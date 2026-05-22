@@ -85,6 +85,8 @@ def build_parser() -> argparse.ArgumentParser:
                    help="Disable automatic session saving")
     p.add_argument("--resume", default=None, metavar="SESSION_ID",
                    help="Resume a previous session by id (or id prefix)")
+    p.add_argument("--agent-name", default=None,
+                   help="Agent display name (default: orzooo)")
     return p
 
 
@@ -494,6 +496,7 @@ def main() -> None:
         session_dir=Path(args.session_dir) if getattr(args, "session_dir", None) else None,
         session_fmt=getattr(args, "session_fmt", "json"),
         auto_save_session=not getattr(args, "no_save_session", False),
+        agent_name=getattr(args, "agent_name", None),
     )
 
     if not cfg.api_key:

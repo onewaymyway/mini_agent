@@ -149,8 +149,8 @@ def print_user_prompt() -> None:
     console.print("\n[bold green]You[/bold green] > ", end="")
 
 
-def print_assistant_prefix() -> None:
-    console.print("\n[bold blue]Claude[/bold blue]", end="")
+def print_assistant_prefix(agent_name: str = "orzooo") -> None:
+    console.print(f"\n[bold blue]{agent_name}[/bold blue]", end="")
 
 
 def print_reasoning(token: str) -> None:

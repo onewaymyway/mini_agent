@@ -231,7 +231,7 @@ class Agent:
 
         try:
             if self.cfg.stream:
-                R.print_assistant_prefix()
+                R.print_assistant_prefix(agent_name=self.cfg.agent_name)
                 writer = R.StreamWriter()
                 stream_kwargs: dict = dict(
                     messages=messages_for_llm,
@@ -261,7 +261,7 @@ class Agent:
                     R.console.print(response.reasoning, style="dim")
                     R.print_reasoning_footer()
                 if response.text:
-                    R.print_assistant_prefix()
+                    R.print_assistant_prefix(agent_name=self.cfg.agent_name)
                     R.print_markdown(response.text)
         except LLMError:
             raise

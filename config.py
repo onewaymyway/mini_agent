@@ -12,10 +12,11 @@ from pathlib import Path
 from typing import Optional
 
 
-# ── Default model ─────────────────────────────────────────────────────────────
+# ── Defaults ──────────────────────────────────────────────────────────────────
 DEFAULT_MODEL = "claude-opus-4-5"
 DEFAULT_MAX_TOKENS = 8192
 DEFAULT_MAX_TURNS = 50
+DEFAULT_AGENT_NAME = "orzooo"
 
 
 @dataclass
@@ -77,6 +78,7 @@ class AppConfig:
     # Context injected into every system prompt
     claude_md_content: str = ""
     system_extra: str = ""         # additional system text (e.g. from --system flag)
+    agent_name: str = DEFAULT_AGENT_NAME  # agent display name
 
 
 def load_config(
@@ -95,6 +97,7 @@ def load_config(
     session_dir: Optional[Path] = None,
     session_fmt: Optional[str] = None,
     auto_save_session: bool = True,
+    agent_name: Optional[str] = None,
 ) -> AppConfig:
     """Load config from environment + CLAUDE.md, return AppConfig."""
     root = project_root or Path.cwd()
@@ -154,6 +157,7 @@ def load_config(
         session_dir=session_dir or (Path(d) if (d := os.environ.get("SESSION_DIR", "")) else None),
         session_fmt=session_fmt or os.environ.get("SESSION_FMT", "json"),
         auto_save_session=auto_save_session,
+        agent_name=agent_name or os.environ.get("AGENT_NAME", DEFAULT_AGENT_NAME),
     )
 
 
@@ -203,4 +207,5 @@ def build_system_prompt(
         system_extra=cfg.system_extra,
         sandbox=cfg.sandbox,
         current_time=current_time,
+        agent_name=cfg.agent_name,
     )

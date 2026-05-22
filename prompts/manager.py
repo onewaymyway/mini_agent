@@ -157,6 +157,7 @@ class PromptManager:
         system_extra: str = "",
         sandbox: bool = False,
         current_time: str = "",
+        agent_name: str = "orzooo",
     ) -> str:
         """
         Assemble the complete system prompt from individual fragments.
@@ -165,7 +166,7 @@ class PromptManager:
         parts: list[str] = []
 
         # 1. Core identity
-        parts.append(self.render("system/agent_core"))
+        parts.append(self.render("system/agent_core", agent_name=agent_name))
 
         # 2. Current time
         if current_time.strip():
