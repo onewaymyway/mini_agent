@@ -1,0 +1,256 @@
+"""
+llm/base.py — 统一的 LLM 抽象层
+
+定义所有 provider 必须实现的接口和共享数据结构，
+Agent 只依赖这个文件，与任何具体的 SDK 完全解耦。
+
+核心类型：
+  LLMConfig     — provider 无关的配置（provider名、model、api_key、参数等）
+  ToolCall      — 模型请求调用工具的指令
+  LLMUsage      — token 用量统计
+  LLMResponse   — 所有 provider 返回的统一响应体
+  LLMClient     — 所有 provider 必须实现的抽象基类
+"""
+
+from __future__ import annotations
+
+import time
+from abc import ABC, abstractmethod
+from dataclasses import dataclass, field
+from typing import Any, Callable, Iterator, Optional
+
+
+# ── 数据结构 ──────────────────────────────────────────────────────────────────
+
+@dataclass
+class ToolCall:
+    """模型请求调用的单个工具。"""
+    id: str          # 由 provider 分配的唯一 ID，回传 tool_result 时使用
+    name: str        # 对应 ToolRegistry 中注册的工具名
+    input: dict      # 工具参数（已解析为 dict）
+
+
+@dataclass
+class LLMUsage:
+    """Token 用量，用于费用统计和上下文管理。"""
+    input_tokens: int = 0
+    output_tokens: int = 0
+    total_tokens: int = 0
+
+    def __add__(self, other: LLMUsage) -> LLMUsage:
+        return LLMUsage(
+            input_tokens=self.input_tokens + other.input_tokens,
+            output_tokens=self.output_tokens + other.output_tokens,
+            total_tokens=self.total_tokens + other.total_tokens,
+        )
+
+
+@dataclass
+class LLMResponse:
+    """
+    所有 provider 返回的统一响应体。
+
+    Agent 只与这个类型交互，永远不触碰 SDK 原始对象。
+    """
+    text: str                          # 文本内容（可能为空，若模型只输出工具调用）
+    tool_calls: list[ToolCall]         # 本轮请求的工具调用列表（可能为空）
+    usage: LLMUsage                    # token 用量
+    stop_reason: str                   # "end_turn" | "tool_use" | "max_tokens" | "stop"
+    reasoning: str = ""                # 思维链内容（CoT），仅部分模型支持（如 NVIDIA reasoning 模型）
+    raw: Any = field(default=None, repr=False)   # 原始 SDK 响应（调试用）
+
+    @property
+    def has_tool_calls(self) -> bool:
+        return bool(self.tool_calls)
+
+    @property
+    def is_complete(self) -> bool:
+        """没有工具调用，即模型已给出最终文本答复。"""
+        return not self.has_tool_calls
+
+
+# ── 工具 Schema 类型 ──────────────────────────────────────────────────────────
+
+@dataclass
+class ToolSchema:
+    """
+    Provider 无关的工具定义。
+    各 provider 的 client 负责将其转换为各自 API 要求的格式。
+    """
+    name: str
+    description: str
+    input_schema: dict   # JSON Schema object
+
+
+# ── 流式 token 回调 ───────────────────────────────────────────────────────────
+
+# 流式输出时每个 token 的回调类型（文本 token）
+StreamCallback = Callable[[str], None]
+
+# 流式思维链 token 的回调类型（仅支持 CoT 的模型使用，如 NVIDIA reasoning 模型）
+ReasoningCallback = Callable[[str], None]
+
+
+# ── 抽象基类 ──────────────────────────────────────────────────────────────────
+
+class LLMClient(ABC):
+    """
+    所有 LLM provider 的抽象基类。
+
+    子类只需实现 chat() 和 stream()。
+    factory.py 负责根据 provider 名称实例化正确的子类。
+
+    接入新 provider 的步骤：
+        1. 在 llm/providers/ 下新建文件，继承 LLMClient
+        2. 实现 chat() 和 stream() 两个方法
+        3. 在 llm/factory.py 的 _REGISTRY 中注册
+    """
+
+    def __init__(self, config: "LLMConfig") -> None:
+        self.config = config
+
+    # ── 必须实现 ──────────────────────────────────────────────────────────────
+
+    @abstractmethod
+    def chat(
+        self,
+        messages: list[dict],
+        system: str,
+        tools: list[ToolSchema],
+    ) -> LLMResponse:
+        """
+        发送一轮对话，返回 LLMResponse。
+
+        Args:
+            messages:  完整对话历史（OpenAI 格式的 role/content list）
+            system:    system prompt 文本
+            tools:     本次可用的工具列表
+        """
+        ...
+
+    @abstractmethod
+    def stream(
+        self,
+        messages: list[dict],
+        system: str,
+        tools: list[ToolSchema],
+        on_token: StreamCallback,
+    ) -> LLMResponse:
+        """
+        流式发送一轮对话。
+
+        每收到一个 token 就调用 on_token(token)，
+        流结束后返回完整的 LLMResponse（含完整 text 和 usage）。
+
+        Args:
+            messages:  完整对话历史
+            system:    system prompt 文本
+            tools:     本次可用的工具列表
+            on_token:  每个流式 token 的回调
+        """
+        ...
+
+    # ── 可选覆盖 ──────────────────────────────────────────────────────────────
+
+    @property
+    def provider_name(self) -> str:
+        """provider 的可读名称，用于日志和错误信息。"""
+        return self.__class__.__name__.replace("Provider", "").replace("Client", "")
+
+    def validate_config(self) -> None:
+        """
+        在首次调用前验证配置。子类可覆盖以增加校验逻辑。
+        默认只检查 api_key 是否存在。
+        """
+        if self.config.requires_api_key and not self.config.api_key:
+            raise LLMConfigError(
+                f"{self.provider_name} requires an API key. "
+                f"Set the corresponding environment variable or pass api_key= to LLMConfig."
+            )
+
+    def format_tools(self, tools: list[ToolSchema]) -> list[dict]:
+        """
+        将 ToolSchema 列表转换为该 provider API 要求的格式。
+        默认实现使用 Anthropic / OpenAI 兼容格式，
+        各 provider 可覆盖此方法适配差异。
+        """
+        return [
+            {
+                "name": t.name,
+                "description": t.description,
+                "input_schema": t.input_schema,
+            }
+            for t in tools
+        ]
+
+    def __repr__(self) -> str:
+        return (
+            f"{self.__class__.__name__}("
+            f"model={self.config.model!r}, "
+            f"provider={self.provider_name!r})"
+        )
+
+
+# ── 配置 ──────────────────────────────────────────────────────────────────────
+
+@dataclass
+class LLMConfig:
+    """
+    Provider 无关的 LLM 配置。
+
+    agent.py 和 config.py 只持有这个对象，
+    不再直接引用任何 SDK 特定的配置。
+    """
+    provider: str                  # "anthropic" | "openai" | "ollama" | 自定义名
+    model: str                     # 模型 ID，如 "claude-opus-4-5" / "gpt-4o"
+    api_key: str = ""              # API key（本地 provider 如 ollama 可留空）
+    base_url: Optional[str] = None # 自定义 endpoint，用于代理或本地部署
+    max_tokens: int = 8192
+    temperature: float = 0.0       # 默认确定性输出（代码场景）
+    timeout: int = 120             # 单次请求超时秒数
+    extra: dict = field(default_factory=dict)   # provider 专用扩展参数
+
+    # 是否必须提供 api_key（本地 provider 设为 False）
+    requires_api_key: bool = True
+
+    @classmethod
+    def from_app_config(cls, cfg: Any) -> "LLMConfig":
+        """
+        从 AppConfig 构建 LLMConfig 的便捷工厂方法。
+        优先读取 cfg.llm_provider，其次读取 LLM_PROVIDER 环境变量。
+        """
+        import os
+        provider = (
+            getattr(cfg, "llm_provider", None)
+            or os.environ.get("LLM_PROVIDER", "anthropic")
+        )
+        base_url = (
+            getattr(cfg, "llm_base_url", None)
+            or os.environ.get("LLM_BASE_URL", "")
+        ) or None
+        return cls(
+            provider=provider,
+            model=cfg.model,
+            api_key=cfg.api_key,
+            max_tokens=cfg.max_tokens,
+            base_url=base_url,
+            requires_api_key=(provider not in ("ollama", "local")),
+        )
+
+
+# ── 异常 ──────────────────────────────────────────────────────────────────────
+
+class LLMError(RuntimeError):
+    """所有 LLM 层异常的基类。"""
+
+class LLMConfigError(LLMError):
+    """配置错误（缺少 key、不支持的 provider 等）。"""
+
+class LLMProviderError(LLMError):
+    """Provider API 返回的错误（HTTP 4xx/5xx、认证失败等）。"""
+
+class LLMTimeoutError(LLMError):
+    """请求超时。"""
+
+class LLMRateLimitError(LLMProviderError):
+    """触发速率限制（可重试）。"""
