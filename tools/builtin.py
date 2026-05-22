@@ -1,0 +1,401 @@
+"""
+Built-in tools: bash, file I/O, glob, grep, patch, web_search.
+All are registered in the default registry via @tool().
+"""
+
+from __future__ import annotations
+
+import fnmatch
+import os
+import re
+import subprocess
+import tempfile
+import textwrap
+import time
+import unicodedata
+from difflib import unified_diff
+from pathlib import Path
+from typing import Optional
+
+from tools import tool
+
+
+# ── bash ──────────────────────────────────────────────────────────────────────
+
+@tool(
+    name="bash",
+    description=(
+        "Execute a shell command in the project environment. "
+        "Returns stdout + stderr. Timeout: 30s by default. "
+        "Working directory is the project root unless overridden."
+    ),
+    schema={
+        "type": "object",
+        "properties": {
+            "command": {
+                "type": "string",
+                "description": "Shell command to execute",
+            },
+            "timeout": {
+                "type": "integer",
+                "description": "Timeout in seconds (default 30)",
+            },
+            "workdir": {
+                "type": "string",
+                "description": "Working directory (default: current dir)",
+            },
+        },
+        "required": ["command"],
+    },
+    requires_approval=True,
+)
+def bash(command: str, timeout: int = 30, workdir: Optional[str] = None) -> str:
+    """Execute a shell command and return combined stdout/stderr."""
+    cwd = Path(workdir).expanduser() if workdir else Path.cwd()
+    try:
+        result = subprocess.run(
+            command,
+            shell=True,
+            cwd=cwd,
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+        )
+        out = result.stdout
+        err = result.stderr
+        combined = (out + err).rstrip()
+        if result.returncode != 0:
+            combined += f"\n[exit code: {result.returncode}]"
+        return combined or "(no output)"
+    except subprocess.TimeoutExpired:
+        return f"[timeout after {timeout}s]"
+    except Exception as e:
+        return f"[error: {e}]"
+
+
+# ── read_file ─────────────────────────────────────────────────────────────────
+
+@tool(
+    name="read_file",
+    description=(
+        "Read the contents of a file. "
+        "Supports optional line range (1-indexed, inclusive). "
+        "Returns file text with line numbers prefixed."
+    ),
+    schema={
+        "type": "object",
+        "properties": {
+            "path": {"type": "string", "description": "File path to read"},
+            "start_line": {"type": "integer", "description": "First line to read (1-indexed)"},
+            "end_line": {"type": "integer", "description": "Last line to read (inclusive)"},
+        },
+        "required": ["path"],
+    },
+    requires_approval=False,
+)
+def read_file(path: str, start_line: Optional[int] = None, end_line: Optional[int] = None) -> str:
+    """Read a file, optionally a line range."""
+    p = Path(path).expanduser()
+    if not p.exists():
+        return f"[error: file not found: {path}]"
+    if not p.is_file():
+        return f"[error: not a file: {path}]"
+    try:
+        lines = p.read_text(encoding="utf-8", errors="replace").splitlines(keepends=True)
+    except Exception as e:
+        return f"[error reading {path}: {e}]"
+
+    sl = (start_line - 1) if start_line else 0
+    el = end_line if end_line else len(lines)
+    sl = max(0, sl)
+    el = min(len(lines), el)
+    selected = lines[sl:el]
+
+    numbered = "".join(f"{sl + i + 1:6}\t{line}" for i, line in enumerate(selected))
+    return numbered or "(empty file)"
+
+
+# ── write_file ────────────────────────────────────────────────────────────────
+
+@tool(
+    name="write_file",
+    description=(
+        "Overwrite (or create) a file with the given content. "
+        "Creates parent directories as needed. "
+        "Use patch_file for targeted edits instead of full rewrites."
+    ),
+    schema={
+        "type": "object",
+        "properties": {
+            "path": {"type": "string", "description": "File path to write"},
+            "content": {"type": "string", "description": "Full file content"},
+        },
+        "required": ["path", "content"],
+    },
+    requires_approval=True,
+)
+def write_file(path: str, content: str) -> str:
+    """Write content to a file (creates parents)."""
+    p = Path(path).expanduser()
+    p.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        p.write_text(content, encoding="utf-8")
+        lines = content.count("\n") + 1
+        return f"Written {lines} lines to {path}"
+    except Exception as e:
+        return f"[error writing {path}: {e}]"
+
+
+# ── create_file ───────────────────────────────────────────────────────────────
+
+@tool(
+    name="create_file",
+    description="Create a new file. Fails if the file already exists (use write_file to overwrite).",
+    schema={
+        "type": "object",
+        "properties": {
+            "path": {"type": "string"},
+            "content": {"type": "string"},
+        },
+        "required": ["path", "content"],
+    },
+    requires_approval=True,
+)
+def create_file(path: str, content: str = "") -> str:
+    p = Path(path).expanduser()
+    if p.exists():
+        return f"[error: file already exists: {path}. Use write_file to overwrite.]"
+    p.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        p.write_text(content, encoding="utf-8")
+        return f"Created {path}"
+    except Exception as e:
+        return f"[error creating {path}: {e}]"
+
+
+# ── delete_file ───────────────────────────────────────────────────────────────
+
+@tool(
+    name="delete_file",
+    description="Delete a file. Does NOT delete directories.",
+    schema={
+        "type": "object",
+        "properties": {"path": {"type": "string"}},
+        "required": ["path"],
+    },
+    requires_approval=True,
+)
+def delete_file(path: str) -> str:
+    p = Path(path).expanduser()
+    if not p.exists():
+        return f"[error: not found: {path}]"
+    if p.is_dir():
+        return f"[error: {path} is a directory. Use bash rm -rf carefully.]"
+    try:
+        p.unlink()
+        return f"Deleted {path}"
+    except Exception as e:
+        return f"[error: {e}]"
+
+
+# ── list_dir ──────────────────────────────────────────────────────────────────
+
+@tool(
+    name="list_dir",
+    description="List files and directories. Optional depth limit (default 2).",
+    schema={
+        "type": "object",
+        "properties": {
+            "path": {"type": "string", "description": "Directory path (default: cwd)"},
+            "depth": {"type": "integer", "description": "Max recursion depth (default 2)"},
+        },
+        "required": [],
+    },
+    requires_approval=False,
+)
+def list_dir(path: str = ".", depth: int = 2) -> str:
+    root = Path(path).expanduser()
+    if not root.exists():
+        return f"[error: not found: {path}]"
+    lines: list[str] = []
+    _walk(root, root, depth, 0, lines)
+    return "\n".join(lines) or "(empty)"
+
+
+def _walk(base: Path, current: Path, max_depth: int, level: int, out: list[str]) -> None:
+    prefix = "  " * level
+    try:
+        entries = sorted(current.iterdir(), key=lambda p: (p.is_file(), p.name.lower()))
+    except PermissionError:
+        out.append(f"{prefix}[permission denied]")
+        return
+    for entry in entries:
+        if entry.name.startswith(".") and level > 0:
+            continue  # skip hidden unless top-level
+        icon = "📄" if entry.is_file() else "📁"
+        out.append(f"{prefix}{icon} {entry.name}")
+        if entry.is_dir() and level < max_depth - 1:
+            _walk(base, entry, max_depth, level + 1, out)
+
+
+# ── glob ──────────────────────────────────────────────────────────────────────
+
+@tool(
+    name="glob",
+    description="Find files matching a glob pattern (e.g. '**/*.py'). Returns matching paths.",
+    schema={
+        "type": "object",
+        "properties": {
+            "pattern": {"type": "string", "description": "Glob pattern"},
+            "root": {"type": "string", "description": "Root directory (default: cwd)"},
+        },
+        "required": ["pattern"],
+    },
+    requires_approval=False,
+)
+def glob(pattern: str, root: str = ".") -> str:
+    base = Path(root).expanduser()
+    matches = sorted(base.glob(pattern))
+    if not matches:
+        return "(no matches)"
+    return "\n".join(str(m.relative_to(base)) for m in matches[:200])
+
+
+# ── grep ──────────────────────────────────────────────────────────────────────
+
+@tool(
+    name="grep",
+    description=(
+        "Search for a regex pattern in files. "
+        "Returns file:line:content for each match. "
+        "Max 100 results."
+    ),
+    schema={
+        "type": "object",
+        "properties": {
+            "pattern": {"type": "string", "description": "Regex pattern"},
+            "path": {"type": "string", "description": "File or directory to search"},
+            "file_pattern": {"type": "string", "description": "Glob filter, e.g. '*.py'"},
+            "case_sensitive": {"type": "boolean", "description": "Default true"},
+        },
+        "required": ["pattern"],
+    },
+    requires_approval=False,
+)
+def grep(
+    pattern: str,
+    path: str = ".",
+    file_pattern: str = "*",
+    case_sensitive: bool = True,
+) -> str:
+    flags = 0 if case_sensitive else re.IGNORECASE
+    try:
+        regex = re.compile(pattern, flags)
+    except re.error as e:
+        return f"[invalid regex: {e}]"
+
+    root = Path(path).expanduser()
+    results: list[str] = []
+
+    files = [root] if root.is_file() else root.rglob(file_pattern)
+    for fpath in files:
+        if not fpath.is_file():
+            continue
+        try:
+            text = fpath.read_text(encoding="utf-8", errors="replace")
+        except Exception:
+            continue
+        for i, line in enumerate(text.splitlines(), 1):
+            if regex.search(line):
+                rel = fpath.relative_to(root) if root.is_dir() else fpath
+                results.append(f"{rel}:{i}:{line.rstrip()}")
+                if len(results) >= 100:
+                    results.append("[… truncated at 100 results]")
+                    return "\n".join(results)
+
+    return "\n".join(results) or "(no matches)"
+
+
+# ── patch_file ────────────────────────────────────────────────────────────────
+
+@tool(
+    name="patch_file",
+    description=(
+        "Apply a targeted find-and-replace edit to a file. "
+        "old_string must exactly match existing content (be as specific as possible). "
+        "new_string is the replacement. Returns a unified diff."
+    ),
+    schema={
+        "type": "object",
+        "properties": {
+            "path": {"type": "string", "description": "File to edit"},
+            "old_string": {"type": "string", "description": "Exact content to replace"},
+            "new_string": {"type": "string", "description": "Replacement content"},
+        },
+        "required": ["path", "old_string", "new_string"],
+    },
+    requires_approval=True,
+)
+def patch_file(path: str, old_string: str, new_string: str) -> str:
+    """Apply a string replacement and return the diff."""
+    p = Path(path).expanduser()
+    if not p.exists():
+        return f"[error: file not found: {path}]"
+    try:
+        original = p.read_text(encoding="utf-8")
+    except Exception as e:
+        return f"[error reading {path}: {e}]"
+
+    count = original.count(old_string)
+    if count == 0:
+        return "[error: old_string not found in file]"
+    if count > 1:
+        return f"[error: old_string matches {count} locations — be more specific]"
+
+    updated = original.replace(old_string, new_string, 1)
+    try:
+        p.write_text(updated, encoding="utf-8")
+    except Exception as e:
+        return f"[error writing {path}: {e}]"
+
+    diff = "".join(
+        unified_diff(
+            original.splitlines(keepends=True),
+            updated.splitlines(keepends=True),
+            fromfile=f"a/{path}",
+            tofile=f"b/{path}",
+            n=3,
+        )
+    )
+    return diff or "(no diff — content unchanged)"
+
+
+# ── web_search ────────────────────────────────────────────────────────────────
+
+@tool(
+    name="web_search",
+    description=(
+        "Search the web for up-to-date information. "
+        "Returns a summary of the top results. "
+        "Use when you need documentation, error messages, or recent info."
+    ),
+    schema={
+        "type": "object",
+        "properties": {
+            "query": {"type": "string", "description": "Search query"},
+        },
+        "required": ["query"],
+    },
+    requires_approval=False,
+)
+def web_search(query: str) -> str:
+    """
+    Stub implementation — replace with a real search API (Brave, Serper, etc.)
+    when an API key is available.
+    """
+    return (
+        f"[web_search: '{query}']\n"
+        "Web search is not configured. "
+        "Set BRAVE_API_KEY or SERPER_API_KEY in your environment "
+        "and update tools/builtin.py to use a real search provider."
+    )
