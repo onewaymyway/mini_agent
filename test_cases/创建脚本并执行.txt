@@ -1,0 +1,6 @@
+写一个计算两个数的和的python脚本，保存到 ./add_sum_v0.py
+
+再写一个测试案例，用于测试该函数是否正确实现
+./add_sum_v0_test.py
+
+运行测试脚本，查看结果,并把测试结果和分析报告 写到 ./add_sum_v0_test_result.md
