@@ -256,3 +256,75 @@ def _already_in(existing: str, new_thinking: str) -> bool:
     if not existing or not new_thinking:
         return False
     return new_thinking[:50] in existing
+
+
+# ── tool_use 消息转换（用于不支持 tool_use 类型的模型）───────────────────────
+
+def convert_tool_use_to_text(messages: list[dict]) -> list[dict]:
+    """
+    将 messages 中的 assistant 消息里的 tool_use 类型转换为 text 类型。
+    把 tool_use 信息序列化为 JSON 字符串，放在 text 类型的 content 中。
+
+    适用场景：某些模型不支持 tool_use 类型的 content，只能接受 text 类型。
+
+    转换前：
+        {
+            "role": "assistant",
+            "content": [
+                {"type": "text", "text": "我将创建一个文件"},
+                {
+                    "type": "tool_use",
+                    "id": "tc_abc123",
+                    "name": "create_file",
+                    "input": {"path": "./test.py", "content": "print(1)"}
+                }
+            ]
+        }
+
+    转换后：
+        {
+            "role": "assistant",
+            "content": [
+                {"type": "text", "text": "我将创建一个文件"},
+                {
+                    "type": "text",
+                    "text": "<tool_use>\n{\"id\": \"tc_abc123\", \"name\": \"create_file\", \"input\": {...}}\n</tool_use>"
+                }
+            ]
+        }
+    """
+    if not messages:
+        return messages
+
+    converted = []
+    for msg in messages:
+        # 只处理 assistant 角色的消息
+        if msg.get("role") != "assistant":
+            converted.append(msg)
+            continue
+
+        content = msg.get("content")
+        if not isinstance(content, list):
+            converted.append(msg)
+            continue
+
+        new_content = []
+        for item in content:
+            if not isinstance(item, dict):
+                new_content.append(item)
+                continue
+
+            # 如果是 tool_use 类型，转换为 text 类型
+            if item.get("type") == "tool_use":
+                tool_entry = {
+                    "name": item.get("name", ""),
+                    "input": item.get("input", {}),
+                }
+                tool_text = f"<tool_use>\n{json.dumps(tool_entry, ensure_ascii=False, indent=2)}\n</tool_use>"
+                new_content.append({"type": "text", "text": tool_text})
+            else:
+                new_content.append(item)
+
+        converted.append({"role": "assistant", "content": new_content})
+
+    return converted

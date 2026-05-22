@@ -225,12 +225,16 @@ class Agent:
                 _reasoning_started[0] = True
             R.print_reasoning(token)
 
+        # 转换消息：将 tool_use 类型转换为 text 类型（用于不支持 tool_use 的模型）
+        from llm.system_tool_call import convert_tool_use_to_text
+        messages_for_llm = convert_tool_use_to_text(self._history)
+
         try:
             if self.cfg.stream:
                 R.print_assistant_prefix()
                 writer = R.StreamWriter()
                 stream_kwargs: dict = dict(
-                    messages=self._history,
+                    messages=messages_for_llm,
                     system=system,
                     tools=tools,
                     on_token=writer.write,
@@ -238,7 +242,7 @@ class Agent:
                 if _supports_on_reasoning:
                     stream_kwargs["on_reasoning"] = _on_reasoning
                 response = self._llm.stream(**stream_kwargs)
-                # postprocess 已提取 <think> 块，非流式 reasoning 在这里显示
+                # postprocess 已提取 <thinking> 块，非流式 reasoning 在这里显示
                 if not _reasoning_started[0] and response.reasoning:
                     R.print_reasoning_header()
                     R.console.print(response.reasoning, style="dim")
@@ -247,11 +251,11 @@ class Agent:
                 writer.flush()
             else:
                 response = self._llm.chat(
-                    messages=self._history,
+                    messages=messages_for_llm,
                     system=system,
                     tools=tools,
                 )
-                # postprocess 已提取 <think> 块，统一在此显示
+                # postprocess 已提取 <thinking> 块，统一在此显示
                 if response.reasoning:
                     R.print_reasoning_header()
                     R.console.print(response.reasoning, style="dim")
