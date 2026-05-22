@@ -103,11 +103,24 @@ def parse_tool_calls(text: str) -> list[ToolCall]:
 
 def _parse_single_call(raw_json: str) -> Optional[ToolCall]:
     """解析单个 JSON 片段为 ToolCall。"""
+    data=None
     try:
+        
         data = json.loads(raw_json)
     except json.JSONDecodeError as e:
         warnings.warn(f"[system_tool_call] Invalid tool call JSON: {e}\n{raw_json[:200]}")
-        return None
+
+        try:
+            # 尝试使用json_repair修复，提升成功率
+            import json_repair
+            obj = json_repair.repair_json(raw_json, return_objects=True)
+            if isinstance(obj, dict):
+                warnings.warn(f"[tool_parser] JSON 已修复 : {raw_json[:80]!r}")
+                data=obj
+        except Exception as e2:
+            warnings.warn(f"[tool_parser] json_repair 失败 {raw_json}: {e2}")
+        if not data:
+            return None
 
     # 支持两种字段命名：
     #   新格式: {"name": "...", "input": {...}}
