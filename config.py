@@ -190,11 +190,17 @@ def build_system_prompt(
     Compose the full system prompt.
     Delegates to PromptManager — all prompt text lives in prompts/system/*.md.
     """
+    from datetime import datetime
     from prompts import pm
+
+    # 当前时间
+    current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S %A")
+
     return pm.build_system_prompt(
         claude_md_content=cfg.claude_md_content,
         active_skills=active_skills,
         skill_context=skill_context,
         system_extra=cfg.system_extra,
         sandbox=cfg.sandbox,
+        current_time=current_time,
     )

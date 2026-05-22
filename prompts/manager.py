@@ -156,6 +156,7 @@ class PromptManager:
         skill_context: str = "",
         system_extra: str = "",
         sandbox: bool = False,
+        current_time: str = "",
     ) -> str:
         """
         Assemble the complete system prompt from individual fragments.
@@ -166,13 +167,17 @@ class PromptManager:
         # 1. Core identity
         parts.append(self.render("system/agent_core"))
 
-        # 2. Project context (CLAUDE.md)
+        # 2. Current time
+        if current_time.strip():
+            parts.append(self.render("system/current_time", current_time=current_time))
+
+        # 3. Project context (CLAUDE.md)
         if claude_md_content.strip():
             parts.append(
                 self.render("system/project_context", claude_md_content=claude_md_content)
             )
 
-        # 3. Active skills
+        # 4. Active skills
         if active_skills:
             skill_list = "\n".join(f"- {s}" for s in active_skills)
             parts.append(
@@ -183,11 +188,11 @@ class PromptManager:
                 )
             )
 
-        # 4. Extra system text (e.g. from --system CLI flag)
+        # 5. Extra system text (e.g. from --system CLI flag)
         if system_extra.strip():
             parts.append(system_extra.strip())
 
-        # 5. Orchestration capabilities (always before sandbox)
+        # 6. Orchestration capabilities (always before sandbox)
         try:
             from tools.orchestration import get_task_manager
             if get_task_manager() is not None:
@@ -195,7 +200,7 @@ class PromptManager:
         except ImportError:
             pass
 
-        # 6. Sandbox mode warning (always last)
+        # 7. Sandbox mode warning (always last)
         if sandbox:
             parts.append(self.render("system/sandbox_mode"))
 
