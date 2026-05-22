@@ -37,11 +37,27 @@ from .base import (
     LLMRateLimitError,
 )
 from .factory import create_client, register_provider, list_providers
+from .debug_logger import (
+    DebugConfig,
+    LLMDebugLogger,
+    get_debug_logger,
+    init_debug_logger,
+)
+from .system_tool_call import (
+    render_tool_list,
+    parse_tool_calls,
+    render_tool_results,
+    postprocess_response,
+)
 
 __all__ = [
     "LLMClient", "LLMConfig", "LLMResponse", "LLMUsage",
     "ToolCall", "ToolSchema", "StreamCallback", "ReasoningCallback",
     "create_client", "register_provider", "list_providers",
+    # debug
+    "DebugConfig", "LLMDebugLogger", "get_debug_logger", "init_debug_logger",
+    # system tool call
+    "render_tool_list", "parse_tool_calls", "render_tool_results", "postprocess_response",
     "LLMError", "LLMConfigError", "LLMProviderError",
     "LLMTimeoutError", "LLMRateLimitError",
 ]

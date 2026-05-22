@@ -1,43 +1,22 @@
 """
 llm/providers/openai.py — OpenAI / OpenAI-compatible provider
 
-对接 openai Python SDK，支持：
-  - OpenAI 官方 API（gpt-4o, o1-*, gpt-4-turbo 等）
-  - Azure OpenAI（通过 base_url + api_key）
-  - 任何兼容 OpenAI Chat Completions API 的服务
-    （DeepSeek、Moonshot、Qwen、Groq、Together、Fireworks 等）
-
-兼容条件：目标服务的 /v1/chat/completions 接口须支持
-  - messages（含 tool 角色）
-  - tools（function calling 格式）
-  - stream: true 时返回 SSE
+支持 OpenAI 官方 API 及所有兼容服务（Azure、Groq、DeepSeek 等）。
+支持 SDK 原生 function calling 和 system-prompt tool call 两种模式。
 """
 
 from __future__ import annotations
 
+import json
 from llm.base import (
-    LLMClient,
-    LLMConfig,
-    LLMResponse,
-    LLMUsage,
-    ToolCall,
-    ToolSchema,
-    StreamCallback,
-    LLMProviderError,
-    LLMTimeoutError,
-    LLMRateLimitError,
+    LLMClient, LLMConfig, LLMResponse, LLMUsage,
+    ToolCall, ToolSchema, StreamCallback,
+    LLMProviderError, LLMTimeoutError, LLMRateLimitError,
 )
+from llm.providers._base_mixin import ProviderMixin
 
 
-class OpenAIProvider(LLMClient):
-    """
-    OpenAI Chat Completions API provider。
-
-    同时兼容：Azure OpenAI、Groq、Moonshot、DeepSeek 等
-    只需在 LLMConfig 中指定 base_url 即可切换。
-
-    tool_choice 默认为 "auto"，可通过 config.extra["tool_choice"] 覆盖。
-    """
+class OpenAIProvider(ProviderMixin, LLMClient):
 
     def __init__(self, config: LLMConfig) -> None:
         super().__init__(config)
@@ -47,9 +26,7 @@ class OpenAIProvider(LLMClient):
         try:
             from openai import OpenAI
         except ImportError:
-            raise LLMProviderError(
-                "openai SDK not installed. Run: pip install openai"
-            )
+            raise LLMProviderError("openai SDK not installed. Run: pip install openai")
         kwargs: dict = {"api_key": self.config.api_key}
         if self.config.base_url:
             kwargs["base_url"] = self.config.base_url
@@ -57,15 +34,18 @@ class OpenAIProvider(LLMClient):
             kwargs["timeout"] = float(self.config.timeout)
         return OpenAI(**kwargs)
 
-    # ── LLMClient 接口实现 ────────────────────────────────────────────────────
+    # ── 公共接口 ───────────────────────────────────────────────────────────────
 
-    def chat(
-        self,
-        messages: list[dict],
-        system: str,
-        tools: list[ToolSchema],
-    ) -> LLMResponse:
-        """非流式调用。"""
+    def chat(self, messages: list[dict], system: str, tools: list[ToolSchema]) -> LLMResponse:
+        return self._traced_chat(self._do_chat, messages, system, tools)
+
+    def stream(self, messages: list[dict], system: str, tools: list[ToolSchema],
+               on_token: StreamCallback) -> LLMResponse:
+        return self._traced_stream(self._do_stream, messages, system, tools, on_token)
+
+    # ── 实际 SDK 调用 ──────────────────────────────────────────────────────────
+
+    def _do_chat(self, messages, system, tools):
         full_messages = self._prepend_system(messages, system)
         kwargs = self._build_kwargs(full_messages, tools, stream=False)
         try:
@@ -74,40 +54,28 @@ class OpenAIProvider(LLMClient):
             raise self._wrap_error(e)
         return self._parse_response(resp)
 
-    def stream(
-        self,
-        messages: list[dict],
-        system: str,
-        tools: list[ToolSchema],
-        on_token: StreamCallback,
-    ) -> LLMResponse:
-        """流式调用，逐 token 触发 on_token 回调。"""
+    def _do_stream(self, messages, system, tools, on_token):
         full_messages = self._prepend_system(messages, system)
         kwargs = self._build_kwargs(full_messages, tools, stream=True)
-        # 收集完整内容用于解析 tool_calls
+        # completions.stream() is a context manager and must not receive stream=True
+        kwargs.pop("stream", None)
         collected_text: list[str] = []
-        collected_tool_calls: dict[int, dict] = {}   # index → partial tool call
+        collected_tool_calls: dict[int, dict] = {}
 
         try:
-            with self._client.chat.completions.stream(**kwargs) as stream:
-                for event in stream:
+            with self._client.chat.completions.stream(**kwargs) as s:
+                for event in s:
                     for choice in getattr(event, "choices", []):
                         delta = getattr(choice, "delta", None)
                         if delta is None:
                             continue
-                        # 文本 token
                         if delta.content:
                             on_token(delta.content)
                             collected_text.append(delta.content)
-                        # 工具调用 delta
                         for tc_delta in getattr(delta, "tool_calls", None) or []:
                             idx = tc_delta.index
                             if idx not in collected_tool_calls:
-                                collected_tool_calls[idx] = {
-                                    "id": "",
-                                    "name": "",
-                                    "arguments": "",
-                                }
+                                collected_tool_calls[idx] = {"id": "", "name": "", "arguments": ""}
                             if tc_delta.id:
                                 collected_tool_calls[idx]["id"] += tc_delta.id
                             if tc_delta.function:
@@ -115,7 +83,7 @@ class OpenAIProvider(LLMClient):
                                     collected_tool_calls[idx]["name"] += tc_delta.function.name
                                 if tc_delta.function.arguments:
                                     collected_tool_calls[idx]["arguments"] += tc_delta.function.arguments
-                final = stream.get_final_completion()
+                final = s.get_final_completion()
         except Exception as e:
             raise self._wrap_error(e)
 
@@ -124,44 +92,31 @@ class OpenAIProvider(LLMClient):
             output_tokens=getattr(final.usage, "completion_tokens", 0),
             total_tokens=getattr(final.usage, "total_tokens", 0),
         )
-        tool_calls = self._parse_tool_calls_from_stream(collected_tool_calls)
+        tool_calls = self._parse_tool_calls_stream(collected_tool_calls)
+        finish = getattr(final.choices[0], "finish_reason", "stop") if final.choices else "stop"
         return LLMResponse(
-            text="".join(collected_text),
-            tool_calls=tool_calls,
-            usage=usage,
-            stop_reason=self._map_finish_reason(
-                getattr(final.choices[0], "finish_reason", "stop") if final.choices else "stop"
-            ),
-            raw=final,
+            text="".join(collected_text), tool_calls=tool_calls,
+            usage=usage, stop_reason=self._map_finish(finish),
         )
 
     def format_tools(self, tools: list[ToolSchema]) -> list[dict]:
-        """OpenAI function-calling 格式（parameters 字段，非 input_schema）。"""
         return [
-            {
-                "type": "function",
-                "function": {
-                    "name": t.name,
-                    "description": t.description,
-                    "parameters": t.input_schema,
-                },
-            }
-            for t in tools
+            {"type": "function", "function": {
+                "name": t.name, "description": t.description, "parameters": t.input_schema,
+            }} for t in tools
         ]
 
-    # ── 内部辅助 ──────────────────────────────────────────────────────────────
+    # ── 辅助 ──────────────────────────────────────────────────────────────────
 
     @staticmethod
     def _prepend_system(messages: list[dict], system: str) -> list[dict]:
-        """OpenAI 无独立 system 参数，需作为首条 system 角色消息插入。"""
         if not system:
             return messages
-        # 若已有 system 消息则替换，否则插入到最前
         if messages and messages[0].get("role") == "system":
             return [{"role": "system", "content": system}] + messages[1:]
         return [{"role": "system", "content": system}] + messages
 
-    def _build_kwargs(self, messages: list[dict], tools: list[ToolSchema], stream: bool) -> dict:
+    def _build_kwargs(self, messages, tools, stream: bool) -> dict:
         kwargs: dict = {
             "model": self.config.model,
             "messages": messages,
@@ -178,61 +133,40 @@ class OpenAIProvider(LLMClient):
         return kwargs
 
     def _parse_response(self, resp) -> LLMResponse:
-        """将 openai.types.chat.ChatCompletion 转换为 LLMResponse。"""
         choice = resp.choices[0] if resp.choices else None
         text = ""
         tool_calls: list[ToolCall] = []
-
         if choice:
-            msg = choice.message
-            text = msg.content or ""
-            for tc in getattr(msg, "tool_calls", None) or []:
-                import json
-                tool_calls.append(
-                    ToolCall(
-                        id=tc.id,
-                        name=tc.function.name,
-                        input=json.loads(tc.function.arguments or "{}"),
-                    )
-                )
-
+            text = choice.message.content or ""
+            for tc in getattr(choice.message, "tool_calls", None) or []:
+                tool_calls.append(ToolCall(
+                    id=tc.id, name=tc.function.name,
+                    input=json.loads(tc.function.arguments or "{}"),
+                ))
         usage = LLMUsage(
             input_tokens=getattr(resp.usage, "prompt_tokens", 0),
             output_tokens=getattr(resp.usage, "completion_tokens", 0),
             total_tokens=getattr(resp.usage, "total_tokens", 0),
         )
-
-        return LLMResponse(
-            text=text,
-            tool_calls=tool_calls,
-            usage=usage,
-            stop_reason=self._map_finish_reason(
-                getattr(choice, "finish_reason", "stop") if choice else "stop"
-            ),
-            raw=resp,
-        )
+        finish = getattr(choice, "finish_reason", "stop") if choice else "stop"
+        return LLMResponse(text=text, tool_calls=tool_calls, usage=usage,
+                           stop_reason=self._map_finish(finish), raw=resp)
 
     @staticmethod
-    def _parse_tool_calls_from_stream(collected: dict[int, dict]) -> list[ToolCall]:
-        import json
-        tool_calls = []
+    def _parse_tool_calls_stream(collected: dict) -> list[ToolCall]:
+        result = []
         for _, tc in sorted(collected.items()):
             try:
                 args = json.loads(tc["arguments"] or "{}")
             except json.JSONDecodeError:
                 args = {}
-            tool_calls.append(ToolCall(id=tc["id"], name=tc["name"], input=args))
-        return tool_calls
+            result.append(ToolCall(id=tc["id"], name=tc["name"], input=args))
+        return result
 
     @staticmethod
-    def _map_finish_reason(reason: str) -> str:
-        mapping = {
-            "stop": "end_turn",
-            "tool_calls": "tool_use",
-            "length": "max_tokens",
-            "content_filter": "stop",
-        }
-        return mapping.get(reason, reason)
+    def _map_finish(reason: str) -> str:
+        return {"stop": "end_turn", "tool_calls": "tool_use",
+                "length": "max_tokens", "content_filter": "stop"}.get(reason, reason)
 
     def _wrap_error(self, exc: Exception) -> LLMProviderError:
         try:

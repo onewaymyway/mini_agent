@@ -22,25 +22,91 @@ err_console = Console(stderr=True)
 # ── Streaming text ─────────────────────────────────────────────────────────────
 
 class StreamWriter:
-    """Write streaming text tokens to stdout without newlines between them."""
+    """
+    Write streaming text tokens to stdout.
+    Automatically suppresses <tool_use>...</tool_use> blocks from display
+    (they will be parsed from the full buffered text by postprocess_response).
+    """
 
     def __init__(self) -> None:
         self._buffer: list[str] = []
         self._started = False
+        # State for tool_use block suppression
+        self._suppress = False          # currently inside a <tool_use> block
+        self._pending: str = ""         # partial tag accumulation
 
     def write(self, token: str) -> None:
-        if not self._started:
-            console.print()  # blank line before response
-            self._started = True
-        print(token, end="", flush=True)
         self._buffer.append(token)
+        # Process token through suppression filter
+        display = self._filter(token)
+        if not display:
+            return
+        if not self._started:
+            console.print()  # blank line before first visible token
+            self._started = True
+        print(display, end="", flush=True)
+
+    def _filter(self, token: str) -> str:
+        """
+        Filter out <tool_use>...</tool_use> blocks from display output.
+        Returns the portion of token that should be printed (may be empty).
+        """
+        result = []
+        # Accumulate pending + new token for tag detection
+        text = self._pending + token
+        self._pending = ""
+
+        i = 0
+        while i < len(text):
+            if self._suppress:
+                # Look for closing tag
+                end = text.find("</tool_use>", i)
+                if end == -1:
+                    # Not found yet — keep suppressing, save tail as pending in case tag spans tokens
+                    tail = text[i:]
+                    # Keep up to 12 chars as pending (len("</tool_use>") = 11)
+                    if len(tail) <= 11:
+                        self._pending = tail
+                    # else discard (we're mid-block with no tag boundary)
+                    i = len(text)
+                else:
+                    # Found closing tag — exit suppress mode
+                    self._suppress = False
+                    i = end + len("</tool_use>")
+            else:
+                # Look for opening tag
+                start = text.find("<tool_use>", i)
+                if start == -1:
+                    # No opening tag — keep up to 10 chars as pending in case tag spans tokens
+                    visible = text[i:]
+                    if len(visible) > 10:
+                        result.append(visible[:-10])
+                        self._pending = visible[-10:]
+                    else:
+                        self._pending = visible
+                    i = len(text)
+                elif start > i:
+                    result.append(text[i:start])
+                    self._suppress = True
+                    i = start + len("<tool_use>")
+                else:
+                    self._suppress = True
+                    i = start + len("<tool_use>")
+
+        return "".join(result)
 
     def flush(self) -> str:
+        # Flush any pending text (might be a partial non-tag string)
+        if self._pending and not self._suppress:
+            print(self._pending, end="", flush=True)
+            self._pending = ""
         full = "".join(self._buffer)
         if self._buffer:
             print()  # final newline
         self._buffer.clear()
         self._started = False
+        self._suppress = False
+        self._pending = ""
         return full
 
 

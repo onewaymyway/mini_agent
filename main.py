@@ -19,12 +19,14 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent))
 
 # Register built-in tools (side-effect import)
-import tools.builtin  # noqa: F401
+import tools.builtin          # noqa: F401
+import tools.orchestration    # noqa: F401
 
 from agent import Agent
 from config import load_config
 from permissions import PermissionGuard
 from prompts import pm                        # ← PromptManager singleton
+from repl_input import get_repl_input
 from skills import SkillLoader
 import renderer as R
 
@@ -65,6 +67,24 @@ def build_parser() -> argparse.ArgumentParser:
                    help="LLM provider: anthropic|openai|ollama|... (overrides LLM_PROVIDER env)")
     p.add_argument("--base-url", default=None,
                    help="Custom API endpoint (for proxies, Azure, local deployments)")
+    p.add_argument("--system-tool-call", action="store_true",
+                   help="Use system-prompt tool call mode (max compatibility, no SDK tools)")
+    p.add_argument("--debug-llm", action="store_true",
+                   help="Enable LLM request/response debug logging to file")
+    p.add_argument("--debug-llm-console", action="store_true",
+                   help="Also print LLM debug info to console (implies --debug-llm)")
+    p.add_argument("--workers", type=int, default=4,
+                   help="Max concurrent sub-agents (default: 4)")
+    p.add_argument("--max-llm-calls", type=int, default=8,
+                   help="Max concurrent LLM API calls (default: 8)")
+    p.add_argument("--session-dir", default=None,
+                   help="Directory to save session files (default: ./sessions)")
+    p.add_argument("--session-fmt", choices=["json", "jsonl"], default="json",
+                   help="Session file format: json (default) or jsonl")
+    p.add_argument("--no-save-session", action="store_true",
+                   help="Disable automatic session saving")
+    p.add_argument("--resume", default=None, metavar="SESSION_ID",
+                   help="Resume a previous session by id (or id prefix)")
     return p
 
 
@@ -78,12 +98,17 @@ def run_repl(agent: Agent, skill_loader: SkillLoader) -> None:
     R.print_info(pm.fragment("cli_messages", "REPL_STARTUP_SKILLS", skill_count=len(skill_loader.available)))
     if agent.cfg.sandbox:
         R.print_warning(pm.fragment("cli_messages", "REPL_SANDBOX_WARNING"))
+    if agent.session_id:
+        R.print_info(f"Session: [{agent.session_id}] — /session list to browse history")
 
+    repl = get_repl_input()
     while True:
         try:
-            R.print_user_prompt()
-            user_input = input().strip()
-        except (EOFError, KeyboardInterrupt):
+            user_input = repl.prompt()
+        except KeyboardInterrupt:
+            R.print_interrupt()
+            continue
+        except EOFError:
             print()
             R.print_info(pm.fragment("cli_messages", "BYE_MSG"))
             break
@@ -163,6 +188,15 @@ def _handle_slash(cmd: str, agent: Agent, skill_loader: SkillLoader) -> None:
     elif name == "prompts":
         _list_prompts()
 
+    elif name in ("session", "sessions"):
+        _handle_session_cmd(parts[1:], agent)
+
+    elif name == "tasks":
+        _handle_tasks_cmd(parts[1:], agent)
+
+    elif name == "concurrency" or name == "cc":
+        _handle_concurrency_cmd(parts[1:])
+
     elif name == "provider":
         _handle_provider_cmd(parts[1:], agent)
 
@@ -198,6 +232,212 @@ def _list_prompts() -> None:
     for p_name in pm.list_prompts():
         R.console.print(f"  [cyan]{p_name}[/cyan]")
     R.console.print(f"\n[dim]Prompt root: {pm._root}[/dim]")
+
+
+def _handle_tasks_cmd(args: list[str], agent) -> None:
+    """
+    /tasks                 — show all tasks table
+    /tasks dashboard       — live dashboard until all done
+    /tasks log <id>        — show task log
+    /tasks cancel <id>     — cancel a task
+    /tasks cancel-all      — cancel all pending/running tasks
+    /tasks workers <n>     — change max_workers
+    """
+    from tools.orchestration import get_task_manager
+    from orchestrator.task_display import print_task_table, print_task_log, TaskDashboard
+    mgr = get_task_manager()
+    if mgr is None:
+        R.print_error("Task manager not running.")
+        return
+
+    if not args or args[0] == "list":
+        records = mgr.list_records()
+        print_task_table(records)
+
+    elif args[0] == "dashboard":
+        dash = TaskDashboard(mgr)
+        try:
+            dash.run_until_done()
+        except KeyboardInterrupt:
+            R.print_interrupt()
+
+    elif args[0] == "log" and len(args) >= 2:
+        rec = mgr.get(args[1])
+        if rec:
+            print_task_log(rec)
+        else:
+            R.print_error(f"Task '{args[1]}' not found.")
+
+    elif args[0] == "cancel" and len(args) >= 2:
+        ok = mgr.cancel(args[1])
+        if ok:
+            R.print_success(f"Cancelled task {args[1]}")
+        else:
+            R.print_error(f"Could not cancel {args[1]} (already terminal or not found).")
+
+    elif args[0] == "cancel-all":
+        n = mgr.cancel_all()
+        R.print_success(f"Cancelled {n} task(s).")
+
+    elif args[0] == "workers" and len(args) >= 2:
+        try:
+            n = int(args[1])
+            mgr.max_workers = n
+            R.print_success(f"Max workers set to {n}.")
+        except ValueError:
+            R.print_error("Usage: /tasks workers <number>")
+
+    else:
+        R.print_error("Usage: /tasks | /tasks dashboard | /tasks log <id> | /tasks cancel <id> | /tasks cancel-all | /tasks workers <n>")
+
+
+def _handle_session_cmd(args: list[str], agent) -> None:
+    """
+    /session              — 显示当前 session 信息
+    /session list         — 列出最近 20 个 session
+    /session save         — 立即保存当前 session
+    /session resume <id>  — 加载一个旧 session（追加到当前历史）
+    /session new          — 清空历史，开始新 session
+    /session delete <id>  — 删除一个 session 文件
+    /session dir          — 显示 session 目录
+    """
+    from session import SessionManager
+    mgr = agent.session_manager
+    if mgr is None:
+        R.print_warning("Session saving is disabled (--no-save-session).")
+        return
+
+    sub = args[0].lower() if args else "info"
+
+    if sub in ("info", "status", ""):
+        sid = agent.session_id or "(none)"
+        sf  = agent.session_file or "(not saved yet)"
+        R.console.print(f"\n[bold]Current session:[/bold]")
+        R.console.print(f"  ID   : [cyan]{sid}[/cyan]")
+        R.console.print(f"  File : [dim]{sf}[/dim]")
+        R.console.print(f"  Turns: {agent.stats.turns}  "
+                        f"Tokens: {agent.stats.input_tokens}↑ {agent.stats.output_tokens}↓")
+
+    elif sub == "list":
+        limit = int(args[1]) if len(args) > 1 and args[1].isdigit() else 20
+        metas = mgr.list_sessions(limit=limit)
+        if not metas:
+            R.console.print("[dim]No sessions found.[/dim]")
+            return
+        from rich.table import Table
+        from rich import box as rbox
+        t = Table(box=rbox.SIMPLE, show_header=True, header_style="bold dim")
+        t.add_column("ID",      style="cyan",  width=10)
+        t.add_column("Title",   min_width=28, max_width=40)
+        t.add_column("Age",     width=12)
+        t.add_column("Model",   width=20)
+        t.add_column("Turns",   width=6,  justify="right")
+        t.add_column("Tokens",  width=12, justify="right")
+        for m in metas:
+            t.add_row(
+                m.id,
+                m.title,
+                m.age_str,
+                m.model[:20],
+                str(m.turns),
+                f"{m.input_tokens}/{m.output_tokens}",
+            )
+        R.console.print(t)
+
+    elif sub == "save":
+        path = agent.save_session()
+        if path:
+            R.print_success(f"Saved → {path}")
+        else:
+            R.print_error("Save failed or nothing to save.")
+
+    elif sub == "resume" and len(args) >= 2:
+        sid = args[1]
+        if agent.load_session(sid):
+            R.print_success(
+                f"Resumed [{agent.session_id}] — {len(agent.history)} messages loaded"
+            )
+        else:
+            R.print_error(f"Session '{sid}' not found.")
+
+    elif sub == "new":
+        agent.clear_history()
+        agent._session = mgr.new_session(
+            provider=getattr(agent.cfg, "llm_provider", "unknown"),
+            model=agent.cfg.model,
+        )
+        R.print_success("New session started.")
+
+    elif sub == "delete" and len(args) >= 2:
+        sid = args[1]
+        ok = mgr.delete(sid)
+        if ok:
+            R.print_success(f"Deleted session '{sid}'.")
+        else:
+            R.print_error(f"Session '{sid}' not found.")
+
+    elif sub == "dir":
+        R.console.print(f"Session directory: [cyan]{mgr.session_dir}[/cyan]")
+
+    else:
+        R.print_error(
+            "Usage: /session | /session list [n] | /session save | "
+            "/session resume <id> | /session new | /session delete <id> | /session dir"
+        )
+
+
+def _handle_concurrency_cmd(args: list[str]) -> None:
+    """
+    /concurrency           — show current limits and queue state
+    /concurrency tasks <n> — set max concurrent tasks
+    /concurrency llm <n>   — set max concurrent LLM calls
+    """
+    from orchestrator.concurrency import concurrency_snapshot, set_max_tasks, set_max_llm_calls
+    snap = concurrency_snapshot()
+
+    if not args or args[0] == "status":
+        t = snap["tasks"]
+        l = snap["llm"]
+        R.console.print(f"\n[bold]Concurrency status:[/bold]")
+        R.console.print(
+            f"  Tasks  : [cyan]{t['active']} running[/cyan] / "
+            f"{t['limit']} max  "
+            f"({t['waiting']} queued)"
+        )
+        R.console.print(
+            f"  LLM    : [blue]{l['active']} active[/blue] / "
+            f"{l['limit']} max  "
+            f"({l['waiting']} queued)"
+        )
+        if t["waiters"]:
+            R.console.print("  Queued tasks: " + ", ".join(
+                f"[dim]{w['label']} ({w['waited_s']}s)[/dim]"
+                for w in t["waiters"]
+            ))
+        if l["waiters"]:
+            R.console.print("  Queued LLM : " + ", ".join(
+                f"[dim]{w['label']} ({w['waited_s']}s)[/dim]"
+                for w in l["waiters"]
+            ))
+    elif args[0] == "tasks" and len(args) >= 2:
+        try:
+            n = int(args[1])
+            set_max_tasks(n)
+            from tools.orchestration import get_task_manager
+            mgr = get_task_manager()
+            if mgr: mgr.max_workers = n
+            R.print_success(f"Max concurrent tasks → {n}")
+        except ValueError:
+            R.print_error("Usage: /concurrency tasks <number>")
+    elif args[0] == "llm" and len(args) >= 2:
+        try:
+            n = int(args[1])
+            set_max_llm_calls(n)
+            R.print_success(f"Max concurrent LLM calls → {n}")
+        except ValueError:
+            R.print_error("Usage: /concurrency llm <number>")
+    else:
+        R.print_error("Usage: /concurrency | /concurrency tasks <n> | /concurrency llm <n>")
 
 
 def _handle_provider_cmd(args: list[str], agent: Agent) -> None:
@@ -237,6 +477,7 @@ def main() -> None:
 
     # Config
     project_root = Path(args.project).expanduser() if args.project else Path.cwd()
+    debug_console = getattr(args, "debug_llm_console", False)
     cfg = load_config(
         project_root=project_root,
         extra_system=args.system,
@@ -246,6 +487,13 @@ def main() -> None:
         model=args.model,
         llm_provider=getattr(args, "provider", None),
         llm_base_url=getattr(args, "base_url", None),
+        use_system_tool_call=getattr(args, "system_tool_call", False),
+        debug_llm=getattr(args, "debug_llm", False) or debug_console,
+        debug_llm_console=debug_console,
+        max_llm_calls=getattr(args, "max_llm_calls", 8),
+        session_dir=Path(args.session_dir) if getattr(args, "session_dir", None) else None,
+        session_fmt=getattr(args, "session_fmt", "json"),
+        auto_save_session=not getattr(args, "no_save_session", False),
     )
 
     if not cfg.api_key:
@@ -272,8 +520,28 @@ def main() -> None:
         project_root=cfg.project_root,
     )
 
+    # Concurrency control (task slots + LLM call slots)
+    from orchestrator.concurrency import init_concurrency
+    from orchestrator.status_bar import start_status_bar
+    max_workers = getattr(args, "workers", 4)
+    max_llm_calls = getattr(args, "max_llm_calls", 8)
+    init_concurrency(max_tasks=max_workers, max_llm_calls=max_llm_calls)
+    start_status_bar()
+
+    # Task manager (for concurrent sub-agents)
+    from tools.orchestration import init_task_manager
+    init_task_manager(cfg, max_workers=max_workers)
+    R.print_info(f"Task manager ready (max {max_workers} concurrent workers)")
+
     # Agent
     agent = Agent(cfg=cfg, skill_loader=skill_loader, guard=guard)
+
+    # Resume session if requested
+    if getattr(args, "resume", None):
+        if agent.load_session(args.resume):
+            R.print_success(f"Resumed session [{agent.session_id}] — {len(agent.history)} messages loaded")
+        else:
+            R.print_error(f"Session '{args.resume}' not found. Starting fresh.")
 
     # Single-shot mode
     if args.prompt:

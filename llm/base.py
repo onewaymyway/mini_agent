@@ -213,6 +213,9 @@ class LLMConfig:
     # 是否必须提供 api_key（本地 provider 设为 False）
     requires_api_key: bool = True
 
+    # 工具调用模式：True = system prompt 模式（通用兼容），False = SDK 原生 tools 参数
+    use_system_tool_call: bool = False
+
     @classmethod
     def from_app_config(cls, cfg: Any) -> "LLMConfig":
         """
@@ -228,6 +231,10 @@ class LLMConfig:
             getattr(cfg, "llm_base_url", None)
             or os.environ.get("LLM_BASE_URL", "")
         ) or None
+        use_system_tc = (
+            getattr(cfg, "use_system_tool_call", False)
+            or os.environ.get("LLM_SYSTEM_TOOL_CALL", "").lower() in ("1", "true", "yes")
+        )
         return cls(
             provider=provider,
             model=cfg.model,
@@ -235,6 +242,7 @@ class LLMConfig:
             max_tokens=cfg.max_tokens,
             base_url=base_url,
             requires_api_key=(provider not in ("ollama", "local")),
+            use_system_tool_call=use_system_tc,
         )
 
 

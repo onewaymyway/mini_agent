@@ -32,3 +32,10 @@ NO_SKILLS_FOUND: (none found)
 
 SLASH_COMMANDS_HEADER: Available slash commands:
 SKILLS_LIST_HEADER: Available skills:
+DEBUG_LLM_ON: LLM debug logging: ON → {log_file}
+DEBUG_LLM_OFF: LLM debug logging: OFF
+SYSTEM_TOOL_CALL_ON: Tool call mode: system-prompt (max compatibility)
+SYSTEM_TOOL_CALL_OFF: Tool call mode: SDK native
+TASKS_HEADER: Sub-agent tasks:
+TASKS_NONE: No tasks submitted yet.
+TASK_MANAGER_READY: Task manager ready ({workers} workers max)

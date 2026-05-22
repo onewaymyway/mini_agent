@@ -24,11 +24,12 @@ from llm.base import (
     LLMProviderError,
     LLMTimeoutError,
 )
+from llm.providers._base_mixin import ProviderMixin
 
 _DEFAULT_BASE_URL = "http://localhost:11434"
 
 
-class OllamaProvider(LLMClient):
+class OllamaProvider(ProviderMixin, LLMClient):
     """
     Ollama 本地模型 provider，通过 HTTP 直接调用 Ollama REST API。
     不依赖任何第三方 SDK（仅使用标准库 urllib）。
@@ -42,7 +43,14 @@ class OllamaProvider(LLMClient):
 
     # ── LLMClient 接口实现 ────────────────────────────────────────────────────
 
-    def chat(
+    def chat(self, messages: list[dict], system: str, tools: list[ToolSchema]) -> LLMResponse:
+        return self._traced_chat(self._do_chat, messages, system, tools)
+
+    def stream(self, messages: list[dict], system: str, tools: list[ToolSchema],
+               on_token: StreamCallback) -> LLMResponse:
+        return self._traced_stream(self._do_stream, messages, system, tools, on_token)
+
+    def _do_chat(
         self,
         messages: list[dict],
         system: str,
@@ -53,7 +61,7 @@ class OllamaProvider(LLMClient):
         raw = self._post("/api/chat", payload)
         return self._parse_response(raw)
 
-    def stream(
+    def _do_stream(
         self,
         messages: list[dict],
         system: str,

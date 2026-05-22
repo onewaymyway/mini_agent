@@ -187,7 +187,15 @@ class PromptManager:
         if system_extra.strip():
             parts.append(system_extra.strip())
 
-        # 5. Sandbox mode warning (always last)
+        # 5. Orchestration capabilities (always before sandbox)
+        try:
+            from tools.orchestration import get_task_manager
+            if get_task_manager() is not None:
+                parts.append(self.render("system/orchestration"))
+        except ImportError:
+            pass
+
+        # 6. Sandbox mode warning (always last)
         if sandbox:
             parts.append(self.render("system/sandbox_mode"))
 

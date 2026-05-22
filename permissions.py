@@ -98,7 +98,10 @@ class PermissionGuard:
         label = f"[bold red]{dangerous_label}[/bold red]" if is_dangerous else safe_label
         console.print(f"\n{label} Tool request: [bold]{tool_name}[/bold]")
         console.print(f"  [dim]{summary}[/dim]")
-        console.print(f"  {choice_hint} : ", end="")
+        # 直接写 stdout 避免 Rich 把 [y] 解析成标记
+        import sys
+        sys.stdout.write(f"  {choice_hint} : ")
+        sys.stdout.flush()
 
         try:
             choice = input().strip().lower() or "y"

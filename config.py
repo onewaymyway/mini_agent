@@ -61,6 +61,18 @@ class AppConfig:
     # LLM provider（传给 llm.LLMConfig.from_app_config）
     llm_provider: str = "anthropic"   # "anthropic" | "openai" | "ollama" | ...
     llm_base_url: str = ""            # 自定义 endpoint（可选）
+    use_system_tool_call: bool = False  # True = system prompt 模式，False = SDK 原生 tools
+    max_llm_calls: int = 8              # LLM 请求并发上限
+
+    # 调试日志
+    debug_llm: bool = False           # 总开关：记录请求/响应
+    debug_llm_console: bool = False   # 同时在终端打印调试信息
+    debug_log_dir: Optional[Path] = None  # 日志目录，None=自动推断
+
+    # Session 持久化
+    session_dir: Optional[Path] = None   # Session 文件目录，None=./sessions
+    session_fmt: str = "json"            # "json" 或 "jsonl"
+    auto_save_session: bool = True       # 每轮对话后自动保存
 
     # Context injected into every system prompt
     claude_md_content: str = ""
@@ -76,6 +88,13 @@ def load_config(
     model: Optional[str] = None,
     llm_provider: Optional[str] = None,
     llm_base_url: Optional[str] = None,
+    use_system_tool_call: Optional[bool] = None,
+    debug_llm: bool = False,
+    debug_llm_console: bool = False,
+    max_llm_calls: Optional[int] = None,
+    session_dir: Optional[Path] = None,
+    session_fmt: Optional[str] = None,
+    auto_save_session: bool = True,
 ) -> AppConfig:
     """Load config from environment + CLAUDE.md, return AppConfig."""
     root = project_root or Path.cwd()
@@ -92,6 +111,28 @@ def load_config(
     llm_provider = llm_provider or os.environ.get("LLM_PROVIDER", "anthropic")
     llm_base_url = llm_base_url or os.environ.get("LLM_BASE_URL", "")
 
+    # 调试日志初始化
+    _debug_llm = debug_llm or os.environ.get("LLM_DEBUG", "").lower() in ("1", "true", "yes")
+    _debug_console = debug_llm_console or os.environ.get("LLM_DEBUG_CONSOLE", "").lower() in ("1", "true", "yes")
+    _debug_log_dir = Path(d) if (d := os.environ.get("LLM_DEBUG_LOG_DIR", "")) else None
+
+    if _debug_llm:
+        from llm.debug_logger import DebugConfig, init_debug_logger
+        _dcfg = DebugConfig(
+            enabled=True,
+            log_to_file=True,
+            log_to_console=_debug_console,
+            log_dir=_debug_log_dir or root / ".claude" / "logs",
+        )
+        init_debug_logger(_dcfg, root)
+
+    # system tool call 模式
+    _use_sys_tc = (
+        use_system_tool_call
+        if use_system_tool_call is not None
+        else os.environ.get("LLM_SYSTEM_TOOL_CALL", "").lower() in ("1", "true", "yes")
+    )
+
     return AppConfig(
         api_key=api_key,
         model=model or os.environ.get("CLAUDE_MODEL", DEFAULT_MODEL),
@@ -105,6 +146,14 @@ def load_config(
         system_extra=extra_system,
         llm_provider=llm_provider,
         llm_base_url=llm_base_url,
+        use_system_tool_call=_use_sys_tc,
+        max_llm_calls=max_llm_calls or int(os.environ.get("MAX_LLM_CALLS", 8)),
+        debug_llm=_debug_llm,
+        debug_llm_console=_debug_console,
+        debug_log_dir=_debug_log_dir,
+        session_dir=session_dir or (Path(d) if (d := os.environ.get("SESSION_DIR", "")) else None),
+        session_fmt=session_fmt or os.environ.get("SESSION_FMT", "json"),
+        auto_save_session=auto_save_session,
     )
 
 
