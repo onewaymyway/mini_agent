@@ -108,7 +108,11 @@ def run_repl(agent: Agent, skill_loader: SkillLoader) -> None:
         R.print_info(f"Session: [{agent.session_id}] — /session list to browse history")
 
     repl = get_repl_input()
+    from orchestrator.status_bar import pause, resume
+
     while True:
+        # 等待用户输入前：擦除状态栏，暂停重绘
+        pause()
         try:
             user_input = repl.prompt()
         except KeyboardInterrupt:
@@ -131,6 +135,8 @@ def run_repl(agent: Agent, skill_loader: SkillLoader) -> None:
             _handle_slash(user_input, agent, skill_loader)
             continue
 
+        # 用户回车，agent 开始运行：恢复状态栏
+        resume()
         try:
             agent.run_turn(user_input)
         except KeyboardInterrupt:

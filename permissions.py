@@ -91,14 +91,20 @@ class PermissionGuard:
         return self._prompt(tool_name, summary, is_dangerous)
 
     def _prompt(self, tool_name: str, summary: str, is_dangerous: bool) -> bool:
+        from orchestrator.status_bar import printing_context, pause, resume
         dangerous_label = pm.fragment("permission_labels", "DANGEROUS_LABEL")
         safe_label      = pm.fragment("permission_labels", "SAFE_LABEL")
         choice_hint     = pm.fragment("permission_labels", "CHOICE_HINT")
 
         label = f"[bold red]{dangerous_label}[/bold red]" if is_dangerous else safe_label
-        console.print(f"\n{label} Tool request: [bold]{tool_name}[/bold]")
-        console.print(f"  [dim]{summary}[/dim]")
-        # 直接写 stdout 避免 Rich 把 [y] 解析成标记
+
+        # 先在 printing_context 里打印审批信息，再 pause 等待输入
+        with printing_context():
+            console.print(f"\n{label} Tool request: [bold]{tool_name}[/bold]")
+            console.print(f"  [dim]{summary}[/dim]")
+
+        # pause：擦除状态栏，等待用户输入（输入完成前不重绘）
+        pause()
         import sys
         sys.stdout.write(f"  {choice_hint} : ")
         sys.stdout.flush()
@@ -106,7 +112,10 @@ class PermissionGuard:
         try:
             choice = input().strip().lower() or "y"
         except (EOFError, KeyboardInterrupt):
+            resume()
             return False
+
+        resume()  # 恢复状态栏
 
         if choice in ("y", "yes"):
             return True
