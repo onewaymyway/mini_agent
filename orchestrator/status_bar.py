@@ -82,7 +82,8 @@ def _draw() -> None:
         return
     lines = _build_status_lines()
     if not lines:
-        _erase()
+        # 没有状态栏内容可显示，但保留 last_lines 计数器
+        # 只在有内容时清除之前的状态栏
         return
     out = sys.stdout
     if _st.last_lines > 0:

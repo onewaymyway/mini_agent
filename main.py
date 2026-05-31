@@ -116,9 +116,11 @@ def run_repl(agent: Agent, skill_loader: SkillLoader) -> None:
         try:
             user_input = repl.prompt()
         except KeyboardInterrupt:
+            resume()  # 先恢复状态栏，再打印中断信息
             R.print_interrupt()
             continue
         except EOFError:
+            resume()  # 先恢复状态栏
             print()
             R.print_info(pm.fragment("cli_messages", "BYE_MSG"))
             break
@@ -127,6 +129,7 @@ def run_repl(agent: Agent, skill_loader: SkillLoader) -> None:
             continue
 
         if user_input.lower() in ("exit", "quit", "/exit", "/quit"):
+            resume()  # 先恢复状态栏，再打印退出信息
             R.print_stats(agent.stats.summary())
             R.print_info(pm.fragment("cli_messages", "BYE_MSG"))
             break
