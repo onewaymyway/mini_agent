@@ -117,12 +117,19 @@ class StatusBar:
         ll = snap["llm"]
 
         active_total = t["active"] + ll["active"] + t["waiting"] + ll["waiting"]
-        if active_total == 0:
+
+        # 收集执行计划展示行
+        plan_lines = _build_plan_lines()
+
+        if active_total == 0 and not plan_lines:
             # 完全空闲，擦除已有输出
             self._erase_locked()
             return
 
-        lines = _build_lines(t, ll)
+        lines = []
+        if active_total > 0:
+            lines.extend(_build_lines(t, ll))
+        lines.extend(plan_lines)
 
         stderr = sys.stderr
         if self._last_lines > 0:
@@ -172,6 +179,15 @@ def _build_lines(t: dict, ll: dict) -> list[str]:
         lines.append(f"  {icon} {label} [{bar}] {active}/{limit}   {status}{queue}")
     return lines
 
+
+
+def _build_plan_lines() -> list[str]:
+    """从执行计划获取紧凑展示行（直接委托给 plan_display）。"""
+    try:
+        from orchestrator.plan_display import build_plan_status_lines
+        return build_plan_status_lines()
+    except Exception:
+        return []
 
 # ── 模块级单例 ────────────────────────────────────────────────────────────────
 

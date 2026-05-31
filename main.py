@@ -21,6 +21,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 # Register built-in tools (side-effect import)
 import tools.builtin          # noqa: F401
 import tools.orchestration    # noqa: F401
+import tools.plan             # noqa: F401  ← 执行计划工具
 
 from agent import Agent
 from config import load_config
@@ -42,6 +43,9 @@ def build_parser() -> argparse.ArgumentParser:
             Slash commands (in REPL):
               /help              Show this help
               /clear             Clear conversation history
+              /plan              Show current execution plan
+              /plan clear        Clear the active plan
+              /plan summary      Print completed plan summary
               /skills            List all available skills
               /skill on <name>   Activate a skill
               /skill off <name>  Deactivate a skill
@@ -195,6 +199,9 @@ def _handle_slash(cmd: str, agent: Agent, skill_loader: SkillLoader) -> None:
 
     elif name == "tasks":
         _handle_tasks_cmd(parts[1:], agent)
+
+    elif name == "plan":
+        _handle_plan_cmd(parts[1:])
 
     elif name == "concurrency" or name == "cc":
         _handle_concurrency_cmd(parts[1:])
@@ -386,6 +393,37 @@ def _handle_session_cmd(args: list[str], agent) -> None:
             "Usage: /session | /session list [n] | /session save | "
             "/session resume <id> | /session new | /session delete <id> | /session dir"
         )
+
+
+def _handle_plan_cmd(args: list[str]) -> None:
+    """
+    /plan              — 显示当前执行计划（树形）
+    /plan clear        — 清除当前计划
+    /plan summary      — 打印完成摘要表格
+    """
+    from orchestrator.plan import get_plan, clear_plan
+    from orchestrator.plan_display import print_plan_tree, print_plan_summary
+
+    if not args or args[0] == "show":
+        plan = get_plan()
+        if plan is None:
+            R.print_info("No active execution plan. The agent will create one when needed.")
+        else:
+            print_plan_tree(plan)
+
+    elif args[0] == "clear":
+        clear_plan()
+        R.print_success("Execution plan cleared.")
+
+    elif args[0] == "summary":
+        plan = get_plan()
+        if plan is None:
+            R.print_info("No plan to summarize.")
+        else:
+            print_plan_summary(plan)
+
+    else:
+        R.print_error("Usage: /plan | /plan clear | /plan summary")
 
 
 def _handle_concurrency_cmd(args: list[str]) -> None:

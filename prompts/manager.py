@@ -168,6 +168,12 @@ class PromptManager:
         # 1. Core identity
         parts.append(self.render("system/agent_core", agent_name=agent_name))
 
+        # 1b. Execution planning capability
+        try:
+            parts.append(self.render("system/plan_mode"))
+        except Exception:
+            pass
+
         # 2. Current time
         if current_time.strip():
             parts.append(self.render("system/current_time", current_time=current_time))
@@ -201,7 +207,18 @@ class PromptManager:
         except ImportError:
             pass
 
-        # 7. Sandbox mode warning (always last)
+        # 7. 执行计划上下文（如有活跃计划，注入当前进度）
+        try:
+            from orchestrator.plan import get_plan
+            plan = get_plan()
+            if plan is not None:
+                plan_block = plan.to_prompt_block()
+                if plan_block:
+                    parts.append(plan_block)
+        except Exception:
+            pass
+
+        # 8. Sandbox mode warning (always last)
         if sandbox:
             parts.append(self.render("system/sandbox_mode"))
 
