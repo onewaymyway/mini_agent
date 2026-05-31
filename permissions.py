@@ -21,7 +21,7 @@ console = Console()
 
 # Tools that are always safe (read-only, no side-effects)
 _SAFE_TOOLS = frozenset(
-    {"read_file", "list_dir", "glob", "grep", "web_search"}
+    {"read_file", "list_dir", "glob", "grep", "web_search", "create_plan", "add_task", "start_task", "complete_task", "fail_task","get_plan_status","clear_plan"}
 )
 
 # Tools that need approval by default (write / exec / network)
