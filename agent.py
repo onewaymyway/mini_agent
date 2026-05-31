@@ -154,9 +154,6 @@ class Agent:
         Run one user turn. May make multiple API calls (tool loops).
         Returns the final assistant text.
         """
-        # AI 输出期间静默状态栏，避免与流式文本混合
-        from orchestrator.status_bar import suppress_bar, unsuppress_bar
-        suppress_bar()
         try:
             if self.skill_loader:
                 newly = self.skill_loader.auto_activate(user_message)
@@ -168,7 +165,6 @@ class Agent:
 
             return self._agentic_loop()
         finally:
-            unsuppress_bar()
             # 每轮对话后自动保存 session
             if getattr(self.cfg, 'auto_save_session', True) and self._history:
                 self.save_session()
