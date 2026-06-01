@@ -100,4 +100,18 @@ class PermissionGuard:
 
         choice = _term.confirm("", choices=choice_hint, default="y")
 
+    def _summarise(tool_name: str, tool_input: dict) -> str:
+        if tool_name == "bash":
+            cmd = tool_input.get("command", "")
+            return f"$ {cmd[:120]}"
+        if tool_name in ("write_file", "create_file", "patch_file", "delete_file"):
+            path = tool_input.get("path", tool_input.get("file_path", "?"))
+            return f"{tool_name}({path})"
+        return f"{tool_name}({', '.join(f'{k}={v!r}' for k, v in list(tool_input.items())[:3])})"
 
+
+    def _is_dangerous(tool_name: str, tool_input: dict) -> bool:
+        if tool_name != "bash":
+            return False
+        cmd = tool_input.get("command", "")
+        return any(re.search(p, cmd) for p in _DANGER_PATTERNS)
