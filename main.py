@@ -27,7 +27,6 @@ from agent import Agent
 from config import load_config
 from permissions import PermissionGuard
 from prompts import pm                        # ← PromptManager singleton
-from repl_input import get_repl_input
 from skills import SkillLoader
 import renderer as R
 
@@ -107,21 +106,15 @@ def run_repl(agent: Agent, skill_loader: SkillLoader) -> None:
     if agent.session_id:
         R.print_info(f"Session: [{agent.session_id}] — /session list to browse history")
 
-    repl = get_repl_input()
-    from orchestrator.status_bar import pause, resume
+    from terminal import term as _term
 
     while True:
-        # 等待用户输入前：擦除状态栏，暂停重绘
-        pause()
         try:
-            user_input = repl.prompt()
+            user_input = _term.prompt_user()
         except KeyboardInterrupt:
-            resume()  # 先恢复状态栏，再打印中断信息
             R.print_interrupt()
             continue
         except EOFError:
-            resume()  # 先恢复状态栏
-            print()
             R.print_info(pm.fragment("cli_messages", "BYE_MSG"))
             break
 
@@ -129,7 +122,6 @@ def run_repl(agent: Agent, skill_loader: SkillLoader) -> None:
             continue
 
         if user_input.lower() in ("exit", "quit", "/exit", "/quit"):
-            resume()  # 先恢复状态栏，再打印退出信息
             R.print_stats(agent.stats.summary())
             R.print_info(pm.fragment("cli_messages", "BYE_MSG"))
             break
@@ -138,8 +130,6 @@ def run_repl(agent: Agent, skill_loader: SkillLoader) -> None:
             _handle_slash(user_input, agent, skill_loader)
             continue
 
-        # 用户回车，agent 开始运行：恢复状态栏
-        resume()
         try:
             agent.run_turn(user_input)
         except KeyboardInterrupt:

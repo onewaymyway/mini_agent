@@ -273,7 +273,10 @@ class LLMDebugLogger:
         try:
             from rich.console import Console
             from rich.syntax import Syntax
-            console = Console(stderr=True)
+            from terminal import term as _t
+            class _C:
+                def print(self, *a, **kw): _t.print(*a, **kw)
+            console = _C()
             seq      = entry.get("seq", "?")
             provider = entry.get("provider", "")
             model    = entry.get("model", "")
@@ -311,9 +314,9 @@ class LLMDebugLogger:
     def _print_info(self, msg: str) -> None:
         try:
             from rich.console import Console
-            Console(stderr=True).print(f"[dim]🔍 {msg}[/dim]")
+            __import__("terminal").term.debug(msg)
         except Exception:
-            print(f"[DEBUG] {msg}", flush=True)
+            __import__("terminal").term.debug(msg, prefix="[DEBUG]")
 
     @staticmethod
     def _resolve_log_file(log_dir: Optional[Path], project_root: Optional[Path]) -> Path:

@@ -1,221 +1,144 @@
 """
-renderer.py — 终端输出
+renderer.py — 渲染适配层
 
-所有输出都通过 printing_context() 包裹，确保：
-  擦除状态栏 → 输出内容 → 重绘状态栏
+将历史 API（print_tool_call 等函数）映射到 terminal.term。
+所有调用方都保持不变，这里做转发即可。
 
-stdout 上只有主线程在写，完全顺序，无竞态。
+terminal.term 是唯一写屏幕的地方。
 """
 
 from __future__ import annotations
 
+import json
 import sys
 from typing import Optional
 
-from rich.console import Console
-from rich.markdown import Markdown
 from rich.syntax import Syntax
 from rich.text import Text
 
-from orchestrator.status_bar import printing_context
+from terminal import term, Terminal
 
-console = Console(highlight=False)
+# 向后兼容：其他模块直接 import R.console 后调用 .print()
+# 提供一个轻量的 _ConsoleProxy 代理到 terminal
+class _ConsoleProxy:
+    def print(self, *args, **kwargs):
+        term.print(*args, **kwargs)
+    def rule(self, *args, **kwargs):
+        term.rule(*args, **kwargs)
+
+console = _ConsoleProxy()
 
 
-# ── StreamWriter ───────────────────────────────────────────────────────────────
+# ── StreamWriter（向后兼容 agent.py 的调用方式）────────────────────────────
 
 class StreamWriter:
     """
-    流式写入 LLM token。
-
-    第一个可见 token 到来时擦除状态栏，flush() 完成后重绘状态栏。
-    整个流式输出过程是一个大的 printing_context。
+    兼容层：agent.py 持有 StreamWriter 实例，逐 token write()，最后 flush()。
+    内部全部委托给 terminal.term。
     """
-
     def __init__(self) -> None:
         self._buffer: list[str] = []
-        self._erased = False
-        self._had_output = False
-        self._suppress = False
-        self._pending = ""
 
     def write(self, token: str) -> None:
         self._buffer.append(token)
-        display = self._filter(token)
-        if not display:
-            return
-        if not self._erased:
-            # 第一个可见 token：手动擦除状态栏（不用 context manager，因为是流式的）
-            from orchestrator.status_bar import _erase
-            _erase()
-            self._erased = True
-            self._had_output = True
-        sys.stdout.write(display)
-        sys.stdout.flush()
-
-    def _filter(self, token: str) -> str:
-        result = []
-        text = self._pending + token
-        self._pending = ""
-        i = 0
-        while i < len(text):
-            if self._suppress:
-                end = text.find("</tool_use>", i)
-                if end == -1:
-                    tail = text[i:]
-                    self._pending = tail if len(tail) <= 11 else ""
-                    i = len(text)
-                else:
-                    self._suppress = False
-                    i = end + len("</tool_use>")
-            else:
-                start = text.find("<tool_use>", i)
-                if start == -1:
-                    visible = text[i:]
-                    if len(visible) > 10:
-                        result.append(visible[:-10])
-                        self._pending = visible[-10:]
-                    else:
-                        self._pending = visible
-                    i = len(text)
-                elif start > i:
-                    result.append(text[i:start])
-                    self._suppress = True
-                    i = start + len("<tool_use>")
-                else:
-                    self._suppress = True
-                    i = start + len("<tool_use>")
-        return "".join(result)
+        term.stream_token(token)
 
     def flush(self) -> str:
-        if self._pending and not self._suppress:
-            sys.stdout.write(self._pending)
-            self._pending = ""
+        term.stream_end()
         full = "".join(self._buffer)
-        if self._had_output:
-            sys.stdout.write("\n")
-            sys.stdout.flush()
-            # 流结束：重绘状态栏
-            from orchestrator.status_bar import _draw
-            _draw()
         self._buffer.clear()
-        self._erased = False
-        self._had_output = False
-        self._suppress = False
-        self._pending = ""
         return full
 
 
-# ── 工具输出 ───────────────────────────────────────────────────────────────────
+# ── 工具输出 ──────────────────────────────────────────────────────────────────
 
 def print_tool_call(tool_name: str, tool_input: dict, verbose: bool = False) -> None:
     icon = _tool_icon(tool_name)
     summary = _tool_summary(tool_name, tool_input)
-    with printing_context():
-        console.print(f"\n{icon} [bold cyan]{tool_name}[/bold cyan]  [dim]{summary}[/dim]")
-        if verbose:
-            import json
-            console.print(Syntax(json.dumps(tool_input, indent=2), "json",
-                                 theme="ansi_dark", line_numbers=False))
+    term.print(f"\n{icon} [bold cyan]{tool_name}[/bold cyan]  [dim]{summary}[/dim]")
+    if verbose:
+        term.syntax(json.dumps(tool_input, indent=2), "json",
+                    theme="ansi_dark", line_numbers=False)
 
 
 def print_tool_result(tool_name: str, result: str, truncate: int = 2000) -> None:
-    with printing_context():
-        if not result or not result.strip():
-            console.print("  [dim](empty result)[/dim]")
-            return
-        display = result if len(result) <= truncate else result[:truncate] + "\n…[truncated]"
-        lang = _result_lang(tool_name, result)
-        if lang:
-            console.print(Syntax(display, lang, theme="ansi_dark",
-                                 line_numbers=False, background_color="default"))
-        else:
-            console.print(Text(display, style="dim"))
+    if not result or not result.strip():
+        term.print("  [dim](empty result)[/dim]")
+        return
+    display = result if len(result) <= truncate else result[:truncate] + "\n…[truncated]"
+    lang = _result_lang(tool_name, result)
+    if lang:
+        term.syntax(display, lang, theme="ansi_dark",
+                    line_numbers=False, background_color="default")
+    else:
+        term.print(Text(display, style="dim"))
 
 
 def print_tool_error(tool_name: str, error: str) -> None:
-    with printing_context():
-        console.print(f"  [red]✗ {tool_name} error:[/red] {error}")
+    term.print(f"  [red]✗ {tool_name} error:[/red] {error}")
 
 
-# ── 状态和提示 ─────────────────────────────────────────────────────────────────
+# ── 布局 ──────────────────────────────────────────────────────────────────────
 
 def print_header(title: str) -> None:
-    with printing_context():
-        console.rule(f"[bold blue]{title}[/bold blue]")
+    term.rule(f"[bold blue]{title}[/bold blue]")
 
 
 def print_assistant_prefix(agent_name: str = "orzooo") -> None:
-    # 只擦除，不重绘——后续 StreamWriter 负责整个流式输出完成后重绘
-    from orchestrator.status_bar import _erase
-    _erase()
-    console.print(f"\n[bold blue]{agent_name}[/bold blue] ", end="")
+    term.print(f"\n[bold blue]{agent_name}[/bold blue] ", end="")
 
 
 def print_reasoning(token: str) -> None:
-    sys.stdout.write(token)
-    sys.stdout.flush()
+    # reasoning token 也走流式通道
+    term.stream_token(token)
 
 
 def print_reasoning_header() -> None:
-    with printing_context():
-        console.print()
-        console.print("[dim]── Reasoning ──────────────────────────────[/dim]")
+    term.print("\n[dim]── Reasoning ──────────────────────────────[/dim]")
 
 
 def print_reasoning_footer() -> None:
-    with printing_context():
-        console.print("[dim]──────────────────────────────────────────[/dim]")
-        console.print()
+    term.print("[dim]──────────────────────────────────────────[/dim]\n")
 
 
 def print_stats(summary: str) -> None:
-    with printing_context():
-        console.print(f"\n[dim]─── {summary} ───[/dim]")
+    term.print(f"\n[dim]─── {summary} ───[/dim]")
 
 
 def print_skill_loaded(skill_name: str) -> None:
-    with printing_context():
-        console.print(f"[dim]📚 Skill loaded: {skill_name}[/dim]")
+    term.print(f"[dim]📚 Skill loaded: {skill_name}[/dim]")
 
 
 def print_info(msg: str) -> None:
-    with printing_context():
-        console.print(f"[blue]ℹ[/blue]  {msg}")
+    term.print(f"[blue]ℹ[/blue]  {msg}")
 
 
 def print_warning(msg: str) -> None:
-    with printing_context():
-        console.print(f"[yellow]⚠[/yellow]  {msg}")
+    term.print(f"[yellow]⚠[/yellow]  {msg}")
 
 
 def print_error(msg: str) -> None:
-    with printing_context():
-        console.print(f"[red]✗[/red]  {msg}")
+    term.print(f"[red]✗[/red]  {msg}")
 
 
 def print_success(msg: str) -> None:
-    with printing_context():
-        console.print(f"[green]✓[/green]  {msg}")
+    term.print(f"[green]✓[/green]  {msg}")
 
 
 def print_diff(diff_text: str) -> None:
-    with printing_context():
-        console.print(Syntax(diff_text, "diff", theme="ansi_dark", background_color="default"))
+    term.syntax(diff_text, "diff", theme="ansi_dark", background_color="default")
 
 
 def print_markdown(md: str) -> None:
-    with printing_context():
-        console.print(Markdown(md))
+    term.markdown(md)
 
 
 def print_interrupt() -> None:
-    with printing_context():
-        console.print("\n[yellow]⚡ Interrupted (Ctrl-C). Type 'exit' to quit.[/yellow]")
+    term.print("\n[yellow]⚡ Interrupted (Ctrl-C). Type 'exit' to quit.[/yellow]")
 
 
 def print_user_prompt() -> None:
-    console.print("\n[bold green]You[/bold green] > ", end="")
+    term.print("\n[bold green]You[/bold green] > ", end="")
 
 
 # ── Helpers ────────────────────────────────────────────────────────────────────

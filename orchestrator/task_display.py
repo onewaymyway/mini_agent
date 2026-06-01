@@ -24,7 +24,10 @@ from rich import box
 
 from orchestrator.task import TaskRecord, TaskStatus
 
-console = Console()
+from terminal import term as _term
+class _C:
+    def print(self, *a, **kw): _term.print(*a, **kw)
+console = _C()
 
 
 # ── 摘要表格 ──────────────────────────────────────────────────────────────────

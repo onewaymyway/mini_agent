@@ -22,7 +22,10 @@ from rich import box
 
 from orchestrator.plan import ExecutionPlan, PlanTask, PlanTaskStatus, TaskSource, get_plan
 
-console = Console()
+from terminal import term as _term
+class _C:
+    def print(self, *a, **kw): _term.print(*a, **kw)
+console = _C()
 
 
 # ── 完整树形展示（/plan 命令） ─────────────────────────────────────────────────
