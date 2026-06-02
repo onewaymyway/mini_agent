@@ -13,9 +13,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from terminal import term as _term
-
 from prompts import pm
-
 
 
 # Tools that are always safe (read-only, no side-effects)
@@ -93,25 +91,45 @@ class PermissionGuard:
         dangerous_label = pm.fragment("permission_labels", "DANGEROUS_LABEL")
         safe_label      = pm.fragment("permission_labels", "SAFE_LABEL")
         choice_hint     = pm.fragment("permission_labels", "CHOICE_HINT")
+
         label = f"[bold red]{dangerous_label}[/bold red]" if is_dangerous else safe_label
 
+        # 先通过队列渲染提示文字（保证在状态栏重绘之前先显示）
         _term.print(f"\n{label} Tool request: [bold]{tool_name}[/bold]")
         _term.print(f"  [dim]{summary}[/dim]")
 
-        choice = _term.confirm("", choices=choice_hint, default="y")
+        # confirm() 会等队列清空（上面两行 print 已渲染到屏幕），
+        # 再暂停刷新，擦状态栏，打印选项提示，然后阻塞读取
+        choice = _term.confirm(
+            prompt_lines=[],   # 提示文字已通过 print() 输出，这里无需重复
+            choices=choice_hint,
+            default="y",
+        )
 
-    def _summarise(tool_name: str, tool_input: dict) -> str:
-        if tool_name == "bash":
-            cmd = tool_input.get("command", "")
-            return f"$ {cmd[:120]}"
-        if tool_name in ("write_file", "create_file", "patch_file", "delete_file"):
-            path = tool_input.get("path", tool_input.get("file_path", "?"))
-            return f"{tool_name}({path})"
-        return f"{tool_name}({', '.join(f'{k}={v!r}' for k, v in list(tool_input.items())[:3])})"
-
-
-    def _is_dangerous(tool_name: str, tool_input: dict) -> bool:
-        if tool_name != "bash":
+        if choice in ("y", "yes"):
+            return True
+        elif choice in ("a", "always"):
+            self._allowed_patterns.append(summary[:40])
+            return True
+        elif choice in ("d", "deny"):
+            self._denied_tools.add(tool_name)
             return False
+        else:
+            return False
+
+
+def _summarise(tool_name: str, tool_input: dict) -> str:
+    if tool_name == "bash":
         cmd = tool_input.get("command", "")
-        return any(re.search(p, cmd) for p in _DANGER_PATTERNS)
+        return f"$ {cmd[:120]}"
+    if tool_name in ("write_file", "create_file", "patch_file", "delete_file"):
+        path = tool_input.get("path", tool_input.get("file_path", "?"))
+        return f"{tool_name}({path})"
+    return f"{tool_name}({', '.join(f'{k}={v!r}' for k, v in list(tool_input.items())[:3])})"
+
+
+def _is_dangerous(tool_name: str, tool_input: dict) -> bool:
+    if tool_name != "bash":
+        return False
+    cmd = tool_input.get("command", "")
+    return any(re.search(p, cmd) for p in _DANGER_PATTERNS)

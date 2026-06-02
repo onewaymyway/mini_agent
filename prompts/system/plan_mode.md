@@ -109,3 +109,45 @@ The CLI shows task relationships clearly:
     └─ ○ [fixtures]  Create test fixtures  ← from:write ← spawned by write task
    ○ [run]    Run tests  → after write                 ← pending, depends on write
 ```
+
+---
+
+## Asking the user for input
+
+When you need clarification, additional information, or user preference before proceeding,
+use the user input tools instead of guessing or making assumptions:
+
+**`ask_user(question, hint?)`** — Open-ended question, returns the user's text response.
+```
+ask_user(
+    question="Which database should the system use?",
+    hint="Options: PostgreSQL, MySQL, SQLite, MongoDB"
+)
+```
+
+**`ask_user_confirm(question, default?)`** — Yes/no confirmation.
+```
+ask_user_confirm(
+    question="The output directory 'dist/' already exists. Overwrite it?",
+    default="no"
+)
+```
+
+**`ask_user_choice(question, options)`** — Multiple choice.
+```
+ask_user_choice(
+    question="Which deployment target should I configure?",
+    options=["Docker", "AWS Lambda", "Kubernetes", "Bare metal"]
+)
+```
+
+**When to ask the user:**
+- The task is ambiguous and different interpretations lead to very different outcomes
+- A destructive or irreversible action is about to happen
+- A preference or style choice must be made (e.g. naming convention, framework)
+- You're blocked and need information only the user can provide
+
+**When NOT to ask:**
+- You can make a reasonable default choice
+- The question is trivial or easily reversible
+- The user already provided the answer in their original message

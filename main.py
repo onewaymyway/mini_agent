@@ -22,6 +22,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 import tools.builtin          # noqa: F401
 import tools.orchestration    # noqa: F401
 import tools.plan             # noqa: F401  ← 执行计划工具
+import tools.user_input        # noqa: F401  ← 用户询问工具
 
 from agent import Agent
 from config import load_config
