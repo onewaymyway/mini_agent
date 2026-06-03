@@ -21,6 +21,11 @@ from skills import SkillLoader
 from tools import ToolRegistry, get_default_registry
 from session import SessionManager, Session
 import renderer as R
+from perception.token_counter import estimate_messages_tokens
+from perception.project_scanner import ProjectScanner
+from perception.file_watcher import FileWatcher
+from perception.tool_cache import ToolResultCache
+from perception.memory_store import MemoryStore, MemoryEntry
 
 
 class Agent:
@@ -59,6 +64,32 @@ class Agent:
         self._session: Optional[Session] = None
         self._init_session()
 
+        # ── 感知与记忆子系统（按开关初始化）────────────────────────────────
+        # [SYS-PROJ] 项目结构感知
+        self._project_snapshot: Optional[str] = None
+        if cfg.project_scan_enabled:
+            try:
+                snap = ProjectScanner().scan(cfg.project_root)
+                self._project_snapshot = snap.to_prompt_block()
+            except Exception as e:
+                R.print_warning(f"[perception] project scan failed: {e}")
+
+        # [SYS-WATCH] 文件变化感知
+        self._file_watcher: Optional[FileWatcher] = (
+            FileWatcher() if cfg.file_watch_enabled else None
+        )
+
+        # [SYS-TOOLCACHE] 工具调用结果缓存
+        self._tool_cache: Optional[ToolResultCache] = (
+            ToolResultCache() if cfg.tool_cache_enabled else None
+        )
+
+        # [SYS-MEMORY] 跨 session 长期记忆
+        self._memory: Optional[MemoryStore] = None
+        if cfg.memory_enabled:
+            store_path = cfg.memory_store_path or (cfg.project_root / ".agent" / "memory.jsonl")
+            self._memory = MemoryStore(path=store_path)
+
     # ── Session 管理 ──────────────────────────────────────────────────────────────
 
     def _init_session(self) -> None:
@@ -84,20 +115,89 @@ class Agent:
             return None
         try:
             stats = {
-                "turns":         self.stats.turns,
-                "input_tokens":  self.stats.input_tokens,
-                "output_tokens": self.stats.output_tokens,
-                "tool_calls":    self.stats.tool_calls,
+                "turns":            self.stats.turns,
+                "input_tokens":     self.stats.input_tokens,
+                "output_tokens":    self.stats.output_tokens,
+                "tool_calls":       self.stats.tool_calls,
+                "tool_stats":       self.stats.tool_stats,
+                "skill_activations": self.stats.skill_activations,
             }
             path = self._session_mgr.save(
                 self._session,
                 history=self._history,
                 stats=stats,
             )
+
+            # [SYS-SUMMARY] 达到门槛后生成 session 摘要
+            if (self.cfg.session_summary_enabled
+                    and self.stats.turns >= self.cfg.session_summary_min_turns
+                    and not getattr(self._session, "summary", "")):
+                self._generate_and_save_summary(str(path))
+
             return str(path)
         except Exception as e:
             R.print_warning(f"Session save failed: {e}")
             return None
+
+    def _generate_and_save_summary(self, session_path: str) -> None:
+        """[SYS-SUMMARY] 用 LLM 生成 session 摘要，写回 session JSON，并写入长期记忆。"""
+        import json as _json
+        try:
+            user_turns = [
+                m["content"] for m in self._history
+                if m.get("role") == "user"
+                and isinstance(m.get("content"), str)
+                and not m["content"].startswith("<tool_result")
+                and not m["content"].startswith("[Compressed")
+            ]
+            if not user_turns:
+                return
+
+            turns_text = "\n".join(f"- {t[:200]}" for t in user_turns[:10])
+            prompt = (
+                "Summarize this conversation in 2-3 sentences. "
+                "Focus on: what was accomplished, key decisions made, and important outcomes. "
+                "Be concise. Respond with only the summary.\n\n"
+                f"User messages:\n{turns_text}"
+            )
+            from llm.system_tool_call import convert_tool_use_to_text
+            resp = self._llm.chat(
+                messages=[{"role": "user", "content": prompt}],
+                system="You are a concise summarizer.",
+                tools=[],
+            )
+            summary = resp.text.strip()
+            if not summary:
+                return
+
+            # 写回 session JSON
+            p = __import__("pathlib").Path(session_path)
+            if p.exists():
+                try:
+                    data = _json.loads(p.read_text(encoding="utf-8"))
+                    data["summary"] = summary
+                    p.write_text(_json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+                    if self._session:
+                        self._session.summary = summary  # type: ignore[attr-defined]
+                except Exception:
+                    pass
+
+            # [SYS-MEMORY] 写入长期记忆
+            if self._memory and self._session:
+                import re as _re
+                tags = list({
+                    w.lower() for w in _re.findall(r"[a-zA-Z一-鿿]{3,}", summary)
+                })[:8]
+                entry = MemoryEntry(
+                    session_id=self._session.id,
+                    summary=summary,
+                    key_outcomes=user_turns[:3],
+                    tags=tags,
+                    model=self.cfg.model,
+                )
+                self._memory.add(entry)
+        except Exception as e:
+            R.print_warning(f"[summary] generation failed: {e}")
 
     def load_session(self, session_id: str) -> bool:
         """按 session_id（或其前缀）加载历史到当前 agent，返回是否成功。"""
@@ -155,15 +255,35 @@ class Agent:
         Returns the final assistant text.
         """
         try:
+            # [SYS-WATCH] 检测外部文件变化，注入提示
+            if self._file_watcher:
+                changed = self._file_watcher.check_changes()
+                if changed:
+                    notice = self._file_watcher.build_change_notice(
+                        changed, self.cfg.project_root
+                    )
+                    # 让缓存失效
+                    if self._tool_cache:
+                        for p in changed:
+                            self._tool_cache.invalidate_file(p)
+                    user_message = user_message + notice
+
             if self.skill_loader:
                 newly = self.skill_loader.auto_activate(user_message)
                 for name in newly:
                     R.print_skill_loaded(name)
+                    # [SYS-SKILL-TRACK] 记录技能激活
+                    if self.cfg.skill_tracking_enabled:
+                        self.stats.record_skill_activation(name)
 
             self._history.append({"role": "user", "content": user_message})
             self.stats.turns += 1
 
-            return self._agentic_loop()
+            result = self._agentic_loop()
+
+            # [SYS-SUMMARY] session 结束后写入摘要（在 save 前）
+            # 摘要写入由 save_session 触发，这里只标记需要摘要
+            return result
         finally:
             # 每轮对话后自动保存 session
             if getattr(self.cfg, 'auto_save_session', True) and self._history:
@@ -178,6 +298,22 @@ class Agent:
 
         while loop_count < self.cfg.max_turns:
             loop_count += 1
+
+            # [SYS-TOKEN] token 预估 + 自动压缩
+            if self.cfg.token_estimate_enabled or self.cfg.auto_compress_enabled:
+                from llm.system_tool_call import convert_tool_use_to_text
+                _sys_preview = self._build_system()
+                _msgs_preview = convert_tool_use_to_text(self._history)
+                _est = estimate_messages_tokens(_msgs_preview, _sys_preview)
+                _budget_pct = _est / max(self.cfg.max_tokens, 1)
+                if self.cfg.token_estimate_enabled and self.cfg.verbose:
+                    R.print_info(
+                        f"[token] ~{_est:,} tokens "
+                        f"({_budget_pct:.0%} of {self.cfg.max_tokens:,})"
+                    )
+                if self.cfg.auto_compress_enabled and _budget_pct >= self.cfg.auto_compress_threshold:
+                    self._auto_compress_history()
+
             response = self._call_llm()
             final_text = response.text
             self.stats.input_tokens += response.usage.input_tokens
@@ -300,18 +436,70 @@ class Agent:
             if not allowed:
                 result_str = "[Tool call denied by user]"
                 R.print_tool_error(tc.name, "denied by user")
+                if self.cfg.tool_stats_enabled:
+                    self.stats.record_tool_call(tc.name, False, 0)
             else:
-                try:
-                    result = self.registry.call(tc.name, tc.input)
-                    result_str = str(result) if not isinstance(result, str) else result
-                    R.print_tool_result(tc.name, result_str)
-                except Exception as e:
-                    result_str = f"[tool error: {e}]"
-                    R.print_tool_error(tc.name, str(e))
+                # [SYS-TOOLCACHE] 检查缓存
+                _cached = None
+                if self._tool_cache:
+                    _cached = self._tool_cache.get(tc.name, tc.input)
+
+                if _cached is not None:
+                    result_str = _cached
+                    R.print_tool_result(tc.name, f"[cache] {result_str[:80]}...")
+                    if self.cfg.tool_stats_enabled:
+                        self.stats.record_tool_call(tc.name, True, len(result_str))
+                else:
+                    try:
+                        result = self.registry.call(tc.name, tc.input)
+                        result_str = str(result) if not isinstance(result, str) else result
+
+                        # [SYS-TRIM] 工具调用结果截断
+                        result_str = self._maybe_trim_result(tc.name, result_str)
+
+                        R.print_tool_result(tc.name, result_str)
+
+                        # [SYS-TOOLCACHE] 写入缓存
+                        if self._tool_cache:
+                            self._tool_cache.put(tc.name, tc.input, result_str)
+
+                        # [SYS-WATCH] 注册 read_file 的文件
+                        if self._file_watcher and tc.name == "read_file":
+                            _path = tc.input.get("path", "")
+                            if _path:
+                                self._file_watcher.register(_path, result_str)
+
+                        if self.cfg.tool_stats_enabled:
+                            self.stats.record_tool_call(tc.name, True, len(result_str))
+                    except Exception as e:
+                        result_str = f"[tool error: {e}]"
+                        R.print_tool_error(tc.name, str(e))
+                        if self.cfg.tool_stats_enabled:
+                            self.stats.record_tool_call(tc.name, False, 0)
 
             result_strs.append(result_str)
 
         return response.tool_calls, result_strs
+
+    def _maybe_trim_result(self, tool_name: str, result: str) -> str:
+        """[SYS-TRIM] 对长工具结果做智能截断。"""
+        if not self.cfg.tool_result_trim_enabled:
+            return result
+        threshold = self.cfg.tool_result_trim_threshold
+        if len(result) <= threshold:
+            return result
+        lines = result.splitlines()
+        if len(lines) > 30:
+            kept_head = lines[:15]
+            kept_tail = lines[-5:]
+            omitted = len(lines) - 20
+            return (
+                "\n".join(kept_head)
+                + f"\n... [{omitted} lines omitted] ...\n"
+                + "\n".join(kept_tail)
+            )
+        # 字符截断
+        return result[:threshold] + f"\n... [{len(result)-threshold} chars omitted]"
 
     def _build_tool_result_message(self, tool_calls, results: list[str]) -> dict:
         """
@@ -326,8 +514,79 @@ class Agent:
 
     def _build_system(self) -> str:
         active = self.skill_loader.active if self.skill_loader else []
-        skill_ctx = self.skill_loader.build_context() if self.skill_loader else ""
-        return build_system_prompt(self.cfg, active, skill_context=skill_ctx)
+
+        # [SYS-SKILL-CHUNK] 技能内容裁剪：只注入相关段落
+        if self.cfg.skill_chunking_enabled and self.skill_loader and self._history:
+            last_user = next(
+                (m["content"] for m in reversed(self._history)
+                 if m.get("role") == "user" and isinstance(m.get("content"), str)),
+                ""
+            )
+            skill_ctx = self.skill_loader.build_context(query=last_user)
+        else:
+            skill_ctx = self.skill_loader.build_context() if self.skill_loader else ""
+
+        base = build_system_prompt(self.cfg, active, skill_context=skill_ctx)
+
+        # [SYS-PROJ] 注入项目结构快照
+        if self._project_snapshot:
+            base += "\n\n" + self._project_snapshot
+
+        # [SYS-MEMORY] 注入跨 session 长期记忆
+        if self._memory and self._history:
+            last_user = next(
+                (m["content"] for m in reversed(self._history)
+                 if m.get("role") == "user" and isinstance(m.get("content"), str)),
+                ""
+            )
+            if last_user:
+                memories = self._memory.search(last_user, k=self.cfg.memory_top_k)
+                if memories:
+                    snippets = "\n".join(
+                        f"- [{m.session_id[:6]}] {m.summary}"
+                        for m in memories
+                    )
+                    base += f"\n\n## Relevant past experience\n{snippets}"
+
+        return base
+
+    def _auto_compress_history(self) -> None:
+        """[SYS-COMPRESS] 自动压缩最老一半的历史，保留最近一半。"""
+        if len(self._history) < 6:
+            return
+        cutoff = len(self._history) // 2
+        old_turns = self._history[:cutoff]
+        # 简单摘要：拼接用户消息
+        user_msgs = [
+            m["content"] for m in old_turns
+            if m.get("role") == "user" and isinstance(m.get("content"), str)
+        ]
+        summary_text = "; ".join(user_msgs[:5])
+        if len(user_msgs) > 5:
+            summary_text += f" ... and {len(user_msgs)-5} more turns"
+
+        # [SYS-FORGET] 智能遗忘：基于权重决定丢弃顺序
+        if self.cfg.forget_policy_enabled:
+            # 优先保留用户指令，丢弃工具结果
+            keep = [
+                m for m in self._history[cutoff:]
+                if m.get("role") != "tool" and not (
+                    m.get("role") == "user"
+                    and isinstance(m.get("content"), str)
+                    and m["content"].startswith("<tool_result")
+                )
+            ]
+            self._history = [
+                {"role": "system",
+                 "content": f"[Compressed: {summary_text}]"}
+            ] + keep
+        else:
+            self._history = [
+                {"role": "system",
+                 "content": f"[Compressed: {summary_text}]"}
+            ] + self._history[cutoff:]
+
+        R.print_info(f"[compress] History compressed ({cutoff} turns → summary).")
 
     def _build_tool_schemas(self) -> list[ToolSchema]:
         """将 ToolRegistry 的工具定义转换为 provider 无关的 ToolSchema 列表。"""

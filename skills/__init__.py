@@ -95,15 +95,38 @@ class SkillLoader:
                 newly.append(name)
         return newly
 
-    def build_context(self) -> str:
-        """Return the combined SKILL.md content for all active skills."""
+    def build_context(self, query: str = "") -> str:
+        """
+        Return skill context for active skills.
+
+        If query is provided and skill_chunking mode is active (caller sets query),
+        only the most relevant sections of each skill are returned.
+        Without query, the full SKILL.md content is returned.
+        """
         if not self._active:
             return ""
         parts = []
         for name in self._active:
             skill = self._all[name]
-            parts.append(f"## Skill: {skill.name}\n\n{skill.content}")
+            if query:
+                content = self._relevant_chunks(skill.content, query)
+            else:
+                content = skill.content
+            parts.append(f"## Skill: {skill.name}\n\n{content}")
         return "\n\n---\n\n".join(parts)
+
+    def _relevant_chunks(self, content: str, query: str, max_chunks: int = 3) -> str:
+        """按 ## 标题分段，返回与 query 最相关的 top-N 段。"""
+        import re
+        chunks = re.split(r"(?=^## )", content, flags=re.MULTILINE)
+        if len(chunks) <= max_chunks:
+            return content
+        # 简单词重叠评分
+        q_words = set(query.lower().split())
+        def score(chunk: str) -> int:
+            return sum(1 for w in q_words if w in chunk.lower())
+        ranked = sorted(chunks, key=score, reverse=True)
+        return "\n\n".join(ranked[:max_chunks])
 
     def get(self, name: str) -> Optional[Skill]:
         return self._all.get(name)

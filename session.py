@@ -59,6 +59,7 @@ class SessionMeta:
     tool_calls: int
     file_path: str
     fmt: str  # "json" | "jsonl"
+    summary: str = ""  # [SYS-SUMMARY] LLM 生成的摘要
 
     @property
     def age_str(self) -> str:
@@ -88,6 +89,7 @@ class Session:
     history: list[dict]   # 完整对话历史
     fmt: str = "json"     # "json" | "jsonl"
     file_path: str = ""
+    summary: str = ""     # [SYS-SUMMARY] LLM 生成的摘要
 
     @property
     def meta(self) -> SessionMeta:
@@ -107,7 +109,7 @@ class Session:
         )
 
     def to_dict(self) -> dict:
-        return {
+        d = {
             "id": self.id,
             "title": self.title,
             "created_at": self.created_at,
@@ -117,6 +119,9 @@ class Session:
             "stats": self.stats,
             "history": self.history,
         }
+        if self.summary:
+            d["summary"] = self.summary
+        return d
 
 
 # ── SessionManager ────────────────────────────────────────────────────────────
@@ -262,6 +267,24 @@ class SessionManager:
                 pass
         return metas
 
+    def search(self, query: str, limit: int = 20) -> list[SessionMeta]:
+        """
+        [SYS-SEARCH] 在所有 session 的 title + summary 中做关键词搜索。
+        返回按相关度排序的 SessionMeta 列表。
+        """
+        q = query.lower().split()
+        results: list[tuple[int, SessionMeta]] = []
+        for meta in self.list_sessions(limit=200):
+            score = 0
+            text = (meta.title + " " + meta.summary).lower()
+            for word in q:
+                if word in text:
+                    score += 2 if word in meta.title.lower() else 1
+            if score:
+                results.append((score, meta))
+        results.sort(key=lambda x: -x[0])
+        return [m for _, m in results[:limit]]
+
     def delete(self, session_id: str) -> bool:
         """删除 Session 文件，返回是否成功。"""
         candidates = self._find_files(session_id)
@@ -367,6 +390,7 @@ class SessionManager:
                 tool_calls=stats.get("tool_calls", 0),
                 file_path=str(path),
                 fmt=path.suffix.lstrip("."),
+                summary=data.get("summary", ""),
             )
         except Exception:
             return None

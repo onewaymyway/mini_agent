@@ -107,6 +107,49 @@ def build_parser() -> argparse.ArgumentParser:
                        "command-line arguments and environment variables. "
                        "If omitted, agent_config.json in the project root is used when it exists."
                    ))
+
+    # ── 感知与记忆功能开关 ────────────────────────────────────────────────────
+    perc = p.add_argument_group("perception & memory (all off by default)")
+    perc.add_argument("--memory", action="store_true", default=None,
+                      help="[SYS-MEMORY] Enable cross-session long-term memory retrieval")
+    perc.add_argument("--memory-top-k", type=int, default=None, metavar="N",
+                      help="Max memories injected per turn (default: 3)")
+    perc.add_argument("--session-summary", action="store_true", default=None,
+                      help="[SYS-SUMMARY] Generate LLM summary at end of each session")
+    perc.add_argument("--session-summary-min-turns", type=int, default=None, metavar="N",
+                      help="Min turns before generating summary (default: 4)")
+    perc.add_argument("--session-search", action="store_true", default=None,
+                      help="[SYS-SEARCH] Enable /session search <query> command")
+    perc.add_argument("--auto-compress", action="store_true", default=None,
+                      help="[SYS-COMPRESS] Auto-compress history when context budget exceeded")
+    perc.add_argument("--auto-compress-threshold", type=float, default=None, metavar="0.0-1.0",
+                      help="Context budget ratio to trigger compression (default: 0.7)")
+    perc.add_argument("--tool-result-trim", action="store_true", default=None,
+                      help="[SYS-TRIM] Truncate long tool results to save tokens")
+    perc.add_argument("--tool-result-trim-threshold", type=int, default=None, metavar="CHARS",
+                      help="Character threshold for tool result trimming (default: 500)")
+    perc.add_argument("--forget-policy", action="store_true", default=None,
+                      help="[SYS-FORGET] Weight-based forgetting: drop low-value history first")
+    perc.add_argument("--skill-semantic", action="store_true", default=None,
+                      help="[SYS-SKILL-SEM] Use embedding similarity for skill activation")
+    perc.add_argument("--skill-semantic-threshold", type=float, default=None, metavar="0.0-1.0",
+                      help="Similarity threshold for semantic skill activation (default: 0.72)")
+    perc.add_argument("--skill-tracking", action="store_true", default=None,
+                      help="[SYS-SKILL-TRACK] Track skill activation counts per session")
+    perc.add_argument("--skill-chunking", action="store_true", default=None,
+                      help="[SYS-SKILL-CHUNK] Inject only relevant skill sections (saves tokens)")
+    perc.add_argument("--project-scan", action="store_true", default=None,
+                      help="[SYS-PROJ] Scan project structure and inject into system prompt")
+    perc.add_argument("--file-watch", action="store_true", default=None,
+                      help="[SYS-WATCH] Detect external file changes between turns")
+    perc.add_argument("--tool-cache", action="store_true", default=None,
+                      help="[SYS-TOOLCACHE] Cache read_file/web_search results within session")
+    perc.add_argument("--token-estimate", action="store_true", default=None,
+                      help="[SYS-TOKEN] Estimate token usage before each LLM call")
+    perc.add_argument("--token-warn-threshold", type=float, default=None, metavar="0.0-1.0",
+                      help="Token budget ratio for warning (default: 0.75)")
+    perc.add_argument("--tool-stats", action="store_true", default=None,
+                      help="[SYS-STATS] Track per-tool call counts, success rates, output sizes")
     return p
 
 
@@ -404,10 +447,32 @@ def _handle_session_cmd(args: list[str], agent) -> None:
     elif sub == "dir":
         R.console.print(f"Session directory: [cyan]{mgr.session_dir}[/cyan]")
 
+    elif sub == "search" and len(args) >= 2:
+        # [SYS-SEARCH] 关键词搜索 session
+        if not getattr(agent.cfg, "session_search_enabled", False):
+            R.print_warning("Session search is disabled. Start with --session-search to enable.")
+            return
+        query = " ".join(args[1:])
+        results = mgr.search(query)
+        if not results:
+            R.console.print(f"[dim]No sessions found for '{query}'.[/dim]")
+            return
+        from rich.table import Table
+        from rich import box as rbox
+        t = Table(box=rbox.SIMPLE, show_header=True, header_style="bold dim")
+        t.add_column("ID", style="cyan", width=10)
+        t.add_column("Title", min_width=24, max_width=36)
+        t.add_column("Summary", min_width=30, max_width=50)
+        t.add_column("Age", width=12)
+        for m in results:
+            t.add_row(m.id, m.title, (m.summary[:60] + "…") if len(m.summary) > 60 else m.summary, m.age_str)
+        R.console.print(t)
+
     else:
         R.print_error(
             "Usage: /session | /session list [n] | /session save | "
-            "/session resume <id> | /session new | /session delete <id> | /session dir"
+            "/session resume <id> | /session new | /session delete <id> | "
+            "/session dir | /session search <query>"
         )
 
 
@@ -535,6 +600,10 @@ def main() -> None:
     project_root = Path(args.project).expanduser() if args.project else Path.cwd()
     debug_console = getattr(args, "debug_llm_console", False)
     config_file = Path(args.config).expanduser() if getattr(args, "config", None) else None
+    def _flag(name, default=None):
+        v = getattr(args, name, default)
+        return v if v else default
+
     cfg = load_config(
         project_root=project_root,
         extra_system=args.system,
@@ -554,6 +623,27 @@ def main() -> None:
         agent_name=getattr(args, "agent_name", None),
         system_message_format=getattr(args, "system_msg_format", None),
         config_file=config_file,
+        # 感知与记忆开关（None 表示未指定，由 load_config 使用默认值）
+        memory_enabled=_flag("memory"),
+        memory_top_k=_flag("memory_top_k"),
+        session_summary_enabled=_flag("session_summary"),
+        session_summary_min_turns=_flag("session_summary_min_turns"),
+        session_search_enabled=_flag("session_search"),
+        auto_compress_enabled=_flag("auto_compress"),
+        auto_compress_threshold=_flag("auto_compress_threshold"),
+        tool_result_trim_enabled=_flag("tool_result_trim"),
+        tool_result_trim_threshold=_flag("tool_result_trim_threshold"),
+        forget_policy_enabled=_flag("forget_policy"),
+        skill_semantic_enabled=_flag("skill_semantic"),
+        skill_semantic_threshold=_flag("skill_semantic_threshold"),
+        skill_tracking_enabled=_flag("skill_tracking"),
+        skill_chunking_enabled=_flag("skill_chunking"),
+        project_scan_enabled=_flag("project_scan"),
+        file_watch_enabled=_flag("file_watch"),
+        tool_cache_enabled=_flag("tool_cache"),
+        token_estimate_enabled=_flag("token_estimate"),
+        token_warn_threshold=_flag("token_warn_threshold"),
+        tool_stats_enabled=_flag("tool_stats"),
     )
 
     if not cfg.api_key:

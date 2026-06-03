@@ -26,6 +26,10 @@ class SessionStats:
     output_tokens: int = 0
     tool_calls: int = 0
     start_time: float = field(default_factory=time.time)
+    # 按工具名的详细统计（tool_stats_enabled 开启时填充）
+    tool_stats: dict = field(default_factory=dict)
+    # 技能激活统计（skill_tracking_enabled 开启时填充）
+    skill_activations: dict = field(default_factory=dict)
 
     @property
     def elapsed(self) -> str:
@@ -33,12 +37,35 @@ class SessionStats:
         return f"{s // 60}m {s % 60}s" if s >= 60 else f"{s}s"
 
     def summary(self) -> str:
-        return (
+        base = (
             f"Turns: {self.turns} | "
             f"Tokens in/out: {self.input_tokens}/{self.output_tokens} | "
             f"Tool calls: {self.tool_calls} | "
             f"Elapsed: {self.elapsed}"
         )
+        if self.tool_stats:
+            top = sorted(self.tool_stats.items(),
+                         key=lambda x: -x[1].get("calls", 0))[:3]
+            tool_line = ", ".join(
+                f"{k}×{v['calls']}" for k, v in top
+            )
+            base += f" | Tools: {tool_line}"
+        return base
+
+    def record_tool_call(self, name: str, success: bool, result_len: int) -> None:
+        """记录单次工具调用（仅当 tool_stats_enabled 时由 agent 调用）。"""
+        ts = self.tool_stats.setdefault(name, {"calls": 0, "success": 0, "fail": 0, "total_len": 0})
+        ts["calls"] += 1
+        ts["total_len"] += result_len
+        if success:
+            ts["success"] += 1
+        else:
+            ts["fail"] += 1
+
+    def record_skill_activation(self, name: str) -> None:
+        """记录技能激活（仅当 skill_tracking_enabled 时由 agent 调用）。"""
+        sa = self.skill_activations.setdefault(name, {"activations": 0})
+        sa["activations"] += 1
 
 
 @dataclass
@@ -85,6 +112,59 @@ class AppConfig:
     #   "system_role"   — 将 system 内容作为 role="system" 的首条消息注入
     system_message_format: str = "system_field"
 
+    # ── 感知与记忆功能开关 ────────────────────────────────────────────────────
+    # 每个功能独立开关，默认全部关闭，可通过 CLI / JSON 配置文件启用。
+
+    # [SYS-MEMORY] 跨 session 长期记忆
+    memory_enabled: bool = False
+    memory_store_path: Optional[Path] = None
+    memory_top_k: int = 3
+
+    # [SYS-SUMMARY] session 摘要化
+    session_summary_enabled: bool = False
+    session_summary_min_turns: int = 4
+
+    # [SYS-SEARCH] session 关键词搜索
+    session_search_enabled: bool = False
+
+    # [SYS-COMPRESS] 自动上下文压缩
+    auto_compress_enabled: bool = False
+    auto_compress_threshold: float = 0.7
+
+    # [SYS-TRIM] 工具调用结果智能截断
+    tool_result_trim_enabled: bool = False
+    tool_result_trim_threshold: int = 500
+
+    # [SYS-FORGET] 智能遗忘策略
+    forget_policy_enabled: bool = False
+
+    # [SYS-SKILL-SEM] 技能语义匹配
+    skill_semantic_enabled: bool = False
+    skill_semantic_threshold: float = 0.72
+
+    # [SYS-SKILL-TRACK] 技能使用追踪
+    skill_tracking_enabled: bool = False
+
+    # [SYS-SKILL-CHUNK] 技能内容裁剪
+    skill_chunking_enabled: bool = False
+
+    # [SYS-PROJ] 项目结构感知
+    project_scan_enabled: bool = False
+
+    # [SYS-WATCH] 文件变化感知
+    file_watch_enabled: bool = False
+
+    # [SYS-TOOLCACHE] 工具调用结果缓存
+    tool_cache_enabled: bool = False
+
+    # [SYS-TOKEN] token 用量预估
+    token_estimate_enabled: bool = False
+    token_warn_threshold: float = 0.75
+
+    # [SYS-STATS] 工具调用详细统计
+    tool_stats_enabled: bool = False
+
+
 
 def load_config(
     project_root: Optional[Path] = None,
@@ -105,6 +185,26 @@ def load_config(
     agent_name: Optional[str] = None,
     system_message_format: Optional[str] = None,
     config_file: Optional[Path] = None,
+    memory_enabled: Optional[bool] = None,
+    memory_top_k: Optional[int] = None,
+    session_summary_enabled: Optional[bool] = None,
+    session_summary_min_turns: Optional[int] = None,
+    session_search_enabled: Optional[bool] = None,
+    auto_compress_enabled: Optional[bool] = None,
+    auto_compress_threshold: Optional[float] = None,
+    tool_result_trim_enabled: Optional[bool] = None,
+    tool_result_trim_threshold: Optional[int] = None,
+    forget_policy_enabled: Optional[bool] = None,
+    skill_semantic_enabled: Optional[bool] = None,
+    skill_semantic_threshold: Optional[float] = None,
+    skill_tracking_enabled: Optional[bool] = None,
+    skill_chunking_enabled: Optional[bool] = None,
+    project_scan_enabled: Optional[bool] = None,
+    file_watch_enabled: Optional[bool] = None,
+    tool_cache_enabled: Optional[bool] = None,
+    token_estimate_enabled: Optional[bool] = None,
+    token_warn_threshold: Optional[float] = None,
+    tool_stats_enabled: Optional[bool] = None,
 ) -> AppConfig:
     """Load config from environment + CLAUDE.md + optional JSON config file, return AppConfig.
 
@@ -192,6 +292,22 @@ def load_config(
     _session_dir_str = file_cfg.get("session_dir") or (str(session_dir) if session_dir else "") or os.environ.get("SESSION_DIR", "")
     _session_dir = Path(_session_dir_str) if _session_dir_str else None
 
+    # ── 感知开关解析（文件 > CLI > 默认值）────────────────────────────────────
+    def _fb(key, cli_val, default=False):
+        """bool 开关：文件优先，无则取 cli，无则取 default。"""
+        if key in file_cfg:
+            return bool(file_cfg[key])
+        return cli_val if cli_val is not None else default
+
+    def _fn(key, cli_val, default):
+        """数值参数：文件优先，无则取 cli，无则取 default。"""
+        if key in file_cfg:
+            return type(default)(file_cfg[key])
+        return cli_val if cli_val is not None else default
+
+    _mem_path_str = file_cfg.get("memory_store_path", "")
+    _mem_path = Path(_mem_path_str) if _mem_path_str else None
+
     return AppConfig(
         api_key=api_key,
         model=_model,
@@ -215,6 +331,28 @@ def load_config(
         auto_save_session=_auto_save,
         agent_name=_agent_name,
         system_message_format=_sys_msg_fmt,
+        # 感知与记忆开关
+        memory_enabled=_fb("memory_enabled", memory_enabled),
+        memory_store_path=_mem_path,
+        memory_top_k=_fn("memory_top_k", memory_top_k, 3),
+        session_summary_enabled=_fb("session_summary_enabled", session_summary_enabled),
+        session_summary_min_turns=_fn("session_summary_min_turns", session_summary_min_turns, 4),
+        session_search_enabled=_fb("session_search_enabled", session_search_enabled),
+        auto_compress_enabled=_fb("auto_compress_enabled", auto_compress_enabled),
+        auto_compress_threshold=_fn("auto_compress_threshold", auto_compress_threshold, 0.7),
+        tool_result_trim_enabled=_fb("tool_result_trim_enabled", tool_result_trim_enabled),
+        tool_result_trim_threshold=_fn("tool_result_trim_threshold", tool_result_trim_threshold, 500),
+        forget_policy_enabled=_fb("forget_policy_enabled", forget_policy_enabled),
+        skill_semantic_enabled=_fb("skill_semantic_enabled", skill_semantic_enabled),
+        skill_semantic_threshold=_fn("skill_semantic_threshold", skill_semantic_threshold, 0.72),
+        skill_tracking_enabled=_fb("skill_tracking_enabled", skill_tracking_enabled),
+        skill_chunking_enabled=_fb("skill_chunking_enabled", skill_chunking_enabled),
+        project_scan_enabled=_fb("project_scan_enabled", project_scan_enabled),
+        file_watch_enabled=_fb("file_watch_enabled", file_watch_enabled),
+        tool_cache_enabled=_fb("tool_cache_enabled", tool_cache_enabled),
+        token_estimate_enabled=_fb("token_estimate_enabled", token_estimate_enabled),
+        token_warn_threshold=_fn("token_warn_threshold", token_warn_threshold, 0.75),
+        tool_stats_enabled=_fb("tool_stats_enabled", tool_stats_enabled),
     )
 
 
