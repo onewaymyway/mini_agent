@@ -216,6 +216,11 @@ class LLMConfig:
     # 工具调用模式：True = system prompt 模式（通用兼容），False = SDK 原生 tools 参数
     use_system_tool_call: bool = False
 
+    # system 消息格式：
+    #   "system_field" — 使用顶层 system 参数（默认）
+    #   "system_role"  — 将 system 注入为 messages[0] role="system"
+    system_message_format: str = "system_field"
+
     @classmethod
     def from_app_config(cls, cfg: Any) -> "LLMConfig":
         """
@@ -235,6 +240,10 @@ class LLMConfig:
             getattr(cfg, "use_system_tool_call", False)
             or os.environ.get("LLM_SYSTEM_TOOL_CALL", "").lower() in ("1", "true", "yes")
         )
+        sys_msg_fmt = (
+            getattr(cfg, "system_message_format", None)
+            or os.environ.get("LLM_SYSTEM_MESSAGE_FORMAT", "system_field")
+        )
         return cls(
             provider=provider,
             model=cfg.model,
@@ -243,6 +252,7 @@ class LLMConfig:
             base_url=base_url,
             requires_api_key=(provider not in ("ollama", "local")),
             use_system_tool_call=use_system_tc,
+            system_message_format=sys_msg_fmt,
         )
 
 

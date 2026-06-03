@@ -18,6 +18,7 @@ from llm.system_tool_call import (
     render_tool_list,
     render_tool_results,
     postprocess_response,
+    convert_system_to_message,
 )
 from prompts import pm as _pm
 
@@ -42,6 +43,9 @@ class ProviderMixin:
         """
         # 1. 准备工具（注入协议到 system）
         system_final, api_tools = self._prepare_tools(system, tools)
+
+        # 1b. 根据 system_message_format 决定是否将 system 合并进 messages
+        system_final, messages = self._apply_system_format(system_final, messages)
 
         # 2. 记录请求（原始 + 实际发给 API 的）
         logger = get_debug_logger()
@@ -97,6 +101,7 @@ class ProviderMixin:
         extra_kwargs 透传给 impl（如 on_reasoning）。
         """
         system_final, api_tools = self._prepare_tools(system, tools)
+        system_final, messages = self._apply_system_format(system_final, messages)
 
         logger = get_debug_logger()
         seq = logger.log_request(
@@ -170,6 +175,26 @@ class ProviderMixin:
         对所有 provider 都执行，不依赖 provider 类型。
         """
         return postprocess_response(response)
+
+    def _apply_system_format(
+        self, system: str, messages: list[dict]
+    ) -> tuple[str, list[dict]]:
+        """
+        根据 config.system_message_format 决定如何传递 system prompt：
+
+          "system_field" (默认)：
+            保持 system 字段不变，messages 不修改。
+            发给模型：{ system: "...", messages: [...] }
+
+          "system_role"：
+            将 system 内容作为 role="system" 的首条消息注入 messages，
+            同时清空 system 字段。
+            发给模型：{ system: "", messages: [{"role":"system","content":"..."}, ...] }
+        """
+        fmt = getattr(self.config, "system_message_format", "system_field")
+        if fmt == "system_role":
+            return convert_system_to_message(system, messages)
+        return system, messages
 
 
 def make_tool_result_message(tool_calls, results: list[str]) -> dict:

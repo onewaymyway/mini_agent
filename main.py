@@ -91,6 +91,22 @@ def build_parser() -> argparse.ArgumentParser:
                    help="Resume a previous session by id (or id prefix)")
     p.add_argument("--agent-name", default=None,
                    help="Agent display name (default: orzooo)")
+    p.add_argument("--system-msg-format",
+                   choices=["system_field", "system_role"],
+                   default=None,
+                   help=(
+                       "How to pass the system prompt to the model. "
+                       "'system_field' (default): use a top-level system parameter "
+                       "{ system: '...', messages: [...] }. "
+                       "'system_role': inject system content as the first message "
+                       "with role='system' inside the messages list."
+                   ))
+    p.add_argument("--config", "-c", default=None, metavar="FILE",
+                   help=(
+                       "Path to a JSON config file. Parameters in this file override "
+                       "command-line arguments and environment variables. "
+                       "If omitted, agent_config.json in the project root is used when it exists."
+                   ))
     return p
 
 
@@ -518,6 +534,7 @@ def main() -> None:
     # Config
     project_root = Path(args.project).expanduser() if args.project else Path.cwd()
     debug_console = getattr(args, "debug_llm_console", False)
+    config_file = Path(args.config).expanduser() if getattr(args, "config", None) else None
     cfg = load_config(
         project_root=project_root,
         extra_system=args.system,
@@ -535,6 +552,8 @@ def main() -> None:
         session_fmt=getattr(args, "session_fmt", "json"),
         auto_save_session=not getattr(args, "no_save_session", False),
         agent_name=getattr(args, "agent_name", None),
+        system_message_format=getattr(args, "system_msg_format", None),
+        config_file=config_file,
     )
 
     if not cfg.api_key:

@@ -1,0 +1,7 @@
+{
+  "model": "qwen/qwen3.5-122b-a10b",
+  "provider": "nvidia",
+  "system_message_format": "system_role",
+  "verbose": true,
+  "max_llm_calls": 4
+}

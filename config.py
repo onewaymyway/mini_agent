@@ -80,6 +80,11 @@ class AppConfig:
     system_extra: str = ""         # additional system text (e.g. from --system flag)
     agent_name: str = DEFAULT_AGENT_NAME  # agent display name
 
+    # 消息格式：
+    #   "system_field"  — 使用顶层 system 参数（默认，Anthropic/OpenAI 原生格式）
+    #   "system_role"   — 将 system 内容作为 role="system" 的首条消息注入
+    system_message_format: str = "system_field"
+
 
 def load_config(
     project_root: Optional[Path] = None,
@@ -98,9 +103,32 @@ def load_config(
     session_fmt: Optional[str] = None,
     auto_save_session: bool = True,
     agent_name: Optional[str] = None,
+    system_message_format: Optional[str] = None,
+    config_file: Optional[Path] = None,
 ) -> AppConfig:
-    """Load config from environment + CLAUDE.md, return AppConfig."""
+    """Load config from environment + CLAUDE.md + optional JSON config file, return AppConfig.
+
+    参数优先级（从高到低）：
+      1. JSON 配置文件（--config 指定）
+      2. 命令行参数
+      3. 环境变量
+      4. 内置默认值
+    """
     root = project_root or Path.cwd()
+
+    # ── JSON 配置文件加载 ─────────────────────────────────────────────────────
+    file_cfg: dict = {}
+    if config_file is not None:
+        file_cfg = _load_config_file(config_file)
+    else:
+        # 自动查找项目根目录下的 agent_config.json
+        default_cfg_path = root / "agent_config.json"
+        if default_cfg_path.exists():
+            file_cfg = _load_config_file(default_cfg_path)
+
+    def _f(key: str, cli_val, default=None):
+        """从配置文件或命令行取值；文件优先级更高。"""
+        return file_cfg[key] if key in file_cfg else (cli_val if cli_val is not None else default)
 
     # API key
     api_key = os.environ.get("ANTHROPIC_API_KEY", "")
@@ -111,13 +139,14 @@ def load_config(
     # Skills directory (project-local first, then ~/.claude/skills)
     skills_dir = _resolve_skills_dir(root)
 
-    llm_provider = llm_provider or os.environ.get("LLM_PROVIDER", "anthropic")
-    llm_base_url = llm_base_url or os.environ.get("LLM_BASE_URL", "")
+    _llm_provider = _f("provider", llm_provider) or os.environ.get("LLM_PROVIDER", "anthropic")
+    _llm_base_url = _f("base_url", llm_base_url) or os.environ.get("LLM_BASE_URL", "")
 
     # 调试日志初始化
-    _debug_llm = debug_llm or os.environ.get("LLM_DEBUG", "").lower() in ("1", "true", "yes")
-    _debug_console = debug_llm_console or os.environ.get("LLM_DEBUG_CONSOLE", "").lower() in ("1", "true", "yes")
-    _debug_log_dir = Path(d) if (d := os.environ.get("LLM_DEBUG_LOG_DIR", "")) else None
+    _debug_llm = bool(_f("debug_llm", debug_llm or None)) or os.environ.get("LLM_DEBUG", "").lower() in ("1", "true", "yes")
+    _debug_console = bool(_f("debug_llm_console", debug_llm_console or None)) or os.environ.get("LLM_DEBUG_CONSOLE", "").lower() in ("1", "true", "yes")
+    _debug_log_dir_str = file_cfg.get("debug_log_dir") or os.environ.get("LLM_DEBUG_LOG_DIR", "")
+    _debug_log_dir = Path(_debug_log_dir_str) if _debug_log_dir_str else None
 
     if _debug_llm:
         from llm.debug_logger import DebugConfig, init_debug_logger
@@ -130,35 +159,112 @@ def load_config(
         init_debug_logger(_dcfg, root)
 
     # system tool call 模式
-    _use_sys_tc = (
+    _use_sys_tc_cli = (
         use_system_tool_call
         if use_system_tool_call is not None
         else os.environ.get("LLM_SYSTEM_TOOL_CALL", "").lower() in ("1", "true", "yes")
     )
+    _use_sys_tc = bool(_f("system_tool_call", _use_sys_tc_cli or None))
+
+    # system 消息格式
+    _sys_msg_fmt_cli = system_message_format or os.environ.get("LLM_SYSTEM_MESSAGE_FORMAT", "system_field")
+    _sys_msg_fmt = _f("system_message_format", _sys_msg_fmt_cli) or "system_field"
+    if _sys_msg_fmt not in ("system_field", "system_role"):
+        import warnings
+        warnings.warn(
+            f"[config] Unknown system_message_format={_sys_msg_fmt!r}, "
+            "falling back to 'system_field'. Valid values: 'system_field', 'system_role'."
+        )
+        _sys_msg_fmt = "system_field"
+
+    # 其他参数
+    _model = _f("model", model) or os.environ.get("CLAUDE_MODEL", DEFAULT_MODEL)
+    _verbose = bool(_f("verbose", verbose or None))
+    _sandbox = bool(_f("sandbox", sandbox or None))
+    _auto_approve = bool(_f("yes", auto_approve or None))
+    _extra_system = _f("system", extra_system) or ""
+    _max_llm_calls_val = _f("max_llm_calls", max_llm_calls)
+    _max_llm_calls = int(_max_llm_calls_val) if _max_llm_calls_val is not None else int(os.environ.get("MAX_LLM_CALLS", 8))
+    _session_fmt = _f("session_fmt", session_fmt) or os.environ.get("SESSION_FMT", "json")
+    _auto_save = not bool(_f("no_save_session", None))  # file flag is "no_save_session"
+    _agent_name = _f("agent_name", agent_name) or os.environ.get("AGENT_NAME", DEFAULT_AGENT_NAME)
+
+    _session_dir_str = file_cfg.get("session_dir") or (str(session_dir) if session_dir else "") or os.environ.get("SESSION_DIR", "")
+    _session_dir = Path(_session_dir_str) if _session_dir_str else None
 
     return AppConfig(
         api_key=api_key,
-        model=model or os.environ.get("CLAUDE_MODEL", DEFAULT_MODEL),
-        max_tokens=int(os.environ.get("CLAUDE_MAX_TOKENS", DEFAULT_MAX_TOKENS)),
+        model=_model,
+        max_tokens=int(file_cfg.get("max_tokens") or os.environ.get("CLAUDE_MAX_TOKENS", DEFAULT_MAX_TOKENS)),
         project_root=root,
         skills_dir=skills_dir,
-        verbose=verbose,
-        sandbox=sandbox,
-        auto_approve=auto_approve,
+        verbose=_verbose,
+        sandbox=_sandbox,
+        auto_approve=_auto_approve,
         claude_md_content=claude_md,
-        system_extra=extra_system,
-        llm_provider=llm_provider,
-        llm_base_url=llm_base_url,
+        system_extra=_extra_system,
+        llm_provider=_llm_provider,
+        llm_base_url=_llm_base_url,
         use_system_tool_call=_use_sys_tc,
-        max_llm_calls=max_llm_calls or int(os.environ.get("MAX_LLM_CALLS", 8)),
+        max_llm_calls=_max_llm_calls,
         debug_llm=_debug_llm,
         debug_llm_console=_debug_console,
         debug_log_dir=_debug_log_dir,
-        session_dir=session_dir or (Path(d) if (d := os.environ.get("SESSION_DIR", "")) else None),
-        session_fmt=session_fmt or os.environ.get("SESSION_FMT", "json"),
-        auto_save_session=auto_save_session,
-        agent_name=agent_name or os.environ.get("AGENT_NAME", DEFAULT_AGENT_NAME),
+        session_dir=_session_dir,
+        session_fmt=_session_fmt,
+        auto_save_session=_auto_save,
+        agent_name=_agent_name,
+        system_message_format=_sys_msg_fmt,
     )
+
+
+def _load_config_file(path: Path) -> dict:
+    """
+    从 JSON 配置文件加载参数，返回 dict。
+    加载失败时打印警告并返回空 dict，不中断启动。
+
+    支持的字段名与命令行参数保持一致（下划线形式），例如：
+      {
+        "model": "claude-opus-4-5",
+        "provider": "openai",
+        "base_url": "https://...",
+        "system_tool_call": true,
+        "system_message_format": "system_role",
+        "verbose": false,
+        "sandbox": false,
+        "yes": false,
+        "max_turns": 50,
+        "max_llm_calls": 8,
+        "workers": 4,
+        "session_dir": "./sessions",
+        "session_fmt": "json",
+        "no_save_session": false,
+        "agent_name": "orzooo",
+        "debug_llm": false,
+        "debug_llm_console": false,
+        "debug_log_dir": "",
+        "max_tokens": 8192,
+        "system": ""
+      }
+    """
+    import json as _json
+    import warnings as _warnings
+    try:
+        text = path.read_text(encoding="utf-8")
+        data = _json.loads(text)
+        if not isinstance(data, dict):
+            _warnings.warn(f"[config] {path}: expected a JSON object, got {type(data).__name__}. Ignored.")
+            return {}
+        return data
+    except FileNotFoundError:
+        _warnings.warn(f"[config] Config file not found: {path}")
+        return {}
+    except _json.JSONDecodeError as e:
+        _warnings.warn(f"[config] Failed to parse config file {path}: {e}")
+        return {}
+    except Exception as e:
+        _warnings.warn(f"[config] Error loading config file {path}: {e}")
+        return {}
 
 
 def _read_claude_md(root: Path) -> str:

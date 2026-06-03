@@ -260,6 +260,44 @@ def _already_in(existing: str, new_thinking: str) -> bool:
 
 # ── tool_use 消息转换（用于不支持 tool_use 类型的模型）───────────────────────
 
+# ── system 消息格式转换 ───────────────────────────────────────────────────────
+
+def convert_system_to_message(
+    system: str,
+    messages: list[dict],
+) -> tuple[str, list[dict]]:
+    """
+    将独立的 system 字段合并为 messages 列表里第一条 role="system" 消息。
+
+    用于不支持顶层 system 参数的模型（如部分本地/兼容模型）。
+
+    转换前：
+        system  = "You are a helpful assistant."
+        messages = [{"role": "user", "content": "Hello"}]
+
+    转换后：
+        system  = ""   ← 清空，避免重复
+        messages = [
+            {"role": "system", "content": "You are a helpful assistant."},
+            {"role": "user",   "content": "Hello"},
+        ]
+
+    若 messages 首条已是 role="system"，则合并内容（新内容在前）；
+    若 system 为空，直接原样返回。
+    """
+    if not system:
+        return system, messages
+
+    if messages and messages[0].get("role") == "system":
+        existing = messages[0].get("content", "")
+        merged = (system.rstrip() + "\n\n" + existing).strip() if existing else system
+        new_messages = [{"role": "system", "content": merged}] + messages[1:]
+    else:
+        new_messages = [{"role": "system", "content": system}] + list(messages)
+
+    return "", new_messages
+
+
 def convert_tool_use_to_text(messages: list[dict]) -> list[dict]:
     """
     将 messages 中的 assistant 消息里的 tool_use 类型转换为 text 类型。
