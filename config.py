@@ -174,10 +174,10 @@ class AppConfig:
     # [SYS-RETRY] 当模型返回空响应（无文本、无工具调用）时自动重试
 
     # 最多重试次数（不含首次调用）；设为 0 禁用重试
-    llm_retry_max: int = 5
+    llm_retry_max: int = 15
 
     # 每次重试前等待秒数；0 = 立即重试
-    llm_retry_delay: float = 2.0
+    llm_retry_delay: float = 5.0
 
     # 是否在重试时打印警告信息到终端
     llm_retry_verbose: bool = True
