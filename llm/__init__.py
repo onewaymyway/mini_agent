@@ -50,6 +50,16 @@ from .system_tool_call import (
     postprocess_response,
 )
 
+from .retry import (
+    RetryCondition,
+    RetryPolicy,
+    EmptyOutputCondition,
+    EmptyTextCondition,
+    StopReasonCondition,
+    default_retry_policy,
+    no_retry_policy,
+)
+
 __all__ = [
     "LLMClient", "LLMConfig", "LLMResponse", "LLMUsage",
     "ToolCall", "ToolSchema", "StreamCallback", "ReasoningCallback",
@@ -60,4 +70,8 @@ __all__ = [
     "render_tool_list", "parse_tool_calls", "render_tool_results", "postprocess_response",
     "LLMError", "LLMConfigError", "LLMProviderError",
     "LLMTimeoutError", "LLMRateLimitError",
+    # retry
+    "RetryCondition", "RetryPolicy",
+    "EmptyOutputCondition", "EmptyTextCondition", "StopReasonCondition",
+    "default_retry_policy", "no_retry_policy",
 ]

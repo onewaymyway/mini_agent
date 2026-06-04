@@ -23,6 +23,8 @@ import tools.builtin          # noqa: F401
 import tools.orchestration    # noqa: F401
 import tools.plan             # noqa: F401  ← 执行计划工具
 import tools.user_input        # noqa: F401  ← 用户询问工具
+# Note: tools.skill_manager is NOT imported here — it is registered lazily
+# inside Agent.__init__ because it needs the SkillLoader instance to bind.
 
 from agent import Agent
 from config import load_config
@@ -43,12 +45,17 @@ def build_parser() -> argparse.ArgumentParser:
             Slash commands (in REPL):
               /help              Show this help
               /clear             Clear conversation history
+              /retry             Discard last response, regenerate with same input
+              /rollback          Undo entire last turn (input + response), sync session
               /plan              Show current execution plan
               /plan clear        Clear the active plan
               /plan summary      Print completed plan summary
-              /skills            List all available skills
-              /skill on <name>   Activate a skill
-              /skill off <name>  Deactivate a skill
+              /skills                    List all available skills with status and token cost
+              /skill on <name> [...]     Activate one or more skills
+              /skill off <name> [...]    Deactivate one or more skills
+              /skill info <name>         Show full skill content
+              /skill stats               Show LRU usage tracking and compact budget preview
+              /skill reset               Deactivate all active skills
               /stats             Show session statistics
               /verbose           Toggle verbose tool output
               /model <name>      Switch model mid-session
@@ -138,6 +145,10 @@ def build_parser() -> argparse.ArgumentParser:
                       help="[SYS-SKILL-TRACK] Track skill activation counts per session")
     perc.add_argument("--skill-chunking", action="store_true", default=None,
                       help="[SYS-SKILL-CHUNK] Inject only relevant skill sections (saves tokens)")
+    perc.add_argument("--skill-compact-budget", type=int, default=None, metavar="TOKENS",
+                      help="[SYS-SKILL-COMPACT] Total token budget for skill re-attachment after compression (default: 25000)")
+    perc.add_argument("--skill-compact-per-skill", type=int, default=None, metavar="TOKENS",
+                      help="[SYS-SKILL-COMPACT] Max tokens per skill during re-attachment (default: 5000)")
     perc.add_argument("--project-scan", action="store_true", default=None,
                       help="[SYS-PROJ] Scan project structure and inject into system prompt")
     perc.add_argument("--file-watch", action="store_true", default=None,
@@ -214,26 +225,17 @@ def _handle_slash(cmd: str, agent: Agent, skill_loader: SkillLoader) -> None:
         agent.clear_history()
         R.print_success(pm.fragment("cli_messages", "HISTORY_CLEARED"))
 
-    elif name == "skills":
-        R.console.print(f"\n[bold]{pm.fragment('cli_messages', 'SKILLS_LIST_HEADER')}[/bold]")
-        R.console.print(skill_loader.list_skills() or pm.fragment("cli_messages", "NO_SKILLS_FOUND"))
+    elif name == "retry":
+        _handle_retry(agent)
 
-    elif name == "skill" and len(parts) >= 3:
-        action, skill_name = parts[1], parts[2]
-        if action == "on":
-            ok = skill_loader.activate(skill_name)
-            if ok:
-                R.print_success(pm.fragment("cli_messages", "SKILL_ACTIVATED", name=skill_name))
-            else:
-                R.print_error(pm.fragment("cli_messages", "SKILL_NOT_FOUND", name=skill_name))
-        elif action == "off":
-            ok = skill_loader.deactivate(skill_name)
-            if ok:
-                R.print_success(pm.fragment("cli_messages", "SKILL_DEACTIVATED", name=skill_name))
-            else:
-                R.print_error(pm.fragment("cli_messages", "SKILL_NOT_FOUND", name=skill_name))
-        else:
-            R.print_error(pm.fragment("cli_messages", "SKILL_CMD_USAGE"))
+    elif name == "rollback":
+        _handle_rollback(agent)
+
+    elif name == "skills":
+        _handle_skills_list(skill_loader)
+
+    elif name == "skill":
+        _handle_skill_cmd(parts[1:], skill_loader)
 
     elif name == "stats":
         R.print_stats(agent.stats.summary())
@@ -272,24 +274,282 @@ def _handle_slash(cmd: str, agent: Agent, skill_loader: SkillLoader) -> None:
         R.print_error(pm.fragment("cli_messages", "UNKNOWN_COMMAND", cmd=cmd))
 
 
+def _handle_skills_list(skill_loader: SkillLoader) -> None:
+    """
+    /skills — 显示所有可用技能的完整列表，含激活状态和 token 估算。
+    """
+    from rich.table import Table
+    from rich import box as rbox
+
+    catalog = skill_loader.get_catalog()
+    if not catalog:
+        R.console.print(f"[dim]{pm.fragment('cli_messages', 'NO_SKILLS_FOUND')}[/dim]")
+        return
+
+    t = Table(box=rbox.SIMPLE, show_header=True, header_style="bold dim")
+    t.add_column("",        width=3)                       # 激活标记
+    t.add_column("Name",    style="cyan",  min_width=18)
+    t.add_column("Description", min_width=36, max_width=56)
+    t.add_column("~Tokens", width=8, justify="right")
+
+    for s in catalog:
+        skill_obj = skill_loader.get(s["name"])
+        token_est = len(skill_obj.content) // 4 if skill_obj else 0   # 粗估 4 chars/token
+        marker = "[green]✓[/green]" if s["active"] else " "
+        name_style = f"[bold]{s['name']}[/bold]" if s["active"] else s["name"]
+        t.add_row(
+            marker,
+            name_style,
+            s["description"][:56],
+            str(token_est),
+        )
+
+    active_count   = sum(1 for s in catalog if s["active"])
+    inactive_count = len(catalog) - active_count
+    total_tokens   = sum(
+        len(skill_loader.get(s["name"]).content) // 4
+        for s in catalog if s["active"] and skill_loader.get(s["name"])
+    )
+
+    R.console.print(f"\n[bold]{pm.fragment('cli_messages', 'SKILLS_LIST_HEADER')}[/bold]")
+    R.console.print(t)
+    R.console.print(
+        f"  [dim]{active_count} active / {inactive_count} inactive  "
+        f"· active skills consuming ~{total_tokens} tokens[/dim]\n"
+    )
+
+
+def _handle_skill_cmd(args: list[str], skill_loader: SkillLoader) -> None:
+    """
+    /skill on  <name> [name2 ...]  — 激活一个或多个技能
+    /skill off <name> [name2 ...]  — 卸载一个或多个技能
+    /skill info <name>             — 显示技能全文内容
+    /skill reset                   — 卸载所有当前激活的技能
+    /skill                         — 无子命令时显示帮助
+    """
+    if not args:
+        R.print_error(pm.fragment("cli_messages", "SKILL_CMD_USAGE"))
+        return
+
+    action = args[0].lower()
+    names  = args[1:]          # 可能为空
+
+    # ── /skill on <name> [name2 ...] ─────────────────────────────────────────
+    if action == "on":
+        if not names:
+            R.print_error("Usage: /skill on <name> [name2 ...]")
+            return
+        ok_list, bad_list, dup_list = [], [], []
+        for n in names:
+            if n not in skill_loader.available:
+                bad_list.append(n)
+            elif not skill_loader.activate(n):   # already active
+                dup_list.append(n)
+            else:
+                ok_list.append(n)
+                R.print_success(pm.fragment("cli_messages", "SKILL_ACTIVATED", name=n))
+        for n in dup_list:
+            R.print_info(pm.fragment("cli_messages", "SKILL_ALREADY_ACTIVE", name=n))
+        for n in bad_list:
+            _suggest_skill(n, skill_loader)
+
+    # ── /skill off <name> [name2 ...] ────────────────────────────────────────
+    elif action == "off":
+        if not names:
+            R.print_error("Usage: /skill off <name> [name2 ...]")
+            return
+        ok_list, bad_list, idle_list = [], [], []
+        for n in names:
+            if n not in skill_loader.available:
+                bad_list.append(n)
+            elif not skill_loader.deactivate(n):   # not active
+                idle_list.append(n)
+            else:
+                ok_list.append(n)
+                R.print_success(pm.fragment("cli_messages", "SKILL_DEACTIVATED", name=n))
+        for n in idle_list:
+            R.print_info(pm.fragment("cli_messages", "SKILL_NOT_ACTIVE", name=n))
+        for n in bad_list:
+            _suggest_skill(n, skill_loader)
+
+    # ── /skill stats ──────────────────────────────────────────────────────────
+    elif action == "stats":
+        _handle_skill_stats(skill_loader)
+
+    # ── /skill info <name> ────────────────────────────────────────────────────
+    elif action == "info":
+        if not names:
+            R.print_error("Usage: /skill info <name>")
+            return
+        skill_name = names[0]
+        skill_obj  = skill_loader.get(skill_name)
+        if skill_obj is None:
+            _suggest_skill(skill_name, skill_loader)
+            return
+        status = "[green]active[/green]" if skill_name in skill_loader.active else "[dim]inactive[/dim]"
+        token_est = len(skill_obj.content) // 4
+        R.console.print(f"\n[bold cyan]{skill_obj.name}[/bold cyan]  {status}  [dim]~{token_est} tokens[/dim]")
+        R.console.print(f"[dim]Location: {skill_obj.location}[/dim]")
+        R.console.print(f"Description: {skill_obj.description}\n")
+        R.print_markdown(skill_obj.content)
+
+    # ── /skill reset ──────────────────────────────────────────────────────────
+    elif action == "reset":
+        active_now = list(skill_loader.active)   # copy before mutating
+        if not active_now:
+            R.print_info("No active skills to reset.")
+            return
+        for n in active_now:
+            skill_loader.deactivate(n)
+            R.print_success(pm.fragment("cli_messages", "SKILL_DEACTIVATED", name=n))
+        R.print_info(f"All {len(active_now)} skill(s) deactivated.")
+
+    else:
+        R.print_error(pm.fragment("cli_messages", "SKILL_CMD_USAGE"))
+
+
+def _handle_skill_stats(skill_loader: SkillLoader) -> None:
+    """
+    /skill stats — 显示 skill 调用追踪：LRU 排序、调用次数、上次使用时间、budget 设置。
+    区分「已加载」和「实际使用」（tracker 里有记录 = 真正用过）。
+    """
+    from rich.table import Table
+    from rich import box as rbox
+    import time
+
+    tracker = skill_loader.tracker
+    records = tracker.records
+    active_set = set(skill_loader.active)
+    tracked_set = {r.name for r in records}
+
+    R.console.print("\n[bold]Skill Usage Tracking[/bold]")
+    R.console.print(
+        f"  Budget: [cyan]{tracker.total_budget:,}[/cyan] tokens total  "
+        f"/ [cyan]{tracker.per_skill_tokens:,}[/cyan] per skill\n"
+    )
+
+    # 合并「激活但未使用」的 skill 也显示出来
+    all_names = list(dict.fromkeys(
+        [r.name for r in records] + list(active_set)
+    ))
+
+    if not all_names:
+        R.console.print("  [dim](no skills activated yet)[/dim]\n")
+        return
+
+    t = Table(box=rbox.SIMPLE, show_header=True, header_style="bold dim")
+    t.add_column("LRU",       width=4,  justify="right")
+    t.add_column("Skill",     style="cyan", min_width=18)
+    t.add_column("Status",    width=14)
+    t.add_column("Used",      width=5,  justify="right")
+    t.add_column("Last used", width=10)
+    t.add_column("~Tokens",   width=8,  justify="right")
+
+    for rank, name in enumerate(all_names, 1):
+        rec       = tracker.get_record(name)
+        skill_obj = skill_loader.get(name)
+        tok_est   = len(skill_obj.content) // 4 if skill_obj else 0
+        is_active = name in active_set
+        was_used  = name in tracked_set
+
+        if is_active and was_used:
+            status = "[green]active+used[/green]"
+        elif is_active and not was_used:
+            status = "[yellow]active/unused[/yellow]"
+        elif not is_active and was_used:
+            status = "[dim]inactive/used[/dim]"
+        else:
+            status = "[dim]inactive[/dim]"
+
+        calls_str = str(rec.call_count) if rec else "-"
+        ts        = time.strftime("%H:%M:%S", time.localtime(rec.last_called)) if rec else "-"
+        rank_str  = f"[bold cyan]{rank}[/bold cyan]" if (rec and rank <= 3) else (str(rank) if rec else "-")
+
+        t.add_row(rank_str, name, status, calls_str, ts, str(tok_est))
+
+    R.console.print(t)
+
+    # 说明
+    R.console.print(
+        "  [dim]LRU rank = priority during compression. "
+        "'active/unused' = loaded but no evidence of actual use this session.[/dim]"
+    )
+
+    # 预演压缩
+    _, included, dropped = skill_loader.build_compact_context(include_inactive=True)
+    R.console.print("\n[dim]  If compacted now:[/dim]")
+    if included:
+        R.console.print(f"  [green]✓ Would include:[/green] {', '.join(included)}")
+    if dropped:
+        R.console.print(f"  [red]✗ Would drop (budget full):[/red] {', '.join(dropped)}")
+    if not included and not dropped:
+        R.console.print("  [dim](nothing to compact)[/dim]")
+    R.console.print()
+
+
+def _suggest_skill(name: str, skill_loader: SkillLoader) -> None:
+    """打印'找不到'错误，并给出相近名称提示。"""
+    R.print_error(pm.fragment("cli_messages", "SKILL_NOT_FOUND", name=name))
+    # 模糊匹配：名称前缀或子串
+    candidates = [
+        a for a in skill_loader.available
+        if a.startswith(name) or name in a or a.startswith(name[:3])
+    ]
+    if candidates:
+        R.print_info(f"  Did you mean: {', '.join(candidates)}?")
+
+
+def _handle_retry(agent: Agent) -> None:
+    """
+    /retry — 丢弃上一轮模型输出，用相同的用户消息重新生成。
+
+    适用场景：对答案不满意，希望得到一个不同的版本，但不想重新输入问题。
+    """
+    if agent._turn_snapshot is None:
+        R.print_warning("Nothing to retry — no previous turn in this session.")
+        return
+    try:
+        agent.retry_last_turn()
+    except KeyboardInterrupt:
+        R.print_interrupt()
+    except Exception as e:
+        R.print_error(f"Retry failed: {e}")
+        if agent.cfg.verbose:
+            import traceback
+            traceback.print_exc()
+
+
+def _handle_rollback(agent: Agent) -> None:
+    """
+    /rollback — 完整撤销上一轮（用户消息 + 模型回复），同步 session 文件。
+
+    适用场景：发现上一个问题问错了，或者整轮对话结果都不想要，完全撤回。
+    回退后 session 文件会立即更新，终端显示回退分隔线。
+    """
+    if agent._turn_snapshot is None:
+        R.print_warning("Nothing to rollback — no previous turn in this session.")
+        return
+    ok = agent.rollback_turn()
+    if ok:
+        R.print_success(
+            f"Rollback complete. History now has {len(agent.history)} messages. "
+            "Session saved."
+        )
+    else:
+        R.print_error("Rollback failed unexpectedly.")
+
+
 def _compact_history(agent: Agent) -> None:
-    """Summarise the conversation to free up context window."""
+    """
+    /compact — 压缩对话历史并重附 skill 上下文（类 Claude Code 机制）。
+    调用 agent.compact_with_skills()，该方法同时处理摘要生成和 skill 重附。
+    """
     if not agent.history:
         R.print_info(pm.fragment("cli_messages", "COMPACT_EMPTY"))
         return
-
     R.print_info(pm.fragment("cli_messages", "COMPACT_START"))
-
-    # Prompt text entirely from the managed prompt file
-    compact_prompt = pm.get_compact_prompt()
-
     try:
-        result = agent.run_turn(compact_prompt)
-        agent._history = [
-            {"role": "user", "content": "[Previous session summary]"},
-            {"role": "assistant", "content": result},
-        ]
-        R.print_success(pm.fragment("cli_messages", "COMPACT_SUCCESS"))
+        agent.compact_with_skills()
     except Exception as e:
         R.print_error(f"Compact failed: {e}")
 
@@ -638,6 +898,8 @@ def main() -> None:
         skill_semantic_threshold=_flag("skill_semantic_threshold"),
         skill_tracking_enabled=_flag("skill_tracking"),
         skill_chunking_enabled=_flag("skill_chunking"),
+        skill_compact_budget=_flag("skill_compact_budget"),
+        skill_compact_per_skill=_flag("skill_compact_per_skill"),
         project_scan_enabled=_flag("project_scan"),
         file_watch_enabled=_flag("file_watch"),
         tool_cache_enabled=_flag("tool_cache"),
@@ -661,7 +923,11 @@ def main() -> None:
         skill_dirs.append(cfg.skills_dir)
     if args.skills_dir:
         skill_dirs.append(Path(args.skills_dir).expanduser())
-    skill_loader = SkillLoader(skill_dirs)
+    skill_loader = SkillLoader(
+        skill_dirs,
+        per_skill_tokens=getattr(cfg, "skill_compact_per_skill", 5_000),
+        total_budget=getattr(cfg, "skill_compact_budget", 25_000),
+    )
 
     # Guard
     guard = PermissionGuard(

@@ -11,6 +11,9 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
 
+from skills.tracker import SkillUsageTracker
+from skills.usage_detector import SkillUsageDetector
+
 
 @dataclass
 class Skill:
@@ -39,11 +42,26 @@ class SkillLoader:
           my-skill.md      ← flat layout also supported
     """
 
-    def __init__(self, skills_dirs: list[Path]) -> None:
+    def __init__(
+        self,
+        skills_dirs: list[Path],
+        per_skill_tokens: int = 5_000,
+        total_budget:     int = 25_000,
+    ) -> None:
         self._dirs = skills_dirs
         self._all: dict[str, Skill] = {}
         self._active: list[str] = []
+        # [SYS-SKILL-TRACK] 调用追踪器：记录每个 skill 最近的调用时间，
+        # 用于压缩时按 LRU 顺序重附 skill 上下文
+        self.tracker = SkillUsageTracker(
+            per_skill_tokens=per_skill_tokens,
+            total_budget=total_budget,
+        )
+        # [SYS-SKILL-DETECT] 实际使用检测器：通过指纹匹配判断 skill 是否真正被用到
+        self.detector = SkillUsageDetector()
         self._discover()
+        # 发现结束后为所有 skill 构建初始指纹
+        self.detector.build_fingerprints(self._all)
 
     # ── Discovery ──────────────────────────────────────────────────────────────
 
@@ -77,6 +95,9 @@ class SkillLoader:
     def activate(self, name: str) -> bool:
         if name in self._all and name not in self._active:
             self._active.append(name)
+            # 激活只是"加载"，在 tracker 里以 load_count 区分；
+            # 真正的使用通过 record_usage() 在推理结束后更新
+            self.detector.update_fingerprint(self._all[name])
             return True
         return False
 
@@ -92,8 +113,31 @@ class SkillLoader:
         for name, skill in self._all.items():
             if name not in self._active and skill.matches_query(query):
                 self._active.append(name)
+                self.detector.update_fingerprint(skill)
                 newly.append(name)
         return newly
+
+    def record_usage(self, response_text: str) -> list[str]:
+        """
+        [SYS-SKILL-DETECT] 在 assistant 回复生成后调用，检测哪些 skill 被真正使用。
+
+        通过 Track A（显式声明标签）和 Track B（指纹关键词匹配）双轨判定，
+        只有被判定为「实际使用」的 skill 才更新 tracker（影响 LRU 排序和保护权重）。
+
+        Args:
+            response_text: assistant 完整回复文本
+
+        Returns:
+            实际被使用的 skill 名称列表（用于日志/调试）
+        """
+        if not self._active or not response_text:
+            return []
+
+        used_names = self.detector.detect_used_names(response_text, self._active)
+        for name in used_names:
+            self.tracker.record(name)   # 只有真正使用了才更新 tracker
+
+        return used_names
 
     def build_context(self, query: str = "") -> str:
         """
@@ -102,6 +146,9 @@ class SkillLoader:
         If query is provided and skill_chunking mode is active (caller sets query),
         only the most relevant sections of each skill are returned.
         Without query, the full SKILL.md content is returned.
+
+        注意：build_context 不再自动调用 tracker.record()，
+        tracker 的更新只通过 record_usage() 在推理后完成。
         """
         if not self._active:
             return ""
@@ -128,6 +175,43 @@ class SkillLoader:
         ranked = sorted(chunks, key=score, reverse=True)
         return "\n\n".join(ranked[:max_chunks])
 
+    def build_compact_context(
+        self,
+        include_inactive: bool = False,
+    ) -> tuple[str, list[str], list[str]]:
+        """
+        压缩时重建 skill 上下文：按 LRU 顺序、受 budget 约束填充 skill 内容。
+
+        保护规则（自动从当前 active skill 推断）：
+          - 当前激活的 skill 不受 per_skill_tokens 截断
+          - 当前激活的 skill 不受 total_budget 限制
+          - 若候选集合只有 1 个 skill，自动豁免截断
+
+        Args:
+            include_inactive: True = 同时考虑曾经被追踪但当前未激活的 skill
+                              False = 只处理当前激活的 skill（默认）
+
+        Returns:
+            (compact_text, included_names, dropped_names)
+        """
+        if include_inactive:
+            candidates = {
+                name: self._all[name].content
+                for name in self.tracker.recent_names()
+                if name in self._all
+            }
+        else:
+            candidates = {
+                name: self._all[name].content
+                for name in self._active
+                if name in self._all
+            }
+
+        # 当前激活的 skill 作为受保护集合传入 tracker
+        protected = set(self._active)
+
+        return self.tracker.build_compact_context(candidates, protected=protected)
+
     def get(self, name: str) -> Optional[Skill]:
         return self._all.get(name)
 
@@ -139,6 +223,36 @@ class SkillLoader:
             active_marker = "✓" if name in self._active else " "
             lines.append(f"  [{active_marker}] {name:<20}  {skill.description[:60]}")
         return "\n".join(lines)
+
+    def get_catalog(self) -> list[dict]:
+        """
+        返回所有可用技能的目录（供注入 system prompt 或工具结果使用）。
+        每条记录包含 name / description / active 三个字段，不含全文内容。
+        """
+        return [
+            {
+                "name":        name,
+                "description": skill.description,
+                "active":      name in self._active,
+            }
+            for name, skill in sorted(self._all.items())
+        ]
+
+    def get_active_catalog(self) -> list[dict]:
+        """仅返回当前激活的技能目录（用于 system prompt 中的简洁描述）。"""
+        return [
+            {
+                "name":        name,
+                "description": self._all[name].description,
+            }
+            for name in self._active
+            if name in self._all
+        ]
+
+    def describe(self, name: str) -> str:
+        """返回指定技能的 description 字段（不含全文），用于工具返回值。"""
+        skill = self._all.get(name)
+        return skill.description if skill else ""
 
 
 # ── Parsing ────────────────────────────────────────────────────────────────────

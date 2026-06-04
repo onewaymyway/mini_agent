@@ -145,6 +145,12 @@ class AppConfig:
     # [SYS-SKILL-TRACK] 技能使用追踪
     skill_tracking_enabled: bool = False
 
+    # [SYS-SKILL-COMPACT] 压缩时重附 skill 上下文（类 Claude Code 机制）
+    # 总 token 预算：所有 skill 共享，LRU 顺序填充，超出则丢弃较旧 skill
+    skill_compact_budget: int = 25_000
+    # 单个 skill 最多贡献的 token 数
+    skill_compact_per_skill: int = 5_000
+
     # [SYS-SKILL-CHUNK] 技能内容裁剪
     skill_chunking_enabled: bool = False
 
@@ -163,6 +169,18 @@ class AppConfig:
 
     # [SYS-STATS] 工具调用详细统计
     tool_stats_enabled: bool = False
+
+    # ── LLM 调用重试策略 ──────────────────────────────────────────────────────
+    # [SYS-RETRY] 当模型返回空响应（无文本、无工具调用）时自动重试
+
+    # 最多重试次数（不含首次调用）；设为 0 禁用重试
+    llm_retry_max: int = 2
+
+    # 每次重试前等待秒数；0 = 立即重试
+    llm_retry_delay: float = 0.0
+
+    # 是否在重试时打印警告信息到终端
+    llm_retry_verbose: bool = True
 
 
 
@@ -199,6 +217,8 @@ def load_config(
     skill_semantic_threshold: Optional[float] = None,
     skill_tracking_enabled: Optional[bool] = None,
     skill_chunking_enabled: Optional[bool] = None,
+    skill_compact_budget: Optional[int] = None,
+    skill_compact_per_skill: Optional[int] = None,
     project_scan_enabled: Optional[bool] = None,
     file_watch_enabled: Optional[bool] = None,
     tool_cache_enabled: Optional[bool] = None,
@@ -347,6 +367,8 @@ def load_config(
         skill_semantic_threshold=_fn("skill_semantic_threshold", skill_semantic_threshold, 0.72),
         skill_tracking_enabled=_fb("skill_tracking_enabled", skill_tracking_enabled),
         skill_chunking_enabled=_fb("skill_chunking_enabled", skill_chunking_enabled),
+        skill_compact_budget=_fn("skill_compact_budget", skill_compact_budget, 25_000),
+        skill_compact_per_skill=_fn("skill_compact_per_skill", skill_compact_per_skill, 5_000),
         project_scan_enabled=_fb("project_scan_enabled", project_scan_enabled),
         file_watch_enabled=_fb("file_watch_enabled", file_watch_enabled),
         tool_cache_enabled=_fb("tool_cache_enabled", tool_cache_enabled),

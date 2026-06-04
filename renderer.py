@@ -137,6 +137,21 @@ def print_interrupt() -> None:
     term.print("\n[yellow]⚡ Interrupted (Ctrl-C). Type 'exit' to quit.[/yellow]")
 
 
+def print_retry_banner(turn: int) -> None:
+    """重试上一轮时的分隔提示。"""
+    term.print(f"\n[bold yellow]↻  Retrying turn {turn} — discarding previous response …[/bold yellow]")
+    term.print("[dim]─────────────────────────────────────────────────────[/dim]")
+
+
+def print_rollback_banner(turn_before: int, turn_after: int) -> None:
+    """回退成功时的分隔提示。"""
+    term.print(
+        f"\n[bold magenta]◀  Rolled back: turn {turn_before} → {turn_after} "
+        f"(last assistant response removed)[/bold magenta]"
+    )
+    term.print("[dim]─────────────────────────────────────────────────────[/dim]")
+
+
 def print_user_prompt() -> None:
     term.print("\n[bold green]You[/bold green] > ", end="")
 

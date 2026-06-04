@@ -23,10 +23,12 @@ VERBOSE_ON: Verbose mode: ON
 VERBOSE_OFF: Verbose mode: OFF
 SKILL_ACTIVATED: Skill '{name}' activated.
 SKILL_DEACTIVATED: Skill '{name}' deactivated.
-SKILL_NOT_FOUND: Skill '{name}' not found or already in that state.
+SKILL_NOT_FOUND: Skill '{name}' not found. Use /skills to see available skill names.
+SKILL_ALREADY_ACTIVE: Skill '{name}' is already active.
+SKILL_NOT_ACTIVE: Skill '{name}' is not currently active.
 MODEL_SWITCHED: Model switched to: {model}
 UNKNOWN_COMMAND: Unknown command: {cmd}. Type /help for available commands.
-SKILL_CMD_USAGE: Usage: /skill on <name> | /skill off <name>
+SKILL_CMD_USAGE: Usage: /skill on <name> [name2 ...] | /skill off <name> [name2 ...] | /skill info <name> | /skill reset
 BYE_MSG: Bye!
 NO_SKILLS_FOUND: (none found)
 
