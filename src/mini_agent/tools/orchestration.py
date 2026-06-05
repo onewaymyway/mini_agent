@@ -26,7 +26,7 @@ def init_task_manager(cfg, max_workers: int = 4):
     global _task_manager
     from mini_agent.orchestrator.task_manager import TaskManager
     from mini_agent.orchestrator.task_display import console
-    import renderer as R
+    from mini_agent.ui import renderer as R
 
     def _on_log(task_id: str, line: str) -> None:
         pass  # 日志写入 TaskRecord，不直接打印
