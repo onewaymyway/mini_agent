@@ -57,7 +57,7 @@ def print_tool_call(tool_name: str, tool_input: dict, verbose: bool = False) -> 
     summary = _tool_summary(tool_name, tool_input)
     term.print(f"\n{icon} [bold cyan]{tool_name}[/bold cyan]  [dim]{summary}[/dim]")
     if verbose:
-        term.syntax(json.dumps(tool_input, indent=2), "json",
+        term.syntax(json.dumps(tool_input, indent=2, ensure_ascii=False), "json",
                     theme="ansi_dark", line_numbers=False)
 
 
