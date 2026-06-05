@@ -100,11 +100,16 @@ class PermissionGuard:
 
         # confirm() 会等队列清空（上面两行 print 已渲染到屏幕），
         # 再暂停刷新，擦状态栏，打印选项提示，然后阻塞读取
-        choice = _term.confirm(
-            prompt_lines=[],   # 提示文字已通过 print() 输出，这里无需重复
-            choices=choice_hint,
-            default="y",
-        )
+        try:
+            choice = _term.confirm(
+                prompt_lines=[],   # 提示文字已通过 print() 输出，这里无需重复
+                choices=choice_hint,
+                default="y",
+            )
+        except (KeyboardInterrupt, EOFError):
+            # 用户 Ctrl-C / Ctrl-D 时默认拒绝
+            _term.print("")
+            return False
 
         if choice in ("y", "yes"):
             return True

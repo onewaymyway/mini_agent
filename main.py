@@ -204,8 +204,12 @@ def run_repl(agent: Agent, skill_loader: SkillLoader) -> None:
         try:
             agent.run_turn(user_input)
         except KeyboardInterrupt:
+            # Ctrl-C 中断时，确保流式输出状态被正确清理
+            _term.force_end_stream()
             R.print_interrupt()
         except Exception as e:
+            # 异常时也清理流式状态，避免 _streaming=True 残留导致后续提示符消失
+            _term.force_end_stream()
             R.print_error(f"API error: {e}")
             if agent.cfg.verbose:
                 import traceback
