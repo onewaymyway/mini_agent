@@ -49,9 +49,15 @@ def _push_loop() -> None:
     while not _stop.is_set():
         time.sleep(0.25)
         if not _stop.is_set():
+            t = get_terminal()
+            # 终端处于输入模式时（_refresh_paused 被 set），
+            # 跳过本次推送——避免 update/redraw 消息污染队列，
+            # 在 confirm()/prompt_user() 等待用户输入时覆盖提示文字。
+            if t._refresh_paused.is_set():
+                continue
             lines = _build_lines()
-            get_terminal().update_statusbar(lines)
-            get_terminal().redraw_statusbar()
+            t.update_statusbar(lines)
+            t.redraw_statusbar()
 
 
 _stop = threading.Event()

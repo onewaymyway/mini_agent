@@ -146,23 +146,26 @@ class Terminal:
 
         返回用户输入的小写字符串。
 
-        修复：原实现用裸 input() 读取，在某些终端配置下回显不可见，
-        且 input() 内部的 prompt 参数不经过 sys.stdout flush 就打印，
-        可能导致选项提示符不显示。改为显式 write+flush，再 readline。
+        修复：
+        1. _enter_input_mode 改为双哨兵，确保 status_bar push_loop 在
+           _refresh_paused set 后已投入的残余 redraw 消息被彻底排空，
+           输入等待期间渲染线程不再写屏幕。
+        2. readline() 读取后补一个换行，确保光标在新行，
+           _exit_input_mode 的 redraw 从正确位置开始绘制状态栏。
         """
-        # 进入输入模式：暂停刷新，等队列清空（包括上面 term.print 的提示内容），
-        # 然后擦状态栏。此时屏幕上已经有提示文字，且不会被任何刷新覆盖。
+        # 进入输入模式：暂停刷新，双哨兵排空队列，擦状态栏
         self._enter_input_mode()
         try:
             # 打印选项提示符（直接写，不经队列——此时渲染线程已空闲）
-            # 用 write+flush 而非 input(prompt)，确保提示符一定显示
             sys.stdout.write(f"  {choices} : ")
             sys.stdout.flush()
             try:
-                # 用 sys.stdin.readline() 代替 input()：
-                # input() 在某些环境下会触发额外的行缓冲处理，
-                # readline() 行为更直接，回显由终端驱动保证
                 line = sys.stdin.readline()
+                # readline() 已包含 \n（用户按回车），但 EOF 时返回 ""
+                # 补一个换行保证光标在新行，状态栏重绘位置正确
+                if not line.endswith("\n"):
+                    sys.stdout.write("\n")
+                    sys.stdout.flush()
                 choice = line.strip().lower() if line else default
                 choice = choice or default
             except (EOFError, KeyboardInterrupt):
@@ -178,24 +181,29 @@ class Terminal:
     def _enter_input_mode(self) -> None:
         """
         进入阻塞输入前的准备：
-        1. 暂停刷新线程（停止投递 _refresh），等待其确认已暂停
-        2. 等待队列完全清空（渲染线程处理完所有消息，含提示文字）
-        3. 直接擦除状态栏（不经队列，此时渲染线程空闲安全）
+        1. 设置暂停标志（_refresh_paused），通知 refresh_thread 和 status_bar
+           push_loop 停止向队列投递新消息
+        2. 投双重哨兵 + join，彻底排空队列（含提示文字 + pause 前可能已入队的
+           残余 _refresh / redraw 消息）
+        3. 直接擦除状态栏（此时渲染线程空闲，安全直接写屏幕）
 
-        修复：原实现用 time.sleep 等刷新周期，存在竞态——sleep 结束后刷新线程
-        可能还未处理完当前周期，仍会投递 _refresh 消息到队列，导致 q.join() 后
-        渲染线程在输入阶段意外写屏幕。
-        改为：先设置暂停标志，再投一个哨兵消息到队列，等哨兵被消费，
-        即可确认渲染线程已空闲且刷新线程不再投递新消息。
+        双重哨兵原因：
+          设置 _refresh_paused 后，status_bar._push_loop 可能正处于
+          sleep 结束、检查标志之前的窗口，已向队列投入 update_statusbar +
+          redraw_statusbar 两条消息。第一个哨兵消费完这些残余消息后，
+          push_loop 在下一轮 sleep 结束前不会再投新消息；但若 push_loop 恰好
+          在第一个哨兵入队前完成了检查（标志已 set，但消息已在队列），
+          第二个哨兵确保渲染线程真正空闲、无残余 redraw 待处理。
         """
-        # 1. 告知刷新线程停止投递 _refresh
+        # 1. 告知所有后台线程停止向队列投递消息
         self._refresh_paused.set()
-        # 2. 投一个哨兵到队列末尾，等它被消费 = 队列中所有消息（含提示文字）已处理完
-        #    同时也清空了刷新线程在 pause 前可能已经投进去的残余 _refresh 消息
-        sentinel = _Msg("_noop", None)
-        self._q.put(sentinel)
+        # 2a. 第一个哨兵：排空 pause 前可能已入队的残余消息（含提示文字）
+        self._q.put(_Msg("_noop", None))
         self._q.join()
-        # 3. 此时渲染线程空闲，刷新线程暂停，安全直接写屏幕
+        # 2b. 第二个哨兵：确认渲染线程在处理完所有残余 redraw 后真正空闲
+        self._q.put(_Msg("_noop", None))
+        self._q.join()
+        # 3. 此时渲染线程空闲，无任何后台线程会写屏幕，安全直接操作
         self._erase_bar_direct()
 
     def _exit_input_mode(self) -> None:
