@@ -36,11 +36,11 @@ import time
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
 import pytest
-from skills import Skill, SkillLoader
-from skills.tracker import SkillUsageTracker, SkillCallRecord
+from mini_agent.skills import Skill, SkillLoader
+from mini_agent.skills.tracker import SkillUsageTracker, SkillCallRecord
 
 
 # ── 共用工厂 ──────────────────────────────────────────────────────────────────
@@ -55,7 +55,7 @@ def make_loader(skill_defs: list[dict], per_skill=5_000, total=25_000) -> SkillL
     loader._all    = {}
     loader._active = []
     loader.tracker = SkillUsageTracker(per_skill_tokens=per_skill, total_budget=total)
-    from skills.usage_detector import SkillUsageDetector
+    from mini_agent.skills.usage_detector import SkillUsageDetector
     loader.detector = SkillUsageDetector()
     for d in skill_defs:
         content = d.get("content", f"# {d['name']}\n" + "x" * d.get("content_len", 100))
@@ -304,8 +304,8 @@ class TestAgentSkillCompact:
         cfg.claude_md_content        = ""
         cfg.agent_name               = "test"
 
-        from config import SessionStats
-        from agent import Agent
+        from mini_agent.config import SessionStats
+        from mini_agent.agent import Agent
         agent = Agent.__new__(Agent)
         agent.cfg          = cfg
         agent.skill_loader = loader
@@ -319,14 +319,14 @@ class TestAgentSkillCompact:
     def test_build_skill_compact_block_empty_without_loader(self):
         agent = self._make_agent()
         agent.skill_loader = None
-        with patch("renderer.print_info"), patch("renderer.print_warning"):
+        with patch("mini_agent.ui.renderer.print_info"), patch("mini_agent.ui.renderer.print_warning"):
             result = agent._build_skill_compact_block()
         assert result == ""
 
     def test_build_skill_compact_block_empty_when_no_calls(self):
         agent = self._make_agent([{"name": "docx"}])
         # 没有调用过任何 skill，tracker 无记录
-        with patch("renderer.print_info"), patch("renderer.print_warning"):
+        with patch("mini_agent.ui.renderer.print_info"), patch("mini_agent.ui.renderer.print_warning"):
             result = agent._build_skill_compact_block()
         assert result == ""
 
@@ -335,7 +335,7 @@ class TestAgentSkillCompact:
         agent.skill_loader.activate("docx")
         # 模拟实际使用：手动打 tracker 记录（真实场景由 record_usage 完成）
         agent.skill_loader.tracker.record("docx")
-        with patch("renderer.print_info"), patch("renderer.print_warning"):
+        with patch("mini_agent.ui.renderer.print_info"), patch("mini_agent.ui.renderer.print_warning"):
             result = agent._build_skill_compact_block()
         assert "DocX" in result or "docx" in result.lower()
 
@@ -356,8 +356,8 @@ class TestAgentSkillCompact:
         agent.skill_loader.tracker.record("a")   # a 也有记录
 
         warnings = []
-        with patch("renderer.print_info"), \
-             patch("renderer.print_warning", side_effect=lambda m: warnings.append(m)):
+        with patch("mini_agent.ui.renderer.print_info"), \
+             patch("mini_agent.ui.renderer.print_warning", side_effect=lambda m: warnings.append(m)):
             agent._build_skill_compact_block()
         assert any("drop" in w.lower() or "budget" in w.lower() for w in warnings)
 
@@ -378,8 +378,8 @@ class TestAgentSkillCompact:
 
         agent.run_turn = fake_run_turn
 
-        with patch("renderer.print_info"), patch("renderer.print_success"), \
-             patch("renderer.print_warning"):
+        with patch("mini_agent.ui.renderer.print_info"), patch("mini_agent.ui.renderer.print_success"), \
+             patch("mini_agent.ui.renderer.print_warning"):
             agent.compact_with_skills()
 
         # 历史应该被替换为摘要 + (可能的 skill 块)
@@ -394,7 +394,7 @@ class TestAgentSkillCompact:
     def test_compact_with_skills_empty_history(self):
         agent = self._make_agent()
         agent._history = []
-        with patch("renderer.print_info"):
+        with patch("mini_agent.ui.renderer.print_info"):
             result = agent.compact_with_skills()
         assert result == ""
         assert agent._history == []

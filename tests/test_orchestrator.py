@@ -20,11 +20,11 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 PROJECT_ROOT = Path(__file__).parent.parent
-sys.path.insert(0, str(PROJECT_ROOT))
+sys.path.insert(0, str(PROJECT_ROOT / "src"))
 
-import tools.builtin  # noqa
-from orchestrator.task import Task, TaskRecord, TaskResult, TaskStatus
-from orchestrator.task_manager import TaskManager
+import mini_agent.tools.builtin  # noqa
+from mini_agent.orchestrator.task import Task, TaskRecord, TaskResult, TaskStatus
+from mini_agent.orchestrator.task_manager import TaskManager
 
 
 # ── 共享工厂 ──────────────────────────────────────────────────────────────────
@@ -34,7 +34,7 @@ def make_task(prompt="Do something", **kwargs) -> Task:
 
 
 def make_cfg():
-    from config import load_config
+    from mini_agent.config import load_config
     cfg = load_config()
     cfg.api_key = "test"
     cfg.stream = False
@@ -147,7 +147,7 @@ class TestTaskManagerCore(unittest.TestCase):
     """
 
     def setUp(self):
-        from orchestrator.concurrency import init_concurrency
+        from mini_agent.orchestrator.concurrency import init_concurrency
         init_concurrency(max_tasks=2, max_llm_calls=8)
         self.cfg = make_cfg()
         self.mgr = TaskManager(self.cfg, max_workers=2)
@@ -245,7 +245,7 @@ class TestTaskManagerDependencies(unittest.TestCase):
     """依赖解析逻辑测试（直接操作状态，不跑真正的 Agent）。"""
 
     def setUp(self):
-        from orchestrator.concurrency import init_concurrency
+        from mini_agent.orchestrator.concurrency import init_concurrency
         init_concurrency(max_tasks=4, max_llm_calls=8)
         self.cfg = make_cfg()
         self.mgr = TaskManager(self.cfg, max_workers=4)
@@ -300,7 +300,7 @@ class TestTaskManagerDependencies(unittest.TestCase):
 
     def test_max_workers_respected(self):
         """同时 RUNNING 的任务数不超过 max_workers。"""
-        from orchestrator.concurrency import init_concurrency
+        from mini_agent.orchestrator.concurrency import init_concurrency
         init_concurrency(max_tasks=2, max_llm_calls=8)
         mgr = TaskManager(self.cfg, max_workers=2)
         try:
@@ -332,14 +332,14 @@ class TestSubAgent(unittest.TestCase):
 
     def setUp(self):
         # Ensure concurrency semaphores are initialized for each test
-        from orchestrator.concurrency import init_concurrency
+        from mini_agent.orchestrator.concurrency import init_concurrency
         init_concurrency(max_tasks=4, max_llm_calls=8)
 
     def _make_mock_agent(self, mock_result="Done."):
         """Build a mock Agent whose run_turn() returns mock_result."""
-        from agent import Agent
-        from llm.base import LLMResponse, LLMUsage
-        from config import SessionStats
+        from mini_agent.agent import Agent
+        from mini_agent.llm.base import LLMResponse, LLMUsage
+        from mini_agent.config import SessionStats
 
         mock_agent = MagicMock(spec=Agent)
         mock_agent.run_turn.return_value = mock_result
@@ -351,7 +351,7 @@ class TestSubAgent(unittest.TestCase):
         return mock_agent
 
     def _make_sub_agent(self, task, mock_result="Done."):
-        from orchestrator.sub_agent import SubAgent
+        from mini_agent.orchestrator.sub_agent import SubAgent
         rec = TaskRecord(task=task)
         cfg = make_cfg()
         mock_agent = self._make_mock_agent(mock_result)
@@ -376,7 +376,7 @@ class TestSubAgent(unittest.TestCase):
         self.assertIn("4", rec.result.output)
 
     def test_exception_sets_failed(self):
-        from orchestrator.sub_agent import SubAgent
+        from mini_agent.orchestrator.sub_agent import SubAgent
         rec = TaskRecord(task=make_task("Crash"))
         cfg = make_cfg()
         sub = SubAgent(rec, cfg)
@@ -388,20 +388,20 @@ class TestSubAgent(unittest.TestCase):
         self.assertIn("boom", rec.result.error)
 
     def test_cancel_pending_before_start(self):
-        from orchestrator.sub_agent import SubAgent
+        from mini_agent.orchestrator.sub_agent import SubAgent
         rec = TaskRecord(task=make_task("x"))
         sub = SubAgent(rec, make_cfg())
         sub.cancel()
         self.assertEqual(rec.status, TaskStatus.CANCELLED)
 
     def test_is_alive_false_before_start(self):
-        from orchestrator.sub_agent import SubAgent
+        from mini_agent.orchestrator.sub_agent import SubAgent
         sub = SubAgent(TaskRecord(task=make_task()), make_cfg())
         self.assertFalse(sub.is_alive)
 
     def test_log_callback_called(self):
         task = make_task("Log test")
-        from orchestrator.sub_agent import SubAgent
+        from mini_agent.orchestrator.sub_agent import SubAgent
         rec = TaskRecord(task=task)
         cfg = make_cfg()
         logged = []
@@ -436,7 +436,7 @@ class TestSubAgent(unittest.TestCase):
 class TestOrchestrationTools(unittest.TestCase):
 
     def setUp(self):
-        from orchestrator.concurrency import init_concurrency
+        from mini_agent.orchestrator.concurrency import init_concurrency
         init_concurrency(max_tasks=2, max_llm_calls=8)
         import tools.orchestration as ot
         cfg = make_cfg()
@@ -587,34 +587,34 @@ class TestTaskDisplay(unittest.TestCase):
         return recs
 
     def test_print_task_table_no_crash(self):
-        from orchestrator.task_display import print_task_table
+        from mini_agent.orchestrator.task_display import print_task_table
         from io import StringIO
         from rich.console import Console
         buf = StringIO()
         c = Console(file=buf, force_terminal=False)
-        with patch("orchestrator.task_display.console", c):
+        with patch("mini_agent.orchestrator.task_display.console", c):
             print_task_table(self._make_records())
         # Should have produced some output
         self.assertGreater(len(buf.getvalue()), 0)
 
     def test_print_task_table_empty(self):
-        from orchestrator.task_display import print_task_table
+        from mini_agent.orchestrator.task_display import print_task_table
         from io import StringIO
         from rich.console import Console
         buf = StringIO()
         c = Console(file=buf, force_terminal=False)
-        with patch("orchestrator.task_display.console", c):
+        with patch("mini_agent.orchestrator.task_display.console", c):
             print_task_table([])
         self.assertIn("No tasks", buf.getvalue())
 
     def test_print_task_log_no_crash(self):
-        from orchestrator.task_display import print_task_log
+        from mini_agent.orchestrator.task_display import print_task_log
         from io import StringIO
         from rich.console import Console
         buf = StringIO()
         c = Console(file=buf, force_terminal=False)
         recs = self._make_records()
-        with patch("orchestrator.task_display.console", c):
+        with patch("mini_agent.orchestrator.task_display.console", c):
             for rec in recs:
                 print_task_log(rec)
 

@@ -18,12 +18,12 @@ import sys, os, time
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
 import pytest
-from skills import Skill, SkillLoader
-from skills.tracker import SkillUsageTracker
-from skills.usage_detector import (
+from mini_agent.skills import Skill, SkillLoader
+from mini_agent.skills.tracker import SkillUsageTracker
+from mini_agent.skills.usage_detector import (
     extract_declared_skills,
     strip_skill_tags,
     build_fingerprint,
@@ -51,7 +51,7 @@ def make_loader(skill_defs: list[dict]) -> SkillLoader:
     loader._all    = {}
     loader._active = []
     loader.tracker = SkillUsageTracker()
-    from skills.usage_detector import SkillUsageDetector
+    from mini_agent.skills.usage_detector import SkillUsageDetector
     loader.detector = SkillUsageDetector()
     for d in skill_defs:
         skill = make_skill(
@@ -372,8 +372,8 @@ class TestTagStrippingInHistory:
     """验证 _append_assistant_response 会剥离 skill_used 标签。"""
 
     def _make_agent(self):
-        from config import SessionStats
-        from agent import Agent
+        from mini_agent.config import SessionStats
+        from mini_agent.agent import Agent
         cfg = MagicMock()
         cfg.auto_save_session = False
         cfg.verbose = False
@@ -385,7 +385,7 @@ class TestTagStrippingInHistory:
         return agent
 
     def test_tag_stripped_from_history(self):
-        from llm.base import LLMResponse, LLMUsage
+        from mini_agent.llm.base import LLMResponse, LLMUsage
         agent = self._make_agent()
         response = LLMResponse(
             text="Here is the result.\n<skill_used>docx</skill_used>",
@@ -402,7 +402,7 @@ class TestTagStrippingInHistory:
         assert "Here is the result." in content_text
 
     def test_response_without_tag_unchanged(self):
-        from llm.base import LLMResponse, LLMUsage
+        from mini_agent.llm.base import LLMResponse, LLMUsage
         agent = self._make_agent()
         response = LLMResponse(
             text="Normal response without tags.",

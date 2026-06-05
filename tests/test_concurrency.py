@@ -20,9 +20,9 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 PROJECT_ROOT = Path(__file__).parent.parent
-sys.path.insert(0, str(PROJECT_ROOT))
+sys.path.insert(0, str(PROJECT_ROOT / "src"))
 
-from orchestrator.concurrency import (
+from mini_agent.orchestrator.concurrency import (
     CountingSemaphore,
     init_concurrency,
     get_task_sem,
@@ -317,7 +317,7 @@ class TestStatusBar(unittest.TestCase):
 
     def test_render_idle_returns_empty(self):
         """空闲时 _build_lines 返回空列表（不写任何内容）。"""
-        from orchestrator.status_bar import _build_lines
+        from mini_agent.orchestrator.status_bar import _build_lines
         t = {"active": 0, "waiting": 0, "limit": 4, "waiters": []}
         ll = {"active": 0, "waiting": 0, "limit": 8, "waiters": []}
         lines = _build_lines(t, ll)
@@ -327,7 +327,7 @@ class TestStatusBar(unittest.TestCase):
 
     def test_render_with_active_tasks_has_content(self):
         """有活跃任务时，_build_lines 返回包含计数信息的行。"""
-        from orchestrator.status_bar import _build_lines
+        from mini_agent.orchestrator.status_bar import _build_lines
         t = {"active": 2, "waiting": 1, "limit": 4, "waiters": [{"label": "t1", "waited_s": 1.0}]}
         ll = {"active": 0, "waiting": 0, "limit": 8, "waiters": []}
         lines = _build_lines(t, ll)
@@ -336,7 +336,7 @@ class TestStatusBar(unittest.TestCase):
 
     def test_render_with_llm_active_has_content(self):
         """有活跃 LLM 请求时，行中包含计数信息。"""
-        from orchestrator.status_bar import _build_lines
+        from mini_agent.orchestrator.status_bar import _build_lines
         t = {"active": 0, "waiting": 0, "limit": 4, "waiters": []}
         ll = {"active": 3, "waiting": 0, "limit": 8, "waiters": []}
         lines = _build_lines(t, ll)
@@ -344,20 +344,20 @@ class TestStatusBar(unittest.TestCase):
         self.assertIn("3/8", lines[1])
 
     def test_start_stop_no_crash(self):
-        from orchestrator.status_bar import StatusBar
+        from mini_agent.orchestrator.status_bar import StatusBar
         bar = StatusBar(refresh_hz=2)
         bar.start()
         time.sleep(0.2)
         bar.stop()   # should not raise
 
     def test_context_manager(self):
-        from orchestrator.status_bar import StatusBar
+        from mini_agent.orchestrator.status_bar import StatusBar
         with StatusBar(refresh_hz=2):
             time.sleep(0.1)
         # Should reach here without exception
 
     def test_module_singleton_start_stop(self):
-        from orchestrator.status_bar import start_status_bar, stop_status_bar, get_status_bar
+        from mini_agent.orchestrator.status_bar import start_status_bar, stop_status_bar, get_status_bar
         bar = start_status_bar(refresh_hz=2)
         self.assertIsNotNone(get_status_bar())
         time.sleep(0.1)
@@ -380,8 +380,8 @@ class TestProviderMixinLLMSemaphore(unittest.TestCase):
 
     def _make_provider(self):
         """构造带 Mock SDK 的 AnthropicProvider。"""
-        from llm.providers.anthropic import AnthropicProvider
-        from llm.base import LLMConfig
+        from mini_agent.llm.providers.anthropic import AnthropicProvider
+        from mini_agent.llm.base import LLMConfig
         cfg = LLMConfig(provider="anthropic", model="claude-opus-4-5", api_key="test")
         with patch.object(AnthropicProvider, "_build_client", return_value=MagicMock()):
             return AnthropicProvider(cfg)

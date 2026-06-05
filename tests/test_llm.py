@@ -21,13 +21,13 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch, call
 
 PROJECT_ROOT = Path(__file__).parent.parent
-sys.path.insert(0, str(PROJECT_ROOT))
+sys.path.insert(0, str(PROJECT_ROOT / "src"))
 
-from llm.base import (
+from mini_agent.llm.base import (
     LLMClient, LLMConfig, LLMResponse, LLMUsage,
     ToolCall, ToolSchema, LLMConfigError, LLMProviderError,
 )
-from llm.factory import create_client, register_provider, list_providers, _REGISTRY
+from mini_agent.llm.factory import create_client, register_provider, list_providers, _REGISTRY
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -193,9 +193,9 @@ class TestFactory(unittest.TestCase):
 
     def test_create_anthropic_client(self):
         cfg = make_config(provider="anthropic")
-        with patch("llm.providers.anthropic.AnthropicProvider._build_client", return_value=MagicMock()):
+        with patch("mini_agent.llm.providers.anthropic.AnthropicProvider._build_client", return_value=MagicMock()):
             client = create_client(cfg)
-        from llm.providers.anthropic import AnthropicProvider
+        from mini_agent.llm.providers.anthropic import AnthropicProvider
         self.assertIsInstance(client, AnthropicProvider)
 
     def test_unknown_provider_raises(self):
@@ -223,9 +223,9 @@ class TestFactory(unittest.TestCase):
 
     def test_claude_alias_maps_to_anthropic(self):
         cfg = make_config(provider="claude")
-        with patch("llm.providers.anthropic.AnthropicProvider._build_client", return_value=MagicMock()):
+        with patch("mini_agent.llm.providers.anthropic.AnthropicProvider._build_client", return_value=MagicMock()):
             client = create_client(cfg)
-        from llm.providers.anthropic import AnthropicProvider
+        from mini_agent.llm.providers.anthropic import AnthropicProvider
         self.assertIsInstance(client, AnthropicProvider)
 
 
@@ -236,7 +236,7 @@ class TestFactory(unittest.TestCase):
 class TestAnthropicProvider(unittest.TestCase):
 
     def _make_provider(self):
-        from llm.providers.anthropic import AnthropicProvider
+        from mini_agent.llm.providers.anthropic import AnthropicProvider
         cfg = make_config(provider="anthropic")
         with patch.object(AnthropicProvider, "_build_client", return_value=MagicMock()):
             return AnthropicProvider(cfg)
@@ -309,7 +309,7 @@ class TestAnthropicProvider(unittest.TestCase):
 class TestOpenAIProvider(unittest.TestCase):
 
     def _make_provider(self):
-        from llm.providers.openai import OpenAIProvider
+        from mini_agent.llm.providers.openai import OpenAIProvider
         cfg = LLMConfig(provider="openai", model="gpt-4o", api_key="test-key")
         with patch.object(OpenAIProvider, "_build_client", return_value=MagicMock()):
             return OpenAIProvider(cfg)
@@ -386,7 +386,7 @@ class TestOpenAIProvider(unittest.TestCase):
 class TestOllamaProvider(unittest.TestCase):
 
     def _make_provider(self):
-        from llm.providers.ollama import OllamaProvider
+        from mini_agent.llm.providers.ollama import OllamaProvider
         cfg = LLMConfig(provider="ollama", model="llama3.1", api_key="",
                         requires_api_key=False)
         return OllamaProvider(cfg)
@@ -443,7 +443,7 @@ class TestOllamaProvider(unittest.TestCase):
         self.assertIn("parameters", result[0]["function"])
 
     def test_connection_error_wrapped(self):
-        from llm.base import LLMProviderError
+        from mini_agent.llm.base import LLMProviderError
         provider = self._make_provider()
         with patch.object(provider, "_post", side_effect=LLMProviderError("Connection refused")):
             with self.assertRaises(LLMProviderError):
@@ -460,9 +460,9 @@ class TestAgentLLMIntegration(unittest.TestCase):
     def _make_agent(self, responses: list[LLMResponse]):
         """创建一个注入了 mock client 的 Agent。"""
         import tools.builtin  # noqa: ensure tools registered
-        from agent import Agent
-        from config import load_config
-        from permissions import PermissionGuard
+        from mini_agent.agent import Agent
+        from mini_agent.config import load_config
+        from mini_agent.permissions import PermissionGuard
 
         cfg = load_config()
         cfg.api_key = "test"
@@ -505,10 +505,10 @@ class TestAgentLLMIntegration(unittest.TestCase):
         self.assertEqual(agent.stats.turns, 1)
 
     def test_tool_call_denied(self):
-        from permissions import PermissionGuard
-        from config import load_config
+        from mini_agent.permissions import PermissionGuard
+        from mini_agent.config import load_config
         import tools.builtin  # noqa
-        from agent import Agent
+        from mini_agent.agent import Agent
 
         cfg = load_config()
         cfg.stream = False
@@ -531,7 +531,7 @@ class TestAgentLLMIntegration(unittest.TestCase):
     def test_switch_provider(self):
         agent, _ = self._make_agent([make_response()])
         new_client = ConcreteClient(make_config())
-        with patch("agent.create_client", return_value=new_client):
+        with patch("mini_agent.agent.create_client", return_value=new_client):
             agent.switch_provider(make_config(provider="openai"))
         self.assertIs(agent.llm_client, new_client)
 

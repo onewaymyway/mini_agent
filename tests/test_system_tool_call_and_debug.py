@@ -19,15 +19,15 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 PROJECT_ROOT = Path(__file__).parent.parent
-sys.path.insert(0, str(PROJECT_ROOT))
+sys.path.insert(0, str(PROJECT_ROOT / "src"))
 
-import tools.builtin  # noqa — register tools
-from llm.base import LLMConfig, LLMResponse, LLMUsage, ToolCall, ToolSchema
-from llm.system_tool_call import (
+import mini_agent.tools.builtin  # noqa — register tools
+from mini_agent.llm.base import LLMConfig, LLMResponse, LLMUsage, ToolCall, ToolSchema
+from mini_agent.llm.system_tool_call import (
     render_tool_list, parse_tool_calls, strip_tool_use_blocks,
     render_tool_results, postprocess_response, extract_thinking_blocks,
 )
-from llm.debug_logger import DebugConfig, LLMDebugLogger, init_debug_logger, get_debug_logger
+from mini_agent.llm.debug_logger import DebugConfig, LLMDebugLogger, init_debug_logger, get_debug_logger
 
 
 # ── 共享测试数据 ──────────────────────────────────────────────────────────────
@@ -475,8 +475,8 @@ class TestProviderMixinPrepareTools(unittest.TestCase):
 
     def _make_mixin(self, use_system_tc: bool):
         """Create a minimal object with ProviderMixin behaviour."""
-        from llm.providers._base_mixin import ProviderMixin
-        from llm.base import LLMClient
+        from mini_agent.llm.providers._base_mixin import ProviderMixin
+        from mini_agent.llm.base import LLMClient
 
         class MinimalProvider(ProviderMixin, LLMClient):
             def chat(self, m, s, t): ...
@@ -526,9 +526,9 @@ class TestProviderMixinPrepareTools(unittest.TestCase):
 class TestAgentToolResultFormat(unittest.TestCase):
 
     def _make_agent(self, use_system_tc: bool, responses: list):
-        from agent import Agent
-        from config import load_config
-        from permissions import PermissionGuard
+        from mini_agent.agent import Agent
+        from mini_agent.config import load_config
+        from mini_agent.permissions import PermissionGuard
 
         cfg = load_config()
         cfg.stream = False
@@ -582,28 +582,28 @@ class TestThinkingExtraction(unittest.TestCase):
     """测试通用 thinking 标签提取逻辑。"""
 
     def test_extract_think_tag(self):
-        from llm.system_tool_call import extract_thinking_blocks
+        from mini_agent.llm.system_tool_call import extract_thinking_blocks
         text = "<think>Step 1: analyse</think>\nFinal answer."
         clean, thinking = extract_thinking_blocks(text)
         self.assertEqual(clean, "Final answer.")
         self.assertIn("Step 1", thinking)
 
     def test_extract_thinking_tag(self):
-        from llm.system_tool_call import extract_thinking_blocks
+        from mini_agent.llm.system_tool_call import extract_thinking_blocks
         text = "<thinking>reasoning here</thinking>\nResult"
         clean, thinking = extract_thinking_blocks(text)
         self.assertEqual(clean, "Result")
         self.assertIn("reasoning here", thinking)
 
     def test_extract_reasoning_tag(self):
-        from llm.system_tool_call import extract_thinking_blocks
+        from mini_agent.llm.system_tool_call import extract_thinking_blocks
         text = "<reasoning>deep thought</reasoning>\nAnswer"
         clean, thinking = extract_thinking_blocks(text)
         self.assertEqual(clean, "Answer")
         self.assertIn("deep thought", thinking)
 
     def test_multiple_think_blocks_merged(self):
-        from llm.system_tool_call import extract_thinking_blocks
+        from mini_agent.llm.system_tool_call import extract_thinking_blocks
         text = "<think>part1</think>\nmiddle<think>part2</think>\nend"
         clean, thinking = extract_thinking_blocks(text)
         self.assertIn("part1", thinking)
@@ -611,15 +611,15 @@ class TestThinkingExtraction(unittest.TestCase):
         self.assertIn("middle", clean)
 
     def test_no_think_block_unchanged(self):
-        from llm.system_tool_call import extract_thinking_blocks
+        from mini_agent.llm.system_tool_call import extract_thinking_blocks
         text = "Plain response without thinking."
         clean, thinking = extract_thinking_blocks(text)
         self.assertEqual(clean, text)
         self.assertEqual(thinking, "")
 
     def test_postprocess_extracts_thinking(self):
-        from llm.system_tool_call import postprocess_response
-        from llm.base import LLMResponse, LLMUsage
+        from mini_agent.llm.system_tool_call import postprocess_response
+        from mini_agent.llm.base import LLMResponse, LLMUsage
         resp = LLMResponse(
             text="<think>internal</think>\nVisible answer.",
             tool_calls=[], usage=LLMUsage(), stop_reason="end_turn"
@@ -630,8 +630,8 @@ class TestThinkingExtraction(unittest.TestCase):
 
     def test_postprocess_merges_streaming_and_tag_reasoning(self):
         """流式 reasoning_content 和文本中的 <think> 标签应合并，不丢失。"""
-        from llm.system_tool_call import postprocess_response
-        from llm.base import LLMResponse, LLMUsage
+        from mini_agent.llm.system_tool_call import postprocess_response
+        from mini_agent.llm.base import LLMResponse, LLMUsage
         resp = LLMResponse(
             text="<think>tag-thinking</think>\nAnswer",
             reasoning="stream-reasoning",   # already collected via on_reasoning
@@ -644,8 +644,8 @@ class TestThinkingExtraction(unittest.TestCase):
     def test_postprocess_tool_call_and_thinking_together(self):
         """同时包含 <think> 和 ```tool_call 块的响应应分别提取。"""
         import json
-        from llm.system_tool_call import postprocess_response
-        from llm.base import LLMResponse, LLMUsage
+        from mini_agent.llm.system_tool_call import postprocess_response
+        from mini_agent.llm.base import LLMResponse, LLMUsage
         block = '```tool_call\n{"tool":"bash","id":"t1","parameters":{"command":"ls"}}\n```'
         text = f"<think>I should list files</think>\n{block}"
         resp = LLMResponse(text=text, tool_calls=[], usage=LLMUsage(), stop_reason="end_turn")
@@ -657,7 +657,7 @@ class TestThinkingExtraction(unittest.TestCase):
         self.assertNotIn("<think>", result.text)
 
     def test_case_insensitive_think_tag(self):
-        from llm.system_tool_call import extract_thinking_blocks
+        from mini_agent.llm.system_tool_call import extract_thinking_blocks
         text = "<THINK>case insensitive</THINK>\nResult"
         clean, thinking = extract_thinking_blocks(text)
         self.assertIn("case insensitive", thinking)
@@ -665,8 +665,8 @@ class TestThinkingExtraction(unittest.TestCase):
 
     def test_postprocess_noop_when_nothing_to_extract(self):
         """没有 think 块和 tool_call 时应直接返回原对象。"""
-        from llm.system_tool_call import postprocess_response
-        from llm.base import LLMResponse, LLMUsage
+        from mini_agent.llm.system_tool_call import postprocess_response
+        from mini_agent.llm.base import LLMResponse, LLMUsage
         resp = LLMResponse(
             text="Hello world", tool_calls=[], usage=LLMUsage(), stop_reason="end_turn"
         )

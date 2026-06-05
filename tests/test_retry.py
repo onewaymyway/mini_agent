@@ -13,12 +13,13 @@ tests/test_retry.py — LLM 重试策略单元测试
 """
 
 import sys
+from pathlib import Path
 import os
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
 import pytest
-from llm.base import LLMResponse, LLMUsage, ToolCall
-from llm.retry import (
+from mini_agent.llm.base import LLMResponse, LLMUsage, ToolCall
+from mini_agent.llm.retry import (
     RetryCondition,
     RetryPolicy,
     EmptyOutputCondition,

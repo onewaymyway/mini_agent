@@ -22,9 +22,9 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 PROJECT_ROOT = Path(__file__).parent.parent
-sys.path.insert(0, str(PROJECT_ROOT))
+sys.path.insert(0, str(PROJECT_ROOT / "src"))
 
-from session import Session, SessionMeta, SessionManager, _serialize_history, _now_iso
+from mini_agent.session import Session, SessionMeta, SessionManager, _serialize_history, _now_iso
 
 
 # ── 共享工厂 ──────────────────────────────────────────────────────────────────
@@ -463,10 +463,10 @@ class TestAgentSessionIntegration(unittest.TestCase):
         shutil.rmtree(self.tmp, ignore_errors=True)
 
     def _make_agent(self, auto_save=True):
-        from agent import Agent
-        from config import load_config
-        from permissions import PermissionGuard
-        from llm.base import LLMResponse, LLMUsage
+        from mini_agent.agent import Agent
+        from mini_agent.config import load_config
+        from mini_agent.permissions import PermissionGuard
+        from mini_agent.llm.base import LLMResponse, LLMUsage
 
         cfg = load_config(
             project_root=self.tmp,

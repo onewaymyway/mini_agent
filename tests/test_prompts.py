@@ -23,9 +23,9 @@ from pathlib import Path
 
 # ── Make project root importable ──────────────────────────────────────────────
 PROJECT_ROOT = Path(__file__).parent.parent
-sys.path.insert(0, str(PROJECT_ROOT))
+sys.path.insert(0, str(PROJECT_ROOT / "src"))
 
-from prompts.manager import (
+from mini_agent.prompts.manager import (
     PromptManager,
     PromptNotFoundError,
     PromptRenderError,
@@ -311,7 +311,7 @@ class TestBuildSystemPrompt(unittest.TestCase):
 
     def _make_prompt_pm(self) -> PromptManager:
         """Create PM with the real prompt files from the project."""
-        real_prompts = PROJECT_ROOT / "prompts"
+        real_prompts = PROJECT_ROOT / "src" / "mini_agent" / "prompts"
         return PromptManager(real_prompts)
 
     def test_core_prompt_included(self):
@@ -377,13 +377,13 @@ class TestBuildSystemPrompt(unittest.TestCase):
 class TestGetCompactPrompt(unittest.TestCase):
 
     def test_returns_non_empty_string(self):
-        real_pm = PromptManager(PROJECT_ROOT / "prompts")
+        real_pm = PromptManager(PROJECT_ROOT / "src" / "mini_agent" / "prompts")
         result = real_pm.get_compact_prompt()
         self.assertIsInstance(result, str)
         self.assertGreater(len(result), 20)
 
     def test_contains_meaningful_content(self):
-        real_pm = PromptManager(PROJECT_ROOT / "prompts")
+        real_pm = PromptManager(PROJECT_ROOT / "src" / "mini_agent" / "prompts")
         result = real_pm.get_compact_prompt()
         # Should ask for a summary of some kind
         lower = result.lower()

@@ -18,11 +18,11 @@ import os
 from pathlib import Path
 from unittest.mock import patch, call, MagicMock
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
 import pytest
-from skills import Skill, SkillLoader
-from skills.tracker import SkillUsageTracker
+from mini_agent.skills import Skill, SkillLoader
+from mini_agent.skills.tracker import SkillUsageTracker
 
 
 # ── SkillLoader stub（不依赖文件系统）────────────────────────────────────────
@@ -33,7 +33,7 @@ def make_loader(skill_defs: list[dict]) -> SkillLoader:
     loader._all    = {}
     loader._active = []
     loader.tracker = SkillUsageTracker()
-    from skills.usage_detector import SkillUsageDetector
+    from mini_agent.skills.usage_detector import SkillUsageDetector
     loader.detector = SkillUsageDetector()
     loader.detector.build_fingerprints(loader._all)
     for d in skill_defs:
@@ -60,8 +60,8 @@ _fake_pm.fragment.side_effect = lambda section, key, **kw: (
 )
 
 with _mock.patch.dict("sys.modules", {
-    "renderer": _mock.MagicMock(),
-    "prompts":  _mock.MagicMock(),
+    "mini_agent.ui.renderer": _mock.MagicMock(),
+    "mini_agent.prompts": _mock.MagicMock(),
 }):
     import importlib
     # 让 main 模块用假的 renderer / pm
@@ -73,7 +73,7 @@ with patch("builtins.__import__", side_effect=lambda *a, **k: __import__(*a, **k
     pass  # 保持 import 正常
 
 # 真正 import（rich 已安装，不会失败）
-from main import _handle_skill_cmd, _handle_skills_list, _suggest_skill
+from mini_agent.cli.commands.skills import handle_skill_cmd as _handle_skill_cmd, handle_skills_list as _handle_skills_list, _suggest_skill
 
 
 # ── helpers ───────────────────────────────────────────────────────────────────
@@ -87,18 +87,18 @@ class Captures:
 
     def patch_ctx(self):
         return (
-            patch("main.R.print_success", side_effect=lambda m: self.success.append(m)),
-            patch("main.R.print_error",   side_effect=lambda m: self.error.append(m)),
-            patch("main.R.print_info",    side_effect=lambda m: self.info.append(m)),
+            patch("mini_agent.cli.commands.skills.R.print_success", side_effect=lambda m: self.success.append(m)),
+            patch("mini_agent.cli.commands.skills.R.print_error",   side_effect=lambda m: self.error.append(m)),
+            patch("mini_agent.cli.commands.skills.R.print_info",    side_effect=lambda m: self.info.append(m)),
         )
 
 
 def run_skill_cmd(args, loader):
     cap = Captures()
-    with patch("main.pm", _fake_pm), \
+    with patch("mini_agent.cli.commands.skills.pm", _fake_pm), \
          cap.patch_ctx()[0], cap.patch_ctx()[1], cap.patch_ctx()[2], \
-         patch("main.R.console.print"), \
-         patch("main.R.print_markdown"):
+         patch("mini_agent.cli.commands.skills.R.console.print"), \
+         patch("mini_agent.cli.commands.skills.R.print_markdown"):
         _handle_skill_cmd(args, loader)
     return cap
 
@@ -200,10 +200,10 @@ class TestSkillInfo:
 
     def test_info_shows_content(self):
         printed = []
-        with patch("main.pm", _fake_pm), \
-             patch("main.R.console.print", side_effect=lambda *a, **k: printed.append(str(a))), \
-             patch("main.R.print_markdown", side_effect=lambda m: printed.append(m)), \
-             patch("main.R.print_error"), patch("main.R.print_info"):
+        with patch("mini_agent.cli.commands.skills.pm", _fake_pm), \
+             patch("mini_agent.cli.commands.skills.R.console.print", side_effect=lambda *a, **k: printed.append(str(a))), \
+             patch("mini_agent.cli.commands.skills.R.print_markdown", side_effect=lambda m: printed.append(m)), \
+             patch("mini_agent.cli.commands.skills.R.print_error"), patch("mini_agent.cli.commands.skills.R.print_info"):
             _handle_skill_cmd(["info", "docx"], self.loader)
         combined = " ".join(printed)
         assert "docx" in combined
@@ -220,10 +220,10 @@ class TestSkillInfo:
     def test_info_shows_active_status(self):
         self.loader.activate("docx")
         printed = []
-        with patch("main.pm", _fake_pm), \
-             patch("main.R.console.print", side_effect=lambda *a, **k: printed.append(str(a))), \
-             patch("main.R.print_markdown"), \
-             patch("main.R.print_error"), patch("main.R.print_info"):
+        with patch("mini_agent.cli.commands.skills.pm", _fake_pm), \
+             patch("mini_agent.cli.commands.skills.R.console.print", side_effect=lambda *a, **k: printed.append(str(a))), \
+             patch("mini_agent.cli.commands.skills.R.print_markdown"), \
+             patch("mini_agent.cli.commands.skills.R.print_error"), patch("mini_agent.cli.commands.skills.R.print_info"):
             _handle_skill_cmd(["info", "docx"], self.loader)
         assert any("active" in p for p in printed)
 
@@ -290,18 +290,18 @@ class TestSuggestSkill:
 
     def test_suggest_prefix_match(self):
         info_msgs = []
-        with patch("main.pm", _fake_pm), \
-             patch("main.R.print_error"), \
-             patch("main.R.print_info", side_effect=lambda m: info_msgs.append(m)):
+        with patch("mini_agent.cli.commands.skills.pm", _fake_pm), \
+             patch("mini_agent.cli.commands.skills.R.print_error"), \
+             patch("mini_agent.cli.commands.skills.R.print_info", side_effect=lambda m: info_msgs.append(m)):
             _suggest_skill("doc", self.loader)
         # "doc" 是 "docx" 和 "doc-advanced" 的前缀
         assert any("docx" in m or "doc-advanced" in m for m in info_msgs)
 
     def test_no_suggestion_when_no_match(self):
         info_msgs = []
-        with patch("main.pm", _fake_pm), \
-             patch("main.R.print_error"), \
-             patch("main.R.print_info", side_effect=lambda m: info_msgs.append(m)):
+        with patch("mini_agent.cli.commands.skills.pm", _fake_pm), \
+             patch("mini_agent.cli.commands.skills.R.print_error"), \
+             patch("mini_agent.cli.commands.skills.R.print_info", side_effect=lambda m: info_msgs.append(m)):
             _suggest_skill("zzz", self.loader)
         # 没有匹配，不输出 Did you mean
         assert not any("Did you mean" in m for m in info_msgs)
@@ -319,16 +319,16 @@ class TestSkillsList:
     def test_list_with_no_skills(self):
         loader = make_loader([])
         printed = []
-        with patch("main.pm", _fake_pm), \
-             patch("main.R.console.print", side_effect=lambda *a, **k: printed.append(str(a))):
+        with patch("mini_agent.cli.commands.skills.pm", _fake_pm), \
+             patch("mini_agent.cli.commands.skills.R.console.print", side_effect=lambda *a, **k: printed.append(str(a))):
             _handle_skills_list(loader)
         assert any("NO_SKILLS_FOUND" in p or "none" in p.lower() for p in printed)
 
     def test_list_shows_all_skills(self):
         """验证 Table 里包含两行（每个 skill 一行）。"""
         tables = []
-        with patch("main.pm", _fake_pm), \
-             patch("main.R.console.print",
+        with patch("mini_agent.cli.commands.skills.pm", _fake_pm), \
+             patch("mini_agent.cli.commands.skills.R.console.print",
                    side_effect=lambda *a, **k: tables.append(a[0]) if a else None):
             _handle_skills_list(self.loader)
         from rich.table import Table
@@ -338,8 +338,8 @@ class TestSkillsList:
 
     def test_list_shows_token_estimate(self):
         printed = []
-        with patch("main.pm", _fake_pm), \
-             patch("main.R.console.print", side_effect=lambda *a, **k: printed.append(str(a))):
+        with patch("mini_agent.cli.commands.skills.pm", _fake_pm), \
+             patch("mini_agent.cli.commands.skills.R.console.print", side_effect=lambda *a, **k: printed.append(str(a))):
             _handle_skills_list(self.loader)
         # content 400 chars → ~100 tokens; 200 chars → ~50 tokens
         combined = " ".join(printed)
@@ -348,8 +348,8 @@ class TestSkillsList:
     def test_list_shows_active_summary(self):
         self.loader.activate("docx")
         printed = []
-        with patch("main.pm", _fake_pm), \
-             patch("main.R.console.print", side_effect=lambda *a, **k: printed.append(str(a))):
+        with patch("mini_agent.cli.commands.skills.pm", _fake_pm), \
+             patch("mini_agent.cli.commands.skills.R.console.print", side_effect=lambda *a, **k: printed.append(str(a))):
             _handle_skills_list(self.loader)
         combined = " ".join(printed)
         assert "1 active" in combined or "active" in combined

@@ -21,13 +21,13 @@ import textwrap
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
 import pytest
-from skills import Skill, SkillLoader
-from skills.tracker import SkillUsageTracker
-from tools import ToolRegistry
-from tools.skill_manager import register_skill_tools
+from mini_agent.skills import Skill, SkillLoader
+from mini_agent.skills.tracker import SkillUsageTracker
+from mini_agent.tools import ToolRegistry
+from mini_agent.tools.skill_manager import register_skill_tools
 
 
 # ── SkillLoader stub ──────────────────────────────────────────────────────────
@@ -42,7 +42,7 @@ def make_loader(skill_defs: list[dict]) -> SkillLoader:
     loader._all   = {}
     loader._active = []
     loader.tracker = SkillUsageTracker()
-    from skills.usage_detector import SkillUsageDetector
+    from mini_agent.skills.usage_detector import SkillUsageDetector
     loader.detector = SkillUsageDetector()
     loader.detector.build_fingerprints(loader._all)
 
@@ -156,13 +156,13 @@ class TestSkillActivateTool:
             {"name": "pdf",  "description": "PDF creation"},
         ])
         self.registry = ToolRegistry()
-        with patch("renderer.print_skill_loaded"):
+        with patch("mini_agent.ui.renderer.print_skill_loaded"):
             register_skill_tools(self.registry, self.loader)
 
     def _call(self, names, reason="test reason"):
         td = self.registry.get("skill_activate")
         assert td is not None
-        with patch("renderer.print_skill_loaded"):
+        with patch("mini_agent.ui.renderer.print_skill_loaded"):
             return json.loads(td.fn(names=names, reason=reason))
 
     def test_activate_single_skill(self):
@@ -222,7 +222,7 @@ class TestSkillDeactivateTool:
     def _call(self, names, reason="test reason"):
         td = self.registry.get("skill_deactivate")
         assert td is not None
-        with patch("renderer.print_info"):
+        with patch("mini_agent.ui.renderer.print_info"):
             return json.loads(td.fn(names=names, reason=reason))
 
     def test_deactivate_single_skill(self):
@@ -322,8 +322,8 @@ class TestSystemPromptSkillCatalog:
         cfg.claude_md_content      = ""
         cfg.agent_name             = "test"
 
-        from config import SessionStats
-        from agent import Agent
+        from mini_agent.config import SessionStats
+        from mini_agent.agent import Agent
 
         agent = Agent.__new__(Agent)
         agent.cfg            = cfg
@@ -340,7 +340,7 @@ class TestSystemPromptSkillCatalog:
             {"name": "pdf",  "description": "PDF operations"},
         ])
 
-        with patch("config.build_system_prompt", return_value="BASE"):
+        with patch("mini_agent.config.build_system_prompt", return_value="BASE"):
             result = agent._build_system()
 
         assert "docx" in result
@@ -353,7 +353,7 @@ class TestSystemPromptSkillCatalog:
         ])
         agent.skill_loader.activate("docx")
 
-        with patch("config.build_system_prompt", return_value="BASE"):
+        with patch("mini_agent.config.build_system_prompt", return_value="BASE"):
             result = agent._build_system()
 
         assert "Currently active" in result
@@ -362,7 +362,7 @@ class TestSystemPromptSkillCatalog:
     def test_skill_tool_instructions_present(self):
         agent = self._make_agent_with_skills([{"name": "docx"}])
 
-        with patch("config.build_system_prompt", return_value="BASE"):
+        with patch("mini_agent.config.build_system_prompt", return_value="BASE"):
             result = agent._build_system()
 
         assert "skill_activate" in result
@@ -372,7 +372,7 @@ class TestSystemPromptSkillCatalog:
     def test_no_catalog_block_when_no_skills(self):
         agent = self._make_agent_with_skills([])
 
-        with patch("config.build_system_prompt", return_value="BASE"):
+        with patch("mini_agent.config.build_system_prompt", return_value="BASE"):
             result = agent._build_system()
 
         # 没有技能时不应出现技能目录块

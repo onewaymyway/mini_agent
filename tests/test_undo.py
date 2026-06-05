@@ -10,15 +10,16 @@ tests/test_undo.py — 手动重试 / 回退功能单元测试
 """
 
 import sys
+from pathlib import Path
 import os
 import copy
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
 import pytest
 from unittest.mock import MagicMock, patch, call as mc
 
-from llm.base import LLMResponse, LLMUsage, ToolCall
+from mini_agent.llm.base import LLMResponse, LLMUsage, ToolCall
 
 
 # ── 轻量 Agent stub（不依赖真实 LLM / session） ──────────────────────────────
@@ -28,8 +29,8 @@ def make_agent(responses: list[str]) -> "object":
     构造一个最小化的 Agent stub，_agentic_loop 依次返回 responses。
     避免真实 LLM 调用、session IO、文件系统等外部依赖。
     """
-    from config import AppConfig
-    from agent import Agent
+    from mini_agent.config import AppConfig
+    from mini_agent.agent import Agent
 
     cfg = AppConfig.__new__(AppConfig)
     # 最小属性集
@@ -70,7 +71,7 @@ def make_agent(responses: list[str]) -> "object":
     agent._session       = None
 
     # 注入空重试策略
-    from llm.retry import no_retry_policy
+    from mini_agent.llm.retry import no_retry_policy
     agent._retry_policy = no_retry_policy()
 
     # _agentic_loop 按顺序返回 responses

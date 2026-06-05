@@ -22,12 +22,12 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch, PropertyMock
 
 PROJECT_ROOT = Path(__file__).parent.parent
-sys.path.insert(0, str(PROJECT_ROOT))
+sys.path.insert(0, str(PROJECT_ROOT / "src"))
 
-from llm.base import LLMConfig, LLMResponse, LLMUsage, ToolCall, ToolSchema
-from llm.base import LLMProviderError, LLMRateLimitError, LLMTimeoutError
-from llm.providers.nvidia import NvidiaProvider, _DEFAULT_BASE_URL, _map_finish_reason, _prepend_system
-from llm.factory import create_client, list_providers, _REGISTRY
+from mini_agent.llm.base import LLMConfig, LLMResponse, LLMUsage, ToolCall, ToolSchema
+from mini_agent.llm.base import LLMProviderError, LLMRateLimitError, LLMTimeoutError
+from mini_agent.llm.providers.nvidia import NvidiaProvider, _DEFAULT_BASE_URL, _map_finish_reason, _prepend_system
+from mini_agent.llm.factory import create_client, list_providers, _REGISTRY
 
 
 # ── 工厂函数 ──────────────────────────────────────────────────────────────────
