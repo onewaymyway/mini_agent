@@ -294,9 +294,13 @@ python -m pytest tests/ -q
 
 ## 文档
 
-- [完整文档](docs/README.md) — 完整架构和模块详情
-- [快速开始](docs/QUICK_START.md) — 入门指南
-- [工具参考](docs/TOOL_REFERENCE.md) — 所有内置工具
+- [系统概览](docs/system-overview.md) — 整体架构和设计思路
+- [CLI I/O 机制](docs/cli-io-mechanism.md) — 命令行输入输出流程
+- [终端 I/O 指南](docs/terminal-io-guide.md) — 终端交互细节
+- [命令与工具参考](docs/commands-and-tools-reference.md) — 所有命令和工具
+- [Plan 和 Task 指南](docs/plan-and-task-guide.md) — 规划和任务系统
+- [Skill 系统指南](docs/skill-system-guide.md) — 技能机制详解
+- [代码结构指南](docs/code-structure-guide.md) — 项目结构说明
 
 ## 许可证
 
