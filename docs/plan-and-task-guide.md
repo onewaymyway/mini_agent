@@ -250,7 +250,11 @@ Progress: 2/4 done, 1 running
 
 | 文件 | 职责 |
 |------|------|
-| `orchestrator/plan.py` | 数据模型：`ExecutionPlan`、`PlanTask`、`PlanTaskStatus`、`TaskSource` |
-| `tools/plan.py` | Agent 工具：`create_plan`、`start_task`、`complete_task` 等 7 个工具 |
-| `orchestrator/plan_display.py` | 渲染：状态栏紧凑行、Rich 树形视图、完成摘要表格 |
-| `prompts/system/plan_mode.md` | System prompt 片段：告知 LLM 如何使用计划工具 |
+| `src/mini_agent/orchestrator/plan.py` | 数据模型：`ExecutionPlan`、`PlanTask`、`PlanTaskStatus`、`TaskSource` |
+| `src/mini_agent/tools/plan.py` | Agent 工具：`create_plan`、`start_task`、`complete_task` 等 7 个工具 |
+| `src/mini_agent/orchestrator/plan_display.py` | 渲染：状态栏紧凑行、Rich 树形视图、完成摘要表格 |
+| `src/mini_agent/prompts/system/plan_mode.md` | System prompt 片段：告知 LLM 如何使用计划工具 |
+
+---
+
+> 最后更新：2026-06（反映 src/mini_agent 包布局重构，/plan 命令实现已从 main.py 迁移至 src/mini_agent/cli/commands/plans.py）

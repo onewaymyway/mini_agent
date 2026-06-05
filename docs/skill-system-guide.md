@@ -58,7 +58,7 @@ Skill 有三类管理入口：CLI、Agent 工具、关键词辅助激活。
 
 ### 3.1 CLI 命令
 
-REPL 中提供以下命令：
+REPL 中提供以下命令（实现位于 `src/mini_agent/cli/commands/skills.py`）：
 
 | 命令 | 作用 |
 |------|------|
@@ -244,10 +244,14 @@ Token 估算采用粗略规则：`1 token ≈ 4 字符`。
 
 | 文件 | 说明 |
 |------|------|
-| `skills/__init__.py` | `Skill`、`SkillLoader`、发现、解析、激活、上下文构建、压缩上下文入口 |
-| `skills/usage_detector.py` | 显式声明和指纹匹配的双轨使用检测 |
-| `skills/tracker.py` | LRU 使用追踪与压缩重附预算实现 |
-| `tools/skill_manager.py` | `skill_list`、`skill_activate`、`skill_deactivate`、`compact_history`、`skill_stats` 工具注册 |
-| `prompts/system/active_skills.md` | active skill 注入到 system prompt 的模板 |
-| `agent.py` | 自动激活、system prompt 拼装、回复后记录使用、压缩重附 |
-| `main.py` | `/skills` 与 `/skill ...` CLI 命令实现 |
+| `src/mini_agent/skills/__init__.py` | `Skill`、`SkillLoader`、发现、解析、激活、上下文构建、压缩上下文入口 |
+| `src/mini_agent/skills/usage_detector.py` | 显式声明和指纹匹配的双轨使用检测 |
+| `src/mini_agent/skills/tracker.py` | LRU 使用追踪与压缩重附预算实现 |
+| `src/mini_agent/tools/skill_manager.py` | `skill_list`、`skill_activate`、`skill_deactivate`、`compact_history`、`skill_stats` 工具注册 |
+| `src/mini_agent/prompts/system/active_skills.md` | active skill 注入到 system prompt 的模板 |
+| `src/mini_agent/agent.py` | 自动激活、system prompt 拼装、回复后记录使用、压缩重附 |
+| `src/mini_agent/cli/repl.py` | `/skills` 与 `/skill ...` CLI 命令实现 |
+
+---
+
+> 最后更新：2026-06（反映 src/mini_agent 包布局重构，CLI 命令实现已从 main.py 迁移至 src/mini_agent/cli/commands/skills.py）
