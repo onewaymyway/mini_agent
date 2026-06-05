@@ -28,6 +28,9 @@
 - 编辑文件时优先使用 `patch_file` 而非 `write_file`
 - 核心代码放在 `src/mini_agent/` 目录下，使用包导入方式
 - 所有与 LLM 的交互通过 `llm.LLMClient` 接口，切换 provider 只需修改配置
+- 所有系统或者模块都应该在/docs 目录下有对应的设计与功能说明
+- 关键功能都应该在/tests 下有对应的单元测试
+- 系统性的测试案例放在 /test_cases 下
 
 ## 运行
 
@@ -35,8 +38,13 @@
 # 安装依赖
 pip install -r requirements.txt
 
-# 配置 API Key
+# 配置 API Key linux
 export ANTHROPIC_API_KEY=sk-...
+export NVIDIA_API_KEY=sk-...
+
+# 配置 API Key win
+$env:ANTHROPIC_API_KEY=sk-...
+$env:NVIDIA_API_KEY=sk-...
 
 # 交互式模式
 python -m mini_agent
@@ -46,6 +54,10 @@ python -m mini_agent "写一个质数筛法的 Python 脚本"
 
 # 使用指定模型
 python -m mini_agent --model claude-haiku-4-5
+
+# 更多参数
+python main.py --provider nvidia --model qwen/qwen3.5-122b-a10b --system-tool-call --system-msg-format system_role
+
 ```
 
 ## 模块说明
