@@ -46,6 +46,7 @@ def run_repl(agent: Agent, skill_loader: SkillLoader) -> None:
             continue
         except EOFError:
             R.print_info(pm.fragment("cli_messages", "BYE_MSG"))
+            _term.stop()
             break
 
         if not user_input:
@@ -54,6 +55,7 @@ def run_repl(agent: Agent, skill_loader: SkillLoader) -> None:
         if user_input.lower() in ("exit", "quit", "/exit", "/quit"):
             R.print_stats(agent.stats.summary())
             R.print_info(pm.fragment("cli_messages", "BYE_MSG"))
+            _term.stop()
             break
 
         if user_input.startswith("/"):

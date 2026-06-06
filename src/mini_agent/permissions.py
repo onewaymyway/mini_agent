@@ -9,10 +9,13 @@ All user-facing text is retrieved from PromptManager (prompts/fragments/permissi
 1. 新增 (e)dit 选项：批准前允许用户修改命令（bash 工具特别有用）
 2. 新增 (s)how 选项：展示完整参数后再决定（summary 截断时有用）
 3. 白名单按 tool_name + path_prefix 精细管理，而非宽泛字符串前缀匹配
+4. 权限配置持久化：allow/deny 列表保存到工作目录 agent_permissions.json，
+   下次启动自动加载，在当前工作目录内永久生效
 """
 
 from __future__ import annotations
 
+import json
 import re
 import sys
 from dataclasses import dataclass, field
@@ -21,6 +24,9 @@ from typing import Optional
 
 from mini_agent.ui.terminal import term as _term
 from mini_agent.prompts import pm
+
+# 权限配置文件名（保存在 project_root 下）
+_PERMISSIONS_FILE = "agent_permissions.json"
 
 
 # Tools that are always safe (read-only, no side-effects)
@@ -58,9 +64,13 @@ class PermissionGuard:
     sandbox: bool = False
     project_root: Path = field(default_factory=Path.cwd)
 
-    # Session-level allow/deny lists (populated interactively)
+    # Session-level allow/deny lists (populated interactively or loaded from file)
     _allow_list: list[_AllowEntry] = field(default_factory=list, init=False)
     _denied_tools: set[str] = field(default_factory=set, init=False)
+
+    def __post_init__(self) -> None:
+        """构造完成后自动从配置文件加载持久化权限。"""
+        self._load_permissions()
 
     def check(self, tool_name: str, tool_input: dict) -> bool:
         """
@@ -112,7 +122,7 @@ class PermissionGuard:
         return False
 
     def _add_allow(self, tool_name: str, tool_input: dict) -> None:
-        """将当前调用加入白名单（按工具 + 路径前缀）。"""
+        """将当前调用加入白名单（按工具 + 路径前缀），并持久化到配置文件。"""
         path = _extract_path(tool_name, tool_input)
         if path:
             # 取路径的父目录作为前缀，避免过宽
@@ -123,6 +133,65 @@ class PermissionGuard:
         if not any(e.tool_name == entry.tool_name and e.path_prefix == entry.path_prefix
                    for e in self._allow_list):
             self._allow_list.append(entry)
+            self._save_permissions()
+
+    # ── 权限持久化 ────────────────────────────────────────────────────────
+
+    def _permissions_path(self) -> Path:
+        """返回权限配置文件路径。"""
+        return self.project_root / _PERMISSIONS_FILE
+
+    def _load_permissions(self) -> None:
+        """从工作目录的 agent_permissions.json 加载持久化权限配置。"""
+        path = self._permissions_path()
+        if not path.exists():
+            return
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+            if not isinstance(data, dict):
+                return
+
+            # 加载白名单
+            for entry in data.get("allow_list", []):
+                if isinstance(entry, dict) and "tool_name" in entry:
+                    a = _AllowEntry(
+                        tool_name=entry["tool_name"],
+                        path_prefix=entry.get("path_prefix", ""),
+                    )
+                    # 去重
+                    if not any(e.tool_name == a.tool_name and e.path_prefix == a.path_prefix
+                               for e in self._allow_list):
+                        self._allow_list.append(a)
+
+            # 加载黑名单
+            for tool_name in data.get("denied_tools", []):
+                if isinstance(tool_name, str):
+                    self._denied_tools.add(tool_name)
+
+            if self._allow_list or self._denied_tools:
+                allow_count = len(self._allow_list)
+                deny_count = len(self._denied_tools)
+                _term.print(
+                    f"[dim]Loaded permissions from {_PERMISSIONS_FILE}: "
+                    f"{allow_count} allowed, {deny_count} denied[/dim]"
+                )
+        except Exception as e:
+            _term.print(f"[yellow]Warning: failed to load {_PERMISSIONS_FILE}: {e}[/yellow]")
+
+    def _save_permissions(self) -> None:
+        """将当前 allow/deny 列表持久化到工作目录的 agent_permissions.json。"""
+        path = self._permissions_path()
+        try:
+            data = {
+                "allow_list": [
+                    {"tool_name": e.tool_name, "path_prefix": e.path_prefix}
+                    for e in self._allow_list
+                ],
+                "denied_tools": sorted(self._denied_tools),
+            }
+            path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+        except Exception as e:
+            _term.print(f"[yellow]Warning: failed to save {_PERMISSIONS_FILE}: {e}[/yellow]")
 
     def _prompt(self, tool_name: str, tool_input: dict, is_dangerous: bool) -> bool:
         """
@@ -174,6 +243,7 @@ class PermissionGuard:
 
             elif choice in ("d", "deny"):
                 self._denied_tools.add(tool_name)
+                self._save_permissions()
                 return False
 
             elif choice in ("s", "show"):

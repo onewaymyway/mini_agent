@@ -52,6 +52,7 @@ class Terminal:
         self._bar_drawn: int = 0
         self._streaming: bool = False
         self._stream_had_output: bool = False
+        self._render_stop: bool = False
 
         # 状态栏内容提供者回调（由 status_bar 模块注册）
         # 架构改进：Terminal 自己在刷新周期内调用回调拉取内容，
@@ -243,11 +244,17 @@ class Terminal:
             try:
                 msg = self._q.get(timeout=0.5)
             except queue.Empty:
+                if self._render_stop:
+                    break
                 continue
             try:
+                if msg.kind == "_stop":
+                    self._q.task_done()
+                    break
                 self._handle(msg)
             finally:
-                self._q.task_done()
+                if msg.kind != "_stop":
+                    self._q.task_done()
 
     def _handle(self, msg: _Msg) -> None:
         kind = msg.kind
@@ -495,9 +502,21 @@ class Terminal:
             raise
 
     def stop(self) -> None:
-        """程序退出时调用。"""
+        """程序退出时调用，优雅关闭后台线程，避免 daemon 线程在解释器关闭时
+        争抢 stdout 锁导致 Fatal Python error: _enter_buffered_busy。"""
+        # 1. 先停刷新线程，防止它继续往队列里投消息
         self._refresh_stop.set()
-        self._q.join()
+        self._refresh_paused.set()   # 防止 refresh_loop 卡在 paused.wait
+        self._refresh_thread.join(timeout=1.0)
+
+        # 2. 向渲染线程投哨兵，通知它退出
+        self._render_stop = True
+        self._q.put(_Msg("_stop", None))
+
+        # 3. 等待渲染线程处理完队列中所有剩余消息（包括哨兵）后退出
+        self._render_thread.join(timeout=2.0)
+
+        # 4. 最后擦除状态栏（渲染线程已停，直接写 stdout 安全）
         self._erase_bar_direct()
 
 
