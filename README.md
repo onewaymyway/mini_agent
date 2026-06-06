@@ -18,6 +18,7 @@
 | 🐛 调试日志 | 完整记录每次请求/响应到 JSONL 文件 |
 | 🧠 感知与记忆 | 项目扫描、文件监视、工具缓存、跨 session 长期记忆 |
 | 🌐 HTTP API | 内置 REST/SSE 服务，支持外部程序通过 HTTP 与 agent 交互 |
+| 🖥️ Web Demo | Streamlit 图形界面，提供浏览器操作的对话界面 |
 
 ## 快速开始
 
@@ -91,6 +92,27 @@ python main.py --provider nvidia --model qwen/qwen3.5-122b-a10b --system-tool-ca
 | `--http-token` | HTTP API 认证令牌 |
 | `--http-allow-ip` | 允许的 IP 地址列表 |
 | `--http-fs-readonly` | 文件系统只读模式 |
+| `--http-ring-maxlen` | 事件环缓冲区大小 |
+
+## Web Demo
+
+使用 Streamlit 启动浏览器交互界面：
+
+```bash
+# 安装依赖
+pip install streamlit requests
+
+# 启动 Web Demo
+streamlit run apps/mini_agent_webdemo/app.py
+```
+
+Web Demo 提供：
+- 📱 浏览器对话界面
+- 🔌 HTTP API 连接配置
+- 🔐 权限审批可视化
+- 📡 实时事件流监控
+- 📁 文件系统浏览
+- 📊 Turn 历史记录
 
 更多参数请使用 `python -m mini_agent --help` 查看。
 
@@ -203,8 +225,19 @@ mini_agent/
 │       │   ├── tool_cache.py       # 工具结果缓存
 │       │   ├── memory_store.py     # 跨 session 记忆
 │       │   └── token_counter.py    # Token 预估
-│       └── ui/              # 用户界面
-│           └── renderer.py  # 终端输出渲染
+│       ├── ui/              # 用户界面
+│       │   └── renderer.py  # 终端输出渲染
+│       └── api/             # HTTP API 服务
+│           ├── __init__.py
+│           ├── server.py    # HTTP 服务封装
+│           ├── routes.py    # API 路由
+│           ├── bridge.py    # Agent 桥梁
+│           ├── auth.py      # 认证中间件
+│           ├── models.py    # 数据模型
+│           └── fs_helper.py # 文件系统助手
+├── apps/                    # Web 应用
+│   └── mini_agent_webdemo/ # Streamlit Web Demo
+│       └── app.py
 ├── prompts/                 # 提示词模板
 │   ├── system/             # 系统提示词
 │   ├── fragments/          # 文本片段

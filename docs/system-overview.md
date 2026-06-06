@@ -262,14 +262,22 @@ system prompt 构建顺序：
 | `api/models.py` | Pydantic 模型 | 请求/响应模型 + 事件类型 |
 | `api/fs_helper.py` | `FsHelper` | 文件系统操作封装 |
 
-核心设计：
-- **AgentRunner 线程**：独立线程消费命令队列，驱动 `agent.run_turn()`
-- **OutputBroadcaster**：拦截 agent 输出，广播到 HTTP 客户端（SSE）
-- **事件环（Ring Buffer）**：存储历史事件，支持回放
-- **权限审批**：通过 HTTP API 进行工具调用审批
-- **文件系统 API**：支持远程文件读写、上传下载
-
 详见 [HTTP API 指南](http-api-guide.md)。
+
+### 3.12 Web Demo（apps/）
+
+基于 Streamlit 的浏览器交互界面：
+
+| 文件 | 功能 |
+|------|------|
+| `apps/mini_agent_webdemo/app.py` | Web Demo 主程序 |
+
+功能特性：
+- 现代化聊天界面
+- 实时事件流监控
+- 权限审批可视化
+- 文件系统浏览
+- Turn 历史记录
 
 ---
 
