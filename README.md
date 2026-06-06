@@ -17,6 +17,7 @@
 | 🔐 权限守卫 | 危险操作需要确认，支持白名单、黑名单、沙箱模式，路径规范化处理 |
 | 🐛 调试日志 | 完整记录每次请求/响应到 JSONL 文件 |
 | 🧠 感知与记忆 | 项目扫描、文件监视、工具缓存、跨 session 长期记忆 |
+| 🌐 HTTP API | 内置 REST/SSE 服务，支持外部程序通过 HTTP 与 agent 交互 |
 
 ## 快速开始
 
@@ -84,6 +85,12 @@ python main.py --provider nvidia --model qwen/qwen3.5-122b-a10b --system-tool-ca
 | `--memory` | 启用跨 session 记忆 |
 | `--project-scan` | 启动时扫描项目结构 |
 | `--file-watch` | 监听文件变化 |
+| `--http` | 启动内置 HTTP API 服务 |
+| `--http-port` | HTTP 服务监听端口（默认 8765） |
+| `--http-host` | HTTP 服务监听地址（默认 127.0.0.1） |
+| `--http-token` | HTTP API 认证令牌 |
+| `--http-allow-ip` | 允许的 IP 地址列表 |
+| `--http-fs-readonly` | 文件系统只读模式 |
 
 更多参数请使用 `python -m mini_agent --help` 查看。
 
@@ -311,6 +318,7 @@ python -m pytest tests/ -q
 - [Plan 和 Task 指南](docs/plan-and-task-guide.md) — 规划和任务系统
 - [Skill 系统指南](docs/skill-system-guide.md) — 技能机制详解
 - [代码结构指南](docs/code-structure-guide.md) — 项目结构说明
+- [HTTP API 指南](docs/http-api-guide.md) — REST/SSE 服务使用指南
 
 ## 许可证
 
@@ -322,4 +330,4 @@ MIT License
 
 ---
 
-*最后更新：2026-06-06*
+*最后更新：2026-06-07*

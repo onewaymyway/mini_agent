@@ -249,6 +249,28 @@ system prompt 构建顺序：
 | `TokenCounter` | 粗略估算上下文 token，触发告警和自动压缩 |
 | `MemoryStore` | 跨 session 长期记忆，关键词评分检索 |
 
+### 3.11 HTTP API 服务（api/）
+
+内置 FastAPI HTTP 服务，支持通过 REST/SSE 与 agent 交互：
+
+| 模块 | 文件 | 职责 |
+|------|------|------|
+| `api/server.py` | `HttpServer` | uvicorn 服务封装，AgentRunner 后台线程 |
+| `api/routes.py` | 路由定义 | REST 端点 + SSE 流式输出 |
+| `api/bridge.py` | `AgentBridge` | Agent 核心与 HTTP 层之间的解耦桥梁 |
+| `api/auth.py` | 认证中间件 | Bearer Token 认证 + IP 白名单 |
+| `api/models.py` | Pydantic 模型 | 请求/响应模型 + 事件类型 |
+| `api/fs_helper.py` | `FsHelper` | 文件系统操作封装 |
+
+核心设计：
+- **AgentRunner 线程**：独立线程消费命令队列，驱动 `agent.run_turn()`
+- **OutputBroadcaster**：拦截 agent 输出，广播到 HTTP 客户端（SSE）
+- **事件环（Ring Buffer）**：存储历史事件，支持回放
+- **权限审批**：通过 HTTP API 进行工具调用审批
+- **文件系统 API**：支持远程文件读写、上传下载
+
+详见 [HTTP API 指南](http-api-guide.md)。
+
 ---
 
 ## 4. 关键设计决策
@@ -271,6 +293,15 @@ JSON 配置文件 > 命令行参数 > 环境变量 > 内置默认值。
 ### 4.4 标准包布局
 
 `src/mini_agent` 采用标准 `src` 布局，支持 `pip install -e .` 安装，使用绝对导入 `from mini_agent.xxx import ...`，不依赖 cwd 路径。
+
+### 4.5 HTTP API 集成方式
+
+HTTP 服务通过桥接模式与 Agent 核心解耦：
+
+- `AgentBridge` 作为统一接口，Agent 核心无需感知 HTTP 存在
+- 输出拦截通过 monkey-patch `Renderer` 实现，无需修改 agent.py
+- 命令队列模式：HTTP 端 enqueue，AgentRunner 阻塞 dequeue
+- 权限审批双路径：终端交互或 HTTP SSE，自动路由到可用方式
 
 ---
 
@@ -312,6 +343,7 @@ JSON 配置文件 > 命令行参数 > 环境变量 > 内置默认值。
 
 - [Agent 设计详解](agent-design.md) — agent.py 的核心架构、组件职责、执行流程
 - [代码结构指南](code-structure-guide.md) — 项目结构与导入规范
+- [HTTP API 指南](http-api-guide.md) — REST/SSE 服务使用指南
 
 ---
 
