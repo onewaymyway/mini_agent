@@ -34,11 +34,13 @@ pip install -r requirements.txt
 ### 配置 API Key
 
 ```bash
-# Anthropic API
-export ANTHROPIC_API_KEY=sk-ant-...
+# 配置 API Key linux
+export ANTHROPIC_API_KEY=sk-...
+export NVIDIA_API_KEY=sk-...
 
-# 或 OpenAI
-export OPENAI_API_KEY=sk-...
+# 配置 API Key win
+$env:ANTHROPIC_API_KEY=sk-...
+$env:NVIDIA_API_KEY=sk-...
 ```
 
 ### 运行
@@ -58,6 +60,9 @@ python -m mini_agent --model claude-haiku-4-5
 
 # 沙箱模式（安全测试）
 python -m mini_agent --sandbox
+
+# 更多参数
+python main.py --provider nvidia --model qwen/qwen3.5-122b-a10b --system-tool-call --system-msg-format system_role
 ```
 
 ## 命令行参数
