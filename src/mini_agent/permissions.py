@@ -106,19 +106,39 @@ class PermissionGuard:
         # Danger check
         is_dangerous = _is_dangerous(tool_name, tool_input)
 
+        # HTTP 审批路径：若 HTTP 服务已启动，优先通过 SSE 推送权限请求，
+        # 等待远程客户端响应；终端仍然显示等待提示。
+        http_gate = _get_http_gate()
+        if http_gate is not None:
+            turn_id = _get_current_turn_id()
+            _term.print(
+                f"[dim]⏳ Waiting for HTTP client to approve [bold]{tool_name}[/bold] ...[/dim]"
+            )
+            approved, edited_input = http_gate.request(
+                tool_name=tool_name,
+                tool_input=tool_input,
+                turn_id=turn_id,
+            )
+            if approved and edited_input:
+                # 用户从 HTTP 端修改了参数，写回 tool_input（in-place）
+                tool_input.clear()
+                tool_input.update(edited_input)
+            result_label = "[green]approved[/green]" if approved else "[red]denied[/red]"
+            _term.print(f"[dim]  → HTTP permission {result_label}[/dim]")
+            return approved
+
         # Prompt user (may loop on 'show' / 'edit')
         return self._prompt(tool_name, tool_input, is_dangerous)
 
     def _is_allowed(self, tool_name: str, tool_input: dict) -> bool:
         """检查是否命中白名单（tool_name 精确匹配 + path_prefix 前缀匹配）。"""
-        target_path = _normalize_path(_extract_path(tool_name, tool_input))
+        target_path = _extract_path(tool_name, tool_input)
         for entry in self._allow_list:
             if entry.tool_name != tool_name:
                 continue
             if not entry.path_prefix:
                 return True  # 对该工具全放行
-            norm_prefix = _normalize_path(entry.path_prefix)
-            if target_path and target_path.startswith(norm_prefix):
+            if target_path and target_path.startswith(entry.path_prefix):
                 return True
         return False
 
@@ -306,16 +326,6 @@ def _summarise(tool_name: str, tool_input: dict) -> str:
     return f"{tool_name}({', '.join(f'{k}={v!r}' for k, v in list(tool_input.items())[:3])})"
 
 
-def _normalize_path(path: Optional[str]) -> Optional[str]:
-    """规范化路径：去掉 ./ 前缀，统一路径格式。"""
-    if not path:
-        return path
-    # 去掉 ./ 前缀（可能多个）
-    while path.startswith("./"):
-        path = path[2:]
-    return path
-
-
 def _extract_path(tool_name: str, tool_input: dict) -> Optional[str]:
     """从 tool_input 中提取文件路径（用于白名单匹配）。"""
     if tool_name == "bash":
@@ -328,3 +338,33 @@ def _is_dangerous(tool_name: str, tool_input: dict) -> bool:
         return False
     cmd = tool_input.get("command", "")
     return any(re.search(p, cmd) for p in _DANGER_PATTERNS)
+
+
+# ── HTTP bridge 懒加载辅助（避免 permissions <-> api 循环依赖）────────────────
+
+def _get_http_gate():
+    """
+    懒加载 HttpPermissionGate 单例。
+    只有在 HTTP 服务真正启动后（bridge 已初始化）才返回非 None。
+    """
+    try:
+        from mini_agent.api.bridge import get_bridge
+        bridge = get_bridge()
+        # 只有 broadcaster 已绑定 asyncio loop（即 server 已 start）才算激活
+        if bridge.broadcaster._loop is not None:
+            return bridge.permission_gate
+    except Exception:
+        pass
+    return None
+
+
+def _get_current_turn_id() -> str:
+    """获取当前正在执行的 turn_id（由 AgentRunner 写入 agent._http_turn_id）。"""
+    try:
+        from mini_agent.api.bridge import get_bridge
+        bridge = get_bridge()
+        if bridge.agent:
+            return getattr(bridge.agent, "_http_turn_id", "")
+    except Exception:
+        pass
+    return ""

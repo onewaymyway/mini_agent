@@ -10,6 +10,14 @@ dependencies = [
     "json_repair",
 ]
 
+[project.optional-dependencies]
+http = [
+    "fastapi>=0.110.0",
+    "uvicorn>=0.29.0",
+    "sse-starlette>=1.8.0",
+    "python-multipart>=0.0.9",
+]
+
 [project.scripts]
 mini-agent = "mini_agent.cli.app:main"
 

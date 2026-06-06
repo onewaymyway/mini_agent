@@ -135,4 +135,19 @@ def build_parser() -> argparse.ArgumentParser:
                       help="Token budget ratio for warning (default: 0.75)")
     perc.add_argument("--tool-stats", action="store_true", default=None,
                       help="[SYS-STATS] Track per-tool call counts, success rates, output sizes")
+
+    # ── HTTP API 服务 ──────────────────────────────────────────────────────
+    http = p.add_argument_group("HTTP API server (optional)")
+    http.add_argument("--http", action="store_true", default=None,
+                      help="启动内置 HTTP API 服务，允许外部通过 REST/SSE 与 agent 交互")
+    http.add_argument("--http-port", type=int, default=None, metavar="PORT",
+                      help="HTTP 服务监听端口（默认 8765）")
+    http.add_argument("--http-host", default=None, metavar="HOST",
+                      help="HTTP 服务监听地址（默认 127.0.0.1；填 0.0.0.0 对外暴露）")
+    http.add_argument("--http-token", default=None, metavar="TOKEN",
+                      help="固定 API token（留空则自动生成并保存到 agent_api.key）")
+    http.add_argument("--http-allow-ip", default=None, metavar="IP[,IP...]",
+                      help="IP 白名单，逗号分隔（默认只允许 127.0.0.1）")
+    http.add_argument("--http-fs-readonly", action="store_true", default=None,
+                      help="文件系统 API 只读模式（禁止写/删操作）")
     return p

@@ -139,6 +139,48 @@ def main() -> None:
         else:
             R.print_error(f"Session '{args.resume}' not found. Starting fresh.")
 
+    # ── HTTP API 服务（可选）──────────────────────────────────────────────────
+    http_server = None
+    # 优先级：CLI 参数 > config 文件
+    http_enabled = getattr(args, "http", None) or cfg.http_enabled
+    if http_enabled:
+        try:
+            from mini_agent.api.server import HttpServer
+
+            # CLI 参数覆盖 config 文件中的值
+            http_host  = getattr(args, "http_host", None)  or cfg.http_host
+            http_port  = getattr(args, "http_port", None)  or cfg.http_port
+            http_token = getattr(args, "http_token", None) or cfg.http_api_token
+
+            # IP 白名单：CLI 用逗号分隔字符串，config 用 list
+            raw_ips = getattr(args, "http_allow_ip", None)
+            if raw_ips:
+                allowed_ips = [ip.strip() for ip in raw_ips.split(",") if ip.strip()]
+            else:
+                allowed_ips = cfg.http_allowed_ips
+
+            fs_readonly = getattr(args, "http_fs_readonly", None) or cfg.http_fs_readonly
+
+            http_server = HttpServer(
+                agent            = agent,
+                project_root     = cfg.project_root,
+                host             = http_host,
+                port             = http_port,
+                configured_token = http_token,
+                allowed_ips      = allowed_ips,
+                cors_origins     = cfg.http_cors_origins,
+                fs_readonly      = fs_readonly,
+                fs_excludes      = cfg.http_fs_excludes or [],
+                ring_maxlen      = cfg.http_ring_maxlen,
+            )
+            http_server.start()
+
+        except ImportError as e:
+            R.print_warning(
+                f"HTTP server dependencies not installed: {e}\n"
+                "  Run: pip install fastapi uvicorn sse-starlette"
+            )
+
     # ── 单次模式 ──────────────────────────────────────────────────────────────
     if args.prompt:
         try:
@@ -149,9 +191,16 @@ def main() -> None:
         except Exception as e:
             R.print_error(str(e))
             sys.exit(1)
+        finally:
+            if http_server:
+                http_server.stop()
         return
 
     # ── 交互 REPL ─────────────────────────────────────────────────────────────
     import anthropic  # noqa: F401  延迟导入，使 API key 校验错误有更清晰的信息
     from mini_agent.cli.repl import run_repl
-    run_repl(agent, skill_loader)
+    try:
+        run_repl(agent, skill_loader)
+    finally:
+        if http_server:
+            http_server.stop()

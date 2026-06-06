@@ -189,6 +189,34 @@ class AppConfig:
     # 是否在重试时打印警告信息到终端
     llm_retry_verbose: bool = True
 
+    # ── HTTP API 服务 ─────────────────────────────────────────────────────────
+    # [HTTP] 是否启动内置 HTTP API 服务（默认关闭）
+    http_enabled: bool = False
+
+    # 监听地址（默认只监听本机，改为 0.0.0.0 可对外暴露）
+    http_host: str = "127.0.0.1"
+
+    # 监听端口
+    http_port: int = 8765
+
+    # 固定 API token（留空则自动生成并写入 agent_api.key）
+    http_api_token: str = ""
+
+    # IP 白名单（空列表 = 不限制；默认只允许本机）
+    # 支持精确 IP 或前缀，如 ["192.168.1.", "10.0.0.1"]
+    http_allowed_ips: list = field(default_factory=lambda: ["127.0.0.1", "::1"])
+
+    # CORS 允许来源（空列表 = 允许所有，用于 Web UI 跨域）
+    http_cors_origins: list = field(default_factory=list)
+
+    # 是否以只读模式暴露文件系统 API
+    http_fs_readonly: bool = False
+
+    # 文件系统黑名单（glob 模式，命中的文件不可读写）
+    http_fs_excludes: list = field(default_factory=list)
+
+    # RingBuffer 最大事件数（影响迟接入客户端能回放多少历史）
+    http_ring_maxlen: int = 2000
 
 
 def load_config(
