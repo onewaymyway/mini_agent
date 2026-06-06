@@ -186,6 +186,21 @@ def bash(command: str, timeout: int = 30) -> str:
 - `sandbox` — 沙箱模式阻断破坏性操作
 - 危险命令识别 — 正则匹配 `rm -rf`、`dd`、`sudo`、`curl | bash` 等
 - 用户确认 — 通过 `terminal.term.confirm()` 安全地暂停渲染并读取输入
+- 白名单机制 — 按 `tool_name` + `path_prefix` 精细管理，支持路径规范化（`./test/` 与 `test/` 等价）
+- 权限持久化 — `agent_permissions.json` 保存在工作目录，跨 session 生效
+
+详见 [权限系统指南](permission-guide.md)。
+
+### 3.6 权限与沙箱（permissions.py）
+
+- `auto_approve` — 受信任环境下自动批准
+- `sandbox` — 沙箱模式阻断破坏性操作
+- 危险命令识别 — 正则匹配 `rm -rf`、`dd`、`sudo`、`curl | bash` 等
+- 用户确认 — 通过 `terminal.term.confirm()` 安全地暂停渲染并读取输入
+- 白名单机制 — 按 `tool_name` + `path_prefix` 精细管理，支持路径规范化（`./test/` 与 `test/` 等价）
+- 权限持久化 — `agent_permissions.json` 保存在工作目录，跨 session 生效
+
+详见 [权限系统指南](permission-guide.md)。
 
 ### 3.7 Prompt 管理（prompts/）
 
