@@ -274,6 +274,16 @@ def _install_output_hook(bridge: AgentBridge) -> None:
     except Exception:
         return
 
+    # ── print_markdown（非流式模式下 assistant 最终回复走这里）────────────────
+    _orig_print_markdown = getattr(_renderer_mod, "print_markdown", None)
+    if _orig_print_markdown:
+        def _patched_print_markdown(md: str) -> None:
+            _orig_print_markdown(md)
+            turn_id = getattr(bridge.agent, "_http_turn_id", "")
+            # 把整段 markdown 作为一个 token 事件推出，让 HTTP 客户端能收到完整文本
+            bridge.emit_token(md, turn_id=turn_id)
+        _renderer_mod.print_markdown = _patched_print_markdown
+
     # ── stream token ──────────────────────────────────────────────────────
     _orig_stream_token = R.__class__.stream_token if hasattr(R.__class__, 'stream_token') else None
 

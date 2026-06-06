@@ -402,7 +402,7 @@ class AgentBridge:
         self.broadcaster.push(AgentEvent(
             type=EventType.TOOL_RESULT,
             turn_id=turn_id,
-            data={"tool_name": name, "result": result[:500]},  # 截断，避免超大推送
+            data={"tool_name": name, "result": result},
         ))
 
     def emit_turn_start(self, turn_id: str, message: str) -> None:
