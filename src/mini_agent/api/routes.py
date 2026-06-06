@@ -81,7 +81,14 @@ async def get_status(request: Request):
     stats  = {}
     if bridge.agent:
         try:
-            stats = bridge.agent.stats.summary()
+            raw = bridge.agent.stats.summary()
+            # summary() 可能返回字符串或字典，统一转为 dict
+            if isinstance(raw, dict):
+                stats = raw
+            elif isinstance(raw, str):
+                stats = {"summary": raw}
+            else:
+                stats = {"summary": str(raw)}
         except Exception:
             pass
     return StatusResponse(
