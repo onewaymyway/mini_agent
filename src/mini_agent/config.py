@@ -134,6 +134,13 @@ class AppConfig:
     # [SYS-TRIM] 工具调用结果智能截断
     tool_result_trim_enabled: bool = False
     tool_result_trim_threshold: int = 500
+    # 各工具的截断策略（head_ratio 仅对 bash 生效，window_lines 仅对 read_file 生效）
+    # bash：头部保留比例（0.0~1.0），剩余为尾部
+    tool_trim_bash_head_ratio: float = 0.7
+    # read_file：滑动窗口保留行数（0 = 自动按 threshold 推算）
+    tool_trim_read_window_lines: int = 0
+    # grep/glob：最多保留匹配行数
+    tool_trim_grep_max_lines: int = 50
 
     # [SYS-FORGET] 智能遗忘策略
     forget_policy_enabled: bool = False
@@ -212,6 +219,9 @@ def load_config(
     auto_compress_threshold: Optional[float] = None,
     tool_result_trim_enabled: Optional[bool] = None,
     tool_result_trim_threshold: Optional[int] = None,
+    tool_trim_bash_head_ratio: Optional[float] = None,
+    tool_trim_read_window_lines: Optional[int] = None,
+    tool_trim_grep_max_lines: Optional[int] = None,
     forget_policy_enabled: Optional[bool] = None,
     skill_semantic_enabled: Optional[bool] = None,
     skill_semantic_threshold: Optional[float] = None,
@@ -362,6 +372,9 @@ def load_config(
         auto_compress_threshold=_fn("auto_compress_threshold", auto_compress_threshold, 0.7),
         tool_result_trim_enabled=_fb("tool_result_trim_enabled", tool_result_trim_enabled),
         tool_result_trim_threshold=_fn("tool_result_trim_threshold", tool_result_trim_threshold, 500),
+        tool_trim_bash_head_ratio=_fn("tool_trim_bash_head_ratio", tool_trim_bash_head_ratio, 0.7),
+        tool_trim_read_window_lines=_fn("tool_trim_read_window_lines", tool_trim_read_window_lines, 0),
+        tool_trim_grep_max_lines=_fn("tool_trim_grep_max_lines", tool_trim_grep_max_lines, 50),
         forget_policy_enabled=_fb("forget_policy_enabled", forget_policy_enabled),
         skill_semantic_enabled=_fb("skill_semantic_enabled", skill_semantic_enabled),
         skill_semantic_threshold=_fn("skill_semantic_threshold", skill_semantic_threshold, 0.72),

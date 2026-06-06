@@ -5,6 +5,12 @@ manages history, and streams responses.
 
 与具体 LLM 的交互全部通过 llm.LLMClient 接口进行，
 切换 provider 只需修改 LLMConfig.provider，不改动 Agent 代码。
+
+架构改进（拆分三个独立组件）：
+- ContextBuilder：负责 system prompt 组装（skill/memory/project 注入）
+- ToolExecutor：负责权限检查、工具调用、截断、缓存
+- HistoryManager：负责历史追加、压缩、快照恢复
+Agent 本身退化为纯编排层。
 """
 
 from __future__ import annotations
@@ -28,6 +34,9 @@ from mini_agent.perception.project_scanner import ProjectScanner
 from mini_agent.perception.file_watcher import FileWatcher
 from mini_agent.perception.tool_cache import ToolResultCache
 from mini_agent.perception.memory_store import MemoryStore, MemoryEntry
+from mini_agent.context_builder import ContextBuilder
+from mini_agent.tool_executor import ToolExecutor
+from mini_agent.history_manager import HistoryManager
 
 
 class Agent:
@@ -106,19 +115,22 @@ class Agent:
             register_skill_stats_tool(self.registry, self.skill_loader)
 
         # ── 感知与记忆子系统（按开关初始化）────────────────────────────────
-        # [SYS-PROJ] 项目结构感知
+
+        # [SYS-PROJ] 项目结构感知 — 懒加载：在后台线程中扫描，不阻塞 REPL 启动
+        # 扫描完成前 _project_snapshot 为 None，第一次 _build_system() 调用时
+        # 若扫描已完成则注入，否则跳过本次注入（下一轮会自动获得结果）。
         self._project_snapshot: Optional[str] = None
         if cfg.project_scan_enabled:
-            try:
-                snap = ProjectScanner().scan(cfg.project_root)
-                self._project_snapshot = snap.to_prompt_block()
-            except Exception as e:
-                R.print_warning(f"[perception] project scan failed: {e}")
+            self._start_project_scan_async(cfg.project_root)
 
-        # [SYS-WATCH] 文件变化感知
-        self._file_watcher: Optional[FileWatcher] = (
-            FileWatcher() if cfg.file_watch_enabled else None
-        )
+        # [SYS-WATCH] 文件变化感知 — FileWatcher 只维护哈希表，check_changes()
+        # 的 IO 改由后台线程每 2s 执行一次，run_turn 只读取已计算好的结果集。
+        self._file_watcher: Optional[FileWatcher] = None
+        self._pending_file_changes: list[str] = []   # 后台线程填充，run_turn 消费
+        self._file_changes_lock = __import__("threading").Lock()
+        if cfg.file_watch_enabled:
+            self._file_watcher = FileWatcher()
+            self._start_file_watch_thread()
 
         # [SYS-TOOLCACHE] 工具调用结果缓存
         self._tool_cache: Optional[ToolResultCache] = (
@@ -130,6 +142,79 @@ class Agent:
         if cfg.memory_enabled:
             store_path = cfg.memory_store_path or (cfg.project_root / ".agent" / "memory.jsonl")
             self._memory = MemoryStore(path=store_path)
+
+        # 所有字段已就绪，初始化三个拆分组件（ContextBuilder / ToolExecutor / HistoryManager）
+        self._init_components()
+
+    def _start_project_scan_async(self, project_root) -> None:
+        """在后台线程中执行项目扫描，完成后写入 _project_snapshot。"""
+        import threading as _threading
+
+        def _scan():
+            try:
+                snap = ProjectScanner().scan(project_root)
+                self._project_snapshot = snap.to_prompt_block()
+            except Exception as e:
+                R.print_warning(f"[perception] project scan failed: {e}")
+
+        t = _threading.Thread(target=_scan, daemon=True, name="project-scan")
+        t.start()
+
+    def _start_file_watch_thread(self) -> None:
+        """后台线程每 2s 检查文件变化，结果存入 _pending_file_changes。"""
+        import threading as _threading
+        import time as _time
+
+        def _watch():
+            while True:
+                _time.sleep(2.0)
+                if self._file_watcher is None:
+                    break
+                try:
+                    changed = self._file_watcher.check_changes()
+                    if changed:
+                        with self._file_changes_lock:
+                            # 合并（避免重复路径）
+                            existing = set(self._pending_file_changes)
+                            for p in changed:
+                                if p not in existing:
+                                    self._pending_file_changes.append(p)
+                except Exception:
+                    pass
+
+        t = _threading.Thread(target=_watch, daemon=True, name="file-watcher")
+        t.start()
+
+    def _init_components(self) -> None:
+        """
+        初始化三个拆分组件（在 __init__ 末尾调用，确保所有字段已就绪）。
+
+        ContextBuilder / ToolExecutor / HistoryManager 各自持有所需依赖的引用，
+        Agent 编排层通过它们完成具体工作。
+        """
+        # ContextBuilder：感知 project_snapshot 通过 getter 懒取，避免扫描未完成时传 None
+        self._ctx_builder = ContextBuilder(
+            cfg=self.cfg,
+            skill_loader=self.skill_loader,
+            memory=self._memory,
+            project_snapshot_getter=lambda: self._project_snapshot,
+        )
+
+        # ToolExecutor：持有 file_changes 列表和锁的引用（共享，不拷贝）
+        self._tool_executor = ToolExecutor(
+            cfg=self.cfg,
+            registry=self.registry,
+            guard=self.guard,
+            stats=self.stats,
+            tool_cache=self._tool_cache,
+            file_watcher=self._file_watcher,
+            file_changes_list=self._pending_file_changes,
+            file_changes_lock=self._file_changes_lock,
+        )
+
+        # HistoryManager：接管 _history 列表，并让 self._history 指向同一对象
+        self._hist = HistoryManager(cfg=self.cfg, skill_loader=self.skill_loader)
+        self._history = self._hist._history   # 共享同一列表对象，无需全量替换引用
 
     # ── Session 管理 ──────────────────────────────────────────────────────────────
 
@@ -181,8 +266,15 @@ class Agent:
             return None
 
     def _generate_and_save_summary(self, session_path: str) -> None:
-        """[SYS-SUMMARY] 用 LLM 生成 session 摘要，写回 session JSON，并写入长期记忆。"""
-        import json as _json
+        """
+        [SYS-SUMMARY] 用 LLM 生成 session 摘要，写回 session 文件，并写入长期记忆。
+
+        修复：
+        - 不再使用 json.loads(path.read_text()) + path.write_text() 裸读写，
+          改为通过 session_mgr.save() 写回，享受原子写入 + 文件锁保护，
+          避免多 SubAgent 并发时互相覆盖。
+        - 写回前先将 summary 赋给 self._session.summary，save() 会自动持久化。
+        """
         try:
             user_turns = [
                 m["content"] for m in self._history
@@ -190,6 +282,7 @@ class Agent:
                 and isinstance(m.get("content"), str)
                 and not m["content"].startswith("<tool_result")
                 and not m["content"].startswith("[Compressed")
+                and not m["content"].startswith("[Previous session")
             ]
             if not user_turns:
                 return
@@ -201,7 +294,6 @@ class Agent:
                 "Be concise. Respond with only the summary.\n\n"
                 f"User messages:\n{turns_text}"
             )
-            from mini_agent.llm.system_tool_call import convert_tool_use_to_text
             resp = self._llm.chat(
                 messages=[{"role": "user", "content": prompt}],
                 system="You are a concise summarizer.",
@@ -211,17 +303,21 @@ class Agent:
             if not summary:
                 return
 
-            # 写回 session JSON
-            p = __import__("pathlib").Path(session_path)
-            if p.exists():
+            # 写回 session（通过 session_mgr，享受原子写入 + 文件锁）
+            if self._session and self._session_mgr:
+                self._session.summary = summary
+                stats = {
+                    "turns":             self.stats.turns,
+                    "input_tokens":      self.stats.input_tokens,
+                    "output_tokens":     self.stats.output_tokens,
+                    "tool_calls":        self.stats.tool_calls,
+                    "tool_stats":        self.stats.tool_stats,
+                    "skill_activations": self.stats.skill_activations,
+                }
                 try:
-                    data = _json.loads(p.read_text(encoding="utf-8"))
-                    data["summary"] = summary
-                    p.write_text(_json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
-                    if self._session:
-                        self._session.summary = summary  # type: ignore[attr-defined]
-                except Exception:
-                    pass
+                    self._session_mgr.save(self._session, history=self._history, stats=stats)
+                except Exception as e:
+                    R.print_warning(f"[summary] session re-save failed: {e}")
 
             # [SYS-MEMORY] 写入长期记忆
             if self._memory and self._session:
@@ -248,7 +344,9 @@ class Agent:
         if session is None:
             return False
         self._session = session
-        self._history = list(session.history)
+        # 必须原地替换列表内容，保持 self._history 与 self._hist._history 指向同一对象
+        self._history.clear()
+        self._history.extend(session.history)
         self.stats.turns         = session.stats.get("turns", 0)
         self.stats.input_tokens  = session.stats.get("input_tokens", 0)
         self.stats.output_tokens = session.stats.get("output_tokens", 0)
@@ -306,7 +404,10 @@ class Agent:
         """将历史和统计还原到快照时刻，返回是否成功。"""
         if self._turn_snapshot is None:
             return False
-        self._history             = copy.deepcopy(self._turn_snapshot["history"])
+        # 原地替换，保持 self._history 与 self._hist._history 指向同一对象
+        restored = copy.deepcopy(self._turn_snapshot["history"])
+        self._history.clear()
+        self._history.extend(restored)
         self.stats.turns          = self._turn_snapshot["stats_turns"]
         self.stats.input_tokens   = self._turn_snapshot["stats_input"]
         self.stats.output_tokens  = self._turn_snapshot["stats_output"]
@@ -470,7 +571,9 @@ class Agent:
         if skill_block:
             new_history.append({"role": "user", "content": skill_block})
 
-        self._history = new_history
+        # 原地替换，保持共享引用有效
+        self._history.clear()
+        self._history.extend(new_history)
 
         # 同步 session
         if getattr(self.cfg, "auto_save_session", True):
@@ -485,9 +588,11 @@ class Agent:
         Returns the final assistant text.
         """
         try:
-            # [SYS-WATCH] 检测外部文件变化，注入提示
+            # [SYS-WATCH] 检测外部文件变化（消费后台线程的检测结果，不做同步 IO）
             if self._file_watcher:
-                changed = self._file_watcher.check_changes()
+                with self._file_changes_lock:
+                    changed = list(self._pending_file_changes)
+                    self._pending_file_changes.clear()
                 if changed:
                     notice = self._file_watcher.build_change_notice(
                         changed, self.cfg.project_root
@@ -745,23 +850,78 @@ class Agent:
         return response.tool_calls, result_strs
 
     def _maybe_trim_result(self, tool_name: str, result: str) -> str:
-        """[SYS-TRIM] 对长工具结果做智能截断。"""
+        """
+        [SYS-TRIM] 按工具类型分策略截断长结果。
+
+        策略说明：
+        - bash：头部最重要（命令回显、错误信息在前），保留更多头部
+        - read_file：上下文连续性重要，使用滑动窗口保留中间段
+        - grep/glob：平铺匹配行，头尾截断影响不大
+        - 其他：通用头尾截断
+        """
         if not self.cfg.tool_result_trim_enabled:
             return result
         threshold = self.cfg.tool_result_trim_threshold
         if len(result) <= threshold:
             return result
+
         lines = result.splitlines()
-        if len(lines) > 30:
-            kept_head = lines[:15]
-            kept_tail = lines[-5:]
-            omitted = len(lines) - 20
-            return (
-                "\n".join(kept_head)
-                + f"\n... [{omitted} lines omitted] ...\n"
-                + "\n".join(kept_tail)
-            )
-        # 字符截断
+        total = len(lines)
+
+        if tool_name == "bash":
+            # bash：头部保留 70%，尾部保留 30%（错误信息通常在头部）
+            if total > 20:
+                head_n = max(12, int(total * 0.7))
+                tail_n = max(4, total - head_n)
+                head_n = min(head_n, total - tail_n)
+                omitted = total - head_n - tail_n
+                if omitted > 0:
+                    return (
+                        "\n".join(lines[:head_n])
+                        + f"\n... [{omitted} lines omitted] ...\n"
+                        + "\n".join(lines[-tail_n:])
+                    )
+
+        elif tool_name == "read_file":
+            # read_file：保留连续的中间段（滑动窗口），
+            # 确保 LLM 看到的是完整的代码块而不是碎片
+            if total > 30:
+                # 优先保留文件头部（import/class/func 定义）+ 尽量多的连续内容
+                window = min(total, max(30, threshold // 60))  # 估算可显示行数
+                if window < total:
+                    # 保留头部 1/3 + 尾部 1/3，中间截断
+                    head_n = window // 2
+                    tail_n = window - head_n
+                    omitted = total - head_n - tail_n
+                    return (
+                        "\n".join(lines[:head_n])
+                        + f"\n... [{omitted} lines omitted — use start_line/end_line to read specific range] ...\n"
+                        + "\n".join(lines[-tail_n:])
+                    )
+
+        elif tool_name in ("grep", "glob"):
+            # grep/glob：平铺结果，只保留前 N 行
+            if total > 50:
+                keep = min(50, max(20, threshold // 60))
+                omitted = total - keep
+                return (
+                    "\n".join(lines[:keep])
+                    + f"\n... [{omitted} more matches omitted] ..."
+                )
+
+        # 通用策略（head + tail）
+        if total > 30:
+            head_n = 15
+            tail_n = 5
+            omitted = total - head_n - tail_n
+            if omitted > 0:
+                return (
+                    "\n".join(lines[:head_n])
+                    + f"\n... [{omitted} lines omitted] ...\n"
+                    + "\n".join(lines[-tail_n:])
+                )
+
+        # 字符截断兜底
         return result[:threshold] + f"\n... [{len(result)-threshold} chars omitted]"
 
     def _build_tool_result_message(self, tool_calls, results: list[str]) -> dict:
@@ -858,40 +1018,68 @@ class Agent:
         return base
 
     def _auto_compress_history(self) -> None:
-        """[SYS-COMPRESS] 自动压缩最老一半的历史，保留最近一半，并重附 skill 上下文。"""
+        """
+        [SYS-COMPRESS] 自动压缩最老一半的历史，保留最近一半，并重附 skill 上下文。
+
+        修复：
+        1. 不再使用 role="system" 插入摘要（该 role 在历史列表中不被所有 provider
+           支持，且 load_session 后不会恢复到内存对象，导致行为不一致）。
+           改为标准的 user/assistant 对话对，所有 provider 均能正确处理。
+        2. 摘要文字更具信息量：除拼接用户消息外，还记录工具调用次数和轮次数，
+           让 LLM 能感知到被压缩掉的工作量。
+        3. [SYS-FORGET] 智能遗忘：在保留段中剔除纯工具结果消息（<tool_result>），
+           避免残留的工具输出在没有对应工具调用上下文时产生混淆。
+        """
         if len(self._history) < 6:
             return
         cutoff = len(self._history) // 2
         old_turns = self._history[:cutoff]
-        # 简单摘要：拼接用户消息
+
+        # 构建摘要：用户消息 + 统计信息
         user_msgs = [
             m["content"] for m in old_turns
             if m.get("role") == "user" and isinstance(m.get("content"), str)
+            and not m["content"].startswith("<tool_result")
+            and not m["content"].startswith("[Previous session")
         ]
-        summary_text = "; ".join(user_msgs[:5])
-        if len(user_msgs) > 5:
-            summary_text += f" ... and {len(user_msgs)-5} more turns"
+        tool_call_count = sum(
+            len(m.get("content", [])) if isinstance(m.get("content"), list) else 0
+            for m in old_turns
+            if m.get("role") == "assistant"
+        )
+        summary_parts = []
+        if user_msgs:
+            summary_parts.append("User requests: " + "; ".join(
+                (msg[:80] + "…" if len(msg) > 80 else msg)
+                for msg in user_msgs[:6]
+            ))
+            if len(user_msgs) > 6:
+                summary_parts.append(f"... and {len(user_msgs)-6} more user turns")
+        if tool_call_count:
+            summary_parts.append(f"({tool_call_count} tool calls executed)")
+        summary_text = " ".join(summary_parts) if summary_parts else f"({cutoff} turns)"
 
-        # [SYS-FORGET] 智能遗忘：基于权重决定丢弃顺序
+        # 保留段：可选剔除纯工具结果消息
         if self.cfg.forget_policy_enabled:
-            # 优先保留用户指令，丢弃工具结果
             keep = [
                 m for m in self._history[cutoff:]
-                if m.get("role") != "tool" and not (
+                if not (
                     m.get("role") == "user"
                     and isinstance(m.get("content"), str)
                     and m["content"].startswith("<tool_result")
                 )
             ]
-            self._history = [
-                {"role": "system",
-                 "content": f"[Compressed: {summary_text}]"}
-            ] + keep
         else:
-            self._history = [
-                {"role": "system",
-                 "content": f"[Compressed: {summary_text}]"}
-            ] + self._history[cutoff:]
+            keep = self._history[cutoff:]
+
+        # 使用标准 user/assistant 对作为压缩占位符（兼容所有 provider）
+        compressed_pair = [
+            {"role": "user",      "content": "[Previous conversation compressed]"},
+            {"role": "assistant", "content": f"[Compressed summary: {summary_text}]"},
+        ]
+        # 原地替换，保持共享引用有效
+        self._history.clear()
+        self._history.extend(compressed_pair + keep)
 
         # [SYS-SKILL-COMPACT] 压缩后重附 skill 上下文
         skill_block = self._build_skill_compact_block()

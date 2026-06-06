@@ -298,25 +298,55 @@ class SessionManager:
 
     @staticmethod
     def _write_json(session: Session, path: Path) -> None:
+        """
+        原子写入 + 文件锁：
+        - 用 fcntl.flock（Unix）或 msvcrt.locking（Windows）持锁，
+          防止多个 SubAgent 并发写同一文件互相覆盖。
+        - 写入临时文件后再 replace，保证读端不会看到半截 JSON。
+        """
+        import tempfile, os as _os
         data = session.to_dict()
-        path.write_text(
-            json.dumps(data, ensure_ascii=False, indent=2),
-            encoding="utf-8",
-        )
+        text = json.dumps(data, ensure_ascii=False, indent=2)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        # 在同一目录下创建临时文件，保证 replace 是原子操作（同分区）
+        fd, tmp = tempfile.mkstemp(dir=path.parent, suffix=".tmp")
+        try:
+            with _os.fdopen(fd, "w", encoding="utf-8") as f:
+                _flock(f)
+                f.write(text)
+                f.flush()
+                _os.fsync(f.fileno())
+        except Exception:
+            _os.unlink(tmp)
+            raise
+        _os.replace(tmp, path)
 
     @staticmethod
     def _write_jsonl(session: Session, path: Path) -> None:
         """
-        JSONL 格式：
+        JSONL 格式（原子写入 + 文件锁）：
         - 第1行：元数据（不含 history）
         - 后续行：每个 history 条目一行
         """
+        import tempfile, os as _os
         lines: list[str] = []
         meta = {k: v for k, v in session.to_dict().items() if k != "history"}
         lines.append(json.dumps(meta, ensure_ascii=False))
         for msg in session.history:
             lines.append(json.dumps(msg, ensure_ascii=False))
-        path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+        text = "\n".join(lines) + "\n"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        fd, tmp = tempfile.mkstemp(dir=path.parent, suffix=".tmp")
+        try:
+            with _os.fdopen(fd, "w", encoding="utf-8") as f:
+                _flock(f)
+                f.write(text)
+                f.flush()
+                _os.fsync(f.fileno())
+        except Exception:
+            _os.unlink(tmp)
+            raise
+        _os.replace(tmp, path)
 
     # ── 内部：文件读取 ────────────────────────────────────────────────────────
 
@@ -343,6 +373,7 @@ class SessionManager:
             history=data.get("history", []),
             fmt="json",
             file_path=str(path),
+            summary=data.get("summary", ""),   # 修复：加载已有摘要，避免重复生成
         )
 
     @staticmethod
@@ -363,6 +394,7 @@ class SessionManager:
             history=history,
             fmt="jsonl",
             file_path=str(path),
+            summary=meta.get("summary", ""),   # 修复：加载已有摘要
         )
 
     def _read_meta(self, path: Path) -> Optional[SessionMeta]:
@@ -445,3 +477,23 @@ def _serialize_history(history: list[dict]) -> list[dict]:
         else:
             result.append({"role": role, "content": content})
     return result
+
+
+def _flock(f) -> None:
+    """
+    跨平台文件锁（尽力而为）。
+    Unix：fcntl.flock 排他锁，进程退出自动释放。
+    Windows：msvcrt.locking，锁前 512 字节作为锁区域。
+    不支持时静默跳过——原子 replace 已提供足够保护。
+    """
+    try:
+        import fcntl
+        fcntl.flock(f.fileno(), fcntl.LOCK_EX)
+        return
+    except ImportError:
+        pass
+    try:
+        import msvcrt
+        msvcrt.locking(f.fileno(), msvcrt.LK_NBLCK, 512)
+    except Exception:
+        pass  # 锁失败不中断写入，原子 replace 仍保护文件完整性

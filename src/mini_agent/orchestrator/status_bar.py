@@ -1,16 +1,19 @@
 """
 orchestrator/status_bar.py
 
-只负责构建状态栏内容并推送给 Terminal，不直接写屏幕。
+架构改进：不再用独立线程 push update+redraw 消息，
+而是向 Terminal 注册一个内容提供者回调（_build_lines）。
+Terminal 的 _refresh_loop 在每个刷新周期内调用该回调拉取内容，
+然后自己决定是否重绘。
 
-Terminal 是唯一写屏幕的地方。
+优势：
+- _refresh_paused 一个标志即可彻底静止所有状态栏活动，
+  消除了旧 push_loop 与 _enter_input_mode 之间的竞态。
+- 减少一个后台线程（status_bar 不再需要 _push_loop 线程）。
+- 内容构建逻辑与推送时机解耦，更易测试。
 """
 
 from __future__ import annotations
-
-import threading
-import time
-from typing import Optional
 
 
 def _build_lines() -> list[str]:
@@ -44,38 +47,17 @@ def _build_lines() -> list[str]:
     return lines
 
 
-def _push_loop() -> None:
-    from mini_agent.ui.terminal import get_terminal
-    while not _stop.is_set():
-        time.sleep(0.25)
-        if not _stop.is_set():
-            t = get_terminal()
-            # 终端处于输入模式时（_refresh_paused 被 set），
-            # 跳过本次推送——避免 update/redraw 消息污染队列，
-            # 在 confirm()/prompt_user() 等待用户输入时覆盖提示文字。
-            if t._refresh_paused.is_set():
-                continue
-            lines = _build_lines()
-            t.update_statusbar(lines)
-            t.redraw_statusbar()
-
-
-_stop = threading.Event()
-_thread: Optional[threading.Thread] = None
-
-
 def start_status_bar(**_kwargs) -> "StatusBar":
-    global _thread
-    _stop.clear()
-    _thread = threading.Thread(target=_push_loop, daemon=True, name="statusbar-push")
-    _thread.start()
+    """启动状态栏：向 Terminal 注册内容提供者回调。"""
+    from mini_agent.ui.terminal import get_terminal
+    get_terminal().set_statusbar_provider(_build_lines)
     return _bar_compat
 
 
 def stop_status_bar() -> None:
-    _stop.set()
-    if _thread:
-        _thread.join(timeout=2)
+    """停止状态栏：清除 Terminal 的内容提供者回调。"""
+    from mini_agent.ui.terminal import get_terminal
+    get_terminal().set_statusbar_provider(None)
 
 
 def get_status_bar() -> "StatusBar":

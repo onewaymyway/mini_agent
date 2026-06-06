@@ -53,6 +53,13 @@ class Terminal:
         self._streaming: bool = False
         self._stream_had_output: bool = False
 
+        # 状态栏内容提供者回调（由 status_bar 模块注册）
+        # 架构改进：Terminal 自己在刷新周期内调用回调拉取内容，
+        # 而不是由外部线程主动 push update+redraw 两条消息。
+        # 这样 _refresh_paused 只需一处检查，消除了 push_loop 与
+        # _enter_input_mode 之间的竞态窗口。
+        self._statusbar_provider: Optional[Callable[[], list[str]]] = None
+
         # 渲染线程：唯一写屏幕的线程
         self._render_thread = threading.Thread(
             target=self._render_loop, daemon=True, name="terminal-render"
@@ -103,10 +110,25 @@ class Terminal:
 
     # ── 状态栏 ────────────────────────────────────────────────────────────
 
+    def set_statusbar_provider(self, provider: "Optional[Callable[[], list[str]]]") -> None:
+        """
+        注册状态栏内容提供者回调。
+        刷新线程每个周期调用 provider() 拉取最新内容，然后自己决定是否重绘。
+        传入 None 清除提供者（停止状态栏）。
+
+        取代旧的 update_statusbar + redraw_statusbar 两步推送模式：
+        旧模式下 status_bar._push_loop 每 250ms 向队列投入两条消息，
+        与 _enter_input_mode 存在竞态；新模式下内容拉取完全在 _refresh_loop
+        内部完成，_refresh_paused 一个标志即可彻底静止所有状态栏活动。
+        """
+        self._statusbar_provider = provider
+
     def update_statusbar(self, lines: list[str]) -> None:
+        """向后兼容接口：直接设置状态栏内容（不经回调）。"""
         self._q.put(_Msg("statusbar", lines))
 
     def redraw_statusbar(self) -> None:
+        """向后兼容接口：触发一次状态栏重绘。"""
         self._q.put(_Msg("redraw", None))
 
     # ═══════════════════════════════════════════════════════════════════════
@@ -381,10 +403,32 @@ class Terminal:
     # ── 刷新循环（refresh_thread）────────────────────────────────────────
 
     def _refresh_loop(self) -> None:
+        """
+        刷新循环：每个周期检查 _refresh_paused；
+        若未暂停，调用 _statusbar_provider 拉取最新内容，
+        然后投递一条 _refresh 消息（携带内容）到渲染队列。
+
+        架构优势：所有状态栏活动（内容拉取 + 重绘）都在同一个
+        "是否暂停"判断分支内完成，_enter_input_mode 设置
+        _refresh_paused 后，下一个刷新周期绝对不会产生任何
+        与状态栏相关的队列消息，彻底消除竞态。
+        """
         while not self._refresh_stop.is_set():
             time.sleep(self._refresh_interval)
-            if not self._refresh_paused.is_set() and not self._refresh_stop.is_set():
-                self._q.put(_Msg("_refresh", None))
+            if self._refresh_paused.is_set() or self._refresh_stop.is_set():
+                continue
+            # 在 refresh_thread 中拉取内容（可以调用任意函数，不写屏幕）
+            lines: list[str] = []
+            provider = self._statusbar_provider
+            if provider is not None:
+                try:
+                    lines = provider()
+                except Exception:
+                    lines = []
+                # 同步更新状态栏内容缓存（通过队列，确保 render_thread 安全读写）
+                if lines:
+                    self._q.put(_Msg("statusbar", lines))
+            self._q.put(_Msg("_refresh", None))
 
     # ── 用户输入底层 ──────────────────────────────────────────────────────
 
