@@ -14,7 +14,7 @@
 | 📚 Skill 机制 | SKILL.md 文件动态加载，自动触发注入上下文 |
 | 📝 Prompt 管理 | 所有 prompt 统一在 `prompts/` 目录管理 |
 | ⚡ 并发 Sub-Agent | 主 Agent 可派生多个子 Agent 并行执行任务 |
-| 🔐 权限守卫 | 危险操作需要确认，支持沙箱模式 |
+| 🔐 权限守卫 | 危险操作需要确认，支持白名单、黑名单、沙箱模式，路径规范化处理 |
 | 🐛 调试日志 | 完整记录每次请求/响应到 JSONL 文件 |
 | 🧠 感知与记忆 | 项目扫描、文件监视、工具缓存、跨 session 长期记忆 |
 
@@ -298,6 +298,7 @@ python -m pytest tests/ -q
 ## 文档
 
 - [系统概览](docs/system-overview.md) — 整体架构和设计思路
+- [权限系统指南](docs/permission-guide.md) — 权限守卫、白名单、持久化配置
 - [Agent 设计](docs/agent-design.md) — Agent 核心循环与组件详解
 - [CLI I/O 机制](docs/cli-io-mechanism.md) — 命令行输入输出流程
 - [终端 I/O 指南](docs/terminal-io-guide.md) — 终端交互细节
@@ -316,4 +317,4 @@ MIT License
 
 ---
 
-*最后更新：2026-06-05*
+*最后更新：2026-06-06*
