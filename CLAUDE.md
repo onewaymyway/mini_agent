@@ -4,7 +4,7 @@
 
 ## 项目结构
 
-- `src/mini_agent/agent.py` — Agent 核心逻辑（对话循环、工具派发、流式输出）
+- `src/mini_agent/agent.py` — Agent 核心逻辑（对话循环、工具派发、流式输出）；拆分为三个独立组件：ContextBuilder（system prompt 构建）、ToolExecutor（权限检查 + 工具调用）、HistoryManager（历史管理）
 - `src/mini_agent/config.py` — 配置管理和系统提示词构建
 - `src/mini_agent/permissions.py` — 工具调用的权限守卫
 - `src/mini_agent/session.py` — 会话管理
@@ -69,6 +69,16 @@ python main.py --provider nvidia --model qwen/qwen3.5-122b-a10b --system-tool-ca
 - `retry.py` — 重试策略（空输出重试等）
 - `system_tool_call.py` — 系统工具调用格式转换
 - `providers/` — 各 LLM 提供商实现（anthropic, openai, ollama, nvidia）
+
+### Agent 核心 (`src/mini_agent/`)
+
+- `agent.py` — Agent 主类，对话循环与编排
+- `context_builder.py` — System prompt 构建（skill/memory/project 注入）
+- `tool_executor.py` — 工具执行（权限检查 + 调用 + 截断 + 缓存）
+- `history_manager.py` — 历史管理（追加 + 压缩 + 快照恢复）
+- `config.py` — 配置管理和系统提示词构建
+- `permissions.py` — 工具调用的权限守卫
+- `session.py` — 会话管理
 
 ### 工具系统 (`src/mini_agent/tools/`)
 

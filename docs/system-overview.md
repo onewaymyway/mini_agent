@@ -34,7 +34,10 @@ src/mini_agent/
 │   ├── renderer.py
 │   └── repl_input.py
 │
-├── agent.py              ← Agent 核心循环
+├── agent.py              ← Agent 核心循环（编排层）
+├── context_builder.py    ← System prompt 构建
+├── tool_executor.py      ← 工具执行（权限 + 调用 + 缓存）
+├── history_manager.py    ← 历史管理（压缩/快照）
 ├── config.py             ← 配置
 ├── permissions.py        ← 权限守卫
 ├── session.py            ← 会话持久化
@@ -114,7 +117,15 @@ slash 命令使用各自的 handler 函数，通过 `cli/commands/__init__.py` �
 
 ### 3.3 Agent 核心循环（agent.py）
 
-Agent 维护对话历史、构建 prompt、调用 LLM、执行工具、保存 session。关键组合对象：
+Agent 作为纯编排层，委托三个核心组件完成具体工作：
+
+| 组件 | 来源 | 职责 |
+|------|------|------|
+| `ContextBuilder` | `context_builder.py` | System prompt 构建（skill/memory/project 注入） |
+| `ToolExecutor` | `tool_executor.py` | 工具执行（权限检查 + 调用 + 截断 + 缓存） |
+| `HistoryManager` | `history_manager.py` | 历史管理（追加 + 压缩 + 快照恢复） |
+
+其他组合对象：
 
 | 对象 | 来源 | 职责 |
 |------|------|------|
@@ -127,10 +138,12 @@ Agent 维护对话历史、构建 prompt、调用 LLM、执行工具、保存 se
 | 感知组件 | `perception/` | 项目扫描/文件监听/缓存/记忆 |
 
 核心方法：
-- `run_turn()` — 处理一轮用户输入
+- `run_turn()` — 处理一轮用户输入（保存快照、触发技能、调用循环）
 - `_agentic_loop()` — 循环调用 LLM 和工具
-- `_build_system()` — 组合 CLAUDE.md、Skill、项目扫描、记忆、计划等上下文
-- `_auto_compress_history()` — token 超阈值时压缩历史
+- `retry_last_turn()` / `rollback_turn()` — 手动重试/回退
+- `compact_with_skills()` — 压缩历史并重附技能上下文
+
+详见 [Agent 设计详解](agent-design.md)。
 
 ### 3.4 LLM 抽象层（llm/）
 
@@ -250,7 +263,6 @@ JSON 配置文件 > 命令行参数 > 环境变量 > 内置默认值。
 
 ### P2（较高收益）
 
-- **拆分 Agent 类**：`agent.py` 职责仍重，可拆出 `ContextBuilder`、`ToolExecutor`、`HistoryManager`
 - **UI 层 facade**：业务模块目前仍有少量直接依赖 `terminal.term`，可进一步收拢
 - **配置优先级语义**：明确 CLI 参数是否可覆盖 JSON 配置文件
 
@@ -280,6 +292,11 @@ JSON 配置文件 > 命令行参数 > 环境变量 > 内置默认值。
 3. 确保模块在 `src/mini_agent/cli/app.py` 启动时被 import（完成注册）
 4. 补充单元测试
 5. 对有大量输出的工具，考虑配合工具结果截断或缓存策略
+
+## 8. 相关文档
+
+- [Agent 设计详解](agent-design.md) — agent.py 的核心架构、组件职责、执行流程
+- [代码结构指南](code-structure-guide.md) — 项目结构与导入规范
 
 ---
 

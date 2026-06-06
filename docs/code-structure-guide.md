@@ -77,12 +77,15 @@ mini_agent/
 
 ### 2.3 核心层（原根目录模块）
 
-| 模块 | 原来的位置 |
-|------|------------|
-| `mini_agent/agent.py` | 根目录 `agent.py` |
-| `mini_agent/config.py` | 根目录 `config.py` |
-| `mini_agent/permissions.py` | 根目录 `permissions.py` |
-| `mini_agent/session.py` | 根目录 `session.py` |
+| 模块 | 原来的位置 | 说明 |
+|------|------------|------|
+| `mini_agent/agent.py` | 根目录 `agent.py` | Agent 主类，对话循环与编排 |
+| `mini_agent/context_builder.py` | 新增 | System prompt 构建 |
+| `mini_agent/tool_executor.py` | 新增 | 工具执行器 |
+| `mini_agent/history_manager.py` | 新增 | 历史管理器 |
+| `mini_agent/config.py` | 根目录 `config.py` | 配置管理 |
+| `mini_agent/permissions.py` | 根目录 `permissions.py` | 权限守卫 |
+| `mini_agent/session.py` | 根目录 `session.py` | 会话持久化 |
 
 ### 2.4 子包（整体迁入，内部结构不变）
 
@@ -174,7 +177,6 @@ from mini_agent.orchestrator.task import Task, TaskStatus
 
 ### P2 — 较高收益，适合独立 PR
 
-- **拆分 Agent 类**：`agent.py` 仍承担会话、LLM 调用、工具执行、感知、压缩等多重职责，可拆出 `ContextBuilder`、`ToolExecutor`、`HistoryManager`
 - **UI 层完全收拢**：少量业务模块（`orchestrator/task_display.py`、`plan_display.py`）仍直接依赖 `mini_agent.ui.terminal`，可定义 UI facade 进一步解耦
 - **配置/存储/安全细分**：`config.py`、`session.py`、`permissions.py` 可进一步拆分为 `config/schema.py` + `config/loader.py` 等
 
