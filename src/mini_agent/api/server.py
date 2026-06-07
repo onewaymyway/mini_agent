@@ -70,8 +70,15 @@ class AgentRunner(threading.Thread):
 
                 # 注入 turn_id，让 OutputHook 知道当前轮
                 bridge.agent._http_turn_id = turn_id
-                # 存用户消息，让 print_assistant_prefix hook 回显到终端
-                bridge.agent._http_current_user_msg = cmd.message
+
+                # HTTP 路径没有 REPL 的 prompt_user()，手动在终端回显用户输入
+                try:
+                    from mini_agent.ui.terminal import term
+                    term.print(
+                        f"\n[bold green]You[/bold green][cyan] ❯ [/cyan]{cmd.message}"
+                    )
+                except Exception:
+                    pass
 
                 result = bridge.agent.run_turn(cmd.message)
 
@@ -303,24 +310,6 @@ def _install_output_hook(bridge: AgentBridge) -> None:
         bridge.emit_token(md, turn_id=_turn_id())
 
     _mod.print_markdown = _patched_print_markdown
-
-    # ── 3. 用户输入回显（命令行可见）：patch print_assistant_prefix ──────
-    # agent.py 在流式/非流式开始前都调用 R.print_assistant_prefix()，
-    # 借此时机把用户消息回显到终端，HTTP路径原本没有这一步。
-    _orig_prefix = _mod.print_assistant_prefix
-
-    def _patched_print_assistant_prefix(agent_name: str = "orzooo") -> None:
-        _orig_prefix(agent_name=agent_name)
-        # 把当前 turn 的用户消息打印到终端（仅 HTTP 路径需要，REPL 路径
-        # 已经在 repl.py 的 prompt_user() 里回显过了）
-        user_msg = getattr(bridge.agent, "_http_current_user_msg", "")
-        if user_msg:
-            from mini_agent.ui.terminal import term
-            term.print(f"\n[bold green]You[/bold green][cyan] ❯ [/cyan]{user_msg}")
-            # 只回显一次
-            bridge.agent._http_current_user_msg = ""
-
-    _mod.print_assistant_prefix = _patched_print_assistant_prefix
 
     # ── 4. 工具调用 ───────────────────────────────────────────────────────
     _orig_tool_call = _mod.print_tool_call
