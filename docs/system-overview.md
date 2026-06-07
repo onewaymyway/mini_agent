@@ -230,7 +230,7 @@ system prompt 构建顺序：
 
 ### 3.9 并发编排（orchestrator/）
 
-详见 [plan-and-task-guide.md](plan-and-task-guide.md)。两层结构：
+详见 [plan-and-task-guide.md](plan-and-task-guide.md) 和 [subagent-mechanism.md](subagent-mechanism.md)。两层结构：
 
 - **ExecutionPlan / PlanTask** — 结构化执行计划，注入 system prompt，不启动线程
 - **TaskManager / SubAgent** — 真正的并发执行，纯线程模型，不依赖 asyncio
