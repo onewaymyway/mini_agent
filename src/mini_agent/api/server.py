@@ -70,6 +70,8 @@ class AgentRunner(threading.Thread):
 
                 # 注入 turn_id，让 OutputHook 知道当前轮
                 bridge.agent._http_turn_id = turn_id
+                # 存用户消息，让 print_assistant_prefix hook 回显到终端
+                bridge.agent._http_current_user_msg = cmd.message
 
                 result = bridge.agent.run_turn(cmd.message)
 
@@ -263,82 +265,108 @@ class HttpServer:
 
 def _install_output_hook(bridge: AgentBridge) -> None:
     """
-    Monkey-patch mini_agent.ui.renderer.Renderer 的输出方法，
-    在原有终端输出的同时，把内容推入 bridge 广播给 HTTP 客户端。
+    Monkey-patch mini_agent.ui.renderer 模块级函数 + StreamWriter 类，
+    在原有终端输出的同时把内容推入 bridge 广播给 HTTP 客户端。
 
-    这样 agent.py 本身无需任何改动。
+    关键：renderer.py 里全是模块级函数（print_markdown、print_tool_call …）
+    和模块级类（StreamWriter），没有任何 Renderer 实例（原 server.py 里
+    `R = _renderer_mod.R` 会 AttributeError，导致整个 hook 静默失败）。
+    正确做法是直接替换模块属性。
     """
     try:
-        from mini_agent.ui import renderer as _renderer_mod
-        R = _renderer_mod.R   # 全局 Renderer 单例
+        from mini_agent.ui import renderer as _mod
     except Exception:
         return
 
-    # ── print_markdown（非流式模式下 assistant 最终回复走这里）────────────────
-    _orig_print_markdown = getattr(_renderer_mod, "print_markdown", None)
-    if _orig_print_markdown:
-        def _patched_print_markdown(md: str) -> None:
-            _orig_print_markdown(md)
-            turn_id = getattr(bridge.agent, "_http_turn_id", "")
-            # 把整段 markdown 作为一个 token 事件推出，让 HTTP 客户端能收到完整文本
-            bridge.emit_token(md, turn_id=turn_id)
-        _renderer_mod.print_markdown = _patched_print_markdown
+    def _turn_id() -> str:
+        return getattr(bridge.agent, "_http_turn_id", "")
 
-    # ── stream token ──────────────────────────────────────────────────────
-    _orig_stream_token = R.__class__.stream_token if hasattr(R.__class__, 'stream_token') else None
+    # ── 1. 流式输出：patch StreamWriter.write ────────────────────────────
+    # agent.py 每次流式回复都 new 一个 StreamWriter()，所以 patch 类本身即可。
+    _OrigSW = _mod.StreamWriter
 
-    # 通过 StreamWriter 拦截流式 token
-    _OrigStreamWriter = getattr(R, "StreamWriter", None)
-    if _OrigStreamWriter is not None:
-        class _PatchedStreamWriter(_OrigStreamWriter):  # type: ignore[valid-type]
-            def write(self, text: str) -> None:
-                super().write(text)
-                turn_id = getattr(bridge.agent, "_http_turn_id", "")
-                bridge.emit_token(text, turn_id=turn_id)
+    class _PatchedStreamWriter(_OrigSW):
+        def write(self, token: str) -> None:
+            super().write(token)                       # 保持终端输出不变
+            bridge.emit_token(token, turn_id=_turn_id())
 
-        R.__class__.StreamWriter = _PatchedStreamWriter
+    _mod.StreamWriter = _PatchedStreamWriter
 
-    # ── tool call ─────────────────────────────────────────────────────────
-    _orig_print_tool_call = getattr(R.__class__, "print_tool_call", None)
-    if _orig_print_tool_call:
-        def _patched_print_tool_call(self, name, inp, **kw):
-            _orig_print_tool_call(self, name, inp, **kw)
-            turn_id = getattr(bridge.agent, "_http_turn_id", "")
-            bridge.emit_tool_call(name, inp, turn_id=turn_id)
-        R.__class__.print_tool_call = _patched_print_tool_call
+    # ── 2. 非流式回复：patch print_markdown ──────────────────────────────
+    # agent.py 非流式模式下调用 R.print_markdown(resp.text)，
+    # 这里 R 是 `import mini_agent.ui.renderer as R`，即模块本身，
+    # 调用的是模块级函数 print_markdown。
+    _orig_print_markdown = _mod.print_markdown
 
-    # ── tool result ───────────────────────────────────────────────────────
-    _orig_print_tool_result = getattr(R.__class__, "print_tool_result", None)
-    if _orig_print_tool_result:
-        def _patched_print_tool_result(self, name, result, **kw):
-            _orig_print_tool_result(self, name, result, **kw)
-            turn_id = getattr(bridge.agent, "_http_turn_id", "")
-            bridge.emit_tool_result(name, str(result), turn_id=turn_id)
-        R.__class__.print_tool_result = _patched_print_tool_result
+    def _patched_print_markdown(md: str) -> None:
+        _orig_print_markdown(md)
+        bridge.emit_token(md, turn_id=_turn_id())
 
-    # ── tool error ────────────────────────────────────────────────────────
-    _orig_print_tool_error = getattr(R.__class__, "print_tool_error", None)
-    if _orig_print_tool_error:
-        def _patched_print_tool_error(self, name, msg, **kw):
-            _orig_print_tool_error(self, name, msg, **kw)
-            turn_id = getattr(bridge.agent, "_http_turn_id", "")
-            bridge.emit(AgentEvent(
-                type=EventType.TOOL_ERROR,
-                turn_id=turn_id,
-                data={"tool_name": name, "message": str(msg)},
-            ))
-        R.__class__.print_tool_error = _patched_print_tool_error
+    _mod.print_markdown = _patched_print_markdown
 
-    # ── print_info / print_warning ────────────────────────────────────────
-    for method_name, evt_type in [
+    # ── 3. 用户输入回显（命令行可见）：patch print_assistant_prefix ──────
+    # agent.py 在流式/非流式开始前都调用 R.print_assistant_prefix()，
+    # 借此时机把用户消息回显到终端，HTTP路径原本没有这一步。
+    _orig_prefix = _mod.print_assistant_prefix
+
+    def _patched_print_assistant_prefix(agent_name: str = "orzooo") -> None:
+        _orig_prefix(agent_name=agent_name)
+        # 把当前 turn 的用户消息打印到终端（仅 HTTP 路径需要，REPL 路径
+        # 已经在 repl.py 的 prompt_user() 里回显过了）
+        user_msg = getattr(bridge.agent, "_http_current_user_msg", "")
+        if user_msg:
+            from mini_agent.ui.terminal import term
+            term.print(f"\n[bold green]You[/bold green][cyan] ❯ [/cyan]{user_msg}")
+            # 只回显一次
+            bridge.agent._http_current_user_msg = ""
+
+    _mod.print_assistant_prefix = _patched_print_assistant_prefix
+
+    # ── 4. 工具调用 ───────────────────────────────────────────────────────
+    _orig_tool_call = _mod.print_tool_call
+
+    def _patched_print_tool_call(tool_name: str, tool_input: dict,
+                                  verbose: bool = False) -> None:
+        _orig_tool_call(tool_name, tool_input, verbose=verbose)
+        bridge.emit_tool_call(tool_name, tool_input, turn_id=_turn_id())
+
+    _mod.print_tool_call = _patched_print_tool_call
+
+    # ── 5. 工具结果（不截断）─────────────────────────────────────────────
+    _orig_tool_result = _mod.print_tool_result
+
+    def _patched_print_tool_result(tool_name: str, result: str,
+                                    truncate: int = 2000) -> None:
+        _orig_tool_result(tool_name, result, truncate=truncate)
+        # 事件推送完整结果，不截断
+        bridge.emit_tool_result(tool_name, result, turn_id=_turn_id())
+
+    _mod.print_tool_result = _patched_print_tool_result
+
+    # ── 6. 工具错误 ───────────────────────────────────────────────────────
+    _orig_tool_error = _mod.print_tool_error
+
+    def _patched_print_tool_error(tool_name: str, error: str) -> None:
+        _orig_tool_error(tool_name, error)
+        bridge.emit(AgentEvent(
+            type=EventType.TOOL_ERROR,
+            turn_id=_turn_id(),
+            data={"tool_name": tool_name, "message": error},
+        ))
+
+    _mod.print_tool_error = _patched_print_tool_error
+
+    # ── 7. info / warning ─────────────────────────────────────────────────
+    for _fn_name, _etype in [
         ("print_info",    EventType.INFO),
         ("print_warning", EventType.WARNING),
     ]:
-        _orig = getattr(R.__class__, method_name, None)
-        if _orig:
-            def _make_patched(orig, etype):
-                def _patched(self, msg, **kw):
-                    orig(self, msg, **kw)
-                    bridge.emit(AgentEvent(type=etype, data={"message": str(msg)}))
-                return _patched
-            setattr(R.__class__, method_name, _make_patched(_orig, evt_type))
+        _orig_fn = getattr(_mod, _fn_name)
+
+        def _make_patched_log(orig, etype):
+            def _patched(msg: str) -> None:
+                orig(msg)
+                bridge.emit(AgentEvent(type=etype, data={"message": msg}))
+            return _patched
+
+        setattr(_mod, _fn_name, _make_patched_log(_orig_fn, _etype))
