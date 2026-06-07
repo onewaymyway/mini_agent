@@ -225,21 +225,76 @@ class SubAgent:
                         except Exception:
                             pass
 
+    # SubAgent 层的重试配置
+    _RETRY_MAX_ATTEMPTS = 3    # 最多尝试 3 次（首次 + 2 次重试）
+    _RETRY_DELAY = 2.0         # 每次重试前等待 2 秒，给 NIM 服务端缓冲时间
+
+    def _is_retryable_error(self, err_str: str) -> bool:
+        """
+        判断错误是否值得重试。
+        可重试：HTTP 5xx（服务端临时错误）、超时。
+        不重试：HTTP 4xx（鉴权失败、参数错误等客户端问题）。
+        """
+        err_lower = err_str.lower()
+        if "http 5" in err_lower:       # 500 / 502 / 503 / 504
+            return True
+        if "timeout" in err_lower:
+            return True
+        if "timed out" in err_lower:
+            return True
+        return False
+
     def _run_with_capture(self, agent: Agent, prompt: str) -> str:
         """
-        运行 agent.run_turn()。
-        
+        运行 agent.run_turn()，对可恢复的 LLM 错误（5xx / 超时）自动重试。
+
         【修复】原来的实现替换了全局 sys.stdout/sys.stderr，这在多线程环境下
         是不安全的：多个 SubAgent 并发时会互相覆盖对方的 stdout，也会破坏
         主线程的 rich/terminal 渲染（状态栏、REPL 输出等）。
-        
+
         正确做法：直接运行 run_turn()，SubAgent 的输出本来就应该通过
         on_log 回调（写入 TaskRecord.log_lines）而不是 stdout。
         agent.run_turn() 内部的 rich Console 输出在 cfg.stream=False 时
         会静默（因为 SubAgent 构建时设置了 cfg.stream=False）。
+
+        【止血补丁】NVIDIA NIM 等服务端在高并发时会偶发 HTTP 500（serde
+        反序列化错误），该错误与请求内容无关，重试大概率成功。此处在
+        SubAgent 层捕获可重试异常，最多尝试 _RETRY_MAX_ATTEMPTS 次，每次
+        间隔 _RETRY_DELAY 秒。4xx 等客户端错误不重试，直接向上抛出。
         """
-        result = agent.run_turn(prompt)
-        return result
+        last_exc: Optional[Exception] = None
+
+        for attempt in range(1, self._RETRY_MAX_ATTEMPTS + 1):
+            try:
+                return agent.run_turn(prompt)
+            except Exception as exc:
+                err_str = str(exc)
+                if not self._is_retryable_error(err_str):
+                    # 不可重试的错误（如 4xx），直接抛出
+                    raise
+
+                last_exc = exc
+                if attempt < self._RETRY_MAX_ATTEMPTS:
+                    self._log(
+                        f"[Retry {attempt}/{self._RETRY_MAX_ATTEMPTS - 1}] "
+                        f"LLM transient error, retrying in {self._RETRY_DELAY}s: {exc}"
+                    )
+                    _debug_log(self.record.task_id, "llm_retry", {
+                        "attempt": attempt,
+                        "max_attempts": self._RETRY_MAX_ATTEMPTS,
+                        "error": err_str,
+                        "delay_s": self._RETRY_DELAY,
+                    })
+                    time.sleep(self._RETRY_DELAY)
+                else:
+                    self._log(f"[Retry exhausted] All {self._RETRY_MAX_ATTEMPTS} attempts failed: {exc}")
+                    _debug_log(self.record.task_id, "llm_retry_exhausted", {
+                        "attempts": self._RETRY_MAX_ATTEMPTS,
+                        "error": err_str,
+                    })
+
+        # 所有重试耗尽，抛出最后一次异常
+        raise last_exc
 
     def _build_agent(self, task: Task) -> Agent:
         """为本次任务构建独立的 Agent 实例。"""
