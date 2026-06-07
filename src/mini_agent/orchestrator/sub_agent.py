@@ -204,11 +204,14 @@ class SubAgent:
         except Exception as exc:
             tb = traceback.format_exc()
             self._log(f"ERROR: {exc}")
-            _debug_log(task.id, "error", {"error": str(exc)})
+            # 完整 traceback 写入 debug jsonl，方便离线排查
+            _debug_log(task.id, "error", {"error": str(exc), "traceback": tb})
             with self._lock:
                 self.record.status = TaskStatus.FAILED
-                self.record.result = TaskResult(output="", error=str(exc))
-            # 详细 traceback 只写日志，不打印到控制台
+                # error 字段保存完整 traceback，而不只是 str(exc)
+                # 这样 get_task_status 返回的 error 字段包含完整堆栈
+                self.record.result = TaskResult(output="", error=tb.strip())
+            # traceback 同时逐行写入 log_lines
             for line in tb.splitlines():
                 self.record.append_log(line)
 

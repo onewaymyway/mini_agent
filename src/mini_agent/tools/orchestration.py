@@ -213,7 +213,7 @@ def spawn_agents(tasks: list) -> str:
     },
     requires_approval=False,
 )
-def get_task_status(task_id: str, include_log: bool = False) -> str:
+def get_task_status(task_id: str, include_log: bool = True) -> str:
     mgr = get_task_manager()
     if mgr is None:
         return "[error: TaskManager not initialized.]"
@@ -221,6 +221,8 @@ def get_task_status(task_id: str, include_log: bool = False) -> str:
     rec = mgr.get(task_id)
     if rec is None:
         return json.dumps({"error": f"Task '{task_id}' not found."})
+
+    from mini_agent.orchestrator.task import TaskStatus as TS
 
     data: dict = {
         "task_id": rec.task_id,
@@ -231,15 +233,16 @@ def get_task_status(task_id: str, include_log: bool = False) -> str:
     if rec.result:
         data["output"] = rec.result.output[:3000]
         if rec.result.error:
-            data["error"] = rec.result.error
+            data["error"] = rec.result.error   # 现在包含完整 traceback
         data["tokens"] = {
             "input": rec.result.input_tokens,
             "output": rec.result.output_tokens,
         }
         data["tool_calls"] = rec.result.tool_calls
         data["turns"] = rec.result.turns
-    if include_log:
-        data["log"] = rec.log_lines[-10:]
+    # failed 状态强制附带日志；其他状态由 include_log 控制
+    if include_log or rec.status == TS.FAILED:
+        data["log"] = rec.log_lines[-50:]
 
     return json.dumps(data, indent=2)
 
