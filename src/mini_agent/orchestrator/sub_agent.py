@@ -15,9 +15,7 @@ SubAgent 是对 Agent 的轻量包装，在独立线程中运行，
 
 from __future__ import annotations
 
-import io
 import json
-import sys
 import threading
 import time
 import traceback
@@ -32,6 +30,7 @@ from .task import Task, TaskRecord, TaskResult, TaskStatus
 from .concurrency import get_task_sem
 from mini_agent.permissions import PermissionGuard
 from mini_agent.tools import get_default_registry
+import io
 
 # Debug log file
 _DEBUG_LOG_FILE = Path(__file__).parent.parent.parent.parent / "test_result" / "subagent_debug.jsonl"
@@ -149,6 +148,13 @@ class SubAgent:
             self._run_body(task)
 
     def _run_body(self, task) -> None:
+        # 【修复】在这里设置 RUNNING 状态（之前错误地在 task_manager._launch() 里设置）
+        with self._lock:
+            if self.record.status == TaskStatus.CANCELLED:
+                return  # 获得信号量前已被取消
+            self.record.status = TaskStatus.RUNNING
+            self.record.started_at = time.time()
+
         self._log(f"Starting task: {task.name}")
         self._log(f"Config: model={task.model or 'default'}, max_turns={task.max_turns}")
         _debug_log(task.id, "run_body_start", {"model": task.model, "max_turns": task.max_turns})
@@ -221,21 +227,18 @@ class SubAgent:
 
     def _run_with_capture(self, agent: Agent, prompt: str) -> str:
         """
-        运行 agent.run_turn()，将打印输出重定向到日志。
-        SubAgent 不应直接向 stdout 写入（会与主 REPL 输出混合）。
+        运行 agent.run_turn()。
+        
+        【修复】原来的实现替换了全局 sys.stdout/sys.stderr，这在多线程环境下
+        是不安全的：多个 SubAgent 并发时会互相覆盖对方的 stdout，也会破坏
+        主线程的 rich/terminal 渲染（状态栏、REPL 输出等）。
+        
+        正确做法：直接运行 run_turn()，SubAgent 的输出本来就应该通过
+        on_log 回调（写入 TaskRecord.log_lines）而不是 stdout。
+        agent.run_turn() 内部的 rich Console 输出在 cfg.stream=False 时
+        会静默（因为 SubAgent 构建时设置了 cfg.stream=False）。
         """
-        buf = io.StringIO()
-        old_stdout, old_stderr = sys.stdout, sys.stderr
-
-        try:
-            # 捕获 stdout/stderr，逐行写入日志
-            sys.stdout = _LineCapture(buf, self._log)
-            sys.stderr = _LineCapture(buf, self._log)
-            result = agent.run_turn(prompt)
-        finally:
-            sys.stdout = old_stdout
-            sys.stderr = old_stderr
-
+        result = agent.run_turn(prompt)
         return result
 
     def _build_agent(self, task: Task) -> Agent:
@@ -277,7 +280,7 @@ class SubAgent:
         llm_cfg = LLMConfig.from_app_config(cfg)
         guard = PermissionGuard(
             auto_approve=task.auto_approve,
-            sandbox=self.base_cfg.sandbox,
+            sandbox=self.base_cfg.sandbox,   # 【修复】继承主进程的 sandbox 配置
             project_root=self.base_cfg.project_root,
         )
         return Agent(cfg=cfg, guard=guard, llm_client=create_client(llm_cfg))

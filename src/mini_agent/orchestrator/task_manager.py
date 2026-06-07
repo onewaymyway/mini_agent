@@ -174,7 +174,11 @@ class TaskManager:
 
     def running_count(self) -> int:
         with self._lock:
-            return sum(1 for r in self._records.values() if r.status == TaskStatus.RUNNING)
+            return sum(
+                1 for r in self._records.values()
+                if r.status == TaskStatus.RUNNING
+                or (r.status == TaskStatus.PENDING and r.task_id in self._agents)
+            )
 
     def pending_count(self) -> int:
         with self._lock:
@@ -235,12 +239,16 @@ class TaskManager:
     def _tick(self) -> None:
         """一次调度周期：检查依赖、启动就绪任务。"""
         with self._lock:
-            running = sum(
-                1 for r in self._records.values() if r.status == TaskStatus.RUNNING
+            # 【修复】同时统计 RUNNING 状态的任务，以及已经分配了 SubAgent
+            # 但仍处于 PENDING（线程刚启动、正在等信号量）的任务，避免重复调度。
+            active = sum(
+                1 for r in self._records.values()
+                if r.status == TaskStatus.RUNNING
+                or (r.status == TaskStatus.PENDING and r.task_id in self._agents)
             )
             from .concurrency import get_task_sem
             sem_limit = get_task_sem().limit
-            if running >= sem_limit:
+            if active >= sem_limit:
                 return
 
             # 收集所有已完成任务的 id（用于依赖检查）
@@ -272,7 +280,7 @@ class TaskManager:
 
             # 按提交时间排序，填满 worker 槽位
             ready.sort(key=lambda r: r.task.created_at)
-            slots = max(0, sem_limit - running)
+            slots = max(0, sem_limit - active)
             to_start = ready[:slots]
 
         # 在锁外启动，避免死锁
@@ -288,10 +296,12 @@ class TaskManager:
         )
         with self._lock:
             self._agents[rec.task_id] = agent
-            # 立即标记为 RUNNING，确保计数同步
-            if rec.status == TaskStatus.PENDING:
-                rec.status = TaskStatus.RUNNING
-                rec.started_at = time.time()
+            # 【修复】不在这里设置 RUNNING 状态。
+            # 原来的代码在 agent.start() 之前就把状态改成 RUNNING，
+            # 导致 SubAgent.start() 内部的 "status != PENDING" 检查提前触发，
+            # 线程根本不会启动，_run() 永远不执行。
+            # 正确做法：保持 PENDING，让 SubAgent._run_body() 在真正开始执行时
+            # 再切换状态。
         agent.start()
         self._notify_status(rec)
 
