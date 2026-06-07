@@ -357,37 +357,63 @@ def format_event_html(event: dict) -> str:
 
 
 def scroll_chat_to_bottom():
-    """注入 JS 让对话容器滚动到底部"""
-    # Streamlit 的 st.container(height=...) 会生成带 data-testid="stVerticalBlockBorderWrapper" 的 div
-    # 里面有一个可滚动的子元素，找到后设置 scrollTop = scrollHeight
+    """
+    注入 JS 让对话容器滚动到底部。
+
+    Streamlit 的 st.container(height=N) 会在 DOM 中生成一个
+    data-testid="stVerticalBlockBorderWrapper" 的外层 div，
+    其内部紧跟的第一个 div 就是实际带 overflow:auto 的滚动容器。
+
+    策略：
+      1. 找到所有 stVerticalBlockBorderWrapper
+      2. 对每一个，尝试其直接子元素以及再向下一层，找 overflow:auto/scroll 的元素
+      3. 多次延迟执行，确保 Streamlit 渲染完成后滚动生效
+    """
     scroll_js = """
 <script>
 (function() {
-    function doScroll() {
-        // 找所有带固定高度的可滚动容器
-        var containers = window.parent.document.querySelectorAll(
-            '[data-testid="stVerticalBlockBorderWrapper"]'
-        );
-        containers.forEach(function(c) {
-            // 找到内部实际滚动元素
-            var inner = c.querySelector('[data-testid="stVerticalBlock"]');
-            if (inner) {
-                // 向上找有 overflow:auto 的父元素
-                var el = inner.parentElement;
-                while (el && el !== c.parentElement) {
-                    var style = window.parent.getComputedStyle(el);
-                    if (style.overflowY === 'auto' || style.overflowY === 'scroll') {
-                        el.scrollTop = el.scrollHeight;
-                        break;
-                    }
-                    el = el.parentElement;
+    function scrollAll() {
+        var doc = window.parent.document;
+
+        // 策略1：找带固定高度边框包装的容器（st.container(height=...)）
+        var wrappers = doc.querySelectorAll('[data-testid="stVerticalBlockBorderWrapper"]');
+        wrappers.forEach(function(wrapper) {
+            // 直接子 div 通常就是滚动容器
+            var children = wrapper.children;
+            for (var i = 0; i < children.length; i++) {
+                var child = children[i];
+                var style = window.parent.getComputedStyle(child);
+                if (style.overflowY === 'auto' || style.overflowY === 'scroll') {
+                    child.scrollTop = child.scrollHeight;
+                }
+            }
+            // 备用：在后代中搜索（最多3层）
+            var els = wrapper.querySelectorAll('div');
+            for (var j = 0; j < Math.min(els.length, 10); j++) {
+                var el = els[j];
+                var s = window.parent.getComputedStyle(el);
+                if ((s.overflowY === 'auto' || s.overflowY === 'scroll') && el.scrollHeight > el.clientHeight) {
+                    el.scrollTop = el.scrollHeight;
                 }
             }
         });
+
+        // 策略2：兜底——找页面中所有可滚动 div（按高度排序取最大的那个，通常是聊天区）
+        if (wrappers.length === 0) {
+            var allDivs = Array.from(doc.querySelectorAll('div'));
+            allDivs.filter(function(d) {
+                var s = window.parent.getComputedStyle(d);
+                return (s.overflowY === 'auto' || s.overflowY === 'scroll') && d.scrollHeight > d.clientHeight + 50;
+            }).forEach(function(d) {
+                d.scrollTop = d.scrollHeight;
+            });
+        }
     }
-    // 延迟执行，等 DOM 渲染完
-    setTimeout(doScroll, 100);
-    setTimeout(doScroll, 400);
+
+    // 多次触发：100ms（DOM 刚生成）、400ms（渲染稳定）、800ms（保险）
+    setTimeout(scrollAll, 100);
+    setTimeout(scrollAll, 400);
+    setTimeout(scrollAll, 800);
 })();
 </script>
 """
@@ -867,8 +893,10 @@ def main():
         chat_container = st.container(height=480)
         render_chat_messages(chat_container)
 
-        # 发送后滚动到底
-        if st.session_state.scroll_trigger > 0:
+        # 每次有消息时都滚动到底（rerun 后页面重建，这里是正确的触发点）
+        # scroll_trigger > 0 表示刚发过消息，始终滚到底；
+        # 平时也对有消息的情况触发，确保刷新后不会跳回顶部
+        if st.session_state.messages:
             scroll_chat_to_bottom()
 
         # ── 输入区 ──

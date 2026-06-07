@@ -39,6 +39,23 @@ def run_repl(agent: Agent, skill_loader: SkillLoader) -> None:
     from mini_agent.ui.terminal import term as _term
 
     while True:
+        # ── HTTP 模式：等待 AgentRunner 处理完才进入输入 ──────────────────
+        # 若 bridge 存在且 agent 正在被 HTTP 线程驱动，则不抢占 term 队列，
+        # 避免 prompt_user() 里的 q.join() 与 AgentRunner 的 push 死锁。
+        _http_bridge = _get_http_bridge()
+        if _http_bridge is not None:
+            _bridge_state = _http_bridge.get_state()
+            if _bridge_state.get("state") in ("running", "waiting_permission"):
+                import time as _time
+                _time.sleep(0.3)
+                continue
+            # 队列中可能还有 AgentRunner finally 块里发出的最后几条 print 消息，
+            # 让渲染线程先把它们消费完，再进入 prompt_user() 的 q.join() 等待，
+            # 否则 q.join() 会等那些消息，反而更慢。
+            # 短暂 yield 给渲染线程即可（不需要精确同步）。
+            import time as _time
+            _time.sleep(0.05)
+
         try:
             user_input = _term.prompt_user()
         except KeyboardInterrupt:
@@ -169,6 +186,20 @@ def _handle_rollback(agent: Agent) -> None:
         )
     else:
         R.print_error("Rollback failed unexpectedly.")
+
+
+def _get_http_bridge():
+    """
+    尝试获取 HTTP bridge 单例。
+    未启动 HTTP 服务时返回 None，不影响纯命令行模式。
+    """
+    try:
+        from mini_agent.api.bridge import get_bridge
+        bridge = get_bridge()
+        # 只有 agent 已注入（即 HttpServer 真正启动了）才视为 HTTP 模式
+        return bridge if bridge.agent is not None else None
+    except Exception:
+        return None
 
 
 def _compact_history(agent: Agent) -> None:
