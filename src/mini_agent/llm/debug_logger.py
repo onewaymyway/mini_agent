@@ -314,9 +314,11 @@ class LLMDebugLogger:
     def _print_info(self, msg: str) -> None:
         try:
             from rich.console import Console
-            __import__("terminal").term.debug(msg)
+            from mini_agent.ui.terminal import term
+            term.debug(msg)
         except Exception:
-            __import__("terminal").term.debug(msg, prefix="[DEBUG]")
+            from mini_agent.ui.terminal import term
+            term.debug(msg, prefix="[DEBUG]")
 
     @staticmethod
     def _resolve_log_file(log_dir: Optional[Path], project_root: Optional[Path]) -> Path:
