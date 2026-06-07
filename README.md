@@ -102,19 +102,23 @@ python main.py --provider nvidia --model qwen/qwen3.5-122b-a10b --system-tool-ca
 # 安装依赖
 pip install streamlit requests
 
+# 启动 HTTP 服务（先启动 mini-agent）
+python -m mini_agent --http --http-port 8765
+
 # 启动 Web Demo
 streamlit run apps/mini_agent_webdemo/app.py
 ```
 
 Web Demo 提供：
 - 📱 浏览器对话界面
-- 🔌 HTTP API 连接配置
+- 🔌 HTTP API 连接配置（支持 Token 认证）
 - 🔐 权限审批可视化
-- 📡 实时事件流监控
+- 📡 实时事件流监控（SSE）
 - 📁 文件系统浏览
 - 📊 Turn 历史记录
+- 💬 权限审批交互式面板
 
-更多参数请使用 `python -m mini_agent --help` 查看。
+**注意**：需要先启动 HTTP 服务，Web Demo 才能连接到 Agent。
 
 ## REPL 命令
 
@@ -345,13 +349,14 @@ python -m pytest tests/ -q
 - [系统概览](docs/system-overview.md) — 整体架构和设计思路
 - [权限系统指南](docs/permission-guide.md) — 权限守卫、白名单、持久化配置
 - [Agent 设计](docs/agent-design.md) — Agent 核心循环与组件详解
-- [CLI I/O 机制](docs/cli-io-mechanism.md) — 命令行输入输出流程
+- [CLI I/O 机制](docs/cli-io-mechanism.md) — 命令行输入输出流程，HTTP 与命令行协同
 - [终端 I/O 指南](docs/terminal-io-guide.md) — 终端交互细节
 - [命令与工具参考](docs/commands-and-tools-reference.md) — 所有命令和工具
 - [Plan 和 Task 指南](docs/plan-and-task-guide.md) — 规划和任务系统
 - [Skill 系统指南](docs/skill-system-guide.md) — 技能机制详解
 - [代码结构指南](docs/code-structure-guide.md) — 项目结构说明
 - [HTTP API 指南](docs/http-api-guide.md) — REST/SSE 服务使用指南
+- [Web Demo 指南](docs/web-demo-guide.md) — Streamlit Web 界面使用
 
 ## 许可证
 
@@ -363,4 +368,4 @@ MIT License
 
 ---
 
-*最后更新：2026-06-07*
+*最后更新：2026-06-07* — 更新 HTTP 服务与 Web Demo 协同机制，新增 Web Demo 指南
