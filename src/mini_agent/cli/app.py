@@ -18,6 +18,24 @@ import mini_agent.ui.renderer as R
 
 
 def main() -> None:
+    # ── 全局异常捕获：确保任何启动错误都能显示 ────────────────────────────────
+    try:
+        _main_inner()
+    except Exception as e:
+        # 使用最直接的方式输出错误，不依赖任何库
+        import traceback
+        print("\n" + "=" * 50, file=sys.stderr)
+        print("ERROR: mini-agent startup failed", file=sys.stderr)
+        print("=" * 50, file=sys.stderr)
+        print(f"\n{type(e).__name__}: {e}", file=sys.stderr)
+        print("\nFull traceback:", file=sys.stderr)
+        traceback.print_exc()
+        print("=" * 50, file=sys.stderr)
+        sys.exit(1)
+
+
+def _main_inner() -> None:
+    """实际的主逻辑，分离出来以便全局异常捕获。"""
     # ── 注册内置工具（side-effect import，必须在 Agent 构造前执行）─────────
     import mini_agent.tools.builtin       # noqa: F401
     import mini_agent.tools.orchestration # noqa: F401
@@ -88,7 +106,11 @@ def main() -> None:
     )
 
     if not cfg.api_key:
-        R.print_error("ANTHROPIC_API_KEY is not set.")
+        # 使用最直接的方式输出错误
+        print("\nERROR: ANTHROPIC_API_KEY is not set.", file=sys.stderr)
+        print("Please set it via:", file=sys.stderr)
+        print("  Windows: $env:ANTHROPIC_API_KEY=\"sk-...\"", file=sys.stderr)
+        print("  Linux/Mac: export ANTHROPIC_API_KEY=\"sk-...\"", file=sys.stderr)
         sys.exit(1)
 
     if args.max_turns:
