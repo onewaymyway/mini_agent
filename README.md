@@ -13,7 +13,7 @@
 | 🔧 系统工具调用 | 工具通过 System Prompt 注入，兼容所有模型 |
 | 📚 Skill 机制 | SKILL.md 文件动态加载，自动触发注入上下文 |
 | 📝 Prompt 管理 | 所有 prompt 统一在 `prompts/` 目录管理 |
-| ⚡ 并发 Sub-Agent | 主 Agent 可派生多个子 Agent 并行执行任务 |
+| ⚡ 并发 Sub-Agent | 主 Agent 可派生多个子 Agent 并行执行任务，支持自动重试（HTTP 5xx/超时最多 3 次） |
 | 🔐 权限守卫 | 危险操作需要确认，支持白名单、黑名单、沙箱模式，路径规范化处理 |
 | 🐛 调试日志 | 完整记录每次请求/响应到 JSONL 文件 |
 | 🧠 感知与记忆 | 项目扫描、文件监视、工具缓存、跨 session 长期记忆 |
@@ -353,6 +353,7 @@ python -m pytest tests/ -q
 - [终端 I/O 指南](docs/terminal-io-guide.md) — 终端交互细节
 - [命令与工具参考](docs/commands-and-tools-reference.md) — 所有命令和工具
 - [Plan 和 Task 指南](docs/plan-and-task-guide.md) — 规划和任务系统
+- [SubAgent 机制](docs/subagent-mechanism.md) — Sub-Agent 执行与重试机制详解
 - [Skill 系统指南](docs/skill-system-guide.md) — 技能机制详解
 - [代码结构指南](docs/code-structure-guide.md) — 项目结构说明
 - [HTTP API 指南](docs/http-api-guide.md) — REST/SSE 服务使用指南
@@ -368,4 +369,4 @@ MIT License
 
 ---
 
-*最后更新：2026-06-07* — 更新 HTTP 服务与 Web Demo 协同机制，新增 Web Demo 指南
+*最后更新：2026-06-07* — SubAgent 自动重试机制、状态管理修复、调试日志新增
