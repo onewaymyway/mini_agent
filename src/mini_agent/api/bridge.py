@@ -348,7 +348,8 @@ class AgentBridge:
         self._state_lock = threading.Lock()
 
         # 注入后由外部赋值
-        self.agent: Any = None   # mini_agent.agent.Agent
+        self.agent: Any  = None   # mini_agent.agent.Agent
+        self.runner: Any = None   # AgentRunner，用于 turn_done 回调通知
 
     # ── 状态管理 ──────────────────────────────────────────────────────────
 
@@ -418,6 +419,12 @@ class AgentBridge:
             turn_id=turn_id,
             data={"text": text},
         ))
+        # 通知 AgentRunner 当前 turn 已完成
+        if self.runner is not None:
+            try:
+                self.runner.notify_turn_done(turn_id)
+            except Exception:
+                pass
 
     def emit_error(self, msg: str, turn_id: str = "") -> None:
         self.broadcaster.push(AgentEvent(

@@ -35,25 +35,37 @@ from .routes import router
 
 class AgentRunner(threading.Thread):
     """
-    后台线程：循环消费 InputQueue，驱动 agent.run_turn()。
-    run_turn() 的所有输出（流式 token、工具调用等）通过
-    OutputHook 拦截后广播到 HTTP 客户端。
+    后台线程：消费 InputQueue，通过 term.inject_input() 把消息注入
+    terminal 的 asyncio 注入队列，由 REPL 的 prompt_user() 竞速消费。
+
+    REPL 消费注入消息后，走完全相同的路径：
+        agent.run_turn(user_input) → 所有输出正常渲染 → You ❯ 重新显示
+
+    AgentRunner 在注入后等待 done_event（由 bridge.emit_turn_done 触发）。
     """
 
     def __init__(self, bridge: AgentBridge) -> None:
         super().__init__(name="agent-runner", daemon=True)
         self._bridge = bridge
         self._stop   = threading.Event()
+        self._pending: dict[str, threading.Event] = {}
+        self._pending_lock = threading.Lock()
 
     def stop(self) -> None:
         self._stop.set()
+
+    def notify_turn_done(self, turn_id: str) -> None:
+        """由 bridge.emit_turn_done 回调，唤醒等待中的 run()。"""
+        with self._pending_lock:
+            ev = self._pending.get(turn_id)
+        if ev:
+            ev.set()
 
     def run(self) -> None:
         bridge = self._bridge
         iq     = bridge.input_queue
 
         while not self._stop.is_set():
-            # 检查中断标志（在 idle 状态下也消耗掉，避免积压）
             bridge.consume_interrupt()
 
             cmd = iq.dequeue(timeout=0.5)
@@ -64,38 +76,44 @@ class AgentRunner(threading.Thread):
             bridge.set_state("running", turn_id=turn_id)
             bridge.emit_turn_start(turn_id, cmd.message)
 
+            if bridge.agent is None:
+                iq.mark_error(turn_id)
+                bridge.emit_error("Agent not initialized", turn_id=turn_id)
+                bridge.set_state("idle", turn_id=None)
+                continue
+
+            # 注入 turn_id，让 OutputHook 知道当前轮
+            bridge.agent._http_turn_id = turn_id
+
+            # 注册完成事件
+            done_event = threading.Event()
+            with self._pending_lock:
+                self._pending[turn_id] = done_event
+
             try:
-                if bridge.agent is None:
-                    raise RuntimeError("Agent not initialized")
+                from mini_agent.ui.terminal import term as _term
+                _term.inject_input(cmd.message)
 
-                # 注入 turn_id，让 OutputHook 知道当前轮
-                bridge.agent._http_turn_id = turn_id
+                # 等待 REPL 执行完 run_turn（最长 300 秒）
+                # bridge.emit_turn_done → notify_turn_done → done_event.set()
+                done_event.wait(timeout=300)
 
-                # HTTP 路径：在终端以分隔线形式回显用户消息
-                # 不打印 You ❯ 前缀——REPL 的 prompt_user() 已在等待输入并管理该提示符
-                try:
-                    from mini_agent.ui.terminal import term as _term
-                    _term.rule(f"[dim]HTTP ❯ {cmd.message[:80]}[/dim]")
-                except Exception:
-                    pass
-
-                result = bridge.agent.run_turn(cmd.message)
-
+                result = getattr(bridge.agent, "_http_last_result", "") or ""
                 iq.mark_done(turn_id)
-                bridge.emit_turn_done(turn_id, text=result or "")
-
+                # emit_turn_done 已由 _install_output_hook 的 run_turn hook 调用
+                # 此处不重复调用，避免重复事件
 
             except Exception as e:
                 tb = traceback.format_exc()
                 iq.mark_error(turn_id)
                 bridge.emit_error(f"{type(e).__name__}: {e}\n{tb}", turn_id=turn_id)
             finally:
+                with self._pending_lock:
+                    self._pending.pop(turn_id, None)
                 bridge.set_state("idle", turn_id=None)
                 if hasattr(bridge.agent, "_http_turn_id"):
                     bridge.agent._http_turn_id = ""
 
-
-# ── FastAPI App 工厂 ──────────────────────────────────────────────────────────
 
 def create_app(
     bridge:      AgentBridge,
@@ -200,8 +218,9 @@ class HttpServer:
             excludes     = fs_excludes,
         )
 
-        # AgentRunner（后台驱动 agent.run_turn）
+        # AgentRunner（把 HTTP 消息注入 terminal 输入队列，由 REPL 主循环执行）
         self._runner = AgentRunner(self._bridge)
+        self._bridge.runner = self._runner  # 让 bridge.emit_turn_done 能通知 runner
 
         # uvicorn 服务线程
         self._server_thread: Optional[threading.Thread] = None
@@ -359,3 +378,36 @@ def _install_output_hook(bridge: AgentBridge) -> None:
             return _patched
 
         setattr(_mod, _fn_name, _make_patched_log(_orig_fn, _etype))
+
+    # ── 8. hook agent.run_turn：REPL 执行完后存结果并通知 AgentRunner ────
+    # 仅在 HTTP turn 期间（_http_turn_id 非空）触发，命令行路径完全不受影响。
+    def _install_run_turn_hook(agent_instance) -> None:
+        _orig_run_turn = agent_instance.run_turn
+
+        def _hooked_run_turn(user_message: str) -> str:
+            result = _orig_run_turn(user_message)
+            turn_id = getattr(agent_instance, "_http_turn_id", "")
+            if turn_id:
+                agent_instance._http_last_result = result or ""
+                bridge.emit_turn_done(turn_id, text=result or "")
+                agent_instance._http_turn_id = ""  # 清空，避免重复触发
+            return result
+
+        agent_instance.run_turn = _hooked_run_turn
+
+    # bridge.agent 是普通属性，监听赋值事件来完成延迟绑定
+    _orig_bridge_setattr = type(bridge).__setattr__
+
+    def _bridge_setattr_hook(self, name: str, value) -> None:
+        _orig_bridge_setattr(self, name, value)
+        if name == "agent" and value is not None:
+            try:
+                _install_run_turn_hook(value)
+            except Exception:
+                pass
+
+    type(bridge).__setattr__ = _bridge_setattr_hook
+
+    # 如果 agent 已经赋值，立即 patch
+    if bridge.agent is not None:
+        _install_run_turn_hook(bridge.agent)

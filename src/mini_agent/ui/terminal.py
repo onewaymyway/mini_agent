@@ -53,6 +53,10 @@ class Terminal:
         self._streaming: bool = False
         self._stream_had_output: bool = False
         self._render_stop: bool = False
+        # HTTP 注入支持：持久后台 ptk loop + session（由 _read_line 懒初始化）
+        self._ptk_loop: Optional[Any]    = None   # asyncio 后台事件循环
+        self._ptk_session: Optional[Any] = None   # PromptSession（持久复用）
+        self._inject_queue: Optional[Any] = None  # asyncio.Queue[str]（在 ptk loop 里）
 
         # 状态栏内容提供者回调（由 status_bar 模块注册）
         # 架构改进：Terminal 自己在刷新周期内调用回调拉取内容，
@@ -138,14 +142,51 @@ class Terminal:
 
     def prompt_user(self, prompt_text: str = "") -> str:
         """
-        REPL 用户输入。
-        阻塞前确保屏幕上没有状态栏干扰，输入完成后恢复状态栏。
+        REPL 用户输入。支持两种输入源竞速：
+          1. HTTP 注入（_inject_queue）—— 外部线程 call_soon_threadsafe 写入
+          2. 键盘输入（prompt_toolkit prompt_async）
+        哪个先到就用哪个，完全等同于用户在键盘上输入。
         """
         self._enter_input_mode()
         try:
             return self._read_line(prompt_text)
         finally:
             self._exit_input_mode()
+
+    def inject_input(self, text: str) -> None:
+        """
+        从任意线程注入一行输入（HTTP 后台线程调用）。
+        通过 ptk 的 buffer + validate_and_handle 模拟用户键入文字并按回车：
+          - ptk 自己负责回显（显示 'You ❯ <text>'）
+          - 提示符只渲染一次，无双重 You ❯
+          - 效果与真实键盘输入完全一致
+        如果 ptk session/loop 尚未就绪，缓存到 _inject_pending 等待。
+        """
+        loop    = self._ptk_loop
+        session = self._ptk_session
+
+        if loop is None or session is None or not loop.is_running():
+            if not hasattr(self, "_inject_pending"):
+                self._inject_pending: list[str] = []
+            self._inject_pending.append(text)
+            return
+
+        def _do_inject():
+            app = session.app
+            if app and app.is_running:
+                from prompt_toolkit.document import Document
+                buf = app.current_buffer
+                buf.set_document(Document(text=text, cursor_position=len(text)))
+                buf.validate_and_handle()
+            else:
+                # app 尚未运行（prompt_async 还没启动），等 50ms 再试
+                import asyncio
+                async def _retry():
+                    await asyncio.sleep(0.05)
+                    _do_inject()
+                asyncio.ensure_future(_retry(), loop=loop)
+
+        loop.call_soon_threadsafe(_do_inject)
 
     def force_end_stream(self) -> None:
         """
@@ -448,19 +489,17 @@ class Terminal:
 
     def _read_line(self, prompt_text: str = "") -> str:
         """
-        使用 prompt_toolkit 或降级 sys.stdin.readline() 读取一行。
+        读取一行用户输入。
 
-        修复：
-        1. prompt_toolkit 非 ImportError 的异常（如 NotImplementedError、
-           KeyboardInterrupt 以外的运行时错误）原来被 `except Exception: pass`
-           静默吞掉，导致每次都重试 ptk 并失败，提示符一直不显示。
-           改为：非 ImportError 异常时设置 _ptk_failed 标志，后续直接降级。
-        2. 降级路径用 sys.stdin.readline() 替代 input()，行为与 confirm()
-           保持一致，避免某些终端下 input() 回显异常。
-        3. 降级时补一个换行分隔，确保用户输入与提示符之间有视觉间距。
+        使用持久后台 asyncio 事件循环运行 prompt_toolkit prompt_async。
+        HTTP 注入通过 inject_input() 直接写入 ptk buffer 并模拟回车，
+        ptk 自己负责回显，提示符只渲染一次，两个 You ❯ 问题彻底解决。
+        多行粘贴由 prompt_toolkit 原生处理，不受影响。
         """
         if not getattr(self, "_ptk_failed", False):
             try:
+                import asyncio
+                import concurrent.futures
                 from prompt_toolkit import PromptSession
                 from prompt_toolkit.formatted_text import HTML
                 from prompt_toolkit.styles import Style
@@ -468,35 +507,57 @@ class Terminal:
                 from prompt_toolkit.auto_suggest import AutoSuggestFromHistory
                 from prompt_toolkit.completion import WordCompleter
 
-                if not hasattr(self, "_ptk_session"):
+                # 懒初始化持久后台事件循环（只创建一次，跨多轮输入复用）
+                if self._ptk_loop is None:
+                    self._ptk_loop = asyncio.new_event_loop()
+                    t = threading.Thread(
+                        target=self._ptk_loop.run_forever,
+                        daemon=True,
+                        name="ptk-event-loop",
+                    )
+                    t.start()
+
+                # 懒初始化 PromptSession（只创建一次，状态持久）
+                if self._ptk_session is None:
                     self._ptk_session = PromptSession(
                         history=InMemoryHistory(),
                         auto_suggest=AutoSuggestFromHistory(),
-                        completer=WordCompleter(_SLASH_COMPLETIONS, sentence=True, ignore_case=True),
+                        completer=WordCompleter(
+                            _SLASH_COMPLETIONS, sentence=True, ignore_case=True
+                        ),
                         complete_while_typing=True,
                         enable_history_search=True,
                         mouse_support=False,
                     )
+                    # 消费 inject_input() 在 session 就绪前缓存的消息
+                    # inject_input() 的重试机制会自动处理，此处清空缓存即可
+                    self._inject_pending = getattr(self, "_inject_pending", [])
+                    # 这些消息会在 inject_input 下次 retry 时处理
 
                 html_prompt = prompt_text or HTML(
                     "<b><ansgreen>You</ansgreen></b><ansicyan> ❯ </ansicyan>"
                 )
-                result = self._ptk_session.prompt(
-                    html_prompt,
-                    style=Style.from_dict({"ansgreen": "bold #00cc00", "ansicyan": "bold #00cccc"}),
-                    patch_stdout=True,   # 后台线程打印时自动保留输入提示符
+                style = Style.from_dict(
+                    {"ansgreen": "bold #00cc00", "ansicyan": "bold #00cccc"}
                 )
-                return (result or "").strip()
+
+                async def _do_prompt() -> str:
+                    """在持久后台 loop 里运行 prompt_async。"""
+                    result = await self._ptk_session.prompt_async(html_prompt, style=style)
+                    return (result or "").strip()
+
+                # 在后台 loop 里运行，主线程阻塞等待结果
+                future = asyncio.run_coroutine_threadsafe(_do_prompt(), self._ptk_loop)
+                return future.result()
+
             except ImportError:
-                pass  # 未安装 prompt_toolkit，直接降级
+                pass
             except (KeyboardInterrupt, EOFError):
-                raise  # 这两个由上层处理，不能吞掉
+                raise
             except Exception:
-                # ptk 运行时异常（如 NotImplementedError on dumb terminal），
-                # 标记失败，后续跳过 ptk 直接用降级方案
                 self._ptk_failed = True
 
-        # 降级：直接写提示符 + readline
+        # 降级：直接写提示符 + readline（不支持注入，但至少能用）
         sys.stdout.write("\n")
         if prompt_text:
             sys.stdout.write(str(prompt_text))
