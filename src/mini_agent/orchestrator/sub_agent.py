@@ -16,10 +16,12 @@ SubAgent 是对 Agent 的轻量包装，在独立线程中运行，
 from __future__ import annotations
 
 import io
+import json
 import sys
 import threading
 import time
 import traceback
+from pathlib import Path
 from typing import Callable, Optional
 
 from mini_agent.config import AppConfig, load_config
@@ -30,6 +32,25 @@ from .task import Task, TaskRecord, TaskResult, TaskStatus
 from .concurrency import get_task_sem
 from mini_agent.permissions import PermissionGuard
 from mini_agent.tools import get_default_registry
+
+# Debug log file
+_DEBUG_LOG_FILE = Path(__file__).parent.parent.parent.parent / "test_result" / "subagent_debug.jsonl"
+
+
+def _debug_log(task_id: str, event: str, details: dict | None = None):
+    """写入 debug 日志到文件。"""
+    try:
+        _DEBUG_LOG_FILE.parent.mkdir(parents=True, exist_ok=True)
+        entry = {
+            "ts": time.time(),
+            "task_id": task_id,
+            "event": event,
+            "details": details or {}
+        }
+        with open(_DEBUG_LOG_FILE, "a", encoding="utf-8") as f:
+            f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+    except Exception:
+        pass  # 静默失败，避免影响正常执行
 
 
 # 实时日志回调类型：(task_id, line) -> None
@@ -59,6 +80,10 @@ class SubAgent:
     ) -> None:
         self.record = record
         self.base_cfg = base_cfg
+        # 保存主配置的 LLM 相关字段，避免子线程重新读取环境变量
+        self._llm_provider = base_cfg.llm_provider
+        self._llm_base_url = base_cfg.llm_base_url
+        self._api_key = base_cfg.api_key  # 从主配置继承 API key
         self.on_log = on_log
         self.on_terminal = on_terminal
         self._thread: Optional[threading.Thread] = None
@@ -104,16 +129,21 @@ class SubAgent:
 
     def _run(self) -> None:
         task = self.record.task
+        _debug_log(task.id, "sub_agent_start", {"task_name": task.name})
         sem = get_task_sem()
 
         # 等待 task slot（可能排队）
         if sem.waiting_count > 0 or sem.active_count >= sem.limit:
             self._log(f"Queued (task slots full: {sem.active_count}/{sem.limit})")
+            _debug_log(task.id, "queued", {"active": sem.active_count, "limit": sem.limit})
 
+        _debug_log(task.id, "acquiring_semaphore", {"label": task.id[:8] + " " + task.name[:16]})
         with sem.acquire(label=task.id[:8] + " " + task.name[:16]):
+            _debug_log(task.id, "semaphore_acquired")
             # 检查是否在排队期间被取消
             with self._lock:
                 if self.record.status == TaskStatus.CANCELLED:
+                    _debug_log(task.id, "cancelled_while_queued")
                     # 在排队期间被取消，直接返回
                     return
             self._run_body(task)
@@ -121,11 +151,17 @@ class SubAgent:
     def _run_body(self, task) -> None:
         self._log(f"Starting task: {task.name}")
         self._log(f"Config: model={task.model or 'default'}, max_turns={task.max_turns}")
+        _debug_log(task.id, "run_body_start", {"model": task.model, "max_turns": task.max_turns})
 
         try:
+            _debug_log(task.id, "building_agent")
             agent = self._build_agent(task)
             self._log(f"Agent built, running turn...")
+            _debug_log(task.id, "agent_built", {"stats": str(agent.stats)})
+
+            _debug_log(task.id, "running_turn")
             output = self._run_with_capture(agent, task.prompt)
+            _debug_log(task.id, "turn_completed", {"output_len": len(output) if output else 0})
             self._log(f"Turn completed, output length: {len(output) if output else 0} chars")
 
             with self._lock:
@@ -134,6 +170,7 @@ class SubAgent:
                     self.record.result = TaskResult(
                         output=output, error="Cancelled after completion"
                     )
+                    _debug_log(task.id, "cancelled")
                 else:
                     self.record.status = TaskStatus.DONE
                     self.record.result = TaskResult(
@@ -143,10 +180,17 @@ class SubAgent:
                         tool_calls=agent.stats.tool_calls,
                         turns=agent.stats.turns,
                     )
+                    _debug_log(task.id, "done", {
+                        "input_tokens": agent.stats.input_tokens,
+                        "output_tokens": agent.stats.output_tokens,
+                        "tool_calls": agent.stats.tool_calls,
+                        "turns": agent.stats.turns
+                    })
             self._log(f"Done. Tokens: {agent.stats.input_tokens}↑ {agent.stats.output_tokens}↓, turns={agent.stats.turns}")
 
         except TimeoutError as exc:
             self._log(f"TIMEOUT: {exc}")
+            _debug_log(task.id, "timeout", {"error": str(exc)})
             with self._lock:
                 self.record.status = TaskStatus.FAILED
                 self.record.result = TaskResult(output="", error=f"Timeout: {exc}")
@@ -154,6 +198,7 @@ class SubAgent:
         except Exception as exc:
             tb = traceback.format_exc()
             self._log(f"ERROR: {exc}")
+            _debug_log(task.id, "error", {"error": str(exc)})
             with self._lock:
                 self.record.status = TaskStatus.FAILED
                 self.record.result = TaskResult(output="", error=str(exc))
@@ -196,17 +241,34 @@ class SubAgent:
     def _build_agent(self, task: Task) -> Agent:
         """为本次任务构建独立的 Agent 实例。"""
         # 继承主 cfg，但允许 task 覆盖部分字段
+        # 关键：显式传递 API key 和 LLM 配置，避免子线程重新读取环境变量
         cfg = load_config(
             project_root=self.base_cfg.project_root,
             verbose=False,
             sandbox=self.base_cfg.sandbox,
             auto_approve=task.auto_approve,
             model=task.model or self.base_cfg.model,
-            llm_provider=task.provider or self.base_cfg.llm_provider,
-            llm_base_url=self.base_cfg.llm_base_url,
+            llm_provider=task.provider or self._llm_provider,
+            llm_base_url=self._llm_base_url,
             use_system_tool_call=self.base_cfg.use_system_tool_call,
             debug_llm=self.base_cfg.debug_llm,
         )
+        # 显式设置 API key（从主配置继承）
+        if not cfg.api_key and self._api_key:
+            cfg.api_key = self._api_key
+        # 如果还是空的，从环境变量再试一次，并记录 debug 信息
+        if not cfg.api_key:
+            from mini_agent.config import os
+            env_key = os.environ.get("ANTHROPIC_API_KEY", "")
+            if env_key:
+                cfg.api_key = env_key
+                _debug_log(self.record.task_id, "api_key_from_env", {})
+            else:
+                _debug_log(self.record.task_id, "api_key_missing", {
+                    "from_config": bool(self._api_key),
+                    "from_env": bool(env_key)
+                })
+
         cfg.max_turns = task.max_turns
         cfg.stream = False   # SubAgent 不流式输出（输出被捕获）
         if task.system_extra:
