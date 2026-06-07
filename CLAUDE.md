@@ -91,10 +91,12 @@ python main.py --provider nvidia --model qwen/qwen3.5-122b-a10b --system-tool-ca
 ### 并发编排 (`src/mini_agent/orchestrator/`)
 
 - `task.py` — 任务定义
-- `task_manager.py` — 任务调度
-- `sub_agent.py` — 子 Agent 实现
+- `task_manager.py` — 任务调度（依赖解析、SubAgent 管理）
+- `sub_agent.py` — 子 Agent 实现（线程包装、自动重试、输出捕获）
 - `concurrency.py` — 并发控制
 - `status_bar.py` — 状态栏显示
+- `plan.py` — 执行计划数据模型
+- `plan_display.py` — 计划 UI 渲染
 
 ### 感知与记忆 (`src/mini_agent/perception/`)
 
