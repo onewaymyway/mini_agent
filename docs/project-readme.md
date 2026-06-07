@@ -107,9 +107,9 @@ mini_agent/
 │       │
 │       ├── orchestrator/        # 并发编排系统
 │       │   ├── task.py          # 任务数据模型
-│       │   ├── task_manager.py  # 任务调度器
+│       │   ├── task_manager.py  # 任务调度器（依赖解析、SubAgent 管理）
 │       │   ├── task_display.py  # 任务 UI（表格/看板）
-│       │   ├── sub_agent.py     # Sub-Agent 线程包装器
+│       │   ├── sub_agent.py     # Sub-Agent 线程包装器（重试机制、输出捕获）
 │       │   ├── concurrency.py   # 信号量并发控制
 │       │   ├── plan.py          # 执行计划数据模型
 │       │   ├── plan_display.py  # 计划 UI（树形/摘要）

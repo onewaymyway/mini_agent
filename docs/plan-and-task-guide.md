@@ -253,6 +253,8 @@ Progress: 2/4 done, 1 running
 | `src/mini_agent/orchestrator/plan.py` | 数据模型：`ExecutionPlan`、`PlanTask`、`PlanTaskStatus`、`TaskSource` |
 | `src/mini_agent/tools/plan.py` | Agent 工具：`create_plan`、`start_task`、`complete_task` 等 7 个工具 |
 | `src/mini_agent/orchestrator/plan_display.py` | 渲染：状态栏紧凑行、Rich 树形视图、完成摘要表格 |
+| `src/mini_agent/orchestrator/sub_agent.py` | Sub-Agent 执行单元（线程包装、重试机制、输出捕获） |
+| `src/mini_agent/orchestrator/task_manager.py` | 并发任务调度器（依赖解析、调度循环、SubAgent 管理） |
 | `src/mini_agent/prompts/system/plan_mode.md` | System prompt 片段：告知 LLM 如何使用计划工具 |
 
 ---

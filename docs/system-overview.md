@@ -235,6 +235,14 @@ system prompt 构建顺序：
 - **ExecutionPlan / PlanTask** — 结构化执行计划，注入 system prompt，不启动线程
 - **TaskManager / SubAgent** — 真正的并发执行，纯线程模型，不依赖 asyncio
 
+**SubAgent 关键特性**：
+- 独立的对话历史、独立的统计信息
+- 继承主 Agent 的 LLMConfig（可覆盖 provider/model）
+- 输出通过回调写入 TaskRecord.log_lines（不直接打印 stdout）
+- 对可重试错误（HTTP 5xx、超时）自动重试最多 3 次，每次间隔 2 秒
+- 线程安全的状态管理，通过 TaskRecord 的 lock 保护
+- Debug 日志写入 test_result/subagent_debug.jsonl
+
 并发控制：两个 `CountingSemaphore`，分别限制并发任务数和并发 LLM 调用数。
 
 ### 3.10 感知系统（perception/）
