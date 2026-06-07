@@ -120,10 +120,13 @@ class SubAgent:
 
     def _run_body(self, task) -> None:
         self._log(f"Starting task: {task.name}")
+        self._log(f"Config: model={task.model or 'default'}, max_turns={task.max_turns}")
 
         try:
             agent = self._build_agent(task)
+            self._log(f"Agent built, running turn...")
             output = self._run_with_capture(agent, task.prompt)
+            self._log(f"Turn completed, output length: {len(output) if output else 0} chars")
 
             with self._lock:
                 if self._cancel_event.is_set():
@@ -140,7 +143,13 @@ class SubAgent:
                         tool_calls=agent.stats.tool_calls,
                         turns=agent.stats.turns,
                     )
-            self._log(f"Done. Tokens: {agent.stats.input_tokens}↑ {agent.stats.output_tokens}↓")
+            self._log(f"Done. Tokens: {agent.stats.input_tokens}↑ {agent.stats.output_tokens}↓, turns={agent.stats.turns}")
+
+        except TimeoutError as exc:
+            self._log(f"TIMEOUT: {exc}")
+            with self._lock:
+                self.record.status = TaskStatus.FAILED
+                self.record.result = TaskResult(output="", error=f"Timeout: {exc}")
 
         except Exception as exc:
             tb = traceback.format_exc()
