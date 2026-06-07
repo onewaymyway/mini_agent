@@ -285,7 +285,98 @@ agent.run_turn()
 
 ---
 
-## 十、关键代码路径
+## 十、HTTP 与命令行协同
+
+### 10.1 架构设计
+
+HTTP 服务与命令行共享同一个 Agent 实例，通过 `AgentBridge` 实现解耦：
+
+```
+┌──────────────┐     ┌──────────────┐     ┌──────────────┐
+│  HTTP Client │ <-- │ FastAPI +    │ <-- │ AgentBridge  │
+│              │     │ AgentRunner  │     │              │
+└──────────────┘     └──────────────┘     └──────┬───────┘
+                                                  │
+                                     ┌────────────▼──────────┐
+                                     │   mini-agent Core     │
+                                     │   (agent.py + tools)  │
+                                     └───────────────────────┘
+```
+
+### 10.2 核心组件
+
+| 组件 | 文件 | 职责 |
+|------|------|------|
+| RingBuffer | `bridge.py` | 线程安全的事件环形缓冲区，支持历史回放 |
+| OutputBroadcaster | `bridge.py` | 事件广播，同时写入 RingBuffer 和 SSE 订阅者 |
+| InputQueue | `bridge.py` | 命令队列，HTTP enqueue、AgentRunner 消费 |
+| PermissionGate | `bridge.py` | HTTP 侧权限审批，支持阻塞等待 |
+| AgentRunner | `server.py` | 后台线程，消费 InputQueue 并驱动 run_turn |
+
+### 10.3 命令行显示协同
+
+HTTP 请求会在命令行终端显示用户输入，保持统一的交互体验：
+
+```
+# 命令行输入
+You ❯ 写一个质数筛法函数
+
+# HTTP 请求（在终端显示）
+You (web) ❯ 写一个质数筛法函数
+─────────
+Agent: 好的，我来写一个质数筛法...
+─── Web 请求处理完毕，你可以继续在此输入 ───
+```
+
+实现位置：`server.py:AgentRunner.run()`
+
+### 10.4 输出钩子机制
+
+通过 monkey-patch `Renderer` 输出方法，将 agent 核心输出接入 HTTP 广播：
+
+```python
+# server.py:_install_output_hook()
+_orig_stream_token = R.__class__.stream_token
+class _PatchedStreamWriter(_OrigStreamWriter):
+    def write(self, text: str) -> None:
+        super().write(text)
+        bridge.emit_token(text, turn_id=turn_id)
+```
+
+这样 agent.py 本身无需任何改动，即可同时输出到终端和 HTTP。
+
+### 10.5 SSE 事件流
+
+支持两种订阅模式：
+
+1. **全局流** `/v1/stream` - 订阅所有实时事件
+2. **指定轮次流** `/v1/stream/{turn_id}` - 只订阅特定 turn 的事件
+
+事件类型包括：
+- `token` - 流式 token
+- `tool_call` / `tool_result` - 工具调用/结果
+- `turn_start` / `turn_done` - 轮次开始/结束
+- `permission_req` - 权限请求
+- `error` / `info` / `warning` - 错误/信息/警告
+
+### 10.6 断线重连
+
+支持 Last-Event-ID 请求头，浏览器 EventSource 自动重连：
+
+```javascript
+const source = new EventSource("http://127.0.0.1:8765/v1/stream", {
+  headers: { "Authorization": "Bearer token" }
+});
+// 断线后自动重连，携带 Last-Event-ID 续接
+```
+
+服务端会回放 `since_id` 之后的历史事件，确保不丢失。
+
+---
+
+## 十一、关键代码路径
+
+### 主循环调用链
 
 ### 主循环调用链
 

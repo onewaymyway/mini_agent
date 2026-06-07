@@ -104,6 +104,15 @@ python main.py --provider nvidia --model qwen/qwen3.5-122b-a10b --system-tool-ca
 - `memory_store.py` — 跨 session 长期记忆
 - `token_counter.py` — Token 预估
 
+### HTTP API (`src/mini_agent/api/`)
+
+- `server.py` — FastAPI app 工厂 + AgentRunner 后台线程 + 输出钩子
+- `routes.py` — HTTP 路由定义（对话/SSE/事件/权限/文件系统）
+- `bridge.py` — 解耦桥梁（RingBuffer/OutputBroadcaster/InputQueue/PermissionGate）
+- `models.py` — Pydantic 请求/响应模型 + AgentEvent
+- `auth.py` — Bearer Token 认证中间件
+- `fs_helper.py` — 文件系统操作封装
+
 ### CLI (`src/mini_agent/cli/`)
 
 - `app.py` — 应用启动装配（解析参数、初始化组件、启动 REPL）
