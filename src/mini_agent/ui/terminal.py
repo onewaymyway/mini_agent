@@ -300,6 +300,11 @@ class Terminal:
                 sys.stdout.flush()
 
         elif kind == "stream_end":
+            # 把过滤器里缓冲的最后几个字符也打印出来（避免末尾内容丢失）
+            if self._pending_stream:
+                sys.stdout.write(self._pending_stream)
+                self._stream_had_output = True
+
             if self._stream_had_output:
                 sys.stdout.write("\n")
                 sys.stdout.flush()
@@ -327,6 +332,9 @@ class Terminal:
         elif kind == "_force_end_stream":
             # 强制结束流式状态（异常恢复时使用）
             if self._streaming or self._stream_had_output:
+                if self._pending_stream:
+                    sys.stdout.write(self._pending_stream)
+                    self._stream_had_output = True
                 if self._stream_had_output:
                     sys.stdout.write("\n")
                     sys.stdout.flush()
