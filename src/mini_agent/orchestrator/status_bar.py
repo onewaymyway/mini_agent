@@ -19,23 +19,67 @@ from __future__ import annotations
 def _build_lines() -> list[str]:
     lines: list[str] = []
     try:
+        from mini_agent.tools.orchestration import get_task_manager
+        mgr = get_task_manager()
+
+        if mgr:
+            # 使用 TaskManager 的真实任务状态
+            stats = mgr.stats()
+            running = stats["running"]
+            pending = stats["pending"]
+            done = stats["done"]
+            failed = stats["failed"]
+            cancelled = stats["cancelled"]
+            total = stats["total"]
+
+            max_workers = mgr.max_workers
+
+            # Tasks 行
+            active_bar = "\033[36m" + "█" * min(running, max_workers) + "\033[90m" + "░" * max(0, max_workers - running) + "\033[0m"
+            task_status = f"\033[36m{running} running\033[0m" if running else "\033[90midle\033[0m"
+
+            queue_str = ""
+            if pending > 0:
+                # 获取排队中的任务名称
+                pending_records = mgr.list_records(status=None)
+                pending_tasks = [r for r in pending_records if r.status.name == "PENDING"][:3]
+                names = ", ".join(r.task.name[:20] for r in pending_tasks)
+                extra = f" +{pending-3}" if pending > 3 else ""
+                queue_str = f"  \033[33m⏳ {pending} queued\033[0m: \033[90m{names}{extra}\033[0m"
+
+            lines.append(f"  ⚡ Tasks [{active_bar}] {running}/{max_workers}   {task_status}{queue_str}")
+
+            # 如果有排队任务，显示详细信息
+            if pending > 0:
+                lines.append("")
+                lines.append("  [Queue details]")
+                pending_records = mgr.list_records(status=None)
+                pending_tasks = [r for r in pending_records if r.status.name == "PENDING"]
+                for i, r in enumerate(pending_tasks[:5], 1):
+                    lines.append(f"    {i}. {r.task.name[:50]}")
+                if len(pending_tasks) > 5:
+                    lines.append(f"    ... and {len(pending_tasks)-5} more")
+        else:
+            # TaskManager 未初始化时显示空闲
+            lines.append("  ⚡ Tasks [\033[90m░░░░\033[0m] 0/4   \033[90midle\033[0m")
+    except Exception as e:
+        # 出错时显示简单状态
+        lines.append(f"  \033[90m⚡ Tasks: error getting status\033[0m")
+
+    try:
         from .concurrency import concurrency_snapshot
         snap = concurrency_snapshot()
-        t, ll = snap["tasks"], snap["llm"]
-        if t["active"] + ll["active"] + t["waiting"] + ll["waiting"] > 0:
-            for snap_, icon, label, ac, wc in [
-                (t,  "⚡", "Tasks", "\033[36m", "\033[33m"),
-                (ll, "🤖", "LLM  ", "\033[34m", "\033[33m"),
-            ]:
-                active, waiting, limit = snap_["active"], snap_["waiting"], snap_["limit"]
-                bar = ac + "█" * min(active, limit) + "\033[90m" + "░" * max(0, limit - active) + "\033[0m"
-                status = f"{ac}{active} running\033[0m" if active else "\033[90midle\033[0m"
-                queue_str = ""
-                if waiting > 0:
-                    names = ", ".join(w["label"][:20] for w in snap_["waiters"][:3])
-                    extra = f" +{waiting-3}" if waiting > 3 else ""
-                    queue_str = f"  {wc}⏳ {waiting} queued\033[0m: \033[90m{names}{extra}\033[0m"
-                lines.append(f"  {icon} {label} [{bar}] {active}/{limit}   {status}{queue_str}")
+        ll = snap["llm"]
+        active, waiting, limit = ll["active"], ll["waiting"], ll["limit"]
+        if active > 0 or waiting > 0:
+            bar = "\033[34m" + "█" * min(active, limit) + "\033[90m" + "░" * max(0, limit - active) + "\033[0m"
+            status = f"\033[34m{active} running\033[0m" if active else "\033[90midle\033[0m"
+            queue_str = ""
+            if waiting > 0:
+                names = ", ".join(w["label"][:20] for w in ll["waiters"][:3])
+                extra = f" +{waiting-3}" if waiting > 3 else ""
+                queue_str = f"  \033[33m⏳ {waiting} queued\033[0m: \033[90m{names}{extra}\033[0m"
+            lines.append(f"  🤖 LLM   [{bar}] {active}/{limit}   {status}{queue_str}")
     except Exception:
         pass
 

@@ -35,6 +35,9 @@ from mini_agent.tools import get_default_registry
 # 实时日志回调类型：(task_id, line) -> None
 LogCallback = Callable[[str, str], None]
 
+# 终端状态通知回调类型：(task_id, old_status, new_status) -> None
+TerminalCallback = Callable[[str, TaskStatus, TaskStatus], None]
+
 
 class SubAgent:
     """
@@ -52,13 +55,16 @@ class SubAgent:
         record: TaskRecord,
         base_cfg: AppConfig,
         on_log: Optional[LogCallback] = None,
+        on_terminal: Optional[TerminalCallback] = None,
     ) -> None:
         self.record = record
         self.base_cfg = base_cfg
         self.on_log = on_log
+        self.on_terminal = on_terminal
         self._thread: Optional[threading.Thread] = None
         self._cancel_event = threading.Event()
         self._lock = threading.Lock()
+        self._terminal_notified: set[TaskStatus] = set()  # 已通知的终态
 
     # ── 生命周期 ──────────────────────────────────────────────────────────────
 
@@ -67,8 +73,8 @@ class SubAgent:
         with self._lock:
             if self.record.status != TaskStatus.PENDING:
                 return
-            self.record.status = TaskStatus.RUNNING
-            self.record.started_at = time.time()
+            # 注意：状态改为 RUNNING 在获得 semaphore 时才执行
+            # 这里只启动线程，不立即改状态
 
         self._thread = threading.Thread(
             target=self._run,
@@ -105,6 +111,11 @@ class SubAgent:
             self._log(f"Queued (task slots full: {sem.active_count}/{sem.limit})")
 
         with sem.acquire(label=task.id[:8] + " " + task.name[:16]):
+            # 检查是否在排队期间被取消
+            with self._lock:
+                if self.record.status == TaskStatus.CANCELLED:
+                    # 在排队期间被取消，直接返回
+                    return
             self._run_body(task)
 
     def _run_body(self, task) -> None:
@@ -144,6 +155,15 @@ class SubAgent:
         finally:
             with self._lock:
                 self.record.finished_at = time.time()
+                # 通知终态（只通知一次）
+                if self.record.is_terminal and self.record.status not in self._terminal_notified:
+                    self._terminal_notified.add(self.record.status)
+                    old_status = TaskStatus.PENDING  # 近似值
+                    if self.on_terminal:
+                        try:
+                            self.on_terminal(self.record.task_id, old_status, self.record.status)
+                        except Exception:
+                            pass
 
     def _run_with_capture(self, agent: Agent, prompt: str) -> str:
         """

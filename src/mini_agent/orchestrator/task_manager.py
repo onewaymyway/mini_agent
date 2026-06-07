@@ -93,10 +93,11 @@ class TaskManager:
     def stop(self, cancel_pending: bool = True) -> None:
         """
         停止调度器。
-        cancel_pending=True 时取消所有未完成任务。
+        cancel_pending=True 时取消所有未完成任务，并等待所有 SubAgent 线程结束。
         """
         self._stop_event.set()
         if cancel_pending:
+            # 先取消所有任务
             with self._lock:
                 for rec in self._records.values():
                     if not rec.is_terminal:
@@ -106,6 +107,11 @@ class TaskManager:
                         elif rec.status == TaskStatus.PENDING:
                             rec.status = TaskStatus.CANCELLED
                             rec.finished_at = time.time()
+            # 等待所有正在运行的 SubAgent 线程结束（最多 5 秒）
+            with self._lock:
+                agents = list(self._agents.values())
+            for agent in agents:
+                agent.join(timeout=1.0)
         if self._scheduler_thread:
             self._scheduler_thread.join(timeout=5)
 
@@ -234,7 +240,7 @@ class TaskManager:
             )
             from .concurrency import get_task_sem
             sem_limit = get_task_sem().limit
-            if running >= sem_limit * 2:
+            if running >= sem_limit:
                 return
 
             # 收集所有已完成任务的 id（用于依赖检查）
@@ -266,7 +272,7 @@ class TaskManager:
 
             # 按提交时间排序，填满 worker 槽位
             ready.sort(key=lambda r: r.task.created_at)
-            slots = max(0, sem_limit * 2 - running)
+            slots = max(0, sem_limit - running)
             to_start = ready[:slots]
 
         # 在锁外启动，避免死锁
@@ -278,9 +284,14 @@ class TaskManager:
             record=rec,
             base_cfg=self.base_cfg,
             on_log=self._handle_log,
+            on_terminal=self._handle_terminal,
         )
         with self._lock:
             self._agents[rec.task_id] = agent
+            # 立即标记为 RUNNING，确保计数同步
+            if rec.status == TaskStatus.PENDING:
+                rec.status = TaskStatus.RUNNING
+                rec.started_at = time.time()
         agent.start()
         self._notify_status(rec)
 
@@ -290,11 +301,15 @@ class TaskManager:
                 self.on_log(task_id, line)
             except Exception:
                 pass
-        # 检查是否刚转为终态，通知状态变更
-        with self._lock:
-            rec = self._records.get(task_id)
-        if rec and rec.is_terminal:
-            self._notify_status(rec)
+
+    def _handle_terminal(self, task_id: str, old_status: TaskStatus, new_status: TaskStatus) -> None:
+        """处理 SubAgent 终态通知，避免重复通知。"""
+        # 只在进入终态时通知
+        if new_status in (TaskStatus.DONE, TaskStatus.FAILED, TaskStatus.CANCELLED):
+            with self._lock:
+                rec = self._records.get(task_id)
+            if rec:
+                self._notify_status(rec)
 
     def _notify_status(self, rec: TaskRecord) -> None:
         if self.on_status_change:

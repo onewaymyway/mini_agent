@@ -83,6 +83,8 @@ def run_repl(agent: Agent, skill_loader: SkillLoader) -> None:
             agent.run_turn(user_input)
         except KeyboardInterrupt:
             _term.force_end_stream()
+            # 尝试取消所有运行的 sub-agents
+            _cancel_running_tasks()
             R.print_interrupt()
         except Exception as e:
             _term.force_end_stream()
@@ -90,6 +92,19 @@ def run_repl(agent: Agent, skill_loader: SkillLoader) -> None:
             if agent.cfg.verbose:
                 import traceback
                 traceback.print_exc()
+
+
+def _cancel_running_tasks() -> None:
+    """取消所有正在运行的 sub-agent 任务。"""
+    try:
+        from mini_agent.tools.orchestration import get_task_manager
+        mgr = get_task_manager()
+        if mgr:
+            cancelled = mgr.cancel_all()
+            if cancelled > 0:
+                R.print_info(f"Cancelled {cancelled} running task(s).")
+    except Exception:
+        pass
 
 
 def _handle_slash(cmd: str, agent: Agent, skill_loader: SkillLoader) -> None:
