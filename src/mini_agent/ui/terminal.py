@@ -484,6 +484,7 @@ class Terminal:
                 result = self._ptk_session.prompt(
                     html_prompt,
                     style=Style.from_dict({"ansgreen": "bold #00cc00", "ansicyan": "bold #00cccc"}),
+                    patch_stdout=True,   # 后台线程打印时自动保留输入提示符
                 )
                 return (result or "").strip()
             except ImportError:

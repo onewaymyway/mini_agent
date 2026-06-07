@@ -71,12 +71,11 @@ class AgentRunner(threading.Thread):
                 # 注入 turn_id，让 OutputHook 知道当前轮
                 bridge.agent._http_turn_id = turn_id
 
-                # HTTP 路径没有 REPL 的 prompt_user()，手动在终端回显用户输入
+                # HTTP 路径：在终端以分隔线形式回显用户消息
+                # 不打印 You ❯ 前缀——REPL 的 prompt_user() 已在等待输入并管理该提示符
                 try:
-                    from mini_agent.ui.terminal import term
-                    term.print(
-                        f"\n[bold green]You[/bold green][cyan] ❯ [/cyan]{cmd.message}"
-                    )
+                    from mini_agent.ui.terminal import term as _term
+                    _term.rule(f"[dim]HTTP ❯ {cmd.message[:80]}[/dim]")
                 except Exception:
                     pass
 
@@ -84,6 +83,7 @@ class AgentRunner(threading.Thread):
 
                 iq.mark_done(turn_id)
                 bridge.emit_turn_done(turn_id, text=result or "")
+
 
             except Exception as e:
                 tb = traceback.format_exc()
