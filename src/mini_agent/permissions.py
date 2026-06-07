@@ -132,13 +132,14 @@ class PermissionGuard:
 
     def _is_allowed(self, tool_name: str, tool_input: dict) -> bool:
         """检查是否命中白名单（tool_name 精确匹配 + path_prefix 前缀匹配）。"""
-        target_path = _extract_path(tool_name, tool_input)
+        target_path = _normalize_path(_extract_path(tool_name, tool_input))
         for entry in self._allow_list:
             if entry.tool_name != tool_name:
                 continue
             if not entry.path_prefix:
                 return True  # 对该工具全放行
-            if target_path and target_path.startswith(entry.path_prefix):
+            norm_prefix = _normalize_path(entry.path_prefix)
+            if target_path and target_path.startswith(norm_prefix):
                 return True
         return False
 
@@ -325,6 +326,15 @@ def _summarise(tool_name: str, tool_input: dict) -> str:
         return f"{tool_name}({path})"
     return f"{tool_name}({', '.join(f'{k}={v!r}' for k, v in list(tool_input.items())[:3])})"
 
+
+def _normalize_path(path: Optional[str]) -> Optional[str]:
+    """规范化路径：去掉 ./ 前缀，统一路径格式。"""
+    if not path:
+        return path
+    # 去掉 ./ 前缀（可能多个）
+    while path.startswith("./"):
+        path = path[2:]
+    return path
 
 def _extract_path(tool_name: str, tool_input: dict) -> Optional[str]:
     """从 tool_input 中提取文件路径（用于白名单匹配）。"""
