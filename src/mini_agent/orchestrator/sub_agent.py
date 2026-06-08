@@ -229,8 +229,8 @@ class SubAgent:
                             pass
 
     # SubAgent 层的重试配置
-    _RETRY_MAX_ATTEMPTS = 3    # 最多尝试 3 次（首次 + 2 次重试）
-    _RETRY_DELAY = 2.0         # 每次重试前等待 2 秒，给 NIM 服务端缓冲时间
+    _RETRY_MAX_ATTEMPTS = 8    # 最多尝试 3 次（首次 + 2 次重试）
+    _RETRY_DELAY = 5.0         # 每次重试前等待 2 秒，给 NIM 服务端缓冲时间
 
     def _is_retryable_error(self, err_str: str) -> bool:
         """
