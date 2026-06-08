@@ -13,8 +13,9 @@ mini-agent 是一个用 Python 实现的命令行 Agent 框架，定位为"简�
 - **工具系统**：内置 bash、文件读写、glob、grep 等工具，支持自定义扩展
 - **Skill 系统**：可加载领域技能文档，支持自动关键词激活
 - **权限管理**：工具调用前需要用户确认，支持沙箱模式
-- **会话管理**：保存、加载、恢复对话历史，支持长期记忆
+- **会话管理**：保存、加载、恢复对话历史，支持长期记忆（`MemoryStore` + TF-IDF 检索）
 - **并发控制**：Sub-Agent 多任务并发执行，含信号量限制
+- **记忆系统**：跨 session 长期记忆，支持可扩展后端（local/Chroma/Redis）
 
 ---
 
@@ -127,11 +128,13 @@ mini_agent/
 │       │   └── usage_detector.py  # 双轨使用检测
 │       │
 │       └── perception/          # 感知与记忆系统
-│           ├── project_scanner.py
-│           ├── file_watcher.py
-│           ├── tool_cache.py
-│           ├── token_counter.py
-│           └── memory_store.py
+│           ├── project_scanner.py   # 项目结构扫描
+│           ├── file_watcher.py      # 文件变化监听
+│           ├── tool_cache.py        # 工具结果缓存
+│           ├── token_counter.py     # Token 预估
+│           ├── memory_base.py       # 记忆后端抽象接口
+│           ├── memory_store.py      # 本地 JSONL 记忆实现
+│           └── memory_factory.py    # 记忆后端工厂
 │
 ├── tests/                       # 单元测试
 ├── test_cases/                  # 手动测试用例

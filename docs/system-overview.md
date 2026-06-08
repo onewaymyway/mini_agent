@@ -255,7 +255,28 @@ system prompt 构建顺序：
 | `FileWatcher` | 检测文件 hash 变化，下轮注入变化提示 |
 | `ToolResultCache` | 缓存工具调用结果，文件变化时失效 |
 | `TokenCounter` | 粗略估算上下文 token，触发告警和自动压缩 |
-| `MemoryStore` | 跨 session 长期记忆，关键词评分检索 |
+
+### 3.11 记忆系统（perception/memory/
+
+跨 session 的长期记忆管理，采用可扩展架构：
+
+| 组件 | 功能 |
+|------|------|
+| `MemoryBackend` | 记忆后端抽象接口（add/search/search_by_tag） |
+| `MemoryStore` | 本地 JSONL 实现，TF-IDF + n-gram 分词 + 时间衰减 |
+| `MemoryFactory` | 根据配置创建后端实例，支持动态注册 |
+
+**核心特性**：
+- **接口与实现解耦**：Agent 只依赖 `MemoryBackend` 抽象，与具体存储完全分离
+- **工厂模式**：新增后端只需实现接口并在工厂注册表中注册
+- **中文 n-gram 分词**：双字 + 三字 n-gram 替代逐字切分，提升复合词召回率
+- **时间衰减**：指数衰减因子（半衰期 30 天），防止旧记忆干扰
+- **容量管理**：默认 500 条上限，超出自动淘汰最旧条目
+- **原子写入**：tmp + rename 保证数据一致性
+
+详见 [记忆管理指南](memory-management-guide.md)。
+
+### 3.13 HTTP API 服务（api/）
 
 ### 3.11 HTTP API 服务（api/）
 
@@ -272,7 +293,7 @@ system prompt 构建顺序：
 
 详见 [HTTP API 指南](http-api-guide.md)。
 
-### 3.12 Web Demo（apps/）
+### 3.14 Web Demo（apps/）
 
 基于 Streamlit 的浏览器交互界面：
 
@@ -310,7 +331,16 @@ JSON 配置文件 > 命令行参数 > 环境变量 > 内置默认值。
 
 `src/mini_agent` 采用标准 `src` 布局，支持 `pip install -e .` 安装，使用绝对导入 `from mini_agent.xxx import ...`，不依赖 cwd 路径。
 
-### 4.5 HTTP API 集成方式
+### 4.8 HTTP API 集成方式
+
+v2 重构将记忆系统改为接口 + 工厂模式：
+
+- `MemoryBackend` 是纯抽象，Agent 代码零耦合具体存储
+- `MemoryFactory` 根据 `cfg.memory.backend` 创建实例
+- 新增后端（如 Chroma、Redis）只需两步：实现接口 → 注册
+- `MemoryConfig` 独立配置，添加参数不影响其他模块
+
+详见 [记忆管理指南](memory-management-guide.md)。
 
 HTTP 服务通过桥接模式与 Agent 核心解耦：
 
@@ -330,7 +360,7 @@ HTTP 服务通过桥接模式与 Agent 核心解耦：
 
 ### P3（长期演进）
 
-- **向量检索记忆**：`MemoryStore` 目前基于关键词，可引入 embedding
+- **记忆系统已完成向量检索扩展点**：通过 `MemoryBackend` 接口可接入 Chroma/Redis 等后端
 - **更多 Provider**：Gemini、Azure OpenAI、OpenRouter、Mistral
 - **Plan + Task 融合**：计划节点绑定 Sub-Agent 任务 ID，实现真正的计划驱动并发
 - **任务持久化**：Sub-Agent 任务记录目前在内存，崩溃后无法恢复
@@ -347,7 +377,15 @@ HTTP 服务通过桥接模式与 Agent 核心解耦：
 5. 补充单元测试（普通文本、工具调用、流式输出、错误处理）
 6. 更新 `cli/parser.py` 的 `--provider` 帮助文本
 
-## 7. 新增工具建议流程
+## 7. 新增记忆后端建议流程
+
+1. 在 `src/mini_agent/perception/` 创建新文件，继承 `MemoryBackend`
+2. 实现 `add()` / `search()` / `search_by_tag()` / `count`
+3. 在 `src/mini_agent/perception/memory_factory.py` 的 `_REGISTRY` 注册
+4. 补充单元测试（添加、检索、标签过滤、容量管理）
+5. 更新 `MemoryConfig.backend` 的文档说明
+
+## 8. 新增工具建议流程
 
 1. 在 `src/mini_agent/tools/` 选择合适文件或新建模块
 2. 用 `@tool` 声明名称、描述、JSON Schema、`requires_approval`
@@ -355,11 +393,12 @@ HTTP 服务通过桥接模式与 Agent 核心解耦：
 4. 补充单元测试
 5. 对有大量输出的工具，考虑配合工具结果截断或缓存策略
 
-## 8. 相关文档
+## 9. 相关文档
 
 - [Agent 设计详解](agent-design.md) — agent.py 的核心架构、组件职责、执行流程
 - [代码结构指南](code-structure-guide.md) — 项目结构与导入规范
 - [HTTP API 指南](http-api-guide.md) — REST/SSE 服务使用指南
+- [记忆管理指南](memory-management-guide.md) — 长期记忆系统与可扩展后端
 
 ---
 
