@@ -298,6 +298,53 @@ class HttpPermissionGate:
         ))
         return pending.approved, pending.edited_input
 
+    def register_pending(
+        self,
+        req_id: str,
+        tool_name: str,
+        tool_input: dict,
+        turn_id: str = "",
+    ) -> Any:
+        """
+        注册一个待审批项并广播 SSE 事件，返回内部 pending 对象（有 .event 属性）。
+        用于双路审批：CLI 与 HTTP 端同时可以响应，由调用方管理 event.wait()。
+        """
+        pending = _PendingPermission(req_id, tool_name, tool_input, turn_id)
+        with self._lock:
+            self._pending[req_id] = pending
+
+        self._broadcaster.push(AgentEvent(
+            type=EventType.PERMISSION_REQ,
+            turn_id=turn_id,
+            data={
+                "req_id":     req_id,
+                "tool_name":  tool_name,
+                "tool_input": tool_input,
+            },
+        ))
+        return pending
+
+    def cancel_pending(self, req_id: str) -> None:
+        """取消一个待审批项（CLI 端已先决定时调用，唤醒 HTTP 监听线程）。"""
+        with self._lock:
+            pending = self._pending.pop(req_id, None)
+        if pending is not None:
+            pending.event.set()   # 让任何正在 wait 的线程退出
+
+    def broadcast_done(
+        self,
+        req_id: str,
+        approved: bool,
+        reason: str,
+        turn_id: str = "",
+    ) -> None:
+        """广播权限审批结果事件给所有 SSE 客户端。"""
+        self._broadcaster.push(AgentEvent(
+            type=EventType.PERMISSION_DONE,
+            turn_id=turn_id,
+            data={"req_id": req_id, "approved": approved, "reason": reason},
+        ))
+
     def respond(
         self,
         req_id: str,

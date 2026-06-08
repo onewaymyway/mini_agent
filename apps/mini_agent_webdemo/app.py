@@ -421,6 +421,373 @@ def scroll_chat_to_bottom():
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
+# JS 实时轮询组件
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def _render_agent_poll_widget():
+    """
+    注入前端 JS 轮询组件。
+    每秒请求后端 /status 和 /events，将结果通过 sendPrompt() 发回 Python。
+    仅在 agent 处于 running / waiting_permission 状态时发消息（避免噪音）。
+    权限审批操作（approve/deny）也在 JS 中直接 POST，然后通知 Python 刷新。
+    """
+    api_base  = st.session_state.api_base
+    token     = st.session_state.token
+    last_id   = st.session_state.last_event_id
+    agent_state = st.session_state.agent_state
+
+    widget_html = f"""
+<div id="agent-poll-root"></div>
+<script>
+(function() {{
+  var BASE    = {json.dumps(api_base)};
+  var TOKEN   = {json.dumps(token)};
+  var lastId  = {last_id};
+  var headers = TOKEN ? {{"Authorization": "Bearer " + TOKEN, "Content-Type": "application/json"}}
+                      : {{"Content-Type": "application/json"}};
+  var pollTimer = null;
+  var permShown = {{}};   // req_id -> true，已发送过的权限请求
+  var permDone  = {{}};   // req_id -> true，已发送过结果的
+
+  function sendToStreamlit(payload) {{
+    // sendPrompt 是 Streamlit components 提供的方法
+    try {{
+      window.parent.postMessage({{
+        type: "streamlit:setComponentValue",
+        value: JSON.stringify(payload)
+      }}, "*");
+    }} catch(e) {{}}
+  }}
+
+  function buildAuthHeader() {{
+    return TOKEN ? {{"Authorization": "Bearer " + TOKEN}} : {{}};
+  }}
+
+  async function fetchJson(path, opts) {{
+    try {{
+      var r = await fetch(BASE + path, Object.assign({{headers: buildAuthHeader()}}, opts||{{}}));
+      if (r.ok) return await r.json();
+    }} catch(e) {{}}
+    return null;
+  }}
+
+  async function poll() {{
+    // 1. 拉取状态
+    var status = await fetchJson("/status");
+    if (!status) return;
+    var state = status.state || "unknown";
+
+    // 2. 拉取新事件
+    var evtData = await fetchJson("/events?since_id=" + lastId + "&limit=100");
+    var newEvents = (evtData && evtData.events) ? evtData.events : [];
+
+    // 筛选出权限类事件
+    var permReqs  = [];
+    var permDones = [];
+    var hasToken  = false;
+    var maxId     = lastId;
+
+    for (var i = 0; i < newEvents.length; i++) {{
+      var e = newEvents[i];
+      if ((e.id||0) > maxId) maxId = e.id;
+      if (e.type === "permission_req")  permReqs.push(e.data||{{}});
+      if (e.type === "permission_done") permDones.push(e.data||{{}});
+      if (e.type === "token") hasToken = true;
+    }}
+
+    if (maxId > lastId) lastId = maxId;
+
+    // 3. 只有在 running/waiting_permission 或有新事件时才通知 Python
+    var hasNew = (newEvents.length > 0) || (state !== (window._lastState||""));
+    window._lastState = state;
+
+    if (hasNew || state === "running" || state === "waiting_permission") {{
+      sendToStreamlit({{
+        type: "poll_update",
+        state: state,
+        last_event_id: lastId,
+        perm_reqs:  permReqs.filter(function(r){{ return !permShown[r.req_id]; }}),
+        perm_dones: permDones.filter(function(r){{ return !permDone[r.req_id]; }}),
+        has_token: hasToken,
+        raw_events: newEvents
+      }});
+      permReqs.forEach(function(r){{ if(r.req_id) permShown[r.req_id]=true; }});
+      permDones.forEach(function(r){{ if(r.req_id) permDone[r.req_id]=true; }});
+    }}
+
+    // 4. 渲染内联权限审批面板（直接在 iframe 里展示，不依赖 Streamlit 重渲染）
+    renderPermPanel(state);
+  }}
+
+  // ── 内联权限审批面板 ──────────────────────────────────────────────────
+  async function renderPermPanel(state) {{
+    var root = document.getElementById("agent-poll-root");
+    if (!root) return;
+
+    if (state !== "waiting_permission") {{
+      root.innerHTML = "";
+      return;
+    }}
+
+    var perms = await fetchJson("/permissions/pending");
+    var pending = (perms && perms.permissions) ? perms.permissions : [];
+
+    if (pending.length === 0) {{
+      root.innerHTML = '<div style="color:#888;font-size:12px;text-align:center;padding:4px">⏳ 等待权限审批...</div>';
+      return;
+    }}
+
+    var html = '<div style="font-family:sans-serif">';
+    pending.forEach(function(perm) {{
+      var reqId     = perm.req_id || "";
+      var toolName  = perm.tool_name || "unknown";
+      var toolInput = perm.tool_input || {{}};
+      var isBash    = toolName === "bash";
+      var inputJson = JSON.stringify(toolInput, null, 2);
+
+      html += '<div style="background:#2D1B00;border:1px solid #FF7043;border-radius:10px;padding:14px;margin:6px 0">';
+      html += '<div style="color:#FF7043;font-weight:bold;font-size:13px;margin-bottom:8px">🔐 权限请求: ' + toolName + '</div>';
+      html += '<pre style="font-size:11px;background:#1A1000;padding:8px;border-radius:6px;white-space:pre-wrap;word-break:break-all;color:#ccc;margin:0 0 10px">' + escHtml(inputJson) + '</pre>';
+
+      // 按钮行：与命令行选项一致
+      html += '<div style="display:flex;flex-wrap:wrap;gap:6px">';
+      html += btnHtml(reqId, "approve_once",   "#2E7D32", "#4CAF50", "✅ 批准(y)");
+      html += btnHtml(reqId, "approve_always", "#1B5E20", "#81C784", "⚡ 永久批准(a)");
+      html += btnHtml(reqId, "deny_once",      "#7D2E2E", "#EF5350", "❌ 拒绝(n)");
+      html += btnHtml(reqId, "deny_always",    "#4A0000", "#B71C1C", "🚫 永久拒绝(d)");
+      html += btnHtml(reqId, "show_detail",    "#1A237E", "#90CAF9", "🔍 查看详情(s)");
+      if (isBash) {{
+        html += btnHtml(reqId, "edit_cmd", "#3E2723", "#FFCC80", "✏️ 编辑命令(e)");
+      }}
+      html += '</div>';
+
+      // 详情区（默认隐藏，点 show_detail 展开）
+      html += '<div id="detail_' + reqId + '" style="display:none;margin-top:10px">';
+      html += '<pre style="font-size:11px;background:#0D0D0D;color:#aaa;padding:8px;border-radius:4px;white-space:pre-wrap;overflow-x:auto">' + escHtml(inputJson) + '</pre>';
+      html += '</div>';
+
+      // 编辑命令区（仅 bash，默认隐藏）
+      if (isBash) {{
+        var cmd = (toolInput.command || "").replace(/"/g, "&quot;");
+        html += '<div id="edit_' + reqId + '" style="display:none;margin-top:10px">';
+        html += '<div style="color:#ccc;font-size:12px;margin-bottom:4px">编辑命令后点「确认编辑」：</div>';
+        html += '<textarea id="editarea_' + reqId + '" style="width:100%;height:80px;background:#111;color:#eee;border:1px solid #555;border-radius:4px;padding:6px;font-family:monospace;font-size:12px;resize:vertical">' + escHtml(toolInput.command||"") + '</textarea>';
+        html += '<div style="margin-top:6px">';
+        html += btnHtml(reqId, "edit_confirm", "#2E7D32", "#4CAF50", "✅ 确认编辑");
+        html += btnHtml(reqId, "edit_cancel",  "#555",    "#ccc",    "取消");
+        html += '</div></div>';
+      }}
+
+      html += '</div>';  // permission-card
+    }});
+    html += '</div>';
+    root.innerHTML = html;
+
+    // 绑定按钮事件
+    pending.forEach(function(perm) {{
+      var reqId    = perm.req_id || "";
+      var isBash   = perm.tool_name === "bash";
+      var toolInput = perm.tool_input || {{}};
+
+      bindBtn(reqId, "approve_once",   function() {{ doApprove(reqId, true,  null, "once");    }});
+      bindBtn(reqId, "approve_always", function() {{ doApprove(reqId, true,  null, "always");  }});
+      bindBtn(reqId, "deny_once",      function() {{ doApprove(reqId, false, null, "once");    }});
+      bindBtn(reqId, "deny_always",    function() {{ doApprove(reqId, false, null, "always");  }});
+      bindBtn(reqId, "show_detail",    function() {{ toggleEl("detail_" + reqId); }});
+      if (isBash) {{
+        bindBtn(reqId, "edit_cmd", function() {{
+          toggleEl("edit_" + reqId);
+        }});
+        bindBtn(reqId, "edit_confirm", function() {{
+          var ta = document.getElementById("editarea_" + reqId);
+          var newCmd = ta ? ta.value : (toolInput.command||"");
+          var edited = Object.assign({{}}, toolInput, {{command: newCmd}});
+          doApprove(reqId, true, edited, "once");
+        }});
+        bindBtn(reqId, "edit_cancel", function() {{
+          var el = document.getElementById("edit_" + reqId);
+          if (el) el.style.display = "none";
+        }});
+      }}
+    }});
+  }}
+
+  function btnHtml(reqId, action, bg, color, label) {{
+    return '<button id="btn_' + reqId + '_' + action + '" '
+      + 'style="background:' + bg + ';color:' + color + ';border:1px solid ' + color + ';'
+      + 'border-radius:6px;padding:4px 10px;font-size:12px;cursor:pointer;white-space:nowrap">'
+      + label + '</button>';
+  }}
+
+  function bindBtn(reqId, action, fn) {{
+    var el = document.getElementById("btn_" + reqId + "_" + action);
+    if (el) el.onclick = fn;
+  }}
+
+  function toggleEl(id) {{
+    var el = document.getElementById(id);
+    if (el) el.style.display = (el.style.display === "none") ? "block" : "none";
+  }}
+
+  function escHtml(s) {{
+    return String(s).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;");
+  }}
+
+  async function doApprove(reqId, approve, editedInput, mode) {{
+    var body = {{approve: approve, mode: mode}};
+    if (editedInput) body.edited_input = editedInput;
+    try {{
+      await fetch(BASE + "/permissions/" + reqId, {{
+        method: "POST",
+        headers: Object.assign({{"Content-Type":"application/json"}}, buildAuthHeader()),
+        body: JSON.stringify(body)
+      }});
+    }} catch(e) {{}}
+    // 通知 Python 刷新
+    sendToStreamlit({{type:"permission_actioned", req_id: reqId, approved: approve}});
+    // 立即重绘
+    setTimeout(function(){{ renderPermPanel("waiting_permission"); }}, 300);
+  }}
+
+  // ── 启动轮询 ──────────────────────────────────────────────────────────
+  function startPoll() {{
+    if (pollTimer) clearInterval(pollTimer);
+    poll();
+    pollTimer = setInterval(poll, 1200);
+  }}
+  startPoll();
+}})();
+</script>
+"""
+    st.components.v1.html(widget_html, height=160, scrolling=False)
+
+
+def _process_js_poll_callback():
+    """
+    处理 JS 轮询组件通过 query_params 或 session 传回的事件。
+    Streamlit components 的 bidirectional 通信需要用 components.declare_component，
+    这里用更简单的方案：JS 通过 sendPrompt 发一条特殊格式的聊天消息，
+    Python 在发送前检测并处理它。
+
+    由于 st.components.v1.html 是单向的（JS→Python 没有原生回调），
+    我们改用另一个策略：JS 直接操作 REST API（已实现），
+    Python 只需在每次 rerun 时主动拉取最新事件。
+    """
+    if not st.session_state.connected:
+        return
+    # 只在 running 或 waiting_permission 时同步
+    if st.session_state.agent_state not in ("running", "waiting_permission", "unknown"):
+        return
+
+    client = get_client()
+    # 拉取状态
+    s = client.status()
+    if s:
+        new_state = s.get("state", st.session_state.agent_state)
+        st.session_state.agent_state = new_state
+
+    # 拉取新事件（更新消息列表和事件日志）
+    evts = client.events(since_id=st.session_state.last_event_id, limit=200)
+    if not (evts and evts.get("events")):
+        return
+
+    new_evts = evts["events"]
+    shown_ids = {m.get("req_id") for m in st.session_state.messages if m.get("role") == "permission"}
+    done_ids  = set()
+
+    for evt in new_evts:
+        evt_id = evt.get("id", 0)
+        if evt_id > st.session_state.last_event_id:
+            st.session_state.last_event_id = evt_id
+
+        etype = evt.get("type", "")
+        edata = evt.get("data", {})
+
+        if etype == "token":
+            # 累积 token 到最后一条 assistant 消息或新建
+            text = edata.get("text", "")
+            if text:
+                # 找到最后一条 streaming 消息
+                last_stream = None
+                for m in reversed(st.session_state.messages):
+                    if m.get("role") == "streaming":
+                        last_stream = m
+                        break
+                if last_stream:
+                    last_stream["content"] += text
+                else:
+                    st.session_state.messages.append({
+                        "role": "streaming", "content": text,
+                        "time": datetime.now().strftime("%H:%M:%S")
+                    })
+
+        elif etype == "turn_done":
+            # 把 streaming 消息合并成 assistant 消息
+            streaming_parts = []
+            new_msgs = []
+            for m in st.session_state.messages:
+                if m.get("role") == "streaming":
+                    streaming_parts.append(m["content"])
+                else:
+                    new_msgs.append(m)
+            st.session_state.messages = new_msgs
+            full = "".join(streaming_parts).strip()
+            if full:
+                st.session_state.messages.append({
+                    "role": "assistant", "content": full,
+                    "time": datetime.now().strftime("%H:%M:%S")
+                })
+            elif not full:
+                # 没有 token 流，从历史取
+                hist = client.history()
+                if hist and hist.get("messages"):
+                    for hm in reversed(hist["messages"]):
+                        if hm.get("role") == "assistant":
+                            c = hm.get("content", "")
+                            if isinstance(c, list):
+                                c = "".join(x.get("text","") for x in c
+                                            if isinstance(x,dict) and x.get("type")=="text")
+                            if c:
+                                st.session_state.messages.append({
+                                    "role": "assistant", "content": str(c),
+                                    "time": datetime.now().strftime("%H:%M:%S")
+                                })
+                            break
+            st.session_state.agent_state = "idle"
+            st.session_state.scroll_trigger += 1
+
+        elif etype == "permission_req":
+            req_id_evt = edata.get("req_id", "")
+            if req_id_evt and req_id_evt not in shown_ids:
+                shown_ids.add(req_id_evt)
+                tool_nm  = edata.get("tool_name", "unknown")
+                tool_inp = edata.get("tool_input", {})
+                st.session_state.messages.append({
+                    "role":      "permission",
+                    "req_id":    req_id_evt,
+                    "tool_name": tool_nm,
+                    "tool_input": tool_inp,
+                    "approved":  None,   # None=待定
+                    "time":      datetime.now().strftime("%H:%M:%S"),
+                })
+                st.session_state.agent_state = "waiting_permission"
+                st.session_state.scroll_trigger += 1
+
+        elif etype == "permission_done":
+            req_id_done   = edata.get("req_id", "")
+            approved_flag = edata.get("approved", False)
+            reason        = edata.get("reason", "")
+            if req_id_done and req_id_done not in done_ids:
+                done_ids.add(req_id_done)
+                for m in st.session_state.messages:
+                    if m.get("role") == "permission" and m.get("req_id") == req_id_done:
+                        m["approved"] = approved_flag
+                        m["reason"]   = reason
+
+        st.session_state.event_log.append(evt)
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
 # 渲染函数
 # ═══════════════════════════════════════════════════════════════════════════════
 
@@ -539,20 +906,18 @@ def render_permission_panel():
         return
     client = get_client()
     perms = client.pending_permissions()
-    pending = perms.get("requests", []) if perms else []
+    pending = perms.get("permissions", []) if perms else []
     if not pending:
         return
 
     st.markdown("### ⚠️ 权限审批请求")
     for perm in pending:
-        req_id     = perm.get("id", "")
+        req_id     = perm.get("req_id", "")
         tool_name  = perm.get("tool_name", "unknown")
-        description = perm.get("description", "")
-        input_data  = perm.get("input", {})
+        input_data = perm.get("tool_input", {})
 
         st.markdown(f"""<div class="permission-card">
 <div class="permission-title">🔐 工具需要权限: {tool_name}</div>
-<div style="color:#ccc;font-size:13px;margin-bottom:8px">{description}</div>
 <div class="permission-content">{json.dumps(input_data, ensure_ascii=False, indent=2)}</div>
 </div>""", unsafe_allow_html=True)
 
@@ -600,6 +965,9 @@ def render_chat_messages(container):
 <div class="msg-time">{time_str}</div>
 </div>""", unsafe_allow_html=True)
 
+            elif role == "permission":
+                st.markdown(msg["content"], unsafe_allow_html=True)
+
             elif role == "streaming":
                 st.markdown(f"""<div class="msg-agent" style="border-left-color:#FF9800">
 <div class="msg-role" style="color:#FF9800">🤖 Agent (输出中...)</div>
@@ -610,12 +978,11 @@ animation:pulse 1s infinite;vertical-align:text-bottom;margin-left:2px">▊</spa
 
 
 def handle_send(msg_text: str):
-    """发送消息并等待 Agent 回复，更新 session_state"""
+    """发送消息，立即返回。后续轮询由前端 JS 完成。"""
     client  = get_client()
     now_str = datetime.now().strftime("%H:%M:%S")
 
     st.session_state.messages.append({"role": "user", "content": msg_text, "time": now_str})
-    # 清空输入框：换一个新 key
     st.session_state.input_key += 1
 
     result = client.chat(msg_text)
@@ -627,73 +994,9 @@ def handle_send(msg_text: str):
         })
         return
 
-    turn_id  = result["turn_id"]
-    st.session_state.turn_id = turn_id
-
-    response_tokens = []
-    last_id   = st.session_state.last_event_id
-    max_wait  = 120
-    start     = time.time()
-
-    with st.spinner(f"Agent 处理中... (turn: {turn_id[:8]})"):
-        while time.time() - start < max_wait:
-            evts = client.events(since_id=last_id, limit=200)
-            if evts and evts.get("events"):
-                for evt in evts["events"]:
-                    evt_id = evt.get("id", 0)
-                    if evt_id > last_id:
-                        last_id = evt_id
-                    etype = evt.get("type", "")
-                    edata = evt.get("data", {})
-                    if etype == "token":
-                        response_tokens.append(edata.get("text", ""))
-                    st.session_state.event_log.append(evt)
-
-            s = client.status()
-            if s:
-                state = s.get("state", "unknown")
-                st.session_state.agent_state = state
-                if state in ("idle", "waiting_permission"):
-                    break
-            time.sleep(0.5)
-
-    st.session_state.last_event_id = last_id
-
-    full_response = "".join(response_tokens).strip()
-    if not full_response:
-        hist = client.history()
-        if hist and hist.get("messages"):
-            for m in reversed(hist["messages"]):
-                if m.get("role") == "assistant":
-                    c = m.get("content", "")
-                    if isinstance(c, list):
-                        full_response = "".join(
-                            x.get("text", "") for x in c
-                            if isinstance(x, dict) and x.get("type") == "text"
-                        )
-                    else:
-                        full_response = str(c)
-                    break
-
-    if full_response:
-        st.session_state.messages.append({
-            "role": "assistant", "content": full_response,
-            "time": datetime.now().strftime("%H:%M:%S")
-        })
-    elif st.session_state.agent_state == "waiting_permission":
-        st.session_state.messages.append({
-            "role": "assistant",
-            "content": "⚠️ Agent 正在等待权限审批，请在上方审批区域操作",
-            "time": datetime.now().strftime("%H:%M:%S")
-        })
-    else:
-        st.session_state.messages.append({
-            "role": "assistant",
-            "content": f"✓ 处理完成（turn: {turn_id[:8]}），详情见事件流",
-            "time": datetime.now().strftime("%H:%M:%S")
-        })
-
-    # 触发滚动
+    turn_id = result["turn_id"]
+    st.session_state.turn_id    = turn_id
+    st.session_state.agent_state = "running"
     st.session_state.scroll_trigger += 1
 
 
@@ -863,6 +1166,11 @@ def main():
     inject_styles()
     init_session()
 
+    # ── 接收来自前端 JS 轮询组件的回调消息 ─────────────────────────────────
+    # JS 组件通过 sendPrompt() 发回格式为 "__agent_poll__:{json}" 的消息
+    # 这里在每次 rerun 时处理它
+    _process_js_poll_callback()
+
     # 侧栏
     render_sidebar()
 
@@ -948,6 +1256,12 @@ def main():
 
     # 底部状态栏
     render_footer()
+
+    # ── 前端 JS 实时轮询组件 ──────────────────────────────────────────────────
+    # 仅在已连接时注入。JS 每秒轮询后端事件和状态，
+    # 把结果通过 sendPrompt() 发回 Python 端处理。
+    if st.session_state.connected:
+        _render_agent_poll_widget()
 
 
 if __name__ == "__main__" or True:
