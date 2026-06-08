@@ -33,7 +33,9 @@ from mini_agent.perception.token_counter import estimate_messages_tokens
 from mini_agent.perception.project_scanner import ProjectScanner
 from mini_agent.perception.file_watcher import FileWatcher
 from mini_agent.perception.tool_cache import ToolResultCache
+from mini_agent.perception.memory_base import MemoryBackend
 from mini_agent.perception.memory_store import MemoryStore, MemoryEntry
+from mini_agent.perception.memory_factory import create_memory_backend
 from mini_agent.context_builder import ContextBuilder
 from mini_agent.tool_executor import ToolExecutor
 from mini_agent.history_manager import HistoryManager
@@ -134,14 +136,13 @@ class Agent:
 
         # [SYS-TOOLCACHE] 工具调用结果缓存
         self._tool_cache: Optional[ToolResultCache] = (
-            ToolResultCache() if cfg.tool_cache_enabled else None
+            ToolResultCache(max_entries=cfg.perception.tool_cache_max_entries) if cfg.tool_cache_enabled else None
         )
 
-        # [SYS-MEMORY] 跨 session 长期记忆
-        self._memory: Optional[MemoryStore] = None
+        # [SYS-MEMORY] 跨 session 长期记忆（通过工厂创建，支持多后端）
+        self._memory: Optional[MemoryBackend] = None
         if cfg.memory_enabled:
-            store_path = cfg.memory_store_path or (cfg.project_root / ".agent" / "memory.jsonl")
-            self._memory = MemoryStore(path=store_path)
+            self._memory = create_memory_backend(cfg)
 
         # 所有字段已就绪，初始化三个拆分组件（ContextBuilder / ToolExecutor / HistoryManager）
         self._init_components()

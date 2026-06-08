@@ -1,6 +1,23 @@
 """
-Configuration and session context management.
+Configuration management.
 Loads CLAUDE.md project context, .env settings, and tracks session state.
+
+重构（v2）：功能开关从平坦字段改为子配置块（Feature Config）。
+- 每个功能模块对应一个独立的 @dataclass，聚合其开关 + 参数
+- AppConfig 主体只持有核心字段 + 各功能块的引用
+- 新增功能只需新建子配置类，AppConfig 主体不变
+- 向后兼容：load_config / agent_config.json 仍使用平坦 key，内部组装为子块
+
+子配置块列表：
+  MemoryConfig        — 跨 session 长期记忆
+  CompressConfig      — 自动上下文压缩
+  ToolTrimConfig      — 工具结果截断
+  SkillConfig         — Skill 系统
+  PerceptionConfig    — 项目感知（扫描/监听/缓存/token 估算）
+  SessionConfig       — Session 持久化
+  DebugConfig         — 调试日志
+  HttpConfig          — HTTP API 服务
+  RetryConfig         — LLM 调用重试
 """
 
 from __future__ import annotations
@@ -13,11 +30,13 @@ from typing import Optional
 
 
 # ── Defaults ──────────────────────────────────────────────────────────────────
-DEFAULT_MODEL = "claude-opus-4-5"
+DEFAULT_MODEL      = "claude-opus-4-5"
 DEFAULT_MAX_TOKENS = 8192
-DEFAULT_MAX_TURNS = 50
+DEFAULT_MAX_TURNS  = 50
 DEFAULT_AGENT_NAME = "orzooo"
 
+
+# ── Session stats（不变）─────────────────────────────────────────────────────
 
 @dataclass
 class SessionStats:
@@ -26,9 +45,7 @@ class SessionStats:
     output_tokens: int = 0
     tool_calls: int = 0
     start_time: float = field(default_factory=time.time)
-    # 按工具名的详细统计（tool_stats_enabled 开启时填充）
     tool_stats: dict = field(default_factory=dict)
-    # 技能激活统计（skill_tracking_enabled 开启时填充）
     skill_activations: dict = field(default_factory=dict)
 
     @property
@@ -44,16 +61,12 @@ class SessionStats:
             f"Elapsed: {self.elapsed}"
         )
         if self.tool_stats:
-            top = sorted(self.tool_stats.items(),
-                         key=lambda x: -x[1].get("calls", 0))[:3]
-            tool_line = ", ".join(
-                f"{k}×{v['calls']}" for k, v in top
-            )
+            top = sorted(self.tool_stats.items(), key=lambda x: -x[1].get("calls", 0))[:3]
+            tool_line = ", ".join(f"{k}×{v['calls']}" for k, v in top)
             base += f" | Tools: {tool_line}"
         return base
 
     def record_tool_call(self, name: str, success: bool, result_len: int) -> None:
-        """记录单次工具调用（仅当 tool_stats_enabled 时由 agent 调用）。"""
         ts = self.tool_stats.setdefault(name, {"calls": 0, "success": 0, "fail": 0, "total_len": 0})
         ts["calls"] += 1
         ts["total_len"] += result_len
@@ -63,161 +76,274 @@ class SessionStats:
             ts["fail"] += 1
 
     def record_skill_activation(self, name: str) -> None:
-        """记录技能激活（仅当 skill_tracking_enabled 时由 agent 调用）。"""
         sa = self.skill_activations.setdefault(name, {"activations": 0})
         sa["activations"] += 1
 
 
+# ════════════════════════════════════════════════════════════════════════════════
+# 子配置块（Feature Configs）
+# 每块聚合一个功能域的所有开关+参数，新增功能只需新建子类，不改 AppConfig 主体。
+# ════════════════════════════════════════════════════════════════════════════════
+
+@dataclass
+class MemoryConfig:
+    """[SYS-MEMORY] 跨 session 长期记忆配置。"""
+    enabled: bool = False
+    backend: str = "local"             # "local" | "chroma" | "redis"（预留扩展点）
+    store_path: Optional[Path] = None  # None = <project_root>/.agent/memory.jsonl
+    top_k: int = 3                     # 检索返回的最大条目数
+    decay_half_life_days: float = 30.0 # 时间衰减半衰期（天）
+    max_entries: int = 500             # 记忆条目上限，超出淘汰最旧
+
+
+@dataclass
+class CompressConfig:
+    """[SYS-COMPRESS] 自动上下文压缩配置。"""
+    enabled: bool = False
+    threshold: float = 0.7             # token 占用率超过此值触发压缩
+    strategy: str = "turn_aligned"     # "turn_aligned" | "llm_summary" | "sliding_window"
+    forget_orphan_tool_results: bool = False  # 剔除保留段中无对应 tool_use 的 tool_result
+
+
+@dataclass
+class ToolTrimConfig:
+    """[SYS-TRIM] 工具调用结果截断配置。"""
+    enabled: bool = False
+    threshold: int = 500               # 超过此字符数触发截断
+    bash_head_ratio: float = 0.7       # bash 结果：头部保留比例
+    read_window_lines: int = 0         # read_file：滑动窗口行数（0=自动推算）
+    grep_max_lines: int = 50           # grep/glob：最大保留行数
+
+
+@dataclass
+class SkillConfig:
+    """[SYS-SKILL] Skill 系统配置。"""
+    semantic_enabled: bool = False     # 语义匹配（需要 embedding）
+    semantic_threshold: float = 0.72   # 语义相似度阈值
+    tracking_enabled: bool = False     # 使用追踪统计
+    chunking_enabled: bool = False     # 内容裁剪（按 query 相关性）
+    compact_budget: int = 25_000       # 压缩时重附的总 token 预算
+    compact_per_skill: int = 5_000     # 单个 skill 最多贡献的 token 数
+    matcher: str = "keyword"           # "keyword" | "ngram" | "semantic"（预留扩展点）
+
+
+@dataclass
+class PerceptionConfig:
+    """[SYS-PERCEPTION] 项目感知相关配置（扫描/监听/缓存/token 估算）。"""
+    project_scan_enabled: bool = False
+    file_watch_enabled: bool = False
+    tool_cache_enabled: bool = False
+    tool_cache_max_entries: int = 256  # 工具结果缓存容量上限
+    token_estimate_enabled: bool = False
+    token_warn_threshold: float = 0.75
+    tool_stats_enabled: bool = False
+
+
+@dataclass
+class SessionConfig:
+    """Session 持久化配置。"""
+    dir: Optional[Path] = None         # None = <project_root>/sessions
+    fmt: str = "json"                  # "json" | "jsonl"
+    auto_save: bool = True
+    summary_enabled: bool = False
+    summary_min_turns: int = 4
+    search_enabled: bool = False
+    backend: str = "local"             # "local" | "sqlite"（预留扩展点）
+
+
+@dataclass
+class DebugConfig:
+    """调试日志配置。"""
+    llm_enabled: bool = False
+    llm_console: bool = False
+    log_dir: Optional[Path] = None
+
+
+@dataclass
+class HttpConfig:
+    """HTTP API 服务配置。"""
+    enabled: bool = False
+    host: str = "127.0.0.1"
+    port: int = 8765
+    api_token: str = ""
+    allowed_ips: list = field(default_factory=lambda: ["127.0.0.1", "::1"])
+    cors_origins: list = field(default_factory=list)
+    fs_readonly: bool = False
+    fs_excludes: list = field(default_factory=list)
+    ring_maxlen: int = 2000
+
+
+@dataclass
+class RetryConfig:
+    """LLM 调用重试配置。"""
+    max_retries: int = 15
+    delay: float = 5.0
+    verbose: bool = True
+
+
+# ════════════════════════════════════════════════════════════════════════════════
+# 主配置类
+# ════════════════════════════════════════════════════════════════════════════════
+
 @dataclass
 class AppConfig:
-    # Anthropic API
+    """
+    应用主配置。
+
+    核心字段直接持有，功能特性通过子配置块聚合。
+    子配置块有合理默认值，不需要某功能时完全不用关心它的字段名。
+
+    用法示例：
+        cfg = AppConfig(
+            model="claude-opus-4-5",
+            memory=MemoryConfig(enabled=True, top_k=5),
+            compress=CompressConfig(enabled=True, strategy="llm_summary"),
+        )
+        if cfg.memory.enabled:
+            backend = create_memory_backend(cfg)
+    """
+
+    # ── 核心（必填/常用）──────────────────────────────────────────────────────
     api_key: str = ""
     model: str = DEFAULT_MODEL
     max_tokens: int = DEFAULT_MAX_TOKENS
     max_turns: int = DEFAULT_MAX_TURNS
-
-    # Paths
     project_root: Path = field(default_factory=Path.cwd)
-    skills_dir: Optional[Path] = None  # ~/.claude/skills or project .claude/skills
+    skills_dir: Optional[Path] = None
 
-    # Behaviour
-    verbose: bool = False          # show raw JSON tool calls
-    sandbox: bool = False          # dry-run: no destructive writes / execs
-    auto_approve: bool = False     # skip permission prompts
-    stream: bool = True            # stream tokens as they arrive
+    # ── 运行行为 ───────────────────────────────────────────────────────────────
+    verbose: bool = False
+    sandbox: bool = False
+    auto_approve: bool = False
+    stream: bool = True
 
-    # LLM provider（传给 llm.LLMConfig.from_app_config）
-    llm_provider: str = "anthropic"   # "anthropic" | "openai" | "ollama" | ...
-    llm_base_url: str = ""            # 自定义 endpoint（可选）
-    use_system_tool_call: bool = False  # True = system prompt 模式，False = SDK 原生 tools
-    max_llm_calls: int = 8              # LLM 请求并发上限
-
-    # 调试日志
-    debug_llm: bool = False           # 总开关：记录请求/响应
-    debug_llm_console: bool = False   # 同时在终端打印调试信息
-    debug_log_dir: Optional[Path] = None  # 日志目录，None=自动推断
-
-    # Session 持久化
-    session_dir: Optional[Path] = None   # Session 文件目录，None=./sessions
-    session_fmt: str = "json"            # "json" 或 "jsonl"
-    auto_save_session: bool = True       # 每轮对话后自动保存
-
-    # Context injected into every system prompt
-    claude_md_content: str = ""
-    system_extra: str = ""         # additional system text (e.g. from --system flag)
-    agent_name: str = DEFAULT_AGENT_NAME  # agent display name
-
-    # 消息格式：
-    #   "system_field"  — 使用顶层 system 参数（默认，Anthropic/OpenAI 原生格式）
-    #   "system_role"   — 将 system 内容作为 role="system" 的首条消息注入
+    # ── LLM Provider ──────────────────────────────────────────────────────────
+    llm_provider: str = "anthropic"
+    llm_base_url: str = ""
+    use_system_tool_call: bool = False
+    max_llm_calls: int = 8
     system_message_format: str = "system_field"
 
-    # ── 感知与记忆功能开关 ────────────────────────────────────────────────────
-    # 每个功能独立开关，默认全部关闭，可通过 CLI / JSON 配置文件启用。
+    # ── System prompt 注入 ────────────────────────────────────────────────────
+    claude_md_content: str = ""
+    system_extra: str = ""
+    agent_name: str = DEFAULT_AGENT_NAME
 
-    # [SYS-MEMORY] 跨 session 长期记忆
-    memory_enabled: bool = False
-    memory_store_path: Optional[Path] = None
-    memory_top_k: int = 3
+    # ── 功能子配置块（每个功能域独立聚合）────────────────────────────────────
+    memory:     MemoryConfig     = field(default_factory=MemoryConfig)
+    compress:   CompressConfig   = field(default_factory=CompressConfig)
+    tool_trim:  ToolTrimConfig   = field(default_factory=ToolTrimConfig)
+    skill:      SkillConfig      = field(default_factory=SkillConfig)
+    perception: PerceptionConfig = field(default_factory=PerceptionConfig)
+    session:    SessionConfig    = field(default_factory=SessionConfig)
+    debug:      DebugConfig      = field(default_factory=DebugConfig)
+    http:       HttpConfig       = field(default_factory=HttpConfig)
+    retry:      RetryConfig      = field(default_factory=RetryConfig)
 
-    # [SYS-SUMMARY] session 摘要化
-    session_summary_enabled: bool = False
-    session_summary_min_turns: int = 4
+    # ── 向后兼容属性（让旧代码 cfg.memory_enabled 不报错）────────────────────
+    # 以下属性委托给子配置块，方便渐进式迁移，后续版本可删除
 
-    # [SYS-SEARCH] session 关键词搜索
-    session_search_enabled: bool = False
+    @property
+    def memory_enabled(self) -> bool:           return self.memory.enabled
+    @property
+    def memory_top_k(self) -> int:              return self.memory.top_k
+    @property
+    def memory_store_path(self) -> Optional[Path]: return self.memory.store_path
 
-    # [SYS-COMPRESS] 自动上下文压缩
-    auto_compress_enabled: bool = False
-    auto_compress_threshold: float = 0.7
+    @property
+    def auto_compress_enabled(self) -> bool:    return self.compress.enabled
+    @property
+    def auto_compress_threshold(self) -> float: return self.compress.threshold
+    @property
+    def forget_policy_enabled(self) -> bool:    return self.compress.forget_orphan_tool_results
 
-    # [SYS-TRIM] 工具调用结果智能截断
-    tool_result_trim_enabled: bool = False
-    tool_result_trim_threshold: int = 500
-    # 各工具的截断策略（head_ratio 仅对 bash 生效，window_lines 仅对 read_file 生效）
-    # bash：头部保留比例（0.0~1.0），剩余为尾部
-    tool_trim_bash_head_ratio: float = 0.7
-    # read_file：滑动窗口保留行数（0 = 自动按 threshold 推算）
-    tool_trim_read_window_lines: int = 0
-    # grep/glob：最多保留匹配行数
-    tool_trim_grep_max_lines: int = 50
+    @property
+    def tool_result_trim_enabled(self) -> bool: return self.tool_trim.enabled
+    @property
+    def tool_result_trim_threshold(self) -> int: return self.tool_trim.threshold
+    @property
+    def tool_trim_bash_head_ratio(self) -> float: return self.tool_trim.bash_head_ratio
+    @property
+    def tool_trim_read_window_lines(self) -> int: return self.tool_trim.read_window_lines
+    @property
+    def tool_trim_grep_max_lines(self) -> int:  return self.tool_trim.grep_max_lines
 
-    # [SYS-FORGET] 智能遗忘策略
-    forget_policy_enabled: bool = False
+    @property
+    def skill_semantic_enabled(self) -> bool:   return self.skill.semantic_enabled
+    @property
+    def skill_semantic_threshold(self) -> float: return self.skill.semantic_threshold
+    @property
+    def skill_tracking_enabled(self) -> bool:   return self.skill.tracking_enabled
+    @property
+    def skill_chunking_enabled(self) -> bool:   return self.skill.chunking_enabled
+    @property
+    def skill_compact_budget(self) -> int:      return self.skill.compact_budget
+    @property
+    def skill_compact_per_skill(self) -> int:   return self.skill.compact_per_skill
 
-    # [SYS-SKILL-SEM] 技能语义匹配
-    skill_semantic_enabled: bool = False
-    skill_semantic_threshold: float = 0.72
+    @property
+    def project_scan_enabled(self) -> bool:     return self.perception.project_scan_enabled
+    @property
+    def file_watch_enabled(self) -> bool:       return self.perception.file_watch_enabled
+    @property
+    def tool_cache_enabled(self) -> bool:       return self.perception.tool_cache_enabled
+    @property
+    def token_estimate_enabled(self) -> bool:   return self.perception.token_estimate_enabled
+    @property
+    def token_warn_threshold(self) -> float:    return self.perception.token_warn_threshold
+    @property
+    def tool_stats_enabled(self) -> bool:       return self.perception.tool_stats_enabled
 
-    # [SYS-SKILL-TRACK] 技能使用追踪
-    skill_tracking_enabled: bool = False
+    @property
+    def session_dir(self) -> Optional[Path]:    return self.session.dir
+    @property
+    def session_fmt(self) -> str:               return self.session.fmt
+    @property
+    def auto_save_session(self) -> bool:        return self.session.auto_save
+    @property
+    def session_summary_enabled(self) -> bool:  return self.session.summary_enabled
+    @property
+    def session_summary_min_turns(self) -> int: return self.session.summary_min_turns
+    @property
+    def session_search_enabled(self) -> bool:   return self.session.search_enabled
 
-    # [SYS-SKILL-COMPACT] 压缩时重附 skill 上下文（类 Claude Code 机制）
-    # 总 token 预算：所有 skill 共享，LRU 顺序填充，超出则丢弃较旧 skill
-    skill_compact_budget: int = 25_000
-    # 单个 skill 最多贡献的 token 数
-    skill_compact_per_skill: int = 5_000
+    @property
+    def debug_llm(self) -> bool:                return self.debug.llm_enabled
+    @property
+    def debug_llm_console(self) -> bool:        return self.debug.llm_console
+    @property
+    def debug_log_dir(self) -> Optional[Path]:  return self.debug.log_dir
 
-    # [SYS-SKILL-CHUNK] 技能内容裁剪
-    skill_chunking_enabled: bool = False
+    @property
+    def http_enabled(self) -> bool:             return self.http.enabled
+    @property
+    def http_host(self) -> str:                 return self.http.host
+    @property
+    def http_port(self) -> int:                 return self.http.port
+    @property
+    def http_api_token(self) -> str:            return self.http.api_token
+    @property
+    def http_allowed_ips(self) -> list:         return self.http.allowed_ips
+    @property
+    def http_cors_origins(self) -> list:        return self.http.cors_origins
+    @property
+    def http_fs_readonly(self) -> bool:         return self.http.fs_readonly
+    @property
+    def http_fs_excludes(self) -> list:         return self.http.fs_excludes
+    @property
+    def http_ring_maxlen(self) -> int:          return self.http.ring_maxlen
 
-    # [SYS-PROJ] 项目结构感知
-    project_scan_enabled: bool = False
+    @property
+    def llm_retry_max(self) -> int:             return self.retry.max_retries
+    @property
+    def llm_retry_delay(self) -> float:         return self.retry.delay
+    @property
+    def llm_retry_verbose(self) -> bool:        return self.retry.verbose
 
-    # [SYS-WATCH] 文件变化感知
-    file_watch_enabled: bool = False
 
-    # [SYS-TOOLCACHE] 工具调用结果缓存
-    tool_cache_enabled: bool = False
-
-    # [SYS-TOKEN] token 用量预估
-    token_estimate_enabled: bool = False
-    token_warn_threshold: float = 0.75
-
-    # [SYS-STATS] 工具调用详细统计
-    tool_stats_enabled: bool = False
-
-    # ── LLM 调用重试策略 ──────────────────────────────────────────────────────
-    # [SYS-RETRY] 当模型返回空响应（无文本、无工具调用）时自动重试
-
-    # 最多重试次数（不含首次调用）；设为 0 禁用重试
-    llm_retry_max: int = 15
-
-    # 每次重试前等待秒数；0 = 立即重试
-    llm_retry_delay: float = 5.0
-
-    # 是否在重试时打印警告信息到终端
-    llm_retry_verbose: bool = True
-
-    # ── HTTP API 服务 ─────────────────────────────────────────────────────────
-    # [HTTP] 是否启动内置 HTTP API 服务（默认关闭）
-    http_enabled: bool = False
-
-    # 监听地址（默认只监听本机，改为 0.0.0.0 可对外暴露）
-    http_host: str = "127.0.0.1"
-
-    # 监听端口
-    http_port: int = 8765
-
-    # 固定 API token（留空则自动生成并写入 agent_api.key）
-    http_api_token: str = ""
-
-    # IP 白名单（空列表 = 不限制；默认只允许本机）
-    # 支持精确 IP 或前缀，如 ["192.168.1.", "10.0.0.1"]
-    http_allowed_ips: list = field(default_factory=lambda: ["127.0.0.1", "::1"])
-
-    # CORS 允许来源（空列表 = 允许所有，用于 Web UI 跨域）
-    http_cors_origins: list = field(default_factory=list)
-
-    # 是否以只读模式暴露文件系统 API
-    http_fs_readonly: bool = False
-
-    # 文件系统黑名单（glob 模式，命中的文件不可读写）
-    http_fs_excludes: list = field(default_factory=list)
-
-    # RingBuffer 最大事件数（影响迟接入客户端能回放多少历史）
-    http_ring_maxlen: int = 2000
-
+# ════════════════════════════════════════════════════════════════════════════════
+# load_config：平坦 JSON/CLI 参数 → 组装子配置块 → 返回 AppConfig
+# ════════════════════════════════════════════════════════════════════════════════
 
 def load_config(
     project_root: Optional[Path] = None,
@@ -238,6 +364,7 @@ def load_config(
     agent_name: Optional[str] = None,
     system_message_format: Optional[str] = None,
     config_file: Optional[Path] = None,
+    # 以下保持与旧签名兼容，内部组装到子配置块
     memory_enabled: Optional[bool] = None,
     memory_top_k: Optional[int] = None,
     session_summary_enabled: Optional[bool] = None,
@@ -264,107 +391,165 @@ def load_config(
     token_warn_threshold: Optional[float] = None,
     tool_stats_enabled: Optional[bool] = None,
 ) -> AppConfig:
-    """Load config from environment + CLAUDE.md + optional JSON config file, return AppConfig.
-
-    参数优先级（从高到低）：
-      1. JSON 配置文件（--config 指定）
-      2. 命令行参数
-      3. 环境变量
-      4. 内置默认值
+    """
+    加载配置，优先级（高→低）：JSON 配置文件 > CLI 参数 > 环境变量 > 内置默认值。
+    返回 AppConfig（含已组装好的子配置块）。
     """
     root = project_root or Path.cwd()
 
-    # ── JSON 配置文件加载 ─────────────────────────────────────────────────────
+    # ── JSON 配置文件 ─────────────────────────────────────────────────────────
     file_cfg: dict = {}
     if config_file is not None:
         file_cfg = _load_config_file(config_file)
     else:
-        # 自动查找项目根目录下的 agent_config.json
         default_cfg_path = root / "agent_config.json"
         if default_cfg_path.exists():
             file_cfg = _load_config_file(default_cfg_path)
 
-    def _f(key: str, cli_val, default=None):
-        """从配置文件或命令行取值；文件优先级更高。"""
+    def _f(key, cli_val, default=None):
         return file_cfg[key] if key in file_cfg else (cli_val if cli_val is not None else default)
 
-    # API key
-    api_key = os.environ.get("ANTHROPIC_API_KEY", "")
-
-    # CLAUDE.md
-    claude_md = _read_claude_md(root)
-
-    # Skills directory (project-local first, then ~/.claude/skills)
-    skills_dir = _resolve_skills_dir(root)
-
-    _llm_provider = _f("provider", llm_provider) or os.environ.get("LLM_PROVIDER", "anthropic")
-    _llm_base_url = _f("base_url", llm_base_url) or os.environ.get("LLM_BASE_URL", "")
-
-    # 调试日志初始化
-    _debug_llm = bool(_f("debug_llm", debug_llm or None)) or os.environ.get("LLM_DEBUG", "").lower() in ("1", "true", "yes")
-    _debug_console = bool(_f("debug_llm_console", debug_llm_console or None)) or os.environ.get("LLM_DEBUG_CONSOLE", "").lower() in ("1", "true", "yes")
-    _debug_log_dir_str = file_cfg.get("debug_log_dir") or os.environ.get("LLM_DEBUG_LOG_DIR", "")
-    _debug_log_dir = Path(_debug_log_dir_str) if _debug_log_dir_str else None
-
-    if _debug_llm:
-        from mini_agent.llm.debug_logger import DebugConfig, init_debug_logger
-        _dcfg = DebugConfig(
-            enabled=True,
-            log_to_file=True,
-            log_to_console=_debug_console,
-            log_dir=_debug_log_dir or root / ".claude" / "logs",
-        )
-        init_debug_logger(_dcfg, root)
-
-    # system tool call 模式
-    _use_sys_tc_cli = (
-        use_system_tool_call
-        if use_system_tool_call is not None
-        else os.environ.get("LLM_SYSTEM_TOOL_CALL", "").lower() in ("1", "true", "yes")
-    )
-    _use_sys_tc = bool(_f("system_tool_call", _use_sys_tc_cli or None))
-
-    # system 消息格式
-    _sys_msg_fmt_cli = system_message_format or os.environ.get("LLM_SYSTEM_MESSAGE_FORMAT", "system_field")
-    _sys_msg_fmt = _f("system_message_format", _sys_msg_fmt_cli) or "system_field"
-    if _sys_msg_fmt not in ("system_field", "system_role"):
-        import warnings
-        warnings.warn(
-            f"[config] Unknown system_message_format={_sys_msg_fmt!r}, "
-            "falling back to 'system_field'. Valid values: 'system_field', 'system_role'."
-        )
-        _sys_msg_fmt = "system_field"
-
-    # 其他参数
-    _model = _f("model", model) or os.environ.get("CLAUDE_MODEL", DEFAULT_MODEL)
-    _verbose = bool(_f("verbose", verbose or None))
-    _sandbox = bool(_f("sandbox", sandbox or None))
-    _auto_approve = bool(_f("yes", auto_approve or None))
-    _extra_system = _f("system", extra_system) or ""
-    _max_llm_calls_val = _f("max_llm_calls", max_llm_calls)
-    _max_llm_calls = int(_max_llm_calls_val) if _max_llm_calls_val is not None else int(os.environ.get("MAX_LLM_CALLS", 8))
-    _session_fmt = _f("session_fmt", session_fmt) or os.environ.get("SESSION_FMT", "json")
-    _auto_save = not bool(_f("no_save_session", None))  # file flag is "no_save_session"
-    _agent_name = _f("agent_name", agent_name) or os.environ.get("AGENT_NAME", DEFAULT_AGENT_NAME)
-
-    _session_dir_str = file_cfg.get("session_dir") or (str(session_dir) if session_dir else "") or os.environ.get("SESSION_DIR", "")
-    _session_dir = Path(_session_dir_str) if _session_dir_str else None
-
-    # ── 感知开关解析（文件 > CLI > 默认值）────────────────────────────────────
     def _fb(key, cli_val, default=False):
-        """bool 开关：文件优先，无则取 cli，无则取 default。"""
         if key in file_cfg:
             return bool(file_cfg[key])
         return cli_val if cli_val is not None else default
 
     def _fn(key, cli_val, default):
-        """数值参数：文件优先，无则取 cli，无则取 default。"""
         if key in file_cfg:
             return type(default)(file_cfg[key])
         return cli_val if cli_val is not None else default
 
+    # ── 核心参数 ──────────────────────────────────────────────────────────────
+    api_key   = os.environ.get("ANTHROPIC_API_KEY", "")
+    claude_md = _read_claude_md(root)
+    skills_dir = _resolve_skills_dir(root)
+
+    _llm_provider = _f("provider", llm_provider) or os.environ.get("LLM_PROVIDER", "anthropic")
+    _llm_base_url = _f("base_url", llm_base_url) or os.environ.get("LLM_BASE_URL", "")
+    _model = _f("model", model) or os.environ.get("CLAUDE_MODEL", DEFAULT_MODEL)
+    _verbose = bool(_f("verbose", verbose or None))
+    _sandbox = bool(_f("sandbox", sandbox or None))
+    _auto_approve = bool(_f("yes", auto_approve or None))
+    _extra_system = _f("system", extra_system) or ""
+    _max_llm_calls_v = _f("max_llm_calls", max_llm_calls)
+    _max_llm_calls = int(_max_llm_calls_v) if _max_llm_calls_v is not None else int(os.environ.get("MAX_LLM_CALLS", 8))
+    _agent_name = _f("agent_name", agent_name) or os.environ.get("AGENT_NAME", DEFAULT_AGENT_NAME)
+
+    _use_sys_tc_cli = (
+        use_system_tool_call if use_system_tool_call is not None
+        else os.environ.get("LLM_SYSTEM_TOOL_CALL", "").lower() in ("1", "true", "yes")
+    )
+    _use_sys_tc = bool(_f("system_tool_call", _use_sys_tc_cli or None))
+
+    _sys_msg_fmt_cli = system_message_format or os.environ.get("LLM_SYSTEM_MESSAGE_FORMAT", "system_field")
+    _sys_msg_fmt = _f("system_message_format", _sys_msg_fmt_cli) or "system_field"
+    if _sys_msg_fmt not in ("system_field", "system_role"):
+        import warnings
+        warnings.warn(f"[config] Unknown system_message_format={_sys_msg_fmt!r}, falling back to 'system_field'.")
+        _sys_msg_fmt = "system_field"
+
+    # ── 组装子配置块 ──────────────────────────────────────────────────────────
+
     _mem_path_str = file_cfg.get("memory_store_path", "")
     _mem_path = Path(_mem_path_str) if _mem_path_str else None
+
+    memory_cfg = MemoryConfig(
+        enabled=_fb("memory_enabled", memory_enabled),
+        backend=_f("memory_backend", None) or "local",
+        store_path=_mem_path,
+        top_k=_fn("memory_top_k", memory_top_k, 3),
+        decay_half_life_days=_fn("memory_decay_half_life_days", None, 30.0),
+        max_entries=_fn("memory_max_entries", None, 500),
+    )
+
+    compress_cfg = CompressConfig(
+        enabled=_fb("auto_compress_enabled", auto_compress_enabled),
+        threshold=_fn("auto_compress_threshold", auto_compress_threshold, 0.7),
+        strategy=_f("auto_compress_strategy", None) or "turn_aligned",
+        forget_orphan_tool_results=_fb("forget_policy_enabled", forget_policy_enabled),
+    )
+
+    tool_trim_cfg = ToolTrimConfig(
+        enabled=_fb("tool_result_trim_enabled", tool_result_trim_enabled),
+        threshold=_fn("tool_result_trim_threshold", tool_result_trim_threshold, 500),
+        bash_head_ratio=_fn("tool_trim_bash_head_ratio", tool_trim_bash_head_ratio, 0.7),
+        read_window_lines=_fn("tool_trim_read_window_lines", tool_trim_read_window_lines, 0),
+        grep_max_lines=_fn("tool_trim_grep_max_lines", tool_trim_grep_max_lines, 50),
+    )
+
+    skill_cfg = SkillConfig(
+        semantic_enabled=_fb("skill_semantic_enabled", skill_semantic_enabled),
+        semantic_threshold=_fn("skill_semantic_threshold", skill_semantic_threshold, 0.72),
+        tracking_enabled=_fb("skill_tracking_enabled", skill_tracking_enabled),
+        chunking_enabled=_fb("skill_chunking_enabled", skill_chunking_enabled),
+        compact_budget=_fn("skill_compact_budget", skill_compact_budget, 25_000),
+        compact_per_skill=_fn("skill_compact_per_skill", skill_compact_per_skill, 5_000),
+        matcher=_f("skill_matcher", None) or "keyword",
+    )
+
+    perception_cfg = PerceptionConfig(
+        project_scan_enabled=_fb("project_scan_enabled", project_scan_enabled),
+        file_watch_enabled=_fb("file_watch_enabled", file_watch_enabled),
+        tool_cache_enabled=_fb("tool_cache_enabled", tool_cache_enabled),
+        tool_cache_max_entries=_fn("tool_cache_max_entries", None, 256),
+        token_estimate_enabled=_fb("token_estimate_enabled", token_estimate_enabled),
+        token_warn_threshold=_fn("token_warn_threshold", token_warn_threshold, 0.75),
+        tool_stats_enabled=_fb("tool_stats_enabled", tool_stats_enabled),
+    )
+
+    _session_dir_str = (
+        file_cfg.get("session_dir")
+        or (str(session_dir) if session_dir else "")
+        or os.environ.get("SESSION_DIR", "")
+    )
+    session_cfg = SessionConfig(
+        dir=Path(_session_dir_str) if _session_dir_str else None,
+        fmt=_f("session_fmt", session_fmt) or os.environ.get("SESSION_FMT", "json"),
+        auto_save=not bool(_f("no_save_session", None)),
+        summary_enabled=_fb("session_summary_enabled", session_summary_enabled),
+        summary_min_turns=_fn("session_summary_min_turns", session_summary_min_turns, 4),
+        search_enabled=_fb("session_search_enabled", session_search_enabled),
+        backend=_f("session_backend", None) or "local",
+    )
+
+    _debug_llm_v = bool(_f("debug_llm", debug_llm or None)) or os.environ.get("LLM_DEBUG", "").lower() in ("1", "true", "yes")
+    _debug_console_v = bool(_f("debug_llm_console", debug_llm_console or None)) or os.environ.get("LLM_DEBUG_CONSOLE", "").lower() in ("1", "true", "yes")
+    _debug_log_dir_str = file_cfg.get("debug_log_dir") or os.environ.get("LLM_DEBUG_LOG_DIR", "")
+    _debug_log_dir = Path(_debug_log_dir_str) if _debug_log_dir_str else None
+    debug_cfg = DebugConfig(
+        llm_enabled=_debug_llm_v,
+        llm_console=_debug_console_v,
+        log_dir=_debug_log_dir,
+    )
+
+    http_cfg = HttpConfig(
+        enabled=_fb("http_enabled", None),
+        host=_f("http_host", None) or "127.0.0.1",
+        port=int(_f("http_port", None) or 8765),
+        api_token=_f("http_api_token", None) or "",
+        allowed_ips=file_cfg.get("http_allowed_ips", ["127.0.0.1", "::1"]),
+        cors_origins=file_cfg.get("http_cors_origins", []),
+        fs_readonly=_fb("http_fs_readonly", None),
+        fs_excludes=file_cfg.get("http_fs_excludes", []),
+        ring_maxlen=int(_f("http_ring_maxlen", None) or 2000),
+    )
+
+    retry_cfg = RetryConfig(
+        max_retries=_fn("llm_retry_max", None, 15),
+        delay=_fn("llm_retry_delay", None, 5.0),
+        verbose=_fb("llm_retry_verbose", None, True),
+    )
+
+    # ── 初始化调试日志（需要在 AppConfig 构建前完成）─────────────────────────
+    if _debug_llm_v:
+        from mini_agent.llm.debug_logger import DebugConfig as LLMDebugConfig, init_debug_logger
+        _dcfg = LLMDebugConfig(
+            enabled=True,
+            log_to_file=True,
+            log_to_console=_debug_console_v,
+            log_dir=_debug_log_dir or root / ".claude" / "logs",
+        )
+        init_debug_logger(_dcfg, root)
 
     return AppConfig(
         api_key=api_key,
@@ -381,80 +566,31 @@ def load_config(
         llm_base_url=_llm_base_url,
         use_system_tool_call=_use_sys_tc,
         max_llm_calls=_max_llm_calls,
-        debug_llm=_debug_llm,
-        debug_llm_console=_debug_console,
-        debug_log_dir=_debug_log_dir,
-        session_dir=_session_dir,
-        session_fmt=_session_fmt,
-        auto_save_session=_auto_save,
         agent_name=_agent_name,
         system_message_format=_sys_msg_fmt,
-        # 感知与记忆开关
-        memory_enabled=_fb("memory_enabled", memory_enabled),
-        memory_store_path=_mem_path,
-        memory_top_k=_fn("memory_top_k", memory_top_k, 3),
-        session_summary_enabled=_fb("session_summary_enabled", session_summary_enabled),
-        session_summary_min_turns=_fn("session_summary_min_turns", session_summary_min_turns, 4),
-        session_search_enabled=_fb("session_search_enabled", session_search_enabled),
-        auto_compress_enabled=_fb("auto_compress_enabled", auto_compress_enabled),
-        auto_compress_threshold=_fn("auto_compress_threshold", auto_compress_threshold, 0.7),
-        tool_result_trim_enabled=_fb("tool_result_trim_enabled", tool_result_trim_enabled),
-        tool_result_trim_threshold=_fn("tool_result_trim_threshold", tool_result_trim_threshold, 500),
-        tool_trim_bash_head_ratio=_fn("tool_trim_bash_head_ratio", tool_trim_bash_head_ratio, 0.7),
-        tool_trim_read_window_lines=_fn("tool_trim_read_window_lines", tool_trim_read_window_lines, 0),
-        tool_trim_grep_max_lines=_fn("tool_trim_grep_max_lines", tool_trim_grep_max_lines, 50),
-        forget_policy_enabled=_fb("forget_policy_enabled", forget_policy_enabled),
-        skill_semantic_enabled=_fb("skill_semantic_enabled", skill_semantic_enabled),
-        skill_semantic_threshold=_fn("skill_semantic_threshold", skill_semantic_threshold, 0.72),
-        skill_tracking_enabled=_fb("skill_tracking_enabled", skill_tracking_enabled),
-        skill_chunking_enabled=_fb("skill_chunking_enabled", skill_chunking_enabled),
-        skill_compact_budget=_fn("skill_compact_budget", skill_compact_budget, 25_000),
-        skill_compact_per_skill=_fn("skill_compact_per_skill", skill_compact_per_skill, 5_000),
-        project_scan_enabled=_fb("project_scan_enabled", project_scan_enabled),
-        file_watch_enabled=_fb("file_watch_enabled", file_watch_enabled),
-        tool_cache_enabled=_fb("tool_cache_enabled", tool_cache_enabled),
-        token_estimate_enabled=_fb("token_estimate_enabled", token_estimate_enabled),
-        token_warn_threshold=_fn("token_warn_threshold", token_warn_threshold, 0.75),
-        tool_stats_enabled=_fb("tool_stats_enabled", tool_stats_enabled),
+        # 子配置块
+        memory=memory_cfg,
+        compress=compress_cfg,
+        tool_trim=tool_trim_cfg,
+        skill=skill_cfg,
+        perception=perception_cfg,
+        session=session_cfg,
+        debug=debug_cfg,
+        http=http_cfg,
+        retry=retry_cfg,
     )
 
 
-def _load_config_file(path: Path) -> dict:
-    """
-    从 JSON 配置文件加载参数，返回 dict。
-    加载失败时打印警告并返回空 dict，不中断启动。
+# ── 辅助函数（不变）──────────────────────────────────────────────────────────
 
-    支持的字段名与命令行参数保持一致（下划线形式），例如：
-      {
-        "model": "claude-opus-4-5",
-        "provider": "openai",
-        "base_url": "https://...",
-        "system_tool_call": true,
-        "system_message_format": "system_role",
-        "verbose": false,
-        "sandbox": false,
-        "yes": false,
-        "max_turns": 50,
-        "max_llm_calls": 8,
-        "workers": 4,
-        "session_dir": "./sessions",
-        "session_fmt": "json",
-        "no_save_session": false,
-        "agent_name": "orzooo",
-        "debug_llm": false,
-        "debug_llm_console": false,
-        "debug_log_dir": "",
-        "max_tokens": 8192,
-        "system": ""
-      }
-    """
+def _load_config_file(path: Path) -> dict:
     import json as _json
     import warnings as _warnings
     try:
         text = path.read_text(encoding="utf-8")
         data = _json.loads(text)
         if not isinstance(data, dict):
-            _warnings.warn(f"[config] {path}: expected a JSON object, got {type(data).__name__}. Ignored.")
+            _warnings.warn(f"[config] {path}: expected a JSON object. Ignored.")
             return {}
         return data
     except FileNotFoundError:
@@ -469,9 +605,7 @@ def _load_config_file(path: Path) -> dict:
 
 
 def _read_claude_md(root: Path) -> str:
-    """Read CLAUDE.md from project root (or parent dirs), return content."""
-    search_dirs = [root] + list(root.parents)[:3]
-    for d in search_dirs:
+    for d in [root] + list(root.parents)[:3]:
         p = d / "CLAUDE.md"
         if p.exists():
             try:
@@ -482,37 +616,21 @@ def _read_claude_md(root: Path) -> str:
 
 
 def _resolve_skills_dir(root: Path) -> Optional[Path]:
-    candidates = [
-        root / ".claude" / "skills",
-        Path.home() / ".claude" / "skills",
-    ]
-    for c in candidates:
+    for c in [root / ".claude" / "skills", Path.home() / ".claude" / "skills"]:
         if c.is_dir():
             return c
     return None
 
 
-def build_system_prompt(
-    cfg: AppConfig,
-    active_skills: list[str],
-    skill_context: str = "",
-) -> str:
-    """
-    Compose the full system prompt.
-    Delegates to PromptManager — all prompt text lives in prompts/system/*.md.
-    """
+def build_system_prompt(cfg: AppConfig, active_skills: list[str], skill_context: str = "") -> str:
     from datetime import datetime
     from mini_agent.prompts import pm
-
-    # 当前时间
-    current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S %A")
-
     return pm.build_system_prompt(
         claude_md_content=cfg.claude_md_content,
         active_skills=active_skills,
         skill_context=skill_context,
         system_extra=cfg.system_extra,
         sandbox=cfg.sandbox,
-        current_time=current_time,
+        current_time=datetime.now().strftime("%Y-%m-%d %H:%M:%S %A"),
         agent_name=cfg.agent_name,
     )

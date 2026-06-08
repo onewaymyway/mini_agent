@@ -3,6 +3,12 @@ Tool Registry.
 Each tool is a plain Python function decorated with @tool().
 The registry collects them, generates Anthropic-compatible tool schemas,
 and dispatches calls by name.
+
+重构（v2）：增加命名空间 + 工具分组支持。
+- register() 支持 group 参数，将工具归入分组（默认 "builtin"）
+- override=True 允许显式替换已注册的工具（防止静默覆盖）
+- subset(groups) 返回只包含指定分组工具的子 registry（用于 SubAgent 工具限制）
+- 全局 _default_registry 保持向后兼容
 """
 
 from __future__ import annotations
@@ -21,16 +27,35 @@ class ToolDef:
     fn: Callable
     input_schema: dict   # JSON Schema object
     requires_approval: bool = True
+    group: str = "builtin"           # 所属分组，用于 subset() 筛选
 
 
 class ToolRegistry:
-    def __init__(self) -> None:
+    def __init__(self, namespace: str = "default") -> None:
+        self.namespace = namespace
         self._tools: dict[str, ToolDef] = {}
+        self._groups: dict[str, list[str]] = {}   # group_name -> [tool_name]
 
     # ── Registration ───────────────────────────────────────────────────────────
 
-    def register(self, tool_def: ToolDef) -> None:
+    def register(self, tool_def: ToolDef, override: bool = False) -> None:
+        """
+        注册工具。
+        
+        Args:
+            tool_def: 工具定义
+            override: True = 允许覆盖已注册工具；False = 重复注册时抛出 ValueError
+        """
+        if tool_def.name in self._tools and not override:
+            raise ValueError(
+                f"Tool {tool_def.name!r} already registered in namespace {self.namespace!r}. "
+                f"Use override=True to replace it."
+            )
         self._tools[tool_def.name] = tool_def
+        # 更新分组索引
+        group = tool_def.group or "builtin"
+        if tool_def.name not in self._groups.setdefault(group, []):
+            self._groups[group].append(tool_def.name)
 
     def register_fn(
         self,
@@ -39,6 +64,8 @@ class ToolRegistry:
         description: Optional[str] = None,
         input_schema: Optional[dict] = None,
         requires_approval: bool = True,
+        group: str = "builtin",
+        override: bool = False,
     ) -> None:
         tool_name = name or fn.__name__
         desc = description or (inspect.getdoc(fn) or "").split("\n")[0]
@@ -50,7 +77,9 @@ class ToolRegistry:
                 fn=fn,
                 input_schema=schema,
                 requires_approval=requires_approval,
-            )
+                group=group,
+            ),
+            override=override,
         )
 
     # ── Lookup ─────────────────────────────────────────────────────────────────
@@ -62,13 +91,44 @@ class ToolRegistry:
     def names(self) -> list[str]:
         return list(self._tools)
 
+    def names_in_group(self, group: str) -> list[str]:
+        """返回指定分组内的工具名列表。"""
+        return list(self._groups.get(group, []))
+
+    @property
+    def groups(self) -> list[str]:
+        """返回所有已注册的分组名。"""
+        return list(self._groups)
+
+    # ── SubRegistry ───────────────────────────────────────────────────────────
+
+    def subset(self, groups: list[str]) -> "ToolRegistry":
+        """
+        返回只包含指定分组工具的子 registry。
+
+        用于 SubAgent 工具限制：主 Agent 拥有全部工具，
+        SubAgent 只允许使用 "readonly"、"builtin" 等安全工具组。
+
+        Example:
+            sub_registry = registry.subset(["builtin", "readonly"])
+            sub_agent = SubAgent(tool_registry=sub_registry, ...)
+        """
+        sub = ToolRegistry(namespace=self.namespace)
+        allowed = {t for g in groups for t in self._groups.get(g, [])}
+        for name, td in self._tools.items():
+            if name in allowed:
+                # 直接写入，绕过重复检查
+                sub._tools[name] = td
+                sub._groups.setdefault(td.group, []).append(name)
+        return sub
+
     # ── Dispatch ───────────────────────────────────────────────────────────────
 
     def call(self, name: str, tool_input: dict) -> Any:
         """Execute a tool by name. Returns the result (str or dict)."""
         td = self._tools.get(name)
         if not td:
-            raise ValueError(f"Unknown tool: {name!r}")
+            raise ValueError(f"Unknown tool: {name!r} (namespace={self.namespace!r})")
         return td.fn(**tool_input)
 
     # ── Anthropic API format ───────────────────────────────────────────────────
@@ -96,8 +156,20 @@ def tool(
     description: Optional[str] = None,
     schema: Optional[dict] = None,
     requires_approval: bool = True,
+    group: str = "builtin",
+    override: bool = False,
 ):
-    """Decorator to register a function as a tool in the default registry."""
+    """
+    Decorator to register a function as a tool in the default registry.
+
+    Args:
+        name:             Tool name (default: function name)
+        description:      Tool description (default: first line of docstring)
+        schema:           JSON Schema for tool input (default: inferred from type hints)
+        requires_approval: Whether the tool requires user approval before execution
+        group:            Tool group name, used for SubAgent tool filtering (default: "builtin")
+        override:         Allow replacing an already-registered tool (default: False)
+    """
     def decorator(fn: Callable) -> Callable:
         _default_registry.register_fn(
             fn,
@@ -105,6 +177,8 @@ def tool(
             description=description,
             input_schema=schema,
             requires_approval=requires_approval,
+            group=group,
+            override=override,
         )
         return fn
     return decorator

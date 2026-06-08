@@ -4,11 +4,15 @@ history_manager.py — 对话历史管理器
 职责：
 - 追加消息（用户消息、assistant 响应、工具结果）
 - 消息格式转换（SDK 对象 → dict）
-- 历史压缩（保留摘要 + 重附 skill）
+- 历史压缩（委托给 CompressionStrategy，可热插拔）
 - 快照 / 恢复（用于 retry / rollback）
 - skill 标签剥离
 
 从 Agent 中拆出，Agent 只需持有一个 HistoryManager 实例。
+
+重构（v2）：
+  压缩逻辑委托给 CompressionStrategy。
+  切换策略只需传入不同的 strategy 参数。
 """
 
 from __future__ import annotations
@@ -20,8 +24,9 @@ import mini_agent.ui.renderer as R
 
 if TYPE_CHECKING:
     from mini_agent.config import AppConfig
-    from mini_agent.llm import LLMResponse
+    from mini_agent.llm import LLMResponse, LLMClient
     from mini_agent.skills import SkillLoader
+    from mini_agent.history.compression import CompressionStrategy
 
 
 class HistoryManager:
@@ -36,11 +41,14 @@ class HistoryManager:
         self,
         cfg: "AppConfig",
         skill_loader: Optional["SkillLoader"] = None,
+        strategy: Optional["CompressionStrategy"] = None,
     ) -> None:
         self.cfg = cfg
         self.skill_loader = skill_loader
         self._history: list[dict] = []
         self._snapshot: Optional[dict] = None   # 用于 retry/rollback
+        # 压缩策略：未传入时根据 cfg.compress.strategy 惰性创建
+        self._strategy = strategy
 
     # ── 对外访问 ──────────────────────────────────────────────────────────
 
@@ -138,64 +146,36 @@ class HistoryManager:
 
     # ── 压缩 ──────────────────────────────────────────────────────────────
 
-    def auto_compress(self, skill_compact_fn=None) -> None:
+    def auto_compress(
+        self,
+        skill_compact_fn=None,
+        llm_client: Optional["LLMClient"] = None,
+    ) -> None:
         """
-        [SYS-COMPRESS] 自动压缩最老一半的历史。
+        [SYS-COMPRESS] 自动压缩历史，委托给 CompressionStrategy。
 
-        修复：不再使用 role="system"（部分 provider 不支持历史中的 system 消息）。
-        改为标准 user/assistant 对，所有 provider 均能正确处理。
+        策略由 cfg.compress.strategy 指定（默认 "turn_aligned"），
+        也可在构造时传入自定义 strategy 实例。
+        切换策略无需修改此方法。
 
         Args:
-            skill_compact_fn: 可选的 skill 上下文重附函数（无参数，返回 str）
+            skill_compact_fn: 可选，压缩后重附 skill 上下文（无参数，返回 str）
+            llm_client:       可选，LLMSummaryStrategy 需要；其他策略忽略
         """
         if len(self._history) < 6:
             return
-        cutoff = len(self._history) // 2
-        old_turns = self._history[:cutoff]
 
-        # 构建摘要
-        user_msgs = [
-            m["content"] for m in old_turns
-            if m.get("role") == "user" and isinstance(m.get("content"), str)
-            and not m["content"].startswith("<tool_result")
-            and not m["content"].startswith("[Previous session")
-        ]
-        tool_call_count = sum(
-            len(m.get("content", [])) if isinstance(m.get("content"), list) else 0
-            for m in old_turns if m.get("role") == "assistant"
-        )
-        summary_parts = []
-        if user_msgs:
-            summary_parts.append("User requests: " + "; ".join(
-                (msg[:80] + "…" if len(msg) > 80 else msg)
-                for msg in user_msgs[:6]
-            ))
-            if len(user_msgs) > 6:
-                summary_parts.append(f"... and {len(user_msgs)-6} more user turns")
-        if tool_call_count:
-            summary_parts.append(f"({tool_call_count} tool calls executed)")
-        summary_text = " ".join(summary_parts) if summary_parts else f"({cutoff} turns)"
+        # 惰性创建策略实例
+        if self._strategy is None:
+            from mini_agent.history.compression import create_strategy
+            self._strategy = create_strategy(self.cfg)
 
-        # 智能遗忘：剔除纯工具结果消息
-        if self.cfg.forget_policy_enabled:
-            keep = [
-                m for m in self._history[cutoff:]
-                if not (
-                    m.get("role") == "user"
-                    and isinstance(m.get("content"), str)
-                    and m["content"].startswith("<tool_result")
-                )
-            ]
-        else:
-            keep = self._history[cutoff:]
+        # 委托给策略：得到新历史列表（策略不修改原列表）
+        new_history = self._strategy.compress(self._history, self.cfg, llm_client)
 
-        # 原地替换，保持 agent.py 中 self._history 共享引用不断裂
-        new_content = [
-            {"role": "user",      "content": "[Previous conversation compressed]"},
-            {"role": "assistant", "content": f"[Compressed summary: {summary_text}]"},
-        ] + keep
+        # 原地替换，保持 agent.py 中 self._history 共享引用有效
         self._history.clear()
-        self._history.extend(new_content)
+        self._history.extend(new_history)
 
         # 重附 skill 上下文
         if skill_compact_fn:
@@ -203,7 +183,10 @@ class HistoryManager:
             if skill_block:
                 self._history.append({"role": "user", "content": skill_block})
 
-        R.print_info(f"[compress] History compressed ({cutoff} turns → summary).")
+        R.print_info(
+            f"[compress] History compressed via {self._strategy.name} "
+            f"→ {len(self._history)} messages."
+        )
 
     def compact_with_llm(self, compact_prompt: str, run_turn_fn) -> str:
         """

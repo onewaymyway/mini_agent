@@ -20,6 +20,7 @@ import math
 import re
 import time
 from dataclasses import dataclass, field, asdict
+from mini_agent.perception.memory_base import MemoryBackend
 from pathlib import Path
 from typing import Optional
 
@@ -54,9 +55,9 @@ class MemoryEntry:
         return (time.time() - self.created_at) / 86400.0
 
 
-class MemoryStore:
+class MemoryStore(MemoryBackend):
     """
-    持久化长期记忆存储。
+    持久化长期记忆存储（MemoryBackend 的本地 JSONL 实现）。
 
     存储格式：JSONL，每行一条 MemoryEntry。
     检索：TF-IDF + 中文 n-gram 分词 + 时间衰减，返回 top-k 相关条目。
