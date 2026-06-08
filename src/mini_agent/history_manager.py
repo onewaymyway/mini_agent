@@ -107,10 +107,17 @@ class HistoryManager:
         }
 
     def restore_snapshot(self, stats) -> bool:
-        """还原到快照时刻，同时恢复 stats。返回是否成功。"""
+        """还原到快照时刻，同时恢复 stats。返回是否成功。
+
+        修复：改用原地 clear()+extend() 而非重新赋值 self._history = ...
+        重新赋值会断开 agent.py 中 self._history = self._hist._history 的共享引用，
+        导致 agent 侧持有旧列表，rollback 实际上不生效。
+        """
         if self._snapshot is None:
             return False
-        self._history             = copy.deepcopy(self._snapshot["history"])
+        # 原地替换，保持所有外部引用（包括 agent.py 的 self._history）指向同一列表
+        self._history.clear()
+        self._history.extend(copy.deepcopy(self._snapshot["history"]))
         stats.turns          = self._snapshot["stats_turns"]
         stats.input_tokens   = self._snapshot["stats_input"]
         stats.output_tokens  = self._snapshot["stats_output"]
@@ -182,11 +189,13 @@ class HistoryManager:
         else:
             keep = self._history[cutoff:]
 
-        # 用 user/assistant 对作为压缩占位符
-        self._history = [
+        # 原地替换，保持 agent.py 中 self._history 共享引用不断裂
+        new_content = [
             {"role": "user",      "content": "[Previous conversation compressed]"},
             {"role": "assistant", "content": f"[Compressed summary: {summary_text}]"},
         ] + keep
+        self._history.clear()
+        self._history.extend(new_content)
 
         # 重附 skill 上下文
         if skill_compact_fn:
@@ -224,7 +233,9 @@ class HistoryManager:
         if skill_block:
             new_history.append({"role": "user", "content": skill_block})
 
-        self._history = new_history
+        # 原地替换，保持 agent.py 中 self._history 共享引用不断裂
+        self._history.clear()
+        self._history.extend(new_history)
         R.print_success("[compact] History compacted with skill context re-attached.")
         return result
 

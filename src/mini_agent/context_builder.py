@@ -5,6 +5,12 @@ context_builder.py — System prompt 组装器
 组合成最终的 system prompt 字符串。
 
 从 Agent 中拆出，Agent 只需持有一个 ContextBuilder 实例并调用 build()。
+
+修复（v2）：
+  1. 记忆检索缓存：每次 run_turn 开始时调用 refresh_turn_context(query) 缓存检索结果，
+     整个 turn 内（多次 LLM 调用）复用，避免对同一 query 重复遍历所有记忆条目。
+  2. Skill 目录缓存：只在 skill 集合变化时重建目录字符串，而非每次 build() 都重新生成。
+  3. 新增 clear_turn_cache() 供 run_turn 结束时清理。
 """
 
 from __future__ import annotations
@@ -38,16 +44,59 @@ class ContextBuilder:
         self.cfg = cfg
         self.skill_loader = skill_loader
         self.memory = memory
-        # 允许外部提供一个 getter 而不是直接传字符串，
-        # 这样懒加载的 ProjectScanner 完成后 ContextBuilder 能自动获取最新结果
         self._project_snapshot_getter = project_snapshot_getter
+
+        # ── Turn 级缓存 ──────────────────────────────────────────────────────
+        # 每次 run_turn 开始时由 refresh_turn_context() 填充，
+        # 整个 turn 内的多次 LLM 调用共享，不重复检索。
+        self._cached_memory_snippet: str = ""
+        self._cached_turn_query: str = ""
+
+        # ── Skill 目录缓存 ───────────────────────────────────────────────────
+        # 只在 skill 集合变化时重建，避免每次 build() 重新生成字符串。
+        self._cached_skill_dir: str = ""
+        self._cached_skill_dir_key: tuple = ()   # (frozenset(active), frozenset(available))
+
+    # ── Turn 生命周期 API ─────────────────────────────────────────────────────
+
+    def refresh_turn_context(self, query: str) -> None:
+        """
+        在每次 run_turn 开始时调用，缓存当前 turn 的记忆检索结果。
+        整个 turn 内的多次 _call_llm() 会复用这份缓存，不重复检索。
+
+        Args:
+            query: 当前用户消息（用于记忆检索）
+        """
+        self._cached_turn_query = query
+        self._cached_memory_snippet = ""
+
+        if self.memory and query:
+            memories = self.memory.search(query, k=self.cfg.memory_top_k)
+            if memories:
+                snippets = "\n".join(
+                    f"- [{m.session_id[:6]}] {m.summary}"
+                    for m in memories
+                )
+                self._cached_memory_snippet = (
+                    f"\n\n## Relevant past experience\n{snippets}"
+                )
+
+    def clear_turn_cache(self) -> None:
+        """在 run_turn 结束时调用，清理 turn 级缓存。"""
+        self._cached_memory_snippet = ""
+        self._cached_turn_query = ""
+
+    # ── 组装 ──────────────────────────────────────────────────────────────────
 
     def build(self, history: list[dict]) -> str:
         """
         根据当前 history 组装完整 system prompt。
 
+        记忆检索结果来自 turn 级缓存（由 refresh_turn_context 预填充），
+        不在此处执行检索，避免每次 LLM 调用都重复遍历记忆条目。
+
         Args:
-            history: agent 当前的对话历史（用于提取最近用户消息，做 skill chunking 和 memory 搜索）
+            history: agent 当前的对话历史（用于 skill chunking）
         """
         cfg = self.cfg
         active = self.skill_loader.active if self.skill_loader else []
@@ -62,9 +111,9 @@ class ContextBuilder:
         from mini_agent.config import build_system_prompt
         base = build_system_prompt(cfg, active, skill_context=skill_ctx)
 
-        # ── Skill 目录注入 ────────────────────────────────────────────────
+        # ── Skill 目录注入（带缓存）────────────────────────────────────────
         if self.skill_loader and self.skill_loader.available:
-            base += "\n\n" + self._build_skill_directory()
+            base += "\n\n" + self._get_skill_directory()
 
         # ── 项目结构快照 ──────────────────────────────────────────────────
         snapshot = (
@@ -75,8 +124,12 @@ class ContextBuilder:
         if snapshot:
             base += "\n\n" + snapshot
 
-        # ── 长期记忆 ──────────────────────────────────────────────────────
-        if self.memory and history:
+        # ── 长期记忆（使用 turn 级缓存，不重复检索）──────────────────────
+        if self._cached_memory_snippet:
+            base += self._cached_memory_snippet
+        elif self.memory and history and not self._cached_turn_query:
+            # 兜底：若 refresh_turn_context 未被调用（如直接调用 build），
+            # 仍执行一次检索，但只做一次。
             last_user = _last_user_msg(history)
             if last_user:
                 memories = self.memory.search(last_user, k=cfg.memory_top_k)
@@ -89,9 +142,25 @@ class ContextBuilder:
 
         return base
 
-    def _build_skill_directory(self) -> str:
-        """构建 skill 目录块（注入可用 skill 列表 + 使用追踪约定）。"""
+    # ── 内部辅助 ──────────────────────────────────────────────────────────────
+
+    def _get_skill_directory(self) -> str:
+        """
+        获取 skill 目录块，带缓存：只在 skill 集合变化时重建。
+        """
+        if not self.skill_loader:
+            return ""
         catalog = self.skill_loader.get_catalog()
+        active_names = frozenset(s["name"] for s in catalog if s["active"])
+        avail_names  = frozenset(s["name"] for s in catalog)
+        key = (active_names, avail_names)
+        if key != self._cached_skill_dir_key:
+            self._cached_skill_dir = self._build_skill_directory(catalog)
+            self._cached_skill_dir_key = key
+        return self._cached_skill_dir
+
+    def _build_skill_directory(self, catalog: list[dict]) -> str:
+        """构建 skill 目录块（注入可用 skill 列表 + 使用追踪约定）。"""
         inactive = [s for s in catalog if not s["active"]]
         active_catalog = [s for s in catalog if s["active"]]
 
@@ -116,7 +185,6 @@ class ContextBuilder:
             "Deactivate it once the task phase is complete to keep context lean."
         )
 
-        # 使用追踪约定（只在有激活 skill 时注入）
         if active_catalog:
             active_names = [s["name"] for s in active_catalog]
             lines.append(

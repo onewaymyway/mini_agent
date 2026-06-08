@@ -611,6 +611,11 @@ class Agent:
                     if self.cfg.skill_tracking_enabled:
                         self.stats.record_skill_activation(name)
 
+            # [SYS-MEMORY] 预检索记忆，缓存到 turn 级别。
+            # 整个 turn 内的多次 _call_llm() 复用此缓存，不重复遍历记忆条目。
+            if self._ctx_builder is not None:
+                self._ctx_builder.refresh_turn_context(user_message)
+
             # [SYS-UNDO] 在追加用户消息前保存快照，用于 retry/rollback
             self._save_turn_snapshot()
 
@@ -623,6 +628,9 @@ class Agent:
             # 摘要写入由 save_session 触发，这里只标记需要摘要
             return result
         finally:
+            # 清理 turn 级上下文缓存
+            if self._ctx_builder is not None:
+                self._ctx_builder.clear_turn_cache()
             # 每轮对话后自动保存 session
             if getattr(self.cfg, 'auto_save_session', True) and self._history:
                 self.save_session()
@@ -1019,23 +1027,39 @@ class Agent:
 
     def _auto_compress_history(self) -> None:
         """
-        [SYS-COMPRESS] 自动压缩最老一半的历史，保留最近一半，并重附 skill 上下文。
+        [SYS-COMPRESS] 自动压缩历史，保留最近一半，并重附 skill 上下文。
 
-        修复：
-        1. 不再使用 role="system" 插入摘要（该 role 在历史列表中不被所有 provider
-           支持，且 load_session 后不会恢复到内存对象，导致行为不一致）。
-           改为标准的 user/assistant 对话对，所有 provider 均能正确处理。
-        2. 摘要文字更具信息量：除拼接用户消息外，还记录工具调用次数和轮次数，
-           让 LLM 能感知到被压缩掉的工作量。
-        3. [SYS-FORGET] 智能遗忘：在保留段中剔除纯工具结果消息（<tool_result>），
-           避免残留的工具输出在没有对应工具调用上下文时产生混淆。
+        修复（v2）：
+        1. 以「turn」为边界切割。切割点对齐到 user 消息边界，保证：
+             - 保留段的第一条消息始终是 user 消息
+             - 每条 tool_result 都有对应的 tool_use（不产生孤立工具结果）
+        2. tool_call_count 只统计 type=tool_use 的 block，而非 content 列表长度。
+        3. 原地替换列表内容，保持 self._history 共享引用有效。
         """
         if len(self._history) < 6:
             return
-        cutoff = len(self._history) // 2
+
+        # ── 找到以 turn 为边界的切割点 ──────────────────────────────────────
+        user_indices = [
+            i for i, m in enumerate(self._history)
+            if m.get("role") == "user"
+            and isinstance(m.get("content"), str)
+            and not m["content"].startswith("<tool_result")
+            and not m["content"].startswith("[Previous")
+            and not m["content"].startswith("[Compressed")
+        ]
+
+        if len(user_indices) < 2:
+            cutoff = len(self._history) // 2
+        else:
+            mid = len(self._history) // 2
+            cutoff = min(user_indices, key=lambda i: abs(i - mid))
+            if cutoff >= user_indices[-1]:
+                cutoff = user_indices[len(user_indices) // 2]
+
         old_turns = self._history[:cutoff]
 
-        # 构建摘要：用户消息 + 统计信息
+        # ── 构建摘要文字 ──────────────────────────────────────────────────────
         user_msgs = [
             m["content"] for m in old_turns
             if m.get("role") == "user" and isinstance(m.get("content"), str)
@@ -1043,41 +1067,40 @@ class Agent:
             and not m["content"].startswith("[Previous session")
         ]
         tool_call_count = sum(
-            len(m.get("content", [])) if isinstance(m.get("content"), list) else 0
+            sum(1 for b in m.get("content", [])
+                if isinstance(b, dict) and b.get("type") == "tool_use")
             for m in old_turns
-            if m.get("role") == "assistant"
+            if m.get("role") == "assistant" and isinstance(m.get("content"), list)
         )
         summary_parts = []
         if user_msgs:
             summary_parts.append("User requests: " + "; ".join(
-                (msg[:80] + "…" if len(msg) > 80 else msg)
+                (msg[:80] + "\u2026" if len(msg) > 80 else msg)
                 for msg in user_msgs[:6]
             ))
             if len(user_msgs) > 6:
                 summary_parts.append(f"... and {len(user_msgs)-6} more user turns")
         if tool_call_count:
             summary_parts.append(f"({tool_call_count} tool calls executed)")
-        summary_text = " ".join(summary_parts) if summary_parts else f"({cutoff} turns)"
+        summary_text = " ".join(summary_parts) if summary_parts else f"({cutoff} msgs)"
 
-        # 保留段：可选剔除纯工具结果消息
+        # ── 保留段：可选剔除孤立工具结果消息 ─────────────────────────────────
+        keep = self._history[cutoff:]
         if self.cfg.forget_policy_enabled:
             keep = [
-                m for m in self._history[cutoff:]
+                m for m in keep
                 if not (
                     m.get("role") == "user"
                     and isinstance(m.get("content"), str)
                     and m["content"].startswith("<tool_result")
                 )
             ]
-        else:
-            keep = self._history[cutoff:]
 
-        # 使用标准 user/assistant 对作为压缩占位符（兼容所有 provider）
+        # ── 原地替换，保持共享引用有效 ───────────────────────────────────────
         compressed_pair = [
             {"role": "user",      "content": "[Previous conversation compressed]"},
             {"role": "assistant", "content": f"[Compressed summary: {summary_text}]"},
         ]
-        # 原地替换，保持共享引用有效
         self._history.clear()
         self._history.extend(compressed_pair + keep)
 
@@ -1089,7 +1112,7 @@ class Agent:
                 "content": skill_block,
             })
 
-        R.print_info(f"[compress] History compressed ({cutoff} turns → summary).")
+        R.print_info(f"[compress] History compressed (cutoff={cutoff}, turn-aligned) → summary.")
 
     def _build_tool_schemas(self) -> list[ToolSchema]:
         """将 ToolRegistry 的工具定义转换为 provider 无关的 ToolSchema 列表。"""
