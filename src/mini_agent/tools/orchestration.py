@@ -128,7 +128,7 @@ def spawn_agent(
         "name": task.name,
         "status": "pending",
         "message": f"Sub-agent spawned. Use get_task_status('{task_id}') to check progress.",
-    }, indent=2)
+    }, indent=2,ensure_ascii=False)
 
 
 @tool(
@@ -185,7 +185,7 @@ def spawn_agents(tasks: list) -> str:
         "spawned": len(results),
         "tasks": results,
         "message": "Use list_tasks to monitor all tasks.",
-    }, indent=2)
+    }, indent=2,ensure_ascii=False)
 
 
 # ── get_task_status 工具 ──────────────────────────────────────────────────────
@@ -244,7 +244,7 @@ def get_task_status(task_id: str, include_log: bool = True) -> str:
     if include_log or rec.status == TS.FAILED:
         data["log"] = rec.log_lines[-50:]
 
-    return json.dumps(data, indent=2)
+    return json.dumps(data, indent=2,ensure_ascii=False)
 
 
 # ── list_tasks 工具 ───────────────────────────────────────────────────────────
@@ -298,7 +298,7 @@ def list_tasks(status: Optional[str] = None, tag: Optional[str] = None) -> str:
     return json.dumps({
         "stats": stats,
         "tasks": tasks,
-    }, indent=2)
+    }, indent=2,ensure_ascii=False)
 
 
 # ── cancel_task 工具 ──────────────────────────────────────────────────────────
@@ -384,4 +384,4 @@ def wait_for_tasks(task_ids: list, timeout_seconds: float = 300) -> str:
     return json.dumps({
         "timed_out": timed_out,
         "results": results,
-    }, indent=2)
+    }, indent=2,ensure_ascii=False)
