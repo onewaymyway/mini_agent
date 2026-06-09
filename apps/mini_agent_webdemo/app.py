@@ -664,29 +664,25 @@ def _render_agent_poll_widget():
 
 def _process_js_poll_callback():
     """
-    处理 JS 轮询组件通过 query_params 或 session 传回的事件。
-    Streamlit components 的 bidirectional 通信需要用 components.declare_component，
-    这里用更简单的方案：JS 通过 sendPrompt 发一条特殊格式的聊天消息，
-    Python 在发送前检测并处理它。
+    每次 rerun 时主动拉取后端最新事件，分发处理后写入 session_state。
 
-    由于 st.components.v1.html 是单向的（JS→Python 没有原生回调），
-    我们改用另一个策略：JS 直接操作 REST API（已实现），
-    Python 只需在每次 rerun 时主动拉取最新事件。
+    注意：/events 路由返回的每条事件结构为：
+        {"id": N, "type": "xxx", "turn_id": "...", "ts": 1.0, ...data字段展开...}
+    data 字段是直接展开在顶层的，不是嵌套的 "data" 子字典。
     """
     if not st.session_state.connected:
         return
-    # 只在 running 或 waiting_permission 时同步
     if st.session_state.agent_state not in ("running", "waiting_permission", "unknown"):
         return
 
     client = get_client()
+
     # 拉取状态
     s = client.status()
     if s:
-        new_state = s.get("state", st.session_state.agent_state)
-        st.session_state.agent_state = new_state
+        st.session_state.agent_state = s.get("state", st.session_state.agent_state)
 
-    # 拉取新事件（更新消息列表和事件日志）
+    # 拉取新事件
     evts = client.events(since_id=st.session_state.last_event_id, limit=200)
     if not (evts and evts.get("events")):
         return
@@ -701,13 +697,11 @@ def _process_js_poll_callback():
             st.session_state.last_event_id = evt_id
 
         etype = evt.get("type", "")
-        edata = evt.get("data", {})
 
+        # 注意：/events 接口将 data 字段展开到顶层，直接从 evt 读取字段
         if etype == "token":
-            # 累积 token 到最后一条 assistant 消息或新建
-            text = edata.get("text", "")
+            text = evt.get("text", "")
             if text:
-                # 找到最后一条 streaming 消息
                 last_stream = None
                 for m in reversed(st.session_state.messages):
                     if m.get("role") == "streaming":
@@ -722,7 +716,6 @@ def _process_js_poll_callback():
                     })
 
         elif etype == "turn_done":
-            # 把 streaming 消息合并成 assistant 消息
             streaming_parts = []
             new_msgs = []
             for m in st.session_state.messages:
@@ -737,8 +730,8 @@ def _process_js_poll_callback():
                     "role": "assistant", "content": full,
                     "time": datetime.now().strftime("%H:%M:%S")
                 })
-            elif not full:
-                # 没有 token 流，从历史取
+            else:
+                # 没有 token 流，从对话历史补取
                 hist = client.history()
                 if hist and hist.get("messages"):
                     for hm in reversed(hist["messages"]):
@@ -757,26 +750,27 @@ def _process_js_poll_callback():
             st.session_state.scroll_trigger += 1
 
         elif etype == "permission_req":
-            req_id_evt = edata.get("req_id", "")
+            # 字段直接在顶层：req_id, tool_name, tool_input
+            req_id_evt = evt.get("req_id", "")
             if req_id_evt and req_id_evt not in shown_ids:
                 shown_ids.add(req_id_evt)
-                tool_nm  = edata.get("tool_name", "unknown")
-                tool_inp = edata.get("tool_input", {})
+                tool_nm  = evt.get("tool_name", "unknown")
+                tool_inp = evt.get("tool_input", {})
                 st.session_state.messages.append({
-                    "role":      "permission",
-                    "req_id":    req_id_evt,
-                    "tool_name": tool_nm,
+                    "role":       "permission",
+                    "req_id":     req_id_evt,
+                    "tool_name":  tool_nm,
                     "tool_input": tool_inp,
-                    "approved":  None,   # None=待定
-                    "time":      datetime.now().strftime("%H:%M:%S"),
+                    "approved":   None,
+                    "time":       datetime.now().strftime("%H:%M:%S"),
                 })
                 st.session_state.agent_state = "waiting_permission"
                 st.session_state.scroll_trigger += 1
 
         elif etype == "permission_done":
-            req_id_done   = edata.get("req_id", "")
-            approved_flag = edata.get("approved", False)
-            reason        = edata.get("reason", "")
+            req_id_done   = evt.get("req_id", "")
+            approved_flag = evt.get("approved", False)
+            reason        = evt.get("reason", "")
             if req_id_done and req_id_done not in done_ids:
                 done_ids.add(req_id_done)
                 for m in st.session_state.messages:
@@ -784,6 +778,7 @@ def _process_js_poll_callback():
                         m["approved"] = approved_flag
                         m["reason"]   = reason
 
+        # 追加到右侧事件日志（仅追加尚未记录的）
         st.session_state.event_log.append(evt)
 
 
