@@ -153,10 +153,9 @@ def init_session():
         "fs_path":          ".",
         "fs_entries":       [],
         "is_streaming":     False,
-        # 用于清空输入框：每次发送后递增，作为 text_area 的 key
         "input_key":        0,
-        # 用于触发自动滚动
         "scroll_trigger":   0,
+        "debug_log":        [],   # 调试日志
     }
     for k, v in defaults.items():
         if k not in st.session_state:
@@ -359,65 +358,45 @@ def format_event_html(event: dict) -> str:
 def scroll_chat_to_bottom():
     """
     注入 JS 让对话容器滚动到底部。
-
-    Streamlit 的 st.container(height=N) 会在 DOM 中生成一个
-    data-testid="stVerticalBlockBorderWrapper" 的外层 div，
-    其内部紧跟的第一个 div 就是实际带 overflow:auto 的滚动容器。
-
-    策略：
-      1. 找到所有 stVerticalBlockBorderWrapper
-      2. 对每一个，尝试其直接子元素以及再向下一层，找 overflow:auto/scroll 的元素
-      3. 多次延迟执行，确保 Streamlit 渲染完成后滚动生效
+    必须用 st.markdown 注入，这样 script 在主页面执行，能访问真实 DOM。
+    st.components.v1.html 是 iframe，无法跨域访问主页面。
     """
     scroll_js = """
 <script>
 (function() {
     function scrollAll() {
-        var doc = window.parent.document;
-
-        // 策略1：找带固定高度边框包装的容器（st.container(height=...)）
-        var wrappers = doc.querySelectorAll('[data-testid="stVerticalBlockBorderWrapper"]');
+        // st.container(height=N) 渲染为 data-testid="stVerticalBlockBorderWrapper"
+        // 其第一个直接子 div 是真正的滚动容器
+        var wrappers = document.querySelectorAll('[data-testid="stVerticalBlockBorderWrapper"]');
         wrappers.forEach(function(wrapper) {
-            // 直接子 div 通常就是滚动容器
             var children = wrapper.children;
             for (var i = 0; i < children.length; i++) {
                 var child = children[i];
-                var style = window.parent.getComputedStyle(child);
+                var style = window.getComputedStyle(child);
                 if (style.overflowY === 'auto' || style.overflowY === 'scroll') {
                     child.scrollTop = child.scrollHeight;
+                    return;
                 }
             }
-            // 备用：在后代中搜索（最多3层）
-            var els = wrapper.querySelectorAll('div');
-            for (var j = 0; j < Math.min(els.length, 10); j++) {
-                var el = els[j];
-                var s = window.parent.getComputedStyle(el);
-                if ((s.overflowY === 'auto' || s.overflowY === 'scroll') && el.scrollHeight > el.clientHeight) {
-                    el.scrollTop = el.scrollHeight;
+            // 备用：往下多找几层
+            var divs = wrapper.querySelectorAll('div');
+            for (var j = 0; j < Math.min(divs.length, 8); j++) {
+                var s = window.getComputedStyle(divs[j]);
+                if ((s.overflowY === 'auto' || s.overflowY === 'scroll')
+                        && divs[j].scrollHeight > divs[j].clientHeight + 10) {
+                    divs[j].scrollTop = divs[j].scrollHeight;
+                    return;
                 }
             }
         });
-
-        // 策略2：兜底——找页面中所有可滚动 div（按高度排序取最大的那个，通常是聊天区）
-        if (wrappers.length === 0) {
-            var allDivs = Array.from(doc.querySelectorAll('div'));
-            allDivs.filter(function(d) {
-                var s = window.parent.getComputedStyle(d);
-                return (s.overflowY === 'auto' || s.overflowY === 'scroll') && d.scrollHeight > d.clientHeight + 50;
-            }).forEach(function(d) {
-                d.scrollTop = d.scrollHeight;
-            });
-        }
     }
-
-    // 多次触发：100ms（DOM 刚生成）、400ms（渲染稳定）、800ms（保险）
-    setTimeout(scrollAll, 100);
-    setTimeout(scrollAll, 400);
+    setTimeout(scrollAll, 80);
+    setTimeout(scrollAll, 350);
     setTimeout(scrollAll, 800);
 })();
 </script>
 """
-    st.components.v1.html(scroll_js, height=0)
+    st.markdown(scroll_js, unsafe_allow_html=True)
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -490,8 +469,9 @@ def _render_agent_poll_widget():
     for (var i = 0; i < newEvents.length; i++) {{
       var e = newEvents[i];
       if ((e.id||0) > maxId) maxId = e.id;
-      if (e.type === "permission_req")  permReqs.push(e.data||{{}});
-      if (e.type === "permission_done") permDones.push(e.data||{{}});
+      // 注意：/events 接口将 data 字段展开到顶层，req_id/tool_name/tool_input 直接在 e 上
+      if (e.type === "permission_req")  permReqs.push(e);
+      if (e.type === "permission_done") permDones.push(e);
       if (e.type === "token") hasToken = true;
     }}
 
@@ -662,13 +642,12 @@ def _render_agent_poll_widget():
     st.components.v1.html(widget_html, height=160, scrolling=False)
 
 
-def _process_js_poll_callback():
+def _sync_events():
     """
     每次 rerun 时主动拉取后端最新事件，分发处理后写入 session_state。
 
-    注意：/events 路由返回的每条事件结构为：
-        {"id": N, "type": "xxx", "turn_id": "...", "ts": 1.0, ...data字段展开...}
-    data 字段是直接展开在顶层的，不是嵌套的 "data" 子字典。
+    事件结构（/events 接口把 data 字段展开到顶层）：
+        {"id": N, "type": "xxx", "turn_id": "...", "ts": 1.0, <data字段直接在顶层>}
     """
     if not st.session_state.connected:
         return
@@ -677,19 +656,33 @@ def _process_js_poll_callback():
 
     client = get_client()
 
-    # 拉取状态
+    # ── 1. 拉取 agent 状态 ──
     s = client.status()
     if s:
-        st.session_state.agent_state = s.get("state", st.session_state.agent_state)
+        new_state = s.get("state", st.session_state.agent_state)
+        if new_state != st.session_state.agent_state:
+            st.session_state.debug_log.append(
+                f"[{_ts()}] state: {st.session_state.agent_state} -> {new_state}"
+            )
+        st.session_state.agent_state = new_state
+        st.session_state.stats = s.get("stats", {})
 
-    # 拉取新事件
+    # ── 2. 拉取新事件（增量） ──
     evts = client.events(since_id=st.session_state.last_event_id, limit=200)
     if not (evts and evts.get("events")):
         return
 
     new_evts = evts["events"]
-    shown_ids = {m.get("req_id") for m in st.session_state.messages if m.get("role") == "permission"}
-    done_ids  = set()
+    if new_evts:
+        st.session_state.debug_log.append(
+            f"[{_ts()}] fetched {len(new_evts)} events "
+            f"(since_id={st.session_state.last_event_id}, "
+            f"types={[e.get('type') for e in new_evts[:10]]})"
+        )
+
+    # 已在消息列表里的权限请求 req_id（去重用）
+    shown_perm_ids = {m.get("req_id") for m in st.session_state.messages
+                      if m.get("role") == "permission"}
 
     for evt in new_evts:
         evt_id = evt.get("id", 0)
@@ -698,93 +691,213 @@ def _process_js_poll_callback():
 
         etype = evt.get("type", "")
 
-        # 注意：/events 接口将 data 字段展开到顶层，直接从 evt 读取字段
         if etype == "token":
             text = evt.get("text", "")
             if text:
-                last_stream = None
-                for m in reversed(st.session_state.messages):
-                    if m.get("role") == "streaming":
-                        last_stream = m
-                        break
+                last_stream = next(
+                    (m for m in reversed(st.session_state.messages)
+                     if m.get("role") == "streaming"), None
+                )
                 if last_stream:
                     last_stream["content"] += text
                 else:
                     st.session_state.messages.append({
                         "role": "streaming", "content": text,
-                        "time": datetime.now().strftime("%H:%M:%S")
+                        "time": _ts()
                     })
 
         elif etype == "turn_done":
-            streaming_parts = []
-            new_msgs = []
-            for m in st.session_state.messages:
-                if m.get("role") == "streaming":
-                    streaming_parts.append(m["content"])
-                else:
-                    new_msgs.append(m)
-            st.session_state.messages = new_msgs
-            full = "".join(streaming_parts).strip()
-            if full:
-                st.session_state.messages.append({
-                    "role": "assistant", "content": full,
-                    "time": datetime.now().strftime("%H:%M:%S")
-                })
-            else:
-                # 没有 token 流，从对话历史补取
+            parts = [m["content"] for m in st.session_state.messages
+                     if m.get("role") == "streaming"]
+            st.session_state.messages = [m for m in st.session_state.messages
+                                          if m.get("role") != "streaming"]
+            full = "".join(parts).strip()
+            if not full:
                 hist = client.history()
-                if hist and hist.get("messages"):
-                    for hm in reversed(hist["messages"]):
+                if hist:
+                    for hm in reversed(hist.get("messages", [])):
                         if hm.get("role") == "assistant":
                             c = hm.get("content", "")
                             if isinstance(c, list):
                                 c = "".join(x.get("text","") for x in c
-                                            if isinstance(x,dict) and x.get("type")=="text")
-                            if c:
-                                st.session_state.messages.append({
-                                    "role": "assistant", "content": str(c),
-                                    "time": datetime.now().strftime("%H:%M:%S")
-                                })
+                                            if isinstance(x, dict) and x.get("type") == "text")
+                            full = str(c).strip()
                             break
+            if full:
+                st.session_state.messages.append({
+                    "role": "assistant", "content": full, "time": _ts()
+                })
             st.session_state.agent_state = "idle"
             st.session_state.scroll_trigger += 1
+            st.session_state.debug_log.append(f"[{_ts()}] turn_done -> idle")
 
         elif etype == "permission_req":
-            # 字段直接在顶层：req_id, tool_name, tool_input
-            req_id_evt = evt.get("req_id", "")
-            if req_id_evt and req_id_evt not in shown_ids:
-                shown_ids.add(req_id_evt)
-                tool_nm  = evt.get("tool_name", "unknown")
-                tool_inp = evt.get("tool_input", {})
+            req_id   = evt.get("req_id", "")
+            tool_nm  = evt.get("tool_name", "unknown")
+            tool_inp = evt.get("tool_input", {})
+            st.session_state.debug_log.append(
+                f"[{_ts()}] permission_req req_id={req_id!r} tool={tool_nm!r}"
+            )
+            if req_id and req_id not in shown_perm_ids:
+                shown_perm_ids.add(req_id)
                 st.session_state.messages.append({
                     "role":       "permission",
-                    "req_id":     req_id_evt,
+                    "req_id":     req_id,
                     "tool_name":  tool_nm,
                     "tool_input": tool_inp,
                     "approved":   None,
-                    "time":       datetime.now().strftime("%H:%M:%S"),
+                    "time":       _ts(),
                 })
                 st.session_state.agent_state = "waiting_permission"
                 st.session_state.scroll_trigger += 1
 
         elif etype == "permission_done":
-            req_id_done   = evt.get("req_id", "")
+            req_id        = evt.get("req_id", "")
             approved_flag = evt.get("approved", False)
             reason        = evt.get("reason", "")
-            if req_id_done and req_id_done not in done_ids:
-                done_ids.add(req_id_done)
-                for m in st.session_state.messages:
-                    if m.get("role") == "permission" and m.get("req_id") == req_id_done:
-                        m["approved"] = approved_flag
-                        m["reason"]   = reason
+            st.session_state.debug_log.append(
+                f"[{_ts()}] permission_done req_id={req_id!r} "
+                f"approved={approved_flag} reason={reason!r}"
+            )
+            for m in st.session_state.messages:
+                if m.get("role") == "permission" and m.get("req_id") == req_id:
+                    m["approved"] = approved_flag
+                    m["reason"]   = reason
 
-        # 追加到右侧事件日志（仅追加尚未记录的）
         st.session_state.event_log.append(evt)
+
+    if len(st.session_state.debug_log) > 200:
+        st.session_state.debug_log = st.session_state.debug_log[-200:]
+
+
+def _ts() -> str:
+    return datetime.now().strftime("%H:%M:%S")
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # 渲染函数
 # ═══════════════════════════════════════════════════════════════════════════════
+
+def render_permission_panel():
+    """
+    权限审批面板（纯 Streamlit 原生组件）。
+    渲染在对话区正下方，waiting_permission 状态 + 有待审批项时显示。
+    """
+    if not st.session_state.connected:
+        return
+    if st.session_state.agent_state != "waiting_permission":
+        return
+
+    client  = get_client()
+    result  = client.pending_permissions()
+    pending = result.get("permissions", []) if result else []
+
+    st.markdown("---")
+    st.markdown("### ⚠️ 权限审批")
+
+    if not pending:
+        st.info("⏳ 等待权限审批中（命令行也可以输入）...")
+        return
+
+    for perm in pending:
+        req_id    = perm.get("req_id", "")
+        tool_name = perm.get("tool_name", "unknown")
+        tool_inp  = perm.get("tool_input", {})
+        is_bash   = (tool_name == "bash")
+        key_sfx   = req_id[:8] if req_id else "noid"
+
+        with st.container(border=True):
+            st.markdown(f"**🔐 工具请求权限：`{tool_name}`**")
+            with st.expander("查看完整参数", expanded=True):
+                st.code(json.dumps(tool_inp, ensure_ascii=False, indent=2), language="json")
+
+            btn_cols = st.columns(4 if not is_bash else 5)
+
+            with btn_cols[0]:
+                if st.button("✅ 批准(y)", key=f"py_{key_sfx}", use_container_width=True, type="primary"):
+                    try:
+                        r = get_client().post(f"/permissions/{req_id}", {"approve": True, "mode": "once"})
+                        if r.status_code == 200:
+                            st.session_state.debug_log.append(f"[{_ts()}] web y req={req_id!r}")
+                            st.rerun()
+                    except Exception as e:
+                        st.error(str(e))
+
+            with btn_cols[1]:
+                if st.button("⚡ 永久批准(a)", key=f"pa_{key_sfx}", use_container_width=True):
+                    try:
+                        r = get_client().post(f"/permissions/{req_id}", {"approve": True, "mode": "always"})
+                        if r.status_code == 200:
+                            st.session_state.debug_log.append(f"[{_ts()}] web a req={req_id!r}")
+                            st.rerun()
+                    except Exception as e:
+                        st.error(str(e))
+
+            with btn_cols[2]:
+                if st.button("❌ 拒绝(n)", key=f"pn_{key_sfx}", use_container_width=True):
+                    try:
+                        r = get_client().post(f"/permissions/{req_id}", {"approve": False, "mode": "once"})
+                        if r.status_code == 200:
+                            st.session_state.debug_log.append(f"[{_ts()}] web n req={req_id!r}")
+                            st.rerun()
+                    except Exception as e:
+                        st.error(str(e))
+
+            with btn_cols[3]:
+                if st.button("🚫 永久拒绝(d)", key=f"pd_{key_sfx}", use_container_width=True):
+                    try:
+                        r = get_client().post(f"/permissions/{req_id}", {"approve": False, "mode": "deny_always"})
+                        if r.status_code == 200:
+                            st.session_state.debug_log.append(f"[{_ts()}] web d req={req_id!r}")
+                            st.rerun()
+                    except Exception as e:
+                        st.error(str(e))
+
+            if is_bash and len(btn_cols) > 4:
+                with btn_cols[4]:
+                    if st.button("✏️ 编辑(e)", key=f"pe_{key_sfx}", use_container_width=True):
+                        st.session_state[f"edit_open_{key_sfx}"] = True
+
+            if is_bash and st.session_state.get(f"edit_open_{key_sfx}"):
+                new_cmd = st.text_area("编辑命令", value=tool_inp.get("command",""),
+                                       key=f"ecmd_{key_sfx}", height=80)
+                c1, c2 = st.columns(2)
+                with c1:
+                    if st.button("确认编辑", key=f"eok_{key_sfx}", type="primary"):
+                        try:
+                            r = get_client().post(f"/permissions/{req_id}",
+                                                  {"approve": True, "mode": "once",
+                                                   "edited_input": dict(tool_inp, command=new_cmd)})
+                            if r.status_code == 200:
+                                st.session_state[f"edit_open_{key_sfx}"] = False
+                                st.rerun()
+                        except Exception as e:
+                            st.error(str(e))
+                with c2:
+                    if st.button("取消", key=f"ecancel_{key_sfx}"):
+                        st.session_state[f"edit_open_{key_sfx}"] = False
+                        st.rerun()
+
+
+def render_debug_panel():
+    """调试日志面板"""
+    with st.expander("🔧 调试日志（排查问题用）", expanded=False):
+        log = st.session_state.get("debug_log", [])
+        c1, c2 = st.columns([4, 1])
+        with c1:
+            st.caption(f"agent_state={st.session_state.agent_state!r}  "
+                       f"last_event_id={st.session_state.last_event_id}  "
+                       f"msgs={len(st.session_state.messages)}  "
+                       f"events={len(st.session_state.event_log)}")
+        with c2:
+            if st.button("清空", key="clear_dbg"):
+                st.session_state.debug_log = []
+                st.rerun()
+        if log:
+            st.code("\n".join(log[-60:]), language=None)
+        else:
+            st.caption("暂无日志")
+
 
 def render_sidebar():
     with st.sidebar:
@@ -1155,10 +1268,8 @@ def main():
     inject_styles()
     init_session()
 
-    # ── 接收来自前端 JS 轮询组件的回调消息 ─────────────────────────────────
-    # JS 组件通过 sendPrompt() 发回格式为 "__agent_poll__:{json}" 的消息
-    # 这里在每次 rerun 时处理它
-    _process_js_poll_callback()
+    # ── 每次 rerun 时同步后端事件到 session_state ──────────────────────────
+    _sync_events()
 
     # 侧栏
     render_sidebar()
@@ -1175,9 +1286,6 @@ def main():
                 unsafe_allow_html=True
             )
 
-    # 权限审批
-    render_permission_panel()
-
     # 主布局：对话区 + 事件流
     if st.session_state.show_events:
         chat_col, event_col = st.columns([3, 2])
@@ -1190,11 +1298,12 @@ def main():
         chat_container = st.container(height=480)
         render_chat_messages(chat_container)
 
-        # 每次有消息时都滚动到底（rerun 后页面重建，这里是正确的触发点）
-        # scroll_trigger > 0 表示刚发过消息，始终滚到底；
-        # 平时也对有消息的情况触发，确保刷新后不会跳回顶部
+        # 有消息时滚动到底部
         if st.session_state.messages:
             scroll_chat_to_bottom()
+
+        # ── 权限审批面板（在对话区下方，纯 Streamlit 原生组件）──
+        render_permission_panel()
 
         # ── 输入区 ──
         user_input, send_btn, sync_btn, turns_btn, events_btn = render_input_area()
@@ -1221,19 +1330,18 @@ def main():
                 st.success(f"已同步 {len(st.session_state.messages)} 条历史")
                 st.rerun()
 
-        # 拉取事件
+        # 手动拉取事件
         if events_btn:
-            evts = get_client().events(since_id=st.session_state.last_event_id, limit=100)
-            if evts and evts.get("events"):
-                new = evts["events"]
-                st.session_state.event_log.extend(new)
-                st.session_state.last_event_id = max(e.get("id",0) for e in new)
-                st.success(f"拉取到 {len(new)} 条新事件")
-                st.rerun()
+            _sync_events()
+            st.success("已同步事件")
+            st.rerun()
 
         # Turn 历史
         if turns_btn:
             render_turns_panel()
+
+        # 调试日志（折叠）
+        render_debug_panel()
 
     # 事件流面板
     if event_col is not None:
@@ -1246,13 +1354,7 @@ def main():
     # 底部状态栏
     render_footer()
 
-    # ── 前端 JS 实时轮询组件（权限审批面板）────────────────────────────────
-    # 仅在已连接时注入。JS 每秒轮询后端事件，直接渲染权限审批按钮（不依赖 Streamlit 重渲染）。
-    if st.session_state.connected:
-        _render_agent_poll_widget()
-
-    # ── Python 端定时 rerun：驱动 _process_js_poll_callback 同步事件到消息列表 ──
-    # 当 agent 处于活跃状态时，每 1.5 秒 rerun 一次，确保对话消息区实时更新。
+    # ── 定时 rerun：agent 活跃时每 1.5s 自动刷新，驱动 _sync_events ──────
     if st.session_state.connected and st.session_state.agent_state in ("running", "waiting_permission"):
         time.sleep(1.5)
         st.rerun()
