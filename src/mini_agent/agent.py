@@ -227,14 +227,26 @@ class Agent:
             return
         try:
             session_dir = getattr(self.cfg, "session_dir", None)
-            if session_dir is None:
-                session_dir = self.cfg.project_root / "sessions"
             fmt = getattr(self.cfg, "session_fmt", "json")
-            self._session_mgr = SessionManager(session_dir=session_dir, fmt=fmt)
+            # session_dir=None 时 SessionManager 内部通过 AgentPaths 推导
+            # → <project_root>/.agent/sessions/
+            self._session_mgr = SessionManager(
+                session_dir=session_dir,
+                project_root=self.cfg.project_root,
+                fmt=fmt,
+            )
             self._session = self._session_mgr.new_session(
                 provider=getattr(self.cfg, "llm_provider", "unknown"),
                 model=self.cfg.model,
             )
+            # 通知 TaskManager 当前 session_id，使 SubAgent 任务日志写到正确目录
+            try:
+                from mini_agent.tools.orchestration import get_task_manager
+                tm = get_task_manager()
+                if tm is not None:
+                    tm.set_session_id(self._session.id)
+            except Exception:
+                pass
             # debug logger 绑定到 session：日志写入 sessions/<id>/llm_debug.jsonl
             if getattr(self.cfg, "debug_llm", False):
                 try:

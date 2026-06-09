@@ -58,6 +58,7 @@ class TaskManager:
         self._records: dict[str, TaskRecord] = {}   # task_id → TaskRecord
         self._agents:  dict[str, SubAgent] = {}     # task_id → SubAgent
         self._lock = threading.Lock()
+        self._session_id: Optional[str] = None      # 由主 Agent 在 session 建立后注入
         self._scheduler_thread: Optional[threading.Thread] = None
         self._stop_event = threading.Event()
         self._poll_interval = 0.3   # 调度间隔（秒）
@@ -73,6 +74,10 @@ class TaskManager:
             daemon=True,
         )
         self._scheduler_thread.start()
+
+    def set_session_id(self, session_id: str) -> None:
+        """由主 Agent 在 session 建立后调用，使后续 SubAgent 任务日志写到正确目录。"""
+        self._session_id = session_id
 
     @property
     def max_workers(self) -> int:
@@ -293,6 +298,7 @@ class TaskManager:
             base_cfg=self.base_cfg,
             on_log=self._handle_log,
             on_terminal=self._handle_terminal,
+            session_id=self._session_id,
         )
         with self._lock:
             self._agents[rec.task_id] = agent
