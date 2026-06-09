@@ -141,8 +141,10 @@ class Agent:
 
         # [SYS-MEMORY] 跨 session 长期记忆（通过工厂创建，支持多后端）
         self._memory: Optional[MemoryBackend] = None
+        self._global_memory: Optional[MemoryBackend] = None
         if cfg.memory_enabled:
-            self._memory = create_memory_backend(cfg)
+            from mini_agent.perception.memory_factory import create_both_memory_backends
+            self._memory, self._global_memory = create_both_memory_backends(cfg)
 
         # 所有字段已就绪，初始化三个拆分组件（ContextBuilder / ToolExecutor / HistoryManager）
         self._init_components()
@@ -233,8 +235,38 @@ class Agent:
                 provider=getattr(self.cfg, "llm_provider", "unknown"),
                 model=self.cfg.model,
             )
+            # debug logger 绑定到 session：日志写入 sessions/<id>/llm_debug.jsonl
+            if getattr(self.cfg, "debug_llm", False):
+                try:
+                    from mini_agent.llm.debug_logger import (
+                        get_debug_logger, init_debug_logger_for_session,
+                        DebugConfig as LLMDebugCfg,
+                    )
+                    existing = get_debug_logger()
+                    init_debug_logger_for_session(
+                        cfg=existing.cfg,
+                        project_root=self.cfg.project_root,
+                        session_id=self._session.id,
+                    )
+                except Exception:
+                    pass
         except Exception as e:
             R.print_warning(f"Session init failed: {e}")
+
+    def _append_memory_delta(self, entry) -> None:
+        """将本 session 产生的记忆条目追加到 memory_delta.jsonl（审计用）。"""
+        if not self._session:
+            return
+        try:
+            from mini_agent.storage.paths import AgentPaths
+            from dataclasses import asdict
+            import json as _json
+            delta_path = AgentPaths(self.cfg.project_root).session_memory_delta(self._session.id)
+            delta_path.parent.mkdir(parents=True, exist_ok=True)
+            with open(delta_path, "a", encoding="utf-8") as f:
+                f.write(_json.dumps(asdict(entry), ensure_ascii=False) + "\n")
+        except Exception:
+            pass
 
     def save_session(self) -> Optional[str]:
         """保存当前对话历史到 Session 文件，返回路径，失败返回 None。"""
@@ -333,7 +365,13 @@ class Agent:
                     tags=tags,
                     model=self.cfg.model,
                 )
-                self._memory.add(entry)
+                # 根据 scope 分流：project 写项目记忆，global 写全局记忆
+                if entry.scope == "global" and self._global_memory:
+                    self._global_memory.add(entry)
+                else:
+                    self._memory.add(entry)
+                # 同时写入 memory_delta.jsonl（session 审计）
+                self._append_memory_delta(entry)
         except Exception as e:
             R.print_warning(f"[summary] generation failed: {e}")
 
@@ -1016,7 +1054,11 @@ class Agent:
                 ""
             )
             if last_user:
-                memories = self._memory.search(last_user, k=self.cfg.memory_top_k)
+                from mini_agent.perception.memory_factory import merge_search
+                memories = merge_search(
+                    self._memory, self._global_memory, last_user,
+                    k=self.cfg.memory_top_k,
+                )
                 if memories:
                     snippets = "\n".join(
                         f"- [{m.session_id[:6]}] {m.summary}"

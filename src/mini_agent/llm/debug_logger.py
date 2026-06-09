@@ -322,11 +322,19 @@ class LLMDebugLogger:
 
     @staticmethod
     def _resolve_log_file(log_dir: Optional[Path], project_root: Optional[Path]) -> Path:
-        base = (
-            log_dir
-            or (project_root / ".claude" / "logs" if project_root else None)
-            or Path.cwd() / ".claude" / "logs"
-        )
+        """
+        解析日志文件路径。优先级：
+        1. 显式传入的 log_dir（向后兼容）
+        2. 默认：<project_root>/.agent/sessions/<current_session_id>/llm_debug.jsonl
+           （由 init_debug_logger_for_session 设置）
+        3. 最终 fallback：<project_root>/.agent/logs/llm_debug_<date>.jsonl
+        """
+        if log_dir is not None:
+            date_str = datetime.now().strftime("%Y%m%d")
+            return log_dir / f"llm_debug_{date_str}.jsonl"
+
+        # fallback：写到 .agent/logs/（session 还未建立时使用）
+        base = (project_root or Path.cwd()) / ".agent" / "logs"
         date_str = datetime.now().strftime("%Y%m%d")
         return base / f"llm_debug_{date_str}.jsonl"
 
@@ -380,6 +388,42 @@ def init_debug_logger(cfg: DebugConfig, project_root: Optional[Path] = None) -> 
     global _default_logger
     _default_logger = LLMDebugLogger(cfg, project_root)
     return _default_logger
+
+
+def init_debug_logger_for_session(
+    cfg: DebugConfig,
+    project_root: Path,
+    session_id: str,
+) -> LLMDebugLogger:
+    """
+    为特定 session 初始化调试日志，输出到 session 目录下的 llm_debug.jsonl。
+    路径：<project_root>/.agent/sessions/<session_id>/llm_debug.jsonl
+
+    在 Agent._init_session() 之后调用（此时 session_id 已确定）。
+    """
+    global _default_logger
+    from mini_agent.storage.paths import AgentPaths
+    session_log_path = AgentPaths(project_root).session_llm_debug(session_id)
+    # 创建一个 log_dir 指向 session 目录的 DebugConfig
+    # _resolve_log_file 会在此目录下生成 llm_debug.jsonl（filename by session, not date）
+    session_cfg = DebugConfig(
+        enabled=cfg.enabled,
+        log_to_file=cfg.log_to_file,
+        log_to_console=cfg.log_to_console,
+        log_dir=None,       # 不用 log_dir，直接传 project_root + session_id
+        max_body_chars=cfg.max_body_chars,
+    )
+    logger = LLMDebugLogger.__new__(LLMDebugLogger)
+    logger.cfg = session_cfg
+    logger._log_file = session_log_path
+    logger._py_logger = None
+    if session_cfg.enabled and session_cfg.log_to_file:
+        session_log_path.parent.mkdir(parents=True, exist_ok=True)
+        logger._py_logger = LLMDebugLogger._build_file_logger(session_log_path)
+    if session_cfg.enabled:
+        logger._print_info(f"LLM debug logging → {session_log_path}")
+    _default_logger = logger
+    return logger
 
 
 def _now_iso() -> str:

@@ -90,8 +90,10 @@ class MemoryConfig:
     """[SYS-MEMORY] 跨 session 长期记忆配置。"""
     enabled: bool = False
     backend: str = "local"             # "local" | "chroma" | "redis"（预留扩展点）
-    store_path: Optional[Path] = None  # None = <project_root>/.agent/memory.jsonl
-    top_k: int = 3                     # 检索返回的最大条目数
+    store_path: Optional[Path] = None  # None = <project_root>/.agent/memory.jsonl（项目级）
+    global_enabled: bool = True        # 同时维护全局记忆 ~/.agent/memory.jsonl
+    global_top_k: int = 2              # 全局记忆检索条目数（项目级优先，全局补充）
+    top_k: int = 3                     # 项目记忆检索返回的最大条目数
     decay_half_life_days: float = 30.0 # 时间衰减半衰期（天）
     max_entries: int = 500             # 记忆条目上限，超出淘汰最旧
 
@@ -142,7 +144,7 @@ class PerceptionConfig:
 @dataclass
 class SessionConfig:
     """Session 持久化配置。"""
-    dir: Optional[Path] = None         # None = <project_root>/sessions
+    dir: Optional[Path] = None         # None = <project_root>/.agent/sessions
     fmt: str = "json"                  # "json" | "jsonl"
     auto_save: bool = True
     summary_enabled: bool = False
@@ -367,6 +369,8 @@ def load_config(
     # 以下保持与旧签名兼容，内部组装到子配置块
     memory_enabled: Optional[bool] = None,
     memory_top_k: Optional[int] = None,
+    memory_global_enabled: Optional[bool] = None,
+    memory_global_top_k: Optional[int] = None,
     session_summary_enabled: Optional[bool] = None,
     session_summary_min_turns: Optional[int] = None,
     session_search_enabled: Optional[bool] = None,
@@ -457,6 +461,8 @@ def load_config(
         enabled=_fb("memory_enabled", memory_enabled),
         backend=_f("memory_backend", None) or "local",
         store_path=_mem_path,
+        global_enabled=_fb("memory_global_enabled", memory_global_enabled, True),
+        global_top_k=_fn("memory_global_top_k", memory_global_top_k, 2),
         top_k=_fn("memory_top_k", memory_top_k, 3),
         decay_half_life_days=_fn("memory_decay_half_life_days", None, 30.0),
         max_entries=_fn("memory_max_entries", None, 500),
@@ -547,7 +553,7 @@ def load_config(
             enabled=True,
             log_to_file=True,
             log_to_console=_debug_console_v,
-            log_dir=_debug_log_dir or root / ".claude" / "logs",
+            log_dir=_debug_log_dir,  # None = session-relative path resolved by debug_logger
         )
         init_debug_logger(_dcfg, root)
 
@@ -616,7 +622,14 @@ def _read_claude_md(root: Path) -> str:
 
 
 def _resolve_skills_dir(root: Path) -> Optional[Path]:
-    for c in [root / ".claude" / "skills", Path.home() / ".claude" / "skills"]:
+    from mini_agent.storage.paths import AgentPaths
+    paths = AgentPaths(root)
+    candidates = [
+        root / ".claude" / "skills",           # 旧路径，兼容保留
+        paths.global_skills_dir,               # ~/.agent/skills（新路径）
+        Path.home() / ".claude" / "skills",    # 旧全局路径，兼容保留
+    ]
+    for c in candidates:
         if c.is_dir():
             return c
     return None

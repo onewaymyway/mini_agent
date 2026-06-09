@@ -1,33 +1,19 @@
 """
 session.py — 会话 Session 持久化管理
 
-每个 Session 保存为一个独立文件，格式可选 JSON 或 JSONL。
+每个 Session 保存为独立目录，目录名即 session_id。
 
-文件命名：<session_id>_<YYYYMMDD_HHMMSS>.json(l)
-默认目录：<project_root>/sessions/
-可配置：  SESSION_DIR 环境变量 或 --session-dir CLI 参数
+目录结构：
+  <project_root>/.agent/sessions/<session_id>/
+    history.json   — 完整对话历史（messages 数组）
+    meta.json      — 元信息（id, title, provider, model, stats, summary）
 
-Session 文件内容（JSON 格式）：
-{
-  "id":          "abc12345",           # 8位随机 hex
-  "title":       "写质数计算脚本",      # 首条用户消息前40字
-  "created_at":  "2025-01-01T12:00:00",
-  "updated_at":  "2025-01-01T12:05:00",
-  "provider":    "anthropic",
-  "model":       "claude-opus-4-5",
-  "stats": {
-    "turns":         5,
-    "input_tokens":  1200,
-    "output_tokens": 800,
-    "tool_calls":    3
-  },
-  "history": [                         # 完整对话历史
-    {"role": "user",      "content": "..."},
-    {"role": "assistant", "content": [...]}
-  ]
-}
+默认目录：<project_root>/.agent/sessions/
+可配置：  SessionConfig.dir 或 --session-dir CLI 参数
 
-JSONL 格式：每轮对话一行，首行为元数据。
+向后兼容：
+  仍可读取旧格式（单个 .json / .jsonl 文件）。
+  新 session 一律写目录格式。
 """
 
 from __future__ import annotations
@@ -36,10 +22,12 @@ import json
 import os
 import uuid
 import time
-from dataclasses import dataclass, field, asdict
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
+
+from mini_agent.storage.paths import AgentPaths
 
 
 # ── 数据结构 ──────────────────────────────────────────────────────────────────
@@ -57,20 +45,19 @@ class SessionMeta:
     input_tokens: int
     output_tokens: int
     tool_calls: int
-    file_path: str
-    fmt: str  # "json" | "jsonl"
-    summary: str = ""  # [SYS-SUMMARY] LLM 生成的摘要
+    file_path: str   # 保留字段（兼容旧代码）：目录格式下指向 meta.json
+    fmt: str         # "dir" | "json" | "jsonl"
+    summary: str = ""
 
     @property
     def age_str(self) -> str:
-        """距今多长时间（如 '2小时前'）。"""
         try:
             dt = datetime.fromisoformat(self.updated_at.replace("Z", "+00:00"))
             diff = datetime.now(timezone.utc) - dt
             s = int(diff.total_seconds())
-            if s < 60:       return f"{s}秒前"
-            if s < 3600:     return f"{s//60}分钟前"
-            if s < 86400:    return f"{s//3600}小时前"
+            if s < 60:    return f"{s}秒前"
+            if s < 3600:  return f"{s//60}分钟前"
+            if s < 86400: return f"{s//3600}小时前"
             return f"{s//86400}天前"
         except Exception:
             return self.updated_at[:16]
@@ -87,9 +74,9 @@ class Session:
     model: str
     stats: dict           # turns / input_tokens / output_tokens / tool_calls
     history: list[dict]   # 完整对话历史
-    fmt: str = "json"     # "json" | "jsonl"
-    file_path: str = ""
-    summary: str = ""     # [SYS-SUMMARY] LLM 生成的摘要
+    fmt: str = "dir"      # "dir" | "json" | "jsonl"
+    file_path: str = ""   # 目录格式下指向 meta.json；旧格式为单文件路径
+    summary: str = ""
 
     @property
     def meta(self) -> SessionMeta:
@@ -106,21 +93,28 @@ class Session:
             tool_calls=self.stats.get("tool_calls", 0),
             file_path=self.file_path,
             fmt=self.fmt,
+            summary=self.summary,
         )
 
-    def to_dict(self) -> dict:
+    def to_meta_dict(self) -> dict:
+        """meta.json 的内容（不含 history）。"""
         d = {
-            "id": self.id,
-            "title": self.title,
-            "created_at": self.created_at,
-            "updated_at": self.updated_at,
-            "provider": self.provider,
-            "model": self.model,
-            "stats": self.stats,
-            "history": self.history,
+            "id":          self.id,
+            "title":       self.title,
+            "created_at":  self.created_at,
+            "updated_at":  self.updated_at,
+            "provider":    self.provider,
+            "model":       self.model,
+            "stats":       self.stats,
         }
         if self.summary:
             d["summary"] = self.summary
+        return d
+
+    def to_dict(self) -> dict:
+        """完整字典（含 history），用于旧格式兼容写入。"""
+        d = self.to_meta_dict()
+        d["history"] = self.history
         return d
 
 
@@ -128,32 +122,38 @@ class Session:
 
 class SessionManager:
     """
-    管理 Session 文件的读写、列举和查找。
+    管理 Session 的读写、列举和查找。
+
+    新格式：每个 session 是一个目录（session_id 为目录名）：
+        <sessions_dir>/<session_id>/
+            history.json
+            meta.json
+
+    旧格式（只读兼容）：
+        <sessions_dir>/<session_id>_<timestamp>.json(l)
 
     使用方式：
-        mgr = SessionManager(session_dir=Path("./sessions"))
-
-        # 新建 session
+        mgr = SessionManager(session_dir=Path(".agent/sessions"))
         session = mgr.new_session(provider="anthropic", model="claude-opus-4-5")
-
-        # 保存（随时调用，覆盖同名文件）
         mgr.save(session, history=[...], stats={...})
-
-        # 列出所有 session
         metas = mgr.list_sessions()
-
-        # 按 id 前缀加载
         session = mgr.load("abc12345")
-        session = mgr.load("abc1")     # 前缀匹配
     """
 
     def __init__(
         self,
         session_dir: Optional[Path] = None,
-        fmt: str = "json",
+        fmt: str = "dir",
+        project_root: Optional[Path] = None,
     ) -> None:
-        self.session_dir = (session_dir or Path("sessions")).expanduser()
-        self.fmt = fmt if fmt in ("json", "jsonl") else "json"
+        # 优先用传入的 session_dir；否则从 project_root 推导；最后 fallback 到 cwd
+        if session_dir is not None:
+            self.session_dir = Path(session_dir).expanduser()
+        else:
+            _root = project_root or Path.cwd()
+            self.session_dir = AgentPaths(_root).sessions_dir
+
+        self.fmt = fmt
         self.session_dir.mkdir(parents=True, exist_ok=True)
 
     # ── 新建 ──────────────────────────────────────────────────────────────────
@@ -171,7 +171,7 @@ class SessionManager:
             model=model,
             stats={"turns": 0, "input_tokens": 0, "output_tokens": 0, "tool_calls": 0},
             history=[],
-            fmt=self.fmt,
+            fmt="dir",
             file_path="",
         )
 
@@ -184,16 +184,11 @@ class SessionManager:
         stats: dict,
     ) -> Path:
         """
-        将当前对话历史和统计写入 Session 文件。
-        首次保存时生成文件名，后续更新同一文件。
-
-        Args:
-            session: 当前 Session 对象（会被就地修改）
-            history: agent._history 的当前值
-            stats:   {"turns":..., "input_tokens":..., ...}
+        将当前对话历史和统计写入 Session 目录。
+        首次保存时创建目录，后续更新同一目录下的两个文件。
 
         Returns:
-            写入的文件路径
+            meta.json 的路径
         """
         session.updated_at = _now_iso()
         session.history = _serialize_history(history)
@@ -209,58 +204,83 @@ class SessionManager:
                         session.title = title[:40] + ("…" if len(title) > 40 else "")
                         break
 
-        # 确定文件路径（首次保存时生成）
-        if not session.file_path:
-            ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-            ext = ".jsonl" if session.fmt == "jsonl" else ".json"
-            fname = f"{session.id}_{ts}{ext}"
-            session.file_path = str(self.session_dir / fname)
+        session_dir = self.session_dir / session.id
+        session_dir.mkdir(parents=True, exist_ok=True)
 
-        path = Path(session.file_path)
+        meta_path    = session_dir / "meta.json"
+        history_path = session_dir / "history.json"
 
-        if session.fmt == "jsonl":
-            self._write_jsonl(session, path)
-        else:
-            self._write_json(session, path)
+        # 原子写入 meta.json
+        _atomic_write_json(meta_path, session.to_meta_dict())
 
-        return path
+        # 原子写入 history.json
+        _atomic_write_json(history_path, session.history)
+
+        session.file_path = str(meta_path)
+        return meta_path
 
     # ── 加载 ──────────────────────────────────────────────────────────────────
 
     def load(self, session_id: str) -> Optional[Session]:
         """
         按 session_id（或其前缀）加载 Session。
-        返回 None 如果未找到。
+        先尝试新格式（目录），再尝试旧格式（单文件）。
         """
-        candidates = self._find_files(session_id)
-        if not candidates:
-            return None
-        # 取最新修改的文件
-        path = max(candidates, key=lambda p: p.stat().st_mtime)
-        return self._read_file(path)
+        # 新格式：目录
+        session_dir = self.session_dir / session_id
+        if session_dir.is_dir():
+            return self._read_dir(session_dir)
+
+        # 前缀匹配（新格式目录）
+        candidates_dir = [
+            d for d in self.session_dir.iterdir()
+            if d.is_dir() and d.name.startswith(session_id)
+        ]
+        if candidates_dir:
+            latest = max(candidates_dir, key=lambda d: d.stat().st_mtime)
+            return self._read_dir(latest)
+
+        # 旧格式：单文件前缀匹配
+        candidates_file = self._find_legacy_files(session_id)
+        if candidates_file:
+            path = max(candidates_file, key=lambda p: p.stat().st_mtime)
+            return self._read_legacy_file(path)
+
+        return None
 
     def load_file(self, path: Path) -> Optional[Session]:
-        """直接按文件路径加载。"""
-        return self._read_file(path)
+        """直接按路径加载（兼容旧调用方式）。"""
+        if path.is_dir():
+            return self._read_dir(path)
+        return self._read_legacy_file(path)
 
     # ── 列举 ──────────────────────────────────────────────────────────────────
 
     def list_sessions(self, limit: int = 50) -> list[SessionMeta]:
         """
         列出所有 Session 的元数据（按最后修改时间倒序）。
-        只读取文件头部，不加载完整历史，速度快。
+        新格式（目录）和旧格式（文件）同时支持。
         """
-        files = sorted(
-            list(self.session_dir.glob("*.json")) +
-            list(self.session_dir.glob("*.jsonl")),
-            key=lambda p: p.stat().st_mtime,
-            reverse=True,
-        )[:limit]
+        entries: list[tuple[float, Path, str]] = []  # (mtime, path, fmt)
+
+        # 新格式：目录
+        for d in self.session_dir.iterdir():
+            if d.is_dir() and (d / "meta.json").exists():
+                entries.append((d.stat().st_mtime, d, "dir"))
+
+        # 旧格式：文件（向后兼容）
+        for p in self.session_dir.glob("*.json"):
+            entries.append((p.stat().st_mtime, p, "file"))
+        for p in self.session_dir.glob("*.jsonl"):
+            entries.append((p.stat().st_mtime, p, "file"))
+
+        entries.sort(key=lambda x: -x[0])
+        entries = entries[:limit]
 
         metas: list[SessionMeta] = []
-        for f in files:
+        for _, path, fmt in entries:
             try:
-                meta = self._read_meta(f)
+                meta = self._read_meta(path, fmt)
                 if meta:
                     metas.append(meta)
             except Exception:
@@ -268,10 +288,7 @@ class SessionManager:
         return metas
 
     def search(self, query: str, limit: int = 20) -> list[SessionMeta]:
-        """
-        [SYS-SEARCH] 在所有 session 的 title + summary 中做关键词搜索。
-        返回按相关度排序的 SessionMeta 列表。
-        """
+        """在所有 session 的 title + summary 中做关键词搜索。"""
         q = query.lower().split()
         results: list[tuple[int, SessionMeta]] = []
         for meta in self.list_sessions(limit=200):
@@ -286,149 +303,153 @@ class SessionManager:
         return [m for _, m in results[:limit]]
 
     def delete(self, session_id: str) -> bool:
-        """删除 Session 文件，返回是否成功。"""
-        candidates = self._find_files(session_id)
-        if not candidates:
-            return False
-        for p in candidates:
-            p.unlink(missing_ok=True)
-        return True
+        """删除 Session，返回是否成功。"""
+        import shutil
 
-    # ── 内部：文件写入 ────────────────────────────────────────────────────────
+        # 新格式：目录
+        session_dir = self.session_dir / session_id
+        if session_dir.is_dir():
+            shutil.rmtree(session_dir, ignore_errors=True)
+            return True
 
-    @staticmethod
-    def _write_json(session: Session, path: Path) -> None:
-        """
-        原子写入 + 文件锁：
-        - 用 fcntl.flock（Unix）或 msvcrt.locking（Windows）持锁，
-          防止多个 SubAgent 并发写同一文件互相覆盖。
-        - 写入临时文件后再 replace，保证读端不会看到半截 JSON。
-        """
-        import tempfile, os as _os
-        data = session.to_dict()
-        text = json.dumps(data, ensure_ascii=False, indent=2)
-        path.parent.mkdir(parents=True, exist_ok=True)
-        # 在同一目录下创建临时文件，保证 replace 是原子操作（同分区）
-        fd, tmp = tempfile.mkstemp(dir=path.parent, suffix=".tmp")
-        try:
-            with _os.fdopen(fd, "w", encoding="utf-8") as f:
-                _flock(f)
-                f.write(text)
-                f.flush()
-                _os.fsync(f.fileno())
-        except Exception:
-            _os.unlink(tmp)
-            raise
-        _os.replace(tmp, path)
+        # 前缀匹配（新格式）
+        candidates_dir = [
+            d for d in self.session_dir.iterdir()
+            if d.is_dir() and d.name.startswith(session_id)
+        ]
+        if candidates_dir:
+            for d in candidates_dir:
+                shutil.rmtree(d, ignore_errors=True)
+            return True
+
+        # 旧格式：文件
+        candidates_file = self._find_legacy_files(session_id)
+        if candidates_file:
+            for p in candidates_file:
+                p.unlink(missing_ok=True)
+            return True
+
+        return False
+
+    # ── 内部：新格式读取 ──────────────────────────────────────────────────────
 
     @staticmethod
-    def _write_jsonl(session: Session, path: Path) -> None:
-        """
-        JSONL 格式（原子写入 + 文件锁）：
-        - 第1行：元数据（不含 history）
-        - 后续行：每个 history 条目一行
-        """
-        import tempfile, os as _os
-        lines: list[str] = []
-        meta = {k: v for k, v in session.to_dict().items() if k != "history"}
-        lines.append(json.dumps(meta, ensure_ascii=False))
-        for msg in session.history:
-            lines.append(json.dumps(msg, ensure_ascii=False))
-        text = "\n".join(lines) + "\n"
-        path.parent.mkdir(parents=True, exist_ok=True)
-        fd, tmp = tempfile.mkstemp(dir=path.parent, suffix=".tmp")
+    def _read_dir(session_dir: Path) -> Optional[Session]:
+        """读取新格式目录（meta.json + history.json）。"""
         try:
-            with _os.fdopen(fd, "w", encoding="utf-8") as f:
-                _flock(f)
-                f.write(text)
-                f.flush()
-                _os.fsync(f.fileno())
-        except Exception:
-            _os.unlink(tmp)
-            raise
-        _os.replace(tmp, path)
+            meta_path    = session_dir / "meta.json"
+            history_path = session_dir / "history.json"
 
-    # ── 内部：文件读取 ────────────────────────────────────────────────────────
+            if not meta_path.exists():
+                return None
 
-    def _read_file(self, path: Path) -> Optional[Session]:
-        try:
-            if path.suffix == ".jsonl":
-                return self._read_jsonl(path)
-            else:
-                return self._read_json(path)
-        except Exception:
-            return None
+            meta = json.loads(meta_path.read_text(encoding="utf-8"))
+            history = []
+            if history_path.exists():
+                raw = json.loads(history_path.read_text(encoding="utf-8"))
+                history = raw if isinstance(raw, list) else []
 
-    @staticmethod
-    def _read_json(path: Path) -> Optional[Session]:
-        data = json.loads(path.read_text(encoding="utf-8"))
-        return Session(
-            id=data.get("id", ""),
-            title=data.get("title", ""),
-            created_at=data.get("created_at", ""),
-            updated_at=data.get("updated_at", ""),
-            provider=data.get("provider", ""),
-            model=data.get("model", ""),
-            stats=data.get("stats", {}),
-            history=data.get("history", []),
-            fmt="json",
-            file_path=str(path),
-            summary=data.get("summary", ""),   # 修复：加载已有摘要，避免重复生成
-        )
-
-    @staticmethod
-    def _read_jsonl(path: Path) -> Optional[Session]:
-        lines = path.read_text(encoding="utf-8").strip().splitlines()
-        if not lines:
-            return None
-        meta = json.loads(lines[0])
-        history = [json.loads(l) for l in lines[1:] if l.strip()]
-        return Session(
-            id=meta.get("id", ""),
-            title=meta.get("title", ""),
-            created_at=meta.get("created_at", ""),
-            updated_at=meta.get("updated_at", ""),
-            provider=meta.get("provider", ""),
-            model=meta.get("model", ""),
-            stats=meta.get("stats", {}),
-            history=history,
-            fmt="jsonl",
-            file_path=str(path),
-            summary=meta.get("summary", ""),   # 修复：加载已有摘要
-        )
-
-    def _read_meta(self, path: Path) -> Optional[SessionMeta]:
-        """快速读取元数据（JSON: 解析整个文件；JSONL: 只读第一行）。"""
-        try:
-            if path.suffix == ".jsonl":
-                first_line = ""
-                with path.open(encoding="utf-8") as f:
-                    first_line = f.readline()
-                data = json.loads(first_line)
-            else:
-                data = json.loads(path.read_text(encoding="utf-8"))
-
-            stats = data.get("stats", {})
-            return SessionMeta(
-                id=data.get("id", path.stem[:8]),
-                title=data.get("title", "(untitled)"),
-                created_at=data.get("created_at", ""),
-                updated_at=data.get("updated_at", ""),
-                provider=data.get("provider", ""),
-                model=data.get("model", ""),
-                turns=stats.get("turns", 0),
-                input_tokens=stats.get("input_tokens", 0),
-                output_tokens=stats.get("output_tokens", 0),
-                tool_calls=stats.get("tool_calls", 0),
-                file_path=str(path),
-                fmt=path.suffix.lstrip("."),
-                summary=data.get("summary", ""),
+            return Session(
+                id=meta.get("id", session_dir.name),
+                title=meta.get("title", ""),
+                created_at=meta.get("created_at", ""),
+                updated_at=meta.get("updated_at", ""),
+                provider=meta.get("provider", ""),
+                model=meta.get("model", ""),
+                stats=meta.get("stats", {}),
+                history=history,
+                fmt="dir",
+                file_path=str(meta_path),
+                summary=meta.get("summary", ""),
             )
         except Exception:
             return None
 
-    def _find_files(self, session_id: str) -> list[Path]:
-        """按 id 前缀查找匹配的 Session 文件。"""
+    @staticmethod
+    def _read_meta(path: Path, fmt: str) -> Optional[SessionMeta]:
+        """快速读取元数据（不加载完整历史）。"""
+        try:
+            if fmt == "dir":
+                meta_path = path / "meta.json"
+                data = json.loads(meta_path.read_text(encoding="utf-8"))
+                stats = data.get("stats", {})
+                return SessionMeta(
+                    id=data.get("id", path.name),
+                    title=data.get("title", "(untitled)"),
+                    created_at=data.get("created_at", ""),
+                    updated_at=data.get("updated_at", ""),
+                    provider=data.get("provider", ""),
+                    model=data.get("model", ""),
+                    turns=stats.get("turns", 0),
+                    input_tokens=stats.get("input_tokens", 0),
+                    output_tokens=stats.get("output_tokens", 0),
+                    tool_calls=stats.get("tool_calls", 0),
+                    file_path=str(path / "meta.json"),
+                    fmt="dir",
+                    summary=data.get("summary", ""),
+                )
+            else:
+                # 旧格式文件
+                if path.suffix == ".jsonl":
+                    with path.open(encoding="utf-8") as f:
+                        data = json.loads(f.readline())
+                else:
+                    data = json.loads(path.read_text(encoding="utf-8"))
+                stats = data.get("stats", {})
+                return SessionMeta(
+                    id=data.get("id", path.stem[:8]),
+                    title=data.get("title", "(untitled)"),
+                    created_at=data.get("created_at", ""),
+                    updated_at=data.get("updated_at", ""),
+                    provider=data.get("provider", ""),
+                    model=data.get("model", ""),
+                    turns=stats.get("turns", 0),
+                    input_tokens=stats.get("input_tokens", 0),
+                    output_tokens=stats.get("output_tokens", 0),
+                    tool_calls=stats.get("tool_calls", 0),
+                    file_path=str(path),
+                    fmt=path.suffix.lstrip("."),
+                    summary=data.get("summary", ""),
+                )
+        except Exception:
+            return None
+
+    # ── 内部：旧格式兼容读取 ──────────────────────────────────────────────────
+
+    @staticmethod
+    def _read_legacy_file(path: Path) -> Optional[Session]:
+        try:
+            if path.suffix == ".jsonl":
+                lines = path.read_text(encoding="utf-8").strip().splitlines()
+                if not lines:
+                    return None
+                meta = json.loads(lines[0])
+                history = [json.loads(l) for l in lines[1:] if l.strip()]
+                fmt = "jsonl"
+            else:
+                data = json.loads(path.read_text(encoding="utf-8"))
+                meta = data
+                history = data.get("history", [])
+                fmt = "json"
+
+            return Session(
+                id=meta.get("id", ""),
+                title=meta.get("title", ""),
+                created_at=meta.get("created_at", ""),
+                updated_at=meta.get("updated_at", ""),
+                provider=meta.get("provider", ""),
+                model=meta.get("model", ""),
+                stats=meta.get("stats", {}),
+                history=history,
+                fmt=fmt,
+                file_path=str(path),
+                summary=meta.get("summary", ""),
+            )
+        except Exception:
+            return None
+
+    def _find_legacy_files(self, session_id: str) -> list[Path]:
+        """旧格式：按 id 前缀查找 .json/.jsonl 文件。"""
         results: list[Path] = []
         for pattern in ("*.json", "*.jsonl"):
             for f in self.session_dir.glob(pattern):
@@ -443,33 +464,42 @@ def _now_iso() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S")
 
 
+def _atomic_write_json(path: Path, data: object) -> None:
+    """原子写入 JSON 文件（tmp + rename，保证读端不见到半截 JSON）。"""
+    import tempfile
+    text = json.dumps(data, ensure_ascii=False, indent=2)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(dir=path.parent, suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            _flock(f)
+            f.write(text)
+            f.flush()
+            os.fsync(f.fileno())
+    except Exception:
+        os.unlink(tmp)
+        raise
+    os.replace(tmp, path)
+
+
 def _serialize_history(history: list[dict]) -> list[dict]:
-    """
-    将 history 序列化为可 JSON 化的格式。
-    处理 Anthropic SDK 的 content block 对象（非 dict）。
-    """
+    """将 history 序列化为可 JSON 化的格式，处理 SDK content block 对象。"""
     result = []
     for msg in history:
         role = msg.get("role", "")
         content = msg.get("content", "")
         if isinstance(content, list):
-            # content 可能是 SDK 对象，转为 dict
             serialized_content = []
             for block in content:
                 if isinstance(block, dict):
                     serialized_content.append(block)
                 else:
-                    # SDK 对象（如 anthropic ContentBlock）
                     try:
                         d = {"type": block.type}
-                        if hasattr(block, "text"):
-                            d["text"] = block.text
-                        if hasattr(block, "id"):
-                            d["id"] = block.id
-                        if hasattr(block, "name"):
-                            d["name"] = block.name
-                        if hasattr(block, "input"):
-                            d["input"] = block.input
+                        if hasattr(block, "text"):    d["text"]  = block.text
+                        if hasattr(block, "id"):      d["id"]    = block.id
+                        if hasattr(block, "name"):    d["name"]  = block.name
+                        if hasattr(block, "input"):   d["input"] = block.input
                         serialized_content.append(d)
                     except Exception:
                         serialized_content.append({"type": "unknown", "raw": str(block)})
@@ -480,12 +510,7 @@ def _serialize_history(history: list[dict]) -> list[dict]:
 
 
 def _flock(f) -> None:
-    """
-    跨平台文件锁（尽力而为）。
-    Unix：fcntl.flock 排他锁，进程退出自动释放。
-    Windows：msvcrt.locking，锁前 512 字节作为锁区域。
-    不支持时静默跳过——原子 replace 已提供足够保护。
-    """
+    """跨平台文件锁（尽力而为）。"""
     try:
         import fcntl
         fcntl.flock(f.fileno(), fcntl.LOCK_EX)
@@ -496,4 +521,4 @@ def _flock(f) -> None:
         import msvcrt
         msvcrt.locking(f.fileno(), msvcrt.LK_NBLCK, 512)
     except Exception:
-        pass  # 锁失败不中断写入，原子 replace 仍保护文件完整性
+        pass

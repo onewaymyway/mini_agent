@@ -41,6 +41,9 @@ class MemoryEntry:
     model: str
     created_at: float = field(default_factory=time.time)
     entry_id: str = ""
+    scope: str = "project"              # "project" | "global"
+                                        # project: 当前项目特有知识
+                                        # global:  跨项目通用经验，写入 ~/.agent/memory.jsonl
 
     def __post_init__(self) -> None:
         if not self.entry_id:
@@ -74,7 +77,7 @@ class MemoryStore(MemoryBackend):
         max_entries: int = _DEFAULT_MAX_ENTRIES,
         decay_half_life_days: float = _DECAY_HALF_LIFE_DAYS,
     ) -> None:
-        self._path = path or Path(".agent") / "memory.jsonl"
+        self._path = path or Path(".agent") / "memory.jsonl"  # 由 memory_factory 覆盖
         self._entries: list[MemoryEntry] = []
         self._loaded = False
         self._max_entries = max_entries

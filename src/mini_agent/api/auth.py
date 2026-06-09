@@ -25,7 +25,7 @@ from fastapi import Request, HTTPException, status
 from fastapi.responses import JSONResponse
 from starlette.middleware.base import BaseHTTPMiddleware
 
-_TOKEN_FILE = "agent_api.key"
+_TOKEN_FILE = ".agent/agent_api.key"  # <project_root>/.agent/agent_api.key
 
 # ── Token 管理 ────────────────────────────────────────────────────────────────
 

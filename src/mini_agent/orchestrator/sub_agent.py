@@ -30,26 +30,43 @@ from .task import Task, TaskRecord, TaskResult, TaskStatus
 from .concurrency import get_task_sem
 from mini_agent.permissions import PermissionGuard
 from mini_agent.tools import get_default_registry
+from mini_agent.storage.paths import AgentPaths
 import io
 
-# Debug log file
-_DEBUG_LOG_FILE = Path(__file__).parent.parent.parent.parent / "test_result" / "subagent_debug.jsonl"
+
+def _get_task_paths(base_cfg: AppConfig, session_id: Optional[str], task_id: str):
+    """获取 task 级别的路径对象（session_id 可能为 None）。"""
+    if not session_id:
+        return None
+    return AgentPaths(base_cfg.project_root), session_id, task_id
 
 
-def _debug_log(task_id: str, event: str, details: dict | None = None):
-    """写入 debug 日志到文件。"""
+def _debug_log(
+    task_id: str,
+    event: str,
+    details: dict | None = None,
+    *,
+    events_path: Optional[Path] = None,
+) -> None:
+    """
+    写入 task 生命周期事件到 events.jsonl。
+    路径：<project_root>/.agent/sessions/<session_id>/tasks/<task_id>/events.jsonl
+    events_path 由 SubAgent 实例在获得 session_id 后传入。
+    """
+    if events_path is None:
+        return  # session 还未建立时静默忽略
     try:
-        _DEBUG_LOG_FILE.parent.mkdir(parents=True, exist_ok=True)
+        events_path.parent.mkdir(parents=True, exist_ok=True)
         entry = {
-            "ts": time.time(),
+            "ts":      time.time(),
             "task_id": task_id,
-            "event": event,
-            "details": details or {}
+            "event":   event,
+            "details": details or {},
         }
-        with open(_DEBUG_LOG_FILE, "a", encoding="utf-8") as f:
+        with open(events_path, "a", encoding="utf-8") as f:
             f.write(json.dumps(entry, ensure_ascii=False) + "\n")
     except Exception:
-        pass  # 静默失败，避免影响正常执行
+        pass
 
 
 # 实时日志回调类型：(task_id, line) -> None
@@ -76,6 +93,7 @@ class SubAgent:
         base_cfg: AppConfig,
         on_log: Optional[LogCallback] = None,
         on_terminal: Optional[TerminalCallback] = None,
+        session_id: Optional[str] = None,
     ) -> None:
         self.record = record
         self.base_cfg = base_cfg
@@ -89,6 +107,18 @@ class SubAgent:
         self._cancel_event = threading.Event()
         self._lock = threading.Lock()
         self._terminal_notified: set[TaskStatus] = set()  # 已通知的终态
+
+        # Task 级路径（需要 session_id）
+        self._session_id = session_id
+        if session_id:
+            _paths = AgentPaths(base_cfg.project_root)
+            self._events_path: Optional[Path] = _paths.task_events(session_id, record.task_id)
+            self._output_path: Optional[Path] = _paths.task_output(session_id, record.task_id)
+            self._result_path: Optional[Path] = _paths.task_result(session_id, record.task_id)
+        else:
+            self._events_path = None
+            self._output_path = None
+            self._result_path = None
 
     # ── 生命周期 ──────────────────────────────────────────────────────────────
 
@@ -128,21 +158,21 @@ class SubAgent:
 
     def _run(self) -> None:
         task = self.record.task
-        _debug_log(task.id, "sub_agent_start", {"task_name": task.name})
+        _debug_log(task.id, "sub_agent_start", {"task_name": task.name}, events_path=self._events_path)
         sem = get_task_sem()
 
         # 等待 task slot（可能排队）
         if sem.waiting_count > 0 or sem.active_count >= sem.limit:
             self._log(f"Queued (task slots full: {sem.active_count}/{sem.limit})")
-            _debug_log(task.id, "queued", {"active": sem.active_count, "limit": sem.limit})
+            _debug_log(task.id, "queued", {"active": sem.active_count, "limit": sem.limit}, events_path=self._events_path)
 
-        _debug_log(task.id, "acquiring_semaphore", {"label": task.id[:8] + " " + task.name[:16]})
+        _debug_log(task.id, "acquiring_semaphore", {"label": task.id[:8] + " " + task.name[:16]}, events_path=self._events_path)
         with sem.acquire(label=task.id[:8] + " " + task.name[:16]):
-            _debug_log(task.id, "semaphore_acquired")
+            _debug_log(task.id, "semaphore_acquired", events_path=self._events_path)
             # 检查是否在排队期间被取消
             with self._lock:
                 if self.record.status == TaskStatus.CANCELLED:
-                    _debug_log(task.id, "cancelled_while_queued")
+                    _debug_log(task.id, "cancelled_while_queued", events_path=self._events_path)
                     # 在排队期间被取消，直接返回
                     return
             self._run_body(task)
@@ -157,17 +187,17 @@ class SubAgent:
 
         self._log(f"Starting task: {task.name}")
         self._log(f"Config: model={task.model or 'default'}, max_turns={task.max_turns}")
-        _debug_log(task.id, "run_body_start", {"model": task.model, "max_turns": task.max_turns})
+        _debug_log(task.id, "run_body_start", {"model": task.model, "max_turns": task.max_turns}, events_path=self._events_path)
 
         try:
-            _debug_log(task.id, "building_agent")
+            _debug_log(task.id, "building_agent", events_path=self._events_path)
             agent = self._build_agent(task)
             self._log(f"Agent built, running turn...")
-            _debug_log(task.id, "agent_built", {"stats": str(agent.stats)})
+            _debug_log(task.id, "agent_built", {"stats": str(agent.stats)}, events_path=self._events_path)
 
-            _debug_log(task.id, "running_turn")
+            _debug_log(task.id, "running_turn", events_path=self._events_path)
             output = self._run_with_capture(agent, task.prompt)
-            _debug_log(task.id, "turn_completed", {"output_len": len(output) if output else 0})
+            _debug_log(task.id, "turn_completed", {"output_len": len(output) if output else 0}, events_path=self._events_path)
             self._log(f"Turn completed, output length: {len(output) if output else 0} chars")
 
             with self._lock:
@@ -176,7 +206,7 @@ class SubAgent:
                     self.record.result = TaskResult(
                         output=output, error="Cancelled after completion"
                     )
-                    _debug_log(task.id, "cancelled")
+                    _debug_log(task.id, "cancelled", events_path=self._events_path)
                 else:
                     self.record.status = TaskStatus.DONE
                     self.record.result = TaskResult(
@@ -186,6 +216,7 @@ class SubAgent:
                         tool_calls=agent.stats.tool_calls,
                         turns=agent.stats.turns,
                     )
+                    self._write_result_json(output, agent)
                     _debug_log(task.id, "done", {
                         "input_tokens": agent.stats.input_tokens,
                         "output_tokens": agent.stats.output_tokens,
@@ -196,7 +227,7 @@ class SubAgent:
 
         except TimeoutError as exc:
             self._log(f"TIMEOUT: {exc}")
-            _debug_log(task.id, "timeout", {"error": str(exc)})
+            _debug_log(task.id, "timeout", {"error": str(exc)}, events_path=self._events_path)
             with self._lock:
                 self.record.status = TaskStatus.FAILED
                 self.record.result = TaskResult(output="", error=f"Timeout: {exc}")
@@ -205,7 +236,7 @@ class SubAgent:
             tb = traceback.format_exc()
             self._log(f"ERROR: {exc}")
             # 完整 traceback 写入 debug jsonl，方便离线排查
-            _debug_log(task.id, "error", {"error": str(exc), "traceback": tb})
+            _debug_log(task.id, "error", {"error": str(exc), "traceback": tb}, events_path=self._events_path)
             with self._lock:
                 self.record.status = TaskStatus.FAILED
                 # error 字段保存完整 traceback，而不只是 str(exc)
@@ -323,7 +354,7 @@ class SubAgent:
             env_key = os.environ.get("ANTHROPIC_API_KEY", "")
             if env_key:
                 cfg.api_key = env_key
-                _debug_log(self.record.task_id, "api_key_from_env", {})
+                _debug_log(self.record.task_id, "api_key_from_env", {}, events_path=self._events_path)
             else:
                 _debug_log(self.record.task_id, "api_key_missing", {
                     "from_config": bool(self._api_key),
@@ -343,8 +374,42 @@ class SubAgent:
         )
         return Agent(cfg=cfg, guard=guard, llm_client=create_client(llm_cfg))
 
+    def _write_result_json(self, output: str, agent) -> None:
+        """任务完成时将结果写入 result.json。"""
+        if not self._result_path:
+            return
+        try:
+            import json as _json
+            self._result_path.parent.mkdir(parents=True, exist_ok=True)
+            data = {
+                "task_id":       self.record.task_id,
+                "status":        "done",
+                "started_at":    self.record.started_at,
+                "finished_at":   time.time(),
+                "input_tokens":  agent.stats.input_tokens,
+                "output_tokens": agent.stats.output_tokens,
+                "tool_calls":    agent.stats.tool_calls,
+                "turns":         agent.stats.turns,
+                "output_len":    len(output) if output else 0,
+            }
+            self._result_path.write_text(
+                _json.dumps(data, ensure_ascii=False, indent=2),
+                encoding="utf-8",
+            )
+        except Exception:
+            pass
+
     def _log(self, line: str) -> None:
         self.record.append_log(line)
+        # 写入 output.log（tab 切换功能的数据源）
+        if self._output_path:
+            try:
+                self._output_path.parent.mkdir(parents=True, exist_ok=True)
+                ts = time.strftime("%H:%M:%S")
+                with open(self._output_path, "a", encoding="utf-8") as f:
+                    f.write(f"[{ts}] {line}\n")
+            except Exception:
+                pass
         if self.on_log:
             try:
                 self.on_log(self.record.task_id, line)

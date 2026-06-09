@@ -24,9 +24,7 @@ from typing import Optional
 
 from mini_agent.ui.terminal import term as _term
 from mini_agent.prompts import pm
-
-# 权限配置文件名（保存在 project_root 下）
-_PERMISSIONS_FILE = "agent_permissions.json"
+from mini_agent.storage.paths import AgentPaths
 
 
 # Tools that are always safe (read-only, no side-effects)
@@ -153,8 +151,8 @@ class PermissionGuard:
     # ── 权限持久化 ────────────────────────────────────────────────────────
 
     def _permissions_path(self) -> Path:
-        """返回权限配置文件路径。"""
-        return self.project_root / _PERMISSIONS_FILE
+        """返回权限配置文件路径：<project_root>/.agent/permissions.json"""
+        return AgentPaths(self.project_root).permissions
 
     def _load_permissions(self) -> None:
         """从工作目录的 agent_permissions.json 加载持久化权限配置。"""
@@ -187,16 +185,17 @@ class PermissionGuard:
                 allow_count = len(self._allow_list)
                 deny_count = len(self._denied_tools)
                 _term.print(
-                    f"[dim]Loaded permissions from {_PERMISSIONS_FILE}: "
+                    f"[dim]Loaded permissions from .agent/permissions.json: "
                     f"{allow_count} allowed, {deny_count} denied[/dim]"
                 )
         except Exception as e:
-            _term.print(f"[yellow]Warning: failed to load {_PERMISSIONS_FILE}: {e}[/yellow]")
+            _term.print(f"[yellow]Warning: failed to load .agent/permissions.json: {e}[/yellow]")
 
     def _save_permissions(self) -> None:
-        """将当前 allow/deny 列表持久化到工作目录的 agent_permissions.json。"""
+        """将当前 allow/deny 列表持久化到 .agent/permissions.json。"""
         path = self._permissions_path()
         try:
+            path.parent.mkdir(parents=True, exist_ok=True)
             data = {
                 "allow_list": [
                     {"tool_name": e.tool_name, "path_prefix": e.path_prefix}
@@ -206,7 +205,7 @@ class PermissionGuard:
             }
             path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
         except Exception as e:
-            _term.print(f"[yellow]Warning: failed to save {_PERMISSIONS_FILE}: {e}[/yellow]")
+            _term.print(f"[yellow]Warning: failed to save .agent/permissions.json: {e}[/yellow]")
 
     def _prompt_with_http(
         self,
