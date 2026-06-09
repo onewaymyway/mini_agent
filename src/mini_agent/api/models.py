@@ -74,8 +74,9 @@ class StatusResponse(BaseModel):
     queue_depth: int
 
 class PermissionRequest(BaseModel):
-    approve:  bool
+    approve:      bool
     edited_input: Optional[dict] = None   # 用户修改后的工具参数（bash edit 场景）
+    mode:         str = "once"             # "once" | "always" | "deny_always"
 
 class PermissionResponse(BaseModel):
     ok: bool

@@ -901,37 +901,8 @@ def render_sidebar():
 
 
 def render_permission_panel():
-    """顶部权限审批区域"""
-    if not st.session_state.connected:
-        return
-    client = get_client()
-    perms = client.pending_permissions()
-    pending = perms.get("permissions", []) if perms else []
-    if not pending:
-        return
-
-    st.markdown("### ⚠️ 权限审批请求")
-    for perm in pending:
-        req_id     = perm.get("req_id", "")
-        tool_name  = perm.get("tool_name", "unknown")
-        input_data = perm.get("tool_input", {})
-
-        st.markdown(f"""<div class="permission-card">
-<div class="permission-title">🔐 工具需要权限: {tool_name}</div>
-<div class="permission-content">{json.dumps(input_data, ensure_ascii=False, indent=2)}</div>
-</div>""", unsafe_allow_html=True)
-
-        c1, c2, _ = st.columns([1, 1, 3])
-        with c1:
-            if st.button("✅ 批准", key=f"approve_{req_id}"):
-                if client.approve_permission(req_id, True):
-                    st.success("已批准")
-                    st.rerun()
-        with c2:
-            if st.button("❌ 拒绝", key=f"reject_{req_id}"):
-                if client.approve_permission(req_id, False):
-                    st.info("已拒绝")
-                    st.rerun()
+    """权限审批已由 JS 实时轮询组件接管，此函数保留为空以兼容调用点。"""
+    pass
 
 
 def render_chat_messages(container):
@@ -948,10 +919,10 @@ def render_chat_messages(container):
 
         for msg in st.session_state.messages:
             role     = msg["role"]
-            content  = msg["content"]
             time_str = msg.get("time", "")
 
             if role == "user":
+                content = msg.get("content", "")
                 st.markdown(f"""<div class="msg-user">
 <div class="msg-role" style="color:#a09aff">👤 你</div>
 {content}
@@ -959,21 +930,44 @@ def render_chat_messages(container):
 </div>""", unsafe_allow_html=True)
 
             elif role == "assistant":
+                content = msg.get("content", "")
                 st.markdown(f"""<div class="msg-agent">
 <div class="msg-role" style="color:#6fcf6f">🤖 Agent</div>
 {content}
 <div class="msg-time">{time_str}</div>
 </div>""", unsafe_allow_html=True)
 
-            elif role == "permission":
-                st.markdown(msg["content"], unsafe_allow_html=True)
-
             elif role == "streaming":
+                content = msg.get("content", "")
                 st.markdown(f"""<div class="msg-agent" style="border-left-color:#FF9800">
 <div class="msg-role" style="color:#FF9800">🤖 Agent (输出中...)</div>
 {content}
 <span style="display:inline-block;width:8px;height:14px;background:#FF9800;
 animation:pulse 1s infinite;vertical-align:text-bottom;margin-left:2px">▊</span>
+</div>""", unsafe_allow_html=True)
+
+            elif role == "permission":
+                # 权限请求消息：显示工具名、参数摘要、审批结果标记
+                tool_name  = msg.get("tool_name", "unknown")
+                tool_input = msg.get("tool_input", {})
+                approved   = msg.get("approved")    # None=待定, True=批准, False=拒绝
+                reason     = msg.get("reason", "")
+
+                if approved is None:
+                    status_html = '<div style="color:#FF7043;font-size:12px;margin-top:8px">⏳ 请在下方权限面板审批（或在命令行输入）</div>'
+                elif approved:
+                    src = {"cli":"命令行","http":"Web界面","timeout":"超时"}.get(reason, reason)
+                    status_html = f'<div style="color:#4CAF50;font-size:12px;margin-top:8px">✅ 已批准（{src}）</div>'
+                else:
+                    src = {"cli":"命令行","http":"Web界面","timeout":"超时"}.get(reason, reason)
+                    status_html = f'<div style="color:#EF5350;font-size:12px;margin-top:8px">❌ 已拒绝（{src}）</div>'
+
+                input_preview = json.dumps(tool_input, ensure_ascii=False, indent=2)
+                st.markdown(f"""<div class="permission-card">
+<div class="permission-title">🔐 权限请求: {tool_name}</div>
+<div class="permission-content">{input_preview}</div>
+{status_html}
+<div class="msg-time">{time_str}</div>
 </div>""", unsafe_allow_html=True)
 
 
@@ -1257,11 +1251,16 @@ def main():
     # 底部状态栏
     render_footer()
 
-    # ── 前端 JS 实时轮询组件 ──────────────────────────────────────────────────
-    # 仅在已连接时注入。JS 每秒轮询后端事件和状态，
-    # 把结果通过 sendPrompt() 发回 Python 端处理。
+    # ── 前端 JS 实时轮询组件（权限审批面板）────────────────────────────────
+    # 仅在已连接时注入。JS 每秒轮询后端事件，直接渲染权限审批按钮（不依赖 Streamlit 重渲染）。
     if st.session_state.connected:
         _render_agent_poll_widget()
+
+    # ── Python 端定时 rerun：驱动 _process_js_poll_callback 同步事件到消息列表 ──
+    # 当 agent 处于活跃状态时，每 1.5 秒 rerun 一次，确保对话消息区实时更新。
+    if st.session_state.connected and st.session_state.agent_state in ("running", "waiting_permission"):
+        time.sleep(1.5)
+        st.rerun()
 
 
 if __name__ == "__main__" or True:

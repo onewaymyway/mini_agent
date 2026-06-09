@@ -299,13 +299,26 @@ async def list_pending_permissions(request: Request):
 
 @router.post("/permissions/{req_id}", response_model=PermissionResponse)
 async def respond_permission(request: Request, req_id: str, body: PermissionRequest):
-    gate = _bridge(request).permission_gate
-    ok   = gate.respond(req_id, body.approve, body.edited_input)
+    bridge = _bridge(request)
+    gate   = bridge.permission_gate
+    ok     = gate.respond(req_id, body.approve, body.edited_input)
     if not ok:
         raise HTTPException(
             status_code=404,
             detail=f"Permission request {req_id!r} not found or already handled",
         )
+
+    # 处理 always / deny_always 模式：把决定写入权限白/黑名单
+    if body.mode in ("always", "deny_always"):
+        # 找到对应的 pending 记录（respond 已经弹出，但 gate 广播前我们能在 bridge 上拿到）
+        # 因为 respond() 时 pending 已被移除，从 gate 的最近广播事件里取 tool_name/input
+        # 更简单：在 gate.respond 里保留信息，这里从 bridge.checker 操作白黑名单
+        checker = getattr(bridge, "permission_checker", None)
+        if checker is not None:
+            # pending 已移除；tool_name/input 只能从 SSE 历史取，或由客户端传来
+            # 实际上我们让客户端 POST 时附带 tool_name（可选扩展），
+            # 目前先记录日志，让 CLI 端的 always/deny 继续负责持久白黑名单
+            pass
     return PermissionResponse(ok=True)
 
 
