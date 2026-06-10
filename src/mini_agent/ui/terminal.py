@@ -159,6 +159,7 @@ class Terminal:
         prompt_lines: list[str],
         choices: str = "(y)es  (a)lways  (n)o  (d)eny-always",
         default: str = "y",
+        interrupt_event=None,
     ) -> str:
         """
         审批/确认输入。
@@ -167,34 +168,72 @@ class Terminal:
                       调用方应先 term.print() 输出提示，再调用 confirm()。
                       confirm() 只负责显示选项提示符并读取输入。
 
-        返回用户输入的小写字符串。
+        interrupt_event: 可选的 threading.Event。若设置，当该 Event 被 set()
+                         时（例如 HTTP 端已先响应），readline 等待会被中断，
+                         抛出 _InterruptedByHTTP（由调用方捕获）。
 
-        修复：
-        1. _enter_input_mode 改为双哨兵，确保 status_bar push_loop 在
-           _refresh_paused set 后已投入的残余 redraw 消息被彻底排空，
-           输入等待期间渲染线程不再写屏幕。
-        2. readline() 读取后补一个换行，确保光标在新行，
-           _exit_input_mode 的 redraw 从正确位置开始绘制状态栏。
+        返回用户输入的小写字符串。
         """
+        import threading as _threading
+
         # 进入输入模式：暂停刷新，双哨兵排空队列，擦状态栏
         self._enter_input_mode()
         try:
             # 打印选项提示符（直接写，不经队列——此时渲染线程已空闲）
             sys.stdout.write(f"  {choices} : ")
             sys.stdout.flush()
-            try:
-                line = sys.stdin.readline()
-                # readline() 已包含 \n（用户按回车），但 EOF 时返回 ""
-                # 补一个换行保证光标在新行，状态栏重绘位置正确
-                if not line.endswith("\n"):
+
+            if interrupt_event is not None:
+                # ── 可中断模式：用独立线程读 stdin，主线程等两者之一 ──────
+                result_holder: list = []
+                stdin_done = _threading.Event()
+
+                def _read_stdin():
+                    try:
+                        line = sys.stdin.readline()
+                        result_holder.append(line)
+                    except Exception:
+                        result_holder.append("")
+                    finally:
+                        stdin_done.set()
+
+                reader = _threading.Thread(target=_read_stdin, daemon=True)
+                reader.start()
+
+                # 等待 stdin 读完 或 interrupt_event 先触发
+                finished = _threading.Event()
+                while not finished.is_set():
+                    if stdin_done.wait(timeout=0.2):
+                        finished.set()
+                    elif interrupt_event.is_set():
+                        # HTTP 端先响应了——打印换行保持终端整洁，然后抛出中断
+                        sys.stdout.write("\n")
+                        sys.stdout.flush()
+                        # reader 线程还阻塞在 readline，但它是 daemon 线程，进程退出时自动清理
+                        # 用户下次按回车时 readline 会返回，但调用方已经不在等了
+                        try:
+                            from mini_agent.permissions import _InterruptedByHTTP
+                        except ImportError:
+                            class _InterruptedByHTTP(Exception): pass
+                        raise _InterruptedByHTTP()
+
+                line = result_holder[0] if result_holder else ""
+            else:
+                # ── 普通模式：直接阻塞 readline ──────────────────────────
+                try:
+                    line = sys.stdin.readline()
+                except (EOFError, KeyboardInterrupt):
                     sys.stdout.write("\n")
                     sys.stdout.flush()
-                choice = line.strip().lower() if line else default
-                choice = choice or default
-            except (EOFError, KeyboardInterrupt):
+                    return "n"
+
+            # readline() 已包含 \n（用户按回车），但 EOF 时返回 ""
+            # 补一个换行保证光标在新行，状态栏重绘位置正确
+            if not line.endswith("\n"):
                 sys.stdout.write("\n")
                 sys.stdout.flush()
-                choice = "n"
+            choice = line.strip().lower() if line else default
+            choice = choice or default
             return choice
         finally:
             self._exit_input_mode()

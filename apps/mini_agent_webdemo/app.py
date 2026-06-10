@@ -155,7 +155,8 @@ def init_session():
         "is_streaming":     False,
         "input_key":        0,
         "scroll_trigger":   0,
-        "debug_log":        [],   # 调试日志
+        "debug_log":            [],   # 调试日志
+        "_pending_idle_sync":   0,    # idle 后补同步计数
     }
     for k, v in defaults.items():
         if k not in st.session_state:
@@ -358,41 +359,38 @@ def format_event_html(event: dict) -> str:
 def scroll_chat_to_bottom():
     """
     注入 JS 让对话容器滚动到底部。
-    必须用 st.markdown 注入，这样 script 在主页面执行，能访问真实 DOM。
-    st.components.v1.html 是 iframe，无法跨域访问主页面。
+    使用多种选择器策略兼容不同版本 Streamlit DOM 结构。
     """
     scroll_js = """
 <script>
 (function() {
     function scrollAll() {
-        // st.container(height=N) 渲染为 data-testid="stVerticalBlockBorderWrapper"
-        // 其第一个直接子 div 是真正的滚动容器
+        // 策略1：找所有有固定高度（overflow scroll）的容器
+        var allDivs = document.querySelectorAll('div');
+        var scrolled = false;
+        for (var i = 0; i < allDivs.length; i++) {
+            var el = allDivs[i];
+            var style = window.getComputedStyle(el);
+            if ((style.overflowY === 'auto' || style.overflowY === 'scroll')
+                    && el.scrollHeight > el.clientHeight + 20
+                    && el.clientHeight > 100) {
+                el.scrollTop = el.scrollHeight;
+                scrolled = true;
+            }
+        }
+        // 策略2：Streamlit stVerticalBlockBorderWrapper
         var wrappers = document.querySelectorAll('[data-testid="stVerticalBlockBorderWrapper"]');
         wrappers.forEach(function(wrapper) {
-            var children = wrapper.children;
-            for (var i = 0; i < children.length; i++) {
-                var child = children[i];
-                var style = window.getComputedStyle(child);
-                if (style.overflowY === 'auto' || style.overflowY === 'scroll') {
-                    child.scrollTop = child.scrollHeight;
-                    return;
-                }
-            }
-            // 备用：往下多找几层
-            var divs = wrapper.querySelectorAll('div');
-            for (var j = 0; j < Math.min(divs.length, 8); j++) {
-                var s = window.getComputedStyle(divs[j]);
-                if ((s.overflowY === 'auto' || s.overflowY === 'scroll')
-                        && divs[j].scrollHeight > divs[j].clientHeight + 10) {
-                    divs[j].scrollTop = divs[j].scrollHeight;
-                    return;
-                }
-            }
+            wrapper.scrollTop = wrapper.scrollHeight;
+            var inner = wrapper.querySelector('[data-testid="stVerticalBlock"]');
+            if (inner) inner.scrollTop = inner.scrollHeight;
         });
     }
-    setTimeout(scrollAll, 80);
-    setTimeout(scrollAll, 350);
-    setTimeout(scrollAll, 800);
+    // 多次尝试，等待 DOM 渲染完成
+    setTimeout(scrollAll, 100);
+    setTimeout(scrollAll, 400);
+    setTimeout(scrollAll, 900);
+    setTimeout(scrollAll, 1800);
 })();
 </script>
 """
@@ -651,7 +649,9 @@ def _sync_events():
     """
     if not st.session_state.connected:
         return
-    if st.session_state.agent_state not in ("running", "waiting_permission", "unknown"):
+    # idle 状态下也同步一次，确保不漏掉 turn_done / permission_done 等事件
+    # 仅在完全静止且没有未处理事件时跳过
+    if st.session_state.agent_state not in ("running", "waiting_permission", "unknown", "idle"):
         return
 
     client = get_client()
@@ -660,6 +660,10 @@ def _sync_events():
     s = client.status()
     if s:
         new_state = s.get("state", st.session_state.agent_state)
+        # 若本地已知是 waiting_permission，而后端返回 running（双路审批时后端仍是running），
+        # 保留本地状态，避免覆盖导致权限面板消失
+        if st.session_state.agent_state == "waiting_permission" and new_state == "running":
+            new_state = "waiting_permission"
         if new_state != st.session_state.agent_state:
             st.session_state.debug_log.append(
                 f"[{_ts()}] state: {st.session_state.agent_state} -> {new_state}"
@@ -707,26 +711,32 @@ def _sync_events():
                     })
 
         elif etype == "turn_done":
-            parts = [m["content"] for m in st.session_state.messages
-                     if m.get("role") == "streaming"]
+            # 清除所有 streaming 中间态（零散 token 片段）
             st.session_state.messages = [m for m in st.session_state.messages
                                           if m.get("role") != "streaming"]
-            full = "".join(parts).strip()
-            if not full:
-                hist = client.history()
-                if hist:
-                    for hm in reversed(hist.get("messages", [])):
-                        if hm.get("role") == "assistant":
-                            c = hm.get("content", "")
-                            if isinstance(c, list):
-                                c = "".join(x.get("text","") for x in c
-                                            if isinstance(x, dict) and x.get("type") == "text")
-                            full = str(c).strip()
-                            break
+            # 始终从后端 history 拉取最新完整的 assistant 消息，
+            # 不依赖 token 事件的累积（轮询间隔 1.5s，token 经常大批漏掉）
+            hist = client.history()
+            full = ""
+            if hist:
+                for hm in reversed(hist.get("messages", [])):
+                    if hm.get("role") == "assistant":
+                        c = hm.get("content", "")
+                        if isinstance(c, list):
+                            c = "".join(x.get("text","") for x in c
+                                        if isinstance(x, dict) and x.get("type") == "text")
+                        full = str(c).strip()
+                        break
             if full:
-                st.session_state.messages.append({
-                    "role": "assistant", "content": full, "time": _ts()
-                })
+                # 去重：如果最后一条 assistant 消息内容一样就不重复添加
+                last_asst = next(
+                    (m for m in reversed(st.session_state.messages)
+                     if m.get("role") == "assistant"), None
+                )
+                if not last_asst or last_asst.get("content", "").strip() != full:
+                    st.session_state.messages.append({
+                        "role": "assistant", "content": full, "time": _ts()
+                    })
             st.session_state.agent_state = "idle"
             st.session_state.scroll_trigger += 1
             st.session_state.debug_log.append(f"[{_ts()}] turn_done -> idle")
@@ -763,6 +773,10 @@ def _sync_events():
                 if m.get("role") == "permission" and m.get("req_id") == req_id:
                     m["approved"] = approved_flag
                     m["reason"]   = reason
+            # 权限审批完成后，agent 继续运行
+            if st.session_state.agent_state == "waiting_permission":
+                st.session_state.agent_state = "running"
+                st.session_state.debug_log.append(f"[{_ts()}] permission_done -> running")
 
         st.session_state.event_log.append(evt)
 
@@ -1008,9 +1022,7 @@ def render_sidebar():
             st.rerun()
 
 
-def render_permission_panel():
-    """权限审批已由 JS 实时轮询组件接管，此函数保留为空以兼容调用点。"""
-    pass
+# render_permission_panel 已在上方定义（第781行），此处不重复定义
 
 
 def render_chat_messages(container):
@@ -1062,12 +1074,22 @@ animation:pulse 1s infinite;vertical-align:text-bottom;margin-left:2px">▊</spa
                 reason     = msg.get("reason", "")
 
                 if approved is None:
-                    status_html = '<div style="color:#FF7043;font-size:12px;margin-top:8px">⏳ 请在下方权限面板审批（或在命令行输入）</div>'
+                    status_html = """
+<div style="margin-top:10px;background:#1A1200;border:1px solid #FF7043;border-radius:8px;padding:10px">
+  <div style="color:#FF7043;font-size:12px;font-weight:bold;margin-bottom:6px">⏳ 等待审批 — 可在下方输入框快捷操作：</div>
+  <div style="display:flex;flex-wrap:wrap;gap:6px;font-size:12px">
+    <span style="background:#1B3A1B;color:#81C784;border:1px solid #2E7D32;border-radius:4px;padding:2px 8px"><b>y</b> 批准（本次）</span>
+    <span style="background:#1B2F1B;color:#A5D6A7;border:1px solid #388E3C;border-radius:4px;padding:2px 8px"><b>a</b> 永久批准</span>
+    <span style="background:#3A1B1B;color:#EF9A9A;border:1px solid #7D2E2E;border-radius:4px;padding:2px 8px"><b>n</b> 拒绝（本次）</span>
+    <span style="background:#2F1B1B;color:#FFCDD2;border:1px solid #B71C1C;border-radius:4px;padding:2px 8px"><b>d</b> 永久拒绝</span>
+  </div>
+  <div style="color:#888;font-size:11px;margin-top:6px">或直接点击下方权限面板的按钮</div>
+</div>"""
                 elif approved:
-                    src = {"cli":"命令行","http":"Web界面","timeout":"超时"}.get(reason, reason)
+                    src = {"cli":"命令行","http":"Web界面","timeout":"超时","user":"Web界面"}.get(reason, reason)
                     status_html = f'<div style="color:#4CAF50;font-size:12px;margin-top:8px">✅ 已批准（{src}）</div>'
                 else:
-                    src = {"cli":"命令行","http":"Web界面","timeout":"超时"}.get(reason, reason)
+                    src = {"cli":"命令行","http":"Web界面","timeout":"超时","user":"Web界面"}.get(reason, reason)
                     status_html = f'<div style="color:#EF5350;font-size:12px;margin-top:8px">❌ 已拒绝（{src}）</div>'
 
                 input_preview = json.dumps(tool_input, ensure_ascii=False, indent=2)
@@ -1079,8 +1101,71 @@ animation:pulse 1s infinite;vertical-align:text-bottom;margin-left:2px">▊</spa
 </div>""", unsafe_allow_html=True)
 
 
+def _handle_permission_input(msg_text: str) -> bool:
+    """
+    在 waiting_permission 状态下，尝试将输入解析为权限审批指令。
+    支持：y/yes、a/always、n/no、d/deny
+    返回 True 表示已处理（不需要再走普通发送流程）。
+    """
+    cmd = msg_text.strip().lower()
+    APPROVE_MAP = {
+        "y": ("approve", True,  "once"),
+        "yes": ("approve", True,  "once"),
+        "a": ("approve", True,  "always"),
+        "always": ("approve", True, "always"),
+        "n": ("approve", False, "once"),
+        "no": ("approve", False, "once"),
+        "d": ("approve", False, "deny_always"),
+        "deny": ("approve", False, "deny_always"),
+    }
+    if cmd not in APPROVE_MAP:
+        return False
+
+    client  = get_client()
+    result  = client.pending_permissions()
+    pending = result.get("permissions", []) if result else []
+    if not pending:
+        return False
+
+    # 取第一个待审批项
+    perm   = pending[0]
+    req_id = perm.get("req_id", "")
+    if not req_id:
+        return False
+
+    _, approve, mode = APPROVE_MAP[cmd]
+    now_str = datetime.now().strftime("%H:%M:%S")
+
+    try:
+        r = client.post(f"/permissions/{req_id}", {"approve": approve, "mode": mode})
+        if r.status_code == 200:
+            action_label = {
+                "once":         "✅ 批准(y)" if approve else "❌ 拒绝(n)",
+                "always":       "⚡ 永久批准(a)",
+                "deny_always":  "🚫 永久拒绝(d)",
+            }.get(mode, cmd)
+            st.session_state.messages.append({
+                "role": "user", "content": f"[权限审批] {action_label}", "time": now_str
+            })
+            st.session_state.input_key += 1
+            st.session_state.debug_log.append(
+                f"[{_ts()}] perm input '{cmd}' -> req={req_id!r} approve={approve} mode={mode}"
+            )
+            st.session_state.agent_state = "running"
+            st.session_state.scroll_trigger += 1
+            return True
+    except Exception as e:
+        st.session_state.debug_log.append(f"[{_ts()}] perm input error: {e}")
+    return False
+
+
 def handle_send(msg_text: str):
     """发送消息，立即返回。后续轮询由前端 JS 完成。"""
+    # waiting_permission 状态下，优先尝试解析为权限审批指令
+    if st.session_state.agent_state == "waiting_permission":
+        if _handle_permission_input(msg_text):
+            return
+
     client  = get_client()
     now_str = datetime.now().strftime("%H:%M:%S")
 
@@ -1104,10 +1189,18 @@ def handle_send(msg_text: str):
 
 def render_input_area():
     """输入框 + 按钮区域，返回需要执行的操作"""
+    is_waiting_perm = st.session_state.agent_state == "waiting_permission"
+
+    placeholder = (
+        "输入权限指令：y 批准 / a 永久批准 / n 拒绝 / d 永久拒绝"
+        if is_waiting_perm
+        else "输入消息... (点击「发送」按钮)"
+    )
+
     # key 随 input_key 变化，从而实现发送后清空
     user_input = st.text_area(
         "消息输入",
-        placeholder="输入消息... (点击「发送」按钮)",
+        placeholder=placeholder,
         height=100,
         key=f"user_input_{st.session_state.input_key}",
         label_visibility="collapsed"
@@ -1115,9 +1208,15 @@ def render_input_area():
 
     btn_col1, btn_col2, btn_col3, btn_col4 = st.columns([2, 1, 1, 1])
     with btn_col1:
+        # waiting_permission 时允许发送（用于输入审批指令）
+        send_disabled = (
+            not st.session_state.connected
+            or not (user_input or "").strip()
+        )
+        send_label = "🔐 提交审批" if is_waiting_perm else "📨 发送"
         send_btn = st.button(
-            "📨 发送", use_container_width=True, type="primary",
-            disabled=not st.session_state.connected or not (user_input or "").strip()
+            send_label, use_container_width=True, type="primary",
+            disabled=send_disabled
         )
     with btn_col2:
         sync_btn = st.button("📋 同步历史", use_container_width=True,
@@ -1358,6 +1457,16 @@ def main():
     if st.session_state.connected and st.session_state.agent_state in ("running", "waiting_permission"):
         time.sleep(1.5)
         st.rerun()
+    elif st.session_state.connected and st.session_state.agent_state == "idle":
+        # idle 状态下短暂再刷新一次，确保最后一批事件（turn_done、permission_done）已同步
+        if st.session_state.get("_pending_idle_sync", 0) < 2:
+            st.session_state["_pending_idle_sync"] = st.session_state.get("_pending_idle_sync", 0) + 1
+            time.sleep(1.0)
+            st.rerun()
+        else:
+            st.session_state["_pending_idle_sync"] = 0
+    else:
+        st.session_state["_pending_idle_sync"] = 0
 
 
 if __name__ == "__main__" or True:
