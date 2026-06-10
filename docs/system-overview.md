@@ -47,7 +47,8 @@ src/mini_agent/
 ├── orchestrator/         ← 并发编排系统
 ├── prompts/              ← Prompt 管理
 ├── skills/               ← Skill 系统
-└── perception/           ← 感知与记忆系统
+├── perception/           ← 感知与记忆系统
+└── mcp/                  ← MCP 外部工具服务
 ```
 
 ### 2.2 顶层依赖关系
@@ -180,7 +181,24 @@ def bash(command: str, timeout: int = 30) -> str:
 工具类别：Shell、文件操作、搜索、计划管理、Sub-Agent 编排、用户交互。  
 工具是否需要审批由工具定义声明，`PermissionGuard` 在执行前决策。
 
-### 3.6 权限与沙箱（permissions.py）
+### 3.6 MCP 外部工具服务（mcp/）
+
+MCP（Model Context Protocol）支持将外部进程的工具动态注册进 `ToolRegistry`，与内置工具完全统一。
+
+| 模块 | 职责 |
+|------|------|
+| `mcp/config.py` | `MCPServerConfig` / `MCPConfig` 数据类 |
+| `mcp/transport.py` | 传输层抽象：`StdioTransport`（本地子进程）/ `SSETransport`（远程 HTTP） |
+| `mcp/manager.py` | `MCPManager`：启动时并发连接、注册工具、代理调用 |
+
+**关键设计**：
+
+- MCP 工具注册名格式 `mcp_{server}__{tool}`，归入分组 `mcp:{server_name}`，不与内置工具冲突
+- 工具调用由 `ToolExecutor` 检测名称前缀后路由到 `MCPManager.call_tool_sync()`
+- 传输层通过 `BaseTransport` 抽象，新增协议只需继承一个类
+- 单个 server 连接失败不阻断 Agent 启动
+
+详见 [MCP 集成指南](mcp-guide.md)。
 
 - `auto_approve` — 受信任环境下自动批准
 - `sandbox` — 沙箱模式阻断破坏性操作
@@ -278,6 +296,7 @@ system prompt 构建顺序：
 
 ### 3.13 HTTP API 服务（api/）
 
+### 3.11 HTTP API 服务（api/）
 
 内置 FastAPI HTTP 服务，支持通过 REST/SSE 与 agent 交互：
 
@@ -392,13 +411,24 @@ HTTP 服务通过桥接模式与 Agent 核心解耦：
 4. 补充单元测试
 5. 对有大量输出的工具，考虑配合工具结果截断或缓存策略
 
-## 9. 相关文档
+## 10. 新增 MCP 工具服务建议流程
+
+1. 在 `mcp_servers/` 创建服务脚本（任何语言均可，遵循 MCP JSON-RPC 2.0 协议）
+2. 在 `agent_config.json` 的 `mcp_servers` 数组中添加配置项
+3. 启动 Agent，观察连接日志确认工具注册成功
+4. 向 Agent 提问触发工具，验证端到端调用
+5. 如需新增传输协议，继承 `mcp/transport.py` 的 `BaseTransport` 并在 `create_transport()` 注册
+
+详见 [MCP 集成指南](mcp-guide.md)。
+
+## 11. 相关文档
 
 - [Agent 设计详解](agent-design.md) — agent.py 的核心架构、组件职责、执行流程
 - [代码结构指南](code-structure-guide.md) — 项目结构与导入规范
 - [HTTP API 指南](http-api-guide.md) — REST/SSE 服务使用指南
 - [记忆管理指南](memory-management-guide.md) — 长期记忆系统与可扩展后端
+- [MCP 集成指南](mcp-guide.md) — MCP 外部工具服务架构与配置
 
 ---
 
-*最后更新：2026-06*
+*最后更新：2026-06（新增 MCP 子系统）*

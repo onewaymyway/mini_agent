@@ -19,7 +19,8 @@ AppConfig
 ├── session:    SessionConfig           ← Session 持久化
 ├── debug:      DebugConfig             ← 调试日志
 ├── http:       HttpConfig              ← HTTP API 服务
-└── retry:      RetryConfig             ← LLM 调用重试
+├── retry:      RetryConfig             ← LLM 调用重试
+└── mcp:        MCPConfig               ← MCP 外部工具服务
 ```
 
 **设计原则**：新增功能只需新建子配置类，`AppConfig` 主体不变。
@@ -106,6 +107,44 @@ class SessionConfig:
     search_enabled: bool = False
     backend: str = "local"             # 预留扩展点
 ```
+
+### MCPConfig
+
+```python
+@dataclass
+class MCPConfig:
+    servers: list[MCPServerConfig] = field(default_factory=list)
+
+@dataclass
+class MCPServerConfig:
+    name: str                          # server 唯一标识
+    transport: str = "stdio"           # "stdio" | "sse"
+    command: str = ""                  # stdio 专用：可执行命令
+    args: list[str] = field(...)       # stdio 专用：命令行参数
+    env: dict[str, str] = field(...)   # stdio 专用：额外环境变量
+    url: str = ""                      # sse 专用：SSE endpoint
+    auto_approve: bool = False         # 此 server 所有工具免审批
+    timeout: float = 10.0             # 连接与调用超时（秒）
+    enabled: bool = True              # False 时跳过
+```
+
+`MCPConfig` 通过 `agent_config.json` 的 `mcp_servers` 数组配置（非平坦 key，使用嵌套对象数组）：
+
+```json
+{
+  "mcp_servers": [
+    {
+      "name": "time_server",
+      "transport": "stdio",
+      "command": "python",
+      "args": ["mcp_servers/time_server.py"],
+      "auto_approve": true
+    }
+  ]
+}
+```
+
+详见 [MCP 集成指南](mcp-guide.md)。
 
 ---
 
@@ -241,4 +280,11 @@ my_feature_cfg = MyFeatureConfig(
 
 ---
 
-*最后更新：2026-06（初版，反映子配置块重构）*
+## 7. 相关文档
+
+- [MCP 集成指南](mcp-guide.md) — MCP 外部工具服务的架构、配置与扩展方式
+- [系统设计概述](system-overview.md) — 整体架构与各子系统关系
+
+---
+
+*最后更新：2026-06（新增 MCPConfig 子配置块）*

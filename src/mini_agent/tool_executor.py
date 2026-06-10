@@ -54,6 +54,7 @@ class ToolExecutor:
         self.file_watcher = file_watcher
         self._pending_file_changes = file_changes_list  # 共享引用
         self._file_changes_lock = file_changes_lock
+        self._mcp_manager = None  # 由 Agent 在 _init_components 后注入
 
     def execute_all(self, response: "LLMResponse") -> tuple[list, list[str]]:
         """
@@ -84,7 +85,14 @@ class ToolExecutor:
                         self.stats.record_tool_call(tc.name, True, len(result_str))
                 else:
                     try:
-                        result = self.registry.call(tc.name, tc.input)
+                        # [SYS-MCP] MCP 工具路由：MCP 工具由 MCPManager 代理调用
+                        if (
+                            self._mcp_manager is not None
+                            and self._mcp_manager.is_mcp_tool(tc.name)
+                        ):
+                            result = self._mcp_manager.call_tool_sync(tc.name, tc.input)
+                        else:
+                            result = self.registry.call(tc.name, tc.input)
                         result_str = str(result) if not isinstance(result, str) else result
 
                         # [SYS-TRIM] 工具调用结果截断（按工具类型分策略）

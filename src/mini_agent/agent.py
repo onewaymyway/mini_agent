@@ -146,6 +146,16 @@ class Agent:
             from mini_agent.perception.memory_factory import create_both_memory_backends
             self._memory, self._global_memory = create_both_memory_backends(cfg)
 
+        # ── [SYS-MCP] MCP 工具注册 ─────────────────────────────────────────────
+        # 连接 agent_config.json 中配置的所有 MCP server，
+        # 将其工具动态注册进 ToolRegistry（group="mcp:{server_name}"）。
+        # 单个 server 连接失败不阻断启动，仅打印警告。
+        self._mcp_manager = None
+        if cfg.mcp.enabled:
+            from mini_agent.mcp import MCPManager
+            self._mcp_manager = MCPManager(cfg.mcp, global_auto_approve=cfg.auto_approve)
+            self._mcp_manager.register_all(self.registry)
+
         # 所有字段已就绪，初始化三个拆分组件（ContextBuilder / ToolExecutor / HistoryManager）
         self._init_components()
 
@@ -214,6 +224,8 @@ class Agent:
             file_changes_list=self._pending_file_changes,
             file_changes_lock=self._file_changes_lock,
         )
+        # [SYS-MCP] 注入 MCPManager（_init_components 在 MCP 注册后调用，此时已就绪）
+        self._tool_executor._mcp_manager = getattr(self, "_mcp_manager", None)
 
         # HistoryManager：接管 _history 列表，并让 self._history 指向同一对象
         self._hist = HistoryManager(cfg=self.cfg, skill_loader=self.skill_loader)

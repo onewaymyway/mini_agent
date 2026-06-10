@@ -27,10 +27,6 @@ from mini_agent.prompts import pm
 from mini_agent.storage.paths import AgentPaths
 
 
-class _InterruptedByHTTP(Exception):
-    """HTTP 端先响应，打断 CLI 的 stdin 等待。"""
-
-
 # Tools that are always safe (read-only, no side-effects)
 _SAFE_TOOLS = frozenset(
     {"read_file", "list_dir", "glob", "grep", "web_search", "create_plan", "add_task", "start_task", "complete_task", "fail_task","get_plan_status","clear_plan"}
@@ -279,14 +275,10 @@ class PermissionGuard:
                     prompt_lines=[],
                     choices=choices,
                     default="y",
-                    interrupt_event=decided_event,   # 让 confirm 在 HTTP 端响应后自动退出
                 )
             except (KeyboardInterrupt, EOFError):
                 _term.print("")
                 choice = "n"
-            except _InterruptedByHTTP:
-                # HTTP 端已先响应，退出 CLI 循环
-                break
 
             if decided_event.is_set():
                 break  # HTTP 端已先响应

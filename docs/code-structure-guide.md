@@ -46,7 +46,12 @@ mini_agent/
         ├── orchestrator/   # 并发编排
         ├── prompts/        # Prompt 管理
         ├── skills/         # Skill 系统
-        └── perception/     # 感知与记忆
+        ├── perception/     # 感知与记忆
+        └── mcp/            # MCP 外部工具服务支持
+            ├── __init__.py
+            ├── config.py   # MCPServerConfig / MCPConfig
+            ├── transport.py # 传输层（stdio / sse）
+            └── manager.py  # MCPManager（连接、注册、调用路由）
 ```
 
 ---
@@ -97,6 +102,16 @@ mini_agent/
 | `mini_agent/prompts/` | 根目录 `prompts/` |
 | `mini_agent/skills/` | 根目录 `skills/` |
 | `mini_agent/perception/` | 根目录 `perception/` |
+| `mini_agent/mcp/` | 新增 |
+
+### 2.5 项目根目录 mcp_servers/
+
+```
+mcp_servers/
+└── time_server.py    # 测试用 MCP 服务（get_current_time / calculate / echo）
+```
+
+用于存放本地 MCP 服务脚本。Agent 通过 `agent_config.json` 的 `mcp_servers` 配置以子进程方式启动它们。详见 [MCP 集成指南](mcp-guide.md)。
 
 ---
 
@@ -189,4 +204,4 @@ from mini_agent.orchestrator.task import Task, TaskStatus
 
 ---
 
-*最后更新：2026-06*
+*最后更新：2026-06（新增 mcp/ 子包与 mcp_servers/ 说明）*

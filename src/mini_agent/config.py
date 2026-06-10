@@ -28,6 +28,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
 
+from mini_agent.mcp.config import MCPConfig, MCPServerConfig
+
 
 # ── Defaults ──────────────────────────────────────────────────────────────────
 DEFAULT_MODEL      = "claude-opus-4-5"
@@ -241,6 +243,7 @@ class AppConfig:
     debug:      DebugConfig      = field(default_factory=DebugConfig)
     http:       HttpConfig       = field(default_factory=HttpConfig)
     retry:      RetryConfig      = field(default_factory=RetryConfig)
+    mcp:        MCPConfig        = field(default_factory=MCPConfig)
 
     # ── 向后兼容属性（让旧代码 cfg.memory_enabled 不报错）────────────────────
     # 以下属性委托给子配置块，方便渐进式迁移，后续版本可删除
@@ -557,6 +560,25 @@ def load_config(
         )
         init_debug_logger(_dcfg, root)
 
+    # ── MCP server 配置解析 ───────────────────────────────────────────────────
+    mcp_servers_raw: list[dict] = file_cfg.get("mcp_servers", [])
+    mcp_server_list: list[MCPServerConfig] = []
+    for raw in mcp_servers_raw:
+        if not isinstance(raw, dict):
+            continue
+        mcp_server_list.append(MCPServerConfig(
+            name=raw.get("name", "unnamed"),
+            transport=raw.get("transport", "stdio"),
+            command=raw.get("command", ""),
+            args=raw.get("args", []),
+            env=raw.get("env", {}),
+            url=raw.get("url", ""),
+            auto_approve=bool(raw.get("auto_approve", False)),
+            timeout=float(raw.get("timeout", 10.0)),
+            enabled=bool(raw.get("enabled", True)),
+        ))
+    mcp_cfg = MCPConfig(servers=mcp_server_list)
+
     return AppConfig(
         api_key=api_key,
         model=_model,
@@ -584,6 +606,7 @@ def load_config(
         debug=debug_cfg,
         http=http_cfg,
         retry=retry_cfg,
+        mcp=mcp_cfg,
     )
 
 

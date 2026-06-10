@@ -3,5 +3,17 @@
   "provider": "nvidia",
   "system_message_format": "system_role",
   "verbose": true,
-  "max_llm_calls": 4
+  "max_llm_calls": 4,
+
+  "mcp_servers": [
+    {
+      "name": "time_server",
+      "transport": "stdio",
+      "command": "python",
+      "args": ["mcp_servers/time_server.py"],
+      "auto_approve": true,
+      "timeout": 10.0,
+      "enabled": true
+    }
+  ]
 }
