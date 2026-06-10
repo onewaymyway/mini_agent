@@ -11,6 +11,8 @@
 - `src/mini_agent/tools/__init__.py` — 工具注册表和 `@tool` 装饰器
 - `src/mini_agent/tools/builtin.py` — 内置工具（bash、文件 I/O、搜索）
 - `src/mini_agent/tools/orchestration.py` — 并发编排工具
+- `src/mini_agent/tools/skill_manager.py` — 技能管理工具
+- `src/mini_agent/mcp/` — MCP（Model Context Protocol）支持
 - `src/mini_agent/skills/__init__.py` — 技能发现和加载
 - `src/mini_agent/cli/app.py` — CLI 应用入口
 - `src/mini_agent/cli/parser.py` — 参数解析
@@ -87,6 +89,13 @@ python main.py --provider nvidia --model qwen/qwen3.5-122b-a10b --system-tool-ca
 - `builtin.py` — 内置工具（读/写文件、bash、grep、glob 等）
 - `orchestration.py` — 并发编排工具（spawn_agent, task 管理）
 - `skill_manager.py` — 技能管理工具（skill_list, skill_activate 等）
+
+### MCP 支持 (`src/mini_agent/mcp/`)
+
+- `__init__.py` — 公开接口导出
+- `config.py` — MCPConfig / MCPServerConfig 数据类
+- `transport.py` — BaseTransport / StdioTransport / SSETransport
+- `manager.py` — MCPManager（连接、注册、调用路由）
 
 ### 并发编排 (`src/mini_agent/orchestrator/`)
 

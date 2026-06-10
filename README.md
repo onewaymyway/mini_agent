@@ -19,6 +19,7 @@
 | 🧠 感知与记忆 | 项目扫描、文件监视、工具缓存、跨 session 长期记忆 |
 | 🌐 HTTP API | 内置 REST/SSE 服务，支持外部程序通过 HTTP 与 agent 交互 |
 | 🖥️ Web Demo | Streamlit 图形界面，提供浏览器操作的对话界面 |
+| 🔌 MCP 支持 | Model Context Protocol 集成，支持 stdio/SSE 传输，可扩展外部工具服务 |
 
 ## 快速开始
 
@@ -93,6 +94,130 @@ python main.py --provider nvidia --model qwen/qwen3.5-122b-a10b --system-tool-ca
 | `--http-allow-ip` | 允许的 IP 地址列表 |
 | `--http-fs-readonly` | 文件系统只读模式 |
 | `--http-ring-maxlen` | 事件环缓冲区大小 |
+
+## MCP 集成
+
+mini-agent 支持 [Model Context Protocol (MCP)](https://modelcontextprotocol.io/)，允许通过标准化协议连接外部工具服务。
+
+### 快速开始
+
+1. 安装 MCP SDK：
+
+```bash
+pip install mcp
+```
+
+2. 配置 `agent_config.json`（已预配置 time_server）：
+
+```json
+{
+  "mcp_servers": [
+    {
+      "name": "time_server",
+      "transport": "stdio",
+      "command": "python",
+      "args": ["mcp_servers/time_server.py"],
+      "auto_approve": true
+    }
+  ]
+}
+```
+
+3. 启动 Agent，会自动连接 MCP server：
+
+```bash
+python -m mini_agent
+```
+
+启动后会显示：
+```
+[mcp] Connected: 'time_server' (3 tools: get_current_time, calculate, echo)
+```
+
+### 可用 MCP 工具
+
+| 工具 | 描述 |
+|------|------|
+| `get_current_time(timezone?)` | 获取当前时间，支持 IANA 时区（如 Asia/Shanghai） |
+| `calculate(expression)` | 安全计算数学表达式（四则运算、sqrt、log、sin 等） |
+| `echo(message)` | 原样返回消息，用于测试连通性 |
+
+### 配置选项
+
+| 字段 | 说明 |
+|------|------|
+| `name` | Server 唯一标识 |
+| `transport` | `"stdio"` 或 `"sse"` |
+| `command`/`args` | stdio 模式的命令和参数 |
+| `url` | SSE 模式的 endpoint |
+| `auto_approve` | 是否免审批 |
+| `timeout` | 连接与调用超时（秒） |
+
+详细文档参见 [MCP 使用指南](docs/mcp-guide.md)。
+
+## REPL 命令
+
+## MCP 集成
+
+mini-agent 支持 [Model Context Protocol (MCP)](https://modelcontextprotocol.io/)，允许通过标准化协议连接外部工具服务。
+
+### 快速开始
+
+1. 安装 MCP SDK：
+
+```bash
+pip install mcp
+```
+
+2. 配置 `agent_config.json`（已预配置 time_server）：
+
+```json
+{
+  "mcp_servers": [
+    {
+      "name": "time_server",
+      "transport": "stdio",
+      "command": "python",
+      "args": ["mcp_servers/time_server.py"],
+      "auto_approve": true
+    }
+  ]
+}
+```
+
+3. 启动 Agent，会自动连接 MCP server：
+
+```bash
+python -m mini_agent
+```
+
+启动后会显示：
+```
+[mcp] Connected: 'time_server' (3 tools: get_current_time, calculate, echo)
+```
+
+### 可用 MCP 工具
+
+| 工具 | 描述 |
+|------|------|
+| `get_current_time(timezone?)` | 获取当前时间，支持 IANA 时区（如 Asia/Shanghai） |
+| `calculate(expression)` | 安全计算数学表达式（四则运算、sqrt、log、sin 等） |
+| `echo(message)` | 原样返回消息，用于测试连通性 |
+
+### 配置选项
+
+| 字段 | 说明 |
+|------|------|
+| `name` | Server 唯一标识 |
+| `transport` | `"stdio"` 或 `"sse"` |
+| `command`/`args` | stdio 模式的命令和参数 |
+| `url` | SSE 模式的 endpoint |
+| `auto_approve` | 是否免审批 |
+| `timeout` | 连接与调用超时（秒） |
+
+详细文档参见 [MCP 使用指南](docs/mcp-guide.md)。
+
+## REPL 命令
 
 ## Web Demo
 
@@ -250,7 +375,8 @@ mini_agent/
 ├── skills/                  # 技能定义
 ├── tests/                   # 单元测试
 ├── docs/                    # 文档
-└── sessions/                # 会话历史（生成）
+├── sessions/                # 会话历史（生成）
+└── mcp_servers/             # MCP 服务器示例
 ```
 
 ## 架构设计
@@ -359,6 +485,7 @@ python -m pytest tests/ -q
 - [代码结构指南](docs/code-structure-guide.md) — 项目结构说明
 - [HTTP API 指南](docs/http-api-guide.md) — REST/SSE 服务使用指南
 - [Web Demo 指南](docs/web-demo-guide.md) — Streamlit Web 界面使用
+- [MCP 集成指南](docs/mcp-guide.md) — Model Context Protocol 集成
 
 ## 许可证
 
@@ -370,4 +497,4 @@ MIT License
 
 ---
 
-*最后更新：2026-06-10* — Web Demo 权限审批优化、内联实时面板、快捷指令支持
+*最后更新：2026-06-10* — MCP 支持新增（time_server 演示）、Web Demo 权限审批优化
