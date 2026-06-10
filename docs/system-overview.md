@@ -278,7 +278,6 @@ system prompt 构建顺序：
 
 ### 3.13 HTTP API 服务（api/）
 
-### 3.11 HTTP API 服务（api/）
 
 内置 FastAPI HTTP 服务，支持通过 REST/SSE 与 agent 交互：
 
