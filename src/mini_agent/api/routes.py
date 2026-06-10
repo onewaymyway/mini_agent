@@ -301,23 +301,27 @@ async def list_pending_permissions(request: Request):
 async def respond_permission(request: Request, req_id: str, body: PermissionRequest):
     bridge = _bridge(request)
     gate   = bridge.permission_gate
-    ok     = gate.respond(req_id, body.approve, body.edited_input)
+
+    # 在 respond 前先取出 turn_id（respond 后 pending 会被移除）
+    with gate._lock:
+        pending_info = gate._pending.get(req_id)
+        turn_id = pending_info.turn_id if pending_info else ""
+
+    ok = gate.respond(req_id, body.approve, body.edited_input)
     if not ok:
         raise HTTPException(
             status_code=404,
             detail=f"Permission request {req_id!r} not found or already handled",
         )
 
+    # 修复：Web 端批准/拒绝后广播 permission_done 事件，并更新 bridge 状态
+    # （CLI 端走 broadcast_done 路径；Web 端 respond() 只设置 event，不广播，需要在此补上）
+    gate.broadcast_done(req_id, body.approve, "http", turn_id)
+
     # 处理 always / deny_always 模式：把决定写入权限白/黑名单
     if body.mode in ("always", "deny_always"):
-        # 找到对应的 pending 记录（respond 已经弹出，但 gate 广播前我们能在 bridge 上拿到）
-        # 因为 respond() 时 pending 已被移除，从 gate 的最近广播事件里取 tool_name/input
-        # 更简单：在 gate.respond 里保留信息，这里从 bridge.checker 操作白黑名单
         checker = getattr(bridge, "permission_checker", None)
         if checker is not None:
-            # pending 已移除；tool_name/input 只能从 SSE 历史取，或由客户端传来
-            # 实际上我们让客户端 POST 时附带 tool_name（可选扩展），
-            # 目前先记录日志，让 CLI 端的 always/deny 继续负责持久白黑名单
             pass
     return PermissionResponse(ok=True)
 

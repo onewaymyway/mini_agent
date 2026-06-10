@@ -275,8 +275,15 @@ class PermissionGuard:
                     prompt_lines=[],
                     choices=choices,
                     default="y",
+                    interrupt_event=decided_event,   # 修复：HTTP先响应时可中断readline，避免stdout冲突
                 )
             except (KeyboardInterrupt, EOFError):
+                _term.print("")
+                choice = "n"
+            except Exception as _e:
+                # _InterruptedByHTTP 或其他中断：HTTP端已先决定，退出循环
+                if decided_event.is_set():
+                    break
                 _term.print("")
                 choice = "n"
 

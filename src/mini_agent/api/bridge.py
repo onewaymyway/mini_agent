@@ -245,6 +245,7 @@ class HttpPermissionGate:
         self._pending: dict[str, _PendingPermission] = {}
         self._lock = threading.Lock()
         self._timeout = 120.0   # 2 分钟无响应视为拒绝
+        self._bridge_state_setter = None  # 可选回调：broadcast_done 后更新 bridge 状态
 
     def request(
         self,
@@ -338,12 +339,25 @@ class HttpPermissionGate:
         reason: str,
         turn_id: str = "",
     ) -> None:
-        """广播权限审批结果事件给所有 SSE 客户端。"""
+        """广播权限审批结果事件给所有 SSE 客户端，并将 bridge 状态更新为 running。
+        幂等：同一 req_id 只广播一次，防止 CLI 路径和 HTTP 路径双重触发。
+        """
+        with self._lock:
+            if not hasattr(self, "_broadcast_done_ids"):
+                self._broadcast_done_ids: set = set()
+            if req_id in self._broadcast_done_ids:
+                return
+            self._broadcast_done_ids.add(req_id)
+
         self._broadcaster.push(AgentEvent(
             type=EventType.PERMISSION_DONE,
             turn_id=turn_id,
             data={"req_id": req_id, "approved": approved, "reason": reason},
         ))
+        # 修复：权限决定后立即把 bridge 状态从 waiting_permission 改回 running，
+        # 这样 /v1/status 轮询就能返回正确状态，Web 端权限面板才会消失
+        if self._bridge_state_setter is not None:
+            self._bridge_state_setter("running")
 
     def respond(
         self,
@@ -388,6 +402,9 @@ class AgentBridge:
         self.input_queue = InputQueue()
         self.permission_gate = HttpPermissionGate(self.broadcaster)
 
+        # 注入状态更新回调：权限审批完成时 gate 可以直接更新 bridge 状态
+        self.permission_gate._bridge_state_setter = self._set_state_from_gate
+
         # 当前运行状态
         self._state:        str = "idle"   # "idle" | "running" | "waiting_permission"
         self._current_turn: Optional[str] = None
@@ -396,6 +413,12 @@ class AgentBridge:
 
         # 注入后由外部赋值
         self.agent: Any = None   # mini_agent.agent.Agent
+
+    def _set_state_from_gate(self, new_state: str) -> None:
+        """由 permission_gate 在权限决定后回调，将状态从 waiting_permission 改回 running。"""
+        with self._state_lock:
+            if self._state == "waiting_permission":
+                self._state = new_state
 
     # ── 状态管理 ──────────────────────────────────────────────────────────
 

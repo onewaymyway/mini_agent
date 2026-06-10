@@ -46,6 +46,62 @@ def _print_to_term(markup: str) -> None:
         pass
 
 
+def _inject_permission_state_hook(bridge: AgentBridge, agent: Any) -> None:
+    """
+    向 agent 的 PermissionGuard 注入状态钩子：
+    - 进入权限等待时：bridge._state = "waiting_permission"
+    - 权限决定后（已由 broadcast_done 回调处理）：bridge._state = "running"
+
+    PermissionGuard._prompt_with_http 调用 http_gate.register_pending()，
+    后者通过 broadcaster 推送 permission_req 事件，但 bridge._state 没有变化。
+    这里 patch PermissionGuard.check()，在其进入等待前设置状态。
+    """
+    try:
+        guard = getattr(agent, "permission_guard", None)
+        if guard is None:
+            # 尝试其他常见属性名
+            guard = getattr(agent, "_permission_guard", None) or \
+                    getattr(agent, "permissions", None)
+        if guard is None:
+            return
+
+        # 避免重复 patch
+        if getattr(guard, "_bridge_hooked", False):
+            return
+        guard._bridge_hooked = True
+
+        _orig_check = guard.check
+
+        def _hooked_check(tool_name: str, tool_input: dict) -> bool:
+            # 在调用原始 check 前后设置 bridge 状态
+            # check() 内部如果需要用户审批，会阻塞线程
+            # 我们需要在阻塞前设置 waiting_permission，阻塞结束后改回 running
+            from mini_agent.permissions import _SAFE_TOOLS
+            needs_prompt = (
+                not guard.auto_approve
+                and tool_name not in _SAFE_TOOLS
+                and tool_name not in guard._denied_tools
+                and not guard._is_allowed(tool_name, tool_input)
+            )
+            if needs_prompt:
+                bridge.set_state("waiting_permission")
+
+            try:
+                result = _orig_check(tool_name, tool_input)
+            finally:
+                # 权限决定后恢复 running（broadcast_done 回调也会做，此处作为兜底）
+                with bridge._state_lock:
+                    if bridge._state == "waiting_permission":
+                        bridge._state = "running"
+
+            return result
+
+        guard.check = _hooked_check
+
+    except Exception as e:
+        _print_to_term(f"[yellow]⚠ permission hook failed: {e}[/yellow]")
+
+
 # ── AgentRunner ───────────────────────────────────────────────────────────────
 
 class AgentRunner(threading.Thread):
@@ -91,6 +147,10 @@ class AgentRunner(threading.Thread):
 
                 # 注入 turn_id，让 OutputHook 知道当前轮
                 bridge.agent._http_turn_id = turn_id
+
+                # 注入权限状态回调：当 PermissionGuard 进入等待时设置 bridge 状态
+                # 这样 /v1/status 才能返回 waiting_permission，web 端才能显示权限面板
+                _inject_permission_state_hook(bridge, bridge.agent)
 
                 result = bridge.agent.run_turn(cmd.message)
 
@@ -289,82 +349,71 @@ class HttpServer:
 
 def _install_output_hook(bridge: AgentBridge) -> None:
     """
-    Monkey-patch mini_agent.ui.renderer.Renderer 的输出方法，
-    在原有终端输出的同时，把内容推入 bridge 广播给 HTTP 客户端。
+    Monkey-patch mini_agent.ui.renderer 模块的输出函数，
+    在原有终端输出的同时把内容推入 bridge 广播给 HTTP 客户端。
 
-    这样 agent.py 本身无需任何改动。
+    renderer.py 里全部是模块级函数（print_tool_call / print_tool_result / …），
+    没有 R 类实例。必须直接 patch 模块属性，而不是 patch 类方法。
+
+    同时 patch StreamWriter.write() 拦截流式 token。
     """
     try:
-        from mini_agent.ui import renderer as _renderer_mod
-        R = _renderer_mod.R   # 全局 Renderer 单例
-    except Exception:
+        from mini_agent.ui import renderer as mod
+    except Exception as e:
+        _print_to_term(f"[yellow]⚠ output hook import failed: {e}[/yellow]")
         return
 
-    # ── print_markdown（非流式模式下 assistant 最终回复走这里）────────────────
-    _orig_print_markdown = getattr(_renderer_mod, "print_markdown", None)
-    if _orig_print_markdown:
-        def _patched_print_markdown(md: str) -> None:
-            _orig_print_markdown(md)
-            turn_id = getattr(bridge.agent, "_http_turn_id", "")
-            # 把整段 markdown 作为一个 token 事件推出，让 HTTP 客户端能收到完整文本
-            bridge.emit_token(md, turn_id=turn_id)
-        _renderer_mod.print_markdown = _patched_print_markdown
+    def _tid() -> str:
+        return getattr(bridge.agent, "_http_turn_id", "") if bridge.agent else ""
 
-    # ── stream token ──────────────────────────────────────────────────────
-    _orig_stream_token = R.__class__.stream_token if hasattr(R.__class__, 'stream_token') else None
+    # ── print_markdown（非流式回复的最终文本走这里）──────────────────────
+    _orig_print_markdown = mod.print_markdown
+    def _print_markdown(md: str) -> None:
+        _orig_print_markdown(md)
+        bridge.emit_token(md, turn_id=_tid())
+    mod.print_markdown = _print_markdown
 
-    # 通过 StreamWriter 拦截流式 token
-    _OrigStreamWriter = getattr(R, "StreamWriter", None)
-    if _OrigStreamWriter is not None:
-        class _PatchedStreamWriter(_OrigStreamWriter):  # type: ignore[valid-type]
-            def write(self, text: str) -> None:
-                super().write(text)
-                turn_id = getattr(bridge.agent, "_http_turn_id", "")
-                bridge.emit_token(text, turn_id=turn_id)
+    # ── StreamWriter.write（流式 token）──────────────────────────────────
+    _OrigStreamWriter = mod.StreamWriter
+    class _PatchedStreamWriter(_OrigStreamWriter):
+        def write(self, token: str) -> None:
+            super().write(token)
+            bridge.emit_token(token, turn_id=_tid())
+    mod.StreamWriter = _PatchedStreamWriter
 
-        R.__class__.StreamWriter = _PatchedStreamWriter
+    # ── print_tool_call ───────────────────────────────────────────────────
+    _orig_print_tool_call = mod.print_tool_call
+    def _print_tool_call(tool_name: str, tool_input: dict, **kw) -> None:
+        _orig_print_tool_call(tool_name, tool_input, **kw)
+        bridge.emit_tool_call(tool_name, tool_input, turn_id=_tid())
+    mod.print_tool_call = _print_tool_call
 
-    # ── tool call ─────────────────────────────────────────────────────────
-    _orig_print_tool_call = getattr(R.__class__, "print_tool_call", None)
-    if _orig_print_tool_call:
-        def _patched_print_tool_call(self, name, inp, **kw):
-            _orig_print_tool_call(self, name, inp, **kw)
-            turn_id = getattr(bridge.agent, "_http_turn_id", "")
-            bridge.emit_tool_call(name, inp, turn_id=turn_id)
-        R.__class__.print_tool_call = _patched_print_tool_call
+    # ── print_tool_result ─────────────────────────────────────────────────
+    _orig_print_tool_result = mod.print_tool_result
+    def _print_tool_result(tool_name: str, result: str, **kw) -> None:
+        _orig_print_tool_result(tool_name, result, **kw)
+        bridge.emit_tool_result(tool_name, str(result), turn_id=_tid())
+    mod.print_tool_result = _print_tool_result
 
-    # ── tool result ───────────────────────────────────────────────────────
-    _orig_print_tool_result = getattr(R.__class__, "print_tool_result", None)
-    if _orig_print_tool_result:
-        def _patched_print_tool_result(self, name, result, **kw):
-            _orig_print_tool_result(self, name, result, **kw)
-            turn_id = getattr(bridge.agent, "_http_turn_id", "")
-            bridge.emit_tool_result(name, str(result), turn_id=turn_id)
-        R.__class__.print_tool_result = _patched_print_tool_result
-
-    # ── tool error ────────────────────────────────────────────────────────
-    _orig_print_tool_error = getattr(R.__class__, "print_tool_error", None)
-    if _orig_print_tool_error:
-        def _patched_print_tool_error(self, name, msg, **kw):
-            _orig_print_tool_error(self, name, msg, **kw)
-            turn_id = getattr(bridge.agent, "_http_turn_id", "")
-            bridge.emit(AgentEvent(
-                type=EventType.TOOL_ERROR,
-                turn_id=turn_id,
-                data={"tool_name": name, "message": str(msg)},
-            ))
-        R.__class__.print_tool_error = _patched_print_tool_error
+    # ── print_tool_error ──────────────────────────────────────────────────
+    _orig_print_tool_error = mod.print_tool_error
+    def _print_tool_error(tool_name: str, error: str, **kw) -> None:
+        _orig_print_tool_error(tool_name, error, **kw)
+        bridge.emit(AgentEvent(
+            type=EventType.TOOL_ERROR,
+            turn_id=_tid(),
+            data={"tool_name": tool_name, "message": str(error)},
+        ))
+    mod.print_tool_error = _print_tool_error
 
     # ── print_info / print_warning ────────────────────────────────────────
-    for method_name, evt_type in [
-        ("print_info",    EventType.INFO),
-        ("print_warning", EventType.WARNING),
-    ]:
-        _orig = getattr(R.__class__, method_name, None)
-        if _orig:
-            def _make_patched(orig, etype):
-                def _patched(self, msg, **kw):
-                    orig(self, msg, **kw)
-                    bridge.emit(AgentEvent(type=etype, data={"message": str(msg)}))
-                return _patched
-            setattr(R.__class__, method_name, _make_patched(_orig, evt_type))
+    for _fname, _etype in [("print_info", EventType.INFO), ("print_warning", EventType.WARNING)]:
+        _orig = getattr(mod, _fname)
+        def _make(orig, etype):
+            def _patched(msg: str, **kw) -> None:
+                orig(msg, **kw)
+                bridge.emit(AgentEvent(type=etype, data={"message": str(msg)}))
+            return _patched
+        setattr(mod, _fname, _make(_orig, _etype))
+
+    _print_to_term("[dim]✓ HTTP output hook installed[/dim]")

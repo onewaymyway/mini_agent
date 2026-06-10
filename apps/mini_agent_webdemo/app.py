@@ -660,10 +660,14 @@ def _sync_events():
     s = client.status()
     if s:
         new_state = s.get("state", st.session_state.agent_state)
-        # 若本地已知是 waiting_permission，而后端返回 running（双路审批时后端仍是running），
-        # 保留本地状态，避免覆盖导致权限面板消失
+        # 关键保护：bridge._state 在权限等待结束后立刻被设回 running，
+        # 但 web 端可能在同一次 rerun 内先处理了 permission_req 事件（把本地设为 waiting_permission），
+        # 再拉 status（此时 bridge 可能已经是 waiting_permission 或 running）。
+        # 规则：
+        #   本地 waiting_permission + 后端 running  → 保留 waiting_permission（等 permission_done 事件来清除）
+        #   本地 running             + 后端 waiting_permission → 直接跟随后端（可信）
         if st.session_state.agent_state == "waiting_permission" and new_state == "running":
-            new_state = "waiting_permission"
+            new_state = "waiting_permission"  # 保留，等 permission_done 事件
         if new_state != st.session_state.agent_state:
             st.session_state.debug_log.append(
                 f"[{_ts()}] state: {st.session_state.agent_state} -> {new_state}"
@@ -695,7 +699,20 @@ def _sync_events():
 
         etype = evt.get("type", "")
 
-        if etype == "token":
+        if etype == "turn_start":
+            # 修复：turn_start 携带用户输入，添加到对话面板（避免页面刷新后消失）
+            msg_text = evt.get("message", evt.get("input", ""))
+            if msg_text:
+                last_user = next(
+                    (m for m in reversed(st.session_state.messages)
+                     if m.get("role") == "user"), None
+                )
+                if not last_user or last_user.get("content", "").strip() != msg_text.strip():
+                    st.session_state.messages.append({
+                        "role": "user", "content": msg_text, "time": _ts()
+                    })
+
+        elif etype == "token":
             text = evt.get("text", "")
             if text:
                 last_stream = next(
@@ -709,6 +726,38 @@ def _sync_events():
                         "role": "streaming", "content": text,
                         "time": _ts()
                     })
+
+        elif etype == "tool_call":
+            # 修复：工具调用显示到对话面板
+            tool_name  = evt.get("tool_name", evt.get("name", "unknown"))
+            tool_input = evt.get("tool_input", evt.get("input", {}))
+            st.session_state.messages.append({
+                "role": "tool_call",
+                "tool_name": tool_name,
+                "tool_input": tool_input,
+                "time": _ts(),
+            })
+
+        elif etype == "tool_result":
+            # 修复：工具结果显示到对话面板
+            tool_name   = evt.get("tool_name", evt.get("name", "unknown"))
+            result_text = evt.get("result", evt.get("output", ""))
+            st.session_state.messages.append({
+                "role": "tool_result",
+                "tool_name": tool_name,
+                "content": str(result_text)[:1000],
+                "time": _ts(),
+            })
+
+        elif etype == "tool_error":
+            tool_name = evt.get("tool_name", "unknown")
+            err_msg   = evt.get("message", "")
+            st.session_state.messages.append({
+                "role": "tool_error",
+                "tool_name": tool_name,
+                "content": err_msg,
+                "time": _ts(),
+            })
 
         elif etype == "turn_done":
             # 清除所有 streaming 中间态（零散 token 片段）
@@ -773,7 +822,8 @@ def _sync_events():
                 if m.get("role") == "permission" and m.get("req_id") == req_id:
                     m["approved"] = approved_flag
                     m["reason"]   = reason
-            # 权限审批完成后，agent 继续运行
+            # 修复：收到 permission_done 后本地状态改为 running
+            # bridge 侧也已修复，/v1/status 将同步返回 running，下次轮询不会再覆盖回来
             if st.session_state.agent_state == "waiting_permission":
                 st.session_state.agent_state = "running"
                 st.session_state.debug_log.append(f"[{_ts()}] permission_done -> running")
@@ -1097,6 +1147,36 @@ animation:pulse 1s infinite;vertical-align:text-bottom;margin-left:2px">▊</spa
 <div class="permission-title">🔐 权限请求: {tool_name}</div>
 <div class="permission-content">{input_preview}</div>
 {status_html}
+<div class="msg-time">{time_str}</div>
+</div>""", unsafe_allow_html=True)
+
+            elif role == "tool_call":
+                # 修复：工具调用渲染
+                tool_name  = msg.get("tool_name", "unknown")
+                tool_input = msg.get("tool_input", {})
+                args_str   = json.dumps(tool_input, ensure_ascii=False, indent=2)[:400]
+                st.markdown(f"""<div class="tool-box">
+<div class="tool-name">🔧 工具调用: {tool_name}</div>
+<pre style="margin:4px 0 0;font-size:11px;color:#ccc;white-space:pre-wrap">{args_str}</pre>
+<div class="msg-time">{time_str}</div>
+</div>""", unsafe_allow_html=True)
+
+            elif role == "tool_result":
+                # 修复：工具结果渲染
+                tool_name = msg.get("tool_name", "unknown")
+                content   = msg.get("content", "")
+                st.markdown(f"""<div class="tool-box" style="border-color:#2D4A2D">
+<div style="color:#81C784;font-size:11px;font-weight:bold">✅ 工具结果: {tool_name}</div>
+<pre style="margin:4px 0 0;font-size:11px;color:#aaa;white-space:pre-wrap">{content}</pre>
+<div class="msg-time">{time_str}</div>
+</div>""", unsafe_allow_html=True)
+
+            elif role == "tool_error":
+                tool_name = msg.get("tool_name", "unknown")
+                content   = msg.get("content", "")
+                st.markdown(f"""<div class="tool-box" style="border-color:#4A2D2D">
+<div style="color:#E57373;font-size:11px;font-weight:bold">❌ 工具错误: {tool_name}</div>
+<pre style="margin:4px 0 0;font-size:11px;color:#aaa;white-space:pre-wrap">{content}</pre>
 <div class="msg-time">{time_str}</div>
 </div>""", unsafe_allow_html=True)
 
