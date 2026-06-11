@@ -113,12 +113,19 @@ def inject_styles():
 
 /* ── 工具调用 ── */
 .tool-box {
-    background: #1A1500; border: 1px solid #3D3000;
+    background: #1C1600 !important; border: 1px solid #5C4800 !important;
     border-radius: 8px; padding: 10px; margin: 6px 0;
     font-family: monospace; font-size: 12px;
 }
-.tool-name { color: #FFB74D; font-weight: bold; margin-bottom: 6px; }
-.tool-box pre { color: #E0E0E0 !important; }  /* 工具框内 pre 文字强制亮色 */
+.tool-name { color: #FFD54F !important; font-weight: bold; margin-bottom: 6px; }
+.tool-box pre, .tool-box code {
+    color: #F5F5F5 !important;   /* 强制亮白，Streamlit不会覆盖 */
+    background: transparent !important;
+    white-space: pre-wrap !important;
+    word-break: break-all;
+    margin: 4px 0 0 !important;
+    font-size: 11px !important;
+}
 
 /* ── 侧栏分节 ── */
 .sidebar-section {
@@ -1056,8 +1063,13 @@ def render_sidebar():
             col1, col2 = st.columns(2)
             with col1:
                 st.metric("总轮次", s.get("total_turns", 0))
+                st.metric("工具调用", s.get("tool_calls", 0))
             with col2:
-                st.metric("Token", f"{s.get('total_tokens', 0):,}")
+                total_tok = s.get("total_tokens", 0)
+                st.metric("Token", f"{total_tok:,}" if total_tok else "0")
+                elapsed = s.get("elapsed", "")
+                if elapsed:
+                    st.metric("耗时", elapsed)
 
         # 视图开关
         st.markdown('<div class="sidebar-section">视图</div>', unsafe_allow_html=True)
@@ -1190,32 +1202,35 @@ animation:pulse 1s infinite;vertical-align:text-bottom;margin-left:2px">▊</spa
 <span style="float:right;font-size:10px;color:#444">{time_str}</span></div>""", unsafe_allow_html=True)
 
             elif role == "tool_call":
-                # 修复：工具调用渲染
                 tool_name  = msg.get("tool_name", "unknown")
                 tool_input = msg.get("tool_input", {})
-                args_str   = json.dumps(tool_input, ensure_ascii=False, indent=2)[:400]
+                import html as _html
+                args_str = _html.escape(json.dumps(tool_input, ensure_ascii=False, indent=2)[:600])
                 st.markdown(f"""<div class="tool-box">
 <div class="tool-name">🔧 工具调用: {tool_name}</div>
-<pre style="margin:4px 0 0;font-size:11px;color:#E0E0E0;white-space:pre-wrap">{args_str}</pre>
+<pre style="margin:4px 0 0 !important;font-size:11px !important;color:#F5F5F5 !important;white-space:pre-wrap !important;background:transparent !important">{args_str}</pre>
 <div class="msg-time">{time_str}</div>
 </div>""", unsafe_allow_html=True)
 
             elif role == "tool_result":
-                # 修复：工具结果渲染
                 tool_name = msg.get("tool_name", "unknown")
                 content   = msg.get("content", "")
-                st.markdown(f"""<div class="tool-box" style="border-color:#2D4A2D;background:#0D1A0D">
-<div style="color:#81C784;font-size:11px;font-weight:bold">✅ 工具结果: {tool_name}</div>
-<pre style="margin:4px 0 0;font-size:11px;color:#C8E6C9;white-space:pre-wrap">{content}</pre>
+                import html as _html
+                content_escaped = _html.escape(content)
+                st.markdown(f"""<div class="tool-box" style="border-color:#3A6B3A !important;background:#0A1A0A !important">
+<div style="color:#69F07A !important;font-size:11px !important;font-weight:bold !important">✅ 工具结果: {tool_name}</div>
+<pre style="margin:4px 0 0 !important;font-size:11px !important;color:#D4F1D4 !important;white-space:pre-wrap !important;background:transparent !important">{content_escaped}</pre>
 <div class="msg-time">{time_str}</div>
 </div>""", unsafe_allow_html=True)
 
             elif role == "tool_error":
                 tool_name = msg.get("tool_name", "unknown")
                 content   = msg.get("content", "")
-                st.markdown(f"""<div class="tool-box" style="border-color:#4A2D2D;background:#1A0D0D">
-<div style="color:#E57373;font-size:11px;font-weight:bold">❌ 工具错误: {tool_name}</div>
-<pre style="margin:4px 0 0;font-size:11px;color:#FFCDD2;white-space:pre-wrap">{content}</pre>
+                import html as _html
+                content_escaped = _html.escape(content)
+                st.markdown(f"""<div class="tool-box" style="border-color:#8B3A3A !important;background:#1A0808 !important">
+<div style="color:#FF6B6B !important;font-size:11px !important;font-weight:bold !important">❌ 工具错误: {tool_name}</div>
+<pre style="margin:4px 0 0 !important;font-size:11px !important;color:#FFCCCC !important;white-space:pre-wrap !important;background:transparent !important">{content_escaped}</pre>
 <div class="msg-time">{time_str}</div>
 </div>""", unsafe_allow_html=True)
 
