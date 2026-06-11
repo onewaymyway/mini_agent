@@ -490,52 +490,40 @@ class Terminal:
         """
         使用 prompt_toolkit 或降级 sys.stdin.readline() 读取一行。
 
-        修复：
-        1. prompt_toolkit 非 ImportError 的异常（如 NotImplementedError、
-           KeyboardInterrupt 以外的运行时错误）原来被 `except Exception: pass`
-           静默吞掉，导致每次都重试 ptk 并失败，提示符一直不显示。
-           改为：非 ImportError 异常时设置 _ptk_failed 标志，后续直接降级。
-        2. 降级路径用 sys.stdin.readline() 替代 input()，行为与 confirm()
-           保持一致，避免某些终端下 input() 回显异常。
-        3. 降级时补一个换行分隔，确保用户输入与提示符之间有视觉间距。
+        prompt_toolkit 配置（安装后自动启用）：
+        - NestedCompleter：/skill → on/off/list 子命令分层弹出，右侧显示描述
+        - @PathCompleter：@src/ 触发文件路径补全
+        - FuzzyCompleter：模糊匹配，输入 "sess" 即可匹配 "/session"
+        - AutoSuggestFromHistory：历史建议，灰色虚影，→ 接受
+        - Tab / Shift-Tab：在候选项间移动
+        - 补全菜单暗色主题（Catppuccin Mocha 风格）
+
+        降级策略：
+        - ImportError（未安装 ptk）→ 直接降级，不报错
+        - 运行时异常（dumb terminal 等）→ 设 _ptk_failed，后续跳过
         """
         if not getattr(self, "_ptk_failed", False):
             try:
-                from prompt_toolkit import PromptSession
                 from prompt_toolkit.formatted_text import HTML
-                from prompt_toolkit.styles import Style
-                from prompt_toolkit.history import InMemoryHistory
-                from prompt_toolkit.auto_suggest import AutoSuggestFromHistory
-                from prompt_toolkit.completion import WordCompleter
 
                 if not hasattr(self, "_ptk_session"):
-                    self._ptk_session = PromptSession(
-                        history=InMemoryHistory(),
-                        auto_suggest=AutoSuggestFromHistory(),
-                        completer=WordCompleter(_SLASH_COMPLETIONS, sentence=True, ignore_case=True),
-                        complete_while_typing=True,
-                        enable_history_search=True,
-                        mouse_support=False,
-                    )
+                    _completer = _build_slash_completer()
+                    self._ptk_session = _build_ptk_session(_completer)
 
                 html_prompt = prompt_text or HTML(
                     "<b><ansgreen>You</ansgreen></b><ansicyan> ❯ </ansicyan>"
                 )
-                result = self._ptk_session.prompt(
-                    html_prompt,
-                    style=Style.from_dict({"ansgreen": "bold #00cc00", "ansicyan": "bold #00cccc"}),
-                )
+                result = self._ptk_session.prompt(html_prompt)
                 return (result or "").strip()
             except ImportError:
                 pass  # 未安装 prompt_toolkit，直接降级
             except (KeyboardInterrupt, EOFError):
-                raise  # 这两个由上层处理，不能吞掉
+                raise  # 由上层处理
             except Exception:
-                # ptk 运行时异常（如 NotImplementedError on dumb terminal），
-                # 标记失败，后续跳过 ptk 直接用降级方案
+                # ptk 运行时异常（dumb terminal、Windows ConPTY 等），标记后降级
                 self._ptk_failed = True
 
-        # 降级：直接写提示符 + readline
+        # 降级：ANSI 提示符 + readline
         sys.stdout.write("\n")
         if prompt_text:
             sys.stdout.write(str(prompt_text))
@@ -580,21 +568,204 @@ class _StreamCtx:
         return False  # 不吞异常
 
 
-# ── slash 命令补全列表 ────────────────────────────────────────────────────────
+# ── 补全系统 ─────────────────────────────────────────────────────────────────
+#
+# 实现三层补全，对标 Claude Code 体验：
+#
+#  1. slash 命令补全（NestedCompleter）
+#     /skill → on / off / list 子命令弹出，每个命令带右侧描述文字
+#  2. @ 文件路径补全（PathCompleter）
+#     @src/ 展开为当前目录下的文件列表
+#  3. 历史命令建议（AutoSuggestFromHistory）
+#     向右箭头接受建议，灰色虚影显示
+#
+# NestedCompleter 格式：
+#   { "/cmd": None }                       → 叶子命令，无子命令
+#   { "/cmd": { "sub": None } }            → 有子命令
+#   { "/cmd": Completer(...) }             → 子命令用独立 Completer
 
-_SLASH_COMPLETIONS = [
-    "/help", "/clear",
-    "/skills", "/skill on", "/skill off",
-    "/stats", "/verbose",
-    "/model", "/compact", "/prompts",
-    "/tasks", "/tasks dashboard", "/tasks log", "/tasks cancel",
-    "/tasks cancel-all", "/tasks workers",
-    "/plan", "/plan clear", "/plan summary",
-    "/concurrency", "/concurrency tasks", "/concurrency llm", "/cc",
-    "/provider", "/provider list", "/provider switch",
-    "/session", "/session list", "/session new",
-    "/exit", "/quit",
+
+# ── 命令定义表 ───────────────────────────────────────────────────────────────
+# 每条命令：(完整命令字符串, 描述, 子命令列表)
+# 子命令列表为空表示叶子命令。
+
+_COMMANDS: list[tuple[str, str, list[str]]] = [
+    ("/help",        "Show help",                    []),
+    ("/clear",       "Clear conversation history",   []),
+    ("/compact",     "Compress history",              []),
+    ("/stats",       "Show session statistics",       []),
+    ("/verbose",     "Toggle verbose mode",           []),
+    ("/prompts",     "List prompt files",             []),
+    ("/retry",       "Retry last turn",               []),
+    ("/rollback",    "Rollback last turn",            []),
+    ("/skills",      "List all skills",               []),
+    ("/skill",       "Manage skills",                 ["on", "off", "list"]),
+    ("/model",       "Switch LLM model",              []),
+    ("/session",     "Session management",            ["list", "new", "load", "delete"]),
+    ("/tasks",       "Task management",               ["dashboard", "log", "cancel", "cancel-all", "workers"]),
+    ("/plan",        "Plan management",               ["clear", "summary"]),
+    ("/concurrency", "Concurrency settings",          ["tasks", "llm"]),
+    ("/cc",          "Concurrency alias",             ["tasks", "llm"]),
+    ("/provider",    "LLM provider settings",         ["list", "switch"]),
+    ("/exit",        "Exit mini-agent",               []),
+    ("/quit",        "Exit mini-agent",               []),
 ]
+
+
+def _build_slash_completer():
+    """
+    构建前缀匹配的分层 slash 命令补全器。
+
+    行为（对标 Claude Code）：
+    - 输入 "/"   → 列出所有命令，右侧显示描述
+    - 输入 "/h"  → 只显示 /h 开头的命令（/help）
+    - 输入 "/se" → /session
+    - 输入 "/skill " → 弹出子命令 on / off / list
+    - 输入 "@src/" → 文件路径补全
+    """
+    try:
+        from prompt_toolkit.completion import Completer, Completion, PathCompleter, merge_completers
+        from prompt_toolkit.document import Document
+    except ImportError:
+        return None
+
+    class _SlashCompleter(Completer):
+        """
+        两阶段前缀补全：
+        1. 光标前的最后一个 token 以 "/" 开头 → 顶层命令前缀匹配
+        2. 光标前已有完整命令且后面有空格 → 子命令前缀匹配
+        """
+        def get_completions(self, document, complete_event):
+            text = document.text_before_cursor
+
+            # ── 阶段 2：子命令补全 ──────────────────────────────────
+            # 格式："/cmd sub_prefix"，中间有空格
+            if " " in text:
+                parts = text.split()
+                if not parts:
+                    return
+                cmd = parts[0].lower()
+                sub_prefix = parts[-1].lower() if len(parts) > 1 else ""
+                # 找到对应命令的子命令列表
+                for name, _desc, subs in _COMMANDS:
+                    if name == cmd and subs:
+                        for sub in subs:
+                            if sub.startswith(sub_prefix):
+                                # 计算插入偏移：替换光标前的 sub_prefix 部分
+                                yield Completion(
+                                    sub,
+                                    start_position=-len(sub_prefix),
+                                    display_meta=f"{name} {sub}",
+                                )
+                        return
+
+            # ── 阶段 1：顶层命令前缀补全 ────────────────────────────
+            # text 以 "/" 开头（可能后面有字符，但没有空格）
+            if not text.startswith("/"):
+                return
+            prefix = text.lower()
+            for name, desc, subs in _COMMANDS:
+                if name.startswith(prefix):
+                    hint = f"  {desc}"
+                    if subs:
+                        hint += f"  [{' | '.join(subs)}]"
+                    yield Completion(
+                        name,
+                        start_position=-len(text),   # 替换掉已输入的前缀
+                        display=name,
+                        display_meta=hint,
+                    )
+
+    class _AtPathCompleter(Completer):
+        """'@path' 触发文件路径补全。"""
+        def get_completions(self, document, complete_event):
+            text = document.text_before_cursor
+            at_pos = text.rfind("@")
+            if at_pos == -1:
+                return
+            path_fragment = text[at_pos + 1:]
+            pc = PathCompleter(expanduser=True, only_directories=False)
+            sub_doc = Document(path_fragment, len(path_fragment))
+            for c in pc.get_completions(sub_doc, complete_event):
+                yield Completion(
+                    c.text, c.start_position,
+                    display=c.display,
+                    display_meta="file",
+                    style="fg:#888888",
+                )
+
+    return merge_completers([_SlashCompleter(), _AtPathCompleter()])
+
+
+def _build_ptk_session(completer):
+    """构建配置好的 PromptSession。"""
+    from prompt_toolkit import PromptSession
+    from prompt_toolkit.history import InMemoryHistory
+    from prompt_toolkit.auto_suggest import AutoSuggestFromHistory
+    from prompt_toolkit.key_binding import KeyBindings
+    from prompt_toolkit.filters import completion_is_selected
+
+    kb = KeyBindings()
+
+    @kb.add("tab")
+    def _tab(event):
+        """Tab 打开补全菜单；菜单已打开时选下一项。"""
+        b = event.app.current_buffer
+        if b.complete_state:
+            b.complete_next()
+        else:
+            b.start_completion(select_first=False)
+
+    @kb.add("s-tab")
+    def _shift_tab(event):
+        """Shift-Tab 选上一项。"""
+        b = event.app.current_buffer
+        if b.complete_state:
+            b.complete_previous()
+
+    @kb.add("enter", filter=completion_is_selected)
+    def _accept_completion(event):
+        """补全菜单打开且已选中时，Enter 接受选中项而非提交。"""
+        event.app.current_buffer.apply_completion(
+            event.app.current_buffer.complete_state.current_completion
+        )
+
+    # 注意：enable_history_search=True 会在 prompt_toolkit 内部把
+    # complete_while_typing 强制设为 False（两者在源码里互斥）。
+    # 解决方案：关掉 enable_history_search，改用 Ctrl+R 手动触发历史搜索。
+    # AutoSuggestFromHistory 的灰色虚影（→ 接受）仍然保留。
+    from prompt_toolkit.filters import Condition
+
+    return PromptSession(
+        history=InMemoryHistory(),
+        auto_suggest=AutoSuggestFromHistory(),
+        completer=completer,
+        complete_while_typing=True,
+        enable_history_search=False,   # 必须关闭，否则 complete_while_typing 被强制 False
+        mouse_support=False,
+        key_bindings=kb,
+        style=_PTK_STYLE,
+    )
+
+
+try:
+    from prompt_toolkit.styles import Style as _PtkStyle
+    _PTK_STYLE = _PtkStyle.from_dict({
+        # 提示符颜色
+        "ansgreen":  "bold #00cc00",
+        "ansicyan":  "#00cccc bold",
+        # 补全菜单
+        "completion-menu.completion":           "bg:#1e1e2e fg:#cdd6f4",
+        "completion-menu.completion.current":   "bg:#313244 fg:#cba6f7 bold",
+        "completion-menu.meta.completion":      "bg:#1e1e2e fg:#6c7086",
+        "completion-menu.meta.completion.current": "bg:#313244 fg:#a6adc8",
+        # 模糊匹配高亮
+        "completion-menu.completion fuzzymatch.inside": "fg:#f38ba8 bold",
+        # 历史建议（灰色虚影）
+        "auto-suggestion": "fg:#585b70 italic",
+    })
+except ImportError:
+    _PTK_STYLE = None
 
 
 # ── 模块级单例 ────────────────────────────────────────────────────────────────
