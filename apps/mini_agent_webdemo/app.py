@@ -1197,19 +1197,19 @@ animation:pulse 1s infinite;vertical-align:text-bottom;margin-left:2px">▊</spa
                     # 工具调用摘要（只取关键字段）
                     summary_fields = {k: v for k, v in list(tool_input.items())[:2]}
                     summary = ", ".join(f"{k}={repr(str(v))[:30]}" for k, v in summary_fields.items())
-                    st.markdown(f"""<div style="padding:4px 10px;border-left:3px solid {color};margin:2px 0;font-size:12px;color:#888;background:#111">
-{icon} <span style="color:{color}">{label}{src_str}</span> &nbsp;·&nbsp; <span style="color:#555">{tool_name}</span> <span style="color:#444;font-size:11px">{summary}</span>
-<span style="float:right;font-size:10px;color:#444">{time_str}</span></div>""", unsafe_allow_html=True)
+                    st.markdown(f"""<div style="padding:4px 10px;border-left:3px solid {color};margin:2px 0;font-size:12px;color:#CCCCCC !important;background:#111">
+{icon} <span style="color:{color} !important">{label}{src_str}</span> &nbsp;·&nbsp; <span style="color:#AAAAAA !important">{tool_name}</span> <span style="color:#888888 !important;font-size:11px">{summary}</span>
+<span style="float:right;font-size:10px;color:#666 !important">{time_str}</span></div>""", unsafe_allow_html=True)
 
             elif role == "tool_call":
                 tool_name  = msg.get("tool_name", "unknown")
                 tool_input = msg.get("tool_input", {})
                 import html as _html
                 args_str = _html.escape(json.dumps(tool_input, ensure_ascii=False, indent=2)[:600])
-                st.markdown(f"""<div class="tool-box">
-<div class="tool-name">🔧 工具调用: {tool_name}</div>
-<pre style="margin:4px 0 0 !important;font-size:11px !important;color:#F5F5F5 !important;white-space:pre-wrap !important;background:transparent !important">{args_str}</pre>
-<div class="msg-time">{time_str}</div>
+                st.markdown(f"""<div style="background:#1C1600 !important;border:1px solid #7A6000 !important;border-radius:8px;padding:10px;margin:6px 0;font-family:monospace;font-size:12px;color:#FFFFFF !important">
+<div style="color:#FFD54F !important;font-weight:bold !important;margin-bottom:6px !important;font-size:12px !important">🔧 工具调用: {tool_name}</div>
+<pre style="color:#FFFFFF !important;font-size:11px !important;white-space:pre-wrap !important;background:transparent !important;margin:0 !important;word-break:break-all">{args_str}</pre>
+<div style="color:#666 !important;font-size:10px !important;text-align:right;margin-top:4px">{time_str}</div>
 </div>""", unsafe_allow_html=True)
 
             elif role == "tool_result":
@@ -1217,10 +1217,10 @@ animation:pulse 1s infinite;vertical-align:text-bottom;margin-left:2px">▊</spa
                 content   = msg.get("content", "")
                 import html as _html
                 content_escaped = _html.escape(content)
-                st.markdown(f"""<div class="tool-box" style="border-color:#3A6B3A !important;background:#0A1A0A !important">
-<div style="color:#69F07A !important;font-size:11px !important;font-weight:bold !important">✅ 工具结果: {tool_name}</div>
-<pre style="margin:4px 0 0 !important;font-size:11px !important;color:#D4F1D4 !important;white-space:pre-wrap !important;background:transparent !important">{content_escaped}</pre>
-<div class="msg-time">{time_str}</div>
+                st.markdown(f"""<div style="background:#061A06 !important;border:1px solid #2E7D32 !important;border-radius:8px;padding:10px;margin:6px 0;font-family:monospace;font-size:12px;color:#FFFFFF !important">
+<div style="color:#00E676 !important;font-weight:bold !important;margin-bottom:6px !important;font-size:12px !important">✅ 工具结果: {tool_name}</div>
+<pre style="color:#E8F5E9 !important;font-size:11px !important;white-space:pre-wrap !important;background:transparent !important;margin:0 !important;word-break:break-all">{content_escaped}</pre>
+<div style="color:#666 !important;font-size:10px !important;text-align:right;margin-top:4px">{time_str}</div>
 </div>""", unsafe_allow_html=True)
 
             elif role == "tool_error":
@@ -1228,10 +1228,10 @@ animation:pulse 1s infinite;vertical-align:text-bottom;margin-left:2px">▊</spa
                 content   = msg.get("content", "")
                 import html as _html
                 content_escaped = _html.escape(content)
-                st.markdown(f"""<div class="tool-box" style="border-color:#8B3A3A !important;background:#1A0808 !important">
-<div style="color:#FF6B6B !important;font-size:11px !important;font-weight:bold !important">❌ 工具错误: {tool_name}</div>
-<pre style="margin:4px 0 0 !important;font-size:11px !important;color:#FFCCCC !important;white-space:pre-wrap !important;background:transparent !important">{content_escaped}</pre>
-<div class="msg-time">{time_str}</div>
+                st.markdown(f"""<div style="background:#1A0606 !important;border:1px solid #C62828 !important;border-radius:8px;padding:10px;margin:6px 0;font-family:monospace;font-size:12px;color:#FFFFFF !important">
+<div style="color:#FF5252 !important;font-weight:bold !important;margin-bottom:6px !important;font-size:12px !important">❌ 工具错误: {tool_name}</div>
+<pre style="color:#FFEBEE !important;font-size:11px !important;white-space:pre-wrap !important;background:transparent !important;margin:0 !important;word-break:break-all">{content_escaped}</pre>
+<div style="color:#666 !important;font-size:10px !important;text-align:right;margin-top:4px">{time_str}</div>
 </div>""", unsafe_allow_html=True)
 
 
