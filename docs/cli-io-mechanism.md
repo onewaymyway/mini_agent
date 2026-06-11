@@ -100,10 +100,10 @@ agent.run_turn()
 ### 4.1 启动 Banner
 
 ```text
-╔══════════════════════════════════════════╗
-║        mini-claude-code  v0.1.0          ║
-║  Type /help for commands, exit to quit   ║
-╚══════════════════════════════════════════╝
+  ╔══════════════════════════════════════════╗
+  ║        mini-agent  v0.1.0                ║
+  ║  Type /help for commands, exit to quit   ║
+  ╚══════════════════════════════════════════╝
 
 ℹ  Model: claude-opus-4-5
 ℹ  Project: /path/to/project
