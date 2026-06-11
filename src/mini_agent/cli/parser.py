@@ -12,7 +12,7 @@ import textwrap
 
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
-        prog="mini-claude-code",
+        prog="mini-agent",
         description="Simplified Claude Code with skill support",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=textwrap.dedent("""

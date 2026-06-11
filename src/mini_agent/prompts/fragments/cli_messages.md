@@ -5,7 +5,7 @@
 
 BANNER: |
   ╔══════════════════════════════════════════╗
-  ║        mini-claude-code  v0.1.0          ║
+  ║        mini-agent  v0.1.0                ║
   ║  Type /help for commands, exit to quit   ║
   ╚══════════════════════════════════════════╝
 
