@@ -104,6 +104,20 @@ class ToolExecutor:
                         if self.tool_cache:
                             self.tool_cache.put(tc.name, tc.input, result_str)
 
+                        # [SYS-TOOLCACHE] 写操作执行成功后，立即使目标文件缓存失效。
+                        # 覆盖的场景：
+                        #   write_file / create_file / patch_file / delete_file
+                        # 时机：工具调用成功后（result_str 不以 "[error" 开头）才失效，
+                        # 避免把失败的写入也当作有效失效触发器。
+                        if (
+                            self.tool_cache
+                            and tc.name in ("write_file", "create_file", "patch_file", "delete_file")
+                            and not result_str.startswith("[error")
+                        ):
+                            _target_path = tc.input.get("path", "")
+                            if _target_path:
+                                self.tool_cache.invalidate_file(_target_path)
+
                         # [SYS-WATCH] 注册 read_file 的文件（供后台线程追踪）
                         if self.file_watcher and tc.name == "read_file":
                             _path = tc.input.get("path", "")
@@ -136,11 +150,14 @@ class ToolExecutor:
         total = len(lines)
 
         if tool_name == "bash":
-            head_ratio = getattr(self.cfg, "tool_trim_bash_head_ratio", 0.7)
+            # 尾部权重更高：实际输出/错误/exit 通常在尾部
+            tail_ratio = getattr(self.cfg.tool_trim, "bash_tail_ratio", 0.6)
             if total > 20:
-                head_n = max(12, int(total * head_ratio))
-                tail_n = max(4, total - head_n)
-                head_n = min(head_n, total - tail_n)
+                tail_n = max(8, int(total * tail_ratio))
+                head_n = max(5, int(total * 0.3))
+                if head_n + tail_n >= total:
+                    head_n = total // 3
+                    tail_n = total - head_n
                 omitted = total - head_n - tail_n
                 if omitted > 0:
                     return (
