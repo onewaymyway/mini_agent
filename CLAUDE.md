@@ -130,3 +130,8 @@ python main.py --provider nvidia --model qwen/qwen3.5-122b-a10b --system-tool-ca
 - `parser.py` — CLI 参数定义
 - `repl.py` — REPL 循环和斜杠命令处理
 - `commands/` — REPL 命令处理器（concurrency, plans, sessions, skills, tasks 等）
+
+### 终端交互 (`src/mini_agent/ui/`)
+
+- `terminal.py` — 统一终端 I/O 管理器，支持命令行输入补全（slash 命令/文件路径/历史建议）
+- `renderer.py` — Rich 终端输出渲染
