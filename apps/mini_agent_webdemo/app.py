@@ -682,10 +682,14 @@ def _sync_events():
 
     new_evts = evts["events"]
     if new_evts:
+        types_summary = {}
+        for e in new_evts:
+            t = e.get("type","?")
+            types_summary[t] = types_summary.get(t, 0) + 1
         st.session_state.debug_log.append(
             f"[{_ts()}] fetched {len(new_evts)} events "
             f"(since_id={st.session_state.last_event_id}, "
-            f"types={[e.get('type') for e in new_evts[:10]]})"
+            f"summary={types_summary})"
         )
 
     # 已在消息列表里的权限请求 req_id（去重用）
@@ -715,14 +719,18 @@ def _sync_events():
         elif etype == "token":
             text = evt.get("text", "")
             if text:
-                last_stream = next(
-                    (m for m in reversed(st.session_state.messages)
-                     if m.get("role") == "streaming"), None
-                )
-                if last_stream:
-                    last_stream["content"] += text
+                # 关键修复：只有 streaming 消息是 messages 列表里"最末尾"的消息时
+                # 才追加 text；否则说明 streaming 已被 tool_call 等消息隔断，
+                # 需要新建一个 streaming 消息（这样 agent 文本和工具调用才能交错显示）
+                msgs = st.session_state.messages
+                if msgs and msgs[-1].get("role") == "streaming":
+                    msgs[-1]["content"] += text
                 else:
-                    st.session_state.messages.append({
+                    reason_for_new = msgs[-1].get("role","none") if msgs else "empty"
+                    st.session_state.debug_log.append(
+                        f"[{_ts()}] new streaming block (prev_role={reason_for_new})"
+                    )
+                    msgs.append({
                         "role": "streaming", "content": text,
                         "time": _ts()
                     })
@@ -731,6 +739,9 @@ def _sync_events():
             # 修复：工具调用显示到对话面板
             tool_name  = evt.get("tool_name", evt.get("name", "unknown"))
             tool_input = evt.get("tool_input", evt.get("input", {}))
+            st.session_state.debug_log.append(
+                f"[{_ts()}] tool_call: {tool_name} | last_msg_role={st.session_state.messages[-1].get('role') if st.session_state.messages else 'none'}"
+            )
             st.session_state.messages.append({
                 "role": "tool_call",
                 "tool_name": tool_name,
@@ -742,6 +753,9 @@ def _sync_events():
             # 修复：工具结果显示到对话面板
             tool_name   = evt.get("tool_name", evt.get("name", "unknown"))
             result_text = evt.get("result", evt.get("output", ""))
+            st.session_state.debug_log.append(
+                f"[{_ts()}] tool_result: {tool_name} | len={len(str(result_text))}"
+            )
             st.session_state.messages.append({
                 "role": "tool_result",
                 "tool_name": tool_name,
@@ -760,11 +774,12 @@ def _sync_events():
             })
 
         elif etype == "turn_done":
-            # 清除所有 streaming 中间态（零散 token 片段）
+            # 将所有 streaming 中间态转换为已完成状态（用 history 的最终文本替换）
+            # 注意：messages 里可能有多个 streaming 消息块（每次 tool_call 后新建的）
+            # 这些都是本 turn 的中间输出，turn_done 时统一处理
             st.session_state.messages = [m for m in st.session_state.messages
                                           if m.get("role") != "streaming"]
-            # 始终从后端 history 拉取最新完整的 assistant 消息，
-            # 不依赖 token 事件的累积（轮询间隔 1.5s，token 经常大批漏掉）
+            # 从后端 history 拉取最新完整的 assistant 消息追加到末尾
             hist = client.history()
             full = ""
             if hist:
@@ -777,7 +792,6 @@ def _sync_events():
                         full = str(c).strip()
                         break
             if full:
-                # 去重：如果最后一条 assistant 消息内容一样就不重复添加
                 last_asst = next(
                     (m for m in reversed(st.session_state.messages)
                      if m.get("role") == "assistant"), None
@@ -1100,30 +1114,46 @@ def render_chat_messages(container):
 </div>""", unsafe_allow_html=True)
 
             elif role == "assistant":
+                import re as _re, html as _html
                 content = msg.get("content", "")
-                st.markdown(f"""<div class="msg-agent">
+                # 过滤 system_tool_call 模式的工具调用标签
+                clean = _re.sub(r"<tool_use>.*?</tool_use>", "", content, flags=_re.DOTALL).strip()
+                if clean:
+                    clean_escaped = _html.escape(clean)
+                    st.markdown(f"""<div class="msg-agent">
 <div class="msg-role" style="color:#6fcf6f">🤖 Agent</div>
-{content}
+<pre style="white-space:pre-wrap;margin:4px 0;font-size:13px;background:transparent;border:none">{clean_escaped}</pre>
 <div class="msg-time">{time_str}</div>
 </div>""", unsafe_allow_html=True)
 
             elif role == "streaming":
+                import re as _re
                 content = msg.get("content", "")
-                st.markdown(f"""<div class="msg-agent" style="border-left-color:#FF9800">
+                # 过滤掉 system_tool_call 模式下 LLM 输出的 <tool_use>...</tool_use> 标签
+                # 这些工具调用已经由 tool_call 事件单独显示，streaming 框里只保留纯文本
+                clean = _re.sub(r"<tool_use>.*?</tool_use>", "", content, flags=_re.DOTALL).strip()
+                if not clean:
+                    # 内容全是 tool_use 标签，不渲染空框
+                    pass
+                else:
+                    # 对 HTML 特殊字符做转义（避免 agent 输出破坏 HTML 结构）
+                    import html as _html
+                    clean_escaped = _html.escape(clean)
+                    st.markdown(f"""<div class="msg-agent" style="border-left-color:#FF9800">
 <div class="msg-role" style="color:#FF9800">🤖 Agent (输出中...)</div>
-{content}
+<pre style="white-space:pre-wrap;margin:4px 0;font-size:13px;background:transparent;border:none">{clean_escaped}</pre>
 <span style="display:inline-block;width:8px;height:14px;background:#FF9800;
 animation:pulse 1s infinite;vertical-align:text-bottom;margin-left:2px">▊</span>
 </div>""", unsafe_allow_html=True)
 
             elif role == "permission":
-                # 权限请求消息：显示工具名、参数摘要、审批结果标记
                 tool_name  = msg.get("tool_name", "unknown")
                 tool_input = msg.get("tool_input", {})
                 approved   = msg.get("approved")    # None=待定, True=批准, False=拒绝
                 reason     = msg.get("reason", "")
 
                 if approved is None:
+                    # 待审批：显示完整卡片
                     status_html = """
 <div style="margin-top:10px;background:#1A1200;border:1px solid #FF7043;border-radius:8px;padding:10px">
   <div style="color:#FF7043;font-size:12px;font-weight:bold;margin-bottom:6px">⏳ 等待审批 — 可在下方输入框快捷操作：</div>
@@ -1135,20 +1165,28 @@ animation:pulse 1s infinite;vertical-align:text-bottom;margin-left:2px">▊</spa
   </div>
   <div style="color:#888;font-size:11px;margin-top:6px">或直接点击下方权限面板的按钮</div>
 </div>"""
-                elif approved:
-                    src = {"cli":"命令行","http":"Web界面","timeout":"超时","user":"Web界面"}.get(reason, reason)
-                    status_html = f'<div style="color:#4CAF50;font-size:12px;margin-top:8px">✅ 已批准（{src}）</div>'
-                else:
-                    src = {"cli":"命令行","http":"Web界面","timeout":"超时","user":"Web界面"}.get(reason, reason)
-                    status_html = f'<div style="color:#EF5350;font-size:12px;margin-top:8px">❌ 已拒绝（{src}）</div>'
-
-                input_preview = json.dumps(tool_input, ensure_ascii=False, indent=2)
-                st.markdown(f"""<div class="permission-card">
+                    input_preview = json.dumps(tool_input, ensure_ascii=False, indent=2)
+                    st.markdown(f"""<div class="permission-card">
 <div class="permission-title">🔐 权限请求: {tool_name}</div>
 <div class="permission-content">{input_preview}</div>
 {status_html}
 <div class="msg-time">{time_str}</div>
 </div>""", unsafe_allow_html=True)
+
+                else:
+                    # 已处理：只显示一行简洁状态，不显示完整卡片
+                    src = {"cli":"命令行","http":"Web界面","timeout":"超时","user":"Web界面"}.get(reason, reason or "")
+                    if approved:
+                        icon, color, label = "✅", "#4CAF50", f"已批准"
+                    else:
+                        icon, color, label = "❌", "#EF5350", f"已拒绝"
+                    src_str = f"（{src}）" if src else ""
+                    # 工具调用摘要（只取关键字段）
+                    summary_fields = {k: v for k, v in list(tool_input.items())[:2]}
+                    summary = ", ".join(f"{k}={repr(str(v))[:30]}" for k, v in summary_fields.items())
+                    st.markdown(f"""<div style="padding:4px 10px;border-left:3px solid {color};margin:2px 0;font-size:12px;color:#888;background:#111">
+{icon} <span style="color:{color}">{label}{src_str}</span> &nbsp;·&nbsp; <span style="color:#555">{tool_name}</span> <span style="color:#444;font-size:11px">{summary}</span>
+<span style="float:right;font-size:10px;color:#444">{time_str}</span></div>""", unsafe_allow_html=True)
 
             elif role == "tool_call":
                 # 修复：工具调用渲染
