@@ -365,9 +365,9 @@ class HttpPermissionGate:
         approved: bool,
         edited_input: Optional[dict] = None,
     ) -> bool:
-        """HTTP 端调用，唤醒阻塞的 request()。"""
+        """HTTP 端调用，唤醒阻塞的 request()，并从 pending 列表移除。"""
         with self._lock:
-            pending = self._pending.get(req_id)
+            pending = self._pending.pop(req_id, None)  # 修复：立即从pending移除，list_pending不再返回已处理条目
         if pending is None:
             return False
         pending.approved     = approved

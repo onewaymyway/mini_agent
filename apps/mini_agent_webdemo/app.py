@@ -118,6 +118,7 @@ def inject_styles():
     font-family: monospace; font-size: 12px;
 }
 .tool-name { color: #FFB74D; font-weight: bold; margin-bottom: 6px; }
+.tool-box pre { color: #E0E0E0 !important; }  /* 工具框内 pre 文字强制亮色 */
 
 /* ── 侧栏分节 ── */
 .sidebar-section {
@@ -1195,7 +1196,7 @@ animation:pulse 1s infinite;vertical-align:text-bottom;margin-left:2px">▊</spa
                 args_str   = json.dumps(tool_input, ensure_ascii=False, indent=2)[:400]
                 st.markdown(f"""<div class="tool-box">
 <div class="tool-name">🔧 工具调用: {tool_name}</div>
-<pre style="margin:4px 0 0;font-size:11px;color:#ccc;white-space:pre-wrap">{args_str}</pre>
+<pre style="margin:4px 0 0;font-size:11px;color:#E0E0E0;white-space:pre-wrap">{args_str}</pre>
 <div class="msg-time">{time_str}</div>
 </div>""", unsafe_allow_html=True)
 
@@ -1203,18 +1204,18 @@ animation:pulse 1s infinite;vertical-align:text-bottom;margin-left:2px">▊</spa
                 # 修复：工具结果渲染
                 tool_name = msg.get("tool_name", "unknown")
                 content   = msg.get("content", "")
-                st.markdown(f"""<div class="tool-box" style="border-color:#2D4A2D">
+                st.markdown(f"""<div class="tool-box" style="border-color:#2D4A2D;background:#0D1A0D">
 <div style="color:#81C784;font-size:11px;font-weight:bold">✅ 工具结果: {tool_name}</div>
-<pre style="margin:4px 0 0;font-size:11px;color:#aaa;white-space:pre-wrap">{content}</pre>
+<pre style="margin:4px 0 0;font-size:11px;color:#C8E6C9;white-space:pre-wrap">{content}</pre>
 <div class="msg-time">{time_str}</div>
 </div>""", unsafe_allow_html=True)
 
             elif role == "tool_error":
                 tool_name = msg.get("tool_name", "unknown")
                 content   = msg.get("content", "")
-                st.markdown(f"""<div class="tool-box" style="border-color:#4A2D2D">
+                st.markdown(f"""<div class="tool-box" style="border-color:#4A2D2D;background:#1A0D0D">
 <div style="color:#E57373;font-size:11px;font-weight:bold">❌ 工具错误: {tool_name}</div>
-<pre style="margin:4px 0 0;font-size:11px;color:#aaa;white-space:pre-wrap">{content}</pre>
+<pre style="margin:4px 0 0;font-size:11px;color:#FFCDD2;white-space:pre-wrap">{content}</pre>
 <div class="msg-time">{time_str}</div>
 </div>""", unsafe_allow_html=True)
 
