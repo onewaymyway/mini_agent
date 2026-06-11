@@ -81,14 +81,16 @@ async def get_status(request: Request):
     stats  = {}
     if bridge.agent:
         try:
-            raw = bridge.agent.stats.summary()
-            # summary() 可能返回字符串或字典，统一转为 dict
-            if isinstance(raw, dict):
-                stats = raw
-            elif isinstance(raw, str):
-                stats = {"summary": raw}
-            else:
-                stats = {"summary": str(raw)}
+            ss = bridge.agent.stats          # SessionStats dataclass
+            stats = {
+                "total_turns":   getattr(ss, "turns",         0),
+                "total_tokens":  getattr(ss, "input_tokens",  0) + getattr(ss, "output_tokens", 0),
+                "input_tokens":  getattr(ss, "input_tokens",  0),
+                "output_tokens": getattr(ss, "output_tokens", 0),
+                "tool_calls":    getattr(ss, "tool_calls",    0),
+                "elapsed":       getattr(ss, "elapsed",       ""),
+                "summary":       ss.summary() if callable(getattr(ss, "summary", None)) else "",
+            }
         except Exception:
             pass
     return StatusResponse(
