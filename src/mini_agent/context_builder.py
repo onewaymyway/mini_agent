@@ -31,7 +31,7 @@ class ContextBuilder:
     - 基础 system prompt（由 config.build_system_prompt 生成）
     - Skill 目录 + 使用追踪约定
     - 项目结构快照（ProjectScanner）
-    - 跨 session 长期记忆（MemoryStore）
+    - 跨 session 长期记忆（project + global 两级）
     """
 
     def __init__(
@@ -39,11 +39,13 @@ class ContextBuilder:
         cfg: "AppConfig",
         skill_loader: Optional["SkillLoader"] = None,
         memory: Optional["MemoryStore"] = None,
+        global_memory: Optional["MemoryStore"] = None,
         project_snapshot_getter=None,   # Callable[[], Optional[str]]
     ) -> None:
         self.cfg = cfg
         self.skill_loader = skill_loader
         self.memory = memory
+        self.global_memory = global_memory
         self._project_snapshot_getter = project_snapshot_getter
 
         # ── Turn 级缓存 ──────────────────────────────────────────────────────
@@ -64,6 +66,8 @@ class ContextBuilder:
         在每次 run_turn 开始时调用，缓存当前 turn 的记忆检索结果。
         整个 turn 内的多次 _call_llm() 会复用这份缓存，不重复检索。
 
+        使用 merge_search 合并 project + global 两级记忆（与 agent.py 原逻辑对齐）。
+
         Args:
             query: 当前用户消息（用于记忆检索）
         """
@@ -71,7 +75,14 @@ class ContextBuilder:
         self._cached_memory_snippet = ""
 
         if self.memory and query:
-            memories = self.memory.search(query, k=self.cfg.memory_top_k)
+            try:
+                from mini_agent.perception.memory_factory import merge_search
+                memories = merge_search(
+                    self.memory, self.global_memory, query,
+                    k=self.cfg.memory_top_k,
+                )
+            except Exception:
+                memories = self.memory.search(query, k=self.cfg.memory_top_k)
             if memories:
                 snippets = "\n".join(
                     f"- [{m.session_id[:6]}] {m.summary}"

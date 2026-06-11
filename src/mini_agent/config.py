@@ -112,9 +112,9 @@ class CompressConfig:
 @dataclass
 class ToolTrimConfig:
     """[SYS-TRIM] 工具调用结果截断配置。"""
-    enabled: bool = False
-    threshold: int = 500               # 超过此字符数触发截断
-    bash_head_ratio: float = 0.7       # bash 结果：头部保留比例
+    enabled: bool = True
+    threshold: int = 4000              # 超过此字符数触发截断（约 1000 tokens）
+    bash_tail_ratio: float = 0.6       # bash 结果：尾部保留比例（错误/输出通常在尾部）
     read_window_lines: int = 0         # read_file：滑动窗口行数（0=自动推算）
     grep_max_lines: int = 50           # grep/glob：最大保留行数
 
@@ -267,7 +267,7 @@ class AppConfig:
     @property
     def tool_result_trim_threshold(self) -> int: return self.tool_trim.threshold
     @property
-    def tool_trim_bash_head_ratio(self) -> float: return self.tool_trim.bash_head_ratio
+    def tool_trim_bash_tail_ratio(self) -> float: return self.tool_trim.bash_tail_ratio
     @property
     def tool_trim_read_window_lines(self) -> int: return self.tool_trim.read_window_lines
     @property
@@ -381,7 +381,7 @@ def load_config(
     auto_compress_threshold: Optional[float] = None,
     tool_result_trim_enabled: Optional[bool] = None,
     tool_result_trim_threshold: Optional[int] = None,
-    tool_trim_bash_head_ratio: Optional[float] = None,
+    tool_trim_bash_tail_ratio: Optional[float] = None,
     tool_trim_read_window_lines: Optional[int] = None,
     tool_trim_grep_max_lines: Optional[int] = None,
     forget_policy_enabled: Optional[bool] = None,
@@ -480,8 +480,8 @@ def load_config(
 
     tool_trim_cfg = ToolTrimConfig(
         enabled=_fb("tool_result_trim_enabled", tool_result_trim_enabled),
-        threshold=_fn("tool_result_trim_threshold", tool_result_trim_threshold, 500),
-        bash_head_ratio=_fn("tool_trim_bash_head_ratio", tool_trim_bash_head_ratio, 0.7),
+        threshold=_fn("tool_result_trim_threshold", tool_result_trim_threshold, 4000),
+        bash_tail_ratio=_fn("tool_trim_bash_tail_ratio", tool_trim_bash_tail_ratio, 0.6),
         read_window_lines=_fn("tool_trim_read_window_lines", tool_trim_read_window_lines, 0),
         grep_max_lines=_fn("tool_trim_grep_max_lines", tool_trim_grep_max_lines, 50),
     )

@@ -118,6 +118,11 @@ class Agent:
 
         # ── 感知与记忆子系统（按开关初始化）────────────────────────────────
 
+        # [SYS-SYSCACHE] turn 级 system prompt 缓存。
+        # _build_system() 首次调用时填充，同 turn 内所有 _call_llm() 复用。
+        # clear_turn_cache() 在每次 run_turn 结束时清除。
+        self._cached_system: Optional[str] = None
+
         # [SYS-PROJ] 项目结构感知 — 懒加载：在后台线程中扫描，不阻塞 REPL 启动
         # 扫描完成前 _project_snapshot 为 None，第一次 _build_system() 调用时
         # 若扫描已完成则注入，否则跳过本次注入（下一轮会自动获得结果）。
@@ -206,10 +211,12 @@ class Agent:
         Agent 编排层通过它们完成具体工作。
         """
         # ContextBuilder：感知 project_snapshot 通过 getter 懒取，避免扫描未完成时传 None
+        # 传入 global_memory 以支持 merge_search 合并两级记忆
         self._ctx_builder = ContextBuilder(
             cfg=self.cfg,
             skill_loader=self.skill_loader,
             memory=self._memory,
+            global_memory=self._global_memory,
             project_snapshot_getter=lambda: self._project_snapshot,
         )
 
@@ -691,7 +698,8 @@ class Agent:
             # 摘要写入由 save_session 触发，这里只标记需要摘要
             return result
         finally:
-            # 清理 turn 级上下文缓存
+            # 清理 turn 级上下文缓存（含 system prompt 缓存）
+            self._cached_system = None
             if self._ctx_builder is not None:
                 self._ctx_builder.clear_turn_cache()
             # 每轮对话后自动保存 session
@@ -709,9 +717,11 @@ class Agent:
             loop_count += 1
 
             # [SYS-TOKEN] token 预估 + 自动压缩
+            # _build_system() 命中 turn 级缓存，与后续 _call_llm() 共享同一字符串，
+            # 不重复构建 system prompt。
             if self.cfg.token_estimate_enabled or self.cfg.auto_compress_enabled:
                 from mini_agent.llm.system_tool_call import convert_tool_use_to_text
-                _sys_preview = self._build_system()
+                _sys_preview = self._build_system()   # 首次调用时填充缓存
                 _msgs_preview = convert_tool_use_to_text(self._history)
                 _est = estimate_messages_tokens(_msgs_preview, _sys_preview)
                 _budget_pct = _est / max(self.cfg.max_tokens, 1)
@@ -721,6 +731,8 @@ class Agent:
                         f"({_budget_pct:.0%} of {self.cfg.max_tokens:,})"
                     )
                 if self.cfg.auto_compress_enabled and _budget_pct >= self.cfg.auto_compress_threshold:
+                    # 压缩后 system 内容可能变化，清除缓存强制重建
+                    self._cached_system = None
                     self._auto_compress_history()
 
             response = self._call_llm()
@@ -864,8 +876,48 @@ class Agent:
     # ── Tool execution ─────────────────────────────────────────────────────────
 
     def _execute_tools(self, response: LLMResponse) -> tuple[list, list[str]]:
-        """运行所有工具调用，返回 (tool_calls列表, result字符串列表)。"""
+        """
+        运行所有工具调用，返回 (tool_calls列表, result字符串列表)。
+
+        [SYS-DEDUP] 历史层去重：
+        同一 turn 内，若相同工具 + 相同参数的结果已经在历史里出现过，
+        则写入占位符 "[same result as above: <tool>(...)]" 而非完整内容。
+        这直接减少历史里的重复 token，缓存命中时尤为有效。
+
+        去重只看「本 turn 内已追加的 tool_result」，跨 turn 的重复由压缩策略处理。
+        """
+        import hashlib as _hashlib, json as _json
+
         result_strs: list[str] = []
+
+        # 收集本 turn 内已见过的 (tool_name, input_hash) → result_str
+        # 仅在本次 _execute_tools 调用内累积（一次 LLM 响应里的多个 tool_call）
+        _seen_this_batch: dict[tuple[str, str], str] = {}
+
+        # 同时扫描本 turn 内历史里已有的 tool_result 消息，提取已见的结果哈希
+        # 避免同 turn 内跨 LLM 调用的重复（例如 turn 里第二次 LLM 调用又 read 同文件）
+        _seen_in_history: dict[tuple[str, str], str] = {}
+        _TR_OPEN = "<tool_result>"
+        _TR_CLOSE = "</tool_result>"
+        for _msg in reversed(self._history):
+            if _msg.get("role") != "user":
+                continue
+            _c = _msg.get("content", "")
+            if not isinstance(_c, str) or not _c.startswith(_TR_OPEN):
+                break   # 碰到非 tool_result 消息就停，本 turn 的都扫完了
+            if '"\"name\":' in _c and '"\"output\":' in _c:
+                try:
+                    _start = len(_TR_OPEN) + 1
+                    _end = _c.rfind(_TR_CLOSE) - 1
+                    if _end > _start:
+                        _entry = _json.loads(_c[_start:_end])
+                        _tname = _entry.get("name", "")
+                        _tout = _entry.get("output", "")
+                        if _tname and not _tout.startswith("[same result"):
+                            _h = _hashlib.md5(_tout.encode()).hexdigest()[:12]
+                            _seen_in_history[(_tname, _h)] = _tout
+                except Exception:
+                    pass
 
         for tc in response.tool_calls:
             R.print_tool_call(tc.name, tc.input, verbose=self.cfg.verbose)
@@ -902,6 +954,17 @@ class Agent:
                         if self._tool_cache:
                             self._tool_cache.put(tc.name, tc.input, result_str)
 
+                        # [SYS-TOOLCACHE] 写操作执行成功后，立即使目标文件缓存失效，
+                        # 确保同一 turn 内后续的 read_file / grep 不返回旧数据。
+                        if (
+                            self._tool_cache
+                            and tc.name in ("write_file", "create_file", "patch_file", "delete_file")
+                            and not result_str.startswith("[error")
+                        ):
+                            _target_path = tc.input.get("path", "")
+                            if _target_path:
+                                self._tool_cache.invalidate_file(_target_path)
+
                         # [SYS-WATCH] 注册 read_file 的文件
                         if self._file_watcher and tc.name == "read_file":
                             _path = tc.input.get("path", "")
@@ -916,6 +979,21 @@ class Agent:
                         if self.cfg.tool_stats_enabled:
                             self.stats.record_tool_call(tc.name, False, 0)
 
+            # [SYS-DEDUP] 去重检查：幂等工具（非写操作）才做去重
+            # 写操作、bash 等副作用工具不去重（每次执行结果可能不同）
+            _DEDUP_TOOLS = {"read_file", "grep", "glob", "list_dir", "web_search"}
+            if tc.name in _DEDUP_TOOLS and not result_str.startswith("["):
+                _h = _hashlib.md5(result_str.encode()).hexdigest()[:12]
+                _key = (tc.name, _h)
+                # 检查本 batch 或本 turn 历史里是否已有相同结果
+                if _key in _seen_this_batch or _key in _seen_in_history:
+                    _short = _json.dumps(tc.input, ensure_ascii=False)[:60]
+                    _dedup_str = f"[same result as above: {tc.name}({_short})]"
+                    R.print_info(f"[dedup] {tc.name} result deduplicated ({len(result_str)} chars → {len(_dedup_str)} chars)")
+                    result_str = _dedup_str
+                else:
+                    _seen_this_batch[_key] = result_str
+
             result_strs.append(result_str)
 
         return response.tool_calls, result_strs
@@ -924,11 +1002,13 @@ class Agent:
         """
         [SYS-TRIM] 按工具类型分策略截断长结果。
 
-        策略说明：
-        - bash：头部最重要（命令回显、错误信息在前），保留更多头部
-        - read_file：上下文连续性重要，使用滑动窗口保留中间段
-        - grep/glob：平铺匹配行，头尾截断影响不大
-        - 其他：通用头尾截断
+        各工具截断方向：
+        - bash：保留头部（命令行 + 前几行输出）+ 尾部（最终输出/错误在末尾）
+                尾部权重更高（tail_ratio=0.6），因为 exit code 和 stderr 通常在尾部
+        - read_file：头尾各保留一半（结构声明在头，返回值/测试在尾）
+                     提示 LLM 使用 start_line/end_line 精确读取
+        - grep/glob：平铺匹配行，保留前 N 行（最相关的命中优先）
+        - 其他：通用头多尾少截断
         """
         if not self.cfg.tool_result_trim_enabled:
             return result
@@ -940,11 +1020,16 @@ class Agent:
         total = len(lines)
 
         if tool_name == "bash":
-            # bash：头部保留 70%，尾部保留 30%（错误信息通常在头部）
+            # bash：尾部权重更高——实际输出/错误/exit 通常在尾部
+            # 保留头部（命令回显 + 早期 stdout）30% + 尾部 60%，中间省略
             if total > 20:
-                head_n = max(12, int(total * 0.7))
-                tail_n = max(4, total - head_n)
-                head_n = min(head_n, total - tail_n)
+                tail_ratio = getattr(self.cfg.tool_trim, "bash_tail_ratio", 0.6)
+                tail_n = max(8, int(total * tail_ratio))
+                head_n = max(5, int(total * 0.3))
+                # 确保 head + tail 不超出 total
+                if head_n + tail_n >= total:
+                    head_n = total // 3
+                    tail_n = total - head_n
                 omitted = total - head_n - tail_n
                 if omitted > 0:
                     return (
@@ -954,13 +1039,10 @@ class Agent:
                     )
 
         elif tool_name == "read_file":
-            # read_file：保留连续的中间段（滑动窗口），
-            # 确保 LLM 看到的是完整的代码块而不是碎片
+            # read_file：头尾各半，提示精确范围读取
             if total > 30:
-                # 优先保留文件头部（import/class/func 定义）+ 尽量多的连续内容
-                window = min(total, max(30, threshold // 60))  # 估算可显示行数
+                window = min(total, max(30, threshold // 60))
                 if window < total:
-                    # 保留头部 1/3 + 尾部 1/3，中间截断
                     head_n = window // 2
                     tail_n = window - head_n
                     omitted = total - head_n - tail_n
@@ -971,16 +1053,17 @@ class Agent:
                     )
 
         elif tool_name in ("grep", "glob"):
-            # grep/glob：平铺结果，只保留前 N 行
-            if total > 50:
-                keep = min(50, max(20, threshold // 60))
+            # grep/glob：平铺结果，只保留前 N 行（最相关命中优先）
+            grep_max = getattr(self.cfg.tool_trim, "grep_max_lines", 50)
+            if total > grep_max:
+                keep = min(grep_max, max(20, threshold // 60))
                 omitted = total - keep
                 return (
                     "\n".join(lines[:keep])
                     + f"\n... [{omitted} more matches omitted] ..."
                 )
 
-        # 通用策略（head + tail）
+        # 通用策略（头多尾少）
         if total > 30:
             head_n = 15
             tail_n = 5
@@ -1007,90 +1090,30 @@ class Agent:
     # ── Helpers ────────────────────────────────────────────────────────────────
 
     def _build_system(self) -> str:
-        active = self.skill_loader.active if self.skill_loader else []
+        """
+        [SYS-SYSTEM] 组装 system prompt。
 
-        # [SYS-SKILL-CHUNK] 技能内容裁剪：只注入相关段落
-        if self.cfg.skill_chunking_enabled and self.skill_loader and self._history:
-            last_user = next(
-                (m["content"] for m in reversed(self._history)
-                 if m.get("role") == "user" and isinstance(m.get("content"), str)),
-                ""
-            )
-            skill_ctx = self.skill_loader.build_context(query=last_user)
+        委托给 ContextBuilder.build()，利用其 turn 级缓存：
+        - skill 目录：只在 skill 集合变化时重建
+        - 记忆检索：turn 开始时 refresh_turn_context() 预填充，同 turn 内不重复检索
+        - 项目快照：通过 getter 懒取
+
+        [SYS-SYSCACHE] turn 内缓存：_cached_system 在同一 turn 的首次调用时填充，
+        后续 _call_llm()（含 token 估算）直接复用，turn 结束时由 clear_turn_cache() 清理。
+        """
+        if self._cached_system is not None:
+            return self._cached_system
+
+        if self._ctx_builder is not None:
+            result = self._ctx_builder.build(self._history)
         else:
-            skill_ctx = self.skill_loader.build_context() if self.skill_loader else ""
-
-        base = build_system_prompt(self.cfg, active, skill_context=skill_ctx)
-
-        # [SYS-SKILL-TOOL] 注入技能目录：让模型知道有哪些 skill 可主动调用
-        # 只有当 skill_loader 存在且有可用技能时才注入，避免无效占用 context
-        if self.skill_loader and self.skill_loader.available:
-            catalog = self.skill_loader.get_catalog()
-            inactive = [s for s in catalog if not s["active"]]
-            active_catalog = [s for s in catalog if s["active"]]
-
-            skill_dir_lines = ["## Available Skills (Tool-Managed)\n"]
-            skill_dir_lines.append(
-                "You can call `skill_list`, `skill_activate`, `skill_deactivate` tools "
-                "to manage skills dynamically.\n"
+            # 兜底：ContextBuilder 未初始化时直接构建（不应发生）
+            result = build_system_prompt(
+                self.cfg,
+                self.skill_loader.active if self.skill_loader else [],
             )
-
-            if active_catalog:
-                skill_dir_lines.append("**Currently active:**")
-                for s in active_catalog:
-                    skill_dir_lines.append(f"  - `{s['name']}`: {s['description']}")
-
-            if inactive:
-                skill_dir_lines.append("\n**Available (not yet loaded):**")
-                for s in inactive:
-                    skill_dir_lines.append(f"  - `{s['name']}`: {s['description']}")
-
-            skill_dir_lines.append(
-                "\n> Activate a skill when its domain is relevant to the current task. "
-                "Deactivate it once the task phase is complete to keep context lean."
-            )
-
-            # [SYS-SKILL-DETECT] Track A 声明约定
-            # 只在有激活 skill 时注入，避免无意义干扰
-            if active_catalog:
-                active_names = [s["name"] for s in active_catalog]
-                skill_dir_lines.append(
-                    f"\n**Skill usage tracking:** When your response draws on guidance "
-                    f"from one or more active skills ({', '.join(active_names)}), "
-                    f"append a `<skill_used>name</skill_used>` tag at the very end of your reply "
-                    f"(after all content). Use comma-separation for multiple skills: "
-                    f"`<skill_used>docx,pdf</skill_used>`. "
-                    f"Only declare skills whose guidance you actually applied — "
-                    f"not every skill that is merely loaded."
-                )
-
-            base += "\n\n" + "\n".join(skill_dir_lines)
-
-        # [SYS-PROJ] 注入项目结构快照
-        if self._project_snapshot:
-            base += "\n\n" + self._project_snapshot
-
-        # [SYS-MEMORY] 注入跨 session 长期记忆
-        if self._memory and self._history:
-            last_user = next(
-                (m["content"] for m in reversed(self._history)
-                 if m.get("role") == "user" and isinstance(m.get("content"), str)),
-                ""
-            )
-            if last_user:
-                from mini_agent.perception.memory_factory import merge_search
-                memories = merge_search(
-                    self._memory, self._global_memory, last_user,
-                    k=self.cfg.memory_top_k,
-                )
-                if memories:
-                    snippets = "\n".join(
-                        f"- [{m.session_id[:6]}] {m.summary}"
-                        for m in memories
-                    )
-                    base += f"\n\n## Relevant past experience\n{snippets}"
-
-        return base
+        self._cached_system = result
+        return result
 
     def _auto_compress_history(self) -> None:
         """
