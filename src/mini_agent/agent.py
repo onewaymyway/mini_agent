@@ -352,15 +352,11 @@ class Agent:
                 return
 
             turns_text = "\n".join(f"- {t[:200]}" for t in user_turns[:10])
-            prompt = (
-                "Summarize this conversation in 2-3 sentences. "
-                "Focus on: what was accomplished, key decisions made, and important outcomes. "
-                "Be concise. Respond with only the summary.\n\n"
-                f"User messages:\n{turns_text}"
-            )
+            from mini_agent.prompts import pm
+            prompt = pm.render("user/session_summary_request", turns_text=turns_text)
             resp = self._llm.chat(
                 messages=[{"role": "user", "content": prompt}],
-                system="You are a concise summarizer.",
+                system=pm.render("system/summarizer"),
                 tools=[],
             )
             summary = resp.text.strip()

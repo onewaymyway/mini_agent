@@ -118,6 +118,13 @@ def _main_inner() -> None:
     if args.no_stream:
         cfg.stream = False
 
+    # ── Prompts ─────────────────────────────────────────────────────────────
+    if args.prompts_dir:
+        cfg.prompts_dir = Path(args.prompts_dir).expanduser()
+    if cfg.prompts_dir:
+        from mini_agent.prompts import pm
+        pm.set_custom_dir(cfg.prompts_dir)
+
     # ── Skills ───────────────────────────────────────────────────────────────
     skill_dirs: list[Path] = []
     if cfg.skills_dir:

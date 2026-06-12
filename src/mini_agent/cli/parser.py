@@ -43,6 +43,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--system", "-s", default="", help="Extra system prompt text")
     p.add_argument("--project", "-p", default=None, help="Project root directory")
     p.add_argument("--skills-dir", default=None, help="Additional skills directory")
+    p.add_argument("--prompts-dir", default=None, help="Custom prompts directory (overrides built-in prompts)")
     p.add_argument("--verbose", "-v", action="store_true", help="Show raw tool JSON")
     p.add_argument("--sandbox", action="store_true", help="Sandbox mode (no destructive ops)")
     p.add_argument("--yes", "-y", action="store_true", help="Auto-approve all tool calls")

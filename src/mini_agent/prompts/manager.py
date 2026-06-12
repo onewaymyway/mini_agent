@@ -68,11 +68,40 @@ class PromptManager:
     Lines starting with `#` are treated as comments and stripped before use.
     """
 
-    def __init__(self, prompts_dir: Optional[Path | str] = None) -> None:
+    def __init__(
+        self,
+        prompts_dir: Optional[Path | str] = None,
+        custom_dir: Optional[Path | str] = None,
+    ) -> None:
         self._root = Path(prompts_dir) if prompts_dir else _DEFAULT_PROMPTS_DIR
+        # 用户自定义 prompts 目录（可选）。查找时优先于 _root，
+        # 若自定义目录中不存在某文件，再回退到 _root（项目默认目录）。
+        self._custom_root: Optional[Path] = Path(custom_dir) if custom_dir else None
         # Two-level cache: raw text per file, parsed fragments per fragment file
         self._raw_cache: dict[str, str] = {}
         self._fragment_cache: dict[str, dict[str, str]] = {}
+
+    def set_custom_dir(self, custom_dir: Optional[Path | str]) -> None:
+        """
+        设置/更新用户自定义 prompts 目录，并清空缓存。
+
+        加载顺序：custom_dir 优先，找不到则回退到默认 _root。
+        传入 None 可清除自定义目录，恢复仅使用默认目录。
+        """
+        self._custom_root = Path(custom_dir) if custom_dir else None
+        self.reload()
+
+    @property
+    def custom_dir(self) -> Optional[Path]:
+        return self._custom_root
+
+    def _search_roots(self) -> list[Path]:
+        """返回按优先级排序的查找目录列表：自定义目录优先，默认目录回退。"""
+        roots = []
+        if self._custom_root is not None:
+            roots.append(self._custom_root)
+        roots.append(self._root)
+        return roots
 
     # ── Core API ───────────────────────────────────────────────────────────────
 
@@ -254,13 +283,20 @@ class PromptManager:
 
     def list_prompts(self) -> list[str]:
         """Return all available prompt logical names (without .md)."""
-        result = []
-        for md_file in sorted(self._root.rglob("*.md")):
-            rel = md_file.relative_to(self._root)
-            # Exclude fragment files (they use key:value format, not templates)
-            if rel.parts[0] != "fragments":
-                result.append(str(rel.with_suffix("")))
-        return result
+        seen: set[str] = set()
+        result: list[str] = []
+        for root in self._search_roots():
+            if not root.exists():
+                continue
+            for md_file in sorted(root.rglob("*.md")):
+                rel = md_file.relative_to(root)
+                # Exclude fragment files (they use key:value format, not templates)
+                if rel.parts[0] != "fragments":
+                    name = str(rel.with_suffix(""))
+                    if name not in seen:
+                        seen.add(name)
+                        result.append(name)
+        return sorted(result)
 
     def list_fragments(self, file: str) -> list[str]:
         """Return all keys in a fragment file."""
@@ -278,14 +314,20 @@ class PromptManager:
         if name in self._raw_cache:
             return self._raw_cache[name]
 
-        path = self._root / (name + ".md")
-        if not path.exists():
-            # Also try without extension (caller may have passed full filename)
-            path = self._root / name
-        if not path.exists():
+        path = None
+        for root in self._search_roots():
+            candidate = root / (name + ".md")
+            if not candidate.exists():
+                # Also try without extension (caller may have passed full filename)
+                candidate = root / name
+            if candidate.exists():
+                path = candidate
+                break
+
+        if path is None:
             available = self.list_prompts()
             raise PromptNotFoundError(
-                f"Prompt {name!r} not found at {self._root}.\n"
+                f"Prompt {name!r} not found in {self._search_roots()}.\n"
                 f"Available prompts: {available}"
             )
 
@@ -298,9 +340,16 @@ class PromptManager:
         if file in self._fragment_cache:
             return self._fragment_cache[file]
 
-        path = self._root / "fragments" / (file + ".md")
-        if not path.exists():
-            raise PromptNotFoundError(f"Fragment file {file!r} not found at {path}")
+        path = None
+        for root in self._search_roots():
+            candidate = root / "fragments" / (file + ".md")
+            if candidate.exists():
+                path = candidate
+                break
+        if path is None:
+            raise PromptNotFoundError(
+                f"Fragment file {file!r} not found in {[r / 'fragments' for r in self._search_roots()]}"
+            )
 
         content = path.read_text(encoding="utf-8")
         fragments = _parse_fragments(content)
@@ -310,6 +359,11 @@ class PromptManager:
     # ── Debug helpers ──────────────────────────────────────────────────────────
 
     def __repr__(self) -> str:
+        if self._custom_root:
+            return (
+                f"PromptManager(custom_dir={self._custom_root}, "
+                f"root={self._root}, cached={len(self._raw_cache)} files)"
+            )
         return f"PromptManager(root={self._root}, cached={len(self._raw_cache)} files)"
 
 
@@ -393,15 +447,20 @@ def _parse_fragments(content: str) -> dict[str, str]:
 _default_manager: Optional[PromptManager] = None
 
 
-def get_prompt_manager(prompts_dir: Optional[Path] = None) -> PromptManager:
+def get_prompt_manager(
+    prompts_dir: Optional[Path] = None,
+    custom_dir: Optional[Path] = None,
+) -> PromptManager:
     """
     Return the module-level singleton PromptManager.
     First call initializes it; subsequent calls return the cached instance.
     Pass prompts_dir on first call to override the default location.
+    Pass custom_dir to set a user-specified override directory that is
+    searched before the default/prompts_dir location.
     """
     global _default_manager
     if _default_manager is None:
-        _default_manager = PromptManager(prompts_dir)
+        _default_manager = PromptManager(prompts_dir, custom_dir)
     return _default_manager
 
 

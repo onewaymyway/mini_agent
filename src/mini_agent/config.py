@@ -214,6 +214,7 @@ class AppConfig:
     max_turns: int = DEFAULT_MAX_TURNS
     project_root: Path = field(default_factory=Path.cwd)
     skills_dir: Optional[Path] = None
+    prompts_dir: Optional[Path] = None
 
     # ── 运行行为 ───────────────────────────────────────────────────────────────
     verbose: bool = False
@@ -430,6 +431,7 @@ def load_config(
     api_key   = os.environ.get("ANTHROPIC_API_KEY", "")
     claude_md = _read_claude_md(root)
     skills_dir = _resolve_skills_dir(root)
+    prompts_dir = _resolve_prompts_dir(root)
 
     _llm_provider = _f("provider", llm_provider) or os.environ.get("LLM_PROVIDER", "anthropic")
     _llm_base_url = _f("base_url", llm_base_url) or os.environ.get("LLM_BASE_URL", "")
@@ -585,6 +587,7 @@ def load_config(
         max_tokens=int(file_cfg.get("max_tokens") or os.environ.get("CLAUDE_MAX_TOKENS", DEFAULT_MAX_TOKENS)),
         project_root=root,
         skills_dir=skills_dir,
+        prompts_dir=prompts_dir,
         verbose=_verbose,
         sandbox=_sandbox,
         auto_approve=_auto_approve,
@@ -644,6 +647,25 @@ def _read_claude_md(root: Path) -> str:
     return ""
 
 
+def _resolve_prompts_dir(root: Path) -> Optional[Path]:
+    """
+    解析用户自定义 prompts 目录。
+
+    查找顺序（优先级从高到低）：
+    1. <project_root>/.agent/prompts/   — 项目级自定义 prompt
+    2. ~/.agent/prompts/                — 全局自定义 prompt
+
+    若均不存在，返回 None，PromptManager 将仅使用项目内置默认 prompts 目录
+    （src/mini_agent/prompts/）。
+    """
+    from mini_agent.storage.paths import AgentPaths
+    paths = AgentPaths(root)
+    for c in (paths.workdir_prompts_dir, paths.global_prompts_dir):
+        if c.is_dir():
+            return c
+    return None
+
+
 def _resolve_skills_dir(root: Path) -> Optional[Path]:
     from mini_agent.storage.paths import AgentPaths
     paths = AgentPaths(root)
@@ -661,6 +683,8 @@ def _resolve_skills_dir(root: Path) -> Optional[Path]:
 def build_system_prompt(cfg: AppConfig, active_skills: list[str], skill_context: str = "") -> str:
     from datetime import datetime
     from mini_agent.prompts import pm
+    if cfg.prompts_dir and pm.custom_dir != cfg.prompts_dir:
+        pm.set_custom_dir(cfg.prompts_dir)
     return pm.build_system_prompt(
         claude_md_content=cfg.claude_md_content,
         active_skills=active_skills,

@@ -82,6 +82,11 @@ class AgentPaths:
         """~/.agent/skills/ — 全局技能库"""
         return self.global_dir / "skills"
 
+    @property
+    def global_prompts_dir(self) -> Path:
+        """~/.agent/prompts/ — 全局自定义 prompt 目录"""
+        return self.global_dir / "prompts"
+
     # ── Workdir 级 ─────────────────────────────────────────────────────────
 
     @property
@@ -93,6 +98,11 @@ class AgentPaths:
     def workdir_memory(self) -> Path:
         """<project_root>/.agent/memory.jsonl — 项目级记忆"""
         return self.workdir_dir / "memory.jsonl"
+
+    @property
+    def workdir_prompts_dir(self) -> Path:
+        """<project_root>/.agent/prompts/ — 项目级自定义 prompt 目录"""
+        return self.workdir_dir / "prompts"
 
     @property
     def permissions(self) -> Path:

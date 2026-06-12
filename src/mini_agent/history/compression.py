@@ -164,17 +164,6 @@ class LLMSummaryStrategy(CompressionStrategy):
     建议：仅在手动触发（/compact 命令）时使用，不作为自动压缩默认策略。
     """
 
-    _SUMMARY_PROMPT = """\
-Please create a concise but complete summary of the conversation above.
-The summary will replace the full conversation history, so it must contain:
-1. The user's overall goal
-2. What has been accomplished so far (with key details like file paths, commands run, results)
-3. Important decisions or findings
-4. The current state / what still needs to be done
-
-Format your response as a single paragraph of 150-250 words.
-Do NOT include meta-commentary like "Here is a summary:" — just the summary text."""
-
     def compress(self, history, cfg, llm_client=None) -> list[dict]:
         if len(history) < 6:
             return list(history)
@@ -187,16 +176,17 @@ Do NOT include meta-commentary like "Here is a summary:" — just the summary te
         old_turns = history[:cutoff]
         keep = history[cutoff:]
 
+        from mini_agent.prompts import pm
         # 构建摘要请求：把被压缩的历史 + 摘要指令发给 LLM
         summary_messages = list(old_turns) + [
-            {"role": "user", "content": self._SUMMARY_PROMPT}
+            {"role": "user", "content": pm.render("user/compress_summary_request")}
         ]
 
         try:
             from mini_agent.llm.base import ToolSchema
             response = llm_client.chat(
                 messages=summary_messages,
-                system="You are a precise assistant that summarizes conversations.",
+                system=pm.render("system/compress_summarizer"),
                 tools=[],
             )
             summary_text = response.text.strip() or _build_summary_text(old_turns, cutoff)
