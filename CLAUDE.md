@@ -39,6 +39,7 @@
 - 未来规划相关的文档放在/next_doc 目录下
 - 关键功能都应该在/tests 下有对应的单元测试
 - 系统性的测试案例放在 /test_cases 下
+- 所有涉及调用大模型的prompt，必须保存到 src/mini_agent/prompts 目录下，然后通过 PromptManager 来获取
 
 ## 运行
 
