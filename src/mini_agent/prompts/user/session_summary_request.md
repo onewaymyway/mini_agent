@@ -8,5 +8,8 @@ Focus on: what was accomplished, key decisions made, and important outcomes.
 Be concise. Respond with only the summary, in the same language as the user
 messages below.
 
+必须遵守：
+输出的summary的语言必须和提供的User messages里的语言是一样的。
+
 User messages:
 {{turns_text}}

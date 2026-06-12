@@ -16,6 +16,7 @@ Agent 本身退化为纯编排层。
 from __future__ import annotations
 
 import copy
+import threading
 from typing import Optional
 
 from mini_agent.config import AppConfig, SessionStats, build_system_prompt
@@ -318,20 +319,30 @@ class Agent:
                 stats=stats,
             )
 
-            # [SYS-SUMMARY] 达到门槛后生成 session 摘要
+            # [SYS-SUMMARY] 达到门槛后生成 session 摘要（耗时较长，放到后台线程，避免阻塞主流程）
             if (self.cfg.session_summary_enabled
                     and self.stats.turns >= self.cfg.session_summary_min_turns
                     and not getattr(self._session, "summary", "")):
-                self._generate_and_save_summary(str(path))
+                R.print_info("正在后台生成本次会话的摘要记忆...")
+                history_snapshot = list(self._history)
+                threading.Thread(
+                    target=self._generate_and_save_summary,
+                    args=(str(path), history_snapshot),
+                    daemon=True,
+                    name="mini-agent-summary",
+                ).start()
 
             return str(path)
         except Exception as e:
             R.print_warning(f"Session save failed: {e}")
             return None
 
-    def _generate_and_save_summary(self, session_path: str) -> None:
+    def _generate_and_save_summary(self, session_path: str, history: Optional[list] = None) -> None:
         """
         [SYS-SUMMARY] 用 LLM 生成 session 摘要，写回 session 文件，并写入长期记忆。
+
+        本方法可能在后台线程中运行（由 save_session 触发），因此通过 `history`
+        参数接收调用时刻的历史快照，不直接访问 self._history，避免与主线程并发修改冲突。
 
         修复：
         - 不再使用 json.loads(path.read_text()) + path.write_text() 裸读写，
@@ -340,8 +351,10 @@ class Agent:
         - 写回前先将 summary 赋给 self._session.summary，save() 会自动持久化。
         """
         try:
+            if history is None:
+                history = self._history
             user_turns = [
-                m["content"] for m in self._history
+                m["content"] for m in history
                 if m.get("role") == "user"
                 and isinstance(m.get("content"), str)
                 and not m["content"].startswith("<tool_result")
@@ -375,7 +388,7 @@ class Agent:
                     "skill_activations": self.stats.skill_activations,
                 }
                 try:
-                    self._session_mgr.save(self._session, history=self._history, stats=stats)
+                    self._session_mgr.save(self._session, history=history, stats=stats)
                 except Exception as e:
                     R.print_warning(f"[summary] session re-save failed: {e}")
 
@@ -399,6 +412,7 @@ class Agent:
                     self._memory.add(entry)
                 # 同时写入 memory_delta.jsonl（session 审计）
                 self._append_memory_delta(entry)
+            R.print_info("会话摘要记忆已生成")
         except Exception as e:
             R.print_warning(f"[summary] generation failed: {e}")
 
