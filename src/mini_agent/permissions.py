@@ -93,6 +93,14 @@ class PermissionGuard:
         if tool_name in _SAFE_TOOLS:
             return True
 
+        # Tool-declared opt-out: @tool(requires_approval=False) -> 视为 safe tool
+        # （前提是不在 _RISKY_TOOLS 里，sandbox/risky 检查已在上面短路处理）
+        if tool_name not in _RISKY_TOOLS:
+            from mini_agent.tools import get_default_registry
+            td = get_default_registry().get(tool_name)
+            if td is not None and not td.requires_approval:
+                return True
+
         # Auto-approve: skip prompts
         if self.auto_approve:
             return True
