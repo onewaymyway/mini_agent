@@ -3,6 +3,9 @@
   "provider": "nvidia",
   "system_message_format": "system_role",
   "verbose": true,
+  "memory_enabled": true,
+  "session_summary_enabled": true,
+  "session_summary_min_turns": 3,
   "max_llm_calls": 4,
 
   "mcp_servers": [
