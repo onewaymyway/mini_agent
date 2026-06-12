@@ -658,6 +658,14 @@ class Agent:
         Returns the final assistant text.
         """
         try:
+            # [SYS-HOOKS] UserPromptSubmit：可注入额外上下文
+            from mini_agent.hooks import get_hook_manager
+            hook_mgr = get_hook_manager()
+            if hook_mgr is not None:
+                pre = hook_mgr.run("UserPromptSubmit", {"prompt": user_message})
+                if pre.context:
+                    user_message = user_message + f"\n\n[hook context]\n{pre.context}"
+
             # [SYS-WATCH] 检测外部文件变化（消费后台线程的检测结果，不做同步 IO）
             if self._file_watcher:
                 with self._file_changes_lock:

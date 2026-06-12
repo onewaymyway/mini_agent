@@ -207,6 +207,28 @@ class PromptManager:
         except ImportError:
             pass
 
+        # 6b. Custom sub-agent profiles (spawn_named_agent)
+        try:
+            from mini_agent.orchestrator.agent_profiles import get_profile_loader
+            loader = get_profile_loader()
+            if loader is not None and loader.available:
+                lines = []
+                for p in loader.get_catalog():
+                    req = [i["name"] for i in p["inputs"] if i["required"]]
+                    opt = [i["name"] for i in p["inputs"] if not i["required"]]
+                    schema_hint = ""
+                    if req or opt:
+                        bits = []
+                        if req:
+                            bits.append(f"required: {req}")
+                        if opt:
+                            bits.append(f"optional: {opt}")
+                        schema_hint = " (" + ", ".join(bits) + ")"
+                    lines.append(f"- `{p['name']}`: {p['description']}{schema_hint}")
+                parts.append(self.render("system/available_subagents", agent_list="\n".join(lines)))
+        except Exception:
+            pass
+
         # 7. 执行计划上下文（如有活跃计划，注入当前进度）
         try:
             from mini_agent.orchestrator.plan import get_plan

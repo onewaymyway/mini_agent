@@ -149,6 +149,17 @@ def _main_inner() -> None:
     init_task_manager(cfg, max_workers=max_workers)
     R.print_info(f"Task manager ready (max {max_workers} concurrent workers)")
 
+    # ── 自定义子 agent profiles + hooks ──────────────────────────────────────
+    from mini_agent.orchestrator.agent_profiles import init_agent_profiles
+    profile_loader = init_agent_profiles(cfg)
+    if profile_loader.available:
+        R.print_info(f"Custom sub-agents loaded: {profile_loader.available}")
+
+    from mini_agent.hooks import init_hooks
+    hook_mgr = init_hooks(cfg.project_root)
+    if hook_mgr.has_any:
+        R.print_info("Hooks loaded from .agent/hooks.json")
+
     # ── Agent ─────────────────────────────────────────────────────────────────
     agent = Agent(cfg=cfg, skill_loader=skill_loader, guard=guard)
 

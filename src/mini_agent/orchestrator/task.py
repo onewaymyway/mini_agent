@@ -56,6 +56,8 @@ class Task:
     max_turns: int = 30
     depends_on: list[str] = field(default_factory=list)  # 依赖的 task id 列表
     tags: list[str] = field(default_factory=list)        # 自由标签（用于过滤）
+    allowed_tools: Optional[list[str]] = None            # 限制可用工具名（None=不限制）
+    allowed_tool_groups: Optional[list[str]] = None      # 限制可用工具分组（None=不限制）
     created_at: float = field(default_factory=time.time)
 
     def __post_init__(self):

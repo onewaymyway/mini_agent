@@ -102,6 +102,30 @@ class ToolRegistry:
 
     # ── SubRegistry ───────────────────────────────────────────────────────────
 
+    def filtered(self, names: Optional[list[str]] = None, groups: Optional[list[str]] = None) -> "ToolRegistry":
+        """
+        返回按工具名和/或分组筛选出的子 registry。
+
+        - names: 显式允许的工具名列表
+        - groups: 允许的分组列表
+        - 两者都为空 -> 返回包含全部工具的子 registry（等价于全量拷贝）
+        - 两者都给出 -> 取并集
+
+        用于自定义子 agent（AgentProfile.tools / tool_groups）限制可用工具集。
+        """
+        if not names and not groups:
+            allowed = set(self._tools)
+        else:
+            allowed = set(names or [])
+            allowed |= {t for g in (groups or []) for t in self._groups.get(g, [])}
+
+        sub = ToolRegistry(namespace=self.namespace)
+        for tool_name, td in self._tools.items():
+            if tool_name in allowed:
+                sub._tools[tool_name] = td
+                sub._groups.setdefault(td.group, []).append(tool_name)
+        return sub
+
     def subset(self, groups: list[str]) -> "ToolRegistry":
         """
         返回只包含指定分组工具的子 registry。

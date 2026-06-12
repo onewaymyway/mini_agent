@@ -22,6 +22,8 @@ from mini_agent.cli.commands import (
     handle_plan_cmd,
     handle_concurrency_cmd,
     handle_provider_cmd,
+    handle_agents_cmd,
+    handle_hooks_cmd,
 )
 
 
@@ -165,6 +167,12 @@ def _handle_slash(cmd: str, agent: Agent, skill_loader: SkillLoader) -> None:
 
     elif name == "provider":
         handle_provider_cmd(parts[1:], agent)
+
+    elif name == "agents":
+        handle_agents_cmd(parts[1:], agent)
+
+    elif name == "hooks":
+        handle_hooks_cmd(parts[1:], agent)
 
     else:
         R.print_error(pm.fragment("cli_messages", "UNKNOWN_COMMAND", cmd=cmd))

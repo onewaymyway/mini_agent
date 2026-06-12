@@ -372,7 +372,16 @@ class SubAgent:
             sandbox=self.base_cfg.sandbox,   # 【修复】继承主进程的 sandbox 配置
             project_root=self.base_cfg.project_root,
         )
-        return Agent(cfg=cfg, guard=guard, llm_client=create_client(llm_cfg))
+
+        # 自定义子 agent 工具限制（来自 AgentProfile.tools / tool_groups）
+        registry = None
+        if task.allowed_tools or task.allowed_tool_groups:
+            registry = get_default_registry().filtered(
+                names=task.allowed_tools,
+                groups=task.allowed_tool_groups,
+            )
+
+        return Agent(cfg=cfg, guard=guard, llm_client=create_client(llm_cfg), registry=registry)
 
     def _write_result_json(self, output: str, agent) -> None:
         """任务完成时将结果写入 result.json。"""

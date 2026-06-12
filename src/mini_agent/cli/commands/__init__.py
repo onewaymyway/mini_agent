@@ -16,6 +16,8 @@ from mini_agent.cli.commands.tasks import handle_tasks_cmd
 from mini_agent.cli.commands.plans import handle_plan_cmd
 from mini_agent.cli.commands.concurrency import handle_concurrency_cmd
 from mini_agent.cli.commands.providers import handle_provider_cmd
+from mini_agent.cli.commands.agents import handle_agents_cmd
+from mini_agent.cli.commands.hooks import handle_hooks_cmd
 
 __all__ = [
     "handle_skills_list",
@@ -25,4 +27,6 @@ __all__ = [
     "handle_plan_cmd",
     "handle_concurrency_cmd",
     "handle_provider_cmd",
+    "handle_agents_cmd",
+    "handle_hooks_cmd",
 ]

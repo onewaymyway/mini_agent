@@ -191,6 +191,28 @@ class AgentPaths:
         d.mkdir(parents=True, exist_ok=True)
         return d
 
+    # ── Hooks / 自定义子 agent ────────────────────────────────────────────
+
+    @property
+    def global_hooks_config(self) -> Path:
+        """~/.agent/hooks.json — 全局 hooks 配置"""
+        return self.global_dir / "hooks.json"
+
+    @property
+    def project_hooks_config(self) -> Path:
+        """<project_root>/.agent/hooks.json — 项目级 hooks 配置"""
+        return self.workdir_dir / "hooks.json"
+
+    @property
+    def global_agents_dir(self) -> Path:
+        """~/.agent/agents/ — 全局自定义子 agent 配置目录"""
+        return self.global_dir / "agents"
+
+    @property
+    def project_agents_dir(self) -> Path:
+        """<project_root>/.agent/agents/ — 项目级自定义子 agent 配置目录"""
+        return self.workdir_dir / "agents"
+
     def __repr__(self) -> str:
         return f"AgentPaths(project_root={self.project_root})"
 

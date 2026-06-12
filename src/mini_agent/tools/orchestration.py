@@ -132,6 +132,123 @@ def spawn_agent(
 
 
 @tool(
+    name="list_agent_profiles",
+    description=(
+        "List predefined custom sub-agent profiles available via spawn_named_agent, "
+        "including each profile's description and required/optional input parameters."
+    ),
+    schema={"type": "object", "properties": {}},
+    requires_approval=False,
+)
+def list_agent_profiles() -> str:
+    from mini_agent.orchestrator.agent_profiles import get_profile_loader
+    loader = get_profile_loader()
+    if loader is None or not loader.available:
+        return "[no custom agent profiles found]"
+    return json.dumps(loader.get_catalog(), indent=2, ensure_ascii=False)
+
+
+@tool(
+    name="spawn_named_agent",
+    description=(
+        "Spawn a predefined, specialized sub-agent (see list_agent_profiles for available "
+        "agent_type values and their input schema). Pass structured `inputs` matching the "
+        "profile's declared input parameters, and optional free-form `context` "
+        "(e.g. relevant file excerpts, prior findings, background info) that will be "
+        "injected into the sub-agent's prompt. Runs asynchronously in the background; "
+        "returns a task_id — use get_task_status to check progress and get_task_result "
+        "to retrieve the output."
+    ),
+    schema={
+        "type": "object",
+        "properties": {
+            "agent_type": {
+                "type": "string",
+                "description": "Name of the predefined agent profile (see list_agent_profiles)",
+            },
+            "inputs": {
+                "type": "object",
+                "description": "Key-value parameters matching the agent profile's declared inputs",
+            },
+            "context": {
+                "type": "string",
+                "description": "Free-form context/background info passed to the sub-agent",
+            },
+            "name": {
+                "type": "string",
+                "description": "Optional human-readable name for this task (shown in dashboard)",
+            },
+            "depends_on": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": "List of task_ids that must complete before this task starts",
+            },
+            "tags": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": "Optional tags for grouping/filtering tasks",
+            },
+        },
+        "required": ["agent_type", "inputs"],
+    },
+    requires_approval=False,
+)
+def spawn_named_agent(
+    agent_type: str,
+    inputs: Optional[dict] = None,
+    context: str = "",
+    name: str = "",
+    depends_on: Optional[list] = None,
+    tags: Optional[list] = None,
+) -> str:
+    mgr = get_task_manager()
+    if mgr is None:
+        return "[error: TaskManager not initialized. Call init_task_manager() first.]"
+
+    from mini_agent.orchestrator.agent_profiles import (
+        get_profile_loader, render_profile_prompt, validate_inputs,
+    )
+    loader = get_profile_loader()
+    if loader is None:
+        return "[error: agent profiles not initialized. Call init_agent_profiles() first.]"
+
+    profile = loader.get(agent_type)
+    if profile is None:
+        available = loader.available
+        return (
+            f"[error: unknown agent_type '{agent_type}'. "
+            f"Available profiles: {available}]"
+        )
+
+    inputs = inputs or {}
+    err = validate_inputs(profile, inputs)
+    if err:
+        return f"[error: {err}]"
+
+    prompt = render_profile_prompt(profile, inputs, context)
+
+    from mini_agent.orchestrator.task import Task
+    task = Task(
+        prompt=prompt,
+        name=name or f"{agent_type}",
+        depends_on=depends_on or [],
+        model=profile.model,
+        provider=profile.provider,
+        allowed_tools=profile.tools or None,
+        allowed_tool_groups=profile.tool_groups or None,
+        tags=(tags or []) + [f"agent:{agent_type}"],
+    )
+    task_id = mgr.submit(task)
+    return json.dumps({
+        "task_id": task_id,
+        "agent_type": agent_type,
+        "name": task.name,
+        "status": "pending",
+        "message": f"Sub-agent '{agent_type}' spawned. Use get_task_status('{task_id}') to check progress.",
+    }, indent=2, ensure_ascii=False)
+
+
+@tool(
     name="spawn_agents",
     description=(
         "Spawn multiple sub-agents concurrently in a single call. "

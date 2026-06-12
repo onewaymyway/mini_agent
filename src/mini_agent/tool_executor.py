@@ -66,7 +66,23 @@ class ToolExecutor:
             R.print_tool_call(tc.name, tc.input, verbose=self.cfg.verbose)
             self.stats.tool_calls += 1
 
-            allowed = self.guard.check(tc.name, tc.input)
+            # [SYS-HOOKS] PreToolUse：可阻断或修改工具输入
+            from mini_agent.hooks import get_hook_manager
+            hook_mgr = get_hook_manager()
+            tool_input = tc.input
+            if hook_mgr is not None:
+                pre = hook_mgr.run("PreToolUse", {"tool_name": tc.name, "tool_input": tool_input}, tool_name=tc.name)
+                if pre.blocked:
+                    result_str = f"[blocked by hook: {pre.reason or 'PreToolUse hook denied'}]"
+                    R.print_tool_error(tc.name, pre.reason or "blocked by PreToolUse hook")
+                    if self.cfg.tool_stats_enabled:
+                        self.stats.record_tool_call(tc.name, False, 0)
+                    result_strs.append(result_str)
+                    continue
+                if pre.modified_input:
+                    tool_input = pre.modified_input
+
+            allowed = self.guard.check(tc.name, tool_input)
             if not allowed:
                 result_str = "[Tool call denied by user]"
                 R.print_tool_error(tc.name, "denied by user")
@@ -76,7 +92,7 @@ class ToolExecutor:
                 # [SYS-TOOLCACHE] 检查缓存
                 cached = None
                 if self.tool_cache:
-                    cached = self.tool_cache.get(tc.name, tc.input)
+                    cached = self.tool_cache.get(tc.name, tool_input)
 
                 if cached is not None:
                     result_str = cached
@@ -90,9 +106,9 @@ class ToolExecutor:
                             self._mcp_manager is not None
                             and self._mcp_manager.is_mcp_tool(tc.name)
                         ):
-                            result = self._mcp_manager.call_tool_sync(tc.name, tc.input)
+                            result = self._mcp_manager.call_tool_sync(tc.name, tool_input)
                         else:
-                            result = self.registry.call(tc.name, tc.input)
+                            result = self.registry.call(tc.name, tool_input)
                         result_str = str(result) if not isinstance(result, str) else result
 
                         # [SYS-TRIM] 工具调用结果截断（按工具类型分策略）
@@ -102,7 +118,7 @@ class ToolExecutor:
 
                         # [SYS-TOOLCACHE] 写入缓存
                         if self.tool_cache:
-                            self.tool_cache.put(tc.name, tc.input, result_str)
+                            self.tool_cache.put(tc.name, tool_input, result_str)
 
                         # [SYS-TOOLCACHE] 写操作执行成功后，立即使目标文件缓存失效。
                         # 覆盖的场景：
@@ -114,13 +130,13 @@ class ToolExecutor:
                             and tc.name in ("write_file", "create_file", "patch_file", "delete_file")
                             and not result_str.startswith("[error")
                         ):
-                            _target_path = tc.input.get("path", "")
+                            _target_path = tool_input.get("path", "")
                             if _target_path:
                                 self.tool_cache.invalidate_file(_target_path)
 
                         # [SYS-WATCH] 注册 read_file 的文件（供后台线程追踪）
                         if self.file_watcher and tc.name == "read_file":
-                            _path = tc.input.get("path", "")
+                            _path = tool_input.get("path", "")
                             if _path:
                                 self.file_watcher.register(_path, result_str)
 
@@ -131,6 +147,16 @@ class ToolExecutor:
                         R.print_tool_error(tc.name, str(e))
                         if self.cfg.tool_stats_enabled:
                             self.stats.record_tool_call(tc.name, False, 0)
+
+            # [SYS-HOOKS] PostToolUse：可注入额外上下文（拼接到结果后）
+            if hook_mgr is not None:
+                post = hook_mgr.run(
+                    "PostToolUse",
+                    {"tool_name": tc.name, "tool_input": tool_input, "tool_result": result_str},
+                    tool_name=tc.name,
+                )
+                if post.context:
+                    result_str = result_str + f"\n\n[hook note] {post.context}"
 
             result_strs.append(result_str)
 
