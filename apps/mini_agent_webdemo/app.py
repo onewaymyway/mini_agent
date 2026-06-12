@@ -366,43 +366,58 @@ def format_event_html(event: dict) -> str:
 
 def scroll_chat_to_bottom():
     """
-    注入 JS 让对话容器滚动到底部。
-    使用多种选择器策略兼容不同版本 Streamlit DOM 结构。
+    让对话容器滚动到底部。
+
+    此函数必须在 chat_container 的 with 块内调用，
+    这样 iframe 会被放置在对话容器内部，
+    window.frameElement.closest() 才能精确找到对应的可滚动容器。
+
+    原理：
+    - st.markdown 的 <script> 永远不执行（浏览器 innerHTML 安全限制）
+    - st.container(autoscroll=True) 对 rerun 模式无效（组件重建时状态重置）
+    - st.components.v1.html 在独立 iframe 里执行 JS，
+      window.frameElement 指向父页面里这个 iframe 的 DOM 元素，
+      .closest('[data-testid="stVerticalBlockBorderWrapper"]') 精确找到
+      st.container(height=...) 生成的可滚动容器
     """
-    scroll_js = """
+    js = """
 <script>
 (function() {
-    function scrollAll() {
-        // 策略1：找所有有固定高度（overflow scroll）的容器
-        var allDivs = document.querySelectorAll('div');
-        var scrolled = false;
-        for (var i = 0; i < allDivs.length; i++) {
-            var el = allDivs[i];
-            var style = window.getComputedStyle(el);
-            if ((style.overflowY === 'auto' || style.overflowY === 'scroll')
-                    && el.scrollHeight > el.clientHeight + 20
-                    && el.clientHeight > 100) {
-                el.scrollTop = el.scrollHeight;
-                scrolled = true;
-            }
+  function doScroll() {
+    try {
+      var frame = window.frameElement;
+      if (!frame) return false;
+
+      // st.container(height=...) 对应的 DOM 是 stVerticalBlockBorderWrapper
+      var container = frame.closest('[data-testid="stVerticalBlockBorderWrapper"]');
+      if (container) {
+        container.scrollTop = container.scrollHeight;
+        return true;
+      }
+
+      // fallback：沿父元素链找第一个 overflow:auto/scroll 的容器
+      var el = frame.parentElement;
+      while (el && el !== window.parent.document.body) {
+        var ov = window.parent.getComputedStyle(el).overflowY;
+        if ((ov === 'auto' || ov === 'scroll') && el.scrollHeight > el.clientHeight) {
+          el.scrollTop = el.scrollHeight;
+          return true;
         }
-        // 策略2：Streamlit stVerticalBlockBorderWrapper
-        var wrappers = document.querySelectorAll('[data-testid="stVerticalBlockBorderWrapper"]');
-        wrappers.forEach(function(wrapper) {
-            wrapper.scrollTop = wrapper.scrollHeight;
-            var inner = wrapper.querySelector('[data-testid="stVerticalBlock"]');
-            if (inner) inner.scrollTop = inner.scrollHeight;
-        });
-    }
-    // 多次尝试，等待 DOM 渲染完成
-    setTimeout(scrollAll, 100);
-    setTimeout(scrollAll, 400);
-    setTimeout(scrollAll, 900);
-    setTimeout(scrollAll, 1800);
+        el = el.parentElement;
+      }
+    } catch(e) {}
+    return false;
+  }
+
+  // 立即执行 + 短延迟重试（等 Streamlit 把新内容渲染完）
+  doScroll();
+  setTimeout(doScroll, 80);
+  setTimeout(doScroll, 250);
+  setTimeout(doScroll, 500);
 })();
 </script>
 """
-    st.markdown(scroll_js, unsafe_allow_html=True)
+    st.components.v1.html(js, height=0, scrolling=False)
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -1528,12 +1543,15 @@ def main():
 
     with chat_col:
         # ── 对话消息区 ──
+        # autoscroll=True 对 rerun 模式不可靠（每次 rerun 组件树重建，useRef 状态重置）
+        # 改用 components.v1.html 在容器内注入 JS 精确滚动
         chat_container = st.container(height=480)
         render_chat_messages(chat_container)
-
-        # 有消息时滚动到底部
-        if st.session_state.messages:
-            scroll_chat_to_bottom()
+        # scroll iframe 必须放在 chat_container 内部，
+        # 这样 window.frameElement.closest(...) 才能找到正确的父容器
+        with chat_container:
+            if st.session_state.messages:
+                scroll_chat_to_bottom()
 
         # ── 权限审批面板（在对话区下方，纯 Streamlit 原生组件）──
         render_permission_panel()
