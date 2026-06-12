@@ -325,12 +325,19 @@ def spawn_agents(tasks: list) -> str:
                 "type": "boolean",
                 "description": "Include the last 10 log lines (default: false)",
             },
+            "full": {
+                "type": "boolean",
+                "description": (
+                    "If true, return the full task output without truncation "
+                    "(default: false, output truncated to 3000 chars)"
+                ),
+            },
         },
         "required": ["task_id"],
     },
     requires_approval=False,
 )
-def get_task_status(task_id: str, include_log: bool = True) -> str:
+def get_task_status(task_id: str, include_log: bool = True, full: bool = False) -> str:
     mgr = get_task_manager()
     if mgr is None:
         return "[error: TaskManager not initialized.]"
@@ -348,7 +355,7 @@ def get_task_status(task_id: str, include_log: bool = True) -> str:
         "elapsed_s": rec.elapsed,
     }
     if rec.result:
-        data["output"] = rec.result.output[:3000]
+        data["output"] = rec.result.output if full else rec.result.output[:3000]
         if rec.result.error:
             data["error"] = rec.result.error   # 现在包含完整 traceback
         data["tokens"] = {
