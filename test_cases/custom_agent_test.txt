@@ -1,0 +1,3 @@
+使用 code-reviewer agent，检查一下 src/mini_agent/permissions.py
+
+生成一个分析报告，保存到 test_result/code_review_report.md

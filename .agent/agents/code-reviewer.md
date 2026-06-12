@@ -1,7 +1,6 @@
 ---
 name: code-reviewer
 description: 审查指定文件的代码改动，发现潜在 bug、风格问题和安全隐患。当用户要求"审查代码"、"review一下"、"看看这段改动有没有问题"时使用。
-model: claude-haiku-4-5
 tools: read_file, grep, bash
 inputs:
   - name: files
