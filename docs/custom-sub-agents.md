@@ -22,8 +22,8 @@ mini_agent 支持类似 Claude Code `.claude/agents/*.md` 的预设子 agent 机
 ---
 name: code-reviewer
 description: 审查指定文件的代码改动... (用于主 agent 判断何时调用)
-model: claude-haiku-4-5      # 可选，子 agent 使用的模型
-provider: anthropic          # 可选
+model: qwen/qwen3.5-122b-a10b      # 可选，子 agent 使用的模型
+provider: nvidia          # 可选
 tools: read_file, grep, bash # 可选，限制可用工具（逗号分隔或 YAML 列表）
 tool_groups: [fs, web]        # 可选，限制可用工具分组
 inputs:
