@@ -61,6 +61,13 @@ class Terminal:
         # _enter_input_mode 之间的竞态窗口。
         self._statusbar_provider: Optional[Callable[[], list[str]]] = None
 
+        # ── Task 焦点状态 ────────────────────────────────────────────────
+        # 当 _task_focus 非 None 时，主输出区被"接管"，刷新循环会把
+        # 焦点 task 的最新日志增量打印到屏幕；agent 主输出则被暂存。
+        self._task_focus: Optional[str] = None          # 当前焦点 task_id
+        self._focus_log_offset: int = 0                 # 已渲染到的日志行数
+        self._focus_lock = threading.Lock()             # 保护焦点状态变更
+
         # 渲染线程：唯一写屏幕的线程
         self._render_thread = threading.Thread(
             target=self._render_loop, daemon=True, name="terminal-render"
@@ -81,6 +88,9 @@ class Terminal:
     # ═══════════════════════════════════════════════════════════════════════
 
     def print(self, *args, **kwargs) -> None:
+        # 焦点模式下主输出静默（焦点退出后日志仍完整保留在 session）
+        if self._task_focus is not None:
+            return
         self._q.put(_Msg("print", (args, kwargs)))
 
     def rule(self, title: str = "", **kwargs) -> None:
@@ -131,6 +141,36 @@ class Terminal:
     def redraw_statusbar(self) -> None:
         """向后兼容接口：触发一次状态栏重绘。"""
         self._q.put(_Msg("redraw", None))
+
+    # ── Task 焦点控制（线程安全）────────────────────────────────────────
+
+    def set_task_focus(self, task_id: "Optional[str]") -> None:
+        """
+        设置/清除 task 焦点。
+
+        task_id 非 None → 进入焦点模式：主输出区接管，实时打印该 task 日志。
+        task_id 为 None → 退出焦点模式，主输出恢复正常。
+
+        可从任意线程调用（通过消息队列转发到 render_thread）。
+        """
+        with self._focus_lock:
+            old = self._task_focus
+            self._task_focus = task_id
+            self._focus_log_offset = 0
+        if old != task_id:
+            self._q.put(_Msg("_focus_change", (old, task_id)))
+
+    def get_task_focus(self) -> "Optional[str]":
+        """返回当前焦点 task_id，None 表示主视图模式。"""
+        return self._task_focus
+
+    def focus_next_task(self) -> None:
+        """切换到下一个 task（tab 列表循环）。"""
+        self._q.put(_Msg("_focus_cycle", +1))
+
+    def focus_prev_task(self) -> None:
+        """切换到上一个 task（tab 列表循环）。"""
+        self._q.put(_Msg("_focus_cycle", -1))
 
     # ═══════════════════════════════════════════════════════════════════════
     # 输入通道（阻塞，主线程调用）
@@ -365,8 +405,76 @@ class Terminal:
                 self._erase_bar()
                 self._draw_bar()
 
+        elif kind == "_focus_lines":
+            # 增量打印焦点 task 的新日志行（在 render_thread，串行安全）
+            lines = msg.payload
+            self._erase_bar()
+            for line in lines:
+                # 简单的日志着色：工具调用紫色，成功绿色，其余默认
+                if "[tool]" in line or "tool_use" in line.lower():
+                    sys.stdout.write(f"\033[35m{line}\033[0m\n")
+                elif line.lstrip().startswith("✓") or "PASSED" in line or "success" in line.lower():
+                    sys.stdout.write(f"\033[32m{line}\033[0m\n")
+                elif line.lstrip().startswith("✗") or "FAILED" in line or "error" in line.lower():
+                    sys.stdout.write(f"\033[31m{line}\033[0m\n")
+                elif line.lstrip().startswith("["):
+                    sys.stdout.write(f"\033[90m{line}\033[0m\n")
+                else:
+                    sys.stdout.write(f"{line}\n")
+            sys.stdout.flush()
+            self._draw_bar()
+
         elif kind == "_noop":
             pass  # 哨兵消息，仅用于同步等待队列清空
+
+        elif kind == "_focus_change":
+            old_id, new_id = msg.payload
+            self._erase_bar()
+            if new_id:
+                sys.stdout.write(
+                    f"\033[36m\n── focus: {new_id} "
+                    f"{'─' * max(0, 54 - len(new_id))}\033[0m\n"
+                )
+                sys.stdout.flush()
+                with self._focus_lock:
+                    self._focus_log_offset = 0
+            else:
+                sys.stdout.write(
+                    "\033[90m\n── focus cleared ─────────────────────────────────\033[0m\n"
+                )
+                sys.stdout.flush()
+            self._draw_bar()
+
+        elif kind == "_focus_cycle":
+            # 在 render_thread 内执行循环切换，避免竞态
+            delta = msg.payload
+            try:
+                from mini_agent.tools.orchestration import get_task_manager
+                mgr = get_task_manager()
+                if mgr:
+                    records = mgr.list_records()
+                    if records:
+                        ids = [r.task_id for r in records]
+                        cur = self._task_focus
+                        if cur in ids:
+                            idx = (ids.index(cur) + delta) % len(ids)
+                        else:
+                            idx = 0 if delta > 0 else len(ids) - 1
+                        new_id = ids[idx]
+                        with self._focus_lock:
+                            old = self._task_focus
+                            self._task_focus = new_id
+                            self._focus_log_offset = 0
+                        if old != new_id:
+                            self._erase_bar()
+                            sys.stdout.write(
+                                f"\033[36m\n── focus: {new_id} "
+                                f"{'─' * max(0, 54 - len(new_id))}\033[0m\n"
+                            )
+                            sys.stdout.flush()
+                            self._draw_bar()
+            except Exception:
+                pass
 
         elif kind == "_force_end_stream":
             # 强制结束流式状态（异常恢复时使用）
@@ -471,6 +579,28 @@ class Terminal:
             time.sleep(self._refresh_interval)
             if self._refresh_paused.is_set() or self._refresh_stop.is_set():
                 continue
+
+            # ── 焦点日志增量投递 ──────────────────────────────────────
+            # 若有焦点 task，把新增日志行投入队列，由 render_thread 打印，
+            # 不与状态栏重绘竞争（同一渲染线程串行处理）。
+            focus_id = self._task_focus
+            if focus_id:
+                try:
+                    from mini_agent.tools.orchestration import get_task_manager
+                    mgr = get_task_manager()
+                    if mgr:
+                        rec = mgr.get(focus_id)
+                        if rec:
+                            with self._focus_lock:
+                                offset = self._focus_log_offset
+                                new_lines = list(rec.log_lines[offset:])
+                                if new_lines:
+                                    self._focus_log_offset = offset + len(new_lines)
+                            if new_lines:
+                                self._q.put(_Msg("_focus_lines", new_lines))
+                except Exception:
+                    pass
+
             # 在 refresh_thread 中拉取内容（可以调用任意函数，不写屏幕）
             lines: list[str] = []
             provider = self._statusbar_provider
@@ -602,7 +732,7 @@ _COMMANDS: list[tuple[str, str, list[str]]] = [
     ("/skill",       "Manage skills",                 ["on", "off", "list"]),
     ("/model",       "Switch LLM model",              []),
     ("/session",     "Session management",            ["list", "new", "load", "delete"]),
-    ("/tasks",       "Task management",               ["dashboard", "log", "cancel", "cancel-all", "workers"]),
+    ("/tasks",       "Task management",               ["focus", "unfocus", "dashboard", "log", "cancel", "cancel-all", "workers"]),
     ("/plan",        "Plan management",               ["clear", "summary"]),
     ("/concurrency", "Concurrency settings",          ["tasks", "llm"]),
     ("/cc",          "Concurrency alias",             ["tasks", "llm"]),
@@ -729,6 +859,51 @@ def _build_ptk_session(completer):
         event.app.current_buffer.apply_completion(
             event.app.current_buffer.complete_state.current_completion
         )
+
+    # ── Task 焦点切换快捷键 ─────────────────────────────────────────
+    # Alt+N (escape+n)  切换到下一个 task 焦点
+    # Alt+P (escape+p)  切换到上一个 task 焦点
+    # Ctrl+G            退出 task 焦点，回到主输出视图
+    #
+    # 选择理由：
+    # - escape+left/right 会使单独 Esc 触发 500ms ESCDELAY，体验差
+    # - c-left/c-right 是 ptk 默认的按词移动光标，不能覆盖
+    # - escape+n/p 不与任何默认绑定冲突，且在所有终端稳定发送
+    # - c-g 是 readline abort，ptk 中可安全重绑，即时响应
+
+    @kb.add("c-g")
+    def _focus_exit(event):
+        """Ctrl+G：退出 task 焦点模式，回到主输出。"""
+        try:
+            from mini_agent.ui.terminal import get_terminal
+            t = get_terminal()
+            if t.get_task_focus() is not None:
+                t.set_task_focus(None)
+        except Exception:
+            pass
+
+    @kb.add("escape", "p")   # Alt+P
+    def _focus_prev(event):
+        """Alt+P：切换到前一个 task（或进入焦点）。"""
+        try:
+            from mini_agent.ui.terminal import get_terminal
+            t = get_terminal()
+            if t.get_task_focus() is None:
+                t.focus_next_task()   # 从无焦点进入，先选第一个
+            else:
+                t.focus_prev_task()
+        except Exception:
+            pass
+
+    @kb.add("escape", "n")   # Alt+N
+    def _focus_next(event):
+        """Alt+N：切换到下一个 task（或进入焦点）。"""
+        try:
+            from mini_agent.ui.terminal import get_terminal
+            t = get_terminal()
+            t.focus_next_task()
+        except Exception:
+            pass
 
     # 注意：enable_history_search=True 会在 prompt_toolkit 内部把
     # complete_while_typing 强制设为 False（两者在源码里互斥）。

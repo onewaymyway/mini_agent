@@ -11,60 +11,129 @@ Terminal 的 _refresh_loop 在每个刷新周期内调用该回调拉取内容�
   消除了旧 push_loop 与 _enter_input_mode 之间的竞态。
 - 减少一个后台线程（status_bar 不再需要 _push_loop 线程）。
 - 内容构建逻辑与推送时机解耦，更易测试。
+
+Task Tab 扩展（路径 B）：
+- 底部增加 task tab 栏，每个 task 显示状态点 + 名称 + 耗时
+- 当前焦点 task 高亮（下划线 + 亮色）
+- 支持键盘 Alt+← / Alt+→ 切换（在 _build_ptk_keybindings 中注册）
+- 按 Esc 退出焦点，回到主输出视图
 """
 
 from __future__ import annotations
+
+_FOCUS_HELP = (
+    "\033[90m  Alt+N/P 切换 task  "
+    "Ctrl+G 退出焦点\033[0m"
+)
+_MAIN_HELP = (
+    "\033[90m  Alt+N/P 进入焦点  "
+    "/tasks focus <id> 进入指定 task\033[0m"
+)
+
+
+def _task_status_icon(status_name: str) -> str:
+    return {
+        "RUNNING":   "\033[36m●\033[0m",   # 青色实心点
+        "PENDING":   "\033[33m○\033[0m",   # 黄色空心点
+        "DONE":      "\033[32m✓\033[0m",   # 绿色勾
+        "FAILED":    "\033[31m✗\033[0m",   # 红色叉
+        "CANCELLED": "\033[90m–\033[0m",   # 灰色短横
+    }.get(status_name, "?")
+
+
+def _build_task_tab_line(records, focus_id: str | None) -> str:
+    """构建单行 task tab 条（ANSI 着色）。"""
+    if not records:
+        return ""
+
+    parts: list[str] = []
+    for rec in records:
+        icon = _task_status_icon(rec.status.name)
+        elapsed = f" {rec.elapsed}s" if rec.elapsed is not None else ""
+        name = rec.task.name[:18]
+        if len(rec.task.name) > 18:
+            name += "…"
+
+        tab_text = f"{icon} {name}{elapsed}"
+
+        if rec.task_id == focus_id:
+            # 当前焦点：亮色 + 下划线
+            parts.append(f"\033[4;97m {tab_text} \033[0m")
+        else:
+            # 非焦点：暗色
+            parts.append(f"\033[90m {tab_text} \033[0m")
+
+    sep = "\033[90m│\033[0m"
+    return "  " + sep.join(parts)
 
 
 def _build_lines() -> list[str]:
     lines: list[str] = []
     try:
         from mini_agent.tools.orchestration import get_task_manager
+        from mini_agent.ui.terminal import get_terminal
         mgr = get_task_manager()
+        terminal = get_terminal()
+        focus_id = terminal.get_task_focus()
 
         if mgr:
-            # 使用 TaskManager 的真实任务状态
             stats = mgr.stats()
-            running = stats["running"]
-            pending = stats["pending"]
-            done = stats["done"]
-            failed = stats["failed"]
+            running   = stats["running"]
+            pending   = stats["pending"]
+            done      = stats["done"]
+            failed    = stats["failed"]
             cancelled = stats["cancelled"]
-            total = stats["total"]
-
+            total     = stats["total"]
             max_workers = mgr.max_workers
 
-            # Tasks 行
-            active_bar = "\033[36m" + "█" * min(running, max_workers) + "\033[90m" + "░" * max(0, max_workers - running) + "\033[0m"
-            task_status = f"\033[36m{running} running\033[0m" if running else "\033[90midle\033[0m"
+            # ── 行1：并发概况条（与原来相同） ────────────────────────
+            active_bar = (
+                "\033[36m" + "█" * min(running, max_workers)
+                + "\033[90m" + "░" * max(0, max_workers - running)
+                + "\033[0m"
+            )
+            task_status = (
+                f"\033[36m{running} running\033[0m"
+                if running else "\033[90midle\033[0m"
+            )
 
             queue_str = ""
             if pending > 0:
-                # 获取排队中的任务名称
                 pending_records = mgr.list_records(status=None)
-                pending_tasks = [r for r in pending_records if r.status.name == "PENDING"][:3]
+                pending_tasks = [
+                    r for r in pending_records if r.status.name == "PENDING"
+                ][:3]
                 names = ", ".join(r.task.name[:20] for r in pending_tasks)
                 extra = f" +{pending-3}" if pending > 3 else ""
-                queue_str = f"  \033[33m⏳ {pending} queued\033[0m: \033[90m{names}{extra}\033[0m"
+                queue_str = (
+                    f"  \033[33m⏳ {pending} queued\033[0m: "
+                    f"\033[90m{names}{extra}\033[0m"
+                )
 
-            lines.append(f"  ⚡ Tasks [{active_bar}] {running}/{max_workers}   {task_status}{queue_str}")
+            lines.append(
+                f"  ⚡ Tasks [{active_bar}] {running}/{max_workers}"
+                f"   {task_status}{queue_str}"
+            )
 
-            # 如果有排队任务，显示详细信息
-            if pending > 0:
-                lines.append("")
-                lines.append("  [Queue details]")
-                pending_records = mgr.list_records(status=None)
-                pending_tasks = [r for r in pending_records if r.status.name == "PENDING"]
-                for i, r in enumerate(pending_tasks[:5], 1):
-                    lines.append(f"    {i}. {r.task.name[:50]}")
-                if len(pending_tasks) > 5:
-                    lines.append(f"    ... and {len(pending_tasks)-5} more")
+            # ── 行2：task tab 条（新增） ──────────────────────────────
+            all_records = mgr.list_records()
+            if all_records:
+                tab_line = _build_task_tab_line(all_records, focus_id)
+                if tab_line:
+                    lines.append(tab_line)
+
+                # ── 行3：操作提示（焦点/非焦点不同文字） ────────────
+                if focus_id:
+                    lines.append(_FOCUS_HELP)
+                elif total > 0:
+                    lines.append(_MAIN_HELP)
+
         else:
-            # TaskManager 未初始化时显示空闲
-            lines.append("  ⚡ Tasks [\033[90m░░░░\033[0m] 0/4   \033[90midle\033[0m")
-    except Exception as e:
-        # 出错时显示简单状态
-        lines.append(f"  \033[90m⚡ Tasks: error getting status\033[0m")
+            lines.append(
+                "  ⚡ Tasks [\033[90m░░░░\033[0m] 0/4   \033[90midle\033[0m"
+            )
+    except Exception:
+        lines.append("  \033[90m⚡ Tasks: error getting status\033[0m")
 
     try:
         from .concurrency import concurrency_snapshot
@@ -72,14 +141,28 @@ def _build_lines() -> list[str]:
         ll = snap["llm"]
         active, waiting, limit = ll["active"], ll["waiting"], ll["limit"]
         if active > 0 or waiting > 0:
-            bar = "\033[34m" + "█" * min(active, limit) + "\033[90m" + "░" * max(0, limit - active) + "\033[0m"
-            status = f"\033[34m{active} running\033[0m" if active else "\033[90midle\033[0m"
+            bar = (
+                "\033[34m" + "█" * min(active, limit)
+                + "\033[90m" + "░" * max(0, limit - active)
+                + "\033[0m"
+            )
+            status = (
+                f"\033[34m{active} running\033[0m"
+                if active else "\033[90midle\033[0m"
+            )
             queue_str = ""
             if waiting > 0:
-                names = ", ".join(w["label"][:20] for w in ll["waiters"][:3])
+                names = ", \033[90m".join(
+                    w["label"][:20] for w in ll["waiters"][:3]
+                )
                 extra = f" +{waiting-3}" if waiting > 3 else ""
-                queue_str = f"  \033[33m⏳ {waiting} queued\033[0m: \033[90m{names}{extra}\033[0m"
-            lines.append(f"  🤖 LLM   [{bar}] {active}/{limit}   {status}{queue_str}")
+                queue_str = (
+                    f"  \033[33m⏳ {waiting} queued\033[0m: "
+                    f"\033[90m{names}{extra}\033[0m"
+                )
+            lines.append(
+                f"  🤖 LLM   [{bar}] {active}/{limit}   {status}{queue_str}"
+            )
     except Exception:
         pass
 
@@ -88,6 +171,7 @@ def _build_lines() -> list[str]:
         lines.extend(build_plan_status_lines())
     except Exception:
         pass
+
     return lines
 
 
