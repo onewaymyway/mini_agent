@@ -20,6 +20,8 @@
 | 🌐 HTTP API | 内置 REST/SSE 服务，支持外部程序通过 HTTP 与 agent 交互 |
 | 🖥️ Web Demo | Streamlit 图形界面，提供浏览器操作的对话界面 |
 | 🔌 MCP 支持 | Model Context Protocol 集成，支持 stdio/SSE 传输，可扩展外部工具服务 |
+| 🤖 自定义子 Agent | 预设角色模板（.agent/agents/*.md），结构化参数注入，支持工具/模型限制 |
+| 🔗 Hooks 机制 | 关键事件自动执行 shell 命令，支持拦截/修改工具调用，项目级/全局级配置 |
 
 ## 快速开始
 
@@ -257,6 +259,11 @@ Web Demo 提供：
 | `/stats` | 显示会话统计 |
 | `/skills` | 列出所有技能 |
 | `/skill on\|off <name>` | 激活/停用技能 |
+| `/agents` | 列出自定义子 agent profiles |
+| `/agents show <name>` | 显示 profile 详细信息 |
+| `/agents reload` | 重新扫描子 agent profiles |
+| `/hooks` | 列出已加载的 hooks |
+| `/hooks reload` | 重新加载 hooks 配置 |
 | `/model <name>` | 切换模型 |
 | `/provider list\|switch <name>` | 列出/切换提供者 |
 | `/session list\|save\|load` | 管理会话 |
@@ -311,6 +318,8 @@ Agent 可以调用以下内置工具：
 - `skill_activate` — 激活技能
 - `skill_deactivate` — 停用技能
 - `ask_user` — 询问用户输入
+- `list_agent_profiles` — 列出所有自定义子 agent profiles
+- `spawn_named_agent` — 派生预设角色的子 agent
 
 ## 项目结构
 
@@ -389,6 +398,9 @@ mini_agent/
 ├── docs/                    # 文档
 ├── sessions/                # 会话历史（生成）
 └── mcp_servers/             # MCP 服务器示例
+├── .agent/                  # 自定义子 agent profiles
+│   └── agents/              # profile 文件 (*.md)
+└── hooks/                   # hooks 示例脚本
 ```
 
 ## 架构设计
@@ -493,6 +505,8 @@ python -m pytest tests/ -q
 - [命令与工具参考](docs/commands-and-tools-reference.md) — 所有命令和工具
 - [Plan 和 Task 指南](docs/plan-and-task-guide.md) — 规划和任务系统
 - [SubAgent 机制](docs/subagent-mechanism.md) — Sub-Agent 执行与重试机制详解
+- [自定义子 Agent](docs/custom-sub-agents.md) — 预设角色模板，结构化参数注入
+- [Hooks 机制](docs/hooks.md) — 关键事件自动执行命令，支持拦截/修改工具调用
 - [Skill 系统指南](docs/skill-system-guide.md) — 技能机制详解
 - [代码结构指南](docs/code-structure-guide.md) — 项目结构说明
 - [HTTP API 指南](docs/http-api-guide.md) — REST/SSE 服务使用指南

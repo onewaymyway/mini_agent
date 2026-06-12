@@ -19,6 +19,11 @@
 - `src/mini_agent/cli/repl.py` — REPL 交互循环
 - `src/mini_agent/llm/` — LLM 抽象层
 - `src/mini_agent/orchestrator/` — 并发编排
+  - `sub_agent.py` — 子 Agent 实现
+  - `agent_profiles.py` — 自定义子 agent profile 管理
+- `src/mini_agent/hooks/` — hooks 机制（关键事件自动执行命令）
+- `src/mini_agent/cli/commands/agents.py` — /agents 斜杠命令
+- `src/mini_agent/cli/commands/hooks.py` — /hooks 斜杠命令
 - `src/mini_agent/perception/` — 感知与记忆子系统
 - `src/mini_agent/ui/renderer.py` — Rich 终端输出渲染
 
@@ -106,6 +111,7 @@ python main.py --provider nvidia --model qwen/qwen3.5-122b-a10b --system-tool-ca
 - `status_bar.py` — 状态栏显示
 - `plan.py` — 执行计划数据模型
 - `plan_display.py` — 计划 UI 渲染
+- `agent_profiles.py` — 自定义子 agent profile（预设角色）
 
 ### 感知与记忆 (`src/mini_agent/perception/`)
 
@@ -129,9 +135,30 @@ python main.py --provider nvidia --model qwen/qwen3.5-122b-a10b --system-tool-ca
 - `app.py` — 应用启动装配（解析参数、初始化组件、启动 REPL）
 - `parser.py` — CLI 参数定义
 - `repl.py` — REPL 循环和斜杠命令处理
-- `commands/` — REPL 命令处理器（concurrency, plans, sessions, skills, tasks 等）
+- `commands/` — REPL 命令处理器（concurrency, plans, sessions, skills, tasks, agents, hooks 等）
+
+### hooks (`src/mini_agent/hooks/`)
+
+- `__init__.py` — 公开接口导出
+- `loader.py` — HookManager（加载、执行、动态注册）
+- `runner.py` — HookResult 定义
 
 ### 终端交互 (`src/mini_agent/ui/`)
 
 - `terminal.py` — 统一终端 I/O 管理器，支持命令行输入补全（slash 命令/文件路径/历史建议）
 - `renderer.py` — Rich 终端输出渲染
+
+### 自定义子 Agent
+
+- profile 文件位置：`.agent/agents/*.md`（项目级）或 `~/.agent/agents/*.md`（全局级）
+- 文件格式：YAML frontmatter（name/description/inputs/tools） + system prompt 模板
+- 支持占位符：`{参数名}` 和 `{context}` 自动填充
+- CLI 命令：`/agents list|show <name>|reload`
+- 工具：`list_agent_profiles`、`spawn_named_agent`
+
+### Hooks 机制
+
+- 配置文件：`.agent/hooks.json`（项目级）或 `~/.agent/hooks.json`（全局级）
+- 支持事件：`UserPromptSubmit`、`PreToolUse`、`PostToolUse`、`PreCompact`、`SessionStart`/`SessionEnd`
+- Hook 可以通过 stdin 接收 JSON payload，通过 stdout 返回决策（allow/block/context/input）
+- CLI 命令：`/hooks list|reload`
