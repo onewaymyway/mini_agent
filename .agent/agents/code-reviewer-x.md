@@ -1,7 +1,7 @@
 ---
-name: code-reviewer
+name: code-reviewer-x
 description: 审查指定文件的代码改动，发现潜在 bug、风格问题和安全隐患。当用户要求"审查代码"、"review一下"、"看看这段改动有没有问题"时使用。
-tools: read_file, grep, bash
+tools: read_file, create_file, write_file, grep, bash, patch_file
 inputs:
   - name: files
     type: array
@@ -27,7 +27,6 @@ inputs:
 
 如果代码没有明显问题，直接说明"未发现重大问题"，不要为了凑数而制造问题。
 
-注意你只需要分析结果就行，返回报告结果就行，你不需要进行保存报告的操作，会有其他部分负责保存报告。
-你只有读文件的权限，没有写文件的权限，所以不要做写文件相关的事情。
+如果需要保存报告，你应该根据要求，保存报告
 
 {context}
