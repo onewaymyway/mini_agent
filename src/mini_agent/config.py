@@ -144,6 +144,22 @@ class PerceptionConfig:
 
 
 @dataclass
+class ProfileConfig:
+    """[SYS-PROFILE] 用户画像（profile）生成配置。
+
+    为后续多用户预留：profile 存储路径由 AgentPaths.profile_path(user_id) 决定，
+    当前 user_id 默认为 None（单用户），不影响现有行为。
+    """
+    enabled: bool = False
+    # 全局记忆每新增 N 条，触发一次 profile 刷新（后台线程，不阻塞主流程）
+    refresh_interval_entries: int = 3
+    # 全局记忆条目数达到该值之前，不生成 profile（信息太少意义不大）
+    min_entries: int = 1
+    # 取最近多少条全局记忆用于生成/刷新 profile
+    max_entries_for_profile: int = 20
+
+
+@dataclass
 class SessionConfig:
     """Session 持久化配置。"""
     dir: Optional[Path] = None         # None = <project_root>/.agent/sessions
@@ -241,6 +257,7 @@ class AppConfig:
     skill:      SkillConfig      = field(default_factory=SkillConfig)
     perception: PerceptionConfig = field(default_factory=PerceptionConfig)
     session:    SessionConfig    = field(default_factory=SessionConfig)
+    profile:    ProfileConfig    = field(default_factory=ProfileConfig)
     debug:      DebugConfig      = field(default_factory=DebugConfig)
     http:       HttpConfig       = field(default_factory=HttpConfig)
     retry:      RetryConfig      = field(default_factory=RetryConfig)
@@ -299,6 +316,13 @@ class AppConfig:
     def token_warn_threshold(self) -> float:    return self.perception.token_warn_threshold
     @property
     def tool_stats_enabled(self) -> bool:       return self.perception.tool_stats_enabled
+
+    @property
+    def profile_enabled(self) -> bool:          return self.profile.enabled
+    @property
+    def profile_refresh_interval_entries(self) -> int: return self.profile.refresh_interval_entries
+    @property
+    def profile_min_entries(self) -> int:       return self.profile.min_entries
 
     @property
     def session_dir(self) -> Optional[Path]:    return self.session.dir
@@ -523,6 +547,13 @@ def load_config(
         backend=_f("session_backend", None) or "local",
     )
 
+    profile_cfg = ProfileConfig(
+        enabled=_fb("profile_enabled", None),
+        refresh_interval_entries=_fn("profile_refresh_interval_entries", None, 3),
+        min_entries=_fn("profile_min_entries", None, 1),
+        max_entries_for_profile=_fn("profile_max_entries_for_profile", None, 20),
+    )
+
     _debug_llm_v = bool(_f("debug_llm", debug_llm or None)) or os.environ.get("LLM_DEBUG", "").lower() in ("1", "true", "yes")
     _debug_console_v = bool(_f("debug_llm_console", debug_llm_console or None)) or os.environ.get("LLM_DEBUG_CONSOLE", "").lower() in ("1", "true", "yes")
     _debug_log_dir_str = file_cfg.get("debug_log_dir") or os.environ.get("LLM_DEBUG_LOG_DIR", "")
@@ -606,6 +637,7 @@ def load_config(
         skill=skill_cfg,
         perception=perception_cfg,
         session=session_cfg,
+        profile=profile_cfg,
         debug=debug_cfg,
         http=http_cfg,
         retry=retry_cfg,
@@ -680,7 +712,7 @@ def _resolve_skills_dir(root: Path) -> Optional[Path]:
     return None
 
 
-def build_system_prompt(cfg: AppConfig, active_skills: list[str], skill_context: str = "") -> str:
+def build_system_prompt(cfg: AppConfig, active_skills: list[str], skill_context: str = "", user_profile: str = "") -> str:
     from datetime import datetime
     from mini_agent.prompts import pm
     if cfg.prompts_dir and pm.custom_dir != cfg.prompts_dir:
@@ -693,4 +725,5 @@ def build_system_prompt(cfg: AppConfig, active_skills: list[str], skill_context:
         sandbox=cfg.sandbox,
         current_time=datetime.now().strftime("%Y-%m-%d %H:%M:%S %A"),
         agent_name=cfg.agent_name,
+        user_profile=user_profile,
     )

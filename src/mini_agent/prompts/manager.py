@@ -187,6 +187,7 @@ class PromptManager:
         sandbox: bool = False,
         current_time: str = "",
         agent_name: str = "orzooo",
+        user_profile: str = "",
     ) -> str:
         """
         Assemble the complete system prompt from individual fragments.
@@ -212,6 +213,10 @@ class PromptManager:
             parts.append(
                 self.render("system/project_context", claude_md_content=claude_md_content)
             )
+
+        # 3b. User profile (long-term, cross-session)
+        if user_profile.strip():
+            parts.append(self.render("system/user_profile", user_profile=user_profile))
 
         # 4. Active skills
         if active_skills:

@@ -87,6 +87,20 @@ class AgentPaths:
         """~/.agent/prompts/ — 全局自定义 prompt 目录"""
         return self.global_dir / "prompts"
 
+    def profile_path(self, user_id: Optional[str] = None) -> Path:
+        """
+        用户 profile 文件路径。
+
+        当前为单用户模式：user_id=None 时返回 ~/.agent/profile.json。
+
+        为后续多用户预留：传入 user_id 时返回
+        ~/.agent/users/<user_id>/profile.json。届时只需在调用处传入
+        实际的 user_id，无需改动 profile 的读写逻辑。
+        """
+        if user_id:
+            return self.global_dir / "users" / user_id / "profile.json"
+        return self.global_dir / "profile.json"
+
     # ── Workdir 级 ─────────────────────────────────────────────────────────
 
     @property

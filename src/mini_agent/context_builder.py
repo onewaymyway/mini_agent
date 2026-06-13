@@ -41,12 +41,14 @@ class ContextBuilder:
         memory: Optional["MemoryStore"] = None,
         global_memory: Optional["MemoryStore"] = None,
         project_snapshot_getter=None,   # Callable[[], Optional[str]]
+        profile_text_getter=None,       # Callable[[], str]
     ) -> None:
         self.cfg = cfg
         self.skill_loader = skill_loader
         self.memory = memory
         self.global_memory = global_memory
         self._project_snapshot_getter = project_snapshot_getter
+        self._profile_text_getter = profile_text_getter
 
         # ── Turn 级缓存 ──────────────────────────────────────────────────────
         # 每次 run_turn 开始时由 refresh_turn_context() 填充，
@@ -120,7 +122,8 @@ class ContextBuilder:
             skill_ctx = self.skill_loader.build_context() if self.skill_loader else ""
 
         from mini_agent.config import build_system_prompt
-        base = build_system_prompt(cfg, active, skill_context=skill_ctx)
+        user_profile = self._profile_text_getter() if self._profile_text_getter else ""
+        base = build_system_prompt(cfg, active, skill_context=skill_ctx, user_profile=user_profile)
 
         # ── Skill 目录注入（带缓存）────────────────────────────────────────
         if self.skill_loader and self.skill_loader.available:

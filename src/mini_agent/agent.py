@@ -152,6 +152,13 @@ class Agent:
             from mini_agent.perception.memory_factory import create_both_memory_backends
             self._memory, self._global_memory = create_both_memory_backends(cfg)
 
+        # [SYS-PROFILE] 用户画像（单用户模式：user_id=None -> ~/.agent/profile.json）
+        self._profile_mgr: Optional["UserProfileManager"] = None
+        if cfg.profile_enabled:
+            from mini_agent.profile import UserProfileManager
+            from mini_agent.storage.paths import AgentPaths
+            self._profile_mgr = UserProfileManager(AgentPaths(cfg.project_root), user_id=None)
+
         # ── [SYS-MCP] MCP 工具注册 ─────────────────────────────────────────────
         # 连接 agent_config.json 中配置的所有 MCP server，
         # 将其工具动态注册进 ToolRegistry（group="mcp:{server_name}"）。
@@ -219,6 +226,7 @@ class Agent:
             memory=self._memory,
             global_memory=self._global_memory,
             project_snapshot_getter=lambda: self._project_snapshot,
+            profile_text_getter=self._get_profile_text,
         )
 
         # ToolExecutor：持有 file_changes 列表和锁的引用（共享，不拷贝）
@@ -337,6 +345,42 @@ class Agent:
             R.print_warning(f"Session save failed: {e}")
             return None
 
+    def _get_profile_text(self) -> str:
+        """供 ContextBuilder 注入 system prompt 的用户画像摘要（无画像则返回空串）。"""
+        if not self._profile_mgr:
+            return ""
+        try:
+            profile = self._profile_mgr.load()
+        except Exception:
+            return ""
+        return profile.derived.get("summary", "") if profile.derived else ""
+
+    def _maybe_refresh_profile(self) -> None:
+        """
+        [SYS-PROFILE] 检查是否需要(重新)生成用户画像，若需要则同步生成。
+
+        本方法预期在 _generate_and_save_summary 的后台线程中被调用（已经
+        不阻塞主流程），因此这里直接同步调用 LLM，不再额外开线程。
+        """
+        if not self._profile_mgr:
+            return
+        # 画像基于全局记忆（跨项目通用经验）；没有全局记忆则跳过
+        source = self._global_memory or self._memory
+        if source is None:
+            return
+        try:
+            count = source.count
+            if not self._profile_mgr.should_refresh(count, self.cfg):
+                return
+            entries = source.all_entries()
+            # all_entries 不保证按时间排序，按 created_at 升序取最近 N 条
+            entries = sorted(entries, key=lambda e: e.created_at)[-self.cfg.profile.max_entries_for_profile:]
+            R.print_info("正在后台更新用户画像(profile)...")
+            self._profile_mgr.generate(self._llm, entries)
+            R.print_info("用户画像(profile)已更新")
+        except Exception as e:
+            R.print_warning(f"用户画像生成失败: {e}")
+
     def _generate_and_save_summary(self, session_path: str, history: Optional[list] = None) -> None:
         """
         [SYS-SUMMARY] 用 LLM 生成 session 摘要，写回 session 文件，并写入长期记忆。
@@ -413,6 +457,9 @@ class Agent:
                 # 同时写入 memory_delta.jsonl（session 审计）
                 self._append_memory_delta(entry)
             R.print_info("会话摘要记忆已生成")
+
+            # [SYS-PROFILE] 同一后台线程内顺带检查并刷新用户画像
+            self._maybe_refresh_profile()
         except Exception as e:
             R.print_warning(f"[summary] generation failed: {e}")
 
