@@ -167,10 +167,11 @@ class UserProfileManager:
         )
         prompt = pm.render("user/profile_update_request", memory_text=memory_text)
 
-        resp = llm_client.chat(
+        resp = llm_client.chat_with_retry(
             messages=[{"role": "user", "content": prompt}],
             system=pm.render("system/profile_summarizer"),
             tools=[],
+            max_retries=10,
         )
         raw = (resp.text or "").strip()
         if raw.startswith("```"):

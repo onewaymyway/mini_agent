@@ -367,22 +367,25 @@ class Agent:
             if force:
                 R.print_warning("用户画像功能未开启（profile.enabled=false）。")
             return
-        # 画像基于全局记忆（跨项目通用经验）；没有全局记忆则跳过
-        source = self._global_memory or self._memory
-        if source is None:
+        # 画像基于长期记忆：默认条目写入 project-scope（self._memory），
+        # global-scope（self._global_memory）为可选的跨项目记忆，两者都要合并考虑。
+        sources = [s for s in (self._memory, self._global_memory) if s is not None]
+        if not sources:
             if force:
                 R.print_warning("记忆功能未开启，无法生成用户画像。")
             return
         try:
-            count = source.count
-            if count == 0:
+            entries = []
+            for s in sources:
+                entries.extend(s.all_entries())
+            if not entries:
                 if force:
                     R.print_warning("暂无可用于生成画像的长期记忆。")
                 return
+            count = len(entries)
             if not force and not self._profile_mgr.should_refresh(count, self.cfg):
                 return
-            entries = source.all_entries()
-            # all_entries 不保证按时间排序，按 created_at 升序取最近 N 条
+            # 按 created_at 升序取最近 N 条
             entries = sorted(entries, key=lambda e: e.created_at)[-self.cfg.profile.max_entries_for_profile:]
             R.print_info("正在更新用户画像(profile)...")
             self._profile_mgr.generate(self._llm, entries)
@@ -460,10 +463,11 @@ class Agent:
             turns_text = "\n".join(f"- {t[:200]}" for t in user_turns[:10])
             from mini_agent.prompts import pm
             prompt = pm.render("user/session_summary_request", turns_text=turns_text)
-            resp = self._llm.chat(
+            resp = self._llm.chat_with_retry(
                 messages=[{"role": "user", "content": prompt}],
                 system=pm.render("system/summarizer"),
                 tools=[],
+                max_retries=10,
             )
             summary = resp.text.strip()
             if not summary:

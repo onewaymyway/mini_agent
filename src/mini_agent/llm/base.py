@@ -157,6 +157,53 @@ class LLMClient(ABC):
         """provider 的可读名称，用于日志和错误信息。"""
         return self.__class__.__name__.replace("Provider", "").replace("Client", "")
 
+    def chat_with_retry(
+        self,
+        messages: list[dict],
+        system: str,
+        tools: Optional[list[ToolSchema]] = None,
+        *,
+        max_retries: int = 2,
+        retry_delay: float = 1.0,
+        retry_policy: Optional["RetryPolicy"] = None,
+        on_retry: Optional[Callable[[int, str], None]] = None,
+    ) -> LLMResponse:
+        """
+        带重试的 chat()，供任何调用方复用，无需各自构造 RetryPolicy。
+
+        与裸调用 chat() 的区别：
+          - 模型返回空响应（无文本且无工具调用）会自动重试；
+          - chat() 抛出异常（网络错误、API 错误等）也会自动重试，
+            而不是直接向上传播；
+          - 重试预算耗尽后，若最后一次是异常则向上抛出，
+            若是"空响应"则原样返回该响应（不抛异常）。
+
+        Args:
+            messages, system, tools: 与 chat() 相同。
+            max_retries:   最多重试次数（不含首次调用），默认 2。
+                           例如长期记忆/用户画像生成等后台任务可传 10。
+            retry_delay:   每次重试前的等待秒数，默认 1.0。
+            retry_policy:  传入完整的 RetryPolicy 以自定义重试条件，
+                           传入时 max_retries/retry_delay 被忽略。
+            on_retry:      重试回调 on_retry(attempt, reason)。
+
+        Returns:
+            最终的 LLMResponse。
+        """
+        from .retry import RetryPolicy, EmptyOutputCondition
+
+        policy = retry_policy or RetryPolicy(
+            max_retries=max_retries,
+            conditions=[EmptyOutputCondition()],
+            retry_delay=retry_delay,
+            retry_on_exception=True,
+        )
+        return policy.call_with_retry(
+            call_fn=lambda: self.chat(messages, system, tools or []),
+            on_retry=on_retry,
+        )
+
+
     def validate_config(self) -> None:
         """
         在首次调用前验证配置。子类可覆盖以增加校验逻辑。

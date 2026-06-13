@@ -144,6 +144,10 @@ class RetryPolicy:
         default_factory=lambda: [EmptyOutputCondition()]
     )
     retry_delay: float = 0.0
+    # 为 True 时，call_fn() 抛出异常也会触发重试（与 max_retries 共用预算），
+    # 而不是直接向上传播。用于"模型调用偶发网络/API错误，希望自动重试"的场景，
+    # 例如长期记忆/用户画像生成。
+    retry_on_exception: bool = False
 
     def call_with_retry(
         self,
@@ -162,18 +166,35 @@ class RetryPolicy:
             最终的 LLMResponse（首次成功或最后一次重试的结果）
 
         Note:
-            - 即使达到 max_retries 上限，也返回最后一次的响应而非抛出异常，
+            - "响应质量"重试（conditions）和"异常"重试（retry_on_exception）
+              共用同一个 max_retries 预算。
+            - 若达到 max_retries 上限仍触发质量条件，返回最后一次的响应而非抛出异常，
               调用方可自行决定如何处理降级响应。
-            - 如果 call_fn 本身抛出异常，异常会直接向上传播，不做重试。
+            - retry_on_exception=False（默认）时，call_fn 抛出异常会直接向上
+              传播，不做重试（兼容旧行为）。retry_on_exception=True 时，
+              异常也计入 max_retries 预算；预算耗尽后异常会向上传播。
         """
-        response = call_fn()
+        attempt = 0
+        while True:
+            try:
+                response = call_fn()
+            except Exception as e:
+                if not self.retry_on_exception or attempt >= self.max_retries:
+                    raise
+                attempt += 1
+                reason = f"[Exception] {type(e).__name__}: {e}"
+                logger.warning("LLM retry %d/%d — %s", attempt, self.max_retries, reason)
+                if on_retry:
+                    on_retry(attempt, reason)
+                if self.retry_delay > 0:
+                    time.sleep(self.retry_delay)
+                continue
 
-        for attempt in range(1, self.max_retries + 1):
             triggered = self._check_conditions(response)
-            if triggered is None:
-                break  # 所有条件均未触发，返回当前响应
+            if triggered is None or attempt >= self.max_retries:
+                return response
 
-            # 触发重试
+            attempt += 1
             reason = triggered.reason
             logger.warning("LLM retry %d/%d — %s", attempt, self.max_retries, reason)
             if on_retry:
@@ -181,10 +202,6 @@ class RetryPolicy:
 
             if self.retry_delay > 0:
                 time.sleep(self.retry_delay)
-
-            response = call_fn()
-
-        return response
 
     def _check_conditions(
         self, response: LLMResponse
@@ -224,3 +241,22 @@ def default_retry_policy(max_retries: int = 2, retry_delay: float = 0.0) -> Retr
 def no_retry_policy() -> RetryPolicy:
     """不重试策略（max_retries=0），用于禁用重试。"""
     return RetryPolicy(max_retries=0, conditions=[])
+
+
+def background_retry_policy(max_retries: int = 10, retry_delay: float = 1.0) -> RetryPolicy:
+    """
+    后台任务重试策略：用于长期记忆/用户画像生成等"调用失败应自动重试"的场景。
+
+    与默认策略的区别：retry_on_exception=True，即网络错误、API 错误等
+    异常也会触发重试（默认最多 10 次，每次间隔 1 秒），而不是直接抛出。
+
+    Args:
+        max_retries:  最多重试次数，默认 10
+        retry_delay:  重试间隔秒数，默认 1.0
+    """
+    return RetryPolicy(
+        max_retries=max_retries,
+        conditions=[EmptyOutputCondition()],
+        retry_delay=retry_delay,
+        retry_on_exception=True,
+    )

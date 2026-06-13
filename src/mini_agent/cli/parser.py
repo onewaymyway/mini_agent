@@ -34,6 +34,8 @@ def build_parser() -> argparse.ArgumentParser:
               /verbose           Toggle verbose tool output
               /model <name>      Switch model mid-session
               /compact           Compress history into a summary
+              /memory            Force-generate/refresh session memory now (bypass interval)
+              /profile           Force-refresh user profile now (bypass interval)
               /prompts           List all managed prompt files
               exit / quit        Exit
         """),

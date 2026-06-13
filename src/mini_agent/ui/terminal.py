@@ -723,6 +723,8 @@ _COMMANDS: list[tuple[str, str, list[str]]] = [
     ("/help",        "Show help",                    []),
     ("/clear",       "Clear conversation history",   []),
     ("/compact",     "Compress history",              []),
+    ("/memory",      "Generate/refresh session memory now", []),
+    ("/profile",     "Refresh user profile now",      []),
     ("/stats",       "Show session statistics",       []),
     ("/verbose",     "Toggle verbose mode",           []),
     ("/prompts",     "List prompt files",             []),
