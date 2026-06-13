@@ -184,10 +184,11 @@ class LLMSummaryStrategy(CompressionStrategy):
 
         try:
             from mini_agent.llm.base import ToolSchema
-            response = llm_client.chat(
+            response = llm_client.chat_with_retry(
                 messages=summary_messages,
                 system=pm.render("system/compress_summarizer"),
                 tools=[],
+                max_retries=10
             )
             summary_text = response.text.strip() or _build_summary_text(old_turns, cutoff)
         except Exception:

@@ -164,7 +164,7 @@ class LLMClient(ABC):
         tools: Optional[list[ToolSchema]] = None,
         *,
         max_retries: int = 2,
-        retry_delay: float = 1.0,
+        retry_delay: float = 5.0,
         retry_policy: Optional["RetryPolicy"] = None,
         on_retry: Optional[Callable[[int, str], None]] = None,
     ) -> LLMResponse:
