@@ -181,8 +181,13 @@ def bash(command: str, timeout: int = 30) -> str:
     ...
 ```
 
-工具类别：Shell、文件操作、搜索、计划管理、Sub-Agent 编排、用户交互。  
+工具类别：Shell、文件操作、搜索（Web Search）、计划管理、Sub-Agent 编排、用户交互。
 工具是否需要审批由工具定义声明，`PermissionGuard` 在执行前决策。
+
+**Web Search 工具**：
+
+- `web_search` — 网络搜索，支持 duckduckgo（默认）、brave、serper、tavily 后端
+- 详见 [Web Search 指南](web-search-guide.md)
 
 ### 3.6 MCP 外部工具服务（mcp/）
 

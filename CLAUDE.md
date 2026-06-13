@@ -12,7 +12,7 @@
 - `src/mini_agent/permissions.py` — 工具调用的权限守卫
 - `src/mini_agent/session.py` — 会话管理
 - `src/mini_agent/tools/__init__.py` — 工具注册表和 `@tool` 装饰器
-- `src/mini_agent/tools/builtin.py` — 内置工具（bash、文件 I/O、搜索）
+- `src/mini_agent/tools/builtin.py` — 内置工具（bash、文件 I/O、web_search 等）
 - `src/mini_agent/tools/orchestration.py` — 并发编排工具
 - `src/mini_agent/tools/skill_manager.py` — 技能管理工具
 - `src/mini_agent/tools/plan.py` — 规划工具
@@ -196,3 +196,4 @@ python main.py --provider nvidia --model qwen/qwen3.5-122b-a10b --system-tool-ca
 - [任务与规划指南](docs/plan-and-task-guide.md) — 执行计划与并发任务
 - [SubAgent 机制](docs/subagent-mechanism.md) — 子 Agent 实现细节
 - [命令与工具参考](docs/commands-and-tools-reference.md) — 所有 slash 命令和工具
+- [Web Search 指南](docs/web-search-guide.md) — **新增**：Web 搜索功能使用指南

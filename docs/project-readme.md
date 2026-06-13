@@ -10,7 +10,8 @@ mini-agent 是一个用 Python 实现的命令行 Agent 框架，定位为"简�
 
 - **交互式 REPL**：支持对话式交互，单条命令或持续会话均可
 - **多 LLM 支持**：Anthropic、OpenAI、Ollama、NVIDIA 等多种提供商
-- **工具系统**：内置 bash、文件读写、glob、grep 等工具，支持自定义扩展
+- **工具系统**：内置 bash、文件读写、glob、grep、web_search 等工具，支持自定义扩展
+- **Web Search**：支持 DuckDuckGo（默认）、Brave、Serper、Tavily 等多种搜索后端
 - **Skill 系统**：可加载领域技能文档，支持自动关键词激活
 - **权限管理**：工具调用前需要用户确认，支持沙箱模式
 - **会话管理**：保存、加载、恢复对话历史，支持长期记忆（`MemoryStore` + TF-IDF 检索）
@@ -29,6 +30,9 @@ pip install -e .
 
 # 设置 API 密钥
 export ANTHROPIC_API_KEY=sk-...
+export BRAVE_API_KEY=...  # 可选：使用 Brave Search
+export SERPER_API_KEY=...  # 可选：使用 Serper
+export TAVILY_API_KEY=...  # 可选：使用 Tavily
 
 # 交互式模式（推荐）
 python -m mini_agent
@@ -47,6 +51,7 @@ mini-agent --provider openai --model gpt-4o
 mini-agent --sandbox          # 沙箱模式
 mini-agent --debug-llm        # 启用 LLM 调试日志
 mini-agent --resume <session-id>  # 恢复历史会话
+mini-agent --web-search-provider brave  # 指定搜索后端
 ```
 
 ---

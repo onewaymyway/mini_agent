@@ -20,6 +20,7 @@
 | 🌐 HTTP API | 内置 REST/SSE 服务，支持外部程序通过 HTTP 与 agent 交互 |
 | 🖥️ Web Demo | Streamlit 图形界面，提供浏览器操作的对话界面 |
 | 🔌 MCP 支持 | Model Context Protocol 集成，支持 stdio/SSE 传输，可扩展外部工具服务 |
+| 🔍 Web Search | 支持 DuckDuckGo（默认）、Brave、Serper、Tavily 等多种搜索后端 |
 | 🤖 自定义子 Agent | 预设角色模板（.agent/agents/*.md），结构化参数注入，支持工具/模型限制 |
 | 🔗 Hooks 机制 | 关键事件自动执行 shell 命令，支持拦截/修改工具调用，项目级/全局级配置 |
 | 🎯 Task 日志实时查看 | 运行时方向键切换查看不同任务日志，状态栏显示任务状态概要 |
@@ -43,10 +44,16 @@ pip install -r requirements.txt
 # 配置 API Key linux
 export ANTHROPIC_API_KEY=sk-...
 export NVIDIA_API_KEY=sk-...
+export BRAVE_API_KEY=...  # 可选：使用 Brave Search
+export SERPER_API_KEY=...  # 可选：使用 Serper
+export TAVILY_API_KEY=...  # 可选：使用 Tavily
 
 # 配置 API Key win
 $env:ANTHROPIC_API_KEY=sk-...
 $env:NVIDIA_API_KEY=sk-...
+$env:BRAVE_API_KEY=...
+$env:SERPER_API_KEY=...
+$env:TAVILY_API_KEY=...
 ```
 
 ### 运行
@@ -90,6 +97,7 @@ python main.py --provider nvidia --model qwen/qwen3.5-122b-a10b --system-tool-ca
 | `--memory` | 启用跨 session 记忆 |
 | `--project-scan` | 启动时扫描项目结构 |
 | `--file-watch` | 监听文件变化 |
+| `--web-search-provider` | 指定搜索后端：`duckduckgo`\|`brave`\|`serper`\|`tavily` |
 | `--http` | 启动内置 HTTP API 服务 |
 | `--http-port` | HTTP 服务监听端口（默认 8765） |
 | `--http-host` | HTTP 服务监听地址（默认 127.0.0.1） |
@@ -256,6 +264,9 @@ Agent 可以调用以下内置工具：
 
 ### Shell 命令
 - `bash` — 执行 Shell 命令
+
+### Web Search
+- `web_search` — 网络搜索，支持 DuckDuckGo（默认）、Brave、Serper、Tavily 后端
 
 ### 并发编排
 - `spawn_agent` — 派生子 Agent
@@ -513,6 +524,7 @@ python -m pytest tests/ -q
 - [HTTP API 指南](docs/http-api-guide.md) — REST/SSE 服务使用指南
 - [Web Demo 指南](docs/web-demo-guide.md) — Streamlit Web 界面使用
 - [MCP 集成指南](docs/mcp-guide.md) — Model Context Protocol 集成
+- [Web Search 指南](docs/web-search-guide.md) — Web 搜索功能使用指南
 
 ## 许可证
 
@@ -524,4 +536,4 @@ MIT License
 
 ---
 
-*最后更新：2026-06-13* — Task 日志实时查看功能（方向键切换）、文档更新
+*最后更新：2026-06-14* — Web Search 功能（DuckDuckGo/Brave/Serper/Tavily），文档更新

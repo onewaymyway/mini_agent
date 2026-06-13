@@ -27,6 +27,17 @@ python main.py
 
 ## 二、CLI 启动参数
 
+### Web Search 参数
+
+| 参数 | 说明 |
+|------|------|
+| `--web-search-provider` | 默认搜索后端：`duckduckgo` \| `brave` \| `serper` \| `tavily` |
+| `--web-search-max-results` | 默认返回结果数量（默认 5） |
+
+**环境变量：** `WEB_SEARCH_PROVIDER`, `BRAVE_API_KEY`, `SERPER_API_KEY`, `TAVILY_API_KEY`
+
+详见 [Web Search 指南](web-search-guide.md)。
+
 ### 基础参数
 
 | 参数 | 简写 | 说明 |
@@ -230,7 +241,23 @@ python main.py
 
 | 工具 | 需要审批 | 参数 | 说明 |
 |------|----------|------|------|
-| `web_search` | ❌ | `query` | Web 搜索（需配置 `BRAVE_API_KEY` 或 `SERPER_API_KEY`） |
+| `web_search` | ❌ | `query`, `max_results`, `provider` | Web 搜索，支持 duckduckgo（默认）、brave、serper、tavily 后端 |
+
+**web_search 配置：**
+
+```json
+{
+  "web_search": {
+    "provider": "duckduckgo",
+    "max_results": 5,
+    "timeout": 10.0
+  }
+}
+```
+
+**环境变量：** `WEB_SEARCH_PROVIDER`, `BRAVE_API_KEY`, `SERPER_API_KEY`, `TAVILY_API_KEY`
+
+详见 [Web Search 指南](web-search-guide.md)。
 
 ### Sub-Agent 编排（orchestration.py）
 
