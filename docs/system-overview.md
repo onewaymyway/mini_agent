@@ -209,7 +209,7 @@ MCP（Model Context Protocol）支持将外部进程的工具动态注册进 `To
 
 详见 [权限系统指南](permission-guide.md)。
 
-### 3.6 权限与沙箱（permissions.py）
+### 3.12 权限与沙箱（permissions.py）
 
 - `auto_approve` — 受信任环境下自动批准
 - `sandbox` — 沙箱模式阻断破坏性操作
@@ -220,7 +220,7 @@ MCP（Model Context Protocol）支持将外部进程的工具动态注册进 `To
 
 详见 [权限系统指南](permission-guide.md)。
 
-### 3.7 Prompt 管理（prompts/）
+### 3.13 Prompt 管理（prompts/）
 
 system prompt 构建顺序：
 
@@ -236,7 +236,7 @@ system prompt 构建顺序：
 
 所有文本片段在 `prompts/fragments/*.md` 中管理，通过 `PromptManager.fragment()` 取用。
 
-### 3.8 Skill 系统（skills/）
+### 3.14 Skill 系统（skills/）
 
 详见 [skill-system-guide.md](skill-system-guide.md)。核心流程：
 
@@ -246,7 +246,7 @@ system prompt 构建顺序：
 4. 回复后检测实际使用（显式标签 + 指纹匹配），更新 LRU 追踪
 5. 压缩历史时按 LRU 顺序重附 Skill，在预算内优先保留最近使用的
 
-### 3.9 并发编排（orchestrator/）
+### 3.15 并发编排（orchestrator/）
 
 详见 [plan-and-task-guide.md](plan-and-task-guide.md) 和 [subagent-mechanism.md](subagent-mechanism.md)。两层结构：
 
@@ -263,7 +263,7 @@ system prompt 构建顺序：
 
 并发控制：两个 `CountingSemaphore`，分别限制并发任务数和并发 LLM 调用数。
 
-### 3.10 感知系统（perception/）
+### 3.16 感知系统（perception/）
 
 一组可选增强能力，通过配置开关启用：
 
@@ -294,9 +294,7 @@ system prompt 构建顺序：
 
 详见 [记忆管理指南](memory-management-guide.md)。
 
-### 3.13 HTTP API 服务（api/）
-
-### 3.11 HTTP API 服务（api/）
+### 3.17 HTTP API 服务（api/）
 
 内置 FastAPI HTTP 服务，支持通过 REST/SSE 与 agent 交互：
 
@@ -311,7 +309,7 @@ system prompt 构建顺序：
 
 详见 [HTTP API 指南](http-api-guide.md)。
 
-### 3.14 Web Demo（apps/）
+### 3.18 Web Demo（apps/）
 
 基于 Streamlit 的浏览器交互界面：
 
@@ -349,7 +347,7 @@ JSON 配置文件 > 命令行参数 > 环境变量 > 内置默认值。
 
 `src/mini_agent` 采用标准 `src` 布局，支持 `pip install -e .` 安装，使用绝对导入 `from mini_agent.xxx import ...`，不依赖 cwd 路径。
 
-### 4.8 HTTP API 集成方式
+### 4.5 HTTP API 集成方式
 
 v2 重构将记忆系统改为接口 + 工厂模式：
 
@@ -369,12 +367,14 @@ HTTP 服务通过桥接模式与 Agent 核心解耦：
 
 ---
 
-## 5. 后续改进方向
+## 7. 后续改进方向
 
 ### P2（较高收益）
 
 - **UI 层 facade**：业务模块目前仍有少量直接依赖 `terminal.term`，可进一步收拢
 - **配置优先级语义**：明确 CLI 参数是否可覆盖 JSON 配置文件
+- **memory_base.py/memory_factory.py**：新增记忆后端支持
+- **terminal.py/repl_input.py**：终端交互模块新增
 
 ### P3（长期演进）
 
@@ -386,7 +386,7 @@ HTTP 服务通过桥接模式与 Agent 核心解耦：
 
 ---
 
-## 6. 新增 Provider 建议流程
+## 8. 新增 Provider 建议流程
 
 1. 在 `src/mini_agent/llm/providers/` 创建新文件，继承 `LLMClient`
 2. 实现 `chat()` 和 `stream()`，将 SDK 响应转换为 `LLMResponse`
@@ -395,7 +395,7 @@ HTTP 服务通过桥接模式与 Agent 核心解耦：
 5. 补充单元测试（普通文本、工具调用、流式输出、错误处理）
 6. 更新 `cli/parser.py` 的 `--provider` 帮助文本
 
-## 7. 新增记忆后端建议流程
+## 9. 新增记忆后端建议流程
 
 1. 在 `src/mini_agent/perception/` 创建新文件，继承 `MemoryBackend`
 2. 实现 `add()` / `search()` / `search_by_tag()` / `count`
@@ -403,7 +403,7 @@ HTTP 服务通过桥接模式与 Agent 核心解耦：
 4. 补充单元测试（添加、检索、标签过滤、容量管理）
 5. 更新 `MemoryConfig.backend` 的文档说明
 
-## 8. 新增工具建议流程
+## 10. 新增工具建议流程
 
 1. 在 `src/mini_agent/tools/` 选择合适文件或新建模块
 2. 用 `@tool` 声明名称、描述、JSON Schema、`requires_approval`
@@ -421,7 +421,7 @@ HTTP 服务通过桥接模式与 Agent 核心解耦：
 
 详见 [MCP 集成指南](mcp-guide.md)。
 
-## 11. 相关文档
+## 12. 相关文档
 
 - [Agent 设计详解](agent-design.md) — agent.py 的核心架构、组件职责、执行流程
 - [代码结构指南](code-structure-guide.md) — 项目结构与导入规范
@@ -431,4 +431,4 @@ HTTP 服务通过桥接模式与 Agent 核心解耦：
 
 ---
 
-*最后更新：2026-06（新增 MCP 子系统）*
+*最后更新：2026-06（新增 MCP 子系统、history/、storage/、task_display.py 等模块）*

@@ -333,26 +333,43 @@ mini_agent/
 ├── src/                     # 源代码
 │   └── mini_agent/
 │       ├── __init__.py
-│       ├── agent.py         # Agent 核心逻辑（对话循环、编排）
+│       ├── __main__.py      # 模块入口
+│       ├── agent.py         # Agent 主类（对话循环与编排）
 │       ├── context_builder.py  # System prompt 构建
-│       ├── tool_executor.py    # 工具执行（权限 + 调用 + 缓存）
+│       ├── tool_executor.py    # 工具执行（权限 + 调用 + 截断 + 缓存）
 │       ├── history_manager.py  # 历史管理（压缩/快照）
 │       ├── config.py        # 配置管理
 │       ├── permissions.py   # 权限守卫
 │       ├── session.py       # 会话管理
 │       ├── skills/          # 技能加载
-│       │   └── __init__.py
+│       │   ├── __init__.py
+│       │   ├── tracker.py   # 技能使用追踪
+│       │   └── usage_detector.py  # 使用检测
 │       ├── cli/             # CLI 基础设施
+│       │   ├── __init__.py
 │       │   ├── app.py       # 应用启动入口
 │       │   ├── parser.py    # 参数解析
 │       │   ├── repl.py      # REPL 循环
 │       │   └── commands/    # REPL 命令处理
+│       │       ├── __init__.py
+│       │       ├── concurrency.py
+│       │       ├── plans.py
+│       │       ├── providers.py
+│       │       ├── sessions.py
+│       │       ├── skills.py
+│       │       ├── tasks.py
+│       │       ├── agents.py
+│       │       └── hooks.py
 │       ├── llm/             # LLM 抽象层
+│       │   ├── __init__.py
 │       │   ├── base.py      # 基础接口
 │       │   ├── factory.py   # 工厂模式
 │       │   ├── retry.py     # 重试策略
 │       │   ├── system_tool_call.py  # 工具调用格式
+│       │   ├── debug_logger.py  # 调试日志
 │       │   └── providers/   # LLM 提供商实现
+│       │       ├── __init__.py
+│       │       ├── _base_mixin.py
 │       │       ├── anthropic.py
 │       │       ├── openai.py
 │       │       ├── ollama.py
@@ -361,43 +378,72 @@ mini_agent/
 │       │   ├── __init__.py  # 工具注册表
 │       │   ├── builtin.py   # 内置工具
 │       │   ├── orchestration.py  # 并发编排工具
+│       │   ├── skill_manager.py  # 技能管理
 │       │   ├── plan.py      # 规划工具
-│       │   ├── user_input.py  # 用户输入工具
-│       │   └── skill_manager.py  # 技能管理
+│       │   └── user_input.py  # 用户输入工具
 │       ├── orchestrator/    # 并发编排
+│       │   ├── __init__.py
 │       │   ├── task.py      # 任务定义
 │       │   ├── task_manager.py  # 任务调度
 │       │   ├── sub_agent.py # 子 Agent
 │       │   ├── concurrency.py  # 并发控制
-│       │   └── status_bar.py  # 状态栏显示
+│       │   ├── status_bar.py  # 状态栏显示
+│       │   ├── plan.py      # 执行计划
+│       │   ├── plan_display.py  # 计划 UI
+│       │   ├── task_display.py  # 任务显示
+│       │   └── agent_profiles.py  # 自定义 agent profile
 │       ├── perception/      # 感知与记忆
+│       │   ├── __init__.py
 │       │   ├── project_scanner.py  # 项目结构扫描
 │       │   ├── file_watcher.py     # 文件变化监听
 │       │   ├── tool_cache.py       # 工具结果缓存
 │       │   ├── memory_store.py     # 跨 session 记忆
+│       │   ├── memory_base.py      # 记忆后端抽象
+│       │   ├── memory_factory.py   # 记忆工厂
 │       │   └── token_counter.py    # Token 预估
 │       ├── ui/              # 用户界面
-│       │   └── renderer.py  # 终端输出渲染
-│       └── api/             # HTTP API 服务
+│       │   ├── __init__.py
+│       │   ├── terminal.py  # 终端 I/O
+│       │   ├── renderer.py  # 终端输出渲染
+│       │   └── repl_input.py  # REPL 输入
+│       ├── api/             # HTTP API 服务
+│       │   ├── __init__.py
+│       │   ├── server.py    # HTTP 服务封装
+│       │   ├── routes.py    # API 路由
+│       │   ├── bridge.py    # Agent 桥梁
+│       │   ├── auth.py      # 认证中间件
+│       │   ├── models.py    # 数据模型
+│       │   └── fs_helper.py # 文件系统助手
+│       ├── history/         # 历史管理
+│       │   ├── __init__.py
+│       │   └── compression.py  # 压缩算法
+│       ├── prompts/         # Prompt 管理
+│       │   ├── __init__.py
+│       │   ├── manager.py   # PromptManager
+│       │   ├── system/      # 系统提示词
+│       │   ├── fragments/   # 文本片段
+│       │   └── user/        # 用户消息
+│       ├── hooks/           # hooks 机制
+│       │   ├── __init__.py
+│       │   ├── loader.py    # HookManager
+│       │   └── runner.py    # HookResult
+│       ├── mcp/             # MCP 支持
+│       │   ├── __init__.py
+│       │   ├── config.py    # 配置
+│       │   ├── transport.py # 传输层
+│       │   └── manager.py   # MCPManager
+│       └── storage/         # 存储层
 │           ├── __init__.py
-│           ├── server.py    # HTTP 服务封装
-│           ├── routes.py    # API 路由
-│           ├── bridge.py    # Agent 桥梁
-│           ├── auth.py      # 认证中间件
-│           ├── models.py    # 数据模型
-│           └── fs_helper.py # 文件系统助手
+│           └── paths.py     # 路径管理
 ├── apps/                    # Web 应用
 │   └── mini_agent_webdemo/ # Streamlit Web Demo
 │       └── app.py
-├── prompts/                 # 提示词模板
-│   ├── system/             # 系统提示词
-│   ├── fragments/          # 文本片段
-│   └── user/               # 用户消息
-├── skills/                  # 技能定义
+├── prompts/                 # 提示词模板（外部）
+├── skills/                  # 技能定义（外部）
 ├── tests/                   # 单元测试
 ├── docs/                    # 文档
 ├── sessions/                # 会话历史（生成）
-└── mcp_servers/             # MCP 服务器示例
+├── mcp_servers/             # MCP 服务器示例
 ├── .agent/                  # 自定义子 agent profiles
 │   └── agents/              # profile 文件 (*.md)
 └── hooks/                   # hooks 示例脚本
@@ -523,4 +569,4 @@ MIT License
 
 ---
 
-*最后更新：2026-06-12* — 命令行输入补全功能新增（slash 命令/文件路径/历史建议）
+*最后更新：2026-06-13* — 文档更新，同步最新代码结构

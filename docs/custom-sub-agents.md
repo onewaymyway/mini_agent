@@ -1,6 +1,6 @@
 # 自定义子 Agent（Custom Sub-Agents）
 
-mini_agent 支持类似 Claude Code `.claude/agents/*.md` 的预设子 agent 机制：
+mini_agent 支持 `.agent/agents/*.md` 的预设子 agent 机制：
 你可以预先定义好一批"专家角色"（如 code-reviewer、test-runner、translator），
 主 agent 在合适的时候通过 `spawn_named_agent` 调用它们，并传入结构化参数和
 自由文本上下文。

@@ -47,6 +47,10 @@ mini_agent/
         ├── prompts/        # Prompt 管理
         ├── skills/         # Skill 系统
         ├── perception/     # 感知与记忆
+        ├── history/        # 历史压缩管理
+        ├── storage/        # 存储层
+        ├── api/            # HTTP API 服务
+        ├── hooks/          # hooks 机制
         └── mcp/            # MCP 外部工具服务支持
             ├── __init__.py
             ├── config.py   # MCPServerConfig / MCPConfig
@@ -102,6 +106,10 @@ mini_agent/
 | `mini_agent/prompts/` | 根目录 `prompts/` |
 | `mini_agent/skills/` | 根目录 `skills/` |
 | `mini_agent/perception/` | 根目录 `perception/` |
+| `mini_agent/history/` | 新增 |
+| `mini_agent/storage/` | 新增 |
+| `mini_agent/api/` | 新增 |
+| `mini_agent/hooks/` | 新增 |
 | `mini_agent/mcp/` | 新增 |
 
 ### 2.5 项目根目录 mcp_servers/
@@ -204,4 +212,4 @@ from mini_agent.orchestrator.task import Task, TaskStatus
 
 ---
 
-*最后更新：2026-06（新增 mcp/ 子包与 mcp_servers/ 说明）*
+*最后更新：2026-06（新增 mcp/ 子包、history/、storage/、api/、hooks/ 等模块）*

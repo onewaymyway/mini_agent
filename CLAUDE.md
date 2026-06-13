@@ -4,7 +4,10 @@
 
 ## 项目结构
 
-- `src/mini_agent/agent.py` — Agent 核心逻辑（对话循环、工具派发、流式输出）；拆分为三个独立组件：ContextBuilder（system prompt 构建）、ToolExecutor（权限检查 + 工具调用）、HistoryManager（历史管理）
+- `src/mini_agent/agent.py` — Agent 主类（对话循环与编排）
+- `src/mini_agent/context_builder.py` — System prompt 构建（skill/memory/project 注入）
+- `src/mini_agent/tool_executor.py` — 工具执行（权限检查 + 调用 + 截断 + 缓存）
+- `src/mini_agent/history_manager.py` — 历史管理（追加 + 压缩 + 快照恢复）
 - `src/mini_agent/config.py` — 配置管理和系统提示词构建
 - `src/mini_agent/permissions.py` — 工具调用的权限守卫
 - `src/mini_agent/session.py` — 会话管理
@@ -12,20 +15,23 @@
 - `src/mini_agent/tools/builtin.py` — 内置工具（bash、文件 I/O、搜索）
 - `src/mini_agent/tools/orchestration.py` — 并发编排工具
 - `src/mini_agent/tools/skill_manager.py` — 技能管理工具
+- `src/mini_agent/tools/plan.py` — 规划工具
+- `src/mini_agent/tools/user_input.py` — 用户输入工具
 - `src/mini_agent/mcp/` — MCP（Model Context Protocol）支持
-- `src/mini_agent/skills/__init__.py` — 技能发现和加载
+- `src/mini_agent/skills/` — 技能发现和加载
 - `src/mini_agent/cli/app.py` — CLI 应用入口
 - `src/mini_agent/cli/parser.py` — 参数解析
 - `src/mini_agent/cli/repl.py` — REPL 交互循环
+- `src/mini_agent/cli/commands/` — REPL 命令处理器（concurrency, plans, sessions, skills, tasks, agents, hooks 等）
 - `src/mini_agent/llm/` — LLM 抽象层
 - `src/mini_agent/orchestrator/` — 并发编排
-  - `sub_agent.py` — 子 Agent 实现
-  - `agent_profiles.py` — 自定义子 agent profile 管理
 - `src/mini_agent/hooks/` — hooks 机制（关键事件自动执行命令）
-- `src/mini_agent/cli/commands/agents.py` — /agents 斜杠命令
-- `src/mini_agent/cli/commands/hooks.py` — /hooks 斜杠命令
 - `src/mini_agent/perception/` — 感知与记忆子系统
-- `src/mini_agent/ui/renderer.py` — Rich 终端输出渲染
+- `src/mini_agent/ui/` — 终端交互（terminal.py, renderer.py, repl_input.py）
+- `src/mini_agent/api/` — HTTP API 服务
+- `src/mini_agent/history/` — 历史压缩管理
+- `src/mini_agent/prompts/` — Prompt 管理
+- `src/mini_agent/storage/` — 存储层
 
 ## 开发规范
 
@@ -39,7 +45,7 @@
 - 未来规划相关的文档放在/next_doc 目录下
 - 关键功能都应该在/tests 下有对应的单元测试
 - 系统性的测试案例放在 /test_cases 下
-- 所有涉及调用大模型的prompt，必须保存到 src/mini_agent/prompts 目录下，然后通过 PromptManager 来获取
+- 所有涉及调用大模型的 prompt，必须保存到 src/mini_agent/prompts 目录下，然后通过 PromptManager 来获取
 
 ## 运行
 
@@ -78,6 +84,7 @@ python main.py --provider nvidia --model qwen/qwen3.5-122b-a10b --system-tool-ca
 - `retry.py` — 重试策略（空输出重试等）
 - `system_tool_call.py` — 系统工具调用格式转换
 - `providers/` — 各 LLM 提供商实现（anthropic, openai, ollama, nvidia）
+- `debug_logger.py` — LLM 调试日志记录
 
 ### Agent 核心 (`src/mini_agent/`)
 
@@ -95,6 +102,8 @@ python main.py --provider nvidia --model qwen/qwen3.5-122b-a10b --system-tool-ca
 - `builtin.py` — 内置工具（读/写文件、bash、grep、glob 等）
 - `orchestration.py` — 并发编排工具（spawn_agent, task 管理）
 - `skill_manager.py` — 技能管理工具（skill_list, skill_activate 等）
+- `plan.py` — 规划工具
+- `user_input.py` — 用户输入工具
 
 ### MCP 支持 (`src/mini_agent/mcp/`)
 
@@ -106,12 +115,13 @@ python main.py --provider nvidia --model qwen/qwen3.5-122b-a10b --system-tool-ca
 ### 并发编排 (`src/mini_agent/orchestrator/`)
 
 - `task.py` — 任务定义
-- `task_manager.py` — 任务调度（依赖解析、SubAgent 管理）
+- `orchestrator/task_manager.py` — 任务调度（依赖解析、SubAgent 管理）
 - `sub_agent.py` — 子 Agent 实现（线程包装、自动重试、输出捕获）
 - `concurrency.py` — 并发控制
 - `status_bar.py` — 状态栏显示
 - `plan.py` — 执行计划数据模型
 - `plan_display.py` — 计划 UI 渲染
+- `task_display.py` — 任务状态显示
 - `agent_profiles.py` — 自定义子 agent profile（预设角色）
 
 ### 感知与记忆 (`src/mini_agent/perception/`)
@@ -120,6 +130,8 @@ python main.py --provider nvidia --model qwen/qwen3.5-122b-a10b --system-tool-ca
 - `file_watcher.py` — 文件变化监听
 - `tool_cache.py` — 工具结果缓存
 - `memory_store.py` — 跨 session 长期记忆
+- `memory_base.py` — 记忆后端抽象
+- `memory_factory.py` — 记忆工厂
 - `token_counter.py` — Token 预估
 
 ### HTTP API (`src/mini_agent/api/`)
@@ -136,7 +148,7 @@ python main.py --provider nvidia --model qwen/qwen3.5-122b-a10b --system-tool-ca
 - `app.py` — 应用启动装配（解析参数、初始化组件、启动 REPL）
 - `parser.py` — CLI 参数定义
 - `repl.py` — REPL 循环和斜杠命令处理
-- `commands/` — REPL 命令处理器（concurrency, plans, sessions, skills, tasks, agents, hooks 等）
+- `commands/` — REPL 命令处理器（concurrency, plans, sessions, skills, tasks, agents, hooks, providers 等）
 
 ### hooks (`src/mini_agent/hooks/`)
 
@@ -148,6 +160,17 @@ python main.py --provider nvidia --model qwen/qwen3.5-122b-a10b --system-tool-ca
 
 - `terminal.py` — 统一终端 I/O 管理器，支持命令行输入补全（slash 命令/文件路径/历史建议）
 - `renderer.py` — Rich 终端输出渲染
+- `repl_input.py` — REPL 输入处理
+
+### 历史管理 (`src/mini_agent/history/`)
+
+- `__init__.py` — 公开接口导出
+- `compression.py` — 历史压缩算法
+
+### 存储层 (`src/mini_agent/storage/`)
+
+- `__init__.py` — 公开接口导出
+- `paths.py` — 路径管理
 
 ### 自定义子 Agent
 
