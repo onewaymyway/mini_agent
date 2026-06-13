@@ -77,6 +77,7 @@ class Session:
     fmt: str = "dir"      # "dir" | "json" | "jsonl"
     file_path: str = ""   # 目录格式下指向 meta.json；旧格式为单文件路径
     summary: str = ""
+    summary_at_turns: int = 0  # 上次生成摘要/记忆时的 stats.turns，用于判断是否需要重新生成
 
     @property
     def meta(self) -> SessionMeta:
@@ -109,6 +110,8 @@ class Session:
         }
         if self.summary:
             d["summary"] = self.summary
+        if self.summary_at_turns:
+            d["summary_at_turns"] = self.summary_at_turns
         return d
 
     def to_dict(self) -> dict:
@@ -361,6 +364,7 @@ class SessionManager:
                 fmt="dir",
                 file_path=str(meta_path),
                 summary=meta.get("summary", ""),
+                summary_at_turns=meta.get("summary_at_turns", 0),
             )
         except Exception:
             return None
@@ -444,6 +448,7 @@ class SessionManager:
                 fmt=fmt,
                 file_path=str(path),
                 summary=meta.get("summary", ""),
+                summary_at_turns=meta.get("summary_at_turns", 0),
             )
         except Exception:
             return None

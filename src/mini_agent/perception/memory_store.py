@@ -98,6 +98,13 @@ class MemoryStore(MemoryBackend):
         else:
             self._append_to_disk(entry)
 
+    def delete_by_session(self, session_id: str) -> None:
+        self._ensure_loaded()
+        before = len(self._entries)
+        self._entries = [e for e in self._entries if e.session_id != session_id]
+        if len(self._entries) != before:
+            self._rewrite_disk()
+
     # ── 检索 ──────────────────────────────────────────────────────────────────
 
     def search(self, query: str, k: int = 3) -> list[MemoryEntry]:

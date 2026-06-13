@@ -45,6 +45,24 @@ class MemoryBackend(ABC):
         """
         ...
 
+    def upsert(self, entry: "MemoryEntry") -> None:
+        """
+        按 session_id 写入/更新一条记忆条目。
+
+        若已存在 session_id 相同的条目，先删除旧条目再 add()新条目；
+        否则等价于 add()。用于"同一 session 内多次刷新摘要"场景，
+        避免重复生成多条记忆。
+
+        默认实现性能较低（O(n) 全量重写），子类可覆盖以提供更高效实现。
+        """
+        self.delete_by_session(entry.session_id)
+        self.add(entry)
+
+    def delete_by_session(self, session_id: str) -> None:
+        """删除指定 session_id 的所有记忆条目。默认实现为 no-op，子类可覆盖。"""
+        return None
+
+
     @abstractmethod
     def search(self, query: str, k: int = 3) -> list["MemoryEntry"]:
         """

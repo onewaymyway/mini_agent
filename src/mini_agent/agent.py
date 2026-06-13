@@ -159,6 +159,9 @@ class Agent:
             from mini_agent.storage.paths import AgentPaths
             self._profile_mgr = UserProfileManager(AgentPaths(cfg.project_root), user_id=None)
 
+        # [SYS-SUMMARY] 防止多个摘要/记忆生成任务并发运行（互斥，非阻塞获取）
+        self._summary_lock = threading.Lock()
+
         # ── [SYS-MCP] MCP 工具注册 ─────────────────────────────────────────────
         # 连接 agent_config.json 中配置的所有 MCP server，
         # 将其工具动态注册进 ToolRegistry（group="mcp:{server_name}"）。
@@ -327,18 +330,13 @@ class Agent:
                 stats=stats,
             )
 
-            # [SYS-SUMMARY] 达到门槛后生成 session 摘要（耗时较长，放到后台线程，避免阻塞主流程）
+            # [SYS-SUMMARY] 达到门槛后生成/刷新 session 摘要与记忆（耗时较长，放到后台线程，避免阻塞主流程）
+            # 条件：达到最小轮次，且自上次生成以来又新增了至少 min_turns 轮（而非"只生成一次"）
+            turns_since_last = self.stats.turns - getattr(self._session, "summary_at_turns", 0)
             if (self.cfg.session_summary_enabled
                     and self.stats.turns >= self.cfg.session_summary_min_turns
-                    and not getattr(self._session, "summary", "")):
-                R.print_info("正在后台生成本次会话的摘要记忆...")
-                history_snapshot = list(self._history)
-                threading.Thread(
-                    target=self._generate_and_save_summary,
-                    args=(str(path), history_snapshot),
-                    daemon=True,
-                    name="mini-agent-summary",
-                ).start()
+                    and turns_since_last >= self.cfg.session_summary_min_turns):
+                self.trigger_summary_and_profile(str(path))
 
             return str(path)
         except Exception as e:
@@ -355,33 +353,78 @@ class Agent:
             return ""
         return profile.derived.get("summary", "") if profile.derived else ""
 
-    def _maybe_refresh_profile(self) -> None:
+    def _maybe_refresh_profile(self, force: bool = False) -> None:
         """
         [SYS-PROFILE] 检查是否需要(重新)生成用户画像，若需要则同步生成。
 
         本方法预期在 _generate_and_save_summary 的后台线程中被调用（已经
         不阻塞主流程），因此这里直接同步调用 LLM，不再额外开线程。
+
+        force=True 时跳过 should_refresh 的间隔判断，只要有记忆条目就重新生成
+        （由 /profile 命令触发）。
         """
         if not self._profile_mgr:
+            if force:
+                R.print_warning("用户画像功能未开启（profile.enabled=false）。")
             return
         # 画像基于全局记忆（跨项目通用经验）；没有全局记忆则跳过
         source = self._global_memory or self._memory
         if source is None:
+            if force:
+                R.print_warning("记忆功能未开启，无法生成用户画像。")
             return
         try:
             count = source.count
-            if not self._profile_mgr.should_refresh(count, self.cfg):
+            if count == 0:
+                if force:
+                    R.print_warning("暂无可用于生成画像的长期记忆。")
+                return
+            if not force and not self._profile_mgr.should_refresh(count, self.cfg):
                 return
             entries = source.all_entries()
             # all_entries 不保证按时间排序，按 created_at 升序取最近 N 条
             entries = sorted(entries, key=lambda e: e.created_at)[-self.cfg.profile.max_entries_for_profile:]
-            R.print_info("正在后台更新用户画像(profile)...")
+            R.print_info("正在更新用户画像(profile)...")
             self._profile_mgr.generate(self._llm, entries)
             R.print_info("用户画像(profile)已更新")
         except Exception as e:
             R.print_warning(f"用户画像生成失败: {e}")
 
-    def _generate_and_save_summary(self, session_path: str, history: Optional[list] = None) -> None:
+    def trigger_summary_and_profile(self, session_path: Optional[str] = None, force: bool = False) -> bool:
+        """
+        触发"生成/刷新 session 摘要 + 写入长期记忆 + 刷新用户画像"的后台任务。
+
+        Args:
+            session_path: session 文件路径；为 None 时使用当前 session 路径。
+            force: 为 True 时忽略 _summary_lock 占用提示之外的逻辑限制——
+                注意：仍会跳过若已有任务在运行（避免并发写同一文件），
+                但会跳过"轮次间隔"门槛检查（调用方——如 /memory 命令——
+                已明确要求立即生成）。
+
+        Returns:
+            True — 已成功提交后台任务；False — 因已有任务在运行而跳过。
+        """
+        if session_path is None:
+            if not self._session_mgr or not self._session:
+                R.print_warning("当前没有可保存的会话。")
+                return False
+            session_path = self._session.file_path or ""
+
+        if self._summary_lock.locked():
+            R.print_warning("摘要/画像生成任务正在进行中，请稍后再试。")
+            return False
+
+        R.print_info("正在后台生成会话摘要 / 更新长期记忆...")
+        history_snapshot = list(self._history)
+        threading.Thread(
+            target=self._generate_and_save_summary,
+            args=(session_path, history_snapshot, force),
+            daemon=True,
+            name="mini-agent-summary",
+        ).start()
+        return True
+
+    def _generate_and_save_summary(self, session_path: str, history: Optional[list] = None, force: bool = False) -> None:
         """
         [SYS-SUMMARY] 用 LLM 生成 session 摘要，写回 session 文件，并写入长期记忆。
 
@@ -394,6 +437,10 @@ class Agent:
           避免多 SubAgent 并发时互相覆盖。
         - 写回前先将 summary 赋给 self._session.summary，save() 会自动持久化。
         """
+        if not self._summary_lock.acquire(blocking=False):
+            if force:
+                R.print_warning("摘要/画像生成任务正在进行中，请稍后再试。")
+            return
         try:
             if history is None:
                 history = self._history
@@ -406,6 +453,8 @@ class Agent:
                 and not m["content"].startswith("[Previous session")
             ]
             if not user_turns:
+                if force:
+                    R.print_warning("当前会话没有可摘要的用户消息。")
                 return
 
             turns_text = "\n".join(f"- {t[:200]}" for t in user_turns[:10])
@@ -423,6 +472,7 @@ class Agent:
             # 写回 session（通过 session_mgr，享受原子写入 + 文件锁）
             if self._session and self._session_mgr:
                 self._session.summary = summary
+                self._session.summary_at_turns = self.stats.turns
                 stats = {
                     "turns":             self.stats.turns,
                     "input_tokens":      self.stats.input_tokens,
@@ -451,17 +501,19 @@ class Agent:
                 )
                 # 根据 scope 分流：project 写项目记忆，global 写全局记忆
                 if entry.scope == "global" and self._global_memory:
-                    self._global_memory.add(entry)
+                    self._global_memory.upsert(entry)
                 else:
-                    self._memory.add(entry)
+                    self._memory.upsert(entry)
                 # 同时写入 memory_delta.jsonl（session 审计）
                 self._append_memory_delta(entry)
             R.print_info("会话摘要记忆已生成")
 
             # [SYS-PROFILE] 同一后台线程内顺带检查并刷新用户画像
-            self._maybe_refresh_profile()
+            self._maybe_refresh_profile(force=force)
         except Exception as e:
             R.print_warning(f"[summary] generation failed: {e}")
+        finally:
+            self._summary_lock.release()
 
     def load_session(self, session_id: str) -> bool:
         """按 session_id（或其前缀）加载历史到当前 agent，返回是否成功。"""
