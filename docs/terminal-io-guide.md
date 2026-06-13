@@ -2,6 +2,10 @@
 
 本文档描述 mini-agent 中命令行输出和输入的统一管理方式。
 
+**补充阅读**：
+- [Task 日志实时查看与切换](task-focus-viewing.md) — 方向键切换查看任务日志机制
+- [RawKeyListener 跨平台键盘监听](../src/mini_agent/ui/raw_key_listener.py) — 方向键监听实现
+
 ---
 
 ## 1. 整体架构
@@ -201,8 +205,9 @@ choice = term.confirm(
 
 | 模块 | 角色 |
 |------|------|
-| `ui/terminal.py` | **唯一写屏幕的地方**，渲染队列、状态栏、输入读取 |
+| `ui/terminal.py` | **唯一写屏幕的地方**，渲染队列、状态栏、输入读取、Task 焦点控制 |
 | `ui/renderer.py` | 适配层：历史 API 映射到 `terminal.term` |
+| `ui/raw_key_listener.py` | 跨平台键盘监听（Unix: `/dev/tty` + `termios` / Windows: `msvcrt`） |
 | `orchestrator/status_bar.py` | 构建状态栏内容，推送给 `terminal.term`，不直接写屏 |
 | `orchestrator/plan_display.py` | 构建 plan 状态栏行和 Rich 树，通过 `terminal.term` 输出 |
 | `permissions.py` | 通过 `term.print()` 和 `term.confirm()` 处理权限审批 |
@@ -298,4 +303,4 @@ permissions.py 拦截
 
 ---
 
-*最后更新：2026-06*
+*最后更新：2026-06（新增 Task 焦点模式、方向键切换日志查看、RawKeyListener 跨平台键盘监听）*

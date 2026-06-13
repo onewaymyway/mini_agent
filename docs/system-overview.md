@@ -113,8 +113,11 @@ slash 命令使用各自的 handler 函数，通过 `cli/commands/__init__.py` �
 - 渲染消息队列 + 专用渲染线程，消除多线程输出竞态
 - 状态栏通过 ANSI 控制码覆写实现局部刷新
 - `_enter_input_mode()` 用哨兵消息精确同步，而非 sleep，确保输入期间无意外写屏
+- **Task 焦点模式**：支持方向键实时切换查看不同任务的日志输出（详见 [task-focus-viewing.md](task-focus-viewing.md)）
 
 `ui/renderer.py` 是向后兼容适配层，将历史 `print_tool_call()` 等 API 映射到 `terminal.term`。
+
+`ui/raw_key_listener.py` 实现跨平台键盘监听（Unix: `/dev/tty` + `termios` / Windows: `msvcrt`），支持在 Agent 运行期间响应用户快捷键。
 
 ### 3.3 Agent 核心循环（agent.py）
 
@@ -248,10 +251,11 @@ system prompt 构建顺序：
 
 ### 3.15 并发编排（orchestrator/）
 
-详见 [plan-and-task-guide.md](plan-and-task-guide.md) 和 [subagent-mechanism.md](subagent-mechanism.md)。两层结构：
+详见 [plan-and-task-guide.md](plan-and-task-guide.md)、[subagent-mechanism.md](subagent-mechanism.md) 和 [task-focus-viewing.md](task-focus-viewing.md)。两层结构：
 
 - **ExecutionPlan / PlanTask** — 结构化执行计划，注入 system prompt，不启动线程
 - **TaskManager / SubAgent** — 真正的并发执行，纯线程模型，不依赖 asyncio
+- **Task 日志实时查看**：支持方向键切换查看各任务实时日志，状态栏显示任务状态概要
 
 **SubAgent 关键特性**：
 - 独立的对话历史、独立的统计信息
@@ -428,7 +432,8 @@ HTTP 服务通过桥接模式与 Agent 核心解耦：
 - [HTTP API 指南](http-api-guide.md) — REST/SSE 服务使用指南
 - [记忆管理指南](memory-management-guide.md) — 长期记忆系统与可扩展后端
 - [MCP 集成指南](mcp-guide.md) — MCP 外部工具服务架构与配置
+- [Task 日志实时查看](task-focus-viewing.md) — 方向键切换查看任务日志机制
 
 ---
 
-*最后更新：2026-06（新增 MCP 子系统、history/、storage/、task_display.py 等模块）*
+*最后更新：2026-06（新增 MCP 子系统、history/、storage/、task_display.py、task-focus-viewing 等模块）*

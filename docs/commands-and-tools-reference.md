@@ -2,6 +2,10 @@
 
 本文档汇总所有 CLI 启动参数、REPL slash 命令和内置工具。
 
+**补充阅读**：
+- [Task 日志实时查看与切换](task-focus-viewing.md) — 方向键实时查看任务日志
+- [Plan 与 Task 指南](plan-and-task-guide.md) — 执行计划机制
+
 ---
 
 ## 一、启动方式
@@ -157,6 +161,15 @@ python main.py
 | `/tasks cancel <id>` | 取消指定任务 |
 | `/tasks cancel-all` | 取消所有 pending/running 任务 |
 | `/tasks workers <n>` | 动态调整最大并发工作线程数 |
+| `/tasks focus <id>` | 进入指定任务的焦点模式（实时查看日志） |
+| `/tasks unfocus` | 退出任务焦点模式 |
+
+**键盘快捷键（运行时）**：
+- `→` 或 `↓` — 进入/切换到下一个任务日志视图
+- `←` 或 `↑` — 切换到上一个任务日志视图
+- `ESC` — 退出任务焦点模式
+
+详见 [Task 日志实时查看与切换](task-focus-viewing.md)。
 
 ### 执行计划（`src/mini_agent/cli/commands/plans.py`）
 

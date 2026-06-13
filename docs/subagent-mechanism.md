@@ -2,6 +2,10 @@
 
 mini-agent 的并发执行能力依赖于 SubAgent 机制——主 Agent 可以派生出多个独立的 Sub-Agent，在后台并行执行任务。
 
+**补充阅读**：
+- [Task 日志实时查看与切换](task-focus-viewing.md) — 方向键实时查看 SubAgent 任务日志
+- [Plan 与 Task 指南](plan-and-task-guide.md) — 结构化执行计划
+
 ---
 
 ## 1. 核心概念
