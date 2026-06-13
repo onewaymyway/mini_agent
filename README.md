@@ -22,6 +22,7 @@
 | 🔌 MCP 支持 | Model Context Protocol 集成，支持 stdio/SSE 传输，可扩展外部工具服务 |
 | 🤖 自定义子 Agent | 预设角色模板（.agent/agents/*.md），结构化参数注入，支持工具/模型限制 |
 | 🔗 Hooks 机制 | 关键事件自动执行 shell 命令，支持拦截/修改工具调用，项目级/全局级配置 |
+| 🎯 Task 日志实时查看 | 运行时方向键切换查看不同任务日志，状态栏显示任务状态概要 |
 
 ## 快速开始
 
@@ -157,70 +158,6 @@ python -m mini_agent
 
 详细文档参见 [MCP 使用指南](docs/mcp-guide.md)。
 
-## REPL 命令
-
-## MCP 集成
-
-mini-agent 支持 [Model Context Protocol (MCP)](https://modelcontextprotocol.io/)，允许通过标准化协议连接外部工具服务。
-
-### 快速开始
-
-1. 安装 MCP SDK：
-
-```bash
-pip install mcp
-```
-
-2. 配置 `agent_config.json`（已预配置 time_server）：
-
-```json
-{
-  "mcp_servers": [
-    {
-      "name": "time_server",
-      "transport": "stdio",
-      "command": "python",
-      "args": ["mcp_servers/time_server.py"],
-      "auto_approve": true
-    }
-  ]
-}
-```
-
-3. 启动 Agent，会自动连接 MCP server：
-
-```bash
-python -m mini_agent
-```
-
-启动后会显示：
-```
-[mcp] Connected: 'time_server' (3 tools: get_current_time, calculate, echo)
-```
-
-### 可用 MCP 工具
-
-| 工具 | 描述 |
-|------|------|
-| `get_current_time(timezone?)` | 获取当前时间，支持 IANA 时区（如 Asia/Shanghai） |
-| `calculate(expression)` | 安全计算数学表达式（四则运算、sqrt、log、sin 等） |
-| `echo(message)` | 原样返回消息，用于测试连通性 |
-
-### 配置选项
-
-| 字段 | 说明 |
-|------|------|
-| `name` | Server 唯一标识 |
-| `transport` | `"stdio"` 或 `"sse"` |
-| `command`/`args` | stdio 模式的命令和参数 |
-| `url` | SSE 模式的 endpoint |
-| `auto_approve` | 是否免审批 |
-| `timeout` | 连接与调用超时（秒） |
-
-详细文档参见 [MCP 使用指南](docs/mcp-guide.md)。
-
-## REPL 命令
-
 ## Web Demo
 
 使用 Streamlit 启动浏览器交互界面：
@@ -268,11 +205,28 @@ Web Demo 提供：
 | `/provider list\|switch <name>` | 列出/切换提供者 |
 | `/session list\|save\|load` | 管理会话 |
 | `/tasks` | 显示子任务状态 |
+| `/tasks focus <id>` | 进入指定任务焦点模式（实时查看日志） |
+| `/tasks unfocus` | 退出任务焦点模式 |
+| `/tasks dashboard` | 实时任务看板 |
+| `/tasks log <id>` | 查看任务日志 |
+| `/tasks cancel <id>` | 取消任务 |
 | `/concurrency` | 查看并发状态 |
 | `/compact` | 压缩对话历史 |
 | `/prompts` | 列出所有提示词文件 |
 | `/retry` | 重试上一轮 |
 | `/rollback` | 回退上一轮 |
+
+### 键盘快捷键（Task 日志查看）
+
+运行 Task 时支持以下快捷键实时切换查看任务日志：
+
+| 按键 | 功能 |
+|------|------|
+| `→` 或 `↓` | 进入/切换到下一个任务日志视图 |
+| `←` 或 `↑` | 切换到上一个任务日志视图 |
+| `ESC` | 退出任务焦点模式 |
+
+详见 [Task 日志实时查看指南](docs/task-focus-viewing.md)。
 
 ### 命令行输入补全
 
@@ -544,6 +498,7 @@ python -m pytest tests/ -q
 ## 文档
 
 - [系统概览](docs/system-overview.md) — 整体架构和设计思路
+- [Task 日志实时查看](docs/task-focus-viewing.md) — **新增**：方向键切换查看任务日志机制
 - [权限系统指南](docs/permission-guide.md) — 权限守卫、白名单、持久化配置
 - [Agent 设计](docs/agent-design.md) — Agent 核心循环与组件详解
 - [CLI I/O 机制](docs/cli-io-mechanism.md) — 命令行输入输出流程，HTTP 与命令行协同
@@ -569,4 +524,4 @@ MIT License
 
 ---
 
-*最后更新：2026-06-13* — 文档更新，同步最新代码结构
+*最后更新：2026-06-13* — Task 日志实时查看功能（方向键切换）、文档更新
