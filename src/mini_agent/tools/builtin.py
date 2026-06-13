@@ -372,30 +372,61 @@ def patch_file(path: str, old_string: str, new_string: str) -> str:
 
 # ── web_search ────────────────────────────────────────────────────────────────
 
+# 由 Agent 在初始化时注入（见 agent.py），供 web_search() 工具使用。
+# 未注入时 web_search() 会使用一个仅含默认值的 AppConfig（即 duckduckgo，无 key）。
+_web_search_cfg = None
+
+
+def configure_web_search(cfg) -> None:
+    """注入 AppConfig，供 web_search 工具读取 provider/api_key/timeout 等配置。"""
+    global _web_search_cfg
+    _web_search_cfg = cfg
+
+
 @tool(
     name="web_search",
     description=(
         "Search the web for up-to-date information. "
-        "Returns a summary of the top results. "
-        "Use when you need documentation, error messages, or recent info."
+        "Returns titles, URLs, and snippets of the top results. "
+        "Use when you need documentation, error messages, or recent info. "
+        "Default provider is DuckDuckGo (free, no API key). "
+        "Optionally pass 'provider' to use a different backend for this call "
+        "(e.g. 'brave', 'serper', 'tavily' — requires the matching *_API_KEY env var)."
     ),
     schema={
         "type": "object",
         "properties": {
             "query": {"type": "string", "description": "Search query"},
+            "max_results": {
+                "type": "integer",
+                "description": "Maximum number of results to return (default 5)",
+            },
+            "provider": {
+                "type": "string",
+                "description": (
+                    "Override the configured search provider for this call only. "
+                    "One of: duckduckgo, brave, serper, tavily."
+                ),
+            },
         },
         "required": ["query"],
     },
     requires_approval=False,
 )
-def web_search(query: str) -> str:
-    """
-    Stub implementation — replace with a real search API (Brave, Serper, etc.)
-    when an API key is available.
-    """
-    return (
-        f"[web_search: '{query}']\n"
-        "Web search is not configured. "
-        "Set BRAVE_API_KEY or SERPER_API_KEY in your environment "
-        "and update tools/builtin.py to use a real search provider."
-    )
+def web_search(query: str, max_results: Optional[int] = None, provider: Optional[str] = None) -> str:
+    from mini_agent.config import AppConfig
+    from mini_agent.web_search import WebSearchError, create_web_search_provider
+
+    cfg = _web_search_cfg or AppConfig()
+    n = max_results or getattr(cfg.web_search, "max_results", 5)
+
+    try:
+        impl = create_web_search_provider(cfg, provider=provider)
+        results = impl.search(query, max_results=n)
+        return impl.format_results(query, results)
+    except WebSearchError as exc:
+        return f"[web_search error] {exc}"
+    except ValueError as exc:
+        # 未知 provider 名称
+        return f"[web_search error] {exc}"
+

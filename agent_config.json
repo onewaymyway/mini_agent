@@ -12,6 +12,13 @@
   "profile_enabled":true,
   "max_llm_calls": 4,
 
+  "web_search": {
+    "provider": "duckduckgo",
+    "api_key": "",
+    "max_results": 5,
+    "timeout": 10.0
+  },
+
   "mcp_servers": [
     {
       "name": "time_server",

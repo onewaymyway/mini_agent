@@ -60,6 +60,10 @@ class Agent:
         llm_client: Optional[LLMClient] = None,
     ) -> None:
         self.cfg = cfg
+
+        from mini_agent.tools.builtin import configure_web_search
+        configure_web_search(cfg)
+
         self.registry = registry or get_default_registry()
         self.skill_loader = skill_loader
         self.guard = guard or PermissionGuard(

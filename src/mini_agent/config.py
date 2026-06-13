@@ -194,6 +194,21 @@ class HttpConfig:
 
 
 @dataclass
+class WebSearchConfig:
+    """[SYS-WEBSEARCH] 网络搜索工具配置。
+
+    provider 可选值（由 web_search/factory.py 注册表决定，可动态扩展）：
+      "duckduckgo" (默认，免费，无需 key) | "brave" | "serper" | "tavily"
+
+    api_key: 显式指定时优先于环境变量（BRAVE_API_KEY / SERPER_API_KEY / TAVILY_API_KEY）。
+    """
+    provider: str = "duckduckgo"
+    api_key: str = ""
+    max_results: int = 5
+    timeout: float = 10.0
+
+
+@dataclass
 class RetryConfig:
     """LLM 调用重试配置。"""
     max_retries: int = 15
@@ -262,6 +277,7 @@ class AppConfig:
     http:       HttpConfig       = field(default_factory=HttpConfig)
     retry:      RetryConfig      = field(default_factory=RetryConfig)
     mcp:        MCPConfig        = field(default_factory=MCPConfig)
+    web_search: WebSearchConfig  = field(default_factory=WebSearchConfig)
 
     # ── 向后兼容属性（让旧代码 cfg.memory_enabled 不报错）────────────────────
     # 以下属性委托给子配置块，方便渐进式迁移，后续版本可删除
@@ -612,6 +628,15 @@ def load_config(
         ))
     mcp_cfg = MCPConfig(servers=mcp_server_list)
 
+    _ws = file_cfg.get("web_search") if isinstance(file_cfg.get("web_search"), dict) else {}
+    web_search_cfg = WebSearchConfig(
+        provider=_ws.get("provider") or os.environ.get("WEB_SEARCH_PROVIDER", "duckduckgo"),
+        api_key=_ws.get("api_key") or os.environ.get("WEB_SEARCH_API_KEY", ""),
+        max_results=int(_ws.get("max_results") or os.environ.get("WEB_SEARCH_MAX_RESULTS", 5)),
+        timeout=float(_ws.get("timeout") or os.environ.get("WEB_SEARCH_TIMEOUT", 10.0)),
+    )
+
+
     return AppConfig(
         api_key=api_key,
         model=_model,
@@ -642,6 +667,7 @@ def load_config(
         http=http_cfg,
         retry=retry_cfg,
         mcp=mcp_cfg,
+        web_search=web_search_cfg,
     )
 
 
