@@ -112,13 +112,13 @@ python main.py --provider nvidia --model qwen/qwen3.5-122b-a10b --system-tool-ca
 - `transport.py` — BaseTransport / StdioTransport / SSETransport
 - `manager.py` — MCPManager（连接、注册、调用路由）
 
-### 并发编排 (`src/mini_agent/orchestrator/`)
+### 并行编排 (`src/mini_agent/orchestrator/`)
 
 - `task.py` — 任务定义
 - `orchestrator/task_manager.py` — 任务调度（依赖解析、SubAgent 管理）
 - `sub_agent.py` — 子 Agent 实现（线程包装、自动重试、输出捕获）
 - `concurrency.py` — 并发控制
-- `status_bar.py` — 状态栏显示
+- `status_bar.py` — 状态栏显示（含 Task Tab 栏）
 - `plan.py` — 执行计划数据模型
 - `plan_display.py` — 计划 UI 渲染
 - `task_display.py` — 任务状态显示
@@ -158,9 +158,10 @@ python main.py --provider nvidia --model qwen/qwen3.5-122b-a10b --system-tool-ca
 
 ### 终端交互 (`src/mini_agent/ui/`)
 
-- `terminal.py` — 统一终端 I/O 管理器，支持命令行输入补全（slash 命令/文件路径/历史建议）
+- `terminal.py` — 统一终端 I/O 管理器，支持命令行输入补全（slash 命令/文件路径/历史建议）、Task 焦点控制（方向键切换日志）
 - `renderer.py` — Rich 终端输出渲染
 - `repl_input.py` — REPL 输入处理
+- `raw_key_listener.py` — 跨平台方向键监听（Unix: `/dev/tty` + `termios` / Windows: `msvcrt`），支持运行时切换 Task 日志视图
 
 ### 历史管理 (`src/mini_agent/history/`)
 
@@ -186,3 +187,12 @@ python main.py --provider nvidia --model qwen/qwen3.5-122b-a10b --system-tool-ca
 - 支持事件：`UserPromptSubmit`、`PreToolUse`、`PostToolUse`、`PreCompact`、`SessionStart`/`SessionEnd`
 - Hook 可以通过 stdin 接收 JSON payload，通过 stdout 返回决策（allow/block/context/input）
 - CLI 命令：`/hooks list|reload`
+
+## 文档索引
+
+- [系统概览](docs/system-overview.md) — 整体架构与模块介绍
+- [Task 日志实时查看](docs/task-focus-viewing.md) — **新增**：方向键切换查看任务日志机制
+- [终端 I/O 指南](docs/terminal-io-guide.md) — 终端渲染与输入机制
+- [任务与规划指南](docs/plan-and-task-guide.md) — 执行计划与并发任务
+- [SubAgent 机制](docs/subagent-mechanism.md) — 子 Agent 实现细节
+- [命令与工具参考](docs/commands-and-tools-reference.md) — 所有 slash 命令和工具
