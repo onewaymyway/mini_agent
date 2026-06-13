@@ -631,7 +631,7 @@ class Agent:
             R.print_info("[compact] History is empty, nothing to compact.")
             return ""
 
-        from prompts import pm as _pm
+        from mini_agent.prompts import pm as _pm
         compact_prompt = _pm.get_compact_prompt()
 
         R.print_info("[compact] Generating summary…")
