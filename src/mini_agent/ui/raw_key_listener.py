@@ -1,86 +1,360 @@
 """
-ui/raw_key_listener.py — agent 运行期间的 raw stdin 方向键监听器
+ui/raw_key_listener.py — 跨平台方向键监听器
 
-设计背景
---------
-prompt_toolkit 的 KeyBindings 只在 .prompt() 阻塞期间活跃（ptk 拥有终端）。
-而用户需要在 agent.run_turn() 期间（task 并发执行时）按方向键切换 task 焦点。
-此时 ptk 已退出，终端在 cooked 模式，ptk keybindings 完全睡着，任何绑在 ptk
-上的快捷键都不会触发。
+背景
+----
+prompt_toolkit 的 KeyBindings 只在 .prompt() 阻塞时活跃（ptk 持有终端）。
+agent.run_turn() 期间 ptk 已退出，任何绑在 ptk 上的快捷键均不生效。
+本模块在 run_turn() 期间独立监听键盘，实现 task 焦点切换。
 
-解决方案
+平台实现
 --------
-在 run_turn() 期间，用独立线程持有终端的 raw 模式，通过 select() + read(4)
-解析 ANSI 方向键序列，直接调用 Terminal 的焦点 API。
+Unix (Linux / macOS)  →  _UnixKeyReader
+  - 优先打开 /dev/tty（控制终端设备，不受 stdin/stdout 重定向影响）
+  - Fallback：找第一个 os.isatty(fd) 为 True 的标准 fd (0/1/2)
+  - tty.setraw() + select() + os.read() 解析 ANSI ESC 序列
+  - stop() 时精确 termios.tcsetattr 还原，不影响 prompt_toolkit
 
-生命周期
---------
-- start()：保存 termios 状态、设置 raw 模式、启动监听线程
-- stop()：设置停止标志、恢复 termios、join 线程
-- 由 repl.py 在 agent.run_turn() 前后调用
+Windows  →  _WindowsKeyReader
+  - msvcrt.kbhit() 轮询 + msvcrt.getwch() 读字符（标准库，无需额外依赖）
+  - 方向键协议：0xe0/0x00 前缀 + 方向码 (H/P/M/K)
+  - Ctrl+C (0x03) 手动发 SIGINT（msvcrt 默认不产生 SIGINT）
+  - 轮询间隔 50ms，CPU 占用可忽略
 
-键位映射
---------
-  →  (ESC [ C)   focus_next_task
-  ←  (ESC [ D)   focus_prev_task
-  ↑  (ESC [ A)   focus_prev_task（备选）
-  ↓  (ESC [ B)   focus_next_task（备选）
-  ESC             set_task_focus(None) 退出焦点
+键位映射（两平台统一）
+---------------------
+  →  或  ↓   focus_next_task()
+  ←  或  ↑   focus_prev_task()（无焦点时进入第一个）
+  ESC         set_task_focus(None) 退出焦点
 
-注意事项
---------
-1. 仅在 sys.stdin.isatty() 为 True 时启用，重定向/管道场景自动跳过
-2. read() 超时用 select(0.1s)，保证 stop() 能在 <200ms 内响应
-3. tty.setraw 只在这个线程里操作，ptk 和 readline 各自独立管理 termios，
-   不会互相干扰——我们在 start 时保存快照，stop 时精确恢复
-4. 日志写到 /tmp/mini_agent_keys.log，便于调试（生产时可关掉 DEBUG_LOG）
+调试
+----
+  MINI_AGENT_KEY_DEBUG=1 mini-agent
+  tail -f /tmp/mini_agent_keys.log   # Unix
+  type \\tmp\\mini_agent_keys.log    # Windows (PowerShell: Get-Content -Wait)
 """
 
 from __future__ import annotations
 
 import os
 import sys
-import select
+import platform
+import signal
 import threading
 import logging
+from abc import ABC, abstractmethod
 
 logger = logging.getLogger(__name__)
 
-# 开启后把每一个收到的字节序列写到日志，方便排查终端兼容性问题
-DEBUG_LOG = os.environ.get("MINI_AGENT_KEY_DEBUG", "0") == "1"
-_LOG_FILE = "./mini_agent_keys.log"
+DEBUG_LOG: bool = os.environ.get("MINI_AGENT_KEY_DEBUG", "0") == "1"
+# DEBUG_LOG=True
+_LOG_FILE: str = ".agent/mini_agent_keys.log"
 
-# ANSI 方向键序列
-_SEQ_UP    = b"\x1b[A"
-_SEQ_DOWN  = b"\x1b[B"
-_SEQ_RIGHT = b"\x1b[C"
-_SEQ_LEFT  = b"\x1b[D"
-_SEQ_ESC   = b"\x1b"
-
-# 部分终端会发送 SS3 序列（例如 xterm 的 application cursor keys 模式）
-_SEQ_UP_SS3    = b"\x1bOA"
-_SEQ_DOWN_SS3  = b"\x1bOB"
-_SEQ_RIGHT_SS3 = b"\x1bOC"
-_SEQ_LEFT_SS3  = b"\x1bOD"
-
-
-def _log_key(seq: bytes) -> None:
+def _log(msg: "bytes | str") -> None:
     if not DEBUG_LOG:
         return
     try:
+        text = msg if isinstance(msg, str) else repr(msg)
         with open(_LOG_FILE, "a") as f:
-            f.write(f"key: {seq!r}\n")
+            f.write(text + "\n")
     except Exception:
+        print("log fail:")
+        import traceback
+        traceback.print_exc()
         pass
+
+
+# ── 抽象基类 ─────────────────────────────────────────────────────────────────
+
+class _BaseKeyReader(ABC):
+    """平台无关的按键读取器接口。"""
+
+    def __init__(self) -> None:
+        self._stop_event = threading.Event()
+        self._thread: "threading.Thread | None" = None
+
+    def start(self) -> None:
+        if not self._setup():
+            return
+        self._stop_event.clear()
+        self._thread = threading.Thread(
+            target=self._loop,
+            name="mini-agent-keylistener",
+            daemon=True,
+        )
+        self._thread.start()
+        _log(f"[{self.__class__.__name__} started]")
+
+    def stop(self) -> None:
+        _log(f"[{self.__class__.__name__} stop()]")
+        self._stop_event.set()
+        self._teardown()
+        if self._thread is not None:
+            self._thread.join(timeout=0.5)
+            self._thread = None
+
+    @abstractmethod
+    def _setup(self) -> bool:
+        """初始化终端，返回是否成功。"""
+
+    @abstractmethod
+    def _teardown(self) -> None:
+        """还原终端状态。"""
+
+    @abstractmethod
+    def _loop(self) -> None:
+        """监听线程主体。"""
+
+    @staticmethod
+    def _dispatch(action: str) -> None:
+        """把解析出的动作派发到 Terminal。"""
+        try:
+            from mini_agent.ui.terminal import get_terminal
+            t = get_terminal()
+        except Exception as e:
+            _log(f"[get_terminal error: {e}]")
+            return
+
+        _log(f"[ACTION: {action}]")
+        if action == "next":
+            t.focus_next_task()
+        elif action == "prev":
+            if t.get_task_focus() is None:
+                t.focus_next_task()
+            else:
+                t.focus_prev_task()
+        elif action == "clear":
+            if t.get_task_focus() is not None:
+                t.set_task_focus(None)
+        elif action == "sigint":
+            os.kill(os.getpid(), signal.SIGINT)
+
+
+# ── Unix 实现 ─────────────────────────────────────────────────────────────────
+
+class _UnixKeyReader(_BaseKeyReader):
+    """
+    Unix (Linux / macOS) 实现。
+
+    fd 获取策略（按优先级）：
+      1. /dev/tty  — 控制终端，不受 stdin/stdout 重定向影响，最可靠
+      2. stderr fd — 通常不被重定向
+      3. stdout fd — 次之
+      4. stdin fd  — 最后选择
+
+    tty.setraw() 让内核不缓冲、不回显，
+    select() 非阻塞轮询保证 stop() 能在 <200ms 内响应。
+    """
+
+    # ANSI CSI 方向键
+    _CSI_UP    = b"\x1b[A"
+    _CSI_DOWN  = b"\x1b[B"
+    _CSI_RIGHT = b"\x1b[C"
+    _CSI_LEFT  = b"\x1b[D"
+    # SS3 变体（xterm application cursor keys 模式）
+    _SS3_UP    = b"\x1bOA"
+    _SS3_DOWN  = b"\x1bOB"
+    _SS3_RIGHT = b"\x1bOC"
+    _SS3_LEFT  = b"\x1bOD"
+
+    def __init__(self) -> None:
+        super().__init__()
+        self._fd: "int | None" = None
+        self._old_attrs: "list | None" = None
+        self._fd_owned: bool = False   # 是否是我们自己 open 的（需要 close）
+
+    def _setup(self) -> bool:
+        import tty, termios
+        fd = self._find_tty_fd()
+        if fd is None:
+            _log("[Unix] no usable tty fd found, skipping")
+            return False
+        try:
+            self._old_attrs = termios.tcgetattr(fd)
+            tty.setraw(fd)
+            self._fd = fd
+            _log(f"[Unix] tty fd={fd}, raw mode on")
+            return True
+        except Exception as e:
+            _log(f"[Unix] setraw failed on fd={fd}: {e}")
+            if self._fd_owned and fd is not None:
+                try:
+                    os.close(fd)
+                except Exception:
+                    pass
+            return False
+
+    def _find_tty_fd(self) -> "int | None":
+        # 策略1：/dev/tty（最可靠，不受重定向影响）
+        try:
+            fd = os.open("/dev/tty", os.O_RDWR | os.O_NOCTTY)
+            self._fd_owned = True
+            _log(f"[Unix] opened /dev/tty as fd={fd}")
+            return fd
+        except Exception as e:
+            _log(f"[Unix] /dev/tty failed: {e}")
+
+        # 策略2：找第一个 isatty 为 True 的标准 fd
+        for fd, name in [(2, "stderr"), (1, "stdout"), (0, "stdin")]:
+            if os.isatty(fd):
+                self._fd_owned = False
+                _log(f"[Unix] using {name} fd={fd} as tty")
+                return fd
+
+        return None
+
+    def _teardown(self) -> None:
+        if self._fd is None:
+            return
+        import termios
+        try:
+            if self._old_attrs is not None:
+                termios.tcsetattr(self._fd, termios.TCSADRAIN, self._old_attrs)
+                _log(f"[Unix] termios restored on fd={self._fd}")
+        except Exception as e:
+            _log(f"[Unix] termios restore error: {e}")
+        if self._fd_owned:
+            try:
+                os.close(self._fd)
+            except Exception:
+                pass
+        self._fd = None
+        self._old_attrs = None
+
+    def _loop(self) -> None:
+        import select as _select
+        fd = self._fd
+        _log("[Unix] listen loop started")
+
+        while not self._stop_event.is_set() and self._fd is not None:
+            try:
+                r, _, _ = _select.select([fd], [], [], 0.1)
+            except Exception as e:
+                _log(f"[Unix] select error: {e}")
+                break
+
+            if not r:
+                continue
+
+            try:
+                first = os.read(fd, 1)
+            except Exception as e:
+                _log(f"[Unix] read error: {e}")
+                break
+
+            if not first:
+                continue
+
+            seq = first
+
+            # ESC 开头：等 50ms 判断是单独 ESC 还是方向键序列
+            if first == b"\x1b":
+                try:
+                    r2, _, _ = _select.select([fd], [], [], 0.05)
+                    if r2:
+                        rest = os.read(fd, 7)
+                        seq = first + rest
+                except Exception:
+                    pass   # 50ms 超时 → 单独 ESC
+
+            _log(seq)
+            self._handle(seq)
+
+        _log("[Unix] listen loop exited")
+
+    def _handle(self, seq: bytes) -> None:
+        if seq == b"\x03":
+            self._dispatch("sigint")
+        elif seq in (self._CSI_RIGHT, self._CSI_DOWN,
+                     self._SS3_RIGHT, self._SS3_DOWN):
+            self._dispatch("next")
+        elif seq in (self._CSI_LEFT, self._CSI_UP,
+                     self._SS3_LEFT, self._SS3_UP):
+            self._dispatch("prev")
+        elif seq == b"\x1b":
+            self._dispatch("clear")
+        else:
+            _log(f"[Unix] ignored: {seq!r}")
+
+
+# ── Windows 实现 ──────────────────────────────────────────────────────────────
+
+class _WindowsKeyReader(_BaseKeyReader):
+    """
+    Windows 实现，使用标准库 msvcrt。
+
+    方向键协议：
+      第1字节  0xe0 (扩展键) 或 0x00 (功能键)
+      第2字节  H=上  P=下  M=右  K=左
+
+    msvcrt.getwch() 不回显、不缓冲，无需修改终端模式，
+    所以 setup/teardown 极简，也不会与 prompt_toolkit 冲突。
+    """
+
+    def _setup(self) -> bool:
+        try:
+            import msvcrt  # noqa: F401
+            _log("[Windows] msvcrt available")
+            return True
+        except ImportError:
+            _log("[Windows] msvcrt not available (not Windows?)")
+            return False
+
+    def _teardown(self) -> None:
+        pass   # msvcrt 不修改终端状态，无需还原
+
+    def _loop(self) -> None:
+        import msvcrt, time
+        _log("[Windows] listen loop started")
+
+        while not self._stop_event.is_set():
+            if not msvcrt.kbhit():
+                time.sleep(0.05)
+                continue
+
+            ch = msvcrt.getwch()
+            _log(f"[Windows] ch={repr(ch)}")
+
+            if ch in ("\xe0", "\x00"):
+                # 扩展键：读第二字节获得方向
+                if not msvcrt.kbhit():
+                    time.sleep(0.02)
+                ch2 = msvcrt.getwch()
+                _log(f"[Windows] ch2={repr(ch2)}")
+                if ch2 in ("M", "P"):    # 右、下
+                    self._dispatch("next")
+                elif ch2 in ("K", "H"):  # 左、上
+                    self._dispatch("prev")
+                else:
+                    _log(f"[Windows] ignored extended: {repr(ch2)}")
+            elif ch == "\x1b":
+                self._dispatch("clear")
+            elif ch == "\x03":
+                self._dispatch("sigint")
+            else:
+                _log(f"[Windows] ignored: {repr(ch)}")
+
+        _log("[Windows] listen loop exited")
+
+
+# ── 工厂 & 模块单例 ───────────────────────────────────────────────────────────
+
+def _make_reader() -> _BaseKeyReader:
+    if platform.system() == "Windows":
+        _log("[factory] Windows -> _WindowsKeyReader")
+        return _WindowsKeyReader()
+    else:
+        _log("[factory] Unix -> _UnixKeyReader")
+        return _UnixKeyReader()
 
 
 class RawKeyListener:
     """
-    在 agent.run_turn() 期间持有 raw 终端，监听方向键。
+    跨平台键盘监听器门面，由 repl.py 在 run_turn() 前后调用。
 
     用法::
 
-        listener = RawKeyListener()
+        listener = get_listener()
         listener.start()
         try:
             agent.run_turn(user_input)
@@ -89,132 +363,26 @@ class RawKeyListener:
     """
 
     def __init__(self) -> None:
-        self._thread: threading.Thread | None = None
-        self._stop_event = threading.Event()
-        self._old_termios: "list | None" = None
-        self._active = False
+        self._reader: "_BaseKeyReader | None" = None
 
     def start(self) -> None:
-        """保存 termios、设 raw 模式、启动监听线程。"""
-        if not sys.stdin.isatty():
-            logger.debug("RawKeyListener: stdin is not a tty, skipping")
-            _log_key(b"[SKIP: not a tty]")
-            return
-
-        try:
-            import tty, termios
-            fd = sys.stdin.fileno()
-            self._old_termios = termios.tcgetattr(fd)
-            tty.setraw(fd)
-            _log_key(b"[RAW MODE ON]")
-        except Exception as e:
-            logger.debug("RawKeyListener: tty.setraw failed: %s", e)
-            self._old_termios = None
-            return
-
-        self._stop_event.clear()
-        self._active = True
-        self._thread = threading.Thread(
-            target=self._listen_loop,
-            name="mini-agent-keylistener",
-            daemon=True,
-        )
-        self._thread.start()
+        _log("[RawKeyListener.start]")
+        self._reader = _make_reader()
+        self._reader.start()
 
     def stop(self) -> None:
-        """停止监听线程、恢复 termios。"""
-        self._stop_event.set()
-        self._active = False
+        _log("[RawKeyListener.stop]")
+        if self._reader is not None:
+            self._reader.stop()
+            self._reader = None
 
-        # 恢复终端状态（必须在 join 之前，否则 read() 可能卡住）
-        if self._old_termios is not None:
-            try:
-                import termios
-                fd = sys.stdin.fileno()
-                termios.tcsetattr(fd, termios.TCSADRAIN, self._old_termios)
-                _log_key(b"[TERMIOS RESTORED]")
-            except Exception as e:
-                logger.debug("RawKeyListener: termios restore failed: %s", e)
-            self._old_termios = None
-
-        if self._thread is not None:
-            self._thread.join(timeout=0.5)
-            self._thread = None
-
-    def _listen_loop(self) -> None:
-        """监听线程主体：select + read + 序列解析。"""
-        fd = sys.stdin.fileno()
-
-        while not self._stop_event.is_set():
-            try:
-                r, _, _ = select.select([fd], [], [], 0.1)
-            except Exception:
-                break
-
-            if not r:
-                continue
-
-            try:
-                seq = os.read(fd, 1)
-            except Exception:
-                break
-
-            if not seq:
-                continue
-
-            # ESC 开头：等最多 50ms 看后面是否有 [ + 字母（方向键序列）
-            if seq == b"\x1b":
-                try:
-                    r2, _, _ = select.select([fd], [], [], 0.05)
-                    if r2:
-                        rest = os.read(fd, 7)
-                        seq = seq + rest
-                    # 若 50ms 内无后续字节 → 单独 ESC
-                except Exception:
-                    pass
-
-            _log_key(seq)
-            self._dispatch(seq)
-
-    def _dispatch(self, seq: bytes) -> None:
-        """根据字节序列触发对应操作。"""
-
-        # raw 模式下 Ctrl+C 不再自动产生 SIGINT，需要手动发送信号
-        if seq == b"\x03":
-            _log_key(b"[ACTION: SIGINT]")
-            import os, signal
-            os.kill(os.getpid(), signal.SIGINT)
-            return
-
-        try:
-            from mini_agent.ui.terminal import get_terminal
-            t = get_terminal()
-        except Exception:
-            return
-
-        if seq in (_SEQ_RIGHT, _SEQ_DOWN, _SEQ_RIGHT_SS3, _SEQ_DOWN_SS3):
-            _log_key(b"[ACTION: focus_next]")
-            t.focus_next_task()
-
-        elif seq in (_SEQ_LEFT, _SEQ_UP, _SEQ_LEFT_SS3, _SEQ_UP_SS3):
-            _log_key(b"[ACTION: focus_prev]")
-            if t.get_task_focus() is None:
-                t.focus_next_task()
-            else:
-                t.focus_prev_task()
-
-        elif seq == _SEQ_ESC:
-            # 纯 ESC：退出焦点
-            _log_key(b"[ACTION: focus_clear]")
-            if t.get_task_focus() is not None:
-                t.set_task_focus(None)
-
-        # 其他按键（字母、数字等）在 raw 模式下被吞掉了——这是 raw 模式的代价。
-        # 由于我们只在 agent.run_turn() 期间激活（不是在用户输入期间），
-        # 用户不会输入文字时被 raw 模式影响。
+    @property
+    def active(self) -> bool:
+        return (self._reader is not None
+                and self._reader._thread is not None
+                and self._reader._thread.is_alive())
 
 
-# 模块级单例，由 repl.py 使用
 _listener = RawKeyListener()
 
 
