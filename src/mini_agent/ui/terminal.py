@@ -862,50 +862,17 @@ def _build_ptk_session(completer):
             event.app.current_buffer.complete_state.current_completion
         )
 
-    # ── Task 焦点切换快捷键 ─────────────────────────────────────────
-    # Alt+N (escape+n)  切换到下一个 task 焦点
-    # Alt+P (escape+p)  切换到上一个 task 焦点
-    # Ctrl+G            退出 task 焦点，回到主输出视图
+    # ── Task 焦点快捷键说明 ─────────────────────────────────────────
+    # 方向键焦点切换【不在这里绑定】。
     #
-    # 选择理由：
-    # - escape+left/right 会使单独 Esc 触发 500ms ESCDELAY，体验差
-    # - c-left/c-right 是 ptk 默认的按词移动光标，不能覆盖
-    # - escape+n/p 不与任何默认绑定冲突，且在所有终端稳定发送
-    # - c-g 是 readline abort，ptk 中可安全重绑，即时响应
-
-    @kb.add("c-g")
-    def _focus_exit(event):
-        """Ctrl+G：退出 task 焦点模式，回到主输出。"""
-        try:
-            from mini_agent.ui.terminal import get_terminal
-            t = get_terminal()
-            if t.get_task_focus() is not None:
-                t.set_task_focus(None)
-        except Exception:
-            pass
-
-    @kb.add("escape", "p")   # Alt+P
-    def _focus_prev(event):
-        """Alt+P：切换到前一个 task（或进入焦点）。"""
-        try:
-            from mini_agent.ui.terminal import get_terminal
-            t = get_terminal()
-            if t.get_task_focus() is None:
-                t.focus_next_task()   # 从无焦点进入，先选第一个
-            else:
-                t.focus_prev_task()
-        except Exception:
-            pass
-
-    @kb.add("escape", "n")   # Alt+N
-    def _focus_next(event):
-        """Alt+N：切换到下一个 task（或进入焦点）。"""
-        try:
-            from mini_agent.ui.terminal import get_terminal
-            t = get_terminal()
-            t.focus_next_task()
-        except Exception:
-            pass
+    # 原因：ptk 的 KeyBindings 只在 .prompt() 阻塞期间活跃（ptk 拥有终端）。
+    # 用户需要在 agent.run_turn() 期间按方向键切换 task 焦点，但此时 ptk 已
+    # 退出，终端回到 cooked 模式，这里绑的任何快捷键都不会触发。
+    #
+    # 真正的方向键监听由 ui/raw_key_listener.py 的 RawKeyListener 负责：
+    # - repl.py 在 run_turn() 前调用 listener.start()（tty.setraw + 线程）
+    # - run_turn() 结束后调用 listener.stop()（恢复 termios）
+    # - 线程解析 ESC[A/B/C/D 序列，直接调用 terminal.focus_*()
 
     # 注意：enable_history_search=True 会在 prompt_toolkit 内部把
     # complete_while_typing 强制设为 False（两者在源码里互斥）。

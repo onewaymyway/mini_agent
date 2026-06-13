@@ -22,12 +22,12 @@ Task Tab 扩展（路径 B）：
 from __future__ import annotations
 
 _FOCUS_HELP = (
-    "\033[90m  Alt+N/P 切换 task  "
-    "Ctrl+G 退出焦点\033[0m"
+    "\033[90m  ← → 切换 task  "
+    "ESC 退出焦点\033[0m"
 )
 _MAIN_HELP = (
-    "\033[90m  Alt+N/P 进入焦点  "
-    "/tasks focus <id> 进入指定 task\033[0m"
+    "\033[90m  ← → 进入/切换焦点  "
+    "/tasks focus <id> 指定 task\033[0m"
 )
 
 
