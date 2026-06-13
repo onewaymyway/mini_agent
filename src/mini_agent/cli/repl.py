@@ -155,6 +155,18 @@ def _handle_slash(cmd: str, agent: Agent, skill_loader: SkillLoader) -> None:
     elif name == "compact":
         _compact_history(agent)
 
+    elif name == "memory":
+        agent.trigger_summary_and_profile(force=True)
+
+    elif name == "profile":
+        import threading
+        threading.Thread(
+            target=agent._maybe_refresh_profile,
+            kwargs={"force": True},
+            daemon=True,
+            name="mini-agent-profile",
+        ).start()
+
     elif name == "prompts":
         _list_prompts()
 
