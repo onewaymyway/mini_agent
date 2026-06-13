@@ -4,8 +4,12 @@
   "system_message_format": "system_role",
   "verbose": true,
   "memory_enabled": true,
+  "profile_min_entries":3,
+  "profile_refresh_interval_entries":5,
+  "profile_max_entries":20,
   "session_summary_enabled": true,
   "session_summary_min_turns": 3,
+  "profile_enabled":true,
   "max_llm_calls": 4,
 
   "mcp_servers": [
