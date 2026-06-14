@@ -103,7 +103,13 @@ def _main_inner() -> None:
         token_estimate_enabled=_flag("token_estimate"),
         token_warn_threshold=_flag("token_warn_threshold"),
         tool_stats_enabled=_flag("tool_stats"),
+        # reminder 系统
+        reminder_enabled=not _flag("no_reminders"),
+        reminders_dir=Path(args.reminders_dir).expanduser() if getattr(args, "reminders_dir", None) else None,
+        reminder_verbose=_flag("reminder_verbose"),
     )
+
+    print("cfg:",cfg)
 
     if not cfg.api_key:
         # 使用最直接的方式输出错误

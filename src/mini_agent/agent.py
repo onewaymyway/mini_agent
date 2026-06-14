@@ -40,6 +40,7 @@ from mini_agent.perception.memory_factory import create_memory_backend
 from mini_agent.context_builder import ContextBuilder
 from mini_agent.tool_executor import ToolExecutor
 from mini_agent.history_manager import HistoryManager
+from mini_agent.reminders import ReminderManager
 
 
 class Agent:
@@ -253,6 +254,16 @@ class Agent:
         # HistoryManager：接管 _history 列表，并让 self._history 指向同一对象
         self._hist = HistoryManager(cfg=self.cfg, skill_loader=self.skill_loader)
         self._history = self._hist._history   # 共享同一列表对象，无需全量替换引用
+
+        # ReminderManager：动态 reminder 注入系统
+        self._reminder_mgr: Optional[ReminderManager] = None
+        if getattr(self.cfg, "reminder", None) and getattr(self.cfg.reminder, "enabled", True):
+            try:
+                self._reminder_mgr = ReminderManager(self.cfg)
+            except Exception as _e:
+                # reminder 系统初始化失败不影响 agent 主流程
+                import warnings
+                warnings.warn(f"[ReminderManager] 初始化失败，已禁用: {_e}")
 
     # ── Session 管理 ──────────────────────────────────────────────────────────────
 
@@ -873,6 +884,9 @@ class Agent:
             self._history.append({"role": "user", "content": user_message})
             self.stats.turns += 1
 
+            # [SYS-REMINDER] 用户意图触发：在用户消息入队后，检查是否需要注入 reminder
+            self._inject_reminders_for_user_intent(user_message)
+
             result = self._agentic_loop()
 
             # [SYS-SUMMARY] session 结束后写入摘要（在 save 前）
@@ -924,6 +938,10 @@ class Agent:
             # 将 LLMResponse 写入对话历史（provider 无关格式）
             self._append_assistant_response(response)
 
+            # [SYS-REMINDER] assistant 文本输出模式触发
+            if response.text:
+                self._inject_reminders_for_pattern(response.text)
+
             # [SYS-SKILL-DETECT] 推理完成后检测哪些 skill 被真正使用
             # 只有「实际使用」的 skill 才更新 tracker LRU 权重
             if self.skill_loader and response.text:
@@ -939,6 +957,9 @@ class Agent:
             self._history.append(
                 self._build_tool_result_message(response.tool_calls, result_strs)
             )
+
+            # [SYS-REMINDER] 工具执行后：检查出错 / 成功输出，注入对应 reminder
+            self._inject_reminders_for_tool_results(response.tool_calls, result_strs)
 
         if loop_count >= self.cfg.max_turns:
             R.print_warning(f"Reached max turns ({self.cfg.max_turns}).")
@@ -1053,6 +1074,50 @@ class Agent:
                 "input": tc.input,
             })
         self._history.append({"role": "assistant", "content": content})
+
+    # ── Reminder 注入辅助方法 ──────────────────────────────────────────────────
+
+    def _inject_reminder(self, reminder) -> None:
+        """将单条 reminder 格式化后追加到对话历史。"""
+        if self._reminder_mgr is None:
+            return
+        msg = ReminderManager.format_injection(reminder)
+        self._history.append(msg)
+        if getattr(self.cfg.reminder, "verbose", False):
+            R.print_info(f"[reminder] 注入: {reminder.name!r} → role={msg['role']}")
+
+    def _inject_reminders_for_user_intent(self, user_message: str) -> None:
+        """用户消息进入时检查并注入 user_intent 类型 reminder。"""
+        if self._reminder_mgr is None:
+            return
+        for r in self._reminder_mgr.check_user_intent(user_message):
+            self._inject_reminder(r)
+
+    def _inject_reminders_for_tool_results(self, tool_calls, result_strs: list) -> None:
+        """工具执行后，逐个工具检查 tool_error / post_tool reminder。"""
+        if self._reminder_mgr is None:
+            return
+        for tc, result_str in zip(tool_calls, result_strs):
+            tool_name = getattr(tc, "name", "") or ""
+            is_error = (
+                result_str.startswith("[error") or
+                result_str.startswith("[tool error") or
+                result_str.startswith("Error:") or
+                result_str.startswith("ERROR:")
+            )
+            if is_error:
+                for r in self._reminder_mgr.check_tool_error(tool_name, result_str):
+                    self._inject_reminder(r)
+            else:
+                for r in self._reminder_mgr.check_post_tool(tool_name, result_str):
+                    self._inject_reminder(r)
+
+    def _inject_reminders_for_pattern(self, assistant_text: str) -> None:
+        """assistant 输出后检查 pattern 类型 reminder。"""
+        if self._reminder_mgr is None:
+            return
+        for r in self._reminder_mgr.check_assistant_text(assistant_text):
+            self._inject_reminder(r)
 
     # ── Tool execution ─────────────────────────────────────────────────────────
 

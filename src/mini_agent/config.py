@@ -216,6 +216,28 @@ class RetryConfig:
     verbose: bool = True
 
 
+@dataclass
+class ReminderConfig:
+    """[SYS-REMINDER] 动态 Reminder 提示注入配置。
+
+    reminder 在特定情境下（工具出错、特定工具输出、用户意图识别）
+    动态追加到对话历史中，帮助模型更好地解决当前问题。
+    不注入 system prompt，而是注入为 user 或 assistant 消息。
+    """
+    enabled: bool = True
+    # 用户自定义 reminder 目录（优先级高于系统默认目录）
+    custom_dir: Optional[Path] = None
+    # 各类触发源开关（精细控制）
+    tool_error_enabled: bool = True     # 工具调用出错时触发
+    post_tool_enabled: bool = True      # 工具调用成功后触发
+    user_intent_enabled: bool = True    # 用户意图识别触发
+    pattern_enabled: bool = True        # assistant 输出模式触发
+    # 同一 turn 内最多注入的 reminder 条数（避免大量 reminder 污染上下文）
+    max_per_turn: int = 3
+    # 调试：打印匹配到的 reminder 名称
+    verbose: bool = False
+
+
 # ════════════════════════════════════════════════════════════════════════════════
 # 主配置类
 # ════════════════════════════════════════════════════════════════════════════════
@@ -278,6 +300,7 @@ class AppConfig:
     retry:      RetryConfig      = field(default_factory=RetryConfig)
     mcp:        MCPConfig        = field(default_factory=MCPConfig)
     web_search: WebSearchConfig  = field(default_factory=WebSearchConfig)
+    reminder:   ReminderConfig   = field(default_factory=ReminderConfig)
 
     # ── 向后兼容属性（让旧代码 cfg.memory_enabled 不报错）────────────────────
     # 以下属性委托给子配置块，方便渐进式迁移，后续版本可删除
@@ -438,6 +461,10 @@ def load_config(
     token_estimate_enabled: Optional[bool] = None,
     token_warn_threshold: Optional[float] = None,
     tool_stats_enabled: Optional[bool] = None,
+    # reminder 系统
+    reminder_enabled: Optional[bool] = None,
+    reminders_dir: Optional[Path] = None,
+    reminder_verbose: Optional[bool] = None,
 ) -> AppConfig:
     """
     加载配置，优先级（高→低）：JSON 配置文件 > CLI 参数 > 环境变量 > 内置默认值。
@@ -636,6 +663,23 @@ def load_config(
         timeout=float(_ws.get("timeout") or os.environ.get("WEB_SEARCH_TIMEOUT", 10.0)),
     )
 
+    _rm = file_cfg.get("reminder") if isinstance(file_cfg.get("reminder"), dict) else {}
+    _reminder_enabled_val = reminder_enabled if reminder_enabled is not None else _rm.get("enabled", True)
+    _reminders_dir_val: Optional[Path] = None
+    if reminders_dir is not None:
+        _reminders_dir_val = Path(reminders_dir)
+    elif _rm.get("custom_dir"):
+        _reminders_dir_val = Path(_rm["custom_dir"])
+    reminder_cfg = ReminderConfig(
+        enabled=bool(_reminder_enabled_val),
+        custom_dir=_reminders_dir_val,
+        tool_error_enabled=bool(_rm.get("tool_error_enabled", True)),
+        post_tool_enabled=bool(_rm.get("post_tool_enabled", True)),
+        user_intent_enabled=bool(_rm.get("user_intent_enabled", True)),
+        pattern_enabled=bool(_rm.get("pattern_enabled", True)),
+        max_per_turn=int(_rm.get("max_per_turn", 3)),
+        verbose=bool(reminder_verbose if reminder_verbose is not None else _rm.get("verbose", False)),
+    )
 
     return AppConfig(
         api_key=api_key,
@@ -668,6 +712,7 @@ def load_config(
         retry=retry_cfg,
         mcp=mcp_cfg,
         web_search=web_search_cfg,
+        reminder=reminder_cfg,
     )
 
 

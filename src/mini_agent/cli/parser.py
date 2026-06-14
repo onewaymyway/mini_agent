@@ -139,6 +139,15 @@ def build_parser() -> argparse.ArgumentParser:
     perc.add_argument("--tool-stats", action="store_true", default=None,
                       help="[SYS-STATS] Track per-tool call counts, success rates, output sizes")
 
+    # ── Reminder 系统 ──────────────────────────────────────────────────────
+    rem = p.add_argument_group("Reminder system")
+    rem.add_argument("--reminders-dir", default=None, metavar="DIR",
+                     help="[SYS-REMINDER] 用户自定义 reminder 目录（优先级高于系统默认）")
+    rem.add_argument("--no-reminders", action="store_true", default=None,
+                     help="[SYS-REMINDER] 禁用 reminder 注入机制")
+    rem.add_argument("--reminder-verbose", action="store_true", default=None,
+                     help="[SYS-REMINDER] 打印 reminder 匹配和注入详情（调试用）")
+
     # ── HTTP API 服务 ──────────────────────────────────────────────────────
     http = p.add_argument_group("HTTP API server (optional)")
     http.add_argument("--http", action="store_true", default=None,
