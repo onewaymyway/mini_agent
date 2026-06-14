@@ -53,6 +53,11 @@ class Terminal:
         self._streaming: bool = False
         self._stream_had_output: bool = False
         self._render_stop: bool = False
+        # 状态栏暂停标志：当最近一次 print 以 end="" 结尾（即光标停留在行中、
+        # 尚未换行，例如 assistant 名字前缀）时设为 True，暂停状态栏的
+        # erase/redraw，避免 \x1b[NA\x1b[0J 把同一行已输出的内容一并擦除。
+        # 在下一次产生换行的输出（流式结束 / markdown 渲染等）时恢复为 False。
+        self._bar_suspended: bool = False
 
         # 状态栏内容提供者回调（由 status_bar 模块注册）
         # 架构改进：Terminal 自己在刷新周期内调用回调拉取内容，
@@ -342,29 +347,39 @@ class Terminal:
             args, kwargs = msg.payload
             self._erase_bar()
             self._console.print(*args, **kwargs)
-            self._draw_bar()
+            if kwargs.get("end", "\n") == "":
+                # 光标停在行中（如 "orzooo " 前缀），暂停状态栏重绘，
+                # 等待后续 stream/markdown 产生换行后再恢复
+                self._bar_suspended = True
+            else:
+                self._bar_suspended = False
+                self._draw_bar()
 
         elif kind == "rule":
             title, kwargs = msg.payload
             self._erase_bar()
             self._console.rule(title, **kwargs)
+            self._bar_suspended = False
             self._draw_bar()
 
         elif kind == "panel":
             content, kwargs = msg.payload
             self._erase_bar()
             self._console.print(Panel(content, **kwargs))
+            self._bar_suspended = False
             self._draw_bar()
 
         elif kind == "syntax":
             code, language, kwargs = msg.payload
             self._erase_bar()
             self._console.print(Syntax(code, language, **kwargs))
+            self._bar_suspended = False
             self._draw_bar()
 
         elif kind == "markdown":
             self._erase_bar()
             self._console.print(Markdown(msg.payload))
+            self._bar_suspended = False
             self._draw_bar()
 
         elif kind == "stream":
@@ -387,6 +402,7 @@ class Terminal:
             if self._stream_had_output:
                 sys.stdout.write("\n")
                 sys.stdout.flush()
+                self._bar_suspended = False
                 self._draw_bar()
             self._streaming = False
             self._stream_had_output = False
@@ -396,12 +412,12 @@ class Terminal:
             self._statusbar_lines = msg.payload
 
         elif kind == "redraw":
-            if not self._streaming:
+            if not self._streaming and not self._bar_suspended:
                 self._erase_bar()
                 self._draw_bar()
 
         elif kind == "_refresh":
-            if not self._streaming:
+            if not self._streaming and not self._bar_suspended:
                 self._erase_bar()
                 self._draw_bar()
 
@@ -422,6 +438,7 @@ class Terminal:
                 else:
                     sys.stdout.write(f"{line}\n")
             sys.stdout.flush()
+            self._bar_suspended = False
             self._draw_bar()
 
         elif kind == "_noop":
@@ -443,6 +460,7 @@ class Terminal:
                     "\033[90m\n── focus cleared ─────────────────────────────────\033[0m\n"
                 )
                 sys.stdout.flush()
+            self._bar_suspended = False
             self._draw_bar()
 
         elif kind == "_focus_cycle":
@@ -472,6 +490,7 @@ class Terminal:
                                 f"{'─' * max(0, 54 - len(new_id))}\033[0m\n"
                             )
                             sys.stdout.flush()
+                            self._bar_suspended = False
                             self._draw_bar()
             except Exception:
                 pass
@@ -488,6 +507,7 @@ class Terminal:
                 self._streaming = False
                 self._stream_had_output = False
                 self._stream_filter_reset()
+                self._bar_suspended = False
                 self._draw_bar()
 
     # ── 状态栏绘制（仅在 render_thread 中调用）───────────────────────────
@@ -514,10 +534,12 @@ class Terminal:
 
     def _erase_bar_direct(self) -> None:
         if not _IS_TTY or self._bar_drawn == 0:
+            self._bar_suspended = False
             return
         sys.stdout.write(f"\x1b[{self._bar_drawn}A\x1b[0J")
         sys.stdout.flush()
         self._bar_drawn = 0
+        self._bar_suspended = False
 
     # ── 流式 token 过滤（过滤 <tool_use> 块）────────────────────────────
 

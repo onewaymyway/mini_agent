@@ -85,7 +85,7 @@ def print_header(title: str) -> None:
 
 
 def print_assistant_prefix(agent_name: str = "orzooo") -> None:
-    term.print(f"\n[bold blue]{agent_name}[/bold blue] ", end="")
+    term.print(f"\n[bold blue]{agent_name}[/bold blue][bold cyan] ❯ [/bold cyan]", end="")
 
 
 def print_reasoning(token: str) -> None:
