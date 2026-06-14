@@ -195,6 +195,22 @@ python main.py --provider nvidia --model qwen/qwen3.5-122b-a10b --system-tool-ca
 - Hook 可以通过 stdin 接收 JSON payload，通过 stdout 返回决策（allow/block/context/input）
 - CLI 命令：`/hooks list|reload`
 
+### Reminder 机制
+
+- Reminder 目录：`src/mini_agent/prompts/reminders/`（系统默认）+ `--reminders-dir` 指定（用户自定义）
+- 文件格式：YAML frontmatter（trigger_event/condition/priority 等）+ 正文提示内容
+- 触发事件：`tool_error`、`post_tool`、`user_intent`、`pattern`
+- CLI 参数：`--reminders-dir`、`--no-reminders`、`--reminder-verbose`
+- 技能：`reminder-generator` 从对话提取经验生成 reminder
+
+### Reminder 机制
+
+- Reminder 目录：`src/mini_agent/prompts/reminders/`（系统默认）+ `--reminders-dir` 指定（用户自定义）
+- 文件格式：YAML frontmatter（trigger_event/condition/priority 等）+ 正文提示内容
+- 触发事件：`tool_error`、`post_tool`、`user_intent`、`pattern`
+- CLI 参数：`--reminders-dir`、`--no-reminders`、`--reminder-verbose`
+- 技能：`reminder-generator` 从对话提取经验生成 reminder
+
 ## 文档索引
 
 - [系统概览](docs/system-overview.md) — 整体架构与模块介绍
