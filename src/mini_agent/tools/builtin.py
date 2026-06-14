@@ -49,27 +49,44 @@ from . import tool  # noqa
     },
     requires_approval=True,
 )
-def bash(command: str, timeout: int = 30, workdir: Optional[str] = None) -> str:
+def bash(command: str, timeout: int = 300, workdir: Optional[str] = None) -> str:
     """Execute a shell command and return combined stdout/stderr."""
     cwd = Path(workdir).expanduser() if workdir else Path.cwd()
+
     try:
         result = subprocess.run(
             command,
             shell=True,
             cwd=cwd,
             capture_output=True,
-            text=True,
             timeout=timeout,
         )
-        out = result.stdout
-        err = result.stderr
-        combined = (out + err).rstrip()
+
+        def decode(data: bytes) -> str:
+            for enc in ("utf-8", "gbk", "cp936"):
+                try:
+                    return data.decode(enc)
+                except UnicodeDecodeError:
+                    pass
+
+            return data.decode("utf-8", errors="replace")
+
+        stdout = decode(result.stdout)
+        stderr = decode(result.stderr)
+
+        combined = (stdout + stderr).rstrip()
+
         if result.returncode != 0:
             combined += f"\n[exit code: {result.returncode}]"
+
         return combined or "(no output)"
+
     except subprocess.TimeoutExpired:
         return f"[timeout after {timeout}s]"
+
     except Exception as e:
+        import traceback
+        traceback.print_exc()
         return f"[error: {e}]"
 
 
