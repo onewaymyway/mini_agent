@@ -18,6 +18,12 @@ api/routes.py — FastAPI 路由定义
   Turns
     GET  /v1/turns                   所有 turn 列表
     GET  /v1/turns/{turn_id}         某 turn 详情
+  Session
+    GET    /v1/sessions              所有 session 列表（含当前 session 标记）
+    GET    /v1/sessions/{id}         某 session 详情（含完整历史）
+    POST   /v1/sessions/{id}/resume  切换到指定 session（成为当前活动 session）
+    POST   /v1/sessions/new          开始一个全新 session
+    DELETE /v1/sessions/{id}         删除一个 session（不可删除当前 session）
   权限审批
     GET  /v1/permissions/pending     待审批列表
     POST /v1/permissions/{req_id}    批准 / 拒绝
@@ -54,6 +60,8 @@ from .models import (
     FsListResponse, FsReadResponse, FsStatResponse,
     FsWriteRequest, FsMkdirRequest, FsDeleteRequest, FsRenameRequest,
     FsSearchRequest, EventType, AgentEvent,
+    SessionInfo, SessionsListResponse, SessionDetailResponse,
+    SessionActionResponse, SessionDeleteResponse,
 )
 
 router = APIRouter(prefix="/v1")
@@ -290,6 +298,173 @@ async def get_turn(request: Request, turn_id: str):
     if not info:
         raise HTTPException(status_code=404, detail=f"turn {turn_id!r} not found")
     return info
+
+
+# ── Session ───────────────────────────────────────────────────────────────────
+
+def _agent_or_404(bridge: AgentBridge):
+    if bridge.agent is None:
+        raise HTTPException(status_code=503, detail="Agent not initialized")
+    return bridge.agent
+
+
+def _session_manager_or_404(bridge: AgentBridge):
+    agent = _agent_or_404(bridge)
+    mgr = agent.session_manager
+    if mgr is None:
+        raise HTTPException(
+            status_code=404,
+            detail="Session persistence is disabled (--no-save-session)",
+        )
+    return agent, mgr
+
+
+def _require_idle(bridge: AgentBridge) -> None:
+    """切换 / 新建 session 前检查 agent 是否空闲，避免与正在执行的 turn 冲突。"""
+    state = bridge.get_state()["state"]
+    if state not in ("idle", "unknown"):
+        raise HTTPException(
+            status_code=409,
+            detail=f"Agent is busy (state={state!r}); "
+                   f"interrupt or wait for the current turn to finish before switching sessions",
+        )
+
+
+@router.get("/sessions", response_model=SessionsListResponse)
+async def list_sessions(request: Request, limit: int = Query(default=50, le=200)):
+    """列出所有已保存的 session，并标记当前 agent 正在使用的 session。"""
+    agent, mgr = _session_manager_or_404(_bridge(request))
+    current_id = agent.session_id
+
+    metas = mgr.list_sessions(limit=limit)
+    infos = [
+        SessionInfo(
+            id=m.id, title=m.title or "(untitled)",
+            created_at=m.created_at, updated_at=m.updated_at,
+            provider=m.provider, model=m.model,
+            turns=m.turns, input_tokens=m.input_tokens,
+            output_tokens=m.output_tokens, tool_calls=m.tool_calls,
+            summary=m.summary, age=m.age_str,
+            is_current=(m.id == current_id),
+        )
+        for m in metas
+    ]
+
+    # 当前 session 可能尚未 save_session() 落盘（例如刚启动 / 刚 new_session），
+    # 此时不会出现在 list_sessions() 结果里 —— 把内存中的"当前会话"插到列表最前面，
+    # 确保 Web 端始终能看到并默认选中它。
+    if current_id and not any(i.id == current_id for i in infos):
+        meta = agent.session_meta
+        if meta is not None:
+            infos.insert(0, SessionInfo(
+                id=meta.id, title=meta.title or "New session",
+                created_at=meta.created_at, updated_at=meta.updated_at,
+                provider=meta.provider, model=meta.model,
+                turns=meta.turns, input_tokens=meta.input_tokens,
+                output_tokens=meta.output_tokens, tool_calls=meta.tool_calls,
+                summary=meta.summary, age="刚刚",
+                is_current=True,
+            ))
+
+    return SessionsListResponse(sessions=infos, current_session_id=current_id, count=len(infos))
+
+
+@router.get("/sessions/{session_id}", response_model=SessionDetailResponse)
+async def get_session_detail(request: Request, session_id: str):
+    """获取某个 session 的完整内容（含历史），用于切换前预览。"""
+    agent, mgr = _session_manager_or_404(_bridge(request))
+
+    # 若请求的就是当前激活 session，直接用内存中的最新数据（可能比磁盘更新）
+    if session_id == agent.session_id:
+        meta = agent.session_meta
+        return SessionDetailResponse(
+            id=meta.id, title=meta.title, created_at=meta.created_at,
+            updated_at=meta.updated_at, provider=meta.provider, model=meta.model,
+            stats={
+                "turns": meta.turns, "input_tokens": meta.input_tokens,
+                "output_tokens": meta.output_tokens, "tool_calls": meta.tool_calls,
+            },
+            summary=meta.summary, history=agent.history, is_current=True,
+        )
+
+    session = mgr.load(session_id)
+    if session is None:
+        raise HTTPException(status_code=404, detail=f"Session '{session_id}' not found")
+
+    return SessionDetailResponse(
+        id=session.id, title=session.title, created_at=session.created_at,
+        updated_at=session.updated_at, provider=session.provider, model=session.model,
+        stats=session.stats, summary=session.summary, history=session.history,
+        is_current=False,
+    )
+
+
+@router.post("/sessions/{session_id}/resume", response_model=SessionActionResponse)
+async def resume_session(request: Request, session_id: str):
+    """将 agent 切换到指定 session（加载其历史，成为当前活动 session）。"""
+    bridge = _bridge(request)
+    agent, _mgr = _session_manager_or_404(bridge)
+    _require_idle(bridge)
+
+    # 切换前先把当前会话保存下来，避免未保存的对话丢失
+    try:
+        agent.save_session()
+    except Exception:
+        pass
+
+    if not agent.load_session(session_id):
+        raise HTTPException(status_code=404, detail=f"Session '{session_id}' not found")
+
+    bridge.emit_session_switched(agent.session_id or "", agent.session_meta.title if agent.session_meta else "")
+    bridge.emit_info(f"[HTTP] Switched to session {agent.session_id!r}")
+
+    return SessionActionResponse(
+        ok=True, session_id=agent.session_id,
+        message="Session resumed", history_count=len(agent.history),
+    )
+
+
+@router.post("/sessions/new", response_model=SessionActionResponse)
+async def new_session(request: Request):
+    """清空当前历史，开始一个全新的 session。"""
+    bridge = _bridge(request)
+    agent, _mgr = _session_manager_or_404(bridge)
+    _require_idle(bridge)
+
+    # 切换前先把当前会话保存下来，避免未保存的对话丢失
+    try:
+        agent.save_session()
+    except Exception:
+        pass
+
+    if not agent.new_session():
+        raise HTTPException(status_code=500, detail="Failed to start a new session")
+
+    bridge.emit_session_switched(agent.session_id or "", "New session")
+    bridge.emit_info(f"[HTTP] Started new session {agent.session_id!r}")
+
+    return SessionActionResponse(
+        ok=True, session_id=agent.session_id,
+        message="New session started", history_count=len(agent.history),
+    )
+
+
+@router.delete("/sessions/{session_id}", response_model=SessionDeleteResponse)
+async def delete_session(request: Request, session_id: str):
+    """删除一个已保存的 session（不能删除当前激活的 session）。"""
+    bridge = _bridge(request)
+    agent, mgr = _session_manager_or_404(bridge)
+
+    if session_id == agent.session_id:
+        raise HTTPException(
+            status_code=400,
+            detail="Cannot delete the currently active session; switch to another session first",
+        )
+
+    ok = mgr.delete(session_id)
+    if not ok:
+        raise HTTPException(status_code=404, detail=f"Session '{session_id}' not found")
+    return SessionDeleteResponse(ok=True, message=f"Session '{session_id}' deleted")
 
 
 # ── 权限审批 ──────────────────────────────────────────────────────────────────

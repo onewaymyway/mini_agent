@@ -76,12 +76,10 @@ def handle_session_cmd(args: list[str], agent: Agent) -> None:
             R.print_error(f"Session '{sid}' not found.")
 
     elif sub == "new":
-        agent.clear_history()
-        agent._session = mgr.new_session(
-            provider=getattr(agent.cfg, "llm_provider", "unknown"),
-            model=agent.cfg.model,
-        )
-        R.print_success("New session started.")
+        if agent.new_session():
+            R.print_success("New session started.")
+        else:
+            R.print_error("Failed to start new session.")
 
     elif sub == "delete" and len(args) >= 2:
         sid = args[1]

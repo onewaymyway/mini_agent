@@ -26,6 +26,8 @@ class EventType(str, Enum):
     PERMISSION_DONE  = "permission_done" # 审批结果
     # 文件系统
     FS_CHANGE        = "fs_change"       # 文件被写/删/改
+    # Session
+    SESSION_SWITCHED = "session_switched" # 当前激活 session 发生切换
     # 系统
     STATUS           = "status"          # agent 状态变化
     ERROR            = "error"           # 运行时错误
@@ -149,3 +151,49 @@ class FsSearchRequest(BaseModel):
     query:        str
     search_content: bool = False    # True = 也搜文件内容
     max_results:  int = 50
+
+
+# ── Session 模型 ──────────────────────────────────────────────────────────────
+
+class SessionInfo(BaseModel):
+    """Session 列表项（不含完整历史）。"""
+    id:            str
+    title:         str
+    created_at:    str
+    updated_at:    str
+    provider:      str
+    model:         str
+    turns:         int = 0
+    input_tokens:  int = 0
+    output_tokens: int = 0
+    tool_calls:    int = 0
+    summary:       str = ""
+    age:           str = ""       # 人类可读的相对时间，如 "3分钟前"
+    is_current:    bool = False   # 是否为当前 agent 正在使用的 session
+
+class SessionsListResponse(BaseModel):
+    sessions:           list[SessionInfo]
+    current_session_id: Optional[str] = None
+    count:              int = 0
+
+class SessionDetailResponse(BaseModel):
+    id:            str
+    title:         str
+    created_at:    str
+    updated_at:    str
+    provider:      str
+    model:         str
+    stats:         dict
+    summary:       str = ""
+    history:       list[dict]
+    is_current:    bool = False
+
+class SessionActionResponse(BaseModel):
+    ok:            bool
+    session_id:    Optional[str] = None
+    message:       str = ""
+    history_count: int = 0
+
+class SessionDeleteResponse(BaseModel):
+    ok:      bool
+    message: str = ""

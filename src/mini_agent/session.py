@@ -53,8 +53,12 @@ class SessionMeta:
     def age_str(self) -> str:
         try:
             dt = datetime.fromisoformat(self.updated_at.replace("Z", "+00:00"))
-            diff = datetime.now(timezone.utc) - dt
+            # _now_iso() 生成的是不带时区信息的 UTC 时间字符串（如 "2026-06-14T02:51:32"），
+            # 与 timezone-aware 的 now 相减会抛 TypeError，因此按 dt 是否带 tzinfo 选择基准
+            now = datetime.now(timezone.utc) if dt.tzinfo else datetime.utcnow()
+            diff = now - dt
             s = int(diff.total_seconds())
+            if s < 0:     return "刚刚"
             if s < 60:    return f"{s}秒前"
             if s < 3600:  return f"{s//60}分钟前"
             if s < 86400: return f"{s//3600}小时前"

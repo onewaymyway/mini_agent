@@ -87,6 +87,7 @@ def inject_styles():
 .event-error       { color: #EF5350; }
 .event-info        { color: #90A4AE; }
 .event-warning     { color: #FFCC02; }
+.event-session_switched { color: #4DD0E1; font-weight: bold; }
 
 /* ── 状态点 ── */
 .status-idle            { display:inline-block;width:8px;height:8px;background:#4CAF50;border-radius:50%;margin-right:6px;box-shadow:0 0 6px #4CAF50; }
@@ -165,6 +166,13 @@ def init_session():
         "scroll_trigger":   0,
         "debug_log":            [],   # 调试日志
         "_pending_idle_sync":   0,    # idle 后补同步计数
+        # ── Session 管理 ──
+        "sessions_list":        [],   # 所有 session 列表（来自 /v1/sessions）
+        "current_session_id":   "",   # 当前激活 session id
+        "preview_session_id":   "",   # 侧栏选择器中选中的 session id（用于预览）
+        "session_preview":      None, # 预览缓存（/v1/sessions/{id} 返回）
+        "session_action_msg":   "",   # 切换/新建/删除后的提示信息
+        "sessions_unavailable": False, # Agent 未启用 session 持久化（--no-save-session）
     }
     for k, v in defaults.items():
         if k not in st.session_state:
@@ -290,6 +298,55 @@ class AgentClient:
             pass
         return None
 
+    # ── Session 管理 ─────────────────────────────────────────────────────
+
+    def sessions(self, limit: int = 50):
+        try:
+            r = self.get("/sessions", params={"limit": limit})
+            if r.status_code == 200:
+                return r.json()
+            if r.status_code == 404:
+                return {"_unavailable": True}
+        except:
+            pass
+        return None
+
+    def session_detail(self, session_id: str):
+        try:
+            r = self.get(f"/sessions/{session_id}")
+            if r.status_code == 200:
+                return r.json()
+            return {"_error": r.json().get("detail", f"HTTP {r.status_code}")}
+        except Exception as e:
+            return {"_error": str(e)}
+
+    def resume_session(self, session_id: str):
+        try:
+            r = self.post(f"/sessions/{session_id}/resume")
+            if r.status_code == 200:
+                return r.json()
+            return {"ok": False, "_error": r.json().get("detail", f"HTTP {r.status_code}")}
+        except Exception as e:
+            return {"ok": False, "_error": str(e)}
+
+    def new_session(self):
+        try:
+            r = self.post("/sessions/new")
+            if r.status_code == 200:
+                return r.json()
+            return {"ok": False, "_error": r.json().get("detail", f"HTTP {r.status_code}")}
+        except Exception as e:
+            return {"ok": False, "_error": str(e)}
+
+    def delete_session(self, session_id: str):
+        try:
+            r = self.delete(f"/sessions/{session_id}")
+            if r.status_code == 200:
+                return r.json()
+            return {"ok": False, "_error": r.json().get("detail", f"HTTP {r.status_code}")}
+        except Exception as e:
+            return {"ok": False, "_error": str(e)}
+
 
 def get_client():
     return AgentClient(st.session_state.api_base, st.session_state.token)
@@ -360,6 +417,11 @@ def format_event_html(event: dict) -> str:
                 f'⚠️ 权限请求: {data.get("tool_name","unknown")} — {data.get("description","")}</div>')
     if etype == "error":
         return f'<div class="{css}" style="padding:4px 0">✗ {data.get("message", str(data))}</div>'
+    if etype == "session_switched":
+        sid   = data.get("session_id", "")[:8]
+        title = data.get("title", "")
+        extra = f" — {title}" if title else ""
+        return f'<div class="{css}" style="padding:4px 0">🔀 切换会话 → {sid}{extra}</div>'
     msg = data.get("message", str(data))[:200]
     return f'<div class="{css}" style="padding:2px 0;font-size:12px">[{etype}] {msg}</div>'
 
@@ -865,6 +927,26 @@ def _sync_events():
                 st.session_state.agent_state = "running"
                 st.session_state.debug_log.append(f"[{_ts()}] permission_done -> running")
 
+        elif etype == "session_switched":
+            # session 在后端被切换（可能是本页面操作，也可能是 CLI 或其他客户端）。
+            # 若与本地记录的当前 session 不一致，重新加载历史与会话列表，
+            # 确保多端 / CLI 切换 session 后 Web 端能保持同步。
+            new_sid = evt.get("session_id", "")
+            if new_sid and new_sid != st.session_state.current_session_id:
+                st.session_state.debug_log.append(
+                    f"[{_ts()}] session_switched -> {new_sid!r}"
+                )
+                st.session_state.current_session_id = new_sid
+                st.session_state.preview_session_id = new_sid
+                hist = client.history()
+                st.session_state.messages = (
+                    _history_to_messages(hist["messages"]) if hist and hist.get("messages") else []
+                )
+                st.session_state.event_log = []
+                st.session_state.turn_id = None
+                st.session_state.scroll_trigger += 1
+                _refresh_sessions(client)
+
         st.session_state.event_log.append(evt)
 
     if len(st.session_state.debug_log) > 200:
@@ -873,6 +955,60 @@ def _sync_events():
 
 def _ts() -> str:
     return datetime.now().strftime("%H:%M:%S")
+
+
+def _history_to_messages(hist_messages: list) -> list:
+    """将后端 /v1/history 返回的 messages 转换为对话面板格式（仅 user/assistant 纯文本）。"""
+    result = []
+    for m in hist_messages or []:
+        role = m.get("role", "")
+        c    = m.get("content", "")
+        text = ("".join(x.get("text", "") for x in c
+                        if isinstance(x, dict) and x.get("type") == "text")
+                if isinstance(c, list) else str(c))
+        if role in ("user", "assistant") and text.strip():
+            result.append({"role": role, "content": text, "time": ""})
+    return result
+
+
+def _refresh_sessions(client) -> None:
+    """刷新会话列表与当前 session id（不触发 rerun）。"""
+    data = client.sessions()
+    if data is None:
+        return
+    if data.get("_unavailable"):
+        st.session_state.sessions_list = []
+        st.session_state.sessions_unavailable = True
+        return
+    st.session_state.sessions_unavailable = False
+    st.session_state.sessions_list = data.get("sessions", [])
+    st.session_state.current_session_id = data.get("current_session_id", "") or ""
+    if not st.session_state.preview_session_id:
+        st.session_state.preview_session_id = st.session_state.current_session_id
+
+
+def _on_session_switched(client, result: dict, msg: str) -> None:
+    """切换 / 新建 session 成功后，重置本地对话状态并重新加载历史。"""
+    new_sid = result.get("session_id", "") or ""
+    st.session_state.current_session_id = new_sid
+    st.session_state.preview_session_id = new_sid
+    st.session_state.event_log = []
+    st.session_state.turn_id = None
+    st.session_state.session_action_msg = msg
+    st.session_state.session_preview = None
+
+    hist = client.history()
+    st.session_state.messages = (
+        _history_to_messages(hist["messages"]) if hist and hist.get("messages") else []
+    )
+    st.session_state.scroll_trigger += 1
+
+    status = client.status()
+    if status:
+        st.session_state.agent_state = status.get("state", "idle")
+        st.session_state.stats = status.get("stats", {})
+
+    _refresh_sessions(client)
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -1000,6 +1136,122 @@ def render_debug_panel():
             st.caption("暂无日志")
 
 
+def render_session_panel():
+    """侧栏「会话管理」面板：列出所有 session，支持预览内容、切换/新建/删除。"""
+    client = get_client()
+
+    # 首次进入或列表为空时自动拉取一次（已知不可用时不再重复请求）
+    if not st.session_state.sessions_list and not st.session_state.sessions_unavailable:
+        _refresh_sessions(client)
+
+    st.markdown('<div class="sidebar-section">会话管理</div>', unsafe_allow_html=True)
+
+    if st.session_state.sessions_unavailable:
+        st.caption("⚠️ 当前 Agent 未启用会话持久化（--no-save-session），无法管理会话")
+        return
+
+    if st.session_state.session_action_msg:
+        st.success(st.session_state.session_action_msg)
+        st.session_state.session_action_msg = ""
+
+    sessions = st.session_state.sessions_list
+    busy = st.session_state.agent_state not in ("idle", "unknown")
+
+    hdr_c1, hdr_c2 = st.columns([4, 1])
+    with hdr_c1:
+        cur = st.session_state.current_session_id
+        st.caption(f"当前会话: `{cur[:8]}`" if cur else "当前会话: 未知")
+    with hdr_c2:
+        if st.button("🔄", help="刷新会话列表", use_container_width=True, key="btn_refresh_sessions"):
+            _refresh_sessions(client)
+            st.rerun()
+
+    if not sessions:
+        st.caption("暂无会话记录")
+    else:
+        ids = [s["id"] for s in sessions]
+
+        def _fmt(sid: str) -> str:
+            s = next((x for x in sessions if x["id"] == sid), None)
+            if not s:
+                return sid
+            mark  = "⭐" if s.get("is_current") else "▫️"
+            title = s.get("title") or "(未命名)"
+            if len(title) > 16:
+                title = title[:16] + "…"
+            return f'{mark} {title} · {s.get("turns", 0)}轮 · {s.get("age", "")}'
+
+        default_id = st.session_state.preview_session_id or st.session_state.current_session_id
+        default_idx = ids.index(default_id) if default_id in ids else 0
+
+        selected_id = st.selectbox(
+            "选择会话", options=ids, index=default_idx,
+            format_func=_fmt, key="session_select_box", label_visibility="collapsed",
+        )
+        st.session_state.preview_session_id = selected_id
+
+        sel_meta  = next((x for x in sessions if x["id"] == selected_id), None)
+        is_current = bool(sel_meta and sel_meta.get("is_current"))
+
+        # 内容预览（按 selected_id 缓存，避免 agent 运行时每 1.5s 重复请求）
+        with st.expander("📜 预览会话内容", expanded=False):
+            cache = st.session_state.session_preview
+            if not cache or cache.get("_id") != selected_id:
+                detail = get_client().session_detail(selected_id)
+                cache = {**(detail or {}), "_id": selected_id}
+                st.session_state.session_preview = cache
+
+            if "_error" in cache:
+                st.caption(f"加载失败: {cache['_error']}")
+            else:
+                msgs = _history_to_messages(cache.get("history", []))
+                if not msgs:
+                    st.caption("（暂无对话内容）")
+                else:
+                    for m in msgs[-8:]:
+                        icon = "👤" if m["role"] == "user" else "🤖"
+                        text = m["content"]
+                        if len(text) > 200:
+                            text = text[:200] + "…"
+                        st.markdown(f"**{icon}** {text}")
+
+        # 操作按钮
+        act_c1, act_c2 = st.columns(2)
+        with act_c1:
+            if st.button("▶ 切换并继续", use_container_width=True, type="primary",
+                          disabled=is_current or busy, key="btn_resume_session"):
+                result = get_client().resume_session(selected_id)
+                if result.get("ok"):
+                    _on_session_switched(client, result, f"已切换到会话 {selected_id[:8]}")
+                    st.rerun()
+                else:
+                    st.error(result.get("_error", "切换失败"))
+        with act_c2:
+            if st.button("🆕 新建会话", use_container_width=True,
+                          disabled=busy, key="btn_new_session"):
+                result = get_client().new_session()
+                if result.get("ok"):
+                    _on_session_switched(client, result, "已新建并切换到空会话")
+                    st.rerun()
+                else:
+                    st.error(result.get("_error", "新建失败"))
+
+        if busy:
+            st.caption("⏳ Agent 运行中，请先中断 / 等待空闲后再切换会话")
+
+        if not is_current:
+            if st.button("🗑 删除该会话", use_container_width=True, key="btn_delete_session"):
+                result = get_client().delete_session(selected_id)
+                if result.get("ok"):
+                    if st.session_state.preview_session_id == selected_id:
+                        st.session_state.preview_session_id = st.session_state.current_session_id
+                    _refresh_sessions(client)
+                    st.success("已删除")
+                    st.rerun()
+                else:
+                    st.error(result.get("_error", "删除失败"))
+
+
 def render_sidebar():
     with st.sidebar:
         st.markdown("## 🤖 Mini Agent")
@@ -1050,6 +1302,7 @@ def render_sidebar():
                     if s:
                         st.session_state.agent_state = s.get("state", "unknown")
                         st.session_state.stats = s.get("stats", {})
+                    _refresh_sessions(client)
                     st.success("连接成功！")
                 else:
                     st.session_state.connected = False
@@ -1062,6 +1315,7 @@ def render_sidebar():
                     if s:
                         st.session_state.agent_state = s.get("state", "unknown")
                         st.session_state.stats = s.get("stats", {})
+                    _refresh_sessions(client)
 
         # 连接状态
         if st.session_state.connected:
@@ -1070,6 +1324,10 @@ def render_sidebar():
                 unsafe_allow_html=True)
         else:
             st.markdown('<div class="conn-bar conn-fail">✗ 未连接</div>', unsafe_allow_html=True)
+
+        # 会话管理
+        if st.session_state.connected:
+            render_session_panel()
 
         # 统计
         if st.session_state.stats:
@@ -1386,9 +1644,9 @@ def render_event_panel():
     filter_types = st.multiselect(
         "过滤", ["token","tool_call","tool_result","tool_error",
                 "turn_start","turn_done","permission_req",
-                "status","error","info","warning"],
+                "status","error","info","warning","session_switched"],
         default=["tool_call","tool_result","turn_start","turn_done",
-                 "error","permission_req","warning"],
+                 "error","permission_req","warning","session_switched"],
         label_visibility="collapsed"
     )
     container = st.container(height=520)
@@ -1568,15 +1826,7 @@ def main():
         if sync_btn:
             hist = get_client().history()
             if hist and hist.get("messages"):
-                st.session_state.messages = []
-                for m in hist["messages"]:
-                    role = m.get("role","")
-                    c    = m.get("content","")
-                    text = ("".join(x.get("text","") for x in c
-                                    if isinstance(x,dict) and x.get("type")=="text")
-                            if isinstance(c, list) else str(c))
-                    if role in ("user","assistant") and text.strip():
-                        st.session_state.messages.append({"role":role,"content":text,"time":""})
+                st.session_state.messages = _history_to_messages(hist["messages"])
                 st.session_state.scroll_trigger += 1
                 st.success(f"已同步 {len(st.session_state.messages)} 条历史")
                 st.rerun()

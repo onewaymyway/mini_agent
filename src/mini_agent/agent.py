@@ -274,31 +274,48 @@ class Agent:
                 provider=getattr(self.cfg, "llm_provider", "unknown"),
                 model=self.cfg.model,
             )
-            # 通知 TaskManager 当前 session_id，使 SubAgent 任务日志写到正确目录
-            try:
-                from mini_agent.tools.orchestration import get_task_manager
-                tm = get_task_manager()
-                if tm is not None:
-                    tm.set_session_id(self._session.id)
-            except Exception:
-                pass
-            # debug logger 绑定到 session：日志写入 sessions/<id>/llm_debug.jsonl
-            if getattr(self.cfg, "debug_llm", False):
-                try:
-                    from mini_agent.llm.debug_logger import (
-                        get_debug_logger, init_debug_logger_for_session,
-                        DebugConfig as LLMDebugCfg,
-                    )
-                    existing = get_debug_logger()
-                    init_debug_logger_for_session(
-                        cfg=existing.cfg,
-                        project_root=self.cfg.project_root,
-                        session_id=self._session.id,
-                    )
-                except Exception:
-                    pass
+            self._bind_session_extras()
         except Exception as e:
             R.print_warning(f"Session init failed: {e}")
+
+    def _bind_session_extras(self) -> None:
+        """
+        将当前 self._session 绑定到 TaskManager / debug logger 等周边组件。
+
+        在以下场景调用：
+          - _init_session（首次创建 session）
+          - load_session（resume 一个已有 session）
+          - new_session（清空历史开始新 session）
+        确保 SubAgent 任务日志、LLM debug 日志始终写入"当前激活 session"对应的目录，
+        而不是停留在进程启动时绑定的那个 session（这在 Web 端切换 session 时尤其重要）。
+        """
+        if self._session is None:
+            return
+
+        # 通知 TaskManager 当前 session_id，使 SubAgent 任务日志写到正确目录
+        try:
+            from mini_agent.tools.orchestration import get_task_manager
+            tm = get_task_manager()
+            if tm is not None:
+                tm.set_session_id(self._session.id)
+        except Exception:
+            pass
+
+        # debug logger 绑定到 session：日志写入 sessions/<id>/llm_debug.jsonl
+        if getattr(self.cfg, "debug_llm", False):
+            try:
+                from mini_agent.llm.debug_logger import (
+                    get_debug_logger, init_debug_logger_for_session,
+                    DebugConfig as LLMDebugCfg,
+                )
+                existing = get_debug_logger()
+                init_debug_logger_for_session(
+                    cfg=existing.cfg,
+                    project_root=self.cfg.project_root,
+                    session_id=self._session.id,
+                )
+            except Exception:
+                pass
 
     def _append_memory_delta(self, entry) -> None:
         """将本 session 产生的记忆条目追加到 memory_delta.jsonl（审计用）。"""
@@ -538,11 +555,50 @@ class Agent:
         self.stats.input_tokens  = session.stats.get("input_tokens", 0)
         self.stats.output_tokens = session.stats.get("output_tokens", 0)
         self.stats.tool_calls    = session.stats.get("tool_calls", 0)
+        self.stats.tool_stats    = session.stats.get("tool_stats", {}) or {}
+        self.stats.skill_activations = session.stats.get("skill_activations", {}) or {}
+        # 切换 session 后重新绑定 TaskManager / debug logger，
+        # 确保后续 SubAgent / LLM debug 日志写入新激活的 session 目录
+        self._bind_session_extras()
+        return True
+
+    def new_session(self) -> bool:
+        """
+        清空当前历史与统计，开始一个全新的 session（尚未写文件）。
+        与 CLI `/session new` 等价，但额外完成 TaskManager / debug logger 重绑定，
+        供 HTTP API（Web 端"新建会话"）调用。
+        """
+        if not self._session_mgr:
+            return False
+        self._history.clear()
+        self.stats = SessionStats()
+        self._session = self._session_mgr.new_session(
+            provider=getattr(self.cfg, "llm_provider", "unknown"),
+            model=self.cfg.model,
+        )
+        self._bind_session_extras()
         return True
 
     @property
     def session_id(self) -> Optional[str]:
         return self._session.id if self._session else None
+
+    @property
+    def session_meta(self):
+        """返回当前 session 的 SessionMeta（含实时 stats），尚无 session 时返回 None。
+
+        与 session_manager.list_sessions() 不同，本属性反映的是
+        Agent 内存中的实时状态（包括尚未 save_session() 落盘的最新 session），
+        主要供 HTTP API 在列举 session 时补充"当前会话"信息。
+        """
+        if self._session is None:
+            return None
+        meta = self._session.meta
+        meta.turns         = self.stats.turns
+        meta.input_tokens  = self.stats.input_tokens
+        meta.output_tokens = self.stats.output_tokens
+        meta.tool_calls    = self.stats.tool_calls
+        return meta
 
     @property
     def session_file(self) -> Optional[str]:

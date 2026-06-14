@@ -556,7 +556,7 @@ def load_config(
     session_cfg = SessionConfig(
         dir=Path(_session_dir_str) if _session_dir_str else None,
         fmt=_f("session_fmt", session_fmt) or os.environ.get("SESSION_FMT", "json"),
-        auto_save=not bool(_f("no_save_session", None)),
+        auto_save=auto_save_session and not bool(_f("no_save_session", None)),
         summary_enabled=_fb("session_summary_enabled", session_summary_enabled),
         summary_min_turns=_fn("session_summary_min_turns", session_summary_min_turns, 4),
         search_enabled=_fb("session_search_enabled", session_search_enabled),

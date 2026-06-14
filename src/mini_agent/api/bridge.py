@@ -508,6 +508,12 @@ class AgentBridge:
             data={"action": action, "path": path},
         ))
 
+    def emit_session_switched(self, session_id: str, title: str = "") -> None:
+        self.broadcaster.push(AgentEvent(
+            type=EventType.SESSION_SWITCHED,
+            data={"session_id": session_id, "title": title},
+        ))
+
 
 # ── 模块级单例 ────────────────────────────────────────────────────────────────
 
