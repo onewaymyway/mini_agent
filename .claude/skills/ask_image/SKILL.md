@@ -1,7 +1,7 @@
 ---
 name: ask_image
 description: 要从图片中读取信息，或者对图片进行问答时，使用本 skill。
-triggers: 图片信息提取，读图
+triggers: 图片信息提取，读图，ask_image,图片,图
 ---
 # ask_image - 图片问答 Skill
 
