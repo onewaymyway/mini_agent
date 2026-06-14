@@ -254,4 +254,4 @@ Token 估算采用粗略规则：`1 token ≈ 4 字符`。
 
 ---
 
-> 最后更新：2026-06（反映 src/mini_agent 包布局重构，CLI 命令实现已从 main.py 迁移至 src/mini_agent/cli/commands/skills.py）
+> 最后更新：2026-06（反映 src/mini_agent 包布局重构，CLI 命令实现已从 main.py 迁移至 src/mini_agent/cli/commands/skills.py；新增图片生成与识别技能）

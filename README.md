@@ -24,6 +24,7 @@
 | 🤖 自定义子 Agent | 预设角色模板（.agent/agents/*.md），结构化参数注入，支持工具/模型限制 |
 | 🔗 Hooks 机制 | 关键事件自动执行 shell 命令，支持拦截/修改工具调用，项目级/全局级配置 |
 | 🎯 Task 日志实时查看 | 运行时方向键切换查看不同任务日志，状态栏显示任务状态概要 |
+| 🖼️ 图片技能 | 图片信息提取与问答（ask_image）、文本生成图片（gen_image_with_text） |
 
 ## 快速开始
 
@@ -267,6 +268,10 @@ Agent 可以调用以下内置工具：
 
 ### Web Search
 - `web_search` — 网络搜索，支持 DuckDuckGo（默认）、Brave、Serper、Tavily 后端
+
+### 图片处理
+- `ask_image` — 图片信息提取与问答（**不要**用 read_file 直接读图片）
+- `gen_image_with_text` — 文本生成图片（text-to-image / image-to-image 编辑）
 
 ### 并发编排
 - `spawn_agent` — 派生子 Agent
@@ -525,6 +530,7 @@ python -m pytest tests/ -q
 - [Web Demo 指南](docs/web-demo-guide.md) — Streamlit Web 界面使用
 - [MCP 集成指南](docs/mcp-guide.md) — Model Context Protocol 集成
 - [Web Search 指南](docs/web-search-guide.md) — Web 搜索功能使用指南
+- [图片技能指南](docs/image-skills-guide.md) — **新增**：图片识别与生成技能使用指南
 
 ## 许可证
 
@@ -536,4 +542,4 @@ MIT License
 
 ---
 
-*最后更新：2026-06-14* — Web Search 功能（DuckDuckGo/Brave/Serper/Tavily），文档更新
+*最后更新：2026-06-14* — 图片技能（ask_image / gen_image_with_text），文档更新

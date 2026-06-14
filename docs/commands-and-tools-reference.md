@@ -149,6 +149,16 @@ python main.py
 | `/skill stats` | 显示 LRU 使用追踪和压缩预算预览 |
 | `/skill reset` | 卸载所有当前激活的技能 |
 
+**内置技能类型**：
+
+| 技能 | 用途 |
+|------|------|
+| `ask_image` | 图片信息提取与问答（**不要**用 Read 工具直接读图片文件） |
+| `gen_image_with_text` | 文本生成图片（支持 text-to-image 和 image-to-image 编辑） |
+| `agent-generator` | 创建符合 mini_agent 规范的自定义子 agent |
+| `skill-generator` | 创建符合 mini_agent 规范的新 SKILL.md 技能文件 |
+| `iching_oracle` | 易经智慧顾问，提供人生决策指导 |
+
 ### 会话管理（`src/mini_agent/cli/commands/sessions.py`）
 
 | 命令 | 说明 |

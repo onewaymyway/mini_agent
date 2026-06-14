@@ -254,6 +254,18 @@ system prompt 构建顺序：
 4. 回复后检测实际使用（显式标签 + 指纹匹配），更新 LRU 追踪
 5. 压缩历史时按 LRU 顺序重附 Skill，在预算内优先保留最近使用的
 
+**内置技能类型**：
+
+| 技能 | 用途 |
+|------|------|
+| `ask_image` | 图片信息提取与问答 |
+| `gen_image_with_text` | 文本生成图片（text-to-image / image-to-image） |
+| `agent-generator` | 创建自定义子 agent |
+| `skill-generator` | 创建新 SKILL.md 技能文件 |
+| `iching_oracle` | 易经智慧顾问 |
+
+图片相关技能详见 [图片技能使用指南](image-skills-guide.md)。
+
 ### 3.15 并发编排（orchestrator/）
 
 详见 [plan-and-task-guide.md](plan-and-task-guide.md)、[subagent-mechanism.md](subagent-mechanism.md) 和 [task-focus-viewing.md](task-focus-viewing.md)。两层结构：
@@ -441,4 +453,4 @@ HTTP 服务通过桥接模式与 Agent 核心解耦：
 
 ---
 
-*最后更新：2026-06（新增 MCP 子系统、history/、storage/、task_display.py、task-focus-viewing 等模块）*
+*最后更新：2026-06（新增 MCP 子系统、history/、storage/、task_display.py、task-focus-viewing、图片技能等模块）*

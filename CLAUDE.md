@@ -197,3 +197,4 @@ python main.py --provider nvidia --model qwen/qwen3.5-122b-a10b --system-tool-ca
 - [SubAgent 机制](docs/subagent-mechanism.md) — 子 Agent 实现细节
 - [命令与工具参考](docs/commands-and-tools-reference.md) — 所有 slash 命令和工具
 - [Web Search 指南](docs/web-search-guide.md) — **新增**：Web 搜索功能使用指南
+- [图片技能指南](docs/image-skills-guide.md) — **新增**：图片识别与生成技能使用指南
