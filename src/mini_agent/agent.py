@@ -42,6 +42,50 @@ from mini_agent.tool_executor import ToolExecutor
 from mini_agent.history_manager import HistoryManager
 from mini_agent.reminders import ReminderManager
 
+import re as _re
+
+# ── 工具错误识别 ──────────────────────────────────────────────────────────────
+# 不同工具的错误输出格式各不相同，单纯依赖 startswith 会漏掉
+# Traceback、非零 exit code 等常见格式。
+_ERROR_STARTSWITH = (
+    "[error",
+    "[tool error",
+    "Error:",
+    "ERROR:",
+    "Traceback (most recent call last)",  # Python 异常堆栈
+    "error:",                              # bash / 编译器小写 error:
+    "fatal:",                              # git fatal
+)
+_ERROR_PATTERNS = _re.compile(
+    r"\[exit code:\s*[1-9]\d*\]"          # exit code 非零
+    r"|^\s*(SyntaxError|TypeError|ValueError|KeyError|AttributeError"
+    r"|RuntimeError|OSError|IOError|FileNotFoundError|PermissionError"
+    r"|ModuleNotFoundError|ImportError|NameError|IndexError"
+    r"|JSONDecodeError|UnicodeDecodeError|ConnectionError|TimeoutError"
+    r"|CalledProcessError)\b",
+    _re.MULTILINE,
+)
+
+
+def _is_tool_error(result_str: str) -> bool:
+    """
+    判断工具调用结果是否为错误输出。
+
+    综合以下特征：
+    1. 特定前缀（[error、Traceback、Error: 等）
+    2. 非零 exit code（[exit code: N]，N > 0）
+    3. 常见 Python / 系统异常类名出现在输出中
+    """
+    if not result_str:
+        return False
+    stripped = result_str.lstrip()
+    for prefix in _ERROR_STARTSWITH:
+        if stripped.startswith(prefix):
+            return True
+    if _ERROR_PATTERNS.search(result_str):
+        return True
+    return False
+
 
 class Agent:
     """
@@ -1099,13 +1143,7 @@ class Agent:
             return
         for tc, result_str in zip(tool_calls, result_strs):
             tool_name = getattr(tc, "name", "") or ""
-            is_error = (
-                result_str.startswith("[error") or
-                result_str.startswith("[tool error") or
-                result_str.startswith("Error:") or
-                result_str.startswith("ERROR:")
-            )
-            if is_error:
+            if _is_tool_error(result_str):
                 for r in self._reminder_mgr.check_tool_error(tool_name, result_str):
                     self._inject_reminder(r)
             else:
