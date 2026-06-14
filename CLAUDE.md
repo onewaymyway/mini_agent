@@ -173,6 +173,13 @@ python main.py --provider nvidia --model qwen/qwen3.5-122b-a10b --system-tool-ca
 - `__init__.py` — 公开接口导出
 - `paths.py` — 路径管理
 
+### Reminder 系统 (`src/mini_agent/reminders/`)
+
+- `loader.py` — Reminder 加载器，扫描目录解析 `.md` 文件
+- `matcher.py` — 条件匹配引擎，根据事件/正则匹配触发条件
+- `manager.py` — ReminderManager，Agent 主流程集成入口
+- `generator.py` — Reminder 生成工具，用于从对话提取经验
+
 ### 自定义子 Agent
 
 - profile 文件位置：`.agent/agents/*.md`（项目级）或 `~/.agent/agents/*.md`（全局级）
@@ -196,5 +203,6 @@ python main.py --provider nvidia --model qwen/qwen3.5-122b-a10b --system-tool-ca
 - [任务与规划指南](docs/plan-and-task-guide.md) — 执行计划与并发任务
 - [SubAgent 机制](docs/subagent-mechanism.md) — 子 Agent 实现细节
 - [命令与工具参考](docs/commands-and-tools-reference.md) — 所有 slash 命令和工具
-- [Web Search 指南](docs/web-search-guide.md) — **新增**：Web 搜索功能使用指南
-- [图片技能指南](docs/image-skills-guide.md) — **新增**：图片识别与生成技能使用指南
+- [Web Search 指南](docs/web-search-guide.md) — Web 搜索功能使用指南
+- [图片技能指南](docs/image-skills-guide.md) — 图片识别与生成技能使用指南
+- [Reminder 系统指南](docs/reminder-system-guide.md) — **新增**：动态提示注入机制使用指南
