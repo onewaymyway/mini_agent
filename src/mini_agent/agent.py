@@ -1128,7 +1128,7 @@ class Agent:
         msg = ReminderManager.format_injection(reminder)
         self._history.append(msg)
         if getattr(self.cfg.reminder, "verbose", False):
-            R.print_info(f"[reminder] 注入: {reminder.name!r} → role={msg['role']}")
+            R.print_info(f"[reminder] 注入: {reminder.name!r} → role={msg['role']}:{reminder.content}")
 
     def _inject_reminders_for_user_intent(self, user_message: str) -> None:
         """用户消息进入时检查并注入 user_intent 类型 reminder。"""
