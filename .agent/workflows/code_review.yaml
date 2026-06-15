@@ -1,0 +1,88 @@
+name: code_review
+description: 代码审查完整流程，包括分析、深度审查、质量评估和报告生成
+version: "1.0"
+steps:
+  - id: analyze
+    name: 静态分析
+    prompt: |
+      请对以下代码进行静态分析，重点关注：
+      1. 代码结构和组织
+      2. 复杂度和可读性
+      3. 潜在的 bug 或边界条件
+      4. 命名规范
+
+      代码：
+      {code}
+
+  - id: review
+    name: 深度审查
+    prompt: |
+      基于以下静态分析结果，对代码进行深度审查：
+
+      分析结果：
+      {analyze.output}
+
+      原始代码：
+      {code}
+
+      请重点关注：
+      - 安全性漏洞（SQL 注入、XSS、敏感信息泄露等）
+      - 性能问题（算法复杂度、不必要的循环、内存泄漏等）
+      - 可维护性（耦合度、测试友好性、文档完整性）
+    depends_on:
+      - analyze
+
+  - id: evaluate
+    name: 质量评估
+    prompt: |
+      请对以下代码审查结论进行综合质量评估。
+
+      静态分析：
+      {analyze.output}
+
+      深度审查：
+      {review.output}
+
+      请从以下维度评估（每项 1-10 分）并给出综合 SCORE：
+      - 代码质量
+      - 安全性
+      - 可维护性
+      - 测试覆盖潜力
+
+      必须在最后一行输出：SCORE: [综合分]/10
+    depends_on:
+      - review
+    role: evaluator
+    retry_on_gate_fail: 1
+
+  - id: report
+    name: 生成审查报告
+    prompt: |
+      请基于以下信息生成一份正式的代码审查报告：
+
+      静态分析：
+      {analyze.output}
+
+      深度审查：
+      {review.output}
+
+      质量评分：{evaluate.score}/100
+
+      报告格式：
+      ## 代码审查报告
+
+      ### 执行摘要
+      [2-3 句话总结整体代码质量]
+
+      ### 主要发现
+      [按严重程度列举问题]
+
+      ### 改进建议
+      [具体可操作的改进建议，按优先级排列]
+
+      ### 结论
+      [整体评价和下一步行动建议]
+      综合质量评分：{evaluate.score}/100
+    depends_on:
+      - evaluate
+    condition: "evaluate.score >= 40"

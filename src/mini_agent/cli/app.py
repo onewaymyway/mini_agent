@@ -168,6 +168,17 @@ def _main_inner() -> None:
     if profile_loader.available:
         R.print_info(f"Custom sub-agents loaded: {profile_loader.available}")
 
+    # ── Role Agent 系统 ───────────────────────────────────────────────────────
+    from mini_agent.role_agents import init_role_agent_system
+    role_sys = init_role_agent_system(cfg, profile_loader)
+    if role_sys.has_output_roles or role_sys.has_tool_roles:
+        R.print_info(f"Role agents ready: {role_sys.summary}")
+
+    # ── 工作流系统 ────────────────────────────────────────────────────────────
+    from mini_agent.workflow.tools import register_workflow_tools
+    register_workflow_tools(cfg)
+    R.print_info("Workflow tools registered (generate/save/run/list/show/delete_workflow)")
+
     from mini_agent.hooks import init_hooks
     hook_mgr = init_hooks(cfg.project_root)
     if hook_mgr.has_any:

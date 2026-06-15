@@ -686,6 +686,137 @@ class Agent:
         self._llm = create_client(llm_config)
         R.print_info(f"Switched to {self._llm}")
 
+    # ── [SYS-ROLE-AGENT] 角色 Agent 触发 ────────────────────────────────────
+
+    def _trigger_role_agents_tool_use(self, tool_calls, result_strs: list) -> None:
+        """
+        工具调用完成后，触发监听该工具的角色 Agent（通常是 CoachAgent）。
+        触发是轻量的：如果没有注册任何 tool 角色，立即返回，开销为零。
+        """
+        try:
+            from mini_agent.role_agents import get_dispatcher
+        except ImportError:
+            return
+
+        dispatcher = get_dispatcher()
+        if dispatcher is None or not dispatcher.has_tool_roles:
+            return
+
+        triggers = dispatcher.get_tool_triggers()
+        if not triggers:
+            return
+
+        # 提取最近几条历史作为上下文（避免传太多）
+        context_msgs = self._history[-6:] if len(self._history) >= 6 else self._history
+        import json as _json
+        context = "\n".join(
+            f"[{m['role']}]: {str(m['content'])[:200]}"
+            for m in context_msgs
+            if isinstance(m.get('content'), str)
+        )
+
+        for tc, result_str in zip(tool_calls, result_strs):
+            if tc.name not in triggers:
+                continue
+            # 解析 tool input（可能是 dict 或 str）
+            tool_input = tc.input if isinstance(tc.input, dict) else {"input": str(tc.input)}
+            dispatcher.trigger_tool_use(
+                tool_name=tc.name,
+                tool_input=tool_input,
+                tool_output=result_str[:2000],  # 截断过长输出
+                context=context,
+                inject_into=self._history,
+            )
+
+    def _run_role_agents_output(self, original_request: str, initial_output: str) -> str:
+        """
+        主 Agent 完成 turn 输出后，触发所有 output 类角色 Agent。
+        支持 evaluator 的多轮修订循环：
+          1. 触发 evaluator → 评分 → 注入反馈
+          2. 若未通过且 max_iterations > 1 → 追加 "请根据反馈修订" → 重新 _agentic_loop
+          3. 重复直到通过或耗尽次数
+        """
+        try:
+            from mini_agent.role_agents import get_dispatcher
+        except ImportError:
+            return initial_output
+
+        dispatcher = get_dispatcher()
+        if dispatcher is None or not dispatcher.has_output_roles:
+            return initial_output
+
+        current_output = initial_output
+
+        # 对每个 output 角色，做最多 max_iterations 轮
+        for profile in dispatcher._output_roles:
+            max_iter = profile.max_iterations if profile.role_type == "evaluator" else 1
+
+            for iteration in range(1, max_iter + 1):
+                import mini_agent.ui.renderer as R
+                R.print_info(
+                    f"[RoleAgent:{profile.name}] "
+                    f"{'评估' if profile.role_type == 'evaluator' else '分析'} "
+                    f"第 {iteration}/{max_iter} 轮..."
+                )
+
+                # 运行单次角色评估
+                from mini_agent.role_agents.feedback import (
+                    RoleFeedback, extract_score, build_inject_message
+                )
+                if profile.role_type == "evaluator":
+                    from mini_agent.role_agents.evaluator import run_evaluator
+                    raw = run_evaluator(
+                        profile=profile,
+                        base_cfg=self.cfg,
+                        original_request=original_request,
+                        agent_output=current_output,
+                        iteration=iteration,
+                    )
+                else:
+                    from mini_agent.role_agents.dispatcher import RoleAgentDispatcher
+                    raw = dispatcher._run_custom_role(
+                        profile, current_output, original_request
+                    )
+
+                score = extract_score(raw) if profile.role_type == "evaluator" else None
+                passed = (
+                    score is not None and score >= profile.pass_threshold
+                ) if score is not None else True  # 非 evaluator 视为通过
+
+                feedback = RoleFeedback(
+                    role_name=profile.name,
+                    role_type=profile.role_type,
+                    raw_output=raw,
+                    score=score,
+                    passed=passed,
+                    inject_as=profile.inject_as,
+                )
+
+                # 注入反馈到历史
+                inject_msg = build_inject_message(feedback)
+                self._history.append(inject_msg)
+
+                if score is not None:
+                    score_pct = int(score * 100)
+                    status = "✅ 通过" if passed else "⚠️ 需修订"
+                    R.print_info(f"[RoleAgent:{profile.name}] 评分 {score_pct}/100 {status}")
+
+                # 通过或最后一轮，不再循环
+                if passed or iteration >= max_iter:
+                    break
+
+                # 未通过且还有轮次：让主 Agent 根据反馈修订输出
+                R.print_info(f"[RoleAgent:{profile.name}] 反馈已注入，主 Agent 修订中...")
+                revision_prompt = (
+                    "请根据上方评估反馈，对你的回答进行修订和改进。"
+                    "重点解决指出的具体问题，保持其他优点不变。"
+                )
+                self._history.append({"role": "user", "content": revision_prompt})
+                self.stats.turns += 1
+                current_output = self._agentic_loop()
+
+        return current_output
+
     # ── [SYS-UNDO] 手动重试 / 回退 ───────────────────────────────────────────
 
     def _save_turn_snapshot(self) -> None:
@@ -933,6 +1064,9 @@ class Agent:
 
             result = self._agentic_loop()
 
+            # [SYS-ROLE-AGENT] output 触发：主 Agent 完成输出后，触发 output 类角色
+            result = self._run_role_agents_output(user_message, result)
+
             # [SYS-SUMMARY] session 结束后写入摘要（在 save 前）
             # 摘要写入由 save_session 触发，这里只标记需要摘要
             return result
@@ -1004,6 +1138,9 @@ class Agent:
 
             # [SYS-REMINDER] 工具执行后：检查出错 / 成功输出，注入对应 reminder
             self._inject_reminders_for_tool_results(response.tool_calls, result_strs)
+
+            # [SYS-ROLE-AGENT] tool_use 触发：CoachAgent 等在特定工具调用后给出建议
+            self._trigger_role_agents_tool_use(response.tool_calls, result_strs)
 
         if loop_count >= self.cfg.max_turns:
             R.print_warning(f"Reached max turns ({self.cfg.max_turns}).")

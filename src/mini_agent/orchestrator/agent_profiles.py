@@ -45,6 +45,18 @@ class AgentProfile:
     hooks: dict = field(default_factory=dict)   # 该 profile 自带的 hooks.json 内容
     source_path: Optional[Path] = None
 
+    # ── Role Agent 扩展字段 ───────────────────────────────────────────────────
+    # role_type: "evaluator" | "coach" | "custom" | "" (空=普通 sub-agent)
+    role_type: str = ""
+    # trigger_on: "output"(主 agent 输出后) | "tool_use:<tool_name>" | "turn_end"
+    trigger_on: str = ""
+    # 评估-修订循环最多几轮（evaluator 用）
+    max_iterations: int = 1
+    # 评估分高于此值视为通过（0-1 浮点）
+    pass_threshold: float = 0.8
+    # 反馈注入主 agent 的方式："user"(追加 user 消息) | "system_reminder"(追加到 system)
+    inject_as: str = "user"
+
 
 # ── 解析 ──────────────────────────────────────────────────────────────────
 
@@ -121,6 +133,11 @@ def _parse_profile(path: Path) -> Optional[AgentProfile]:
         system_prompt=body.strip(),
         hooks=meta.get("hooks") if isinstance(meta.get("hooks"), dict) else {},
         source_path=path,
+        role_type=str(meta.get("role_type", "")),
+        trigger_on=str(meta.get("trigger_on", "")),
+        max_iterations=int(meta.get("max_iterations", 1)),
+        pass_threshold=float(meta.get("pass_threshold", 0.8)),
+        inject_as=str(meta.get("inject_as", "user")),
     )
 
 
