@@ -335,10 +335,16 @@ class AutonomousLoop:
             task = self.goal_backlog.next_task()
             self.input_queue.push(task)  # initiator="autonomous"
 
-        # 3. 否则空转，等待用户消息或下一次 tick
+        # 3. 探索预算未耗尽时，按固定比例分配给 Experiment（见 7.10）
+        elif self.input_queue.is_idle() and self.exploration_budget.has_remaining():
+            experiment = self.experiment_log.next_candidate()
+            if experiment:
+                self.input_queue.push(experiment)  # initiator="autonomous", lowest priority
+
+        # 4. 否则空转，等待用户消息或下一次 tick
 ```
 
-典型周期性任务，把 A–G 已设计的后台机制接上触发时机：每天跑一次 memory consolidation（6.4 剪枝去重）；每周跑一次 evolution-agent review（6.1，聚合 lesson、生成 evolve 分支提案）；定期刷新 capability map（6.6）；`file_watcher.py` 从被动轮询变为 tick 驱动的主动检查。这些机制本身在前面章节已经设计好，Phase H 只是给它们一个不依赖用户在场的触发时机。
+典型周期性任务，把 A–G 已设计的后台机制接上触发时机：每天跑一次 memory consolidation（6.4 剪枝去重）；每周跑一次 evolution-agent review（6.1，聚合 lesson、生成 evolve 分支提案）；定期刷新 capability map（6.6）；`file_watcher.py` 从被动轮询变为 tick 驱动的主动检查。这些机制本身在前面章节已经设计好，Phase H 只是给它们一个不依赖用户在场的触发时机。第 3 类（探索）是本节新增的 tick 类型，优先级低于周期性任务和 goal backlog 任务，详见 7.10。
 
 ### 7.5 并发与资源仲裁
 
@@ -346,7 +352,7 @@ daemon 同时承载"自主任务"和"用户对话"会产生冲突——用户在
 
 - **用户交互优先**：`InputQueue` 里用户消息永远插队到自主任务前面；自主任务正在执行且涉及和当前用户请求重叠的文件/资源时**暂停**（不杀掉，状态保存回 goal backlog，标记"被用户交互打断，下次 tick 继续"）。
 - **资源锁**：自主任务执行前检查将要触碰的路径是否和"最近 N 分钟内有用户活动"的路径重叠，重叠则该 Task 回到 backlog 排队。
-- **预算硬限制**：`resource_budget.daily_token_budget` 是自主任务的硬上限——用户交互不受此限制（用户请求总要响应），但自主 tick 发现"今日自主预算已用尽"时，跳过本次 tick 的自主部分，只处理周期性轻量任务（如成本低的 consolidation）。
+- **预算硬限制**：`resource_budget.daily_token_budget` 是自主任务的硬上限——用户交互不受此限制（用户请求总要响应），但自主 tick 发现"今日自主预算已用尽"时，跳过本次 tick 的自主部分，只处理周期性轻量任务（如成本低的 consolidation）。`daily_token_budget` 内部进一步切分出一份**探索预算**（7.10），固定比例、独立核算——goal backlog 任务紧张时不会挪用探索预算去"赶进度"，探索预算闲置时也不会被 goal backlog 借用，避免"探索"在资源紧张时总是第一个被牺牲到归零。
 
 ### 7.6 主动汇报：活动摘要
 
@@ -380,11 +386,48 @@ Phase H 做完，mini_agent 在行为上接近"持续运行、有自己议程的
 
 | 档位 | 行为范围 |
 |---|---|
-| `passive` | 完全被动响应，daemon 仅做最轻量的周期性维护（如 memory consolidation），不创建 Goal/Objective，goal_backlog 为空 |
-| `maintenance` | 在 `passive` 基础上启用 7.4 的周期性任务（evolution-agent review、capability map 刷新、file watcher），但不自主 derive 新 Goal |
-| `autonomous` | 完全启用 Goal Backlog 的软目标 derive 与执行 |
+| `passive` | 完全被动响应，daemon 仅做最轻量的周期性维护（如 memory consolidation），不创建 Goal/Objective，goal_backlog 为空，**不分配探索预算，不产生 Experiment** |
+| `maintenance` | 在 `passive` 基础上启用 7.4 的周期性任务（evolution-agent review、capability map 刷新、file watcher）以及 7.10 的探索机制（小比例探索预算），但不自主 derive 新 Goal |
+| `autonomous` | 完全启用 Goal Backlog 的软目标 derive 与执行，探索预算比例可调高 |
 
 默认建议 `passive` 起步，逐档开放。修改 `autonomy_level` 本身属于 T1（声明式配置），但**影响面大，建议即使 eval 通过也强制走人审**——不应被 6.7 节的"T1 eval 通过可自动合并"规则覆盖,这是 4.1 节风险分级表之外需要单独标注的一条特例。
+
+### 7.10 探索与实验机制
+
+> 前面的 Phase B（反思）是"被动遭遇"——agent 在真实任务执行中撞到问题才产生 lesson。本节补上"主动式"的另一半：agent 不等坑出现，自己提出假设、设计实验去验证。两者最终都汇入同一套 lesson/skill/evolve 体系，本节不是新起一套体系,而是给已有体系加一个**主动入口**。
+
+**Experiment 实体**：与 Lesson 的区分在于"主动设计 vs 被动遭遇"。
+
+```python
+@dataclass
+class Experiment:
+    id: str
+    hypothesis: str          # "若启用 X，则 Y 指标改善" —— 跑之前就写好，跑完不可改
+    motivation: str          # 关联的 capability_map 条目 / 半成形 lesson / 新增能力
+    method: str              # 实验设计：control vs treatment、场景来源、试验次数、判定阈值
+    status: str              # designed | running | completed
+    trials: list[dict]       # 多次试验的原始指标
+    outcome: str             # confirmed | rejected | inconclusive
+    conclusion: str          # 验证后写的结论，即使 rejected 也要写
+    follow_up: str | None    # confirmed 时关联到的 evolve 分支 / skill_propose id
+```
+
+**假设来源**（按优先级）：① capability_map（6.6）里的低置信度区域——agent 知道自己在某类任务上不稳定但还没归因；② 还没攒够 `occurrence_count` 的半成形 lesson——主动设计场景**重现** trigger，比干等真实任务再撞上更快；③ 新接入但未充分使用的能力（新 MCP server、新工具、新激活 skill）——"还没被实战检验过的失败模式"是天然的探索起点，相当于在沙箱里先探边界，比第一次在真实任务里用时才发现问题更安全；④ 用户在对话中提出的"我好奇 X 会不会更好"，可直接转 Experiment，不需要统计门槛。
+
+**预注册（pre-registration）**：`hypothesis` 和 `method`（包括试验次数、判定指标、confirmed/rejected 的阈值）必须在执行前写入并冻结，**验证阶段不允许根据结果反过来修改判定标准**——LLM 擅长为任何结果找到看起来合理的解释，先写后跑是防止"事后圆场"的唯一办法,这一原则与第 4.2 节"commit message 携带元数据、不可事后篡改叙事"是同一种纪律。同时，`method` 必须明确多次试验（如同场景跑 5 次）看指标分布，而不是单点对比——这是 4.6 节 eval 对比在"验证单个改动"场景下够用、但"验证一个假设"时需要补的统计严谨性。
+
+**反事实重放（counterfactual replay）**：相比 6.3 节"lesson → 生成全新合成 test_cases"，更有价值的场景来源是 `.agent/sessions/` 里**真实发生过的历史会话**——选一个产生过 lesson 或落在 capability_map 低置信度类别里的历史 session，用修改后的 skill/config/prompt 重放其关键节点，判断"如果当时启用了这个改动，结果会不会更好"。这比纯合成场景更贴近真实分布。confirmed 的实验，其重放所用的历史片段可沉淀为新的 `test_cases/`（呼应 6.3），形成"真实数据 → 实验 → 永久回归场景"的闭环。
+
+**执行规格：探索是最高不确定性活动，应配最严格的执行规格**。复用 4.5 的 worktree 副本和 Phase D 的 eval 对比作为执行/验证环境，但在 4.7 的操作可逆性分级和 7.5 的资源仲裁上，Experiment **始终取最保守一档**——外部副作用类操作全部 mock，被用户交互或 goal backlog 任务抢占资源时直接挂起且不计入"打断"统计（探索本身就是"有空才做"的活动）。
+
+**总结：confirmed / rejected / inconclusive 都要写**：
+- **confirmed**（显著改善）→ 触发 `skill_propose` 或开 evolve 分支（走 Phase C/F 既有 tier 判定，不因为"来自实验"而改变门槛），并更新 capability_map 相关条目的置信度。
+- **rejected**（验证后无改善甚至更差）→ 生成 `entry_type="lesson"`、`source="experiment"` 的**负面 lesson**："曾验证 X 方向，结果 Y，短期内不建议重试"，并设置**冷却期**——第 2 节"假设生成"挑选候选前，先查 experiment log 是否有相近方向的近期 rejected 记录，避免在同一个死胡同里反复"重新发现"同一个否定结论。
+- **inconclusive**（方差过大/数据不足）→ 记录但不设冷却期，标记"优先级低、值得在资源充裕时用更大试验量重跑"。
+
+所有 Experiment 记录（无论 outcome）构成一个可检索的**实验记录簿**，是假设生成阶段的第一道查询入口。
+
+**与已有机制的关系**：本节真正新增的只有三样——① 带预注册纪律的 Experiment 实体；② 反事实重放这一场景来源；③ AutonomousLoop 里独立核算的探索预算 + rejected 结果的冷却期。其余（worktree 副本、eval 对比、skill_propose/evolve 分支、capability_map、lesson memory）全部复用前述章节，不重复建设。
 
 ---
 
@@ -414,3 +457,4 @@ A（基础设施清债）
 3. **受保护路径清单的维护**：T3 清单本身如何随项目演进而更新？这本身是不是也该是一个"完全由人主导、agent 只能建议、不能修改"的特例流程？
 4. **副本运行的资源成本**：每个 evolve 分支跑一次 worktree + venv + 副本进程，长期累积的计算/存储成本如何控制（特别是 6.7 节频率治理是否足够）？
 5. **自主性分级开关的默认与切换流程**（7.9）：`passive → maintenance → autonomous` 的升级，除了"修改配置走人审"，是否还需要一个"观察期"（类似问题1，但对象是整个 daemon 的自主行为而非单次改动）？降级（`autonomous → passive`）是否需要更轻量的流程，作为"紧急刹车"？
+6. **探索预算与冷却期的校准**（7.10）：探索预算占比、rejected 后的冷却期时长，目前都是"待定参数"——定太小则探索机制形同虚设，定太大则可能挤占 goal backlog 的正常推进。是否需要让这两个参数本身也成为 capability_map/能力地图驱动的动态值（比如某类方向 rejected 越多次，冷却期越长，呈指数退避），而不是固定常量？
