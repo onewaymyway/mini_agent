@@ -78,18 +78,19 @@ class MCPManager:
             return
 
         try:
-            loop = asyncio.get_event_loop()
-            if loop.is_running():
-                # 在已有 event loop 中（例如 Jupyter / async main）
-                import concurrent.futures
-                future = asyncio.run_coroutine_threadsafe(
-                    self._register_all_async(registry), loop
-                )
-                future.result(timeout=30)
-            else:
-                loop.run_until_complete(self._register_all_async(registry))
+            loop = asyncio.get_running_loop()
         except RuntimeError:
-            # 没有 event loop，创建新的
+            loop = None
+
+        if loop is not None and loop.is_running():
+            # 在已有 event loop 中（例如 Jupyter / async main）
+            import concurrent.futures
+            future = asyncio.run_coroutine_threadsafe(
+                self._register_all_async(registry), loop
+            )
+            future.result(timeout=30)
+        else:
+            # 没有运行中的 event loop，新建一个跑完即可
             asyncio.run(self._register_all_async(registry))
 
     def is_mcp_tool(self, tool_name: str) -> bool:

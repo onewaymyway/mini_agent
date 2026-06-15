@@ -55,7 +55,7 @@ class SessionMeta:
             dt = datetime.fromisoformat(self.updated_at.replace("Z", "+00:00"))
             # _now_iso() 生成的是不带时区信息的 UTC 时间字符串（如 "2026-06-14T02:51:32"），
             # 与 timezone-aware 的 now 相减会抛 TypeError，因此按 dt 是否带 tzinfo 选择基准
-            now = datetime.now(timezone.utc) if dt.tzinfo else datetime.utcnow()
+            now = datetime.now(timezone.utc) if dt.tzinfo else datetime.now(timezone.utc).replace(tzinfo=None)
             diff = now - dt
             s = int(diff.total_seconds())
             if s < 0:     return "刚刚"
