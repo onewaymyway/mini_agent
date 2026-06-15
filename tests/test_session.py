@@ -212,9 +212,15 @@ class TestSessionManagerJSON(unittest.TestCase):
     def test_save_file_is_valid_json(self):
         s = self.mgr.new_session("anthropic", "claude-opus-4-5")
         path = self.mgr.save(s, history=SAMPLE_HISTORY, stats=SAMPLE_STATS)
-        data = json.loads(Path(path).read_text())
-        self.assertIn("id", data)
-        self.assertIn("history", data)
+        # path 指向 meta.json：包含元信息，不含 history（history 在同目录的 history.json）
+        meta = json.loads(Path(path).read_text())
+        self.assertIn("id", meta)
+        self.assertNotIn("history", meta)
+
+        history_path = Path(path).parent / "history.json"
+        self.assertTrue(history_path.exists())
+        history = json.loads(history_path.read_text())
+        self.assertEqual(len(history), len(SAMPLE_HISTORY))
 
     def test_save_extracts_title_from_history(self):
         s = self.mgr.new_session("anthropic", "claude-opus-4-5")
@@ -328,6 +334,11 @@ class TestSessionManagerJSON(unittest.TestCase):
 # ══════════════════════════════════════════════════════════════════════════════
 
 class TestSessionManagerJSONL(unittest.TestCase):
+    """
+    新版 SessionManager 的 save() 始终写目录格式（fmt="dir"），
+    不再产出 .jsonl 文件；.jsonl 仅作为旧格式的只读兼容路径保留
+    （见 session.py: _read_legacy_file）。
+    """
 
     def setUp(self):
         self.tmp = Path(tempfile.mkdtemp())
@@ -337,47 +348,59 @@ class TestSessionManagerJSONL(unittest.TestCase):
         import shutil
         shutil.rmtree(self.tmp, ignore_errors=True)
 
-    def test_save_creates_jsonl_file(self):
-        s = self.mgr.new_session("openai", "gpt-4o")
-        path = self.mgr.save(s, history=SAMPLE_HISTORY, stats=SAMPLE_STATS)
-        self.assertTrue(str(path).endswith(".jsonl"))
-        self.assertTrue(Path(str(path)).exists())
+    def _write_legacy_jsonl(self, session_id="abcd1234") -> Path:
+        meta = {
+            "id": session_id,
+            "title": "Legacy session",
+            "created_at": _now_iso(),
+            "updated_at": _now_iso(),
+            "provider": "openai",
+            "model": "gpt-4o",
+            "stats": SAMPLE_STATS,
+        }
+        lines = [json.dumps(meta)] + [json.dumps(m) for m in SAMPLE_HISTORY]
+        path = self.mgr.session_dir / f"{session_id}_20250101_000000.jsonl"
+        path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+        return path
 
-    def test_jsonl_first_line_is_meta(self):
+    def test_save_always_creates_dir_format(self):
+        """新建 session 的 save() 始终写目录格式，而非 .jsonl 文件。"""
         s = self.mgr.new_session("openai", "gpt-4o")
         path = self.mgr.save(s, history=SAMPLE_HISTORY, stats=SAMPLE_STATS)
-        lines = Path(path).read_text().strip().splitlines()
+        self.assertEqual(Path(path).name, "meta.json")
+        self.assertEqual(s.fmt, "dir")
+        self.assertFalse(any(self.mgr.session_dir.glob("*.jsonl")))
+
+    def test_legacy_jsonl_first_line_is_meta(self):
+        path = self._write_legacy_jsonl()
+        lines = path.read_text().strip().splitlines()
         meta = json.loads(lines[0])
         self.assertIn("id", meta)
         self.assertNotIn("history", meta)  # history not in first line
 
-    def test_jsonl_subsequent_lines_are_history(self):
-        s = self.mgr.new_session("openai", "gpt-4o")
-        path = self.mgr.save(s, history=SAMPLE_HISTORY, stats=SAMPLE_STATS)
-        lines = Path(path).read_text().strip().splitlines()
+    def test_legacy_jsonl_subsequent_lines_are_history(self):
+        path = self._write_legacy_jsonl()
+        lines = path.read_text().strip().splitlines()
         # lines[0] = meta, lines[1:] = history entries
         self.assertEqual(len(lines) - 1, len(SAMPLE_HISTORY))
 
-    def test_jsonl_load_roundtrip(self):
-        s = self.mgr.new_session("openai", "gpt-4o")
-        self.mgr.save(s, history=SAMPLE_HISTORY, stats=SAMPLE_STATS)
-        loaded = self.mgr.load(s.id)
+    def test_legacy_jsonl_load_roundtrip(self):
+        self._write_legacy_jsonl("abcd1234")
+        loaded = self.mgr.load("abcd1234")
         self.assertIsNotNone(loaded)
-        self.assertEqual(loaded.id, s.id)
+        self.assertEqual(loaded.id, "abcd1234")
         self.assertEqual(len(loaded.history), len(SAMPLE_HISTORY))
 
-    def test_jsonl_list_reads_first_line_only(self):
-        """list_sessions 对 JSONL 应只读第一行（快速）。"""
-        s = self.mgr.new_session("openai", "gpt-4o")
-        self.mgr.save(s, history=SAMPLE_HISTORY, stats=SAMPLE_STATS)
+    def test_legacy_jsonl_list_reads_first_line_only(self):
+        """list_sessions 对旧版 .jsonl 文件应只读第一行（快速）。"""
+        self._write_legacy_jsonl("abcd1234")
         metas = self.mgr.list_sessions()
         self.assertEqual(len(metas), 1)
-        self.assertEqual(metas[0].id, s.id)
+        self.assertEqual(metas[0].id, "abcd1234")
 
-    def test_jsonl_fmt_field(self):
-        s = self.mgr.new_session("openai", "gpt-4o")
-        self.mgr.save(s, history=SAMPLE_HISTORY, stats=SAMPLE_STATS)
-        loaded = self.mgr.load(s.id)
+    def test_legacy_jsonl_fmt_field(self):
+        self._write_legacy_jsonl("abcd1234")
+        loaded = self.mgr.load("abcd1234")
         self.assertEqual(loaded.fmt, "jsonl")
 
 
@@ -455,7 +478,7 @@ class TestSessionManagerEdgeCases(unittest.TestCase):
 class TestAgentSessionIntegration(unittest.TestCase):
 
     def setUp(self):
-        import tools.builtin  # noqa
+        import mini_agent.tools.builtin  # noqa
         self.tmp = Path(tempfile.mkdtemp())
 
     def tearDown(self):
@@ -501,23 +524,24 @@ class TestAgentSessionIntegration(unittest.TestCase):
         agent = self._make_agent()
         agent.run_turn("Hello")
         sessions_dir = self.tmp / "sessions"
-        files = list(sessions_dir.glob("*.json"))
-        self.assertEqual(len(files), 1)
+        # 新格式：每个 session 是一个目录（包含 meta.json + history.json）
+        session_dirs = [d for d in sessions_dir.iterdir() if d.is_dir()]
+        self.assertEqual(len(session_dirs), 1)
+        self.assertTrue((session_dirs[0] / "meta.json").exists())
+        self.assertTrue((session_dirs[0] / "history.json").exists())
 
     def test_session_file_contains_history(self):
         agent = self._make_agent()
         agent.run_turn("Hello")
-        files = list((self.tmp / "sessions").glob("*.json"))
-        data = json.loads(files[0].read_text())
-        self.assertTrue(len(data["history"]) >= 1)
-        self.assertEqual(data["history"][0]["role"], "user")
-        self.assertEqual(data["history"][0]["content"], "Hello")
+        loaded = agent.session_manager.load(agent.session_id)
+        self.assertTrue(len(loaded.history) >= 1)
+        self.assertEqual(loaded.history[0]["role"], "user")
+        self.assertEqual(loaded.history[0]["content"], "Hello")
 
     def test_session_file_contains_stats(self):
         agent = self._make_agent()
         agent.run_turn("Hello")
-        files = list((self.tmp / "sessions").glob("*.json"))
-        data = json.loads(files[0].read_text())
+        data = json.loads(Path(agent.session_file).read_text())
         self.assertIn("stats", data)
         self.assertEqual(data["stats"]["turns"], 1)
 
@@ -525,9 +549,10 @@ class TestAgentSessionIntegration(unittest.TestCase):
         agent = self._make_agent()
         agent.run_turn("Turn 1")
         agent.run_turn("Turn 2")
-        files = list((self.tmp / "sessions").glob("*.json"))
-        self.assertEqual(len(files), 1)  # same file updated
-        data = json.loads(files[0].read_text())
+        sessions_dir = self.tmp / "sessions"
+        session_dirs = [d for d in sessions_dir.iterdir() if d.is_dir()]
+        self.assertEqual(len(session_dirs), 1)  # same session dir updated
+        data = json.loads((session_dirs[0] / "meta.json").read_text())
         self.assertEqual(data["stats"]["turns"], 2)
 
     def test_save_session_manual(self):

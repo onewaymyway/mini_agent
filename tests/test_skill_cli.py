@@ -59,21 +59,9 @@ _fake_pm.fragment.side_effect = lambda section, key, **kw: (
     key.format(**kw) if kw else key
 )
 
-with _mock.patch.dict("sys.modules", {
-    "mini_agent.ui.renderer": _mock.MagicMock(),
-    "mini_agent.prompts": _mock.MagicMock(),
-}):
-    import importlib
-    # 让 main 模块用假的 renderer / pm
-    import renderer as _R_mock
-    import prompts as _P_mock
-
-# 直接 import main 函数，但在测试里 patch renderer 和 pm
-with patch("builtins.__import__", side_effect=lambda *a, **k: __import__(*a, **k)):
-    pass  # 保持 import 正常
-
 # 真正 import（rich 已安装，不会失败）
 from mini_agent.cli.commands.skills import handle_skill_cmd as _handle_skill_cmd, handle_skills_list as _handle_skills_list, _suggest_skill
+
 
 
 # ── helpers ───────────────────────────────────────────────────────────────────

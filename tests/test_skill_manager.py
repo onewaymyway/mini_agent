@@ -324,6 +324,7 @@ class TestSystemPromptSkillCatalog:
 
         from mini_agent.config import SessionStats
         from mini_agent.agent import Agent
+        from mini_agent.context_builder import ContextBuilder
 
         agent = Agent.__new__(Agent)
         agent.cfg            = cfg
@@ -331,6 +332,16 @@ class TestSystemPromptSkillCatalog:
         agent._history       = []
         agent._project_snapshot = None
         agent._memory        = None
+        agent._global_memory = None
+        agent._cached_system = None
+        agent._ctx_builder = ContextBuilder(
+            cfg=cfg,
+            skill_loader=loader,
+            memory=None,
+            global_memory=None,
+            project_snapshot_getter=lambda: None,
+            profile_text_getter=lambda: "",
+        )
 
         return agent
 

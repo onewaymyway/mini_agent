@@ -397,7 +397,7 @@ class TestRealPromptFiles(unittest.TestCase):
     """Smoke-test the actual prompt files in the project."""
 
     def setUp(self):
-        self.pm = PromptManager(PROJECT_ROOT / "prompts")
+        self.pm = PromptManager(PROJECT_ROOT / "src" / "mini_agent" / "prompts")
 
     def test_all_system_prompts_render(self):
         for name in self.pm.list_prompts():

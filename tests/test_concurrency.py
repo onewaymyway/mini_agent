@@ -316,53 +316,66 @@ class TestStatusBar(unittest.TestCase):
         init_concurrency(max_tasks=4, max_llm_calls=8)
 
     def test_render_idle_returns_empty(self):
-        """空闲时 _build_lines 返回空列表（不写任何内容）。"""
+        """空闲时 _build_lines 不包含 LLM 队列信息。"""
         from mini_agent.orchestrator.status_bar import _build_lines
-        t = {"active": 0, "waiting": 0, "limit": 4, "waiters": []}
-        ll = {"active": 0, "waiting": 0, "limit": 8, "waiters": []}
-        lines = _build_lines(t, ll)
-        # Lines are built but display logic suppresses when all zeros
-        # The lines still exist as strings
+        with patch("mini_agent.tools.orchestration.get_task_manager", return_value=None), \
+             patch("mini_agent.orchestrator.concurrency.concurrency_snapshot",
+                   return_value={"llm": {"active": 0, "waiting": 0, "limit": 8, "waiters": []}}):
+            lines = _build_lines()
         self.assertIsInstance(lines, list)
+        self.assertFalse(any("🤖" in line for line in lines))
 
     def test_render_with_active_tasks_has_content(self):
         """有活跃任务时，_build_lines 返回包含计数信息的行。"""
         from mini_agent.orchestrator.status_bar import _build_lines
-        t = {"active": 2, "waiting": 1, "limit": 4, "waiters": [{"label": "t1", "waited_s": 1.0}]}
-        ll = {"active": 0, "waiting": 0, "limit": 8, "waiters": []}
-        lines = _build_lines(t, ll)
-        self.assertEqual(len(lines), 2)
-        self.assertIn("2/4", lines[0])
+        mgr = MagicMock()
+        mgr.stats.return_value = {
+            "running": 2, "pending": 1, "done": 0,
+            "failed": 0, "cancelled": 0, "total": 3,
+        }
+        mgr.max_workers = 4
+        mgr.list_records.return_value = []
+        with patch("mini_agent.tools.orchestration.get_task_manager", return_value=mgr), \
+             patch("mini_agent.orchestrator.concurrency.concurrency_snapshot",
+                   return_value={"llm": {"active": 0, "waiting": 0, "limit": 8, "waiters": []}}):
+            lines = _build_lines()
+        self.assertTrue(any("2/4" in line for line in lines))
 
     def test_render_with_llm_active_has_content(self):
         """有活跃 LLM 请求时，行中包含计数信息。"""
         from mini_agent.orchestrator.status_bar import _build_lines
-        t = {"active": 0, "waiting": 0, "limit": 4, "waiters": []}
-        ll = {"active": 3, "waiting": 0, "limit": 8, "waiters": []}
-        lines = _build_lines(t, ll)
-        self.assertEqual(len(lines), 2)
-        self.assertIn("3/8", lines[1])
+        with patch("mini_agent.tools.orchestration.get_task_manager", return_value=None), \
+             patch("mini_agent.orchestrator.concurrency.concurrency_snapshot",
+                   return_value={"llm": {"active": 3, "waiting": 0, "limit": 8, "waiters": []}}):
+            lines = _build_lines()
+        self.assertTrue(any("3/8" in line for line in lines))
 
     def test_start_stop_no_crash(self):
         from mini_agent.orchestrator.status_bar import StatusBar
-        bar = StatusBar(refresh_hz=2)
+        bar = StatusBar()
         bar.start()
-        time.sleep(0.2)
+        time.sleep(0.05)
         bar.stop()   # should not raise
 
     def test_context_manager(self):
         from mini_agent.orchestrator.status_bar import StatusBar
-        with StatusBar(refresh_hz=2):
-            time.sleep(0.1)
+        with StatusBar():
+            time.sleep(0.05)
         # Should reach here without exception
 
     def test_module_singleton_start_stop(self):
         from mini_agent.orchestrator.status_bar import start_status_bar, stop_status_bar, get_status_bar
-        bar = start_status_bar(refresh_hz=2)
+        from mini_agent.ui.terminal import get_terminal
+
+        start_status_bar()
         self.assertIsNotNone(get_status_bar())
-        time.sleep(0.1)
+        # 启动后 Terminal 注册了内容提供者回调
+        self.assertIsNotNone(get_terminal()._statusbar_provider)
+
         stop_status_bar()
-        self.assertIsNone(get_status_bar())
+        # 停止后回调被清除（单例对象本身依然存在）
+        self.assertIsNone(get_terminal()._statusbar_provider)
+
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -387,12 +400,14 @@ class TestProviderMixinLLMSemaphore(unittest.TestCase):
             return AnthropicProvider(cfg)
 
     def _make_sdk_response(self, text="ok"):
-        resp = MagicMock()
-        block = MagicMock(); block.type = "text"; block.text = text
-        resp.content = [block]
-        resp.stop_reason = "end_turn"
-        resp.usage = MagicMock(input_tokens=5, output_tokens=10)
-        return resp
+        """构造 _do_chat 的返回值（统一的 LLMResponse，而非原始 SDK 对象）。"""
+        from mini_agent.llm.base import LLMResponse, LLMUsage
+        return LLMResponse(
+            text=text,
+            tool_calls=[],
+            usage=LLMUsage(input_tokens=5, output_tokens=10),
+            stop_reason="end_turn",
+        )
 
     def test_llm_semaphore_limits_concurrent_calls(self):
         """同时超过 max_llm_calls 的请求应排队，不并发超限。"""

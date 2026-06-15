@@ -459,7 +459,7 @@ class TestAgentLLMIntegration(unittest.TestCase):
 
     def _make_agent(self, responses: list[LLMResponse]):
         """创建一个注入了 mock client 的 Agent。"""
-        import tools.builtin  # noqa: ensure tools registered
+        import mini_agent.tools.builtin  # noqa: ensure tools registered
         from mini_agent.agent import Agent
         from mini_agent.config import load_config
         from mini_agent.permissions import PermissionGuard
@@ -507,7 +507,7 @@ class TestAgentLLMIntegration(unittest.TestCase):
     def test_tool_call_denied(self):
         from mini_agent.permissions import PermissionGuard
         from mini_agent.config import load_config
-        import tools.builtin  # noqa
+        import mini_agent.tools.builtin  # noqa
         from mini_agent.agent import Agent
 
         cfg = load_config()

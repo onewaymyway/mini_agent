@@ -29,41 +29,47 @@ def make_agent(responses: list[str]) -> "object":
     构造一个最小化的 Agent stub，_agentic_loop 依次返回 responses。
     避免真实 LLM 调用、session IO、文件系统等外部依赖。
     """
-    from mini_agent.config import AppConfig
+    from pathlib import Path as _Path
+    from mini_agent.config import (
+        AppConfig, SessionConfig, PerceptionConfig, SkillConfig,
+        CompressConfig, MemoryConfig, RetryConfig, SessionStats,
+    )
     from mini_agent.agent import Agent
 
-    cfg = AppConfig.__new__(AppConfig)
-    # 最小属性集
-    cfg.auto_approve      = True
-    cfg.sandbox           = False
-    cfg.project_root      = __import__("pathlib").Path("/tmp")
-    cfg.stream            = False
-    cfg.verbose           = False
-    cfg.max_turns         = 10
-    cfg.model             = "test-model"
-    cfg.agent_name        = "test"
-    cfg.auto_save_session = False      # 禁用真实 session IO
-    cfg.skill_tracking_enabled = False
-    cfg.token_estimate_enabled = False
-    cfg.auto_compress_enabled  = False
-    cfg.llm_retry_max   = 0
-    cfg.llm_retry_delay = 0.0
-    cfg.llm_retry_verbose = False
-    # 感知子系统全关
-    for attr in ("file_watch_enabled", "tool_cache_enabled",
-                 "project_scan_enabled", "memory_enabled",
-                 "skill_chunking_enabled"):
-        setattr(cfg, attr, False)
+    # 通过真正的 dataclass __init__ 构造，子配置块都有合理默认值，
+    # 只覆盖测试关心的开关，避免直接对只读的向后兼容 property 赋值。
+    cfg = AppConfig(
+        auto_approve=True,
+        sandbox=False,
+        project_root=_Path("/tmp"),
+        stream=False,
+        verbose=False,
+        max_turns=10,
+        model="test-model",
+        agent_name="test",
+        session=SessionConfig(auto_save=False),   # 禁用真实 session IO
+        perception=PerceptionConfig(
+            project_scan_enabled=False,
+            file_watch_enabled=False,
+            tool_cache_enabled=False,
+            token_estimate_enabled=False,
+        ),
+        skill=SkillConfig(tracking_enabled=False, chunking_enabled=False),
+        compress=CompressConfig(enabled=False),
+        memory=MemoryConfig(enabled=False),
+        retry=RetryConfig(max_retries=0, delay=0.0, verbose=False),
+    )
 
     agent = Agent.__new__(Agent)
     agent.cfg          = cfg
-    agent.stats        = __import__("config").SessionStats()
+    agent.stats        = SessionStats()
     agent._history     = []
     agent._turn_snapshot = None
     agent._file_watcher  = None
     agent._tool_cache    = None
     agent._project_snapshot = None
     agent._memory        = None
+    agent._ctx_builder   = None
     agent.skill_loader   = None
     agent.guard          = MagicMock(check=MagicMock(return_value=True))
     agent.registry       = MagicMock(names=[])
@@ -240,7 +246,7 @@ class TestRollbackTurn:
     def test_rollback_calls_save_session_when_enabled(self):
         """回退时应调用 save_session 同步 session 文件。"""
         agent = make_agent([])
-        agent.cfg.auto_save_session = True
+        agent.cfg.session.auto_save = True
         agent._save_turn_snapshot()
         agent._history.append({"role": "user", "content": "q"})
         agent.stats.turns = 1
@@ -252,7 +258,7 @@ class TestRollbackTurn:
 
     def test_rollback_does_not_call_save_session_when_disabled(self):
         agent = make_agent([])
-        agent.cfg.auto_save_session = False
+        agent.cfg.session.auto_save = False
         agent._save_turn_snapshot()
         agent._history.append({"role": "user", "content": "q"})
         agent.stats.turns = 1

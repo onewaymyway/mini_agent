@@ -438,7 +438,7 @@ class TestOrchestrationTools(unittest.TestCase):
     def setUp(self):
         from mini_agent.orchestrator.concurrency import init_concurrency
         init_concurrency(max_tasks=2, max_llm_calls=8)
-        import tools.orchestration as ot
+        import mini_agent.tools.orchestration as ot
         cfg = make_cfg()
         # 替换模块级 _task_manager
         mgr = TaskManager(cfg, max_workers=2)
@@ -554,7 +554,7 @@ class TestOrchestrationTools(unittest.TestCase):
         self.assertIn(tid, data["results"])
 
     def test_spawn_agent_without_manager(self):
-        import tools.orchestration as ot
+        import mini_agent.tools.orchestration as ot
         ot._task_manager = None
         result = ot.spawn_agent(prompt="x")
         self.assertIn("error", result)
