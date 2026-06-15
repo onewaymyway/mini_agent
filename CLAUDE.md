@@ -222,3 +222,4 @@ python main.py --provider nvidia --model qwen/qwen3.5-122b-a10b --system-tool-ca
 - [Web Search 指南](docs/web-search-guide.md) — Web 搜索功能使用指南
 - [图片技能指南](docs/image-skills-guide.md) — 图片识别与生成技能使用指南
 - [Reminder 系统指南](docs/reminder-system-guide.md) — **新增**：动态提示注入机制使用指南
+- [单元测试指南](docs/unit-testing-guide.md) — **新增**：测试结构、编写规范与运行方式
