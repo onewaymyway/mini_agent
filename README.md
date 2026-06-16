@@ -26,6 +26,8 @@
 | 🎯 Task 日志实时查看 | 运行时方向键切换查看不同任务日志，状态栏显示任务状态概要 |
 | 🖼️ 图片技能 | 图片信息提取与问答（ask_image）、文本生成图片（gen_image_with_text） |
 | 📝 Reminder 系统 | 动态提示注入机制，工具出错/用户意图等情境下自动追加解决经验 |
+| 🤖 Role Agent | 预设角色子 Agent 模板，结构化参数注入，支持工具/模型限制 |
+| 🔄 Workflow | 工作流编排机制，支持多步骤自动化任务执行 |
 
 ## 快速开始
 
@@ -540,8 +542,10 @@ python -m pytest tests/ -q
 - [MCP 集成指南](docs/mcp-guide.md) — Model Context Protocol 集成
 - [Web Search 指南](docs/web-search-guide.md) — Web 搜索功能使用指南
 - [图片技能指南](docs/image-skills-guide.md) — 图片识别与生成技能使用指南
-- [Reminder 系统指南](docs/reminder-system-guide.md) — **新增**：动态提示注入机制使用指南
-- [单元测试指南](docs/unit-testing-guide.md) — **新增**：测试结构、编写规范与运行方式
+- [Reminder 系统指南](docs/reminder-system-guide.md) — 动态提示注入机制使用指南
+- [单元测试指南](docs/unit-testing-guide.md) — 测试结构、编写规范与运行方式
+- [Role Agent 指南](docs/role-agents-guide.md) — 预设角色子 Agent 模板
+- [Workflow 指南](docs/workflow-guide.md) — 工作流编排机制
 
 ## 许可证
 
@@ -553,4 +557,4 @@ MIT License
 
 ---
 
-*最后更新：2026-06-15* — Reminder 系统，图片技能（ask_image / gen_image_with_text），文档更新
+*最后更新：2026-06-16* — Role Agent、Workflow 功能，参数优先级调整（命令行 > 配置文件）
