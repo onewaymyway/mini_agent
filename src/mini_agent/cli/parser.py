@@ -148,6 +148,17 @@ def build_parser() -> argparse.ArgumentParser:
     rem.add_argument("--reminder-verbose", action="store_true", default=None,
                      help="[SYS-REMINDER] 打印 reminder 匹配和注入详情（调试用）")
 
+    # ── Role Agent 系统 ────────────────────────────────────────────────────
+    ra = p.add_argument_group("Role Agent system")
+    ra.add_argument("--role-agents", action="store_true", default=None,
+                    help="[SYS-ROLE-AGENT] 启用多角色 Agent 协作（默认关闭）")
+    ra.add_argument("--role-agents-allow", default=None, metavar="NAMES",
+                    help="[SYS-ROLE-AGENT] 白名单：仅启用指定角色 Agent，逗号分隔（如 evaluator,coach）；不传表示全部启用")
+    ra.add_argument("--role-agents-block", default=None, metavar="NAMES",
+                    help="[SYS-ROLE-AGENT] 黑名单：屏蔽指定角色 Agent，逗号分隔（如 coach）；不传表示不屏蔽任何")
+    ra.add_argument("--role-agents-dir", default=None, metavar="DIR",
+                    help="[SYS-ROLE-AGENT] 仅从指定目录加载角色 Agent profile（覆盖默认 .agent/agents/ 目录）")
+
     # ── HTTP API 服务 ──────────────────────────────────────────────────────
     http = p.add_argument_group("HTTP API server (optional)")
     http.add_argument("--http", action="store_true", default=None,

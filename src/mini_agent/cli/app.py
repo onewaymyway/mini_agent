@@ -107,6 +107,11 @@ def _main_inner() -> None:
         reminder_enabled=not _flag("no_reminders"),
         reminders_dir=Path(args.reminders_dir).expanduser() if getattr(args, "reminders_dir", None) else None,
         reminder_verbose=_flag("reminder_verbose"),
+        # role agent 系统
+        role_agent_enabled=_flag("role_agents"),
+        role_agent_allow=getattr(args, "role_agents_allow", None),
+        role_agent_block=getattr(args, "role_agents_block", None),
+        role_agent_dir=Path(args.role_agents_dir).expanduser() if getattr(args, "role_agents_dir", None) else None,
     )
 
     print("cfg:",cfg)
@@ -170,9 +175,12 @@ def _main_inner() -> None:
 
     # ── Role Agent 系统 ───────────────────────────────────────────────────────
     from mini_agent.role_agents import init_role_agent_system
-    role_sys = init_role_agent_system(cfg, profile_loader)
-    if role_sys.has_output_roles or role_sys.has_tool_roles:
-        R.print_info(f"Role agents ready: {role_sys.summary}")
+    if cfg.role_agent.enabled:
+        role_sys = init_role_agent_system(cfg, profile_loader)
+        if role_sys.has_output_roles or role_sys.has_tool_roles:
+            R.print_info(f"Role agents ready: {role_sys.summary}")
+    else:
+        R.print_info("[RoleAgent] 未启用（使用 --role-agents 参数开启）")
 
     # ── 工作流系统 ────────────────────────────────────────────────────────────
     from mini_agent.workflow.tools import register_workflow_tools

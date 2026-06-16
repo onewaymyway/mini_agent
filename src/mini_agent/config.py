@@ -217,6 +217,29 @@ class RetryConfig:
 
 
 @dataclass
+class RoleAgentConfig:
+    """[SYS-ROLE-AGENT] 多角色 Agent 协作系统配置。
+
+    控制 EvaluatorAgent / CoachAgent 等角色 Agent 的启用与过滤。
+    总开关（enabled）优先级最高；其他参数仅在总开关开启时生效。
+    """
+    # ── 总开关（默认关闭，需显式启用）────────────────────────────────────────
+    enabled: bool = False
+
+    # ── 白名单：只启用指定名称的角色 Agent（空列表 = 全部启用）────────────────
+    # 例：["evaluator"]  只启用 evaluator，忽略其他所有角色 Agent
+    allow: list = field(default_factory=list)
+
+    # ── 黑名单：屏蔽指定名称的角色 Agent（空列表 = 不屏蔽）────────────────────
+    # 例：["coach"]  屏蔽 coach，其余正常加载
+    block: list = field(default_factory=list)
+
+    # ── 自定义目录：仅从该目录加载角色 Agent profile（覆盖默认目录）────────────
+    # None = 使用项目默认的 .agent/agents/ 目录
+    agents_dir: Optional[Path] = None
+
+
+@dataclass
 class ReminderConfig:
     """[SYS-REMINDER] 动态 Reminder 提示注入配置。
 
@@ -301,6 +324,7 @@ class AppConfig:
     mcp:        MCPConfig        = field(default_factory=MCPConfig)
     web_search: WebSearchConfig  = field(default_factory=WebSearchConfig)
     reminder:   ReminderConfig   = field(default_factory=ReminderConfig)
+    role_agent: RoleAgentConfig  = field(default_factory=RoleAgentConfig)
 
     # ── 向后兼容属性（让旧代码 cfg.memory_enabled 不报错）────────────────────
     # 以下属性委托给子配置块，方便渐进式迁移，后续版本可删除
@@ -414,6 +438,21 @@ class AppConfig:
 # load_config：平坦 JSON/CLI 参数 → 组装子配置块 → 返回 AppConfig
 # ════════════════════════════════════════════════════════════════════════════════
 
+def _parse_name_list(value) -> list:
+    """把 CLI 字符串（逗号分隔）或列表统一转为 list[str]。
+    例：
+      "evaluator,coach"  → ["evaluator", "coach"]
+      ["evaluator"]      → ["evaluator"]
+      []                 → []
+      None               → []
+    """
+    if not value:
+        return []
+    if isinstance(value, str):
+        return [v.strip() for v in value.split(",") if v.strip()]
+    return [str(v) for v in value if v]
+
+
 def load_config(
     project_root: Optional[Path] = None,
     extra_system: str = "",
@@ -465,6 +504,11 @@ def load_config(
     reminder_enabled: Optional[bool] = None,
     reminders_dir: Optional[Path] = None,
     reminder_verbose: Optional[bool] = None,
+    # role agent 系统
+    role_agent_enabled: Optional[bool] = None,
+    role_agent_allow: Optional[list] = None,
+    role_agent_block: Optional[list] = None,
+    role_agent_dir: Optional[Path] = None,
 ) -> AppConfig:
     """
     加载配置，优先级（高→低）：JSON 配置文件 > CLI 参数 > 环境变量 > 内置默认值。
@@ -681,6 +725,27 @@ def load_config(
         verbose=bool(reminder_verbose if reminder_verbose is not None else _rm.get("verbose", False)),
     )
 
+    # ── RoleAgent 配置组装 ────────────────────────────────────────────────────
+    _ra = file_cfg.get("role_agent") if isinstance(file_cfg.get("role_agent"), dict) else {}
+    # 总开关：CLI 参数 > 配置文件 > 默认 False（默认不启用）
+    _ra_enabled = role_agent_enabled if role_agent_enabled is not None else _ra.get("enabled", False)
+    # 白名单：CLI 参数（逗号分隔字符串或列表）> 配置文件 > 空列表（全部启用）
+    _ra_allow = _parse_name_list(role_agent_allow) if role_agent_allow is not None else _parse_name_list(_ra.get("allow", []))
+    # 黑名单：CLI 参数 > 配置文件 > 空列表（不屏蔽）
+    _ra_block = _parse_name_list(role_agent_block) if role_agent_block is not None else _parse_name_list(_ra.get("block", []))
+    # 自定义目录：CLI 参数 > 配置文件 > None（使用默认）
+    _ra_dir: Optional[Path] = None
+    if role_agent_dir is not None:
+        _ra_dir = Path(role_agent_dir).expanduser()
+    elif _ra.get("agents_dir"):
+        _ra_dir = Path(_ra["agents_dir"]).expanduser()
+    role_agent_cfg = RoleAgentConfig(
+        enabled=bool(_ra_enabled),
+        allow=_ra_allow,
+        block=_ra_block,
+        agents_dir=_ra_dir,
+    )
+
     return AppConfig(
         api_key=api_key,
         model=_model,
@@ -713,6 +778,7 @@ def load_config(
         mcp=mcp_cfg,
         web_search=web_search_cfg,
         reminder=reminder_cfg,
+        role_agent=role_agent_cfg,
     )
 
 

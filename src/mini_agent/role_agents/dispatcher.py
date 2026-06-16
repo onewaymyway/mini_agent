@@ -62,9 +62,24 @@ def init_role_agent_system(
     cfg: "AppConfig",
     profile_loader: "AgentProfileLoader",
 ) -> "RoleAgentDispatcher":
-    """初始化全局 RoleAgentDispatcher，在 app.py 启动时调用。"""
+    """初始化全局 RoleAgentDispatcher，在 app.py 启动时调用。
+
+    如果 cfg.role_agent.agents_dir 指定了自定义目录，则用该目录的 loader
+    替换传入的 profile_loader（仅用于 role agent 发现）。
+    """
     global _dispatcher
-    _dispatcher = RoleAgentDispatcher(cfg, profile_loader)
+
+    # 如果指定了自定义 agents_dir，用新 loader 覆盖
+    if cfg.role_agent.agents_dir is not None:
+        from mini_agent.orchestrator.agent_profiles import AgentProfileLoader
+        import mini_agent.ui.renderer as R
+        custom_dir = cfg.role_agent.agents_dir
+        R.print_info(f"[RoleAgent] 使用自定义目录：{custom_dir}")
+        effective_loader = AgentProfileLoader([custom_dir])
+    else:
+        effective_loader = profile_loader
+
+    _dispatcher = RoleAgentDispatcher(cfg, effective_loader)
     return _dispatcher
 
 
@@ -91,10 +106,30 @@ class RoleAgentDispatcher:
         self._discover()
 
     def _discover(self) -> None:
-        """从 profile_loader 中找出所有 role_type 不为空的 profile 并分类。"""
+        """从 profile_loader 中找出所有 role_type 不为空的 profile 并分类。
+
+        过滤优先级：
+          1. allow 白名单（非空时，只保留名单内的）
+          2. block 黑名单（过滤掉名单内的）
+          两者均对 profile.name 进行精确匹配。
+        """
+        ra_cfg = self._cfg.role_agent
+        allow_set = set(ra_cfg.allow) if ra_cfg.allow else set()
+        block_set = set(ra_cfg.block) if ra_cfg.block else set()
+
         for name in self._loader.available:
             profile = self._loader.get(name)
             if not profile or not profile.role_type:
+                continue
+
+            # 白名单过滤：allow 非空时，只保留白名单内的
+            if allow_set and name not in allow_set:
+                R.print_info(f"[RoleAgent] 跳过 '{name}'（不在白名单 {sorted(allow_set)} 中）")
+                continue
+
+            # 黑名单过滤：在 block 名单中的屏蔽
+            if name in block_set:
+                R.print_info(f"[RoleAgent] 屏蔽 '{name}'（在黑名单中）")
                 continue
 
             trigger = profile.trigger_on.strip().lower()
