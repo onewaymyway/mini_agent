@@ -529,6 +529,7 @@ python -m pytest tests/ -q
 - [权限系统指南](docs/permission-guide.md) — 权限守卫、白名单、持久化配置
 - [Agent 设计](docs/agent-design.md) — Agent 核心循环与组件详解
 - [CLI I/O 机制](docs/cli-io-mechanism.md) — 命令行输入输出流程，HTTP 与命令行协同
+- [终端显示机制深度解析](docs/terminal-display-internals.md) — **新增**：线程模型、状态栏控制、三阶段状态机、token 过滤
 - [终端 I/O 指南](docs/terminal-io-guide.md) — 终端交互细节
 - [命令与工具参考](docs/commands-and-tools-reference.md) — 所有命令和工具
 - [Plan 和 Task 指南](docs/plan-and-task-guide.md) — 规划和任务系统
@@ -557,4 +558,4 @@ MIT License
 
 ---
 
-*最后更新：2026-06-16* — Role Agent、Workflow 功能，参数优先级调整（命令行 > 配置文件）
+*最后更新：2026-06-17* — 更新项目文档，CLAUDE.md 与 README.md 信息同步
