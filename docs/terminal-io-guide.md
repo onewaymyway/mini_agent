@@ -4,6 +4,7 @@
 
 **补充阅读**：
 - [Task 日志实时查看与切换](task-focus-viewing.md) — 方向键切换查看任务日志机制
+- [终端显示机制深度解析](terminal-display-internals.md) — 状态栏、流式输出、光标控制的完整内部实现
 - [RawKeyListener 跨平台键盘监听](../src/mini_agent/ui/raw_key_listener.py) — 方向键监听实现
 
 ---
@@ -22,6 +23,8 @@
 │  orchestrator/*.py               _statusbar_lines: 当前状态栏内容  │
 │  llm/debug_logger.py             _bar_drawn: 已绘行数              │
 │                                  _streaming: 流式输出中标志        │
+│                                  _bar_suspended: prefix 后暂停标志 │
+│                                  _bar_below_prefix: LLM等待标志   │
 │                                                                    │
 │  输出通道                输入通道                                   │
 │  ─────────────────        ──────────────────────                   │
@@ -93,11 +96,32 @@
 
 渲染顺序：`_erase_bar()` → 输出内容 → `_draw_bar()`
 
-流式输出期间（`stream_token` 消息）：
-- 第一个可见 token 前擦状态栏，之后只追加写
-- `stream_end` 消息到来时重绘状态栏
+### 3.3 等待 LLM 响应时的状态栏（`_bar_below_prefix`）
 
-### 3.3 输入时的精确同步
+agent 输出前缀（`orzooo ❯ `）时带 `end=""`，光标停在行中。这期间若状态栏直接擦写，会连同 prefix 一起清除。
+
+为此引入三阶段状态机（详见 [终端显示机制深度解析](terminal-display-internals.md) 第三章）：
+
+```
+阶段 1  print_assistant_prefix() 输出 "orzooo ❯ "（end=""）
+        → _bar_suspended = True，状态栏暂停重绘
+
+阶段 2  _refresh 收到，_bar_suspended=True 但还未流式
+        → 输出 \n 把光标推到下一行
+        → 正常绘制状态栏（显示在 prefix 下方）
+        → _bar_below_prefix = True
+
+        终端效果：
+          orzooo ❯
+          ⚡ Tasks [████] 2/4  2 running
+
+阶段 3  首个 stream token 到来
+        → ESC[{bar_drawn+1}A ESC[0J  上移多行并清除
+        → 光标回到 "orzooo ❯ " 末尾
+        → stream 内容紧接 prefix 输出
+```
+
+### 3.4 输入时的精确同步
 
 `prompt_user()` 和 `confirm()` 在主线程阻塞执行，需要暂停渲染线程：
 
@@ -114,7 +138,7 @@ def _enter_input_mode(self):
 
 使用哨兵消息（`_noop`）精确同步，而非 `time.sleep`，消除原实现中的竞态窗口。
 
-### 3.4 流式状态异常恢复
+### 3.5 流式状态异常恢复
 
 `_StreamCtx.__exit__` 在发生异常时调用 `force_end_stream()` 而非 `stream_end()`：
 
@@ -208,7 +232,7 @@ choice = term.confirm(
 | `ui/terminal.py` | **唯一写屏幕的地方**，渲染队列、状态栏、输入读取、Task 焦点控制 |
 | `ui/renderer.py` | 适配层：历史 API 映射到 `terminal.term` |
 | `ui/raw_key_listener.py` | 跨平台键盘监听（Unix: `/dev/tty` + `termios` / Windows: `msvcrt`） |
-| `orchestrator/status_bar.py` | 构建状态栏内容，推送给 `terminal.term`，不直接写屏 |
+| `orchestrator/status_bar.py` | 构建状态栏内容，向 Terminal 注册回调，不直接写屏 |
 | `orchestrator/plan_display.py` | 构建 plan 状态栏行和 Rich 树，通过 `terminal.term` 输出 |
 | `permissions.py` | 通过 `term.print()` 和 `term.confirm()` 处理权限审批 |
 | `llm/debug_logger.py` | 通过 `term.debug()` 输出调试信息 |
@@ -303,4 +327,4 @@ permissions.py 拦截
 
 ---
 
-*最后更新：2026-06（新增 Task 焦点模式、方向键切换日志查看、RawKeyListener 跨平台键盘监听）*
+*最后更新：2026-06（新增 Task 焦点模式、等待 LLM 时状态栏下移机制、`_bar_below_prefix` 三阶段状态机）*

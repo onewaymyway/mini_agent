@@ -1,6 +1,7 @@
 # mini-agent 命令行输入打印机制
 
-> 本文为 terminal-io-guide.md 的详细补充，重点覆盖所有显示元素的具体格式和行为。
+> 本文为 terminal-io-guide.md 的详细补充，重点覆盖所有显示元素的具体格式和行为。  
+> 底层实现原理（光标控制、状态机、线程模型）请参阅 [终端显示机制深度解析](terminal-display-internals.md)。
 
 ---
 
@@ -54,6 +55,25 @@ graph TD
 
 输入期间通过 `_enter_input_mode()` 的哨兵同步暂停状态栏，输入完成后通过 `_exit_input_mode()` 恢复。
 
+### 2.3 等待 LLM 时的状态栏行为
+
+**问题背景**：agent 输出前缀（`orzooo ❯ `）时光标停在行内，随后进入等待 LLM 响应的静止阶段。旧实现中状态栏在此期间完全消失，屏幕静止，用户体验差。
+
+**修复后的显示效果**：
+
+```
+orzooo ❯                          ← 前缀输出后，光标停在这里
+⚡ Tasks [████] 2/4  2 running    ← 约 250ms 后，状态栏出现在下方
+```
+
+LLM 首个 token 到来时，自动将光标移回前缀末尾，流式内容紧接输出：
+
+```
+orzooo ❯ 好的，我来帮你...        ← token 流接在 prefix 后面
+```
+
+这一行为由 `_bar_below_prefix` 三阶段状态机控制，详见 [终端显示机制深度解析](terminal-display-internals.md) 第三章。
+
 ---
 
 ## 三、REPL 输入机制
@@ -80,7 +100,7 @@ graph TD
   ↓
 _enter_input_mode()
   ├── 设置 _refresh_paused 标志
-  ├── 投入 _noop 哨兵消息，等待队列清空
+  ├── 投入 _noop 哨兵消息，等待队列清空（双哨兵确保残余消息全部消费）
   └── 直接擦除状态栏
   ↓
 显示提示符 "You ❯ "（等待输入）
@@ -119,9 +139,11 @@ agent.run_turn()
 实现位置：`ui/terminal.py:stream_token()` / `stream_end()`
 
 行为：
-1. 第一个可见 token：擦除状态栏，打印 Agent 名称（蓝色加粗）
-2. 每个 token：过滤 `<tool_use>...</tool_use>` 块，实时输出到 stdout
-3. 流结束：打印换行，重绘状态栏
+1. 输出 Agent 名称前缀（`orzooo ❯ `），光标停在行内，状态栏进入等待模式
+2. 约 250ms 后，状态栏显示在前缀下方（等待 LLM 时的反馈）
+3. 首个可见 token 到来：光标回移，清除状态栏，token 紧接前缀输出
+4. 每个 token：过滤 `<tool_use>...</tool_use>` 块，实时追加到 stdout
+5. 流结束：打印换行，重绘状态栏
 
 ### 4.3 工具调用显示
 
@@ -196,11 +218,11 @@ agent.run_turn()
 
 | 状态 | 图标 | 颜色 |
 |------|------|------|
-| PENDING | ⏳ | dim |
-| RUNNING | ⚡ | cyan |
-| DONE | ✓ | green |
-| FAILED | ✗ | red |
-| CANCELLED | ⊘ | yellow |
+| PENDING | ○ | 黄色 |
+| RUNNING | ● | 青色 |
+| DONE | ✓ | 绿色 |
+| FAILED | ✗ | 红色 |
+| CANCELLED | – | 灰色 |
 
 ### 6.2 任务表格（/tasks）
 
@@ -209,10 +231,20 @@ agent.run_turn()
 │ ID     │ Status    │ Name                     │ Elapsed│ Tokens   │
 ├────────┼───────────┼──────────────────────────┼────────┼──────────┤
 │ abc123 │ ✓ done    │ Fetch API documentation  │ 12s    │ 150/320  │
-│ def456 │ ⚡ running│ Analyze response format  │ 5s     │ —        │
-│ ghi789 │ ⏳ pending│ Generate code examples   │ —      │ —        │
+│ def456 │ ● running │ Analyze response format  │ 5s     │ —        │
+│ ghi789 │ ○ pending │ Generate code examples   │ —      │ —        │
 └────────┴───────────┴──────────────────────────┴────────┴──────────┘
 ```
+
+### 6.3 状态栏 Tab 条
+
+当有任务存在时，状态栏底部显示任务 Tab 栏，支持方向键切换焦点：
+
+```
+  ● fetch-docs 12s │ ○ analyze │ ✓ gen-code
+```
+
+当前焦点任务以亮色 + 下划线高亮，非焦点任务显示为暗灰色。
 
 ---
 
@@ -378,8 +410,6 @@ const source = new EventSource("http://127.0.0.1:8765/v1/stream", {
 
 ### 主循环调用链
 
-### 主循环调用链
-
 ```
 cli/app.py:main()
   └─ cli/repl.py:run_repl()
@@ -391,12 +421,26 @@ cli/app.py:main()
               └─ ui/renderer.py         ← 工具调用展示
 ```
 
-### 流式输出流程
+### 流式输出完整流程
 
 ```
+ui/renderer.py:print_assistant_prefix()
+  └─ term.print("orzooo ❯ ", end="")   ← _bar_suspended = True
+
+    [等待 LLM，约 250ms 后]
+
+  └─ _refresh 触发 → \n + 绘制状态栏   ← _bar_below_prefix = True
+
+    [首个 token 到来]
+
 agent._call_llm()
-  └─ term.stream_token(token)           ← 逐 token 过滤输出
-  └─ term.stream_end() / force_end_stream()
+  └─ term.stream_token(token)
+      └─ ESC[N+1]A ESC[0J             ← 上移 N+1 行，清除状态栏
+      └─ sys.stdout.write(token)       ← token 紧接 prefix 输出
+
+  └─ term.stream_end()
+      └─ sys.stdout.write("\n")
+      └─ _draw_bar()                   ← 状态栏回到底部
 ```
 
 ### 输入模式完整流程
@@ -405,8 +449,10 @@ agent._call_llm()
 term.prompt_user()
   └─ _enter_input_mode()
       ├─ _refresh_paused.set()          ← 暂停刷新线程
-      ├─ queue.put(_Msg("_noop", None)) ← 投入哨兵
-      ├─ queue.join()                   ← 等待队列清空
+      ├─ queue.put(_Msg("_noop", None)) ← 第一哨兵：排空残余消息
+      ├─ queue.join()
+      ├─ queue.put(_Msg("_noop", None)) ← 第二哨兵：确认渲染线程真正空闲
+      ├─ queue.join()
       └─ _erase_bar_direct()            ← 直接擦除状态栏
   └─ _read_line()                       ← 阻塞等待输入
   └─ _exit_input_mode()
@@ -415,4 +461,4 @@ term.prompt_user()
 
 ---
 
-*最后更新：2026-06*
+*最后更新：2026-06（新增等待 LLM 时的状态栏下移行为描述、任务 Tab 栏说明、流式输出完整流程）*
