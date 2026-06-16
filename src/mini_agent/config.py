@@ -455,7 +455,7 @@ def _parse_name_list(value) -> list:
 
 def load_config(
     project_root: Optional[Path] = None,
-    extra_system: str = "",
+    extra_system: Optional[str] = None,
     verbose: Optional[bool] = None,
     sandbox: Optional[bool] = None,
     auto_approve: Optional[bool] = None,
@@ -463,12 +463,12 @@ def load_config(
     llm_provider: Optional[str] = None,
     llm_base_url: Optional[str] = None,
     use_system_tool_call: Optional[bool] = None,
-    debug_llm: bool = False,
-    debug_llm_console: bool = False,
+    debug_llm: Optional[bool] = None,
+    debug_llm_console: Optional[bool] = None,
     max_llm_calls: Optional[int] = None,
     session_dir: Optional[Path] = None,
     session_fmt: Optional[str] = None,
-    auto_save_session: bool = True,
+    auto_save_session: Optional[bool] = None,
     agent_name: Optional[str] = None,
     system_message_format: Optional[str] = None,
     config_file: Optional[Path] = None,
@@ -564,11 +564,9 @@ def load_config(
     _max_llm_calls = int(_max_llm_calls_v) if _max_llm_calls_v is not None else int(os.environ.get("MAX_LLM_CALLS", 8))
     _agent_name = _f("agent_name", agent_name) or os.environ.get("AGENT_NAME", DEFAULT_AGENT_NAME)
 
-    _use_sys_tc_cli = (
-        use_system_tool_call if use_system_tool_call is not None
-        else os.environ.get("LLM_SYSTEM_TOOL_CALL", "").lower() in ("1", "true", "yes")
-    )
-    _use_sys_tc = bool(_f("system_tool_call", _use_sys_tc_cli or None))
+    # CLI > 配置文件 > 环境变量 > 默认
+    _use_sys_tc_env = os.environ.get("LLM_SYSTEM_TOOL_CALL", "").lower() in ("1", "true", "yes")
+    _use_sys_tc = bool(_fb("system_tool_call", use_system_tool_call, _use_sys_tc_env))
 
     _sys_msg_fmt_cli = system_message_format or os.environ.get("LLM_SYSTEM_MESSAGE_FORMAT", "system_field")
     _sys_msg_fmt = _f("system_message_format", _sys_msg_fmt_cli) or "system_field"
@@ -636,7 +634,8 @@ def load_config(
     session_cfg = SessionConfig(
         dir=Path(_session_dir_str) if _session_dir_str else None,
         fmt=_f("session_fmt", session_fmt) or os.environ.get("SESSION_FMT", "json"),
-        auto_save=auto_save_session and not bool(_f("no_save_session", None)),
+        auto_save=_fb("no_save_session", None, False) is False
+                  and _fb("auto_save_session", auto_save_session, True),
         summary_enabled=_fb("session_summary_enabled", session_summary_enabled),
         summary_min_turns=_fn("session_summary_min_turns", session_summary_min_turns, 4),
         search_enabled=_fb("session_search_enabled", session_search_enabled),
@@ -650,8 +649,10 @@ def load_config(
         max_entries_for_profile=_fn("profile_max_entries_for_profile", None, 20),
     )
 
-    _debug_llm_v = bool(_f("debug_llm", debug_llm or None)) or os.environ.get("LLM_DEBUG", "").lower() in ("1", "true", "yes")
-    _debug_console_v = bool(_f("debug_llm_console", debug_llm_console or None)) or os.environ.get("LLM_DEBUG_CONSOLE", "").lower() in ("1", "true", "yes")
+    _env_debug     = os.environ.get("LLM_DEBUG", "").lower() in ("1", "true", "yes")
+    _env_debug_con = os.environ.get("LLM_DEBUG_CONSOLE", "").lower() in ("1", "true", "yes")
+    _debug_llm_v     = bool(_fb("debug_llm",         debug_llm,         _env_debug))
+    _debug_console_v = bool(_fb("debug_llm_console", debug_llm_console, _env_debug_con))
     _debug_log_dir_str = file_cfg.get("debug_log_dir") or os.environ.get("LLM_DEBUG_LOG_DIR", "")
     _debug_log_dir = Path(_debug_log_dir_str) if _debug_log_dir_str else None
     debug_cfg = DebugConfig(
@@ -659,7 +660,6 @@ def load_config(
         llm_console=_debug_console_v,
         log_dir=_debug_log_dir,
     )
-
     http_cfg = HttpConfig(
         enabled=_fb("http_enabled", None),
         host=_f("http_host", None) or "127.0.0.1",
