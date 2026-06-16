@@ -73,6 +73,7 @@ python -m mini_agent --model claude-haiku-4-5
 # 更多参数
 python main.py --provider nvidia --model qwen/qwen3.5-122b-a10b --system-tool-call --system-msg-format system_role
 
+# **注意**：命令行参数优先级高于配置文件参数
 ```
 
 ## 模块说明
