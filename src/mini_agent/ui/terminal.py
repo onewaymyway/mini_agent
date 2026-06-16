@@ -59,6 +59,14 @@ class Terminal:
         # 在下一次产生换行的输出（流式结束 / markdown 渲染等）时恢复为 False。
         self._bar_suspended: bool = False
 
+        # 等待 LLM 响应时的状态栏扩展标志：
+        # 当 _bar_suspended=True 时收到 _refresh，说明光标停在 "agent ❯ " 后面、
+        # LLM 还没有任何输出。此时我们先输出 \n 把光标推到新行，然后正常绘制
+        # 状态栏，并置此标志=True，告知后续 stream 的 erase 逻辑：
+        # 需要额外向上移动一行（跨过 "agent ❯ " 那一行），再清除状态栏。
+        # 首个 stream token 到来时此标志清零。
+        self._bar_below_prefix: bool = False
+
         # 状态栏内容提供者回调（由 status_bar 模块注册）
         # 架构改进：Terminal 自己在刷新周期内调用回调拉取内容，
         # 而不是由外部线程主动 push update+redraw 两条消息。
@@ -387,7 +395,23 @@ class Terminal:
             filtered = self._filter_token(token)
             if filtered:
                 if not self._streaming:
-                    self._erase_bar()
+                    if self._bar_below_prefix:
+                        # 状态栏画在了 "agent ❯ " 下方，需先擦除状态栏，
+                        # 然后再向上移动一行回到 "agent ❯ " 那行末尾，
+                        # 这样 stream 内容就紧接在前缀后面输出。
+                        if self._bar_drawn > 0:
+                            # 上移 bar_drawn 行 + 1 行（prefix 行），清除到屏幕底部
+                            lines_up = self._bar_drawn + 1
+                            sys.stdout.write(f"[{lines_up}A[0J")
+                            sys.stdout.flush()
+                            self._bar_drawn = 0
+                        else:
+                            # 状态栏还没画出来（内容为空），只需上移 1 行
+                            sys.stdout.write("[1A[0J")
+                            sys.stdout.flush()
+                        self._bar_below_prefix = False
+                    else:
+                        self._erase_bar()
                     self._streaming = True
                     self._stream_had_output = True
                 sys.stdout.write(filtered)
@@ -399,10 +423,24 @@ class Terminal:
                 sys.stdout.write(self._pending_stream)
                 self._stream_had_output = True
 
+            if self._bar_below_prefix and not self._stream_had_output:
+                # LLM 没有产生任何可见输出（纯工具调用等情况），
+                # 但状态栏已画在 "agent ❯ " 下方，需擦除并回到 prefix 行末尾。
+                if self._bar_drawn > 0:
+                    lines_up = self._bar_drawn + 1
+                    sys.stdout.write(f"\x1b[{lines_up}A\x1b[0J")
+                    sys.stdout.flush()
+                    self._bar_drawn = 0
+                else:
+                    sys.stdout.write("\x1b[1A\x1b[0J")
+                    sys.stdout.flush()
+                self._bar_below_prefix = False
+
             if self._stream_had_output:
                 sys.stdout.write("\n")
                 sys.stdout.flush()
                 self._bar_suspended = False
+                self._bar_below_prefix = False
                 self._draw_bar()
             self._streaming = False
             self._stream_had_output = False
@@ -417,7 +455,20 @@ class Terminal:
                 self._draw_bar()
 
         elif kind == "_refresh":
-            if not self._streaming and not self._bar_suspended:
+            if self._streaming:
+                pass  # 流式输出中：不干扰 stdout
+            elif self._bar_suspended:
+                # 光标停在 "agent ❯ " 后面，等待 LLM 响应。
+                # 先输出 \n 把光标推到新行，再正常绘制状态栏。
+                # 设置 _bar_below_prefix，让首个 stream token 到来时
+                # erase 逻辑知道要额外上移一行（跨过 "agent ❯ " 行）。
+                if self._statusbar_lines:
+                    sys.stdout.write("\n")
+                    sys.stdout.flush()
+                    self._bar_suspended = False
+                    self._bar_below_prefix = True
+                    self._draw_bar()
+            else:
                 self._erase_bar()
                 self._draw_bar()
 
@@ -497,6 +548,16 @@ class Terminal:
 
         elif kind == "_force_end_stream":
             # 强制结束流式状态（异常恢复时使用）
+            if self._bar_below_prefix:
+                if self._bar_drawn > 0:
+                    lines_up = self._bar_drawn + 1
+                    sys.stdout.write(f"\x1b[{lines_up}A\x1b[0J")
+                    sys.stdout.flush()
+                    self._bar_drawn = 0
+                else:
+                    sys.stdout.write("\x1b[1A\x1b[0J")
+                    sys.stdout.flush()
+                self._bar_below_prefix = False
             if self._streaming or self._stream_had_output:
                 if self._pending_stream:
                     sys.stdout.write(self._pending_stream)
@@ -508,6 +569,7 @@ class Terminal:
                 self._stream_had_output = False
                 self._stream_filter_reset()
                 self._bar_suspended = False
+                self._bar_below_prefix = False
                 self._draw_bar()
 
     # ── 状态栏绘制（仅在 render_thread 中调用）───────────────────────────
