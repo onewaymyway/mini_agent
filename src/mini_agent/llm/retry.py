@@ -149,7 +149,7 @@ class RetryPolicy:
     conditions: list[RetryCondition] = field(
         default_factory=lambda: [EmptyOutputCondition()]
     )
-    retry_delay: float = 0.0
+    retry_delay: float = 10.0
     # 为 True 时，call_fn() 抛出异常也会触发重试（与 max_retries 共用预算），
     # 而不是直接向上传播。用于"模型调用偶发网络/超时/API错误，希望自动重试"的场景——
     # 这正是 LLM 调用最常见的失败模式，因此默认开启（见 default_retry_policy）。
@@ -239,7 +239,7 @@ class RetryPolicy:
 
 def default_retry_policy(
     max_retries: int = 2,
-    retry_delay: float = 0.0,
+    retry_delay: float = 10.0,
     retry_on_exception: bool = True,
 ) -> RetryPolicy:
     """
@@ -270,7 +270,7 @@ def no_retry_policy() -> RetryPolicy:
     return RetryPolicy(max_retries=0, conditions=[])
 
 
-def background_retry_policy(max_retries: int = 10, retry_delay: float = 1.0) -> RetryPolicy:
+def background_retry_policy(max_retries: int = 10, retry_delay: float = 10.0) -> RetryPolicy:
     """
     后台任务重试策略：用于长期记忆/用户画像生成等"调用失败应自动重试"的场景。
 

@@ -1,5 +1,5 @@
 {
-  "model": "qwen/qwen3.5-122b-a10b",
+  "model": "deepseek-ai/deepseek-v4-flash",
   "provider": "nvidia",
   "system_message_format": "system_role",
   "system_tool_call": true,
@@ -12,6 +12,7 @@
   "session_summary_min_turns": 3,
   "profile_enabled":true,
   "max_llm_calls": 4,
+  "llm_retry_delay":10,
 
   "web_search": {
     "provider": "duckduckgo",
