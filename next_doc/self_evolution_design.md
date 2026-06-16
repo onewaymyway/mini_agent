@@ -37,17 +37,20 @@ flowchart LR
 
 | Phase | 主题 | 产出 | 依赖 |
 |---|---|---|---|
-| A | 基础设施清债 | history `_type` 字段化、SubAgent 输出去截断、config 拆分 | 无 |
+| A | 基础设施清债 | history `_type` 字段化、SubAgent 输出去截断、config 拆分、task manifest / plan_snapshot | 无 |
 | B | 反思层：Lesson Memory | 结构化 lesson 条目 + SessionEnd/规则触发 | A |
-| F | 安全网：风险分级 + 版本化 + 副本化运行 | StateRepo / EvolutionWorkspace、risk tier 门控 | B（lesson 作为 commit 元数据来源） |
+| F | 安全网：风险分级 + 版本化 + 副本化运行 | StateRepo / EvolutionWorkspace、risk tier 门控 | B |
 | C | 沉淀层：skill_propose | evolve 分支形式的 skill 草稿 | B, F |
 | D | 验证层：Eval 反馈环 | 副本内 eval 对比报告 | F |
 | E | 协作层：SubAgent 信息继承 | inherited_skills、共享缓存、lesson 回流 | B |
 | G | 自主/后台循环 | 定期 consolidation、剪枝、能力地图刷新 | A–F 全部 |
-| H | 自主运行时 | daemon 化、AgentSelfProfile、Goal Backlog、调度器、活动摘要 | A–G 全部（前述机制是 daemon 自主行为的"内容来源"），且受 7.9 节分级开关约束 |
+| W | 知识层补全 | Task manifest、Workdir 知识层（timeline/work_index/open_threads/knowledge.md）、Global 知识层（self_profile/projects_index/cross_project_index/activity_log） | A，可与 B–G 并行推进；H 强依赖 W |
+| H | 自主运行时 | daemon 化、AgentSelfProfile、Goal Backlog、调度器、活动摘要 | A–G + **W**（W 是 daemon 感知跨项目状态的基础） |
 
-> **建议起步顺序**：A → B（先做规则触发，成本低见效快）→ F（趁早搭安全网，C 直接依赖它）→ C → D → E → G → H（H 是否启用、启用到哪一档由 7.9 节的分级开关决定，不是"做完 G 就自动进入 H"）。
-> 这一顺序与此前讨论一致，本文档不再重复展开 A/B/D/E 的细节背景，重点放在 F（安全网）、H（自主运行时）以及若干补充机制。
+> **建议起步顺序**：A（含 task manifest）→ B → F → C → D → E，W 可在 B 落地后并行推进（W1 Task/Workdir 层先做，W2 Global 层紧跟），G → H（H 强依赖 W 全部就绪）。
+> H 不应被当作"做完 G 自动顺延"的下一步，而是一次需要 Otz 显式决策"是否要让 mini_agent 变成持续运行实体"的方向选择。
+
+**第 11–16 章**是在第 6 章补充机制之外，围绕"感知层"、"记忆层"、"执行层"、"协作层"、"架构层"、"时间维度"的系统性深化，聚焦自我进化闭环的数据质量和鲁棒性，不是独立 Phase，而是对已有各 Phase 的横向加固。
 
 ---
 
@@ -431,26 +434,914 @@ class Experiment:
 
 ---
 
-## 8. 实施优先级建议
+---
+
+## 8. Phase W：知识层补全
+
+> 前面 A–G 以及 H 设计的机制都需要在"启动时能快速获得准确的上下文"这个前提下才能发挥价值。W 的目标是补全三个层级（Task / Workdir / Global）的结构化知识积累，让 agent 在任何一次 session 启动时都能从三个粒度感知自己的状态——**我整体是什么状态**（Global）、**这个项目现在在哪**（Workdir）、**上次这个任务做到哪**（Task/Session）。没有这一层，daemon（H）再强也只是"有任务来才动"的进程，谈不上跨时间、跨项目的连续性。
+
+### 8.1 W1：Task 与 Session 知识层
+
+在已有的 `task_dir(sid, tid)` 路径下新增两个文件，作为"任务叙事层"：
+
+**`task_manifest.json`**（Task 级，新增）——任务全生命周期的结构化叙事，在 `output.log`（原始流）、`events.jsonl`（工具事件）、`result.json`（最终摘要）之上增加一层"人和 agent 都能直接读懂"的叙事文件：
+
+```json
+{
+  "id": "a3f7c2",
+  "name": "Fix token budget bug in context_builder",
+  "initiator": "user",
+  "goal": "修复 context_builder.py 里 token 预算计算溢出导致截断错误的问题",
+  "acceptance_criteria": [
+    "所有现有单测通过",
+    "token 预算超限时 warning 而非 silent truncate",
+    "新增至少一个覆盖 edge case 的测试"
+  ],
+  "context_snapshot": {
+    "related_files": ["src/mini_agent/perception/context_builder.py"],
+    "related_lessons": ["lesson_2026061501"],
+    "parent_goal_id": "goal_weekly_phase_a",
+    "parent_task_id": null
+  },
+  "progress": {
+    "current_step": "写新测试",
+    "steps_done": ["定位根因", "修改计算逻辑"],
+    "steps_remaining": ["写新测试", "跑测试套件"],
+    "blockers": [],
+    "last_updated": 1718000300.0
+  },
+  "decision_log": [
+    {
+      "at": 1718000100.0,
+      "decision": "选择修改 _calc_budget() 而非 _trim_history()",
+      "rationale": "前者是根因，后者是症状，修症状会掩盖问题",
+      "alternatives_considered": ["修改 _trim_history", "调整 token_limit 常量"]
+    }
+  ],
+  "outcome": {
+    "status": "done",
+    "summary": "修复了 _calc_budget() 里整数溢出，新增 2 个 edge case 测试",
+    "artifacts": [
+      {"type": "file_modified", "path": "src/mini_agent/perception/context_builder.py"},
+      {"type": "test_added", "path": "tests/test_context_builder.py"}
+    ],
+    "unresolved": [],
+    "lessons_generated": ["lesson_2026061801"],
+    "token_cost": {"input": 12000, "output": 3400}
+  }
+}
+```
+
+`progress` 和 `decision_log` 通过新增工具 `update_task_progress(task_id, current_step, blockers, note)` 由 agent **主动写入**，不是从 `events.jsonl` 被动推导——这强迫 agent 在长任务里定期"停下来想一想自己在做什么"，本身对执行质量有正向影响。`outcome.unresolved` 是把"发现了但没处理的问题"结构化的关键字段，SessionEnd hook 会自动把这里的条目推到 Workdir 层的 `open_threads.json`。
+
+**`plan_snapshot.json`**（Session 级，新增）——`ExecutionPlan`（`plan.py`）目前是纯内存，session 崩了计划就丢了。加持久化快照，每次 `PlanTask` 状态变更时更新，支持 session 意外中断后"续跑"（重启时读取，恢复 DONE 步骤，从第一个 non-terminal 步骤继续）：
+
+```json
+{
+  "goal": "完成 Phase A 基础设施清债",
+  "created_at": 1718000000.0,
+  "last_updated": 1718000500.0,
+  "tasks": [
+    {"id": "t1", "title": "history 条目加 _type 字段", "status": "done", "result": "已完成，见 commit abc123"},
+    {"id": "t2", "title": "SubAgent 输出去截断", "status": "running", "result": ""},
+    {"id": "t3", "title": "config.py 拆分", "status": "pending", "result": ""}
+  ]
+}
+```
+
+完整后的 Session/Task 目录结构：
 
 ```
-A（基础设施清债）
-  └─ B（lesson memory，先做规则触发）
-       └─ F（安全网：StateRepo + risk tier + worktree 副本）
-            ├─ C（skill_propose，evolve 分支形式）
-            │     └─ D（eval 反馈环）
-            ├─ 6.2（人类反馈通道）—— 可与 B 同步做，成本低
-            └─ E（SubAgent 信息继承）
-                 └─ G（后台循环：consolidation + 6.4 剪枝 + 6.6 能力地图）
-                      └─ H（自主运行时：daemon + AgentSelfProfile + Goal Backlog）
-                           　 ← 是否进入 H、进入到哪一档由 7.9 节 autonomy_level 决定
+.agent/sessions/<session_id>/
+  meta.json                 # 已有
+  history.json              # 已有
+  llm_debug.jsonl           # 已有
+  memory_delta.jsonl        # 已有
+  plan_snapshot.json        # 新增：ExecutionPlan 持久化快照
+  tasks/<task_id>/
+    manifest.json           # 新增：任务叙事文件
+    output.log              # 已有
+    events.jsonl            # 已有
+    result.json             # 已有
 ```
 
-6.1（角色分离）建议在 C 落地后引入，作为"进化者"角色的载体；6.5、6.7、6.8 属于治理层面的精细化，可在 G 阶段逐步补充。H 不应被当作"做完 G 自动顺延"的下一步，而是一次独立的、需要 Otz 显式决策"是否要让 mini_agent 变成一个持续运行的实体"的产品方向选择。
+`AgentPaths` 对应新增：`session_plan_snapshot(sid)`、`task_manifest(sid, tid)` 两个路径方法。
+
+### 8.2 W2：Workdir 知识层
+
+在 `.agent/`（workdir 根）下新增四个文件，填补"跨 session 项目知识"的空白：
+
+**`project.json`**——项目身份证，相对静态，每次 session 启动时作为"项目自我介绍"注入 context：
+
+```json
+{
+  "name": "mini_agent",
+  "description": "Python-based AI agent framework",
+  "root_language": "python",
+  "entry_points": ["src/mini_agent/agent.py"],
+  "key_modules": {
+    "orchestrator": "SubAgent 调度与任务管理",
+    "perception": "Memory、工具缓存、Context 构建",
+    "hooks": "Pre/PostToolUse 生命周期钩子",
+    "mcp": "MCP server 集成"
+  },
+  "created_at": 1718000000.0,
+  "last_active": 1718500000.0,
+  "total_sessions": 47
+}
+```
+
+**`timeline.jsonl`**——所有 session 的时序骨架，每次 session 结束追加一行（append-only）。刻意精简，只记"这次做了什么方向"，细节留在 session 自己的 meta.json 里：
+
+```jsonl
+{"sid":"sess_089","at":1718000000,"duration_min":45,"theme":"设计 lesson memory schema","key_outcomes":["确定 MemoryEntry 新字段"],"task_count":2,"status":"done"}
+{"sid":"sess_090","at":1718100000,"duration_min":30,"theme":"实现 SessionEnd hook 触发","key_outcomes":["hooks/loader.py 接入 SessionEnd 事件"],"task_count":0,"status":"done"}
+```
+
+**`work_index.json`**——最有价值的一个。把跨 session 相关的任务聚合成 **WorkThread**（工作线），由 evolution-agent 或 SessionEnd hook 定期更新：
+
+```json
+{
+  "last_updated": 1718500000.0,
+  "work_threads": [
+    {
+      "id": "wt_self_evolution",
+      "title": "自我进化机制实现",
+      "status": "active",
+      "started_at": 1718000000.0,
+      "related_sessions": ["sess_085", "sess_089", "sess_090"],
+      "cumulative_progress": "Phase B lesson memory 结构已定，SessionEnd 触发已实现，StateRepo 尚未开始",
+      "open_questions": ["T1 自动合并的观察期怎么定"],
+      "next_suggested": "实现 StateRepo.apply() 作为安全写入入口",
+      "related_goal_id": "goal_phase_f"
+    },
+    {
+      "id": "wt_webdemo",
+      "title": "Streamlit Web Demo 稳定性修复",
+      "status": "done",
+      "related_sessions": ["sess_070", "sess_071"],
+      "cumulative_progress": "权限面板、实时事件、CLI 输入可见性问题均已解决",
+      "open_questions": []
+    }
+  ]
+}
+```
+
+WorkThread 是把"跨越多个 session、可能中断再续的工作线索"**显式建模**出来，而不是让它们隐式地散落在 memory 条目里靠检索碰。agent 每次启动时，`active` 的 WorkThread 直接注入 context——"你上次在推进 X，做到了 Y，下一步建议 Z"，比 memory 模糊检索精准得多。WorkThread 同时也是 Phase H（7.3）Goal Backlog 里 Objective 节点的自然前身，可以直接晋升关联。
+
+**`open_threads.json`**——跨 session 的待处理线索池。解决"任务 A 途中发现问题 B，但当时不便处理"的归宿问题：
+
+```json
+{
+  "items": [
+    {
+      "id": "ot_001",
+      "title": "SubAgent 输出截断问题",
+      "discovered_in": "sess_085",
+      "type": "bug",
+      "priority": "high",
+      "description": "output 超 3000 字时直接截断且不通知 orchestrator，orchestration.py L358",
+      "work_thread_ref": "wt_self_evolution",
+      "status": "open",
+      "resolved_in": null
+    }
+  ]
+}
+```
+
+类型（`type`）：`bug` / `tech_debt` / `feature` / `question` / `blocker`。通过 agent 主动工具 `add_open_thread()` 随时追加；SessionEnd hook 也会把各 task manifest 里 `outcome.unresolved` 的条目自动推进来。
+
+**`knowledge.md`**——自由 Markdown，记录不适合放进结构化 JSON 的"软知识"：架构决策背景、踩过的坑的细节、"为什么这样设计而不是那样"。与 `CLAUDE.md` 的区别：`CLAUDE.md` 是"给 agent 的操作规范"（应该做什么），`knowledge.md` 是"关于这个项目的认知积累"（这个项目是什么样的）。属于安全网 T1，写入走 `StateRepo.apply()`，留版本记录。
+
+完整后的 Workdir 目录结构：
+
+```
+.agent/
+  ├── project.json            # 新增：项目元信息
+  ├── memory.jsonl            # 已有：项目级 lesson/summary
+  ├── permissions.json        # 已有
+  ├── hooks.json              # 已有
+  ├── goals.json              # Phase H 新增：Goal Backlog
+  ├── timeline.jsonl          # 新增：session 时序骨架
+  ├── work_index.json         # 新增：跨 session 工作线聚合
+  ├── open_threads.json       # 新增：跨 session 待处理线索池
+  ├── knowledge.md            # 新增：项目软知识积累
+  ├── skills/                 # 已有
+  ├── agents/                 # 已有
+  ├── prompts/                # 已有
+  ├── cache/                  # 已有
+  └── sessions/               # 已有，结构见 8.1
+```
+
+**维护机制（三条触发路径）**：
+
+- **SessionEnd hook（轻量，每次自动跑）**：追加 `timeline.jsonl`；把各 task manifest `outcome.unresolved` 推入 `open_threads.json`；更新 `project.json` 的 `last_active` 和 `total_sessions`。纯写入无 LLM，每次无条件执行。
+- **evolution-agent 周期性扫描（中等成本，低频）**：读取最近若干 `timeline.jsonl` + session manifest，判断是否新建/更新/合并 WorkThread；更新 `work_index.json` 的 `cumulative_progress` 和 `next_suggested`；归档已 resolved 的 `open_threads`。每天一次或每 N 个 session 触发。
+- **agent 主动写（随时）**：`add_open_thread()`、`update_knowledge(section, content)` 工具，执行任务途中随时调用，不需要等 SessionEnd。
+
+### 8.3 W3：Global 知识层
+
+Global 层（`~/.agent/`）现有文件：`profile.json`（用户画像）、`memory.jsonl`（跨项目通用 lesson）、`skills/`、`prompts/`、`hooks.json`、`agents/`。**完全没有"agent 自身的全局认知"**——有关于用户的画像，但没有关于 agent 自己的画像；有碎片化的 memory 条目，但没有跨项目的工作全局视图。
+
+新增四个文件：
+
+**`self_profile.json`**——agent 自我模型（对应 Phase H 7.2 节的 `AgentSelfProfile`，是那个设计的全局落地文件）。与 `profile.json`（主语=用户）平行，主语是 agent 自己：
+
+```json
+{
+  "version": 1,
+  "identity": {
+    "purpose": "作为 AI agent 协助开发工作，同时持续改进自身能力",
+    "core_constraints_ref": "~/.agent/skills/ 中的 safety-net skill + 项目 CLAUDE.md",
+    "created_at": 1718000000.0
+  },
+  "self_assessment": {
+    "strengths": ["Python 重构", "架构设计讨论", "文档整理"],
+    "weak_areas": ["长文件的精确 patch", "并发 bug 定位"],
+    "confidence_by_domain": {
+      "python_refactoring": 0.85,
+      "bash_file_ops": 0.62,
+      "mcp_integration": 0.71
+    },
+    "last_assessed_at": 1718500000.0
+  },
+  "operating_state": {
+    "autonomy_level": "passive",
+    "active_project": "/Users/otz/projects/mini_agent",
+    "last_active_at": 1718500000.0,
+    "total_sessions_lifetime": 127,
+    "total_projects_worked": 3
+  },
+  "resource_budget": {
+    "daily_token_budget": 200000,
+    "used_today": 45000,
+    "budget_reset_at": "00:00"
+  },
+  "evolution_state": {
+    "pending_evolve_branches": ["evolve/2026-06-10-bash-safety"],
+    "last_reflection_at": 1718400000.0,
+    "lifetime_lessons_generated": 43,
+    "lifetime_skills_proposed": 7,
+    "lifetime_skills_approved": 4
+  }
+}
+```
+
+`self_assessment.confidence_by_domain` 是 capability_map（6.6）的 global scope 版本——各 workdir 的 capability_map 跨项目汇总后写这里。`evolution_state` 是"进化仪表盘"——agent 启动时直接看到"总共学到了多少、还有哪些提案在等人审"，而不用扫描 evolve 分支列表。这个文件属于安全网 T1（影响面大，修改强制人审，见 7.9 节说明）。
+
+**`projects_index.json`**——曾经工作过的所有 workdir 的注册表。每次在新目录启动自动注册；每次 session 结束更新 `last_active`：
+
+```json
+{
+  "projects": [
+    {
+      "id": "proj_miniagent",
+      "path": "/Users/otz/projects/mini_agent",
+      "name": "mini_agent",
+      "first_seen": 1710000000.0,
+      "last_active": 1718500000.0,
+      "total_sessions": 89,
+      "status": "active",
+      "description": "Python AI agent framework，当前在实现自我进化机制",
+      "tags": ["python", "ai-agent"]
+    },
+    {
+      "id": "proj_other",
+      "path": "/Users/otz/projects/other_project",
+      "name": "other_project",
+      "first_seen": 1715000000.0,
+      "last_active": 1716000000.0,
+      "total_sessions": 12,
+      "status": "dormant",
+      "tags": ["python"]
+    }
+  ],
+  "active_project_id": "proj_miniagent"
+}
+```
+
+这是 daemon（7.4）能做"跨项目巡视"的基础数据——没有注册表，daemon 就不知道该巡视哪些目录。`status: dormant` 的项目可以触发"30 天没活动，是否做一次 consolidation"的自动提醒。
+
+**`cross_project_index.json`**——跨项目层面涌现的模式与能力图谱。这是 6.5 节"Scope 晋升"的数据支撑：
+
+```json
+{
+  "last_updated": 1718500000.0,
+  "cross_project_patterns": [
+    {
+      "id": "cpp_bash_rm_danger",
+      "title": "bash rm 操作在任何项目里都高危",
+      "observed_in_projects": ["proj_miniagent", "proj_other"],
+      "occurrence_count": 6,
+      "confidence": 0.91,
+      "pattern_type": "risk",
+      "derived_from_lessons": ["lesson_001", "lesson_008", "lesson_021"],
+      "global_skill_candidate": true,
+      "promoted_to_skill": "bash-safety",
+      "promoted_at": 1717000000.0
+    },
+    {
+      "id": "cpp_test_before_refactor",
+      "title": "重构前跑一遍现有测试可以显著减少回归",
+      "observed_in_projects": ["proj_miniagent"],
+      "occurrence_count": 2,
+      "confidence": 0.55,
+      "pattern_type": "best_practice",
+      "global_skill_candidate": false
+    }
+  ],
+  "skill_promotion_history": [
+    {
+      "skill_name": "bash-safety",
+      "promoted_from": "proj_miniagent",
+      "promoted_at": 1717000000.0,
+      "trigger_pattern": "cpp_bash_rm_danger",
+      "status": "active_global"
+    }
+  ],
+  "cross_project_capability_map": {
+    "python_refactoring": {"confidence": 0.85, "sample_projects": 2},
+    "bash_file_ops": {"confidence": 0.62, "sample_projects": 2}
+  }
+}
+```
+
+skill 从 workdir 晋升到 global 的依据：`observed_in_projects` 数量 ≥ 2 且 `confidence` 超过阈值。`cross_project_capability_map` 是各 workdir capability_map 的汇总，写回 `self_profile.json` 的 `confidence_by_domain`，形成闭环。
+
+**`activity_log.jsonl`**——全局活动时序，比任何单个 workdir 的 `timeline.jsonl` 都高一层。每次 session 结束追加一行，不区分项目：
+
+```jsonl
+{"at":1718000000,"project_id":"proj_miniagent","sid":"sess_089","theme":"设计 lesson memory schema","duration_min":45}
+{"at":1718200000,"project_id":"proj_other","sid":"sess_012","theme":"修复登录流程 bug","duration_min":25}
+```
+
+用途：① `self_profile.json` 里 `total_sessions_lifetime` 的数据来源；② daemon 在跨项目切换时快速重建"上次在 proj_other 做什么"的上下文，不需要加载那个项目的完整 session 历史；③ 未来跨时间跨度的活动分析（此时数据已就位，不需要追溯补采集）。
+
+完整后的 Global 目录结构：
+
+```
+~/.agent/
+  ├── profile.json                # 已有：用户画像（主语=用户）
+  ├── memory.jsonl                # 已有：跨项目通用 lesson/summary
+  ├── self_profile.json           # 新增：agent 自我模型（主语=agent 自己）
+  ├── projects_index.json         # 新增：workdir 注册表
+  ├── cross_project_index.json    # 新增：跨项目模式与能力图谱
+  ├── activity_log.jsonl          # 新增：全局活动时序流水
+  ├── skills/                     # 已有：全局技能库
+  ├── prompts/                    # 已有
+  ├── hooks.json                  # 已有
+  └── agents/                     # 已有
+```
+
+**维护机制（三条触发路径，与 Workdir 层对称）**：
+
+- **SessionEnd hook（轻量，每次自动跑）**：更新 `self_profile.json` 的 `operating_state`（`last_active_at`、`total_sessions_lifetime`、`resource_budget.used_today`）；更新 `projects_index.json` 当前项目的 `last_active`；追加一条 `activity_log.jsonl`。纯写入无 LLM 调用，每次无条件执行。
+- **evolution-agent 跨项目扫描（高成本，低频，每周一次或新增 workdir 时触发）**：比对各 workdir 的 `work_index.json` 和 `memory.jsonl`，识别跨项目重复出现的模式，写入 `cross_project_index.json`；判断是否触发 skill 晋升提案（走 F 的 evolve 分支流程，tier=T1）；汇总各 workdir 的 capability_map 刷新 `self_profile.json` 的 `confidence_by_domain`。
+- **事件驱动更新**：`evolution_state` 里的计数字段（`lifetime_lessons_generated` 等）在对应事件发生时直接 +1，不等 session 结束；`pending_evolve_branches` 在分支创建/合并/删除时同步更新。
+
+### 8.4 三层知识体系的 context 注入策略
+
+W 建完后，`context_builder.py` 在每次新 session 启动时，可以从三个粒度确定性地注入项目认知，不再依赖 memory 检索"碰运气"：
+
+| 层级 | 注入内容 | 注入策略 |
+|---|---|---|
+| Global | `self_profile.self_assessment`（我在这类任务上的历史表现）；`evolution_state.pending_evolve_branches`（还有哪些未合并提案） | always-on，精简注入 |
+| Global | `projects_index` + `activity_log` 最近几条（切换了工作目录时） | 仅在 workdir 变化时注入 |
+| Workdir | `project.json`（项目身份）；`work_index` 里 status=active 的 WorkThread 的 `cumulative_progress` + `next_suggested` | always-on |
+| Workdir | `open_threads` 里 priority=high 的条目 | always-on，最多 N 条 |
+| Workdir | `timeline.jsonl` 最近 M 条；`knowledge.md` 相关段落 | 按本次 session 意图检索后注入 |
+| Session | `plan_snapshot.json`（上次 session 的计划做到哪）；相关 task manifest | 仅在 session resume 时注入 |
+
+这六层注入合起来，替代目前"只靠 memory.jsonl 相似度检索"的单一信息来源，提供**确定性的项目认知连续性**。
+
+### 8.5 与其他 Phase 的关键接口
+
+- **→ Phase B**：Workdir `open_threads.json` 里的条目，可以直接作为 lesson 生成的"已知待处理信号"，降低重复踩坑的概率。
+- **→ Phase C（skill_propose）**：`cross_project_index` 里 `global_skill_candidate: true` 的模式，直接触发 evolution-agent 开 T1 evolve 分支，走 skill 晋升流程（6.5）。
+- **→ Phase G（后台循环）**：`timeline.jsonl` 和 `activity_log.jsonl` 是 consolidation 的主要输入；`open_threads` 的高优先级条目是下一轮 AutonomousLoop tick 的候选任务来源。
+- **→ Phase H（daemon）**：`projects_index` 是跨项目巡视的遍历列表；`self_profile.resource_budget` 是自主预算的全局账本；`work_index` 的 active WorkThread 是 Goal Backlog 里 Objective 的直接来源。没有 W，H 的跨项目自主能力无从建立。
 
 ---
 
-## 9. 开放问题 / 后续需要决策的点
+## 9. 观察性（Observability）
+
+> 没有可观测性，前面所有机制（剪枝、eval、能力地图、异常检测）的数据质量都会打折扣——它们依赖的统计信号，必须从结构化的追踪数据里来。本章是所有量化判断的数据基础，越早建越省事，越晚建欠债越多。
+
+### 11.1 时序性能追踪（Tracing）
+
+在 `run_turn()` 的关键路径节点打点，追加到 `session_dir/traces.jsonl`：
+
+```python
+# 追踪记录结构
+{
+  "turn_id": "t_008",
+  "ts": 1718000000.0,
+  "phase": "llm_call",            # "context_build" | "llm_call" | "tool_exec" | "reminder_inject"
+  "duration_ms": 1240,
+  "meta": {
+    "prompt_tokens": 8200,
+    "context_breakdown": {         # context_build 阶段专属
+      "system_base": 1200,
+      "skill_context": 3400,       # ← 若这个占比异常高，说明 skill 需要剪枝
+      "memory_inject": 800,
+      "history": 2800
+    },
+    "tool_name": null,             # tool_exec 阶段专属
+    "cache_hit": false
+  }
+}
+```
+
+关键节点：`_build_system()`（context 构建耗时 + 各部分 token 分布）、`_call_llm()`（LLM 调用耗时 + token 消耗）、`_execute_tools()`（每个工具的耗时 + 缓存命中）、`_inject_reminder()`（reminder 注入频率）。`context_breakdown` 里的 skill_context 占比，是 6.4 节（剪枝）"这个 skill 成本高但未被实际使用"判断的直接数据来源。
+
+### 11.2 系统健康检查（/diagnostics）
+
+在已有 `/status` 端点之外新增 `/diagnostics`，返回结构化的系统状态快照：
+
+```json
+{
+  "snapshot_at": 1718000000.0,
+  "performance": {
+    "avg_turn_duration_ms": 2300,
+    "avg_llm_latency_ms": 1100,
+    "tool_cache_hit_rate": 0.61,
+    "p95_context_tokens": 14200
+  },
+  "memory": {
+    "workdir_memory_entries": 87,
+    "global_memory_entries": 203,
+    "memory_jsonl_size_kb": 420,
+    "oldest_lesson_days": 45
+  },
+  "skills": {
+    "active_count": 6,
+    "total_context_tokens": 3400,
+    "least_used_skill": "mcp-debug",
+    "last_pruning_at": 1717000000.0
+  },
+  "evolution": {
+    "pending_evolve_branches": 2,
+    "lessons_last_7d": 8,
+    "open_threads_high_priority": 3
+  },
+  "anomaly_flags": []             # 见 11.3
+}
+```
+
+这同时是 W3 `self_profile.json` 的实时数据来源，也是 Phase H daemon 做自我监控的基础端点。
+
+### 11.3 异常行为检测
+
+从历史 `activity_log.jsonl` 推导行为基线（平均每 session 的工具调用次数、类型分布、token 消耗范围），当某次 session 的指标超出基线 3 倍标准差时，向 `anomaly_flags` 写入一条告警并推送到 7.6 节的活动摘要。检测完全基于统计，无需 LLM——低成本但对"skill 引入了问题"或"experiment 产生了意外副作用"有早期预警价值。
+
+典型异常模式：
+- 单 session 网络请求量是基线 5 倍以上（可能是某个工具进入了循环）
+- 没有用户任务的情况下发生了文件写操作（daemon 自主行为越界）
+- tool_error_rate 突然超过 40%（环境变化或 skill 冲突）
+
+### 11.4 工具调用因果链
+
+在 `events.jsonl` 的每条记录里加 `turn_id` 和 `sequence_in_turn`，并补充 `error_category` 和 `resolved_by` 字段：
+
+```jsonl
+{"turn_id":"t_008","seq":3,"tool":"bash","success":false,"error_category":"permission","input_hash":"a3f7"}
+{"turn_id":"t_008","seq":4,"tool":"bash","success":true,"error_category":null,"resolves_seq":3,"input_hash":"b2c1"}
+```
+
+`error_category` 枚举：`permission` / `path_not_found` / `timeout` / `syntax` / `logic` / `unknown`。`resolves_seq` 指向被这次成功调用修复的前一次失败——这个"问题-解法"对是 Phase B lesson 自动生成质量飞跃的关键输入，让反思 LLM 调用能拿到"失败原因 + 最终解法"这一完整因果，而不只是"有 3 次失败"这个裸数字。
+
+---
+
+## 10. 环境感知
+
+### 12.1 文件变化影响推断
+
+`file_watcher.py` 目前能监听文件变化但不推断含义。新增一个轻量的"文件变化影响映射表"，用规则（不需要 LLM）推导变化的系统影响：
+
+```python
+FILE_CHANGE_EFFECTS = {
+  "poetry.lock":        ["invalidate_tool_cache:bash", "flag_skill:python-deps"],
+  "pyproject.toml":     ["invalidate_tool_cache:bash", "rescan_project_snapshot"],
+  ".git/HEAD":          ["rescan_project_snapshot", "clear_plan_snapshot"],
+  "requirements*.txt":  ["invalidate_tool_cache:bash"],
+  "CLAUDE.md":          ["reload_config"],
+  ".agent/skills/**":   ["reload_skill_loader"],
+  ".agent/hooks.json":  ["reload_hook_manager"],
+}
+```
+
+监听到变化时，查映射表执行对应的缓存失效 / 重新扫描动作，而不是只发一条"文件变了"通知让 agent 自己决定。这让 `file_watcher.py` 从"被动感知"升级为"主动响应"，减少因环境变化导致的"agent 用了过期信息"问题。
+
+### 12.2 环境漂移检测（Environment Drift）
+
+在 `project.json`（W2 新增）里维护 `environment_fingerprint`：
+
+```json
+{
+  "environment_fingerprint": {
+    "python_version": "3.11.4",
+    "key_deps": {"anthropic": "0.25.0", "fastapi": "0.110.0"},
+    "os": "Darwin-23.4.0",
+    "captured_at": 1718000000.0
+  }
+}
+```
+
+每次 session 启动时对比当前环境与上次 fingerprint。发生变化时：① 更新 fingerprint；② 扫描 workdir `memory.jsonl` 里有 `environment_tags` 提到变化组件的 lesson，标记为 `validation_required`；③ 扫描 `skills/` 里有对应 `activation_conditions` 的 skill，降低其置信度至"需要重新验证"。防止"环境升级后，旧经验悄悄变成误导性噪音"。
+
+### 12.3 外部事件主动触发（Inbound Webhooks）
+
+现有 hooks 系统是 agent → 外部（单向出口）。补充反方向：外部事件 → `InputQueue`。
+
+在 API 层新增 `POST /webhook/event` 端点：
+
+```json
+{
+  "event_type": "ci_failed",
+  "source": "github_actions",
+  "payload": {
+    "run_id": "123456",
+    "failed_step": "test",
+    "log_url": "https://..."
+  },
+  "priority": "normal"            // "urgent" | "normal" | "low"
+}
+```
+
+`InputQueue` 支持 `initiator="external_event"` 类型的合成消息，daemon（7.4）的 tick 把它和自主任务一样处理（用户交互优先级最高，external_event 次之，autonomous 最低）。这样"CI 挂了 → agent 自动看一眼 log 并判断是否需要处理"、"issue 创建 → agent 自动分析影响范围"这类场景就能实现，而不需要 daemon 主动轮询外部系统。
+
+---
+
+## 11. 多 Agent 协调深化
+
+### 13.1 能力匹配调度（Capability-aware Dispatch）
+
+结合 capability_map（6.6），给 agent profile 也加一份能力声明，spawn 时做"任务类型 × agent 能力"的匹配：
+
+```yaml
+# .agent/agents/code-reviewer.md frontmatter
+---
+name: code-reviewer
+capability_tags: ["code_review", "python", "test_generation"]
+strength_domains:
+  python_refactoring: 0.88
+  test_coverage_analysis: 0.75
+tool_restrictions: [read_file, grep, glob, bash]
+---
+```
+
+`spawn_agent` 工具新增可选参数 `required_capability`，`TaskManager` 在选择 SubAgent profile 时按 `strength_domains` 匹配，而不是随机或固定分配。这是 capability_map 在协调层的自然延伸——主 agent 知道自己哪里弱（capability_map），也知道自己的 SubAgent 哪里强（profile 声明），就能做更智能的任务分配。
+
+### 13.2 SubAgent 降级重试链
+
+SubAgent 失败后的框架层降级策略：
+
+```python
+# task 定义时可选配置降级链
+Task(
+  prompt="...",
+  fallback_chain=[
+    {"profile": "code-reviewer",    "mode": "full"},
+    {"profile": "code-reviewer",    "mode": "conservative"},  # 更严格的权限
+    {"profile": None,               "mode": "inline"},        # 主 agent 自己处理
+  ]
+)
+```
+
+`TaskManager` 在 SubAgent 失败时自动尝试链中下一项，而不是把失败信号直接抛给主 agent。`mode: conservative` 会给 SubAgent 注入更严格的权限配置（只读工具、更小的 token budget）；`mode: inline` 是最终兜底——主 agent 暂停其他任务，自己处理这个失败的任务。这对 Phase H（daemon 自主运行）特别重要：没有用户在线纠正时，必须有内置的降级路径，否则一个 SubAgent 失败会卡住整个 goal backlog。
+
+### 13.3 SubAgent 间中间结果流
+
+通过 `task_artifacts/` 目录 + `file_watcher.py` 实现 SubAgent 之间的异步协调：
+
+```
+.agent/sessions/<sid>/tasks/
+  t_001/           # SubAgent A：数据分析
+    manifest.json
+    artifacts/
+      intermediate_summary.json   ← A 产出中间结果时写入
+  t_002/           # SubAgent B：报告撰写
+    manifest.json
+    # B 通过 file_watcher 订阅 t_001/artifacts/，发现 intermediate_summary.json 后开始工作
+```
+
+`spawn_agent` 新增 `watches_artifacts_of: [task_id]` 参数，`TaskManager` 在启动 SubAgent B 时注册对 A 的 artifacts 目录的文件监听。这比"等 A 全部完成再启动 B"效率更高，也比"A/B 完全独立"的纯并行更有协同价值。
+
+---
+
+## 12. 知识表示深化
+
+### 14.1 knowledge.md + 结构化索引双层
+
+W2 新增的 `knowledge.md` 适合人类阅读，但 agent 检索只能靠语义相似度。补充一个自动 derive 的 `knowledge_index.json`：
+
+```json
+{
+  "last_indexed": 1718000000.0,
+  "entries": [
+    {
+      "id": "kn_001",
+      "heading": "MCP 集成：为什么去掉 SDK 依赖",
+      "topic": "mcp",
+      "decision_type": "architecture",
+      "affected_modules": ["mcp/manager.py", "mcp/transport/"],
+      "created_at": 1715000000.0,
+      "summary": "MCP SDK 引入了过多间接依赖且版本锁定严格，改用 raw JSON-RPC 2.0 实现"
+    }
+  ]
+}
+```
+
+维护方式：只有人（或 agent 用 `update_knowledge()` 工具）写 `knowledge.md`，`knowledge_index.json` 由 evolution-agent 定期从 Markdown 里解析生成，不需要手工维护。agent 查询时先走结构化索引定位条目（属性查询），再按需读 Markdown 全文——两者优势互补，`knowledge.md` 保留可读性，索引提供精确检索能力。
+
+### 14.2 Skill 依赖与冲突图
+
+SKILL.md frontmatter 新增字段：
+
+```yaml
+---
+name: python-test-runner
+activation_conditions:
+  project_type: python
+  requires_tool: bash
+conflicts_with:
+  - node-test-runner          # 同时激活时建议互斥
+requires:
+  - bash-safety               # 建议先激活这个
+confidence_score: 0.82        # 见 14.3
+evidence_sources:             # 见 14.3
+  - lesson_2026061501
+  - lesson_2026061203
+environment_tags:
+  - python311
+  - pytest
+---
+```
+
+`SkillLoader` 在激活时做约束检查：`activation_conditions` 不满足则跳过自动激活；`conflicts_with` 里有已激活的 skill 则告警；`requires` 里的 skill 未激活则自动补激活。这是 skill 体系从"一堆独立文档"走向"有结构的知识库"的关键步骤，也是 6.4 节（剪枝/冲突检测）的数据基础。
+
+### 14.3 知识可信度传递（Confidence Provenance）
+
+lesson 的可信度应该向上传递到从它派生的 skill。`confidence_score` 的计算规则：
+
+```
+skill_confidence = weighted_avg(
+    source_lessons,
+    weights={
+        "human_feedback": 1.0,     # 人类纠正，权重最高
+        "experiment_confirmed": 0.8,
+        "self_reflection": 0.4,
+        "revert_record": 0.2,      # 曾被回退，权重最低
+    }
+)
+```
+
+`SkillLoader` 在注入 context 时按置信度**调整语气**：
+
+| confidence_score | 注入语气 |
+|---|---|
+| ≥ 0.85 | "在此类场景下**应当**…" |
+| 0.6–0.85 | "在此类场景下**建议**…" |
+| 0.4–0.6 | "可以考虑…（置信度中等，建议根据实际情况判断）" |
+| < 0.4 | "注意：以下经验置信度较低，仅供参考…" |
+
+这让 context 里的 skill 指导不再是"一刀切的权威语气"，而是"根据证据质量分级的建议"，减少 agent 因为盲目遵循低质量 skill 而做出错误决策的概率。
+
+---
+
+## 13. 执行层鲁棒性
+
+### 15.1 元认知 Checkpoint
+
+每 N 轮（可配置，默认 5）自动执行一次轻量的"自我评估"，检查"是否还在正轨上"：
+
+```python
+# 触发条件：turn 数达到 checkpoint_interval 且任务未完成
+def _metacognitive_checkpoint(self):
+    # 构建评估 prompt：当前目标 + 已完成步骤 + 最近 N 轮工具调用
+    # 期望输出：{"on_track": bool, "concern": str, "suggested_action": str}
+    assessment = self._lightweight_llm_call(checkpoint_prompt)
+    if not assessment["on_track"]:
+        # 注入一条 reminder 级别的提示，不打断用户，不重置历史
+        self._inject_reminder(assessment["concern"])
+        # 记录到 task_manifest.decision_log
+        self._manifest.append_decision(
+            decision="metacognitive checkpoint 触发",
+            rationale=assessment["concern"],
+            suggested_action=assessment["suggested_action"]
+        )
+```
+
+这把"发现偏差"的时间从"max_turns 耗尽后"提前到"偏差刚发生时"，且成本很低（轻量 LLM 调用，每 N 轮一次）。checkpoint 结果写入 task_manifest 的 `decision_log`，为 Phase B 的反思提供"这个任务在第 15 轮出现了偏差"这类高价值的时间戳信号。
+
+### 15.2 错误分类驱动的恢复策略
+
+把已有的 `prompts/reminders/` 静态文件体系升级为"error_category → reminder 动态选择注入"：
+
+```python
+# reminder 触发逻辑（目前：匹配错误字符串关键词）
+# 升级后：基于 error_category 字段精确路由
+
+ERROR_RECOVERY_MAP = {
+    "path_not_found":  "reminders/path_not_found.md",    # 已有
+    "permission":      "reminders/bash_permission_error.md",  # 已有
+    "syntax":          "reminders/syntax_error.md",       # 已有
+    "timeout":         "reminders/tool_timeout.md",       # 新增
+    "logic":           "reminders/logic_error_pattern.md",# 新增：建议分解任务/验证假设
+    "network":         "reminders/network_error.md",      # 已有
+}
+```
+
+`error_category`（11.4 新增）出现时，直接查表注入对应 reminder，而不是靠字符串关键词猜测错误类型。同时 `logic` 类别的 reminder 是新增的最有价值的一类——"工具没有报错但结果明显不对"（比如 patch_file 成功但文件内容仍然是旧的），这类"逻辑错误"目前完全没有被系统性地捕捉和指导。
+
+### 15.3 任务降级策略（Goal Demotion）
+
+当一个任务执行到 N 轮还没完成（达到 `demotion_threshold`），主 agent 有结构化的选项而不只是"继续等或等 max_turns 耗尽"：
+
+```python
+class DemotionOptions(Enum):
+    CONTINUE     = "continue"      # 继续等待
+    CHECKPOINT   = "checkpoint"    # 要求 SubAgent 汇报进度后继续
+    SIMPLIFY     = "simplify"      # 降低目标（"先给草稿"替代"完整实现"）
+    REASSIGN     = "reassign"      # 取消 SubAgent，主 agent 自己处理
+    DEFER        = "defer"         # 暂停，放回 goal backlog 等资源充裕时重试
+```
+
+`TaskManager` 在 SubAgent 达到 `demotion_threshold` 时，把这五个选项和当前任务状态一起推给主 agent 做决策（一次轻量 LLM 调用），而不是盲目等到 `max_turns`。降级决策本身写入 task_manifest 的 `decision_log`，作为 Phase B 反思的输入。
+
+---
+
+## 14. 协作层深化
+
+### 16.1 审批中插话（Guided Approval）
+
+当前权限弹窗是二元的（approve / reject）。扩展为三选项：
+
+```
+[a] 批准执行
+[r] 拒绝
+[m] 修改后执行 → 弹出文本框，内容注入到下一次 LLM 调用的 user turn
+```
+
+`[m]` 选项让用户说"可以，但换个方式"，而不是"不行"然后等 agent 自己想下一步。工程上：在 `PermissionGuard` 已有的 `(e)dit` 选项基础上，把编辑后的内容追加为一条 user 消息（`_type="user_correction"`），这条消息对 Phase B 的"纠正检测"（6.2）也是高质量的人类反馈信号。
+
+### 16.2 隐式反馈捕捉
+
+用户交互中的弱信号，目前完全丢失，通过 bridge 层事件监听低成本捕捉：
+
+| 隐式信号 | 捕捉方式 | 转换为 |
+|---|---|---|
+| 用户删掉 agent 输出重新写 | Web demo 监听编辑事件 | `source="implicit_rejection"` lesson，`confidence=0.3` |
+| 完成后立刻追问"你确定吗" | 关键词检测 + 时间窗口（30s内） | 给上一条 lesson 降低 confidence |
+| 用户沉默很久才回复 | 响应时间异常（>5min） | 标记前一次 agent 提问为"可能不清晰" |
+| 用户手动执行了本应 agent 做的命令 | bash history 对比（若有权限） | `source="implicit_bypass"` lesson |
+
+信号单独看很弱，但汇入 lesson memory 后的统计价值高。每条隐式反馈 lesson 的 `confidence` 初始值设很低（0.2–0.3），需要多次重复印证才能影响 skill_propose 的 `occurrence_count` 门槛。
+
+### 16.3 澄清优先分支（Clarify-First）
+
+在 `ExecutionPlan` 里新增一个可选的首步类型 `clarify`：
+
+```python
+class PlanTaskType(Enum):
+    EXECUTE  = "execute"
+    CLARIFY  = "clarify"     # 新增：执行前先向用户确认理解
+    VERIFY   = "verify"      # 新增：执行后验证结果符合预期
+```
+
+触发条件：agent 在 `create_plan` 阶段评估"任务意图置信度"——如果一个 prompt 有两种及以上合理的理解方式、且它们会导致不同的执行路径，则计划的第一步自动设为 `clarify`（生成一个结构化的澄清问题），而不是选一种理解猛冲。
+
+澄清问题的格式：
+```
+我理解这个任务可能是：
+  (A) 重构 context_builder.py 的 token 计算逻辑（影响所有调用方）
+  (B) 只在当前 session 里调整 token 预算上限（临时修改）
+
+请确认是哪种，或者说明其他理解。
+```
+
+这减少"做完了一大半才发现方向错了"的成本，尤其在 daemon 自主运行（Phase H）时，没有用户实时在线纠正，澄清优先更重要。
+
+---
+
+## 15. 架构与理念层
+
+### 17.1 Skill 条件激活
+
+SKILL.md frontmatter 的 `activation_conditions`（14.2 已设计）配合 SkillLoader 做环境感知的条件过滤——这让 skill 激活从"人工管理哪些激活"变成"系统根据上下文自动选择合适的 skill 子集"，是 skill 体系规模化的前提。
+
+### 17.2 Prompt 工程版本化与实验
+
+`prompts/` 目录的核心文件（尤其是 `system/` 下的）纳入 StateRepo 版本管理（tier=T2，prompt 改动直接影响模型行为，风险不低于普通代码）。新增 `prompts/experiments/` 目录存放候选 prompt 片段，通过 7.10 节的 Experiment 机制验证效果（控制变量：只改一个 prompt 片段，其他不变，跑副本对比 eval），而不是直接在生产 prompt 上做改动、靠主观感觉判断好坏。
+
+### 17.3 三条理念校准标准
+
+这三条不是可以直接实现的功能，而是在做每一个具体设计决策时应该持续自问的标准：
+
+**从"能做什么"到"该做什么"**：系统的"能力"（更快、更准、自动改进）和"判断力"（什么时候不该做某件事）同等重要。T3 的"强制人审"是硬约束，但在 T0/T1 范围内同样需要一种"软性保守性"：在模糊地带主动选择更保守的选项，不需要被规则禁止——"我本可以自动 apply，但我选择先问一下"是更高阶的自我节制能力，不是由 tier 决定，而是由 agent 自己的判断触发。
+
+**从"单次优化"到"长期共生"**：优化目标不只是"让 agent 在具体任务上表现更好"，还包括"这段关系本身是否在变好"——用户是否越来越信任 agent 的判断、agent 是否越来越能预判用户意图而不需要反复确认。某些设计决策应该优先考虑"长期关系"：偶尔问一个不必要的问题（稍微降低效率）比自作主张做了用户不想要的优化（破坏信任）代价小得多。
+
+**从"避免犯错"到"优雅地从错误中恢复"**：安全网（Phase F）减少错误影响，但更高阶的目标是：当错误真的发生时，agent 能以清晰、诚实、快速的方式"汇报发生了什么、影响范围是什么、已做了什么止损、下一步建议什么"——这种"优雅的失败模式"对用户信任的维护，长期来看可能比"尽量不失败"更重要。建议在任务失败时有一个标准的"失败报告"模板（影响范围 / 已执行的止损动作 / 追溯到哪个决策点出了问题 / 建议的下一步），而不是在对话里说一句"我遇到了问题"。
+
+---
+
+## 16. 时间维度与成长感知
+
+### 18.1 时间感知的检索权重
+
+memory 检索引入"时间衰减 + 趋势放大"两个权重，而不是把三个月前的 lesson 和昨天的 lesson 等权重对待：
+
+```python
+def _compute_retrieval_weight(lesson: MemoryEntry, now: float) -> float:
+    age_days = (now - lesson.created_at) / 86400
+
+    # 时间衰减：半衰期 30 天（可配置），有多次重复印证的衰减更慢
+    half_life = 30 * (1 + lesson.occurrence_count * 0.5)
+    time_decay = 0.5 ** (age_days / half_life)
+
+    # 趋势放大：最近 7 天内出现频率上升的 lesson 类型，权重放大
+    recent_trend = self._get_recent_trend(lesson.trigger_category)
+    trend_boost = 1.0 + max(0, recent_trend - 1.0) * 0.3
+
+    return time_decay * trend_boost
+```
+
+同时区分"时效性知识"（环境相关，衰减快）和"普适性知识"（原则性的，衰减慢）——`environment_tags` 不为空的 lesson 用更短的半衰期，避免过时环境知识持续被检索到。
+
+### 18.2 版本里程碑（Milestones）
+
+在 W3 `self_profile.json` 里新增 `milestones` 数组，记录能力质变节点：
+
+```json
+{
+  "milestones": [
+    {
+      "id": "ms_001",
+      "title": "第一次成功自主提案并通过审核的 skill",
+      "achieved_at": 1718000000.0,
+      "evidence": {"skill_name": "bash-safety", "evolve_branch": "evolve/2026-06-10-bash-safety"}
+    },
+    {
+      "id": "ms_002",
+      "title": "autonomy_level 从 passive 升级到 maintenance",
+      "achieved_at": 1719000000.0,
+      "evidence": {"approved_by": "user", "session_id": "sess_102"}
+    },
+    {
+      "id": "ms_003",
+      "title": "第一次跨项目 skill 晋升",
+      "achieved_at": 1720000000.0,
+      "evidence": {"skill": "bash-safety", "from_project": "proj_miniagent"}
+    }
+  ]
+}
+```
+
+里程碑在对应事件发生时自动写入（lesson 生成 / skill 审批 / autonomy_level 变更 / 跨项目晋升都有对应的事件钩子）。用途：① 活动摘要（7.6）里的"成长报告"有了具体内容；② evolution-agent 在生成 evolve 分支提案时，可以把"这次提案是否达到了新的里程碑"作为额外激励信号——milestone 距离近的提案优先级更高。
+
+### 18.3 知识时效性标注与过期归档
+
+lesson 和 skill 新增 `expires_after_days` 可选字段（默认无限期）：
+
+```python
+# 对于明显有时效性的 lesson，在创建时标注过期期限
+MemoryEntry(
+    ...
+    environment_tags=["anthropic_sdk_0_25"],
+    expires_after_days=90,    # SDK 升级后这条 lesson 大概率过时
+)
+```
+
+evolution-agent 的周期性 consolidation（Phase G）在扫描 memory 时，过期的 lesson 不直接删除，而是移到 `memory_archived.jsonl`（保留可追溯性）并从活跃检索集中移除。这配合 12.2 的环境漂移检测，构成"知识的自然淘汰"机制——让 memory 不因为时间积累而永远膨胀，而是随着环境和知识的更新，自然完成新陈代谢。
+
+---
+
+## 17. 实施优先级建议
+
+```
+A（基础设施清债，含 W1 task manifest / plan_snapshot）
+  ├─ 9（观察性：tracing + 健康检查 + 因果链）—— 越早建越省事，是所有量化判断的数据基础
+  ├─ B（lesson memory，先做规则触发）
+  │    └─ F（安全网：StateRepo + risk tier + worktree 副本）
+  │         ├─ C（skill_propose）+ 12.2/12.3（skill 依赖图 + 可信度传递）
+  │         │     └─ D（eval 反馈环）
+  │         ├─ 6.2 + 14.2（人类反馈：显式纠正 + 隐式信号）
+  │         └─ E（SubAgent 信息继承）+ 11（多 agent 协调深化）
+  └─ W2/W3（Workdir + Global 知识层）—— 可与 B 并行，W2 先于 W3
+       └─ 10（环境感知：漂移检测 + 影响推断 + inbound webhook）
+             └─ G（后台循环：consolidation + 剪枝 + 能力地图）
+                    └─ H（自主运行时）← 强依赖 W2/W3 + 12 就绪
+                         └─ 16（时间维度：衰减权重 + 里程碑 + 过期归档）
+```
+
+**横向加固（可在任意阶段穿插）**：9.3（异常行为检测）、12.1（knowledge 双层索引）、13.1（元认知 checkpoint）、13.2（错误分类驱动恢复）、13.3（任务降级策略）、14.1（审批中插话）、14.3（澄清优先分支）、15.2（prompt 工程版本化）。
+
+**理念层**（15.3 三条校准标准）不是功能实现，是每个设计决策时应持续自问的标准，贯穿全程。
+
+---
+
+## 18. 开放问题 / 后续需要决策的点
 
 1. **T1 自动合并的边界**：eval 通过就自动合并 T1 改动，门槛设多严？是否需要"观察期"（合并后先在主体上跑 N 个 session，确认无负面影响才算"稳定"）？
 2. **语义合并的可靠性**：4.4 节的 LLM 语义合并本身也需要验证流水线把关，但"用 LLM 合并配置，再用同一套验证检查合并结果"是否存在系统性盲点（两者用同一个模型，可能有相同的认知盲区）？
@@ -458,3 +1349,6 @@ A（基础设施清债）
 4. **副本运行的资源成本**：每个 evolve 分支跑一次 worktree + venv + 副本进程，长期累积的计算/存储成本如何控制（特别是 6.7 节频率治理是否足够）？
 5. **自主性分级开关的默认与切换流程**（7.9）：`passive → maintenance → autonomous` 的升级，除了"修改配置走人审"，是否还需要一个"观察期"（类似问题1，但对象是整个 daemon 的自主行为而非单次改动）？降级（`autonomous → passive`）是否需要更轻量的流程，作为"紧急刹车"？
 6. **探索预算与冷却期的校准**（7.10）：探索预算占比、rejected 后的冷却期时长，目前都是"待定参数"——定太小则探索机制形同虚设，定太大则可能挤占 goal backlog 的正常推进。是否需要让这两个参数本身也成为 capability_map/能力地图驱动的动态值（比如某类方向 rejected 越多次，冷却期越长，呈指数退避），而不是固定常量？
+7. **观察性数据的存储成本**（9）：`traces.jsonl` 每个 turn 都追加，session 越长数据越大。是否需要设置 traces 的自动归档/压缩策略（类似 history compression），避免磁盘占用无限增长？traces 的保留时长怎么定（只保留最近 N 天，还是和 session 同生命周期）？
+8. **隐式反馈的信噪比**（14.2）：隐式信号（用户沉默、用户重写输出）的误判率可能较高——"用户沉默5分钟"可能只是被打断了，不一定是 agent 问题不清晰。如何在捕捉隐式信号和避免噪音污染 lesson memory 之间取得平衡？`confidence=0.2` 的初始值是否足够保守？
+9. **知识可信度的"通货膨胀"问题**（12.3）：如果 agent 反复确认同一条 lesson（occurrence_count++），置信度会持续上升。但如果这条 lesson 本身是错的（只是在某个特定环境下碰巧正确），高置信度反而会让错误更顽固。如何防止置信度的"虚假膨胀"——是否需要引入"反例计数"（有一次明确的反例就大幅降低置信度），而不只是正向计数？
