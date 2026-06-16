@@ -456,9 +456,9 @@ def _parse_name_list(value) -> list:
 def load_config(
     project_root: Optional[Path] = None,
     extra_system: str = "",
-    verbose: bool = False,
-    sandbox: bool = False,
-    auto_approve: bool = False,
+    verbose: Optional[bool] = None,
+    sandbox: Optional[bool] = None,
+    auto_approve: Optional[bool] = None,
     model: Optional[str] = None,
     llm_provider: Optional[str] = None,
     llm_base_url: Optional[str] = None,
@@ -526,17 +526,26 @@ def load_config(
             file_cfg = _load_config_file(default_cfg_path)
 
     def _f(key, cli_val, default=None):
-        return file_cfg[key] if key in file_cfg else (cli_val if cli_val is not None else default)
+        """CLI 参数 > 配置文件 > 默认值"""
+        if cli_val is not None:
+            return cli_val
+        return file_cfg[key] if key in file_cfg else default
 
     def _fb(key, cli_val, default=False):
+        """CLI 参数 > 配置文件 > 默认值（bool 版）"""
+        if cli_val is not None:
+            return bool(cli_val)
         if key in file_cfg:
             return bool(file_cfg[key])
-        return cli_val if cli_val is not None else default
+        return default
 
     def _fn(key, cli_val, default):
+        """CLI 参数 > 配置文件 > 默认值（数值版，类型与 default 一致）"""
+        if cli_val is not None:
+            return type(default)(cli_val)
         if key in file_cfg:
             return type(default)(file_cfg[key])
-        return cli_val if cli_val is not None else default
+        return default
 
     # ── 核心参数 ──────────────────────────────────────────────────────────────
     api_key   = os.environ.get("ANTHROPIC_API_KEY", "")
@@ -547,9 +556,9 @@ def load_config(
     _llm_provider = _f("provider", llm_provider) or os.environ.get("LLM_PROVIDER", "anthropic")
     _llm_base_url = _f("base_url", llm_base_url) or os.environ.get("LLM_BASE_URL", "")
     _model = _f("model", model) or os.environ.get("CLAUDE_MODEL", DEFAULT_MODEL)
-    _verbose = bool(_f("verbose", verbose or None))
-    _sandbox = bool(_f("sandbox", sandbox or None))
-    _auto_approve = bool(_f("yes", auto_approve or None))
+    _verbose      = bool(_fb("verbose",      verbose,      False))
+    _sandbox      = bool(_fb("sandbox",      sandbox,      False))
+    _auto_approve = bool(_fb("yes",          auto_approve, False))
     _extra_system = _f("system", extra_system) or ""
     _max_llm_calls_v = _f("max_llm_calls", max_llm_calls)
     _max_llm_calls = int(_max_llm_calls_v) if _max_llm_calls_v is not None else int(os.environ.get("MAX_LLM_CALLS", 8))
@@ -620,8 +629,8 @@ def load_config(
     )
 
     _session_dir_str = (
-        file_cfg.get("session_dir")
-        or (str(session_dir) if session_dir else "")
+        (str(session_dir) if session_dir else "")
+        or file_cfg.get("session_dir")
         or os.environ.get("SESSION_DIR", "")
     )
     session_cfg = SessionConfig(
