@@ -204,13 +204,20 @@ python main.py --provider nvidia --model qwen/qwen3.5-122b-a10b --system-tool-ca
 - CLI 参数：`--reminders-dir`、`--no-reminders`、`--reminder-verbose`
 - 技能：`reminder-generator` 从对话提取经验生成 reminder
 
-### Reminder 机制
+### Role Agent
 
-- Reminder 目录：`src/mini_agent/prompts/reminders/`（系统默认）+ `--reminders-dir` 指定（用户自定义）
-- 文件格式：YAML frontmatter（trigger_event/condition/priority 等）+ 正文提示内容
-- 触发事件：`tool_error`、`post_tool`、`user_intent`、`pattern`
-- CLI 参数：`--reminders-dir`、`--no-reminders`、`--reminder-verbose`
-- 技能：`reminder-generator` 从对话提取经验生成 reminder
+- 预设角色子 Agent 模板，位于 `src/mini_agent/orchestrator/agent_profiles.py`
+- 支持结构化参数注入、工具/模型限制
+- CLI 命令：`/agents list|show <name>|reload`
+
+### Workflow
+
+- 工作流编排机制，支持多步骤自动化任务执行
+- 参见 [Workflow 指南](docs/workflow-guide.md)
+
+### 参数优先级
+
+**命令行参数 > 配置文件参数**。之前配置文件优先级更高，已修正。
 
 ## 文档索引
 
