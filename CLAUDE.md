@@ -222,7 +222,8 @@ python main.py --provider nvidia --model qwen/qwen3.5-122b-a10b --system-tool-ca
 ## 文档索引
 
 - [系统概览](docs/system-overview.md) — 整体架构与模块介绍
-- [Task 日志实时查看](docs/task-focus-viewing.md) — **新增**：方向键切换查看任务日志机制
+- [Task 日志实时查看](docs/task-focus-viewing.md) — 方向键切换查看任务日志机制
+- [终端显示机制深度解析](docs/terminal-display-internals.md) — **新增**：线程模型、状态栏控制、三阶段状态机、token 过滤
 - [终端 I/O 指南](docs/terminal-io-guide.md) — 终端渲染与输入机制
 - [任务与规划指南](docs/plan-and-task-guide.md) — 执行计划与并发任务
 - [SubAgent 机制](docs/subagent-mechanism.md) — 子 Agent 实现细节
