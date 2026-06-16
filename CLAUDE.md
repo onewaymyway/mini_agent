@@ -230,5 +230,6 @@ python main.py --provider nvidia --model qwen/qwen3.5-122b-a10b --system-tool-ca
 - [命令与工具参考](docs/commands-and-tools-reference.md) — 所有 slash 命令和工具
 - [Web Search 指南](docs/web-search-guide.md) — Web 搜索功能使用指南
 - [图片技能指南](docs/image-skills-guide.md) — 图片识别与生成技能使用指南
-- [Reminder 系统指南](docs/reminder-system-guide.md) — **新增**：动态提示注入机制使用指南
-- [单元测试指南](docs/unit-testing-guide.md) — **新增**：测试结构、编写规范与运行方式
+- [Reminder 系统指南](docs/reminder-system-guide.md) — 动态提示注入机制使用指南
+- [单元测试指南](docs/unit-testing-guide.md) — 测试结构、编写规范与运行方式
+- [终端显示机制深度解析](docs/terminal-display-internals.md) — 线程模型、状态栏控制、三阶段状态机、token 过滤
