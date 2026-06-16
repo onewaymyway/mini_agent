@@ -124,7 +124,7 @@ def _main_inner() -> None:
         print("  Linux/Mac: export ANTHROPIC_API_KEY=\"sk-...\"", file=sys.stderr)
         sys.exit(1)
 
-    if args.max_turns:
+    if args.max_turns is not None:
         cfg.max_turns = args.max_turns
     if args.no_stream:
         cfg.stream = False
