@@ -43,7 +43,7 @@
     ],
     "provider_kwargs": {
       "builtin.system": {
-        "include_hostname": true
+        "include_hostname": false
       }
     }
   }
