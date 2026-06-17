@@ -49,27 +49,27 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--verbose", "-v", action="store_true", default=None, help="Show raw tool JSON")
     p.add_argument("--sandbox", action="store_true", default=None, help="Sandbox mode (no destructive ops)")
     p.add_argument("--yes", "-y", action="store_true", default=None, help="Auto-approve all tool calls")
-    p.add_argument("--no-stream", action="store_true", default=None, help="Disable streaming")
+    p.add_argument("--no-stream", action="store_true", help="Disable streaming")
     p.add_argument("--max-turns", type=int, default=None, help="Max agentic turns per user message")
     p.add_argument("--provider", default=None,
                    help="LLM provider: anthropic|openai|ollama|... (overrides LLM_PROVIDER env)")
     p.add_argument("--base-url", default=None,
                    help="Custom API endpoint (for proxies, Azure, local deployments)")
-    p.add_argument("--system-tool-call", action="store_true", default=None,
+    p.add_argument("--system-tool-call", action="store_true",
                    help="Use system-prompt tool call mode (max compatibility, no SDK tools)")
-    p.add_argument("--debug-llm", action="store_true", default=None,
+    p.add_argument("--debug-llm", action="store_true",
                    help="Enable LLM request/response debug logging to file")
-    p.add_argument("--debug-llm-console", action="store_true", default=None,
+    p.add_argument("--debug-llm-console", action="store_true",
                    help="Also print LLM debug info to console (implies --debug-llm)")
-    p.add_argument("--workers", type=int, default=None,
+    p.add_argument("--workers", type=int, default=4,
                    help="Max concurrent sub-agents (default: 4)")
-    p.add_argument("--max-llm-calls", type=int, default=None,
+    p.add_argument("--max-llm-calls", type=int, default=8,
                    help="Max concurrent LLM API calls (default: 8)")
     p.add_argument("--session-dir", default=None,
                    help="Directory to save session files (default: ./sessions)")
-    p.add_argument("--session-fmt", choices=["json", "jsonl"], default=None,
+    p.add_argument("--session-fmt", choices=["json", "jsonl"], default="json",
                    help="Session file format: json (default) or jsonl")
-    p.add_argument("--no-save-session", action="store_true", default=None,
+    p.add_argument("--no-save-session", action="store_true",
                    help="Disable automatic session saving")
     p.add_argument("--resume", default=None, metavar="SESSION_ID",
                    help="Resume a previous session by id (or id prefix)")
