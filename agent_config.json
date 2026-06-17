@@ -3,6 +3,7 @@
   "provider": "nvidia",
   "system_message_format": "system_role",
   "system_tool_call": true,
+  "claude_md_file":"Agent.md",
   "verbose": true,
   "memory_enabled": true,
   "profile_min_entries":3,
