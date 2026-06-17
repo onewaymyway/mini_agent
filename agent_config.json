@@ -31,5 +31,19 @@
       "timeout": 10.0,
       "enabled": true
     }
-  ]
+  ],
+  "env_info": {
+    "enabled": true,
+    "providers": [
+      "builtin.system",
+      "builtin.runtime",
+      "builtin.locale",
+      "myplugins.git_info.GitInfoProvider"
+    ],
+    "provider_kwargs": {
+      "builtin.system": {
+        "include_hostname": true
+      }
+    }
+  }
 }

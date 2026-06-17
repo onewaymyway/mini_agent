@@ -95,7 +95,7 @@ class DebugConfig:
     log_to_file: bool = True
     log_to_console: bool = False
     log_dir: Optional[Path] = None
-    max_body_chars: int = 8000      # 单个字段最大字符数（防止日志过大）
+    max_body_chars: int = 800000000      # 单个字段最大字符数（防止日志过大）
 
     @classmethod
     def from_env(cls) -> "DebugConfig":

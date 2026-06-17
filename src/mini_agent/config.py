@@ -240,6 +240,33 @@ class RoleAgentConfig:
 
 
 @dataclass
+class EnvInfoConfig:
+    """[SYS-ENV-INFO] 环境信息采集与注入配置。
+
+    控制将哪些环境信息（OS、Python 版本、时区等）注入到 system prompt 中，
+    帮助模型感知运行环境，给出更贴合实际的建议和命令。
+
+    providers 列表支持两种格式：
+      - 内置别名：  "builtin.system" | "builtin.runtime" | "builtin.locale"
+      - 完整类路径："mypkg.module.MyProvider"（需实现 EnvInfoProvider 接口）
+
+    provider_kwargs 为各 Provider 的初始化参数，key 为 Provider 标识：
+      {"builtin.system": {"include_hostname": True}}
+    """
+    enabled: bool = True
+
+    # 启用的 Provider 列表（None = 使用默认三个内置 Provider）
+    providers: Optional[list] = None
+
+    # 各 Provider 的初始化参数
+    provider_kwargs: dict = field(default_factory=dict)
+
+    # 隐私开关（透传给内置 Provider，无需在 provider_kwargs 中重复写）
+    include_hostname: bool = False
+    include_username: bool = False
+
+
+@dataclass
 class ReminderConfig:
     """[SYS-REMINDER] 动态 Reminder 提示注入配置。
 
@@ -325,6 +352,7 @@ class AppConfig:
     web_search: WebSearchConfig  = field(default_factory=WebSearchConfig)
     reminder:   ReminderConfig   = field(default_factory=ReminderConfig)
     role_agent: RoleAgentConfig  = field(default_factory=RoleAgentConfig)
+    env_info:   EnvInfoConfig    = field(default_factory=EnvInfoConfig)
 
     # ── 向后兼容属性（让旧代码 cfg.memory_enabled 不报错）────────────────────
     # 以下属性委托给子配置块，方便渐进式迁移，后续版本可删除
@@ -755,6 +783,25 @@ def load_config(
         agents_dir=_ra_dir,
     )
 
+    # ── EnvInfo 配置组装 ────────────────────────────────────────────────────
+    _ei = file_cfg.get("env_info") if isinstance(file_cfg.get("env_info"), dict) else {}
+    _ei_enabled = bool(_ei.get("enabled", True))
+    _ei_providers = _ei.get("providers", None)
+    _ei_provider_kwargs: dict = _ei.get("provider_kwargs", {})
+    _ei_include_hostname = bool(_ei.get("include_hostname", False))
+    _ei_include_username = bool(_ei.get("include_username", False))
+    if _ei_include_hostname or _ei_include_username:
+        sys_kwargs = _ei_provider_kwargs.setdefault("builtin.system", {})
+        sys_kwargs.setdefault("include_hostname", _ei_include_hostname)
+        sys_kwargs.setdefault("include_username", _ei_include_username)
+    env_info_cfg = EnvInfoConfig(
+        enabled=_ei_enabled,
+        providers=_ei_providers,
+        provider_kwargs=_ei_provider_kwargs,
+        include_hostname=_ei_include_hostname,
+        include_username=_ei_include_username,
+    )
+
     return AppConfig(
         api_key=api_key,
         model=_model,
@@ -788,6 +835,7 @@ def load_config(
         web_search=web_search_cfg,
         reminder=reminder_cfg,
         role_agent=role_agent_cfg,
+        env_info=env_info_cfg,
     )
 
 
@@ -863,6 +911,20 @@ def build_system_prompt(cfg: AppConfig, active_skills: list[str], skill_context:
     from mini_agent.prompts import pm
     if cfg.prompts_dir and pm.custom_dir != cfg.prompts_dir:
         pm.set_custom_dir(cfg.prompts_dir)
+
+    # 采集环境信息
+    env_info_block = ""
+    if cfg.env_info.enabled:
+        try:
+            from mini_agent.env_info.registry import EnvInfoRegistry
+            registry = EnvInfoRegistry.from_config(
+                providers=cfg.env_info.providers,
+                provider_kwargs=cfg.env_info.provider_kwargs,
+            )
+            env_info_block = registry.build_block()
+        except Exception:
+            pass
+
     return pm.build_system_prompt(
         claude_md_content=cfg.claude_md_content,
         active_skills=active_skills,
@@ -872,4 +934,5 @@ def build_system_prompt(cfg: AppConfig, active_skills: list[str], skill_context:
         current_time=datetime.now().strftime("%Y-%m-%d %H:%M:%S %A"),
         agent_name=cfg.agent_name,
         user_profile=user_profile,
+        env_info=env_info_block,
     )

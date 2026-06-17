@@ -188,6 +188,7 @@ class PromptManager:
         current_time: str = "",
         agent_name: str = "orzooo",
         user_profile: str = "",
+        env_info: str = "",
     ) -> str:
         """
         Assemble the complete system prompt from individual fragments.
@@ -207,6 +208,10 @@ class PromptManager:
         # 2. Current time
         if current_time.strip():
             parts.append(self.render("system/current_time", current_time=current_time))
+
+        # 2b. Environment info (OS, Python, timezone, …)
+        if env_info.strip():
+            parts.append(env_info.strip())
 
         # 3. Project context (CLAUDE.md)
         if claude_md_content.strip():
