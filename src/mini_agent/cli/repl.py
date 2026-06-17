@@ -36,7 +36,7 @@ def run_repl(agent: Agent, skill_loader: SkillLoader) -> None:
     if agent.cfg.sandbox:
         R.print_warning(pm.fragment("cli_messages", "REPL_SANDBOX_WARNING"))
     if agent.session_id:
-        R.print_info(f"Session: [{agent.session_id}] — /session list to browse history")
+        R.print_info(f"Session: \\[{agent.session_id}] — /session list to browse history")
 
     from mini_agent.ui.terminal import term as _term
 
