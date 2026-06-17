@@ -29,6 +29,9 @@
 | 🤖 Role Agent | 预设角色子 Agent 模板，结构化参数注入，支持工具/模型限制 |
 | 🔄 Workflow | 工作流编排机制，支持多步骤自动化任务执行 |
 | 🌍 Env Info | 环境信息自动采集与注入，内置 OS/Python/时区 Provider，支持自定义扩展 |
+| 💾 History 即时落盘 | RawHistory 采用 JSONL 追加写 + fsync，每次操作立即持久化，防崩溃丢失 |
+| 🎯 Selective 压缩 | 按 _type 差异化权重评分保留，优先保留用户意图和回复，智能截断工具噪音 |
+| 🔁 Resume 提示 | 退出 REPL 时自动显示 resume 命令，方便恢复上次会话 |
 
 ## 快速开始
 
@@ -393,7 +396,9 @@ mini_agent/
 │       │   └── fs_helper.py # 文件系统助手
 │       ├── history/         # 历史管理
 │       │   ├── __init__.py
-│       │   └── compression.py  # 压缩算法
+│       │   ├── compression.py  # 压缩算法（turn_aligned/sliding_window/llm_summary/selective）
+│       │   ├── raw_history.py  # Raw history（JSONL 即时落盘）
+│       │   └── entry.py        # 历史条目类型与辅助函数
 │       ├── prompts/         # Prompt 管理
 │       │   ├── __init__.py
 │       │   ├── manager.py   # PromptManager
@@ -515,7 +520,14 @@ triggers: keyword1, keyword2
   "auto_approve": false,
   "memory_enabled": true,
   "project_scan_enabled": true,
-  "tool_cache_enabled": true
+  "tool_cache_enabled": true,
+  "compress": {
+    "enabled": true,
+    "threshold": 0.7,
+    "strategy": "selective",
+    "selective_weights": {"tool_result": 0.3, "reminder": 0.1},
+    "selective_min_user_turns": 3
+  }
 }
 ```
 
@@ -565,4 +577,4 @@ MIT License
 
 ---
 
-*最后更新：2026-06-17* — 新增 env_info 环境信息采集模块，更新文档索引
+*最后更新：2026-06-18* — History 即时落盘（JSONL+fsync）、Selective 压缩策略、Reminder 去重守卫、Resume 退出提示
