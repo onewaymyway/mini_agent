@@ -299,6 +299,10 @@ class Agent:
         self._hist = HistoryManager(cfg=self.cfg, skill_loader=self.skill_loader)
         self._history = self._hist._history   # 共享同一列表对象，无需全量替换引用
 
+        # raw history 路径绑定（_init_session 在 _init_components 之前调用，
+        # 彼时 _hist 尚不存在，set_path 被吞掉了。在这里补绑定。）
+        self._bind_raw_path()
+
         # ReminderManager：动态 reminder 注入系统
         self._reminder_mgr: Optional[ReminderManager] = None
         if getattr(self.cfg, "reminder", None) and getattr(self.cfg.reminder, "enabled", True):
@@ -372,11 +376,25 @@ class Agent:
             except Exception:
                 pass
 
-        # raw history 绑定 .jsonl 路径 → 之后每次 append() 立即落盘
+        # raw history 路径绑定：调用独立方法（确保 _hist 已初始化后再绑定）
+        self._bind_raw_path()
+
+    def _bind_raw_path(self) -> None:
+        """将 raw history 的 .jsonl 文件路径绑定到当前 session，启用即时落盘。
+
+        必须在 self._hist 和 self._session 都已就绪后调用。
+        _bind_session_extras 在 _init_session 时被调用，此时 _hist 尚未创建，
+        所以这里做防御性检查；真正的绑定发生在 _init_components 末尾的补充调用。
+        """
+        if self._session is None or not hasattr(self, "_hist"):
+            return
         try:
             from mini_agent.storage.paths import AgentPaths
             from pathlib import Path as _Path
-            raw_path = AgentPaths(self.cfg.project_root).session_dir(self._session.id) / "raw_history.jsonl"
+            raw_path = (
+                AgentPaths(self.cfg.project_root)
+                .session_dir(self._session.id) / "raw_history.jsonl"
+            )
             self._hist._raw.set_path(raw_path)
         except Exception as _e:
             import sys
