@@ -27,6 +27,19 @@ from mini_agent.cli.commands import (
 )
 
 
+def _print_resume_hint(agent: Agent) -> None:
+    """在退出时打印 resume 提示，告知用户如何继续当前会话。"""
+    session_id = getattr(agent, "session_id", None)
+    if not session_id:
+        return
+    resume_cmd = f"mini-agent --resume {session_id}"
+    R.console.print(
+        f"\n[bold cyan]💡 提示：[/bold cyan] 你可以通过以下命令继续本次对话：\n"
+        f"  [bold green]{resume_cmd}[/bold green]\n"
+        f"  [dim]Session ID: {session_id}[/dim]",
+    )
+
+
 def run_repl(agent: Agent, skill_loader: SkillLoader) -> None:
     """启动并运行交互式 REPL，直到用户退出。"""
     R.console.print(pm.fragment("cli_messages", "BANNER"), style="bold blue")
@@ -65,6 +78,7 @@ def run_repl(agent: Agent, skill_loader: SkillLoader) -> None:
             continue
         except EOFError:
             R.print_info(pm.fragment("cli_messages", "BYE_MSG"))
+            _print_resume_hint(agent)
             _term.stop()
             break
 
@@ -74,6 +88,7 @@ def run_repl(agent: Agent, skill_loader: SkillLoader) -> None:
         if user_input.lower() in ("exit", "quit", "/exit", "/quit"):
             R.print_stats(agent.stats.summary())
             R.print_info(pm.fragment("cli_messages", "BYE_MSG"))
+            _print_resume_hint(agent)
             _term.stop()
             break
 
