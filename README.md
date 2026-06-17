@@ -28,6 +28,7 @@
 | 📝 Reminder 系统 | 动态提示注入机制，工具出错/用户意图等情境下自动追加解决经验 |
 | 🤖 Role Agent | 预设角色子 Agent 模板，结构化参数注入，支持工具/模型限制 |
 | 🔄 Workflow | 工作流编排机制，支持多步骤自动化任务执行 |
+| 🌍 Env Info | 环境信息自动采集与注入，内置 OS/Python/时区 Provider，支持自定义扩展 |
 
 ## 快速开始
 
@@ -109,9 +110,6 @@ python main.py --provider nvidia --model qwen/qwen3.5-122b-a10b --system-tool-ca
 | `--http-allow-ip` | 允许的 IP 地址列表 |
 | `--http-fs-readonly` | 文件系统只读模式 |
 | `--http-ring-maxlen` | 事件环缓冲区大小 |
-| `--reminders-dir` | 指定用户自定义 reminder 目录 |
-| `--no-reminders` | 禁用 reminder 系统 |
-| `--reminder-verbose` | 启用 reminder 调试日志 |
 | `--reminders-dir` | 指定用户自定义 reminder 目录 |
 | `--no-reminders` | 禁用 reminder 系统 |
 | `--reminder-verbose` | 启用 reminder 调试日志 |
@@ -411,6 +409,14 @@ mini_agent/
 │       │   ├── config.py    # 配置
 │       │   ├── transport.py # 传输层
 │       │   └── manager.py   # MCPManager
+│       ├── env_info/        # 环境信息采集
+│       │   ├── __init__.py
+│       │   ├── base.py       # EnvInfoProvider 抽象基类
+│       │   ├── registry.py   # 注册/采集/格式化
+│       │   └── providers/    # 内置 Provider
+│       │       ├── system.py
+│       │       ├── runtime.py
+│       │       └── locale.py
 │       └── storage/         # 存储层
 │           ├── __init__.py
 │           └── paths.py     # 路径管理
@@ -547,6 +553,7 @@ python -m pytest tests/ -q
 - [单元测试指南](docs/unit-testing-guide.md) — 测试结构、编写规范与运行方式
 - [Role Agent 指南](docs/role-agents-guide.md) — 预设角色子 Agent 模板
 - [Workflow 指南](docs/workflow-guide.md) — 工作流编排机制
+- [Env Info 指南](docs/env-info-guide.md) — 环境信息采集与注入，自定义 Provider 扩展
 
 ## 许可证
 
@@ -558,4 +565,4 @@ MIT License
 
 ---
 
-*最后更新：2026-06-17* — 更新项目文档，CLAUDE.md 与 README.md 信息同步
+*最后更新：2026-06-17* — 新增 env_info 环境信息采集模块，更新文档索引
