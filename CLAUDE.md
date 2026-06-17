@@ -32,6 +32,7 @@
 - `src/mini_agent/history/` — 历史压缩管理
 - `src/mini_agent/prompts/` — Prompt 管理
 - `src/mini_agent/storage/` — 存储层
+- `src/mini_agent/env_info/` — 环境信息采集与注入（Provider 抽象基类 + 注册表 + 内置 Provider）
 
 ## 开发规范
 
@@ -174,6 +175,15 @@ python main.py --provider nvidia --model qwen/qwen3.5-122b-a10b --system-tool-ca
 - `__init__.py` — 公开接口导出
 - `paths.py` — 路径管理
 
+### 环境信息采集 (`src/mini_agent/env_info/`)
+
+- `__init__.py` — 公开接口导出（EnvInfoProvider、EnvInfoRegistry、build_env_block）
+- `base.py` — EnvInfoProvider 抽象基类（name/enabled/collect/safe_collect）
+- `registry.py` — EnvInfoRegistry（注册、采集、格式化、from_config 工厂方法）
+- `providers/system.py` — SystemInfoProvider（OS、Arch、Hostname*、User*）
+- `providers/runtime.py` — RuntimeInfoProvider（Python、Venv、CWD）
+- `providers/locale.py` — LocaleInfoProvider（Timezone、Locale）
+
 ### Reminder 系统 (`src/mini_agent/reminders/`)
 
 - `loader.py` — Reminder 加载器，扫描目录解析 `.md` 文件
@@ -215,6 +225,16 @@ python main.py --provider nvidia --model qwen/qwen3.5-122b-a10b --system-tool-ca
 - 工作流编排机制，支持多步骤自动化任务执行
 - 参见 [Workflow 指南](docs/workflow-guide.md)
 
+### Env Info（环境信息采集）
+
+- 模块位置：`src/mini_agent/env_info/`
+- 抽象基类：`EnvInfoProvider`（name/enabled/collect/safe_collect）
+- 注册表：`EnvInfoRegistry`（注册、采集、格式化、from_config 工厂方法）
+- 内置 Provider：`builtin.system`、`builtin.runtime`、`builtin.locale`
+- 自定义 Provider：实现 `EnvInfoProvider` 子类，在 `agent_config.json` 的 `env_info.providers` 中注册完整类路径
+- 配置示例：`{"env_info": {"enabled": true, "providers": ["builtin.system", "myplugins.git_info.GitInfoProvider"]}}`
+- 参见 [Env Info 指南](docs/env-info-guide.md)
+
 ### 参数优先级
 
 **命令行参数 > 配置文件参数**。之前配置文件优先级更高，已修正。
@@ -233,3 +253,4 @@ python main.py --provider nvidia --model qwen/qwen3.5-122b-a10b --system-tool-ca
 - [Reminder 系统指南](docs/reminder-system-guide.md) — 动态提示注入机制使用指南
 - [单元测试指南](docs/unit-testing-guide.md) — 测试结构、编写规范与运行方式
 - [终端显示机制深度解析](docs/terminal-display-internals.md) — 线程模型、状态栏控制、三阶段状态机、token 过滤
+- [Env Info 指南](docs/env-info-guide.md) — 环境信息采集与注入，自定义 Provider 扩展
