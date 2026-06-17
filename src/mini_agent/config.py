@@ -500,6 +500,7 @@ def load_config(
     agent_name: Optional[str] = None,
     system_message_format: Optional[str] = None,
     config_file: Optional[Path] = None,
+    claude_md_file: Optional[str] = None,
     # 以下保持与旧签名兼容，内部组装到子配置块
     memory_enabled: Optional[bool] = None,
     memory_top_k: Optional[int] = None,
@@ -577,7 +578,13 @@ def load_config(
 
     # ── 核心参数 ──────────────────────────────────────────────────────────────
     api_key   = os.environ.get("ANTHROPIC_API_KEY", "")
-    claude_md = _read_claude_md(root)
+    # claude_md_file 优先级：CLI 参数 > 配置文件 > 默认 "CLAUDE.md"
+    _claude_md_filename = (
+        claude_md_file
+        or file_cfg.get("claude_md_file")
+        or "CLAUDE.md"
+    )
+    claude_md = _read_claude_md(root, filename=_claude_md_filename)
     skills_dir = _resolve_skills_dir(root)
     prompts_dir = _resolve_prompts_dir(root)
 
@@ -862,9 +869,16 @@ def _load_config_file(path: Path) -> dict:
         return {}
 
 
-def _read_claude_md(root: Path) -> str:
+def _read_claude_md(root: Path, filename: str = "CLAUDE.md") -> str:
+    """读取项目上下文文档。
+
+    Args:
+        root: 项目根目录。
+        filename: 要加载的文档名（默认 CLAUDE.md）。
+                  文件不存在时返回空字符串，不抛出异常。
+    """
     for d in [root] + list(root.parents)[:3]:
-        p = d / "CLAUDE.md"
+        p = d / filename
         if p.exists():
             try:
                 return p.read_text(encoding="utf-8")

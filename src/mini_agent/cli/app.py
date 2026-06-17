@@ -80,6 +80,7 @@ def _main_inner() -> None:
         agent_name=getattr(args, "agent_name", None),
         system_message_format=getattr(args, "system_msg_format", None),
         config_file=config_file,
+        claude_md_file=getattr(args, "claude_md_file", None),
         # 感知与记忆开关
         memory_enabled=_flag("memory"),
         memory_top_k=_flag("memory_top_k"),

@@ -91,6 +91,12 @@ def build_parser() -> argparse.ArgumentParser:
                        "command-line arguments and environment variables. "
                        "If omitted, agent_config.json in the project root is used when it exists."
                    ))
+    p.add_argument("--claude-md-file", default=None, metavar="FILENAME",
+                   help=(
+                       "Name of the project context document to load (default: CLAUDE.md). "
+                       "Can also be set via 'claude_md_file' in agent_config.json. "
+                       "If the file does not exist, the context will be empty."
+                   ))
 
     # ── 感知与记忆功能开关 ────────────────────────────────────────────────────
     perc = p.add_argument_group("perception & memory (all off by default)")
