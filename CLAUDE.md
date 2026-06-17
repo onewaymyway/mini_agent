@@ -266,7 +266,7 @@ python main.py --provider nvidia --model qwen/qwen3.5-122b-a10b --system-tool-ca
 
 - [系统概览](docs/system-overview.md) — 整体架构与模块介绍
 - [Task 日志实时查看](docs/task-focus-viewing.md) — 方向键切换查看任务日志机制
-- [终端显示机制深度解析](docs/terminal-display-internals.md) — **新增**：线程模型、状态栏控制、三阶段状态机、token 过滤
+- [终端显示机制深度解析](docs/terminal-display-internals.md) — 线程模型、状态栏控制、三阶段状态机、token 过滤
 - [终端 I/O 指南](docs/terminal-io-guide.md) — 终端渲染与输入机制
 - [任务与规划指南](docs/plan-and-task-guide.md) — 执行计划与并发任务
 - [SubAgent 机制](docs/subagent-mechanism.md) — 子 Agent 实现细节
@@ -275,5 +275,4 @@ python main.py --provider nvidia --model qwen/qwen3.5-122b-a10b --system-tool-ca
 - [图片技能指南](docs/image-skills-guide.md) — 图片识别与生成技能使用指南
 - [Reminder 系统指南](docs/reminder-system-guide.md) — 动态提示注入机制使用指南
 - [单元测试指南](docs/unit-testing-guide.md) — 测试结构、编写规范与运行方式
-- [终端显示机制深度解析](docs/terminal-display-internals.md) — 线程模型、状态栏控制、三阶段状态机、token 过滤
 - [Env Info 指南](docs/env-info-guide.md) — 环境信息采集与注入，自定义 Provider 扩展
