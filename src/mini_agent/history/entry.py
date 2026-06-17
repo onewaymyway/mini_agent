@@ -35,7 +35,7 @@ Raw history 专用类型（不出现在当前状态 history 中）：
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime
 from enum import Enum
 from typing import Optional
 
@@ -133,9 +133,17 @@ def is_turn_boundary(msg: dict) -> bool:
 # ── 时间戳辅助 ───────────────────────────────────────────────────────────────
 
 def _now_ts() -> str:
-    """返回当前 UTC 时间的 ISO 8601 字符串，精确到毫秒，例如 '2024-01-15T08:30:00.123Z'。"""
-    now = datetime.now(timezone.utc)
-    return now.strftime("%Y-%m-%dT%H:%M:%S.") + f"{now.microsecond // 1000:03d}Z"
+    """返回当前本地时间的 ISO 8601 字符串，精确到毫秒，含时区偏移。
+
+    例如：'2026-06-18T16:30:00.123+08:00'
+    - 使用本地时间（对人类更直观，日志可读性好）
+    - 含时区偏移（跨时区场景仍可排序比较，不丢失绝对时间信息）
+    """
+    now = datetime.now().astimezone()   # 本地时区
+    ms = now.microsecond // 1000
+    tz = now.strftime("%z")             # +0800
+    tz_fmt = f"{tz[:3]}:{tz[3:]}" if len(tz) == 5 else "Z"  # +08:00
+    return now.strftime("%Y-%m-%dT%H:%M:%S.") + f"{ms:03d}" + tz_fmt
 
 
 # ── 构造辅助 ─────────────────────────────────────────────────────────────────

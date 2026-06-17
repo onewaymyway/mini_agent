@@ -236,9 +236,11 @@ class SessionManager:
         # 原子写入 history.json
         _atomic_write_json(history_path, session.history)
 
-        # 可选：原子写入 raw_history.json
-        if raw_history is not None:
-            raw_path = session_dir / "raw_history.json"
+        # raw_history：新格式已通过 set_path() 实时写入 raw_history.jsonl，
+        # 此处无需再写一次；save_to_file 仅作为旧格式兼容路径的后备。
+        if raw_history is not None and raw_history._file is None:
+            # 未绑定实时写入路径时（如测试环境），才走批量写入
+            raw_path = session_dir / "raw_history.jsonl"
             raw_history.save_to_file(raw_path)
 
         session.file_path = str(meta_path)

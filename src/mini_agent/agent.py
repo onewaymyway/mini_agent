@@ -372,6 +372,16 @@ class Agent:
             except Exception:
                 pass
 
+        # raw history 绑定 .jsonl 路径 → 之后每次 append() 立即落盘
+        try:
+            from mini_agent.storage.paths import AgentPaths
+            from pathlib import Path as _Path
+            raw_path = AgentPaths(self.cfg.project_root).session_dir(self._session.id) / "raw_history.jsonl"
+            self._hist._raw.set_path(raw_path)
+        except Exception as _e:
+            import sys
+            print(f"[raw_history] set_path failed: {_e}", file=sys.stderr)
+
     def _append_memory_delta(self, entry) -> None:
         """将本 session 产生的记忆条目追加到 memory_delta.jsonl（审计用）。"""
         if not self._session:
@@ -616,14 +626,20 @@ class Agent:
         self.stats.tool_stats    = session.stats.get("tool_stats", {}) or {}
         self.stats.skill_activations = session.stats.get("skill_activations", {}) or {}
 
-        # 同步加载 raw_history.json（存在时）
+        # 同步加载 raw_history（先 clear，再 load，最后 set_path 绑定实时写入）
+        self._hist._raw.clear()
         if session.file_path:
             from pathlib import Path as _Path
-            raw_path = _Path(session.file_path).parent / "raw_history.json"
-            self._hist._raw.clear()
-            self._hist._raw.load_from_file(raw_path)
+            session_dir = _Path(session.file_path).parent
+            # 优先加载新格式 .jsonl，回退旧格式 .json
+            raw_jsonl = session_dir / "raw_history.jsonl"
+            raw_json  = session_dir / "raw_history.json"
+            if raw_jsonl.exists():
+                self._hist._raw.load_from_file(raw_jsonl)
+            elif raw_json.exists():
+                self._hist._raw.load_from_file(raw_json)
 
-        # 切换 session 后重新绑定 TaskManager / debug logger
+        # 切换 session 后重新绑定 TaskManager / debug logger / raw_history 路径
         self._bind_session_extras()
         return True
 
