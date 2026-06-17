@@ -381,6 +381,10 @@ class TestTagStrippingInHistory:
         agent.cfg = cfg
         agent.skill_loader = None
         agent._history = []
+
+        from mini_agent.history_manager import HistoryManager
+        agent._hist          = HistoryManager(cfg=agent.cfg, skill_loader=getattr(agent, 'skill_loader', None))
+        agent._hist._history = agent._history  # 共享同一列表
         agent.stats = SessionStats()
         return agent
 

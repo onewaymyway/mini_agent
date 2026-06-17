@@ -19,6 +19,12 @@ history/compression.py — 历史压缩策略框架
   # 自定义策略：
   from mini_agent.history.compression import register_strategy
   register_strategy("my_strategy", MyStrategy)
+
+类型化版本改动：
+  - 所有字符串前缀判断（startswith "<tool_result"、"[Previous" 等）
+    改为通过 _type 字段判断（is_turn_boundary / is_tool_result 等辅助函数）
+  - 向后兼容：辅助函数在无 _type 字段时降级到字符串前缀判断
+  - compress() 返回的新 history 条目使用 make_compressed() 等构造函数，自带 _type
 """
 
 from __future__ import annotations
@@ -26,6 +32,15 @@ from __future__ import annotations
 import copy
 from abc import ABC, abstractmethod
 from typing import TYPE_CHECKING, Optional
+
+from mini_agent.history.entry import (
+    HType,
+    is_real_user_input,
+    is_tool_result,
+    is_turn_boundary,
+    make_compressed,
+    make_compact_summary,
+)
 
 if TYPE_CHECKING:
     from mini_agent.llm.base import LLMClient
@@ -59,7 +74,7 @@ class CompressionStrategy(ABC):
             llm_client: LLM 客户端（LLMSummaryStrategy 需要，其他策略可忽略）
 
         Returns:
-            压缩后的新历史列表
+            压缩后的新历史列表（条目含 _type 字段）
         """
         ...
 
@@ -84,6 +99,7 @@ class TurnAlignedStrategy(CompressionStrategy):
       · 不产生孤立的 tool_result（无对应 tool_use）
     - 摘要文字：拼接被压缩的 user 消息 + 工具调用计数
     - 无额外依赖，离线可用
+    - 使用 _type 字段精确判断 turn 边界（而非字符串前缀）
     """
 
     def compress(self, history, cfg, llm_client=None) -> list[dict]:
@@ -101,9 +117,9 @@ class TurnAlignedStrategy(CompressionStrategy):
         summary_text = _build_summary_text(old_turns, cutoff)
 
         return [
-            {"role": "user",      "content": "[Previous conversation compressed]"},
-            {"role": "assistant", "content": f"[Compressed summary: {summary_text}]"},
-        ] + keep
+            make_compressed(),
+            make_compact_summary(f"[Compressed summary: {summary_text}]"),
+        ] + list(keep)
 
 
 class SlidingWindowStrategy(CompressionStrategy):
@@ -116,6 +132,8 @@ class SlidingWindowStrategy(CompressionStrategy):
 
     配置：通过 cfg.compress 中未来可扩展的 window_turns 字段控制；
           当前版本默认保留最近 5 个完整 turn。
+
+    使用 _type 字段精确识别真实用户输入（而非字符串前缀）。
     """
 
     def __init__(self, window_turns: int = 5) -> None:
@@ -125,14 +143,10 @@ class SlidingWindowStrategy(CompressionStrategy):
         if len(history) < 6:
             return list(history)
 
-        # 收集所有 user 消息起始索引（过滤掉 tool_result 和压缩占位符）
+        # 收集所有真实用户消息的起始索引（用 is_turn_boundary 精确识别）
         turn_starts = [
             i for i, m in enumerate(history)
-            if m.get("role") == "user"
-            and isinstance(m.get("content"), str)
-            and not m["content"].startswith("<tool_result")
-            and not m["content"].startswith("[Previous")
-            and not m["content"].startswith("[Compressed")
+            if is_turn_boundary(m)
         ]
 
         if len(turn_starts) <= self.window_turns:
@@ -143,9 +157,9 @@ class SlidingWindowStrategy(CompressionStrategy):
 
         dropped_turns = len(turn_starts) - self.window_turns
         return [
-            {"role": "user",      "content": "[Previous conversation compressed]"},
-            {"role": "assistant", "content": f"[{dropped_turns} earlier turns dropped by sliding window]"},
-        ] + keep
+            make_compressed(),
+            make_compact_summary(f"[{dropped_turns} earlier turns dropped by sliding window]"),
+        ] + list(keep)
 
     @property
     def name(self) -> str:
@@ -177,13 +191,13 @@ class LLMSummaryStrategy(CompressionStrategy):
         keep = history[cutoff:]
 
         from mini_agent.prompts import pm
-        # 构建摘要请求：把被压缩的历史 + 摘要指令发给 LLM
-        summary_messages = list(old_turns) + [
+        from mini_agent.history.entry import to_llm_messages
+        # 构建摘要请求：把被压缩的历史（剥离 _type）+ 摘要指令发给 LLM
+        summary_messages = to_llm_messages(list(old_turns)) + [
             {"role": "user", "content": pm.render("user/compress_summary_request")}
         ]
 
         try:
-            from mini_agent.llm.base import ToolSchema
             response = llm_client.chat_with_retry(
                 messages=summary_messages,
                 system=pm.render("system/compress_summarizer"),
@@ -199,9 +213,9 @@ class LLMSummaryStrategy(CompressionStrategy):
             keep = _drop_orphan_tool_results(keep)
 
         return [
-            {"role": "user",      "content": "[Previous conversation compressed]"},
-            {"role": "assistant", "content": f"[Summary of earlier conversation:\n{summary_text}]"},
-        ] + keep
+            make_compressed(),
+            make_compact_summary(f"[Summary of earlier conversation:\n{summary_text}]"),
+        ] + list(keep)
 
 
 # ════════════════════════════════════════════════════════════════════════════════
@@ -254,18 +268,16 @@ def list_strategies() -> list[str]:
 
 
 # ════════════════════════════════════════════════════════════════════════════════
-# 共享辅助函数
+# 共享辅助函数（使用 _type 字段，向后兼容字符串前缀）
 # ════════════════════════════════════════════════════════════════════════════════
 
 def _find_turn_aligned_cutoff(history: list[dict]) -> int:
-    """找最靠近历史中点的 user 消息索引作为切割点。"""
+    """找最靠近历史中点的真实用户消息索引作为切割点。
+    使用 is_turn_boundary() 精确识别（含向后兼容）。
+    """
     user_indices = [
         i for i, m in enumerate(history)
-        if m.get("role") == "user"
-        and isinstance(m.get("content"), str)
-        and not m["content"].startswith("<tool_result")
-        and not m["content"].startswith("[Previous")
-        and not m["content"].startswith("[Compressed")
+        if is_turn_boundary(m)
     ]
     if len(user_indices) < 2:
         return len(history) // 2
@@ -277,25 +289,19 @@ def _find_turn_aligned_cutoff(history: list[dict]) -> int:
 
 
 def _drop_orphan_tool_results(history: list[dict]) -> list[dict]:
-    """剔除保留段中没有对应 tool_use 的孤立 tool_result 消息。"""
-    return [
-        m for m in history
-        if not (
-            m.get("role") == "user"
-            and isinstance(m.get("content"), str)
-            and m["content"].startswith("<tool_result")
-        )
-    ]
+    """剔除保留段中没有对应 tool_use 的孤立 tool_result 消息。
+    使用 is_tool_result() 精确识别（含向后兼容）。
+    """
+    return [m for m in history if not is_tool_result(m)]
 
 
 def _build_summary_text(old_turns: list[dict], cutoff: int) -> str:
-    """从被压缩的消息中生成摘要字符串。"""
+    """从被压缩的消息中生成摘要字符串。
+    使用 is_real_user_input() 精确识别真实用户消息（含向后兼容）。
+    """
     user_msgs = [
         m["content"] for m in old_turns
-        if m.get("role") == "user"
-        and isinstance(m.get("content"), str)
-        and not m["content"].startswith("<tool_result")
-        and not m["content"].startswith("[Previous session")
+        if is_real_user_input(m) and isinstance(m.get("content"), str)
     ]
     tool_call_count = sum(
         sum(1 for b in m.get("content", [])

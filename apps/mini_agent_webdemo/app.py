@@ -958,11 +958,32 @@ def _ts() -> str:
 
 
 def _history_to_messages(hist_messages: list) -> list:
-    """将后端 /v1/history 返回的 messages 转换为对话面板格式（仅 user/assistant 纯文本）。"""
+    """将后端 /v1/history 返回的 messages 转换为对话面板格式（仅 user/assistant 纯文本）。
+
+    使用 _type 字段精确过滤（向后兼容：无 _type 时用字符串前缀判断）。
+    仅展示真实用户输入（user_input）和 assistant 回复（assistant_reply）。
+    """
+    # 仅展示的 _type 白名单（None 表示旧格式条目，按字符串前缀判断）
+    _SHOW_TYPES = {"user_input", "assistant_reply", None}
+    # 旧格式排除前缀
+    _SKIP_PREFIXES = ("<tool_result", "[Previous", "[Compressed")
+
     result = []
     for m in hist_messages or []:
         role = m.get("role", "")
         c    = m.get("content", "")
+        _type = m.get("_type")
+
+        # 有 _type 时精确过滤
+        if _type is not None:
+            if _type not in _SHOW_TYPES:
+                continue
+        else:
+            # 向后兼容：无 _type 时用旧逻辑
+            if role == "user" and isinstance(c, str):
+                if any(c.startswith(p) for p in _SKIP_PREFIXES):
+                    continue
+
         text = ("".join(x.get("text", "") for x in c
                         if isinstance(x, dict) and x.get("type") == "text")
                 if isinstance(c, list) else str(c))

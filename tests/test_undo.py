@@ -64,6 +64,10 @@ def make_agent(responses: list[str]) -> "object":
     agent.cfg          = cfg
     agent.stats        = SessionStats()
     agent._history     = []
+
+    from mini_agent.history_manager import HistoryManager
+    agent._hist          = HistoryManager(cfg=agent.cfg, skill_loader=getattr(agent, 'skill_loader', None))
+    agent._hist._history = agent._history  # 共享同一列表
     agent._turn_snapshot = None
     agent._file_watcher  = None
     agent._tool_cache    = None

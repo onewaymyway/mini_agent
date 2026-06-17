@@ -189,10 +189,14 @@ class SessionManager:
         session: Session,
         history: list[dict],
         stats: dict,
+        raw_history=None,
     ) -> Path:
         """
         将当前对话历史和统计写入 Session 目录。
-        首次保存时创建目录，后续更新同一目录下的两个文件。
+        首次保存时创建目录，后续更新同一目录下的文件。
+
+        Args:
+            raw_history: 可选的 RawHistory 实例，若传入则同步保存 raw_history.json
 
         Returns:
             meta.json 的路径
@@ -201,12 +205,21 @@ class SessionManager:
         session.history = _serialize_history(history)
         session.stats = dict(stats)
 
-        # 从历史中提取标题（首条用户消息）
+        # 从历史中提取标题（首条真实用户消息）
         if session.title in ("New session", "") and history:
             for msg in history:
                 if msg.get("role") == "user":
+                    # 优先用 _type=user_input 的消息；向后兼容时检查非前缀
+                    _t = msg.get("_type")
                     content = msg.get("content", "")
-                    if isinstance(content, str) and content.strip():
+                    is_real = (
+                        (_t == "user_input")
+                        or (_t is None and isinstance(content, str)
+                            and not content.startswith("<tool_result")
+                            and not content.startswith("[Previous")
+                            and not content.startswith("[Compressed"))
+                    )
+                    if is_real and isinstance(content, str) and content.strip():
                         title = content.strip().replace("\n", " ")
                         session.title = title[:40] + ("…" if len(title) > 40 else "")
                         break
@@ -222,6 +235,11 @@ class SessionManager:
 
         # 原子写入 history.json
         _atomic_write_json(history_path, session.history)
+
+        # 可选：原子写入 raw_history.json
+        if raw_history is not None:
+            raw_path = session_dir / "raw_history.json"
+            raw_history.save_to_file(raw_path)
 
         session.file_path = str(meta_path)
         return meta_path
@@ -492,11 +510,14 @@ def _atomic_write_json(path: Path, data: object) -> None:
 
 
 def _serialize_history(history: list[dict]) -> list[dict]:
-    """将 history 序列化为可 JSON 化的格式，处理 SDK content block 对象。"""
+    """将 history 序列化为可 JSON 化的格式，处理 SDK content block 对象。
+    保留 _type 字段（如有），确保存储后 _type 信息不丢失。
+    """
     result = []
     for msg in history:
         role = msg.get("role", "")
         content = msg.get("content", "")
+        _type = msg.get("_type")  # 保留 _type
         if isinstance(content, list):
             serialized_content = []
             for block in content:
@@ -512,9 +533,12 @@ def _serialize_history(history: list[dict]) -> list[dict]:
                         serialized_content.append(d)
                     except Exception:
                         serialized_content.append({"type": "unknown", "raw": str(block)})
-            result.append({"role": role, "content": serialized_content})
+            entry = {"role": role, "content": serialized_content}
         else:
-            result.append({"role": role, "content": content})
+            entry = {"role": role, "content": content}
+        if _type is not None:
+            entry["_type"] = str(_type)  # HType.__str__ 返回 value（如 "user_input"）
+        result.append(entry)
     return result
 
 

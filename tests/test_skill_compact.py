@@ -310,6 +310,10 @@ class TestAgentSkillCompact:
         agent.cfg          = cfg
         agent.skill_loader = loader
         agent._history     = []
+
+        from mini_agent.history_manager import HistoryManager
+        agent._hist          = HistoryManager(cfg=agent.cfg, skill_loader=getattr(agent, 'skill_loader', None))
+        agent._hist._history = agent._history  # 共享同一列表
         agent._project_snapshot = None
         agent._memory        = None
         agent.stats          = SessionStats()

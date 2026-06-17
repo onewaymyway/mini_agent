@@ -404,6 +404,7 @@ class Agent:
                 self._session,
                 history=self._history,
                 stats=stats,
+                raw_history=self._hist._raw,
             )
 
             # [SYS-SUMMARY] 达到门槛后生成/刷新 session 摘要与记忆（耗时较长，放到后台线程，避免阻塞主流程）
@@ -523,13 +524,10 @@ class Agent:
         try:
             if history is None:
                 history = self._history
+            from mini_agent.history.entry import is_real_user_input
             user_turns = [
                 m["content"] for m in history
-                if m.get("role") == "user"
-                and isinstance(m.get("content"), str)
-                and not m["content"].startswith("<tool_result")
-                and not m["content"].startswith("[Compressed")
-                and not m["content"].startswith("[Previous session")
+                if is_real_user_input(m) and isinstance(m.get("content"), str)
             ]
             if not user_turns:
                 if force:
@@ -562,7 +560,12 @@ class Agent:
                     "skill_activations": self.stats.skill_activations,
                 }
                 try:
-                    self._session_mgr.save(self._session, history=history, stats=stats)
+                    self._session_mgr.save(
+                        self._session,
+                        history=history,
+                        stats=stats,
+                        raw_history=self._hist._raw,
+                    )
                 except Exception as e:
                     R.print_warning(f"[summary] session re-save failed: {e}")
 
@@ -612,8 +615,15 @@ class Agent:
         self.stats.tool_calls    = session.stats.get("tool_calls", 0)
         self.stats.tool_stats    = session.stats.get("tool_stats", {}) or {}
         self.stats.skill_activations = session.stats.get("skill_activations", {}) or {}
-        # 切换 session 后重新绑定 TaskManager / debug logger，
-        # 确保后续 SubAgent / LLM debug 日志写入新激活的 session 目录
+
+        # 同步加载 raw_history.json（存在时）
+        if session.file_path:
+            from pathlib import Path as _Path
+            raw_path = _Path(session.file_path).parent / "raw_history.json"
+            self._hist._raw.clear()
+            self._hist._raw.load_from_file(raw_path)
+
+        # 切换 session 后重新绑定 TaskManager / debug logger
         self._bind_session_extras()
         return True
 
@@ -792,9 +802,11 @@ class Agent:
                     inject_as=profile.inject_as,
                 )
 
-                # 注入反馈到历史
+                # 注入反馈到历史（带 _type=role_agent）
                 inject_msg = build_inject_message(feedback)
-                self._history.append(inject_msg)
+                from mini_agent.history.entry import HType
+                inject_typed = dict(inject_msg, _type=HType.ROLE_AGENT)
+                self._hist.append_raw_dict(inject_typed)
 
                 if score is not None:
                     score_pct = int(score * 100)
@@ -811,7 +823,7 @@ class Agent:
                     "请根据上方评估反馈，对你的回答进行修订和改进。"
                     "重点解决指出的具体问题，保持其他优点不变。"
                 )
-                self._history.append({"role": "user", "content": revision_prompt})
+                self._hist.append_user(revision_prompt)
                 self.stats.turns += 1
                 current_output = self._agentic_loop()
 
@@ -993,16 +1005,33 @@ class Agent:
         # 压缩历史：保留摘要 + 重附 skill 块
         skill_block = self._build_skill_compact_block()
 
+        from mini_agent.history.entry import (
+            make_session_resume, make_compact_summary, make_skill_context
+        )
+        # 记录 compact 事件到 raw history（_hist 可能在测试用的手工构造 agent 中不存在）
+        _hist = getattr(self, "_hist", None)
+        if _hist is not None:
+            _hist._raw.append_compact_event(
+                before_count=len(self._history),
+                after_count=2,
+                strategy="compact_with_skills",
+            )
+
         new_history: list[dict] = [
-            {"role": "user",      "content": "[Previous session summary]"},
-            {"role": "assistant", "content": result},
+            make_session_resume("[Previous session summary]"),
+            make_compact_summary(result),
         ]
         if skill_block:
-            new_history.append({"role": "user", "content": skill_block})
+            new_history.append(make_skill_context(skill_block))
 
         # 原地替换，保持共享引用有效
         self._history.clear()
         self._history.extend(new_history)
+
+        # 同步 raw history（追加新条目）
+        if _hist is not None:
+            for msg in new_history:
+                _hist._raw.append(msg)
 
         # 同步 session
         if getattr(self.cfg, "auto_save_session", True):
@@ -1056,7 +1085,7 @@ class Agent:
             # [SYS-UNDO] 在追加用户消息前保存快照，用于 retry/rollback
             self._save_turn_snapshot()
 
-            self._history.append({"role": "user", "content": user_message})
+            self._hist.append_user(user_message)
             self.stats.turns += 1
 
             # [SYS-REMINDER] 用户意图触发：在用户消息入队后，检查是否需要注入 reminder
@@ -1132,9 +1161,7 @@ class Agent:
 
             # 执行工具调用，结果写回历史
             tool_results, result_strs = self._execute_tools(response)
-            self._history.append(
-                self._build_tool_result_message(response.tool_calls, result_strs)
-            )
+            self._hist.append_tool_results(response.tool_calls, result_strs)
 
             # [SYS-REMINDER] 工具执行后：检查出错 / 成功输出，注入对应 reminder
             self._inject_reminders_for_tool_results(response.tool_calls, result_strs)
@@ -1162,9 +1189,10 @@ class Agent:
         _stream_sig = _inspect.signature(self._llm.stream)
         _supports_on_reasoning = "on_reasoning" in _stream_sig.parameters
 
-        # 转换消息：将 tool_use 类型转换为 text 类型（用于不支持 tool_use 的模型）
+        # 转换消息：先剥离 _type 字段，再将 tool_use 类型转换为 text 类型（用于不支持 tool_use 的模型）
         from mini_agent.llm.system_tool_call import convert_tool_use_to_text
-        messages_for_llm = convert_tool_use_to_text(self._history)
+        from mini_agent.history.entry import to_llm_messages
+        messages_for_llm = convert_tool_use_to_text(to_llm_messages(self._history))
 
         def _do_single_call() -> LLMResponse:
             """单次 LLM 调用，流式/非流式统一封装。重试时每次重新调用此函数。"""
@@ -1237,46 +1265,36 @@ class Agent:
 
     def _append_assistant_response(self, response: LLMResponse) -> None:
         """
-        将 LLMResponse 转换为对话历史条目。
+        将 LLMResponse 转换为对话历史条目（委托给 HistoryManager）。
         使用 provider 无关的通用格式（Anthropic/OpenAI 均可接受）。
         <skill_used> 标签在此处剥离，不写入历史（避免污染后续对话上下文）。
         """
-        from mini_agent.skills.usage_detector import strip_skill_tags
-        content: list[dict] = []
-        if response.text:
-            clean_text = strip_skill_tags(response.text)
-            if clean_text:
-                content.append({"type": "text", "text": clean_text})
-        for tc in response.tool_calls:
-            content.append({
-                "type": "tool_use",
-                "id": tc.id,
-                "name": tc.name,
-                "input": tc.input,
-            })
-        self._history.append({"role": "assistant", "content": content})
+        self._hist.append_assistant(response)
 
     # ── Reminder 注入辅助方法 ──────────────────────────────────────────────────
 
     def _inject_reminder(self, reminder) -> None:
-        """将单条 reminder 格式化后追加到对话历史。"""
-        if self._reminder_mgr is None:
+        """将单条 reminder 格式化后追加到对话历史（带 _type=reminder）。"""
+        if getattr(self, "_reminder_mgr", None) is None:
             return
         msg = ReminderManager.format_injection(reminder)
-        self._history.append(msg)
+        # 通过 append_raw_dict 追加，msg 中已有 role/content，补上 _type
+        from mini_agent.history.entry import HType
+        msg_typed = dict(msg, _type=HType.REMINDER)
+        self._hist.append_raw_dict(msg_typed)
         if getattr(self.cfg.reminder, "verbose", False):
             R.print_info(f"[reminder] 注入: {reminder.name!r} → role={msg['role']}:{reminder.content}")
 
     def _inject_reminders_for_user_intent(self, user_message: str) -> None:
         """用户消息进入时检查并注入 user_intent 类型 reminder。"""
-        if self._reminder_mgr is None:
+        if getattr(self, "_reminder_mgr", None) is None:
             return
         for r in self._reminder_mgr.check_user_intent(user_message):
             self._inject_reminder(r)
 
     def _inject_reminders_for_tool_results(self, tool_calls, result_strs: list) -> None:
         """工具执行后，逐个工具检查 tool_error / post_tool reminder。"""
-        if self._reminder_mgr is None:
+        if getattr(self, "_reminder_mgr", None) is None:
             return
         for tc, result_str in zip(tool_calls, result_strs):
             tool_name = getattr(tc, "name", "") or ""
@@ -1289,7 +1307,7 @@ class Agent:
 
     def _inject_reminders_for_pattern(self, assistant_text: str) -> None:
         """assistant 输出后检查 pattern 类型 reminder。"""
-        if self._reminder_mgr is None:
+        if getattr(self, "_reminder_mgr", None) is None:
             return
         for r in self._reminder_mgr.check_assistant_text(assistant_text):
             self._inject_reminder(r)
@@ -1320,13 +1338,21 @@ class Agent:
         _seen_in_history: dict[tuple[str, str], str] = {}
         _TR_OPEN = "<tool_result>"
         _TR_CLOSE = "</tool_result>"
+        from mini_agent.history.entry import HType as _HType
         for _msg in reversed(self._history):
             if _msg.get("role") != "user":
                 continue
+            # 用 _type 精确识别 tool_result（向后兼容无 _type 时用字符串前缀）
+            _mt = _msg.get("_type")
             _c = _msg.get("content", "")
-            if not isinstance(_c, str) or not _c.startswith(_TR_OPEN):
+            _is_tr = (
+                _mt == _HType.TOOL_RESULT
+                if _mt is not None
+                else (isinstance(_c, str) and _c.startswith(_TR_OPEN))
+            )
+            if not _is_tr:
                 break   # 碰到非 tool_result 消息就停，本 turn 的都扫完了
-            if '"\"name\":' in _c and '"\"output\":' in _c:
+            if isinstance(_c, str) and '"name"' in _c and '"output"' in _c:
                 try:
                     _start = len(_TR_OPEN) + 1
                     _end = _c.rfind(_TR_CLOSE) - 1
@@ -1540,24 +1566,20 @@ class Agent:
         """
         [SYS-COMPRESS] 自动压缩历史，保留最近一半，并重附 skill 上下文。
 
-        修复（v2）：
-        1. 以「turn」为边界切割。切割点对齐到 user 消息边界，保证：
-             - 保留段的第一条消息始终是 user 消息
-             - 每条 tool_result 都有对应的 tool_use（不产生孤立工具结果）
-        2. tool_call_count 只统计 type=tool_use 的 block，而非 content 列表长度。
-        3. 原地替换列表内容，保持 self._history 共享引用有效。
+        使用 _type 字段精确识别 turn 边界（而非字符串前缀）。
         """
         if len(self._history) < 6:
             return
 
+        from mini_agent.history.entry import (
+            is_turn_boundary, is_tool_result, is_real_user_input,
+            make_compressed, make_compact_summary, make_skill_context, HType,
+        )
+
         # ── 找到以 turn 为边界的切割点 ──────────────────────────────────────
         user_indices = [
             i for i, m in enumerate(self._history)
-            if m.get("role") == "user"
-            and isinstance(m.get("content"), str)
-            and not m["content"].startswith("<tool_result")
-            and not m["content"].startswith("[Previous")
-            and not m["content"].startswith("[Compressed")
+            if is_turn_boundary(m)
         ]
 
         if len(user_indices) < 2:
@@ -1573,9 +1595,7 @@ class Agent:
         # ── 构建摘要文字 ──────────────────────────────────────────────────────
         user_msgs = [
             m["content"] for m in old_turns
-            if m.get("role") == "user" and isinstance(m.get("content"), str)
-            and not m["content"].startswith("<tool_result")
-            and not m["content"].startswith("[Previous session")
+            if is_real_user_input(m) and isinstance(m.get("content"), str)
         ]
         tool_call_count = sum(
             sum(1 for b in m.get("content", [])
@@ -1598,30 +1618,32 @@ class Agent:
         # ── 保留段：可选剔除孤立工具结果消息 ─────────────────────────────────
         keep = self._history[cutoff:]
         if self.cfg.forget_policy_enabled:
-            keep = [
-                m for m in keep
-                if not (
-                    m.get("role") == "user"
-                    and isinstance(m.get("content"), str)
-                    and m["content"].startswith("<tool_result")
-                )
-            ]
+            keep = [m for m in keep if not is_tool_result(m)]
+
+        # ── 记录 compact 事件到 raw history ─────────────────────────────────
+        _hist = getattr(self, "_hist", None)
+        if _hist is not None:
+            _hist._raw.append_compact_event(
+                before_count=len(self._history),
+                after_count=len(keep) + 2,
+                strategy="auto_compress",
+            )
 
         # ── 原地替换，保持共享引用有效 ───────────────────────────────────────
         compressed_pair = [
-            {"role": "user",      "content": "[Previous conversation compressed]"},
-            {"role": "assistant", "content": f"[Compressed summary: {summary_text}]"},
+            make_compressed(),
+            make_compact_summary(f"[Compressed summary: {summary_text}]"),
         ]
         self._history.clear()
-        self._history.extend(compressed_pair + keep)
+        self._history.extend(compressed_pair + list(keep))
 
         # [SYS-SKILL-COMPACT] 压缩后重附 skill 上下文
         skill_block = self._build_skill_compact_block()
         if skill_block:
-            self._history.append({
-                "role":    "user",
-                "content": skill_block,
-            })
+            msg = make_skill_context(skill_block)
+            self._history.append(msg)
+            if _hist is not None:
+                _hist._raw.append(msg)
 
         R.print_info(f"[compress] History compressed (cutoff={cutoff}, turn-aligned) → summary.")
 
