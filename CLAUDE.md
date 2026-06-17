@@ -29,7 +29,7 @@
 - `src/mini_agent/perception/` — 感知与记忆子系统
 - `src/mini_agent/ui/` — 终端交互（terminal.py, renderer.py, repl_input.py）
 - `src/mini_agent/api/` — HTTP API 服务
-- `src/mini_agent/history/` — 历史压缩管理
+- `src/mini_agent/history/` — 历史管理（压缩算法 + RawHistory 即时落盘 + 条目类型定义）
 - `src/mini_agent/prompts/` — Prompt 管理
 - `src/mini_agent/storage/` — 存储层
 - `src/mini_agent/env_info/` — 环境信息采集与注入（Provider 抽象基类 + 注册表 + 内置 Provider）
@@ -149,7 +149,7 @@ python main.py --provider nvidia --model qwen/qwen3.5-122b-a10b --system-tool-ca
 
 - `app.py` — 应用启动装配（解析参数、初始化组件、启动 REPL）
 - `parser.py` — CLI 参数定义
-- `repl.py` — REPL 循环和斜杠命令处理
+- `repl.py` — REPL 循环和斜杠命令处理；退出时自动打印 resume 提示（`_print_resume_hint()`）
 - `commands/` — REPL 命令处理器（concurrency, plans, sessions, skills, tasks, agents, hooks, providers 等）
 
 ### hooks (`src/mini_agent/hooks/`)
@@ -168,7 +168,28 @@ python main.py --provider nvidia --model qwen/qwen3.5-122b-a10b --system-tool-ca
 ### 历史管理 (`src/mini_agent/history/`)
 
 - `__init__.py` — 公开接口导出
-- `compression.py` — 历史压缩算法
+- `compression.py` — 历史压缩算法（turn_aligned / sliding_window / llm_summary / **selective**）
+- `raw_history.py` — Raw history 管理器（JSONL 即时落盘，每次 append() 立即写文件 + fsync，防崩溃丢失）
+- `entry.py` — 历史条目类型定义（HType 枚举）、构造辅助函数、时间戳生成（本地时间 + 时区偏移）
+
+#### History 即时落盘机制
+
+- RawHistory 从批量写 JSON 改为 JSONL 追加写 + fsync
+- 每次 `append()` 立即写一行 JSON 并 `fsync`，不等 `save_session()`
+- 即使 agent 崩溃或被强杀，raw history 仍然完整
+- 存储路径：`.agent/sessions/<id>/raw_history.jsonl`
+- Session 恢复时优先加载 `.jsonl`，回退兼容旧格式 `.json`
+- 时间戳使用本地时间 + 时区偏移（如 `2026-06-18T16:30:00.123+08:00`），对人类更直观
+
+#### Selective 压缩策略
+
+- 新增 `selective` 压缩策略（`CompressConfig.strategy = "selective"`）
+- 按 `_type` 差异化权重评分：user_input(1.0) > assistant_reply(0.9) > tool_result(0.4) > reminder(0.2)
+- 位置加权：最近 25% 的消息额外 +0.2
+- 保证最少用户轮数（`selective_min_user_turns`，默认 3）
+- `_fix_orphans()` 保证 turn 结构完整（tool_result 必须配对 assistant_reply）
+- 去重：skill_context / reminder / hook_context 只保留最新一条
+- 配置：`compress.selective_weights`（自定义权重）、`compress.selective_min_user_turns`
 
 ### 存储层 (`src/mini_agent/storage/`)
 
@@ -211,6 +232,8 @@ python main.py --provider nvidia --model qwen/qwen3.5-122b-a10b --system-tool-ca
 - Reminder 目录：`src/mini_agent/prompts/reminders/`（系统默认）+ `--reminders-dir` 指定（用户自定义）
 - 文件格式：YAML frontmatter（trigger_event/condition/priority 等）+ 正文提示内容
 - 触发事件：`tool_error`、`post_tool`、`user_intent`、`pattern`
+- **去重守卫**：同一 turn 内同名 reminder 只注入一次（`_reminder_already_in_turn()`），避免历史堆积重复噪音
+- 压缩去重：SelectiveStrategy 压缩时，skill_context / reminder / hook_context 只保留最新一条
 - CLI 参数：`--reminders-dir`、`--no-reminders`、`--reminder-verbose`
 - 技能：`reminder-generator` 从对话提取经验生成 reminder
 
