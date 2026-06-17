@@ -105,8 +105,13 @@ class CompressConfig:
     """[SYS-COMPRESS] 自动上下文压缩配置。"""
     enabled: bool = False
     threshold: float = 0.7             # token 占用率超过此值触发压缩
-    strategy: str = "turn_aligned"     # "turn_aligned" | "llm_summary" | "sliding_window"
+    strategy: str = "turn_aligned"     # "turn_aligned" | "llm_summary" | "sliding_window" | "selective"
     forget_orphan_tool_results: bool = False  # 剔除保留段中无对应 tool_use 的 tool_result
+
+    # ── SelectiveStrategy 专用 ───────────────────────────────────────────────
+    # 各 _type 保留权重（0.0=最先丢弃，1.0=始终保留），None 使用内置默认
+    selective_weights: dict = None
+    selective_min_user_turns: int = 3  # 无论 budget 多紧，至少保留这么多轮用户输入
 
 
 @dataclass

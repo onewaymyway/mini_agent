@@ -1273,9 +1273,40 @@ class Agent:
 
     # ── Reminder 注入辅助方法 ──────────────────────────────────────────────────
 
+    def _reminder_already_in_turn(self, reminder_name: str) -> bool:
+        """检查当前 turn 内是否已注入过同名 reminder（去重守卫）。
+
+        "当前 turn" 定义为：从最近一条 user_input 条目之后到历史末尾。
+        只扫 _type=reminder 的条目，按 content 中是否含 reminder_name 判断。
+        这样同一个 reminder 在同一轮内只注入一次，避免历史里堆积重复噪音。
+        """
+        from mini_agent.history.entry import HType
+        history = self._history
+        # 找最近一条 user_input 的位置
+        turn_start = 0
+        for i in range(len(history) - 1, -1, -1):
+            if history[i].get("_type") == HType.USER_INPUT:
+                turn_start = i + 1
+                break
+        # 扫 turn_start 之后的 reminder 条目
+        for msg in history[turn_start:]:
+            if msg.get("_type") == HType.REMINDER:
+                content = msg.get("content", "")
+                if isinstance(content, str) and reminder_name in content:
+                    return True
+        return False
+
     def _inject_reminder(self, reminder) -> None:
-        """将单条 reminder 格式化后追加到对话历史（带 _type=reminder）。"""
+        """将单条 reminder 格式化后追加到对话历史（带 _type=reminder）。
+
+        同一轮内同名 reminder 只注入一次（去重），避免历史里堆积重复噪音。
+        """
         if getattr(self, "_reminder_mgr", None) is None:
+            return
+        # 去重：当前 turn 已存在同名 reminder 则跳过
+        if self._reminder_already_in_turn(reminder.name):
+            if getattr(self.cfg.reminder, "verbose", False):
+                R.print_info(f"[reminder] 跳过重复注入: {reminder.name!r}")
             return
         msg = ReminderManager.format_injection(reminder)
         # 通过 append_raw_dict 追加，msg 中已有 role/content，补上 _type

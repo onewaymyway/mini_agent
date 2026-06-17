@@ -215,8 +215,13 @@ class ContextBuilder:
 
 
 def _last_user_msg(history: list[dict]) -> str:
-    """从历史中提取最近一条用户文本消息。"""
+    """从历史中提取最近一条真实用户输入文本。
+
+    使用 _type=user_input 精确识别，跳过 tool_result / skill_context /
+    reminder 等注入条目（向后兼容：无 _type 时用 is_real_user_input 字符串前缀判断）。
+    """
+    from mini_agent.history.entry import is_real_user_input
     for m in reversed(history):
-        if m.get("role") == "user" and isinstance(m.get("content"), str):
+        if is_real_user_input(m) and isinstance(m.get("content"), str):
             return m["content"]
     return ""

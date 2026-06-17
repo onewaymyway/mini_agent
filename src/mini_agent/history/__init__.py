@@ -3,6 +3,7 @@ from mini_agent.history.compression import (
     TurnAlignedStrategy,
     SlidingWindowStrategy,
     LLMSummaryStrategy,
+    SelectiveStrategy,
     create_strategy,
     register_strategy,
     list_strategies,
