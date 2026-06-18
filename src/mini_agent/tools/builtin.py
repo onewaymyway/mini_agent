@@ -361,6 +361,160 @@ def _walk(
                 _walk(base, entry, max_depth, level + 1, out, show_size=show_size)
 
 
+# ── tree_summary ──────────────────────────────────────────────────────────────
+
+# 默认忽略的目录名（不递归进入）
+_TREE_IGNORE_DIRS = frozenset({
+    ".git", ".hg", ".svn",
+    "__pycache__", ".pytest_cache", ".mypy_cache", ".ruff_cache",
+    "node_modules", ".venv", "venv", "env", ".env",
+    "dist", "build", ".build", "target",
+    ".idea", ".vscode",
+})
+
+
+@tool(
+    name="tree_summary",
+    description=(
+        "Show a compact directory skeleton: only directories with file counts and total sizes. "
+        "Much more token-efficient than list_dir for large projects. "
+        "Use at the start of a task to understand project layout without reading individual files. "
+        "Common build/cache dirs (.git, __pycache__, node_modules, .venv, etc.) are skipped automatically."
+    ),
+    schema={
+        "type": "object",
+        "properties": {
+            "path": {"type": "string", "description": "Root directory (default: cwd)"},
+            "depth": {"type": "integer", "description": "Max recursion depth (default 3)"},
+            "show_files": {
+                "type": "boolean",
+                "description": "Also list individual filenames under each directory (default false)",
+            },
+            "include_hidden": {
+                "type": "boolean",
+                "description": "Include hidden directories like .agent, .claude (default false)",
+            },
+        },
+        "required": [],
+    },
+    requires_approval=False,
+)
+def tree_summary(
+    path: str = ".",
+    depth: int = 3,
+    show_files: bool = False,
+    include_hidden: bool = False,
+) -> str:
+    root = Path(path).expanduser()
+    if not root.exists():
+        return f"[error: not found: {path}]"
+    if not root.is_dir():
+        return f"[error: not a directory: {path}]"
+
+    lines: list[str] = []
+    lines.append(f"📁 {root.name}/")
+    _tree_walk(root, depth, 0, lines, show_files=show_files, include_hidden=include_hidden)
+
+    # 全局统计
+    total_files, total_bytes = _tree_count(root, include_hidden=include_hidden)
+    lines.append(f"\n{total_files} files, {_fmt_size(total_bytes)} total")
+    return "\n".join(lines)
+
+
+def _tree_walk(
+    current: Path,
+    max_depth: int,
+    level: int,
+    out: list[str],
+    show_files: bool,
+    include_hidden: bool,
+) -> None:
+    if level >= max_depth:
+        return
+    prefix = "  " * (level + 1)
+
+    try:
+        entries = sorted(current.iterdir(), key=lambda p: p.name.lower())
+    except PermissionError:
+        out.append(f"{prefix}[permission denied]")
+        return
+
+    dirs, files = [], []
+    for e in entries:
+        name = e.name
+        if name.startswith(".") and not include_hidden:
+            continue
+        if e.is_dir():
+            if name in _TREE_IGNORE_DIRS:
+                continue
+            dirs.append(e)
+        elif e.is_file():
+            files.append(e)
+
+    # 显示文件列表（可选）
+    if show_files:
+        threshold = _large_file_threshold()
+        warn_marker = (
+            getattr(_tool_trim_cfg, "large_file_warn_marker", "⚠")
+            if _tool_trim_cfg is not None else "⚠"
+        )
+        for f in files:
+            try:
+                sz = f.stat().st_size
+                marker = f" {warn_marker}" if sz > threshold else ""
+                out.append(f"{prefix}📄 {f.name:<38} {_fmt_size(sz):>8}{marker}")
+            except OSError:
+                out.append(f"{prefix}📄 {f.name}")
+    else:
+        # 紧凑模式：只显示当前目录的文件数 + 大小
+        if files:
+            try:
+                total_sz = sum(f.stat().st_size for f in files)
+                large_count = sum(
+                    1 for f in files
+                    if f.stat().st_size > _large_file_threshold()
+                )
+                size_str = _fmt_size(total_sz)
+                warn = f"  ⚠ {large_count} large" if large_count else ""
+                out.append(f"{prefix}({len(files)} files, {size_str}{warn})")
+            except OSError:
+                out.append(f"{prefix}({len(files)} files)")
+
+    # 递归子目录
+    for d in dirs:
+        try:
+            sub_files, sub_bytes = _tree_count(d, include_hidden=include_hidden)
+        except Exception:
+            sub_files, sub_bytes = 0, 0
+        size_str = f"  [{_fmt_size(sub_bytes)}, {sub_files} files]" if not show_files else ""
+        out.append(f"{prefix}📁 {d.name}/{size_str}")
+        _tree_walk(d, max_depth, level + 1, out, show_files=show_files, include_hidden=include_hidden)
+
+
+def _tree_count(directory: Path, include_hidden: bool = False) -> tuple[int, int]:
+    """递归统计目录下的文件数和总字节数，跳过忽略目录。"""
+    total_files = 0
+    total_bytes = 0
+    try:
+        for entry in directory.iterdir():
+            name = entry.name
+            if name.startswith(".") and not include_hidden:
+                continue
+            if entry.is_file():
+                total_files += 1
+                try:
+                    total_bytes += entry.stat().st_size
+                except OSError:
+                    pass
+            elif entry.is_dir() and name not in _TREE_IGNORE_DIRS:
+                sub_f, sub_b = _tree_count(entry, include_hidden=include_hidden)
+                total_files += sub_f
+                total_bytes += sub_b
+    except PermissionError:
+        pass
+    return total_files, total_bytes
+
+
 # ── glob ──────────────────────────────────────────────────────────────────────
 
 @tool(

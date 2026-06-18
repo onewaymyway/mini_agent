@@ -2,4 +2,7 @@
 
 读取 docs/terminal-display-internals.md 内容
 
+
+使用tree_summary
+
 查看本项目的文件结构，给出本项目大致的文件目录结构
