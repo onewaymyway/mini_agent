@@ -92,12 +92,46 @@ def bash(command: str, timeout: int = 300, workdir: Optional[str] = None) -> str
 
 # ── read_file ─────────────────────────────────────────────────────────────────
 
+# [SYS-LARGEFILE] 默认大文件阈值（字节），可通过 config 覆盖
+_DEFAULT_LARGE_FILE_THRESHOLD = 20000  # 20 KB
+
+# 模块级配置引用（由 configure_large_file 注入，None 时使用默认值）
+_tool_trim_cfg = None
+
+
+def configure_large_file(cfg) -> None:
+    """注入 ToolTrimConfig，供 read_file / list_dir 读取大文件相关配置。"""
+    global _tool_trim_cfg
+    _tool_trim_cfg = cfg
+
+
+def _large_file_threshold() -> int:
+    """返回当前生效的大文件字节阈值。"""
+    if _tool_trim_cfg is not None:
+        return getattr(_tool_trim_cfg, "large_file_threshold_bytes", _DEFAULT_LARGE_FILE_THRESHOLD)
+    return _DEFAULT_LARGE_FILE_THRESHOLD
+
+
+def _fmt_size(nbytes: int) -> str:
+    """将字节数格式化为人类可读的大小字符串。"""
+    if nbytes < 1024:
+        return f"{nbytes} B"
+    elif nbytes < 1024 * 1024:
+        return f"{nbytes / 1024:.1f} KB"
+    else:
+        return f"{nbytes / (1024 * 1024):.1f} MB"
+
+
 @tool(
     name="read_file",
     description=(
         "Read the contents of a file. "
         "Supports optional line range (1-indexed, inclusive). "
-        "Returns file text with line numbers prefixed."
+        "Returns file text with line numbers prefixed. "
+        "IMPORTANT: For large files (> 100 KB), always check file size first via list_dir "
+        "or use grep/glob to locate the relevant section before reading. "
+        "Prefer start_line/end_line to read only what you need. "
+        "Pass force=true only when the full file is truly necessary."
     ),
     schema={
         "type": "object",
@@ -105,18 +139,54 @@ def bash(command: str, timeout: int = 300, workdir: Optional[str] = None) -> str
             "path": {"type": "string", "description": "File path to read"},
             "start_line": {"type": "integer", "description": "First line to read (1-indexed)"},
             "end_line": {"type": "integer", "description": "Last line to read (inclusive)"},
+            "force": {
+                "type": "boolean",
+                "description": (
+                    "Force reading the full file even if it exceeds the large-file threshold. "
+                    "Only use when the entire file content is truly necessary."
+                ),
+            },
         },
         "required": ["path"],
     },
     requires_approval=False,
 )
-def read_file(path: str, start_line: Optional[int] = None, end_line: Optional[int] = None) -> str:
-    """Read a file, optionally a line range."""
+def read_file(
+    path: str,
+    start_line: Optional[int] = None,
+    end_line: Optional[int] = None,
+    force: bool = False,
+) -> str:
+    """Read a file, optionally a line range. Large files are intercepted unless force=true."""
     p = Path(path).expanduser()
     if not p.exists():
         return f"[error: file not found: {path}]"
     if not p.is_file():
         return f"[error: not a file: {path}]"
+
+    # [SYS-LARGEFILE] 大文件检查：仅在未指定行范围且未强制时拦截
+    if not force and start_line is None and end_line is None:
+        try:
+            file_size = p.stat().st_size
+            threshold = _large_file_threshold()
+            if file_size > threshold:
+                # 统计行数（仍不读入内存，用二进制计换行符）
+                try:
+                    with p.open("rb") as f:
+                        line_count = f.read().count(b"\n") + 1
+                except Exception:
+                    line_count = None
+                line_info = f", {line_count} lines" if line_count is not None else ""
+                return (
+                    f"[large file: {_fmt_size(file_size)}{line_info} — {path}]\n"
+                    f"Reading the full file is expensive. Consider:\n"
+                    f"  • grep to locate relevant patterns first\n"
+                    f"  • read_file with start_line/end_line to read a specific range\n"
+                    f"  • read_file with force=true if the full content is truly needed"
+                )
+        except OSError:
+            pass  # stat 失败时放行，走正常路径
+
     try:
         lines = p.read_text(encoding="utf-8", errors="replace").splitlines(keepends=True)
     except Exception as e:
@@ -219,40 +289,76 @@ def delete_file(path: str) -> str:
 
 @tool(
     name="list_dir",
-    description="List files and directories. Optional depth limit (default 2).",
+    description=(
+        "List files and directories. Optional depth limit (default 2). "
+        "Displays file sizes to help identify large files before reading them. "
+        "Files exceeding the large-file threshold are marked with ⚠."
+    ),
     schema={
         "type": "object",
         "properties": {
             "path": {"type": "string", "description": "Directory path (default: cwd)"},
             "depth": {"type": "integer", "description": "Max recursion depth (default 2)"},
+            "show_size": {
+                "type": "boolean",
+                "description": "Show file sizes (default true). Set false to reduce output length.",
+            },
         },
         "required": [],
     },
     requires_approval=False,
 )
-def list_dir(path: str = ".", depth: int = 2) -> str:
+def list_dir(path: str = ".", depth: int = 2, show_size: bool = True) -> str:
+    # [SYS-LARGEFILE] show_size 可由 config 默认值覆盖
+    if _tool_trim_cfg is not None:
+        show_size = getattr(_tool_trim_cfg, "list_dir_show_size", show_size)
     root = Path(path).expanduser()
     if not root.exists():
         return f"[error: not found: {path}]"
     lines: list[str] = []
-    _walk(root, root, depth, 0, lines)
+    _walk(root, root, depth, 0, lines, show_size=show_size)
     return "\n".join(lines) or "(empty)"
 
 
-def _walk(base: Path, current: Path, max_depth: int, level: int, out: list[str]) -> None:
+def _walk(
+    base: Path,
+    current: Path,
+    max_depth: int,
+    level: int,
+    out: list[str],
+    show_size: bool = True,
+) -> None:
     prefix = "  " * level
     try:
         entries = sorted(current.iterdir(), key=lambda p: (p.is_file(), p.name.lower()))
     except PermissionError:
         out.append(f"{prefix}[permission denied]")
         return
+    # [SYS-LARGEFILE] 获取当前配置的阈值和标记符
+    threshold = _large_file_threshold()
+    warn_marker = (
+        getattr(_tool_trim_cfg, "large_file_warn_marker", "⚠")
+        if _tool_trim_cfg is not None
+        else "⚠"
+    )
     for entry in entries:
         if entry.name.startswith(".") and level > 0:
             continue  # skip hidden unless top-level
-        icon = "📄" if entry.is_file() else "📁"
-        out.append(f"{prefix}{icon} {entry.name}")
-        if entry.is_dir() and level < max_depth - 1:
-            _walk(base, entry, max_depth, level + 1, out)
+        if entry.is_file():
+            if show_size:
+                try:
+                    size = entry.stat().st_size
+                    size_str = _fmt_size(size)
+                    marker = f" {warn_marker}" if size > threshold else ""
+                    out.append(f"{prefix}📄 {entry.name:<40} {size_str:>8}{marker}")
+                except OSError:
+                    out.append(f"{prefix}📄 {entry.name}")
+            else:
+                out.append(f"{prefix}📄 {entry.name}")
+        else:
+            out.append(f"{prefix}📁 {entry.name}")
+            if entry.is_dir() and level < max_depth - 1:
+                _walk(base, entry, max_depth, level + 1, out, show_size=show_size)
 
 
 # ── glob ──────────────────────────────────────────────────────────────────────

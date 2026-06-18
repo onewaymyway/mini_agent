@@ -106,8 +106,9 @@ class Agent:
     ) -> None:
         self.cfg = cfg
 
-        from mini_agent.tools.builtin import configure_web_search
+        from mini_agent.tools.builtin import configure_web_search, configure_large_file
         configure_web_search(cfg)
+        configure_large_file(cfg.tool_trim)
 
         self.registry = registry or get_default_registry()
         self.skill_loader = skill_loader

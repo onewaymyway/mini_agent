@@ -122,6 +122,10 @@ class ToolTrimConfig:
     bash_tail_ratio: float = 0.6       # bash 结果：尾部保留比例（错误/输出通常在尾部）
     read_window_lines: int = 0         # read_file：滑动窗口行数（0=自动推算）
     grep_max_lines: int = 50           # grep/glob：最大保留行数
+    # [SYS-LARGEFILE] 大文件感知
+    large_file_threshold_bytes: int = 20000  # 超过此字节数视为大文件（默认 20 KB）
+    list_dir_show_size: bool = True            # list_dir 是否显示文件大小
+    large_file_warn_marker: str = "⚠"         # 大文件在 list_dir 中的标记符
 
 
 @dataclass
