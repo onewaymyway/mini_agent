@@ -189,6 +189,39 @@ mini-agent --retry-backoff linear --retry-backoff-step 60 --retry-backoff-max 30
 
 详见 [LLM 重试退避策略指南](retry-backoff-guide.md)。
 
+### LLM Fallback Chain（多配置故障转移 + 多 Key 轮转）
+
+通过 `llm_fallback_chain` 配置多套 LLM 配置（第一条为主配置），在当前配置重试耗尽后自动切换到下一条。
+每条配置可配置多个 API key，遇到 rate limit 时立即切换 key，无需等待退避。
+
+```json
+{
+  "llm_fallback_chain": [
+    {
+      "provider": "anthropic",
+      "model": "claude-opus-4-7",
+      "api_keys": ["sk-ant-aaa...", "sk-ant-bbb..."],
+      "key_rotation": "passive"
+    },
+    {
+      "provider": "openai",
+      "model": "gpt-4o",
+      "api_key": "sk-openai-backup..."
+    }
+  ],
+  "llm_fallback_on": ["LLMRateLimitError", "LLMTimeoutError", "LLMProviderError"]
+}
+```
+
+AppConfig 新增字段：
+
+| 字段 | 类型 | 默认值 | 说明 |
+|------|------|--------|------|
+| `llm_fallback_chain` | list | `[]` | 配置链，空时退化为单条主配置 |
+| `llm_fallback_on` | list\|null | `null`（使用内置默认值） | 触发 fallback 的错误类名称集合 |
+
+详见 [LLM 多配置故障转移指南](llm-failover-guide.md)。
+
 ---
 
 ## 3. 配置加载优先级

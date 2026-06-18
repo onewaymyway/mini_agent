@@ -353,6 +353,14 @@ class AppConfig:
     max_llm_calls: int = 8
     system_message_format: str = "system_field"
 
+    # ── LLM Fallback Chain（多配置故障转移 + 多 key 轮转）────────────────────
+    # 每条 dict 至少包含 provider/model/api_key；
+    # 可含 api_keys（列表）、key_rotation、key_switch_on、key_cooldown。
+    # 若为空列表，退化为只使用主配置的单条链。
+    llm_fallback_chain: list = field(default_factory=list)
+    # 触发切换到下一条 LLM 配置的错误类名称集合（None = 使用 LLMClientPool 默认值）
+    llm_fallback_on: Optional[list] = None
+
     # ── System prompt 注入 ────────────────────────────────────────────────────
     claude_md_content: str = ""
     system_extra: str = ""
@@ -747,6 +755,12 @@ def load_config(
         backoff_max_delay=_fn("llm_retry_backoff_max_delay", llm_retry_backoff_max_delay, 0.0),
     )
 
+    # ── LLM Fallback Chain ────────────────────────────────────────────────────
+    # 从配置文件读取（CLI 不支持直接传 chain，只能通过 JSON 配置文件）
+    _llm_fallback_chain: list = file_cfg.get("llm_fallback_chain", [])
+    _llm_fallback_on_raw = file_cfg.get("llm_fallback_on", None)
+    _llm_fallback_on: Optional[list] = list(_llm_fallback_on_raw) if _llm_fallback_on_raw else None
+
     # ── 初始化调试日志（需要在 AppConfig 构建前完成）─────────────────────────
     if _debug_llm_v:
         from mini_agent.llm.debug_logger import DebugConfig as LLMDebugConfig, init_debug_logger
@@ -877,6 +891,8 @@ def load_config(
         reminder=reminder_cfg,
         role_agent=role_agent_cfg,
         env_info=env_info_cfg,
+        llm_fallback_chain=_llm_fallback_chain,
+        llm_fallback_on=_llm_fallback_on,
     )
 
 

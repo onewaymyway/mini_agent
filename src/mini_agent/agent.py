@@ -25,6 +25,7 @@ from mini_agent.llm import (
     create_client, LLMError,
 )
 from mini_agent.llm.retry import RetryPolicy, default_retry_policy, no_retry_policy, parse_backoff
+from mini_agent.llm.client_pool import LLMClientPool
 from mini_agent.permissions import PermissionGuard
 from mini_agent.skills import SkillLoader
 from mini_agent.tools import ToolRegistry, get_default_registry
@@ -106,9 +107,8 @@ class Agent:
     ) -> None:
         self.cfg = cfg
 
-        from mini_agent.tools.builtin import configure_web_search, configure_large_file
+        from mini_agent.tools.builtin import configure_web_search
         configure_web_search(cfg)
-        configure_large_file(cfg.tool_trim)
 
         self.registry = registry or get_default_registry()
         self.skill_loader = skill_loader
@@ -123,6 +123,20 @@ class Agent:
         self._llm: LLMClient = llm_client or create_client(
             LLMConfig.from_app_config(cfg)
         )
+        # LLMClientPool：多配置故障转移 + 多 key 轮转
+        # 若外部注入了 llm_client（测试场景），pool 也退化为单条链
+        if llm_client is not None:
+            from mini_agent.llm.client_pool import ProviderEntry
+            _entry = ProviderEntry(
+                config=LLMConfig.from_app_config(cfg),
+                client=llm_client,
+                key_pool=None,
+            )
+            self._client_pool = LLMClientPool(entries=[_entry])
+        else:
+            self._client_pool = LLMClientPool.from_config(cfg)
+            # 保持 self._llm 与 pool 主 client 同步
+            self._llm = self._client_pool.current_client
         # Session 持久化
         self._session_mgr: Optional[SessionManager] = None
         self._session: Optional[Session] = None
@@ -733,11 +747,16 @@ class Agent:
     def switch_provider(self, llm_config: LLMConfig) -> None:
         """
         运行时切换 LLM provider，不影响对话历史。
+        同时重建 LLMClientPool 为单条链（新 config）。
 
         Example:
             agent.switch_provider(LLMConfig(provider="openai", model="gpt-4o", api_key="..."))
         """
-        self._llm = create_client(llm_config)
+        from mini_agent.llm.client_pool import ProviderEntry
+        new_client = create_client(llm_config)
+        self._llm = new_client
+        entry = ProviderEntry(config=llm_config, client=new_client, key_pool=None)
+        self._client_pool = LLMClientPool(entries=[entry])
         R.print_info(f"Switched to {self._llm}")
 
     # ── [SYS-ROLE-AGENT] 角色 Agent 触发 ────────────────────────────────────
@@ -1223,24 +1242,20 @@ class Agent:
     def _call_llm(self) -> LLMResponse:
         """
         调用 LLMClient，根据 cfg.stream 选择流式或非流式。
-        内置重试策略：当模型返回空响应时自动重试（由 self._retry_policy 控制）。
+        通过 LLMClientPool 支持多 key 轮转和多配置故障转移。
         """
         system = self._build_system()
         tools = self._build_tool_schemas()
 
-        # 思维链回调：对支持 on_reasoning 参数的 provider（如 NVIDIA）启用流式 reasoning
         import inspect as _inspect
-        _stream_sig = _inspect.signature(self._llm.stream)
-        _supports_on_reasoning = "on_reasoning" in _stream_sig.parameters
-
-        # 转换消息：先剥离 _type 字段，再将 tool_use 类型转换为 text 类型（用于不支持 tool_use 的模型）
         from mini_agent.llm.system_tool_call import convert_tool_use_to_text
         from mini_agent.history.entry import to_llm_messages
         messages_for_llm = convert_tool_use_to_text(to_llm_messages(self._history))
 
-        def _do_single_call() -> LLMResponse:
-            """单次 LLM 调用，流式/非流式统一封装。重试时每次重新调用此函数。"""
-            # 每次重试前重置 reasoning 状态（避免重复输出 header）
+        def _do_single_call(client: LLMClient) -> LLMResponse:
+            """单次 LLM 调用（流式/非流式），接受 client 参数供 pool 切换。"""
+            _stream_sig = _inspect.signature(client.stream)
+            _supports_on_reasoning = "on_reasoning" in _stream_sig.parameters
             _reasoning_started = [False]
 
             def _on_reasoning(token: str) -> None:
@@ -1261,8 +1276,7 @@ class Agent:
                     )
                     if _supports_on_reasoning:
                         stream_kwargs["on_reasoning"] = _on_reasoning
-                    resp = self._llm.stream(**stream_kwargs)
-                    # postprocess 已提取 <thinking> 块，非流式 reasoning 在这里显示
+                    resp = client.stream(**stream_kwargs)
                     if not _reasoning_started[0] and resp.reasoning:
                         R.print_reasoning_header()
                         R.console.print(resp.reasoning, style="dim")
@@ -1270,12 +1284,11 @@ class Agent:
                         R.print_reasoning_footer()
                     writer.flush()
                 else:
-                    resp = self._llm.chat(
+                    resp = client.chat(
                         messages=messages_for_llm,
                         system=system,
                         tools=tools,
                     )
-                    # postprocess 已提取 <thinking> 块，统一在此显示
                     if resp.reasoning:
                         R.print_reasoning_header()
                         R.console.print(resp.reasoning, style="dim")
@@ -1286,23 +1299,37 @@ class Agent:
             except LLMError:
                 raise
             except Exception as e:
-                from llm import LLMProviderError
+                from mini_agent.llm.base import LLMProviderError
                 raise LLMProviderError(f"Unexpected LLM error: {e}") from e
 
             return resp
 
         def _on_retry(attempt: int, reason: str) -> None:
-            """重试时的提示回调。"""
             if getattr(self.cfg, "llm_retry_verbose", True):
                 R.print_warning(
                     f"[retry {attempt}/{self._retry_policy.max_retries}] {reason}"
                 )
 
-        # 使用重试策略执行调用
-        response = self._retry_policy.call_with_retry(
+        def _on_switch_key(old_suffix: str, new_suffix: str, exc: Exception) -> None:
+            R.print_warning(
+                f"[key-switch] ...{old_suffix} → ...{new_suffix} "
+                f"({type(exc).__name__})"
+            )
+
+        def _on_switch_config(old_label: str, new_label: str, exc: Exception) -> None:
+            R.print_warning(
+                f"[llm-fallback] {old_label} → {new_label} "
+                f"({type(exc).__name__}: {str(exc)[:80]})"
+            )
+            self._llm = self._client_pool.current_client
+
+        response = self._client_pool.call_with_pool(
             call_fn=_do_single_call,
-            on_retry=_on_retry,
+            retry_policy=self._retry_policy,
+            on_switch_key=_on_switch_key,
+            on_switch_config=_on_switch_config,
         )
+        self._llm = self._client_pool.current_client
         return response
 
     # ── History management ─────────────────────────────────────────────────────
