@@ -1,0 +1,3 @@
+读取 docs/config-guide.md 内容
+
+读取 docs/terminal-display-internals.md 内容
