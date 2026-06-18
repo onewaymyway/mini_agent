@@ -93,7 +93,7 @@ def bash(command: str, timeout: int = 300, workdir: Optional[str] = None) -> str
 # ── read_file ─────────────────────────────────────────────────────────────────
 
 # [SYS-LARGEFILE] 默认大文件阈值（字节），可通过 config 覆盖
-_DEFAULT_LARGE_FILE_THRESHOLD = 100_000  # 100 KB
+_DEFAULT_LARGE_FILE_THRESHOLD = 20000  # 100 KB
 
 # 模块级配置引用（由 configure_large_file 注入，None 时使用默认值）
 _tool_trim_cfg = None
@@ -128,7 +128,7 @@ def _fmt_size(nbytes: int) -> str:
         "Read the contents of a file. "
         "Supports optional line range (1-indexed, inclusive). "
         "Returns file text with line numbers prefixed. "
-        "IMPORTANT: For large files (> 100 KB), always check file size first via list_dir "
+        "IMPORTANT: For large files (> 20 KB), always check file size first via list_dir "
         "or use grep/glob to locate the relevant section before reading. "
         "Prefer start_line/end_line to read only what you need. "
         "Pass force=true only when the full file is truly necessary."
