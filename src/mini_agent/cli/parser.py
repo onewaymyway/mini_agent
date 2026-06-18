@@ -65,6 +65,23 @@ def build_parser() -> argparse.ArgumentParser:
                    help="Max concurrent sub-agents (default: 4)")
     p.add_argument("--max-llm-calls", type=int, default=8,
                    help="Max concurrent LLM API calls (default: 8)")
+    p.add_argument("--rpm", type=int, default=0,
+                   help="Max LLM requests per minute (0 = unlimited, default: 0). "
+                        "Useful to avoid hitting platform rate limits.")
+    p.add_argument("--retry-backoff", choices=["fixed", "linear", "exponential"], default=None,
+                   metavar="MODE",
+                   help="Retry wait backoff mode: fixed / linear / exponential (default: fixed). "
+                        "fixed: constant delay each retry. "
+                        "linear: increases by --retry-backoff-step each retry. "
+                        "exponential: multiplied by --retry-backoff-step each retry.")
+    p.add_argument("--retry-backoff-step", type=float, default=None,
+                   metavar="N",
+                   help="Backoff step value (default: 60). "
+                        "linear: seconds added per retry. "
+                        "exponential: multiplier per retry (e.g. 1.5 means ×1.5 each time).")
+    p.add_argument("--retry-backoff-max", type=float, default=None,
+                   metavar="SECONDS",
+                   help="Max wait cap for backoff in seconds (default: 0 = no cap).")
     p.add_argument("--session-dir", default=None,
                    help="Directory to save session files (default: ./sessions)")
     p.add_argument("--session-fmt", choices=["json", "jsonl"], default="json",

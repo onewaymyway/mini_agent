@@ -60,6 +60,10 @@ class ProviderMixin:
             stream=False,
         )
 
+        # 2b. RPM 频率限速（超限时阻塞等待）
+        from mini_agent.orchestrator.concurrency import get_rate_limiter
+        get_rate_limiter().acquire()
+
         sem = get_llm_sem()
         sem_label = f"{self.config.provider}/{self.config.model[:20]}"
         t0 = time.monotonic()
@@ -99,6 +103,7 @@ class ProviderMixin:
         """
         包装 _do_stream()，记录完整的原始/实际请求和原始/处理后响应。
         extra_kwargs 透传给 impl（如 on_reasoning）。
+        集成 RPM 限速和实时 token 计数（状态栏显示）。
         """
         system_final, api_tools = self._prepare_tools(system, tools)
         system_final, messages = self._apply_system_format(system_final, messages)
@@ -115,13 +120,25 @@ class ProviderMixin:
             stream=True,
         )
 
+        # RPM 频率限速
+        from mini_agent.orchestrator.concurrency import get_rate_limiter, get_stream_token_state
+        get_rate_limiter().acquire()
+
+        # 包装 on_token：同时更新全局 token 计数状态
+        _token_state = get_stream_token_state()
+        _token_state.start(model=self.config.model)
+
+        def _counting_on_token(token: str) -> None:
+            _token_state.increment()
+            on_token(token)
+
         sem = get_llm_sem()
         sem_label = f"{self.config.provider}/{self.config.model[:20]}"
         t0 = time.monotonic()
         try:
             with sem.acquire(label=sem_label):
                 raw_response = impl(
-                    messages, system_final, api_tools, on_token, **extra_kwargs
+                    messages, system_final, api_tools, _counting_on_token, **extra_kwargs
                 )
 
             processed_response = self._postprocess(raw_response, tools)
@@ -141,6 +158,8 @@ class ProviderMixin:
             duration_ms = int((time.monotonic() - t0) * 1000)
             logger.log_error(seq, self.config.provider, self.config.model, e, duration_ms)
             raise
+        finally:
+            _token_state.stop()
 
     # ── 内部辅助 ──────────────────────────────────────────────────────────────
 

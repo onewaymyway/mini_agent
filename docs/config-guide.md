@@ -64,44 +64,6 @@ class CompressConfig:
 | `strategy` | `"turn_aligned"`（默认）/ `"llm_summary"` / `"sliding_window"` / 自定义注册名 |
 | `forget_orphan_tool_results` | 压缩后是否剔除保留段中无对应 tool_use 的 tool_result |
 
-### ToolTrimConfig
-
-控制工具调用结果的截断策略，同时承载**大文件感知**相关配置。
-
-```python
-@dataclass
-class ToolTrimConfig:
-    enabled: bool = True
-    threshold: int = 4000              # 超过此字符数触发截断（约 1000 tokens）
-    bash_tail_ratio: float = 0.6       # bash 结果：尾部保留比例
-    read_window_lines: int = 0         # read_file 截断窗口行数（0 = 自动推算）
-    grep_max_lines: int = 50           # grep/glob 最大保留行数
-    # 大文件感知
-    large_file_threshold_bytes: int = 20000  # 超过此字节数视为大文件（默认 20 KB）
-    list_dir_show_size: bool = True            # list_dir 是否显示文件大小
-    large_file_warn_marker: str = "⚠"         # 大文件在 list_dir 中的标记符
-```
-
-| 字段 | 说明 |
-|------|------|
-| `threshold` | 工具结果超过此字符数时触发截断，不同工具有各自的截断策略 |
-| `bash_tail_ratio` | bash 输出尾部保留比例（错误信息通常在末尾）；智能截断会优先保留含 `ERROR`/`FAILED`/`Traceback` 等关键词的行 |
-| `read_window_lines` | `read_file` 截断时保留的行数（0 = 自动按 threshold 推算） |
-| `large_file_threshold_bytes` | `read_file` 和 `list_dir`/`tree_summary` 共用的大文件阈值；超过时 `read_file` 拦截，`list_dir`/`tree_summary` 标记 ⚠ |
-| `list_dir_show_size` | 为 `false` 时 `list_dir` 和 `tree_summary` 均不输出文件大小，减少 token 消耗 |
-| `large_file_warn_marker` | `list_dir` / `tree_summary` 中大文件的标记符，默认 `⚠` |
-
-**`tree_summary` 与忽略目录：** `tree_summary` 工具内置忽略列表（`.git`、`__pycache__`、`node_modules`、`.venv`、`dist`、`build` 等），无需配置。若需要查看隐藏目录（如 `.agent`、`.claude`），传 `include_hidden=true`。
-
-**JSON 配置示例：**
-
-```json
-{
-  "large_file_threshold_bytes": 200000,
-  "list_dir_show_size": true
-}
-```
-
 ### PerceptionConfig
 
 ```python
@@ -184,6 +146,49 @@ class MCPServerConfig:
 
 详见 [MCP 集成指南](mcp-guide.md)。
 
+### RetryConfig
+
+控制 LLM 调用的自动重试行为，包括重试次数、基础等待时长和退避策略。
+
+```python
+@dataclass
+class RetryConfig:
+    max_retries: int = 15          # 最大重试次数
+    delay: float = 5.0             # 第一次重试的基础等待时间（秒）
+    verbose: bool = True           # 是否打印重试日志
+    backoff_mode: str = "fixed"    # "fixed" | "linear" | "exponential"
+    backoff_step: float = 60.0     # linear: 每次递增秒数；exponential: 倍数（>1.0）
+    backoff_max_delay: float = 0.0 # 等待时长上限（秒），0 = 不限制
+```
+
+**退避策略说明：**
+
+| `backoff_mode` | 等待时长计算 | 典型场景 |
+|----------------|-------------|---------|
+| `fixed` | 每次固定 `delay` 秒（默认） | 一般偶发错误 |
+| `linear` | `delay, delay+step, delay+2×step, …` | API 频率限制（429） |
+| `exponential` | `delay, delay×step, delay×step², …` | 服务过载恢复 |
+
+**JSON 配置示例：**
+
+```json
+{
+  "llm_retry_max": 10,
+  "llm_retry_delay": 10,
+  "llm_retry_backoff_mode": "exponential",
+  "llm_retry_backoff_step": 1.5,
+  "llm_retry_backoff_max_delay": 300
+}
+```
+
+**CLI 参数：**
+
+```bash
+mini-agent --retry-backoff linear --retry-backoff-step 60 --retry-backoff-max 300
+```
+
+详见 [LLM 重试退避策略指南](retry-backoff-guide.md)。
+
 ---
 
 ## 3. 配置加载优先级
@@ -212,9 +217,7 @@ JSON 配置文件  >  命令行参数  >  环境变量  >  内置默认值
   "auto_compress_strategy": "turn_aligned",
   "tool_cache_enabled": true,
   "tool_cache_max_entries": 256,
-  "skill_tracking_enabled": true,
-  "large_file_threshold_bytes": 100000,
-  "list_dir_show_size": true
+  "skill_tracking_enabled": true
 }
 ```
 

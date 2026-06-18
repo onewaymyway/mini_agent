@@ -5,6 +5,13 @@ orchestrator/concurrency.py — 并发控制中心
   1. Task 并发（SubAgent 数量）  — TaskSemaphore
   2. LLM 请求并发（所有 provider）— LLMSemaphore
 
+以及一个全局频率限制器：
+  3. LLM RPM 限速（每分钟最大请求数）— RateLimiter
+
+还维护两个全局显示状态（供状态栏读取）：
+  - 当前流式生成的 token 计数
+  - 当前重试倒计时信息
+
 两者都基于带计数和排队可见性的信号量实现：
   - acquire() 返回一个 context manager，退出时自动释放
   - 排队等待期间记录等待者信息（用于状态栏显示）
@@ -28,6 +35,7 @@ from __future__ import annotations
 
 import threading
 import time
+from collections import deque
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from typing import Generator, Optional
@@ -206,3 +214,189 @@ def concurrency_snapshot() -> dict:
         "tasks": get_task_sem().snapshot_status(),
         "llm":   get_llm_sem().snapshot_status(),
     }
+
+
+# ── 全局 RPM 频率限制器 ────────────────────────────────────────────────────────
+
+class RateLimiter:
+    """
+    滑动窗口频率限制器，线程安全。
+
+    限制每分钟最多发出 max_rpm 次 LLM 请求。
+    超出时阻塞等待，直到窗口内请求数低于上限。
+
+    max_rpm=0 表示不限速（默认行为）。
+    """
+
+    def __init__(self, max_rpm: int = 0) -> None:
+        self._max_rpm = max_rpm
+        self._timestamps: deque = deque()   # 最近 60s 内的请求时间戳
+        self._lock = threading.Lock()
+
+    @property
+    def max_rpm(self) -> int:
+        return self._max_rpm
+
+    @max_rpm.setter
+    def max_rpm(self, value: int) -> None:
+        with self._lock:
+            self._max_rpm = max(0, value)
+
+    @property
+    def enabled(self) -> bool:
+        return self._max_rpm > 0
+
+    def acquire(self) -> float:
+        """
+        等待直到可以发出一次请求（不超过 RPM 限制）。
+
+        Returns:
+            实际等待的秒数（0.0 = 无需等待）
+        """
+        if not self.enabled:
+            return 0.0
+
+        waited = 0.0
+        while True:
+            with self._lock:
+                now = time.time()
+                window_start = now - 60.0
+                # 清理过期时间戳
+                while self._timestamps and self._timestamps[0] < window_start:
+                    self._timestamps.popleft()
+
+                if len(self._timestamps) < self._max_rpm:
+                    self._timestamps.append(now)
+                    return waited
+
+                # 计算需要等到最旧时间戳过期
+                oldest = self._timestamps[0]
+                wait_sec = (oldest + 60.0) - now + 0.05
+
+            time.sleep(min(wait_sec, 0.5))
+            waited += min(wait_sec, 0.5)
+
+    def snapshot(self) -> dict:
+        """返回当前状态快照（用于状态栏显示）。"""
+        with self._lock:
+            now = time.time()
+            window_start = now - 60.0
+            recent_count = sum(1 for t in self._timestamps if t >= window_start)
+            # 如果超限，计算最早可用时间
+            wait_sec = 0.0
+            if self.enabled and recent_count >= self._max_rpm and self._timestamps:
+                oldest = self._timestamps[0]
+                wait_sec = max(0.0, (oldest + 60.0) - now)
+            return {
+                "max_rpm": self._max_rpm,
+                "used_in_window": recent_count,
+                "enabled": self.enabled,
+                "wait_sec": round(wait_sec, 1),
+            }
+
+
+_rate_limiter: Optional[RateLimiter] = None
+
+
+def get_rate_limiter() -> RateLimiter:
+    global _rate_limiter
+    if _rate_limiter is None:
+        _rate_limiter = RateLimiter(max_rpm=0)
+    return _rate_limiter
+
+
+def set_rpm_limit(max_rpm: int) -> None:
+    """动态调整 RPM 限制（0 = 不限速）。"""
+    get_rate_limiter().max_rpm = max_rpm
+
+
+# ── 全局流式 token 计数状态（供状态栏实时显示） ────────────────────────────────
+
+class StreamTokenState:
+    """当前正在流式生成的 token 计数状态。"""
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self.active = False
+        self.token_count = 0
+        self.started_at = 0.0
+        self.model = ""
+
+    def start(self, model: str = "") -> None:
+        with self._lock:
+            self.active = True
+            self.token_count = 0
+            self.started_at = time.monotonic()
+            self.model = model
+
+    def increment(self) -> None:
+        # 热路径，用非阻塞方式；Python GIL 保证 int += 1 原子
+        if self.active:
+            self.token_count += 1
+
+    def stop(self) -> None:
+        with self._lock:
+            self.active = False
+
+    def snapshot(self) -> dict:
+        with self._lock:
+            elapsed = (time.monotonic() - self.started_at) if self.active else 0.0
+            tps = self.token_count / elapsed if elapsed > 0.1 else 0.0
+            return {
+                "active": self.active,
+                "token_count": self.token_count,
+                "elapsed_s": round(elapsed, 1),
+                "tokens_per_sec": round(tps, 1),
+                "model": self.model,
+            }
+
+
+_stream_token_state = StreamTokenState()
+
+
+def get_stream_token_state() -> StreamTokenState:
+    return _stream_token_state
+
+
+# ── 全局重试倒计时状态（供状态栏显示） ────────────────────────────────────────
+
+class RetryCountdownState:
+    """当前重试等待的状态信息。"""
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self.active = False
+        self.attempt = 0
+        self.max_retries = 0
+        self.wait_until = 0.0
+        self.reason = ""
+
+    def start_wait(self, attempt: int, max_retries: int, delay: float, reason: str) -> None:
+        with self._lock:
+            self.active = True
+            self.attempt = attempt
+            self.max_retries = max_retries
+            self.wait_until = time.monotonic() + delay
+            self.reason = reason[:60] if reason else ""
+
+    def stop_wait(self) -> None:
+        with self._lock:
+            self.active = False
+
+    def snapshot(self) -> dict:
+        with self._lock:
+            remaining = max(0.0, self.wait_until - time.monotonic())
+            return {
+                "active": self.active,
+                "attempt": self.attempt,
+                "max_retries": self.max_retries,
+                "remaining_s": round(remaining, 1),
+                "reason": self.reason,
+            }
+
+
+_retry_countdown_state = RetryCountdownState()
+
+
+def get_retry_countdown_state() -> RetryCountdownState:
+    return _retry_countdown_state

@@ -65,12 +65,32 @@ python main.py
 | `--debug-llm` | 启用 LLM 请求/响应调试日志（写入 `.claude/logs/`） |
 | `--debug-llm-console` | 同时在控制台打印调试信息（隐含 `--debug-llm`） |
 
-### 并发参数
+### 并发与频率限制参数
 
 | 参数 | 默认 | 说明 |
 |------|------|------|
 | `--workers` | 4 | 最大并发 Sub-Agent 数 |
 | `--max-llm-calls` | 8 | 最大并发 LLM 调用数 |
+| `--rpm` | 0 | 每分钟最大 LLM 请求数（0 = 不限速）。超出时自动等待，避免触发平台频率限制 |
+
+### 重试退避参数
+
+| 参数 | 默认 | 说明 |
+|------|------|------|
+| `--retry-backoff` | `fixed` | 退避策略：`fixed`（固定）/ `linear`（线性递增）/ `exponential`（指数递增） |
+| `--retry-backoff-step` | `60.0` | 步长值。`linear`：每次递增秒数；`exponential`：倍数（如 `1.5` 表示每次 ×1.5） |
+| `--retry-backoff-max` | `0` | 等待时长上限（秒），`0` = 不限制 |
+
+示例：
+```bash
+# 指数退避：5s → 7.5s → 11.25s → … 上限 120s
+mini-agent --retry-backoff exponential --retry-backoff-step 1.5 --retry-backoff-max 120
+
+# 线性退避：10s → 70s → 130s → … 上限 300s
+mini-agent --retry-backoff linear --retry-backoff-step 60 --retry-backoff-max 300
+```
+
+详见 [LLM 重试退避策略指南](retry-backoff-guide.md)。
 
 ### Session 参数
 
@@ -232,81 +252,14 @@ python main.py
 
 | 工具 | 需要审批 | 参数 | 说明 |
 |------|----------|------|------|
-| `read_file` | ❌ | `path`, `start_line`, `end_line`, `force` | 读取文件内容，支持行范围。大文件（> 20 KB）自动拦截并给出建议，`force=true` 强制全量读取 |
+| `read_file` | ❌ | `path`, `start_line`, `end_line` | 读取文件内容，支持行范围 |
 | `write_file` | ✅ | `path`, `content` | 覆盖写入文件 |
 | `create_file` | ✅ | `path`, `content` | 创建新文件（已存在则失败） |
 | `delete_file` | ✅ | `path` | 删除单个文件 |
-| `patch_file` | ✅ | `path`, `old_string`, `new_string` | 精确查找替换编辑文件。精确匹配失败时自动尝试 whitespace-normalized 回退，失败则返回最近似候选片段 |
-| `list_dir` | ❌ | `path`, `depth`, `show_size` | 列出目录内容，默认显示文件大小，超过阈值的文件标记 ⚠ |
-| `tree_summary` | ❌ | `path`, `depth`, `show_files`, `include_hidden` | 目录骨架摘要：只显示目录层级 + 每层文件数/大小，忽略构建缓存目录。比 `list_dir` 更节省 token |
+| `patch_file` | ✅ | `path`, `old_string`, `new_string` | 精确查找替换编辑文件 |
+| `list_dir` | ❌ | `path`, `depth` | 列出目录内容 |
 | `glob` | ❌ | `pattern`, `root` | 通配符查找文件 |
-| `grep` | ❌ | `pattern`, `path`, `file_pattern`, `case_sensitive`, `context_lines`, `max_results` | 正则搜索文件内容，支持上下文行和自定义结果上限 |
-| `diff_files` | ❌ | `path_a`, `path_b`, `context_lines` | 比较两个文件，返回 unified diff 和变更行数统计 |
-
-**大文件感知机制：**
-
-`read_file` 在读取前先通过 `stat()` 获取文件大小。若文件超过阈值（默认 100 KB）且未指定行范围，会拦截并返回：
-
-```
-[large file: 2.3 MB, 4821 lines — path/to/file.py]
-Reading the full file is expensive. Consider:
-  • grep to locate relevant patterns first
-  • read_file with start_line/end_line to read a specific range
-  • read_file with force=true if the full content is truly needed
-```
-
-以下情况**不触发**拦截：
-- 已指定 `start_line` 或 `end_line`（局部读取始终允许）
-- 传入 `force=true`
-
-`list_dir` 默认在文件名右侧显示大小（自动选单位：B / KB / MB），超过阈值的文件追加 ⚠ 标记，便于在规划任务时提前识别大文件。可传 `show_size=false` 关闭以减少输出长度。
-
-阈值和标记符均可通过 `ToolTrimConfig` 配置，详见[配置系统指南](config-guide.md)。
-
-**`tree_summary` 输出示例：**
-
-```
-📁 my_project/
-  (3 files, 12.1 KB)
-  📁 src/  [1.0 MB, 154 files]
-    📁 mini_agent/  [1021.1 KB, 147 files]
-      (5 files, 84.2 KB)
-      📁 tools/  [120.3 KB, 6 files]
-  📁 tests/  [275.5 KB, 15 files]
-    (15 files, 275.5 KB)
-  📁 docs/  [308.7 KB, 30 files]
-
-233 files, 1.9 MB total
-```
-
-自动忽略的目录：`.git`、`__pycache__`、`node_modules`、`.venv`、`dist`、`build` 等。传 `show_files=true` 可同时列出文件名（此时格式与 `list_dir` 类似但仍跳过忽略目录）。传 `include_hidden=true` 可显示 `.agent`、`.claude` 等隐藏目录。
-
-**`patch_file` 容错机制：**
-
-1. **精确匹配**：`old_string` 在文件中出现恰好一次 → 直接替换
-2. **whitespace-normalized 回退**：精确匹配失败时，去除行尾空白并统一换行符后重试。成功时 diff 末尾附注 `[note: matched after whitespace normalization]`
-3. **候选提示**：两级均失败时，以 `old_string` 首行为锚定位文件中最相近的实际片段，附在错误信息后，方便直接复制修正
-
-**`grep` 上下文模式示例：**
-
-```
-# grep(pattern="def foo", path="main.py", context_lines=2)
-main.py:3  import os
-main.py:4  
-main.py:5> def foo():
-main.py:6      return 42
-main.py:7  
----
-main.py:12  # helper
-main.py:13  
-main.py:14> def foo_helper():
-main.py:15      pass
-main.py:16  
-
-[2 matches found]
-```
-
-匹配行用 `>` 标记，非匹配上下文行用空格。不同匹配块之间用 `---` 分隔。末尾附总匹配数，截断时注明实际显示数量。
+| `grep` | ❌ | `pattern`, `path`, `file_pattern`, `case_sensitive` | 正则搜索文件内容 |
 
 ### Shell（builtin.py）
 

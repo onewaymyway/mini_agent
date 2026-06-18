@@ -219,10 +219,22 @@ class WebSearchConfig:
 
 @dataclass
 class RetryConfig:
-    """LLM 调用重试配置。"""
+    """LLM 调用重试配置。
+
+    backoff_mode 决定每次重试的等待时长计算方式：
+      "fixed"       — 每次等待固定的 delay 秒（默认）
+      "linear"      — 线性递增：delay, delay+step, delay+2*step, …
+      "exponential" — 指数递增：delay, delay*step², …
+                      （此时 backoff_step 为倍数，如 1.5 表示每次 ×1.5）
+
+    backoff_max_delay — 等待时间上限（秒），0 = 不限制
+    """
     max_retries: int = 15
     delay: float = 5.0
     verbose: bool = True
+    backoff_mode: str = "fixed"          # "fixed" | "linear" | "exponential"
+    backoff_step: float = 60.0           # linear: 步长(s)；exponential: 倍数(>1.0)
+    backoff_max_delay: float = 0.0       # 0 = 不限制上限
 
 
 @dataclass
@@ -469,6 +481,12 @@ class AppConfig:
     def llm_retry_delay(self) -> float:         return self.retry.delay
     @property
     def llm_retry_verbose(self) -> bool:        return self.retry.verbose
+    @property
+    def llm_retry_backoff_mode(self) -> str:    return self.retry.backoff_mode
+    @property
+    def llm_retry_backoff_step(self) -> float:  return self.retry.backoff_step
+    @property
+    def llm_retry_backoff_max_delay(self) -> float: return self.retry.backoff_max_delay
 
 
 # ════════════════════════════════════════════════════════════════════════════════
@@ -547,6 +565,10 @@ def load_config(
     role_agent_allow: Optional[list] = None,
     role_agent_block: Optional[list] = None,
     role_agent_dir: Optional[Path] = None,
+    # 重试退避策略
+    llm_retry_backoff_mode: Optional[str] = None,
+    llm_retry_backoff_step: Optional[float] = None,
+    llm_retry_backoff_max_delay: Optional[float] = None,
 ) -> AppConfig:
     """
     加载配置，优先级（高→低）：JSON 配置文件 > CLI 参数 > 环境变量 > 内置默认值。
@@ -720,6 +742,9 @@ def load_config(
         max_retries=_fn("llm_retry_max", None, 15),
         delay=_fn("llm_retry_delay", None, 5.0),
         verbose=_fb("llm_retry_verbose", None, True),
+        backoff_mode=_f("llm_retry_backoff_mode", llm_retry_backoff_mode) or "fixed",
+        backoff_step=_fn("llm_retry_backoff_step", llm_retry_backoff_step, 60.0),
+        backoff_max_delay=_fn("llm_retry_backoff_max_delay", llm_retry_backoff_max_delay, 0.0),
     )
 
     # ── 初始化调试日志（需要在 AppConfig 构建前完成）─────────────────────────

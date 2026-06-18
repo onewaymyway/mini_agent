@@ -113,6 +113,10 @@ def _main_inner() -> None:
         role_agent_allow=getattr(args, "role_agents_allow", None),
         role_agent_block=getattr(args, "role_agents_block", None),
         role_agent_dir=Path(args.role_agents_dir).expanduser() if getattr(args, "role_agents_dir", None) else None,
+        # 重试退避策略
+        llm_retry_backoff_mode=getattr(args, "retry_backoff", None),
+        llm_retry_backoff_step=getattr(args, "retry_backoff_step", None),
+        llm_retry_backoff_max_delay=getattr(args, "retry_backoff_max", None),
     )
 
     print("cfg:",cfg)
@@ -167,6 +171,13 @@ def _main_inner() -> None:
     start_status_bar()
     init_task_manager(cfg, max_workers=max_workers)
     R.print_info(f"Task manager ready (max {max_workers} concurrent workers)")
+
+    # ── RPM 限速初始化 ────────────────────────────────────────────────────────
+    from mini_agent.orchestrator.concurrency import set_rpm_limit
+    _rpm = getattr(args, "rpm", 0) or 0
+    if _rpm > 0:
+        set_rpm_limit(_rpm)
+        R.print_info(f"LLM rate limit: {_rpm} requests/minute")
 
     # ── 自定义子 agent profiles + hooks ──────────────────────────────────────
     from mini_agent.orchestrator.agent_profiles import init_agent_profiles

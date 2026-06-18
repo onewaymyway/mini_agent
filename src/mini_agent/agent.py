@@ -24,7 +24,7 @@ from mini_agent.llm import (
     LLMClient, LLMConfig, LLMResponse, ToolSchema,
     create_client, LLMError,
 )
-from mini_agent.llm.retry import RetryPolicy, default_retry_policy, no_retry_policy
+from mini_agent.llm.retry import RetryPolicy, default_retry_policy, no_retry_policy, parse_backoff
 from mini_agent.permissions import PermissionGuard
 from mini_agent.skills import SkillLoader
 from mini_agent.tools import ToolRegistry, get_default_registry
@@ -131,10 +131,19 @@ class Agent:
         # ── [SYS-RETRY] LLM 重试策略初始化 ──────────────────────────────────
         # 默认使用 EmptyOutputCondition（空输出即重试），可通过 cfg 调整参数，
         # 也可在实例化后替换 self._retry_policy 以使用自定义策略。
-        _retry_max = getattr(cfg, "llm_retry_max", 2)
+        _retry_max   = getattr(cfg, "llm_retry_max", 2)
         _retry_delay = getattr(cfg, "llm_retry_delay", 0.0)
+        _backoff_mode     = getattr(cfg, "llm_retry_backoff_mode", "fixed")
+        _backoff_step     = getattr(cfg, "llm_retry_backoff_step", 60.0)
+        _backoff_max_delay = getattr(cfg, "llm_retry_backoff_max_delay", 0.0)
+        _backoff = parse_backoff(
+            mode=_backoff_mode,
+            initial=_retry_delay,
+            step_or_multiplier=_backoff_step,
+            max_delay=_backoff_max_delay,
+        )
         self._retry_policy: RetryPolicy = (
-            default_retry_policy(max_retries=_retry_max, retry_delay=_retry_delay)
+            default_retry_policy(max_retries=_retry_max, backoff=_backoff)
             if _retry_max > 0
             else no_retry_policy()
         )

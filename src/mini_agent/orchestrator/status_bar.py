@@ -136,10 +136,12 @@ def _build_lines() -> list[str]:
         lines.append("  \033[90m⚡ Tasks: error getting status\033[0m")
 
     try:
-        from .concurrency import concurrency_snapshot
+        from .concurrency import concurrency_snapshot, get_stream_token_state, get_retry_countdown_state, get_rate_limiter
         snap = concurrency_snapshot()
         ll = snap["llm"]
         active, waiting, limit = ll["active"], ll["waiting"], ll["limit"]
+
+        # ── LLM 并发状态行 ────────────────────────────────────────────────────
         if active > 0 or waiting > 0:
             bar = (
                 "\033[34m" + "█" * min(active, limit)
@@ -163,6 +165,48 @@ def _build_lines() -> list[str]:
             lines.append(
                 f"  🤖 LLM   [{bar}] {active}/{limit}   {status}{queue_str}"
             )
+
+        # ── 流式 token 计数行 ─────────────────────────────────────────────────
+        tok = get_stream_token_state().snapshot()
+        if tok["active"]:
+            tcount = tok["token_count"]
+            tps = tok["tokens_per_sec"]
+            elapsed = tok["elapsed_s"]
+            tps_str = f" \033[90m({tps:.0f} tok/s)\033[0m" if tps > 0 else ""
+            lines.append(
+                f"  ✍️  Generating  \033[36m{tcount:,} tokens\033[0m"
+                f"  \033[90m{elapsed}s{tps_str}\033[0m"
+            )
+
+        # ── 重试倒计时行 ──────────────────────────────────────────────────────
+        rcd = get_retry_countdown_state().snapshot()
+        if rcd["active"]:
+            rem = rcd["remaining_s"]
+            att = rcd["attempt"]
+            mx  = rcd["max_retries"]
+            bar_total = 10
+            bar_filled = int((1 - rem / max(rem + 0.01, 1)) * bar_total) if rem < 60 else 0
+            prog = "\033[33m" + "█" * bar_filled + "\033[90m" + "░" * (bar_total - bar_filled) + "\033[0m"
+            lines.append(
+                f"  ⏳ Retry {att}/{mx}  [{prog}]  \033[33m{rem:.1f}s\033[0m remaining"
+            )
+
+        # ── RPM 限速状态行（仅启用时显示，且接近上限时高亮） ─────────────────
+        rl = get_rate_limiter().snapshot()
+        if rl["enabled"]:
+            used = rl["used_in_window"]
+            max_rpm = rl["max_rpm"]
+            ratio = used / max_rpm if max_rpm > 0 else 0
+            wait_sec = rl.get("wait_sec", 0.0)
+            bar_total = 10
+            bar_filled = int(ratio * bar_total)
+            color = "\033[31m" if ratio >= 0.9 else ("\033[33m" if ratio >= 0.7 else "\033[32m")
+            rpm_bar = color + "█" * bar_filled + "\033[90m" + "░" * (bar_total - bar_filled) + "\033[0m"
+            wait_str = f"  \033[31m⏸ waiting {wait_sec:.1f}s\033[0m" if wait_sec > 0 else ""
+            lines.append(
+                f"  🚦 RPM    [{rpm_bar}] {used}/{max_rpm}{wait_str}"
+            )
+
     except Exception:
         pass
 

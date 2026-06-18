@@ -8,6 +8,12 @@ llm/retry.py — LLM 调用重试条件框架
   EmptyOutputCondition   — 模型没有任何文本输出且没有工具调用
   EmptyTextCondition     — 模型文本为空（即使有工具调用也重试）
 
+退避策略（BackoffStrategy）：
+  FixedBackoff(delay)            — 每次等待固定秒数（默认）
+  LinearBackoff(initial, step)   — 每次线性递增：initial, initial+step, initial+2*step, …
+  ExponentialBackoff(initial, multiplier, max_delay)
+                                 — 每次指数递增：initial, initial*m, initial*m², …，上限 max_delay
+
 扩展新条件：
   继承 RetryCondition，实现 should_retry(response) 方法即可，
   然后加入 RetryPolicy.conditions 列表。
@@ -15,10 +21,8 @@ llm/retry.py — LLM 调用重试条件框架
 示例：
   policy = RetryPolicy(
       max_retries=3,
-      conditions=[
-          EmptyOutputCondition(),       # 空输出重试
-          MyCustomCondition(threshold=0.5),  # 自定义条件
-      ],
+      backoff=ExponentialBackoff(initial=5.0, multiplier=2.0, max_delay=120.0),
+      conditions=[EmptyOutputCondition()],
   )
   response = policy.call_with_retry(call_fn, on_retry=on_retry_fn)
 """
@@ -34,6 +38,125 @@ from typing import Callable, Optional
 from .base import LLMResponse, LLMConfigError
 
 logger = logging.getLogger(__name__)
+
+
+# ── 退避策略抽象基类 ──────────────────────────────────────────────────────────
+
+class BackoffStrategy(ABC):
+    """
+    单次等待时长计算策略。
+
+    每次触发重试时，call_with_retry 调用 delay_for(attempt)
+    获取本次应等待的秒数（attempt 从 1 开始，表示"第几次重试"）。
+    """
+
+    @abstractmethod
+    def delay_for(self, attempt: int) -> float:
+        """
+        返回第 attempt 次重试前应等待的秒数。
+
+        Args:
+            attempt: 当前重试次数，从 1 开始
+        """
+        ...
+
+    @property
+    def description(self) -> str:
+        """人可读的策略描述，用于日志和启动信息。"""
+        return self.__class__.__name__
+
+
+# ── 内置退避策略 ──────────────────────────────────────────────────────────────
+
+@dataclass
+class FixedBackoff(BackoffStrategy):
+    """
+    固定等待时长策略：每次重试等待相同的秒数。
+
+    适用场景：简单场景，或等待时间由外部因素决定（如 Retry-After 头）。
+
+    示例（每次等待 10s）：
+        FixedBackoff(delay=10.0)
+        → 第1次: 10s, 第2次: 10s, 第3次: 10s
+    """
+    delay: float = 10.0
+
+    def delay_for(self, attempt: int) -> float:
+        return max(0.0, self.delay)
+
+    @property
+    def description(self) -> str:
+        return f"fixed({self.delay}s)"
+
+
+@dataclass
+class LinearBackoff(BackoffStrategy):
+    """
+    线性递增等待策略：每次重试在上次基础上增加固定步长。
+
+    计算公式：delay = initial + (attempt - 1) * step
+
+    Args:
+        initial:   第一次重试的等待时间（秒）
+        step:      每次递增的秒数
+        max_delay: 等待时间上限（0 = 不限制），防止等待时间无限增长
+
+    示例（initial=10, step=60）：
+        → 第1次: 10s, 第2次: 70s, 第3次: 130s, 第4次: 190s
+    """
+    initial: float = 10.0
+    step: float = 60.0
+    max_delay: float = 0.0   # 0 = 不限制
+
+    def delay_for(self, attempt: int) -> float:
+        d = self.initial + (attempt - 1) * self.step
+        if self.max_delay > 0:
+            d = min(d, self.max_delay)
+        return max(0.0, d)
+
+    @property
+    def description(self) -> str:
+        cap = f", max={self.max_delay}s" if self.max_delay > 0 else ""
+        return f"linear(init={self.initial}s, step=+{self.step}s{cap})"
+
+
+@dataclass
+class ExponentialBackoff(BackoffStrategy):
+    """
+    指数递增等待策略：每次重试等待时间乘以固定倍数。
+
+    计算公式：delay = min(initial * multiplier^(attempt-1), max_delay)
+
+    Args:
+        initial:    第一次重试的等待时间（秒）
+        multiplier: 每次重试的倍数因子（必须 > 1.0）
+        max_delay:  等待时间上限（秒，0 = 不限制）
+
+    示例（initial=5, multiplier=2.0, max_delay=300）：
+        → 第1次: 5s, 第2次: 10s, 第3次: 20s, 第4次: 40s, … 上限 300s
+    示例（initial=10, multiplier=1.5）：
+        → 第1次: 10s, 第2次: 15s, 第3次: 22.5s, 第4次: 33.75s
+    """
+    initial: float = 5.0
+    multiplier: float = 2.0
+    max_delay: float = 300.0   # 默认上限 5 分钟
+
+    def __post_init__(self) -> None:
+        if self.multiplier <= 1.0:
+            raise ValueError(f"ExponentialBackoff.multiplier must be > 1.0, got {self.multiplier}")
+        if self.initial <= 0:
+            raise ValueError(f"ExponentialBackoff.initial must be > 0, got {self.initial}")
+
+    def delay_for(self, attempt: int) -> float:
+        d = self.initial * (self.multiplier ** (attempt - 1))
+        if self.max_delay > 0:
+            d = min(d, self.max_delay)
+        return max(0.0, d)
+
+    @property
+    def description(self) -> str:
+        cap = f", max={self.max_delay}s" if self.max_delay > 0 else ""
+        return f"exponential(init={self.initial}s, x{self.multiplier}{cap})"
 
 
 # ── 重试条件抽象基类 ──────────────────────────────────────────────────────────
@@ -131,32 +254,41 @@ class StopReasonCondition(RetryCondition):
 @dataclass
 class RetryPolicy:
     """
-    重试策略：持有一组重试条件，执行带重试的 LLM 调用。
+    重试策略：持有一组重试条件和退避策略，执行带重试的 LLM 调用。
 
     Attributes:
         max_retries:  最多重试次数（不含首次调用），0 = 不重试
         conditions:   重试条件列表，任意一个触发即重试（OR 关系）
-        retry_delay:  每次重试前的等待秒数（0 = 立即重试）
+        backoff:      退避策略，控制每次重试前等待多久；
+                      默认 FixedBackoff(10s)，即每次等待 10 秒。
+                      传入 LinearBackoff / ExponentialBackoff 可实现递增等待。
+        retry_delay:  【兼容旧接口】若传入且 backoff 未显式指定，
+                      自动构造 FixedBackoff(retry_delay)。
+                      新代码请直接使用 backoff= 参数。
         retry_on_exception:  call_fn() 抛出异常时是否重试（见下）
         non_retryable_exceptions: 即使 retry_on_exception=True，
                        命中这些异常类型时也直接抛出，不计入重试。
                        默认包含 LLMConfigError —— 配置错误（如缺少 api_key）
-                       是确定性的，重试不会让它变成功，反而会白白
-                       浪费 max_retries 预算并等待 retry_delay。
+                       是确定性的，重试不会让它变成功。
     """
 
     max_retries: int = 2
     conditions: list[RetryCondition] = field(
         default_factory=lambda: [EmptyOutputCondition()]
     )
-    retry_delay: float = 10.0
-    # 为 True 时，call_fn() 抛出异常也会触发重试（与 max_retries 共用预算），
-    # 而不是直接向上传播。用于"模型调用偶发网络/超时/API错误，希望自动重试"的场景——
-    # 这正是 LLM 调用最常见的失败模式，因此默认开启（见 default_retry_policy）。
+    backoff: BackoffStrategy = field(default_factory=lambda: FixedBackoff(10.0))
+    # 向后兼容：旧代码传 retry_delay=N 等价于 backoff=FixedBackoff(N)
+    retry_delay: float = field(default=0.0, repr=False)
     retry_on_exception: bool = False
     non_retryable_exceptions: tuple = field(
         default_factory=lambda: (LLMConfigError,)
     )
+
+    def __post_init__(self) -> None:
+        # 兼容旧接口：若外部只传了 retry_delay 而未显式设置 backoff，
+        # 则用 retry_delay 构造 FixedBackoff 覆盖默认值
+        if self.retry_delay > 0 and isinstance(self.backoff, FixedBackoff) and self.backoff.delay == 10.0:
+            self.backoff = FixedBackoff(self.retry_delay)
 
     def call_with_retry(
         self,
@@ -177,15 +309,18 @@ class RetryPolicy:
         Note:
             - "响应质量"重试（conditions）和"异常"重试（retry_on_exception）
               共用同一个 max_retries 预算。
-            - 若达到 max_retries 上限仍触发质量条件，返回最后一次的响应而非抛出异常，
-              调用方可自行决定如何处理降级响应。
-            - retry_on_exception=False 时，call_fn 抛出异常会直接向上
-              传播，不做重试（兼容旧行为）。retry_on_exception=True（默认）时，
-              异常（网络错误、超时 LLMTimeoutError、5xx 等 API 错误）也会计入
-              max_retries 预算后重试；预算耗尽后异常会向上抛出。
+            - 若达到 max_retries 上限仍触发质量条件，返回最后一次的响应而非抛出异常。
+            - retry_on_exception=False 时，call_fn 抛出异常会直接向上传播。
             - non_retryable_exceptions 命中时，无论 retry_on_exception 取值，
-              都立即向上抛出（配置类错误重试无意义）。
+              都立即向上抛出。
         """
+        # 获取全局倒计时状态（可能为 None，如在测试中）
+        try:
+            from mini_agent.orchestrator.concurrency import get_retry_countdown_state
+            _countdown = get_retry_countdown_state()
+        except Exception:
+            _countdown = None
+
         attempt = 0
         while True:
             try:
@@ -197,11 +332,14 @@ class RetryPolicy:
                     raise
                 attempt += 1
                 reason = f"[Exception] {type(e).__name__}: {e}"
-                logger.warning("LLM retry %d/%d — %s", attempt, self.max_retries, reason)
+                delay = self.backoff.delay_for(attempt)
+                logger.warning(
+                    "LLM retry %d/%d (wait %.1fs, %s) — %s",
+                    attempt, self.max_retries, delay, self.backoff.description, reason,
+                )
                 if on_retry:
                     on_retry(attempt, reason)
-                if self.retry_delay > 0:
-                    time.sleep(self.retry_delay)
+                self._do_wait(delay, attempt, _countdown)
                 continue
 
             triggered = self._check_conditions(response)
@@ -210,12 +348,33 @@ class RetryPolicy:
 
             attempt += 1
             reason = triggered.reason
-            logger.warning("LLM retry %d/%d — %s", attempt, self.max_retries, reason)
+            delay = self.backoff.delay_for(attempt)
+            logger.warning(
+                "LLM retry %d/%d (wait %.1fs, %s) — %s",
+                attempt, self.max_retries, delay, self.backoff.description, reason,
+            )
             if on_retry:
                 on_retry(attempt, reason)
+            self._do_wait(delay, attempt, _countdown)
 
-            if self.retry_delay > 0:
-                time.sleep(self.retry_delay)
+    def _do_wait(self, delay: float, attempt: int, _countdown) -> None:
+        """执行等待，同时维护倒计时状态供状态栏显示。"""
+        if delay <= 0:
+            return
+        if _countdown:
+            _countdown.start_wait(attempt, self.max_retries, delay, self.backoff.description)
+        try:
+            self._sleep_with_countdown(delay)
+        finally:
+            if _countdown:
+                _countdown.stop_wait()
+
+    def _sleep_with_countdown(self, total: float) -> None:
+        """分片 sleep（每片 ≤0.2s），让状态栏有机会刷新倒计时显示。"""
+        remaining = total
+        while remaining > 0:
+            time.sleep(min(remaining, 0.2))
+            remaining -= 0.2
 
     def _check_conditions(
         self, response: LLMResponse
@@ -241,26 +400,23 @@ def default_retry_policy(
     max_retries: int = 2,
     retry_delay: float = 10.0,
     retry_on_exception: bool = True,
+    backoff: Optional[BackoffStrategy] = None,
 ) -> RetryPolicy:
     """
-    默认重试策略：包含 EmptyOutputCondition（空输出即重试），
-    且默认 retry_on_exception=True —— LLM 调用抛出的异常
-    （网络错误、超时 LLMTimeoutError、5xx 等可恢复的 API 错误）
-    同样会触发重试，而不是直接中断当前 turn。
-
-    LLMConfigError（如缺少 api_key）属于 non_retryable_exceptions，
-    即使 retry_on_exception=True 也不会重试，会立即向上抛出。
+    默认重试策略：EmptyOutputCondition + 可配置退避。
 
     Args:
-        max_retries:  最多重试次数，默认 2
-        retry_delay:  重试间隔秒数，默认 0（立即重试）
-        retry_on_exception: 异常是否计入重试，默认 True。
-                       传 False 可恢复"只重试空响应"的旧行为。
+        max_retries:        最多重试次数，默认 2
+        retry_delay:        固定等待秒数（兼容旧接口）；
+                            若同时传入 backoff=，则 retry_delay 被忽略
+        retry_on_exception: 异常是否计入重试，默认 True
+        backoff:            退避策略；为 None 时使用 FixedBackoff(retry_delay)
     """
+    _backoff = backoff if backoff is not None else FixedBackoff(retry_delay)
     return RetryPolicy(
         max_retries=max_retries,
         conditions=[EmptyOutputCondition()],
-        retry_delay=retry_delay,
+        backoff=_backoff,
         retry_on_exception=retry_on_exception,
     )
 
@@ -270,20 +426,61 @@ def no_retry_policy() -> RetryPolicy:
     return RetryPolicy(max_retries=0, conditions=[])
 
 
-def background_retry_policy(max_retries: int = 10, retry_delay: float = 10.0) -> RetryPolicy:
+def background_retry_policy(
+    max_retries: int = 10,
+    retry_delay: float = 10.0,
+    backoff: Optional[BackoffStrategy] = None,
+) -> RetryPolicy:
     """
-    后台任务重试策略：用于长期记忆/用户画像生成等"调用失败应自动重试"的场景。
-
-    与 default_retry_policy 行为一致（均默认 retry_on_exception=True），
-    区别仅在于默认的重试次数更多、间隔更长，适合非交互的后台任务。
+    后台任务重试策略：用于长期记忆/用户画像生成等场景。
+    重试次数更多、间隔更长，适合非交互的后台任务。
 
     Args:
-        max_retries:  最多重试次数，默认 10
-        retry_delay:  重试间隔秒数，默认 1.0
+        max_retries: 最多重试次数，默认 10
+        retry_delay: 固定等待秒数（兼容旧接口）
+        backoff:     退避策略；为 None 时使用 FixedBackoff(retry_delay)
     """
+    _backoff = backoff if backoff is not None else FixedBackoff(retry_delay)
     return RetryPolicy(
         max_retries=max_retries,
         conditions=[EmptyOutputCondition()],
-        retry_delay=retry_delay,
+        backoff=_backoff,
         retry_on_exception=True,
     )
+
+
+def parse_backoff(
+    mode: str,
+    initial: float,
+    step_or_multiplier: float,
+    max_delay: float = 0.0,
+) -> BackoffStrategy:
+    """
+    从字符串模式名称构造 BackoffStrategy，方便 CLI / 配置文件使用。
+
+    Args:
+        mode:                "fixed" | "linear" | "exponential"
+        initial:             初始等待秒数（fixed 模式下即固定等待秒数）
+        step_or_multiplier:  linear 模式下为步长（秒），exponential 模式下为倍数
+        max_delay:           等待时间上限（0 = 不限制）
+
+    Raises:
+        ValueError: mode 不是已知策略名称时
+
+    示例：
+        parse_backoff("linear", 10, 60)          → LinearBackoff(10, 60)
+        parse_backoff("exponential", 5, 1.5, 300) → ExponentialBackoff(5, 1.5, 300)
+        parse_backoff("fixed", 30, 0)             → FixedBackoff(30)
+    """
+    mode = mode.lower().strip()
+    if mode == "fixed":
+        return FixedBackoff(delay=initial)
+    elif mode == "linear":
+        return LinearBackoff(initial=initial, step=step_or_multiplier, max_delay=max_delay)
+    elif mode in ("exponential", "exp"):
+        return ExponentialBackoff(initial=initial, multiplier=step_or_multiplier, max_delay=max_delay)
+    else:
+        raise ValueError(
+            f"Unknown backoff mode: {mode!r}. "
+            "Expected 'fixed', 'linear', or 'exponential'."
+        )
