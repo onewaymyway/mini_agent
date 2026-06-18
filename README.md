@@ -566,6 +566,8 @@ triggers: keyword1, keyword2
 
 也可通过 `--providers-config` 指定其他路径。详见 [LLM 故障转移指南](docs/llm-failover-guide.md)。
 
+特殊说明：当前仅有nvidia、openrouter两个经过实际测试，因为本人只有这两个平台的api key。
+
 ### 重试退避策略
 
 重试等待时长支持三种退避模式（通过 `--retry-backoff` 或配置文件指定）：
