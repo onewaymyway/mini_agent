@@ -71,8 +71,8 @@ class OpenRouterProvider(OpenAIProvider):
             "X-Title": config.extra.pop("x_title", _DEFAULT_TITLE),
         }
         # 合并到 extra["default_headers"]，不覆盖用户已设置的值
-        # existing = config.extra.get("default_headers", {})
-        # config.extra["default_headers"] = {**headers, **existing}
+        existing = config.extra.get("default_headers", {})
+        config.extra["default_headers"] = {**headers, **existing}
 
         super().__init__(config)
 

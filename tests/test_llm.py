@@ -471,6 +471,21 @@ class TestOpenRouterProvider(unittest.TestCase):
         self.assertIn("default_headers", call_kwargs)
         self.assertEqual(call_kwargs["default_headers"]["X-Custom"], "value")
 
+    def test_default_headers_not_leaked_into_request_kwargs(self):
+        """default_headers 是客户端级配置，不应混入 chat.completions.create()/stream() 的 kwargs。"""
+        provider = self._make_provider()
+        kwargs = provider._build_kwargs(
+            messages=[{"role": "user", "content": "hi"}], tools=None, stream=False
+        )
+        self.assertNotIn("default_headers", kwargs)
+
+    def test_default_headers_not_leaked_stream_kwargs(self):
+        provider = self._make_provider()
+        kwargs = provider._build_kwargs(
+            messages=[{"role": "user", "content": "hi"}], tools=None, stream=True
+        )
+        self.assertNotIn("default_headers", kwargs)
+
 
 # ══════════════════════════════════════════════════════════════════════════════
 # OllamaProvider 测试

@@ -34,8 +34,8 @@ class OpenAIProvider(ProviderMixin, LLMClient):
             kwargs["timeout"] = float(self.config.timeout)
         # 支持通过 config.extra["default_headers"] 注入额外请求头
         # 用于 OpenRouter 等需要自定义头的服务
-        # if self.config.extra.get("default_headers"):
-        #     kwargs["default_headers"] = self.config.extra["default_headers"]
+        if self.config.extra.get("default_headers"):
+            kwargs["default_headers"] = self.config.extra["default_headers"]
         return OpenAI(**kwargs)
 
     # ── 公共接口 ───────────────────────────────────────────────────────────────
@@ -138,7 +138,10 @@ class OpenAIProvider(ProviderMixin, LLMClient):
             kwargs["tool_choice"] = self.config.extra.get("tool_choice", "auto")
         if stream:
             kwargs["stream_options"] = {"include_usage": True}
-        kwargs.update({k: v for k, v in self.config.extra.items() if k != "tool_choice"})
+        # config.extra 中部分键是客户端级配置（如 default_headers，用于构造
+        # OpenAI() client），不应随请求 kwargs 传给 chat.completions.create()/stream()
+        _CLIENT_LEVEL_KEYS = {"tool_choice", "default_headers"}
+        kwargs.update({k: v for k, v in self.config.extra.items() if k not in _CLIENT_LEVEL_KEYS})
         return kwargs
 
     def _parse_response(self, resp) -> LLMResponse:
