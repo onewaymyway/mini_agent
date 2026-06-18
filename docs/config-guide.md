@@ -77,7 +77,7 @@ class ToolTrimConfig:
     read_window_lines: int = 0         # read_file 截断窗口行数（0 = 自动推算）
     grep_max_lines: int = 50           # grep/glob 最大保留行数
     # 大文件感知
-    large_file_threshold_bytes: int = 20000  # 超过此字节数视为大文件（默认 100 KB）
+    large_file_threshold_bytes: int = 20000  # 超过此字节数视为大文件（默认 20 KB）
     list_dir_show_size: bool = True            # list_dir 是否显示文件大小
     large_file_warn_marker: str = "⚠"         # 大文件在 list_dir 中的标记符
 ```
@@ -85,11 +85,13 @@ class ToolTrimConfig:
 | 字段 | 说明 |
 |------|------|
 | `threshold` | 工具结果超过此字符数时触发截断，不同工具有各自的截断策略 |
-| `bash_tail_ratio` | bash 输出尾部保留比例（错误信息通常在末尾） |
+| `bash_tail_ratio` | bash 输出尾部保留比例（错误信息通常在末尾）；智能截断会优先保留含 `ERROR`/`FAILED`/`Traceback` 等关键词的行 |
 | `read_window_lines` | `read_file` 截断时保留的行数（0 = 自动按 threshold 推算） |
-| `large_file_threshold_bytes` | `read_file` 执行前的大小检查阈值；超过时拦截并提示替代方案 |
-| `list_dir_show_size` | 为 `false` 时 `list_dir` 不输出文件大小，减少 token 消耗 |
-| `large_file_warn_marker` | `list_dir` 中大文件的标记符，默认 `⚠` |
+| `large_file_threshold_bytes` | `read_file` 和 `list_dir`/`tree_summary` 共用的大文件阈值；超过时 `read_file` 拦截，`list_dir`/`tree_summary` 标记 ⚠ |
+| `list_dir_show_size` | 为 `false` 时 `list_dir` 和 `tree_summary` 均不输出文件大小，减少 token 消耗 |
+| `large_file_warn_marker` | `list_dir` / `tree_summary` 中大文件的标记符，默认 `⚠` |
+
+**`tree_summary` 与忽略目录：** `tree_summary` 工具内置忽略列表（`.git`、`__pycache__`、`node_modules`、`.venv`、`dist`、`build` 等），无需配置。若需要查看隐藏目录（如 `.agent`、`.claude`），传 `include_hidden=true`。
 
 **JSON 配置示例：**
 
