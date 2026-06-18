@@ -14,6 +14,7 @@ tool_executor.py — 工具执行器
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 from typing import TYPE_CHECKING, Optional
 
@@ -176,21 +177,57 @@ class ToolExecutor:
         total = len(lines)
 
         if tool_name == "bash":
-            # 尾部权重更高：实际输出/错误/exit 通常在尾部
+            # [SYS-TRIM] 智能截断：优先保留错误/失败关键行，再做头尾补充
+            # 关键行模式：pytest 失败、traceback、error 行、exit code 等
+            _KEY_PATTERNS = re.compile(
+                r"(FAILED|ERROR|Error|Traceback|assert|AssertionError"
+                r"|raised|exception|exit code [^0]"
+                r"|✗|✘|FAIL|PASS|passed|failed|warning)",
+                re.IGNORECASE,
+            )
+            key_indices = [i for i, l in enumerate(lines) if _KEY_PATTERNS.search(l)]
+
             tail_ratio = getattr(self.cfg.tool_trim, "bash_tail_ratio", 0.6)
-            if total > 20:
-                tail_n = max(8, int(total * tail_ratio))
-                head_n = max(5, int(total * 0.3))
-                if head_n + tail_n >= total:
-                    head_n = total // 3
-                    tail_n = total - head_n
-                omitted = total - head_n - tail_n
-                if omitted > 0:
-                    return (
-                        "\n".join(lines[:head_n])
-                        + f"\n... [{omitted} lines omitted] ...\n"
-                        + "\n".join(lines[-tail_n:])
-                    )
+            tail_n = max(8, int(total * tail_ratio))
+            head_n = max(5, int(total * 0.2))
+
+            # 在 head + tail 之外，额外插入关键行（最多 30 行）
+            key_extra = [i for i in key_indices
+                         if i >= head_n and i < total - tail_n][:30]
+
+            if head_n + tail_n >= total and not key_extra:
+                pass  # 不需要截断，走下面通用逻辑
+            elif total > 20:
+                kept: list[str] = []
+                kept.extend(lines[:head_n])
+
+                if key_extra:
+                    # 将关键行分组成连续块，每块加分隔符
+                    groups: list[list[int]] = []
+                    for ki in key_extra:
+                        if groups and ki == groups[-1][-1] + 1:
+                            groups[-1].append(ki)
+                        else:
+                            groups.append([ki])
+                    omitted_before_first = key_extra[0] - head_n
+                    if omitted_before_first > 0:
+                        kept.append(f"... [{omitted_before_first} lines omitted] ...")
+                    for gi, grp in enumerate(groups):
+                        kept.extend(lines[grp[0]: grp[-1] + 1])
+                        if gi < len(groups) - 1:
+                            between = groups[gi + 1][0] - grp[-1] - 1
+                            if between > 0:
+                                kept.append(f"... [{between} lines omitted] ...")
+                    omitted_after_last = (total - tail_n) - key_extra[-1] - 1
+                    if omitted_after_last > 0:
+                        kept.append(f"... [{omitted_after_last} lines omitted] ...")
+                else:
+                    omitted = total - head_n - tail_n
+                    if omitted > 0:
+                        kept.append(f"... [{omitted} lines omitted] ...")
+
+                kept.extend(lines[-tail_n:])
+                return "\n".join(kept)
 
         elif tool_name == "read_file":
             window = getattr(self.cfg, "tool_trim_read_window_lines", 0)

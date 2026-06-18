@@ -93,7 +93,7 @@ def bash(command: str, timeout: int = 300, workdir: Optional[str] = None) -> str
 # ── read_file ─────────────────────────────────────────────────────────────────
 
 # [SYS-LARGEFILE] 默认大文件阈值（字节），可通过 config 覆盖
-_DEFAULT_LARGE_FILE_THRESHOLD = 20000  # 20 KB
+_DEFAULT_LARGE_FILE_THRESHOLD = 100_000  # 100 KB
 
 # 模块级配置引用（由 configure_large_file 注入，None 时使用默认值）
 _tool_trim_cfg = None
@@ -390,8 +390,9 @@ def glob(pattern: str, root: str = ".") -> str:
     name="grep",
     description=(
         "Search for a regex pattern in files. "
-        "Returns file:line:content for each match. "
-        "Max 100 results."
+        "Returns file:line:content for each match, with optional surrounding context lines. "
+        "Use context_lines to see code around each match without a separate read_file call. "
+        "Reports total match count and truncation status."
     ),
     schema={
         "type": "object",
@@ -400,6 +401,14 @@ def glob(pattern: str, root: str = ".") -> str:
             "path": {"type": "string", "description": "File or directory to search"},
             "file_pattern": {"type": "string", "description": "Glob filter, e.g. '*.py'"},
             "case_sensitive": {"type": "boolean", "description": "Default true"},
+            "context_lines": {
+                "type": "integer",
+                "description": "Lines of context before and after each match (default 0, max 10)",
+            },
+            "max_results": {
+                "type": "integer",
+                "description": "Max number of matching lines to return (default 100)",
+            },
         },
         "required": ["pattern"],
     },
@@ -410,6 +419,8 @@ def grep(
     path: str = ".",
     file_pattern: str = "*",
     case_sensitive: bool = True,
+    context_lines: int = 0,
+    max_results: int = 100,
 ) -> str:
     flags = 0 if case_sensitive else re.IGNORECASE
     try:
@@ -417,26 +428,76 @@ def grep(
     except re.error as e:
         return f"[invalid regex: {e}]"
 
+    context_lines = max(0, min(context_lines, 10))
+    max_results = max(1, min(max_results, 500))
     root = Path(path).expanduser()
-    results: list[str] = []
 
-    files = [root] if root.is_file() else root.rglob(file_pattern)
+    # 收集所有匹配，记录 (fpath, line_index) 以便后续提取上下文
+    Match = tuple  # (rel_path_str, all_lines_list, match_line_idx_0based)
+    matches: list[Match] = []
+    total_found = 0
+
+    files = [root] if root.is_file() else sorted(root.rglob(file_pattern))
     for fpath in files:
         if not fpath.is_file():
             continue
         try:
-            text = fpath.read_text(encoding="utf-8", errors="replace")
+            all_lines = fpath.read_text(encoding="utf-8", errors="replace").splitlines()
         except Exception:
             continue
-        for i, line in enumerate(text.splitlines(), 1):
+        rel = str(fpath.relative_to(root)) if root.is_dir() else str(fpath)
+        for i, line in enumerate(all_lines):
             if regex.search(line):
-                rel = fpath.relative_to(root) if root.is_dir() else fpath
-                results.append(f"{rel}:{i}:{line.rstrip()}")
-                if len(results) >= 100:
-                    results.append("[… truncated at 100 results]")
-                    return "\n".join(results)
+                total_found += 1
+                if len(matches) < max_results:
+                    matches.append((rel, all_lines, i))
 
-    return "\n".join(results) or "(no matches)"
+    if not matches:
+        return "(no matches)"
+
+    # 渲染结果
+    out: list[str] = []
+    truncated = total_found > max_results
+
+    if context_lines == 0:
+        # 简洁模式：file:lineno:content
+        for rel, all_lines, idx in matches:
+            out.append(f"{rel}:{idx + 1}:{all_lines[idx].rstrip()}")
+    else:
+        # 上下文模式：按文件分组，块之间用分隔符
+        # 先按文件名分组，再合并相邻/重叠的上下文块
+        from itertools import groupby
+        keyed = [(rel, idx) for rel, _, idx in matches]
+        file_to_matches: dict[str, list] = {}
+        for rel, all_lines, idx in matches:
+            file_to_matches.setdefault(rel, (all_lines, []))[1].append(idx)
+
+        for rel, (all_lines, idxs) in file_to_matches.items():
+            # 合并重叠的上下文区间
+            intervals: list[tuple[int, int, set[int]]] = []
+            for idx in sorted(idxs):
+                lo = max(0, idx - context_lines)
+                hi = min(len(all_lines) - 1, idx + context_lines)
+                if intervals and lo <= intervals[-1][1] + 1:
+                    prev_lo, prev_hi, prev_hits = intervals[-1]
+                    intervals[-1] = (prev_lo, max(prev_hi, hi), prev_hits | {idx})
+                else:
+                    intervals.append((lo, hi, {idx}))
+
+            for seg_idx, (lo, hi, hit_set) in enumerate(intervals):
+                if seg_idx > 0:
+                    out.append("---")
+                for ln in range(lo, hi + 1):
+                    marker = ">" if ln in hit_set else " "
+                    out.append(f"{rel}:{ln + 1}{marker} {all_lines[ln].rstrip()}")
+
+    summary = f"\n[{total_found} match{'es' if total_found != 1 else ''} found"
+    if truncated:
+        summary += f", showing first {max_results}"
+    summary += "]"
+    out.append(summary)
+
+    return "\n".join(out)
 
 
 # ── patch_file ────────────────────────────────────────────────────────────────
@@ -445,14 +506,16 @@ def grep(
     name="patch_file",
     description=(
         "Apply a targeted find-and-replace edit to a file. "
-        "old_string must exactly match existing content (be as specific as possible). "
-        "new_string is the replacement. Returns a unified diff."
+        "old_string must match existing content (include enough surrounding lines to be unique). "
+        "If exact match fails, a whitespace-normalized fallback is attempted automatically. "
+        "On failure, the closest candidate in the file is shown to help you correct old_string. "
+        "Returns a unified diff on success."
     ),
     schema={
         "type": "object",
         "properties": {
             "path": {"type": "string", "description": "File to edit"},
-            "old_string": {"type": "string", "description": "Exact content to replace"},
+            "old_string": {"type": "string", "description": "Content to replace (must be unique in file)"},
             "new_string": {"type": "string", "description": "Replacement content"},
         },
         "required": ["path", "old_string", "new_string"],
@@ -469,13 +532,49 @@ def patch_file(path: str, old_string: str, new_string: str) -> str:
     except Exception as e:
         return f"[error reading {path}: {e}]"
 
+    # ── 第一步：精确匹配 ───────────────────────────────────────────────────────
     count = original.count(old_string)
-    if count == 0:
-        return "[error: old_string not found in file]"
-    if count > 1:
-        return f"[error: old_string matches {count} locations — be more specific]"
+    matched_str = None  # 实际用于替换的原文片段
+    used_fallback = False
 
-    updated = original.replace(old_string, new_string, 1)
+    if count == 1:
+        matched_str = old_string
+    elif count > 1:
+        return f"[error: old_string matches {count} locations — be more specific]"
+    else:
+        # ── 第二步：whitespace-normalized 回退 ───────────────────────────────
+        # 归一化：去除行尾空白，统一换行符
+        def _norm(s: str) -> str:
+            return "\n".join(line.rstrip() for line in s.splitlines())
+
+        norm_orig = _norm(original)
+        norm_old = _norm(old_string)
+        norm_count = norm_orig.count(norm_old)
+
+        if norm_count == 1:
+            # 定位归一化匹配在原文中对应的实际行范围
+            lines_before = norm_orig[: norm_orig.index(norm_old)].count("\n")
+            old_line_count = norm_old.count("\n") + 1
+            orig_lines = original.splitlines(keepends=True)
+            matched_str = "".join(orig_lines[lines_before: lines_before + old_line_count])
+            used_fallback = True
+        elif norm_count > 1:
+            return (
+                f"[error: old_string not found exactly, "
+                f"and whitespace-normalized fallback matches {norm_count} locations — be more specific]"
+            )
+        else:
+            # ── 第三步：彻底失败，返回最近似候选 ─────────────────────────────
+            candidate = _find_patch_candidate(original, old_string)
+            msg = "[error: old_string not found in file"
+            if old_string != old_string.strip():
+                msg += " (note: old_string has leading/trailing whitespace)"
+            msg += "]"
+            if candidate:
+                msg += f"\n\nClosest candidate in file (use as old_string):\n{candidate}"
+            return msg
+
+    updated = original.replace(matched_str, new_string, 1)
     try:
         p.write_text(updated, encoding="utf-8")
     except Exception as e:
@@ -490,7 +589,101 @@ def patch_file(path: str, old_string: str, new_string: str) -> str:
             n=3,
         )
     )
-    return diff or "(no diff — content unchanged)"
+    result = diff or "(no diff — content unchanged)"
+    if used_fallback:
+        result += "\n[note: matched after whitespace normalization]"
+    return result
+
+
+def _find_patch_candidate(original: str, old_string: str) -> str:
+    """
+    在 original 中找与 old_string 最相似的实际片段，用于错误提示。
+    以 old_string 首行为锚，提取原文中相同行数的片段。
+    """
+    old_lines = old_string.splitlines()
+    if not old_lines:
+        return ""
+    first_stripped = old_lines[0].strip()
+    if not first_stripped:
+        return ""
+
+    orig_lines = original.splitlines()
+    n = len(old_lines)
+
+    # 找首行最相近的原文行
+    anchor = -1
+    for i, line in enumerate(orig_lines):
+        ls = line.strip()
+        if first_stripped and (first_stripped in ls or ls.startswith(first_stripped[:30])):
+            anchor = i
+            break
+
+    if anchor == -1:
+        # 次级回退：以 old_string 前 30 个非空字符做子串搜索
+        needle = old_string.strip()[:30]
+        if needle:
+            joined = "\n".join(orig_lines)
+            idx = joined.find(needle)
+            if idx != -1:
+                anchor = joined[:idx].count("\n")
+
+    if anchor == -1:
+        return ""
+
+    return "\n".join(orig_lines[anchor: anchor + n])
+
+
+# ── diff_files ────────────────────────────────────────────────────────────────
+
+@tool(
+    name="diff_files",
+    description=(
+        "Compare two files and return a unified diff. "
+        "Useful for reviewing changes between versions, comparing configs, or auditing edits. "
+        "context_lines controls how many unchanged lines to show around each change (default 3)."
+    ),
+    schema={
+        "type": "object",
+        "properties": {
+            "path_a": {"type": "string", "description": "First file (shown as 'before')"},
+            "path_b": {"type": "string", "description": "Second file (shown as 'after')"},
+            "context_lines": {"type": "integer", "description": "Unchanged lines around each hunk (default 3)"},
+        },
+        "required": ["path_a", "path_b"],
+    },
+    requires_approval=False,
+)
+def diff_files(path_a: str, path_b: str, context_lines: int = 3) -> str:
+    """Return a unified diff between two files."""
+    pa, pb = Path(path_a).expanduser(), Path(path_b).expanduser()
+    for label, p in (("path_a", pa), ("path_b", pb)):
+        if not p.exists():
+            return f"[error: {label} not found: {p}]"
+        if not p.is_file():
+            return f"[error: {label} is not a file: {p}]"
+    try:
+        lines_a = pa.read_text(encoding="utf-8", errors="replace").splitlines(keepends=True)
+        lines_b = pb.read_text(encoding="utf-8", errors="replace").splitlines(keepends=True)
+    except Exception as e:
+        return f"[error reading files: {e}]"
+
+    context_lines = max(0, min(context_lines, 20))
+    diff = "".join(
+        unified_diff(
+            lines_a,
+            lines_b,
+            fromfile=str(pa),
+            tofile=str(pb),
+            n=context_lines,
+        )
+    )
+    if not diff:
+        return f"(files are identical: {path_a} == {path_b})"
+
+    # 统计变更行数
+    added = sum(1 for l in diff.splitlines() if l.startswith("+") and not l.startswith("+++"))
+    removed = sum(1 for l in diff.splitlines() if l.startswith("-") and not l.startswith("---"))
+    return f"{diff}\n[+{added} -{removed} lines changed]"
 
 
 # ── web_search ────────────────────────────────────────────────────────────────
