@@ -10,3 +10,4 @@ mcp>=1.0.0
 # Web Demo 依赖
 streamlit>=1.30.0
 requests>=2.31.0
+openai==2.14.0
