@@ -1,0 +1,50 @@
+{
+  "_comment": "此文件包含 API key 等敏感信息，复制为 providers.json 后填写真实值。providers.json 已加入 .gitignore，不会被提交。",
+
+  "llm_fallback_chain": [
+    {
+      "_comment": "主配置（第一条），Anthropic 多 key 轮转",
+      "provider": "anthropic",
+      "model": "claude-opus-4-7",
+      "api_keys": [
+        "sk-ant-key-1-...",
+        "sk-ant-key-2-..."
+      ],
+      "key_rotation": "passive",
+      "key_switch_on": ["LLMRateLimitError"],
+      "key_cooldown": 60
+    },
+    {
+      "_comment": "备用配置，OpenAI fallback",
+      "provider": "openai",
+      "model": "gpt-4o",
+      "api_key": "sk-openai-...",
+      "key_rotation": "passive"
+    }
+  ],
+
+  "llm_fallback_on": [
+    "LLMRateLimitError",
+    "LLMTimeoutError",
+    "LLMProviderError"
+  ],
+
+  "_comment_providers": "providers 块为全局 per-provider 设置，会合并到 llm_fallback_chain 的对应条目中（条目的显式字段优先）",
+  "providers": {
+    "anthropic": {
+      "api_keys": [
+        "sk-ant-key-1-...",
+        "sk-ant-key-2-..."
+      ],
+      "key_rotation": "round_robin",
+      "key_cooldown": 60
+    },
+    "openai": {
+      "api_keys": [
+        "sk-openai-key-1-...",
+        "sk-openai-key-2-..."
+      ],
+      "key_rotation": "passive"
+    }
+  }
+}
