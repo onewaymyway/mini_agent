@@ -32,6 +32,10 @@ class OpenAIProvider(ProviderMixin, LLMClient):
             kwargs["base_url"] = self.config.base_url
         if self.config.timeout:
             kwargs["timeout"] = float(self.config.timeout)
+        # 支持通过 config.extra["default_headers"] 注入额外请求头
+        # 用于 OpenRouter 等需要自定义头的服务
+        if self.config.extra.get("default_headers"):
+            kwargs["default_headers"] = self.config.extra["default_headers"]
         return OpenAI(**kwargs)
 
     # ── 公共接口 ───────────────────────────────────────────────────────────────

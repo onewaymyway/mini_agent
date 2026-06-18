@@ -40,26 +40,33 @@ def _load_nvidia():
     from .providers.nvidia import NvidiaProvider
     return NvidiaProvider
 
+def _load_openrouter():
+    from .providers.openrouter import OpenRouterProvider
+    return OpenRouterProvider
+
 
 _REGISTRY: dict[str, Callable[[], type[LLMClient]]] = {
     # ── 已内置的 provider ─────────────────────────────────────────
-    "anthropic":  _load_anthropic,
-    "claude":     _load_anthropic,   # 别名
-    "openai":     _load_openai,
-    "azure":      _load_openai,      # Azure OpenAI 兼容 OpenAI 格式
+    "anthropic":    _load_anthropic,
+    "claude":       _load_anthropic,    # 别名
+    "openai":       _load_openai,
+    "azure":        _load_openai,       # Azure OpenAI 兼容 OpenAI 格式
     # OpenAI 兼容的第三方服务（只需设置 base_url 和 api_key）
-    "deepseek":   _load_openai,
-    "moonshot":   _load_openai,
-    "qwen":       _load_openai,
-    "groq":       _load_openai,
-    "together":   _load_openai,
-    "fireworks":  _load_openai,
+    "deepseek":     _load_openai,
+    "moonshot":     _load_openai,
+    "qwen":         _load_openai,
+    "groq":         _load_openai,
+    "together":     _load_openai,
+    "fireworks":    _load_openai,
+    # ── OpenRouter（多模型聚合网关）────────────────────────────────
+    "openrouter":   _load_openrouter,
+    "or":           _load_openrouter,   # 别名
     # ── 本地模型 ──────────────────────────────────────────────────
-    "ollama":     _load_ollama,
-    "local":      _load_ollama,      # 别名
+    "ollama":       _load_ollama,
+    "local":        _load_ollama,       # 别名
     # ── NVIDIA NIM ───────────────────────────────────────────────
-    "nvidia":     _load_nvidia,
-    "nim":        _load_nvidia,      # 别名
+    "nvidia":       _load_nvidia,
+    "nim":          _load_nvidia,       # 别名
 }
 
 
@@ -123,10 +130,11 @@ def register_provider(name: str, loader: Callable[[], type[LLMClient]]) -> None:
 
 # 每个 loader 函数的"规范名"（别名不在此列表中）
 _CANONICAL_NAMES: dict[str, str] = {
-    "_load_anthropic": "anthropic",
-    "_load_openai":    "openai",
-    "_load_ollama":    "ollama",
-    "_load_nvidia":    "nvidia",
+    "_load_anthropic":   "anthropic",
+    "_load_openai":      "openai",
+    "_load_ollama":      "ollama",
+    "_load_nvidia":      "nvidia",
+    "_load_openrouter":  "openrouter",
 }
 
 

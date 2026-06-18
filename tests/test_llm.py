@@ -380,6 +380,99 @@ class TestOpenAIProvider(unittest.TestCase):
 
 
 # ══════════════════════════════════════════════════════════════════════════════
+# OpenRouterProvider 测试
+# ══════════════════════════════════════════════════════════════════════════════
+
+class TestOpenRouterProvider(unittest.TestCase):
+
+    def _make_provider(self, extra=None):
+        from mini_agent.llm.providers.openrouter import OpenRouterProvider
+        cfg = LLMConfig(
+            provider="openrouter",
+            model="anthropic/claude-opus-4-7",
+            api_key="sk-or-test",
+            extra=extra or {},
+        )
+        with patch.object(OpenRouterProvider, "_build_client", return_value=MagicMock()):
+            return OpenRouterProvider(cfg)
+
+    def test_default_base_url_injected(self):
+        provider = self._make_provider()
+        self.assertEqual(provider.config.base_url, "https://openrouter.ai/api/v1")
+
+    def test_provider_name(self):
+        provider = self._make_provider()
+        self.assertEqual(provider.provider_name, "OpenRouter")
+
+    def test_default_headers_injected(self):
+        provider = self._make_provider()
+        headers = provider.config.extra["default_headers"]
+        self.assertIn("HTTP-Referer", headers)
+        self.assertIn("X-Title", headers)
+        self.assertEqual(headers["X-Title"], "mini_agent")
+
+    def test_custom_headers_via_extra(self):
+        provider = self._make_provider(extra={
+            "http_referer": "https://mysite.com",
+            "x_title": "MyApp",
+        })
+        headers = provider.config.extra["default_headers"]
+        self.assertEqual(headers["HTTP-Referer"], "https://mysite.com")
+        self.assertEqual(headers["X-Title"], "MyApp")
+
+    def test_custom_base_url_not_overridden(self):
+        from mini_agent.llm.providers.openrouter import OpenRouterProvider
+        cfg = LLMConfig(
+            provider="openrouter",
+            model="openai/gpt-4o",
+            api_key="sk-or-test",
+            base_url="https://custom-proxy.example.com/v1",
+        )
+        with patch.object(OpenRouterProvider, "_build_client", return_value=MagicMock()):
+            p = OpenRouterProvider(cfg)
+        self.assertEqual(p.config.base_url, "https://custom-proxy.example.com/v1")
+
+    def test_api_key_from_env(self):
+        from mini_agent.llm.providers.openrouter import OpenRouterProvider
+        cfg = LLMConfig(provider="openrouter", model="openai/gpt-4o", api_key="")
+        with patch.dict("os.environ", {"OPENROUTER_API_KEY": "sk-or-from-env"}):
+            with patch.object(OpenRouterProvider, "_build_client", return_value=MagicMock()):
+                p = OpenRouterProvider(cfg)
+        self.assertEqual(p.config.api_key, "sk-or-from-env")
+
+    def test_registered_in_factory(self):
+        from mini_agent.llm.factory import _REGISTRY
+        self.assertIn("openrouter", _REGISTRY)
+        self.assertIn("or", _REGISTRY)
+
+    def test_factory_alias_or(self):
+        from mini_agent.llm.factory import _REGISTRY
+        # "or" 和 "openrouter" 指向同一个 loader
+        self.assertIs(_REGISTRY["or"], _REGISTRY["openrouter"])
+
+    def test_list_providers_includes_openrouter(self):
+        from mini_agent.llm.factory import list_providers
+        self.assertIn("openrouter", list_providers())
+
+    def test_openai_provider_default_headers_passthrough(self):
+        """OpenAIProvider._build_client 能正确透传 default_headers。"""
+        from mini_agent.llm.providers.openai import OpenAIProvider
+        cfg = LLMConfig(
+            provider="openai",
+            model="gpt-4o",
+            api_key="k",
+            extra={"default_headers": {"X-Custom": "value"}},
+        )
+        mock_openai_cls = MagicMock(return_value=MagicMock())
+        with patch.dict("sys.modules", {"openai": MagicMock(OpenAI=mock_openai_cls)}):
+            OpenAIProvider(cfg)
+        mock_openai_cls.assert_called_once()
+        call_kwargs = mock_openai_cls.call_args[1]
+        self.assertIn("default_headers", call_kwargs)
+        self.assertEqual(call_kwargs["default_headers"]["X-Custom"], "value")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
 # OllamaProvider 测试
 # ══════════════════════════════════════════════════════════════════════════════
 
