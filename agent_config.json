@@ -1,6 +1,5 @@
 {
-  "model": "z-ai/glm-5.1",
-  "provider": "nvidia",
+
   "system_message_format": "system_role",
   "system_tool_call": true,
   "claude_md_file":"Agent.md",
