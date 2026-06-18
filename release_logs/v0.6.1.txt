@@ -1,0 +1,103 @@
+# mini_agent v0.6.1 Release Notes
+
+发布日期：2026-06-19
+
+---
+
+## 🌟 新功能
+
+### 多 Agent 协作与 Workflow 机制
+- 新增 **Role Agents** 多角色 Agent 协作框架，支持 coach（教练）、evaluator（评估者）等角色
+- 新增 **Workflow** 工作流引擎，支持 YAML 定义工作流、自动生成与执行
+- 内置 `code_review.yaml` 工作流示例，演示多 Agent 协作审查流程
+- Role Agent 增加开关控制，可通过配置启用/禁用
+
+### OpenRouter Provider
+- 新增 **OpenRouter** LLM Provider，支持通过 OpenRouter 调用多种大模型
+- 修复 OpenRouter 传递 `extra` 参数时的报错问题
+
+### 环境信息采集机制
+- 新增 **env_info** 模块，自动采集系统环境信息（时区、语言环境、运行时等）
+- 环境信息注入 system prompt，帮助 Agent 感知运行上下文
+
+### Git Context Skill
+- 新增 **git-context** 技能，支持分析 Git 仓库状态、提交历史、代码变更
+- 可通过自然语言触发，如"最近改了什么"、"有哪些提交"
+
+### 内置工具增强
+- 新增 **tree_summary** 工具，以紧凑的目录骨架形式展示项目结构，节省 token
+- 优化内置工具的参数与执行逻辑
+- 调整大文件阈值判定
+
+---
+
+## 🔧 优化改进
+
+### History 机制重构
+- 引入 **Raw History** 原始历史记录层，保留完整对话细节
+- 优化 history 保存与加载机制，提升数据完整性
+- 新增选择性压缩（selective compression）测试
+
+### Compact 逻辑优化
+- 优化上下文压缩（compact）逻辑，减少信息丢失
+- 新增 **reminder 重复检测**，避免压缩后注入重复的 reminder 内容
+
+### LLM 调用优化
+- 新增 **Client Pool** 连接池机制，支持多模型客户端管理
+- 优化大模型参数设置方式，统一配置入口
+- 优化 **retry 重试机制**，改进错误恢复策略
+- 新增 LLM Failover 故障转移指南文档
+- 新增 Retry Backoff 退避策略指南文档
+
+### 命令行与参数
+- 调整参数优先级：**命令行参数 > 配置文件参数**
+- 优化命令行参数解析逻辑
+- 修复 parser 重置导致的报错问题
+- 新增 `claude_md_file` 参数，支持自定义 CLAUDE.md 文件路径
+
+### 交互体验
+- 退出 REPL 时增加 **resume 提示**，方便用户恢复会话
+- 修复 session ID 不显示的问题
+- 优化终端显示效果
+
+---
+
+## 📝 文档更新
+
+- 新增 `docs/role-agents-guide.md` — Role Agents 使用指南
+- 新增 `docs/workflow-guide.md` — Workflow 工作流使用指南
+- 新增 `docs/llm-failover-guide.md` — LLM 故障转移指南
+- 新增 `docs/retry-backoff-guide.md` — 重试退避策略指南
+- 新增 `docs/env-info-guide.md` — 环境信息机制说明
+- 新增 `docs/history-typed-design.md` — History 类型化设计文档
+- 新增 `docs/terminal-display-internals.md` — 终端显示内部机制
+- 更新 `docs/config-guide.md` — 配置指南
+- 更新 `docs/commands-and-tools-reference.md` — 命令与工具参考
+- 更新 `docs/terminal-io-guide.md` — 终端 IO 指南
+- 更新 `README.md` 和 `CLAUDE.md` 项目文档
+- 新增 `providers.json.example` — Provider 配置示例
+- 新增 `Agent.md` — Agent 说明文档
+
+---
+
+## 🗑️ 清理
+
+- 删除过时的文档 `future_todos_2.md`、`future_todos_3.md`
+- 更新 `requirements.txt` 依赖
+- 更新 `.gitignore` 忽略规则
+
+---
+
+## 📦 涉及的主要文件
+
+| 类别 | 关键文件 |
+|------|----------|
+| 新增模块 | `role_agents/`, `workflow/`, `env_info/`, `llm/client_pool.py`, `llm/providers/openrouter.py` |
+| 核心修改 | `agent.py`, `config.py`, `cli/app.py`, `cli/parser.py`, `cli/repl.py` |
+| History 重构 | `history/entry.py`, `history/raw_history.py`, `history/compression.py` |
+| LLM 优化 | `llm/retry.py`, `llm/providers/openai.py`, `llm/providers/openrouter.py` |
+| 内置工具 | `tools/builtin.py`, `tool_executor.py` |
+| 测试 | `test_selective_compression.py`, `test_env_info.py`, `test_llm.py` |
+| 插件 | `myplugins/git_info.py` |
+| Skill | `.claude/skills/git-context/SKILL.md` |
+| Workflow | `.agent/agents/coach.md`, `.agent/agents/evaluator.md`, `.agent/workflows/code_review.yaml` |
