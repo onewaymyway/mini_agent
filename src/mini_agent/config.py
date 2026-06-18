@@ -629,8 +629,19 @@ def load_config(
             return type(default)(file_cfg[key])
         return default
 
-    # ── 核心参数 ──────────────────────────────────────────────────────────────
-    api_key   = os.environ.get("ANTHROPIC_API_KEY", "")
+    # ── 从 providers.json 主配置提取基础值（chain[0] 即为主配置）────────────
+    # 这些值作为"providers.json 层"，优先级低于 agent_config.json，高于环境变量。
+    _raw_chain_for_main: list = _providers_cfg.get("llm_fallback_chain", [])
+    _main_entry: dict = _raw_chain_for_main[0] if _raw_chain_for_main else {}
+    _main_api_keys: list = _main_entry.get("api_keys") or []
+    _providers_api_key: str = (
+        _main_entry.get("api_key")
+        or (_main_api_keys[0] if _main_api_keys else "")
+    )
+    _providers_provider: str = _main_entry.get("provider", "")
+    _providers_model: str    = _main_entry.get("model", "")
+
+    # ── 核心参数（优先级：CLI > agent_config.json > providers.json > 环境变量 > 默认）
     # claude_md_file 优先级：CLI 参数 > 配置文件 > 默认 "CLAUDE.md"
     _claude_md_filename = (
         claude_md_file
@@ -641,9 +652,30 @@ def load_config(
     skills_dir = _resolve_skills_dir(root)
     prompts_dir = _resolve_prompts_dir(root)
 
-    _llm_provider = _f("provider", llm_provider) or os.environ.get("LLM_PROVIDER", "anthropic")
-    _llm_base_url = _f("base_url", llm_base_url) or os.environ.get("LLM_BASE_URL", "")
-    _model = _f("model", model) or os.environ.get("CLAUDE_MODEL", DEFAULT_MODEL)
+    _llm_provider = (
+        _f("provider", llm_provider)           # CLI 参数 > agent_config.json
+        or _providers_provider                  # providers.json chain[0].provider
+        or os.environ.get("LLM_PROVIDER", "anthropic")
+    )
+    _llm_base_url = (
+        _f("base_url", llm_base_url)
+        or _main_entry.get("base_url", "")
+        or os.environ.get("LLM_BASE_URL", "")
+    )
+    _model = (
+        _f("model", model)                     # CLI 参数 > agent_config.json
+        or _providers_model                     # providers.json chain[0].model
+        or os.environ.get("CLAUDE_MODEL", DEFAULT_MODEL)
+    )
+
+    # api_key：按最终确定的 provider 读取对应环境变量
+    from mini_agent.llm.client_pool import _get_env_api_key as _geak
+    _env_api_key = _geak(_llm_provider) or os.environ.get("ANTHROPIC_API_KEY", "")
+    api_key = (
+        file_cfg.get("api_key", "")            # agent_config.json（极少用）
+        or _providers_api_key                   # providers.json chain[0] 的 key
+        or _env_api_key                         # 环境变量（ANTHROPIC_API_KEY 等）
+    )
     _verbose      = bool(_fb("verbose",      verbose,      False))
     _sandbox      = bool(_fb("sandbox",      sandbox,      False))
     _auto_approve = bool(_fb("yes",          auto_approve, False))

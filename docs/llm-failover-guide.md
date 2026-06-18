@@ -125,7 +125,31 @@ mini-agent --providers-config /secure/path/providers.json
 ### 优先级
 
 ```
-chain 条目显式字段  >  providers 全局块  >  环境变量（ANTHROPIC_API_KEY 等）
+CLI 参数  >  agent_config.json  >  providers.json chain[0]  >  环境变量  >  内置默认值
+```
+
+三个核心参数（`provider`、`model`、`api_key`）均遵循此顺序。这意味着：
+
+- 有了 `providers.json`，**不需要设置 `ANTHROPIC_API_KEY` 等环境变量**
+- 有了 `providers.json`，**`agent_config.json` 里可以不写 `model`、`provider`**，直接继承主配置的值
+- `agent_config.json` 里的 `model`/`provider` 仍然可以覆盖 `providers.json` 的值（如需临时切换模型）
+
+**最简配置示例**：只有 `providers.json`，`agent_config.json` 只写功能开关：
+
+```json
+// providers.json（含 key，不提交 git）
+{
+  "llm_fallback_chain": [
+    { "provider": "anthropic", "model": "claude-opus-4-7", "api_key": "sk-ant-..." }
+  ]
+}
+
+// agent_config.json（无敏感信息，可提交 git）
+{
+  "memory_enabled": true,
+  "session_summary_enabled": true,
+  "max_llm_calls": 4
+}
 ```
 
 ---
