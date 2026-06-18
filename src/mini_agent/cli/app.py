@@ -56,6 +56,11 @@ def _main_inner() -> None:
     project_root  = Path(args.project).expanduser() if args.project else Path.cwd()
     debug_console = getattr(args, "debug_llm_console", False)
     config_file   = Path(args.config).expanduser() if getattr(args, "config", None) else None
+    providers_config_file = (
+        Path(args.providers_config).expanduser()
+        if getattr(args, "providers_config", None)
+        else None
+    )
 
     def _flag(name, default=None):
         v = getattr(args, name, default)
@@ -80,6 +85,7 @@ def _main_inner() -> None:
         agent_name=getattr(args, "agent_name", None),
         system_message_format=getattr(args, "system_msg_format", None),
         config_file=config_file,
+        providers_config_file=providers_config_file,
         claude_md_file=getattr(args, "claude_md_file", None),
         # 感知与记忆开关
         memory_enabled=_flag("memory"),

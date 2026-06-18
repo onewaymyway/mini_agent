@@ -577,6 +577,8 @@ def load_config(
     llm_retry_backoff_mode: Optional[str] = None,
     llm_retry_backoff_step: Optional[float] = None,
     llm_retry_backoff_max_delay: Optional[float] = None,
+    # providers 独立配置文件（含 API key，应加入 .gitignore）
+    providers_config_file: Optional[Path] = None,
 ) -> AppConfig:
     """
     加载配置，优先级（高→低）：JSON 配置文件 > CLI 参数 > 环境变量 > 内置默认值。
@@ -592,6 +594,18 @@ def load_config(
         default_cfg_path = root / "agent_config.json"
         if default_cfg_path.exists():
             file_cfg = _load_config_file(default_cfg_path)
+
+    # ── Providers 独立配置文件（含 API key，默认 providers.json）─────────────
+    # 优先级：--providers-config CLI 参数 > 项目根目录的 providers.json
+    _providers_cfg_path: Optional[Path] = (
+        providers_config_file
+        or (root / "providers.json" if (root / "providers.json").exists() else None)
+    )
+    _providers_cfg: dict = (
+        _load_providers_config(_providers_cfg_path)
+        if _providers_cfg_path is not None
+        else {}
+    )
 
     def _f(key, cli_val, default=None):
         """CLI 参数 > 配置文件 > 默认值"""
@@ -756,10 +770,22 @@ def load_config(
     )
 
     # ── LLM Fallback Chain ────────────────────────────────────────────────────
-    # 从配置文件读取（CLI 不支持直接传 chain，只能通过 JSON 配置文件）
-    _llm_fallback_chain: list = file_cfg.get("llm_fallback_chain", [])
-    _llm_fallback_on_raw = file_cfg.get("llm_fallback_on", None)
-    _llm_fallback_on: Optional[list] = list(_llm_fallback_on_raw) if _llm_fallback_on_raw else None
+    # 来源优先级：providers.json > agent_config.json（providers.json 优先整体覆盖）
+    # 若 providers.json 中有 llm_fallback_chain，使用它；否则从 agent_config.json 读取
+    if "llm_fallback_chain" in _providers_cfg:
+        _raw_chain: list = _providers_cfg["llm_fallback_chain"]
+    else:
+        _raw_chain = file_cfg.get("llm_fallback_chain", [])
+
+    # 将 providers 块的全局设置合并到 chain 每条条目中
+    _llm_fallback_chain: list = _merge_providers_into_chain(_raw_chain, _providers_cfg)
+
+    # fallback_on：providers.json > agent_config.json
+    _fallback_on_raw = (
+        _providers_cfg.get("llm_fallback_on")
+        or file_cfg.get("llm_fallback_on")
+    )
+    _llm_fallback_on: Optional[list] = list(_fallback_on_raw) if _fallback_on_raw else None
 
     # ── 初始化调试日志（需要在 AppConfig 构建前完成）─────────────────────────
     if _debug_llm_v:
@@ -917,6 +943,87 @@ def _load_config_file(path: Path) -> dict:
     except Exception as e:
         _warnings.warn(f"[config] Error loading config file {path}: {e}")
         return {}
+
+
+def _load_providers_config(path: Path) -> dict:
+    """
+    加载 providers 配置文件（默认 providers.json）。
+
+    该文件专门存放含 API key 的敏感配置，应加入 .gitignore。
+    支持的顶层字段：
+      llm_fallback_chain  — 与 agent_config.json 中的同名字段相同格式
+      llm_fallback_on     — fallback 触发条件
+      providers           — per-provider 的全局设置（api_keys、base_url 等）
+
+    providers 字段示例：
+      {
+        "anthropic": {
+          "api_keys": ["sk-ant-aaa", "sk-ant-bbb"],
+          "key_rotation": "round_robin",
+          "key_cooldown": 60
+        },
+        "openai": {
+          "api_keys": ["sk-openai-111", "sk-openai-222"]
+        }
+      }
+
+    返回 dict，不存在时返回 {}（不报警告，属于可选文件）。
+    """
+    import json as _json
+    import warnings as _warnings
+    if not path.exists():
+        return {}
+    try:
+        text = path.read_text(encoding="utf-8")
+        data = _json.loads(text)
+        if not isinstance(data, dict):
+            _warnings.warn(f"[config] {path}: expected a JSON object. Ignored.")
+            return {}
+        return data
+    except _json.JSONDecodeError as e:
+        _warnings.warn(f"[config] Failed to parse providers config {path}: {e}")
+        return {}
+    except Exception as e:
+        _warnings.warn(f"[config] Error loading providers config {path}: {e}")
+        return {}
+
+
+def _merge_providers_into_chain(
+    chain: list,
+    providers_cfg: dict,
+) -> list:
+    """
+    将 providers 块的全局设置合并到 fallback chain 的每条条目中。
+
+    chain 中每条条目的显式字段优先级高于 providers 块的全局设置。
+    仅补充缺少的字段（不覆盖已有值）。
+
+    例如 providers.json：
+      {
+        "providers": {
+          "anthropic": { "api_keys": ["sk-ant-aaa", "sk-ant-bbb"], "key_rotation": "round_robin" }
+        },
+        "llm_fallback_chain": [
+          { "provider": "anthropic", "model": "claude-opus-4-7" }
+          // ↑ 该条目会自动补充 api_keys 和 key_rotation
+        ]
+      }
+    """
+    providers_map: dict = providers_cfg.get("providers", {})
+    if not providers_map or not chain:
+        return chain
+
+    merged = []
+    for entry in chain:
+        provider_name = entry.get("provider", "")
+        global_settings = providers_map.get(provider_name, {})
+        if not global_settings:
+            merged.append(entry)
+            continue
+        # 全局设置作为默认值，entry 中已有的字段优先
+        combined = {**global_settings, **entry}
+        merged.append(combined)
+    return merged
 
 
 def _read_claude_md(root: Path, filename: str = "CLAUDE.md") -> str:

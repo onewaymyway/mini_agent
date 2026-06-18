@@ -191,8 +191,16 @@ mini-agent --retry-backoff linear --retry-backoff-step 60 --retry-backoff-max 30
 
 ### LLM Fallback Chain（多配置故障转移 + 多 Key 轮转）
 
-通过 `llm_fallback_chain` 配置多套 LLM 配置（第一条为主配置），在当前配置重试耗尽后自动切换到下一条。
-每条配置可配置多个 API key，遇到 rate limit 时立即切换 key，无需等待退避。
+API key 等敏感配置存放在独立的 **`providers.json`** 中（已加入 `.gitignore`），与普通配置分离。
+
+```
+项目根目录/
+├── agent_config.json      ← 通用配置，可提交 git
+├── providers.json         ← API key & fallback chain，加入 .gitignore ❌
+└── providers.json.example ← 模板，可提交 git
+```
+
+`providers.json` 支持两个顶层字段：
 
 ```json
 {
@@ -200,13 +208,13 @@ mini-agent --retry-backoff linear --retry-backoff-step 60 --retry-backoff-max 30
     {
       "provider": "anthropic",
       "model": "claude-opus-4-7",
-      "api_keys": ["sk-ant-aaa...", "sk-ant-bbb..."],
+      "api_keys": ["sk-ant-aaa", "sk-ant-bbb"],
       "key_rotation": "passive"
     },
     {
       "provider": "openai",
       "model": "gpt-4o",
-      "api_key": "sk-openai-backup..."
+      "api_key": "sk-openai-backup"
     }
   ],
   "llm_fallback_on": ["LLMRateLimitError", "LLMTimeoutError", "LLMProviderError"]
@@ -219,6 +227,12 @@ AppConfig 新增字段：
 |------|------|--------|------|
 | `llm_fallback_chain` | list | `[]` | 配置链，空时退化为单条主配置 |
 | `llm_fallback_on` | list\|null | `null`（使用内置默认值） | 触发 fallback 的错误类名称集合 |
+
+CLI 参数：
+
+```bash
+mini-agent --providers-config /secure/path/providers.json
+```
 
 详见 [LLM 多配置故障转移指南](llm-failover-guide.md)。
 

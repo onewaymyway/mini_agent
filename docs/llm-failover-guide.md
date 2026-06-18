@@ -13,48 +13,67 @@ mini-agent 提供两层互补的容错机制，解决 LLM 调用的可靠性问�
 
 ---
 
-## 快速上手
+## 配置文件分离
 
-### 场景一：Anthropic 配置多个 API key（频率限制分摊）
+API key 等敏感信息存放在**独立的 `providers.json`** 中，与普通配置 `agent_config.json` 分离。
 
-```json
-// agent_config.json
-{
-  "llm_fallback_chain": [
-    {
-      "provider": "anthropic",
-      "model": "claude-opus-4-7",
-      "api_keys": ["sk-ant-aaa...", "sk-ant-bbb...", "sk-ant-ccc..."],
-      "key_rotation": "passive"
-    }
-  ]
-}
+```
+项目根目录/
+├── agent_config.json      # 通用配置（模型、功能开关等）← 可提交到 git
+├── providers.json         # Provider & API key 配置    ← 加入 .gitignore ❌
+└── providers.json.example # 配置模板                   ← 可提交到 git
 ```
 
-当 `sk-ant-aaa` 触发 rate limit，自动切换到 `sk-ant-bbb`，无需等待退避。
+`providers.json` 在项目初始化时自动被加入 `.gitignore`，不会被意外提交。
 
-### 场景二：Anthropic 主力 + OpenAI 备用（跨 provider fallback）
+---
+
+## 快速上手
+
+### 步骤一：复制模板
+
+```bash
+cp providers.json.example providers.json
+```
+
+### 步骤二：填写真实 key
 
 ```json
+// providers.json
 {
   "llm_fallback_chain": [
     {
       "provider": "anthropic",
       "model": "claude-opus-4-7",
-      "api_key": "sk-ant-primary..."
+      "api_keys": ["sk-ant-real-key-1", "sk-ant-real-key-2"],
+      "key_rotation": "passive"
     },
     {
       "provider": "openai",
       "model": "gpt-4o",
-      "api_key": "sk-openai-backup..."
+      "api_key": "sk-openai-real-key"
     }
   ]
 }
 ```
 
-Anthropic 重试耗尽后，自动切换到 OpenAI 继续响应。
+### 步骤三：启动（自动发现）
 
-### 场景三：多 key + 跨 provider fallback（完整组合）
+```bash
+mini-agent   # 自动读取项目根目录的 providers.json
+```
+
+或显式指定路径：
+
+```bash
+mini-agent --providers-config /secure/path/providers.json
+```
+
+---
+
+## providers.json 结构
+
+### 方式一：直接写 fallback chain（推荐）
 
 ```json
 {
@@ -62,20 +81,51 @@ Anthropic 重试耗尽后，自动切换到 OpenAI 继续响应。
     {
       "provider": "anthropic",
       "model": "claude-opus-4-7",
-      "api_keys": ["sk-ant-aaa...", "sk-ant-bbb..."],
-      "key_rotation": "round_robin",
+      "api_keys": ["sk-ant-aaa", "sk-ant-bbb"],
+      "key_rotation": "passive",
       "key_switch_on": ["LLMRateLimitError"],
       "key_cooldown": 60
     },
     {
       "provider": "openai",
       "model": "gpt-4o",
-      "api_keys": ["sk-openai-111...", "sk-openai-222..."],
-      "key_rotation": "passive"
+      "api_key": "sk-openai-backup"
     }
   ],
   "llm_fallback_on": ["LLMRateLimitError", "LLMTimeoutError", "LLMProviderError"]
 }
+```
+
+### 方式二：providers 全局块（key 统一管理）
+
+当多条 chain 条目共用同一 provider 的 key 时，用 `providers` 块统一管理，避免重复：
+
+```json
+{
+  "providers": {
+    "anthropic": {
+      "api_keys": ["sk-ant-aaa", "sk-ant-bbb"],
+      "key_rotation": "round_robin",
+      "key_cooldown": 60
+    },
+    "openai": {
+      "api_keys": ["sk-openai-111", "sk-openai-222"]
+    }
+  },
+  "llm_fallback_chain": [
+    { "provider": "anthropic", "model": "claude-opus-4-7" },
+    { "provider": "anthropic", "model": "claude-haiku-4-5" },
+    { "provider": "openai",    "model": "gpt-4o" }
+  ]
+}
+```
+
+`providers` 块中的设置会自动合并到 `llm_fallback_chain` 的对应条目中。chain 条目中**显式指定的字段优先级更高**，会覆盖全局设置。
+
+### 优先级
+
+```
+chain 条目显式字段  >  providers 全局块  >  环境变量（ANTHROPIC_API_KEY 等）
 ```
 
 ---
@@ -284,7 +334,9 @@ pool = LLMClientPool.from_config(cfg)
 
 | 文件 | 说明 |
 |------|------|
-| `src/mini_agent/llm/client_pool.py` | **新建**：ApiKeyPool、ProviderEntry、LLMClientPool |
-| `src/mini_agent/agent.py` | `_call_llm` 改造，接入 `LLMClientPool` |
-| `src/mini_agent/config.py` | AppConfig 新增 `llm_fallback_chain`、`llm_fallback_on` 字段 |
+| `providers.json` | **敏感配置**（API key），加入 .gitignore，不提交 |
+| `providers.json.example` | 配置模板，可提交到 git 供团队参考 |
+| `src/mini_agent/llm/client_pool.py` | ApiKeyPool、ProviderEntry、LLMClientPool 实现 |
+| `src/mini_agent/config.py` | `_load_providers_config`、`_merge_providers_into_chain`、`load_config` |
+| `src/mini_agent/agent.py` | `_call_llm` 通过 `LLMClientPool` 调用 |
 | `docs/retry-backoff-guide.md` | 重试退避策略（与本机制配合使用） |

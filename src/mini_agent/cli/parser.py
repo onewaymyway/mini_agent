@@ -108,6 +108,12 @@ def build_parser() -> argparse.ArgumentParser:
                        "command-line arguments and environment variables. "
                        "If omitted, agent_config.json in the project root is used when it exists."
                    ))
+    p.add_argument("--providers-config", default=None, metavar="FILE",
+                   help=(
+                       "Path to the providers JSON config file containing API keys and "
+                       "LLM fallback chain (default: providers.json in the project root). "
+                       "This file should be added to .gitignore to avoid leaking secrets."
+                   ))
     p.add_argument("--claude-md-file", default=None, metavar="FILENAME",
                    help=(
                        "Name of the project context document to load (default: CLAUDE.md). "
