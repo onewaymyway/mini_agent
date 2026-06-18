@@ -146,19 +146,6 @@ tests/
 
 ---
 
-## 已完成项
-
-以下改进已完成：
-
-- ✅ **阶段 1**: 引入 `src/mini_agent` 包布局
-- ✅ **阶段 2**: 拆分 `main.py` 为 cli/* 模块
-- ✅ **阶段 3**: UI 模块统一到 `ui/` 目录
-- ✅ **阶段 4**: Agent 拆分为 context_builder, tool_executor, history_manager
-- ✅ **感知与记忆**: perception/ 目录完整实现
-- ✅ **并发编排**: orchestrator/ 目录包含 task, plan, status_bar 等
-
----
-
 ## 备注
 
 - P1 改进建议拆分成多个独立的 PR，每个 PR 有明确的验收标准
