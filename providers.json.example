@@ -45,6 +45,40 @@
         "sk-openai-key-2-..."
       ],
       "key_rotation": "passive"
+    },
+    "_comment_openrouter": "OpenRouter：统一网关，可访问 100+ 模型。模型 ID 格式为 'provider/model-name'",
+    "openrouter": {
+      "api_key": "sk-or-...",
+      "key_rotation": "passive",
+      "_comment_extra": "可选：通过 extra 覆盖请求头中的应用标识（用于 OpenRouter 统计）",
+      "extra": {
+        "http_referer": "https://your-site.com",
+        "x_title": "YourAppName"
+      }
+    }
+  },
+
+  "_comment_openrouter_examples": "OpenRouter 使用示例",
+  "_openrouter_examples": {
+    "claude_via_openrouter": {
+      "provider": "openrouter",
+      "model": "anthropic/claude-opus-4-7",
+      "api_key": "sk-or-..."
+    },
+    "gpt4o_via_openrouter": {
+      "provider": "openrouter",
+      "model": "openai/gpt-4o",
+      "api_key": "sk-or-..."
+    },
+    "llama_via_openrouter": {
+      "provider": "openrouter",
+      "model": "meta-llama/llama-3.1-405b-instruct",
+      "api_key": "sk-or-..."
+    },
+    "gemini_via_openrouter": {
+      "provider": "openrouter",
+      "model": "google/gemini-2.5-pro",
+      "api_key": "sk-or-..."
     }
   }
 }
