@@ -32,6 +32,9 @@
 | 💾 History 即时落盘 | RawHistory 采用 JSONL 追加写 + fsync，每次操作立即持久化，防崩溃丢失 |
 | 🎯 Selective 压缩 | 按 _type 差异化权重评分保留，优先保留用户意图和回复，智能截断工具噪音 |
 | 🔁 Resume 提示 | 退出 REPL 时自动显示 resume 命令，方便恢复上次会话 |
+| 🔄 LLM 故障转移 | 多配置 fallback chain + 多 API Key 轮转，自动切换保证可用性 |
+| ⏳ 智能退避策略 | 重试支持 fixed / linear / exponential 三种退避模式，可配上限 |
+| 🚦 RPM 限速 | 滑动窗口频率限制，防止超出平台 RPM 配额 |
 
 ## 快速开始
 
@@ -116,6 +119,11 @@ python main.py --provider nvidia --model qwen/qwen3.5-122b-a10b --system-tool-ca
 | `--reminders-dir` | 指定用户自定义 reminder 目录 |
 | `--no-reminders` | 禁用 reminder 系统 |
 | `--reminder-verbose` | 启用 reminder 调试日志 |
+| `--rpm` | 每分钟最大 LLM 请求数（0 = 不限速，默认 0） |
+| `--retry-backoff` | 重试退避模式：`fixed`\|`linear`\|`exponential`（默认 fixed） |
+| `--retry-backoff-step` | 退避步长值（linear: 秒数，exponential: 倍数，默认 60） |
+| `--retry-backoff-max` | 退避等待上限秒数（0 = 不限制，默认 0） |
+| `--providers-config` | providers 配置文件路径（含 API key，默认 providers.json） |
 
 ## MCP 集成
 
@@ -344,7 +352,8 @@ mini_agent/
 │       │   ├── __init__.py
 │       │   ├── base.py      # 基础接口
 │       │   ├── factory.py   # 工厂模式
-│       │   ├── retry.py     # 重试策略
+│       │   ├── retry.py     # 重试策略（退避策略 + 条件框架）
+│       │   ├── client_pool.py  # 多配置故障转移 & 多 Key 轮转
 │       │   ├── system_tool_call.py  # 工具调用格式
 │       │   ├── debug_logger.py  # 调试日志
 │       │   └── providers/   # LLM 提供商实现
@@ -531,6 +540,44 @@ triggers: keyword1, keyword2
 }
 ```
 
+### Providers 配置（含 API Key）
+
+在项目根目录创建 `providers.json` 存放敏感配置（已自动加入 `.gitignore`）：
+
+```json
+{
+  "providers": {
+    "anthropic": {
+      "api_keys": ["sk-ant-aaa", "sk-ant-bbb"],
+      "key_rotation": "round_robin",
+      "key_cooldown": 60
+    },
+    "openai": {
+      "api_keys": ["sk-openai-111"]
+    }
+  },
+  "llm_fallback_chain": [
+    {"provider": "anthropic", "model": "claude-sonnet-4-6"},
+    {"provider": "openai", "model": "gpt-4o"}
+  ],
+  "llm_fallback_on": ["LLMRateLimitError", "LLMTimeoutError"]
+}
+```
+
+也可通过 `--providers-config` 指定其他路径。详见 [LLM 故障转移指南](docs/llm-failover-guide.md)。
+
+### 重试退避策略
+
+重试等待时长支持三种退避模式（通过 `--retry-backoff` 或配置文件指定）：
+
+| 模式 | 说明 | 示例（delay=10, step=60） |
+|------|------|--------------------------|
+| `fixed` | 每次等待固定秒数（默认） | 10s, 10s, 10s |
+| `linear` | 每次线性递增 | 10s, 70s, 130s |
+| `exponential` | 每次指数递增（step 为倍数） | 10s, 600s, 3600s |
+
+详见 [重试退避指南](docs/retry-backoff-guide.md)。
+
 ## 测试
 
 ```bash
@@ -566,6 +613,8 @@ python -m pytest tests/ -q
 - [Role Agent 指南](docs/role-agents-guide.md) — 预设角色子 Agent 模板
 - [Workflow 指南](docs/workflow-guide.md) — 工作流编排机制
 - [Env Info 指南](docs/env-info-guide.md) — 环境信息采集与注入，自定义 Provider 扩展
+- [LLM 故障转移指南](docs/llm-failover-guide.md) — 多配置 fallback chain + 多 API Key 轮转
+- [重试退避指南](docs/retry-backoff-guide.md) — fixed / linear / exponential 退避策略详解
 
 ## 许可证
 
@@ -577,4 +626,4 @@ MIT License
 
 ---
 
-*最后更新：2026-06-18* — History 即时落盘（JSONL+fsync）、Selective 压缩策略、Reminder 去重守卫、Resume 退出提示
+*最后更新：2026-06-18* — LLM 故障转移（fallback chain + 多 Key 轮转）、智能退避策略（fixed/linear/exponential）、RPM 限速、流式 token 计数与重试倒计时状态栏
