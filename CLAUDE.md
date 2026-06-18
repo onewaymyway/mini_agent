@@ -8,7 +8,7 @@
 - `src/mini_agent/context_builder.py` — System prompt 构建（skill/memory/project 注入）
 - `src/mini_agent/tool_executor.py` — 工具执行（权限检查 + 调用 + 截断 + 缓存）
 - `src/mini_agent/history_manager.py` — 历史管理（追加 + 压缩 + 快照恢复）
-- `src/mini_agent/config.py` — 配置管理和系统提示词构建
+- `src/mini_agent/config.py` — 配置管理（含 providers.json 加载、llm_fallback_chain、退避策略参数）
 - `src/mini_agent/permissions.py` — 工具调用的权限守卫
 - `src/mini_agent/session.py` — 会话管理
 - `src/mini_agent/tools/__init__.py` — 工具注册表和 `@tool` 装饰器
@@ -83,7 +83,16 @@ python main.py --provider nvidia --model qwen/qwen3.5-122b-a10b --system-tool-ca
 
 - `base.py` — LLM 客户端基础接口
 - `factory.py` — Provider 工厂，根据配置创建对应客户端
-- `retry.py` — 重试策略（空输出重试等）
+- `retry.py` — 重试策略（退避策略 + 条件框架）：
+  - `BackoffStrategy` 抽象基类，`delay_for(attempt)` 计算等待时长
+  - 内置策略：`FixedBackoff`（固定等待）、`LinearBackoff`（线性递增）、`ExponentialBackoff`（指数递增）
+  - `parse_backoff()` 从字符串模式名构造策略，方便 CLI / 配置文件使用
+  - `RetryPolicy` 持有退避策略 + 重试条件，执行带重试的 LLM 调用
+- `client_pool.py` — 多配置故障转移 & 多 API Key 轮转：
+  - `ApiKeyPool` — 同一 provider 的多 API Key 管理，支持 passive（遇错切换）和 round_robin（主动轮询）两种轮转策略
+  - `LLMClientPool` — 多套 LLM 配置的故障转移链，当前配置全部失败后自动切换到下一条
+  - `ProviderEntry` — fallback chain 中的单条配置，持有 client + key pool
+  - 触发条件可配置：`key_switch_on`（key 切换触发）、`fallback_on`（配置切换触发）
 - `system_tool_call.py` — 系统工具调用格式转换
 - `providers/` — 各 LLM 提供商实现（anthropic, openai, ollama, nvidia）
 - `debug_logger.py` — LLM 调试日志记录
@@ -94,7 +103,7 @@ python main.py --provider nvidia --model qwen/qwen3.5-122b-a10b --system-tool-ca
 - `context_builder.py` — System prompt 构建（skill/memory/project 注入）
 - `tool_executor.py` — 工具执行（权限检查 + 调用 + 截断 + 缓存）
 - `history_manager.py` — 历史管理（追加 + 压缩 + 快照恢复）
-- `config.py` — 配置管理和系统提示词构建
+- `config.py` — 配置管理（含 providers.json 加载、llm_fallback_chain、退避策略参数）
 - `permissions.py` — 工具调用的权限守卫
 - `session.py` — 会话管理
 
@@ -119,8 +128,8 @@ python main.py --provider nvidia --model qwen/qwen3.5-122b-a10b --system-tool-ca
 - `task.py` — 任务定义
 - `orchestrator/task_manager.py` — 任务调度（依赖解析、SubAgent 管理）
 - `sub_agent.py` — 子 Agent 实现（线程包装、自动重试、输出捕获）
-- `concurrency.py` — 并发控制
-- `status_bar.py` — 状态栏显示（含 Task Tab 栏）
+- `concurrency.py` — 并发控制（TaskSemaphore + LLMSemaphore + RateLimiter RPM 限速 + StreamTokenState 流式 token 计数 + RetryCountdownState 重试倒计时）
+- `status_bar.py` — 状态栏显示（含 Task Tab 栏、流式 token 计数、重试倒计时进度条、RPM 限速状态）
 - `plan.py` — 执行计划数据模型
 - `plan_display.py` — 计划 UI 渲染
 - `task_display.py` — 任务状态显示
@@ -258,6 +267,45 @@ python main.py --provider nvidia --model qwen/qwen3.5-122b-a10b --system-tool-ca
 - 配置示例：`{"env_info": {"enabled": true, "providers": ["builtin.system", "myplugins.git_info.GitInfoProvider"]}}`
 - 参见 [Env Info 指南](docs/env-info-guide.md)
 
+### LLM 故障转移 & 多 Key 轮转
+
+- 核心模块：`src/mini_agent/llm/client_pool.py`
+- **ApiKeyPool**：同一 provider 的多 API Key 管理
+  - 轮转策略：`passive`（遇错切换，默认）和 `round_robin`（每次请求轮转）
+  - 切换触发条件（`key_switch_on`）：默认 `["LLMRateLimitError"]`，可扩展为认证失败等
+  - 冷却机制：key 被切换后进入冷却期（`key_cooldown`，默认 60s）
+- **LLMClientPool**：多套 LLM 配置的故障转移链
+  - `llm_fallback_chain`：有序配置列表，第一条为主配置
+  - fallback 触发条件（`fallback_on`）：默认 `["LLMRateLimitError", "LLMTimeoutError", "LLMProviderError"]`
+  - 认证失败（`LLMConfigError`）不触发 fallback（换配置不会解决代码配置问题）
+- **配置来源**：`providers.json`（优先）> `agent_config.json` 中的 `llm_fallback_chain`
+- **providers.json**：独立存放含 API key 的敏感配置，已自动加入 `.gitignore`
+- **providers 块合并**：`providers` 字段的全局设置（api_keys、key_rotation 等）自动合并到 chain 每条条目中
+- 参见 [LLM 故障转移指南](docs/llm-failover-guide.md)
+
+### 重试退避策略
+
+- 核心模块：`src/mini_agent/llm/retry.py`
+- **BackoffStrategy** 抽象基类：`delay_for(attempt)` 返回第 N 次重试前等待秒数
+- 内置策略：
+  - `FixedBackoff(delay)` — 每次等待固定秒数（默认）
+  - `LinearBackoff(initial, step, max_delay)` — 线性递增：initial, initial+step, initial+2*step, …
+  - `ExponentialBackoff(initial, multiplier, max_delay)` — 指数递增：initial, initial×m, initial×m², …
+- `parse_backoff(mode, initial, step_or_multiplier, max_delay)` — 从字符串模式名构造策略
+- **配置方式**：
+  - CLI：`--retry-backoff fixed|linear|exponential --retry-backoff-step N --retry-backoff-max S`
+  - 配置文件：`llm_retry_backoff_mode`、`llm_retry_backoff_step`、`llm_retry_backoff_max_delay`
+- **兼容旧接口**：`retry_delay=N` 等价于 `backoff=FixedBackoff(N)`
+- 参见 [重试退避指南](docs/retry-backoff-guide.md)
+
+### RPM 限速
+
+- 核心模块：`src/mini_agent/orchestrator/concurrency.py`（`RateLimiter`）
+- 滑动窗口频率限制器，限制每分钟最多发出 max_rpm 次 LLM 请求
+- 超出时阻塞等待，直到窗口内请求数低于上限
+- CLI：`--rpm N`（0 = 不限速，默认 0）
+- 状态栏显示 RPM 使用率进度条（接近上限时高亮警告）
+
 ### 参数优先级
 
 **命令行参数 > 配置文件参数**。之前配置文件优先级更高，已修正。
@@ -276,3 +324,5 @@ python main.py --provider nvidia --model qwen/qwen3.5-122b-a10b --system-tool-ca
 - [Reminder 系统指南](docs/reminder-system-guide.md) — 动态提示注入机制使用指南
 - [单元测试指南](docs/unit-testing-guide.md) — 测试结构、编写规范与运行方式
 - [Env Info 指南](docs/env-info-guide.md) — 环境信息采集与注入，自定义 Provider 扩展
+- [LLM 故障转移指南](docs/llm-failover-guide.md) — 多配置 fallback chain + 多 API Key 轮转
+- [重试退避指南](docs/retry-backoff-guide.md) — fixed / linear / exponential 退避策略详解
