@@ -2,6 +2,7 @@
 
 Usage:
     /gen_image_with_text "A beautiful sunset beach scene"
+    /gen_image_with_text --prompt-file prompt.txt
 """
 
 import os
@@ -14,7 +15,8 @@ from agnes_tools import AgnesImageClient
 
 
 def gen_image(
-    prompt: str,
+    prompt: Optional[str] = None,
+    prompt_file: Optional[str] = None,
     size: str = "1024x1024",
     save_path: Optional[str] = None,
     response_format: str = "url",
@@ -22,7 +24,8 @@ def gen_image(
     """Generate an image from text description.
 
     Args:
-        prompt: Text description of the image to generate
+        prompt: Text description of the image to generate. Either this or prompt_file must be provided.
+        prompt_file: Path to a file containing the prompt text. Mutually exclusive with prompt.
         size: Image size, default "1024x1024". Supports "1024x1024", "1024x768", "768x1024"
         save_path: Optional path to save the generated image
         response_format: Response format, "url" or "b64_json"
@@ -30,6 +33,32 @@ def gen_image(
     Returns:
         dict with success status and image_url or error
     """
+    if not prompt and not prompt_file:
+        return {
+            "success": False,
+            "error": "Either 'prompt' or 'prompt_file' must be provided.",
+        }
+
+    if prompt and prompt_file:
+        return {
+            "success": False,
+            "error": "Cannot specify both 'prompt' and 'prompt_file'. Use one or the other.",
+        }
+
+    if prompt_file:
+        file_path = Path(prompt_file)
+        if not file_path.exists():
+            return {
+                "success": False,
+                "error": f"Prompt file not found: {prompt_file}",
+            }
+        prompt = file_path.read_text(encoding="utf-8").strip()
+        if not prompt:
+            return {
+                "success": False,
+                "error": f"Prompt file is empty: {prompt_file}",
+            }
+
     api_key = os.environ.get("AGNES_API_KEY")
     if not api_key:
         return {
@@ -130,7 +159,14 @@ def main():
     parser.add_argument(
         "mode", choices=["gen", "edit"], help="Mode: gen (text-to-image) or edit (image editing)"
     )
-    parser.add_argument("prompt", help="Text description for the image")
+    parser.add_argument(
+        "prompt", nargs="?", help="Text description of the image (mutually exclusive with --prompt-file)",
+    )
+    parser.add_argument(
+        "--prompt-file",
+        dest="prompt_file",
+        help="Path to a file containing the prompt text (mutually exclusive with prompt argument)",
+    )
     parser.add_argument("--size", default="1024x1024", help="Image size (default: 1024x1024)")
     parser.add_argument("--save-path", help="Path to save the image")
     parser.add_argument("--image-path", help="Path to input image (for edit mode)")
@@ -143,6 +179,7 @@ def main():
     if args.mode == "gen":
         result = gen_image(
             prompt=args.prompt,
+            prompt_file=args.prompt_file,
             size=args.size,
             save_path=args.save_path,
             response_format=args.response_format,
