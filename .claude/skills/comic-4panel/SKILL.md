@@ -1,6 +1,6 @@
 ---
 name: comic-4panel
-description: 四格漫画全流程生成技能，从主题构思到分镜脚本再到一次性生成完整四格漫画图。当用户说"画个四格漫画"、"生成四格漫画"、"四格漫画"时使用。
+description: 四格漫画全流程生成技能，从主题构思到分镜脚本再到一次性生成完整四格漫画图（图文一体）。当用户说"画个四格漫画"、"生成四格漫画"、"四格漫画"时使用。
 triggers: 四格漫画, 4koma, comic, 漫画生成, 画漫画, 四格, 4panel, comic strip, 4格
 ---
 
@@ -8,11 +8,12 @@ triggers: 四格漫画, 4koma, comic, 漫画生成, 画漫画, 四格, 4panel, c
 
 ## 概述
 
-本 skill 用于生成完整的四格漫画（2×2 网格布局）。流程包括：主题构思 → 分镜脚本 → 一次性生成完整漫画图 → 用户选择交付。
+本 skill 用于生成完整的四格漫画（2×2 网格布局）。流程包括：主题构思 → 分镜脚本 → 一次性生成完整漫画图（图文一体）→ 用户选择交付。
+
+**核心理念**：对白文字直接由图片生成模型画入画面，无需后处理叠加。只需调用一次 `gen_image_with_text` 即可得到最终成品。
 
 **依赖**：
 - `gen_image_with_text` skill（必须，通过 bash 调用 `gen_image.py gen` 生成图片）
-- `Pillow`（可选，用于对白文字叠加）
 - `AGNES_API_KEY` 环境变量（必须）
 
 ## 输入规范
@@ -31,7 +32,6 @@ triggers: 四格漫画, 4koma, comic, 漫画生成, 画漫画, 四格, 4panel, c
 | language | `zh` | 对白语言：zh / ja / en |
 | humor_type | `日常` | 幽默类型：日常 / 荒诞 / 吐槽 / 温馨 |
 | num_candidates | `2` | 每次生成的候选图数量 |
-| add_text_overlay | `true` | 是否同时生成对白叠加版 |
 | auto_mode | `false` | 快速模式，跳过中间确认 |
 | prompt_lang | `zh` | prompt 语言：zh（优先中文）/ en（强制英文） |
 
@@ -59,6 +59,8 @@ theme_concept:
 - 叙事弧线必须遵循起承转合结构
 - 展示给用户确认后再进入 Step 2
 
+**产物输出**：Step 1 完成后，立即写入 `output_dir/theme_concept.yaml`
+
 ### Step 2: 分镜脚本
 
 基于主题概念生成4格详细分镜，输出格式：
@@ -85,52 +87,60 @@ panels:
 **要求**：
 - 每格必须包含中英文版本的场景、表情、动作、构图
 - 对白简短有力，符合角色性格
+- 对白长度控制在 10-20 字以内（方便模型画入画面）
+- 旁白控制在 5-10 字以内
 - 展示给用户确认后再进入 Step 3
 
-### Step 3: 生成漫画
+**产物输出**：Step 2 完成后，立即写入 `output_dir/storyboard.yaml`
+
+### Step 3: 生成漫画（图文一体）
 
 #### Prompt 构建规则
+
+**核心原则**：在 prompt 中明确告诉模型每格的对白文字和旁白文字，让模型直接将文字画入画面。
 
 **中文 prompt 模板**（prompt_lang=zh，默认）：
 
 ```
-一幅2×2网格布局的四格漫画。
+一幅2×2网格布局的四格漫画，格间有白色边框。
 
-第1格（左上）：[角色描述块_zh]，[表情_zh]，[动作_zh]，在[场景_zh]。[构图_zh]
-第2格（右上）：[角色描述块_zh]，[表情_zh]，[动作_zh]，在[场景_zh]。[构图_zh]
-第3格（左下）：[角色描述块_zh]，[表情_zh]，[动作_zh]，在[场景_zh]。[构图_zh]
-第4格（右下）：[角色描述块_zh]，[表情_zh]，[动作_zh]，在[场景_zh]。[构图_zh]
+第1格（左上）：[角色描述块]，[表情]，[动作]，在[场景]。[构图]。对话框文字："[对白]"。旁白文字："[旁白]"。
+第2格（右上）：[角色描述块]，[表情]，[动作]，在[场景]。[构图]。对话框文字："[对白]"。旁白文字："[旁白]"。
+第3格（左下）：[角色描述块]，[表情]，[动作]，在[场景]。[构图]。对话框文字："[对白]"。旁白文字："[旁白]"。
+第4格（右下）：[角色描述块]，[表情]，[动作]，在[场景]。[构图]。对话框文字："[对白]"。旁白文字："[旁白]"。
 
-[风格后缀_zh]
+[风格后缀]
 ```
 
 **英文 prompt 模板**（prompt_lang=en）：
 
 ```
-A 4-panel comic strip in 2x2 grid layout.
+A 4-panel comic strip in 2x2 grid layout with clean white borders between panels.
 
-Panel 1 (top-left): [CHARACTER_BLOCK_EN], [EXPRESSION_EN], [ACTION_EN], in [SCENE_EN]. [COMPOSITION_EN]
-Panel 2 (top-right): [CHARACTER_BLOCK_EN], [EXPRESSION_EN], [ACTION_EN], in [SCENE_EN]. [COMPOSITION_EN]
-Panel 3 (bottom-left): [CHARACTER_BLOCK_EN], [EXPRESSION_EN], [ACTION_EN], in [SCENE_EN]. [COMPOSITION_EN]
-Panel 4 (bottom-right): [CHARACTER_BLOCK_EN], [EXPRESSION_EN], [ACTION_EN], in [SCENE_EN]. [COMPOSITION_EN]
+Panel 1 (top-left): [CHARACTER_BLOCK], [EXPRESSION], [ACTION], in [SCENE]. [COMPOSITION]. Speech bubble text: "[DIALOGUE]". Narration text: "[NARRATION]".
+Panel 2 (top-right): [CHARACTER_BLOCK], [EXPRESSION], [ACTION], in [SCENE]. [COMPOSITION]. Speech bubble text: "[DIALOGUE]". Narration text: "[NARRATION]".
+Panel 3 (bottom-left): [CHARACTER_BLOCK], [EXPRESSION], [ACTION], in [SCENE]. [COMPOSITION]. Speech bubble text: "[DIALOGUE]". Narration text: "[NARRATION]".
+Panel 4 (bottom-right): [CHARACTER_BLOCK], [EXPRESSION], [ACTION], in [SCENE]. [COMPOSITION]. Speech bubble text: "[DIALOGUE]". Narration text: "[NARRATION]".
 
-[STYLE_SUFFIX_EN]
+[STYLE_SUFFIX]
 ```
 
 **关键原则**：
 - `[角色描述块]` 每格完全相同 → 保证角色一致性
 - 明确声明 2×2 网格布局 + 每格标注位置
 - `[风格后缀]` 放在末尾统一风格
+- 对白文字用引号包裹，明确标注为 "对话框文字" / "Speech bubble text"
+- 旁白文字用引号包裹，明确标注为 "旁白文字" / "Narration text"
 
 #### 风格后缀表
 
 | style | 中文后缀 | 英文后缀 |
 |---|---|---|
-| anime | 动漫风格，四格漫画，所有格角色设计一致，漫画画风，格间白色边框，鲜艳色彩，高质量 | anime style, 4koma comic strip, consistent character design across all panels, manga art style, clean white borders between panels, vibrant colors, high quality |
-| manga-bw | 黑白漫画风格，四格漫画，所有格角色设计一致，墨线画，网点纸，格间白色边框，高质量 | black and white manga style, 4koma comic strip, consistent character design across all panels, ink pen drawing, screentone, clean white borders between panels, high quality |
-| chibi | Q版风格，四格漫画，超变形，可爱，大头小身，所有格角色设计一致，格间白色边框，高质量 | chibi style, 4koma comic strip, super deformed, cute, big head small body, consistent character design across all panels, clean white borders between panels, high quality |
-| realistic | 半写实动漫风格，四格漫画，所有格角色设计一致，精细阴影，格间白色边框，高质量 | semi-realistic anime style, 4koma comic strip, consistent character design across all panels, detailed shading, clean white borders between panels, high quality |
-| watercolor | 水彩插画风格，四格漫画，所有格角色设计一致，柔和色彩，颜料质感，格间白色边框，高质量 | watercolor illustration style, 4koma comic strip, consistent character design across all panels, soft colors, paint texture, clean white borders between panels, high quality |
+| anime | 动漫风格，四格漫画，所有格角色设计一致，漫画画风，格间白色边框，鲜艳色彩，高质量，清晰的文字 | anime style, 4koma comic strip, consistent character design across all panels, manga art style, clean white borders between panels, vibrant colors, high quality, clear text |
+| manga-bw | 黑白漫画风格，四格漫画，所有格角色设计一致，墨线画，网点纸，格间白色边框，高质量，清晰的文字 | black and white manga style, 4koma comic strip, consistent character design across all panels, ink pen drawing, screentone, clean white borders between panels, high quality, clear text |
+| chibi | Q版风格，四格漫画，超变形，可爱，大头小身，所有格角色设计一致，格间白色边框，高质量，清晰的文字 | chibi style, 4koma comic strip, super deformed, cute, big head small body, consistent character design across all panels, clean white borders between panels, high quality, clear text |
+| realistic | 半写实动漫风格，四格漫画，所有格角色设计一致，精细阴影，格间白色边框，高质量，清晰的文字 | semi-realistic anime style, 4koma comic strip, consistent character design across all panels, detailed shading, clean white borders between panels, high quality, clear text |
+| watercolor | 水彩插画风格，四格漫画，所有格角色设计一致，柔和色彩，颜料质感，格间白色边框，高质量，清晰的文字 | watercolor illustration style, 4koma comic strip, consistent character design across all panels, soft colors, paint texture, clean white borders between panels, high quality, clear text |
 | custom | 用户通过 style_suffix 参数提供 | 用户通过 style_suffix 参数提供 |
 
 #### 多候选生成
@@ -146,6 +156,8 @@ Panel 4 (bottom-right): [CHARACTER_BLOCK_EN], [EXPRESSION_EN], [ACTION_EN], in [
 python .claude/skills/gen_image_with_text/gen_image.py gen "<prompt>" --size 1024x1024 --save-path <output_dir>/<filename>_v{i}.png
 ```
 
+**产物输出**：每张图生成后，追加写入 `output_dir/generation_log.json`
+
 ### Step 4: 用户选择与交付
 
 展示所有候选图路径，让用户选择：
@@ -154,58 +166,13 @@ python .claude/skills/gen_image_with_text/gen_image.py gen "<prompt>" --size 102
 🎬 四格漫画生成完成！共 N 张候选图：
   📷 候选1: <path>_v1.png
   📷 候选2: <path>_v2.png
-  📝 对白版1: <path>_v1_text.png
-  📝 对白版2: <path>_v2_text.png
 
 请选择满意的版本（输入编号），或说"重新生成"获取更多候选图。
 ```
 
 **重新生成**：用户说"重新生成"、"再来几张"、"更多"时，生成新候选图，编号递增（_v3, _v4...），旧候选保留。
 
-## 对白文字叠加规范
-
-当 `add_text_overlay=true` 时，为每张候选图生成对白叠加版。
-
-### 气泡位置规则
-- 每格画面分为4个象限，对白气泡优先放在角色面部的对角象限
-- 单角色格：气泡放在角色上方或下方
-- 双角色格：各角色对白分别放在各自上方
-- 旁白文字：画面顶部，半透明黑色背景条
-
-### 字体规范
-- 中文：微软雅黑（msyh.ttc），字号 16-20px
-- 日文：MS Gothic（msgothic.ttc），字号 16-20px
-- 英文：Arial，字号 14-18px
-
-### Agent 执行方式
-
-Agent 通过 bash 调用 PIL 一行命令完成文字叠加，**不要编写独立脚本文件**：
-
-```bash
-python -c "
-from PIL import Image, ImageDraw, ImageFont
-img = Image.open('<image_path>')
-w, h = img.size
-pw, ph = w // 2, h // 2
-draw = ImageDraw.Draw(img)
-font = ImageFont.truetype('C:/Windows/Fonts/msyh.ttc', 18)
-# 按 storyboard.yaml 中的 panels 数据，逐格在对应象限绘制气泡和文字
-# 旁白用半透明黑色矩形背景 + 白色文字
-# 对白用圆角矩形气泡 + 黑色文字
-img.save('<output_path>')
-"
-```
-
-**关键执行要点**：
-1. 从 `storyboard.yaml` 读取每格的 `dialogue` 和 `narration`
-2. 根据格子位置 `(row, col)` 计算坐标：`px = pw * col + 10`, `py = ph * row + 10`
-3. 旁白放在格子顶部，对白放在格子底部气泡框内
-4. 使用 `draw.textbbox()` 测量文字宽度，动态调整气泡大小
-5. 如果 Pillow 未安装，跳过叠加步骤并提示用户
-
-叠加版命名：`{filename}_v{i}_text.png`，原图保留。
-
-**后续扩展**：支持用户自定义气泡样式、字体、字号、位置等参数。
+**产物输出**：全部完成后，生成 `output_dir/README.md` 交付说明
 
 ## 产物文件规范
 
@@ -217,8 +184,7 @@ img.save('<output_path>')
 |---|---|---|---|
 | Step 1 主题构思 | `theme_concept.yaml` | YAML | 主题概念完整数据 |
 | Step 2 分镜脚本 | `storyboard.yaml` | YAML | 四格分镜详细脚本 |
-| Step 3 漫画生成 | `{filename}_v{i}.png` | PNG | 纯画面候选图 |
-| Step 3 漫画生成 | `{filename}_v{i}_text.png` | PNG | 对白叠加版候选图（可选） |
+| Step 3 漫画生成 | `{filename}_v{i}.png` | PNG | 图文一体候选图（含对白文字） |
 | Step 3 漫画生成 | `generation_log.json` | JSON | 生成日志（含 prompt、参数、时间） |
 | 全部完成 | `README.md` | Markdown | 最终交付说明，汇总所有产物 |
 
@@ -279,7 +245,6 @@ panels:
     {
       "version": 1,
       "file": "comic_4panel_v1.png",
-      "text_overlay_file": "comic_4panel_v1_text.png",
       "prompt_lang": "zh",
       "size": "1024x1024",
       "generated_at": "2026-06-19T10:40:30+08:00"
@@ -303,8 +268,7 @@ panels:
 |---|---|
 | `theme_concept.yaml` | 主题构思 |
 | `storyboard.yaml` | 分镜脚本 |
-| `{filename}_v1.png` | 候选图1（纯画面） |
-| `{filename}_v1_text.png` | 候选图1（对白叠加） |
+| `{filename}_v1.png` | 候选图1（图文一体） |
 | `generation_log.json` | 生成日志 |
 
 ## 使用说明
@@ -317,7 +281,7 @@ panels:
 
 1. **Step 1 完成后**：立即写入 `theme_concept.yaml`
 2. **Step 2 完成后**：立即写入 `storyboard.yaml`
-3. **Step 3 每张图生成后**：追加写入 `generation_log.json`，同时生成对白叠加版（如开启）
+3. **Step 3 每张图生成后**：追加写入 `generation_log.json`
 4. **全部完成后**：生成 `README.md` 交付说明
 
 ## 用户交互规范
@@ -340,7 +304,6 @@ panels:
 
 1. **模型不理解2×2布局**：prompt 中必须明确声明网格布局 + 每格标注位置；多候选生成提高成功率
 2. **角色跨格不一致**：统一角色描述前缀 + 风格后缀中强调 `所有格角色设计一致` / `consistent character design across all panels`
-3. **中文 prompt 效果不佳**：支持 prompt_lang=en 切换英文；也可中英混合（布局声明用英文，内容描述用中文）
+3. **文字渲染效果差**：模型对文字渲染能力有限，对白尽量简短（10字以内）；支持 prompt_lang=en 切换英文 prompt
 4. **API 限流**：串行调用 + 失败重试1次
-5. **对白叠加遮挡画面**：同时保留纯画面版，用户可选择；气泡位置遵循避让角色面部规则
-6. **Pillow 未安装**：add_text_overlay 功能需要 Pillow，未安装时跳过叠加步骤并提示用户
+5. **Pillow 不再需要**：文字由模型直接生成，无需后处理叠加
