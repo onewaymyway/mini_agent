@@ -1,0 +1,6 @@
+根据以下要求生成图片
+
+prompt文件在：
+test_cases/inputs/gen_image_prompt.txt
+
+保存到 test_result/image_from_skill_2/gen_image_pic_1_zh.png
