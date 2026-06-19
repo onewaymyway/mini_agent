@@ -96,10 +96,10 @@ python gen_image.py gen --prompt-file prompts/my_prompt.txt --save-path output.p
 
 ```bash
 # 方式一：直接传入 prompt 字符串
-python .claude/skills/gen_image_with_text/gen_image.py gen "prompt" [选项]
+python .claude/skills/gen_image_with_text/gen_image.py gen "prompt"  --save-path output.png
 
 # 方式二：从文件读取 prompt
-python .claude/skills/gen_image_with_text/gen_image.py gen --prompt-file prompt.txt [选项]
+python .claude/skills/gen_image_with_text/gen_image.py gen --prompt-file prompt.txt  --save-path output.png
 ```
 
 > **注意**：`prompt` 和 `--prompt-file` 互斥，只能选其一。
