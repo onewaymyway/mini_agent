@@ -359,9 +359,11 @@ mini_agent/
 │       │   └── providers/   # LLM 提供商实现
 │       │       ├── __init__.py
 │       │       ├── _base_mixin.py
+│       │       ├── agnes.py
 │       │       ├── anthropic.py
 │       │       ├── openai.py
 │       │       ├── ollama.py
+│       │       ├── openrouter.py
 │       │       └── nvidia.py
 │       ├── tools/           # 工具系统
 │       │   ├── __init__.py  # 工具注册表
