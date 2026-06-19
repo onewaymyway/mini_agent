@@ -27,6 +27,7 @@ triggers: 四格漫画, 4koma, comic, 漫画生成, 画漫画, 四格, 4panel, c
 | style | `anime` | 画风：anime / manga-bw / chibi / realistic / watercolor / custom |
 | style_suffix | `""` | 自定义风格后缀（style=custom 时使用） |
 | characters | `""` | 角色描述 |
+| source_work | `""` | **来源作品**（如"《Re:从零开始的异世界生活》"），直接影响模型对角色服装、发型、气质的理解，对生成效果至关重要 |
 | output_dir | `./comic_output` | 输出目录 |
 | filename | `comic_4panel_{timestamp}` | 输出文件名（不含扩展名） |
 | language | `zh` | 对白语言：zh / ja / en |
@@ -116,6 +117,7 @@ panels:
 **核心原则**：
 - 每格用**完整段落**描述，不再用占位符拼接
 - 每格包含：画面场景 + 角色状态 + 屏幕/道具内容 + 对白气泡文字
+- **角色描述块必须包含来源作品信息**（如"来自《Re:从零开始的异世界生活》的蕾姆"），这直接影响模型对角色服装、发型、气质的理解
 - 角色描述块在每格开头保持一致，确保跨格一致性
 - 屏幕上的文字（代码、报错信息等）也要在 prompt 中写明，让模型画入画面
 
