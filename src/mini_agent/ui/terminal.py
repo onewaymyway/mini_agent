@@ -67,6 +67,25 @@ class Terminal:
         # 首个 stream token 到来时此标志清零。
         self._bar_below_prefix: bool = False
 
+        # 保存最近一次「行内挂起」打印（end="" 的 print 调用，典型场景是
+        # print_assistant_prefix() 打印 "agent ❯ "）的原始 args/kwargs。
+        #
+        # 背景（曾经真实出现过的回归 bug）：当状态栏因等待 LLM 响应被画到
+        # prefix 行下方后，stream 分支需要"回到 prefix 行末尾继续输出"。
+        # 早期实现试图用 \x1b[NA（CUU，仅控制行、不控制列）配合 \x1b[0J
+        # 清除状态栏来实现，隐含假设"上移 N 行后列位置会自动停在 prefix
+        # 文本之后"——但这是错误的：ANSI 的 CUU 只改变行号，列号始终保持
+        # 在"当前列"。而前面为了把状态栏推到新行已经写过 "\n"
+        # （终端 OPOST 会把它转成 \r\n），列号早被重置为 0。于是
+        # \x1b[NA\x1b[0J 实际把光标定位到了 prefix 那一行的【行首】而非
+        # 【行尾】，0J 清除到屏幕底部，连 prefix 文本本身都被一并擦掉，
+        # 造成 "agent ❯ " 前缀在视觉上消失、正文另起一行出现的错乱画面。
+        #
+        # 正确做法：不依赖光标"记住"列位置，而是显式上移到该行行首、清除，
+        # 再重新打印一次保存好的 prefix 内容——列位置必然正确，因为是
+        # 重新渲染而不是寄望于光标状态被保留。
+        self._open_line_render: tuple | None = None
+
         # 状态栏内容提供者回调（由 status_bar 模块注册）
         # 架构改进：Terminal 自己在刷新周期内调用回调拉取内容，
         # 而不是由外部线程主动 push update+redraw 两条消息。
@@ -82,11 +101,27 @@ class Terminal:
         # 管理的输入行/光标产生竞争，造成画面错乱（消息插入到 "You ❯" 之后、
         # 状态栏被意外重绘等）。
         # 解决方式：_input_blocking=True 期间，print/rule/panel/syntax/
-        # markdown 类消息一律缓存到 _pending_during_input，不写屏幕；
-        # 待 _exit_input_mode() 后统一重新入队补打印，保证消息不丢失，
-        # 只是延迟到不会撕裂输入行的时机显示。
+        # markdown/stream/stream_end 类消息一律缓存到 _pending_during_input，
+        # 不写屏幕；待 _exit_input_mode() 后统一重新入队补打印，保证消息
+        # 不丢失，只是延迟到不会撕裂输入行的时机显示。
+        #
+        # 注意：stream/stream_end 必须和 print 一起拦截——见 _handle() 中
+        # 的详细说明。二者是同一段输出（"agent ❯ " 前缀 + 紧随其后的流式
+        # 正文）的两半，必须同进同出，否则会出现前缀缺席、正文却正常显示
+        # 的错乱画面。
+        #
+        # 看门狗：_input_blocking 理论上只应在 _enter_input_mode() 到
+        # _exit_input_mode() 之间的极短窗口（人类按键间隔）内为 True。
+        # 如果因为某个未预见的异常路径（例如调用方持有的 confirm()/
+        # prompt_user() 在 finally 执行前进程崩溃式退出某个线程、或多线程
+        # 权限确认场景下的边界条件）导致标志没能被正确清除，所有后续 agent
+        # 输出都会被无限期缓存、永不上屏。_refresh_loop 中的看门狗会在
+        # 标志持续为 True 超过 _INPUT_BLOCKING_TIMEOUT 秒后强制复位，
+        # 避免输出永久卡死（详见 _refresh_loop）。
         self._input_blocking: bool = False
         self._pending_during_input: list[_Msg] = []
+        self._input_blocking_since: float = 0.0
+        self._INPUT_BLOCKING_TIMEOUT: float = 120.0  # 秒；远大于正常人类输入耗时
 
         # ── Task 焦点状态 ────────────────────────────────────────────────
         # 当 _task_focus 非 None 时，主输出区被"接管"，刷新循环会把
@@ -339,6 +374,7 @@ class Terminal:
         self._erase_bar_direct()
         # 4. 开始缓存阻塞输入期间到达的输出类消息（业务后台线程可能仍在产生）
         self._input_blocking = True
+        self._input_blocking_since = time.monotonic()
 
     def _exit_input_mode(self) -> None:
         """
@@ -350,6 +386,7 @@ class Terminal:
         4. 重绘状态栏
         """
         self._input_blocking = False
+        self._input_blocking_since = 0.0
         pending, self._pending_during_input = self._pending_during_input, []
         self._refresh_paused.clear()
         for msg in pending:
@@ -386,8 +423,19 @@ class Terminal:
         # 这类会直接写 stdout 的消息一旦在此时渲染，会撕裂 prompt_toolkit
         # 自己管理的输入行，造成画面错乱。因此先缓存，等 _exit_input_mode()
         # 后再统一补打印。_noop/_refresh/statusbar 等不写屏幕的消息不受影响。
+        #
+        # 重要：stream/stream_end 必须和 print（用于打印 "agent ❯ " 前缀，
+        # end=""）一起被拦截，不能只拦截 print。二者是同一个逻辑输出的
+        # 不可分割的两半——print_assistant_prefix() 打印前缀后，紧跟着
+        # 一连串 stream token 续写在同一行。如果前缀被缓存暂不上屏，而
+        # stream token 不在拦截名单内、被正常处理写到了 sys.stdout，
+        # 就会出现「正文内容显示了，但前面的 "agent ❯ " 前缀却缺席」的
+        # 错乱画面——这正是本函数早期版本的一个回归 bug：当时只拦截了
+        # print/rule/panel/syntax/markdown，遗漏了 stream/stream_end，
+        # 导致两路消息在 _input_blocking 期间被区别对待、显示不一致。
         if self._input_blocking and kind in (
-            "print", "rule", "panel", "syntax", "markdown"
+            "print", "rule", "panel", "syntax", "markdown",
+            "stream", "stream_end",
         ):
             self._pending_during_input.append(msg)
             return
@@ -398,10 +446,14 @@ class Terminal:
             self._console.print(*args, **kwargs)
             if kwargs.get("end", "\n") == "":
                 # 光标停在行中（如 "orzooo " 前缀），暂停状态栏重绘，
-                # 等待后续 stream/markdown 产生换行后再恢复
+                # 等待后续 stream/markdown 产生换行后再恢复。
+                # 保存这次调用，供状态栏被画到下方后需要"回到行尾"时
+                # 重新打印恢复正确列位置（见 _open_line_render 注释）。
                 self._bar_suspended = True
+                self._open_line_render = (args, kwargs)
             else:
                 self._bar_suspended = False
+                self._open_line_render = None
                 self._draw_bar()
 
         elif kind == "rule":
@@ -437,20 +489,24 @@ class Terminal:
             if filtered:
                 if not self._streaming:
                     if self._bar_below_prefix:
-                        # 状态栏画在了 "agent ❯ " 下方，需先擦除状态栏，
-                        # 然后再向上移动一行回到 "agent ❯ " 那行末尾，
-                        # 这样 stream 内容就紧接在前缀后面输出。
-                        if self._bar_drawn > 0:
-                            # 上移 bar_drawn 行 + 1 行（prefix 行），清除到屏幕底部
-                            lines_up = self._bar_drawn + 1
-                            sys.stdout.write(f"[{lines_up}A[0J")
-                            sys.stdout.flush()
-                            self._bar_drawn = 0
-                        else:
-                            # 状态栏还没画出来（内容为空），只需上移 1 行
-                            sys.stdout.write("[1A[0J")
-                            sys.stdout.flush()
+                        # 状态栏画在了 "agent ❯ " 下方。不能依赖 \x1b[NA
+                        # （只控制行，不控制列）回到 prefix 文本之后的列
+                        # 位置——中途的 "\n" 已经把列号重置为 0，单纯上移
+                        # N 行只会停在 prefix 那一行的行首，而非行尾，
+                        # 之后的 \x1b[0J 会把 prefix 文本本身也清除掉，
+                        # 造成 "agent ❯ " 前缀视觉上消失、正文另起一行
+                        # 出现的错乱画面（曾经真实复现过的回归 bug）。
+                        # 正确做法：上移到 prefix 行的行首、清除该行及
+                        # 以下所有内容，再重新打印一次保存好的 prefix
+                        # 渲染，列位置必然正确（见 _open_line_render 的
+                        # 定义注释）。
+                        lines_up = (self._bar_drawn if self._bar_drawn > 0 else 0) + 1
+                        sys.stdout.write(f"\x1b[{lines_up}A\x1b[0J")
+                        sys.stdout.flush()
+                        self._bar_drawn = 0
+                        self._replay_open_line()
                         self._bar_below_prefix = False
+
                     else:
                         self._erase_bar()
                     self._streaming = True
@@ -465,17 +521,23 @@ class Terminal:
                 self._stream_had_output = True
 
             if self._bar_below_prefix and not self._stream_had_output:
-                # LLM 没有产生任何可见输出（纯工具调用等情况），
-                # 但状态栏已画在 "agent ❯ " 下方，需擦除并回到 prefix 行末尾。
-                if self._bar_drawn > 0:
-                    lines_up = self._bar_drawn + 1
-                    sys.stdout.write(f"\x1b[{lines_up}A\x1b[0J")
-                    sys.stdout.flush()
-                    self._bar_drawn = 0
-                else:
-                    sys.stdout.write("\x1b[1A\x1b[0J")
-                    sys.stdout.flush()
+                # LLM 没有产生任何可见输出（纯工具调用等情况），但状态栏
+                # 已画在 "agent ❯ " 下方。同样不能依赖 \x1b[NA 回到 prefix
+                # 行尾的列位置（原因见 stream 分支的详细注释）——这里
+                # 上移到 prefix 行行首、清除，再重新打印一次 prefix，
+                # 然后让下面的 "_stream_had_output" 判断走兜底换行逻辑
+                # （prefix 后没有内容追加，直接收尾换行）。
+                lines_up = (self._bar_drawn if self._bar_drawn > 0 else 0) + 1
+                sys.stdout.write(f"\x1b[{lines_up}A\x1b[0J")
+                sys.stdout.flush()
+                self._bar_drawn = 0
+                # _replay_open_line() 内部已设置 _stream_had_output=True，
+                # 确保下面的兜底换行逻辑会被触发（prefix 被重新打印后，
+                # 即便本轮无内容，也需要换行收尾，否则下一次输出会接在
+                # prefix 同一行造成粘连）。
+                self._replay_open_line()
                 self._bar_below_prefix = False
+
 
             if self._stream_had_output:
                 sys.stdout.write("\n")
@@ -590,15 +652,16 @@ class Terminal:
         elif kind == "_force_end_stream":
             # 强制结束流式状态（异常恢复时使用）
             if self._bar_below_prefix:
-                if self._bar_drawn > 0:
-                    lines_up = self._bar_drawn + 1
-                    sys.stdout.write(f"\x1b[{lines_up}A\x1b[0J")
-                    sys.stdout.flush()
-                    self._bar_drawn = 0
-                else:
-                    sys.stdout.write("\x1b[1A\x1b[0J")
-                    sys.stdout.flush()
+                # 同样不能依赖 \x1b[NA 回到 prefix 行尾的列位置
+                # （原因见 stream 分支的详细注释）：上移到行首、清除，
+                # 再重新打印一次 prefix，保证列位置正确。
+                lines_up = (self._bar_drawn if self._bar_drawn > 0 else 0) + 1
+                sys.stdout.write(f"\x1b[{lines_up}A\x1b[0J")
+                sys.stdout.flush()
+                self._bar_drawn = 0
+                self._replay_open_line()
                 self._bar_below_prefix = False
+
             if self._streaming or self._stream_had_output:
                 if self._pending_stream:
                     sys.stdout.write(self._pending_stream)
@@ -643,6 +706,28 @@ class Terminal:
         sys.stdout.flush()
         self._bar_drawn = 0
         self._bar_suspended = False
+
+    # ── 行内挂起内容重放 ─────────────────────────────────────────────────
+
+    def _replay_open_line(self) -> None:
+        """
+        重新打印保存的「行内挂起」内容（典型场景：状态栏被画到
+        "agent ❯ " 前缀下方后，需要回到 prefix 行重新输出）。
+
+        不能直接复用原始 args 重新调用 console.print()：第一次打印时
+        prefix 字符串通常带有一个前导 "\n"（用来和上一段输出隔开一个
+        空行）。这次是在已经清空、定位好的位置重新打印，不需要再插入
+        这个前导换行，否则会比首次打印多出一个空行。这里只对字符串
+        类型的位置参数做 lstrip("\n")，不触碰非字符串参数或 kwargs。
+        """
+        if self._open_line_render is None:
+            return
+        args, kwargs = self._open_line_render
+        stripped_args = tuple(
+            a.lstrip("\n") if isinstance(a, str) else a for a in args
+        )
+        self._console.print(*stripped_args, **kwargs)
+        self._stream_had_output = True
 
     # ── 流式 token 过滤（过滤 <tool_use> 块）────────────────────────────
 
@@ -726,6 +811,25 @@ class Terminal:
         while not self._refresh_stop.is_set():
             time.sleep(self._refresh_interval)
             if self._refresh_paused.is_set() or self._refresh_stop.is_set():
+                # 看门狗：_input_blocking 正常情况下只会在用户实际输入期间
+                # （人类按键间隔，通常数秒）为 True。如果持续超过
+                # _INPUT_BLOCKING_TIMEOUT 仍未被 _exit_input_mode() 清除
+                # （说明触发了某个未预见的异常路径，标志卡死），强制复位
+                # 并 flush 所有缓存消息，避免 agent 输出永久不可见。
+                # 这是纵深防御的最后一道保险，正常路径不应触发。
+                if (
+                    self._input_blocking
+                    and self._input_blocking_since
+                    and (time.monotonic() - self._input_blocking_since)
+                    > self._INPUT_BLOCKING_TIMEOUT
+                ):
+                    self._input_blocking = False
+                    self._input_blocking_since = 0.0
+                    pending, self._pending_during_input = self._pending_during_input, []
+                    self._refresh_paused.clear()
+                    for msg in pending:
+                        self._q.put(msg)
+                    self._q.put(_Msg("redraw", None))
                 continue
 
             # ── 焦点日志增量投递 ──────────────────────────────────────
