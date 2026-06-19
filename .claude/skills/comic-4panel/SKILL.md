@@ -177,72 +177,31 @@ python .claude/skills/gen_image_with_text/gen_image.py gen "<prompt>" --size 102
 - 日文：MS Gothic（msgothic.ttc），字号 16-20px
 - 英文：Arial，字号 14-18px
 
-### 实现方式
+### Agent 执行方式
 
-Agent 通过 Python 一行命令调用 PIL 叠加文字：
+Agent 通过 bash 调用 PIL 一行命令完成文字叠加，**不要编写独立脚本文件**：
 
-```python
+```bash
+python -c "
 from PIL import Image, ImageDraw, ImageFont
-import os
-
-def add_dialogue_overlay(image_path, panels_dialogue, output_path, lang="zh"):
-    """在四格漫画图上叠加对白文字。
-    
-    Args:
-        image_path: 原始漫画图路径
-        panels_dialogue: 列表，每项为 dict，包含 dialogue 和 narration
-            [{"dialogue": "对白", "narration": "旁白"}, ...]
-        output_path: 输出路径
-        lang: 对白语言
-    """
-    img = Image.open(image_path)
-    w, h = img.size
-    pw, ph = w // 2, h // 2  # 每格尺寸
-    draw = ImageDraw.Draw(img)
-    
-    # 字体选择
-    font_paths = {
-        "zh": "C:/Windows/Fonts/msyh.ttc",
-        "ja": "C:/Windows/Fonts/msgothic.ttc",
-        "en": "C:/Windows/Fonts/arial.ttf",
-    }
-    font_path = font_paths.get(lang, font_paths["zh"])
-    font = ImageFont.truetype(font_path, 18)
-    small_font = ImageFont.truetype(font_path, 14)
-    
-    positions = [
-        (pw * 0 + 10, ph * 0 + 10),   # 第1格 左上
-        (pw * 1 + 10, ph * 0 + 10),   # 第2格 右上
-        (pw * 0 + 10, ph * 1 + 10),   # 第3格 左下
-        (pw * 1 + 10, ph * 1 + 10),   # 第4格 右下
-    ]
-    
-    for i, pd in enumerate(panels_dialogue):
-        px, py = positions[i]
-        # 旁白
-        if pd.get("narration"):
-            text = pd["narration"]
-            bbox = draw.textbbox((0, 0), text, font=small_font)
-            tw, th = bbox[2] - bbox[0], bbox[3] - bbox[1]
-            draw.rectangle([px, py, px + tw + 10, py + th + 6], fill=(0, 0, 0, 128))
-            draw.text((px + 5, py + 3), text, fill="white", font=small_font)
-            py += th + 12
-        # 对白
-        if pd.get("dialogue"):
-            text = pd["dialogue"]
-            bbox = draw.textbbox((0, 0), text, font=font)
-            tw, th = bbox[2] - bbox[0], bbox[3] - bbox[1]
-            # 气泡背景
-            bx, by = px, py + ph - th - 40
-            draw.rounded_rectangle(
-                [bx, by, bx + tw + 16, by + th + 12],
-                radius=8, fill="white", outline="black", width=2
-            )
-            draw.text((bx + 8, by + 6), text, fill="black", font=font)
-    
-    os.makedirs(os.path.dirname(output_path) or ".", exist_ok=True)
-    img.save(output_path)
+img = Image.open('<image_path>')
+w, h = img.size
+pw, ph = w // 2, h // 2
+draw = ImageDraw.Draw(img)
+font = ImageFont.truetype('C:/Windows/Fonts/msyh.ttc', 18)
+# 按 storyboard.yaml 中的 panels 数据，逐格在对应象限绘制气泡和文字
+# 旁白用半透明黑色矩形背景 + 白色文字
+# 对白用圆角矩形气泡 + 黑色文字
+img.save('<output_path>')
+"
 ```
+
+**关键执行要点**：
+1. 从 `storyboard.yaml` 读取每格的 `dialogue` 和 `narration`
+2. 根据格子位置 `(row, col)` 计算坐标：`px = pw * col + 10`, `py = ph * row + 10`
+3. 旁白放在格子顶部，对白放在格子底部气泡框内
+4. 使用 `draw.textbbox()` 测量文字宽度，动态调整气泡大小
+5. 如果 Pillow 未安装，跳过叠加步骤并提示用户
 
 叠加版命名：`{filename}_v{i}_text.png`，原图保留。
 
