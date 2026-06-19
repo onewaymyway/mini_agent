@@ -650,6 +650,26 @@ class Terminal:
     _pending_stream: str = ""
 
     def _filter_token(self, token: str) -> str:
+        """
+        过滤流式 token 中的 <tool_use>...</tool_use> 块，只把可见对话文本
+        透传给屏幕。需要正确处理标签被截断在两个 token 边界之间的情况
+        （例如 "</tool" 和 "_use>" 分属两次 on_token 回调）。
+
+        核心不变量：无论当前缓冲区文本（tail）有多长，只要没能在其中找到
+        完整的目标标签（"</tool_use>" 或 "<tool_use>"），就必须保留其
+        末尾 len(TAG) - 1 个字符存入 _pending_stream，留给下一个 token
+        拼接后继续查找——因为标签的前缀可能恰好就停在这次缓冲区的结尾。
+
+        早期版本在这里有一个边界 bug：当 tail 长度超过 11 时直接整体丢弃
+        （_pending_stream = ""），把本该保留用于拼接的标签前缀（如
+        "</tool" 中的若干字符）一并丢掉，导致下一个 token（如 "_use>"）
+        永远凑不出完整的 "</tool_use>"，_suppress_stream 标志再也不会
+        被清除，造成后续所有正常对话文本被永久吞掉、屏幕上只剩下
+        "_use>" 之类的标签残片。修复方式：tail 无论长短，都只截取最后
+        10 个字符存入 _pending_stream（suppress 分支不需要把前面的内容
+        输出，因为那本就是要被抑制的工具调用块内容；非 suppress 分支则
+        把前面的内容正常输出，只缓冲最后 10 个字符）。
+        """
         result = []
         text = self._pending_stream + token
         self._pending_stream = ""
@@ -658,8 +678,11 @@ class Terminal:
             if self._suppress_stream:
                 end = text.find("</tool_use>", i)
                 if end == -1:
+                    # 未找到完整结束标签：保留末尾最多 10 个字符（足够拼出
+                    # "</tool_use>" 的任意前缀）以待下个 token，前面的内容
+                    # 本就处于抑制区间内，无需保留、不输出。
                     tail = text[i:]
-                    self._pending_stream = tail if len(tail) <= 11 else ""
+                    self._pending_stream = tail[-10:] if len(tail) > 10 else tail
                     i = len(text)
                 else:
                     self._suppress_stream = False
