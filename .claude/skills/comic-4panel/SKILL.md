@@ -184,6 +184,7 @@ python .claude/skills/gen_image_with_text/gen_image.py gen "<prompt>" --size 102
 |---|---|---|---|
 | Step 1 主题构思 | `theme_concept.yaml` | YAML | 主题概念完整数据 |
 | Step 2 分镜脚本 | `storyboard.yaml` | YAML | 四格分镜详细脚本 |
+| Step 3 漫画生成 | `prompt_used.txt` | TXT | 实际用于调用图片生成模型的完整 prompt 内容 |
 | Step 3 漫画生成 | `{filename}_v{i}.png` | PNG | 图文一体候选图（含对白文字） |
 | Step 3 漫画生成 | `generation_log.json` | JSON | 生成日志（含 prompt、参数、时间） |
 | 全部完成 | `README.md` | Markdown | 最终交付说明，汇总所有产物 |
