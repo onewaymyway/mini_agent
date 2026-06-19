@@ -95,19 +95,32 @@ panels:
 
 ### Step 3: 生成漫画（图文一体）
 
-#### Prompt 构建规则
+#### Step 3a: 构建并保存 Prompt
 
-**核心原则**：在 prompt 中明确告诉模型每格的对白文字和旁白文字，让模型直接将文字画入画面。
+基于 `storyboard.yaml` 中的分镜数据，按照以下模板构建完整 prompt，**先保存到文件，再展示给用户确认**。
+
+**核心原则**：
+- 每格用**完整段落**描述，不再用占位符拼接
+- 每格包含：画面场景 + 角色状态 + 屏幕/道具内容 + 对白气泡文字
+- 角色描述块在每格开头保持一致，确保跨格一致性
+- 屏幕上的文字（代码、报错信息等）也要在 prompt 中写明，让模型画入画面
 
 **中文 prompt 模板**（prompt_lang=zh，默认）：
 
 ```
-一幅2×2网格布局的四格漫画，格间有白色边框。
+一幅2×2网格布局的四格漫画，格间有白色边框，所有格角色设计一致。
 
-第1格（左上）：[角色描述块]，[表情]，[动作]，在[场景]。[构图]。对话框文字："[对白]"。旁白文字："[旁白]"。
-第2格（右上）：[角色描述块]，[表情]，[动作]，在[场景]。[构图]。对话框文字："[对白]"。旁白文字："[旁白]"。
-第3格（左下）：[角色描述块]，[表情]，[动作]，在[场景]。[构图]。对话框文字："[对白]"。旁白文字："[旁白]"。
-第4格（右下）：[角色描述块]，[表情]，[动作]，在[场景]。[构图]。对话框文字："[对白]"。旁白文字："[旁白]"。
+【第1格 · 左上】
+[场景描述]。[角色名]穿着[服装]，[表情描述]，[动作描述]。[屏幕/道具内容描述，含文字]。对话框文字："[对白]"。
+
+【第2格 · 右上】
+[场景描述]。[角色名]穿着[服装]，[表情描述]，[动作描述]。[屏幕/道具内容描述，含文字]。对话框文字："[对白]"。
+
+【第3格 · 左下】
+[场景描述]。[角色名]穿着[服装]，[表情描述]，[动作描述]。[屏幕/道具内容描述，含文字]。对话框文字："[对白]"。
+
+【第4格 · 右下】
+[场景描述]。[角色名]穿着[服装]，[表情描述]，[动作描述]。[屏幕/道具内容描述，含文字]。对话框文字："[对白]"。
 
 [风格后缀]
 ```
@@ -115,22 +128,54 @@ panels:
 **英文 prompt 模板**（prompt_lang=en）：
 
 ```
-A 4-panel comic strip in 2x2 grid layout with clean white borders between panels.
+A 4-panel comic strip in 2x2 grid layout with clean white borders between panels, consistent character design across all panels.
 
-Panel 1 (top-left): [CHARACTER_BLOCK], [EXPRESSION], [ACTION], in [SCENE]. [COMPOSITION]. Speech bubble text: "[DIALOGUE]". Narration text: "[NARRATION]".
-Panel 2 (top-right): [CHARACTER_BLOCK], [EXPRESSION], [ACTION], in [SCENE]. [COMPOSITION]. Speech bubble text: "[DIALOGUE]". Narration text: "[NARRATION]".
-Panel 3 (bottom-left): [CHARACTER_BLOCK], [EXPRESSION], [ACTION], in [SCENE]. [COMPOSITION]. Speech bubble text: "[DIALOGUE]". Narration text: "[NARRATION]".
-Panel 4 (bottom-right): [CHARACTER_BLOCK], [EXPRESSION], [ACTION], in [SCENE]. [COMPOSITION]. Speech bubble text: "[DIALOGUE]". Narration text: "[NARRATION]".
+[Panel 1 · Top-left]
+[Scene description]. [Character Name] wearing [outfit], [expression], [action]. [Screen/prop description with text]. Speech bubble text: "[DIALOGUE]".
+
+[Panel 2 · Top-right]
+[Scene description]. [Character Name] wearing [outfit], [expression], [action]. [Screen/prop description with text]. Speech bubble text: "[DIALOGUE]".
+
+[Panel 3 · Bottom-left]
+[Scene description]. [Character Name] wearing [outfit], [expression], [action]. [Screen/prop description with text]. Speech bubble text: "[DIALOGUE]".
+
+[Panel 4 · Bottom-right]
+[Scene description]. [Character Name] wearing [outfit], [expression], [action]. [Screen/prop description with text]. Speech bubble text: "[DIALOGUE]".
 
 [STYLE_SUFFIX]
 ```
 
-**关键原则**：
-- `[角色描述块]` 每格完全相同 → 保证角色一致性
-- 明确声明 2×2 网格布局 + 每格标注位置
-- `[风格后缀]` 放在末尾统一风格
-- 对白文字用引号包裹，明确标注为 "对话框文字" / "Speech bubble text"
-- 旁白文字用引号包裹，明确标注为 "旁白文字" / "Narration text"
+**实际示例**（基于程序员笑话 × 异世界女仆 × 太空船脚本）：
+
+```
+一幅2×2网格布局的四格漫画，格间有白色边框，所有格角色设计一致。
+
+【第1格 · 左上】
+未来太空飞船的控制室，红色警报灯疯狂闪烁，多个屏幕显示错误信息。蕾姆穿着蓝白色女仆装，蓝色长发，一脸认真地盯着控制台屏幕。屏幕上显示红色警告文字："Critical Error: Life Support System Failure!"。对话框文字："又崩了……是哪个魔法回路写的代码？"
+
+【第2格 · 右上】
+蕾姆站在控制台前，打开系统日志界面。屏幕上满是乱码和程序员注释，可见文字："// TODO: fix this later (100年前的程序员写的)"、"// it works, don't touch it"、"// I have no idea why this works"。蕾姆面无表情，眼神死寂。对话框文字："……这是'祖传代码'吗？"
+
+【第3格 · 左下】
+蕾姆坐在控制台前认真敲代码，女仆围裙飘起，身后有冰系魔法的光效。屏幕上显示代码："# remove legacy curse"、"system.reboot(force=True)"。飞船剧烈抖动，背景有震动线条。对话框文字："冰系魔法（注释掉旧代码）发动！"
+
+【第4格 · 右下】
+太空船控制室灯光全部变成粉色，背景音乐自动播放的氛围。屏幕显示："System stable. Personality module activated: Maid Mode."。蕾姆愣在原地，一脸无语。对话框文字："……我只是想修bug，不是重写世界观啊。"
+
+动漫风格，四格漫画，所有格角色设计一致，漫画画风，格间白色边框，鲜艳色彩，高质量，清晰的文字
+```
+
+**产物输出**：构建完成后，立即写入 `output_dir/prompt_used.txt`
+
+#### Step 3b: 用户确认 Prompt
+
+展示 `prompt_used.txt` 的内容给用户，询问是否满意。用户可以说：
+- "可以" / "生成" → 进入 Step 3c
+- "修改" → 回到 Step 2 调整分镜，或直接在 Step 3a 调整 prompt
+
+#### Step 3c: 调用模型生成
+
+用户确认后，读取 `prompt_used.txt` 的内容，调用图片生成模型。
 
 #### 风格后缀表
 
