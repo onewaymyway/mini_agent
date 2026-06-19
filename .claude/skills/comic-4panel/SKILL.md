@@ -61,6 +61,7 @@ theme_concept:
   core_idea: "一句话核心创意"
   tone: "风格基调"
   setting: "场景设定"
+  source_work: "来源作品（如《Re:从零开始的异世界生活》）"
   characters:
     - name: "角色名"
       visual_desc_zh: "中文视觉描述"
@@ -72,6 +73,7 @@ theme_concept:
 **要求**：
 - 角色必须同时包含 `visual_desc_zh` 和 `visual_desc_en`
 - 叙事弧线必须遵循起承转合结构
+- **必须包含 `source_work` 字段**（来源作品），即使为空也要显式设置为空字符串
 - 展示给用户确认后再进入 Step 2
 
 **产物输出（强制）**：Step 1 完成后，**立即**写入 `output_dir/theme_concept.yaml`，然后才能展示给用户确认。
@@ -112,7 +114,7 @@ panels:
 
 #### Step 3a: 构建并保存 Prompt
 
-基于 `storyboard.yaml` 中的分镜数据，按照以下模板构建完整 prompt，**先保存到文件，再展示给用户确认**。
+基于 `storyboard.yaml` 中的分镜数据和 `theme_concept.yaml` 中的 `source_work`，按照以下模板构建完整 prompt，**先保存到文件，再展示给用户确认**。
 
 **核心原则**：
 - 每格用**完整段落**描述，不再用占位符拼接
@@ -127,16 +129,16 @@ panels:
 一幅2×2网格布局的四格漫画，格间有白色边框，所有格角色设计一致。
 
 【第1格 · 左上】
-[场景描述]。[角色名]穿着[服装]，[表情描述]，[动作描述]。[屏幕/道具内容描述，含文字]。对话框文字："[对白]"。
+[场景描述]。来自《[来源作品]》的[角色名]穿着[服装]，[表情描述]，[动作描述]。[屏幕/道具内容描述，含文字]。对话框文字："[对白]"。
 
 【第2格 · 右上】
-[场景描述]。[角色名]穿着[服装]，[表情描述]，[动作描述]。[屏幕/道具内容描述，含文字]。对话框文字："[对白]"。
+[场景描述]。来自《[来源作品]》的[角色名]穿着[服装]，[表情描述]，[动作描述]。[屏幕/道具内容描述，含文字]。对话框文字："[对白]"。
 
 【第3格 · 左下】
-[场景描述]。[角色名]穿着[服装]，[表情描述]，[动作描述]。[屏幕/道具内容描述，含文字]。对话框文字："[对白]"。
+[场景描述]。来自《[来源作品]》的[角色名]穿着[服装]，[表情描述]，[动作描述]。[屏幕/道具内容描述，含文字]。对话框文字："[对白]"。
 
 【第4格 · 右下】
-[场景描述]。[角色名]穿着[服装]，[表情描述]，[动作描述]。[屏幕/道具内容描述，含文字]。对话框文字："[对白]"。
+[场景描述]。来自《[来源作品]》的[角色名]穿着[服装]，[表情描述]，[动作描述]。[屏幕/道具内容描述，含文字]。对话框文字："[对白]"。
 
 [风格后缀]
 ```
@@ -147,27 +149,27 @@ panels:
 A 4-panel comic strip in 2x2 grid layout with clean white borders between panels, consistent character design across all panels.
 
 [Panel 1 · Top-left]
-[Scene description]. [Character Name] wearing [outfit], [expression], [action]. [Screen/prop description with text]. Speech bubble text: "[DIALOGUE]".
+[Scene description]. [Character Name] from "[SOURCE_WORK]" wearing [outfit], [expression], [action]. [Screen/prop description with text]. Speech bubble text: "[DIALOGUE]".
 
 [Panel 2 · Top-right]
-[Scene description]. [Character Name] wearing [outfit], [expression], [action]. [Screen/prop description with text]. Speech bubble text: "[DIALOGUE]".
+[Scene description]. [Character Name] from "[SOURCE_WORK]" wearing [outfit], [expression], [action]. [Screen/prop description with text]. Speech bubble text: "[DIALOGUE]".
 
 [Panel 3 · Bottom-left]
-[Scene description]. [Character Name] wearing [outfit], [expression], [action]. [Screen/prop description with text]. Speech bubble text: "[DIALOGUE]".
+[Scene description]. [Character Name] from "[SOURCE_WORK]" wearing [outfit], [expression], [action]. [Screen/prop description with text]. Speech bubble text: "[DIALOGUE]".
 
 [Panel 4 · Bottom-right]
-[Scene description]. [Character Name] wearing [outfit], [expression], [action]. [Screen/prop description with text]. Speech bubble text: "[DIALOGUE]".
+[Scene description]. [Character Name] from "[SOURCE_WORK]" wearing [outfit], [expression], [action]. [Screen/prop description with text]. Speech bubble text: "[DIALOGUE]".
 
 [STYLE_SUFFIX]
 ```
 
-**实际示例**（基于程序员笑话 × 异世界女仆 × 太空船脚本）：
+**实际示例**（基于程序员笑话 × 异世界女仆 × 太空船脚本，来源作品：《Re:从零开始的异世界生活》）：
 
 ```
 一幅2×2网格布局的四格漫画，格间有白色边框，所有格角色设计一致。
 
 【第1格 · 左上】
-未来太空飞船的控制室，红色警报灯疯狂闪烁，多个屏幕显示错误信息。蕾姆穿着蓝白色女仆装，蓝色长发，一脸认真地盯着控制台屏幕。屏幕上显示红色警告文字："Critical Error: Life Support System Failure!"。对话框文字："又崩了……是哪个魔法回路写的代码？"
+未来太空飞船的控制室，红色警报灯疯狂闪烁，多个屏幕显示错误信息。来自《Re:从零开始的异世界生活》的蕾姆穿着蓝白色女仆装，蓝色长发，一脸认真地盯着控制台屏幕。屏幕上显示红色警告文字："Critical Error: Life Support System Failure!"。对话框文字："又崩了……是哪个魔法回路写的代码？"
 
 【第2格 · 右上】
 蕾姆站在控制台前，打开系统日志界面。屏幕上满是乱码和程序员注释，可见文字："// TODO: fix this later (100年前的程序员写的)"、"// it works, don't touch it"、"// I have no idea why this works"。蕾姆面无表情，眼神死寂。对话框文字："……这是'祖传代码'吗？"
@@ -262,6 +264,7 @@ python .claude/skills/gen_image_with_text/gen_image.py gen --prompt-file <output
 # 主题构思产物
 generated_at: "2026-06-19T10:30:00+08:00"
 input_theme: "程序员日常"
+source_work: "《Re:从零开始的异世界生活》"
 theme_concept:
   core_idea: "一句话核心创意"
   tone: "风格基调"
@@ -325,6 +328,7 @@ panels:
 # 四格漫画交付
 
 - **主题**：{input_theme}
+- **来源作品**：{source_work}
 - **风格**：{style}
 - **生成时间**：{generated_at}
 
@@ -370,6 +374,7 @@ panels:
 
 1. **模型不理解2×2布局**：prompt 中必须明确声明网格布局 + 每格标注位置；多候选生成提高成功率
 2. **角色跨格不一致**：统一角色描述前缀 + 风格后缀中强调 `所有格角色设计一致` / `consistent character design across all panels`
-3. **文字渲染效果差**：模型对文字渲染能力有限，对白尽量简短（10字以内）；支持 prompt_lang=en 切换英文 prompt
-4. **API 限流**：串行调用 + 失败重试1次
-5. **Pillow 不再需要**：文字由模型直接生成，无需后处理叠加
+3. **来源作品缺失导致角色形象偏差**：务必在 theme_concept.yaml 中填写 `source_work`，prompt 中会引用此信息
+4. **文字渲染效果差**：模型对文字渲染能力有限，对白尽量简短（10字以内）；支持 prompt_lang=en 切换英文 prompt
+5. **API 限流**：串行调用 + 失败重试1次
+6. **Pillow 不再需要**：文字由模型直接生成，无需后处理叠加
