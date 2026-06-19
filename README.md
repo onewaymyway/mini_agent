@@ -135,14 +135,11 @@ python main.py
 # 单次命令模式
 python -m mini_agent "写一个质数筛法的 Python 脚本"
 
-# 使用指定模型
-python -m mini_agent --model claude-haiku-4-5
-
 # 沙箱模式（安全测试）
 python -m mini_agent --sandbox
 
-# 更多参数
-python main.py --provider nvidia --model qwen/qwen3.5-122b-a10b --system-tool-call --system-msg-format system_role
+# 使用 main.py 启动，更多参数
+python main.py --debug-llm --reminder-verbose
 ```
 
 ## 命令行参数
