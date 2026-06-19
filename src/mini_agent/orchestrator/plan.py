@@ -16,10 +16,12 @@ orchestrator/plan.py — Agent 执行计划（轻量级任务树）
 
 from __future__ import annotations
 
+import json
 import time
 import uuid
 from dataclasses import dataclass, field
 from enum import Enum
+from pathlib import Path
 from typing import Optional
 
 
@@ -131,11 +133,15 @@ class ExecutionPlan:
         self.goal = goal
         self._tasks: dict[str, PlanTask] = {}
         self.created_at = time.time()
+        # 持久化快照路径（W1，对应设计文档 8.1 节）。由 bind_snapshot_path() 注入；
+        # 未绑定时（例如没有活跃 session）所有持久化操作静默跳过。
+        self._snapshot_path: Optional[Path] = None
 
     # ── 任务管理 ──────────────────────────────────────────────────────────────
 
     def add(self, task: PlanTask) -> str:
         self._tasks[task.id] = task
+        self.save_snapshot()
         return task.id
 
     def get(self, task_id: str) -> Optional[PlanTask]:
@@ -158,6 +164,7 @@ class ExecutionPlan:
             return False
         task.status = PlanTaskStatus.RUNNING
         task.started_at = time.time()
+        self.save_snapshot()
         return True
 
     def complete(self, task_id: str, result: str = "") -> bool:
@@ -168,6 +175,7 @@ class ExecutionPlan:
         task.result = result
         task.finished_at = time.time()
         self._propagate_skip()
+        self.save_snapshot()
         return True
 
     def fail(self, task_id: str, error: str = "") -> bool:
@@ -178,6 +186,7 @@ class ExecutionPlan:
         task.error = error
         task.finished_at = time.time()
         self._propagate_skip()
+        self.save_snapshot()
         return True
 
     def _propagate_skip(self) -> None:
@@ -308,10 +317,94 @@ class ExecutionPlan:
         for child in self.children_of(task.id):
             self._collect_display(child, out, depth + 1)
 
+    # ── 持久化（W1，对应设计文档 8.1 节）────────────────────────────────────────
+
+    def bind_snapshot_path(self, path: Optional[Path]) -> None:
+        """绑定 plan_snapshot.json 落盘路径（由 session 建立后注入）。"""
+        self._snapshot_path = path
+
+    def to_snapshot_dict(self) -> dict:
+        """序列化为设计文档 8.1 节描述的 plan_snapshot.json schema（精简版：
+        id/title/status/result 四个字段，足以支持续跑恢复）。"""
+        last_updated = self.created_at
+        for t in self._tasks.values():
+            if t.finished_at and t.finished_at > last_updated:
+                last_updated = t.finished_at
+            if t.started_at and t.started_at > last_updated:
+                last_updated = t.started_at
+        return {
+            "goal": self.goal,
+            "created_at": self.created_at,
+            "last_updated": last_updated,
+            "tasks": [
+                {
+                    "id": t.id,
+                    "title": t.title,
+                    "status": t.status.value,
+                    "result": t.result or t.error or "",
+                }
+                for t in self._tasks.values()
+            ],
+        }
+
+    def save_snapshot(self) -> Optional[Path]:
+        """将当前计划状态写入 plan_snapshot.json；未绑定路径时静默跳过。"""
+        if self._snapshot_path is None:
+            return None
+        try:
+            self._snapshot_path.parent.mkdir(parents=True, exist_ok=True)
+            self._snapshot_path.write_text(
+                json.dumps(self.to_snapshot_dict(), ensure_ascii=False, indent=2),
+                encoding="utf-8",
+            )
+            return self._snapshot_path
+        except Exception:
+            return None
+
+    @classmethod
+    def load_snapshot(cls, path: Path) -> Optional["ExecutionPlan"]:
+        """
+        从 plan_snapshot.json 恢复一个 ExecutionPlan 实例。
+        快照是精简 schema（不含 description/depends_on/parent_id/source 等字段），
+        恢复后的 PlanTask 仅保证 id/title/status/result 准确，足以支持
+        "续跑：恢复 DONE 步骤，从第一个 non-terminal 步骤继续"这一最低要求。
+        读取失败（文件不存在、JSON 损坏等）时返回 None，调用方应静默忽略。
+        """
+        try:
+            if not path.exists():
+                return None
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except Exception:
+            return None
+
+        try:
+            plan = cls(goal=data.get("goal", ""))
+            plan.created_at = data.get("created_at", time.time())
+            for t in data.get("tasks", []):
+                status = PlanTaskStatus(t.get("status", "pending"))
+                task = PlanTask(
+                    id=t["id"],
+                    title=t.get("title", ""),
+                    status=status,
+                    result=t.get("result", "") if status == PlanTaskStatus.DONE else "",
+                    error=t.get("result", "") if status == PlanTaskStatus.FAILED else "",
+                )
+                plan._tasks[task.id] = task
+            plan.bind_snapshot_path(path)
+            return plan
+        except Exception:
+            return None
+
 
 # ── 模块级单例 ────────────────────────────────────────────────────────────────
 
 _current_plan: Optional[ExecutionPlan] = None
+
+# 当前 session 的 plan_snapshot.json 路径。由 Agent 在 session 建立/切换时调用
+# bind_plan_session() 注入，使得后续任何 set_plan() 创建的新计划都能自动绑定
+# 到正确的落盘路径，而不需要每个调用点（如 tools/plan.py 的 create_plan）
+# 都显式知道当前 session_id。
+_current_snapshot_path: Optional[Path] = None
 
 
 def get_plan() -> Optional[ExecutionPlan]:
@@ -321,8 +414,39 @@ def get_plan() -> Optional[ExecutionPlan]:
 def set_plan(plan: Optional[ExecutionPlan]) -> None:
     global _current_plan
     _current_plan = plan
+    if plan is not None and _current_snapshot_path is not None:
+        plan.bind_snapshot_path(_current_snapshot_path)
+        plan.save_snapshot()
 
 
 def clear_plan() -> None:
     global _current_plan
     _current_plan = None
+
+
+def bind_plan_session(snapshot_path: Optional[Path]) -> None:
+    """
+    绑定当前 session 的 plan_snapshot.json 路径。
+    由 Agent 在 session 建立/切换（_bind_session_extras）时调用。
+    若当前已有活跃 plan，立即绑定并尝试落盘；不影响已有 plan 的内存状态。
+    """
+    global _current_snapshot_path
+    _current_snapshot_path = snapshot_path
+    if _current_plan is not None and snapshot_path is not None:
+        _current_plan.bind_snapshot_path(snapshot_path)
+
+
+def try_restore_plan(snapshot_path: Path) -> bool:
+    """
+    session 启动时调用：若 plan_snapshot.json 存在，尝试恢复为当前活跃 plan。
+    返回是否成功恢复。不存在或解析失败时返回 False，调用方应静默忽略
+    （让 agent 继续以"无活跃 plan"状态启动，不阻塞正常流程）。
+    """
+    global _current_plan
+    if not snapshot_path.exists():
+        return False
+    restored = ExecutionPlan.load_snapshot(snapshot_path)
+    if restored is None:
+        return False
+    _current_plan = restored
+    return True

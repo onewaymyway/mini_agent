@@ -115,10 +115,15 @@ class SubAgent:
             self._events_path: Optional[Path] = _paths.task_events(session_id, record.task_id)
             self._output_path: Optional[Path] = _paths.task_output(session_id, record.task_id)
             self._result_path: Optional[Path] = _paths.task_result(session_id, record.task_id)
+            self._manifest_path: Optional[Path] = _paths.task_manifest(session_id, record.task_id)
+            # 绑定 manifest 路径，并立即写一份初始 manifest（任务创建时落初始 manifest.json）
+            record.bind_manifest_path(self._manifest_path)
+            record.write_manifest()
         else:
             self._events_path = None
             self._output_path = None
             self._result_path = None
+            self._manifest_path = None
 
     # ── 生命周期 ──────────────────────────────────────────────────────────────
 
@@ -249,6 +254,9 @@ class SubAgent:
         finally:
             with self._lock:
                 self.record.finished_at = time.time()
+                # 任务结束时补写 outcome 块到 manifest.json（DONE/FAILED/CANCELLED 三种终态统一处理）
+                if self.record.is_terminal:
+                    self.record.write_manifest()
                 # 通知终态（只通知一次）
                 if self.record.is_terminal and self.record.status not in self._terminal_notified:
                     self._terminal_notified.add(self.record.status)

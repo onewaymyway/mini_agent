@@ -312,7 +312,9 @@ def spawn_agents(tasks: list) -> str:
     description=(
         "Get the current status and result of a sub-agent task by task_id. "
         "Returns status (pending/running/done/failed/cancelled), elapsed time, "
-        "token usage, and the task output if completed."
+        "token usage, and the task output if completed. "
+        "If the output exceeds 3000 chars and full=False, the response includes "
+        "truncated=true and full_length — call again with full=True to get everything."
     ),
     schema={
         "type": "object",
@@ -355,7 +357,13 @@ def get_task_status(task_id: str, include_log: bool = True, full: bool = False) 
         "elapsed_s": rec.elapsed,
     }
     if rec.result:
-        data["output"] = rec.result.output if full else rec.result.output[:3000]
+        output = rec.result.output or ""
+        truncated = (not full) and len(output) > 3000
+        data["output"] = output if full else output[:3000]
+        if truncated:
+            data["truncated"] = True
+            data["full_length"] = len(output)
+            data["hint"] = f"Output truncated to 3000 chars (full length: {len(output)}). Call get_task_status(task_id='{task_id}', full=True) to retrieve the complete output."
         if rec.result.error:
             data["error"] = rec.result.error   # 现在包含完整 traceback
         data["tokens"] = {
@@ -509,3 +517,88 @@ def wait_for_tasks(task_ids: list, timeout_seconds: float = 300) -> str:
         "timed_out": timed_out,
         "results": results,
     }, indent=2,ensure_ascii=False)
+
+
+# ── update_task_progress 工具 ─────────────────────────────────────────────────
+
+@tool(
+    name="update_task_progress",
+    description=(
+        "Actively record progress on a long-running task into its manifest.json "
+        "(task narrative file). Call this periodically during multi-step sub-agent "
+        "tasks to record what step you're on, what's been done, what remains, and "
+        "any blockers. This is a deliberate checkpoint — pausing to reflect on "
+        "progress improves execution quality on long tasks. The note (if provided) "
+        "is appended to the task's decision_log."
+    ),
+    schema={
+        "type": "object",
+        "properties": {
+            "task_id": {
+                "type": "string",
+                "description": "The task_id to update (same as returned by spawn_agent)",
+            },
+            "current_step": {
+                "type": "string",
+                "description": "Short description of what's currently being worked on",
+            },
+            "steps_done": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": "Steps completed so far (replaces previous list if provided)",
+            },
+            "steps_remaining": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": "Steps still remaining (replaces previous list if provided)",
+            },
+            "blockers": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": "Anything currently blocking progress (replaces previous list if provided)",
+            },
+            "note": {
+                "type": "string",
+                "description": (
+                    "Optional free-form note about a decision made or observation, "
+                    "appended to the task's decision_log"
+                ),
+            },
+        },
+        "required": ["task_id"],
+    },
+    requires_approval=False,
+)
+def update_task_progress(
+    task_id: str,
+    current_step: str = "",
+    steps_done: Optional[list] = None,
+    steps_remaining: Optional[list] = None,
+    blockers: Optional[list] = None,
+    note: str = "",
+) -> str:
+    mgr = get_task_manager()
+    if mgr is None:
+        return "[error: TaskManager not initialized.]"
+
+    rec = mgr.get(task_id)
+    if rec is None:
+        return json.dumps({"error": f"Task '{task_id}' not found."})
+
+    rec.update_progress(
+        current_step=current_step,
+        steps_done=steps_done,
+        steps_remaining=steps_remaining,
+        blockers=blockers,
+        note=note,
+    )
+
+    return json.dumps({
+        "updated": True,
+        "task_id": task_id,
+        "current_step": rec.current_step,
+        "steps_done": rec.steps_done,
+        "steps_remaining": rec.steps_remaining,
+        "blockers": rec.blockers,
+        "manifest_written": rec._manifest_path is not None,
+    }, ensure_ascii=False)

@@ -37,7 +37,11 @@ mini_agent/
         │   └── repl_input.py
         │
         ├── agent.py        # Agent 核心循环
-        ├── config.py       # 配置（AppConfig）
+        ├── config/         # 配置（AppConfig），v3 起拆分为包
+        │   ├── __init__.py # 重导出，对外 import 路径不变
+        │   ├── models.py   # 14 个配置 dataclass + AppConfig
+        │   ├── loader.py   # load_config 及加载辅助函数
+        │   └── prompt_builder.py  # build_system_prompt 及辅助函数
         ├── permissions.py  # 权限守卫
         ├── session.py      # 会话持久化
         │
@@ -92,9 +96,18 @@ mini_agent/
 | `mini_agent/context_builder.py` | 新增 | System prompt 构建 |
 | `mini_agent/tool_executor.py` | 新增 | 工具执行器 |
 | `mini_agent/history_manager.py` | 新增 | 历史管理器 |
-| `mini_agent/config.py` | 根目录 `config.py` | 配置管理 |
+| `mini_agent/config/` | 根目录 `config.py`（v3 拆分为包，见下方说明） | 配置管理 |
 | `mini_agent/permissions.py` | 根目录 `permissions.py` | 权限守卫 |
 | `mini_agent/session.py` | 根目录 `session.py` | 会话持久化 |
+
+**`config/` 包内部分工**（对应 `self_evolution_implementation_plan.md` Stage 0.4）：
+
+| 文件 | 职责 |
+|------|------|
+| `config/models.py` | 14 个配置 dataclass（`MemoryConfig`/`CompressConfig`/…）+ `AppConfig` 主体 + 默认值常量 |
+| `config/loader.py` | `load_config()` 主入口、`_load_config_file()`、`_load_providers_config()`、`_merge_providers_into_chain()` |
+| `config/prompt_builder.py` | `build_system_prompt()`、`_read_claude_md()`、`_resolve_prompts_dir()`、`_resolve_skills_dir()` |
+| `config/__init__.py` | 统一重导出全部符号，外部 `from mini_agent.config import AppConfig` 等用法不受影响 |
 
 ### 2.4 子包（整体迁入，内部结构不变）
 
@@ -201,15 +214,17 @@ from mini_agent.orchestrator.task import Task, TaskStatus
 ### P2 — 较高收益，适合独立 PR
 
 - **UI 层完全收拢**：少量业务模块（`orchestrator/task_display.py`、`plan_display.py`）仍直接依赖 `mini_agent.ui.terminal`，可定义 UI facade 进一步解耦
-- **配置/存储/安全细分**：`config.py`、`session.py`、`permissions.py` 可进一步拆分为 `config/schema.py` + `config/loader.py` 等
+
+> ✅ 已完成（2026-06，`self_evolution_implementation_plan.md` Stage 0）：
+> - `config.py` → `config/` 包拆分（`models.py` / `loader.py` / `prompt_builder.py`），见上方 2.3 节
+> - 任务持久化：`TaskRecord` 现在会把 `manifest.json` 落盘到 `tasks/<task_id>/`，`ExecutionPlan` 状态变更同步写 `plan_snapshot.json` 并支持 session 重启恢复，不再"仅在内存"，详见 [Plan 与 Task 机制说明](plan-and-task-guide.md) 与 [存储设计](storage-design.md)
 
 ### P3 — 长期演进
 
 - 引入 `mypy` / `pyright`、`ruff`、`black` 工具链
 - `MemoryStore` 从关键词检索升级为向量检索
 - Plan 节点与 Sub-Agent 任务 ID 建立显式绑定
-- 任务持久化（当前仅在内存）
 
 ---
 
-*最后更新：2026-06（新增 mcp/ 子包、history/、storage/、api/、hooks/ 等模块）*
+*最后更新：2026-06（config.py 拆分为 config/ 包；任务持久化落地，见 [自我演化实施计划](../next_doc/self_evolution_implementation_plan.md) Stage 0）*

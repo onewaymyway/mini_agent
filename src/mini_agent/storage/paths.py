@@ -26,12 +26,14 @@ storage/paths.py — 统一路径管理
     paths.session_meta(sid)       # .agent/sessions/<sid>/meta.json
     paths.session_llm_debug(sid)  # .agent/sessions/<sid>/llm_debug.jsonl
     paths.session_memory_delta(sid) # .agent/sessions/<sid>/memory_delta.jsonl
+    paths.session_plan_snapshot(sid) # .agent/sessions/<sid>/plan_snapshot.json
 
     # Task 级（需要 session_id + task_id）
     paths.task_dir(sid, tid)      # .agent/sessions/<sid>/tasks/<tid>/
     paths.task_output(sid, tid)   # .agent/sessions/<sid>/tasks/<tid>/output.log
     paths.task_events(sid, tid)   # .agent/sessions/<sid>/tasks/<tid>/events.jsonl
     paths.task_result(sid, tid)   # .agent/sessions/<sid>/tasks/<tid>/result.json
+    paths.task_manifest(sid, tid) # .agent/sessions/<sid>/tasks/<tid>/manifest.json
 
     # Global 级
     paths.global_memory           # ~/.agent/memory.jsonl
@@ -164,6 +166,12 @@ class AgentPaths:
         本 session 产生的记忆条目（审计用）"""
         return self.session_dir(session_id) / "memory_delta.jsonl"
 
+    def session_plan_snapshot(self, session_id: str) -> Path:
+        """<project_root>/.agent/sessions/<session_id>/plan_snapshot.json
+        ExecutionPlan 的持久化快照（W1，对应设计文档 8.1 节）。
+        每次 PlanTask 状态变更时同步写入，session 意外中断后可据此恢复。"""
+        return self.session_dir(session_id) / "plan_snapshot.json"
+
     def tasks_dir(self, session_id: str) -> Path:
         """<project_root>/.agent/sessions/<session_id>/tasks/"""
         return self.session_dir(session_id) / "tasks"
@@ -188,6 +196,13 @@ class AgentPaths:
         """…/tasks/<task_id>/result.json
         任务完成结果（token 统计、输出文本等）"""
         return self.task_dir(session_id, task_id) / "result.json"
+
+    def task_manifest(self, session_id: str, task_id: str) -> Path:
+        """…/tasks/<task_id>/manifest.json
+        任务全生命周期的结构化叙事文件（W1，对应设计文档 8.1 节）。
+        包含 goal/acceptance_criteria/progress/decision_log/outcome 等字段，
+        由 agent 主动写入（update_task_progress 工具），不是从 events.jsonl 被动推导。"""
+        return self.task_dir(session_id, task_id) / "manifest.json"
 
     # ── 便捷方法 ───────────────────────────────────────────────────────────
 

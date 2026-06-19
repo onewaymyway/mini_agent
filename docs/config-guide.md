@@ -2,6 +2,10 @@
 
 > 说明 mini-agent 的配置架构、子配置块、加载优先级与扩展方式。
 
+> **模块布局（2026-06 起）**：配置代码已从单文件 `config.py` 拆分为 `config/` 包
+> （`models.py` / `loader.py` / `prompt_builder.py`，见 [代码结构说明](code-structure-guide.md#23-核心层原根目录模块)），
+> 但对外 import 路径完全不变——本文档中所有 `from mini_agent.config import ...` 写法继续有效。
+
 ---
 
 ## 1. 架构概览
@@ -340,7 +344,7 @@ cfg = load_config(
 
 新增功能只需三步，无需修改 `AppConfig` 主体：
 
-**步骤一**：新建子配置类
+**步骤一**：在 `config/models.py` 中新建子配置类
 
 ```python
 @dataclass
@@ -350,7 +354,7 @@ class MyFeatureConfig:
     param_b: str = "default"
 ```
 
-**步骤二**：在 `AppConfig` 中加入子块引用
+**步骤二**：在同一文件的 `AppConfig` 中加入子块引用
 
 ```python
 @dataclass
@@ -359,7 +363,7 @@ class AppConfig:
     my_feature: MyFeatureConfig = field(default_factory=MyFeatureConfig)
 ```
 
-**步骤三**：在 `load_config` 中从 JSON/CLI 组装
+**步骤三**：在 `config/loader.py` 的 `load_config()` 中从 JSON/CLI 组装
 
 ```python
 my_feature_cfg = MyFeatureConfig(
@@ -368,13 +372,16 @@ my_feature_cfg = MyFeatureConfig(
 )
 ```
 
+新增的子配置类如需被 `config/__init__.py` 重导出（供外部 `from mini_agent.config import MyFeatureConfig` 使用），记得同时把类名加入 `__init__.py` 的 import 列表和 `__all__`。
+
 ---
 
 ## 7. 相关文档
 
+- [代码结构说明](code-structure-guide.md) — `config/` 包的文件拆分与职责边界
 - [MCP 集成指南](mcp-guide.md) — MCP 外部工具服务的架构、配置与扩展方式
 - [系统设计概述](system-overview.md) — 整体架构与各子系统关系
 
 ---
 
-*最后更新：2026-06（新增 MCPConfig 子配置块）*
+*最后更新：2026-06（config.py 拆分为 config/ 包：models.py / loader.py / prompt_builder.py）*

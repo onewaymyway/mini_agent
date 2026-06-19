@@ -403,6 +403,21 @@ class Agent:
         # raw history 路径绑定：调用独立方法（确保 _hist 已初始化后再绑定）
         self._bind_raw_path()
 
+        # ExecutionPlan 持久化快照绑定 + 恢复（W1，对应设计文档 8.1 节）
+        # session 启动时检测 plan_snapshot.json 是否存在，存在则尝试恢复
+        # （new_session 创建的是全新 session_id，天然不会撞上旧快照文件，
+        # 因此这里的"存在即恢复"逻辑对三个调用场景都是安全的）。
+        try:
+            from mini_agent.storage.paths import AgentPaths
+            from mini_agent.orchestrator.plan import bind_plan_session, try_restore_plan, clear_plan
+
+            snapshot_path = AgentPaths(self.cfg.project_root).session_plan_snapshot(self._session.id)
+            clear_plan()  # 切换 session 时先清空旧 session 残留的内存计划
+            try_restore_plan(snapshot_path)   # 存在则恢复，不存在则静默跳过
+            bind_plan_session(snapshot_path)  # 无论是否恢复成功，都绑定为当前 session 路径
+        except Exception:
+            pass
+
     def _bind_raw_path(self) -> None:
         """将 raw history 的 .jsonl 文件路径绑定到当前 session，启用即时落盘。
 

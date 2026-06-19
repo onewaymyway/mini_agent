@@ -10,10 +10,12 @@ orchestrator/task.py — Task 数据模型
 
 from __future__ import annotations
 
+import json
 import time
 import uuid
 from dataclasses import dataclass, field
 from enum import Enum
+from pathlib import Path
 from typing import Any, Optional
 
 
@@ -60,6 +62,12 @@ class Task:
     allowed_tool_groups: Optional[list[str]] = None      # 限制可用工具分组（None=不限制）
     created_at: float = field(default_factory=time.time)
 
+    # ── manifest 相关字段（W1，对应设计文档 8.1 节）──────────────────────────
+    # 全部带默认值，保证现有调用方零迁移成本继续工作。
+    initiator: str = "agent"             # 任务发起方："user" / "agent"
+    goal: str = ""                       # 任务目标的结构化描述；为空时回退到 prompt
+    acceptance_criteria: list[str] = field(default_factory=list)  # 验收标准
+
     def __post_init__(self):
         if not self.name:
             # 自动从 prompt 截取前 40 字符作为名称
@@ -80,6 +88,18 @@ class TaskRecord:
     started_at: Optional[float] = None
     finished_at: Optional[float] = None
     log_lines: list[str] = field(default_factory=list)  # 实时日志
+
+    # ── manifest 相关运行时状态（W1）────────────────────────────────────────
+    # 由 update_task_progress 工具主动写入，而非从 events.jsonl 被动推导。
+    current_step: str = ""
+    steps_done: list[str] = field(default_factory=list)
+    steps_remaining: list[str] = field(default_factory=list)
+    blockers: list[str] = field(default_factory=list)
+    decision_log: list[dict] = field(default_factory=list)
+    unresolved: list[str] = field(default_factory=list)
+
+    # manifest 落盘路径；由 SubAgent/调用方在拿到 session_id 后注入
+    _manifest_path: Optional[Path] = field(default=None, repr=False, compare=False)
 
     @property
     def task_id(self) -> str:
@@ -117,3 +137,95 @@ class TaskRecord:
             TaskStatus.FAILED:    "red",
             TaskStatus.CANCELLED: "yellow",
         }[self.status]
+
+    # ── manifest 持久化（W1，对应设计文档 8.1 节）────────────────────────────
+
+    def bind_manifest_path(self, path: Path) -> None:
+        """注入 manifest.json 的落盘路径（由 SubAgent 在获得 session_id 后调用）。"""
+        self._manifest_path = path
+
+    def to_manifest_dict(self) -> dict:
+        """序列化为设计文档 8.1 节描述的 task_manifest.json schema。"""
+        outcome: Optional[dict] = None
+        if self.is_terminal:
+            artifacts: list[dict] = []
+            lessons_generated: list[str] = []
+            token_cost = {"input": 0, "output": 0}
+            summary = ""
+            if self.result is not None:
+                summary = (self.result.output or "")[:500]
+                token_cost = {
+                    "input": self.result.input_tokens,
+                    "output": self.result.output_tokens,
+                }
+            outcome = {
+                "status": self.status.value,
+                "summary": summary,
+                "artifacts": artifacts,
+                "unresolved": list(self.unresolved),
+                "lessons_generated": lessons_generated,
+                "token_cost": token_cost,
+            }
+
+        return {
+            "id": self.task.id,
+            "name": self.task.name,
+            "initiator": self.task.initiator,
+            "goal": self.task.goal or self.task.prompt,
+            "acceptance_criteria": list(self.task.acceptance_criteria),
+            "context_snapshot": {
+                "related_files": [],
+                "related_lessons": [],
+                "parent_goal_id": None,
+                "parent_task_id": None,
+            },
+            "progress": {
+                "current_step": self.current_step,
+                "steps_done": list(self.steps_done),
+                "steps_remaining": list(self.steps_remaining),
+                "blockers": list(self.blockers),
+                "last_updated": time.time(),
+            },
+            "decision_log": list(self.decision_log),
+            "outcome": outcome,
+        }
+
+    def write_manifest(self) -> Optional[Path]:
+        """将当前 manifest 状态写入 manifest.json；未绑定路径时静默跳过。"""
+        if self._manifest_path is None:
+            return None
+        try:
+            self._manifest_path.parent.mkdir(parents=True, exist_ok=True)
+            self._manifest_path.write_text(
+                json.dumps(self.to_manifest_dict(), ensure_ascii=False, indent=2),
+                encoding="utf-8",
+            )
+            return self._manifest_path
+        except Exception:
+            return None
+
+    def update_progress(
+        self,
+        current_step: str = "",
+        steps_done: Optional[list[str]] = None,
+        steps_remaining: Optional[list[str]] = None,
+        blockers: Optional[list[str]] = None,
+        note: str = "",
+    ) -> None:
+        """供 update_task_progress 工具调用：主动更新进度并立即落盘。"""
+        if current_step:
+            self.current_step = current_step
+        if steps_done is not None:
+            self.steps_done = list(steps_done)
+        if steps_remaining is not None:
+            self.steps_remaining = list(steps_remaining)
+        if blockers is not None:
+            self.blockers = list(blockers)
+        if note:
+            self.decision_log.append({
+                "at": time.time(),
+                "decision": note,
+                "rationale": "",
+                "alternatives_considered": [],
+            })
+        self.write_manifest()

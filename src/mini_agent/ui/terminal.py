@@ -82,27 +82,11 @@ class Terminal:
         # 管理的输入行/光标产生竞争，造成画面错乱（消息插入到 "You ❯" 之后、
         # 状态栏被意外重绘等）。
         # 解决方式：_input_blocking=True 期间，print/rule/panel/syntax/
-        # markdown/stream/stream_end 类消息一律缓存到 _pending_during_input，
-        # 不写屏幕；待 _exit_input_mode() 后统一重新入队补打印，保证消息
-        # 不丢失，只是延迟到不会撕裂输入行的时机显示。
-        #
-        # 注意：stream/stream_end 必须和 print 一起拦截——见 _handle() 中
-        # 的详细说明。二者是同一段输出（"agent ❯ " 前缀 + 紧随其后的流式
-        # 正文）的两半，必须同进同出，否则会出现前缀缺席、正文却正常显示
-        # 的错乱画面。
-        #
-        # 看门狗：_input_blocking 理论上只应在 _enter_input_mode() 到
-        # _exit_input_mode() 之间的极短窗口（人类按键间隔）内为 True。
-        # 如果因为某个未预见的异常路径（例如调用方持有的 confirm()/
-        # prompt_user() 在 finally 执行前进程崩溃式退出某个线程、或多线程
-        # 权限确认场景下的边界条件）导致标志没能被正确清除，所有后续 agent
-        # 输出都会被无限期缓存、永不上屏。_refresh_loop 中的看门狗会在
-        # 标志持续为 True 超过 _INPUT_BLOCKING_TIMEOUT 秒后强制复位，
-        # 避免输出永久卡死（详见 _refresh_loop）。
+        # markdown 类消息一律缓存到 _pending_during_input，不写屏幕；
+        # 待 _exit_input_mode() 后统一重新入队补打印，保证消息不丢失，
+        # 只是延迟到不会撕裂输入行的时机显示。
         self._input_blocking: bool = False
         self._pending_during_input: list[_Msg] = []
-        self._input_blocking_since: float = 0.0
-        self._INPUT_BLOCKING_TIMEOUT: float = 120.0  # 秒；远大于正常人类输入耗时
 
         # ── Task 焦点状态 ────────────────────────────────────────────────
         # 当 _task_focus 非 None 时，主输出区被"接管"，刷新循环会把
@@ -355,7 +339,6 @@ class Terminal:
         self._erase_bar_direct()
         # 4. 开始缓存阻塞输入期间到达的输出类消息（业务后台线程可能仍在产生）
         self._input_blocking = True
-        self._input_blocking_since = time.monotonic()
 
     def _exit_input_mode(self) -> None:
         """
@@ -367,7 +350,6 @@ class Terminal:
         4. 重绘状态栏
         """
         self._input_blocking = False
-        self._input_blocking_since = 0.0
         pending, self._pending_during_input = self._pending_during_input, []
         self._refresh_paused.clear()
         for msg in pending:
@@ -404,19 +386,8 @@ class Terminal:
         # 这类会直接写 stdout 的消息一旦在此时渲染，会撕裂 prompt_toolkit
         # 自己管理的输入行，造成画面错乱。因此先缓存，等 _exit_input_mode()
         # 后再统一补打印。_noop/_refresh/statusbar 等不写屏幕的消息不受影响。
-        #
-        # 重要：stream/stream_end 必须和 print（用于打印 "agent ❯ " 前缀，
-        # end=""）一起被拦截，不能只拦截 print。二者是同一个逻辑输出的
-        # 不可分割的两半——print_assistant_prefix() 打印前缀后，紧跟着
-        # 一连串 stream token 续写在同一行。如果前缀被缓存暂不上屏，而
-        # stream token 不在拦截名单内、被正常处理写到了 sys.stdout，
-        # 就会出现「正文内容显示了，但前面的 "agent ❯ " 前缀却缺席」的
-        # 错乱画面——这正是本函数早期版本的一个回归 bug：当时只拦截了
-        # print/rule/panel/syntax/markdown，遗漏了 stream/stream_end，
-        # 导致两路消息在 _input_blocking 期间被区别对待、显示不一致。
         if self._input_blocking and kind in (
-            "print", "rule", "panel", "syntax", "markdown",
-            "stream", "stream_end",
+            "print", "rule", "panel", "syntax", "markdown"
         ):
             self._pending_during_input.append(msg)
             return
@@ -755,25 +726,6 @@ class Terminal:
         while not self._refresh_stop.is_set():
             time.sleep(self._refresh_interval)
             if self._refresh_paused.is_set() or self._refresh_stop.is_set():
-                # 看门狗：_input_blocking 正常情况下只会在用户实际输入期间
-                # （人类按键间隔，通常数秒）为 True。如果持续超过
-                # _INPUT_BLOCKING_TIMEOUT 仍未被 _exit_input_mode() 清除
-                # （说明触发了某个未预见的异常路径，标志卡死），强制复位
-                # 并 flush 所有缓存消息，避免 agent 输出永久不可见。
-                # 这是纵深防御的最后一道保险，正常路径不应触发。
-                if (
-                    self._input_blocking
-                    and self._input_blocking_since
-                    and (time.monotonic() - self._input_blocking_since)
-                    > self._INPUT_BLOCKING_TIMEOUT
-                ):
-                    self._input_blocking = False
-                    self._input_blocking_since = 0.0
-                    pending, self._pending_during_input = self._pending_during_input, []
-                    self._refresh_paused.clear()
-                    for msg in pending:
-                        self._q.put(msg)
-                    self._q.put(_Msg("redraw", None))
                 continue
 
             # ── 焦点日志增量投递 ──────────────────────────────────────

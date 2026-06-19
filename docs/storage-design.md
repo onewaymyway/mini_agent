@@ -59,12 +59,14 @@ Global（用户级）                  ~/.agent/
             ├── history.json                   # 完整对话历史（messages 数组）
             ├── llm_debug.jsonl                # LLM 请求/响应调试日志
             ├── memory_delta.jsonl             # 本次 session 产生的记忆条目
+            ├── plan_snapshot.json             # ExecutionPlan 持久化快照（W1）
             │
             └── tasks/                         # [Task] 所有子任务目录
                 └── <task_id>/                 # 每个 SubAgent 任务一个目录
                     ├── output.log             # 实时输出（tab 切换数据源）
                     ├── events.jsonl           # 生命周期事件（状态变更、重试）
-                    └── result.json            # 任务完成结果（token 统计等）
+                    ├── result.json            # 任务完成结果（token 统计等）
+                    └── manifest.json          # 任务全生命周期叙事文件（W1）
 ```
 
 ---
@@ -88,12 +90,14 @@ paths.session_history(sid)    # <root>/.agent/sessions/<sid>/history.json
 paths.session_meta(sid)       # <root>/.agent/sessions/<sid>/meta.json
 paths.session_llm_debug(sid)  # <root>/.agent/sessions/<sid>/llm_debug.jsonl
 paths.session_memory_delta(sid) # <root>/.agent/sessions/<sid>/memory_delta.jsonl
+paths.session_plan_snapshot(sid) # <root>/.agent/sessions/<sid>/plan_snapshot.json
 
 # Task 级
 paths.task_dir(sid, tid)      # <root>/.agent/sessions/<sid>/tasks/<tid>/
 paths.task_output(sid, tid)   # …/tasks/<tid>/output.log
 paths.task_events(sid, tid)   # …/tasks/<tid>/events.jsonl
 paths.task_result(sid, tid)   # …/tasks/<tid>/result.json
+paths.task_manifest(sid, tid) # …/tasks/<tid>/manifest.json
 
 # Global 级
 paths.global_memory           # ~/.agent/memory.jsonl
@@ -344,6 +348,86 @@ SubAgent 运行过程中每一行输出都追加到此文件，格式为带时�
   "output_len": 843
 }
 ```
+
+#### `manifest.json` — 任务全生命周期叙事文件（W1）
+
+与 `events.jsonl`（被动记录每个状态变化时间点）和 `result.json`（仅终态统计）不同，`manifest.json` 是**主动写入**的结构化叙事，回答"这个任务的目标是什么、现在进展到哪、做出了哪些关键决策、最后留下了什么未解决的问题"。
+
+- **任务创建时**（`SubAgent.__init__` 获得 `session_id` 后）立即写入一份初始版本，`goal`/`acceptance_criteria` 取自 `Task` 的对应字段（`goal` 为空时回退到 `prompt`）
+- **执行过程中**由 agent 主动调用 `update_task_progress` 工具更新 `progress` 块和 `decision_log`（不是从 `events.jsonl` 被动推导）
+- **任务结束时**（`DONE`/`FAILED`/`CANCELLED` 三种终态统一处理）补写 `outcome` 块
+
+```jsonc
+{
+  "id": "abc123",
+  "name": "修复 token 预算计算溢出问题",
+  "initiator": "agent",
+  "goal": "修复 token 预算计算溢出问题",
+  "acceptance_criteria": ["所有现有单测通过"],
+  "context_snapshot": {
+    "related_files": [], "related_lessons": [],
+    "parent_goal_id": null, "parent_task_id": null
+  },
+  "progress": {
+    "current_step": "写新测试",
+    "steps_done": ["定位根因", "修改计算逻辑"],
+    "steps_remaining": ["写新测试", "跑测试套件"],
+    "blockers": [],
+    "last_updated": 1781856272.88
+  },
+  "decision_log": [
+    {"at": 1781856272.9, "decision": "选择修改 _calc_budget() 而非 _trim_history()",
+     "rationale": "", "alternatives_considered": []}
+  ],
+  "outcome": null   // 任务结束后才会有值，见下方
+}
+```
+
+任务结束后 `outcome` 字段示例：
+
+```jsonc
+"outcome": {
+  "status": "done",
+  "summary": "修复完成……（result.output 的前 500 字符）",
+  "artifacts": [],
+  "unresolved": ["还有一个 edge case 未覆盖"],
+  "lessons_generated": [],
+  "token_cost": {"input": 100, "output": 50}
+}
+```
+
+**对应工具**：`update_task_progress(task_id, current_step, steps_done, steps_remaining, blockers, note)`，详见 [Plan 与 Task 机制说明](plan-and-task-guide.md)。
+
+**容错策略**：`manifest.json` 的所有写入操作（`TaskRecord.write_manifest()`）在异常时静默失败并返回 `None`，不会因为磁盘问题中断任务本身的执行。
+
+#### `plan_snapshot.json` — ExecutionPlan 持久化快照（W1）
+
+**负责模块**：`orchestrator/plan.py` → `ExecutionPlan`
+
+**存储位置**：`<project_root>/.agent/sessions/<session_id>/plan_snapshot.json`（注意：与 `manifest.json` 不同，这个文件在 session 目录下，不在某个具体 task 目录下，因为一个 ExecutionPlan 对应一整个 session 的工作计划，可能驱动多个 SubAgent 任务）
+
+`ExecutionPlan` 在内存中本是纯结构，但为了让长任务在 session 意外中断（进程崩溃、被杀死）后能够续跑，每次 `PlanTask` 状态变更（`add`/`start`/`complete`/`fail`）都会自动同步写入这个文件：
+
+```json
+{
+  "goal": "完成 Phase A 基础设施清债",
+  "created_at": 1781856272.46,
+  "last_updated": 1781856272.46,
+  "tasks": [
+    {"id": "t1", "title": "history 条目加 _type 字段", "status": "done",
+     "result": "已完成，见 commit abc123"},
+    {"id": "t2", "title": "SubAgent 输出去截断", "status": "running", "result": ""},
+    {"id": "t3", "title": "config.py 拆分", "status": "pending", "result": ""}
+  ]
+}
+```
+
+**恢复时机**：Agent 在 `_bind_session_extras()` 中绑定 session 时（无论是新建 session、`load_session()` 续接已有 session，还是 `new_session()` 开新对话），都会检测该路径下文件是否存在：
+
+- 存在 → `try_restore_plan()` 解析并恢复为当前活跃 `ExecutionPlan`（中断时仍处于 `RUNNING` 状态的任务会被忠实保留为 `RUNNING`，由调用方决定是重新执行还是标记失败）
+- 不存在 → 静默跳过，agent 以"无活跃 plan"状态正常启动，不阻塞流程
+
+**注意**：恢复出来的 `PlanTask` 只保证 `id`/`title`/`status`/`result` 四个核心字段准确（精简 schema），不包含 `description`/`depends_on`/`parent_id`/`source` 等展示用字段，足以支持"恢复 DONE 步骤、从第一个非终态步骤继续"这一最低要求。
 
 ---
 
