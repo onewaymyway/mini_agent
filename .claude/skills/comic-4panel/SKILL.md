@@ -213,9 +213,13 @@ A 4-panel comic strip in 2x2 grid layout with clean white borders between panels
 
 #### 调用方式
 
+**使用 prompt 文件模式**（推荐，避免命令行参数过长）：
+
 ```bash
-python .claude/skills/gen_image_with_text/gen_image.py gen "<prompt>" --size 1024x1024 --save-path <output_dir>/<filename>_v{i}.png
+python .claude/skills/gen_image_with_text/gen_image.py gen --prompt-file <output_dir>/prompt_used.txt --size 1024x1024 --save-path <output_dir>/<filename>_v{i}.png
 ```
+
+> 说明：`--prompt-file` 参数读取 `prompt_used.txt` 中的完整 prompt 内容，无需在命令行中转义引号或换行符。
 
 **产物输出**：每张图生成后，追加写入 `output_dir/generation_log.json`
 
