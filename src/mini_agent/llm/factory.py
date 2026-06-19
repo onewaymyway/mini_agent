@@ -44,6 +44,10 @@ def _load_openrouter():
     from .providers.openrouter import OpenRouterProvider
     return OpenRouterProvider
 
+def _load_agnes():
+    from .providers.agnes import AgnesProvider
+    return AgnesProvider
+
 
 _REGISTRY: dict[str, Callable[[], type[LLMClient]]] = {
     # ── 已内置的 provider ─────────────────────────────────────────
@@ -61,6 +65,8 @@ _REGISTRY: dict[str, Callable[[], type[LLMClient]]] = {
     # ── OpenRouter（多模型聚合网关）────────────────────────────────
     "openrouter":   _load_openrouter,
     "or":           _load_openrouter,   # 别名
+    # ── Agnes AI（OpenAI 兼容网关）───────────────────────────────────
+    "agnes":        _load_agnes,
     # ── 本地模型 ──────────────────────────────────────────────────
     "ollama":       _load_ollama,
     "local":        _load_ollama,       # 别名
@@ -135,6 +141,7 @@ _CANONICAL_NAMES: dict[str, str] = {
     "_load_ollama":      "ollama",
     "_load_nvidia":      "nvidia",
     "_load_openrouter":  "openrouter",
+    "_load_agnes":       "agnes",
 }
 
 

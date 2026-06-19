@@ -488,6 +488,117 @@ class TestOpenRouterProvider(unittest.TestCase):
 
 
 # ══════════════════════════════════════════════════════════════════════════════
+# AgnesProvider 测试
+# ══════════════════════════════════════════════════════════════════════════════
+
+class TestAgnesProvider(unittest.TestCase):
+
+    def _make_provider(self, **cfg_kwargs):
+        from mini_agent.llm.providers.agnes import AgnesProvider
+        defaults = dict(provider="agnes", model="agnes-2.0-flash", api_key="agnes-test-key")
+        defaults.update(cfg_kwargs)
+        cfg = LLMConfig(**defaults)
+        with patch.object(AgnesProvider, "_build_client", return_value=MagicMock()):
+            return AgnesProvider(cfg)
+
+    def test_default_base_url_injected(self):
+        provider = self._make_provider()
+        self.assertEqual(provider.config.base_url, "https://apihub.agnes-ai.com/v1")
+
+    def test_provider_name(self):
+        provider = self._make_provider()
+        self.assertEqual(provider.provider_name, "Agnes")
+
+    def test_custom_base_url_not_overridden(self):
+        provider = self._make_provider(base_url="https://custom-proxy.example.com/v1")
+        self.assertEqual(provider.config.base_url, "https://custom-proxy.example.com/v1")
+
+    def test_api_key_from_env(self):
+        from mini_agent.llm.providers.agnes import AgnesProvider
+        cfg = LLMConfig(provider="agnes", model="agnes-2.0-flash", api_key="")
+        with patch.dict("os.environ", {"AGNES_API_KEY": "agnes-from-env"}):
+            with patch.object(AgnesProvider, "_build_client", return_value=MagicMock()):
+                p = AgnesProvider(cfg)
+        self.assertEqual(p.config.api_key, "agnes-from-env")
+
+    def test_explicit_api_key_wins_over_env(self):
+        from mini_agent.llm.providers.agnes import AgnesProvider
+        cfg = LLMConfig(provider="agnes", model="agnes-2.0-flash", api_key="explicit-key")
+        with patch.dict("os.environ", {"AGNES_API_KEY": "agnes-from-env"}):
+            with patch.object(AgnesProvider, "_build_client", return_value=MagicMock()):
+                p = AgnesProvider(cfg)
+        self.assertEqual(p.config.api_key, "explicit-key")
+
+    def test_base_url_from_env(self):
+        from mini_agent.llm.providers.agnes import AgnesProvider
+        cfg = LLMConfig(provider="agnes", model="agnes-2.0-flash", api_key="k")
+        with patch.dict("os.environ", {"AGNES_BASE_URL": "https://env-proxy.example.com/v1"}):
+            with patch.object(AgnesProvider, "_build_client", return_value=MagicMock()):
+                p = AgnesProvider(cfg)
+        self.assertEqual(p.config.base_url, "https://env-proxy.example.com/v1")
+
+    def test_registered_in_factory(self):
+        from mini_agent.llm.factory import _REGISTRY
+        self.assertIn("agnes", _REGISTRY)
+
+    def test_list_providers_includes_agnes(self):
+        from mini_agent.llm.factory import list_providers
+        self.assertIn("agnes", list_providers())
+
+    def test_create_client_via_factory(self):
+        from mini_agent.llm.factory import create_client
+        from mini_agent.llm.providers.agnes import AgnesProvider
+        cfg = LLMConfig(provider="agnes", model="agnes-1.5-flash", api_key="k")
+        with patch.object(AgnesProvider, "_build_client", return_value=MagicMock()):
+            client = create_client(cfg)
+        self.assertIsInstance(client, AgnesProvider)
+
+    def test_format_tools_openai_compatible(self):
+        """Agnes 完全兼容 OpenAI 的 tools/function 结构。"""
+        provider = self._make_provider()
+        tools = [ToolSchema(
+            name="get_weather", description="Get the current weather for a location",
+            input_schema={"type": "object", "properties": {"location": {"type": "string"}},
+                          "required": ["location"]},
+        )]
+        formatted = provider.format_tools(tools)
+        self.assertEqual(formatted, [{
+            "type": "function",
+            "function": {
+                "name": "get_weather",
+                "description": "Get the current weather for a location",
+                "parameters": {"type": "object", "properties": {"location": {"type": "string"}},
+                               "required": ["location"]},
+            },
+        }])
+
+    def test_build_kwargs_uses_model(self):
+        provider = self._make_provider()
+        kwargs = provider._build_kwargs(
+            messages=[{"role": "user", "content": "hi"}], tools=None, stream=False
+        )
+        self.assertEqual(kwargs["model"], "agnes-2.0-flash")
+
+    def test_parse_response_text_and_usage(self):
+        provider = self._make_provider()
+        mock_choice = MagicMock()
+        mock_choice.message.content = "Hello from Agnes!"
+        mock_choice.message.tool_calls = None
+        mock_choice.finish_reason = "stop"
+        mock_resp = MagicMock()
+        mock_resp.choices = [mock_choice]
+        mock_resp.usage.prompt_tokens = 10
+        mock_resp.usage.completion_tokens = 5
+        mock_resp.usage.total_tokens = 15
+
+        resp = provider._parse_response(mock_resp)
+        self.assertEqual(resp.text, "Hello from Agnes!")
+        self.assertEqual(resp.stop_reason, "end_turn")
+        self.assertEqual(resp.usage.input_tokens, 10)
+        self.assertEqual(resp.usage.output_tokens, 5)
+
+
+# ══════════════════════════════════════════════════════════════════════════════
 # OllamaProvider 测试
 # ══════════════════════════════════════════════════════════════════════════════
 
