@@ -51,21 +51,77 @@ pip install -r requirements.txt
 
 ### 配置 API Key
 
-```bash
-# 配置 API Key linux
-export ANTHROPIC_API_KEY=sk-...
-export NVIDIA_API_KEY=sk-...
-export BRAVE_API_KEY=...  # 可选：使用 Brave Search
-export SERPER_API_KEY=...  # 可选：使用 Serper
-export TAVILY_API_KEY=...  # 可选：使用 Tavily
+#### LLM Provider API Key（推荐：providers.json）
 
-# 配置 API Key win
-$env:ANTHROPIC_API_KEY=sk-...
-$env:NVIDIA_API_KEY=sk-...
-$env:BRAVE_API_KEY=...
-$env:SERPER_API_KEY=...
-$env:TAVILY_API_KEY=...
+复制项目根目录的 `providers.json.example` 为 `providers.json`，填入真实 API Key（已自动加入 `.gitignore`）：
+
+```bash
+cp providers.json.example providers.json
 ```
+
+配置文件结构（详见 `providers.json.example`）：
+
+```json
+{
+  "llm_fallback_chain": [
+    {
+      "provider": "anthropic",
+      "model": "claude-opus-4-7",
+      "api_keys": ["sk-ant-key-1-...", "sk-ant-key-2-..."],
+      "key_rotation": "passive",
+      "key_switch_on": ["LLMRateLimitError"],
+      "key_cooldown": 60
+    },
+    {
+      "provider": "openai",
+      "model": "gpt-4o",
+      "api_key": "sk-openai-...",
+      "key_rotation": "passive"
+    }
+  ],
+  "llm_fallback_on": ["LLMRateLimitError", "LLMTimeoutError", "LLMProviderError"],
+
+  "providers": {
+    "anthropic": {
+      "api_keys": ["sk-ant-key-1-...", "sk-ant-key-2-..."],
+      "key_rotation": "round_robin",
+      "key_cooldown": 60
+    },
+    "openai": {
+      "api_keys": ["sk-openai-key-1-...", "sk-openai-key-2-..."],
+      "key_rotation": "passive"
+    },
+    "openrouter": {
+      "api_key": "sk-or-...",
+      "key_rotation": "passive",
+      "extra": {
+        "http_referer": "https://your-site.com",
+        "x_title": "YourAppName"
+      }
+    }
+  }
+}
+```
+
+> **说明**：`providers` 块为全局 per-provider 设置，会合并到 `llm_fallback_chain` 的对应条目中（条目的显式字段优先）。也可通过 `--providers-config` 指定其他路径。详见 [LLM 故障转移指南](docs/llm-failover-guide.md)。
+
+> **注意**：当前仅有 nvidia、openrouter、agnes 三个 provider 经过实际测试。
+
+#### 图片 Skill API Key（环境变量）
+
+图片相关 Skill 独立于 LLM Provider，需要通过环境变量配置对应的 API Key：
+
+```bash
+# ask_image skill — 使用 NVIDIA 视觉模型
+export NVIDIA_API_KEY=nvapi-xxx          # Linux / macOS
+$env:NVIDIA_API_KEY="nvapi-xxx"           # Windows PowerShell
+
+# gen_image_with_text skill — 使用 Agnes 图片生成服务
+export AGNES_API_KEY=agnes-xxx            # Linux / macOS
+$env:AGNES_API_KEY="agnes-xxx"             # Windows PowerShell
+```
+
+> 这两个 Skill 的 API Key 目前仅支持环境变量方式，不支持 providers.json 配置。
 
 ### 运行
 
@@ -542,33 +598,17 @@ triggers: keyword1, keyword2
 }
 ```
 
-### Providers 配置（含 API Key）
+### Providers 配置
 
-在项目根目录创建 `providers.json` 存放敏感配置（已自动加入 `.gitignore`）：
+LLM Provider 的 API Key 和 Fallback Chain 配置详见上方 [配置 API Key → LLM Provider API Key](#llm-provider-api-key推荐providersjson) 章节。
 
-```json
-{
-  "providers": {
-    "anthropic": {
-      "api_keys": ["sk-ant-aaa", "sk-ant-bbb"],
-      "key_rotation": "round_robin",
-      "key_cooldown": 60
-    },
-    "openai": {
-      "api_keys": ["sk-openai-111"]
-    }
-  },
-  "llm_fallback_chain": [
-    {"provider": "anthropic", "model": "claude-sonnet-4-6"},
-    {"provider": "openai", "model": "gpt-4o"}
-  ],
-  "llm_fallback_on": ["LLMRateLimitError", "LLMTimeoutError"]
-}
-```
+`providers.json` 支持的完整功能：
 
-也可通过 `--providers-config` 指定其他路径。详见 [LLM 故障转移指南](docs/llm-failover-guide.md)。
+- **多 API Key 轮转**：`key_rotation` 支持 `round_robin` 模式，`key_cooldown` 控制冷却时间
+- **Fallback Chain**：`llm_fallback_chain` 定义故障转移链，`llm_fallback_on` 指定触发条件
+- **自定义路径**：通过 `--providers-config` 指定其他配置文件路径
 
-特殊说明：当前provider仅有nvidia、openrouter、agnes 经过实际测试，因为本人只有这些平台的api key。
+详见 [LLM 故障转移指南](docs/llm-failover-guide.md)。
 
 ### 重试退避策略
 
@@ -630,4 +670,4 @@ MIT License
 
 ---
 
-*最后更新：2026-06-18* — LLM 故障转移（fallback chain + 多 Key 轮转）、智能退避策略（fixed/linear/exponential）、RPM 限速、流式 token 计数与重试倒计时状态栏
+*最后更新：2026-06-19* — API Key 配置重构：主推 providers.json 管理 LLM API Key，图片 Skill（ask_image / gen_image_with_text）保留环境变量方式
