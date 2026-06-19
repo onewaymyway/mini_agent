@@ -1,7 +1,7 @@
 ---
 name: gen_image_with_text
-description: 要用文字生成图片时，使用本 skill。
-triggers: 图片生成，生成图
+description: 要用文字生成图片时，使用本 skill。支持 prompt 字符串或 prompt_file 文件两种方式。
+triggers: 图片生成，生成图, gen_image, prompt_file
 ---
 
 # Generate Image with Text
@@ -19,18 +19,90 @@ export AGNES_API_KEY="your-api-key"  # Linux/Mac
 $env:AGNES_API_KEY="your-api-key"   # Windows PowerShell
 ```
 
+## 两种 Prompt 输入方式
+
+`gen_image()` 函数支持两种 prompt 输入方式，**二者只需提供其一**：
+
+| 方式 | 参数 | 适用场景 |
+|------|------|----------|
+| **直接传入字符串** | `prompt="描述文字"` | 简短 prompt，直接在代码或命令行中使用 |
+| **从文件读取** | `prompt_file="prompt.txt"` | 长 prompt、需要版本管理、或批量生成时使用 |
+
+### 函数调用示例
+
+```python
+from gen_image import gen_image
+
+# 方式一：直接传入 prompt 字符串
+result = gen_image(prompt="A beautiful sunset beach scene", size="1024x1024")
+
+# 方式二：从文件读取 prompt
+result = gen_image(prompt_file="prompts/my_prompt.txt", size="1024x1024")
+```
+
+### 命令行示例
+
+```bash
+# 方式一：直接传入 prompt 字符串
+python gen_image.py gen "A beautiful sunset beach scene" --save-path output.png
+
+# 方式二：从文件读取 prompt
+python gen_image.py gen --prompt-file prompts/my_prompt.txt --save-path output.png
+```
+
+> **注意**：`prompt` 和 `--prompt-file` 互斥，不能同时指定。如果两者都为空，会返回错误。
+
 ## 功能
 
 - **text-to-image**: 根据文字描述生成图片
 - **image editing**: 基于现有图片进行修改
+
+## 两种 Prompt 输入方式
+
+`gen_image()` 函数支持两种 prompt 输入方式，**二者只需提供其一**：
+
+| 方式 | 参数 | 适用场景 |
+|------|------|----------|
+| **直接传入字符串** | `prompt="描述文字"` | 简短 prompt，直接在代码或命令行中使用 |
+| **从文件读取** | `prompt_file="prompt.txt"` | 长 prompt、需要版本管理、或批量生成时使用 |
+
+### 函数调用示例
+
+```python
+from gen_image import gen_image
+
+# 方式一：直接传入 prompt 字符串
+result = gen_image(prompt="A beautiful sunset beach scene", size="1024x1024")
+
+# 方式二：从文件读取 prompt
+result = gen_image(prompt_file="prompts/my_prompt.txt", size="1024x1024")
+```
+
+### 命令行示例
+
+```bash
+# 方式一：直接传入 prompt 字符串
+python gen_image.py gen "A beautiful sunset beach scene" --save-path output.png
+
+# 方式二：从文件读取 prompt
+python gen_image.py gen --prompt-file prompts/my_prompt.txt --save-path output.png
+```
+
+> **注意**：`prompt` 和 `--prompt-file` 互斥，不能同时指定。如果两者都为空，会返回错误。
 
 ## 命令行用法
 
 ### 生成图片（text-to-image）
 
 ```bash
+# 方式一：直接传入 prompt 字符串
 python .claude/skills/gen_image_with_text/gen_image.py gen "prompt" [选项]
+
+# 方式二：从文件读取 prompt
+python .claude/skills/gen_image_with_text/gen_image.py gen --prompt-file prompt.txt [选项]
 ```
+
+> **注意**：`prompt` 和 `--prompt-file` 互斥，只能选其一。
 
 ### 编辑图片（image-to-image）
 
@@ -42,7 +114,8 @@ python .claude/skills/gen_image_with_text/gen_image.py edit "prompt" --image-pat
 
 | 参数 | 说明 | 默认值 |
 |------|------|--------|
-| `prompt` | 图片描述文本（必填） | - |
+| `prompt` | 图片描述文本（与 `--prompt-file` 二选一） | - |
+| `--prompt-file` | 包含 prompt 文本的文件路径（与 `prompt` 二选一） | - |
 | `--size` | 图片尺寸 | `1024x1024` |
 | `--save-path` | 保存图片的路径 | 不保存 |
 | `--image-path` | 输入图片路径（edit 模式必填） | - |
