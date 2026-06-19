@@ -74,6 +74,20 @@ class Terminal:
         # _enter_input_mode 之间的竞态窗口。
         self._statusbar_provider: Optional[Callable[[], list[str]]] = None
 
+        # 阻塞输入期间的消息缓存：
+        # _enter_input_mode() 只能保证 Terminal 自己的状态栏刷新线程不再
+        # 写屏幕，但业务代码（如后台摘要/画像生成线程）仍可能在用户正阻塞
+        # 于 prompt_toolkit.prompt() 等待输入时调用 term.print() 等方法。
+        # 这类消息一旦被渲染线程直接写 stdout，会与 prompt_toolkit 自己
+        # 管理的输入行/光标产生竞争，造成画面错乱（消息插入到 "You ❯" 之后、
+        # 状态栏被意外重绘等）。
+        # 解决方式：_input_blocking=True 期间，print/rule/panel/syntax/
+        # markdown 类消息一律缓存到 _pending_during_input，不写屏幕；
+        # 待 _exit_input_mode() 后统一重新入队补打印，保证消息不丢失，
+        # 只是延迟到不会撕裂输入行的时机显示。
+        self._input_blocking: bool = False
+        self._pending_during_input: list[_Msg] = []
+
         # ── Task 焦点状态 ────────────────────────────────────────────────
         # 当 _task_focus 非 None 时，主输出区被"接管"，刷新循环会把
         # 焦点 task 的最新日志增量打印到屏幕；agent 主输出则被暂存。
@@ -301,6 +315,9 @@ class Terminal:
         2. 投双重哨兵 + join，彻底排空队列（含提示文字 + pause 前可能已入队的
            残余 _refresh / redraw 消息）
         3. 直接擦除状态栏（此时渲染线程空闲，安全直接写屏幕）
+        4. 设置 _input_blocking，让渲染线程在接下来的阻塞输入期间把
+           print/rule/panel/syntax/markdown 类消息缓存而非直接写屏幕
+           （见 _handle()），避免与 prompt_toolkit 的输入行渲染竞争。
 
         双重哨兵原因：
           设置 _refresh_paused 后，status_bar._push_loop 可能正处于
@@ -320,10 +337,23 @@ class Terminal:
         self._q.join()
         # 3. 此时渲染线程空闲，无任何后台线程会写屏幕，安全直接操作
         self._erase_bar_direct()
+        # 4. 开始缓存阻塞输入期间到达的输出类消息（业务后台线程可能仍在产生）
+        self._input_blocking = True
 
     def _exit_input_mode(self) -> None:
-        """输入完成后：恢复刷新，重绘状态栏。"""
+        """
+        输入完成后：
+        1. 停止缓存模式，取出阻塞期间积压的消息
+        2. 恢复刷新
+        3. 把积压消息重新入队，让渲染线程正常补打印（此时已脱离
+           prompt_toolkit 的输入行上下文，可以安全写屏幕）
+        4. 重绘状态栏
+        """
+        self._input_blocking = False
+        pending, self._pending_during_input = self._pending_during_input, []
         self._refresh_paused.clear()
+        for msg in pending:
+            self._q.put(msg)
         # 重绘通过队列（让渲染线程来画）
         self._q.put(_Msg("redraw", None))
 
@@ -350,6 +380,17 @@ class Terminal:
 
     def _handle(self, msg: _Msg) -> None:
         kind = msg.kind
+
+        # 阻塞输入期间（主线程正卡在 prompt_toolkit.prompt() 等待用户输入），
+        # 业务后台线程（如摘要/画像生成）仍可能调用 term.print() 等方法。
+        # 这类会直接写 stdout 的消息一旦在此时渲染，会撕裂 prompt_toolkit
+        # 自己管理的输入行，造成画面错乱。因此先缓存，等 _exit_input_mode()
+        # 后再统一补打印。_noop/_refresh/statusbar 等不写屏幕的消息不受影响。
+        if self._input_blocking and kind in (
+            "print", "rule", "panel", "syntax", "markdown"
+        ):
+            self._pending_during_input.append(msg)
+            return
 
         if kind == "print":
             args, kwargs = msg.payload
