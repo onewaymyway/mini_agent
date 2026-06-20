@@ -255,6 +255,9 @@ def load_config(
         top_k=_fn("memory_top_k", memory_top_k, 3),
         decay_half_life_days=_fn("memory_decay_half_life_days", None, 30.0),
         max_entries=_fn("memory_max_entries", None, 500),
+        lesson_rules_enabled=_fb("lesson_rules_enabled", None, True),
+        lesson_fail_threshold=_fn("lesson_fail_threshold", None, 3),
+        correction_detection_enabled=_fb("correction_detection_enabled", None, True),
     )
 
     compress_cfg = CompressConfig(

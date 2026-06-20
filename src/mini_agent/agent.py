@@ -45,47 +45,51 @@ from mini_agent.reminders import ReminderManager
 
 import re as _re
 
-# ── 工具错误识别 ──────────────────────────────────────────────────────────────
-# 不同工具的错误输出格式各不相同，单纯依赖 startswith 会漏掉
-# Traceback、非零 exit code 等常见格式。
-_ERROR_STARTSWITH = (
-    "[error",
-    "[tool error",
-    "Error:",
-    "ERROR:",
-    "Traceback (most recent call last)",  # Python 异常堆栈
-    "error:",                              # bash / 编译器小写 error:
-    "fatal:",                              # git fatal
-)
-_ERROR_PATTERNS = _re.compile(
-    r"\[exit code:\s*[1-9]\d*\]"          # exit code 非零
-    r"|^\s*(SyntaxError|TypeError|ValueError|KeyError|AttributeError"
-    r"|RuntimeError|OSError|IOError|FileNotFoundError|PermissionError"
-    r"|ModuleNotFoundError|ImportError|NameError|IndexError"
-    r"|JSONDecodeError|UnicodeDecodeError|ConnectionError|TimeoutError"
-    r"|CalledProcessError)\b",
-    _re.MULTILINE,
-)
+# ── 工具错误识别（Stage 1.2 起迁移至 perception/lesson_rules.py，供 ──────────
+#    tool_executor.py 共享复用，避免循环依赖；这里保留 _is_tool_error 别名
+#    以兼容本文件内现有调用点）─────────────────────────────────────────────────
+from mini_agent.perception.lesson_rules import is_tool_error as _is_tool_error
 
 
-def _is_tool_error(result_str: str) -> bool:
+def _clamp_confidence(value) -> float:
+    """把 LLM 返回的 confidence 字段安全转换并裁剪到 [0, 1]。"""
+    try:
+        v = float(value)
+    except (TypeError, ValueError):
+        return 0.5
+    return max(0.0, min(1.0, v))
+
+
+def _parse_lesson_candidates(text: str) -> list[dict]:
     """
-    判断工具调用结果是否为错误输出。
+    解析 SessionEnd 反思 LLM 调用返回的 lesson 候选 JSON 数组。
 
-    综合以下特征：
-    1. 特定前缀（[error、Traceback、Error: 等）
-    2. 非零 exit code（[exit code: N]，N > 0）
-    3. 常见 Python / 系统异常类名出现在输出中
+    容错处理：
+    - 模型偶尔会用 ```json ... ``` 包裹，先尝试剥离代码块围栏
+    - 解析失败或返回的不是数组时，返回空列表（不抛异常，反思失败应静默降级）
+    - 数组中非 dict 的元素会被过滤掉
     """
-    if not result_str:
-        return False
-    stripped = result_str.lstrip()
-    for prefix in _ERROR_STARTSWITH:
-        if stripped.startswith(prefix):
-            return True
-    if _ERROR_PATTERNS.search(result_str):
-        return True
-    return False
+    if not text or not text.strip():
+        return []
+    cleaned = text.strip()
+    if cleaned.startswith("```"):
+        # 剥离 ```json\n...\n``` 或 ```\n...\n``` 围栏
+        lines = cleaned.splitlines()
+        if lines and lines[0].startswith("```"):
+            lines = lines[1:]
+        if lines and lines[-1].startswith("```"):
+            lines = lines[:-1]
+        cleaned = "\n".join(lines).strip()
+
+    import json as _json
+    try:
+        data = _json.loads(cleaned)
+    except Exception:
+        return []
+
+    if not isinstance(data, list):
+        return []
+    return [item for item in data if isinstance(item, dict)]
 
 
 class Agent:
@@ -306,6 +310,19 @@ class Agent:
         )
 
         # ToolExecutor：持有 file_changes 列表和锁的引用（共享，不拷贝）
+        # [SYS-LESSON] 规则触发引擎（Stage 1.2）：仅当记忆功能启用且规则开关打开时创建
+        _lesson_engine = None
+        if (
+            self._memory is not None
+            and getattr(self.cfg.memory, "lesson_rules_enabled", True)
+        ):
+            from mini_agent.perception.lesson_rules import LessonRuleEngine
+            _lesson_engine = LessonRuleEngine(
+                session_id=self._session.id if self._session else "",
+                model=self.cfg.model,
+                fail_threshold=getattr(self.cfg.memory, "lesson_fail_threshold", 3),
+            )
+
         self._tool_executor = ToolExecutor(
             cfg=self.cfg,
             registry=self.registry,
@@ -315,6 +332,9 @@ class Agent:
             file_watcher=self._file_watcher,
             file_changes_list=self._pending_file_changes,
             file_changes_lock=self._file_changes_lock,
+            lesson_engine=_lesson_engine,
+            memory_sink=self._memory,
+            on_edit_detected=self._on_edit_detected,
         )
         # [SYS-MCP] 注入 MCPManager（_init_components 在 MCP 注册后调用，此时已就绪）
         self._tool_executor._mcp_manager = getattr(self, "_mcp_manager", None)
@@ -664,6 +684,105 @@ class Agent:
             R.print_warning(f"[summary] generation failed: {e}")
         finally:
             self._summary_lock.release()
+
+    def trigger_session_end(self) -> None:
+        """
+        [SYS-SESSION-END] 会话真正结束时调用：触发 SessionEnd hook + 反思生成 lesson。
+
+        对应 self_evolution_implementation_plan.md Stage 1.3 / 设计文档第 3 节
+        "SessionEnd hook（目前是预留未接的事件）"。
+
+        调用时机：REPL 退出（EOFError / exit / quit / /exit / /quit），即将退出进程前。
+        因此本方法是同步执行（不开后台线程）——进程退出后台线程来不及跑完没有意义，
+        但内部做好超时与异常隔离，确保反思失败/缓慢不会导致退出流程卡死或抛出异常。
+        """
+        if not self._session:
+            return
+
+        # [SYS-HOOKS] 触发 SessionEnd 事件（先于 LLM 反思，给 hook 一个"看到原始数据"的机会）
+        payload = {
+            "session_id": self._session.id,
+            "tool_stats": dict(self.stats.tool_stats),
+            "turns": self.stats.turns,
+            "input_tokens": self.stats.input_tokens,
+            "output_tokens": self.stats.output_tokens,
+        }
+        from mini_agent.hooks import get_hook_manager
+        hook_mgr = get_hook_manager()
+        if hook_mgr is not None:
+            try:
+                hook_mgr.run("SessionEnd", payload)
+            except Exception:
+                pass  # SessionEnd hook 失败不应阻塞退出流程
+
+        # [SYS-LESSON] 反思 LLM 调用：基于 tool_stats + 最后若干轮 history 生成 lesson 候选
+        if not self.cfg.memory.enabled or self._memory is None:
+            return
+        try:
+            self._reflect_and_save_lessons()
+        except Exception as e:
+            # 反思失败是可接受的降级（不影响本次对话已有的价值），仅打印警告
+            R.print_warning(f"[session-end] reflection failed: {e}")
+
+    def _reflect_and_save_lessons(self, max_lessons: int = 5) -> int:
+        """
+        跑一次轻量 LLM 反思调用，基于 tool_stats + 最后若干轮 history（用
+        is_turn_boundary 精确截取"用户意图轮"）生成结构化 lesson 候选并写入记忆。
+
+        返回实际写入的 lesson 条数（供调用方/测试断言）。
+        """
+        from mini_agent.history.entry import is_turn_boundary
+
+        user_turns = [
+            m["content"] for m in self._history
+            if is_turn_boundary(m) and isinstance(m.get("content"), str)
+        ]
+        if not user_turns and not self.stats.tool_stats:
+            return 0  # 没有任何可反思的内容，跳过 LLM 调用
+
+        tool_stats_lines = [
+            f"- {name}: {s.get('calls', 0)} calls, {s.get('success', 0)} succeeded, {s.get('fail', 0)} failed"
+            for name, s in self.stats.tool_stats.items()
+        ] or ["(no tool calls this session)"]
+        turns_text = "\n".join(f"- {t[:200]}" for t in user_turns[-10:]) or "(no user turns)"
+
+        from mini_agent.prompts import pm
+        prompt = pm.render(
+            "user/session_reflection_request",
+            tool_stats_text="\n".join(tool_stats_lines),
+            turns_text=turns_text,
+        )
+        resp = self._llm.chat_with_retry(
+            messages=[{"role": "user", "content": prompt}],
+            system=pm.render("system/session_reflection"),
+            tools=[],
+            max_retries=3,   # 反思是锦上添花，不值得像主对话那样重试 10 次
+        )
+        candidates = _parse_lesson_candidates(resp.text)
+        saved = 0
+        for cand in candidates[:max_lessons]:
+            entry = MemoryEntry(
+                session_id=self._session.id,
+                summary="",
+                key_outcomes=[],
+                tags=["lesson", "session_reflection"],
+                model=self.cfg.model,
+                entry_type="lesson",
+                trigger=str(cand.get("trigger", ""))[:500],
+                outcome=str(cand.get("outcome", ""))[:500],
+                root_cause=str(cand.get("root_cause", ""))[:500],
+                suggested_action=str(cand.get("suggested_action", ""))[:500],
+                confidence=_clamp_confidence(cand.get("confidence", 0.5)),
+                occurrence_count=1,
+                source="self_reflection",
+            )
+            if entry.scope == "global" and self._global_memory:
+                self._global_memory.add(entry)
+            else:
+                self._memory.add(entry)
+            self._append_memory_delta(entry)
+            saved += 1
+        return saved
 
     def load_session(self, session_id: str) -> bool:
         """按 session_id（或其前缀）加载历史到当前 agent，返回是否成功。"""
@@ -1166,6 +1285,10 @@ class Agent:
             self._hist.append_user(user_message)
             self.stats.turns += 1
 
+            # [SYS-LESSON] 人类反馈纠正检测（Stage 1.4）：规则式短语识别，
+            # 命中时立即生成 source="human_feedback" 的高质量 lesson，不等 SessionEnd。
+            self._detect_and_record_correction(user_message)
+
             # [SYS-REMINDER] 用户意图触发：在用户消息入队后，检查是否需要注入 reminder
             self._inject_reminders_for_user_intent(user_message)
 
@@ -1408,6 +1531,113 @@ class Agent:
             return
         for r in self._reminder_mgr.check_user_intent(user_message):
             self._inject_reminder(r)
+
+    def _detect_and_record_correction(self, user_message: str) -> bool:
+        """
+        [SYS-LESSON] 人类反馈纠正检测（Stage 1.4）。
+
+        在新追加的用户消息中检测纠正性短语；命中时立即生成
+        entry_type="lesson", source="human_feedback" 的记忆条目并写入。
+        "上一轮 agent 做了什么"取最近一条 assistant 回复作为 trigger 的上下文。
+
+        返回是否命中（供调用方/测试断言；Stage 1.5 的 (e)dit 接入复用本方法的
+        核心逻辑，故拆成独立方法而非内联在 run_turn 里）。
+        """
+        if not getattr(self.cfg.memory, "correction_detection_enabled", True):
+            return False
+        if self._memory is None or not self.cfg.memory.enabled:
+            return False
+        if not isinstance(user_message, str):
+            return False
+
+        from mini_agent.perception.correction_detector import (
+            detect_correction, make_correction_lesson_fields,
+        )
+        if not detect_correction(user_message):
+            return False
+
+        # 取最近一条 assistant 回复作为"上一轮 agent 做了什么"的上下文
+        from mini_agent.history.entry import HType
+        prior_action = ""
+        for msg in reversed(self._history):
+            if msg.get("_type") == HType.ASSISTANT_REPLY or (
+                msg.get("_type") is None and msg.get("role") == "assistant"
+            ):
+                content = msg.get("content", "")
+                prior_action = content if isinstance(content, str) else ""
+                break
+
+        fields = make_correction_lesson_fields(user_message, prior_action=prior_action)
+        entry = MemoryEntry(
+            session_id=self._session.id if self._session else "",
+            summary="",
+            key_outcomes=[],
+            tags=["lesson", "human_feedback"],
+            model=self.cfg.model,
+            entry_type="lesson",
+            occurrence_count=1,
+            **fields,
+        )
+        if entry.scope == "global" and self._global_memory:
+            self._global_memory.add(entry)
+        else:
+            self._memory.add(entry)
+        self._append_memory_delta(entry)
+        return True
+
+    def _on_edit_detected(self, edit: dict) -> None:
+        """
+        [SYS-LESSON] (e)dit 审批编辑事件回调（Stage 1.5）。
+
+        由 ToolExecutor 在检测到 PermissionGuard.last_edit 后调用。对应设计文档
+        16.1 节："把编辑后的内容追加为一条 user 消息（_type="user_correction"），
+        这条消息对 Phase B 的纠正检测也是高质量的人类反馈信号"。
+
+        做两件事：
+        1. 把编辑内容追加为一条 _type=user_correction 的 history 消息
+           （计入对话上下文，让 LLM 看到用户做了什么修改）
+        2. 复用 Stage 1.4 的纠正检测逻辑，尝试生成 source=human_feedback 的 lesson
+           （编辑内容本身未必含纠正性短语，检测不到时静默跳过，不是所有编辑都构成"纠正"）
+        """
+        tool_name = edit.get("tool_name", "")
+        original = edit.get("original", "")
+        edited = edit.get("edited", "")
+        if not edited or edited == original:
+            return
+
+        correction_text = (
+            f"[edited {tool_name} call] original: {original!r} → edited: {edited!r}"
+        )
+        from mini_agent.history.entry import make_user_correction
+        self._hist.append_raw_dict(make_user_correction(correction_text))
+
+        # 编辑内容本身可能不含"不对/应该"之类纠正短语（用户可能只是默默改了参数），
+        # 这里直接当作高质量人类反馈处理，不依赖 detect_correction() 的短语匹配——
+        # "用户主动编辑了 agent 提议的操作"这件事本身就是明确的纠正信号。
+        if self._memory is not None and self.cfg.memory.enabled:
+            try:
+                from mini_agent.perception.correction_detector import make_correction_lesson_fields
+                fields = make_correction_lesson_fields(
+                    correction_text=f"应该是：{edited}" if tool_name == "bash" else edited,
+                    prior_action=f"提议执行 {tool_name}：{original}",
+                )
+                entry = MemoryEntry(
+                    session_id=self._session.id if self._session else "",
+                    summary="",
+                    key_outcomes=[],
+                    tags=["lesson", "human_feedback", "edit"],
+                    model=self.cfg.model,
+                    entry_type="lesson",
+                    occurrence_count=1,
+                    **fields,
+                )
+                if entry.scope == "global" and self._global_memory:
+                    self._global_memory.add(entry)
+                else:
+                    self._memory.add(entry)
+                self._append_memory_delta(entry)
+            except Exception:
+                pass  # lesson 生成失败不应影响编辑本身已经成功写入 history
 
     def _inject_reminders_for_tool_results(self, tool_calls, result_strs: list) -> None:
         """工具执行后，逐个工具检查 tool_error / post_tool reminder。"""

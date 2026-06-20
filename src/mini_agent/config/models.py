@@ -110,6 +110,11 @@ class MemoryConfig:
     decay_half_life_days: float = 30.0 # 时间衰减半衰期（天）
     max_entries: int = 500             # 记忆条目上限，超出淘汰最旧
 
+    # ── Lesson Memory 扩展（Stage 1，对应设计文档第 3 节 / 6.2 节）────────────
+    lesson_rules_enabled: bool = True       # 规则触发（连续失败/权限拒绝后重试成功）总开关
+    lesson_fail_threshold: int = 3          # 同一工具连续失败 ≥ N 次触发 lesson
+    correction_detection_enabled: bool = True  # 人类反馈纠正检测总开关（1.4）
+
 
 @dataclass
 class CompressConfig:

@@ -78,6 +78,7 @@ def run_repl(agent: Agent, skill_loader: SkillLoader) -> None:
             continue
         except EOFError:
             R.print_info(pm.fragment("cli_messages", "BYE_MSG"))
+            agent.trigger_session_end()
             _print_resume_hint(agent)
             _term.stop()
             break
@@ -88,6 +89,7 @@ def run_repl(agent: Agent, skill_loader: SkillLoader) -> None:
         if user_input.lower() in ("exit", "quit", "/exit", "/quit"):
             R.print_stats(agent.stats.summary())
             R.print_info(pm.fragment("cli_messages", "BYE_MSG"))
+            agent.trigger_session_end()
             _print_resume_hint(agent)
             _term.stop()
             break

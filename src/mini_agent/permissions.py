@@ -66,9 +66,39 @@ class PermissionGuard:
     _allow_list: list[_AllowEntry] = field(default_factory=list, init=False)
     _denied_tools: set[str] = field(default_factory=set, init=False)
 
+    # [SYS-LESSON] 最近一次 (e)dit 审批编辑事件（Stage 1.5），供调用方
+    # （tool_executor.py）在 check() 返回后查询并转化为 user_correction 消息。
+    # 格式：{"tool_name": str, "original": str, "edited": str} | None
+    # 调用方取走后应立即清空（pop_last_edit()），避免被下一次调用误用。
+    last_edit: Optional[dict] = field(default=None, init=False)
+
     def __post_init__(self) -> None:
         """构造完成后自动从配置文件加载持久化权限。"""
         self._load_permissions()
+
+    def pop_last_edit(self) -> Optional[dict]:
+        """
+        取走并清空"最近一次 (e)dit 审批编辑事件"（Stage 1.5）。
+
+        调用方（通常是 tool_executor.py，在 guard.check() 返回后立即调用）
+        取走后本属性被清空，确保每次编辑事件只被消费一次，
+        不会因为后续不相关的工具调用而被误用。
+        """
+        edit = self.last_edit
+        self.last_edit = None
+        return edit
+
+    @staticmethod
+    def _edit_repr(tool_name: str, tool_input: dict) -> str:
+        """把工具参数渲染成适合放进 user_correction 消息的可读字符串。
+        bash 工具优先展示 command 字段（最常见、最易读），其他工具用 JSON 表示。"""
+        if tool_name == "bash" and "command" in tool_input:
+            return str(tool_input["command"])
+        try:
+            import json as _json
+            return _json.dumps(tool_input, ensure_ascii=False)
+        except Exception:
+            return str(tool_input)
 
     def check(self, tool_name: str, tool_input: dict) -> bool:
         """
@@ -117,11 +147,20 @@ class PermissionGuard:
         http_gate = _get_http_gate()
         if http_gate is not None:
             turn_id = _get_current_turn_id()
+            original_input_repr = dict(tool_input)  # 用于检测 HTTP 端编辑前后差异
             approved, edited_input = self._prompt_with_http(
                 tool_name, tool_input, is_dangerous, http_gate, turn_id
             )
             if approved and edited_input:
                 # 用户从 HTTP 端修改了参数，写回 tool_input（in-place）
+                if edited_input != original_input_repr:
+                    # [SYS-LESSON] 记录编辑事件（Stage 1.5）。HTTP 端编辑可能涉及
+                    # 任意字段（不限于 bash 的 command），用 repr 整体对比。
+                    self.last_edit = {
+                        "tool_name": tool_name,
+                        "original": self._edit_repr(tool_name, original_input_repr),
+                        "edited": self._edit_repr(tool_name, edited_input),
+                    }
                 tool_input.clear()
                 tool_input.update(edited_input)
             return approved
@@ -344,6 +383,13 @@ class PermissionGuard:
                 if edited is not None:
                     tool_input["command"] = edited
                     _term.print(f"[dim]Edited to:[/dim] {edited}")
+                    # [SYS-LESSON] 记录编辑事件（Stage 1.5）
+                    if edited != original_cmd:
+                        self.last_edit = {
+                            "tool_name": tool_name,
+                            "original": original_cmd,
+                            "edited": edited,
+                        }
                     cli_decided = True
                     with result_lock:
                         result.update({"decided": True, "approved": True, "source": "cli"})
@@ -443,6 +489,14 @@ class PermissionGuard:
                 if edited is not None:
                     tool_input["command"] = edited
                     _term.print(f"[dim]Edited to:[/dim] {edited}")
+                    # [SYS-LESSON] 记录编辑事件（Stage 1.5），供 tool_executor.py
+                    # 转化为 user_correction 消息，接入 Stage 1.4 纠正检测
+                    if edited != original_cmd:
+                        self.last_edit = {
+                            "tool_name": tool_name,
+                            "original": original_cmd,
+                            "edited": edited,
+                        }
                     return True
                 # 用户取消编辑，重新询问
 

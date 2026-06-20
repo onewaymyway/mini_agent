@@ -17,7 +17,7 @@
 | SubAgent 输出去截断 | ✅ 已实现（2026-06） | `get_task_status` 默认仍截断 3000 字符，`full=True` 可绕过；**新增**截断时主动通知（`truncated: true` + `full_length: N` + `hint`），见 Stage 0.3 |
 | config.py 拆分 | ✅ 已实现（2026-06） | 已拆成 `config/` 包：`models.py`（14 个 dataclass）/ `loader.py` / `prompt_builder.py`，`config/__init__.py` 重导出保持外部 import 路径不变，见 Stage 0.4 |
 | `task_manifest.json` / `plan_snapshot.json`（W1） | ✅ 已实现（2026-06） | `AgentPaths` 新增 `session_plan_snapshot`/`task_manifest`；`TaskRecord` 落 `manifest.json`（含 `update_task_progress` 工具主动写入）；`ExecutionPlan` 状态变更同步落 `plan_snapshot.json` 并支持 session 重启恢复，见 Stage 0.2 |
-| Lesson Memory（`entry_type`/`trigger`/`confidence` 等字段） | ❌ 未实现 | `MemoryEntry` 仍只有 `summary`/`key_outcomes`/`tags`/`scope`，是纯摘要型结构 |
+| Lesson Memory（`entry_type`/`trigger`/`confidence` 等字段） | ✅ 已实现（2026-06） | `MemoryEntry` 新增 8 个 lesson 专属字段；规则触发（连续失败/拒绝重试成功）、SessionEnd 反思、人类反馈纠正检测、`(e)dit` 接入四条写入路径均已落地，见 Stage 1 完成记录 |
 | SessionEnd hook 真正触发 | ❌ 未实现 | `hooks/loader.py` 已声明事件名，但文档原话"预留未接"依然成立 |
 | StateRepo / risk tier / evolve 分支 / worktree 副本化运行 | ❌ 未实现 | 全局零代码痕迹，是当前最大的空白区 |
 | evolution-agent profile | ❌ 未实现 | 没有专属 profile，但 `AgentProfile`（含 `role_type`/`tools`/`tool_groups`/`inputs`）机制已就位，扩展成本低 |
@@ -32,7 +32,7 @@
 | `PlanTaskType`（`clarify`/`verify`） | ❌ 未实现 | `plan.py` 无此枚举扩展 |
 | Phase H（daemon / `AgentSelfProfile` / Goal Backlog / 调度器） | ❌ 未实现 | `AgentBridge`/`InputQueue` 长驻进程雏形已存在（文档 7.8 节判断准确），其余全无 |
 
-**核心判断**：项目当前已完成"文档设想的 Phase A 起点"全部地基工作——history `_type`、config 拆分、task manifest 三项均已落地（详见 Stage 0 完成记录）。但 B（lesson memory）与 F（安全网）这两项被文档列为"后续一切的前提"的阶段，**仍是空白**。这意味着若不先补齐 B + F，C/D/E/G/H 都无法真正挂上去——直接跳过去做后面的阶段会建在不存在的地基上。
+**核心判断**：项目当前已完成"文档设想的 Phase A + B 起点"全部地基工作——history `_type`、config 拆分、task manifest、lesson memory 四项均已落地（详见 Stage 0/1 完成记录）。但 F（安全网）这项被文档列为"后续一切的前提"的阶段，**仍是空白**。这意味着若不先补齐 F，C/D/E/G/H 都无法真正挂上去——直接跳过去做后面的阶段会建在不存在的地基上。
 
 ---
 
@@ -84,37 +84,43 @@
 
 ---
 
-### Stage 1（核心，约 2-3 人天）—— Phase B：Lesson Memory
+### Stage 1（核心，约 2-3 人天）—— Phase B：Lesson Memory ✅ 已完成（2026-06）
 
 依赖 Stage 0（尤其 0.2 的路径方法）。**1.1 必须最先完成，1.2/1.3/1.4 三者互相独立、可三路并行**；1.5 依赖 1.4。
 
-#### 1.1 数据结构扩展
+#### 1.1 数据结构扩展 ✅
 - `MemoryEntry`（`memory_store.py`）新增字段：`entry_type: str = "summary"`、`trigger`、`outcome`、`root_cause`、`suggested_action`、`confidence: float = 0.5`、`occurrence_count: int = 1`、`source: str = "self_reflection"`
 - 全部带默认值，保证现有 `summary` 型条目零迁移成本继续工作
 - `MemoryStore.search()` 的检索文本拼接（`to_search_text`）需把新字段纳入，否则 lesson 类条目无法被检索到
+- **实际产出**：`perception/memory_store.py`（`MemoryEntry` 新增 8 个字段 + `to_search_text` 对 lesson 型条目额外拼接 trigger/outcome/root_cause/suggested_action）；`tests/test_lesson_memory_entry.py`（8 个测试，含磁盘 roundtrip 与新旧格式混存验证）
 
-#### 1.2 规则触发（先做这个——文档明确建议"先做规则触发"，成本低、无需等 SessionEnd）
+#### 1.2 规则触发（先做这个——文档明确建议"先做规则触发"，成本低、无需等 SessionEnd）✅
 - 定位现有"连续失败计数"逻辑（若没有则在 `agent.py`/`permissions.py` 周边新增一个轻量计数器）
 - 规则一：同一工具连续失败 ≥ N 次（建议 N=3，可配置）→ 模板直接生成 `entry_type="lesson"`、`source="self_reflection"` 条目，不调用 LLM
 - 规则二：识别"权限拒绝后重试成功"模式（结合 `permissions.py` 的拒绝记录 + 紧接着的成功调用）→ 生成轻量 lesson
+- **实际产出**：新建 `perception/lesson_rules.py`（`LessonRuleEngine` 类，两条规则均为纯规则判断不调用 LLM；同时把 `agent.py` 原有的 `_is_tool_error` 迁移至此处的 `is_tool_error`，供 `tool_executor.py` 共享避免循环依赖）；`tool_executor.py` 接入 `lesson_engine`/`memory_sink` 参数，每次工具调用后观察并写入；`config/models.py` 新增 `lesson_rules_enabled`/`lesson_fail_threshold` 配置项；`tests/test_lesson_rules.py`（13 个测试）
 
-#### 1.3 SessionEnd hook 真正接入（文档点名的"预留未接"项）
+#### 1.3 SessionEnd hook 真正接入（文档点名的"预留未接"项）✅
 - 在 `hooks/loader.py` 已声明的 `SessionEnd` 事件基础上，找到 session 真正结束的代码路径（REPL 退出 / `/exit` / 进程终止），补上 `mgr.run("SessionEnd", {...})` 调用
 - payload 至少包含 `tool_stats`、最后 N 轮 history（用 `is_turn_boundary` 精确截取——这正是文档强调"依赖 Phase A 的 `_type` 字段"之处，现在 A 已就位可直接复用）
 - 接一个轻量 LLM 调用生成结构化 lesson 候选（prompt：给定 `tool_stats` + history 摘要，输出 JSON 数组的 lesson 候选）
+- **实际产出**：`agent.py` 新增 `trigger_session_end()`（触发 hook + 反思）、`_reflect_and_save_lessons()`（LLM 调用 + 解析 + 写入）、`_parse_lesson_candidates()`/`_clamp_confidence()` 辅助函数；`cli/repl.py` 两处真实退出点（`EOFError`、`exit/quit`）接入；新建 prompt 模板 `prompts/system/session_reflection.md` + `prompts/user/session_reflection_request.md`；`tests/test_session_end_reflection.py`（10 个测试，覆盖 hook 调用、反思失败降级、候选解析、`max_lessons` 限制）
 
-#### 1.4 人类反馈通道（设计文档 6.2 节，标注"第一批补充机制"，优先级高、成本低）
+#### 1.4 人类反馈通道（设计文档 6.2 节，标注"第一批补充机制"，优先级高、成本低）✅
 - 纠正检测：规则式识别"不对/不要/应该/下次记住"等短语（中英文均需覆盖），命中时将该 user 消息转为 `entry_type="lesson"`、`source="human_feedback"`、较高 `confidence`（建议 0.7）
 - 该逻辑挂在 history 写入路径上（`make_user_input` 之后增加检测钩子），与 1.2/1.3 完全独立
+- **实际产出**：新建 `perception/correction_detector.py`（`detect_correction()` 规则式短语检测，中英文各 ~15 条模式，收紧"应该"类规则避免误判普通陈述句；`make_correction_lesson_fields()` 生成 `confidence=0.85`，高于规则触发的 0.6）；`agent.py` 新增 `_detect_and_record_correction()`，挂在 `run_turn()` 的 `append_user` 之后；`config/models.py` 新增 `correction_detection_enabled` 配置项；`tests/test_correction_detector.py`（37 个测试，含误判率验证）
 
-#### 1.5 `(e)dit` 审批选项接入纠正信号（设计文档 16.1 节收尾，框架已具备 `(e)dit`，只差最后一步）
+#### 1.5 `(e)dit` 审批选项接入纠正信号（设计文档 16.1 节收尾，框架已具备 `(e)dit`，只差最后一步）✅
 - `permissions.py` 中 `(e)dit` 修改后的内容，目前只注入下一轮 LLM 调用；现追加：同时调用 1.4 的"转 lesson"逻辑，标记 `source="human_feedback"`
 - 依赖 1.4 先完成
+- **实际产出**：`history/entry.py` 新增 `HType.USER_CORRECTION` 枚举值 + `make_user_correction()` 构造函数（`is_real_user_input`/`is_turn_boundary` 均纳入此类型）；`permissions.py` 新增 `last_edit`/`pop_last_edit()`/`_edit_repr()`，三处 `(e)dit` 分支（CLI 简单版、HTTP 双路版的 CLI 端、HTTP 端）统一记录编辑事件；`tool_executor.py` 新增 `on_edit_detected` 回调参数，`check()` 调用后检测并触发；`agent.py` 新增 `_on_edit_detected()`，写入 `user_correction` 消息 + 生成 `source="human_feedback"` lesson；`tests/test_edit_approval_integration.py`（11 个测试）+ `tests/test_session_end_reflection.py` 中补充的 Agent 集成测试
 
 **验证标准**：
-- 人为制造 3 次连续 bash 失败 → 检查 `memory.jsonl` 出现 `entry_type=lesson` 条目
-- 对话中说"不对，应该用 patch_file" → 检查同样生成 lesson 且 `source=human_feedback`
-- 正常跑完一个 session 后退出 → 检查 SessionEnd 反思 lesson 出现
+- 人为制造 3 次连续 bash 失败 → 检查 `memory.jsonl` 出现 `entry_type=lesson` 条目 ✅（`test_lesson_rules.py::test_consecutive_failure_triggers_at_threshold`）
+- 对话中说"不对，应该用 patch_file" → 检查同样生成 lesson 且 `source=human_feedback` ✅（`test_session_end_reflection.py::test_detect_and_record_correction_writes_human_feedback_lesson`）
+- 正常跑完一个 session 后退出 → 检查 SessionEnd 反思 lesson 出现 ✅（`test_session_end_reflection.py::test_reflect_and_save_lessons_writes_entries`）
+- 全量回归：719 通过（631 Stage 0 基线 + 88 Stage 1 新增），2 个失败为 Stage 0 收尾时已确认的、与本阶段无关的 `debug_logger.py` 边界值问题
 
 ---
 
@@ -193,7 +199,7 @@ Stage 1+2 完成后，C/D/E 之间**互相独立**，可按资源拆给不同批
 ```
 Stage 0（4 项并行）✅ 已完成
   0.1 保护路径清单 ─┐
-  0.2 task_manifest ─┼─→ Stage 1（B：lesson memory）
+  0.2 task_manifest ─┼─→ Stage 1（B：lesson memory）✅ 已完成
   0.3 输出截断收尾  ─┤        1.1 数据结构（必须先做）
   0.4 config 拆分   ─┘          ├─ 1.2 规则触发 ─┐
                                   ├─ 1.3 SessionEnd ─┼─→ Stage 2（F：安全网）
@@ -214,7 +220,7 @@ Stage 0（4 项并行）✅ 已完成
 | Stage | 工作量估计 | 并行度 | 状态 |
 |---|---|---|---|
 | Stage 0 | 0.5 人天 | 4 路并行，1 人天内可完成 | ✅ 已完成（2026-06） |
-| Stage 1 | 2-3 人天 | 1.1 单线，1.2/1.3/1.4 三路并行 | 待开始 |
+| Stage 1 | 2-3 人天 | 1.1 单线，1.2/1.3/1.4 三路并行 | ✅ 已完成（2026-06） |
 | Stage 2 | 3-4 人天 | 2.1 单线，2.2/2.3 两路并行 | 待开始 |
 | Stage 3 | 3-5 人天 | 3.1/3.2/3.3 三路独立，3.3 可提前 | 待开始 |
 
@@ -227,6 +233,6 @@ Stage 0（4 项并行）✅ 已完成
 若实际只有单人执行，无法并行，建议按以下严格顺序推进（同一 Stage 内原本可并行的子项改为依次完成，编号即推荐顺序）：
 
 1. ~~0.1 → 0.2 → 0.3 → 0.4~~ ✅ 已完成（2026-06）
-2. **下一步 →** 1.1 → 1.2 → 1.4 → 1.5 → 1.3（1.3 涉及 LLM 调用设计与 prompt 调优，复杂度高于其余三项，建议放在同 Stage 最后）
-3. 2.1 → 2.2 → 2.3 → 2.4
+2. ~~1.1 → 1.2 → 1.4 → 1.5 → 1.3~~ ✅ 已完成（2026-06）
+3. **下一步 →** 2.1 → 2.2 → 2.3 → 2.4
 4. 3.3（依赖最弱，优先验证）→ 3.1 → 3.2

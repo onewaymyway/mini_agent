@@ -65,6 +65,7 @@ Assistant 回复      [assistant_reply]   Assistant 回复    [assistant_reply, 
 | 类型值 | 含义 | role |
 |--------|------|------|
 | `user_input` | 真实用户输入 | `user` |
+| `user_correction` | 用户纠正（(e)dit 审批编辑产生，Stage 1.5） | `user` |
 | `tool_result` | 工具执行结果回注 | `user` |
 | `skill_context` | skill 上下文重附 | `user` |
 | `reminder` | 动态 reminder 注入 | `user` 或 `assistant` |
@@ -78,6 +79,8 @@ Assistant 回复      [assistant_reply]   Assistant 回复    [assistant_reply, 
 | `compact_event` | **Raw History 专用**：compact 操作记录 | `user` |
 
 `compact_event` 只出现在 Raw History 中，`to_llm_messages()` 遇到它会直接跳过。
+
+`user_correction` 是 `user_input` 的"子类"——`is_real_user_input()`/`is_turn_boundary()` 把两者**同等对待**（都算真实用户意图），区分出独立类型值只是为了审计时能追溯"这条用户消息是直接输入的，还是审批编辑产生的"。由 `PermissionGuard` 在 `(e)dit` 分支检测到编辑后，通过 `make_user_correction()` 构造并经 `Agent._on_edit_detected()` 写入 history；同时是 Stage 1.4"人类反馈纠正检测"的高质量信号来源之一（详见 [记忆管理指南](memory-management-guide.md#lesson-memory)）。
 
 ---
 
@@ -247,7 +250,7 @@ def replay(raw_history: list[dict]) -> list[dict]:
 def is_real_user_input(msg: dict) -> bool:
     t = msg.get("_type")
     if t is not None:
-        return t == HType.USER_INPUT   # 新格式：精确判断
+        return t in (HType.USER_INPUT, HType.USER_CORRECTION)   # 新格式：精确判断
     # 向后兼容：无 _type 时用字符串前缀
     content = msg.get("content", "")
     return (

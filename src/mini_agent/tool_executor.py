@@ -46,6 +46,9 @@ class ToolExecutor:
         file_watcher: Optional["FileWatcher"] = None,
         file_changes_list: Optional[list] = None,   # _pending_file_changes 的引用
         file_changes_lock=None,
+        lesson_engine=None,        # Optional[LessonRuleEngine]，Stage 1.2
+        memory_sink=None,          # Optional[MemoryBackend]，lesson 写入目标（通常是项目级 memory）
+        on_edit_detected=None,     # Optional[Callable[[dict], None]]，Stage 1.5
     ) -> None:
         self.cfg = cfg
         self.registry = registry
@@ -56,6 +59,9 @@ class ToolExecutor:
         self._pending_file_changes = file_changes_list  # 共享引用
         self._file_changes_lock = file_changes_lock
         self._mcp_manager = None  # 由 Agent 在 _init_components 后注入
+        self._lesson_engine = lesson_engine
+        self._memory_sink = memory_sink
+        self.on_edit_detected = on_edit_detected
 
     def execute_all(self, response: "LLMResponse") -> tuple[list, list[str]]:
         """
@@ -84,6 +90,19 @@ class ToolExecutor:
                     tool_input = pre.modified_input
 
             allowed = self.guard.check(tc.name, tool_input)
+
+            # [SYS-LESSON] (e)dit 审批编辑接入（Stage 1.5）：check() 内部可能
+            # in-place 修改了 tool_input（用户编辑了命令/参数），检测并通过回调
+            # 转交给 Agent 层处理（写入 user_correction 消息 + 触发纠正检测）。
+            # 用回调而非直接操作 history，避免 ToolExecutor 反向依赖 Agent。
+            if self.on_edit_detected is not None:
+                edit = self.guard.pop_last_edit()
+                if edit is not None:
+                    try:
+                        self.on_edit_detected(edit)
+                    except Exception:
+                        pass  # 编辑事件处理失败不应影响工具调用主流程
+
             if not allowed:
                 result_str = "[Tool call denied by user]"
                 R.print_tool_error(tc.name, "denied by user")
@@ -158,6 +177,23 @@ class ToolExecutor:
                 )
                 if post.context:
                     result_str = result_str + f"\n\n[hook note] {post.context}"
+
+            # [SYS-LESSON] 规则触发：连续失败 / 权限拒绝后重试成功（Stage 1.2）
+            # 不依赖 LLM，纯规则判断；命中时立即写入记忆，不等 SessionEnd。
+            if self._lesson_engine is not None and self._memory_sink is not None:
+                try:
+                    from mini_agent.perception.lesson_rules import is_tool_error
+                    entry = self._lesson_engine.observe(
+                        tool_name=tc.name,
+                        tool_input=tool_input,
+                        allowed=allowed,
+                        result_str=result_str,
+                        is_error=is_tool_error(result_str),
+                    )
+                    if entry is not None:
+                        self._memory_sink.add(entry)
+                except Exception:
+                    pass  # lesson 生成失败不应影响工具调用主流程
 
             result_strs.append(result_str)
 

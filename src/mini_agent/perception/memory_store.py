@@ -45,13 +45,29 @@ class MemoryEntry:
                                         # project: 当前项目特有知识
                                         # global:  跨项目通用经验，写入 ~/.agent/memory.jsonl
 
+    # ── Lesson Memory 扩展字段（Stage 1，对应设计文档第 3 节 / 6.2 节）─────────
+    # 全部带默认值，保证现有 summary 型条目零迁移成本继续工作。
+    entry_type: str = "summary"         # "summary" | "lesson" | "capability_map"
+    trigger: str = ""                   # 触发场景描述（lesson 专属）
+    outcome: str = ""                   # 实际发生了什么（lesson 专属）
+    root_cause: str = ""                # 根因，如有（lesson 专属）
+    suggested_action: str = ""          # 下次该怎么做（lesson 专属）
+    confidence: float = 0.5             # 0-1，可信度（lesson 专属）
+    occurrence_count: int = 1           # 同类 lesson 重复出现次数（lesson 专属）
+    source: str = "self_reflection"     # "self_reflection" | "human_feedback" | "revert_record"
+
     def __post_init__(self) -> None:
         if not self.entry_id:
             import uuid
             self.entry_id = uuid.uuid4().hex[:12]
 
     def to_search_text(self) -> str:
-        return " ".join([self.summary] + self.key_outcomes + self.tags)
+        """检索文本拼接：summary 型条目走旧逻辑，lesson 型条目额外纳入
+        trigger/outcome/root_cause/suggested_action，否则这些信息无法被检索到。"""
+        parts = [self.summary] + self.key_outcomes + self.tags
+        if self.entry_type == "lesson":
+            parts.extend([self.trigger, self.outcome, self.root_cause, self.suggested_action])
+        return " ".join(p for p in parts if p)
 
     @property
     def age_days(self) -> float:

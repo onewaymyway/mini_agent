@@ -6,6 +6,7 @@ history/entry.py — history 条目类型系统
 
 类型枚举（HistoryEntryType）：
   user_input        — 真实用户输入（来自 REPL / API / CLI）
+  user_correction    — 用户纠正（(e)dit 审批编辑产生，视为真实用户输入的子类，Stage 1.5）
   tool_result       — 工具执行结果回注（<tool_result> 格式）
   compressed        — 压缩占位符（[Previous conversation compressed]）
   compact_summary   — /compact 产生的 LLM 摘要占位符
@@ -48,6 +49,7 @@ class HType(str, Enum):
 
     # ── user 侧消息 ──────────────────────────────────────────────────────────
     USER_INPUT       = "user_input"       # 真实用户输入
+    USER_CORRECTION  = "user_correction"  # 用户纠正（(e)dit 审批编辑产生，Stage 1.5）
     TOOL_RESULT      = "tool_result"      # 工具结果回注
     SKILL_CONTEXT    = "skill_context"    # skill 上下文重附
     REMINDER         = "reminder"         # reminder 动态注入
@@ -72,10 +74,14 @@ class HType(str, Enum):
 # ── 判断辅助 ─────────────────────────────────────────────────────────────────
 
 def is_real_user_input(msg: dict) -> bool:
-    """判断一条 history 消息是否是真实的用户输入（而非 tool_result / 占位符等）。"""
+    """判断一条 history 消息是否是真实的用户输入（而非 tool_result / 占位符等）。
+
+    USER_CORRECTION（(e)dit 编辑产生）被视为真实用户输入的子类——它和
+    USER_INPUT 一样代表用户主动表达的意图，只是来源渠道不同（编辑而非直接输入）。
+    """
     t = msg.get("_type")
     if t is not None:
-        return t == HType.USER_INPUT
+        return t in (HType.USER_INPUT, HType.USER_CORRECTION)
     # 向后兼容：无 _type 时用旧的字符串前缀判断
     content = msg.get("content", "")
     if not isinstance(content, str):
@@ -124,7 +130,7 @@ def is_turn_boundary(msg: dict) -> bool:
         return False
     t = msg.get("_type")
     if t is not None:
-        return t == HType.USER_INPUT
+        return t in (HType.USER_INPUT, HType.USER_CORRECTION)
     # 向后兼容
     return is_real_user_input(msg)
 
@@ -153,6 +159,15 @@ def _now_ts() -> str:
 
 def make_user_input(content: str) -> dict:
     return {"role": "user", "content": content, "_type": HType.USER_INPUT}
+
+
+def make_user_correction(content: str) -> dict:
+    """构造一条用户纠正消息（(e)dit 审批编辑产生，Stage 1.5）。
+
+    对应设计文档 16.1 节：把编辑后的内容追加为一条 user 消息（_type="user_correction"），
+    这条消息同时是真实用户输入（计入 history）和高质量的人类反馈信号（Stage 1.4 纠正检测会处理它）。
+    """
+    return {"role": "user", "content": content, "_type": HType.USER_CORRECTION}
 
 
 def make_tool_result(content: str) -> dict:

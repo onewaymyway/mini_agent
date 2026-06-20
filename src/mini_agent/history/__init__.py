@@ -15,6 +15,7 @@ from mini_agent.history.entry import (
     is_compressed_placeholder,
     is_turn_boundary,
     make_user_input,
+    make_user_correction,
     make_tool_result,
     make_assistant_reply,
     make_compressed,
