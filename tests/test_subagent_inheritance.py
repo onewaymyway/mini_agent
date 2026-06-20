@@ -166,13 +166,31 @@ class TestSpawnToolsPropagateActiveSkills(unittest.TestCase):
 
 class TestSubAgentSkillActivation(unittest.TestCase):
     """
-    注意：register_skill_tools() 把 skill_list/skill_activate/... 注册到
+    register_skill_tools() 把 skill_list/skill_activate/... 注册到
     Agent.registry（未显式传入时默认是进程级单例 get_default_registry()）。
-    生产环境一个进程同一时刻通常只有一个"持有 skill_loader 的 Agent"在用
-    这个全局 registry；但本测试类在同一个测试进程里连续构造多个带
-    skill_loader 的 Agent（验证装配逻辑本身），会触发 ToolRegistry.register()
-    的"重复注册"保护。这是测试本身的隔离问题，不是被测代码的缺陷——
-    用 setUp/tearDown 快照并恢复全局 registry 的 _tools 字典来规避。
+
+    [回归说明] 这里曾经有一个被低估的真实生产 bug：本测试类最初的 docstring
+    把"同一进程里连续构造多个带 skill_loader 的 Agent 会撞上 ToolRegistry
+    的重复注册保护"当作"纯测试隔离问题"处理（用 setUp/tearDown 快照恢复
+    全局 registry 绕过）。但这个场景在生产环境同样会发生且更常见——
+    只要主 agent 激活了任意一个 skill，再 spawn 一个继承了 active_skills
+    的 SubAgent，SubAgent 的 Agent.__init__ 就会在全局单例 registry 上
+    重复调用 register_skill_tools()，直接抛 ValueError 让任务以 FAILED
+    收场（见 test_main_agent_and_subagent_skill_loader_coexist_without_crash）。
+
+    真正的修复在 sub_agent.py：SubAgent 一旦持有自己的 SkillLoader，
+    必须用 get_default_registry().filtered() 拿到一份独立的 registry 副本，
+    不能继续共享全局单例；同时 skill_manager.py 的五处 register_fn() 调用
+    都加上 override=True——因为 filtered() 复制出的副本本身就带着从全局
+    registry 复制来的同名占位条目，仍需要"覆盖"才能绑定到当前 agent 自己
+    的 skill_loader/agent 闭包。override=True 之所以安全，是因为现在它
+    只会作用在每个 agent 私有的 registry 副本上，不会影响全局单例或
+    其他 agent 的 registry。
+
+    本测试类剩余的 setUp/tearDown 快照恢复逻辑依然保留：因为本类还会
+    反复构造"主 agent"（不传 allowed_tools，registry=None 时退化到全局
+    单例）来验证装配细节，这部分仍然需要隔离，避免不同测试方法之间
+    通过全局单例互相污染。
     """
 
     def setUp(self):
@@ -225,6 +243,74 @@ class TestSubAgentSkillActivation(unittest.TestCase):
         agent = sub._build_agent(task)  # 不应抛异常
         self.assertIsNotNone(agent.skill_loader)
         self.assertNotIn("does-not-exist", agent.skill_loader.active)
+
+    def test_subagent_gets_independent_registry_copy(self):
+        """SubAgent 持有 skill_loader 时，不应直接复用全局单例 registry。"""
+        task = make_task(active_skills=["bash-rm-safety"])
+        rec = TaskRecord(task=task)
+        cfg = make_cfg(project_root=self.project_root)
+        sub = SubAgent(rec, cfg)
+        agent = sub._build_agent(task)
+
+        from mini_agent.tools import get_default_registry
+        self.assertIsNot(agent.registry, get_default_registry())
+
+    def test_main_agent_and_subagent_skill_loader_coexist_without_crash(self):
+        """
+        [核心回归测试] 复现真实生产场景：主 agent 已经用全局 registry 激活了
+        某个 skill（register_skill_tools 已在全局单例上注册过一次），随后
+        构造一个同样带 active_skills 的 SubAgent——不应该抛
+        'Tool already registered' ValueError。
+        """
+        from mini_agent.skills import SkillLoader
+        from mini_agent.agent import Agent
+
+        cfg = make_cfg(project_root=self.project_root)
+        main_skill_loader = SkillLoader([cfg.skills_dir] if cfg.skills_dir else [])
+        main_skill_loader.activate("bash-rm-safety")
+
+        # 主 agent 构造：register_skill_tools 在全局单例 registry 上注册一次
+        main_agent = Agent(cfg=cfg, skill_loader=main_skill_loader)
+
+        task = make_task(active_skills=["bash-rm-safety"])
+        rec = TaskRecord(task=task)
+        sub = SubAgent(rec, cfg)
+
+        # 不应抛 ValueError("already registered")
+        sub_built_agent = sub._build_agent(task)
+        self.assertIsNotNone(sub_built_agent.skill_loader)
+        self.assertIn("bash-rm-safety", sub_built_agent.skill_loader.active)
+
+    def test_main_agent_skill_list_not_polluted_by_subagent(self):
+        """
+        SubAgent 构造完成后，主 agent 自己的 skill_list 工具仍然绑定主 agent
+        自己的 skill_loader，调用结果不应受 SubAgent 影响（验证 registry
+        隔离防止闭包串台，而不只是"不崩溃"）。
+        """
+        import json
+        from mini_agent.skills import SkillLoader
+        from mini_agent.agent import Agent
+
+        cfg = make_cfg(project_root=self.project_root)
+        main_skill_loader = SkillLoader([cfg.skills_dir] if cfg.skills_dir else [])
+        main_skill_loader.activate("bash-rm-safety")
+        main_agent = Agent(cfg=cfg, skill_loader=main_skill_loader)
+
+        before = json.loads(main_agent.registry.get("skill_list").fn())
+
+        # 构造一个激活了【不同】skill 的 SubAgent
+        task = make_task(active_skills=["code-review"])
+        rec = TaskRecord(task=task)
+        sub = SubAgent(rec, cfg)
+        sub.base_cfg = cfg
+        sub_built_agent = sub._build_agent(task)
+
+        after = json.loads(main_agent.registry.get("skill_list").fn())
+        self.assertEqual(before, after)
+        # 而且 SubAgent 自己的 skill_list 反映的是它自己的 skill_loader
+        sub_result = json.loads(sub_built_agent.registry.get("skill_list").fn())
+        sub_active = {s["name"] for s in sub_result["skills"] if s["active"]}
+        self.assertEqual(sub_active, {"code-review"})
 
     def test_built_subagent_is_marked_is_subagent(self):
         task = make_task()

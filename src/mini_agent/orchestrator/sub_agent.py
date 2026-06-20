@@ -417,6 +417,26 @@ class SubAgent:
             for name in task.active_skills:
                 skill_loader.activate(name)
 
+            # 【关键修复】Agent.__init__ 在 self.skill_loader 非空时会调用
+            # register_skill_tools()/register_compact_tool()/register_skill_stats_tool()，
+            # 把 skill_list/skill_activate/compact_skill_context 等工具注册到
+            # self.registry——若此处 registry 仍是 None（未设置 allowed_tools 时
+            # 的默认情况），Agent.__init__ 会回退到全局单例 get_default_registry()。
+            # 主 agent 启动时已经在那个全局单例上注册过同名工具，重复注册会直接
+            # 抛 ValueError 崩溃任务（生产环境复现：spawn 一个继承了 active_skills
+            # 的 SubAgent 即触发）。
+            #
+            # 不能简单加 override=True 了事：这些工具函数通过闭包捕获
+            # skill_loader/agent 参数，override 会把全局 registry 里 skill_list
+            # 等工具的实现直接替换成指向【这个 SubAgent】的 skill_loader——
+            # 之后主 agent 或其他并发 SubAgent 调用 skill_list 时，实际执行的
+            # 会是这个已经结束的 SubAgent 的闭包，造成跨 agent 串台，比崩溃更隐蔽、
+            # 更危险。正确做法是给这种"持有自己 skill_loader"的 SubAgent 一份
+            # 独立的 registry 副本（filtered() 返回的是新对象，不是引用），
+            # 工具注册各自隔离，互不影响。
+            if registry is None:
+                registry = get_default_registry().filtered()
+
         return Agent(
             cfg=cfg, guard=guard, llm_client=create_client(llm_cfg),
             registry=registry, skill_loader=skill_loader,

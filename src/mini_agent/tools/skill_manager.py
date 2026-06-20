@@ -79,6 +79,7 @@ def register_skill_tools(registry: ToolRegistry, skill_loader: "SkillLoader") ->
             "required": [],
         },
         requires_approval=False,
+        override=True,  # [Phase E / 3.3 修复] 见 sub_agent.py _build_agent 注释：SubAgent 持有独立 skill_loader 时会拿到 filtered() 出来的独立 registry 副本，该副本已含从全局 registry 复制来的同名占位条目，必须允许覆盖
     )
 
     # ── skill_activate ─────────────────────────────────────────────────────────
@@ -149,6 +150,7 @@ def register_skill_tools(registry: ToolRegistry, skill_loader: "SkillLoader") ->
             "required": ["names", "reason"],
         },
         requires_approval=False,
+        override=True,  # [Phase E / 3.3 修复] 见 sub_agent.py _build_agent 注释：SubAgent 持有独立 skill_loader 时会拿到 filtered() 出来的独立 registry 副本，该副本已含从全局 registry 复制来的同名占位条目，必须允许覆盖
     )
 
     # ── skill_deactivate ───────────────────────────────────────────────────────
@@ -216,6 +218,7 @@ def register_skill_tools(registry: ToolRegistry, skill_loader: "SkillLoader") ->
             "required": ["names", "reason"],
         },
         requires_approval=False,
+        override=True,  # [Phase E / 3.3 修复] 见 sub_agent.py _build_agent 注释：SubAgent 持有独立 skill_loader 时会拿到 filtered() 出来的独立 registry 副本，该副本已含从全局 registry 复制来的同名占位条目，必须允许覆盖
     )
 
 
@@ -268,6 +271,7 @@ def register_compact_tool(registry: ToolRegistry, agent: "object") -> None:
             "required": [],
         },
         requires_approval=False,
+        override=True,  # [Phase E / 3.3 修复] 见 sub_agent.py _build_agent 注释：SubAgent 持有独立 skill_loader 时会拿到 filtered() 出来的独立 registry 副本，该副本已含从全局 registry 复制来的同名占位条目，必须允许覆盖
     )
 
 
@@ -329,4 +333,5 @@ def register_skill_stats_tool(registry: ToolRegistry, skill_loader: "SkillLoader
             "required": [],
         },
         requires_approval=False,
+        override=True,  # [Phase E / 3.3 修复] 见 sub_agent.py _build_agent 注释：SubAgent 持有独立 skill_loader 时会拿到 filtered() 出来的独立 registry 副本，该副本已含从全局 registry 复制来的同名占位条目，必须允许覆盖
     )
