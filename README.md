@@ -347,7 +347,8 @@ Agent 可以调用以下内置工具：
 ### 并发编排
 - `spawn_agent` — 派生子 Agent
 - `spawn_agents` — 批量派生子 Agent
-- `get_task_status` — 查询任务状态
+- `get_task_status` — 查询任务状态（输出超 3000 字符自动截断，返回 `truncated`/`full_length` 提示用 `full=True` 取完整内容）
+- `update_task_progress` — 主动记录长任务进度到 `manifest.json`（current_step/steps_done/blockers/decision_log）
 - `list_tasks` — 列出所有任务
 - `wait_for_tasks` — 等待任务完成
 - `cancel_task` — 取消任务
@@ -379,7 +380,11 @@ mini_agent/
 │       ├── context_builder.py  # System prompt 构建
 │       ├── tool_executor.py    # 工具执行（权限 + 调用 + 截断 + 缓存）
 │       ├── history_manager.py  # 历史管理（压缩/快照）
-│       ├── config.py        # 配置管理
+│       ├── config/          # 配置管理包
+│       │   ├── __init__.py  # 重导出，对外 import 路径不变
+│       │   ├── models.py    # 14 个配置 dataclass + AppConfig
+│       │   ├── loader.py    # load_config 及加载辅助函数
+│       │   └── prompt_builder.py  # build_system_prompt 及辅助函数
 │       ├── permissions.py   # 权限守卫
 │       ├── session.py       # 会话管理
 │       ├── skills/          # 技能加载
@@ -427,12 +432,12 @@ mini_agent/
 │       │   └── user_input.py  # 用户输入工具
 │       ├── orchestrator/    # 并发编排
 │       │   ├── __init__.py
-│       │   ├── task.py      # 任务定义
+│       │   ├── task.py      # 任务定义（含 manifest.json 写入）
 │       │   ├── task_manager.py  # 任务调度
 │       │   ├── sub_agent.py # 子 Agent
 │       │   ├── concurrency.py  # 并发控制
 │       │   ├── status_bar.py  # 状态栏显示
-│       │   ├── plan.py      # 执行计划
+│       │   ├── plan.py      # 执行计划（含 plan_snapshot.json 持久化与恢复）
 │       │   ├── plan_display.py  # 计划 UI
 │       │   ├── task_display.py  # 任务显示
 │       │   └── agent_profiles.py  # 自定义 agent profile
@@ -488,7 +493,7 @@ mini_agent/
 │       │       └── locale.py
 │       └── storage/         # 存储层
 │           ├── __init__.py
-│           └── paths.py     # 路径管理
+│           └── paths.py     # 路径管理（含 plan_snapshot/manifest 路径方法）
 ├── apps/                    # Web 应用
 │   └── mini_agent_webdemo/ # Streamlit Web Demo
 │       └── app.py
@@ -498,6 +503,8 @@ mini_agent/
 ├── docs/                    # 文档
 ├── sessions/                # 会话历史（生成）
 ├── mcp_servers/             # MCP 服务器示例
+├── scripts/                 # 独立治理脚本（不属于 mini_agent 包）
+│   └── protected_paths.py  # 受保护路径清单（T3 治理红线）
 ├── .agent/                  # 自定义子 agent profiles
 │   └── agents/              # profile 文件 (*.md)
 └── hooks/                   # hooks 示例脚本
@@ -638,12 +645,13 @@ python -m pytest tests/ -q
 - [终端显示机制深度解析](docs/terminal-display-internals.md) — **新增**：线程模型、状态栏控制、三阶段状态机、token 过滤
 - [终端 I/O 指南](docs/terminal-io-guide.md) — 终端交互细节
 - [命令与工具参考](docs/commands-and-tools-reference.md) — 所有命令和工具
-- [Plan 和 Task 指南](docs/plan-and-task-guide.md) — 规划和任务系统
+- [Plan 和 Task 指南](docs/plan-and-task-guide.md) — 规划和任务系统，含 `plan_snapshot.json` 持久化与 session 重启恢复
 - [SubAgent 机制](docs/subagent-mechanism.md) — Sub-Agent 执行与重试机制详解
 - [自定义子 Agent](docs/custom-sub-agents.md) — 预设角色模板，结构化参数注入
 - [Hooks 机制](docs/hooks.md) — 关键事件自动执行命令，支持拦截/修改工具调用
 - [Skill 系统指南](docs/skill-system-guide.md) — 技能机制详解
 - [代码结构指南](docs/code-structure-guide.md) — 项目结构说明
+- [受保护路径清单指南](docs/protected-paths-guide.md) — **新增**：T3 治理红线设计与扩展规则（自我演化基础设施）
 - [HTTP API 指南](docs/http-api-guide.md) — REST/SSE 服务使用指南
 - [Web Demo 指南](docs/web-demo-guide.md) — Streamlit Web 界面使用
 - [MCP 集成指南](docs/mcp-guide.md) — Model Context Protocol 集成
@@ -668,3 +676,5 @@ MIT License
 ---
 
 *最后更新：2026-06-19* — API Key 配置重构：主推 providers.json 管理 LLM API Key，图片 Skill（ask_image / gen_image_with_text）保留环境变量方式
+
+*2026-06 自我演化基础设施（Stage 0）*：`config.py` 拆分为 `config/` 包（外部 import 路径不变）；新增 `manifest.json`/`plan_snapshot.json` 任务与计划持久化，支持 session 重启恢复；新增 `update_task_progress` 工具；`get_task_status` 截断时主动提示；新增 `scripts/protected_paths.py` 受保护路径清单（T3 治理红线）

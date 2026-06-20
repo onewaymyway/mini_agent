@@ -8,12 +8,12 @@
 - `src/mini_agent/context_builder.py` — System prompt 构建（skill/memory/project 注入）
 - `src/mini_agent/tool_executor.py` — 工具执行（权限检查 + 调用 + 截断 + 缓存）
 - `src/mini_agent/history_manager.py` — 历史管理（追加 + 压缩 + 快照恢复）
-- `src/mini_agent/config.py` — 配置管理（含 providers.json 加载、llm_fallback_chain、退避策略参数）
+- `src/mini_agent/config/` — 配置管理包（`models.py`/`loader.py`/`prompt_builder.py`，含 providers.json 加载、llm_fallback_chain、退避策略参数；对外 `from mini_agent.config import ...` 路径不变）
 - `src/mini_agent/permissions.py` — 工具调用的权限守卫
 - `src/mini_agent/session.py` — 会话管理
 - `src/mini_agent/tools/__init__.py` — 工具注册表和 `@tool` 装饰器
 - `src/mini_agent/tools/builtin.py` — 内置工具（bash、文件 I/O、web_search 等）
-- `src/mini_agent/tools/orchestration.py` — 并发编排工具
+- `src/mini_agent/tools/orchestration.py` — 并发编排工具（含 `update_task_progress` 任务进度叙事写入）
 - `src/mini_agent/tools/skill_manager.py` — 技能管理工具
 - `src/mini_agent/tools/plan.py` — 规划工具
 - `src/mini_agent/tools/user_input.py` — 用户输入工具
@@ -24,15 +24,16 @@
 - `src/mini_agent/cli/repl.py` — REPL 交互循环
 - `src/mini_agent/cli/commands/` — REPL 命令处理器（concurrency, plans, sessions, skills, tasks, agents, hooks 等）
 - `src/mini_agent/llm/` — LLM 抽象层
-- `src/mini_agent/orchestrator/` — 并发编排
+- `src/mini_agent/orchestrator/` — 并发编排（含 `plan.py` 的 `plan_snapshot.json` 持久化、`task.py` 的 `manifest.json` 写入）
 - `src/mini_agent/hooks/` — hooks 机制（关键事件自动执行命令）
 - `src/mini_agent/perception/` — 感知与记忆子系统
 - `src/mini_agent/ui/` — 终端交互（terminal.py, renderer.py, repl_input.py）
 - `src/mini_agent/api/` — HTTP API 服务
 - `src/mini_agent/history/` — 历史管理（压缩算法 + RawHistory 即时落盘 + 条目类型定义）
 - `src/mini_agent/prompts/` — Prompt 管理
-- `src/mini_agent/storage/` — 存储层
+- `src/mini_agent/storage/` — 存储层（`paths.py` 含 `session_plan_snapshot`/`task_manifest` 等路径方法）
 - `src/mini_agent/env_info/` — 环境信息采集与注入（Provider 抽象基类 + 注册表 + 内置 Provider）
+- `scripts/protected_paths.py` — 受保护路径清单（T3 治理红线，独立于 `src/mini_agent/` 包，自我演化相关安全机制使用）
 
 ## 开发规范
 
@@ -103,7 +104,7 @@ python main.py --provider nvidia --model qwen/qwen3.5-122b-a10b --system-tool-ca
 - `context_builder.py` — System prompt 构建（skill/memory/project 注入）
 - `tool_executor.py` — 工具执行（权限检查 + 调用 + 截断 + 缓存）
 - `history_manager.py` — 历史管理（追加 + 压缩 + 快照恢复）
-- `config.py` — 配置管理（含 providers.json 加载、llm_fallback_chain、退避策略参数）
+- `config/` — 配置管理包：`models.py`（14 个配置 dataclass + AppConfig）/ `loader.py`（`load_config` 及 providers.json 加载、llm_fallback_chain、退避策略参数）/ `prompt_builder.py`（`build_system_prompt`）；`__init__.py` 重导出，对外 import 路径不变
 - `permissions.py` — 工具调用的权限守卫
 - `session.py` — 会话管理
 
@@ -111,7 +112,7 @@ python main.py --provider nvidia --model qwen/qwen3.5-122b-a10b --system-tool-ca
 
 - `__init__.py` — 工具注册表，`@tool` 装饰器
 - `builtin.py` — 内置工具（读/写文件、bash、grep、glob 等）
-- `orchestration.py` — 并发编排工具（spawn_agent, task 管理）
+- `orchestration.py` — 并发编排工具（spawn_agent, task 管理, `update_task_progress` 任务进度叙事写入）
 - `skill_manager.py` — 技能管理工具（skill_list, skill_activate 等）
 - `plan.py` — 规划工具
 - `user_input.py` — 用户输入工具
@@ -125,12 +126,12 @@ python main.py --provider nvidia --model qwen/qwen3.5-122b-a10b --system-tool-ca
 
 ### 并行编排 (`src/mini_agent/orchestrator/`)
 
-- `task.py` — 任务定义
+- `task.py` — 任务定义（`Task`/`TaskRecord`；`TaskRecord` 新增 `manifest.json` 写入：`write_manifest`/`update_progress`，任务创建时落初始版本、结束时补写 `outcome`）
 - `orchestrator/task_manager.py` — 任务调度（依赖解析、SubAgent 管理）
-- `sub_agent.py` — 子 Agent 实现（线程包装、自动重试、输出捕获）
+- `sub_agent.py` — 子 Agent 实现（线程包装、自动重试、输出捕获、`manifest.json` 创建/收尾）
 - `concurrency.py` — 并发控制（TaskSemaphore + LLMSemaphore + RateLimiter RPM 限速 + StreamTokenState 流式 token 计数 + RetryCountdownState 重试倒计时）
 - `status_bar.py` — 状态栏显示（含 Task Tab 栏、流式 token 计数、重试倒计时进度条、RPM 限速状态）
-- `plan.py` — 执行计划数据模型
+- `plan.py` — 执行计划数据模型（`ExecutionPlan`/`PlanTask`；新增 `plan_snapshot.json` 持久化：状态变更自动落盘，session 启动时 `try_restore_plan` 自动恢复）
 - `plan_display.py` — 计划 UI 渲染
 - `task_display.py` — 任务状态显示
 - `agent_profiles.py` — 自定义子 agent profile（预设角色）
@@ -203,7 +204,7 @@ python main.py --provider nvidia --model qwen/qwen3.5-122b-a10b --system-tool-ca
 ### 存储层 (`src/mini_agent/storage/`)
 
 - `__init__.py` — 公开接口导出
-- `paths.py` — 路径管理
+- `paths.py` — 路径管理（`AgentPaths`，含 `session_plan_snapshot(sid)`、`task_manifest(sid, tid)` 等 Stage 0.2 新增方法）
 
 ### 环境信息采集 (`src/mini_agent/env_info/`)
 
@@ -306,6 +307,15 @@ python main.py --provider nvidia --model qwen/qwen3.5-122b-a10b --system-tool-ca
 - CLI：`--rpm N`（0 = 不限速，默认 0）
 - 状态栏显示 RPM 使用率进度条（接近上限时高亮警告）
 
+### 自我演化基础设施（Stage 0）
+
+> 对应 `next_doc/self_evolution_implementation_plan.md` Stage 0，为后续 lesson memory / 自动改代码能力打地基
+
+- **受保护路径清单**：`scripts/protected_paths.py`，独立于 `src/mini_agent/` 包外，不 import 任何 mini_agent 模块；`is_protected_path(path)` 命中即强制判定为 T3 风险等级。当前覆盖 `agent.py`/`permissions.py`/`hooks/`/清单自身，并为 Stage 2 的 `evolution/` 包预留正则规则
+- **任务进度叙事**：`orchestrator/task.py` 的 `TaskRecord.write_manifest()`，任务创建时落初始 `manifest.json`，agent 可调用 `update_task_progress` 工具主动更新 `progress`/`decision_log`，任务结束时补写 `outcome`
+- **计划持久化与恢复**：`orchestrator/plan.py` 的 `ExecutionPlan` 每次状态变更自动写 `plan_snapshot.json`；session 启动/续接时通过 `try_restore_plan()` 自动恢复，中断时仍 `RUNNING` 的任务状态被忠实保留
+- 详见 [受保护路径清单指南](docs/protected-paths-guide.md)、[Plan 与 Task 机制说明](docs/plan-and-task-guide.md) 第 10 节、[存储设计](docs/storage-design.md) 4.4 节
+
 ### 参数优先级
 
 **命令行参数 > 配置文件参数**。之前配置文件优先级更高，已修正。
@@ -316,9 +326,13 @@ python main.py --provider nvidia --model qwen/qwen3.5-122b-a10b --system-tool-ca
 - [Task 日志实时查看](docs/task-focus-viewing.md) — 方向键切换查看任务日志机制
 - [终端显示机制深度解析](docs/terminal-display-internals.md) — 线程模型、状态栏控制、三阶段状态机、token 过滤
 - [终端 I/O 指南](docs/terminal-io-guide.md) — 终端渲染与输入机制
-- [任务与规划指南](docs/plan-and-task-guide.md) — 执行计划与并发任务
+- [任务与规划指南](docs/plan-and-task-guide.md) — 执行计划与并发任务，含 `plan_snapshot.json` 持久化与恢复
 - [SubAgent 机制](docs/subagent-mechanism.md) — 子 Agent 实现细节
 - [命令与工具参考](docs/commands-and-tools-reference.md) — 所有 slash 命令和工具
+- [代码结构指南](docs/code-structure-guide.md) — 项目结构说明，含 `config/` 包拆分
+- [配置系统指南](docs/config-guide.md) — 配置架构、子配置块、加载优先级
+- [存储设计](docs/storage-design.md) — 文件布局，含 `manifest.json`/`plan_snapshot.json`
+- [受保护路径清单指南](docs/protected-paths-guide.md) — T3 治理红线设计与扩展规则
 - [Web Search 指南](docs/web-search-guide.md) — Web 搜索功能使用指南
 - [图片技能指南](docs/image-skills-guide.md) — 图片识别与生成技能使用指南
 - [Reminder 系统指南](docs/reminder-system-guide.md) — 动态提示注入机制使用指南
