@@ -295,10 +295,13 @@ mini-agent --retry-backoff linear --retry-backoff-step 60 --retry-backoff-max 30
 |------|----------|------|------|
 | `spawn_agent` | ❌ | `prompt`, `name`, `depends_on`, `model`, `system_extra`, `tags` | 派生单个 Sub-Agent |
 | `spawn_agents` | ❌ | `tasks` | 批量派生多个 Sub-Agent |
-| `get_task_status` | ❌ | `task_id`, `include_log` | 查询任务状态和结果 |
+| `get_task_status` | ❌ | `task_id`, `full` | 查询任务状态和结果；输出超 3000 字符且 `full=False` 时返回 `truncated`/`full_length` 字段，提示用 `full=True` 重新取完整内容 |
+| `update_task_progress` | ❌ | `task_id`, `current_step`, `steps_done`, `steps_remaining`, `blockers`, `note` | 主动记录长任务进度到 `manifest.json`，`note` 追加到 `decision_log` |
 | `list_tasks` | ❌ | `status`, `tag` | 列出所有任务 |
 | `cancel_task` | ❌ | `task_id` | 取消指定任务 |
 | `wait_for_tasks` | ❌ | `task_ids`, `timeout_seconds` | 等待多个任务完成 |
+
+详见 [Plan 与 Task 机制说明](plan-and-task-guide.md) 中 `manifest.json` 相关章节、[存储设计](storage-design.md#44-subagent-任务文件)。
 
 ### 执行计划（plan.py）
 

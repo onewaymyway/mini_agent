@@ -4,6 +4,7 @@ mini-agent 的执行计划系统让 Agent 在运行过程中能够明确地规�
 
 **补充阅读**：
 - [Task 日志实时查看与切换](task-focus-viewing.md) — 方向键实时查看任务日志机制
+- [存储设计](storage-design.md) — `plan_snapshot.json`/`manifest.json` 的文件布局（第 10 节有详细说明）
 
 ---
 
@@ -249,17 +250,70 @@ Progress: 2/4 done, 1 running
 
 ---
 
-## 10. 实现文件
+## 10. 持久化与恢复（plan_snapshot.json）
+
+> 对应 `self_evolution_implementation_plan.md` Stage 0.2
+
+`ExecutionPlan` 在内存中只是一棵 `PlanTask` 节点树，但每次状态变更（`add_task`/`start_task`/`complete_task`/`fail_task`）都会**自动同步**写入 `<project_root>/.agent/sessions/<session_id>/plan_snapshot.json`，调用方（即 `tools/plan.py` 中的各工具）不需要关心持久化细节。
+
+```json
+{
+  "goal": "完成 Phase A 基础设施清债",
+  "created_at": 1781856272.46,
+  "last_updated": 1781856272.46,
+  "tasks": [
+    {"id": "t1", "title": "history 条目加 _type 字段", "status": "done",
+     "result": "已完成，见 commit abc123"},
+    {"id": "t2", "title": "SubAgent 输出去截断", "status": "running", "result": ""}
+  ]
+}
+```
+
+### 自动绑定机制
+
+Agent 在 `_bind_session_extras()` 中建立/切换 session 时，会调用 `bind_plan_session(snapshot_path)` 把当前 session 的快照路径注册为模块级"当前路径"。之后任何地方调用 `set_plan(plan)`（例如 `create_plan` 工具内部）都会自动绑定到这个路径并立即落盘——工具层完全不需要显式传递 `session_id`。
+
+### 恢复时机与策略
+
+session 建立时（新建、`load_session()` 续接、或 `new_session()` 开新对话）都会检测 `plan_snapshot.json` 是否存在：
+
+- **存在** → `try_restore_plan()` 解析并恢复为当前活跃 `ExecutionPlan`
+- **不存在** → 静默跳过，以"无活跃 plan"状态正常启动
+
+**恢复后的状态语义**：中断时仍处于 `RUNNING` 的任务会被**忠实保留**为 `RUNNING`（不会被自动改写为 `PENDING` 或 `FAILED`），由后续逻辑或 LLM 自行判断是重新执行还是视为失败重试。`DONE` 任务的 `result` 完整保留，`PENDING` 任务原样等待执行——这就是"恢复 DONE 步骤、从第一个非终态步骤继续"的最低要求。
+
+**精简 schema 的取舍**：快照只持久化 `id`/`title`/`status`/`result` 四个字段，不包含 `description`/`depends_on`/`parent_id`/`source` 等展示用字段。这意味着恢复后的计划树会丢失原有的层级缩进和依赖关系展示，但任务本身的执行进度不受影响——这类展示字段的优先级低于"知道哪些做完了、哪些还没做"。
+
+### 容错策略
+
+`save_snapshot()` / `load_snapshot()` 在文件不存在、JSON 损坏或磁盘异常时均静默失败（返回 `None` / `False`），绝不会因为持久化层的问题中断 agent 主流程。
+
+详见 [存储设计](storage-design.md#44-subagent-任务文件) 中 `plan_snapshot.json` 一节。
+
+---
+
+## 11. 实现文件
 
 | 文件 | 职责 |
 |------|------|
-| `src/mini_agent/orchestrator/plan.py` | 数据模型：`ExecutionPlan`、`PlanTask`、`PlanTaskStatus`、`TaskSource` |
+| `src/mini_agent/orchestrator/plan.py` | 数据模型：`ExecutionPlan`、`PlanTask`、`PlanTaskStatus`、`TaskSource`；持久化：`save_snapshot`/`load_snapshot`/`bind_plan_session`/`try_restore_plan` |
 | `src/mini_agent/tools/plan.py` | Agent 工具：`create_plan`、`start_task`、`complete_task` 等 7 个工具 |
 | `src/mini_agent/orchestrator/plan_display.py` | 渲染：状态栏紧凑行、Rich 树形视图、完成摘要表格 |
-| `src/mini_agent/orchestrator/sub_agent.py` | Sub-Agent 执行单元（线程包装、重试机制、输出捕获） |
+| `src/mini_agent/orchestrator/task.py` | `Task`/`TaskRecord` 数据模型；`manifest.json` 序列化与写入：`to_manifest_dict`/`write_manifest`/`update_progress` |
+| `src/mini_agent/tools/orchestration.py` | Sub-Agent 编排工具：`spawn_agent`、`get_task_status`、`update_task_progress` 等 |
+| `src/mini_agent/orchestrator/sub_agent.py` | Sub-Agent 执行单元（线程包装、重试机制、输出捕获、`manifest.json` 创建/收尾） |
 | `src/mini_agent/orchestrator/task_manager.py` | 并发任务调度器（依赖解析、调度循环、SubAgent 管理） |
+| `src/mini_agent/storage/paths.py` | 路径管理：`session_plan_snapshot(sid)`、`task_manifest(sid, tid)` |
 | `src/mini_agent/prompts/system/plan_mode.md` | System prompt 片段：告知 LLM 如何使用计划工具 |
 
 ---
 
-> 最后更新：2026-06（反映 src/mini_agent 包布局重构，/plan 命令实现已从 main.py 迁移至 src/mini_agent/cli/commands/plans.py）
+## 12. 相关文档
+
+- [存储设计](storage-design.md) — `plan_snapshot.json`/`manifest.json` 的完整文件布局与清理策略
+- [SubAgent 机制说明](subagent-mechanism.md) — Sub-Agent 执行单元与 `manifest.json` 的关系
+- [Commands & Tools 参考](commands-and-tools-reference.md) — `update_task_progress`、`get_task_status` 等工具的完整参数表
+
+---
+
+> 最后更新：2026-06（新增第 10 节"持久化与恢复"，反映 `self_evolution_implementation_plan.md` Stage 0.2 的 `plan_snapshot.json` 自动落盘与 session 重启恢复机制；/plan 命令实现已从 main.py 迁移至 src/mini_agent/cli/commands/plans.py）

@@ -14,9 +14,9 @@
 | 文档项 | 状态 | 实际情况 |
 |---|---|---|
 | history `_type` 字段化 | ✅ 已实现 | `history/entry.py` 完整实现，含 `HType` 枚举、`is_real_user_input`/`is_tool_result`/`is_turn_boundary` 等判断函数、`to_llm_messages()` 剥离逻辑 |
-| SubAgent 输出去截断 | ⚠️ 部分实现 | `get_task_status` 默认仍截断 3000 字符，但已新增 `full=True` 参数可绕过，schema 中也注明了截断行为；**缺**截断发生时的主动通知 |
-| config.py 拆分 | ❌ 未实现 | 仍是 1140 行单文件，14 个 dataclass 与加载/构建逻辑全部混在一起 |
-| `task_manifest.json` / `plan_snapshot.json`（W1） | ❌ 未实现 | 全局搜索无任何痕迹，`AgentPaths` 没有对应路径方法 |
+| SubAgent 输出去截断 | ✅ 已实现（2026-06） | `get_task_status` 默认仍截断 3000 字符，`full=True` 可绕过；**新增**截断时主动通知（`truncated: true` + `full_length: N` + `hint`），见 Stage 0.3 |
+| config.py 拆分 | ✅ 已实现（2026-06） | 已拆成 `config/` 包：`models.py`（14 个 dataclass）/ `loader.py` / `prompt_builder.py`，`config/__init__.py` 重导出保持外部 import 路径不变，见 Stage 0.4 |
+| `task_manifest.json` / `plan_snapshot.json`（W1） | ✅ 已实现（2026-06） | `AgentPaths` 新增 `session_plan_snapshot`/`task_manifest`；`TaskRecord` 落 `manifest.json`（含 `update_task_progress` 工具主动写入）；`ExecutionPlan` 状态变更同步落 `plan_snapshot.json` 并支持 session 重启恢复，见 Stage 0.2 |
 | Lesson Memory（`entry_type`/`trigger`/`confidence` 等字段） | ❌ 未实现 | `MemoryEntry` 仍只有 `summary`/`key_outcomes`/`tags`/`scope`，是纯摘要型结构 |
 | SessionEnd hook 真正触发 | ❌ 未实现 | `hooks/loader.py` 已声明事件名，但文档原话"预留未接"依然成立 |
 | StateRepo / risk tier / evolve 分支 / worktree 副本化运行 | ❌ 未实现 | 全局零代码痕迹，是当前最大的空白区 |
@@ -32,7 +32,7 @@
 | `PlanTaskType`（`clarify`/`verify`） | ❌ 未实现 | `plan.py` 无此枚举扩展 |
 | Phase H（daemon / `AgentSelfProfile` / Goal Backlog / 调度器） | ❌ 未实现 | `AgentBridge`/`InputQueue` 长驻进程雏形已存在（文档 7.8 节判断准确），其余全无 |
 
-**核心判断**：项目当前停留在"文档设想的 Phase A 起点附近"——A 中最难的一项（history `_type`）已完成，但 A 中同样关键的"config 拆分"与"task manifest"未完成。而 B（lesson memory）与 F（安全网）这两项被文档列为"后续一切的前提"的阶段，**完全是空白**。这意味着若不先补齐 A + B + F，C/D/E/G/H 都无法真正挂上去——直接跳过去做后面的阶段会建在不存在的地基上。
+**核心判断**：项目当前已完成"文档设想的 Phase A 起点"全部地基工作——history `_type`、config 拆分、task manifest 三项均已落地（详见 Stage 0 完成记录）。但 B（lesson memory）与 F（安全网）这两项被文档列为"后续一切的前提"的阶段，**仍是空白**。这意味着若不先补齐 B + F，C/D/E/G/H 都无法真正挂上去——直接跳过去做后面的阶段会建在不存在的地基上。
 
 ---
 
@@ -47,36 +47,40 @@
 
 ## 三、实施计划
 
-### Stage 0（前置，约 0.5 人天）—— 补齐 Phase A 残留 + 画安全网红线
+### Stage 0（前置，约 0.5 人天）—— 补齐 Phase A 残留 + 画安全网红线 ✅ 已完成（2026-06）
 
 不属于文档任何 Phase 编号，但是后续一切的地基，必须最先做、不能跳过。**内部 4 项互相独立，可四路并行**。
 
-#### 0.1 受保护路径清单
+#### 0.1 受保护路径清单 ✅
 - 新建独立文件（建议放仓库根目录或 `scripts/`，**明确不放在 `src/mini_agent/` 包内**，呼应文档"T3 判定逻辑本身要在 agent 可写范围之外"）
 - 内容：硬编码的路径/正则集合，至少覆盖 `src/mini_agent/agent.py`、`src/mini_agent/permissions.py`、`src/mini_agent/hooks/`、以及该清单文件自身的路径
 - 现在没有 StateRepo 也无妨——先把"清单"产物和存放位置确定，Stage 2 写 StateRepo 时直接 import
 - **验证**：独立单测断言清单非空且包含上述关键文件
+- **实际产出**：`scripts/protected_paths.py`（含为 Stage 2 `evolution/` 预留的正则规则）+ `tests/test_protected_paths.py`（10 个测试）；说明文档见 [受保护路径清单指南](../docs/protected-paths-guide.md)
 
-#### 0.2 `task_manifest.json` + `plan_snapshot.json`（对应设计文档 8.1 节 / W1）
+#### 0.2 `task_manifest.json` + `plan_snapshot.json`（对应设计文档 8.1 节 / W1）✅
 - `AgentPaths` 新增方法：`session_plan_snapshot(sid)`、`task_manifest(sid, tid)`
 - `Task`/`TaskRecord`（`orchestrator/task.py`）新增写入逻辑：任务创建时落初始 `manifest.json`（`id`/`name`/`initiator`/`goal` 由 `Task` 字段映射），任务结束时补写 `outcome` 块
 - 新增工具 `update_task_progress(task_id, current_step, blockers, note)`，供 agent 在长任务中主动调用（文档强调这是"主动写入"，非被动推导）
 - `ExecutionPlan`（`plan.py`）每次 `PlanTask` 状态变更时同步写 `plan_snapshot.json`；session 启动时检测文件存在则尝试恢复
 - **验证**：跑一个多步骤任务，检查 `tasks/<id>/manifest.json` 与 `sessions/<sid>/plan_snapshot.json` 是否生成、字段是否符合设计文档 8.1 节 schema
+- **实际产出**：`storage/paths.py`（新增 2 个路径方法）、`orchestrator/task.py`（`Task` 新增 `goal`/`initiator`/`acceptance_criteria`；`TaskRecord` 新增 `write_manifest`/`update_progress`）、`orchestrator/sub_agent.py`（创建/结束时落盘）、`orchestrator/plan.py`（`save_snapshot`/`load_snapshot`/`bind_plan_session`/`try_restore_plan`）、`agent.py`（`_bind_session_extras` 接入恢复逻辑）、`tools/orchestration.py`（新增 `update_task_progress` 工具）+ `tests/test_task_manifest_and_plan_snapshot.py`（10 个测试）；说明文档见 [Plan 与 Task 机制说明](../docs/plan-and-task-guide.md) 第 10 节、[存储设计](../docs/storage-design.md) 4.4 节
 
-#### 0.3 SubAgent 输出截断收尾
+#### 0.3 SubAgent 输出截断收尾 ✅
 - 现状已有 `full=True` 参数，缺的是"截断时主动通知"
 - 在 `get_task_status` 截断分支加一行：真实截断发生时，返回 JSON 中加 `"truncated": true, "full_length": N`，提示主 agent 可用 `full=True` 重新取
 - 工作量很小（约 10 行），顺手收尾遗留问题
 - **验证**：构造一个输出 >3000 字符的 SubAgent 任务，检查返回值含 `truncated` 标记
+- **实际产出**：`tools/orchestration.py`（`get_task_status` 新增 `truncated`/`full_length`/`hint` 字段）+ `tests/test_task_status_truncation.py`（4 个测试，覆盖超限/未超限/`full=True`/精确边界值）
 
-#### 0.4 config.py 拆分
+#### 0.4 config.py 拆分 ✅
 - 拆成 `config/` 包：
   - `config/models.py` —— 14 个 dataclass
   - `config/loader.py` —— `load_config`/`_load_config_file`/`_load_providers_config`/`_merge_providers_into_chain`
   - `config/prompt_builder.py` —— `build_system_prompt`/`_read_claude_md`/`_resolve_*_dir`
   - `config/__init__.py` —— 重导出，保持外部 `from mini_agent.config import AppConfig` 等现有 import 路径不变
 - **验证**：跑现有全量测试套件（`tests/`），确保零行为变化
+- **实际产出**：单文件 `config.py`（1140 行）拆分为 `config/{__init__,models,loader,prompt_builder}.py`；用 AST 比对确认拆分前后全部 25 个顶层定义内容逐字节一致（除良性末尾换行符差异）；全量测试套件 631 通过，2 个失败为拆分前已存在、与 config 无关的 `debug_logger.py` 边界值问题；说明文档见 [代码结构说明](../docs/code-structure-guide.md)、[配置系统指南](../docs/config-guide.md)
 
 ---
 
@@ -187,7 +191,7 @@ Stage 1+2 完成后，C/D/E 之间**互相独立**，可按资源拆给不同批
 ## 四、依赖关系图
 
 ```
-Stage 0（4 项并行）
+Stage 0（4 项并行）✅ 已完成
   0.1 保护路径清单 ─┐
   0.2 task_manifest ─┼─→ Stage 1（B：lesson memory）
   0.3 输出截断收尾  ─┤        1.1 数据结构（必须先做）
@@ -207,12 +211,12 @@ Stage 0（4 项并行）
 
 ## 五、时间与人力估算
 
-| Stage | 工作量估计 | 并行度 |
-|---|---|---|
-| Stage 0 | 0.5 人天 | 4 路并行，1 人天内可完成 |
-| Stage 1 | 2-3 人天 | 1.1 单线，1.2/1.3/1.4 三路并行 |
-| Stage 2 | 3-4 人天 | 2.1 单线，2.2/2.3 两路并行 |
-| Stage 3 | 3-5 人天 | 3.1/3.2/3.3 三路独立，3.3 可提前 |
+| Stage | 工作量估计 | 并行度 | 状态 |
+|---|---|---|---|
+| Stage 0 | 0.5 人天 | 4 路并行，1 人天内可完成 | ✅ 已完成（2026-06） |
+| Stage 1 | 2-3 人天 | 1.1 单线，1.2/1.3/1.4 三路并行 | 待开始 |
+| Stage 2 | 3-4 人天 | 2.1 单线，2.2/2.3 两路并行 | 待开始 |
+| Stage 3 | 3-5 人天 | 3.1/3.2/3.3 三路独立，3.3 可提前 | 待开始 |
 
 总计约 **9-13 人天**可以把 A（补完）+ B + F + C/D/E 这条设计文档推荐的"建议起步顺序"主线跑通，建立起真正的"经验沉淀 → 安全验证 → 受控应用"闭环骨架。过程中每个 Stage 结束都有可验证、可演示的成果，避免"写了很多代码但拼不起来"的风险。
 
@@ -222,7 +226,7 @@ Stage 0（4 项并行）
 
 若实际只有单人执行，无法并行，建议按以下严格顺序推进（同一 Stage 内原本可并行的子项改为依次完成，编号即推荐顺序）：
 
-1. 0.1 → 0.2 → 0.3 → 0.4
-2. 1.1 → 1.2 → 1.4 → 1.5 → 1.3（1.3 涉及 LLM 调用设计与 prompt 调优，复杂度高于其余三项，建议放在同 Stage 最后）
+1. ~~0.1 → 0.2 → 0.3 → 0.4~~ ✅ 已完成（2026-06）
+2. **下一步 →** 1.1 → 1.2 → 1.4 → 1.5 → 1.3（1.3 涉及 LLM 调用设计与 prompt 调优，复杂度高于其余三项，建议放在同 Stage 最后）
 3. 2.1 → 2.2 → 2.3 → 2.4
 4. 3.3（依赖最弱，优先验证）→ 3.1 → 3.2

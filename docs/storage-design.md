@@ -499,11 +499,12 @@ SubAgent 运行过程中每一行输出都追加到此文件，格式为带时�
 
 | 数据 | 清理方式 | 影响 |
 |------|---------|------|
-| 单个 session | `rm -rf .agent/sessions/<id>/` | 丢失该次对话历史和调试日志 |
+| 单个 session | `rm -rf .agent/sessions/<id>/` | 丢失该次对话历史、调试日志、`plan_snapshot.json`，该 session 的计划无法续跑 |
 | 所有 session | `rm -rf .agent/sessions/` | 丢失所有对话历史，记忆不受影响 |
 | 项目记忆 | `rm .agent/memory.jsonl` | 丢失项目级知识，全局记忆不受影响 |
 | 全局记忆 | `rm ~/.agent/memory.jsonl` | 丢失跨项目通用经验 |
 | 工具缓存 | `rm -rf .agent/cache/` | 下次运行重新构建缓存，无数据损失 |
+| 单个 task 的 manifest | `rm .../tasks/<tid>/manifest.json` | 丢失该任务的进度叙事，不影响任务本身已完成的工作或 `result.json` |
 | 所有项目数据 | `rm -rf .agent/` | 完全重置，相当于全新项目 |
 
 ---
@@ -512,5 +513,10 @@ SubAgent 运行过程中每一行输出都追加到此文件，格式为带时�
 
 - [记忆管理指南](./memory-management-guide.md) — 记忆检索算法、后端扩展
 - [SubAgent 机制说明](./subagent-mechanism.md) — 并发任务执行原理
+- [Plan 与 Task 机制说明](./plan-and-task-guide.md) — `manifest.json`/`plan_snapshot.json` 的写入时机与对应工具
 - [配置指南](./config-guide.md) — 完整配置字段说明
 - [权限管理](./permission-guide.md) — 权限系统详细说明
+
+---
+
+*最后更新：2026-06（新增 `plan_snapshot.json`、`manifest.json`，见 [自我演化实施计划](../next_doc/self_evolution_implementation_plan.md) Stage 0.2）*
