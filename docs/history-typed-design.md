@@ -153,13 +153,16 @@ src/mini_agent/history/
 
 ```python
 from mini_agent.history.entry import (
-    make_user_input, make_tool_result, make_assistant_reply,
+    make_user_input, make_user_correction, make_tool_result, make_assistant_reply,
     make_compressed, make_compact_summary, make_session_resume,
     make_skill_context, make_reminder,
 )
 
 msg = make_user_input("帮我写个测试")
 # {"role": "user", "content": "帮我写个测试", "_type": "user_input"}
+
+correction_msg = make_user_correction("[edited bash call] original: 'rm -rf /tmp/x' → edited: 'rm -rf /tmp/x --dry-run'")
+# {"role": "user", "content": "...", "_type": "user_correction"}
 ```
 
 ### 判断消息类型
@@ -354,6 +357,13 @@ return [
 
 这些能力是基于字符串前缀猜测无法稳定实现的。
 
+> ✅ **已落地**（2026-06，Stage 1.3）：`agent.py` 的 `_reflect_and_save_lessons()`
+> 正是用 `is_turn_boundary()` 精确截取最后若干轮用户意图轮次，喂给反思 LLM
+> 调用生成结构化 lesson 候选。`user_correction`（本文档第 3 节新增类型）则是
+> Stage 1.4/1.5 人类反馈通道的载体——`is_turn_boundary()` 把它和 `user_input`
+> 同等对待，使纠正性编辑也能被反思机制正确识别为一轮用户意图。
+> 详见 [记忆管理指南](memory-management-guide.md#lesson-memory)。
+
 ---
 
 ## 12. 相关文档
@@ -361,3 +371,9 @@ return [
 - [`storage-design.md`](storage-design.md) — session 存储结构总体设计
 - [`agent-design.md`](agent-design.md) — agent 主循环与 HistoryManager 集成
 - [`unit-testing-guide.md`](unit-testing-guide.md) — 测试 helper 中如何构建带 `_hist` 的 agent
+- [`memory-management-guide.md`](memory-management-guide.md) — Lesson Memory：规则触发 / SessionEnd 反思 / 人类反馈纠正检测如何消费类型化 history
+- [`permission-guide.md`](permission-guide.md) — `(e)dit` 审批编辑如何产生 `user_correction` 消息
+
+---
+
+*最后更新：2026-06（新增 `user_correction` 类型，对应 self_evolution_implementation_plan.md Stage 1.5）*

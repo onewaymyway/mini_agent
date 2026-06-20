@@ -313,6 +313,13 @@ system prompt 构建顺序：
 - **容量管理**：默认 500 条上限，超出自动淘汰最旧条目
 - **原子写入**：tmp + rename 保证数据一致性
 
+**Lesson Memory**（2026-06 新增）：除了 session 结束时的 summary 型条目，
+`MemoryEntry` 现在还支持 `entry_type="lesson"` 型条目，由四条独立路径触发
+写入——规则触发（连续失败/拒绝重试成功，`perception/lesson_rules.py`）、
+SessionEnd 反思（LLM 调用，`agent.py::_reflect_and_save_lessons`）、人类
+反馈纠正检测（规则式短语匹配，`perception/correction_detector.py`）、
+`(e)dit` 审批编辑接入。四条路径的 `confidence` 分层反映信号可信度差异。
+
 详见 [记忆管理指南](memory-management-guide.md)。
 
 ### 3.17 HTTP API 服务（api/）
@@ -453,4 +460,4 @@ HTTP 服务通过桥接模式与 Agent 核心解耦：
 
 ---
 
-*最后更新：2026-06（新增 MCP 子系统、history/、storage/、task_display.py、task-focus-viewing、图片技能等模块）*
+*最后更新：2026-06（新增 Lesson Memory 提及，详见 self_evolution_implementation_plan.md Stage 1）*

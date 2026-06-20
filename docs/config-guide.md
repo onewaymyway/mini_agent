@@ -41,9 +41,16 @@ class MemoryConfig:
     enabled: bool = False
     backend: str = "local"             # "local" | "chroma" | "redis"（扩展点）
     store_path: Optional[Path] = None  # None = <project_root>/.agent/memory.jsonl
+    global_enabled: bool = True
+    global_top_k: int = 2
     top_k: int = 3
     decay_half_life_days: float = 30.0
     max_entries: int = 500
+
+    # ── Lesson Memory 扩展（2026-06，Stage 1）──
+    lesson_rules_enabled: bool = True       # 规则触发总开关
+    lesson_fail_threshold: int = 3          # 同一工具连续失败 ≥ N 次触发 lesson
+    correction_detection_enabled: bool = True  # 人类反馈纠正检测总开关
 ```
 
 | 字段 | 说明 |
@@ -51,6 +58,13 @@ class MemoryConfig:
 | `backend` | 指定记忆后端实现，对应 `memory_factory.py` 注册表中的 key |
 | `decay_half_life_days` | 时间衰减半衰期，30 天后旧记忆检索分数衰减 50% |
 | `max_entries` | 超出后淘汰最旧条目并重写文件 |
+| `lesson_rules_enabled` | 关闭后 `_init_components()` 不会创建 `LessonRuleEngine`，规则触发完全不生效 |
+| `lesson_fail_threshold` | 仅影响"连续失败"规则；"拒绝后重试成功"规则不受此参数影响 |
+| `correction_detection_enabled` | 关闭后 `run_turn()` 跳过纠正短语检测，但不影响 `(e)dit` 接入（后者走独立路径） |
+
+`lesson_rules_enabled`/`lesson_fail_threshold`/`correction_detection_enabled`
+仅支持 JSON 配置文件，暂无对应 CLI 参数。详见
+[记忆管理指南](memory-management-guide.md#lesson-memory) 中 Lesson Memory 完整说明。
 
 ### CompressConfig
 
@@ -381,7 +395,8 @@ my_feature_cfg = MyFeatureConfig(
 - [代码结构说明](code-structure-guide.md) — `config/` 包的文件拆分与职责边界
 - [MCP 集成指南](mcp-guide.md) — MCP 外部工具服务的架构、配置与扩展方式
 - [系统设计概述](system-overview.md) — 整体架构与各子系统关系
+- [记忆管理指南](memory-management-guide.md) — `MemoryConfig` 新增字段的完整使用场景（Lesson Memory）
 
 ---
 
-*最后更新：2026-06（config.py 拆分为 config/ 包：models.py / loader.py / prompt_builder.py）*
+*最后更新：2026-06（`MemoryConfig` 新增 `lesson_rules_enabled`/`lesson_fail_threshold`/`correction_detection_enabled`，对应 self_evolution_implementation_plan.md Stage 1）*

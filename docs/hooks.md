@@ -49,7 +49,18 @@ shell 命令，用于审计、拦截危险操作、自动格式化、注入额�
 | `PreToolUse` | 每次工具调用前 | `{"tool_name": "...", "tool_input": {...}}` |
 | `PostToolUse` | 每次工具调用后 | `{"tool_name": "...", "tool_input": {...}, "tool_result": "..."}` |
 | `PreCompact` | 历史压缩前 | （预留，尚未接入触发点） |
-| `SessionStart` / `SessionEnd` | 会话开始/结束 | （预留，尚未接入触发点） |
+| `SessionStart` | 会话开始 | （预留，尚未接入触发点） |
+| `SessionEnd` | 会话真正结束（REPL 退出：`EOFError` / `exit` / `quit` / `/exit` / `/quit`） | `{"session_id": "...", "tool_stats": {...}, "turns": N, "input_tokens": N, "output_tokens": N}` |
+
+> **2026-06 更新（Stage 1.3）**：`SessionEnd` 已从"预留未接"升级为真正接入。
+> 触发点是 `agent.trigger_session_end()`，由 `cli/repl.py` 在进程退出前的两处
+> 真实退出路径调用。`SessionStart` 仍是预留状态。
+>
+> `SessionEnd` 触发后，agent 还会紧接着跑一次轻量 LLM 反思调用，基于
+> `tool_stats` + 最后若干轮用户意图轮次生成结构化 lesson 候选并写入记忆——
+> 这是 hook 触发之外的**额外行为**，不依赖 hook 配置是否存在，由
+> `cfg.memory.enabled` 控制是否执行。详见
+> [记忆管理指南](memory-management-guide.md#lesson-memory) 中 SessionEnd 反思一节。
 
 ## Hook 如何与主流程交互
 
@@ -116,3 +127,12 @@ print(json.dumps({"decision": "allow"}))
 （frontmatter 中的 `hooks` 字段）在被激活时临时挂载专属 hook，
 停用/任务结束时再移除。当前 loader/profile 已解析该字段，
 動態挂载的接线点留给具体业务按需调用。
+
+## 相关文档
+
+- [记忆管理指南](memory-management-guide.md) — `SessionEnd` 触发后的反思 LLM 调用如何生成 lesson
+- [history 类型化设计](history-typed-design.md) — `is_turn_boundary()` 如何为反思调用截取用户意图轮次
+
+---
+
+*最后更新：2026-06（`SessionEnd` 从预留升级为真正接入，对应 self_evolution_implementation_plan.md Stage 1.3）*

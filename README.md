@@ -158,7 +158,7 @@ python main.py --debug-llm --reminder-verbose
 | `--session-dir` | Session 文件保存目录 |
 | `--resume` | 恢复之前的对话 |
 | `--system-tool-call` | 启用系统工具调用格式 |
-| `--memory` | 启用跨 session 记忆 |
+| `--memory` | 启用跨 session 记忆（含 Lesson Memory：规则触发/SessionEnd 反思/人类反馈纠正检测，详见 [记忆管理指南](docs/memory-management-guide.md#lesson-memory)） |
 | `--project-scan` | 启动时扫描项目结构 |
 | `--file-watch` | 监听文件变化 |
 | `--web-search-provider` | 指定搜索后端：`duckduckgo`\|`brave`\|`serper`\|`tavily` |
@@ -446,9 +446,11 @@ mini_agent/
 │       │   ├── project_scanner.py  # 项目结构扫描
 │       │   ├── file_watcher.py     # 文件变化监听
 │       │   ├── tool_cache.py       # 工具结果缓存
-│       │   ├── memory_store.py     # 跨 session 记忆
+│       │   ├── memory_store.py     # 跨 session 记忆（含 Lesson Memory 字段）
 │       │   ├── memory_base.py      # 记忆后端抽象
 │       │   ├── memory_factory.py   # 记忆工厂
+│       │   ├── lesson_rules.py     # 规则触发引擎（连续失败/拒绝重试成功）
+│       │   ├── correction_detector.py  # 人类反馈纠正检测
 │       │   └── token_counter.py    # Token 预估
 │       ├── ui/              # 用户界面
 │       │   ├── __init__.py
@@ -638,8 +640,10 @@ python -m pytest tests/ -q
 ## 文档
 
 - [系统概览](docs/system-overview.md) — 整体架构和设计思路
+- [记忆管理指南](docs/memory-management-guide.md) — **更新**：长期记忆系统，含 Lesson Memory（规则触发/SessionEnd 反思/人类反馈纠正检测）
+- [history 类型化设计](docs/history-typed-design.md) — **更新**：`_type` 字段化设计，新增 `user_correction` 类型
 - [Task 日志实时查看](docs/task-focus-viewing.md) — **新增**：方向键切换查看任务日志机制
-- [权限系统指南](docs/permission-guide.md) — 权限守卫、白名单、持久化配置
+- [权限系统指南](docs/permission-guide.md) — **更新**：权限守卫、白名单、持久化配置，`(e)dit` 接入 Lesson Memory
 - [Agent 设计](docs/agent-design.md) — Agent 核心循环与组件详解
 - [CLI I/O 机制](docs/cli-io-mechanism.md) — 命令行输入输出流程，HTTP 与命令行协同
 - [终端显示机制深度解析](docs/terminal-display-internals.md) — **新增**：线程模型、状态栏控制、三阶段状态机、token 过滤
@@ -648,7 +652,7 @@ python -m pytest tests/ -q
 - [Plan 和 Task 指南](docs/plan-and-task-guide.md) — 规划和任务系统，含 `plan_snapshot.json` 持久化与 session 重启恢复
 - [SubAgent 机制](docs/subagent-mechanism.md) — Sub-Agent 执行与重试机制详解
 - [自定义子 Agent](docs/custom-sub-agents.md) — 预设角色模板，结构化参数注入
-- [Hooks 机制](docs/hooks.md) — 关键事件自动执行命令，支持拦截/修改工具调用
+- [Hooks 机制](docs/hooks.md) — **更新**：关键事件自动执行命令，`SessionEnd` 已从预留升级为真正接入
 - [Skill 系统指南](docs/skill-system-guide.md) — 技能机制详解
 - [代码结构指南](docs/code-structure-guide.md) — 项目结构说明
 - [受保护路径清单指南](docs/protected-paths-guide.md) — **新增**：T3 治理红线设计与扩展规则（自我演化基础设施）
@@ -678,3 +682,5 @@ MIT License
 *最后更新：2026-06-19* — API Key 配置重构：主推 providers.json 管理 LLM API Key，图片 Skill（ask_image / gen_image_with_text）保留环境变量方式
 
 *2026-06 自我演化基础设施（Stage 0）*：`config.py` 拆分为 `config/` 包（外部 import 路径不变）；新增 `manifest.json`/`plan_snapshot.json` 任务与计划持久化，支持 session 重启恢复；新增 `update_task_progress` 工具；`get_task_status` 截断时主动提示；新增 `scripts/protected_paths.py` 受保护路径清单（T3 治理红线）
+
+*2026-06 Lesson Memory（Stage 1）*：`MemoryEntry` 新增 8 个 lesson 专属字段（`entry_type`/`trigger`/`outcome`/`root_cause`/`suggested_action`/`confidence`/`occurrence_count`/`source`）；新增四条独立写入路径——规则触发（连续失败/拒绝重试成功，`perception/lesson_rules.py`）、`SessionEnd` hook 真正接入 + LLM 反思生成 lesson、人类反馈纠正检测（`perception/correction_detector.py`）、`(e)dit` 审批编辑接入；`history/entry.py` 新增 `HType.USER_CORRECTION` 类型

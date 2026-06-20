@@ -71,6 +71,23 @@
 | `e` / `edit` | 修改命令后批准（仅 `bash` 工具） |
 | `s` / `show` | 显示完整参数后重新选择 |
 
+### `(e)dit` 与 Lesson Memory 的接入（2026-06，Stage 1.5）
+
+用户选择 `(e)dit` 修改命令/参数后批准，这个动作本身就是一条**高质量的人类反馈**——
+用户主动纠正了 agent 提议的操作。`PermissionGuard` 检测到编辑发生后会记录到
+`last_edit` 属性（`{"tool_name", "original", "edited"}`），调用方（`tool_executor.py`）
+在 `check()` 返回后立即查询并消费它：
+
+1. 把编辑前后内容追加为一条 `_type="user_correction"` 的 history 消息
+   （详见 [history 类型化设计](history-typed-design.md#3-类型枚举htype)），
+   让 LLM 在后续对话中能看到用户做了什么修改
+2. 同时生成一条 `entry_type="lesson"`、`source="human_feedback"`、
+   `confidence=0.85` 的记忆条目（详见 [记忆管理指南](memory-management-guide.md#lesson-memory)）
+
+这个机制覆盖三处 `(e)dit` 触发点：CLI 简单审批、HTTP 双路审批的 CLI 端、HTTP 端
+（HTTP 端编辑可能涉及任意字段，不限于 bash 的 `command`）。检测逻辑实现在
+`PermissionGuard.pop_last_edit()`，每次编辑事件只被消费一次。
+
 ## 白名单机制
 
 ### 路径规范化
@@ -205,8 +222,14 @@ else:
 
 - [`permissions.py`](../src/mini_agent/permissions.py) — 权限守卫核心实现
 - [`permission_labels.md`](../src/mini_agent/prompts/fragments/permission_labels.md) — 交互界面文本片段
+- [`perception/correction_detector.py`](../src/mini_agent/perception/correction_detector.py) — `(e)dit` 编辑内容转 lesson 的字段生成逻辑
 
 ## 更新日志
+
+### 2026-06（Stage 1.5）
+
+- `PermissionGuard` 新增 `last_edit` / `pop_last_edit()` / `_edit_repr()`，三处 `(e)dit` 分支统一记录编辑事件
+- `(e)dit` 编辑现在会同时产生 `_type="user_correction"` history 消息和 `source="human_feedback"` 记忆条目
 
 ### 2026-06-06
 

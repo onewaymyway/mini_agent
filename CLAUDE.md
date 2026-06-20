@@ -141,9 +141,11 @@ python main.py --provider nvidia --model qwen/qwen3.5-122b-a10b --system-tool-ca
 - `project_scanner.py` — 项目结构扫描
 - `file_watcher.py` — 文件变化监听
 - `tool_cache.py` — 工具结果缓存
-- `memory_store.py` — 跨 session 长期记忆
+- `memory_store.py` — 跨 session 长期记忆（`MemoryEntry` 含 Lesson Memory 扩展字段）
 - `memory_base.py` — 记忆后端抽象
 - `memory_factory.py` — 记忆工厂
+- `lesson_rules.py` — 规则触发引擎（连续失败计数 / 权限拒绝后重试成功检测，不调用 LLM）
+- `correction_detector.py` — 人类反馈纠正检测（规则式短语匹配，中英文约 30 条模式）
 - `token_counter.py` — Token 预估
 
 ### HTTP API (`src/mini_agent/api/`)
@@ -316,6 +318,17 @@ python main.py --provider nvidia --model qwen/qwen3.5-122b-a10b --system-tool-ca
 - **计划持久化与恢复**：`orchestrator/plan.py` 的 `ExecutionPlan` 每次状态变更自动写 `plan_snapshot.json`；session 启动/续接时通过 `try_restore_plan()` 自动恢复，中断时仍 `RUNNING` 的任务状态被忠实保留
 - 详见 [受保护路径清单指南](docs/protected-paths-guide.md)、[Plan 与 Task 机制说明](docs/plan-and-task-guide.md) 第 10 节、[存储设计](docs/storage-design.md) 4.4 节
 
+### Lesson Memory（Stage 1）
+
+> 对应 `next_doc/self_evolution_implementation_plan.md` Stage 1（Phase B），四条独立写入路径，任意一条触发都立即写入，不等 session 结束
+
+- **数据结构**：`MemoryEntry`（`perception/memory_store.py`）新增 `entry_type`/`trigger`/`outcome`/`root_cause`/`suggested_action`/`confidence`/`occurrence_count`/`source` 8 个字段，全部带默认值，summary 型条目零迁移成本
+- **规则触发**（不调用 LLM）：`perception/lesson_rules.py` 的 `LessonRuleEngine`，连续失败 ≥ N 次（默认 3）或权限拒绝后重试成功，`confidence=0.6`、`source="self_reflection"`；接入 `tool_executor.py`
+- **SessionEnd 反思**：`agent.trigger_session_end()`，在 REPL 真正退出（`EOFError`/`exit`/`quit`）时同步触发 `SessionEnd` hook + 一次轻量 LLM 反思调用，基于 `tool_stats` + `is_turn_boundary()` 截取的最后若干轮用户意图生成结构化 lesson 候选
+- **人类反馈纠正检测**：`perception/correction_detector.py` 的 `detect_correction()`，规则式短语匹配（中英文约 30 条，刻意排除高误报模式），挂在 `run_turn()` 的 `append_user` 之后，`confidence=0.85`、`source="human_feedback"`
+- **`(e)dit` 审批编辑接入**：`permissions.py` 新增 `last_edit`/`pop_last_edit()`，`(e)dit` 编辑发生时通过 `tool_executor.py` 的 `on_edit_detected` 回调转交 `agent._on_edit_detected()`，写入 `HType.USER_CORRECTION` 类型的 history 消息 + 生成 `human_feedback` lesson
+- 详见 [记忆管理指南](docs/memory-management-guide.md#lesson-memory)、[history 类型化设计](docs/history-typed-design.md)、[权限管理指南](docs/permission-guide.md)、[hooks 指南](docs/hooks.md)
+
 ### 参数优先级
 
 **命令行参数 > 配置文件参数**。之前配置文件优先级更高，已修正。
@@ -323,6 +336,10 @@ python main.py --provider nvidia --model qwen/qwen3.5-122b-a10b --system-tool-ca
 ## 文档索引
 
 - [系统概览](docs/system-overview.md) — 整体架构与模块介绍
+- [记忆管理指南](docs/memory-management-guide.md) — 长期记忆系统，含 Lesson Memory（规则触发/SessionEnd 反思/人类反馈纠正检测）
+- [history 类型化设计](docs/history-typed-design.md) — `_type` 字段化设计，含 `user_correction` 类型
+- [权限管理指南](docs/permission-guide.md) — 权限守卫、白名单，`(e)dit` 接入 Lesson Memory
+- [Hooks 机制](docs/hooks.md) — 关键事件自动执行命令，`SessionEnd` 接入
 - [Task 日志实时查看](docs/task-focus-viewing.md) — 方向键切换查看任务日志机制
 - [终端显示机制深度解析](docs/terminal-display-internals.md) — 线程模型、状态栏控制、三阶段状态机、token 过滤
 - [终端 I/O 指南](docs/terminal-io-guide.md) — 终端渲染与输入机制
