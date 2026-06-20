@@ -32,6 +32,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import threading
 import time
 from collections import OrderedDict
 from dataclasses import dataclass, field
@@ -130,6 +131,15 @@ class ToolResultCache:
 
         # 文件被修改时，同时清除 read_file 缓存和同目录 list_dir 缓存
         cache.invalidate_file("app.py")
+
+    线程安全（Phase E，3.3，对应设计文档第 5 节"SubAgent 信息继承"）：
+    默认情况下每个 Agent 实例持有自己的 ToolResultCache（session 内私有，
+    无并发访问）。但 TaskManager 可选择持有一个跨 SubAgent 共享的全局实例
+    （见 orchestrator/task_manager.py），此时多个 SubAgent 线程会并发调用
+    get/put/invalidate_file——内部用一把 threading.Lock 保护所有读写 self._store
+    （含 OrderedDict 的 move_to_end/popitem 等非原子操作）和 self._stats 的代码段，
+    保证共享场景下不会出现 dict 结构损坏或计数错乱。私有场景下加锁的开销可忽略
+    （无竞争锁），不单独区分"共享/私有"两套实现以保持代码简单。
     """
 
     def __init__(self, max_entries: int = _DEFAULT_MAX_ENTRIES) -> None:
@@ -137,6 +147,7 @@ class ToolResultCache:
         self._store: OrderedDict[str, _CacheEntry] = OrderedDict()
         self._max_entries = max_entries
         self._stats = {"hits": 0, "misses": 0, "puts": 0, "evictions": 0}
+        self._lock = threading.Lock()
 
     # ── 核心 API ──────────────────────────────────────────────────────────────
 
@@ -144,32 +155,34 @@ class ToolResultCache:
         if tool_name not in _CACHEABLE_TOOLS:
             return None
         key = _make_key_with_index(tool_name, _normalize_input(tool_name, input_dict))
-        entry = self._store.get(key)
-        if entry is None or entry.expired:
-            if entry and entry.expired:
-                del self._store[key]
-                _key_registry.pop(key, None)
-            self._stats["misses"] += 1
-            return None
-        # LRU：命中后移到末尾
-        self._store.move_to_end(key)
-        entry.hits += 1
-        self._stats["hits"] += 1
-        return entry.result
+        with self._lock:
+            entry = self._store.get(key)
+            if entry is None or entry.expired:
+                if entry and entry.expired:
+                    del self._store[key]
+                    _key_registry.pop(key, None)
+                self._stats["misses"] += 1
+                return None
+            # LRU：命中后移到末尾
+            self._store.move_to_end(key)
+            entry.hits += 1
+            self._stats["hits"] += 1
+            return entry.result
 
     def put(self, tool_name: str, input_dict: dict, result: str) -> None:
         if tool_name not in _CACHEABLE_TOOLS:
             return
         key = _make_key_with_index(tool_name, _normalize_input(tool_name, input_dict))
         ttl = _DEFAULT_TTL.get(tool_name)
-        self._store[key] = _CacheEntry(result=result, ttl=ttl)
-        self._store.move_to_end(key)
-        self._stats["puts"] += 1
-        # LRU 淘汰：超出容量时删除最久未访问的条目，同步清理 registry
-        while len(self._store) > self._max_entries:
-            evicted_key, _ = self._store.popitem(last=False)
-            _key_registry.pop(evicted_key, None)
-            self._stats["evictions"] += 1
+        with self._lock:
+            self._store[key] = _CacheEntry(result=result, ttl=ttl)
+            self._store.move_to_end(key)
+            self._stats["puts"] += 1
+            # LRU 淘汰：超出容量时删除最久未访问的条目，同步清理 registry
+            while len(self._store) > self._max_entries:
+                evicted_key, _ = self._store.popitem(last=False)
+                _key_registry.pop(evicted_key, None)
+                self._stats["evictions"] += 1
 
     def invalidate_file(self, path: str) -> int:
         """
@@ -187,42 +200,48 @@ class ToolResultCache:
         """
         norm_path = _normalize_path(path)
 
-        # 精确清除 read_file key（含/不含 mtime 后缀的旧 key 都要清）
-        to_delete: list[str] = []
-        for key in list(self._store.keys()):
-            entry_key_data = _key_to_tool_path_hint(key)
-            if entry_key_data is None:
-                continue
-            t, p = entry_key_data
-            if t == "read_file" and p == norm_path:
-                to_delete.append(key)
-            elif t == "grep" and (p == norm_path or p.startswith(norm_path)):
-                # grep 以该文件或其父目录为根时一并失效
-                to_delete.append(key)
+        with self._lock:
+            # 精确清除 read_file key（含/不含 mtime 后缀的旧 key 都要清）
+            to_delete: list[str] = []
+            for key in list(self._store.keys()):
+                entry_key_data = _key_to_tool_path_hint(key)
+                if entry_key_data is None:
+                    continue
+                t, p = entry_key_data
+                if t == "read_file" and p == norm_path:
+                    to_delete.append(key)
+                elif t == "grep" and (p == norm_path or p.startswith(norm_path)):
+                    # grep 以该文件或其父目录为根时一并失效
+                    to_delete.append(key)
 
-        for k in to_delete:
-            del self._store[k]
-        return len(to_delete)
+            for k in to_delete:
+                del self._store[k]
+            return len(to_delete)
 
     def clear(self) -> None:
-        _key_registry.clear()
-        self._store.clear()
+        with self._lock:
+            _key_registry.clear()
+            self._store.clear()
 
     # ── 统计 ──────────────────────────────────────────────────────────────────
 
     @property
     def hit_rate(self) -> float:
-        total = self._stats["hits"] + self._stats["misses"]
-        return self._stats["hits"] / total if total else 0.0
+        with self._lock:
+            total = self._stats["hits"] + self._stats["misses"]
+            return self._stats["hits"] / total if total else 0.0
 
     def stats_summary(self) -> str:
-        h, m = self._stats["hits"], self._stats["misses"]
-        e = self._stats["evictions"]
-        rate = f"{self.hit_rate:.0%}"
+        with self._lock:
+            h, m = self._stats["hits"], self._stats["misses"]
+            e = self._stats["evictions"]
+            entries = len(self._store)
+        rate_total = h + m
+        rate = f"{(h / rate_total if rate_total else 0.0):.0%}"
         evict_str = f", {e} evictions" if e else ""
         return (
             f"tool cache: {h} hits / {m} misses ({rate}), "
-            f"{len(self._store)}/{self._max_entries} entries{evict_str}"
+            f"{entries}/{self._max_entries} entries{evict_str}"
         )
 
 

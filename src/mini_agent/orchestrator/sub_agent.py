@@ -94,6 +94,7 @@ class SubAgent:
         on_log: Optional[LogCallback] = None,
         on_terminal: Optional[TerminalCallback] = None,
         session_id: Optional[str] = None,
+        shared_tool_cache=None,   # Optional[ToolResultCache]，Phase E / 3.3 跨 SubAgent 共享缓存
     ) -> None:
         self.record = record
         self.base_cfg = base_cfg
@@ -103,6 +104,7 @@ class SubAgent:
         self._api_key = base_cfg.api_key  # 从主配置继承 API key
         self.on_log = on_log
         self.on_terminal = on_terminal
+        self._shared_tool_cache = shared_tool_cache
         self._thread: Optional[threading.Thread] = None
         self._cancel_event = threading.Event()
         self._lock = threading.Lock()
@@ -352,6 +354,12 @@ class SubAgent:
             llm_base_url=self._llm_base_url,
             use_system_tool_call=self.base_cfg.use_system_tool_call,
             debug_llm=self.base_cfg.debug_llm,
+            # [Phase E / 3.3 顺带修复] load_config() 默认从磁盘/环境变量重新加载，
+            # 不会自动继承调用方内存中 base_cfg 的 perception 配置；之前这里没有
+            # 显式传 tool_cache_enabled，导致即使主 agent 开启了 tool_cache，
+            # 没有 shared_tool_cache 注入的 SubAgent 也会静默拿到一个 None
+            # （未启用）的私有缓存，而不是按预期各自新建一份私有缓存。
+            tool_cache_enabled=self.base_cfg.tool_cache_enabled,
         )
         # 显式设置 API key（从主配置继承）
         if not cfg.api_key and self._api_key:
@@ -389,7 +397,32 @@ class SubAgent:
                 groups=task.allowed_tool_groups,
             )
 
-        return Agent(cfg=cfg, guard=guard, llm_client=create_client(llm_cfg), registry=registry)
+        # [Phase E / 3.3] SubAgent 信息继承：按名称激活主 agent 当前激活的 skill。
+        # 只有 task.active_skills 非空时才构造 SkillLoader（避免没有继承需求的
+        # 普通任务也付出一次技能目录扫描的开销）。目录解析逻辑与
+        # cli/app.py 构造主 Agent 的 SkillLoader 时完全一致，保证子 agent
+        # 能发现同一批 skill 定义（否则"按名称激活"会因为根本没扫描到该 skill
+        # 而静默失败——SkillLoader.activate() 对未知名称直接返回 False）。
+        skill_loader = None
+        if task.active_skills:
+            from mini_agent.skills import SkillLoader
+            skill_dirs = []
+            if cfg.skills_dir:
+                skill_dirs.append(cfg.skills_dir)
+            skill_loader = SkillLoader(
+                skill_dirs,
+                per_skill_tokens=getattr(cfg, "skill_compact_per_skill", 5_000),
+                total_budget=getattr(cfg, "skill_compact_budget", 25_000),
+            )
+            for name in task.active_skills:
+                skill_loader.activate(name)
+
+        return Agent(
+            cfg=cfg, guard=guard, llm_client=create_client(llm_cfg),
+            registry=registry, skill_loader=skill_loader,
+            tool_cache=self._shared_tool_cache,
+            is_subagent=True,
+        )
 
     def _write_result_json(self, output: str, agent) -> None:
         """任务完成时将结果写入 result.json。"""

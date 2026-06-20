@@ -7,12 +7,23 @@ tools/orchestration.py — 编排工具
 与 TaskManager 的连接通过模块级单例完成：
   - 主程序启动时调用 init_task_manager(cfg)
   - 工具函数通过 get_task_manager() 获取实例
+
+与"主 agent 当前激活的 skill 列表"的连接也走类似的模块级机制，但用
+thread-local 而不是普通单例（Phase E，3.3，对应设计文档第 5 节
+"SubAgent 信息继承"）：
+  - Agent.__init__ 尾部调用 set_active_skills_provider(lambda: self.skill_loader.active)，
+    注册到当前线程
+  - spawn_agent / spawn_named_agent 工具通过 _get_active_skills() 读取当前线程的 provider，
+    写入新建 Task 的 active_skills 字段，SubAgent 启动时据此激活同名 skill
+  - 用 thread-local 是因为每个 SubAgent 在独立线程里构造自己的 Agent 实例，
+    普通模块级变量会在并发场景下被互相覆盖（见下方实现注释）
 """
 
 from __future__ import annotations
 
 import json
-from typing import Optional
+import threading as _threading
+from typing import Callable, Optional
 
 from . import tool
 
@@ -54,6 +65,34 @@ def init_task_manager(cfg, max_workers: int = 4):
 def get_task_manager():
     """获取全局 TaskManager 实例。"""
     return _task_manager
+
+
+# ── 模块级"当前激活 skill 列表"提供者（Phase E，3.3）─────────────────────────
+#
+# 用 threading.local 而非普通模块级变量：每个 SubAgent 在独立的 threading.Thread
+# 中运行自己的 Agent 实例（见 orchestrator/sub_agent.py），如果 SubAgent 自己的
+# Agent.__init__ 也调用 set_active_skills_provider()（递归 spawn 场景下确实可能），
+# 普通模块级变量会被并发线程互相覆盖——主 agent 线程的 spawn_agent 调用可能读到
+# 某个并发 SubAgent 线程刚刚注册的 provider，串台。thread-local 保证每个线程
+# 看到的是"该线程所属 Agent 实例"注册的 provider，互不干扰。
+
+_active_skills_local = _threading.local()
+
+
+def set_active_skills_provider(provider: Optional[Callable[[], list[str]]]) -> None:
+    """由 Agent.__init__ 调用，为当前线程注册一个返回"当前激活 skill 名称列表"的回调。"""
+    _active_skills_local.provider = provider
+
+
+def _get_active_skills() -> list[str]:
+    """spawn_agent / spawn_named_agent 内部调用；当前线程未注册 provider 或调用失败时返回空列表。"""
+    provider = getattr(_active_skills_local, "provider", None)
+    if provider is None:
+        return []
+    try:
+        return list(provider())
+    except Exception:
+        return []
 
 
 # ── spawn_agent 工具 ──────────────────────────────────────────────────────────
@@ -121,6 +160,7 @@ def spawn_agent(
         model=model,
         system_extra=system_extra,
         tags=tags or [],
+        active_skills=_get_active_skills(),
     )
     task_id = mgr.submit(task)
     return json.dumps({
@@ -236,6 +276,7 @@ def spawn_named_agent(
         provider=profile.provider,
         allowed_tools=profile.tools or None,
         allowed_tool_groups=profile.tool_groups or None,
+        active_skills=_get_active_skills(),
         tags=(tags or []) + [f"agent:{agent_type}"],
     )
     task_id = mgr.submit(task)
@@ -286,6 +327,7 @@ def spawn_agents(tasks: list) -> str:
 
     from mini_agent.orchestrator.task import Task
     results = []
+    active_skills = _get_active_skills()
     for t in tasks:
         task = Task(
             prompt=t["prompt"],
@@ -294,6 +336,7 @@ def spawn_agents(tasks: list) -> str:
             model=t.get("model"),
             system_extra=t.get("system_extra", ""),
             tags=t.get("tags", []),
+            active_skills=active_skills,
         )
         task_id = mgr.submit(task)
         results.append({"task_id": task_id, "name": task.name})

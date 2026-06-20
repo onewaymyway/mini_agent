@@ -62,6 +62,24 @@ class MemoryBackend(ABC):
         """删除指定 session_id 的所有记忆条目。默认实现为 no-op，子类可覆盖。"""
         return None
 
+    def reload(self) -> None:
+        """
+        重新从持久化存储加载，丢弃当前进程内的缓存状态。
+
+        [Phase E / 3.3] 对应"SubAgent 触发的规则型 lesson 汇总写回主 agent
+        memory"——SubAgent 在独立的 Agent 实例（及独立的 MemoryBackend 对象）
+        里写入 lesson，物理上已经落到同一个 <project_root>/.agent/memory.jsonl
+        文件（同进程内多次 open(..., "a") 追加写在 POSIX 上是安全的），但主
+        agent 持有的 MemoryBackend 实例如果有本地内存缓存（如 MemoryStore 的
+        self._entries 列表），该缓存不会自动感知到磁盘上新增的条目。
+        SubAgent 完成后，TaskManager 应在主 agent 的 memory backend 上调用
+        reload()，让后续 search() 能检索到 SubAgent 期间产生的新 lesson。
+
+        默认实现为 no-op：无本地缓存的后端（例如直接查询远端数据库的
+        Redis/Chroma 实现）不需要"重新加载"这个概念，数据本来就是实时的。
+        """
+        return None
+
 
     @abstractmethod
     def search(self, query: str, k: int = 3) -> list["MemoryEntry"]:

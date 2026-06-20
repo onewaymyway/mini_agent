@@ -108,8 +108,11 @@ class Agent:
         skill_loader: Optional[SkillLoader] = None,
         guard: Optional[PermissionGuard] = None,
         llm_client: Optional[LLMClient] = None,
+        tool_cache: Optional[ToolResultCache] = None,
+        is_subagent: bool = False,
     ) -> None:
         self.cfg = cfg
+        self._is_subagent = is_subagent
 
         from mini_agent.tools.builtin import configure_web_search
         configure_web_search(cfg)
@@ -194,6 +197,12 @@ class Agent:
             register_compact_tool(self.registry, self)          # 需要 agent 实例
             register_skill_stats_tool(self.registry, self.skill_loader)
 
+            # [Phase E / 3.3] 注册"当前激活 skill 列表"provider，供 spawn_agent /
+            # spawn_named_agent 工具读取，写入新建 Task 的 active_skills 字段，
+            # 使 SubAgent 启动时能继承主 agent 当前激活的 skill（设计文档第 5 节）。
+            from mini_agent.tools.orchestration import set_active_skills_provider
+            set_active_skills_provider(lambda: self.skill_loader.active)
+
         # ── 感知与记忆子系统（按开关初始化）────────────────────────────────
 
         # [SYS-SYSCACHE] turn 级 system prompt 缓存。
@@ -218,9 +227,15 @@ class Agent:
             self._start_file_watch_thread()
 
         # [SYS-TOOLCACHE] 工具调用结果缓存
-        self._tool_cache: Optional[ToolResultCache] = (
-            ToolResultCache(max_entries=cfg.perception.tool_cache_max_entries) if cfg.tool_cache_enabled else None
-        )
+        # [Phase E / 3.3] 若构造时显式传入 tool_cache（SubAgent 跨任务共享场景，
+        # 见 orchestrator/task_manager.py 的 _shared_tool_cache），直接复用该实例，
+        # 不再各自新建一份私有缓存——ToolResultCache 内部已加锁，可安全跨线程共享。
+        if tool_cache is not None:
+            self._tool_cache: Optional[ToolResultCache] = tool_cache
+        else:
+            self._tool_cache = (
+                ToolResultCache(max_entries=cfg.perception.tool_cache_max_entries) if cfg.tool_cache_enabled else None
+            )
 
         # [SYS-MEMORY] 跨 session 长期记忆（通过工厂创建，支持多后端）
         self._memory: Optional[MemoryBackend] = None
@@ -228,6 +243,23 @@ class Agent:
         if cfg.memory_enabled:
             from mini_agent.perception.memory_factory import create_both_memory_backends
             self._memory, self._global_memory = create_both_memory_backends(cfg)
+
+            # [Phase E / 3.3] 向已存在的 TaskManager 登记【主 agent】的 memory
+            # backend，使 SubAgent 结束时能触发 reload()（详见
+            # TaskManager._reload_main_memory_sinks）。
+            #
+            # 必须用 is_subagent 显式区分，不能简单地"谁先构造谁登记"：
+            # SubAgent 是在 TaskManager 的后台调度线程里异步构造的，时间上完全
+            # 可能晚于主 agent（例如主 agent 在某个 turn 里调用 spawn_agent 之后），
+            # 如果不加区分，SubAgent 自己的 Agent.__init__ 会把主 agent 的登记
+            # 覆盖掉，导致本应回灌给主 agent 的 reload() 调用错误地作用在某个
+            # 已经跑完、即将被回收的 SubAgent 的 memory 实例上——表现为"主 agent
+            # 再也收不到任何 SubAgent 产生的新 lesson"，且没有任何报错，非常隐蔽。
+            if not self._is_subagent:
+                from mini_agent.tools.orchestration import get_task_manager
+                _tm = get_task_manager()
+                if _tm is not None:
+                    _tm.set_memory_sinks(memory=self._memory, global_memory=self._global_memory)
 
         # [SYS-PROFILE] 用户画像（单用户模式：user_id=None -> ~/.agent/profile.json）
         self._profile_mgr: Optional["UserProfileManager"] = None

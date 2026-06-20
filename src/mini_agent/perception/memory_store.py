@@ -121,6 +121,11 @@ class MemoryStore(MemoryBackend):
         if len(self._entries) != before:
             self._rewrite_disk()
 
+    def reload(self) -> None:
+        """丢弃当前内存缓存，下次访问时重新从磁盘完整加载（见 MemoryBackend.reload 文档）。"""
+        self._entries = []
+        self._loaded = False
+
     # ── 检索 ──────────────────────────────────────────────────────────────────
 
     def search(self, query: str, k: int = 3) -> list[MemoryEntry]:

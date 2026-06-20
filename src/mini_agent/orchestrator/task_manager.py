@@ -63,6 +63,25 @@ class TaskManager:
         self._stop_event = threading.Event()
         self._poll_interval = 0.3   # 调度间隔（秒）
 
+        # [Phase E / 3.3] 跨 SubAgent 共享的 ToolResultCache（对应设计文档第 5 节
+        # "SubAgent 信息继承"）。每个 SubAgent 默认各自新建一份缓存，意味着
+        # SubAgent A 读过的文件，SubAgent B 还要重新读一次——并发跑多个子任务时
+        # 这部分重复 token 消耗完全可以避免。TaskManager 持有唯一实例并通过
+        # SubAgent 注入给各自的 Agent，ToolResultCache 内部已加 threading.Lock
+        # 保护并发读写（见 perception/tool_cache.py）。仅在功能开关打开时创建，
+        # 避免未启用 tool_cache 的场景下白白占用一份空缓存对象。
+        self._shared_tool_cache = None
+        if getattr(base_cfg, "tool_cache_enabled", False):
+            from mini_agent.perception.tool_cache import ToolResultCache
+            self._shared_tool_cache = ToolResultCache(
+                max_entries=getattr(base_cfg.perception, "tool_cache_max_entries", 256)
+            )
+
+        # [Phase E / 3.3] 主 agent 的 memory backend 引用（由 Agent.__init__ 事后
+        # 通过 set_memory_sinks() 注册），用于 SubAgent 结束时触发 reload()。
+        self._main_memory = None
+        self._main_global_memory = None
+
     # ── 生命周期 ──────────────────────────────────────────────────────────────
 
     def start(self) -> None:
@@ -299,6 +318,7 @@ class TaskManager:
             on_log=self._handle_log,
             on_terminal=self._handle_terminal,
             session_id=self._session_id,
+            shared_tool_cache=self._shared_tool_cache,
         )
         with self._lock:
             self._agents[rec.task_id] = agent
@@ -326,6 +346,31 @@ class TaskManager:
                 rec = self._records.get(task_id)
             if rec:
                 self._notify_status(rec)
+            # [Phase E / 3.3] SubAgent 结束（无论成功/失败/取消，只要曾经跑起来
+            # 就可能已经写过规则触发的 lesson）后，让主 agent 的 memory backend
+            # 重新从磁盘加载，使本 session 后续的 search() 能检索到 SubAgent
+            # 期间产生的新 lesson，而不是只留在 SubAgent 自己的 MemoryStore
+            # 实例（随 SubAgent 线程结束后被垃圾回收，从未被主 agent 看到）里。
+            self._reload_main_memory_sinks()
+
+    def _reload_main_memory_sinks(self) -> None:
+        for sink in (self._main_memory, self._main_global_memory):
+            if sink is None:
+                continue
+            try:
+                sink.reload()
+            except Exception:
+                pass
+
+    def set_memory_sinks(self, memory=None, global_memory=None) -> None:
+        """
+        由主 Agent.__init__ 调用，登记自己的 memory / global_memory backend 实例。
+
+        TaskManager 通常在主 Agent 构造之前就已经 init_task_manager() 创建好
+        （见 cli/app.py 的初始化顺序），因此用"事后注册"而不是构造函数参数传入。
+        """
+        self._main_memory = memory
+        self._main_global_memory = global_memory
 
     def _notify_status(self, rec: TaskRecord) -> None:
         if self.on_status_change:

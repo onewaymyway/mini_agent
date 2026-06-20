@@ -60,6 +60,7 @@ class Task:
     tags: list[str] = field(default_factory=list)        # 自由标签（用于过滤）
     allowed_tools: Optional[list[str]] = None            # 限制可用工具名（None=不限制）
     allowed_tool_groups: Optional[list[str]] = None      # 限制可用工具分组（None=不限制）
+    active_skills: list[str] = field(default_factory=list)  # 主 agent 当前激活的 skill 名称（Phase E，3.3）
     created_at: float = field(default_factory=time.time)
 
     # ── manifest 相关字段（W1，对应设计文档 8.1 节）──────────────────────────
