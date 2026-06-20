@@ -37,6 +37,10 @@ def build_parser() -> argparse.ArgumentParser:
               /memory            Force-generate/refresh session memory now (bypass interval)
               /profile           Force-refresh user profile now (bypass interval)
               /prompts           List all managed prompt files
+              /evolution log [N]          Show recent self-evolution commits (default 10)
+              /evolution show <commit>    Show one commit's full info + diff
+              /evolution diff <commit>    Show diff for one commit
+              /evolution revert <commit>  Revert a self-evolution commit (records a lesson)
               exit / quit        Exit
         """),
     )
