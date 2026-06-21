@@ -208,16 +208,7 @@ MCP（Model Context Protocol）支持将外部进程的工具动态注册进 `To
 
 详见 [MCP 集成指南](mcp-guide.md)。
 
-- `auto_approve` — 受信任环境下自动批准
-- `sandbox` — 沙箱模式阻断破坏性操作
-- 危险命令识别 — 正则匹配 `rm -rf`、`dd`、`sudo`、`curl | bash` 等
-- 用户确认 — 通过 `terminal.term.confirm()` 安全地暂停渲染并读取输入
-- 白名单机制 — 按 `tool_name` + `path_prefix` 精细管理，支持路径规范化（`./test/` 与 `test/` 等价）
-- 权限持久化 — `agent_permissions.json` 保存在工作目录，跨 session 生效
-
-详见 [权限系统指南](permission-guide.md)。
-
-### 3.12 权限与沙箱（permissions.py）
+### 3.7 权限与沙箱（permissions.py）
 
 - `auto_approve` — 受信任环境下自动批准
 - `sandbox` — 沙箱模式阻断破坏性操作
@@ -228,7 +219,7 @@ MCP（Model Context Protocol）支持将外部进程的工具动态注册进 `To
 
 详见 [权限系统指南](permission-guide.md)。
 
-### 3.13 Prompt 管理（prompts/）
+### 3.8 Prompt 管理（prompts/）
 
 system prompt 构建顺序：
 
@@ -244,7 +235,7 @@ system prompt 构建顺序：
 
 所有文本片段在 `prompts/fragments/*.md` 中管理，通过 `PromptManager.fragment()` 取用。
 
-### 3.14 Skill 系统（skills/）
+### 3.9 Skill 系统（skills/）
 
 详见 [skill-system-guide.md](skill-system-guide.md)。核心流程：
 
@@ -254,7 +245,7 @@ system prompt 构建顺序：
 4. 回复后检测实际使用（显式标签 + 指纹匹配），更新 LRU 追踪
 5. 压缩历史时按 LRU 顺序重附 Skill，在预算内优先保留最近使用的
 
-**内置技能类型**：
+**内置技能类型**（`.claude/skills/`）：
 
 | 技能 | 用途 |
 |------|------|
@@ -263,10 +254,14 @@ system prompt 构建顺序：
 | `agent-generator` | 创建自定义子 agent |
 | `skill-generator` | 创建新 SKILL.md 技能文件 |
 | `iching_oracle` | 易经智慧顾问 |
+| `comic-4panel` | 四格漫画全流程生成（主题构思→分镜脚本→一次性生成完整漫画图） |
+| `git-context` | 分析当前工作目录 Git 仓库状态 |
+| `python-expert` | Python 编码最佳实践助手 |
+| `reminder-generator` | 从对话提取可复用经验，生成 reminder 文件 |
 
-图片相关技能详见 [图片技能使用指南](image-skills-guide.md)。
+图片相关技能详见 [图片技能使用指南](image-skills-guide.md)，四格漫画详见 [四格漫画生成指南](comic-4panel-guide.md)。
 
-### 3.15 并发编排（orchestrator/）
+### 3.10 并发编排（orchestrator/）
 
 详见 [plan-and-task-guide.md](plan-and-task-guide.md)、[subagent-mechanism.md](subagent-mechanism.md) 和 [task-focus-viewing.md](task-focus-viewing.md)。两层结构：
 
@@ -284,7 +279,7 @@ system prompt 构建顺序：
 
 并发控制：两个 `CountingSemaphore`，分别限制并发任务数和并发 LLM 调用数。
 
-### 3.16 感知系统（perception/）
+### 3.11 感知系统（perception/）
 
 一组可选增强能力，通过配置开关启用：
 
@@ -295,7 +290,7 @@ system prompt 构建顺序：
 | `ToolResultCache` | 缓存工具调用结果，文件变化时失效 |
 | `TokenCounter` | 粗略估算上下文 token，触发告警和自动压缩 |
 
-### 3.11 记忆系统（perception/memory/
+### 3.12 记忆系统（perception/memory/）
 
 跨 session 的长期记忆管理，采用可扩展架构：
 
@@ -322,7 +317,7 @@ SessionEnd 反思（LLM 调用，`agent.py::_reflect_and_save_lessons`）、人�
 
 详见 [记忆管理指南](memory-management-guide.md)。
 
-### 3.17 HTTP API 服务（api/）
+### 3.13 HTTP API 服务（api/）
 
 内置 FastAPI HTTP 服务，支持通过 REST/SSE 与 agent 交互：
 
@@ -337,7 +332,7 @@ SessionEnd 反思（LLM 调用，`agent.py::_reflect_and_save_lessons`）、人�
 
 详见 [HTTP API 指南](http-api-guide.md)。
 
-### 3.18 Web Demo（apps/）
+### 3.14 Web Demo（apps/）
 
 基于 Streamlit 的浏览器交互界面：
 
@@ -352,7 +347,7 @@ SessionEnd 反思（LLM 调用，`agent.py::_reflect_and_save_lessons`）、人�
 - 文件系统浏览
 - Turn 历史记录
 
-### 3.19 自我演化系统（evolution/，2026-06 新增）
+### 3.15 自我演化系统（evolution/，2026-06 新增）
 
 agent 修改自身状态（skill、配置、未来可能扩展到代码）的安全网与生产闭环，
 对应 `next_doc/self_evolution_design.md` 的设计与 `self_evolution_implementation_plan.md`
@@ -420,7 +415,7 @@ HTTP 服务通过桥接模式与 Agent 核心解耦：
 
 ---
 
-## 7. 后续改进方向
+## 5. 后续改进方向
 
 ### P2（较高收益）
 
@@ -439,7 +434,7 @@ HTTP 服务通过桥接模式与 Agent 核心解耦：
 
 ---
 
-## 8. 新增 Provider 建议流程
+## 6. 新增 Provider 建议流程
 
 1. 在 `src/mini_agent/llm/providers/` 创建新文件，继承 `LLMClient`
 2. 实现 `chat()` 和 `stream()`，将 SDK 响应转换为 `LLMResponse`
@@ -448,7 +443,7 @@ HTTP 服务通过桥接模式与 Agent 核心解耦：
 5. 补充单元测试（普通文本、工具调用、流式输出、错误处理）
 6. 更新 `cli/parser.py` 的 `--provider` 帮助文本
 
-## 9. 新增记忆后端建议流程
+## 7. 新增记忆后端建议流程
 
 1. 在 `src/mini_agent/perception/` 创建新文件，继承 `MemoryBackend`
 2. 实现 `add()` / `search()` / `search_by_tag()` / `count`
@@ -456,7 +451,7 @@ HTTP 服务通过桥接模式与 Agent 核心解耦：
 4. 补充单元测试（添加、检索、标签过滤、容量管理）
 5. 更新 `MemoryConfig.backend` 的文档说明
 
-## 10. 新增工具建议流程
+## 8. 新增工具建议流程
 
 1. 在 `src/mini_agent/tools/` 选择合适文件或新建模块
 2. 用 `@tool` 声明名称、描述、JSON Schema、`requires_approval`
@@ -464,7 +459,7 @@ HTTP 服务通过桥接模式与 Agent 核心解耦：
 4. 补充单元测试
 5. 对有大量输出的工具，考虑配合工具结果截断或缓存策略
 
-## 10. 新增 MCP 工具服务建议流程
+## 9. 新增 MCP 工具服务建议流程
 
 1. 在 `mcp_servers/` 创建服务脚本（任何语言均可，遵循 MCP JSON-RPC 2.0 协议）
 2. 在 `agent_config.json` 的 `mcp_servers` 数组中添加配置项
@@ -474,7 +469,7 @@ HTTP 服务通过桥接模式与 Agent 核心解耦：
 
 详见 [MCP 集成指南](mcp-guide.md)。
 
-## 12. 相关文档
+## 10. 相关文档
 
 - [Agent 设计详解](agent-design.md) — agent.py 的核心架构、组件职责、执行流程
 - [代码结构指南](code-structure-guide.md) — 项目结构与导入规范
@@ -489,4 +484,4 @@ HTTP 服务通过桥接模式与 Agent 核心解耦：
 
 ---
 
-*最后更新：2026-06（新增 3.19 自我演化系统小节，详见 self_evolution_implementation_plan.md Stage 2/3.1/3.2/3.3）*
+*最后更新：2026-06（新增 3.15 自我演化系统小节，详见 self_evolution_implementation_plan.md Stage 2/3.1/3.2/3.3；修复章节编号不连续问题，并删除一处重复粘贴的权限说明段落）*
