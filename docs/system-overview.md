@@ -352,6 +352,31 @@ SessionEnd 反思（LLM 调用，`agent.py::_reflect_and_save_lessons`）、人�
 - 文件系统浏览
 - Turn 历史记录
 
+### 3.19 自我演化系统（evolution/，2026-06 新增）
+
+agent 修改自身状态（skill、配置、未来可能扩展到代码）的安全网与生产闭环，
+对应 `next_doc/self_evolution_design.md` 的设计与 `self_evolution_implementation_plan.md`
+Stage 2/3 的落地：
+
+| 组件 | 文件 | 职责 |
+|------|------|------|
+| `StateRepo` | `evolution/state_repo.py` | 所有自我修改的唯一写入入口；按风险分级（T0~T3）强制升级受保护路径改动；结构化 commit message |
+| 验证流水线 | `evolution/validators.py` | 按 tier 递增校验（schema → 加载校验 → lint+单测 → 强制人审） |
+| `EvolutionWorkspace` | `evolution/workspace.py` | 基于 `git worktree` 的进程级隔离，验证改动在隔离环境里能否正常加载 |
+| `eval_runner` | `evolution/eval_runner.py` | `mini-agent eval` 的核心引擎：场景加载、with/without-skill 对比报告 |
+| `lesson_review` | `perception/lesson_review.py` | `/evolve review` 扫描 `occurrence_count` 超阈值的 lesson 并分组 |
+| `skill_propose` 工具 | `tools/evolution.py` | 把 lesson 提炼为 SKILL.md 提案，落在独立 `evolve/` 分支等待人工 merge |
+| `evolution-agent` profile | `.agent/agents/evolution-agent.md` | 专职处理 lesson → skill 提案的 sub-agent，复用 `AgentProfile` 机制 |
+
+与 `orchestrator/`（SubAgent）的交叉：spawn 的 SubAgent 会继承主 agent 当前
+激活的 skill 列表、共享工具结果缓存、并在结束时把自己产生的 lesson 回流给
+主 agent（详见 [Stage 3.3 指南](self-evolution-stage3-3-guide.md)）。
+
+详见 [Stage 2 安全网指南](self-evolution-stage2-guide.md)、
+[Stage 3.1 lesson → skill 闭环指南](self-evolution-stage3-1-guide.md)、
+[Stage 3.2 eval 反馈环指南](self-evolution-stage3-2-guide.md)、
+[Stage 3.3 SubAgent 信息继承指南](self-evolution-stage3-3-guide.md)。
+
 ---
 
 ## 4. 关键设计决策
@@ -457,7 +482,11 @@ HTTP 服务通过桥接模式与 Agent 核心解耦：
 - [记忆管理指南](memory-management-guide.md) — 长期记忆系统与可扩展后端
 - [MCP 集成指南](mcp-guide.md) — MCP 外部工具服务架构与配置
 - [Task 日志实时查看](task-focus-viewing.md) — 方向键切换查看任务日志机制
+- [自我演化安全网指南（Stage 2）](self-evolution-stage2-guide.md) — `StateRepo`/验证流水线/`EvolutionWorkspace`
+- [自我演化 lesson → skill 闭环指南（Stage 3.1）](self-evolution-stage3-1-guide.md) — `skill_propose`/`evolution-agent`
+- [自我演化 eval 反馈环指南（Stage 3.2）](self-evolution-stage3-2-guide.md) — `mini-agent eval`
+- [自我演化 SubAgent 信息继承指南（Stage 3.3）](self-evolution-stage3-3-guide.md) — skill 继承/工具缓存共享/lesson 回流
 
 ---
 
-*最后更新：2026-06（新增 Lesson Memory 提及，详见 self_evolution_implementation_plan.md Stage 1）*
+*最后更新：2026-06（新增 3.19 自我演化系统小节，详见 self_evolution_implementation_plan.md Stage 2/3.1/3.2/3.3）*

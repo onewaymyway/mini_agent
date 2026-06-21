@@ -351,6 +351,20 @@ for entry in results:
         print(f"[summary] {entry.summary}")
 ```
 
+### SubAgent 产生的 lesson 如何回流主 agent（2026-06 新增，Stage 3.3）
+
+SubAgent（并发子任务）构造自己的 `Agent` 实例时，走的是与主 agent 完全
+相同的后端工厂函数，读写的是**同一个**项目级 `memory.jsonl` 磁盘文件——
+SubAgent 触发的规则型 lesson（连续失败/拒绝重试成功）在运行期间就已经
+实时写入磁盘了。
+
+但主 agent 自己内存里的 `MemoryStore` 实例是 session 开始时加载的一份
+快照，不会自动感知磁盘上新写入的内容。为此 `TaskManager` 在任意 SubAgent
+进入终态（`DONE`/`FAILED`/`CANCELLED`）时，会触发主 agent 已注册的 memory
+backend 执行 `reload()`，使本 session 后续的 `search()` 能检索到 SubAgent
+期间产生的新 lesson。详见
+[自我演化 SubAgent 信息继承（Stage 3.3）](self-evolution-stage3-3-guide.md#4-lesson-回流主-agent磁盘共享--事后-reload)。
+
 ## 可扩展性设计
 
 ### v2 可扩展性重构要点
@@ -419,6 +433,8 @@ register_memory_backend("chroma", lambda cfg: ChromaMemoryBackend(cfg))
 - [权限管理指南](./permission-guide.md) - `(e)dit` 审批编辑如何接入 lesson 系统
 - [hooks 指南](./hooks.md) - `SessionEnd` 事件触发机制
 - [自我演化实施计划](../next_doc/self_evolution_implementation_plan.md) - Stage 1 完整需求背景
+- [自我演化 SubAgent 信息继承（Stage 3.3）](self-evolution-stage3-3-guide.md) - SubAgent 产生的 lesson 如何回流主 agent
+- [自我演化 eval 反馈环（Stage 3.2）](self-evolution-stage3-2-guide.md) - 用 eval 验证 lesson → skill 闭环产出的效果
 
 ## 常见问题
 

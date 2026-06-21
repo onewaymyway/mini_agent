@@ -258,6 +258,8 @@ CLI 测试的输出捕获没有用 `capsys`——`mini_agent.ui.terminal.term` �
 - [自我演化设计文档](../next_doc/self_evolution_design.md) — 第 4 节安全网整体设计
 - [受保护路径清单](protected-paths-guide.md) — Stage 0.1，T3 强制升级判定的依据
 - [记忆管理指南](memory-management-guide.md) — Stage 1 的 lesson/memory 写入路径，revert 记录复用了这套存储
+- [自我演化 lesson → skill 闭环（Stage 3.1）](self-evolution-stage3-1-guide.md) — 本阶段的安全网被 `skill_propose` 工具直接复用
+- [自我演化 eval 反馈环（Stage 3.2）](self-evolution-stage3-2-guide.md) — `EvolutionWorkspace` 隔离环境可与 `mini-agent eval` 组合使用
 
 ---
 

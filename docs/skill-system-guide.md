@@ -91,6 +91,29 @@ Agent 初始化时，如果传入了 `skill_loader`，会注册以下技能管�
 
 关键词自动激活只是辅助机制；更精确的方式仍然是让模型根据工具目录主动调用 `skill_activate`。
 
+### 3.4 `exclude()`：彻底排除（2026-06 新增，Stage 3.2）
+
+`SkillLoader.exclude(name)` 与 `deactivate(name)` 的区别是把 skill 从
+`_all` 中**整体删除**，而不只是从 `_active` 列表移除——意味着排除后既不能
+被 `skill_activate` 显式激活，也不会被 `auto_activate()` 的关键词命中
+重新拉起。这是 [`mini-agent eval --without-skill`](self-evolution-stage3-2-guide.md)
+严格对比实验的基础：要保证"排除某个 skill"是真正的"完全不参与"，而不是
+"默认不激活但仍可能被关键词触发"。
+
+```python
+loader.exclude("docx")   # docx 从 _all 中被 del，对本次 SkillLoader 实例彻底不可见
+```
+
+### 3.5 `skill_propose`：让 agent 自己生成新 skill（2026-06 新增，Stage 3.1）
+
+除了人工编写 SKILL.md，agent 也可以调用 `skill_propose` 工具把
+`memory.jsonl` 中沉淀的 lesson 提炼为一份新的 SKILL.md 提案。提案不会
+直接出现在主分支或当前工作目录——它通过自我演化安全网（`StateRepo.apply()`，
+tier 固定 T1）写到一个独立的 `evolve/<date>-skill-<name>` git 分支上，
+等待人工 `/evolution show|diff` 审核后手动 `git merge`，合并后才会被
+`SkillLoader` 在下次启动时发现。详见
+[自我演化 lesson → skill 闭环指南（Stage 3.1）](self-evolution-stage3-1-guide.md)。
+
 ---
 
 ## 4. System Prompt 注入流程
@@ -251,7 +274,9 @@ Token 估算采用粗略规则：`1 token ≈ 4 字符`。
 | `src/mini_agent/prompts/system/active_skills.md` | active skill 注入到 system prompt 的模板 |
 | `src/mini_agent/agent.py` | 自动激活、system prompt 拼装、回复后记录使用、压缩重附 |
 | `src/mini_agent/cli/repl.py` | `/skills` 与 `/skill ...` CLI 命令实现 |
+| `src/mini_agent/tools/evolution.py` | `skill_propose` 工具：lesson → SKILL.md 提案（2026-06 新增，Stage 3.1） |
+| `src/mini_agent/evolution/eval_runner.py` | `mini-agent eval` 调用 `SkillLoader.exclude()` 做严格对比（2026-06 新增，Stage 3.2） |
 
 ---
 
-> 最后更新：2026-06（反映 src/mini_agent 包布局重构，CLI 命令实现已从 main.py 迁移至 src/mini_agent/cli/commands/skills.py；新增图片生成与识别技能）
+> 最后更新：2026-06（新增 `exclude()` 与 `skill_propose`，详见 self_evolution_implementation_plan.md Stage 3.1/3.2）

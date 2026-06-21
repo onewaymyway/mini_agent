@@ -329,6 +329,43 @@ python main.py --provider nvidia --model qwen/qwen3.5-122b-a10b --system-tool-ca
 - **`(e)dit` 审批编辑接入**：`permissions.py` 新增 `last_edit`/`pop_last_edit()`，`(e)dit` 编辑发生时通过 `tool_executor.py` 的 `on_edit_detected` 回调转交 `agent._on_edit_detected()`，写入 `HType.USER_CORRECTION` 类型的 history 消息 + 生成 `human_feedback` lesson
 - 详见 [记忆管理指南](docs/memory-management-guide.md#lesson-memory)、[history 类型化设计](docs/history-typed-design.md)、[权限管理指南](docs/permission-guide.md)、[hooks 指南](docs/hooks.md)
 
+### 自我演化安全网（Stage 2）
+
+> 对应 `next_doc/self_evolution_implementation_plan.md` Stage 2（Phase F），自我修改的唯一写入入口 + 分级校验 + 进程级隔离
+
+- **`StateRepo`**（`evolution/state_repo.py`）：`apply()` 是所有自我修改的唯一写入入口，原子化（先算受保护路径强制升级后的生效 tier → 跑校验 → 全部通过才落盘 + `git commit`），commit message 结构化携带 `source_lessons`/`session_id`/`confidence`/`occurrence_count`/`proposed_by`；改动路径命中 `scripts/protected_paths.py` 清单时强制升级为 T3，只升不降
+- **验证流水线**（`evolution/validators.py`）：T0 schema 校验 / T1 加载校验（真用 `SkillLoader`/`AgentProfile` 解析一遍）/ T2 lint + 现有单测 / T3 同 T2 + 强制人审
+- **`EvolutionWorkspace`**（`evolution/workspace.py`）：基于 `git worktree` 的进程级隔离，`smoke_boot()` 验证改动在隔离环境里能正常加载，复用现有 `--sandbox` flag
+- **`/evolution log|show|diff|revert`** CLI 命令组：`revert` 触发后自动生成一条 `source="revert_record"` 的 lesson，反哺记忆系统
+- 详见 [自我演化安全网指南（Stage 2）](docs/self-evolution-stage2-guide.md)
+
+### lesson → skill 闭环（Stage 3.1）
+
+> 对应 `next_doc/self_evolution_implementation_plan.md` Stage 3.1（Phase C），`memory.jsonl` 中沉淀的经验自动提炼为可复用的 skill
+
+- **`skill_propose` 工具**：内部调用 `StateRepo.apply()` 在 `evolve/<date>-skill-<name>` 分支上写 `skills/<name>/SKILL.md`，tier 固定 T1；含 fresh-repo（全新项目首次触发演化、`git worktree add ... HEAD` 因无提交而失败）修复
+- **`evolution-agent` profile**（`.agent/agents/evolution-agent.md`）：复用现有 `AgentProfile` 机制的专职 sub-agent，只读 lesson + 调用 `skill_propose`，不直接改动主分支
+- **lesson 阈值扫描**（`perception/lesson_review.py`）：`/evolve review` 扫描 `occurrence_count` 超阈值（T1 默认 3）的 lesson，按关键词 Jaccard 相似度分组后 spawn `evolution-agent` 处理
+- 详见 [自我演化 lesson → skill 闭环指南（Stage 3.1）](docs/self-evolution-stage3-1-guide.md)
+
+### eval 反馈环（Stage 3.2）
+
+> 对应 `next_doc/self_evolution_implementation_plan.md` Stage 3.2（Phase D），验证某个 skill 开启前后的真实效果差异
+
+- **`mini-agent eval --scenario DIR [--skill NAME]`**：复用 `test_cases/*.txt` 既有格式作为回归集，对同一批场景分别跑 with/without-skill 两遍，对比 turns/token/tool 失败率，输出 JSON 报告
+- **核心引擎**（`evolution/eval_runner.py`）：场景加载、单场景执行（真实 LLM 调用）、对比报告生成，与 CLI 解耦，可被未来的 `evolution-agent` 直接调用
+- **`SkillLoader.exclude(name)`**：与 `deactivate()` 的区别是把 skill 从 `_all` 中整体移除，保证不会被 `auto_activate()` 关键词命中重新拉起，是 `--without-skill` 严格排除的关键
+- 详见 [自我演化 eval 反馈环指南（Stage 3.2）](docs/self-evolution-stage3-2-guide.md)
+
+### SubAgent 信息继承（Stage 3.3）
+
+> 对应 `next_doc/self_evolution_implementation_plan.md` Stage 3.3（Phase E），主 agent 的运行期状态向 SubAgent 继承/共享
+
+- **Skill 继承**：`Task.active_skills` 字段 + `tools/orchestration.py` 的 thread-local provider 机制，SubAgent 启动时按名称自动激活主 agent 当前激活的 skill；用独立 `ToolRegistry` 副本（`filtered()`）规避全局单例重复注册崩溃 / 闭包跨实例串台
+- **`ToolResultCache` 跨 SubAgent 共享**：`tool_cache_enabled` 开启时 `TaskManager` 持有唯一加锁实例（`threading.Lock` 保护 `OrderedDict` 操作），避免并发 SubAgent 重复读取同一份文件
+- **lesson 回流**：SubAgent 与主 agent 共享同一个 `memory.jsonl` 磁盘路径，SubAgent 进入终态（`DONE`/`FAILED`/`CANCELLED`）时触发主 agent 已注册 memory backend 的 `reload()`
+- 详见 [自我演化 SubAgent 信息继承指南（Stage 3.3）](docs/self-evolution-stage3-3-guide.md)
+
 ### 参数优先级
 
 **命令行参数 > 配置文件参数**。之前配置文件优先级更高，已修正。
@@ -350,6 +387,10 @@ python main.py --provider nvidia --model qwen/qwen3.5-122b-a10b --system-tool-ca
 - [配置系统指南](docs/config-guide.md) — 配置架构、子配置块、加载优先级
 - [存储设计](docs/storage-design.md) — 文件布局，含 `manifest.json`/`plan_snapshot.json`
 - [受保护路径清单指南](docs/protected-paths-guide.md) — T3 治理红线设计与扩展规则
+- [自我演化安全网指南（Stage 2）](docs/self-evolution-stage2-guide.md) — `StateRepo`/验证流水线/`EvolutionWorkspace`/`/evolution` 命令组
+- [自我演化 lesson → skill 闭环指南（Stage 3.1）](docs/self-evolution-stage3-1-guide.md) — `skill_propose`/`evolution-agent`/`/evolve review`
+- [自我演化 eval 反馈环指南（Stage 3.2）](docs/self-evolution-stage3-2-guide.md) — `mini-agent eval` with/without-skill 对比
+- [自我演化 SubAgent 信息继承指南（Stage 3.3）](docs/self-evolution-stage3-3-guide.md) — skill 继承/工具缓存共享/lesson 回流
 - [Web Search 指南](docs/web-search-guide.md) — Web 搜索功能使用指南
 - [图片技能指南](docs/image-skills-guide.md) — 图片识别与生成技能使用指南
 - [Reminder 系统指南](docs/reminder-system-guide.md) — 动态提示注入机制使用指南

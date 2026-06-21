@@ -189,6 +189,8 @@ pytest tests/test_evolution_agent_profile.py -v    # evolution-agent.md 自身�
 - [Stage 2 安全网指南](self-evolution-stage2-guide.md) — `StateRepo`/`EvolutionWorkspace`/`/evolution` 命令组，本阶段直接复用
 - [自定义子 Agent 指南](custom-sub-agents.md) — `AgentProfile` 机制，`evolution-agent.md` 遵循的约定
 - [记忆管理指南](memory-management-guide.md) — `MemoryEntry`/`occurrence_count`/`source` 字段语义
+- [自我演化 eval 反馈环（Stage 3.2）](self-evolution-stage3-2-guide.md) — 用 `mini-agent eval` 验证本阶段产出的 skill 是否真的有效
+- [自我演化 SubAgent 信息继承（Stage 3.3）](self-evolution-stage3-3-guide.md) — `evolution-agent` 作为 SubAgent 运行时同样适用的 skill 继承/lesson 回流机制
 
 ---
 

@@ -305,6 +305,20 @@ mgr.cancel(task_id)  # 发送取消信号
 - TaskManager.submit()：实际的任务调度入口
 - SubAgent：执行具体的任务内容
 
+### 8.3 与自我演化系统的关系（Stage 3.3 / Phase E）
+
+主 agent 的部分运行期状态会被 SubAgent 继承/共享，详见
+[自我演化 SubAgent 信息继承（Stage 3.3）](self-evolution-stage3-3-guide.md)：
+
+- **Skill 继承**：spawn 时通过 `Task.active_skills` 字段把主 agent 当前激活的
+  skill 列表透传给 SubAgent，SubAgent 启动后按名称自动激活同一批 skill。
+- **`ToolResultCache` 跨 SubAgent 共享**：`tool_cache_enabled` 开启时，
+  `TaskManager` 持有一个加锁的全局缓存实例，避免并发 SubAgent 重复读取
+  同一份文件。
+- **lesson 回流**：SubAgent 与主 agent 共享同一个 `memory.jsonl` 磁盘路径，
+  SubAgent 进入终态时触发主 agent 的 memory backend `reload()`，使本 session
+  后续检索能看到 SubAgent 期间产生的新 lesson。
+
 ---
 
-*最后更新：2026-06（反映 SubAgent 重试机制、状态管理修复、调试日志新增）*
+*最后更新：2026-06（反映 SubAgent 重试机制、状态管理修复、调试日志新增、Stage 3.3 信息继承机制）*

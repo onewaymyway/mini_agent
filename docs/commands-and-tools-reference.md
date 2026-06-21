@@ -5,6 +5,9 @@
 **补充阅读**：
 - [Task 日志实时查看与切换](task-focus-viewing.md) — 方向键实时查看任务日志
 - [Plan 与 Task 指南](plan-and-task-guide.md) — 执行计划机制
+- [自我演化安全网指南（Stage 2）](self-evolution-stage2-guide.md) — `/evolution` 命令组背景
+- [自我演化 lesson → skill 闭环指南（Stage 3.1）](self-evolution-stage3-1-guide.md) — `/evolve` 命令与 `skill_propose` 工具背景
+- [自我演化 eval 反馈环指南（Stage 3.2）](self-evolution-stage3-2-guide.md) — `mini-agent eval` 完整说明
 
 ---
 
@@ -242,9 +245,43 @@ mini-agent --retry-backoff linear --retry-backoff-step 60 --retry-backoff-max 30
 |------|------|
 | `/model <name>` | 中途切换模型（如 `/model claude-haiku-4-5`） |
 
+### 自我演化（`src/mini_agent/cli/commands/evolution.py` / `evolve.py`）
+
+> 详见 [Stage 2 安全网指南](self-evolution-stage2-guide.md)、[Stage 3.1 lesson → skill 闭环指南](self-evolution-stage3-1-guide.md)
+
+| 命令 | 说明 |
+|------|------|
+| `/evolution log [N]` | 展示最近 N 条自我修改 commit（默认 10），表格形式 |
+| `/evolution show <commit>` | 展示单条 commit 的完整结构化信息 + diff |
+| `/evolution diff <commit>` | 展示某次 commit 的改动 diff（语法高亮） |
+| `/evolution revert <commit>` | 生成 revert commit，并自动记录一条 `source="revert_record"` 的 lesson |
+| `/evolve review [--global] [--tier T1\|T2]` | 扫描 lesson（默认 workdir 级 `memory.jsonl`，`--global` 扫描 `~/.agent/memory.jsonl`），对达标分组 spawn `evolution-agent` 提案 |
+| `/evolve list [--global] [--tier T1\|T2]` | 同 `review`，但只扫描 + 列出达标分组，不 spawn agent、不消耗 LLM 调用 |
+
+`commit` 参数支持完整 hash 或前缀。
+
 ---
 
-## 四、内置工具
+## 四、`mini-agent eval` 子命令
+
+> 详见 [Stage 3.2 eval 反馈环指南](self-evolution-stage3-2-guide.md)
+
+不属于 REPL slash 命令，是独立的进程入口子命令（`mini-agent eval ...`），用于
+对比某个 skill 开启/排除前后的 turns/token/tool 失败率：
+
+```bash
+mini-agent eval --scenario test_cases/ --skill docx
+mini-agent eval --scenario test_cases/ --skill docx --output /tmp/report.json
+mini-agent eval --scenario test_cases/                      # 不传 --skill，跑 baseline 冒烟测试
+```
+
+主要参数：`--scenario DIR`（必填）、`--skill NAME`、`--pattern GLOB`、
+`--max-scenario-turns N`（默认 10）、`--project DIR`、`--skills-dir DIR`、
+`--output FILE`、`--no-sandbox`、`--max-turns N`、`--quiet`。
+
+---
+
+## 五、内置工具
 
 > 实现位置：`src/mini_agent/tools/`
 
@@ -333,9 +370,17 @@ mini-agent --retry-backoff linear --retry-backoff-step 60 --retry-backoff-max 30
 | `skill_stats` | 返回技能使用追踪和预算状态 |
 | `compact_history` | 触发带 Skill 重附逻辑的历史压缩 |
 
+### 自我演化（evolution.py，Stage 3.1）
+
+| 工具 | 需要审批 | 参数 | 说明 |
+|------|----------|------|------|
+| `skill_propose` | ❌（沙箱拦截 + T1 校验流水线把关） | `name`, `content`, `source_lessons`, `reason` | 把新 SKILL.md 提案为一个 `evolve/<date>-skill-<name>` 分支上的 commit（`StateRepo.apply()`，tier=T1），不会自动生效，需人工 review + merge |
+
+详见 [自我演化 lesson → skill 闭环指南（Stage 3.1）](self-evolution-stage3-1-guide.md)。
+
 ---
 
-## 五、命令执行流程
+## 六、命令执行流程
 
 ```
 用户输入
@@ -355,7 +400,7 @@ ui/terminal.py（stream_token / print）
 
 ---
 
-## 六、常用命令示例
+## 七、常用命令示例
 
 ```bash
 # 启动并指定模型
