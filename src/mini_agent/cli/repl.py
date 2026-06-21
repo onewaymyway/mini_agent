@@ -25,6 +25,7 @@ from mini_agent.cli.commands import (
     handle_agents_cmd,
     handle_hooks_cmd,
     handle_evolution_cmd,
+    handle_evolve_cmd,
 )
 
 
@@ -211,6 +212,9 @@ def _handle_slash(cmd: str, agent: Agent, skill_loader: SkillLoader) -> None:
 
     elif name == "evolution":
         handle_evolution_cmd(parts[1:], agent)
+
+    elif name == "evolve":
+        handle_evolve_cmd(parts[1:], agent)
 
     else:
         R.print_error(pm.fragment("cli_messages", "UNKNOWN_COMMAND", cmd=cmd))

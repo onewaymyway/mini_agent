@@ -113,6 +113,16 @@ class EvolutionWorkspace:
             )
 
         branch_exists = branch in repo.list_branches()
+
+        # 【fresh-repo 修复】见 StateRepo.ensure_initial_commit() 文档：全新项目
+        # 第一次创建 evolve 分支时，HEAD 可能还不是有效引用（仓库尚无任何 commit），
+        # 此时 `git worktree add ... -b <branch> HEAD` 会直接失败。只在
+        # base 仍是默认的 "HEAD" 且仓库确实没有 commit 时兜底创建一个空初始
+        # commit；调用方显式传入其他 base（如某个具体 commit hash）时不做
+        # 任何隐式修复，按调用方意图失败更安全。
+        if not branch_exists and base == "HEAD" and not repo.has_commits():
+            repo.ensure_initial_commit()
+
         args = ["worktree", "add", str(target)]
         if branch_exists:
             args.append(branch)

@@ -124,6 +124,15 @@ class Agent:
             sandbox=cfg.sandbox,
             project_root=cfg.project_root,
         )
+
+        # [Phase C / 3.1] 注册 project_root provider（thread-local，与 active-skills
+        # provider 同款写法），供 skill_propose 等无状态工具函数读取当前 agent
+        # 所在的项目根目录。不放在 `if self.skill_loader:` 分支里——project_root
+        # 是比 skill 更基础的上下文，任何 Agent（不论是否携带 skill_loader）
+        # 都应该让同线程内的 skill_propose 调用能找到正确的项目根目录。
+        from mini_agent.tools.evolution import set_project_root_provider
+        set_project_root_provider(lambda: self.cfg.project_root)
+
         self.stats = SessionStats()
         self._history: list[dict] = []
         # LLMClient 可从外部注入（便于测试），否则从 AppConfig 自动创建

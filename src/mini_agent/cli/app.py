@@ -51,6 +51,7 @@ def _main_inner() -> None:
     import mini_agent.tools.orchestration # noqa: F401
     import mini_agent.tools.plan          # noqa: F401
     import mini_agent.tools.user_input    # noqa: F401
+    import mini_agent.tools.evolution     # noqa: F401  [Phase C / 3.1] skill_propose
     # tools.skill_manager 由 Agent.__init__ 懒注册（需要 SkillLoader 实例）
 
     from mini_agent.cli.parser import build_parser

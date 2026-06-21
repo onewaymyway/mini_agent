@@ -34,7 +34,8 @@ _SAFE_TOOLS = frozenset(
 
 # Tools that need approval by default (write / exec / network)
 _RISKY_TOOLS = frozenset(
-    {"bash", "write_file", "patch_file", "create_file", "delete_file"}
+    {"bash", "write_file", "patch_file", "create_file", "delete_file",
+     "skill_propose"}  # [Phase C / 3.1] 自我演化写盘操作，--sandbox 模式下应被拦截
 )
 
 # Dangerous shell patterns that get an extra warning

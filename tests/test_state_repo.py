@@ -55,6 +55,43 @@ def test_init_sets_local_git_identity_if_missing(tmp_path):
     assert proc.stdout.strip()
 
 
+# ── has_commits() / ensure_initial_commit()（Stage 3.1 fresh-repo 修复）────────
+
+def test_has_commits_false_on_fresh_repo(repo):
+    assert repo.has_commits() is False
+
+
+def test_has_commits_true_after_apply(repo):
+    repo.apply(changes={"a.txt": "x"}, message="seed", meta={}, tier="T0")
+    assert repo.has_commits() is True
+
+
+def test_ensure_initial_commit_on_fresh_repo_creates_commit(repo):
+    assert repo.has_commits() is False
+    repo.ensure_initial_commit()
+    assert repo.has_commits() is True
+    logs = repo.log()
+    assert len(logs) == 1
+    assert "initial commit" in logs[0].subject
+
+
+def test_ensure_initial_commit_is_noop_if_already_has_commits(repo):
+    repo.apply(changes={"a.txt": "x"}, message="seed", meta={}, tier="T0")
+    repo.ensure_initial_commit()
+    logs = repo.log()
+    assert len(logs) == 1  # 没有多出一条 commit
+    assert "seed" in logs[0].subject
+
+
+def test_ensure_initial_commit_allows_subsequent_branch_creation(repo):
+    """这是 self_evolution_implementation_plan.md 记录的 Stage 3.1 中断点的
+    直接回归测试：fresh repo 上 `git branch <name> HEAD` 此前会失败
+    （HEAD 不是有效引用），ensure_initial_commit() 修复后应该能正常创建分支。"""
+    repo.ensure_initial_commit()
+    repo.create_branch("some-branch")  # 不应抛异常
+    assert "some-branch" in repo.list_branches()
+
+
 # ── apply() 基本行为 ──────────────────────────────────────────────────────────
 
 def test_apply_writes_file_and_commits(repo, tmp_path):

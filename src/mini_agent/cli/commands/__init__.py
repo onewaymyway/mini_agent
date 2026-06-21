@@ -9,6 +9,7 @@ cli/commands — slash 命令处理模块包
   concurrency — /concurrency (/cc)
   providers   — /provider
   evolution   — /evolution log|show|diff|revert（Stage 2：自我演化安全网）
+  evolve      — /evolve review|list（Stage 3.1：lesson → skill 提案闭环）
 """
 
 from mini_agent.cli.commands.skills import handle_skills_list, handle_skill_cmd
@@ -20,6 +21,7 @@ from mini_agent.cli.commands.providers import handle_provider_cmd
 from mini_agent.cli.commands.agents import handle_agents_cmd
 from mini_agent.cli.commands.hooks import handle_hooks_cmd
 from mini_agent.cli.commands.evolution import handle_evolution_cmd
+from mini_agent.cli.commands.evolve import handle_evolve_cmd
 
 __all__ = [
     "handle_skills_list",
@@ -32,4 +34,5 @@ __all__ = [
     "handle_agents_cmd",
     "handle_hooks_cmd",
     "handle_evolution_cmd",
+    "handle_evolve_cmd",
 ]

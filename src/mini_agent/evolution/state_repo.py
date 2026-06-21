@@ -147,6 +147,28 @@ class StateRepo:
             if proc.returncode != 0 or not proc.stdout.strip():
                 self._run_git(["config", key, fallback])
 
+    def has_commits(self) -> bool:
+        """仓库是否已有至少一次 commit（HEAD 是否已指向有效提交）。"""
+        proc = self._run_git(["rev-parse", "--verify", "-q", "HEAD"], check=False)
+        return proc.returncode == 0
+
+    def ensure_initial_commit(self) -> None:
+        """
+        若仓库尚无任何 commit，创建一个空的初始 commit，使 HEAD 成为有效引用。
+
+        【背景】fresh-repo 边界场景：全新项目第一次触发自我演化（例如
+        skill_propose 在尚未有任何 commit 的项目上是第一个写操作）时，
+        `git worktree add <path> -b <branch> HEAD` 会因为 HEAD 还不是
+        一个有效引用而失败（"fatal: invalid reference: HEAD"）——这正是
+        self_evolution_implementation_plan.md 中记录的 Stage 3.1 中断点。
+
+        分支操作（含 EvolutionWorkspace.create()）在"基于 HEAD 创建新分支"
+        之前，应该先调用本方法兜底；已有 commit 时直接是 no-op。
+        """
+        if self.has_commits():
+            return
+        self._run_git(["commit", "--allow-empty", "-m", "[T0][self_evolution] initial commit"])
+
     # ── git 调用封装 ──────────────────────────────────────────────────────────
 
     def _run_git(self, args: list[str], check: bool = True) -> subprocess.CompletedProcess:

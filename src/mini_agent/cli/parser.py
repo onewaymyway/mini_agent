@@ -47,6 +47,8 @@ def build_parser() -> argparse.ArgumentParser:
               /evolution show <commit>    Show one commit's full info + diff
               /evolution diff <commit>    Show diff for one commit
               /evolution revert <commit>  Revert a self-evolution commit (records a lesson)
+              /evolve review [--global] [--tier T1|T2]   Scan lessons, spawn evolution-agent on qualifying groups
+              /evolve list [--global] [--tier T1|T2]     Preview qualifying lesson groups without spawning
               exit / quit        Exit
         """),
     )

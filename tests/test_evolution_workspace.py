@@ -80,6 +80,29 @@ def test_create_makes_new_branch_and_worktree_dir(repo, ws_root):
         ws.destroy(delete_branch=True)
 
 
+def test_create_on_fresh_repo_with_no_commits_does_not_fail(tmp_path, ws_root):
+    """
+    [核心回归测试] self_evolution_implementation_plan.md 记录的 Stage 3.1
+    中断点：全新项目（StateRepo 刚 git init，尚无任何 commit）上调用
+    EvolutionWorkspace.create(base="HEAD")，此前会因为 `git worktree add
+    ... -b <branch> HEAD` 里 HEAD 还不是有效引用而抛
+    'fatal: invalid reference: HEAD'。修复后应该自动兜底创建一个空初始
+    commit，再正常创建分支 + worktree。
+    """
+    fresh_root = tmp_path / "fresh_project"
+    fresh_root.mkdir()
+    fresh_repo = StateRepo(fresh_root)
+    assert fresh_repo.has_commits() is False
+
+    ws = EvolutionWorkspace.create(fresh_repo, branch="evolve/fresh-test", workspace_root=ws_root)
+    try:
+        assert ws.path.exists()
+        assert "evolve/fresh-test" in fresh_repo.list_branches()
+        assert fresh_repo.has_commits() is True  # 兜底 commit 已经产生
+    finally:
+        ws.destroy(delete_branch=True)
+
+
 def test_destroy_removes_worktree_dir(repo, ws_root):
     ws = EvolutionWorkspace.create(repo, branch="evolve/test-destroy", workspace_root=ws_root)
     path = ws.path
