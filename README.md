@@ -140,6 +140,9 @@ python -m mini_agent --sandbox
 
 # 使用 main.py 启动，更多参数
 python main.py --debug-llm --reminder-verbose
+
+# eval 反馈环：对比某个 skill 开启/排除前后的 turns/token/tool 失败率
+mini-agent eval --scenario test_cases/ --skill docx
 ```
 
 ## 命令行参数
@@ -295,6 +298,8 @@ Web Demo 提供：
 | `/prompts` | 列出所有提示词文件 |
 | `/retry` | 重试上一轮 |
 | `/rollback` | 回退上一轮 |
+| `/evolution log\|show\|diff\|revert` | 查看/审查/回退自我修改历史（Stage 2 安全网） |
+| `/evolve review\|list` | 扫描达标 lesson 并提案/预览新 skill（Stage 3.1） |
 
 ### 键盘快捷键（Task 日志查看）
 
@@ -363,6 +368,9 @@ Agent 可以调用以下内置工具：
 - `list_agent_profiles` — 列出所有自定义子 agent profiles
 - `spawn_named_agent` — 派生预设角色的子 agent
 
+### 自我演化
+- `skill_propose` — 把 lesson 提炼为新 SKILL.md 提案，落在独立 `evolve/` 分支等待人工审核合并（不直接生效）
+
 ## 项目结构
 
 ```
@@ -405,7 +413,10 @@ mini_agent/
 │       │       ├── skills.py
 │       │       ├── tasks.py
 │       │       ├── agents.py
-│       │       └── hooks.py
+│       │       ├── hooks.py
+│       │       ├── evolution.py  # /evolution log|show|diff|revert（Stage 2）
+│       │       ├── evolve.py     # /evolve review|list（Stage 3.1）
+│       │       └── eval_cmd.py   # mini-agent eval 子命令入口（Stage 3.2）
 │       ├── llm/             # LLM 抽象层
 │       │   ├── __init__.py
 │       │   ├── base.py      # 基础接口
@@ -429,7 +440,14 @@ mini_agent/
 │       │   ├── orchestration.py  # 并发编排工具
 │       │   ├── skill_manager.py  # 技能管理
 │       │   ├── plan.py      # 规划工具
-│       │   └── user_input.py  # 用户输入工具
+│       │   ├── user_input.py  # 用户输入工具
+│       │   └── evolution.py # skill_propose 工具（Stage 3.1）
+│       ├── evolution/       # 自我演化安全网与生产闭环
+│       │   ├── __init__.py
+│       │   ├── state_repo.py    # StateRepo：唯一写入入口，风险分级 T0~T3（Stage 2）
+│       │   ├── validators.py    # 按 tier 升级的验证流水线（Stage 2）
+│       │   ├── workspace.py     # EvolutionWorkspace：git worktree 进程级隔离（Stage 2）
+│       │   └── eval_runner.py   # mini-agent eval 核心引擎（Stage 3.2）
 │       ├── orchestrator/    # 并发编排
 │       │   ├── __init__.py
 │       │   ├── task.py      # 任务定义（含 manifest.json 写入）
@@ -451,6 +469,7 @@ mini_agent/
 │       │   ├── memory_factory.py   # 记忆工厂
 │       │   ├── lesson_rules.py     # 规则触发引擎（连续失败/拒绝重试成功）
 │       │   ├── correction_detector.py  # 人类反馈纠正检测
+│       │   ├── lesson_review.py    # lesson 阈值扫描与分组（Stage 3.1，/evolve review）
 │       │   └── token_counter.py    # Token 预估
 │       ├── ui/              # 用户界面
 │       │   ├── __init__.py
@@ -508,7 +527,7 @@ mini_agent/
 ├── scripts/                 # 独立治理脚本（不属于 mini_agent 包）
 │   └── protected_paths.py  # 受保护路径清单（T3 治理红线）
 ├── .agent/                  # 自定义子 agent profiles
-│   └── agents/              # profile 文件 (*.md)
+│   └── agents/              # profile 文件 (*.md，含 evolution-agent.md，Stage 3.1)
 └── hooks/                   # hooks 示例脚本
 ```
 
@@ -656,6 +675,10 @@ python -m pytest tests/ -q
 - [Skill 系统指南](docs/skill-system-guide.md) — 技能机制详解
 - [代码结构指南](docs/code-structure-guide.md) — 项目结构说明
 - [受保护路径清单指南](docs/protected-paths-guide.md) — **新增**：T3 治理红线设计与扩展规则（自我演化基础设施）
+- [自我演化安全网指南（Stage 2）](docs/self-evolution-stage2-guide.md) — **新增**：`StateRepo`/验证流水线/`EvolutionWorkspace`/`/evolution` 命令组
+- [自我演化 lesson → skill 闭环指南（Stage 3.1）](docs/self-evolution-stage3-1-guide.md) — **新增**：`skill_propose`/`evolution-agent`/`/evolve review`
+- [自我演化 eval 反馈环指南（Stage 3.2）](docs/self-evolution-stage3-2-guide.md) — **新增**：`mini-agent eval` with/without-skill 对比
+- [自我演化 SubAgent 信息继承指南（Stage 3.3）](docs/self-evolution-stage3-3-guide.md) — **新增**：skill 继承/工具缓存共享/lesson 回流
 - [HTTP API 指南](docs/http-api-guide.md) — REST/SSE 服务使用指南
 - [Web Demo 指南](docs/web-demo-guide.md) — Streamlit Web 界面使用
 - [MCP 集成指南](docs/mcp-guide.md) — Model Context Protocol 集成
@@ -684,3 +707,11 @@ MIT License
 *2026-06 自我演化基础设施（Stage 0）*：`config.py` 拆分为 `config/` 包（外部 import 路径不变）；新增 `manifest.json`/`plan_snapshot.json` 任务与计划持久化，支持 session 重启恢复；新增 `update_task_progress` 工具；`get_task_status` 截断时主动提示；新增 `scripts/protected_paths.py` 受保护路径清单（T3 治理红线）
 
 *2026-06 Lesson Memory（Stage 1）*：`MemoryEntry` 新增 8 个 lesson 专属字段（`entry_type`/`trigger`/`outcome`/`root_cause`/`suggested_action`/`confidence`/`occurrence_count`/`source`）；新增四条独立写入路径——规则触发（连续失败/拒绝重试成功，`perception/lesson_rules.py`）、`SessionEnd` hook 真正接入 + LLM 反思生成 lesson、人类反馈纠正检测（`perception/correction_detector.py`）、`(e)dit` 审批编辑接入；`history/entry.py` 新增 `HType.USER_CORRECTION` 类型
+
+*2026-06 自我演化安全网（Stage 2）*：新增 `evolution/` 包——`StateRepo.apply()` 作为所有自我修改的唯一写入入口（风险分级 T0~T3，受保护路径强制升级为 T3）；按 tier 升级的验证流水线（schema/加载校验/lint+单测）；`EvolutionWorkspace` 基于 `git worktree` 的进程级隔离；新增 `/evolution log\|show\|diff\|revert` 命令组，`revert` 自动生成 `source="revert_record"` 的 lesson
+
+*2026-06 lesson → skill 闭环（Stage 3.1）*：新增 `skill_propose` 工具，把 lesson 提炼为 SKILL.md 提案并落在独立 `evolve/` 分支（tier 固定 T1，不直接生效）；新增 `evolution-agent` profile（`.agent/agents/evolution-agent.md`）专职处理提案；新增 `perception/lesson_review.py` 做 lesson 阈值扫描分组；新增 `/evolve review\|list` 命令；修复 fresh-repo（全新项目首次触发演化）边界场景
+
+*2026-06 eval 反馈环（Stage 3.2）*：新增 `mini-agent eval --scenario DIR [--skill NAME]` 子命令，复用 `test_cases/*.txt` 作为回归集，对比某个 skill 开启/排除前后的 turns/token/tool 失败率，输出 JSON 报告；`SkillLoader` 新增 `exclude()` 方法保证排除的 skill 不会被关键词重新激活
+
+*2026-06 SubAgent 信息继承（Stage 3.3）*：`Task` 新增 `active_skills` 字段，spawn 的 SubAgent 自动继承主 agent 当前激活的 skill（thread-local provider 机制，独立 `ToolRegistry` 副本规避重复注册崩溃）；`ToolResultCache` 加锁支持跨 SubAgent 共享，避免重复读取同一文件；SubAgent 结束时触发主 agent memory backend `reload()`，使其产生的 lesson 能被主 agent 检索到
