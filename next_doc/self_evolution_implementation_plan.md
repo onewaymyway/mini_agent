@@ -168,10 +168,32 @@ Stage 1+2 完成后，C/D/E 之间**互相独立**，可按资源拆给不同批
 - 触发条件先实现最简单版本：`/evolve review` 手动命令，扫描 `memory.jsonl` 中 `occurrence_count` 超阈值（设计文档 6.7 节：T1 阈值 3）的 lesson，spawn evolution-agent 处理
 - 依赖 Stage 2 的 evolve 分支机制（`git branch` 实现，无需额外代码，2.1 已具备）
 
-#### 3.2 Phase D：`mini-agent eval` 命令
+#### 3.2 Phase D：`mini-agent eval` 命令 ✅ 已完成
 - CLI 新增子命令 `eval --scenario <dir> --with-skill/--without-skill`
 - 实现：跑 `test_cases/` 下场景，对比开关某个 skill 前后的 tool 失败率/turns/token 消耗，输出 JSON 报告
 - 可与 3.1 完全并行；唯一共享依赖是 Stage 2 的 worktree（用于副本对比），时间紧可先在主进程内跑（牺牲隔离性换开发速度），后续再接入 worktree
+
+  **实现说明**：
+  - 核心引擎 `src/mini_agent/evolution/eval_runner.py`：场景加载（复用
+    `test_cases/*.txt` 既有格式，空行分隔多轮对话）、单场景执行
+    （`run_scenario`，统计来自 `SessionStats.tool_stats`）、with/without-skill
+    对比报告（`run_eval` + `EvalReport`）
+  - CLI 接入 `src/mini_agent/cli/commands/eval_cmd.py`：`mini-agent eval
+    --scenario DIR [--skill NAME] [--output FILE] [...]`；因为主入口
+    `prompt` 是位置参数，与子命令模式冲突，改为在 `cli/app.py:main()` 最前面
+    检测 `sys.argv[1] == "eval"` 整体短路，不进入 `build_parser()`
+  - `--without-skill` 通过 `SkillLoader.exclude(name)`（新增方法）实现：
+    与已有 `deactivate()` 的区别是 `exclude()` 把 skill 从 `_all` 中整体移除，
+    保证不会被 `auto_activate()` 关键词命中重新拉起
+  - 按文档原话选择"先在主进程内跑，牺牲隔离性换开发速度"：未引入
+    worktree 隔离，`EvolutionWorkspace`（Stage 2.3）与本命令通过
+    `--project <ws.path> --output <ws.eval_result_path()>` 路径参数组合
+    使用，两者不相互 import，留给未来按需接入
+  - eval 跑批收紧了重试策略（1 次重试/1s 退避，而非生产默认的 15 次/5s），
+    避免单个真实失败场景拖慢整批运行
+  - 测试：`tests/test_eval_runner.py`（27 例）、`tests/test_eval_cli.py`
+    （23 例）、`tests/test_skill_manager.py` 新增 `TestSkillLoaderExclude`
+    （7 例）
 
 #### 3.3 Phase E：SubAgent 信息继承
 - `Task`（`orchestrator/task.py`）新增字段 `active_skills: list[str]`，`spawn_agent` 工具透传主 agent 当前激活的 skill 列表
@@ -182,7 +204,9 @@ Stage 1+2 完成后，C/D/E 之间**互相独立**，可按资源拆给不同批
 
 **验证标准**：
 - 3.1：跑通后能看到真实的 evolve 分支被创建，`git diff main..evolve/xxx` 可见新 SKILL.md
-- 3.2：跑通后 `mini-agent eval` 输出有意义的对比数字
+- 3.2：✅ 跑通后 `mini-agent eval` 输出有意义的对比数字（见上方实现说明；
+  `mini-agent eval --scenario test_cases/ --skill <name>` 实测可输出
+  with/without 两组 turns/token/tool_failure_rate 及其 delta）
 - 3.3：spawn 一个 SubAgent，确认它确实带着主 agent 当前激活的 skill 启动
 
 ---
@@ -221,8 +245,8 @@ Stage 0（4 项并行）✅ 已完成
 |---|---|---|---|
 | Stage 0 | 0.5 人天 | 4 路并行，1 人天内可完成 | ✅ 已完成（2026-06） |
 | Stage 1 | 2-3 人天 | 1.1 单线，1.2/1.3/1.4 三路并行 | ✅ 已完成（2026-06） |
-| Stage 2 | 3-4 人天 | 2.1 单线，2.2/2.3 两路并行 | 待开始 |
-| Stage 3 | 3-5 人天 | 3.1/3.2/3.3 三路独立，3.3 可提前 | 待开始 |
+| Stage 2 | 3-4 人天 | 2.1 单线，2.2/2.3 两路并行 | ✅ 已完成（2026-06） |
+| Stage 3 | 3-5 人天 | 3.1/3.2/3.3 三路独立，3.3 可提前 | 进行中：3.2/3.3 ✅ 已完成，3.1 待开始 |
 
 总计约 **9-13 人天**可以把 A（补完）+ B + F + C/D/E 这条设计文档推荐的"建议起步顺序"主线跑通，建立起真正的"经验沉淀 → 安全验证 → 受控应用"闭环骨架。过程中每个 Stage 结束都有可验证、可演示的成果，避免"写了很多代码但拼不起来"的风险。
 
@@ -234,5 +258,6 @@ Stage 0（4 项并行）✅ 已完成
 
 1. ~~0.1 → 0.2 → 0.3 → 0.4~~ ✅ 已完成（2026-06）
 2. ~~1.1 → 1.2 → 1.4 → 1.5 → 1.3~~ ✅ 已完成（2026-06）
-3. **下一步 →** 2.1 → 2.2 → 2.3 → 2.4
-4. 3.3（依赖最弱，优先验证）→ 3.1 → 3.2
+3. ~~2.1 → 2.2 → 2.3 → 2.4~~ ✅ 已完成（2026-06）
+4. ~~3.3（依赖最弱，优先验证）→ 3.2~~ ✅ 已完成（2026-06）→ **下一步 →** 3.1
+

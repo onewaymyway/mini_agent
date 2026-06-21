@@ -256,6 +256,60 @@ class TestSkillDeactivateTool:
         assert "docx" not in self.loader.active
 
 
+# ── exclude()（Stage 3.2 / mini-agent eval --without-skill）────────────────────
+
+class TestSkillLoaderExclude:
+    """
+    SkillLoader.exclude() 用于 eval 的 --without-skill 场景：必须保证被排除的
+    skill 既不在 active 列表里，也不会被 auto_activate() 关键词命中重新拉起——
+    这是它与已有 deactivate() 的本质区别（deactivate 只是取消激活，关键词命中
+    仍会被 auto_activate 重新激活）。
+    """
+
+    def setup_method(self):
+        self.loader = make_loader([
+            {"name": "docx", "description": "Word docs", "trigger_words": ["docx", "word"]},
+            {"name": "pdf",  "description": "PDF creation", "trigger_words": ["pdf"]},
+        ])
+
+    def test_exclude_removes_from_all(self):
+        assert self.loader.exclude("docx") is True
+        assert self.loader.get("docx") is None
+        assert "pdf" in [s["name"] for s in self.loader.get_catalog()]
+
+    def test_exclude_removes_from_active_if_currently_active(self):
+        self.loader.activate("docx")
+        assert "docx" in self.loader.active
+        self.loader.exclude("docx")
+        assert "docx" not in self.loader.active
+
+    def test_exclude_nonexistent_skill_returns_false(self):
+        assert self.loader.exclude("ghost") is False
+
+    def test_excluded_skill_cannot_be_reactivated(self):
+        self.loader.exclude("docx")
+        assert self.loader.activate("docx") is False
+        assert "docx" not in self.loader.active
+
+    def test_excluded_skill_not_picked_up_by_auto_activate(self):
+        self.loader.exclude("docx")
+        newly = self.loader.auto_activate("please convert this to docx format")
+        assert "docx" not in newly
+        assert "docx" not in self.loader.active
+
+    def test_other_skills_unaffected_by_exclude(self):
+        self.loader.activate("pdf")
+        self.loader.exclude("docx")
+        assert "pdf" in self.loader.active
+        assert self.loader.get("pdf") is not None
+
+    def test_excluded_skill_absent_from_catalog(self):
+        self.loader.exclude("docx")
+        names = [s["name"] for s in self.loader.get_catalog()]
+        assert "docx" not in names
+        assert "pdf" in names
+
+
 # ── 工具注册完整性 ────────────────────────────────────────────────────────────
 
 class TestToolRegistration:

@@ -17,7 +17,16 @@ from pathlib import Path
 import mini_agent.ui.renderer as R
 
 
-def main() -> None:
+def main() -> int:
+    # ── eval 子命令短路：在进入主 argparse 流程之前优先处理 ───────────────────
+    # 对应 self_evolution_implementation_plan.md Stage 3.2。`mini-agent eval ...`
+    # 与主入口的位置参数 `prompt`（cli/parser.py）共存：argparse 不支持
+    # "位置参数 + 互斥子命令"两者兼得，所以在这里按 argv[1] 整体短路，
+    # 不进入 build_parser() 解析，与现有单命令体系互不干扰。
+    if len(sys.argv) > 1 and sys.argv[1] == "eval":
+        from mini_agent.cli.commands.eval_cmd import run_eval_cli
+        return run_eval_cli(sys.argv[2:])
+
     # ── 全局异常捕获：确保任何启动错误都能显示 ────────────────────────────────
     try:
         _main_inner()
@@ -32,6 +41,7 @@ def main() -> None:
         traceback.print_exc()
         print("=" * 50, file=sys.stderr)
         sys.exit(1)
+    return 0
 
 
 def _main_inner() -> None:

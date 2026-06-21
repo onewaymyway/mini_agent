@@ -16,6 +16,12 @@ def build_parser() -> argparse.ArgumentParser:
         description="Simplified Claude Code with skill support",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=textwrap.dedent("""
+            Subcommands:
+              mini-agent eval --scenario DIR [--skill NAME]
+                  Run test_cases/-style scenarios and compare tool-failure-rate
+                  /turns/token cost with a skill enabled vs excluded.
+                  Run `mini-agent eval --help` for full options.
+
             Slash commands (in REPL):
               /help              Show this help
               /clear             Clear conversation history

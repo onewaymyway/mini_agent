@@ -107,6 +107,24 @@ class SkillLoader:
             return True
         return False
 
+    def exclude(self, name: str) -> bool:
+        """
+        [Phase D / 3.2] 把某个 skill 从"可用集合"中临时移除：既不能被 auto_activate()
+        自动命中，也不能被 activate() 显式激活（与 deactivate() 的区别——deactivate
+        只是取消激活，skill 仍在 _all 里，关键词命中时会被 auto_activate 重新拉起）。
+
+        用于 `mini-agent eval --without-skill <name>` 场景：需要严格保证该 skill
+        在本次评测中完全不参与，而不是"默认不激活但仍可能被关键词触发"。
+
+        返回是否真的移除了（name 不存在则返回 False，调用方可借此判断拼写错误）。
+        """
+        if name not in self._all:
+            return False
+        del self._all[name]
+        if name in self._active:
+            self._active.remove(name)
+        return True
+
     def auto_activate(self, query: str) -> list[str]:
         """Activate any skills whose trigger words match the query. Return newly activated names."""
         newly = []
