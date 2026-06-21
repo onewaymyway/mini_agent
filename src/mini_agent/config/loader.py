@@ -36,6 +36,7 @@ from .models import (
     RoleAgentConfig,
     EnvInfoConfig,
     ReminderConfig,
+    WorkdirKnowledgeConfig,
     DEFAULT_MODEL,
     DEFAULT_AGENT_NAME,
     DEFAULT_MAX_TOKENS,
@@ -464,6 +465,14 @@ def load_config(
         include_username=_ei_include_username,
     )
 
+    # ── Workdir 知识层配置组装（W2，对应设计文档 8.2 节）─────────────────────
+    _wk = file_cfg.get("workdir_knowledge") if isinstance(file_cfg.get("workdir_knowledge"), dict) else {}
+    workdir_knowledge_cfg = WorkdirKnowledgeConfig(
+        enabled=bool(_wk.get("enabled", True)),
+        work_thread_relation_days=float(_wk.get("work_thread_relation_days", 7.0)),
+        open_threads_inject_limit=int(_wk.get("open_threads_inject_limit", 5)),
+    )
+
     return AppConfig(
         api_key=api_key,
         model=_model,
@@ -498,6 +507,7 @@ def load_config(
         reminder=reminder_cfg,
         role_agent=role_agent_cfg,
         env_info=env_info_cfg,
+        workdir_knowledge=workdir_knowledge_cfg,
         llm_fallback_chain=_llm_fallback_chain,
         llm_fallback_on=_llm_fallback_on,
     )

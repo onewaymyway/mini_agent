@@ -20,6 +20,14 @@ storage/paths.py — 统一路径管理
     paths.sessions_dir            # .agent/sessions/
     paths.cache_dir               # .agent/cache/
 
+    # Workdir 知识层（W2，设计文档 8.2 节）
+    paths.workdir_project_meta    # .agent/project.json
+    paths.workdir_timeline        # .agent/timeline.jsonl
+    paths.workdir_work_index      # .agent/work_index.json
+    paths.workdir_open_threads    # .agent/open_threads.json
+    paths.workdir_knowledge_md    # .agent/knowledge.md
+    paths.workdir_knowledge_index # .agent/knowledge_index.json
+
     # Session 级（需要 session_id）
     paths.session_dir(sid)        # .agent/sessions/<sid>/
     paths.session_history(sid)    # .agent/sessions/<sid>/history.json
@@ -124,6 +132,41 @@ class AgentPaths:
     def permissions(self) -> Path:
         """<project_root>/.agent/permissions.json — 权限白名单/黑名单"""
         return self.workdir_dir / "permissions.json"
+
+    # ── Workdir 知识层（W2，对应设计文档 8.2 节）────────────────────────────
+    # 命名延续 workdir_xxx 惯例（对齐已有的 workdir_memory / workdir_prompts_dir）。
+
+    @property
+    def workdir_project_meta(self) -> Path:
+        """<project_root>/.agent/project.json — 项目身份证（4.1）"""
+        return self.workdir_dir / "project.json"
+
+    @property
+    def workdir_timeline(self) -> Path:
+        """<project_root>/.agent/timeline.jsonl — session 时序骨架（4.2）"""
+        return self.workdir_dir / "timeline.jsonl"
+
+    @property
+    def workdir_work_index(self) -> Path:
+        """<project_root>/.agent/work_index.json — 跨 session WorkThread 聚合（4.3）"""
+        return self.workdir_dir / "work_index.json"
+
+    @property
+    def workdir_open_threads(self) -> Path:
+        """<project_root>/.agent/open_threads.json — 跨 session 待处理线索池（4.4）"""
+        return self.workdir_dir / "open_threads.json"
+
+    @property
+    def workdir_knowledge_md(self) -> Path:
+        """<project_root>/.agent/knowledge.md — 项目软知识积累（4.5，T1，走 StateRepo.apply()）"""
+        return self.workdir_dir / "knowledge.md"
+
+    @property
+    def workdir_knowledge_index(self) -> Path:
+        """<project_root>/.agent/knowledge_index.json — knowledge.md 的结构化索引
+        （14.1 横向加固，与 4.5 同批完成；由 update_knowledge() 在写 Markdown 时
+        顺手维护，不等待尚不存在的 evolution-agent 周期扫描）"""
+        return self.workdir_dir / "knowledge_index.json"
 
     @property
     def sessions_dir(self) -> Path:

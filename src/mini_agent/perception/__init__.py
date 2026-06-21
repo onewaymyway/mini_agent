@@ -23,6 +23,17 @@ from .project_scanner import ProjectScanner, ProjectSnapshot
 from .file_watcher import FileWatcher
 from .tool_cache import ToolResultCache
 from .memory_store import MemoryStore, MemoryEntry
+from .workdir_knowledge import (
+    ProjectMeta, WorkThread, OpenThread, KnowledgeIndexEntry,
+    ensure_project_meta, load_project_meta,
+    capture_environment_fingerprint, detect_environment_drift,
+    append_timeline_entry, load_recent_timeline,
+    load_work_index, save_work_index, get_active_work_threads,
+    find_work_thread, upsert_work_thread, relate_session_to_work_thread,
+    load_open_threads, save_open_threads, add_open_thread,
+    import_unresolved_from_manifest, get_high_priority_open_threads,
+    load_knowledge_index, save_knowledge_index, upsert_knowledge_index_entry,
+)
 
 __all__ = [
     "estimate_tokens",
@@ -30,4 +41,13 @@ __all__ = [
     "FileWatcher",
     "ToolResultCache",
     "MemoryStore", "MemoryEntry",
+    "ProjectMeta", "WorkThread", "OpenThread", "KnowledgeIndexEntry",
+    "ensure_project_meta", "load_project_meta",
+    "capture_environment_fingerprint", "detect_environment_drift",
+    "append_timeline_entry", "load_recent_timeline",
+    "load_work_index", "save_work_index", "get_active_work_threads",
+    "find_work_thread", "upsert_work_thread", "relate_session_to_work_thread",
+    "load_open_threads", "save_open_threads", "add_open_thread",
+    "import_unresolved_from_manifest", "get_high_priority_open_threads",
+    "load_knowledge_index", "save_knowledge_index", "upsert_knowledge_index_entry",
 ]

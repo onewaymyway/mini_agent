@@ -92,6 +92,36 @@ def _parse_lesson_candidates(text: str) -> list[dict]:
     return [item for item in data if isinstance(item, dict)]
 
 
+def _parse_timeline_summary(text: str) -> dict:
+    """
+    解析 timeline 反思 LLM 调用返回的 {theme, key_outcomes} JSON 对象（W2，4.2）。
+
+    与 _parse_lesson_candidates 的容错策略一致（剥离 ```json 围栏、解析失败时
+    静默降级），但目标结构是单个 dict 而不是数组。解析失败或字段缺失时返回
+    空 dict，调用方据此决定是否跳过本次 timeline 追加。
+    """
+    if not text or not text.strip():
+        return {}
+    cleaned = text.strip()
+    if cleaned.startswith("```"):
+        lines = cleaned.splitlines()
+        if lines and lines[0].startswith("```"):
+            lines = lines[1:]
+        if lines and lines[-1].startswith("```"):
+            lines = lines[:-1]
+        cleaned = "\n".join(lines).strip()
+
+    import json as _json
+    try:
+        data = _json.loads(cleaned)
+    except Exception:
+        return {}
+
+    if not isinstance(data, dict):
+        return {}
+    return data
+
+
 class Agent:
     """
     Stateful agent that maintains conversation history and runs the agentic loop.
@@ -132,6 +162,19 @@ class Agent:
         # 都应该让同线程内的 skill_propose 调用能找到正确的项目根目录。
         from mini_agent.tools.evolution import set_project_root_provider
         set_project_root_provider(lambda: self.cfg.project_root)
+
+        # [W2 / Stage 4] 同样为 tools/workdir_knowledge.py（add_open_thread /
+        # update_work_thread / update_knowledge）注册 project_root + session_id
+        # provider。session_id 用懒读取的 lambda（`self._session` 此时尚未创建，
+        # 但 lambda 在工具被调用时才执行，届时 _init_session() 已经跑完）。
+        from mini_agent.tools.workdir_knowledge import (
+            set_project_root_provider as _set_wk_project_root_provider,
+            set_session_id_provider as _set_wk_session_id_provider,
+        )
+        _set_wk_project_root_provider(lambda: self.cfg.project_root)
+        _set_wk_session_id_provider(
+            lambda: self._session.id if self._session else ""
+        )
 
         self.stats = SessionStats()
         self._history: list[dict] = []
@@ -419,8 +462,49 @@ class Agent:
                 model=self.cfg.model,
             )
             self._bind_session_extras()
+            self._maybe_ensure_project_meta()
         except Exception as e:
             R.print_warning(f"Session init failed: {e}")
+
+    def _maybe_ensure_project_meta(self) -> None:
+        """
+        [W2 / 4.1 + 12.2] agent 进程启动时（不是每次 session 切换/resume）确保
+        project.json 存在并更新 last_active / total_sessions / environment_fingerprint。
+
+        只在 _init_session 调用一次，不在 load_session() / new_session() 里重复
+        调用——resume 一个已有 session 不是"新的一次工作"，不应该把
+        total_sessions 算两遍；new_session()（/session new）则是用户在同一进程
+        内开了一个新会话，同样不重复计入"启动一次 agent 进程"。
+
+        【横向加固 12.2】顺手检测 environment_fingerprint 漂移并打印提醒——
+        只做"检测并报告"，不做"自动降低 lesson/skill 置信度"的下游联动
+        （那部分价值中等、可独立排期，强行在这里捆绑实现会让一次启动检查
+        牵连读写 memory.jsonl/skills/，与本方法"轻量、不可阻塞启动"的定位冲突）。
+        """
+        if not getattr(self.cfg, "workdir_knowledge_enabled", True):
+            return
+        try:
+            from mini_agent.storage.paths import AgentPaths
+            from mini_agent.perception.workdir_knowledge import (
+                ensure_project_meta, load_project_meta, capture_environment_fingerprint,
+                detect_environment_drift,
+            )
+            paths = AgentPaths(self.cfg.project_root)
+            old_meta = load_project_meta(paths)
+            old_fp = dict(old_meta.environment_fingerprint) if old_meta else {}
+
+            ensure_project_meta(paths, self.cfg.project_root)
+
+            if old_fp:
+                new_fp = capture_environment_fingerprint(self.cfg.project_root)
+                drift = detect_environment_drift(old_fp, new_fp)
+                if drift:
+                    R.print_info(
+                        "检测到运行环境变化（" + "; ".join(drift[:3]) + "）："
+                        "之前积累的部分经验/技能可能需要重新验证。"
+                    )
+        except Exception:
+            pass  # 观察性数据，失败不应影响 agent 主流程
 
     def _bind_session_extras(self) -> None:
         """
@@ -756,6 +840,14 @@ class Agent:
             except Exception:
                 pass  # SessionEnd hook 失败不应阻塞退出流程
 
+        # [W2 / 4.2-4.4] Workdir 知识层更新：timeline / work_index / open_threads
+        # 纯写入为主（无 LLM 依赖），theme/key_outcomes 这一项需要一次轻量反思
+        # 调用，单独捕获异常，不让其失败影响 lesson 反思或退出流程。
+        try:
+            self._update_workdir_knowledge_on_session_end()
+        except Exception as e:
+            R.print_warning(f"[session-end] workdir knowledge update failed: {e}")
+
         # [SYS-LESSON] 反思 LLM 调用：基于 tool_stats + 最后若干轮 history 生成 lesson 候选
         if not self.cfg.memory.enabled or self._memory is None:
             return
@@ -824,6 +916,150 @@ class Agent:
             self._append_memory_delta(entry)
             saved += 1
         return saved
+
+    # ── [W2 / Stage 4] Workdir 知识层：SessionEnd 维护路径 ──────────────────
+
+    def _update_workdir_knowledge_on_session_end(self) -> None:
+        """
+        SessionEnd hook 轻量路径（设计文档 8.2 节"三条触发路径"之一）：
+          - 追加 timeline.jsonl 一条 session 概览（4.2）
+          - 尝试把本次 session 关联到一个 active WorkThread（4.3 最简版本）
+          - 把本次 session 各 task manifest 的 outcome.unresolved 推进
+            open_threads.json（4.4）
+
+        纯写入部分（work_index 关联、open_threads 推进）无 LLM 依赖，
+        始终执行；theme/key_outcomes 需要一次独立的轻量反思调用（与
+        _reflect_and_save_lessons 的诊断型反思目标不同，见 Stage 4.2 计划
+        文档的取舍说明），调用失败时 theme/key_outcomes 留空但仍写入
+        timeline 行（保留 task_count/status/duration 等无需 LLM 的字段）。
+        """
+        if not getattr(self.cfg, "workdir_knowledge_enabled", True):
+            return
+        if not self._session:
+            return
+
+        from mini_agent.storage.paths import AgentPaths
+        from mini_agent.perception import workdir_knowledge as wk
+
+        paths = AgentPaths(self.cfg.project_root)
+        session_id = self._session.id
+
+        # ── 收集本次 session 的 task manifest（来源：磁盘上的 manifest.json，
+        #    覆盖主线程内 TaskManager 已知的任务，也覆盖跨进程恢复的场景）──
+        unresolved_all: list[str] = []
+        task_count = 0
+        try:
+            tasks_root = paths.tasks_dir(session_id)
+            if tasks_root.is_dir():
+                for task_dir in tasks_root.iterdir():
+                    manifest_path = task_dir / "manifest.json"
+                    if not manifest_path.is_file():
+                        continue
+                    task_count += 1
+                    try:
+                        import json as _json
+                        data = _json.loads(manifest_path.read_text(encoding="utf-8"))
+                        outcome = data.get("outcome") or {}
+                        unresolved_all.extend(outcome.get("unresolved", []) or [])
+                    except Exception:
+                        continue
+        except Exception:
+            pass
+
+        # ── 4.4：把 unresolved 推进 open_threads.json ────────────────────────
+        if unresolved_all:
+            try:
+                wk.import_unresolved_from_manifest(paths, session_id, unresolved_all)
+            except Exception:
+                pass
+
+        # ── 4.3：关联到 active WorkThread（轻量启发式，不新建 WorkThread）───
+        try:
+            relation_days = getattr(
+                self.cfg.workdir_knowledge, "work_thread_relation_days", 7.0
+            )
+            from mini_agent.history.entry import is_turn_boundary
+            first_user_turn = next(
+                (m["content"] for m in self._history
+                 if is_turn_boundary(m) and isinstance(m.get("content"), str)),
+                "",
+            )
+            wk.relate_session_to_work_thread(
+                paths, session_id, first_user_turn, relation_days=relation_days,
+            )
+        except Exception:
+            pass
+
+        # ── 4.2：timeline.jsonl 一行概览 ──────────────────────────────────
+        duration_min = self._session_duration_minutes()
+        theme, key_outcomes = self._reflect_timeline_summary()
+        try:
+            wk.append_timeline_entry(
+                paths,
+                session_id=session_id,
+                duration_min=duration_min,
+                theme=theme,
+                key_outcomes=key_outcomes,
+                task_count=task_count,
+                status="done",
+            )
+        except Exception:
+            pass
+
+    def _session_duration_minutes(self) -> float:
+        """从 Session.created_at（ISO 字符串，_now_iso() 格式）估算本次 session 时长（分钟）。
+        解析失败时返回 0.0（不阻塞 timeline 写入）。"""
+        if not self._session or not getattr(self._session, "created_at", ""):
+            return 0.0
+        try:
+            from datetime import datetime, timezone
+            created = datetime.strptime(self._session.created_at, "%Y-%m-%dT%H:%M:%S")
+            created = created.replace(tzinfo=timezone.utc)
+            now = datetime.now(timezone.utc)
+            return max(0.0, (now - created).total_seconds() / 60.0)
+        except Exception:
+            return 0.0
+
+    def _reflect_timeline_summary(self) -> tuple[str, list[str]]:
+        """
+        独立的轻量反思调用：生成 {theme, key_outcomes}（4.2 节方案①）。
+
+        与 _reflect_and_save_lessons 的诊断型反思（trigger/root_cause/
+        suggested_action）目标不同，故不复用同一次 LLM 调用——两种反思
+        目标混在一起容易互相干扰输出质量，详见 Stage 4.2 计划文档。
+
+        没有任何用户意图轮次时跳过 LLM 调用，直接返回空概览。
+        """
+        from mini_agent.history.entry import is_turn_boundary
+
+        user_turns = [
+            m["content"] for m in self._history
+            if is_turn_boundary(m) and isinstance(m.get("content"), str)
+        ]
+        if not user_turns:
+            return "", []
+
+        turns_text = "\n".join(f"- {t[:200]}" for t in user_turns[-10:])
+
+        try:
+            from mini_agent.prompts import pm
+            prompt = pm.render("user/timeline_reflection_request", turns_text=turns_text)
+            resp = self._llm.chat_with_retry(
+                messages=[{"role": "user", "content": prompt}],
+                system=pm.render("system/timeline_reflection"),
+                tools=[],
+                max_retries=3,
+            )
+            data = _parse_timeline_summary(resp.text)
+        except Exception:
+            return "", []
+
+        theme = str(data.get("theme", ""))[:200]
+        raw_outcomes = data.get("key_outcomes", []) or []
+        if not isinstance(raw_outcomes, list):
+            raw_outcomes = []
+        key_outcomes = [str(o)[:200] for o in raw_outcomes[:5]]
+        return theme, key_outcomes
 
     def load_session(self, session_id: str) -> bool:
         """按 session_id（或其前缀）加载历史到当前 agent，返回是否成功。"""

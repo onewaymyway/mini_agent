@@ -97,10 +97,38 @@
 
 ## 四、实施计划
 
-### Stage 4（核心，约 3-4 人天）—— Phase W2：Workdir 知识层
+### Stage 4（核心，约 3-4 人天）—— Phase W2：Workdir 知识层 ✅ 已完成
 
 > 设计文档 8.2 节。在 `.agent/` 下新增四个文件 + 1 个 Markdown，是本文档范围内优先级最高的一项——
 > 它是 Stage 4 之后几乎所有内容（G 的巡视、context 注入、晨报）的数据来源。
+
+> **完成情况摘要**（实现细节见对应代码与测试，此处只记结论，供 Stage 5/6/8 衔接参考）：
+> - 新增文件：`perception/workdir_knowledge.py`（数据模型 + 读写，含 4.1-4.5 全部数据结构，
+>   以及横向加固的 `capture_environment_fingerprint`/`detect_environment_drift`/
+>   `KnowledgeIndexEntry`）、`tools/workdir_knowledge.py`（`add_open_thread`/
+>   `update_work_thread`/`update_knowledge` 三个工具，thread-local provider 机制与
+>   `tools/evolution.py` 同构）、`prompts/system|user/timeline_reflection*.md`（4.2 独立轻量
+>   反思调用，采用方案①而非与 lesson 反思合并）。
+> - 修改文件：`storage/paths.py`（7 个 `workdir_xxx` 路径方法，含 `workdir_knowledge_index`）、
+>   `config/models.py|loader.py|__init__.py`（`WorkdirKnowledgeConfig`，默认 `enabled=True`）、
+>   `agent.py`（`_maybe_ensure_project_meta` 接入 `_init_session`，仅在进程启动时调用一次，
+>   不在 `load_session()`/`new_session()` 里重复计入 `total_sessions`；
+>   `_update_workdir_knowledge_on_session_end` 接入 `trigger_session_end()`，与 lesson 反思
+>   并列、互不阻塞）、`context_builder.py`（4.6 三项 always-on 注入：`project.json` 身份信息 +
+>   active WorkThread 进度 + 高优先级 open_threads；`timeline.jsonl`/`knowledge.md` 按设计文档
+>   8.4 节定位为"按意图检索注入"，不在本 Stage always-on 范围内）、`cli/app.py`（注册新工具模块）。
+> - 关键设计取舍：四个 JSON/JSONL 文件全部走原子写（tmp + `os.replace`），不经过 StateRepo——
+>   定位是"观察性数据"，与 W1 的 `task_manifest.json` 一致；只有 `knowledge.md` 走
+>   `StateRepo.apply()`（tier 固定 T1）。`relate_session_to_work_thread` 只做"关联到已有
+>   active WorkThread"，不自动新建——避免启发式误判污染 `work_index.json`。
+> - 横向加固 12.2（`environment_fingerprint`）与 14.1（`knowledge_index.json`）已按计划文档建议
+>   提前在本 Stage 完成；12.2 目前只做"检测并报告"（`_maybe_ensure_project_meta` 里打印提醒），
+>   未接入"自动降低 lesson/skill 置信度"的下游联动（设计文档原意如此，留待按需排期，避免
+>   一次启动检查牵连读写 `memory.jsonl`/`skills/`）。
+> - 测试：`tests/test_workdir_knowledge.py`（62）、`tests/test_workdir_knowledge_tools.py`（32）、
+>   `tests/test_session_end_workdir_knowledge.py`（27）、
+>   `tests/test_context_builder_workdir_knowledge.py`（14）、
+>   `tests/test_agent_startup_project_meta.py`（7），共 142 条，全绿，无回归。
 
 #### 4.1 `project.json`（项目身份证）
 - 新增 `AgentPaths.workdir_project_meta()` 路径方法（命名对齐现有 `workdir_memory()`/
@@ -425,8 +453,8 @@ Stage 完成后回顾更新（已完成的条目标注完成日期，移出待�
   Stage 3.2 ✅ 已完成（eval 反馈环）
   Stage 3.3 ✅ 已完成（SubAgent 信息继承）
         │
-        └─→ Stage 4（W2：Workdir 知识层）
-              │  ├─ 顺带：14.1 knowledge_index、12.2 environment_fingerprint
+        └─→ Stage 4（W2：Workdir 知识层）✅ 已完成
+              │  ├─ 顺带：14.1 knowledge_index ✅、12.2 environment_fingerprint ✅
               │
               └─→ Stage 5（W3：Global 知识层，5.4 依赖 4.3 已有跨 session 数据）
                     │
@@ -449,8 +477,8 @@ Stage 完成后回顾更新（已完成的条目标注完成日期，移出待�
 
 | Stage | 工作量估计 | 并行度 | 状态 |
 |---|---|---|---|
-| Stage 4（W2） | 3-4 人天 | 4.1-4.5 内部有顺序（4.6 依赖前面全部），基本单线 | 待开始 |
-| Stage 5（W3） | 3-4 人天 | 5.1-5.3 可与 5.4 部分并行，5.5 需等前面全部 | 待开始（依赖 Stage 4） |
+| Stage 4（W2） | 3-4 人天 | 4.1-4.5 内部有顺序（4.6 依赖前面全部），基本单线 | ✅ 已完成 |
+| Stage 5（W3） | 3-4 人天 | 5.1-5.3 可与 5.4 部分并行，5.5 需等前面全部 | 待开始（依赖的 Stage 4 已完成，可以开始） |
 | Stage 6（观察性） | 2-3 人天 | 6.1/6.2/6.4 可并行，6.3 需等 Stage 5.3 有数据积累 | 待开始（依赖 Stage 5） |
 | Stage 7（横向加固任务池） | 不单独计入总量，分摊进 Stage 4-9 各自的改动成本 | 机会性，无固定并行度 | 持续滚动 |
 | Stage 8（Phase G） | 4-6 人天 | 8.2/8.3 可并行，8.4/8.5 需等前面 | 待开始（依赖 Stage 4/5/6） |

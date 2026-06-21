@@ -32,6 +32,8 @@ class ContextBuilder:
     - Skill 目录 + 使用追踪约定
     - 项目结构快照（ProjectScanner）
     - 跨 session 长期记忆（project + global 两级）
+    - Workdir 知识层（W2，4.6）：project.json 身份信息 / active WorkThread
+      进度 / 高优先级 open_threads，均为 always-on 注入
     """
 
     def __init__(
@@ -138,6 +140,11 @@ class ContextBuilder:
         if snapshot:
             base += "\n\n" + snapshot
 
+        # ── Workdir 知识层（W2，4.6）：身份信息 / active WorkThread / 高优先级 open_threads ──
+        wk_block = self._build_workdir_knowledge_block()
+        if wk_block:
+            base += "\n\n" + wk_block
+
         # ── 长期记忆（使用 turn 级缓存，不重复检索）──────────────────────
         if self._cached_memory_snippet:
             base += self._cached_memory_snippet
@@ -157,6 +164,80 @@ class ContextBuilder:
         return base
 
     # ── 内部辅助 ──────────────────────────────────────────────────────────────
+
+    def _build_workdir_knowledge_block(self) -> str:
+        """
+        组装 Workdir 知识层 always-on 注入块（设计文档 8.4 节）：
+          - project.json 身份信息
+          - work_index 里 status=active 的 WorkThread 的 cumulative_progress + next_suggested
+          - open_threads 里 priority=high 的条目（限制最多 N 条）
+
+        三部分均为纯本地小文件读取（无 LLM、无网络），开销可忽略，因此不做
+        额外的跨 build() 调用缓存——每个 turn 调用一次 build()，多读几次
+        几 KB 的 JSON 文件不构成性能问题，换来的是"数据写入后立即在下一次
+        system prompt 里可见"，不需要额外的缓存失效逻辑。
+
+        cfg.workdir_knowledge_enabled=False 时整体跳过；任何单项读取失败
+        都不应该影响其余两项或 system prompt 的其他部分。
+        """
+        if not getattr(self.cfg, "workdir_knowledge_enabled", True):
+            return ""
+
+        try:
+            from mini_agent.storage.paths import AgentPaths
+            from mini_agent.perception import workdir_knowledge as wk
+        except Exception:
+            return ""
+
+        try:
+            paths = AgentPaths(self.cfg.project_root)
+        except Exception:
+            return ""
+
+        lines: list[str] = []
+
+        # project.json 身份信息
+        try:
+            meta = wk.load_project_meta(paths)
+            if meta is not None:
+                block = meta.to_prompt_block()
+                if block:
+                    lines.append(block)
+        except Exception:
+            pass
+
+        # active WorkThread 进度
+        try:
+            active_threads = wk.get_active_work_threads(paths)
+        except Exception:
+            active_threads = []
+        if active_threads:
+            thread_lines = ["## Active work threads (cross-session)"]
+            for t in active_threads:
+                entry = f"- **{t.title}** (`{t.id}`)"
+                if t.cumulative_progress:
+                    entry += f"\n  Progress so far: {t.cumulative_progress}"
+                if t.next_suggested:
+                    entry += f"\n  Suggested next step: {t.next_suggested}"
+                if t.open_questions:
+                    entry += f"\n  Open questions: {'; '.join(t.open_questions[:3])}"
+                thread_lines.append(entry)
+            lines.append("\n".join(thread_lines))
+
+        # 高优先级 open_threads
+        try:
+            limit = getattr(self.cfg.workdir_knowledge, "open_threads_inject_limit", 5)
+            high_priority = wk.get_high_priority_open_threads(paths, limit=limit)
+        except Exception:
+            high_priority = []
+        if high_priority:
+            ot_lines = ["## High-priority open threads"]
+            for item in high_priority:
+                ot_lines.append(f"- [{item.type}] {item.title} (discovered in {item.discovered_in})")
+            lines.append("\n".join(ot_lines))
+
+        return "\n\n".join(lines)
+
 
     def _get_skill_directory(self) -> str:
         """

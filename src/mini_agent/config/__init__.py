@@ -44,6 +44,7 @@ from .models import (
     RoleAgentConfig,
     EnvInfoConfig,
     ReminderConfig,
+    WorkdirKnowledgeConfig,
     # 主配置
     AppConfig,
 )
@@ -82,6 +83,7 @@ __all__ = [
     "RoleAgentConfig",
     "EnvInfoConfig",
     "ReminderConfig",
+    "WorkdirKnowledgeConfig",
     "AppConfig",
     "load_config",
     "_parse_name_list",
