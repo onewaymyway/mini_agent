@@ -16,7 +16,9 @@
 | ⚡ 并发 Sub-Agent | 主 Agent 可派生多个子 Agent 并行执行任务，支持自动重试（HTTP 5xx/超时最多 3 次） |
 | 🔐 权限守卫 | 危险操作需要确认，支持白名单、黑名单、沙箱模式，路径规范化处理 |
 | 🐛 调试日志 | 完整记录每次请求/响应到 JSONL 文件 |
-| 🧠 感知与记忆 | 项目扫描、文件监视、工具缓存、跨 session 长期记忆 |
+| 🧠 感知与记忆 | 项目扫描、文件监视、工具缓存、跨 session 长期记忆（含规则触发/反思生成的 Lesson Memory） |
+| 👤 用户画像 | 基于长期记忆自动生成技术栈/习惯/偏好画像，注入 system prompt 实现跨 session 个性化 |
+| 🌱 自我演化 | agent 可把经验（lesson）提炼为新 skill 并自我提案，全程经过风险分级（T0~T3）安全网 + 隔离验证 + 人工审核 |
 | 🌐 HTTP API | 内置 REST/SSE 服务，支持外部程序通过 HTTP 与 agent 交互 |
 | 🖥️ Web Demo | Streamlit 图形界面，提供浏览器操作的对话界面 |
 | 🔌 MCP 支持 | Model Context Protocol 集成，支持 stdio/SSE 传输，可扩展外部工具服务 |
@@ -161,7 +163,7 @@ mini-agent eval --scenario test_cases/ --skill docx
 | `--session-dir` | Session 文件保存目录 |
 | `--resume` | 恢复之前的对话 |
 | `--system-tool-call` | 启用系统工具调用格式 |
-| `--memory` | 启用跨 session 记忆（含 Lesson Memory：规则触发/SessionEnd 反思/人类反馈纠正检测，详见 [记忆管理指南](docs/memory-management-guide.md#lesson-memory)） |
+| `--memory` | 启用跨 session 记忆（含 Lesson Memory：规则触发/SessionEnd 反思/人类反馈纠正检测，详见 [记忆管理指南](docs/memory-management-guide.md#lesson-memory)）；用户画像功能依赖记忆系统，但本身没有独立 CLI flag，需在 `agent_config.json` 设置 `profile_enabled: true` 单独开启，详见 [用户画像系统指南](docs/user-profile-guide.md) |
 | `--project-scan` | 启动时扫描项目结构 |
 | `--file-watch` | 监听文件变化 |
 | `--web-search-provider` | 指定搜索后端：`duckduckgo`\|`brave`\|`serper`\|`tavily` |
@@ -296,6 +298,8 @@ Web Demo 提供：
 | `/concurrency` | 查看并发状态 |
 | `/compact` | 压缩对话历史 |
 | `/prompts` | 列出所有提示词文件 |
+| `/memory` | 立即后台生成/刷新 session 摘要 + 写入长期记忆 + 刷新用户画像（需 `--memory`） |
+| `/profile` | 立即后台刷新用户画像（需 `agent_config.json` 设置 `profile_enabled: true`） |
 | `/retry` | 重试上一轮 |
 | `/rollback` | 回退上一轮 |
 | `/evolution log\|show\|diff\|revert` | 查看/审查/回退自我修改历史（Stage 2 安全网） |
@@ -660,6 +664,7 @@ python -m pytest tests/ -q
 
 - [系统概览](docs/system-overview.md) — 整体架构和设计思路
 - [记忆管理指南](docs/memory-management-guide.md) — **更新**：长期记忆系统，含 Lesson Memory（规则触发/SessionEnd 反思/人类反馈纠正检测）
+- [用户画像系统指南](docs/user-profile-guide.md) — **新增**：基于长期记忆自动生成用户画像，注入 system prompt 实现个性化
 - [history 类型化设计](docs/history-typed-design.md) — **更新**：`_type` 字段化设计，新增 `user_correction` 类型
 - [Task 日志实时查看](docs/task-focus-viewing.md) — **新增**：方向键切换查看任务日志机制
 - [权限系统指南](docs/permission-guide.md) — **更新**：权限守卫、白名单、持久化配置，`(e)dit` 接入 Lesson Memory
