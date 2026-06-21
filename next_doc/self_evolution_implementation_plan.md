@@ -162,7 +162,7 @@
 
 Stage 1+2 完成后，C/D/E 之间**互相独立**，可按资源拆给不同批次并行推进。
 
-#### 3.1 Phase C：`skill_propose` + evolution-agent profile
+#### 3.1 Phase C：`skill_propose` + evolution-agent profile ✅ 已完成
 - 新建 `.agent/agents/evolution-agent.md`，复用现有 `AgentProfile` 机制（`role_type` 留空或新增 `"evolution"`），`tools` 字段限制为一组新工具
 - 新增工具 `skill_propose(name, content, source_lessons)`——内部调用 `StateRepo.apply()` 在 evolve 分支上写 `skills/<name>/SKILL.md`，tier 固定 T1
 - 触发条件先实现最简单版本：`/evolve review` 手动命令，扫描 `memory.jsonl` 中 `occurrence_count` 超阈值（设计文档 6.7 节：T1 阈值 3）的 lesson，spawn evolution-agent 处理
@@ -195,7 +195,7 @@ Stage 1+2 完成后，C/D/E 之间**互相独立**，可按资源拆给不同批
     （23 例）、`tests/test_skill_manager.py` 新增 `TestSkillLoaderExclude`
     （7 例）
 
-#### 3.3 Phase E：SubAgent 信息继承
+#### 3.3 Phase E：SubAgent 信息继承 ✅ 已完成
 - `Task`（`orchestrator/task.py`）新增字段 `active_skills: list[str]`，`spawn_agent` 工具透传主 agent 当前激活的 skill 列表
 - SubAgent 启动时按名称激活这些 skill（复用现有 `SkillLoader`，传参即可）
 - `ToolResultCache` 改造为跨 agent 共享：最简方案是 `TaskManager` 持有全局共享实例并加 `threading.Lock`，而非每个 SubAgent 各自新建一份
