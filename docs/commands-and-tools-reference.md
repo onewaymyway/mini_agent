@@ -5,6 +5,10 @@
 **补充阅读**：
 - [Task 日志实时查看与切换](task-focus-viewing.md) — 方向键实时查看任务日志
 - [Plan 与 Task 指南](plan-and-task-guide.md) — 执行计划机制
+- [记忆管理指南](memory-management-guide.md) — `/memory` 命令背景
+- [用户画像系统指南](user-profile-guide.md) — `/profile` 命令背景
+- [自定义子 Agent 指南](custom-sub-agents.md) — `/agents` 命令与 `spawn_named_agent` 工具背景
+- [Hooks 机制指南](hooks.md) — `/hooks` 命令背景
 - [自我演化安全网指南（Stage 2）](self-evolution-stage2-guide.md) — `/evolution` 命令组背景
 - [自我演化 lesson → skill 闭环指南（Stage 3.1）](self-evolution-stage3-1-guide.md) — `/evolve` 命令与 `skill_propose` 工具背景
 - [自我演化 eval 反馈环指南（Stage 3.2）](self-evolution-stage3-2-guide.md) — `mini-agent eval` 完整说明
@@ -159,6 +163,8 @@ mini-agent --retry-backoff linear --retry-backoff-step 60 --retry-backoff-max 30
 | `/verbose` | 切换详细工具 JSON 输出模式 |
 | `/compact` | 压缩对话历史为摘要，重附 Skill 上下文 |
 | `/prompts` | 列出所有 PromptManager 管理的 prompt 文件 |
+| `/memory` | 立即在后台生成/刷新 session 摘要 + 写入长期记忆 + 刷新用户画像（跳过轮次间隔门槛），需 `--memory` 启用；详见 [记忆管理指南](memory-management-guide.md) |
+| `/profile` | 立即在后台刷新用户画像（跳过刷新间隔），需在 `agent_config.json` 中设置 `profile_enabled: true`（无对应 CLI flag）；详见 [用户画像系统指南](user-profile-guide.md) |
 | `exit` / `quit` | 退出程序 |
 
 ### Skill 管理（`src/mini_agent/cli/commands/skills.py`）
@@ -172,7 +178,7 @@ mini-agent --retry-backoff linear --retry-backoff-step 60 --retry-backoff-max 30
 | `/skill stats` | 显示 LRU 使用追踪和压缩预算预览 |
 | `/skill reset` | 卸载所有当前激活的技能 |
 
-**内置技能类型**：
+**内置技能类型**（`.claude/skills/`）：
 
 | 技能 | 用途 |
 |------|------|
@@ -181,6 +187,10 @@ mini-agent --retry-backoff linear --retry-backoff-step 60 --retry-backoff-max 30
 | `agent-generator` | 创建符合 mini_agent 规范的自定义子 agent |
 | `skill-generator` | 创建符合 mini_agent 规范的新 SKILL.md 技能文件 |
 | `iching_oracle` | 易经智慧顾问，提供人生决策指导 |
+| `comic-4panel` | 四格漫画全流程生成：主题构思 → 分镜脚本 → 一次性生成完整漫画图；详见 [四格漫画生成指南](comic-4panel-guide.md) |
+| `git-context` | 分析当前工作目录 Git 仓库状态（commit 历史、变更文件、分支、diff） |
+| `python-expert` | Python 编码最佳实践助手 |
+| `reminder-generator` | 从当前对话提取可复用经验并生成 reminder 文件；详见 [Reminder 系统指南](reminder-system-guide.md) |
 
 ### 会话管理（`src/mini_agent/cli/commands/sessions.py`）
 
@@ -245,6 +255,27 @@ mini-agent --retry-backoff linear --retry-backoff-step 60 --retry-backoff-max 30
 |------|------|
 | `/model <name>` | 中途切换模型（如 `/model claude-haiku-4-5`） |
 
+### 自定义子 Agent（`src/mini_agent/cli/commands/agents.py`）
+
+> 详见 [自定义子 Agent 指南](custom-sub-agents.md)、[Role Agent 指南](role-agents-guide.md)
+
+| 命令 | 说明 |
+|------|------|
+| `/agents` 或 `/agents list` | 列出所有自定义子 agent profile（名称、描述、模型、可用工具） |
+| `/agents show <name>` | 显示指定 profile 的详细信息 |
+| `/agents reload` | 重新扫描 `.agent/agents/`（项目级）与 `~/.agent/agents/`（全局级）目录 |
+
+> 注意命名相似但完全不同的两个系统：本节的 `/agents`（`AgentProfile`，自定义**子 agent 角色模板**，目录在 `.agent/agents/`）与上文的 `/profile`（`UserProfileManager`，自动学习的**用户个人画像**，与 spawn 子 agent 无关）。
+
+### Hooks（`src/mini_agent/cli/commands/hooks.py`）
+
+> 详见 [Hooks 机制指南](hooks.md)
+
+| 命令 | 说明 |
+|------|------|
+| `/hooks` 或 `/hooks list` | 按事件分组列出已加载的 hooks |
+| `/hooks reload` | 重新加载 `.agent/hooks.json`（项目级）与 `~/.agent/hooks.json`（全局级） |
+
 ### 自我演化（`src/mini_agent/cli/commands/evolution.py` / `evolve.py`）
 
 > 详见 [Stage 2 安全网指南](self-evolution-stage2-guide.md)、[Stage 3.1 lesson → skill 闭环指南](self-evolution-stage3-1-guide.md)
@@ -293,10 +324,12 @@ mini-agent eval --scenario test_cases/                      # 不传 --skill，�
 | `write_file` | ✅ | `path`, `content` | 覆盖写入文件 |
 | `create_file` | ✅ | `path`, `content` | 创建新文件（已存在则失败） |
 | `delete_file` | ✅ | `path` | 删除单个文件 |
-| `patch_file` | ✅ | `path`, `old_string`, `new_string` | 精确查找替换编辑文件 |
+| `patch_file` | ✅ | `path`, `old_string`, `new_string` | 精确查找替换编辑文件，精确匹配失败时自动尝试空白符规整化的兜底匹配 |
 | `list_dir` | ❌ | `path`, `depth` | 列出目录内容 |
 | `glob` | ❌ | `pattern`, `root` | 通配符查找文件 |
 | `grep` | ❌ | `pattern`, `path`, `file_pattern`, `case_sensitive` | 正则搜索文件内容 |
+| `diff_files` | ❌ | `path_a`, `path_b`, `context_lines` | 比较两个文件，返回 unified diff（默认 3 行上下文，最多 20 行），结尾附加变更行数统计 |
+| `tree_summary` | ❌ | `path`, `depth`, `show_files`, `include_hidden` | 输出紧凑的目录骨架（只显示目录+文件数+总大小），比 `list_dir` 更省 token；自动跳过 `.git`/`__pycache__`/`node_modules`/`.venv` 等常见构建/缓存目录 |
 
 ### Shell（builtin.py）
 
@@ -332,13 +365,15 @@ mini-agent eval --scenario test_cases/                      # 不传 --skill，�
 |------|----------|------|------|
 | `spawn_agent` | ❌ | `prompt`, `name`, `depends_on`, `model`, `system_extra`, `tags` | 派生单个 Sub-Agent |
 | `spawn_agents` | ❌ | `tasks` | 批量派生多个 Sub-Agent |
+| `list_agent_profiles` | ❌ | （无） | 列出所有预设的自定义子 agent profile，含描述与所需输入参数，配合 `spawn_named_agent` 使用 |
+| `spawn_named_agent` | ❌ | `agent_type`, `inputs`, `context`, `name`, `depends_on` | 派生一个预设角色的子 agent（`agent_type` 取自 `list_agent_profiles`），`inputs` 需匹配该 profile 声明的输入参数；异步执行，返回 `task_id` |
 | `get_task_status` | ❌ | `task_id`, `full` | 查询任务状态和结果；输出超 3000 字符且 `full=False` 时返回 `truncated`/`full_length` 字段，提示用 `full=True` 重新取完整内容 |
 | `update_task_progress` | ❌ | `task_id`, `current_step`, `steps_done`, `steps_remaining`, `blockers`, `note` | 主动记录长任务进度到 `manifest.json`，`note` 追加到 `decision_log` |
 | `list_tasks` | ❌ | `status`, `tag` | 列出所有任务 |
 | `cancel_task` | ❌ | `task_id` | 取消指定任务 |
 | `wait_for_tasks` | ❌ | `task_ids`, `timeout_seconds` | 等待多个任务完成 |
 
-详见 [Plan 与 Task 机制说明](plan-and-task-guide.md) 中 `manifest.json` 相关章节、[存储设计](storage-design.md#44-subagent-任务文件)。
+详见 [Plan 与 Task 机制说明](plan-and-task-guide.md) 中 `manifest.json` 相关章节、[存储设计](storage-design.md#44-subagent-任务文件)、[自定义子 Agent 指南](custom-sub-agents.md)。
 
 ### 执行计划（plan.py）
 
