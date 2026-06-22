@@ -109,6 +109,144 @@ async def get_status(request: Request):
     )
 
 
+# ── 诊断（Stage 6 / 6.2）──────────────────────────────────────────────────────
+
+@router.get("/diagnostics")
+async def get_diagnostics(request: Request):
+    """
+    [Stage 6 / 6.2] 系统健康诊断端点。
+
+    聚合以下数据源（直接读底层文件，不依赖 self_profile.json 中转）：
+      performance    — 当前 session 的 traces.jsonl 追踪摘要
+      memory         — workdir memory.jsonl 统计
+      skills         — 激活 skill 列表 + 使用率统计
+      evolution      — pending_evolve_branches / open_threads 高优
+      anomaly_flags  — 本 session 相对历史基线的异常标记
+    """
+    bridge = _bridge(request)
+    agent = bridge.agent
+    result: dict = {
+        "performance":   {},
+        "memory":        {},
+        "skills":        {},
+        "evolution":     {},
+        "anomaly_flags": [],
+    }
+
+    try:
+        from mini_agent.storage.paths import AgentPaths
+        proj_root = agent.cfg.project_root if agent else None
+        paths = AgentPaths(proj_root) if proj_root else None
+
+        # ── performance（traces.jsonl）────────────────────────────────────────
+        if agent and getattr(agent, "_tracer", None):
+            try:
+                result["performance"] = agent._tracer.get_summary()
+            except Exception:
+                pass
+
+        # ── memory（workdir memory.jsonl）────────────────────────────────────
+        if paths:
+            try:
+                import json as _json
+                mem_path = paths.workdir_memory()
+                if mem_path.exists():
+                    entries = []
+                    with open(mem_path, encoding="utf-8") as f:
+                        for line in f:
+                            line = line.strip()
+                            if line:
+                                try:
+                                    entries.append(_json.loads(line))
+                                except Exception:
+                                    pass
+                    by_type: dict = {}
+                    for e in entries:
+                        t = e.get("entry_type", "unknown")
+                        by_type[t] = by_type.get(t, 0) + 1
+                    result["memory"] = {
+                        "total_entries":  len(entries),
+                        "by_type":        by_type,
+                    }
+            except Exception:
+                pass
+
+        # ── skills ────────────────────────────────────────────────────────────
+        if agent and getattr(agent, "skill_loader", None):
+            try:
+                sl = agent.skill_loader
+                active = list(sl.active)
+                tracker_stats = {}
+                if hasattr(sl, "tracker") and sl.tracker:
+                    tracker_stats = {
+                        name: sl.tracker.get_score(name)
+                        for name in active
+                        if hasattr(sl.tracker, "get_score")
+                    }
+                result["skills"] = {
+                    "active_count": len(active),
+                    "active":       active,
+                    "usage_scores": tracker_stats,
+                }
+            except Exception:
+                pass
+
+        # ── evolution（Stage 4/5 数据）────────────────────────────────────────
+        if paths:
+            try:
+                import json as _json
+                evo: dict = {}
+                # pending_evolve_branches from global self_profile
+                sp_path = paths.global_self_profile()
+                if sp_path.exists():
+                    sp = _json.loads(sp_path.read_text(encoding="utf-8"))
+                    branches = (
+                        sp.get("evolution_state", {}).get("pending_evolve_branches", [])
+                    )
+                    evo["pending_evolve_branches"] = branches
+                    evo["pending_branches_count"]  = len(branches)
+                # high-priority open_threads
+                ot_path = paths.workdir_open_threads()
+                if ot_path.exists():
+                    ot_data = _json.loads(ot_path.read_text(encoding="utf-8"))
+                    high = [
+                        t for t in ot_data.get("threads", [])
+                        if t.get("priority") == "high"
+                    ]
+                    evo["open_threads_high_count"] = len(high)
+                    evo["open_threads_high"]       = high[:5]  # 最多展示 5 条
+                result["evolution"] = evo
+            except Exception:
+                pass
+
+        # ── anomaly_flags（异常检测，依赖 activity_log 数据积累）──────────────
+        if paths and agent:
+            try:
+                from mini_agent.perception.observability import detect_anomalies
+                al_path = paths.global_activity_log()
+                ss = agent.stats
+                current = {
+                    "session_id":   agent._session.id if agent._session else "",
+                    "tool_count":   getattr(ss, "tool_calls", 0),
+                    "total_tokens": getattr(ss, "input_tokens", 0) + getattr(ss, "output_tokens", 0),
+                    "duration_min": 0.0,  # 实时端点不计算 duration，留给 session_end 时记录
+                }
+                k_sigma = getattr(agent.cfg.observability, "anomaly_k_sigma", 3.0)
+                min_samples = getattr(agent.cfg.observability, "anomaly_min_samples", 10)
+                flags = detect_anomalies(
+                    al_path, current,
+                    k_sigma=k_sigma, min_samples=min_samples,
+                )
+                result["anomaly_flags"] = [f.to_dict() for f in flags]
+            except Exception:
+                pass
+
+    except Exception as e:
+        result["_error"] = str(e)
+
+    return JSONResponse(content=result)
+
+
 # ── 对话 ──────────────────────────────────────────────────────────────────────
 
 @router.post("/chat", response_model=ChatResponse)

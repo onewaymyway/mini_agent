@@ -245,6 +245,11 @@ class AgentPaths:
         每次 PlanTask 状态变更时同步写入，session 意外中断后可据此恢复。"""
         return self.session_dir(session_id) / "plan_snapshot.json"
 
+    def session_traces(self, session_id: str) -> Path:
+        """<project_root>/.agent/sessions/<session_id>/traces.jsonl
+        Stage 6.1：session 内各阶段时序追踪记录（build_system/call_llm/execute_tools/tool_call）。"""
+        return self.session_dir(session_id) / "traces.jsonl"
+
     def tasks_dir(self, session_id: str) -> Path:
         """<project_root>/.agent/sessions/<session_id>/tasks/"""
         return self.session_dir(session_id) / "tasks"

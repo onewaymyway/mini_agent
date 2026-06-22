@@ -186,6 +186,25 @@ class WorkdirKnowledgeConfig:
 
 
 @dataclass
+class ObservabilityConfig:
+    """[SYS-OBSERVABILITY] 第 9 章观察性配置（Stage 6）。
+
+    覆盖：
+      6.1  traces.jsonl  — session 内时序性能追踪
+      6.2  /diagnostics  — 实时聚合健康检查端点
+      6.3  anomaly_flags — 异常行为检测（依赖 activity_log 数据积累）
+      6.4  error_category / resolves_seq — 工具调用因果链字段
+    """
+    enabled: bool = True
+    # 6.1：是否写入 traces.jsonl（可独立关闭，降低磁盘写入）
+    tracing_enabled: bool = True
+    # 6.3：异常检测触发阈值 k（value > mean + k*std 时告警），建议 2.5~3.5
+    anomaly_k_sigma: float = 3.0
+    # 6.3：至少需要多少条 activity_log 历史记录才启用异常检测（小样本方差不稳定）
+    anomaly_min_samples: int = 10
+
+
+@dataclass
 class GlobalKnowledgeConfig:
     """[SYS-GLOBAL-KNOWLEDGE] Global 知识层配置（W3，对应设计文档 8.3 节 /
     self_evolution_stage4plus_plan.md Stage 5）。
@@ -435,6 +454,7 @@ class AppConfig:
     env_info:   EnvInfoConfig    = field(default_factory=EnvInfoConfig)
     workdir_knowledge: WorkdirKnowledgeConfig = field(default_factory=WorkdirKnowledgeConfig)
     global_knowledge: GlobalKnowledgeConfig = field(default_factory=GlobalKnowledgeConfig)
+    observability: ObservabilityConfig = field(default_factory=ObservabilityConfig)
 
     # ── 向后兼容属性（让旧代码 cfg.memory_enabled 不报错）────────────────────
     # 以下属性委托给子配置块，方便渐进式迁移，后续版本可删除
@@ -495,6 +515,10 @@ class AppConfig:
 
     @property
     def global_knowledge_enabled(self) -> bool: return self.global_knowledge.enabled
+    @property
+    def observability_enabled(self) -> bool: return self.observability.enabled
+    @property
+    def tracing_enabled(self) -> bool: return self.observability.enabled and self.observability.tracing_enabled
 
     @property
     def profile_enabled(self) -> bool:          return self.profile.enabled

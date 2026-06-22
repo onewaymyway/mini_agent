@@ -46,6 +46,7 @@ from .models import (
     ReminderConfig,
     WorkdirKnowledgeConfig,
     GlobalKnowledgeConfig,
+    ObservabilityConfig,
     # 主配置
     AppConfig,
 )
@@ -86,6 +87,7 @@ __all__ = [
     "ReminderConfig",
     "WorkdirKnowledgeConfig",
     "GlobalKnowledgeConfig",
+    "ObservabilityConfig",
     "AppConfig",
     "load_config",
     "_parse_name_list",

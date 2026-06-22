@@ -199,6 +199,8 @@ class Agent:
         # Session 持久化
         self._session_mgr: Optional[SessionManager] = None
         self._session: Optional[Session] = None
+        # [Stage 6 / 6.1] Session tracer — 在 _bind_session_extras 里绑定到具体 session_dir
+        self._tracer: Optional[object] = None  # SessionTracer | None
         self._init_session()
 
         # ── [SYS-RETRY] LLM 重试策略初始化 ──────────────────────────────────
@@ -576,6 +578,9 @@ class Agent:
         # raw history 路径绑定：调用独立方法（确保 _hist 已初始化后再绑定）
         self._bind_raw_path()
 
+        # [Stage 6 / 6.1] 初始化 SessionTracer（绑定到当前 session_dir）
+        self._init_tracer()
+
         # ExecutionPlan 持久化快照绑定 + 恢复（W1，对应设计文档 8.1 节）
         # session 启动时检测 plan_snapshot.json 是否存在，存在则尝试恢复
         # （new_session 创建的是全新 session_id，天然不会撞上旧快照文件，
@@ -590,6 +595,24 @@ class Agent:
             bind_plan_session(snapshot_path)  # 无论是否恢复成功，都绑定为当前 session 路径
         except Exception:
             pass
+
+    def _init_tracer(self) -> None:
+        """[Stage 6 / 6.1] 初始化 SessionTracer，绑定到当前 session_dir。
+
+        在 _bind_session_extras 里调用（三个场景：_init_session / load_session /
+        new_session），确保 tracer 始终指向"当前激活 session"对应的目录。
+        """
+        if self._session is None:
+            return
+        try:
+            from mini_agent.perception.observability import SessionTracer
+            from mini_agent.storage.paths import AgentPaths
+            paths = AgentPaths(self.cfg.project_root)
+            session_dir = paths.session_dir(self._session.id)
+            enabled = getattr(self.cfg, "tracing_enabled", True)
+            self._tracer = SessionTracer(session_dir, self._session.id, enabled=enabled)
+        except Exception:
+            self._tracer = None
 
     def _bind_raw_path(self) -> None:
         """将 raw history 的 .jsonl 文件路径绑定到当前 session，启用即时落盘。
@@ -877,6 +900,12 @@ class Agent:
         except Exception as e:
             R.print_warning(f"[session-end] workdir knowledge update failed: {e}")
 
+        # [Stage 6 / 6.3] 观察性：SessionEnd 时写入量化指标 + 异常检测
+        try:
+            self._run_observability_on_session_end()
+        except Exception:
+            pass
+
         # [SYS-LESSON] 反思 LLM 调用：基于 tool_stats + 最后若干轮 history 生成 lesson 候选
         if not self.cfg.memory.enabled or self._memory is None:
             return
@@ -1086,6 +1115,62 @@ class Agent:
                 )
             except Exception:
                 pass
+
+    def _run_observability_on_session_end(self) -> None:
+        """[Stage 6 / 6.3] SessionEnd 时：
+        1. 把本 session 的 total_tokens / tool_count 写入 activity_log（为异常检测提供基线数据）
+        2. 运行异常检测，若触发则打印警告
+        写入 activity_log 的字段是对 gk.append_activity_log 的补充（后者已写 theme/duration，
+        这里追加 tool_count / total_tokens 供 detect_anomalies 使用）。
+        两个步骤都是观察性数据，任何异常静默降级。
+        """
+        if not getattr(self.cfg, "observability_enabled", True):
+            return
+        if not self._session:
+            return
+        try:
+            from mini_agent.storage.paths import AgentPaths
+            from mini_agent.perception.observability import detect_anomalies
+            paths = AgentPaths(self.cfg.project_root)
+            al_path = paths.global_activity_log()
+
+            total_tokens = self.stats.input_tokens + self.stats.output_tokens
+            tool_count = getattr(self.stats, "tool_calls", 0)
+            duration_min = self._session_duration_minutes()
+
+            # 1. 把当前 session 的量化指标追加到 activity_log（追加字段，不重写已有行）
+            # activity_log 条目本身由 gk.append_activity_log 写入，这里追加一条补充记录
+            # 格式：单独一行 JSON，flag 字段为 "session_metrics"（与主 activity_log 行区分）
+            import json as _json
+            al_path.parent.mkdir(parents=True, exist_ok=True)
+            metrics_entry = {
+                "ts":           __import__("time").time(),
+                "record_type":  "session_metrics",
+                "session_id":   self._session.id,
+                "tool_count":   tool_count,
+                "total_tokens": total_tokens,
+                "duration_min": duration_min,
+            }
+            with open(al_path, "a", encoding="utf-8") as f:
+                f.write(_json.dumps(metrics_entry, ensure_ascii=False) + "\n")
+
+            # 2. 异常检测（基于历史 session_metrics 记录）
+            k_sigma = getattr(self.cfg.observability, "anomaly_k_sigma", 3.0)
+            min_samples = getattr(self.cfg.observability, "anomaly_min_samples", 10)
+            current = {
+                "session_id":   self._session.id,
+                "tool_count":   tool_count,
+                "total_tokens": total_tokens,
+                "duration_min": duration_min,
+            }
+            flags = detect_anomalies(al_path, current, k_sigma=k_sigma, min_samples=min_samples)
+            for flag in flags:
+                R.print_warning(
+                    f"[anomaly] {flag.flag_type}: 当前值 {flag.value:.1f} 超出基线 "
+                    f"(均值 {flag.baseline:.1f}, 阈值 {flag.threshold:.1f})"
+                )
+        except Exception:
+            pass
 
     def _session_duration_minutes(self) -> float:
         """从 Session.created_at（ISO 字符串，_now_iso() 格式）估算本次 session 时长（分钟）。
@@ -1682,9 +1767,23 @@ class Agent:
             # 不重复构建 system prompt。
             if self.cfg.token_estimate_enabled or self.cfg.auto_compress_enabled:
                 from mini_agent.llm.system_tool_call import convert_tool_use_to_text
-                _sys_preview = self._build_system()   # 首次调用时填充缓存
-                _msgs_preview = convert_tool_use_to_text(self._history)
-                _est = estimate_messages_tokens(_msgs_preview, _sys_preview)
+                # [Stage 6 / 6.1] build_system 追踪（首次调用时有实际构建成本）
+                if self._tracer:
+                    with self._tracer.span("build_system", turn_id=self.stats.turns) as _bsp:
+                        _sys_preview = self._build_system()
+                        _msgs_preview = convert_tool_use_to_text(self._history)
+                        _est = estimate_messages_tokens(_msgs_preview, _sys_preview)
+                        _sys_tokens = estimate_messages_tokens([], _sys_preview)
+                        _hist_tokens = _est - _sys_tokens
+                        _bsp["context_breakdown"] = {
+                            "system_base": _sys_tokens,
+                            "history":     _hist_tokens,
+                            "total":       _est,
+                        }
+                else:
+                    _sys_preview = self._build_system()   # 首次调用时填充缓存
+                    _msgs_preview = convert_tool_use_to_text(self._history)
+                    _est = estimate_messages_tokens(_msgs_preview, _sys_preview)
                 _budget_pct = _est / max(self.cfg.max_tokens, 1)
                 if self.cfg.token_estimate_enabled and self.cfg.verbose:
                     R.print_info(
@@ -1696,7 +1795,15 @@ class Agent:
                     self._cached_system = None
                     self._auto_compress_history()
 
-            response = self._call_llm()
+            # [Stage 6 / 6.1] call_llm 追踪
+            if self._tracer:
+                _turn_id = self.stats.turns
+                with self._tracer.span("call_llm", turn_id=_turn_id) as _sp:
+                    response = self._call_llm()
+                    _sp["input_tokens"] = response.usage.input_tokens
+                    _sp["output_tokens"] = response.usage.output_tokens
+            else:
+                response = self._call_llm()
             final_text = response.text
             self.stats.input_tokens += response.usage.input_tokens
             self.stats.output_tokens += response.usage.output_tokens
@@ -1719,7 +1826,15 @@ class Agent:
                 break
 
             # 执行工具调用，结果写回历史
-            tool_results, result_strs = self._execute_tools(response)
+            # [Stage 6 / 6.1] execute_tools 追踪
+            if self._tracer:
+                with self._tracer.span("execute_tools", turn_id=self.stats.turns) as _sp:
+                    tool_results, result_strs = self._execute_tools(response)
+                    _sp["tool_count"] = len(response.tool_calls)
+                    from mini_agent.perception.lesson_rules import is_tool_error as _ite
+                    _sp["tool_error_count"] = sum(1 for r in result_strs if _ite(r))
+            else:
+                tool_results, result_strs = self._execute_tools(response)
             self._hist.append_tool_results(response.tool_calls, result_strs)
 
             # [SYS-REMINDER] 工具执行后：检查出错 / 成功输出，注入对应 reminder
@@ -2146,6 +2261,27 @@ class Agent:
                 else:
                     _seen_this_batch[_key] = result_str
 
+            # [Stage 6 / 6.4] 工具调用因果链记录
+            if self._tracer:
+                from mini_agent.perception.observability import classify_error
+                from mini_agent.perception.lesson_rules import is_tool_error as _ite6
+                _is_err6 = _ite6(result_str)
+                _err_cat6 = classify_error(result_str) if _is_err6 else None
+                # 因果链：检测"失败后重试成功"——在 result_strs 里往前找同名工具的失败记录
+                _resolves_seq6: object = None
+                if not _is_err6:
+                    for _prev_idx, _prev_r in enumerate(result_strs):
+                        if _ite6(_prev_r):
+                            _resolves_seq6 = _prev_idx + 1  # 1-based
+                self._tracer.record_tool_event(
+                    turn_id=self.stats.turns,
+                    sequence_in_turn=len(result_strs) + 1,
+                    tool_name=tc.name,
+                    result_str=result_str,
+                    is_error=_is_err6,
+                    error_category=_err_cat6,
+                    resolves_seq=_resolves_seq6,
+                )
             result_strs.append(result_str)
 
         return response.tool_calls, result_strs
