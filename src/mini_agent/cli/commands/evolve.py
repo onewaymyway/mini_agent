@@ -29,8 +29,13 @@ def handle_evolve_cmd(args: list[str], agent=None) -> None:
         _handle_review(rest, agent, spawn=True)
     elif sub == "list":
         _handle_review(rest, agent, spawn=False)
+    elif sub in ("phase-g", "phase_g", "phaseg"):
+        _handle_phase_g(rest, agent)
     else:
-        R.print_error("Usage: /evolve [review [--global] [--tier T1|T2] | list [--global] [--tier T1|T2]]")
+        R.print_error(
+            "Usage: /evolve [review [--global] [--tier T1|T2] | "
+            "list [--global] [--tier T1|T2] | phase-g [--dry-run]]"
+        )
 
 
 def _parse_review_args(rest: list[str]) -> tuple[bool, str]:
@@ -156,3 +161,102 @@ def _spawn_evolution_agent(agent, groups) -> None:
         f"evolution-agent spawned (task {task_id}) to review {len(groups)} lesson group(s). "
         f"Use /tasks log {task_id} to follow progress."
     )
+
+
+def _handle_phase_g(rest: list[str], agent) -> None:
+    """
+    [Stage 8 / 8.1] /evolve phase-g — 手动触发 Phase G 后台循环扫描。
+
+    子命令选项：
+      --dry-run   只展示报告，不写入节奏治理记录（方便反复测试）
+      --force     忽略时间门控，强制运行（即使 24h 内已运行过）
+    """
+    if agent is None:
+        R.print_error("No active agent context for /evolve phase-g.")
+        return
+
+    dry_run = "--dry-run" in rest
+    force   = "--force"   in rest
+
+    try:
+        from mini_agent.storage.paths import AgentPaths
+        from mini_agent.evolution.phase_g import run_phase_g, should_run_phase_g
+
+        paths = AgentPaths(agent.cfg.project_root)
+
+        if not force and not should_run_phase_g(paths):
+            R.print_info(
+                "[phase-g] 24h 内已运行过，跳过（使用 --force 强制运行）。"
+            )
+            return
+
+        R.print_info("[phase-g] 开始扫描…")
+
+        report = run_phase_g(
+            paths,
+            skill_loader=getattr(agent, "skill_loader", None),
+            memory_backend=getattr(agent, "_memory", None),
+        )
+
+        _print_phase_g_report(report)
+
+        if dry_run:
+            R.print_info("[phase-g] --dry-run 模式，节奏治理记录未写入。")
+    except Exception as e:
+        R.print_error(f"[phase-g] 运行失败：{e}")
+
+
+def _print_phase_g_report(report) -> None:
+    """格式化输出 Phase G 报告。"""
+    from rich.table import Table
+    from rich import box as rbox
+
+    # ── 8.2 剪枝候选 ──
+    if report.prune_candidates:
+        t = Table(box=rbox.SIMPLE, show_header=True, header_style="bold dim")
+        t.add_column("Skill", min_width=20)
+        t.add_column("Reason", min_width=40)
+        t.add_column("Last Used (days)", min_width=16)
+        for c in report.prune_candidates:
+            t.add_row(c.name, c.reason[:60], f"{c.last_used_days_ago:.0f}d")
+        R.console.print("\n[bold yellow]⚠  剪枝候选[/bold yellow]")
+        R.console.print(t)
+    else:
+        R.console.print("[dim]  ✓ 无剪枝候选[/dim]")
+
+    # ── 8.3 能力地图 ──
+    if report.capability_map:
+        t = Table(box=rbox.SIMPLE, show_header=True, header_style="bold dim")
+        t.add_column("Domain", min_width=18)
+        t.add_column("Confidence", min_width=12)
+        t.add_column("✓ / ✗", min_width=8)
+        for e in sorted(report.capability_map, key=lambda x: -x.confidence):
+            bar = "▓" * int(e.confidence * 10) + "░" * (10 - int(e.confidence * 10))
+            t.add_row(e.domain, f"{bar} {e.confidence:.0%}", f"{e.success_count}/{e.failure_count}")
+        R.console.print("\n[bold blue]📊 能力地图（已写入 memory）[/bold blue]")
+        R.console.print(t)
+    else:
+        R.console.print("[dim]  ─ 无任务历史可统计（能力地图为空）[/dim]")
+
+    # ── 8.4 Scope 晋升候选 ──
+    if report.promotion_candidates:
+        t = Table(box=rbox.SIMPLE, show_header=True, header_style="bold dim")
+        t.add_column("Pattern", min_width=24)
+        t.add_column("Projects", min_width=8)
+        t.add_column("Confidence", min_width=10)
+        t.add_column("Suggested Skill", min_width=20)
+        for c in report.promotion_candidates:
+            t.add_row(
+                c.description[:40],
+                str(c.observed_in_projects),
+                f"{c.confidence:.0%}",
+                c.suggested_skill_name,
+            )
+        R.console.print("\n[bold green]🚀 跨项目晋升候选[/bold green]")
+        R.console.print(t)
+        R.console.print("[dim]  提示：用 /evolve review 触发 evolution-agent 将候选转为 skill 提案[/dim]")
+    else:
+        R.console.print("[dim]  ✓ 无 Scope 晋升候选（跨项目模式数据不足或未达门槛）[/dim]")
+
+    R.console.print(f"\n[dim]Phase G 完成，共发现 {len(report.prune_candidates)} 个剪枝候选、"
+                    f"{len(report.promotion_candidates)} 个晋升候选[/dim]\n")

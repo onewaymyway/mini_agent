@@ -69,6 +69,20 @@ class Task:
     goal: str = ""                       # 任务目标的结构化描述；为空时回退到 prompt
     acceptance_criteria: list[str] = field(default_factory=list)  # 验收标准
 
+    # ── [Stage 7 / 13.2] SubAgent 降级重试链 ────────────────────────────────
+    # fallback_profiles: 失败时按顺序尝试的 agent profile 名称列表。
+    # 例如 ["senior_dev", "minimal"] 表示先降级到 senior_dev，再降级到 minimal。
+    # 为空时不做 profile 降级重试。
+    fallback_profiles: list[str] = field(default_factory=list)
+
+    # ── [Stage 7 / 15.3] 任务降级策略 ───────────────────────────────────────
+    # demotion_scope: 失败后降低任务目标范围的提示词追加。
+    # 若非空，在所有 fallback_profiles 均失败后，用更窄目标重试一次。
+    # 例如 "仅输出分析报告，不要修改任何文件"
+    demotion_scope: str = ""
+    # max_demotion_attempts: 降级重试最大次数（profile + scope 合计）
+    max_demotion_attempts: int = 0  # 0 = 不启用降级
+
     def __post_init__(self):
         if not self.name:
             # 自动从 prompt 截取前 40 字符作为名称
@@ -101,6 +115,11 @@ class TaskRecord:
 
     # manifest 落盘路径；由 SubAgent/调用方在拿到 session_id 后注入
     _manifest_path: Optional[Path] = field(default=None, repr=False, compare=False)
+
+    # [Stage 7 / 13.2+15.3] 降级重试追踪
+    demotion_attempts: int = 0          # 已尝试的降级次数
+    active_fallback_profile: str = ""   # 当前使用的 fallback profile（""=原始）
+    demoted_scope: bool = False         # 是否已切换到 demotion_scope
 
     @property
     def task_id(self) -> str:

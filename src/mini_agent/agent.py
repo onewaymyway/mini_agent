@@ -906,6 +906,12 @@ class Agent:
         except Exception:
             pass
 
+        # [Stage 8 / 8.1] Phase G 时间门控：每 24h 自动触发一次后台循环扫描
+        try:
+            self._maybe_run_phase_g()
+        except Exception:
+            pass
+
         # [SYS-LESSON] 反思 LLM 调用：基于 tool_stats + 最后若干轮 history 生成 lesson 候选
         if not self.cfg.memory.enabled or self._memory is None:
             return
@@ -1115,6 +1121,43 @@ class Agent:
                 )
             except Exception:
                 pass
+
+    def _maybe_run_phase_g(self) -> None:
+        """
+        [Stage 8 / 8.1] SessionEnd 时的 Phase G 时间门控。
+
+        每次 session 结束时检查"上次 Phase G 运行距今是否超过 24h"，
+        是则自动触发一次轻量扫描（剪枝 + 能力地图 + 晋升候选）。
+        不需要后台调度器，用 phase_g_rhythm.json 的 _last_run_at 字段实现。
+        结果只打印摘要（有发现时），不阻塞退出流程。
+        """
+        try:
+            from mini_agent.storage.paths import AgentPaths
+            from mini_agent.evolution.phase_g import run_phase_g, should_run_phase_g
+
+            paths = AgentPaths(self.cfg.project_root)
+            if not should_run_phase_g(paths):
+                return
+
+            report = run_phase_g(
+                paths,
+                skill_loader=getattr(self, "skill_loader", None),
+                memory_backend=getattr(self, "_memory", None),
+            )
+
+            # 只在有发现时打印摘要（避免每次退出都打印噪音）
+            if report.prune_candidates:
+                R.print_info(
+                    f"[phase-g] 发现 {len(report.prune_candidates)} 个剪枝候选，"
+                    "用 /evolve phase-g 查看详情。"
+                )
+            if report.promotion_candidates:
+                R.print_info(
+                    f"[phase-g] 发现 {len(report.promotion_candidates)} 个跨项目晋升候选，"
+                    "用 /evolve phase-g 查看详情。"
+                )
+        except Exception:
+            pass  # Phase G 失败不影响退出流程
 
     def _run_observability_on_session_end(self) -> None:
         """[Stage 6 / 6.3] SessionEnd 时：
@@ -2119,7 +2162,11 @@ class Agent:
         for tc, result_str in zip(tool_calls, result_strs):
             tool_name = getattr(tc, "name", "") or ""
             if _is_tool_error(result_str):
-                for r in self._reminder_mgr.check_tool_error(tool_name, result_str):
+                # [Stage 7 / 15.2] 传入 error_category 供精确路由
+                from mini_agent.perception.observability import classify_error as _ce
+                _ecat = _ce(result_str)
+                for r in self._reminder_mgr.check_tool_error(tool_name, result_str,
+                                                               error_category=_ecat):
                     self._inject_reminder(r)
             else:
                 for r in self._reminder_mgr.check_post_tool(tool_name, result_str):

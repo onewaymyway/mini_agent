@@ -50,6 +50,9 @@ class ReminderCondition:
     keyword: Optional[str] = None        # 用户消息关键词（正则）
     intent_pattern: Optional[str] = None # 用户消息模式（正则）
     text_pattern: Optional[str] = None   # assistant 输出模式（正则）
+    # [Stage 7 / 15.2] 错误分类驱动恢复：按 error_category 精确路由
+    # 对应 classify_error() 返回值枚举（observability.py）
+    error_category: Optional[str] = None  # permission|not_found|timeout|network|…
 
 
 @dataclass
@@ -159,6 +162,7 @@ def _build_condition(cond_raw) -> ReminderCondition:
         keyword=cond_raw.get("keyword"),
         intent_pattern=cond_raw.get("intent_pattern"),
         text_pattern=cond_raw.get("text_pattern"),
+        error_category=cond_raw.get("error_category"),  # [15.2]
     )
 
 

@@ -22,11 +22,31 @@ class Skill:
     location: Path
     content: str           # full SKILL.md text
     trigger_words: list[str] = field(default_factory=list)
+    # [Stage 7 / 14.2] Skill 依赖与冲突图
+    requires: list[str] = field(default_factory=list)      # 依赖 skill 列表
+    conflicts_with: list[str] = field(default_factory=list)  # 互斥 skill 列表
+    activation_conditions: list[str] = field(default_factory=list)  # 额外激活条件（正则）
+    # [Stage 7 / 14.3] 知识可信度
+    confidence_score: float = 1.0  # 0.0-1.0，影响注入时的语气强度
+    positive_count: int = 0        # 正向印证次数（lesson/使用确认）
+    negative_count: int = 0        # 反例计数（人工纠正/revert）
 
     def matches_query(self, query: str) -> bool:
         """Heuristic: does the user query seem to need this skill?"""
         q = query.lower()
-        return any(t in q for t in self.trigger_words)
+        # 基础触发词匹配
+        if any(t in q for t in self.trigger_words):
+            return True
+        # [14.2] activation_conditions 额外匹配
+        if self.activation_conditions:
+            import re as _re
+            for cond in self.activation_conditions:
+                try:
+                    if _re.search(cond, q, _re.I):
+                        return True
+                except Exception:
+                    pass
+        return False
 
 
 class SkillLoader:
@@ -93,13 +113,30 @@ class SkillLoader:
         return list(self._active)
 
     def activate(self, name: str) -> bool:
-        if name in self._all and name not in self._active:
-            self._active.append(name)
-            # 激活只是"加载"，在 tracker 里以 load_count 区分；
-            # 真正的使用通过 record_usage() 在推理结束后更新
-            self.detector.update_fingerprint(self._all[name])
-            return True
-        return False
+        """激活 skill；[14.2] 若触发冲突则拒绝激活并打印警告。"""
+        if name not in self._all or name in self._active:
+            return False
+        skill = self._all[name]
+        # [Stage 7 / 14.2] 冲突检查：若 conflicts_with 里的某个 skill 已激活，拒绝
+        for conflicting in skill.conflicts_with:
+            if conflicting in self._active:
+                import mini_agent.ui.renderer as _R
+                _R.print_warning(
+                    f"[skill] 无法激活 '{name}'：与已激活的 '{conflicting}' 存在冲突 (conflicts_with)"
+                )
+                return False
+        # [14.2] requires 检查：依赖的 skill 若不存在则打印提示（不阻塞，允许继续激活）
+        for dep in skill.requires:
+            if dep not in self._all:
+                import mini_agent.ui.renderer as _R
+                _R.print_warning(
+                    f"[skill] '{name}' 依赖 '{dep}' 但该 skill 不存在（requires）"
+                )
+        self._active.append(name)
+        # 激活只是"加载"，在 tracker 里以 load_count 区分；
+        # 真正的使用通过 record_usage() 在推理结束后更新
+        self.detector.update_fingerprint(skill)
+        return True
 
     def deactivate(self, name: str) -> bool:
         if name in self._active:
@@ -134,6 +171,32 @@ class SkillLoader:
                 self.detector.update_fingerprint(skill)
                 newly.append(name)
         return newly
+
+    def update_confidence(
+        self,
+        name: str,
+        positive: bool = True,
+        delta_positive: float = 0.05,
+        delta_negative: float = 0.20,
+    ) -> bool:
+        """[Stage 7 / 14.3] 更新 skill 置信度（设计文档开放问题 9 的反例计数机制）。
+
+        positive=True  → 正向印证（使用成功 / lesson 确认），confidence 小幅上升
+        positive=False → 反例（人工纠正 / revert record），confidence 大幅下降
+
+        正向使 confidence 向 1.0 靠拢，负向使其向 0 靠拢。
+        仅更新内存中的 Skill 对象，不写回 SKILL.md（需要调用方显式持久化）。
+        """
+        if name not in self._all:
+            return False
+        skill = self._all[name]
+        if positive:
+            skill.positive_count += 1
+            skill.confidence_score = min(1.0, skill.confidence_score + delta_positive)
+        else:
+            skill.negative_count += 1
+            skill.confidence_score = max(0.0, skill.confidence_score - delta_negative)
+        return True
 
     def record_usage(self, response_text: str) -> list[str]:
         """
@@ -174,10 +237,16 @@ class SkillLoader:
         for name in self._active:
             skill = self._all[name]
             if query:
-                content = self._relevant_chunks(skill.content, query)
+                _content = self._relevant_chunks(skill.content, query)
             else:
-                content = skill.content
-            parts.append(f"## Skill: {skill.name}\n\n{content}")
+                _content = skill.content
+            # [Stage 7 / 14.3] 置信度标注：confidence < 0.7 时添加语气修饰
+            _header = f"## Skill: {skill.name}"
+            if skill.confidence_score < 0.5:
+                _header += "  ⚠ 置信度较低，请结合实际情况判断"
+            elif skill.confidence_score < 0.7:
+                _header += "  ℹ 置信度中等"
+            parts.append(f"{_header}\n\n{_content}")
         return "\n\n---\n\n".join(parts)
 
     def _relevant_chunks(self, content: str, query: str, max_chunks: int = 3) -> str:
@@ -332,12 +401,31 @@ def _parse_skill(path: Path) -> Optional[Skill]:
     if not trigger_words:
         trigger_words = _extract_triggers(name, description)
 
+    # [Stage 7 / 14.2+14.3] 解析扩展字段
+    def _parse_list(raw: str) -> list[str]:
+        return [s.strip() for s in raw.split(",") if s.strip()] if raw else []
+
+    requires = _parse_list(fields.get("requires", "") if fm_match else "")
+    conflicts_with = _parse_list(fields.get("conflicts_with", "") if fm_match else "")
+    activation_conditions = _parse_list(fields.get("activation_conditions", "") if fm_match else "")
+    confidence_score = 1.0
+    if fm_match:
+        try:
+            confidence_score = float(fields.get("confidence_score", "1.0"))
+            confidence_score = max(0.0, min(1.0, confidence_score))
+        except (ValueError, KeyError):
+            confidence_score = 1.0
+
     return Skill(
         name=name,
         description=description,
         location=path,
         content=content,
         trigger_words=trigger_words,
+        requires=requires,
+        conflicts_with=conflicts_with,
+        activation_conditions=activation_conditions,
+        confidence_score=confidence_score,
     )
 
 

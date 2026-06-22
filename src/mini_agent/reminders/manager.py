@@ -86,12 +86,16 @@ class ReminderManager:
     # ── 四类触发检查 ──────────────────────────────────────────────────────────
 
     def check_tool_error(
-        self, tool_name: str, error_str: str
+        self, tool_name: str, error_str: str,
+        error_category: str = "",
     ) -> List[Reminder]:
-        """工具出错时调用。返回待注入的 reminder 列表。"""
+        """工具出错时调用。返回待注入的 reminder 列表。
+        [Stage 7 / 15.2] error_category 传入后，matcher 可按分类精确路由。
+        """
         if not self.enabled or not self._cfg.tool_error_enabled:
             return []
-        matched = self._matcher.match_tool_error(tool_name, error_str)
+        matched = self._matcher.match_tool_error(tool_name, error_str,
+                                                  error_category=error_category or None)
         return self._limit(matched)
 
     def check_post_tool(

@@ -339,19 +339,122 @@ class TaskManager:
                 pass
 
     def _handle_terminal(self, task_id: str, old_status: TaskStatus, new_status: TaskStatus) -> None:
-        """处理 SubAgent 终态通知，避免重复通知。"""
-        # 只在进入终态时通知
-        if new_status in (TaskStatus.DONE, TaskStatus.FAILED, TaskStatus.CANCELLED):
-            with self._lock:
-                rec = self._records.get(task_id)
-            if rec:
-                self._notify_status(rec)
-            # [Phase E / 3.3] SubAgent 结束（无论成功/失败/取消，只要曾经跑起来
-            # 就可能已经写过规则触发的 lesson）后，让主 agent 的 memory backend
-            # 重新从磁盘加载，使本 session 后续的 search() 能检索到 SubAgent
-            # 期间产生的新 lesson，而不是只留在 SubAgent 自己的 MemoryStore
-            # 实例（随 SubAgent 线程结束后被垃圾回收，从未被主 agent 看到）里。
-            self._reload_main_memory_sinks()
+        """处理 SubAgent 终态通知；FAILED 时尝试降级重试（13.2+15.3）。"""
+        if new_status not in (TaskStatus.DONE, TaskStatus.FAILED, TaskStatus.CANCELLED):
+            return
+
+        with self._lock:
+            rec = self._records.get(task_id)
+
+        if rec is None:
+            return
+
+        # [Stage 7 / 13.2+15.3] FAILED → 尝试降级重试链
+        if new_status == TaskStatus.FAILED:
+            if self._try_demotion(rec):
+                # 已重新提交降级任务，不通知"最终失败"
+                self._reload_main_memory_sinks()
+                return
+
+        self._notify_status(rec)
+        # [Phase E / 3.3] 重新加载主 agent memory
+        self._reload_main_memory_sinks()
+
+    def _try_demotion(self, rec: TaskRecord) -> bool:
+        """
+        [Stage 7 / 13.2+15.3] SubAgent 降级重试链实现。
+
+        降级顺序（与设计文档 13.2+15.3 节对齐）：
+          1. fallback_profiles 列表里按顺序切换 agent profile（换 SubAgent 角色）
+          2. 所有 profile 都试过后，若设置了 demotion_scope，用更窄目标再试一次
+          3. 超出 max_demotion_attempts 后放弃，留给外部判定为最终失败
+
+        返回 True 表示已触发降级重试（任务重新入队），False 表示放弃。
+        """
+        task = rec.task
+        if task.max_demotion_attempts <= 0:
+            return False  # 未启用降级
+
+        if rec.demotion_attempts >= task.max_demotion_attempts:
+            return False  # 已耗尽降级次数
+
+        # ── 阶段一：fallback_profiles 降级（换 profile）─────────────────────
+        # 当前 profile 索引 = demotion_attempts（0=原始，1=fallback_profiles[0]，…）
+        profile_idx = rec.demotion_attempts  # 这次失败前已用掉的 profile 序号
+        if profile_idx < len(task.fallback_profiles):
+            next_profile = task.fallback_profiles[profile_idx]
+            rec.active_fallback_profile = next_profile
+            rec.demotion_attempts += 1
+            rec.append_log(
+                f"[demotion] profile fallback → {next_profile!r} "
+                f"(attempt {rec.demotion_attempts}/{task.max_demotion_attempts})"
+            )
+            self._resubmit_demoted(rec, profile_override=next_profile)
+            return True
+
+        # ── 阶段二：demotion_scope 降级（缩小任务目标）──────────────────────
+        if task.demotion_scope and not rec.demoted_scope:
+            rec.demoted_scope = True
+            rec.demotion_attempts += 1
+            rec.append_log(
+                f"[demotion] scope demotion activated "
+                f"(attempt {rec.demotion_attempts}/{task.max_demotion_attempts}): "
+                f"{task.demotion_scope[:80]}"
+            )
+            self._resubmit_demoted(rec, scope_override=task.demotion_scope)
+            return True
+
+        return False  # 所有降级策略已耗尽
+
+    def _resubmit_demoted(
+        self,
+        rec: TaskRecord,
+        profile_override: str = "",
+        scope_override: str = "",
+    ) -> None:
+        """
+        把 TaskRecord 重置为 PENDING 并把对应的新 SubAgent 加入调度。
+
+        不创建新的 TaskRecord / TaskRecord.task_id，复用原始 task_id，
+        以便主 agent 的 depends_on 引用不失效。SubAgent 会被替换为新实例。
+        """
+        import copy
+
+        # 构造降级后的 prompt
+        demoted_prompt = rec.task.prompt
+        if scope_override:
+            demoted_prompt = demoted_prompt + "\n\n[降级约束] " + scope_override
+
+        # 构造降级后的 system_extra（注入 profile 角色切换提示）
+        system_extra = rec.task.system_extra or ""
+        if profile_override:
+            system_extra = (
+                f"[fallback_profile={profile_override!r}] "
+                f"你是一个 {profile_override} profile 的 SubAgent，正在重试上次失败的任务。\n"
+                + system_extra
+            )
+
+        # 修改运行时状态，重置为 PENDING
+        rec.status = TaskStatus.PENDING
+        rec.result = None
+        rec.started_at = None
+        rec.finished_at = None
+
+        # 用修改后的 prompt/system_extra 覆盖 task（浅拷贝后替换字段）
+        # Task 是 dataclass，用 dataclasses.replace 最安全
+        from dataclasses import replace as _dc_replace
+        rec.task = _dc_replace(
+            rec.task,
+            prompt=demoted_prompt,
+            system_extra=system_extra,
+        )
+
+        with self._lock:
+            # 移除旧 SubAgent（已终止）
+            self._agents.pop(rec.task_id, None)
+            # 任务重新进入等待列表（_records 里已有此条目，status 已改 PENDING）
+
+        # _tick() 会在下一个调度周期自动启动新 SubAgent
 
     def _reload_main_memory_sinks(self) -> None:
         for sink in (self._main_memory, self._main_global_memory):

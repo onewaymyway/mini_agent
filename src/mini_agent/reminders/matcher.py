@@ -37,12 +37,16 @@ class ReminderMatcher:
     # ── 四类触发入口 ──────────────────────────────────────────────────────────
 
     def match_tool_error(
-        self, tool_name: str, error_str: str
+        self,
+        tool_name: str,
+        error_str: str,
+        error_category: Optional[str] = None,
     ) -> List[Reminder]:
         """
         工具调用出错时触发。
-        condition.tool_name    → 匹配工具名（可选）
+        condition.tool_name     → 匹配工具名（可选）
         condition.error_pattern → 匹配错误内容（可选）
+        condition.error_category → 精确匹配 classify_error() 分类（[15.2] 新增）
         """
         matched = []
         for r in self._reminders:
@@ -52,6 +56,10 @@ class ReminderMatcher:
                 continue
             if r.condition.error_pattern:
                 if not _re_search(r.condition.error_pattern, error_str):
+                    continue
+            # [Stage 7 / 15.2] error_category 精确路由
+            if r.condition.error_category:
+                if error_category != r.condition.error_category:
                     continue
             matched.append(r)
 
