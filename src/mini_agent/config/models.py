@@ -186,6 +186,24 @@ class WorkdirKnowledgeConfig:
 
 
 @dataclass
+class GlobalKnowledgeConfig:
+    """[SYS-GLOBAL-KNOWLEDGE] Global 知识层配置（W3，对应设计文档 8.3 节 /
+    self_evolution_stage4plus_plan.md Stage 5）。
+
+    覆盖 self_profile.json / projects_index.json / cross_project_index.json /
+    activity_log.jsonl 四个文件的维护与 context 注入开关。默认开启，与
+    WorkdirKnowledgeConfig 取舍一致——这是纯粹的"数据沉淀与观察"层（5.4 的
+    跨项目扫描函数本身可被调用，但不在本配置下自动周期触发，触发时机留给
+    Stage 8 Phase G），不产生任何自主行为。
+    """
+    enabled: bool = True
+    # projects_index：项目超过此天数无 last_active 更新则标记 dormant
+    dormant_after_days: float = 30.0
+    # context 注入：workdir 变化时注入 activity_log 最近几条
+    activity_log_inject_limit: int = 5
+
+
+@dataclass
 class ProfileConfig:
     """[SYS-PROFILE] 用户画像（profile）生成配置。
 
@@ -416,6 +434,7 @@ class AppConfig:
     role_agent: RoleAgentConfig  = field(default_factory=RoleAgentConfig)
     env_info:   EnvInfoConfig    = field(default_factory=EnvInfoConfig)
     workdir_knowledge: WorkdirKnowledgeConfig = field(default_factory=WorkdirKnowledgeConfig)
+    global_knowledge: GlobalKnowledgeConfig = field(default_factory=GlobalKnowledgeConfig)
 
     # ── 向后兼容属性（让旧代码 cfg.memory_enabled 不报错）────────────────────
     # 以下属性委托给子配置块，方便渐进式迁移，后续版本可删除
@@ -473,6 +492,9 @@ class AppConfig:
 
     @property
     def workdir_knowledge_enabled(self) -> bool: return self.workdir_knowledge.enabled
+
+    @property
+    def global_knowledge_enabled(self) -> bool: return self.global_knowledge.enabled
 
     @property
     def profile_enabled(self) -> bool:          return self.profile.enabled

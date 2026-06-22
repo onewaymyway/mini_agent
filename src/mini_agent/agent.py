@@ -463,6 +463,7 @@ class Agent:
             )
             self._bind_session_extras()
             self._maybe_ensure_project_meta()
+            self._maybe_register_global_project()
         except Exception as e:
             R.print_warning(f"Session init failed: {e}")
 
@@ -503,6 +504,33 @@ class Agent:
                         "检测到运行环境变化（" + "; ".join(drift[:3]) + "）："
                         "之前积累的部分经验/技能可能需要重新验证。"
                     )
+        except Exception:
+            pass  # 观察性数据，失败不应影响 agent 主流程
+
+    def _maybe_register_global_project(self) -> None:
+        """
+        [W3 / 5.2] agent 进程启动时（与 _maybe_ensure_project_meta 同一次调用
+        时机，只在 _init_session 跑一次）把当前 workdir 注册/更新进
+        ~/.agent/projects_index.json，并顺手跑一遍全部已注册项目的 dormant
+        状态巡检（5.2 节"定期检查"——不需要专门后台任务，任意 session 启动时
+        顺手检查一遍即可，O(项目数) 量级足够轻量）。
+
+        与 _maybe_ensure_project_meta 各自独立 try/except——Global 知识层
+        与 Workdir 知识层是两个平行的子系统（5.5 节"维护机制与 context 注入"
+        强调两者对称但不耦合），一方失败不应该影响另一方。
+        """
+        if not getattr(self.cfg, "global_knowledge_enabled", True):
+            return
+        try:
+            from mini_agent.storage.paths import AgentPaths
+            from mini_agent.perception import global_knowledge as gk
+
+            paths = AgentPaths(self.cfg.project_root)
+            gk.register_or_touch_project(paths, self.cfg.project_root)
+            dormant_after_days = getattr(
+                self.cfg.global_knowledge, "dormant_after_days", 30.0
+            )
+            gk.refresh_dormant_status(paths, dormant_after_days=dormant_after_days)
         except Exception:
             pass  # 观察性数据，失败不应影响 agent 主流程
 
@@ -840,8 +868,9 @@ class Agent:
             except Exception:
                 pass  # SessionEnd hook 失败不应阻塞退出流程
 
-        # [W2 / 4.2-4.4] Workdir 知识层更新：timeline / work_index / open_threads
-        # 纯写入为主（无 LLM 依赖），theme/key_outcomes 这一项需要一次轻量反思
+        # [W2+W3 / 4.2-4.4 + 5.3 + 5.5] Workdir + Global 知识层更新：timeline /
+        # work_index / open_threads / activity_log / self_profile。纯写入为主
+        # （无 LLM 依赖），theme/key_outcomes 这一项需要一次轻量反思
         # 调用，单独捕获异常，不让其失败影响 lesson 反思或退出流程。
         try:
             self._update_workdir_knowledge_on_session_end()
@@ -915,23 +944,47 @@ class Agent:
                 self._memory.add(entry)
             self._append_memory_delta(entry)
             saved += 1
+
+        # ── [W3 / 5.5 事件驱动更新] lesson 生成是即时事件，不等 SessionEnd
+        #    的批量维护路径——直接在产生的那一刻 +saved，与设计文档原话
+        #    "在对应事件发生时直接 +1，不等 session 结束"一致。失败不影响
+        #    已经成功写入的 lesson（self_profile 是衍生统计，不是权威数据）。
+        if saved and getattr(self.cfg, "global_knowledge_enabled", True):
+            try:
+                from mini_agent.storage.paths import AgentPaths
+                from mini_agent.perception import global_knowledge as gk
+                import time as _time
+                paths = AgentPaths(self.cfg.project_root)
+                profile = gk.ensure_self_profile(paths)
+                profile.evolution_state.lifetime_lessons_generated += saved
+                profile.evolution_state.last_reflection_at = _time.time()
+                gk.save_self_profile(paths, profile)
+            except Exception:
+                pass
+
         return saved
 
-    # ── [W2 / Stage 4] Workdir 知识层：SessionEnd 维护路径 ──────────────────
+    # ── [W2+W3 / Stage 4-5] Workdir + Global 知识层：SessionEnd 维护路径 ─────
 
     def _update_workdir_knowledge_on_session_end(self) -> None:
         """
-        SessionEnd hook 轻量路径（设计文档 8.2 节"三条触发路径"之一）：
+        SessionEnd hook 轻量路径（设计文档 8.2/8.3 节"三条触发路径"之一）：
           - 追加 timeline.jsonl 一条 session 概览（4.2）
           - 尝试把本次 session 关联到一个 active WorkThread（4.3 最简版本）
           - 把本次 session 各 task manifest 的 outcome.unresolved 推进
             open_threads.json（4.4）
+          - 追加 activity_log.jsonl 一条全局活动记录，复用同一次 theme/
+            duration 计算（5.3）
+          - 更新 self_profile.json 的 operating_state（5.5）
 
-        纯写入部分（work_index 关联、open_threads 推进）无 LLM 依赖，
-        始终执行；theme/key_outcomes 需要一次独立的轻量反思调用（与
-        _reflect_and_save_lessons 的诊断型反思目标不同，见 Stage 4.2 计划
-        文档的取舍说明），调用失败时 theme/key_outcomes 留空但仍写入
-        timeline 行（保留 task_count/status/duration 等无需 LLM 的字段）。
+        纯写入部分（work_index 关联、open_threads 推进、activity_log/
+        self_profile 更新）无 LLM 依赖，始终执行；theme/key_outcomes 需要
+        一次独立的轻量反思调用（与 _reflect_and_save_lessons 的诊断型反思
+        目标不同，见 Stage 4.2 计划文档的取舍说明），调用失败时
+        theme/key_outcomes 留空但仍写入 timeline 行（保留
+        task_count/status/duration 等无需 LLM 的字段）。方法名沿用 W2 阶段
+        命名，未改名为更通用的名字——调用方（trigger_session_end）只有一处，
+        改名收益不大，保留命名稳定性。
         """
         if not getattr(self.cfg, "workdir_knowledge_enabled", True):
             return
@@ -1005,6 +1058,34 @@ class Agent:
             )
         except Exception:
             pass
+
+        # ── [W3 / 5.3 + 5.5] Global 知识层 SessionEnd 维护：复用上面已经
+        #    计算好的 theme/duration_min 写一行 activity_log.jsonl，避免
+        #    两次遍历 session 数据（计划文档 5.3 节要求）；同时更新
+        #    self_profile.json 的 operating_state（5.5 节，纯计数器更新，
+        #    无 LLM 依赖）。两者独立 try/except，与 W2 部分互不阻塞。 ──
+        if getattr(self.cfg, "global_knowledge_enabled", True):
+            try:
+                from mini_agent.perception import global_knowledge as gk
+                project_id = gk.project_id_for(self.cfg.project_root)
+                gk.append_activity_log(
+                    paths,
+                    project_id=project_id,
+                    session_id=session_id,
+                    theme=theme,
+                    duration_min=duration_min,
+                )
+            except Exception:
+                pass
+            try:
+                from mini_agent.perception import global_knowledge as gk
+                gk.update_self_profile_on_session_end(
+                    paths,
+                    active_project=str(self.cfg.project_root.resolve()),
+                    tokens_used=self.stats.input_tokens + self.stats.output_tokens,
+                )
+            except Exception:
+                pass
 
     def _session_duration_minutes(self) -> float:
         """从 Session.created_at（ISO 字符串，_now_iso() 格式）估算本次 session 时长（分钟）。

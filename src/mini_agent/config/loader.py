@@ -37,6 +37,7 @@ from .models import (
     EnvInfoConfig,
     ReminderConfig,
     WorkdirKnowledgeConfig,
+    GlobalKnowledgeConfig,
     DEFAULT_MODEL,
     DEFAULT_AGENT_NAME,
     DEFAULT_MAX_TOKENS,
@@ -473,6 +474,14 @@ def load_config(
         open_threads_inject_limit=int(_wk.get("open_threads_inject_limit", 5)),
     )
 
+    # ── Global 知识层配置组装（W3，对应设计文档 8.3 节）──────────────────────
+    _gk = file_cfg.get("global_knowledge") if isinstance(file_cfg.get("global_knowledge"), dict) else {}
+    global_knowledge_cfg = GlobalKnowledgeConfig(
+        enabled=bool(_gk.get("enabled", True)),
+        dormant_after_days=float(_gk.get("dormant_after_days", 30.0)),
+        activity_log_inject_limit=int(_gk.get("activity_log_inject_limit", 5)),
+    )
+
     return AppConfig(
         api_key=api_key,
         model=_model,
@@ -508,6 +517,7 @@ def load_config(
         role_agent=role_agent_cfg,
         env_info=env_info_cfg,
         workdir_knowledge=workdir_knowledge_cfg,
+        global_knowledge=global_knowledge_cfg,
         llm_fallback_chain=_llm_fallback_chain,
         llm_fallback_on=_llm_fallback_on,
     )

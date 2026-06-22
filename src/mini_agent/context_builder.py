@@ -34,6 +34,9 @@ class ContextBuilder:
     - 跨 session 长期记忆（project + global 两级）
     - Workdir 知识层（W2，4.6）：project.json 身份信息 / active WorkThread
       进度 / 高优先级 open_threads，均为 always-on 注入
+    - Global 知识层（W3，5.5）：self_profile.self_assessment 精简注入 /
+      evolution_state.pending_evolve_branches，均 always-on；
+      projects_index + activity_log 最近几条仅在 workdir 变化时注入
     """
 
     def __init__(
@@ -62,6 +65,15 @@ class ContextBuilder:
         # 只在 skill 集合变化时重建，避免每次 build() 重新生成字符串。
         self._cached_skill_dir: str = ""
         self._cached_skill_dir_key: tuple = ()   # (frozenset(active), frozenset(available))
+
+        # ── Global 知识层（W3，5.5）：workdir 切换检测 ───────────────────────
+        # 记录上一次 build() 时的 project_root，用于判断"projects_index +
+        # activity_log 最近几条"是否需要注入（8.4 节表格：仅在 workdir 变化
+        # 时注入，不是每次 build() 都重复注入，否则会持续占用 context）。
+        # 初始为 None：进程内第一次 build() 视为"刚切换到当前 workdir"，
+        # 因此也会注入一次（与"agent 启动时看到自己上次在哪干了什么"的
+        # 设计意图一致，不需要特殊处理第一次的情况）。
+        self._last_seen_project_root: Optional[str] = None
 
     # ── Turn 生命周期 API ─────────────────────────────────────────────────────
 
@@ -144,6 +156,12 @@ class ContextBuilder:
         wk_block = self._build_workdir_knowledge_block()
         if wk_block:
             base += "\n\n" + wk_block
+
+        # ── Global 知识层（W3，5.5）：self_assessment / pending_evolve_branches
+        #    always-on；projects_index + activity_log 仅在 workdir 变化时注入 ──
+        gk_block = self._build_global_knowledge_block()
+        if gk_block:
+            base += "\n\n" + gk_block
 
         # ── 长期记忆（使用 turn 级缓存，不重复检索）──────────────────────
         if self._cached_memory_snippet:
@@ -235,6 +253,89 @@ class ContextBuilder:
             for item in high_priority:
                 ot_lines.append(f"- [{item.type}] {item.title} (discovered in {item.discovered_in})")
             lines.append("\n".join(ot_lines))
+
+        return "\n\n".join(lines)
+
+    def _build_global_knowledge_block(self) -> str:
+        """
+        组装 Global 知识层 context 注入块（设计文档 8.4 节）：
+          - self_profile.self_assessment（always-on，精简注入）
+          - evolution_state.pending_evolve_branches（always-on）
+          - projects_index + activity_log 最近几条（仅在 workdir 变化时注入）
+
+        "workdir 变化"判定：与上一次 build() 调用时记录的 project_root 比较——
+        同一个 ContextBuilder 实例在整个 Agent 生命周期内通常对应同一个
+        project_root（一个进程一个 workdir），因此对绝大多数 session 而言
+        这一项只在第一次 build() 时注入一次；只有在未来支持"同进程内切换
+        workdir"的场景下才会再次触发，目前代码里没有这种调用路径，但判定
+        逻辑本身不依赖这个假设，按 cfg.project_root 实时比较，保持正确性。
+
+        cfg.global_knowledge_enabled=False 时整体跳过；任何单项读取失败
+        都不应该影响其余部分或 system prompt 的其他部分（与 Workdir 块
+        的容错策略一致）。
+        """
+        if not getattr(self.cfg, "global_knowledge_enabled", True):
+            return ""
+
+        try:
+            from mini_agent.storage.paths import AgentPaths
+            from mini_agent.perception import global_knowledge as gk
+        except Exception:
+            return ""
+
+        try:
+            paths = AgentPaths(self.cfg.project_root)
+        except Exception:
+            return ""
+
+        lines: list[str] = []
+
+        # self_assessment（always-on，精简注入）+ pending_evolve_branches
+        try:
+            profile = gk.load_self_profile(paths)
+        except Exception:
+            profile = None
+        if profile is not None:
+            try:
+                assessment_block = profile.self_assessment.to_prompt_block()
+            except Exception:
+                assessment_block = ""
+            if assessment_block:
+                lines.append(assessment_block)
+
+            pending = profile.evolution_state.pending_evolve_branches
+            if pending:
+                lines.append(
+                    "## Pending evolve branches (awaiting human review)\n"
+                    + "\n".join(f"- {b}" for b in pending[:10])
+                )
+
+        # projects_index + activity_log 最近几条：仅在 workdir 变化时注入
+        current_root = str(self.cfg.project_root.resolve()) if self.cfg.project_root else ""
+        workdir_changed = current_root != self._last_seen_project_root
+        if workdir_changed:
+            try:
+                limit = getattr(self.cfg.global_knowledge, "activity_log_inject_limit", 5)
+                recent_activity = gk.load_recent_activity(paths, limit=limit)
+            except Exception:
+                recent_activity = []
+            try:
+                index = gk.load_projects_index(paths)
+                total_projects = len(index.projects)
+            except Exception:
+                total_projects = 0
+
+            if recent_activity or total_projects:
+                switch_lines = ["## Recent cross-project activity (workdir just changed)"]
+                if total_projects:
+                    switch_lines.append(f"- You have worked on {total_projects} project(s) so far.")
+                for rec in recent_activity:
+                    theme = rec.get("theme") or "(no theme recorded)"
+                    pid = rec.get("project_id", "")
+                    switch_lines.append(f"- [{pid}] {theme}")
+                lines.append("\n".join(switch_lines))
+
+            self._last_seen_project_root = current_root
 
         return "\n\n".join(lines)
 

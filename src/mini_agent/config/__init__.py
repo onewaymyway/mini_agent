@@ -45,6 +45,7 @@ from .models import (
     EnvInfoConfig,
     ReminderConfig,
     WorkdirKnowledgeConfig,
+    GlobalKnowledgeConfig,
     # 主配置
     AppConfig,
 )
@@ -84,6 +85,7 @@ __all__ = [
     "EnvInfoConfig",
     "ReminderConfig",
     "WorkdirKnowledgeConfig",
+    "GlobalKnowledgeConfig",
     "AppConfig",
     "load_config",
     "_parse_name_list",

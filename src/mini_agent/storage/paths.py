@@ -28,6 +28,12 @@ storage/paths.py — 统一路径管理
     paths.workdir_knowledge_md    # .agent/knowledge.md
     paths.workdir_knowledge_index # .agent/knowledge_index.json
 
+    # Global 知识层（W3，设计文档 8.3 节）
+    paths.global_self_profile        # ~/.agent/self_profile.json
+    paths.global_projects_index      # ~/.agent/projects_index.json
+    paths.global_cross_project_index # ~/.agent/cross_project_index.json
+    paths.global_activity_log        # ~/.agent/activity_log.jsonl
+
     # Session 级（需要 session_id）
     paths.session_dir(sid)        # .agent/sessions/<sid>/
     paths.session_history(sid)    # .agent/sessions/<sid>/history.json
@@ -96,6 +102,30 @@ class AgentPaths:
     def global_prompts_dir(self) -> Path:
         """~/.agent/prompts/ — 全局自定义 prompt 目录"""
         return self.global_dir / "prompts"
+
+    # ── Global 知识层（W3，对应设计文档 8.3 节）──────────────────────────────
+    # 命名延续 global_xxx 惯例（对齐已有的 global_memory / global_skills_dir）。
+
+    @property
+    def global_self_profile(self) -> Path:
+        """~/.agent/self_profile.json — agent 自我模型（5.1，主语=agent 自己，
+        与 profile.json 主语=用户 平行）"""
+        return self.global_dir / "self_profile.json"
+
+    @property
+    def global_projects_index(self) -> Path:
+        """~/.agent/projects_index.json — 曾经工作过的所有 workdir 注册表（5.2）"""
+        return self.global_dir / "projects_index.json"
+
+    @property
+    def global_cross_project_index(self) -> Path:
+        """~/.agent/cross_project_index.json — 跨项目模式与能力图谱（5.4）"""
+        return self.global_dir / "cross_project_index.json"
+
+    @property
+    def global_activity_log(self) -> Path:
+        """~/.agent/activity_log.jsonl — 全局活动时序流水（5.3）"""
+        return self.global_dir / "activity_log.jsonl"
 
     def profile_path(self, user_id: Optional[str] = None) -> Path:
         """

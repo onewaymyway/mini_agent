@@ -198,7 +198,7 @@ session 启动时能在 system prompt 里看到上一次 session 的 WorkThread 
 
 ---
 
-### Stage 5（核心，约 3-4 人天）—— Phase W3：Global 知识层
+### Stage 5（核心，约 3-4 人天）—— Phase W3：Global 知识层 ✅ 已完成
 
 > 设计文档 8.3 节。`~/.agent/` 下新增四个文件。与 Stage 4 同构，但 scope 从单项目变为跨项目，
 > 复杂度集中在"如何从多个 workdir 汇总"而非单文件写入本身。`AgentPaths` 新增方法统一命名为
@@ -256,6 +256,27 @@ session 启动时能在 system prompt 里看到上一次 session 的 WorkThread 
 
 **Stage 5 验证标准**：在至少两个不同项目目录里各跑若干 session，人工核对 `~/.agent/` 下四个新文件
 正确反映跨项目状态，且 `cross_project_index.json` 能正确识别出至少一组跨项目重复模式。
+
+> **完成记录**：5.1-5.5 全部落地。核心实现在 `perception/global_knowledge.py`（数据模型 +
+> 读写 + `scan_cross_project_patterns`/`merge_cross_project_patterns` 跨项目聚合）；
+> `storage/paths.py` 新增 `global_self_profile`/`global_projects_index`/
+> `global_cross_project_index`/`global_activity_log` 四个路径属性；`config/models.py` 新增
+> `GlobalKnowledgeConfig`；`agent.py` 接入 `_maybe_register_global_project`（session 启动注册 +
+> dormant 巡检）与 `_update_workdir_knowledge_on_session_end` 尾部追加（activity_log + self_profile
+> 更新，复用同一次 theme/duration 计算）、`_reflect_and_save_lessons` 事件驱动更新
+> `lifetime_lessons_generated`；`context_builder.py` 新增 `_build_global_knowledge_block`
+> （self_assessment + pending_evolve_branches always-on，projects_index+activity_log 仅
+> workdir 变化时注入）。`resource_budget.used_today` 按 UTC 日历日做了真实的跨日重置（而非占位）。
+> 测试覆盖：`tests/test_global_knowledge.py`（46，纯函数）+
+> `tests/test_global_knowledge_integration.py`（14，agent.py 接入）+
+> `tests/test_context_builder_global_knowledge.py`（14，context 注入）= 74 个新增测试，
+> 全部通过；同时补充 `tests/conftest.py` 全局隔离 `Path.home()`，修复了本 Stage 暴露出的
+> "测试构造真实 Agent 会污染运行测试机器的 `~/.agent/`"问题（Stage 1-4 即已存在，本 Stage
+> 一并修复）。手动场景验证：两个不同 workdir 各跑一次 session 后 `projects_index.json`/
+> `self_profile.json`/`activity_log.jsonl` 均正确反映跨项目状态；两个 workdir 各产生一条
+> "bash rm -rf 删除重要文件"风险 lesson 后，`scan_cross_project_patterns` 正确识别为同一个
+> 跨项目模式（`observed_in_projects` 计数为 2，`global_skill_candidate=True`）。
+> 5.4 节"自动触发 skill 晋升提案"按计划留给 Stage 8（Phase G），本 Stage 只实现扫描聚合函数本身。
 
 ---
 
@@ -456,7 +477,7 @@ Stage 完成后回顾更新（已完成的条目标注完成日期，移出待�
         └─→ Stage 4（W2：Workdir 知识层）✅ 已完成
               │  ├─ 顺带：14.1 knowledge_index ✅、12.2 environment_fingerprint ✅
               │
-              └─→ Stage 5（W3：Global 知识层，5.4 依赖 4.3 已有跨 session 数据）
+              └─→ Stage 5（W3：Global 知识层，5.4 依赖 4.3 已有跨 session 数据）✅ 已完成
                     │
                     └─→ Stage 6（观察性：tracing/diagnostics/异常检测/因果链）
                           │  （6.3 异常检测依赖 Stage 5.3 activity_log 已有数据积累）
@@ -478,8 +499,8 @@ Stage 完成后回顾更新（已完成的条目标注完成日期，移出待�
 | Stage | 工作量估计 | 并行度 | 状态 |
 |---|---|---|---|
 | Stage 4（W2） | 3-4 人天 | 4.1-4.5 内部有顺序（4.6 依赖前面全部），基本单线 | ✅ 已完成 |
-| Stage 5（W3） | 3-4 人天 | 5.1-5.3 可与 5.4 部分并行，5.5 需等前面全部 | 待开始（依赖的 Stage 4 已完成，可以开始） |
-| Stage 6（观察性） | 2-3 人天 | 6.1/6.2/6.4 可并行，6.3 需等 Stage 5.3 有数据积累 | 待开始（依赖 Stage 5） |
+| Stage 5（W3） | 3-4 人天 | 5.1-5.3 可与 5.4 部分并行，5.5 需等前面全部 | ✅ 已完成 |
+| Stage 6（观察性） | 2-3 人天 | 6.1/6.2/6.4 可并行，6.3 需等 Stage 5.3 有数据积累 | 待开始（依赖的 Stage 5 已完成，可以开始） |
 | Stage 7（横向加固任务池） | 不单独计入总量，分摊进 Stage 4-9 各自的改动成本 | 机会性，无固定并行度 | 持续滚动 |
 | Stage 8（Phase G） | 4-6 人天 | 8.2/8.3 可并行，8.4/8.5 需等前面 | 待开始（依赖 Stage 4/5/6） |
 | Stage 9（Phase H） | 不估算（决策点，启动后的具体人天留给届时按 9.1 八个子项重新估算） | 内部严格按 9.1 顺序串行 | 决策待定 |
