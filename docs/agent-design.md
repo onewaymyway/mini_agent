@@ -157,10 +157,10 @@ execute_tools(response):
 
 | 工具类型 | 截断策略 |
 |----------|----------|
-| `bash` | 头部 70% + 尾部 30%（错误信息通常在头部） |
-| `read_file` | 滑动窗口保留连续中间段，确保代码块完整性 |
-| `grep/glob` | 只保留前 50 行 |
-| 其他 | 通用头尾截断 |
+| `bash` | 头部 20% + 尾部 60%（`bash_tail_ratio`，默认 0.6）+ 中间额外插入匹配到的错误/失败关键行（正则匹配 `FAILED`/`ERROR`/`Traceback`/`AssertionError` 等，最多 30 行），三段合并后用 `[N lines omitted]` 标注省略 |
+| `read_file` | 头尾各取窗口的一半（窗口大小 = `read_window_lines`，0 时自动按阈值推算），省略中间段，提示用 `start_line`/`end_line` 读取指定范围 |
+| `grep/glob` | 只保留前 `grep_max_lines`（默认 50）行 |
+| 其他 | 通用头尾截断（头 15 行 + 尾 5 行） |
 
 ### 4.3 HistoryManager
 
@@ -374,18 +374,18 @@ R.print_reasoning_footer()
 
 | 配置项 | 默认值 | 说明 |
 |--------|--------|------|
-| `max_turns` | 10 | 单轮对话最大 LLM 调用次数 |
+| `max_turns` | 50 | 单轮对话最大 LLM 调用次数（CLI: `--max-turns`） |
 | `stream` | true | 是否流式输出 |
 | `token_estimate_enabled` | false | 是否显示 token 预估 |
 | `auto_compress_enabled` | false | 是否自动压缩历史 |
-| `auto_compress_threshold` | 0.8 | 压缩触发阈值（%） |
+| `auto_compress_threshold` | 0.7 | 压缩触发阈值（token 占用率） |
 | `tool_result_trim_enabled` | true | 是否截断长结果 |
-| `tool_result_trim_threshold` | 3000 | 截断阈值（字符） |
+| `tool_result_trim_threshold` | 4000 | 截断阈值（字符，约 1000 tokens） |
 | `forget_policy_enabled` | false | 是否移除纯工具结果消息 |
 | `skill_compact_budget` | 25000 | Skill 压缩总预算 |
 | `skill_compact_per_skill` | 5000 | 每个 Skill 预算 |
-| `session_summary_enabled` | true | 是否生成 session 摘要 |
-| `session_summary_min_turns` | 5 | 生成摘要的最小轮数 |
+| `session_summary_enabled` | false | 是否生成 session 摘要（需配合 `--memory` 才有意义） |
+| `session_summary_min_turns` | 4 | 生成摘要的最小轮数 |
 
 ---
 
@@ -440,4 +440,4 @@ R.print_reasoning_footer()
 
 ---
 
-*最后更新：2026-06*
+*最后更新：2026-06（修正配置默认值表与 bash 结果截断策略描述，使其与当前 `_maybe_trim_result` 实现及 `config/models.py` 默认值一致；此前的截断策略描述对应的是早期"简单头尾截断"版本，未跟上后续"错误关键行优先"重构）*

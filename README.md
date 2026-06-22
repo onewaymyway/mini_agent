@@ -159,6 +159,7 @@ mini-agent eval --scenario test_cases/ --skill docx
 | `--yes`, `-y` | 自动批准所有工具调用 |
 | `--debug-llm` | 启用调试日志 |
 | `--max-llm-calls` | 最大并发 LLM 调用数（默认 8） |
+| `--max-turns` | 单轮对话最大 agentic turns（即一次用户消息内最多几次 LLM 调用-工具调用循环，默认 50） |
 | `--workers` | 最大并发子 Agent 数（默认 4） |
 | `--session-dir` | Session 文件保存目录 |
 | `--resume` | 恢复之前的对话 |
@@ -182,6 +183,10 @@ mini-agent eval --scenario test_cases/ --skill docx
 | `--retry-backoff-step` | 退避步长值（linear: 秒数，exponential: 倍数，默认 60） |
 | `--retry-backoff-max` | 退避等待上限秒数（0 = 不限制，默认 0） |
 | `--providers-config` | providers 配置文件路径（含 API key，默认 providers.json） |
+| `--role-agents` | 启用多角色 Agent 协作系统（默认关闭），详见 [Role Agent 指南](docs/role-agents-guide.md) |
+| `--role-agents-allow` | 白名单：仅启用指定角色 Agent，逗号分隔（如 `evaluator,coach`） |
+| `--role-agents-block` | 黑名单：屏蔽指定角色 Agent，逗号分隔 |
+| `--role-agents-dir` | 仅从指定目录加载角色 Agent profile（覆盖默认 `.agent/agents/`） |
 
 ## MCP 集成
 
@@ -374,6 +379,22 @@ Agent 可以调用以下内置工具：
 
 ### 自我演化
 - `skill_propose` — 把 lesson 提炼为新 SKILL.md 提案，落在独立 `evolve/` 分支等待人工审核合并（不直接生效）
+
+### 内置 Skill（`.claude/skills/`）
+
+不同于上面的内置工具（Python 函数），Skill 是按需加载的 markdown 知识包，详见 [Skill 系统指南](docs/skill-system-guide.md)：
+
+| Skill | 用途 |
+|------|------|
+| `ask_image` | 图片信息提取与问答（**不要**用 `read_file` 直接读图片） |
+| `gen_image_with_text` | 文本生成图片（text-to-image / image-to-image 编辑） |
+| `comic-4panel` | 四格漫画全流程生成：主题构思 → 分镜脚本 → 一次性生成完整漫画图，详见 [四格漫画生成指南](docs/comic-4panel-guide.md) |
+| `agent-generator` | 创建符合项目规范的自定义子 agent（`.agent/agents/*.md`） |
+| `skill-generator` | 创建符合项目规范的新 SKILL.md 技能文件 |
+| `iching_oracle` | 易经智慧顾问，提供人生决策指导 |
+| `git-context` | 分析当前工作目录 Git 仓库状态（commit 历史、变更文件、分支、diff） |
+| `python-expert` | Python 编码最佳实践助手 |
+| `reminder-generator` | 从对话提取可复用经验，生成 reminder 文件，详见 [Reminder 系统指南](docs/reminder-system-guide.md) |
 
 ## 项目结构
 
@@ -689,9 +710,10 @@ python -m pytest tests/ -q
 - [MCP 集成指南](docs/mcp-guide.md) — Model Context Protocol 集成
 - [Web Search 指南](docs/web-search-guide.md) — Web 搜索功能使用指南
 - [图片技能指南](docs/image-skills-guide.md) — 图片识别与生成技能使用指南
+- [四格漫画生成指南](docs/comic-4panel-guide.md) — 主题构思到分镜脚本再到成图的全流程 Skill
 - [Reminder 系统指南](docs/reminder-system-guide.md) — 动态提示注入机制使用指南
 - [单元测试指南](docs/unit-testing-guide.md) — 测试结构、编写规范与运行方式
-- [Role Agent 指南](docs/role-agents-guide.md) — 预设角色子 Agent 模板
+- [Role Agent 指南](docs/role-agents-guide.md) — EvaluatorAgent/CoachAgent 等框架自动触发的角色 Agent（不同于 `/agents` 命令管理的、由 `spawn_named_agent` 主动调用的自定义子 Agent）
 - [Workflow 指南](docs/workflow-guide.md) — 工作流编排机制
 - [Env Info 指南](docs/env-info-guide.md) — 环境信息采集与注入，自定义 Provider 扩展
 - [LLM 故障转移指南](docs/llm-failover-guide.md) — 多配置 fallback chain + 多 API Key 轮转

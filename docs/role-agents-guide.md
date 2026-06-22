@@ -30,6 +30,39 @@ EvaluatorAgent 评估（output 触发）
 
 ---
 
+## 启用方式
+
+**整个 Role Agent 系统默认关闭**（`RoleAgentConfig.enabled = False`），即使
+`.agent/agents/` 目录下存在 `role_type` 非空的 profile，不显式启用也不会被
+触发。CLI 参数：
+
+| 参数 | 说明 |
+|------|------|
+| `--role-agents` | 启用多角色 Agent 协作（总开关） |
+| `--role-agents-allow NAMES` | 白名单，逗号分隔（如 `evaluator,coach`），仅启用指定角色；不传 = 全部启用 |
+| `--role-agents-block NAMES` | 黑名单，逗号分隔（如 `coach`），屏蔽指定角色；不传 = 不屏蔽 |
+| `--role-agents-dir DIR` | 仅从指定目录加载角色 Agent profile（覆盖默认 `.agent/agents/` 目录） |
+
+也可在 `agent_config.json` 中配置：
+
+```json
+{
+  "role_agents": {
+    "enabled": true,
+    "allow": ["evaluator"],
+    "block": []
+  }
+}
+```
+
+```bash
+mini-agent --role-agents                          # 启用全部角色 Agent
+mini-agent --role-agents --role-agents-allow evaluator   # 只启用 evaluator
+mini-agent --role-agents --role-agents-block coach        # 启用除 coach 外的全部
+```
+
+---
+
 ## 文件位置
 
 角色 Agent 的定义文件与普通子 Agent 共用同一目录：

@@ -143,18 +143,18 @@ Profile 文件存储在：
 系统通过 `should_refresh()` 判断是否需要生成/刷新画像：
 
 **触发条件**：
-1. 记忆条目数 `>= cfg.profile_min_entries`（默认 10 条）
+1. 记忆条目数 `>= cfg.profile_min_entries`（默认 1 条）
 2. 且满足以下任一条件：
    - 尚未生成过画像（`is_new == True`）
-   - 自上次生成以来新增的条目数 `>= cfg.profile_refresh_interval_entries`（默认 20 条）
+   - 自上次生成以来新增的条目数 `>= cfg.profile_refresh_interval_entries`（默认 3 条）
 
 ### 5.2 生成流程
 
 ```python
 # 1. 检查是否需要刷新
 if profile_mgr.should_refresh(len(entries), cfg):
-    # 2. 获取记忆条目
-    entries = memory_backend.search("", k=cfg.profile_max_entries)
+    # 2. 取最近 N 条记忆条目（N = cfg.profile.max_entries_for_profile，默认 20）
+    entries = sorted(entries, key=lambda e: e.created_at)[-cfg.profile.max_entries_for_profile:]
 
     # 3. 在后台线程中生成画像
     profile = profile_mgr.generate(llm_client, entries)
@@ -209,19 +209,25 @@ defer to what the user says in the current conversation if it conflicts.
 
 ```json
 {
-  "profile_min_entries": 10,
-  "profile_refresh_interval_entries": 20,
-  "profile_max_entries": 50
+  "profile_enabled": true,
+  "profile_min_entries": 1,
+  "profile_refresh_interval_entries": 3,
+  "profile_max_entries_for_profile": 20
 }
 ```
+
+没有对应的 CLI flag，必须通过配置文件开启（`profile_enabled` 默认为 `false`）。
 
 ### 6.2 配置字段说明
 
 | 字段 | 类型 | 默认值 | 说明 |
 |------|------|--------|------|
-| `profile_min_entries` | int | `10` | 生成画像所需的最小记忆条目数 |
-| `profile_refresh_interval_entries` | int | `20` | 两次刷新之间的最小条目增量 |
-| `profile_max_entries` | int | `50` | 生成画像时使用记忆条目的最大数量 |
+| `profile_enabled` | bool | `false` | 是否启用用户画像功能 |
+| `profile_min_entries` | int | `1` | 生成画像所需的最小记忆条目数 |
+| `profile_refresh_interval_entries` | int | `3` | 两次刷新之间的最小条目增量 |
+| `profile_max_entries_for_profile` | int | `20` | 生成画像时取用的最近记忆条目数量上限 |
+
+> 这几个默认值都偏小（相比早期设计的 10/20/50），意味着默认配置下画像会很早、很频繁地刷新。如果发现画像质量不稳定或刷新过于频繁消耗 LLM 调用，可在 `agent_config.json` 中调大这三个值。
 
 ### 6.3 代码中使用
 
@@ -295,8 +301,8 @@ refresh_interval = cfg.profile_refresh_interval_entries
 
 # 2. 检查是否需要刷新画像
 if profile_mgr.should_refresh(len(memory_entries), cfg):
-    # 3. 获取最近的记忆条目
-    entries = memory_backend.search("", k=cfg.profile_max_entries)
+    # 3. 按 created_at 升序，取最近 N 条记忆条目
+    entries = sorted(memory_entries, key=lambda e: e.created_at)[-cfg.profile.max_entries_for_profile:]
 
     # 4. 在后台线程中异步生成画像
     threading.Thread(
@@ -353,7 +359,7 @@ derived = {
 
 ### Q1: 画像什么时候首次生成？
 
-当记忆条目数达到 `profile_min_entries`（默认 10 条）时，系统会自动触发首次生成。
+当记忆条目数达到 `profile_min_entries`（默认 1 条，即默认配置下几乎立即触发）时，系统会自动触发首次生成。
 
 ### Q2: 画像更新会覆盖手动设置的偏好吗？
 
