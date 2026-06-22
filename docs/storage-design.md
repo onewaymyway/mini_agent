@@ -38,8 +38,12 @@ Global（用户级）                  ~/.agent/
 ## 2. 完整目录结构
 
 ```
-~/.agent/                                      # [Global] 全局数据
+~/.agent/                                      # [Global] 全局数据（W3，Stage 5）
 ├── memory.jsonl                               # 全局记忆（跨项目通用经验）
+├── self_profile.json                          # Agent 自我画像（5.1）
+├── projects_index.json                        # 已知项目注册表（5.2）
+├── cross_project_index.json                   # 跨项目规律模式（5.3）
+├── activity_log.jsonl                         # 全局活动日志 + session_metrics（5.4/6.3）
 └── skills/                                    # 全局技能库（可选）
     └── <skill-name>/SKILL.md
 
@@ -50,6 +54,14 @@ Global（用户级）                  ~/.agent/
     ├── memory.jsonl                           # 项目记忆（当前项目特有知识）
     ├── permissions.json                       # 权限白名单/黑名单
     ├── agent_api.key                          # HTTP API token（gitignore）
+    │
+    ├── project.json                           # 项目身份证 + 环境指纹（W2/4.1）
+    ├── timeline.jsonl                         # session 时间线（W2/4.2）
+    ├── work_index.json                        # 工作线索索引（W2/4.3）
+    ├── open_threads.json                      # 跨 session 待处理线索池（W2/4.4）
+    ├── knowledge_index.json                   # 结构化知识索引（W2/4.5）
+    ├── phase_g_rhythm.json                    # Phase G 节奏治理时间戳（Stage 8/8.5）
+    │
     ├── cache/
     │   └── tool_cache.json                    # 工具调用结果缓存
     │
@@ -60,6 +72,7 @@ Global（用户级）                  ~/.agent/
             ├── llm_debug.jsonl                # LLM 请求/响应调试日志
             ├── memory_delta.jsonl             # 本次 session 产生的记忆条目
             ├── plan_snapshot.json             # ExecutionPlan 持久化快照（W1）
+            ├── traces.jsonl                   # 时序性能追踪（Stage 6/6.1）
             │
             └── tasks/                         # [Task] 所有子任务目录
                 └── <task_id>/                 # 每个 SubAgent 任务一个目录
@@ -101,6 +114,25 @@ paths.task_manifest(sid, tid) # …/tasks/<tid>/manifest.json
 
 # Global 级
 paths.global_memory           # ~/.agent/memory.jsonl
+
+# W2 Workdir 知识层（Stage 4）
+paths.workdir_project_meta()       # <root>/.agent/project.json
+paths.workdir_timeline()           # <root>/.agent/timeline.jsonl
+paths.workdir_work_index()         # <root>/.agent/work_index.json
+paths.workdir_open_threads()       # <root>/.agent/open_threads.json
+paths.workdir_knowledge_index()    # <root>/.agent/knowledge_index.json
+
+# W3 Global 知识层（Stage 5）
+paths.global_self_profile()        # ~/.agent/self_profile.json
+paths.global_projects_index()      # ~/.agent/projects_index.json
+paths.global_cross_project_index() # ~/.agent/cross_project_index.json
+paths.global_activity_log()        # ~/.agent/activity_log.jsonl
+
+# Session 级（Stage 6 新增）
+paths.session_traces(sid)          # <root>/.agent/sessions/<sid>/traces.jsonl
+
+# Phase G 节奏治理（Stage 8）
+paths.workdir_dir() / "phase_g_rhythm.json"   # <root>/.agent/phase_g_rhythm.json
 ```
 
 **为什么需要统一路径管理层：**
@@ -477,11 +509,58 @@ SubAgent 运行过程中每一行输出都追加到此文件，格式为带时�
 
 ---
 
+### 4.5 W2 Workdir 知识层（Stage 4）
+
+> 详见 [W2/W3 知识层指南](self-evolution-stage4-5-guide.md)
+
+| 文件 | 路径方法 | 写入时机 | 读取时机 |
+|------|---------|---------|---------|
+| `project.json` | `workdir_project_meta()` | session 启动时（`ensure_project_meta`） | session 启动时注入 context |
+| `timeline.jsonl` | `workdir_timeline()` | session 结束时追加 | session 启动时注入最近 N 条 |
+| `work_index.json` | `workdir_work_index()` | 工具写入 / session end 时更新 | session 启动时扫描 open threads |
+| `open_threads.json` | `workdir_open_threads()` | session end 导入未解决问题 | session 启动时注入 high-priority 线索 |
+| `knowledge_index.json` | `workdir_knowledge_index()` | `update_knowledge` 工具调用时 | 按需检索 |
+
+所有 W2 文件使用**原子替换写入**（`tmp → fsync → rename`），与 `memory.jsonl` 的追加写入模式不同。
+
+### 4.6 W3 Global 知识层（Stage 5）
+
+> 详见 [W2/W3 知识层指南](self-evolution-stage4-5-guide.md)
+
+| 文件 | 路径方法 | 写入时机 |
+|------|---------|---------|
+| `self_profile.json` | `global_self_profile()` | session 结束时更新画像 |
+| `projects_index.json` | `global_projects_index()` | 首次进入新项目时注册；session end 时刷新 `last_active_at` |
+| `cross_project_index.json` | `global_cross_project_index()` | `scan_cross_project_patterns()` 扫描后合并写入（通常由 Phase G 8.4 或手动触发）|
+| `activity_log.jsonl` | `global_activity_log()` | session 结束追加两行：`session_end`（主活动记录）+ `session_metrics`（Stage 6.3 异常检测基线）|
+
+`activity_log.jsonl` 是**仅追加**的流水账，不做截断，长期使用后体积会持续增长。建议定期归档或按年/月分割。
+
+### 4.7 时序追踪（Stage 6）
+
+> 详见 [观察性系统指南](observability-guide.md)
+
+| 文件 | 路径方法 | 写入时机 | 大小预估 |
+|------|---------|---------|---------|
+| `traces.jsonl` | `session_traces(sid)` | `run_turn` 每个阶段结束后追加 | ~1–5 KB/session（3–5 行/turn）|
+
+`traces.jsonl` 随 session 目录存活，不会自动清理。`/diagnostics` 端点只读当前 session 的 traces，不扫描历史。长期项目可随 sessions 目录整体归档。
+
+### 4.8 Phase G 节奏治理（Stage 8）
+
+| 文件 | 位置 | 写入时机 |
+|------|------|---------|
+| `phase_g_rhythm.json` | `<root>/.agent/` | Phase G 每次运行后（记录 `_last_run_at`），以及每个提案发出后（记录 `prune:<name>` / `promote:<id>` 时间戳）|
+
+此文件很小（纯时间戳字典），可以 git 提交（便于跨机器同步提案冷却状态），也可加入 `.gitignore`（允许每台机器独立触发）。
+
+---
+
 ## 5. `.gitignore` 策略
 
 ```gitignore
 # 运行时产物，不提交
-.agent/sessions/       # 对话历史（含 llm_debug.jsonl / tasks/）
+.agent/sessions/       # 对话历史（含 llm_debug.jsonl / tasks/ / traces.jsonl）
 .agent/cache/          # 可安全清除的缓存
 .agent/logs/           # fallback 日志
 
@@ -491,6 +570,9 @@ SubAgent 运行过程中每一行输出都追加到此文件，格式为带时�
 # 持久化数据，按需选择：
 # .agent/memory.jsonl           # 项目记忆，通常不提交（个人知识）
 # .agent/permissions.json       # 权限配置，团队项目建议提交
+# .agent/project.json           # 项目身份证，通常不提交
+# .agent/open_threads.json      # 个人工作线索，通常不提交
+# .agent/phase_g_rhythm.json    # Phase G 冷却状态，按需决定
 ```
 
 ---
@@ -499,13 +581,17 @@ SubAgent 运行过程中每一行输出都追加到此文件，格式为带时�
 
 | 数据 | 清理方式 | 影响 |
 |------|---------|------|
-| 单个 session | `rm -rf .agent/sessions/<id>/` | 丢失该次对话历史、调试日志、`plan_snapshot.json`，该 session 的计划无法续跑 |
-| 所有 session | `rm -rf .agent/sessions/` | 丢失所有对话历史，记忆不受影响 |
+| 单个 session | `rm -rf .agent/sessions/<id>/` | 丢失该次对话历史、调试日志、`plan_snapshot.json`、`traces.jsonl`，该 session 的计划无法续跑 |
+| 所有 session | `rm -rf .agent/sessions/` | 丢失所有对话历史，记忆不受影响；`/diagnostics` 性能分组将返回空 |
 | 项目记忆 | `rm .agent/memory.jsonl` | 丢失项目级知识，全局记忆不受影响 |
 | 全局记忆 | `rm ~/.agent/memory.jsonl` | 丢失跨项目通用经验 |
 | 工具缓存 | `rm -rf .agent/cache/` | 下次运行重新构建缓存，无数据损失 |
 | 单个 task 的 manifest | `rm .../tasks/<tid>/manifest.json` | 丢失该任务的进度叙事，不影响任务本身已完成的工作或 `result.json` |
-| 所有项目数据 | `rm -rf .agent/` | 完全重置，相当于全新项目 |
+| W2 知识层 | `rm .agent/project.json .agent/timeline.jsonl .agent/open_threads.json` | 丢失项目历史上下文，下次 session 重新初始化；`knowledge_index.json` 建议手动保留 |
+| W3 Global 知识层 | `rm ~/.agent/self_profile.json ~/.agent/projects_index.json` | 丢失自我画像和项目注册表，不影响记忆与技能；Phase G 晋升候选需重新积累 |
+| Phase G 节奏记录 | `rm .agent/phase_g_rhythm.json` | 重置所有提案冷却期，Phase G 下次运行将重新对所有候选提案 |
+| 全局活动日志 | `rm ~/.agent/activity_log.jsonl` | 清空异常检测基线，需重新积累 10+ 条 session_metrics 记录后才能恢复异常检测能力 |
+| 所有项目数据 | `rm -rf .agent/` | 完全重置，相当于全新项目；不影响 `~/.agent/` 全局数据 |
 
 ---
 
@@ -514,6 +600,9 @@ SubAgent 运行过程中每一行输出都追加到此文件，格式为带时�
 - [记忆管理指南](./memory-management-guide.md) — 记忆检索算法、后端扩展
 - [SubAgent 机制说明](./subagent-mechanism.md) — 并发任务执行原理
 - [Plan 与 Task 机制说明](./plan-and-task-guide.md) — `manifest.json`/`plan_snapshot.json` 的写入时机与对应工具
+- [W2/W3 知识层指南](self-evolution-stage4-5-guide.md) — Workdir/Global 知识层详细说明
+- [观察性系统指南](observability-guide.md) — `traces.jsonl` 格式与 `/diagnostics` 端点
+- [Phase G 后台循环指南](self-evolution-phase-g-guide.md) — `phase_g_rhythm.json` 与节奏治理
 - [配置指南](./config-guide.md) — 完整配置字段说明
 - [权限管理](./permission-guide.md) — 权限系统详细说明
 

@@ -76,7 +76,8 @@ enabled: true
 | 字段 | 适用事件 | 说明 |
 |------|----------|------|
 | `tool_name` | `tool_error`、`post_tool` | 匹配工具名，留空则匹配所有工具 |
-| `error_pattern` | `tool_error` | 匹配错误内容，留空则所有该工具错误都触发 |
+| `error_pattern` | `tool_error` | 匹配错误内容（正则），留空则所有该工具错误都触发 |
+| `error_category` | `tool_error` | **精确匹配**错误分类（非正则），见下方枚举值（Stage 6.4 新增）|
 | `output_pattern` | `post_tool` | 匹配工具成功输出内容 |
 | `keyword` | `user_intent` | 匹配用户消息中的关键词 |
 | `intent_pattern` | `user_intent` | 更复杂的用户消息模式 |
@@ -84,6 +85,45 @@ enabled: true
 
 > `keyword` 和 `intent_pattern` 同时设置时，满足其一即匹配。  
 > 两者均未设置的 `user_intent` reminder 不会触发（避免每条消息都注入）。
+
+#### error_category 枚举值（Stage 6.4）
+
+`error_category` 是 `error_pattern` 的**精确路由补充**：系统在触发 `tool_error` 前先调用 `classify_error()` 对错误字符串分类，reminder 只需填写分类名即可精确命中，无需编写脆弱的正则。
+
+| 值 | 触发场景示例 |
+|----|-------------|
+| `permission` | `PermissionError`、`[Permission denied]`、`[DENIED]` |
+| `not_found` | `FileNotFoundError`、`NoSuchFile` |
+| `timeout` | `TimeoutError`、`timed out` |
+| `network` | `ConnectionError`、`ECONNREFUSED` |
+| `syntax` | `SyntaxError` |
+| `import` | `ModuleNotFoundError`、`ImportError` |
+| `parse` | `JSONDecodeError` |
+| `encoding` | `UnicodeDecodeError` |
+| `process` | `CalledProcessError`、`[exit code: N]` |
+| `key_access` | `KeyError`、`AttributeError`、`IndexError` |
+| `type_value` | `TypeError`、`ValueError` |
+| `io` | `OSError`、`IOError` |
+| `runtime` | `RuntimeError` |
+| `other` | 所有未匹配的错误 |
+
+**示例**：
+
+```yaml
+---
+name: file_not_found_hint
+trigger_event: tool_error
+condition:
+  error_category: "not_found"    # 精确匹配，不需要正则
+inject_as: user
+priority: 75
+enabled: true
+---
+
+目标文件不存在。请先用 `list_dir` 确认目录内容，检查路径拼写，或改用相对路径。
+```
+
+`error_pattern` 和 `error_category` 可以同时设置（AND 语义）：先按 `error_category` 过滤，再按 `error_pattern` 做内容检查。
 
 ### inject_as 说明
 

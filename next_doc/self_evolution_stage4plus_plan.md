@@ -280,7 +280,7 @@ session 启动时能在 system prompt 里看到上一次 session 的 WorkThread 
 
 ---
 
-### Stage 6（核心，约 2-3 人天）—— 第 9 章：观察性
+### Stage 6（核心，约 2-3 人天）—— 第 9 章：观察性 ✅ 已完成
 
 > 设计文档原话"是所有量化判断的数据基础，越早建越省事，越晚建欠债越多"。本文档把它排在
 > W2/W3 之后而非最前面，理由是：第 9 章的产出（`traces.jsonl`/`/diagnostics`）主要服务于
@@ -334,9 +334,33 @@ session 启动时能在 system prompt 里看到上一次 session 的 WorkThread 
 `anomaly_flags` 正确区分两者；`events.jsonl` 的因果链字段在 Phase B 现有的反思 LLM 调用里
 可以被正确读取（验证"6.4 是 Phase B 反思质量飞跃的关键输入"这一设计意图，而非只是字段存在）。
 
+> **完成记录**（2026-06）：
+>
+> - **6.1 traces.jsonl**：`SessionTracer` + `span()` context manager，在 `_agentic_loop()` 的
+>   `call_llm` / `execute_tools` / `build_system` 三处打点，含 `context_breakdown` 字段（`system_base` / `history` / `total`）。
+>
+> - **6.2 /diagnostics**：`GET /v1/diagnostics` 端点，五个分组：`performance`（traces 聚合）/
+>   `memory`（条目统计）/ `skills`（激活列表）/ `evolution`（演化状态）/ `anomaly_flags`（异常标记）。
+>
+> - **6.3 异常检测**：`detect_anomalies()` k-σ 算法，检测 `tool_call_spike` / `token_spike` /
+>   `session_duration_spike`，依赖 `activity_log.jsonl` 中的 `session_metrics` 行（每次
+>   `trigger_session_end()` 时由 `_run_observability_on_session_end()` 写入）。
+>
+> - **6.4 因果链**：`classify_error()` 14 种 error_category 分类（基于正则规则，复用
+>   `lesson_rules.py` 的异常类名模式）；`traces.jsonl` tool_call 记录含 `sequence_in_turn` /
+>   `error_category` / `resolves_seq`；`_execute_tools()` 尾部写入因果链记录。
+>
+> - **核心模块**：`src/mini_agent/perception/observability.py` + `src/mini_agent/api/routes.py`
+>   + `src/mini_agent/config/models.py`（`ObservabilityConfig`）。
+>
+> - **测试**：`tests/test_observability.py` 33 个测试，全绿。
+>
+> - **config**：`ObservabilityConfig`（`enabled` / `tracing_enabled` / `anomaly_k_sigma` /
+>   `anomaly_min_samples`）接入 `AppConfig`，便捷属性 `cfg.observability_enabled` / `cfg.tracing_enabled`。
+
 ---
 
-### Stage 7（机会性任务池，不单独估算人天）—— 横向加固清单
+### Stage 7（机会性任务池，不单独估算人天）—— 横向加固清单 ✅ 本批已完成（13.2+15.3+15.2 已落地；其余见表格注）
 
 > 延续设计文档"可在任意阶段穿插"的定位。下表是第 10/11/12/13/14/15 章里**未被 Stage 0-6
 > 顺手覆盖**的全部条目，按"挂靠点"分组——意思是"这一项最适合在改动哪个模块时顺手做"，
@@ -366,9 +390,29 @@ session 启动时能在 system prompt 里看到上一次 session 的 WorkThread 
 触及表中"挂靠点"列出的模块时，检查这张表是否有可以顺手捎带的条目。表格本身应随每个
 Stage 完成后回顾更新（已完成的条目标注完成日期，移出待办状态）。
 
+> **完成记录**（2026-06）：
+>
+> - **13.2 + 15.3（已完成）**：`TaskManager._try_demotion()` + `_resubmit_demoted()`，两阶段降级：
+>   profile fallback（按 `Task.fallback_profiles` 切换）→ scope demotion（追加 `Task.demotion_scope`
+>   约束），复用 task_id，下次 tick 自动调度。
+>
+> - **15.2（已完成）**：`error_category` 精确路由已在 `reminders/matcher.py` 接入，reminder 的
+>   `condition.error_category` 字段可精确匹配 14 种分类，无需正则。
+>
+> - **14.1（已完成，Stage 4 顺手）**：`knowledge_index.json` + `upsert_knowledge_index_entry()`。
+>
+> - **14.2（已完成，Stage 3.2 顺手）**：`SkillLoader.activate()` 里 `conflicts_with` + `activation_conditions` 检查。
+>
+> - **14.3（已完成，Stage 3.2 顺手）**：`confidence_score` 字段注入 context 时调整语气。
+>
+> - **12.2（已完成，Stage 4 顺手）**：`detect_environment_drift()` + `_maybe_ensure_project_meta()` 打印漂移警告。
+>
+> - **12.1 / 12.3 / 13.1 / 13.3 / 15.1 / 16.2 / 16.3 / 17.2**：按计划表的建议延后或暂缓，
+>   见表格各行的"挂靠点"说明。
+
 ---
 
-### Stage 8（核心，约 4-6 人天）—— Phase G：后台循环
+### Stage 8（核心，约 4-6 人天）—— Phase G：后台循环 ✅ 已完成
 
 > 设计文档 6.1/6.4/6.5/6.6/6.7 节（6.1 由 Stage 3.1 他人负责，本 Stage 不重复）。
 > 前提：Stage 4（W2）必须完成；Stage 5（W3）的 5.4 节"扫描聚合函数"必须完成
@@ -426,6 +470,37 @@ Stage 完成后回顾更新（已完成的条目标注完成日期，移出待�
 更新 → 跨项目模式检测 → 晋升提案（若条件满足）"的链路，每一步产出可在 `/diagnostics`
 （Stage 6.2）里看到对应的统计变化。
 
+> **完成记录**（2026-06）：
+>
+> - **8.1 调度骨架**：采用"时间门控"方案（无常驻进程），`phase_g_rhythm.json` 的 `_last_run_at`
+>   字段替代 cron，`should_run_phase_g()` 在每次 `trigger_session_end()` 时检查（24h 间隔）。
+>   手动触发入口：`/evolve phase-g [--force] [--dry-run]`。
+>
+> - **8.2 剪枝候选**：`prune_skills()` 实现，规则 A（高 token 成本 + 未使用）和规则 B（冲突检测），
+>   输出 `PruneCandidate` 列表，不自动执行任何下线操作。
+>
+> - **8.3 能力地图**：`build_capability_map()` 扫描 `tasks/*/manifest.json`，按
+>   `_infer_domain()` 规则式推断任务类型，聚合成功率，写入 `entry_type="capability_map"` 的
+>   memory 条目。Global scope 汇总（写入 `self_profile.json`）留待数据积累后扩展。
+>
+> - **8.4 Scope 晋升**：`check_scope_promotion()` 读 `cross_project_index.json`，
+>   判据：`observed_in_projects ≥ 2` 且 `confidence ≥ 0.70` 且 `global_skill_candidate=true`。
+>   当前只输出候选列表（`PromotionCandidate`），不直接调用 `skill_propose`（人工确认后由
+>   `/evolve review` 处理）。
+>
+> - **8.5 节奏治理**：`rhythm_is_allowed()` / `record_proposal()`，7 天冷却期，`phase_g_rhythm.json`
+>   持久化，独立于 8.2/8.3/8.4 的逻辑，可以为任意 `(proposal_type, key)` 对做限流。
+>
+> - **核心模块**：`src/mini_agent/evolution/phase_g.py`（`run_phase_g()` 整体入口）
+>   + `src/mini_agent/cli/commands/evolve.py`（`_handle_phase_g()` + `_print_phase_g_report()`）
+>   + `agent.py → _maybe_run_phase_g()`（SessionEnd 时间门控接入点）。
+>
+> - **测试**：`tests/test_phase_g.py` 35 个测试，全绿。
+>
+> - **遗留**：8.1 节"调度器与 8.3/8.4 产出互通"中的"`/diagnostics` 反映每一步统计变化"
+>   已通过 `performance.tool_error_rate` + `evolution.pending_evolve_branches` 两个分组覆盖；
+>   `anomaly_flags` 需要 10+ 条 `session_metrics` 历史积累才有效（小样本期无误报是预期行为）。
+
 ---
 
 ### Stage 9（决策点，非常规人天估算）—— Phase H：自主运行时
@@ -478,6 +553,22 @@ Stage 完成后回顾更新（已完成的条目标注完成日期，移出待�
               │  ├─ 顺带：14.1 knowledge_index ✅、12.2 environment_fingerprint ✅
               │
               └─→ Stage 5（W3：Global 知识层，5.4 依赖 4.3 已有跨 session 数据）✅ 已完成
+                    │
+                    └─→ Stage 6（第 9 章：观察性）✅ 已完成
+                          │  ├─ 顺带：Stage 7 中的 15.2（error_category Reminder 路由）
+                          │
+                          └─→ Stage 7（横向加固任务池）✅ 本批已完成
+                                │  ├─ 13.2 SubAgent 降级重试链（TaskManager）✅
+                                │  └─ 15.3 任务降级策略（与 13.2 合并实施）✅
+                                │
+                                └─→ Stage 8（Phase G：后台循环）✅ 已完成
+                                      ├─ 8.1 时间门控调度（phase_g_rhythm.json）
+                                      ├─ 8.2 剪枝候选（prune_skills）
+                                      ├─ 8.3 能力地图（build_capability_map）
+                                      ├─ 8.4 Scope 晋升（check_scope_promotion）
+                                      └─ 8.5 节奏治理（rhythm_is_allowed）
+                                            │
+                                            └─→ Stage 9（Phase H：自主运行时）[决策点，未启动]
                     │
                     └─→ Stage 6（观察性：tracing/diagnostics/异常检测/因果链）
                           │  （6.3 异常检测依赖 Stage 5.3 activity_log 已有数据积累）

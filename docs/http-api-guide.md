@@ -65,6 +65,7 @@ curl -H "Authorization: Bearer your-secret-token" http://127.0.0.1:8765/v1/healt
 |------|------|------|
 | `/v1/health` | GET | 健康检查 |
 | `/v1/status` | GET | Agent 状态（空闲/运行中）+ 统计信息 |
+| `/v1/diagnostics` | GET | **Stage 6** 实时健康诊断（性能 + 内存 + skills + 演化状态 + 异常标记）|
 | `/docs` | GET | Swagger API 文档 |
 
 ### 对话端点
@@ -321,6 +322,28 @@ HTTP API 服务采用以下设计：
 └─────────────────────────────────────────────────────────────┘
 ```
 
+## /diagnostics 端点详解（Stage 6）
+
+`GET /v1/diagnostics` 聚合当前 session 的健康状态，适合监控、调试和演化数据查看。
+
+```bash
+curl -H "Authorization: Bearer <token>" http://127.0.0.1:8765/v1/diagnostics
+```
+
+响应包含五个分组（任一失败静默降级为空对象）：
+
+| 分组 | 数据来源 | 典型用途 |
+|------|---------|---------|
+| `performance` | `traces.jsonl`（当前 session）| 查看 LLM 耗时 / token 分布 / 工具错误率 |
+| `memory` | `memory.jsonl` | 确认记忆条目数量与类型分布 |
+| `skills` | `SkillLoader`（运行时）| 查看当前激活的 skill 列表 |
+| `evolution` | `self_profile.json` + `open_threads.json` | 待审核演化分支 / 高优先级悬挂线索 |
+| `anomaly_flags` | `activity_log.jsonl`（历史基线）| 检测当前 session 是否异常 |
+
+完整响应格式见 [观察性系统指南](observability-guide.md)。
+
+---
+
 ## 相关文档
 
 - [权限系统指南](permission-guide.md) — HTTP 审批流程详解
@@ -328,6 +351,7 @@ HTTP API 服务采用以下设计：
 - [Agent 设计](agent-design.md) — Agent 核心循环
 - [CLI I/O 机制](cli-io-mechanism.md) — HTTP 与命令行协同机制
 - [Web Demo 指南](web-demo-guide.md) — Streamlit Web 界面使用
+- [观察性系统指南](observability-guide.md) — `/diagnostics` 端点与 traces.jsonl 详解
 
 ## Web Demo
 

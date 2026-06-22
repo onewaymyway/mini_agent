@@ -278,7 +278,7 @@ mini-agent --retry-backoff linear --retry-backoff-step 60 --retry-backoff-max 30
 
 ### 自我演化（`src/mini_agent/cli/commands/evolution.py` / `evolve.py`）
 
-> 详见 [Stage 2 安全网指南](self-evolution-stage2-guide.md)、[Stage 3.1 lesson → skill 闭环指南](self-evolution-stage3-1-guide.md)
+> 详见 [Stage 2 安全网指南](self-evolution-stage2-guide.md)、[Stage 3.1 lesson → skill 闭环指南](self-evolution-stage3-1-guide.md)、[Phase G 后台循环指南](self-evolution-phase-g-guide.md)
 
 | 命令 | 说明 |
 |------|------|
@@ -288,6 +288,7 @@ mini-agent --retry-backoff linear --retry-backoff-step 60 --retry-backoff-max 30
 | `/evolution revert <commit>` | 生成 revert commit，并自动记录一条 `source="revert_record"` 的 lesson |
 | `/evolve review [--global] [--tier T1\|T2]` | 扫描 lesson（默认 workdir 级 `memory.jsonl`，`--global` 扫描 `~/.agent/memory.jsonl`），对达标分组 spawn `evolution-agent` 提案 |
 | `/evolve list [--global] [--tier T1\|T2]` | 同 `review`，但只扫描 + 列出达标分组，不 spawn agent、不消耗 LLM 调用 |
+| `/evolve phase-g [--force] [--dry-run]` | **Stage 8** 手动触发 Phase G 后台循环扫描（剪枝候选 + 能力地图 + 晋升候选）。`--force` 跳过 24h 时间门控，`--dry-run` 只展示不写入节奏记录 |
 
 `commit` 参数支持完整 hash 或前缀。
 

@@ -372,6 +372,51 @@ Stage 2/3 的落地：
 [Stage 3.2 eval 反馈环指南](self-evolution-stage3-2-guide.md)、
 [Stage 3.3 SubAgent 信息继承指南](self-evolution-stage3-3-guide.md)。
 
+### 3.16 Workdir/Global 知识层（perception/，Stage 4 & 5 新增）
+
+在 `perception/` 下新增两个知识层，为 agent 提供**跨 session 的项目上下文**与**跨项目的自我认知**：
+
+| 层 | 文件 | 数据内容 |
+|----|------|---------|
+| **W2 Workdir（项目级）** | `perception/workdir_knowledge.py` | `project.json`（身份证+环境指纹）/ `timeline.jsonl`（session 时间线）/ `open_threads.json`（跨 session 待处理线索）/ `knowledge_index.json`（结构化知识索引）|
+| **W3 Global（用户级）** | `perception/global_knowledge.py` | `self_profile.json`（agent 自我画像）/ `projects_index.json`（已知项目注册表）/ `cross_project_index.json`（跨项目模式）/ `activity_log.jsonl`（全局活动日志）|
+
+Session 启动时自动注入 context，session 结束时自动更新数据。`GlobalKnowledgeConfig` / `WorkdirKnowledgeConfig` 提供开关控制。
+
+详见 [W2/W3 知识层指南](self-evolution-stage4-5-guide.md)。
+
+### 3.17 观察性系统（perception/，Stage 6 新增）
+
+为每个 session 提供三个维度的可见性：
+
+| 子系统 | 数据文件 / 端点 | 说明 |
+|--------|----------------|------|
+| 时序追踪（6.1）| `sessions/<id>/traces.jsonl` | 每阶段（build_system/call_llm/execute_tools）耗时与 token 分布 |
+| 健康诊断（6.2）| `GET /v1/diagnostics` | 聚合性能 + 内存 + skills + 演化状态 + 异常标记 |
+| 异常检测（6.3）| 写入 `activity_log.jsonl` | k-σ 统计检测：当前 session 指标是否超出历史 3σ 基线 |
+| 因果链（6.4）| `traces.jsonl` tool_call 记录 | `sequence_in_turn` + `error_category` + `resolves_seq` 追踪失败→修复链路 |
+
+核心逻辑在 `perception/observability.py`，`ObservabilityConfig` 提供开关控制。
+
+详见 [观察性系统指南](observability-guide.md)。
+
+### 3.18 Phase G 后台循环（evolution/，Stage 8 新增）
+
+定期扫描已有数据，主动识别改进机会——**不需要常驻进程**，通过 `phase_g_rhythm.json` 里的时间戳实现 24h 时间门控：
+
+| 扫描任务 | 数据来源 | 产出 |
+|---------|---------|------|
+| 剪枝候选（8.2）| `SkillLoader` 使用频率 + traces.jsonl token 成本 | 高成本低频 skill 候选列表 |
+| 能力地图（8.3）| `sessions/*/tasks/*/manifest.json` | `entry_type="capability_map"` memory 条目 |
+| Scope 晋升（8.4）| `cross_project_index.json` | 跨项目模式晋升候选列表 |
+| 节奏治理（8.5）| `.agent/phase_g_rhythm.json` | 冷却期限制（7d/次） |
+
+触发方式：`/evolve phase-g [--force] [--dry-run]`（手动），或任意 session 结束时自动检查（超过 24h 自动运行，有发现时打印单行摘要）。
+
+SubAgent 降级重试链（Stage 7 / 13.2+15.3）同步在 `orchestrator/task_manager.py` 实现：任务失败时按 `Task.fallback_profiles` 切换 profile，再按 `Task.demotion_scope` 缩小目标，而非立即宣告失败。
+
+详见 [Phase G 后台循环指南](self-evolution-phase-g-guide.md)、[SubAgent 机制](subagent-mechanism.md)。
+
 ---
 
 ## 4. 关键设计决策

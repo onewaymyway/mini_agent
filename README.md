@@ -19,6 +19,10 @@
 | 🧠 感知与记忆 | 项目扫描、文件监视、工具缓存、跨 session 长期记忆（含规则触发/反思生成的 Lesson Memory） |
 | 👤 用户画像 | 基于长期记忆自动生成技术栈/习惯/偏好画像，注入 system prompt 实现跨 session 个性化 |
 | 🌱 自我演化 | agent 可把经验（lesson）提炼为新 skill 并自我提案，全程经过风险分级（T0~T3）安全网 + 隔离验证 + 人工审核 |
+| 🗂️ 知识层 | W2 Workdir 层（项目身份证/时间线/跨session待处理线索）+ W3 Global 层（自我画像/跨项目模式/活动日志）自动维护 |
+| 🔭 观察性 | traces.jsonl 时序追踪 + `/diagnostics` 健康端点 + k-σ 异常检测 + 工具调用因果链（error_category / resolves_seq）|
+| ♻️ Phase G | 后台循环扫描：剪枝候选 + 能力地图 + 跨项目晋升候选，24h 时间门控，`/evolve phase-g` 手动触发 |
+| 🔀 SubAgent 降级 | 任务失败时按 `fallback_profiles` 切换 profile、再按 `demotion_scope` 缩小目标，不立即宣告失败 |
 | 🌐 HTTP API | 内置 REST/SSE 服务，支持外部程序通过 HTTP 与 agent 交互 |
 | 🖥️ Web Demo | Streamlit 图形界面，提供浏览器操作的对话界面 |
 | 🔌 MCP 支持 | Model Context Protocol 集成，支持 stdio/SSE 传输，可扩展外部工具服务 |
@@ -705,6 +709,9 @@ python -m pytest tests/ -q
 - [自我演化 lesson → skill 闭环指南（Stage 3.1）](docs/self-evolution-stage3-1-guide.md) — **新增**：`skill_propose`/`evolution-agent`/`/evolve review`
 - [自我演化 eval 反馈环指南（Stage 3.2）](docs/self-evolution-stage3-2-guide.md) — **新增**：`mini-agent eval` with/without-skill 对比
 - [自我演化 SubAgent 信息继承指南（Stage 3.3）](docs/self-evolution-stage3-3-guide.md) — **新增**：skill 继承/工具缓存共享/lesson 回流
+- [Workdir/Global 知识层指南（Stage 4 & 5）](docs/self-evolution-stage4-5-guide.md) — **新增**：W2 项目知识层（project.json/timeline/open_threads）+ W3 跨项目知识层（self_profile/cross_project_index/activity_log）
+- [观察性系统指南（Stage 6）](docs/observability-guide.md) — **新增**：traces.jsonl 时序追踪 / `/diagnostics` 端点 / k-σ 异常检测 / 工具调用因果链（error_category/resolves_seq）
+- [Phase G 后台循环指南（Stage 8）](docs/self-evolution-phase-g-guide.md) — **新增**：剪枝候选 / 能力地图 / Scope 晋升候选 / 节奏治理，`/evolve phase-g` 命令
 - [HTTP API 指南](docs/http-api-guide.md) — REST/SSE 服务使用指南
 - [Web Demo 指南](docs/web-demo-guide.md) — Streamlit Web 界面使用
 - [MCP 集成指南](docs/mcp-guide.md) — Model Context Protocol 集成

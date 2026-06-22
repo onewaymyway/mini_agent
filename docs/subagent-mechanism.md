@@ -220,7 +220,91 @@ class SubAgent:
 
 ---
 
-## 5. Debug 日志
+## 5. 降级重试链（Stage 7 / 13.2 + 15.3）
+
+SubAgent 任务失败（`TaskStatus.FAILED`）时，TaskManager 在通知"最终失败"之前，先尝试**降级重试**：按预设的降级策略自动重新提交任务，而不立即宣告失败。
+
+### 5.1 降级阶段
+
+降级按以下顺序尝试（每次 FAILED 触发一次 `_try_demotion()`）：
+
+```
+阶段一：profile fallback（13.2）
+  → 按 Task.fallback_profiles 列表顺序，依次切换 SubAgent 使用的 agent profile
+
+阶段二：scope demotion（15.3）
+  → 在 Task.prompt 末尾追加 Task.demotion_scope 约束文本，缩小任务目标后重试
+
+阶段三：放弃
+  → 超出 max_demotion_attempts，任务最终标记为 FAILED
+```
+
+### 5.2 Task 配置字段
+
+```python
+@dataclass
+class Task:
+    # ...
+
+    # 13.2 profile 降级链
+    fallback_profiles: list[str] = field(default_factory=list)
+    # 例：["senior_dev", "minimal"] 表示失败后先换 senior_dev，再换 minimal
+
+    # 15.3 scope 降级策略
+    demotion_scope: str = ""
+    # 例："仅输出分析报告，不要修改任何文件"
+
+    # 最多尝试几次降级（profile + scope 合计）
+    max_demotion_attempts: int = 0  # 0 = 不启用降级
+```
+
+### 5.3 使用示例
+
+```python
+from mini_agent.orchestrator.task import Task
+
+# 失败后先降级到 senior_dev profile，再降级到 minimal profile，
+# 最后缩小目标范围后重试（合计最多 3 次降级）
+task = Task(
+    prompt="重构 auth 模块，使用 async/await 替换同步 IO",
+    fallback_profiles=["senior_dev", "minimal"],
+    demotion_scope="仅输出分析报告，不要修改任何文件",
+    max_demotion_attempts=3,
+)
+```
+
+**降级流程**：
+
+```
+初始运行（原始 prompt，默认 profile）
+   ↓ FAILED
+降级 1/3：切换到 senior_dev profile，重试
+   ↓ FAILED
+降级 2/3：切换到 minimal profile，重试
+   ↓ FAILED
+降级 3/3：追加 demotion_scope 约束，重试
+   ↓ FAILED 或 DONE（成功）
+```
+
+### 5.4 TaskRecord 降级追踪字段
+
+```python
+@dataclass
+class TaskRecord:
+    demotion_attempts: int = 0          # 已尝试的降级次数
+    active_fallback_profile: str = ""   # 当前使用的 fallback profile（""=原始）
+    demoted_scope: bool = False         # 是否已切换到 demotion_scope
+```
+
+### 5.5 设计约束
+
+- **task_id 不变**：降级后复用原始 task_id，`depends_on` 引用不失效
+- **不产生新 TaskRecord**：原地重置为 PENDING，下次 `_tick()` 自动调度
+- **`max_demotion_attempts=0` 时不启用**：默认行为与原有重试机制完全兼容
+
+---
+
+## 6. Debug 日志
 
 日志文件：`test_result/subagent_debug.jsonl`
 

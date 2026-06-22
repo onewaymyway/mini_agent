@@ -326,6 +326,54 @@ if cfg.tool_cache_enabled:    # 等价于 cfg.perception.tool_cache_enabled
     ...
 ```
 
+### WorkdirKnowledgeConfig（Stage 4 W2）
+
+```python
+@dataclass
+class WorkdirKnowledgeConfig:
+    enabled: bool = True
+    timeline_inject_limit: int = 5          # 注入最近 N 条 timeline 记录
+    work_thread_relation_days: float = 7.0  # N 天内活跃的 work_thread 才关联 session
+    open_threads_inject_limit: int = 5      # 最多注入几条 high-priority open_thread
+```
+
+控制 W2 Workdir 知识层（`project.json` / `timeline.jsonl` / `open_threads.json` / `knowledge_index.json`）的维护与 context 注入。
+详见 [W2/W3 知识层指南](self-evolution-stage4-5-guide.md)。
+
+### GlobalKnowledgeConfig（Stage 5 W3）
+
+```python
+@dataclass
+class GlobalKnowledgeConfig:
+    enabled: bool = True
+    dormant_after_days: float = 30.0        # 超过此天数未活跃的项目标记为休眠
+    activity_log_inject_limit: int = 5      # 注入最近 N 条 activity_log 条目
+```
+
+控制 W3 Global 知识层（`self_profile.json` / `projects_index.json` / `cross_project_index.json` / `activity_log.jsonl`）的维护与 context 注入。
+详见 [W2/W3 知识层指南](self-evolution-stage4-5-guide.md)。
+
+### ObservabilityConfig（Stage 6）
+
+```python
+@dataclass
+class ObservabilityConfig:
+    enabled: bool = True
+    tracing_enabled: bool = True       # 是否写入 traces.jsonl（独立开关）
+    anomaly_k_sigma: float = 3.0       # 异常检测触发阈值（value > mean + k*std）
+    anomaly_min_samples: int = 10      # 至少需要多少条历史记录才启用异常检测
+```
+
+| 字段 | 说明 |
+|------|------|
+| `enabled` | 整体开关；关闭后 `tracing_enabled` 也同时失效 |
+| `tracing_enabled` | 只关闭 traces.jsonl 写入，不影响 `/diagnostics` 端点与异常检测 |
+| `anomaly_k_sigma` | 越小越灵敏（建议 2.5~3.5），3.0 是保守默认值 |
+| `anomaly_min_samples` | 样本不足时不运行异常检测，避免误报（新项目初期） |
+
+对应的便捷属性：`cfg.observability_enabled` / `cfg.tracing_enabled`。
+详见 [观察性系统指南](observability-guide.md)。
+
 ---
 
 ## 5. 构建自定义 AppConfig
