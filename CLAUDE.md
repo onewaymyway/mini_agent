@@ -31,8 +31,9 @@
 - `src/mini_agent/api/` — HTTP API 服务
 - `src/mini_agent/history/` — 历史管理（压缩算法 + RawHistory 即时落盘 + 条目类型定义）
 - `src/mini_agent/prompts/` — Prompt 管理
-- `src/mini_agent/storage/` — 存储层（`paths.py` 含 `session_plan_snapshot`/`task_manifest` 等路径方法）
+- `src/mini_agent/storage/` — 存储层（`paths.py` 含 `session_plan_snapshot`/`task_manifest`/`workdir_xxx`/`global_xxx` 等路径方法）
 - `src/mini_agent/env_info/` — 环境信息采集与注入（Provider 抽象基类 + 注册表 + 内置 Provider）
+- `src/mini_agent/evolution/` — 自我演化机制：`state_repo.py`（唯一写入入口）/`validators.py`（分级校验）/`workspace.py`（worktree 隔离）/`eval_runner.py`（eval 反馈环）/`phase_g.py`（Stage 8 后台循环：剪枝/能力地图/Scope 晋升/节奏治理）
 - `scripts/protected_paths.py` — 受保护路径清单（T3 治理红线，独立于 `src/mini_agent/` 包，自我演化相关安全机制使用）
 
 ## 开发规范
@@ -116,6 +117,7 @@ python main.py --provider nvidia --model qwen/qwen3.5-122b-a10b --system-tool-ca
 - `skill_manager.py` — 技能管理工具（skill_list, skill_activate 等）
 - `plan.py` — 规划工具
 - `user_input.py` — 用户输入工具
+- `workdir_knowledge.py` — Workdir 知识层工具（Stage 4）：`add_open_thread`/`update_work_thread`/`update_knowledge`，thread-local provider 机制与 `orchestration.py` 同构
 
 ### MCP 支持 (`src/mini_agent/mcp/`)
 
@@ -126,8 +128,8 @@ python main.py --provider nvidia --model qwen/qwen3.5-122b-a10b --system-tool-ca
 
 ### 并行编排 (`src/mini_agent/orchestrator/`)
 
-- `task.py` — 任务定义（`Task`/`TaskRecord`；`TaskRecord` 新增 `manifest.json` 写入：`write_manifest`/`update_progress`，任务创建时落初始版本、结束时补写 `outcome`）
-- `orchestrator/task_manager.py` — 任务调度（依赖解析、SubAgent 管理）
+- `task.py` — 任务定义（`Task`/`TaskRecord`；`TaskRecord` 新增 `manifest.json` 写入：`write_manifest`/`update_progress`，任务创建时落初始版本、结束时补写 `outcome`；`Task.fallback_profiles`/`demotion_scope` 字段支撑 Stage 7 降级重试链）
+- `orchestrator/task_manager.py` — 任务调度（依赖解析、SubAgent 管理）；`_try_demotion()`/`_resubmit_demoted()`（Stage 7，13.2+15.3）两阶段降级：先按 `fallback_profiles` 切换 agent profile，全部失败后按 `demotion_scope` 缩小目标范围重试，复用原 task_id
 - `sub_agent.py` — 子 Agent 实现（线程包装、自动重试、输出捕获、`manifest.json` 创建/收尾）
 - `concurrency.py` — 并发控制（TaskSemaphore + LLMSemaphore + RateLimiter RPM 限速 + StreamTokenState 流式 token 计数 + RetryCountdownState 重试倒计时）
 - `status_bar.py` — 状态栏显示（含 Task Tab 栏、流式 token 计数、重试倒计时进度条、RPM 限速状态）
@@ -141,17 +143,21 @@ python main.py --provider nvidia --model qwen/qwen3.5-122b-a10b --system-tool-ca
 - `project_scanner.py` — 项目结构扫描
 - `file_watcher.py` — 文件变化监听
 - `tool_cache.py` — 工具结果缓存
-- `memory_store.py` — 跨 session 长期记忆（`MemoryEntry` 含 Lesson Memory 扩展字段）
+- `memory_store.py` — 跨 session 长期记忆（`MemoryEntry` 含 Lesson Memory 扩展字段，`entry_type="capability_map"` 由 Stage 8 消费）
 - `memory_base.py` — 记忆后端抽象
 - `memory_factory.py` — 记忆工厂
 - `lesson_rules.py` — 规则触发引擎（连续失败计数 / 权限拒绝后重试成功检测，不调用 LLM）
 - `correction_detector.py` — 人类反馈纠正检测（规则式短语匹配，中英文约 30 条模式）
 - `token_counter.py` — Token 预估
+- `workdir_knowledge.py` — Workdir 知识层（W2，Stage 4）：`project.json`/`timeline.jsonl`/`work_index.json`/`open_threads.json`/`knowledge.md` 五个文件的数据模型与读写，含 `capture_environment_fingerprint`/`detect_environment_drift`/`KnowledgeIndexEntry`
+- `global_knowledge.py` — Global 知识层（W3，Stage 5）：`self_profile.json`/`projects_index.json`/`cross_project_index.json`/`activity_log.jsonl` 数据模型与读写，含跨项目模式聚合 `scan_cross_project_patterns`/`merge_cross_project_patterns`
+- `observability.py` — 观察性（第 9 章，Stage 6）：`SessionTracer`（`traces.jsonl` 打点）、`classify_error()`（14 种 `error_category` 分类）、`detect_anomalies()`（k-σ 异常检测）
+- `lesson_review.py` — lesson 阈值扫描（Stage 3.1），`/evolve review` 的扫描逻辑
 
 ### HTTP API (`src/mini_agent/api/`)
 
 - `server.py` — FastAPI app 工厂 + AgentRunner 后台线程 + 输出钩子
-- `routes.py` — HTTP 路由定义（对话/SSE/事件/权限/文件系统）
+- `routes.py` — HTTP 路由定义（对话/SSE/事件/权限/文件系统/`GET /v1/diagnostics` 系统健康检查，Stage 6.2）
 - `bridge.py` — 解耦桥梁（RingBuffer/OutputBroadcaster/InputQueue/PermissionGate）
 - `models.py` — Pydantic 请求/响应模型 + AgentEvent
 - `auth.py` — Bearer Token 认证中间件
@@ -206,7 +212,7 @@ python main.py --provider nvidia --model qwen/qwen3.5-122b-a10b --system-tool-ca
 ### 存储层 (`src/mini_agent/storage/`)
 
 - `__init__.py` — 公开接口导出
-- `paths.py` — 路径管理（`AgentPaths`，含 `session_plan_snapshot(sid)`、`task_manifest(sid, tid)` 等 Stage 0.2 新增方法）
+- `paths.py` — 路径管理（`AgentPaths`，含 `session_plan_snapshot(sid)`/`task_manifest(sid, tid)`（Stage 0.2）、`workdir_project_meta()`/`workdir_timeline()`/`workdir_work_index()`/`workdir_open_threads()`/`workdir_knowledge_md()`/`workdir_knowledge_index()`（Stage 4，W2）、`global_self_profile()`/`global_projects_index()`/`global_cross_project_index()`/`global_activity_log()`（Stage 5，W3）等路径方法）
 
 ### 环境信息采集 (`src/mini_agent/env_info/`)
 
@@ -366,6 +372,64 @@ python main.py --provider nvidia --model qwen/qwen3.5-122b-a10b --system-tool-ca
 - **lesson 回流**：SubAgent 与主 agent 共享同一个 `memory.jsonl` 磁盘路径，SubAgent 进入终态（`DONE`/`FAILED`/`CANCELLED`）时触发主 agent 已注册 memory backend 的 `reload()`
 - 详见 [自我演化 SubAgent 信息继承指南（Stage 3.3）](docs/self-evolution-stage3-3-guide.md)
 
+### Workdir 知识层（Stage 4 / Phase W2）
+
+> 对应 `next_doc/self_evolution_stage4plus_plan.md` Stage 4，设计依据 `next_doc/self_evolution_design.md` 第 8.2 节。在 `.agent/` 下新增五个文件，是项目级"软知识"的沉淀层
+
+- **五个文件**：`project.json`（项目身份证，含 `name`/`root_language`/`key_modules`/`environment_fingerprint`）、`timeline.jsonl`（session 时序骨架，独立轻量反思生成 `theme`/`key_outcomes`）、`work_index.json`（`WorkThread` 聚合，跨 session 累积 `cumulative_progress`/`next_suggested`）、`open_threads.json`（跨 session 待处理线索池）、`knowledge.md`（项目软知识，T1，走 `StateRepo.apply()`）
+- **核心模块**：`perception/workdir_knowledge.py`（数据模型 + 读写）、`tools/workdir_knowledge.py`（`add_open_thread`/`update_work_thread`/`update_knowledge` 三个工具）
+- **维护机制**：SessionStart 时 `agent.py` 的 `_maybe_ensure_project_meta()` 创建/更新 `project.json`（含 12.2 横向加固 `environment_fingerprint` 漂移检测）；SessionEnd 时 `_update_workdir_knowledge_on_session_end()` 追加 `timeline.jsonl`、关联 `work_index.json`、回收 `task_manifest.outcome.unresolved` 进 `open_threads.json`
+- **context 注入**：`context_builder.py` always-on 注入 `project.json` 身份信息 + 活跃 WorkThread 进度 + 高优先级 open_threads（数量上限 `WorkdirKnowledgeConfig.open_threads_inject_limit`，默认 5）
+- **横向加固顺带完成**：14.1 `knowledge_index.json`（`update_knowledge()` 写入时同步生成结构化索引）
+- **配置**：`WorkdirKnowledgeConfig`（默认 `enabled=True`），`work_thread_relation_days`（默认 7 天，关联启发式窗口）
+- 详见 [Workdir 知识层与 Global 知识层指南（Stage 4 & 5）](docs/self-evolution-stage4-5-guide.md)
+
+### Global 知识层（Stage 5 / Phase W3）
+
+> 对应 `next_doc/self_evolution_stage4plus_plan.md` Stage 5，设计依据 `next_doc/self_evolution_design.md` 第 8.3 节。`~/.agent/` 下新增四个文件，scope 从单项目升级为跨项目
+
+- **四个文件**：`self_profile.json`（agent 自我模型，`AgentSelfProfile` 落地版，`autonomy_level` 默认 `"passive"`）、`projects_index.json`（workdir 注册表，30 天无活动自动标记 `dormant`）、`cross_project_index.json`（跨项目模式聚合，`observed_in_projects`/`confidence`/`global_skill_candidate`）、`activity_log.jsonl`（全局活动时序，与 `timeline.jsonl` 同一处代码路径写入）
+- **核心模块**：`perception/global_knowledge.py`（数据模型 + 读写 + `scan_cross_project_patterns()`/`merge_cross_project_patterns()` 跨项目聚合）
+- **维护机制**：session 启动时 `_maybe_register_global_project()` 注册/更新 `projects_index.json` 并做 dormant 巡检；SessionEnd 时复用 Stage 4 的 theme/duration 计算结果追加 `activity_log.jsonl` 并更新 `self_profile.json`
+- **本 Stage 范围**：5.4 节"跨项目模式扫描"只实现扫描聚合函数本身（`scan_cross_project_patterns`），**不接调度自动触发**——触发时机（"该不该自动晋升"）留给 Stage 8 Phase G
+- **context 注入**：`_build_global_knowledge_block()` always-on 注入 `self_assessment` 精简版 + `pending_evolve_branches`；workdir 变化时注入 `projects_index`/`activity_log` 最近若干条（`GlobalKnowledgeConfig.activity_log_inject_limit`，默认 5）
+- **配置**：`GlobalKnowledgeConfig`（默认 `enabled=True`），`dormant_after_days`（默认 30）
+- 详见 [Workdir 知识层与 Global 知识层指南（Stage 4 & 5）](docs/self-evolution-stage4-5-guide.md)
+
+### 观察性（Stage 6 / 第 9 章）
+
+> 对应 `next_doc/self_evolution_stage4plus_plan.md` Stage 6，设计依据 `next_doc/self_evolution_design.md` 第 9/10/11 章。是 Phase G 剪枝判断和异常检测的数据基础
+
+- **6.1 时序性能追踪**：`SessionTracer` + `span()` context manager，在 `_agentic_loop()` 的 `call_llm`/`execute_tools`/`build_system` 三处打点，写入 `session_dir/traces.jsonl`，含 `context_breakdown`（`system_base`/`history`/`total` token 占比）字段——是 Stage 8 剪枝判断的直接数据来源
+- **6.2 系统健康检查**：`GET /v1/diagnostics` 端点，五个分组：`performance`（traces 聚合）/`memory`（条目统计）/`skills`（激活列表）/`evolution`（演化状态）/`anomaly_flags`（异常标记），直接聚合底层数据，不反向依赖 `self_profile.json`
+- **6.3 异常行为检测**：`detect_anomalies()` k-σ 算法（默认 k=3.0），检测 `tool_call_spike`/`token_spike`/`session_duration_spike` 三类异常，依赖 `activity_log.jsonl` 中的 `session_metrics` 行（至少 `anomaly_min_samples` 条历史记录，默认 10，才启用）
+- **6.4 工具调用因果链**：`classify_error()` 基于正则规则做 14 种 `error_category` 分类（复用 `lesson_rules.py` 的异常类名模式）；`traces.jsonl` 的 tool_call 记录含 `sequence_in_turn`/`error_category`/`resolves_seq` 字段
+- **核心模块**：`perception/observability.py` + `api/routes.py`（`/diagnostics` 端点）
+- **配置**：`ObservabilityConfig`（`enabled`/`tracing_enabled`/`anomaly_k_sigma`/`anomaly_min_samples`），便捷属性 `cfg.observability_enabled`/`cfg.tracing_enabled`
+- 详见 [观察性系统指南（Stage 6）](docs/observability-guide.md)
+
+### 横向加固任务池（Stage 7）
+
+> 对应 `next_doc/self_evolution_stage4plus_plan.md` Stage 7，延续设计文档"可在任意阶段穿插"的定位，挂在 Stage 4-8 的具体改动点上顺带完成，非独立排期
+
+- **13.2 + 15.3（SubAgent 降级重试链 + 任务降级策略）**：`TaskManager._try_demotion()`/`_resubmit_demoted()`，两阶段降级——阶段一按 `Task.fallback_profiles` 列表顺序切换 agent profile；阶段二（全部 profile 试过后）若设置了 `Task.demotion_scope` 则缩小目标范围重试一次，复用原 `task_id`，下次 tick 自动调度。是 Phase H 自主运行时"没有用户在场纠正"场景的硬性技术前提
+- **15.2（错误分类驱动恢复）**：`reminders/matcher.py` 的 `condition.error_category` 字段，基于 Stage 6.4 的分类结果精确路由，无需正则
+- **14.1/14.2/14.3（knowledge_index / Skill 依赖冲突图 / 知识可信度传递）**：分别在 Stage 4 的 `update_knowledge()` 与 Stage 3.2 的 `SkillLoader.activate()` 改动中顺手完成（`conflicts_with`/`activation_conditions` 约束检查、`confidence_score` 注入 context 时调整语气）
+- **12.2（环境漂移检测）**：`detect_environment_drift()` + `_maybe_ensure_project_meta()`，在 Stage 4 顺手完成
+- **暂缓/留待 Stage 9 的条目**：12.1（`FILE_CHANGE_EFFECTS`）、12.3（inbound webhook）、13.1（能力匹配调度）、13.3（中间结果流）、15.1（元认知 checkpoint）、16.2（隐式反馈捕捉）、16.3（澄清优先分支）、17.2（Prompt 工程版本化）——详见计划文档 Stage 7 表格
+
+### Phase G 后台循环（Stage 8）
+
+> 对应 `next_doc/self_evolution_stage4plus_plan.md` Stage 8，设计依据 `next_doc/self_evolution_design.md` 第 6.4/6.5/6.6/6.7 节。不依赖常驻进程的"时间门控"调度，是 Phase H 自主运行时的前置数据沉淀
+
+- **8.1 调度骨架**：`phase_g_rhythm.json` 的 `_last_run_at` 字段替代 cron，`should_run_phase_g()` 在每次 `trigger_session_end()` 时检查（默认 24h 间隔）；手动触发入口 `/evolve phase-g [--force] [--dry-run]`
+- **8.2 剪枝候选**：`prune_skills()`，规则 A（高 token 成本 + 未使用）+ 规则 B（冲突检测），输出 `PruneCandidate` 列表，不自动执行下线
+- **8.3 能力地图**：`build_capability_map()` 扫描 `tasks/*/manifest.json`，按 `_infer_domain()` 规则式推断任务类型，聚合成功率，写入 `entry_type="capability_map"` 的 memory 条目——终于激活了早期设计就预留的这个枚举值。Global scope 汇总留待数据积累后扩展
+- **8.4 Scope 晋升**：`check_scope_promotion()` 读 `cross_project_index.json`，判据 `observed_in_projects ≥ 2` 且 `confidence ≥ 0.70` 且 `global_skill_candidate=true`，当前只输出候选列表（`PromotionCandidate`），不直接调用 `skill_propose`
+- **8.5 节奏治理**：`rhythm_is_allowed()`/`record_proposal()`，7 天冷却期，可对任意 `(proposal_type, key)` 限流——回应设计文档开放问题 1（T1 自动合并的观察期）
+- **核心模块**：`evolution/phase_g.py`（`run_phase_g()` 整体入口）+ `cli/commands/evolve.py`（`_handle_phase_g()`）+ `agent.py`（`_maybe_run_phase_g()`，SessionEnd 时间门控接入点）
+- 详见 [Phase G 后台循环指南（Stage 8）](docs/self-evolution-phase-g-guide.md)
+
 ### 参数优先级
 
 **命令行参数 > 配置文件参数**。之前配置文件优先级更高，已修正。
@@ -398,3 +462,11 @@ python main.py --provider nvidia --model qwen/qwen3.5-122b-a10b --system-tool-ca
 - [Env Info 指南](docs/env-info-guide.md) — 环境信息采集与注入，自定义 Provider 扩展
 - [LLM 故障转移指南](docs/llm-failover-guide.md) — 多配置 fallback chain + 多 API Key 轮转
 - [重试退避指南](docs/retry-backoff-guide.md) — fixed / linear / exponential 退避策略详解
+- [Workdir 知识层与 Global 知识层指南（Stage 4 & 5）](docs/self-evolution-stage4-5-guide.md) — `project.json`/`work_index.json`/`open_threads.json`/`knowledge.md`（W2）+ `self_profile.json`/`projects_index.json`/`cross_project_index.json`/`activity_log.jsonl`（W3）
+- [观察性系统指南（Stage 6）](docs/observability-guide.md) — `traces.jsonl` 追踪、`/diagnostics` 端点、异常检测、工具调用因果链
+- [Phase G 后台循环指南（Stage 8）](docs/self-evolution-phase-g-guide.md) — 剪枝候选 / 能力地图 / Scope 晋升 / 演化节奏治理
+
+## 当前进展
+
+- Stage 0-8 均已完成（详见 `next_doc/self_evolution_implementation_plan.md` 与 `next_doc/self_evolution_stage4plus_plan.md` 各 Stage 完成记录）
+- Stage 9（Phase H：自主运行时）是决策点而非常规排期 Stage，启动前置清单见 `next_doc/self_evolution_stage4plus_plan.md` 第 9.0 节；细化方案见 `next_doc/self_evolution_stage9_plan.md`
