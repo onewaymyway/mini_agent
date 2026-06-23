@@ -24,7 +24,10 @@ from unittest.mock import MagicMock, patch
 PROJECT_ROOT = Path(__file__).parent.parent
 sys.path.insert(0, str(PROJECT_ROOT / "src"))
 
-from mini_agent.session import Session, SessionMeta, SessionManager, _serialize_history, _now_iso
+from mini_agent.session import (
+    Session, SessionMeta, SessionManager, _serialize_history, _now_iso,
+    _flock, _atomic_write_json,
+)
 
 
 # ── 共享工厂 ──────────────────────────────────────────────────────────────────
@@ -598,6 +601,53 @@ class TestAgentSessionIntegration(unittest.TestCase):
         path = agent.session_file
         self.assertIsNotNone(path)
         self.assertTrue(Path(path).exists())
+
+
+# ── _flock 跨平台兼容性回归测试（Android/Termux 等不支持 flock 的文件系统）──
+
+class TestFlockCompat(unittest.TestCase):
+    """
+    回归测试：fix_android_session_save.md
+
+    背景：Android Termux 的 FUSE/SD 卡挂载文件系统上，fcntl.flock() 不
+    支持文件锁定，会抛出 OSError(38)（ENOSYS - Function not implemented），
+    而不是 ImportError。旧版 _flock() 只捕获了 ImportError，导致该异常
+    向上传播，最终使 _atomic_write_json()（以及 session 保存）整体失败。
+
+    本测试通过 mock fcntl.flock 抛出 OSError 来模拟该环境，验证：
+    1. _flock() 本身不再抛出异常（"尽力而为"语义生效）
+    2. _atomic_write_json() 在该情况下仍能正常完成写入
+    """
+
+    def test_flock_swallows_oserror_from_fcntl(self):
+        """模拟 Android Termux：fcntl.flock 抛出 OSError(38)，_flock 不应传播异常。"""
+        with tempfile.TemporaryDirectory() as d:
+            tmp_path = Path(d) / "lockfile.txt"
+            with open(tmp_path, "w") as f:
+                with patch("fcntl.flock", side_effect=OSError(38, "Function not implemented")):
+                    try:
+                        _flock(f)
+                    except OSError:
+                        self.fail("_flock() 未能捕获 fcntl.flock 抛出的 OSError")
+
+    def test_flock_still_works_normally_without_mock(self):
+        """正常环境下 _flock() 应该照常成功（不依赖 mock，验证修复未破坏正常路径）。"""
+        with tempfile.TemporaryDirectory() as d:
+            tmp_path = Path(d) / "lockfile.txt"
+            with open(tmp_path, "w") as f:
+                try:
+                    _flock(f)
+                except OSError:
+                    self.fail("正常环境下 _flock() 不应该抛出异常")
+
+    def test_atomic_write_json_succeeds_when_flock_unsupported(self):
+        """端到端：模拟 flock 不支持的环境下，_atomic_write_json 仍能完整写入文件。"""
+        with tempfile.TemporaryDirectory() as d:
+            target = Path(d) / "meta.json"
+            with patch("fcntl.flock", side_effect=OSError(38, "Function not implemented")):
+                _atomic_write_json(target, {"key": "value", "n": 1})
+            self.assertTrue(target.exists())
+            self.assertEqual(json.loads(target.read_text()), {"key": "value", "n": 1})
 
 
 # ── Runner ────────────────────────────────────────────────────────────────────
