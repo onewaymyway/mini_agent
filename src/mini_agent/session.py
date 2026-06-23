@@ -545,12 +545,20 @@ def _serialize_history(history: list[dict]) -> list[dict]:
 
 
 def _flock(f) -> None:
-    """跨平台文件锁（尽力而为）。"""
+    """跨平台文件锁（尽力而为）。
+
+    部分文件系统（典型如 Android Termux 的 FUSE/SD 卡挂载路径）不支持
+    flock，调用会抛出 OSError(38)（ENOSYS - Function not implemented），
+    而不是 ImportError（fcntl 模块本身是存在的，只是该文件系统不支持这个
+    系统调用）。这里必须把 OSError 也纳入捕获范围，否则异常会向上传播到
+    _atomic_write_json，导致文件写入整体失败、session 无法持久化——
+    而文件锁定本身只是"尽力而为"，锁不上不应该阻断核心写入逻辑。
+    """
     try:
         import fcntl
         fcntl.flock(f.fileno(), fcntl.LOCK_EX)
         return
-    except ImportError:
+    except (ImportError, OSError):
         pass
     try:
         import msvcrt
