@@ -318,12 +318,32 @@ permissions.py 拦截
 | `--no-stream` | 禁用流式输出 |
 | `--debug-llm` | 启用 LLM 调试日志（`.claude/logs/` 目录） |
 | `--debug-llm-console` | 同时在控制台打印调试信息 |
+| `--simple-mode` | 简化显示模式（见 9.1）：关闭所有 ANSI 光标定位/擦除操作，状态栏完全不显示 |
 
 | 环境变量 | 说明 |
 |----------|------|
 | `LLM_DEBUG` | 启用调试日志 |
 | `LLM_DEBUG_CONSOLE` | 控制台调试输出 |
 | `LLM_DEBUG_LOG_DIR` | 调试日志目录 |
+| `MINI_AGENT_SIMPLE_MODE=1` | 等价于 `--simple-mode`，适合写进 Termux 的 shell 启动脚本固定开启 |
+
+### 9.1 `--simple-mode`：精简终端降级显示
+
+本文第 3.2～3.4 节描述的"擦除再重绘"机制依赖终端正确支持
+`\x1b[NA`（光标上移）/ `\x1b[0J`（清除到屏底）这两条 ANSI 控制序列。
+在 Termux 等光标控制支持不完整的环境下，这套机制会导致状态栏堆叠、
+内容错位等排版问题，比普通日志式的顺序滚动输出体验更差。
+
+`--simple-mode` 关闭本文第 3 章描述的全部机制——不再有 `_erase_bar()`
+/ `_draw_bar()` / `_bar_below_prefix` 三阶段状态机，状态栏也不再以任何
+形式显示（不是退化为"内容变化时打印一行"，是彻底不显示）；其余输出
+（assistant 回复、工具调用信息、权限提示等）仍按正常顺序打印，只是
+不再被状态栏的擦除/重绘逻辑包裹。
+
+完整设计动机、消息分发逻辑、双重防御保证（确保 simple-mode 下任何
+路径都不会触发擦除）、以及一个相关根因排查（`RawKeyListener` 曾经
+意外破坏过同一终端设备的 `\n`→`\r\n` 自动转换），见
+[终端显示机制深度解析](terminal-display-internals.md) 第九章。
 
 ---
 

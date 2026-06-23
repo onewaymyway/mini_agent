@@ -745,5 +745,202 @@ term = Terminal(status_refresh_hz=8)    # 8 Hz，更流畅但 CPU 占用略高
 
 ---
 
+## 九、simple-mode
+
+### 9.1 问题背景
+
+本文前八章描述的"先擦除再重绘"机制，本质上依赖目标终端正确实现两条 ANSI 控制序列：
+
+```
+\x1b[NA   CUU（Cursor Up）— 光标上移 N 行
+\x1b[0J   EL/ED 变体     — 清除光标位置到屏幕底部
+```
+
+这套机制在主流桌面终端模拟器（iTerm2、Windows Terminal、GNOME Terminal、
+大多数 SSH 客户端等）下表现良好。但在一些精简终端环境——典型如
+**Termux**（Android 上的终端 App）、某些嵌入式串口控制台、或被其他程序
+（如某些 IDE 内置终端、低版本 PTY 模拟器）包裹的子终端——这两条序列可能
+不被正确支持，或者支持不完整（例如只支持部分擦除模式、或上移行数计算
+基准不一致）。
+
+后果是：状态栏没有被正确擦除就被重绘，画面出现重复堆叠的状态栏残影；
+或者擦除范围算错，把不该擦的内容（如上一轮对话）也清掉；又或者
+"等待 LLM 响应"阶段的三阶段状态机（见第三章）因为光标定位不准确，
+导致 `"agent ❯ "` 前缀和正文之间出现错位、丢字、重复字等问题。
+
+### 9.2 设计思路
+
+simple-mode 不去逐个修补每个特殊终端的兼容性，而是从根本上避免依赖
+任何"光标位置会被正确保留/移动"的假设——所有内容一律按收到顺序原样
+`print`/`write`，只追加换行，绝不回退、绝不擦除。
+
+状态栏在 simple-mode 下**完全不显示**（不是退化为"内容变化时追加打印
+一行"，而是彻底不输出任何状态栏内容）。这是经过一次迭代后的结论：
+最初的实现尝试了"内容变化才打印"，但状态栏里"已用时长/token 数"这类
+字段几乎每个刷新周期都在变，单靠内容比较等于没有节流，实际体验依然
+是刷屏；而状态栏本身对 simple-mode 的使用场景（精简终端、关注的是
+"输出有没有正常显示"而不是"任务进度可视化"）价值有限，所以直接选择
+不显示，而不是继续在节流策略上打磨。
+
+这是一个纯粹的"加法"设计，且有两层独立保护，确保 simple-mode 下绝不
+会触发任何擦除/原地重绘：
+
+1. **分发层**：`Terminal._handle()` 在分发消息前先检查 `self._simple_mode`，
+   为真则整体转发到 `_handle_simple()`，与原有的擦除/重绘路径完全隔离，
+   互不影响、互不调用对方的私有状态（如 `_bar_below_prefix`、
+   `_open_line_render` 等三阶段状态机变量在 simple-mode 下完全不会被
+   设置或读取）。
+2. **函数自身防御**：`_draw_bar()` / `_erase_bar()` / `_erase_bar_direct()`
+   这三个唯一会写 ANSI 擦除序列（`\x1b[NA\x1b[0J`）的函数，内部各自都有
+   `if self._simple_mode: return` 早退保护。即使未来某处代码不小心绕过
+   `_handle()` 直接调用了它们，在 simple-mode 下也只会是彻底的 no-op，
+   不会写出任何字节。
+
+```
+_handle(msg)
+  │
+  ├─ self._input_blocking?  → 缓存（两种模式共用，与本文第四章逻辑不变）
+  │
+  ├─ self._simple_mode?
+  │     ├─ True  → _handle_simple(msg)   ← 本章新增，纯顺序打印，无状态栏
+  │     └─ False → 原有 erase/redraw 逻辑（第二、三章）
+
+_draw_bar() / _erase_bar() / _erase_bar_direct()
+  │
+  ├─ self._simple_mode?  → 立即 return，不写任何字节（第二层防御）
+  └─ 否则才执行原有的 ANSI 擦除/重绘逻辑
+```
+
+### 9.3 各消息类型在 simple-mode 下的行为对照
+
+| 消息类型 | 正常模式 | simple-mode |
+|----------|----------|-------------|
+| `print` / `rule` / `panel` / `syntax` / `markdown` | erase_bar → 渲染 → draw_bar | 直接渲染，不擦不画状态栏 |
+| `stream`（首 token） | 视 `_bar_below_prefix` 走三阶段状态机 | 直接写 token，不判断状态栏位置 |
+| `stream_end` | 视情况回放 prefix、换行、重绘状态栏 | 冲洗 pending 缓冲，必要时换行，结束 |
+| `statusbar` | 更新内部缓存并触发重绘 | 仅更新内部缓存，**不触发任何打印**（缓存只是保持状态一致，没有任何代码路径会读取它来显示） |
+| `redraw` / `_refresh` | erase_bar → draw_bar（或三阶段状态机） | **no-op**，不打印、不擦除 |
+| `_focus_lines` / `_focus_change` / `_focus_cycle` | erase_bar → 着色打印 → draw_bar | 直接着色打印，不动状态栏 |
+| `_force_end_stream` | 回放 prefix（如需）→ 冲洗 → 重绘 | 冲洗 pending 缓冲，必要时换行 |
+| `_noop` | 哨兵，无操作 | 同：无操作 |
+
+simple-mode 下，状态栏从用户的角度看是"不存在的"——不会在任何时刻、
+以任何形式（无论是原地刷新还是追加打印）出现在输出里。这是有意的
+设计选择，不是节流不够导致的妥协。
+
+### 9.4 启用方式
+
+三种方式，优先级从高到低：
+
+```bash
+# 1. CLI 参数（推荐，显式且不影响其他 shell 会话）
+python -m mini_agent --simple-mode
+
+# 2. 环境变量（适合在 Termux 的 shell 启动脚本/.bashrc 里固定设置）
+export MINI_AGENT_SIMPLE_MODE=1
+python -m mini_agent
+
+# 3. agent_config.json（项目级固定配置）
+# { "simple_mode": true }
+```
+
+`Terminal.__init__(simple_mode=None)` 在未显式传参时读取
+`MINI_AGENT_SIMPLE_MODE` 环境变量作为默认值；`cli/app.py` 在解析完
+`argparse` 参数后的第一时间（早于任何 `R.print_info()` 调用、早于
+`start_status_bar()`）就调用 `term.set_simple_mode(True)`，确保启动期间
+的全部输出都已经处于 simple-mode，不会出现"前几行还是正常模式、后面
+突然切换"的不一致。
+
+### 9.5 程序化切换
+
+也可以在运行期手动切换（例如未来要做的 `/simple` slash 命令）：
+
+```python
+from mini_agent.ui.terminal import term
+
+term.set_simple_mode(True)   # 开启
+term.is_simple_mode()        # 查询当前状态
+term.set_simple_mode(False)  # 关闭，恢复原地刷新（仅建议在真实 TTY 上这样做）
+```
+
+`set_simple_mode(True)` 内部会顺手把 `_bar_drawn` / `_bar_suspended` /
+`_bar_below_prefix` 等"原地刷新模式"专用的状态变量清零，避免切换后
+这些陈旧状态被遗留误用；反向切换（关闭 simple-mode）不做特殊清理，
+下一次 `_refresh` 会按正常模式重新建立状态栏。
+
+### 9.6 不受 simple-mode 影响的部分
+
+- `prompt_toolkit` 输入（历史、Tab 补全、自动建议）不受影响，仍按原样
+  工作——simple-mode 只改变*输出*侧的渲染策略，不改变*输入*侧。
+- `_input_blocking` 消息缓存机制（第四章）在两种模式下都生效，逻辑
+  完全共用，不需要也没有 simple-mode 专属版本。
+
+### 9.7 一个更深层的根因：RawKeyListener 与 OPOST
+
+上线 simple-mode 后收到反馈："simple-mode 不对"——实测输出仍然逐行
+错位、呈阶梯状右移（每一行都比上一行更靠右一点）。排查后发现这其实
+是一个**与 simple-mode 本身无关、普通模式同样会中的**独立 bug，只是
+普通模式下被状态栏的擦除/重绘操作部分掩盖了，simple-mode 关闭擦除后
+反而更明显地暴露出来。
+
+**根因**：`ui/raw_key_listener.py` 的 `_UnixKeyReader._setup()`（方向键
+task 焦点切换监听器，见第六章）在 `run_turn()` 期间对监听用的 fd 调用
+了 `tty.setraw(fd)`。`setraw()` 会把 termios 的 `IFLAG`/`OFLAG`/`CFLAG`/
+`LFLAG` 全部清成"裸"模式，其中 `OFLAG` 里的 `OPOST` 被清掉意味着内核
+不再把输出的 `"\n"` 自动转换成 `"\r\n"`。
+
+致命的是：termios 设置是**终端设备级别**的，不是 fd 级别的。
+`_find_tty_fd()` 优先打开 `/dev/tty`（控制终端），它和 `sys.stdout`
+指向的是**同一个底层设备**——哪怕二者是两个不同的文件描述符，对其中
+一个 fd 调用 `tcsetattr()` 修改的也是设备本身的状态，会影响所有其他
+打开了同一设备的 fd。一旦在监听器的 fd 上 `setraw()`，`OPOST` 在
+整个设备上都被关掉，后续 `terminal.py` 渲染线程往 `sys.stdout` 写的
+每一个 `"\n"` 都不会再自动带上 `"\r"`，只移动到下一行的**同一列**，
+而不是回到列首——这正是"逐行越来越靠右"现象的成因。
+
+可以用一对 pty 简单复现这个机制：
+
+```python
+import pty, os, termios, tty, time
+master, slave = pty.openpty()
+fd2 = os.open(os.ttyname(slave), os.O_RDWR)   # 模拟 /dev/tty，与 slave 同一设备
+tty.setraw(fd2)                                # 在另一个 fd 上 setraw
+os.write(slave, b"line one\nline two\n")       # 用 slave（模拟 sys.stdout）写入
+time.sleep(0.05)
+print(repr(os.read(master, 1000)))
+# => b'line one\nline two\n'   （注意：没有 \r，OPOST 已被破坏）
+```
+
+**修复**：`_setup()` 不再使用 `tty.setraw()`，改为手工只清 `LFLAG` 里
+监听器真正需要的三个 bit，完全不触碰 `OFLAG`（因此 `OPOST` 原样保留）：
+
+```python
+new_attrs = termios.tcgetattr(fd)
+new_attrs[3] = new_attrs[3] & ~(termios.ECHO | termios.ICANON | termios.ISIG)  # lflag
+new_attrs[6][termios.VMIN] = 1
+new_attrs[6][termios.VTIME] = 0
+termios.tcsetattr(fd, termios.TCSANOW, new_attrs)
+```
+
+三个 bit 分别对应监听器实际依赖的输入特性：
+
+| Bit | 作用 | 为什么需要关闭 |
+|-----|------|----------------|
+| `ECHO` | 回显按键 | 方向键序列不应该被打印到屏幕上 |
+| `ICANON` | 行缓冲（等 Enter） | 需要按字节立即可读，不等行结束 |
+| `ISIG` | 内核自动发信号 | `_handle()` 收到 `b"\x03"` 时手动 `os.kill(...SIGINT)`，必须自己识别这个字节，不能让内核抢先处理掉 |
+
+这三点都只涉及 `LFLAG`，`tty.setraw()` 额外清掉的 `OFLAG`（含 `OPOST`）、
+`IFLAG`、`CFLAG` 监听器从来都不需要——用更精确、范围更小的 termios
+修改替换掉"一把梭"的 `setraw()`，问题即被根除，且对普通模式和
+simple-mode 都生效（这不是 simple-mode 专属修复）。
+
+回归测试见 `tests/test_raw_key_listener.py`，用真实 pty（而非 mock
+termios）端到端验证：另一个 fd 上的 `\n`→`\r\n` 转换在 `_setup()`
+前后保持正常，且监听器自身的输入特性（不回显、单字节立即可读、
+Ctrl+C 可被读到）不受影响。
+
+---
+
 *最后更新：2026-06*  
-*涵盖版本：mini-agent（含 `_bar_below_prefix` 三阶段状态机修复）*
+*涵盖版本：mini-agent（含 `_bar_below_prefix` 三阶段状态机修复、simple-mode 简化显示模式——不显示状态栏、双重擦除防御、RawKeyListener OPOST 根因修复）*

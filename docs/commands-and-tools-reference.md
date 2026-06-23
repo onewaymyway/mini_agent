@@ -56,6 +56,7 @@ python main.py
 | `--config` | `-c` | JSON 配置文件路径（默认 agent_config.json） |
 | `--verbose` | `-v` | 显示原始工具调用 JSON |
 | `--sandbox` | | 沙箱模式（禁止破坏性操作） |
+| `--simple-mode` | | 简化显示模式：适用于 Termux 等光标控制支持不完整的终端，关闭所有 ANSI 光标定位/擦除操作，状态栏完全不显示（也可用环境变量 `MINI_AGENT_SIMPLE_MODE=1` 开启），详见 [终端显示机制深度解析](terminal-display-internals.md#九-simple-mode) |
 | `--yes` | `-y` | 自动批准所有工具调用 |
 | `--no-stream` | | 禁用流式输出 |
 | `--max-turns` | | 每条用户消息的最大 agentic 轮数 |
@@ -355,6 +356,8 @@ mini-agent eval --scenario test_cases/                      # 不传 --skill，�
 ---
 
 ## 六、内置工具
+
+> 实现位置：`src/mini_agent/tools/`
 
 ### 文件操作（builtin.py）
 

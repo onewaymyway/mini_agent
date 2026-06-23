@@ -74,6 +74,28 @@ orzooo ❯ 好的，我来帮你...        ← token 流接在 prefix 后面
 
 这一行为由 `_bar_below_prefix` 三阶段状态机控制，详见 [终端显示机制深度解析](terminal-display-internals.md) 第三章。
 
+### 2.4 simple-mode：精简环境降级显示
+
+上述"原地擦除再重绘"的机制依赖终端正确支持光标定位/清除相关 ANSI
+控制序列。在 Termux 等光标控制支持不完整的环境下，这套机制反而会
+导致状态栏堆叠、内容错位等排版问题。
+
+`--simple-mode`（或环境变量 `MINI_AGENT_SIMPLE_MODE=1`）关闭所有
+擦除/重绘和光标移动操作：状态栏**完全不显示**（不追加打印、不原地
+刷新，彻底没有），其余输出一律按普通日志方式顺序打印、只追加不回退：
+
+```
+orzooo ❯ 好的，我来帮你...
+```
+
+`_draw_bar()` / `_erase_bar()` / `_erase_bar_direct()` —— 全部代码里
+唯二会写 ANSI 擦除序列的三个函数——内部都各自有 simple-mode 早退保护，
+双重保证 simple-mode 下任何路径都不会触发擦除。
+
+详见 [终端显示机制深度解析](terminal-display-internals.md) 第九章
+（含一个更深层的根因排查：`RawKeyListener` 的 `tty.setraw()` 曾经
+破坏过同一终端设备上 `\n→\r\n` 的自动转换，见 9.7 节）。
+
 ---
 
 ## 三、REPL 输入机制
