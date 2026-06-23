@@ -138,12 +138,21 @@ class OutputBroadcaster:
 # ── InputQueue ────────────────────────────────────────────────────────────────
 
 class _TurnCommand:
-    __slots__ = ("turn_id", "message", "submitted_at")
+    # Stage 9 §7.1: 新增 initiator 字段，区分"谁发起的"
+    __slots__ = ("turn_id", "message", "submitted_at", "initiator", "meta")
 
-    def __init__(self, turn_id: str, message: str) -> None:
+    def __init__(
+        self,
+        turn_id: str,
+        message: str,
+        initiator: str = "user",
+        meta: Optional[dict] = None,
+    ) -> None:
         self.turn_id = turn_id
         self.message = message
         self.submitted_at = time.time()
+        self.initiator = initiator          # "user" | "scheduled" | "autonomous"
+        self.meta: dict = meta or {}
 
 
 class InputQueue:
@@ -158,15 +167,26 @@ class InputQueue:
         self._turns: dict[str, TurnInfo] = {}
         self._lock = threading.Lock()
 
-    def enqueue(self, message: str, turn_id: Optional[str] = None) -> str:
-        """投入一条命令，返回 turn_id。"""
+    def enqueue(
+        self,
+        message: str,
+        turn_id: Optional[str] = None,
+        initiator: str = "user",
+        meta: Optional[dict] = None,
+    ) -> str:
+        """
+        投入一条命令，返回 turn_id。
+        Stage 9 §7.1: 新增 initiator 参数（"user"|"scheduled"|"autonomous"），
+        默认 "user"，现有所有调用点无需修改（向后兼容）。
+        """
         tid = turn_id or str(uuid.uuid4())
-        cmd = _TurnCommand(tid, message)
+        cmd = _TurnCommand(tid, message, initiator=initiator, meta=meta or {})
         info = TurnInfo(
             turn_id=tid,
             input=message,
             state="queued",
             started_at=time.time(),
+            initiator=initiator,
         )
         with self._lock:
             self._turns[tid] = info

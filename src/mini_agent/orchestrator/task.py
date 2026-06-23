@@ -25,6 +25,10 @@ class TaskStatus(str, Enum):
     DONE      = "done"       # 成功完成
     FAILED    = "failed"     # 执行失败
     CANCELLED = "cancelled"  # 已取消
+    # Stage 9 §8.1: 自主任务被用户消息抢占时进入 PAUSED 状态
+    # 区别于 CANCELLED：PAUSED 任务可在下次 tick 重新提交；
+    # 关联的 Goal Backlog Objective 状态不变（任务暂停 ≠ 目标放弃）
+    PAUSED    = "paused"     # 被用户活动抢占，暂停（可恢复）
 
 
 @dataclass
@@ -134,6 +138,7 @@ class TaskRecord:
 
     @property
     def is_terminal(self) -> bool:
+        # Stage 9: PAUSED 不是终态（可恢复），CANCELLED 才是终态
         return self.status in (TaskStatus.DONE, TaskStatus.FAILED, TaskStatus.CANCELLED)
 
     def append_log(self, line: str) -> None:
@@ -147,7 +152,8 @@ class TaskRecord:
             TaskStatus.DONE:      "✓",
             TaskStatus.FAILED:    "✗",
             TaskStatus.CANCELLED: "⊘",
-        }[self.status]
+            TaskStatus.PAUSED:    "⏸",   # Stage 9: 被抢占暂停
+        }.get(self.status, "?")
 
     def status_color(self) -> str:
         return {
@@ -156,7 +162,8 @@ class TaskRecord:
             TaskStatus.DONE:      "green",
             TaskStatus.FAILED:    "red",
             TaskStatus.CANCELLED: "yellow",
-        }[self.status]
+            TaskStatus.PAUSED:    "magenta",  # Stage 9
+        }.get(self.status, "white")
 
     # ── manifest 持久化（W1，对应设计文档 8.1 节）────────────────────────────
 

@@ -49,6 +49,15 @@ def build_parser() -> argparse.ArgumentParser:
               /evolution revert <commit>  Revert a self-evolution commit (records a lesson)
               /evolve review [--global] [--tier T1|T2]   Scan lessons, spawn evolution-agent on qualifying groups
               /evolve list [--global] [--tier T1|T2]     Preview qualifying lesson groups without spawning
+              /agent goals                List Goal Backlog (active goals + objectives)
+              /agent goals add <title>    Add a Goal
+              /agent goals obj add <title> [--goal <id>] [--thread <id>]  Add an Objective
+              /agent goals done <id>      Mark goal/objective as completed
+              /agent goals abandon <id>   Mark goal/objective as abandoned
+              /agent goals progress <id> <notes>  Update progress notes
+              /agent goals status         Show AutonomousLoop tick status
+              /goals                      Shortcut for /agent goals
+              /digest                     Show autonomous activity summary since last interaction
               exit / quit        Exit
         """),
     )
@@ -199,6 +208,15 @@ def build_parser() -> argparse.ArgumentParser:
                     help="[SYS-ROLE-AGENT] 黑名单：屏蔽指定角色 Agent，逗号分隔（如 coach）；不传表示不屏蔽任何")
     ra.add_argument("--role-agents-dir", default=None, metavar="DIR",
                     help="[SYS-ROLE-AGENT] 仅从指定目录加载角色 Agent profile（覆盖默认 .agent/agents/ 目录）")
+
+    # ── Stage 9: Daemon 模式 ──────────────────────────────────────────────
+    daemon_grp = p.add_argument_group("Daemon mode (Stage 9 Phase H)")
+    daemon_grp.add_argument("--daemon-mode", action="store_true", default=False,
+                             help="[Stage 9] 以 daemon 模式运行（不启动 REPL，持续驻留）。"
+                                  "通常由 'mini-agent daemon start' 内部调用，用户无需直接使用。")
+    daemon_grp.add_argument("--no-daemon", action="store_true", default=False,
+                             help="[Stage 9] 禁用 daemon 模式，回退到传统的进程内直接持有 Agent 行为。"
+                                  "适用于 CI、脚本化场景等不需要持续性的一次性执行。")
 
     # ── HTTP API 服务 ──────────────────────────────────────────────────────
     http = p.add_argument_group("HTTP API server (optional)")

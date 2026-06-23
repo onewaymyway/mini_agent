@@ -11,6 +11,7 @@ cli/app.py — 应用启动装配
 
 from __future__ import annotations
 
+import os
 import sys
 from pathlib import Path
 
@@ -26,6 +27,18 @@ def main() -> int:
     if len(sys.argv) > 1 and sys.argv[1] == "eval":
         from mini_agent.cli.commands.eval_cmd import run_eval_cli
         return run_eval_cli(sys.argv[2:])
+
+    # ── Stage 9 §3.3: daemon 子命令短路 ──────────────────────────────────────
+    # `mini-agent daemon start|stop|status` 不进入主 argparse 流程
+    if len(sys.argv) > 1 and sys.argv[1] == "daemon":
+        from mini_agent.cli.daemon import run_daemon_cli
+        project_root = Path.cwd()
+        # 快速扫描 --project 参数
+        for i, arg in enumerate(sys.argv):
+            if arg in ("--project", "-p") and i + 1 < len(sys.argv):
+                project_root = Path(sys.argv[i + 1]).expanduser()
+                break
+        return run_daemon_cli(sys.argv[2:], project_root)
 
     # ── 全局异常捕获：确保任何启动错误都能显示 ────────────────────────────────
     try:
@@ -289,6 +302,52 @@ def _main_inner() -> None:
         finally:
             if http_server:
                 http_server.stop()
+        return
+
+    # ── Stage 9: daemon 模式（--daemon-mode）────────────────────────────────
+    # daemon 模式：HTTP 服务已启动，进程持续存活，不启动交互 REPL
+    # 这是 `mini-agent daemon start` 内部调用的路径
+    if getattr(args, "daemon_mode", False):
+        import signal as _signal
+        import threading as _threading
+
+        # 写入 PID 文件
+        try:
+            from mini_agent.cli.daemon import _write_pid
+            http_port = getattr(args, "http_port", None) or 8765
+            _write_pid(project_root, os.getpid(), http_port)
+            R.print_info(f"[daemon] Running in daemon mode, PID={os.getpid()}, port={http_port}")
+        except Exception as e:
+            R.print_warning(f"[daemon] Failed to write PID file: {e}")
+
+        stop_event = _threading.Event()
+
+        def _shutdown_handler(signum, frame):
+            R.print_info("[daemon] Received shutdown signal, stopping...")
+            stop_event.set()
+
+        try:
+            _signal.signal(_signal.SIGTERM, _shutdown_handler)
+            _signal.signal(_signal.SIGINT, _shutdown_handler)
+        except Exception:
+            pass
+
+        R.print_info("[daemon] Daemon ready. Ctrl-C or SIGTERM to stop.")
+
+        try:
+            # 持续等待，直到收到停止信号
+            while not stop_event.is_set():
+                stop_event.wait(timeout=5.0)
+        finally:
+            R.print_info("[daemon] Shutting down daemon...")
+            if http_server:
+                http_server.stop()
+            # 清理 PID 文件
+            try:
+                from mini_agent.cli.daemon import _cleanup_pid_files
+                _cleanup_pid_files(project_root)
+            except Exception:
+                pass
         return
 
     # ── 交互 REPL ─────────────────────────────────────────────────────────────

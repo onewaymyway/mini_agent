@@ -109,12 +109,22 @@ class AgentRunner(threading.Thread):
     后台线程：循环消费 InputQueue，驱动 agent.run_turn()。
     run_turn() 的所有输出（流式 token、工具调用等）通过
     OutputHook 拦截后广播到 HTTP 客户端。
+
+    Stage 9 §7.2: 新增 AutonomousLoop 集成。
+    dequeue(timeout=0.5) 超时返回 None（没有新用户消息）时，
+    检查距上次 tick 是否已过 tick_interval，是则调用 autonomous_loop.tick()。
+    这样"检查用户消息"和"自主周期任务"共享同一个循环，互相知道对方状态。
     """
 
-    def __init__(self, bridge: AgentBridge) -> None:
+    def __init__(
+        self,
+        bridge: AgentBridge,
+        autonomous_loop=None,  # Optional[AutonomousLoop]，不强制依赖
+    ) -> None:
         super().__init__(name="agent-runner", daemon=True)
         self._bridge = bridge
         self._stop   = threading.Event()
+        self._autonomous_loop = autonomous_loop  # Stage 9: AutonomousLoop 实例
 
     def stop(self) -> None:
         self._stop.set()
@@ -129,6 +139,13 @@ class AgentRunner(threading.Thread):
 
             cmd = iq.dequeue(timeout=0.5)
             if cmd is None:
+                # Stage 9 §7.2: 没有用户消息时，检查是否应该 tick AutonomousLoop
+                if (self._autonomous_loop is not None
+                        and self._autonomous_loop.should_tick()):
+                    try:
+                        self._autonomous_loop.tick()
+                    except Exception:
+                        pass  # tick 异常不影响主循环
                 continue
 
             turn_id = cmd.turn_id
@@ -277,12 +294,42 @@ class HttpServer:
             excludes     = fs_excludes,
         )
 
-        # AgentRunner（后台驱动 agent.run_turn）
-        self._runner = AgentRunner(self._bridge)
+        # Stage 9 §7.2: 初始化 AutonomousLoop（在 daemon 进程中挂载到 AgentRunner）
+        self._autonomous_loop = self._build_autonomous_loop(agent)
+
+        # AgentRunner（后台驱动 agent.run_turn），注入 AutonomousLoop
+        self._runner = AgentRunner(self._bridge, autonomous_loop=self._autonomous_loop)
 
         # uvicorn 服务线程
         self._server_thread: Optional[threading.Thread] = None
         self._uvicorn_server: Optional[uvicorn.Server] = None
+
+    def _build_autonomous_loop(self, agent: Any):
+        """
+        Stage 9 §7.2: 构建 AutonomousLoop 实例。
+        若依赖不满足（paths/cfg 不可用），返回 None（AgentRunner 降级为无自主能力）。
+        """
+        try:
+            from mini_agent.evolution.autonomous_loop import AutonomousLoop
+            from mini_agent.perception.goal_backlog import load_goal_backlog
+
+            # 从 agent 拿到 paths 和 cfg
+            paths = getattr(agent, "_paths", None)
+            cfg = getattr(agent, "cfg", None)
+            if paths is None or cfg is None:
+                return None
+
+            goal_backlog = load_goal_backlog(paths)
+
+            return AutonomousLoop(
+                goal_backlog=goal_backlog,
+                input_queue=self._bridge.input_queue,
+                paths=paths,
+                cfg=cfg,
+                tick_interval_seconds=60.0,  # 每分钟检查一次
+            )
+        except Exception:
+            return None
 
     @property
     def bridge(self) -> AgentBridge:
@@ -291,6 +338,11 @@ class HttpServer:
     @property
     def token(self) -> str:
         return self._token
+
+    @property
+    def autonomous_loop(self):
+        """返回 AutonomousLoop 实例（供 daemon status 命令查询）。"""
+        return self._autonomous_loop
 
     def start(self) -> None:
         """启动 AgentRunner 和 uvicorn（均在后台线程）。"""
@@ -308,6 +360,8 @@ class HttpServer:
             allowed_ips  = self._allowed_ips,
             cors_origins = self._cors_origins,
         )
+        # Stage 9 §3: 注入 HttpServer 自身到 app.state，使 routes.py 可查询 AutonomousLoop
+        app.state.http_server = self
 
         # uvicorn config（禁用 access log，避免污染终端）
         cfg = uvicorn.Config(

@@ -101,11 +101,39 @@ async def get_status(request: Request):
             }
         except Exception:
             pass
+    # Stage 9 §3: 读取 AutonomousLoop 状态（通过 request.app.state 获取 HttpServer 引用）
+    autonomy_level = "passive"
+    last_tick_at = None
+    tick_count = 0
+    subscribers = 0
+    try:
+        http_server = getattr(request.app.state, "http_server", None)
+        if http_server:
+            al = getattr(http_server, "autonomous_loop", None)
+            if al:
+                loop_status = al.get_digest_status()
+                autonomy_level = loop_status.get("autonomy_level", "passive")
+                last_tick_at = loop_status.get("last_tick_at") or None
+                tick_count = loop_status.get("tick_count", 0)
+            # subscriber 数量（SSE 连接数）
+            sub_count = getattr(bridge, "_subscriber_count", None)
+            if sub_count is None:
+                sse_clients = getattr(bridge, "_sse_clients", None)
+                subscribers = len(sse_clients) if sse_clients else 0
+            else:
+                subscribers = sub_count
+    except Exception:
+        pass
+
     return StatusResponse(
         state       = state["state"],
         turn_id     = state["turn_id"],
         stats       = stats,
         queue_depth = state["queue_depth"],
+        subscribers = subscribers,
+        autonomy_level = autonomy_level,
+        last_autonomous_tick_at = last_tick_at if last_tick_at else None,
+        tick_count = tick_count,
     )
 
 

@@ -216,11 +216,75 @@ def _handle_slash(cmd: str, agent: Agent, skill_loader: SkillLoader) -> None:
     elif name == "evolve":
         handle_evolve_cmd(parts[1:], agent)
 
+    # ── Stage 9: Goal Backlog + Activity Digest ───────────────────────────
+    elif name == "agent":
+        # /agent goals ... | /agent digest | /agent daemon ...
+        _handle_agent_subcmd(parts[1:], agent)
+
+    elif name == "goals":
+        # 快捷方式：/goals 等同于 /agent goals
+        from mini_agent.cli.commands.goals import handle_goals_cmd
+        handle_goals_cmd(parts[1:], agent)
+
+    elif name == "digest":
+        # /digest — 显示自上次交互以来的自主活动摘要
+        _handle_digest_cmd(agent)
+
     else:
         R.print_error(pm.fragment("cli_messages", "UNKNOWN_COMMAND", cmd=cmd))
 
 
 # ── 内联命令实现（行为简单、无独立拆分价值）────────────────────────────────
+
+def _handle_agent_subcmd(parts: list[str], agent) -> None:
+    """`/agent <subcmd>` 路由：goals / digest / daemon。"""
+    if not parts:
+        R.print_info("Usage: /agent <goals|digest|daemon> [args...]")
+        return
+    sub = parts[0].lower()
+    rest = parts[1:]
+    if sub == "goals":
+        from mini_agent.cli.commands.goals import handle_goals_cmd
+        handle_goals_cmd(rest, agent)
+    elif sub == "digest":
+        _handle_digest_cmd(agent)
+    elif sub == "daemon":
+        # daemon 子命令（在 REPL 中仅支持 status）
+        if not rest or rest[0] == "status":
+            from mini_agent.cli.commands.goals import handle_goals_cmd
+            handle_goals_cmd(["status"], agent)
+        else:
+            R.print_info("In REPL, only '/agent daemon status' is supported. "
+                         "Use 'mini-agent daemon start|stop|status' in a separate terminal.")
+    else:
+        R.print_error(f"Unknown /agent subcommand: {sub!r}")
+        R.print_info("Available: goals, digest, daemon")
+
+
+def _handle_digest_cmd(agent) -> None:
+    """`/digest` — 显示自上次交互以来的自主活动摘要。"""
+    import time
+    paths = getattr(agent, "_paths", None)
+    if paths is None:
+        try:
+            from mini_agent.storage.paths import AgentPaths
+            paths = AgentPaths(agent.cfg.project_root)
+        except Exception:
+            R.print_error("Cannot access project paths.")
+            return
+
+    try:
+        from mini_agent.evolution.resource_arbiter import (
+            read_activity_digest, build_digest_summary,
+        )
+        # 读取最近 24h 的记录
+        since = time.time() - 86400
+        records = read_activity_digest(paths, since_ts=since)
+        summary = build_digest_summary(records)
+        R.print_info(summary)
+    except Exception as e:
+        R.print_warning(f"无法读取 activity_digest: {e}")
+
 
 def _handle_retry(agent: Agent) -> None:
     """/retry — 丢弃上一轮模型输出，用相同输入重新生成。"""

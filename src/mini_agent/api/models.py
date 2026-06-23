@@ -74,6 +74,11 @@ class StatusResponse(BaseModel):
     turn_id:    Optional[str]
     stats:      dict
     queue_depth: int
+    # Stage 9 §3: daemon 状态字段
+    subscribers: int = 0
+    autonomy_level: str = "passive"
+    last_autonomous_tick_at: Optional[float] = None
+    tick_count: int = 0
 
 class PermissionRequest(BaseModel):
     approve:      bool
@@ -100,6 +105,8 @@ class TurnInfo(BaseModel):
     started_at: float
     ended_at:  Optional[float] = None
     token_count: int = 0
+    # Stage 9 §7.1: 区分发起方，用于晨报分组和 tier 上浮判断
+    initiator: str = "user"  # "user" | "scheduled" | "autonomous"
 
 class TurnsResponse(BaseModel):
     turns: list[TurnInfo]

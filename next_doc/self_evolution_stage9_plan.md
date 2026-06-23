@@ -32,8 +32,9 @@ CLI（`python -m mini_agent`）和 Web demo 都只是连接到这个守护进程
 客户端进程退出，agent 本体（daemon）不受影响、继续运行。这是设计文档第 7.1 节"daemon 作为主体，
 现有接口降级为通道"的字面实现，不是比喻——本文档第三节给出具体的进程架构、启动发现机制和验证标准。
 
-本文档把"决定启动后怎么做"拆解为十二个章节（第三节是新增的架构修正，第五至第十二章对应
-上级文档 9.1 节八步预案，但拆得更细、且建立在第三节修正后的进程模型之上），每个子阶段给出：
+本文档把"决定启动后怎么做"组织为十六个章节（第三节是新增的架构修正，第五至第十二章对应
+上级文档 9.1 节八步预案，但拆得更细、且建立在第三节修正后的进程模型之上；第十三至十六章
+是依赖图、测试建议、修正清单和决策记录），每个子阶段给出：
 
 1. **现状核对**（这一块当前代码里有没有、有多少能复用）
 2. **具体改动**（新增什么文件/类/方法，改动什么现有接口）
@@ -53,18 +54,18 @@ CLI（`python -m mini_agent`）和 Web demo 都只是连接到这个守护进程
 | Stage 4-8 全部完成并稳定运行一段观察期 | ✅ 代码层面全部完成（`tests/` 含 `test_workdir_knowledge.py`/`test_global_knowledge.py`/`test_observability.py`/`test_phase_g.py` 等全绿）。**"稳定运行的观察期"是运营判断，不是工程判断**，本文档不替代——建议决策时检查 `~/.agent/self_profile.json` 的 `evolution_state.lifetime_lessons_generated`、`activity_log.jsonl` 的条数是否已经积累到三位数量级，作为"观察期是否足够"的量化参考起点，而非凭直觉 |
 | 用户/团队明确确认产品定位允许"持续存在、有自己议程的 agent" | ⬜ 待决策。本文档第九节留空白决策记录区，要求显式填写"是/否/暂缓"+ 日期 + 决策人 |
 | Stage 7 任务池 13.2（降级重试链）+ 15.3（任务降级）已完成 | ✅ 已核实：`orchestrator/task_manager.py` 的 `_try_demotion()`/`_resubmit_demoted()` 已实现两阶段降级（profile fallback → scope demotion），`Task.fallback_profiles`/`demotion_scope` 字段已存在于 `orchestrator/task.py` |
-| `autonomy_level` 默认从 `passive` 起步，团队认可"逐档开放、可随时降级"的升级路径 | ⬜ 待决策，但**技术上已具备条件**：Stage 5 的 `GlobalKnowledgeConfig`/`self_profile.json` schema 已经把 `autonomy_level` 字段位置留好（当前 `self_profile.json` 尚无 `operating_state.autonomy_level` 字段本身——核对 `perception/global_knowledge.py` 的 `SelfProfile` dataclass 发现目前只有 `evolution_state`/`resource_budget` 等顶层结构，`autonomy_level` 字段本身需要本 Stage 9.2 新增，**不是"已经声明只是没用"，是真的还没声明**，纠正前序文档可能给人的印象） |
+| `autonomy_level` 默认从 `passive` 起步，团队认可"逐档开放、可随时降级"的升级路径 | ⬜ 待决策，但**技术上已具备条件**：Stage 5 的 `GlobalKnowledgeConfig`/`self_profile.json` schema 已经把 `autonomy_level` 字段位置留好（当前 `self_profile.json` 尚无 `operating_state.autonomy_level` 字段本身——核对 `perception/global_knowledge.py` 的 `SelfProfile` dataclass 发现目前只有 `evolution_state`/`resource_budget` 等顶层结构，`autonomy_level` 字段本身需要本文档第五节新增，**不是"已经声明只是没用"，是真的还没声明**，纠正前序文档可能给人的印象） |
 
 **核对结论与前序文档的一处修正**：`self_evolution_stage4plus_plan.md` 5.1 节验证标准写"`autonomy_level`
 默认值必须是 `passive`"，但实际查 `perception/global_knowledge.py` 的 `SelfProfile`/`OperatingState`
 dataclass 定义，**当前没有 `autonomy_level` 字段**——Stage 5 完成记录里也没有提到补充这个字段。
-这是本文档核查源码发现的一处偏差，六节会补上这个字段，按 9.0 清单的要求处理（默认 `passive`）。
+这是本文档核查源码发现的一处偏差，第六节会补上这个字段，按 9.0 清单的要求处理（默认 `passive`）。
 
 ---
 
 ## 三、核心架构定位修正：守护进程是主体，不是某个进程里的一个分支
 
-> 本节是本文档相对初版的一次实质性修正，原因：初版在 七节把 `AutonomousLoop` 设计为
+> 本节是本文档相对初版的一次实质性修正，原因：初版在 第七节把 `AutonomousLoop` 设计为
 > "复用现有 `AgentRunner` 循环，不新起一个独立进程"，这个决定**只解决了"避免两套轮询逻辑
 > 互相不知道对方状态"的工程问题，却丢掉了设计文档第 7.1 节真正要表达的核心**：
 > daemon 不是"agent perform 任务时顺带在跑的一个循环"，而是 agent **持续存在的自我本体**——
@@ -92,7 +93,7 @@ dataclass 定义，**当前没有 `autonomy_level` 字段**——Stage 5 完成�
    一个独立 daemon 在背后承载两者。
 4. **结论**：今天**完全没有"守护进程"这个概念**。`AgentRunner` 是离设计文档"daemon 作为主体"
    最近的现有代码，但它的角色定位是"HTTP 服务的内部执行引擎"，不是"独立存在、CLI/Web 都是
-   连接它的客户端"。初版文档 七节"复用现有 AgentRunner 循环"的方案，实质上是
+   连接它的客户端"。初版文档 第七节"复用现有 AgentRunner 循环"的方案，实质上是
    **把自主调度逻辑塞进一个本身就依附于 CLI 进程生命周期的组件里**——如果用户没有加
    `--http` 参数（mini_agent 默认的、最常见的启动方式），`AgentRunner` 根本不存在，
    自主能力等于不存在；即使加了 `--http`，用户关掉 CLI，自主能力也随之关闭。
@@ -109,7 +110,7 @@ dataclass 定义，**当前没有 `autonomy_level` 字段**——Stage 5 完成�
 │  · 持有唯一的 Agent 实例 + AgentBridge + InputQueue              │
 │  · 对外暴露：现有 HTTP API（routes.py 全部端点不变）+            │
 │    一个新的本地 IPC 端点（供 CLI REPL 连接，见 3.3）              │
-│  · AutonomousLoop 跑在这个进程的 tick 循环里（八节）            │
+│  · AutonomousLoop 跑在这个进程的 tick 循环里（第八节）            │
 └─────────────────────────────────────────────────────────────────┘
                     ▲                           ▲
                     │ HTTP（已有）                │ 本地 IPC（新增）
@@ -151,7 +152,7 @@ dataclass 定义，**当前没有 `autonomy_level` 字段**——Stage 5 完成�
        但底层已经是"先有 daemon 后连接"，下次同目录再启动 CLI 会发现 daemon 还在，
        直接连接，**对话历史和自主活动在两次 CLI 调用之间是连续的**——这是本节真正的
        行为变化，用户能感知到的差异是"upon 第二次打开 CLI，能看到第一次退出后 daemon
-       自主做了什么"（晨报，九节）
+       自主做了什么"（晨报，第九节）
      - 选项 B（保守兼容）：新增 `--no-daemon` flag 时退回今天的行为（进程内直接持有
        Agent，不连接不创建 daemon），**作为过渡期兼容开关**，便于不需要持续性的轻量
        脚本化场景（如 CI 里跑一次性 `--prompt` 单次模式，本来就不需要 daemon）
@@ -183,7 +184,7 @@ dataclass 定义，**当前没有 `autonomy_level` 字段**——Stage 5 完成�
   验证方式：daemon 进程打印的调试日志包含该次输入，CLI 进程本身不直接 import `Agent` 类
   的执行路径（连接模式下 CLI 进程甚至不需要加载 LLM 配置去构造 Agent）
 - 关闭 CLI（`Ctrl-D` 退出 REPL），daemon 进程依然存活（`daemon status` 仍报告存活）；
-  几分钟后（模拟到达 tick 间隔）daemon 自主触发一次 Phase G 扫描（复用 八节验证），
+  几分钟后（模拟到达 tick 间隔）daemon 自主触发一次 Phase G 扫描（复用 第八节验证），
   全程没有任何 CLI/Web 客户端连接
 - 重新打开 CLI，连接到同一个仍在运行的 daemon，**对话历史延续**（上一次 CLI session
   的历史在 daemon 侧没有丢失），且能看到 daemon 在两次连接之间自主产生的活动摘要
@@ -206,7 +207,7 @@ dataclass 定义，**当前没有 `autonomy_level` 字段**——Stage 5 完成�
    遇到"明明没有 daemon 在跑，CLI 却以为有"的诡异状态
 3. **本节是 8.3 节 `AutonomousLoop` 真正能够独立于客户端运行的前提**——如果不先完成本节，
    后面 8-12 节描述的"daemon 在没有用户的情况下自主运行"在物理上无法发生（因为 daemon
-   这个独立运行的容器还不存在）。本文档据此调整了子任务顺序（见十三节依赖图的更新版本），
+   这个独立运行的容器还不存在）。本文档据此调整了子任务顺序（见第十三节依赖图的更新版本），
    **本节（架构修正）必须在第七节之前完成**，比初版文档隐含的顺序更靠前。
 
 ---
@@ -225,21 +226,21 @@ dataclass 定义，**当前没有 `autonomy_level` 字段**——Stage 5 完成�
 | `evolution/phase_g.py` 的 `prune_skills`/`build_capability_map`/`check_scope_promotion`/`rhythm_is_allowed` | AutonomousLoop 的周期性任务直接调用这几个函数，函数签名不变 |
 | `perception/workdir_knowledge.py` 的 `WorkThread` 数据结构 | Goal Backlog 的 Objective 节点直接引用 `work_thread_ref`，不重新定义"进展跟踪"的字段 |
 | `orchestrator/task_manager.py`/`orchestrator/task.py` 的 `Task`/`TaskRecord`/`SubAgent` | Goal Backlog 拆解出的 Task 直接构造现有 `Task` 对象提交给现有 `TaskManager`，不重新实现任务执行 |
-| `evolution/state_repo.py` 的 `StateRepo.apply()` | 十节只新增一个 `initiator` 参数，不重写写入逻辑本身 |
-| `orchestrator/agent_profiles.py` 的 `AgentProfile`/`AgentProfileLoader` | 五节"autonomous-worker"角色直接用现有机制定义一个新 profile 文件，不改 profile 加载代码 |
+| `evolution/state_repo.py` 的 `StateRepo.apply()` | 第十节只新增一个 `initiator` 参数，不重写写入逻辑本身 |
+| `orchestrator/agent_profiles.py` 的 `AgentProfile`/`AgentProfileLoader` | 第五节"autonomous-worker"角色直接用现有机制定义一个新 profile 文件，不改 profile 加载代码 |
 
 ### 4.2 必须新增（本文档核心工作量）
 
 | 新模块/文件 | 对应子阶段 |
 |---|---|
 | `cli/daemon.py`（`daemon start/stop/status` 子命令 + PID 文件管理 + CLI 连接模式） | 第三节（架构修正，最优先） |
-| `perception/global_knowledge.py` 的 `SelfProfile` 补充 `operating_state.autonomy_level` 字段 | 9.1 |
-| `.agent/goals.json` 数据结构 + `perception/goal_backlog.py` | 9.2 |
-| `evolution/autonomous_loop.py`（`AutonomousLoop` 类，跑在 daemon 进程的 tick 循环里） | 9.3 |
-| `evolution/resource_arbiter.py`（资源仲裁：用户优先、文件锁、预算硬限制） | 9.4 |
-| `.agent/activity_digest.jsonl` + 晨报生成逻辑 | 9.4 |
-| `StateRepo.apply()` 新增 `initiator` 参数 + tier 上浮规则 | 9.5 |
-| `evolution/experiment.py`（`Experiment` 实体 + 预注册纪律 + 反事实重放） | 9.7 |
+| `perception/global_knowledge.py` 的 `SelfProfile` 补充 `operating_state.autonomy_level` 字段 | 第五节 |
+| `.agent/goals.json` 数据结构 + `perception/goal_backlog.py` | 第六节 |
+| `evolution/autonomous_loop.py`（`AutonomousLoop` 类，跑在 daemon 进程的 tick 循环里） | 第七节 |
+| `evolution/resource_arbiter.py`（资源仲裁：用户优先、文件锁、预算硬限制） | 第八节 |
+| `.agent/activity_digest.jsonl` + 晨报生成逻辑 | 第八节 |
+| `StateRepo.apply()` 新增 `initiator` 参数 + tier 上浮规则 | 第九节 |
+| `evolution/experiment.py`（`Experiment` 实体 + 预注册纪律 + 反事实重放） | 第十一节 |
 | CLI：`/agent autonomy <level>`、`mini-agent daemon start|stop|status`、`/agent goals list|add` | 贯穿各节 |
 
 ---
@@ -307,8 +308,8 @@ class OperatingState:
 ### 5.5 风险与边界
 
 最大风险不是"字段写错"，是"agent 通过某种间接路径自己改了这个值"（比如把它当成普通配置文件用
-`write_file` 工具改）。`StateRepo.apply()` 在 十节会把 `~/.agent/self_profile.json` 加入
-T3 受保护清单的候选——这是本节遗留给 十节处理的依赖，此处先标注。
+`write_file` 工具改）。`StateRepo.apply()` 在 第十节会把 `~/.agent/self_profile.json` 加入
+T3 受保护清单的候选——这是本节遗留给 第十节处理的依赖，此处先标注。
 
 ---
 
@@ -377,7 +378,7 @@ session 结束后 `TaskRecord` 仍写在 `tasks/<id>/manifest.json` 里（Stage 
      JSON 文件的落盘方式一致，**不走 `StateRepo.apply()`**——这是纯运行时状态而非
      "代码/配置改动"，性质与 `work_index.json` 一致，不属于安全网治理范围）
    - `has_actionable_work() -> bool`：是否存在 `status=active` 且 `level=objective` 的节点，
-     供 八节 `AutonomousLoop.tick()` 直接调用（对应设计文档 7.4 节伪代码第 2 行）
+     供 第八节 `AutonomousLoop.tick()` 直接调用（对应设计文档 7.4 节伪代码第 2 行）
    - `next_task() -> Optional[Task]`：从最高优先级的 active Objective 拆解出一个具体 `Task`
      对象（复用 `orchestrator/task.py` 的 `Task` 类），**这是本子阶段唯一涉及"拆解逻辑"
      需要 LLM 判断的部分**——调用一次轻量 LLM（参考 Stage 4.2 `timeline.jsonl` 反思调用的
@@ -385,7 +386,7 @@ session 结束后 `TaskRecord` 仍写在 `tasks/<id>/manifest.json` 里（Stage 
      `next_suggested`，输出一个具体可执行的 Task 描述
 2. CLI 命令 `/agent goals list|show <id>|add <title> [--level goal|objective] [--parent <id>]`：
    `add` 子命令默认 `source="user"`（用户手动添加），agent 自主 derive 的 Goal/Objective
-   不通过这个命令产生，是 八节 `AutonomousLoop` 内部逻辑直接写入（但必须出现在 九节晨报里，
+   不通过这个命令产生，是 第八节 `AutonomousLoop` 内部逻辑直接写入（但必须出现在 第九节晨报里，
    不能静默产生）
 
 ### 6.4 与现有机制的接口
@@ -405,7 +406,7 @@ session 结束后 `TaskRecord` 仍写在 `tasks/<id>/manifest.json` 里（Stage 
   `next_suggested` 字段语义吻合
 - 提交 `next_task()` 产出的 Task 给 `TaskManager` 执行完成后，检查对应 Objective 的
   `progress_notes` 被正确更新
-- `autonomy_level=passive` 时（八节实现后联合验证）：`has_actionable_work()` 即使返回
+- `autonomy_level=passive` 时（第八节实现后联合验证）：`has_actionable_work()` 即使返回
   `True`，`AutonomousLoop.tick()` 也不会调用 `next_task()`——这是"档位边界卡在哪一行代码"
   的具体验证点，呼应第一节提出的问题
 
@@ -467,9 +468,9 @@ daemon 进程已经落地，`AgentRunner` 现在跑在 daemon 进程里，**本�
                self._tick_passive()   # 只做本节范围：周期性任务，不动 Goal Backlog
                return
            if autonomy_level == "maintenance":
-               self._tick_maintenance()  # 本节范围 + 十一节探索预算分配
+               self._tick_maintenance()  # 本节范围 + 第十一节探索预算分配
                return
-           self._tick_autonomous()  # 十二节范围，本 Stage 暂不实现内部逻辑
+           self._tick_autonomous()  # 第十二节范围，本 Stage 暂不实现内部逻辑
 
        def _tick_passive(self) -> None:
            """[本节范围] 只检查 Stage 8 已有周期性任务是否到期，
@@ -477,7 +478,7 @@ daemon 进程已经落地，`AgentRunner` 现在跑在 daemon 进程里，**本�
            from mini_agent.evolution.phase_g import should_run_phase_g, run_phase_g
            if should_run_phase_g(self._paths):
                report = run_phase_g(self._paths, ...)
-               self._record_for_digest(report)  # 九节晨报数据来源
+               self._record_for_digest(report)  # 第九节晨报数据来源
    ```
 
 4. **`passive` 档位的边界在代码里具体卡在哪一行**：`tick()` 方法里
@@ -517,7 +518,7 @@ daemon 进程已经落地，`AgentRunner` 现在跑在 daemon 进程里，**本�
 - `autonomy_level=passive` 时，`goal_backlog.json` 即使包含 active Objective，多次 tick 后
   文件内容不变（验证边界确实生效）
 - 模拟一条 `initiator="autonomous"` 的合成任务进入 `InputQueue`，与一条 `initiator="user"`
-  的真实用户消息同时在队列里，验证用户消息被优先处理（为九节资源仲裁做前置验证）
+  的真实用户消息同时在队列里，验证用户消息被优先处理（为第九节资源仲裁做前置验证）
 
 ### 7.5 风险与边界
 
@@ -533,14 +534,14 @@ daemon 进程已经落地，`AgentRunner` 现在跑在 daemon 进程里，**本�
 > 对应上级文档 9.1 第 4 步："在调度器开始处理真正的自主任务之前必须先有这两项，否则
 > '自主任务和用户冲突'以及'用户不知道 agent 做了什么'两个风险点没有兜底"。
 
-本节是 七节 `_tick_maintenance()`/`_tick_autonomous()` 真正处理 Goal Backlog 任务之前
+本节是第七节 `_tick_maintenance()`/`_tick_autonomous()` 真正处理 Goal Backlog 任务之前
 的**强制前置依赖**，不可跳过，原因直接引用上级文档原话。
 
 ### 8.1 资源仲裁
 
 设计文档 7.5 节三条仲裁规则，逐条给出实现方式：
 
-1. **用户交互优先**：七节已在 `InputQueue` 层面验证了"用户消息优先"，本节补充
+1. **用户交互优先**：第七节已在 `InputQueue` 层面验证了"用户消息优先"，本节补充
    "正在执行的自主任务遇到用户消息时暂停"——这需要 `TaskManager` 提供一个"暂停某个
    task_id，状态保存"的接口。**核实当前 `TaskManager` 没有暂停接口**（只有
    `CANCELLED`/`FAILED`/`DONE` 终态），这是本节需要新增的能力：
@@ -561,7 +562,7 @@ daemon 进程已经落地，`AgentRunner` 现在跑在 daemon 进程里，**本�
    **探索预算切分**（设计文档"固定比例、独立核算"）：`resource_budget` 新增
    `exploration_budget_ratio: float = 0.1`（默认 10%），`used_today` 拆分为
    `used_today_goals` + `used_today_exploration` 两个计数器分别累加，互不挪用——
-   这是本节需要新增的字段，留给 十二节探索机制使用，本节先把字段和"互不挪用"的检查逻辑建好
+   这是本节需要新增的字段，留给 第十二节探索机制使用，本节先把字段和"互不挪用"的检查逻辑建好
 
 ### 8.2 主动汇报：活动摘要（晨报）
 
@@ -572,8 +573,11 @@ daemon 进程已经落地，`AgentRunner` 现在跑在 daemon 进程里，**本�
    {"at": 1718500100.0, "type": "evolve_proposal", "branch": "evolve/...", "summary": "..."}
    {"at": 1718500200.0, "type": "soft_goal_created", "goal_id": "...", "title": "..."}
    ```
-2. 晨报展示逻辑：用户下次打开任意客户端（CLI `/agent digest` 命令，或 Web demo 启动时），
-   第一屏展示"自上次交互以来"的摘要——**"上次交互"的判断**：扫描 `InputQueue` 历史
+2. 晨报展示逻辑：daemon 持续追加 `activity_digest.jsonl`，**与是否有客户端连接无关**；
+   用户下次打开任意客户端（CLI 连接到 daemon 后自动展示，或 `/agent digest` 命令；
+   Web demo 连接时同理），第一屏展示"自上次交互以来"的摘要——这正是第三节确立的
+   "用户打开任意客户端，看到的是 daemon 现在在做什么 + 最近做了什么，而不是启动一个
+   新会话"这一体验的具体落地。**"上次交互"的判断**：扫描 `InputQueue` 历史
    `initiator="user"` 的最近一条 `TurnInfo.ended_at`，取之后的 `activity_digest.jsonl` 记录
 3. **分组展示，不混在一起**（设计文档原话）：
    - evolve 分支提案单独列出"有 N 个待审的进化提案"
@@ -652,16 +656,16 @@ def apply(self, changes, message, meta, tier, validators=None, auto_validators=F
    "完全不留痕直接落盘"的档位，所以上浮的关键卡点就是 T0，不需要对更高档位做二次上浮
 3. `meta` 字典里新增 `initiator` 字段（与 tier 判定逻辑解耦，单纯用于 commit message 的
    可追溯展示，呼应"是否留痕、是否可 revert 不能因发起方是自主而降低标准"）
-4. **T3 受保护路径清单扩展**（呼应第四节 4.5 节遗留问题）：`scripts/protected_paths.py`
+4. **T3 受保护路径清单扩展**（呼应第五节 5.5 节遗留问题）：`scripts/protected_paths.py`
    新增规则，把 `~/.agent/self_profile.json` 中 `operating_state.autonomy_level` 字段的
    修改路径纳入保护——但这里有个实现细节问题：`protected_paths.py` 当前是按**文件路径**
    粒度判断（`is_protected_path(path)`），**不是按字段粒度**。如果把整个 `self_profile.json`
-   标记为 T3，会导致 五节"SessionEnd 时自动更新 `operating_state.last_active_at`"这类
+   标记为 T3，会导致 第五节"SessionEnd 时自动更新 `operating_state.last_active_at`"这类
    高频轻量写入也被迫走 T3 流程（强制人审），这显然不对——**这是本节发现的一个真实设计冲突，
    需要解决而非掩盖**：
-   - 方案：不把整个文件路径纳入 T3 清单，而是在 五节 `/agent autonomy` 命令的实现里，
+   - 方案：不把整个文件路径纳入 T3 清单，而是在 第五节 `/agent autonomy` 命令的实现里，
      **直接绕开 `StateRepo.apply()`**，用更简单的直接文件写入 + 强制 CLI 交互确认作为
-     安全网（已在 五节描述："不注册为工具，只能 CLI 手动触发"）。`StateRepo.apply()`
+     安全网（已在 第五节描述："不注册为工具，只能 CLI 手动触发"）。`StateRepo.apply()`
      的 T3 保护机制是为"agent 自己提议的改动"设计的，`/agent autonomy` 从一开始就不是
      agent 提议的改动，不需要套用同一套机制，**两种不同性质的写入不应该被强行塞进同一个
      安全网路径**——这是本节对前序文档措辞的一处修正（前序文档笼统写"`StateRepo.apply()`
@@ -673,7 +677,7 @@ def apply(self, changes, message, meta, tier, validators=None, auto_validators=F
 - `evolution/phase_g.py` 当前所有调用 `StateRepo.apply()` 的地方（如果有，需核对
   `check_scope_promotion` 是否直接调用或只是"输出候选交给人工"）——核实 Stage 8 完成记录
   "8.4 节只输出候选列表，不直接调用 `skill_propose`"，**说明当前 `phase_g.py` 内部还没有
-  真正的 `initiator="scheduled"` 调用点**，这是 七节 `AutonomousLoop` 接入后才会第一次
+  真正的 `initiator="scheduled"` 调用点**，这是 第七节 `AutonomousLoop` 接入后才会第一次
   出现的真实调用场景——`_tick_passive()` 触发的 `run_phase_g()` 本身不直接写文件
   （Stage 8 设计如此），但如果未来 8.4 节晋升候选改为自动调用 `skill_propose`
   （目前设计文档和计划文档都倾向于保持"人工确认"），那个调用点必须传 `initiator="scheduled"`
@@ -706,20 +710,20 @@ def apply(self, changes, message, meta, tier, validators=None, auto_validators=F
 
 ### 10.1 本节不是新功能开发，是"开闸"
 
-到 九节为止，所有机制已经就位（调度骨架 9.3、资源仲裁与晨报 9.4、安全网调整 9.5），
-本节只是把 七节 `AutonomousLoop._tick_maintenance()` 之前因为"按依赖关系必须先做 9.4/9.5"
+到第九节为止，所有机制已经就位（调度骨架第七节、资源仲裁与晨报第八节、安全网调整第九节），
+本节只是把第七节 `AutonomousLoop._tick_maintenance()` 之前因为"按依赖关系必须先做第八/九节"
 而暂时空着的方法体填上：
 
 ```python
 def _tick_maintenance(self) -> None:
     self._tick_passive()  # 周期性任务，行为不变
-    # 9.6 新增：探索预算分配（如果 9.8 已实现）
+    # 本节新增：探索预算分配（如果第十一节已实现）
     if self._exploration_budget.has_remaining():
         experiment = self._experiment_log.next_candidate()
         if experiment:
             self._submit_with_arbitration(experiment, initiator="autonomous")
     # 注意：maintenance 档位本身仍然不 derive 新 Goal/Objective，
-    # 这是与 autonomous 档位的边界，由 9.9 节处理，此处不实现
+    # 这是与 autonomous 档位的边界，由第十二节处理，此处不实现
 ```
 
 ### 10.2 验证标准
@@ -727,7 +731,7 @@ def _tick_maintenance(self) -> None:
 - 升级到 `maintenance` 后，不需要任何 `/evolve review` 或 `/evolve phase-g` 手动命令，
   daemon 在 24h 间隔到达后自动触发 Phase G 扫描，且产出正确写入 `activity_digest.jsonl`
 - `maintenance` 档位下 `goal_backlog.json` 经过多次 tick 仍不产生新节点（验证边界仍然守住，
-  这一条延续 七节验证标准，确认升档后边界没有意外松动）
+  这一条延续 第七节验证标准，确认升档后边界没有意外松动）
 
 ---
 
@@ -778,7 +782,7 @@ class Experiment:
 3. **新接入未充分使用的能力**：复用 Stage 7 14.2 节的 `SkillUsageTracker`，筛选
    "已激活但 `last_used_at` 为空或样本数 < N"的 skill/MCP server
 4. **用户直接提出**：不需要统计门槛，对应一个新工具 `propose_experiment(hypothesis, method)`
-   ——**这个工具需要注册给主 agent**（与 五节的 `/agent autonomy` 不同，"用户在对话中
+   ——**这个工具需要注册给主 agent**（与 第五节的 `/agent autonomy` 不同，"用户在对话中
    提出"这个来源本质上是用户通过自然语言对话表达意图，再由 agent 调用工具转化为
    `Experiment` 草稿，符合现有"工具响应用户意图"的模式，不需要绕开 `StateRepo.apply()`
    那一套限制——这条来源产生的是 `status=designed` 的草稿，不直接执行，仍需走后续
@@ -804,7 +808,7 @@ class Experiment:
    **不新增执行环境**
 2. "外部副作用类操作全部 mock"：复用现有的 `--sandbox` flag（Stage 2 `EvolutionWorkspace`
    已支持），Experiment 执行时强制启用，不提供关闭选项
-3. "被抢占时不计入打断统计"：八节的 `PAUSED` 状态机制里，新增一个标记字段
+3. "被抢占时不计入打断统计"：第八节的 `PAUSED` 状态机制里，新增一个标记字段
    `is_experiment: bool`，资源仲裁逻辑对该字段为 `True` 的任务直接暂停而不触发
    降级重试链（Stage 7 13.2 的降级重试是为正常任务设计的，实验任务被抢占是预期行为，
    不应该触发"失败后降级换 profile"这种逻辑）
@@ -838,8 +842,8 @@ def finalize_experiment(exp: Experiment, outcome: str, conclusion: str) -> None:
 
 ### 11.7 风险与边界
 
-预算仲裁（八节）必须先稳定运行，否则探索预算和 goal backlog 预算的"互不挪用"无法验证
-——这是本节排在 9.4/9.5 之后的直接原因，与上级文档判断一致，本节不重复论证，只强调
+预算仲裁（第八节）必须先稳定运行，否则探索预算和 goal backlog 预算的"互不挪用"无法验证
+——这是本节排在第八/九节之后的直接原因，与上级文档判断一致，本节不重复论证，只强调
 "稳定运行"的判断标准建议是：`maintenance` 档位下连续运行至少覆盖 7 天的资源仲裁数据
 （对应 Stage 8.5 的冷却期量级，便于横向比较）。
 
@@ -852,7 +856,7 @@ def finalize_experiment(exp: Experiment, outcome: str, conclusion: str) -> None:
 > "怎么做"）：
 
 1. **软目标 derive 的触发判断本身需要明确的"证据强度"门槛**，不能是"agent 觉得应该做就做"。
-   建议届时讨论时，参照本文档 十一节"假设来源"的同一套数据基础（capability_map 低置信度、
+   建议届时讨论时，参照本文档 第十一节"假设来源"的同一套数据基础（capability_map 低置信度、
    半成形 lesson、`open_threads.json` 高优先级条目），定义清晰的数值门槛，而不是让
    `_tick_autonomous()` 内部用一次性的 LLM 判断"要不要 derive 一个新目标"——后者的不可预测性
    与"持续存在、有自己议程的 agent"这一档本身的高风险定位不匹配
@@ -861,7 +865,7 @@ def finalize_experiment(exp: Experiment, outcome: str, conclusion: str) -> None:
    `passive → maintenance → autonomous` 升级流程定得多严格，`autonomous → passive` 的降级
    必须是**单条命令、无需二次确认、立即生效**（`/agent autonomy passive --emergency`），
    理由是"刹车"场景下要求用户在恐慌或紧急情况下还要走复杂确认流程是设计错误。
-   这一条建议本身不依赖"是否启动 autonomous 档位"的决策，可以提前在 五节
+   这一条建议本身不依赖"是否启动 autonomous 档位"的决策，可以提前在 第五节
    `/agent autonomy` 命令实现时一并加上 `--emergency` 选项，**降级路径的工程实现不需要
    等到真正讨论是否启用 autonomous 档位**——这是本文档对原计划"留给届时重新评估"的
    唯一一处主动建议提前做的部分，因为它是纯粹的安全兜底，不涉及"该不该让 agent 有议程"
@@ -874,28 +878,35 @@ def finalize_experiment(exp: Experiment, outcome: str, conclusion: str) -> None:
 ```
 9.0 前置条件核对（决策点，需人工确认两项 ⬜）
   │
-  └─→ 9.1 自我模型补全（autonomy_level 字段落地）
+  └─→ 第三节 守护进程架构修正（daemon 化：daemon start/stop/status，
+      CLI/Web 降级为客户端）—— 本文档相对原八步预案新增的最优先前置步骤，
+      原因：没有这一步，后面所有"自主运行"在物理上无法独立于客户端存在
         │
-        ├─→ 9.2 Goal Backlog 数据结构 + work_index 互通
-        │     │
-        │     └─→ 9.3 AutonomousLoop 骨架（passive 档位验证）
-        │           │
-        │           └─→ 9.4 资源仲裁 + 晨报（强制前置，不可跳过）
-        │                 │
-        │                 └─→ 9.5 安全网 initiator 字段 + tier 上浮
-        │                       │
-        │                       └─→ 9.6 升级 maintenance（开闸，无新功能）
-        │                             │
-        │                             └─→ 9.7 探索与实验机制
-        │                                   │
-        │                                   └─→ 9.8 升级 autonomous（决策点，暂不实现）
-        │
-        └─→（9.8 节"紧急刹车"建议可在 9.1 完成后随时提前实现，不在主链路上）
+        └─→ 第五节 自我模型补全（autonomy_level 字段落地）
+              │
+              ├─→ 第六节 Goal Backlog 数据结构 + work_index 互通
+              │     │
+              │     └─→ 第七节 AutonomousLoop（daemon tick 循环，passive 档位验证）
+              │           │
+              │           └─→ 第八节 资源仲裁 + 晨报（强制前置，不可跳过）
+              │                 │
+              │                 └─→ 第九节 安全网 initiator 字段 + tier 上浮
+              │                       │
+              │                       └─→ 第十节 升级 maintenance（开闸，无新功能）
+              │                             │
+              │                             └─→ 第十一节 探索与实验机制
+              │                                   │
+              │                                   └─→ 第十二节 升级 autonomous（决策点，暂不实现）
+              │
+              └─→（第十二节"紧急刹车"建议可在第五节完成后随时提前实现，不在主链路上）
 ```
 
-与上级文档 9.1 节八步顺序完全对应（本文档 9.1-9.8 对应原八步，编号方式不同仅为配合
-本文档的章节组织，内容映射关系：本文档 9.1=原第1步，9.2=原第2步，9.3=原第3步，
-9.4=原第4步，9.5=原第5步，9.6=原第6步，9.7=原第7步，9.8=原第8步）。
+第五至第十二节与上级文档 9.1 节八步顺序完全对应（内容映射关系：第五节=原第1步，
+第六节=原第2步，第七节=原第3步，第八节=原第4步，第九节=原第5步，第十节=原第6步，
+第十一节=原第7步，第十二节=原第8步），编号方式不同仅为配合本文档新增第三节
+（架构修正）之后的章节组织。第三节是本文档相对上级文档八步预案**新增**的一步，
+不在原八步映射范围内——原八步预案隐含假设"调度器加在某个已有循环上即可"，本文档
+核对源码后发现这个假设不成立，必须先有独立的常驻进程，才能谈后续八步。
 
 ---
 
@@ -906,18 +917,20 @@ def finalize_experiment(exp: Experiment, outcome: str, conclusion: str) -> None:
 
 | 测试文件 | 覆盖范围 |
 |---|---|
-| `tests/test_autonomy_level.py` | 9.1：字段新增、向后兼容、`/agent autonomy` 命令边界（不可被工具调用） |
-| `tests/test_goal_backlog.py` | 9.2：`GoalBacklog` 读写、`has_actionable_work`/`next_task`、与 WorkThread 关联 |
-| `tests/test_autonomous_loop.py` | 9.3：`tick()` 三档位分支、`passive` 边界验证（多次 tick 不产生 Goal）、daemon 化的 Phase G 触发（不依赖 session 退出） |
-| `tests/test_resource_arbitration.py` | 9.4：用户优先暂停、路径重叠检测、预算硬限制、探索预算隔离 |
-| `tests/test_activity_digest.py` | 9.4：晨报分组展示、"上次交互"判断逻辑 |
-| `tests/test_state_repo_initiator.py` | 9.5：`initiator` 参数、tier 上浮（仅 T0→T1）、现有调用点默认值兼容性 |
-| `tests/test_experiment.py` | 9.7：预注册冻结机制（追加写验证不可篡改）、假设来源优先级查询、冷却期 |
+| `tests/test_daemon_process.py` | 第三节：`daemon start/stop/status`、PID 文件管理、崩溃恢复（PID 文件残留清理）、CLI 连接模式下"不依赖客户端"的存活验证（**全文档最高优先级测试**） |
+| `tests/test_autonomy_level.py` | 第五节：字段新增、向后兼容、`/agent autonomy` 命令边界（不可被工具调用） |
+| `tests/test_goal_backlog.py` | 第六节：`GoalBacklog` 读写、`has_actionable_work`/`next_task`、与 WorkThread 关联 |
+| `tests/test_autonomous_loop.py` | 第七节：`tick()` 三档位分支、`passive` 边界验证（多次 tick 不产生 Goal）、daemon 化的 Phase G 触发（不依赖任何客户端连接） |
+| `tests/test_resource_arbitration.py` | 第八节：用户优先暂停、路径重叠检测、预算硬限制、探索预算隔离 |
+| `tests/test_activity_digest.py` | 第八节：晨报分组展示、"上次交互"判断逻辑 |
+| `tests/test_state_repo_initiator.py` | 第九节：`initiator` 参数、tier 上浮（仅 T0→T1）、现有调用点默认值兼容性 |
+| `tests/test_experiment.py` | 第十一节：预注册冻结机制（追加写验证不可篡改）、假设来源优先级查询、冷却期 |
 
 **核心验证原则延续前两份文档"改造原则 3"**：每个测试文件都必须包含至少一条"验证确实被
-消费/生效"的测试（而非只验证"数据被正确写入"）——例如 `test_autonomous_loop.py` 必须有
-一条测试验证"不依赖 session 退出，daemon 自己能触发 Phase G"，这是本 Stage 与前序
-Stage 4-8 最大的行为差异点，必须有对应测试覆盖，不能只测"参数传递正确"这类表面细节。
+消费/生效"的测试（而非只验证"数据被正确写入"）——例如 `test_daemon_process.py` 必须有
+一条测试验证"daemon 进程在没有任何客户端连接的情况下持续运行、自主触发周期性任务"，
+这是本 Stage 与前序 Stage 4-8 最大的行为差异点，必须有对应测试覆盖，不能只测
+"参数传递正确"这类表面细节。
 
 ---
 
@@ -926,19 +939,25 @@ Stage 4-8 最大的行为差异点，必须有对应测试覆盖，不能只测"
 为方便后续核对，汇总本文档在细化过程中发现的、与 `self_evolution_stage4plus_plan.md`
 原文存在偏差或需要补充澄清的地方：
 
+0. **守护进程必须是独立于任何客户端连接的常驻进程，不能挂在某次 CLI 调用上**——这是本文档
+   相对最初草稿的核心修正，详见第三节。初版曾把 `AutonomousLoop` 设计为"复用现有
+   `AgentRunner` 循环，不新起一个独立进程"，但当时的"现有 `AgentRunner` 循环"本身只在
+   `--http` 参数开启时才存在、且生命周期绑定 CLI 进程——这与"Agent 持续存在、有自己的
+   议程"这一定位矛盾。第三节给出了具体修正：新增 `mini-agent daemon start/stop/status`，
+   CLI（默认）和 Web 端都降级为连接到这个常驻进程的客户端
 1. **`autonomy_level` 字段实际不存在**（前序文档 5.1 节验证标准暗示已声明，实际核查
-   `perception/global_knowledge.py` 后发现需要在本 Stage 新增，见第二节核对结论与第四节）
+   `perception/global_knowledge.py` 后发现需要在本 Stage 新增，见第二节核对结论与第五节）
 2. **`StateRepo.apply()` 新增 `initiator` 参数的适用范围需要明确边界**：只适用于 agent
    自主发起的改动，不适用于用户通过专用命令（如 `/agent autonomy`）做的配置修改——后者
-   应该绕开 `StateRepo.apply()` 走更简单的直接写入 + 强制确认（见第八节 8.2 第 4 条）
+   应该绕开 `StateRepo.apply()` 走更简单的直接写入 + 强制确认（见第九节 9.2 第 4 条）
 3. **`activity_digest.jsonl`（本 Stage 新增）与 `activity_log.jsonl`（Stage 5 已有）
-   是两个不同粒度的文件，不应合并**（见第七节 7.3 节）
-4. **`TaskManager` 当前没有任务暂停接口，只有终态**，八节资源仲裁需要新增 `PAUSED` 状态，
-   这是对现有任务状态机的一次扩展，不是简单复用（见第七节 7.1 第 1 条）
+   是两个不同粒度的文件，不应合并**（见第八节 8.3 节）
+4. **`TaskManager` 当前没有任务暂停接口，只有终态**，第八节资源仲裁需要新增 `PAUSED` 状态，
+   这是对现有任务状态机的一次扩展，不是简单复用（见第八节 8.1 第 1 条）
 5. **探索机制的"预注册不可篡改"建议用存储层面的追加写实现，而非仅靠代码逻辑禁止字段
-   修改**——更彻底地落实设计文档"先写后跑"的纪律要求（见第十节 10.1 节）
-6. **`autonomous → passive` 的紧急降级命令建议提前在 五节实现**，不需要等待
-   "是否启用 autonomous 档位"这个产品决策本身（见第十一节第 2 条）——这是本文档唯一
+   修改**——更彻底地落实设计文档"先写后跑"的纪律要求（见第十一节 11.1 节）
+6. **`autonomous → passive` 的紧急降级命令建议提前在第五节实现**，不需要等待
+   "是否启用 autonomous 档位"这个产品决策本身（见第十二节第 2 条）——这是本文档唯一
    一处主动建议突破"严格按 9.1-9.8 顺序"的地方，因为安全兜底机制的工程实现与
    "是否启用更高自主档位"是两个独立的决策维度，没有必要互相阻塞。
 
@@ -954,5 +973,5 @@ Stage 4-8 最大的行为差异点，必须有对应测试覆盖，不能只测"
 - [ ] 决策人/团队：__________
 - [ ] 决策结论（是否启动 / 启动到哪一档为止 / 暂缓）：__________
 - [ ] 若启动，`autonomy_level` 计划在多长观察期后从 `passive` 升至 `maintenance`：__________
-- [ ] 是否同时批准 9.7 探索机制（可与 `maintenance` 升级分开决策）：__________
-- [ ] `autonomous` 档位（十二节）：明确"留待届时重新评估"，本次决策不涉及：（默认勾选）
+- [ ] 是否同时批准第十一节探索机制（可与 `maintenance` 升级分开决策）：__________
+- [ ] `autonomous` 档位（第十二节）：明确"留待届时重新评估"，本次决策不涉及：（默认勾选）

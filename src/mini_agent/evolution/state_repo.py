@@ -194,7 +194,12 @@ class StateRepo:
 
     # ── tier 判定（T3 强制升级） ─────────────────────────────────────────────
 
-    def resolve_tier(self, paths: list[Union[str, Path]], requested_tier: str) -> tuple[str, bool]:
+    def resolve_tier(
+        self,
+        paths: list[Union[str, Path]],
+        requested_tier: str,
+        initiator: str = "user",
+    ) -> tuple[str, bool]:
         """
         计算一组改动路径的实际生效 tier。
 
@@ -205,6 +210,12 @@ class StateRepo:
           - 强制升级只升不降：即使 requested_tier 已经是 T3，也不会因为"没命中受保护路径"
             而被降级——调用方明确要求的 tier 永远是下限
 
+        Stage 9 §9.2 新增规则（initiator 上浮）：
+          - 当 initiator 为 "autonomous" 或 "scheduled" 且 effective_tier == "T0" 时，
+            自动上浮为 T1——"用户主动要求的 T0 改动可以直接 apply；
+            同等改动若由自主 tick 发起，至少走 evolve 分支留痕"
+          - 只处理 T0→T1 这一档上浮，T1/T2/T3 不因 initiator 改变
+
         返回 (实际生效 tier, 是否发生了强制升级)。
         """
         if requested_tier not in VALID_TIERS:
@@ -212,15 +223,20 @@ class StateRepo:
                 f"invalid tier {requested_tier!r}, must be one of {VALID_TIERS}"
             )
 
-        forced = any(is_protected_path(p) for p in paths)
-        if not forced:
-            return requested_tier, False
+        forced_by_path = any(is_protected_path(p) for p in paths)
+        if not forced_by_path:
+            effective = requested_tier
+            forced = False
+        else:
+            effective = "T3"
+            forced = True
 
-        effective = "T3"
-        # 即使 requested_tier 本来就是 T3，也仍然标记为"命中保护路径"，
-        # 因为调用方需要知道这是治理红线生效而非自愿选择。
-        upgraded = _TIER_RANK[effective] > _TIER_RANK[requested_tier]
-        return effective, (upgraded or requested_tier == "T3" and forced)
+        # Stage 9 §9.2: initiator 上浮：T0 → T1（仅对自主发起的改动）
+        if initiator in ("autonomous", "scheduled") and effective == "T0":
+            effective = "T1"
+            forced = forced or True  # 标记发生了上浮
+
+        return effective, forced
 
     # ── 核心写入入口 ──────────────────────────────────────────────────────────
 
@@ -232,6 +248,7 @@ class StateRepo:
         tier: str,
         validators: Optional[list[Callable[[Path, ChangeSet], "ValidationResult"]]] = None,
         auto_validators: bool = False,
+        initiator: str = "user",
     ) -> ApplyResult:
         """
         原子写入 + 按 tier 校验 + commit。
@@ -265,7 +282,10 @@ class StateRepo:
             rel = self._normalize_path(raw_path)
             normalized[rel] = content
 
-        effective_tier, forced = self.resolve_tier(list(normalized.keys()), tier)
+        # Stage 9 §9.2: 传入 initiator 触发 T0→T1 上浮规则（自主发起时）
+        effective_tier, forced = self.resolve_tier(list(normalized.keys()), tier, initiator=initiator)
+        # initiator 写入 meta 用于 commit message 可追溯展示
+        meta = {**meta, "initiator": initiator}
 
         effective_validators = validators
         if effective_validators is None and auto_validators:
