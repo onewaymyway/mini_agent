@@ -66,15 +66,17 @@ class Terminal:
         self._bar_drawn: int = 0
 
         # ── simple-mode：特殊环境降级显示 ────────────────────────────────
-        # True 时关闭一切"先擦除再重绘"的 ANSI 光标控制逻辑：
-        #   - 状态栏不再原地刷新，只在内容发生变化时追加打印一行新状态
+        # True 时关闭一切"先擦除再重绘"的 ANSI 光标控制逻辑，并且完全
+        # 不显示状态栏（不是"降级为追加打印"，是彻底不打印任何状态栏
+        # 内容）：
+        #   - 状态栏不再渲染，也不再以任何形式打印（包括追加打印）
         #   - 流式输出/print 等不再调用 _erase_bar()，直接顺序写出
         #   - _bar_below_prefix 三阶段状态机整体跳过（不需要，因为从不擦除）
+        #   - _erase_bar() / _draw_bar() / _erase_bar_direct() 三个函数
+        #     内部都各自有 simple_mode 早退保护，无论从哪里被调用，
+        #     在 simple-mode 下都绝不会发出任何 ANSI 光标控制序列
         # 默认值：显式传参 > MINI_AGENT_SIMPLE_MODE 环境变量 > False。
         self._simple_mode: bool = bool(simple_mode) if simple_mode is not None else _SIMPLE_MODE_ENV
-        # simple-mode 下用于判断状态栏内容是否变化，变化才打印，
-        # 避免在不支持原地刷新的终端里高频重复刷屏。
-        self._simple_last_statusbar: list[str] = []
         self._streaming: bool = False
         self._stream_had_output: bool = False
         self._render_stop: bool = False
@@ -216,15 +218,14 @@ class Terminal:
         产生任何输出之前调用一次）。
 
         切换为 True 时顺手把已经画在屏幕上的状态栏"作废"——不主动擦除
-        （simple-mode 本身就不做擦除操作），只是重置内部 _bar_drawn 计数，
-        避免后续误判为"原地刷新模式下已绘制 N 行"。
+        （simple-mode 本身就不做擦除操作，也不再显示状态栏），只是重置
+        内部 _bar_drawn 计数，避免后续误判为"原地刷新模式下已绘制 N 行"。
         """
         self._simple_mode = bool(enabled)
         if self._simple_mode:
             self._bar_drawn = 0
             self._bar_suspended = False
             self._bar_below_prefix = False
-            self._simple_last_statusbar = []
 
     def is_simple_mode(self) -> bool:
         return self._simple_mode
@@ -781,17 +782,21 @@ class Terminal:
             self._stream_filter_reset()
 
         elif kind == "statusbar":
+            # simple-mode 下不显示状态栏（用户明确要求：simple-mode 不应该
+            # 出现状态栏这种"持续刷新的活动内容"，哪怕是追加打印也不要）。
+            # 这里仍然更新内部缓存只是为了保持状态一致、不报错，没有任何
+            # 打印路径会读取它。
             self._statusbar_lines = msg.payload
 
         elif kind == "redraw":
-            # simple-mode 没有"原地"概念，redraw 等价于按需打印一次。
-            self._simple_print_statusbar_if_changed()
+            # simple-mode 下状态栏整体不显示，redraw 请求直接忽略。
+            pass
 
         elif kind == "_refresh":
-            # 不维护 _bar_suspended/_bar_below_prefix 状态机：流式输出中
-            # 也允许打印状态栏变化（只在内容变化时打印一行，不会撕裂
-            # 正在输出的文本，因为不擦除、只追加换行）。
-            self._simple_print_statusbar_if_changed()
+            # simple-mode 下状态栏整体不显示，周期性 tick 直接忽略。
+            # 不打印任何内容，也绝不触碰光标/擦除——保持"零额外输出、
+            # 零光标控制"的简化模式承诺。
+            pass
 
         elif kind == "_focus_lines":
             lines = msg.payload
@@ -858,23 +863,15 @@ class Terminal:
                 self._stream_had_output = False
                 self._stream_filter_reset()
 
-    def _simple_print_statusbar_if_changed(self) -> None:
-        """
-        simple-mode 专用：状态栏内容相对上次有变化时才打印一次（追加，
-        不擦除）。避免在不支持原地刷新的终端上以 4Hz 频率重复刷屏
-        （状态栏大多数周期内容其实没变化，例如长时间等待 LLM 响应时）。
-        """
-        lines = self._statusbar_lines
-        if not lines or lines == self._simple_last_statusbar:
-            return
-        self._simple_last_statusbar = list(lines)
-        for line in lines:
-            sys.stdout.write(line + "\n")
-        sys.stdout.flush()
-
     # ── 状态栏绘制（仅在 render_thread 中调用）───────────────────────────
 
     def _draw_bar(self) -> None:
+        # 防御性保护：simple-mode 下不显示状态栏，也绝不使用擦除/原地
+        # 重绘机制。正常情况下 _handle_simple() 根本不会调用到这里
+        # （它走完全独立的代码路径），这里再加一道保险，防止未来有人
+        # 不小心从别处调用 _draw_bar() 时仍然违反 simple-mode 的承诺。
+        if self._simple_mode:
+            return
         if not _IS_TTY or not self._statusbar_lines:
             return
         out = sys.stdout
@@ -886,6 +883,9 @@ class Terminal:
         self._bar_drawn = len(self._statusbar_lines)
 
     def _erase_bar(self) -> None:
+        # 同上：防御性保护，simple-mode 下绝不发出擦除序列。
+        if self._simple_mode:
+            return
         if not _IS_TTY or self._bar_drawn == 0:
             return
         sys.stdout.write(f"\x1b[{self._bar_drawn}A\x1b[0J")

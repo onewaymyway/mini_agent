@@ -164,19 +164,48 @@ class _UnixKeyReader(_BaseKeyReader):
         self._fd_owned: bool = False   # 是否是我们自己 open 的（需要 close）
 
     def _setup(self) -> bool:
-        import tty, termios
+        import termios
         fd = self._find_tty_fd()
         if fd is None:
             _log("[Unix] no usable tty fd found, skipping")
             return False
         try:
             self._old_attrs = termios.tcgetattr(fd)
-            tty.setraw(fd)
+
+            # ── 为什么不用 tty.setraw(fd) ───────────────────────────────
+            # tty.setraw() 会把 IFLAG/OFLAG/CFLAG/LFLAG 全部清成"裸"模式，
+            # 其中 OFLAG 里的 OPOST 被清掉意味着内核不再把输出的 "\n"
+            # 自动转换成 "\r\n"。
+            #
+            # 致命的是：termios 设置是**终端设备级别**的，不是 fd 级别的。
+            # 这里打开的 fd 通常是 /dev/tty（控制终端），它和 sys.stdout
+            # 指向的是**同一个底层设备**——哪怕是两个不同的文件描述符。
+            # 一旦在这个 fd 上 setraw()，OPOST 在整个设备上都被关掉，
+            # 后续任何线程往 sys.stdout 写的 "\n" 都不会再自动回到列首，
+            # 造成 terminal.py 渲染线程输出的每一行依次比上一行更靠右、
+            # 呈阶梯状错位——这正是用户反馈"simple-mode 不对"时观察到的
+            # 现象，且与是否开启 simple-mode 无关（普通模式同样受影响，
+            # 只是被状态栏的擦除/重绘操作部分掩盖了）。
+            #
+            # 这个监听器实际只需要"输入"侧的三个特性：
+            #   - 不回显按键（ECHO off）
+            #   - 不等行缓冲，按字节立即可读（ICANON off，VMIN=1/VTIME=0）
+            #   - 不让内核对 Ctrl+C 自动发信号（ISIG off——因为下面
+            #     _handle() 收到 b"\x03" 时会手动 os.kill(...SIGINT)，
+            #     必须由我们自己识别这个字节，不能让内核抢先处理掉）
+            # 这三点都只涉及 LFLAG，完全不需要触碰 OFLAG/IFLAG/CFLAG，
+            # 因此手工只清 LFLAG 里这三个 bit，其余（包括 OPOST）原样保留。
+            new_attrs = termios.tcgetattr(fd)
+            new_attrs[3] = new_attrs[3] & ~(termios.ECHO | termios.ICANON | termios.ISIG)  # lflag
+            new_attrs[6][termios.VMIN] = 1   # cc[VMIN]：至少读到 1 字节就返回
+            new_attrs[6][termios.VTIME] = 0  # cc[VTIME]：不等待超时
+            termios.tcsetattr(fd, termios.TCSANOW, new_attrs)
+
             self._fd = fd
-            _log(f"[Unix] tty fd={fd}, raw mode on")
+            _log(f"[Unix] tty fd={fd}, cbreak mode on (OPOST preserved)")
             return True
         except Exception as e:
-            _log(f"[Unix] setraw failed on fd={fd}: {e}")
+            _log(f"[Unix] termios setup failed on fd={fd}: {e}")
             if self._fd_owned and fd is not None:
                 try:
                     os.close(fd)

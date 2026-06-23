@@ -351,5 +351,124 @@ class TestStreamTokenFilterToolUseTagBoundary(unittest.TestCase):
         self.assertNotIn("tool_use", clean)
 
 
+class TestSimpleModeNeverShowsStatusbarOrErases(unittest.TestCase):
+    """
+    回归测试：simple-mode 下完全不显示状态栏，且任何情况下都不使用
+    擦除/原地重绘机制（不只是"不调用"，连直接调用 _draw_bar() /
+    _erase_bar() / _erase_bar_direct() 这种防御性场景也要保证零输出）。
+
+    背景：用户反馈"simple mode 不对"——根因之一是早期实现仍然把状态栏
+    以"内容变化才打印"的方式追加输出，这在 Termux 等环境里依然会产生
+    大量噪音；同时担心擦除机制可能从某个未预料的路径被触发。明确需求：
+        1. simple-mode 下，状态栏任何形式都不显示（不追加打印、
+           不原地刷新，统统没有）
+        2. 任何地方都不能使用擦除机制（ANSI \\x1b[NA\\x1b[0J 等）
+    """
+
+    def _make_simple_term(self):
+        import io
+        from rich.console import Console
+        term = Terminal(status_refresh_hz=4, simple_mode=True)
+        term._console = Console(file=io.StringIO(), highlight=False)
+        return term
+
+    def test_statusbar_never_printed_via_refresh_or_redraw(self):
+        """statusbar 消息 + 周期性 _refresh + 显式 redraw，均不应产生任何输出。"""
+        import io
+        term = self._make_simple_term()
+        buf = io.StringIO()
+        original_stdout = sys.stdout
+        sys.stdout = buf
+        try:
+            term._handle(_Msg("statusbar", ["⚡ Tasks [██░░] 2/4 running"]))
+            term._handle(_Msg("_refresh", None))
+            term._handle(_Msg("redraw", None))
+            # 多次刷新、内容变化，依然不应输出任何内容
+            term._handle(_Msg("statusbar", ["⚡ Tasks [████] 4/4 running"]))
+            term._handle(_Msg("_refresh", None))
+            term._handle(_Msg("redraw", None))
+        finally:
+            sys.stdout = original_stdout
+            term.stop()
+
+        output = buf.getvalue()
+        self.assertEqual(output, "", "simple-mode 下状态栏不应有任何输出")
+        self.assertNotIn("Tasks", output)
+
+    def test_no_ansi_escape_sequences_in_full_turn_simulation(self):
+        """模拟一个完整轮次（prefix + 状态栏更新 + 流式输出 + 结束），全程无 ANSI 转义序列。"""
+        import io
+        term = self._make_simple_term()
+        buf = io.StringIO()
+        original_stdout = sys.stdout
+        sys.stdout = buf
+        try:
+            term._handle(_Msg("print", (("orzooo ❯ ",), {"end": ""})))
+            for i in range(5):
+                term._handle(_Msg("statusbar", [f"⚡ Tasks [{'█' * i}{'░' * (4 - i)}] {i}/4"]))
+                term._handle(_Msg("_refresh", None))
+            term._handle(_Msg("stream", "你好"))
+            term._handle(_Msg("stream", "，世界"))
+            term._handle(_Msg("stream_end", None))
+        finally:
+            sys.stdout = original_stdout
+            term.stop()
+
+        output = buf.getvalue()
+        self.assertNotIn("\x1b[", output, "simple-mode 下不应出现任何 ANSI 转义序列")
+        self.assertNotIn("Tasks", output, "simple-mode 下不应出现状态栏内容")
+        self.assertIn("你好，世界", output)
+
+    def test_draw_bar_erase_bar_are_noop_in_simple_mode_even_called_directly(self):
+        """
+        即使绕过正常调度、直接调用 _draw_bar()/_erase_bar()/_erase_bar_direct()
+        （防御性场景：模拟未来代码不小心从别处调用这些函数），
+        在 simple_mode=True 时也必须是彻底的 no-op，不产生任何输出。
+        """
+        import io
+        term = self._make_simple_term()
+        term._statusbar_lines = ["fake status line that should never print"]
+        term._bar_drawn = 5  # 伪造"已经画了 5 行"的状态
+
+        buf = io.StringIO()
+        original_stdout = sys.stdout
+        sys.stdout = buf
+        try:
+            term._draw_bar()
+            term._erase_bar()
+            term._erase_bar_direct()
+        finally:
+            sys.stdout = original_stdout
+            term.stop()
+
+        output = buf.getvalue()
+        self.assertEqual(output, "", "_draw_bar/_erase_bar/_erase_bar_direct 在 simple_mode 下必须零输出")
+
+    def test_normal_mode_unaffected_statusbar_still_shows(self):
+        """对照测试：非 simple-mode 下状态栏仍应正常显示，确认本次改动没有误伤正常模式。
+
+        _draw_bar()/_erase_bar() 内部会检查 _IS_TTY（测试环境的 stdout
+        不是真实 tty，需要 patch 成 True 才能验证"正常模式下确实会画
+        状态栏"这一行为本身没有被本次改动破坏）。
+        """
+        import io
+        term = Terminal(status_refresh_hz=4, simple_mode=False)
+        term._console = MagicMock()
+
+        buf = io.StringIO()
+        original_stdout = sys.stdout
+        sys.stdout = buf
+        try:
+            with patch("mini_agent.ui.terminal._IS_TTY", True):
+                term._handle(_Msg("statusbar", ["⚡ Tasks [██░░] 2/4 running"]))
+                term._handle(_Msg("_refresh", None))
+        finally:
+            sys.stdout = original_stdout
+            term.stop()
+
+        output = buf.getvalue()
+        self.assertIn("Tasks", output, "非 simple-mode 下状态栏应该正常显示")
+
+
 if __name__ == "__main__":
     unittest.main()
