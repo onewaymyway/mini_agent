@@ -61,6 +61,10 @@ Global（用户级）                  ~/.agent/
     ├── open_threads.json                      # 跨 session 待处理线索池（W2/4.4）
     ├── knowledge_index.json                   # 结构化知识索引（W2/4.5）
     ├── phase_g_rhythm.json                    # Phase G 节奏治理时间戳（Stage 8/8.5）
+    ├── goals.json                             # 跨会话目标层级（Stage 9，Goal Backlog）
+    ├── activity_digest.jsonl                  # 自主行为粗粒度日志（Stage 9，/digest 数据源）
+    ├── daemon.pid                             # daemon 进程 PID 文件（Stage 9）
+    ├── daemon_info.json                       # daemon 进程详情（PID/端口/启动时间，Stage 9）
     │
     ├── cache/
     │   └── tool_cache.json                    # 工具调用结果缓存

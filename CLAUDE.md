@@ -33,7 +33,7 @@
 - `src/mini_agent/prompts/` — Prompt 管理
 - `src/mini_agent/storage/` — 存储层（`paths.py` 含 `session_plan_snapshot`/`task_manifest`/`workdir_xxx`/`global_xxx` 等路径方法）
 - `src/mini_agent/env_info/` — 环境信息采集与注入（Provider 抽象基类 + 注册表 + 内置 Provider）
-- `src/mini_agent/evolution/` — 自我演化机制：`state_repo.py`（唯一写入入口）/`validators.py`（分级校验）/`workspace.py`（worktree 隔离）/`eval_runner.py`（eval 反馈环）/`phase_g.py`（Stage 8 后台循环：剪枝/能力地图/Scope 晋升/节奏治理）
+- `src/mini_agent/evolution/` — 自我演化机制：`state_repo.py`（唯一写入入口，Stage 9 加 `initiator` T0→T1 上浮）/`validators.py`（分级校验）/`workspace.py`（worktree 隔离）/`eval_runner.py`（eval 反馈环）/`phase_g.py`（Stage 8 后台循环：剪枝/能力地图/Scope 晋升/节奏治理）/`autonomous_loop.py`（Stage 9 三档位 tick 调度器）/`resource_arbiter.py`（Stage 9 资源仲裁 + activity_digest.jsonl）
 - `scripts/protected_paths.py` — 受保护路径清单（T3 治理红线，独立于 `src/mini_agent/` 包，自我演化相关安全机制使用）
 
 ## 开发规范
@@ -153,22 +153,26 @@ python main.py --provider nvidia --model qwen/qwen3.5-122b-a10b --system-tool-ca
 - `global_knowledge.py` — Global 知识层（W3，Stage 5）：`self_profile.json`/`projects_index.json`/`cross_project_index.json`/`activity_log.jsonl` 数据模型与读写，含跨项目模式聚合 `scan_cross_project_patterns`/`merge_cross_project_patterns`
 - `observability.py` — 观察性（第 9 章，Stage 6）：`SessionTracer`（`traces.jsonl` 打点）、`classify_error()`（14 种 `error_category` 分类）、`detect_anomalies()`（k-σ 异常检测）
 - `lesson_review.py` — lesson 阈值扫描（Stage 3.1），`/evolve review` 的扫描逻辑
+- `goal_backlog.py` — 跨会话目标层级（Stage 9）：`GoalNode`（Goal/Objective 统一节点）、`GoalBacklog`（持久化 `.agent/goals.json`）；`has_actionable_work()` 和 `next_task_description()` 是 AutonomousLoop 的核心调用接口
+- `exploration_sandbox.py` — 探索实验沙盒（Stage 9）：包装 Stage 2 `EvolutionWorkspace` 加预算门控，`ExplorationReport` 结果写入 `activity_digest.jsonl`；第十二节 autonomous 档位接口预留
 
 ### HTTP API (`src/mini_agent/api/`)
 
-- `server.py` — FastAPI app 工厂 + AgentRunner 后台线程 + 输出钩子
-- `routes.py` — HTTP 路由定义（对话/SSE/事件/权限/文件系统/`GET /v1/diagnostics` 系统健康检查，Stage 6.2）
-- `bridge.py` — 解耦桥梁（RingBuffer/OutputBroadcaster/InputQueue/PermissionGate）
-- `models.py` — Pydantic 请求/响应模型 + AgentEvent
+- `server.py` — FastAPI app 工厂 + AgentRunner 后台线程（Stage 9：内嵌 AutonomousLoop tick，`_build_autonomous_loop()`）+ 输出钩子；`app.state.http_server = self` 供 routes 查询 AutonomousLoop 状态
+- `routes.py` — HTTP 路由定义（对话/SSE/事件/权限/文件系统/`GET /v1/diagnostics` 系统健康检查 Stage 6.2）；`/v1/status` Stage 9 新增 `autonomy_level`/`last_autonomous_tick_at`/`tick_count`/`subscribers` 字段
+- `bridge.py` — 解耦桥梁（RingBuffer/OutputBroadcaster/InputQueue/PermissionGate）；`InputQueue.enqueue()` Stage 9 新增 `initiator`/`meta` 参数
+- `models.py` — Pydantic 请求/响应模型 + AgentEvent；`TurnInfo` Stage 9 新增 `initiator`；`StatusResponse` Stage 9 新增 daemon 状态字段
 - `auth.py` — Bearer Token 认证中间件
 - `fs_helper.py` — 文件系统操作封装
 
 ### CLI (`src/mini_agent/cli/`)
 
-- `app.py` — 应用启动装配（解析参数、初始化组件、启动 REPL）
-- `parser.py` — CLI 参数定义
-- `repl.py` — REPL 循环和斜杠命令处理；退出时自动打印 resume 提示（`_print_resume_hint()`）
-- `commands/` — REPL 命令处理器（concurrency, plans, sessions, skills, tasks, agents, hooks, providers 等）
+- `app.py` — 应用启动装配（解析参数、初始化组件、启动 REPL）；含 `daemon` 子命令短路、`--daemon-mode` 持续驻留模式（Stage 9）
+- `parser.py` — CLI 参数定义；含 `--daemon-mode` / `--no-daemon` 标志（Stage 9）
+- `repl.py` — REPL 循环和斜杠命令处理；退出时自动打印 resume 提示（`_print_resume_hint()`）；含 `/agent` / `/goals` / `/digest` 路由（Stage 9）
+- `daemon.py` — 守护进程管理：`cmd_daemon_start/stop/status`、PID 文件管理（`.agent/daemon.pid` + `.agent/daemon_info.json`）、`DaemonClient`（HTTP 连接模式 CLI）、`run_connected_repl`（Stage 9）
+- `commands/` — REPL 命令处理器（concurrency, plans, sessions, skills, tasks, agents, hooks, providers, evolution, evolve, eval_cmd）
+  - `goals.py` — `/agent goals` 全部子命令（add/obj/done/abandon/pause/progress/status），`/digest` 数据展示（Stage 9）
 
 ### hooks (`src/mini_agent/hooks/`)
 
@@ -429,6 +433,22 @@ python main.py --provider nvidia --model qwen/qwen3.5-122b-a10b --system-tool-ca
 - **8.5 节奏治理**：`rhythm_is_allowed()`/`record_proposal()`，7 天冷却期，可对任意 `(proposal_type, key)` 限流——回应设计文档开放问题 1（T1 自动合并的观察期）
 - **核心模块**：`evolution/phase_g.py`（`run_phase_g()` 整体入口）+ `cli/commands/evolve.py`（`_handle_phase_g()`）+ `agent.py`（`_maybe_run_phase_g()`，SessionEnd 时间门控接入点）
 - 详见 [Phase G 后台循环指南（Stage 8）](docs/self-evolution-phase-g-guide.md)
+
+### 自主运行时（Stage 9 / Phase H）
+
+> 对应 `next_doc/self_evolution_stage9_plan.md`。在全部 Stage 0-8 基础设施之上引入常驻守护进程、跨会话目标层级和三档位自主调度
+
+- **进程模型升级**：daemon 进程常驻（`cli/daemon.py`），AgentRunner 线程内嵌 `AutonomousLoop` tick 调度；CLI 进入"连接模式"（通过现有 HTTP API 接入，不新增协议）；`--no-daemon` 可回退到传统模式
+- **守护进程管理**（`cli/daemon.py`）：`mini-agent daemon start [--detach]|stop|status`；PID 文件写入 `.agent/daemon.pid` + `.agent/daemon_info.json`；`--daemon-mode` 标志供内部调用
+- **Goal Backlog**（`perception/goal_backlog.py`）：`GoalNode`（Goal/Objective 统一节点），持久化到 `.agent/goals.json`；Objective 可通过 `work_thread_ref` 关联已有 WorkThread（复用 Stage 4 进展文本）；`has_actionable_work()` / `next_task_description()` 是 AutonomousLoop 调用的核心接口
+- **AutonomousLoop**（`evolution/autonomous_loop.py`）：三档位（passive/maintenance/autonomous），边界用方法边界物理隔离；`passive` 档位 `_tick_passive()` 方法体内不引用 GoalBacklog 任何方法；`maintenance` 档位起调用 `ResourceArbiter` 预算门控 + GoalBacklog 拆解任务后通过 `InputQueue.enqueue(initiator="autonomous")` 提交
+- **资源仲裁**（`evolution/resource_arbiter.py`）：用户优先（AgentRunner 循环天然保证）/ 路径冲突检测（复用 traces.jsonl，未开启 tracing 时保守降级）/ 预算硬限制（`used_today < daily_token_budget`）；探索子配额（`exploration_budget_ratio`，默认 10%）；`activity_digest.jsonl` 自主行为粗粒度日志，`/digest` 命令展示
+- **initiator 字段贯穿**（第九节）：`_TurnCommand`/`enqueue()`/`TurnInfo`/`StateRepo.apply()` 均新增 `initiator` 参数（`"user"`/`"autonomous"`/`"scheduled"`）；自主发起的 T0 改动在 `resolve_tier()` 中自动上浮为 T1（留痕，不绕过 evolve 分支）
+- **新 TaskStatus 值**：`TaskStatus.PAUSED`（被用户活动抢占暂停，可恢复；区别于 `CANCELLED` 的不可恢复）
+- **`/v1/status` 扩展**：响应中新增 `subscribers`/`autonomy_level`/`last_autonomous_tick_at`/`tick_count` 字段
+- **探索实验沙盒**（`perception/exploration_sandbox.py`）：包装 Stage 2 `EvolutionWorkspace` 加预算门控，为第十二节 autonomous 档位预留接口
+- **CLI 命令**：`/agent goals`（含 add/obj/done/abandon/progress/status 子命令）、`/goals`（快捷方式）、`/digest`（自主活动摘要）、`mini-agent daemon start|stop|status`
+- 详见 [Stage 9 自主运行时指南](docs/self-evolution-stage9-guide.md)
 
 ### 参数优先级
 

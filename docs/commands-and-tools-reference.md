@@ -294,7 +294,48 @@ mini-agent --retry-backoff linear --retry-backoff-step 60 --retry-backoff-max 30
 
 ---
 
-## 四、`mini-agent eval` 子命令
+### Goal Backlog 与自主调度（`src/mini_agent/cli/commands/goals.py`）
+
+> **Stage 9** 跨会话目标层级 + AutonomousLoop 状态查询。详见 [Stage 9 自主运行时指南](self-evolution-stage9-guide.md)
+
+| 命令 | 说明 |
+|------|------|
+| `/agent goals` | 列出 Goal Backlog 中所有 active Goals 和 Objectives |
+| `/goals` | `/agent goals` 的快捷方式 |
+| `/agent goals add <title> [--priority N] [--tag t1,t2]` | 添加 Goal（长期目标） |
+| `/agent goals obj add <title> [--goal <id>] [--thread <id>]` | 添加 Objective（子目标，可关联 Goal 和 WorkThread） |
+| `/agent goals done <id>` | 标记 Goal/Objective 完成 |
+| `/agent goals abandon <id>` | 标记 Goal/Objective 放弃 |
+| `/agent goals pause <id>` | 暂停 Goal/Objective |
+| `/agent goals progress <id> <notes>` | 更新进展备注 |
+| `/agent goals status` | 显示 AutonomousLoop tick 状态（档位/上次 tick/tick 次数） |
+| `/digest` | 显示自上次交互以来的自主活动摘要（来自 `activity_digest.jsonl`） |
+| `/agent digest` | 同 `/digest` |
+
+---
+
+## 五、`mini-agent daemon` 子命令
+
+> **Stage 9** 守护进程管理。详见 [Stage 9 自主运行时指南](self-evolution-stage9-guide.md)
+
+```bash
+# 前台启动（开发调试，Ctrl-C 停止）
+mini-agent daemon start
+
+# 后台启动（写 PID 文件，等待 HTTP 就绪）
+mini-agent daemon start --detach
+
+# 指定端口（默认 8765）
+mini-agent daemon start --detach --http-port 9000
+
+# 停止（发送 SIGTERM，等待优雅关闭）
+mini-agent daemon stop
+
+# 查看状态（PID/端口/autonomy_level/上次 tick）
+mini-agent daemon status
+```
+
+---
 
 > 详见 [Stage 3.2 eval 反馈环指南](self-evolution-stage3-2-guide.md)
 
@@ -313,9 +354,7 @@ mini-agent eval --scenario test_cases/                      # 不传 --skill，�
 
 ---
 
-## 五、内置工具
-
-> 实现位置：`src/mini_agent/tools/`
+## 六、内置工具
 
 ### 文件操作（builtin.py）
 
@@ -416,7 +455,7 @@ mini-agent eval --scenario test_cases/                      # 不传 --skill，�
 
 ---
 
-## 六、命令执行流程
+## 七、命令执行流程
 
 ```
 用户输入
@@ -436,7 +475,7 @@ ui/terminal.py（stream_token / print）
 
 ---
 
-## 七、常用命令示例
+## 八、常用命令示例
 
 ```bash
 # 启动并指定模型

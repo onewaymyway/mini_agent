@@ -353,6 +353,54 @@ curl -H "Authorization: Bearer <token>" http://127.0.0.1:8765/v1/diagnostics
 - [Web Demo 指南](web-demo-guide.md) — Streamlit Web 界面使用
 - [观察性系统指南](observability-guide.md) — `/diagnostics` 端点与 traces.jsonl 详解
 
+---
+
+## Stage 9 Daemon 模式说明
+
+**Stage 9** 将 HTTP 服务升级为首选的常驻接入点：
+
+### /v1/status 新增字段
+
+`GET /v1/status` 响应中新增 daemon 状态字段：
+
+```json
+{
+  "state": "idle",
+  "turn_id": null,
+  "stats": {...},
+  "queue_depth": 0,
+  "subscribers": 1,
+  "autonomy_level": "maintenance",
+  "last_autonomous_tick_at": 1720000000.0,
+  "tick_count": 42
+}
+```
+
+| 字段 | 说明 |
+|------|------|
+| `subscribers` | 当前连接的 SSE 客户端数 |
+| `autonomy_level` | 当前档位（`passive`/`maintenance`/`autonomous`） |
+| `last_autonomous_tick_at` | 上次 autonomous tick 的 Unix 时间戳 |
+| `tick_count` | daemon 启动以来的总 tick 次数 |
+
+### Daemon 启动流程
+
+```bash
+# 1. 启动 daemon（后台常驻）
+mini-agent daemon start --detach
+
+# 2. CLI 连接（任意终端）
+mini-agent          # 检测到 daemon 运行时自动进入连接模式
+
+# 3. 查看 daemon 状态
+mini-agent daemon status
+
+# 4. 停止
+mini-agent daemon stop
+```
+
+Daemon 启动后，所有客户端（CLI 连接模式 + Web Demo）通过相同的 HTTP API 接入，行为完全对称。
+
 ## Web Demo
 
 项目提供了一个基于 Streamlit 的 Web 演示界面，位于 `apps/mini_agent_webdemo/app.py`。

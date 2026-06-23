@@ -417,6 +417,39 @@ SubAgent 降级重试链（Stage 7 / 13.2+15.3）同步在 `orchestrator/task_ma
 
 详见 [Phase G 后台循环指南](self-evolution-phase-g-guide.md)、[SubAgent 机制](subagent-mechanism.md)。
 
+### 3.19 自主运行时（cli/daemon.py + evolution/，Stage 9 新增）
+
+引入**常驻守护进程（daemon）**，agent 不再依赖 CLI 会话存活，跨会话目标由 Goal Backlog 管理：
+
+```
+daemon 进程（常驻）
+  ├─ AgentRunner 线程（消费 InputQueue，处理用户消息 + autonomous 任务）
+  ├─ AutonomousLoop（tick 调度器，三档位：passive / maintenance / autonomous）
+  └─ HTTP API（FastAPI/uvicorn，CLI/Web 均通过此接入）
+```
+
+**核心组件**：
+
+| 模块 | 职责 |
+|------|------|
+| `cli/daemon.py` | daemon start/stop/status，PID 文件，DaemonClient（HTTP 连接模式） |
+| `perception/goal_backlog.py` | 跨会话目标层级（Goal → Objective），持久化到 `.agent/goals.json` |
+| `evolution/autonomous_loop.py` | daemon 内 tick 调度，三档位边界用方法边界物理隔离（不靠注释） |
+| `evolution/resource_arbiter.py` | 用户优先 / 路径冲突 / 预算硬限制三条仲裁规则 |
+| `perception/exploration_sandbox.py` | 探索实验沙盒（第十二节 autonomous 档位接口预留） |
+
+**三档位**（`self_profile.json` 中的 `autonomy_level` 字段）：
+
+| 档位 | `passive`（默认） | `maintenance` | `autonomous` |
+|------|-----------------|--------------|-------------|
+| Phase G 时间门控 | ✅ | ✅ | ✅ |
+| 从 GoalBacklog 提交 Task | ❌ | ✅ | ✅ |
+| 软目标 derive | ❌ | ❌ | ✅（第十二节） |
+
+**initiator 字段贯穿**：`InputQueue.enqueue()` / `TurnInfo` / `StateRepo.apply()` 均已加入 `initiator` 字段（`"user"` / `"autonomous"` / `"scheduled"`）；自主发起的 T0 改动自动上浮为 T1（留痕）。
+
+详见 [Stage 9 自主运行时指南](self-evolution-stage9-guide.md)。
+
 ---
 
 ## 4. 关键设计决策

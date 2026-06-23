@@ -33,6 +33,9 @@
 | 🖼️ 图片技能 | 图片信息提取与问答（ask_image）、文本生成图片（gen_image_with_text） |
 | 📝 Reminder 系统 | 动态提示注入机制，工具出错/用户意图等情境下自动追加解决经验，同轮去重防重复 |
 | 🤖 Role Agent | 预设角色子 Agent 模板，结构化参数注入，支持工具/模型限制 |
+| 🏃 常驻守护进程 | **Stage 9**：`mini-agent daemon start` 让 agent 常驻后台，CLI/Web 均以"连接模式"接入，不依赖会话存活 |
+| 🎯 Goal Backlog | **Stage 9**：跨会话目标层级（Goal → Objective），`.agent/goals.json` 持久化，可关联 WorkThread 复用进展 |
+| ⚙️ 三档位自主调度 | **Stage 9**：`passive`（默认）/ `maintenance`（主动执行待办目标）/ `autonomous`（软目标 derive，第十二节），修改 `self_profile.json` 切换 |
 | 🔄 Workflow | 工作流编排机制，支持多步骤自动化任务执行 |
 | 🌍 Env Info | 环境信息自动采集与注入，内置 OS/Python/时区 Provider，支持自定义扩展 |
 | 💾 History 即时落盘 | RawHistory 采用 JSONL 追加写 + fsync，每次操作立即持久化，防崩溃丢失 |
@@ -144,14 +147,36 @@ python -m mini_agent "写一个质数筛法的 Python 脚本"
 # 沙箱模式（安全测试）
 python -m mini_agent --sandbox
 
-# Termux / 简化终端模式（状态栏不再原地刷新，关闭光标控制）
-python -m mini_agent --simple-mode
-
 # 使用 main.py 启动，更多参数
 python main.py --debug-llm --reminder-verbose
 
 # eval 反馈环：对比某个 skill 开启/排除前后的 turns/token/tool 失败率
 mini-agent eval --scenario test_cases/ --skill docx
+```
+
+### 守护进程模式（Stage 9）
+
+```bash
+# 后台启动 daemon（agent 常驻，不依赖 CLI 会话存活）
+mini-agent daemon start --detach
+
+# 任意终端"连接"到已运行的 daemon
+mini-agent                          # 自动检测到 daemon，进入连接模式
+
+# 查看 daemon 状态（PID、端口、autonomy_level、上次 tick）
+mini-agent daemon status
+
+# 管理跨会话目标
+/agent goals add "完成认证模块重构" --priority 10
+/agent goals obj add "完成接口层" --goal goal_xxxxxxxx
+/digest                             # 查看自上次交互以来的自主活动
+
+# 切换自主档位（passive → maintenance：主动执行待办 Objective）
+# 修改 ~/.agent/self_profile.json 或项目 .agent/self_profile.json 中的：
+# "operating_state": { "autonomy_level": "maintenance" }
+
+# 停止 daemon
+mini-agent daemon stop
 ```
 
 ## 命令行参数
@@ -163,7 +188,6 @@ mini-agent eval --scenario test_cases/ --skill docx
 | `--base-url` | 自定义 API 端点 |
 | `--agent-name` | Agent 显示名称（默认：orzooo） |
 | `--sandbox` | 沙箱模式 |
-| `--simple-mode` | 简化显示模式：适用于 Termux 等光标控制支持不完整的终端。关闭状态栏原地刷新/擦除等所有 ANSI 光标定位操作，所有输出改为顺序追加打印（也可用环境变量 `MINI_AGENT_SIMPLE_MODE=1` 开启），详见 [终端显示机制深度解析](docs/terminal-display-internals.md#九-simple-mode) |
 | `--yes`, `-y` | 自动批准所有工具调用 |
 | `--debug-llm` | 启用调试日志 |
 | `--max-llm-calls` | 最大并发 LLM 调用数（默认 8） |
@@ -434,9 +458,10 @@ mini_agent/
 │       │   └── usage_detector.py  # 使用检测
 │       ├── cli/             # CLI 基础设施
 │       │   ├── __init__.py
-│       │   ├── app.py       # 应用启动入口
-│       │   ├── parser.py    # 参数解析
-│       │   ├── repl.py      # REPL 循环
+│       │   ├── app.py       # 应用启动入口（含 daemon 子命令短路、--daemon-mode 处理）
+│       │   ├── parser.py    # 参数解析（含 --daemon-mode / --no-daemon 标志）
+│       │   ├── repl.py      # REPL 循环（含 /agent /goals /digest 路由）
+│       │   ├── daemon.py    # 守护进程管理：start/stop/status、DaemonClient（Stage 9）
 │       │   └── commands/    # REPL 命令处理
 │       │       ├── __init__.py
 │       │       ├── concurrency.py
@@ -449,7 +474,8 @@ mini_agent/
 │       │       ├── hooks.py
 │       │       ├── evolution.py  # /evolution log|show|diff|revert（Stage 2）
 │       │       ├── evolve.py     # /evolve review|list（Stage 3.1）
-│       │       └── eval_cmd.py   # mini-agent eval 子命令入口（Stage 3.2）
+│       │       ├── eval_cmd.py   # mini-agent eval 子命令入口（Stage 3.2）
+│       │       └── goals.py      # /agent goals 全部子命令（Stage 9）
 │       ├── llm/             # LLM 抽象层
 │       │   ├── __init__.py
 │       │   ├── base.py      # 基础接口
@@ -477,13 +503,15 @@ mini_agent/
 │       │   └── evolution.py # skill_propose 工具（Stage 3.1）
 │       ├── evolution/       # 自我演化安全网与生产闭环
 │       │   ├── __init__.py
-│       │   ├── state_repo.py    # StateRepo：唯一写入入口，风险分级 T0~T3（Stage 2）
+│       │   ├── state_repo.py    # StateRepo：唯一写入入口，风险分级 T0~T3（Stage 2）；initiator T0→T1 上浮（Stage 9）
 │       │   ├── validators.py    # 按 tier 升级的验证流水线（Stage 2）
 │       │   ├── workspace.py     # EvolutionWorkspace：git worktree 进程级隔离（Stage 2）
-│       │   └── eval_runner.py   # mini-agent eval 核心引擎（Stage 3.2）
+│       │   ├── eval_runner.py   # mini-agent eval 核心引擎（Stage 3.2）
+│       │   ├── autonomous_loop.py  # AutonomousLoop：三档位 tick 调度器（Stage 9）
+│       │   └── resource_arbiter.py # 资源仲裁：预算/路径冲突/探索配额，activity_digest.jsonl（Stage 9）
 │       ├── orchestrator/    # 并发编排
 │       │   ├── __init__.py
-│       │   ├── task.py      # 任务定义（含 manifest.json 写入）
+│       │   ├── task.py      # 任务定义（含 manifest.json 写入；TaskStatus.PAUSED Stage 9）
 │       │   ├── task_manager.py  # 任务调度
 │       │   ├── sub_agent.py # 子 Agent
 │       │   ├── concurrency.py  # 并发控制
@@ -503,7 +531,9 @@ mini_agent/
 │       │   ├── lesson_rules.py     # 规则触发引擎（连续失败/拒绝重试成功）
 │       │   ├── correction_detector.py  # 人类反馈纠正检测
 │       │   ├── lesson_review.py    # lesson 阈值扫描与分组（Stage 3.1，/evolve review）
-│       │   └── token_counter.py    # Token 预估
+│       │   ├── token_counter.py    # Token 预估
+│       │   ├── goal_backlog.py     # 跨会话目标层级 GoalNode/GoalBacklog，goals.json（Stage 9）
+│       │   └── exploration_sandbox.py  # 探索实验沙盒，包装 EvolutionWorkspace（Stage 9）
 │       ├── ui/              # 用户界面
 │       │   ├── __init__.py
 │       │   ├── terminal.py  # 终端 I/O
@@ -716,6 +746,7 @@ python -m pytest tests/ -q
 - [Workdir/Global 知识层指南（Stage 4 & 5）](docs/self-evolution-stage4-5-guide.md) — **新增**：W2 项目知识层（project.json/timeline/open_threads）+ W3 跨项目知识层（self_profile/cross_project_index/activity_log）
 - [观察性系统指南（Stage 6）](docs/observability-guide.md) — **新增**：traces.jsonl 时序追踪 / `/diagnostics` 端点 / k-σ 异常检测 / 工具调用因果链（error_category/resolves_seq）
 - [Phase G 后台循环指南（Stage 8）](docs/self-evolution-phase-g-guide.md) — **新增**：剪枝候选 / 能力地图 / Scope 晋升候选 / 节奏治理，`/evolve phase-g` 命令
+- [Stage 9 自主运行时指南](docs/self-evolution-stage9-guide.md) — **新增**：常驻守护进程 / Goal Backlog / 三档位 AutonomousLoop / 资源仲裁 / `mini-agent daemon` 命令
 - [HTTP API 指南](docs/http-api-guide.md) — REST/SSE 服务使用指南
 - [Web Demo 指南](docs/web-demo-guide.md) — Streamlit Web 界面使用
 - [MCP 集成指南](docs/mcp-guide.md) — Model Context Protocol 集成
@@ -753,3 +784,4 @@ MIT License
 *2026-06 eval 反馈环（Stage 3.2）*：新增 `mini-agent eval --scenario DIR [--skill NAME]` 子命令，复用 `test_cases/*.txt` 作为回归集，对比某个 skill 开启/排除前后的 turns/token/tool 失败率，输出 JSON 报告；`SkillLoader` 新增 `exclude()` 方法保证排除的 skill 不会被关键词重新激活
 
 *2026-06 SubAgent 信息继承（Stage 3.3）*：`Task` 新增 `active_skills` 字段，spawn 的 SubAgent 自动继承主 agent 当前激活的 skill（thread-local provider 机制，独立 `ToolRegistry` 副本规避重复注册崩溃）；`ToolResultCache` 加锁支持跨 SubAgent 共享，避免重复读取同一文件；SubAgent 结束时触发主 agent memory backend `reload()`，使其产生的 lesson 能被主 agent 检索到
+*2026-06-24 自主运行时（Stage 9 / Phase H）*：新增 `cli/daemon.py`（`mini-agent daemon start|stop|status`，PID 文件，`DaemonClient` CLI 连接模式）；新增 `perception/goal_backlog.py`（`GoalNode`/`GoalBacklog`，持久化 `.agent/goals.json`，`has_actionable_work()` / `next_task_description()`）；新增 `evolution/autonomous_loop.py`（三档位 tick：passive/maintenance/autonomous，方法边界物理隔离）；新增 `evolution/resource_arbiter.py`（用户优先 / 路径冲突 / 预算硬限制三条仲裁规则，探索子配额，`activity_digest.jsonl`）；新增 `cli/commands/goals.py`（`/agent goals` 全部子命令，`/goals`，`/digest`）；新增 `perception/exploration_sandbox.py`（探索沙盒，第十二节接口预留）；`InputQueue.enqueue()` / `TurnInfo` / `StateRepo.apply()` / `resolve_tier()` 均加入 `initiator` 字段，T0→T1 自动上浮规则；`TaskStatus.PAUSED` 新值；`/v1/status` 新增 `autonomy_level` / `last_autonomous_tick_at` / `tick_count` 字段
