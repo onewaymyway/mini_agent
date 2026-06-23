@@ -172,6 +172,48 @@ class Terminal:
         )
         self._refresh_thread.start()
 
+        # ── SIGWINCH 处理（终端窗口 resize）────────────────────────────────
+        # 问题根源：用户拖动终端窗口改变尺寸时，rich Console 会缓存旧的终端
+        # 宽度（_width/_height）。_draw_bar() 用旧宽度渲染出的内容行数估算
+        # 偏高（同等内容在窄终端占更多行），导致 _bar_drawn 虚高；下一次
+        # _erase_bar() 上移 _bar_drawn 行时超出实际行数，把正在等待用户输入
+        # 的 "You ❯" 提示符也一并擦掉，造成闪烁/消失现象。
+        #
+        # 修复：捕获 SIGWINCH，在 resize 时：
+        #   1. 让 Console 丢弃宽度缓存（_width/_height = None），下次渲染时
+        #      自动从 os.get_terminal_size() 重新读取正确尺寸
+        #   2. 把 _bar_drawn 重置为 0，避免用旧行数做超界擦除
+        #   3. 若此刻不在输入阻塞期间，投一条 redraw 让状态栏以新宽度重绘
+        #
+        # 注意：
+        #   - SIGWINCH 只在主线程可靠（CPython signal 限制）；这里在构造函数
+        #     （主线程执行）中注册，不影响其他 signal 处理逻辑。
+        #   - Windows 没有 SIGWINCH，用 hasattr 保护。
+        #   - prompt_toolkit 自己也会注册 SIGWINCH handler 来刷新输入行；
+        #     我们在自己的 handler 末尾转发给之前的 handler，保证 ptk 的
+        #     resize 重绘逻辑依然能正常触发。
+        import signal as _signal
+        if hasattr(_signal, "SIGWINCH"):
+            _prev_sigwinch = _signal.getsignal(_signal.SIGWINCH)
+
+            def _on_sigwinch(signum, frame):
+                # 1. 让 rich Console 丢弃宽度缓存，下次渲染自动重测
+                try:
+                    self._console._width = None
+                    self._console._height = None
+                except Exception:
+                    pass
+                # 2. 重置已绘状态栏行数，防止超界擦除把 "You ❯" 也擦掉
+                self._bar_drawn = 0
+                # 3. 若不在输入期间，重绘状态栏（适应新宽度）
+                if not self._input_blocking and not self._refresh_paused.is_set():
+                    self._q.put(_Msg("redraw", None))
+                # 4. 转发给之前的 handler（如 prompt_toolkit 自己注册的）
+                if callable(_prev_sigwinch):
+                    _prev_sigwinch(signum, frame)
+
+            _signal.signal(_signal.SIGWINCH, _on_sigwinch)
+
     # ═══════════════════════════════════════════════════════════════════════
     # 输出通道（线程安全）
     # ═══════════════════════════════════════════════════════════════════════
