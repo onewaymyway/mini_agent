@@ -144,6 +144,9 @@ python -m mini_agent "写一个质数筛法的 Python 脚本"
 # 沙箱模式（安全测试）
 python -m mini_agent --sandbox
 
+# Termux / 简化终端模式（状态栏不再原地刷新，关闭光标控制）
+python -m mini_agent --simple-mode
+
 # 使用 main.py 启动，更多参数
 python main.py --debug-llm --reminder-verbose
 
@@ -160,6 +163,7 @@ mini-agent eval --scenario test_cases/ --skill docx
 | `--base-url` | 自定义 API 端点 |
 | `--agent-name` | Agent 显示名称（默认：orzooo） |
 | `--sandbox` | 沙箱模式 |
+| `--simple-mode` | 简化显示模式：适用于 Termux 等光标控制支持不完整的终端。关闭状态栏原地刷新/擦除等所有 ANSI 光标定位操作，所有输出改为顺序追加打印（也可用环境变量 `MINI_AGENT_SIMPLE_MODE=1` 开启），详见 [终端显示机制深度解析](docs/terminal-display-internals.md#九-simple-mode) |
 | `--yes`, `-y` | 自动批准所有工具调用 |
 | `--debug-llm` | 启用调试日志 |
 | `--max-llm-calls` | 最大并发 LLM 调用数（默认 8） |
