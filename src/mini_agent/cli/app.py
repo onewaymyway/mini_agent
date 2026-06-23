@@ -77,6 +77,14 @@ def _main_inner() -> None:
     parser = build_parser()
     args   = parser.parse_args()
 
+    # ── simple-mode：尽早设置，确保启动阶段的所有输出（包括下面 print("cfg:", cfg)
+    # 以及 R.print_info 等）都遵循该模式。CLI 参数优先于 MINI_AGENT_SIMPLE_MODE
+    # 环境变量（Terminal 构造时已经读取过环境变量作为默认值，这里只在用户
+    # 显式传了 --simple-mode 时才覆盖，不传则保留 Terminal 自己的默认判断）。
+    if getattr(args, "simple_mode", None):
+        from mini_agent.ui.terminal import term as _term_early
+        _term_early.set_simple_mode(True)
+
     # ── 配置构建 ─────────────────────────────────────────────────────────────
     project_root  = Path(args.project).expanduser() if args.project else Path.cwd()
     debug_console = getattr(args, "debug_llm_console", False)
@@ -96,6 +104,7 @@ def _main_inner() -> None:
         extra_system=args.system,
         verbose=args.verbose,
         sandbox=args.sandbox,
+        simple_mode=getattr(args, "simple_mode", None),
         auto_approve=args.yes,
         model=args.model,
         llm_provider=getattr(args, "provider", None),
@@ -149,6 +158,15 @@ def _main_inner() -> None:
         llm_retry_backoff_step=getattr(args, "retry_backoff_step", None),
         llm_retry_backoff_max_delay=getattr(args, "retry_backoff_max", None),
     )
+
+    # ── simple-mode 最终同步 ─────────────────────────────────────────────────
+    # 上面在解析完 args 后已经处理了 --simple-mode 显式传参的情况；这里用
+    # load_config() 算出的最终值（可能来自 agent_config.json 里的
+    # "simple_mode": true，CLI 未传参时也要生效）再同步一次，确保两者
+    # 不会因为来源不同而不一致。
+    from mini_agent.ui.terminal import term as _term
+    if cfg.simple_mode and not _term.is_simple_mode():
+        _term.set_simple_mode(True)
 
     print("cfg:",cfg)
 

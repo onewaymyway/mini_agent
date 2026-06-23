@@ -69,6 +69,10 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--prompts-dir", default=None, help="Custom prompts directory (overrides built-in prompts)")
     p.add_argument("--verbose", "-v", action="store_true", default=None, help="Show raw tool JSON")
     p.add_argument("--sandbox", action="store_true", default=None, help="Sandbox mode (no destructive ops)")
+    p.add_argument("--simple-mode", action="store_true", default=None,
+                   help="Simplified display for limited terminals (e.g. Termux): no status-bar "
+                        "redraw/erase, no ANSI cursor control, every update is a normal printed "
+                        "line (overrides MINI_AGENT_SIMPLE_MODE env)")
     p.add_argument("--yes", "-y", action="store_true", default=None, help="Auto-approve all tool calls")
     p.add_argument("--no-stream", action="store_true", help="Disable streaming")
     p.add_argument("--max-turns", type=int, default=None, help="Max agentic turns per user message")

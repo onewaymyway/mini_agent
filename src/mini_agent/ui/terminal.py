@@ -19,6 +19,7 @@ terminal.py — 统一终端 I/O 管理器
 
 from __future__ import annotations
 
+import os
 import queue
 import sys
 import threading
@@ -34,6 +35,19 @@ from rich.text import Text
 
 _IS_TTY: bool = hasattr(sys.stdout, "isatty") and sys.stdout.isatty()
 
+# ── simple-mode 默认值 ───────────────────────────────────────────────────────
+# 部分环境（典型如 Termux、某些精简终端模拟器、串口控制台）的 ANSI 光标控制
+# 支持不完整或行为不一致：`\x1b[NA`（上移）、`\x1b[0J`（擦除到屏底）等序列
+# 可能不生效或生效不完整，导致 terminal.py 赖以实现"无闪烁刷新"的
+# erase→redraw 循环在这些环境里反而表现为：状态栏重复堆叠、文字错位、
+# 内容被错误擦除等"排版混乱"问题（比正常滚动输出体验更差）。
+# simple-mode 关闭所有光标定位/擦除操作，所有内容一律正常 print（只追加，
+# 不回退/不擦除），用空间换正确性。可通过 --simple-mode CLI 参数或
+# MINI_AGENT_SIMPLE_MODE=1 环境变量开启。
+_SIMPLE_MODE_ENV: bool = os.environ.get("MINI_AGENT_SIMPLE_MODE", "").strip().lower() in (
+    "1", "true", "yes", "on",
+)
+
 
 class _Msg:
     __slots__ = ("kind", "payload")
@@ -45,11 +59,22 @@ class _Msg:
 class Terminal:
     """唯一的终端 I/O 管理器。通过模块级 `term` 单例访问。"""
 
-    def __init__(self, status_refresh_hz: int = 4) -> None:
+    def __init__(self, status_refresh_hz: int = 4, simple_mode: Optional[bool] = None) -> None:
         self._console = Console(highlight=False)
         self._q: queue.Queue[_Msg] = queue.Queue()
         self._statusbar_lines: list[str] = []
         self._bar_drawn: int = 0
+
+        # ── simple-mode：特殊环境降级显示 ────────────────────────────────
+        # True 时关闭一切"先擦除再重绘"的 ANSI 光标控制逻辑：
+        #   - 状态栏不再原地刷新，只在内容发生变化时追加打印一行新状态
+        #   - 流式输出/print 等不再调用 _erase_bar()，直接顺序写出
+        #   - _bar_below_prefix 三阶段状态机整体跳过（不需要，因为从不擦除）
+        # 默认值：显式传参 > MINI_AGENT_SIMPLE_MODE 环境变量 > False。
+        self._simple_mode: bool = bool(simple_mode) if simple_mode is not None else _SIMPLE_MODE_ENV
+        # simple-mode 下用于判断状态栏内容是否变化，变化才打印，
+        # 避免在不支持原地刷新的终端里高频重复刷屏。
+        self._simple_last_statusbar: list[str] = []
         self._streaming: bool = False
         self._stream_had_output: bool = False
         self._render_stop: bool = False
@@ -182,6 +207,27 @@ class Terminal:
         return _StreamCtx(self)
 
     # ── 状态栏 ────────────────────────────────────────────────────────────
+
+    # ── simple-mode 控制 ─────────────────────────────────────────────────
+
+    def set_simple_mode(self, enabled: bool) -> None:
+        """
+        运行期切换 simple-mode（典型用法：app.py 在解析完 CLI 参数后、
+        产生任何输出之前调用一次）。
+
+        切换为 True 时顺手把已经画在屏幕上的状态栏"作废"——不主动擦除
+        （simple-mode 本身就不做擦除操作），只是重置内部 _bar_drawn 计数，
+        避免后续误判为"原地刷新模式下已绘制 N 行"。
+        """
+        self._simple_mode = bool(enabled)
+        if self._simple_mode:
+            self._bar_drawn = 0
+            self._bar_suspended = False
+            self._bar_below_prefix = False
+            self._simple_last_statusbar = []
+
+    def is_simple_mode(self) -> bool:
+        return self._simple_mode
 
     def set_statusbar_provider(self, provider: "Optional[Callable[[], list[str]]]") -> None:
         """
@@ -440,6 +486,10 @@ class Terminal:
             self._pending_during_input.append(msg)
             return
 
+        if self._simple_mode:
+            self._handle_simple(msg)
+            return
+
         if kind == "print":
             args, kwargs = msg.payload
             self._erase_bar()
@@ -676,6 +726,152 @@ class Terminal:
                 self._bar_below_prefix = False
                 self._draw_bar()
 
+    # ── simple-mode 分发（无擦除、无光标控制，仅顺序打印）────────────────
+    #
+    # 设计原则：simple-mode 下完全不依赖光标位置/行数这些"会被特殊终端
+    # 破坏"的状态。所有内容一律按收到的顺序原样写出并换行，状态栏也
+    # 不再"原地刷新"，退化为偶尔打印一行新的状态摘要（只在内容变化时
+    # 打印，且自带换行），效果类似于普通日志输出——这正是用户在 Termux
+    # 等环境下想要的：宁可多刷几行，也不要错位、不要内容被覆盖。
+    def _handle_simple(self, msg: _Msg) -> None:
+        kind = msg.kind
+
+        if kind == "print":
+            args, kwargs = msg.payload
+            # simple-mode 下不需要"行内挂起"机制：即使调用方传了 end=""
+            # （例如 print_assistant_prefix 打印 "agent ❯ "），这里也尊重
+            # 原始 end 参数，让前缀和后续 stream token 自然拼接在同一行，
+            # 不去管理状态栏与之的位置关系——因为 simple-mode 根本不会把
+            # 状态栏画到这一行下面，没有"回到行尾"的需要。
+            self._console.print(*args, **kwargs)
+
+        elif kind == "rule":
+            title, kwargs = msg.payload
+            self._console.rule(title, **kwargs)
+
+        elif kind == "panel":
+            content, kwargs = msg.payload
+            self._console.print(Panel(content, **kwargs))
+
+        elif kind == "syntax":
+            code, language, kwargs = msg.payload
+            self._console.print(Syntax(code, language, **kwargs))
+
+        elif kind == "markdown":
+            self._console.print(Markdown(msg.payload))
+
+        elif kind == "stream":
+            token = msg.payload
+            filtered = self._filter_token(token)
+            if filtered:
+                self._streaming = True
+                self._stream_had_output = True
+                sys.stdout.write(filtered)
+                sys.stdout.flush()
+
+        elif kind == "stream_end":
+            if self._pending_stream:
+                sys.stdout.write(self._pending_stream)
+                self._stream_had_output = True
+            if self._stream_had_output:
+                sys.stdout.write("\n")
+                sys.stdout.flush()
+            self._streaming = False
+            self._stream_had_output = False
+            self._stream_filter_reset()
+
+        elif kind == "statusbar":
+            self._statusbar_lines = msg.payload
+
+        elif kind == "redraw":
+            # simple-mode 没有"原地"概念，redraw 等价于按需打印一次。
+            self._simple_print_statusbar_if_changed()
+
+        elif kind == "_refresh":
+            # 不维护 _bar_suspended/_bar_below_prefix 状态机：流式输出中
+            # 也允许打印状态栏变化（只在内容变化时打印一行，不会撕裂
+            # 正在输出的文本，因为不擦除、只追加换行）。
+            self._simple_print_statusbar_if_changed()
+
+        elif kind == "_focus_lines":
+            lines = msg.payload
+            for line in lines:
+                if "[tool]" in line or "tool_use" in line.lower():
+                    sys.stdout.write(f"\033[35m{line}\033[0m\n")
+                elif line.lstrip().startswith("✓") or "PASSED" in line or "success" in line.lower():
+                    sys.stdout.write(f"\033[32m{line}\033[0m\n")
+                elif line.lstrip().startswith("✗") or "FAILED" in line or "error" in line.lower():
+                    sys.stdout.write(f"\033[31m{line}\033[0m\n")
+                elif line.lstrip().startswith("["):
+                    sys.stdout.write(f"\033[90m{line}\033[0m\n")
+                else:
+                    sys.stdout.write(f"{line}\n")
+            sys.stdout.flush()
+
+        elif kind == "_noop":
+            pass
+
+        elif kind == "_focus_change":
+            old_id, new_id = msg.payload
+            if new_id:
+                sys.stdout.write(f"\n── focus: {new_id} ──\n")
+                with self._focus_lock:
+                    self._focus_log_offset = 0
+            else:
+                sys.stdout.write("\n── focus cleared ──\n")
+            sys.stdout.flush()
+
+        elif kind == "_focus_cycle":
+            delta = msg.payload
+            try:
+                from mini_agent.tools.orchestration import get_task_manager
+                mgr = get_task_manager()
+                if mgr:
+                    records = mgr.list_records()
+                    if records:
+                        ids = [r.task_id for r in records]
+                        cur = self._task_focus
+                        if cur in ids:
+                            idx = (ids.index(cur) + delta) % len(ids)
+                        else:
+                            idx = 0 if delta > 0 else len(ids) - 1
+                        new_id = ids[idx]
+                        with self._focus_lock:
+                            old = self._task_focus
+                            self._task_focus = new_id
+                            self._focus_log_offset = 0
+                        if old != new_id:
+                            sys.stdout.write(f"\n── focus: {new_id} ──\n")
+                            sys.stdout.flush()
+            except Exception:
+                pass
+
+        elif kind == "_force_end_stream":
+            if self._streaming or self._stream_had_output:
+                if self._pending_stream:
+                    sys.stdout.write(self._pending_stream)
+                    self._stream_had_output = True
+                if self._stream_had_output:
+                    sys.stdout.write("\n")
+                    sys.stdout.flush()
+                self._streaming = False
+                self._stream_had_output = False
+                self._stream_filter_reset()
+
+    def _simple_print_statusbar_if_changed(self) -> None:
+        """
+        simple-mode 专用：状态栏内容相对上次有变化时才打印一次（追加，
+        不擦除）。避免在不支持原地刷新的终端上以 4Hz 频率重复刷屏
+        （状态栏大多数周期内容其实没变化，例如长时间等待 LLM 响应时）。
+        """
+        lines = self._statusbar_lines
+        if not lines or lines == self._simple_last_statusbar:
+            return
+        self._simple_last_statusbar = list(lines)
+        for line in lines:
+            sys.stdout.write(line + "\n")
+        sys.stdout.flush()
+
     # ── 状态栏绘制（仅在 render_thread 中调用）───────────────────────────
 
     def _draw_bar(self) -> None:
@@ -699,6 +895,12 @@ class Terminal:
     # ── 状态栏操作（主线程直接调用，仅在队列空闲时安全）─────────────────
 
     def _erase_bar_direct(self) -> None:
+        # simple-mode 下没有"原地绘制"的状态栏可擦——_bar_drawn 也不会被
+        # 维护成非零值（_handle_simple 从不调用 _draw_bar）。这里直接早退，
+        # 不发任何 ANSI 控制序列，避免对不支持光标控制的终端产生副作用。
+        if self._simple_mode:
+            self._bar_suspended = False
+            return
         if not _IS_TTY or self._bar_drawn == 0:
             self._bar_suspended = False
             return
