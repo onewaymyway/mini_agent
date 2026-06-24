@@ -11,6 +11,7 @@
   "session_summary_enabled": true,
   "session_summary_min_turns": 3,
   "profile_enabled":true,
+  "skill_keyword_activation_enabled":true,
   "max_llm_calls": 4,
   "llm_retry_delay":30,
 
