@@ -1519,16 +1519,50 @@ _COMMANDS: list[tuple[str, str, list[str]]] = [
     ("/rollback",    "Rollback last turn",            []),
     ("/skills",      "List all skills",               []),
     ("/skill",       "Manage skills",                 ["on", "off", "list"]),
-    ("/model",       "Switch LLM model",              []),
+    ("/model",       "Switch LLM model",              []),   # 子命令在启动时动态注入
     ("/session",     "Session management",            ["list", "new", "load", "delete"]),
     ("/tasks",       "Task management",               ["focus", "unfocus", "dashboard", "log", "cancel", "cancel-all", "workers"]),
     ("/plan",        "Plan management",               ["clear", "summary"]),
     ("/concurrency", "Concurrency settings",          ["tasks", "llm"]),
     ("/cc",          "Concurrency alias",             ["tasks", "llm"]),
-    ("/provider",    "LLM provider settings",         ["list", "switch", "models"]),
+    ("/provider",    "LLM provider settings",         ["list", "models", "switch"]),
     ("/exit",        "Exit mini-agent",               []),
     ("/quit",        "Exit mini-agent",               []),
 ]
+
+# ── /model 子命令动态注入 ──────────────────────────────────────────────────────
+# 在 REPL 启动时调用 prime_model_completions(pool)，将 fallback chain 中所有模型名
+# 注入为 /model 的子命令候选，这样输入 "/model " 后 Tab 就能列出可用模型。
+
+def prime_model_completions(pool: "LLMClientPool | None") -> None:
+    """
+    从 LLMClientPool 读取所有已配置模型，注入到 _COMMANDS 中 /model 条目的子命令列表。
+
+    必须在 _ptk_session 首次创建之前调用（即在 REPL 主循环第一次 _read_line 之前）。
+    若 pool 为 None 或读取失败，静默跳过，不影响正常启动。
+
+    Args:
+        pool: Agent 当前使用的 LLMClientPool 实例。
+    """
+    if pool is None:
+        return
+    try:
+        snap = pool.snapshot()
+        models: list[str] = []
+        for entry in snap["entries"]:
+            # label 格式为 "provider/model"，取 "/" 后半部分
+            _, _, model = entry["label"].partition("/")
+            if model and model not in models:
+                models.append(model)
+        if not models:
+            return
+        # 找到 _COMMANDS 中的 /model 条目并原地替换子命令列表
+        for i, (name, desc, _subs) in enumerate(_COMMANDS):
+            if name == "/model":
+                _COMMANDS[i] = (name, desc, models)
+                break
+    except Exception:
+        pass  # 静默降级，补全缺失不应影响主功能
 
 
 def _build_slash_completer():

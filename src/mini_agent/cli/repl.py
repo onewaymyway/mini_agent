@@ -53,7 +53,8 @@ def run_repl(agent: Agent, skill_loader: SkillLoader) -> None:
     if agent.session_id:
         R.print_info(f"Session: \\[{agent.session_id}] — /session list to browse history")
 
-    from mini_agent.ui.terminal import term as _term
+    from mini_agent.ui.terminal import term as _term, prime_model_completions as _prime_models
+    _prime_models(getattr(agent, "_client_pool", None))
 
     while True:
         # ── HTTP 模式：等待 AgentRunner 处理完才进入输入 ──────────────────
