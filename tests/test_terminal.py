@@ -419,6 +419,111 @@ class TestRawKeyListenerPauseDuringBlockingInput(unittest.TestCase):
         fake_listener.start.assert_called_once()
 
 
+class TestInputBlockingWatchdogTimeout(unittest.TestCase):
+    """
+    回归测试："用户输入的时候还是在刷新导致看不到用户输入" bug
+    （在 raw key listener 修复之后仍然复现的第二个独立根因）。
+
+    根因：_refresh_loop() 里的看门狗会在 _input_blocking 持续为 True
+    超过 _INPUT_BLOCKING_TIMEOUT 秒后，强制清掉 _refresh_paused / 
+    _input_blocking 并 flush 缓存消息 + 投递 redraw。这个机制本身是
+    合理的兜底（防止某个异常路径导致标志永久卡死），但旧版本把超时
+    设成 120 秒——这远小于很多完全合法的人类等待场景：用户读完提示、
+    思考、打一段较长回答，或者（尤其 Termux 等移动端）中途把 App
+    切到后台再切回来，都完全可能超过 120 秒。
+
+    一旦看门狗在用户*仍然合法地*停留在 prompt_toolkit 的 .prompt()
+    或 confirm() 的 readline() 里时误判"卡死"并强制复位，
+    _refresh_paused 会被清掉，refresh_thread 从下一个周期开始重新
+    按周期投递 _refresh 消息——状态栏从此开始一遍遍重绘，跟用户正在
+    输入的那一行抢屏幕，造成"一直在刷新、看不到自己刚打的字"的画面。
+
+    本测试验证：
+      1. 默认超时值必须远大于 120 秒（锁定"足够宽松，不会在正常人类
+         交互/切后台场景下误触发"这一要求，避免未来被无意调小）。
+      2. 看门狗只在真正超过阈值时才触发，不会提前误触发。
+      3. 看门狗触发后的具体行为：_refresh_paused 被清除（→ refresh_thread
+         恢复投递 _refresh 消息，重新开始重绘状态栏，这正是"抢屏幕"
+         的实际机制）、_pending_during_input 被清空并重新入队、
+         _input_blocking 被复位。
+    """
+
+    def setUp(self):
+        self.term = Terminal(status_refresh_hz=4)
+        self.term._console = MagicMock()
+
+    def tearDown(self):
+        self.term.stop()
+
+    def test_default_timeout_is_generous_enough_for_real_human_pauses(self):
+        """
+        锁定默认超时远大于 120 秒（早期复现过 bug 的阈值），并且至少
+        覆盖"用户切到后台几分钟再切回来"这种完全合法的场景（这里用
+        10 分钟作为下限示例，实际默认值更宽松）。
+        """
+        self.assertGreater(
+            self.term._INPUT_BLOCKING_TIMEOUT, 120.0,
+            "看门狗超时不能只有 120 秒——这远小于很多合法的人类等待场景"
+            "（思考、打长回复、切到后台再切回来），会导致看门狗在用户仍在"
+            "合法输入时误触发，强制恢复状态栏刷新、跟输入行抢屏幕",
+        )
+        self.assertGreaterEqual(
+            self.term._INPUT_BLOCKING_TIMEOUT, 600.0,
+            "看门狗超时应该至少能覆盖几分钟量级的合理人类等待/切后台场景",
+        )
+
+    def test_watchdog_does_not_fire_before_timeout_elapsed(self):
+        """_input_blocking 持续时间小于阈值时，看门狗不应该有任何动作
+        ——_refresh_paused 应保持被设置，消息不应被强制 flush。"""
+        self.term._INPUT_BLOCKING_TIMEOUT = 10.0  # 缩短阈值加快测试
+        self.term._input_blocking = True
+        self.term._input_blocking_since = time.monotonic()  # 刚刚开始
+        self.term._refresh_paused.set()
+        self.term._pending_during_input = [_Msg("print", (("还没到期",), {}))]
+
+        self.term._refresh_interval = 0.02
+        time.sleep(0.1)  # 远小于阈值
+
+        self.assertTrue(self.term._refresh_paused.is_set(), "未超时前 _refresh_paused 不应被清除")
+        self.assertTrue(self.term._input_blocking, "未超时前 _input_blocking 不应被复位")
+        self.assertEqual(len(self.term._pending_during_input), 1, "未超时前缓存消息不应被 flush")
+
+    def test_watchdog_fires_after_timeout_and_resumes_refresh_thread(self):
+        """
+        _input_blocking 持续超过阈值后，看门狗应该：
+          - 清除 _refresh_paused（→ refresh_thread 从下一周期开始恢复
+            投递 _refresh 消息，重新开始重绘状态栏——这正是"抢屏幕"
+            视觉症状的直接机制，本测试验证到这一步即视为复现了根因）
+          - 复位 _input_blocking
+          - flush 缓存消息
+
+        用很短的阈值（0.05s）模拟"早期 120 秒阈值在足够长的人类等待
+        后同样会触发"的效果，验证触发后的行为链条本身是正确可复现的。
+        """
+        self.term._INPUT_BLOCKING_TIMEOUT = 0.05
+        self.term._input_blocking = True
+        self.term._input_blocking_since = time.monotonic()
+        self.term._refresh_paused.set()
+        self.term._pending_during_input = [_Msg("print", (("迟到的消息",), {}))]
+        self.term._refresh_interval = 0.02
+
+        # 等待超过阈值，给 refresh_loop 足够的周期去检测到超时
+        time.sleep(0.3)
+
+        self.assertFalse(
+            self.term._refresh_paused.is_set(),
+            "超时后看门狗必须清除 _refresh_paused，这一步直接导致 refresh_thread"
+            "恢复投递 _refresh 消息、重新开始重绘状态栏——如果用户此时仍在"
+            "ptk 的 .prompt() 或 confirm() 的 readline() 里合法等待，"
+            "就会出现状态栏跟输入行抢屏幕、看不到自己刚打的字的画面",
+        )
+        self.assertFalse(self.term._input_blocking, "超时后 _input_blocking 必须被复位")
+        self.assertEqual(
+            self.term._pending_during_input, [],
+            "超时后缓存消息必须被 flush（重新入队），不能让 agent 输出永久卡住",
+        )
+
+
 class TestStreamTokenFilterToolUseTagBoundary(unittest.TestCase):
     """
     回归测试：_filter_token() 在 <tool_use>...</tool_use> 标签跨流式

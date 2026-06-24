@@ -137,18 +137,35 @@ class Terminal:
         # 正文）的两半，必须同进同出，否则会出现前缀缺席、正文却正常显示
         # 的错乱画面。
         #
-        # 看门狗：_input_blocking 理论上只应在 _enter_input_mode() 到
-        # _exit_input_mode() 之间的极短窗口（人类按键间隔）内为 True。
-        # 如果因为某个未预见的异常路径（例如调用方持有的 confirm()/
-        # prompt_user() 在 finally 执行前进程崩溃式退出某个线程、或多线程
-        # 权限确认场景下的边界条件）导致标志没能被正确清除，所有后续 agent
-        # 输出都会被无限期缓存、永不上屏。_refresh_loop 中的看门狗会在
-        # 标志持续为 True 超过 _INPUT_BLOCKING_TIMEOUT 秒后强制复位，
-        # 避免输出永久卡死（详见 _refresh_loop）。
+        # 看门狗：_refresh_loop 中的看门狗会在 _input_blocking 持续为 True
+        # 超过 _INPUT_BLOCKING_TIMEOUT 秒后强制复位（清 _input_blocking /
+        # _refresh_paused、flush 所有缓存消息），目的是兜底"某个未预见的
+        # 异常路径导致标志没能被正确清除，所有后续 agent 输出被无限期
+        # 缓存、永不上屏"这一情况（详见 _refresh_loop）。
+        #
+        # ★★★ 真实复现过的严重回归（曾经把超时设成 120 秒）★★★
+        # 早期版本的注释里写着"_input_blocking 理论上只应在...人类按键
+        # 间隔内为 True"——这个假设是错的。_input_blocking 覆盖的是从
+        # "进入阻塞输入"到"用户真正提交"之间的*整段*等待，不是"按键
+        # 间隔"：用户读完提示、思考、打一段较长的回答，或者（尤其在
+        # Termux 等移动端）中途把 App 切到后台去做别的事再切回来，都完全
+        # 可能轻松超过 120 秒——这些都是完全正常、合法的人类行为，不是
+        # bug。而看门狗一旦误判"卡死"并强制复位，会在用户*仍然合法地*
+        # 停留在 prompt_toolkit 的 .prompt() 或 confirm() 的 readline()
+        # 里（这两个调用完全不知道、也不关心我们这边的内部计时器）的
+        # 情况下，把 _refresh_paused 清掉、让 refresh_thread 重新开始
+        # 按周期投递 _refresh 消息——状态栏从此开始一遍遍重绘，跟用户
+        # 正在输入的那一行抢屏幕，画面上呈现"一直在刷新、看不到自己刚
+        # 打的字"——这正是真实环境里复现过的 bug。
+        #
+        # 修复：把超时大幅拉长到远超任何正常人类交互（包括"切到后台
+        # 待一会儿再切回来"）会触发的量级，让看门狗只在"真的已经没人
+        # 会回来了"的极端情况下才介入；宁可异常路径下恢复得慢一点，
+        # 也不要在正常使用中频繁误伤正在合法等待输入的场景。
         self._input_blocking: bool = False
         self._pending_during_input: list[_Msg] = []
         self._input_blocking_since: float = 0.0
-        self._INPUT_BLOCKING_TIMEOUT: float = 120.0  # 秒；远大于正常人类输入耗时
+        self._INPUT_BLOCKING_TIMEOUT: float = 180000.0  # 30 分钟，仅作极端兜底
 
         # ── Task 焦点状态 ────────────────────────────────────────────────
         # 当 _task_focus 非 None 时，主输出区被"接管"，刷新循环会把
@@ -1324,12 +1341,22 @@ class Terminal:
         while not self._refresh_stop.is_set():
             time.sleep(self._refresh_interval)
             if self._refresh_paused.is_set() or self._refresh_stop.is_set():
-                # 看门狗：_input_blocking 正常情况下只会在用户实际输入期间
-                # （人类按键间隔，通常数秒）为 True。如果持续超过
-                # _INPUT_BLOCKING_TIMEOUT 仍未被 _exit_input_mode() 清除
-                # （说明触发了某个未预见的异常路径，标志卡死），强制复位
-                # 并 flush 所有缓存消息，避免 agent 输出永久不可见。
-                # 这是纵深防御的最后一道保险，正常路径不应触发。
+                # 看门狗：仅用于兜底"_exit_input_mode() 因某个未预见的
+                # 异常路径没有被正确调用，标志永久卡死"这一情况。
+                #
+                # 注意：_input_blocking 持续为 True 的时长 *不能* 简单
+                # 等同于"人类按键间隔"——它覆盖的是用户读完提示、思考、
+                # 打完一段完整回答（甚至中途切到后台再切回来）的整段
+                # 等待，完全可能轻松超过几分钟，这是正常人类行为，不是
+                # bug。_INPUT_BLOCKING_TIMEOUT 因此被设得很长（远超任何
+                # 正常交互场景），只在"真的已经没人会回来"的极端情况下
+                # 才介入；如果调低这个阈值，会导致看门狗在用户仍然合法
+                # 停留在 prompt_toolkit 的 .prompt() 或 confirm() 的
+                # readline() 里时就误判"卡死"、强制把 _refresh_paused
+                # 清掉——refresh_thread 会从此重新开始按周期重绘状态栏，
+                # 跟用户正在输入的那一行抢屏幕，造成"一直在刷新、看不到
+                # 自己刚打的字"的画面（真实复现过的回归 bug，详见构造
+                # 函数里 _INPUT_BLOCKING_TIMEOUT 定义处的完整说明）。
                 if (
                     self._input_blocking
                     and self._input_blocking_since
