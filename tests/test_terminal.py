@@ -292,6 +292,133 @@ class TestBackgroundThreadDuringBlockingInput(unittest.TestCase):
         )
 
 
+class TestRawKeyListenerPauseDuringBlockingInput(unittest.TestCase):
+    """
+    回归测试："用户确认的时候看不到用户输入" bug。
+
+    根因：raw_key_listener（repl.py 在 run_turn() 期间启动，用于监听
+    方向键/Ctrl+C）会用 termios 显式关闭终端的 ECHO，生命周期覆盖整个
+    run_turn()。但 ask_user_confirm / ask_user / ask_user_choice 这几个
+    工具，以及工具执行权限的 confirm() 审批提示，都是在 run_turn()
+    *内部*被调用的——它们阻塞读取 sys.stdin 时，listener 还在跑、
+    ECHO 还是关闭状态，用户打的字不会被终端回显，也没有任何代码把
+    它显式打印回去，于是看起来"输入凭空消失"。
+
+    修复：_enter_input_mode() 检测到 listener 处于活跃状态时，先把它
+    停掉（termios 会被还原，包括重新打开 ECHO），并记录这一事实；
+    _exit_input_mode() 的最后一步据此决定是否把 listener 重新启动
+    回去——只有"进入前确实是活跃的"才重启，避免在 prompt_user()
+    这种"listener 本来就没在跑"的路径上意外把它启动起来。
+    """
+
+    def setUp(self):
+        self.term = Terminal(status_refresh_hz=4)
+        self.term._console = MagicMock()
+
+    def tearDown(self):
+        self.term.stop()
+
+    def test_enter_input_mode_stops_active_listener_and_remembers_it(self):
+        fake_listener = MagicMock()
+        fake_listener.active = True
+
+        with patch(
+            "mini_agent.ui.raw_key_listener.get_listener",
+            return_value=fake_listener,
+        ):
+            self.term._enter_input_mode()
+
+        fake_listener.stop.assert_called_once()
+        self.assertTrue(
+            self.term._key_listener_was_active,
+            "listener 进入前活跃，应该被记住，供 _exit_input_mode() 恢复",
+        )
+        self.term._exit_input_mode()
+
+    def test_exit_input_mode_restarts_listener_only_if_it_was_active(self):
+        fake_listener = MagicMock()
+        fake_listener.active = True
+
+        with patch(
+            "mini_agent.ui.raw_key_listener.get_listener",
+            return_value=fake_listener,
+        ):
+            self.term._enter_input_mode()
+            fake_listener.stop.assert_called_once()
+
+            self.term._exit_input_mode()
+
+            fake_listener.start.assert_called_once()
+        self.assertFalse(
+            self.term._key_listener_was_active,
+            "恢复之后应该清空标记，避免下一轮被误判",
+        )
+
+    def test_prompt_user_path_does_not_touch_inactive_listener(self):
+        """
+        listener 进入前本就不活跃（典型如 prompt_user() 这条路径——
+        run_turn() 已经结束，repl.py 的 finally 早就调用过
+        listener.stop()）：_enter_input_mode() 不应该调用 stop()，
+        _exit_input_mode() 也不应该意外把它 start() 起来。
+        """
+        fake_listener = MagicMock()
+        fake_listener.active = False
+
+        with patch(
+            "mini_agent.ui.raw_key_listener.get_listener",
+            return_value=fake_listener,
+        ):
+            self.term._enter_input_mode()
+            fake_listener.stop.assert_not_called()
+
+            self.term._exit_input_mode()
+            fake_listener.start.assert_not_called()
+
+    def test_listener_interaction_failure_does_not_break_input_mode(self):
+        """get_listener() 本身抛异常（例如模块导入失败）时，
+        _enter_input_mode()/_exit_input_mode() 不应该因此崩溃——
+        阻塞输入这条核心路径的健壮性不能依赖 listener 模块是否可用。"""
+        with patch(
+            "mini_agent.ui.raw_key_listener.get_listener",
+            side_effect=RuntimeError("boom"),
+        ):
+            try:
+                self.term._enter_input_mode()
+                self.term._exit_input_mode()
+            except Exception as exc:
+                self.fail(f"listener 交互失败不应该让阻塞输入流程崩溃，但抛出了: {exc}")
+
+    def test_full_cycle_restores_echo_visible_state_for_confirm(self):
+        """
+        端到端验证：模拟 confirm() 的真实调用模式（_enter_input_mode →
+        阻塞读取 → _exit_input_mode），确认 listener 在"读取期间"
+        被正确停掉（即模拟用户输入时 ECHO 已经恢复），读取完成后
+        又被正确恢复运行。
+        """
+        fake_listener = MagicMock()
+        fake_listener.active = True
+        listener_active_during_read = []
+
+        with patch(
+            "mini_agent.ui.raw_key_listener.get_listener",
+            return_value=fake_listener,
+        ):
+            self.term._enter_input_mode()
+            try:
+                # 模拟"阻塞读取用户输入"这一刻——此时 listener 应该
+                # 已经被 stop() 过（active 在真实场景下会变为 False，
+                # 这里用 mock 的调用记录直接断言）
+                listener_active_during_read.append(fake_listener.stop.called)
+            finally:
+                self.term._exit_input_mode()
+
+        self.assertEqual(
+            listener_active_during_read, [True],
+            "阻塞读取用户输入期间，listener 必须已经被停掉（ECHO 已恢复）",
+        )
+        fake_listener.start.assert_called_once()
+
+
 class TestStreamTokenFilterToolUseTagBoundary(unittest.TestCase):
     """
     回归测试：_filter_token() 在 <tool_use>...</tool_use> 标签跨流式

@@ -173,6 +173,11 @@ class Terminal:
         self._refresh_thread.start()
 
         # 当前正在阻塞等待输入的 ptk Application 实例（由 _read_line() 维护）。
+        # 标记：进入阻塞输入前，raw key listener 当时是否处于活跃状态。
+        # 用于 _enter_input_mode()/_exit_input_mode() 配对地暂停/恢复它——
+        # 详见 _enter_input_mode() 里的说明。
+        self._key_listener_was_active: bool = False
+
         # SIGWINCH 的 debounce-settle 回调用它来跨线程触发强制重绘。
         # 详见 _read_line() 和 _on_sigwinch_settled() 的说明。
         self._active_ptk_app = None
@@ -598,6 +603,37 @@ class Terminal:
     def _enter_input_mode(self) -> None:
         """
         进入阻塞输入前的准备：
+        0. ★ 若 raw key listener（方向键/Ctrl+C 监听器，由 repl.py 在
+           run_turn() 期间启动）当前处于活跃状态，先把它停掉。
+
+           背景（真实复现过的 bug：" 用户确认的时候看不到用户输入"）：
+           raw_key_listener 为了监听方向键/Ctrl+C 而用 termios 把终端
+           设成 cbreak 模式，其中显式关闭了 ECHO（见 raw_key_listener.py
+           的 _setup()：`new_attrs[3] &= ~(termios.ECHO | ICANON | ISIG)`）。
+           它的生命周期是整个 run_turn()——但 ask_user_confirm /
+           ask_user / ask_user_choice 这几个工具，以及工具执行权限的
+           confirm() 审批提示，都是在 run_turn() *内部*被调用的（agent
+           在工具调用过程中触发）。也就是说，这些工具走到这里阻塞等待
+           用户输入时，raw key listener 还在跑、终端的 ECHO 依然是关闭
+           状态——用户这时候敲的字符，终端不会回显，我们自己的代码也
+           没有显式把输入内容打印回去，于是用户看不到自己刚刚输入了
+           什么，只会在按下回车后突然看到"User confirmed"之类的结果，
+           体验上就是"输入凭空消失"。
+
+           修复：每次进入阻塞输入前，如果 listener 正活跃，就先停掉它
+           （_teardown() 会把 termios 设置还原成进入前的状态，包括重新
+           打开 ECHO），让 sys.stdin.readline()/input() 在正常的、有
+           回显的终端模式下读取；同时记录"它之前是活跃的"这个事实
+           （self._key_listener_was_active），供 _exit_input_mode() 在
+           恢复阻塞输入流程的最后一步重新把它启动回去——run_turn() 的
+           其余部分（用户回答之后，agent 还要继续跑）仍然需要方向键/
+           Ctrl+C 监听，不能永久关掉。
+
+           对 prompt_user()（轮次之间，在 run_turn() 返回之后才会被
+           调用）这条路径而言，listener 这时候本来就是停着的（repl.py
+           的 finally 块已经在 run_turn() 结束时调用过 listener.stop()）
+           ——这里的 .active 检查会正确判定为 False，不会做任何事，
+           也不会在 _exit_input_mode() 时意外把它重新启动起来。
         1. 设置暂停标志（_refresh_paused），通知 refresh_thread 和 status_bar
            push_loop 停止向队列投递新消息
         2. 投双重哨兵 + join，彻底排空队列（含提示文字 + pause 前可能已入队的
@@ -642,6 +678,17 @@ class Terminal:
           在第一个哨兵入队前完成了检查（标志已 set，但消息已在队列），
           第二个哨兵确保渲染线程真正空闲、无残余 redraw 待处理。
         """
+        # 0. 暂停 raw key listener（若活跃），恢复正常回显，供下面的
+        #    sys.stdin.readline()/input() 使用——见上方详细说明
+        self._key_listener_was_active = False
+        try:
+            from mini_agent.ui.raw_key_listener import get_listener as _get_key_listener
+            _listener = _get_key_listener()
+            if _listener.active:
+                _listener.stop()
+                self._key_listener_was_active = True
+        except Exception:
+            pass
         # 1. 告知所有后台线程停止向队列投递消息
         self._refresh_paused.set()
         # 2a. 第一个哨兵：排空 pause 前可能已入队的残余消息（含提示文字）
@@ -680,6 +727,12 @@ class Terminal:
           极短窗口里又冒出新消息，它也会被正确缓冲到（已重新置空的）
           _pending_during_input 里，而不会越过已经入队的积压内容、
           造成乱序。
+        4. 最后，若 _enter_input_mode() 时暂停过 raw key listener
+           （self._key_listener_was_active 为 True），把它重新启动
+           回去——run_turn() 在用户回答之后还要继续跑，方向键/Ctrl+C
+           监听不能永久关掉。对 prompt_user() 这条路径（listener 进入
+           前本来就是停着的）而言，这里什么都不会做，不会意外把它
+           启动起来。
         """
         self._rearm_sigwinch()
         pending, self._pending_during_input = self._pending_during_input, []
@@ -690,6 +743,14 @@ class Terminal:
         self._refresh_paused.clear()
         self._input_blocking = False
         self._input_blocking_since = 0.0
+        # 4. 恢复 raw key listener（如果进入输入模式前它是活跃的）
+        if self._key_listener_was_active:
+            self._key_listener_was_active = False
+            try:
+                from mini_agent.ui.raw_key_listener import get_listener as _get_key_listener
+                _get_key_listener().start()
+            except Exception:
+                pass
 
     # ═══════════════════════════════════════════════════════════════════════
     # 渲染循环（render_thread）
