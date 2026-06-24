@@ -879,9 +879,18 @@ class Terminal:
                         # 以下所有内容，再重新打印一次保存好的 prefix
                         # 渲染，列位置必然正确（见 _open_line_render 的
                         # 定义注释）。
-                        lines_up = (self._bar_drawn if self._bar_drawn > 0 else 0) + 1
-                        sys.stdout.write(f"\x1b[{lines_up}A\x1b[0J")
-                        sys.stdout.flush()
+                        #
+                        # 改用逐行向上擦除：先擦掉 _bar_drawn 行状态栏，
+                        # 再额外上移 1 行到 prefix 行，然后 \x1b[0J 清到底。
+                        # 理由：单次 \x1b[NA 在 Termux / vterm 等实现里
+                        # 遇到滚动边界会被截断，导致实际上移行数偏少，
+                        # 旧状态栏行残留；逐行方案每次只上移 1 行，不受
+                        # 滚动边界截断影响，可靠性更高。
+                        out = sys.stdout
+                        for _ in range(self._bar_drawn if self._bar_drawn > 0 else 0):
+                            out.write("\x1b[1A\x1b[2K")
+                        out.write("\x1b[1A\x1b[0J")  # 额外上移 1 行到 prefix 行，清到屏底
+                        out.flush()
                         self._bar_drawn = 0
                         self._replay_open_line()
                         self._bar_below_prefix = False
@@ -906,9 +915,12 @@ class Terminal:
                 # 上移到 prefix 行行首、清除，再重新打印一次 prefix，
                 # 然后让下面的 "_stream_had_output" 判断走兜底换行逻辑
                 # （prefix 后没有内容追加，直接收尾换行）。
-                lines_up = (self._bar_drawn if self._bar_drawn > 0 else 0) + 1
-                sys.stdout.write(f"\x1b[{lines_up}A\x1b[0J")
-                sys.stdout.flush()
+                # 同样改用逐行向上擦除，理由见 stream 分支注释。
+                out = sys.stdout
+                for _ in range(self._bar_drawn if self._bar_drawn > 0 else 0):
+                    out.write("\x1b[1A\x1b[2K")
+                out.write("\x1b[1A\x1b[0J")  # 额外上移 1 行到 prefix 行，清到屏底
+                out.flush()
                 self._bar_drawn = 0
                 # _replay_open_line() 内部已设置 _stream_had_output=True，
                 # 确保下面的兜底换行逻辑会被触发（prefix 被重新打印后，
@@ -1032,11 +1044,13 @@ class Terminal:
             # 强制结束流式状态（异常恢复时使用）
             if self._bar_below_prefix:
                 # 同样不能依赖 \x1b[NA 回到 prefix 行尾的列位置
-                # （原因见 stream 分支的详细注释）：上移到行首、清除，
-                # 再重新打印一次 prefix，保证列位置正确。
-                lines_up = (self._bar_drawn if self._bar_drawn > 0 else 0) + 1
-                sys.stdout.write(f"\x1b[{lines_up}A\x1b[0J")
-                sys.stdout.flush()
+                # （原因见 stream 分支的详细注释）：改用逐行向上擦除，
+                # 再额外上移 1 行到 prefix 行，清到屏底后重新打印 prefix。
+                out = sys.stdout
+                for _ in range(self._bar_drawn if self._bar_drawn > 0 else 0):
+                    out.write("\x1b[1A\x1b[2K")
+                out.write("\x1b[1A\x1b[0J")
+                out.flush()
                 self._bar_drawn = 0
                 self._replay_open_line()
                 self._bar_below_prefix = False
@@ -1203,12 +1217,24 @@ class Terminal:
         if not _IS_TTY or not self._statusbar_lines:
             return
         out = sys.stdout
+        new_count = len(self._statusbar_lines)
         if self._bar_drawn > 0:
-            out.write(f"\x1b[{self._bar_drawn}A\x1b[0J")
+            # 逐行向上擦除旧内容，再回到起始行准备重写。
+            # 比"一次 \x1b[NA\x1b[0J"更可靠：Termux / vterm 等实现里
+            # \x1b[NA 在滚动边界附近会被截断，导致上移行数少于预期，
+            # \x1b[0J 清除的起点偏低，旧的状态栏行残留在屏幕上不被
+            # 擦除，下次绘制直接追加，形成反复堆叠的视觉 bug。
+            # 逐行策略：每次只上移 1 行（\x1b[1A），然后 \x1b[2K 擦除
+            # 当前整行，循环 _bar_drawn 次后光标已回到状态栏首行上方
+            # 的最后一行正常内容处；最后 \x1b[0J 清除从此往下的余量
+            # （兜底：防止行数缩减时旧的末尾行残留）。
+            for _ in range(self._bar_drawn):
+                out.write("\x1b[1A\x1b[2K")
+            out.write("\x1b[0J")
         for line in self._statusbar_lines:
             out.write(line + "\n")
         out.flush()
-        self._bar_drawn = len(self._statusbar_lines)
+        self._bar_drawn = new_count
 
     def _erase_bar(self) -> None:
         # 同上：防御性保护，simple-mode 下绝不发出擦除序列。
@@ -1216,8 +1242,12 @@ class Terminal:
             return
         if not _IS_TTY or self._bar_drawn == 0:
             return
-        sys.stdout.write(f"\x1b[{self._bar_drawn}A\x1b[0J")
-        sys.stdout.flush()
+        # 逐行向上擦除，与 _draw_bar() 保持一致——理由见 _draw_bar() 注释。
+        out = sys.stdout
+        for _ in range(self._bar_drawn):
+            out.write("\x1b[1A\x1b[2K")
+        out.write("\x1b[0J")
+        out.flush()
         self._bar_drawn = 0
 
     # ── 状态栏操作（主线程直接调用，仅在队列空闲时安全）─────────────────
@@ -1232,8 +1262,12 @@ class Terminal:
         if not _IS_TTY or self._bar_drawn == 0:
             self._bar_suspended = False
             return
-        sys.stdout.write(f"\x1b[{self._bar_drawn}A\x1b[0J")
-        sys.stdout.flush()
+        # 逐行向上擦除，与 _draw_bar() 保持一致——理由见 _draw_bar() 注释。
+        out = sys.stdout
+        for _ in range(self._bar_drawn):
+            out.write("\x1b[1A\x1b[2K")
+        out.write("\x1b[0J")
+        out.flush()
         self._bar_drawn = 0
         self._bar_suspended = False
 
