@@ -110,7 +110,12 @@ class SkillConfig:
     compact_budget: int = 25_000
     compact_per_skill: int = 5_000
     matcher: str = "keyword"           # "keyword" | "ngram" | "semantic"（扩展点）
+    keyword_activation_enabled: bool = False  # 关键词自动激活（默认关闭）
 ```
+
+`keyword_activation_enabled`：控制每轮用户输入是否触发 `auto_activate()` 的关键词扫描。
+默认关闭，避免 skill 被意外拉起；可在 `agent_config.json` 中设为 `true` 静态开启，
+也可在运行时通过 `/skill autoload on|off` 动态切换。
 
 ### SessionConfig
 

@@ -107,6 +107,7 @@ def load_config(
     skill_chunking_enabled: Optional[bool] = None,
     skill_compact_budget: Optional[int] = None,
     skill_compact_per_skill: Optional[int] = None,
+    skill_keyword_activation_enabled: Optional[bool] = None,
     project_scan_enabled: Optional[bool] = None,
     file_watch_enabled: Optional[bool] = None,
     tool_cache_enabled: Optional[bool] = None,
@@ -290,6 +291,7 @@ def load_config(
         compact_budget=_fn("skill_compact_budget", skill_compact_budget, 25_000),
         compact_per_skill=_fn("skill_compact_per_skill", skill_compact_per_skill, 5_000),
         matcher=_f("skill_matcher", None) or "keyword",
+        keyword_activation_enabled=_fb("skill_keyword_activation_enabled", skill_keyword_activation_enabled, default=False),
     )
 
     perception_cfg = PerceptionConfig(

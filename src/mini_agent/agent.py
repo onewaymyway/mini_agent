@@ -1752,7 +1752,7 @@ class Agent:
                             self._tool_cache.invalidate_file(p)
                     user_message = user_message + notice
 
-            if self.skill_loader:
+            if self.skill_loader and self.cfg.skill.keyword_activation_enabled:
                 newly = self.skill_loader.auto_activate(user_message)
                 for name in newly:
                     R.print_skill_loaded(name)

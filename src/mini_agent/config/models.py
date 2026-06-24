@@ -154,6 +154,7 @@ class SkillConfig:
     compact_budget: int = 25_000       # 压缩时重附的总 token 预算
     compact_per_skill: int = 5_000     # 单个 skill 最多贡献的 token 数
     matcher: str = "keyword"           # "keyword" | "ngram" | "semantic"（预留扩展点）
+    keyword_activation_enabled: bool = False  # 是否允许根据关键词自动激活 skill（默认关闭，需显式启用）
 
 
 @dataclass
@@ -497,6 +498,8 @@ class AppConfig:
     def skill_compact_budget(self) -> int:      return self.skill.compact_budget
     @property
     def skill_compact_per_skill(self) -> int:   return self.skill.compact_per_skill
+    @property
+    def skill_keyword_activation_enabled(self) -> bool: return self.skill.keyword_activation_enabled
 
     @property
     def project_scan_enabled(self) -> bool:     return self.perception.project_scan_enabled

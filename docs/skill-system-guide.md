@@ -87,9 +87,34 @@ Agent 初始化时，如果传入了 `skill_loader`，会注册以下技能管�
 
 ### 3.3 关键词辅助激活
 
-每轮 `run_turn()` 开始时，`SkillLoader.auto_activate(user_message)` 会根据 `trigger_words` 对用户输入做启发式匹配。匹配成功的技能会自动加入 active 列表，并在终端打印已加载提示。
+每轮 `run_turn()` 开始时，若关键词激活功能已启用，`SkillLoader.auto_activate(user_message)` 会根据 `trigger_words` 对用户输入做启发式匹配。匹配成功的技能会自动加入 active 列表，并在终端打印已加载提示。
 
-关键词自动激活只是辅助机制；更精确的方式仍然是让模型根据工具目录主动调用 `skill_activate`。
+**默认关闭。** 关键词匹配基于静态触发词，可能因词语歧义造成 skill 被意外拉起、多余地占用 context token。推荐的方式是让模型通过 `skill_list` + `skill_activate` 工具按需显式加载。
+
+#### 开启方式
+
+**静态（`agent_config.json`）**
+
+```json
+{
+  "skill_keyword_activation_enabled": true
+}
+```
+
+**运行时 toggle（REPL 命令）**
+
+| 命令 | 作用 |
+|------|------|
+| `/skill autoload` | 查看当前开关状态 |
+| `/skill autoload on` | 开启关键词自动激活 |
+| `/skill autoload off` | 关闭关键词自动激活 |
+
+**代码**
+
+```python
+cfg.skill.keyword_activation_enabled = True   # 开启
+cfg.skill.keyword_activation_enabled = False  # 关闭
+```
 
 ### 3.4 `exclude()`：彻底排除（2026-06 新增，Stage 3.2）
 

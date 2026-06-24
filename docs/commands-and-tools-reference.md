@@ -178,6 +178,8 @@ mini-agent --retry-backoff linear --retry-backoff-step 60 --retry-backoff-max 30
 | `/skill info <name>` | 显示技能全文内容、状态、token 估算 |
 | `/skill stats` | 显示 LRU 使用追踪和压缩预算预览 |
 | `/skill reset` | 卸载所有当前激活的技能 |
+| `/skill autoload` | 查看关键词自动激活开关当前状态 |
+| `/skill autoload on\|off` | 运行时开启/关闭关键词自动激活（默认关闭） |
 
 **内置技能类型**（`.claude/skills/`）：
 

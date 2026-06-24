@@ -56,13 +56,14 @@ def handle_skills_list(skill_loader: SkillLoader) -> None:
     )
 
 
-def handle_skill_cmd(args: list[str], skill_loader: SkillLoader) -> None:
+def handle_skill_cmd(args: list[str], skill_loader: SkillLoader, cfg=None) -> None:
     """
     /skill on  <name> [name2 ...]  — 激活一个或多个技能
     /skill off <name> [name2 ...]  — 卸载一个或多个技能
     /skill info <name>             — 显示技能全文内容
     /skill stats                   — 显示 LRU 调用统计
     /skill reset                   — 卸载所有当前激活的技能
+    /skill autoload on|off         — 打开/关闭关键词自动激活 skill 的机制
     """
     if not args:
         R.print_error(pm.fragment("cli_messages", "SKILL_CMD_USAGE"))
@@ -135,6 +136,26 @@ def handle_skill_cmd(args: list[str], skill_loader: SkillLoader) -> None:
             skill_loader.deactivate(n)
             R.print_success(pm.fragment("cli_messages", "SKILL_DEACTIVATED", name=n))
         R.print_info(f"All {len(active_now)} skill(s) deactivated.")
+
+    elif action == "autoload":
+        if not names:
+            # 无参数时显示当前状态
+            if cfg is not None:
+                state = "on" if cfg.skill.keyword_activation_enabled else "off"
+                R.print_info(f"Keyword auto-activation is currently [bold]{state}[/bold].")
+            else:
+                R.print_error("Config not available.")
+            return
+        toggle = names[0].lower()
+        if toggle not in ("on", "off"):
+            R.print_error("Usage: /skill autoload on|off")
+            return
+        if cfg is None:
+            R.print_error("Config not available — cannot toggle autoload at runtime.")
+            return
+        cfg.skill.keyword_activation_enabled = (toggle == "on")
+        state_label = "[green]enabled[/green]" if toggle == "on" else "[yellow]disabled[/yellow]"
+        R.console.print(f"  Keyword auto-activation {state_label}.")
 
     else:
         R.print_error(pm.fragment("cli_messages", "SKILL_CMD_USAGE"))

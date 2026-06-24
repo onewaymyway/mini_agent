@@ -157,7 +157,7 @@ def _handle_slash(cmd: str, agent: Agent, skill_loader: SkillLoader) -> None:
         handle_skills_list(skill_loader)
 
     elif name == "skill":
-        handle_skill_cmd(parts[1:], skill_loader)
+        handle_skill_cmd(parts[1:], skill_loader, cfg=agent.cfg)
 
     elif name == "stats":
         R.print_stats(agent.stats.summary())
