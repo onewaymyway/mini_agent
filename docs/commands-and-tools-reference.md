@@ -249,7 +249,8 @@ mini-agent --retry-backoff linear --retry-backoff-step 60 --retry-backoff-max 30
 | 命令 | 说明 |
 |------|------|
 | `/provider` | 显示当前 LLM provider 信息 |
-| `/provider list` | 列出所有注册的 providers |
+| `/provider list` | 列出所有注册的 provider 类型 |
+| `/provider models` | 列出 fallback chain 中所有已配置的模型，标记当前正在使用的 |
 | `/provider switch <name> [model]` | 运行时切换 provider |
 
 ### 模型
