@@ -5,7 +5,7 @@ condition:
   error_pattern: "No space left on device|ENOSPC|disk.*full|quota.*exceeded"
 inject_as: user
 priority: 90
-enabled: true
+enabled: false
 ---
 
 **[Reminder] 磁盘空间不足处理建议：**
