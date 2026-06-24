@@ -49,6 +49,7 @@
 - 关键功能都应该在/tests 下有对应的单元测试
 - 系统性的测试案例放在 /test_cases 下
 - 所有涉及调用大模型的 prompt，必须保存到 src/mini_agent/prompts 目录下，然后通过 PromptManager 来获取
+- 增加/命令 时，需要在 src/mini_agent/ui/terminal.py 的 _COMMANDS里配置对应的提示信息
 
 ## 运行
 
