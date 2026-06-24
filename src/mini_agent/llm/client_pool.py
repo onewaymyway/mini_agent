@@ -515,19 +515,79 @@ class LLMClientPool:
 def _get_env_api_key(provider: str) -> str:
     """根据 provider 名称读取对应的环境变量 API key。"""
     import os
-    _ENV_MAP = {
-        "anthropic": "ANTHROPIC_API_KEY",
-        "claude":    "ANTHROPIC_API_KEY",
-        "openai":    "OPENAI_API_KEY",
-        "azure":     "OPENAI_API_KEY",
-        "deepseek":  "DEEPSEEK_API_KEY",
-        "moonshot":  "MOONSHOT_API_KEY",
-        "qwen":      "DASHSCOPE_API_KEY",
-        "groq":      "GROQ_API_KEY",
-        "together":  "TOGETHER_API_KEY",
-        "fireworks": "FIREWORKS_API_KEY",
-        "nvidia":    "NVIDIA_API_KEY",
-        "nim":       "NVIDIA_API_KEY",
-    }
-    env_var = _ENV_MAP.get(provider.lower())
+    env_var = _PROVIDER_ENV_MAP.get(provider.lower())
     return os.environ.get(env_var, "") if env_var else ""
+
+
+# provider 名称 → 环境变量名的映射表（供 _get_env_api_key 和 inject_env_from_providers 共用）
+_PROVIDER_ENV_MAP: dict[str, str] = {
+    "anthropic":  "ANTHROPIC_API_KEY",
+    "claude":     "ANTHROPIC_API_KEY",
+    "openai":     "OPENAI_API_KEY",
+    "azure":      "OPENAI_API_KEY",
+    "deepseek":   "DEEPSEEK_API_KEY",
+    "moonshot":   "MOONSHOT_API_KEY",
+    "qwen":       "DASHSCOPE_API_KEY",
+    "groq":       "GROQ_API_KEY",
+    "together":   "TOGETHER_API_KEY",
+    "fireworks":  "FIREWORKS_API_KEY",
+    "nvidia":     "NVIDIA_API_KEY",
+    "nim":        "NVIDIA_API_KEY",
+    "openrouter": "OPENROUTER_API_KEY",
+    "agnes":      "AGNES_API_KEY",
+}
+
+
+def inject_env_from_providers(providers_cfg: dict) -> None:
+    """
+    从已解析的 providers.json 数据中，将 api_key / api_keys[0] 自动注入为
+    对应的标准环境变量（如 AGNES_API_KEY、NVIDIA_API_KEY）。
+
+    **只注入当前进程环境中尚不存在的变量**，不覆盖用户已手动设置的值。
+    注入范围：
+      1. ``llm_fallback_chain`` 中每条条目的 ``api_key`` / ``api_keys``
+      2. ``providers`` 块中每个 provider 的 ``api_key`` / ``api_keys``
+
+    这样，各 provider 实现在初始化时读取 ``os.environ.get("AGNES_API_KEY")``
+    等标准变量，就能找到 providers.json 里配置的 key，无需额外传参。
+
+    Args:
+        providers_cfg: ``_load_providers_config()`` 的返回值（可能是 ``{}``）。
+    """
+    import os
+
+    def _first_key(entry: dict) -> str:
+        """从条目中提取第一个有效 api_key 字符串。"""
+        k = entry.get("api_key", "")
+        if k and not k.startswith("sk-"):
+            # 非占位符（providers.json.example 里的 "sk-ant-key-1-..." 仍然是字符串，
+            # 此处不做过滤，由调用方保证 providers.json 中填写的是真实 key）
+            pass
+        if k:
+            return k
+        keys = entry.get("api_keys", [])
+        return keys[0] if keys else ""
+
+    def _inject(provider_name: str, key_value: str) -> None:
+        """若 key_value 非空且对应环境变量未设置，则注入。"""
+        if not key_value:
+            return
+        env_var = _PROVIDER_ENV_MAP.get(provider_name.lower())
+        if not env_var:
+            return
+        if not os.environ.get(env_var):
+            os.environ[env_var] = key_value
+
+    if not providers_cfg:
+        return
+
+    # 1. 遍历 llm_fallback_chain
+    for entry in providers_cfg.get("llm_fallback_chain", []):
+        provider = entry.get("provider", "")
+        if provider:
+            _inject(provider, _first_key(entry))
+
+    # 2. 遍历 providers 块
+    for provider_name, settings in providers_cfg.get("providers", {}).items():
+        if isinstance(settings, dict):
+            _inject(provider_name, _first_key(settings))

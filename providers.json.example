@@ -55,6 +55,16 @@
         "http_referer": "https://your-site.com",
         "x_title": "YourAppName"
       }
+    },
+    "_comment_agnes": "Agnes AI：配置后自动注入 AGNES_API_KEY 环境变量",
+    "agnes": {
+      "api_key": "agnes-...",
+      "key_rotation": "passive"
+    },
+    "_comment_nvidia": "NVIDIA NIM：配置后自动注入 NVIDIA_API_KEY 环境变量",
+    "nvidia": {
+      "api_key": "nvapi-...",
+      "key_rotation": "passive"
     }
   },
 

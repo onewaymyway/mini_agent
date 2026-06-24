@@ -12,7 +12,7 @@ mini-agent 是一个用 Python 实现的命令行 Agent 框架，定位为"简�
 - **多 LLM 支持**：Anthropic、OpenAI、Ollama、NVIDIA 等多种提供商
 - **工具系统**：内置 bash、文件读写、glob、grep、web_search 等工具，支持自定义扩展
 - **Web Search**：支持 DuckDuckGo（默认）、Brave、Serper、Tavily 等多种搜索后端
-- **Skill 系统**：可加载领域技能文档，支持自动关键词激活
+- **Skill 系统**：可加载领域技能文档，关键词自动激活默认关闭，可通过 `/skill autoload on` 或配置 `skill_keyword_activation_enabled: true` 启用
 - **权限管理**：工具调用前需要用户确认，支持沙箱模式
 - **会话管理**：保存、加载、恢复对话历史，支持长期记忆（`MemoryStore` + TF-IDF 检索）
 - **并发控制**：Sub-Agent 多任务并发执行，含信号量限制
@@ -159,12 +159,12 @@ mini_agent/
 | `cli/parser.py` | 纯 argparse 定义，无任何业务依赖 |
 | `cli/app.py` | 启动装配：解析参数、构建 Config/Agent/Skills，分发单次/REPL 模式 |
 | `cli/repl.py` | REPL 主循环、slash 命令路由、retry/rollback/compact 实现 |
-| `cli/commands/skills.py` | `/skills` `/skill on\|off\|info\|stats\|reset` |
+| `cli/commands/skills.py` | `/skills` `/skill on\|off\|info\|stats\|reset\|autoload` |
 | `cli/commands/sessions.py` | `/session` 及其子命令 |
 | `cli/commands/tasks.py` | `/tasks` 及其子命令 |
 | `cli/commands/plans.py` | `/plan` 及其子命令 |
 | `cli/commands/concurrency.py` | `/concurrency`（别名 `/cc`）及其子命令 |
-| `cli/commands/providers.py` | `/provider` 及其子命令 |
+| `cli/commands/providers.py` | `/provider` `/provider list\|models\|switch` |
 
 ### ui/ — 终端 UI 层
 

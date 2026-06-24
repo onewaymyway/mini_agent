@@ -157,6 +157,11 @@ def load_config(
         else {}
     )
 
+    # providers.json 里的 api_key 自动注入为标准环境变量（只补充，不覆盖已有值）
+    # 这样各 provider 实现在初始化时无需额外传参即可读取到 key
+    from mini_agent.llm.client_pool import inject_env_from_providers as _inject_env
+    _inject_env(_providers_cfg)
+
     def _f(key, cli_val, default=None):
         """CLI 参数 > 配置文件 > 默认值"""
         if cli_val is not None:

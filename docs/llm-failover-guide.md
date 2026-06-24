@@ -285,8 +285,32 @@ CLI 参数  >  agent_config.json  >  providers.json chain[0]  >  环境变量  >
 | `together` | `TOGETHER_API_KEY` |
 | `fireworks` | `FIREWORKS_API_KEY` |
 | `nvidia` / `nim` | `NVIDIA_API_KEY` |
+| `openrouter` | `OPENROUTER_API_KEY` |
+| `agnes` | `AGNES_API_KEY` |
 
 在 fallback chain 的条目中省略 `api_key` / `api_keys` 时，自动从对应环境变量读取。
+
+### 自动注入机制
+
+`load_config()` 在解析完 `providers.json` 后，会立即调用 `inject_env_from_providers()`，
+将文件中配置的 `api_key` / `api_keys[0]` **自动写入**对应的标准环境变量（如 `AGNES_API_KEY`、`NVIDIA_API_KEY`）。
+
+**规则：**
+- 只补充**当前进程中尚不存在**的环境变量，不覆盖用户已手动 `export` 的值
+- 注入顺序：先遍历 `llm_fallback_chain`，再遍历 `providers` 块；同一 provider 先遇到的 key 优先
+- 实现位置：`src/mini_agent/llm/client_pool.py` 中的 `inject_env_from_providers()`
+
+**效果：**只需在 `providers.json` 中配置一次 key，各 provider 实现、第三方库、子进程工具均可通过标准环境变量读取，无需重复传参。
+
+```json
+// providers.json 示例 — 配置 agnes 后，AGNES_API_KEY 自动可用
+{
+  "providers": {
+    "agnes": { "api_key": "agnes-xxx" },
+    "nvidia": { "api_key": "nvapi-xxx" }
+  }
+}
+```
 
 ---
 
@@ -351,6 +375,59 @@ pool = LLMClientPool(entries=entries)
 # 从 AppConfig 自动构建（推荐）
 pool = LLMClientPool.from_config(cfg)
 ```
+
+---
+
+## 运行时查看与切换
+
+### 查看当前配置的所有模型
+
+```
+/provider models
+```
+
+列出 fallback chain 中所有已配置的条目，标记当前正在使用的：
+
+```
+Configured models  (active: anthropic/claude-opus-4-7)
+
+   #  Provider     Model                         Keys  Rotation
+   ─────────────────────────────────────────────────────────────
+●  1  anthropic    claude-opus-4-7               2     passive
+○  2  openai       gpt-4o                        1     passive
+
+  ● = currently active · Keys = number of API keys in rotation
+```
+
+- `●` 标记当前活跃条目（`_current_idx`，可能因 fallback 已切到非第一条）
+- `Keys` 列显示该条目配置的 API key 数量
+- `Rotation` 列显示轮转策略（`passive` / `round_robin` / `—`）
+
+### 运行时切换 provider
+
+```
+/provider switch openai gpt-4o
+```
+
+调用 `agent.switch_provider()`，重新构建整个 `LLMClient` 实例。**注意**：切换后 fallback chain 缩减为单条，再次执行 `/provider models` 可确认。
+
+### 只切换模型名（不换 provider）
+
+```
+/model claude-opus-4-7
+```
+
+仅修改 `cfg.model` 字符串，不重建 LLMClient，API key 和 provider 类型保持不变。**注意**：当前 provider 不支持该模型时，下次调用会直接报错。
+
+### `/model` vs `/provider switch` 的区别
+
+| | `/model <name>` | `/provider switch <name> [model]` |
+|---|---|---|
+| 改变的对象 | `cfg.model` 字符串 | 整个 `LLMClient` 实例 |
+| API key | 不变 | 从环境变量重新读取 |
+| Provider 类型 | 不变 | 替换为新 provider |
+| LLMClientPool | 不变（fallback chain 保留） | 重建为单条链 |
+| 对话历史 | 保留 | 保留 |
 
 ---
 
