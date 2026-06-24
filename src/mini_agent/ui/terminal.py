@@ -172,6 +172,38 @@ class Terminal:
         )
         self._refresh_thread.start()
 
+        # 当前正在阻塞等待输入的 ptk Application 实例（由 _read_line() 维护）。
+        # SIGWINCH 的 debounce-settle 回调用它来跨线程触发强制重绘。
+        # 详见 _read_line() 和 _on_sigwinch_settled() 的说明。
+        self._active_ptk_app = None
+
+        # ── SIGWINCH debounce（resize 抖动 / 尺寸尚未稳定问题）──────────────
+        # 背景（Termux 等移动端终端模拟器上更容易复现）：应用切到后台再
+        # 切回前台时，触发的 SIGWINCH 可能出现以下任一情况：
+        #   - 短时间内连续触发多次（动画式的尺寸过渡），中间几次的尺寸是
+        #     "过渡态"，不是最终稳定值；
+        #   - 信号送达的时刻，底层 pty 的 ioctl(TIOCGWINSZ) 可能还没完全
+        #     更新到最终尺寸（取决于 Termux 自身从 Android 窗口尺寸到 pty
+        #     winsize 的同步实现，这一步发生在我们的进程之外，无法直接
+        #     控制其时序）。
+        # 如果我们在 SIGWINCH 处理函数里"立即"用当时查到的尺寸重绘，
+        # 拿到的很可能是这个过渡态/未稳定值，重绘结果本身就是错的，
+        # 之后如果没有再来一次 SIGWINCH（比如最终尺寸和触发动画前的
+        # 尺寸恰好相同，某些实现不会为此再发一次信号），就再也没有
+        # 机会用正确尺寸纠正了。
+        #
+        # 解决思路：不在信号处理函数里直接做"最终"重绘，而是用一个
+        # 短延时（_SIGWINCH_DEBOUNCE_SECONDS）的 debounce 定时器——每次
+        # 收到新的 SIGWINCH 就取消旧定时器、重新计时；只有"安静"超过
+        # 这个时长之后，才认为尺寸已经稳定，此时才真正触发重绘。重绘时
+        # 不使用信号触发瞬间缓存的任何尺寸值，而是让 rich Console 和
+        # prompt_toolkit 在各自渲染时重新查询操作系统当前的真实尺寸
+        # （二者的 get_size() 实现都不缓存，每次都是新查询），从根本上
+        # 避免"用到尚未更新好的旧数据"。
+        self._SIGWINCH_DEBOUNCE_SECONDS = 0.15
+        self._sigwinch_debounce_timer: Optional[threading.Timer] = None
+        self._sigwinch_debounce_lock = threading.Lock()
+
         # ── SIGWINCH 处理（终端窗口 resize）────────────────────────────────
         # 问题根源：用户拖动终端窗口改变尺寸时，rich Console 会缓存旧的终端
         # 宽度（_width/_height）。_draw_bar() 用旧宽度渲染出的内容行数估算
@@ -189,30 +221,162 @@ class Terminal:
         #   - SIGWINCH 只在主线程可靠（CPython signal 限制）；这里在构造函数
         #     （主线程执行）中注册，不影响其他 signal 处理逻辑。
         #   - Windows 没有 SIGWINCH，用 hasattr 保护。
-        #   - prompt_toolkit 自己也会注册 SIGWINCH handler 来刷新输入行；
-        #     我们在自己的 handler 末尾转发给之前的 handler，保证 ptk 的
-        #     resize 重绘逻辑依然能正常触发。
+        #
+        # ★★★ 关键陷阱（曾经导致此修复"上线后第一轮对话就失效"）★★★
+        # prompt_toolkit 的 PromptSession.prompt() 内部通过
+        # asyncio_loop.add_signal_handler(SIGWINCH, ...) 接管 resize 信号。
+        # asyncio 的实现（见 unix_events.py）是直接 signal.signal(SIGWINCH,
+        # 一个内部 noop 桩函数) 来覆盖"当前"的 OS 级 handler，且只把回调
+        # 记在它自己的 loop._signal_handlers 字典里——它既不知道、也不会
+        # 调用我们在这里注册的 _on_sigwinch；prompt() 返回时，asyncio 的
+        # remove_signal_handler() 还会把 OS 级 handler 显式复位为 SIG_DFL。
+        # 也就是说：只要用户提交过一次输入（调用过一次 prompt_toolkit 的
+        # .prompt()），我们这里注册的 handler 就会被**永久**替换为 SIG_DFL，
+        # 此后整个进程生命周期内的任何 resize（无论发生在 agent 运行期间、
+        # 状态栏刷新期间，还是下一次进入输入等待前的极短间隙）都不会再触发
+        # 上面的 1/2/3 步修复，_bar_drawn 和 Console 宽度缓存从此失真，
+        # 直接导致下一次 _enter_input_mode() 里的 _erase_bar_direct() 用
+        # 错误的行数擦除——这正是 "You ❯" 在 resize 后闪烁/消失的真正根因
+        # （比"ptk 自己重绘不及时"更深一层，且完全不依赖具体终端模拟器）。
+        #
+        # 修复方式：把 handler 做成可重新挂载的实例方法（_on_sigwinch /
+        # _rearm_sigwinch），并在每次离开阻塞输入（_exit_input_mode，
+        # 同时覆盖 prompt_user() 的 ptk 路径和 confirm() 的 readline 路径）
+        # 时主动重新 signal.signal() 挂回去。ptk 在【活跃 prompt() 期间】
+        # 仍然会临时接管 SIGWINCH（这是期望行为——交给 ptk 自己重绘输入
+        # 行），但只要 prompt() 一返回，我们就立刻把 handler 抢回来，确保
+        # 后续任何时刻的 resize 都不会再悄悄变成"没人处理"的 SIG_DFL。
         import signal as _signal
+        self._signal_mod = _signal
         if hasattr(_signal, "SIGWINCH"):
-            _prev_sigwinch = _signal.getsignal(_signal.SIGWINCH)
+            self._prev_sigwinch = _signal.getsignal(_signal.SIGWINCH)
+            self._rearm_sigwinch()
+        else:
+            self._prev_sigwinch = None
 
-            def _on_sigwinch(signum, frame):
-                # 1. 让 rich Console 丢弃宽度缓存，下次渲染自动重测
-                try:
-                    self._console._width = None
-                    self._console._height = None
-                except Exception:
-                    pass
-                # 2. 重置已绘状态栏行数，防止超界擦除把 "You ❯" 也擦掉
-                self._bar_drawn = 0
-                # 3. 若不在输入期间，重绘状态栏（适应新宽度）
-                if not self._input_blocking and not self._refresh_paused.is_set():
-                    self._q.put(_Msg("redraw", None))
-                # 4. 转发给之前的 handler（如 prompt_toolkit 自己注册的）
-                if callable(_prev_sigwinch):
-                    _prev_sigwinch(signum, frame)
+    def _on_sigwinch(self, signum, frame) -> None:
+        # 1. 让 rich Console 丢弃宽度缓存，下次渲染自动重测（仅影响走
+        #    Console 渲染的 panel/markdown/syntax 等内容的换行宽度，
+        #    与状态栏无关——状态栏行是纯字符串 write，不经过 Console）
+        try:
+            self._console._width = None
+            self._console._height = None
+        except Exception:
+            pass
+        # 2. 若不在输入期间，重绘状态栏（适应新宽度）
+        #
+        #    ★★★ 这里曾经还有一行 `self._bar_drawn = 0`，已被移除 ★★★
+        #    （历史教训，记录在此避免未来重新引入同样的 bug）：
+        #    `_bar_drawn` 不是"状态栏画面宽度估算"的缓存值，而是
+        #    "当前屏幕上真实占用了多少行、下次擦除需要上移多少行"的
+        #    唯一权威记录，被 _draw_bar()/_erase_bar() 以及三阶段状态机
+        #    （_bar_below_prefix，见 stream/stream_end/_force_end_stream
+        #    分支里的 `lines_up = (self._bar_drawn if ... else 0) + 1`）
+        #    共同依赖，必须随时反映"屏幕上确实还有多少行待擦除"这一
+        #    事实。把它强行置 0 等于对整个系统说"什么都不用擦"——而
+        #    屏幕上明明还有内容——直接导致下一次绘制在不擦除旧内容的
+        #    情况下继续往下追加，造成状态栏被一遍遍重复打印、不断堆叠
+        #    （resize 一次多一份，长时间挂着任务时只要触发几次 resize/
+        #    后台切换就会越堆越多）。状态栏本身是纯字符串行，行数只
+        #    取决于 `len(self._statusbar_lines)`，跟终端宽度变化没有
+        #    关系，resize 时根本不需要、也不应该去碰 `_bar_drawn`。
+        if not self._input_blocking and not self._refresh_paused.is_set():
+            self._q.put(_Msg("redraw", None))
+        # 3. 转发给之前的 handler（如最初进程启动时已有的 handler）
+        if callable(self._prev_sigwinch):
+            try:
+                self._prev_sigwinch(signum, frame)
+            except Exception:
+                pass
+        # 4. 调度一次"稳定后再确认"的延迟重绘（见构造函数里 SIGWINCH
+        #    debounce 段落的详细说明）。上面 1-3 步是即时处理，对绝大多数
+        #    桌面终端已经足够；这一步专门兜底"信号送达时尺寸还没真正
+        #    稳定"的场景（典型如 Termux 切后台/前台）。即使上面的即时
+        #    处理已经是对的，重复执行一次也是无害的（幂等）。
+        self._schedule_sigwinch_settle()
 
-            _signal.signal(_signal.SIGWINCH, _on_sigwinch)
+    def _schedule_sigwinch_settle(self) -> None:
+        """
+        (重新) 启动一个短延时定时器：如果在 _SIGWINCH_DEBOUNCE_SECONDS 内
+        没有再收到新的 SIGWINCH，就认为尺寸已经稳定，执行
+        _on_sigwinch_settled() 做一次"确认性"的最终重绘。每次新信号
+        到达都会取消旧定时器、重新计时——这样无论一次 resize 触发了
+        多少次连续的 SIGWINCH（典型如尺寸过渡动画），最终只会在"安静期"
+        之后真正重绘一次，且这一次用到的是当时（延迟之后）查询到的
+        最新尺寸，不是信号触发瞬间可能还没更新好的旧值。
+        """
+        with self._sigwinch_debounce_lock:
+            if self._sigwinch_debounce_timer is not None:
+                self._sigwinch_debounce_timer.cancel()
+            timer = threading.Timer(
+                self._SIGWINCH_DEBOUNCE_SECONDS, self._on_sigwinch_settled
+            )
+            timer.daemon = True
+            self._sigwinch_debounce_timer = timer
+            timer.start()
+
+    def _on_sigwinch_settled(self) -> None:
+        """
+        在 resize "安静期"过后（debounce 计时结束）真正执行的确认性重绘。
+        运行在定时器自己的线程上，**不是**主线程，也不是渲染线程——
+        因此这里只能调用明确线程安全的接口，不能直接操作 stdout 或
+        ptk 内部渲染状态：
+          - rich Console 的 _width/_height 缓存清空：纯属性赋值，安全。
+          - self._bar_drawn 重置：简单整数赋值，安全（worst case 是与
+            渲染线程之间出现一次良性的竞态重排，不影响正确性）。
+          - 投递 _Msg("redraw") 到 self._q：queue.Queue 本身是线程安全的。
+          - Application.invalidate()：prompt_toolkit 文档里明确标注为
+            "线程安全的重绘触发方式"，专门设计给外部线程调用；它只是
+            把一个回调通过 call_soon_threadsafe 扔给 ptk 自己的事件循环，
+            真正的重绘（包括重新查询当前终端尺寸）仍然发生在 ptk 自己的
+            线程上，不存在跨线程直接操作渲染状态的问题。
+        """
+        try:
+            self._console._width = None
+            self._console._height = None
+        except Exception:
+            pass
+        # 不再重置 self._bar_drawn——理由见 _on_sigwinch() 里的详细注释，
+        # 这里同理：_bar_drawn 必须始终如实反映屏幕上真正占用的行数，
+        # 任何时候把它清零都会导致下次绘制不擦除旧内容、状态栏被重复
+        # 堆叠打印。
+
+        app = self._active_ptk_app
+        if app is not None:
+            # 用户正阻塞在 prompt_toolkit 的 .prompt() 里（典型即"等待
+            # 用户输入"场景）。直接让 ptk 用当前最新尺寸强制重绘一次，
+            # 不依赖 ptk 自己内部的 resize-diff 判断（如果尺寸在动画
+            # 过程中一度变化又变回原值，ptk 可能认为"没有变化"而跳过
+            # 重绘，但屏幕实际内容已经因为 Android 切前台/后台被破坏，
+            # 这种情况下仍然需要一次强制重绘）。
+            try:
+                app.invalidate()
+            except Exception:
+                pass
+        elif not self._input_blocking and not self._refresh_paused.is_set():
+            # 不在任何阻塞输入路径里（agent 正在运行/状态栏可见），
+            # 走普通的 redraw 消息队列重绘。
+            self._q.put(_Msg("redraw", None))
+
+    def _rearm_sigwinch(self) -> None:
+        """
+        (重新) 把 self._on_sigwinch 挂为 SIGWINCH 的 OS 级 handler。
+        必须在每次退出阻塞输入（_exit_input_mode）时调用——见上方
+        构造函数里的详细说明：prompt_toolkit 在 .prompt() 期间会把
+        handler 偷走，返回时还会把它复位成 SIG_DFL，不会自动还给我们。
+        只在主线程调用（SIGWINCH/CPython signal 限制决定了这一点，
+        本项目里 _enter_input_mode/_exit_input_mode 也始终在主线程
+        执行，与该限制天然一致）。
+        """
+        _signal = getattr(self, "_signal_mod", None)
+        if _signal is None or not hasattr(_signal, "SIGWINCH"):
+            return
+        try:
+            _signal.signal(_signal.SIGWINCH, self._on_sigwinch)
+        except (ValueError, OSError):
+            # 非主线程调用时 signal.signal 会抛 ValueError；静默忽略，
+            # 不影响功能（下一次主线程路径仍会重新挂载）。
+            pass
 
     # ═══════════════════════════════════════════════════════════════════════
     # 输出通道（线程安全）
@@ -437,11 +601,38 @@ class Terminal:
         1. 设置暂停标志（_refresh_paused），通知 refresh_thread 和 status_bar
            push_loop 停止向队列投递新消息
         2. 投双重哨兵 + join，彻底排空队列（含提示文字 + pause 前可能已入队的
-           残余 _refresh / redraw 消息）
-        3. 直接擦除状态栏（此时渲染线程空闲，安全直接写屏幕）
-        4. 设置 _input_blocking，让渲染线程在接下来的阻塞输入期间把
-           print/rule/panel/syntax/markdown 类消息缓存而非直接写屏幕
-           （见 _handle()），避免与 prompt_toolkit 的输入行渲染竞争。
+           残余 _refresh / redraw 消息）。注意：此时 _input_blocking 仍是
+           False——这是必须的，排空阶段里可能还混着"上一轮对话遗留、
+           本就该正常显示"的 stream/print 消息（比如 run_turn() 刚
+           结束但渲染线程还没来得及处理完最后几条），这些必须被正常
+           处理写到屏幕上，不能被误判为"阻塞期消息"缓冲起来推迟显示。
+        3. ★ 双重 join 确认队列真正空闲的那一刻，立刻置位
+           _input_blocking（在 _erase_bar_direct() 之前）。
+
+           这是修复一个真实复现过的竞态 bug 的关键改动：如果像旧版本
+           那样把置位动作放在 _erase_bar_direct() 之后，中间就会出现
+           一个"队列已确认排空，但 _input_blocking 还是 False"的窗口
+           ——这个窗口跨越了整个 _erase_bar_direct() 的执行时间（一次
+           真实的 stdout 写操作，不是几个字节码指令那么短）。后台线程
+           （典型如会话摘要生成 mini-agent-summary 线程）调用
+           term.print() 恰好落在这个窗口里时，_handle() 的缓冲判断
+           （if self._input_blocking and kind in (...)）会判定为
+           "不在阻塞期"，于是这条消息被当作普通消息正常处理——渲染
+           线程会直接写 stdout（print 内容 + 可能的状态栏重绘），这个
+           写动作和主线程紧接着即将启动的 prompt_toolkit 输入行渲染
+           几乎同时发生，二者对同一个 stdout 的写入没有任何协调，会
+           交织出文字粘连、状态栏在输入提示符旁边冒出来等乱码画面
+           ——这正是实际环境里复现过的 bug（"刚好触发 session memory
+           生成的时候会导致无法输入，输入的文字会被立刻擦除"）。
+
+           把置位动作提前到 _erase_bar_direct() 之前（而不是之后），
+           把这个竞态窗口从"一整次 stdout 写操作的时长"压缩到几乎为
+           零（只剩一行属性赋值，CPython 里这种简单赋值在 GIL 保护下
+           是原子的），同时又不会影响上面第 2 步排空阶段的正确性
+           （那一步本就需要 _input_blocking 为 False）。
+        4. 直接擦除状态栏（此时渲染线程空闲，无任何后台线程会写屏幕，
+           安全直接操作；_input_blocking 已经是 True，从此刻起任何
+           新到达的后台线程消息都会被正确缓冲）
 
         双重哨兵原因：
           设置 _refresh_paused 后，status_bar._push_loop 可能正处于
@@ -459,29 +650,46 @@ class Terminal:
         # 2b. 第二个哨兵：确认渲染线程在处理完所有残余 redraw 后真正空闲
         self._q.put(_Msg("_noop", None))
         self._q.join()
-        # 3. 此时渲染线程空闲，无任何后台线程会写屏幕，安全直接操作
-        self._erase_bar_direct()
-        # 4. 开始缓存阻塞输入期间到达的输出类消息（业务后台线程可能仍在产生）
+        # 3. 排空确认完成的瞬间立刻置位，把竞态窗口压缩到最小
         self._input_blocking = True
         self._input_blocking_since = time.monotonic()
+        # 4. 此时渲染线程空闲，且新消息已能被正确缓冲，安全直接操作
+        self._erase_bar_direct()
 
     def _exit_input_mode(self) -> None:
         """
         输入完成后：
-        1. 停止缓存模式，取出阻塞期间积压的消息
-        2. 恢复刷新
-        3. 把积压消息重新入队，让渲染线程正常补打印（此时已脱离
-           prompt_toolkit 的输入行上下文，可以安全写屏幕）
-        4. 重绘状态栏
+        1. 重新挂载 SIGWINCH handler（见构造函数注释：prompt_toolkit 的
+           .prompt() 在 prompt_user() 路径下会偷走并复位这个 handler，
+           confirm() 的 readline 路径虽然自己不偷，但如果在它之前已经
+           走过一次 prompt_user()，handler 也早被复位成 SIG_DFL 了——
+           所以这里两条路径都统一重新挂载，不区分调用来源）
+        2. 取出阻塞期间积压的消息，连同一条 redraw 重新入队（此时
+           _input_blocking 仍是 True——见下方详细说明，这是有意为之）
+        3. 最后才清除 _input_blocking / _refresh_paused
+
+        为什么"重新入队"和"清除标志"的顺序很重要：
+          如果像早期版本那样先清除 _input_blocking、再循环把积压消息
+          入队，中间会有一个短暂窗口——这段时间里如果恰好有另一条
+          后台线程消息到达（比如积压消息本身还没入队完，又有新的
+          term.print() 调用），_handle() 会因为 _input_blocking 已经
+          是 False 而把它当作"正常"消息立刻处理，从而抢在本该更早
+          产生的积压消息前面被渲染——造成时间顺序错乱的画面（新内容
+          先出现，旧的积压内容后出现）。把清除标志的时间点推到最后
+          （积压消息 + redraw 已经全部入队之后），可以保证：即使这段
+          极短窗口里又冒出新消息，它也会被正确缓冲到（已重新置空的）
+          _pending_during_input 里，而不会越过已经入队的积压内容、
+          造成乱序。
         """
-        self._input_blocking = False
-        self._input_blocking_since = 0.0
+        self._rearm_sigwinch()
         pending, self._pending_during_input = self._pending_during_input, []
-        self._refresh_paused.clear()
         for msg in pending:
             self._q.put(msg)
         # 重绘通过队列（让渲染线程来画）
         self._q.put(_Msg("redraw", None))
+        self._refresh_paused.clear()
+        self._input_blocking = False
+        self._input_blocking_since = 0.0
 
     # ═══════════════════════════════════════════════════════════════════════
     # 渲染循环（render_thread）
@@ -1127,6 +1335,17 @@ class Terminal:
         降级策略：
         - ImportError（未安装 ptk）→ 直接降级，不报错
         - 运行时异常（dumb terminal 等）→ 设 _ptk_failed，后续跳过
+
+        self._active_ptk_app 的作用：
+            记录当前正在阻塞等待输入的 ptk Application 实例。SIGWINCH 的
+            "settle" 回调（见 _on_sigwinch_settled，跑在独立的 debounce
+            定时器线程上，不是主线程）需要在 resize 尺寸真正稳定之后，
+            强制 ptk 用最新尺寸重绘一次——但定时器线程不能直接操作 ptk
+            内部状态（ptk 的渲染必须发生在它自己的事件循环线程）。
+            `Application.invalidate()` 是 ptk 文档里明确标注的"线程安全"
+            API，正是为这种"外部线程要求重绘"场景设计的，因此只需要
+            持有 app 引用、跨线程调用 invalidate() 即可，不需要也不应该
+            直接调用 renderer 内部方法。
         """
         if not getattr(self, "_ptk_failed", False):
             try:
@@ -1139,8 +1358,12 @@ class Terminal:
                 html_prompt = prompt_text or HTML(
                     "<b><ansgreen>You</ansgreen></b><ansicyan> ❯ </ansicyan>"
                 )
-                result = self._ptk_session.prompt(html_prompt)
-                return (result or "").strip()
+                self._active_ptk_app = self._ptk_session.app
+                try:
+                    result = self._ptk_session.prompt(html_prompt)
+                    return (result or "").strip()
+                finally:
+                    self._active_ptk_app = None
             except ImportError:
                 pass  # 未安装 prompt_toolkit，直接降级
             except (KeyboardInterrupt, EOFError):
@@ -1165,6 +1388,13 @@ class Terminal:
     def stop(self) -> None:
         """程序退出时调用，优雅关闭后台线程，避免 daemon 线程在解释器关闭时
         争抢 stdout 锁导致 Fatal Python error: _enter_buffered_busy。"""
+        # 0. 取消尚未触发的 SIGWINCH debounce 定时器（daemon=True，即使不取消
+        #    也不会阻止进程退出，但显式取消更干净，避免它在解释器关闭过程中
+        #    触发回调访问已经在被销毁的对象）。
+        with self._sigwinch_debounce_lock:
+            if self._sigwinch_debounce_timer is not None:
+                self._sigwinch_debounce_timer.cancel()
+                self._sigwinch_debounce_timer = None
         # 1. 先停刷新线程，防止它继续往队列里投消息
         self._refresh_stop.set()
         self._refresh_paused.set()   # 防止 refresh_loop 卡在 paused.wait

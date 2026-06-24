@@ -180,6 +180,117 @@ class TestBackgroundThreadDuringBlockingInput(unittest.TestCase):
         self.term._q.join()
         self.term._console.print.assert_called_once()
 
+    def test_input_blocking_flag_set_before_erase_bar_direct_runs(self):
+        """
+        回归测试：精确复现"_input_blocking 置位"和"_erase_bar_direct()
+        执行"之间的竞态窗口。
+
+        早期版本把 self._input_blocking = True 放在 _erase_bar_direct()
+        *之后*，这意味着从"双重哨兵 join 确认队列已空"到"标志真正
+        置位"之间，存在一段跨越整次 _erase_bar_direct() 执行时长的
+        窗口——如果后台线程（如会话摘要生成线程）恰好在这个窗口里
+        调用 term.print()，消息会被当作"非阻塞期"消息直接渲染，
+        和主线程紧接着启动的 prompt_toolkit 输入行渲染产生不可控的
+        交织写入，正是用户反馈的"输入文字被立刻擦除""状态栏在 You ❯
+        旁边冒出来"等乱码画面的根因。
+
+        本测试把 _erase_bar_direct 替换为一个会先记录"此刻
+        _input_blocking 是否已经是 True"、再人为暂停一小段时间的
+        替身，模拟真实环境里这段操作不是零耗时的；暂停期间从另一个
+        线程调用 term.print()，断言：
+          1) _erase_bar_direct 被调用时，_input_blocking 必须已经是
+             True（验证置位顺序已经提前）；
+          2) 暂停期间到达的后台消息必须被正确缓冲，没有被渲染到
+             console（验证竞态窗口已被关闭，不会有提前/交织写入）。
+        """
+        blocking_when_erase_called = []
+        erase_called = threading.Event()
+        release_erase = threading.Event()
+
+        real_erase = self.term._erase_bar_direct
+
+        def _slow_erase():
+            blocking_when_erase_called.append(self.term._input_blocking)
+            erase_called.set()
+            release_erase.wait(timeout=2.0)
+            real_erase()
+
+        self.term._erase_bar_direct = _slow_erase
+
+        def _enter():
+            self.term._enter_input_mode()
+
+        t = threading.Thread(target=_enter, daemon=True)
+        t.start()
+        self.assertTrue(erase_called.wait(timeout=2.0), "_erase_bar_direct 应该很快被调用到")
+
+        # 此刻模拟后台线程（如摘要生成完成）尝试打印消息——
+        # 这正是历史 bug 里"恰好命中竞态窗口"的那条消息
+        self.term.print("会话摘要记忆已生成")
+        time.sleep(0.05)  # 给渲染线程一点时间处理队列
+
+        release_erase.set()
+        t.join(timeout=2.0)
+
+        self.assertEqual(
+            blocking_when_erase_called, [True],
+            "_erase_bar_direct() 执行时 _input_blocking 必须已经是 True"
+            "（置位顺序必须在 erase 之前，关闭竞态窗口）",
+        )
+        self.term._console.print.assert_not_called()
+        self.assertEqual(
+            len(self.term._pending_during_input), 1,
+            "竞态窗口内到达的后台打印消息必须被正确缓冲，而不是被渲染线程"
+            "直接写到屏幕上（否则会和即将启动的 ptk 输入行渲染交织出乱码）",
+        )
+
+        self.term._exit_input_mode()
+        self.term._q.join()
+        self.term._console.print.assert_called_once()
+
+    def test_exit_input_mode_requeues_pending_before_clearing_flag(self):
+        """
+        回归测试：_exit_input_mode() 必须先把积压消息 + redraw 重新
+        入队，再清除 _input_blocking / _refresh_paused——顺序颠倒会
+        在"积压消息正在被重新入队"的短暂窗口里，让另一条恰好同时到达
+        的新消息抢在积压内容前面被处理，造成时间顺序错乱（新内容先
+        出现，本该更早出现的积压内容反而后出现）。
+
+        验证方式：在 _q.put 上打补丁，记录每次 put 调用时 _input_blocking
+        的瞬时值；调用 _exit_input_mode() 后，检查"重新入队积压消息 +
+        redraw"的所有 put 调用都发生在 _input_blocking 仍为 True 的
+        时刻（最后一次把它设为 False 的赋值必须在所有相关 put 之后）。
+        """
+        self.term._input_blocking = True
+        self.term._pending_during_input = [
+            _Msg("print", (("早期积压消息",), {}))
+        ]
+
+        observed_blocking_at_put = []
+        real_put = self.term._q.put
+
+        def _tracking_put(msg):
+            observed_blocking_at_put.append(self.term._input_blocking)
+            return real_put(msg)
+
+        self.term._q.put = _tracking_put
+
+        self.term._exit_input_mode()
+
+        self.assertTrue(
+            len(observed_blocking_at_put) >= 2,
+            "应该至少有积压消息 + redraw 两次 put 调用",
+        )
+        self.assertTrue(
+            all(observed_blocking_at_put),
+            "重新入队积压消息和 redraw 时，_input_blocking 必须仍为 True"
+            "（清除标志必须发生在这些 put 调用之后，避免新消息插队造成乱序）",
+        )
+        self.assertFalse(
+            self.term._input_blocking,
+            "_exit_input_mode() 返回后，_input_blocking 最终必须为 False",
+        )
+
 
 class TestStreamTokenFilterToolUseTagBoundary(unittest.TestCase):
     """
@@ -468,6 +579,269 @@ class TestSimpleModeNeverShowsStatusbarOrErases(unittest.TestCase):
 
         output = buf.getvalue()
         self.assertIn("Tasks", output, "非 simple-mode 下状态栏应该正常显示")
+
+
+@unittest.skipUnless(hasattr(__import__("signal"), "SIGWINCH"), "SIGWINCH 仅在 POSIX 平台存在")
+class TestSigwinchRearm(unittest.TestCase):
+    """
+    回归测试：prompt_toolkit 会通过 asyncio loop.add_signal_handler() 接管
+    SIGWINCH，并在 .prompt() 返回时把 OS 级 handler 显式复位为 SIG_DFL
+    （而不是还原成我们注册的 _on_sigwinch）。
+
+    如果不在 _exit_input_mode() 里重新挂载，用户第一次提交输入之后，
+    整个进程生命周期内的所有后续 resize 都会变成"没人处理"的 SIG_DFL，
+    _bar_drawn / rich Console 宽度缓存从此失真——这正是
+    "调整窗口大小，下面的 You ❯ 会闪烁、消失看不到" 的根因。
+
+    本测试不依赖真实的 prompt_toolkit/asyncio 交互，只验证我们自己的
+    契约：_exit_input_mode() 必须无条件重新调用 signal.signal() 把
+    self._on_sigwinch 挂回 SIGWINCH，不管之前发生了什么。
+    """
+
+    def setUp(self):
+        self.term = Terminal(status_refresh_hz=4)
+        self.term._console = MagicMock()
+
+    def tearDown(self):
+        self.term.stop()
+
+    def test_exit_input_mode_rearms_handler_after_external_reset(self):
+        import signal
+
+        # 模拟 prompt_toolkit 的 asyncio loop 在 .prompt() 返回时
+        # 把 OS handler 复位为 SIG_DFL 这一真实行为。
+        signal.signal(signal.SIGWINCH, signal.SIG_DFL)
+        self.assertEqual(
+            signal.getsignal(signal.SIGWINCH),
+            signal.SIG_DFL,
+            "前置条件：handler 已被外部（模拟 ptk）复位为 SIG_DFL",
+        )
+
+        self.term._exit_input_mode()
+
+        self.assertEqual(
+            signal.getsignal(signal.SIGWINCH),
+            self.term._on_sigwinch,
+            "_exit_input_mode() 之后，SIGWINCH 必须重新指向 self._on_sigwinch，"
+            "不能停留在 ptk 复位后的 SIG_DFL",
+        )
+
+    def test_rearm_is_idempotent_across_multiple_input_rounds(self):
+        """模拟多轮 prompt_user()：每轮结束后 handler 都应正确挂回，
+        不会在第二轮、第三轮开始"失效"。
+
+        注意：bound method 每次属性访问都会产生一个新的包装对象，
+        所以这里用 == 比较（同一 __self__ + __func__ 即相等），
+        不能用 is（恒为 False，是 Python bound method 的已知特性，
+        不代表 handler 没挂上）。
+        """
+        import signal
+
+        for _ in range(3):
+            # 进入输入前先模拟 ptk 接管+复位（即上一轮 .prompt() 的效果）
+            signal.signal(signal.SIGWINCH, signal.SIG_DFL)
+            self.term._exit_input_mode()
+            self.assertEqual(
+                signal.getsignal(signal.SIGWINCH),
+                self.term._on_sigwinch,
+                "多轮输入后 handler 应始终被正确重新挂载",
+            )
+
+    def test_on_sigwinch_invalidates_console_width_cache_but_not_bar_drawn(self):
+        """
+        触发一次 resize 信号：
+          - Rich Console 的宽度缓存应该被清空（影响 panel/markdown/syntax
+            等走 Console 渲染的内容，下次渲染时重新测量终端宽度）；
+          - 但 self._bar_drawn 绝对不能被触碰。
+
+        背景（真实复现过的严重回归 bug）：早期版本在这里会把 _bar_drawn
+        强行置 0，理由是"避免用旧行数超界擦除"，但状态栏本身是纯字符串
+        write、行数只取决于 len(self._statusbar_lines)，跟终端宽度变化
+        没有关系；把 _bar_drawn 清零等于谎称"屏幕上没有内容待擦除"，
+        导致下一次绘制不擦除旧内容、直接在下面追加——状态栏被一遍遍
+        重复打印、不断堆叠（resize 越多，堆叠越多）。
+        """
+        self.term._bar_drawn = 5
+        self.term._console._width = 120
+        self.term._console._height = 40
+
+        self.term._on_sigwinch(None, None)
+
+        self.assertEqual(
+            self.term._bar_drawn, 5,
+            "_bar_drawn 必须保持不变——它是屏幕上真实占用行数的唯一权威记录，"
+            "resize 不会改变状态栏的逻辑行数，清零会导致下次绘制不擦除旧内容、"
+            "造成状态栏重复堆叠的严重回归（已在生产环境真实复现）",
+        )
+        self.assertIsNone(self.term._console._width)
+        self.assertIsNone(self.term._console._height)
+
+    def test_on_sigwinch_settled_also_does_not_touch_bar_drawn(self):
+        """debounce settle 回调同样不能触碰 _bar_drawn，理由同上。"""
+        self.term._bar_drawn = 3
+        self.term._on_sigwinch_settled()
+        self.assertEqual(self.term._bar_drawn, 3)
+
+    def test_sigwinch_during_bar_below_prefix_does_not_corrupt_erase_math(self):
+        """
+        回归测试：复现"等待 LLM 响应时状态栏被画在 agent ❯ 下方
+        （_bar_below_prefix=True），此时收到一次 SIGWINCH"的真实场景。
+
+        三阶段状态机（见 _handle() 里 stream/stream_end 分支）依赖
+        `lines_up = (self._bar_drawn if self._bar_drawn > 0 else 0) + 1`
+        来正确计算"需要上移多少行才能回到 agent ❯ 所在行的行首"。
+        如果 SIGWINCH 把 _bar_drawn 清零，这个计算会得出错误的、
+        过小的行数，导致只上移 1 行（停在状态栏内部某一行，而不是
+        真正的 agent ❯ 那一行），_bar_below_prefix 下方原本画着的
+        状态栏内容不会被完全擦除，紧接着的 \\x1b[0J 又会在错误位置
+        清除/重画，画面上呈现状态栏被重复打印的乱码。
+
+        本测试只验证不变量本身：SIGWINCH 触发后，_bar_below_prefix
+        状态机依赖的 _bar_drawn 必须维持触发前的真实值，使得
+        lines_up 的计算结果不受 resize 影响。
+        """
+        self.term._bar_below_prefix = True
+        self.term._bar_drawn = 2  # 假设状态栏当前真实占用 2 行
+
+        self.term._on_sigwinch(None, None)
+
+        lines_up = (self.term._bar_drawn if self.term._bar_drawn > 0 else 0) + 1
+        self.assertEqual(
+            lines_up, 3,
+            "SIGWINCH 不应该改变 _bar_below_prefix 状态机算出的 lines_up，"
+            "否则会在 stream/stream_end 分支里上移错误的行数，造成擦除不完整、"
+            "状态栏重复堆叠（真实复现过的乱码画面）",
+        )
+
+
+class TestSigwinchDebounceSettle(unittest.TestCase):
+    """
+    回归测试：Termux 等移动端终端模拟器上，应用切到后台再切回前台时，
+    SIGWINCH 送达的时刻底层 pty 尺寸可能还没真正稳定（过渡态值，或
+    短时间内连发多次）。如果只在信号处理函数里"立即"重绘，用到的可能
+    是错误的、未稳定的尺寸，且后续可能不会再有信号纠正它。
+
+    本测试验证 debounce-settle 机制本身的契约：
+      1. 短时间内连续多次 SIGWINCH，只应在"安静期"之后真正 settle 一次
+         （验证 timer 被正确取消重置，不会每次都立刻触发）。
+      2. settle 时，如果有活跃的 ptk Application，调用其线程安全的
+         invalidate()，而不是走 redraw 消息队列。
+      3. settle 时，如果没有活跃的 ptk Application 且不在阻塞输入期间，
+         走 redraw 消息队列（覆盖 confirm() 的 readline 路径和非阻塞期间
+         的 agent 运行场景）。
+      4. 阻塞输入但没有活跃 ptk app（如 confirm() 的 readline 路径）时，
+         settle 不应该误投 redraw 消息（避免撕裂正在显示的确认提示符）。
+    """
+
+    def setUp(self):
+        self.term = Terminal(status_refresh_hz=4)
+        self.term._console = MagicMock()
+        # debounce 时间设短一点，加快测试速度
+        self.term._SIGWINCH_DEBOUNCE_SECONDS = 0.05
+
+    def tearDown(self):
+        self.term.stop()
+
+    def test_burst_of_sigwinch_settles_only_once(self):
+        """连续触发多次 SIGWINCH（模拟 resize 过渡动画），settle 回调
+        应该只在最后一次信号之后的安静期触发一次，而不是每次都触发。"""
+        settle_calls = []
+        self.term._on_sigwinch_settled = lambda: settle_calls.append(1)
+
+        for _ in range(5):
+            self.term._on_sigwinch(None, None)
+            time.sleep(0.01)  # 间隔小于 debounce 时长，模拟连续抖动
+
+        # 此刻 debounce 还没到期，不应该已经 settle 过
+        self.assertEqual(len(settle_calls), 0)
+
+        # 等待超过 debounce 时长，应该恰好 settle 一次
+        time.sleep(0.15)
+        self.assertEqual(len(settle_calls), 1, "连续抖动应只触发一次 settle，而非每次信号都触发")
+
+    def test_settled_invalidates_active_ptk_app_instead_of_redraw_queue(self):
+        """有活跃 ptk app 时，settle 应该调用 app.invalidate()（线程安全），
+        不应该走 _q 的 redraw 消息（那是给"没有 ptk 在跑"的场景用的）。"""
+        fake_app = MagicMock()
+        self.term._active_ptk_app = fake_app
+        self.term._input_blocking = True  # 模拟正阻塞在 ptk 的 .prompt() 里
+
+        self.term._on_sigwinch_settled()
+
+        fake_app.invalidate.assert_called_once()
+
+    def test_settled_falls_back_to_redraw_queue_when_no_ptk_app_and_not_blocking(self):
+        """没有活跃 ptk app、且不在阻塞输入期间（agent 正常运行/状态栏可见）
+        时，settle 应该把 redraw 消息投进队列。"""
+        self.term._active_ptk_app = None
+        self.term._input_blocking = False
+        self.term._refresh_paused.clear()
+
+        self.term._on_sigwinch_settled()
+
+        # 排空队列检查是否有 redraw 消息
+        found = False
+        try:
+            while True:
+                msg = self.term._q.get_nowait()
+                if msg.kind == "redraw":
+                    found = True
+                self.term._q.task_done()
+        except Exception:
+            pass
+        self.assertTrue(found, "非阻塞场景下 settle 应该投递 redraw 消息")
+
+    def test_settled_does_not_leak_redraw_when_blocking_without_ptk_app(self):
+        """confirm() 走的是裸 readline，没有 ptk app，但仍处于
+        _input_blocking=True。这种情况下 settle 不应该投 redraw 消息——
+        否则会撕裂正在显示的确认提示符（这正是 _input_blocking 标志本来
+        要保护的场景）。"""
+        self.term._active_ptk_app = None
+        self.term._input_blocking = True
+
+        self.term._on_sigwinch_settled()
+
+        found = False
+        try:
+            while True:
+                msg = self.term._q.get_nowait()
+                if msg.kind == "redraw":
+                    found = True
+                self.term._q.task_done()
+        except Exception:
+            pass
+        self.assertFalse(found, "阻塞输入期间（无 ptk app）不应该投 redraw 消息")
+
+    def test_settled_does_not_crash_when_invalidate_raises(self):
+        """ptk app.invalidate() 内部抛异常（例如 app 已经退出/loop 已关闭）
+        不应该让 settle 回调本身崩掉（它跑在独立的 Timer 线程上，未捕获
+        异常会被 threading 静默打印但不影响主流程；这里仍然要求我们自己
+        做好防御，不依赖 threading 的默认行为）。"""
+        fake_app = MagicMock()
+        fake_app.invalidate.side_effect = RuntimeError("loop closed")
+        self.term._active_ptk_app = fake_app
+
+        try:
+            self.term._on_sigwinch_settled()
+        except Exception as exc:
+            self.fail(f"_on_sigwinch_settled 不应该向外抛异常，但抛出了: {exc}")
+
+    def test_stop_cancels_pending_debounce_timer(self):
+        """term.stop() 应该取消尚未触发的 debounce 定时器，避免遗留的
+        daemon 线程在解释器关闭过程中触发回调。"""
+        settle_calls = []
+        self.term._on_sigwinch_settled = lambda: settle_calls.append(1)
+        self.term._SIGWINCH_DEBOUNCE_SECONDS = 1.0  # 拉长，确保 stop() 先于触发执行
+
+        self.term._on_sigwinch(None, None)  # 启动一个 debounce 定时器
+        self.assertIsNotNone(self.term._sigwinch_debounce_timer)
+
+        self.term.stop()
+        self.assertIsNone(self.term._sigwinch_debounce_timer, "stop() 后应清空定时器引用")
+
+        # 等过原定的触发时间点，确认 cancel 真的生效，settle 没有被调用
+        time.sleep(1.2)
+        self.assertEqual(settle_calls, [], "stop() 取消的定时器不应该再触发 settle 回调")
 
 
 if __name__ == "__main__":
