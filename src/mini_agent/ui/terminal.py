@@ -1525,7 +1525,7 @@ _COMMANDS: list[tuple[str, str, list[str]]] = [
     ("/plan",        "Plan management",               ["clear", "summary"]),
     ("/concurrency", "Concurrency settings",          ["tasks", "llm"]),
     ("/cc",          "Concurrency alias",             ["tasks", "llm"]),
-    ("/provider",    "LLM provider settings",         ["list", "switch"]),
+    ("/provider",    "LLM provider settings",         ["list", "switch", "models"]),
     ("/exit",        "Exit mini-agent",               []),
     ("/quit",        "Exit mini-agent",               []),
 ]
