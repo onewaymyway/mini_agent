@@ -451,6 +451,17 @@ mini-agent eval --scenario test_cases/                      # 不传 --skill，�
 | `skill_stats` | 返回技能使用追踪和预算状态 |
 | `compact_history` | 触发带 Skill 重附逻辑的历史压缩 |
 
+### 自感知系统（introspection.py，由 Agent 动态注册）
+
+让 agent 具备实时感知和动态调整自身状态的能力。详见 [introspection-guide.md](introspection-guide.md)。
+
+| 工具 | 需要审批 | 说明 |
+|------|----------|------|
+| `agent_status` | ❌ | 返回全局简报：LLM/session/stats/skills/工具/子系统开关/进程信息的一次性快照 |
+| `agent_inspect` | ❌ | 深查指定子系统详情；target 可选 config/history/stats/skills/tools/memory/providers/registry/session/perception/retry_policy/mcp/env/process |
+| `agent_patch` | ✅ | 运行时热修改白名单字段（config.*、retry_policy.max_retries、stats.reset、tool_cache.clear、skill.\<name\>:active）|
+| `agent_policy` | ❌ | 查看/调整自省策略：隐藏 target（hide_target/show_target）、锁定修改（lock_target/unlock_target/lock_field/unlock_field）|
+
 ### 自我演化（evolution.py，Stage 3.1）
 
 | 工具 | 需要审批 | 参数 | 说明 |
