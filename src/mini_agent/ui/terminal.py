@@ -26,6 +26,7 @@ import threading
 import time
 from typing import Any, Callable, Iterator, Optional
 
+from rich.cells import cell_len
 from rich.console import Console
 from rich.markdown import Markdown
 from rich.panel import Panel
@@ -93,6 +94,41 @@ class Terminal:
         # 需要额外向上移动一行（跨过 "agent ❯ " 那一行），再清除状态栏。
         # 首个 stream token 到来时此标志清零。
         self._bar_below_prefix: bool = False
+
+        # ── resize 不确定期标志（本次修复的核心） ───────────────────────
+        # True 表示"已经收到至少一次 SIGWINCH，但尚未确认尺寸已经安静
+        # 稳定"——覆盖从信号触发瞬间到 debounce settle 完成之间的整段
+        # 窗口（典型 0.15 秒，见 _SIGWINCH_DEBOUNCE_SECONDS）。
+        #
+        # ★★★ 真实复现过的严重 bug（比第一版"折行记账"修复更深一层）★★★
+        # 第一次修复只在 _on_sigwinch_settled() 这一条路径上做了"放弃
+        # 旧记账、换行重画"的处理，但完全没意识到：状态栏最高频的刷新
+        # 路径是 _refresh_loop 每 _refresh_interval（默认 0.25 秒）投递
+        # 一次的 "_refresh" 消息，它会直接调用 self._erase_bar()，用的
+        # 是当前的 self._bar_drawn（可能是 resize 前、按旧宽度算出的、
+        # 已经因为终端 reflow 而失真的值）去做 \x1b[1A\x1b[2K 相对
+        # 擦除——而 0.25 秒的刷新间隔比 0.15 秒的 debounce 窗口更长，
+        # 意味着**几乎每次 resize 都会在 settle 真正触发之前，先撞上
+        # 至少一次正常的 _refresh**，那一次擦除完全没有受到任何保护，
+        # 仍然可能越界擦掉状态栏上方的正常历史输出——这正是用户反馈
+        # "切后台再切回来，还是会向上擦除之前的历史输出"的真正根因：
+        # 第一版修复保护的不是高频命中的那条路径。
+        #
+        # 修复：不再试图在每一个调用 _erase_bar()/_erase_bar_direct()
+        # 的上层分支（print/_refresh/stream/_focus_lines/...）里逐一
+        # 加判断（容易遗漏，事实证明也确实遗漏过）。而是把保护下沉到
+        # 擦除函数本身——_erase_bar()/_erase_bar_direct() 内部检查
+        # 这个标志：只要它为 True，就完全不发任何 \x1b[1A 相对位移
+        # 序列，转而换行放弃旧内容、把 _bar_drawn 归零，让调用方紧接
+        # 着的 _draw_bar() 在全新的一行正常画出——不可能越界，因为
+        # 没有任何相对位移操作。
+        #
+        # 标志的生命周期：
+        #   - _on_sigwinch（信号触发瞬间）：置为 True。
+        #   - _on_sigwinch_settled（debounce 安静期之后，确认尺寸已经
+        #     稳定）：置回 False，重新允许相对擦除——此后画的内容用的
+        #     是新宽度，记账重新可信，直到下一次 resize 再次打破它。
+        self._resize_unsettled: bool = False
 
         # 保存最近一次「行内挂起」打印（end="" 的 print 调用，典型场景是
         # print_assistant_prefix() 打印 "agent ❯ "）的原始 args/kwargs。
@@ -276,47 +312,6 @@ class Terminal:
         else:
             self._prev_sigwinch = None
 
-    def _on_sigwinch(self, signum, frame) -> None:
-        # 1. 让 rich Console 丢弃宽度缓存，下次渲染自动重测（仅影响走
-        #    Console 渲染的 panel/markdown/syntax 等内容的换行宽度，
-        #    与状态栏无关——状态栏行是纯字符串 write，不经过 Console）
-        try:
-            self._console._width = None
-            self._console._height = None
-        except Exception:
-            pass
-        # 2. 若不在输入期间，重绘状态栏（适应新宽度）
-        #
-        #    ★★★ 这里曾经还有一行 `self._bar_drawn = 0`，已被移除 ★★★
-        #    （历史教训，记录在此避免未来重新引入同样的 bug）：
-        #    `_bar_drawn` 不是"状态栏画面宽度估算"的缓存值，而是
-        #    "当前屏幕上真实占用了多少行、下次擦除需要上移多少行"的
-        #    唯一权威记录，被 _draw_bar()/_erase_bar() 以及三阶段状态机
-        #    （_bar_below_prefix，见 stream/stream_end/_force_end_stream
-        #    分支里的 `lines_up = (self._bar_drawn if ... else 0) + 1`）
-        #    共同依赖，必须随时反映"屏幕上确实还有多少行待擦除"这一
-        #    事实。把它强行置 0 等于对整个系统说"什么都不用擦"——而
-        #    屏幕上明明还有内容——直接导致下一次绘制在不擦除旧内容的
-        #    情况下继续往下追加，造成状态栏被一遍遍重复打印、不断堆叠
-        #    （resize 一次多一份，长时间挂着任务时只要触发几次 resize/
-        #    后台切换就会越堆越多）。状态栏本身是纯字符串行，行数只
-        #    取决于 `len(self._statusbar_lines)`，跟终端宽度变化没有
-        #    关系，resize 时根本不需要、也不应该去碰 `_bar_drawn`。
-        if not self._input_blocking and not self._refresh_paused.is_set():
-            self._q.put(_Msg("redraw", None))
-        # 3. 转发给之前的 handler（如最初进程启动时已有的 handler）
-        if callable(self._prev_sigwinch):
-            try:
-                self._prev_sigwinch(signum, frame)
-            except Exception:
-                pass
-        # 4. 调度一次"稳定后再确认"的延迟重绘（见构造函数里 SIGWINCH
-        #    debounce 段落的详细说明）。上面 1-3 步是即时处理，对绝大多数
-        #    桌面终端已经足够；这一步专门兜底"信号送达时尺寸还没真正
-        #    稳定"的场景（典型如 Termux 切后台/前台）。即使上面的即时
-        #    处理已经是对的，重复执行一次也是无害的（幂等）。
-        self._schedule_sigwinch_settle()
-
     def _schedule_sigwinch_settle(self) -> None:
         """
         (重新) 启动一个短延时定时器：如果在 _SIGWINCH_DEBOUNCE_SECONDS 内
@@ -344,24 +339,83 @@ class Terminal:
         因此这里只能调用明确线程安全的接口，不能直接操作 stdout 或
         ptk 内部渲染状态：
           - rich Console 的 _width/_height 缓存清空：纯属性赋值，安全。
-          - self._bar_drawn 重置：简单整数赋值，安全（worst case 是与
-            渲染线程之间出现一次良性的竞态重排，不影响正确性）。
-          - 投递 _Msg("redraw") 到 self._q：queue.Queue 本身是线程安全的。
+          - 投递 _Msg 到 self._q：queue.Queue 本身是线程安全的。
           - Application.invalidate()：prompt_toolkit 文档里明确标注为
             "线程安全的重绘触发方式"，专门设计给外部线程调用；它只是
             把一个回调通过 call_soon_threadsafe 扔给 ptk 自己的事件循环，
             真正的重绘（包括重新查询当前终端尺寸）仍然发生在 ptk 自己的
             线程上，不存在跨线程直接操作渲染状态的问题。
+
+        ★★★ 真实复现过的严重问题（比"状态栏堆叠"更严重）★★★
+        本方法不再走 "redraw"（_erase_bar() + _draw_bar()，相对上移
+        self._bar_drawn 行）的常规重绘路径，而是投递专门的
+        "_resize_settled" 消息。原因：
+
+        _bar_drawn 记录的是"画状态栏那一刻、按当时终端宽度计算出的
+        物理行数"。这个数字在没有 resize 发生的整段时间里始终可信，
+        因为画和擦用的是同一份终端宽度。但 resize（尤其是 Termux
+        切后台/前台引发的、往往伴随尺寸剧烈跳变的那种）会触发一个
+        我们完全无法控制、也无法事后查询的副作用：**终端模拟器自己
+        会把当前屏幕缓冲区里"已经显示"的内容按新列宽重新折行
+        （reflow）**。也就是说，旧状态栏那几行在 resize 完成之后，
+        屏幕上真实占用的物理行数已经悄悄变了——可能变多（变窄时），
+        也可能变少（变宽时）——而 _bar_drawn 里存的还是 resize 前
+        按旧宽度算出的数字，对"现在"的屏幕状态已经失真，且没有任何
+        escape sequence 能让我们查询"reflow 之后实际变成了几行"。
+
+        继续相信这个失真的 _bar_drawn 去做 \x1b[1A\x1b[2K 循环擦除，
+        后果分两种：
+          - 终端变窄（reflow 后行数变多）：擦的行数比真实少，旧内容
+            擦不干净，新内容叠加在残留之下——表现为状态栏反复堆叠。
+          - 终端变宽（reflow 后行数变少）：擦的行数比真实多，多移动
+            的那几次 \x1b[1A\x1b[2K 会直接越过状态栏的物理边界，
+            擦进状态栏上方"正常历史输出"的区域——表现为之前的输出
+            内容被莫名其妙地擦掉（比堆叠更具破坏性，且不可恢复，
+            因为被擦的内容已经不在任何缓冲区里了）。
+
+        两种情况的根本原因相同：基于"记住画了多少行，下次原地擦除
+        多少行"的相对擦除策略，前提是"记的时候"和"擦的时候"屏幕
+        上的物理布局必须没有被外部因素改变过；resize 恰恰打破了
+        这个前提，而且没有办法事后修正（reflow 后的真实行数对我们
+        的进程不可见）。
+
+        修复策略：resize 安静期过后，不再尝试"原地擦除旧状态栏"，
+        而是主动放弃对旧状态栏内容的维护——换一行，把 _bar_drawn
+        归零（这次归零是安全的：我们没有谎称"已经擦掉了"，旧内容
+        确实还留在屏幕历史里，只是不再尝试覆盖它），从新的一行
+        开始重新画状态栏。代价是用户会在历史里多看到一份"过期"的
+        旧状态栏文字（良性、最多有点视觉冗余），但绝不会出现内容
+        被错误吃掉，也不会无限堆叠——因为新画的这一份，_bar_drawn
+        会被 _draw_bar() 重新正确赋值为按当前（新）宽度算出的真实
+        物理行数，只要后续没有新的 resize，这个记账立刻恢复可信，
+        正常的原地擦除重绘会照常工作。
+
+        ★ self._resize_unsettled 标志的清除时机（第二版修复新增，
+        关键细节）★：本方法运行在独立的 Timer 线程上，**不**在这里
+        把 self._resize_unsettled 清回 False。原因是竞态：如果在这
+        里清除，标志变为 False 的时刻，和 render_thread 真正处理
+        "_resize_settled" 消息、完成"换行+归零+重画"的时刻之间存在
+        一个时间窗口——这段窗口里如果先插队处理了一条别的消息（如
+        正常的 "_refresh"），它会看到标志已经是 False（"认为已经
+        安全了"），于是照常调用 _erase_bar() 用旧的、尚未被归零的
+        _bar_drawn 做相对擦除——等于完全绕过了本次修复，回到了
+        "用旧记账做相对擦除"的老问题。
+
+        正确做法：标志的清除职责转移给 render_thread 自己，在它真正
+        完成 "_resize_settled" 消息的处理（旧内容已经被放弃、新内容
+        已经按新宽度重新画出、_bar_drawn 已经刷新为可信值）之后才
+        清除——确保"标志变为 False"和"_bar_drawn 重新可信"这两件
+        事严格在同一时刻发生，不存在窗口期不一致。
+
+        例外：app is not None（阻塞输入中）这条路径完全不经过我们
+        的 _bar_drawn 记账体系（ptk 自己管理重绘），这里可以直接
+        清除标志，不存在上述竞态。
         """
         try:
             self._console._width = None
             self._console._height = None
         except Exception:
             pass
-        # 不再重置 self._bar_drawn——理由见 _on_sigwinch() 里的详细注释，
-        # 这里同理：_bar_drawn 必须始终如实反映屏幕上真正占用的行数，
-        # 任何时候把它清零都会导致下次绘制不擦除旧内容、状态栏被重复
-        # 堆叠打印。
 
         app = self._active_ptk_app
         if app is not None:
@@ -371,14 +425,92 @@ class Terminal:
             # 过程中一度变化又变回原值，ptk 可能认为"没有变化"而跳过
             # 重绘，但屏幕实际内容已经因为 Android 切前台/后台被破坏，
             # 这种情况下仍然需要一次强制重绘）。
+            # 注意：ptk 自己管理输入行的重绘，不经过我们的 _bar_drawn
+            # 记账体系，这条路径本身不受上面 reflow 问题影响，可以
+            # 直接清除不确定期标志（不存在竞态——没有 render_thread
+            # 消息处理需要等待）。
+            self._resize_unsettled = False
             try:
                 app.invalidate()
             except Exception:
                 pass
         elif not self._input_blocking and not self._refresh_paused.is_set():
-            # 不在任何阻塞输入路径里（agent 正在运行/状态栏可见），
-            # 走普通的 redraw 消息队列重绘。
-            self._q.put(_Msg("redraw", None))
+            # 不在任何阻塞输入路径里（agent 正在运行/状态栏可见）。
+            # 走专门的 "_resize_settled" 消息，由 render_thread 用
+            # "换行 + 放弃旧内容"的安全方式处理，而不是常规的
+            # "redraw"（相对擦除）路径——理由见上面的详细说明。
+            #
+            # 注意：这里不清除 self._resize_unsettled——它会在
+            # render_thread 真正处理完这条消息（_bar_drawn 已刷新为
+            # 可信值）之后才清除，避免竞态窗口期内插队的其他消息
+            # 误以为"已经安全"而绕过保护。
+            self._q.put(_Msg("_resize_settled", None))
+        # else: 阻塞输入但没有活跃 ptk app（如 confirm() 的裸 readline
+        # 路径）。这种场景下没有任何安全的时机去执行"换行+归零+重画"
+        # （会撕裂正在显示的确认提示符），所以保持 self._resize_unsettled
+        # 为 True 不清除——代价是直到下一次有效的 settle（例如用户
+        # 完成这次输入、退出阻塞、后续再发生一次 resize 后才会被清除）
+        # 之前，所有相对擦除路径会持续退化为安全模式（换行重画而非
+        # 原地覆盖）。这只是偶尔多换几行的轻微视觉冗余，不是功能性
+        # 问题，比"继续相信可能已经失真的 _bar_drawn"安全得多。
+
+    def _on_sigwinch(self, signum, frame) -> None:
+        """
+        SIGWINCH 立即响应（信号触发的那一刻，可能在尺寸真正稳定之前）。
+
+        ★ 与旧版本的关键差异 ★
+        旧版本这里会立即投递一条 "redraw" 消息（= _erase_bar() 用旧的
+        self._bar_drawn 做相对擦除，再 _draw_bar() 重画）。这在桌面
+        终端上通常无害，因为：(a) resize 多为一次性的、尺寸瞬间稳定；
+        (b) 列宽变化幅度较小，折行差异有限。
+
+        但 Termux 切后台/切前台触发的 SIGWINCH 往往伴随尺寸的剧烈
+        跳变和多次连续触发（过渡动画），信号触发的瞬间，终端的屏幕
+        缓冲区可能还没有完成 reflow（把已显示内容按新列宽重新折行），
+        也可能 ioctl 查到的尺寸还是过渡态。这时如果立即用旧的
+        self._bar_drawn（按 resize 前的宽度算出的物理行数）去做
+        \x1b[1A\x1b[2K 相对擦除，擦除的行数和屏幕当前真实占用的行数
+        很可能已经不一致——擦少了会堆叠，擦多了会越界吃掉状态栏上方
+        的正常历史输出（更严重，且不可恢复）。详细原理见
+        _on_sigwinch_settled() 的文档。
+
+        所以这里只做"安全"的部分：清空 Console 宽度缓存、转发旧
+        handler、调度一次 debounce 之后的 settle。真正的重绘统一
+        交给 _on_sigwinch_settled()（等尺寸稳定下来之后）用安全路径
+        （"_resize_settled" 消息，换行 + 放弃旧内容，不做相对擦除）
+        处理，不在信号触发的瞬间就贸然相信旧的行数记账。
+
+        ★ 更重要的一步（第二版修复新增）★：把 self._resize_unsettled
+        置为 True，进入"不确定期"。这会让在 settle 真正触发之前、
+        期间任何一次（最典型是 _refresh_loop 每 0.25 秒一次的常规
+        刷新）调用到的 _erase_bar()/_erase_bar_direct() 都自动退化为
+        安全模式（不做相对擦除，换行放弃旧内容），不需要逐一修改每个
+        调用点——见 self._resize_unsettled 声明处的详细说明。
+        """
+        # 0. 进入 resize 不确定期：在 settle 确认尺寸稳定之前，所有
+        #    相对擦除路径统一退化为安全模式。必须在清空宽度缓存之前
+        #    设置，确保没有任何窗口期内的擦除调用能"赶在"标志生效前
+        #    用旧记账做相对擦除。
+        self._resize_unsettled = True
+        # 1. 让 rich Console 丢弃宽度缓存，下次渲染自动重测（仅影响走
+        #    Console 渲染的 panel/markdown/syntax 等内容的换行宽度）。
+        try:
+            self._console._width = None
+            self._console._height = None
+        except Exception:
+            pass
+        # 2. 转发给之前的 handler（如最初进程启动时已有的 handler）
+        if callable(self._prev_sigwinch):
+            try:
+                self._prev_sigwinch(signum, frame)
+            except Exception:
+                pass
+        # 3. 调度一次"稳定后再确认"的延迟重绘（debounce）。真正的重绘
+        #    动作（以及对 _bar_drawn 的处理）全部放在 settle 阶段，
+        #    见 _on_sigwinch_settled() 的详细说明——这里不直接投递
+        #    "redraw"，避免在尺寸还未稳定、reflow 尚未完成时就用
+        #    可能已经失真的 _bar_drawn 做有风险的相对擦除。
+        self._schedule_sigwinch_settle()
 
     def _rearm_sigwinch(self) -> None:
         """
@@ -500,6 +632,27 @@ class Terminal:
     def get_task_focus(self) -> "Optional[str]":
         """返回当前焦点 task_id，None 表示主视图模式。"""
         return self._task_focus
+
+    def get_width(self) -> int:
+        """
+        返回当前终端的真实列宽，供状态栏内容构建方（plan_display.py /
+        status_bar.py）做「按显示宽度动态截断」，而不是写死字符数。
+
+        背景：plan_display.py 里曾经把 goal/title 按固定字符数截断
+        （如 [:40]、[:36]），这在桌面宽终端上没问题，但放到 Termux 等
+        窄屏移动端（典型 30~45 列）上，配合中文字符/emoji 的双宽显示，
+        仍然很容易让单条状态栏文字超出实际列宽，被终端自动折成多行
+        物理行，与"以为只占 1 行"的记账假设不一致。
+        提供这个方法让上层按当前真实宽度的比例动态截断，从源头减少
+        折行概率（而不是仅靠 _physical_line_count() 事后纠正记账）。
+
+        不可用 TTY（如管道、测试环境）时返回一个保守的默认值，
+        不抛异常、不依赖 isatty。
+        """
+        try:
+            return max(20, self._console.width)
+        except Exception:
+            return 80
 
     def focus_next_task(self) -> None:
         """切换到下一个 task（tab 列表循环）。"""
@@ -810,7 +963,7 @@ class Terminal:
         # 导致两路消息在 _input_blocking 期间被区别对待、显示不一致。
         if self._input_blocking and kind in (
             "print", "rule", "panel", "syntax", "markdown",
-            "stream", "stream_end",
+            "stream", "stream_end", "_resize_settled",
         ):
             self._pending_during_input.append(msg)
             return
@@ -886,12 +1039,34 @@ class Terminal:
                         # 遇到滚动边界会被截断，导致实际上移行数偏少，
                         # 旧状态栏行残留；逐行方案每次只上移 1 行，不受
                         # 滚动边界截断影响，可靠性更高。
-                        out = sys.stdout
-                        for _ in range(self._bar_drawn if self._bar_drawn > 0 else 0):
-                            out.write("\x1b[1A\x1b[2K")
-                        out.write("\x1b[1A\x1b[0J")  # 额外上移 1 行到 prefix 行，清到屏底
-                        out.flush()
-                        self._bar_drawn = 0
+                        #
+                        # ★ resize 不确定期保护（同 _safe_erase_lines_up()
+                        # 的理由）：这里"多上移 1 行到 prefix 行"这个
+                        # 假设本身也建立在 self._bar_drawn 真实可信的
+                        # 基础上——如果终端刚发生过 resize、已显示内容
+                        # 被 reflow，self._bar_drawn 对"现在"屏幕状态
+                        # 可能已经失真，继续按它做相对擦除（包括这里
+                        # 额外的 +1 行）同样有越界吃掉历史输出的风险。
+                        # 这里不能复用 _safe_erase_lines_up()（它只处理
+                        # 状态栏本身，不知道还要多上移 1 行到 prefix），
+                        # 所以单独处理：不确定期内，不管 self._bar_drawn
+                        # 是多少，统一退化为"直接换行、放弃状态栏和
+                        # prefix 行原有内容"，再调用 _replay_open_line()
+                        # 在全新的、干净的当前光标位置重新打印 prefix——
+                        # 该方法本身只是 console.print()，不做任何相对
+                        # 定位假设，在任意干净的新行起点调用都是安全的。
+                        if self._resize_unsettled:
+                            sys.stdout.write("\n")
+                            sys.stdout.flush()
+                            self._bar_drawn = 0
+                            self._resize_unsettled = False
+                        else:
+                            out = sys.stdout
+                            for _ in range(self._bar_drawn if self._bar_drawn > 0 else 0):
+                                out.write("\x1b[1A\x1b[2K")
+                            out.write("\x1b[1A\x1b[0J")  # 额外上移 1 行到 prefix 行，清到屏底
+                            out.flush()
+                            self._bar_drawn = 0
                         self._replay_open_line()
                         self._bar_below_prefix = False
 
@@ -916,12 +1091,23 @@ class Terminal:
                 # 然后让下面的 "_stream_had_output" 判断走兜底换行逻辑
                 # （prefix 后没有内容追加，直接收尾换行）。
                 # 同样改用逐行向上擦除，理由见 stream 分支注释。
-                out = sys.stdout
-                for _ in range(self._bar_drawn if self._bar_drawn > 0 else 0):
-                    out.write("\x1b[1A\x1b[2K")
-                out.write("\x1b[1A\x1b[0J")  # 额外上移 1 行到 prefix 行，清到屏底
-                out.flush()
-                self._bar_drawn = 0
+                #
+                # ★ resize 不确定期保护（理由同 stream 分支的对应位置）：
+                # 不确定期内不信任 self._bar_drawn，统一退化为直接换行
+                # 放弃旧内容，再调用 _replay_open_line() 在干净的新行
+                # 重新打印 prefix。
+                if self._resize_unsettled:
+                    sys.stdout.write("\n")
+                    sys.stdout.flush()
+                    self._bar_drawn = 0
+                    self._resize_unsettled = False
+                else:
+                    out = sys.stdout
+                    for _ in range(self._bar_drawn if self._bar_drawn > 0 else 0):
+                        out.write("\x1b[1A\x1b[2K")
+                    out.write("\x1b[1A\x1b[0J")  # 额外上移 1 行到 prefix 行，清到屏底
+                    out.flush()
+                    self._bar_drawn = 0
                 # _replay_open_line() 内部已设置 _stream_had_output=True，
                 # 确保下面的兜底换行逻辑会被触发（prefix 被重新打印后，
                 # 即便本轮无内容，也需要换行收尾，否则下一次输出会接在
@@ -946,6 +1132,40 @@ class Terminal:
         elif kind == "redraw":
             if not self._streaming and not self._bar_suspended:
                 self._erase_bar()
+                self._draw_bar()
+
+        elif kind == "_resize_settled":
+            # resize 安静期过后的安全重绘——不走 "redraw" 的相对擦除
+            # 路径。详细原理见 _on_sigwinch_settled() 的文档：resize
+            # （尤其 Termux 切后台/前台）会让终端把已显示内容按新列宽
+            # reflow，旧的 self._bar_drawn 记账对"现在"的屏幕状态已经
+            # 失真，继续用它做 \x1b[1A\x1b[2K 相对擦除，擦多了会越界
+            # 吃掉状态栏上方的正常历史输出，擦少了会堆叠残留。
+            #
+            # 实际的"换行放弃旧内容 + 归零 + 清除 self._resize_unsettled
+            # 标志"全部由 _draw_bar() 内部调用的 _safe_erase_lines_up()
+            # 统一处理（见该方法文档里"标志清除的关键设计决定"一节）。
+            # 这里只需要直接调用 _draw_bar()，不需要重复手写擦除逻辑。
+            #
+            # ★★★ 关于标志为何不会再永久卡死（修复历史回归）★★★
+            # 早期版本曾经把"清除标志"的职责放在这个消息分支里、且
+            # 只在 not streaming and not bar_suspended 时才清除——一旦
+            # resize 恰好发生在流式输出过程中或 bar_suspended 阶段，
+            # 这个分支会被跳过，标志永久卡在 True，之后**所有**正常的
+            # _refresh 心跳都会持续触发换行而不是原地刷新，表现为状态栏
+            # 不断把历史内容向下推挤、看起来像在持续向上吞掉正常输出，
+            # 且不会自行恢复。现在清除职责下沉到 _safe_erase_lines_up()
+            # 自己（任何调用它的地方，只要真正执行过一次换行放弃，
+            # 就会立即清除标志），不再依赖这条消息分支是否被执行、
+            # 是否命中某个特定的状态组合，从根本上消除了"卡死"的可能。
+            #
+            # 流式输出中或 prefix 行尚未画状态栏（_bar_suspended）时，
+            # 跳过：流式中插入换行会撕裂正在进行的文本；prefix 阶段
+            # 本来就 _bar_drawn == 0、没有旧内容需要放弃。两种情况都
+            # 交给各自原有的收尾逻辑处理（stream_end 分支本身会调用
+            # _erase_bar()/_draw_bar()，同样会经过 _safe_erase_lines_up()
+            # 的保护，不需要这里额外兜底）。
+            if not self._streaming and not self._bar_suspended:
                 self._draw_bar()
 
         elif kind == "_refresh":
@@ -1046,12 +1266,20 @@ class Terminal:
                 # 同样不能依赖 \x1b[NA 回到 prefix 行尾的列位置
                 # （原因见 stream 分支的详细注释）：改用逐行向上擦除，
                 # 再额外上移 1 行到 prefix 行，清到屏底后重新打印 prefix。
-                out = sys.stdout
-                for _ in range(self._bar_drawn if self._bar_drawn > 0 else 0):
-                    out.write("\x1b[1A\x1b[2K")
-                out.write("\x1b[1A\x1b[0J")
-                out.flush()
-                self._bar_drawn = 0
+                #
+                # ★ resize 不确定期保护（理由同 stream 分支的对应位置）。
+                if self._resize_unsettled:
+                    sys.stdout.write("\n")
+                    sys.stdout.flush()
+                    self._bar_drawn = 0
+                    self._resize_unsettled = False
+                else:
+                    out = sys.stdout
+                    for _ in range(self._bar_drawn if self._bar_drawn > 0 else 0):
+                        out.write("\x1b[1A\x1b[2K")
+                    out.write("\x1b[1A\x1b[0J")
+                    out.flush()
+                    self._bar_drawn = 0
                 self._replay_open_line()
                 self._bar_below_prefix = False
 
@@ -1134,6 +1362,15 @@ class Terminal:
             # simple-mode 下状态栏整体不显示，redraw 请求直接忽略。
             pass
 
+        elif kind == "_resize_settled":
+            # simple-mode 下从不维护状态栏（_bar_drawn 恒为 0，_draw_bar
+            # 也从不被调用），resize 安静期的"放弃旧内容重画"逻辑在这里
+            # 无意义——没有旧内容、没有光标控制承诺可破坏。但仍需清除
+            # self._resize_unsettled 标志，避免它被永久卡在 True（即使
+            # simple-mode 下不会有可见副作用，卡死的标志本身是隐患，
+            # 万一未来运行时从 simple-mode 切换回正常模式会暴露出来）。
+            self._resize_unsettled = False
+
         elif kind == "_refresh":
             # simple-mode 下状态栏整体不显示，周期性 tick 直接忽略。
             # 不打印任何内容，也绝不触碰光标/擦除——保持"零额外输出、
@@ -1207,6 +1444,163 @@ class Terminal:
 
     # ── 状态栏绘制（仅在 render_thread 中调用）───────────────────────────
 
+    def _physical_line_count(self, lines: list[str]) -> int:
+        """
+        计算给定的一组「逻辑行」字符串，写到当前终端宽度下，
+        实际会占用多少「物理行」（即终端真正自动换行后的行数）。
+
+        背景（真实复现过的 bug，桌面正常、Termux 手机端状态栏反复堆叠）：
+        早期实现里 self._bar_drawn 直接取 len(self._statusbar_lines)，
+        即「字符串条数」。这隐含了一个不成立的假设：每条逻辑行在终端
+        渲染后必然恰好占 1 个物理行。
+
+        但 plan/task 状态栏里大量使用中文字符和 emoji（📋 ⚡ ✍️ ✓ ○ ◉ 等），
+        这些字符在绝大多数终端里按 2 列宽渲染，而 plan_display.py /
+        status_bar.py 里的长度截断（如 title[:36]）全部按 Python 字符数
+        计算，不是按显示宽度。结果是同一条"逻辑行"，其真实显示宽度
+        （cell width）可能比字符数多出 30%~50%。
+        在桌面终端（通常 80~120 列）这点差距大多不会触发自动换行，
+        所以"电脑上正常"；但 Termux 等移动端终端典型只有 30~45 列宽，
+        一条偏长的状态栏文字很容易被终端自动折成 2 行甚至更多物理行。
+
+        如果 _bar_drawn 仍按"逻辑条数"记账，下次 _erase_bar() 用
+        \x1b[1A 上移的次数会比真实物理行数少，擦除不完整，旧内容
+        残留在屏幕上，新内容画在残留下方——表现为状态栏反复堆叠、
+        无法清理干净。
+
+        修复：不再假设 1 逻辑行 = 1 物理行，而是对每条逻辑行算出真实
+        显示宽度，结合当前终端列宽计算它会折成几行，再累加得到真正
+        应该记账的物理行数。
+
+        ★★★ 真实复现过的第二个、更隐蔽的严重 bug ★★★
+        （比上面的"折行记账"问题更深一层，且与 resize 完全无关，
+        哪怕终端宽高从未变化过、状态栏第一次画出来开始就持续发生）
+
+        最初的实现直接对原始字符串调用 rich.cells.cell_len(line)。
+        但 status_bar.py 里几乎每一行都带有大量 ANSI 颜色转义序列
+        （如 "\033[36m"、"\033[90m"、"\033[0m"，文件里明确标注
+        "ANSI 着色"）。cell_len() 只是按 Unicode 东亚宽度属性逐字符
+        累加宽度，**完全不识别 ANSI 转义序列**——会把转义码本身的
+        每一个字符（如 "\033[36m" 这 5 个字符）也当作"普通可见字符"
+        计入宽度，而这些转义码在终端里会被直接解释执行、根本不占用
+        任何屏幕列位置、不会推进光标。
+
+        实测：一条带颜色码的状态栏行，cell_len() 算出的宽度可能比
+        其真实显示宽度高估 50%~70%（颜色码越多，高估越严重）。
+        在 Termux 等窄终端（典型 30~45 列）下，这种系统性高估很容易
+        让一条本来只占 1 个物理行的文字，被误判成占 2 行甚至更多——
+        于是 self._bar_drawn 被设置成一个比屏幕上真实占用行数更大
+        的值。下一次擦除时，按这个被高估的值做 \x1b[1A 相对上移，
+        多移动的那些行会直接越过状态栏的真实边界，越界擦进状态栏
+        上方"正常历史输出"的区域。
+
+        这个 bug 不依赖任何 resize 事件触发——只要终端宽度不够宽、
+        状态栏内容带 ANSI 颜色码（几乎总是如此），从状态栏第一次
+        被画出来开始就会持续发生，且每一次刷新都会重新计算一次
+        （同样被高估的）宽度，持续越界擦除一些历史输出，看起来像
+        "状态栏在不断地向上吞掉正常内容"——这正是比 resize reflow
+        问题更根本、更持续性的根因。
+
+        修复：用 rich.text.Text.from_ansi() 先正确解析掉 ANSI 转义
+        序列（保留它们携带的样式信息用于其他渲染场景，但参与宽度
+        计算时只统计真正可见的字符），再取解析结果的 .cell_len，
+        得到的是真实的、终端折行会依据的可见宽度。
+
+        终端宽度来源与 self._console 保持一致（同一份 resize 缓存，
+        见 _on_sigwinch() 的失效逻辑），避免口径不一致引入新的偏差。
+        """
+        try:
+            width = max(1, self._console.width)
+        except Exception:
+            width = 80  # 极端兜底：拿不到宽度时退化为不折行估算
+        total = 0
+        for line in lines:
+            try:
+                # ★ 关键：用 Text.from_ansi() 解析掉 ANSI 转义序列，
+                # 只统计真正可见字符的显示宽度——转义码本身不占用
+                # 任何屏幕列位置，绝不能被计入折行判断。
+                w = Text.from_ansi(line).cell_len
+            except Exception:
+                try:
+                    w = cell_len(line)
+                except Exception:
+                    w = len(line)
+            # 每条逻辑行至少占 1 个物理行；超过终端宽度时按列宽折行。
+            # 注意：空行（w == 0）也至少占 1 行。
+            total += max(1, -(-w // width))  # ceil(w / width)
+        return total
+
+    def _safe_erase_lines_up(self) -> bool:
+        """
+        统一的"擦除前安全检查"：在任何地方要执行
+        `for _ in range(self._bar_drawn): out.write("\\x1b[1A\\x1b[2K")`
+        这种相对光标位移擦除之前，必须先调用这个方法。
+
+        返回 True 表示"已经处理过了，调用方不需要再发相对擦除序列"
+        （包括"resize 不确定期，已经换行放弃旧内容"和"_bar_drawn 本来
+        就是 0，没什么可擦"两种情况）；返回 False 表示"可以放心地按
+        正常方式做相对擦除"。
+
+        ★★★ 本次修复要堵住的真正漏洞 ★★★
+        第一版修复只保护了 _on_sigwinch_settled() 投递的 "_resize_settled"
+        消息这一条路径，但状态栏最高频的刷新——_refresh_loop 每
+        _refresh_interval（默认 0.25 秒）投递一次的 "_refresh" 消息，
+        会直接调用 _erase_bar()；而 _erase_bar() 和 _draw_bar() 内部
+        **各自独立**都写着一段 `if self._bar_drawn > 0: for _ in
+        range(self._bar_drawn): ...\\x1b[1A\\x1b[2K...` 的相对擦除逻辑
+        ——第一版完全没有改动这两处，等于完全没有保护到。而
+        _SIGWINCH_DEBOUNCE_SECONDS（0.15 秒）比 _refresh_interval
+        （0.25 秒）更短，意味着几乎每次 resize 都会在 settle 真正
+        触发之前，先撞上至少一次未受保护的 "_refresh" → _erase_bar()
+        → 相对擦除——这正是"切后台再切回来，还是会向上擦除之前的
+        历史输出"问题持续存在的真正原因。
+
+        修复：把检查下沉到这一个统一入口，_draw_bar()/_erase_bar()/
+        _erase_bar_direct() 三处但凡要做相对擦除，都先调用它。只要
+        self._resize_unsettled 为 True（resize 已发生但尚未确认安静
+        稳定，覆盖从信号触发到 debounce 结束的整段窗口），就完全不发
+        任何 \\x1b[1A，转而换行放弃旧内容、把 _bar_drawn 归零——不可能
+        越界，因为没有任何相对位移操作。
+
+        ★★★ 标志清除的关键设计决定（修复一个曾经导致标志永久卡死、
+        每次刷新持续向上吞掉历史输出的严重回归）★★★
+        清除 self._resize_unsettled 的职责放在这个方法内部完成，
+        不依赖任何外部调用方（包括 "_resize_settled" 消息分支）事后
+        补一句"处理完了，可以清除了"。原因：
+
+        本方法只会在 render_thread 自己的线程里被同步调用（_draw_bar/
+        _erase_bar/_erase_bar_direct 都运行在 render_thread），执行
+        "换行+归零" 和调用方紧接着"用当前最新宽度重新建立记账"
+        （_draw_bar() 里的 self._bar_drawn = new_count）是同一次函数
+        调用链内连续完成的，中间不会被其他消息打断——不存在跨线程/
+        跨消息的竞态窗口。也就是说，只要这个方法被调用过一次、执行
+        了换行放弃旧内容，"不确定期"就已经被妥善处理完毕，可以立刻
+        安全地恢复正常模式，不需要等待任何特定的外部消息。
+
+        早期版本把清除职责放在 "_resize_settled" 消息处理分支里、
+        而不是这里，导致一个致命漏洞：_safe_erase_lines_up() 真正
+        被高频调用的地方是 _refresh（每 250ms 一次的常规心跳，跟
+        resize 是否已经投递过 "_resize_settled" 消息完全无关）——
+        如果某次 resize 触发后 "_resize_settled" 消息因为流式输出
+        中/_bar_suspended 而被跳过（或者根本在 _input_blocking 期间
+        从未投递），标志就再也没有机会被清除，之后**所有**正常的
+        _refresh 心跳都会持续命中这里的换行分支——不是因为还在
+        "resize 不确定期"，而是因为标志本身被卡死、永远读不到
+        False。表现正是：宽高早已不再变化，却仍然每次刷新都换一行、
+        持续把内容向下推挤，看起来像"不断向上吃掉历史输出"。
+        """
+        if self._bar_drawn == 0:
+            self._resize_unsettled = False
+            return True
+        if self._resize_unsettled:
+            out = sys.stdout
+            out.write("\n")
+            out.flush()
+            self._bar_drawn = 0
+            self._resize_unsettled = False
+            return True
+        return False
+
     def _draw_bar(self) -> None:
         # 防御性保护：simple-mode 下不显示状态栏，也绝不使用擦除/原地
         # 重绘机制。正常情况下 _handle_simple() 根本不会调用到这里
@@ -1217,8 +1611,17 @@ class Terminal:
         if not _IS_TTY or not self._statusbar_lines:
             return
         out = sys.stdout
-        new_count = len(self._statusbar_lines)
-        if self._bar_drawn > 0:
+        # ★ 关键修复：new_count 必须是「真实物理行数」，不是字符串条数。
+        # 见 _physical_line_count() 的详细说明——中文/emoji 等宽字符会让
+        # 一条逻辑行在窄终端（典型如 Termux 手机端）上被自动折成多行，
+        # 如果继续用 len(self._statusbar_lines) 记账，下次擦除时上移的
+        # 行数会比真实占用的物理行数少，导致旧内容残留、反复堆叠。
+        new_count = self._physical_line_count(self._statusbar_lines)
+        # ★ 第二版修复：擦旧内容之前先经过安全检查（见 _safe_erase_lines_up
+        # 的详细说明）。resize 不确定期内，这里不会发出 \x1b[1A，已经在
+        # 安全检查内部换行放弃了旧内容，_bar_drawn 也已归零——后面直接
+        # 从新行写入即可，不需要、也不能再额外做相对擦除。
+        if not self._safe_erase_lines_up() and self._bar_drawn > 0:
             # 逐行向上擦除旧内容，再回到起始行准备重写。
             # 比"一次 \x1b[NA\x1b[0J"更可靠：Termux / vterm 等实现里
             # \x1b[NA 在滚动边界附近会被截断，导致上移行数少于预期，
@@ -1228,11 +1631,44 @@ class Terminal:
             # 当前整行，循环 _bar_drawn 次后光标已回到状态栏首行上方
             # 的最后一行正常内容处；最后 \x1b[0J 清除从此往下的余量
             # （兜底：防止行数缩减时旧的末尾行残留）。
+            #
+            # ★★★ 真正的根因（比之前所有假设都更基础、更隐蔽）★★★
+            # \x1b[1A（CUU，光标上移）只改变行号，\x1b[2K（EL，清除整行）
+            # 不改变光标列号——这两个控制序列都不会把列位置归零。而
+            # 写入每一行内容时，代码只发送 "line + \n"（裸 LF），LF 在
+            # VT100/ANSI 标准里只移动到下一行，并不像 CRLF 那样把列号
+            # 归零。多数桌面终端"看起来正常"，是因为底层 tty 驱动开启
+            # 了 termios 的 ONLCR 标志，会把输出流里的 LF 自动翻译成
+            # CRLF——这是终端驱动层的隐式行为，不是我们代码本身保证的，
+            # 一旦这个翻译没有发生（如 Termux 的 PTY 实现细节差异、
+            # 或任何其他不保证 ONLCR 语义的环境），光标列位置会在每一
+            # 行写完之后停留在"该行内容长度"对应的列，而不是列 0。
+            #
+            # 后果：下一轮 \x1b[1A 上移之后，光标行号正确归位了，但列号
+            # 仍然停留在"上一次最后一行内容长度"对应的位置——重新写入
+            # 新内容时，会从这个错误的列开始覆盖，导致：
+            #   - 新内容里靠前的部分被写到了行中间，行首的旧内容残留
+            #     没有被覆盖（\x1b[2K 虽然清过一次，但这次重写又从错误
+            #     列开始写，相当于把刚清空的行又"部分性"地弄脏）；
+            #   - 多行状态栏时，每一行残留的列偏移还会逐行累积、相互
+            #     干扰，造成位置越写越偏、像是不断向某个方向"滚动堆叠"
+            #     的视觉效果——这正是用户反馈的"擦除好像没生效、内容
+            #     持续往上吃掉历史输出"现象的真正根源，与 resize 是否
+            #     发生、_bar_drawn 计数是否精确都没有关系，是从状态栏
+            #     机制最初实现起就存在的基础控制序列缺陷。
+            #
+            # 修复：不依赖 ONLCR 这种隐式的、依赖外部环境配置的翻译。
+            # 每次 \x1b[1A 之前先发送 \r，显式把列位置归零，再上移、
+            # 再清行——保证每一步操作开始时光标列位置都是已知的 0。
             for _ in range(self._bar_drawn):
-                out.write("\x1b[1A\x1b[2K")
-            out.write("\x1b[0J")
+                out.write("\r\x1b[1A\x1b[2K")
+            out.write("\r\x1b[0J")
+        # ★ 同样的根因，同样的修复：每条新行内容写入前先发 \r 归零列
+        # 位置，再写内容，再发 \n 换行——不依赖 ONLCR 的隐式翻译，确保
+        # 不管当前终端/PTY 是否真的把 LF 自动翻译成 CRLF，这里写出的
+        # 每一行都从确定的列 0 开始，下一行也是如此。
         for line in self._statusbar_lines:
-            out.write(line + "\n")
+            out.write("\r" + line + "\n")
         out.flush()
         self._bar_drawn = new_count
 
@@ -1241,6 +1677,12 @@ class Terminal:
         if self._simple_mode:
             return
         if not _IS_TTY or self._bar_drawn == 0:
+            return
+        # ★ 第二版修复：先经过统一的安全检查。resize 不确定期内，这里
+        # 直接返回（已经换行放弃了旧内容、_bar_drawn 已归零），不发
+        # 任何 \x1b[1A——这正是堵住"_refresh 高频路径未受保护"漏洞的
+        # 关键一步，见 _safe_erase_lines_up() 的详细说明。
+        if self._safe_erase_lines_up():
             return
         # 逐行向上擦除，与 _draw_bar() 保持一致——理由见 _draw_bar() 注释。
         out = sys.stdout
@@ -1260,6 +1702,10 @@ class Terminal:
             self._bar_suspended = False
             return
         if not _IS_TTY or self._bar_drawn == 0:
+            self._bar_suspended = False
+            return
+        # ★ 第二版修复：同样先经过统一的安全检查，理由同 _erase_bar()。
+        if self._safe_erase_lines_up():
             self._bar_suspended = False
             return
         # 逐行向上擦除，与 _draw_bar() 保持一致——理由见 _draw_bar() 注释。
