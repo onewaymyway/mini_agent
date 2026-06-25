@@ -85,6 +85,10 @@ def _main_inner() -> None:
         from mini_agent.ui.terminal import term as _term_early
         _term_early.set_simple_mode(True)
 
+    if getattr(args, "raw_output", None):
+        from mini_agent.ui.terminal import term as _term_early_raw
+        _term_early_raw.set_raw_output(True)
+
     # ── 配置构建 ─────────────────────────────────────────────────────────────
     project_root  = Path(args.project).expanduser() if args.project else Path.cwd()
     debug_console = getattr(args, "debug_llm_console", False)
@@ -105,6 +109,7 @@ def _main_inner() -> None:
         verbose=args.verbose,
         sandbox=args.sandbox,
         simple_mode=getattr(args, "simple_mode", None),
+        raw_output=getattr(args, "raw_output", None),
         auto_approve=args.yes,
         model=args.model,
         llm_provider=getattr(args, "provider", None),
@@ -167,6 +172,12 @@ def _main_inner() -> None:
     from mini_agent.ui.terminal import term as _term
     if cfg.simple_mode and not _term.is_simple_mode():
         _term.set_simple_mode(True)
+
+    # ── raw-output 最终同步 ──────────────────────────────────────────────────
+    # 同 simple-mode：CLI 未显式传参时，agent_config.json 里的
+    # "raw_output": true 也要生效。
+    if cfg.raw_output and not _term.is_raw_output():
+        _term.set_raw_output(True)
 
     print("cfg:",cfg)
 

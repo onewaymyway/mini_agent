@@ -415,6 +415,7 @@ class AppConfig:
     verbose: bool = False
     sandbox: bool = False
     simple_mode: bool = False
+    raw_output: bool = False
     auto_approve: bool = False
     stream: bool = True
 

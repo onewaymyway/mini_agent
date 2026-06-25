@@ -49,6 +49,17 @@ _SIMPLE_MODE_ENV: bool = os.environ.get("MINI_AGENT_SIMPLE_MODE", "").strip().lo
     "1", "true", "yes", "on",
 )
 
+# ── raw-output 默认值 ────────────────────────────────────────────────────────
+# 默认情况下，命令行会实时过滤掉 LLM 流式输出中的 <tool_use>...</tool_use>
+# 标签块（工具调用 JSON，见 _filter_token()），只把可见对话文本打印给用户。
+# 开启 raw-output 后跳过这层过滤，将模型原始输出（包括 <tool_use> 标签本身）
+# 不做任何改动地直接打印出来——典型用于调试模型到底输出了什么、标签格式
+# 是否符合预期等场景。可通过 --raw-output CLI 参数或
+# MINI_AGENT_RAW_OUTPUT=1 环境变量开启。
+_RAW_OUTPUT_ENV: bool = os.environ.get("MINI_AGENT_RAW_OUTPUT", "").strip().lower() in (
+    "1", "true", "yes", "on",
+)
+
 
 class _Msg:
     __slots__ = ("kind", "payload")
@@ -60,7 +71,8 @@ class _Msg:
 class Terminal:
     """唯一的终端 I/O 管理器。通过模块级 `term` 单例访问。"""
 
-    def __init__(self, status_refresh_hz: int = 4, simple_mode: Optional[bool] = None) -> None:
+    def __init__(self, status_refresh_hz: int = 4, simple_mode: Optional[bool] = None,
+                 raw_output: Optional[bool] = None) -> None:
         self._console = Console(highlight=False)
         self._q: queue.Queue[_Msg] = queue.Queue()
         self._statusbar_lines: list[str] = []
@@ -78,6 +90,9 @@ class Terminal:
         #     在 simple-mode 下都绝不会发出任何 ANSI 光标控制序列
         # 默认值：显式传参 > MINI_AGENT_SIMPLE_MODE 环境变量 > False。
         self._simple_mode: bool = bool(simple_mode) if simple_mode is not None else _SIMPLE_MODE_ENV
+        # raw-output：显式传参 > MINI_AGENT_RAW_OUTPUT 环境变量 > False。
+        # 开启后 _filter_token() 直接透传，不再过滤 <tool_use> 标签块。
+        self._raw_output: bool = bool(raw_output) if raw_output is not None else _RAW_OUTPUT_ENV
         self._streaming: bool = False
         self._stream_had_output: bool = False
         self._render_stop: bool = False
@@ -589,6 +604,19 @@ class Terminal:
 
     def is_simple_mode(self) -> bool:
         return self._simple_mode
+
+    # ── raw-output 控制 ──────────────────────────────────────────────────
+    # 运行期切换是否跳过 <tool_use> 流式过滤、原样显示模型全部输出。
+    # 典型用法同 set_simple_mode：app.py 解析完 CLI 参数后调用一次。
+    # 切换时顺手重置过滤器内部状态（_suppress_stream / _pending_stream），
+    # 避免切换前残留的"正处于标签内"状态影响切换后的行为。
+
+    def set_raw_output(self, enabled: bool) -> None:
+        self._raw_output = bool(enabled)
+        self._stream_filter_reset()
+
+    def is_raw_output(self) -> bool:
+        return self._raw_output
 
     def set_statusbar_provider(self, provider: "Optional[Callable[[], list[str]]]") -> None:
         """
@@ -1752,6 +1780,11 @@ class Terminal:
         透传给屏幕。需要正确处理标签被截断在两个 token 边界之间的情况
         （例如 "</tool" 和 "_use>" 分属两次 on_token 回调）。
 
+        raw-output 开启时（self._raw_output=True）：直接原样返回 token，
+        不做任何标签识别/缓冲——这是"显示模型所有原始输出"开关的核心
+        实现位置，调用方（stream / stream_end 等四处分支）完全不需要
+        改动，因为它们只是把这里的返回值写到 stdout。
+
         核心不变量：无论当前缓冲区文本（tail）有多长，只要没能在其中找到
         完整的目标标签（"</tool_use>" 或 "<tool_use>"），就必须保留其
         末尾 len(TAG) - 1 个字符存入 _pending_stream，留给下一个 token
@@ -1767,6 +1800,8 @@ class Terminal:
         输出，因为那本就是要被抑制的工具调用块内容；非 suppress 分支则
         把前面的内容正常输出，只缓冲最后 10 个字符）。
         """
+        if self._raw_output:
+            return token
         result = []
         text = self._pending_stream + token
         self._pending_stream = ""

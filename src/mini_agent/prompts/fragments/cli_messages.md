@@ -21,6 +21,8 @@ COMPACT_EMPTY: History is empty.
 HISTORY_CLEARED: Conversation history cleared.
 VERBOSE_ON: Verbose mode: ON
 VERBOSE_OFF: Verbose mode: OFF
+RAW_OUTPUT_ON: Raw output mode: ON (showing all model output, including <tool_use> blocks)
+RAW_OUTPUT_OFF: Raw output mode: OFF (<tool_use> blocks hidden again)
 SKILL_ACTIVATED: Skill '{name}' activated.
 SKILL_DEACTIVATED: Skill '{name}' deactivated.
 SKILL_NOT_FOUND: Skill '{name}' not found. Use /skills to see available skill names.

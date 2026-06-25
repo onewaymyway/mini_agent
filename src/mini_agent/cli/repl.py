@@ -168,6 +168,14 @@ def _handle_slash(cmd: str, agent: Agent, skill_loader: SkillLoader) -> None:
         key = "VERBOSE_ON" if agent.cfg.verbose else "VERBOSE_OFF"
         R.print_info(pm.fragment("cli_messages", key))
 
+    elif name in ("raw-output", "raw_output", "rawoutput"):
+        from mini_agent.ui.terminal import term as _term
+        new_state = not _term.is_raw_output()
+        _term.set_raw_output(new_state)
+        agent.cfg.raw_output = new_state
+        key = "RAW_OUTPUT_ON" if new_state else "RAW_OUTPUT_OFF"
+        R.print_info(pm.fragment("cli_messages", key))
+
     elif name == "model" and len(parts) >= 2:
         agent.cfg.model = parts[1]
         R.print_info(pm.fragment("cli_messages", "MODEL_SWITCHED", model=parts[1]))

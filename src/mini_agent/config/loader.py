@@ -70,6 +70,7 @@ def load_config(
     verbose: Optional[bool] = None,
     sandbox: Optional[bool] = None,
     simple_mode: Optional[bool] = None,
+    raw_output: Optional[bool] = None,
     auto_approve: Optional[bool] = None,
     model: Optional[str] = None,
     llm_provider: Optional[str] = None,
@@ -237,6 +238,10 @@ def load_config(
         "1", "true", "yes", "on",
     )
     _simple_mode  = bool(_fb("simple_mode",  simple_mode,  _simple_mode_env))
+    _raw_output_env = os.environ.get("MINI_AGENT_RAW_OUTPUT", "").strip().lower() in (
+        "1", "true", "yes", "on",
+    )
+    _raw_output   = bool(_fb("raw_output",   raw_output,   _raw_output_env))
     _auto_approve = bool(_fb("yes",          auto_approve, False))
     _extra_system = _f("system", extra_system) or ""
     _max_llm_calls_v = _f("max_llm_calls", max_llm_calls)
@@ -504,6 +509,7 @@ def load_config(
         verbose=_verbose,
         sandbox=_sandbox,
         simple_mode=_simple_mode,
+        raw_output=_raw_output,
         auto_approve=_auto_approve,
         claude_md_content=claude_md,
         system_extra=_extra_system,

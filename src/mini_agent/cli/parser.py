@@ -38,6 +38,7 @@ def build_parser() -> argparse.ArgumentParser:
               /skill reset               Deactivate all active skills
               /stats             Show session statistics
               /verbose           Toggle verbose tool output
+              /raw-output        Toggle showing raw model output (incl. <tool_use> blocks)
               /model <name>      Switch model mid-session
               /compact           Compress history into a summary
               /memory            Force-generate/refresh session memory now (bypass interval)
@@ -73,6 +74,10 @@ def build_parser() -> argparse.ArgumentParser:
                    help="Simplified display for limited terminals (e.g. Termux): no status-bar "
                         "redraw/erase, no ANSI cursor control, every update is a normal printed "
                         "line (overrides MINI_AGENT_SIMPLE_MODE env)")
+    p.add_argument("--raw-output", action="store_true", default=None,
+                   help="Disable streaming token filtering: show the model's raw output "
+                        "verbatim, including <tool_use>...</tool_use> blocks that are normally "
+                        "hidden (overrides MINI_AGENT_RAW_OUTPUT env)")
     p.add_argument("--yes", "-y", action="store_true", default=None, help="Auto-approve all tool calls")
     p.add_argument("--no-stream", action="store_true", help="Disable streaming")
     p.add_argument("--max-turns", type=int, default=None, help="Max agentic turns per user message")

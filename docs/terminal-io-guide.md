@@ -183,6 +183,11 @@ with term.streaming() as write:
 
 内置 `<tool_use>...</tool_use>` 过滤——原始工具调用 JSON 块不显示给用户。
 
+可通过 `--raw-output` CLI 参数、`MINI_AGENT_RAW_OUTPUT=1` 环境变量、运行期
+`/raw-output` slash 命令，或直接调用 `term.set_raw_output(True)` 关闭这层
+过滤，原样显示模型的全部流式输出（包括 `<tool_use>` 标签本身），用于调试
+模型实际产出内容。
+
 ### 4.3 结构化输出
 
 ```python

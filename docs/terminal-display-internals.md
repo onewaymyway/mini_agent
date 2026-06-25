@@ -492,6 +492,16 @@ def _enter_input_mode(self):
 
 LLM 输出中可能包含 `<tool_use>...</tool_use>` 标签块（工具调用的 JSON），这些不应显示给用户，由 `_filter_token()` 实时过滤。
 
+**raw-output 开关**：`_filter_token()` 开头有一道短路判断——当
+`self._raw_output` 为真时直接 `return token`，不做任何标签识别/缓冲，
+四处调用方（stream / stream_end 等分支）完全不需要改动。开关可通过
+`--raw-output` CLI 参数、`MINI_AGENT_RAW_OUTPUT=1` 环境变量、
+agent_config.json 里的 `"raw_output": true`，或运行期 `/raw-output`
+slash 命令（调用 `term.set_raw_output()`）四种方式控制，优先级与
+simple-mode 完全一致：CLI 显式传参 > 配置文件 > 环境变量 > 默认 False。
+切换时会顺带调用 `_stream_filter_reset()`，清空过滤器内部状态，避免
+切换前残留的"正处于标签内"状态影响切换后的行为。
+
 过滤器维护两个状态：
 
 - `_suppress_stream: bool`：当前是否在 `<tool_use>` 块内
