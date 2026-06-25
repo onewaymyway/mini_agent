@@ -4,6 +4,19 @@ llm/providers/_base_mixin.py — Provider 公共 Mixin
 为所有 provider 提供两个横切能力：
   1. 调试日志（记录原始输入、实际发给API的输入、原始输出、处理后输出）
   2. system-prompt tool call 模式（自动注入协议、后处理响应）
+
+错误分层说明
+------------
+  _wrap_error()（各 provider 自己实现）
+    负责把 SDK 原生异常（openai.RateLimitError / anthropic.APIError / httpx.HTTPStatusError 等）
+    翻译成 LLM 层统一异常（LLMRateLimitError / LLMTimeoutError / LLMProviderError）。
+    由于各 SDK 异常类型完全不同，这一层必须在各 provider 内实现，无法合并。
+
+  _upgrade_error()（此 Mixin 提供）
+    在 _wrap_error() 之后执行，对已经统一为 LLMProviderError 的异常再做一次
+    语义升级：检测消息文本中的 context window 超限关键词，将其升级为
+    LLMContextWindowError。关键词检测逻辑所有 provider 完全一致，因此集中在此处，
+    不在各 provider 重复。
 """
 
 from __future__ import annotations
@@ -12,6 +25,7 @@ import time
 from typing import Callable, Optional
 
 from ..base import LLMClient, LLMResponse, LLMUsage, ToolSchema, StreamCallback
+from ..base import LLMProviderError, LLMContextWindowError
 from mini_agent.orchestrator.concurrency import get_llm_sem
 from ..debug_logger import get_debug_logger
 from ..system_tool_call import (
@@ -21,6 +35,24 @@ from ..system_tool_call import (
     convert_system_to_message,
 )
 from mini_agent.prompts import pm as _pm
+
+# ── context window 超限关键词（所有 provider 共用） ───────────────────────────
+# 各 provider API 报错消息的写法不同，但语义一样；统一放在 Mixin 做一次检测，
+# 不在各 provider 的 _wrap_error 里重复。新增 provider 时无需关心此逻辑。
+_CONTEXT_WINDOW_KEYWORDS: tuple[str, ...] = (
+    "ContextWindowExceeded",       # OpenAI / OpenRouter / NVIDIA NIM 透传
+    "context_length_exceeded",     # OpenAI 官方错误码
+    "maximum context length",      # OpenAI 错误消息文本
+    "prompt is too long",          # Anthropic
+    "context window is full",      # 部分兼容层
+    "input is too long",           # 部分本地模型
+)
+
+
+def _is_context_window_error(msg: str) -> bool:
+    """判断错误消息是否表示 context window 超限。大小写不敏感。"""
+    lower = msg.lower()
+    return any(kw.lower() in lower for kw in _CONTEXT_WINDOW_KEYWORDS)
 
 
 class ProviderMixin:
@@ -89,7 +121,7 @@ class ProviderMixin:
         except Exception as e:
             duration_ms = int((time.monotonic() - t0) * 1000)
             logger.log_error(seq, self.config.provider, self.config.model, e, duration_ms)
-            raise
+            raise self._upgrade_error(e)
 
     def _traced_stream(
         self,
@@ -157,9 +189,33 @@ class ProviderMixin:
         except Exception as e:
             duration_ms = int((time.monotonic() - t0) * 1000)
             logger.log_error(seq, self.config.provider, self.config.model, e, duration_ms)
-            raise
+            raise self._upgrade_error(e)
         finally:
             _token_state.stop()
+
+    # ── 错误语义升级 ──────────────────────────────────────────────────────────
+
+    def _upgrade_error(self, exc: Exception) -> Exception:
+        """
+        对 _wrap_error() 产出的 LLMProviderError 做第二层语义升级。
+
+        分工说明：
+          _wrap_error()（各 provider 实现）：SDK 原生异常 → LLM 层统一异常
+            不同 SDK 的异常类型完全不同，必须各自翻译，无法合并。
+
+          _upgrade_error()（此处，所有 provider 共用）：LLMProviderError → 更具体的子类
+            升级逻辑只依赖消息文本，与 provider 无关，统一放在 Mixin 避免重复。
+
+        目前支持的升级：
+          LLMProviderError（含 context window 关键词）→ LLMContextWindowError
+
+        非 LLMProviderError 的异常（如 LLMRateLimitError、LLMTimeoutError）
+        直接原样返回，不做升级。
+        """
+        if isinstance(exc, LLMProviderError) and not isinstance(exc, LLMContextWindowError):
+            if _is_context_window_error(str(exc)):
+                return LLMContextWindowError(str(exc))
+        return exc
 
     # ── 内部辅助 ──────────────────────────────────────────────────────────────
 

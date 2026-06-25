@@ -1839,14 +1839,46 @@ class Agent:
                     self._auto_compress_history()
 
             # [Stage 6 / 6.1] call_llm 追踪
-            if self._tracer:
-                _turn_id = self.stats.turns
-                with self._tracer.span("call_llm", turn_id=_turn_id) as _sp:
-                    response = self._call_llm()
-                    _sp["input_tokens"] = response.usage.input_tokens
-                    _sp["output_tokens"] = response.usage.output_tokens
-            else:
-                response = self._call_llm()
+            # [AUTO-COMPACT] 捕获上下文窗口超限错误，自动压缩历史后在同一 loop 内重试。
+            # LLMContextWindowError 已被 RetryPolicy.non_retryable_exceptions 排除出重试
+            # 循环（所以到这里时重试预算已用尽、且没有等待时间），直接触发 compact。
+            _auto_compact_done = False
+            while True:
+                try:
+                    if self._tracer:
+                        _turn_id = self.stats.turns
+                        with self._tracer.span("call_llm", turn_id=_turn_id) as _sp:
+                            response = self._call_llm()
+                            _sp["input_tokens"] = response.usage.input_tokens
+                            _sp["output_tokens"] = response.usage.output_tokens
+                    else:
+                        response = self._call_llm()
+                    break  # 成功，跳出内层 while
+                except Exception as _llm_exc:
+                    from mini_agent.llm.base import LLMContextWindowError as _CWErr
+                    if not isinstance(_llm_exc, _CWErr):
+                        raise  # 非 context window 错误：向上传播，不做 compact
+                    if _auto_compact_done:
+                        # compact 后再次超限（历史压缩后仍然太长，罕见但可能）：
+                        # 放弃本轮，告知用户
+                        R.print_error(
+                            "[auto-compact] 压缩后上下文仍超出限制，无法继续。"
+                            "请尝试 /compact 手动压缩或开始新对话。"
+                        )
+                        raise
+                    R.print_warning(
+                        f"[auto-compact] 上下文窗口超限，自动压缩历史… "
+                        f"({type(_llm_exc).__name__})"
+                    )
+                    try:
+                        self.compact_with_skills()
+                        # compact 完成后重置 cached_system，强制用新历史重建 system prompt
+                        self._cached_system = None
+                        _auto_compact_done = True
+                        # 继续内层 while，用压缩后的历史重新调用 LLM
+                    except Exception as _compact_exc:
+                        R.print_error(f"[auto-compact] 压缩失败: {_compact_exc}")
+                        raise _llm_exc from _compact_exc
             final_text = response.text
             self.stats.input_tokens += response.usage.input_tokens
             self.stats.output_tokens += response.usage.output_tokens

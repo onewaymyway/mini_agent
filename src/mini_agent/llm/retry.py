@@ -35,7 +35,7 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from typing import Callable, Optional
 
-from .base import LLMResponse, LLMConfigError
+from .base import LLMResponse, LLMConfigError, LLMContextWindowError
 
 logger = logging.getLogger(__name__)
 
@@ -281,7 +281,7 @@ class RetryPolicy:
     retry_delay: float = field(default=0.0, repr=False)
     retry_on_exception: bool = False
     non_retryable_exceptions: tuple = field(
-        default_factory=lambda: (LLMConfigError,)
+        default_factory=lambda: (LLMConfigError, LLMContextWindowError)
     )
 
     def __post_init__(self) -> None:

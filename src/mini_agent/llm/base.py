@@ -319,3 +319,14 @@ class LLMTimeoutError(LLMError):
 
 class LLMRateLimitError(LLMProviderError):
     """触发速率限制（可重试）。"""
+
+class LLMContextWindowError(LLMProviderError):
+    """
+    上下文窗口超出限制（HTTP 400 ContextWindowExceededError）。
+
+    这是一个确定性错误：相同的历史在相同的模型上重试永远不会成功。
+    正确的处理方式是触发 compact（历史压缩），而非重试。
+
+    RetryPolicy.non_retryable_exceptions 默认包含此类型，确保重试循环
+    立即退出；调用方（agent._call_llm_with_tools）捕获后触发 auto-compact。
+    """
