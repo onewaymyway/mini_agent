@@ -661,7 +661,7 @@ def register_introspection_tools(registry: "ToolRegistry", agent) -> None:
         快速了解自身全貌时首选此工具；需要深入某个子系统时再调用 agent_inspect。
         """
         data = _build_status(agent, policy)
-        R.print_tool_use("agent_status", {})
+        R.print_tool_call("agent_status", {})
         return _safe_json(data)
 
     registry.register_fn(
@@ -703,7 +703,7 @@ def register_introspection_tools(registry: "ToolRegistry", agent) -> None:
         if collector is None:
             return json.dumps({"error": f"target '{target}' 暂无采集器"}, ensure_ascii=False)
 
-        R.print_tool_use("agent_inspect", {"target": target})
+        R.print_tool_call("agent_inspect", {"target": target})
         try:
             data = collector(agent)
             return _safe_json({"target": target, "data": data, "_ts": time.time()})
@@ -756,7 +756,7 @@ def register_introspection_tools(registry: "ToolRegistry", agent) -> None:
         target = target.strip().lower()
         field = field.strip()
 
-        R.print_tool_use("agent_patch", {"target": target, "field": field, "value": value})
+        R.print_tool_call("agent_patch", {"target": target, "field": field, "value": value})
         result = _do_patch(agent, target, field, value, policy)
         return result
 
@@ -812,7 +812,7 @@ def register_introspection_tools(registry: "ToolRegistry", agent) -> None:
           'lock_field'    target=<t> field=<f>  — 锁定具体字段
           'unlock_field'  target=<t> field=<f>  — 解锁具体字段
         """
-        R.print_tool_use("agent_policy", {"action": action, "target": target, "field": field})
+        R.print_tool_call("agent_policy", {"action": action, "target": target, "field": field})
         action = action.strip().lower()
 
         if action == "show":
