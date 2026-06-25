@@ -1002,32 +1002,48 @@ class TestSigwinchDebounceSettle(unittest.TestCase):
 
         fake_app.invalidate.assert_called_once()
 
-    def test_settled_falls_back_to_redraw_queue_when_no_ptk_app_and_not_blocking(self):
+    def test_settled_falls_back_to_resize_settled_queue_when_no_ptk_app_and_not_blocking(self):
         """没有活跃 ptk app、且不在阻塞输入期间（agent 正常运行/状态栏可见）
-        时，settle 应该把 redraw 消息投进队列。"""
+        时，settle 应该把 "_resize_settled" 消息投进队列。
+
+        注意：不是 "redraw"。旧设计里 settle 投递的是 "redraw"
+        （= _erase_bar() 用旧的 _bar_drawn 做相对擦除 + _draw_bar()）。
+        但 resize（尤其 Termux 切后台/前台）会让终端把已显示内容按
+        新列宽 reflow，旧的 _bar_drawn 对"现在"屏幕状态已经失真——
+        继续用它做相对擦除，行数算少了会堆叠，算多了会越界擦掉状态栏
+        上方的正常历史输出（真实复现过的回归）。新设计改为投递专门的
+        "_resize_settled" 消息，由 render_thread 用"放弃旧内容、换行
+        重新开始"的安全方式处理，不做相对擦除。详见
+        Terminal._on_sigwinch_settled() 的文档。
+        """
         self.term._active_ptk_app = None
         self.term._input_blocking = False
         self.term._refresh_paused.clear()
 
         self.term._on_sigwinch_settled()
 
-        # 排空队列检查是否有 redraw 消息
-        found = False
+        # 排空队列检查是否有 _resize_settled 消息，且确认没有误投旧的
+        # redraw 消息（二者不应该同时出现——新设计应该只走一条路径）。
+        found_resize_settled = False
+        found_redraw = False
         try:
             while True:
                 msg = self.term._q.get_nowait()
+                if msg.kind == "_resize_settled":
+                    found_resize_settled = True
                 if msg.kind == "redraw":
-                    found = True
+                    found_redraw = True
                 self.term._q.task_done()
         except Exception:
             pass
-        self.assertTrue(found, "非阻塞场景下 settle 应该投递 redraw 消息")
+        self.assertTrue(found_resize_settled, "非阻塞场景下 settle 应该投递 _resize_settled 消息")
+        self.assertFalse(found_redraw, "settle 不应该再投递旧的 redraw 消息（已改为 _resize_settled）")
 
-    def test_settled_does_not_leak_redraw_when_blocking_without_ptk_app(self):
+    def test_settled_does_not_leak_resize_settled_when_blocking_without_ptk_app(self):
         """confirm() 走的是裸 readline，没有 ptk app，但仍处于
-        _input_blocking=True。这种情况下 settle 不应该投 redraw 消息——
-        否则会撕裂正在显示的确认提示符（这正是 _input_blocking 标志本来
-        要保护的场景）。"""
+        _input_blocking=True。这种情况下 settle 不应该投任何会写屏幕的
+        消息（redraw 或 _resize_settled）——否则会撕裂正在显示的确认
+        提示符（这正是 _input_blocking 标志本来要保护的场景）。"""
         self.term._active_ptk_app = None
         self.term._input_blocking = True
 
@@ -1037,12 +1053,12 @@ class TestSigwinchDebounceSettle(unittest.TestCase):
         try:
             while True:
                 msg = self.term._q.get_nowait()
-                if msg.kind == "redraw":
+                if msg.kind in ("redraw", "_resize_settled"):
                     found = True
                 self.term._q.task_done()
         except Exception:
             pass
-        self.assertFalse(found, "阻塞输入期间（无 ptk app）不应该投 redraw 消息")
+        self.assertFalse(found, "阻塞输入期间（无 ptk app）不应该投 redraw/_resize_settled 消息")
 
     def test_settled_does_not_crash_when_invalidate_raises(self):
         """ptk app.invalidate() 内部抛异常（例如 app 已经退出/loop 已关闭）
@@ -1074,6 +1090,401 @@ class TestSigwinchDebounceSettle(unittest.TestCase):
         # 等过原定的触发时间点，确认 cancel 真的生效，settle 没有被调用
         time.sleep(1.2)
         self.assertEqual(settle_calls, [], "stop() 取消的定时器不应该再触发 settle 回调")
+
+
+@unittest.skipUnless(hasattr(__import__("signal"), "SIGWINCH"), "SIGWINCH 仅在 POSIX 平台存在")
+class TestResizeSettledMessageHandling(unittest.TestCase):
+    """
+    回归测试：resize 之后（尤其 Termux 切后台/前台触发的剧烈尺寸跳变）
+    曾经出现过"直接擦除了之前的正常输出内容"的严重 bug。
+
+    根因：旧设计里 settle 投递 "redraw" 消息（= _erase_bar() 用旧的
+    self._bar_drawn 做 \\x1b[1A\\x1b[2K 相对擦除）。但终端在 resize 时
+    会把屏幕上已经显示的内容按新列宽重新 reflow——这个 reflow 后的
+    真实物理行数对我们的进程不可见、不可查询。如果终端变宽导致旧状态栏
+    reflow 后占用的行数变少，而我们仍然按 resize 前（更宽行数）的
+    _bar_drawn 上移擦除，多移动的那几次 \\x1b[1A\\x1b[2K 会直接越过
+    状态栏的物理边界，擦进状态栏上方的正常历史输出区域——表现为之前
+    输出的内容被无故擦掉，且不可恢复。
+
+    新设计改为：resize 安静期过后投递专门的 "_resize_settled" 消息，
+    由 render_thread（唯一写屏幕的线程）安全处理——不做相对擦除，而是
+    主动放弃对旧状态栏内容的维护：换一行、把 _bar_drawn 归零、从新行
+    开始用当前（新）宽度重新画状态栏。代价最多是历史里多一份"过期"的
+    旧状态栏文字，但绝不会误删正常输出，也不会无限堆叠。
+
+    本测试类直接验证 _handle() 处理 "_resize_settled" 消息时的实际
+    stdout 写入内容，确保：
+      1. 绝不发出 \\x1b[1A（相对上移光标）——这是导致越界擦除的根源。
+      2. 如果之前确实画过状态栏（_bar_drawn > 0），会先换行再重画。
+      3. 处理完成后 _bar_drawn 被正确更新为新画内容的真实物理行数，
+         不是停留在旧的、可能已经因 resize reflow 而失真的值。
+      4. 流式输出中（_streaming=True）或状态栏尚未画出
+         （_bar_suspended=True，对应 _bar_drawn == 0）时按兵不动，
+         不插入多余换行，交由各自原有的收尾逻辑处理。
+    """
+
+    def setUp(self):
+        self.term = Terminal(status_refresh_hz=4)
+        self.term._console = MagicMock()
+
+    def tearDown(self):
+        self.term.stop()
+
+    def _capture_stdout(self, fn):
+        import io
+        buf = io.StringIO()
+        original_stdout = sys.stdout
+        sys.stdout = buf
+        try:
+            with patch("mini_agent.ui.terminal._IS_TTY", True):
+                fn()
+        finally:
+            sys.stdout = original_stdout
+        return buf.getvalue()
+
+    def test_resize_settled_never_emits_relative_cursor_up(self):
+        """核心回归断言：当 resize 不确定期标志为真时（self._resize_unsettled
+        = True，即 resize 已发生但尚未确认安静稳定——这正是
+        _on_sigwinch() 在信号触发瞬间设置的状态，覆盖从信号触发到
+        debounce 安静期结束的整段窗口），处理 _resize_settled 绝不
+        应该发出 \\x1b[1A（相对上移光标）。这正是越界擦除吃掉历史
+        输出的根源——只要不发这个序列，就不可能"擦多了"，因为没有
+        任何相对位移操作。"""
+        self.term._statusbar_lines = ["⚡ Tasks [██░░] 2/4 running"]
+        self.term._bar_drawn = 5  # 伪造"resize 前以旧宽度画了 5 行"
+        self.term._resize_unsettled = True  # resize 已发生，尚未确认安全
+        self.term._streaming = False
+        self.term._bar_suspended = False
+
+        output = self._capture_stdout(
+            lambda: self.term._handle(_Msg("_resize_settled", None))
+        )
+
+        self.assertNotIn(
+            "\x1b[1A", output,
+            "_resize_settled 处理绝不能发出相对光标上移序列——"
+            "resize 后旧的 _bar_drawn 可能因终端 reflow 已经失真，"
+            "用它做相对擦除会越界吃掉状态栏上方的正常历史输出"
+            "（真实复现过的严重回归：'直接擦除了之前的输出内容'）",
+        )
+
+    def test_resize_settled_inserts_newline_before_redrawing_when_bar_was_drawn(self):
+        """resize 不确定期内（self._resize_unsettled=True），之前确实
+        画过状态栏（_bar_drawn > 0）时，应该先换行再重画——这是"放弃
+        旧内容、不尝试覆盖它"策略的具体体现：旧内容留在换行之前的
+        历史里，新内容画在换行之后的全新位置，两者互不干扰。"""
+        self.term._statusbar_lines = ["⚡ Tasks [██░░] 2/4 running"]
+        self.term._bar_drawn = 5
+        self.term._resize_unsettled = True
+        self.term._streaming = False
+        self.term._bar_suspended = False
+
+        output = self._capture_stdout(
+            lambda: self.term._handle(_Msg("_resize_settled", None))
+        )
+
+        self.assertTrue(
+            output.startswith("\r\n"),
+            "之前有旧状态栏（_bar_drawn > 0）时，_resize_settled 必须先换行，"
+            "再在新的一行开始重画，确保不与历史区域的旧内容产生原地覆盖冲突。"
+            "必须是 \\r\\n（不是裸 \\n）——裸 LF 只换行不归零列位置，不能"
+            "依赖终端 ONLCR 这种隐式翻译，必须显式发 \\r 归零列位置",
+        )
+        self.assertIn("Tasks", output, "新内容应该正常画出")
+
+    def test_resize_settled_updates_bar_drawn_to_fresh_physical_line_count(self):
+        """处理完 _resize_settled 后，_bar_drawn 必须被更新为按当前
+        （新）终端宽度算出的真实物理行数，不能停留在 resize 前的旧值——
+        否则下一次正常的 _refresh/redraw 仍然会用失真的行数做相对擦除，
+        本次修复就白费了。"""
+        self.term._statusbar_lines = ["⚡ Tasks [██░░] 2/4 running"]
+        self.term._bar_drawn = 99  # 故意设置一个明显错误的旧值
+        self.term._resize_unsettled = True
+        self.term._streaming = False
+        self.term._bar_suspended = False
+
+        self._capture_stdout(
+            lambda: self.term._handle(_Msg("_resize_settled", None))
+        )
+
+        self.assertNotEqual(
+            self.term._bar_drawn, 99,
+            "_bar_drawn 必须被刷新为当前真实画出的物理行数，不能停留在旧值",
+        )
+        self.assertGreater(self.term._bar_drawn, 0, "正常画出了状态栏内容后 _bar_drawn 应为正数")
+
+    def test_resize_settled_noop_when_no_bar_was_ever_drawn(self):
+        """_bar_drawn == 0（状态栏从未画出过，例如刚启动还没到第一次
+        _refresh）时，不需要插入换行——没有旧内容需要放弃，直接按新
+        宽度画即可，避免无意义的多余空行。"""
+        self.term._statusbar_lines = ["⚡ Tasks [██░░] 2/4 running"]
+        self.term._bar_drawn = 0
+        self.term._streaming = False
+        self.term._bar_suspended = False
+
+        output = self._capture_stdout(
+            lambda: self.term._handle(_Msg("_resize_settled", None))
+        )
+
+        self.assertFalse(
+            output.startswith("\n"),
+            "_bar_drawn == 0 时（没有旧内容）不应该插入多余的换行",
+        )
+        self.assertIn("Tasks", output)
+
+    def test_resize_settled_skips_during_active_streaming(self):
+        """流式输出进行中（_streaming=True）时，_resize_settled 不应该
+        做任何事——插入换行会撕裂正在输出的流式文本。等流式结束后，
+        stream_end 分支本身会用新宽度重新画状态栏，不需要这里额外处理。"""
+        self.term._statusbar_lines = ["⚡ Tasks [██░░] 2/4 running"]
+        self.term._bar_drawn = 5
+        self.term._streaming = True
+        self.term._bar_suspended = False
+
+        output = self._capture_stdout(
+            lambda: self.term._handle(_Msg("_resize_settled", None))
+        )
+
+        self.assertEqual(output, "", "流式输出期间 _resize_settled 应该完全不写任何内容")
+        self.assertEqual(self.term._bar_drawn, 5, "流式输出期间不应该触碰 _bar_drawn")
+
+    def test_resize_settled_skips_when_bar_suspended_awaiting_llm(self):
+        """光标停在 'agent ❯ ' 后面等待 LLM 响应时（_bar_suspended=True），
+        状态栏本来就还没画出来，_resize_settled 不应该插入换行或重画，
+        否则会把 prefix 行错误地往下推一行，造成画面错乱。"""
+        self.term._statusbar_lines = ["⚡ Tasks [██░░] 2/4 running"]
+        self.term._bar_drawn = 0
+        self.term._streaming = False
+        self.term._bar_suspended = True
+
+        output = self._capture_stdout(
+            lambda: self.term._handle(_Msg("_resize_settled", None))
+        )
+
+        self.assertEqual(output, "", "_bar_suspended 期间 _resize_settled 应该完全不写任何内容")
+
+    def test_resize_unsettled_flag_does_not_stay_stuck_after_one_handling(self):
+        """
+        ★★★ 本次修复要堵住的核心漏洞的专项回归测试 ★★★
+
+        真实复现过的严重 bug：self._resize_unsettled 标志一旦被设置为
+        True，如果清除职责系在某个特定消息分支（且该分支可能被流式/
+        bar_suspended 等条件跳过，或者根本没有被投递过），标志会被
+        永久卡死在 True。之后**所有**正常的、跟 resize 完全无关的
+        _refresh 心跳（每 250ms 一次）都会持续命中"换行放弃旧内容"
+        分支——不是因为还在 resize 不确定期，而是因为标志本身永远
+        读不到 False。表现正是：终端宽高早已不再变化、已经稳定下来，
+        却仍然每次刷新都换一行、不断把内容向下推挤，看起来像状态栏
+        在持续不断地向上吞掉正常的历史输出。
+
+        本测试验证：_resize_unsettled=True 之后，只要真正调用过一次
+        会做擦除判断的路径（这里直接用最高频的 "_refresh" 消息模拟
+        常规心跳，不依赖任何 resize 专属消息），标志必须被清除，且
+        从第二次心跳开始，必须恢复正常的原地相对擦除（发出 \\x1b[1A），
+        不能继续无限期地换行。
+        """
+        self.term._statusbar_lines = ["⚡ Tasks [██░░] 2/4 running"]
+        self.term._bar_drawn = 5
+        self.term._resize_unsettled = True  # 模拟 resize 刚发生
+        self.term._streaming = False
+        self.term._bar_suspended = False
+
+        # 第一次心跳：标志为真，应该换行放弃旧内容，且处理完后标志被清除。
+        first_output = self._capture_stdout(
+            lambda: self.term._handle(_Msg("_refresh", None))
+        )
+        self.assertTrue(
+            first_output.startswith("\r\n"),
+            "标志为真时第一次心跳应该换行放弃旧内容（必须是 \\r\\n，"
+            "不是裸 \\n——裸 LF 不归零列位置，不能依赖终端 ONLCR 隐式"
+            "翻译，必须显式发 \\r 归零列位置，否则下次重画会从错误的"
+            "列开始覆盖，造成内容错位、看起来像擦除没生效）",
+        )
+        self.assertFalse(
+            self.term._resize_unsettled,
+            "处理完一次擦除判断后，_resize_unsettled 必须被清除，"
+            "不能永久卡在 True——否则后续所有心跳都会持续换行，"
+            "表现为不断向上吞掉正常输出且永不自行恢复",
+        )
+
+        # 第二次心跳：标志已经是 False，必须恢复正常的原地相对擦除
+        # （发出 \x1b[1A），不能再继续换行。
+        second_output = self._capture_stdout(
+            lambda: self.term._handle(_Msg("_refresh", None))
+        )
+        self.assertIn(
+            "\x1b[1A", second_output,
+            "标志清除之后，后续心跳必须恢复正常的原地相对擦除，"
+            "不能继续无限期换行（那样会让屏幕历史无限增长，"
+            "且不是本次修复想要的'卡死后只多换一行'的良性降级）",
+        )
+        self.assertFalse(
+            second_output.startswith("\r\n\r\n"),
+            "恢复正常后不应该再出现连续多次换行的堆叠现象",
+        )
+
+    def test_resize_unsettled_flag_cleared_even_when_bar_was_never_drawn(self):
+        """_bar_drawn == 0 时（没有旧内容），_safe_erase_lines_up() 应该
+        立即清除标志并返回——没有旧内容意味着没有 reflow 风险，不需要
+        等待任何"确认"。这避免了"状态栏当前恰好没有显示内容"时标志
+        被无意义地长期卡住。"""
+        self.term._statusbar_lines = ["⚡ Tasks [██░░] 2/4 running"]
+        self.term._bar_drawn = 0
+        self.term._resize_unsettled = True
+        self.term._streaming = False
+        self.term._bar_suspended = False
+
+        self._capture_stdout(
+            lambda: self.term._handle(_Msg("_refresh", None))
+        )
+
+        self.assertFalse(
+            self.term._resize_unsettled,
+            "_bar_drawn == 0 时即使标志为真，处理一次后也应该被清除",
+        )
+
+
+class TestCursorColumnResetOnErase(unittest.TestCase):
+    """
+    ★★★ 最终、也是最根本的回归测试 ★★★
+
+    真实复现过的最严重 bug：用户反馈"宽高根本没有变化，状态栏每次
+    刷新都持续向上擦除一些正常的历史输出"。排查了折行记账（ANSI
+    转义序列被错误计入显示宽度）和 resize 标志卡死两个问题并修复后，
+    现象依然完整存在——因为真正的根因比这两个都更基础：
+
+    \x1b[1A（CUU，光标上移）只改变光标的行号，\x1b[2K（EL，清除整行）
+    不改变光标的列号——这两个常用的擦除控制序列都不会把列位置归零。
+    而状态栏每写完一行内容后，代码只发送裸 "\n"（LF）。LF 在 VT100/
+    ANSI 标准里只移动到下一行，并不会像 CRLF 那样把列号归零到 0。
+
+    多数桌面终端"看起来正常"，靠的是底层 tty 驱动开启了 termios 的
+    ONLCR 标志，会把输出流里的 LF 自动翻译成 CRLF——这是终端驱动层
+    的隐式行为，不是代码本身保证的。一旦这个翻译没有发生（Termux 的
+    PTY 实现细节、或任何其他不保证 ONLCR 语义的环境），光标列位置会
+    停留在"上一行内容长度"对应的列，而不是列 0。下一轮 \x1b[1A 上移
+    之后，行号正确归位了，但列号仍然是错的——重新写入新内容时会从
+    这个错误的列开始覆盖，旧内容前半部分残留没被覆盖到，多行状态栏
+    时这个列偏移还会逐行累积——表现为内容持续错位、看起来像"擦除
+    没有生效、不断向上吞掉正常输出"，且与 resize 是否发生完全无关，
+    从状态栏机制最初实现起就存在。
+
+    修复：所有 \x1b[1A 之前、所有新写入的状态栏行内容之前，都必须
+    先发送 \r 显式归零列位置，不依赖 ONLCR 这种隐式的、依赖外部环境
+    配置的翻译。本测试类直接验证这个契约在每一处相关代码路径都成立。
+    """
+
+    def setUp(self):
+        self.term = Terminal(status_refresh_hz=4)
+        self.term._console = MagicMock()
+        self.term._console.width = 80
+
+    def tearDown(self):
+        self.term.stop()
+
+    def _capture_stdout(self, fn):
+        import io
+        buf = io.StringIO()
+        original_stdout = sys.stdout
+        sys.stdout = buf
+        try:
+            with patch("mini_agent.ui.terminal._IS_TTY", True):
+                fn()
+        finally:
+            sys.stdout = original_stdout
+        return buf.getvalue()
+
+    @staticmethod
+    def _assert_every_cuu_preceded_by_cr(output: str, msg_ctx: str):
+        """断言输出里每一处 \x1b[1A（CUU）紧邻的前一个字符都是 \r。
+        这是"列位置归零"契约最直接的字符串级验证方式：不需要真正的
+        终端模拟器，因为 \r 本身就是显式归零列位置的标准控制字符，
+        只要确保它总是出现在每次上移操作之前，归零就一定生效，不依赖
+        任何隐式的 ONLCR 翻译。"""
+        idx = output.find("\x1b[1A")
+        count = 0
+        while idx != -1:
+            count += 1
+            assert idx > 0 and output[idx - 1] == "\r", (
+                f"{msg_ctx}: 第 {count} 处 \\x1b[1A 之前没有紧邻的 \\r"
+                f"（找到的前一字符是 {output[idx-1:idx]!r}）——"
+                "光标上移之前必须先显式归零列位置，否则上移后的列号"
+                "仍然停留在错误位置，导致后续清除/重写从错误的列开始，"
+                "造成内容错位、旧内容残留（真实复现过的根本性 bug）"
+            )
+            idx = output.find("\x1b[1A", idx + 1)
+        assert count > 0, f"{msg_ctx}: 输出里没有找到任何 \\x1b[1A，测试前提不成立"
+
+    @staticmethod
+    def _assert_every_new_line_preceded_by_cr(output: str, lines: list, msg_ctx: str):
+        """断言每一条状态栏行内容写入前都有 \r——保证不管前面的擦除
+        操作是否已经正确归零列位置，写入新内容这一步本身也有独立的
+        归零保险，双重确保不会从错误列开始覆盖。"""
+        for line in lines:
+            idx = output.find(line)
+            assert idx != -1, f"{msg_ctx}: 输出里没有找到内容 {line!r}"
+            assert idx > 0 and output[idx - 1] == "\r", (
+                f"{msg_ctx}: 内容 {line!r} 写入前没有紧邻的 \\r"
+            )
+
+    def test_draw_bar_normal_redraw_resets_column_before_each_cuu(self):
+        """_draw_bar() 在正常原地重绘（非 resize 不确定期、_bar_drawn > 0）
+        时，每一次 \x1b[1A 之前都必须有 \r，且每条新行内容写入前也要有
+        \r。这是最高频路径（每 250ms 一次的 _refresh 最终都会走到这里），
+        必须做到位。"""
+        lines = ["⚡ Tasks [██░░] 2/4 running", "📋 Plan [░░░░] 0/4 done"]
+        self.term._statusbar_lines = lines
+        self.term._bar_drawn = 2
+        self.term._resize_unsettled = False
+
+        output = self._capture_stdout(lambda: self.term._draw_bar())
+
+        self._assert_every_cuu_preceded_by_cr(output, "_draw_bar 正常重绘")
+        self._assert_every_new_line_preceded_by_cr(output, lines, "_draw_bar 正常重绘")
+
+    def test_erase_bar_resets_column_before_each_cuu(self):
+        """_erase_bar() 正常擦除路径同样必须满足这个契约。"""
+        self.term._statusbar_lines = ["⚡ Tasks [██░░] 2/4 running"]
+        self.term._bar_drawn = 3
+        self.term._resize_unsettled = False
+
+        output = self._capture_stdout(lambda: self.term._erase_bar())
+
+        self._assert_every_cuu_preceded_by_cr(output, "_erase_bar")
+
+    def test_erase_bar_direct_resets_column_before_each_cuu(self):
+        """_erase_bar_direct() 正常擦除路径同样必须满足这个契约。"""
+        self.term._statusbar_lines = ["⚡ Tasks [██░░] 2/4 running"]
+        self.term._bar_drawn = 4
+        self.term._resize_unsettled = False
+
+        output = self._capture_stdout(lambda: self.term._erase_bar_direct())
+
+        self._assert_every_cuu_preceded_by_cr(output, "_erase_bar_direct")
+
+    def test_bar_below_prefix_extra_line_also_resets_column(self):
+        """stream 分支里"状态栏画在 prefix 行下方"的特殊场景，那次
+        额外多上移 1 行到 prefix 行的操作（\x1b[1A\x1b[0J）同样必须有
+        \r 在前面——这是最容易被遗漏的一处，因为它是手写的内联逻辑，
+        不经过 _erase_bar()/_draw_bar() 统一入口。"""
+        self.term._statusbar_lines = ["⚡ Tasks running"]
+        self.term._bar_drawn = 2
+        self.term._resize_unsettled = False
+        self.term._bar_below_prefix = True
+        self.term._open_line_render = (("agent ❯ ",), {"end": ""})
+        self.term._streaming = False
+        # 绕过 _filter_token 的内部缓冲逻辑（它会保留末尾若干字符等待
+        # 下一个 token 拼接，与本测试要验证的目标无关，单次调用容易
+        # 拿到空字符串导致整段目标逻辑被跳过）。这里让它原样返回，
+        # 只聚焦验证 _bar_below_prefix 场景下的擦除/写入列位置契约。
+        self.term._filter_token = lambda token: token
+
+        output = self._capture_stdout(
+            lambda: self.term._handle(_Msg("stream", "hello world this is a token"))
+        )
+
+        self._assert_every_cuu_preceded_by_cr(output, "_bar_below_prefix (stream 分支)")
 
 
 if __name__ == "__main__":

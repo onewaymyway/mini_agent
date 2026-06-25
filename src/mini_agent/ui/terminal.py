@@ -1056,15 +1056,15 @@ class Terminal:
                         # 该方法本身只是 console.print()，不做任何相对
                         # 定位假设，在任意干净的新行起点调用都是安全的。
                         if self._resize_unsettled:
-                            sys.stdout.write("\n")
+                            sys.stdout.write("\r\n")
                             sys.stdout.flush()
                             self._bar_drawn = 0
                             self._resize_unsettled = False
                         else:
                             out = sys.stdout
                             for _ in range(self._bar_drawn if self._bar_drawn > 0 else 0):
-                                out.write("\x1b[1A\x1b[2K")
-                            out.write("\x1b[1A\x1b[0J")  # 额外上移 1 行到 prefix 行，清到屏底
+                                out.write("\r\x1b[1A\x1b[2K")
+                            out.write("\r\x1b[1A\x1b[0J")  # 额外上移 1 行到 prefix 行，清到屏底
                             out.flush()
                             self._bar_drawn = 0
                         self._replay_open_line()
@@ -1097,15 +1097,15 @@ class Terminal:
                 # 放弃旧内容，再调用 _replay_open_line() 在干净的新行
                 # 重新打印 prefix。
                 if self._resize_unsettled:
-                    sys.stdout.write("\n")
+                    sys.stdout.write("\r\n")
                     sys.stdout.flush()
                     self._bar_drawn = 0
                     self._resize_unsettled = False
                 else:
                     out = sys.stdout
                     for _ in range(self._bar_drawn if self._bar_drawn > 0 else 0):
-                        out.write("\x1b[1A\x1b[2K")
-                    out.write("\x1b[1A\x1b[0J")  # 额外上移 1 行到 prefix 行，清到屏底
+                        out.write("\r\x1b[1A\x1b[2K")
+                    out.write("\r\x1b[1A\x1b[0J")  # 额外上移 1 行到 prefix 行，清到屏底
                     out.flush()
                     self._bar_drawn = 0
                 # _replay_open_line() 内部已设置 _stream_had_output=True，
@@ -1269,15 +1269,15 @@ class Terminal:
                 #
                 # ★ resize 不确定期保护（理由同 stream 分支的对应位置）。
                 if self._resize_unsettled:
-                    sys.stdout.write("\n")
+                    sys.stdout.write("\r\n")
                     sys.stdout.flush()
                     self._bar_drawn = 0
                     self._resize_unsettled = False
                 else:
                     out = sys.stdout
                     for _ in range(self._bar_drawn if self._bar_drawn > 0 else 0):
-                        out.write("\x1b[1A\x1b[2K")
-                    out.write("\x1b[1A\x1b[0J")
+                        out.write("\r\x1b[1A\x1b[2K")
+                    out.write("\r\x1b[1A\x1b[0J")
                     out.flush()
                     self._bar_drawn = 0
                 self._replay_open_line()
@@ -1594,7 +1594,7 @@ class Terminal:
             return True
         if self._resize_unsettled:
             out = sys.stdout
-            out.write("\n")
+            out.write("\r\n")
             out.flush()
             self._bar_drawn = 0
             self._resize_unsettled = False
@@ -1684,11 +1684,12 @@ class Terminal:
         # 关键一步，见 _safe_erase_lines_up() 的详细说明。
         if self._safe_erase_lines_up():
             return
-        # 逐行向上擦除，与 _draw_bar() 保持一致——理由见 _draw_bar() 注释。
+        # 逐行向上擦除，与 _draw_bar() 保持一致——理由见 _draw_bar() 注释
+        # （★ 真正根因：裸 \n 不归位列，\x1b[1A 之前必须先 \r 显式归零）。
         out = sys.stdout
         for _ in range(self._bar_drawn):
-            out.write("\x1b[1A\x1b[2K")
-        out.write("\x1b[0J")
+            out.write("\r\x1b[1A\x1b[2K")
+        out.write("\r\x1b[0J")
         out.flush()
         self._bar_drawn = 0
 
@@ -1708,11 +1709,12 @@ class Terminal:
         if self._safe_erase_lines_up():
             self._bar_suspended = False
             return
-        # 逐行向上擦除，与 _draw_bar() 保持一致——理由见 _draw_bar() 注释。
+        # 逐行向上擦除，与 _draw_bar() 保持一致——理由见 _draw_bar() 注释
+        # （★ 真正根因：裸 \n 不归位列，\x1b[1A 之前必须先 \r 显式归零）。
         out = sys.stdout
         for _ in range(self._bar_drawn):
-            out.write("\x1b[1A\x1b[2K")
-        out.write("\x1b[0J")
+            out.write("\r\x1b[1A\x1b[2K")
+        out.write("\r\x1b[0J")
         out.flush()
         self._bar_drawn = 0
         self._bar_suspended = False
