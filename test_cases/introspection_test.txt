@@ -1,3 +1,8 @@
 获取agent系统简报
 
 获取skills系统完整状态
+
+获取session系统完整状态
+
+
+修改 agent 的 retry_policy max_retries为20
