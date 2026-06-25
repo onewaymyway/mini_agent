@@ -443,6 +443,18 @@ class Agent:
                 import warnings
                 warnings.warn(f"[ReminderManager] 初始化失败，已禁用: {_e}")
 
+        # ── [SYS-INTROSPECTION] 自感知与运行时调整工具 ─────────────────────────
+        # 注册 agent_status / agent_inspect / agent_patch / agent_policy 四个工具，
+        # 让 agent 具备实时感知并动态调整自身状态的能力。
+        # 必须在所有其他组件（history / tool_executor / skill 等）初始化完毕后注册，
+        # 以确保采集器可访问完整的 agent 内部对象。
+        try:
+            from mini_agent.tools.introspection import register_introspection_tools
+            register_introspection_tools(self.registry, self)
+        except Exception as _e:
+            import warnings
+            warnings.warn(f"[Introspection] 自省工具注册失败，已跳过: {_e}")
+
     # ── Session 管理 ──────────────────────────────────────────────────────────────
 
     def _init_session(self) -> None:
