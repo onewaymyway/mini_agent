@@ -167,11 +167,60 @@ class DaemonClient:
         except Exception:
             return None
 
-    def send_message(self, message: str) -> Optional[str]:
+    def list_sessions(self, limit: int = 10) -> list[dict]:
+        """获取 daemon 的 session 列表（GET /v1/sessions）。"""
+        try:
+            import urllib.request
+            req = urllib.request.Request(
+                f"{self.base_url}/v1/sessions?limit={limit}",
+                headers=self._headers(),
+            )
+            with urllib.request.urlopen(req, timeout=5) as resp:
+                data = json.loads(resp.read())
+                return data.get("sessions", [])
+        except Exception:
+            return []
+
+    def resume_session(self, session_id: str) -> bool:
+        """切换到指定 session（POST /v1/sessions/{id}/resume）。"""
+        try:
+            import urllib.request
+            req = urllib.request.Request(
+                f"{self.base_url}/v1/sessions/{session_id}/resume",
+                data=b"{}",
+                headers=self._headers(),
+                method="POST",
+            )
+            with urllib.request.urlopen(req, timeout=10) as resp:
+                data = json.loads(resp.read())
+                return data.get("ok", False)
+        except Exception:
+            return False
+
+    def new_session(self) -> Optional[str]:
+        """让 daemon 开始新 session（POST /v1/sessions/new），返回新 session_id。"""
+        try:
+            import urllib.request
+            req = urllib.request.Request(
+                f"{self.base_url}/v1/sessions/new",
+                data=b"{}",
+                headers=self._headers(),
+                method="POST",
+            )
+            with urllib.request.urlopen(req, timeout=10) as resp:
+                data = json.loads(resp.read())
+                return data.get("session_id") if data.get("ok") else None
+        except Exception:
+            return None
+
+    def send_message(self, message: str, session_id: Optional[str] = None) -> Optional[str]:
         """提交一条用户消息，返回 turn_id。"""
         try:
             import urllib.request
-            body = json.dumps({"message": message}).encode()
+            payload: dict = {"message": message}
+            if session_id:
+                payload["session_id"] = session_id
+            body = json.dumps(payload).encode()
             req = urllib.request.Request(
                 f"{self.base_url}/v1/chat",
                 data=body,
@@ -479,16 +528,69 @@ def run_daemon_cli(argv: list[str], project_root: Path) -> int:
 
 # ── CLI 连接模式：连接到已存在的 daemon ──────────────────────────────────────
 
+# ── Session 选择界面 ──────────────────────────────────────────────────────────
+
+def _pick_session(client: "DaemonClient") -> Optional[str]:
+    """
+    展示 session 选择菜单，返回：
+      - session_id str  → 用户选择已有 session（需 resume）
+      - ""              → 用户选择新建 session
+      - None            → 用户取消（q 或 Ctrl-C）
+
+    如果 daemon 没有任何历史 session，静默返回 ""（直接新建）。
+    默认回车选最近一条 session（编号 1）。
+    """
+    sessions = client.list_sessions(limit=8)
+    if not sessions:
+        return ""  # 没有历史，静默新建
+
+    status = client.get_status() or {}
+    current_sid = status.get("session_id", "")
+
+    print()
+    print("  \033[1m最近的 sessions\033[0m")
+    print("  " + "─" * 54)
+    for i, s in enumerate(sessions, 1):
+        sid   = s.get("id", "")
+        title = (s.get("title") or "(untitled)")[:36]
+        turns = s.get("turns", 0)
+        age   = s.get("age_str") or (s.get("updated_at") or "")[:16]
+        mark  = " \033[32m● active\033[0m" if sid == current_sid else ""
+        print(f"  \033[36m[{i}]\033[0m {title:<36} {turns:>3}轮  {age}{mark}")
+    print("  " + "─" * 54)
+    print("  \033[36m[n]\033[0m 新建 session    \033[36m[q]\033[0m 退出")
+    print()
+
+    while True:
+        try:
+            raw = input("  选择 [1]: ").strip()
+        except (EOFError, KeyboardInterrupt):
+            print()
+            return None
+        if raw == "" or raw == "1":
+            return sessions[0]["id"]
+        if raw.lower() == "n":
+            return ""
+        if raw.lower() == "q":
+            return None
+        if raw.isdigit():
+            idx = int(raw) - 1
+            if 0 <= idx < len(sessions):
+                return sessions[idx]["id"]
+        print(f"  \033[33m请输入 1-{len(sessions)}、n 或 q\033[0m")
+
+
 def run_connected_repl(daemon_info: dict) -> None:
     """
     CLI 连接模式：连接到已存在的 daemon，REPL 输入通过 HTTP API 提交。
 
     流程：
       1. health_check 确认 HTTP 服务就绪
-      2. get_status 获取 agent_name 用于显示提示符
-      3. 每轮：POST /v1/chat → 拿 turn_id → GET /v1/stream/{turn_id} 流式接收
-      4. turn_done 事件触发后回到输入等待
-      5. exit/quit 或 Ctrl-C：断开连接，daemon 继续运行
+      2. 展示 session 选择界面（最近 N 条 + 新建选项）
+      3. 根据选择 resume 或 new_session
+      4. REPL 循环：每轮 POST /v1/chat → turn_id → SSE 流式接收
+      5. 内置命令：/session list  /session new  /session  exit
+      6. exit/Ctrl-C：断开，daemon 继续运行
     """
     import threading
 
@@ -496,30 +598,45 @@ def run_connected_repl(daemon_info: dict) -> None:
     pid  = daemon_info["pid"]
     client = DaemonClient(port)
 
-    # ── 等待 HTTP 就绪（daemon 刚启动时可能有短暂延迟）─────────────────────
+    # ── 等待 HTTP 就绪 ────────────────────────────────────────────────────────
     print(f"[daemon] Connecting to daemon (PID={pid}, port={port})...", flush=True)
     for _attempt in range(10):
         if client.health_check():
             break
         time.sleep(0.5)
     else:
-        print("[daemon] Error: daemon HTTP service not responding. "
-              "Try 'mini-agent daemon status'.", file=sys.stderr)
+        print("[daemon] Error: HTTP service not responding. "
+              "Try: mini-agent daemon status", file=sys.stderr)
         return
 
-    # ── 获取提示符标签（StatusResponse 无 agent_name，用端口区分多 daemon）──
-    # 未来可在 daemon_info.json 里写入 agent_name 后在此读取
     agent_name = daemon_info.get("agent_name") or f"daemon:{port}"
+    print(f"[daemon] Connected \u2713  (PID={pid}, port={port})")
 
-    print(f"[daemon] Connected  \u2713  (PID={pid}, port={port})")
-    print("[daemon] 'exit' or Ctrl-C to disconnect \u2014 daemon keeps running\n",
+    # ── Session 选择 ──────────────────────────────────────────────────────────
+    chosen_sid = _pick_session(client)
+    if chosen_sid is None:
+        print("[daemon] Exited (daemon continues running)")
+        return
+
+    active_session_id: Optional[str] = None
+    if chosen_sid == "":
+        new_sid = client.new_session()
+        active_session_id = new_sid
+        label = f"new session {new_sid}" if new_sid else "new session"
+    else:
+        ok = client.resume_session(chosen_sid)
+        active_session_id = chosen_sid
+        label = f"session {chosen_sid}" if ok else f"session {chosen_sid} (resume may have failed)"
+
+    print(f"[daemon] \u2713 {label}")
+    print("[daemon] '/session list' \u5207\u6362\uff0c'/session new' \u65b0\u5efa\uff0c'exit' \u65ad\u5f00\n",
           flush=True)
 
-    prompt = f"{agent_name} (connected) ❯ "
+    prompt = f"{agent_name} \u276f "
 
+    # ── REPL 主循环 ───────────────────────────────────────────────────────────
     try:
         while True:
-            # ── 读取用户输入 ───────────────────────────────────────────────
             try:
                 user_input = input(prompt).strip()
             except (EOFError, KeyboardInterrupt):
@@ -529,34 +646,70 @@ def run_connected_repl(daemon_info: dict) -> None:
             if not user_input:
                 continue
 
-            if user_input.lower() in ("exit", "quit", "/exit", "/quit"):
+            # ── 内置命令 ──────────────────────────────────────────────────────
+            cmd = user_input.lower()
+
+            if cmd in ("exit", "quit", "/exit", "/quit"):
                 print("[daemon] Disconnected (daemon continues running)")
                 break
 
-            # ── 提交消息到 daemon ──────────────────────────────────────────
-            turn_id = client.send_message(user_input)
+            if cmd in ("/session new", "/new"):
+                new_sid = client.new_session()
+                if new_sid:
+                    active_session_id = new_sid
+                    print(f"[daemon] \u2713 New session: {new_sid}")
+                else:
+                    print("[daemon] \u2717 Failed to create new session")
+                continue
+
+            if cmd in ("/session list", "/sessions", "/session ls"):
+                chosen = _pick_session(client)
+                if chosen is None:
+                    continue
+                if chosen == "":
+                    new_sid = client.new_session()
+                    if new_sid:
+                        active_session_id = new_sid
+                        print(f"[daemon] \u2713 New session: {new_sid}")
+                    else:
+                        print("[daemon] \u2717 Failed to create new session")
+                else:
+                    ok = client.resume_session(chosen)
+                    if ok:
+                        active_session_id = chosen
+                        print(f"[daemon] \u2713 Switched to: {chosen}")
+                    else:
+                        print(f"[daemon] \u2717 Failed to switch to {chosen}")
+                continue
+
+            if cmd == "/session":
+                st = client.get_status() or {}
+                cur = st.get("session_id") or active_session_id or "(unknown)"
+                state = st.get("state", "?")
+                print(f"[daemon] session={cur}  state={state}")
+                print("         /session list  /session new")
+                continue
+
+            # ── 发送消息 ──────────────────────────────────────────────────────
+            turn_id = client.send_message(user_input, session_id=active_session_id)
             if not turn_id:
-                print("[error] Failed to send message to daemon. "
-                      "Is it still running? Try 'mini-agent daemon status'.",
-                      file=sys.stderr)
-                # 重新检查存活性
                 if not client.health_check():
                     print("[daemon] Daemon appears to have stopped. Exiting.",
                           file=sys.stderr)
                     break
+                print("[error] send_message failed, please retry.", file=sys.stderr)
                 continue
 
-            # ── 流式接收该轮输出 ───────────────────────────────────────────
+            # ── 流式接收 ──────────────────────────────────────────────────────
             done_event = threading.Event()
             printed_any = False
 
-            def on_token(text, _ref={"printed": False}):
+            def on_token(text):
                 nonlocal printed_any
                 print(text, end="", flush=True)
                 printed_any = True
 
             def on_done(_text):
-                # token 已流式打印完毕，只需换行
                 if printed_any:
                     print()
                 done_event.set()
@@ -567,18 +720,14 @@ def run_connected_repl(daemon_info: dict) -> None:
                 except Exception as e:
                     print(f"\n[daemon-client] stream error: {e}", file=sys.stderr)
                 finally:
-                    done_event.set()  # 无论如何保证 done_event 被 set
+                    done_event.set()
 
-            t = threading.Thread(target=stream_worker, daemon=True)
-            t.start()
-
-            # 等待该轮完成（最多 10 分钟）
+            threading.Thread(target=stream_worker, daemon=True).start()
             if not done_event.wait(timeout=600):
                 print("\n[daemon] Timed out waiting for response.")
 
     except KeyboardInterrupt:
         print("\n[daemon] Disconnected (daemon continues running)")
-
 
 # ── 自动拉起 daemon（选项 A：默认行为）──────────────────────────────────────
 
