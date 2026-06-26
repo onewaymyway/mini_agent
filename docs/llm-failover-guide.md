@@ -409,25 +409,51 @@ Configured models  (active: anthropic/claude-opus-4-7)
 /provider switch openai gpt-4o
 ```
 
-调用 `agent.switch_provider()`，重新构建整个 `LLMClient` 实例。**注意**：切换后 fallback chain 缩减为单条，再次执行 `/provider models` 可确认。
+调用 `agent.switch_to_provider_default(provider, model)`：
 
-### 只切换模型名（不换 provider）
+1. 先在当前 `LLMClientPool` 的 fallback chain 中查找匹配的条目：
+   - 给了 `model`：要求 provider + model 都匹配；
+   - 不给 `model`（`/provider switch openai`）：使用该 provider 在 chain 中
+     出现的**第一条**，即该 provider 的"默认模型"。
+   - 命中后直接切换 `_current_idx`，复用该条目早已就绪的 client，**不会**
+     重建，也**不会**丢弃 fallback chain 中的其他条目。
+2. 若 chain 中完全没有该 provider 的条目：从标准环境变量（如
+   `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` 等）解析 api key，构造一条全新的
+   `LLMConfig`，创建 client 后作为新条目追加进 chain 并激活。
+
+`/provider models` 之后再次确认：fallback chain 的其余条目仍然保留，只是
+`_current_idx` 指向了新的活跃条目。
+
+### 切换模型（保持当前 provider，除非该模型属于另一 provider）
 
 ```
-/model claude-opus-4-7
+/model claude-haiku-4-5
 ```
 
-仅修改 `cfg.model` 字符串，不重建 LLMClient，API key 和 provider 类型保持不变。**注意**：当前 provider 不支持该模型时，下次调用会直接报错。
+调用 `agent.switch_model(model)`：
+
+1. 先在 fallback chain 中查找模型名匹配的已配置条目——若找到，直接切换
+   过去，连带使用其对应的 provider 与 api key（不重建 client）。
+2. 若 chain 中没有这个模型，则在**当前 provider** 下用新的模型名构造一条
+   新的 `LLMConfig`（沿用当前 api_key / base_url 等其余字段），创建新
+   client，作为新条目追加进 chain 并激活。
+
+这保证了 `/model` 不再只是改一个不会被实际读取的 `cfg.model` 字符串——
+后续真正发出的 LLM 调用（`agent._call_llm` → `LLMClientPool.call_with_pool`
+→ `LLMClientPool.current_client`）会使用切换后的 client。
 
 ### `/model` vs `/provider switch` 的区别
 
 | | `/model <name>` | `/provider switch <name> [model]` |
 |---|---|---|
-| 改变的对象 | `cfg.model` 字符串 | 整个 `LLMClient` 实例 |
-| API key | 不变 | 从环境变量重新读取 |
-| Provider 类型 | 不变 | 替换为新 provider |
-| LLMClientPool | 不变（fallback chain 保留） | 重建为单条链 |
+| 改变的对象 | `LLMClientPool` 当前激活条目（`_current_idx`）+ 对应 client | 同上 |
+| 查找范围 | 按 model 名在 fallback chain 中查找 | 按 provider（+可选 model）在 fallback chain 中查找 |
+| 找不到时 | 在**当前 provider** 下新建条目 | 解析对应 provider 的环境变量 api key，新建条目 |
+| API key | 命中已有条目则带着该条目的 key；新建条目则沿用当前 key | 命中已有条目则带着该条目的 key；新建条目则从环境变量重新读取 |
+| LLMClientPool | fallback chain 始终保留，只追加/切换，不坍缩 | 同上 |
 | 对话历史 | 保留 | 保留 |
+
+> **注**：`Agent` 上还保留着更底层的 `switch_provider(llm_config)` 方法（供编程/测试场景直接传入完整 `LLMConfig` 使用），它会把整个 `LLMClientPool` 重建为单条链，丢弃原有 fallback chain。`/model` 与 `/provider switch` 这两个 CLI 命令不会调用它，而是调用 `switch_model()` / `switch_to_provider_default()`，二者都不会丢弃 fallback chain 中的其他条目。
 
 ---
 

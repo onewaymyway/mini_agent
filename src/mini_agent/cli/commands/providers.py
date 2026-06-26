@@ -94,3 +94,4 @@ def _handle_models(agent: Agent) -> None:
         "· Keys = number of API keys in rotation  "
         "· switch with [bold]/provider switch <provider> <model>[/bold][/dim]\n"
     )
+

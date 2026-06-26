@@ -754,6 +754,99 @@ class TestAgentLLMIntegration(unittest.TestCase):
             agent.switch_provider(make_config(provider="openai"))
         self.assertIs(agent.llm_client, new_client)
 
+    def test_switch_model_existing_in_pool(self):
+        """/model 切换到 fallback chain 中已有的模型时，应直接复用该条目的
+        client，不重新创建，且 provider/model 同步更新。"""
+        from mini_agent.llm.client_pool import LLMClientPool, ProviderEntry
+
+        agent, _ = self._make_agent([make_response()])
+        cfg_a = make_config(provider="anthropic", model="claude-opus-4-5")
+        cfg_b = make_config(provider="openai", model="gpt-4o")
+        client_a = ConcreteClient(cfg_a)
+        client_b = ConcreteClient(cfg_b)
+        agent._client_pool = LLMClientPool(entries=[
+            ProviderEntry(config=cfg_a, client=client_a),
+            ProviderEntry(config=cfg_b, client=client_b),
+        ])
+        agent._llm = client_a
+
+        with patch("mini_agent.agent.create_client") as mock_create:
+            entry = agent.switch_model("gpt-4o")
+            mock_create.assert_not_called()  # 已存在，不应重建 client
+
+        self.assertIs(agent.llm_client, client_b)
+        self.assertEqual(entry.config.provider, "openai")
+        self.assertEqual(agent.cfg.model, "gpt-4o")
+        self.assertEqual(agent.cfg.llm_provider, "openai")
+
+    def test_switch_model_not_in_pool_creates_new_entry(self):
+        """/model 切换到一个 fallback chain 中不存在的模型名时，应在**当前
+        provider** 下创建一条新条目并激活，而不是报错或静默无效。"""
+        agent, _ = self._make_agent([make_response()])
+        cfg_a = make_config(provider="anthropic", model="claude-opus-4-5")
+        from mini_agent.llm.client_pool import LLMClientPool, ProviderEntry
+        client_a = ConcreteClient(cfg_a)
+        agent._client_pool = LLMClientPool(entries=[ProviderEntry(config=cfg_a, client=client_a)])
+        agent._llm = client_a
+
+        new_client = ConcreteClient(make_config(provider="anthropic", model="claude-haiku-4-5"))
+        with patch("mini_agent.agent.create_client", return_value=new_client) as mock_create:
+            entry = agent.switch_model("claude-haiku-4-5")
+            mock_create.assert_called_once()
+            called_cfg = mock_create.call_args[0][0]
+            self.assertEqual(called_cfg.provider, "anthropic")  # 沿用当前 provider
+            self.assertEqual(called_cfg.model, "claude-haiku-4-5")
+
+        self.assertIs(agent.llm_client, new_client)
+        self.assertEqual(entry.config.model, "claude-haiku-4-5")
+        self.assertEqual(agent.cfg.model, "claude-haiku-4-5")
+        # 旧条目仍保留在 fallback chain 中（未被丢弃）
+        self.assertEqual(len(agent._client_pool._entries), 2)
+
+    def test_switch_to_provider_default_existing_entry(self):
+        """/provider switch <name> 在没给 model 时，应使用该 provider 在
+        fallback chain 中出现的第一条（"默认模型"），并复用其 client。"""
+        from mini_agent.llm.client_pool import LLMClientPool, ProviderEntry
+
+        agent, _ = self._make_agent([make_response()])
+        cfg_a = make_config(provider="anthropic", model="claude-opus-4-5")
+        cfg_b1 = make_config(provider="openai", model="gpt-4o")
+        cfg_b2 = make_config(provider="openai", model="gpt-4o-mini")
+        client_a, client_b1, client_b2 = (
+            ConcreteClient(cfg_a), ConcreteClient(cfg_b1), ConcreteClient(cfg_b2),
+        )
+        agent._client_pool = LLMClientPool(entries=[
+            ProviderEntry(config=cfg_a, client=client_a),
+            ProviderEntry(config=cfg_b1, client=client_b1),
+            ProviderEntry(config=cfg_b2, client=client_b2),
+        ])
+        agent._llm = client_a
+
+        with patch("mini_agent.agent.create_client") as mock_create:
+            entry = agent.switch_to_provider_default("openai")
+            mock_create.assert_not_called()
+
+        self.assertIs(agent.llm_client, client_b1)  # 第一条 = 默认模型
+        self.assertEqual(entry.config.model, "gpt-4o")
+        self.assertEqual(agent.cfg.llm_provider, "openai")
+
+    def test_switch_to_provider_default_unknown_provider_builds_new(self):
+        """fallback chain 中完全没有该 provider 时，应解析环境变量 key 并
+        创建一个新条目，而不是报错。"""
+        agent, _ = self._make_agent([make_response()])
+        new_client = ConcreteClient(make_config(provider="openai", model="gpt-4o"))
+        with patch("mini_agent.agent.create_client", return_value=new_client) as mock_create, \
+             patch("mini_agent.llm.client_pool._get_env_api_key", return_value="env-key"):
+            entry = agent.switch_to_provider_default("openai", "gpt-4o")
+            mock_create.assert_called_once()
+            called_cfg = mock_create.call_args[0][0]
+            self.assertEqual(called_cfg.provider, "openai")
+            self.assertEqual(called_cfg.model, "gpt-4o")
+            self.assertEqual(called_cfg.api_key, "env-key")
+
+        self.assertIs(agent.llm_client, new_client)
+        self.assertEqual(entry.config.provider, "openai")
+
     def test_history_uses_provider_agnostic_format(self):
         """对话历史不应包含任何 provider SDK 特有的对象。"""
         agent, _ = self._make_agent([make_response(text="OK")])
