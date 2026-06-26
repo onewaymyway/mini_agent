@@ -172,9 +172,11 @@ def _build_lines() -> list[str]:
             tcount = tok["token_count"]
             tps = tok["tokens_per_sec"]
             elapsed = tok["elapsed_s"]
+            model = tok.get("model") or ""
+            model_str = f" \033[90m[{model}]\033[0m" if model else ""
             tps_str = f" \033[90m({tps:.0f} tok/s)\033[0m" if tps > 0 else ""
             lines.append(
-                f"  ✍️  Generating  \033[36m{tcount:,} tokens\033[0m"
+                f"  ✍️  Generating{model_str}  \033[36m{tcount:,} tokens\033[0m"
                 f"  \033[90m{elapsed}s{tps_str}\033[0m"
             )
 
