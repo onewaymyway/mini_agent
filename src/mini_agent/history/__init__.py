@@ -23,6 +23,7 @@ from mini_agent.history.entry import (
     make_session_resume,
     make_skill_context,
     make_reminder,
+    make_format_correction,
     make_role_agent,
     to_llm_messages,
 )

@@ -53,6 +53,7 @@ class HType(str, Enum):
     TOOL_RESULT      = "tool_result"      # 工具结果回注
     SKILL_CONTEXT    = "skill_context"    # skill 上下文重附
     REMINDER         = "reminder"         # reminder 动态注入
+    FORMAT_CORRECTION = "format_correction"  # 工具调用格式纠错提示（解析失败后自动注入）
     HOOK_CONTEXT     = "hook_context"     # hook 注入的额外上下文
     FILE_CHANGE      = "file_change"      # 文件变化通知（追加到用户消息）
     SESSION_RESUME   = "session_resume"   # 跨 session 恢复标记
@@ -196,6 +197,15 @@ def make_skill_context(content: str) -> dict:
 
 def make_reminder(role: str, content: str) -> dict:
     return {"role": role, "content": content, "_type": HType.REMINDER}
+
+
+def make_format_correction(content: str) -> dict:
+    """构造一条工具调用格式纠错提示消息（_type=format_correction）。
+
+    始终以 user 角色注入——这是系统对模型上一条输出的反馈，而非真实用户输入，
+    但从 LLM 的对话轮次结构上看必须扮演 user 角色才能让模型"回应"它。
+    """
+    return {"role": "user", "content": content, "_type": HType.FORMAT_CORRECTION}
 
 
 def make_role_agent(role: str, content: str) -> dict:

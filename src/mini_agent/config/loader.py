@@ -36,6 +36,7 @@ from .models import (
     RoleAgentConfig,
     EnvInfoConfig,
     ReminderConfig,
+    FormatCorrectionConfig,
     WorkdirKnowledgeConfig,
     GlobalKnowledgeConfig,
     DEFAULT_MODEL,
@@ -119,6 +120,10 @@ def load_config(
     reminder_enabled: Optional[bool] = None,
     reminders_dir: Optional[Path] = None,
     reminder_verbose: Optional[bool] = None,
+    # 工具调用格式纠错系统
+    format_correction_enabled: Optional[bool] = None,
+    format_correction_max_retries: Optional[int] = None,
+    format_correction_verbose: Optional[bool] = None,
     # role agent 系统
     role_agent_enabled: Optional[bool] = None,
     role_agent_allow: Optional[list] = None,
@@ -443,6 +448,23 @@ def load_config(
         verbose=bool(reminder_verbose if reminder_verbose is not None else _rm.get("verbose", False)),
     )
 
+    # ── 工具调用格式纠错配置组装 ──────────────────────────────────────────────
+    _fc = file_cfg.get("format_correction") if isinstance(file_cfg.get("format_correction"), dict) else {}
+    _fc_enabled_val = format_correction_enabled if format_correction_enabled is not None else _fc.get("enabled", True)
+    format_correction_cfg = FormatCorrectionConfig(
+        enabled=bool(_fc_enabled_val),
+        max_retries_per_turn=int(
+            format_correction_max_retries
+            if format_correction_max_retries is not None
+            else _fc.get("max_retries_per_turn", 2)
+        ),
+        verbose=bool(
+            format_correction_verbose
+            if format_correction_verbose is not None
+            else _fc.get("verbose", False)
+        ),
+    )
+
     # ── RoleAgent 配置组装 ────────────────────────────────────────────────────
     _ra = file_cfg.get("role_agent") if isinstance(file_cfg.get("role_agent"), dict) else {}
     # 总开关：CLI 参数 > 配置文件 > 默认 False（默认不启用）
@@ -533,6 +555,7 @@ def load_config(
         mcp=mcp_cfg,
         web_search=web_search_cfg,
         reminder=reminder_cfg,
+        format_correction=format_correction_cfg,
         role_agent=role_agent_cfg,
         env_info=env_info_cfg,
         workdir_knowledge=workdir_knowledge_cfg,

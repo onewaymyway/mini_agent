@@ -40,6 +40,7 @@ from mini_agent.history.entry import (
     make_session_resume,
     make_skill_context,
     make_reminder,
+    make_format_correction,
     make_role_agent,
     to_llm_messages,
 )
@@ -157,6 +158,17 @@ class HistoryManager:
     def append_reminder(self, role: str, content: str) -> None:
         """追加 reminder 注入消息（_type=reminder）。"""
         msg = make_reminder(role, content)
+        self._history.append(msg)
+        self._raw.append(msg)
+
+    def append_format_correction(self, content: str) -> None:
+        """追加工具调用格式纠错提示消息（_type=format_correction，始终 user 角色）。
+
+        用于：模型输出中检测到"看起来想调用工具但格式损坏、解析失败"的痕迹时，
+        自动以 user 身份告知模型重新输出，让 agentic loop 继续而不是把半成品
+        输出当成最终答案直接结束。
+        """
+        msg = make_format_correction(content)
         self._history.append(msg)
         self._raw.append(msg)
 

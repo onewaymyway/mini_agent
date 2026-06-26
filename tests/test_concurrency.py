@@ -376,6 +376,62 @@ class TestStatusBar(unittest.TestCase):
         # 停止后回调被清除（单例对象本身依然存在）
         self.assertIsNone(get_terminal()._statusbar_provider)
 
+    def test_generating_line_includes_model_name(self):
+        """流式生成中的状态行应包含当前使用的模型名。"""
+        from mini_agent.orchestrator.status_bar import _build_lines
+        fake_tok_state = MagicMock()
+        fake_tok_state.snapshot.return_value = {
+            "active": True, "token_count": 123,
+            "elapsed_s": 2.5, "tokens_per_sec": 49.2,
+            "model": "claude-sonnet-4-6",
+        }
+        with patch("mini_agent.tools.orchestration.get_task_manager", return_value=None), \
+             patch("mini_agent.orchestrator.concurrency.concurrency_snapshot",
+                   return_value={"llm": {"active": 0, "waiting": 0, "limit": 8, "waiters": []}}), \
+             patch("mini_agent.orchestrator.concurrency.get_stream_token_state",
+                   return_value=fake_tok_state):
+            lines = _build_lines()
+        gen_line = next((l for l in lines if "Generating" in l), None)
+        self.assertIsNotNone(gen_line)
+        self.assertIn("claude-sonnet-4-6", gen_line)
+        self.assertIn("123", gen_line)
+
+    def test_generating_line_without_model_falls_back_gracefully(self):
+        """model 为空字符串（旧版本/未传入）时不应崩溃，也不应显示空方括号。"""
+        from mini_agent.orchestrator.status_bar import _build_lines
+        fake_tok_state = MagicMock()
+        fake_tok_state.snapshot.return_value = {
+            "active": True, "token_count": 10,
+            "elapsed_s": 1.0, "tokens_per_sec": 10.0,
+            "model": "",
+        }
+        with patch("mini_agent.tools.orchestration.get_task_manager", return_value=None), \
+             patch("mini_agent.orchestrator.concurrency.concurrency_snapshot",
+                   return_value={"llm": {"active": 0, "waiting": 0, "limit": 8, "waiters": []}}), \
+             patch("mini_agent.orchestrator.concurrency.get_stream_token_state",
+                   return_value=fake_tok_state):
+            lines = _build_lines()
+        gen_line = next((l for l in lines if "Generating" in l), None)
+        self.assertIsNotNone(gen_line)
+        self.assertNotIn("[]", gen_line)
+
+    def test_generating_line_absent_when_inactive(self):
+        """没有流式生成在进行时，不应出现 Generating 行（行为不变）。"""
+        from mini_agent.orchestrator.status_bar import _build_lines
+        fake_tok_state = MagicMock()
+        fake_tok_state.snapshot.return_value = {
+            "active": False, "token_count": 0,
+            "elapsed_s": 0.0, "tokens_per_sec": 0.0,
+            "model": "claude-sonnet-4-6",
+        }
+        with patch("mini_agent.tools.orchestration.get_task_manager", return_value=None), \
+             patch("mini_agent.orchestrator.concurrency.concurrency_snapshot",
+                   return_value={"llm": {"active": 0, "waiting": 0, "limit": 8, "waiters": []}}), \
+             patch("mini_agent.orchestrator.concurrency.get_stream_token_state",
+                   return_value=fake_tok_state):
+            lines = _build_lines()
+        self.assertFalse(any("Generating" in l for l in lines))
+
 
 
 # ══════════════════════════════════════════════════════════════════════════════

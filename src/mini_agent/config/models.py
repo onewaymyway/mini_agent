@@ -380,6 +380,30 @@ class ReminderConfig:
     verbose: bool = False
 
 
+@dataclass
+class FormatCorrectionConfig:
+    """[SYS-FORMAT-CORRECTION] 工具调用格式纠错配置。
+
+    背景：模型有时会"意图"调用工具（输出中出现 <tool_use> / <tool_result>
+    等协议关键字），但因为标签未闭合、JSON 截断、标签名用混等格式问题，
+    导致 parse_tool_calls() 解析失败，最终 response.tool_calls 为空。
+
+    若不处理，_agentic_loop() 会把这个"半成品"输出当成最终答案，直接结束
+    对话——但模型本意是还没做完事。本配置控制：检测到这类"格式损坏但明显
+    想调用工具"的输出时，是否自动以 user 角色注入纠错提示，让模型重新
+    输出一次，loop 继续而不是中断。
+
+    可扩展性：新的"格式异常模式"在
+    perception/format_correction_detector.py 的规则注册表里追加即可，
+    不需要改这里的配置结构。
+    """
+    enabled: bool = True
+    # 同一 turn 内最多允许的纠错重试次数（防止模型持续输出坏格式导致死循环）
+    max_retries_per_turn: int = 2
+    # 调试：打印命中的格式问题类型 + 注入的纠错提示
+    verbose: bool = False
+
+
 # ════════════════════════════════════════════════════════════════════════════════
 # 主配置类
 # ════════════════════════════════════════════════════════════════════════════════
@@ -453,6 +477,7 @@ class AppConfig:
     mcp:        MCPConfig        = field(default_factory=MCPConfig)
     web_search: WebSearchConfig  = field(default_factory=WebSearchConfig)
     reminder:   ReminderConfig   = field(default_factory=ReminderConfig)
+    format_correction: FormatCorrectionConfig = field(default_factory=FormatCorrectionConfig)
     role_agent: RoleAgentConfig  = field(default_factory=RoleAgentConfig)
     env_info:   EnvInfoConfig    = field(default_factory=EnvInfoConfig)
     workdir_knowledge: WorkdirKnowledgeConfig = field(default_factory=WorkdirKnowledgeConfig)

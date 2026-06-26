@@ -1814,6 +1814,10 @@ class Agent:
         """Keep calling the LLM until it produces a final text response (no tool calls)."""
         final_text = ""
         loop_count = 0
+        # [SYS-FORMAT-CORRECTION] 本轮（一次 _agentic_loop 调用）内已消耗的格式纠错重试次数。
+        # 与 loop_count 分开计数：纠错重试不应挤占 max_turns 预算，
+        # 但仍需独立上限防止模型持续输出坏格式导致死循环。
+        format_correction_retries = 0
 
         while loop_count < self.cfg.max_turns:
             loop_count += 1
@@ -1911,6 +1915,25 @@ class Agent:
                     R.print_info(f"[skill-detect] used: {used}")
 
             if not response.has_tool_calls:
+                # [SYS-FORMAT-CORRECTION] 解析失败后的第二轮检查：
+                # 模型输出里是否有"看起来想调用工具但格式损坏"的痕迹
+                # （标签未闭合、标签角色混淆、JSON 损坏等）。命中则不直接
+                # break——以 user 角色注入纠错提示，让模型重新输出一次。
+                if (
+                    self.cfg.format_correction.enabled
+                    and format_correction_retries < self.cfg.format_correction.max_retries_per_turn
+                ):
+                    issue = self._detect_format_issue(response.text)
+                    if issue is not None:
+                        format_correction_retries += 1
+                        self._hist.append_format_correction(issue.message)
+                        if self.cfg.format_correction.verbose:
+                            R.print_info(
+                                f"[format-correction] 检测到格式问题: {issue.issue_type!r}，"
+                                f"已注入纠错提示，重试 {format_correction_retries}/"
+                                f"{self.cfg.format_correction.max_retries_per_turn}"
+                            )
+                        continue  # 跳过 break，回到循环顶部重新调用一次 LLM（仍计入 loop_count/max_turns 预算）
                 break
 
             # 执行工具调用，结果写回历史
@@ -2223,6 +2246,18 @@ class Agent:
             return
         for r in self._reminder_mgr.check_assistant_text(assistant_text):
             self._inject_reminder(r)
+
+    def _detect_format_issue(self, assistant_text: str):
+        """[SYS-FORMAT-CORRECTION] 检测 assistant 输出中"格式损坏的工具调用"痕迹。
+
+        仅在 response.has_tool_calls 为假（即 parse_tool_calls 已判定无有效
+        工具调用）之后调用。委托给 perception.format_correction_detector，
+        新增检测规则只需改那个模块，这里不需要变动。
+
+        返回 FormatIssue | None。
+        """
+        from mini_agent.perception.format_correction_detector import detect_format_issue
+        return detect_format_issue(assistant_text)
 
     # ── Tool execution ─────────────────────────────────────────────────────────
 
