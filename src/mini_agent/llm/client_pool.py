@@ -296,6 +296,61 @@ class LLMClientPool:
         with self._lock:
             return self._entries[self._current_idx]
 
+    def find_entry_index(
+        self,
+        provider: Optional[str] = None,
+        model: Optional[str] = None,
+    ) -> Optional[int]:
+        """
+        在 fallback chain 中查找匹配 provider/model 的条目索引。
+
+        provider 和 model 均为可选过滤条件（大小写不敏感）：
+          - 只给 model：按模型名匹配（忽略 provider）
+          - 只给 provider：返回该 provider 的第一条条目（"默认模型"）
+          - 都给：要求两者都匹配
+
+        Returns:
+            匹配的条目索引，未找到返回 None。
+        """
+        provider_l = provider.lower().strip() if provider else None
+        model_l = model.lower().strip() if model else None
+        with self._lock:
+            for i, entry in enumerate(self._entries):
+                if provider_l is not None and entry.config.provider.lower() != provider_l:
+                    continue
+                if model_l is not None and entry.config.model.lower() != model_l:
+                    continue
+                return i
+        return None
+
+    def switch_to_index(self, idx: int) -> ProviderEntry:
+        """
+        将 _current_idx 切换到已存在的条目（不重建 client，因为该条目本就
+        持有一个就绪的 client）。
+
+        Returns:
+            切换后的 ProviderEntry。
+        """
+        with self._lock:
+            if not (0 <= idx < len(self._entries)):
+                raise IndexError(f"LLMClientPool: index {idx} out of range")
+            self._current_idx = idx
+            return self._entries[idx]
+
+    def add_entry(self, entry: ProviderEntry, *, activate: bool = True) -> int:
+        """
+        向 fallback chain 追加一条新条目（不影响已有条目）。
+
+        Returns:
+            新条目的索引。
+        """
+        with self._lock:
+            self._entries.append(entry)
+            new_idx = len(self._entries) - 1
+            if activate:
+                self._current_idx = new_idx
+            return new_idx
+
     def call_with_pool(
         self,
         call_fn: Callable[[LLMClient], LLMResponse],

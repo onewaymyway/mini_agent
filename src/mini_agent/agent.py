@@ -1390,7 +1390,99 @@ class Agent:
         self._llm = new_client
         entry = ProviderEntry(config=llm_config, client=new_client, key_pool=None)
         self._client_pool = LLMClientPool(entries=[entry])
+        self.cfg.model = llm_config.model
+        self.cfg.llm_provider = llm_config.provider
         R.print_info(f"Switched to {self._llm}")
+
+    def switch_model(self, model: str) -> "ProviderEntry":  # noqa: F821 (前向引用，运行时从 client_pool 导入)
+        """
+        运行时切换模型（保持当前 provider 不变，除非该模型属于 fallback chain
+        中的另一个 provider）。
+
+        行为：
+          1. 先在当前 LLMClientPool 的 fallback chain 中查找匹配该 model 名称
+             的已配置条目——若找到，直接切换 _current_idx 指向它（该条目早已
+             持有一个就绪的 client，无需重建，API key/provider 也随之带过去）。
+          2. 若 fallback chain 中没有这个模型，则在**当前 provider**下用新的
+             model 名构造一个新的 LLMConfig（沿用当前 api_key/base_url 等），
+             创建新 client，作为新条目追加进 fallback chain 并激活。
+
+        这保证了 /model <name> 不再只是改一个不会被实际使用的字符串，而是
+        真正让后续的 LLM 调用使用新模型对应的 client。
+
+        Returns:
+            切换后激活的 ProviderEntry。
+        """
+        from mini_agent.llm.client_pool import ProviderEntry
+
+        idx = self._client_pool.find_entry_index(model=model)
+        if idx is not None:
+            entry = self._client_pool.switch_to_index(idx)
+        else:
+            current = self._client_pool.current_entry
+            new_cfg = LLMConfig(
+                provider=current.config.provider,
+                model=model,
+                api_key=current.config.api_key,
+                base_url=current.config.base_url,
+                max_tokens=current.config.max_tokens,
+                temperature=current.config.temperature,
+                timeout=current.config.timeout,
+                extra=current.config.extra,
+                requires_api_key=current.config.requires_api_key,
+                use_system_tool_call=current.config.use_system_tool_call,
+                system_message_format=current.config.system_message_format,
+            )
+            new_client = create_client(new_cfg)
+            entry = ProviderEntry(config=new_cfg, client=new_client, key_pool=None)
+            self._client_pool.add_entry(entry, activate=True)
+
+        self._llm = entry.client
+        self.cfg.model = entry.config.model
+        self.cfg.llm_provider = entry.config.provider
+        return entry
+
+    def switch_to_provider_default(
+        self, provider: str, model: Optional[str] = None,
+    ) -> "ProviderEntry":  # noqa: F821
+        """
+        运行时切换到指定 provider（供 `/provider switch <name> [model]` 使用）。
+
+        行为：
+          1. 若 fallback chain 中已有该 provider 的条目：
+             - 给了 model：要求 provider+model 都匹配；
+             - 没给 model：使用该 provider 在 chain 中出现的**第一条**（即
+               "默认模型"）。
+             命中后直接切换 _current_idx，复用已就绪的 client。
+          2. 若 fallback chain 中完全没有该 provider：构造一条全新配置
+             （model 用调用方传入的值；若也没传，退回当前 model），从标准
+             环境变量解析 api_key，创建 client 并作为新条目追加进 chain。
+
+        Returns:
+            切换后激活的 ProviderEntry。
+        """
+        from mini_agent.llm.client_pool import ProviderEntry, _get_env_api_key
+
+        idx = self._client_pool.find_entry_index(provider=provider, model=model)
+        if idx is not None:
+            entry = self._client_pool.switch_to_index(idx)
+        else:
+            resolved_model = model or self.cfg.model
+            api_key = _get_env_api_key(provider)
+            new_cfg = LLMConfig(
+                provider=provider,
+                model=resolved_model,
+                api_key=api_key,
+                requires_api_key=(provider not in ("ollama", "local")),
+            )
+            new_client = create_client(new_cfg)
+            entry = ProviderEntry(config=new_cfg, client=new_client, key_pool=None)
+            self._client_pool.add_entry(entry, activate=True)
+
+        self._llm = entry.client
+        self.cfg.model = entry.config.model
+        self.cfg.llm_provider = entry.config.provider
+        return entry
 
     # ── [SYS-ROLE-AGENT] 角色 Agent 触发 ────────────────────────────────────
 

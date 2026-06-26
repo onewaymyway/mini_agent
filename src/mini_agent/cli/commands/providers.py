@@ -9,14 +9,12 @@ cli/commands/providers.py — /provider slash 命令处理
 
 from __future__ import annotations
 
-import os
-
 from mini_agent.agent import Agent
 import mini_agent.ui.renderer as R
 
 
 def handle_provider_cmd(args: list[str], agent: Agent) -> None:
-    from mini_agent.llm import list_providers, LLMConfig, create_client
+    from mini_agent.llm import list_providers
 
     if not args or args[0] == "info":
         R.print_info(f"Current LLM: {agent.llm_client}")
@@ -31,20 +29,10 @@ def handle_provider_cmd(args: list[str], agent: Agent) -> None:
 
     elif args[0] == "switch" and len(args) >= 2:
         provider = args[1]
-        model    = args[2] if len(args) >= 3 else agent.cfg.model
-        if provider in ("anthropic", "claude"):
-            api_key = os.environ.get("ANTHROPIC_API_KEY", "")
-        elif provider in ("openai", "azure"):
-            api_key = os.environ.get("OPENAI_API_KEY", "")
-        else:
-            api_key = ""
-        cfg = LLMConfig(
-            provider=provider, model=model, api_key=api_key,
-            requires_api_key=(provider not in ("ollama", "local")),
-        )
+        model    = args[2] if len(args) >= 3 else None
         try:
-            agent.switch_provider(cfg)
-            R.print_success(f"Switched to {provider} / {model}")
+            entry = agent.switch_to_provider_default(provider, model)
+            R.print_success(f"Switched to {entry.config.provider} / {entry.config.model}")
         except Exception as e:
             R.print_error(str(e))
 
@@ -106,4 +94,3 @@ def _handle_models(agent: Agent) -> None:
         "· Keys = number of API keys in rotation  "
         "· switch with [bold]/provider switch <provider> <model>[/bold][/dim]\n"
     )
-

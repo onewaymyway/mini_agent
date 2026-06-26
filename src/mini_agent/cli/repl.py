@@ -177,8 +177,10 @@ def _handle_slash(cmd: str, agent: Agent, skill_loader: SkillLoader) -> None:
         R.print_info(pm.fragment("cli_messages", key))
 
     elif name == "model" and len(parts) >= 2:
-        agent.cfg.model = parts[1]
-        R.print_info(pm.fragment("cli_messages", "MODEL_SWITCHED", model=parts[1]))
+        _handle_model_cmd(parts[1], agent)
+
+    elif name == "model":
+        R.print_error("Usage: /model <name>")
 
     elif name == "compact":
         _compact_history(agent)
@@ -338,6 +340,27 @@ def _get_http_bridge():
         return bridge if bridge.agent is not None else None
     except Exception:
         return None
+
+
+def _handle_model_cmd(model_name: str, agent: Agent) -> None:
+    """
+    /model <name> — 运行时切换模型。
+
+    委托给 agent.switch_model()：
+      - 若该模型已存在于 fallback chain 中，直接切换过去（连带正确的
+        provider 和 api key）；
+      - 否则在当前 provider 下用新模型名创建一个新 client 并追加进 chain。
+    与旧实现的区别：这里会真正生效于后续的 LLM 调用，而不是只改一个
+    不会被读取的配置字符串。
+    """
+    try:
+        entry = agent.switch_model(model_name)
+        R.print_info(
+            pm.fragment("cli_messages", "MODEL_SWITCHED", model=entry.config.model)
+            + f"  (provider: {entry.config.provider})"
+        )
+    except Exception as e:
+        R.print_error(f"Failed to switch model: {e}")
 
 
 def _compact_history(agent: Agent) -> None:
