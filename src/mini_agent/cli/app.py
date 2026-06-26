@@ -264,6 +264,20 @@ def _main_inner() -> None:
     if hook_mgr.has_any:
         R.print_info("Hooks loaded from .agent/hooks.json")
 
+    # ── Stage 9: 连接模式 —— 在构建 Agent 之前检查 daemon ───────────────────
+    # 条件：非 --no-daemon、非 --daemon-mode（daemon 自身不去连自己）、非单次 --prompt
+    # 若 daemon 存活，直接用 HTTP API 连接，跳过本进程的 Agent 构建（节省资源）
+    if (
+        not getattr(args, "no_daemon", False)
+        and not getattr(args, "daemon_mode", False)
+        and not args.prompt
+    ):
+        from mini_agent.cli.daemon import _read_daemon_info, run_connected_repl
+        _daemon_info = _read_daemon_info(project_root)
+        if _daemon_info:
+            run_connected_repl(_daemon_info)
+            return
+
     # ── Agent ─────────────────────────────────────────────────────────────────
     agent = Agent(cfg=cfg, skill_loader=skill_loader, guard=guard)
 
@@ -344,7 +358,8 @@ def _main_inner() -> None:
         try:
             from mini_agent.cli.daemon import _write_pid
             http_port = getattr(args, "http_port", None) or 8765
-            _write_pid(project_root, os.getpid(), http_port)
+            _agent_name = getattr(cfg, "agent_name", None) or None
+            _write_pid(project_root, os.getpid(), http_port, agent_name=_agent_name)
             R.print_info(f"[daemon] Running in daemon mode, PID={os.getpid()}, port={http_port}")
         except Exception as e:
             R.print_warning(f"[daemon] Failed to write PID file: {e}")

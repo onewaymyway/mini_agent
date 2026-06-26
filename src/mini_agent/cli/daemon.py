@@ -41,13 +41,20 @@ def _daemon_info_file(project_root: Path) -> Path:
     return project_root / ".agent" / "daemon_info.json"
 
 
-def _write_pid(project_root: Path, pid: int, http_port: int) -> None:
+def _write_pid(
+    project_root: Path,
+    pid: int,
+    http_port: int,
+    agent_name: Optional[str] = None,
+) -> None:
     pid_path = _pid_file(project_root)
     pid_path.parent.mkdir(parents=True, exist_ok=True)
-    info = {"pid": pid, "http_port": http_port, "started_at": time.time()}
+    info: dict = {"pid": pid, "http_port": http_port, "started_at": time.time()}
+    if agent_name:
+        info["agent_name"] = agent_name
     # 写 pid 文件
     pid_path.write_text(str(pid))
-    # 写 info 文件（含端口）
+    # 写 info 文件（含端口 + agent_name，CLI 连接时读取）
     _daemon_info_file(project_root).write_text(
         json.dumps(info, indent=2)
     )
@@ -180,13 +187,20 @@ class DaemonClient:
 
     def stream_output(self, turn_id: str, on_token=None, on_done=None) -> None:
         """
-        订阅 SSE 流式输出直到该轮完成。
-        on_token(text): 收到 token 时回调
-        on_done(text): 轮结束时回调
+        订阅 /v1/stream/{turn_id} SSE 端点，直到该轮 turn_done 事件到来。
+
+        使用 per-turn 端点（而非全局 /v1/stream）有两个好处：
+          1. 服务端已做 turn_id 过滤，客户端无需自行过滤
+          2. turn_done 后服务端不再推送该轮事件，便于客户端检测结束
+
+        SSE 帧格式（来自 api/models.py AgentEvent.sse_format）：
+            id: <int>
+            event: <EventType>        # "token" / "turn_done" / "turn_start" / ...
+            data: {"turn_id": "...", "text": "...", ...}
         """
         try:
             import urllib.request
-            url = f"{self.base_url}/v1/stream"
+            url = f"{self.base_url}/v1/stream/{turn_id}"
             req = urllib.request.Request(url, headers=self._headers())
             with urllib.request.urlopen(req, timeout=300) as resp:
                 buffer = b""
@@ -195,37 +209,55 @@ class DaemonClient:
                     if not chunk:
                         break
                     buffer += chunk
+                    # SSE 帧以 \n\n 分隔
                     while b"\n\n" in buffer:
-                        msg_bytes, buffer = buffer.split(b"\n\n", 1)
-                        msg = msg_bytes.decode("utf-8", errors="replace")
-                        self._handle_sse_message(msg, turn_id, on_token, on_done)
+                        frame_bytes, buffer = buffer.split(b"\n\n", 1)
+                        frame = frame_bytes.decode("utf-8", errors="replace")
+                        done = self._handle_sse_frame(frame, on_token, on_done)
+                        if done:
+                            return  # turn_done 已触发，退出循环
         except Exception as e:
-            if "timed out" not in str(e).lower():
+            err = str(e)
+            if "timed out" not in err.lower() and "RemoteDisconnected" not in err:
                 print(f"[daemon-client] stream error: {e}", file=sys.stderr)
 
-    def _handle_sse_message(self, msg: str, turn_id: str, on_token, on_done) -> None:
-        """解析单条 SSE 消息。"""
-        data_line = None
-        for line in msg.splitlines():
-            if line.startswith("data:"):
+    def _handle_sse_frame(self, frame: str, on_token, on_done) -> bool:
+        """
+        解析单条 SSE 帧，返回 True 表示该轮已结束（turn_done）。
+
+        帧结构：
+            id: <n>
+            event: <type>
+            data: <json>
+        """
+        evt_type = ""
+        data_line = ""
+        for line in frame.splitlines():
+            if line.startswith("event:"):
+                evt_type = line[6:].strip()
+            elif line.startswith("data:"):
                 data_line = line[5:].strip()
+
         if not data_line:
-            return
+            return False
         try:
-            event = json.loads(data_line)
+            payload = json.loads(data_line)
         except Exception:
-            return
+            return False
 
-        evt_type = event.get("type", "")
-        evt_turn = event.get("turn_id", "")
+        if evt_type == "token":
+            # data: {"turn_id": "...", "text": "...", ...}
+            text = payload.get("text", "")
+            if text and on_token:
+                on_token(text)
+        elif evt_type == "turn_done":
+            text = payload.get("text", "")
+            if on_done:
+                on_done(text)
+            return True  # 通知调用方退出
+        # 其他事件（turn_start / tool_call / info / replay_done 等）忽略
 
-        if evt_turn != turn_id:
-            return  # 不是当前轮的事件
-
-        if evt_type == "token" and on_token:
-            on_token(event.get("data", {}).get("text", ""))
-        elif evt_type == "turn_done" and on_done:
-            on_done(event.get("data", {}).get("text", ""))
+        return False
 
 
 # ── daemon 子命令实现 ─────────────────────────────────────────────────────────
@@ -450,25 +482,46 @@ def run_daemon_cli(argv: list[str], project_root: Path) -> int:
 def run_connected_repl(daemon_info: dict) -> None:
     """
     CLI 连接模式：连接到已存在的 daemon，REPL 输入通过 HTTP API 提交。
-    与今天 Web 端的接入方式完全对称（都通过 POST /v1/chat + GET /v1/stream）。
+
+    流程：
+      1. health_check 确认 HTTP 服务就绪
+      2. get_status 获取 agent_name 用于显示提示符
+      3. 每轮：POST /v1/chat → 拿 turn_id → GET /v1/stream/{turn_id} 流式接收
+      4. turn_done 事件触发后回到输入等待
+      5. exit/quit 或 Ctrl-C：断开连接，daemon 继续运行
     """
     import threading
+
     port = daemon_info["http_port"]
-    pid = daemon_info["pid"]
-
-    print(f"[daemon] Connected to running daemon (PID={pid}, port={port})")
-    print("[daemon] Type your message, or 'exit' to disconnect (daemon keeps running)")
-    print()
-
+    pid  = daemon_info["pid"]
     client = DaemonClient(port)
 
-    # 读取 API token（如果有）
-    # 这里简化：不传 token（本地 127.0.0.1 通常不需要）
+    # ── 等待 HTTP 就绪（daemon 刚启动时可能有短暂延迟）─────────────────────
+    print(f"[daemon] Connecting to daemon (PID={pid}, port={port})...", flush=True)
+    for _attempt in range(10):
+        if client.health_check():
+            break
+        time.sleep(0.5)
+    else:
+        print("[daemon] Error: daemon HTTP service not responding. "
+              "Try 'mini-agent daemon status'.", file=sys.stderr)
+        return
+
+    # ── 获取提示符标签（StatusResponse 无 agent_name，用端口区分多 daemon）──
+    # 未来可在 daemon_info.json 里写入 agent_name 后在此读取
+    agent_name = daemon_info.get("agent_name") or f"daemon:{port}"
+
+    print(f"[daemon] Connected  \u2713  (PID={pid}, port={port})")
+    print("[daemon] 'exit' or Ctrl-C to disconnect \u2014 daemon keeps running\n",
+          flush=True)
+
+    prompt = f"{agent_name} (connected) ❯ "
 
     try:
         while True:
+            # ── 读取用户输入 ───────────────────────────────────────────────
             try:
-                user_input = input("orzooo (connected) ❯ ").strip()
+                user_input = input(prompt).strip()
             except (EOFError, KeyboardInterrupt):
                 print("\n[daemon] Disconnected (daemon continues running)")
                 break
@@ -476,41 +529,55 @@ def run_connected_repl(daemon_info: dict) -> None:
             if not user_input:
                 continue
 
-            if user_input.lower() in ("exit", "quit"):
+            if user_input.lower() in ("exit", "quit", "/exit", "/quit"):
                 print("[daemon] Disconnected (daemon continues running)")
                 break
 
-            # 提交消息
+            # ── 提交消息到 daemon ──────────────────────────────────────────
             turn_id = client.send_message(user_input)
             if not turn_id:
-                print("[error] Failed to send message to daemon")
+                print("[error] Failed to send message to daemon. "
+                      "Is it still running? Try 'mini-agent daemon status'.",
+                      file=sys.stderr)
+                # 重新检查存活性
+                if not client.health_check():
+                    print("[daemon] Daemon appears to have stopped. Exiting.",
+                          file=sys.stderr)
+                    break
                 continue
 
-            # 流式接收输出
+            # ── 流式接收该轮输出 ───────────────────────────────────────────
             done_event = threading.Event()
-            response_parts = []
+            printed_any = False
 
-            def on_token(text):
+            def on_token(text, _ref={"printed": False}):
+                nonlocal printed_any
                 print(text, end="", flush=True)
-                response_parts.append(text)
+                printed_any = True
 
-            def on_done(text):
-                print()  # 换行
+            def on_done(_text):
+                # token 已流式打印完毕，只需换行
+                if printed_any:
+                    print()
                 done_event.set()
 
-            # 在后台线程接收 SSE
-            def stream_worker():
-                client.stream_output(turn_id, on_token=on_token, on_done=on_done)
-                done_event.set()  # 确保 done_event 被 set
+            def stream_worker(_tid=turn_id):
+                try:
+                    client.stream_output(_tid, on_token=on_token, on_done=on_done)
+                except Exception as e:
+                    print(f"\n[daemon-client] stream error: {e}", file=sys.stderr)
+                finally:
+                    done_event.set()  # 无论如何保证 done_event 被 set
 
             t = threading.Thread(target=stream_worker, daemon=True)
             t.start()
 
-            # 等待完成（最多 5 分钟）
-            done_event.wait(timeout=300)
+            # 等待该轮完成（最多 10 分钟）
+            if not done_event.wait(timeout=600):
+                print("\n[daemon] Timed out waiting for response.")
 
     except KeyboardInterrupt:
-        print("\n[daemon] Disconnected")
+        print("\n[daemon] Disconnected (daemon continues running)")
 
 
 # ── 自动拉起 daemon（选项 A：默认行为）──────────────────────────────────────
