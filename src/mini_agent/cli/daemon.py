@@ -618,6 +618,24 @@ def _pick_session(client: "DaemonClient") -> Optional[str]:
         print(f"  \033[33m请输入 1-{len(sessions)}、n 或 q\033[0m")
 
 
+def _connected_print(text: str) -> None:
+    """
+    连接模式专用输出：清除当前行后输出，避免和 status_bar 残留交织。
+    在调用前 status_bar 应已停止，这里只是做防御性清行。
+    """
+    import sys
+    # \r\033[K = 回到行首 + 清除到行尾，再输出文本
+    sys.stdout.write("\r[K" + text)
+    sys.stdout.flush()
+
+
+def _connected_print_token(text: str) -> None:
+    """流式 token 输出：不清行，直接追加（token 是连续的）。"""
+    import sys
+    sys.stdout.write(text)
+    sys.stdout.flush()
+
+
 def run_connected_repl(daemon_info: dict) -> None:
     """
     CLI 连接模式：连接到已存在的 daemon，REPL 输入通过 HTTP API 提交。
@@ -629,6 +647,9 @@ def run_connected_repl(daemon_info: dict) -> None:
       4. REPL 循环：每轮 POST /v1/chat → turn_id → SSE 流式接收
       5. 内置命令：/session list  /session new  /session  exit
       6. exit/Ctrl-C：断开，daemon 继续运行
+
+    注意：调用前必须已停止 status_bar（stop_status_bar()），
+    否则 _refresh_loop 会干扰 input() 提示符和 SSE 输出。
     """
     import threading
 
@@ -637,24 +658,28 @@ def run_connected_repl(daemon_info: dict) -> None:
     _proj = daemon_info.get("project_root")
     client = DaemonClient(port, project_root=_proj)
 
+
     # ── 等待 HTTP 就绪 ────────────────────────────────────────────────────────
-    print(f"[daemon] Connecting to daemon (PID={pid}, port={port})...", flush=True)
+    import sys as _sys
+    _sys.stdout.write(f"[daemon] Connecting to daemon (PID={pid}, port={port})...\n")
+    _sys.stdout.flush()
     for _attempt in range(10):
         if client.health_check():
             break
         time.sleep(0.5)
     else:
-        print("[daemon] Error: HTTP service not responding. "
-              "Try: mini-agent daemon status", file=sys.stderr)
+        _sys.stderr.write("[daemon] Error: HTTP service not responding. "
+                          "Try: mini-agent daemon status\n")
         return
 
     agent_name = daemon_info.get("agent_name") or f"daemon:{port}"
-    print(f"[daemon] Connected \u2713  (PID={pid}, port={port})")
+    _sys.stdout.write(f"[daemon] Connected \u2713  (PID={pid}, port={port})\n")
+    _sys.stdout.flush()
 
     # ── Session 选择 ──────────────────────────────────────────────────────────
     chosen_sid = _pick_session(client)
     if chosen_sid is None:
-        print("[daemon] Exited (daemon continues running)")
+        _sys.stdout.write("[daemon] Exited (daemon continues running)\n")
         return
 
     active_session_id: Optional[str] = None
@@ -667,19 +692,26 @@ def run_connected_repl(daemon_info: dict) -> None:
         active_session_id = chosen_sid
         label = f"session {chosen_sid}" if ok else f"session {chosen_sid} (resume may have failed)"
 
-    print(f"[daemon] \u2713 {label}")
-    print("[daemon] '/session list' \u5207\u6362\uff0c'/session new' \u65b0\u5efa\uff0c'exit' \u65ad\u5f00\n",
-          flush=True)
+    _connected_print(f"[daemon] \u2713 {label}\n")
+    _connected_print("[daemon] '/session list' \u5207\u6362\uff0c'/session new' \u65b0\u5efa\uff0c'exit' \u65ad\u5f00\n\n")
 
     prompt = f"{agent_name} \u276f "
 
     # ── REPL 主循环 ───────────────────────────────────────────────────────────
+    # 使用 sys.stdout.write + sys.stdin.readline 代替 input()，
+    # 避免 status_bar 残留 / Rich 控制字符干扰输入提示符
     try:
         while True:
+            _sys.stdout.write(prompt)
+            _sys.stdout.flush()
             try:
-                user_input = input(prompt).strip()
+                line = _sys.stdin.readline()
+                if line == "":   # EOF
+                    raise EOFError
+                user_input = line.rstrip("\n").strip()
             except (EOFError, KeyboardInterrupt):
-                print("\n[daemon] Disconnected (daemon continues running)")
+                _sys.stdout.write("\n")
+                _connected_print("[daemon] Disconnected (daemon continues running)\n")
                 break
 
             if not user_input:
@@ -689,16 +721,16 @@ def run_connected_repl(daemon_info: dict) -> None:
             cmd = user_input.lower()
 
             if cmd in ("exit", "quit", "/exit", "/quit"):
-                print("[daemon] Disconnected (daemon continues running)")
+                _connected_print("[daemon] Disconnected (daemon continues running)\n")
                 break
 
             if cmd in ("/session new", "/new"):
                 new_sid = client.new_session()
                 if new_sid:
                     active_session_id = new_sid
-                    print(f"[daemon] \u2713 New session: {new_sid}")
+                    _connected_print(f"[daemon] \u2713 New session: {new_sid}\n")
                 else:
-                    print("[daemon] \u2717 Failed to create new session")
+                    _connected_print("[daemon] \u2717 Failed to create new session\n")
                 continue
 
             if cmd in ("/session list", "/sessions", "/session ls"):
@@ -709,34 +741,33 @@ def run_connected_repl(daemon_info: dict) -> None:
                     new_sid = client.new_session()
                     if new_sid:
                         active_session_id = new_sid
-                        print(f"[daemon] \u2713 New session: {new_sid}")
+                        _connected_print(f"[daemon] \u2713 New session: {new_sid}\n")
                     else:
-                        print("[daemon] \u2717 Failed to create new session")
+                        _connected_print("[daemon] \u2717 Failed to create new session\n")
                 else:
                     ok = client.resume_session(chosen)
                     if ok:
                         active_session_id = chosen
-                        print(f"[daemon] \u2713 Switched to: {chosen}")
+                        _connected_print(f"[daemon] \u2713 Switched to: {chosen}\n")
                     else:
-                        print(f"[daemon] \u2717 Failed to switch to {chosen}")
+                        _connected_print(f"[daemon] \u2717 Failed to switch to {chosen}\n")
                 continue
 
             if cmd == "/session":
                 st = client.get_status() or {}
                 cur = st.get("session_id") or active_session_id or "(unknown)"
                 state = st.get("state", "?")
-                print(f"[daemon] session={cur}  state={state}")
-                print("         /session list  /session new")
+                _connected_print(f"[daemon] session={cur}  state={state}\n")
+                _connected_print("         /session list  /session new\n")
                 continue
 
             # ── 发送消息 ──────────────────────────────────────────────────────
             turn_id = client.send_message(user_input, session_id=active_session_id)
             if not turn_id:
                 if not client.health_check():
-                    print("[daemon] Daemon appears to have stopped. Exiting.",
-                          file=sys.stderr)
+                    _connected_print("[daemon] Daemon appears to have stopped. Exiting.\n")
                     break
-                print("[error] send_message failed, please retry.", file=sys.stderr)
+                _connected_print("[error] send_message failed, please retry.\n")
                 continue
 
             # ── 流式接收 ──────────────────────────────────────────────────────
@@ -745,28 +776,35 @@ def run_connected_repl(daemon_info: dict) -> None:
 
             def on_token(text):
                 nonlocal printed_any
-                print(text, end="", flush=True)
+                _connected_print_token(text)
                 printed_any = True
 
             def on_done(_text):
                 if printed_any:
-                    print()
+                    _sys.stdout.write("\n")
+                    _sys.stdout.flush()
                 done_event.set()
 
             def stream_worker(_tid=turn_id):
                 try:
                     client.stream_output(_tid, on_token=on_token, on_done=on_done)
                 except Exception as e:
-                    print(f"\n[daemon-client] stream error: {e}", file=sys.stderr)
+                    _connected_print(f"\n[daemon-client] stream error: {e}\n")
                 finally:
                     done_event.set()
 
+            _sys.stdout.write("\n")  # token 开始前换行
+            _sys.stdout.flush()
             threading.Thread(target=stream_worker, daemon=True).start()
             if not done_event.wait(timeout=600):
-                print("\n[daemon] Timed out waiting for response.")
+                _connected_print("\n[daemon] Timed out waiting for response.\n")
+            _sys.stdout.write("\n")  # 输出后空行
+            _sys.stdout.flush()
 
     except KeyboardInterrupt:
-        print("\n[daemon] Disconnected (daemon continues running)")
+        _sys.stdout.write("\n")
+        _connected_print("[daemon] Disconnected (daemon continues running)\n")
+
 
 # ── 自动拉起 daemon（选项 A：默认行为）──────────────────────────────────────
 
