@@ -272,11 +272,31 @@ def _main_inner() -> None:
         and not getattr(args, "daemon_mode", False)
         and not args.prompt
     ):
-        from mini_agent.cli.daemon import _read_daemon_info, run_connected_repl
+        from mini_agent.cli.daemon import _read_daemon_info, run_connected_repl, DaemonClient
         _daemon_info = _read_daemon_info(project_root)
         if _daemon_info:
-            run_connected_repl(_daemon_info)
-            return
+            # 额外探活：PID 存在 + HTTP 服务真正就绪才走连接模式
+            _client = DaemonClient(
+                _daemon_info["http_port"],
+                project_root=project_root,
+            )
+            if _client.health_check():
+                # daemon HTTP 就绪，走连接模式（不构建本进程 Agent）
+                run_connected_repl(_daemon_info)
+                return
+            else:
+                # PID 存在但 HTTP 不通：daemon 可能刚启动或已崩溃
+                # 等待最多 3 秒再试一次
+                import time as _time
+                _time.sleep(3)
+                if _client.health_check():
+                    run_connected_repl(_daemon_info)
+                    return
+                # 仍不通：回退到独立进程模式，打印提示
+                R.print_warning(
+                    f"[daemon] Daemon PID={_daemon_info['pid']} found but HTTP not responding. "
+                    "Starting in standalone mode. Use 'mini-agent daemon status' to check."
+                )
 
     # ── Agent ─────────────────────────────────────────────────────────────────
     agent = Agent(cfg=cfg, skill_loader=skill_loader, guard=guard)

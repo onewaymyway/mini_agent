@@ -49,7 +49,12 @@ def _write_pid(
 ) -> None:
     pid_path = _pid_file(project_root)
     pid_path.parent.mkdir(parents=True, exist_ok=True)
-    info: dict = {"pid": pid, "http_port": http_port, "started_at": time.time()}
+    info: dict = {
+        "pid": pid,
+        "http_port": http_port,
+        "started_at": time.time(),
+        "project_root": str(project_root),  # DaemonClient 用于读取 token
+    }
     if agent_name:
         info["agent_name"] = agent_name
     # 写 pid 文件
@@ -130,10 +135,34 @@ class DaemonClient:
     复用现有 HTTP API，不新增协议。
     """
 
-    def __init__(self, http_port: int, token: Optional[str] = None) -> None:
+    _TOKEN_FILE = ".agent/agent_api.key"  # 与 api/auth.py 保持一致
+
+    def __init__(
+        self,
+        http_port: int,
+        token: Optional[str] = None,
+        project_root: Optional[Path] = None,
+    ) -> None:
         self.base_url = f"http://127.0.0.1:{http_port}"
-        self.token = token
         self._session = None
+        # token 优先级：显式传入 > project_root/.agent/agent_api.key > cwd/.agent/agent_api.key
+        if token:
+            self.token = token
+        else:
+            roots = []
+            if project_root:
+                roots.append(Path(project_root))
+            roots.append(Path.cwd())
+            self.token = None
+            for root in roots:
+                key_path = root / self._TOKEN_FILE
+                if key_path.exists():
+                    try:
+                        self.token = key_path.read_text(encoding="utf-8").strip() or None
+                    except Exception:
+                        pass
+                    if self.token:
+                        break
 
     def _headers(self) -> dict:
         h = {"Content-Type": "application/json"}
@@ -146,7 +175,7 @@ class DaemonClient:
         try:
             import urllib.request
             req = urllib.request.Request(
-                f"{self.base_url}/health",
+                f"{self.base_url}/v1/health",
                 headers=self._headers(),
             )
             with urllib.request.urlopen(req, timeout=3) as resp:
@@ -376,7 +405,7 @@ def cmd_daemon_start(
         print(f"[daemon] PID file: {_pid_file(project_root)}")
 
         # 等待 HTTP 服务就绪（最多 10 秒）
-        client = DaemonClient(http_port)
+        client = DaemonClient(http_port, project_root=project_root)
         for _ in range(20):
             time.sleep(0.5)
             if client.health_check():
@@ -455,7 +484,7 @@ def cmd_daemon_status(project_root: Path) -> int:
         print(f"[daemon] Uptime: {_format_duration(uptime)}")
 
     # 尝试获取详细状态
-    client = DaemonClient(port)
+    client = DaemonClient(port, project_root=project_root)
     status = client.get_status()
     if status:
         print(f"[daemon] Agent state: {status.get('state', 'unknown')}")
@@ -470,7 +499,16 @@ def cmd_daemon_status(project_root: Path) -> int:
             ago = time.time() - last_tick
             print(f"[daemon] Last autonomous tick: {_format_duration(ago)} ago")
     else:
-        print("[daemon] (HTTP service not responding)")
+        # health_check 失败时分两种情况
+        if client.health_check():
+            # /v1/health 通但 /v1/status 需要 token
+            print("[daemon] HTTP service is up but /v1/status failed "
+                  "(token may be missing or wrong)")
+        else:
+            print("[daemon] HTTP service not responding")
+            print(f"         Expected: http://127.0.0.1:{port}/v1/health")
+            print("         Tip: daemon may still be starting up. "
+                  "Try again in a few seconds.")
 
     return 0
 
@@ -596,7 +634,8 @@ def run_connected_repl(daemon_info: dict) -> None:
 
     port = daemon_info["http_port"]
     pid  = daemon_info["pid"]
-    client = DaemonClient(port)
+    _proj = daemon_info.get("project_root")
+    client = DaemonClient(port, project_root=_proj)
 
     # ── 等待 HTTP 就绪 ────────────────────────────────────────────────────────
     print(f"[daemon] Connecting to daemon (PID={pid}, port={port})...", flush=True)
