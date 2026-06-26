@@ -263,7 +263,7 @@ class DaemonClient:
             print(f"[daemon-client] send_message failed: {e}", file=sys.stderr)
             return None
 
-    def stream_output(self, turn_id: str, on_token=None, on_done=None) -> None:
+    def stream_output(self, turn_id: str, on_token=None, on_done=None, on_error=None) -> None:
         """
         订阅 /v1/stream/{turn_id} SSE 端点，直到该轮 turn_done 事件到来。
 
@@ -275,6 +275,10 @@ class DaemonClient:
             id: <int>
             event: <EventType>        # "token" / "turn_done" / "turn_start" / ...
             data: {"turn_id": "...", "text": "...", ...}
+
+        注意：服务端在 run_turn() 抛异常时，会先发 error 事件，
+        紧接着也会发 turn_done（text 为空，meta 里带 error），
+        所以本方法保证总能在合理时间内返回（不再需要单靠 error 事件收尾）。
         """
         try:
             import urllib.request
@@ -291,7 +295,7 @@ class DaemonClient:
                     while b"\n\n" in buffer:
                         frame_bytes, buffer = buffer.split(b"\n\n", 1)
                         frame = frame_bytes.decode("utf-8", errors="replace")
-                        done = self._handle_sse_frame(frame, on_token, on_done)
+                        done = self._handle_sse_frame(frame, on_token, on_done, on_error)
                         if done:
                             return  # turn_done 已触发，退出循环
         except Exception as e:
@@ -299,7 +303,7 @@ class DaemonClient:
             if "timed out" not in err.lower() and "RemoteDisconnected" not in err:
                 print(f"[daemon-client] stream error: {e}", file=sys.stderr)
 
-    def _handle_sse_frame(self, frame: str, on_token, on_done) -> bool:
+    def _handle_sse_frame(self, frame: str, on_token, on_done, on_error=None) -> bool:
         """
         解析单条 SSE 帧，返回 True 表示该轮已结束（turn_done）。
 
@@ -328,10 +332,16 @@ class DaemonClient:
             text = payload.get("text", "")
             if text and on_token:
                 on_token(text)
+        elif evt_type == "error":
+            # data: {"turn_id": "...", "message": "...", ...}
+            # 不在这里 return True：服务端紧接着会发 turn_done 来正式收尾这一轮，
+            # 这里只是让调用方能尽快看到错误提示，不必等到 turn_done 才知道出错了。
+            if on_error:
+                on_error(payload.get("message", ""))
         elif evt_type == "turn_done":
             text = payload.get("text", "")
             if on_done:
-                on_done(text)
+                on_done(text, payload.get("error"))
             return True  # 通知调用方退出
         # 其他事件（turn_start / tool_call / info / replay_done 等）忽略
 
@@ -695,7 +705,11 @@ def run_connected_repl(daemon_info: dict) -> None:
     _connected_print(f"[daemon] \u2713 {label}\n")
     _connected_print("[daemon] '/session list' \u5207\u6362\uff0c'/session new' \u65b0\u5efa\uff0c'exit' \u65ad\u5f00\n\n")
 
-    prompt = f"{agent_name} \u276f "
+    # Bug 修复：原来这里用 agent_name 作为提示符标签（如 "orzooo ❯ "），
+    # 但 daemon 连接模式下，这一行提示符是给"用户输入"用的，
+    # 应该和普通 REPL（ui/terminal.py 的 "You ❯ "）保持一致的角色标签，
+    # 否则用户会困惑——看起来像是 agent 在等待输入，而不是自己要输入。
+    prompt = "\033[1;32mYou\033[0m\033[1;36m \u276f \033[0m"
 
     # ── REPL 主循环 ───────────────────────────────────────────────────────────
     # 使用 sys.stdout.write + sys.stdin.readline 代替 input()，
@@ -779,18 +793,30 @@ def run_connected_repl(daemon_info: dict) -> None:
                 _connected_print_token(text)
                 printed_any = True
 
-            def on_done(_text):
+            def on_error(message):
+                # 服务端 run_turn() 出错时立刻提示，不必等 turn_done/超时才知道。
+                _connected_print(f"\n[error] {message}\n")
+
+            def on_done(_text, error=None):
                 if printed_any:
                     _sys.stdout.write("\n")
                     _sys.stdout.flush()
+                if error and not printed_any:
+                    # 出错且没有任何 token 输出过（典型场景：LLM 调用直接抛异常），
+                    # 这里再兜底提示一次，避免用户只看到空白就回到了输入提示符。
+                    _connected_print(f"[error] {error}\n")
                 done_event.set()
 
             def stream_worker(_tid=turn_id):
                 try:
-                    client.stream_output(_tid, on_token=on_token, on_done=on_done)
+                    client.stream_output(
+                        _tid, on_token=on_token, on_done=on_done, on_error=on_error
+                    )
                 except Exception as e:
                     _connected_print(f"\n[daemon-client] stream error: {e}\n")
                 finally:
+                    # 兜底：无论 stream_output 内部发生什么，都必须 set，
+                    # 否则用户会一直卡在等待状态，看不到下一个 You ❯ 输入提示。
                     done_event.set()
 
             _sys.stdout.write("\n")  # token 开始前换行
@@ -798,7 +824,7 @@ def run_connected_repl(daemon_info: dict) -> None:
             threading.Thread(target=stream_worker, daemon=True).start()
             if not done_event.wait(timeout=600):
                 _connected_print("\n[daemon] Timed out waiting for response.\n")
-            _sys.stdout.write("\n")  # 输出后空行
+            _sys.stdout.write("\n")  # 输出后空行，与下一个 You ❯ 提示符分隔开
             _sys.stdout.flush()
 
     except KeyboardInterrupt:

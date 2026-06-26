@@ -178,6 +178,12 @@ class AgentRunner(threading.Thread):
                 tb = traceback.format_exc()
                 iq.mark_error(turn_id)
                 bridge.emit_error(f"{type(e).__name__}: {e}\n{tb}", turn_id=turn_id)
+                # 关键修复：即使出错也必须发出 turn_done（text 为空，附带 error 标记），
+                # 否则等待 /v1/stream/{turn_id} 的客户端（CLI/Web）会一直阻塞到超时，
+                # 既看不到错误也等不到下一个输入提示。
+                bridge.emit_turn_done(
+                    turn_id, text="", meta={"error": f"{type(e).__name__}: {e}"}
+                )
             finally:
                 bridge.set_state("idle", turn_id=None)
                 if hasattr(bridge.agent, "_http_turn_id"):

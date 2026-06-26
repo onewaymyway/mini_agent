@@ -502,11 +502,14 @@ class AgentBridge:
             data={"message": message},
         ))
 
-    def emit_turn_done(self, turn_id: str, text: str = "") -> None:
+    def emit_turn_done(self, turn_id: str, text: str = "", meta: Optional[dict] = None) -> None:
+        data = {"text": text}
+        if meta:
+            data.update(meta)
         self.broadcaster.push(AgentEvent(
             type=EventType.TURN_DONE,
             turn_id=turn_id,
-            data={"text": text},
+            data=data,
         ))
 
     def emit_error(self, msg: str, turn_id: str = "") -> None:
