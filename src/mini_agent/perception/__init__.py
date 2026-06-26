@@ -33,6 +33,7 @@ from .workdir_knowledge import (
     load_open_threads, save_open_threads, add_open_thread,
     import_unresolved_from_manifest, get_high_priority_open_threads,
     load_knowledge_index, save_knowledge_index, upsert_knowledge_index_entry,
+    search_knowledge_index, read_knowledge_section,
 )
 
 __all__ = [
@@ -50,4 +51,5 @@ __all__ = [
     "load_open_threads", "save_open_threads", "add_open_thread",
     "import_unresolved_from_manifest", "get_high_priority_open_threads",
     "load_knowledge_index", "save_knowledge_index", "upsert_knowledge_index_entry",
+    "search_knowledge_index", "read_knowledge_section",
 ]

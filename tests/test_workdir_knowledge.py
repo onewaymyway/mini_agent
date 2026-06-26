@@ -42,6 +42,8 @@ from mini_agent.perception.workdir_knowledge import (
     load_knowledge_index,
     save_knowledge_index,
     upsert_knowledge_index_entry,
+    search_knowledge_index,
+    read_knowledge_section,
 )
 
 
@@ -464,3 +466,120 @@ class TestKnowledgeIndex:
         paths.workdir_knowledge_index.parent.mkdir(parents=True, exist_ok=True)
         paths.workdir_knowledge_index.write_text("{broken", encoding="utf-8")
         assert load_knowledge_index(paths) == []
+
+
+# ════════════════════════════════════════════════════════════════════════════
+# 检索侧补全：search_knowledge_index / read_knowledge_section
+# ════════════════════════════════════════════════════════════════════════════
+#
+# 补的是设计文档 8.4 节"knowledge.md 相关段落，按本次 session 意图检索后
+# 注入"那一项——此前 update_knowledge() 只把 knowledge.md 写进去、
+# upsert_knowledge_index_entry() 维护了索引，但没有任何函数把索引或正文
+# 读出来供 agent 按需检索，这里是补上的读取/检索侧。
+
+class TestSearchKnowledgeIndex:
+
+    def test_empty_index_returns_empty(self, paths):
+        assert search_knowledge_index(paths, "任意查询") == []
+
+    def test_empty_query_returns_empty(self, paths):
+        upsert_knowledge_index_entry(paths, heading="标题", summary="内容")
+        assert search_knowledge_index(paths, "") == []
+
+    def test_finds_matching_entry(self, paths):
+        upsert_knowledge_index_entry(
+            paths, heading="数据库选型", summary="选择了 SQLite 而不是 Postgres",
+            topic="storage",
+        )
+        upsert_knowledge_index_entry(
+            paths, heading="鉴权方案", summary="使用 JWT token", topic="auth",
+        )
+        results = search_knowledge_index(paths, "SQLite Postgres 数据库")
+        assert len(results) >= 1
+        assert results[0][0].heading == "数据库选型"
+
+    def test_results_sorted_by_score_descending(self, paths):
+        upsert_knowledge_index_entry(paths, heading="A", summary="数据库 数据库 数据库连接池")
+        upsert_knowledge_index_entry(paths, heading="B", summary="提到一次数据库")
+        results = search_knowledge_index(paths, "数据库")
+        scores = [s for _, s in results]
+        assert scores == sorted(scores, reverse=True)
+
+    def test_unrelated_query_returns_empty(self, paths):
+        upsert_knowledge_index_entry(paths, heading="数据库选型", summary="SQLite vs Postgres")
+        assert search_knowledge_index(paths, "量子计算机外星人") == []
+
+    def test_k_limits_results(self, paths):
+        for i in range(5):
+            upsert_knowledge_index_entry(paths, heading=f"标题{i}", summary="共同关键词 架构 决策")
+        results = search_knowledge_index(paths, "架构 决策", k=2)
+        assert len(results) <= 2
+
+    def test_topic_filter_narrows_candidates(self, paths):
+        upsert_knowledge_index_entry(paths, heading="A", summary="集成方式说明", topic="mcp")
+        upsert_knowledge_index_entry(paths, heading="B", summary="集成方式说明", topic="auth")
+        results = search_knowledge_index(paths, "集成方式", topic="mcp")
+        assert all(e.topic == "mcp" for e, _ in results)
+        assert any(e.heading == "A" for e, _ in results)
+        assert not any(e.heading == "B" for e, _ in results)
+
+    def test_topic_filter_with_no_matching_topic_returns_empty(self, paths):
+        upsert_knowledge_index_entry(paths, heading="A", summary="任意内容", topic="mcp")
+        assert search_knowledge_index(paths, "任意内容", topic="nonexistent") == []
+
+    def test_searches_affected_modules_field(self, paths):
+        upsert_knowledge_index_entry(
+            paths, heading="MCP 重构", summary="去掉了 SDK 依赖",
+            affected_modules=["mcp/manager.py", "mcp/client.py"],
+        )
+        results = search_knowledge_index(paths, "manager")
+        assert len(results) >= 1
+        assert results[0][0].heading == "MCP 重构"
+
+
+class TestReadKnowledgeSection:
+
+    def test_no_file_returns_none(self, paths):
+        assert read_knowledge_section(paths, "任意标题") is None
+
+    def test_missing_heading_returns_none(self, paths):
+        paths.workdir_knowledge_md.parent.mkdir(parents=True, exist_ok=True)
+        paths.workdir_knowledge_md.write_text("## 已有标题\n\n内容\n", encoding="utf-8")
+        assert read_knowledge_section(paths, "不存在的标题") is None
+
+    def test_returns_section_content(self, paths):
+        paths.workdir_knowledge_md.parent.mkdir(parents=True, exist_ok=True)
+        paths.workdir_knowledge_md.write_text(
+            "## 数据库选型\n\n选择了 SQLite。\n\n## 鉴权方案\n\n使用 JWT。\n",
+            encoding="utf-8",
+        )
+        content = read_knowledge_section(paths, "数据库选型")
+        assert content == "选择了 SQLite。"
+
+    def test_stops_at_next_heading(self, paths):
+        paths.workdir_knowledge_md.parent.mkdir(parents=True, exist_ok=True)
+        paths.workdir_knowledge_md.write_text(
+            "## 第一节\n\n第一节内容\n\n## 第二节\n\n第二节内容\n",
+            encoding="utf-8",
+        )
+        content = read_knowledge_section(paths, "第一节")
+        assert content == "第一节内容"
+        assert "第二节" not in content
+
+    def test_reads_last_section_to_end_of_file(self, paths):
+        paths.workdir_knowledge_md.parent.mkdir(parents=True, exist_ok=True)
+        paths.workdir_knowledge_md.write_text(
+            "## 第一节\n\n内容A\n\n## 最后一节\n\n内容B\n",
+            encoding="utf-8",
+        )
+        content = read_knowledge_section(paths, "最后一节")
+        assert content == "内容B"
+
+    def test_stops_at_h1_heading_too(self, paths):
+        paths.workdir_knowledge_md.parent.mkdir(parents=True, exist_ok=True)
+        paths.workdir_knowledge_md.write_text(
+            "## 某节\n\n节内容\n\n# 一级标题\n\n后面的内容\n",
+            encoding="utf-8",
+        )
+        content = read_knowledge_section(paths, "某节")
+        assert content == "节内容"

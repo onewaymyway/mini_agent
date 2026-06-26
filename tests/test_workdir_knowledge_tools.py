@@ -1,10 +1,12 @@
 """
-tests/test_workdir_knowledge_tools.py — Stage 4 验证（4.3/4.4/4.5 工具）
+tests/test_workdir_knowledge_tools.py — Stage 4 验证（4.3/4.4/4.5 工具 + 检索侧补全）
 
 对应 self_evolution_stage4plus_plan.md Stage 4：
   - add_open_thread 工具（4.4）
   - update_work_thread 工具（4.3，新建 + 更新两种路径）
   - update_knowledge 工具（4.5，走 StateRepo.apply()，tier=T1）
+  - search_knowledge 工具（检索侧补全：update_knowledge 写入 knowledge.md
+    后此前没有任何读取路径，这里补的是 TF-IDF 关键词检索 + 按需取正文）
   - project_root / session_id provider 机制（thread-local，与
     tools/evolution.py 的 set_project_root_provider 同构）
 """
@@ -19,7 +21,7 @@ from pathlib import Path
 
 import mini_agent.tools.builtin       # noqa: F401
 import mini_agent.tools.evolution     # noqa: F401
-import mini_agent.tools.workdir_knowledge  # noqa: F401（确保三个工具已注册）
+import mini_agent.tools.workdir_knowledge  # noqa: F401（确保四个工具已注册）
 
 from mini_agent.config import load_config
 from mini_agent.agent import Agent
@@ -31,6 +33,7 @@ from mini_agent.tools.workdir_knowledge import (
     add_open_thread,
     update_work_thread,
     update_knowledge,
+    search_knowledge,
     set_project_root_provider,
     set_session_id_provider,
     _get_project_root,
@@ -302,6 +305,94 @@ class TestUpdateKnowledgeTool(unittest.TestCase):
         entries = load_knowledge_index(self.paths)
         self.assertEqual(len(entries), 1)
         self.assertEqual(entries[0].topic, "b")
+
+
+# ════════════════════════════════════════════════════════════════════════════
+# search_knowledge 工具（检索侧补全）
+# ════════════════════════════════════════════════════════════════════════════
+
+class TestSearchKnowledgeTool(unittest.TestCase):
+
+    def setUp(self):
+        self._tmpdir = tempfile.TemporaryDirectory()
+        self.project_root = Path(self._tmpdir.name)
+        self.cfg = make_cfg(self.project_root)
+        self.agent = Agent(cfg=self.cfg)
+        self.paths = AgentPaths(self.project_root)
+
+        update_knowledge(
+            "数据库选型", "选择了 SQLite 而不是 Postgres，因为单机部署更简单。",
+            topic="storage", decision_type="architecture",
+        )
+        update_knowledge(
+            "鉴权 Token 刷新坑", "刷新 token 时如果旧 token 已过期会导致 401。",
+            topic="auth", decision_type="gotcha",
+        )
+        update_knowledge(
+            "MCP 集成方式", "去掉了官方 SDK 依赖，直接用 httpx 调 HTTP 接口。",
+            topic="mcp", decision_type="architecture",
+        )
+
+    def tearDown(self):
+        set_project_root_provider(None)
+        set_session_id_provider(None)
+        self._tmpdir.cleanup()
+
+    def test_no_provider_returns_error(self):
+        set_project_root_provider(None)
+        result = json.loads(search_knowledge("数据库"))
+        self.assertFalse(result["ok"])
+
+    def test_finds_relevant_entry_by_keyword(self):
+        result = json.loads(search_knowledge("为什么用 SQLite 而不是 Postgres"))
+        self.assertTrue(result["ok"])
+        self.assertGreaterEqual(result["count"], 1)
+        self.assertEqual(result["results"][0]["heading"], "数据库选型")
+
+    def test_results_ranked_by_relevance(self):
+        result = json.loads(search_knowledge("token 刷新 401"))
+        self.assertGreaterEqual(result["count"], 1)
+        self.assertEqual(result["results"][0]["heading"], "鉴权 Token 刷新坑")
+        # 分数应该按降序排列
+        scores = [r["score"] for r in result["results"]]
+        self.assertEqual(scores, sorted(scores, reverse=True))
+
+    def test_default_does_not_include_content(self):
+        result = json.loads(search_knowledge("数据库选型"))
+        top = result["results"][0]
+        self.assertNotIn("content", top)
+
+    def test_include_content_returns_full_section_text(self):
+        result = json.loads(search_knowledge("token 刷新", include_content=True))
+        top = result["results"][0]
+        self.assertIn("content", top)
+        self.assertIn("401", top["content"])
+
+    def test_topic_filter_excludes_other_topics(self):
+        result = json.loads(search_knowledge("集成 方式 选型", topic="mcp"))
+        for r in result["results"]:
+            self.assertEqual(r["topic"], "mcp")
+
+    def test_topic_filter_with_no_match_returns_empty(self):
+        result = json.loads(search_knowledge("数据库", topic="auth"))
+        self.assertEqual(result["count"], 0)
+
+    def test_unrelated_query_returns_empty(self):
+        result = json.loads(search_knowledge("量子计算机外星人入侵"))
+        self.assertEqual(result["count"], 0)
+
+    def test_k_limits_result_count(self):
+        result = json.loads(search_knowledge("架构 决策 选型 方式", k=1))
+        self.assertLessEqual(result["count"], 1)
+
+    def test_empty_knowledge_base_returns_empty(self):
+        with tempfile.TemporaryDirectory() as td2:
+            empty_root = Path(td2)
+            cfg2 = make_cfg(empty_root)
+            agent2 = Agent(cfg=cfg2)
+            result = json.loads(search_knowledge("任何东西"))
+            self.assertTrue(result["ok"])
+            self.assertEqual(result["count"], 0)
 
 
 # ════════════════════════════════════════════════════════════════════════════

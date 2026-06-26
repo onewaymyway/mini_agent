@@ -1,5 +1,6 @@
 """
-tools/workdir_knowledge.py — Workdir 知识层主动写入工具（W2，Stage 4.3-4.5）
+tools/workdir_knowledge.py — Workdir 知识层主动写入 + 检索工具（W2，Stage 4.3-4.5 +
+检索侧补全）
 
 对应 self_evolution_stage4plus_plan.md Stage 4.3/4.4/4.5：
 
@@ -15,8 +16,19 @@ tools/workdir_knowledge.py — Workdir 知识层主动写入工具（W2，Stage 
   update_knowledge(section, content)
       写入项目软知识 knowledge.md（4.5，T1，走 StateRepo.apply() 安全网）。
 
+  search_knowledge(query, k, topic, include_content)
+      检索侧补全：update_knowledge() 把 knowledge.md 写进去之后，原本没有
+      任何工具能把它读出来——agent 只能靠自己想起"项目里有个 knowledge.md"
+      然后用文件读取工具翻整份 Markdown，没有按相关性筛选的手段，导致积累
+      的软知识在实践中几乎不会被后续 session 用上。这个工具对应设计文档
+      8.4 节"knowledge.md 相关段落，按本次 session 意图检索后注入"那一项
+      （此前只实现了 always-on 注入的几类，这一项一直空着）。检索基于
+      knowledge_index.json 的 TF-IDF 关键词匹配（见
+      perception/workdir_knowledge.py 的 search_knowledge_index()），
+      不需要向量数据库。
+
 设计取舍（与 tools/evolution.py 的 skill_propose 同构）：
-  - 三个工具都是模块级 @tool 装饰器注册的无状态函数，没有直接 access 到
+  - 四个工具都是模块级 @tool 装饰器注册的无状态函数，没有直接 access 到
     调用它的 Agent 实例，需要通过 thread-local provider 读取"当前项目根目录"
     和"当前 session_id"——复用 Phase E（3.3）/ Phase C（3.1）已经建立的
     thread-local provider 模式（tools/orchestration.py 的
@@ -34,6 +46,9 @@ tools/workdir_knowledge.py — Workdir 知识层主动写入工具（W2，Stage 
     不用 EvolutionWorkspace。这与 cli/commands/evolution.py 里
     `StateRepo(agent.cfg.project_root)` 直接操作主仓库是同一个模式，
     区别于 skill_propose 那种"需要审核"的提案流程。
+  - search_knowledge 是纯读取操作（不修改任何文件），requires_approval=False
+    且不经过 StateRepo——和 add_open_thread / update_work_thread 一样，
+    读取本身没有需要"可 git revert"的风险面。
 """
 
 from __future__ import annotations
@@ -439,6 +454,99 @@ def update_knowledge(
     }, ensure_ascii=False)
 
 
+# ════════════════════════════════════════════════════════════════════════════
+# search_knowledge（检索侧补全，对应设计文档 8.4 节"按意图检索注入"）
+# ════════════════════════════════════════════════════════════════════════════
+
+@tool(
+    name="search_knowledge",
+    description=(
+        "Search this project's accumulated knowledge.md for entries relevant to a "
+        "query — use this BEFORE re-deriving an architectural decision, debugging a "
+        "'why is this built this way' question, or starting work in an area the "
+        "project may have already documented a gotcha or tradeoff for. Searches "
+        "structured summaries (fast, keyword-based) and optionally returns the full "
+        "Markdown section content for the best matches. Call this proactively at the "
+        "start of non-trivial tasks, the same way you would check open_threads or "
+        "work_index — knowledge.md only helps future sessions if it's actually read."
+    ),
+    schema={
+        "type": "object",
+        "properties": {
+            "query": {
+                "type": "string",
+                "description": "Natural-language or keyword query describing what you're "
+                                "looking for (e.g. 'why SQLite instead of Postgres', "
+                                "'auth token refresh gotchas').",
+            },
+            "k": {
+                "type": "integer",
+                "description": "Max number of matching entries to return, ranked by "
+                                "relevance (default 5).",
+            },
+            "topic": {
+                "type": "string",
+                "description": "Optional exact-match topic filter (e.g. 'mcp', 'auth') to "
+                                "narrow the search to entries tagged with that topic before "
+                                "ranking — use when you already know the area and want to "
+                                "avoid cross-topic noise.",
+            },
+            "include_content": {
+                "type": "boolean",
+                "description": "If true, also fetch and return the full Markdown section "
+                                "content for each match (not just the summary). Defaults to "
+                                "false to save tokens — most of the time the summary is "
+                                "enough to decide whether the entry is relevant; turn this on "
+                                "once you've confirmed a match is what you need.",
+            },
+        },
+        "required": ["query"],
+    },
+    requires_approval=False,
+)
+def search_knowledge(
+    query: str,
+    k: int = 5,
+    topic: Optional[str] = None,
+    include_content: bool = False,
+) -> str:
+    project_root = _get_project_root()
+    if project_root is None:
+        return _error(
+            "project_root provider not registered (search_knowledge must be called "
+            "from within an Agent session)."
+        )
+
+    from mini_agent.storage.paths import AgentPaths
+    from mini_agent.perception.workdir_knowledge import (
+        search_knowledge_index, read_knowledge_section,
+    )
+
+    paths = AgentPaths(project_root)
+    try:
+        ranked = search_knowledge_index(paths, query, k=k, topic=topic or None)
+    except Exception as e:
+        return _error(f"search failed: {e}")
+
+    results = []
+    for entry, score in ranked:
+        item = entry.to_dict()
+        item["score"] = round(score, 4)
+        if include_content:
+            try:
+                item["content"] = read_knowledge_section(paths, entry.heading)
+            except Exception:
+                item["content"] = None
+        results.append(item)
+
+    return json.dumps({
+        "ok": True,
+        "query": query,
+        "count": len(results),
+        "results": results,
+    }, ensure_ascii=False)
+
+
 def _upsert_markdown_section(existing: str, section: str, content: str) -> str:
     """
     在现有 Markdown 文本中插入/替换一个 '## <section>' 二级标题段落。
@@ -488,4 +596,5 @@ __all__ = [
     "add_open_thread",
     "update_work_thread",
     "update_knowledge",
+    "search_knowledge",
 ]

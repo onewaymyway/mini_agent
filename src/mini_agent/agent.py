@@ -164,9 +164,10 @@ class Agent:
         set_project_root_provider(lambda: self.cfg.project_root)
 
         # [W2 / Stage 4] 同样为 tools/workdir_knowledge.py（add_open_thread /
-        # update_work_thread / update_knowledge）注册 project_root + session_id
-        # provider。session_id 用懒读取的 lambda（`self._session` 此时尚未创建，
-        # 但 lambda 在工具被调用时才执行，届时 _init_session() 已经跑完）。
+        # update_work_thread / update_knowledge / search_knowledge）注册
+        # project_root + session_id provider。session_id 用懒读取的 lambda
+        # （`self._session` 此时尚未创建，但 lambda 在工具被调用时才执行，
+        # 届时 _init_session() 已经跑完）。
         from mini_agent.tools.workdir_knowledge import (
             set_project_root_provider as _set_wk_project_root_provider,
             set_session_id_provider as _set_wk_session_id_provider,

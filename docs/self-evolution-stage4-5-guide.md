@@ -130,22 +130,43 @@ W3  Global 知识层（用户级，跨项目）
 
 **路径**：`.agent/knowledge_index.json`
 
-`update_knowledge` 工具写入的知识片段同时在这里建立索引，支持不读全文就能快速扫描：
+`update_knowledge` 工具写入的知识片段同时在这里建立索引，支持不读全文就能快速扫描。实际字段（与 `KnowledgeIndexEntry` 一致）：
 
 ```json
 {
+  "last_indexed": 1750000000.0,
   "entries": [
     {
-      "id": "ki-001",
-      "title": "auth 模块 API 说明",
-      "tags": ["auth", "api", "python"],
-      "file_path": ".agent/knowledge/auth-api.md",
+      "id": "kn_001",
+      "heading": "auth 模块 API 说明",
       "summary": "描述了 login/logout/refresh 三个端点的参数和返回值",
-      "updated_at": "2026-06-22T10:00:00Z"
+      "topic": "auth",
+      "decision_type": "convention",
+      "affected_modules": ["auth/api.py"],
+      "created_at": 1750000000.0
     }
   ]
 }
 ```
+
+**检索**：索引建立之后并非只能被动等待 always-on 注入——`search_knowledge` 工具（对应
+`perception/workdir_knowledge.py` 的 `search_knowledge_index()`）让 agent 按关键词主动检索：
+
+```python
+search_knowledge(query="为什么用 SQLite 而不是 Postgres")
+# → {"ok": true, "results": [{"id": "kn_003", "heading": "数据库选型",
+#     "summary": "...", "score": 2.31, ...}]}
+
+search_knowledge(query="鉴权 token 刷新", include_content=True)
+# include_content=True 时额外带出 knowledge.md 里该 section 的完整正文
+# （通过 read_knowledge_section() 按标题取出，避免一次性把全文塞进结果）
+
+search_knowledge(query="集成方式", topic="mcp")
+# topic 做精确过滤，缩小到指定主题范围内再排序
+```
+
+评分用 TF-IDF（复用 `perception/memory_store.py` 的中英混合分词器，含中文 n-gram），
+不需要向量数据库；候选条目数量级通常只有几十到几百条，关键词检索已经够用。
 
 ### 2.6 context 注入时机
 
@@ -157,6 +178,11 @@ W3  Global 知识层（用户级，跨项目）
 | timeline 最近 N 条 | 始终注入 | `WorkdirKnowledgeConfig.timeline_inject_limit`（默认 5）|
 | open_threads（high 优先级） | 有 high 线索时 | `WorkdirKnowledgeConfig.open_threads_inject_limit`（默认 5）|
 | 环境漂移警告 | fingerprint 有变化时 | 自动 |
+
+`knowledge.md` / `knowledge_index.json` **不在**上表的 always-on 注入范围内——
+内容量级（可能积累到几十甚至上百个 section）不适合每个 turn 都塞进 system
+prompt，而是按 8.4 节设计的"按本次 session 意图检索后注入"模式：agent 需要
+时主动调用 `search_knowledge` 工具去查，而不是依赖 system prompt 自动出现。
 
 ---
 
@@ -325,6 +351,8 @@ W3  Global 知识层（用户级，跨项目）
 | `load_open_threads()` / `save_open_threads()` | 跨 session 线索管理 |
 | `import_unresolved_from_manifest()` | 从 task manifest 导入未解决问题 |
 | `upsert_knowledge_index_entry()` | 更新知识索引 |
+| `search_knowledge_index()` | 按关键词 TF-IDF 检索知识索引（检索侧补全） |
+| `read_knowledge_section()` | 按标题取出 knowledge.md 某节完整正文 |
 | `capture_environment_fingerprint()` | 采集环境指纹 |
 | `detect_environment_drift()` | 对比指纹检测漂移 |
 
@@ -362,14 +390,34 @@ W3  Global 知识层（用户级，跨项目）
 
 ```python
 update_knowledge(
-    title="auth 模块 API 说明",
-    content="## login\nPOST /api/login\n...",
-    tags=["auth", "api"],
-    section="auth",          # 文件内分节（可选）
+    section="数据库选型",                 # 渲染为 "## 数据库选型" 标题，也是索引的 key
+    content="选择了 SQLite 而不是 Postgres，因为单机部署更简单。",
+    summary="单机部署优先，选 SQLite",      # 可选；省略时取 content 前 200 字
+    topic="storage",                       # 可选，供 search_knowledge 的 topic 过滤
+    decision_type="architecture",          # 可选，如 architecture/gotcha/tradeoff/convention
+    affected_modules=["db/engine.py"],     # 可选
 )
 ```
 
-写入 `.agent/knowledge/<title>.md` 并同步更新 `knowledge_index.json`。
+写入 `.agent/knowledge.md`（按 `section` 标题替换/追加，走 `StateRepo.apply()`
+产生 git commit），并同步更新 `knowledge_index.json` 里对应的索引条目。
+
+### search_knowledge
+
+```python
+search_knowledge(query="为什么用 SQLite 而不是 Postgres")
+# → 按 TF-IDF 相关度排序，返回匹配的索引条目（含 summary，不含正文）
+
+search_knowledge(query="鉴权 token 刷新", include_content=True)
+# include_content=True 时额外取出 knowledge.md 里对应 section 的完整正文
+
+search_knowledge(query="集成方式", topic="mcp", k=3)
+# topic 精确过滤 + k 限制返回条数
+```
+
+`update_knowledge` 把内容写进去之后，这是**唯一**能把内容检索出来的方式——
+不会自动出现在 system prompt 里，需要 agent 主动调用。建议在开始一个非trivial
+任务前先 `search_knowledge` 一下，看看项目是否已经踩过相关的坑或做过相关决策。
 
 ### add_open_thread / resolve_open_thread
 

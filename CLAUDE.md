@@ -118,7 +118,7 @@ python main.py --provider nvidia --model qwen/qwen3.5-122b-a10b --system-tool-ca
 - `skill_manager.py` — 技能管理工具（skill_list, skill_activate 等）
 - `plan.py` — 规划工具
 - `user_input.py` — 用户输入工具
-- `workdir_knowledge.py` — Workdir 知识层工具（Stage 4）：`add_open_thread`/`update_work_thread`/`update_knowledge`，thread-local provider 机制与 `orchestration.py` 同构
+- `workdir_knowledge.py` — Workdir 知识层工具（Stage 4 + 检索侧补全）：`add_open_thread`/`update_work_thread`/`update_knowledge`/`search_knowledge`，thread-local provider 机制与 `orchestration.py` 同构
 
 ### MCP 支持 (`src/mini_agent/mcp/`)
 
@@ -382,10 +382,10 @@ python main.py --provider nvidia --model qwen/qwen3.5-122b-a10b --system-tool-ca
 > 对应 `next_doc/self_evolution_stage4plus_plan.md` Stage 4，设计依据 `next_doc/self_evolution_design.md` 第 8.2 节。在 `.agent/` 下新增五个文件，是项目级"软知识"的沉淀层
 
 - **五个文件**：`project.json`（项目身份证，含 `name`/`root_language`/`key_modules`/`environment_fingerprint`）、`timeline.jsonl`（session 时序骨架，独立轻量反思生成 `theme`/`key_outcomes`）、`work_index.json`（`WorkThread` 聚合，跨 session 累积 `cumulative_progress`/`next_suggested`）、`open_threads.json`（跨 session 待处理线索池）、`knowledge.md`（项目软知识，T1，走 `StateRepo.apply()`）
-- **核心模块**：`perception/workdir_knowledge.py`（数据模型 + 读写）、`tools/workdir_knowledge.py`（`add_open_thread`/`update_work_thread`/`update_knowledge` 三个工具）
+- **核心模块**：`perception/workdir_knowledge.py`（数据模型 + 读写 + 检索：`search_knowledge_index()`/`read_knowledge_section()`）、`tools/workdir_knowledge.py`（`add_open_thread`/`update_work_thread`/`update_knowledge`/`search_knowledge` 四个工具）
 - **维护机制**：SessionStart 时 `agent.py` 的 `_maybe_ensure_project_meta()` 创建/更新 `project.json`（含 12.2 横向加固 `environment_fingerprint` 漂移检测）；SessionEnd 时 `_update_workdir_knowledge_on_session_end()` 追加 `timeline.jsonl`、关联 `work_index.json`、回收 `task_manifest.outcome.unresolved` 进 `open_threads.json`
-- **context 注入**：`context_builder.py` always-on 注入 `project.json` 身份信息 + 活跃 WorkThread 进度 + 高优先级 open_threads（数量上限 `WorkdirKnowledgeConfig.open_threads_inject_limit`，默认 5）
-- **横向加固顺带完成**：14.1 `knowledge_index.json`（`update_knowledge()` 写入时同步生成结构化索引）
+- **context 注入**：`context_builder.py` always-on 注入 `project.json` 身份信息 + 活跃 WorkThread 进度 + 高优先级 open_threads（数量上限 `WorkdirKnowledgeConfig.open_threads_inject_limit`，默认 5）。`knowledge.md` **不**走 always-on——按设计文档 8.4 节"按意图检索注入"，agent 需要主动调用 `search_knowledge` 工具
+- **横向加固顺带完成**：14.1 `knowledge_index.json`（`update_knowledge()` 写入时同步生成结构化索引）+ 检索侧补全（`search_knowledge` 工具：此前索引建了但从未被读出来用过，TF-IDF 关键词检索，复用 `memory_store.py` 的中英混合分词器）
 - **配置**：`WorkdirKnowledgeConfig`（默认 `enabled=True`），`work_thread_relation_days`（默认 7 天，关联启发式窗口）
 - 详见 [Workdir 知识层与 Global 知识层指南（Stage 4 & 5）](docs/self-evolution-stage4-5-guide.md)
 
@@ -419,7 +419,7 @@ python main.py --provider nvidia --model qwen/qwen3.5-122b-a10b --system-tool-ca
 
 - **13.2 + 15.3（SubAgent 降级重试链 + 任务降级策略）**：`TaskManager._try_demotion()`/`_resubmit_demoted()`，两阶段降级——阶段一按 `Task.fallback_profiles` 列表顺序切换 agent profile；阶段二（全部 profile 试过后）若设置了 `Task.demotion_scope` 则缩小目标范围重试一次，复用原 `task_id`，下次 tick 自动调度。是 Phase H 自主运行时"没有用户在场纠正"场景的硬性技术前提
 - **15.2（错误分类驱动恢复）**：`reminders/matcher.py` 的 `condition.error_category` 字段，基于 Stage 6.4 的分类结果精确路由，无需正则
-- **14.1/14.2/14.3（knowledge_index / Skill 依赖冲突图 / 知识可信度传递）**：分别在 Stage 4 的 `update_knowledge()` 与 Stage 3.2 的 `SkillLoader.activate()` 改动中顺手完成（`conflicts_with`/`activation_conditions` 约束检查、`confidence_score` 注入 context 时调整语气）
+- **14.1/14.2/14.3（knowledge_index / Skill 依赖冲突图 / 知识可信度传递）**：分别在 Stage 4 的 `update_knowledge()` 与 Stage 3.2 的 `SkillLoader.activate()` 改动中顺手完成（`conflicts_with`/`activation_conditions` 约束检查、`confidence_score` 注入 context 时调整语气）。14.1 的检索侧（设计文档 8.4 节"按意图检索注入"，此前只完成了写入侧）后续补全为 `search_knowledge` 工具 + `search_knowledge_index()`/`read_knowledge_section()`
 - **12.2（环境漂移检测）**：`detect_environment_drift()` + `_maybe_ensure_project_meta()`，在 Stage 4 顺手完成
 - **暂缓/留待 Stage 9 的条目**：12.1（`FILE_CHANGE_EFFECTS`）、12.3（inbound webhook）、13.1（能力匹配调度）、13.3（中间结果流）、15.1（元认知 checkpoint）、16.2（隐式反馈捕捉）、16.3（澄清优先分支）、17.2（Prompt 工程版本化）——详见计划文档 Stage 7 表格
 

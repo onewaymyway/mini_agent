@@ -9,8 +9,11 @@ self_evolution_stage4plus_plan.md Stage 4）
   - timeline.jsonl     — session 时序骨架，append-only（4.2）
   - work_index.json    — 跨 session WorkThread 聚合（4.3，本 Stage 价值最高的一项）
   - open_threads.json  — 跨 session 待处理线索池（4.4）
-  - knowledge.md       — 项目软知识（4.5，T1，走 StateRepo.apply()，不在本模块内，
-                          见 tools/workdir_knowledge.py 的 update_knowledge 工具）
+  - knowledge.md       — 项目软知识（4.5，T1，走 StateRepo.apply()，写入不在本
+                          模块内，见 tools/workdir_knowledge.py 的
+                          update_knowledge 工具；本模块提供检索/读取侧：
+                          search_knowledge_index() 按关键词检索摘要，
+                          read_knowledge_section() 按标题取出完整正文）
 
 设计取舍：
   - 全部纯写入操作（除 knowledge.md 外）不经过 StateRepo——这四个文件是
@@ -20,11 +23,16 @@ self_evolution_stage4plus_plan.md Stage 4）
   - 本模块只负责"数据结构 + 读写"，不负责"什么时候调用"——调用时机
     （SessionEnd hook / 工具主动写 / context 注入）由 agent.py、
     tools/workdir_knowledge.py、context_builder.py 各自负责
+  - search_knowledge_index() 复用 perception/memory_store.py 的
+    _tokenize()（中英混合 TF-IDF 分词，含中文 n-gram），不重新发明一套
+    分词逻辑——knowledge_index.json 条目数量级（几十到几百条）远小于
+    long-term memory，用同一套轻量级检索就足够，不需要向量数据库
 """
 
 from __future__ import annotations
 
 import json
+import math
 import os
 import tempfile
 import time
@@ -748,6 +756,135 @@ def upsert_knowledge_index_entry(
     return new_entry
 
 
+# ════════════════════════════════════════════════════════════════════════════
+# knowledge.md 检索侧（补全设计文档 8.4 节"按本次 session 意图检索后注入"）
+# ════════════════════════════════════════════════════════════════════════════
+#
+# 现状（改动前）：update_knowledge() 工具只负责写入 knowledge.md + 维护
+# knowledge_index.json，但索引建好之后从未被读出来过——context_builder.py
+# 的 always-on 注入只覆盖 project.json / WorkThread / open_threads 三类，
+# 完全不涉及 knowledge.md；agent 唯一能看到 knowledge.md 内容的方式是自己
+# 用文件读取工具去翻整份 Markdown，没有任何按相关性筛选的手段。
+#
+# 这里补的是检索侧：
+#   search_knowledge_index() — 对 knowledge_index.json 的 heading/summary/
+#       topic/decision_type/affected_modules 做 TF-IDF 关键词检索，返回
+#       按相关度排序的索引条目（只是摘要，不含 Markdown 正文）。
+#   read_knowledge_section() — 给定一个 heading，从 knowledge.md 里把那一节
+#       的完整正文抠出来（与 tools/workdir_knowledge.py 里写入侧的
+#       _upsert_markdown_section() 共享同一套"## 标题"边界识别逻辑，
+#       但那个函数是私有的、和写入逻辑耦合在一起，这里独立实现一个只读版本，
+#       避免 perception 层反向 import tools 层）。
+# 二者配合，对应 tools/workdir_knowledge.py 里新增的 search_knowledge 工具：
+# 先用 search_knowledge_index() 找到候选 heading，再按需用
+# read_knowledge_section() 取出对应正文（节省 token——大多数检索场景下，
+# 摘要已经够用，不需要把整节正文都塞进结果）。
+
+def _knowledge_entry_search_text(entry: KnowledgeIndexEntry) -> str:
+    """把一条索引条目的可检索字段拼成一段文本，供 TF-IDF 分词打分。"""
+    parts = [entry.heading, entry.summary, entry.topic, entry.decision_type]
+    parts.extend(entry.affected_modules)
+    return " ".join(p for p in parts if p)
+
+
+def search_knowledge_index(
+    paths: AgentPaths,
+    query: str,
+    k: int = 5,
+    topic: Optional[str] = None,
+) -> list[tuple[KnowledgeIndexEntry, float]]:
+    """
+    对 knowledge_index.json 做关键词检索，返回 (entry, score) 按 score 降序
+    排列的 top-k 列表（score<=0 的条目被过滤掉，与 memory_store.search() 的
+    "不返回毫不相关结果"原则一致）。
+
+    评分复用 perception/memory_store.py 的 _tokenize()（中英混合分词 +
+    中文 n-gram），用标准 TF-IDF（不含 memory 那边的时间衰减——knowledge.md
+    是"沉淀下来的认知"，不应该因为写入时间久就被判定为不相关；新旧本身不是
+    knowledge 的相关性信号，这点区别于 memory 的"最近发生的事更重要"）。
+
+    query 为空或全是停用词时返回 []（而不是退化成"返回全部条目"——
+    调用方应该用 load_knowledge_index() 取全量列表，search 只负责"有
+    query 时排序"，语义保持单一）。
+
+    topic 非空时先按精确匹配过滤候选范围，再在过滤后的子集里跑 TF-IDF——
+    例如 search_knowledge(query="鉴权失败排查", topic="auth") 只在
+    topic="auth" 的条目里找最相关的，避免跨主题的同名词干扰排序
+    （N 越小，IDF 越准确地反映"在这个主题范围内多稀有"，而不是被全量
+    knowledge base 的整体词频分布带偏）。
+    """
+    from mini_agent.perception.memory_store import _tokenize
+
+    entries = load_knowledge_index(paths)
+    if topic:
+        entries = [e for e in entries if e.topic == topic]
+    if not entries:
+        return []
+
+    query_tokens = _tokenize(query)
+    if not query_tokens:
+        return []
+
+    doc_texts = [_tokenize(_knowledge_entry_search_text(e)) for e in entries]
+    N = len(entries)
+
+    scored: list[tuple[KnowledgeIndexEntry, float]] = []
+    for entry, tokens in zip(entries, doc_texts):
+        if not tokens:
+            scored.append((entry, 0.0))
+            continue
+        score = 0.0
+        for qt in query_tokens:
+            tf = tokens.count(qt) / len(tokens)
+            df = sum(1 for t in doc_texts if qt in t)
+            idf = math.log((N + 1) / (df + 1)) + 1
+            score += tf * idf
+        scored.append((entry, score))
+
+    ranked = sorted(scored, key=lambda x: -x[1])
+    return [(e, s) for e, s in ranked[:k] if s > 0]
+
+
+def read_knowledge_section(paths: AgentPaths, heading: str) -> Optional[str]:
+    """
+    从 knowledge.md 里按 "## <heading>" 标题取出该节的完整正文（不含标题行
+    本身），找不到对应标题或文件不存在时返回 None。
+
+    边界识别逻辑（标题匹配到下一个同级或更高级标题为止）与写入侧
+    tools/workdir_knowledge.py 的 _upsert_markdown_section() 保持一致，
+    但这里是独立实现的只读版本——perception 层不应该反向 import tools
+    层（tools 依赖 perception 是允许的方向，反过来会形成循环依赖）。
+    """
+    path = paths.workdir_knowledge_md
+    if not path.is_file():
+        return None
+    try:
+        text = path.read_text(encoding="utf-8")
+    except Exception:
+        return None
+
+    target = f"## {heading}".strip()
+    lines = text.splitlines()
+
+    start_idx: Optional[int] = None
+    end_idx: Optional[int] = None
+    for i, line in enumerate(lines):
+        if line.strip() == target:
+            start_idx = i + 1
+            continue
+        if start_idx is not None and end_idx is None:
+            stripped = line.strip()
+            if stripped.startswith("# ") or stripped.startswith("## "):
+                end_idx = i
+                break
+    if start_idx is None:
+        return None
+    if end_idx is None:
+        end_idx = len(lines)
+
+    return "\n".join(lines[start_idx:end_idx]).strip()
+
+
 __all__ = [
     "ProjectMeta",
     "load_project_meta",
@@ -775,4 +912,6 @@ __all__ = [
     "load_knowledge_index",
     "save_knowledge_index",
     "upsert_knowledge_index_entry",
+    "search_knowledge_index",
+    "read_knowledge_section",
 ]
