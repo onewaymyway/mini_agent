@@ -29,6 +29,7 @@ class HookResult:
     reason: str = ""
     context: str = ""                # 注入到 prompt 的额外文本
     modified_input: Optional[dict] = None  # PreToolUse 修改后的工具参数
+    user_input: Optional[str] = None  # TurnEnd hook 返回时，替代真实用户输入
     error: str = ""
     raw_stdout: str = ""
 
@@ -87,6 +88,7 @@ def run_hook(spec: HookSpec, payload: dict[str, Any]) -> HookResult:
         reason=str(data.get("reason", "")),
         context=str(data.get("context", "")),
         modified_input=data.get("input") if isinstance(data.get("input"), dict) else None,
+        user_input=str(data["user_input"]) if isinstance(data.get("user_input"), str) else None,
         error=err,
         raw_stdout=out,
     )

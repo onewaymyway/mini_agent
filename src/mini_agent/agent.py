@@ -1952,6 +1952,33 @@ class Agent:
             # [SYS-ROLE-AGENT] output 触发：主 Agent 完成输出后，触发 output 类角色
             result = self._run_role_agents_output(user_message, result)
 
+            # [SYS-HOOKS] TurnEnd：一轮对话结束，轮到用户输入前触发。
+            # payload 包含当前历史快照（浅拷贝，供 hook 读取），以及本轮 assistant 输出。
+            # hook 可返回 {"user_input": "..."} 以替代真实用户输入；
+            # 否则正常等待用户输入。
+            self._turn_end_user_input: "Optional[str]" = None
+            try:
+                from mini_agent.hooks import get_hook_manager as _get_hook_manager
+                _hook_mgr = _get_hook_manager()
+                if _hook_mgr is not None and _hook_mgr._all_specs("TurnEnd"):
+                    _history_snapshot = [
+                        {"role": m.get("role", ""), "content": m.get("content", "")}
+                        for m in self._hist.messages
+                    ]
+                    _te_result = _hook_mgr.run(
+                        "TurnEnd",
+                        {
+                            "assistant_output": result,
+                            "history": _history_snapshot,
+                        },
+                    )
+                    if _te_result.user_input is not None:
+                        self._turn_end_user_input = _te_result.user_input
+            except Exception:
+                import traceback
+                traceback.print_exc()
+                pass  # TurnEnd hook 失败不影响主流程
+
             # [SYS-SUMMARY] session 结束后写入摘要（在 save 前）
             # 摘要写入由 save_session 触发，这里只标记需要摘要
             return result

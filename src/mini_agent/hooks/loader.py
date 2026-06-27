@@ -13,8 +13,22 @@ project 中的条目会追加在 global 之后，同 event 内 global 先执行�
   ],
   "UserPromptSubmit": [...],
   "SessionStart": [...],
-  "SessionEnd": [...]
+  "SessionEnd": [...],
+  "TurnEnd": [
+    {"command": "python3 .agent/hooks/turn_end_notify.py"}
+  ]
 }
+
+TurnEnd 事件在每轮 Agent 回复结束、等待用户下一次输入之前触发。
+stdin payload:
+  {
+    "assistant_output": "<本轮 assistant 最终回复文本>",
+    "history": [{"role": "user"|"assistant", "content": "..."}, ...]
+  }
+hook stdout 可返回：
+  {}                           # 不做任何事，继续等待真实用户输入
+  {"context": "提示文本"}      # 输出提示，继续等待
+  {"user_input": "..."}        # 替代真实用户输入，直接驱动下一轮（用于 agent-to-agent 接管）
 
 matcher 支持 "*"（全部）或 "|" 分隔的工具名列表（PreToolUse/PostToolUse 专用，
 其它事件忽略 matcher）。
@@ -40,6 +54,7 @@ KNOWN_EVENTS = (
     "PreCompact",
     "SessionStart",
     "SessionEnd",
+    "TurnEnd",
 )
 
 
@@ -156,9 +171,11 @@ class HookManager:
         - 任一 hook 返回 block -> 立即停止并返回该 block 结果
         - context 会被拼接累积
         - modified_input 取最后一个非空结果（按顺序依次应用）
+        - user_input 取最后一个非空结果（TurnEnd 专用：替代真实用户输入）
         """
         merged_context: list[str] = []
         merged_input: Optional[dict] = None
+        merged_user_input: Optional[str] = None
 
         for spec in self._all_specs(event):
             if tool_name is not None and not _matches(spec.matcher, tool_name):
@@ -171,11 +188,14 @@ class HookManager:
             if res.modified_input:
                 merged_input = {**(merged_input or {}), **res.modified_input}
                 payload = {**payload, "tool_input": merged_input}
+            if res.user_input is not None:
+                merged_user_input = res.user_input
 
         return HookResult(
             decision="allow",
             context="\n".join(merged_context),
             modified_input=merged_input,
+            user_input=merged_user_input,
         )
 
     @property

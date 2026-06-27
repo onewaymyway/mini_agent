@@ -109,6 +109,35 @@ def run_repl(agent: Agent, skill_loader: SkillLoader) -> None:
                 agent.run_turn(user_input)
             finally:
                 _key_listener.stop()
+
+            # [SYS-HOOKS] TurnEnd：若 hook 返回了替代用户输入，直接注入下一轮，
+            # 跳过真实用户输入等待。
+            _injected = getattr(agent, "_turn_end_user_input", None)
+            if _injected:
+                agent._turn_end_user_input = None
+                user_input = _injected
+                # 直接 goto 本循环的 run_turn，跳过 prompt_user()
+                try:
+                    _key_listener2 = _get_key_listener()
+                    _key_listener2.start()
+                    try:
+                        while user_input:
+                            agent.run_turn(user_input)
+                            _injected2 = getattr(agent, "_turn_end_user_input", None)
+                            agent._turn_end_user_input = None
+                            user_input = _injected2 or ""
+                    finally:
+                        _key_listener2.stop()
+                except KeyboardInterrupt:
+                    _term.force_end_stream()
+                    _cancel_running_tasks()
+                    R.print_interrupt()
+                except Exception as e:
+                    _term.force_end_stream()
+                    R.print_error(f"API error (injected turn): {e}")
+                    if agent.cfg.verbose:
+                        import traceback
+                        traceback.print_exc()
         except KeyboardInterrupt:
             _term.force_end_stream()
             _cancel_running_tasks()
