@@ -404,6 +404,36 @@ class FormatCorrectionConfig:
     verbose: bool = False
 
 
+@dataclass
+class PrivacyConfig:
+    """
+    隐私信息保护配置。
+
+    enabled=True 时，agent 在每次调用 LLM 前会把 secrets 里的真实值替换成
+    占位符（如 {{SECRET_1}}），收到回复后再还原。LLM 全程看不到真实 key。
+
+    auto_env_patterns：
+        匹配这些正则的环境变量名会被自动纳入保护，无需手动列举。
+        设为 [] 可完全禁用环境变量自动采集。
+        设为 None 时使用 PrivacyGuard 的内置默认模式（推荐）。
+
+    secrets：
+        显式指定的隐私条目列表，每项是 {"name": "标签", "value": "真实值"}。
+        可在 agent_config.json 的 "privacy" 块里配置，也可在代码里通过
+        load_config(privacy_secrets=[...]) 传入。
+
+    placeholder_prefix：
+        占位符前缀，默认 SECRET，生成 {{SECRET_1}}、{{SECRET_2}} 等。
+        一般不需要修改，除非业务场景中 {{SECRET_N}} 本身有特殊含义。
+    """
+    enabled: bool = True
+    secrets: list = field(default_factory=list)   # list[{"name": str, "value": str}]
+    auto_env_patterns: Optional[list] = None      # None = 使用 PrivacyGuard 内置默认
+    placeholder_prefix: str = "SECRET"
+    # 调试：打印屏蔽摘要（不含真实值）
+    verbose: bool = False
+
+
 # ════════════════════════════════════════════════════════════════════════════════
 # 主配置类
 # ════════════════════════════════════════════════════════════════════════════════
@@ -483,6 +513,7 @@ class AppConfig:
     workdir_knowledge: WorkdirKnowledgeConfig = field(default_factory=WorkdirKnowledgeConfig)
     global_knowledge: GlobalKnowledgeConfig = field(default_factory=GlobalKnowledgeConfig)
     observability: ObservabilityConfig = field(default_factory=ObservabilityConfig)
+    privacy:    PrivacyConfig     = field(default_factory=PrivacyConfig)
 
     # ── 向后兼容属性（让旧代码 cfg.memory_enabled 不报错）────────────────────
     # 以下属性委托给子配置块，方便渐进式迁移，后续版本可删除

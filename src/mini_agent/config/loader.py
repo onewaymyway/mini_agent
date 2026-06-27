@@ -37,6 +37,7 @@ from .models import (
     EnvInfoConfig,
     ReminderConfig,
     FormatCorrectionConfig,
+    PrivacyConfig,
     WorkdirKnowledgeConfig,
     GlobalKnowledgeConfig,
     DEFAULT_MODEL,
@@ -124,6 +125,10 @@ def load_config(
     format_correction_enabled: Optional[bool] = None,
     format_correction_max_retries: Optional[int] = None,
     format_correction_verbose: Optional[bool] = None,
+    # 隐私信息保护
+    privacy_enabled: Optional[bool] = None,
+    privacy_secrets: Optional[list] = None,   # [{"name": str, "value": str}, ...]
+    privacy_verbose: Optional[bool] = None,
     # role agent 系统
     role_agent_enabled: Optional[bool] = None,
     role_agent_allow: Optional[list] = None,
@@ -465,6 +470,25 @@ def load_config(
         ),
     )
 
+    # ── 隐私保护配置组装 ──────────────────────────────────────────────────────
+    _pv = file_cfg.get("privacy") if isinstance(file_cfg.get("privacy"), dict) else {}
+    _pv_enabled = privacy_enabled if privacy_enabled is not None else _pv.get("enabled", True)
+    # secrets 合并：文件里的 + 代码传入的（去重由 PrivacyGuard 负责）
+    _pv_secrets = list(_pv.get("secrets", []))
+    if privacy_secrets:
+        _pv_secrets = _pv_secrets + [s for s in privacy_secrets if s not in _pv_secrets]
+    # auto_env_patterns：None 表示使用 PrivacyGuard 内置默认，[] 表示禁用自动采集
+    _pv_patterns = _pv.get("auto_env_patterns", None)   # None → 内置默认
+    privacy_cfg = PrivacyConfig(
+        enabled=bool(_pv_enabled),
+        secrets=_pv_secrets,
+        auto_env_patterns=_pv_patterns,
+        placeholder_prefix=_pv.get("placeholder_prefix", "SECRET"),
+        verbose=bool(
+            privacy_verbose if privacy_verbose is not None else _pv.get("verbose", False)
+        ),
+    )
+
     # ── RoleAgent 配置组装 ────────────────────────────────────────────────────
     _ra = file_cfg.get("role_agent") if isinstance(file_cfg.get("role_agent"), dict) else {}
     # 总开关：CLI 参数 > 配置文件 > 默认 False（默认不启用）
@@ -560,6 +584,7 @@ def load_config(
         env_info=env_info_cfg,
         workdir_knowledge=workdir_knowledge_cfg,
         global_knowledge=global_knowledge_cfg,
+        privacy=privacy_cfg,
         llm_fallback_chain=_llm_fallback_chain,
         llm_fallback_on=_llm_fallback_on,
     )
