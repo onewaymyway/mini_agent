@@ -271,6 +271,9 @@ class HttpConfig:
     fs_readonly: bool = False
     fs_excludes: list = field(default_factory=list)
     ring_maxlen: int = 2000
+    # daemon 多用户架构 Phase 1：是否启用多用户认证（MultiUserAuthMiddleware）。
+    # 默认 False，保持现有单 token 单用户行为完全不变（向后兼容）。
+    multi_user_enabled: bool = False
 
 
 @dataclass
@@ -626,6 +629,8 @@ class AppConfig:
     def http_fs_excludes(self) -> list:         return self.http.fs_excludes
     @property
     def http_ring_maxlen(self) -> int:          return self.http.ring_maxlen
+    @property
+    def http_multi_user_enabled(self) -> bool:  return self.http.multi_user_enabled
 
     @property
     def llm_retry_max(self) -> int:             return self.retry.max_retries

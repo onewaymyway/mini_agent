@@ -495,27 +495,32 @@ class AgentBridge:
             data={"tool_name": name, "result": result},
         ))
 
-    def emit_turn_start(self, turn_id: str, message: str) -> None:
+    def emit_turn_start(self, turn_id: str, message: str, user_id: str = "") -> None:
         self.broadcaster.push(AgentEvent(
             type=EventType.TURN_START,
             turn_id=turn_id,
+            user_id=user_id,
             data={"message": message},
         ))
 
-    def emit_turn_done(self, turn_id: str, text: str = "", meta: Optional[dict] = None) -> None:
+    def emit_turn_done(
+        self, turn_id: str, text: str = "", meta: Optional[dict] = None, user_id: str = ""
+    ) -> None:
         data = {"text": text}
         if meta:
             data.update(meta)
         self.broadcaster.push(AgentEvent(
             type=EventType.TURN_DONE,
             turn_id=turn_id,
+            user_id=user_id,
             data=data,
         ))
 
-    def emit_error(self, msg: str, turn_id: str = "") -> None:
+    def emit_error(self, msg: str, turn_id: str = "", user_id: str = "") -> None:
         self.broadcaster.push(AgentEvent(
             type=EventType.ERROR,
             turn_id=turn_id,
+            user_id=user_id,
             data={"message": msg},
         ))
 

@@ -43,6 +43,9 @@ class AgentEvent(BaseModel):
     id:      int       = 0               # 全局自增序号（由 RingBuffer 赋值）
     type:    EventType = EventType.INFO
     turn_id: str       = ""              # 关联的 turn（无关联时为空）
+    # daemon 多用户架构 Phase 1：发起这条事件的用户 user_id（无关联/单用户模式下为空）。
+    # 目前只是打个标记，Phase 3 才会真正用它来按用户过滤 /v1/stream 订阅。
+    user_id: str       = ""
     ts:      float     = Field(default_factory=time.time)
     data:    dict      = Field(default_factory=dict)
 
@@ -202,5 +205,41 @@ class SessionActionResponse(BaseModel):
     history_count: int = 0
 
 class SessionDeleteResponse(BaseModel):
+    ok:      bool
+    message: str = ""
+
+
+# ── 用户管理（daemon 多用户架构 Phase 1）────────────────────────────────────────
+
+class UserInfo(BaseModel):
+    """对外展示的用户信息（不含 token_hash 等内部字段）。"""
+    user_id:     str
+    name:        str
+    role:        str
+    trust_level: int
+    created_at:  float
+    last_seen:   float = 0.0
+    meta:        dict = Field(default_factory=dict)
+
+class UsersListResponse(BaseModel):
+    users: list[UserInfo]
+
+class UserCreateRequest(BaseModel):
+    name:        str
+    role:        str
+    trust_level: int = 5
+    meta:        Optional[dict] = None
+
+class UserCreateResponse(BaseModel):
+    ok:      bool
+    user_id: str = ""
+    token:   str = ""   # 仅在创建/重置 token 时返回一次明文，之后不可再查
+    message: str = ""
+
+class UserUpdateRequest(BaseModel):
+    role: Optional[str] = None
+    meta: Optional[dict] = None
+
+class UserActionResponse(BaseModel):
     ok:      bool
     message: str = ""

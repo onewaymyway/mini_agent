@@ -368,6 +368,7 @@ def load_config(
         fs_readonly=_fb("http_fs_readonly", None),
         fs_excludes=file_cfg.get("http_fs_excludes", []),
         ring_maxlen=int(_f("http_ring_maxlen", None) or 2000),
+        multi_user_enabled=_fb("http_multi_user_enabled", None),
     )
 
     retry_cfg = RetryConfig(

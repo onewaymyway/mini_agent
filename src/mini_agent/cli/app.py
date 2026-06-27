@@ -40,6 +40,18 @@ def main() -> int:
                 break
         return run_daemon_cli(sys.argv[2:], project_root)
 
+    # ── daemon 多用户架构 Phase 1：user 子命令短路 ───────────────────────────
+    # `mini-agent user list|add|remove|role|token` 同样不进入主 argparse 流程，
+    # 写法与上面的 daemon 子命令完全一致（--project 扫描 + 短路转发）。
+    if len(sys.argv) > 1 and sys.argv[1] == "user":
+        from mini_agent.cli.commands.user_cmd import run_user_cli
+        project_root = Path.cwd()
+        for i, arg in enumerate(sys.argv):
+            if arg in ("--project", "-p") and i + 1 < len(sys.argv):
+                project_root = Path(sys.argv[i + 1]).expanduser()
+                break
+        return run_user_cli(sys.argv[2:], project_root)
+
     # ── 全局异常捕获：确保任何启动错误都能显示 ────────────────────────────────
     try:
         _main_inner()
@@ -338,18 +350,22 @@ def _main_inner() -> None:
                 allowed_ips = cfg.http_allowed_ips
 
             fs_readonly = getattr(args, "http_fs_readonly", None) or cfg.http_fs_readonly
+            multi_user_enabled = getattr(args, "http_multi_user", None)
+            if multi_user_enabled is None:
+                multi_user_enabled = cfg.http_multi_user_enabled
 
             http_server = HttpServer(
-                agent            = agent,
-                project_root     = cfg.project_root,
-                host             = http_host,
-                port             = http_port,
-                configured_token = http_token,
-                allowed_ips      = allowed_ips,
-                cors_origins     = cfg.http_cors_origins,
-                fs_readonly      = fs_readonly,
-                fs_excludes      = cfg.http_fs_excludes or [],
-                ring_maxlen      = cfg.http_ring_maxlen,
+                agent              = agent,
+                project_root       = cfg.project_root,
+                host               = http_host,
+                port               = http_port,
+                configured_token   = http_token,
+                allowed_ips        = allowed_ips,
+                cors_origins       = cfg.http_cors_origins,
+                fs_readonly        = fs_readonly,
+                fs_excludes        = cfg.http_fs_excludes or [],
+                ring_maxlen        = cfg.http_ring_maxlen,
+                multi_user_enabled = multi_user_enabled,
             )
             http_server.start()
 

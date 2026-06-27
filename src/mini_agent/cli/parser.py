@@ -242,4 +242,7 @@ def build_parser() -> argparse.ArgumentParser:
                       help="IP 白名单，逗号分隔（默认只允许 127.0.0.1）")
     http.add_argument("--http-fs-readonly", action="store_true", default=None,
                       help="文件系统 API 只读模式（禁止写/删操作）")
+    http.add_argument("--http-multi-user", action="store_true", default=None,
+                      help="[daemon 多用户 Phase 1] 启用多用户认证（每个用户独立 token/角色），"
+                           "默认关闭，关闭时行为与现有单 token 单用户模式完全一致")
     return p

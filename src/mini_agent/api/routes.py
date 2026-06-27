@@ -27,6 +27,12 @@ api/routes.py — FastAPI 路由定义
   权限审批
     GET  /v1/permissions/pending     待审批列表
     POST /v1/permissions/{req_id}    批准 / 拒绝
+  用户管理（daemon 多用户架构 Phase 1，owner only；单用户模式下这组端点返回 404）
+    GET    /v1/users                 用户列表
+    POST   /v1/users                 新增用户，返回 user_id + token（仅此一次明文）
+    PATCH  /v1/users/{user_id}       修改角色/meta
+    DELETE /v1/users/{user_id}       删除用户
+    POST   /v1/users/{user_id}/token 重新生成 token
   文件系统
     GET    /v1/fs/list               列目录（?path=xxx）
     GET    /v1/fs/read               读文件（?path=xxx）
@@ -62,7 +68,10 @@ from .models import (
     FsSearchRequest, EventType, AgentEvent,
     SessionInfo, SessionsListResponse, SessionDetailResponse,
     SessionActionResponse, SessionDeleteResponse,
+    UserInfo, UsersListResponse, UserCreateRequest, UserCreateResponse,
+    UserUpdateRequest, UserActionResponse,
 )
+from .user_store import UserStore, VALID_ROLES
 
 router = APIRouter(prefix="/v1")
 
@@ -73,6 +82,26 @@ def _bridge(request: Request) -> AgentBridge:
 
 def _fs(request: Request) -> FsHelper:
     return request.app.state.fs_helper
+
+
+def _role_store(request: Request) -> Optional[UserStore]:
+    """daemon 多用户架构 Phase 1：未开启多用户模式时返回 None。"""
+    return getattr(request.app.state, "role_store", None)
+
+
+def _require_owner(request: Request) -> None:
+    """
+    owner-only 端点的权限检查。
+
+    单用户模式（role_store 为 None，即 multi_user_enabled=False）下直接放行——
+    单 token 模式下能通过 AuthMiddleware 认证的就是唯一使用者，等同于 owner，
+    不应该因为新增了 /v1/users 这组端点就把现有单用户部署挡在外面。
+    """
+    user_ctx = getattr(request.state, "user_ctx", None)
+    if user_ctx is None:
+        return  # 单用户模式，放行
+    if not user_ctx.is_owner:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Owner only")
 
 
 # ── 系统 ──────────────────────────────────────────────────────────────────────
@@ -279,8 +308,12 @@ async def get_diagnostics(request: Request):
 
 @router.post("/chat", response_model=ChatResponse)
 async def chat(request: Request, body: ChatRequest):
-    bridge  = _bridge(request)
-    turn_id = bridge.input_queue.enqueue(body.message, body.turn_id)
+    bridge = _bridge(request)
+    # daemon 多用户架构 Phase 1：MultiUserAuthMiddleware 开启时会在 request.state
+    # 上挂一个 user_ctx；单用户模式下没有这个属性，getattr 安全降级为 None。
+    user_ctx = getattr(request.state, "user_ctx", None)
+    meta = {"user_id": user_ctx.user_id, "role": user_ctx.role} if user_ctx else None
+    turn_id = bridge.input_queue.enqueue(body.message, body.turn_id, meta=meta)
     bridge.emit_info(f"[HTTP] Queued message: {body.message[:80]}")
     return ChatResponse(turn_id=turn_id, queued=True)
 
@@ -792,3 +825,110 @@ async def fs_upload(
         return {"ok": True, "path": path, "size": len(content)}
     except Exception as e:
         raise _fs_error(e)
+
+
+# ── 用户管理（daemon 多用户架构 Phase 1，owner only）─────────────────────────────
+#
+# 单用户模式（未开启 --http-multi-user）下，role_store 为 None，
+# 这组端点统一返回 404——既不暴露"功能存在但未开启"的细节，
+# 也避免单用户部署的人困惑于一个用不了的端点。
+
+def _users_unavailable() -> HTTPException:
+    return HTTPException(
+        status_code=status.HTTP_404_NOT_FOUND,
+        detail="Multi-user mode not enabled. Start daemon with --http-multi-user.",
+    )
+
+
+def _to_user_info(record) -> UserInfo:
+    return UserInfo(
+        user_id=record.user_id,
+        name=record.name,
+        role=record.role,
+        trust_level=record.trust_level,
+        created_at=record.created_at,
+        last_seen=record.last_seen,
+        meta=record.meta,
+    )
+
+
+@router.get("/users", response_model=UsersListResponse)
+async def list_users(request: Request):
+    store = _role_store(request)
+    if store is None:
+        raise _users_unavailable()
+    _require_owner(request)
+    return UsersListResponse(users=[_to_user_info(r) for r in store.list_users()])
+
+
+@router.post("/users", response_model=UserCreateResponse)
+async def create_user(request: Request, body: UserCreateRequest):
+    store = _role_store(request)
+    if store is None:
+        raise _users_unavailable()
+    _require_owner(request)
+
+    if body.role not in VALID_ROLES or body.role == "owner":
+        return UserCreateResponse(
+            ok=False,
+            message=f"Invalid role {body.role!r}. Must be one of "
+                     f"{sorted(VALID_ROLES - {'owner'})}",
+        )
+    try:
+        user_id, token = store.add_user(
+            name=body.name, role=body.role,
+            trust_level=body.trust_level, meta=body.meta,
+        )
+    except ValueError as e:
+        return UserCreateResponse(ok=False, message=str(e))
+
+    return UserCreateResponse(ok=True, user_id=user_id, token=token)
+
+
+@router.delete("/users/{user_id}", response_model=UserActionResponse)
+async def remove_user(request: Request, user_id: str):
+    store = _role_store(request)
+    if store is None:
+        raise _users_unavailable()
+    _require_owner(request)
+
+    if user_id == "owner":
+        return UserActionResponse(ok=False, message="Cannot remove owner")
+    ok = store.remove_user(user_id)
+    return UserActionResponse(
+        ok=ok, message="" if ok else f"User {user_id!r} not found"
+    )
+
+
+@router.patch("/users/{user_id}", response_model=UserActionResponse)
+async def update_user(request: Request, user_id: str, body: UserUpdateRequest):
+    store = _role_store(request)
+    if store is None:
+        raise _users_unavailable()
+    _require_owner(request)
+
+    if user_id == "owner":
+        return UserActionResponse(ok=False, message="Cannot modify owner via this endpoint")
+
+    ok = True
+    if body.role is not None:
+        ok = store.update_role(user_id, body.role) and ok
+    if body.meta is not None:
+        ok = store.update_meta(user_id, body.meta) and ok
+    return UserActionResponse(
+        ok=ok, message="" if ok else f"User {user_id!r} not found or invalid role"
+    )
+
+
+@router.post("/users/{user_id}/token", response_model=UserCreateResponse)
+async def rotate_user_token(request: Request, user_id: str):
+    """重新生成某用户的 token（旧 token 立即失效）。"""
+    store = _role_store(request)
+    if store is None:
+        raise _users_unavailable()
+    _require_owner(request)
+
+    new_token = store.rotate_token(user_id)
+    if new_token is None:
+        return UserCreateResponse(ok=False, message=f"User {user_id!r} not found")
+    return UserCreateResponse(ok=True, user_id=user_id, token=new_token)

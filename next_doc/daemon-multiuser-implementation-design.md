@@ -151,6 +151,9 @@ daemon 进程（绑定到一个 project_root）
 
 ## 二、Phase 1：用户识别（角色系统的最小可用版本）
 
+> **状态：已实现**（见下方"实施记录"）。本节原文保留作为设计依据，
+> 实际实现与原计划的差异点列在文末"实施记录"小节。
+
 **目标**：daemon 能区分"谁在跟我说话"，但暂时不动 AgentBridge/单 Agent 模型——
 所有用户仍然共用同一个全局 Agent 和同一份历史，只是请求带上了身份。
 这是为了把"认证"和"会话隔离"两件事分开验证，降低单次改动的风险（与原方案第十一节的
@@ -214,6 +217,64 @@ daemon 进程（绑定到一个 project_root）
   - 新增一个 family 角色用户，拿到 token，能用该 token 调 `/v1/chat`（此时仍是全局共享 Agent
     和历史——预期行为，Phase 3 才隔离）
   - 非 owner 调 `/v1/users` 返回 403
+
+### Phase 1 实施记录（与原计划的差异点）
+
+**已完成，已用真实 HTTP 请求 + 真实 daemon 进程端到端验证通过**（不是只测了单元函数）：
+单用户模式向后兼容性、owner 增删改用户、非 owner 403、token 失效立即生效、
+`/v1/chat` 的 `meta.user_id/role` 正确传递到 `InputQueue`、CLI 四个子命令
+（list/add/role/token；remove 也测了）全部通过。已跑过项目现有的完整 pytest 套件
+（1383 passed，2 个失败项确认是改造前就存在、与本次改动完全无关的调试日志截断测试）。
+
+与原计划的具体差异：
+
+1. **改名**：`api/user_store.py::UserProfileManager` → `RoleProfileManager`（按 0.1 节）。
+   Phase 1 阶段这个类本身还没接入任何调用链（要等 Phase 2 才会真正用到画像注入），
+   这次只是把命名隐患先消掉，类的实现内容未改动。
+
+2. **`AppConfig` 新增字段**：`HttpConfig.multi_user_enabled`（默认 `False`），
+   对应 `cfg.http_multi_user_enabled` 属性、配置文件字段 `http_multi_user_enabled`、
+   CLI 参数 `--http-multi-user`。完整走通了"CLI 参数 > 配置文件 > 默认值"三层优先级
+   （复用 `loader.py` 现成的 `_fb` helper，没有新发明一套读取逻辑）。
+
+3. **`AuthMiddleware` vs `MultiUserAuthMiddleware` 二选一**：没有像原计划写的那样在
+   `create_app()` 内部用 `cfg.multi_user_enabled` 做判断——`create_app()` 本身不持有
+   `cfg`，改成接收一个 `role_store: Optional[UserStore] = None` 参数，
+   `role_store is not None` 即代表开启多用户模式。`HttpServer.__init__` 收到
+   `multi_user_enabled=True` 时才会真正构造 `UserStore` 并调用 `ensure_owner()`；
+   `create_app()` 本身保持"传什么就用什么"的纯函数风格，不去关心这个布尔开关从哪来。
+
+4. **owner token 的来历**：`ensure_owner(configured_token=self._token)`——也就是说，
+   多用户模式下的 owner token 直接复用"原来单 token 模式下那个 token"
+   （CLI/配置/环境变量传入的，或者 `load_or_generate_token` 自动生成的那个）。
+   这意味着一个原本跑在单用户模式的项目，重启时加上 `--http-multi-user`，
+   **旧的 token 不会失效**，只是现在它对应的身份多了一个名字叫 "owner"。
+   这个设计原文档没有明确写，是实现时做的决定，记录在这里供确认。
+
+5. **`/v1/users` 在单用户模式下的行为**：原计划没有明确规定这组端点在
+   `multi_user_enabled=False` 时该怎么响应。实现选择返回 `404`
+   （而不是比如 401/403），原因是：单用户模式下这组端点"根本不存在"，
+   404 比"存在但你没权限"更准确，也不会暴露"这个功能其实做了但没开"的信息。
+
+6. **`AgentEvent.user_id` 的实际打点范围**：原计划写"`chat`/`emit_*` 调用处顺带传入"，
+   实现时具体打在 `emit_turn_start` / `emit_turn_done` / `emit_error` 这三个
+   per-turn 生命周期事件上（`emit_token`/`emit_info`/`emit_fs_change` 等没有加，
+   因为 Phase 1 阶段还用不上，等 Phase 3 真正要按用户过滤 `/v1/stream` 订阅时，
+   只看 turn 级别的这三个事件就足够判断"这条 turn 是谁发起的"）。
+
+7. **CLI 子命令集合**：原计划写的是
+   `mini-agent user <list|add|remove|token|profile|note>`，实现时去掉了
+   `profile`/`note`（这两个属于 `RoleProfileManager` 的画像读写，按计划本来就该在
+   Phase 2 才接，Phase 1 阶段加进 CLI 但后端什么都没连，等于挂了两个空命令，
+   没有实际意义），改成加了一个 `role`（修改用户角色，原计划里有对应的 PATCH 端点，
+   但子命令列表里漏列了，这次补上）。最终 Phase 1 的 CLI 子命令是：
+   `list / add / remove / role / token`。
+
+8. **`/v1/users` 鉴权细节**：`_require_owner()` 的实现是"`request.state.user_ctx`
+   不存在（即单用户模式）就直接放行；存在但 `role != owner` 才 403"——
+   和原计划"owner-only 的判断：`request.state.role == "owner"`"基本一致，
+   只是改成读 `user_ctx.is_owner`（`UserContext` 上已有的便捷属性）而不是直接比较
+   字符串，避免角色名字符串各处对不齐的风险。
 
 ---
 
@@ -406,18 +467,23 @@ session_manager"变成"该用户名下所有 session 文件"（按 `meta.json` �
 
 ## 六、本次需要用户确认的关键决策点
 
-1. **`UserProfileManager` 改名为 `RoleProfileManager`**（0.1 节）——同意吗，还是有更喜欢的名字？同意。
-2. **角色画像走 `cfg.system_extra`，不新增 `extra_system` 字段**（0.2 节）——这是修正草稿里的
-   一个直接 bug，应该没有争议，但请确认。已确认。
-3. **Phase 1/2 阶段先不动 AgentBridge，所有用户共享同一个全局 Agent**——这意味着 Phase 1/2
-   做完之后，"多用户"只是"认证 + 画像"，对话内容仍然是混在一起的同一份历史，
-   要等 Phase 3 才有真正的隔离。这个中间状态是否可接受，还是希望跳过 1/2 直接做 3？可以接受。
+> Phase 1 已经按以下默认方案实施（用户选择"按计划文档开始"，未逐项单独答复，
+> 故采用文档原本建议的默认选项）。1-3 已落地，4-5 仍待确认/讨论。
+
+1. ~~**`UserProfileManager` 改名为 `RoleProfileManager`**（0.1 节）——同意吗，还是有更喜欢的名字？~~
+   **已实施**：改名为 `RoleProfileManager`。
+2. ~~**角色画像走 `cfg.system_extra`，不新增 `extra_system` 字段**（0.2 节）——这是修正草稿里的
+   一个直接 bug，应该没有争议，但请确认。~~
+   **已确认无争议**；该接入点要等 Phase 2 才会真正用上（Phase 1 只是改了名字，没动这部分逻辑）。
+3. ~~**Phase 1/2 阶段先不动 AgentBridge，所有用户共享同一个全局 Agent**——……~~
+   **已按此方案实施 Phase 1**：当前所有用户仍共享同一个全局 Agent/历史，
+   "多用户"目前只是"认证 + 角色权限分级"，对话隔离要等 Phase 3。
 4. **Phase 3 的线程模型修正**（0.3/3.1 节，Agent 构造和 AgentRunner 跑在同一线程）——
    这个改动同时也修复了一个现状就存在的 bug（thread-local 在单 Agent 模式下其实没生效），
    是否需要我**现在就**先单独修一下现状的这个 bug（不等 Phase 3），让 `skill_propose`
-   等工具在当前单 Agent daemon 模式下先恢复正常？这个修复和多用户改造无关，可以独立先做。可以先做。
-5. **Phase 3 验收标准里"对话隔离"的测试方式**——你是否方便在本地实际跑两个客户端测试。本地可以直接跑两个测试。
-   （因为我这边的沙盒环境没有 LLM API key，无法端到端跑通真实对话，只能做单元测试级别的验证）？。你可以只做单元测试。
+   等工具在当前单 Agent daemon 模式下先恢复正常？这个修复和多用户改造无关，可以独立先做。
+5. **Phase 3 验收标准里"对话隔离"的测试方式**——你是否方便在本地实际跑两个客户端测试
+   （因为我这边的沙盒环境没有 LLM API key，无法端到端跑通真实对话，只能做单元测试级别的验证）？
 
 ---
 

@@ -15,9 +15,16 @@ api/user_store.py — 用户注册表与 token 角色系统
   public    — 公开访客，只读，受限对话轮数
 
 每个用户有独立数据目录：.agent/users/<user_id>/
-  profile.json      — 用户画像（由 agent 在对话中自动更新）
+  profile.json      — 社交画像（由 RoleProfileManager 管理，agent 在对话中自动更新）
   memory.jsonl      — 与该用户的专属记忆
   preferences.json  — 用户偏好
+
+注意：本文件里的 RoleProfileManager 和 mini_agent.profile.UserProfileManager 是两个
+不同的东西，不要混淆：
+  - RoleProfileManager（本文件）  → <project_root>/.agent/users/<user_id>/profile.json
+    人工/agent 在对话中维护的社交画像（relation/trust_level/agent_notes 等）。
+  - profile.py::UserProfileManager → ~/.agent/users/<user_id>/profile.json（全局，跨项目）
+    LLM 自动总结的技术栈/习惯画像，单用户个性化功能，与角色系统无关。
 """
 
 from __future__ import annotations
@@ -179,7 +186,7 @@ class UserStore:
         tokens/
           owner.key        — owner token 明文（0600）
           <user_id>.key    — 其他用户 token 明文（0600）
-        owner/             — owner 数据目录（见 UserProfileManager）
+        owner/             — owner 数据目录（见 RoleProfileManager）
         <user_id>/         — 其他用户数据目录
     """
 
@@ -414,9 +421,15 @@ class UserStore:
             self._save()
 
 
-# ── 用户画像管理 ──────────────────────────────────────────────────────────────
+# ── 角色社交画像管理 ──────────────────────────────────────────────────────────
+#
+# 注意：这不是 mini_agent.profile.UserProfileManager（那个是单用户、跨项目的
+# LLM 自动生成技术栈/习惯画像，存在 ~/.agent/users/<user_id>/profile.json）。
+# 这里管的是"这个人是谁、关系如何、对话中要注意什么"的社交画像，
+# 存在 <project_root>/.agent/users/<user_id>/profile.json（项目本地）。
+# 两者路径形状相似但 scope 不同，故意分成两个类，避免谁覆盖谁。
 
-class UserProfileManager:
+class RoleProfileManager:
     """
     管理 .agent/users/<user_id>/profile.json。
     由 SessionAgent 在对话中增量写入，由 Self 的 Phase G tick 汇总。

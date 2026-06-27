@@ -28,7 +28,9 @@ from .auth import AuthMiddleware, load_or_generate_token, print_token_banner
 from .bridge import AgentBridge, init_bridge
 from .fs_helper import FsHelper
 from .models import EventType, AgentEvent
+from .multi_auth import MultiUserAuthMiddleware
 from .routes import router
+from .user_store import UserStore
 
 
 # ── 终端安全打印（可从任意线程调用）─────────────────────────────────────────
@@ -149,8 +151,11 @@ class AgentRunner(threading.Thread):
                 continue
 
             turn_id = cmd.turn_id
+            # daemon 多用户架构 Phase 1：从 enqueue() 时传入的 meta 里取 user_id，
+            # 单用户模式下 cmd.meta 为空，user_id 就是 ""，行为不变。
+            user_id = cmd.meta.get("user_id", "") if cmd.meta else ""
             bridge.set_state("running", turn_id=turn_id)
-            bridge.emit_turn_start(turn_id, cmd.message)
+            bridge.emit_turn_start(turn_id, cmd.message, user_id=user_id)
 
             try:
                 if bridge.agent is None:
@@ -172,17 +177,17 @@ class AgentRunner(threading.Thread):
                 result = bridge.agent.run_turn(cmd.message)
 
                 iq.mark_done(turn_id)
-                bridge.emit_turn_done(turn_id, text=result or "")
+                bridge.emit_turn_done(turn_id, text=result or "", user_id=user_id)
 
             except Exception as e:
                 tb = traceback.format_exc()
                 iq.mark_error(turn_id)
-                bridge.emit_error(f"{type(e).__name__}: {e}\n{tb}", turn_id=turn_id)
+                bridge.emit_error(f"{type(e).__name__}: {e}\n{tb}", turn_id=turn_id, user_id=user_id)
                 # 关键修复：即使出错也必须发出 turn_done（text 为空，附带 error 标记），
                 # 否则等待 /v1/stream/{turn_id} 的客户端（CLI/Web）会一直阻塞到超时，
                 # 既看不到错误也等不到下一个输入提示。
                 bridge.emit_turn_done(
-                    turn_id, text="", meta={"error": f"{type(e).__name__}: {e}"}
+                    turn_id, text="", meta={"error": f"{type(e).__name__}: {e}"}, user_id=user_id
                 )
             finally:
                 bridge.set_state("idle", turn_id=None)
@@ -203,6 +208,7 @@ def create_app(
     token:       str,
     allowed_ips: list[str],
     cors_origins: list[str],
+    role_store: Optional[UserStore] = None,
 ) -> FastAPI:
 
     @asynccontextmanager
@@ -236,7 +242,13 @@ def create_app(
     )
 
     # ── 鉴权中间件 ────────────────────────────────────────────────────────
-    app.add_middleware(AuthMiddleware, token=token, allowed_ips=allowed_ips)
+    # daemon 多用户架构 Phase 1：role_store 非空时，说明开启了多用户模式，
+    # 挂载 MultiUserAuthMiddleware（按 token 区分用户身份/角色）；
+    # 否则保持现状，挂载单 token 的 AuthMiddleware，不影响现有单用户部署。
+    if role_store is not None:
+        app.add_middleware(MultiUserAuthMiddleware, role_store=role_store, allowed_ips=allowed_ips)
+    else:
+        app.add_middleware(AuthMiddleware, token=token, allowed_ips=allowed_ips)
 
     # ── 路由 ──────────────────────────────────────────────────────────────
     app.include_router(router)
@@ -250,8 +262,9 @@ def create_app(
         }
 
     # ── 注入到 app.state ──────────────────────────────────────────────────
-    app.state.bridge    = bridge
-    app.state.fs_helper = fs_helper
+    app.state.bridge     = bridge
+    app.state.fs_helper  = fs_helper
+    app.state.role_store = role_store   # None = 单用户模式（Phase 1 未开启）
 
     return app
 
@@ -276,9 +289,11 @@ class HttpServer:
         fs_readonly:      bool = False,
         fs_excludes:      Optional[list[str]] = None,
         ring_maxlen:      int  = 2000,
+        multi_user_enabled: bool = False,
     ) -> None:
         self._host = host
         self._port = port
+        self._project_root = project_root
 
         # Token
         self._token = load_or_generate_token(project_root, configured_token)
@@ -299,6 +314,17 @@ class HttpServer:
             readonly     = fs_readonly,
             excludes     = fs_excludes,
         )
+
+        # daemon 多用户架构 Phase 1：multi_user_enabled 时创建 UserStore 并确保
+        # owner 用户存在（owner token 复用上面已经算好的 self._token，保持
+        # "原有单 token 升级为 owner token"的自然过渡——开启多用户模式前用的
+        # 那个 token 不会失效，只是现在它对应的身份叫 owner）。
+        self._multi_user_enabled = multi_user_enabled
+        self._role_store: Optional[UserStore] = None
+        if multi_user_enabled:
+            users_dir = project_root / ".agent" / "users"
+            self._role_store = UserStore(users_dir)
+            self._role_store.ensure_owner(configured_token=self._token)
 
         # Stage 9 §7.2: 初始化 AutonomousLoop（在 daemon 进程中挂载到 AgentRunner）
         self._autonomous_loop = self._build_autonomous_loop(agent)
@@ -346,6 +372,11 @@ class HttpServer:
         return self._token
 
     @property
+    def role_store(self) -> Optional[UserStore]:
+        """daemon 多用户架构 Phase 1：未开启多用户模式时为 None。"""
+        return self._role_store
+
+    @property
     def autonomous_loop(self):
         """返回 AutonomousLoop 实例（供 daemon status 命令查询）。"""
         return self._autonomous_loop
@@ -365,6 +396,7 @@ class HttpServer:
             token        = self._token,
             allowed_ips  = self._allowed_ips,
             cors_origins = self._cors_origins,
+            role_store   = self._role_store,
         )
         # Stage 9 §3: 注入 HttpServer 自身到 app.state，使 routes.py 可查询 AutonomousLoop
         app.state.http_server = self
@@ -395,6 +427,18 @@ class HttpServer:
             time.sleep(0.1)
 
         print_token_banner(self._token, self._host, self._port)
+        if self._multi_user_enabled:
+            self._print_multi_user_banner()
+
+    def _print_multi_user_banner(self) -> None:
+        """daemon 多用户架构 Phase 1：提示已开启多用户模式，上面打印的 token 即 owner token。"""
+        n_others = max(len(self._role_store.list_users()) - 1, 0)  # 减去 owner 自己
+        print(
+            "  👥  Multi-user mode: ON  (above token = owner)\n"
+            f"  Other users: {n_others}\n"
+            "  Manage: mini-agent user list / add / remove\n",
+            flush=True,
+        )
 
     def stop(self) -> None:
         """优雅关闭。"""
