@@ -1963,7 +1963,7 @@ class Agent:
                 if _hook_mgr is not None and _hook_mgr._all_specs("TurnEnd"):
                     _history_snapshot = [
                         {"role": m.get("role", ""), "content": m.get("content", "")}
-                        for m in self._hist.messages
+                        for m in self._hist._history
                     ]
                     _te_result = _hook_mgr.run(
                         "TurnEnd",

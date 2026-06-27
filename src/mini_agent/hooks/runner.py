@@ -61,6 +61,8 @@ def run_hook(spec: HookSpec, payload: dict[str, Any]) -> HookResult:
     except subprocess.TimeoutExpired:
         return HookResult(decision="allow", error=f"hook timed out after {spec.timeout}s: {spec.command}")
     except Exception as e:
+        import traceback
+        traceback.print_exc()
         return HookResult(decision="allow", error=f"hook failed to start: {e}")
 
     out = (proc.stdout or "").strip()
