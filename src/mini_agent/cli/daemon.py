@@ -279,25 +279,39 @@ class DaemonClient:
         注意：服务端在 run_turn() 抛异常时，会先发 error 事件，
         紧接着也会发 turn_done（text 为空，meta 里带 error），
         所以本方法保证总能在合理时间内返回（不再需要单靠 error 事件收尾）。
+
+        关键 bug 修复（曾经导致"回复很短时，回复后不出现下一个 You ❯ 提示符"）：
+        之前用 resp.read(1024) 按固定字节数读取。/v1/stream 端点是 chunked + keep-alive，
+        服务端在该轮结束后仍会保持连接打开（等待下一轮或发心跳），并不会关闭连接。
+        而 http.client 对分块编码响应的 read(amt) 语义是"必须攒够 amt 字节才返回"
+        （见 http.client.HTTPResponse._read_chunked），不会因为"当前已有数据但不足 amt"
+        就提前返回。一旦本轮所有 SSE 帧加起来的字节数小于 1024（很短的回复，比如本例），
+        read(1024) 就会一直阻塞等待凑够 1024 字节，而服务端在 turn_done 之后没有更多
+        实时数据可发，于是永远卡住——表现出来就是：回复完全没显示，或者显示了一部分就停在
+        那里，对应的 You ❯ 也永远等不到。
+        而 SSE 协议本身是逐行的（每个字段一行，空行分隔帧），改用 resp.readline() 按行读取，
+        每收到一行就立刻返回，不需要凑够任何字节数，从根本上避免了这个问题。
         """
         try:
             import urllib.request
             url = f"{self.base_url}/v1/stream/{turn_id}"
             req = urllib.request.Request(url, headers=self._headers())
             with urllib.request.urlopen(req, timeout=300) as resp:
-                buffer = b""
+                frame_lines: list[bytes] = []
                 while True:
-                    chunk = resp.read(1024)
-                    if not chunk:
-                        break
-                    buffer += chunk
-                    # SSE 帧以 \n\n 分隔
-                    while b"\n\n" in buffer:
-                        frame_bytes, buffer = buffer.split(b"\n\n", 1)
-                        frame = frame_bytes.decode("utf-8", errors="replace")
-                        done = self._handle_sse_frame(frame, on_token, on_done, on_error)
-                        if done:
-                            return  # turn_done 已触发，退出循环
+                    line = resp.readline()
+                    if not line:
+                        break  # 连接被服务端关闭（EOF）
+                    if line in (b"\n", b"\r\n"):
+                        # 空行 = 一帧的结束
+                        if frame_lines:
+                            frame = b"".join(frame_lines).decode("utf-8", errors="replace")
+                            frame_lines = []
+                            done = self._handle_sse_frame(frame, on_token, on_done, on_error)
+                            if done:
+                                return  # turn_done 已触发，退出循环
+                        continue
+                    frame_lines.append(line)
         except Exception as e:
             err = str(e)
             if "timed out" not in err.lower() and "RemoteDisconnected" not in err:
