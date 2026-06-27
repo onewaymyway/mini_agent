@@ -2148,15 +2148,50 @@ class Agent:
                     _reasoning_started[0] = True
                 R.print_reasoning(token)
 
+            # [SYS-PRIVACY] 流式打印时，占位符可能被拆成多个 token
+            # （如 "{{SECRET_" 和 "1}}" 分两次到达）。
+            # 用一个小缓冲区：遇到 "{{" 开头但还没有 "}}" 闭合时暂缓打印，
+            # 等完整占位符到齐后 restore 再输出。
+            # 注意：_make_guarded_write(w) 在 writer 实例化之后调用，避免前向引用。
+            def _make_guarded_write(w: "R.StreamWriter"):
+                _ph_buf: list[str] = []
+
+                def _guarded_write(token: str) -> None:
+                    if _ph_buf:
+                        _ph_buf.append(token)
+                        combined = "".join(_ph_buf)
+                        if "}}" in combined:
+                            _ph_buf.clear()
+                            w.write(_guard.restore(combined))
+                        elif len(combined) > 40:
+                            # 超长未闭合，不是合法占位符，直接输出
+                            _ph_buf.clear()
+                            w.write(combined)
+                    else:
+                        if "{{" in token:
+                            idx = token.rfind("{{")
+                            before, after = token[:idx], token[idx:]
+                            if "}}" in after:
+                                w.write((before + _guard.restore(after)) if before else _guard.restore(after))
+                            else:
+                                if before:
+                                    w.write(before)
+                                _ph_buf.append(after)
+                        else:
+                            w.write(token)
+
+                return _guarded_write
+
             try:
                 if self.cfg.stream:
                     R.print_assistant_prefix(agent_name=self.cfg.agent_name)
                     writer = R.StreamWriter()
+                    _on_token_fn = _make_guarded_write(writer) if _guard.active else writer.write
                     stream_kwargs: dict = dict(
                         messages=messages_for_llm,
                         system=system,
                         tools=tools,
-                        on_token=writer.write,
+                        on_token=_on_token_fn,
                     )
                     if _supports_on_reasoning:
                         stream_kwargs["on_reasoning"] = _on_reasoning
