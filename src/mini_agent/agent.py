@@ -179,6 +179,17 @@ class Agent:
 
         self.stats = SessionStats()
         self._history: list[dict] = []
+
+        # [SYS-PRIVACY] 隐私保护：发送前屏蔽，收到后还原
+        from mini_agent.perception.privacy_guard import PrivacyGuard
+        self._privacy_guard = PrivacyGuard.from_config(cfg.privacy)
+        if cfg.privacy.verbose and self._privacy_guard.active:
+            import mini_agent.ui.renderer as _R
+            _R.console.print(
+                f"[dim][privacy] active — registered secrets:\n"
+                f"{self._privacy_guard.summary()}[/dim]"
+            )
+
         # LLMClient 可从外部注入（便于测试），否则从 AppConfig 自动创建
         self._llm: LLMClient = llm_client or create_client(
             LLMConfig.from_app_config(cfg)
@@ -2096,6 +2107,12 @@ class Agent:
         from mini_agent.history.entry import to_llm_messages
         messages_for_llm = convert_tool_use_to_text(to_llm_messages(self._history))
 
+        # [SYS-PRIVACY] 发送前：屏蔽隐私值
+        _guard = self._privacy_guard
+        if _guard.active:
+            messages_for_llm = _guard.redact_messages(messages_for_llm)
+            system = _guard.redact_system(system)
+
         def _do_single_call(client: LLMClient) -> LLMResponse:
             """单次 LLM 调用（流式/非流式），接受 client 参数供 pool 切换。"""
             _stream_sig = _inspect.signature(client.stream)
@@ -2174,6 +2191,24 @@ class Agent:
             on_switch_config=_on_switch_config,
         )
         self._llm = self._client_pool.current_client
+
+        # [SYS-PRIVACY] 收到回复后：还原占位符 → 真实值
+        if _guard.active:
+            from dataclasses import replace as _dc_replace
+            import json as _json
+            if response.text:
+                response = _dc_replace(response, text=_guard.restore(response.text))
+            if response.tool_calls:
+                restored_calls = []
+                for tc in response.tool_calls:
+                    raw = _json.dumps(tc.input)
+                    restored_raw = _guard.restore(raw)
+                    if restored_raw != raw:
+                        from mini_agent.llm.base import ToolCall as _ToolCall
+                        tc = _ToolCall(id=tc.id, name=tc.name, input=_json.loads(restored_raw))
+                    restored_calls.append(tc)
+                response = _dc_replace(response, tool_calls=restored_calls)
+
         return response
 
     # ── History management ─────────────────────────────────────────────────────
