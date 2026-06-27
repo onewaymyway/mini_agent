@@ -280,6 +280,8 @@ daemon 进程（绑定到一个 project_root）
 
 ## 三、Phase 2：per-user 目录与画像（仍不动 AgentBridge）
 
+> **状态：已实现**（见下方"实施记录"）。
+
 **目标**：每个用户有自己的数据目录和"社交画像"，对话内容仍然共享同一个 Agent/历史，
 但 system prompt 里会按当前请求的 user_id 注入对应的画像片段。
 
@@ -316,6 +318,62 @@ daemon 进程（绑定到一个 project_root）
   （比如 public 角色不该透漏内部信息）
 - `.agent/users/<user_id>/profile.json` 在多轮对话后能看到 `agent_notes`/`last_contact` 更新
 - owner 的个性化画像（`profile.py` 那一套）行为不受影响——两套画像系统互不干扰
+
+### Phase 2 实施记录（与原计划的差异点）
+
+**已完成，端到端验证通过**：起了一个真实 `HttpServer`（`multi_user_enabled=True`），
+用真实 FastAPI `TestClient` 走 `/v1/chat` → `InputQueue` → `AgentRunner.run()` →
+`system_extra` 注入 → `run_turn()` → `remember_about_user` 工具 → `profile.json` 落盘，
+确认全链路用的是同一个 `RoleProfileManager` 实例，没有出现"两份画像各管各的"。
+也补了单用户模式（`multi_user_enabled=False`）的对照测试，确认 `system_extra`
+完全不受影响、`remember_about_user` 始终返回"未开启多用户模式"。完整 pytest 套件
+仍是 1383 passed / 2 个无关失败（与 Phase 1 报告的那两个完全一样）。
+
+与原计划的具体差异：
+
+1. **`system_extra` 注入点按计划实现，但补了一个原计划没写的细节：基底值的保存和还原。**
+   原计划的伪代码 `bridge.agent.cfg.system_extra = (base_system_extra + ...).strip()`
+   没说 `base_system_extra` 从哪来、turn 结束后要不要还原。实现里在 `AgentRunner`
+   上懒加载式地缓存一份"构造时刻原本的 `system_extra`"（只读一次，此后不变），
+   每个 turn 都基于这份固定基底重新拼接，turn 结束（`finally` 块）后还原回基底值。
+   没有这一步的话会有两个问题：①连续多轮拼接会让 `system_extra` 无限增长；
+   ②上一个用户的角色提示会泄漏给下一个用户（或者泄漏到 CLI 命令行侧的直接交互、
+   `AutonomousLoop.tick()` 等"不是任何 web 用户发起"的场景）。
+
+2. **session 结束时的画像更新，触发时机从"session 切换前"改成"每个 turn 结束后"。**
+   原计划写的是"复用 `resume_session`/`new_session` 切换前的 `save_session()` 时机"。
+   实际实现没有这么做——理由是 Phase 1/2 阶段所有用户共享同一个全局 Agent/历史，
+   用户很可能整段对话都不会触发 `/sessions/new` 或 `/resume`（这两个端点本来是给
+   "切换到另一个历史会话"用的，不是聊天的必经路径）。如果按原计划只在 session
+   切换前更新，`last_contact`/`contact_count` 在很多真实场景下会一直停在 0，
+   对不上验收标准里"多轮对话后能看到更新"的要求。改成在 `AgentRunner.run()`
+   每个 turn 成功结束后更新（`api/server.py`），覆盖面更准确，且不需要等
+   Phase 3 引入 per-session 模型才能修。
+
+3. **`remember_about_user` 工具的"当前用户"获取方式，没有照搬
+   `tools/workdir_knowledge.py` 的 thread-local provider 注册模式
+   （在 `Agent.__init__` 里注册一次）。** 原因是 `project_root`/`session_id`
+   在一个 Agent 实例生命周期内基本不变，适合"构造时注册一次、之后懒读取"；
+   但"当前是哪个用户在跟我说话"在共享 Agent 模型下是**逐条消息变化**的——
+   Agent 实例不变，但服务的用户在变。改成由 `AgentRunner.run()`
+   （运行在它自己专属的后台线程上）在每次调用 `run_turn()` 前直接写入
+   thread-local（`tools/user_memory.py::set_current_user()`），`run_turn()`
+   结束后清空。这个差异点已经在新文件 `tools/user_memory.py` 的模块 docstring
+   里详细写明，供以后维护时对照。
+
+4. **`remember_about_user` 的可见性：始终注册，不按是否多用户模式隐藏。**
+   工具在 `Agent.__init__` 时无条件 import（触发 `@tool` 装饰器注册），单用户
+   模式下也会出现在 LLM 可见的工具列表里，只是调用后会得到"未开启多用户模式"
+   的提示，不会真正写入任何文件。这与 `skill_propose` 等工具的现有惯例一致
+   （永远注册，不满足前置条件时优雅拒绝，而不是动态增减工具列表）——这个
+   项目目前没有"按运行时配置动态隐藏某个工具"的机制，没有为此单独新增一套。
+   代价是单用户模式的用户会在工具列表里多看到一个用不上的工具定义（占一点
+   token），原计划没有提到这一点，记录在这里供后续如果觉得有必要优化时参考。
+
+5. **工具描述语言**：原计划的伪代码片段是中文注释，但实现时工具的 `description`/
+   `schema` 字段全部用英文撰写——这是核对 `tools/builtin.py`、`workdir_knowledge.py`、
+   `evolution.py` 等现有工具后发现的项目既有惯例（工具面向 LLM 的文本统一用英文，
+   周围的 Python 注释/docstring 仍然是中文），照此惯例实现，不是新规定。
 
 ---
 
@@ -492,7 +550,7 @@ session_manager"变成"该用户名下所有 session 文件"（按 `meta.json` �
 | Phase | 新增文件 | 修改文件 |
 |---|---|---|
 | 1 | `api/multi_auth.py`, `cli/commands/user_cmd.py` | `api/user_store.py`（改名+清理）, `api/server.py`, `api/routes.py`, `api/models.py`, `cli/app.py` |
-| 2 | （无） | `api/user_store.py`, `api/server.py`（AgentRunner.run 注入 system_extra）, `tools/`（新增 `remember_about_user` 工具，文件待定） |
+| 2 | `tools/user_memory.py`（新工具 `remember_about_user`） | `api/server.py`（`AgentRunner.run` 注入 `system_extra`、画像更新）, `agent.py`（import 触发工具注册） |
 | 3 | `evolution/self_runner.py` | `api/session_pool.py`（线程模型修正）, `api/server.py`（HttpServer 二选一装配）, `api/routes.py`（`_bridge`/`_resolve_session_id`）, session 存储层（如需补 `user_id` 字段） |
 | 4 | `evolution/self_bus.py` | `api/session_pool.py`（移出 SelfMessage/SelfMessageBus）, `evolution/self_runner.py`, `cli/commands/self_cmd.py`（新增 `mini-agent self status` 等） |
 
