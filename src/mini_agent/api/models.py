@@ -64,10 +64,19 @@ class AgentEvent(BaseModel):
 class ChatRequest(BaseModel):
     message:  str
     turn_id:  Optional[str] = None   # 客户端可指定；留空则服务端生成
+    # daemon 多用户架构 Phase 3：指定要发到哪个 session。单用户模式下忽略
+    # （永远用全局唯一的 bridge）。多用户模式下若省略，_bridge() 会按
+    # "该用户最近一次访问过的 session" 兜底，仍找不到则新建一个。
+    # 注意：cli/daemon.py::DaemonClient.send_message() 早就在发这个字段了
+    # （payload["session_id"] = session_id），只是 ChatRequest 此前没有声明
+    # 这个字段，Pydantic 默认静默丢弃多余字段，一直没有真正生效过。
+    session_id: Optional[str] = None
 
 class ChatResponse(BaseModel):
     turn_id:  str
     queued:   bool = True
+    # daemon 多用户架构 Phase 3：这条消息实际落到的 session_id（单用户模式下为 None）。
+    session_id: Optional[str] = None
 
 class InterruptResponse(BaseModel):
     ok: bool
@@ -82,6 +91,12 @@ class StatusResponse(BaseModel):
     autonomy_level: str = "passive"
     last_autonomous_tick_at: Optional[float] = None
     tick_count: int = 0
+    # daemon 多用户架构 Phase 3：当前（该用户最近访问过的）session_id。
+    # 修复一个预先存在的 bug：cli/daemon.py::_pick_session() 一直在读
+    # status.get("session_id", "")，但这个字段从来没有在 StatusResponse 里
+    # 声明过——也就是说"●active"标记在 session 选择菜单里从未真正生效过
+    # （永远拿到空字符串，永远不会匹配任何 session）。这里补上，顺带修了这个老 bug。
+    session_id: Optional[str] = None
 
 class PermissionRequest(BaseModel):
     approve:      bool

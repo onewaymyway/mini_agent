@@ -123,10 +123,20 @@ class AgentRunner(threading.Thread):
         bridge: AgentBridge,
         autonomous_loop=None,  # Optional[AutonomousLoop]，不强制依赖
         role_profile_mgr=None,  # daemon 多用户架构 Phase 2: Optional[RoleProfileManager]
+        agent_factory=None,    # daemon 多用户架构 Phase 3: Optional[Callable[[], Agent]]
+        on_ready=None,         # daemon 多用户架构 Phase 3: Optional[Callable[[Agent], None]]
+        on_crash=None,         # daemon 多用户架构 Phase 3: Optional[Callable[[BaseException], None]]
     ) -> None:
         super().__init__(name="agent-runner", daemon=True)
         self._bridge = bridge
-        self._stop   = threading.Event()
+        # 命名说明：这里特意不叫 self._stop —— threading.Thread 自己有一个私有方法
+        # 也叫 _stop()（线程真正结束后内部清理用，见 Thread._wait_for_tstate_lock）。
+        # 之前这里用 self._stop = threading.Event() 会把父类的 _stop() 方法直接盖掉，
+        # 只要从来没人对这个线程调用过 .join()，这个问题完全不会暴露（Phase 1/2
+        # 确实从来没调用过 .join()）。Phase 3 的 SessionAgentPool._do_suspend()
+        # 需要真正 join() 等线程退出，一调用就会因为 self._stop 变成 Event 而不是
+        # 方法直接报 "Event object is not callable" 崩掉。改名为 _stop_evt 避免遮蔽。
+        self._stop_evt   = threading.Event()
         self._autonomous_loop = autonomous_loop  # Stage 9: AutonomousLoop 实例
         self._role_profile_mgr = role_profile_mgr
         # daemon 多用户架构 Phase 2：记录"原本配置好的" system_extra（来自 --system
@@ -138,14 +148,85 @@ class AgentRunner(threading.Thread):
         # 但稳妥起见仍做一次懒加载）。
         self._base_system_extra: Optional[str] = None
 
+        # daemon 多用户架构 Phase 3：agent_factory 是这次新增的核心机制。
+        #
+        # 背景（见设计文档 0.3 节）：tools/evolution.py、tools/workdir_knowledge.py、
+        # tools/orchestration.py 里的"当前 Agent 上下文"都是用 threading.local()
+        # 实现的，在 Agent.__init__() 里写入"调用 Agent() 那个线程"的 thread-local，
+        # 工具函数运行时读取的是"工具函数实际运行所在线程"的 thread-local。
+        # 这两者必须是同一个线程，否则工具读到的永远是 None/空。
+        #
+        # Phase 1/2（agent_factory=None）：bridge.agent 由外部预先构造好并赋值
+        # （HttpServer.__init__ 里 `self._bridge.agent = agent`），这是历史行为，
+        # 不受此次改动影响——单 Agent 模式下 Agent() 只构造一次，构造它的线程
+        # 是主线程，run_turn() 永远在 AgentRunner 线程里跑，两者不一致这个问题
+        # 本来就已经存在（设计文档已经记录），Phase 3 不强求回头修这个历史包袱，
+        # 只保证新增的 per-session 路径是对的。
+        #
+        # Phase 3（agent_factory 非 None）：run() 的第一件事就是在**这条线程自己**
+        # 上调用 agent_factory() 构造 Agent，赋给 bridge.agent，然后才进入主循环。
+        # 这样 Agent.__init__() 里注册的所有 thread-local provider，写入的就是
+        # 这条 AgentRunner 线程——和之后每次 run_turn()（同样在这条线程上跑）
+        # 读取的是同一个线程，工具调用时能读到正确的 project_root/session_id。
+        self._agent_factory = agent_factory
+        self._on_ready = on_ready    # Agent 构造成功后回调（传入 agent 实例）
+        self._on_crash = on_crash    # run() 内出现未捕获异常时回调（传入异常对象）
+        self.ready_event = threading.Event()  # agent_factory 模式下，构造完成后 set()
+        self.init_error: Optional[BaseException] = None
+
     def stop(self) -> None:
-        self._stop.set()
+        self._stop_evt.set()
 
     def run(self) -> None:
         bridge = self._bridge
-        iq     = bridge.input_queue
 
-        while not self._stop.is_set():
+        # daemon 多用户架构 Phase 3：见 __init__ 里的详细说明——agent_factory
+        # 非 None 时，必须在这里（这条线程自己）构造 Agent，不能让调用方在
+        # 它自己的线程上提前构造好再传进来。
+        if self._agent_factory is not None:
+            try:
+                agent = self._agent_factory()
+                bridge.agent = agent
+                if self._on_ready is not None:
+                    try:
+                        self._on_ready(agent)
+                    except Exception:
+                        pass
+            except Exception as e:
+                self.init_error = e
+                if self._on_crash is not None:
+                    try:
+                        self._on_crash(e)
+                    except Exception:
+                        pass
+                return  # 构造失败，这条线程直接结束，不进入主循环（finally 仍会 set ready_event）
+            finally:
+                # 无论成功还是失败都要 set：调用方（SessionAgentPool.get_or_create）
+                # 是用 ready_event.wait(timeout=...) 等构造完成的，失败也得让它解除阻塞，
+                # 否则会一直等到 timeout 才发现出错（self.init_error 才是判断真正依据）。
+                self.ready_event.set()
+        else:
+            # Phase 1/2 路径（单 Agent 模式）：bridge.agent 应该已经由外部设置好。
+            self.ready_event.set()
+
+        iq = bridge.input_queue
+
+        try:
+            self._main_loop(bridge, iq)
+        except Exception as e:
+            # daemon 多用户架构 Phase 3：主循环内未被下面 try/except 捕获的异常
+            # （理论上不应该发生，下面每个 turn 都有自己的 try/except）。
+            # 兜底捕获，通知 on_crash，让 SessionAgentPool 能检测到并清理，
+            # 不影响其他 SessionAgent 或 Self。
+            if self._on_crash is not None:
+                try:
+                    self._on_crash(e)
+                except Exception:
+                    pass
+
+    def _main_loop(self, bridge: AgentBridge, iq) -> None:
+
+        while not self._stop_evt.is_set():
             # 检查中断标志（在 idle 状态下也消耗掉，避免积压）
             bridge.consume_interrupt()
 
@@ -275,6 +356,8 @@ def create_app(
     allowed_ips: list[str],
     cors_origins: list[str],
     role_store: Optional[UserStore] = None,
+    project_root: Optional[Path] = None,
+    session_pool: Optional[Any] = None,  # daemon 多用户架构 Phase 3: Optional[SessionAgentPool]
 ) -> FastAPI:
 
     @asynccontextmanager
@@ -328,9 +411,11 @@ def create_app(
         }
 
     # ── 注入到 app.state ──────────────────────────────────────────────────
-    app.state.bridge     = bridge
-    app.state.fs_helper  = fs_helper
-    app.state.role_store = role_store   # None = 单用户模式（Phase 1 未开启）
+    app.state.bridge       = bridge
+    app.state.fs_helper    = fs_helper
+    app.state.role_store   = role_store    # None = 单用户模式（Phase 1 未开启）
+    app.state.project_root = project_root  # daemon 多用户架构 Phase 3
+    app.state.session_pool = session_pool  # None = 单用户模式 / Phase 3 未开启
 
     return app
 
@@ -387,14 +472,37 @@ class HttpServer:
         # 那个 token 不会失效，只是现在它对应的身份叫 owner）。
         # Phase 2：同时创建 RoleProfileManager，管理每个用户的社交画像
         # （<project_root>/.agent/users/<user_id>/profile.json）。
+        # Phase 3：同时创建 SessionAgentPool + SelfMessageBus，管理每个用户
+        # 每个 session 各自独立的 Agent 实例。注意：传进来的 `agent` 参数
+        # （app.py 在主线程构造好的那个）在多用户模式下被重新定位为"Self"——
+        # 它继续驱动 self._bridge/self._runner（下面几行不变），SessionAgentPool
+        # 不会复用它，每个 session 都会用 agent.cfg 当模板各自深拷贝一份、
+        # 各自独立构造全新的 Agent（见 session_pool.py 模块 docstring）。
         self._multi_user_enabled = multi_user_enabled
         self._role_store: Optional[UserStore] = None
         self._role_profile_mgr: Optional[RoleProfileManager] = None
+        self._session_pool = None
         if multi_user_enabled:
             users_dir = project_root / ".agent" / "users"
             self._role_store = UserStore(users_dir)
             self._role_store.ensure_owner(configured_token=self._token)
             self._role_profile_mgr = RoleProfileManager(users_dir)
+
+            from mini_agent.api.session_pool import SessionAgentPool, SelfMessageBus
+
+            skill_loader = getattr(agent, "skill_loader", None)
+            skill_dirs = list(getattr(skill_loader, "dirs", []) or [])
+
+            self._self_message_bus = SelfMessageBus()
+            self._session_pool = SessionAgentPool(
+                base_cfg=agent.cfg,
+                role_profile_mgr=self._role_profile_mgr,
+                bus=self._self_message_bus,
+                skill_dirs=skill_dirs,
+            )
+            self._session_pool.start_monitor()
+        else:
+            self._self_message_bus = None
 
         # daemon 多用户架构 Phase 2：把 RoleProfileManager 注入 remember_about_user
         # 工具（tools/user_memory.py）。多用户模式未开启时传 None，
@@ -462,6 +570,11 @@ class HttpServer:
         return self._role_profile_mgr
 
     @property
+    def session_pool(self):
+        """daemon 多用户架构 Phase 3：未开启多用户模式时为 None。"""
+        return self._session_pool
+
+    @property
     def autonomous_loop(self):
         """返回 AutonomousLoop 实例（供 daemon status 命令查询）。"""
         return self._autonomous_loop
@@ -482,6 +595,8 @@ class HttpServer:
             allowed_ips  = self._allowed_ips,
             cors_origins = self._cors_origins,
             role_store   = self._role_store,
+            project_root = self._project_root,
+            session_pool = self._session_pool,
         )
         # Stage 9 §3: 注入 HttpServer 自身到 app.state，使 routes.py 可查询 AutonomousLoop
         app.state.http_server = self
@@ -528,6 +643,10 @@ class HttpServer:
     def stop(self) -> None:
         """优雅关闭。"""
         self._runner.stop()
+        # daemon 多用户架构 Phase 3：保存并停止所有活跃的 SessionAgent，
+        # 不要让用户的对话历史因为 daemon 关闭而丢失未落盘的内容。
+        if self._session_pool is not None:
+            self._session_pool.stop_all()
         if self._uvicorn_server:
             self._uvicorn_server.should_exit = True
         if self._server_thread:

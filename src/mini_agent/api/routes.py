@@ -76,8 +76,76 @@ from .user_store import UserStore, VALID_ROLES
 router = APIRouter(prefix="/v1")
 
 
-def _bridge(request: Request) -> AgentBridge:
-    return request.app.state.bridge
+def _session_pool(request: Request):
+    """daemon 多用户架构 Phase 3：未开启多用户模式时返回 None。"""
+    return getattr(request.app.state, "session_pool", None)
+
+
+def _resolve_session_id(request: Request, explicit: Optional[str] = None) -> str:
+    """
+    决定这次请求应该落到哪个 session_id。
+
+    仅在多用户模式下才需要真正"决定"——单用户模式没有 session_pool，
+    调用方应该直接走 app.state.bridge，根本不会调用这个函数（见 _bridge()）。
+
+    解析优先级：
+      1. explicit（POST /chat 的 body.session_id，或 URL 路径里的 {session_id}）
+      2. 查询参数 ?session_id=xxx（GET 类端点的等价写法）
+      3. 该用户名下最近一次活跃的 session（如果有）
+      4. 全新生成一个 session_id（该用户的第一次请求）
+    """
+    if explicit:
+        return explicit
+    qp = request.query_params.get("session_id")
+    if qp:
+        return qp
+
+    user_ctx = getattr(request.state, "user_ctx", None)
+    pool = _session_pool(request)
+    if user_ctx is not None and pool is not None:
+        entries = pool.list_entries(user_id=user_ctx.user_id)
+        if entries:
+            most_recent = max(entries, key=lambda e: e.last_active)
+            return most_recent.session_id
+
+    import uuid as _uuid
+    return _uuid.uuid4().hex[:12]
+
+
+def _bridge(request: Request, session_id: Optional[str] = None) -> AgentBridge:
+    """
+    取这次请求要操作的 AgentBridge。
+
+    单用户模式（app.state.session_pool 为 None）：完全保持原有行为，
+    直接返回 app.state.bridge——历史上唯一的全局 bridge，不做任何额外判断。
+    这条路径自 Phase 1 起就没有变过，Phase 3 不会让单用户部署多走一步逻辑。
+
+    多用户模式：按 _resolve_session_id() 决定 session_id，
+    再向 SessionAgentPool 要 / 建对应的 SessionEntry，返回它的 bridge。
+    """
+    pool = _session_pool(request)
+    if pool is None:
+        return request.app.state.bridge
+
+    user_ctx = getattr(request.state, "user_ctx", None)
+    if user_ctx is None:
+        # 理论上不会发生：开启多用户模式时，MultiUserAuthMiddleware 必然先于
+        # 路由处理函数运行，认证失败已经在中间件那一层就返回 401 了。
+        # 这里是防御性兜底，不应该被正常请求路径触发。
+        raise HTTPException(status_code=401, detail="Authentication required")
+
+    sid = _resolve_session_id(request, explicit=session_id)
+    try:
+        entry = pool.get_or_create(user_ctx, sid)
+    except RuntimeError as e:
+        # get_or_create 在并发上限 / Agent 构造失败时抛 RuntimeError，
+        # 转换成 HTTP 层面合理的错误（503：服务暂时不可用，不是客户端的错）。
+        raise HTTPException(status_code=503, detail=str(e))
+
+    # 记录到 request.state，方便同一次请求内其它代码复用（例如 chat() 拿到的
+    # turn_id 之后要回写"这次请求实际用的是哪个 session_id"到响应里）。
+    request.state.resolved_session_id = entry.session_id
+    return entry.bridge
 
 
 def _fs(request: Request) -> FsHelper:
@@ -163,6 +231,14 @@ async def get_status(request: Request):
         autonomy_level = autonomy_level,
         last_autonomous_tick_at = last_tick_at if last_tick_at else None,
         tick_count = tick_count,
+        # daemon 多用户架构 Phase 3：getattr 兜底——_bridge() 只有真正解析过
+        # session 才会设置 request.state.resolved_session_id（单用户模式下
+        # 完全不会设置这个属性，回退到 bridge.agent.session_id，对应改造前
+        # 这里原本缺失但本该有的行为）。
+        session_id = getattr(
+            request.state, "resolved_session_id",
+            getattr(bridge.agent, "session_id", None) if bridge.agent else None,
+        ),
     )
 
 
@@ -308,14 +384,18 @@ async def get_diagnostics(request: Request):
 
 @router.post("/chat", response_model=ChatResponse)
 async def chat(request: Request, body: ChatRequest):
-    bridge = _bridge(request)
+    bridge = _bridge(request, session_id=body.session_id)
     # daemon 多用户架构 Phase 1：MultiUserAuthMiddleware 开启时会在 request.state
     # 上挂一个 user_ctx；单用户模式下没有这个属性，getattr 安全降级为 None。
     user_ctx = getattr(request.state, "user_ctx", None)
     meta = {"user_id": user_ctx.user_id, "role": user_ctx.role} if user_ctx else None
     turn_id = bridge.input_queue.enqueue(body.message, body.turn_id, meta=meta)
     bridge.emit_info(f"[HTTP] Queued message: {body.message[:80]}")
-    return ChatResponse(turn_id=turn_id, queued=True)
+    # daemon 多用户架构 Phase 3：把这次请求实际落到的 session_id 带回去——
+    # 客户端如果发请求时没指定 session_id（_resolve_session_id 会自动决定一个），
+    # 这样客户端才能知道"刚刚这条消息其实进了哪个 session"。
+    resolved_sid = getattr(request.state, "resolved_session_id", None)
+    return ChatResponse(turn_id=turn_id, queued=True, session_id=resolved_sid)
 
 
 @router.post("/interrupt", response_model=InterruptResponse)
@@ -442,8 +522,30 @@ async def stream_turn(
     turn_id: str,
     replay: bool = Query(default=True),
 ):
-    """SSE：只订阅某一轮（turn_id）的事件。"""
-    bridge = _bridge(request)
+    """
+    SSE：只订阅某一轮（turn_id）的事件。
+
+    daemon 多用户架构 Phase 3：不能简单调用 _bridge(request)——那会按
+    "该用户最近活跃的 session"解析，但要订阅的是一个**具体的 turn_id**，
+    它可能属于这个用户的*另一个*（不是最近活跃的）session，或者（在权限
+    检查失败时）压根不属于这个用户。必须先用 pool.find_by_turn() 真正找到
+    这个 turn_id 实际所属的 SessionEntry，校验归属后再订阅它的 bridge，
+    不能靠"猜最近的那个 session"。
+    """
+    pool = _session_pool(request)
+    if pool is not None:
+        entry = pool.find_by_turn(turn_id)
+        if entry is None:
+            raise HTTPException(status_code=404, detail=f"Turn '{turn_id}' not found")
+        user_ctx = getattr(request.state, "user_ctx", None)
+        if user_ctx is not None and not user_ctx.is_owner and entry.user_id != user_ctx.user_id:
+            # 非 owner 只能订阅自己发起的 turn；owner 可以订阅任意 turn
+            # （主人有权查看任何对话，这是设计文档里明确的"owner 特权"之一）。
+            raise HTTPException(status_code=403, detail="This turn does not belong to you")
+        bridge = entry.bridge
+    else:
+        bridge = _bridge(request)
+
     return StreamingResponse(
         _sse_generator(bridge, replay=replay, turn_id_filter=turn_id),
         media_type="text/event-stream",
@@ -493,7 +595,20 @@ async def list_turns(request: Request):
 
 @router.get("/turns/{turn_id}", response_model=TurnInfo)
 async def get_turn(request: Request, turn_id: str):
-    info = _bridge(request).input_queue.get_turn(turn_id)
+    # 同 stream_turn() 的修复理由：turn_id 可能不属于"该用户最近活跃的 session"，
+    # 必须先用 pool.find_by_turn() 真正定位归属，再做权限校验。
+    pool = _session_pool(request)
+    if pool is not None:
+        entry = pool.find_by_turn(turn_id)
+        if entry is None:
+            raise HTTPException(status_code=404, detail=f"turn {turn_id!r} not found")
+        user_ctx = getattr(request.state, "user_ctx", None)
+        if user_ctx is not None and not user_ctx.is_owner and entry.user_id != user_ctx.user_id:
+            raise HTTPException(status_code=403, detail="This turn does not belong to you")
+        info = entry.bridge.input_queue.get_turn(turn_id)
+    else:
+        info = _bridge(request).input_queue.get_turn(turn_id)
+
     if not info:
         raise HTTPException(status_code=404, detail=f"turn {turn_id!r} not found")
     return info
@@ -529,9 +644,85 @@ def _require_idle(bridge: AgentBridge) -> None:
         )
 
 
+def _user_session_manager(request: Request):
+    """
+    daemon 多用户架构 Phase 3：返回该用户专属的、**不需要真实 Agent** 的
+    SessionManager——纯文件系统读写，构造成本几乎为零（不会触发 LLM client
+    初始化、skill 扫描等 Agent() 构造的开销）。
+
+    用于 list_sessions / get_session_detail / delete_session 这类"只是看看
+    有哪些 session、不需要真的把某个 session 加载成活跃对话"的场景。
+    路径计算逻辑必须和 SessionAgentPool._build_session_cfg() 完全一致
+    （owner 用全局 .agent/sessions/，其他用户用 .agent/users/<id>/sessions/），
+    否则会出现"这里看到的列表"和"SessionAgentPool 实际加载的"不是同一批文件。
+
+    单用户模式（没有 user_ctx）返回 None——调用方应该走原来的
+    _session_manager_or_404(bridge) 路径，不应该调用这个函数。
+    """
+    user_ctx = getattr(request.state, "user_ctx", None)
+    if user_ctx is None:
+        return None
+
+    pool = _session_pool(request)
+    project_root = getattr(request.app.state, "project_root", None)
+    if pool is None or project_root is None:
+        return None
+
+    from mini_agent.session import SessionManager
+
+    if user_ctx.user_id == "owner":
+        return SessionManager(project_root=project_root)
+    session_dir = project_root / ".agent" / "users" / user_ctx.user_id / "sessions"
+    return SessionManager(session_dir=session_dir)
+
+
 @router.get("/sessions", response_model=SessionsListResponse)
 async def list_sessions(request: Request, limit: int = Query(default=50, le=200)):
-    """列出所有已保存的 session，并标记当前 agent 正在使用的 session。"""
+    """列出所有已保存的 session，并标记当前（该用户最近访问过的）session。"""
+    user_mgr = _user_session_manager(request)
+
+    if user_mgr is not None:
+        # ── 多用户模式 ───────────────────────────────────────────────────
+        # 不通过 _bridge()（那会触发 SessionAgentPool.get_or_create()，
+        # 也就是真的构造一个 Agent）——仅仅是"看看列表"不应该有这个代价。
+        pool = _session_pool(request)
+        user_ctx = request.state.user_ctx
+        current_id = None
+        if pool is not None:
+            entries = pool.list_entries(user_id=user_ctx.user_id)
+            if entries:
+                current_id = max(entries, key=lambda e: e.last_active).session_id
+
+        metas = user_mgr.list_sessions(limit=limit)
+        infos = [
+            SessionInfo(
+                id=m.id, title=m.title or "(untitled)",
+                created_at=m.created_at, updated_at=m.updated_at,
+                provider=m.provider, model=m.model,
+                turns=m.turns, input_tokens=m.input_tokens,
+                output_tokens=m.output_tokens, tool_calls=m.tool_calls,
+                summary=m.summary, age=m.age_str,
+                is_current=(m.id == current_id),
+            )
+            for m in metas
+        ]
+        # 当前活跃 session 如果还没 save_session() 落盘（刚创建、还没说过话），
+        # 不会出现在 list_sessions() 结果里——从内存里的 SessionEntry 插一条。
+        if current_id and not any(i.id == current_id for i in infos) and pool is not None:
+            entry = pool.get(current_id)
+            if entry is not None and entry.agent is not None and entry.agent.session_meta:
+                meta = entry.agent.session_meta
+                infos.insert(0, SessionInfo(
+                    id=meta.id, title=meta.title or "New session",
+                    created_at=meta.created_at, updated_at=meta.updated_at,
+                    provider=meta.provider, model=meta.model,
+                    turns=meta.turns, input_tokens=meta.input_tokens,
+                    output_tokens=meta.output_tokens, tool_calls=meta.tool_calls,
+                    summary=meta.summary, age="刚刚", is_current=True,
+                ))
+        return SessionsListResponse(sessions=infos, current_session_id=current_id, count=len(infos))
+
+    # ── 单用户模式：原有行为，完全不变 ───────────────────────────────────────
     agent, mgr = _session_manager_or_404(_bridge(request))
     current_id = agent.session_id
 
@@ -571,6 +762,45 @@ async def list_sessions(request: Request, limit: int = Query(default=50, le=200)
 @router.get("/sessions/{session_id}", response_model=SessionDetailResponse)
 async def get_session_detail(request: Request, session_id: str):
     """获取某个 session 的完整内容（含历史），用于切换前预览。"""
+    user_mgr = _user_session_manager(request)
+
+    if user_mgr is not None:
+        # 多用户模式：如果这个 session 当前确实活跃在 pool 里，用内存数据
+        # （可能比磁盘更新）；否则从该用户自己的 session 目录里读。
+        # 注意：这里不会"看到"别的用户的 session——user_mgr 的 session_dir
+        # 在构造时就已经被锁定为这个用户自己的目录了，物理上读不到别人的文件，
+        # 不依赖额外的权限判断逻辑。
+        pool = _session_pool(request)
+        if pool is not None:
+            entry = pool.get(session_id)
+            if (
+                entry is not None
+                and entry.user_id == request.state.user_ctx.user_id
+                and entry.agent is not None
+                and entry.agent.session_id == session_id
+            ):
+                meta = entry.agent.session_meta
+                return SessionDetailResponse(
+                    id=meta.id, title=meta.title, created_at=meta.created_at,
+                    updated_at=meta.updated_at, provider=meta.provider, model=meta.model,
+                    stats={
+                        "turns": meta.turns, "input_tokens": meta.input_tokens,
+                        "output_tokens": meta.output_tokens, "tool_calls": meta.tool_calls,
+                    },
+                    summary=meta.summary, history=entry.agent.history, is_current=True,
+                )
+
+        session = user_mgr.load(session_id)
+        if session is None:
+            raise HTTPException(status_code=404, detail=f"Session '{session_id}' not found")
+        return SessionDetailResponse(
+            id=session.id, title=session.title, created_at=session.created_at,
+            updated_at=session.updated_at, provider=session.provider, model=session.model,
+            stats=session.stats, summary=session.summary, history=session.history,
+            is_current=False,
+        )
+
+    # ── 单用户模式：原有行为，完全不变 ───────────────────────────────────────
     agent, mgr = _session_manager_or_404(_bridge(request))
 
     # 若请求的就是当前激活 session，直接用内存中的最新数据（可能比磁盘更新）
@@ -600,7 +830,28 @@ async def get_session_detail(request: Request, session_id: str):
 
 @router.post("/sessions/{session_id}/resume", response_model=SessionActionResponse)
 async def resume_session(request: Request, session_id: str):
-    """将 agent 切换到指定 session（加载其历史，成为当前活动 session）。"""
+    """
+    切换到指定 session，成为(该用户的)当前活动 session。
+
+    多用户模式下这是一个"轻量"操作：不立刻构造 Agent（那会在第一次真正
+    /chat 时由 _bridge() 通过 SessionAgentPool.get_or_create() 触发），
+    这里只是确认这个 session_id 存在（或者干脆乐观地接受任意 ID——下次
+    /chat 时 get_or_create() 会按"是否有历史"决定加载还是新建）。
+    """
+    pool = _session_pool(request)
+    if pool is not None:
+        user_ctx = request.state.user_ctx
+        # 乐观接受：不在这里强行验证 session_id 是否存在于磁盘——
+        # 如果用户传了一个不存在的 ID，get_or_create() 在第一次 /chat 时
+        # 会发现历史不存在，自然新建一个，不算错误。这样设计是为了不在
+        # "resume"这个轻量动作上引入一次额外的磁盘 I/O 往返。
+        return SessionActionResponse(
+            ok=True, session_id=session_id,
+            message="Session selected (will be loaded on first message)",
+            history_count=0,
+        )
+
+    # ── 单用户模式：原有行为，完全不变 ───────────────────────────────────────
     bridge = _bridge(request)
     agent, _mgr = _session_manager_or_404(bridge)
     _require_idle(bridge)
@@ -625,7 +876,20 @@ async def resume_session(request: Request, session_id: str):
 
 @router.post("/sessions/new", response_model=SessionActionResponse)
 async def new_session(request: Request):
-    """清空当前历史，开始一个全新的 session。"""
+    """开始一个全新的 session（该用户的）。"""
+    pool = _session_pool(request)
+    if pool is not None:
+        # 多用户模式：同样是"轻量"操作——只生成一个新 session_id 返回，
+        # 不立刻构造 Agent（见 resume_session 的说明，原因一样）。
+        import uuid as _uuid
+        new_sid = _uuid.uuid4().hex[:12]
+        return SessionActionResponse(
+            ok=True, session_id=new_sid,
+            message="New session id allocated (Agent will be created on first message)",
+            history_count=0,
+        )
+
+    # ── 单用户模式：原有行为，完全不变 ───────────────────────────────────────
     bridge = _bridge(request)
     agent, _mgr = _session_manager_or_404(bridge)
     _require_idle(bridge)
@@ -651,6 +915,23 @@ async def new_session(request: Request):
 @router.delete("/sessions/{session_id}", response_model=SessionDeleteResponse)
 async def delete_session(request: Request, session_id: str):
     """删除一个已保存的 session（不能删除当前激活的 session）。"""
+    user_mgr = _user_session_manager(request)
+
+    if user_mgr is not None:
+        pool = _session_pool(request)
+        if pool is not None:
+            entry = pool.get(session_id)
+            if entry is not None and entry.user_id == request.state.user_ctx.user_id:
+                raise HTTPException(
+                    status_code=400,
+                    detail="Cannot delete a currently active session; suspend or switch away first",
+                )
+        ok = user_mgr.delete(session_id)
+        if not ok:
+            raise HTTPException(status_code=404, detail=f"Session '{session_id}' not found")
+        return SessionDeleteResponse(ok=True, message=f"Session '{session_id}' deleted")
+
+    # ── 单用户模式：原有行为，完全不变 ───────────────────────────────────────
     bridge = _bridge(request)
     agent, mgr = _session_manager_or_404(bridge)
 
@@ -670,13 +951,36 @@ async def delete_session(request: Request, session_id: str):
 
 @router.get("/permissions/pending")
 async def list_pending_permissions(request: Request):
+    """
+    daemon 多用户架构 Phase 3：单用户模式下行为不变（看全局唯一 bridge 的
+    pending 列表）。多用户模式下，"待审批列表"含义变成"该用户最近活跃
+    session 的 pending 列表"——这与 chat/status 等端点的解析方式一致，
+    都是按"最近活跃 session"兜底，不是全局视角（owner 想看所有用户的
+    待审批，应该用 /v1/sessions 配合逐个查询，这里不展开做聚合视图）。
+    """
     return {"permissions": _bridge(request).permission_gate.list_pending()}
 
 
 @router.post("/permissions/{req_id}", response_model=PermissionResponse)
 async def respond_permission(request: Request, req_id: str, body: PermissionRequest):
-    bridge = _bridge(request)
-    gate   = bridge.permission_gate
+    # 同 stream_turn() 的修复理由：req_id 可能不属于"该用户最近活跃的 session"，
+    # 必须先用 pool.find_by_permission_req() 真正定位归属。
+    pool = _session_pool(request)
+    if pool is not None:
+        entry = pool.find_by_permission_req(req_id)
+        if entry is None:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Permission request {req_id!r} not found or already handled",
+            )
+        user_ctx = getattr(request.state, "user_ctx", None)
+        if user_ctx is not None and not user_ctx.is_owner and entry.user_id != user_ctx.user_id:
+            raise HTTPException(status_code=403, detail="This permission request does not belong to you")
+        bridge = entry.bridge
+    else:
+        bridge = _bridge(request)
+
+    gate = bridge.permission_gate
 
     # 在 respond 前先取出 turn_id（respond 后 pending 会被移除）
     with gate._lock:

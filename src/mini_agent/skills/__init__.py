@@ -83,6 +83,17 @@ class SkillLoader:
         # 发现结束后为所有 skill 构建初始指纹
         self.detector.build_fingerprints(self._all)
 
+    @property
+    def dirs(self) -> list:
+        """
+        构造时传入的 skill 目录列表（只读）。
+        daemon 多用户架构 Phase 3：SessionAgentPool 需要给每个 SessionAgent
+        构造独立的 SkillLoader（不能跨 session 共享同一个实例，见
+        api/session_pool.py 模块 docstring 第 5 点），但应该用同一批目录——
+        这个属性让它不需要重新从 cfg 推导一遍 skill_dirs 计算逻辑。
+        """
+        return self._dirs
+
     # ── Discovery ──────────────────────────────────────────────────────────────
 
     def _discover(self) -> None:
