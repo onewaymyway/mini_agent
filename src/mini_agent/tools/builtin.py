@@ -787,6 +787,175 @@ def _find_patch_candidate(original: str, old_string: str) -> str:
     return "\n".join(orig_lines[anchor: anchor + n])
 
 
+# ── patch_file_simple ─────────────────────────────────────────────────────────
+
+@tool(
+    name="patch_file_simple",
+    description=(
+        "Apply a targeted find-and-replace edit to a file using start/end line anchors. "
+        "More robust than patch_file for long replacements: instead of matching the full old string, "
+        "you provide the first and last lines of the region to replace, along with their expected line numbers. "
+        "Both the line number AND the line content must match exactly (after stripping trailing whitespace). "
+        "Returns a unified diff on success, or a detailed error with the actual file content on mismatch."
+    ),
+    schema={
+        "type": "object",
+        "properties": {
+            "path": {"type": "string", "description": "File to edit"},
+            "old_string_start": {
+                "type": "string",
+                "description": "Exact content of the first line of the region to replace",
+            },
+            "old_string_start_line_num": {
+                "type": "integer",
+                "description": "1-based line number where old_string_start must appear",
+            },
+            "old_string_end": {
+                "type": "string",
+                "description": "Exact content of the last line of the region to replace",
+            },
+            "old_string_end_line_num": {
+                "type": "integer",
+                "description": "1-based line number where old_string_end must appear (must be >= old_string_start_line_num)",
+            },
+            "new_string": {
+                "type": "string",
+                "description": "Replacement content (replaces the entire region from start line to end line, inclusive)",
+            },
+        },
+        "required": [
+            "path",
+            "old_string_start",
+            "old_string_start_line_num",
+            "old_string_end",
+            "old_string_end_line_num",
+            "new_string",
+        ],
+    },
+    requires_approval=True,
+)
+def patch_file_simple(
+    path: str,
+    old_string_start: str,
+    old_string_start_line_num: int,
+    old_string_end: str,
+    old_string_end_line_num: int,
+    new_string: str,
+) -> str:
+    """Replace a line range in a file using start/end line anchors with validation."""
+    p = Path(path).expanduser()
+    if not p.exists():
+        return f"[error: file not found: {path}]"
+    try:
+        original = p.read_text(encoding="utf-8")
+    except Exception as e:
+        return f"[error reading {path}: {e}]"
+
+    lines = original.splitlines(keepends=True)
+    total_lines = len(lines)
+
+    # ── 参数合法性检验 ────────────────────────────────────────────────────────
+    errors: list[str] = []
+
+    start_idx = old_string_start_line_num - 1  # 转为 0-based
+    end_idx = old_string_end_line_num - 1
+
+    if old_string_start_line_num < 1:
+        errors.append(f"old_string_start_line_num must be >= 1, got {old_string_start_line_num}")
+    if old_string_end_line_num < 1:
+        errors.append(f"old_string_end_line_num must be >= 1, got {old_string_end_line_num}")
+    if old_string_end_line_num < old_string_start_line_num:
+        errors.append(
+            f"old_string_end_line_num ({old_string_end_line_num}) must be "
+            f">= old_string_start_line_num ({old_string_start_line_num})"
+        )
+    if errors:
+        return "[error: invalid parameters]\n" + "\n".join(f"  • {e}" for e in errors)
+
+    if old_string_start_line_num > total_lines:
+        return (
+            f"[error: old_string_start_line_num={old_string_start_line_num} exceeds "
+            f"file length ({total_lines} lines): {path}]"
+        )
+    if old_string_end_line_num > total_lines:
+        return (
+            f"[error: old_string_end_line_num={old_string_end_line_num} exceeds "
+            f"file length ({total_lines} lines): {path}]"
+        )
+
+    # ── 行内容验证 ────────────────────────────────────────────────────────────
+    actual_start_line = lines[start_idx].rstrip("\n").rstrip("\r")
+    actual_end_line = lines[end_idx].rstrip("\n").rstrip("\r")
+
+    expected_start = old_string_start.rstrip("\n").rstrip("\r")
+    expected_end = old_string_end.rstrip("\n").rstrip("\r")
+
+    mismatch_msgs: list[str] = []
+
+    if actual_start_line != expected_start:
+        mismatch_msgs.append(
+            f"Line {old_string_start_line_num} content mismatch:\n"
+            f"  expected: {repr(expected_start)}\n"
+            f"  actual:   {repr(actual_start_line)}"
+        )
+
+    if actual_end_line != expected_end:
+        mismatch_msgs.append(
+            f"Line {old_string_end_line_num} content mismatch:\n"
+            f"  expected: {repr(expected_end)}\n"
+            f"  actual:   {repr(actual_end_line)}"
+        )
+
+    if mismatch_msgs:
+        # 提供上下文帮助调试
+        ctx_start = max(0, start_idx - 2)
+        ctx_end = min(total_lines, end_idx + 3)
+        context_lines_str = "".join(
+            f"  {i + 1:>6}  {lines[i]}" if lines[i].endswith("\n") else f"  {i + 1:>6}  {lines[i]}\n"
+            for i in range(ctx_start, ctx_end)
+        )
+        detail = "\n".join(mismatch_msgs)
+        return (
+            f"[error: line content does not match expected value]\n\n"
+            f"{detail}\n\n"
+            f"File context (lines {ctx_start + 1}–{ctx_end}):\n"
+            f"{context_lines_str}"
+        )
+
+    # ── 执行替换 ──────────────────────────────────────────────────────────────
+    # 保留 new_string 末尾换行逻辑：
+    # 若 new_string 不以换行结尾，且被替换区域后面还有内容，则补一个换行
+    replacement = new_string
+    if replacement and not replacement.endswith("\n") and end_idx + 1 < total_lines:
+        replacement += "\n"
+
+    updated_lines = lines[:start_idx] + [replacement] + lines[end_idx + 1:]
+    updated = "".join(updated_lines)
+
+    try:
+        p.write_text(updated, encoding="utf-8")
+    except Exception as e:
+        return f"[error writing {path}: {e}]"
+
+    diff = "".join(
+        unified_diff(
+            original.splitlines(keepends=True),
+            updated.splitlines(keepends=True),
+            fromfile=f"a/{path}",
+            tofile=f"b/{path}",
+            n=3,
+        )
+    )
+    region_desc = (
+        f"line {old_string_start_line_num}"
+        if old_string_start_line_num == old_string_end_line_num
+        else f"lines {old_string_start_line_num}–{old_string_end_line_num}"
+    )
+    result = diff or "(no diff — content unchanged)"
+    result += f"\n[replaced {region_desc} in {path}]"
+    return result
+
+
 # ── diff_files ────────────────────────────────────────────────────────────────
 
 @tool(
@@ -899,4 +1068,3 @@ def web_search(query: str, max_results: Optional[int] = None, provider: Optional
     except ValueError as exc:
         # 未知 provider 名称
         return f"[web_search error] {exc}"
-
