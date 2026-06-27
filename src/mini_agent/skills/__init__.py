@@ -341,6 +341,41 @@ class SkillLoader:
         skill = self._all.get(name)
         return skill.description if skill else ""
 
+    def rediscover(self, dirs: Optional[list] = None) -> None:
+        """
+        [SYS-HOT-RELOAD] 重新扫描磁盘，增量更新 _all。
+        - 新增的 skill：加入 _all
+        - 修改的 skill：更新 _all（若已激活则保持激活状态）
+        - 消失的 skill：从 _all 和 _active 中移除
+        dirs 参数由 HotReloader 传入（与初始化时的 _dirs 一致），忽略该参数，
+        始终用 self._dirs（保持一致性）。
+        """
+        old_names = set(self._all)
+        new_all: dict[str, "Skill"] = {}
+
+        for d in self._dirs:
+            if not d.is_dir():
+                continue
+            for skill_md in d.rglob("SKILL.md"):
+                skill = _parse_skill(skill_md)
+                if skill:
+                    new_all[skill.name] = skill
+            for skill_md in d.glob("*.md"):
+                if skill_md.name == "SKILL.md":
+                    continue
+                skill = _parse_skill(skill_md)
+                if skill:
+                    new_all[skill.name] = skill
+
+        new_names = set(new_all)
+        removed = old_names - new_names
+
+        self._all = new_all
+        # 清理已消失的 skill 的激活状态
+        self._active = [n for n in self._active if n in self._all]
+        # 重建指纹（新 skill 加入，旧 skill 内容可能变化）
+        self.detector.build_fingerprints(self._all)
+
 
 # ── Parsing ────────────────────────────────────────────────────────────────────
 

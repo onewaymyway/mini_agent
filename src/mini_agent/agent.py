@@ -258,6 +258,27 @@ class Agent:
             from mini_agent.tools.orchestration import set_active_skills_provider
             set_active_skills_provider(lambda: self.skill_loader.active)
 
+        # [SYS-HOT-RELOAD] 热重载监视器：自动感知 skills/ 和 .agent/agents/ 目录变化
+        from mini_agent.perception.hot_reload import HotReloader
+        self._hot_reloader = HotReloader(
+            min_interval_s=getattr(cfg, "hot_reload_interval_s", 2.0)
+        )
+        if self.skill_loader:
+            self._hot_reloader.register(
+                dirs=self.skill_loader._dirs,
+                reload_fn=self.skill_loader.rediscover,
+                category="skill",
+            )
+        # agent profiles 由模块级单例管理，这里取引用
+        from mini_agent.orchestrator.agent_profiles import get_profile_loader
+        _apl = get_profile_loader()
+        if _apl is not None:
+            self._hot_reloader.register(
+                dirs=_apl._dirs,
+                reload_fn=_apl.rediscover,
+                category="agent",
+            )
+
         # ── 感知与记忆子系统（按开关初始化）────────────────────────────────
 
         # [SYS-SYSCACHE] turn 级 system prompt 缓存。
@@ -1913,6 +1934,15 @@ class Agent:
 
         while loop_count < self.cfg.max_turns:
             loop_count += 1
+
+            # [SYS-HOT-RELOAD] 检查 skills / agent profiles 是否有文件变化
+            if self._hot_reloader.has_watches:
+                _hr_reports = self._hot_reloader.poll()
+                for _hr in _hr_reports:
+                    if _hr.has_changes:
+                        # 使 system prompt 缓存失效（包含 skill 目录和 agent 目录）
+                        self._cached_system = None
+                        R.print_info(f"[hot-reload] {_hr.summary()}")
 
             # [SYS-TOKEN] token 预估 + 自动压缩
             # _build_system() 命中 turn 级缓存，与后续 _call_llm() 共享同一字符串，

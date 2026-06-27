@@ -36,6 +36,7 @@ def build_parser() -> argparse.ArgumentParser:
               /skill info <name>         Show full skill content
               /skill stats               Show LRU usage tracking and compact budget preview
               /skill reset               Deactivate all active skills
+              /reload                    Force hot-reload of skills and agent profiles from disk
               /stats             Show session statistics
               /verbose           Toggle verbose tool output
               /raw-output        Toggle showing raw model output (incl. <tool_use> blocks)

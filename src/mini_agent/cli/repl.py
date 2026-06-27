@@ -160,6 +160,23 @@ def _handle_slash(cmd: str, agent: Agent, skill_loader: SkillLoader) -> None:
     elif name == "skill":
         handle_skill_cmd(parts[1:], skill_loader, cfg=agent.cfg)
 
+    elif name == "reload":
+        # 手动强制热重载：跳过 debounce，立即重新扫描所有监视目录
+        if not agent._hot_reloader.has_watches:
+            R.print_info("[reload] 没有注册任何热重载监视目录")
+        else:
+            reports = agent._hot_reloader.force_reload()
+            any_change = False
+            for r in reports:
+                if r.has_changes:
+                    any_change = True
+                    R.print_success(f"[reload:{r.category}] {r.summary()}")
+                else:
+                    R.print_info(f"[reload:{r.category}] reloaded (no file changes)")
+            if any_change:
+                # 使 system prompt 缓存失效
+                agent._cached_system = None
+
     elif name == "stats":
         R.print_stats(agent.stats.summary())
 

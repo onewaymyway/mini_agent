@@ -1068,3 +1068,4 @@ def web_search(query: str, max_results: Optional[int] = None, provider: Optional
     except ValueError as exc:
         # 未知 provider 名称
         return f"[web_search error] {exc}"
+

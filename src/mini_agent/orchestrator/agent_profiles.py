@@ -186,6 +186,23 @@ class AgentProfileLoader:
             })
         return out
 
+    def rediscover(self, dirs: Optional[list] = None) -> None:
+        """
+        [SYS-HOT-RELOAD] 重新扫描磁盘，增量更新 _all。
+        新增的 profile 立即可用，修改的 profile 立即生效，
+        删除的 profile 从目录中移除（进行中的 subagent 不受影响）。
+        dirs 参数由 HotReloader 传入，忽略该参数，始终用 self._dirs。
+        """
+        new_all: dict[str, AgentProfile] = {}
+        for d in self._dirs:
+            if not d.is_dir():
+                continue
+            for md in sorted(d.glob("*.md")):
+                profile = _parse_profile(md)
+                if profile:
+                    new_all[profile.name] = profile
+        self._all = new_all
+
 
 # ── 渲染 / 校验 ──────────────────────────────────────────────────────────
 
