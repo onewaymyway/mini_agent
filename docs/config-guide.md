@@ -379,6 +379,36 @@ class ObservabilityConfig:
 对应的便捷属性：`cfg.observability_enabled` / `cfg.tracing_enabled`。
 详见 [观察性系统指南](observability-guide.md)。
 
+### PrivacyConfig
+
+```python
+@dataclass
+class PrivacyConfig:
+    enabled: bool = True
+    secrets: list = field(default_factory=list)   # [{"name": str, "value": str}]
+    auto_env_patterns: Optional[list] = None      # None = 使用内置默认模式
+    placeholder_prefix: str = "SECRET"
+    verbose: bool = False
+```
+
+| 字段 | 说明 |
+|------|------|
+| `enabled` | 总开关；`False` 时使用空操作实现，零开销 |
+| `secrets` | 显式指定的隐私值列表 |
+| `auto_env_patterns` | 自动采集环境变量的正则模式列表；`None` = 内置默认；`[]` = 禁用 |
+| `placeholder_prefix` | 占位符前缀，默认生成 `{{SECRET_1}}` |
+| `verbose` | 启动时打印已注册条目摘要（不含真实值） |
+
+详见 [隐私信息保护机制说明](privacy-guard-guide.md)。
+
+### `hot_reload_interval_s`（AppConfig 直接字段）
+
+```python
+hot_reload_interval_s: float = 2.0  # Skills/Agent Profiles 热重载轮询间隔（秒）
+```
+
+详见 [热重载机制说明](hot-reload-guide.md)。
+
 ---
 
 ## 5. 构建自定义 AppConfig

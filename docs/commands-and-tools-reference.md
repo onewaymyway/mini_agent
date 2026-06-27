@@ -166,6 +166,8 @@ mini-agent --retry-backoff linear --retry-backoff-step 60 --retry-backoff-max 30
 | `/prompts` | 列出所有 PromptManager 管理的 prompt 文件 |
 | `/memory` | 立即在后台生成/刷新 session 摘要 + 写入长期记忆 + 刷新用户画像（跳过轮次间隔门槛），需 `--memory` 启用；详见 [记忆管理指南](memory-management-guide.md) |
 | `/profile` | 立即在后台刷新用户画像（跳过刷新间隔），需在 `agent_config.json` 中设置 `profile_enabled: true`（无对应 CLI flag）；详见 [用户画像系统指南](user-profile-guide.md) |
+| `/raw-output` | 切换 raw output 模式（Toggle）：开启后工具调用结果不截断传给 LLM，也不截断终端显示；详见 [Raw Output 模式说明](raw-output-mode-guide.md) |
+| `/reload` | 强制热重载 Skills 和 Agent Profiles（跳过 debounce，立即重扫磁盘）；详见 [热重载机制说明](hot-reload-guide.md) |
 | `exit` / `quit` | 退出程序 |
 
 ### Skill 管理（`src/mini_agent/cli/commands/skills.py`）
@@ -371,6 +373,7 @@ mini-agent eval --scenario test_cases/                      # 不传 --skill，�
 | `create_file` | ✅ | `path`, `content` | 创建新文件（已存在则失败） |
 | `delete_file` | ✅ | `path` | 删除单个文件 |
 | `patch_file` | ✅ | `path`, `old_string`, `new_string` | 精确查找替换编辑文件，精确匹配失败时自动尝试空白符规整化的兜底匹配 |
+| `patch_file_simple` | ✅ | `path`, `old_string_start`, `old_string_start_line_num`, `old_string_end`, `old_string_end_line_num`, `new_string` | 行锚点替换：只需提供首行/末行内容及其行号，中间内容不参与匹配；适合长段落替换；详见 [patch_file_simple 工具说明](patch-file-simple-guide.md) |
 | `list_dir` | ❌ | `path`, `depth` | 列出目录内容 |
 | `glob` | ❌ | `pattern`, `root` | 通配符查找文件 |
 | `grep` | ❌ | `pattern`, `path`, `file_pattern`, `case_sensitive` | 正则搜索文件内容 |

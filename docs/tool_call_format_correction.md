@@ -36,6 +36,10 @@
 2. **`tag_role_confusion`**：请求标签 `<tool_use>` 与结果标签 `<tool_result>` 混用、不闭合——对应用户报告的**案例2**
 3. **`invalid_json_in_tool_use`**：标签闭合正常但 JSON 本身损坏，且 `json_repair` 也救不回有效 `name` 字段
 4. **`legacy_fence_unclosed`**：兼容旧版 ` ```tool_call ` 围栏格式未闭合
+5. **`orphan_close_tag`**：存在 `</tool_use>` 等闭合标签，但规范开标签 `<tool_use>` 数量不足——对应**案例3**（`<tool_call>` 开、`</tool_use>` 闭）
+6. **`tool_call_alias_tag`**：出现 `<tool_call>` / `<tool_invoke>` 等别名开标签，但没有规范 `<tool_use>`——对应**案例4**（非标准标签开头、内容截断）
+
+详见 [格式纠错检测规则扩展说明](format-correction-detector-update.md)。
 
 ## 安全设计
 

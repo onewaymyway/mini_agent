@@ -301,7 +301,29 @@ Token 估算采用粗略规则：`1 token ≈ 4 字符`。
 | `src/mini_agent/cli/repl.py` | `/skills` 与 `/skill ...` CLI 命令实现 |
 | `src/mini_agent/tools/evolution.py` | `skill_propose` 工具：lesson → SKILL.md 提案（2026-06 新增，Stage 3.1） |
 | `src/mini_agent/evolution/eval_runner.py` | `mini-agent eval` 调用 `SkillLoader.exclude()` 做严格对比（2026-06 新增，Stage 3.2） |
+| `src/mini_agent/perception/hot_reload.py` | `HotReloader`：mtime 轮询热重载，`SkillLoader.rediscover()` 作为回调 |
 
 ---
 
-> 最后更新：2026-06（新增 `exclude()` 与 `skill_propose`，详见 self_evolution_implementation_plan.md Stage 3.1/3.2）
+## 9. 热重载
+
+`SkillLoader` 支持运行时**无重启热重载**：
+
+```python
+# HotReloader 在 Agent.__init__ 中自动注册，无需手动调用
+# 每个 turn 开始时自动轮询；也可通过 /reload 命令手动触发
+```
+
+新增 API `SkillLoader.rediscover(dirs)`：
+
+- 重新扫描 `_dirs` 中的所有 `SKILL.md` 和 `*.md`
+- 新增 skill → 加入 `_all`
+- 修改的 skill → 重新解析并覆盖（已激活状态保留）
+- 删除的 skill → 从 `_all` 和 `_active` 中移除
+- 重建 `SkillUsageDetector` 指纹
+
+详见 [热重载机制说明](hot-reload-guide.md)。
+
+---
+
+> 最后更新：2026-06（新增热重载 `rediscover()`、`patch_file_simple` 工具、隐私保护、raw-output 模式）
