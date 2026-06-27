@@ -30,7 +30,7 @@ from .fs_helper import FsHelper
 from .models import EventType, AgentEvent
 from .multi_auth import MultiUserAuthMiddleware
 from .routes import router
-from .user_store import UserStore
+from .user_store import UserStore, RoleProfileManager
 
 
 # ── 终端安全打印（可从任意线程调用）─────────────────────────────────────────
@@ -122,11 +122,21 @@ class AgentRunner(threading.Thread):
         self,
         bridge: AgentBridge,
         autonomous_loop=None,  # Optional[AutonomousLoop]，不强制依赖
+        role_profile_mgr=None,  # daemon 多用户架构 Phase 2: Optional[RoleProfileManager]
     ) -> None:
         super().__init__(name="agent-runner", daemon=True)
         self._bridge = bridge
         self._stop   = threading.Event()
         self._autonomous_loop = autonomous_loop  # Stage 9: AutonomousLoop 实例
+        self._role_profile_mgr = role_profile_mgr
+        # daemon 多用户架构 Phase 2：记录"原本配置好的" system_extra（来自 --system
+        # CLI 参数 / 配置文件，在 Agent 构造时就定好，不会再变）。每个 turn 临时往后拼接
+        # 角色上下文时，都以这个值为基底重新拼，而不是在上一轮拼接结果上继续累加——
+        # 否则角色上下文会无限累积，且上一个用户的角色提示会泄漏给下一个用户。
+        # 用 None 而不是直接读 bridge.agent.cfg.system_extra，因为此时 bridge.agent
+        # 可能还没设置好（HttpServer.__init__ 里 AgentRunner 在 agent 赋值之后才构造，
+        # 但稳妥起见仍做一次懒加载）。
+        self._base_system_extra: Optional[str] = None
 
     def stop(self) -> None:
         self._stop.set()
@@ -154,12 +164,36 @@ class AgentRunner(threading.Thread):
             # daemon 多用户架构 Phase 1：从 enqueue() 时传入的 meta 里取 user_id，
             # 单用户模式下 cmd.meta 为空，user_id 就是 ""，行为不变。
             user_id = cmd.meta.get("user_id", "") if cmd.meta else ""
+            role    = cmd.meta.get("role", "") if cmd.meta else ""
             bridge.set_state("running", turn_id=turn_id)
             bridge.emit_turn_start(turn_id, cmd.message, user_id=user_id)
 
             try:
                 if bridge.agent is None:
                     raise RuntimeError("Agent not initialized")
+
+                # daemon 多用户架构 Phase 2：把这一轮发起者的角色社交画像拼进
+                # system_extra（临时改法，Phase 3 进入 per-session Agent 后会改成
+                # "session 专属 cfg 在创建时就注入好"，不需要每条消息都换）。
+                # 注意：role_profile_mgr 为 None（未开启多用户模式）或者
+                # user_id 为空（单用户模式下 cmd.meta 本身就是空的）时，
+                # 整段逻辑跳过，agent.cfg.system_extra 保持原样不动，行为与改造前完全一致。
+                if self._role_profile_mgr is not None and user_id:
+                    if self._base_system_extra is None:
+                        # 懒加载：第一次真正用到时才读，此后固定不变
+                        self._base_system_extra = getattr(bridge.agent.cfg, "system_extra", "") or ""
+                    role_ctx = self._role_profile_mgr.build_system_context(user_id, role)
+                    bridge.agent.cfg.system_extra = (
+                        self._base_system_extra + "\n\n" + role_ctx
+                    ).strip()
+
+                # daemon 多用户架构 Phase 2：让 remember_about_user 工具（运行在
+                # 这同一条 AgentRunner 线程上）能读到"这一轮是谁发的"。
+                # 即使 role_profile_mgr 为 None 也调用（写入空字符串），
+                # 这样 tools/user_memory.py::is_available() 的判断始终准确，
+                # 不会读到上一次（如果有过）残留的用户身份。
+                from mini_agent.tools.user_memory import set_current_user
+                set_current_user(user_id, role)
 
                 # ── 在终端模拟显示 Web 端发来的用户输入 ──────────────────
                 # 让命令行侧看到 "You (web) ❯ <message>"，与正常 REPL 输入体验一致
@@ -179,6 +213,24 @@ class AgentRunner(threading.Thread):
                 iq.mark_done(turn_id)
                 bridge.emit_turn_done(turn_id, text=result or "", user_id=user_id)
 
+                # daemon 多用户架构 Phase 2：每轮成功对话后更新该用户的 last_contact/
+                # contact_count。放在这里（而不是设计文档原计划的"session 切换前"），
+                # 是因为 Phase 1/2 阶段所有用户共享同一个全局 Agent/历史，用户很可能
+                # 整段对话都不会触发 /sessions/new 或 /resume，"切换 session 时才更新"
+                # 会导致这两个字段在很多场景下永远不更新，对不上验收标准里
+                # "多轮对话后能看到 last_contact 更新"的要求。按 turn 更新才是
+                # 在当前模型下真正对得上请求频率的时机。
+                if self._role_profile_mgr is not None and user_id:
+                    try:
+                        profile = self._role_profile_mgr.get_profile(user_id)
+                        contact_count = profile.get("contact_count", 0) + 1
+                        self._role_profile_mgr.update_profile(user_id, {
+                            "last_contact": time.time(),
+                            "contact_count": contact_count,
+                        })
+                    except Exception:
+                        pass  # 画像更新失败不应影响主对话流程
+
             except Exception as e:
                 tb = traceback.format_exc()
                 iq.mark_error(turn_id)
@@ -193,6 +245,20 @@ class AgentRunner(threading.Thread):
                 bridge.set_state("idle", turn_id=None)
                 if hasattr(bridge.agent, "_http_turn_id"):
                     bridge.agent._http_turn_id = ""
+
+                # daemon 多用户架构 Phase 2：还原 system_extra，避免这一轮注入的角色
+                # 上下文残留到"非 web 触发"的下一次使用（比如同一 daemon 进程里
+                # CLI 命令行侧直接交互、或 AutonomousLoop.tick() 走到需要 system prompt
+                # 的逻辑）。两者不应该看到上一个 web 用户的角色画像片段。
+                if self._role_profile_mgr is not None and self._base_system_extra is not None:
+                    bridge.agent.cfg.system_extra = self._base_system_extra
+
+                # 同理清空 remember_about_user 工具读到的"当前用户"——
+                # 这条 AgentRunner 线程稍后可能去跑 AutonomousLoop.tick()，
+                # 那不是任何用户发起的，不应该让 remember_about_user 误以为
+                # 还在为上一个用户服务。
+                from mini_agent.tools.user_memory import clear_current_user
+                clear_current_user()
 
                 # ── run_turn 完成后，提示命令行侧可继续输入 ────────────
                 _print_to_term(
@@ -319,18 +385,32 @@ class HttpServer:
         # owner 用户存在（owner token 复用上面已经算好的 self._token，保持
         # "原有单 token 升级为 owner token"的自然过渡——开启多用户模式前用的
         # 那个 token 不会失效，只是现在它对应的身份叫 owner）。
+        # Phase 2：同时创建 RoleProfileManager，管理每个用户的社交画像
+        # （<project_root>/.agent/users/<user_id>/profile.json）。
         self._multi_user_enabled = multi_user_enabled
         self._role_store: Optional[UserStore] = None
+        self._role_profile_mgr: Optional[RoleProfileManager] = None
         if multi_user_enabled:
             users_dir = project_root / ".agent" / "users"
             self._role_store = UserStore(users_dir)
             self._role_store.ensure_owner(configured_token=self._token)
+            self._role_profile_mgr = RoleProfileManager(users_dir)
+
+        # daemon 多用户架构 Phase 2：把 RoleProfileManager 注入 remember_about_user
+        # 工具（tools/user_memory.py）。多用户模式未开启时传 None，
+        # is_available() 会返回 False，工具调用时直接给出友好提示，不会报错崩溃。
+        from mini_agent.tools.user_memory import set_role_profile_manager
+        set_role_profile_manager(self._role_profile_mgr)
 
         # Stage 9 §7.2: 初始化 AutonomousLoop（在 daemon 进程中挂载到 AgentRunner）
         self._autonomous_loop = self._build_autonomous_loop(agent)
 
-        # AgentRunner（后台驱动 agent.run_turn），注入 AutonomousLoop
-        self._runner = AgentRunner(self._bridge, autonomous_loop=self._autonomous_loop)
+        # AgentRunner（后台驱动 agent.run_turn），注入 AutonomousLoop + RoleProfileManager
+        self._runner = AgentRunner(
+            self._bridge,
+            autonomous_loop=self._autonomous_loop,
+            role_profile_mgr=self._role_profile_mgr,
+        )
 
         # uvicorn 服务线程
         self._server_thread: Optional[threading.Thread] = None
@@ -375,6 +455,11 @@ class HttpServer:
     def role_store(self) -> Optional[UserStore]:
         """daemon 多用户架构 Phase 1：未开启多用户模式时为 None。"""
         return self._role_store
+
+    @property
+    def role_profile_mgr(self) -> Optional[RoleProfileManager]:
+        """daemon 多用户架构 Phase 2：未开启多用户模式时为 None。"""
+        return self._role_profile_mgr
 
     @property
     def autonomous_loop(self):

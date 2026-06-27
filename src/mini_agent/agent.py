@@ -177,6 +177,15 @@ class Agent:
             lambda: self._session.id if self._session else ""
         )
 
+        # daemon 多用户架构 Phase 2：导入 tools/user_memory.py 触发
+        # remember_about_user 的 @tool 注册（与上面两处同样的写法——
+        # 仅仅是 import 这个模块就会执行模块级的 @tool 装饰器）。
+        # 这个工具不需要 thread-local provider 在这里注册——它的"当前用户"
+        # 是由 AgentRunner.run() 在每轮调用前直接设置的（原因见
+        # tools/user_memory.py 模块docstring），与 project_root/session_id
+        # 这种"Agent 生命周期内基本不变"的上下文性质不同，不适合在这里注册。
+        import mini_agent.tools.user_memory  # noqa: F401
+
         self.stats = SessionStats()
         self._history: list[dict] = []
 
