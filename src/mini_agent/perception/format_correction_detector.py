@@ -95,8 +95,13 @@ def _build_message(detail: str) -> str:
 _OPEN_TAG_RE = _re.compile(r"<tool_use>", _re.IGNORECASE)
 _CLOSE_TAG_RE = _re.compile(r"</tool_use>", _re.IGNORECASE)
 _RESULT_OPEN_TAG_RE = _re.compile(r"<tool_result>", _re.IGNORECASE)
-_RESULT_CLOSE_TAG_RE = _re.compile(r"</tool_result>", _re.IGNORECASE)
+_RESULT_CLOSE_TAG_RE = _re.compile(r"</tool_result>\b", _re.IGNORECASE)
 _LEGACY_FENCE_RE = _re.compile(r"```tool_call\b", _re.IGNORECASE)
+
+# 任意\"疑似工具调用\"标签的统一检测——涵盖已知变体和拼写错误
+# 包括：<tool_use>、</tool_use>、<tool_call>、</tool_call>、<tool_invoke> 等
+_ANY_TOOL_OPEN_RE = _re.compile(r"<tool_(?:use|call|invoke)\b[^>]*>", _re.IGNORECASE)
+_ANY_TOOL_CLOSE_RE = _re.compile(r"</tool_(?:use|call|invoke)>", _re.IGNORECASE)
 
 
 def _detect_unclosed_or_duplicated_open_tag(text: str) -> bool:
@@ -180,6 +185,47 @@ def _detect_invalid_json_in_tool_use(text: str) -> bool:
     return False
 
 
+def _detect_orphan_close_tag(text: str) -> bool:
+    """
+    孤立闭合标签：出现了 </tool_use> 或 </tool_call> 等闭合标签，
+    但没有对应的合法开标签（即 <tool_use> 数量 < </tool_use> 数量，
+    或完全没有 <tool_use> 但有 </tool_use>）。
+
+    典型案例3：模型开头用了非标准的 <tool_call>，结尾却用 </tool_use>
+    闭合，导致 <tool_use> 开标签缺失，现有规则全部漏检。
+
+    判断方式：任意闭合标签存在，且\"规范开标签\"数 < \"任意闭合标签\"数。
+    """
+    close_count = len(_ANY_TOOL_CLOSE_RE.findall(text))
+    if close_count == 0:
+        return False
+    # 规范开标签：只认 <tool_use>（parse_tool_calls 唯一能解析的）
+    open_count = len(_OPEN_TAG_RE.findall(text))
+    return open_count < close_count
+
+
+def _detect_tool_call_alias_tag(text: str) -> bool:
+    """
+    非标准开标签变体：出现了 <tool_call> / <tool_invoke> 等别名开标签，
+    但没有任何规范的 <tool_use> 开标签。
+
+    这类情况说明模型知道要调用工具，但用错了标签名，
+    parse_tool_calls 完全无法识别，应提示模型用正确标签重试。
+
+    注意：_detect_orphan_close_tag 已能捕获\"有非标准开标签 + </tool_use>闭合\"
+    的情况；本规则作为补充，捕获\"有非标准开标签但完全没有任何闭合标签\"
+    （即模型用 <tool_call> 开头，然后内容就截断了）。
+    """
+    # 任意非标准 tool 开标签
+    alias_opens = _re.findall(r"<tool_(?:call|invoke)\b[^>]*>", text, _re.IGNORECASE)
+    if not alias_opens:
+        return False
+    # 如果同时有规范 <tool_use>，让其它规则处理
+    if _OPEN_TAG_RE.search(text):
+        return False
+    return True
+
+
 # ── 规则注册表 ────────────────────────────────────────────────────────────────
 # 顺序即优先级：先匹配"标签角色混淆"（更具体、信息量更大的诊断——明确指出
 # 模型把请求标签和结果标签搞混了），再匹配范围更宽的"开标签未闭合"
@@ -215,6 +261,21 @@ _RULES: list[tuple[str, Callable[[str], bool], str]] = [
         _detect_legacy_fence_unclosed,
         "It looks like a ```tool_call code fence was opened but never "
         "closed with a matching ``` , so the tool call could not be parsed.\n",
+    ),
+    (
+        "orphan_close_tag",
+        _detect_orphan_close_tag,
+        "A `</tool_use>` (or similar closing tag) was found, but there is no "
+        "matching `<tool_use>` opening tag before it. This usually means the "
+        "opening tag used a non-standard name (e.g. `<tool_call>`) or was "
+        "accidentally omitted.\n",
+    ),
+    (
+        "tool_call_alias_tag",
+        _detect_tool_call_alias_tag,
+        "A non-standard tag variant such as `<tool_call>` or `<tool_invoke>` "
+        "was used instead of `<tool_use>`. Only `<tool_use>` is recognized — "
+        "please resend the tool call using the correct tag.\n",
     ),
 ]
 
