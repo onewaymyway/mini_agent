@@ -61,11 +61,11 @@ def print_tool_call(tool_name: str, tool_input: dict, verbose: bool = False) -> 
                     theme="ansi_dark", line_numbers=False)
 
 
-def print_tool_result(tool_name: str, result: str, truncate: int = 2000) -> None:
+def print_tool_result(tool_name: str, result: str, truncate: Optional[int] = 2000) -> None:
     if not result or not result.strip():
         term.print("  [dim](empty result)[/dim]")
         return
-    display = result if len(result) <= truncate else result[:truncate] + "\n…[truncated]"
+    display = result if (truncate is None or len(result) <= truncate) else result[:truncate] + "\n…[truncated]"
     lang = _result_lang(tool_name, result)
     if lang:
         term.syntax(display, lang, theme="ansi_dark",

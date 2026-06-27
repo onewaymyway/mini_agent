@@ -134,7 +134,10 @@ class ToolExecutor:
                         # [SYS-TRIM] 工具调用结果截断（按工具类型分策略）
                         result_str = self._trim_result(tc.name, result_str)
 
-                        R.print_tool_result(tc.name, result_str)
+                        R.print_tool_result(
+                            tc.name, result_str,
+                            truncate=None if getattr(self.cfg, "raw_output", False) else 2000,
+                        )
 
                         # [SYS-TOOLCACHE] 写入缓存
                         if self.tool_cache:
@@ -202,6 +205,7 @@ class ToolExecutor:
     def _trim_result(self, tool_name: str, result: str) -> str:
         """
         [SYS-TRIM] 按工具类型分策略截断长结果，策略参数可通过 config 调整。
+        raw_output 模式下跳过所有截断，返回完整结果。
         """
         if not self.cfg.tool_result_trim_enabled:
             return result
