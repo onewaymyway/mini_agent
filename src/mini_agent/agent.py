@@ -181,8 +181,31 @@ class Agent:
         self._history: list[dict] = []
 
         # [SYS-PRIVACY] 隐私保护：发送前屏蔽，收到后还原
-        from mini_agent.perception.privacy_guard import PrivacyGuard
+        from mini_agent.perception.privacy_guard import PrivacyGuard, SecretEntry
         self._privacy_guard = PrivacyGuard.from_config(cfg.privacy)
+
+        # 自动把所有 provider key 注册进隐私保护，无论 auto_env_patterns 是否覆盖到
+        if cfg.privacy.enabled:
+            _keys_to_guard: list[SecretEntry] = []
+            # 主 provider key
+            if cfg.api_key:
+                _keys_to_guard.append(SecretEntry(name=f"{cfg.llm_provider}.api_key", value=cfg.api_key))
+            # fallback chain 里的所有 key
+            for _entry in (cfg.llm_fallback_chain or []):
+                _p = _entry.get("provider", "unknown")
+                for _k in (_entry.get("api_keys") or []):
+                    _keys_to_guard.append(SecretEntry(name=f"{_p}.api_key", value=_k))
+                if _entry.get("api_key"):
+                    _keys_to_guard.append(SecretEntry(name=f"{_p}.api_key", value=_entry["api_key"]))
+            # web search key
+            if getattr(cfg, "web_search", None) and cfg.web_search.api_key:
+                _keys_to_guard.append(SecretEntry(name="web_search.api_key", value=cfg.web_search.api_key))
+            # HTTP API token
+            if getattr(cfg, "http", None) and cfg.http.api_token:
+                _keys_to_guard.append(SecretEntry(name="http.api_token", value=cfg.http.api_token))
+            for _e in _keys_to_guard:
+                self._privacy_guard._register(_e)
+
         if cfg.privacy.verbose and self._privacy_guard.active:
             import mini_agent.ui.renderer as _R
             _R.console.print(

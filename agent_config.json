@@ -49,5 +49,13 @@
         "include_hostname": false
       }
     }
+  },
+  "privacy": {
+    "enabled": true,
+    "verbose": true,
+    "secrets": [
+      {"name": "MY_DB_PASSWORD", "value": "super-secret-pw"}
+    ],
+    "auto_env_patterns": null
   }
 }
