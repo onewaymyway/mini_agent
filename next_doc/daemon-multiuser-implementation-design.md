@@ -379,6 +379,9 @@ daemon 进程（绑定到一个 project_root）
 
 ## 四、Phase 3：SessionAgentPool（每个 session 一个独立 Agent）
 
+> **状态：已实现**（见本节末尾"实施记录"，内容较长，记录了 3 个在实测中
+> 才发现的真实 bug，包括一个死锁）。
+
 **目标**：真正的并发隔离。这是工作量最大、风险最高的一步，原方案第十一节也明确说
 "这是破坏性改动，建议一次性大改"。
 
@@ -500,6 +503,134 @@ session_manager"变成"该用户名下所有 session 文件"（按 `meta.json` �
 - CLI 客户端（daemon.py 连接模式）的两个 bug 修复在多用户模式下依然有效
   （这条是回归测试，不是新功能）
 
+### Phase 3 实施记录（与原计划的差异点，含 3 个实测中才发现的真实 bug）
+
+**已完成，端到端验证通过**：起了真实 `HttpServer`（`multi_user_enabled=True`，
+真实 `Agent` 实例，用不需要 API key 的 `ollama` provider 让构造能完整跑通，
+而不是 mock），走完整 FastAPI `TestClient` 路径验证了：lazy session 创建
+（`/sessions/new` 不会立刻构造 Agent）、per-user 目录隔离、并发创建 5 个 session
+无报错、`suspend()`（含 `.join()`）、`stop_all()`、按 `turn_id`/`req_id` 路由到正确
+session（而不是"猜最近活跃的那个"）。完整 pytest 套件仍是 1383 passed / 2 个
+无关失败。
+
+#### Bug 1（严重，会让 Phase 3 完全不可用）：AgentRunner 的 `self._stop` 遮蔽了
+`threading.Thread._stop()`
+
+`AgentRunner.__init__` 里原来写的是 `self._stop = threading.Event()`。
+`threading.Thread` 自己有一个私有方法也叫 `_stop()`（线程真正结束后内部清理用，
+见 `Thread._wait_for_tstate_lock`）。只要从来没人对这个线程调用过 `.join()`，
+这个命名冲突完全不会暴露——Phase 1/2 确实从来没调用过 `.join()`。
+Phase 3 的 `SessionAgentPool._do_suspend()` 第一次需要真正 `join()` 等线程退出，
+一调用就报 `TypeError: 'Event' object is not callable`。
+**已重命名为 `self._stop_evt`**，问题修复，并补了能复现这个问题的测试
+（先在没有这次重命名的版本上跑通了失败复现，再确认修复后通过）。
+
+#### Bug 2（严重，会让构造失败的请求永久卡死）：`get_or_create()` 持锁等待造成死锁
+
+最初的实现里，`get_or_create()` 整个方法体（包括等待 `runner.ready_event` 的
+阻塞调用）都包在 `with self._lock:` 里。而 `AgentRunner` 构造失败时调用的
+`on_crash` 回调（运行在**另一条线程**——也就是刚 `start()` 的那条 AgentRunner
+线程——上）需要 `with self._lock:` 才能把这个 session 从 pool 摘掉。
+于是：调用方线程握着锁等 `ready_event`；`AgentRunner` 线程的 `on_crash` 想拿
+同一把锁才能让调用方的等待有意义地结束；两边互相等对方，死锁。
+表现出来就是：任何 Agent 构造失败（比如这次测试里"没有配置 LLM API key"）
+都会让 `get_or_create()` 卡满 `AGENT_READY_TIMEOUT`（30 秒），而不是快速报错。
+
+这个 bug 不是靠读代码看出来的，是写完测试**实际跑出来**才发现——构造一个会
+失败的 factory（用没配 API key 的 anthropic provider）调 `get_or_create()`，
+卡了 30 秒才超时，而单独测 `AgentRunner` 本身（不经过 pool）瞬间就能正确返回
+`init_error`，对比之下才定位到问题出在 `SessionAgentPool` 自己的锁设计上。
+
+**修复**：改成"每个 session_id 一把构造锁"（`_construction_locks: dict[str,
+threading.Lock]`），`self._lock`（pool 级别的锁）只用于简短的字典读写，
+**从不**跨越"等待另一个线程完成某件事"这种阻塞操作。同一个 `session_id` 的
+并发请求会在各自的构造锁上排队（这是预期行为：没必要对同一个 session 并发
+构造两次），不同 `session_id` 之间完全不互相阻塞。修复后用没配 API key 的
+factory 重测：0.6 秒内正确抛出异常，不再有 30 秒卡死。
+
+#### Bug 3（中等，预先存在，Phase 3 之前从未暴露）：`StatusResponse`/`ChatRequest`
+缺字段，导致 CLI 的两处逻辑一直没生效
+
+核对 `cli/daemon.py` 时发现两个预先存在、与多用户改造本身无关的 bug：
+1. `DaemonClient.send_message()` 一直在发 `payload["session_id"] = session_id`，
+   但 `ChatRequest`（服务端模型）从来没有声明过 `session_id` 字段——Pydantic
+   默认静默丢弃多余字段，这个值一直被服务端忽略。
+2. `_pick_session()` 一直在读 `status.get("session_id", "")`，但
+   `StatusResponse` 从来没有 `session_id` 字段——session 选择菜单里的
+   "●active"标记因此从来没有真正生效过（永远拿到空字符串，永远不匹配）。
+
+这两个字段 Phase 3 必须补上（否则 `/v1/chat` 没法知道要发到哪个 session），
+顺手就把这两个老 bug 也修了——`ChatRequest`/`StatusResponse`/`ChatResponse`
+都加上了 `session_id` 字段，`cli/daemon.py` 不需要改任何代码，这两处逻辑
+现在会自然生效。
+
+#### 与原方案 3.3/3.4 节的差异
+
+1. **per-user session 目录，而不是给 `SessionMeta` 加 `user_id` 字段**
+   （3.4 节原方案的建议）。已在 `session_pool.py` 里详细论证：物理目录分离
+   （`.agent/users/<user_id>/sessions/`）比"共享目录 + 按字段过滤"隔离性更强
+   （不存在过滤逻辑写错导致越权读到别人 session 的风险），且不需要改
+   `SessionMeta`/`Session` 的数据结构，`session.py` 完全没有改动。
+
+2. **`/v1/sessions/new` 和 `/v1/sessions/{id}/resume` 在多用户模式下是"轻量"
+   操作，不会立刻构造 Agent。** 原方案没有明确这一点。实现选择："new"只生成
+   一个新 `session_id` 返回；"resume"乐观接受任意 ID，不验证是否存在。
+   真正的 Agent 构造推迟到第一次 `/v1/chat` 时由 `_bridge()` 触发
+   `SessionAgentPool.get_or_create()`。这样设计是因为 CLI 的 `_pick_session()`
+   流程里，"选了一个 session"和"真的开始对话"之间可能有用户思考的间隙，
+   不应该在用户还没说话之前就付出 Agent 构造的代价（包括这次实测中发现的
+   "MCP/SkillLoader/LLMClient 都要重新建一遍"的真实成本）。
+
+3. **`/v1/stream/{turn_id}` 和 `/v1/turns/{turn_id}` 不能用"该用户最近活跃的
+   session"兜底解析。** 这是原方案 §3.3 提到但没写清楚怎么落地的一点——
+   实测中发现：如果一个用户同时开着两个 session（比如两个浏览器标签），
+   按 turn_id 查询/订阅如果只看"最近活跃的那个 session"，会在用户切换到
+   第二个 session 后，第一个 session 的 turn_id 查询全部失效（明明那个 turn
+   还在跑/刚跑完，却查不到）。已改为用 `SessionAgentPool.find_by_turn()`
+   先正确定位 turn_id 实际所属的 SessionEntry，再做权限校验
+   （非 owner 只能查自己的，owner 可以查任何人的——owner 特权）。
+   同样的问题和修法也适用于 `/v1/permissions/{req_id}`，新增了
+   `find_by_permission_req()`（原方案完全没提到这个端点需要类似处理，
+   是实现时类比 `find_by_turn` 的场景发现的）。
+
+4. **MCP 工具注册的并发安全 + SkillLoader 不能共享**（0.3 节已经提到线程模型
+   问题，但原方案没有意识到这两个具体的共享可变状态风险）：
+   - `tools/__init__.py::ToolRegistry.register()` 是纯 dict 操作，没有锁，
+     `MCPManager.register_all()` 注册进的是**全局共享**的 `_default_registry`。
+     已加全局 `_agent_construction_lock`，序列化"构造 Agent"这一步（不影响
+     `run_turn()` 的并发度）。
+   - `SkillLoader._active`（已激活 skill 列表）是实例级可变状态，不能跨
+     session 共享，否则一个用户激活的 skill 会"传染"给另一个用户的对话。
+     每个 `SessionEntry` 现在都构造自己独立的 `SkillLoader`（复用同一份
+     `skill_dirs` 列表，重新跑 `_discover()` 扫描——这个扫描成本是已知、
+     接受的取舍，已在 `session_pool.py` 模块 docstring 里写明）。
+
+5. **已知限制，本次未修复**：`tools/introspection.py` 里的 `agent_status` /
+   `agent_inspect` / `agent_patch` / `agent_policy` 四个工具，注册时没有用
+   `override=True`，意味着**进程里第一个构造的 Agent**会成功注册，
+   之后构造的所有 Agent（包括 Self 自己之后如果重建，以及 Phase 3 的每一个
+   SessionAgent）调用 `register_introspection_tools()` 都会因为名字冲突直接
+   跳过（已有的"失败则警告并跳过"兜底，不会崩，但后果是：这四个工具实际上
+   永远只会操作"进程里第一个 Agent"的状态，不管当前是哪个 SessionAgent 在问。
+   这是一个**预先存在**的设计假设（"进程里只有一个 Agent"），Phase 3 第一次
+   让这个假设失效，但修复需要给 `ToolRegistry` 引入"per-Agent 命名空间"这类
+   更大的改动，超出本次范围，记录为已知限制。受影响的只是这四个自省工具，
+   不影响对话/工具调用/session 隔离等核心功能。
+
+#### 文件改动（实际 vs 原计划表格）
+
+原计划表格写的新增文件是 `evolution/self_runner.py`。**实际没有新建这个文件**——
+深入看了一遍现有的 `AutonomousLoop`/`AgentRunner` 关系后发现：`AutonomousLoop.tick()`
+本来就是通过"submit 一个 autonomous 类型的任务到 InputQueue，由同一个
+AgentRunner 循环消费"的方式工作的（`_submit_autonomous_task()`），这个机制
+不需要一个全新的 `SelfRunner` 类——本次 Phase 3 的设计是：Self 继续用
+`HttpServer` 原有的 `self._bridge`/`self._runner`（`app.py` 在主线程构造的那个
+`agent` 参数，多用户模式下被重新定位为"Self 的 agent"，但构造路径和接口完全
+不变），`SessionAgentPool` 是纯粹新增、平行存在的——这比"重新设计 Self 的运行
+模型"风险小得多，且复用了已经验证过的 `AgentRunner`/`AutonomousLoop` 协作关系。
+`evolution/self_bus.py`（Phase 4 计划项）目前 `SelfMessage`/`SelfMessageBus`
+仍然定义在 `session_pool.py` 里，留给 Phase 4 视情况再搬。
+
 ---
 
 ## 五、Phase 4：Self ↔ SessionAgent 通信
@@ -525,8 +656,10 @@ session_manager"变成"该用户名下所有 session 文件"（按 `meta.json` �
 
 ## 六、本次需要用户确认的关键决策点
 
-> Phase 1 已经按以下默认方案实施（用户选择"按计划文档开始"，未逐项单独答复，
-> 故采用文档原本建议的默认选项）。1-3 已落地，4-5 仍待确认/讨论。
+> Phase 1-3 已经按以下默认方案实施（用户选择"按计划文档开始"/"继续"，
+> 未逐项单独答复，故采用文档原本建议的默认选项，遇到需要临场决策的地方
+> 选择风险最低、与现有代码最一致的方案，并在对应 Phase 的"实施记录"里
+> 详细记录了取舍理由）。
 
 1. ~~**`UserProfileManager` 改名为 `RoleProfileManager`**（0.1 节）——同意吗，还是有更喜欢的名字？~~
    **已实施**：改名为 `RoleProfileManager`。
@@ -534,14 +667,28 @@ session_manager"变成"该用户名下所有 session 文件"（按 `meta.json` �
    一个直接 bug，应该没有争议，但请确认。~~
    **已确认无争议**；该接入点要等 Phase 2 才会真正用上（Phase 1 只是改了名字，没动这部分逻辑）。
 3. ~~**Phase 1/2 阶段先不动 AgentBridge，所有用户共享同一个全局 Agent**——……~~
-   **已按此方案实施 Phase 1**：当前所有用户仍共享同一个全局 Agent/历史，
-   "多用户"目前只是"认证 + 角色权限分级"，对话隔离要等 Phase 3。
-4. **Phase 3 的线程模型修正**（0.3/3.1 节，Agent 构造和 AgentRunner 跑在同一线程）——
-   这个改动同时也修复了一个现状就存在的 bug（thread-local 在单 Agent 模式下其实没生效），
-   是否需要我**现在就**先单独修一下现状的这个 bug（不等 Phase 3），让 `skill_propose`
-   等工具在当前单 Agent daemon 模式下先恢复正常？这个修复和多用户改造无关，可以独立先做。
-5. **Phase 3 验收标准里"对话隔离"的测试方式**——你是否方便在本地实际跑两个客户端测试
-   （因为我这边的沙盒环境没有 LLM API key，无法端到端跑通真实对话，只能做单元测试级别的验证）？
+   **已按此方案实施 Phase 1/2**。Phase 3 完成后这一点已经改变：每个用户每个
+   session 现在都有自己独立的 Agent + 对话历史，不再共享。
+4. ~~**Phase 3 的线程模型修正**（0.3/3.1 节）——是否需要现在就先单独修一下
+   现状的 thread-local bug？~~
+   **已在 Phase 3 里一并修复**（`AgentRunner` 加 `agent_factory` 机制），
+   没有单独提前修——事后看这样选是对的，因为 Phase 3 实施过程中又额外发现
+   并修复了两个更严重的真实 bug（`self._stop` 命名冲突、`get_or_create()`
+   死锁），如果提前单独修线程模型问题，后面这两个 bug 大概率还是要在
+   Phase 3 阶段才会暴露出来，不如一起处理、一起测试。
+5. ~~**Phase 3 验收标准里"对话隔离"的测试方式**——你是否方便在本地实际跑两个
+   客户端测试？~~
+   **改用 `ollama` provider 自行解决**：它不需要 API key 就能完成 `Agent()`
+   构造和发起真实的 LLM 请求（请求本身会因为本地没有真的跑着 ollama 服务而
+   失败在网络层，但这正好把"基础设施是否正确"和"LLM 调用本身"两件事干净地
+   分开了——本次所有 Phase 3 测试验证的都是前者：session 隔离、并发构造、
+   崩溃处理、turn/权限路由，没有一个依赖真实 LLM 返回内容）。
+6. **`tools/introspection.py` 的多 Agent 兼容问题**（见 Phase 3 实施记录第 5
+   点）——`agent_status`/`agent_inspect`/`agent_patch`/`agent_policy` 四个
+   工具目前只会绑定到"进程里第一个构造的 Agent"，Phase 3 之后这个假设不再
+   成立。本次记录为已知限制，未修复（需要给 `ToolRegistry` 引入 per-Agent
+   命名空间，是比 Phase 3 本身更大的改动）。是否需要单独排期修复，还是接受
+   "这四个工具在多用户模式下不可靠，其它功能不受影响"这个现状？
 
 ---
 
@@ -551,8 +698,8 @@ session_manager"变成"该用户名下所有 session 文件"（按 `meta.json` �
 |---|---|---|
 | 1 | `api/multi_auth.py`, `cli/commands/user_cmd.py` | `api/user_store.py`（改名+清理）, `api/server.py`, `api/routes.py`, `api/models.py`, `cli/app.py` |
 | 2 | `tools/user_memory.py`（新工具 `remember_about_user`） | `api/server.py`（`AgentRunner.run` 注入 `system_extra`、画像更新）, `agent.py`（import 触发工具注册） |
-| 3 | `evolution/self_runner.py` | `api/session_pool.py`（线程模型修正）, `api/server.py`（HttpServer 二选一装配）, `api/routes.py`（`_bridge`/`_resolve_session_id`）, session 存储层（如需补 `user_id` 字段） |
-| 4 | `evolution/self_bus.py` | `api/session_pool.py`（移出 SelfMessage/SelfMessageBus）, `evolution/self_runner.py`, `cli/commands/self_cmd.py`（新增 `mini-agent self status` 等） |
+| 3 | （无新文件——`evolution/self_runner.py` 计划被取消，见 Phase 3 实施记录第 5 点） | `api/session_pool.py`（重写：线程模型修正、构造锁死锁修复、per-user 目录）, `api/server.py`（`AgentRunner` 加 `agent_factory`/`on_crash`/`ready_event`、`self._stop`→`self._stop_evt` 改名、`HttpServer` 装配 `SessionAgentPool`）, `api/routes.py`（`_bridge`/`_resolve_session_id`/`_user_session_manager`，5 个 session 端点 + `stream_turn`/`get_turn`/permissions 端点的多用户分支）, `api/models.py`（`ChatRequest`/`StatusResponse`/`ChatResponse` 补 `session_id` 字段）, `skills/__init__.py`（`SkillLoader` 加 `dirs` 只读属性） |
+| 4 | `evolution/self_bus.py`（待定，目前 `SelfMessage`/`SelfMessageBus` 仍在 `session_pool.py` 里） | `api/session_pool.py`（视情况移出 SelfMessage/SelfMessageBus）, `cli/commands/self_cmd.py`（新增 `mini-agent self status` 等） |
 
 ---
 
