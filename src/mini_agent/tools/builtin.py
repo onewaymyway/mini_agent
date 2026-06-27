@@ -209,7 +209,10 @@ def read_file(
     description=(
         "Overwrite (or create) a file with the given content. "
         "Creates parent directories as needed. "
-        "Use patch_file for targeted edits instead of full rewrites."
+        "Use patch_file for targeted edits instead of full rewrites. "
+        "For large files (>200 lines or containing special characters), prefer writing in chunks: "
+        "write .part1 / .part2 files separately, then merge with "
+        "bash('cat file.part1 file.part2 > file && rm file.part1 file.part2')."
     ),
     schema={
         "type": "object",
@@ -237,7 +240,12 @@ def write_file(path: str, content: str) -> str:
 
 @tool(
     name="create_file",
-    description="Create a new file. Fails if the file already exists (use write_file to overwrite).",
+    description=(
+        "Create a new file. Fails if the file already exists (use write_file to overwrite). "
+        "For large files (>200 lines or containing special characters), prefer writing in chunks: "
+        "create .part1 / .part2 files separately, then merge with "
+        "bash('cat file.part1 file.part2 > file && rm file.part1 file.part2')."
+    ),
     schema={
         "type": "object",
         "properties": {
