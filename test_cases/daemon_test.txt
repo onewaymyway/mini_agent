@@ -1,0 +1,10 @@
+$env:PYTHONPATH = "$PWD\src"
+
+python main.py daemon start
+python main.py daemon stop
+python main.py daemon status
+
+python -m mini_agent daemon start
+python -m mini-agent daemon start
+
+python -m mini_agent
