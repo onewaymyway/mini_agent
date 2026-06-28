@@ -58,7 +58,8 @@ cd mini_agent
 pip install -r requirements.txt
 ```
 
-当前项目以及可以在安卓 Termux环境运行了！！！！
+当前项目已经可以在安卓 Termux环境运行了！！！！
+本人平时也是在Termux玩，开发的时候才用windows
 > 📱 完整的 Termux 环境搭建、运行与稳定性优化指南请参考：[TERMUX_README.md](TERMUX_README.md)
 
 ### 配置 API Key
