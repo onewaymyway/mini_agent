@@ -28,7 +28,7 @@
 | 🔌 MCP 支持 | Model Context Protocol 集成，支持 stdio/SSE 传输，可扩展外部工具服务 |
 | 🔍 Web Search | 支持 DuckDuckGo（默认）、Brave、Serper、Tavily 等多种搜索后端 |
 | 🤖 自定义子 Agent | 预设角色模板（.agent/agents/*.md），结构化参数注入，支持工具/模型限制 |
-| 🔗 Hooks 机制 | 关键事件自动执行 shell 命令，支持拦截/修改工具调用，新增 `TurnEnd` 一轮结束 hook（通知/agent 接管/自动化测试），项目级/全局级配置 |
+| 🔗 Hooks 机制 | 15 个生命周期事件（Session / Prompt / Tool / Subagent / Task / Stop / Compact / TurnEnd），shell 命令自动执行，支持拦截工具调用、监控 SubAgent 终态、阻止不必要的历史压缩，项目级/全局级配置 |
 | 🎯 Task 日志实时查看 | 运行时方向键切换查看不同任务日志，状态栏显示任务状态概要 |
 | 🖼️ 图片技能 | 图片信息提取与问答（ask_image）、文本生成图片（gen_image_with_text） |
 | 📝 Reminder 系统 | 动态提示注入机制，工具出错/用户意图等情境下自动追加解决经验，同轮去重防重复 |
@@ -744,7 +744,7 @@ python -m pytest tests/ -q
 - [Plan 和 Task 指南](docs/plan-and-task-guide.md) — 规划和任务系统，含 `plan_snapshot.json` 持久化与 session 重启恢复
 - [SubAgent 机制](docs/subagent-mechanism.md) — Sub-Agent 执行与重试机制详解
 - [自定义子 Agent](docs/custom-sub-agents.md) — 预设角色模板，结构化参数注入
-- [Hooks 机制](docs/hooks.md) — **更新**：新增 `TurnEnd` 事件（一轮结束通知 / agent-to-agent 接管 / 自动化测试），`runner.py` 跨平台编码修复（Windows GBK 问题）
+- [Hooks 机制](docs/hooks.md) — **更新**：15 个生命周期事件（新增 `PostToolUseFailure`、`PostToolBatch`、`SubagentStart`、`SubagentStop`、`TaskCreated`、`TaskCompleted`、`Stop`、`PreCompact`、`PostCompact`；`SessionStart` 从预留升级为已接入），完整事件时序图与用例
 - [Skill 系统指南](docs/skill-system-guide.md) — 技能机制详解
 - [代码结构指南](docs/code-structure-guide.md) — 项目结构说明
 - [受保护路径清单指南](docs/protected-paths-guide.md) — **新增**：T3 治理红线设计与扩展规则（自我演化基础设施）
@@ -783,6 +783,8 @@ MIT License
 *最后更新：2026-06-19* — API Key 配置重构：主推 providers.json 管理 LLM API Key，图片 Skill（ask_image / gen_image_with_text）保留环境变量方式
 
 *2026-06 Chunked Compact*：`compact_with_skills()` 增加超限自动切换路径——当历史已超出上下文窗口（`LLMContextWindowError`）时，新的 `_compact_chunked()` 把历史按 turn 边界切成多个 chunk，每 chunk 独立调用 `_llm.chat_with_retry` 生成摘要（完全绕开 `run_turn`），多 chunk 结果再合并为最终摘要；单 chunk / 合并失败均有降级保底；新增 prompt 文件 `compact_chunk_request.md` 和 `compact_merge_request.md`；所有 compact prompt 加强为要求保留工具调用结果摘要、精确文件路径、错误信息等关键成果信息；新增 [compact 设计文档](docs/compact-design.md)
+
+*2026-06 Hooks 扩展*：`KNOWN_EVENTS` 从 7 个扩展至 15 个，按生命周期分组新增：`PostToolUseFailure`（工具函数抛异常时触发）、`PostToolBatch`（一批 tool_calls 全部结束后触发一次，payload 含 `tool_names`/`results`/`error_count`）、`SubagentStart`（SubAgent 进入 RUNNING 状态时）、`SubagentStop`（SubAgent 进入终态时，含 `status`/`error`）、`TaskCreated`（`TaskManager.submit()` 时）、`TaskCompleted`（`_handle_terminal()` 确认终态时，覆盖 DONE/FAILED/CANCELLED）、`Stop`（agentic loop 无工具调用准备结束本轮时，可通过 `context` 注入追加 user 消息）、`PreCompact`（`_auto_compress_history()` 前，exit code 2 可阻止本次压缩）、`PostCompact`（压缩后，payload 含摘要文本）；`SessionStart` 从“预留未接”升级为真正接入（`_init_session` 完成后触发）；`hook_mgr` 引用提升到 batch 级别，避免每次工具调用重复查询；对应更新 `docs/hooks.md`、`CLAUDE.md`、`docs/subagent-mechanism.md`（8.4 节）、`docs/plan-and-task-guide.md`（第 12 节）、`docs/compact-design.md`（Hooks 集成节）
 
 *2026-06 TurnEnd Hook*：`hooks/loader.py` 新增 `TurnEnd` 事件（第 7 个 KNOWN_EVENT），在每轮 Agent 回复完成、等待用户输入之前触发；`HookResult` 新增 `user_input` 字段，`TurnEnd` hook 可返回 `{"user_input": "..."}` 替代真实用户输入，直接驱动下一轮（agent-to-agent 接管 / 自动化测试）；REPL 注入轮以灰色 `dim` 样式显示注入内容；`hooks/runner.py` 跨平台编码修复（全部改为二进制模式 + 显式 UTF-8，解决 Windows GBK `UnicodeEncodeError`；Windows 下 `shlex.split` 改用 `posix=False`）；新增示例 `.agent/hooks/turn_end_notify.py`（终端通知）和 `.agent/hooks/turn_end_auto_reply.py`（队列接管）
 
