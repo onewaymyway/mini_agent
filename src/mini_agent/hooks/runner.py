@@ -8,9 +8,15 @@ hooks/runner.py — 执行单个 hook 命令
     {"decision": "allow"}                       # 明确允许（默认行为）
     {"context": "额外注入的上下文文本"}          # 注入到下一轮 prompt（多事件通用）
     {"input": {...}}                            # 修改 PreToolUse 的工具调用参数
+    {"user_input": "..."}                       # TurnEnd 专用：替代真实用户输入
 
 hook 命令执行失败 / 超时 / 输出非 JSON，均视为 "allow"（不阻塞主流程），
 但错误信息会记录在 HookResult.error 中，便于调试。
+
+跨平台注意事项：
+  - stdin/stdout/stderr 全部使用二进制模式 + 显式 UTF-8 编解码，
+    避免 Windows 系统默认编码（GBK 等）导致的 UnicodeEncodeError。
+  - shlex.split 在 Windows 下使用 posix=False，避免反斜杠路径被错误处理。
 """
 
 from __future__ import annotations
@@ -18,9 +24,13 @@ from __future__ import annotations
 import json
 import shlex
 import subprocess
-from dataclasses import dataclass, field
+import sys
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Optional
+
+
+_IS_WINDOWS = sys.platform == "win32"
 
 
 @dataclass
@@ -47,14 +57,30 @@ class HookSpec:
     source: str = ""             # 来源说明（哪个配置文件/skill/agent profile）
 
 
+def _split_command(command: str) -> list[str]:
+    """跨平台 shell 命令分割。
+
+    Windows 下 shlex.split 默认 posix=True 会把反斜杠当转义符处理，
+    导致 Windows 路径被截断；改用 posix=False 可正确保留反斜杠。
+    其他平台保持 posix=True 默认行为。
+    """
+    return shlex.split(command, posix=not _IS_WINDOWS)
+
+
 def run_hook(spec: HookSpec, payload: dict[str, Any]) -> HookResult:
-    """同步执行一个 hook 命令，返回解析后的结果。"""
+    """同步执行一个 hook 命令，返回解析后的结果。
+
+    stdin/stdout/stderr 全部走二进制模式，payload 用 UTF-8 编码写入，
+    输出用 UTF-8（errors='replace'）解码，彻底规避 Windows GBK 问题。
+    """
+    payload_bytes = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+
     try:
         proc = subprocess.run(
-            shlex.split(spec.command) if isinstance(spec.command, str) else spec.command,
-            input=json.dumps(payload, ensure_ascii=False),
+            _split_command(spec.command) if isinstance(spec.command, str) else spec.command,
+            input=payload_bytes,
             capture_output=True,
-            text=True,
+            text=False,                          # 二进制模式，不依赖系统默认编码
             timeout=spec.timeout,
             cwd=str(spec.cwd) if spec.cwd else None,
         )
@@ -65,8 +91,8 @@ def run_hook(spec: HookSpec, payload: dict[str, Any]) -> HookResult:
         traceback.print_exc()
         return HookResult(decision="allow", error=f"hook failed to start: {e}")
 
-    out = (proc.stdout or "").strip()
-    err = (proc.stderr or "").strip()
+    out = (proc.stdout or b"").decode("utf-8", errors="replace").strip()
+    err = (proc.stderr or b"").decode("utf-8", errors="replace").strip()
 
     # 非零退出码且未给出 JSON 决策 -> 视为 block（约定：exit code 2 = block，类似 Claude Code）
     if proc.returncode == 2:

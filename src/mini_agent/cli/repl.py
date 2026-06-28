@@ -122,6 +122,11 @@ def run_repl(agent: Agent, skill_loader: SkillLoader) -> None:
                     _key_listener2.start()
                     try:
                         while user_input:
+                            # 显示注入的输入，视觉上与真实用户输入保持一致
+                            R.console.print(
+                                f"\n[bold green]You[/bold green][cyan] ❯ [/cyan]"
+                                f"[dim]{user_input}[/dim]"
+                            )
                             agent.run_turn(user_input)
                             _injected2 = getattr(agent, "_turn_end_user_input", None)
                             agent._turn_end_user_input = None
