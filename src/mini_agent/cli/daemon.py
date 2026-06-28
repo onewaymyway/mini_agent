@@ -1154,10 +1154,9 @@ def run_connected_repl(daemon_info: dict) -> None:
             # 所以这里不再调用 _bar_resume()，把恢复动作整体后移到本轮循环
             # 体的最后（流式输出彻底结束之后），下面发消息/解析内置命令/
             # 流式接收期间，刷新线程全程保持暂停。
-            _bar_resume()           # 有输入了，立刻恢复状态栏（旧bug写法）
-
             if not user_input:
-                continue
+                _bar_resume()        # 空输入直接 continue，没有后续输出，
+                continue              # 这里才是真正的"重新等待"窗口
 
             # ── 内置命令 ──────────────────────────────────────────────────────
             cmd = user_input.lower()

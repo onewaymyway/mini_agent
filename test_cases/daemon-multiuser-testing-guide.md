@@ -1150,7 +1150,105 @@ mini-agent daemon stop --project "$TESTPROJ"
 
 ---
 
-## 附录：测试场景与对应实现文件
+### R-3 connected 模式选择 session 之后必须立刻出现 `You ❯` 提示符（Windows 实测 bug）
+
+> 来源：Windows 下实测，终端 B 连上 daemon 之后，session 选择菜单正常显示，
+> 选完一个 session 后画面完全空白，没有任何 `You ❯` 提示符出现，表现像是
+> 卡住。根因和修复细节见 `daemon-multiuser-implementation-design.md` 第九节。
+
+```bash
+mini-agent daemon start --http-port 18999 --detach --project "$TESTPROJ"
+sleep 2
+mini-agent --project "$TESTPROJ"
+```
+
+人工观察以下几个时间点，每一个都应该立刻看到 `You ❯` 提示符，不应该有
+任何"画面空白、像卡住"的中间状态：
+
+1. **首次连接、daemon 已有历史 session**：展示 session 列表后，敲 `1`（或
+   直接回车选最近一条）确认选择——选完**立刻**出现 `You ❯`，中间不应该有
+   任何空白/卡顿的瞬间（哪怕只有零点几秒的视觉闪烁也算异常，说明状态栏
+   刷新线程又抢跑了一次）。
+2. **首次连接、daemon 没有历史 session**：应该完全跳过选择菜单，直接显示
+   `You ❯`。
+3. **会话中途切换**：输入 `/session list` → 选择另一个 session → 同样应该
+   立刻出现 `You ❯`，不应该空白。
+4. **新建 session**：输入 `/session new` → 立刻出现 `You ❯`。
+5. **每一轮对话结束后**：agent 回复完毕，紧接着应该立刻出现下一个
+   `You ❯`（这是 R-2 已经覆盖的场景，这里再确认一次没有因为本次状态栏
+   修复引入新的回归）。
+
+在 CLI 里输入 `exit` 退出，然后：
+```bash
+mini-agent daemon stop --project "$TESTPROJ"
+```
+
+**预期结果**：上述 5 个时间点，`You ❯` 都是立即可见的，没有任何空白
+中间状态。
+
+**判断依据**：本次 bug 的本质是"状态栏刷新线程的一次正常心跳，异步擦掉了
+主线程刚打印出来的提示符"——这是一个时机相关的竞态，复现概率不是
+100%（取决于 `_refresh_loop` 的 250ms 心跳和主线程打印提示符的时间差），
+单次观察"看起来正常"不能排除问题仍然存在，建议每个时间点重复测试
+3-5 次（尤其是第 1 点，这是用户实测报告里复现的场景）。如果在任意一次
+重复测试里观察到空白/卡顿，说明 `cli/daemon.py::_pick_session`/
+`run_connected_repl` 里的 `_bar_pause`/`_bar_resume` 又被改回了
+`set_statusbar_provider(None)` 这种不充分的旧实现，或者引入了新的、
+绕开 `_enter_input_mode`/`_exit_input_mode` 直接操作 stdout 的代码路径。
+对应的自动化回归测试见 `tests/test_daemon_connected_statusbar.py`（白盒
+断言调用的是 `_enter_input_mode`/`_exit_input_mode` 而非
+`set_statusbar_provider`），可以作为"代码层面有没有被改回旧实现"的
+快速检查，但不能替代这里的人工观察——单元测试无法捕捉真实终端环境下
+的时序竞态本身，只能确保"用了正确的 API"这件事没有被回归。
+
+---
+
+### R-4 connected 模式 agent 回复内容不能被状态栏刷新打断（R-3 修复后才暴露的 bug）
+
+> 来源：R-3 修复让 `You ❯` 提示符正常出现之后，紧接着实测发现 agent 的
+> 流式回复内容被状态栏行反复打断，一段连续的句子被切成"看起来随机断开"
+> 的碎片，状态栏那一行（`🌐 [connected] session=... state=running ...`）
+> 每隔几百毫秒就插进正在输出的文本中间。根因和修复细节见
+> `daemon-multiuser-implementation-design.md` 第十节。
+
+```bash
+mini-agent daemon start --http-port 18999 --detach --project "$TESTPROJ"
+sleep 2
+mini-agent --project "$TESTPROJ"
+```
+
+人工观察以下场景，agent 的回复文本必须是**连续完整**的一段输出，中间
+不应该出现任何状态栏行（`🌐 [connected] ...`）插在文本中间：
+
+1. **问一个会产生较长回复的问题**（比如"详细介绍一下 XXX 的历史"，
+   确保流式输出能持续几秒钟，给刷新线程足够的心跳次数去"插队"——
+   如果回复很短，单次测试可能凑巧没有命中竞态窗口，不能说明问题
+   已经修复）。仔细看完整的回复文本，确认没有任何一行是
+   `🌐 [connected] session=...` 格式的状态栏内容夹在中间。
+2. **连续问 3-5 轮**，每轮都检查一次，因为竞态的复现概率不是 100%。
+3. **故意让回复触发工具调用**（比如"帮我写一个脚本"），工具调用期间
+   往往耗时更长（等待用户确认权限、执行外部命令等），是更容易暴露
+   竞态的场景，同样检查输出有没有被状态栏打断。
+4. 如果机器上还连着另一个 CLI 终端（多用户场景），在终端 A 流式输出
+   期间，从终端 B 发一条消息，确认两边的输出都不会交叉打断（这个
+   场景同时验证了 observer 旁观打印的互斥锁是否仍然有效）。
+
+**预期结果**：上述所有场景下，agent 的回复文本都应该是连续完整的，
+没有任何状态栏行插在文本中间。
+
+**判断依据**：这是一个时机相关的竞态（取决于刷新线程 250ms 心跳和
+token 到达速度的相对时序），单次"看起来正常"不能排除问题仍然存在，
+重点观察长回复 + 多轮对话的场景。如果观察到回复被状态栏行打断，
+说明 `run_connected_repl()` 主循环里的 `_bar_resume()` 又被挪回了
+"读完用户输入就立刻调用"的位置，或者新增了某条会进入流式输出但忘记
+保持状态栏暂停的代码路径。
+
+对应的自动化回归测试见 `tests/test_daemon_connected_statusbar.py` 里
+`test_run_connected_repl_no_unconditional_resume_right_after_readline`、
+`test_run_connected_repl_bar_resume_not_called_immediately_after_input`、
+`test_run_connected_repl_bar_resume_called_after_streaming_done` 三条，
+同样只能确保"代码层面调用时机没有被改回旧模式"，不能替代这里的人工
+长回复观察。
 
 | 测试模块 | 对应实现 | 核心验证点 |
 |---------|---------|----------|

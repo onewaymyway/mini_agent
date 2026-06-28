@@ -898,3 +898,135 @@ connected 模式也走这条路径，而不是用自己的平行实现。
 1387 passed（含新增 6 个），失败的 4 个与本次改动完全无关
 （`jsonschema` 模块缺失、格式纠错标签判定、日志截断边界，均是预先存在的
 、和 daemon/Terminal 无关的失败）。
+
+---
+
+## 十、第九节修复之后暴露的新问题：agent 回复内容被状态栏刷新打断（已修复）
+
+> 用户实测反馈：第九节的修复让 `You ❯` 提示符正常出现了，但紧接着发现
+> 新问题——agent 的回复在流式输出过程中被状态栏行反复打断，一段连续的
+> 中文句子被切成"看起来随机断开"的碎片：
+> ```
+> 他的主要身份标签：
+>   🌐 [connected] session=84a0b9e5  ● running  queue=0  clients=0
+>   🌐 [connected] session=84a0b9e5  ● running  queue=0  clients=0
+> 。
+>   🌐 [connected] session=84a0b9e5  ● running  queue=0  clients=0
+> 音乐风格产生了深远影响。
+> ```
+> 用户判断"感觉是被状态栏刷新破坏了"——方向完全正确，这是同一个根因
+> 在另一个时间窗口里的表现。
+
+### 10.1 根因
+
+第九节的修复把 `_bar_pause()`/`_bar_resume()` 从 `set_statusbar_provider(None)`
+换成了 `_enter_input_mode()`/`_exit_input_mode()`，解决了"等待用户输入"
+这个时间窗口的竞态。但 `run_connected_repl()` 主循环里 `_bar_resume()` 的
+**调用时机**没有一起改对：
+
+```python
+line = _sys.stdin.readline()
+...
+_bar_resume()           # 有输入了，立刻恢复状态栏   ← 问题就在这一行
+...
+turn_id = client.send_message(user_input, ...)   # 发消息
+...
+threading.Thread(target=stream_worker, ...).start()  # 流式接收
+done_event.wait(timeout=600)
+```
+
+代码原来的注释写的设计意图是"等待用户输入时：暂停；agent 回复期间：
+恢复，显示 session/state 信息"——这个意图本身就是错的。`_bar_resume()`
+清除 `_refresh_paused` 之后，刷新线程立刻恢复每 250ms 的心跳，而这正是
+`_connected_print_token()` 用裸 `_sys.stdout.write()` 持续输出流式 token
+的时间段——这条写入路径完全绕开了 `Terminal` 的渲染队列，跟刷新线程的
+`_draw_bar()`/`_erase_bar()`（同样直接写 stdout，但在另一个线程里）没有
+任何互斥协调。两个线程各写各的，必然在某个 token 写到一半的时候插入一行
+状态栏文字，把输出切成碎片——这正是用户截图里看到的现象。
+
+这个问题在第九节修复之前其实也存在（`_bar_resume()` 提前调用这件事
+本身没变过），只是当时连 `You ❯` 提示符都看不见，没人能注意到流式输出
+也有问题；修好提示符之后，这个一直存在的问题才第一次变得可观察。
+
+### 10.2 修复
+
+核心原则改成一句话："只要 connected REPL 自己还要往 stdout 写任何东西
+（提示符、session 列表、流式 token、结果提示、observer 旁观输出），
+刷新线程就必须保持暂停；只有在确定不会再自己写 stdout 的间隙，才允许
+恢复。" 具体改法：
+
+1. **删除"读完输入就立刻 `_bar_resume()`"这一行**，把恢复动作挪到
+   每一条独立路径各自的末尾——内置命令分支（`/session new`、
+   `/session list`、`/session`、`send_message` 失败）原来就会
+   `continue`、不会进入 streaming，所以各自在 `continue` 前调用一次
+   `_bar_resume()` 是正确的；唯一的主干路径（成功发消息 → 启动
+   `stream_worker` → `done_event.wait()` → 打印收尾换行）则要等到
+   **流式输出完全结束之后**才调用 `_bar_resume()`。
+
+2. **空输入分支**（`if not user_input: continue`）单独调一次
+   `_bar_resume()`——这条路径同样不会进入 streaming，必须自己负责恢复，
+   否则刷新线程会一直卡在暂停状态。
+
+3. `_pick_session()` 内部增加了重入检测（见 `_pick_session` 文档字符串
+   "重入保护"一节）：主循环 `/session list` 分支调用 `_pick_session()`
+   之前已经 `_bar_pause()` 过了，如果 `_pick_session()` 内部又无条件
+   调用一次 `_exit_input_mode()`，会把外层还想维持的暂停状态提前解除——
+   `_pick_session()` 返回后主循环还要打印 "✓ Switched to: ..." 这类
+   结果提示，这段输出会重新暴露在竞态里。`_pick_session()` 现在进入时
+   检查一次 `term._refresh_paused.is_set()`：已经是 `True` 说明外层在
+   管，自己全程不碰；否则自己用一次 `enter_input_mode`/`exit_input_mode`
+   包住"打印 session 列表 + 所有输入循环"整个函数体（而不是像第九节
+   那样只在每次循环内部反复进出——打印列表用的也是裸 `print()`，同样
+   需要保护）。
+
+### 10.3 影响范围与验证
+
+只改了 `cli/daemon.py`：`run_connected_repl()` 主循环里 `_bar_resume()`
+的调用位置、`_pick_session()` 的暂停范围和重入检测。未改动
+`ui/terminal.py`。
+
+`tests/test_daemon_connected_statusbar.py` 从 6 个扩到 12 个，新增的测试
+覆盖：
+- `_pick_session` 的暂停范围必须覆盖打印列表（不只是 `input()`）；
+- `_pick_session` 的重入保护——外层已暂停时不能再调用 `enter`/`exit`，
+  包括正常返回和 EOF 异常路径；
+- `run_connected_repl` 主干路径（消息发送成功 → 流式接收）之间不能有
+  `_bar_resume()`；
+- "刚读完输入、还没判断命令"这个区间不能有无条件执行的 `_bar_resume()`
+  （这是 bug 最初的错误写法，最容易在未来重构时被无意中重新引入）；
+- `_bar_resume()` 必须在 `done_event.wait()` 之后才出现；
+- 空输入分支必须自己调用一次 `_bar_resume()`。
+
+这几条静态源码检查都用了排除注释行的辅助函数 `_bar_resume_calls_in_code()`
+——本文件的注释里大量引用 `_bar_resume()` 这个词来解释历史 bug，纯字符串
+`in` 检测会把注释误判成代码，写测试时确认过这一点（最初几版测试在正确
+代码上也会"误报"失败，原因正是匹配到了注释文字）。
+
+验证方法同第九节：手动把 `_bar_resume()` 改回"读完输入就立刻调用"的
+旧写法生成一份模拟文件，确认相关测试（`test_run_connected_repl_
+no_unconditional_resume_right_after_readline`、`test_run_connected_repl_
+empty_input_path_resumes_bar`）能正确捕捉到回归，再恢复正确实现重新
+跑通全部 12 个测试。同时重新跑了一遍第九节模拟的旧
+`set_statusbar_provider(None)` 实现，确认对应测试依然能捕捉到那个更早的
+回归——两次修复互相独立可验证，没有互相掩盖。
+
+完整 `pytest` 套件跑下来 1393 passed（含新增的 12 个 daemon 状态栏测试），
+失败的 4 个与本次改动完全无关，跟第九节记录的是同一批
+（`jsonschema` 模块缺失、格式纠错标签判定、日志截断边界）。
+
+### 10.4 仍然存在的已知局限（有意为之，非 bug）
+
+修复后，状态栏在 connected 模式下基本不会再刷新——因为 connected REPL
+几乎全程都处于"打印提示符 / 等待输入 / 流式输出"这三种状态之一，刷新线程
+持续保持暂停。两次循环之间确实留了一个理论上"活的"窗口（`_bar_resume()`
+调用之后到下一轮 `_bar_pause()` 调用之前），但中间没有任何阻塞 I/O，
+Python 字节码执行速度远快于刷新线程 250ms 的心跳周期，实际上几乎不可能
+被刷新线程抓住这个窗口画出东西。也就是说，**这次修复的代价是 connected
+模式的状态栏几乎成了摆设——但这是必要的代价**：当前 `Terminal` 的刷新
+线程和 connected REPL 自己的裸 stdout 写入之间没有任何互斥机制，只要
+两者有重叠的活跃窗口就会冲突，没有办法在"让状态栏可见"和"保证输出不被
+打断"之间找到更好的折中。如果未来想恢复状态栏在 connected 模式下的
+可见性，需要先给 `_connected_print`/`_connected_print_token` 这类裸写
+路径接入 `Terminal` 的渲染队列（让它们也走 `_q.put(...)` 而不是直接
+`sys.stdout.write`），从根本上统一成单一写入路径，而不是在现有的"两条
+路径各写各的"架构上继续打补丁。
