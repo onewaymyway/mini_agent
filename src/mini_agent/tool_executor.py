@@ -3,19 +3,25 @@ tool_executor.py — 工具执行器
 
 职责：
 - 权限检查（PermissionGuard）
-- 工具调用（ToolRegistry）
+- 工具调用（ToolRegistry / MCPManager）
 - 结果截断（按工具类型分策略）
 - 结果缓存（ToolResultCache）
 - 文件变化注册（FileWatcher）
 - 工具统计（SessionStats）
+- Hook 拦截（PreToolUse / PostToolUse）
+- Lesson 规则触发（LessonRuleEngine）
+- 编辑回调（on_edit_detected）
+- Turn 内去重（SYS-DEDUP）
+- 因果链追踪（SessionTracer.record_tool_event）
 
 从 Agent 中拆出，Agent 只需持有一个 ToolExecutor 实例并调用 execute_all()。
 """
 
 from __future__ import annotations
 
+import hashlib as _hashlib
+import json as _json
 import re
-from pathlib import Path
 from typing import TYPE_CHECKING, Optional
 
 import mini_agent.ui.renderer as R
@@ -29,11 +35,21 @@ if TYPE_CHECKING:
     from mini_agent.perception.file_watcher import FileWatcher
     from mini_agent.config import SessionStats
 
+# 幂等工具集合（非写操作），才参与 turn 内去重（SYS-DEDUP）
+_DEDUP_TOOLS = frozenset({"read_file", "grep", "glob", "list_dir", "web_search"})
+
 
 class ToolExecutor:
     """
     执行一批工具调用并返回结果字符串列表。
-    所有副作用（权限、缓存、统计、文件追踪）都在这里管理。
+    所有副作用（权限、缓存、统计、文件追踪、hooks、lesson、dedup、tracer）
+    都在这里统一管理。
+
+    关键参数：
+      tracer         — 可选的 SessionTracer，用于记录因果链（Stage 6）
+      turn_id_getter — 返回当前 turn 计数的 callable，供 tracer 使用
+      history_getter — 返回当前 _history 列表的 callable，用于 SYS-DEDUP
+                       扫描本 turn 内已有的 tool_result，跨 LLM 调用去重
     """
 
     def __init__(
@@ -49,6 +65,9 @@ class ToolExecutor:
         lesson_engine=None,        # Optional[LessonRuleEngine]，Stage 1.2
         memory_sink=None,          # Optional[MemoryBackend]，lesson 写入目标（通常是项目级 memory）
         on_edit_detected=None,     # Optional[Callable[[dict], None]]，Stage 1.5
+        tracer=None,               # Optional[SessionTracer]，Stage 6
+        turn_id_getter=None,       # Optional[Callable[[], int]]，供 tracer 用
+        history_getter=None,       # Optional[Callable[[], list]]，供 SYS-DEDUP 跨调用去重
     ) -> None:
         self.cfg = cfg
         self.registry = registry
@@ -62,12 +81,84 @@ class ToolExecutor:
         self._lesson_engine = lesson_engine
         self._memory_sink = memory_sink
         self.on_edit_detected = on_edit_detected
+        self._tracer = tracer
+        self._turn_id_getter = turn_id_getter
+        self._history_getter = history_getter
 
-    def execute_all(self, response: "LLMResponse") -> tuple[list, list[str]]:
+    def execute_all(
+        self,
+        response: "LLMResponse",
+        history: Optional[list] = None,
+    ) -> tuple[list, list[str]]:
         """
         执行 response 中所有工具调用，返回 (tool_calls, result_strs)。
+
+        参数：
+          history — 当前 turn 的历史消息列表（可选）。
+                    传入时启用 SYS-DEDUP 跨 LLM 调用去重；
+                    未传入时仍做 batch 内去重。
+                    优先使用构造时注入的 history_getter；此参数作为兼容入口。
         """
         result_strs: list[str] = []
+
+        # ── [SYS-DEDUP] 初始化去重状态 ────────────────────────────────────────
+        # _seen_this_batch  : 本次 execute_all 调用内已见的 (name, hash) → result
+        # _seen_in_history  : 本 turn 内跨 LLM 调用已有的 tool_result（从 history 扫出）
+        _seen_this_batch: dict[tuple[str, str], str] = {}
+        _seen_in_history: dict[tuple[str, str], str] = {}
+
+        _TR_OPEN = "<tool_result>"
+        _TR_CLOSE = "</tool_result>"
+        try:
+            from mini_agent.history.entry import HType as _HType
+            _have_htype = True
+        except Exception:
+            _have_htype = False
+
+        # 解析 history：优先 getter，其次参数
+        _history: Optional[list] = None
+        if self._history_getter is not None:
+            try:
+                _history = self._history_getter()
+            except Exception:
+                pass
+        if _history is None:
+            _history = history
+
+        if _history is not None:
+            for _msg in reversed(_history):
+                if _msg.get("role") != "user":
+                    continue
+                _mt = _msg.get("_type")
+                _c = _msg.get("content", "")
+                _is_tr = (
+                    (_mt == _HType.TOOL_RESULT if _have_htype else False)
+                    if _mt is not None
+                    else (isinstance(_c, str) and _c.startswith(_TR_OPEN))
+                )
+                if not _is_tr:
+                    break  # 碰到非 tool_result 消息即停，本 turn 已全部扫完
+                if isinstance(_c, str) and '"name"' in _c and '"output"' in _c:
+                    try:
+                        _start = len(_TR_OPEN) + 1
+                        _end = _c.rfind(_TR_CLOSE) - 1
+                        if _end > _start:
+                            _entry = _json.loads(_c[_start:_end])
+                            _tname = _entry.get("name", "")
+                            _tout = _entry.get("output", "")
+                            if _tname and not _tout.startswith("[same result"):
+                                _h = _hashlib.md5(_tout.encode()).hexdigest()[:12]
+                                _seen_in_history[(_tname, _h)] = _tout
+                    except Exception:
+                        pass
+
+        # ── 当前 turn_id（供 tracer 使用）───────────────────────────────────
+        _turn_id: int = 0
+        if self._turn_id_getter is not None:
+            try:
+                _turn_id = self._turn_id_getter()
+            except Exception:
+                pass
 
         for tc in response.tool_calls:
             R.print_tool_call(tc.name, tc.input, verbose=self.cfg.verbose)
@@ -197,6 +288,49 @@ class ToolExecutor:
                         self._memory_sink.add(entry)
                 except Exception:
                     pass  # lesson 生成失败不应影响工具调用主流程
+
+            # [SYS-DEDUP] Turn 内幂等工具结果去重
+            # 非写操作工具（read_file / grep / glob / list_dir / web_search）才做去重；
+            # 写操作或已是错误/占位符时跳过，确保每次执行的副作用都能被记录。
+            if tc.name in _DEDUP_TOOLS and not result_str.startswith("["):
+                _h = _hashlib.md5(result_str.encode()).hexdigest()[:12]
+                _key = (tc.name, _h)
+                if _key in _seen_this_batch or _key in _seen_in_history:
+                    _short = _json.dumps(tc.input, ensure_ascii=False)[:60]
+                    _dedup_str = f"[same result as above: {tc.name}({_short})]"
+                    R.print_info(
+                        f"[dedup] {tc.name} result deduplicated "
+                        f"({len(result_str)} chars → {len(_dedup_str)} chars)"
+                    )
+                    result_str = _dedup_str
+                else:
+                    _seen_this_batch[_key] = result_str
+
+            # [Stage 6 / 6.4] 工具调用因果链记录
+            if self._tracer is not None:
+                try:
+                    from mini_agent.perception.observability import classify_error
+                    from mini_agent.perception.lesson_rules import is_tool_error as _ite
+                    _is_err = _ite(result_str)
+                    _err_cat = classify_error(result_str) if _is_err else None
+                    # 因果链：检测"失败后重试成功"——在已有 result_strs 里找同名工具的失败记录
+                    _resolves_seq: Optional[int] = None
+                    if not _is_err:
+                        from mini_agent.perception.lesson_rules import is_tool_error as _ite2
+                        for _prev_idx, _prev_r in enumerate(result_strs):
+                            if _ite2(_prev_r):
+                                _resolves_seq = _prev_idx + 1  # 1-based
+                    self._tracer.record_tool_event(
+                        turn_id=_turn_id,
+                        sequence_in_turn=len(result_strs) + 1,
+                        tool_name=tc.name,
+                        result_str=result_str,
+                        is_error=_is_err,
+                        error_category=_err_cat,
+                        resolves_seq=_resolves_seq,
+                    )
+                except Exception:
+                    pass  # tracer 失败不影响主流程
 
             result_strs.append(result_str)
 

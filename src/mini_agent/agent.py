@@ -486,6 +486,11 @@ class Agent:
             lesson_engine=_lesson_engine,
             memory_sink=self._memory,
             on_edit_detected=self._on_edit_detected,
+            # [Stage 6] tracer 通过 _update_executor_tracer() 在 _init_tracer 后注入；
+            # turn_id_getter / history_getter 用 lambda 懒引用，调用时已就绪。
+            tracer=None,
+            turn_id_getter=lambda: self.stats.turns,
+            history_getter=lambda: self._history,
         )
         # [SYS-MCP] 注入 MCPManager（_init_components 在 MCP 注册后调用，此时已就绪）
         self._tool_executor._mcp_manager = getattr(self, "_mcp_manager", None)
@@ -690,6 +695,9 @@ class Agent:
             self._tracer = SessionTracer(session_dir, self._session.id, enabled=enabled)
         except Exception:
             self._tracer = None
+        # 同步更新 ToolExecutor 的 tracer 引用
+        if hasattr(self, '_tool_executor') and self._tool_executor is not None:
+            self._tool_executor._tracer = self._tracer
 
     def _bind_raw_path(self) -> None:
         """将 raw history 的 .jsonl 文件路径绑定到当前 session，启用即时落盘。
@@ -2706,235 +2714,22 @@ class Agent:
 
     def _execute_tools(self, response: LLMResponse) -> tuple[list, list[str]]:
         """
-        运行所有工具调用，返回 (tool_calls列表, result字符串列表)。
+        [已整合到 ToolExecutor.execute_all]
 
-        [SYS-DEDUP] 历史层去重：
-        同一 turn 内，若相同工具 + 相同参数的结果已经在历史里出现过，
-        则写入占位符 "[same result as above: <tool>(...)]" 而非完整内容。
-        这直接减少历史里的重复 token，缓存命中时尤为有效。
-
-        去重只看「本 turn 内已追加的 tool_result」，跨 turn 的重复由压缩策略处理。
+        代理到 self._tool_executor.execute_all()。
+        原有的权限检查、缓存、截断、文件追踪、hook、lesson、dedup、tracer
+        全部在 ToolExecutor 中统一实现，此处仅做转发，保持调用点不变。
         """
-        import hashlib as _hashlib, json as _json
-
-        result_strs: list[str] = []
-
-        # 收集本 turn 内已见过的 (tool_name, input_hash) → result_str
-        # 仅在本次 _execute_tools 调用内累积（一次 LLM 响应里的多个 tool_call）
-        _seen_this_batch: dict[tuple[str, str], str] = {}
-
-        # 同时扫描本 turn 内历史里已有的 tool_result 消息，提取已见的结果哈希
-        # 避免同 turn 内跨 LLM 调用的重复（例如 turn 里第二次 LLM 调用又 read 同文件）
-        _seen_in_history: dict[tuple[str, str], str] = {}
-        _TR_OPEN = "<tool_result>"
-        _TR_CLOSE = "</tool_result>"
-        from mini_agent.history.entry import HType as _HType
-        for _msg in reversed(self._history):
-            if _msg.get("role") != "user":
-                continue
-            # 用 _type 精确识别 tool_result（向后兼容无 _type 时用字符串前缀）
-            _mt = _msg.get("_type")
-            _c = _msg.get("content", "")
-            _is_tr = (
-                _mt == _HType.TOOL_RESULT
-                if _mt is not None
-                else (isinstance(_c, str) and _c.startswith(_TR_OPEN))
-            )
-            if not _is_tr:
-                break   # 碰到非 tool_result 消息就停，本 turn 的都扫完了
-            if isinstance(_c, str) and '"name"' in _c and '"output"' in _c:
-                try:
-                    _start = len(_TR_OPEN) + 1
-                    _end = _c.rfind(_TR_CLOSE) - 1
-                    if _end > _start:
-                        _entry = _json.loads(_c[_start:_end])
-                        _tname = _entry.get("name", "")
-                        _tout = _entry.get("output", "")
-                        if _tname and not _tout.startswith("[same result"):
-                            _h = _hashlib.md5(_tout.encode()).hexdigest()[:12]
-                            _seen_in_history[(_tname, _h)] = _tout
-                except Exception:
-                    pass
-
-        for tc in response.tool_calls:
-            R.print_tool_call(tc.name, tc.input, verbose=self.cfg.verbose)
-            self.stats.tool_calls += 1
-
-            allowed = self.guard.check(tc.name, tc.input)
-            if not allowed:
-                result_str = "[Tool call denied by user]"
-                R.print_tool_error(tc.name, "denied by user")
-                if self.cfg.tool_stats_enabled:
-                    self.stats.record_tool_call(tc.name, False, 0)
-            else:
-                # [SYS-TOOLCACHE] 检查缓存
-                _cached = None
-                if self._tool_cache:
-                    _cached = self._tool_cache.get(tc.name, tc.input)
-
-                if _cached is not None:
-                    result_str = _cached
-                    R.print_tool_result(tc.name, f"[cache] {result_str[:80]}...")
-                    if self.cfg.tool_stats_enabled:
-                        self.stats.record_tool_call(tc.name, True, len(result_str))
-                else:
-                    try:
-                        result = self.registry.call(tc.name, tc.input)
-                        result_str = str(result) if not isinstance(result, str) else result
-
-                        # [SYS-TRIM] 工具调用结果截断
-                        result_str = self._maybe_trim_result(tc.name, result_str)
-
-                        R.print_tool_result(tc.name, result_str)
-
-                        # [SYS-TOOLCACHE] 写入缓存
-                        if self._tool_cache:
-                            self._tool_cache.put(tc.name, tc.input, result_str)
-
-                        # [SYS-TOOLCACHE] 写操作执行成功后，立即使目标文件缓存失效，
-                        # 确保同一 turn 内后续的 read_file / grep 不返回旧数据。
-                        if (
-                            self._tool_cache
-                            and tc.name in ("write_file", "create_file", "patch_file", "delete_file")
-                            and not result_str.startswith("[error")
-                        ):
-                            _target_path = tc.input.get("path", "")
-                            if _target_path:
-                                self._tool_cache.invalidate_file(_target_path)
-
-                        # [SYS-WATCH] 注册 read_file 的文件
-                        if self._file_watcher and tc.name == "read_file":
-                            _path = tc.input.get("path", "")
-                            if _path:
-                                self._file_watcher.register(_path, result_str)
-
-                        if self.cfg.tool_stats_enabled:
-                            self.stats.record_tool_call(tc.name, True, len(result_str))
-                    except Exception as e:
-                        result_str = f"[tool error: {e}]"
-                        R.print_tool_error(tc.name, str(e))
-                        if self.cfg.tool_stats_enabled:
-                            self.stats.record_tool_call(tc.name, False, 0)
-
-            # [SYS-DEDUP] 去重检查：幂等工具（非写操作）才做去重
-            # 写操作、bash 等副作用工具不去重（每次执行结果可能不同）
-            _DEDUP_TOOLS = {"read_file", "grep", "glob", "list_dir", "web_search"}
-            if tc.name in _DEDUP_TOOLS and not result_str.startswith("["):
-                _h = _hashlib.md5(result_str.encode()).hexdigest()[:12]
-                _key = (tc.name, _h)
-                # 检查本 batch 或本 turn 历史里是否已有相同结果
-                if _key in _seen_this_batch or _key in _seen_in_history:
-                    _short = _json.dumps(tc.input, ensure_ascii=False)[:60]
-                    _dedup_str = f"[same result as above: {tc.name}({_short})]"
-                    R.print_info(f"[dedup] {tc.name} result deduplicated ({len(result_str)} chars → {len(_dedup_str)} chars)")
-                    result_str = _dedup_str
-                else:
-                    _seen_this_batch[_key] = result_str
-
-            # [Stage 6 / 6.4] 工具调用因果链记录
-            if self._tracer:
-                from mini_agent.perception.observability import classify_error
-                from mini_agent.perception.lesson_rules import is_tool_error as _ite6
-                _is_err6 = _ite6(result_str)
-                _err_cat6 = classify_error(result_str) if _is_err6 else None
-                # 因果链：检测"失败后重试成功"——在 result_strs 里往前找同名工具的失败记录
-                _resolves_seq6: object = None
-                if not _is_err6:
-                    for _prev_idx, _prev_r in enumerate(result_strs):
-                        if _ite6(_prev_r):
-                            _resolves_seq6 = _prev_idx + 1  # 1-based
-                self._tracer.record_tool_event(
-                    turn_id=self.stats.turns,
-                    sequence_in_turn=len(result_strs) + 1,
-                    tool_name=tc.name,
-                    result_str=result_str,
-                    is_error=_is_err6,
-                    error_category=_err_cat6,
-                    resolves_seq=_resolves_seq6,
-                )
-            result_strs.append(result_str)
-
-        return response.tool_calls, result_strs
+        return self._tool_executor.execute_all(response)
 
     def _maybe_trim_result(self, tool_name: str, result: str) -> str:
         """
-        [SYS-TRIM] 按工具类型分策略截断长结果。
+        [已废弃 / 整合到 ToolExecutor._trim_result]
 
-        各工具截断方向：
-        - bash：保留头部（命令行 + 前几行输出）+ 尾部（最终输出/错误在末尾）
-                尾部权重更高（tail_ratio=0.6），因为 exit code 和 stderr 通常在尾部
-        - read_file：头尾各保留一半（结构声明在头，返回值/测试在尾）
-                     提示 LLM 使用 start_line/end_line 精确读取
-        - grep/glob：平铺匹配行，保留前 N 行（最相关的命中优先）
-        - 其他：通用头多尾少截断
+        截断逻辑已迁移到 tool_executor.py，保留此方法仅作兼容占位。
+        实际不再被调用（_execute_tools 已代理到 ToolExecutor.execute_all）。
         """
-        if not self.cfg.tool_result_trim_enabled:
-            return result
-        threshold = self.cfg.tool_result_trim_threshold
-        if len(result) <= threshold:
-            return result
-
-        lines = result.splitlines()
-        total = len(lines)
-
-        if tool_name == "bash":
-            # bash：尾部权重更高——实际输出/错误/exit 通常在尾部
-            # 保留头部（命令回显 + 早期 stdout）30% + 尾部 60%，中间省略
-            if total > 20:
-                tail_ratio = getattr(self.cfg.tool_trim, "bash_tail_ratio", 0.6)
-                tail_n = max(8, int(total * tail_ratio))
-                head_n = max(5, int(total * 0.3))
-                # 确保 head + tail 不超出 total
-                if head_n + tail_n >= total:
-                    head_n = total // 3
-                    tail_n = total - head_n
-                omitted = total - head_n - tail_n
-                if omitted > 0:
-                    return (
-                        "\n".join(lines[:head_n])
-                        + f"\n... [{omitted} lines omitted] ...\n"
-                        + "\n".join(lines[-tail_n:])
-                    )
-
-        elif tool_name == "read_file":
-            # read_file：头尾各半，提示精确范围读取
-            if total > 30:
-                window = min(total, max(30, threshold // 60))
-                if window < total:
-                    head_n = window // 2
-                    tail_n = window - head_n
-                    omitted = total - head_n - tail_n
-                    return (
-                        "\n".join(lines[:head_n])
-                        + f"\n... [{omitted} lines omitted — use start_line/end_line to read specific range] ...\n"
-                        + "\n".join(lines[-tail_n:])
-                    )
-
-        elif tool_name in ("grep", "glob"):
-            # grep/glob：平铺结果，只保留前 N 行（最相关命中优先）
-            grep_max = getattr(self.cfg.tool_trim, "grep_max_lines", 50)
-            if total > grep_max:
-                keep = min(grep_max, max(20, threshold // 60))
-                omitted = total - keep
-                return (
-                    "\n".join(lines[:keep])
-                    + f"\n... [{omitted} more matches omitted] ..."
-                )
-
-        # 通用策略（头多尾少）
-        if total > 30:
-            head_n = 15
-            tail_n = 5
-            omitted = total - head_n - tail_n
-            if omitted > 0:
-                return (
-                    "\n".join(lines[:head_n])
-                    + f"\n... [{omitted} lines omitted] ...\n"
-                    + "\n".join(lines[-tail_n:])
-                )
-
-        # 字符截断兜底
-        return result[:threshold] + f"\n... [{len(result)-threshold} chars omitted]"
+        return self._tool_executor._trim_result(tool_name, result)
 
     def _build_tool_result_message(self, tool_calls, results: list[str]) -> dict:
         """
