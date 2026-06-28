@@ -727,13 +727,22 @@ def _pick_session(
 
     while True:
         try:
+            # 每次阻塞 input() 前关掉状态栏，输入完成后恢复
             if term is not None:
-                term._enter_input_mode()
+                try:
+                    term.set_statusbar_provider(None)
+                except Exception:
+                    pass
             try:
                 raw = input("  选择 [1]: ").strip()
             finally:
                 if term is not None:
-                    term._exit_input_mode()
+                    try:
+                        term.set_statusbar_provider(
+                            lambda: _connected_status_bar_provider(client)
+                        )
+                    except Exception:
+                        pass
         except (EOFError, KeyboardInterrupt):
             print()
             return None
@@ -1007,29 +1016,47 @@ def run_connected_repl(daemon_info: dict) -> None:
     _obs_thread = threading.Thread(target=_observer_worker, daemon=True, name="daemon-observer")
     _obs_thread.start()
 
+    # ── 状态栏控制辅助函数 ────────────────────────────────────────────────────
+    # connected 模式的状态栏策略：
+    #   等待用户输入时：关掉 provider（状态栏静止/消失），不干扰提示符
+    #   agent 回复期间：打开 provider（显示 session/state 信息）
+    # 这样比 _enter_input_mode()/_exit_input_mode() 简单得多——那套机制
+    # 是为 prompt_toolkit 重量级场景设计的，包含 join() 等阻塞操作，
+    # 在 connected 模式下反而引入额外的时序复杂度。
+    def _bar_pause() -> None:
+        """等待用户输入前：关掉状态栏 provider，让刷新线程不再写屏幕。"""
+        if _term is not None:
+            try:
+                _term.set_statusbar_provider(None)
+            except Exception:
+                pass
+
+    def _bar_resume() -> None:
+        """用户输入完成 / agent 回复期间：重新注册 provider，恢复状态栏。"""
+        if _term is not None:
+            try:
+                _term.set_statusbar_provider(lambda: _connected_status_bar_provider(client))
+            except Exception:
+                pass
+
     # ── REPL 主循环 ───────────────────────────────────────────────────────────
     try:
         while True:
             _waiting_input.set()    # 标记：正在等用户输入（允许 observer 打印）
-            # 进入阻塞输入前暂停状态栏刷新，防止刷新线程覆盖提示符
-            if _term is not None:
-                _term._enter_input_mode()
+            _bar_pause()            # 关掉状态栏刷新，防止覆盖 You ❯ 提示符
+            _sys.stdout.write(prompt)
+            _sys.stdout.flush()
             try:
-                _sys.stdout.write(prompt)
-                _sys.stdout.flush()
-                try:
-                    line = _sys.stdin.readline()
-                    if line == "":   # EOF
-                        raise EOFError
-                    user_input = line.rstrip("\n").strip()
-                except (EOFError, KeyboardInterrupt):
-                    _sys.stdout.write("\n")
-                    _connected_print("[daemon] Disconnected (daemon continues running)\n")
-                    break
-            finally:
-                # 输入完成后恢复状态栏刷新
-                if _term is not None:
-                    _term._exit_input_mode()
+                line = _sys.stdin.readline()
+                if line == "":   # EOF
+                    raise EOFError
+                user_input = line.rstrip("\n").strip()
+            except (EOFError, KeyboardInterrupt):
+                _sys.stdout.write("\n")
+                _connected_print("[daemon] Disconnected (daemon continues running)\n")
+                break
+
+            _bar_resume()           # 有输入了，恢复状态栏
 
             if not user_input:
                 continue
@@ -1051,6 +1078,8 @@ def run_connected_repl(daemon_info: dict) -> None:
                 continue
 
             if cmd in ("/session list", "/sessions", "/session ls"):
+                # _pick_session 内部自己管状态栏（用 term 参数），
+                # 这里不需要额外暂停
                 chosen = _pick_session(client, term=_term)
                 if chosen is None:
                     continue
@@ -1099,7 +1128,6 @@ def run_connected_repl(daemon_info: dict) -> None:
                 nonlocal printed_any
                 with _observer_lock:  # 与 observer 互斥，避免输出交错
                     if not printed_any:
-                        # 修复 2：首个 token 前输出 agent 名字前缀
                         _sys.stdout.write(agent_prefix)
                         _sys.stdout.flush()
                     _connected_print_token(text)
@@ -1144,11 +1172,7 @@ def run_connected_repl(daemon_info: dict) -> None:
     finally:
         # 清理：停止 observer 线程，停止状态栏
         _observer_stop.set()
-        if _term is not None:
-            try:
-                _term.set_statusbar_provider(None)
-            except Exception:
-                pass
+        _bar_pause()  # 确保退出时状态栏已清除
 
 
 # ── 自动拉起 daemon（选项 A：默认行为）──────────────────────────────────────
