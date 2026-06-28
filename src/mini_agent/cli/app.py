@@ -18,6 +18,39 @@ from pathlib import Path
 import mini_agent.ui.renderer as R
 
 
+def _extract_project_root(argv: list[str]) -> tuple[Path, list[str]]:
+    """
+    从子命令的 argv 里取出 --project/-p 的值，并返回"去掉这两个 token 之后"的
+    剩余 argv。
+
+    修复一个真实存在的 bug：之前 daemon/user/self 三处子命令短路各自写了一份
+    几乎一样的"扫描 --project，找到就记下值"的代码，但只是**读取**，从来没有
+    把这两个 token 从转发给子命令处理函数的 argv 里**去掉**。
+    `run_daemon_cli` 的 `start`/`stop`/`status` 子命令凑巧没有用严格的
+    argparse（`stop`/`status` 根本不解析 rest，`start` 用 parse_known_args
+    能容忍多余参数），这个 bug 一直没暴露。但 `run_user_cli`/`run_self_cli`
+    用的是标准的 `argparse.ArgumentParser`（不认识 `--project` 这个选项），
+    一旦 argv 里残留了 `--project <path>` 没被消费掉，就会被当成"多余的
+    位置参数"直接报错拒绝——也就是说，`mini-agent user list --project <path>`
+    这种最基本的用法，从 `user`/`self` 子命令加上的那天起就没有真正可用过，
+    只有"在当前目录运行、不显式传 --project"这一种用法是好的。
+
+    现在统一在这里既扫描又剔除，三处短路逻辑都改成调用这个函数，从根上
+    避免同一个 bug 在未来新增的子命令里再出现一次。
+    """
+    project_root = Path.cwd()
+    rest: list[str] = []
+    i = 0
+    while i < len(argv):
+        if argv[i] in ("--project", "-p") and i + 1 < len(argv):
+            project_root = Path(argv[i + 1]).expanduser()
+            i += 2
+            continue
+        rest.append(argv[i])
+        i += 1
+    return project_root, rest
+
+
 def main() -> int:
     # ── eval 子命令短路：在进入主 argparse 流程之前优先处理 ───────────────────
     # 对应 self_evolution_implementation_plan.md Stage 3.2。`mini-agent eval ...`
@@ -32,37 +65,24 @@ def main() -> int:
     # `mini-agent daemon start|stop|status` 不进入主 argparse 流程
     if len(sys.argv) > 1 and sys.argv[1] == "daemon":
         from mini_agent.cli.daemon import run_daemon_cli
-        project_root = Path.cwd()
-        # 快速扫描 --project 参数
-        for i, arg in enumerate(sys.argv):
-            if arg in ("--project", "-p") and i + 1 < len(sys.argv):
-                project_root = Path(sys.argv[i + 1]).expanduser()
-                break
-        return run_daemon_cli(sys.argv[2:], project_root)
+        project_root, rest = _extract_project_root(sys.argv[2:])
+        return run_daemon_cli(rest, project_root)
 
     # ── daemon 多用户架构 Phase 1：user 子命令短路 ───────────────────────────
     # `mini-agent user list|add|remove|role|token` 同样不进入主 argparse 流程，
     # 写法与上面的 daemon 子命令完全一致（--project 扫描 + 短路转发）。
     if len(sys.argv) > 1 and sys.argv[1] == "user":
         from mini_agent.cli.commands.user_cmd import run_user_cli
-        project_root = Path.cwd()
-        for i, arg in enumerate(sys.argv):
-            if arg in ("--project", "-p") and i + 1 < len(sys.argv):
-                project_root = Path(sys.argv[i + 1]).expanduser()
-                break
-        return run_user_cli(sys.argv[2:], project_root)
+        project_root, rest = _extract_project_root(sys.argv[2:])
+        return run_user_cli(rest, project_root)
 
     # ── daemon 多用户架构 Phase 4：self 子命令短路 ───────────────────────────
     # `mini-agent self status` 同样不进入主 argparse 流程，写法与上面的
     # user 子命令完全一致。
     if len(sys.argv) > 1 and sys.argv[1] == "self":
         from mini_agent.cli.commands.self_cmd import run_self_cli
-        project_root = Path.cwd()
-        for i, arg in enumerate(sys.argv):
-            if arg in ("--project", "-p") and i + 1 < len(sys.argv):
-                project_root = Path(sys.argv[i + 1]).expanduser()
-                break
-        return run_self_cli(sys.argv[2:], project_root)
+        project_root, rest = _extract_project_root(sys.argv[2:])
+        return run_self_cli(rest, project_root)
 
     # ── 全局异常捕获：确保任何启动错误都能显示 ────────────────────────────────
     try:
