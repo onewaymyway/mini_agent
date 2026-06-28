@@ -51,7 +51,17 @@ from . import tool  # noqa
 )
 def bash(command: str, timeout: int = 300, workdir: Optional[str] = None) -> str:
     """Execute a shell command and return combined stdout/stderr."""
+    import os
     cwd = Path(workdir).expanduser() if workdir else Path.cwd()
+
+    # 注入 Python UTF-8 环境变量，避免 Windows GBK 终端导致子进程
+    # print(emoji/中文) 时抛出 UnicodeEncodeError。
+    # PYTHONUTF8=1  : Python 3.7+ UTF-8 模式（影响 stdin/stdout/stderr/文件默认编码）
+    # PYTHONIOENCODING=utf-8 : 兼容旧版 Python，强制 I/O 编码
+    # 二者同时设置，兼容性最佳；不影响非 Python 进程。
+    _env = os.environ.copy()
+    _env.setdefault("PYTHONUTF8", "1")
+    _env.setdefault("PYTHONIOENCODING", "utf-8")
 
     try:
         result = subprocess.run(
@@ -60,6 +70,7 @@ def bash(command: str, timeout: int = 300, workdir: Optional[str] = None) -> str
             cwd=cwd,
             capture_output=True,
             timeout=timeout,
+            env=_env,
         )
 
         def decode(data: bytes) -> str:
