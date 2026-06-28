@@ -58,6 +58,9 @@ cd mini_agent
 pip install -r requirements.txt
 ```
 
+当前项目以及可以在安卓 Termux环境运行了！！！！
+> 📱 完整的 Termux 环境搭建、运行与稳定性优化指南请参考：[TERMUX_README.md](TERMUX_README.md)
+
 ### 配置 API Key
 
 #### LLM Provider API Key（推荐：providers.json）
@@ -147,7 +150,8 @@ python -m mini_agent "写一个质数筛法的 Python 脚本"
 # 沙箱模式（安全测试）
 python -m mini_agent --sandbox
 
-# Termux / 简化终端模式（状态栏不再原地刷新，关闭光标控制）
+# 简化终端模式（状态栏不再原地刷新，关闭光标控制,如果在某些环境下状态栏显示不正常可以开启这个模式）
+
 python -m mini_agent --simple-mode
 
 # 使用 main.py 启动，更多参数
