@@ -246,7 +246,7 @@ python main.py --provider nvidia --model qwen/qwen3.5-122b-a10b --system-tool-ca
 ### Hooks 机制
 
 - 配置文件：`.agent/hooks.json`（项目级）或 `~/.agent/hooks.json`（全局级）
-- 支持事件：`UserPromptSubmit`、`PreToolUse`、`PostToolUse`、`PreCompact`、`SessionStart`/`SessionEnd`
+- 支持事件：`UserPromptSubmit`、`PreToolUse`、`PostToolUse`、`PreCompact`、`SessionStart`/`SessionEnd`、`TurnEnd`（一轮结束后、等待用户输入前；可返回 `user_input` 替代真实输入）
 - Hook 可以通过 stdin 接收 JSON payload，通过 stdout 返回决策（allow/block/context/input）
 - CLI 命令：`/hooks list|reload`
 
@@ -461,7 +461,7 @@ python main.py --provider nvidia --model qwen/qwen3.5-122b-a10b --system-tool-ca
 - [记忆管理指南](docs/memory-management-guide.md) — 长期记忆系统，含 Lesson Memory（规则触发/SessionEnd 反思/人类反馈纠正检测）
 - [history 类型化设计](docs/history-typed-design.md) — `_type` 字段化设计，含 `user_correction` 类型
 - [权限管理指南](docs/permission-guide.md) — 权限守卫、白名单，`(e)dit` 接入 Lesson Memory
-- [Hooks 机制](docs/hooks.md) — 关键事件自动执行命令，`SessionEnd` 接入
+- [Hooks 机制](docs/hooks.md) — 关键事件自动执行命令，`SessionEnd` 接入，`TurnEnd` 新增（一轮结束通知 / agent-to-agent 接管 / 自动化测试）
 - [Task 日志实时查看](docs/task-focus-viewing.md) — 方向键切换查看任务日志机制
 - [终端显示机制深度解析](docs/terminal-display-internals.md) — 线程模型、状态栏控制、三阶段状态机、token 过滤
 - [终端 I/O 指南](docs/terminal-io-guide.md) — 终端渲染与输入机制
