@@ -782,6 +782,8 @@ MIT License
 
 *最后更新：2026-06-19* — API Key 配置重构：主推 providers.json 管理 LLM API Key，图片 Skill（ask_image / gen_image_with_text）保留环境变量方式
 
+*2026-06 Chunked Compact*：`compact_with_skills()` 增加超限自动切换路径——当历史已超出上下文窗口（`LLMContextWindowError`）时，新的 `_compact_chunked()` 把历史按 turn 边界切成多个 chunk，每 chunk 独立调用 `_llm.chat_with_retry` 生成摘要（完全绕开 `run_turn`），多 chunk 结果再合并为最终摘要；单 chunk / 合并失败均有降级保底；新增 prompt 文件 `compact_chunk_request.md` 和 `compact_merge_request.md`；所有 compact prompt 加强为要求保留工具调用结果摘要、精确文件路径、错误信息等关键成果信息；新增 [compact 设计文档](docs/compact-design.md)
+
 *2026-06 TurnEnd Hook*：`hooks/loader.py` 新增 `TurnEnd` 事件（第 7 个 KNOWN_EVENT），在每轮 Agent 回复完成、等待用户输入之前触发；`HookResult` 新增 `user_input` 字段，`TurnEnd` hook 可返回 `{"user_input": "..."}` 替代真实用户输入，直接驱动下一轮（agent-to-agent 接管 / 自动化测试）；REPL 注入轮以灰色 `dim` 样式显示注入内容；`hooks/runner.py` 跨平台编码修复（全部改为二进制模式 + 显式 UTF-8，解决 Windows GBK `UnicodeEncodeError`；Windows 下 `shlex.split` 改用 `posix=False`）；新增示例 `.agent/hooks/turn_end_notify.py`（终端通知）和 `.agent/hooks/turn_end_auto_reply.py`（队列接管）
 
 *2026-06 自我演化基础设施（Stage 0）*：`config.py` 拆分为 `config/` 包（外部 import 路径不变）；新增 `manifest.json`/`plan_snapshot.json` 任务与计划持久化，支持 session 重启恢复；新增 `update_task_progress` 工具；`get_task_status` 截断时主动提示；新增 `scripts/protected_paths.py` 受保护路径清单（T3 治理红线）

@@ -145,7 +145,7 @@ Agent 作为纯编排层，委托三个核心组件完成具体工作：
 - `run_turn()` — 处理一轮用户输入（保存快照、触发技能、调用循环）
 - `_agentic_loop()` — 循环调用 LLM 和工具
 - `retry_last_turn()` / `rollback_turn()` — 手动重试/回退
-- `compact_with_skills()` — 压缩历史并重附技能上下文
+- `compact_with_skills()` — 压缩历史并重附技能上下文；历史已超限时自动切换至分批摘要路径（`_compact_chunked`）
 
 详见 [Agent 设计详解](agent-design.md)。
 

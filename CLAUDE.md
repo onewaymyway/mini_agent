@@ -214,6 +214,16 @@ python main.py --provider nvidia --model qwen/qwen3.5-122b-a10b --system-tool-ca
 - 去重：skill_context / reminder / hook_context 只保留最新一条
 - 配置：`compress.selective_weights`（自定义权重）、`compress.selective_min_user_turns`
 
+#### 分批摘要（Chunked Compact）
+
+- `compact_with_skills()` 内部自动选路：正常路径用 `run_turn`；若触发 `LLMContextWindowError`
+  则切换到 `_compact_chunked()`，完全绕开 `run_turn`，用 `_llm.chat_with_retry` 分批处理
+- 切分规则：按 turn 边界分 chunk，每 chunk ≤ 模型上下文 50%；chunk 数 > 1 时再做一次合并调用
+- 单 chunk 失败时降级为字符串摘要，不中断整体流程；合并调用失败时字符串拼接
+- 所有 compact prompt 统一要求保留：工具调用结果摘要、精确文件路径、错误信息、关键发现
+- 新增 prompt 文件：`compact_chunk_request.md`、`compact_merge_request.md`
+- 详见 [compact 设计文档](docs/compact-design.md)
+
 ### 存储层 (`src/mini_agent/storage/`)
 
 - `__init__.py` — 公开接口导出

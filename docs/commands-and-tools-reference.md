@@ -162,7 +162,7 @@ mini-agent --retry-backoff linear --retry-backoff-step 60 --retry-backoff-max 30
 | `/rollback` | 完整撤销上一轮（用户消息 + 模型回复），同步保存 session |
 | `/stats` | 显示会话统计（轮数、tokens、工具调用数、耗时） |
 | `/verbose` | 切换详细工具 JSON 输出模式 |
-| `/compact` | 压缩对话历史为摘要，重附 Skill 上下文 |
+| `/compact` | 压缩对话历史为语义摘要，重附 Skill 上下文；历史超限时自动切换为分批摘要（chunked compact） |
 | `/prompts` | 列出所有 PromptManager 管理的 prompt 文件 |
 | `/memory` | 立即在后台生成/刷新 session 摘要 + 写入长期记忆 + 刷新用户画像（跳过轮次间隔门槛），需 `--memory` 启用；详见 [记忆管理指南](memory-management-guide.md) |
 | `/profile` | 立即在后台刷新用户画像（跳过刷新间隔），需在 `agent_config.json` 中设置 `profile_enabled: true`（无对应 CLI flag）；详见 [用户画像系统指南](user-profile-guide.md) |

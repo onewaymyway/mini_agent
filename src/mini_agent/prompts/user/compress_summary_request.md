@@ -3,12 +3,16 @@
 # 发送给模型，要求对将被压缩的历史对话生成摘要（LLMSummaryStrategy）
 
 Please create a concise but complete summary of the conversation above.
-The summary will replace the full conversation history, so it must contain:
-1. The user's overall goal
-2. What has been accomplished so far (with key details like file paths, commands run, results)
-3. Important decisions or findings
-4. The current state / what still needs to be done
+The summary will replace the full conversation history, so it must preserve all actionable detail:
 
-Format your response as a single paragraph of 150-250 words, in the same
-language used in the conversation above.
+1. **Goal** — The user's overall objective
+2. **Work completed** — Files created/modified/deleted (exact paths), commands run and their results,
+   tool call outcomes (what was found, fixed, or produced — preserve exact error messages, paths, values)
+3. **Key decisions** — Technical choices made and reasoning
+4. **Critical findings** — Important data retrieved, errors and resolutions, test results, API responses
+5. **Current state** — What works, what is broken, what is partially done
+6. **Pending / next steps** — Open items discussed or implied
+
+Be factual and precise. Preserve exact file paths, command names, error messages, and variable names.
+Respond in the same language used in the conversation.
 Do NOT include meta-commentary like "Here is a summary:" — just the summary text.

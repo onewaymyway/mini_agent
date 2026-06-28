@@ -1836,6 +1836,15 @@ class Agent:
           1. 命令行 /compact（已升级调用此方法）
           2. tool `compact_history`（供 agent 自主调用）
           3. 直接调用 agent.compact_with_skills()
+          4. auto-compact（上下文超限时自动触发）
+
+        实现路径（自动选择）：
+          - 正常路径：历史未超限时，通过 run_turn() 发送 compact prompt，
+            让 LLM 在完整历史上下文中生成高质量摘要。
+          - 分批路径（chunked compact）：历史已超限，run_turn() 本身无法执行时，
+            把历史按 turn 边界切成多个小批，每批独立调用 LLM 生成摘要，
+            最后合并成一个统一摘要替换历史。此路径完全绕开 run_turn()，
+            直接使用 _llm.chat_with_retry。
 
         Returns:
             摘要文本（assistant 的压缩结果），失败时返回空字符串
@@ -1847,52 +1856,237 @@ class Agent:
         from mini_agent.prompts import pm as _pm
         compact_prompt = _pm.get_compact_prompt()
 
+        # ── 尝试正常路径：run_turn ───────────────────────────────────────────
         R.print_info("[compact] Generating summary…")
+        result = ""
+        used_chunked = False
         try:
             result = self.run_turn(compact_prompt)
         except Exception as e:
-            R.print_error(f"[compact] Summary generation failed: {e}")
+            from mini_agent.llm.base import LLMContextWindowError
+            if isinstance(e, LLMContextWindowError):
+                # 历史已超限，run_turn 无法执行 → 切换到分批路径
+                R.print_warning(
+                    "[compact] History exceeds context limit — switching to chunked compact…"
+                )
+                try:
+                    result = self._compact_chunked()
+                    used_chunked = True
+                except Exception as ce:
+                    R.print_error(f"[compact] Chunked compact failed: {ce}")
+                    return ""
+            else:
+                R.print_error(f"[compact] Summary generation failed: {e}")
+                return ""
+
+        if not result:
+            R.print_warning("[compact] Got empty summary, aborting.")
             return ""
 
-        # 压缩历史：保留摘要 + 重附 skill 块
+        # ── 重附 skill 块 ────────────────────────────────────────────────────
         skill_block = self._build_skill_compact_block()
 
         from mini_agent.history.entry import (
             make_session_resume, make_compact_summary, make_skill_context
         )
-        # 记录 compact 事件到 raw history（_hist 可能在测试用的手工构造 agent 中不存在）
+
         _hist = getattr(self, "_hist", None)
-        if _hist is not None:
-            _hist._raw.append_compact_event(
-                before_count=len(self._history),
-                after_count=2,
-                strategy="compact_with_skills",
-            )
+        strategy = "compact_chunked" if used_chunked else "compact_with_skills"
 
-        new_history: list[dict] = [
-            make_session_resume("[Previous session summary]"),
-            make_compact_summary(result),
-        ]
-        if skill_block:
-            new_history.append(make_skill_context(skill_block))
+        # chunked 路径已在 _compact_chunked 内完成历史替换，
+        # 正常路径需要在这里做替换（run_turn 追加了摘要轮次，需清理并重建）
+        if not used_chunked:
+            if _hist is not None:
+                _hist._raw.append_compact_event(
+                    before_count=len(self._history),
+                    after_count=2,
+                    strategy=strategy,
+                )
+            new_history: list[dict] = [
+                make_session_resume("[Previous session summary]"),
+                make_compact_summary(result),
+            ]
+            if skill_block:
+                new_history.append(make_skill_context(skill_block))
+            self._history.clear()
+            self._history.extend(new_history)
+            if _hist is not None:
+                for msg in new_history:
+                    _hist._raw.append(msg)
+        else:
+            # chunked 路径：历史已替换为 [session_resume + compact_summary]，
+            # 仅追加 skill_block（如果有）
+            if skill_block:
+                skill_msg = make_skill_context(skill_block)
+                self._history.append(skill_msg)
+                if _hist is not None:
+                    _hist._raw.append(skill_msg)
 
-        # 原地替换，保持共享引用有效
-        self._history.clear()
-        self._history.extend(new_history)
-
-        # 同步 raw history（追加新条目）
-        if _hist is not None:
-            for msg in new_history:
-                _hist._raw.append(msg)
-
-        # 同步 session
         if getattr(self.cfg, "auto_save_session", True):
             self.save_session()
 
         R.print_success("[compact] History compacted with skill context re-attached.")
         return result
 
+    def _compact_chunked(self) -> str:
+        """
+        [SYS-COMPACT-CHUNKED] 分批摘要：当历史已超出上下文限制时使用。
+
+        算法：
+          1. 把 _history 按 turn 边界切成若干 chunk，每 chunk 的 token 估算
+             控制在模型上下文的 50% 以内，保留足够空间给摘要 prompt 和输出。
+          2. 每个 chunk 独立调用 _llm.chat_with_retry 生成小摘要（绕开 run_turn）。
+          3. 若 chunk 数 > 1，再做一次合并调用，把所有小摘要归并为最终摘要。
+          4. 用最终摘要原地替换 _history（[session_resume, compact_summary]）。
+
+        调用方（compact_with_skills）负责后续追加 skill_block 和 save_session。
+
+        Returns:
+            合并后的最终摘要文本。失败时抛出异常（由调用方处理）。
+        """
+        from mini_agent.history.entry import (
+            to_llm_messages, is_turn_boundary,
+            make_session_resume, make_compact_summary,
+        )
+        from mini_agent.prompts import pm as _pm
+
+        history = list(self._history)
+
+        # ── 1. 估算 token budget（每 chunk 目标：模型上下文的 50%）────────────
+        # 用粗略字符估算：1 token ≈ 4 chars（英文）/ 2 chars（中文混合取中间值）
+        # 保守取 3 chars/token，给 prompt overhead 留余量
+        CHARS_PER_TOKEN = 3
+        # 从 cfg 或 llm 尝试获取模型最大上下文；找不到时默认 100K token
+        model_ctx_tokens: int = (
+            getattr(getattr(self, "_llm", None), "context_window", None)
+            or getattr(self.cfg, "model_context_window", None)
+            or 100_000
+        )
+        # 每 chunk 最多使用 50% 上下文（另 50% 留给 system prompt、chunk prompt 和输出）
+        chunk_budget_chars = int(model_ctx_tokens * 0.50 * CHARS_PER_TOKEN)
+
+        # ── 2. 按 turn 边界切分 chunk ─────────────────────────────────────────
+        # 收集所有 turn 起始索引（真实用户输入）
+        turn_starts: list[int] = [
+            i for i, m in enumerate(history) if is_turn_boundary(m)
+        ]
+        if not turn_starts:
+            turn_starts = [0]
+
+        chunks: list[list[dict]] = []
+        current_chunk: list[dict] = []
+        current_chars = 0
+
+        for ti, start in enumerate(turn_starts):
+            end = turn_starts[ti + 1] if ti + 1 < len(turn_starts) else len(history)
+            turn_msgs = history[start:end]
+            turn_chars = sum(
+                len(str(m.get("content", ""))) for m in turn_msgs
+            )
+
+            if current_chunk and current_chars + turn_chars > chunk_budget_chars:
+                # 当前 turn 放不下，先提交当前 chunk
+                chunks.append(current_chunk)
+                current_chunk = list(turn_msgs)
+                current_chars = turn_chars
+            else:
+                current_chunk.extend(turn_msgs)
+                current_chars += turn_chars
+
+        if current_chunk:
+            chunks.append(current_chunk)
+
+        # 极端情况：单个 turn 本身就超限 → 强制每个 turn 单独成 chunk
+        # （不拆 turn 内部，LLM 调用会自动截断，摘要质量降低但不会崩溃）
+        if not chunks:
+            chunks = [[m] for m in history]
+
+        total_chunks = len(chunks)
+        R.print_info(f"[compact] Chunked compact: {total_chunks} chunk(s) from {len(history)} messages…")
+
+        # ── 3. 对每个 chunk 独立生成摘要 ─────────────────────────────────────
+        from mini_agent.prompts import pm as _pm
+        chunk_summaries: list[str] = []
+        system_prompt = _pm.render("system/compress_summarizer")
+
+        for idx, chunk in enumerate(chunks):
+            chunk_num = idx + 1
+            R.print_info(f"[compact]   chunk {chunk_num}/{total_chunks} ({len(chunk)} messages)…")
+
+            # 构建发给 LLM 的消息列表：chunk 内容 + chunk 摘要请求
+            chunk_prompt = _pm.render(
+                "user/compact_chunk_request",
+                chunk_index=chunk_num,
+                total_chunks=total_chunks,
+            )
+            llm_messages = to_llm_messages(chunk) + [
+                {"role": "user", "content": chunk_prompt}
+            ]
+
+            try:
+                resp = self._llm.chat_with_retry(
+                    messages=llm_messages,
+                    system=system_prompt,
+                    tools=[],
+                    max_retries=3,
+                )
+                chunk_text = resp.text.strip()
+            except Exception as e:
+                # 单 chunk 失败：用字符串摘要降级（不中断整体流程）
+                R.print_warning(f"[compact]   chunk {chunk_num} LLM failed ({e}), using fallback summary.")
+                from mini_agent.history.compression import _build_summary_text
+                chunk_text = _build_summary_text(chunk, len(chunk))
+
+            chunk_summaries.append(f"=== Chunk {chunk_num}/{total_chunks} ===\n{chunk_text}")
+
+        # ── 4. 合并摘要 ───────────────────────────────────────────────────────
+        if total_chunks == 1:
+            final_summary = chunk_summaries[0].split("\n", 1)[-1].strip()
+        else:
+            R.print_info(f"[compact] Merging {total_chunks} chunk summaries…")
+            merged_text = "\n\n".join(chunk_summaries)
+            merge_prompt = _pm.render(
+                "user/compact_merge_request",
+                total_chunks=total_chunks,
+                chunk_summaries=merged_text,
+            )
+            try:
+                resp = self._llm.chat_with_retry(
+                    messages=[{"role": "user", "content": merge_prompt}],
+                    system=system_prompt,
+                    tools=[],
+                    max_retries=3,
+                )
+                final_summary = resp.text.strip()
+            except Exception as e:
+                R.print_warning(f"[compact] Merge LLM call failed ({e}), concatenating chunks.")
+                final_summary = "\n\n".join(chunk_summaries)
+
+        # ── 5. 原地替换历史 ───────────────────────────────────────────────────
+        _hist = getattr(self, "_hist", None)
+        new_history: list[dict] = [
+            make_session_resume("[Previous session summary — chunked compact]"),
+            make_compact_summary(final_summary),
+        ]
+
+        if _hist is not None:
+            _hist._raw.append_compact_event(
+                before_count=len(self._history),
+                after_count=len(new_history),
+                strategy="compact_chunked",
+            )
+
+        self._history.clear()
+        self._history.extend(new_history)
+
+        if _hist is not None:
+            for msg in new_history:
+                _hist._raw.append(msg)
+
+        return final_summary
+
     def run_turn(self, user_message: str) -> str:
+
         """
         Run one user turn. May make multiple API calls (tool loops).
         Returns the final assistant text.
@@ -1975,8 +2169,6 @@ class Agent:
                     if _te_result.user_input is not None:
                         self._turn_end_user_input = _te_result.user_input
             except Exception:
-                import traceback
-                traceback.print_exc()
                 pass  # TurnEnd hook 失败不影响主流程
 
             # [SYS-SUMMARY] session 结束后写入摘要（在 save 前）
