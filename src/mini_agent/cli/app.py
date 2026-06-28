@@ -42,9 +42,20 @@ def _extract_project_root(argv: list[str]) -> tuple[Path, list[str]]:
     rest: list[str] = []
     i = 0
     while i < len(argv):
-        if argv[i] in ("--project", "-p") and i + 1 < len(argv):
-            project_root = Path(argv[i + 1]).expanduser()
-            i += 2
+        if argv[i] in ("--project", "-p"):
+            if i + 1 < len(argv) and not argv[i + 1].startswith("-"):
+                # 正常情况：--project <path>
+                val = argv[i + 1].strip()
+                if val:  # 非空才覆盖
+                    project_root = Path(val).expanduser()
+                i += 2
+            else:
+                # --project 是末尾孤立 token，或后面紧跟另一个 flag：
+                # PowerShell 里 "$TESTPROJ"（未定义变量）会被展开成空串后
+                # 整个参数被 shell 丢弃，导致 --project 没有值。
+                # 静默跳过，不把它放进 rest，避免下游 argparse 报
+                # "unrecognized arguments: --project"。
+                i += 1
             continue
         rest.append(argv[i])
         i += 1
