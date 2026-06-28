@@ -565,15 +565,37 @@ def run_daemon_cli(argv: list[str], project_root: Path) -> int:
 
     if subcmd == "start":
         import argparse
-        p = argparse.ArgumentParser(prog="mini-agent daemon start")
+        # allow_abbrev=False：默认的 argparse 前缀匹配会把独立的 --http 当成
+        # --http-port 的缩写去匹配（这个子解析器只认识 --http-port，没有定义
+        # --http 本身），导致 `daemon start --http --http-port 19100` 这种
+        # 完全合理的组合被错误解析、报"--http-port: expected one argument"。
+        # 这是实测中发现的另一个真实 bug——和上面 parse_known_args 的修复
+        # 同一批改动里一起发现的，因为之前从来没人真的同时传过
+        # --http 和 --http-port 给这个子命令（多用户模式之前，没人需要显式
+        # 加 --http，因为 cmd_daemon_start 自己的 base_cmd 已经默认带了
+        # --http；现在为了同时开 --http-multi-user，文档建议的标准用法是
+        # 显式写全 --http --http-multi-user，组合起来才暴露了这个 abbrev 坑）。
+        p = argparse.ArgumentParser(prog="mini-agent daemon start", allow_abbrev=False)
         p.add_argument("--http-port", type=int, default=8765)
         p.add_argument("--detach", action="store_true",
                        help="Run in background (fork to daemon)")
-        args = p.parse_args(rest)
+        # 修复另一个真实存在的 bug：之前这里用 parse_args(rest)，任何这个子
+        # 解析器不认识的参数（比如多用户架构 Phase 1 加的 --http-multi-user）
+        # 都会被 argparse 直接报错拒绝，而不是转发给实际启动 daemon 子进程的
+        # 命令行（cmd_daemon_start 早就支持 extra_argv 参数，只是这里从来没
+        # 传过）。也就是说，`mini-agent daemon start --http-multi-user` 这个
+        # 本该是"开启多用户模式启动 daemon"的标准用法，实际上从加上这个 flag
+        # 那天起就从未真正可用过——只能用更底层的
+        # `python -m mini_agent --http --http-multi-user --daemon-mode` 绕开
+        # `daemon start` 这层包装才能用上。改成 parse_known_args()，把所有
+        # 认不出来的参数原样转发给 cmd_daemon_start 的 extra_argv，由它继续
+        # 转发给真正的 daemon 子进程命令行。
+        args, unknown = p.parse_known_args(rest)
         return cmd_daemon_start(
             project_root=project_root,
             http_port=args.http_port,
             detach=args.detach,
+            extra_argv=unknown,
         )
 
     elif subcmd == "stop":
