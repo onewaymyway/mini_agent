@@ -33,6 +33,8 @@ api/routes.py — FastAPI 路由定义
     PATCH  /v1/users/{user_id}       修改角色/meta
     DELETE /v1/users/{user_id}       删除用户
     POST   /v1/users/{user_id}/token 重新生成 token
+  Self 状态（daemon 多用户架构 Phase 4，owner only）
+    GET    /v1/self/status           GoalBacklog + 最近自主活动 + SessionAgentPool 概况
   文件系统
     GET    /v1/fs/list               列目录（?path=xxx）
     GET    /v1/fs/read               读文件（?path=xxx）
@@ -1236,3 +1238,81 @@ async def rotate_user_token(request: Request, user_id: str):
     if new_token is None:
         return UserCreateResponse(ok=False, message=f"User {user_id!r} not found")
     return UserCreateResponse(ok=True, user_id=user_id, token=new_token)
+
+
+# ── Self 状态（daemon 多用户架构 Phase 4，owner only）───────────────────────────
+
+@router.get("/self/status")
+async def get_self_status(request: Request):
+    """
+    Self（主自我）的状态总览：GoalBacklog、自主活动摘要（含最近的
+    session_crashed 通知）、SessionAgentPool 概况。
+
+    注意：必须从 request.app.state.http_server 取 Self 真正使用的 bridge/agent，
+    不能用 _bridge(request)——那个在多用户模式下会按"该用户最近活跃 session"
+    解析，拿到的会是某个 SessionAgent，不是 Self。Self 是 HttpServer 自己持有的
+    那个固定的 _bridge/_runner，跟任何用户的 session 都不是同一回事。
+
+    单用户模式下也能用（没有 SessionAgentPool 那部分数据，其它字段仍然有效）——
+    "Self"这个概念本来就不是多用户特有的，只是多用户模式下多了 pool 状态可看。
+    """
+    http_server = getattr(request.app.state, "http_server", None)
+    if http_server is None:
+        raise HTTPException(status_code=503, detail="HttpServer not available")
+    _require_owner(request)
+
+    self_agent = http_server.bridge.agent
+    result: dict = {
+        "autonomous_loop": None,
+        "goals": {"active_objectives": [], "active_goals": []},
+        "recent_activity": [],
+        "session_pool": None,
+    }
+
+    al = http_server.autonomous_loop
+    if al is not None:
+        try:
+            result["autonomous_loop"] = al.get_digest_status()
+        except Exception:
+            pass
+
+    try:
+        from mini_agent.storage.paths import AgentPaths
+        from mini_agent.perception.goal_backlog import load_goal_backlog
+        from mini_agent.evolution.resource_arbiter import read_activity_digest
+
+        project_root = getattr(self_agent.cfg, "project_root", None) if self_agent else None
+        if project_root is not None:
+            paths = AgentPaths(project_root)
+
+            backlog = load_goal_backlog(paths)
+            result["goals"] = {
+                "active_objectives": [n.to_dict() for n in backlog.active_objectives()],
+                "active_goals":      [n.to_dict() for n in backlog.active_goals()],
+            }
+
+            # 最近活动（含 session_crashed 等）：默认看最近 24 小时
+            since = time.time() - 24 * 3600
+            records = read_activity_digest(paths, since_ts=since)
+            result["recent_activity"] = records[-50:]  # 最多 50 条，避免响应过大
+    except Exception:
+        pass
+
+    pool = http_server.session_pool
+    if pool is not None:
+        entries = pool.list_entries()
+        result["session_pool"] = {
+            "active_count": pool.active_count(),
+            "sessions": [
+                {
+                    "session_id":  e.session_id,
+                    "user_id":     e.user_id,
+                    "role":        e.role,
+                    "idle_seconds": round(e.idle_seconds, 1),
+                    "is_alive":    e.is_alive,
+                }
+                for e in entries
+            ],
+        }
+
+    return result

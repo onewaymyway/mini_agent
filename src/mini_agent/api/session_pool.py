@@ -128,10 +128,9 @@ class SessionEntry:
 
 # ── SelfMessageBus ────────────────────────────────────────────────────────────
 #
-# Phase 3 阶段先把消息发出去（session_crashed 等），但还没有人在另一端真正
-# 消费处理——Self 目前仍然是 HttpServer._runner 那个 AgentRunner，并不会去
-# drain 这个 bus。Phase 4 会让 Self 真正订阅并处理这些消息。
-# 提前把发送端做好，Phase 4 接上消费端时 SessionAgentPool 这边不需要再改。
+# Phase 3 阶段先把发送端做好（session_crashed 等），Phase 4 把消费端接上——
+# Self 现在会在 api/server.py::AgentRunner._main_loop() 的每个 idle 周期
+# drain 并处理 to_id="self" 的消息（见 AgentRunner._drain_self_messages()）。
 
 class SelfMessage:
     """Self 与 SessionAgent 之间的内部消息。"""
@@ -570,9 +569,21 @@ class SessionAgentPool:
     def _do_suspend(self, entry: SessionEntry) -> None:
         """保存 session 状态，停止 Runner，从 bus 注销。"""
         # 保存 session
+        summary_payload = None
         try:
             if entry.agent is not None and entry.agent.session_manager:
                 entry.agent.save_session()
+                meta = entry.agent.session_meta
+                if meta is not None:
+                    summary_payload = {
+                        "session_id": entry.session_id,
+                        "user_id":    entry.user_id,
+                        "role":       entry.role,
+                        "title":      meta.title or "",
+                        "summary":    meta.summary or "",
+                        "turns":      meta.turns,
+                        "duration_seconds": time.time() - entry.created_at,
+                    }
         except Exception:
             pass
 
@@ -583,6 +594,17 @@ class SessionAgentPool:
                 entry.runner.join(timeout=5)
         except Exception:
             pass
+
+        # daemon 多用户架构 Phase 4：向 Self 上报这次对话的摘要。
+        # 放在 runner 停止*之后*发送（而不是在保存 session 那一步就立刻发），
+        # 是为了确保即使 Self 立刻在下个 tick 周期就去查 SessionAgentPool 的状态，
+        # 看到的也是"这个 session 已经完全停掉"的一致状态，不会有"摘要已经发了，
+        # 但 runner 还在跑"这种过渡期的歧义。
+        if summary_payload is not None:
+            self._bus.send(SelfMessage(
+                from_id=f"session:{entry.session_id}", to_id="self",
+                msg_type="session_summary", payload=summary_payload,
+            ))
 
         # 从 bus 注销
         self._bus.unregister(f"session:{entry.session_id}")

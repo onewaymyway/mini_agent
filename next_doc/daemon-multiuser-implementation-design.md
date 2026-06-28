@@ -4,7 +4,11 @@
 > 原方案描述的是目标形态；本文档逐项核对了当前代码的真实情况，标出原方案与现状的冲突点、
 > 已经存在但原方案没意识到的可复用机制，以及每个 Phase 具体要改哪些文件、新增哪些文件。
 >
-> 状态：**设计稿，待确认，尚未写代码**（除 daemon 模式的两个 bug 已单独修复，与本文档无关）。
+> 状态：**Phase 1-4 均已实施完成**（daemon 模式的两个 bug 早先已单独修复，与本文档无关）。
+> 每个 Phase 的小节末尾都有"实施记录"，记录了实测中发现的真实 bug 和与原计划的差异点——
+> 这些记录是后续维护时理解"为什么代码长这样"的主要依据，建议优先读这些，而不是只读
+> 设计部分（设计部分描述的是出发点，不是最终落地的样子，两者有出入的地方实施记录里
+> 都标出来了）。
 
 ---
 
@@ -635,6 +639,10 @@ AgentRunner 循环消费"的方式工作的（`_submit_autonomous_task()`），�
 
 ## 五、Phase 4：Self ↔ SessionAgent 通信
 
+> **状态：已实现**（见本节末尾"实施记录"，记录了 4 个实测中发现的真实 bug，
+> 其中一个比这次多用户改造本身的历史更长——`AutonomousLoop` 在 daemon 模式下
+> 从一开始就没有真正工作过）。
+
 **目标**：原方案第五节的 `SelfMessageBus`，草稿已经写在 `api/session_pool.py` 里
 （`SelfMessage`/`SelfMessageBus` 两个类），基本可以直接用，只需要：
 
@@ -651,6 +659,93 @@ AgentRunner 循环消费"的方式工作的（`_submit_autonomous_task()`），�
 - 一次 family 角色的对话结束后，Self 这边能在下次 `tick()` 时看到该 session 的摘要
 - owner 通过 `mini-agent self status`（CLI 新命令，对应原方案第九节）能看到
   GoalBacklog、最近的 session_crashed 通知等
+
+### Phase 4 实施记录（与原计划的差异点，含 4 个实测中发现的真实 bug）
+
+**已完成，端到端验证通过**：用真实 `HttpServer`（multi_user_enabled=True）测试了
+完整链路——session 正常结束 → Self 收到 `session_summary` → `RoleProfileManager`
+正确写入 `recent_sessions`（owner 的 session 正确被排除，因为 owner 有自己独立的
+画像系统）；SessionAgent 崩溃 → Self 收到 `session_crashed` → 正确写入
+`activity_digest.jsonl`；`mini-agent self status` 端到端跑通，能看到 Autonomous
+Loop 状态、Goals、最近活动、SessionAgentPool 概况。完整 pytest 套件仍是
+1383 passed / 2 个无关失败。
+
+#### 与原计划第 1/2 点的差异：没有新建 `evolution/self_runner.py` 和
+`evolution/self_bus.py`
+
+如 Phase 3 实施记录第 5 点已经说明的：Self 复用 `HttpServer._bridge`/`_runner`
+（原有的 `AgentRunner`），没有单独的 `SelfRunner` 类。`SelfMessage`/
+`SelfMessageBus` 仍然定义在 `session_pool.py` 里，没有挪到 `evolution/self_bus.py`
+——目前这两个类只有 `session_pool.py`（生产端）和 `server.py`（消费端）在用，
+专门为它们建一个新文件、再处理两边的 import 调整，相对于"两个类总共不到
+150 行代码、留在原地完全不影响理解"的现状，收益不明显，所以没有做这次搬迁。
+如果未来 Phase 5+ 还有其它模块需要用到 `SelfMessageBus`（不只是 session_pool
+和 server 两边），再挪文件会更有理由。
+
+#### Bug 1（中等，"消费端"实际从未真正接上过）：Self 的 `AgentRunner` 没有
+拿到 `self_message_bus`
+
+`AgentRunner.__init__` 支持 `self_message_bus` 参数，`_main_loop()` 里也已经写好
+了"idle 周期 drain 消息"的逻辑（`self._self_message_bus is not None` 判断 +
+`_drain_self_messages()` 调用）。但 `HttpServer.__init__` 构造 `self._runner =
+AgentRunner(...)` 时，没有把 `self._self_message_bus` 传进去——构造时漏了这一个
+参数，导致 Self 自己的 `AgentRunner` 实例里 `self_message_bus` 始终是 `None`，
+"消费端"代码写对了，但从未真正被触发过。这是写本节测试时，加了一个断言
+专门检查"Self 的 AgentRunner 是否真的拿到了同一个 bus 实例"才发现的——
+不写这个断言的话，光看"程序没有报错"是看不出这个问题的（因为 `None` 分支
+也是合法路径，不会抛异常，只是什么都不做）。已修复：补上
+`self_message_bus=self._self_message_bus` 这一个参数。
+
+#### Bug 2（中等，预先存在，比本次改造历史更长）：`Agent` 没有 `_paths` 属性，
+`_build_autonomous_loop()` 因此从一开始就返回 `None`
+
+`HttpServer._build_autonomous_loop()` 原来写的是 `getattr(agent, "_paths", None)`
+来获取 `AgentPaths` 实例。但 `Agent` 类自己从来不缓存这个属性——`agent.py` 内部
+任何需要 `AgentPaths` 的地方，都是 `AgentPaths(self.cfg.project_root)` 现场构造。
+这意味着 `getattr(agent, "_paths", None)` **永远返回 `None`**，`_build_autonomous_loop()`
+因此永远在检查 `paths is None` 的那一行就提前返回 `None`——`AutonomousLoop`
+在 daemon 模式下从一开始就没有被真正构造过，`/v1/status` 里的
+`autonomy_level`/`last_autonomous_tick_at`/`tick_count` 这些字段事实上一直都是
+默认值，从来没有真实更新过。
+
+这个 bug 和本次多用户改造完全无关（哪怕从来没做过这次 Phase 1-4 的任何改动，
+单用户模式的 daemon 也一样中这个 bug），是写 `mini-agent self status` 时，
+看到输出里"Autonomous Loop: not available"才顺着挖出来、确认、修复的。
+修复方式和 Bug 3（下面）完全一样：改成 `AgentPaths(cfg.project_root)` 现场构造。
+
+确认这个修复是安全的：`AutonomousLoop.tick()` 在默认的 `passive` autonomy
+级别下（没有人去手动改 `self_profile.json` 的话，新/老部署都是这个默认级别）
+只做两件已经存在、本来就该周期性运行的维护性工作（Phase G 时间门控检查、
+workdir knowledge 整合），两者都包在自己的 try/except 里，不会因为"现在终于
+真的会被调用了"而引入新的异常风险。`autonomous` 级别会做更多事，但需要显式
+配置才会进入那个档位，不会因为这次修复就让任何现有部署意外进入更主动的模式。
+
+#### Bug 3（同 Bug 2 的另一处）：`_handle_session_crashed` 同样错误地假设
+`agent._paths` 存在
+
+`server.py::AgentRunner._handle_session_crashed()` 里给 `append_activity_digest()`
+传参数时，同样写的是 `getattr(self._bridge.agent, "_paths", None)`，同样的根因，
+同样永远是 `None`，这段"把 session 崩溃记录写进 activity_digest.jsonl"的代码
+之前是静默 no-op——是写本节"session_crashed 应该能在 digest 文件里查到"的测试时，
+断言失败（文件不存在）才发现的。修复方式同 Bug 2。
+
+#### Bug 4（小，纯粹是 CLI 显示层的字段名写错）：`mini-agent self status` 读
+`description` 字段，但 `GoalNode.to_dict()` 用的字段名是 `title`
+
+`cli/commands/self_cmd.py` 最初写的是 `g.get('description', '')`，实际跑出来
+goal 标题那一列永远是空的。核对 `GoalNode.to_dict()` 后确认字段名是 `title`，
+已修正。
+
+#### 小结：这次 Phase 4 实际花的精力，"接消费端"本身只是几行代码，
+真正的工作量在于验证
+
+原计划第 1/2/3 点描述的功能本身代码量不大（草稿基本可以直接用），但实测下来，
+4 个 bug 里有 3 个都是"代码逻辑是对的，但因为一个错误的属性名假设，从一开始
+就没有被真正执行过"——这类 bug 不写端到端测试、只看代码 review 是基本看不出来
+的（`getattr(obj, "wrong_name", None)` 永远合法，永远不报错，只是悄悄走了
+fallback 分支）。这进一步印证了之前 Phase 1-3 实施记录里反复出现的同一个教训：
+对涉及多线程/多实例协作的代码，"测试通过"和"代码逻辑看起来对"是两件不同的事，
+后者不能替代前者。
 
 ---
 
@@ -699,7 +794,7 @@ AgentRunner 循环消费"的方式工作的（`_submit_autonomous_task()`），�
 | 1 | `api/multi_auth.py`, `cli/commands/user_cmd.py` | `api/user_store.py`（改名+清理）, `api/server.py`, `api/routes.py`, `api/models.py`, `cli/app.py` |
 | 2 | `tools/user_memory.py`（新工具 `remember_about_user`） | `api/server.py`（`AgentRunner.run` 注入 `system_extra`、画像更新）, `agent.py`（import 触发工具注册） |
 | 3 | （无新文件——`evolution/self_runner.py` 计划被取消，见 Phase 3 实施记录第 5 点） | `api/session_pool.py`（重写：线程模型修正、构造锁死锁修复、per-user 目录）, `api/server.py`（`AgentRunner` 加 `agent_factory`/`on_crash`/`ready_event`、`self._stop`→`self._stop_evt` 改名、`HttpServer` 装配 `SessionAgentPool`）, `api/routes.py`（`_bridge`/`_resolve_session_id`/`_user_session_manager`，5 个 session 端点 + `stream_turn`/`get_turn`/permissions 端点的多用户分支）, `api/models.py`（`ChatRequest`/`StatusResponse`/`ChatResponse` 补 `session_id` 字段）, `skills/__init__.py`（`SkillLoader` 加 `dirs` 只读属性） |
-| 4 | `evolution/self_bus.py`（待定，目前 `SelfMessage`/`SelfMessageBus` 仍在 `session_pool.py` 里） | `api/session_pool.py`（视情况移出 SelfMessage/SelfMessageBus）, `cli/commands/self_cmd.py`（新增 `mini-agent self status` 等） |
+| 4 | `cli/commands/self_cmd.py`（`mini-agent self status`） | `api/server.py`（修复 `self_message_bus` 漏传、修复两处 `agent._paths` 不存在的 bug）, `api/routes.py`（新增 `/v1/self/status`） |
 
 ---
 

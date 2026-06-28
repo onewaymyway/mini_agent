@@ -126,6 +126,9 @@ class AgentRunner(threading.Thread):
         agent_factory=None,    # daemon 多用户架构 Phase 3: Optional[Callable[[], Agent]]
         on_ready=None,         # daemon 多用户架构 Phase 3: Optional[Callable[[Agent], None]]
         on_crash=None,         # daemon 多用户架构 Phase 3: Optional[Callable[[BaseException], None]]
+        self_message_bus=None,  # daemon 多用户架构 Phase 4: Optional[SelfMessageBus]，
+                                 # 非 None 时这条 AgentRunner 被视为"Self"，会在每次
+                                 # idle 周期顺带 drain 并处理 to_id="self" 的消息。
     ) -> None:
         super().__init__(name="agent-runner", daemon=True)
         self._bridge = bridge
@@ -147,6 +150,11 @@ class AgentRunner(threading.Thread):
         # 可能还没设置好（HttpServer.__init__ 里 AgentRunner 在 agent 赋值之后才构造，
         # 但稳妥起见仍做一次懒加载）。
         self._base_system_extra: Optional[str] = None
+
+        # daemon 多用户架构 Phase 4：Self ↔ SessionAgent 通信。
+        self._self_message_bus = self_message_bus
+        if self_message_bus is not None:
+            self_message_bus.register("self")
 
         # daemon 多用户架构 Phase 3：agent_factory 是这次新增的核心机制。
         #
@@ -239,6 +247,13 @@ class AgentRunner(threading.Thread):
                         self._autonomous_loop.tick()
                     except Exception:
                         pass  # tick 异常不影响主循环
+
+                # daemon 多用户架构 Phase 4：每个 idle 周期都顺带处理一下 Self
+                # 收到的消息，不像 AutonomousLoop.tick() 那样受 tick_interval
+                # 限制——session_crashed 这类通知应该尽快被看到，不应该等到
+                # 下一个 tick 周期（默认 60 秒）才处理。
+                if self._self_message_bus is not None:
+                    self._drain_self_messages()
                 continue
 
             turn_id = cmd.turn_id
@@ -345,6 +360,105 @@ class AgentRunner(threading.Thread):
                 _print_to_term(
                     "[dim]─── Web 请求处理完毕，你可以继续在此输入 ───[/dim]"
                 )
+
+    def _drain_self_messages(self) -> None:
+        """
+        daemon 多用户架构 Phase 4：处理 SelfMessageBus 上 to_id="self" 的消息。
+
+        只在这条 AgentRunner 被识别为"Self"时才会被调用（self_message_bus
+        非 None，即 HttpServer 在 multi_user_enabled 时传入的那个 bus 实例）。
+
+        每种 msg_type 的处理都包在各自的 try/except 里——任何一条消息处理失败
+        都不应该影响这条主循环继续往下处理其它消息，更不应该让 Self 自己
+        的线程崩掉（Self 崩了影响面比某一个 SessionAgent 崩了大得多）。
+        """
+        for msg in self._self_message_bus.drain_all("self"):
+            try:
+                if msg.msg_type == "session_crashed":
+                    self._handle_session_crashed(msg.payload)
+                elif msg.msg_type == "session_summary":
+                    self._handle_session_summary(msg.payload)
+                # 其它 msg_type（approval_req / peer_message / context_inject 等）
+                # 是 Phase 4 之后才会真正用到的扩展点，目前没有处理逻辑，
+                # 静默忽略而不是报错——保持向前兼容，未来加新 msg_type 不需要
+                # 同步改这里的 if/elif 链。
+            except Exception:
+                pass
+
+    def _handle_session_crashed(self, payload: dict) -> None:
+        """
+        记录某个 SessionAgent 崩溃的通知。
+
+        目前的处理方式：写进 Self 的 activity digest（`mini-agent daemon status`/
+        将来的 `mini-agent self status` 能读到），并在 daemon 自己的终端打印一行
+        提示——这是"主人应该知道，但不需要打断当前对话"级别的事件，不通过
+        bridge.emit_error 之类的方式广播给任何 HTTP 客户端（这条消息从语义上
+        就只跟 Self 自己有关，不属于任何用户的对话流）。
+        """
+        from mini_agent.evolution.resource_arbiter import append_activity_digest
+
+        session_id = payload.get("session_id", "?")
+        user_id    = payload.get("user_id", "?")
+        error      = payload.get("error", "")
+
+        _print_to_term(
+            f"[yellow]⚠ SessionAgent crashed: session={session_id} user={user_id} "
+            f"error={error}[/yellow]"
+        )
+
+        try:
+            # 修复一个真实存在的 bug：Agent 实例上根本没有 `_paths` 这个属性
+            # （agent.py 内部需要 AgentPaths 时，都是 AgentPaths(cfg.project_root)
+            # 现场构造，从不缓存成 self._paths/self.paths）。之前这里写的
+            # `getattr(self._bridge.agent, "_paths", None)` 永远拿到 None，
+            # 这段 activity_digest 写入代码从一开始就是静默 no-op，从来没真正
+            # 执行过——是写 Phase 4 测试时才发现的（测试断言 digest 文件存在，
+            # 实际上文件从未被创建）。
+            from mini_agent.storage.paths import AgentPaths
+            project_root = getattr(self._bridge.agent.cfg, "project_root", None)
+            if project_root is not None:
+                paths = AgentPaths(project_root)
+                append_activity_digest(paths, {
+                    "type":    "session_crashed",
+                    "summary": f"Session {session_id} (user={user_id}) crashed: {error}",
+                    "session_id": session_id,
+                    "user_id":    user_id,
+                    "error":      error,
+                })
+        except Exception:
+            pass
+
+    def _handle_session_summary(self, payload: dict) -> None:
+        """
+        处理某个正常结束（suspend）的 session 的摘要上报。
+
+        按设计文档 Phase 4 计划：调用 RoleProfileManager.update_profile()
+        做汇总——往该用户画像的 recent_sessions 里追加一条记录（保留最近 10 条，
+        避免 profile.json 随对话次数无限增长）。owner 的 session 不做这个处理：
+        owner 已经有独立的 profile.py::UserProfileManager 在自动生成更详细的
+        个性化总结，这里再记一份是重复劳动，也会跟那套系统的数据混在一起。
+        """
+        if self._role_profile_mgr is None:
+            return
+
+        user_id = payload.get("user_id", "")
+        if not user_id or user_id == "owner":
+            return
+
+        try:
+            profile = self._role_profile_mgr.get_profile(user_id)
+            recent = list(profile.get("recent_sessions", []))
+            recent.append({
+                "session_id": payload.get("session_id", ""),
+                "title":      payload.get("title", ""),
+                "summary":    payload.get("summary", ""),
+                "turns":      payload.get("turns", 0),
+                "ended_at":   time.time(),
+            })
+            recent = recent[-10:]  # 只保留最近 10 条，避免无限增长
+            self._role_profile_mgr.update_profile(user_id, {"recent_sessions": recent})
+        except Exception:
+            pass
 
 
 # ── FastAPI App 工厂 ──────────────────────────────────────────────────────────
@@ -514,10 +628,13 @@ class HttpServer:
         self._autonomous_loop = self._build_autonomous_loop(agent)
 
         # AgentRunner（后台驱动 agent.run_turn），注入 AutonomousLoop + RoleProfileManager
+        # + SelfMessageBus（Phase 4：这条 AgentRunner 就是"Self"，需要消费
+        # SessionAgentPool 发过来的 session_crashed/session_summary 等消息）。
         self._runner = AgentRunner(
             self._bridge,
             autonomous_loop=self._autonomous_loop,
             role_profile_mgr=self._role_profile_mgr,
+            self_message_bus=self._self_message_bus,
         )
 
         # uvicorn 服务线程
@@ -527,17 +644,28 @@ class HttpServer:
     def _build_autonomous_loop(self, agent: Any):
         """
         Stage 9 §7.2: 构建 AutonomousLoop 实例。
-        若依赖不满足（paths/cfg 不可用），返回 None（AgentRunner 降级为无自主能力）。
+        若依赖不满足（cfg.project_root 不可用），返回 None（AgentRunner 降级为无自主能力）。
+
+        修复一个更早就存在、范围比这次多用户改造大得多的 bug：这里原来写的是
+        `getattr(agent, "_paths", None)`，但 Agent 实例上根本没有 `_paths` 这个
+        属性（agent.py 内部任何需要 AgentPaths 的地方，都是用
+        `AgentPaths(self.cfg.project_root)` 现场构造，从不缓存）。也就是说，
+        这个 getattr 永远返回 None，本方法因此永远在 `if paths is None` 那一行
+        就返回 None——`AutonomousLoop` 从一开始就没有在 daemon 模式下真正被构造
+        过，是这次给 Phase 4 写 `mini-agent self status` 时，看到"Autonomous Loop:
+        not available"才顺着挖出来的，和本次多用户改造完全无关，但既然发现了
+        就一并修掉。
         """
         try:
             from mini_agent.evolution.autonomous_loop import AutonomousLoop
             from mini_agent.perception.goal_backlog import load_goal_backlog
+            from mini_agent.storage.paths import AgentPaths
 
-            # 从 agent 拿到 paths 和 cfg
-            paths = getattr(agent, "_paths", None)
             cfg = getattr(agent, "cfg", None)
-            if paths is None or cfg is None:
+            project_root = getattr(cfg, "project_root", None) if cfg is not None else None
+            if cfg is None or project_root is None:
                 return None
+            paths = AgentPaths(project_root)
 
             goal_backlog = load_goal_backlog(paths)
 

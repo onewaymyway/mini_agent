@@ -52,6 +52,18 @@ def main() -> int:
                 break
         return run_user_cli(sys.argv[2:], project_root)
 
+    # ── daemon 多用户架构 Phase 4：self 子命令短路 ───────────────────────────
+    # `mini-agent self status` 同样不进入主 argparse 流程，写法与上面的
+    # user 子命令完全一致。
+    if len(sys.argv) > 1 and sys.argv[1] == "self":
+        from mini_agent.cli.commands.self_cmd import run_self_cli
+        project_root = Path.cwd()
+        for i, arg in enumerate(sys.argv):
+            if arg in ("--project", "-p") and i + 1 < len(sys.argv):
+                project_root = Path(sys.argv[i + 1]).expanduser()
+                break
+        return run_self_cli(sys.argv[2:], project_root)
+
     # ── 全局异常捕获：确保任何启动错误都能显示 ────────────────────────────────
     try:
         _main_inner()
