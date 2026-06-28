@@ -755,6 +755,39 @@ def _connected_print_token(text: str) -> None:
     sys.stdout.flush()
 
 
+def _connected_status_bar_provider(client: "DaemonClient") -> "list[str]":
+    """
+    connected 模式专用状态栏内容提供者。
+    通过 GET /v1/status 轮询 daemon 状态，构建与本地 status_bar 风格一致的状态行。
+    注册到 Terminal.set_statusbar_provider() 后由刷新线程定期调用。
+    """
+    try:
+        status = client.get_status()
+        if not status:
+            return ["  \033[90m⚡ [connected] daemon 无响应\033[0m"]
+
+        state = status.get("state", "unknown")
+        session_id = status.get("session_id", "")
+        sid_short = session_id[:8] if session_id else "?"
+        queue_depth = status.get("queue_depth", 0)
+        subscribers = status.get("subscribers", 0)
+
+        # 状态图标
+        state_icon = {
+            "idle":    "\033[90m●\033[0m idle",
+            "running": "\033[36m●\033[0m running",
+            "waiting": "\033[33m●\033[0m waiting",
+        }.get(state, f"\033[90m●\033[0m {state}")
+
+        lines = [
+            f"  🌐 [connected] session={sid_short}  {state_icon}"
+            f"  \033[90mqueue={queue_depth}  clients={subscribers}\033[0m"
+        ]
+        return lines
+    except Exception:
+        return ["  \033[90m⚡ [connected] status error\033[0m"]
+
+
 def run_connected_repl(daemon_info: dict) -> None:
     """
     CLI 连接模式：连接到已存在的 daemon，REPL 输入通过 HTTP API 提交。
@@ -767,8 +800,17 @@ def run_connected_repl(daemon_info: dict) -> None:
       5. 内置命令：/session list  /session new  /session  exit
       6. exit/Ctrl-C：断开，daemon 继续运行
 
-    注意：调用前必须已停止 status_bar（stop_status_bar()），
-    否则 _refresh_loop 会干扰 input() 提示符和 SSE 输出。
+    修复 1（状态栏）：connected 模式现在也显示状态栏，通过
+      _connected_status_bar_provider 向 Terminal 注册回调，显示
+      daemon 的 session/state/queue 信息，与本地模式风格一致。
+
+    修复 2（agent 名字前缀）：agent 回复前输出 "agentname ❯ " 前缀，
+      与终端 A（daemon 本身）显示保持一致。
+
+    修复 3（多终端同步）：新增后台 observer 线程，持续订阅全局
+      /v1/stream SSE。当本终端处于等待输入阶段时，若其他终端（如终端C）
+      发出消息并得到回复，observer 会把回复实时打印到本终端，实现同一
+      session 多终端同步显示。
     """
     import threading
 
@@ -776,7 +818,6 @@ def run_connected_repl(daemon_info: dict) -> None:
     pid  = daemon_info["pid"]
     _proj = daemon_info.get("project_root")
     client = DaemonClient(port, project_root=_proj)
-
 
     # ── 等待 HTTP 就绪 ────────────────────────────────────────────────────────
     import sys as _sys
@@ -795,10 +836,26 @@ def run_connected_repl(daemon_info: dict) -> None:
     _sys.stdout.write(f"[daemon] Connected \u2713  (PID={pid}, port={port})\n")
     _sys.stdout.flush()
 
+    # ── 修复 1：重新启动状态栏（connected 模式专用 provider）────────────────
+    # app.py 在检测到 daemon 存在后调用了 stop_status_bar()，这里把它重新
+    # 启动，但注册的是 _connected_status_bar_provider 而非本地 _build_lines。
+    try:
+        from mini_agent.ui.terminal import get_terminal
+        _term = get_terminal()
+        _term.set_statusbar_provider(lambda: _connected_status_bar_provider(client))
+    except Exception:
+        pass  # 不影响主流程
+
     # ── Session 选择 ──────────────────────────────────────────────────────────
     chosen_sid = _pick_session(client)
     if chosen_sid is None:
         _sys.stdout.write("[daemon] Exited (daemon continues running)\n")
+        # 退出前停止状态栏
+        try:
+            from mini_agent.ui.terminal import get_terminal
+            get_terminal().set_statusbar_provider(None)
+        except Exception:
+            pass
         return
 
     active_session_id: Optional[str] = None
@@ -814,17 +871,130 @@ def run_connected_repl(daemon_info: dict) -> None:
     _connected_print(f"[daemon] \u2713 {label}\n")
     _connected_print("[daemon] '/session list' \u5207\u6362\uff0c'/session new' \u65b0\u5efa\uff0c'exit' \u65ad\u5f00\n\n")
 
-    # Bug 修复：原来这里用 agent_name 作为提示符标签（如 "orzooo ❯ "），
-    # 但 daemon 连接模式下，这一行提示符是给"用户输入"用的，
-    # 应该和普通 REPL（ui/terminal.py 的 "You ❯ "）保持一致的角色标签，
-    # 否则用户会困惑——看起来像是 agent 在等待输入，而不是自己要输入。
     prompt = "\033[1;32mYou\033[0m\033[1;36m \u276f \033[0m"
+    # 修复 2：agent 回复前缀，格式与 daemon 本身终端 A 一致
+    agent_prefix = f"\033[1;33m{agent_name}\033[0m\033[1;36m \u276f \033[0m"
+
+    # ── 修复 3：多终端同步 —— 后台 observer 线程 ─────────────────────────────
+    # 持续订阅全局 /v1/stream（非 per-turn 端点），在本终端等待用户输入时，
+    # 若其他终端触发了新的 turn，把输出实时打印到本终端。
+    #
+    # 状态共享（线程安全通过 threading.Event/Lock 保证）：
+    #   _waiting_input    - True 表示当前正在阻塞等待用户输入（可打印旁观输出）
+    #   _my_turn_id       - 本终端当前正在处理的 turn_id（避免旁观自己的回复）
+    #   _observer_lock    - 保证旁观输出与主输出不交错
+    _waiting_input   = threading.Event()
+    _waiting_input.set()   # 初始就是在等输入
+    _my_turn_id_holder: list[Optional[str]] = [None]   # 用列表做可变容器
+    _observer_lock   = threading.Lock()
+    _observer_stop   = threading.Event()
+
+    def _observer_worker() -> None:
+        """
+        后台线程：订阅 /v1/stream 全局 SSE，在等待用户输入期间把其他
+        终端触发的 agent 回复打印到本终端。
+        断线后自动重连（sleep 2s）。
+        """
+        import urllib.request as _ureq
+
+        # 记录已经打印过的 turn_id，避免重连后重复显示同一 turn
+        _seen_turns: set = set()
+        # 每个 turn 是否已打印过前缀（避免多个 token 事件里重复打前缀）
+        _turn_prefix_printed: set = set()
+
+        while not _observer_stop.is_set():
+            try:
+                url = f"{client.base_url}/v1/stream"
+                req = _ureq.Request(url, headers=client._headers())
+                with _ureq.urlopen(req, timeout=300) as resp:
+                    frame_lines: list[bytes] = []
+                    while not _observer_stop.is_set():
+                        line = resp.readline()
+                        if not line:
+                            break  # 服务端关闭连接，退出重连
+                        if line in (b"\n", b"\r\n"):
+                            if frame_lines:
+                                frame = b"".join(frame_lines).decode("utf-8", errors="replace")
+                                frame_lines = []
+                                _handle_observer_frame(
+                                    frame, _seen_turns, _turn_prefix_printed
+                                )
+                            continue
+                        frame_lines.append(line)
+            except Exception:
+                pass
+            if not _observer_stop.is_set():
+                time.sleep(2)  # 断线后等待重连
+
+    def _handle_observer_frame(
+        frame: str,
+        seen_turns: set,
+        turn_prefix_printed: set,
+    ) -> None:
+        """
+        解析单帧 SSE，决定是否输出到本终端。
+        只有满足以下全部条件才输出：
+          1. 本终端正在等待用户输入（_waiting_input 已 set）
+          2. 该 turn_id 不是本终端自己发起的（_my_turn_id_holder[0]）
+          3. 事件类型是 token 或 turn_done
+        """
+        evt_type = ""
+        data_line = ""
+        for ln in frame.splitlines():
+            if ln.startswith("event:"):
+                evt_type = ln[6:].strip()
+            elif ln.startswith("data:"):
+                data_line = ln[5:].strip()
+
+        if not data_line:
+            return
+        try:
+            payload = json.loads(data_line)
+        except Exception:
+            return
+
+        turn_id = payload.get("turn_id", "")
+
+        # 过滤掉本终端自己的 turn（本终端用 per-turn /v1/stream/{turn_id} 接收）
+        my_tid = _my_turn_id_holder[0]
+        if turn_id and turn_id == my_tid:
+            return
+
+        # 只在等待用户输入时显示旁观输出
+        if not _waiting_input.is_set():
+            return
+
+        with _observer_lock:
+            if evt_type == "token":
+                text = payload.get("text", "")
+                if not text:
+                    return
+                if turn_id not in turn_prefix_printed:
+                    # 首个 token：先清当前行（清掉 "You ❯ " 提示符），
+                    # 打出来源标记 + agent 前缀，再输出 token
+                    turn_prefix_printed.add(turn_id)
+                    seen_turns.add(turn_id)
+                    _sys.stdout.write(
+                        f"\r\033[K\033[2m[其他终端]\033[0m {agent_prefix}\n"
+                    )
+                _sys.stdout.write(text)
+                _sys.stdout.flush()
+
+            elif evt_type == "turn_done":
+                if turn_id in turn_prefix_printed:
+                    # 该 turn 有输出过内容，补一个换行 + 重打 prompt
+                    _sys.stdout.write(f"\n\n{prompt}")
+                    _sys.stdout.flush()
+                    turn_prefix_printed.discard(turn_id)
+
+    # 启动 observer 线程
+    _obs_thread = threading.Thread(target=_observer_worker, daemon=True, name="daemon-observer")
+    _obs_thread.start()
 
     # ── REPL 主循环 ───────────────────────────────────────────────────────────
-    # 使用 sys.stdout.write + sys.stdin.readline 代替 input()，
-    # 避免 status_bar 残留 / Rich 控制字符干扰输入提示符
     try:
         while True:
+            _waiting_input.set()    # 标记：正在等用户输入（允许 observer 打印）
             _sys.stdout.write(prompt)
             _sys.stdout.flush()
             try:
@@ -893,27 +1063,34 @@ def run_connected_repl(daemon_info: dict) -> None:
                 _connected_print("[error] send_message failed, please retry.\n")
                 continue
 
+            # 标记：本终端正在处理这个 turn，observer 不要重复打印
+            _waiting_input.clear()
+            _my_turn_id_holder[0] = turn_id
+
             # ── 流式接收 ──────────────────────────────────────────────────────
             done_event = threading.Event()
             printed_any = False
 
-            def on_token(text):
+            def on_token(text, _pa=None):
                 nonlocal printed_any
-                _connected_print_token(text)
-                printed_any = True
+                with _observer_lock:  # 与 observer 互斥，避免输出交错
+                    if not printed_any:
+                        # 修复 2：首个 token 前输出 agent 名字前缀
+                        _sys.stdout.write(agent_prefix)
+                        _sys.stdout.flush()
+                    _connected_print_token(text)
+                    printed_any = True
 
             def on_error(message):
-                # 服务端 run_turn() 出错时立刻提示，不必等 turn_done/超时才知道。
                 _connected_print(f"\n[error] {message}\n")
 
             def on_done(_text, error=None):
-                if printed_any:
-                    _sys.stdout.write("\n")
-                    _sys.stdout.flush()
-                if error and not printed_any:
-                    # 出错且没有任何 token 输出过（典型场景：LLM 调用直接抛异常），
-                    # 这里再兜底提示一次，避免用户只看到空白就回到了输入提示符。
-                    _connected_print(f"[error] {error}\n")
+                with _observer_lock:
+                    if printed_any:
+                        _sys.stdout.write("\n")
+                        _sys.stdout.flush()
+                    if error and not printed_any:
+                        _connected_print(f"[error] {error}\n")
                 done_event.set()
 
             def stream_worker(_tid=turn_id):
@@ -924,8 +1101,6 @@ def run_connected_repl(daemon_info: dict) -> None:
                 except Exception as e:
                     _connected_print(f"\n[daemon-client] stream error: {e}\n")
                 finally:
-                    # 兜底：无论 stream_output 内部发生什么，都必须 set，
-                    # 否则用户会一直卡在等待状态，看不到下一个 You ❯ 输入提示。
                     done_event.set()
 
             _sys.stdout.write("\n")  # token 开始前换行
@@ -933,12 +1108,23 @@ def run_connected_repl(daemon_info: dict) -> None:
             threading.Thread(target=stream_worker, daemon=True).start()
             if not done_event.wait(timeout=600):
                 _connected_print("\n[daemon] Timed out waiting for response.\n")
-            _sys.stdout.write("\n")  # 输出后空行，与下一个 You ❯ 提示符分隔开
+            _sys.stdout.write("\n")  # 输出后空行
             _sys.stdout.flush()
+
+            # 本 turn 结束，重新允许 observer 打印
+            _my_turn_id_holder[0] = None
 
     except KeyboardInterrupt:
         _sys.stdout.write("\n")
         _connected_print("[daemon] Disconnected (daemon continues running)\n")
+    finally:
+        # 清理：停止 observer 线程，停止状态栏
+        _observer_stop.set()
+        try:
+            from mini_agent.ui.terminal import get_terminal
+            get_terminal().set_statusbar_provider(None)
+        except Exception:
+            pass
 
 
 # ── 自动拉起 daemon（选项 A：默认行为）──────────────────────────────────────

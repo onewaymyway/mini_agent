@@ -336,14 +336,11 @@ def _main_inner() -> None:
                 project_root=project_root,
             )
             if _client.health_check():
-                # daemon HTTP 就绪，走连接模式（不构建本进程 Agent）
-                # 停止 status_bar：连接模式用独立的输出方式，不需要状态栏，
-                # 且状态栏的 _refresh_loop 会干扰 input() 提示符和 SSE 输出
-                try:
-                    from mini_agent.orchestrator.status_bar import stop_status_bar
-                    stop_status_bar()
-                except Exception:
-                    pass
+                # daemon HTTP 就绪，走连接模式（不构建本进程 Agent）。
+                # 注意：不再在这里 stop_status_bar()。
+                # run_connected_repl() 内部会把 provider 替换为 connected 模式专用的
+                # _connected_status_bar_provider，显示 daemon session/state 信息，
+                # 退出时再清除（set_statusbar_provider(None)）。
                 run_connected_repl(_daemon_info)
                 return
             else:
