@@ -687,7 +687,10 @@ def run_daemon_cli(argv: list[str], project_root: Path) -> int:
 
 # ── Session 选择界面 ──────────────────────────────────────────────────────────
 
-def _pick_session(client: "DaemonClient") -> Optional[str]:
+def _pick_session(
+    client: "DaemonClient",
+    term=None,
+) -> Optional[str]:
     """
     展示 session 选择菜单，返回：
       - session_id str  → 用户选择已有 session（需 resume）
@@ -696,6 +699,10 @@ def _pick_session(client: "DaemonClient") -> Optional[str]:
 
     如果 daemon 没有任何历史 session，静默返回 ""（直接新建）。
     默认回车选最近一条 session（编号 1）。
+
+    term（Optional Terminal）：若传入，在每次阻塞 input() 前后调用
+    _enter_input_mode()/_exit_input_mode() 暂停/恢复状态栏刷新，
+    防止刷新线程在用户输入时把提示符覆盖掉。
     """
     sessions = client.list_sessions(limit=8)
     if not sessions:
@@ -720,7 +727,13 @@ def _pick_session(client: "DaemonClient") -> Optional[str]:
 
     while True:
         try:
-            raw = input("  选择 [1]: ").strip()
+            if term is not None:
+                term._enter_input_mode()
+            try:
+                raw = input("  选择 [1]: ").strip()
+            finally:
+                if term is not None:
+                    term._exit_input_mode()
         except (EOFError, KeyboardInterrupt):
             print()
             return None
@@ -839,6 +852,7 @@ def run_connected_repl(daemon_info: dict) -> None:
     # ── 修复 1：重新启动状态栏（connected 模式专用 provider）────────────────
     # app.py 在检测到 daemon 存在后调用了 stop_status_bar()，这里把它重新
     # 启动，但注册的是 _connected_status_bar_provider 而非本地 _build_lines。
+    _term = None
     try:
         from mini_agent.ui.terminal import get_terminal
         _term = get_terminal()
@@ -847,15 +861,17 @@ def run_connected_repl(daemon_info: dict) -> None:
         pass  # 不影响主流程
 
     # ── Session 选择 ──────────────────────────────────────────────────────────
-    chosen_sid = _pick_session(client)
+    # 传入 _term，_pick_session 内部会在 input() 前后调用
+    # _enter_input_mode()/_exit_input_mode() 暂停状态栏刷新
+    chosen_sid = _pick_session(client, term=_term)
     if chosen_sid is None:
         _sys.stdout.write("[daemon] Exited (daemon continues running)\n")
         # 退出前停止状态栏
-        try:
-            from mini_agent.ui.terminal import get_terminal
-            get_terminal().set_statusbar_provider(None)
-        except Exception:
-            pass
+        if _term is not None:
+            try:
+                _term.set_statusbar_provider(None)
+            except Exception:
+                pass
         return
 
     active_session_id: Optional[str] = None
@@ -995,17 +1011,25 @@ def run_connected_repl(daemon_info: dict) -> None:
     try:
         while True:
             _waiting_input.set()    # 标记：正在等用户输入（允许 observer 打印）
-            _sys.stdout.write(prompt)
-            _sys.stdout.flush()
+            # 进入阻塞输入前暂停状态栏刷新，防止刷新线程覆盖提示符
+            if _term is not None:
+                _term._enter_input_mode()
             try:
-                line = _sys.stdin.readline()
-                if line == "":   # EOF
-                    raise EOFError
-                user_input = line.rstrip("\n").strip()
-            except (EOFError, KeyboardInterrupt):
-                _sys.stdout.write("\n")
-                _connected_print("[daemon] Disconnected (daemon continues running)\n")
-                break
+                _sys.stdout.write(prompt)
+                _sys.stdout.flush()
+                try:
+                    line = _sys.stdin.readline()
+                    if line == "":   # EOF
+                        raise EOFError
+                    user_input = line.rstrip("\n").strip()
+                except (EOFError, KeyboardInterrupt):
+                    _sys.stdout.write("\n")
+                    _connected_print("[daemon] Disconnected (daemon continues running)\n")
+                    break
+            finally:
+                # 输入完成后恢复状态栏刷新
+                if _term is not None:
+                    _term._exit_input_mode()
 
             if not user_input:
                 continue
@@ -1027,7 +1051,7 @@ def run_connected_repl(daemon_info: dict) -> None:
                 continue
 
             if cmd in ("/session list", "/sessions", "/session ls"):
-                chosen = _pick_session(client)
+                chosen = _pick_session(client, term=_term)
                 if chosen is None:
                     continue
                 if chosen == "":
@@ -1120,11 +1144,11 @@ def run_connected_repl(daemon_info: dict) -> None:
     finally:
         # 清理：停止 observer 线程，停止状态栏
         _observer_stop.set()
-        try:
-            from mini_agent.ui.terminal import get_terminal
-            get_terminal().set_statusbar_provider(None)
-        except Exception:
-            pass
+        if _term is not None:
+            try:
+                _term.set_statusbar_provider(None)
+            except Exception:
+                pass
 
 
 # ── 自动拉起 daemon（选项 A：默认行为）──────────────────────────────────────
