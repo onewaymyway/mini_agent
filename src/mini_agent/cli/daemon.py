@@ -422,6 +422,13 @@ def cmd_daemon_start(
     else:
         # 后台进程
         print(f"[daemon] Starting in background on port {http_port}...")
+
+        # daemon 进程的 stdout/stderr 重定向到日志文件而非 DEVNULL，
+        # 崩溃时可查看：<project_root>/.agent/daemon.log
+        log_path = project_root / ".agent" / "daemon.log"
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        log_file = open(log_path, "w", encoding="utf-8", errors="replace")
+
         if sys.platform == "win32":
             # Windows 没有 start_new_session；必须用 creationflags 让子进程
             # 脱离当前控制台会话，否则父进程（powershell 命令）退出时子进程
@@ -431,14 +438,14 @@ def cmd_daemon_start(
             DETACHED_PROCESS = 0x00000008
             CREATE_NEW_PROCESS_GROUP = 0x00000200
             kwargs = {
-                "stdout": subprocess.DEVNULL,
-                "stderr": subprocess.DEVNULL,
+                "stdout": log_file,
+                "stderr": log_file,
                 "creationflags": DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP,
             }
         else:
             kwargs = {
-                "stdout": subprocess.DEVNULL,
-                "stderr": subprocess.DEVNULL,
+                "stdout": log_file,
+                "stderr": log_file,
                 "close_fds": True,
                 "start_new_session": True,
             }
@@ -469,20 +476,41 @@ def cmd_daemon_start(
             time.sleep(0.5)
             # 子进程可能已崩溃
             if not _is_process_alive(pid):
+                log_file.flush()
+                log_file.close()
                 print(
                     f"[daemon] Error: daemon process (PID={pid}) exited unexpectedly.",
                     file=sys.stderr,
                 )
+                print(
+                    f"[daemon] Check log for details: {log_path}",
+                    file=sys.stderr,
+                )
+                # 打印日志末尾 30 行，方便直接看到错误
+                try:
+                    lines = log_path.read_text(encoding="utf-8", errors="replace").splitlines()
+                    tail = lines[-30:] if len(lines) > 30 else lines
+                    if tail:
+                        print("[daemon] --- daemon.log tail ---", file=sys.stderr)
+                        for l in tail:
+                            print(f"  {l}", file=sys.stderr)
+                        print("[daemon] --- end ---", file=sys.stderr)
+                except Exception:
+                    pass
                 _cleanup_pid_files(project_root)
                 return 1
             if pid_path.exists() and client.health_check():
+                log_file.close()
                 print(f"[daemon] HTTP service ready at http://127.0.0.1:{http_port}")
+                print(f"[daemon] Log: {log_path}")
                 return 0
 
+        log_file.close()
         print(
             "[daemon] Warning: HTTP service did not respond within 15s, "
             "but daemon process is running."
         )
+        print(f"[daemon] Log: {log_path}")
         return 0
 
 
