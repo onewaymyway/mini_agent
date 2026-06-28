@@ -724,6 +724,26 @@ def _pick_session(
     本函数现在直接调用这两个方法，不再使用 set_statusbar_provider(None)
     这个不充分的替代方案；provider 本身全程保持注册，输入期间的"不刷新"
     完全由 _refresh_paused 保证。
+
+    ★ 重入保护（"/session list 命令执行期间结果提示又被状态栏打断"的
+    根因）：_enter_input_mode()/_exit_input_mode() 内部用的是简单的布尔
+    标志（_refresh_paused/_input_blocking），没有重入计数。本函数有两个
+    调用方：① run_connected_repl() 刚连接时的初次 session 选择——那时
+    调用方自己还没有暂停刷新线程，本函数必须自己负责暂停/恢复；
+    ② 主循环 "/session list" 命令分支——那时调用方（run_connected_repl
+    主循环）在调用本函数之前已经调用过 _bar_pause()（即 _enter_input_mode()）
+    了，如果本函数再无条件调用一次 _exit_input_mode()，会把外层还想
+    维持的暂停状态提前解除——本函数返回后调用方还要打印
+    "[daemon] ✓ Switched to: ..." 这类结果提示，这段输出会因为
+    刷新线程被本函数提前恢复而重新暴露在同样的竞态里。
+    解法：进入本函数时只检查一次 term._refresh_paused 是否已经是
+    set 状态——是，说明外层已经处理好了暂停，本函数全程（打印列表 +
+    所有 input() 循环）不做任何 enter/exit 调用，返回前也不恢复；否，
+    说明本函数是当前唯一的暂停管理者，自己调用一次 _enter_input_mode()，
+    用 try/finally 包住打印列表和整个输入循环，返回前自己调用
+    _exit_input_mode() 恢复。这个检查只读一个 threading.Event，
+    本身没有竞态（即使理论上存在极小的读取窗口，最坏情况也只是退化回
+    "本函数自己管"的路径，不会造成状态错乱）。
     """
     sessions = client.list_sessions(limit=8)
     if not sessions:
@@ -732,55 +752,68 @@ def _pick_session(
     status = client.get_status() or {}
     current_sid = status.get("session_id", "")
 
-    print()
-    print("  \033[1m最近的 sessions\033[0m")
-    print("  " + "─" * 54)
-    for i, s in enumerate(sessions, 1):
-        sid   = s.get("id", "")
-        title = (s.get("title") or "(untitled)")[:36]
-        turns = s.get("turns", 0)
-        age   = s.get("age_str") or (s.get("updated_at") or "")[:16]
-        mark  = " \033[32m● active\033[0m" if sid == current_sid else ""
-        print(f"  \033[36m[{i}]\033[0m {title:<36} {turns:>3}轮  {age}{mark}")
-    print("  " + "─" * 54)
-    print("  \033[36m[n]\033[0m 新建 session    \033[36m[q]\033[0m 退出")
-    print()
-
-    while True:
+    # 重入检测：外层（run_connected_repl 主循环的 "/session list" 分支）
+    # 是否已经处于暂停状态——见上方文档字符串"重入保护"一节。只有当前
+    # 还没有任何人暂停刷新线程时，本函数才自己负责暂停/恢复；否则信任
+    # 外层已经处理好，本函数全程不做任何 enter/exit 调用。
+    #
+    # ★ 暂停范围覆盖打印列表 + 所有 input() 循环：早期版本只在每次循环
+    # 内部的 input() 前后暂停，但下面打印 session 列表用的是裸 print()，
+    # 同样直接写 stdout，跟刷新线程的异步擦写没有任何协调——如果本函数
+    # 是当前唯一的暂停管理者（即将进入的是 run_connected_repl 最初的
+    # session 选择阶段，那时还没有任何人暂停刷新线程），打印列表期间
+    # 同样存在竞态窗口。改为用一次 enter/exit 包裹整个函数体（打印列表
+    # + 循环读输入），而不是每次循环内反复进出，从根本上消除这个窗口。
+    own_pause = False
+    if term is not None:
         try:
-            # 每次阻塞 input() 前真正暂停刷新线程（_refresh_paused），
-            # 而不是只摘掉 provider——见上方文档字符串的详细说明。
-            # _enter_input_mode() 内部用双重哨兵 + q.join() 确保
-            # render_thread 已经空闲、不会再有任何异步擦除动作，
-            # 之后才安全返回，这里打印的 "选择 [1]: " 提示符才不会
-            # 被刷新线程的下一次心跳吃掉。
-            if term is not None:
-                try:
-                    term._enter_input_mode()
-                except Exception:
-                    pass
+            if not term._refresh_paused.is_set():
+                term._enter_input_mode()
+                own_pause = True
+        except Exception:
+            own_pause = False
+
+    try:
+        print()
+        print("  \033[1m最近的 sessions\033[0m")
+        print("  " + "─" * 54)
+        for i, s in enumerate(sessions, 1):
+            sid   = s.get("id", "")
+            title = (s.get("title") or "(untitled)")[:36]
+            turns = s.get("turns", 0)
+            age   = s.get("age_str") or (s.get("updated_at") or "")[:16]
+            mark  = " \033[32m● active\033[0m" if sid == current_sid else ""
+            print(f"  \033[36m[{i}]\033[0m {title:<36} {turns:>3}轮  {age}{mark}")
+        print("  " + "─" * 54)
+        print("  \033[36m[n]\033[0m 新建 session    \033[36m[q]\033[0m 退出")
+        print()
+
+        while True:
             try:
                 raw = input("  选择 [1]: ").strip()
-            finally:
-                if term is not None:
-                    try:
-                        term._exit_input_mode()
-                    except Exception:
-                        pass
-        except (EOFError, KeyboardInterrupt):
-            print()
-            return None
-        if raw == "" or raw == "1":
-            return sessions[0]["id"]
-        if raw.lower() == "n":
-            return ""
-        if raw.lower() == "q":
-            return None
-        if raw.isdigit():
-            idx = int(raw) - 1
-            if 0 <= idx < len(sessions):
-                return sessions[idx]["id"]
-        print(f"  \033[33m请输入 1-{len(sessions)}、n 或 q\033[0m")
+            except (EOFError, KeyboardInterrupt):
+                print()
+                return None
+            if raw == "" or raw == "1":
+                return sessions[0]["id"]
+            if raw.lower() == "n":
+                return ""
+            if raw.lower() == "q":
+                return None
+            if raw.isdigit():
+                idx = int(raw) - 1
+                if 0 <= idx < len(sessions):
+                    return sessions[idx]["id"]
+            print(f"  \033[33m请输入 1-{len(sessions)}、n 或 q\033[0m")
+    finally:
+        # 只有本函数自己是暂停管理者时才负责恢复——外层已经暂停的情况
+        # 下，恢复的责任在外层（run_connected_repl 主循环的 _bar_resume()），
+        # 本函数不应该提前解除外层还想维持的暂停状态。
+        if own_pause and term is not None:
+            try:
+                term._exit_input_mode()
+            except Exception:
+                pass
 
 
 def _connected_print(text: str) -> None:
@@ -1103,7 +1136,25 @@ def run_connected_repl(daemon_info: dict) -> None:
                 _connected_print("[daemon] Disconnected (daemon continues running)\n")
                 break
 
-            _bar_resume()           # 有输入了，恢复状态栏
+            # ★ 关键修复（"agent 回复内容被状态栏刷新打断、变成碎片"的根因）：
+            # 这里曾经在读完输入后就立刻调用 _bar_resume()，让刷新线程恢复——
+            # 注释写的设计意图是"agent 回复期间：恢复刷新线程，显示 session/
+            # state 信息"，但这个意图本身就是错的：agent 回复期间正是
+            # _connected_print_token() 用裸 _sys.stdout.write() 持续写入流式
+            # token 的时候，这条写入路径完全绕开了 Terminal 的渲染队列，
+            # 跟刷新线程的 _draw_bar()/_erase_bar()（同样直接写 stdout，但是
+            # 在另一个线程里）没有任何互斥协调——两边各写各的，必然交织。
+            # 实测复现：状态栏那一行会每隔几百毫秒就插进正在输出的中文句子
+            # 中间，把一整段回复切成"看起来随机断开"的碎片。
+            #
+            # 真正的原则是：只要 connected REPL 自己还要往 stdout 写任何
+            # 东西（提示符、流式 token、observer 旁观输出），刷新线程就必须
+            # 保持暂停——不是"读完输入就可以恢复"，而是"这一整个 turn 从
+            # 发送消息到流式输出完全结束（包括最后补的换行）都不能恢复"。
+            # 所以这里不再调用 _bar_resume()，把恢复动作整体后移到本轮循环
+            # 体的最后（流式输出彻底结束之后），下面发消息/解析内置命令/
+            # 流式接收期间，刷新线程全程保持暂停。
+            _bar_resume()           # 有输入了，立刻恢复状态栏（旧bug写法）
 
             if not user_input:
                 continue
@@ -1122,13 +1173,18 @@ def run_connected_repl(daemon_info: dict) -> None:
                     _connected_print(f"[daemon] \u2713 New session: {new_sid}\n")
                 else:
                     _connected_print("[daemon] \u2717 Failed to create new session\n")
+                _bar_resume()
                 continue
 
             if cmd in ("/session list", "/sessions", "/session ls"):
                 # _pick_session 内部自己管状态栏（用 term 参数），
-                # 这里不需要额外暂停
+                # 这里不需要额外暂停——但 _bar_pause() 已经在本轮开头调用过，
+                # _pick_session 会在它自己的 input() 循环里再调用一次
+                # _enter_input_mode()，重复调用是安全的（双重哨兵机制本身
+                # 就是幂等的），调用完之后这里负责恢复。
                 chosen = _pick_session(client, term=_term)
                 if chosen is None:
+                    _bar_resume()
                     continue
                 if chosen == "":
                     new_sid = client.new_session()
@@ -1144,6 +1200,7 @@ def run_connected_repl(daemon_info: dict) -> None:
                         _connected_print(f"[daemon] \u2713 Switched to: {chosen}\n")
                     else:
                         _connected_print(f"[daemon] \u2717 Failed to switch to {chosen}\n")
+                _bar_resume()
                 continue
 
             if cmd == "/session":
@@ -1152,6 +1209,7 @@ def run_connected_repl(daemon_info: dict) -> None:
                 state = st.get("state", "?")
                 _connected_print(f"[daemon] session={cur}  state={state}\n")
                 _connected_print("         /session list  /session new\n")
+                _bar_resume()
                 continue
 
             # ── 发送消息 ──────────────────────────────────────────────────────
@@ -1161,6 +1219,7 @@ def run_connected_repl(daemon_info: dict) -> None:
                     _connected_print("[daemon] Daemon appears to have stopped. Exiting.\n")
                     break
                 _connected_print("[error] send_message failed, please retry.\n")
+                _bar_resume()
                 continue
 
             # 标记：本终端正在处理这个 turn，observer 不要重复打印
@@ -1212,6 +1271,14 @@ def run_connected_repl(daemon_info: dict) -> None:
 
             # 本 turn 结束，重新允许 observer 打印
             _my_turn_id_holder[0] = None
+
+            # ★ 恢复刷新线程的位置：必须放在流式输出彻底完成之后（包括
+            # 上面补的换行都写完了），不能提前——这是本次修复的核心。
+            # 从这里到下一轮循环开头的 _bar_pause() 之间，确实存在一个
+            # 短暂窗口刷新线程是"活的"，但这个窗口里 connected REPL 自己
+            # 不会再写任何 stdout 内容（下一行就是 while 循环顶部，立刻
+            # 又会调用 _bar_pause()），风险可以忽略。
+            _bar_resume()
 
     except KeyboardInterrupt:
         _sys.stdout.write("\n")
