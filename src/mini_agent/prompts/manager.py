@@ -199,7 +199,13 @@ class PromptManager:
         # 1. Core identity
         parts.append(self.render("system/agent_core", agent_name=agent_name))
 
-        # 1b. Execution planning capability
+        # 1b. Workspace hygiene & graceful operation standards
+        try:
+            parts.append(self.render("system/workspace_hygiene"))
+        except Exception:
+            pass
+
+        # 1c. Execution planning capability
         try:
             parts.append(self.render("system/plan_mode"))
         except Exception:
