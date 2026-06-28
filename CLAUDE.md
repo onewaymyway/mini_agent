@@ -256,8 +256,17 @@ python main.py --provider nvidia --model qwen/qwen3.5-122b-a10b --system-tool-ca
 ### Hooks 机制
 
 - 配置文件：`.agent/hooks.json`（项目级）或 `~/.agent/hooks.json`（全局级）
-- 支持事件：`UserPromptSubmit`、`PreToolUse`、`PostToolUse`、`PreCompact`、`SessionStart`/`SessionEnd`、`TurnEnd`（一轮结束后、等待用户输入前；可返回 `user_input` 替代真实输入）
-- Hook 可以通过 stdin 接收 JSON payload，通过 stdout 返回决策（allow/block/context/input）
+- 支持事件（15 个，按生命周期）：
+  - **Session**：`SessionStart`、`SessionEnd`
+  - **Prompt**：`UserPromptSubmit`
+  - **Tool**：`PreToolUse`（可阻止）、`PostToolUse`、`PostToolUseFailure`（工具抛异常时）、`PostToolBatch`（一批工具全部结束后）
+  - **Subagent**：`SubagentStart`、`SubagentStop`
+  - **Task**：`TaskCreated`、`TaskCompleted`
+  - **Stop**：`Stop`（LLM 无工具调用、准备结束本轮时；context 可注入）
+  - **Compact**：`PreCompact`（可阻止）、`PostCompact`
+  - **mini_agent 扩展**：`TurnEnd`（一轮结束后，可注入 `user_input` 接管下一轮）
+- Hook 通过 stdin 接收 JSON payload，通过 stdout 返回决策（allow/block/context/input/user_input）
+- 可阻止的事件：`UserPromptSubmit`、`PreToolUse`、`PreCompact`
 - CLI 命令：`/hooks list|reload`
 
 ### Reminder 机制
@@ -471,7 +480,7 @@ python main.py --provider nvidia --model qwen/qwen3.5-122b-a10b --system-tool-ca
 - [记忆管理指南](docs/memory-management-guide.md) — 长期记忆系统，含 Lesson Memory（规则触发/SessionEnd 反思/人类反馈纠正检测）
 - [history 类型化设计](docs/history-typed-design.md) — `_type` 字段化设计，含 `user_correction` 类型
 - [权限管理指南](docs/permission-guide.md) — 权限守卫、白名单，`(e)dit` 接入 Lesson Memory
-- [Hooks 机制](docs/hooks.md) — 关键事件自动执行命令，`SessionEnd` 接入，`TurnEnd` 新增（一轮结束通知 / agent-to-agent 接管 / 自动化测试）
+- [Hooks 机制](docs/hooks.md) — 15 个生命周期事件（Session / Prompt / Tool / Subagent / Task / Stop / Compact / TurnEnd），完整事件时序图与各事件用例
 - [Task 日志实时查看](docs/task-focus-viewing.md) — 方向键切换查看任务日志机制
 - [终端显示机制深度解析](docs/terminal-display-internals.md) — 线程模型、状态栏控制、三阶段状态机、token 过滤
 - [终端 I/O 指南](docs/terminal-io-guide.md) — 终端渲染与输入机制

@@ -403,6 +403,26 @@ mgr.cancel(task_id)  # 发送取消信号
   SubAgent 进入终态时触发主 agent 的 memory backend `reload()`，使本 session
   后续检索能看到 SubAgent 期间产生的新 lesson。
 
+### 8.4 与 Hooks 系统的关系
+
+SubAgent 生命周期与 hooks 系统深度集成，相关事件在 `sub_agent.py` 和
+`task_manager.py` 中触发，无需 hook 配置也能正常运行；有配置时自动激活。
+
+| 事件 | 触发位置 | 触发时机 | payload 关键字段 |
+|---|---|---|---|
+| `TaskCreated` | `task_manager.py::submit()` | 任务提交进队列时 | `task_id / task_name / prompt[:200] / tags` |
+| `SubagentStart` | `sub_agent.py::_run_body()` | SubAgent 进入 RUNNING 状态后 | `task_id / task_name / prompt[:200]` |
+| `SubagentStop` | `sub_agent.py::_run_body()` finally | SubAgent 进入终态前（DONE/FAILED/CANCELLED） | `task_id / status / error` |
+| `TaskCompleted` | `task_manager.py::_handle_terminal()` | 终态确认后、memory reload 前 | `task_id / task_name / status / error` |
+
+**典型用途**：
+- `TaskCreated` — 记录任务分发日志，或向外部系统推送任务开始通知
+- `SubagentStart` — 启动外部监控进程、分配追踪 ID
+- `SubagentStop` — 失败时发告警，成功时触发下游流程
+- `TaskCompleted` — 汇总多 SubAgent 批量结果，或触发后处理
+
+详见 [Hooks 机制](hooks.md)。
+
 ---
 
-*最后更新：2026-06（反映 SubAgent 重试机制、状态管理修复、调试日志新增、Stage 3.3 信息继承机制）*
+*最后更新：2026-06（新增 8.4 Hooks 集成：TaskCreated / SubagentStart / SubagentStop / TaskCompleted 事件；反映 SubAgent 重试机制、状态管理修复、调试日志新增、Stage 3.3 信息继承机制）*

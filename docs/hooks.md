@@ -29,44 +29,127 @@ shell 命令，用于审计、拦截危险操作、自动格式化、注入额�
       "command": "python3 .agent/hooks/log_tool_call.py"
     }
   ],
+  "PostToolBatch": [
+    {"command": "python3 .agent/hooks/batch_done.py"}
+  ],
   "UserPromptSubmit": [
     {"command": "python3 .agent/hooks/inject_context.py"}
   ],
+  "SessionStart": [
+    {"command": "python3 .agent/hooks/on_session_start.py"}
+  ],
+  "SessionEnd": [
+    {"command": "python3 .agent/hooks/on_session_end.py"}
+  ],
   "TurnEnd": [
     {"command": "python3 .agent/hooks/turn_end_notify.py", "timeout": 5}
+  ],
+  "TaskCreated": [
+    {"command": "python3 .agent/hooks/on_task_created.py"}
+  ],
+  "TaskCompleted": [
+    {"command": "python3 .agent/hooks/on_task_completed.py"}
+  ],
+  "SubagentStart": [
+    {"command": "python3 .agent/hooks/on_subagent_start.py"}
+  ],
+  "SubagentStop": [
+    {"command": "python3 .agent/hooks/on_subagent_stop.py"}
+  ],
+  "Stop": [
+    {"command": "python3 .agent/hooks/on_stop.py"}
+  ],
+  "PreCompact": [
+    {"command": "python3 .agent/hooks/pre_compact.py"}
+  ],
+  "PostCompact": [
+    {"command": "python3 .agent/hooks/post_compact.py"}
   ]
 }
 ```
 
 字段说明：
 - `command`：要执行的 shell 命令（跨平台解析：Windows 下使用 `posix=False`，其他平台使用标准 POSIX 解析）
-- `matcher`：仅 `PreToolUse` / `PostToolUse` 有效。`"*"` 或省略表示匹配所有工具；
+- `matcher`：仅 `PreToolUse` / `PostToolUse` / `PostToolUseFailure` 有效。`"*"` 或省略表示匹配所有工具；
   也可用 `|` 分隔多个工具名，如 `"bash|write_file"`
 - `timeout`：超时秒数，默认 30
 
 ## 支持的事件
 
-| 事件 | 触发时机 | payload |
-|---|---|---|
-| `UserPromptSubmit` | 每轮用户输入被处理前 | `{"prompt": "..."}` |
-| `PreToolUse` | 每次工具调用前 | `{"tool_name": "...", "tool_input": {...}}` |
-| `PostToolUse` | 每次工具调用后 | `{"tool_name": "...", "tool_input": {...}, "tool_result": "..."}` |
-| `PreCompact` | 历史压缩前 | （预留，尚未接入触发点） |
-| `SessionStart` | 会话开始 | （预留，尚未接入触发点） |
-| `SessionEnd` | 会话真正结束（REPL 退出：`EOFError` / `exit` / `quit` / `/exit` / `/quit`） | `{"session_id": "...", "tool_stats": {...}, "turns": N, "input_tokens": N, "output_tokens": N}` |
-| `TurnEnd` | 每轮 Agent 回复完成、等待下一次用户输入之前 | `{"assistant_output": "...", "history": [{"role": "...", "content": "..."}, ...]}` |
+### Session 生命周期
 
-> **2026-06 更新（Stage 1.3）**：`SessionEnd` 已从"预留未接"升级为真正接入。
-> 触发点是 `agent.trigger_session_end()`，由 `cli/repl.py` 在进程退出前的两处
-> 真实退出路径调用。`SessionStart` 仍是预留状态。
->
-> `SessionEnd` 触发后，agent 还会紧接着跑一次轻量 LLM 反思调用，基于
-> `tool_stats` + 最后若干轮用户意图轮次生成结构化 lesson 候选并写入记忆——
-> 这是 hook 触发之外的**额外行为**，不依赖 hook 配置是否存在，由
-> `cfg.memory.enabled` 控制是否执行。详见
-> [记忆管理指南](memory-management-guide.md#lesson-memory) 中 SessionEnd 反思一节。
+| 事件 | 触发时机 | 可阻止 | payload |
+|---|---|---|---|
+| `SessionStart` | session 初始化完成后（`_init_session` 完成时） | ❌ | `{"session_id": "...", "model": "...", "provider": "..."}` |
+| `SessionEnd` | REPL 真正退出时（`EOFError` / `exit` / `quit` / `/exit` / `/quit`） | ❌ | `{"session_id": "...", "tool_stats": {...}, "turns": N, "input_tokens": N, "output_tokens": N}` |
 
-> **2026-06 更新**：新增 `TurnEnd` 事件。详见下方专节说明。
+### Prompt 生命周期
+
+| 事件 | 触发时机 | 可阻止 | payload |
+|---|---|---|---|
+| `UserPromptSubmit` | 每轮用户输入被处理前 | ✅ | `{"prompt": "..."}` |
+
+### Tool 生命周期
+
+| 事件 | 触发时机 | 可阻止 | payload |
+|---|---|---|---|
+| `PreToolUse` | 每次工具调用前 | ✅ | `{"tool_name": "...", "tool_input": {...}}` |
+| `PostToolUse` | 每次工具调用成功后 | ❌ | `{"tool_name": "...", "tool_input": {...}, "tool_result": "..."}` |
+| `PostToolUseFailure` | 工具调用抛出异常时 | ❌ | `{"tool_name": "...", "tool_input": {...}, "error": "..."}` |
+| `PostToolBatch` | 一批工具全部执行完成后（`execute_all` 返回前） | ❌ | `{"tool_names": [...], "results": [...], "error_count": N}` |
+
+> **`PostToolUseFailure` vs `PostToolUse`**：`PostToolUse` 在工具成功返回时触发
+> （包括返回 `[tool error: ...]` 格式错误字符串的情况，即注册函数执行完但结果是错误）；
+> `PostToolUseFailure` 只在工具函数本身**抛出未捕获异常**时触发。两者不重叠。
+
+> **`PostToolBatch`**：每次 LLM 返回一批 tool_calls 并全部执行完后触发一次，
+> 不是每个工具单独触发。可用于"批量完成后记录日志"等场景。
+
+### Subagent 生命周期
+
+| 事件 | 触发时机 | 可阻止 | payload |
+|---|---|---|---|
+| `SubagentStart` | SubAgent 进入 RUNNING 状态时 | ❌ | `{"task_id": "...", "task_name": "...", "prompt": "...（前200字）"}` |
+| `SubagentStop` | SubAgent 进入终态（DONE / FAILED / CANCELLED）时 | ❌ | `{"task_id": "...", "status": "done|failed|cancelled", "error": "..."}` |
+
+### Task 生命周期
+
+| 事件 | 触发时机 | 可阻止 | payload |
+|---|---|---|---|
+| `TaskCreated` | `TaskManager.submit()` 提交任务时 | ❌ | `{"task_id": "...", "task_name": "...", "prompt": "...（前200字）", "tags": [...]}` |
+| `TaskCompleted` | 任务进入终态（DONE / FAILED / CANCELLED）时 | ❌ | `{"task_id": "...", "task_name": "...", "status": "...", "error": "..."}` |
+
+> `TaskCompleted` 覆盖三种终态（DONE / FAILED / CANCELLED），
+> 通过 payload 中的 `status` 字段区分。
+
+### Stop 生命周期
+
+| 事件 | 触发时机 | 可阻止 | payload |
+|---|---|---|---|
+| `Stop` | agentic loop 中 LLM 无工具调用、准备结束本轮输出前 | ❌（结果可注入） | `{"text": "本轮输出文本", "turn": N}` |
+
+> **`Stop` 的 context 注入**：若 hook 返回 `{"context": "..."}` ，
+> 该文本会以 `[stop hook context] ...` 形式作为 user 消息追加进 history。
+> 适合"收尾检查"类场景（如让 agent 再核实一遍某个条件）。
+> `blocked` 字段对 Stop 事件无效，不能阻止本轮结束。
+
+### Context Compact 生命周期
+
+| 事件 | 触发时机 | 可阻止 | payload |
+|---|---|---|---|
+| `PreCompact` | `_auto_compress_history()` 执行前 | ✅ | `{"history_len": N, "strategy": "auto_compress"}` |
+| `PostCompact` | `_auto_compress_history()` 执行后 | ❌ | `{"history_len": N, "strategy": "auto_compress", "summary": "..."}` |
+
+> **`PreCompact` 阻止**：hook 返回 exit code 2 或 `{"decision": "block"}` 可阻止本次压缩。
+> 典型用途：当前 turn 正在执行重要任务时，临时禁止压缩以保留完整上下文。
+
+### mini_agent 扩展
+
+| 事件 | 触发时机 | 可阻止 | payload |
+|---|---|---|---|
+| `TurnEnd` | 每轮 Agent 回复完成、等待下一次用户输入之前 | ❌ | `{"assistant_output": "...", "history": [...]}` |
+
+---
 
 ## Hook 如何与主流程交互
 
@@ -82,25 +165,58 @@ hook 命令通过 **stdin** 接收 JSON payload，可选地向 **stdout** 输出
 
 行为规则：
 
-- **退出码为 2**：视为 `block`（无论 stdout 是什么），常用于"一句话拒绝"场景，
-  类似 `exit(2)` + 打印理由到 stdout/stderr
-- **`decision: "block"`**（仅 `PreToolUse`）：阻断本次工具调用，
-  结果会被替换为 `[blocked by hook: <reason>]`，工具不会真正执行
+- **退出码为 2**：视为 `block`（无论 stdout 是什么），常用于"一句话拒绝"场景
+- **`decision: "block"`**（仅 `PreToolUse` 和 `PreCompact`）：阻断操作，
+  工具调用结果替换为 `[blocked by hook: <reason>]`，或压缩跳过
 - **`context`**：
-  - `UserPromptSubmit` 时，会以 `[hook context]\n...` 形式追加到用户消息后
-  - `PostToolUse` 时，会以 `[hook note] ...` 形式追加到工具结果后
-- **`input`**（仅 `PreToolUse`）：用于修改本次工具调用的参数（多个 hook 依次合并）
-- **`user_input`**（仅 `TurnEnd`）：替代真实用户输入，直接驱动下一轮对话（详见下方）
+  - `UserPromptSubmit` 时：以 `[hook context]\n...` 形式追加到用户消息后
+  - `PostToolUse` 时：以 `[hook note] ...` 形式追加到工具结果后
+  - `Stop` 时：以 `[stop hook context] ...` 形式作为 user 消息追加进 history
+- **`input`**（仅 `PreToolUse`）：修改本次工具调用的参数（多个 hook 依次合并）
+- **`user_input`**（仅 `TurnEnd`）：替代真实用户输入，直接驱动下一轮对话
 - stdout 非 JSON 或为空：不阻断，非空内容当作 `context` 处理
 - hook 执行报错/超时：不阻塞主流程，仅记录在内部 `error` 字段
+
+---
+
+## 事件触发时序（一轮完整对话流）
+
+```
+UserPromptSubmit
+  │
+  └─→ agentic loop
+        │
+        ├─→ LLM 调用
+        │
+        ├─→ [有工具调用]
+        │     ├─→ PreToolUse (×N，每个工具)
+        │     ├─→ 工具执行
+        │     │     ├─→ PostToolUse (成功)
+        │     │     └─→ PostToolUseFailure (抛异常)
+        │     └─→ PostToolBatch (本批全部结束)
+        │
+        └─→ [无工具调用]
+              └─→ Stop
+                    │
+                    └─→ TurnEnd
+                          │
+                          └─→ SessionEnd（REPL 退出时）
+```
+
+SubAgent 并发路径：
+
+```
+TaskCreated → SubagentStart → [SubAgent 内部 loop] → SubagentStop → TaskCompleted
+```
+
+---
 
 ## TurnEnd 事件详解
 
 ### 触发时机
 
 每轮对话完成后，Agent 输出已渲染到终端、session 已保存，**正要等待用户下一次
-输入之前**触发。对应代码路径：`agent.py::run_turn()` 末尾，在 `save_session()`
-之后、`repl.py` 的 `prompt_user()` 之前。
+输入之前**触发。
 
 ### Payload
 
@@ -115,99 +231,30 @@ hook 命令通过 **stdin** 接收 JSON payload，可选地向 **stdout** 输出
 }
 ```
 
-`history` 为当前完整对话历史的浅拷贝（`role` + `content` 字段），
-可用于分析对话上下文、决策是否需要接管。
-
 ### stdout 返回协议
 
 | 返回内容 | 效果 |
 |---|---|
 | `{}` 或不返回 | 不做任何事，继续等待真实用户输入 |
-| `{"context": "提示文本"}` | 向 hook runner 记录（当前不注入对话），继续等待用户输入 |
-| `{"user_input": "..."}` | **替代真实用户输入**，直接驱动下一轮（见下方） |
+| `{"context": "提示文本"}` | 向 hook runner 记录，继续等待用户输入 |
+| `{"user_input": "..."}` | **替代真实用户输入**，直接驱动下一轮 |
 
 ### `user_input` 替代机制
 
 当 `TurnEnd` hook 返回 `{"user_input": "..."}` 时：
 
 1. REPL 跳过 `prompt_user()`（不等待键盘输入）
-2. 在终端以灰色 `dim` 样式打印注入的输入行（`You ❯ <注入内容>`），与真实输入视觉区分
+2. 在终端以灰色 `dim` 样式打印注入的输入行（`You ❯ <注入内容>`）
 3. 直接调用 `agent.run_turn(注入内容)` 驱动下一轮
-4. 下一轮结束后，再次触发 `TurnEnd` hook，若仍返回 `user_input` 则循环继续，
-   直到 hook 返回 `{}` 为止，才回到正常 `prompt_user()` 等待
+4. 下一轮结束后再次触发 `TurnEnd`，直到 hook 返回 `{}` 为止
 
 多个 `TurnEnd` hook 并存时，取**最后一个**返回 `user_input` 的值。
 
-### 典型应用场景
+---
 
-**场景 1：简单通知**（项目内置示例 `.agent/hooks/turn_end_notify.py`）
+## 典型用例
 
-每轮结束后向终端打印一行提示，不接管输入：
-
-```python
-#!/usr/bin/env python3
-import json, sys
-
-payload = json.load(sys.stdin)
-history = payload.get("history", [])
-turn_count = sum(1 for m in history if m.get("role") == "user")
-print(f"\n✅ [Turn {turn_count} 结束] Agent 已回复", file=sys.stderr)
-print("{}")
-```
-
-**场景 2：Agent-to-Agent 接管**（示例 `.agent/hooks/turn_end_auto_reply.py`）
-
-外部 orchestrator 进程把下一条指令写入队列文件，本 hook 消费并注入：
-
-```python
-#!/usr/bin/env python3
-import json, os, sys
-
-QUEUE_FILE = os.environ.get("MINI_AGENT_AUTO_REPLY_QUEUE", "/tmp/mini_agent_auto_reply.txt")
-
-payload = json.load(sys.stdin)
-
-if os.path.isfile(QUEUE_FILE):
-    lines = open(QUEUE_FILE).readlines()
-    if lines:
-        next_input = lines[0].rstrip("\n")
-        open(QUEUE_FILE, "w").writelines(lines[1:]) if lines[1:] else os.remove(QUEUE_FILE)
-        if next_input.strip():
-            print(json.dumps({"user_input": next_input}))
-            sys.exit(0)
-
-print("{}")  # 队列为空，回到正常等待
-```
-
-使用方式：在另一个终端向队列写入指令，本 agent 自动消费：
-
-```bash
-echo "请总结一下刚才的对话" >> /tmp/mini_agent_auto_reply.txt
-```
-
-**场景 3：自动化测试**
-
-用 `MINI_AGENT_AUTO_TURNS` 环境变量让 agent 自动跑 N 轮，无需人工干预：
-
-```bash
-MINI_AGENT_AUTO_TURNS=3 mini-agent
-```
-
-详见 `.agent/hooks/turn_end_auto_reply.py` 中的完整实现。
-
-### 启用示例
-
-`.agent/hooks.json`：
-
-```json
-{
-  "TurnEnd": [
-    {"command": "python3 .agent/hooks/turn_end_notify.py", "timeout": 5}
-  ]
-}
-```
-
-## 示例：阻止删除特定文件
+### 阻止删除特定文件（PreToolUse）
 
 `.agent/hooks/check_dangerous.py`：
 
@@ -226,54 +273,116 @@ if payload["tool_name"] in ("delete_file", "bash"):
 print(json.dumps({"decision": "allow"}))
 ```
 
-`.agent/hooks.json`：
+### 批量工具完成后发通知（PostToolBatch）
 
-```json
-{
-  "PreToolUse": [
-    {"matcher": "*", "command": "python3 .agent/hooks/check_dangerous.py"}
-  ]
-}
+```python
+#!/usr/bin/env python3
+import json, sys
+
+payload = json.load(sys.stdin)
+names = payload.get("tool_names", [])
+errs  = payload.get("error_count", 0)
+print(f"[batch done] {len(names)} tools, {errs} errors: {names}", file=sys.stderr)
+print("{}")
 ```
+
+### 监控 SubAgent 完成（SubagentStop）
+
+```python
+#!/usr/bin/env python3
+import json, sys
+
+payload = json.load(sys.stdin)
+status = payload.get("status", "")
+task_name = payload.get("task_name", "")
+error = payload.get("error", "")
+
+if status == "failed":
+    print(f"⚠️  SubAgent failed: {task_name}\n{error[:200]}", file=sys.stderr)
+elif status == "done":
+    print(f"✅ SubAgent done: {task_name}", file=sys.stderr)
+print("{}")
+```
+
+### 阻止无关时机的历史压缩（PreCompact）
+
+```python
+#!/usr/bin/env python3
+import json, sys, os
+
+payload = json.load(sys.stdin)
+# 例如：环境变量标记当前正在跑重要任务，禁止压缩
+if os.environ.get("MINI_AGENT_NO_COMPACT"):
+    print(json.dumps({"decision": "block", "reason": "no-compact flag is set"}))
+    sys.exit(0)
+
+print("{}")
+```
+
+### Agent-to-Agent 接管（TurnEnd）
+
+`.agent/hooks/turn_end_auto_reply.py`：
+
+```python
+#!/usr/bin/env python3
+import json, os, sys
+
+QUEUE_FILE = os.environ.get("MINI_AGENT_AUTO_REPLY_QUEUE", "/tmp/mini_agent_auto_reply.txt")
+payload = json.load(sys.stdin)
+
+if os.path.isfile(QUEUE_FILE):
+    lines = open(QUEUE_FILE).readlines()
+    if lines:
+        next_input = lines[0].rstrip("\n")
+        open(QUEUE_FILE, "w").writelines(lines[1:]) if lines[1:] else os.remove(QUEUE_FILE)
+        if next_input.strip():
+            print(json.dumps({"user_input": next_input}))
+            sys.exit(0)
+
+print("{}")
+```
+
+---
 
 ## 跨平台注意事项
 
 hook runner（`hooks/runner.py`）已针对 Windows 做以下兼容处理：
 
-- **编码**：stdin/stdout/stderr 全部使用二进制模式 + 显式 UTF-8 编解码，
-  避免 Windows 系统默认编码（GBK 等）导致含 emoji / 中文的 payload 报
-  `UnicodeEncodeError`
-- **命令解析**：Windows 下使用 `shlex.split(cmd, posix=False)`，
-  避免反斜杠路径（如 `C:\agent\hooks\x.py`）被当作转义符截断
+- **编码**：stdin/stdout/stderr 全部使用二进制模式 + 显式 UTF-8 编解码
+- **命令解析**：Windows 下使用 `shlex.split(cmd, posix=False)`，避免反斜杠路径被截断
 
-hook 脚本本身需注意：`sys.stdin` 读取时同样建议显式指定 UTF-8：
+hook 脚本建议：
 
 ```python
 import sys, json
-# Python 3.7+：用 sys.stdin.buffer 确保 UTF-8
 payload = json.loads(sys.stdin.buffer.read().decode("utf-8"))
 ```
 
-或直接用 `json.load(sys.stdin)`（在 runner 传 bytes 的情况下，Python 会自动处理）。
+---
 
 ## CLI 调试命令
 
 - `/hooks` 或 `/hooks list`：列出当前加载的所有 hook（按事件分组，含来源）
 - `/hooks reload`：重新加载 `.agent/hooks.json` 和 `~/.agent/hooks.json`
 
+---
+
 ## 与 Skill / 自定义子 Agent 的联动（动态注册）
 
 `HookManager` 提供 `register_dynamic_from_dict(hooks_dict, source)` /
 `unregister_source(source)`，允许 skill 或自定义子 agent profile
 （frontmatter 中的 `hooks` 字段）在被激活时临时挂载专属 hook，
-停用/任务结束时再移除。当前 loader/profile 已解析该字段，
-動態挂载的接线点留给具体业务按需调用。
+停用/任务结束时再移除。
+
+---
 
 ## 相关文档
 
 - [记忆管理指南](memory-management-guide.md) — `SessionEnd` 触发后的反思 LLM 调用如何生成 lesson
 - [history 类型化设计](history-typed-design.md) — `is_turn_boundary()` 如何为反思调用截取用户意图轮次
+- [SubAgent 机制](subagent-mechanism.md) — SubagentStart / SubagentStop 的运行时上下文
+- [Plan & Task 指南](plan-and-task-guide.md) — TaskCreated / TaskCompleted 的任务生命周期
 
 ---
 
-*最后更新：2026-06（新增 `TurnEnd` 事件：一轮结束 hook，支持终端通知、agent-to-agent 接管、自动化测试；`runner.py` 跨平台编码修复）*
+*最后更新：2026-06（新增事件：`PostToolUseFailure`、`PostToolBatch`、`SubagentStart`、`SubagentStop`、`TaskCreated`、`TaskCompleted`、`Stop`、`PreCompact`、`PostCompact`；`SessionStart` 从预留升级为已接入；补充完整事件时序图和各事件用例）*

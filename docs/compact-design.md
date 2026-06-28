@@ -158,4 +158,21 @@ self._history.extend(new_history)
 
 ---
 
-*最后更新：2026-06（新增分批摘要路径 `_compact_chunked`，解决历史超限时无法 compact 的问题；强化摘要 prompt 以保留工具调用结果等关键成果信息）*
+## Hooks 集成
+
+`_auto_compress_history()` 执行时会触发两个 hook 事件：
+
+| 事件 | 触发时机 | 可阻止 | payload |
+|---|---|---|---|
+| `PreCompact` | 压缩逻辑执行前 | ✅ | `{"history_len": N, "strategy": "auto_compress"}` |
+| `PostCompact` | 压缩完成后 | ❌ | `{"history_len": N, "strategy": "auto_compress", "summary": "..."}` |
+
+`PreCompact` 返回 exit code 2 或 `{"decision": "block"}` 可跳过本次压缩。
+`compact_with_skills()`（`/compact` 命令路径）和分批路径（`_compact_chunked`）
+目前不经过 `_auto_compress_history()`，不触发这两个事件。
+
+详见 [Hooks 机制](hooks.md#context-compact-生命周期)。
+
+---
+
+*最后更新：2026-06（新增 Hooks 集成节：PreCompact / PostCompact；新增分批摘要路径 `_compact_chunked`，解决历史超限时无法 compact 的问题；强化摘要 prompt 以保留工具调用结果等关键成果信息）*

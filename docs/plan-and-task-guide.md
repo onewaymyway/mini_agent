@@ -308,12 +308,58 @@ session 建立时（新建、`load_session()` 续接、或 `new_session()` 开�
 
 ---
 
-## 12. 相关文档
+## 12. Hooks 集成
+
+Task / SubAgent 生命周期会自动触发 hooks 系统的对应事件，无需额外配置；
+在 `.agent/hooks.json` 中声明对应事件后自动激活。
+
+### 事件触发时序
+
+```
+TaskCreated          <- TaskManager.submit() 提交时
+  |
+  +-> SubagentStart  <- SubAgent 进入 RUNNING 状态
+        |
+        +-> [SubAgent 执行中]
+              |
+              +-> SubagentStop   <- 进入终态（DONE / FAILED / CANCELLED）
+                    |
+                    +-> TaskCompleted  <- _handle_terminal() 确认终态
+```
+
+### 各事件 payload
+
+| 事件 | payload |
+|---|---|
+| `TaskCreated` | `task_id / task_name / prompt[:200] / tags` |
+| `SubagentStart` | `task_id / task_name / prompt[:200]` |
+| `SubagentStop` | `task_id / status / error` |
+| `TaskCompleted` | `task_id / task_name / status / error` |
+
+`TaskCompleted` 的 `status` 字段覆盖三种终态：`done` / `failed` / `cancelled`。
+
+### 配置示例
+
+```json
+{
+  "TaskCreated":   [{"command": "python3 .agent/hooks/on_task_created.py"}],
+  "TaskCompleted": [{"command": "python3 .agent/hooks/on_task_completed.py"}],
+  "SubagentStop":  [{"command": "python3 .agent/hooks/on_subagent_stop.py"}]
+}
+```
+
+详见 [Hooks 机制](hooks.md)。
+
+---
+
+## 13. 相关文档
 
 - [存储设计](storage-design.md) — `plan_snapshot.json`/`manifest.json` 的完整文件布局与清理策略
 - [SubAgent 机制说明](subagent-mechanism.md) — Sub-Agent 执行单元与 `manifest.json` 的关系
+- [Hooks 机制](hooks.md) — TaskCreated / SubagentStart / SubagentStop / TaskCompleted 事件详解
 - [Commands & Tools 参考](commands-and-tools-reference.md) — `update_task_progress`、`get_task_status` 等工具的完整参数表
 
 ---
 
-> 最后更新：2026-06（新增第 10 节"持久化与恢复"，反映 `self_evolution_implementation_plan.md` Stage 0.2 的 `plan_snapshot.json` 自动落盘与 session 重启恢复机制；/plan 命令实现已从 main.py 迁移至 src/mini_agent/cli/commands/plans.py）
+> 最后更新：2026-06（新增第 12 节"Hooks 集成"：TaskCreated / SubagentStart / SubagentStop / TaskCompleted 事件时序与配置示例；原第 12 节"相关文档"顺延为第 13 节；第 10 节"持久化与恢复"反映 Stage 0.2 plan_snapshot.json 机制）
+
