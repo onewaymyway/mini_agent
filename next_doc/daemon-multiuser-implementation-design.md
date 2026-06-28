@@ -809,3 +809,92 @@ fallback 分支）。这进一步印证了之前 Phase 1-3 实施记录里反复
 "每个 session 一个 AgentRunner"的新模型整体替换，**到时需要确认这两个修复的逻辑
 （尤其是出错时发 turn_done 的兜底）原样保留在新的 per-session 运行循环里**，
 不要在搬迁代码时把这个修复漏掉。
+
+---
+
+## 九、Windows 实测发现的 bug：选完 session 后看不到 `You ❯` 提示符（已修复）
+
+> 用户实测场景：终端 B 连接 daemon → 展示 session 列表 → 选择某个 session 后，
+> 画面上完全没有 `You ❯` 输入提示符，表现像是卡住。用户当时的猜测
+> （"应该是状态栏刷新导致的问题，用户输入时不应该显示状态栏"）**方向是对的**，
+> 但根因比"要不要显示状态栏"更具体——不是"显示了不该显示的内容"，而是
+> "刷新线程的一次正常心跳，异步擦掉了主线程刚打印出来的提示符"。
+
+### 9.1 根因
+
+`cli/daemon.py` 里 `_pick_session()` 和 `run_connected_repl()` 主循环，在每次阻塞
+`input()`/`readline()` 前后，原来的实现是：
+
+```python
+term.set_statusbar_provider(None)      # 阻塞输入前："关掉"状态栏
+raw = input("...")
+term.set_statusbar_provider(lambda: ...)  # 输入完成后：重新打开
+```
+
+这是一个**看起来合理但实际不充分**的简化版。`Terminal._refresh_loop()`
+（`ui/terminal.py`）每 `_refresh_interval`（默认 0.25 秒）醒来一次，决定"这个
+周期要不要刷新屏幕"用的标志是 `_refresh_paused`，**不是** "`_statusbar_provider`
+是否为 `None`"。把 provider 设成 `None` 只是让 `_refresh_loop` 在拉取内容那一步
+拿到空列表，但它后面无条件执行的 `self._q.put(_Msg("_refresh", None))` 完全不受
+影响——这条 `_refresh` 消息照常每 250ms 投递给 `render_thread`。
+
+`render_thread` 收到 `_refresh` 时的判断逻辑（`_handle()` 里的 `elif kind ==
+"_refresh"` 分支）：只要不在 `streaming` 也不在 `bar_suspended` 状态，就执行
+`self._erase_bar(); self._draw_bar()`。`_erase_bar()` 发出的是**相对于当前光标
+位置**的 ANSI 序列（反复 `\x1b[1A\x1b[2K` 上移清行），它的前提假设是"光标现在
+停在状态栏正下方"——但 connected 模式从来不会调用任何会设置 `_bar_suspended`
+的方法（那些方法只在 `repl.py` 本地模式路径里用），所以这个分支永远会被命中；
+而此刻光标实际位置是 `daemon.py` 自己用 `_sys.stdout.write(prompt)` 直接写出来
+的、`Terminal` 完全不知情的新位置——`You ❯ ` 提示符后面。`_erase_bar()` 按照
+"状态栏在这下面"的错误假设做相对擦除，结果擦掉/打乱的是刚打印的提示符那一行；
+随后 `_draw_bar()` 因为 `_statusbar_lines` 早已被清空（provider 是 `None`）什么
+都不画——净效果就是提示符消失，画面空白。
+
+这本质上是 connected 模式自己发明了一套和 `Terminal` 真正的同步机制语义不同的
+"暂停"实现，重新踩中了 `Terminal` 类本来就是为了解决这类竞态才设计的那套机制
+（`_enter_input_mode()`/`_exit_input_mode()`，见 `tools/user_input.py`、
+`permissions.py` 里阻塞输入点的标准用法）原本要防住的坑。
+
+### 9.2 修复
+
+`_pick_session()` 和 `run_connected_repl()` 主循环里的 `_bar_pause()`/
+`_bar_resume()`，改为直接调用 `term._enter_input_mode()`/`term._exit_input_mode()`：
+
+```python
+term._enter_input_mode()   # 阻塞输入前：设置 _refresh_paused + 双重哨兵排空队列
+                            #   + 直接同步擦掉已画的状态栏
+raw = input("...")
+term._exit_input_mode()    # 输入完成后：清除 _refresh_paused，刷新线程恢复周期重绘
+```
+
+`_enter_input_mode()` 内部会先设置 `_refresh_paused`，再用两次 `_Msg("_noop")` +
+`q.join()` 确认 `render_thread` 真正空闲（杜绝"标志已设置但队列里还有残余消息"
+的窗口），最后才同步调用 `_erase_bar_direct()` 清掉当前画着的状态栏——三步做完
+之后才返回，这时候再打印提示符是绝对安全的：刷新线程在 `_refresh_paused` 被
+清除之前不会再产生任何状态栏相关的队列消息。`_exit_input_mode()` 则负责把
+阻塞期间积压的其它消息按顺序重新入队、清除 `_refresh_paused`，让刷新线程
+重新开始按周期工作。
+
+`provider` 本身不再需要"摘掉再装回"——它全程保持注册为
+`_connected_status_bar_provider`，阻塞输入期间的"不刷新"完全由
+`_refresh_paused` 保证，这也是为什么旧实现"看起来合理"：它确实让 provider
+返回空，只是没意识到 `_refresh` 心跳的投递跟 provider 是否为空是两件独立的事。
+
+### 9.3 影响范围与验证
+
+只改了 `cli/daemon.py` 两处（`_pick_session()` 的 input 循环、
+`run_connected_repl()` 的 `_bar_pause`/`_bar_resume`），未改动 `ui/terminal.py`
+本身——`_enter_input_mode`/`_exit_input_mode` 是已经存在、已经被其它模块
+（`tools/user_input.py`、`permissions.py`）验证过的官方机制，本次只是让
+connected 模式也走这条路径，而不是用自己的平行实现。
+
+新增 `tests/test_daemon_connected_statusbar.py`（6 个测试），核心断言是
+"`_pick_session`/`run_connected_repl` 调用的是 `_enter_input_mode`/
+`_exit_input_mode`，不是 `set_statusbar_provider(None)`"，并验证了调用顺序
+（暂停必须先于阻塞输入完成、恢复必须在输入返回之后，包括 EOF/KeyboardInterrupt
+异常路径下 `finally` 仍能正确调用 `_exit_input_mode`）。曾手动把代码改回旧的
+`set_statusbar_provider(None)` 实现验证过这组测试确实会失败（3/6 测试能正确
+抓住回归），确认测试本身有效，不是摆设。完整 `pytest` 套件跑下来
+1387 passed（含新增 6 个），失败的 4 个与本次改动完全无关
+（`jsonschema` 模块缺失、格式纠错标签判定、日志截断边界，均是预先存在的
+、和 daemon/Terminal 无关的失败）。

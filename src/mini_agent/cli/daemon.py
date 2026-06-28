@@ -703,6 +703,27 @@ def _pick_session(
     term（Optional Terminal）：若传入，在每次阻塞 input() 前后调用
     _enter_input_mode()/_exit_input_mode() 暂停/恢复状态栏刷新，
     防止刷新线程在用户输入时把提示符覆盖掉。
+
+    ★ 关键修复（"选了 session 之后看不到 You ❯"的真正根因）：
+    早期实现这里只是 set_statusbar_provider(None) 再设回去——但
+    Terminal._refresh_loop() 每 _refresh_interval（默认 0.25s）醒来时，
+    判断"要不要继续刷新"用的标志是 _refresh_paused，不是
+    "_statusbar_provider 是否为 None"。provider 设成 None 只是让
+    refresh_loop 跳过"拉取新内容"那一步，但它依然会无条件往渲染队列
+    投递一条 "_refresh" 消息；render_thread 收到后只要不在 streaming/
+    bar_suspended 状态（connected 模式从未设置过 bar_suspended），就会
+    调用 _erase_bar()——这是基于"光标在状态栏正下方"假设的相对 ANSI
+    擦除（\\x1b[1A 反复上移），但此刻光标实际停在 input() 刚打印出来的
+    "选择 [1]: " 提示符后面，render_thread 对此一无所知，于是这次异步
+    擦除会把刚打印的提示符整行吃掉——表现为"选完 session 之后画面
+    空白，没有任何提示符"。
+    真正能阻止 refresh_loop 在阻塞输入期间做任何动作的，是
+    _refresh_paused 这个标志，而设置/清除它的官方入口正是
+    _enter_input_mode()/_exit_input_mode()（同时还会用双重哨兵 +
+    q.join() 确保 render_thread 真正空闲后才返回，杜绝竞态）。
+    本函数现在直接调用这两个方法，不再使用 set_statusbar_provider(None)
+    这个不充分的替代方案；provider 本身全程保持注册，输入期间的"不刷新"
+    完全由 _refresh_paused 保证。
     """
     sessions = client.list_sessions(limit=8)
     if not sessions:
@@ -727,10 +748,15 @@ def _pick_session(
 
     while True:
         try:
-            # 每次阻塞 input() 前关掉状态栏，输入完成后恢复
+            # 每次阻塞 input() 前真正暂停刷新线程（_refresh_paused），
+            # 而不是只摘掉 provider——见上方文档字符串的详细说明。
+            # _enter_input_mode() 内部用双重哨兵 + q.join() 确保
+            # render_thread 已经空闲、不会再有任何异步擦除动作，
+            # 之后才安全返回，这里打印的 "选择 [1]: " 提示符才不会
+            # 被刷新线程的下一次心跳吃掉。
             if term is not None:
                 try:
-                    term.set_statusbar_provider(None)
+                    term._enter_input_mode()
                 except Exception:
                     pass
             try:
@@ -738,9 +764,7 @@ def _pick_session(
             finally:
                 if term is not None:
                     try:
-                        term.set_statusbar_provider(
-                            lambda: _connected_status_bar_provider(client)
-                        )
+                        term._exit_input_mode()
                     except Exception:
                         pass
         except (EOFError, KeyboardInterrupt):
@@ -1018,24 +1042,47 @@ def run_connected_repl(daemon_info: dict) -> None:
 
     # ── 状态栏控制辅助函数 ────────────────────────────────────────────────────
     # connected 模式的状态栏策略：
-    #   等待用户输入时：关掉 provider（状态栏静止/消失），不干扰提示符
-    #   agent 回复期间：打开 provider（显示 session/state 信息）
-    # 这样比 _enter_input_mode()/_exit_input_mode() 简单得多——那套机制
-    # 是为 prompt_toolkit 重量级场景设计的，包含 join() 等阻塞操作，
-    # 在 connected 模式下反而引入额外的时序复杂度。
+    #   等待用户输入时：暂停刷新线程（_refresh_paused），状态栏静止/消失，
+    #                  不干扰提示符
+    #   agent 回复期间：恢复刷新线程，重新开始按周期重绘（显示 session/
+    #                  state 信息）
+    #
+    # ★ 这里曾经的实现（"_bar_pause 只是 set_statusbar_provider(None)，
+    # _bar_resume 再设回去"）是个看起来合理但实际不充分的简化版，是
+    # "选完 session 后看不到 You ❯"这个 bug 的根因：
+    # Terminal._refresh_loop() 判断是否要继续刷新屏幕的标志是
+    # _refresh_paused，不是 "provider 是否为 None"——provider 设成 None
+    # 只是让 refresh_loop 跳过"拉取新内容"那一步，但它仍然会无条件
+    # 往渲染队列投递 "_refresh" 心跳消息；render_thread 收到后只要
+    # 不在 streaming/bar_suspended 状态（connected 模式从未设置过
+    # bar_suspended）就会调用 _erase_bar() 做一次基于"光标在状态栏
+    # 正下方"假设的相对 ANSI 擦除——但此刻光标实际停在刚打印出来的
+    # "You ❯ " 提示符后面，这次异步擦除会把它整行吃掉。
+    #
+    # 真正能让 refresh_loop 在阻塞输入期间什么都不做的，只有
+    # _refresh_paused 这个标志，它的官方设置/清除入口就是
+    # _enter_input_mode()/_exit_input_mode()——这两个方法本来就是
+    # Terminal 类为了解决"刷新线程异步写屏幕 vs 主线程阻塞读输入"
+    # 这一类竞态而设计的（tools/user_input.py、permissions.py 里的
+    # 阻塞输入点都是这么用的），内部还有双重哨兵 + q.join() 保证
+    # render_thread 真正空闲后才返回。改用它们之后 provider 不需要
+    # 反复摘掉/装回，全程保持注册即可。
     def _bar_pause() -> None:
-        """等待用户输入前：关掉状态栏 provider，让刷新线程不再写屏幕。"""
+        """等待用户输入前：真正暂停刷新线程，避免它在阻塞 readline 期间
+        异步擦除/重绘屏幕，吃掉刚打印的 You ❯ 提示符。"""
         if _term is not None:
             try:
-                _term.set_statusbar_provider(None)
+                _term._enter_input_mode()
             except Exception:
                 pass
 
     def _bar_resume() -> None:
-        """用户输入完成 / agent 回复期间：重新注册 provider，恢复状态栏。"""
+        """用户输入完成 / agent 回复期间：恢复刷新线程，状态栏重新
+        按周期重绘。provider 全程保持是 _connected_status_bar_provider，
+        这里不需要再重新注册。"""
         if _term is not None:
             try:
-                _term.set_statusbar_provider(lambda: _connected_status_bar_provider(client))
+                _term._exit_input_mode()
             except Exception:
                 pass
 
@@ -1043,7 +1090,7 @@ def run_connected_repl(daemon_info: dict) -> None:
     try:
         while True:
             _waiting_input.set()    # 标记：正在等用户输入（允许 observer 打印）
-            _bar_pause()            # 关掉状态栏刷新，防止覆盖 You ❯ 提示符
+            _bar_pause()            # 暂停刷新线程，防止覆盖 You ❯ 提示符
             _sys.stdout.write(prompt)
             _sys.stdout.flush()
             try:
