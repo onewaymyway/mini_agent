@@ -110,12 +110,25 @@ def _is_process_alive(pid: int) -> bool:
     try:
         if sys.platform == "win32":
             import ctypes
-            SYNCHRONIZE = 0x00100000
-            handle = ctypes.windll.kernel32.OpenProcess(SYNCHRONIZE, False, pid)
-            if handle:
-                ctypes.windll.kernel32.CloseHandle(handle)
-                return True
-            return False
+            import ctypes.wintypes
+            # PROCESS_QUERY_LIMITED_INFORMATION 是最小权限，足以查询退出码，
+            # 且不需要 SeDebugPrivilege；SYNCHRONIZE 在某些场景下会被拒绝。
+            PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+            STILL_ACTIVE = 259
+            kernel32 = ctypes.windll.kernel32
+            handle = kernel32.OpenProcess(
+                PROCESS_QUERY_LIMITED_INFORMATION, False, pid
+            )
+            if not handle:
+                return False
+            try:
+                exit_code = ctypes.wintypes.DWORD()
+                ok = kernel32.GetExitCodeProcess(handle, ctypes.byref(exit_code))
+                if not ok:
+                    return False
+                return exit_code.value == STILL_ACTIVE
+            finally:
+                kernel32.CloseHandle(handle)
         else:
             os.kill(pid, 0)
             return True
@@ -409,13 +422,26 @@ def cmd_daemon_start(
     else:
         # 后台进程
         print(f"[daemon] Starting in background on port {http_port}...")
-        kwargs = {
-            "stdout": subprocess.DEVNULL,
-            "stderr": subprocess.DEVNULL,
-            "close_fds": True,
-        }
-        if sys.platform != "win32":
-            kwargs["start_new_session"] = True
+        if sys.platform == "win32":
+            # Windows 没有 start_new_session；必须用 creationflags 让子进程
+            # 脱离当前控制台会话，否则父进程（powershell 命令）退出时子进程
+            # 会随控制台会话一起被杀死。
+            # DETACHED_PROCESS(0x8) 让子进程无控制台；
+            # CREATE_NEW_PROCESS_GROUP(0x200) 防止 Ctrl-C 信号传播。
+            DETACHED_PROCESS = 0x00000008
+            CREATE_NEW_PROCESS_GROUP = 0x00000200
+            kwargs = {
+                "stdout": subprocess.DEVNULL,
+                "stderr": subprocess.DEVNULL,
+                "creationflags": DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP,
+            }
+        else:
+            kwargs = {
+                "stdout": subprocess.DEVNULL,
+                "stderr": subprocess.DEVNULL,
+                "close_fds": True,
+                "start_new_session": True,
+            }
 
         try:
             proc = subprocess.Popen(base_cmd, **kwargs)
@@ -424,20 +450,39 @@ def cmd_daemon_start(
             return 1
 
         pid = proc.pid
-        _write_pid(project_root, pid, http_port)
         print(f"[daemon] Started: PID={pid}, port={http_port}")
         print(f"[daemon] PID file: {_pid_file(project_root)}")
 
-        # 等待 HTTP 服务就绪（最多 10 秒）
+        # PID 文件由 daemon 子进程自身在 --daemon-mode 路径里写入
+        # （app.py 的 daemon-mode 段调用 _write_pid(os.getpid(), ...)）。
+        # 父进程这里不再写文件，避免两处写入竞争以及子进程还未来得及
+        # 写文件就被误判"已死"的时序问题。
+        #
+        # 不过需要等子进程写完 PID 文件后，health_check 才有意义；
+        # 因此下面的等待循环里顺便也等 PID 文件出现。
+
+        # 等待 HTTP 服务就绪（最多 15 秒）
+        # 同时等 PID 文件（由子进程自己写）出现，再做 health_check。
         client = DaemonClient(http_port, project_root=project_root)
-        for _ in range(20):
+        pid_path = _pid_file(project_root)
+        for i in range(30):
             time.sleep(0.5)
-            if client.health_check():
+            # 子进程可能已崩溃
+            if not _is_process_alive(pid):
+                print(
+                    f"[daemon] Error: daemon process (PID={pid}) exited unexpectedly.",
+                    file=sys.stderr,
+                )
+                _cleanup_pid_files(project_root)
+                return 1
+            if pid_path.exists() and client.health_check():
                 print(f"[daemon] HTTP service ready at http://127.0.0.1:{http_port}")
                 return 0
 
-        print("[daemon] Warning: HTTP service did not respond within 10s, "
-              "but daemon process is running.")
+        print(
+            "[daemon] Warning: HTTP service did not respond within 15s, "
+            "but daemon process is running."
+        )
         return 0
 
 
