@@ -192,6 +192,19 @@ class SubAgent:
             self.record.status = TaskStatus.RUNNING
             self.record.started_at = time.time()
 
+        # [SYS-HOOKS] SubagentStart：SubAgent 进入 RUNNING 状态时触发
+        try:
+            from mini_agent.hooks import get_hook_manager as _ghm_sa
+            _hm_sa = _ghm_sa()
+            if _hm_sa is not None:
+                _hm_sa.run("SubagentStart", {
+                    "task_id": task.id,
+                    "task_name": task.name,
+                    "prompt": task.prompt[:200],
+                })
+        except Exception:
+            pass
+
         self._log(f"Starting task: {task.name}")
         self._log(f"Config: model={task.model or 'default'}, max_turns={task.max_turns}")
         _debug_log(task.id, "run_body_start", {"model": task.model, "max_turns": task.max_turns}, events_path=self._events_path)
@@ -263,6 +276,18 @@ class SubAgent:
                 if self.record.is_terminal and self.record.status not in self._terminal_notified:
                     self._terminal_notified.add(self.record.status)
                     old_status = TaskStatus.PENDING  # 近似值
+                    # [SYS-HOOKS] SubagentStop：SubAgent 进入终态时触发
+                    try:
+                        from mini_agent.hooks import get_hook_manager as _ghm_sas
+                        _hm_sas = _ghm_sas()
+                        if _hm_sas is not None:
+                            _hm_sas.run("SubagentStop", {
+                                "task_id": self.record.task_id,
+                                "status": self.record.status.value if hasattr(self.record.status, 'value') else str(self.record.status),
+                                "error": (self.record.result.error if self.record.result else "") or "",
+                            })
+                    except Exception:
+                        pass
                     if self.on_terminal:
                         try:
                             self.on_terminal(self.record.task_id, old_status, self.record.status)

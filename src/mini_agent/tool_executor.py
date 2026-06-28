@@ -160,13 +160,15 @@ class ToolExecutor:
             except Exception:
                 pass
 
+        # [SYS-HOOKS] hook manager 引用在整个 batch 中复用（避免每次 tool call 重复查询）
+        from mini_agent.hooks import get_hook_manager
+        hook_mgr = get_hook_manager()
+
         for tc in response.tool_calls:
             R.print_tool_call(tc.name, tc.input, verbose=self.cfg.verbose)
             self.stats.tool_calls += 1
 
             # [SYS-HOOKS] PreToolUse：可阻断或修改工具输入
-            from mini_agent.hooks import get_hook_manager
-            hook_mgr = get_hook_manager()
             tool_input = tc.input
             if hook_mgr is not None:
                 pre = hook_mgr.run("PreToolUse", {"tool_name": tc.name, "tool_input": tool_input}, tool_name=tc.name)
@@ -261,6 +263,20 @@ class ToolExecutor:
                         R.print_tool_error(tc.name, str(e))
                         if self.cfg.tool_stats_enabled:
                             self.stats.record_tool_call(tc.name, False, 0)
+                        # [SYS-HOOKS] PostToolUseFailure：工具抛异常后通知
+                        if hook_mgr is not None:
+                            try:
+                                hook_mgr.run(
+                                    "PostToolUseFailure",
+                                    {
+                                        "tool_name": tc.name,
+                                        "tool_input": tool_input,
+                                        "error": str(e),
+                                    },
+                                    tool_name=tc.name,
+                                )
+                            except Exception:
+                                pass
 
             # [SYS-HOOKS] PostToolUse：可注入额外上下文（拼接到结果后）
             if hook_mgr is not None:
@@ -333,6 +349,23 @@ class ToolExecutor:
                     pass  # tracer 失败不影响主流程
 
             result_strs.append(result_str)
+
+        # [SYS-HOOKS] PostToolBatch：一批工具全部执行完成后触发（通知型，不可阻止）
+        if hook_mgr is not None and result_strs:
+            try:
+                hook_mgr.run(
+                    "PostToolBatch",
+                    {
+                        "tool_names": [tc.name for tc in response.tool_calls],
+                        "results": result_strs,
+                        "error_count": sum(
+                            1 for r in result_strs
+                            if r.startswith("[tool error") or r.startswith("[blocked")
+                        ),
+                    },
+                )
+            except Exception:
+                pass
 
         return response.tool_calls, result_strs
 

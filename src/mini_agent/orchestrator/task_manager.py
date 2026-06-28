@@ -149,6 +149,19 @@ class TaskManager:
         record = TaskRecord(task=task)
         with self._lock:
             self._records[task.id] = record
+        # [SYS-HOOKS] TaskCreated：任务提交时触发
+        try:
+            from mini_agent.hooks import get_hook_manager as _ghm_tc
+            _hm_tc = _ghm_tc()
+            if _hm_tc is not None:
+                _hm_tc.run("TaskCreated", {
+                    "task_id": task.id,
+                    "task_name": task.name,
+                    "prompt": task.prompt[:200],
+                    "tags": list(task.tags),
+                })
+        except Exception:
+            pass
         return task.id
 
     def submit_many(self, tasks: list[Task]) -> list[str]:
@@ -356,6 +369,20 @@ class TaskManager:
                 self._reload_main_memory_sinks()
                 return
 
+        # [SYS-HOOKS] TaskCompleted：任务进入终态时触发
+        try:
+            from mini_agent.hooks import get_hook_manager as _ghm_tcd
+            _hm_tcd = _ghm_tcd()
+            if _hm_tcd is not None:
+                _status_val = rec.status.value if hasattr(rec.status, 'value') else str(rec.status)
+                _hm_tcd.run("TaskCompleted", {
+                    "task_id": rec.task_id,
+                    "task_name": rec.task.name,
+                    "status": _status_val,
+                    "error": (rec.result.error if rec.result else "") or "",
+                })
+        except Exception:
+            pass
         self._notify_status(rec)
         # [Phase E / 3.3] 重新加载主 agent memory
         self._reload_main_memory_sinks()

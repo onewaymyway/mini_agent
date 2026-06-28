@@ -48,13 +48,34 @@ from typing import Optional
 from .runner import HookResult, HookSpec, run_hook
 
 KNOWN_EVENTS = (
-    "UserPromptSubmit",
-    "PreToolUse",
-    "PostToolUse",
-    "PreCompact",
+    # Session 生命周期
     "SessionStart",
     "SessionEnd",
-    "TurnEnd",
+
+    # Prompt 生命周期
+    "UserPromptSubmit",
+
+    # Tool 生命周期
+    "PreToolUse",
+    "PostToolUse",
+    "PostToolUseFailure",   # tool 执行失败后（result 以 "[" 开头的错误）
+    "PostToolBatch",        # 一批并行 tool 全部结束后（execute_all 返回时）
+
+    # Task / Subagent 生命周期
+    "SubagentStart",        # SubAgent._run_body 进入 RUNNING 时
+    "SubagentStop",         # SubAgent 进入终态（DONE/FAILED/CANCELLED）时；可阻止 = 不适用，此处为通知
+    "TaskCreated",          # TaskManager.submit 时
+    "TaskCompleted",        # TaskManager._handle_terminal 确认 DONE 时
+
+    # Stop 生命周期
+    "Stop",                 # agentic_loop 无工具调用，准备结束本轮输出时
+
+    # Context Compact 生命周期
+    "PreCompact",           # _auto_compress_history 执行前（可阻止）
+    "PostCompact",          # _auto_compress_history 执行后
+
+    # mini_agent 扩展
+    "TurnEnd",              # 一轮 run_turn 结束、等待用户下一次输入前
 )
 
 

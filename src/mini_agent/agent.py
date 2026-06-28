@@ -548,6 +548,18 @@ class Agent:
             self._bind_session_extras()
             self._maybe_ensure_project_meta()
             self._maybe_register_global_project()
+            # [SYS-HOOKS] SessionStart：session 初始化完成后触发（通知型）
+            try:
+                from mini_agent.hooks import get_hook_manager as _ghm_ss
+                _hm_ss = _ghm_ss()
+                if _hm_ss is not None:
+                    _hm_ss.run("SessionStart", {
+                        "session_id": self._session.id if self._session else "",
+                        "model": self.cfg.model,
+                        "provider": getattr(self.cfg, "llm_provider", "unknown"),
+                    })
+            except Exception:
+                pass
         except Exception as e:
             R.print_warning(f"Session init failed: {e}")
 
@@ -2326,6 +2338,23 @@ class Agent:
                                 f"{self.cfg.format_correction.max_retries_per_turn}"
                             )
                         continue  # 跳过 break，回到循环顶部重新调用一次 LLM（仍计入 loop_count/max_turns 预算）
+                # [SYS-HOOKS] Stop：LLM 准备结束本轮输出（无工具调用）
+                try:
+                    from mini_agent.hooks import get_hook_manager as _ghm_stop
+                    _hm_stop = _ghm_stop()
+                    if _hm_stop is not None:
+                        _stop_res = _hm_stop.run("Stop", {
+                            "text": response.text,
+                            "turn": self.stats.turns,
+                        })
+                        # Stop hook 可返回 context 注入，作为后续 user 消息前缀
+                        # （blocked 字段对 Stop 无意义，主流程不可中断）
+                        if _stop_res.context:
+                            self._hist.append_user(
+                                f"[stop hook context] {_stop_res.context}"
+                            )
+                except Exception:
+                    pass
                 break
 
             # 执行工具调用，结果写回历史
@@ -2774,6 +2803,21 @@ class Agent:
 
         使用 _type 字段精确识别 turn 边界（而非字符串前缀）。
         """
+        # [SYS-HOOKS] PreCompact：压缩前通知 hook（可阻止）
+        try:
+            from mini_agent.hooks import get_hook_manager as _ghm_pre
+            _hm_pre = _ghm_pre()
+            if _hm_pre is not None:
+                _pre_res = _hm_pre.run("PreCompact", {
+                    "history_len": len(self._history),
+                    "strategy": "auto_compress",
+                })
+                if _pre_res.blocked:
+                    R.print_info("[compress] PreCompact hook blocked compression.")
+                    return
+        except Exception:
+            pass
+
         if len(self._history) < 6:
             return
 
@@ -2852,6 +2896,19 @@ class Agent:
                 _hist._raw.append(msg)
 
         R.print_info(f"[compress] History compressed (cutoff={cutoff}, turn-aligned) → summary.")
+
+        # [SYS-HOOKS] PostCompact：压缩完成后通知 hook（通知型）
+        try:
+            from mini_agent.hooks import get_hook_manager as _ghm_post
+            _hm_post = _ghm_post()
+            if _hm_post is not None:
+                _hm_post.run("PostCompact", {
+                    "history_len": len(self._history),
+                    "strategy": "auto_compress",
+                    "summary": summary_text,
+                })
+        except Exception:
+            pass
 
     def _build_tool_schemas(self) -> list[ToolSchema]:
         """将 ToolRegistry 的工具定义转换为 provider 无关的 ToolSchema 列表。"""
