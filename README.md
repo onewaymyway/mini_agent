@@ -24,6 +24,7 @@
 | ♻️ Phase G | 后台循环扫描：剪枝候选 + 能力地图 + 跨项目晋升候选，24h 时间门控，`/evolve phase-g` 手动触发 |
 | 🔀 SubAgent 降级 | 任务失败时按 `fallback_profiles` 切换 profile、再按 `demotion_scope` 缩小目标，不立即宣告失败 |
 | 🌐 HTTP API | 内置 REST/SSE 服务，支持外部程序通过 HTTP 与 agent 交互 |
+| 👥 多用户模式 | `--http-multi-user`：多用户独立 token + 角色权限（owner/family/colleague/agent/public）+ 独立 Session 隔离；不启用时与现有单用户模式完全兼容 |
 | 🖥️ Web Demo | Streamlit 图形界面，提供浏览器操作的对话界面 |
 | 🔌 MCP 支持 | Model Context Protocol 集成，支持 stdio/SSE 传输，可扩展外部工具服务 |
 | 🔍 Web Search | 支持 DuckDuckGo（默认）、Brave、Serper、Tavily 等多种搜索后端 |
@@ -207,6 +208,58 @@ mini-agent daemon status
 mini-agent daemon stop
 ```
 
+### 多用户模式
+
+允许多个用户通过独立 token 和角色权限同时连接到同一个 daemon。
+
+```bash
+# 启动多用户 daemon（后台常驻）
+mini-agent daemon start --http --http-multi-user --detach
+
+# 启动日志中会显示 owner token，形如：
+#   🌐  HTTP API server started
+#   URL  : http://127.0.0.1:8765/v1
+#   Token: abc123...def456      ← owner token
+#   👥  Multi-user mode: ON  (above token = owner)
+
+# 用户管理（需要 daemon 正在运行）
+mini-agent user list                                    # 查看所有用户和角色
+mini-agent user add --name "小明" --role colleague      # 新增用户（打印一次性 token）
+mini-agent user add --name "小红" --role family --trust 8
+mini-agent user remove u_a1b2c3d4                      # 删除用户
+mini-agent user role u_a1b2c3d4 family                 # 修改用户角色
+mini-agent user token u_a1b2c3d4                       # 重新生成 token（旧 token 立即失效）
+```
+
+**角色权限对比：**
+
+| 角色 | 工具权限 | Token 上限 | 适用场景 |
+|------|----------|-----------|----------|
+| `owner` | 全部工具 | 200,000 | daemon 启动者，完全控制 |
+| `family` | builtin + search | 80,000 | 家人 / 朋友，情感支持为主 |
+| `colleague` | builtin + search | 50,000 | 工作相关，专业交流 |
+| `agent` | builtin | 30,000 | 其他 AI agent，结构化通信 |
+| `public` | 无工具 | 8,000 | 公开访客，只读受限 |
+
+**用户连接方式：**
+
+用户使用分配到的 token 通过 HTTP API 连接：
+
+```bash
+# 用户用自己的 token 发送消息
+curl -X POST http://127.0.0.1:8765/v1/chat \
+  -H "Authorization: Bearer <user-token>" \
+  -H "Content-Type: application/json" \
+  -d '{"message": "你好"}'
+
+# 或通过 Web Demo（在界面中填入 token）
+streamlit run apps/mini_agent_webdemo/app.py
+```
+
+每个用户拥有**独立 Agent 实例、独立对话历史、独立数据目录**，互不干扰。
+
+详见 [多用户模式指南](docs/multi-user-guide.md)。
+
 ## 命令行参数
 
 | 参数 | 说明 |
@@ -232,9 +285,10 @@ mini-agent daemon stop
 | `--http` | 启动内置 HTTP API 服务 |
 | `--http-port` | HTTP 服务监听端口（默认 8765） |
 | `--http-host` | HTTP 服务监听地址（默认 127.0.0.1） |
-| `--http-token` | HTTP API 认证令牌 |
+| `--http-token` | HTTP API 认证令牌（多用户模式下为 owner token） |
 | `--http-allow-ip` | 允许的 IP 地址列表 |
 | `--http-fs-readonly` | 文件系统只读模式 |
+| `--http-multi-user` | 启用多用户认证模式（每用户独立 token/角色/Session） |
 | `--http-ring-maxlen` | 事件环缓冲区大小 |
 | `--reminders-dir` | 指定用户自定义 reminder 目录 |
 | `--no-reminders` | 禁用 reminder 系统 |

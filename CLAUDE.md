@@ -78,6 +78,20 @@ python -m mini_agent --model claude-haiku-4-5
 python main.py --provider nvidia --model qwen/qwen3.5-122b-a10b --system-tool-call --system-msg-format system_role
 
 # **注意**：命令行参数优先级高于配置文件参数
+
+# 启动 HTTP API 服务（单用户模式）
+python -m mini_agent --http
+
+# 启动多用户 daemon（后台常驻，推荐）
+mini-agent daemon start --http --http-multi-user --detach
+
+# 多用户管理
+mini-agent user list                                    # 查看所有用户
+mini-agent user add --name "小明" --role colleague      # 添加用户（返回 token）
+mini-agent user add --name "小红" --role family --trust 8
+mini-agent user remove u_a1b2c3d4                      # 删除用户
+mini-agent user role u_a1b2c3d4 family                 # 修改角色
+mini-agent user token u_a1b2c3d4                       # 重新生成 token
 ```
 
 ## 模块说明
@@ -163,7 +177,10 @@ python main.py --provider nvidia --model qwen/qwen3.5-122b-a10b --system-tool-ca
 - `routes.py` — HTTP 路由定义（对话/SSE/事件/权限/文件系统/`GET /v1/diagnostics` 系统健康检查 Stage 6.2）；`/v1/status` Stage 9 新增 `autonomy_level`/`last_autonomous_tick_at`/`tick_count`/`subscribers` 字段
 - `bridge.py` — 解耦桥梁（RingBuffer/OutputBroadcaster/InputQueue/PermissionGate）；`InputQueue.enqueue()` Stage 9 新增 `initiator`/`meta` 参数
 - `models.py` — Pydantic 请求/响应模型 + AgentEvent；`TurnInfo` Stage 9 新增 `initiator`；`StatusResponse` Stage 9 新增 daemon 状态字段
-- `auth.py` — Bearer Token 认证中间件
+- `auth.py` — Bearer Token 认证中间件（单用户模式）
+- `multi_auth.py` — 多用户认证中间件（`MultiUserAuthMiddleware`）；与 `auth.py` 互斥，由 `create_app()` 按 `http_multi_user_enabled` 二选一挂载；认证成功后在 `request.state.user_ctx` 注入 `UserContext`
+- `user_store.py` — 用户注册表（`UserStore`）与角色体系；五种角色（owner/family/colleague/agent/public）对应不同工具权限和资源配额；token 明文存 `.agent/users/tokens/*.key`（0600），hash 存 `users.json`；`RoleProfileManager` 管理每用户社交画像（`profile.json`）
+- `session_pool.py` — 多用户 Session 池（`SessionAgentPool`）；每个 `(user_id, session_id)` 对应独立 Agent 实例和 AgentBridge；含 idle 超时自动挂起（默认 30 分钟）、崩溃恢复、最大并发限制（默认 20）；`SelfMessageBus` 实现 Self 与 SessionAgent 之间的内部消息
 - `fs_helper.py` — 文件系统操作封装
 
 ### CLI (`src/mini_agent/cli/`)
@@ -173,6 +190,7 @@ python main.py --provider nvidia --model qwen/qwen3.5-122b-a10b --system-tool-ca
 - `repl.py` — REPL 循环和斜杠命令处理；退出时自动打印 resume 提示（`_print_resume_hint()`）；含 `/agent` / `/goals` / `/digest` 路由（Stage 9）
 - `daemon.py` — 守护进程管理：`cmd_daemon_start/stop/status`、PID 文件管理（`.agent/daemon.pid` + `.agent/daemon_info.json`）、`DaemonClient`（HTTP 连接模式 CLI）、`run_connected_repl`（Stage 9）
 - `commands/` — REPL 命令处理器（concurrency, plans, sessions, skills, tasks, agents, hooks, providers, evolution, evolve, eval_cmd）
+- `commands/user_cmd.py` — `mini-agent user` 子命令（多用户架构）；通过 HTTP 调用 `/v1/users` 端点管理用户，不直接读写文件；支持 list / add / remove / role / token 子命令；需要 daemon 以 `--http-multi-user` 启动
   - `goals.py` — `/agent goals` 全部子命令（add/obj/done/abandon/accept/reject/pause/progress/status），`/goals`/`/digest` 快捷命令，`/goals accept|reject` 含 `SoftGoalDeriver.record_rejected()` 30天去重（Stage 9）
   - `cron.py` — `/cron` 全部子命令（list/status/enable/disable/run/add/remove/set-schedule），daemon 模式专属（Stage 9 Phase 1）
 
