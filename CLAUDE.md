@@ -33,7 +33,7 @@
 - `src/mini_agent/prompts/` — Prompt 管理
 - `src/mini_agent/storage/` — 存储层（`paths.py` 含 `session_plan_snapshot`/`task_manifest`/`workdir_xxx`/`global_xxx` 等路径方法）
 - `src/mini_agent/env_info/` — 环境信息采集与注入（Provider 抽象基类 + 注册表 + 内置 Provider）
-- `src/mini_agent/evolution/` — 自我演化机制：`state_repo.py`（唯一写入入口，Stage 9 加 `initiator` T0→T1 上浮）/`validators.py`（分级校验）/`workspace.py`（worktree 隔离）/`eval_runner.py`（eval 反馈环）/`phase_g.py`（Stage 8 后台循环：剪枝/能力地图/Scope 晋升/节奏治理）/`autonomous_loop.py`（Stage 9 三档位 tick 调度器）/`resource_arbiter.py`（Stage 9 资源仲裁 + activity_digest.jsonl）
+- `src/mini_agent/evolution/` — 自我演化机制：`state_repo.py`（唯一写入入口，Stage 9 加 `initiator` T0→T1 上浮）/`validators.py`（分级校验）/`workspace.py`（worktree 隔离）/`eval_runner.py`（eval 反馈环）/`phase_g.py`（Stage 8 后台循环：剪枝/能力地图/Scope 晋升/节奏治理）/`autonomous_loop.py`（Stage 9 三档位 tick + ExplorationSandbox + SoftGoalDeriver 接入）/`resource_arbiter.py`（Stage 9 资源仲裁 + activity_digest.jsonl + 六分组 build_digest_summary）/`cron_scheduler.py`（Stage 9 定时任务：interval/cron 双格式，5 个内置系统 job）/`objective_executor.py`（Stage 9 Objective 多步持续执行引擎）/`soft_goal_deriver.py`（Stage 9 autonomous 档位软目标 derive：三路信号 + ExplorationSandbox 验证）
 - `scripts/protected_paths.py` — 受保护路径清单（T3 治理红线，独立于 `src/mini_agent/` 包，自我演化相关安全机制使用）
 
 ## 开发规范
@@ -154,8 +154,8 @@ python main.py --provider nvidia --model qwen/qwen3.5-122b-a10b --system-tool-ca
 - `global_knowledge.py` — Global 知识层（W3，Stage 5）：`self_profile.json`/`projects_index.json`/`cross_project_index.json`/`activity_log.jsonl` 数据模型与读写，含跨项目模式聚合 `scan_cross_project_patterns`/`merge_cross_project_patterns`
 - `observability.py` — 观察性（第 9 章，Stage 6）：`SessionTracer`（`traces.jsonl` 打点）、`classify_error()`（14 种 `error_category` 分类）、`detect_anomalies()`（k-σ 异常检测）
 - `lesson_review.py` — lesson 阈值扫描（Stage 3.1），`/evolve review` 的扫描逻辑
-- `goal_backlog.py` — 跨会话目标层级（Stage 9）：`GoalNode`（Goal/Objective 统一节点）、`GoalBacklog`（持久化 `.agent/goals.json`）；`has_actionable_work()` 和 `next_task_description()` 是 AutonomousLoop 的核心调用接口
-- `exploration_sandbox.py` — 探索实验沙盒（Stage 9）：包装 Stage 2 `EvolutionWorkspace` 加预算门控，`ExplorationReport` 结果写入 `activity_digest.jsonl`；第十二节 autonomous 档位接口预留
+- `goal_backlog.py` — 跨会话目标层级（Stage 9）：`GoalNode`（Goal/Objective 统一节点）、`GoalBacklog`（持久化 `.agent/goals.json`）；`has_actionable_work()` 和 `active_objectives()` 是 AutonomousLoop/ObjectiveExecutor 的核心调用接口
+- `exploration_sandbox.py` — 探索实验沙盒（Stage 9 Phase 3）：包装 Stage 2 `EvolutionWorkspace` 加预算门控，`ExplorationReport` 结果写入 `activity_digest.jsonl`；`_tick_autonomous()` 对 capability 类软目标候选调用此沙盒做轻量验证，成功才写 GoalBacklog + 触发 `skill_propose`
 
 ### HTTP API (`src/mini_agent/api/`)
 
@@ -173,7 +173,8 @@ python main.py --provider nvidia --model qwen/qwen3.5-122b-a10b --system-tool-ca
 - `repl.py` — REPL 循环和斜杠命令处理；退出时自动打印 resume 提示（`_print_resume_hint()`）；含 `/agent` / `/goals` / `/digest` 路由（Stage 9）
 - `daemon.py` — 守护进程管理：`cmd_daemon_start/stop/status`、PID 文件管理（`.agent/daemon.pid` + `.agent/daemon_info.json`）、`DaemonClient`（HTTP 连接模式 CLI）、`run_connected_repl`（Stage 9）
 - `commands/` — REPL 命令处理器（concurrency, plans, sessions, skills, tasks, agents, hooks, providers, evolution, evolve, eval_cmd）
-  - `goals.py` — `/agent goals` 全部子命令（add/obj/done/abandon/pause/progress/status），`/digest` 数据展示（Stage 9）
+  - `goals.py` — `/agent goals` 全部子命令（add/obj/done/abandon/accept/reject/pause/progress/status），`/goals`/`/digest` 快捷命令，`/goals accept|reject` 含 `SoftGoalDeriver.record_rejected()` 30天去重（Stage 9）
+  - `cron.py` — `/cron` 全部子命令（list/status/enable/disable/run/add/remove/set-schedule），daemon 模式专属（Stage 9 Phase 1）
 
 ### hooks (`src/mini_agent/hooks/`)
 
@@ -459,15 +460,16 @@ python main.py --provider nvidia --model qwen/qwen3.5-122b-a10b --system-tool-ca
 > 对应 `next_doc/self_evolution_stage9_plan.md`。在全部 Stage 0-8 基础设施之上引入常驻守护进程、跨会话目标层级和三档位自主调度
 
 - **进程模型升级**：daemon 进程常驻（`cli/daemon.py`），AgentRunner 线程内嵌 `AutonomousLoop` tick 调度；CLI 进入"连接模式"（通过现有 HTTP API 接入，不新增协议）；`--no-daemon` 可回退到传统模式
-- **守护进程管理**（`cli/daemon.py`）：`mini-agent daemon start [--detach]|stop|status`；PID 文件写入 `.agent/daemon.pid` + `.agent/daemon_info.json`；`--daemon-mode` 标志供内部调用
-- **Goal Backlog**（`perception/goal_backlog.py`）：`GoalNode`（Goal/Objective 统一节点），持久化到 `.agent/goals.json`；Objective 可通过 `work_thread_ref` 关联已有 WorkThread（复用 Stage 4 进展文本）；`has_actionable_work()` / `next_task_description()` 是 AutonomousLoop 调用的核心接口
-- **AutonomousLoop**（`evolution/autonomous_loop.py`）：三档位（passive/maintenance/autonomous），边界用方法边界物理隔离；`passive` 档位 `_tick_passive()` 方法体内不引用 GoalBacklog 任何方法；`maintenance` 档位起调用 `ResourceArbiter` 预算门控 + GoalBacklog 拆解任务后通过 `InputQueue.enqueue(initiator="autonomous")` 提交
-- **资源仲裁**（`evolution/resource_arbiter.py`）：用户优先（AgentRunner 循环天然保证）/ 路径冲突检测（复用 traces.jsonl，未开启 tracing 时保守降级）/ 预算硬限制（`used_today < daily_token_budget`）；探索子配额（`exploration_budget_ratio`，默认 10%）；`activity_digest.jsonl` 自主行为粗粒度日志，`/digest` 命令展示
-- **initiator 字段贯穿**（第九节）：`_TurnCommand`/`enqueue()`/`TurnInfo`/`StateRepo.apply()` 均新增 `initiator` 参数（`"user"`/`"autonomous"`/`"scheduled"`）；自主发起的 T0 改动在 `resolve_tier()` 中自动上浮为 T1（留痕，不绕过 evolve 分支）
-- **新 TaskStatus 值**：`TaskStatus.PAUSED`（被用户活动抢占暂停，可恢复；区别于 `CANCELLED` 的不可恢复）
-- **`/v1/status` 扩展**：响应中新增 `subscribers`/`autonomy_level`/`last_autonomous_tick_at`/`tick_count` 字段
-- **探索实验沙盒**（`perception/exploration_sandbox.py`）：包装 Stage 2 `EvolutionWorkspace` 加预算门控，为第十二节 autonomous 档位预留接口
-- **CLI 命令**：`/agent goals`（含 add/obj/done/abandon/progress/status 子命令）、`/goals`（快捷方式）、`/digest`（自主活动摘要）、`mini-agent daemon start|stop|status`
+- **守护进程管理**（`cli/daemon.py`）：`mini-agent daemon start [--detach]|stop|status`；PID 文件写入 `.agent/daemon.pid` + `.agent/daemon_info.json`
+- **Goal Backlog**（`perception/goal_backlog.py`）：`GoalNode`（Goal/Objective 统一节点），持久化到 `.agent/goals.json`；Objective 可通过 `work_thread_ref` 关联已有 WorkThread（复用 Stage 4 进展文本）；`has_actionable_work()` / `active_objectives()` 是 ObjectiveExecutor 调用的核心接口
+- **AutonomousLoop**（`evolution/autonomous_loop.py`）：三档位（passive/maintenance/autonomous），边界用方法边界物理隔离；`passive` 档位调用 `CronScheduler.tick()`；`maintenance` 档位起调用 `ObjectiveExecutor`；`autonomous` 档位加入 `SoftGoalDeriver` + `ExplorationSandbox`
+- **CronScheduler**（`evolution/cron_scheduler.py`）：interval/cron 双格式，5 个内置系统 job（phase_g/workdir_sync/self_eval/goal_review/digest_trim）；触发的 job 通过 `InputQueue.enqueue(initiator="cron")` 提交
+- **ObjectiveExecutor**（`evolution/objective_executor.py`）：Objective 拆解为 3-8 个 Step，每步完成后 `on_turn_done()` 回调推进；SSE 推送 `OBJECTIVE_PROGRESS` 事件；同时最多 2 个 Objective 并行，单步最多重试 2 次
+- **SoftGoalDeriver**（`evolution/soft_goal_deriver.py`）：三路信号（capability_map 低置信度 / WorkThread 积压 / 高频 Lesson）；`derive_candidates()` 分 capability 类和其他类；capability 类经 ExplorationSandbox 验证后才写 GoalBacklog
+- **资源仲裁**（`evolution/resource_arbiter.py`）：用户优先 / 路径冲突检测 / 预算硬限制三条规则；`activity_digest.jsonl` 自主行为粗粒度日志；`build_digest_summary()` 六分组渲染（Objective进展/Cron执行/探索结果/Agent建议/进化提案/其他）
+- **initiator 字段贯穿**：`_TurnCommand`/`enqueue()`/`TurnInfo`/`StateRepo.apply()` 均加入 `initiator` 参数（`"user"`/`"autonomous"`/`"cron"`）；自主发起的 T0 改动自动上浮为 T1
+- **新 API 端点**：`/v1/autonomous/status`、`/v1/goals` CRUD、`/v1/cron/jobs` CRUD，共 8 个新端点
+- **CLI 命令**：`/goals`（含 accept/reject）、`/cron`（含所有子命令）、`/digest`（六分组摘要）、`mini-agent daemon start|stop|status`
 - 详见 [Stage 9 自主运行时指南](docs/self-evolution-stage9-guide.md)
 
 ### 参数优先级

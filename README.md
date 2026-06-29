@@ -33,9 +33,12 @@
 | 🖼️ 图片技能 | 图片信息提取与问答（ask_image）、文本生成图片（gen_image_with_text） |
 | 📝 Reminder 系统 | 动态提示注入机制，工具出错/用户意图等情境下自动追加解决经验，同轮去重防重复 |
 | 🤖 Role Agent | 预设角色子 Agent 模板，结构化参数注入，支持工具/模型限制 |
-| 🏃 常驻守护进程 | **Stage 9**：`mini-agent daemon start` 让 agent 常驻后台，CLI/Web 均以"连接模式"接入，不依赖会话存活 |
-| 🎯 Goal Backlog | **Stage 9**：跨会话目标层级（Goal → Objective），`.agent/goals.json` 持久化，可关联 WorkThread 复用进展 |
-| ⚙️ 三档位自主调度 | **Stage 9**：`passive`（默认）/ `maintenance`（主动执行待办目标）/ `autonomous`（软目标 derive，第十二节），修改 `self_profile.json` 切换 |
+| 🏃 常驻守护进程 | **Stage 9**：`mini-agent daemon start --detach` 让 agent 常驻后台，CLI/Web 均以"连接模式"接入，不依赖会话存活；PID 文件 + daemon_info.json 管理 |
+| 🎯 Goal Backlog | **Stage 9**：跨会话目标层级（Goal → Objective），`.agent/goals.json` 持久化；`/goals accept/reject` 管理 agent 建议目标，关联 WorkThread 复用进展 |
+| ⚙️ 三档位自主调度 | **Stage 9**：`passive`（只跑 cron job）/ `maintenance`（Objective 持续执行）/ `autonomous`（软目标 derive + 探索实验），修改 `self_profile.json` 切换 |
+| ⏰ 定时任务（Cron） | **Stage 9**：`/cron` 命令管理周期性 daemon 任务；支持 `interval:<秒>` 和 `cron:<5字段>` 两种格式；5 个内置系统 job（phase_g / workdir_sync / self_eval / goal_review / digest_trim） |
+| 🔄 Objective 持续执行 | **Stage 9**：ObjectiveExecutor 将 Objective 拆解为 3-8 个 Step 依次提交，步骤间自动传递上下文摘要；SSE 推送 `objective_progress` 事件实时显示进度 |
+| 🧭 软目标 Derive | **Stage 9**：autonomous 档位下从三路信号（capability_map 低置信度 / WorkThread 积压 / 高频 Lesson）自动生成 Goal 建议，capability 类先经 ExplorationSandbox 验证再提案 |
 | 🔄 Workflow | 工作流编排机制，支持多步骤自动化任务执行 |
 | 🌍 Env Info | 环境信息自动采集与注入，内置 OS/Python/时区 Provider，支持自定义扩展 |
 | 💾 History 即时落盘 | RawHistory 采用 JSONL 追加写 + fsync，每次操作立即持久化，防崩溃丢失 |
@@ -174,13 +177,30 @@ mini-agent                          # 自动检测到 daemon，进入连接模�
 # 查看 daemon 状态（PID、端口、autonomy_level、上次 tick）
 mini-agent daemon status
 
-# 管理跨会话目标
-/agent goals add "完成认证模块重构" --priority 10
-/agent goals obj add "完成接口层" --goal goal_xxxxxxxx
-/digest                             # 查看自上次交互以来的自主活动
+# ── 目标管理 ──────────────────────────────────────────────
+# 设置跨会话目标
+/goals add "完成认证模块重构" --priority 70
+/goals obj add "完成接口层" --goal goal_xxxxxxxx
 
-# 切换自主档位（passive → maintenance：主动执行待办 Objective）
-# 修改 ~/.agent/self_profile.json 或项目 .agent/self_profile.json 中的：
+# 查看自上次交互以来的自主活动（Objective 进展 / Cron 执行 / Agent 建议目标）
+/digest
+
+# 接受或拒绝 Agent 建议的软目标
+/goals accept goal_abc123           # 接受，提升优先级
+/goals reject goal_abc123           # 拒绝，30 天内不再建议相同主题
+
+# ── 定时任务 ──────────────────────────────────────────────
+/cron list                          # 查看所有 cron job（含 5 个内置系统 job）
+/cron status                        # 下次触发时间总览
+/cron run sys:phase_g               # 立即触发一次 Phase G 扫描
+/cron disable sys:workdir_sync      # 临时关闭 workdir 同步
+/cron add "日报" "cron:0 9 * * *" "生成昨日工作摘要"  # 添加用户 job
+
+# ── 切换自主档位 ──────────────────────────────────────────
+# passive（默认）：只跑 cron job
+# maintenance：cron + Objective 持续执行
+# autonomous：maintenance + 软目标 derive + 探索实验
+# 修改 .agent/self_profile.json：
 # "operating_state": { "autonomy_level": "maintenance" }
 
 # 停止 daemon
@@ -484,7 +504,8 @@ mini_agent/
 │       │       ├── evolution.py  # /evolution log|show|diff|revert（Stage 2）
 │       │       ├── evolve.py     # /evolve review|list（Stage 3.1）
 │       │       ├── eval_cmd.py   # mini-agent eval 子命令入口（Stage 3.2）
-│       │       └── goals.py      # /agent goals 全部子命令（Stage 9）
+│       │       ├── goals.py      # /agent goals 全部子命令：add/obj/done/abandon/accept/reject/pause/progress/status（Stage 9）
+│       │       └── cron.py       # /cron 全部子命令：list/status/enable/disable/run/add/remove/set-schedule（Stage 9 Phase 1）
 │       ├── llm/             # LLM 抽象层
 │       │   ├── __init__.py
 │       │   ├── base.py      # 基础接口
@@ -516,8 +537,12 @@ mini_agent/
 │       │   ├── validators.py    # 按 tier 升级的验证流水线（Stage 2）
 │       │   ├── workspace.py     # EvolutionWorkspace：git worktree 进程级隔离（Stage 2）
 │       │   ├── eval_runner.py   # mini-agent eval 核心引擎（Stage 3.2）
-│       │   ├── autonomous_loop.py  # AutonomousLoop：三档位 tick 调度器（Stage 9）
-│       │   └── resource_arbiter.py # 资源仲裁：预算/路径冲突/探索配额，activity_digest.jsonl（Stage 9）
+│       │   ├── phase_g.py       # Phase G 后台循环：剪枝/能力地图/Scope晋升/节奏治理（Stage 8）
+│       │   ├── autonomous_loop.py  # AutonomousLoop：三档位 tick + ExplorationSandbox + SoftGoalDeriver 接入（Stage 9）
+│       │   ├── resource_arbiter.py # 资源仲裁 + activity_digest.jsonl + build_digest_summary() 六分组渲染（Stage 9）
+│       │   ├── cron_scheduler.py   # CronScheduler：interval/cron 双格式，5 个内置系统 job（Stage 9 Phase 1）
+│       │   ├── objective_executor.py # ObjectiveExecutor：Objective 多步持续执行，SSE objective_progress（Stage 9 Phase 2）
+│       │   └── soft_goal_deriver.py  # SoftGoalDeriver：capability/workthread/lesson 三路信号软目标 derive（Stage 9 Phase 3）
 │       ├── orchestrator/    # 并发编排
 │       │   ├── __init__.py
 │       │   ├── task.py      # 任务定义（含 manifest.json 写入；TaskStatus.PAUSED Stage 9）
@@ -800,3 +825,8 @@ MIT License
 
 *2026-06 SubAgent 信息继承（Stage 3.3）*：`Task` 新增 `active_skills` 字段，spawn 的 SubAgent 自动继承主 agent 当前激活的 skill（thread-local provider 机制，独立 `ToolRegistry` 副本规避重复注册崩溃）；`ToolResultCache` 加锁支持跨 SubAgent 共享，避免重复读取同一文件；SubAgent 结束时触发主 agent memory backend `reload()`，使其产生的 lesson 能被主 agent 检索到
 *2026-06-24 自主运行时（Stage 9 / Phase H）*：新增 `cli/daemon.py`（`mini-agent daemon start|stop|status`，PID 文件，`DaemonClient` CLI 连接模式）；新增 `perception/goal_backlog.py`（`GoalNode`/`GoalBacklog`，持久化 `.agent/goals.json`，`has_actionable_work()` / `next_task_description()`）；新增 `evolution/autonomous_loop.py`（三档位 tick：passive/maintenance/autonomous，方法边界物理隔离）；新增 `evolution/resource_arbiter.py`（用户优先 / 路径冲突 / 预算硬限制三条仲裁规则，探索子配额，`activity_digest.jsonl`）；新增 `cli/commands/goals.py`（`/agent goals` 全部子命令，`/goals`，`/digest`）；新增 `perception/exploration_sandbox.py`（探索沙盒，第十二节接口预留）；`InputQueue.enqueue()` / `TurnInfo` / `StateRepo.apply()` / `resolve_tier()` 均加入 `initiator` 字段，T0→T1 自动上浮规则；`TaskStatus.PAUSED` 新值；`/v1/status` 新增 `autonomy_level` / `last_autonomous_tick_at` / `tick_count` 字段
+*2026-06 自主运行时 Phase 1（Stage 9 基础架构）*：新增 `evolution/cron_scheduler.py`（CronScheduler，interval/cron 双格式，内置 5 个系统 job：phase_g/workdir_sync/self_eval/goal_review/digest_trim）；`AutonomousLoop._tick_passive()` 改调 CronScheduler；新增 `evolution/objective_executor.py`（ObjectiveExecutor，Objective 拆解为 3-8 步 Step，每步完成自动推进，串行+并发上限保护）；`/cron` CLI 命令（list/status/enable/disable/run/add/remove/set-schedule）注册到 REPL 和 `_COMMANDS` 补全
+
+*2026-06 自主运行时 Phase 2（Stage 9 接入与 API）*：`server.py` `_build_autonomous_loop()` 注入 CronScheduler + ObjectiveExecutor；AgentRunner turn 完成/失败后回调 `ObjectiveExecutor.on_turn_done()`/`on_turn_failed()`（仅 initiator="autonomous"/"cron" 时触发）；`api/models.py` 新增 `OBJECTIVE_PROGRESS` SSE 事件；`bridge.py` 新增 `emit_objective_progress()`；`api/routes.py` 新增 `/v1/autonomous/status`、`/v1/goals` CRUD、`/v1/cron/jobs` CRUD 共 8 个端点；新增 `evolution/soft_goal_deriver.py`（三路信号：capability_map 低置信度 / WorkThread 积压 / 高频 Lesson，每次最多 derive 2 个 Goal）
+
+*2026-06 自主运行时 Phase 3（Stage 9 闭环完善）*：`_tick_autonomous()` 完整接入 ExplorationSandbox——capability 类候选先经探索验证（`_run_capability_exploration()`），成功才写 GoalBacklog + 触发 `skill_propose`，失败静默丢弃；`SoftGoalDeriver` 新增 `derive_candidates()`（返回两类候选不写 GoalBacklog）+ `commit_goals()` 方法；`build_digest_summary()` 重写为六分组渲染（Objective进展/Cron执行记录/探索实验结果/💡Agent建议目标/进化提案/其他），Agent建议目标组内嵌 `/goals accept|reject <id>` 快捷指令；`goals.py` 补全 `accept`（激活 + priority 提升）/`reject`（abandoned + `record_rejected()` 30天去重）子命令
