@@ -383,6 +383,174 @@ curl -H "Authorization: Bearer <token>" http://127.0.0.1:8765/v1/diagnostics
 | `last_autonomous_tick_at` | 上次 autonomous tick 的 Unix 时间戳 |
 | `tick_count` | daemon 启动以来的总 tick 次数 |
 
+### /v1/autonomous/status — 自主执行状态
+
+`GET /v1/autonomous/status` 返回 daemon 自主执行的完整实时视图：
+
+```bash
+curl -H "Authorization: Bearer <token>" \
+  http://127.0.0.1:8765/v1/autonomous/status
+```
+
+响应示例：
+
+```json
+{
+  "autonomy_level": "maintenance",
+  "next_tick_in": 47.3,
+  "cron_jobs": [
+    {
+      "id": "sys:phase_g",
+      "name": "Phase G 扫描",
+      "enabled": true,
+      "next_run_in": 18420,
+      "next_run_str": "in 5.1h",
+      "run_count": 12,
+      "last_run_at": 1720000000.0
+    }
+  ],
+  "objective_executions": [
+    {
+      "execution_id": "exec_a1b2c3d4",
+      "objective_id": "obj_xyz",
+      "title": "完善测试覆盖",
+      "status": "running",
+      "progress": "2/4",
+      "current_step": "识别未覆盖的函数路径",
+      "started_at": 1720000000.0
+    }
+  ]
+}
+```
+
+| 字段 | 说明 |
+|------|------|
+| `autonomy_level` | 当前档位 |
+| `next_tick_in` | 距下次 `AutonomousLoop.tick()` 还有多少秒 |
+| `cron_jobs` | 所有 cron job 状态列表 |
+| `objective_executions` | 活跃 Objective 执行进度列表（完成超过 1h 的自动移除） |
+
+### /v1/goals — Goal Backlog REST API
+
+```bash
+# 获取完整 GoalBacklog（所有 active Goals 和 Objectives）
+GET /v1/goals
+
+# 添加新 Goal
+POST /v1/goals
+Body: {
+  "title": "完善测试覆盖",
+  "description": "提升单元测试覆盖率到 80%",
+  "priority": 70,
+  "source": "user"
+}
+
+# 更新 Goal 状态/进展
+PATCH /v1/goals/{goal_id}
+Body: {
+  "status": "completed",         # active | paused | completed | abandoned
+  "progress_notes": "覆盖率已达 82%",
+  "priority": 50
+}
+```
+
+`PATCH` 时将 `status` 设为 `"abandoned"` 且目标为 `source="agent_derived"` 时，
+系统会自动记录到 `soft_goal_rejected.json`，30 天内不会再 derive 相同主题。
+
+`GET /v1/goals` 响应示例：
+
+```json
+{
+  "goals": [
+    {
+      "id": "goal_abc12345",
+      "level": "goal",
+      "title": "完善测试覆盖",
+      "source": "user",
+      "status": "active",
+      "priority": 70,
+      "created_at": 1720000000.0
+    }
+  ],
+  "objectives": [
+    {
+      "id": "obj_def67890",
+      "level": "objective",
+      "parent_id": "goal_abc12345",
+      "title": "为 agent.py 补充单元测试",
+      "status": "active",
+      "progress_notes": "已完成接口扫描"
+    }
+  ]
+}
+```
+
+### /v1/cron/jobs — Cron Job REST API
+
+```bash
+# 列出所有 cron job
+GET /v1/cron/jobs
+
+# 添加用户 job
+POST /v1/cron/jobs
+Body: {
+  "name": "daily-summary",
+  "schedule": "cron:0 9 * * *",
+  "task_template": "生成昨日工作摘要",
+  "description": "每天 09:00 自动生成摘要"
+}
+
+# 修改 job（启用/禁用/改 schedule）
+PUT /v1/cron/jobs/{job_id}
+Body: { "enabled": false }
+Body: { "schedule": "interval:7200" }
+
+# 立即触发一次（不影响 next_run_at）
+POST /v1/cron/jobs/{job_id}/run
+```
+
+`GET /v1/cron/jobs` 响应示例：
+
+```json
+{
+  "jobs": [
+    {
+      "id": "sys:phase_g",
+      "name": "Phase G 扫描",
+      "schedule": "interval:21600",
+      "description": "技能剪枝、去重、能力地图更新（每 6 小时）",
+      "enabled": true,
+      "last_run_at": 1720000000.0,
+      "next_run_at": 1720021600.0,
+      "next_run_str": "in 5.1h",
+      "run_count": 12,
+      "tags": ["maintenance", "evolution"]
+    }
+  ]
+}
+```
+
+### SSE 新增事件类型：`objective_progress`
+
+`GET /v1/stream` 或 `GET /v1/stream/{turn_id}` 中，当 daemon 自主推进 Objective 步骤时，
+会推送 `objective_progress` 类型的 SSE 事件：
+
+```json
+{
+  "type": "objective_progress",
+  "data": {
+    "execution_id": "exec_a1b2c3d4",
+    "objective_id": "obj_xyz",
+    "title": "完善测试覆盖",
+    "status": "running",
+    "progress": "3/4",
+    "current_step": "运行测试并修复失败用例"
+  }
+}
+```
+
+客户端可通过此事件实时更新 Objective 执行进度条，无需轮询 `/v1/autonomous/status`。
+
 ### Daemon 启动流程
 
 ```bash

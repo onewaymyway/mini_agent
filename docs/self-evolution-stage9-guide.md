@@ -1,33 +1,39 @@
 # Stage 9 自主运行时指南（Phase H）
 
-> 对应 `next_doc/self_evolution_stage9_plan.md`，在 Stage 0-8 的全部基础设施之上，为 agent 引入"常驻守护进程 + 跨会话目标层级 + 三档位自主调度"能力。
+> Stage 9 在 Stage 0–8 全部基础设施之上，为 agent 引入「常驻守护进程 + 跨会话目标层级 + 三档位自主调度 + 定时任务 + Objective 持续执行 + 软目标 derive」能力。
 
 ---
 
 ## 1. 架构概述
 
-Stage 9 的核心变化是**进程模型升级**：
+### 进程模型升级
 
 ```
-旧模型（Stage 0-8）：
+旧模型（Stage 0–8）：
   每次 CLI 启动 → 进程内创建 Agent → 交互完成 → 进程退出
 
 新模型（Stage 9）：
-  mini-agent daemon start     ← 一次性操作，Agent 常驻
+  mini-agent daemon start --detach    ← 一次性操作，Agent 常驻
        ↓
   daemon 进程（持续运行）
     ├─ AgentRunner 线程（消费 InputQueue）
-    ├─ AutonomousLoop（tick 调度）
+    │    ├─ 用户消息（initiator="user"）
+    │    ├─ cron job（initiator="cron"）
+    │    └─ 自主步骤（initiator="autonomous"）
+    ├─ AutonomousLoop（tick 调度，60s 间隔）
+    │    ├─ CronScheduler.tick()       ← passive 档位
+    │    ├─ ObjectiveExecutor.resume() ← maintenance 档位
+    │    └─ SoftGoalDeriver.derive()   ← autonomous 档位
     └─ HTTP API（FastAPI/uvicorn）
-       ↑
-  CLI 连接模式（随时进入/退出，daemon 不受影响）
-  Web 客户端（现有 Streamlit Demo）
+         ├─ /v1/autonomous/status
+         ├─ /v1/goals
+         └─ /v1/cron/jobs
 ```
 
 关键设计原则：
-- **daemon 与 workdir 绑定**，不是全局唯一 daemon，每个项目有自己的 daemon
-- **IPC 直接复用现有 HTTP API**（POST `/v1/chat` + GET `/v1/stream`），不新增协议
-- **CLI 连接模式**与现有 Web 端接入方式完全对称
+- **daemon 与 workdir 绑定**，不是全局唯一，每个项目有自己的 daemon
+- **IPC 直接复用 HTTP API**（POST `/v1/chat` + GET `/v1/stream`），不新增协议
+- **initiator 字段贯穿**：`"user"` / `"cron"` / `"autonomous"` 区分消息来源
 - **`--no-daemon` 回退**：CI/脚本场景可完全跳过 daemon 机制
 
 ---
@@ -43,13 +49,13 @@ mini-agent daemon start
 # 后台启动（生产使用）
 mini-agent daemon start --detach
 
-# 指定端口
+# 指定端口（默认 8765）
 mini-agent daemon start --detach --http-port 9000
 
 # 停止
 mini-agent daemon stop
 
-# 查看状态（PID、端口、autonomy_level、上次 tick 时间）
+# 查看状态（PID、端口、autonomy_level、cron 摘要、上次 tick 时间）
 mini-agent daemon status
 ```
 
@@ -60,11 +66,11 @@ mini-agent daemon status
 | PID 文件 | `<project_root>/.agent/daemon.pid` | 进程 PID（整数） |
 | info 文件 | `<project_root>/.agent/daemon_info.json` | `{"pid": N, "http_port": N, "started_at": T}` |
 
-进程退出时自动清理两个文件。进程异常死亡后残留文件在下次 `daemon start/status` 时自动清理。
+进程退出时自动清理。进程异常死亡后残留文件在下次 `daemon start/status` 时自动清理。
 
 ### 2.3 CLI 连接模式
 
-当 daemon 已运行时，`mini-agent` 启动后自动进入"连接模式"：
+当 daemon 已运行时，`mini-agent` 启动后自动进入「连接模式」：
 
 ```
 [daemon] Connected to running daemon (PID=12345, port=8765)
@@ -76,34 +82,20 @@ orzooo (connected) ❯ exit
 [daemon] Disconnected (daemon continues running)
 ```
 
-输入 `exit` 只是断开 CLI 连接，daemon 继续运行。
-
-### 2.4 `--daemon-mode` 标志
-
-`daemon start --detach` 内部通过 `--daemon-mode` 标志调用主入口：
-
-```bash
-python -m mini_agent --http --http-port 8765 --daemon-mode
-```
-
-`--daemon-mode` 时：
-1. 启动 HTTP 服务（`--http` 已含）
-2. 写入 PID 文件
-3. 阻塞等待 SIGTERM/SIGINT，不启动交互 REPL
-4. 收到信号时优雅关闭 HTTP 服务并清理 PID 文件
+输入 `exit` 只断开 CLI 连接，daemon 继续运行。
 
 ---
 
 ## 3. Goal Backlog（`perception/goal_backlog.py`）
 
-跨会话目标层级，存储在 `<project_root>/.agent/goals.json`。
+跨会话目标层级，持久化到 `<project_root>/.agent/goals.json`。
 
 ### 3.1 数据结构
 
 ```
 Goal（长期目标）
   └─ Objective（子目标，可关联 WorkThread）
-       └─ Task（单次执行，通过 InputQueue 提交）
+       └─ Task（单次执行，由 ObjectiveExecutor 通过 InputQueue 提交）
 ```
 
 `GoalNode` 统一表示两层节点，通过 `level` 字段区分：
@@ -112,93 +104,65 @@ Goal（长期目标）
 GoalNode:
   id              str     # "goal_abc12345" | "obj_def67890"
   level           str     # "goal" | "objective"
-  title           str     # 节点标题
+  title           str
   source          str     # "user" | "agent_derived"
   status          str     # "active" | "paused" | "completed" | "abandoned"
   created_at      float
   last_touched_at float
-  progress_notes  str     # 进展备注
-  parent_id       str?    # Objective 指向其父 Goal 的 id
-  children_ids    list    # Goal 的子 Objective id 列表
-  work_thread_ref str?    # Objective 关联的 WorkThread id（复用 work_index.json）
-  priority        int     # 数字越大越优先，默认 0
+  progress_notes  str
+  parent_id       str?    # Objective 指向其父 Goal
+  children_ids    list
+  work_thread_ref str?    # 关联的 WorkThread id（复用 work_index.json）
+  priority        int     # 数字越大越优先，默认 0；agent_derived 默认 20-30
   tags            list
 ```
 
-### 3.2 与 WorkThread 的关系
-
-Objective 通过 `work_thread_ref` 字段引用已有 `WorkThread`（Stage 4 的 `work_index.json`），复用其 `cumulative_progress`/`next_suggested`，不重复维护进展文本。
-
-### 3.3 CLI 命令
+### 3.2 CLI 命令
 
 ```bash
-# 查看 Goal Backlog
-/agent goals
-/goals          # 快捷方式
-
-# 添加 Goal
-/agent goals add "重构认证模块" --priority 10 --tag backend,security
-
-# 添加 Objective（关联到 Goal 和 WorkThread）
-/agent goals obj add "完成接口层重构" --goal goal_abc12345 --thread wt_xyz
-
-# 标记完成
-/agent goals done obj_def67890
-
-# 更新进展
-/agent goals progress obj_def67890 "接口层已完成，单测覆盖率 85%"
-
-# 查看 AutonomousLoop 状态
-/agent goals status
-
-# 查看活动摘要
-/digest
-```
-
-### 3.4 持久化
-
-原子写入（tmp + `os.replace()`），格式：
-
-```json
-{
-  "version": 1,
-  "goals": [
-    {"id": "goal_abc12345", "level": "goal", "title": "...", "status": "active", ...},
-    {"id": "obj_def67890", "level": "objective", "parent_id": "goal_abc12345", ...}
-  ]
-}
+/goals                                   # 列出所有 active Goals 和 Objectives
+/goals add "完善测试覆盖" --priority 70  # 添加 Goal
+/goals obj add "为 agent.py 加单测" --goal goal_abc12345
+/goals done obj_def67890                 # 标记完成
+/goals abandon <id>                      # 放弃（agent_derived 的会记录到 rejected 列表）
+/goals pause <id>                        # 暂停
+/goals progress <id> "覆盖率已达 80%"   # 更新进展备注
+/goals status                            # 显示 AutonomousLoop tick 状态
+/digest                                  # 查看自主活动摘要（最近 24h）
 ```
 
 ---
 
 ## 4. AutonomousLoop（`evolution/autonomous_loop.py`）
 
-运行在 daemon 进程的 `AgentRunner` 线程内，与"检查用户消息"分支并列。
+运行在 `AgentRunner` 线程内，当 `InputQueue.dequeue(timeout=0.5)` 超时（无新消息）时触发。
 
-### 4.1 接入点
+### 4.1 三档位完整行为
 
-`AgentRunner.run()` 中，当 `InputQueue.dequeue(timeout=0.5)` 超时返回 `None`（没有新用户消息）时：
+| 档位 | `autonomy_level` | 行为 |
+|------|-----------------|------|
+| **passive** | `"passive"` | 只运行 CronScheduler.tick()，**不读 GoalBacklog** |
+| **maintenance** | `"maintenance"` | passive + ObjectiveExecutor 推进活跃 Objective，可启动新 Objective |
+| **autonomous** | `"autonomous"` | maintenance + SoftGoalDeriver.derive() 主动 derive 新 Goal |
 
-```python
-if autonomous_loop.should_tick():
-    autonomous_loop.tick()
+边界的物理体现：`_tick_passive()` 方法体内不引用 `self._goal_backlog` 任何方法；`_tick_maintenance()` 才调用 `goal_backlog.active_objectives()`。
+
+### 4.2 tick 流程（maintenance 档位）
+
 ```
-
-`should_tick()` 检查距上次 tick 是否已过 `tick_interval_seconds`（默认 60 秒）。
-
-### 4.2 三档位边界
-
-| 档位 | `autonomy_level` 值 | AutonomousLoop 行为 |
-|------|--------------------|--------------------|
-| 被动 | `"passive"` | 只做 Phase G 时间门控检查，**不读 GoalBacklog** |
-| 维护 | `"maintenance"` | passive + 从 GoalBacklog 拆解并提交 Task |
-| 自主 | `"autonomous"` | maintenance + 软目标 derive（第十二节，暂未实装） |
-
-**边界的物理体现**（不靠注释承诺）：`_tick_passive()` 方法体内不引用 `self._goal_backlog` 任何方法；只有 `_tick_maintenance()` 及以上才调用 `goal_backlog.has_actionable_work()`。
+tick()
+ ├─ _tick_passive()
+ │   └─ CronScheduler.tick()         ← 检查所有 job 是否到期并触发
+ └─ _tick_maintenance()
+     ├─ ResourceArbiter.can_run_autonomous()   ← 预算 + 路径冲突门控
+     ├─ ObjectiveExecutor.resume()             ← 恢复因资源仲裁暂停的 Objective
+     └─ 若有空闲槽位：
+         └─ ObjectiveExecutor.start(objective) ← 启动新 Objective
+```
 
 ### 4.3 autonomy_level 修改
 
-通过修改 `~/.agent/self_profile.json` 中的 `operating_state.autonomy_level` 字段：
+修改 `~/.agent/self_profile.json`：
 
 ```json
 {
@@ -210,180 +174,274 @@ if autonomous_loop.should_tick():
 
 默认值为 `"passive"`（最保守）。
 
-### 4.4 tick 流程（maintenance 档位）
+---
+
+## 5. 定时任务（`evolution/cron_scheduler.py`）
+
+### 5.1 设计动机
+
+原 `_tick_passive()` 直接调用 `should_run_phase_g() / run_phase_g()`，每个周期性任务都硬编码在 tick 里。`CronScheduler` 统一所有周期性任务：
+
+- Phase G 等系统维护任务注册为 `sys:` 前缀 job，逻辑本身不变
+- 用户可以 disable 系统 job、调整触发频率，也可以添加自定义 job
+- 触发记录写入 `activity_digest.jsonl`，`/digest` 可见
+
+### 5.2 Schedule 格式
 
 ```
-tick()
- ├─ _tick_passive()
- │   ├─ should_run_phase_g() → run_phase_g()（Stage 8 已有）
- │   └─ _run_workdir_consolidation()
- └─ [if maintenance or autonomous]
-     ├─ ResourceArbiter.can_run_autonomous()  ← 预算门控
-     ├─ goal_backlog.has_actionable_work()
-     ├─ goal_backlog.next_task_description()  ← 拆解下一个 Task
-     └─ input_queue.enqueue(..., initiator="autonomous")  ← 提交
+interval:<秒>          固定间隔，如 interval:3600（每小时）
+cron:<分 时 日 月 周>   5 字段 cron，如 cron:0 */6 * * *（每 6 小时整点）
+```
+
+内置轻量 cron 解析器，支持 `*`、`*/n`、`n,m`、`n-m` 语法，不依赖外部库。
+
+### 5.3 内置系统 Job
+
+持久化到 `<project_root>/.agent/cron_jobs.json`，首次 daemon 启动时自动创建：
+
+| id | 默认间隔 | 用途 |
+|----|---------|------|
+| `sys:phase_g` | 6h | Phase G 扫描（技能剪枝 + 能力地图） |
+| `sys:workdir_sync` | 1h | WorkdirKnowledge 整合（文件变化同步） |
+| `sys:self_eval` | 24h | 能力自评（capability_map 置信度更新） |
+| `sys:goal_review` | 12h | Goal 清理（标记已完成/无进展的目标） |
+| `sys:digest_trim` | 7d | 日志修剪（删除 30 天前的 digest 记录） |
+
+系统 job 可 `disable`、可 `set-schedule`，**不可 `remove`**。
+
+### 5.4 Job 提交机制
+
+触发的 job 通过 `submit_fn(message, initiator="cron", meta)` 提交到 `InputQueue`，
+和用户消息走同一条 AgentRunner 线程，保证执行的串行性（cron job 不会抢占正在响应的用户消息）。
+
+### 5.5 CLI 命令
+
+详见 [命令与工具参考](commands-and-tools-reference.md#定时任务)，完整子命令：
+`list [--all]` / `status` / `enable` / `disable` / `run` / `add` / `remove` / `set-schedule`
+
+---
+
+## 6. Objective 持续执行（`evolution/objective_executor.py`）
+
+### 6.1 设计动机
+
+原 `_tick_maintenance()` 对每个 Objective 只做一次 LLM 调用拆解 + 一次 Task 提交，执行完就结束。`ObjectiveExecutor` 实现真正的多步持续推进：
+
+```
+start(objective)
+  └─ LLM 拆解 Objective → steps[0..N]（3-8 步）
+       └─ step[0] → InputQueue（initiator="autonomous"）
+            └─ AgentRunner 执行完成 → on_turn_done(turn_id, summary)
+                 └─ step[0].status = done
+                      └─ step[1] → InputQueue
+                           └─ ...（循环直到所有 step done）
+                                └─ objective.status = completed
+                                     └─ activity_digest 记录
+```
+
+### 6.2 并发控制
+
+- 同时最多运行 `MAX_CONCURRENT_OBJECTIVES = 2` 个 Objective
+- 每个 Objective 的步骤**串行**执行（保证因果性，步骤 N+1 可以看到步骤 N 的结果）
+- 每步提交前经过 `ResourceArbiter.can_run_autonomous()` 检查
+
+### 6.3 失败处理
+
+- 单步最多重试 `MAX_STEP_RETRIES = 2` 次
+- 超过重试次数 → Objective 状态改为 `"failed"`，写入 `activity_digest`
+- 用户可通过 `/goals progress <id> <notes>` 更新状态后重新激活
+
+### 6.4 步骤上下文注入
+
+每个步骤提交的 Task 消息包含前序步骤的结果摘要：
+
+```
+[自主任务 - 完善测试覆盖]
+步骤 3/4: 生成测试用例并写入文件
+
+[前序步骤结果]
+步骤1: 扫描到 23 个未覆盖函数（agent.py x 15, llm/*.py x 8）
+步骤2: 确定优先覆盖 agent.run_turn(), _call_llm(), _execute_tools()
+```
+
+### 6.5 持久化
+
+状态持久化到 `<project_root>/.agent/objective_executions.json`，daemon 重启后恢复进行中的 Objective。
+
+### 6.6 turn 完成回调接入点
+
+`AgentRunner.run()` 中，`bridge.agent.run_turn()` 完成后：
+
+```python
+# server.py AgentRunner.run() 内
+result = bridge.agent.run_turn(cmd.message)
+iq.mark_done(turn_id)
+bridge.emit_turn_done(turn_id, text=result or "")
+
+# ObjectiveExecutor 回调（仅 initiator 为 autonomous/cron 时）
+if cmd.initiator in ("autonomous", "cron"):
+    obj_exec.on_turn_done(turn_id, result_summary)
 ```
 
 ---
 
-## 5. 资源仲裁（`evolution/resource_arbiter.py`）
+## 7. 软目标 Derive（`evolution/soft_goal_deriver.py`）
 
-`AutonomousLoop._tick_maintenance()` 在提交 Task 前，必须通过 `ResourceArbiter.can_run_autonomous()` 才能继续。
+### 7.1 触发条件
 
-### 5.1 三条仲裁规则
+`autonomous` 档位下，每次 `tick()` 时检查：
+- 距上次 derive 超过 `DERIVE_INTERVAL_SECONDS = 21600`（6 小时）
+- GoalBacklog 中 `agent_derived` + `active` 的 Goal 数量 < `MAX_PENDING_DERIVED = 5`
 
-**规则 1：用户优先**（由 AgentRunner 循环天然保证）
+### 7.2 三路信号
 
-用户消息优先于 autonomous tick 执行——两者都通过 `InputQueue`，用户消息会在下一个 dequeue 循环被立即取走并执行；autonomous 任务提交到队列后也遵循相同的 FIFO 顺序。
+**信号 1：capability_map 低置信度**
+
+`confidence < 0.35` 且 `total_calls >= 3` 的能力条目，说明 agent 在该能力上经常失败，主动生成「改善 X 执行可靠性」类型的 Goal。
+
+**信号 2：WorkThread next_suggested 积压**
+
+`next_suggested` 非空但 30 天无活动的 WorkThread，说明 agent 自己建议的后续工作一直没有跟进，生成对应的 Goal。
+
+**信号 3：高频 Lesson（T1+）**
+
+`total_occurrence >= 3` 且来自不止一个 session 的 LessonGroup，说明某类错误模式反复出现，生成「系统性解决：xxx」类型的 Goal。
+
+### 7.3 优先级与去重
+
+- Lesson 来源：`priority = 30`（最高，有实证失败）
+- capability_map 来源：`priority = 25`
+- WorkThread 来源：`priority = 20`
+- 每次最多 derive `MAX_NEW_GOALS = 2` 个
+- 已有相同主题的 Goal 或用户已 `reject` 的（30 天内）不再 derive
+
+### 7.4 用户处理
+
+Derive 的 Goal 在 `/digest` 中以「💡 Agent 建议」分组展示：
+
+```
+【新软目标（Agent 建议）】
+  💡 "改善 _call_llm 的执行可靠性" — 来自 capability_map（成功率 28%）
+     /goals accept <id>  接受 | /goals reject <id>  拒绝
+
+  💡 "系统性解决：连续工具调用失败" — 来自 lesson（触发 7 次，3 个 session）
+     /goals accept <id>  接受 | /goals reject <id>  拒绝
+```
+
+`reject` 后 `SoftGoalDeriver.record_rejected()` 记录到 `soft_goal_rejected.json`，30 天内不会再 derive 相同主题。
+
+---
+
+## 8. 资源仲裁（`evolution/resource_arbiter.py`）
+
+`_tick_maintenance()` 在推进 Objective 前必须通过 `ResourceArbiter.can_run_autonomous()`：
+
+### 8.1 三条仲裁规则
+
+**规则 1：用户优先**（由 `InputQueue` FIFO 天然保证）
+
+用户消息和自主消息都通过同一个 `InputQueue`，用户消息会在下一个 `dequeue` 循环立即取走执行；`ObjectiveExecutor.pause_all()` 在资源不足时也可主动暂停。
 
 **规则 2：路径冲突检测**
 
-```python
-arbiter.check_path_conflict(task_paths)
-```
+从 `traces.jsonl` 提取最近 10 分钟用户触碰的文件路径，与自主任务计划操作路径做集合交集检查。
 
-从 Stage 6 的 `traces.jsonl` 提取最近 10 分钟内用户触碰的文件路径，与自主任务计划操作的路径做集合交集检查。tracing 未开启时降级为"保守地一律认为有冲突"（宁可错误暂停，不可错误覆盖）。
+**规则 3：预算硬限**
 
-**规则 3：预算硬限制**
+`used_today < daily_token_budget`，`daily_token_budget <= 0` 时不限制。
 
-```python
-used_today < daily_token_budget  →  允许
-```
+### 8.2 activity_digest.jsonl
 
-读取 `self_profile.json` 的 `ResourceBudget.used_today` 和 `daily_token_budget`，`daily_token_budget <= 0` 时不限制。
-
-### 5.2 探索预算子配额
-
-独立于目标执行预算的"实验性预算"：
-
-```
-exploration_budget = daily_token_budget × exploration_budget_ratio（默认 10%）
-```
-
-`ResourceArbiter.can_run_exploration()` 检查 `used_today_exploration < exploration_budget`。
-
-### 5.3 activity_digest.jsonl
-
-自主行为的粗粒度日志（对比 `activity_log.jsonl` 的 session 粒度）：
+记录所有自主行为：
 
 ```jsonl
-{"at": 1720000000.0, "type": "task_submitted", "objective_id": "obj_xxx", "task_desc": "..."}
-{"at": 1720003600.0, "type": "phase_g_completed", "prune_count": 2, "capability_count": 15}
-{"at": 1720007200.0, "type": "exploration_result", "success": true, "tokens_used": 800}
+{"at": 1720000000.0, "type": "cron_run", "job_id": "sys:phase_g", "summary": "..."}
+{"at": 1720003600.0, "type": "objective_started", "objective_id": "obj_xxx", "title": "..."}
+{"at": 1720007200.0, "type": "objective_completed", "execution_id": "exec_yyy", "steps": 4}
+{"at": 1720010800.0, "type": "soft_goal_created", "goal_id": "goal_zzz", "title": "..."}
 ```
 
-REPL 中通过 `/digest` 查看（最近 24h，按类型分组展示）。
+`/digest` 按类型分组展示最近 24h 的记录。
 
 ---
 
-## 6. initiator 字段贯穿（第九节）
+## 9. HTTP API 新增端点
 
-本 Stage 在以下位置统一加入 `initiator` 字段，使"谁发起的"可追溯：
+详见 [HTTP API 指南](http-api-guide.md#stage-9-daemon-模式说明)，摘要：
 
-| 位置 | 改动 |
+| 端点 | 说明 |
 |------|------|
-| `_TurnCommand` | 新增 `initiator` / `meta` 字段 |
-| `InputQueue.enqueue()` | 新增 `initiator="user"` 参数（默认值，向后兼容） |
-| `TurnInfo` | 新增 `initiator` 字段 |
-| `TaskStatus` | 新增 `PAUSED`（被用户活动抢占暂停，可恢复） |
-| `StateRepo.resolve_tier()` | 新增 `initiator` 参数，T0→T1 自动上浮规则 |
-| `StateRepo.apply()` | 新增 `initiator` 参数，写入 commit meta |
+| `GET /v1/autonomous/status` | daemon 自主执行实时状态（档位 + cron_jobs + objective_executions） |
+| `GET /v1/goals` | GoalBacklog 视图（所有 active Goals 和 Objectives） |
+| `POST /v1/goals` | 添加 Goal |
+| `PATCH /v1/goals/{goal_id}` | 更新 Goal 状态/进展/优先级 |
+| `GET /v1/cron/jobs` | 列出所有 cron job |
+| `POST /v1/cron/jobs` | 添加用户 cron job |
+| `PUT /v1/cron/jobs/{job_id}` | 启用/禁用/修改 schedule |
+| `POST /v1/cron/jobs/{job_id}/run` | 立即触发一次 |
 
-**T0→T1 上浮规则（第九节 §9.2）**：
+### SSE 新增事件
 
-> 当 `initiator` 为 `"autonomous"` 或 `"scheduled"` 且 `effective_tier == "T0"` 时，自动上浮为 T1——"用户主动要求的 T0 改动可以直接 apply；同等改动若由自主 tick 发起，至少走 evolve 分支留痕"。
-
----
-
-## 7. `/v1/status` 响应扩展
-
-daemon 状态字段已加入 `/v1/status` 响应：
-
-```json
-{
-  "state": "idle",
-  "turn_id": null,
-  "stats": {...},
-  "queue_depth": 0,
-  "subscribers": 1,
-  "autonomy_level": "maintenance",
-  "last_autonomous_tick_at": 1720000000.0,
-  "tick_count": 42
-}
-```
+`objective_progress`：Objective 步骤推进时推送，包含 `execution_id`、`progress`（"3/4"）、`current_step` 等字段，客户端可实时渲染进度条。
 
 ---
 
-## 8. 探索实验沙盒（`perception/exploration_sandbox.py`）
+## 10. initiator 字段贯穿
 
-为第十二节（autonomous 档位软目标 derive）预留的接口。通过包装 Stage 2 的 `EvolutionWorkspace` 加入预算门控：
+| 值 | 来源 | 说明 |
+|----|------|------|
+| `"user"` | CLI REPL / HTTP `/v1/chat` | 用户主动发送的消息 |
+| `"cron"` | CronScheduler.tick() | 定时任务触发的消息 |
+| `"autonomous"` | ObjectiveExecutor._submit_step() | Objective 自主步骤 |
 
-```python
-sandbox = ExplorationSandbox(paths, cfg, arbiter)
-with sandbox.create(capability_id="skill_xyz", goal="验证 X 方案") as ctx:
-    ctx.report.finding = "X 方案在 Y 条件下可行"
-    ctx.report.success = True
-    ctx.record_tokens(500)
-# 退出时：worktree 自动清理，report 写入 activity_digest.jsonl
-```
-
-探索预算耗尽时抛出 `ExplorationBudgetExhausted`。
+`StateRepo.resolve_tier()` 会对 `initiator` 为 `"autonomous"/"cron"` 且 `effective_tier == "T0"` 的改动自动上浮为 T1（自主发起的改动至少留痕）。
 
 ---
 
-## 9. 文件清单
+## 11. 文件清单
 
-### 新增文件
+### Stage 9 Phase 1（基础架构）
 
 | 文件 | 职责 |
 |------|------|
-| `src/mini_agent/cli/daemon.py` | daemon 管理（start/stop/status）、DaemonClient、PID 文件 |
-| `src/mini_agent/perception/goal_backlog.py` | GoalNode、GoalBacklog、goals.json 持久化 |
-| `src/mini_agent/evolution/autonomous_loop.py` | AutonomousLoop、三档位 tick |
-| `src/mini_agent/evolution/resource_arbiter.py` | ResourceArbiter、activity_digest.jsonl |
-| `src/mini_agent/cli/commands/goals.py` | `/agent goals` 全部子命令实现 |
-| `src/mini_agent/perception/exploration_sandbox.py` | 探索沙盒（第十二节接口预留） |
+| `cli/daemon.py` | daemon 管理（start/stop/status）、DaemonClient、PID 文件 |
+| `perception/goal_backlog.py` | GoalNode、GoalBacklog、goals.json 持久化 |
+| `evolution/autonomous_loop.py` | AutonomousLoop、三档位 tick（完整实现） |
+| `evolution/resource_arbiter.py` | ResourceArbiter、activity_digest.jsonl |
+| `evolution/cron_scheduler.py` | CronJob、CronScheduler、5 个内置系统 job、轻量 cron 解析器 |
+| `evolution/objective_executor.py` | ExecutionStep、ObjectiveExecution、ObjectiveExecutor |
+| `evolution/soft_goal_deriver.py` | SoftGoalDeriver（三路信号：capability/workthread/lesson） |
+| `cli/commands/goals.py` | `/agent goals` 全部子命令 |
+| `cli/commands/cron.py` | `/cron` 全部子命令 |
+| `perception/exploration_sandbox.py` | 探索沙盒（autonomous 档位接口预留） |
 
-### 修改文件
+### Stage 9 Phase 2（接入与 API）
 
 | 文件 | 改动摘要 |
 |------|----------|
-| `src/mini_agent/api/bridge.py` | `_TurnCommand`/`enqueue()` 加 `initiator`/`meta` |
-| `src/mini_agent/api/models.py` | `TurnInfo` 加 `initiator`；`StatusResponse` 加 daemon 状态字段 |
-| `src/mini_agent/orchestrator/task.py` | `TaskStatus.PAUSED` 新值 |
-| `src/mini_agent/evolution/state_repo.py` | `resolve_tier()`/`apply()` 加 `initiator`；T0→T1 上浮 |
-| `src/mini_agent/api/server.py` | `AgentRunner` 接入 `AutonomousLoop`；`HttpServer._build_autonomous_loop()` |
-| `src/mini_agent/api/routes.py` | `/v1/status` 填充 autonomy_level 等 daemon 字段 |
-| `src/mini_agent/cli/app.py` | `daemon` 子命令短路；`--daemon-mode` 处理 |
-| `src/mini_agent/cli/parser.py` | `--daemon-mode`/`--no-daemon` 标志；帮助文本 |
-| `src/mini_agent/cli/repl.py` | `/agent`、`/goals`、`/digest` 路由；内联 handler |
-| `src/mini_agent/cli/commands/__init__.py` | 导出 `handle_goals_cmd` |
+| `api/bridge.py` | `_TurnCommand` 加 `initiator`/`meta`；新增 `emit_objective_progress()` |
+| `api/models.py` | `TurnInfo` 加 `initiator`；新增 `OBJECTIVE_PROGRESS` EventType |
+| `api/server.py` | `_build_autonomous_loop()` 注入 CronScheduler + ObjectiveExecutor；turn 完成/失败回调 |
+| `api/routes.py` | 新增 `/v1/autonomous/status`、`/v1/goals` CRUD、`/v1/cron/jobs` CRUD |
+| `cli/repl.py` | 路由 `/cron` 命令 |
+| `ui/terminal.py` | Tab 补全新增 `/cron` 及所有子命令 |
 
 ---
 
-## 10. 档位升级路径
+## 12. 档位升级路径
 
 ```
-passive（默认）
-  │  self_profile.json 中修改 autonomy_level
+passive（默认，只跑 cron job）
+  │  self_profile.json: autonomy_level = "maintenance"
   ▼
-maintenance
-  │  Phase G 数据积累后，由 check_scope_promotion() 推荐后手动升级
+maintenance（cron + Objective 持续执行）
+  │  确认 capability_map 数据充足 + ResourceArbiter 配置合理后
   ▼
-autonomous（第十二节实装）
+autonomous（maintenance + 软目标 derive）
 ```
 
-建议在新项目中至少运行 2-3 周积累 `traces.jsonl` + `capability_map` 数据后再切换到 `maintenance` 档位；`autonomous` 档位等第十二节完成后评估是否启用。
+**建议**：新项目至少运行 2 周积累 `traces.jsonl` + `capability_map` 数据后再切到 `maintenance`；`autonomous` 档位在 `MAX_PENDING_DERIVED` 和 `DERIVE_INTERVAL_SECONDS` 调整合适后再启用，避免 GoalBacklog 被 derive 出的 Goal 淹没。
 
 ---
 
-## 11. 下一步（第十二节，暂未实装）
-
-`_tick_autonomous()` 目前只调用 `_tick_maintenance()`。第十二节将实装：
-- 从 `capability_map` 低置信度条目 derive 新 Goal（`source="agent_derived"`）
-- 通过 `ExplorationSandbox` 在隔离 worktree 内做轻量实验
-- 实验成功后通过 `skill_propose` 提案（复用 Stage 3.1 闭环）
-
----
-
-*参见：[Phase G 后台循环指南](self-evolution-phase-g-guide.md)、[Workdir 知识层指南](self-evolution-stage4-5-guide.md)、[自我演化安全网指南](self-evolution-stage2-guide.md)*
+*参见：[HTTP API 指南](http-api-guide.md) · [命令与工具参考](commands-and-tools-reference.md) · [Phase G 后台循环指南](self-evolution-phase-g-guide.md) · [Workdir 知识层指南](self-evolution-stage4-5-guide.md)*

@@ -318,6 +318,59 @@ mini-agent --retry-backoff linear --retry-backoff-step 60 --retry-backoff-max 30
 | `/digest` | 显示自上次交互以来的自主活动摘要（来自 `activity_digest.jsonl`） |
 | `/agent digest` | 同 `/digest` |
 
+### 定时任务（`src/mini_agent/cli/commands/cron.py`）
+
+> **Stage 9 Phase 2** daemon 模式下的周期性任务调度。详见 [Stage 9 自主运行时指南](self-evolution-stage9-guide.md#5-定时任务-cronscheduler)
+
+仅在 `daemon` 模式下可用（`CronScheduler` 由 `HttpServer._build_autonomous_loop()` 初始化）。非 daemon 模式下调用会给出友好提示。
+
+| 命令 | 说明 |
+|------|------|
+| `/cron list` | 列出所有启用的 cron job（id / 名称 / 下次触发 / 已运行次数） |
+| `/cron list --all` | 列出全部 cron job，包括已禁用的 |
+| `/cron status` | 所有 job 下次触发时间总览 |
+| `/cron enable <id>` | 启用 job，重新计算 `next_run_at` |
+| `/cron disable <id>` | 禁用 job（`sys:` 前缀的系统 job 可禁用但不可删除） |
+| `/cron run <id>` | 立即触发一次（不修改 `next_run_at`，不影响下次正常触发） |
+| `/cron add <name> <schedule> <task_template>` | 添加用户自定义 job |
+| `/cron remove <id>` | 删除用户 job（`sys:` 前缀的系统 job 不可删除） |
+| `/cron set-schedule <id> <schedule>` | 修改触发时间并重新计算 `next_run_at` |
+
+**schedule 格式：**
+
+```
+interval:<秒>          每隔固定秒数触发，如 interval:3600（每小时）
+cron:<分 时 日 月 周>   标准 cron 5 字段，如 cron:0 */6 * * *（每 6 小时整点）
+```
+
+**内置系统 job（`sys:` 前缀，首次 daemon 启动时自动创建）：**
+
+| id | 默认触发频率 | 说明 |
+|----|------------|------|
+| `sys:phase_g` | 每 6 小时 | Phase G 扫描：技能剪枝 + 能力地图更新 |
+| `sys:workdir_sync` | 每 1 小时 | WorkdirKnowledge 整合：扫描文件变化，更新 WorkThread |
+| `sys:self_eval` | 每 24 小时 | 能力自评：回顾工具使用，更新 capability_map 置信度 |
+| `sys:goal_review` | 每 12 小时 | 目标清理：标记已完成/长期无进展的 Goal/Objective |
+| `sys:digest_trim` | 每 7 天 | 日志修剪：删除 30 天前的 `activity_digest.jsonl` 记录 |
+
+系统 job 可以 `disable`，但不可 `remove`；可以用 `set-schedule` 调整触发频率。
+
+**示例：**
+
+```bash
+# 添加每天 09:00 执行的用户 job
+/cron add daily-summary "cron:0 9 * * *" "生成昨日工作摘要并更新 work_index.json"
+
+# 禁用 Phase G（临时关闭，不删除）
+/cron disable sys:phase_g
+
+# 立即手动触发 workdir_sync
+/cron run sys:workdir_sync
+
+# 把 self_eval 改为每 12 小时一次
+/cron set-schedule sys:self_eval interval:43200
+```
+
 ---
 
 ## 五、`mini-agent daemon` 子命令
