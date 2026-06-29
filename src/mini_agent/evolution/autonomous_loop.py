@@ -46,6 +46,8 @@ class AutonomousLoop:
         paths: "AgentPaths",
         cfg: "AppConfig",
         tick_interval_seconds: float = 60.0,
+        cron_scheduler=None,
+        objective_executor=None,
     ) -> None:
         self._goal_backlog = goal_backlog
         self._input_queue = input_queue
@@ -55,6 +57,9 @@ class AutonomousLoop:
         self._last_tick_at: float = 0.0
         self._tick_count: int = 0
         self._digest_records: list[dict] = []  # 待写入 activity_digest.jsonl 的记录
+        # Phase 1 新增：CronScheduler 和 ObjectiveExecutor（可选注入，降级安全）
+        self._cron_scheduler = cron_scheduler
+        self._objective_executor = objective_executor
 
     # ── 公共接口 ──────────────────────────────────────────────────────────────
 
@@ -95,70 +100,136 @@ class AutonomousLoop:
 
     def _tick_passive(self) -> None:
         """
-        [passive 档位] 只检查 Stage 8 已有周期性任务是否到期，
-        不读取、不创建 Goal/Objective。
+        [passive 档位] 运行所有到期的 cron job。
+        Phase G、workdir_sync、self_eval、goal_review、digest_trim
+        都作为 cron job 注册，不再在此直接调用。
 
         边界的物理体现：本方法体内不引用 self._goal_backlog 任何方法。
         """
-        # Phase G 时间门控检查（从 SessionEnd 时间门控迁移到 daemon tick 时间门控）
-        try:
-            from mini_agent.evolution.phase_g import should_run_phase_g, run_phase_g
-            if should_run_phase_g(self._paths):
-                report = run_phase_g(self._paths)
-                self._record_phase_g_for_digest(report)
-        except Exception:
-            pass
+        # CronScheduler.tick()：检查所有 enabled job 是否到期并触发
+        if self._cron_scheduler is not None:
+            try:
+                triggered = self._cron_scheduler.tick()
+                for job_id in triggered:
+                    self._record_digest({
+                        "type": "cron_run",
+                        "job_id": job_id,
+                        "summary": f"Cron job 触发：{job_id}",
+                    })
+            except Exception:
+                pass
+        else:
+            # 降级：CronScheduler 未注入时直接调用 Phase G（保持向后兼容）
+            try:
+                from mini_agent.evolution.phase_g import should_run_phase_g, run_phase_g
+                if should_run_phase_g(self._paths):
+                    report = run_phase_g(self._paths)
+                    self._record_phase_g_for_digest(report)
+            except Exception:
+                pass
 
-        # Workdir knowledge 定期整合（Stage 4 周期性任务，如已实现）
-        try:
-            self._run_workdir_consolidation()
-        except Exception:
-            pass
+        # Workdir knowledge 定期整合（CronScheduler 未注入时的降级路径）
+        if self._cron_scheduler is None:
+            try:
+                self._run_workdir_consolidation()
+            except Exception:
+                pass
 
     def _tick_maintenance(self) -> None:
         """
-        [maintenance 档位] passive 的全部任务 + Goal Backlog 驱动的任务提交。
+        [maintenance 档位] passive 的全部任务 + Objective 持续执行推进。
         不 derive 新 Goal/Objective（这是与 autonomous 档位的边界）。
         """
         self._tick_passive()
 
-        # 检查资源仲裁（第八节 ResourceArbiter）
+        # 检查资源仲裁
         try:
             from mini_agent.evolution.resource_arbiter import ResourceArbiter
             arbiter = ResourceArbiter(self._paths, self._cfg)
             if not arbiter.can_run_autonomous():
+                # 资源不足：暂停所有 Objective 执行
+                if self._objective_executor is not None:
+                    self._objective_executor.pause_all()
                 return
         except Exception:
-            # 资源仲裁模块未就绪时，保守地跳过自主任务
             return
 
-        # 从 Goal Backlog 拆解下一个 Task
-        # 注意：只有 maintenance 及以上档位才到达这里
-        if not self._goal_backlog.has_actionable_work():
+        # ObjectiveExecutor：推进已有活跃 Objective
+        if self._objective_executor is not None:
+            try:
+                self._objective_executor.resume()  # 恢复因资源仲裁暂停的 Objective
+            except Exception:
+                pass
+
+        # 若有 ObjectiveExecutor 且还有并发槽位，从 GoalBacklog 启动新 Objective
+        if (
+            self._objective_executor is not None
+            and self._objective_executor.can_start_new()
+            and self._goal_backlog.has_actionable_work()
+        ):
+            objectives = self._goal_backlog.active_objectives()
+            for obj in objectives:
+                if self._objective_executor.is_running(obj.id):
+                    continue
+                if not self._objective_executor.can_start_new():
+                    break
+                exec_id = self._objective_executor.start(obj)
+                if exec_id:
+                    self._record_digest({
+                        "type": "objective_started",
+                        "objective_id": obj.id,
+                        "title": obj.title,
+                        "execution_id": exec_id,
+                        "summary": f"开始执行 Objective：{obj.title}",
+                    })
             return
 
-        result = self._goal_backlog.next_task_description()
-        if not result:
-            return
-
-        objective_id, task_desc = result
-
-        # 通过 InputQueue 提交（与用户消息走同一条路，但 initiator 不同）
-        if self._submit_autonomous_task(task_desc, objective_id):
-            self._record_digest({
-                "type": "task_submitted",
-                "objective_id": objective_id,
-                "task_desc": task_desc[:200],
-            })
+        # ObjectiveExecutor 未注入时的降级路径：沿用旧的单次 Task 提交
+        if self._objective_executor is None:
+            if not self._goal_backlog.has_actionable_work():
+                return
+            result = self._goal_backlog.next_task_description()
+            if not result:
+                return
+            objective_id, task_desc = result
+            if self._submit_autonomous_task(task_desc, objective_id):
+                self._record_digest({
+                    "type": "task_submitted",
+                    "objective_id": objective_id,
+                    "task_desc": task_desc[:200],
+                })
 
     def _tick_autonomous(self) -> None:
         """
         [autonomous 档位] maintenance 的全部任务 + 软目标 derive。
-        第十二节实现，本 Stage 暂时只执行 maintenance 逻辑。
+
+        软目标 derive 逻辑：
+          1. 读 capability_map：confidence < 0.3 的条目（agent 不确定自己能做的）
+          2. 读 workdir_knowledge：next_suggested 非空但 30 天无 Objective 的 WorkThread
+          3. 读 recent_lessons：高频触发的 LessonRule（说明某类问题反复出现）
+          4. 每次最多 derive 2 个新 Goal，source="agent_derived"
         """
         self._tick_maintenance()
-        # 软目标 derive 逻辑留给第十二节实现
-        # TODO Stage 9.12: derive new Goal/Objective based on capability_map low confidence
+
+        # 软目标 derive（每 tick 至多执行一次，由节奏治理控制频率）
+        try:
+            from mini_agent.evolution.soft_goal_deriver import SoftGoalDeriver
+            deriver = SoftGoalDeriver(self._paths, self._cfg)
+            if deriver.should_derive():
+                new_goals = deriver.derive(self._goal_backlog)
+                for goal in new_goals:
+                    self._record_digest({
+                        "type": "soft_goal_created",
+                        "goal_id": goal.id,
+                        "title": goal.title,
+                        "summary": f"Agent 建议新目标：{goal.title}",
+                    })
+                if new_goals:
+                    self._goal_backlog.save()
+        except ImportError:
+            pass  # soft_goal_deriver 尚未实现时静默跳过
+        except Exception:
+            pass
 
     # ── 内部辅助 ──────────────────────────────────────────────────────────────
 

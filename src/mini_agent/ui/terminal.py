@@ -2079,6 +2079,7 @@ _COMMANDS: list[tuple[str, str, list[str]]] = [
     ("/agent",       "Goal backlog & daemon management",             ["goals", "digest", "daemon"]),
     ("/goals",       "Shortcut for /agent goals",                    ["list", "add", "obj", "done", "abandon", "pause", "progress", "status"]),
     ("/digest",      "Show autonomous activity summary (last 24h)",  []),
+    ("/cron",        "Manage periodic daemon tasks",                 ["list", "status", "enable", "disable", "run", "add", "remove", "set-schedule"]),
     ("/exit",        "Exit mini-agent",                              []),
     ("/quit",        "Exit mini-agent",                              []),
 ]

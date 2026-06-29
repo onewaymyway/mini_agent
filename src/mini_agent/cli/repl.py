@@ -292,6 +292,17 @@ def _handle_slash(cmd: str, agent: Agent, skill_loader: SkillLoader) -> None:
         # /digest — 显示自上次交互以来的自主活动摘要
         _handle_digest_cmd(agent)
 
+    elif name == "cron":
+        # /cron — 定时任务管理（daemon 模式）
+        import asyncio
+        from mini_agent.cli.commands.cron import handle_cron
+        # 构造轻量 ctx 供 handle_cron 使用（注入 cron_scheduler）
+        class _Ctx:
+            cron_scheduler = getattr(agent, "_cron_scheduler", None)
+        result = asyncio.run(handle_cron(parts[1:], _Ctx()))
+        if result:
+            R.print_info(result)
+
     else:
         R.print_error(pm.fragment("cli_messages", "UNKNOWN_COMMAND", cmd=cmd))
 
