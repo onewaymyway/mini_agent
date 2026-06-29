@@ -309,6 +309,17 @@ class AgentRunner(threading.Thread):
                 iq.mark_done(turn_id)
                 bridge.emit_turn_done(turn_id, text=result or "", user_id=user_id)
 
+                # ObjectiveExecutor 回调：若此 turn 是自主步骤，推进到下一步
+                _obj_exec = getattr(bridge, "_objective_executor", None)
+                if _obj_exec is not None and cmd.initiator in ("autonomous", "cron"):
+                    try:
+                        # 从 result 的首句提取摘要（不超过 200 字）
+                        _summary = (result or "").strip()
+                        _summary = _summary.split("\n")[0][:200]
+                        _obj_exec.on_turn_done(turn_id, _summary)
+                    except Exception:
+                        pass
+
                 # daemon 多用户架构 Phase 2：每轮成功对话后更新该用户的 last_contact/
                 # contact_count。放在这里（而不是设计文档原计划的"session 切换前"），
                 # 是因为 Phase 1/2 阶段所有用户共享同一个全局 Agent/历史，用户很可能
@@ -337,6 +348,13 @@ class AgentRunner(threading.Thread):
                 bridge.emit_turn_done(
                     turn_id, text="", meta={"error": f"{type(e).__name__}: {e}"}, user_id=user_id
                 )
+                # ObjectiveExecutor 失败回调
+                _obj_exec = getattr(bridge, "_objective_executor", None)
+                if _obj_exec is not None and cmd.initiator in ("autonomous", "cron"):
+                    try:
+                        _obj_exec.on_turn_failed(turn_id, str(e))
+                    except Exception:
+                        pass
             finally:
                 bridge.set_state("idle", turn_id=None)
                 if hasattr(bridge.agent, "_http_turn_id"):
@@ -643,18 +661,8 @@ class HttpServer:
 
     def _build_autonomous_loop(self, agent: Any):
         """
-        Stage 9 §7.2: 构建 AutonomousLoop 实例。
-        若依赖不满足（cfg.project_root 不可用），返回 None（AgentRunner 降级为无自主能力）。
-
-        修复一个更早就存在、范围比这次多用户改造大得多的 bug：这里原来写的是
-        `getattr(agent, "_paths", None)`，但 Agent 实例上根本没有 `_paths` 这个
-        属性（agent.py 内部任何需要 AgentPaths 的地方，都是用
-        `AgentPaths(self.cfg.project_root)` 现场构造，从不缓存）。也就是说，
-        这个 getattr 永远返回 None，本方法因此永远在 `if paths is None` 那一行
-        就返回 None——`AutonomousLoop` 从一开始就没有在 daemon 模式下真正被构造
-        过，是这次给 Phase 4 写 `mini-agent self status` 时，看到"Autonomous Loop:
-        not available"才顺着挖出来的，和本次多用户改造完全无关，但既然发现了
-        就一并修掉。
+        Stage 9 §7.2: 构建 AutonomousLoop 实例，同时初始化 CronScheduler 和
+        ObjectiveExecutor，注入到 AutonomousLoop 和 AgentRunner。
         """
         try:
             from mini_agent.evolution.autonomous_loop import AutonomousLoop
@@ -669,12 +677,87 @@ class HttpServer:
 
             goal_backlog = load_goal_backlog(paths)
 
+            # ── CronScheduler ────────────────────────────────────────────────
+            def _cron_submit(message: str, initiator: str, meta: dict):
+                try:
+                    return self._bridge.input_queue.enqueue(
+                        message=message,
+                        initiator=initiator,
+                        meta=meta,
+                    )
+                except Exception:
+                    return None
+
+            from mini_agent.evolution.cron_scheduler import load_cron_scheduler
+            cron_scheduler = load_cron_scheduler(paths, submit_fn=_cron_submit)
+
+            # ── ObjectiveExecutor ────────────────────────────────────────────
+            def _obj_submit(message: str, initiator: str, meta: dict):
+                """提交自主步骤到 InputQueue，返回 turn_id。"""
+                try:
+                    return self._bridge.input_queue.enqueue(
+                        message=message,
+                        initiator=initiator,
+                        meta=meta,
+                    )
+                except Exception:
+                    return None
+
+            def _llm_decompose(objective):
+                """用 agent 当前 LLM client 拆解 Objective。"""
+                try:
+                    from mini_agent.evolution.objective_executor import _default_llm_decompose
+                    llm = getattr(agent, "_llm", None)
+                    if llm is None:
+                        return []
+                    return _default_llm_decompose(llm, objective)
+                except Exception:
+                    return []
+
+            bridge_ref = self._bridge
+
+            def _on_progress(execution):
+                """Objective 步骤推进时推 SSE 事件。"""
+                try:
+                    done, total = execution.progress_ratio
+                    cur = execution.current_step
+                    bridge_ref.emit_objective_progress(
+                        execution_id=execution.execution_id,
+                        objective_id=execution.objective_id,
+                        title=execution.objective_title,
+                        status=execution.status,
+                        progress=f"{done}/{total}",
+                        current_step=cur.description[:80] if cur else "",
+                    )
+                except Exception:
+                    pass
+
+            from mini_agent.evolution.objective_executor import ObjectiveExecutor
+            objective_executor = ObjectiveExecutor(
+                paths=paths,
+                submit_fn=_obj_submit,
+                llm_decompose_fn=_llm_decompose,
+                on_progress_fn=_on_progress,
+            )
+            objective_executor.load()
+
+            # 把 ObjectiveExecutor 和 CronScheduler 挂到 bridge，
+            # 供 AgentRunner.run() 在 turn 完成后回调
+            self._bridge._objective_executor = objective_executor
+            self._bridge._cron_scheduler = cron_scheduler
+            # 也挂到 agent，供 /cron REPL 命令使用
+            if agent is not None:
+                agent._cron_scheduler = cron_scheduler
+                agent._objective_executor = objective_executor
+
             return AutonomousLoop(
                 goal_backlog=goal_backlog,
                 input_queue=self._bridge.input_queue,
                 paths=paths,
                 cfg=cfg,
-                tick_interval_seconds=60.0,  # 每分钟检查一次
+                tick_interval_seconds=60.0,
+                cron_scheduler=cron_scheduler,
+                objective_executor=objective_executor,
             )
         except Exception:
             return None

@@ -1316,3 +1316,300 @@ async def get_self_status(request: Request):
         }
 
     return result
+
+# ── 自主执行状态 ──────────────────────────────────────────────────────────────
+
+@router.get("/autonomous/status")
+async def get_autonomous_status(request: Request):
+    """
+    GET /v1/autonomous/status
+
+    返回 daemon 自主执行的实时状态：
+      - autonomy_level：当前档位（passive/maintenance/autonomous）
+      - cron_jobs：各 job 的下次触发时间
+      - objective_executions：活跃 Objective 的执行进度
+      - next_tick_in：距下次 AutonomousLoop.tick() 还有多少秒
+    """
+    http_server = getattr(request.app.state, "http_server", None)
+    if http_server is None:
+        raise HTTPException(status_code=503, detail="HttpServer not available")
+    _require_owner(request)
+
+    result: dict = {
+        "autonomy_level": "unknown",
+        "next_tick_in": None,
+        "cron_jobs": [],
+        "objective_executions": [],
+    }
+
+    al = http_server.autonomous_loop
+    if al is not None:
+        try:
+            result["autonomy_level"] = al.autonomy_level
+            result["next_tick_in"] = round(max(0.0, al._last_tick_at + al._tick_interval - time.time()), 1)
+        except Exception:
+            pass
+
+        # CronScheduler 状态
+        cs = getattr(al, "_cron_scheduler", None)
+        if cs is None:
+            cs = getattr(http_server.bridge, "_cron_scheduler", None)
+        if cs is not None:
+            try:
+                jobs = cs.list_jobs()
+                result["cron_jobs"] = [
+                    {
+                        "id": j.id,
+                        "name": j.name,
+                        "enabled": j.enabled,
+                        "next_run_in": round(max(0.0, j.time_until_next()), 0),
+                        "next_run_str": j.next_run_str(),
+                        "run_count": j.run_count,
+                        "last_run_at": j.last_run_at,
+                    }
+                    for j in jobs
+                ]
+            except Exception:
+                pass
+
+        # ObjectiveExecutor 状态
+        oe = getattr(al, "_objective_executor", None)
+        if oe is None:
+            oe = getattr(http_server.bridge, "_objective_executor", None)
+        if oe is not None:
+            try:
+                result["objective_executions"] = oe.get_status_summary()
+            except Exception:
+                pass
+
+    return result
+
+
+# ── Goals REST API ────────────────────────────────────────────────────────────
+
+@router.get("/goals")
+async def list_goals(request: Request):
+    """GET /v1/goals — 返回完整的 GoalBacklog 视图。"""
+    http_server = getattr(request.app.state, "http_server", None)
+    if http_server is None:
+        raise HTTPException(status_code=503, detail="HttpServer not available")
+    _require_owner(request)
+
+    try:
+        from mini_agent.storage.paths import AgentPaths
+        from mini_agent.perception.goal_backlog import load_goal_backlog
+        self_agent = http_server.bridge.agent
+        project_root = getattr(self_agent.cfg, "project_root", None) if self_agent else None
+        if not project_root:
+            return {"goals": [], "objectives": []}
+        paths = AgentPaths(project_root)
+        backlog = load_goal_backlog(paths)
+        return {
+            "goals":      [n.to_dict() for n in backlog.active_goals()],
+            "objectives": [n.to_dict() for n in backlog.active_objectives()],
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/goals")
+async def add_goal(request: Request):
+    """
+    POST /v1/goals
+    Body: { "title": str, "description": str, "priority": int, "source": str }
+    """
+    http_server = getattr(request.app.state, "http_server", None)
+    if http_server is None:
+        raise HTTPException(status_code=503, detail="HttpServer not available")
+    _require_owner(request)
+
+    body = await request.json()
+    title = body.get("title", "").strip()
+    if not title:
+        raise HTTPException(status_code=400, detail="title is required")
+
+    try:
+        from mini_agent.storage.paths import AgentPaths
+        from mini_agent.perception.goal_backlog import load_goal_backlog
+        self_agent = http_server.bridge.agent
+        project_root = getattr(self_agent.cfg, "project_root", None) if self_agent else None
+        if not project_root:
+            raise HTTPException(status_code=503, detail="project_root not configured")
+        paths = AgentPaths(project_root)
+        backlog = load_goal_backlog(paths)
+        goal = backlog.add_goal(
+            title=title,
+            description=body.get("description", ""),
+            source=body.get("source", "user"),
+            priority=int(body.get("priority", 50)),
+        )
+        backlog.save()
+        return {"goal": goal.to_dict()}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.patch("/goals/{goal_id}")
+async def update_goal(goal_id: str, request: Request):
+    """
+    PATCH /v1/goals/{goal_id}
+    Body: { "status": str, "progress_notes": str, "priority": int }
+    """
+    http_server = getattr(request.app.state, "http_server", None)
+    if http_server is None:
+        raise HTTPException(status_code=503, detail="HttpServer not available")
+    _require_owner(request)
+
+    body = await request.json()
+    try:
+        from mini_agent.storage.paths import AgentPaths
+        from mini_agent.perception.goal_backlog import load_goal_backlog
+        self_agent = http_server.bridge.agent
+        project_root = getattr(self_agent.cfg, "project_root", None) if self_agent else None
+        if not project_root:
+            raise HTTPException(status_code=503, detail="project_root not configured")
+        paths = AgentPaths(project_root)
+        backlog = load_goal_backlog(paths)
+
+        node = backlog.get(goal_id)
+        if node is None:
+            raise HTTPException(status_code=404, detail=f"Goal '{goal_id}' not found")
+
+        if "status" in body:
+            node.status = body["status"]
+        if "progress_notes" in body:
+            node.progress_notes = body["progress_notes"]
+        if "priority" in body:
+            node.priority = int(body["priority"])
+
+        # reject 时通知 SoftGoalDeriver 记录拒绝历史
+        if body.get("status") == "abandoned" and node.source == "agent_derived":
+            try:
+                from mini_agent.evolution.soft_goal_deriver import SoftGoalDeriver
+                SoftGoalDeriver(paths, self_agent.cfg).record_rejected(node.title)
+            except Exception:
+                pass
+
+        backlog.save()
+        return {"goal": node.to_dict()}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ── Cron Jobs REST API ────────────────────────────────────────────────────────
+
+@router.get("/cron/jobs")
+async def list_cron_jobs(request: Request):
+    """GET /v1/cron/jobs — 列出所有 cron job。"""
+    http_server = getattr(request.app.state, "http_server", None)
+    if http_server is None:
+        raise HTTPException(status_code=503, detail="HttpServer not available")
+    _require_owner(request)
+
+    cs = getattr(http_server.bridge, "_cron_scheduler", None)
+    if cs is None:
+        al = http_server.autonomous_loop
+        cs = getattr(al, "_cron_scheduler", None) if al else None
+    if cs is None:
+        return {"jobs": [], "note": "CronScheduler not available (daemon mode required)"}
+
+    jobs = cs.list_jobs()
+    return {
+        "jobs": [
+            {**j.to_dict(), "next_run_str": j.next_run_str()}
+            for j in jobs
+        ]
+    }
+
+
+@router.post("/cron/jobs")
+async def add_cron_job(request: Request):
+    """
+    POST /v1/cron/jobs
+    Body: { "name": str, "schedule": str, "task_template": str, "description": str }
+    """
+    http_server = getattr(request.app.state, "http_server", None)
+    if http_server is None:
+        raise HTTPException(status_code=503, detail="HttpServer not available")
+    _require_owner(request)
+
+    cs = getattr(http_server.bridge, "_cron_scheduler", None)
+    if cs is None:
+        raise HTTPException(status_code=503, detail="CronScheduler not available")
+
+    body = await request.json()
+    name = body.get("name", "").strip()
+    schedule = body.get("schedule", "").strip()
+    task_template = body.get("task_template", "").strip()
+    if not name or not schedule or not task_template:
+        raise HTTPException(status_code=400, detail="name, schedule, task_template are required")
+
+    try:
+        job = cs.add_job(
+            name=name,
+            schedule=schedule,
+            task_template=task_template,
+            description=body.get("description", ""),
+        )
+        return {"job": {**job.to_dict(), "next_run_str": job.next_run_str()}}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.put("/cron/jobs/{job_id}")
+async def update_cron_job(job_id: str, request: Request):
+    """
+    PUT /v1/cron/jobs/{job_id}
+    Body: { "enabled": bool, "schedule": str }
+    """
+    http_server = getattr(request.app.state, "http_server", None)
+    if http_server is None:
+        raise HTTPException(status_code=503, detail="HttpServer not available")
+    _require_owner(request)
+
+    cs = getattr(http_server.bridge, "_cron_scheduler", None)
+    if cs is None:
+        raise HTTPException(status_code=503, detail="CronScheduler not available")
+
+    body = await request.json()
+    try:
+        if "enabled" in body:
+            if body["enabled"]:
+                cs.enable(job_id)
+            else:
+                cs.disable(job_id)
+        if "schedule" in body:
+            cs.update_schedule(job_id, body["schedule"])
+        job = cs.get(job_id)
+        if not job:
+            raise HTTPException(status_code=404, detail=f"Job '{job_id}' not found")
+        return {"job": {**job.to_dict(), "next_run_str": job.next_run_str()}}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/cron/jobs/{job_id}/run")
+async def run_cron_job_now(job_id: str, request: Request):
+    """POST /v1/cron/jobs/{job_id}/run — 立即触发一次。"""
+    http_server = getattr(request.app.state, "http_server", None)
+    if http_server is None:
+        raise HTTPException(status_code=503, detail="HttpServer not available")
+    _require_owner(request)
+
+    cs = getattr(http_server.bridge, "_cron_scheduler", None)
+    if cs is None:
+        raise HTTPException(status_code=503, detail="CronScheduler not available")
+
+    success = cs.run_now(job_id)
+    if not success:
+        job = cs.get(job_id)
+        if not job:
+            raise HTTPException(status_code=404, detail=f"Job '{job_id}' not found")
+        raise HTTPException(status_code=500, detail="Job trigger failed")
+    return {"triggered": True, "job_id": job_id}

@@ -542,6 +542,28 @@ class AgentBridge:
             data={"session_id": session_id, "title": title},
         ))
 
+    def emit_objective_progress(
+        self,
+        execution_id: str,
+        objective_id: str,
+        title: str,
+        status: str,
+        progress: str,
+        current_step: str = "",
+    ) -> None:
+        """推送 Objective 执行进度事件（daemon 自主执行时）。"""
+        self.broadcaster.push(AgentEvent(
+            type=EventType.OBJECTIVE_PROGRESS,
+            data={
+                "execution_id": execution_id,
+                "objective_id": objective_id,
+                "title": title,
+                "status": status,
+                "progress": progress,
+                "current_step": current_step,
+            },
+        ))
+
 
 # ── 模块级单例 ────────────────────────────────────────────────────────────────
 

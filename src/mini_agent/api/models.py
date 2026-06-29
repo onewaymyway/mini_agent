@@ -34,6 +34,8 @@ class EventType(str, Enum):
     INFO             = "info"            # 普通信息（print_info 等）
     WARNING          = "warning"
     INTERRUPT        = "interrupt"       # 执行被中断
+    # 自主执行
+    OBJECTIVE_PROGRESS = "objective_progress"  # Objective 步骤推进（daemon 自主执行）
 
 
 # ── 事件数据结构 ──────────────────────────────────────────────────────────────
