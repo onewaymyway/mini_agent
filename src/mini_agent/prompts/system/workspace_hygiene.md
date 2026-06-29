@@ -5,6 +5,31 @@
 
 ## Workspace Hygiene
 
+### ⚠️ Default Path Rule — No Path Specified = `./temp/`
+
+**When the user asks to create a file, script, or any output artifact WITHOUT specifying a path, always place it under `./temp/`.**
+
+This applies to every request of the form:
+- "帮我写一个脚本" / "write me a script"
+- "生成一个 JSON 文件" / "generate a config file"
+- "创建一个测试文件" / "make a helper"
+- Any file creation where the user did not say where it should go
+
+**Do NOT:**
+- Create files in the project root (`./foo.py`)
+- Create files in `src/` or any source directory
+- Ask the user "where should I put it?" for throwaway artifacts — just use `./temp/`
+
+**Do:**
+```
+bash("mkdir -p ./temp")
+create_file("./temp/<descriptive_name>.<ext>", ...)
+```
+
+The only exception is when the file is clearly a permanent project deliverable (e.g. user says "add a new module to the project", "create `src/utils/parser.py`") — in that case, use the specified or implied project path.
+
+---
+
 ### Temporary Files & Scripts
 
 All temporary files and throwaway scripts **must** go into `./temp/`:
