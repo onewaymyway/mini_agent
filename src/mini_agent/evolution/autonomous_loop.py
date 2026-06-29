@@ -201,37 +201,182 @@ class AutonomousLoop:
 
     def _tick_autonomous(self) -> None:
         """
-        [autonomous 档位] maintenance 的全部任务 + 软目标 derive。
+        [autonomous 档位] maintenance + 软目标 derive + 探索实验。
 
-        软目标 derive 逻辑：
-          1. 读 capability_map：confidence < 0.3 的条目（agent 不确定自己能做的）
-          2. 读 workdir_knowledge：next_suggested 非空但 30 天无 Objective 的 WorkThread
-          3. 读 recent_lessons：高频触发的 LessonRule（说明某类问题反复出现）
-          4. 每次最多 derive 2 个新 Goal，source="agent_derived"
+        流程：
+          1. _tick_maintenance()（cron + Objective 推进）
+          2. derive_candidates() 分两类：
+               capability 类 → ExplorationSandbox 验证 → 成功才写 Goal + skill_propose
+               其他类（workthread/lesson）→ 直接写 Goal
         """
         self._tick_maintenance()
 
-        # 软目标 derive（每 tick 至多执行一次，由节奏治理控制频率）
         try:
             from mini_agent.evolution.soft_goal_deriver import SoftGoalDeriver
             deriver = SoftGoalDeriver(self._paths, self._cfg)
-            if deriver.should_derive():
-                new_goals = deriver.derive(self._goal_backlog)
-                for goal in new_goals:
-                    self._record_digest({
-                        "type": "soft_goal_created",
-                        "goal_id": goal.id,
-                        "title": goal.title,
-                        "summary": f"Agent 建议新目标：{goal.title}",
-                    })
-                if new_goals:
-                    self._goal_backlog.save()
+            if not deriver.should_derive():
+                return
+
+            cap_candidates, other_candidates = deriver.derive_candidates(self._goal_backlog)
+
+            # 其他类：直接写 Goal
+            new_goals = deriver.commit_goals(other_candidates, self._goal_backlog)
+            for goal in new_goals:
+                self._record_digest({
+                    "type": "soft_goal_created",
+                    "goal_id": goal.id,
+                    "title": goal.title,
+                    "summary": (
+                        f"Agent 建议新目标：{goal.title} — "
+                        f"来自 {goal.description[:60]}"
+                    ),
+                })
+
+            # capability 类：每次 tick 最多跑 1 个探索实验（消耗较多资源）
+            for candidate in cap_candidates[:1]:
+                self._run_capability_exploration(candidate, deriver)
+
+            if new_goals or cap_candidates:
+                deriver._record_derive()
+                self._goal_backlog.save()
+
         except ImportError:
-            pass  # soft_goal_deriver 尚未实现时静默跳过
+            pass
         except Exception:
             pass
 
-    # ── 内部辅助 ──────────────────────────────────────────────────────────────
+    def _run_capability_exploration(self, candidate, deriver) -> None:
+        """
+        对 capability 类候选跑一次轻量探索实验。
+        成功 → 写 Goal + 尝试 skill_propose；失败 → 静默丢弃。
+        """
+        try:
+            from mini_agent.perception.exploration_sandbox import (
+                make_exploration_sandbox,
+                ExplorationBudgetExhausted,
+            )
+        except ImportError:
+            # ExplorationSandbox 不可用时降级为直接写 Goal
+            new_goals = deriver.commit_goals([candidate], self._goal_backlog, max_new=1)
+            for goal in new_goals:
+                self._record_digest({
+                    "type": "soft_goal_created",
+                    "goal_id": goal.id,
+                    "title": goal.title,
+                    "summary": f"Agent 建议新目标：{goal.title} — 来自 capability_map",
+                })
+            return
+
+        try:
+            sandbox = make_exploration_sandbox(self._paths, self._cfg)
+            goal_text = (
+                f"验证假设：{candidate.title}\n"
+                f"背景：{candidate.description}\n"
+                f"任务：分析失败根因，给出 1-3 条可执行改进措施；"
+                f"若措施可封装为通用 skill 则简要描述 skill 内容（50 字内）。"
+            )
+
+            with sandbox.create(
+                capability_id=candidate.title[:40],
+                goal=goal_text,
+                branch_prefix="explore/capability",
+            ) as ctx:
+                result = self._submit_exploration_task(goal_text, ctx)
+
+                if result:
+                    ctx.report.success = True
+                    ctx.report.finding = result[:200]
+
+                    # 验证通过：写 Goal
+                    new_goals = deriver.commit_goals([candidate], self._goal_backlog, max_new=1)
+                    for goal in new_goals:
+                        self._record_digest({
+                            "type": "soft_goal_created",
+                            "goal_id": goal.id,
+                            "title": goal.title,
+                            "summary": (
+                                f"Agent 建议新目标：{goal.title} — "
+                                f"来自 capability_map（探索验证通过）"
+                            ),
+                        })
+
+                    # 尝试 skill_propose
+                    skill_id = self._maybe_propose_skill(candidate, result)
+                    if skill_id:
+                        ctx.report.proposed_skill_id = skill_id
+                        self._record_digest({
+                            "type": "exploration_result",
+                            "goal": candidate.title,
+                            "success": True,
+                            "finding": result[:200],
+                            "proposed_skill_id": skill_id,
+                            "summary": f"探索实验成功，已提案技能：{skill_id}",
+                        })
+
+        except ExplorationBudgetExhausted:
+            pass
+        except Exception:
+            pass
+
+    def _submit_exploration_task(self, goal_text: str, ctx) -> str:
+        """
+        提交探索任务到 InputQueue 并同步等待结果（最多 5 分钟）。
+        不走 ObjectiveExecutor 的多步逻辑，是一次性轻量任务。
+        """
+        try:
+            iq = getattr(self, "_input_queue", None)
+            if iq is None:
+                return ""
+            import time as _t
+            turn_id = iq.enqueue(
+                message=f"[探索实验] {goal_text}",
+                initiator="autonomous",
+                meta={"exploration_sandbox_id": ctx.sandbox_id},
+            )
+            if not turn_id:
+                return ""
+            deadline = _t.time() + 300
+            while _t.time() < deadline:
+                _t.sleep(2)
+                status = getattr(iq, "get_status", lambda _: None)(str(turn_id))
+                if status == "done":
+                    return getattr(iq, "get_result", lambda _: "")(str(turn_id)) or "completed"
+                if status in ("error", "cancelled"):
+                    return ""
+            return ""
+        except Exception:
+            return ""
+
+    def _maybe_propose_skill(self, candidate, exploration_result: str) -> str:
+        """
+        若探索结果暗示可封装为 skill，调用 skill_propose 生成提案分支。
+        返回分支名（即 skill_id），失败返回空字符串。
+        """
+        keywords = ["skill", "技能", "封装", "通用", "可复用", "pattern"]
+        if not any(kw in exploration_result.lower() for kw in keywords):
+            return ""
+        try:
+            from mini_agent.tools.evolution import skill_propose
+            skill_name = (
+                candidate.title.lower()
+                .replace(" ", "_")
+                .replace("/", "_")[:30]
+            )
+            result = skill_propose(
+                name=skill_name,
+                content=(
+                    f"# {candidate.title}\n\n"
+                    f"## 背景\n{candidate.description}\n\n"
+                    f"## 探索发现\n{exploration_result[:500]}\n\n"
+                    f"## 来源\n自动生成（ExplorationSandbox，capability_map 低置信度触发）"
+                ),
+                source_lessons=[],
+            )
+            return (result or {}).get("branch", "") if isinstance(result, dict) else ""
+        except Exception:
+            return ""
+
+
 
     def _get_autonomy_level(self) -> str:
         """读取当前 autonomy_level（从 self_profile.json）。"""

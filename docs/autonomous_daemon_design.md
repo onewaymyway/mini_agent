@@ -18,7 +18,7 @@
 | `/v1/cron/jobs` CRUD | ✅ 已实现 | `api/routes.py` |
 | `/cron` CLI 命令 | ✅ 已实现 | `cli/commands/cron.py` |
 | SSE `objective_progress` | ✅ 已实现 | `api/bridge.py` + `api/models.py` |
-| ExplorationSandbox | 🔲 接口预留 | `perception/exploration_sandbox.py` |
+| ExplorationSandbox | ✅ 已接入 | `perception/exploration_sandbox.py` + `autonomous_loop.py` |
 
 ---
 
@@ -76,16 +76,76 @@ urgency 用于同 priority 档位内的排序（lesson 的 urgency 正比于触�
 
 ---
 
-## 待实现（下一阶段）
+## Phase 3 完成内容
 
-### ExplorationSandbox 接入
+### ExplorationSandbox 接入 `_tick_autonomous()`
 
-`autonomous` 档位下，SoftGoalDeriver derive 出 Goal 后，可通过 `ExplorationSandbox` 在隔离 worktree 内做轻量验证实验，成功后通过 `skill_propose` 提案。`exploration_sandbox.py` 已有接口骨架，待 Phase 3 接入 SoftGoalDeriver 闭环。
+`autonomous` 档位下，`SoftGoalDeriver.derive_candidates()` 将候选分为两类：
 
-### objective_progress SSE 前端渲染
+- **capability 类**（`source_tag="capability"`）：先经 `ExplorationSandbox.create()` 在隔离 git worktree 内做轻量验证实验，成功才写 Goal + 尝试 `skill_propose` 生成技能提案分支；失败静默丢弃（不骚扰用户）
+- **其他类**（`workthread`/`lesson`）：直接调 `commit_goals()` 写 GoalBacklog
 
-`objective_progress` 事件已通过 `bridge.emit_objective_progress()` 推送，Web Demo 尚未实现对应的进度条组件。
+每次 tick 最多处理 1 个 capability 候选（通过 `ExplorationBudgetExhausted` 保护），与 `ResourceArbiter.can_run_exploration()` 预算门控配合。
 
-### `/digest` 分组显示优化
+`skill_propose` 触发条件：探索结果文本中包含 "skill"/"技能"/"封装"/"通用"/"可复用"/"pattern" 关键词。
 
-`/digest` 目前输出原始 `activity_digest.jsonl` 记录。待实现按类型分组渲染，并在「新软目标」分组中直接嵌入 `/goals accept <id>` / `/goals reject <id>` 快捷操作提示。
+### `/digest` 分组显示重写（`resource_arbiter.py`）
+
+`build_digest_summary()` 从 3 个分组扩展为 6 个：
+
+| 分组 | 记录类型 | 展示内容 |
+|------|---------|---------|
+| Objective 进展 | `objective_*` | 按 objective_id 折叠，显示完成/失败/运行状态 |
+| Cron 执行记录 | `cron_run` | job 名 + 摘要 + 相对时间 |
+| 探索实验结果 | `exploration_result` | 成功/失败 + finding 摘要 + skill_propose 分支 |
+| Agent 建议目标 | `soft_goal_created` | 内嵌 `/goals accept <id>` / `/goals reject <id>` 快捷指令 |
+| 进化提案 | `evolve_proposal` | 数量 + `/evolve review` 提示 |
+| 其他活动 | 其余类型 | 原始 summary + 相对时间 |
+
+### `/goals accept` 和 `/goals reject` 命令（`cli/commands/goals.py`）
+
+| 命令 | 行为 |
+|------|------|
+| `/goals accept <id>` | 激活 Goal，若是 `agent_derived` 则 priority 提升到 50 |
+| `/goals reject <id>` | 标记 abandoned，若是 `agent_derived` 则调用 `SoftGoalDeriver.record_rejected()`（30 天去重） |
+| `/goals abandon <id>` | 同 reject（通用 abandon，调用同一底层函数） |
+
+`SoftGoalDeriver` 新增 `derive_candidates()` + `commit_goals()` 两个方法，`derive()` 保持向后兼容。
+
+---
+
+## 完整数据流（Phase 1-3）
+
+```
+daemon tick（autonomous 档位）
+  │
+  ├─ CronScheduler.tick()
+  │    └─ sys:phase_g 到期 → enqueue("执行 Phase G 扫描", initiator="cron")
+  │         └─ AgentRunner 执行 → on_turn_done() （不走 ObjectiveExecutor）
+  │
+  ├─ ObjectiveExecutor.resume()
+  │    └─ 活跃 Objective step[2] → enqueue("步骤 3/4: ...", initiator="autonomous")
+  │         └─ AgentRunner 执行 → on_turn_done() → step[3] 提交
+  │              └─ 所有 step 完成 → objective.status = "completed"
+  │                   └─ activity_digest: {type: "objective_completed", ...}
+  │                        └─ SSE: {type: "objective_progress", status: "completed"}
+  │
+  └─ SoftGoalDeriver.derive_candidates()
+       ├─ capability 候选（confidence=0.28）
+       │    └─ ExplorationSandbox.create()
+       │         └─ enqueue("[探索实验] ...", initiator="autonomous")
+       │              └─ 成功 → commit_goals() + skill_propose()
+       │                   └─ activity_digest: {type: "soft_goal_created", ...}
+       │                   └─ activity_digest: {type: "exploration_result", proposed_skill_id}
+       │
+       └─ lesson 候选（触发 7 次）
+            └─ commit_goals() 直接写 GoalBacklog
+                 └─ activity_digest: {type: "soft_goal_created", ...}
+
+用户 /digest:
+  【Objective 进展】  ✅ 完善测试覆盖（4 步完成，用时 23m）[2h前]
+  【Cron 执行记录】   ✓ Phase G 扫描 — 剪枝 2 技能，+3 能力条目 [6h前]
+  【探索实验结果】    ✅ 改善 _call_llm 可靠性 → 已提案技能：improve_call_llm [1h前]
+  【💡 Agent 建议】  💡 "系统性解决：连续工具调用失败" — 来自 lesson（触发 7 次）[30m前]
+                        /goals accept goal_abc123  |  /goals reject goal_abc123
+```

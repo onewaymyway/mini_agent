@@ -137,55 +137,59 @@ class SoftGoalDeriver:
 
     # ── 主入口 ────────────────────────────────────────────────────────────────
 
-    def derive(self, goal_backlog: "GoalBacklog") -> list["GoalNode"]:
+    def derive_candidates(
+        self,
+        goal_backlog: "GoalBacklog",
+    ) -> "tuple[list[_DeriveCandidate], list[_DeriveCandidate]]":
         """
-        分析三路信号，生成新 Goal，写入 GoalBacklog，返回新增的 GoalNode 列表。
-        调用前应先调用 should_derive() 确认条件满足。
-        """
-        # 检查 pending derived goal 上限
-        existing_derived = [
-            g for g in goal_backlog.active_goals()
-            if g.source == "agent_derived" and g.status == "active"
-        ]
-        if len(existing_derived) >= MAX_PENDING_DERIVED:
-            return []
+        分析三路信号，返回两类候选但**不写 GoalBacklog**：
+          (capability_candidates, other_candidates)
 
+        capability_candidates — source_tag="capability"，推荐经 ExplorationSandbox 验证
+        other_candidates      — source_tag in ("workthread","lesson")，可直接写 Goal
+
+        _tick_autonomous() 用此接口插入探索验证逻辑。
+        """
         rejected_keys = self._load_rejected_keys()
         existing_titles = {
             _DeriveCandidate(title=g.title, description="", source_tag="").dedupe_key()
             for g in goal_backlog.active_goals()
         }
 
-        candidates: list[_DeriveCandidate] = []
+        all_candidates: list[_DeriveCandidate] = []
+        all_candidates.extend(self._from_capability_map())
+        all_candidates.extend(self._from_work_index())
+        all_candidates.extend(self._from_lesson_review())
 
-        # 信号 1：capability_map 低置信度
-        candidates.extend(self._from_capability_map())
+        seen: set[str] = set()
+        cap: list[_DeriveCandidate] = []
+        other: list[_DeriveCandidate] = []
 
-        # 信号 2：WorkThread next_suggested 积压
-        candidates.extend(self._from_work_index())
-
-        # 信号 3：高频 lesson 尚无对应目标
-        candidates.extend(self._from_lesson_review())
-
-        # 去重 + 过滤已有 / 已拒绝
-        seen_keys: set[str] = set()
-        filtered: list[_DeriveCandidate] = []
-        for c in sorted(candidates, key=lambda x: x.urgency, reverse=True):
+        for c in sorted(all_candidates, key=lambda x: x.urgency, reverse=True):
             key = c.dedupe_key()
-            if key in seen_keys or key in rejected_keys or key in existing_titles:
+            if key in seen or key in rejected_keys or key in existing_titles:
                 continue
-            seen_keys.add(key)
-            filtered.append(c)
+            seen.add(key)
+            (cap if c.source_tag == "capability" else other).append(c)
 
-        # 每次最多 MAX_NEW_GOALS 个
-        to_create = filtered[:MAX_NEW_GOALS]
-        if not to_create:
-            self._record_derive()
+        return cap, other
+
+    def commit_goals(
+        self,
+        candidates: "list[_DeriveCandidate]",
+        goal_backlog: "GoalBacklog",
+        max_new: int = MAX_NEW_GOALS,
+    ) -> "list[GoalNode]":
+        """将候选写入 GoalBacklog，不超过 MAX_PENDING_DERIVED 上限，返回新增节点。"""
+        existing_derived = [
+            g for g in goal_backlog.active_goals()
+            if g.source == "agent_derived" and g.status == "active"
+        ]
+        slots = MAX_PENDING_DERIVED - len(existing_derived)
+        if slots <= 0:
             return []
-
-        # 写入 GoalBacklog
-        new_goals: list["GoalNode"] = []
-        for c in to_create:
+        new_goals = []
+        for c in candidates[:min(max_new, slots)]:
             goal = goal_backlog.add_goal(
                 title=c.title,
                 description=c.description,
@@ -193,8 +197,18 @@ class SoftGoalDeriver:
                 priority=c.priority,
             )
             new_goals.append(goal)
+        return new_goals
 
-        self._record_derive()
+    def derive(self, goal_backlog: "GoalBacklog") -> "list[GoalNode]":
+        """
+        向后兼容入口：直接 derive 写 GoalBacklog，不区分 capability 来源。
+        _tick_autonomous() 使用 derive_candidates() + ExplorationSandbox + commit_goals()。
+        """
+        cap_c, other_c = self.derive_candidates(goal_backlog)
+        all_c = sorted(cap_c + other_c, key=lambda x: x.urgency, reverse=True)
+        new_goals = self.commit_goals(all_c, goal_backlog)
+        if new_goals:
+            self._record_derive()
         return new_goals
 
     # ── 三路信号采集 ──────────────────────────────────────────────────────────

@@ -61,7 +61,21 @@ def handle_goals_cmd(args: list[str], agent=None) -> None:
         if not rest:
             R.print_error("Usage: /agent goals abandon <id>")
             return
-        _cmd_set_status(gb, rest[0], "abandoned")
+        _cmd_abandon(gb, rest[0], paths, agent)
+
+    elif subcmd == "reject":
+        # /goals reject <id> — 拒绝 agent_derived Goal（alias: abandon + 记录 rejected）
+        if not rest:
+            R.print_error("Usage: /agent goals reject <id>")
+            return
+        _cmd_abandon(gb, rest[0], paths, agent)
+
+    elif subcmd == "accept":
+        # /goals accept <id> — 接受 agent_derived Goal（激活，提升 priority）
+        if not rest:
+            R.print_error("Usage: /agent goals accept <id>")
+            return
+        _cmd_accept(gb, rest[0])
 
     elif subcmd == "pause":
         if not rest:
@@ -80,7 +94,7 @@ def handle_goals_cmd(args: list[str], agent=None) -> None:
 
     else:
         R.print_error(f"Unknown subcommand: {subcmd!r}")
-        R.print_info("Available: list, add, obj add, done, abandon, pause, progress, status")
+        R.print_info("Available: list, add, obj add, done, abandon, accept, reject, pause, progress, status")
 
 
 # ── 子命令实现 ─────────────────────────────────────────────────────────────────
@@ -200,6 +214,55 @@ def _cmd_set_status(gb, node_id: str, status: str) -> None:
     gb.save()
     emoji = {"completed": "✅", "abandoned": "🗑", "paused": "⏸"}.get(status, "")
     R.print_success(f"{emoji} {node_id} 状态: {old_status} → {status}")
+
+
+def _cmd_accept(gb, node_id: str) -> None:
+    """
+    接受 agent_derived Goal：激活并提升优先级到用户 Goal 默认值（50）。
+    对非 agent_derived Goal 也有效（等同于把 paused Goal 重新激活）。
+    """
+    node = gb.get(node_id)
+    if not node:
+        R.print_error(f"Not found: {node_id!r}")
+        return
+    if node.status == "active":
+        R.print_warning(f"{node_id} 已经是 active 状态")
+        return
+    node.status = "active"
+    # agent_derived Goal 被接受后提升到用户 Goal 优先级
+    if getattr(node, "source", "") == "agent_derived" and node.priority < 50:
+        node.priority = 50
+    gb.save()
+    R.print_success(f"✅ 已接受 Goal：{node.title}")
+    if getattr(node, "source", "") == "agent_derived":
+        R.print_info("提示：使用 /goals obj add <步骤描述> --goal " + node_id + " 为此 Goal 添加 Objective")
+
+
+def _cmd_abandon(gb, node_id: str, paths=None, agent=None) -> None:
+    """
+    放弃/拒绝 Goal：设置 abandoned 状态，若是 agent_derived 则记录 rejected 历史。
+    """
+    node = gb.get(node_id)
+    if not node:
+        R.print_error(f"Not found: {node_id!r}")
+        return
+    old_status = node.status
+    gb.set_status(node_id, "abandoned")
+    gb.save()
+
+    # agent_derived Goal 被拒绝时，通知 SoftGoalDeriver 记录 30 天去重
+    if getattr(node, "source", "") == "agent_derived":
+        try:
+            from mini_agent.evolution.soft_goal_deriver import SoftGoalDeriver
+            cfg = getattr(agent, "cfg", None) if agent else None
+            if paths and cfg:
+                SoftGoalDeriver(paths, cfg).record_rejected(node.title)
+                R.print_success(f"🗑 已拒绝并记录：{node.title}（30 天内不再建议相同主题）")
+                return
+        except Exception:
+            pass
+
+    R.print_success(f"🗑 {node_id} 状态: {old_status} → abandoned")
 
 
 def _cmd_progress(gb, node_id: str, notes: str) -> None:

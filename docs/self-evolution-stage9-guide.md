@@ -124,11 +124,13 @@ GoalNode:
 /goals add "完善测试覆盖" --priority 70  # 添加 Goal
 /goals obj add "为 agent.py 加单测" --goal goal_abc12345
 /goals done obj_def67890                 # 标记完成
-/goals abandon <id>                      # 放弃（agent_derived 的会记录到 rejected 列表）
+/goals abandon <id>                      # 放弃（agent_derived 的会记录 30 天去重）
+/goals accept <id>                       # 接受 agent_derived Goal，激活并提升 priority
+/goals reject <id>                       # 拒绝 agent_derived Goal（30 天内不再建议相同主题）
 /goals pause <id>                        # 暂停
 /goals progress <id> "覆盖率已达 80%"   # 更新进展备注
 /goals status                            # 显示 AutonomousLoop tick 状态
-/digest                                  # 查看自主活动摘要（最近 24h）
+/digest                                  # 查看自主活动摘要（最近 24h，分组展示）
 ```
 
 ---
@@ -332,6 +334,54 @@ Derive 的 Goal 在 `/digest` 中以「💡 Agent 建议」分组展示：
 
 ---
 
+## 7.5 探索实验（`perception/exploration_sandbox.py`）
+
+`autonomous` 档位下，`capability` 类软目标候选在写入 GoalBacklog 之前，会先经过 `ExplorationSandbox` 做一次轻量验证实验。
+
+### 触发条件
+
+- `SoftGoalDeriver.derive_candidates()` 返回 `source_tag="capability"` 的候选
+- `ResourceArbiter.can_run_exploration()` 返回 True（未超探索预算）
+- 每次 tick 最多处理 **1 个** capability 候选
+
+### 实验流程
+
+```
+_run_capability_exploration(candidate)
+  │
+  ├─ ExplorationSandbox.create(capability_id, goal_text)
+  │    ├─ ResourceArbiter.can_run_exploration()  ← 预算门控
+  │    └─ EvolutionWorkspace.create_worktree()   ← 隔离 git worktree
+  │
+  ├─ _submit_exploration_task()
+  │    └─ InputQueue.enqueue("[探索实验] ...", initiator="autonomous")
+  │         └─ AgentRunner 执行（在 worktree 内，不影响主分支）
+  │              └─ 同步等待结果（最多 5 分钟）
+  │
+  ├─ 成功（result 非空）：
+  │    ├─ commit_goals([candidate])          → 写 GoalBacklog
+  │    └─ _maybe_propose_skill()             → skill_propose()（含关键词时触发）
+  │         └─ activity_digest: exploration_result（含 proposed_skill_id）
+  │
+  └─ 失败（result 空 / 超时 / 预算耗尽）：
+       └─ 静默丢弃，不写 Goal，不骚扰用户
+```
+
+### `_maybe_propose_skill` 触发条件
+
+探索结果文本中包含关键词：`skill` / `技能` / `封装` / `通用` / `可复用` / `pattern`
+
+触发时调用 `skill_propose(name, content, source_lessons=[])` 生成 `explore/capability/<name>` 分支，
+用户可通过 `/evolve review` 查看和审核。
+
+### 降级策略
+
+- `ExplorationSandbox` 模块不可用（ImportError）→ 直接写 Goal，不做实验
+- `ExplorationBudgetExhausted` → 跳过本 tick 的 capability 候选
+- EvolutionWorkspace 不可用 → fallback 到 tempdir（功能可用，不隔离 git 历史）
+
+---
+
 ## 8. 资源仲裁（`evolution/resource_arbiter.py`）
 
 `_tick_maintenance()` 在推进 Objective 前必须通过 `ResourceArbiter.can_run_autonomous()`：
@@ -413,7 +463,7 @@ Derive 的 Goal 在 `/digest` 中以「💡 Agent 建议」分组展示：
 | `evolution/soft_goal_deriver.py` | SoftGoalDeriver（三路信号：capability/workthread/lesson） |
 | `cli/commands/goals.py` | `/agent goals` 全部子命令 |
 | `cli/commands/cron.py` | `/cron` 全部子命令 |
-| `perception/exploration_sandbox.py` | 探索沙盒（autonomous 档位接口预留） |
+| `perception/exploration_sandbox.py` | 探索沙盒（ExplorationSandbox + ExplorationReport，由 `_tick_autonomous` 驱动） |
 
 ### Stage 9 Phase 2（接入与 API）
 

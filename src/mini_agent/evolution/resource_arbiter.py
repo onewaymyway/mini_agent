@@ -250,46 +250,136 @@ def read_activity_digest(
 
 def build_digest_summary(records: list[dict]) -> str:
     """
-    将 activity_digest 记录分组展示（对应设计文档"分组展示，不混在一起"）。
-    三类分组：
-      - evolve_proposal：有 N 个待审的进化提案
-      - soft_goal_created：软目标创建
-      - 其余：日常自主活动
+    将 activity_digest 记录分四组展示：
+
+      【Objective 进展】  — objective_started / objective_completed / objective_failed
+      【Cron 执行记录】  — cron_run
+      【探索实验结果】   — exploration_result
+      【Agent 建议目标】 — soft_goal_created（附 accept/reject 快捷指令）
     """
     if not records:
         return "（自上次交互以来无自主活动）"
 
-    evolve_proposals = [r for r in records if r.get("type") == "evolve_proposal"]
-    soft_goals = [r for r in records if r.get("type") == "soft_goal_created"]
-    others = [r for r in records
-              if r.get("type") not in ("evolve_proposal", "soft_goal_created")]
+    import time as _time
 
-    lines = [f"自上次交互以来的自主活动（共 {len(records)} 条）："]
+    def _ago(ts: float) -> str:
+        if not ts:
+            return ""
+        delta = _time.time() - ts
+        if delta < 60:
+            return "刚刚"
+        if delta < 3600:
+            return f"{delta/60:.0f}m前"
+        if delta < 86400:
+            return f"{delta/3600:.1f}h前"
+        return f"{delta/86400:.1f}d前"
 
-    if evolve_proposals:
-        lines.append(f"\n【进化提案】{len(evolve_proposals)} 个待审：")
-        for r in evolve_proposals[-3:]:  # 最多显示 3 条
-            lines.append(f"  · {r.get('summary', r.get('branch', ''))}")
-        if len(evolve_proposals) > 3:
-            lines.append(f"  ... 还有 {len(evolve_proposals)-3} 个")
+    # 分组
+    obj_records   = [r for r in records if r.get("type", "").startswith("objective_")]
+    cron_records  = [r for r in records if r.get("type") == "cron_run"]
+    explore_records = [r for r in records if r.get("type") == "exploration_result"]
+    goal_records  = [r for r in records if r.get("type") == "soft_goal_created"]
+    evolve_records = [r for r in records if r.get("type") == "evolve_proposal"]
+    other_records = [r for r in records if r.get("type", "") not in (
+        "objective_started", "objective_completed", "objective_failed",
+        "cron_run", "exploration_result", "soft_goal_created", "evolve_proposal",
+    )]
 
-    if soft_goals:
-        lines.append(f"\n【新软目标】{len(soft_goals)} 个：")
-        for r in soft_goals[-3:]:
-            lines.append(f"  · {r.get('title', r.get('goal_id', ''))}")
+    # 将 obj_records 按 objective_id 折叠
+    obj_by_id: dict[str, list[dict]] = {}
+    for r in obj_records:
+        oid = r.get("objective_id") or r.get("execution_id", "?")
+        obj_by_id.setdefault(oid, []).append(r)
 
-    if others:
-        lines.append(f"\n【日常自主活动】{len(others)} 条：")
-        for r in others[-5:]:  # 最多显示 5 条
-            summary = r.get("summary", r.get("task_desc", r.get("type", "")))
-            at = r.get("at", 0)
-            if at:
-                import time as _time
-                ago = _time.time() - at
-                ago_str = f"{ago/3600:.1f}h前" if ago >= 3600 else f"{ago/60:.0f}m前"
-                lines.append(f"  · [{ago_str}] {summary}")
+    total = len(records)
+    lines = [f"自上次交互以来的自主活动（{total} 条，最近 24h）："]
+
+    # ── Objective 进展 ─────────────────────────────────────────────────────────
+    if obj_by_id:
+        lines.append(f"\n【Objective 进展】")
+        for oid, recs in list(obj_by_id.items())[:6]:
+            # 找最新记录
+            latest = max(recs, key=lambda r: r.get("at", 0))
+            rtype = latest.get("type", "")
+            title = latest.get("title", oid)
+            ago = _ago(latest.get("at", 0))
+
+            if rtype == "objective_completed":
+                steps = latest.get("steps", "?")
+                dur = latest.get("duration", 0)
+                dur_str = f"，用时 {dur/60:.0f}m" if dur > 60 else ""
+                lines.append(f"  ✅ {title}（{steps} 步完成{dur_str}）[{ago}]")
+            elif rtype == "objective_failed":
+                reason = latest.get("reason", "")
+                lines.append(f"  ✗  {title} — 执行失败：{reason[:60]} [{ago}]")
+                lines.append(f"     /goals progress <id> <备注> 后可重新激活")
+            elif rtype == "objective_started":
+                lines.append(f"  ●  {title} — 已启动 [{ago}]")
             else:
-                lines.append(f"  · {summary}")
+                lines.append(f"  ·  {title} [{ago}]")
+
+    # ── Cron 执行记录 ──────────────────────────────────────────────────────────
+    if cron_records:
+        lines.append(f"\n【Cron 执行记录】")
+        for r in cron_records[-6:]:
+            job_id   = r.get("job_id", "?")
+            job_name = r.get("job_name", job_id)
+            summary  = r.get("summary", "")
+            ago      = _ago(r.get("at", 0))
+            detail   = f" — {summary[:60]}" if summary and summary != f"Cron job 触发：{job_id}" else ""
+            lines.append(f"  ✓ {job_name}{detail} [{ago}]")
+        if len(cron_records) > 6:
+            lines.append(f"  ... 还有 {len(cron_records)-6} 条")
+
+    # ── 探索实验结果 ───────────────────────────────────────────────────────────
+    if explore_records:
+        lines.append(f"\n【探索实验结果】")
+        for r in explore_records[-4:]:
+            ok      = r.get("success", False)
+            goal    = r.get("goal", "")[:60]
+            finding = r.get("finding", "")[:80]
+            tokens  = r.get("tokens_used", 0)
+            ago     = _ago(r.get("at", 0))
+            icon    = "✅" if ok else "✗ "
+            token_str = f"，{tokens} tokens" if tokens else ""
+            lines.append(f"  {icon} {goal} [{ago}{token_str}]")
+            if finding:
+                lines.append(f"     → {finding}")
+            skill_id = r.get("proposed_skill_id")
+            if skill_id:
+                lines.append(f"     → 已生成技能提案：{skill_id}（/evolve review 查看）")
+
+    # ── Agent 建议目标（含 accept/reject 快捷指令）─────────────────────────────
+    if goal_records:
+        lines.append(f"\n【💡 Agent 建议目标】")
+        for r in goal_records[-4:]:
+            goal_id = r.get("goal_id", "?")
+            title   = r.get("title", goal_id)
+            summary = r.get("summary", "")
+            ago     = _ago(r.get("at", 0))
+            # 来源说明：从 summary 中提取（例如 "来自 capability_map（成功率 28%）"）
+            source_note = ""
+            if " — " in summary:
+                source_note = " — " + summary.split(" — ", 1)[-1]
+            lines.append(f"  💡 \"{title}\"{source_note} [{ago}]")
+            lines.append(f"     /goals accept {goal_id}  接受  |  /goals reject {goal_id}  拒绝（30天去重）")
+
+    # ── 进化提案 ────────────────────────────────────────────────────────────────
+    if evolve_records:
+        lines.append(f"\n【进化提案】{len(evolve_records)} 个待审：")
+        for r in evolve_records[-3:]:
+            lines.append(f"  · {r.get('summary', r.get('branch', ''))}")
+        if len(evolve_records) > 3:
+            lines.append(f"  ... 还有 {len(evolve_records)-3} 个")
+        lines.append("  /evolve review 查看并审核")
+
+    # ── 其余活动 ────────────────────────────────────────────────────────────────
+    if other_records:
+        lines.append(f"\n【其他活动】{len(other_records)} 条：")
+        for r in other_records[-4:]:
+            summary = r.get("summary") or r.get("task_desc") or r.get("type", "")
+            ago = _ago(r.get("at", 0))
+            lines.append(f"  · [{ago}] {summary[:80]}")
 
     return "\n".join(lines)
 
