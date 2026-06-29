@@ -46,6 +46,15 @@ api/routes.py — FastAPI 路由定义
     DELETE /v1/fs/delete             删除
     POST   /v1/fs/rename             重命名/移动
     POST   /v1/fs/upload             上传文件
+  自主执行状态（daemon 自主运行能力）
+    GET    /v1/autonomous/status     当前 autonomy_level + cron job 状态 + Objective 执行进度
+    GET    /v1/goals                 GoalBacklog 完整视图（active goals + objectives）
+    POST   /v1/goals                 新增 Goal
+    PATCH  /v1/goals/{goal_id}       更新 Goal 状态/进度/优先级
+    GET    /v1/cron/jobs             CronScheduler job 列表
+    POST   /v1/cron/jobs             添加 cron job
+    PUT    /v1/cron/jobs/{id}        修改 job（enable/disable/schedule）
+    POST   /v1/cron/jobs/{id}/run    立即运行一次
 """
 
 from __future__ import annotations
@@ -1000,12 +1009,62 @@ async def respond_permission(request: Request, req_id: str, body: PermissionRequ
     # （CLI 端走 broadcast_done 路径；Web 端 respond() 只设置 event，不广播，需要在此补上）
     gate.broadcast_done(req_id, body.approve, "http", turn_id)
 
-    # 处理 always / deny_always 模式：把决定写入权限白/黑名单
-    if body.mode in ("always", "deny_always"):
-        checker = getattr(bridge, "permission_checker", None)
-        if checker is not None:
-            pass
+    # 处理 always / deny_always 模式：把决定写入权限白/黑名单。
+    _persist_permission_preference(bridge, body.mode, pending_info)
     return PermissionResponse(ok=True)
+
+
+def _persist_permission_preference(bridge, mode: str, pending_info) -> None:
+    """
+    把 HTTP 端提交的 "always"/"deny_always" 决定持久化到对应
+    PermissionGuard 实例的白/黑名单（_allow_list/_denied_tools），
+    与 daemon 本地终端 CLI 交互（PermissionGuard._prompt_with_http 的
+    CLI 分支，直接调用 self._add_allow()/self._denied_tools.add()）
+    行为保持一致。
+
+    ★ 这里曾经是一段未完成的占位代码：
+        checker = getattr(bridge, "permission_checker", None)
+        if checker is not None: pass
+    AgentBridge 对象上从来没有 "permission_checker" 这个属性
+    （bridge.py 里能找到的是 self.agent，没有 self.permission_checker），
+    所以 getattr 总是返回 None，这个分支永远不会执行——意味着无论
+    CLI/web 端通过纯 HTTP 路径选择 "always"/"deny_always"，决定从来
+    没有真正被持久化，下次同样的工具调用还会再问一次。这是
+    "connected 模式应该和本地模式有完全对等的交互能力"这个目标下的
+    一个真实缺口，顺手在这里修掉。
+
+    真正持久化逻辑挂在 PermissionGuard 实例上，而不是 bridge 本身；
+    AgentBridge 持有 self.agent，Agent 持有 self.guard，链路是
+    bridge.agent.guard。
+
+    抽成独立函数（而不是写在路由处理函数体内）是为了能脱离 FastAPI
+    request/response 生命周期单独做单元测试——只需要构造 bridge/
+    pending_info/guard 这三个普通对象，不需要起一个真实的 HTTP 服务。
+
+    mode 不是 "always"/"deny_always" 时直接返回，不做任何事
+    （"once" 是最常见的情况，不需要持久化任何偏好）。
+    持久化失败（比如 guard 不存在、写文件出错）只会被静默忽略——
+    respond() 已经让这次审批本身生效，工具调用会按这次的 approve/deny
+    决定继续执行，持久化偏好失败不是致命错误，不应该让这次响应整体
+    失败（HTTP 层已经返回 200 OK 给客户端了）。
+    """
+    if mode not in ("always", "deny_always"):
+        return
+    guard = getattr(getattr(bridge, "agent", None), "guard", None)
+    if guard is None:
+        return
+    tool_name  = pending_info.tool_name if pending_info else ""
+    tool_input = pending_info.tool_input if pending_info else {}
+    if not tool_name:
+        return
+    try:
+        if mode == "always":
+            guard._add_allow(tool_name, tool_input)
+        else:  # deny_always
+            guard._denied_tools.add(tool_name)
+            guard._save_permissions()
+    except Exception:
+        pass
 
 
 # ── 文件系统 ──────────────────────────────────────────────────────────────────

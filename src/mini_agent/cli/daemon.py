@@ -276,7 +276,87 @@ class DaemonClient:
             print(f"[daemon-client] send_message failed: {e}", file=sys.stderr)
             return None
 
-    def stream_output(self, turn_id: str, on_token=None, on_done=None, on_error=None) -> None:
+    def list_pending_permissions(self) -> list[dict]:
+        """获取当前待审批的权限请求列表（GET /v1/permissions/pending）。
+
+        主要用于 connected 模式刚连接/刚切换 session 时的"补报"——如果
+        permission_req 事件在本客户端订阅 SSE 之前就已经广播过（比如
+        另一个终端先连上、触发了工具调用，本终端是稍后才连接的），单靠
+        SSE 是看不到这条历史事件的（除非走 replay，但 replay 只重放
+        RingBuffer 里还没被后续事件挤出去的部分，且 permission_done 之前
+        的 permission_req 状态需要专门处理，不能简单当成"重放一遍了之"）。
+        直接查一次"现在还有哪些 pending"更可靠。
+        """
+        try:
+            import urllib.request
+            req = urllib.request.Request(
+                f"{self.base_url}/v1/permissions/pending",
+                headers=self._headers(),
+            )
+            with urllib.request.urlopen(req, timeout=5) as resp:
+                data = json.loads(resp.read())
+                return data.get("permissions", [])
+        except Exception:
+            return []
+
+    def respond_permission(
+        self,
+        req_id: str,
+        approve: bool,
+        edited_input: Optional[dict] = None,
+        mode: str = "once",
+    ) -> bool:
+        """
+        提交权限审批决定（POST /v1/permissions/{req_id}）。
+
+        mode: "once"（仅本次）| "always"（以后总是允许这个工具）|
+              "deny_always"（以后总是拒绝这个工具）—— 对应
+              PermissionGuard._prompt_with_http() 里 CLI 端 (a)/(d) 选项
+              的语义，服务端 respond_permission() 路由目前只在 body 里
+              接收这个字段（透传），真正的"写入白/黑名单"逻辑在
+              PermissionGuard 内部（daemon 本地终端的 CLI 分支才会触发
+              _add_allow()/_denied_tools——纯 HTTP 路径目前不持久化这个
+              偏好，仅影响这一次请求是否通过，这点和 daemon 本地终端的
+              CLI 交互不完全等价，已在 run_connected_repl 的审批提示里
+              注明）。
+
+        如果这个 req_id 已经被别的端（daemon 本地终端、另一个 CLI、
+        web demo）先处理过，服务端会返回 404——这里转换成 False，
+        调用方应该把它当成"已被别人处理，不需要重试"，不是真正的错误。
+        """
+        try:
+            import urllib.request
+            import urllib.error
+            payload: dict = {"approve": approve, "mode": mode}
+            if edited_input is not None:
+                payload["edited_input"] = edited_input
+            body = json.dumps(payload).encode()
+            req = urllib.request.Request(
+                f"{self.base_url}/v1/permissions/{req_id}",
+                data=body,
+                headers=self._headers(),
+                method="POST",
+            )
+            with urllib.request.urlopen(req, timeout=10) as resp:
+                data = json.loads(resp.read())
+                return data.get("ok", False)
+        except urllib.error.HTTPError as e:
+            if e.code == 404:
+                return False  # 已被别的端处理，不是真正的失败
+            print(f"[daemon-client] respond_permission failed: {e}", file=sys.stderr)
+            return False
+        except Exception as e:
+            print(f"[daemon-client] respond_permission failed: {e}", file=sys.stderr)
+            return False
+
+    def stream_output(
+        self,
+        turn_id: str,
+        on_token=None,
+        on_done=None,
+        on_error=None,
+        on_event=None,
+    ) -> None:
         """
         订阅 /v1/stream/{turn_id} SSE 端点，直到该轮 turn_done 事件到来。
 
@@ -304,6 +384,14 @@ class DaemonClient:
         那里，对应的 You ❯ 也永远等不到。
         而 SSE 协议本身是逐行的（每个字段一行，空行分隔帧），改用 resp.readline() 按行读取，
         每收到一行就立刻返回，不需要凑够任何字节数，从根本上避免了这个问题。
+
+        on_event（新增，可选）：统一回调，签名 on_event(evt_type: str, payload: dict)，
+        用于接收 token/turn_done/error 之外的"只读展示类"事件——tool_call、
+        tool_result、tool_error、info、warning、permission_req、permission_done、
+        session_switched 等。引入这个回调之前，_handle_sse_frame 对这些事件类型
+        一律静默忽略（见函数末尾原来的注释"其他事件……忽略"），这正是 connected
+        模式 CLI 完全看不到工具调用过程的根因——协议层（AgentEvent/EventType）
+        早就在推送这些事件，只是客户端从来没有读取/转发它们。
         """
         try:
             import urllib.request
@@ -320,7 +408,9 @@ class DaemonClient:
                         if frame_lines:
                             frame = b"".join(frame_lines).decode("utf-8", errors="replace")
                             frame_lines = []
-                            done = self._handle_sse_frame(frame, on_token, on_done, on_error)
+                            done = self._handle_sse_frame(
+                                frame, on_token, on_done, on_error, on_event
+                            )
                             if done:
                                 return  # turn_done 已触发，退出循环
                         continue
@@ -330,7 +420,9 @@ class DaemonClient:
             if "timed out" not in err.lower() and "RemoteDisconnected" not in err:
                 print(f"[daemon-client] stream error: {e}", file=sys.stderr)
 
-    def _handle_sse_frame(self, frame: str, on_token, on_done, on_error=None) -> bool:
+    def _handle_sse_frame(
+        self, frame: str, on_token, on_done, on_error=None, on_event=None
+    ) -> bool:
         """
         解析单条 SSE 帧，返回 True 表示该轮已结束（turn_done）。
 
@@ -370,7 +462,18 @@ class DaemonClient:
             if on_done:
                 on_done(text, payload.get("error"))
             return True  # 通知调用方退出
-        # 其他事件（turn_start / tool_call / info / replay_done 等）忽略
+        elif evt_type in (
+            "tool_call", "tool_result", "tool_error",
+            "info", "warning", "permission_req", "permission_done",
+            "session_switched", "fs_change",
+        ):
+            # 之前这里被静默忽略——是 connected 模式看不到工具调用过程的根因。
+            # 统一转发给 on_event，由调用方决定怎么渲染（见 run_connected_repl
+            # 里的 _render_sse_event，复用 ui/renderer.py 的图标/摘要样式）。
+            if on_event:
+                on_event(evt_type, payload)
+        # 其他事件（turn_start / replay_done 等）忽略——这两类纯粹是协议层
+        # 的簿记信息（标记一轮开始 / SSE 重放完毕），没有对应的可展示内容。
 
         return False
 
@@ -700,50 +803,24 @@ def _pick_session(
     如果 daemon 没有任何历史 session，静默返回 ""（直接新建）。
     默认回车选最近一条 session（编号 1）。
 
-    term（Optional Terminal）：若传入，在每次阻塞 input() 前后调用
-    _enter_input_mode()/_exit_input_mode() 暂停/恢复状态栏刷新，
-    防止刷新线程在用户输入时把提示符覆盖掉。
+    term（Optional Terminal）：若传入，用 term.print()/term.prompt_user()
+    输出菜单和读取选择，而不是裸 print()/input()。
 
-    ★ 关键修复（"选了 session 之后看不到 You ❯"的真正根因）：
-    早期实现这里只是 set_statusbar_provider(None) 再设回去——但
-    Terminal._refresh_loop() 每 _refresh_interval（默认 0.25s）醒来时，
-    判断"要不要继续刷新"用的标志是 _refresh_paused，不是
-    "_statusbar_provider 是否为 None"。provider 设成 None 只是让
-    refresh_loop 跳过"拉取新内容"那一步，但它依然会无条件往渲染队列
-    投递一条 "_refresh" 消息；render_thread 收到后只要不在 streaming/
-    bar_suspended 状态（connected 模式从未设置过 bar_suspended），就会
-    调用 _erase_bar()——这是基于"光标在状态栏正下方"假设的相对 ANSI
-    擦除（\\x1b[1A 反复上移），但此刻光标实际停在 input() 刚打印出来的
-    "选择 [1]: " 提示符后面，render_thread 对此一无所知，于是这次异步
-    擦除会把刚打印的提示符整行吃掉——表现为"选完 session 之后画面
-    空白，没有任何提示符"。
-    真正能阻止 refresh_loop 在阻塞输入期间做任何动作的，是
-    _refresh_paused 这个标志，而设置/清除它的官方入口正是
-    _enter_input_mode()/_exit_input_mode()（同时还会用双重哨兵 +
-    q.join() 确保 render_thread 真正空闲后才返回，杜绝竞态）。
-    本函数现在直接调用这两个方法，不再使用 set_statusbar_provider(None)
-    这个不充分的替代方案；provider 本身全程保持注册，输入期间的"不刷新"
-    完全由 _refresh_paused 保证。
+    ★ 架构修复（彻底取代之前"手动 _enter_input_mode()/_exit_input_mode()
+    配合重入检测"的方案）：之前的实现是在裸 print()/input() 外面手动
+    包一层状态栏暂停/恢复，需要额外的重入检测逻辑来防止嵌套调用互相
+    干扰（"/session list 命令执行期间结果提示又被状态栏打断"那个 bug）。
+    这其实是在用 patch 的方式弥补"输出路径绕开了 Terminal 渲染队列"这个
+    根本问题——只要还在用裸 print()/input()，类似的竞态以后只会在新的
+    地方重新出现。
 
-    ★ 重入保护（"/session list 命令执行期间结果提示又被状态栏打断"的
-    根因）：_enter_input_mode()/_exit_input_mode() 内部用的是简单的布尔
-    标志（_refresh_paused/_input_blocking），没有重入计数。本函数有两个
-    调用方：① run_connected_repl() 刚连接时的初次 session 选择——那时
-    调用方自己还没有暂停刷新线程，本函数必须自己负责暂停/恢复；
-    ② 主循环 "/session list" 命令分支——那时调用方（run_connected_repl
-    主循环）在调用本函数之前已经调用过 _bar_pause()（即 _enter_input_mode()）
-    了，如果本函数再无条件调用一次 _exit_input_mode()，会把外层还想
-    维持的暂停状态提前解除——本函数返回后调用方还要打印
-    "[daemon] ✓ Switched to: ..." 这类结果提示，这段输出会因为
-    刷新线程被本函数提前恢复而重新暴露在同样的竞态里。
-    解法：进入本函数时只检查一次 term._refresh_paused 是否已经是
-    set 状态——是，说明外层已经处理好了暂停，本函数全程（打印列表 +
-    所有 input() 循环）不做任何 enter/exit 调用，返回前也不恢复；否，
-    说明本函数是当前唯一的暂停管理者，自己调用一次 _enter_input_mode()，
-    用 try/finally 包住打印列表和整个输入循环，返回前自己调用
-    _exit_input_mode() 恢复。这个检查只读一个 threading.Event，
-    本身没有竞态（即使理论上存在极小的读取窗口，最坏情况也只是退化回
-    "本函数自己管"的路径，不会造成状态错乱）。
+    现在改为直接用 term.print()（把内容交给渲染队列，由唯一的渲染线程
+    串行处理，天然和状态栏刷新互斥，不需要任何手动暂停）和
+    term.prompt_user()（内部自带 _enter_input_mode()/_exit_input_mode()
+    配对调用，且是不可重入问题的——它和 print() 走的是同一个队列，
+    调用顺序就是处理顺序，没有"两个独立调用方都想暂停"的并发问题）。
+    term 为 None 时（极端情况下没拿到 Terminal 实例）才退回裸
+    print()/input()，作为兜底。
     """
     sessions = client.list_sessions(limit=8)
     if not sessions:
@@ -752,86 +829,64 @@ def _pick_session(
     status = client.get_status() or {}
     current_sid = status.get("session_id", "")
 
-    # 重入检测：外层（run_connected_repl 主循环的 "/session list" 分支）
-    # 是否已经处于暂停状态——见上方文档字符串"重入保护"一节。只有当前
-    # 还没有任何人暂停刷新线程时，本函数才自己负责暂停/恢复；否则信任
-    # 外层已经处理好，本函数全程不做任何 enter/exit 调用。
-    #
-    # ★ 暂停范围覆盖打印列表 + 所有 input() 循环：早期版本只在每次循环
-    # 内部的 input() 前后暂停，但下面打印 session 列表用的是裸 print()，
-    # 同样直接写 stdout，跟刷新线程的异步擦写没有任何协调——如果本函数
-    # 是当前唯一的暂停管理者（即将进入的是 run_connected_repl 最初的
-    # session 选择阶段，那时还没有任何人暂停刷新线程），打印列表期间
-    # 同样存在竞态窗口。改为用一次 enter/exit 包裹整个函数体（打印列表
-    # + 循环读输入），而不是每次循环内反复进出，从根本上消除这个窗口。
-    own_pause = False
-    if term is not None:
+    def _out(line: str) -> None:
+        if term is not None:
+            term.print(line)
+        else:
+            print(line)
+
+    # session 标题来自用户历史输入（"New session" 之类是默认值，但更常见
+    # 的是用户第一句话的摘要），属于不可信的外部数据——必须用
+    # rich.markup.escape() 转义后才能安全拼进 term.print() 的 markup
+    # 字符串里。否则如果标题恰好包含方括号（比如用户问过 "[紧急] 帮我..."
+    # 这种问题），会被 rich 误解析成未知标签，轻则显示异常、重则内容
+    # 被吃掉（rich 对无法识别的标签是直接消费掉方括号内的文本，不是
+    # 原样保留）。term.print() 走的是裸 print()/_out() 在 term=None 时
+    # 没有这个问题（标准 print() 不解析 markup），但有 term 的主路径必须
+    # 转义。
+    from rich.markup import escape as _esc
+
+    _out("")
+    _out("  [bold]最近的 sessions[/bold]")
+    _out("  " + "─" * 54)
+    for i, s in enumerate(sessions, 1):
+        sid   = s.get("id", "")
+        title = _esc((s.get("title") or "(untitled)")[:36])
+        turns = s.get("turns", 0)
+        age   = _esc(s.get("age_str") or (s.get("updated_at") or "")[:16])
+        mark  = " [green]● active[/green]" if sid == current_sid else ""
+        _out(f"  [cyan][{i}][/cyan] {title:<36} {turns:>3}轮  {age}{mark}")
+    _out("  " + "─" * 54)
+    _out("  [cyan][n][/cyan] 新建 session    [cyan][q][/cyan] 退出")
+    _out("")
+
+    while True:
         try:
-            if not term._refresh_paused.is_set():
-                term._enter_input_mode()
-                own_pause = True
-        except Exception:
-            own_pause = False
-
-    try:
-        print()
-        print("  \033[1m最近的 sessions\033[0m")
-        print("  " + "─" * 54)
-        for i, s in enumerate(sessions, 1):
-            sid   = s.get("id", "")
-            title = (s.get("title") or "(untitled)")[:36]
-            turns = s.get("turns", 0)
-            age   = s.get("age_str") or (s.get("updated_at") or "")[:16]
-            mark  = " \033[32m● active\033[0m" if sid == current_sid else ""
-            print(f"  \033[36m[{i}]\033[0m {title:<36} {turns:>3}轮  {age}{mark}")
-        print("  " + "─" * 54)
-        print("  \033[36m[n]\033[0m 新建 session    \033[36m[q]\033[0m 退出")
-        print()
-
-        while True:
-            try:
+            if term is not None:
+                raw = term.prompt_user("  选择 [1]: ").strip()
+            else:
                 raw = input("  选择 [1]: ").strip()
-            except (EOFError, KeyboardInterrupt):
-                print()
-                return None
-            if raw == "" or raw == "1":
-                return sessions[0]["id"]
-            if raw.lower() == "n":
-                return ""
-            if raw.lower() == "q":
-                return None
-            if raw.isdigit():
-                idx = int(raw) - 1
-                if 0 <= idx < len(sessions):
-                    return sessions[idx]["id"]
-            print(f"  \033[33m请输入 1-{len(sessions)}、n 或 q\033[0m")
-    finally:
-        # 只有本函数自己是暂停管理者时才负责恢复——外层已经暂停的情况
-        # 下，恢复的责任在外层（run_connected_repl 主循环的 _bar_resume()），
-        # 本函数不应该提前解除外层还想维持的暂停状态。
-        if own_pause and term is not None:
-            try:
-                term._exit_input_mode()
-            except Exception:
-                pass
+        except (EOFError, KeyboardInterrupt):
+            _out("")
+            return None
+        if raw == "" or raw == "1":
+            return sessions[0]["id"]
+        if raw.lower() == "n":
+            return ""
+        if raw.lower() == "q":
+            return None
+        if raw.isdigit():
+            idx = int(raw) - 1
+            if 0 <= idx < len(sessions):
+                return sessions[idx]["id"]
+        _out(f"  [yellow]请输入 1-{len(sessions)}、n 或 q[/yellow]")
 
 
-def _connected_print(text: str) -> None:
-    """
-    连接模式专用输出：清除当前行后输出，避免和 status_bar 残留交织。
-    在调用前 status_bar 应已停止，这里只是做防御性清行。
-    """
-    import sys
-    # \r\033[K = 回到行首 + 清除到行尾，再输出文本
-    sys.stdout.write("\r[K" + text)
-    sys.stdout.flush()
-
-
-def _connected_print_token(text: str) -> None:
-    """流式 token 输出：不清行，直接追加（token 是连续的）。"""
-    import sys
-    sys.stdout.write(text)
-    sys.stdout.flush()
+# 注：旧版的 _connected_print()/_connected_print_token() 已在本次重构中
+# 移除——它们是裸 _sys.stdout.write() 包装，是之前两轮状态栏竞态 bug 的
+# 根源（见 run_connected_repl 文档字符串"架构要点"第 1 点）。现在统一
+# 通过 _out()（包装 term.print()）和 term.stream_token()/term.streaming()
+# 输出，不再需要这两个函数。
 
 
 def _connected_status_bar_provider(client: "DaemonClient") -> "list[str]":
@@ -856,6 +911,7 @@ def _connected_status_bar_provider(client: "DaemonClient") -> "list[str]":
             "idle":    "\033[90m●\033[0m idle",
             "running": "\033[36m●\033[0m running",
             "waiting": "\033[33m●\033[0m waiting",
+            "waiting_permission": "\033[31m●\033[0m waiting_permission",
         }.get(state, f"\033[90m●\033[0m {state}")
 
         lines = [
@@ -865,6 +921,293 @@ def _connected_status_bar_provider(client: "DaemonClient") -> "list[str]":
         return lines
     except Exception:
         return ["  \033[90m⚡ [connected] status error\033[0m"]
+
+
+def _render_sse_event(term, evt_type: str, payload: dict, *, prefix: str = "") -> None:
+    """
+    把"只读展示类"SSE 事件（tool_call / tool_result / tool_error / info /
+    warning / session_switched / fs_change）渲染到 term，样式尽量贴近
+    daemon 本地终端（ui/renderer.py 里 print_tool_call 等函数）的效果，
+    这样无论从哪个端看，视觉体验基本一致。
+
+    复用 renderer.py 的图标/摘要 helper（_tool_icon/_tool_summary/
+    _result_lang），不重新发明一套展示逻辑，避免两边样式漂移。
+
+    prefix: 旁观（observer）路径下传入一个来源标记（如 "[其他终端] "），
+            拼在内容前面，区分"这是别的客户端触发的输出"；主路径
+            （自己发起的 turn）不传，保持和本地模式一样干净的输出。
+
+    注意：调用方负责判断"这条事件是否应该被渲染"（比如 observer 路径要
+    检查 _waiting_input），本函数只管渲染，不做任何过滤判断。
+
+    ★ rich markup 转义（重要）：payload 里几乎所有字段（tool_name 之外
+    的 summary/message/result/path/title 等）都来自工具实际执行结果或
+    用户输入，是不可信的外部数据。rich.console.Console.print() 默认会
+    解析字符串里的 "[xxx]" 当作 markup 标签——如果不转义，一段恰好包含
+    方括号的 bash 输出（很常见，比如很多 CLI 工具用 "[INFO]"/"[WARN]"
+    这种前缀）会被当成未知标签，轻则显示错位，重则内容被直接吃掉
+    （rich 对无法识别的标签是消费掉方括号本身，不是当文本保留）。
+    这个问题同样存在于 ui/renderer.py（它在展示 tool_result 主体内容时
+    用 Text() 包装规避了，但 tool_name/summary 等字段是直接拼接的，
+    没有处理）——这里统一用 rich.markup.escape() 处理所有拼进 markup
+    模板字符串的字段，比 renderer.py 现状更完整。
+    """
+    if term is None:
+        return
+    try:
+        from mini_agent.ui import renderer as _r
+    except Exception:
+        _r = None
+
+    from rich.markup import escape as _esc
+    from rich.text import Text as _Text
+
+    try:
+        if evt_type == "tool_call":
+            tool_name  = payload.get("tool_name", "")
+            tool_input = payload.get("tool_input", {}) or {}
+            icon    = _r._tool_icon(tool_name) if _r else "🔧"
+            summary = _r._tool_summary(tool_name, tool_input) if _r else ""
+            term.print(
+                f"\n{prefix}{icon} [bold cyan]{_esc(tool_name)}[/bold cyan]  "
+                f"[dim]{_esc(summary)}[/dim]"
+            )
+
+        elif evt_type == "tool_result":
+            tool_name = payload.get("tool_name", "")
+            result    = str(payload.get("result", ""))
+            if not result or not result.strip():
+                term.print(f"{prefix}  [dim](empty result)[/dim]")
+            else:
+                truncate = 2000
+                display = result if len(result) <= truncate else result[:truncate] + "\n…[truncated]"
+                lang = _r._result_lang(tool_name, result) if _r else None
+                if lang:
+                    # Syntax 对象本身就是安全的（不经过 markup 解析），
+                    # 不需要 escape。
+                    term.syntax(display, lang, theme="ansi_dark",
+                                line_numbers=False, background_color="default")
+                else:
+                    # 用 Text 对象包装而不是直接传字符串给 print()——
+                    # Text() 是 rich 提供的"已知安全"的纯文本载体，
+                    # 不会解析其中的 "[xxx]"，这是规避 markup 注入风险
+                    # 的正确方式（renderer.py 里展示 tool_result 时也是
+                    # 这么做的，这里保持一致）。
+                    term.print(_Text(display, style="dim"))
+
+        elif evt_type == "tool_error":
+            tool_name = payload.get("tool_name", "")
+            message   = payload.get("message", "")
+            term.print(f"{prefix}  [red]✗ {_esc(tool_name)} error:[/red] {_esc(message)}")
+
+        elif evt_type == "info":
+            term.print(f"{prefix}[blue]ℹ[/blue]  {_esc(payload.get('message', ''))}")
+
+        elif evt_type == "warning":
+            term.print(f"{prefix}[yellow]⚠[/yellow]  {_esc(payload.get('message', ''))}")
+
+        elif evt_type == "session_switched":
+            sid = payload.get("session_id", "")
+            title = payload.get("title", "")
+            term.print(f"{prefix}[dim]↳ session switched: {_esc(sid)} {_esc(title)}[/dim]")
+
+        elif evt_type == "fs_change":
+            action = payload.get("action", "")
+            path   = payload.get("path", "")
+            term.print(f"{prefix}[dim]📁 {_esc(action)}: {_esc(path)}[/dim]")
+        # permission_req / permission_done 不在这里渲染——它们需要交互式
+        # 审批流程（见 _handle_connected_permission），不是单纯的展示事件。
+    except Exception:
+        pass  # 渲染失败不应该打断主流程（比如某条事件字段缺失）
+
+
+def _format_permission_summary(tool_name: str, tool_input: dict) -> str:
+    """权限请求的摘要文案，复用 renderer.py 的 _tool_summary，没有就退化
+    成简单的 repr。"""
+    try:
+        from mini_agent.ui import renderer as _r
+        s = _r._tool_summary(tool_name, tool_input)
+        if s:
+            return s
+    except Exception:
+        pass
+    try:
+        return json.dumps(tool_input, ensure_ascii=False)[:120]
+    except Exception:
+        return str(tool_input)[:120]
+
+
+def _is_dangerous_tool_guess(tool_name: str, tool_input: dict) -> bool:
+    """
+    HTTP 端事件里没有直接携带"是否危险"这个标记（PermissionGuard 内部的
+    判断逻辑没有通过 AgentEvent 暴露出来），这里只能从 tool_name 做一个
+    粗略猜测，仅用于审批提示的颜色/标签，不影响实际审批逻辑（真正的
+    危险判定仍然只在服务端 PermissionGuard.check() 里做一次，HTTP 端
+    永远只是把用户的 y/n 选择转发过去，不会绕过服务端判断）。
+    """
+    return tool_name in ("bash", "delete_file", "patch_file")
+
+
+def _handle_connected_permission(
+    client: "DaemonClient",
+    term,
+    req_id: str,
+    tool_name: str,
+    tool_input: dict,
+    turn_id: str,
+    *,
+    prefix: str = "",
+) -> None:
+    """
+    在 connected CLI 客户端上完整渲染一次权限审批交互，与 daemon 本地
+    终端的 (y)/(a)/(n)/(d)/(s)/(w) 选项尽量保持一致的体验（具体实现见
+    permissions.py::PermissionGuard._prompt_with_http，本函数是它在
+    "纯 HTTP 客户端"侧的对应物）。
+
+    这是"多端同步"设计的核心体现：审批请求本来就是通过 SSE 广播给
+    *所有*订阅了这个 session 的客户端（daemon 本地终端、web demo、
+    任意数量的 CLI 客户端）——谁先提交了决定，PermissionGuard 内部的
+    竞速逻辑就采纳谁的（见 _prompt_with_http 的 _http_watcher 线程
+    设计）。本函数只是让 CLI 客户端也能成为这个竞速里的一个参与者，
+    不需要、也不应该尝试在客户端这一侧重新发明审批仲裁逻辑。
+
+    由于本函数会阻塞在 term.confirm() 等待本端用户输入，调用方必须把它
+    放在一个独立线程里调用（不能占住主 SSE 读取循环），见
+    run_connected_repl 里 _watch_permission 的用法——这样即使本端用户
+    迟迟不响应，也不会卡住其他事件（比如同一 turn 后续的 token）的接收；
+    而如果别的端先决定了，本函数会通过 interrupt_event 提前结束等待。
+
+    edit（编辑 bash 命令）功能这里不提供——daemon 本地终端的 (e)dit 选项
+    依赖在本地终端重新读一段多行输入，HTTP 客户端要做到等价体验需要
+    额外的多行输入 UI，暂不实现；本端用户如果需要编辑命令，可以选择
+    (w)ait 转交给 daemon 本地终端或 web demo 处理。
+    """
+    if term is None:
+        # 极端兜底：没有 Terminal 实例，没办法做交互式审批，直接放弃
+        # （服务端会在超时后自动按 deny 处理，不会卡住整个流程）。
+        return
+
+    import threading as _threading
+
+    permission_done_event = _threading.Event()
+    decided_elsewhere = {"flag": False}
+
+    def _watch_done():
+        """后台轮询：如果这个 req_id 在我们等待期间已经被别的端处理掉了
+        （list_pending_permissions 里不再包含它），设置 interrupt_event
+        让本端的 confirm() 提前结束等待，不用傻等到超时。"""
+        import time as _time
+        while not permission_done_event.is_set():
+            _time.sleep(0.5)
+            pending = client.list_pending_permissions()
+            if not any(p.get("req_id") == req_id for p in pending):
+                decided_elsewhere["flag"] = True
+                permission_done_event.set()
+                return
+
+    watcher = _threading.Thread(target=_watch_done, daemon=True)
+    watcher.start()
+
+    dangerous = _is_dangerous_tool_guess(tool_name, tool_input)
+    label = "[bold red]⚠ DANGEROUS[/bold red]" if dangerous else "[yellow]Tool request[/yellow]"
+    summary = _format_permission_summary(tool_name, tool_input)
+
+    from rich.markup import escape as _esc
+
+    term.print(f"\n{prefix}{label}: [bold]{_esc(tool_name)}[/bold]")
+    term.print(f"{prefix}  [dim]{_esc(summary)}[/dim]")
+    term.print(f"{prefix}  [dim](其他已连接的端也能审批这条请求，谁先响应就算谁的)[/dim]")
+
+    if tool_name == "bash":
+        choices = "(y)es  (a)lways  (n)o  (d)eny-always  (s)how  (w)ait"
+    else:
+        choices = "(y)es  (a)lways  (n)o  (d)eny-always  (s)how  (w)ait"
+
+    # ★ 历史教训（已在 permissions.py 修复根因，这里仍保留双重保险）：
+    # 这个类名曾经在 permissions.py 里从未被真正定义过（只在注释里提到），
+    # ui/terminal.py::confirm() 每次命中中断分支时都会执行
+    # "try: from mini_agent.permissions import X; except ImportError:
+    # class X(Exception): pass"——这个 import 曾经总是失败，于是每次都
+    # 动态生成一个全新的本地类；调用方如果也用同样模式 except 这个类型，
+    # 捕获到的是自己生成的另一个类对象，跨模块精确匹配会失败。
+    # 现在 permissions.py 里已经真正定义了这个类（见该文件
+    # _InterruptedByHTTP 类的文档字符串），下面的 try/except ImportError
+    # 会成功导入到真正同一个类，可以放心做精确捕获了；额外保留一层
+    # except Exception 兜底（同 permissions.py::_prompt_with_http 的策略），
+    # 防止任何未预见的其它异常类型也能被妥善处理，不会让整个审批交互
+    # 流程崩溃。
+    try:
+        from mini_agent.permissions import _InterruptedByHTTP
+    except ImportError:
+        class _InterruptedByHTTP(Exception):
+            pass
+
+    while not permission_done_event.is_set():
+        try:
+            choice = term.confirm(
+                prompt_lines=[],
+                choices=choices,
+                default="y",
+                interrupt_event=permission_done_event,
+            )
+        except _InterruptedByHTTP:
+            break
+        except (KeyboardInterrupt, EOFError):
+            choice = "n"
+        except Exception:
+            # 兜底：未预见的其它异常类型，同样通过 permission_done_event
+            # 状态判断下一步，不强行区分异常类型。
+            if permission_done_event.is_set():
+                break
+            choice = "n"
+
+        if permission_done_event.is_set():
+            break
+
+        if choice in ("y", "yes"):
+            ok = client.respond_permission(req_id, True, mode="once")
+            permission_done_event.set()
+            if ok:
+                term.print(f"{prefix}  [green]→ approved[/green] (via this terminal)")
+            break
+
+        if choice in ("a", "always"):
+            ok = client.respond_permission(req_id, True, mode="always")
+            permission_done_event.set()
+            if ok:
+                term.print(f"{prefix}  [green]→ approved (always)[/green] (via this terminal)")
+            break
+
+        if choice in ("n", "no"):
+            ok = client.respond_permission(req_id, False, mode="once")
+            permission_done_event.set()
+            if ok:
+                term.print(f"{prefix}  [red]→ denied[/red] (via this terminal)")
+            break
+
+        if choice in ("d", "deny"):
+            ok = client.respond_permission(req_id, False, mode="deny_always")
+            permission_done_event.set()
+            if ok:
+                term.print(f"{prefix}  [red]→ denied (always)[/red] (via this terminal)")
+            break
+
+        if choice in ("s", "show"):
+            try:
+                term.syntax(json.dumps(tool_input, ensure_ascii=False, indent=2),
+                            "json", theme="ansi_dark", line_numbers=False)
+            except Exception:
+                term.print(f"{prefix}  [dim]{_esc(repr(tool_input))}[/dim]")
+            continue  # 显示完继续等待下一次选择，不算决定
+
+        if choice in ("w", "wait"):
+            term.print(f"{prefix}  [dim]⏳ 等待其他端审批…[/dim]")
+            permission_done_event.wait(timeout=125.0)
+            break
+
+    watcher.join(timeout=1)
+    if decided_elsewhere["flag"]:
+        term.print(f"{prefix}  [dim](已被其他端处理)[/dim]")
 
 
 def run_connected_repl(daemon_info: dict) -> None:
@@ -879,17 +1222,68 @@ def run_connected_repl(daemon_info: dict) -> None:
       5. 内置命令：/session list  /session new  /session  exit
       6. exit/Ctrl-C：断开，daemon 继续运行
 
-    修复 1（状态栏）：connected 模式现在也显示状态栏，通过
-      _connected_status_bar_provider 向 Terminal 注册回调，显示
-      daemon 的 session/state/queue 信息，与本地模式风格一致。
+    ★ 设计目标（本次重构）：connected 模式应该和"本地直跑模式"、web demo
+    一样具有完整的交互能力——状态栏持续可见、能看到工具调用过程、能在
+    本端完成权限审批，并且这一切在同一 session 的多个客户端之间（daemon
+    本地终端、web demo、任意数量的 CLI 客户端）自动保持同步。
 
-    修复 2（agent 名字前缀）：agent 回复前输出 "agentname ❯ " 前缀，
-      与终端 A（daemon 本身）显示保持一致。
+    架构要点：
+      1. 【输出统一走 Terminal 渲染队列，不再裸写 stdout】
+         之前的实现里，提示符/流式 token/结果提示全部用裸
+         _sys.stdout.write() 写入，跟 Terminal 状态栏刷新线程（同样直接
+         写 stdout，但在另一个线程里）之间没有任何协调，只能靠手动的
+         _bar_pause()/_bar_resume() 打补丁式地暂停/恢复刷新线程——这正是
+         之前两轮 bug（提示符被吃掉、回复内容被打断）的根源，并且代价
+         是状态栏几乎全程被迫保持暂停，形同摆设。
+         现在改用 term.print()/term.stream_token()/term.streaming()/
+         term.prompt_user()——这些方法把内容交给 Terminal 唯一的渲染
+         线程串行处理，每条消息处理时自动"擦状态栏→写内容→重绘状态栏"，
+         天然互斥，不需要任何手动暂停/恢复。daemon 本地终端（终端 A）
+         本来就是这样工作的，这里只是让 connected 模式接入同一套机制，
+         而不是自己发明一套简化版。代价是这次改动比之前两次单纯打补丁
+         大得多，但消除的是整整一类竞态，不是治标。
 
-    修复 3（多终端同步）：新增后台 observer 线程，持续订阅全局
-      /v1/stream SSE。当本终端处于等待输入阶段时，若其他终端（如终端C）
-      发出消息并得到回复，observer 会把回复实时打印到本终端，实现同一
-      session 多终端同步显示。
+      2. 【工具调用 / 状态事件可见】
+         AgentEvent/EventType 协议层早就支持 tool_call/tool_result/
+         tool_error/info/warning/session_switched/fs_change 这些事件类型，
+         api/server.py 的 _install_output_hook 也确实把 daemon 本地的
+         渲染同步广播到了 SSE 流上——问题只在于 DaemonClient 客户端这边
+         一直把它们静默丢弃（见 _handle_sse_frame 旧版注释"其他事件……
+         忽略"）。现在 stream_output() 新增 on_event 回调转发这些事件，
+         _render_sse_event() 复用 ui/renderer.py 的图标/摘要逻辑渲染，
+         视觉效果与终端 A 基本一致。
+
+      3. 【权限审批】
+         permissions.py::PermissionGuard._prompt_with_http() 本来就设计
+         成"daemon 本地终端 CLI 输入 + 任意 HTTP 客户端"两路竞速、谁先
+         响应算谁的（HttpPermissionGate 内部用 threading.Event 配合
+         req_id 仲裁）。connected 模式只需要成为这个竞速里的一个参与者：
+         收到 permission_req 事件 → _handle_connected_permission() 渲染
+         (y)/(a)/(n)/(d)/(s)/(w) 选项 → 本端用户选择后调用
+         DaemonClient.respond_permission() 提交。如果别的端先决定了，
+         本端的等待会被 interrupt_event 提前中断（轮询
+         list_pending_permissions() 检测 req_id 是否还在），不会傻等
+         超时。
+
+      4. 【多端同步】
+         这一点不需要任何新机制——SSE 广播（OutputBroadcaster）本来就是
+         "推给所有订阅者"，每个 session 有自己独立的 bridge/ring/
+         broadcaster，多用户架构下天然按 session 隔离。本函数的主路径
+         订阅 /v1/stream/{turn_id}（只看自己发起的这个 turn），后台
+         observer 线程订阅 /v1/stream（看同一 session 里所有其它事件）——
+         两条路径合起来，不管事件是谁触发的、本端是不是正忙着自己的
+         turn，都不会被错过。
+         注意一个有意的简化：如果本端正在 streaming 自己的 turn 期间，
+         observer 看到了"别的 turn"产生的 permission_req，这里只打印
+         一行通知，不会打断当前的流式输出去抢占式地做交互式审批——
+         这种"同一时刻两件事都要本端键盘输入"的场景留给其他端处理
+         （daemon 本地终端、web demo 仍然是合法的审批入口），CLI 客户端
+         不追求做到绝对无缝。
+
+      5. 【向后兼容】
+         /session list、/session new、/session、exit 等内置命令行为不变；
+         _pick_session() 现在也改用 term.print()/term.prompt_user()，
+         不再需要之前那套手动暂停/重入检测逻辑。
     """
     import threading
 
@@ -898,10 +1292,26 @@ def run_connected_repl(daemon_info: dict) -> None:
     _proj = daemon_info.get("project_root")
     client = DaemonClient(port, project_root=_proj)
 
-    # ── 等待 HTTP 就绪 ────────────────────────────────────────────────────────
+    # 提前拿到 term 实例——下面所有输出（包括"正在连接"这几行）统一走
+    # term.print()，不再用裸 _sys.stdout.write。get_terminal() 是模块级
+    # 单例，多次调用返回同一个实例，不会重复创建渲染线程。
     import sys as _sys
-    _sys.stdout.write(f"[daemon] Connecting to daemon (PID={pid}, port={port})...\n")
-    _sys.stdout.flush()
+    _term = None
+    try:
+        from mini_agent.ui.terminal import get_terminal
+        _term = get_terminal()
+    except Exception:
+        pass  # 极端兜底：拿不到就退回裸 print，下面 _out() 会处理
+
+    def _out(line: str) -> None:
+        """统一输出函数：有 term 就走渲染队列，没有就退回裸 print。"""
+        if _term is not None:
+            _term.print(line)
+        else:
+            print(line)
+
+    # ── 等待 HTTP 就绪 ────────────────────────────────────────────────────────
+    _out(f"[daemon] Connecting to daemon (PID={pid}, port={port})...")
     for _attempt in range(10):
         if client.health_check():
             break
@@ -912,26 +1322,24 @@ def run_connected_repl(daemon_info: dict) -> None:
         return
 
     agent_name = daemon_info.get("agent_name") or f"daemon:{port}"
-    _sys.stdout.write(f"[daemon] Connected \u2713  (PID={pid}, port={port})\n")
-    _sys.stdout.flush()
+    _out(f"[daemon] Connected \u2713  (PID={pid}, port={port})")
 
-    # ── 修复 1：重新启动状态栏（connected 模式专用 provider）────────────────
-    # app.py 在检测到 daemon 存在后调用了 stop_status_bar()，这里把它重新
-    # 启动，但注册的是 _connected_status_bar_provider 而非本地 _build_lines。
-    _term = None
-    try:
-        from mini_agent.ui.terminal import get_terminal
-        _term = get_terminal()
-        _term.set_statusbar_provider(lambda: _connected_status_bar_provider(client))
-    except Exception:
-        pass  # 不影响主流程
+    # ── 状态栏：注册 connected 模式专用 provider ─────────────────────────────
+    # app.py 在检测到 daemon 存在后调用了 stop_status_bar()，这里重新启动，
+    # 注册的是 _connected_status_bar_provider 而非本地 _build_lines。
+    # 跟之前版本不同的是：现在不再需要任何手动暂停/恢复逻辑——只要本函数
+    # 剩下的所有输出都通过 term.print()/term.stream_token()/
+    # term.prompt_user() 走渲染队列，状态栏刷新自然就不会和它们冲突。
+    if _term is not None:
+        try:
+            _term.set_statusbar_provider(lambda: _connected_status_bar_provider(client))
+        except Exception:
+            pass
 
     # ── Session 选择 ──────────────────────────────────────────────────────────
-    # 传入 _term，_pick_session 内部会在 input() 前后调用
-    # _enter_input_mode()/_exit_input_mode() 暂停状态栏刷新
     chosen_sid = _pick_session(client, term=_term)
     if chosen_sid is None:
-        _sys.stdout.write("[daemon] Exited (daemon continues running)\n")
+        _out("[daemon] Exited (daemon continues running)")
         # 退出前停止状态栏
         if _term is not None:
             try:
@@ -950,16 +1358,24 @@ def run_connected_repl(daemon_info: dict) -> None:
         active_session_id = chosen_sid
         label = f"session {chosen_sid}" if ok else f"session {chosen_sid} (resume may have failed)"
 
-    _connected_print(f"[daemon] \u2713 {label}\n")
-    _connected_print("[daemon] '/session list' \u5207\u6362\uff0c'/session new' \u65b0\u5efa\uff0c'exit' \u65ad\u5f00\n\n")
+    _out(f"[daemon] \u2713 {label}")
+    _out("[daemon] '/session list' \u5207\u6362\uff0c'/session new' \u65b0\u5efa\uff0c'exit' \u65ad\u5f00")
+    _out("")
 
-    prompt = "\033[1;32mYou\033[0m\033[1;36m \u276f \033[0m"
-    # 修复 2：agent 回复前缀，格式与 daemon 本身终端 A 一致
-    agent_prefix = f"\033[1;33m{agent_name}\033[0m\033[1;36m \u276f \033[0m"
+    # agent 回复前缀，格式与 daemon 本身终端 A 一致（ui/renderer.py 里
+    # print_assistant_prefix 的等价物，这里手动拼是因为需要拿到 agent_name
+    # 这个 connected 模式特有的变量）。agent_name 来自 daemon 启动配置
+    # （daemon_info["agent_name"]），相对可信但仍统一转义一次，防止用户
+    # 自定义了一个包含方括号的 agent 名字时被 rich 误解析。
+    from rich.markup import escape as _esc_agent_name
+    agent_name_escaped = _esc_agent_name(agent_name)
+    agent_prefix_markup = f"\n[bold yellow]{agent_name_escaped}[/bold yellow][bold cyan] \u276f [/bold cyan]"
 
-    # ── 修复 3：多终端同步 —— 后台 observer 线程 ─────────────────────────────
-    # 持续订阅全局 /v1/stream（非 per-turn 端点），在本终端等待用户输入时，
-    # 若其他终端触发了新的 turn，把输出实时打印到本终端。
+    # ── 多终端同步：后台 observer 线程 ───────────────────────────────────────
+    # 持续订阅全局 /v1/stream（非 per-turn 端点；按 session 隔离，"全局"指
+    # 的是"这个 session 里所有 turn"，不是跨 session）。本终端等待用户输入
+    # 时，若同一 session 的其他终端/web demo 触发了新的 turn，把输出实时
+    # 打印到本终端；权限请求则不受这个限制，随时都可能需要响应。
     #
     # 状态共享（线程安全通过 threading.Event/Lock 保证）：
     #   _waiting_input    - True 表示当前正在阻塞等待用户输入（可打印旁观输出）
@@ -970,17 +1386,33 @@ def run_connected_repl(daemon_info: dict) -> None:
     _my_turn_id_holder: list[Optional[str]] = [None]   # 用列表做可变容器
     _observer_lock   = threading.Lock()
     _observer_stop   = threading.Event()
+    # 记录本端正在处理的权限请求 req_id 集合，避免主路径和 observer 路径
+    # 同时对同一个 req_id 弹出两次审批交互（主路径走 per-turn stream 时，
+    # 如果碰巧也命中了自己发起的 turn 的 permission_req，应该只处理一次）。
+    _active_permission_reqs: set = set()
+    _active_permission_lock = threading.Lock()
+
+    def _claim_permission_req(req_id: str) -> bool:
+        """原子地"认领"一个 req_id，返回 True 表示认领成功（之前没人在处理），
+        False 表示已经有人在处理了（不要重复弹出交互）。"""
+        with _active_permission_lock:
+            if req_id in _active_permission_reqs:
+                return False
+            _active_permission_reqs.add(req_id)
+            return True
+
+    def _release_permission_req(req_id: str) -> None:
+        with _active_permission_lock:
+            _active_permission_reqs.discard(req_id)
 
     def _observer_worker() -> None:
         """
         后台线程：订阅 /v1/stream 全局 SSE，在等待用户输入期间把其他
-        终端触发的 agent 回复打印到本终端。
+        终端触发的 agent 回复打印到本终端；权限请求随时处理。
         断线后自动重连（sleep 2s）。
         """
         import urllib.request as _ureq
 
-        # 记录已经打印过的 turn_id，避免重连后重复显示同一 turn
-        _seen_turns: set = set()
         # 每个 turn 是否已打印过前缀（避免多个 token 事件里重复打前缀）
         _turn_prefix_printed: set = set()
 
@@ -998,9 +1430,7 @@ def run_connected_repl(daemon_info: dict) -> None:
                             if frame_lines:
                                 frame = b"".join(frame_lines).decode("utf-8", errors="replace")
                                 frame_lines = []
-                                _handle_observer_frame(
-                                    frame, _seen_turns, _turn_prefix_printed
-                                )
+                                _handle_observer_frame(frame, _turn_prefix_printed)
                             continue
                         frame_lines.append(line)
             except Exception:
@@ -1008,17 +1438,21 @@ def run_connected_repl(daemon_info: dict) -> None:
             if not _observer_stop.is_set():
                 time.sleep(2)  # 断线后等待重连
 
-    def _handle_observer_frame(
-        frame: str,
-        seen_turns: set,
-        turn_prefix_printed: set,
-    ) -> None:
+    def _handle_observer_frame(frame: str, turn_prefix_printed: set) -> None:
         """
-        解析单帧 SSE，决定是否输出到本终端。
-        只有满足以下全部条件才输出：
-          1. 本终端正在等待用户输入（_waiting_input 已 set）
-          2. 该 turn_id 不是本终端自己发起的（_my_turn_id_holder[0]）
-          3. 事件类型是 token 或 turn_done
+        解析单帧 SSE，决定是否输出/响应到本终端。
+
+        过滤规则：
+          - permission_req / permission_done：始终处理（不受 turn_id 归属
+            或 _waiting_input 限制）——权限审批的设计就是"任意已连接的端
+            都能响应"，哪怕本端正忙着输入自己的下一条消息，也应该能看到
+            有请求在等待（即使为了不打断本端当前的交互而选择不强行弹出
+            confirm()，至少应该有一行提示）。
+          - 其它事件类型（token/tool_call/tool_result/...）：只有
+            "不是本端自己发起的 turn" 且 "本端正在等待用户输入" 才显示——
+            自己的 turn 走主路径的 per-turn stream 就够了，不需要重复；
+            本端正忙着自己的 turn 时，旁观输出和自己的输出交织在一起会
+            造成更大的困惑，不如不显示（这点和之前的设计保持一致）。
         """
         evt_type = ""
         data_line = ""
@@ -1036,256 +1470,265 @@ def run_connected_repl(daemon_info: dict) -> None:
             return
 
         turn_id = payload.get("turn_id", "")
-
-        # 过滤掉本终端自己的 turn（本终端用 per-turn /v1/stream/{turn_id} 接收）
         my_tid = _my_turn_id_holder[0]
-        if turn_id and turn_id == my_tid:
+        is_own_turn = bool(turn_id) and turn_id == my_tid
+
+        # ── 权限请求：始终处理，不受 turn_id 归属或 _waiting_input 限制 ────
+        if evt_type == "permission_req":
+            req_id     = payload.get("req_id", "")
+            tool_name  = payload.get("tool_name", "")
+            tool_input = payload.get("tool_input", {}) or {}
+            if not req_id or not _claim_permission_req(req_id):
+                return
+            if is_own_turn or _waiting_input.is_set():
+                # 本端空闲，或者这正好是本端自己 turn 的权限请求（主路径
+                # 也会处理，但 _claim_permission_req 保证只有一边真正弹出
+                # 交互）：正常弹出交互式审批。
+                try:
+                    with _observer_lock:
+                        _handle_connected_permission(
+                            client, _term, req_id, tool_name, tool_input, turn_id,
+                            prefix="" if is_own_turn else "[dim][其他终端][/dim] ",
+                        )
+                finally:
+                    _release_permission_req(req_id)
+            else:
+                # 本端正忙着 streaming 自己的 turn：不抢占式弹出 confirm()
+                # （会和当前正在写的流式输出冲突），只打印一行通知。
+                if _term is not None:
+                    try:
+                        from rich.markup import escape as _esc_local
+                        with _observer_lock:
+                            _term.print(
+                                f"[dim][其他终端] 有权限请求待审批: {_esc_local(tool_name)} "
+                                f"(req_id={_esc_local(req_id[:8])})，可在当前任务结束后用 "
+                                f"/session 查看，或在 daemon 本地终端/web 端处理[/dim]"
+                            )
+                    except Exception:
+                        pass
+                _release_permission_req(req_id)
             return
 
-        # 只在等待用户输入时显示旁观输出
+        if evt_type == "permission_done":
+            # 没有特别需要展示的内容（_handle_connected_permission 自己
+            # 会在决定时打印结果）；这里只是确保 claim 状态被释放，防止
+            # 极端情况下（比如本端从未真正处理过这个 req_id）泄漏。
+            req_id = payload.get("req_id", "")
+            if req_id:
+                _release_permission_req(req_id)
+            return
+
+        # ── 其它事件：本端自己的 turn 不重复处理，本端忙碌时不显示 ──────────
+        if is_own_turn:
+            return
         if not _waiting_input.is_set():
             return
+
+        prefix = "[dim][其他终端][/dim] "
 
         with _observer_lock:
             if evt_type == "token":
                 text = payload.get("text", "")
-                if not text:
+                if not text or _term is None:
                     return
                 if turn_id not in turn_prefix_printed:
-                    # 首个 token：先清当前行（清掉 "You ❯ " 提示符），
-                    # 打出来源标记 + agent 前缀，再输出 token
                     turn_prefix_printed.add(turn_id)
-                    seen_turns.add(turn_id)
-                    _sys.stdout.write(
-                        f"\r\033[K\033[2m[其他终端]\033[0m {agent_prefix}\n"
-                    )
-                _sys.stdout.write(text)
-                _sys.stdout.flush()
+                    _term.print(f"\n{prefix}[bold yellow]{agent_name_escaped}[/bold yellow][bold cyan] \u276f [/bold cyan]", end="")
+                _term.stream_token(text)
 
             elif evt_type == "turn_done":
-                if turn_id in turn_prefix_printed:
-                    # 该 turn 有输出过内容，补一个换行 + 重打 prompt
-                    _sys.stdout.write(f"\n\n{prompt}")
-                    _sys.stdout.flush()
-                    turn_prefix_printed.discard(turn_id)
+                if turn_id in turn_prefix_printed and _term is not None:
+                    _term.stream_end()
+                turn_prefix_printed.discard(turn_id)
+
+            elif evt_type in ("tool_call", "tool_result", "tool_error", "info", "warning",
+                               "session_switched", "fs_change"):
+                _render_sse_event(_term, evt_type, payload, prefix=prefix)
 
     # 启动 observer 线程
     _obs_thread = threading.Thread(target=_observer_worker, daemon=True, name="daemon-observer")
     _obs_thread.start()
 
-    # ── 状态栏控制辅助函数 ────────────────────────────────────────────────────
-    # connected 模式的状态栏策略：
-    #   等待用户输入时：暂停刷新线程（_refresh_paused），状态栏静止/消失，
-    #                  不干扰提示符
-    #   agent 回复期间：恢复刷新线程，重新开始按周期重绘（显示 session/
-    #                  state 信息）
-    #
-    # ★ 这里曾经的实现（"_bar_pause 只是 set_statusbar_provider(None)，
-    # _bar_resume 再设回去"）是个看起来合理但实际不充分的简化版，是
-    # "选完 session 后看不到 You ❯"这个 bug 的根因：
-    # Terminal._refresh_loop() 判断是否要继续刷新屏幕的标志是
-    # _refresh_paused，不是 "provider 是否为 None"——provider 设成 None
-    # 只是让 refresh_loop 跳过"拉取新内容"那一步，但它仍然会无条件
-    # 往渲染队列投递 "_refresh" 心跳消息；render_thread 收到后只要
-    # 不在 streaming/bar_suspended 状态（connected 模式从未设置过
-    # bar_suspended）就会调用 _erase_bar() 做一次基于"光标在状态栏
-    # 正下方"假设的相对 ANSI 擦除——但此刻光标实际停在刚打印出来的
-    # "You ❯ " 提示符后面，这次异步擦除会把它整行吃掉。
-    #
-    # 真正能让 refresh_loop 在阻塞输入期间什么都不做的，只有
-    # _refresh_paused 这个标志，它的官方设置/清除入口就是
-    # _enter_input_mode()/_exit_input_mode()——这两个方法本来就是
-    # Terminal 类为了解决"刷新线程异步写屏幕 vs 主线程阻塞读输入"
-    # 这一类竞态而设计的（tools/user_input.py、permissions.py 里的
-    # 阻塞输入点都是这么用的），内部还有双重哨兵 + q.join() 保证
-    # render_thread 真正空闲后才返回。改用它们之后 provider 不需要
-    # 反复摘掉/装回，全程保持注册即可。
-    def _bar_pause() -> None:
-        """等待用户输入前：真正暂停刷新线程，避免它在阻塞 readline 期间
-        异步擦除/重绘屏幕，吃掉刚打印的 You ❯ 提示符。"""
-        if _term is not None:
-            try:
-                _term._enter_input_mode()
-            except Exception:
-                pass
-
-    def _bar_resume() -> None:
-        """用户输入完成 / agent 回复期间：恢复刷新线程，状态栏重新
-        按周期重绘。provider 全程保持是 _connected_status_bar_provider，
-        这里不需要再重新注册。"""
-        if _term is not None:
-            try:
-                _term._exit_input_mode()
-            except Exception:
-                pass
 
     # ── REPL 主循环 ───────────────────────────────────────────────────────────
+    #
+    # 不再需要任何 _bar_pause()/_bar_resume() 手动管理——term.prompt_user()
+    # 内部自带 _enter_input_mode()/_exit_input_mode() 配对调用，
+    # term.print()/term.streaming() 都走渲染队列，状态栏刷新和这些输出
+    # 之间的互斥由 Terminal 自己保证。这是本次重构想要达成的核心简化：
+    # 之前两轮 bug 修复本质上都是在给"裸写 stdout"这个根本问题打补丁，
+    # 现在从根上换掉了这个做法，那两类竞态不会再出现，不需要再靠手动
+    # 维护"暂停范围对不对、有没有重入"这类细节。
     try:
         while True:
             _waiting_input.set()    # 标记：正在等用户输入（允许 observer 打印）
-            _bar_pause()            # 暂停刷新线程，防止覆盖 You ❯ 提示符
-            _sys.stdout.write(prompt)
-            _sys.stdout.flush()
+
             try:
-                line = _sys.stdin.readline()
-                if line == "":   # EOF
-                    raise EOFError
-                user_input = line.rstrip("\n").strip()
+                user_input = (_term.prompt_user() if _term is not None
+                              else input("\nYou \u276f ")).strip()
             except (EOFError, KeyboardInterrupt):
-                _sys.stdout.write("\n")
-                _connected_print("[daemon] Disconnected (daemon continues running)\n")
+                _out("[daemon] Disconnected (daemon continues running)")
                 break
 
-            # ★ 关键修复（"agent 回复内容被状态栏刷新打断、变成碎片"的根因）：
-            # 这里曾经在读完输入后就立刻调用 _bar_resume()，让刷新线程恢复——
-            # 注释写的设计意图是"agent 回复期间：恢复刷新线程，显示 session/
-            # state 信息"，但这个意图本身就是错的：agent 回复期间正是
-            # _connected_print_token() 用裸 _sys.stdout.write() 持续写入流式
-            # token 的时候，这条写入路径完全绕开了 Terminal 的渲染队列，
-            # 跟刷新线程的 _draw_bar()/_erase_bar()（同样直接写 stdout，但是
-            # 在另一个线程里）没有任何互斥协调——两边各写各的，必然交织。
-            # 实测复现：状态栏那一行会每隔几百毫秒就插进正在输出的中文句子
-            # 中间，把一整段回复切成"看起来随机断开"的碎片。
-            #
-            # 真正的原则是：只要 connected REPL 自己还要往 stdout 写任何
-            # 东西（提示符、流式 token、observer 旁观输出），刷新线程就必须
-            # 保持暂停——不是"读完输入就可以恢复"，而是"这一整个 turn 从
-            # 发送消息到流式输出完全结束（包括最后补的换行）都不能恢复"。
-            # 所以这里不再调用 _bar_resume()，把恢复动作整体后移到本轮循环
-            # 体的最后（流式输出彻底结束之后），下面发消息/解析内置命令/
-            # 流式接收期间，刷新线程全程保持暂停。
             if not user_input:
-                _bar_resume()        # 空输入直接 continue，没有后续输出，
-                continue              # 这里才是真正的"重新等待"窗口
+                continue
 
             # ── 内置命令 ──────────────────────────────────────────────────────
             cmd = user_input.lower()
 
             if cmd in ("exit", "quit", "/exit", "/quit"):
-                _connected_print("[daemon] Disconnected (daemon continues running)\n")
+                _out("[daemon] Disconnected (daemon continues running)")
                 break
 
             if cmd in ("/session new", "/new"):
                 new_sid = client.new_session()
                 if new_sid:
                     active_session_id = new_sid
-                    _connected_print(f"[daemon] \u2713 New session: {new_sid}\n")
+                    _out(f"[daemon] \u2713 New session: {new_sid}")
                 else:
-                    _connected_print("[daemon] \u2717 Failed to create new session\n")
-                _bar_resume()
+                    _out("[daemon] \u2717 Failed to create new session")
                 continue
 
             if cmd in ("/session list", "/sessions", "/session ls"):
-                # _pick_session 内部自己管状态栏（用 term 参数），
-                # 这里不需要额外暂停——但 _bar_pause() 已经在本轮开头调用过，
-                # _pick_session 会在它自己的 input() 循环里再调用一次
-                # _enter_input_mode()，重复调用是安全的（双重哨兵机制本身
-                # 就是幂等的），调用完之后这里负责恢复。
                 chosen = _pick_session(client, term=_term)
                 if chosen is None:
-                    _bar_resume()
                     continue
                 if chosen == "":
                     new_sid = client.new_session()
                     if new_sid:
                         active_session_id = new_sid
-                        _connected_print(f"[daemon] \u2713 New session: {new_sid}\n")
+                        _out(f"[daemon] \u2713 New session: {new_sid}")
                     else:
-                        _connected_print("[daemon] \u2717 Failed to create new session\n")
+                        _out("[daemon] \u2717 Failed to create new session")
                 else:
                     ok = client.resume_session(chosen)
                     if ok:
                         active_session_id = chosen
-                        _connected_print(f"[daemon] \u2713 Switched to: {chosen}\n")
+                        _out(f"[daemon] \u2713 Switched to: {chosen}")
                     else:
-                        _connected_print(f"[daemon] \u2717 Failed to switch to {chosen}\n")
-                _bar_resume()
+                        _out(f"[daemon] \u2717 Failed to switch to {chosen}")
                 continue
 
             if cmd == "/session":
                 st = client.get_status() or {}
                 cur = st.get("session_id") or active_session_id or "(unknown)"
                 state = st.get("state", "?")
-                _connected_print(f"[daemon] session={cur}  state={state}\n")
-                _connected_print("         /session list  /session new\n")
-                _bar_resume()
+                _out(f"[daemon] session={cur}  state={state}")
+                _out("         /session list  /session new")
                 continue
 
             # ── 发送消息 ──────────────────────────────────────────────────────
             turn_id = client.send_message(user_input, session_id=active_session_id)
             if not turn_id:
                 if not client.health_check():
-                    _connected_print("[daemon] Daemon appears to have stopped. Exiting.\n")
+                    _out("[daemon] Daemon appears to have stopped. Exiting.")
                     break
-                _connected_print("[error] send_message failed, please retry.\n")
-                _bar_resume()
+                _out("[error] send_message failed, please retry.")
                 continue
 
             # 标记：本终端正在处理这个 turn，observer 不要重复打印
             _waiting_input.clear()
             _my_turn_id_holder[0] = turn_id
 
-            # ── 流式接收 ──────────────────────────────────────────────────────
+            # ── 流式接收：token / tool_call / tool_result / permission_req ───
             done_event = threading.Event()
             printed_any = False
 
             def on_token(text, _pa=None):
                 nonlocal printed_any
+                if _term is None:
+                    return
                 with _observer_lock:  # 与 observer 互斥，避免输出交错
                     if not printed_any:
-                        _sys.stdout.write(agent_prefix)
-                        _sys.stdout.flush()
-                    _connected_print_token(text)
+                        _term.print(agent_prefix_markup, end="")
+                    _term.stream_token(text)
                     printed_any = True
 
             def on_error(message):
-                _connected_print(f"\n[error] {message}\n")
+                if _term is not None:
+                    from rich.markup import escape as _esc_err
+                    _term.print(f"\n[red][error][/red] {_esc_err(str(message))}")
 
             def on_done(_text, error=None):
+                nonlocal printed_any
                 with _observer_lock:
-                    if printed_any:
-                        _sys.stdout.write("\n")
-                        _sys.stdout.flush()
-                    if error and not printed_any:
-                        _connected_print(f"[error] {error}\n")
+                    if printed_any and _term is not None:
+                        _term.stream_end()
+                        printed_any = False
+                    if error and _term is not None:
+                        from rich.markup import escape as _esc_err
+                        _term.print(f"[red][error][/red] {_esc_err(str(error))}")
                 done_event.set()
+
+            def on_event(evt_type, payload, _tid=turn_id):
+                """处理本端自己发起的 turn 里出现的非 token 事件——
+                工具调用过程、权限请求等。"""
+                nonlocal printed_any
+                if evt_type == "permission_req":
+                    req_id     = payload.get("req_id", "")
+                    tool_name  = payload.get("tool_name", "")
+                    tool_input = payload.get("tool_input", {}) or {}
+                    if not req_id or not _claim_permission_req(req_id):
+                        return
+                    try:
+                        with _observer_lock:
+                            # 权限请求出现在 token 流之间——如果正好在
+                            # streaming 一段文本中间，先收尾当前这段，
+                            # 避免审批提示和未完成的文本混在一行。
+                            if printed_any and _term is not None:
+                                _term.stream_end()
+                                printed_any = False
+                            _handle_connected_permission(
+                                client, _term, req_id, tool_name, tool_input, _tid,
+                            )
+                    finally:
+                        _release_permission_req(req_id)
+                    return
+
+                if evt_type == "permission_done":
+                    req_id = payload.get("req_id", "")
+                    if req_id:
+                        _release_permission_req(req_id)
+                    return
+
+                # tool_call / tool_result / tool_error / info / warning / ...
+                with _observer_lock:
+                    if printed_any and _term is not None:
+                        _term.stream_end()
+                        printed_any = False
+                    _render_sse_event(_term, evt_type, payload)
 
             def stream_worker(_tid=turn_id):
                 try:
                     client.stream_output(
-                        _tid, on_token=on_token, on_done=on_done, on_error=on_error
+                        _tid, on_token=on_token, on_done=on_done,
+                        on_error=on_error, on_event=on_event,
                     )
                 except Exception as e:
-                    _connected_print(f"\n[daemon-client] stream error: {e}\n")
+                    if _term is not None:
+                        from rich.markup import escape as _esc_err
+                        _term.print(f"\n[red][daemon-client] stream error:[/red] {_esc_err(str(e))}")
                 finally:
                     done_event.set()
 
-            _sys.stdout.write("\n")  # token 开始前换行
-            _sys.stdout.flush()
             threading.Thread(target=stream_worker, daemon=True).start()
             if not done_event.wait(timeout=600):
-                _connected_print("\n[daemon] Timed out waiting for response.\n")
-            _sys.stdout.write("\n")  # 输出后空行
-            _sys.stdout.flush()
+                if _term is not None:
+                    _term.print("\n[yellow][daemon] Timed out waiting for response.[/yellow]")
 
             # 本 turn 结束，重新允许 observer 打印
             _my_turn_id_holder[0] = None
 
-            # ★ 恢复刷新线程的位置：必须放在流式输出彻底完成之后（包括
-            # 上面补的换行都写完了），不能提前——这是本次修复的核心。
-            # 从这里到下一轮循环开头的 _bar_pause() 之间，确实存在一个
-            # 短暂窗口刷新线程是"活的"，但这个窗口里 connected REPL 自己
-            # 不会再写任何 stdout 内容（下一行就是 while 循环顶部，立刻
-            # 又会调用 _bar_pause()），风险可以忽略。
-            _bar_resume()
-
     except KeyboardInterrupt:
-        _sys.stdout.write("\n")
-        _connected_print("[daemon] Disconnected (daemon continues running)\n")
+        _out("[daemon] Disconnected (daemon continues running)")
     finally:
         # 清理：停止 observer 线程，停止状态栏
         _observer_stop.set()
-        _bar_pause()  # 确保退出时状态栏已清除
+        if _term is not None:
+            try:
+                _term.set_statusbar_provider(None)
+            except Exception:
+                pass
 
 
 # ── 自动拉起 daemon（选项 A：默认行为）──────────────────────────────────────

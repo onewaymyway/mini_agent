@@ -1030,3 +1030,257 @@ Python 字节码执行速度远快于刷新线程 250ms 的心跳周期，实际
 路径接入 `Terminal` 的渲染队列（让它们也走 `_q.put(...)` 而不是直接
 `sys.stdout.write`），从根本上统一成单一写入路径，而不是在现有的"两条
 路径各写各的"架构上继续打补丁。
+
+---
+
+## 十一、架构级重构：connected 模式完整功能对等（状态栏 + 工具调用可见 + 权限审批 + 多端同步）
+
+> 用户反馈：第十节修复之后状态栏和回复内容不再冲突，但用户进一步指出
+> 需求是"connected 模式理论上所有交互应该都和普通模式一样，只是连的
+> daemon"，并且"像权限审批这种，或者其他用户输入这种，在同一个
+> session，无论是从哪个端输入的，都要同步到其他所有当前连接到同一个
+> session 的端"。这意味着第十节末尾"已知局限"一节里提到的妥协（状态栏
+> 几乎成了摆设）不再是可接受的终态，需要做一次架构级的重构，而不是
+> 继续在"裸写 stdout + 手动暂停/恢复"这个根本设计上打补丁。
+
+### 11.1 根本问题回顾
+
+前两轮（第九、第十节）修复的 bug，本质都是同一个根因的不同表现：
+connected 模式的所有输出（提示符、流式 token）都用裸 `_sys.stdout.write()`
+直接写终端，跟 `Terminal` 状态栏刷新线程（同样直接写 stdout，但在另一个
+线程里）之间没有任何互斥协调，只能靠手动调用 `_enter_input_mode()`/
+`_exit_input_mode()`（包装成 `_bar_pause()`/`_bar_resume()`）在特定时间
+窗口"暂停"刷新线程来规避冲突。这种"打补丁"式修复有两个根本缺陷：
+1. 每次新增一种输出（工具调用展示、权限审批提示）都要重新考虑"这段时间
+   要不要暂停状态栏"，心智负担线性增长，且容易遗漏。
+2. 代价是状态栏几乎全程被迫暂停，变得几乎不可见——这正是用户本次反馈
+   "连不上来的状态栏"的根源。
+
+daemon 本地终端（终端 A）从来没有这个问题，因为它的所有输出（见
+`ui/renderer.py`）都是通过 `Terminal.print()`/`stream_token()` 等方法
+交给 `Terminal` 唯一的渲染线程串行处理——每条消息处理时自动"擦状态栏→
+写内容→重绘状态栏"，状态栏刷新和内容输出天然互斥，不需要任何手动协调。
+
+### 11.2 协议层发现：工具调用事件早就存在，只是被客户端丢弃了
+
+排查"看不到工具调用"这个问题时发现：`api/models.py::EventType` 早就
+定义了 `TOOL_CALL`/`TOOL_RESULT`/`TOOL_ERROR`/`INFO`/`WARNING`/
+`PERMISSION_REQ`/`PERMISSION_DONE` 等事件类型，`api/server.py` 的
+`_install_output_hook()` 也确实把 daemon 本地的渲染动作同步广播到了
+SSE 流上。问题完全在客户端一侧：`cli/daemon.py::DaemonClient.
+_handle_sse_frame()` 对这些事件类型一律静默忽略（旧代码注释原文是
+"其他事件（turn_start / tool_call / info / replay_done 等）忽略"）。
+
+### 11.3 本次重构的四个支柱
+
+**① 输出统一走 Terminal 渲染队列**
+把 `run_connected_repl()`/`_pick_session()` 里所有的裸
+`_sys.stdout.write()`/`input()`/`_sys.stdin.readline()` 替换为
+`term.print()`/`term.stream_token()`/`term.streaming()`/
+`term.prompt_user()`。彻底删除 `_bar_pause()`/`_bar_resume()` 这两个
+补丁函数，以及 `_pick_session()` 里那套"重入检测"逻辑——这些机制存在的
+唯一理由就是裸写 stdout 需要手动协调，现在这个前提不存在了。
+
+**② 工具调用 / 状态事件可见**
+`DaemonClient.stream_output()` 新增 `on_event` 回调参数，
+`_handle_sse_frame()` 把 `tool_call`/`tool_result`/`tool_error`/
+`info`/`warning`/`session_switched`/`fs_change` 转发给它，不再丢弃。
+新增 `_render_sse_event()` 复用 `ui/renderer.py` 的 `_tool_icon`/
+`_tool_summary`/`_result_lang` 这几个 helper，渲染样式与终端 A 基本
+一致。
+
+**③ 权限审批**
+`permissions.py::PermissionGuard._prompt_with_http()` 本来就设计成
+"daemon 本地终端 CLI 输入 + 任意 HTTP 客户端"两路竞速、谁先响应算谁的
+（`HttpPermissionGate` 内部用 `req_id` + `threading.Event` 仲裁）。
+新增 `DaemonClient.respond_permission()`/`list_pending_permissions()`
+和 `_handle_connected_permission()`，让 CLI 客户端成为这场竞速的一个
+参与者：收到 `permission_req` → 渲染 `(y)/(a)/(n)/(d)/(s)/(w)` 选项 →
+本端选择后提交；若别的端先决定了，后台 watcher 线程轮询检测到
+`req_id` 不再 pending，设置 `interrupt_event` 让本端的 `term.confirm()`
+提前结束等待，不用傻等超时。
+
+**④ 多端同步**
+不需要任何新机制——`OutputBroadcaster` 本来就是"推给所有订阅者"，每个
+session 有独立的 bridge/ring/broadcaster，多用户架构下天然按 session
+隔离。本函数主路径订阅 `/v1/stream/{turn_id}`（自己发起的 turn），
+observer 线程订阅 `/v1/stream`（同一 session 里所有其它事件）——
+两条路径合起来不会错过任何事件。有意的简化：本端正忙着 streaming 自己
+的 turn 时，observer 看到别的 turn 的 `permission_req` 只打印通知，不
+抢占式弹出交互（避免和当前流式输出冲突）；本端空闲时正常弹出交互。
+
+### 11.4 重构过程中顺手发现并修复的两个独立 bug
+
+**bug A：rich markup 注入风险**
+`term.print()` 走的是 `rich.console.Console.print()`，默认会解析字符串
+里的 `"[xxx]"` 当作 markup 标签。`payload` 里几乎所有字段（工具命令、
+错误消息、session 标题等）都是不可信的外部数据——如果不转义，一段恰好
+包含 rich 认识的标签名（`bold`/`red`/`green` 等都是常见词，bash 输出
+或日志格式里出现的概率不低）的内容会被静默吃掉，不会报错，非常隐蔽。
+亲自验证过具体失败模式：`"echo [bold]hello[/bold] world"` 不转义时
+渲染结果会变成 `"echo hello world"`，标签文字本身消失。统一用
+`rich.markup.escape()` 处理拼进 markup 模板字符串的字段，长文本主体
+（如 `tool_result` 内容）改用 `rich.text.Text()` 对象包装（`Text` 是
+"已知安全"的纯文本载体，不解析 markup）。`ui/renderer.py` 展示
+`tool_result` 主体内容时已经用 `Text()` 包装过，但 `tool_name`/
+`summary` 等字段是直接拼接的——这次的修复比 `renderer.py` 现状更完整，
+但 `renderer.py` 本身的那个遗留风险点没有在本次任务范围内一起修。
+
+**bug B：`always`/`deny_always` 权限模式从未真正持久化**
+`api/routes.py::respond_permission()` 路由处理这两种模式时，原来是一段
+未完成的占位代码：
+```python
+checker = getattr(bridge, "permission_checker", None)
+if checker is not None: pass
+```
+`AgentBridge` 对象上从来没有 `permission_checker` 这个属性（真正存在的
+是 `self.agent`），`getattr` 永远返回 `None`，这个分支永远不会执行——
+意味着无论 CLI 还是 web demo 通过纯 HTTP 路径选择"以后总是允许/拒绝
+这个工具"，这个偏好从来没有被写入 `PermissionGuard` 的白/黑名单
+（`_allow_list`/`_denied_tools`），下次同样的工具调用还会再问一次。
+这与 daemon 本地终端的 CLI 交互（`_prompt_with_http` 的 CLI 分支直接
+调用 `self._add_allow()`/`self._denied_tools.add()`）行为不一致。
+修复后抽成独立函数 `_persist_permission_preference(bridge, mode,
+pending_info)`，链路是 `bridge.agent.guard`（`AgentBridge` 持有
+`self.agent`，`Agent` 持有 `self.guard`）。
+
+**bug C（同一批顺手修复）：`_InterruptedByHTTP` 异常类从未被真正定义**
+`ui/terminal.py::Terminal.confirm()` 在 `interrupt_event` 被外部
+`set()` 时需要抛出一个"中断"异常，用的写法是 "try: from
+mini_agent.permissions import _InterruptedByHTTP except ImportError:
+class _InterruptedByHTTP(Exception): pass"。这个类在 `permissions.py`
+里从来没有被真正定义过（只在注释/字符串里提到这个名字），所以这个
+import 总是失败，每次命中这个分支都会动态生成一个全新的本地类。
+任何调用方用同样模式 `except` 这个类型，捕获到的是自己生成的另一个
+类对象，跨模块精确匹配会失败。`permissions.py` 自己调用 `confirm()`
+的地方一直用宽泛的 `except Exception` 绕开了这个坑，没有暴露出来，
+但本次新写的 `_handle_connected_permission()` 一开始也踩了同一个坑。
+修复：在 `permissions.py` 里真正定义这个类，所有"try import except
+本地定义"的调用点现在都能找到同一个真正存在的类，可以放心做精确
+`except` 捕获，不需要再退化成宽泛兜底（虽然宽泛兜底作为第二道防线仍然
+保留）。
+
+### 11.5 测试
+
+新增三个测试文件，共 53 个测试：
+- `tests/test_daemon_connected_full_features.py`（40 个）：静态源码
+  检查（确认旧的补丁式机制没有被带回来）+ `DaemonClient` 新方法行为
+  测试 + `_render_sse_event`/`_handle_connected_permission` 交互逻辑
+  测试 + markup 转义安全性测试（用真实 `rich.Console` 渲染验证，不是
+  单纯 mock）。
+- `tests/test_permissions_persist_preference.py`（9 个）：
+  `_persist_permission_preference()` 的各种边界情况。
+- `tests/test_permissions_interrupted_by_http.py`（4 个）：验证
+  `_InterruptedByHTTP` 现在是 `permissions.py` 里真正定义的类，且两个
+  独立的"try import except 本地定义"调用点能拿到同一个类对象。
+
+每一类修复都用"故意改回错误实现"的方式验证过对应测试确实能捕捉到
+回归（包括 markup 转义这种容易被忽视的细节）。完整 `pytest` 套件
+1434 passed，失败的 4 个是预先存在、与本次改动无关的问题（`jsonschema`
+模块缺失、格式纠错标签判定、日志截断边界——跟第九、第十节记录的是
+同一批）。
+
+### 11.6 已知局限 / 留给未来的工作
+
+1. **权限审批的 `(e)dit` 选项未实现**：daemon 本地终端可以编辑 bash
+   命令后再批准（多行输入 UI），HTTP 客户端要做到等价体验需要额外的
+   多行输入交互设计，本次没有实现；CLI 客户端用户如果需要编辑命令，
+   只能选择 `(w)ait` 转交给本地终端或 web demo 处理。
+2. **`PermissionGuard._allow_list`/`_denied_tools` 没有专门的并发锁**：
+   `_persist_permission_preference()` 现在会从 HTTP 请求处理线程调用
+   `guard._add_allow()`，理论上如果同时有多个权限请求都选择 "always"，
+   存在并发写入的边界风险（CPython GIL 保证单个 list.append()/
+   set.add() 操作不会损坏数据结构，最坏情况是"丢失一次添加"，不会
+   crash）。这个限制是 `PermissionGuard` 本身的既有设计，不是本次
+   改动引入的，但本次改动是第一次真正从并发的 HTTP 路径调用这两个
+   方法，值得记录。
+3. **`ui/renderer.py` 里 `tool_name`/`summary` 字段未转义的同款 markup
+   风险，没有在本次任务范围内一起修**——只修复了 `cli/daemon.py` 新增
+   代码里的同类问题。
+4. **没有做真正的端到端集成测试**（启动真实 FastAPI + 模拟多个并发
+   HTTP 客户端验证多端同步的完整链路）——本次的测试都是单元测试层面
+   （mock `DaemonClient`/`bridge`/`term`），覆盖的是"各个函数自己的
+   逻辑是否正确"，没有覆盖"真实网络请求 + 真实并发"这一层。建议下一轮
+   补充，并在 Windows 环境下做一次真实的多终端手工测试（多个 CLI
+   客户端 + web demo 同时连接同一个 session，验证工具调用展示和权限
+   审批竞速的真实表现）。
+
+---
+
+## 十二、与 autonomous daemon 功能（cron/goals/objective）的合并
+
+> 背景：第十一节完成后，另一条并行的开发线在同一个项目基础上实现了
+> daemon 自主运行能力（`evolution/cron_scheduler.py`、
+> `evolution/objective_executor.py`、`evolution/soft_goal_deriver.py`、
+> `cli/commands/cron.py`，以及 `api/routes.py` 里的 `/v1/autonomous/
+> status`、`/v1/goals`、`/v1/cron/jobs` 等端点，详见
+> `docs/autonomous_daemon_design.md`）。这两条线各自独立完成，需要合并
+> 到同一个项目里。
+
+### 12.1 合并范围排查
+
+逐文件比对三方（原始基线版本 / 本文档第九到十一节修改后的版本 / 对方
+完成 autonomous daemon 后的版本），确认实际冲突范围：
+
+| 文件 | 我是否改过 | 对方是否改过 | 处理方式 |
+|------|-----------|-------------|---------|
+| `cli/daemon.py` | 是（第九～十一节） | 否 | 直接用我的版本整体覆盖 |
+| `api/routes.py` | 是（权限持久化修复） | 是（新增自主执行相关端点，纯末尾追加） | 拼接合并：我的版本 + 对方追加的内容 |
+| `permissions.py` | 是（`_InterruptedByHTTP` 定义） | 否 | 直接用我的版本整体覆盖 |
+| `ui/terminal.py` | 否 | 是（补全列表新增 `/cron`/`/goals` 等条目） | 保留对方版本，不需要任何操作 |
+| `agent.py`、`api/bridge.py`、`api/models.py`、`api/server.py`、
+  `cli/commands/goals.py`、`cli/repl.py`、`evolution/autonomous_loop.py`、
+  `evolution/resource_arbiter.py`、`hooks/loader.py`、
+  `orchestrator/sub_agent.py`、`orchestrator/task_manager.py`、
+  `prompts/manager.py` 等 | 否 | 是 | 保留对方版本，不需要任何操作 |
+| `next_doc/daemon-multiuser-implementation-design.md`、
+  `test_cases/daemon-multiuser-testing-guide.md` | 是 | 否（对方的设计内容写在
+  全新的 `autonomous_daemon_design.md` 里，没有动这两个文件） | 直接用我的版本整体覆盖 |
+| `tests/test_daemon_connected_statusbar.py` | 已删除（被
+  `test_daemon_connected_full_features.py` 取代） | 对方项目里还保留着
+  这个旧文件（第十节交付时的版本） | 删除旧文件，加入我后续新增的三个
+  测试文件 |
+
+发现这个排查结果的关键原因是：对方的开发是基于我**第二轮**修复
+（第十节完成、第十一节重构之前）的版本继续往前做的，且 autonomous
+daemon 这部分功能完全没有涉及 `cli/daemon.py`/`permissions.py`——
+所以这两个文件不存在真正的合并冲突，可以直接整体覆盖；唯一需要真正
+做内容级合并的文件是 `api/routes.py`，而且对方的改动恰好是在文件
+末尾纯追加新端点（`return result` 之后接着写新的 `@router.get(...)`
+等），跟我修改的中段权限路由完全不重叠，合并方式是简单的字符串拼接
+（我的版本内容 + 对方追加的 298 行），不需要逐行 diff 三方合并。
+
+### 12.2 合并验证
+
+合并后：
+- 三个被覆盖/拼接的文件（`daemon.py`/`routes.py`/`permissions.py`）
+  全部通过 `ast.parse()` 语法检查。
+- 关键符号确认：`DaemonClient.respond_permission`、
+  `_persist_permission_preference`、`_InterruptedByHTTP`、
+  `_render_sse_event`、`_handle_connected_permission`（我方）与
+  `evolution.cron_scheduler`、`evolution.objective_executor`、
+  `evolution.soft_goal_deriver`（对方）均能正常 import，互不冲突。
+- 完整 `pytest` 套件：**1434 passed**，与合并前（仅含我方改动时）的
+  结果完全一致，4 个失败是同一批预先存在、与两边改动都无关的问题
+  （`jsonschema` 模块缺失、格式纠错标签判定、日志截断边界）。
+
+### 12.3 已知的功能性缺口（合并后浮现，非 bug）
+
+connected 模式（`cli/daemon.py::run_connected_repl`）目前只识别
+`/session list`/`/session new`/`/session`/`exit` 这几个内置命令——
+对方新增的 `/cron`/`/goals`/`/digest`/`/agent` 等命令是接在
+`cli/repl.py`（本地直跑模式）里的，`run_connected_repl()` 没有同步
+支持。这不是合并引入的 bug（两条代码路径一直是独立的，`repl.py` 的
+改动也没有触碰 `daemon.py`），而是一个原本就存在、合并后才更显眼的
+功能缺口：通过 connected 模式操作 daemon 时，目前没有办法用 `/cron`/
+`/goals` 这类命令直接管理自主任务和目标——只能退回到 daemon 本地
+终端，或者通过 `/v1/cron/jobs`、`/v1/goals` 这两组 HTTP 端点自己发
+请求。
+
+如果之后需要补上这一块，思路应该延续第十一节"完整功能对等"的方向：
+在 `run_connected_repl()` 的内置命令分发里增加对 `/cron`/`/goals`/
+`/digest` 的识别，复用已经存在的 `DaemonClient` HTTP 调用模式（类似
+`respond_permission()`/`list_pending_permissions()` 那样，新增
+`list_cron_jobs()`/`add_cron_job()`/`list_goals()` 等方法），渲染上
+复用 `_render_sse_event()` 已经建立的 markup 转义规范。这部分本次
+合并没有实现，留作后续工作。

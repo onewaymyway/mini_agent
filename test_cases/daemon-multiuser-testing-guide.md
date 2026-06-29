@@ -1195,11 +1195,17 @@ mini-agent daemon stop --project "$TESTPROJ"
 `run_connected_repl` 里的 `_bar_pause`/`_bar_resume` 又被改回了
 `set_statusbar_provider(None)` 这种不充分的旧实现，或者引入了新的、
 绕开 `_enter_input_mode`/`_exit_input_mode` 直接操作 stdout 的代码路径。
-对应的自动化回归测试见 `tests/test_daemon_connected_statusbar.py`（白盒
+对应的自动化回归测试见 `tests/test_daemon_connected_full_features.py`（白盒
 断言调用的是 `_enter_input_mode`/`_exit_input_mode` 而非
 `set_statusbar_provider`），可以作为"代码层面有没有被改回旧实现"的
 快速检查，但不能替代这里的人工观察——单元测试无法捕捉真实终端环境下
 的时序竞态本身，只能确保"用了正确的 API"这件事没有被回归。
+
+> 文件名更新说明：本节最初的回归测试在 `tests/test_daemon_connected_
+> statusbar.py` 里，第十一节的架构级重构（彻底改用 `term.print()`/
+> `term.prompt_user()` 取代手动 `_enter_input_mode`/`_exit_input_mode`
+> 管理）之后，相关测试已经整体重写并合并进
+> `tests/test_daemon_connected_full_features.py`，旧文件已删除。
 
 ---
 
@@ -1243,12 +1249,17 @@ token 到达速度的相对时序），单次"看起来正常"不能排除问题
 "读完用户输入就立刻调用"的位置，或者新增了某条会进入流式输出但忘记
 保持状态栏暂停的代码路径。
 
-对应的自动化回归测试见 `tests/test_daemon_connected_statusbar.py` 里
+对应的自动化回归测试见 `tests/test_daemon_connected_full_features.py` 里
 `test_run_connected_repl_no_unconditional_resume_right_after_readline`、
 `test_run_connected_repl_bar_resume_not_called_immediately_after_input`、
 `test_run_connected_repl_bar_resume_called_after_streaming_done` 三条，
 同样只能确保"代码层面调用时机没有被改回旧模式"，不能替代这里的人工
 长回复观察。
+
+> 文件名更新说明：同 R-3，原 `tests/test_daemon_connected_statusbar.py`
+> 已删除，第十一节重构后这几条测试的等价物（针对新架构调整过具体断言
+> 方式，但验证的核心意图不变）合并进了
+> `tests/test_daemon_connected_full_features.py`。
 
 | 测试模块 | 对应实现 | 核心验证点 |
 |---------|---------|----------|
@@ -1257,6 +1268,104 @@ token 到达速度的相对时序），单次"看起来正常"不能排除问题
 | 模块 2 | `api/server.py::AgentRunner.run`（system_extra 注入）、`tools/user_memory.py`、`api/user_store.py::RoleProfileManager` | 角色画像注入、记忆工具、画像更新 |
 | 模块 3 | `api/session_pool.py::SessionAgentPool`、`api/server.py::AgentRunner`（`agent_factory`/`on_crash`） | 会话隔离、并发安全、故障隔离、按 turn/req_id 路由 |
 | 模块 4 | `api/server.py::AgentRunner._drain_self_messages`、`api/session_pool.py::SelfMessageBus`、`cli/commands/self_cmd.py` | Self 消费会话消息、CLI 状态查看 |
+
+---
+
+### R-5 connected 模式完整交互功能对等（架构级重构，第十一节）
+
+> 来源：用户明确要求"connected 模式理论上所有交互应该都和普通模式
+> 一样，只是连的 daemon"，以及"权限审批/用户输入在同一个 session 的
+> 所有端之间要同步"。这是一次架构级重构（不再是单点 bug 修复），
+> 测试范围也更大。根因分析和实现细节见
+> `daemon-multiuser-implementation-design.md` 第十一节。
+
+```bash
+mini-agent daemon start --http-port 18999 --detach --project "$TESTPROJ"
+sleep 2
+# 终端 B
+mini-agent --project "$TESTPROJ"
+```
+
+**5.1 状态栏应该持续可见（不再是第十节里"几乎被迫暂停"的状态）**
+
+- 连接后、等待输入期间，画面下方应该能看到状态栏（`🌐 [connected]
+  session=... state=idle ...`），并且每隔约 1 秒左右有刷新（哪怕内容
+  没变化，光是这一行还在，没有消失/卡死就算正常）。
+- 发消息后，agent 处理期间状态栏应该显示 `state=running`，且回复内容
+  不应该被状态栏行打断（这是 R-4 已经验证过的，这里再确认一次没有
+  因为本次重构引入新的回归）。
+
+**5.2 工具调用过程应该可见**
+
+- 发一条会触发工具调用的消息（比如 "帮我创建一个文件 test.txt，内容是
+  hello"）。
+- 终端 B 应该能看到类似下面的输出（具体图标/格式可能略有差异，但
+  核心信息——工具名、参数摘要、执行结果——应该都能看到）：
+  ```
+  ⚡ write_file  path=test.txt
+    （执行结果……）
+  ```
+- 对照终端 A（daemon 本地终端）此刻显示的内容，两边应该展示的是同一次
+  工具调用，视觉风格应该接近（不要求逐字节一致，但信息密度应该
+  相当——终端 A 能看到的工具名、参数、结果，终端 B 也应该都能看到）。
+
+**5.3 权限审批应该能在终端 B 完成**
+
+- 发一条会触发危险操作确认的消息（比如让 agent 执行 `rm` 之类需要
+  权限审批的 bash 命令，具体取决于你的 `PermissionGuard` 配置）。
+- 终端 B 应该弹出审批提示，包含工具名、参数摘要，以及 `(y)/(a)/(n)/
+  (d)/(s)/(w)` 选项。
+- 分别测试每个选项：
+  - `y`：批准一次，工具应该正常执行，终端 B 显示"approved"。
+  - `n`：拒绝一次，工具应该被拒绝执行。
+  - `a`：批准并记住——**关键验证点**：再让 agent 触发同一个工具，
+    这次不应该再弹出审批提示（验证 `_persist_permission_preference`
+    确实把决定写进了白名单，这是本节顺手修复的 bug B）。
+  - `d`：拒绝并记住——同样验证之后同一工具不再询问（直接拒绝，不弹窗）。
+  - `s`：应该展示完整的工具参数（JSON 格式），然后继续等待下一次选择
+    （不应该提交决定）。
+  - `w`：应该等待其他端（终端 A 或 web demo）处理，本端不提交决定。
+
+**5.4 多端权限审批竞速**
+
+- 同时开两个 CLI 客户端（终端 B、终端 C）连接同一个 session。
+- 让终端 B 发一条触发权限审批的消息。
+- 在终端 C 上应该也能看到这条权限请求的通知（如果终端 C 当前是空闲
+  等待输入状态，应该弹出完整的交互式审批选项；如果终端 C 正忙着自己
+  的 turn，应该至少打印一行通知，不强行打断终端 C 的当前输出）。
+- 在终端 C 上完成审批（选择 `y` 或 `n`），确认终端 B 这边的等待会
+  立刻结束（不需要等到超时），并显示"已被其他端处理"或类似提示。
+- 反过来在终端 A（daemon 本地终端）做审批，确认终端 B/C 都能正确感知
+  到"已被其他端处理"。
+
+**5.5 多端 token/工具调用同步**
+
+- 终端 B 空闲等待输入时，让终端 C 发一条消息。
+- 终端 B 应该能看到终端 C 这次对话的回复内容和工具调用过程（标记为
+  "其他终端"来源），不需要终端 B 自己发消息才能看到。
+
+**预期结果**：上述 5.1-5.5 全部场景下，connected 模式（终端 B/C）的
+体验应该和直接在 daemon 本地终端操作基本等价——能看到状态、能看到
+工具调用、能完成审批、多端之间的状态变化能互相感知。
+
+**判断依据**：这是功能性验证（不是单纯的竞态时序问题），相对更容易
+稳定复现，不需要像 R-3/R-4 那样反复多次测试。如果某个场景下终端 B
+完全看不到对应的信息（比如工具调用过程、权限请求），先检查
+`DaemonClient._handle_sse_frame()` 是否正确转发了对应的事件类型，
+再检查 `_render_sse_event()`/`_handle_connected_permission()` 是否
+正确处理了这个事件。如果 `always`/`deny_always` 之后还是反复询问，
+检查 `api/routes.py::_persist_permission_preference()` 链路（
+`bridge.agent.guard` 是否能正确取到）。
+
+对应的自动化回归测试见 `tests/test_daemon_connected_full_features.py`
+（40 个，覆盖 `DaemonClient` 新方法、事件渲染、权限交互逻辑、markup
+转义安全性）、`tests/test_permissions_persist_preference.py`（9 个，
+覆盖 `always`/`deny_always` 持久化链路）、
+`tests/test_permissions_interrupted_by_http.py`（4 个，覆盖异常类型
+跨模块一致性）。这些单元测试覆盖的是"各个函数自己的逻辑是否正确"，
+不能替代这里 5.1-5.5 的真实多端网络交互验证——目前还没有针对这部分
+的自动化端到端集成测试（见实现文档第十一节"已知局限"第 4 点），
+这也是为什么这里的人工测试格外重要。
 
 ---
 
@@ -1293,6 +1402,37 @@ token 到达速度的相对时序），单次"看起来正常"不能排除问题
    `--project` 参数后只是读取了值，没有把这两个 token 从转发给子命令处理
    函数的 argv 里剔除，导致 `mini-agent user ... --project <path>` 这种
    最基本用法报 `unrecognized arguments`。
+9. `cli/daemon.py` 的 connected 模式状态栏暂停机制只用
+   `set_statusbar_provider(None)` 摘掉 provider，但 `Terminal.
+   _refresh_loop()` 判断是否继续刷新用的是独立的 `_refresh_paused`
+   标志，跟 provider 是否为 `None` 无关——provider 设成 `None` 不会
+   阻止刷新线程继续向渲染队列投递 `_refresh` 心跳，这条心跳触发的
+   异步擦除/重绘会和裸 `_sys.stdout.write()` 打印的提示符/流式 token
+   产生竞态（仅在真实终端环境下、心跳周期恰好落在写入中途时才暴露，
+   纯逻辑 review 看不出来）。根本解法是改用 `Terminal` 官方提供的
+   `_enter_input_mode()`/`_exit_input_mode()`，并最终（第十一节）
+   把所有输出都改走 `term.print()`/`term.stream_token()` 这条统一
+   路径，从根上消除两套独立写 stdout 路径的并存。
+10. `api/routes.py::respond_permission()` 处理 `always`/`deny_always`
+    模式的代码是一段未完成的占位逻辑——`getattr(bridge,
+    "permission_checker", None)` 查询的属性名在 `AgentBridge` 上根本
+    不存在（真正存在的是 `self.agent`），`getattr` 永远返回 `None`，
+    对应分支永远不会执行。表现是 HTTP 端选择"以后总是允许/拒绝"这个
+    工具后，下次同样的调用还会再问一次——因为没有抛异常、HTTP 响应
+    也正常返回 200，这个静默失效只有真正测试"选了 always 之后再触发
+    一次同样的工具调用"这个具体场景才能发现。
+11. `ui/terminal.py::Terminal.confirm()` 需要的 `_InterruptedByHTTP`
+    异常类在 `permissions.py` 里从未被真正定义过（只在注释/字符串里
+    提到这个名字），所有引用它的地方都用 "try import 失败就本地定义"
+    的写法，且因为 import 总是失败，每次执行都会动态生成一个全新的
+    本地类——任何调用方如果用同样模式做精确 `except` 匹配，捕获到的
+    是自己生成的另一个类对象，跨模块匹配会失败。这个问题之所以没有
+    在生产环境暴露过，是因为 `permissions.py` 自己调用 `confirm()`
+    的地方一直用宽泛的 `except Exception` 绕开了它；只有当 cli/
+    daemon.py 新增的 `_handle_connected_permission()` 也试图做精确
+    类型匹配时才会显现（症状：HTTP 客户端审批被其他端抢先处理时，
+    中断信号没有被正确捕获，行为退化为"一直等到超时"而不是"立刻停止
+    等待"）。
 
 **这份清单本身就是最好的论据**：所有这些 bug 都属于"代码逻辑没问题，但因为
 一个错误的属性/参数假设，从一开始就没有被真正执行过"——这类问题只看代码

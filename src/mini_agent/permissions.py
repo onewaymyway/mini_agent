@@ -57,6 +57,38 @@ class _AllowEntry:
     path_prefix: str   # 空字符串表示对该工具的所有调用放行
 
 
+class _InterruptedByHTTP(Exception):
+    """
+    表示"本地终端正在阻塞等待用户输入（确认/权限审批），但 HTTP 端
+    （另一个 CLI 客户端、web demo）先给出了响应"这一中断信号。
+
+    ★ 重要修复：这个类之前在本模块里从未被真正定义过——只在注释/字符串
+    里提到这个名字。ui/terminal.py::Terminal.confirm() 需要在
+    interrupt_event 被外部 set() 时抛出一个"中断"异常，用的写法是：
+        try:
+            from mini_agent.permissions import _InterruptedByHTTP
+        except ImportError:
+            class _InterruptedByHTTP(Exception): pass
+        raise _InterruptedByHTTP()
+    因为这个 import 总是失败（类根本不存在），每次命中这个分支都会
+    重新动态生成一个全新的本地类。如果调用方（比如本模块内部调用
+    confirm() 的地方，或者 cli/daemon.py 里类似的审批交互代码）也用
+    同样的"尝试 import 失败就本地定义"模式去 except 这个类型，捕获到的
+    是调用方自己生成的另一个类对象，跟 confirm() 实际抛出的那个类对象
+    不是同一个，跨模块的 except 精确匹配会失败、异常真的会往上抛而不是
+    被正常处理。
+
+    本模块内部调用 confirm() 的地方（_prompt_with_http，下面）一直是用
+    宽泛的 except Exception 配合检查 decided_event.is_set() 绕开了这个
+    坑，没有暴露出来；但这本质上是个该修的根因——现在把这个类真正定义
+    在这里，ui/terminal.py 的 "from mini_agent.permissions import
+    _InterruptedByHTTP" 就能找到真正的同一个类，未来任何调用方用标准的
+    "from mini_agent.permissions import _InterruptedByHTTP" + except 精确
+    匹配都能正常工作，不需要再退化成宽泛捕获。
+    """
+    pass
+
+
 @dataclass
 class PermissionGuard:
     auto_approve: bool = False
