@@ -1,0 +1,21 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.backends.legacy:build"
+
+[project]
+name = "weixin-py"
+version = "1.0.0"
+description = "Python library for the openclaw-weixin WeChat bot protocol"
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+keywords = ["wechat", "weixin", "bot", "openclaw", "claude"]
+
+[project.optional-dependencies]
+httpx = ["httpx>=0.27"]
+aiohttp = ["aiohttp>=3.9"]
+requests = ["requests>=2.31"]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["weixin*"]
