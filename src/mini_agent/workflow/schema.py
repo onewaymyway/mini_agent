@@ -61,6 +61,10 @@ class WorkflowStep:
     model: Optional[str] = None          # 覆盖 model（None = 继承全局）
     timeout: Optional[float] = None      # 步骤超时（秒）
     retry_on_gate_fail: int = 0          # evaluator 不达标时，重跑前序步骤的最大次数（0=不重跑）
+    # [具身改进 B3] 是否允许与同一拓扑层的其他步骤并发执行。
+    # 默认 True；若某步骤有 depends_on 未声明的隐式副作用（如读写同一外部文件/
+    # 状态），可显式设为 False 强制串行，保留人工对并发风险的控制权。
+    allow_parallel: bool = True
 
 
 @dataclass
@@ -90,6 +94,7 @@ class WorkflowDef:
                 model=s.get("model"),
                 timeout=float(s["timeout"]) if s.get("timeout") else None,
                 retry_on_gate_fail=int(s.get("retry_on_gate_fail", 0)),
+                allow_parallel=bool(s.get("allow_parallel", True)),
             ))
         return cls(
             name=str(data.get("name", "unnamed")),
@@ -116,6 +121,7 @@ class WorkflowDef:
                     **({"model": s.model} if s.model else {}),
                     **({"timeout": s.timeout} if s.timeout else {}),
                     **({"retry_on_gate_fail": s.retry_on_gate_fail} if s.retry_on_gate_fail else {}),
+                    **({"allow_parallel": s.allow_parallel} if not s.allow_parallel else {}),
                 }
                 for s in self.steps
             ],

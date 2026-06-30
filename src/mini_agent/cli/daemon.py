@@ -349,6 +349,63 @@ class DaemonClient:
             print(f"[daemon-client] respond_permission failed: {e}", file=sys.stderr)
             return False
 
+    # ── [具身改进 A1] Connected REPL 命令对等：cron / goals / digest ──────────
+    # 复用现有 HTTP API（routes.py 已有 /v1/cron /v1/goals /v1/autonomous/status
+    # /v1/self/status），这里只是补上 CLI 连接模式缺失的转发方法，
+    # 不新增协议、不改动服务端。
+
+    def _get_json(self, path: str, timeout: float = 5) -> Optional[dict]:
+        """通用 GET 封装：失败时返回 None（不抛异常，调用方据此判断失败原因）。"""
+        try:
+            import urllib.request
+            req = urllib.request.Request(f"{self.base_url}{path}", headers=self._headers())
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
+                return json.loads(resp.read())
+        except Exception as e:
+            print(f"[daemon-client] GET {path} failed: {e}", file=sys.stderr)
+            return None
+
+    def _post_json(self, path: str, payload: Optional[dict] = None, timeout: float = 10) -> Optional[dict]:
+        """通用 POST 封装：失败时返回 None。"""
+        try:
+            import urllib.request
+            body = json.dumps(payload or {}).encode()
+            req = urllib.request.Request(
+                f"{self.base_url}{path}", data=body, headers=self._headers(), method="POST",
+            )
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
+                return json.loads(resp.read())
+        except Exception as e:
+            print(f"[daemon-client] POST {path} failed: {e}", file=sys.stderr)
+            return None
+
+    def list_cron_jobs(self) -> Optional[dict]:
+        """GET /v1/cron/jobs — CronScheduler job 列表。"""
+        return self._get_json("/v1/cron/jobs")
+
+    def run_cron_job(self, job_id: str) -> Optional[dict]:
+        """POST /v1/cron/jobs/{id}/run — 立即触发一次。"""
+        return self._post_json(f"/v1/cron/jobs/{job_id}/run")
+
+    def list_goals(self) -> Optional[dict]:
+        """GET /v1/goals — GoalBacklog 完整视图（active goals + objectives）。"""
+        return self._get_json("/v1/goals")
+
+    def get_autonomous_status(self) -> Optional[dict]:
+        """GET /v1/autonomous/status — 当前自主化档位 + cron/objective 进度。"""
+        return self._get_json("/v1/autonomous/status")
+
+    def get_digest(self) -> Optional[dict]:
+        """
+        Self 状态总览（晨报）。
+
+        注：v3 改进计划草案设想的端点名是 /v1/digest，但服务端实际实现
+        落在 /v1/self/status（GoalBacklog + 最近活动 + session_pool 概况，
+        语义与"digest"一致，只是路由命名不同）——这里直接对接已有端点，
+        不新增重复路由。
+        """
+        return self._get_json("/v1/self/status")
+
     def stream_output(
         self,
         turn_id: str,
@@ -1210,6 +1267,133 @@ def _handle_connected_permission(
         term.print(f"{prefix}  [dim](已被其他端处理)[/dim]")
 
 
+def _fmt_ts(ts: Optional[float]) -> str:
+    """把 epoch 秒格式化为可读时间，None/0 时返回占位符。"""
+    if not ts:
+        return "-"
+    try:
+        return time.strftime("%Y-%m-%d %H:%M", time.localtime(ts))
+    except Exception:
+        return str(ts)
+
+
+def _handle_connected_cron(client: "DaemonClient", user_input: str, _out) -> None:
+    """
+    [具身改进 A1] /cron 命令分发：
+      /cron               等价于 /cron list
+      /cron list          展示所有 cron job
+      /cron run <job_id>  立即触发一次
+    """
+    parts = user_input.split()
+    sub = parts[1].lower() if len(parts) > 1 else "list"
+
+    if sub == "run":
+        if len(parts) < 3:
+            _out("[daemon] usage: /cron run <job_id>")
+            return
+        job_id = parts[2]
+        result = client.run_cron_job(job_id)
+        if result is None:
+            _out(f"[daemon] \u2717 Failed to run job {job_id!r}（daemon 未响应或该 job 不存在）")
+        else:
+            _out(f"[daemon] \u2713 Triggered job {job_id!r}")
+        return
+
+    # 默认 / "list"：展示 job 列表
+    data = client.list_cron_jobs()
+    if data is None:
+        _out("[daemon] \u2717 Failed to fetch cron jobs（daemon 未响应）")
+        return
+    jobs = data.get("jobs", [])
+    if not jobs:
+        note = data.get("note", "")
+        _out(f"[daemon] (no cron jobs){'  ' + note if note else ''}")
+        return
+    _out(f"[daemon] Cron jobs ({len(jobs)}):")
+    for j in jobs:
+        flag = "on " if j.get("enabled") else "off"
+        next_run = j.get("next_run_str") or _fmt_ts(j.get("next_run_at"))
+        _out(
+            f"  [{flag}] {j.get('id', '?')}  {j.get('name', '')}"
+            f"  schedule={j.get('schedule', '')}  next_run={next_run}"
+            f"  run_count={j.get('run_count', 0)}"
+        )
+
+
+def _handle_connected_goals(client: "DaemonClient", _out) -> None:
+    """[具身改进 A1] /goals：展示 GoalBacklog 的 Goal/Objective 层级。"""
+    data = client.list_goals()
+    if data is None:
+        _out("[daemon] \u2717 Failed to fetch goals（daemon 未响应）")
+        return
+    goals = data.get("goals", [])
+    objectives = data.get("objectives", [])
+
+    if not goals and not objectives:
+        _out("[daemon] (no active goals/objectives)")
+        return
+
+    if goals:
+        _out(f"[daemon] Active goals ({len(goals)}):")
+        for g in goals:
+            _out(
+                f"  \u25cb {g.get('id', '?')}  [{g.get('status', '?')}]"
+                f"  pri={g.get('priority', '-')}  {g.get('title', '')}"
+            )
+    if objectives:
+        _out(f"[daemon] Active objectives ({len(objectives)}):")
+        for o in objectives:
+            note = o.get("progress_notes") or ""
+            note_suffix = f"  — {note}" if note else ""
+            _out(
+                f"  \u25aa {o.get('id', '?')}  [{o.get('status', '?')}]"
+                f"  {o.get('title', '')}{note_suffix}"
+            )
+
+
+def _handle_connected_digest(client: "DaemonClient", _out) -> None:
+    """
+    [具身改进 A1] /digest（晨报视图）：自主化档位 + 待办目标 + 最近活动摘要。
+    对接 /v1/self/status + /v1/autonomous/status，两者合并展示。
+    """
+    auto = client.get_autonomous_status()
+    digest = client.get_digest()
+
+    if auto is None and digest is None:
+        _out("[daemon] \u2717 Failed to fetch digest（daemon 未响应）")
+        return
+
+    if auto is not None:
+        level = auto.get("autonomy_level", "unknown")
+        next_tick = auto.get("next_tick_in")
+        next_tick_str = f"{next_tick:.0f}s" if isinstance(next_tick, (int, float)) else "-"
+        _out(f"[daemon] autonomy_level={level}  next_tick_in={next_tick_str}")
+        cron_jobs = auto.get("cron_jobs") or []
+        if cron_jobs:
+            _out(f"         cron_jobs: {len(cron_jobs)} 个（详情见 /cron）")
+        oe = auto.get("objective_executions")
+        if oe:
+            _out(f"         objective_executions: {oe}")
+
+    if digest is not None:
+        goals = digest.get("goals", {})
+        active_goals = goals.get("active_goals", [])
+        active_objectives = goals.get("active_objectives", [])
+        _out(f"         active_goals={len(active_goals)}  active_objectives={len(active_objectives)}")
+
+        recent = digest.get("recent_activity") or []
+        if recent:
+            _out(f"[daemon] Recent activity (last {min(len(recent), 5)} of {len(recent)}):")
+            for rec in recent[-5:]:
+                ts = _fmt_ts(rec.get("ts") or rec.get("timestamp"))
+                kind = rec.get("type", "event")
+                _out(f"  {ts}  {kind}: {str(rec)[:120]}")
+
+        pool = digest.get("session_pool")
+        if pool:
+            _out(f"         session_pool: active={pool.get('active_count', 0)}")
+
+
 def run_connected_repl(daemon_info: dict) -> None:
     """
     CLI 连接模式：连接到已存在的 daemon，REPL 输入通过 HTTP API 提交。
@@ -1359,7 +1543,7 @@ def run_connected_repl(daemon_info: dict) -> None:
         label = f"session {chosen_sid}" if ok else f"session {chosen_sid} (resume may have failed)"
 
     _out(f"[daemon] \u2713 {label}")
-    _out("[daemon] '/session list' \u5207\u6362\uff0c'/session new' \u65b0\u5efa\uff0c'exit' \u65ad\u5f00")
+    _out("[daemon] '/session list' \u5207\u6362\uff0c'/session new' \u65b0\u5efa\uff0c'/cron' '/goals' '/digest' \u67e5\u770b\u81ea\u4e3b\u4efb\u52a1\uff0c'exit' \u65ad\u5f00")
     _out("")
 
     # agent 回复前缀，格式与 daemon 本身终端 A 一致（ui/renderer.py 里
@@ -1615,6 +1799,19 @@ def run_connected_repl(daemon_info: dict) -> None:
                 state = st.get("state", "?")
                 _out(f"[daemon] session={cur}  state={state}")
                 _out("         /session list  /session new")
+                continue
+
+            # ── [具身改进 A1] /cron /goals /digest：connected REPL 命令对等 ──
+            if cmd.startswith("/cron"):
+                _handle_connected_cron(client, user_input, _out)
+                continue
+
+            if cmd.startswith("/goals"):
+                _handle_connected_goals(client, _out)
+                continue
+
+            if cmd in ("/digest", "/autonomous", "/autonomous status"):
+                _handle_connected_digest(client, _out)
                 continue
 
             # ── 发送消息 ──────────────────────────────────────────────────────

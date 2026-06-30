@@ -68,6 +68,8 @@ class ToolExecutor:
         tracer=None,               # Optional[SessionTracer]，Stage 6
         turn_id_getter=None,       # Optional[Callable[[], int]]，供 tracer 用
         history_getter=None,       # Optional[Callable[[], list]]，供 SYS-DEDUP 跨调用去重
+        reminder_mgr=None,         # Optional[ReminderManager]，[具身改进 A3] 前馈控制
+        inject_reminder=None,      # Optional[Callable[[Reminder], None]]，由 Agent 提供的注入回调
     ) -> None:
         self.cfg = cfg
         self.registry = registry
@@ -84,6 +86,8 @@ class ToolExecutor:
         self._tracer = tracer
         self._turn_id_getter = turn_id_getter
         self._history_getter = history_getter
+        self._reminder_mgr = reminder_mgr
+        self._inject_reminder = inject_reminder
 
     def execute_all(
         self,
@@ -167,6 +171,16 @@ class ToolExecutor:
         for tc in response.tool_calls:
             R.print_tool_call(tc.name, tc.input, verbose=self.cfg.verbose)
             self.stats.tool_calls += 1
+
+            # [具身改进 A3] pre_tool reminder：前馈控制，在工具真正执行前
+            # （甚至在 PreToolUse hook 和权限检查之前）注入警示，而不是
+            # 等出错/出结果后再补救。失败不应阻断主流程，故静默吞掉异常。
+            if self._reminder_mgr is not None and self._inject_reminder is not None:
+                try:
+                    for _r in self._reminder_mgr.check_pre_tool(tc.name, tc.input):
+                        self._inject_reminder(_r)
+                except Exception:
+                    pass
 
             # [SYS-HOOKS] PreToolUse：可阻断或修改工具输入
             tool_input = tc.input

@@ -107,6 +107,15 @@ class ReminderManager:
         matched = self._matcher.match_post_tool(tool_name, output_str)
         return self._limit(matched)
 
+    def check_pre_tool(
+        self, tool_name: str, tool_input: Optional[dict] = None
+    ) -> List[Reminder]:
+        """[具身改进 A3] 工具调用前调用。返回待注入的 reminder 列表（前馈控制）。"""
+        if not self.enabled or not getattr(self._cfg, "pre_tool_enabled", True):
+            return []
+        matched = self._matcher.match_pre_tool(tool_name, tool_input)
+        return self._limit(matched)
+
     def check_user_intent(self, user_message: str) -> List[Reminder]:
         """用户消息进入时调用。返回待注入的 reminder 列表。"""
         if not self.enabled or not self._cfg.user_intent_enabled:

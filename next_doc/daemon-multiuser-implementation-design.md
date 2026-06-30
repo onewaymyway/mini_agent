@@ -1264,7 +1264,17 @@ daemon 这部分功能完全没有涉及 `cli/daemon.py`/`permissions.py`——
   结果完全一致，4 个失败是同一批预先存在、与两边改动都无关的问题
   （`jsonschema` 模块缺失、格式纠错标签判定、日志截断边界）。
 
-### 12.3 已知的功能性缺口（合并后浮现，非 bug）
+### 12.3 已知的功能性缺口（合并后浮现，非 bug）—— ✅ 已修复（见具身改进 v3 A1）
+
+> 更新：本节描述的缺口已在《embodied_agent_improvement_plan_v3.md》A1
+> 中实现。`run_connected_repl()` 现已支持 `/cron`、`/cron run <job_id>`、
+> `/goals`、`/digest` 四个命令，转发到 `DaemonClient` 新增的
+> `list_cron_jobs()`/`run_cron_job()`/`list_goals()`/
+> `get_autonomous_status()`/`get_digest()` 方法，对应 HTTP 端点
+> `/v1/cron/jobs`、`/v1/cron/jobs/{id}/run`、`/v1/goals`、
+> `/v1/autonomous/status`、`/v1/self/status`（"digest"语义落在
+> `/v1/self/status`，没有单独新增 `/v1/digest` 路由）。以下原始记录保留
+> 作为问题背景。
 
 connected 模式（`cli/daemon.py::run_connected_repl`）目前只识别
 `/session list`/`/session new`/`/session`/`exit` 这几个内置命令——

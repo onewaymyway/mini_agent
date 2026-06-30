@@ -48,8 +48,13 @@ def handle_evolution_cmd(args: list[str], agent=None) -> None:
         _handle_diff(repo, rest)
     elif sub == "revert":
         _handle_revert(repo, rest, agent)
+    elif sub in ("lessons-to-reminders", "lessons2reminders"):
+        _handle_lessons_to_reminders(agent)
     else:
-        R.print_error("Usage: /evolution [log [N] | show <commit> | diff <commit> | revert <commit>]")
+        R.print_error(
+            "Usage: /evolution [log [N] | show <commit> | diff <commit> | "
+            "revert <commit> | lessons-to-reminders]"
+        )
 
 
 # ── /evolution log ───────────────────────────────────────────────────────────
@@ -212,6 +217,68 @@ def _record_revert_lesson(agent, reverted: "CommitInfo", revert_commit: str) -> 
             agent._append_memory_delta(entry)
     except Exception as e:
         R.print_warning(f"[evolution] failed to record revert lesson: {e}")
+
+
+# ── /evolution lessons-to-reminders ──────────────────────────────────────────
+
+def _handle_lessons_to_reminders(agent) -> None:
+    """
+    [具身改进 B2] 扫描 lesson memory，把达到阈值的分组转化为 pre_tool reminder。
+
+    - human_feedback 来源的分组：直接激活（写入 reminder 目录，立即生效）。
+    - 仅 self_reflection 来源、达到 T1 聚合门槛（occurrence≥3 且来自≥2个
+      session）的分组：写成草稿（drafts/ 子目录，enabled: false），需要
+      用户手动审阅后提升（lesson_to_reminder.promote_draft()）。
+    """
+    if agent is None or getattr(agent, "_memory", None) is None:
+        R.print_error("[evolution] 当前 agent 未启用 memory，无法扫描 lesson。")
+        return
+
+    from pathlib import Path
+    from mini_agent.evolution.lesson_to_reminder import LessonToReminderBridge
+
+    reminder_cfg = getattr(getattr(agent, "cfg", None), "reminder", None)
+    custom_dir = getattr(reminder_cfg, "custom_dir", None) if reminder_cfg else None
+    reminder_dir = Path(custom_dir) if custom_dir else (
+        Path(agent.cfg.project_root) / ".agent" / "reminders"
+    )
+
+    entries = agent._memory.all_entries()
+    bridge = LessonToReminderBridge(reminder_dir)
+    generated = bridge.scan(entries)
+
+    if not generated:
+        R.print_info("[evolution] 没有达到阈值的 lesson 分组，未生成新的 reminder。")
+        return
+
+    written = bridge.write(generated)
+    activated = [p for gr, p in zip(generated, written) if gr.activated]
+    drafted = [p for gr, p in zip(generated, written) if not gr.activated]
+
+    if activated:
+        R.print_info(f"[evolution] 已激活 {len(activated)} 条 reminder（human_feedback 来源）：")
+        for p in activated:
+            R.print_info(f"  + {p}")
+    if drafted:
+        R.print_info(
+            f"[evolution] 已生成 {len(drafted)} 条草稿（达到 T1 聚合门槛，待审阅）："
+        )
+        for p in drafted:
+            R.print_info(f"  ~ {p}")
+
+    # 新写入的 reminder 立即生效。若 cfg.reminder.custom_dir 此前未设置（默认
+    # None），ReminderManager 内部的 loader 不知道 reminder_dir 这个新目录，
+    # 需要先把它接上，reload() 才能真正扫到刚写的文件（drafts/ 不受影响，
+    # 本来就不会被 ReminderLoader 扫描到）。
+    if activated and getattr(agent, "_reminder_mgr", None) is not None:
+        try:
+            if reminder_cfg is not None and getattr(reminder_cfg, "custom_dir", None) is None:
+                reminder_cfg.custom_dir = reminder_dir
+                agent._reminder_mgr._loader._custom_dir = reminder_dir
+            agent._reminder_mgr.reload()
+            R.print_info("[evolution] ReminderManager 已热重载。")
+        except Exception as e:
+            R.print_warning(f"[evolution] ReminderManager 热重载失败: {e}")
 
 
 # ── 辅助 ──────────────────────────────────────────────────────────────────────

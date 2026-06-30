@@ -68,6 +68,12 @@ enabled: true
 | `post_tool` | 工具调用成功后（基于输出内容）| `tool_name`、`output_pattern` |
 | `user_intent` | 用户消息进入时 | `keyword`、`intent_pattern` |
 | `pattern` | assistant 输出文本后 | `text_pattern` |
+| `pre_tool` | 工具调用**前**（前馈控制，[具身改进 A3]）| `tool_name` |
+
+> `pre_tool` 在工具真正执行前触发（甚至在权限检查、PreToolUse hook 之前），
+> 用于在危险/容易出错的操作发生前主动提醒，而不是等出错后再补救。
+> 暂不支持按参数内容匹配，只能按工具名（留空则对任意工具都生效）。
+> 受 `ReminderConfig.pre_tool_enabled` 开关控制（默认开启）。
 
 ### condition 字段说明
 
@@ -75,7 +81,7 @@ enabled: true
 
 | 字段 | 适用事件 | 说明 |
 |------|----------|------|
-| `tool_name` | `tool_error`、`post_tool` | 匹配工具名，留空则匹配所有工具 |
+| `tool_name` | `tool_error`、`post_tool`、`pre_tool` | 匹配工具名，留空则匹配所有工具 |
 | `error_pattern` | `tool_error` | 匹配错误内容（正则），留空则所有该工具错误都触发 |
 | `error_category` | `tool_error` | **精确匹配**错误分类（非正则），见下方枚举值（Stage 6.4 新增）|
 | `output_pattern` | `post_tool` | 匹配工具成功输出内容 |

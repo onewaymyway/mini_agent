@@ -2,28 +2,40 @@
 workflow/runner.py — WorkflowRunner 工作流执行引擎
 
 核心职责：
-  1. 按依赖顺序（拓扑排序）执行步骤
+  1. 按依赖顺序（拓扑分层）执行步骤，同一层内互不依赖的步骤默认并发执行
+     （[具身改进 B3]，依赖 `cfg.workflow.parallel_enabled`/`max_parallel`，
+     单步骤可用 `WorkflowStep.allow_parallel=False` 强制串行）
   2. 步骤间数据传递：{step_id.output} / {step_id.score} 占位符替换
   3. 条件判断：condition 表达式决定步骤是否执行
   4. 角色 Agent 绑定：step.role 指定由哪个角色执行
   5. 动态参数注入：run_workflow(inputs={"code": "..."}) 替换 {code}
   6. 运行时状态追踪：每步状态、耗时、输出
 
+并发安全性说明（B3）：`_execute_with_main_agent()` 给每个步骤创建独立的
+`Agent` 实例（独立 history/独立 PermissionGuard），步骤之间不共享可变 Agent
+状态，这是"同层并发是安全的"的前提。唯一的跨线程共享可变状态是
+`step_results` dict，所有读写都通过 `_run_one_step()`/`_run_step_with_gate_retry()`
+里的 `results_lock` 保护。
+
 执行流程：
   WorkflowRunner.run(workflow_def, inputs)
-    → _topological_sort()
-    → for each step:
-        → _resolve_prompt()     # 替换占位符
-        → _eval_condition()     # 判断是否执行
-        → _execute_step()       # 调用主 Agent 或角色 Agent
-        → 记录 StepResult
+    → _compute_parallel_batches()    # 拓扑分层，得到可并发执行的 batch 列表
+    → for each batch:
+        → 层内并发执行（ThreadPoolExecutor，allow_parallel=False 的步骤单独串行跑）
+          → _run_one_step()
+              → _resolve_prompt()     # 替换占位符
+              → _eval_condition()     # 判断是否执行
+              → _run_step_with_gate_retry() → _execute_step()  # 调用主 Agent 或角色 Agent
+              → 记录 StepResult
     → 返回 WorkflowRunResult
 """
 
 from __future__ import annotations
 
 import re
+import threading
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from typing import Any, Optional, TYPE_CHECKING
 
@@ -104,9 +116,11 @@ class WorkflowRunner:
         # 供 _run_step_with_gate_retry 引用步骤定义
         self._current_wf_steps = wf.steps
 
-        # 拓扑排序
+        # [具身改进 B3] 拓扑分层：同一层内互不依赖的步骤可以并发执行。
+        # 层与层之间仍然严格按依赖顺序推进（下一层开始前，上一层已全部完成），
+        # 不破坏 depends_on 语义，只是把"同层内"的串行遍历换成并发。
         try:
-            ordered = self._topological_sort(wf)
+            batches = self._compute_parallel_batches(wf)
         except ValueError as e:
             return WorkflowRunResult(
                 workflow_name=wf.name,
@@ -115,58 +129,51 @@ class WorkflowRunner:
                 total_duration=time.monotonic() - t_start,
             )
 
-        for step in ordered:
-            R.print_info(f"[Workflow] 步骤：{step.id}（{step.name}）")
+        # step_results 在并发批次内会被多个线程同时读写（gate-retry 重跑依赖步骤时
+        # 会写回 step_results[dep_id]），用一把锁保护写操作，避免极端情况下的竞态。
+        results_lock = threading.Lock()
 
-            # 依赖步骤是否都完成
-            dep_failed = [
-                d for d in step.depends_on
-                if step_results.get(d, StepResult(d, StepStatus.PENDING)).status
-                   in (StepStatus.FAILED, StepStatus.PENDING)
-            ]
-            if dep_failed:
-                R.print_warning(f"[Workflow] 步骤 {step.id} 因依赖失败被跳过：{dep_failed}")
-                step_results[step.id] = StepResult(
-                    step_id=step.id,
-                    status=StepStatus.SKIPPED,
-                    error=f"依赖步骤未完成：{dep_failed}",
-                )
+        for batch in batches:
+            # 一层内，把允许并发的步骤和被显式禁止并发的步骤分开：
+            # 后者依次串行跑（彼此之间、与并发组之间都没有依赖边，跑的先后顺序
+            # 不影响正确性），前者用线程池并发跑。
+            parallel_steps = [s for s in batch if s.allow_parallel]
+            serial_steps = [s for s in batch if not s.allow_parallel]
+
+            for step in serial_steps:
+                self._run_one_step(step, step_results, inputs, results_lock)
+
+            if not parallel_steps:
                 continue
 
-            # 条件判断
-            if step.condition and not self._eval_condition(step.condition, step_results):
-                R.print_info(f"[Workflow] 步骤 {step.id} 条件不满足，跳过：{step.condition!r}")
-                step_results[step.id] = StepResult(
-                    step_id=step.id,
-                    status=StepStatus.SKIPPED,
-                )
-                continue
-
-            # 替换 prompt 占位符
-            try:
-                resolved_prompt = self._resolve_prompt(step.prompt, step_results, inputs)
-            except KeyError as e:
-                step_results[step.id] = StepResult(
-                    step_id=step.id,
-                    status=StepStatus.FAILED,
-                    error=f"Prompt 占位符缺失：{e}",
-                )
-                continue
-
-            # 执行步骤（含质检门 retry 循环）
-            sr = self._run_step_with_gate_retry(
-                step, resolved_prompt, step_results, inputs
+            use_concurrency = (
+                getattr(getattr(self._cfg, "workflow", None), "parallel_enabled", True)
+                and len(parallel_steps) > 1
+                and getattr(getattr(self._cfg, "workflow", None), "max_parallel", 4) > 1
             )
-            step_results[step.id] = sr
+            if not use_concurrency:
+                for step in parallel_steps:
+                    self._run_one_step(step, step_results, inputs, results_lock)
+                continue
 
-            status_icon = {"done": "✅", "skipped": "⏭️", "failed": "❌", "gate_failed": "🔄"}.get(
-                sr.status.value, "❓"
+            max_workers = min(
+                len(parallel_steps),
+                max(1, getattr(getattr(self._cfg, "workflow", None), "max_parallel", 4)),
             )
             R.print_info(
-                f"[Workflow] {status_icon} 步骤 {step.id} 完成 "
-                f"({sr.duration_seconds:.1f}s)"
-                + (f" 评分：{int(sr.score * 100)}/100" if sr.score is not None else "")
+                f"[Workflow] 并发执行本层 {len(parallel_steps)} 个步骤"
+                f"（worker={max_workers}）：{[s.id for s in parallel_steps]}"
             )
+            with ThreadPoolExecutor(max_workers=max_workers) as pool:
+                futures = {
+                    pool.submit(self._run_one_step, step, step_results, inputs, results_lock): step
+                    for step in parallel_steps
+                }
+                for future in as_completed(futures):
+                    # _run_one_step 内部已经把结果写进 step_results 并吞掉了异常
+                    # （转成 FAILED StepResult），这里不需要再处理返回值/异常；
+                    # 用 as_completed 只是为了等待本层全部完成再进入下一层。
+                    future.result()
 
         total_duration = time.monotonic() - t_start
         all_results = list(step_results.values())
@@ -183,6 +190,118 @@ class WorkflowRunner:
             step_results=all_results,
             total_duration=total_duration,
         )
+
+    def _run_one_step(
+        self,
+        step: WorkflowStep,
+        step_results: dict[str, StepResult],
+        inputs: dict,
+        results_lock: "threading.Lock",
+    ) -> None:
+        """
+        执行单个步骤的完整流程（依赖检查 → 条件判断 → prompt 解析 → 执行 →
+        写回 step_results），抽出来是因为并发批次和串行批次现在共用同一套逻辑
+        （之前这些步骤直接摊在 run() 的 for 循环体里）。
+
+        写回 step_results 时加锁：并发批次里多个线程会同时调用本方法，
+        且 gate-retry 重跑前序步骤时会再次写 step_results[dep_id]，没有锁的话
+        理论上存在竞态（dict 本身线程安全，但"先读 status 判断依赖是否完成，
+        再写自己的结果"这个复合操作不是原子的）。
+        """
+        import mini_agent.ui.renderer as R
+
+        with results_lock:
+            R.print_info(f"[Workflow] 步骤：{step.id}（{step.name}）")
+            dep_failed = [
+                d for d in step.depends_on
+                if step_results.get(d, StepResult(d, StepStatus.PENDING)).status
+                   in (StepStatus.FAILED, StepStatus.PENDING)
+            ]
+            if dep_failed:
+                R.print_warning(f"[Workflow] 步骤 {step.id} 因依赖失败被跳过：{dep_failed}")
+                step_results[step.id] = StepResult(
+                    step_id=step.id,
+                    status=StepStatus.SKIPPED,
+                    error=f"依赖步骤未完成：{dep_failed}",
+                )
+                return
+
+            if step.condition and not self._eval_condition(step.condition, step_results):
+                R.print_info(f"[Workflow] 步骤 {step.id} 条件不满足，跳过：{step.condition!r}")
+                step_results[step.id] = StepResult(
+                    step_id=step.id,
+                    status=StepStatus.SKIPPED,
+                )
+                return
+
+            try:
+                resolved_prompt = self._resolve_prompt(step.prompt, step_results, inputs)
+            except KeyError as e:
+                step_results[step.id] = StepResult(
+                    step_id=step.id,
+                    status=StepStatus.FAILED,
+                    error=f"Prompt 占位符缺失：{e}",
+                )
+                return
+
+        # 实际执行（LLM 调用等耗时操作）故意放在锁外：并发批次的核心收益就是
+        # 让多个步骤的 LLM 调用真正同时在跑，锁只保护 step_results 的读写。
+        sr = self._run_step_with_gate_retry(step, resolved_prompt, step_results, inputs, results_lock)
+
+        with results_lock:
+            step_results[step.id] = sr
+            status_icon = {"done": "✅", "skipped": "⏭️", "failed": "❌", "gate_failed": "🔄"}.get(
+                sr.status.value, "❓"
+            )
+            R.print_info(
+                f"[Workflow] {status_icon} 步骤 {step.id} 完成 "
+                f"({sr.duration_seconds:.1f}s)"
+                + (f" 评分：{int(sr.score * 100)}/100" if sr.score is not None else "")
+            )
+
+    # ── [具身改进 B3] 并行批次计算 ──────────────────────────────────────────────
+
+    def _compute_parallel_batches(self, wf: WorkflowDef) -> list[list[WorkflowStep]]:
+        """
+        Kahn 算法的分层版本：每一层（batch）包含当前所有"依赖已全部完成"的
+        步骤，层内步骤互相之间没有依赖边——这正是可以安全并发执行的条件
+        （层与层之间仍然严格按依赖顺序推进）。
+
+        和 _topological_sort() 的区别只是返回结构：那个返回扁平列表（单一
+        全局顺序），这个返回"层"的列表，保留了"哪些步骤理论上互不依赖、
+        可以同时跑"这个信息。循环依赖检测逻辑与 _topological_sort 一致。
+        """
+        step_map = {s.id: s for s in wf.steps}
+        in_degree: dict[str, int] = {s.id: 0 for s in wf.steps}
+        for step in wf.steps:
+            for dep in step.depends_on:
+                if dep not in step_map:
+                    raise ValueError(f"步骤 {step.id!r} 依赖不存在的步骤 {dep!r}")
+                in_degree[step.id] += 1
+
+        dependents: dict[str, list[str]] = {s.id: [] for s in wf.steps}
+        for step in wf.steps:
+            for dep in step.depends_on:
+                dependents[dep].append(step.id)
+
+        ready = [s for s in wf.steps if in_degree[s.id] == 0]
+        batches: list[list[WorkflowStep]] = []
+        completed = 0
+
+        while ready:
+            batches.append(ready)
+            completed += len(ready)
+            next_ready: list[WorkflowStep] = []
+            for step in ready:
+                for dep_id in dependents[step.id]:
+                    in_degree[dep_id] -= 1
+                    if in_degree[dep_id] == 0:
+                        next_ready.append(step_map[dep_id])
+            ready = next_ready
+
+        if completed != len(wf.steps):
+            raise ValueError("工作流存在循环依赖，无法执行")
+        return batches
 
     # ── 拓扑排序 ────────────────────────────────────────────────────────────
 
@@ -291,6 +410,7 @@ class WorkflowRunner:
         resolved_prompt: str,
         step_results: dict[str, StepResult],
         inputs: dict,
+        results_lock: "Optional[threading.Lock]" = None,
     ) -> StepResult:
         """
         执行步骤，如果是 evaluator 且质检不达标，
@@ -301,6 +421,10 @@ class WorkflowRunner:
           2. 找到 evaluator 依赖的前序步骤（通常是被评估的那个步骤）
           3. 带着 evaluator 的反馈作为附加上下文重跑前序步骤
           4. 再次运行 evaluator，最多重跑 retry_on_gate_fail 次
+
+        [具身改进 B3] results_lock：并发批次下，对 step_results 的写入（重跑
+        依赖步骤后写回 dep 的新结果）需要加锁——传 None 时表示调用方明确知道
+        不存在并发（如单测直接调用本方法），跳过加锁。
         """
         import mini_agent.ui.renderer as R
 
@@ -336,7 +460,11 @@ class WorkflowRunner:
 
                 R.print_info(f"[Workflow] 🔄 重跑步骤 {dep_id}（含反馈）")
                 dep_sr = self._execute_step(dep_step_def, dep_prompt_with_feedback, step_results)
-                step_results[dep_id] = dep_sr
+                if results_lock is not None:
+                    with results_lock:
+                        step_results[dep_id] = dep_sr
+                else:
+                    step_results[dep_id] = dep_sr
 
             # 重新生成 evaluator 的 prompt（依赖步骤输出已更新）
             try:

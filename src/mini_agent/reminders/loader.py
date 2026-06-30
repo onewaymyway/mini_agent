@@ -7,7 +7,7 @@ Reminder 文件格式示例（.md）：
 
     ---
     name: bash_permission_error
-    trigger_event: tool_error          # tool_error | post_tool | user_intent | pattern
+    trigger_event: tool_error          # tool_error | post_tool | user_intent | pattern | pre_tool
     condition:
       tool_name: bash                  # 可选：限定工具名（正则）
       error_pattern: "Permission denied"  # 正则匹配错误/输出内容
@@ -39,6 +39,10 @@ TRIGGER_TOOL_ERROR   = "tool_error"   # 工具调用出错
 TRIGGER_POST_TOOL    = "post_tool"    # 工具调用成功后（基于输出内容）
 TRIGGER_USER_INTENT  = "user_intent"  # 用户消息进入时
 TRIGGER_PATTERN      = "pattern"      # assistant 输出文本模式
+# [具身改进 A3] 前馈控制：工具执行前触发，用于在危险操作发生前注入警示，
+# 而不是等出错/出结果后再补救。条件字段复用 condition.tool_name；
+# 暂不支持按参数内容匹配（tool_input 结构多变，先覆盖"按工具名预警"这一最常见场景）。
+TRIGGER_PRE_TOOL     = "pre_tool"     # 工具调用前（前馈控制）
 
 
 @dataclass
@@ -253,7 +257,7 @@ class ReminderLoader:
         trigger_event = str(meta.get("trigger_event", "")).strip()
         if trigger_event not in (
             TRIGGER_TOOL_ERROR, TRIGGER_POST_TOOL,
-            TRIGGER_USER_INTENT, TRIGGER_PATTERN
+            TRIGGER_USER_INTENT, TRIGGER_PATTERN, TRIGGER_PRE_TOOL,
         ):
             if self._verbose:
                 print(

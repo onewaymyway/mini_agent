@@ -513,6 +513,19 @@ class Agent:
                 import warnings
                 warnings.warn(f"[ReminderManager] 初始化失败，已禁用: {_e}")
 
+        # [具身改进 B1] ProprioceptionModule：本体感知快照，O(1) 不调用 LLM
+        self._proprioception: Optional["ProprioceptionModule"] = None
+        self._last_tool_names: list = []  # 供 sense() 估算 risk_perception
+        if getattr(self.cfg, "proprioception", None) and self.cfg.proprioception.enabled:
+            from mini_agent.perception.proprioception import ProprioceptionModule
+            self._proprioception = ProprioceptionModule()
+
+        # [具身改进 A3] ReminderManager 在 ToolExecutor 构造之后才初始化完成，
+        # 这里补注入 reminder_mgr + 注入回调，使 pre_tool 前馈检查可用
+        # （与 _mcp_manager 的延迟注入方式一致）。
+        self._tool_executor._reminder_mgr = self._reminder_mgr
+        self._tool_executor._inject_reminder = self._inject_reminder
+
         # ── [SYS-INTROSPECTION] 自感知与运行时调整工具 ─────────────────────────
         # 注册 agent_status / agent_inspect / agent_patch / agent_policy 四个工具，
         # 让 agent 具备实时感知并动态调整自身状态的能力。
@@ -2244,6 +2257,9 @@ class Agent:
         """Keep calling the LLM until it produces a final text response (no tool calls)."""
         final_text = ""
         loop_count = 0
+        # [具身改进 B1] 本轮（一次 _agentic_loop 调用）内是否已经注入过元认知提示，
+        # 避免 frustration 持续超阈值时每个 loop_count 都重复注入刷屏。
+        _meta_hint_emitted_this_call = False
         # [SYS-FORMAT-CORRECTION] 本轮（一次 _agentic_loop 调用）内已消耗的格式纠错重试次数。
         # 与 loop_count 分开计数：纠错重试不应挤占 max_turns 预算，
         # 但仍需独立上限防止模型持续输出坏格式导致死循环。
@@ -2264,6 +2280,7 @@ class Agent:
             # [SYS-TOKEN] token 预估 + 自动压缩
             # _build_system() 命中 turn 级缓存，与后续 _call_llm() 共享同一字符串，
             # 不重复构建 system prompt。
+            _budget_pct = 0.0  # [具身改进 B1] 默认值，token 预估关闭时 proprioception 仍可读取（视为 0）
             if self.cfg.token_estimate_enabled or self.cfg.auto_compress_enabled:
                 from mini_agent.llm.system_tool_call import convert_tool_use_to_text
                 # [Stage 6 / 6.1] build_system 追踪（首次调用时有实际构建成本）
@@ -2293,6 +2310,38 @@ class Agent:
                     # 压缩后 system 内容可能变化，清除缓存强制重建
                     self._cached_system = None
                     self._auto_compress_history()
+
+            # [具身改进 B1] 本体感知快照：每轮 LLM 调用前 sense 一次。
+            # O(1)，不调用 LLM；frustration 超阈值时注入一次元认知提示，
+            # 建议模型停下来向用户汇报困境而不是盲目重试——但不强制中断循环，
+            # 决定权仍在模型/用户手里（前馈控制 + 保留人类控制权）。
+            if self._proprioception is not None:
+                _pp_state = self._proprioception.sense(
+                    cognitive_load_ratio=_budget_pct,
+                    recent_tool_names=self._last_tool_names,
+                    assistant_text=final_text,
+                    turns_used=loop_count,
+                    max_turns=self.cfg.max_turns,
+                )
+                if self.cfg.proprioception.verbose:
+                    R.print_info(f"[proprioception] {_pp_state.to_dict()}")
+                if self.cfg.proprioception.trace_enabled and self._tracer:
+                    self._tracer.record_internal_state(
+                        turn_id=self.stats.turns, state=_pp_state.to_dict()
+                    )
+                if (
+                    not _meta_hint_emitted_this_call
+                    and _pp_state.frustration >= self.cfg.proprioception.frustration_threshold
+                    and self._proprioception.consecutive_failures
+                        >= self.cfg.proprioception.consecutive_failure_threshold
+                ):
+                    _meta_hint_emitted_this_call = True
+                    self._hist.append_user(
+                        "[proprioception] 系统提示（非用户输入）：最近连续 "
+                        f"{self._proprioception.consecutive_failures} 次工具调用失败，"
+                        "挫败感信号偏高。建议先停下来总结目前卡在哪里、是否需要换一种方法，"
+                        "或者直接向用户说明遇到的困难并请求指引，而不是继续重复同样的尝试。"
+                    )
 
             # [Stage 6 / 6.1] call_llm 追踪
             # [AUTO-COMPACT] 捕获上下文窗口超限错误，自动压缩历史后在同一 loop 内重试。
@@ -2403,6 +2452,14 @@ class Agent:
             else:
                 tool_results, result_strs = self._execute_tools(response)
             self._hist.append_tool_results(response.tool_calls, result_strs)
+
+            # [具身改进 B1] 更新本体感知状态：记录最近工具名（供下一轮 risk_perception
+            # 估算）+ 按每个工具结果是否出错累积/衰减 frustration。
+            if self._proprioception is not None:
+                self._last_tool_names = [tc.name for tc in response.tool_calls]
+                from mini_agent.perception.lesson_rules import is_tool_error as _ite_pp
+                for _r in result_strs:
+                    self._proprioception.record_tool_outcome(success=not _ite_pp(_r))
 
             # [SYS-REMINDER] 工具执行后：检查出错 / 成功输出，注入对应 reminder
             self._inject_reminders_for_tool_results(response.tool_calls, result_strs)

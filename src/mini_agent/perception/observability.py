@@ -201,6 +201,24 @@ class SessionTracer:
         }
         self._append(entry)
 
+    def record_internal_state(self, *, turn_id: int, state: dict) -> None:
+        """
+        [具身改进 B1] 写入一次 ProprioceptionModule.sense() 快照到 traces.jsonl。
+
+        phase="internal_state"，不计入 elapsed_ms（这是一次 O(1) 快照，没有
+        耗时意义）。Phase G 扫描可以读取这类记录，分析 frustration /
+        cognitive_load 的历史趋势（"某类任务系统性地让 agent 感到挫败"）。
+        """
+        entry: dict = {
+            "session_id": self._session_id,
+            "turn_id":    turn_id,
+            "phase":      "internal_state",
+            "started_at": time.time(),
+            "elapsed_ms": 0.0,
+            "state":      state,
+        }
+        self._append(entry)
+
     def get_summary(self) -> dict:
         """
         读取本 session 的 traces.jsonl，返回聚合摘要（供 /diagnostics 使用）。

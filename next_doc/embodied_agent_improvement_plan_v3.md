@@ -4,6 +4,65 @@
 > **前身文档**：`embodied_agent_improvement_plan_v2.md`（基于旧代码，部分设计已被实现或架构已变）。
 > **定位**：在现有架构的真实接缝上落地具身智能理念，不重复已实现的内容，不悬空设计。
 
+> **实施进度更新（阶段 A 已完成）**：
+> - **A1 Connected REPL 完整命令对等**：✅ 已实现。`cli/daemon.py` 新增
+>   `DaemonClient.list_cron_jobs/run_cron_job/list_goals/get_autonomous_status/get_digest`
+>   以及 `_handle_connected_cron/_handle_connected_goals/_handle_connected_digest`，
+>   `run_connected_repl()` 现支持 `/cron`、`/cron run <job_id>`、`/goals`、`/digest`。
+>   "digest"语义对接已有 `/v1/self/status`，未新增重复路由。测试见
+>   `tests/test_daemon_connected_repl_commands.py`。
+> - **A2 Lesson source 区分（human_feedback）**：核对代码库后发现**已经实现**
+>   （`perception/correction_detector.py` + `agent.py::_detect_and_record_correction`/
+>   `_on_edit_detected`，confidence=0.85，高于规则触发 lesson 的 0.6），本文档 §1.2
+>   表格中"未实现"的描述已过时，不需要重复开发。
+> - **A3 Reminder pre_tool 触发时机**：✅ 已实现。新增 `TRIGGER_PRE_TOOL` 触发类型
+>   （`reminders/loader.py`/`matcher.py`/`manager.py`）、`ReminderConfig.pre_tool_enabled`
+>   开关、`ToolExecutor` 在工具真正执行前（甚至权限检查/PreToolUse hook 之前）调用
+>   `reminder_mgr.check_pre_tool()` 并通过 Agent 注入的回调写入历史，新增示例
+>   reminder `prompts/reminders/large_file_read_warning.md`。测试见
+>   `tests/test_reminder_pre_tool.py`。
+> - **B1 ProprioceptionModule（本体感知模块）**：✅ 已实现。新增
+>   `perception/proprioception.py`（`AgentInternalState` + `ProprioceptionModule`，
+>   纯计算、不调用 LLM）、`ProprioceptionConfig`（默认开启），在
+>   `agent.py::_agentic_loop()` 中每轮 LLM 调用前 `sense()` 一次（cognitive_load
+>   复用已有的 token 预估 `_budget_pct`，risk_perception 基于最近工具名，
+>   energy_budget_ratio 基于剩余 turn 预算），工具执行后 `record_tool_outcome()`
+>   累积/衰减 frustration。frustration 超阈值且连续失败达标时注入一条元认知
+>   提示（建议模型停下来汇报困境），**不强制中断循环**——前馈控制 + 保留人类
+>   控制权。快照可选写入 `traces.jsonl`（`SessionTracer.record_internal_state`）。
+>   测试见 `tests/test_proprioception.py`（21 个用例，纯单元测试）。
+> - **B2 Lesson → Reminder 自动闭环**：✅ 已实现，但复用了比设计稿更成熟的
+>   已有基础设施——`perception/lesson_review.py`（Stage 3.1 已经实现的
+>   trigger 文本 Jaccard 相似度聚类 + T0/T1/T2/T3 门槛判定）此前只喂给
+>   evolution-agent 提案流程（`/evolve review`），未连到 reminder。新增
+>   `evolution/lesson_to_reminder.py::LessonToReminderBridge`，直接复用
+>   `group_lessons()` 的聚类结果：含 human_feedback 来源的分组直接激活
+>   （写入 reminder 目录，`pre_tool` 触发类型，依赖 A3），仅 self_reflection
+>   来源但达到 T1 门槛的分组写成草稿（`drafts/` 子目录，`enabled: false`，
+>   `ReminderLoader` 不递归子目录因此不会被自动加载，需要手动
+>   `promote_draft()` 提升）。CLI 入口：`/evolution lessons-to-reminders`
+>   （未接入 Phase G 自动周期扫描，作为手动触发的简化版本，后续可仿照
+>   `/evolve phase-g` 的模式接入周期触发）。测试见
+>   `tests/test_lesson_to_reminder.py`（12 个用例，含真实 `ReminderLoader`
+>   端到端解析校验）。
+> - **B3 Workflow 并发执行（depends_on 拓扑分析）**：✅ 已实现。新增
+>   `WorkflowRunner._compute_parallel_batches()`（Kahn 拓扑分层算法，循环/缺失
+>   依赖检测语义与原 `_topological_sort()` 一致），`run()` 改为按层执行，
+>   同一层内默认用 `ThreadPoolExecutor` 并发跑。并发安全性来自既有架构：
+>   `_execute_with_main_agent()` 本来就给每个步骤创建独立 `Agent` 实例（独立
+>   history/PermissionGuard），步骤间不共享可变 Agent 状态；唯一的跨线程
+>   共享状态 `step_results` dict 通过新增的 `results_lock` 保护读写。新增
+>   `WorkflowStep.allow_parallel`（默认 True）允许单步骤强制串行（应对
+>   depends_on 未声明的隐式副作用），新增 `WorkflowConfig.parallel_enabled`/
+>   `max_parallel` 全局开关。测试见 `tests/test_workflow_parallel.py`（17 个
+>   用例，含真实多线程并发数验证、gate-retry 在并发路径下的回归测试）。
+>   测试过程中发现一个改动前就存在、与本次改动无关的语义细节：步骤被
+>   condition 判定 SKIPPED 后，依赖它的下游步骤不会级联 SKIPPED（依赖检查
+>   只把 FAILED/PENDING 视为"未完成"）——按"不在本次改动范围内调整语义"
+>   的原则原样保留，仅在新增测试里补充注释说明。
+> - **B4 AffordanceMap / 阶段 C（AgentSelfModel 等）**：仍为未实现状态，
+>   维持本文档原有设计，留作后续迭代。
+
 ---
 
 ## 一、现状盘点——哪些已经实现，哪些还是空白
@@ -29,14 +88,14 @@
 
 | 功能 | v2 计划 § | 当前状态 | 优先级 |
 |------|----------|---------|-------|
-| 本体感知模块（ProprioceptionModule） | § 2.1 | 未实现 | P1 |
-| Connected REPL 完整命令支持 | 架构文档已知缺口 | 未实现 | P1 |
-| Lesson source 区分（human_feedback） | § 3.2 | 未实现，source 仅 "self_reflection" | P1 |
-| Reminder pre_tool 触发时机 | § 4.1 | 未实现 | P2 |
-| Lesson → Reminder 自动闭环 | § 4.1 | 未实现 | P2 |
+| 本体感知模块（ProprioceptionModule） | § 2.1 | ✅ 已实现（B1） | P1 |
+| Connected REPL 完整命令支持 | 架构文档已知缺口 | ✅ 已实现（A1） | P1 |
+| Lesson source 区分（human_feedback） | § 3.2 | ✅ 已实现（核对后发现是历史遗留，见上方说明） | P1 |
+| Reminder pre_tool 触发时机 | § 4.1 | ✅ 已实现（A3） | P2 |
+| Lesson → Reminder 自动闭环 | § 4.1 | ✅ 已实现（B2） | P2 |
 | 工具透明性（IntentActionMapper） | § 2.3 | 未实现 | P2 |
 | 余裕感知层（AffordanceMap） | § 3.1 | 未实现 | P2 |
-| Workflow 并发执行（depends_on 拓扑分析） | § 12.6 | depends_on 字段存在但串行执行 | P2 |
+| Workflow 并发执行（depends_on 拓扑分析） | § 12.6 | ✅ 已实现（B3） | P2 |
 | AgentSelfModel（命名澄清 + 聚合视图） | § 4.2 | 未实现，三个 profile 概念混用 | P3 |
 | 认知锚点文件 | § 3.3 | 未实现 | P3 |
 | 时间加权记忆激活 | § 1.1 | 未实现 | P3 |

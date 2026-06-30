@@ -388,6 +388,38 @@ class EnvInfoConfig:
 
 
 @dataclass
+class WorkflowConfig:
+    """[具身改进 B3] Workflow 并发执行配置。
+
+    `workflow/runner.py` 按 depends_on 拓扑分层（batch），同一层内互不依赖的
+    步骤默认并发执行（每个步骤本来就用独立的 Agent 实例，互不共享可变状态，
+    详见 runner.py 模块文档）。这里只控制"是否启用并发"和"并发上限"，
+    单步骤可通过 WorkflowStep.allow_parallel=False 单独强制串行。
+    """
+    parallel_enabled: bool = True
+    max_parallel: int = 4   # 同一拓扑层最多同时执行的步骤数
+
+
+@dataclass
+class ProprioceptionConfig:
+    """[具身改进 B1] 本体感知模块配置。
+
+    ProprioceptionModule 让 agent 对自身状态（认知负荷、不确定性、风险感知、
+    剩余预算、挫败感）有一个轮间快照，供主循环决定是否需要调整行为。
+    本身不调用 LLM，是 O(1) 的纯计算，默认开启不会带来明显成本。
+    """
+    enabled: bool = True
+    # frustration 超过该阈值且连续失败次数达到 consecutive_failure_threshold 时，
+    # 注入一条元认知提示（建议模型停下来汇报困境，而不是盲目重试）。
+    frustration_threshold: float = 0.5
+    consecutive_failure_threshold: int = 3
+    # 是否把每轮快照写入 traces.jsonl（供 Phase G 后续分析趋势）
+    trace_enabled: bool = True
+    # 调试：打印每轮快照
+    verbose: bool = False
+
+
+@dataclass
 class ReminderConfig:
     """[SYS-REMINDER] 动态 Reminder 提示注入配置。
 
@@ -403,6 +435,9 @@ class ReminderConfig:
     post_tool_enabled: bool = True      # 工具调用成功后触发
     user_intent_enabled: bool = True    # 用户意图识别触发
     pattern_enabled: bool = True        # assistant 输出模式触发
+    # [具身改进 A3] 前馈控制：工具调用前触发（成熟的运动系统不只靠事后纠错，
+    # 还依赖预期动作的预先调节——危险操作发生前先提醒，而不是出错后再补救）
+    pre_tool_enabled: bool = True        # 工具调用前触发
     # 同一 turn 内最多注入的 reminder 条数（避免大量 reminder 污染上下文）
     max_per_turn: int = 3
     # 调试：打印匹配到的 reminder 名称
@@ -536,6 +571,8 @@ class AppConfig:
     mcp:        MCPConfig        = field(default_factory=MCPConfig)
     web_search: WebSearchConfig  = field(default_factory=WebSearchConfig)
     reminder:   ReminderConfig   = field(default_factory=ReminderConfig)
+    proprioception: ProprioceptionConfig = field(default_factory=ProprioceptionConfig)
+    workflow:   WorkflowConfig   = field(default_factory=WorkflowConfig)
     format_correction: FormatCorrectionConfig = field(default_factory=FormatCorrectionConfig)
     role_agent: RoleAgentConfig  = field(default_factory=RoleAgentConfig)
     env_info:   EnvInfoConfig    = field(default_factory=EnvInfoConfig)

@@ -37,6 +37,8 @@ from .models import (
     RoleAgentConfig,
     EnvInfoConfig,
     ReminderConfig,
+    ProprioceptionConfig,
+    WorkflowConfig,
     FormatCorrectionConfig,
     PrivacyConfig,
     WorkdirKnowledgeConfig,
@@ -559,6 +561,23 @@ def load_config(
         activity_log_inject_limit=int(_gk.get("activity_log_inject_limit", 5)),
     )
 
+    # ── [具身改进 B1] 本体感知模块配置组装 ──────────────────────────────────
+    _pp = file_cfg.get("proprioception") if isinstance(file_cfg.get("proprioception"), dict) else {}
+    proprioception_cfg = ProprioceptionConfig(
+        enabled=bool(_pp.get("enabled", True)),
+        frustration_threshold=float(_pp.get("frustration_threshold", 0.5)),
+        consecutive_failure_threshold=int(_pp.get("consecutive_failure_threshold", 3)),
+        trace_enabled=bool(_pp.get("trace_enabled", True)),
+        verbose=bool(_pp.get("verbose", False)),
+    )
+
+    # [具身改进 B3] Workflow 并发执行配置组装
+    _wf = file_cfg.get("workflow") if isinstance(file_cfg.get("workflow"), dict) else {}
+    workflow_cfg = WorkflowConfig(
+        parallel_enabled=bool(_wf.get("parallel_enabled", True)),
+        max_parallel=int(_wf.get("max_parallel", 4)),
+    )
+
     return AppConfig(
         api_key=api_key,
         model=_model,
@@ -594,6 +613,8 @@ def load_config(
         mcp=mcp_cfg,
         web_search=web_search_cfg,
         reminder=reminder_cfg,
+        proprioception=proprioception_cfg,
+        workflow=workflow_cfg,
         format_correction=format_correction_cfg,
         role_agent=role_agent_cfg,
         env_info=env_info_cfg,

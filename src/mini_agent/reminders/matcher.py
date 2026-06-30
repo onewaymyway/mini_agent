@@ -20,6 +20,7 @@ from .loader import (
     TRIGGER_POST_TOOL,
     TRIGGER_USER_INTENT,
     TRIGGER_PATTERN,
+    TRIGGER_PRE_TOOL,
 )
 
 
@@ -127,6 +128,27 @@ class ReminderMatcher:
                 continue
             if _re_search(r.condition.text_pattern, assistant_text):
                 matched.append(r)
+
+        return _sort(matched)
+
+    def match_pre_tool(
+        self, tool_name: str, tool_input: Optional[dict] = None
+    ) -> List[Reminder]:
+        """
+        [具身改进 A3] 工具调用前触发（前馈控制）。
+        condition.tool_name → 匹配工具名（可选，为空表示对任意工具都生效）。
+
+        tool_input 暂不参与匹配（不同工具参数结构差异很大，正则匹配整个
+        dict 的字符串表示容易误判）；保留参数位是为了未来扩展按参数内容
+        匹配时不需要再改调用方签名。
+        """
+        matched = []
+        for r in self._reminders:
+            if r.trigger_event != TRIGGER_PRE_TOOL:
+                continue
+            if not self._match_tool_name(r, tool_name):
+                continue
+            matched.append(r)
 
         return _sort(matched)
 
