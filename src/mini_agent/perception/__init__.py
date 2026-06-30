@@ -21,6 +21,7 @@ perception — 感知与记忆子系统。
 from .token_counter import estimate_tokens
 from .project_scanner import ProjectScanner, ProjectSnapshot
 from .affordance_analyzer import AffordanceMap, AffordanceAnalyzer
+from .self_model import AgentSelfModel, AgentSelfModelBuilder
 from .file_watcher import FileWatcher
 from .tool_cache import ToolResultCache
 from .memory_store import MemoryStore, MemoryEntry
@@ -41,6 +42,7 @@ __all__ = [
     "estimate_tokens",
     "ProjectScanner", "ProjectSnapshot",
     "AffordanceMap", "AffordanceAnalyzer",
+    "AgentSelfModel", "AgentSelfModelBuilder",
     "FileWatcher",
     "ToolResultCache",
     "MemoryStore", "MemoryEntry",

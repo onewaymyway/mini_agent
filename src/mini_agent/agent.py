@@ -458,6 +458,15 @@ class Agent:
             global_memory=self._global_memory,
             project_snapshot_getter=lambda: self._project_snapshot,
             profile_text_getter=self._get_profile_text,
+            # [具身改进 C1] AgentSelfModel getter：每轮 build() 时读取最新状态
+            # 注意：self._self_model 在下方的 C1 初始化块里赋值，而该块
+            # 在 ContextBuilder 构造之后——lambda 捕获 self 引用，调用时才求值，
+            # 所以不存在"先用后赋"问题：getter 在第一次 build() 被调用时，
+            # self._self_model 已经完成初始化（或为 None）。
+            self_model_getter=lambda: (
+                self._self_model.to_system_prompt_fragment()
+                if self._self_model is not None else None
+            ),
         )
 
         # ToolExecutor：持有 file_changes 列表和锁的引用（共享，不拷贝）
@@ -519,6 +528,24 @@ class Agent:
         if getattr(self.cfg, "proprioception", None) and self.cfg.proprioception.enabled:
             from mini_agent.perception.proprioception import ProprioceptionModule
             self._proprioception = ProprioceptionModule()
+
+        # [具身改进 C1] AgentSelfModel：三个 profile 概念的聚合视图
+        # 慢变量（capability_snapshot, affordance_summary）在此构建一次，
+        # 快变量（internal_state）每轮 turn 开始时由 _update_self_model 更新。
+        self._self_model: Optional["AgentSelfModel"] = None
+        try:
+            from mini_agent.perception.self_model import AgentSelfModel, AgentSelfModelBuilder
+            _skill_count = len(self.skill_loader.active) if self.skill_loader else 0
+            self._self_model = AgentSelfModelBuilder().build(
+                project_root=self.cfg.project_root,
+                affordance_map=None,   # B4 注入在 session_pool 阶段，此处不重建
+                active_skill_count=_skill_count,
+                use_capability_map=getattr(
+                    getattr(self.cfg, 'affordance', None), 'use_capability_map', True
+                ),
+            )
+        except Exception:
+            pass  # AgentSelfModel 构建失败不阻断 Agent 启动
 
         # [具身改进 A3] ReminderManager 在 ToolExecutor 构造之后才初始化完成，
         # 这里补注入 reminder_mgr + 注入回调，使 pre_tool 前馈检查可用
@@ -2342,6 +2369,14 @@ class Agent:
                         "挫败感信号偏高。建议先停下来总结目前卡在哪里、是否需要换一种方法，"
                         "或者直接向用户说明遇到的困难并请求指引，而不是继续重复同样的尝试。"
                     )
+
+            # [具身改进 C1] AgentSelfModel 快变量更新：把刚 sense() 到的内部状态
+            # 同步给 self_model，ContextBuilder.build() 下次调用时会自动读取。
+            if self._self_model is not None and self._proprioception is not None:
+                try:
+                    self._self_model.update_internal_state(_pp_state)
+                except Exception:
+                    pass
 
             # [Stage 6 / 6.1] call_llm 追踪
             # [AUTO-COMPACT] 捕获上下文窗口超限错误，自动压缩历史后在同一 loop 内重试。

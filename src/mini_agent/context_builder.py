@@ -47,6 +47,7 @@ class ContextBuilder:
         global_memory: Optional["MemoryStore"] = None,
         project_snapshot_getter=None,   # Callable[[], Optional[str]]
         profile_text_getter=None,       # Callable[[], str]
+        self_model_getter=None,         # Callable[[], Optional[str]]  [具身改进 C1]
     ) -> None:
         self.cfg = cfg
         self.skill_loader = skill_loader
@@ -54,6 +55,8 @@ class ContextBuilder:
         self.global_memory = global_memory
         self._project_snapshot_getter = project_snapshot_getter
         self._profile_text_getter = profile_text_getter
+        # [具身改进 C1] AgentSelfModel：session 级实时聚合视图（每轮读取）
+        self._self_model_getter = self_model_getter
 
         # ── Turn 级缓存 ──────────────────────────────────────────────────────
         # 每次 run_turn 开始时由 refresh_turn_context() 填充，
@@ -162,6 +165,18 @@ class ContextBuilder:
         gk_block = self._build_global_knowledge_block()
         if gk_block:
             base += "\n\n" + gk_block
+
+        # ── AgentSelfModel（具身改进 C1）：session 级实时聚合视图 ─────────
+        # 注入在 global knowledge 块（SelfAssessment 跨 session 历史评估）
+        # 之后，补充 SelfAssessment 没有的实时维度：
+        #   当前 workdir 能力分布 / 当前余裕摘要 / 当前内部感受
+        if self._self_model_getter is not None:
+            try:
+                sm_fragment = self._self_model_getter()
+                if sm_fragment:
+                    base += "\n\n" + sm_fragment
+            except Exception:
+                pass  # 感知层失败不阻断 system prompt 组装
 
         # ── 长期记忆（使用 turn 级缓存，不重复检索）──────────────────────
         if self._cached_memory_snippet:
