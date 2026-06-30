@@ -205,7 +205,7 @@ def _estimate_skill_token_costs(paths) -> dict[str, float]:
     # 扫描最近若干 session 的 traces.jsonl
     session_dirs: list[Path] = []
     try:
-        sessions_root = paths.sessions_dir()
+        sessions_root = paths.sessions_dir  # property，不是方法调用
         if sessions_root.exists():
             session_dirs = sorted(
                 [d for d in sessions_root.iterdir() if d.is_dir()],
@@ -294,7 +294,7 @@ def build_capability_map(paths, memory_backend) -> list[CapabilityMapEntry]:
     """
     domain_stats: dict[str, dict] = {}
 
-    sessions_root = paths.sessions_dir()
+    sessions_root = paths.sessions_dir  # property，不是方法调用
     if not sessions_root.exists():
         return []
 

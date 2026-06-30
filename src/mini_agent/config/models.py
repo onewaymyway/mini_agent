@@ -420,6 +420,23 @@ class ProprioceptionConfig:
 
 
 @dataclass
+class AffordanceConfig:
+    """[具身改进 B4] 余裕感知层（AffordanceMap）配置。
+
+    session 开始时构建一次（不是每轮 turn），交叉分析 open_threads /
+    capability_map / lesson memory，生成"当前环境对我意味着哪些行动机会"
+    的简短文本块，拼进 system_extra。纯只读分析，不调用 LLM，不写入任何
+    文件——失败时静默跳过，不阻断 session 创建。
+    """
+    enabled: bool = True
+    # 是否在分析中纳入 capability_map（依赖 Phase G 历史扫描数据；
+    # 项目从未跑过 Phase G 时该字段不影响功能，只是 unexplored_areas 为空）
+    use_capability_map: bool = True
+    # 调试：打印生成的 AffordanceMap
+    verbose: bool = False
+
+
+@dataclass
 class ReminderConfig:
     """[SYS-REMINDER] 动态 Reminder 提示注入配置。
 
@@ -572,6 +589,7 @@ class AppConfig:
     web_search: WebSearchConfig  = field(default_factory=WebSearchConfig)
     reminder:   ReminderConfig   = field(default_factory=ReminderConfig)
     proprioception: ProprioceptionConfig = field(default_factory=ProprioceptionConfig)
+    affordance: AffordanceConfig = field(default_factory=AffordanceConfig)
     workflow:   WorkflowConfig   = field(default_factory=WorkflowConfig)
     format_correction: FormatCorrectionConfig = field(default_factory=FormatCorrectionConfig)
     role_agent: RoleAgentConfig  = field(default_factory=RoleAgentConfig)

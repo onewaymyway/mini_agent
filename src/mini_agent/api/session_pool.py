@@ -478,6 +478,13 @@ class SessionAgentPool:
             with _agent_construction_lock:
                 agent = Agent(cfg=session_cfg, skill_loader=skill_loader)
 
+            # [具身改进 B4] 余裕感知层：session 构造完成后，一次性分析
+            # open_threads / capability_map / lesson memory，把结果追加到
+            # agent.cfg.system_extra（ContextBuilder 每轮读取的同一对象，
+            # 立即对下一轮 system prompt 生效）。只读分析，失败不阻断
+            # session 创建。
+            self._inject_affordance_map(agent, session_cfg)
+
             # 尝试恢复已有 session 历史（同一个 session_id 之前已经存在）
             try:
                 mgr = agent.session_manager
@@ -491,6 +498,74 @@ class SessionAgentPool:
             return agent
 
         return _factory
+
+    @staticmethod
+    def _inject_affordance_map(agent: Any, session_cfg: "AppConfig") -> None:
+        """
+        [具身改进 B4] 构建一次 AffordanceMap，拼进 agent 正在使用的 system_extra。
+
+        必须在 Agent() 构造之后调用——AffordanceMap 复用 Agent 已经建好的
+        memory backend（agent._memory），避免重复构造一份 MemoryStore 实例
+        指向同一个文件（MemoryStore 不是为多实例并发写同一文件设计的）。
+
+        关键实现细节：ContextBuilder 持有的是 `agent.cfg` 这个对象的引用
+        （而不是构造时的深拷贝快照，见 agent.py::Agent.__init__ 里
+        `ContextBuilder(cfg=self.cfg, ...)`），且 build_system_prompt() 每次
+        都重新读取 cfg.system_extra——所以即使 Agent 已经构造完成，只要
+        改的是 `agent.cfg.system_extra`（而不是这里传入的 `session_cfg`，
+        二者在 owner/单 session 路径下可能是同一对象，但不能假设），下一轮
+        system prompt 组装时依然会拿到新内容，不需要、也不应该新增一个
+        Agent 运行期接口来做这件事。
+        """
+        affordance_cfg = getattr(session_cfg, "affordance", None)
+        if affordance_cfg is None or not getattr(affordance_cfg, "enabled", True):
+            return
+
+        try:
+            from mini_agent.perception.affordance_analyzer import AffordanceAnalyzer
+            from mini_agent.perception.workdir_knowledge import load_open_threads
+            from mini_agent.storage.paths import AgentPaths
+
+            paths = AgentPaths(session_cfg.project_root)
+            open_threads = load_open_threads(paths)
+
+            memory_backend = getattr(agent, "_memory", None)
+            lesson_entries = []
+            capability_entries = []
+            if memory_backend is not None and hasattr(memory_backend, "all_entries"):
+                all_entries = memory_backend.all_entries()
+                lesson_entries = [e for e in all_entries if getattr(e, "entry_type", "") == "lesson"]
+                if getattr(affordance_cfg, "use_capability_map", True):
+                    try:
+                        from mini_agent.evolution.phase_g import build_capability_map
+                        capability_entries = build_capability_map(paths, None)
+                    except Exception:
+                        capability_entries = []
+
+            affordance_map = AffordanceAnalyzer().analyze(
+                open_threads=open_threads,
+                lesson_entries=lesson_entries,
+                capability_entries=capability_entries,
+            )
+            fragment = affordance_map.to_system_prompt_fragment()
+            if not fragment:
+                return
+
+            if getattr(affordance_cfg, "verbose", False):
+                log.info("[SessionPool] AffordanceMap: %s", affordance_map.to_dict())
+
+            # 写到 agent.cfg（ContextBuilder 实际持有、每轮读取的那个对象），
+            # 而不是闭包参数 session_cfg——二者在当前实现里恰好是同一对象
+            # （Agent(cfg=session_cfg) 不做深拷贝），但显式走 agent.cfg 更
+            # 准确地表达"我要影响的是这个 agent 接下来读到的 system_extra"，
+            # 不依赖"session_cfg 和 agent.cfg 是否同一对象"这个实现细节。
+            target_cfg = getattr(agent, "cfg", None) or session_cfg
+            existing = getattr(target_cfg, "system_extra", "") or ""
+            target_cfg.system_extra = (existing + "\n\n" + fragment).strip()
+        except Exception:
+            # 感知层失败不应该阻断 session 创建——AffordanceMap 是锦上添花，
+            # 不是必需路径。
+            log.debug("[SessionPool] AffordanceMap injection failed", exc_info=True)
 
     def _create_entry(
         self,

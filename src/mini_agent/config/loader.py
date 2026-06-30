@@ -38,6 +38,7 @@ from .models import (
     EnvInfoConfig,
     ReminderConfig,
     ProprioceptionConfig,
+    AffordanceConfig,
     WorkflowConfig,
     FormatCorrectionConfig,
     PrivacyConfig,
@@ -571,6 +572,14 @@ def load_config(
         verbose=bool(_pp.get("verbose", False)),
     )
 
+    # [具身改进 B4] 余裕感知层配置组装
+    _af = file_cfg.get("affordance") if isinstance(file_cfg.get("affordance"), dict) else {}
+    affordance_cfg = AffordanceConfig(
+        enabled=bool(_af.get("enabled", True)),
+        use_capability_map=bool(_af.get("use_capability_map", True)),
+        verbose=bool(_af.get("verbose", False)),
+    )
+
     # [具身改进 B3] Workflow 并发执行配置组装
     _wf = file_cfg.get("workflow") if isinstance(file_cfg.get("workflow"), dict) else {}
     workflow_cfg = WorkflowConfig(
@@ -614,6 +623,7 @@ def load_config(
         web_search=web_search_cfg,
         reminder=reminder_cfg,
         proprioception=proprioception_cfg,
+        affordance=affordance_cfg,
         workflow=workflow_cfg,
         format_correction=format_correction_cfg,
         role_agent=role_agent_cfg,
