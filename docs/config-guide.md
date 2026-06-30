@@ -24,6 +24,7 @@ AppConfig
 ├── debug:      DebugConfig             ← 调试日志
 ├── http:       HttpConfig              ← HTTP API 服务
 ├── retry:      RetryConfig             ← LLM 调用重试
+├── ensemble:   EnsembleConfig          ← 多结果合并取优（Best-of-N）
 └── mcp:        MCPConfig               ← MCP 外部工具服务
 ```
 
@@ -211,6 +212,54 @@ mini-agent --retry-backoff linear --retry-backoff-step 60 --retry-backoff-max 30
 ```
 
 详见 [LLM 重试退避策略指南](retry-backoff-guide.md)。
+
+### EnsembleConfig
+
+控制"多结果合并取优"（Best-of-N）功能：对同一任务获取多个候选结果，再综合评判出最优结果。
+
+```python
+@dataclass
+class EnsembleConfig:
+    mode: str = "off"                  # off | manual | auto | always
+    granularity: str = "both"          # llm_call | subagent | both
+    n: int = 3                         # 候选数
+    execution: str = "parallel"        # serial | parallel
+    max_concurrency: int = 3
+    judge_strategy: str = "llm_judge"  # llm_judge | first_success | vote | merge
+    judge_model: Optional[str] = None  # None = 复用主模型
+    early_stop_on_consensus: bool = True
+    max_extra_cost_ratio: float = 2.0
+```
+
+| 字段 | 说明 |
+|------|------|
+| `mode` | `off` 完全关闭；`manual` 仅显式调用工具时触发；`auto` 框架自行判断（规则层+模型自判层）；`always` 强制触发（调试用） |
+| `granularity` | 限制可用粒度：`llm_call`（同输入多次调用）/ `subagent`（多 SubAgent 不同上下文）/ `both` |
+| `n` | 候选数量 |
+| `execution` | `serial`（可提前停止，省成本）/ `parallel`（速度快） |
+| `judge_strategy` | 评判策略；`verifiable` 类任务会被 `classify_task_type()` 自动覆盖为 `first_success` |
+| `early_stop_on_consensus` | 串行模式下，候选已通过校验或已有多数共识时提前停止 |
+
+**JSON 配置示例：**
+
+```json
+{
+  "ensemble_mode": "manual",
+  "ensemble_granularity": "both",
+  "ensemble_n": 3,
+  "ensemble_execution": "parallel",
+  "ensemble_judge_strategy": "llm_judge"
+}
+```
+
+**CLI 运行时调整：**
+
+```
+/ensemble mode auto
+/ensemble granularity subagent
+```
+
+详见 [多结果合并取优指南](ensemble-best-of-n-guide.md)。
 
 ### LLM Fallback Chain（多配置故障转移 + 多 Key 轮转）
 
@@ -479,6 +528,7 @@ my_feature_cfg = MyFeatureConfig(
 - [MCP 集成指南](mcp-guide.md) — MCP 外部工具服务的架构、配置与扩展方式
 - [系统设计概述](system-overview.md) — 整体架构与各子系统关系
 - [记忆管理指南](memory-management-guide.md) — `MemoryConfig` 新增字段的完整使用场景（Lesson Memory）
+- [多结果合并取优指南](ensemble-best-of-n-guide.md) — `EnsembleConfig` 的完整使用场景与架构说明
 
 ---
 

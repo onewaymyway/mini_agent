@@ -348,6 +348,161 @@ def spawn_agents(tasks: list) -> str:
     }, indent=2,ensure_ascii=False)
 
 
+# ── ensemble（多结果合并取优）工具 ────────────────────────────────────────────
+#
+# 两个粒度对应两个工具：
+#   run_ensemble_llm       — 相同输入多次调用模型（粒度A）
+#   run_ensemble_subagents — 多个 SubAgent 用不同上下文/提示词跑同一任务（粒度B）
+# 是否真正执行受 cfg.ensemble.mode 与 granularity 开关控制：
+#   - mode=off：直接拒绝，提示用户先开启配置
+#   - mode=manual：只要 Agent 主动调用本工具，就视为显式触发，正常执行
+#   - mode=auto / always：同样允许 Agent 主动调用（Agent 自己判断后调用本工具，
+#     等价于规则/模型自判已经认为"值得"，工具内部不再重复判定一次）
+
+@tool(
+    name="run_ensemble_llm",
+    description=(
+        "Best-of-N at the LLM-call level: invoke the model multiple times on the SAME prompt "
+        "(temperature jittered for diversity), then judge/merge the candidates into one final answer. "
+        "Use this for a single open-ended question/sub-task where you want to reduce the chance of "
+        "a one-off bad answer, WITHOUT spawning full sub-agents (cheaper, faster, no tool use). "
+        "Only available when ensemble is enabled in config (mode != off) and granularity allows 'llm_call'."
+    ),
+    schema={
+        "type": "object",
+        "properties": {
+            "prompt": {"type": "string", "description": "The question/instruction to answer."},
+            "system": {"type": "string", "description": "Optional system prompt context for the calls."},
+            "n": {"type": "integer", "description": "Number of candidates (default from config, usually 3)."},
+            "execution": {"type": "string", "enum": ["serial", "parallel"], "description": "Default from config."},
+            "strategy": {
+                "type": "string",
+                "enum": ["llm_judge", "first_success", "vote", "merge"],
+                "description": "Judging strategy. Default from config (llm_judge for open-ended tasks).",
+            },
+        },
+        "required": ["prompt"],
+    },
+    requires_approval=False,
+)
+def run_ensemble_llm(
+    prompt: str,
+    system: str = "",
+    n: Optional[int] = None,
+    execution: Optional[str] = None,
+    strategy: Optional[str] = None,
+) -> str:
+    mgr = get_task_manager()
+    cfg = mgr.base_cfg if mgr is not None else None
+    if cfg is None:
+        return json.dumps({"error": "config not available; ensemble requires an initialized TaskManager."})
+
+    ens_cfg = getattr(cfg, "ensemble", None)
+    if ens_cfg is None or ens_cfg.mode == "off":
+        return json.dumps({"error": "ensemble is disabled (ensemble.mode=off). Enable it in config first."})
+    if ens_cfg.granularity not in ("llm_call", "both"):
+        return json.dumps({"error": f"llm_call granularity is disabled (ensemble.granularity={ens_cfg.granularity})."})
+
+    from mini_agent.ensemble import run_llm_ensemble, classify_task_type
+
+    task_type = classify_task_type(prompt)
+    effective_strategy = strategy or ("first_success" if task_type == "verifiable" else ens_cfg.judge_strategy)
+
+    result = run_llm_ensemble(
+        cfg,
+        messages=[{"role": "user", "content": prompt}],
+        system=system or "",
+        n=n,
+        execution=execution,
+        strategy=effective_strategy,
+    )
+    return json.dumps({
+        "final_content": result.final_content,
+        "chosen_idx": result.chosen_idx,
+        "judge_strategy": result.judge_strategy,
+        "judge_reason": result.judge_reason,
+        "execution": result.execution,
+        "early_stopped": result.early_stopped,
+        "n_candidates": len(result.candidates),
+        "total_latency_s": round(result.total_latency_s, 2),
+    }, indent=2, ensure_ascii=False)
+
+
+@tool(
+    name="run_ensemble_subagents",
+    description=(
+        "Best-of-N at the sub-agent level: spawn N sub-agents with DIFFERENT context/personas "
+        "(e.g. conservative vs creative vs self-critique) to independently work on the SAME task "
+        "(can use tools, multi-turn), then judge/merge their final outputs into one result. "
+        "Use this for a full task where the approach itself matters (multiple valid strategies), "
+        "not just a single answer. More expensive than run_ensemble_llm. "
+        "Only available when ensemble is enabled in config (mode != off) and granularity allows 'subagent'."
+    ),
+    schema={
+        "type": "object",
+        "properties": {
+            "prompt": {"type": "string", "description": "The task for each sub-agent to complete."},
+            "n": {"type": "integer", "description": "Number of sub-agents (default from config, usually 3)."},
+            "execution": {"type": "string", "enum": ["serial", "parallel"], "description": "Default from config."},
+            "strategy": {
+                "type": "string",
+                "enum": ["llm_judge", "first_success", "vote", "merge"],
+                "description": "Judging strategy. Default from config.",
+            },
+            "variant_prompts": {
+                "type": "array", "items": {"type": "string"},
+                "description": "Optional: give each sub-agent a fully different prompt instead of personas.",
+            },
+        },
+        "required": ["prompt"],
+    },
+    requires_approval=False,
+)
+def run_ensemble_subagents(
+    prompt: str,
+    n: Optional[int] = None,
+    execution: Optional[str] = None,
+    strategy: Optional[str] = None,
+    variant_prompts: Optional[list] = None,
+) -> str:
+    mgr = get_task_manager()
+    if mgr is None:
+        return json.dumps({"error": "TaskManager not initialized."})
+    cfg = mgr.base_cfg
+
+    ens_cfg = getattr(cfg, "ensemble", None)
+    if ens_cfg is None or ens_cfg.mode == "off":
+        return json.dumps({"error": "ensemble is disabled (ensemble.mode=off). Enable it in config first."})
+    if ens_cfg.granularity not in ("subagent", "both"):
+        return json.dumps({"error": f"subagent granularity is disabled (ensemble.granularity={ens_cfg.granularity})."})
+
+    from mini_agent.ensemble import run_subagent_ensemble, classify_task_type
+
+    task_type = classify_task_type(prompt)
+    effective_strategy = strategy or ("first_success" if task_type == "verifiable" else ens_cfg.judge_strategy)
+
+    result = run_subagent_ensemble(
+        cfg,
+        prompt,
+        n=n,
+        execution=execution,
+        strategy=effective_strategy,
+        variant_prompts=variant_prompts,
+        active_skills=_get_active_skills(),
+    )
+    return json.dumps({
+        "final_content": result.final_content,
+        "chosen_idx": result.chosen_idx,
+        "judge_strategy": result.judge_strategy,
+        "judge_reason": result.judge_reason,
+        "execution": result.execution,
+        "early_stopped": result.early_stopped,
+        "n_candidates": len(result.candidates),
+        "candidate_personas": [c.meta.get("persona", "") for c in result.candidates],
+        "total_latency_s": round(result.total_latency_s, 2),
+    }, indent=2, ensure_ascii=False)
+
+
 # ── get_task_status 工具 ──────────────────────────────────────────────────────
 
 @tool(

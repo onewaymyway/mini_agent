@@ -33,6 +33,7 @@ from .models import (
     HttpConfig,
     WebSearchConfig,
     RetryConfig,
+    EnsembleConfig,
     RoleAgentConfig,
     EnvInfoConfig,
     ReminderConfig,
@@ -380,6 +381,18 @@ def load_config(
         backoff_max_delay=_fn("llm_retry_backoff_max_delay", llm_retry_backoff_max_delay, 0.0),
     )
 
+    ensemble_cfg = EnsembleConfig(
+        mode=_f("ensemble_mode", None) or "off",
+        granularity=_f("ensemble_granularity", None) or "both",
+        n=int(_fn("ensemble_n", None, 3)),
+        execution=_f("ensemble_execution", None) or "parallel",
+        max_concurrency=int(_fn("ensemble_max_concurrency", None, 3)),
+        judge_strategy=_f("ensemble_judge_strategy", None) or "llm_judge",
+        judge_model=_f("ensemble_judge_model", None) or None,
+        early_stop_on_consensus=_fb("ensemble_early_stop_on_consensus", None, True),
+        max_extra_cost_ratio=_fn("ensemble_max_extra_cost_ratio", None, 2.0),
+    )
+
     # ── LLM Fallback Chain ────────────────────────────────────────────────────
     # 来源优先级：providers.json > agent_config.json（providers.json 优先整体覆盖）
     # 若 providers.json 中有 llm_fallback_chain，使用它；否则从 agent_config.json 读取
@@ -577,6 +590,7 @@ def load_config(
         debug=debug_cfg,
         http=http_cfg,
         retry=retry_cfg,
+        ensemble=ensemble_cfg,
         mcp=mcp_cfg,
         web_search=web_search_cfg,
         reminder=reminder_cfg,

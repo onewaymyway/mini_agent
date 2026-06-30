@@ -263,6 +263,10 @@ def _handle_slash(cmd: str, agent: Agent, skill_loader: SkillLoader) -> None:
     elif name in ("concurrency", "cc"):
         handle_concurrency_cmd(parts[1:])
 
+    elif name == "ensemble":
+        from mini_agent.cli.commands.ensemble import handle_ensemble_cmd
+        handle_ensemble_cmd(parts[1:], agent)
+
     elif name == "provider":
         handle_provider_cmd(parts[1:], agent)
 

@@ -74,6 +74,9 @@ KNOWN_EVENTS = (
     "PreCompact",           # _auto_compress_history 执行前（可阻止）
     "PostCompact",          # _auto_compress_history 执行后
 
+    # Ensemble（多结果合并取优）生命周期
+    "EnsembleJudged",       # 一次 ensemble 运行完成评判/合并后触发（通知，不可阻止）
+
     # mini_agent 扩展
     "TurnEnd",              # 一轮 run_turn 结束、等待用户下一次输入前
 )

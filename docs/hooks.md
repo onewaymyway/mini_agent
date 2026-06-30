@@ -143,6 +143,14 @@ shell 命令，用于审计、拦截危险操作、自动格式化、注入额�
 > **`PreCompact` 阻止**：hook 返回 exit code 2 或 `{"decision": "block"}` 可阻止本次压缩。
 > 典型用途：当前 turn 正在执行重要任务时，临时禁止压缩以保留完整上下文。
 
+### Ensemble 生命周期
+
+| 事件 | 触发时机 | 可阻止 | payload |
+|---|---|---|---|
+| `EnsembleJudged` | 一次 ensemble（Best-of-N）运行完成评判/合并后 | ❌ | `{"final_content": "...", "chosen_idx": N\|null, "judge_strategy": "...", "granularity": "llm_call\|subagent", "execution": "serial\|parallel", "judge_reason": "...", "early_stopped": bool, "candidates": [...]}` |
+
+> 同一份 payload 也会落盘到 `<session_dir>/ensemble/<时间戳>_<粒度>.json`。详见 [多结果合并取优指南](ensemble-best-of-n-guide.md)。
+
 ### mini_agent 扩展
 
 | 事件 | 触发时机 | 可阻止 | payload |
@@ -382,6 +390,7 @@ payload = json.loads(sys.stdin.buffer.read().decode("utf-8"))
 - [history 类型化设计](history-typed-design.md) — `is_turn_boundary()` 如何为反思调用截取用户意图轮次
 - [SubAgent 机制](subagent-mechanism.md) — SubagentStart / SubagentStop 的运行时上下文
 - [Plan & Task 指南](plan-and-task-guide.md) — TaskCreated / TaskCompleted 的任务生命周期
+- [多结果合并取优指南](ensemble-best-of-n-guide.md) — `EnsembleJudged` 事件的完整 payload 与落盘格式
 
 ---
 

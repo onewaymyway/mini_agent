@@ -2161,7 +2161,42 @@ class Agent:
             # [SYS-REMINDER] 用户意图触发：在用户消息入队后，检查是否需要注入 reminder
             self._inject_reminders_for_user_intent(user_message)
 
-            result = self._agentic_loop()
+            # [SYS-ENSEMBLE] AUTO 模式：框架自行判断本轮是否值得做 best-of-N，
+            # 判断为"值得"时，用多个 SubAgent（不同上下文）跑完整这一轮任务，
+            # 评判/合并出最终结果后直接作为本轮回复，跳过常规单路 _agentic_loop()。
+            # 仅在 mode=auto 且 granularity 允许 subagent 且 TaskManager 已初始化时生效；
+            # 任何异常都安静回退到正常单路流程，不影响主流程稳定性。
+            _ensemble_used = False
+            if getattr(self.cfg, "ensemble", None) is not None and self.cfg.ensemble.mode == "auto" \
+                    and self.cfg.ensemble.granularity in ("subagent", "both"):
+                try:
+                    from mini_agent.ensemble import should_trigger_ensemble, run_subagent_ensemble
+                    from mini_agent.tools.orchestration import get_task_manager
+
+                    decision = should_trigger_ensemble(user_message, self.cfg)
+                    if decision.trigger and get_task_manager() is not None:
+                        R.print_info(
+                            f"[ensemble] auto-triggered (source={decision.source}): {decision.reason}"
+                        )
+                        ens_result = run_subagent_ensemble(
+                            self.cfg, user_message,
+                            strategy=decision.judge_strategy,
+                            session_id=getattr(self, "session_id", None),
+                        )
+                        if ens_result.final_content:
+                            result = ens_result.final_content
+                            from mini_agent.llm.base import LLMResponse, LLMUsage
+                            self._hist.append_assistant(LLMResponse(
+                                text=result, tool_calls=[], usage=LLMUsage(), stop_reason="end_turn",
+                            ))
+                            R.print_assistant_prefix(agent_name=self.cfg.agent_name)
+                            R.print_markdown(result)
+                            _ensemble_used = True
+                except Exception as _e:
+                    R.print_warning(f"[ensemble] auto-trigger 失败，回退到常规流程: {_e}")
+
+            if not _ensemble_used:
+                result = self._agentic_loop()
 
             # [SYS-ROLE-AGENT] output 触发：主 Agent 完成输出后，触发 output 类角色
             result = self._run_role_agents_output(user_message, result)

@@ -246,6 +246,20 @@ mini-agent --retry-backoff linear --retry-backoff-step 60 --retry-backoff-max 30
 | `/concurrency tasks <n>` | 设置最大并发任务数 |
 | `/concurrency llm <n>` | 设置最大并发 LLM 调用数 |
 
+### 多结果合并取优（`src/mini_agent/cli/commands/ensemble.py`）
+
+| 命令 | 说明 |
+|------|------|
+| `/ensemble` | 显示当前 ensemble（Best-of-N）配置状态 |
+| `/ensemble on` / `/ensemble off` | 快捷开关（`off → manual` / 完全关闭） |
+| `/ensemble mode <off\|manual\|auto\|always>` | 设置触发模式 |
+| `/ensemble granularity <llm_call\|subagent\|both>` | 设置粒度开关 |
+| `/ensemble n <int>` | 设置候选数 |
+| `/ensemble execution <serial\|parallel>` | 设置串行/并行执行 |
+| `/ensemble strategy <llm_judge\|first_success\|vote\|merge>` | 设置评判策略 |
+
+详见 [多结果合并取优指南](ensemble-best-of-n-guide.md)。
+
 ### Provider 管理（`src/mini_agent/cli/commands/providers.py`）
 
 | 命令 | 说明 |
@@ -474,8 +488,10 @@ mini-agent eval --scenario test_cases/                      # 不传 --skill，�
 | `list_tasks` | ❌ | `status`, `tag` | 列出所有任务 |
 | `cancel_task` | ❌ | `task_id` | 取消指定任务 |
 | `wait_for_tasks` | ❌ | `task_ids`, `timeout_seconds` | 等待多个任务完成 |
+| `run_ensemble_llm` | ❌ | `prompt`, `system`, `n`, `execution`, `strategy` | 同一输入多次调用模型取优（粒度A，便宜快速），需 `ensemble.mode != off` |
+| `run_ensemble_subagents` | ❌ | `prompt`, `n`, `execution`, `strategy`, `variant_prompts` | 多个不同人设的 Sub-Agent 各自完整跑同一任务再取优（粒度B），需 `ensemble.mode != off` |
 
-详见 [Plan 与 Task 机制说明](plan-and-task-guide.md) 中 `manifest.json` 相关章节、[存储设计](storage-design.md#44-subagent-任务文件)、[自定义子 Agent 指南](custom-sub-agents.md)。
+详见 [Plan 与 Task 机制说明](plan-and-task-guide.md) 中 `manifest.json` 相关章节、[存储设计](storage-design.md#44-subagent-任务文件)、[自定义子 Agent 指南](custom-sub-agents.md)、[多结果合并取优指南](ensemble-best-of-n-guide.md)。
 
 ### 执行计划（plan.py）
 

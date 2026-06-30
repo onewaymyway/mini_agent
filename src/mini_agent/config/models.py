@@ -312,6 +312,32 @@ class RetryConfig:
 
 
 @dataclass
+class EnsembleConfig:
+    """[SYS-ENSEMBLE] 多结果合并取优（Best-of-N）配置。
+
+    mode 决定是否触发以及如何触发：
+      "off"     完全关闭（默认）
+      "manual"  仅当调用方显式指定 ensemble=true 时触发
+      "auto"    由规则层 + 模型自判层共同决定是否触发
+      "always"  对所有匹配的任务强制触发（调试/评测用）
+
+    granularity 控制粒度开关：
+      "llm_call" 仅同输入多次调用模型
+      "subagent" 仅多 subagent 不同上下文
+      "both"     两种都允许（按调用方/场景选择）
+    """
+    mode: str = "off"                          # off | manual | auto | always
+    granularity: str = "both"                  # llm_call | subagent | both
+    n: int = 3
+    execution: str = "parallel"                # serial | parallel
+    max_concurrency: int = 3
+    judge_strategy: str = "llm_judge"           # llm_judge | first_success | vote | merge
+    judge_model: Optional[str] = None
+    early_stop_on_consensus: bool = True
+    max_extra_cost_ratio: float = 2.0           # AUTO 模式下的成本保护上限（相对单次调用的倍数）
+
+
+@dataclass
 class RoleAgentConfig:
     """[SYS-ROLE-AGENT] 多角色 Agent 协作系统配置。
 
@@ -517,6 +543,7 @@ class AppConfig:
     global_knowledge: GlobalKnowledgeConfig = field(default_factory=GlobalKnowledgeConfig)
     observability: ObservabilityConfig = field(default_factory=ObservabilityConfig)
     privacy:    PrivacyConfig     = field(default_factory=PrivacyConfig)
+    ensemble:   EnsembleConfig    = field(default_factory=EnsembleConfig)
 
     # ── 向后兼容属性（让旧代码 cfg.memory_enabled 不报错）────────────────────
     # 以下属性委托给子配置块，方便渐进式迁移，后续版本可删除
@@ -644,5 +671,10 @@ class AppConfig:
     def llm_retry_backoff_step(self) -> float:  return self.retry.backoff_step
     @property
     def llm_retry_backoff_max_delay(self) -> float: return self.retry.backoff_max_delay
+
+    @property
+    def ensemble_enabled(self) -> bool:          return self.ensemble.mode != "off"
+    @property
+    def ensemble_mode(self) -> str:              return self.ensemble.mode
 
 
