@@ -1,0 +1,45 @@
+# config.example.toml
+# 复制为 config.toml 后按需修改；所有字段也可以用同名环境变量覆盖
+# （见 run_mini_agent_bot.py：WEIXIN_BASE_URL / WEIXIN_TOKEN /
+#   MINI_AGENT_BASE_URL / MINI_AGENT_OWNER_TOKEN）。
+
+[weixin]
+# openclaw 网关地址；留空则走 auto_token()（从 ~/.openclaw/openclaw.json 读取）
+base_url = "http://localhost:8080"
+token = ""
+
+[mini_agent]
+# ── 本机部署（默认）──────────────────────────────────────────────
+base_url = "http://localhost:8000"
+
+# ── 跨机部署示例（取消注释并改成实际地址，建议走 HTTPS）───────────
+# base_url = "https://mini-agent.example.com"
+
+# owner token：用于自动创建微信用户对应的 mini_agent 账号（调 POST /v1/users）。
+# 从 mini_agent 项目根目录的 .agent/agent_api.key 或启动日志里获取。
+owner_token = ""
+
+# openid <-> mini_agent 用户映射的本地 sqlite 存放路径
+user_mapping_db = "data/user_mapping.db"
+
+# 对话轮询间隔（秒）
+chat_poll_interval_s = 1.5
+# 单轮对话最长等待时间（秒），超时会提示用户稍后用 /status 查看
+chat_timeout_s = 180
+
+# 权限审批轮询间隔（秒）
+permission_poll_interval_s = 4.0
+
+[mini_agent.roles]
+# 在这个名单里的微信 openid，创建出来的 mini_agent 账号会用 owner_mapped_role
+# （默认 "family"，mini_agent 里信任等级最高的非 owner 角色）
+owner_openids = []
+# 不在名单里的微信用户，默认账号角色（mini_agent VALID_ROLES 之一：
+# family / colleague / agent / public）
+default_role = "public"
+owner_mapped_role = "family"
+
+# ── 跨机部署额外提示（不是本文件配置项，需要在 mini_agent 服务端配置）──
+# 1. 打开 mini_agent 的 http_multi_user_enabled
+# 2. IP 白名单加上本 Bot 所在机器的出口 IP，或改为仅依赖 token 鉴权
+# 3. 建议在 mini_agent server 前套一层 HTTPS 反代，避免 Bearer token 明文过公网
