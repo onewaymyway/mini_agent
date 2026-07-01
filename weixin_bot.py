@@ -195,7 +195,7 @@ class WeixinHandler(BaseHandler):
         if not openid:
             return
         text = text.strip()
-        ctx = self._get_or_create(openid)
+        ctx = await self._get_or_create(openid)
 
         try:
             if text.startswith("/"):
@@ -208,9 +208,20 @@ class WeixinHandler(BaseHandler):
 
     # ── Agent 实例化（与 main.py 相同的配置加载方式） ───────────────────────
 
-    def _get_or_create(self, openid: str) -> _UserCtx:
+    async def _get_or_create(self, openid: str) -> _UserCtx:
         if openid not in self._contexts:
-            self._contexts[openid] = self._make_ctx()
+            # _make_ctx() 会构造 Agent，Agent.__init__ 里 MCPManager.register_all()
+            # 在检测到"当前已有运行中的 event loop"时，会用
+            # asyncio.run_coroutine_threadsafe(...).result() 把注册协程提交回该 loop
+            # 并阻塞等待。如果直接在事件循环所在线程（也就是本协程 on_text 所在线程）
+            # 里同步调用 _make_ctx()，就会变成"loop 所在线程阻塞等待需要 loop 自己
+            # 才能推进的任务"，造成死锁，30 秒后必然 TimeoutError。
+            # 因此这里必须丢进线程池执行，让 register_all() 提交任务的线程与
+            # loop 所在线程不同，run_coroutine_threadsafe 才能正常工作。
+            loop = asyncio.get_event_loop()
+            self._contexts[openid] = await loop.run_in_executor(
+                self._executor, self._make_ctx
+            )
         return self._contexts[openid]
 
     def _make_ctx(self) -> _UserCtx:
