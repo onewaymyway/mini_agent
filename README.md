@@ -431,6 +431,7 @@ Web Demo 提供：
 | `/rollback` | 回退上一轮 |
 | `/evolution log\|show\|diff\|revert` | 查看/审查/回退自我修改历史（Stage 2 安全网） |
 | `/evolve review\|list` | 扫描达标 lesson 并提案/预览新 skill（Stage 3.1） |
+| `/debug system\|history\|all\|save` | 打印/导出当前 system prompt 与 history，便于分析调试 |
 
 ### 键盘快捷键（Task 日志查看）
 

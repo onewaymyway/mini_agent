@@ -60,6 +60,10 @@ def build_parser() -> argparse.ArgumentParser:
               /agent goals status         Show AutonomousLoop tick status
               /goals                      Shortcut for /agent goals
               /digest                     Show autonomous activity summary since last interaction
+              /debug system               Print current system prompt (with token estimate)
+              /debug history [full] [n]   Print history as a table (last n msgs; 'full' = no truncation)
+              /debug all [n]              Print system + history together
+              /debug save [path]          Dump system + full history to a Markdown file for offline analysis
               exit / quit        Exit
         """),
     )

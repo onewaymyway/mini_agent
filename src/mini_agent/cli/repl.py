@@ -26,6 +26,7 @@ from mini_agent.cli.commands import (
     handle_hooks_cmd,
     handle_evolution_cmd,
     handle_evolve_cmd,
+    handle_debug_cmd,
 )
 
 
@@ -287,6 +288,11 @@ def _handle_slash(cmd: str, agent: Agent, skill_loader: SkillLoader) -> None:
 
     elif name == "evolve":
         handle_evolve_cmd(parts[1:], agent)
+
+    elif name == "debug":
+        # /debug system|history [full] [n]|all [n]|save [path]
+        # 打印/导出当前 system prompt 与 history，便于分析调试
+        handle_debug_cmd(parts[1:], agent)
 
     # ── Stage 9: Goal Backlog + Activity Digest ───────────────────────────
     elif name == "agent":

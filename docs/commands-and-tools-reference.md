@@ -387,6 +387,19 @@ cron:<分 时 日 月 周>   标准 cron 5 字段，如 cron:0 */6 * * *（每 6
 
 ---
 
+### 调试（`src/mini_agent/cli/commands/debug_cmd.py`）
+
+> 打印/导出当前 system prompt 与 history，便于分析调试（排查 prompt 注入、history 压缩/截断、`_type` 归类是否符合预期）。
+
+| 命令 | 说明 |
+|------|------|
+| `/debug system` | 打印当前实际会发给 LLM 的 system prompt 全文，附字符数与估算 token 数 |
+| `/debug history [full] [n]` | 表格形式打印 history（`#` / role / `_type` / 估算 tokens / 内容预览）；默认截断预览，加 `full` 不截断；加数字 `n` 只看最近 n 条 |
+| `/debug all [n]` | system + history 一起打印 |
+| `/debug save [path]` | 将完整 system prompt + 全部 history（不截断）落盘为 Markdown，默认写入 `<project_root>/.agent/debug/debug_dump_<ts>.md` |
+
+---
+
 ## 五、`mini-agent daemon` 子命令
 
 > **Stage 9** 守护进程管理。详见 [Stage 9 自主运行时指南](self-evolution-stage9-guide.md)
@@ -603,6 +616,8 @@ mini-agent --debug-llm-console
 /concurrency       查看并发状态
 /compact           压缩历史释放 context
 /stats             查看会话统计
+/debug all         打印当前 system prompt + history（调试用）
+/debug save        导出 system + history 到 Markdown 文件
 ```
 
 ---
