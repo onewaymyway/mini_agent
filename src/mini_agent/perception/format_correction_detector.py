@@ -95,7 +95,7 @@ def _build_message(detail: str) -> str:
 _OPEN_TAG_RE = _re.compile(r"<tool_use>", _re.IGNORECASE)
 _CLOSE_TAG_RE = _re.compile(r"</tool_use>", _re.IGNORECASE)
 _RESULT_OPEN_TAG_RE = _re.compile(r"<tool_result>", _re.IGNORECASE)
-_RESULT_CLOSE_TAG_RE = _re.compile(r"</tool_result>\b", _re.IGNORECASE)
+_RESULT_CLOSE_TAG_RE = _re.compile(r"</tool_result>", _re.IGNORECASE)
 _LEGACY_FENCE_RE = _re.compile(r"```tool_call\b", _re.IGNORECASE)
 
 # 任意\"疑似工具调用\"标签的统一检测——涵盖已知变体和拼写错误

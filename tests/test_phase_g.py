@@ -43,12 +43,15 @@ class MockPaths:
         self._root = root
         (root / ".agent").mkdir(parents=True, exist_ok=True)
 
+    @property
     def workdir_dir(self) -> Path:
         return self._root / ".agent"
 
+    @property
     def sessions_dir(self) -> Path:
         return self._root / ".agent" / "sessions"
 
+    @property
     def global_cross_project_index(self) -> Path:
         return self._root / ".agent" / "cross_project_index.json"
 
@@ -81,7 +84,7 @@ class TestRhythmGovernance:
     def test_expired_record_allowed(self, paths):
         # 先记录一个过期的时间（比 min_interval_days 更早）
         data = {f"prune:skill_foo": time.time() - 8 * 86400}  # 8 天前
-        (paths.workdir_dir() / "phase_g_rhythm.json").write_text(
+        (paths.workdir_dir / "phase_g_rhythm.json").write_text(
             json.dumps(data), encoding="utf-8"
         )
         assert rhythm_is_allowed(paths, "prune", "skill_foo", min_interval_days=7.0) is True
@@ -101,7 +104,7 @@ class TestRhythmGovernance:
     def test_should_run_after_interval(self, paths):
         # 模拟 25 小时前运行过
         data = {"_last_run_at": time.time() - 25 * 3600}
-        (paths.workdir_dir() / "phase_g_rhythm.json").write_text(
+        (paths.workdir_dir / "phase_g_rhythm.json").write_text(
             json.dumps(data), encoding="utf-8"
         )
         assert should_run_phase_g(paths, interval_hours=24.0) is True
@@ -151,7 +154,7 @@ def _make_manifest(sessions_dir: Path, session: str, task: str, status: str, goa
 
 class TestBuildCapabilityMap:
     def test_basic_aggregation(self, paths, tmp_path):
-        sessions = paths.sessions_dir()
+        sessions = paths.sessions_dir
         _make_manifest(sessions, "s1", "t1", "done",   "Fix bug in utils.py")
         _make_manifest(sessions, "s1", "t2", "done",   "Fix bug in parser.py")
         _make_manifest(sessions, "s2", "t3", "failed", "Fix bug in app.py")
@@ -170,7 +173,7 @@ class TestBuildCapabilityMap:
         assert result == []
 
     def test_writes_to_memory(self, paths, tmp_path):
-        sessions = paths.sessions_dir()
+        sessions = paths.sessions_dir
         _make_manifest(sessions, "s1", "t1", "done", "Write pytest tests")
 
         mock_mem = MagicMock()
@@ -179,7 +182,7 @@ class TestBuildCapabilityMap:
         assert mock_mem.add.called
 
     def test_cancelled_counts_as_failure(self, paths):
-        sessions = paths.sessions_dir()
+        sessions = paths.sessions_dir
         _make_manifest(sessions, "s1", "t1", "cancelled", "Refactor auth module")
 
         result = build_capability_map(paths, memory_backend=None)
@@ -188,7 +191,7 @@ class TestBuildCapabilityMap:
         assert domain_map["refactor"].failure_count == 1
 
     def test_multiple_domains(self, paths):
-        sessions = paths.sessions_dir()
+        sessions = paths.sessions_dir
         _make_manifest(sessions, "s1", "t1", "done",   "Write pytest tests for parser")
         _make_manifest(sessions, "s1", "t2", "done",   "Build Docker image")
         _make_manifest(sessions, "s2", "t3", "failed", "Write pytest tests for auth")
@@ -205,7 +208,7 @@ class TestBuildCapabilityMap:
 
 def _write_cross_index(paths, patterns: list[dict]) -> None:
     data = {"cross_project_patterns": patterns}
-    paths.global_cross_project_index().write_text(
+    paths.global_cross_project_index.write_text(
         json.dumps(data), encoding="utf-8"
     )
 
@@ -305,7 +308,7 @@ class TestRunPhaseG:
         assert get_last_phase_g_run(paths) > 0.0
 
     def test_capability_map_populated(self, paths):
-        sessions = paths.sessions_dir()
+        sessions = paths.sessions_dir
         _make_manifest(sessions, "s1", "t1", "done", "Fix bug in utils.py")
 
         report = run_phase_g(paths, skill_loader=None, memory_backend=None)

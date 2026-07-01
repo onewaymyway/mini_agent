@@ -31,7 +31,7 @@ _RHYTHM_FILENAME = "phase_g_rhythm.json"
 
 def _rhythm_path(paths) -> Path:
     """演化节奏治理状态文件路径（存在 workdir .agent/ 目录）。"""
-    return paths.workdir_dir() / _RHYTHM_FILENAME
+    return paths.workdir_dir / _RHYTHM_FILENAME
 
 
 def _load_rhythm(paths) -> dict:
@@ -444,7 +444,7 @@ def check_scope_promotion(
     返回 PromotionCandidate 列表，调用方决定是否触发 skill_propose。
     不自动写入 skill——遵循\"人工确认后才真正下线\"的一贯精神。
     """
-    cross_index_path = paths.global_cross_project_index()
+    cross_index_path = paths.global_cross_project_index
     if not cross_index_path.exists():
         return []
 
