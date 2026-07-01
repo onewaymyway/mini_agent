@@ -17,6 +17,7 @@ import os
 import random
 import struct
 from typing import Any, Optional
+from uuid import uuid4
 
 from .codec import (
     decode_get_config_resp,
@@ -273,9 +274,15 @@ def make_text_message(
     text: str,
     context_token: Optional[str] = None,
 ) -> WeixinMessage:
-    """Build a WeixinMessage containing a single text item."""
+    """Build a WeixinMessage containing a single text item.
+
+    每次调用都会生成唯一的 client_id（UUID4），防止服务端把同一 bot token
+    发出的多条消息当作重复消息去重（这是只有第一条消息能被成功投递的根本原因）。
+    """
     return WeixinMessage(
         to_user_id=to_user_id,
+        from_user_id="",
+        client_id=str(uuid4()),
         message_type=MessageType.BOT,
         message_state=MessageState.FINISH,
         context_token=context_token,

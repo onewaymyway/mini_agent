@@ -248,6 +248,7 @@ def encode_weixin_message(msg: WeixinMessage) -> dict:
     return _strip_none({
         "to_user_id": msg.to_user_id,
         "from_user_id": msg.from_user_id,
+        "client_id": msg.client_id,          # 必须带：服务端用于消息去重，缺失时只有第一条能被投递
         "session_id": msg.session_id,
         "context_token": msg.context_token,
         "message_type": msg.message_type,
