@@ -148,3 +148,109 @@ For production use, consider:
 - Maintaining a per-user conversation history (pass it via `--continue` or a custom system prompt)
 - Rate-limiting requests per user
 - Using `chunk_size > 0` to stream partial replies back to WeChat as they are generated
+
+## Connecting to mini_agent (this project)
+
+Instead of shelling out to a CLI per message, `MiniAgentHandler` relays WeChat
+messages to this project's own HTTP API (`src/mini_agent/api/`), reusing its
+multi-user session pool, permission gate, and file-system endpoints.
+
+```python
+import asyncio
+from weixin import WeixinBot
+from weixin.handlers.mini_agent_handler import MiniAgentHandler
+from permission_poller import PermissionPoller
+from user_mapping import RoleRules
+
+bot = WeixinBot(base_url="http://localhost:8080", token="your-weixin-token")
+
+handler = MiniAgentHandler(
+    mini_agent_base_url="http://localhost:8000",
+    owner_token="your-mini-agent-owner-token",
+    role_rules=RoleRules(owner_openids=set(), default_role="public"),
+)
+bot.add_handler(handler)
+
+poller = PermissionPoller(bot=bot, handler=handler)
+
+asyncio.run(asyncio.gather(bot.run(), poller.run()))
+```
+
+Or just run the ready-made entry point after copying `config.example.toml` to
+`config.toml` and filling in `mini_agent.owner_token`:
+
+```bash
+cd apps/weixin_plugin
+pip install httpx        # recommended
+python run_mini_agent_bot.py
+```
+
+### Slash commands
+
+| Command | Description |
+|---|---|
+| *(plain text)* | Chat with the current session |
+| `/help` | Show help |
+| `/status` | Show agent state, current turn, current session |
+| `/interrupt` | Interrupt the currently running turn |
+| `/sessions` | List your sessions (numbered, current marked with ●) |
+| `/session new` | Create and switch to a new session |
+| `/session use <n>` | Switch to session number `n` from the last `/sessions` listing |
+| `/session del <n>` | Delete session number `n` |
+| `/ls [path]` | List a directory (read-only) |
+| `/cat <path>` | Read a file (read-only, truncated if long) |
+| `/find <keyword>` | Search files by name |
+| `/yes` / `/no` | Approve / deny the latest pending permission request once |
+| `/always` / `/denyalways` | Approve / deny this kind of request permanently |
+
+Each WeChat `openid` is automatically provisioned as its own mini_agent user
+(via `POST /v1/users`, using the configured owner token) on first contact, and
+the mapping is cached in a local sqlite file (`data/user_mapping.db`) so
+restarts don't create duplicate accounts. Role assignment is configurable via
+`[mini_agent.roles]` in `config.toml` — put trusted WeChat openids in
+`owner_openids` to grant them the higher-trust `family` role; everyone else
+gets `default_role` (`public` by default).
+
+Permission requests (tool calls requiring approval) and other user-confirmation
+prompts are picked up by `PermissionPoller`, which polls
+`GET /v1/permissions/pending` per user (default every 4s) and proactively
+pushes a WeChat message when a new one appears. Replying with `/yes`, `/no`,
+`/always`, or `/denyalways` submits the decision back via
+`POST /v1/permissions/{req_id}`. A pending request that goes unanswered for
+10 minutes triggers a one-time reminder.
+
+### Same-machine vs. cross-machine deployment
+
+By default everything assumes the mini_agent server runs on the same machine
+(`mini_agent.base_url = "http://localhost:8000"` in `config.toml`) — no extra
+setup needed.
+
+To run the WeChat bot on a different machine from the mini_agent server:
+
+1. On the mini_agent server, enable multi-user HTTP auth
+   (`http_multi_user_enabled`) so per-user tokens work correctly.
+2. Either add the bot machine's outbound IP to mini_agent's IP allowlist, or
+   rely on token-only auth if you disable the allowlist (weigh this against
+   your threat model).
+3. Put mini_agent behind HTTPS (nginx/caddy reverse proxy, or TLS termination
+   directly) — Bearer tokens are sent as plain headers, so don't send them
+   over plaintext HTTP across a public network.
+4. Point `mini_agent.base_url` in `config.toml` (or the
+   `MINI_AGENT_BASE_URL` env var) at the remote HTTPS URL, and set
+   `MINI_AGENT_OWNER_TOKEN` / `mini_agent.owner_token` to the server's owner
+   token.
+
+### Known limitations (planned for a later iteration)
+
+- Chat replies are fetched by polling `GET /v1/turns/{turn_id}` + reading
+  `GET /v1/history` for the final answer, rather than streaming tokens live
+  via SSE — WeChat doesn't render a typing effect anyway, so replies are sent
+  as a single message once the turn finishes.
+- `/v1/permissions/pending` is polled per user rather than subscribed to via
+  SSE; this is simpler and more robust for a first version at the cost of a
+  few seconds of latency.
+- File operations are read-only (`/ls`, `/cat`, `/find`); there is no
+  WeChat-side `/fs/write` or upload command yet, to avoid accidental edits
+  from a chat interface.
+- Commands are slash-only; there's no natural-language command routing yet.
+
