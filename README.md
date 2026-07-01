@@ -397,6 +397,27 @@ Web Demo 提供：
 
 **注意**：需要先启动 HTTP 服务，Web Demo 才能连接到 Agent。
 
+## 微信接入
+
+`weixin_bot.py` 与 `main.py` 同级放在项目根目录，直接内嵌 `mini_agent`，
+自动复用 `agent_config.json` / `providers.json` / `skills/`，无需额外配置：
+
+```bash
+# 微信网关配置（openclaw）走环境变量，默认读 ~/.openclaw/openclaw.json
+export WEIXIN_BASE_URL=...
+export WEIXIN_TOKEN=...
+
+python weixin_bot.py [--project <路径>] [--yes] [--no-stream]
+```
+
+特点：
+- 每个微信 `openid` 对应一个独立 `Agent` 实例，会话与权限白名单互不影响
+- 危险工具调用的审批走微信消息（回复 `/yes` `/no` `/always` `/denyalways`），无需守在终端旁
+- 支持 `/sessions` `/session` `/status` `/ls` `/cat` `/find` 等管理指令，发 `/help` 查看完整列表
+
+详见 [微信接入指南](docs/weixin-bot-guide.md)（含 `Agent` 首次创建时
+的 asyncio 事件循环死锁问题的根因分析与修复记录）。
+
 ## REPL 命令
 
 进入交互式模式后，支持以下斜杠命令：
@@ -857,6 +878,7 @@ python -m pytest tests/ -q
 - [Env Info 指南](docs/env-info-guide.md) — 环境信息采集与注入，自定义 Provider 扩展
 - [LLM 故障转移指南](docs/llm-failover-guide.md) — 多配置 fallback chain + 多 API Key 轮转
 - [重试退避指南](docs/retry-backoff-guide.md) — fixed / linear / exponential 退避策略详解
+- [微信接入指南](docs/weixin-bot-guide.md) — **新增**：`weixin_bot.py` 每用户 Agent 隔离 / 远程权限审批 / 同步-异步桥接，含 `_get_or_create` 事件循环死锁问题的根因与修复记录
 
 ## 许可证
 

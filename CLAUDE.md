@@ -35,6 +35,8 @@
 - `src/mini_agent/env_info/` — 环境信息采集与注入（Provider 抽象基类 + 注册表 + 内置 Provider）
 - `src/mini_agent/evolution/` — 自我演化机制：`state_repo.py`（唯一写入入口，Stage 9 加 `initiator` T0→T1 上浮）/`validators.py`（分级校验）/`workspace.py`（worktree 隔离）/`eval_runner.py`（eval 反馈环）/`phase_g.py`（Stage 8 后台循环：剪枝/能力地图/Scope 晋升/节奏治理）/`autonomous_loop.py`（Stage 9 三档位 tick + ExplorationSandbox + SoftGoalDeriver 接入）/`resource_arbiter.py`（Stage 9 资源仲裁 + activity_digest.jsonl + 六分组 build_digest_summary）/`cron_scheduler.py`（Stage 9 定时任务：interval/cron 双格式，5 个内置系统 job）/`objective_executor.py`（Stage 9 Objective 多步持续执行引擎）/`soft_goal_deriver.py`（Stage 9 autonomous 档位软目标 derive：三路信号 + ExplorationSandbox 验证）/`memory_aging.py`（具身改进 C2，lesson 按 source + occurrence_count 计算专属时间衰减半衰期）/`self_maintenance.py`（具身改进 C4，SelfMaintenanceModule：stale_tools/stale_skills/conflicting_lessons 健康检查，SessionEnd 时间门控 + `sys:self_maintain` cron job）
 - `scripts/protected_paths.py` — 受保护路径清单（T3 治理红线，独立于 `src/mini_agent/` 包，自我演化相关安全机制使用）
+- `weixin_bot.py` — 微信端接入入口（与 `main.py` 同级，内嵌 `mini_agent`，每个 openid 独立 Agent 实例，权限审批走微信消息 + `threading.Event` 而非终端阻塞）；`Agent()` 首次构造必须经由 `loop.run_in_executor()` 丢进线程池，不能在 `on_text` 协程里同步调用，否则 `MCPManager.register_all()` 内部的 `run_coroutine_threadsafe(...).result()` 会在事件循环自身线程里死锁（详见 [微信接入指南](docs/weixin-bot-guide.md) 第 3 节）
+- `apps/weixin_plugin/weixin/` — 微信网关 SDK（`bot.py`/`types.py`/`login.py`），供 `weixin_bot.py` 使用
 
 ## 开发规范
 
@@ -577,6 +579,7 @@ mini-agent user token u_a1b2c3d4                       # 重新生成 token
 - [Phase G 后台循环指南（Stage 8）](docs/self-evolution-phase-g-guide.md) — 剪枝候选 / 能力地图 / Scope 晋升 / 演化节奏治理
 - [Stage 9 自主运行时指南](docs/self-evolution-stage9-guide.md) — 常驻守护进程 / Goal Backlog / 三档位 AutonomousLoop / 资源仲裁
 - [具身智能改进指南](docs/embodied-agent-guide.md) — 本体感知 / 余裕感知 / 工具透明性 / AgentSelfModel / 时间加权记忆 / 认知锚点 / 自维护模块（A/B/C 三阶段共 12 项）
+- [微信接入指南](docs/weixin-bot-guide.md) — `weixin_bot.py` 每用户 Agent 隔离 / 远程权限审批 / 同步-异步桥接；含 `_get_or_create` 事件循环死锁问题的根因分析与修复记录
 
 ## 当前进展
 
