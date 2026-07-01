@@ -26,14 +26,14 @@
 - `src/mini_agent/llm/` — LLM 抽象层
 - `src/mini_agent/orchestrator/` — 并发编排（含 `plan.py` 的 `plan_snapshot.json` 持久化、`task.py` 的 `manifest.json` 写入）
 - `src/mini_agent/hooks/` — hooks 机制（关键事件自动执行命令）
-- `src/mini_agent/perception/` — 感知与记忆子系统
+- `src/mini_agent/perception/` — 感知与记忆子系统（含具身改进：`proprioception.py` 本体感知/`affordance_analyzer.py` 余裕感知/`self_model.py` AgentSelfModel 聚合/`intent_action_mapper.py` 工具调用意图分组）
 - `src/mini_agent/ui/` — 终端交互（terminal.py, renderer.py, repl_input.py）
 - `src/mini_agent/api/` — HTTP API 服务
 - `src/mini_agent/history/` — 历史管理（压缩算法 + RawHistory 即时落盘 + 条目类型定义）
 - `src/mini_agent/prompts/` — Prompt 管理
 - `src/mini_agent/storage/` — 存储层（`paths.py` 含 `session_plan_snapshot`/`task_manifest`/`workdir_xxx`/`global_xxx` 等路径方法）
 - `src/mini_agent/env_info/` — 环境信息采集与注入（Provider 抽象基类 + 注册表 + 内置 Provider）
-- `src/mini_agent/evolution/` — 自我演化机制：`state_repo.py`（唯一写入入口，Stage 9 加 `initiator` T0→T1 上浮）/`validators.py`（分级校验）/`workspace.py`（worktree 隔离）/`eval_runner.py`（eval 反馈环）/`phase_g.py`（Stage 8 后台循环：剪枝/能力地图/Scope 晋升/节奏治理）/`autonomous_loop.py`（Stage 9 三档位 tick + ExplorationSandbox + SoftGoalDeriver 接入）/`resource_arbiter.py`（Stage 9 资源仲裁 + activity_digest.jsonl + 六分组 build_digest_summary）/`cron_scheduler.py`（Stage 9 定时任务：interval/cron 双格式，5 个内置系统 job）/`objective_executor.py`（Stage 9 Objective 多步持续执行引擎）/`soft_goal_deriver.py`（Stage 9 autonomous 档位软目标 derive：三路信号 + ExplorationSandbox 验证）
+- `src/mini_agent/evolution/` — 自我演化机制：`state_repo.py`（唯一写入入口，Stage 9 加 `initiator` T0→T1 上浮）/`validators.py`（分级校验）/`workspace.py`（worktree 隔离）/`eval_runner.py`（eval 反馈环）/`phase_g.py`（Stage 8 后台循环：剪枝/能力地图/Scope 晋升/节奏治理）/`autonomous_loop.py`（Stage 9 三档位 tick + ExplorationSandbox + SoftGoalDeriver 接入）/`resource_arbiter.py`（Stage 9 资源仲裁 + activity_digest.jsonl + 六分组 build_digest_summary）/`cron_scheduler.py`（Stage 9 定时任务：interval/cron 双格式，5 个内置系统 job）/`objective_executor.py`（Stage 9 Objective 多步持续执行引擎）/`soft_goal_deriver.py`（Stage 9 autonomous 档位软目标 derive：三路信号 + ExplorationSandbox 验证）/`memory_aging.py`（具身改进 C2，lesson 按 source + occurrence_count 计算专属时间衰减半衰期）/`self_maintenance.py`（具身改进 C4，SelfMaintenanceModule：stale_tools/stale_skills/conflicting_lessons 健康检查，SessionEnd 时间门控 + `sys:self_maintain` cron job）
 - `scripts/protected_paths.py` — 受保护路径清单（T3 治理红线，独立于 `src/mini_agent/` 包，自我演化相关安全机制使用）
 
 ## 开发规范
@@ -490,6 +490,55 @@ mini-agent user token u_a1b2c3d4                       # 重新生成 token
 - **CLI 命令**：`/goals`（含 accept/reject）、`/cron`（含所有子命令）、`/digest`（六分组摘要）、`mini-agent daemon start|stop|status`
 - 详见 [Stage 9 自主运行时指南](docs/self-evolution-stage9-guide.md)
 
+### 具身智能改进（Embodied Agent）
+
+> 对应 `next_doc/embodied_agent_design.md`（设计依据）与
+> `next_doc/embodied_agent_improvement_plan_v3.md`（改进计划 + 逐项实现取舍
+> 说明）。借用本体感知/余裕感知/工具透明性/自创生等具身认知类比，给
+> Agent 补上"对自身状态的显式建模"，全部 A/B/C 三阶段 + 阶段 D 收尾共 12
+> 项均已实现
+
+- **A1 Connected REPL 完整命令对等**：`cli/daemon.py::DaemonClient` 把连接
+  模式下的 slash 命令路由到对应 HTTP API 端点，与本地模式命令对等
+- **A2 Lesson source 区分**：`perception/correction_detector.py` 检测用户
+  直接纠正短语，立即生成 `source="human_feedback"` 的 lesson（区别于
+  `self_reflection`/`experiment_confirmed`/`revert_record`），供 B2/C2 差异化对待
+- **A3 Reminder pre_tool 触发**：`reminders/manager.py::check_pre_tool()`
+  在工具执行前做前馈匹配，命中则提前注入提醒，而非等出错后补救
+- **B1 本体感知模块**：`perception/proprioception.py`（`ProprioceptionConfig`），
+  O(1) 纯计算的轮间快照（认知负荷/不确定性/风险感知/剩余预算/frustration），
+  frustration 超阈值 + 连续失败达标时注入元认知提示
+- **B2 Lesson → Reminder 自动闭环**：`evolution/lesson_to_reminder.py`，
+  human_feedback 来源 1 次即激活，其余来源需达 T1 门槛且先落草稿；
+  `/evolution lessons-to-reminders` 命令
+- **B3 Workflow 并发执行**：`workflow/runner.py::_compute_parallel_batches()`
+  对 `depends_on` 拓扑排序，无依赖步骤并发执行
+- **B4 余裕感知层（AffordanceMap）**：`perception/affordance_analyzer.py`
+  （`AffordanceConfig`），session 级构建，交叉分析 open_threads/capability_map/
+  lesson memory 生成行动机会摘要，接入 `api/session_pool.py`（当前仅多用户路径生效）
+- **工具透明性（IntentActionMapper）**：`perception/intent_action_mapper.py`，
+  纯规则匹配把工具调用按意图分组（exploration/code_edit/test_run/env_setup/
+  vcs_op/research/other），写入 `traces.jsonl` 的 `action_events` 字段，不
+  改变 history 本身
+- **C1 AgentSelfModel**：`perception/self_model.py`，聚合 SelfAssessment（慢
+  变量）+ capability_map + ProprioceptionModule 快照 + AffordanceMap（快变量），
+  澄清与 UserProfile/RoleProfileManager/AgentProfile 三个既有 profile 概念的语义边界
+- **C2 时间加权记忆激活**：`evolution/memory_aging.py::compute_decay_factor()`，
+  lesson 按 source 区分半衰期基准（human_feedback 90d 最慢 → revert_record
+  14d 最快），occurrence_count 越高衰减越慢（封顶 4 倍），接入
+  `memory_store.py::_score_all()`；非 lesson 条目行为不变
+- **C3 认知锚点文件**：`agent.py::_save_cognitive_anchor()`/
+  `_maybe_load_cognitive_anchor()` + `AgentPaths.workdir_cognitive_anchor`，
+  Ctrl-C 打断时 LLM 生成四段式"思维状态重建指南"（`prompts/system/
+  cognitive_anchor.md`），下次 session 启动时注入 `system_extra` 并归档；
+  daemon connected REPL 的 Ctrl-C 暂未接入，留作后续
+- **C4 自维护模块（SelfMaintenanceModule）**：`evolution/self_maintenance.py`，
+  三项检查（`traces.jsonl` 失败率推断 stale_tools / skill tracker 推断
+  stale_skills / lesson 聚类正负信号推断 conflicting_lessons），只产出建议
+  写入 `activity_digest.jsonl`（`type="health_report"`），不自动修复；
+  SessionEnd 时间门控 + 内置 cron job `sys:self_maintain`
+- 详见 [具身智能改进指南](docs/embodied-agent-guide.md)
+
 ### 参数优先级
 
 **命令行参数 > 配置文件参数**。之前配置文件优先级更高，已修正。
@@ -525,8 +574,11 @@ mini-agent user token u_a1b2c3d4                       # 重新生成 token
 - [Workdir 知识层与 Global 知识层指南（Stage 4 & 5）](docs/self-evolution-stage4-5-guide.md) — `project.json`/`work_index.json`/`open_threads.json`/`knowledge.md`（W2）+ `self_profile.json`/`projects_index.json`/`cross_project_index.json`/`activity_log.jsonl`（W3）
 - [观察性系统指南（Stage 6）](docs/observability-guide.md) — `traces.jsonl` 追踪、`/diagnostics` 端点、异常检测、工具调用因果链
 - [Phase G 后台循环指南（Stage 8）](docs/self-evolution-phase-g-guide.md) — 剪枝候选 / 能力地图 / Scope 晋升 / 演化节奏治理
+- [Stage 9 自主运行时指南](docs/self-evolution-stage9-guide.md) — 常驻守护进程 / Goal Backlog / 三档位 AutonomousLoop / 资源仲裁
+- [具身智能改进指南](docs/embodied-agent-guide.md) — 本体感知 / 余裕感知 / 工具透明性 / AgentSelfModel / 时间加权记忆 / 认知锚点 / 自维护模块（A/B/C 三阶段共 12 项）
 
 ## 当前进展
 
 - Stage 0-8 均已完成（详见 `next_doc/self_evolution_implementation_plan.md` 与 `next_doc/self_evolution_stage4plus_plan.md` 各 Stage 完成记录）
 - Stage 9（Phase H：自主运行时）是决策点而非常规排期 Stage，启动前置清单见 `next_doc/self_evolution_stage4plus_plan.md` 第 9.0 节；细化方案见 `next_doc/self_evolution_stage9_plan.md`
+- 具身智能改进（`next_doc/embodied_agent_improvement_plan_v3.md`）A/B/C 三阶段共 12 项均已完成，详见 [具身智能改进指南](docs/embodied-agent-guide.md)；已知遗留缺口：AffordanceMap（B4）与认知锚点（C3）仅在部分路径生效（分别是"仅多用户 daemon"和"本地 CLI，daemon connected REPL 未接入"），详见改进计划文档对应小节

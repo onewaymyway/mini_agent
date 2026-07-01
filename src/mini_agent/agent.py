@@ -525,6 +525,9 @@ class Agent:
         # [具身改进 B1] ProprioceptionModule：本体感知快照，O(1) 不调用 LLM
         self._proprioception: Optional["ProprioceptionModule"] = None
         self._last_tool_names: list = []  # 供 sense() 估算 risk_perception
+        # [具身改进 工具透明性] 最近一批工具调用的意图分组结果（ActionEvent 列表），
+        # 供 digest / 自维护扫描等读取，不持久化，仅 session 内有效。
+        self._last_action_events: list = []
         if getattr(self.cfg, "proprioception", None) and self.cfg.proprioception.enabled:
             from mini_agent.perception.proprioception import ProprioceptionModule
             self._proprioception = ProprioceptionModule()
@@ -588,6 +591,7 @@ class Agent:
             self._bind_session_extras()
             self._maybe_ensure_project_meta()
             self._maybe_register_global_project()
+            self._maybe_load_cognitive_anchor()
             # [SYS-HOOKS] SessionStart：session 初始化完成后触发（通知型）
             try:
                 from mini_agent.hooks import get_hook_manager as _ghm_ss
@@ -669,6 +673,93 @@ class Agent:
             gk.refresh_dormant_status(paths, dormant_after_days=dormant_after_days)
         except Exception:
             pass  # 观察性数据，失败不应影响 agent 主流程
+
+    def _maybe_load_cognitive_anchor(self) -> None:
+        """
+        [具身改进 C3] session 启动时检查是否存在认知锚点文件，若存在则
+        优先注入 system_extra（"恢复记忆"），并归档（重命名加时间戳后缀）——
+        消费一次即归档，避免同一份锚点被无限期重复注入到后续每个 session。
+
+        与 B4 AffordanceMap 的协作：二者都写入 cfg.system_extra，但分别在
+        不同时机调用（AffordanceMap 由 SessionAgentPool 在多用户路径里注入，
+        认知锚点在 agent.py 这里对本地/daemon 两条路径统一生效）——拼接顺序
+        不强制，system_extra 是简单的文本累加。
+        """
+        if not getattr(self.cfg, "cognitive_anchor_enabled", True):
+            return
+        try:
+            from mini_agent.storage.paths import AgentPaths
+            paths = AgentPaths(self.cfg.project_root)
+            anchor_path = paths.workdir_cognitive_anchor
+            if not anchor_path.exists():
+                return
+            content = anchor_path.read_text(encoding="utf-8").strip()
+            if not content:
+                return
+
+            fragment = (
+                "## 上次中断时留下的认知锚点（自动恢复，仅供参考）\n" + content
+            )
+            existing = getattr(self.cfg, "system_extra", "") or ""
+            self.cfg.system_extra = (existing + "\n\n" + fragment).strip()
+
+            # 归档：重命名为带时间戳的文件，原路径不再存在，避免重复注入。
+            import time as _time
+            archived = anchor_path.with_name(
+                f"cognitive_anchor.{int(_time.time())}.md"
+            )
+            anchor_path.rename(archived)
+        except Exception:
+            pass  # 锚点恢复失败不应影响 session 启动
+
+    def _save_cognitive_anchor(self) -> None:
+        """
+        [具身改进 C3] 任务被用户明确打断时（Ctrl-C / /stop）调用，生成一份
+        "思维状态重建指南"写入 .agent/cognitive_anchor.md，供下次 session
+        恢复时读取（见 _maybe_load_cognitive_anchor）。
+
+        内容由 LLM 生成，格式固定（见 prompts/system/cognitive_anchor.md），
+        是"给被打断后返回的自己看的便条"，不是给人类看的进展报告——后者已经
+        由 history/timeline 覆盖。失败静默降级，不影响中断流程本身。
+        """
+        if not getattr(self.cfg, "cognitive_anchor_enabled", True):
+            return
+        if self._llm is None or not self._history:
+            return
+        try:
+            recent: list[str] = []
+            for m in self._history[-12:]:
+                role = m.get("role")
+                content = m.get("content")
+                if role not in ("user", "assistant") or not isinstance(content, str):
+                    continue
+                if not content.strip():
+                    continue
+                recent.append(f"[{role}] {content[:300]}")
+            if not recent:
+                return
+            turns_text = "\n".join(recent)
+
+            from mini_agent.prompts import pm
+            prompt = pm.render("user/cognitive_anchor_request", turns_text=turns_text)
+            resp = self._llm.chat_with_retry(
+                messages=[{"role": "user", "content": prompt}],
+                system=pm.render("system/cognitive_anchor"),
+                tools=[],
+                max_retries=2,   # 这是锦上添花的便条，不值得为它重试太多次
+            )
+            anchor_content = (resp.text or "").strip()
+            if not anchor_content:
+                return
+
+            from mini_agent.storage.paths import AgentPaths
+            paths = AgentPaths(self.cfg.project_root)
+            anchor_path = paths.workdir_cognitive_anchor
+            anchor_path.parent.mkdir(parents=True, exist_ok=True)
+            anchor_path.write_text(anchor_content, encoding="utf-8")
+            R.print_info("[cognitive-anchor] 已记录当前思路，下次恢复时会自动提醒。")
+        except Exception:
+            pass  # 认知锚点生成失败不应影响中断流程本身
 
     def _bind_session_extras(self) -> None:
         """
@@ -1049,6 +1140,14 @@ class Agent:
         except Exception:
             pass
 
+        # [具身改进 C4] 自维护模块：每 24h 自动触发一次健康检查
+        # （可能失效的工具 / 过时 skill / 矛盾的 lesson），与 Phase G
+        # 采用同款时间门控模式，互不干扰（各自独立的 last_run_at 状态文件）。
+        try:
+            self._maybe_run_self_maintenance()
+        except Exception:
+            pass
+
         # [SYS-LESSON] 反思 LLM 调用：基于 tool_stats + 最后若干轮 history 生成 lesson 候选
         if not self.cfg.memory.enabled or self._memory is None:
             return
@@ -1295,6 +1394,40 @@ class Agent:
                 )
         except Exception:
             pass  # Phase G 失败不影响退出流程
+
+    def _maybe_run_self_maintenance(self) -> None:
+        """
+        [具身改进 C4] SessionEnd 时的自维护时间门控。
+
+        每次 session 结束时检查"上次自维护扫描距今是否超过 24h"，是则触发
+        一次健康检查（可能失效的工具 / 过时 skill / 矛盾的 lesson）。结果
+        写入 activity_digest.jsonl，只在有发现时打印摘要，不阻塞退出流程。
+        """
+        try:
+            from mini_agent.storage.paths import AgentPaths
+            from mini_agent.evolution.self_maintenance import (
+                run_self_maintenance, should_run_self_maintenance,
+            )
+
+            paths = AgentPaths(self.cfg.project_root)
+            if not should_run_self_maintenance(paths):
+                return
+
+            report = run_self_maintenance(
+                paths,
+                skill_loader=getattr(self, "skill_loader", None),
+                memory_backend=getattr(self, "_memory", None),
+            )
+
+            if report.has_findings:
+                R.print_info(
+                    f"[self-maintenance] 发现 {len(report.stale_tools)} 个可能失效工具、"
+                    f"{len(report.stale_skills)} 个过时 skill、"
+                    f"{len(report.conflicting_lessons)} 组可能矛盾的经验，"
+                    "详情见 activity_digest.jsonl / 下次连接的晨报。"
+                )
+        except Exception:
+            pass  # 自维护扫描失败不影响退出流程
 
     def _run_observability_on_session_end(self) -> None:
         """[Stage 6 / 6.3] SessionEnd 时：
@@ -2484,6 +2617,18 @@ class Agent:
                     _sp["tool_count"] = len(response.tool_calls)
                     from mini_agent.perception.lesson_rules import is_tool_error as _ite
                     _sp["tool_error_count"] = sum(1 for r in result_strs if _ite(r))
+                    # [具身改进 工具透明性] 把本批工具调用按意图分组，写入 trace
+                    # 的 action_events 字段——给"调用了 read_file×3 + patch×2"
+                    # 这类原始流水账加一层"做了一次代码重构"的语义标注，
+                    # 不改变 history 本身，只在可观测性侧补充。
+                    try:
+                        from mini_agent.perception.intent_action_mapper import IntentActionMapper
+                        _events = IntentActionMapper.group_calls(response.tool_calls, result_strs)
+                        if _events:
+                            _sp["action_events"] = [e.to_dict() for e in _events]
+                            self._last_action_events = _events
+                    except Exception:
+                        pass
             else:
                 tool_results, result_strs = self._execute_tools(response)
             self._hist.append_tool_results(response.tool_calls, result_strs)

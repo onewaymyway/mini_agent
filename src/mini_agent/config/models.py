@@ -574,6 +574,11 @@ class AppConfig:
     system_extra: str = ""
     agent_name: str = DEFAULT_AGENT_NAME
 
+    # [具身改进 C3] 认知锚点文件开关——任务被打断时是否生成/读取
+    # .agent/cognitive_anchor.md。默认开启，禁用后 _save_cognitive_anchor /
+    # _maybe_load_cognitive_anchor 均直接 no-op。
+    cognitive_anchor_enabled: bool = True
+
     # ── 功能子配置块（每个功能域独立聚合）────────────────────────────────────
     memory:     MemoryConfig     = field(default_factory=MemoryConfig)
     compress:   CompressConfig   = field(default_factory=CompressConfig)

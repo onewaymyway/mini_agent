@@ -11,6 +11,12 @@ perception/memory_store.py — 跨 session 长期记忆。
   3. 条目上限：超过 max_entries 时自动淘汰最旧条目，
      避免记忆文件无界增长导致检索质量下降。
   4. 持久化改写：淘汰后重写整个文件（而非只追加），保持磁盘与内存一致。
+
+具身改进（v3 C2，时间加权记忆激活）：
+  lesson 型条目的时间衰减不再使用全局统一半衰期，而是按 source +
+  occurrence_count 计算专属半衰期（见 evolution/memory_aging.py），
+  被人类亲自纠正、被反复印证的经验衰减更慢，一次性的回退记录衰减更快。
+  非 lesson 条目（summary 等）行为不变，仍使用构造时传入的全局半衰期。
 """
 
 from __future__ import annotations
@@ -206,8 +212,18 @@ class MemoryStore(MemoryBackend):
                 df = sum(1 for t in doc_texts if qt in t)
                 idf = math.log((N + 1) / (df + 1)) + 1
                 score += tf * idf
-            # 时间衰减：score *= exp(-λ * age_days)
-            decay = math.exp(-self._decay_lambda * entry.age_days)
+            # [具身改进 C2 / 时间加权记忆激活] lesson 型条目按 source +
+            # occurrence_count 计算专属半衰期（human_feedback 衰减最慢、
+            # revert_record 最快，被反复印证的经验衰减更慢）；非 lesson 条目
+            # （summary 等）沿用构造时传入的全局半衰期配置，保持向后兼容。
+            if getattr(entry, "entry_type", "summary") == "lesson":
+                try:
+                    from mini_agent.evolution.memory_aging import compute_decay_factor
+                    decay = compute_decay_factor(entry)
+                except Exception:
+                    decay = math.exp(-self._decay_lambda * entry.age_days)
+            else:
+                decay = math.exp(-self._decay_lambda * entry.age_days)
             results.append((entry, score * decay))
         return results
 

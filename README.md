@@ -22,6 +22,13 @@
 | 🗂️ 知识层 | W2 Workdir 层（项目身份证/时间线/跨session待处理线索）+ W3 Global 层（自我画像/跨项目模式/活动日志）自动维护 |
 | 🔭 观察性 | traces.jsonl 时序追踪 + `/diagnostics` 健康端点 + k-σ 异常检测 + 工具调用因果链（error_category / resolves_seq）|
 | ♻️ Phase G | 后台循环扫描：剪枝候选 + 能力地图 + 跨项目晋升候选，24h 时间门控，`/evolve phase-g` 手动触发 |
+| 🧘 本体感知 | ProprioceptionModule：认知负荷/不确定性/风险感知/剩余预算/挫败感轮间快照，frustration 累积触发元认知提示 |
+| 🧭 余裕感知 | AffordanceMap：session 级交叉分析未完成线索/能力地图/经验，生成"当前环境行动机会"摘要注入 system prompt |
+| 🪄 工具透明性 | IntentActionMapper：工具调用按意图（探索/代码编辑/测试/环境配置/版本控制等）分组，写入 traces.jsonl，避免原始流水账 |
+| 🪞 AgentSelfModel | 聚合本体感知快照 + 余裕地图 + 跨 session 能力评估，澄清与既有三个 profile 概念的语义边界 |
+| ⏳ 时间加权记忆 | Lesson 按来源（人类反馈/自我反思/实验验证/回退记录）区分半衰期，反复印证的经验衰减更慢 |
+| 📌 认知锚点 | 任务被 Ctrl-C 打断时自动生成"思维状态重建指南"，下次恢复 session 时自动提醒 |
+| 🩺 自维护 | 定期健康检查：可能失效的工具 / 过时 skill / 矛盾的经验，生成修复建议写入晨报，不自动修复 |
 | 🔀 SubAgent 降级 | 任务失败时按 `fallback_profiles` 切换 profile、再按 `demotion_scope` 缩小目标，不立即宣告失败 |
 | 🌐 HTTP API | 内置 REST/SSE 服务，支持外部程序通过 HTTP 与 agent 交互 |
 | 👥 多用户模式 | `--http-multi-user`：多用户独立 token + 角色权限（owner/family/colleague/agent/public）+ 独立 Session 隔离；不启用时与现有单用户模式完全兼容 |
@@ -835,6 +842,7 @@ python -m pytest tests/ -q
 - [观察性系统指南（Stage 6）](docs/observability-guide.md) — **新增**：traces.jsonl 时序追踪 / `/diagnostics` 端点 / k-σ 异常检测 / 工具调用因果链（error_category/resolves_seq）
 - [Phase G 后台循环指南（Stage 8）](docs/self-evolution-phase-g-guide.md) — **新增**：剪枝候选 / 能力地图 / Scope 晋升候选 / 节奏治理，`/evolve phase-g` 命令
 - [Stage 9 自主运行时指南](docs/self-evolution-stage9-guide.md) — **新增**：常驻守护进程 / Goal Backlog / 三档位 AutonomousLoop / 资源仲裁 / `mini-agent daemon` 命令
+- [具身智能改进指南](docs/embodied-agent-guide.md) — **新增**：本体感知（ProprioceptionModule）/ 余裕感知（AffordanceMap）/ 工具透明性（IntentActionMapper）/ AgentSelfModel / 时间加权记忆激活 / 认知锚点文件 / 自维护模块（SelfMaintenanceModule），A/B/C 三阶段共 12 项
 - [HTTP API 指南](docs/http-api-guide.md) — REST/SSE 服务使用指南
 - [Web Demo 指南](docs/web-demo-guide.md) — Streamlit Web 界面使用
 - [MCP 集成指南](docs/mcp-guide.md) — Model Context Protocol 集成
@@ -859,7 +867,9 @@ MIT License
 
 ---
 
-*最后更新：2026-06-19* — API Key 配置重构：主推 providers.json 管理 LLM API Key，图片 Skill（ask_image / gen_image_with_text）保留环境变量方式
+*最后更新：2026-07-01* — 具身智能改进 A/B/C 三阶段全部完成（12 项：本体感知/余裕感知/工具透明性/AgentSelfModel/时间加权记忆/认知锚点/自维护模块等），详见 [具身智能改进指南](docs/embodied-agent-guide.md)
+
+*2026-06-19* — API Key 配置重构：主推 providers.json 管理 LLM API Key，图片 Skill（ask_image / gen_image_with_text）保留环境变量方式
 
 *2026-06 Chunked Compact*：`compact_with_skills()` 增加超限自动切换路径——当历史已超出上下文窗口（`LLMContextWindowError`）时，新的 `_compact_chunked()` 把历史按 turn 边界切成多个 chunk，每 chunk 独立调用 `_llm.chat_with_retry` 生成摘要（完全绕开 `run_turn`），多 chunk 结果再合并为最终摘要；单 chunk / 合并失败均有降级保底；新增 prompt 文件 `compact_chunk_request.md` 和 `compact_merge_request.md`；所有 compact prompt 加强为要求保留工具调用结果摘要、精确文件路径、错误信息等关键成果信息；新增 [compact 设计文档](docs/compact-design.md)
 
@@ -884,3 +894,7 @@ MIT License
 *2026-06 自主运行时 Phase 2（Stage 9 接入与 API）*：`server.py` `_build_autonomous_loop()` 注入 CronScheduler + ObjectiveExecutor；AgentRunner turn 完成/失败后回调 `ObjectiveExecutor.on_turn_done()`/`on_turn_failed()`（仅 initiator="autonomous"/"cron" 时触发）；`api/models.py` 新增 `OBJECTIVE_PROGRESS` SSE 事件；`bridge.py` 新增 `emit_objective_progress()`；`api/routes.py` 新增 `/v1/autonomous/status`、`/v1/goals` CRUD、`/v1/cron/jobs` CRUD 共 8 个端点；新增 `evolution/soft_goal_deriver.py`（三路信号：capability_map 低置信度 / WorkThread 积压 / 高频 Lesson，每次最多 derive 2 个 Goal）
 
 *2026-06 自主运行时 Phase 3（Stage 9 闭环完善）*：`_tick_autonomous()` 完整接入 ExplorationSandbox——capability 类候选先经探索验证（`_run_capability_exploration()`），成功才写 GoalBacklog + 触发 `skill_propose`，失败静默丢弃；`SoftGoalDeriver` 新增 `derive_candidates()`（返回两类候选不写 GoalBacklog）+ `commit_goals()` 方法；`build_digest_summary()` 重写为六分组渲染（Objective进展/Cron执行记录/探索实验结果/💡Agent建议目标/进化提案/其他），Agent建议目标组内嵌 `/goals accept|reject <id>` 快捷指令；`goals.py` 补全 `accept`（激活 + priority 提升）/`reject`（abandoned + `record_rejected()` 30天去重）子命令
+
+*2026-07 具身智能改进 A/B/C 三阶段（`next_doc/embodied_agent_improvement_plan_v3.md`）*：A1 `cli/daemon.py::DaemonClient` connected REPL 命令与本地模式对等；A2 `perception/correction_detector.py` 检测用户直接纠正短语生成 `source="human_feedback"` lesson；A3 `reminders/loader.py`/`manager.py` 新增 `pre_tool` 前馈触发；B1 新增 `perception/proprioception.py`（`ProprioceptionModule`，认知负荷/不确定性/风险感知/剩余预算/frustration 轮间快照，`ProprioceptionConfig`）；B2 新增 `evolution/lesson_to_reminder.py`（human_feedback 来源 1 次即激活，其余需达 T1 门槛先落草稿，`/evolution lessons-to-reminders`）；B3 `workflow/runner.py::_compute_parallel_batches()` 对 `depends_on` 拓扑排序并发执行无依赖步骤；B4 新增 `perception/affordance_analyzer.py`（`AffordanceMap`，交叉分析 open_threads/capability_map/lesson memory，接入 `api/session_pool.py`，`AffordanceConfig`）；新增工具透明性 `perception/intent_action_mapper.py`（`IntentActionMapper` 按意图分组工具调用，写入 `traces.jsonl` 的 `action_events`）；C1 新增 `perception/self_model.py`（`AgentSelfModel` 聚合视图，澄清与 UserProfile/RoleProfileManager/AgentProfile 三个既有 profile 概念的语义边界）
+
+*2026-07 具身智能改进阶段 D（C2/C3/C4 收尾）*：C2 新增 `evolution/memory_aging.py`（`compute_decay_factor()`，lesson 按 source 区分半衰期基准 human_feedback 90d/experiment_confirmed 60d/self_reflection 30d/revert_record 14d，occurrence_count 加成封顶 4 倍，接入 `memory_store.py::_score_all()`）；C3 新增认知锚点文件机制（`agent.py::_save_cognitive_anchor()`/`_maybe_load_cognitive_anchor()` + `AgentPaths.workdir_cognitive_anchor` + `AppConfig.cognitive_anchor_enabled`，Ctrl-C 打断时 LLM 生成四段式"思维状态重建指南"，`prompts/system/cognitive_anchor.md` + `prompts/user/cognitive_anchor_request.md`，下次 session 启动注入 `system_extra` 后归档；daemon connected REPL 的 Ctrl-C 暂未接入）；C4 新增 `evolution/self_maintenance.py`（`SelfMaintenanceModule`：扫描 `traces.jsonl` 推断 stale_tools、复用 skill tracker 推断 stale_skills、复用 lesson 聚类推断 conflicting_lessons，只产出建议写入 `activity_digest.jsonl` 不自动修复，SessionEnd 时间门控 + 新增内置 cron job `sys:self_maintain`）；新增 61 个测试用例（`tests/test_intent_action_mapper.py`/`test_memory_aging.py`/`test_cognitive_anchor.py`/`test_self_maintenance.py`）；新增 [具身智能改进指南](docs/embodied-agent-guide.md) 汇总全部 12 项改进

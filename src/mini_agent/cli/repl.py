@@ -147,6 +147,12 @@ def run_repl(agent: Agent, skill_loader: SkillLoader) -> None:
             _term.force_end_stream()
             _cancel_running_tasks()
             R.print_interrupt()
+            # [具身改进 C3] 用户明确打断当前任务——尝试生成认知锚点，
+            # 失败静默降级，不影响中断流程本身。
+            try:
+                agent._save_cognitive_anchor()
+            except Exception:
+                pass
         except Exception as e:
             _term.force_end_stream()
             R.print_error(f"API error: {e}")

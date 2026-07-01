@@ -15,6 +15,7 @@ evolution/cron_scheduler.py — Daemon 模式定时任务调度器
   sys:self_eval      — 能力自评（capability_map 更新）     interval:86400
   sys:goal_review    — 目标清理（已完成/过期 Goal）         interval:43200
   sys:digest_trim    — activity_digest 日志修剪            interval:604800
+  sys:self_maintain  — 自维护健康检查（具身改进 C4）         interval:86400
 
 存储：<project_root>/.agent/cron_jobs.json
 """
@@ -150,6 +151,15 @@ _BUILTIN_JOBS: list[dict] = [
         "description": "修剪 activity_digest.jsonl，保留最近 30 天（每 7 天）",
         "task_template": "[系统维护] 修剪 activity_digest.jsonl：删除 30 天前的记录，压缩历史统计",
         "tags": ["maintenance"],
+        "enabled": True,
+    },
+    {
+        "id": "sys:self_maintain",
+        "name": "自维护健康检查",
+        "schedule": "interval:86400",
+        "description": "检查可能失效的工具、过时 skill、矛盾的 lesson（每 24 小时）",
+        "task_template": "[系统维护] 执行自维护健康检查：扫描近期工具调用失败率、长期未使用的 skill、记忆库中可能矛盾的经验，生成修复建议",
+        "tags": ["maintenance", "self_awareness"],
         "enabled": True,
     },
 ]

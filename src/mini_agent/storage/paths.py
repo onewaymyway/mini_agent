@@ -199,6 +199,15 @@ class AgentPaths:
         return self.workdir_dir / "knowledge_index.json"
 
     @property
+    def workdir_cognitive_anchor(self) -> Path:
+        """<project_root>/.agent/cognitive_anchor.md — 认知锚点文件（具身改进
+        v3 C3）。任务被用户明确打断时（Ctrl-C / /stop）生成的"思维状态重建
+        指南"——记录的是"当时在想什么"而不是"做了什么"（后者是 session
+        历史的职责）。单文件、被新内容覆盖（不追加历史）：这是工作台上的
+        便条，不是日志，只需要最新的一份。"""
+        return self.workdir_dir / "cognitive_anchor.md"
+
+    @property
     def sessions_dir(self) -> Path:
         """<project_root>/.agent/sessions/ — 所有 session 的根目录"""
         return self.workdir_dir / "sessions"

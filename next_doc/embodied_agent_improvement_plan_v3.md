@@ -60,10 +60,80 @@
 >   condition 判定 SKIPPED 后，依赖它的下游步骤不会级联 SKIPPED（依赖检查
 >   只把 FAILED/PENDING 视为"未完成"）——按"不在本次改动范围内调整语义"
 >   的原则原样保留，仅在新增测试里补充注释说明。
-> - **B4 AffordanceMap / 阶段 C（AgentSelfModel 等）**：仍为未实现状态，
->   维持本文档原有设计，留作后续迭代。
+> - **B4 AffordanceMap / 阶段 C（AgentSelfModel 等）**：B4 与 C1 已实现
+>   （`perception/affordance_analyzer.py` + `perception/self_model.py`，
+>   接入 `api/session_pool.py::_inject_affordance_map` 与 `agent.py`
+>   构造流程），详见下方"实施进度更新（阶段 D 已完成）"。
+> - **工具透明性（IntentActionMapper）/ C2 时间加权记忆激活 / C3 认知锚点
+>   文件 / C4 自维护模块**：✅ 均已实现，详见下方"实施进度更新（阶段 D
+>   已完成）"。
 
 ---
+
+> **实施进度更新（阶段 D 已完成）**：
+> - **工具透明性（IntentActionMapper，§ 2.3）**：✅ 已实现。新增
+>   `perception/intent_action_mapper.py`（`ActionEvent` + `IntentActionMapper`），
+>   纯规则匹配（不调用 LLM），按"工具名所属意图类别"做连续游程分组——
+>   `exploration`/`code_edit`/`test_run`/`env_setup`/`vcs_op`/`research`/`other`，
+>   `bash` 工具按命令内容关键词细分类别。接入 `agent.py` 主循环
+>   `execute_tools` span：分组结果写入 `traces.jsonl` 的 `action_events`
+>   字段（不改变 history 本身，只在可观测性侧补充语义标注），供 /diagnostics
+>   和后续 Phase G 扫描读取。测试见 `tests/test_intent_action_mapper.py`
+>   （17 个用例）。
+> - **C2 时间加权记忆激活**：✅ 已实现，但实现方式与本文档原计划（"Phase G
+>   tick 时批量预计算 temporal_weight 缓存字段"）不同——核对
+>   `memory_store.py::_score_all()` 后发现时间衰减本来就是按 `entry.age_days`
+>   实时计算（不是缓存字段，没有"缓存过期"问题），批量预计算反而要多维护
+>   一份一致性。改为新增 `evolution/memory_aging.py::compute_decay_factor()`
+>   纯函数，由 `_score_all()` 直接调用替换原有的全局 `self._decay_lambda`：
+>   `entry_type=="lesson"` 的条目按 `source` 区分半衰期基准
+>   （human_feedback=90d/experiment_confirmed=60d/self_reflection=30d/
+>   revert_record=14d），并按 `occurrence_count` 做加成（封顶 4 倍）；非
+>   lesson 条目（summary 等）沿用构造时传入的全局半衰期配置，行为不变。
+>   测试见 `tests/test_memory_aging.py`（10 个用例，含 MemoryStore 端到端
+>   排序验证）。
+> - **C3 认知锚点文件**：✅ 已实现。新增 `AgentPaths.workdir_cognitive_anchor`
+>   路径属性（`.agent/cognitive_anchor.md`）、`agent.py::_save_cognitive_anchor()`
+>   （LLM 生成"思维状态重建指南"，固定四段式格式，新增
+>   `prompts/system/cognitive_anchor.md` + `prompts/user/cognitive_anchor_request.md`）
+>   与 `agent.py::_maybe_load_cognitive_anchor()`（session 启动时读取并注入
+>   `system_extra`，读取后立即归档重命名为带时间戳文件，避免重复注入）。
+>   触发点：`cli/repl.py::run_repl()` 的 `KeyboardInterrupt` 处理分支（用户
+>   Ctrl-C 打断当前任务时调用），`_maybe_load_cognitive_anchor()` 接入
+>   `agent.py::_init_session()`（与 `_maybe_ensure_project_meta()` 同批调用，
+>   对本地/daemon 两条路径统一生效，不像 B4 AffordanceMap 那样只在
+>   `SessionAgentPool` 多用户路径生效）。新增配置开关
+>   `AppConfig.cognitive_anchor_enabled`（默认 True）。daemon connected REPL
+>   模式（`cli/daemon.py`）的 Ctrl-C 暂未接入——客户端进程不直接持有
+>   Agent 实例，需要额外的 API 触发路径，留作后续迭代。测试见
+>   `tests/test_cognitive_anchor.py`（12 个用例，用 duck-typed fake object
+>   以未绑定方法方式调用，避免构造完整 Agent 实例）。
+> - **C4 自维护模块（SelfMaintenanceModule）**：✅ 已实现，但 `stale_tools`
+>   检测方式与本文档原计划（"最近 N 天未被成功调用的工具"）不同——核对
+>   代码库后发现不存在跨 session 持久化的"每个工具最后一次成功调用时间"，
+>   改用已经持久化的信号：扫描最近 20 个 session 的 `traces.jsonl` 里
+>   `phase="tool_call"` 记录，统计每个工具近期失败率（≥3 次调用且失败率
+>   ≥60% 才判定为"可能失效"）。`stale_skills` 复用 `phase_g.py::prune_skills()`
+>   同款 `skill_loader.tracker` 基础设施（角度不同：长期未用 vs 高成本未用）。
+>   `conflicting_lessons` 复用 `lesson_review.py::group_lessons()` 聚类结果，
+>   同一聚类内同时出现正面/负面关键词信号时标记"可能矛盾"（启发式，非
+>   精确判断）。新增 `evolution/self_maintenance.py`，与 Phase G 同款
+>   "时间门控"模式（独立状态文件 `self_maintenance_state.json`），接入
+>   `agent.py::_maybe_run_self_maintenance()`（SessionEnd 时间门控，与
+>   `_maybe_run_phase_g()` 并列调用）并新增内置 cron job `sys:self_maintain`
+>   （`evolution/cron_scheduler.py`，interval:86400）。只产出报告和建议文本，
+>   写入 `activity_digest.jsonl`（`type="health_report"`），不自动修复——
+>   与 v3 §九"保留人类控制权"原则一致。测试见 `tests/test_self_maintenance.py`
+>   （22 个用例）。
+> - 阶段 D 完成后，本文档原计划中列出的全部改进项（A/B/C 三阶段 + P2 的
+>   IntentActionMapper）均已落地，只剩"行为级测试框架"一项严格意义上未
+>   按原计划新建独立的 `tests/behavior/` 目录——核对后认为现有测试文件
+>   （`tests/test_*.py`）已经覆盖了对应行为（frustration 累积/衰减、
+>   lesson source 区分、workflow 并行批次、本节新增的四项），新增一个平行
+>   目录复制相同断言收益有限，故未单独建立 `tests/behavior/`，详见 §六
+>   末尾说明。
+
+
 
 ## 一、现状盘点——哪些已经实现，哪些还是空白
 
@@ -93,14 +163,14 @@
 | Lesson source 区分（human_feedback） | § 3.2 | ✅ 已实现（核对后发现是历史遗留，见上方说明） | P1 |
 | Reminder pre_tool 触发时机 | § 4.1 | ✅ 已实现（A3） | P2 |
 | Lesson → Reminder 自动闭环 | § 4.1 | ✅ 已实现（B2） | P2 |
-| 工具透明性（IntentActionMapper） | § 2.3 | 未实现 | P2 |
-| 余裕感知层（AffordanceMap） | § 3.1 | 未实现 | P2 |
+| 工具透明性（IntentActionMapper） | § 2.3 | ✅ 已实现（阶段 D） | P2 |
+| 余裕感知层（AffordanceMap） | § 3.1 | ✅ 已实现（B4） | P2 |
 | Workflow 并发执行（depends_on 拓扑分析） | § 12.6 | ✅ 已实现（B3） | P2 |
-| AgentSelfModel（命名澄清 + 聚合视图） | § 4.2 | 未实现，三个 profile 概念混用 | P3 |
-| 认知锚点文件 | § 3.3 | 未实现 | P3 |
-| 时间加权记忆激活 | § 1.1 | 未实现 | P3 |
-| 自维护模块（SelfMaintenanceModule） | § 1.2 | 未实现 | P3 |
-| 行为级测试框架 | § 4.3 | tests/behavior/ 目录不存在 | P3 |
+| AgentSelfModel（命名澄清 + 聚合视图） | § 4.2 | ✅ 已实现（C1） | P3 |
+| 认知锚点文件 | § 3.3 | ✅ 已实现（阶段 D） | P3 |
+| 时间加权记忆激活 | § 1.1 | ✅ 已实现（阶段 D，实现方式见文首说明） | P3 |
+| 自维护模块（SelfMaintenanceModule） | § 1.2 | ✅ 已实现（阶段 D，stale_tools 检测方式见文首说明） | P3 |
+| 行为级测试框架 | § 4.3 | 未单独建立 tests/behavior/，见 §六末尾说明 | P3 |
 
 ### 1.3 架构已变、v2 计划需修订的部分
 
@@ -651,7 +721,7 @@ class WorkflowRunner:
 
 ---
 
-### B4. 余裕感知层（AffordanceMap）
+### B4. 余裕感知层（AffordanceMap）✅ 已实现
 
 **问题**：`ProjectScanner` 生成"这里有什么"的描述性快照，缺少"这里对我意味着哪些行动机会"的语义层。
 
@@ -737,7 +807,7 @@ class AffordanceAnalyzer:
 
 > 阶段 C：深层具身能力，需要较大的架构扩展，在 P1/P2 稳定后推进
 
-### C1. AgentSelfModel——三个 Profile 概念的语义澄清与聚合
+### C1. AgentSelfModel——三个 Profile 概念的语义澄清与聚合 ✅ 已实现
 
 **问题**：代码库中存在三个命名相近但职责完全不同的"profile"概念，导致可读性混乱：
 
@@ -798,7 +868,7 @@ class AgentSelfModel:
 
 ---
 
-### C2. 时间加权记忆激活
+### C2. 时间加权记忆激活 ✅ 已实现（阶段 D，实现方式见文首说明）
 
 **问题**：`memory.jsonl` 所有条目地位平等，高质量的旧经验和低质量的新经验被同等检索，没有反映"被反复印证的知识更稳固、环境相关知识衰退更快"这一规律。
 
@@ -842,7 +912,7 @@ def run_memory_aging(memory_store: MemoryStore) -> None:
 
 ---
 
-### C3. 认知锚点文件——思维状态重建指南
+### C3. 认知锚点文件——思维状态重建指南 ✅ 已实现（阶段 D）
 
 **问题**：任务中途被打断后，下次 session 恢复时 Agent 只能从对话历史重建状态，而历史记录是"做了什么"而非"在想什么"。
 
@@ -889,7 +959,7 @@ def _save_cognitive_anchor(self, task_context: str) -> None:
 
 ---
 
-### C4. 自维护模块（SelfMaintenanceModule）
+### C4. 自维护模块（SelfMaintenanceModule）✅ 已实现（阶段 D，stale_tools 检测方式见文首说明）
 
 **问题**：Agent 被动响应工具失效、skill 过时等问题，没有主动感知和修复自身健康的机制。
 
@@ -1003,9 +1073,33 @@ class TestWorkflowParallel(unittest.TestCase):
         ...
 ```
 
+> **实施说明（阶段 D 已完成时一并核对）**：未按上述伪代码单独建立
+> `tests/behavior/` 目录。核对后发现现有测试文件已经在 `tests/` 顶层
+> 覆盖了同等粒度的行为断言，与本节示例一一对应：
+> - `test_frustration_accumulates_on_failure` / `_decays_on_success`
+>   → `tests/test_proprioception.py`（B1，已实现）
+> - `test_human_feedback_detection` / `_lesson_higher_priority`
+>   → `tests/test_lesson_to_reminder.py` + A2 相关测试（human_feedback
+>   分组"1 次即激活" vs self_reflection 需达门槛，语义等价于
+>   "更低 promote_threshold"）
+> - `test_independent_steps_run_concurrently` / `_evaluator_steps_stay_serial`
+>   → `tests/test_workflow_parallel.py`（B3，已实现）
+>
+> 阶段 D 新增的四项也遵循同一模式——落在 `tests/` 顶层而非独立
+> `tests/behavior/` 子目录：`tests/test_intent_action_mapper.py`（17 例）、
+> `tests/test_memory_aging.py`（10 例，含 MemoryStore 端到端排序验证）、
+> `tests/test_cognitive_anchor.py`（12 例）、`tests/test_self_maintenance.py`
+> （22 例）。不新建平行目录的理由：项目现有测试组织方式本来就是"一个
+> 模块一个 test_xxx.py"，额外建一个 `tests/behavior/` 目录收纳同粒度的
+> 断言只是换了个位置放同样的东西，没有带来新的验证价值，反而增加了
+> "同一个功能测试分散在两处"的维护成本。
+
 ---
 
 ## 七、实施路线图
+
+> **状态**：阶段 A/B/C 全部已完成；C2/C3/C4 的实际接入点与下方路线图
+> 描述有出入（详见文首"实施进度更新"），但立项依据（依赖关系）基本成立。
 
 ```
 阶段 A（P1，当前可开始）  估计 1-2 周
