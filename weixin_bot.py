@@ -224,7 +224,7 @@ class WeixinHandler(BaseHandler):
             auto_approve=self._auto_approve,
             # 关掉终端流式打印和 verbose（微信里没有终端）
             verbose=False,
-            stream=False,
+            # stream=False,
         )
         cfg.stream = False  # 确保关闭（load_config 可能被 agent_config.json 覆盖）
 
