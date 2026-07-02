@@ -1568,6 +1568,13 @@ def run_connected_repl(daemon_info: dict) -> None:
     _waiting_input   = threading.Event()
     _waiting_input.set()   # 初始就是在等输入
     _my_turn_id_holder: list[Optional[str]] = [None]   # 用列表做可变容器
+    # 本端自己 turn 的"当前是否正处于流式输出中间"标记，改成共享容器
+    # （而不是每轮 turn 里的局部变量），这样 observer 线程在实时插入其他
+    # 端的输出之前，可以安全地把本端未完成的这一行收尾（stream_end()），
+    # 并把标记复位——本端 on_token 下一次收到新 token 时会发现标记是
+    # False，自动重新打印一次前缀，相当于"另起一行接着流"，不会和
+    # 其他端的内容混在同一行里。
+    _own_printed_any_holder: list[bool] = [False]
     _observer_lock   = threading.Lock()
     _observer_stop   = threading.Event()
     # 记录本端正在处理的权限请求 req_id 集合，避免主路径和 observer 路径
@@ -1591,22 +1598,63 @@ def run_connected_repl(daemon_info: dict) -> None:
 
     def _observer_worker() -> None:
         """
-        后台线程：订阅 /v1/stream 全局 SSE，在等待用户输入期间把其他
-        终端触发的 agent 回复打印到本终端；权限请求随时处理。
+        后台线程：订阅 /v1/stream SSE，实时把同一 session 里其他终端/
+        web demo 触发的输出打印到本终端；权限请求随时处理。
         断线后自动重连（sleep 2s）。
+
+        两个关键点（修复"新客户端看不到历史"和"事件跨 session 混在
+        一起、时序错乱"两个问题）：
+          1. 带 session_id 参数订阅，让服务端 (_sse_generator) 只推送
+             "当前这个 session" 的事件——而不是 daemon 进程启动以来
+             所有 session 混在一起的全部历史。
+          2. 记录每个 session 收到过的最大 event id (_last_event_id)，
+             重连时带上 since_id 续接，不再每次重连都把整个历史重放
+             一遍（那是之前"内容重复、时序错乱"的根源）。只有真正切换
+             到了一个不同的 session 时，才把 since_id 归零，从头回放
+             这个 session 的完整历史——这正是"后连的客户端也能看到之前
+             的历史记录"这个需求要的效果。
         """
         import urllib.request as _ureq
+        from urllib.parse import quote as _urlquote
 
         # 每个 turn 是否已打印过前缀（避免多个 token 事件里重复打前缀）
         _turn_prefix_printed: set = set()
+        _last_event_id = [0]
+        _last_seen_session: list[Optional[str]] = [object()]  # 哨兵，保证首次必然判定为"变了"
+
+        def _parse_event_id(frame: str) -> Optional[int]:
+            for ln in frame.splitlines():
+                if ln.startswith("id:"):
+                    try:
+                        return int(ln[3:].strip())
+                    except ValueError:
+                        return None
+            return None
 
         while not _observer_stop.is_set():
             try:
-                url = f"{client.base_url}/v1/stream"
+                cur_sid = active_session_id
+                if cur_sid != _last_seen_session[0]:
+                    # 切换到了另一个 session（或首次连接）：从头回放这个
+                    # session 的完整历史，让本端能看到"之前的历史记录"。
+                    _last_event_id[0] = 0
+                    _last_seen_session[0] = cur_sid
+                    _turn_prefix_printed.clear()
+
+                url = f"{client.base_url}/v1/stream?since_id={_last_event_id[0]}"
+                if cur_sid:
+                    url += f"&session_id={_urlquote(cur_sid)}"
                 req = _ureq.Request(url, headers=client._headers())
                 with _ureq.urlopen(req, timeout=300) as resp:
                     frame_lines: list[bytes] = []
                     while not _observer_stop.is_set():
+                        if active_session_id != _last_seen_session[0]:
+                            # 用户在别的地方（主循环）切换了 session：主动
+                            # 断开重连，外层 while 会用新 session_id 重新
+                            # 订阅。不强行打断 readline()——最多等到下一次
+                            # 心跳（服务端每 20s 发一次）或下一条事件时
+                            # 自然退出这层循环，不需要额外的信号量。
+                            break
                         line = resp.readline()
                         if not line:
                             break  # 服务端关闭连接，退出重连
@@ -1614,6 +1662,9 @@ def run_connected_repl(daemon_info: dict) -> None:
                             if frame_lines:
                                 frame = b"".join(frame_lines).decode("utf-8", errors="replace")
                                 frame_lines = []
+                                eid = _parse_event_id(frame)
+                                if eid is not None:
+                                    _last_event_id[0] = eid
                                 _handle_observer_frame(frame, _turn_prefix_printed)
                             continue
                         frame_lines.append(line)
@@ -1702,15 +1753,27 @@ def run_connected_repl(daemon_info: dict) -> None:
                 _release_permission_req(req_id)
             return
 
-        # ── 其它事件：本端自己的 turn 不重复处理，本端忙碌时不显示 ──────────
+        # ── 其它事件：本端自己的 turn 不重复处理（主路径已经在显示了），──────
+        # 除此之外一律实时显示——哪怕本端正忙着自己的 turn、正在等待用户
+        # 输入，或者根本没有在做任何事，都应该立刻看到同一个 session 里
+        # 其他端（其它命令行 / web demo）的输入和输出，这才是"daemon 里
+        # 看到的那个样子"。不再有 _waiting_input 这个门槛——以前那个门槛
+        # 会导致本端忙碌时直接丢弃其他端的事件，不是"延迟显示"而是
+        # "永久错过"，是真正的 bug。
         if is_own_turn:
-            return
-        if not _waiting_input.is_set():
             return
 
         prefix = "[dim][其他终端][/dim] "
 
         with _observer_lock:
+            # 如果本端自己的 turn 正流式输出到一半，先把这一行收尾，
+            # 再插入其他端的内容，避免两路文本交织到同一行里。收尾后
+            # 把共享标记复位，本端 on_token 下次收到新 token 时会发现
+            # 需要重新打印一次前缀，相当于"换行后接着流"，内容本身不丢。
+            if _own_printed_any_holder[0] and _term is not None:
+                _term.stream_end()
+                _own_printed_any_holder[0] = False
+
             if evt_type == "token":
                 text = payload.get("text", "")
                 if not text or _term is None:
@@ -1829,17 +1892,19 @@ def run_connected_repl(daemon_info: dict) -> None:
 
             # ── 流式接收：token / tool_call / tool_result / permission_req ───
             done_event = threading.Event()
-            printed_any = False
+            # 复用共享容器 _own_printed_any_holder（而不是本轮局部变量）：
+            # observer 线程需要能在其他端有新内容插入时，安全地把本端这
+            # 一行收尾并复位这个标记，见 _handle_observer_frame 里的说明。
+            _own_printed_any_holder[0] = False
 
             def on_token(text, _pa=None):
-                nonlocal printed_any
                 if _term is None:
                     return
                 with _observer_lock:  # 与 observer 互斥，避免输出交错
-                    if not printed_any:
+                    if not _own_printed_any_holder[0]:
                         _term.print(agent_prefix_markup, end="")
                     _term.stream_token(text)
-                    printed_any = True
+                    _own_printed_any_holder[0] = True
 
             def on_error(message):
                 if _term is not None:
@@ -1847,11 +1912,10 @@ def run_connected_repl(daemon_info: dict) -> None:
                     _term.print(f"\n[red][error][/red] {_esc_err(str(message))}")
 
             def on_done(_text, error=None):
-                nonlocal printed_any
                 with _observer_lock:
-                    if printed_any and _term is not None:
+                    if _own_printed_any_holder[0] and _term is not None:
                         _term.stream_end()
-                        printed_any = False
+                        _own_printed_any_holder[0] = False
                     if error and _term is not None:
                         from rich.markup import escape as _esc_err
                         _term.print(f"[red][error][/red] {_esc_err(str(error))}")
@@ -1860,7 +1924,6 @@ def run_connected_repl(daemon_info: dict) -> None:
             def on_event(evt_type, payload, _tid=turn_id):
                 """处理本端自己发起的 turn 里出现的非 token 事件——
                 工具调用过程、权限请求等。"""
-                nonlocal printed_any
                 if evt_type == "permission_req":
                     req_id     = payload.get("req_id", "")
                     tool_name  = payload.get("tool_name", "")
@@ -1872,9 +1935,9 @@ def run_connected_repl(daemon_info: dict) -> None:
                             # 权限请求出现在 token 流之间——如果正好在
                             # streaming 一段文本中间，先收尾当前这段，
                             # 避免审批提示和未完成的文本混在一行。
-                            if printed_any and _term is not None:
+                            if _own_printed_any_holder[0] and _term is not None:
                                 _term.stream_end()
-                                printed_any = False
+                                _own_printed_any_holder[0] = False
                             _handle_connected_permission(
                                 client, _term, req_id, tool_name, tool_input, _tid,
                             )
@@ -1890,9 +1953,9 @@ def run_connected_repl(daemon_info: dict) -> None:
 
                 # tool_call / tool_result / tool_error / info / warning / ...
                 with _observer_lock:
-                    if printed_any and _term is not None:
+                    if _own_printed_any_holder[0] and _term is not None:
                         _term.stream_end()
-                        printed_any = False
+                        _own_printed_any_holder[0] = False
                     _render_sse_event(_term, evt_type, payload)
 
             def stream_worker(_tid=turn_id):

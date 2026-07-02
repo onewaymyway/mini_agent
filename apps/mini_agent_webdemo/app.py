@@ -247,9 +247,12 @@ class AgentClient:
         except:
             return False
 
-    def events(self, since_id=0, limit=100):
+    def events(self, since_id=0, limit=100, session_id=None):
         try:
-            r = self.get("/events", params={"since_id": since_id, "limit": limit})
+            params = {"since_id": since_id, "limit": limit}
+            if session_id:
+                params["session_id"] = session_id
+            r = self.get("/events", params=params)
             if r.status_code == 200:
                 return r.json()
         except:
@@ -761,7 +764,16 @@ def _sync_events():
         st.session_state.stats = s.get("stats", {})
 
     # ── 2. 拉取新事件（增量） ──
-    evts = client.events(since_id=st.session_state.last_event_id, limit=200)
+    # 修复：之前这里没有按 session_id 过滤，daemon 模式下所有 session 共用
+    # 同一个全局事件流——只要有别的 CLI 终端切换过 session，本页面拉到的
+    # token/tool_call 等事件就会混进"当前显示的 session 不认识的内容"，
+    # 表现为对话区莫名多出不属于这个对话的文字/工具调用。按当前 session_id
+    # 过滤后，只有属于这个 session（以及不带 session 标签的系统级事件，比如
+    # session_switched 本身）会被拉取到。
+    evts = client.events(
+        since_id=st.session_state.last_event_id, limit=200,
+        session_id=st.session_state.current_session_id or None,
+    )
     if not (evts and evts.get("events")):
         return
 

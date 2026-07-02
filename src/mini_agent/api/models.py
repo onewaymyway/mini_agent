@@ -48,6 +48,12 @@ class AgentEvent(BaseModel):
     # daemon 多用户架构 Phase 1：发起这条事件的用户 user_id（无关联/单用户模式下为空）。
     # 目前只是打个标记，Phase 3 才会真正用它来按用户过滤 /v1/stream 订阅。
     user_id: str       = ""
+    # 这条事件产生时，agent 当前激活的 session_id。单用户模式下所有客户端
+    # 共用同一个全局 bridge/RingBuffer，之前没有这个字段时，任何切换过
+    # 多个 session 的 daemon 进程的 /v1/stream 历史回放会把"跨 session 的
+    # 所有事件"混在一起吐给客户端——这个字段就是用来让 /v1/stream 可以按
+    # session_id 过滤，客户端订阅时只看"当前这个 session"的事件。
+    session_id: str    = ""
     ts:      float     = Field(default_factory=time.time)
     data:    dict      = Field(default_factory=dict)
 
@@ -55,7 +61,8 @@ class AgentEvent(BaseModel):
         """格式化为 SSE 文本帧（含 id/event/data 三行 + 空行）。"""
         import json
         payload = json.dumps(
-            {"turn_id": self.turn_id, "ts": self.ts, **self.data},
+            {"turn_id": self.turn_id, "session_id": self.session_id,
+             "ts": self.ts, **self.data},
             ensure_ascii=False,
         )
         return f"id: {self.id}\nevent: {self.type.value}\ndata: {payload}\n\n"

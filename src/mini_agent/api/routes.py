@@ -445,14 +445,37 @@ async def _sse_generator(
     since_ts: Optional[float] = None,
     replay: bool = True,
     turn_id_filter: Optional[str] = None,
+    session_id_filter: Optional[str] = None,
 ) -> AsyncIterator[str]:
     """
     核心 SSE 生成器：
     1. 先回放 since_id / since_ts 之后的历史事件
     2. 实时推送后续新事件
     支持 turn_id 过滤（只输出某一轮的事件）
+    支持 session_id 过滤（只输出属于某个 session 的事件）——单用户 daemon
+    模式下所有 session 共用同一个全局 bridge/RingBuffer，不加这个过滤，
+    多个客户端各自切换到不同 session 时会互相看到对方 session 的历史和
+    实时事件，混在一起、时序错乱。传了 session_id_filter 之后：
+      - 不带 session_id 标签的事件（系统级，比如 daemon 启动日志）照样放行；
+      - 带了 session_id 标签、但和 filter 不一致的事件被过滤掉。
     """
     ring = bridge.ring
+
+    def _match(evt: AgentEvent) -> bool:
+        if turn_id_filter and evt.turn_id and evt.turn_id != turn_id_filter:
+            return False
+        # session_switched 例外：这个事件类型的作用就是"通知所有客户端
+        # 当前激活 session 变了"，它本来就打的是"切换目标"的 session_id，
+        # 如果也拿来跟 filter 比对，正在看旧 session 的客户端永远收不到
+        # 这条通知，也就永远不知道要重新加载——所以它必须无条件放行。
+        if (
+            session_id_filter
+            and evt.session_id
+            and evt.session_id != session_id_filter
+            and evt.type != EventType.SESSION_SWITCHED
+        ):
+            return False
+        return True
 
     # ── 阶段 1：历史回放 ──────────────────────────────────────────────────
     if replay:
@@ -462,7 +485,7 @@ async def _sse_generator(
             history = ring.events_since(since_id)
 
         for evt in history:
-            if turn_id_filter and evt.turn_id and evt.turn_id != turn_id_filter:
+            if not _match(evt):
                 continue
             yield evt.sse_format()
 
@@ -489,7 +512,7 @@ async def _sse_generator(
                 yield f": heartbeat {time.time()}\n\n"
                 continue
 
-            if turn_id_filter and evt.turn_id and evt.turn_id != turn_id_filter:
+            if not _match(evt):
                 continue
             yield evt.sse_format()
     except asyncio.CancelledError:
@@ -504,10 +527,16 @@ async def stream_all(
     since_id: int = Query(default=0, description="从该 event id 之后开始回放"),
     since_ts: Optional[float] = Query(default=None, description="从该时间戳之后开始回放"),
     replay:   bool = Query(default=True, description="是否先回放历史"),
+    session_id: Optional[str] = Query(
+        default=None,
+        description="只订阅这个 session 的事件；不传则保持旧行为（全局，不过滤）",
+    ),
 ):
     """
     SSE：订阅全局事件流。
     支持 Last-Event-ID 请求头（浏览器 EventSource 断线重连标准协议）。
+    支持 session_id 过滤：多个客户端连到同一 daemon 但各自停留在不同
+    session 时，各自只应该看到自己当前 session 的历史和实时事件。
     """
     bridge = _bridge(request)
 
@@ -517,7 +546,10 @@ async def stream_all(
         since_id = int(header_last_id)
 
     return StreamingResponse(
-        _sse_generator(bridge, since_id=since_id, since_ts=since_ts, replay=replay),
+        _sse_generator(
+            bridge, since_id=since_id, since_ts=since_ts, replay=replay,
+            session_id_filter=session_id,
+        ),
         media_type="text/event-stream",
         headers={
             "Cache-Control":     "no-cache",
@@ -577,15 +609,30 @@ async def get_events(
     since_ts: Optional[float] = Query(default=None),
     limit:    int   = Query(default=200, le=2000),
     type:     Optional[str] = Query(default=None, description="过滤事件类型"),
+    session_id: Optional[str] = Query(
+        default=None,
+        description="只返回这个 session 的事件；不传则保持旧行为（不过滤，跨 session 全部返回）",
+    ),
 ):
     ring   = _bridge(request).ring
     events = ring.events_since_ts(since_ts) if since_ts else ring.events_since(since_id)
 
     if type:
         events = [e for e in events if e.type.value == type]
+    if session_id:
+        # 不带 session_id 标签的事件（系统级）、以及 session_switched 事件
+        # （职责就是通知"当前 session 变了"，必须无条件放行，否则正在看
+        # 旧 session 的客户端永远不知道要跟着切换）照样放行，逻辑与
+        # /v1/stream 的 session 过滤保持一致，见 _sse_generator 的 _match()。
+        events = [
+            e for e in events
+            if not e.session_id or e.session_id == session_id
+            or e.type == EventType.SESSION_SWITCHED
+        ]
 
     events = events[-limit:]
     dicts  = [{"id": e.id, "type": e.type.value, "turn_id": e.turn_id,
+               "session_id": e.session_id,
                "ts": e.ts, **e.data} for e in events]
 
     return EventsResponse(

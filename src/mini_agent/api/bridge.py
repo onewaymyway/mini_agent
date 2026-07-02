@@ -266,6 +266,16 @@ class HttpPermissionGate:
         self._lock = threading.Lock()
         self._timeout = 120.0   # 2 分钟无响应视为拒绝
         self._bridge_state_setter = None  # 可选回调：broadcast_done 后更新 bridge 状态
+        # 可选回调：返回当前激活的 session_id，由 AgentBridge 注入，
+        # 用于给这里推送的 permission_req/permission_done 事件打上
+        # session_id 标签，让 /v1/stream 能按 session 过滤。
+        self._session_id_getter = None
+
+    def _sid(self) -> str:
+        try:
+            return self._session_id_getter() if self._session_id_getter else ""
+        except Exception:
+            return ""
 
     def request(
         self,
@@ -287,6 +297,7 @@ class HttpPermissionGate:
         self._broadcaster.push(AgentEvent(
             type=EventType.PERMISSION_REQ,
             turn_id=turn_id,
+            session_id=self._sid(),
             data={
                 "req_id":     req_id,
                 "tool_name":  tool_name,
@@ -304,6 +315,7 @@ class HttpPermissionGate:
             self._broadcaster.push(AgentEvent(
                 type=EventType.PERMISSION_DONE,
                 turn_id=turn_id,
+                session_id=self._sid(),
                 data={"req_id": req_id, "approved": False, "reason": "timeout"},
             ))
             return False, None
@@ -311,6 +323,7 @@ class HttpPermissionGate:
         self._broadcaster.push(AgentEvent(
             type=EventType.PERMISSION_DONE,
             turn_id=turn_id,
+            session_id=self._sid(),
             data={
                 "req_id":   req_id,
                 "approved": pending.approved,
@@ -337,6 +350,7 @@ class HttpPermissionGate:
         self._broadcaster.push(AgentEvent(
             type=EventType.PERMISSION_REQ,
             turn_id=turn_id,
+            session_id=self._sid(),
             data={
                 "req_id":     req_id,
                 "tool_name":  tool_name,
@@ -372,6 +386,7 @@ class HttpPermissionGate:
         self._broadcaster.push(AgentEvent(
             type=EventType.PERMISSION_DONE,
             turn_id=turn_id,
+            session_id=self._sid(),
             data={"req_id": req_id, "approved": approved, "reason": reason},
         ))
         # 修复：权限决定后立即把 bridge 状态从 waiting_permission 改回 running，
@@ -424,6 +439,9 @@ class AgentBridge:
 
         # 注入状态更新回调：权限审批完成时 gate 可以直接更新 bridge 状态
         self.permission_gate._bridge_state_setter = self._set_state_from_gate
+        # 注入 session_id 获取回调：权限相关事件也要打上当前 session 标签，
+        # 否则 /v1/stream?session_id=xxx 按 session 过滤时会漏掉审批事件。
+        self.permission_gate._session_id_getter = self._current_session_id
 
         # 当前运行状态
         self._state:        str = "idle"   # "idle" | "running" | "waiting_permission"
@@ -433,6 +451,17 @@ class AgentBridge:
 
         # 注入后由外部赋值
         self.agent: Any = None   # mini_agent.agent.Agent
+
+    def _current_session_id(self) -> str:
+        """当前 agent 激活的 session_id（单用户模式下唯一有意义的来源）。
+        取不到时返回空字符串，此时事件不带 session 标签，/v1/stream 的
+        session 过滤会把它当成"不属于任何具体 session 的系统级事件"，
+        照样透传给所有订阅者，不会因为取不到 session_id 就丢事件。
+        """
+        try:
+            return getattr(self.agent, "session_id", "") or ""
+        except Exception:
+            return ""
 
     def _set_state_from_gate(self, new_state: str) -> None:
         """由 permission_gate 在权限决定后回调，将状态从 waiting_permission 改回 running。"""
@@ -472,12 +501,18 @@ class AgentBridge:
     # ── 便捷推送方法 ──────────────────────────────────────────────────────
 
     def emit(self, event: AgentEvent) -> AgentEvent:
+        # 兜底：调用方直接构造 AgentEvent 时如果没显式填 session_id，
+        # 在这里自动补上当前激活 session，避免漏打标签导致 /v1/stream
+        # 按 session 过滤时把这条事件过滤掉。
+        if not event.session_id:
+            event = event.model_copy(update={"session_id": self._current_session_id()})
         return self.broadcaster.push(event)
 
     def emit_token(self, token: str, turn_id: str = "") -> None:
         self.broadcaster.push(AgentEvent(
             type=EventType.TOKEN,
             turn_id=turn_id,
+            session_id=self._current_session_id(),
             data={"text": token},
         ))
 
@@ -485,6 +520,7 @@ class AgentBridge:
         self.broadcaster.push(AgentEvent(
             type=EventType.TOOL_CALL,
             turn_id=turn_id,
+            session_id=self._current_session_id(),
             data={"tool_name": name, "tool_input": inp},
         ))
 
@@ -492,6 +528,7 @@ class AgentBridge:
         self.broadcaster.push(AgentEvent(
             type=EventType.TOOL_RESULT,
             turn_id=turn_id,
+            session_id=self._current_session_id(),
             data={"tool_name": name, "result": result},
         ))
 
@@ -500,6 +537,7 @@ class AgentBridge:
             type=EventType.TURN_START,
             turn_id=turn_id,
             user_id=user_id,
+            session_id=self._current_session_id(),
             data={"message": message},
         ))
 
@@ -513,6 +551,7 @@ class AgentBridge:
             type=EventType.TURN_DONE,
             turn_id=turn_id,
             user_id=user_id,
+            session_id=self._current_session_id(),
             data=data,
         ))
 
@@ -521,24 +560,33 @@ class AgentBridge:
             type=EventType.ERROR,
             turn_id=turn_id,
             user_id=user_id,
+            session_id=self._current_session_id(),
             data={"message": msg},
         ))
 
     def emit_info(self, msg: str) -> None:
         self.broadcaster.push(AgentEvent(
             type=EventType.INFO,
+            session_id=self._current_session_id(),
             data={"message": msg},
         ))
 
     def emit_fs_change(self, action: str, path: str) -> None:
         self.broadcaster.push(AgentEvent(
             type=EventType.FS_CHANGE,
+            session_id=self._current_session_id(),
             data={"action": action, "path": path},
         ))
 
     def emit_session_switched(self, session_id: str, title: str = "") -> None:
+        # 注意：这条事件本身要打上"切换到的目标 session_id"，而不是
+        # self._current_session_id()（此时 agent.session_id 通常已经等于
+        # session_id 了，二者一致；显式传参更清楚地表达意图，也不依赖
+        # 调用时机）。这样客户端按 session_id 过滤订阅时，session_switched
+        # 事件会正确出现在"新 session"的流里，而不是旧 session 的流里。
         self.broadcaster.push(AgentEvent(
             type=EventType.SESSION_SWITCHED,
+            session_id=session_id,
             data={"session_id": session_id, "title": title},
         ))
 
@@ -554,6 +602,7 @@ class AgentBridge:
         """推送 Objective 执行进度事件（daemon 自主执行时）。"""
         self.broadcaster.push(AgentEvent(
             type=EventType.OBJECTIVE_PROGRESS,
+            session_id=self._current_session_id(),
             data={
                 "execution_id": execution_id,
                 "objective_id": objective_id,
