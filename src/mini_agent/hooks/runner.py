@@ -55,6 +55,9 @@ class HookSpec:
     timeout: float = 30.0
     cwd: Optional[Path] = None
     source: str = ""             # 来源说明（哪个配置文件/skill/agent profile）
+    # [platform_filter] 平台/tag 限制：空 = 不限制，见 mini_agent.platform_filter
+    platforms: Optional[list] = None
+    tags: Optional[list] = None
 
 
 def _split_command(command: str) -> list[str]:

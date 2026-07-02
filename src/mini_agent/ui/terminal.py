@@ -2074,6 +2074,7 @@ _COMMANDS: list[tuple[str, str, list[str]]] = [
     ("/provider",    "LLM provider settings",                        ["list", "models", "switch"]),
     ("/agents",      "Agent profile management",                     ["list", "show", "reload"]),
     ("/hooks",       "Hook management",                              ["list", "reload"]),
+    ("/platform",    "Platform/tag load policy for skill/agent/hook/tool", ["status", "filtered", "reload"]),
     ("/evolution",   "Self-evolution history",                       ["log", "show", "diff", "revert"]),
     ("/evolve",      "Spawn evolution-agent on qualifying lessons",  ["review", "list"]),
     ("/agent",       "Goal backlog & daemon management",             ["goals", "digest", "daemon"]),

@@ -50,6 +50,10 @@ skills/
 
 `SKILL.md` 可以使用 frontmatter 声明元数据；若缺失，系统会从正文和文件名推断名称、描述和触发词。
 
+frontmatter 还支持可选的 `platforms` / `tags` 字段，用于限制该 skill 只在特定平台或
+tag 策略下才会被发现/加载（不满足条件时连描述都不会注入 system prompt）；详见
+[Skill/Agent/Hook/Tool 平台与 Tag 过滤指南](platform-tag-loading-guide.md)。
+
 ---
 
 ## 3. 激活与卸载入口

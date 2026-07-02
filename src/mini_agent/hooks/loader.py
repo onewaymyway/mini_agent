@@ -99,16 +99,31 @@ def _load_hooks_file(path: Path, source: str, cwd: Optional[Path]) -> dict[str, 
         for e in entries:
             if not isinstance(e, dict) or "command" not in e:
                 continue
+            hook_platforms = e.get("platforms") or []
+            hook_tags = e.get("tags") or []
+            if not _hook_allowed(hook_platforms, hook_tags, source, e.get("command", "")):
+                continue
             specs.append(HookSpec(
                 command=e["command"],
                 matcher=e.get("matcher", "*"),
                 timeout=float(e.get("timeout", 30.0)),
                 cwd=cwd,
                 source=source,
+                platforms=hook_platforms,
+                tags=hook_tags,
             ))
         if specs:
             result[event] = specs
     return result
+
+
+def _hook_allowed(platforms: list, tags: list, source: str, command: str) -> bool:
+    """[platform_filter] 单条 hook 的放行判定，不满足则该条 hook 不会被加载/执行。"""
+    from mini_agent.platform_filter import get_load_policy
+    allowed, _reason = get_load_policy().is_allowed(
+        platforms=platforms, tags=tags, kind="hook", name=f"{source}:{command}",
+    )
+    return allowed
 
 
 def _matches(matcher: str, tool_name: str) -> bool:
@@ -166,12 +181,18 @@ class HookManager:
             for e in entries:
                 if not isinstance(e, dict) or "command" not in e:
                     continue
+                hook_platforms = e.get("platforms") or []
+                hook_tags = e.get("tags") or []
+                if not _hook_allowed(hook_platforms, hook_tags, source, e.get("command", "")):
+                    continue
                 specs.append(HookSpec(
                     command=e["command"],
                     matcher=e.get("matcher", "*"),
                     timeout=float(e.get("timeout", 30.0)),
                     cwd=cwd,
                     source=source,
+                    platforms=hook_platforms,
+                    tags=hook_tags,
                 ))
             if specs:
                 self.register_dynamic(event, specs, source)

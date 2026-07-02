@@ -219,6 +219,13 @@ def _main_inner() -> None:
         llm_retry_backoff_max_delay=getattr(args, "retry_backoff_max", None),
     )
 
+    # ── 可加载对象的平台/tag 过滤策略 ─────────────────────────────────────────
+    # 必须在 skill / agent profile / hooks / tool 的发现与注册之前初始化，
+    # 否则这些发现逻辑拿到的会是懒加载出的默认（cwd 而非 cfg.project_root）单例。
+    # 读取 <project_root>/platform_policy.json，不存在则完全不限制（no-op）。
+    from mini_agent.platform_filter import init_load_policy
+    init_load_policy(cfg.project_root)
+
     # ── simple-mode 最终同步 ─────────────────────────────────────────────────
     # 上面在解析完 args 后已经处理了 --simple-mode 显式传参的情况；这里用
     # load_config() 算出的最终值（可能来自 agent_config.json 里的

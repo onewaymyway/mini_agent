@@ -553,6 +553,7 @@ mini-agent user token u_a1b2c3d4                       # 重新生成 token
 - [history 类型化设计](docs/history-typed-design.md) — `_type` 字段化设计，含 `user_correction` 类型
 - [权限管理指南](docs/permission-guide.md) — 权限守卫、白名单，`(e)dit` 接入 Lesson Memory
 - [Hooks 机制](docs/hooks.md) — 15 个生命周期事件（Session / Prompt / Tool / Subagent / Task / Stop / Compact / TurnEnd），完整事件时序图与各事件用例
+- [Skill/Agent/Hook/Tool 平台与 Tag 过滤指南](docs/platform-tag-loading-guide.md) — 可加载对象的平台限制（termux/pc/windows/macos/linux/android）与 tag allow/deny 策略，`platform_policy.json` 配置，`/platform` 命令
 - [Task 日志实时查看](docs/task-focus-viewing.md) — 方向键切换查看任务日志机制
 - [终端显示机制深度解析](docs/terminal-display-internals.md) — 线程模型、状态栏控制、三阶段状态机、token 过滤
 - [终端 I/O 指南](docs/terminal-io-guide.md) — 终端渲染与输入机制

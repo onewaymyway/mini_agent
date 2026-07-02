@@ -296,6 +296,16 @@ mini-agent --retry-backoff linear --retry-backoff-step 60 --retry-backoff-max 30
 | `/hooks` 或 `/hooks list` | 按事件分组列出已加载的 hooks |
 | `/hooks reload` | 重新加载 `.agent/hooks.json`（项目级）与 `~/.agent/hooks.json`（全局级） |
 
+### 平台/Tag 加载策略（`src/mini_agent/cli/commands/platform.py`）
+
+> 详见 [Skill/Agent/Hook/Tool 平台与 Tag 过滤指南](platform-tag-loading-guide.md)
+
+| 命令 | 说明 |
+|------|------|
+| `/platform` 或 `/platform status` | 显示当前探测到的平台标签、`platform_policy.json` 中的 tag deny/allow 列表、本次运行被过滤对象数 |
+| `/platform filtered` | 列出本次运行中因平台/tag 不匹配被过滤掉的 skill/agent/hook/tool（含过滤原因） |
+| `/platform reload` | 重新读取 `<project_root>/platform_policy.json` 并触发一次热重载（skill/agent profile 立即生效；tool/hook 是启动时一次性注册，需重启进程才能生效） |
+
 ### 自我演化（`src/mini_agent/cli/commands/evolution.py` / `evolve.py`）
 
 > 详见 [Stage 2 安全网指南](self-evolution-stage2-guide.md)、[Stage 3.1 lesson → skill 闭环指南](self-evolution-stage3-1-guide.md)、[Phase G 后台循环指南](self-evolution-phase-g-guide.md)

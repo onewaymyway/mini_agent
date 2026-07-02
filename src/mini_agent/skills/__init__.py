@@ -30,6 +30,9 @@ class Skill:
     confidence_score: float = 1.0  # 0.0-1.0，影响注入时的语气强度
     positive_count: int = 0        # 正向印证次数（lesson/使用确认）
     negative_count: int = 0        # 反例计数（人工纠正/revert）
+    # [platform_filter] 平台/tag 限制：空 = 不限制，见 mini_agent.platform_filter
+    platforms: list[str] = field(default_factory=list)
+    tags: list[str] = field(default_factory=list)
 
     def matches_query(self, query: str) -> bool:
         """Heuristic: does the user query seem to need this skill?"""
@@ -103,14 +106,14 @@ class SkillLoader:
             # Nested: skills/docx/SKILL.md
             for skill_md in d.rglob("SKILL.md"):
                 skill = _parse_skill(skill_md)
-                if skill:
+                if skill and _skill_allowed(skill):
                     self._all[skill.name] = skill
             # Flat: skills/my-skill.md
             for skill_md in d.glob("*.md"):
                 if skill_md.name == "SKILL.md":
                     continue
                 skill = _parse_skill(skill_md)
-                if skill:
+                if skill and _skill_allowed(skill):
                     self._all[skill.name] = skill
 
     # ── Public API ─────────────────────────────────────────────────────────────
@@ -369,13 +372,13 @@ class SkillLoader:
                 continue
             for skill_md in d.rglob("SKILL.md"):
                 skill = _parse_skill(skill_md)
-                if skill:
+                if skill and _skill_allowed(skill):
                     new_all[skill.name] = skill
             for skill_md in d.glob("*.md"):
                 if skill_md.name == "SKILL.md":
                     continue
                 skill = _parse_skill(skill_md)
-                if skill:
+                if skill and _skill_allowed(skill):
                     new_all[skill.name] = skill
 
         new_names = set(new_all)
@@ -454,6 +457,9 @@ def _parse_skill(path: Path) -> Optional[Skill]:
     requires = _parse_list(fields.get("requires", "") if fm_match else "")
     conflicts_with = _parse_list(fields.get("conflicts_with", "") if fm_match else "")
     activation_conditions = _parse_list(fields.get("activation_conditions", "") if fm_match else "")
+    # [platform_filter] platforms / tags：逗号分隔，未声明 = 不限制（见 platform_filter.py）
+    platforms = _parse_list(fields.get("platforms", "") if fm_match else "")
+    skill_tags = _parse_list(fields.get("tags", "") if fm_match else "")
     confidence_score = 1.0
     if fm_match:
         try:
@@ -472,7 +478,18 @@ def _parse_skill(path: Path) -> Optional[Skill]:
         conflicts_with=conflicts_with,
         activation_conditions=activation_conditions,
         confidence_score=confidence_score,
+        platforms=platforms,
+        tags=skill_tags,
     )
+
+
+def _skill_allowed(skill: Skill) -> bool:
+    """[platform_filter] discover/rediscover 阶段的放行判定，不满足则整个 skill 不进入 _all。"""
+    from mini_agent.platform_filter import get_load_policy
+    allowed, _reason = get_load_policy().is_allowed(
+        platforms=skill.platforms, tags=skill.tags, kind="skill", name=skill.name,
+    )
+    return allowed
 
 
 def _extract_triggers(name: str, description: str) -> list[str]:

@@ -12,6 +12,7 @@ cli/commands — slash 命令处理模块包
   evolve      — /evolve review|list（Stage 3.1：lesson → skill 提案闭环）
   goals       — /agent goals|/goals（Stage 9：Goal Backlog）
   debug_cmd   — /debug system|history|all|save（打印/导出 system prompt 与 history，便于分析调试）
+  platform    — /platform status|filtered|reload（可加载对象的平台/tag 过滤策略查看与重载）
 """
 
 from mini_agent.cli.commands.skills import handle_skills_list, handle_skill_cmd
@@ -22,6 +23,7 @@ from mini_agent.cli.commands.concurrency import handle_concurrency_cmd
 from mini_agent.cli.commands.providers import handle_provider_cmd
 from mini_agent.cli.commands.agents import handle_agents_cmd
 from mini_agent.cli.commands.hooks import handle_hooks_cmd
+from mini_agent.cli.commands.platform import handle_platform_cmd
 from mini_agent.cli.commands.evolution import handle_evolution_cmd
 from mini_agent.cli.commands.evolve import handle_evolve_cmd
 from mini_agent.cli.commands.goals import handle_goals_cmd
@@ -37,6 +39,7 @@ __all__ = [
     "handle_provider_cmd",
     "handle_agents_cmd",
     "handle_hooks_cmd",
+    "handle_platform_cmd",
     "handle_evolution_cmd",
     "handle_evolve_cmd",
     "handle_goals_cmd",

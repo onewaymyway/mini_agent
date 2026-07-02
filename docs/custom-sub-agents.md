@@ -56,6 +56,7 @@ inputs:
 | `tool_groups` | 允许使用的工具分组列表，与 `tools` 取并集 |
 | `inputs` | 参数 schema，每项含 `name/type/description/required/default` |
 | `hooks` | （可选）该 profile 自带的 hooks 配置，结构同 `hooks.json`，spawn 时可挂载 |
+| `platforms` / `tags` | （可选）限制该 profile 只在特定平台/tag 策略下才会被发现，不满足条件时不会出现在 `/agents list` 或 `spawn_named_agent` 候选中；详见 [平台与 Tag 过滤指南](platform-tag-loading-guide.md) |
 
 ### 正文占位符
 

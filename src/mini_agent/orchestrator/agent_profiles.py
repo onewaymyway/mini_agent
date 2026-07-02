@@ -57,6 +57,10 @@ class AgentProfile:
     # 反馈注入主 agent 的方式："user"(追加 user 消息) | "system_reminder"(追加到 system)
     inject_as: str = "user"
 
+    # [platform_filter] 平台/tag 限制：空 = 不限制，见 mini_agent.platform_filter
+    platforms: list[str] = field(default_factory=list)
+    tags: list[str] = field(default_factory=list)
+
 
 # ── 解析 ──────────────────────────────────────────────────────────────────
 
@@ -122,6 +126,17 @@ def _parse_profile(path: Path) -> Optional[AgentProfile]:
     elif not isinstance(tool_groups, list):
         tool_groups = []
 
+    def _as_list(raw: Any) -> list[str]:
+        if isinstance(raw, str):
+            return [t.strip() for t in raw.split(",") if t.strip()]
+        if isinstance(raw, list):
+            return [str(t).strip() for t in raw if str(t).strip()]
+        return []
+
+    # [platform_filter] platforms / tags：字符串（逗号分隔）或 list 均可，未声明 = 不限制
+    platforms = _as_list(meta.get("platforms"))
+    profile_tags = _as_list(meta.get("tags"))
+
     return AgentProfile(
         name=name,
         description=str(meta.get("description", "")),
@@ -138,7 +153,18 @@ def _parse_profile(path: Path) -> Optional[AgentProfile]:
         max_iterations=int(meta.get("max_iterations", 1)),
         pass_threshold=float(meta.get("pass_threshold", 0.8)),
         inject_as=str(meta.get("inject_as", "user")),
+        platforms=platforms,
+        tags=profile_tags,
     )
+
+
+def _profile_allowed(profile: AgentProfile) -> bool:
+    """[platform_filter] discover/rediscover 阶段的放行判定，不满足则整个 profile 不进入 _all。"""
+    from mini_agent.platform_filter import get_load_policy
+    allowed, _reason = get_load_policy().is_allowed(
+        platforms=profile.platforms, tags=profile.tags, kind="agent", name=profile.name,
+    )
+    return allowed
 
 
 # ── Loader ───────────────────────────────────────────────────────────────
@@ -157,7 +183,7 @@ class AgentProfileLoader:
                 continue
             for md in sorted(d.glob("*.md")):
                 profile = _parse_profile(md)
-                if profile:
+                if profile and _profile_allowed(profile):
                     self._all[profile.name] = profile
 
     @property
@@ -199,7 +225,7 @@ class AgentProfileLoader:
                 continue
             for md in sorted(d.glob("*.md")):
                 profile = _parse_profile(md)
-                if profile:
+                if profile and _profile_allowed(profile):
                     new_all[profile.name] = profile
         self._all = new_all
 

@@ -28,6 +28,9 @@ class ToolDef:
     input_schema: dict   # JSON Schema object
     requires_approval: bool = True
     group: str = "builtin"           # 所属分组，用于 subset() 筛选
+    # [platform_filter] 平台/tag 限制：空 = 不限制，见 mini_agent.platform_filter
+    platforms: list[str] = field(default_factory=list)
+    tags: list[str] = field(default_factory=list)
 
 
 class ToolRegistry:
@@ -46,6 +49,16 @@ class ToolRegistry:
             tool_def: 工具定义
             override: True = 允许覆盖已注册工具；False = 重复注册时抛出 ValueError
         """
+        # [platform_filter] 平台/tag 不满足时静默跳过注册：工具完全不会出现在
+        # _tools / names / Anthropic tool schema 里（模型看不到它的存在）。
+        from mini_agent.platform_filter import get_load_policy
+        allowed, _reason = get_load_policy().is_allowed(
+            platforms=tool_def.platforms, tags=tool_def.tags,
+            kind="tool", name=tool_def.name,
+        )
+        if not allowed:
+            return
+
         if tool_def.name in self._tools and not override:
             raise ValueError(
                 f"Tool {tool_def.name!r} already registered in namespace {self.namespace!r}. "
@@ -66,6 +79,8 @@ class ToolRegistry:
         requires_approval: bool = True,
         group: str = "builtin",
         override: bool = False,
+        platforms: Optional[list] = None,
+        tags: Optional[list] = None,
     ) -> None:
         tool_name = name or fn.__name__
         desc = description or (inspect.getdoc(fn) or "").split("\n")[0]
@@ -78,6 +93,8 @@ class ToolRegistry:
                 input_schema=schema,
                 requires_approval=requires_approval,
                 group=group,
+                platforms=list(platforms or []),
+                tags=list(tags or []),
             ),
             override=override,
         )
@@ -182,6 +199,8 @@ def tool(
     requires_approval: bool = True,
     group: str = "builtin",
     override: bool = False,
+    platforms: Optional[list] = None,
+    tags: Optional[list] = None,
 ):
     """
     Decorator to register a function as a tool in the default registry.
@@ -193,6 +212,8 @@ def tool(
         requires_approval: Whether the tool requires user approval before execution
         group:            Tool group name, used for SubAgent tool filtering (default: "builtin")
         override:         Allow replacing an already-registered tool (default: False)
+        platforms:        [platform_filter] 平台限制，空 = 不限制，如 ["termux"]
+        tags:             [platform_filter] tag 列表，受 platform_policy.json 的 allow/deny 管辖
     """
     def decorator(fn: Callable) -> Callable:
         _default_registry.register_fn(
@@ -203,6 +224,8 @@ def tool(
             requires_approval=requires_approval,
             group=group,
             override=override,
+            platforms=platforms,
+            tags=tags,
         )
         return fn
     return decorator

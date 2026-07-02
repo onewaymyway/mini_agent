@@ -853,6 +853,7 @@ python -m pytest tests/ -q
 - [SubAgent 机制](docs/subagent-mechanism.md) — Sub-Agent 执行与重试机制详解
 - [自定义子 Agent](docs/custom-sub-agents.md) — 预设角色模板，结构化参数注入
 - [Hooks 机制](docs/hooks.md) — **更新**：15 个生命周期事件（新增 `PostToolUseFailure`、`PostToolBatch`、`SubagentStart`、`SubagentStop`、`TaskCreated`、`TaskCompleted`、`Stop`、`PreCompact`、`PostCompact`；`SessionStart` 从预留升级为已接入），完整事件时序图与用例
+- [Skill/Agent/Hook/Tool 平台与 Tag 过滤指南](docs/platform-tag-loading-guide.md) — **新增**：`platforms`/`tags` 声明式限制，`platform_policy.json` 全局策略，`/platform status|filtered|reload` 命令
 - [Skill 系统指南](docs/skill-system-guide.md) — 技能机制详解
 - [代码结构指南](docs/code-structure-guide.md) — 项目结构说明
 - [受保护路径清单指南](docs/protected-paths-guide.md) — **新增**：T3 治理红线设计与扩展规则（自我演化基础设施）
