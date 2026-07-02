@@ -283,33 +283,6 @@ def render_chat_tab(client: AgentClient):
                     elif role in ("assistant", "agent"):
                         st.markdown(f'<div class="msg-agent">{content}</div>', unsafe_allow_html=True)
 
-            # 本轮/最近的工具活动，紧跟在消息之后展示
-            if tool_events:
-                st.markdown('<div style="color:#888;font-size:11px;margin:6px 0;">🔧 最近工具活动</div>',
-                             unsafe_allow_html=True)
-                for e in tool_events[-30:]:
-                    etype = e.get("type")
-                    if etype == "permission_req":
-                        req_id = e.get("req_id")
-                        st.markdown(f"""
-<div class="permission-card">
-  <b>🔐 权限请求：{e.get('tool_name','未知工具')}</b><br/>
-  <code style="font-size:11px;">{str(e.get('tool_input',''))[:300]}</code>
-</div>
-""", unsafe_allow_html=True)
-                        pc1, pc2, pc3 = st.columns(3)
-                        if pc1.button("✅ 允许一次", key=f"chat_appr_once_{req_id}"):
-                            client.respond_permission(req_id, True, "once")
-                            st.rerun()
-                        if pc2.button("♾️ 始终允许", key=f"chat_appr_always_{req_id}"):
-                            client.respond_permission(req_id, True, "always")
-                            st.rerun()
-                        if pc3.button("❌ 拒绝", key=f"chat_deny_{req_id}"):
-                            client.respond_permission(req_id, False, "once")
-                            st.rerun()
-                    else:
-                        st.caption(_event_text(e))
-
             # 滚动锚点：每次渲染后用下面注入的 JS 把它滚到可视区域，从而把整个
             # 固定高度容器滚到底部，实现"自动滚动到最新消息"。
             st.markdown('<div id="chat-bottom-anchor"></div>', unsafe_allow_html=True)
@@ -336,6 +309,33 @@ def render_chat_tab(client: AgentClient):
         if st.button("🗑️ 清空历史"):
             client.clear_history()
             st.rerun()
+
+        # 工具活动/权限审批放在对话内容之外、页面最下方，不打断消息阅读体验
+        has_pending_perm = any(e.get("type") == "permission_req" for e in tool_events)
+        if tool_events:
+            with st.expander("🔧 最近工具活动", expanded=has_pending_perm):
+                for e in tool_events[-30:]:
+                    etype = e.get("type")
+                    if etype == "permission_req":
+                        req_id = e.get("req_id")
+                        st.markdown(f"""
+<div class="permission-card">
+  <b>🔐 权限请求：{e.get('tool_name','未知工具')}</b><br/>
+  <code style="font-size:11px;">{str(e.get('tool_input',''))[:300]}</code>
+</div>
+""", unsafe_allow_html=True)
+                        pc1, pc2, pc3 = st.columns(3)
+                        if pc1.button("✅ 允许一次", key=f"chat_appr_once_{req_id}"):
+                            client.respond_permission(req_id, True, "once")
+                            st.rerun()
+                        if pc2.button("♾️ 始终允许", key=f"chat_appr_always_{req_id}"):
+                            client.respond_permission(req_id, True, "always")
+                            st.rerun()
+                        if pc3.button("❌ 拒绝", key=f"chat_deny_{req_id}"):
+                            client.respond_permission(req_id, False, "once")
+                            st.rerun()
+                    else:
+                        st.caption(_event_text(e))
 
     with col_events:
         st.markdown("#### 📡 事件流")
