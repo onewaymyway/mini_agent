@@ -31,6 +31,33 @@ st.set_page_config(
     initial_sidebar_state="expanded",
 )
 
+def _event_text(e: dict) -> str:
+    """按事件类型正确提取展示文本。/events 接口把 data 字段展开到了事件顶层，
+    不同类型的关键信息在不同的 key 里（tool_call 是 tool_name/tool_input，
+    tool_result 是 tool_name/result，等等），不能都当成 'message' 取。"""
+    etype = e.get("type", "")
+    if etype == "tool_call":
+        return f"🔧 调用工具 `{e.get('tool_name','?')}` · 参数: {str(e.get('tool_input',''))[:200]}"
+    if etype == "tool_result":
+        return f"✅ 工具结果 `{e.get('tool_name','?')}` · {str(e.get('result',''))[:200]}"
+    if etype == "tool_error":
+        return f"❌ 工具出错 `{e.get('tool_name','?')}` · {str(e.get('error', e.get('message','')))[:200]}"
+    if etype == "permission_req":
+        return f"🔐 请求权限 `{e.get('tool_name','?')}` · {str(e.get('tool_input',''))[:200]}"
+    if etype == "permission_done":
+        approved = e.get("approve", e.get("approved"))
+        return f"{'✅ 已批准' if approved else '❌ 已拒绝'} req={e.get('req_id','')}"
+    if etype == "turn_start":
+        return f"▶️ 开始新一轮: {str(e.get('message',''))[:150]}"
+    if etype == "turn_done":
+        return f"⏹ 本轮结束 · {str(e.get('text',''))[:150]}"
+    if etype == "error":
+        return f"❌ {str(e.get('message',''))[:200]}"
+    if etype == "token":
+        return ""  # 逐 token 事件太碎，不在这里展示
+    return str(e.get("message", e.get("text", "")))[:150]
+
+
 def _inject_scroll_script():
     """把聊天区滚动到底部锚点。同时兼容新版 st.iframe 和旧版 components.html。"""
     script = """
@@ -230,6 +257,15 @@ def render_chat_tab(client: AgentClient):
             st.caption("⏳ Agent 正在处理中…（页面会自动刷新，无需等待）")
         hist = client.history() or {}
         entries = hist.get("messages", [])
+        # 拉最近事件，把 tool_call / tool_result / tool_error / permission_req 也
+        # 渲染进聊天流里，让用户能看到 Agent 实际调用了什么工具、结果是什么。
+        ev_data = client.events(since_id=0, limit=100) or {}
+        tool_events = [
+            e for e in ev_data.get("events", [])
+            if e.get("type") in ("tool_call", "tool_result", "tool_error",
+                                  "permission_req", "permission_done")
+        ]
+
         chat_box = st.container(height=460, border=True)
         with chat_box:
             if isinstance(entries, list):
@@ -246,6 +282,34 @@ def render_chat_tab(client: AgentClient):
                         st.markdown(f'<div class="msg-user">{content}</div>', unsafe_allow_html=True)
                     elif role in ("assistant", "agent"):
                         st.markdown(f'<div class="msg-agent">{content}</div>', unsafe_allow_html=True)
+
+            # 本轮/最近的工具活动，紧跟在消息之后展示
+            if tool_events:
+                st.markdown('<div style="color:#888;font-size:11px;margin:6px 0;">🔧 最近工具活动</div>',
+                             unsafe_allow_html=True)
+                for e in tool_events[-30:]:
+                    etype = e.get("type")
+                    if etype == "permission_req":
+                        req_id = e.get("req_id")
+                        st.markdown(f"""
+<div class="permission-card">
+  <b>🔐 权限请求：{e.get('tool_name','未知工具')}</b><br/>
+  <code style="font-size:11px;">{str(e.get('tool_input',''))[:300]}</code>
+</div>
+""", unsafe_allow_html=True)
+                        pc1, pc2, pc3 = st.columns(3)
+                        if pc1.button("✅ 允许一次", key=f"chat_appr_once_{req_id}"):
+                            client.respond_permission(req_id, True, "once")
+                            st.rerun()
+                        if pc2.button("♾️ 始终允许", key=f"chat_appr_always_{req_id}"):
+                            client.respond_permission(req_id, True, "always")
+                            st.rerun()
+                        if pc3.button("❌ 拒绝", key=f"chat_deny_{req_id}"):
+                            client.respond_permission(req_id, False, "once")
+                            st.rerun()
+                    else:
+                        st.caption(_event_text(e))
+
             # 滚动锚点：每次渲染后用下面注入的 JS 把它滚到可视区域，从而把整个
             # 固定高度容器滚到底部，实现"自动滚动到最新消息"。
             st.markdown('<div id="chat-bottom-anchor"></div>', unsafe_allow_html=True)
@@ -283,7 +347,9 @@ def render_chat_tab(client: AgentClient):
                 ts = e.get("ts")
                 t_str = datetime.fromtimestamp(ts).strftime("%H:%M:%S") if ts else ""
                 etype = e.get("type", "info")
-                st.caption(f"`{t_str}` **{etype}** — {str(e.get('message', ''))[:150]}")
+                text = _event_text(e)
+                if text:
+                    st.caption(f"`{t_str}` **{etype}** — {text}")
 
 
 # ═══════════════════════════════════════════════════════════════════════
