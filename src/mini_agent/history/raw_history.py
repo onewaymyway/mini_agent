@@ -125,10 +125,16 @@ class RawHistory:
                 import sys
                 print(f"[raw_history] write error: {e}", file=sys.stderr)
 
-    def append_compact_event(self, before_count: int, after_count: int, strategy: str) -> None:
+    def append_compact_event(
+        self,
+        before_count: int,
+        after_count: int,
+        strategy: str,
+        trigger_reason: str = None,
+    ) -> None:
         """记录一次 compact 操作事件（立即落盘）。"""
         from mini_agent.history.entry import make_compact_event
-        self.append(make_compact_event(before_count, after_count, strategy))
+        self.append(make_compact_event(before_count, after_count, strategy, trigger_reason))
 
     def clear(self) -> None:
         """清空内存中的 raw history（不删除 .jsonl 文件，历史只追加）。

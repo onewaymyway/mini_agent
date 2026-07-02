@@ -76,12 +76,37 @@ class CompressConfig:
     threshold: float = 0.7             # token 占用率超过此值触发压缩
     strategy: str = "turn_aligned"     # 压缩策略名，对应 history/compression.py 注册表
     forget_orphan_tool_results: bool = False
+
+    # ── SelectiveStrategy 专用 ──
+    selective_weights: dict = None
+    selective_min_user_turns: int = 3
+
+    # ── 触发器开关（2026-07 新增，见 history/triggers.py，均默认关闭）──
+    turn_count_trigger_enabled: bool = False
+    max_turns_before_compact: int = 20
+    tool_call_count_trigger_enabled: bool = False
+    max_tool_calls_before_compact: int = 50
+    topic_shift_detection: str = "off"          # "off" | "heuristic" | "llm"
+    topic_shift_keyword_overlap_threshold: float = 0.15
+    redundancy_detection_enabled: bool = False
+    redundancy_tool_result_ratio: float = 0.6
+    compact_cooldown_turns: int = 3
+    require_confirmation: bool = False
 ```
 
 | 字段 | 说明 |
 |------|------|
-| `strategy` | `"turn_aligned"`（默认）/ `"llm_summary"` / `"sliding_window"` / 自定义注册名 |
+| `strategy` | `"turn_aligned"`（默认）/ `"llm_summary"` / `"sliding_window"` / `"selective"` / 自定义注册名 |
 | `forget_orphan_tool_results` | 压缩后是否剔除保留段中无对应 tool_use 的 tool_result |
+| `turn_count_trigger_enabled` / `max_turns_before_compact` | 距上次 compact 满 N 轮自动触发（常规维护性压缩，建议策略 `selective`） |
+| `tool_call_count_trigger_enabled` / `max_tool_calls_before_compact` | 距上次 compact 累计 N 次工具调用自动触发 |
+| `topic_shift_detection` | `"off"` 不检测；`"heuristic"` 用关键词重合度+切换语关键词，无额外 LLM 调用；`"llm"` 在 heuristic 命中后追加一次小模型调用二次确认。命中后建议策略为 `llm_summary` |
+| `topic_shift_keyword_overlap_threshold` | 相邻两条用户消息关键词重合度低于此值视为疑似话题切换 |
+| `redundancy_detection_enabled` / `redundancy_tool_result_ratio` | `tool_result` 消息占比超过此值时触发（历史信息冗余），建议策略 `selective` |
+| `compact_cooldown_turns` | compact 后这么多轮内，除 token 硬阈值外的其他触发器不生效，防止反复触发 |
+| `require_confirmation` | `False`（默认）全自动静默压缩；`True` 触发后先询问用户 y/n，拒绝则本次跳过 |
+
+> 各触发器相互独立、可任意组合开启，详见 [Compact 设计文档](compact-design.md)。
 
 ### PerceptionConfig
 
@@ -334,6 +359,13 @@ JSON 配置文件  >  命令行参数  >  环境变量  >  内置默认值
   "memory_max_entries": 500,
   "auto_compress_enabled": true,
   "auto_compress_strategy": "turn_aligned",
+  "compact_turn_count_trigger_enabled": true,
+  "compact_max_turns": 20,
+  "compact_tool_call_count_trigger_enabled": true,
+  "compact_max_tool_calls": 50,
+  "compact_topic_shift_detection": "heuristic",
+  "compact_redundancy_detection_enabled": true,
+  "compact_require_confirmation": false,
   "tool_cache_enabled": true,
   "tool_cache_max_entries": 256,
   "skill_tracking_enabled": true

@@ -297,6 +297,19 @@ def load_config(
         threshold=_fn("auto_compress_threshold", auto_compress_threshold, 0.7),
         strategy=_f("auto_compress_strategy", None) or "turn_aligned",
         forget_orphan_tool_results=_fb("forget_policy_enabled", forget_policy_enabled),
+        # ── 触发器开关（每个独立配置，默认关闭/宽松，向后兼容）──────────────
+        turn_count_trigger_enabled=_fb("compact_turn_count_trigger_enabled", None, False),
+        max_turns_before_compact=_fn("compact_max_turns", None, 20),
+        tool_call_count_trigger_enabled=_fb("compact_tool_call_count_trigger_enabled", None, False),
+        max_tool_calls_before_compact=_fn("compact_max_tool_calls", None, 50),
+        topic_shift_detection=_f("compact_topic_shift_detection", None) or "off",
+        topic_shift_keyword_overlap_threshold=_fn(
+            "compact_topic_shift_keyword_overlap_threshold", None, 0.15
+        ),
+        redundancy_detection_enabled=_fb("compact_redundancy_detection_enabled", None, False),
+        redundancy_tool_result_ratio=_fn("compact_redundancy_tool_result_ratio", None, 0.6),
+        compact_cooldown_turns=_fn("compact_cooldown_turns", None, 3),
+        require_confirmation=_fb("compact_require_confirmation", None, False),
     )
 
     tool_trim_cfg = ToolTrimConfig(

@@ -214,6 +214,7 @@ mini-agent user token u_a1b2c3d4                       # 重新生成 token
 
 - `__init__.py` — 公开接口导出
 - `compression.py` — 历史压缩算法（turn_aligned / sliding_window / llm_summary / **selective**）
+- `triggers.py` — **[2026-07 新增]** Compact 触发器框架（`CompactTrigger` / `CompositeTrigger`），决定"何时"触发压缩，与 `compression.py` 决定"怎么压缩"分离
 - `raw_history.py` — Raw history 管理器（JSONL 即时落盘，每次 append() 立即写文件 + fsync，防崩溃丢失）
 - `entry.py` — 历史条目类型定义（HType 枚举）、构造辅助函数、时间戳生成（本地时间 + 时区偏移）
 
@@ -235,6 +236,22 @@ mini-agent user token u_a1b2c3d4                       # 重新生成 token
 - `_fix_orphans()` 保证 turn 结构完整（tool_result 必须配对 assistant_reply）
 - 去重：skill_context / reminder / hook_context 只保留最新一条
 - 配置：`compress.selective_weights`（自定义权重）、`compress.selective_min_user_turns`
+
+#### Compact 触发器体系（2026-07 新增）
+
+- `history/triggers.py::CompositeTrigger` 在 `_agentic_loop()` 每轮开头检查一组触发器，OR 组合，取 priority 最高的命中结果
+- 内置触发器（均带独立开关，默认关闭；`TokenThresholdTrigger` 由已有的 `compress.enabled` 控制）：
+  - `TokenThresholdTrigger`（现有逻辑，硬约束，无视冷却期）
+  - `TurnCountTrigger` — `turn_count_trigger_enabled` / `max_turns_before_compact`（默认 20）
+  - `ToolCallCountTrigger` — `tool_call_count_trigger_enabled` / `max_tool_calls_before_compact`（默认 50）
+  - `RedundancyTrigger` — `redundancy_detection_enabled` / `redundancy_tool_result_ratio`（默认 0.6）
+  - `TopicShiftTrigger` — `topic_shift_detection`（`"off"`/`"heuristic"`/`"llm"`），heuristic 用关键词重合度+切换语关键词，llm 档追加一次小模型二次确认
+- 每个触发器可给出 `suggested_strategy`（如话题切换建议 `llm_summary`，轮次/工具调用/冗余建议 `selective`），`_auto_compress_history()` 临时切换 `cfg.compress.strategy` 执行后再恢复
+- `compact_cooldown_turns`（默认 3）：compact 后这么多轮内，非硬约束触发器不生效
+- `require_confirmation`（默认 `False`）：触发后是否需要 `term.confirm()` 询问用户 y/n
+- **修复**：`_auto_compress_history()` 原来是独立于 `CompressionStrategy` 注册表之外的硬编码切割实现，配置的 `compress.strategy` 从未真正生效；现已改为委托给 `HistoryManager.auto_compress()`
+- `compact_event` 新增 `trigger_reason` 字段（写入 raw_history，供审计/统计各触发器命中效果）
+- 详见 [compact 设计文档](docs/compact-design.md)
 
 #### 分批摘要（Chunked Compact）
 

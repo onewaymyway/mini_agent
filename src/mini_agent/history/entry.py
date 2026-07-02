@@ -212,8 +212,20 @@ def make_role_agent(role: str, content: str) -> dict:
     return {"role": role, "content": content, "_type": HType.ROLE_AGENT}
 
 
-def make_compact_event(before_count: int, after_count: int, strategy: str) -> dict:
-    """Raw history 专用：记录发生了一次 compact 操作。"""
+def make_compact_event(
+    before_count: int,
+    after_count: int,
+    strategy: str,
+    trigger_reason: str = None,
+) -> dict:
+    """Raw history 专用：记录发生了一次 compact 操作。
+
+    trigger_reason: 触发本次 compact 的原因标识，例如
+        "token_threshold" / "turn_count" / "tool_call_count" /
+        "topic_shift_heuristic" / "topic_shift_llm" / "redundancy" /
+        "manual" / None（未知/旧调用点未传入）。
+        用于事后统计各触发器的实际命中效果。
+    """
     import json as _json
     payload = {
         "event": "compact",
@@ -221,6 +233,8 @@ def make_compact_event(before_count: int, after_count: int, strategy: str) -> di
         "after_count": after_count,
         "strategy": strategy,
     }
+    if trigger_reason:
+        payload["trigger_reason"] = trigger_reason
     return {
         "role": "user",
         "content": _json.dumps(payload, ensure_ascii=False),

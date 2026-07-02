@@ -508,6 +508,16 @@ class Agent:
         self._hist = HistoryManager(cfg=self.cfg, skill_loader=self.skill_loader)
         self._history = self._hist._history   # 共享同一列表对象，无需全量替换引用
 
+        # [SYS-COMPACT-TRIGGERS] compact 触发器组合（token/轮次/工具调用计数/
+        # 话题切换/冗余检测），各自独立开关，见 history/triggers.py
+        from mini_agent.history.triggers import CompositeTrigger
+        self._compact_triggers = CompositeTrigger()
+        # 上次 compact 时的 turns / tool_calls 快照，用于计算轮次/工具调用增量触发
+        self._last_compact_turns: int = 0
+        self._last_compact_tool_calls: int = 0
+        # 距上次 compact 经过的轮数（用于冷却期判断）
+        self._turns_since_last_compact: int = 0
+
         # raw history 路径绑定（_init_session 在 _init_components 之前调用，
         # 彼时 _hist 尚不存在，set_path 被吞掉了。在这里补绑定。）
         self._bind_raw_path()
@@ -2466,10 +2476,24 @@ class Agent:
                         f"[token] ~{_est:,} tokens "
                         f"({_budget_pct:.0%} of {self.cfg.max_tokens:,})"
                     )
-                if self.cfg.auto_compress_enabled and _budget_pct >= self.cfg.auto_compress_threshold:
-                    # 压缩后 system 内容可能变化，清除缓存强制重建
-                    self._cached_system = None
-                    self._auto_compress_history()
+            # [SYS-COMPACT-TRIGGERS] 组合触发器检查：token 阈值 / 轮次计数 /
+            # 工具调用计数 / 冗余检测 / 话题切换，任一命中即可能触发 compact。
+            # 独立于 token_estimate_enabled 之外运行（多数子触发器不依赖 token 估算）。
+            self._turns_since_last_compact = self.stats.turns - self._last_compact_turns
+            from mini_agent.history.triggers import TriggerContext
+            _trigger_ctx = TriggerContext(
+                history=self._history,
+                budget_pct=_budget_pct,
+                turns=self.stats.turns,
+                tool_calls=self.stats.tool_calls,
+                last_compact_turns=self._last_compact_turns,
+                last_compact_tool_calls=self._last_compact_tool_calls,
+                turns_since_last_compact=self._turns_since_last_compact,
+                llm_client=self._llm,
+            )
+            _trigger_result = self._compact_triggers.check(_trigger_ctx, self.cfg)
+            if _trigger_result.triggered:
+                self._maybe_run_compact(_trigger_result)
 
             # [具身改进 B1] 本体感知快照：每轮 LLM 调用前 sense 一次。
             # O(1)，不调用 LLM；frustration 超阈值时注入一次元认知提示，
@@ -3069,12 +3093,50 @@ class Agent:
         self._cached_system = result
         return result
 
-    def _auto_compress_history(self) -> None:
+    def _maybe_run_compact(self, trigger_result) -> None:
         """
-        [SYS-COMPRESS] 自动压缩历史，保留最近一半，并重附 skill 上下文。
+        [SYS-COMPACT-TRIGGERS] 触发器命中后的统一入口。
 
-        使用 _type 字段精确识别 turn 边界（而非字符串前缀）。
+        根据 cfg.compress.require_confirmation 决定是否需要用户确认：
+          False（默认）—— 全自动静默压缩，仅打印提示（保持原有行为）
+          True          —— 先询问用户 y/n，拒绝则本次跳过（下一轮循环还会再检查一次）
         """
+        R.print_info(f"[compact] 触发条件命中（{trigger_result.reason}）：{trigger_result.message}")
+
+        if self.cfg.compress.require_confirmation:
+            try:
+                from mini_agent.ui.terminal import term as _term
+                _term.print(
+                    f"[dim]即将执行历史压缩（原因: {trigger_result.reason} — "
+                    f"{trigger_result.message}），是否继续？[/dim]"
+                )
+                choice = _term.confirm(prompt_lines=[], choices="(y)es  (n)o", default="y")
+            except Exception:
+                # 非交互环境（如 headless/daemon）下无法弹确认，降级为自动执行
+                choice = "y"
+            if choice not in ("y", "yes"):
+                R.print_info("[compact] 用户拒绝，本次跳过压缩。")
+                return
+
+        # 压缩后 system 内容可能变化，清除缓存强制重建
+        self._cached_system = None
+        self._auto_compress_history(trigger_result=trigger_result)
+
+    def _auto_compress_history(self, trigger_result=None) -> None:
+        """
+        [SYS-COMPRESS] 自动压缩历史。
+
+        委托给 HistoryManager.auto_compress()，使用 cfg.compress.strategy
+        指定的可插拔压缩策略（turn_aligned / sliding_window / llm_summary /
+        selective），而不是硬编码的切割逻辑，从而让 trigger 建议的
+        suggested_strategy（例如话题切换建议 llm_summary）真正生效。
+        """
+        strategy_name = "auto_compress"
+        trigger_reason = None
+        if trigger_result is not None:
+            trigger_reason = trigger_result.reason
+            strategy_name = trigger_result.reason
+
         # [SYS-HOOKS] PreCompact：压缩前通知 hook（可阻止）
         try:
             from mini_agent.hooks import get_hook_manager as _ghm_pre
@@ -3082,7 +3144,7 @@ class Agent:
             if _hm_pre is not None:
                 _pre_res = _hm_pre.run("PreCompact", {
                     "history_len": len(self._history),
-                    "strategy": "auto_compress",
+                    "strategy": strategy_name,
                 })
                 if _pre_res.blocked:
                     R.print_info("[compress] PreCompact hook blocked compression.")
@@ -3093,81 +3155,54 @@ class Agent:
         if len(self._history) < 6:
             return
 
-        from mini_agent.history.entry import (
-            is_turn_boundary, is_tool_result, is_real_user_input,
-            make_compressed, make_compact_summary, make_skill_context, HType,
-        )
-
-        # ── 找到以 turn 为边界的切割点 ──────────────────────────────────────
-        user_indices = [
-            i for i, m in enumerate(self._history)
-            if is_turn_boundary(m)
-        ]
-
-        if len(user_indices) < 2:
-            cutoff = len(self._history) // 2
-        else:
-            mid = len(self._history) // 2
-            cutoff = min(user_indices, key=lambda i: abs(i - mid))
-            if cutoff >= user_indices[-1]:
-                cutoff = user_indices[len(user_indices) // 2]
-
-        old_turns = self._history[:cutoff]
-
-        # ── 构建摘要文字 ──────────────────────────────────────────────────────
-        user_msgs = [
-            m["content"] for m in old_turns
-            if is_real_user_input(m) and isinstance(m.get("content"), str)
-        ]
-        tool_call_count = sum(
-            sum(1 for b in m.get("content", [])
-                if isinstance(b, dict) and b.get("type") == "tool_use")
-            for m in old_turns
-            if m.get("role") == "assistant" and isinstance(m.get("content"), list)
-        )
-        summary_parts = []
-        if user_msgs:
-            summary_parts.append("User requests: " + "; ".join(
-                (msg[:80] + "\u2026" if len(msg) > 80 else msg)
-                for msg in user_msgs[:6]
-            ))
-            if len(user_msgs) > 6:
-                summary_parts.append(f"... and {len(user_msgs)-6} more user turns")
-        if tool_call_count:
-            summary_parts.append(f"({tool_call_count} tool calls executed)")
-        summary_text = " ".join(summary_parts) if summary_parts else f"({cutoff} msgs)"
-
-        # ── 保留段：可选剔除孤立工具结果消息 ─────────────────────────────────
-        keep = self._history[cutoff:]
-        if self.cfg.forget_policy_enabled:
-            keep = [m for m in keep if not is_tool_result(m)]
-
-        # ── 记录 compact 事件到 raw history ─────────────────────────────────
         _hist = getattr(self, "_hist", None)
-        if _hist is not None:
-            _hist._raw.append_compact_event(
-                before_count=len(self._history),
-                after_count=len(keep) + 2,
-                strategy="auto_compress",
+        if _hist is None:
+            return
+
+        # ── 临时切换压缩策略（若 trigger 给出了建议策略）───────────────────
+        from mini_agent.history.compression import create_strategy
+        original_strategy = _hist._strategy
+        if trigger_result is not None and trigger_result.suggested_strategy:
+            try:
+                saved_cfg_strategy = self.cfg.compress.strategy
+                self.cfg.compress.strategy = trigger_result.suggested_strategy
+                _hist._strategy = create_strategy(self.cfg)
+            except Exception:
+                _hist._strategy = original_strategy
+            finally:
+                self.cfg.compress.strategy = saved_cfg_strategy
+
+        before_count = len(self._history)
+        try:
+            _hist.auto_compress(
+                skill_compact_fn=self._build_skill_compact_block,
+                llm_client=self._llm,
             )
+        finally:
+            # 恢复原策略实例，避免临时覆盖影响后续默认压缩
+            _hist._strategy = original_strategy
 
-        # ── 原地替换，保持共享引用有效 ───────────────────────────────────────
-        compressed_pair = [
-            make_compressed(),
-            make_compact_summary(f"[Compressed summary: {summary_text}]"),
-        ]
-        self._history.clear()
-        self._history.extend(compressed_pair + list(keep))
+        # ── 若使用了 trigger_reason，重写最后一条 compact_event 的 reason ───
+        # （HistoryManager.auto_compress 内部已写入不带 reason 的 compact_event，
+        #  这里补充写入 trigger_reason，便于事后统计各触发器命中效果）
+        if trigger_reason and _hist._raw.entries:
+            for entry in reversed(_hist._raw.entries):
+                if entry.get("_type") == "compact_event":
+                    try:
+                        import json as _json
+                        payload = _json.loads(entry.get("content", "{}"))
+                        payload["trigger_reason"] = trigger_reason
+                        entry["content"] = _json.dumps(payload, ensure_ascii=False)
+                    except Exception:
+                        pass
+                    break
 
-        # [SYS-SKILL-COMPACT] 压缩后重附 skill 上下文
-        skill_block = self._build_skill_compact_block()
-        if skill_block:
-            msg = make_skill_context(skill_block)
-            self._history.append(msg)
-            if _hist is not None:
-                _hist._raw.append(msg)
+        after_count = len(self._history)
 
-        R.print_info(f"[compress] History compressed (cutoff={cutoff}, turn-aligned) → summary.")
+        # ── 更新 last_compact 计数快照（供 turn/tool_call 计数触发器使用）───
+        self._last_compact_turns = self.stats.turns
+        self._last_compact_tool_calls = self.stats.tool_calls
+        self._turns_since_last_compact = 0
 
         # [SYS-HOOKS] PostCompact：压缩完成后通知 hook（通知型）
         try:
@@ -3175,9 +3210,10 @@ class Agent:
             _hm_post = _ghm_post()
             if _hm_post is not None:
                 _hm_post.run("PostCompact", {
-                    "history_len": len(self._history),
-                    "strategy": "auto_compress",
-                    "summary": summary_text,
+                    "history_len": after_count,
+                    "strategy": strategy_name,
+                    "before_count": before_count,
+                    "after_count": after_count,
                 })
         except Exception:
             pass

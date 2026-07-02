@@ -73,8 +73,6 @@ shell 命令，用于审计、拦截危险操作、自动格式化、注入额�
 - `matcher`：仅 `PreToolUse` / `PostToolUse` / `PostToolUseFailure` 有效。`"*"` 或省略表示匹配所有工具；
   也可用 `|` 分隔多个工具名，如 `"bash|write_file"`
 - `timeout`：超时秒数，默认 30
-- `platforms` / `tags`：可选，限制该条 hook 只在特定平台/tag 策略下加载，不声明则不限制；
-  详见 [Skill/Agent/Hook/Tool 平台与 Tag 过滤指南](platform-tag-loading-guide.md)
 
 ## 支持的事件
 
@@ -139,8 +137,13 @@ shell 命令，用于审计、拦截危险操作、自动格式化、注入额�
 
 | 事件 | 触发时机 | 可阻止 | payload |
 |---|---|---|---|
-| `PreCompact` | `_auto_compress_history()` 执行前 | ✅ | `{"history_len": N, "strategy": "auto_compress"}` |
-| `PostCompact` | `_auto_compress_history()` 执行后 | ❌ | `{"history_len": N, "strategy": "auto_compress", "summary": "..."}` |
+| `PreCompact` | `_auto_compress_history()` 执行前 | ✅ | `{"history_len": N, "strategy": "<trigger_reason 或 auto_compress>"}` |
+| `PostCompact` | `_auto_compress_history()` 执行后 | ❌ | `{"history_len": N, "strategy": "<trigger_reason 或 auto_compress>", "before_count": N, "after_count": N}` |
+
+> **2026-07 起**：`strategy` 字段传入的是触发本次 compact 的触发器 `reason`
+> （例如 `"token_threshold"` / `"turn_count"` / `"tool_call_count"` / `"redundancy"` /
+> `"topic_shift_heuristic"` / `"topic_shift_llm"`），而不再固定为 `"auto_compress"`，
+> hook 脚本可据此区分不同触发来源。触发器体系详见 [Compact 设计文档](compact-design.md)。
 
 > **`PreCompact` 阻止**：hook 返回 exit code 2 或 `{"decision": "block"}` 可阻止本次压缩。
 > 典型用途：当前 turn 正在执行重要任务时，临时禁止压缩以保留完整上下文。
@@ -396,4 +399,4 @@ payload = json.loads(sys.stdin.buffer.read().decode("utf-8"))
 
 ---
 
-*最后更新：2026-06（新增事件：`PostToolUseFailure`、`PostToolBatch`、`SubagentStart`、`SubagentStop`、`TaskCreated`、`TaskCompleted`、`Stop`、`PreCompact`、`PostCompact`；`SessionStart` 从预留升级为已接入；补充完整事件时序图和各事件用例）*
+*最后更新：2026-07（PreCompact/PostCompact 的 `strategy` payload 改为传入触发器 `reason`，反映新增的 Compact 触发器体系；此前更新：新增事件：`PostToolUseFailure`、`PostToolBatch`、`SubagentStart`、`SubagentStop`、`TaskCreated`、`TaskCompleted`、`Stop`、`PreCompact`、`PostCompact`；`SessionStart` 从预留升级为已接入；补充完整事件时序图和各事件用例）*

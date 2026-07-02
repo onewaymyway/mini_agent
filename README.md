@@ -803,6 +803,23 @@ triggers: keyword1, keyword2
 }
 ```
 
+**Compact 触发器开关**（2026-07 新增，均默认关闭，独立配置，见 [Compact 设计文档](docs/compact-design.md)）：
+
+```json
+{
+  "auto_compress_enabled": true,
+  "compact_turn_count_trigger_enabled": true,
+  "compact_max_turns": 20,
+  "compact_tool_call_count_trigger_enabled": true,
+  "compact_max_tool_calls": 50,
+  "compact_topic_shift_detection": "heuristic",
+  "compact_redundancy_detection_enabled": true,
+  "compact_redundancy_tool_result_ratio": 0.6,
+  "compact_cooldown_turns": 3,
+  "compact_require_confirmation": false
+}
+```
+
 ### Providers 配置
 
 LLM Provider 的 API Key 和 Fallback Chain 配置详见上方 [配置 API Key → LLM Provider API Key](#llm-provider-api-key推荐providersjson) 章节。
@@ -894,6 +911,8 @@ MIT License
 *最后更新：2026-07-01* — 具身智能改进 A/B/C 三阶段全部完成（12 项：本体感知/余裕感知/工具透明性/AgentSelfModel/时间加权记忆/认知锚点/自维护模块等），详见 [具身智能改进指南](docs/embodied-agent-guide.md)
 
 *2026-06-19* — API Key 配置重构：主推 providers.json 管理 LLM API Key，图片 Skill（ask_image / gen_image_with_text）保留环境变量方式
+
+*2026-07 Compact 触发器体系*：新增 `history/triggers.py`，把"何时触发 compact"从单一的 token 阈值判断扩展为可插拔的 `CompactTrigger` 框架（与 `CompressionStrategy` 同一设计哲学）。新增四种触发器，均带独立开关、默认关闭：`TurnCountTrigger`（距上次 compact 满 N 轮，默认 20）、`ToolCallCountTrigger`（累计 N 次工具调用，默认 50）、`RedundancyTrigger`（`tool_result` 占比超过阈值，默认 60%）、`TopicShiftTrigger`（话题切换检测，`heuristic`/`llm` 两档，heuristic 用关键词重合度+切换语关键词，llm 档追加一次小模型二次确认）。各触发器可给出 `suggested_strategy`（如话题切换建议 `llm_summary`），并新增冷却期（`compact_cooldown_turns`，默认 3 轮）防止反复触发，以及触发后是否需要用户确认的开关（`compress.require_confirmation`）。同时修复了 `_auto_compress_history()` 此前未委托给 `CompressionStrategy` 注册表、导致配置的压缩策略实际不生效的问题；`compact_event` 新增 `trigger_reason` 字段记录触发来源；详见 [compact 设计文档](docs/compact-design.md)
 
 *2026-06 Chunked Compact*：`compact_with_skills()` 增加超限自动切换路径——当历史已超出上下文窗口（`LLMContextWindowError`）时，新的 `_compact_chunked()` 把历史按 turn 边界切成多个 chunk，每 chunk 独立调用 `_llm.chat_with_retry` 生成摘要（完全绕开 `run_turn`），多 chunk 结果再合并为最终摘要；单 chunk / 合并失败均有降级保底；新增 prompt 文件 `compact_chunk_request.md` 和 `compact_merge_request.md`；所有 compact prompt 加强为要求保留工具调用结果摘要、精确文件路径、错误信息等关键成果信息；新增 [compact 设计文档](docs/compact-design.md)
 

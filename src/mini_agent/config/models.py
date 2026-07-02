@@ -129,6 +129,33 @@ class CompressConfig:
     selective_weights: dict = None
     selective_min_user_turns: int = 3  # 无论 budget 多紧，至少保留这么多轮用户输入
 
+    # ── 触发器开关（每个触发方式独立开关，默认关闭，不影响现有行为）───────
+    # 轮次计数触发：距上次 compact 满 N 轮自动触发
+    turn_count_trigger_enabled: bool = False
+    max_turns_before_compact: int = 20
+
+    # 工具调用计数触发：距上次 compact 累计 N 次工具调用自动触发
+    tool_call_count_trigger_enabled: bool = False
+    max_tool_calls_before_compact: int = 50
+
+    # 话题切换检测："off" | "heuristic" | "llm"
+    #   off       —— 不检测（默认）
+    #   heuristic —— 纯规则/关键词/路径跳变检测，无额外 LLM 调用
+    #   llm       —— 启发式命中疑似切换后，再用一次小模型调用做二次确认
+    topic_shift_detection: str = "off"
+    topic_shift_keyword_overlap_threshold: float = 0.15  # 关键词重合度低于此值视为疑似切换
+
+    # 冗余信息检测：tool_result 占比过高 / 重复调用堆积
+    redundancy_detection_enabled: bool = False
+    redundancy_tool_result_ratio: float = 0.6  # tool_result 消息占比超过此值触发
+
+    # 冷却时间：compact 后这么多轮内，屏蔽除 token 硬阈值外的其他触发器，防止反复触发
+    compact_cooldown_turns: int = 3
+
+    # 触发后是否需要用户确认才执行（False=全自动静默压缩，仅打印提示；
+    # True=先询问用户 y/n，用户拒绝则本次跳过，下次再检查）
+    require_confirmation: bool = False
+
 
 @dataclass
 class ToolTrimConfig:
