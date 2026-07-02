@@ -19,6 +19,7 @@ terminal.py — 统一终端 I/O 管理器
 
 from __future__ import annotations
 
+import asyncio
 import os
 import queue
 import sys
@@ -249,6 +250,36 @@ class Terminal:
         # SIGWINCH 的 debounce-settle 回调用它来跨线程触发强制重绘。
         # 详见 _read_line() 和 _on_sigwinch_settled() 的说明。
         self._active_ptk_app = None
+
+        # ── 阻塞输入期间的"定时补打印"线程 ──────────────────────────────
+        # 背景：daemon connected 多客户端场景下，本端正停留在
+        # prompt_toolkit 的 .prompt()（"You ❯" 提示符）等待用户输入时，
+        # 同一 session 里其他客户端（另一个命令行 / web demo）触发的
+        # agent 输出，之前的行为是全部缓冲进 _pending_during_input，
+        # 一直等到本端自己提交了一次输入（_exit_input_mode()）才会统一
+        # 补打印——效果就是"必须自己发一条消息，才能看到别人的内容"，
+        # 不是想要的"实时同步"。
+        #
+        # 修复：不再只在退出输入模式时才 flush，而是用一个低频定时器
+        # （_PTK_FLUSH_INTERVAL）周期性检查 _pending_during_input，只要
+        # 有积压内容、且当前真的处于 prompt_toolkit 的阻塞 .prompt() 里
+        # （self._active_ptk_app is not None——sys.stdin.readline() 降级
+        # 路径下这个值恒为 None，不会触发，那条路径没有安全的"打印到
+        # 输入行上方"手段，只能继续沿用旧的"退出时补打印"行为），就用
+        # prompt_toolkit 官方提供的 run_in_terminal() 把积压内容打印出来：
+        # 它会先暂停当前 Application 的渲染、执行回调、再重新绘制输入行，
+        # 不会撕裂正在输入的那一行——这正是 ptk 文档里说明的"在阻塞的
+        # prompt 上方安全打印"的标准做法，不是我们自己拿 stdout 硬写。
+        #
+        # 放在 self._active_ptk_app 赋值之后再启动这个线程，避免线程刚
+        # 启动的一瞬间就去读一个还不存在的属性（虽然 wait() 里有
+        # _PTK_FLUSH_INTERVAL 秒缓冲，实际不会触发，但没必要留这个隐患）。
+        self._PTK_FLUSH_INTERVAL = 0.6  # 秒；够快到接近"实时"，又不会频繁到打扰输入
+        self._ptk_flush_stop = threading.Event()
+        self._ptk_flush_thread = threading.Thread(
+            target=self._ptk_flush_loop, daemon=True, name="terminal-ptk-flush"
+        )
+        self._ptk_flush_thread.start()
 
         # ── SIGWINCH debounce（resize 抖动 / 尺寸尚未稳定问题）──────────────
         # 背景（Termux 等移动端终端模拟器上更容易复现）：应用切到后台再
@@ -1923,6 +1954,107 @@ class Terminal:
                     self._q.put(_Msg("statusbar", lines))
             self._q.put(_Msg("_refresh", None))
 
+    def _ptk_flush_loop(self) -> None:
+        """
+        每 _PTK_FLUSH_INTERVAL 秒检查一次：如果本端正阻塞在
+        prompt_toolkit 的 .prompt() 里、且有积压的旁观消息，就用
+        run_in_terminal() 安全地把它们打印出来，不必等到本端自己提交
+        输入才显示——见 __init__ 里这个线程启动处的详细说明。
+
+        这个循环本身只做"判断要不要 flush"，真正的打印动作交给
+        _flush_pending_during_input()（里面才会真正调用 run_in_terminal）。
+        """
+        while not self._ptk_flush_stop.is_set():
+            self._ptk_flush_stop.wait(self._PTK_FLUSH_INTERVAL)
+            if self._ptk_flush_stop.is_set():
+                break
+            if not self._input_blocking:
+                continue
+            if self._active_ptk_app is None:
+                # 降级路径（未安装 ptk，或 ptk 运行时异常后已降级到裸
+                # readline）：没有"安全打印到输入行上方"的手段，只能
+                # 维持旧行为——积压到 _exit_input_mode() 统一补打印。
+                continue
+            if not self._pending_during_input:
+                continue
+            self._flush_pending_during_input()
+
+    def _flush_pending_during_input(self) -> None:
+        """
+        把 _pending_during_input 里积压的消息，通过 prompt_toolkit 的
+        `in_terminal()` 异步上下文管理器安全地打印到当前输入行上方，
+        然后让 ptk 自己重绘输入行。
+
+        实现上复用渲染线程已经测试过的 _handle() 逻辑，而不是自己重新
+        写一遍"怎么打印 print/stream/stream_end 等各种消息类型"——
+        做法是：短暂把 _input_blocking 置回 False（这样 _handle() 不会
+        再把这批消息当成"阻塞期消息"重新缓冲），把消息推回主队列，
+        等渲染线程真正处理完（_q.join()），再把 _input_blocking 置回
+        True，继续缓冲这之后到达的新消息。这个"短暂置 False 再置回
+        True"的模式和 _exit_input_mode() 是同一个模式，唯一区别是这里
+        不清除 _refresh_paused、不重新挂载 SIGWINCH、不恢复 key
+        listener——因为我们还没有真正退出输入模式，用户仍在 ptk 的
+        .prompt() 里，只是"顺便"把这段时间攒下的旁观消息打印出来。
+
+        ★★★ 为什么不能直接调用 prompt_toolkit.application.run_in_terminal()
+        ★★★
+        `run_in_terminal(func)` 内部是 `ensure_future(run())`——它假定
+        调用方当前就在 ptk 那个 Application 正在跑的 asyncio 事件循环
+        线程里，直接 `ensure_future` 就能把协程挂到"当前线程的"事件
+        循环上。但这个 flush 方法是从我们自己的后台线程
+        （terminal-ptk-flush）调用的，这个线程根本没有正在运行的事件
+        循环——`ensure_future` 拿到的要么是错误的循环、要么直接创建了
+        一个从来没有被 run 过的协程对象，从而产生
+        "coroutine 'run_in_terminal.<locals>.run' was never awaited"
+        这个 RuntimeWarning，而且回调根本没有被真正执行到（表现为：
+        没报错，但其他客户端的内容依然不会实时显示出来）。
+
+        正确做法：拿到 ptk Application 实际在跑的那个事件循环
+        （`app.loop`，Application.run_async() 运行期间会把它设置好），
+        用 `asyncio.run_coroutine_threadsafe()` 把协程真正提交到*那个*
+        循环上执行，再阻塞等待结果——这才是官方文档里"从其他线程安全
+        调度协程到指定事件循环"的标准写法。
+        """
+        app = self._active_ptk_app
+        if app is None:
+            return
+        loop = getattr(app, "loop", None)
+        if loop is None or loop.is_closed():
+            return
+
+        try:
+            from prompt_toolkit.application import in_terminal
+        except ImportError:
+            return
+
+        def _do_flush() -> None:
+            pending, self._pending_during_input = self._pending_during_input, []
+            if not pending:
+                return
+            self._input_blocking = False
+            try:
+                for msg in pending:
+                    self._q.put(msg)
+                self._q.put(_Msg("redraw", None))
+                self._q.join()
+            finally:
+                self._input_blocking = True
+                self._input_blocking_since = time.monotonic()
+
+        async def _runner() -> None:
+            async with in_terminal():
+                _do_flush()
+
+        try:
+            fut = asyncio.run_coroutine_threadsafe(_runner(), loop)
+            # 有超时兜底：万一 ptk 那边恰好在退出/重建循环，不要把这个
+            # 后台线程永久卡死——超时后消息仍留在 _pending_during_input
+            # （_do_flush 还没机会清空它），下一个 flush 周期或
+            # _exit_input_mode() 会重新尝试，不会丢失。
+            fut.result(timeout=5.0)
+        except Exception:
+            pass
+
     # ── 用户输入底层 ──────────────────────────────────────────────────────
 
     def _read_line(self, prompt_text: str = "") -> str:
@@ -2000,6 +2132,9 @@ class Terminal:
             if self._sigwinch_debounce_timer is not None:
                 self._sigwinch_debounce_timer.cancel()
                 self._sigwinch_debounce_timer = None
+        # 0.5 停"定时补打印"线程
+        self._ptk_flush_stop.set()
+        self._ptk_flush_thread.join(timeout=1.0)
         # 1. 先停刷新线程，防止它继续往队列里投消息
         self._refresh_stop.set()
         self._refresh_paused.set()   # 防止 refresh_loop 卡在 paused.wait
