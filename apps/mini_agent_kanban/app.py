@@ -17,6 +17,7 @@ import time
 from datetime import datetime
 
 import streamlit as st
+import streamlit.components.v1 as components
 
 from client import AgentClient
 
@@ -29,6 +30,23 @@ st.set_page_config(
     layout="wide",
     initial_sidebar_state="expanded",
 )
+
+def _inject_scroll_script():
+    """把聊天区滚动到底部锚点。同时兼容新版 st.iframe 和旧版 components.html。"""
+    script = """
+    <script>
+    (function() {
+        const doc = window.parent.document;
+        const anchor = doc.getElementById('chat-bottom-anchor');
+        if (anchor) { anchor.scrollIntoView({behavior: 'instant', block: 'end'}); }
+    })();
+    </script>
+    """
+    if hasattr(st, "iframe"):
+        st.iframe(script, height=1)
+    else:
+        components.html(script, height=0)
+
 
 STATE_LABELS = {
     "idle": ("🟢", "空闲"),
@@ -212,20 +230,26 @@ def render_chat_tab(client: AgentClient):
             st.caption("⏳ Agent 正在处理中…（页面会自动刷新，无需等待）")
         hist = client.history() or {}
         entries = hist.get("messages", [])
-        if isinstance(entries, list):
-            for e in entries[-60:]:
-                role = e.get("role", "")
-                content = e.get("content", "")
-                if isinstance(content, list):
-                    # content 可能是多模态 block 列表（tool_use/tool_result/text）
-                    content = "\n".join(
-                        b.get("text", str(b)) if isinstance(b, dict) else str(b)
-                        for b in content
-                    )
-                if role in ("user", "human"):
-                    st.markdown(f'<div class="msg-user">{content}</div>', unsafe_allow_html=True)
-                elif role in ("assistant", "agent"):
-                    st.markdown(f'<div class="msg-agent">{content}</div>', unsafe_allow_html=True)
+        chat_box = st.container(height=460, border=True)
+        with chat_box:
+            if isinstance(entries, list):
+                for e in entries[-60:]:
+                    role = e.get("role", "")
+                    content = e.get("content", "")
+                    if isinstance(content, list):
+                        # content 可能是多模态 block 列表（tool_use/tool_result/text）
+                        content = "\n".join(
+                            b.get("text", str(b)) if isinstance(b, dict) else str(b)
+                            for b in content
+                        )
+                    if role in ("user", "human"):
+                        st.markdown(f'<div class="msg-user">{content}</div>', unsafe_allow_html=True)
+                    elif role in ("assistant", "agent"):
+                        st.markdown(f'<div class="msg-agent">{content}</div>', unsafe_allow_html=True)
+            # 滚动锚点：每次渲染后用下面注入的 JS 把它滚到可视区域，从而把整个
+            # 固定高度容器滚到底部，实现"自动滚动到最新消息"。
+            st.markdown('<div id="chat-bottom-anchor"></div>', unsafe_allow_html=True)
+        _inject_scroll_script()
 
         with st.form("chat_form", clear_on_submit=True):
             msg = st.text_area("输入消息", height=80, label_visibility="collapsed",
