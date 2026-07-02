@@ -130,7 +130,7 @@ def render_sidebar():
         st.rerun()
 
     st.session_state["auto_refresh"] = st.sidebar.checkbox(
-        "⏱️ 自动刷新（每 3 秒）", value=st.session_state.get("auto_refresh", False),
+        "⏱️ 自动刷新（每 3 秒）", value=st.session_state.get("auto_refresh", True),
         help="Agent 运行中（running/等待审批）时建议开启，聊天与事件为轮询式获取，不开自动刷新需要手动点刷新才能看到最新状态",
     )
 
@@ -234,6 +234,19 @@ def render_chat_tab(client: AgentClient):
             res = client.chat(msg.strip())
             if res and "_error" in res:
                 st.error(res["_error"])
+            else:
+                # /chat 是异步排队接口（返回 queued:true），回复不会立刻出现在 /history 里，
+                # 这里主动轮询 /status 直到 Agent 跑完（或超时），再刷新页面，
+                # 避免用户看到"发送了但看板一直不出回复"。
+                placeholder = st.empty()
+                for i in range(60):
+                    time.sleep(1)
+                    st_now = client.status() or {}
+                    state_now = st_now.get("state", "unknown")
+                    placeholder.caption(f"⏳ Agent 状态: {state_now} （已等待 {i+1}s）")
+                    if state_now != "running":
+                        break
+                placeholder.empty()
             st.rerun()
         if interrupt:
             client.interrupt()
