@@ -73,6 +73,8 @@ shell 命令，用于审计、拦截危险操作、自动格式化、注入额�
 - `matcher`：仅 `PreToolUse` / `PostToolUse` / `PostToolUseFailure` 有效。`"*"` 或省略表示匹配所有工具；
   也可用 `|` 分隔多个工具名，如 `"bash|write_file"`
 - `timeout`：超时秒数，默认 30
+- `platforms` / `tags`：可选，限制该条 hook 只在特定平台/tag 策略下加载，不声明则不限制；
+  详见 [Skill/Agent/Hook/Tool 平台与 Tag 过滤指南](platform-tag-loading-guide.md)
 
 ## 支持的事件
 

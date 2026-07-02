@@ -1035,6 +1035,65 @@ def diff_files(path_a: str, path_b: str, context_lines: int = 3) -> str:
 _web_search_cfg = None
 
 
+# ── view_raw_result [SYS-RAWSTORE] ───────────────────────────────────────────
+
+# 模块级引用（由 configure_raw_result_store 注入，None 时该工具直接报错提示）
+_raw_result_store = None
+
+
+def configure_raw_result_store(store) -> None:
+    """由 Agent 初始化时注入 RawResultStore 实例（session 内单例）。"""
+    global _raw_result_store
+    _raw_result_store = store
+
+
+@tool(
+    name="view_raw_result",
+    description=(
+        "View the full, untruncated original output of a previous tool call "
+        "that was truncated or LLM-summarized (its trimmed result will mention "
+        "a result_id you can use here). Supports an optional line range, same "
+        "as read_file, so you don't have to dump everything back into context."
+    ),
+    schema={
+        "type": "object",
+        "properties": {
+            "result_id": {
+                "type": "string",
+                "description": "The result_id mentioned in a previously trimmed/summarized tool result.",
+            },
+            "start_line": {"type": "integer", "description": "First line to return (1-indexed)"},
+            "end_line": {"type": "integer", "description": "Last line to return (inclusive)"},
+        },
+        "required": ["result_id"],
+    },
+    requires_approval=False,
+)
+def view_raw_result(
+    result_id: str,
+    start_line: Optional[int] = None,
+    end_line: Optional[int] = None,
+) -> str:
+    """Retrieve the full original content of a previously truncated/summarized tool result."""
+    if _raw_result_store is None:
+        return "[error: raw result store is not enabled]"
+    content = _raw_result_store.get(result_id)
+    if content is None:
+        return f"[error: no stored raw result found for result_id={result_id!r} (it may have expired/been evicted)]"
+
+    if start_line is None and end_line is None:
+        return content
+
+    lines = content.splitlines(keepends=True)
+    sl = (start_line - 1) if start_line else 0
+    el = end_line if end_line else len(lines)
+    sl = max(0, sl)
+    el = min(len(lines), el)
+    selected = lines[sl:el]
+    numbered = "".join(f"{sl + i + 1:6}\t{line}" for i, line in enumerate(selected))
+    return numbered or "(empty range)"
+
+
 def configure_web_search(cfg) -> None:
     """注入 AppConfig，供 web_search 工具读取 provider/api_key/timeout 等配置。"""
     global _web_search_cfg

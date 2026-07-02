@@ -170,6 +170,21 @@ class ToolTrimConfig:
     list_dir_show_size: bool = True            # list_dir 是否显示文件大小
     large_file_warn_marker: str = "⚠"         # 大文件在 list_dir 中的标记符
 
+    # [SYS-RAWSTORE] 原始输出留存：只要发生了截断/摘要，完整原文都会被保存，
+    # 供 agent 通过 view_raw_result 工具按需回看。默认开启，几乎零成本
+    # （只是内存里多存一份字符串，不涉及额外 LLM 调用）。
+    raw_store_enabled: bool = True
+    raw_store_max_entries: int = 128          # 原始结果 LRU 容量上限
+    raw_store_max_total_chars: int = 5_000_000  # 所有留存原文的总字符数上限（防止内存无界增长）
+
+    # [SYS-SMARTTRIM] 智能摘要：结果超过 smart_summary_threshold 时，
+    # 不再单纯按规则截断，而是调用 LLM 提炼出与本次调用相关的关键信息。
+    # 默认关闭（避免引入额外 LLM 调用开销），可显式开启。
+    smart_summary_enabled: bool = False
+    smart_summary_threshold: int = 12000      # 触发 LLM 摘要的字符数阈值（应 >= threshold）
+    smart_summary_max_input_chars: int = 60000  # 喂给摘要模型的原文上限，超过则退化为规则截断
+    smart_summary_model: str = ""             # 摘要用的模型名；留空则复用当前主模型
+
 
 @dataclass
 class SkillConfig:
@@ -659,6 +674,10 @@ class AppConfig:
     def tool_trim_read_window_lines(self) -> int: return self.tool_trim.read_window_lines
     @property
     def tool_trim_grep_max_lines(self) -> int:  return self.tool_trim.grep_max_lines
+    @property
+    def raw_store_enabled(self) -> bool: return self.tool_trim.raw_store_enabled
+    @property
+    def smart_summary_enabled(self) -> bool: return self.tool_trim.smart_summary_enabled
 
     @property
     def skill_semantic_enabled(self) -> bool:   return self.skill.semantic_enabled

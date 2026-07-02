@@ -36,7 +36,7 @@ if TYPE_CHECKING:
     from mini_agent.config import SessionStats
 
 # 幂等工具集合（非写操作），才参与 turn 内去重（SYS-DEDUP）
-_DEDUP_TOOLS = frozenset({"read_file", "grep", "glob", "list_dir", "web_search"})
+_DEDUP_TOOLS = frozenset({"read_file", "grep", "glob", "list_dir", "web_search", "view_raw_result"})
 
 
 class ToolExecutor:
@@ -70,6 +70,8 @@ class ToolExecutor:
         history_getter=None,       # Optional[Callable[[], list]]，供 SYS-DEDUP 跨调用去重
         reminder_mgr=None,         # Optional[ReminderManager]，[具身改进 A3] 前馈控制
         inject_reminder=None,      # Optional[Callable[[Reminder], None]]，由 Agent 提供的注入回调
+        llm_client=None,           # Optional[LLMClient]，[SYS-SMARTTRIM] 智能摘要用
+        raw_result_store=None,     # Optional[RawResultStore]，[SYS-RAWSTORE] 原始输出留存
     ) -> None:
         self.cfg = cfg
         self.registry = registry
@@ -88,6 +90,8 @@ class ToolExecutor:
         self._history_getter = history_getter
         self._reminder_mgr = reminder_mgr
         self._inject_reminder = inject_reminder
+        self._llm_client = llm_client
+        self._raw_result_store = raw_result_store
 
     def execute_all(
         self,
@@ -239,7 +243,7 @@ class ToolExecutor:
                         result_str = str(result) if not isinstance(result, str) else result
 
                         # [SYS-TRIM] 工具调用结果截断（按工具类型分策略）
-                        result_str = self._trim_result(tc.name, result_str)
+                        result_str = self._trim_result(tc.name, result_str, tool_input)
 
                         R.print_tool_result(
                             tc.name, result_str,
@@ -383,10 +387,17 @@ class ToolExecutor:
 
         return response.tool_calls, result_strs
 
-    def _trim_result(self, tool_name: str, result: str) -> str:
+    def _trim_result(self, tool_name: str, result: str, tool_input: Optional[dict] = None) -> str:
         """
         [SYS-TRIM] 按工具类型分策略截断长结果，策略参数可通过 config 调整。
         raw_output 模式下跳过所有截断，返回完整结果。
+
+        [SYS-SMARTTRIM] / [SYS-RAWSTORE] 扩展：
+          - 超过 smart_summary_threshold 且开启 smart_summary 时，改用 LLM
+            提炼关键信息（而非纯规则截断）；LLM 调用失败自动降级为规则截断。
+          - 只要发生了截断/摘要（返回值 != 原文），原始完整结果都会存入
+            RawResultStore，并在返回文本末尾附上 result_id 提示，供 agent
+            通过 view_raw_result 工具按需回看完整原文。
         """
         if not self.cfg.tool_result_trim_enabled:
             return result
@@ -394,6 +405,96 @@ class ToolExecutor:
         if len(result) <= threshold:
             return result
 
+        trim_cfg = self.cfg.tool_trim
+        smart_threshold = getattr(trim_cfg, "smart_summary_threshold", threshold)
+        use_smart_summary = (
+            getattr(trim_cfg, "smart_summary_enabled", False)
+            and self._llm_client is not None
+            and len(result) > smart_threshold
+        )
+
+        if use_smart_summary:
+            summarized = self._smart_summarize(tool_name, tool_input or {}, result)
+            if summarized is not None:
+                return self._remember_raw(tool_name, result, summarized)
+            # LLM 摘要失败：静默降级，继续走下面的规则截断
+
+        trimmed = self._rule_trim(tool_name, result)
+        return self._remember_raw(tool_name, result, trimmed)
+
+    def _remember_raw(self, tool_name: str, original: str, trimmed: str) -> str:
+        """
+        [SYS-RAWSTORE] 若发生了实质性截断/摘要（trimmed != original），
+        把完整原文存入 RawResultStore，并在返回文本后附上取回提示。
+        raw_result_store 未注入或功能关闭时原样返回 trimmed，不受影响。
+        """
+        if trimmed == original:
+            return trimmed
+        if not getattr(self.cfg.tool_trim, "raw_store_enabled", True) or self._raw_result_store is None:
+            return trimmed
+        try:
+            result_id = self._raw_result_store.put(original, tool_name=tool_name)
+        except Exception:
+            return trimmed
+        return (
+            f"{trimmed}\n\n"
+            f"[full output stored — {len(original)} chars total. "
+            f"Use view_raw_result(result_id=\"{result_id}\") to inspect the original, "
+            f"optionally with start_line/end_line.]"
+        )
+
+    def _smart_summarize(self, tool_name: str, tool_input: dict, result: str) -> Optional[str]:
+        """
+        [SYS-SMARTTRIM] 调用 LLM 从超长结果里提炼关键信息。
+        任何异常（超时、网络错误、prompt 加载失败等）都返回 None，
+        由调用方静默降级到规则截断——摘要失败绝不能阻塞工具调用主流程。
+        """
+        trim_cfg = self.cfg.tool_trim
+        max_input_chars = getattr(trim_cfg, "smart_summary_max_input_chars", 60000)
+        if len(result) > max_input_chars:
+            # 原文本身太大，喂给摘要模型也不现实，直接降级到规则截断
+            return None
+        try:
+            from mini_agent.prompts import pm
+
+            system = pm.render("system/tool_result_summarizer")
+            user_msg = pm.render(
+                "user/tool_result_summary_request",
+                tool_name=tool_name,
+                tool_input=_json.dumps(tool_input, ensure_ascii=False),
+                tool_output=result,
+            )
+            client = self._llm_client
+            model_override = getattr(trim_cfg, "smart_summary_model", "") or None
+            if model_override and hasattr(client, "with_model"):
+                # 若 LLMClient 支持临时切换模型（更便宜/更快），优先使用
+                try:
+                    client = client.with_model(model_override)
+                except Exception:
+                    client = self._llm_client
+
+            response = client.chat_with_retry(
+                messages=[{"role": "user", "content": user_msg}],
+                system=system,
+                tools=[],
+                max_retries=2,
+            )
+            summary_text = (response.text or "").strip()
+            if not summary_text:
+                return None
+            return (
+                f"[LLM-extracted summary of {tool_name} output "
+                f"({len(result)} chars original)]\n{summary_text}"
+            )
+        except Exception:
+            return None
+
+    def _rule_trim(self, tool_name: str, result: str) -> str:
+        """
+        [SYS-TRIM] 原有的按工具类型分策略的规则截断逻辑（默认策略 / 智能摘要
+        的兜底降级目标）。调用方已确保 len(result) > threshold。
+        """
+        threshold = self.cfg.tool_result_trim_threshold
         lines = result.splitlines()
         total = len(lines)
 

@@ -24,6 +24,7 @@ from .affordance_analyzer import AffordanceMap, AffordanceAnalyzer
 from .self_model import AgentSelfModel, AgentSelfModelBuilder
 from .file_watcher import FileWatcher
 from .tool_cache import ToolResultCache
+from .raw_result_store import RawResultStore
 from .memory_store import MemoryStore, MemoryEntry
 from .workdir_knowledge import (
     ProjectMeta, WorkThread, OpenThread, KnowledgeIndexEntry,
@@ -45,6 +46,7 @@ __all__ = [
     "AgentSelfModel", "AgentSelfModelBuilder",
     "FileWatcher",
     "ToolResultCache",
+    "RawResultStore",
     "MemoryStore", "MemoryEntry",
     "ProjectMeta", "WorkThread", "OpenThread", "KnowledgeIndexEntry",
     "ensure_project_meta", "load_project_meta",

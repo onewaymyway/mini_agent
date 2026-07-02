@@ -356,6 +356,17 @@ class Agent:
                 ToolResultCache(max_entries=cfg.perception.tool_cache_max_entries) if cfg.tool_cache_enabled else None
             )
 
+        # [SYS-RAWSTORE] 原始工具结果留存（截断/摘要后仍可通过 view_raw_result 回看）
+        self._raw_result_store: Optional[RawResultStore] = None
+        if getattr(cfg, "raw_store_enabled", True):
+            from mini_agent.perception.raw_result_store import RawResultStore as _RawResultStore
+            from mini_agent.tools.builtin import configure_raw_result_store
+            self._raw_result_store = _RawResultStore(
+                max_entries=cfg.tool_trim.raw_store_max_entries,
+                max_total_chars=cfg.tool_trim.raw_store_max_total_chars,
+            )
+            configure_raw_result_store(self._raw_result_store)
+
         # [SYS-MEMORY] 跨 session 长期记忆（通过工厂创建，支持多后端）
         self._memory: Optional[MemoryBackend] = None
         self._global_memory: Optional[MemoryBackend] = None
@@ -500,6 +511,8 @@ class Agent:
             tracer=None,
             turn_id_getter=lambda: self.stats.turns,
             history_getter=lambda: self._history,
+            llm_client=self._llm,
+            raw_result_store=self._raw_result_store,
         )
         # [SYS-MCP] 注入 MCPManager（_init_components 在 MCP 注册后调用，此时已就绪）
         self._tool_executor._mcp_manager = getattr(self, "_mcp_manager", None)

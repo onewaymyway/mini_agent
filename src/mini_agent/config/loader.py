@@ -107,6 +107,13 @@ def load_config(
     tool_trim_bash_tail_ratio: Optional[float] = None,
     tool_trim_read_window_lines: Optional[int] = None,
     tool_trim_grep_max_lines: Optional[int] = None,
+    raw_store_enabled: Optional[bool] = None,
+    raw_store_max_entries: Optional[int] = None,
+    raw_store_max_total_chars: Optional[int] = None,
+    smart_summary_enabled: Optional[bool] = None,
+    smart_summary_threshold: Optional[int] = None,
+    smart_summary_max_input_chars: Optional[int] = None,
+    smart_summary_model: Optional[str] = None,
     forget_policy_enabled: Optional[bool] = None,
     skill_semantic_enabled: Optional[bool] = None,
     skill_semantic_threshold: Optional[float] = None,
@@ -318,6 +325,15 @@ def load_config(
         bash_tail_ratio=_fn("tool_trim_bash_tail_ratio", tool_trim_bash_tail_ratio, 0.6),
         read_window_lines=_fn("tool_trim_read_window_lines", tool_trim_read_window_lines, 0),
         grep_max_lines=_fn("tool_trim_grep_max_lines", tool_trim_grep_max_lines, 50),
+        raw_store_enabled=_fb("raw_store_enabled", raw_store_enabled, True),
+        raw_store_max_entries=_fn("raw_store_max_entries", raw_store_max_entries, 128),
+        raw_store_max_total_chars=_fn("raw_store_max_total_chars", raw_store_max_total_chars, 5_000_000),
+        smart_summary_enabled=_fb("smart_summary_enabled", smart_summary_enabled, False),
+        smart_summary_threshold=_fn("smart_summary_threshold", smart_summary_threshold, 12000),
+        smart_summary_max_input_chars=_fn(
+            "smart_summary_max_input_chars", smart_summary_max_input_chars, 60000
+        ),
+        smart_summary_model=_f("smart_summary_model", smart_summary_model) or "",
     )
 
     skill_cfg = SkillConfig(

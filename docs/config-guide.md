@@ -17,7 +17,7 @@ AppConfig
 ├── model / api_key / project_root ...  ← 核心字段（直接持有）
 ├── memory:     MemoryConfig            ← 记忆功能
 ├── compress:   CompressConfig          ← 历史压缩
-├── tool_trim:  ToolTrimConfig          ← 工具结果截断
+├── tool_trim:  ToolTrimConfig          ← 工具结果截断（含原始输出留存 + 可选 LLM 智能摘要，详见 [工具结果原始留存与智能摘要指南](tool-result-raw-store-and-smart-summary-guide.md)）
 ├── skill:      SkillConfig             ← Skill 系统
 ├── perception: PerceptionConfig        ← 感知（扫描/监听/缓存/token）
 ├── session:    SessionConfig           ← Session 持久化
