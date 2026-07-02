@@ -207,6 +207,9 @@ def render_chat_tab(client: AgentClient):
 
     with col_chat:
         st.markdown("#### 💬 对话")
+        cur_status = client.status() or {}
+        if cur_status.get("state") == "running":
+            st.caption("⏳ Agent 正在处理中…（页面会自动刷新，无需等待）")
         hist = client.history() or {}
         entries = hist.get("messages", [])
         if isinstance(entries, list):
@@ -234,19 +237,9 @@ def render_chat_tab(client: AgentClient):
             res = client.chat(msg.strip())
             if res and "_error" in res:
                 st.error(res["_error"])
-            else:
-                # /chat 是异步排队接口（返回 queued:true），回复不会立刻出现在 /history 里，
-                # 这里主动轮询 /status 直到 Agent 跑完（或超时），再刷新页面，
-                # 避免用户看到"发送了但看板一直不出回复"。
-                placeholder = st.empty()
-                for i in range(60):
-                    time.sleep(1)
-                    st_now = client.status() or {}
-                    state_now = st_now.get("state", "unknown")
-                    placeholder.caption(f"⏳ Agent 状态: {state_now} （已等待 {i+1}s）")
-                    if state_now != "running":
-                        break
-                placeholder.empty()
+            # /chat 是异步排队接口，消息本身会立刻写入 /history（不等 Agent 处理完）。
+            # 所以这里立即 rerun 就能马上看到自己刚发的消息；Agent 的回复由下面
+            # 默认开启的"自动刷新"轮询捕捉，不在这里阻塞等待。
             st.rerun()
         if interrupt:
             client.interrupt()
