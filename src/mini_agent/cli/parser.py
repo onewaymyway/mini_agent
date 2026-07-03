@@ -249,4 +249,17 @@ def build_parser() -> argparse.ArgumentParser:
     http.add_argument("--http-multi-user", action="store_true", default=None,
                       help="[daemon 多用户 Phase 1] 启用多用户认证（每个用户独立 token/角色），"
                            "默认关闭，关闭时行为与现有单 token 单用户模式完全一致")
+
+    # ── 客户端连接（连到已存在的 daemon，本进程不构建 Agent）────────────────────
+    client_grp = p.add_argument_group("Client mode (connect to a running daemon)")
+    client_grp.add_argument(
+        "--token", "-T", default=None, metavar="TOKEN",
+        help=(
+            "连接已存在 daemon 时使用的 API token。多用户模式下用它来标识"
+            "\"以哪个用户身份连接\"（用 'mini-agent user token <user_id>' 生成/查看）。"
+            "不传时按原有优先级回退：project_root/.agent/agent_api.key > "
+            "cwd/.agent/agent_api.key。仅影响 REPL 连接到 daemon 的场景，"
+            "对 --http（启动 daemon 本身）无效，daemon 自身的 token 请用 --http-token。"
+        ),
+    )
     return p

@@ -4,6 +4,7 @@ api/routes.py — FastAPI 路由定义
 端点总览：
   系统
     GET  /v1/health                  心跳
+    GET  /v1/whoami                  当前 token 对应的身份（user_id/role/是否 owner）
     GET  /v1/status                  agent 状态 + stats
   对话
     POST /v1/chat                    发送消息，返回 turn_id
@@ -80,7 +81,7 @@ from .models import (
     SessionInfo, SessionsListResponse, SessionDetailResponse,
     SessionActionResponse, SessionDeleteResponse,
     UserInfo, UsersListResponse, UserCreateRequest, UserCreateResponse,
-    UserUpdateRequest, UserActionResponse,
+    UserUpdateRequest, UserActionResponse, WhoamiResponse,
 )
 from .user_store import UserStore, VALID_ROLES
 
@@ -254,6 +255,38 @@ async def get_status(request: Request):
 
 
 # ── 诊断（Stage 6 / 6.2）──────────────────────────────────────────────────────
+
+@router.get("/whoami", response_model=WhoamiResponse)
+async def whoami(request: Request):
+    """
+    供 CLI 客户端在连接时确认"当前 token 对应哪个用户/角色"，
+    避免带错 token 却在 REPL 里毫无提示地连到别的身份上。
+
+    - 多用户模式（MultiUserAuthMiddleware 已注入 request.state.user_ctx）：
+      如实返回该 token 对应的 user_id/name/role/trust_level。
+    - 单用户模式（旧版单 token，没有 user_ctx）：
+      返回一个固定的 owner 身份，行为与改造前完全一致，方便 CLI 端
+      不用区分模式就能统一走一套"连接后打印身份"的逻辑。
+    """
+    user_ctx = getattr(request.state, "user_ctx", None)
+    if user_ctx is not None:
+        return WhoamiResponse(
+            multi_user_enabled=True,
+            user_id=user_ctx.user_id,
+            name=user_ctx.name,
+            role=user_ctx.role,
+            trust_level=user_ctx.trust_level,
+            is_owner=user_ctx.is_owner,
+        )
+    return WhoamiResponse(
+        multi_user_enabled=False,
+        user_id="owner",
+        name="owner",
+        role="owner",
+        trust_level=10,
+        is_owner=True,
+    )
+
 
 @router.get("/diagnostics")
 async def get_diagnostics(request: Request):

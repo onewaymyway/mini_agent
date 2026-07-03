@@ -248,6 +248,16 @@ class UserInfo(BaseModel):
 class UsersListResponse(BaseModel):
     users: list[UserInfo]
 
+class WhoamiResponse(BaseModel):
+    """GET /v1/whoami —— 供 CLI 客户端确认当前 token 对应的身份。"""
+    multi_user_enabled: bool
+    user_id:     str
+    name:        str
+    role:        str
+    trust_level: int
+    is_owner:    bool
+
+
 class UserCreateRequest(BaseModel):
     name:        str
     role:        str

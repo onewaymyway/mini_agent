@@ -209,6 +209,25 @@ class DaemonClient:
         except Exception:
             return None
 
+    def get_whoami(self) -> Optional[dict]:
+        """获取当前 token 对应的身份（/v1/whoami 端点）。
+
+        用于 CLI 连接 daemon 时确认"这次是以哪个用户身份连进去的"，
+        尤其是显式传了 --token 的场景——避免带错 token 却完全没有提示。
+        对旧版不支持 /v1/whoami 的 daemon（升级前构建的），404/连接失败时
+        静默返回 None，调用方按"无法确认身份，跳过展示"处理即可。
+        """
+        try:
+            import urllib.request
+            req = urllib.request.Request(
+                f"{self.base_url}/v1/whoami",
+                headers=self._headers(),
+            )
+            with urllib.request.urlopen(req, timeout=5) as resp:
+                return json.loads(resp.read())
+        except Exception:
+            return None
+
     def list_sessions(self, limit: int = 10) -> list[dict]:
         """获取 daemon 的 session 列表（GET /v1/sessions）。"""
         try:
@@ -1394,9 +1413,15 @@ def _handle_connected_digest(client: "DaemonClient", _out) -> None:
             _out(f"         session_pool: active={pool.get('active_count', 0)}")
 
 
-def run_connected_repl(daemon_info: dict) -> None:
+def run_connected_repl(daemon_info: dict, token: Optional[str] = None) -> None:
     """
     CLI 连接模式：连接到已存在的 daemon，REPL 输入通过 HTTP API 提交。
+
+    Args:
+        daemon_info: _read_daemon_info() 返回的 daemon 信息（pid/port/project_root）。
+        token: 显式指定的连接 token（--token/-T），多用户 daemon 下用来标识
+            "以哪个用户身份连接"。为 None 时 DaemonClient 内部回退到读
+            .agent/agent_api.key 文件（单用户/owner 行为，向后兼容）。
 
     流程：
       1. health_check 确认 HTTP 服务就绪
@@ -1474,7 +1499,7 @@ def run_connected_repl(daemon_info: dict) -> None:
     port = daemon_info["http_port"]
     pid  = daemon_info["pid"]
     _proj = daemon_info.get("project_root")
-    client = DaemonClient(port, project_root=_proj)
+    client = DaemonClient(port, token=token, project_root=_proj)
 
     # 提前拿到 term 实例——下面所有输出（包括"正在连接"这几行）统一走
     # term.print()，不再用裸 _sys.stdout.write。get_terminal() 是模块级
@@ -1507,6 +1532,20 @@ def run_connected_repl(daemon_info: dict) -> None:
 
     agent_name = daemon_info.get("agent_name") or f"daemon:{port}"
     _out(f"[daemon] Connected \u2713  (PID={pid}, port={port})")
+
+    # ── 身份确认：多用户 daemon 下，把当前 token 对应的用户打印出来 ─────────
+    # 主要是给显式传了 --token/-T 的场景一个明确反馈——万一 token 带错了
+    # （比如 copy 错了别的用户的 token），至少这里能立刻看出连的是谁，
+    # 而不是等到聊天内容/权限行为跟预期不一致才发现。
+    # 旧版 daemon（没有 /v1/whoami 端点）直接返回 None，静默跳过即可。
+    _whoami = client.get_whoami()
+    if _whoami:
+        if _whoami.get("multi_user_enabled"):
+            _out(
+                f"[daemon] Identity: {_whoami.get('name')} "
+                f"(user_id={_whoami.get('user_id')}, role={_whoami.get('role')})"
+            )
+        # 单用户模式下 whoami 固定返回 owner，信息量为零，不用刷屏打印。
 
     # ── 状态栏：注册 connected 模式专用 provider ─────────────────────────────
     # app.py 在检测到 daemon 存在后调用了 stop_status_bar()，这里重新启动，

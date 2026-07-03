@@ -338,8 +338,13 @@ def _main_inner() -> None:
         _daemon_info = _read_daemon_info(project_root)
         if _daemon_info:
             # 额外探活：PID 存在 + HTTP 服务真正就绪才走连接模式
+            # --token（-T）：显式指定连接身份用的 token，多用户 daemon 下
+            # 用它决定"以哪个用户连接"；不传则 DaemonClient 内部按原有优先级
+            # 回退到 .agent/agent_api.key 文件（单用户/owner 行为不变）。
+            _cli_token = getattr(args, "token", None)
             _client = DaemonClient(
                 _daemon_info["http_port"],
+                token=_cli_token,
                 project_root=project_root,
             )
             if _client.health_check():
@@ -348,7 +353,7 @@ def _main_inner() -> None:
                 # run_connected_repl() 内部会把 provider 替换为 connected 模式专用的
                 # _connected_status_bar_provider，显示 daemon session/state 信息，
                 # 退出时再清除（set_statusbar_provider(None)）。
-                run_connected_repl(_daemon_info)
+                run_connected_repl(_daemon_info, token=_cli_token)
                 return
             else:
                 # PID 存在但 HTTP 不通：daemon 可能刚启动或已崩溃
@@ -356,7 +361,7 @@ def _main_inner() -> None:
                 import time as _time
                 _time.sleep(3)
                 if _client.health_check():
-                    run_connected_repl(_daemon_info)
+                    run_connected_repl(_daemon_info, token=_cli_token)
                     return
                 # 仍不通：回退到独立进程模式，打印提示
                 R.print_warning(
