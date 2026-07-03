@@ -1891,6 +1891,20 @@ def run_connected_repl(daemon_info: dict, token: Optional[str] = None) -> None:
             if not user_input:
                 continue
 
+            # ── 显式补打印自己的输入回显 ──────────────────────────────────
+            # ptk 的输入行现在配置成 erase_when_done=True（见
+            # ui/terminal.py::_build_ptk_session），提交后会自己把那行擦掉。
+            # 这里通过 term.print() 走统一渲染队列重新打印一次——这样
+            # "You ❯ <输入>" 这行内容就纳入 _bar_drawn 的记账体系，不会再
+            # 被后续任何状态栏擦除/重绘误伤掉（多终端 daemon connected
+            # 模式下曾复现过"发送方自己的输入回显消失，但同一 session
+            # 里其他终端能看到"的 bug，根因就是这行内容游离在记账之外）。
+            if _term is not None:
+                from rich.markup import escape as _esc_echo
+                _term.print(
+                    f"[bold green]You[/bold green][bold cyan] \u276f [/bold cyan]{_esc_echo(user_input)}"
+                )
+
             # ── 内置命令 ──────────────────────────────────────────────────────
             cmd = user_input.lower()
 

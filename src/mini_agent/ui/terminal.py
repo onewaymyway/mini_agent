@@ -2495,6 +2495,16 @@ def _build_ptk_session(completer):
         mouse_support=False,
         key_bindings=kb,
         style=_PTK_STYLE,
+        # ★ 提交后由 ptk 自己擦除输入行（不再残留在屏幕上），改由调用方
+        #   （daemon.py connected REPL）通过 term.print() 显式补打印一次
+        #   "You ❯ <输入>"。原因：ptk 自己画的这行完全不受 Terminal 的
+        #   _bar_drawn 记账管理，是唯一游离在统一渲染队列之外的屏幕内容——
+        #   一旦任何相对擦除（状态栏 redraw / resize 结算等）算错了行数，
+        #   没有任何账本记录它、也没有任何补偿机制，只会被无声吃掉。让
+        #   ptk 自己先清掉，再由 Terminal 统一补打印一次，这行内容就和
+        #   其它所有内容一样被正确记账，不会再被误伤（多终端 daemon
+        #   connected 模式下曾复现过"发送方自己的 You ❯ 输入回显消失"）。
+        erase_when_done=True,
     )
 
 
