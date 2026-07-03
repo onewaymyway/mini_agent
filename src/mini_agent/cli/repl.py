@@ -91,6 +91,16 @@ def run_repl(agent: Agent, skill_loader: SkillLoader) -> None:
         if not user_input:
             continue
 
+        # ptk 的输入行现在配置成 erase_when_done=True（见
+        # ui/terminal.py::_build_ptk_session），提交后会自己把那行擦掉，
+        # 这里补打印一次，走统一渲染队列，避免游离在 _bar_drawn 记账之外
+        # 被后续重绘误伤（daemon connected 模式已经用同样的方式修复过，
+        # 这里是本地非 daemon 模式的对应修复）。
+        from rich.markup import escape as _esc_echo_local
+        _term.print(
+            f"[bold green]You[/bold green][bold cyan] \u276f [/bold cyan]{_esc_echo_local(user_input)}"
+        )
+
         if user_input.lower() in ("exit", "quit", "/exit", "/quit"):
             R.print_stats(agent.stats.summary())
             R.print_info(pm.fragment("cli_messages", "BYE_MSG"))
