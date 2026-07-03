@@ -64,6 +64,7 @@ curl -H "Authorization: Bearer your-secret-token" http://127.0.0.1:8765/v1/healt
 | 端点 | 方法 | 说明 |
 |------|------|------|
 | `/v1/health` | GET | 健康检查 |
+| `/v1/whoami` | GET | 当前 token 对应的身份（多用户模式下返回 user_id/name/role；单用户模式固定返回 owner，向后兼容） |
 | `/v1/status` | GET | Agent 状态（空闲/运行中）+ 统计信息 |
 | `/v1/diagnostics` | GET | **Stage 6** 实时健康诊断（性能 + 内存 + skills + 演化状态 + 异常标记）|
 | `/docs` | GET | Swagger API 文档 |

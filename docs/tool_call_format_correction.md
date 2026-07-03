@@ -59,3 +59,51 @@
   - 正常最终回复不会被误触发
 
 全部测试通过（全量回归测试 1345 passed，含 2 个与本次改动无关的预先存在失败用例——`TestLLMDebugLogger` 里的日志截断边界断言）。
+
+## 补充修复：`system_tool_call.py` 解析正则过严（2026-07）
+
+上面这套纠错重试机制解决的是"模型格式写坏了，引导它重写"；但还有一类问题更基础：
+**模型格式其实是对的，只是解析器的正则太严格，把合法输出误判成了解析失败**，
+根本不会触发上面任何一条纠错规则（因为规则本身也是靠正则识别 issue 类型的，
+同样会被这类边界情况绕过）。
+
+### 具体 bug
+
+`_TOOL_USE_RE`（以及同款的 `_TOOL_CALL_LEGACY_RE`、`_TOOL_RESULT_RE`）原先写成：
+
+```python
+_TOOL_USE_RE = re.compile(r"<tool_use>\s*\n(.*?)\n\s*</tool_use>", re.DOTALL)
+```
+
+要求闭合标签 `</tool_use>` 前面**必须**有一个字面换行符。但模型偶尔会把闭合标签
+紧贴在 JSON 末尾输出，中间没有换行：
+
+```
+<tool_use>
+{"name": "bash", "input": {"command": "..."}}</tool_use>
+```
+
+这种情况下正则完全匹配不上，`parse_tool_calls()` 返回空列表，工具调用被整段
+当成普通文本吞掉，模型这一轮的调用直接失效——且不会进入本文档描述的纠错重试
+流程，因为标签本身是"闭合"的，触发不了 `unclosed_tool_use` 等规则。
+
+### 修复
+
+三个正则两端统一从 `\s*\n`（可选空白 + 强制换行）放宽为 `\s*`（可选空白，
+零个或多个换行都行）：
+
+```python
+_TOOL_USE_RE = re.compile(r"<tool_use>\s*(.*?)\s*</tool_use>", re.DOTALL)
+_TOOL_CALL_LEGACY_RE = re.compile(r"```tool_call\s*(.*?)\s*```", re.DOTALL)
+_TOOL_RESULT_RE = re.compile(r"<tool_result>\s*(.*?)\s*</tool_result>", re.DOTALL)
+```
+
+`prompts/system/tool_call_protocol.md` 里给模型的格式说明（标签各自独占一行）
+**保持不变**——那是对模型的规范性要求，仍然应该引导模型按标准格式输出；这次
+只是让解析器对"格式基本正确但换行细节有出入"的情况更宽容，属于防御性解析，
+不代表协议本身放宽了。
+
+验证覆盖：原始换行紧贴闭合标签的 case、多行 JSON + 紧贴闭合、标准带换行格式、
+前后夹杂其他文字、旧版 ` ```tool_call ` 围栏格式，共 5 种场景，均解析正确且
+无回归。
+

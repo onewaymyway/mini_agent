@@ -217,6 +217,36 @@ curl -N http://127.0.0.1:8765/v1/stream \
   -H "Authorization: Bearer <your-token>"
 ```
 
+### 通过 CLI 连接
+
+除了直接打 HTTP API，也可以用普通的 `mini-agent` REPL 以指定用户身份连接到正在运行的多用户 daemon —— 用 `--token`（简写 `-T`）传入该用户的 token 即可：
+
+```bash
+# 以 colleague 用户 u_a1b2c3d4 的身份连接到 daemon
+mini-agent --token <u_a1b2c3d4-的-token>
+
+# 简写
+mini-agent -T <token>
+```
+
+连接成功后，REPL 会打印当前 token 对应的身份，方便确认没有带错 token：
+
+```
+[daemon] Connected ✓  (PID=12345, port=8765)
+[daemon] Identity: 小明 (user_id=u_a1b2c3d4, role=colleague)
+```
+
+不传 `--token` 时行为不变：按原有优先级回退到本地 `.agent/agent_api.key` 文件（单用户/owner 场景，向后兼容）。
+
+身份确认背后用的是新增的 `GET /v1/whoami` 端点（见下方 [API 端点](#api-端点)），也可以直接用 curl 调用来核对某个 token 到底属于谁：
+
+```bash
+curl -H "Authorization: Bearer <token>" http://127.0.0.1:8765/v1/whoami
+# → {"multi_user_enabled": true, "user_id": "u_a1b2c3d4", "name": "小明", "role": "colleague", "trust_level": 5, "is_owner": false}
+```
+
+> 注意：`--token` 只影响"REPL 连接到已存在 daemon"这一种场景，对 `--http`（启动 daemon 本身）无效——daemon 自身监听用的 token 仍然用 `--http-token` 指定。
+
 ### 通过 Web Demo 连接
 
 启动 Web Demo 后，在侧边栏填入用户自己的 token：
@@ -359,9 +389,17 @@ Agent 在对话中自动更新每个用户的画像（`.agent/users/<user_id>/pr
 
 ## API 端点
 
-多用户模式新增以下 API 端点（需要 owner token 认证）：
+多用户模式新增以下 API 端点：
 
-### 用户管理 API
+### 身份确认 API
+
+| 端点 | 方法 | 说明 | 权限 |
+|------|------|------|------|
+| `/v1/whoami` | GET | 返回当前 token 对应的 user_id/name/role/trust_level | 任意已认证用户 |
+
+单用户模式（未开 `--http-multi-user`）下调用同样有效，固定返回 `{"multi_user_enabled": false, "user_id": "owner", "role": "owner", ...}`，方便 CLI 端不用区分模式统一处理。
+
+### 用户管理 API（需要 owner token 认证）
 
 | 端点 | 方法 | 说明 | 权限 |
 |------|------|------|------|
@@ -468,6 +506,10 @@ A: 用 `mini-agent user token <user_id>` 重置 token，不把新 token 告知�
 **Q: `--http-multi-user` 和 `--http` 的关系？**
 
 A: `--http-multi-user` 隐含了 `--http`，单独使用 `--http-multi-user` 也会启动 HTTP 服务。但建议总是同时写明两个参数，表意更清晰。
+
+**Q: 能不能用 `mini-agent` 命令行（而不是 curl/Web Demo）以某个用户身份连接多用户 daemon？**
+
+A: 可以。用 `mini-agent --token <该用户的token>`（简写 `-T`）连接即可，详见 [通过 CLI 连接](#通过-cli-连接)。不传 `--token` 时按原有逻辑回退到 `.agent/agent_api.key`（单用户/owner）。
 
 ---
 
