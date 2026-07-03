@@ -1963,6 +1963,20 @@ class Terminal:
 
         这个循环本身只做"判断要不要 flush"，真正的打印动作交给
         _flush_pending_during_input()（里面才会真正调用 run_in_terminal）。
+
+        ★★★ 只在输入框还是空的时候才 flush ★★★
+        实测复现过：用户正在敲 `/session`、`/cron` 这类会触发补全弹窗
+        （NestedCompleter）的命令时，如果这时候后台线程恰好触发了一次
+        flush（`in_terminal()` 会暂停并重绘当前 Application），偶尔会
+        跟补全菜单的状态搅到一起，导致回车提交的不是用户实际打的那串
+        文本（比如补全菜单当时"选中"的某一项被一起提交了），表现为
+        `/命令` 没有被识别成命令，被当成普通聊天消息发了出去。
+        为了彻底避免这整类"跟正在输入的内容互相干扰"的问题，改成只在
+        输入框完全为空（用户还没开始打字）时才 flush；一旦用户开始输入
+        任何字符（哪怕只有一个 `/`），就不再 flush，积压内容等这次输入
+        结束（提交或者清空重来）之后，由正常的 _exit_input_mode() 或者
+        下一次输入框重新变空时的 flush 补上——不会丢，只是会稍微晚一点
+        显示，用"稍微没那么实时"换"绝不干扰正在输入的内容"。
         """
         while not self._ptk_flush_stop.is_set():
             self._ptk_flush_stop.wait(self._PTK_FLUSH_INTERVAL)
@@ -1970,12 +1984,23 @@ class Terminal:
                 break
             if not self._input_blocking:
                 continue
-            if self._active_ptk_app is None:
+            app = self._active_ptk_app
+            if app is None:
                 # 降级路径（未安装 ptk，或 ptk 运行时异常后已降级到裸
                 # readline）：没有"安全打印到输入行上方"的手段，只能
                 # 维持旧行为——积压到 _exit_input_mode() 统一补打印。
                 continue
             if not self._pending_during_input:
+                continue
+            try:
+                buf = app.current_buffer
+                if buf is not None and (buf.text or buf.complete_state is not None):
+                    # 用户正在输入内容，或补全菜单正开着：不打扰，跳过
+                    # 这一轮，下次输入框空了再 flush。
+                    continue
+            except Exception:
+                # 拿不到当前 buffer 状态时，保守起见也跳过这一轮，
+                # 不冒风险去 flush。
                 continue
             self._flush_pending_during_input()
 
@@ -1989,12 +2014,12 @@ class Terminal:
         写一遍"怎么打印 print/stream/stream_end 等各种消息类型"——
         做法是：短暂把 _input_blocking 置回 False（这样 _handle() 不会
         再把这批消息当成"阻塞期消息"重新缓冲），把消息推回主队列，
-        等渲染线程真正处理完（_q.join()），再把 _input_blocking 置回
-        True，继续缓冲这之后到达的新消息。这个"短暂置 False 再置回
-        True"的模式和 _exit_input_mode() 是同一个模式，唯一区别是这里
-        不清除 _refresh_paused、不重新挂载 SIGWINCH、不恢复 key
-        listener——因为我们还没有真正退出输入模式，用户仍在 ptk 的
-        .prompt() 里，只是"顺便"把这段时间攒下的旁观消息打印出来。
+        等渲染线程真正处理完，再把 _input_blocking 置回 True，继续
+        缓冲这之后到达的新消息。这个"短暂置 False 再置回 True"的模式
+        和 _exit_input_mode() 是同一个模式，唯一区别是这里不清除
+        _refresh_paused、不重新挂载 SIGWINCH、不恢复 key listener——
+        因为我们还没有真正退出输入模式，用户仍在 ptk 的 .prompt() 里，
+        只是"顺便"把这段时间攒下的旁观消息打印出来。
 
         ★★★ 为什么不能直接调用 prompt_toolkit.application.run_in_terminal()
         ★★★
@@ -2006,14 +2031,39 @@ class Terminal:
         循环——`ensure_future` 拿到的要么是错误的循环、要么直接创建了
         一个从来没有被 run 过的协程对象，从而产生
         "coroutine 'run_in_terminal.<locals>.run' was never awaited"
-        这个 RuntimeWarning，而且回调根本没有被真正执行到（表现为：
-        没报错，但其他客户端的内容依然不会实时显示出来）。
+        这个 RuntimeWarning，而且回调根本没有被真正执行到。
 
         正确做法：拿到 ptk Application 实际在跑的那个事件循环
         （`app.loop`，Application.run_async() 运行期间会把它设置好），
         用 `asyncio.run_coroutine_threadsafe()` 把协程真正提交到*那个*
         循环上执行，再阻塞等待结果——这才是官方文档里"从其他线程安全
         调度协程到指定事件循环"的标准写法。
+
+        ★★★ 两个额外修的竞态（实测复现过：B 端提交的输入没有回显、
+        C 端自己的回复内容错乱/缺字）★★★
+        1. `self._q.join()` 是同步阻塞调用；如果直接在协程里调用它，
+           等于在 ptk 的事件循环线程上执行一次阻塞 I/O 等待——asyncio
+           是单线程协作式调度，这会把整个事件循环"冻住"，导致这段
+           时间内 ptk 自己正在处理的按键事件（尤其是恰好在这个窗口
+           按下的回车）被延后甚至处理异常，表现为提交后本该由 ptk
+           自己保留在回滚区里的那行"You ❯ <文本>"回显丢失。
+           修法：改成 `await loop.run_in_executor(None, self._q.join)`，
+           把这个阻塞等待丢到线程池里去等，事件循环本身不被冻住。
+        2. `finally` 里原来无条件把 `_input_blocking` 置回 True。但如果
+           这次 flush 还没收尾，用户就已经按了回车提交——`_read_line()`
+           会先把 `self._active_ptk_app` 置回 None，然后
+           `_exit_input_mode()` 才会把 `_input_blocking` 置为 False（这
+           才是"真正退出阻塞输入"的权威状态）。如果我们的 `finally` 在
+           这之后才执行、还傻乎乎地把 `_input_blocking` 重新置为
+           True，就会把"提交之后紧接着到来的、本该立刻显示"的内容
+           （包括本端自己这一轮的回复）又错误地重新缓冲起来，之后跟
+           下一次 flush 混在一起打印，就是实测里那种内容错乱、开头
+           缺字的画面。
+           修法：`finally` 里先检查 `self._active_ptk_app is app`——
+           只有确认"我们还在同一次 .prompt() 调用里"，才把
+           `_input_blocking` 置回 True；如果 App 已经变了（说明用户
+           已经提交、真正的退出逻辑已经跑过了），就什么都不做，尊重
+           `_exit_input_mode()` 已经设好的权威状态。
         """
         app = self._active_ptk_app
         if app is None:
@@ -2027,25 +2077,36 @@ class Terminal:
         except ImportError:
             return
 
-        def _do_flush() -> None:
+        async def _do_flush() -> None:
             pending, self._pending_during_input = self._pending_during_input, []
             if not pending:
+                return
+            # 再确认一次：调度到真正执行之间可能已经过了一小段时间，
+            # 用户完全可能已经提交了输入——这种情况下就不要再动
+            # _input_blocking 了，把消息原样放回去，让正常的
+            # _exit_input_mode() 补打印路径去处理，避免抢跑。
+            if self._active_ptk_app is not app:
+                self._pending_during_input = pending + self._pending_during_input
                 return
             self._input_blocking = False
             try:
                 for msg in pending:
                     self._q.put(msg)
                 self._q.put(_Msg("redraw", None))
-                self._q.join()
+                await loop.run_in_executor(None, self._q.join)
             finally:
-                self._input_blocking = True
-                self._input_blocking_since = time.monotonic()
+                if self._active_ptk_app is app:
+                    self._input_blocking = True
+                    self._input_blocking_since = time.monotonic()
+                # else：用户已经提交、_exit_input_mode() 已经把
+                # _input_blocking 设成了权威值 False，这里绝不能覆盖。
 
         async def _runner() -> None:
             async with in_terminal():
-                _do_flush()
+                await _do_flush()
 
         try:
+
             fut = asyncio.run_coroutine_threadsafe(_runner(), loop)
             # 有超时兜底：万一 ptk 那边恰好在退出/重建循环，不要把这个
             # 后台线程永久卡死——超时后消息仍留在 _pending_during_input

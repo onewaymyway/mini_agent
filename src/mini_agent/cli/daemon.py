@@ -1982,11 +1982,31 @@ def run_connected_repl(daemon_info: dict) -> None:
     except KeyboardInterrupt:
         _out("[daemon] Disconnected (daemon continues running)")
     finally:
-        # 清理：停止 observer 线程，停止状态栏
+        # 清理：停止 observer 线程，停止状态栏，并且——这是这次要修的关键
+        # 一步——真正关掉 Terminal 自己的后台线程（渲染线程 / 状态栏刷新
+        # 线程 / 新增的"定时补打印"线程）。
+        #
+        # 之前这里只 set 了 _observer_stop、清了状态栏回调，但从没调用过
+        # Terminal.stop()，也没有 join _obs_thread。这些线程全是
+        # daemon=True，进程退出时 Python 会强制把它们杀掉——如果杀掉的
+        # 那一刻它们正好在写 stdout（比如 _ptk_flush_thread 每 0.6s 醒一次
+        # 可能正在打印，或者渲染线程正在处理队列里的最后几条消息），就会
+        # 撞上解释器关闭时的 stdout 缓冲锁，抛出
+        # "Fatal Python error: _enter_buffered_busy: could not acquire
+        # lock for <_io.BufferedWriter name='<stdout>'> at interpreter
+        # shutdown" ——这正是你复现到的那个崩溃。Terminal.stop() 本来就是
+        # 专门为了避免这个问题写的（见它自己的 docstring），只是这条路径
+        # 之前忘了调用。
         _observer_stop.set()
+        if _obs_thread is not None:
+            _obs_thread.join(timeout=2.0)
         if _term is not None:
             try:
                 _term.set_statusbar_provider(None)
+            except Exception:
+                pass
+            try:
+                _term.stop()
             except Exception:
                 pass
 
