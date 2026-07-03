@@ -35,20 +35,24 @@ from .base import ToolCall, ToolSchema, LLMResponse, LLMUsage
 # ── 正则表达式 ────────────────────────────────────────────────────────────────
 
 # 主格式：<tool_use>\n{...}\n</tool_use>
+# 注意：开/闭标签前后的空白（含换行）都是可选的——模型偶尔会把闭合标签
+# 紧贴在 JSON 末尾输出（如 "}</tool_use>"，中间没有换行），如果这里强制
+# 要求 \n 就会导致整个块解析失败、工具调用被当成纯文本吞掉。所以两侧统一
+# 用 \s* 兜底，不再要求字面 \n。
 _TOOL_USE_RE = re.compile(
-    r"<tool_use>\s*\n(.*?)\n\s*</tool_use>",
+    r"<tool_use>\s*(.*?)\s*</tool_use>",
     re.DOTALL,
 )
 
-# 兼容旧格式：```tool_call\n{...}\n```
+# 兼容旧格式：```tool_call\n{...}\n```（同样放宽收尾空白要求）
 _TOOL_CALL_LEGACY_RE = re.compile(
-    r"```tool_call\s*\n(.*?)\n```",
+    r"```tool_call\s*(.*?)\s*```",
     re.DOTALL,
 )
 
-# tool_result 回注格式
+# tool_result 回注格式（同上，放宽收尾空白要求）
 _TOOL_RESULT_RE = re.compile(
-    r"<tool_result>\s*\n(.*?)\n\s*</tool_result>",
+    r"<tool_result>\s*(.*?)\s*</tool_result>",
     re.DOTALL,
 )
 
