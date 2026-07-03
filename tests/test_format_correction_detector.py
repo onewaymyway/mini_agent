@@ -50,6 +50,21 @@ def test_real_case_2_tag_role_confusion():
     assert issue.issue_type == "tag_role_confusion"
 
 
+def test_real_case_3_tool_result_used_as_request():
+    """案例3：<tool_result> 开闭标签自身闭合（不会被 tag_role_confusion 捉到），
+    但内容是 name+input 的请求 payload，本质是把"发起调用"误写成了"回填结果"。
+    """
+    text = (
+        "orzooo ❯ <tool_result>\n"
+        '{"name": "read_file", "input": {"end_line": 1130, '
+        '"path": ".claude/skills/web-search/job_listings.py", "start_line": 1120}}\n'
+        "</tool_result>"
+    )
+    issue = detect_format_issue(text)
+    assert issue is not None
+    assert issue.issue_type == "tool_result_used_as_request"
+
+
 # ── 正例：应该被检测为格式问题（按规则类型分组）──────────────────────────────
 
 @pytest.mark.parametrize("text", [
@@ -74,6 +89,16 @@ def test_tag_role_confusion_positive(text):
     issue = detect_format_issue(text)
     assert issue is not None
     assert issue.issue_type == "tag_role_confusion"
+
+
+@pytest.mark.parametrize("text", [
+    '<tool_result>\n{"name": "bash", "input": {"command": "ls"}}\n</tool_result>',
+    '<tool_result>{"name": "write_file", "input": {"path": "a.py", "content": "x"}}</tool_result>',
+])
+def test_tool_result_used_as_request_positive(text):
+    issue = detect_format_issue(text)
+    assert issue is not None
+    assert issue.issue_type == "tool_result_used_as_request"
 
 
 def test_invalid_json_in_closed_tags():

@@ -22,6 +22,13 @@ perception/format_correction_detector.py — 工具调用格式纠错检测器
         {"name": "bash", "input": {...}}
         </tool_use>
 
+    案例3（开闭标签都用 <tool_result>，自身是"闭合"的，不会被
+           标签不匹配规则捉到，但内容是 name+input 的请求 payload，
+           本质仍是把"发起调用"误写成了"回填结果"）：
+        <tool_result>
+        {"name": "read_file", "input": {"end_line": 1130, "path": "...", "start_line": 1120}}
+        </tool_result>
+
 本模块职责：
   在 parse_tool_calls() 已经判定"无工具调用"之后，对模型的原始输出文本做
   第二轮检查——只看"是否存在但解析失败的工具调用痕迹"，不重新发明解析逻辑。
@@ -185,6 +192,50 @@ def _detect_invalid_json_in_tool_use(text: str) -> bool:
     return False
 
 
+def _detect_tool_result_used_as_request(text: str) -> bool:
+    """
+    案例4（新增）：<tool_result> 开闭标签本身是完整闭合的（不会被
+    _detect_tag_role_confusion 捉到，因为它要求开闭标签名不一致），
+    但标签内部的 JSON 内容却是"请求"形状——即一个带有 "name" 和
+    "input" 字段的对象，这正是 <tool_use> 才该有的 payload：
+
+        <tool_result>
+        {"name": "read_file", "input": {"path": "...", ...}}
+        </tool_result>
+
+    真实的 <tool_result>（由系统回注）内容是工具的执行结果（字符串/
+    任意数据），几乎不会恰好是 {"name": ..., "input": ...} 这种形状。
+    一旦命中，基本可以断定模型把"发起调用"错写成了"回填结果"标签。
+
+    判断方式：找到所有闭合的 <tool_result>...</tool_result> 块，
+    尝试解析其中 JSON（含 json_repair 兜底），若为 dict 且同时包含
+    "name" 与 "input" 键，则判定为角色误用。
+    """
+    import json as _json
+
+    blocks = _re.findall(
+        r"<tool_result>\s*\n?(.*?)\n?\s*</tool_result>", text, _re.DOTALL | _re.IGNORECASE
+    )
+    if not blocks:
+        return False
+    for raw in blocks:
+        raw = raw.strip()
+        if not raw:
+            continue
+        obj = None
+        try:
+            obj = _json.loads(raw)
+        except _json.JSONDecodeError:
+            try:
+                import json_repair
+                obj = json_repair.repair_json(raw, return_objects=True)
+            except Exception:
+                obj = None
+        if isinstance(obj, dict) and "name" in obj and "input" in obj:
+            return True
+    return False
+
+
 def _detect_orphan_close_tag(text: str) -> bool:
     """
     孤立闭合标签：出现了 </tool_use> 或 </tool_call> 等闭合标签，
@@ -241,6 +292,15 @@ _RULES: list[tuple[str, Callable[[str], bool], str]] = [
         "`<tool_result>` were mixed up — for example opening with one and "
         "closing with the other. `<tool_use>` is for YOUR tool requests; "
         "`<tool_result>` is only ever sent back BY the system, never by you.\n",
+    ),
+    (
+        "tool_result_used_as_request",
+        _detect_tool_result_used_as_request,
+        "It looks like `<tool_result>` was used to wrap a tool *request* "
+        "(a JSON object with `name` and `input` fields) instead of "
+        "`<tool_use>`. `<tool_result>` is reserved for the system to send "
+        "results back to you — when YOU want to call a tool, use "
+        "`<tool_use>` instead.\n",
     ),
     (
         "unclosed_tool_use",

@@ -38,6 +38,7 @@
 4. **`legacy_fence_unclosed`**：兼容旧版 ` ```tool_call ` 围栏格式未闭合
 5. **`orphan_close_tag`**：存在 `</tool_use>` 等闭合标签，但规范开标签 `<tool_use>` 数量不足——对应**案例3**（`<tool_call>` 开、`</tool_use>` 闭）
 6. **`tool_call_alias_tag`**：出现 `<tool_call>` / `<tool_invoke>` 等别名开标签，但没有规范 `<tool_use>`——对应**案例4**（非标准标签开头、内容截断）
+7. **`tool_result_used_as_request`**（2026-07 新增）：`<tool_result>` 开闭标签自身完整闭合（因此不会被 `tag_role_confusion` 捉到，因为它要求开闭标签名不一致），但内容是带 `name` + `input` 字段的请求 payload——例如 `<tool_result>\n{"name": "read_file", "input": {...}}\n</tool_result>`。这是把"发起调用"误写成了"回填结果"标签，本质仍是标签角色误用，只是更隐蔽（标签数量配对、不触发未闭合/孤立闭合等规则）
 
 详见 [格式纠错检测规则扩展说明](format-correction-detector-update.md)。
 
