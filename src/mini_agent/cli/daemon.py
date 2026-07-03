@@ -1039,7 +1039,18 @@ def _render_sse_event(term, evt_type: str, payload: dict, *, prefix: str = "") -
     from rich.text import Text as _Text
 
     try:
-        if evt_type == "tool_call":
+        if evt_type == "turn_start":
+            # 跟 api/server.py 里 daemon 本地终端渲染 web 端消息的样式保持
+            # 一致（"You (web) ❯ <message>"）——这样无论是本地 daemon 控制
+            # 台，还是别的 connected 客户端，看到"同一 session 里有人发了
+            # 一句话"这件事时，视觉体验是一样的。故意不加 prefix（比如
+            # "[其他终端]"）：daemon 本地终端本来就不加，这里跟它对齐。
+            message = payload.get("message", "")
+            term.print(
+                f"\n[bold green]You (web)[/bold green][bold cyan] ❯ [/bold cyan]{_esc(message)}"
+            )
+
+        elif evt_type == "tool_call":
             tool_name  = payload.get("tool_name", "")
             tool_input = payload.get("tool_input", {}) or {}
             icon    = _r._tool_icon(tool_name) if _r else "🔧"
@@ -1607,6 +1618,17 @@ def run_connected_repl(daemon_info: dict, token: Optional[str] = None) -> None:
     _waiting_input   = threading.Event()
     _waiting_input.set()   # 初始就是在等输入
     _my_turn_id_holder: list[Optional[str]] = [None]   # 用列表做可变容器
+    # 从"调用 send_message() 提交这条消息"到"HTTP 响应返回、拿到真正的
+    # turn_id"之间有一小段真实存在的窗口——这段时间里 observer 线程完全
+    # 可能已经通过 SSE 收到了这轮的 turn_start 事件（服务端几乎是提交后
+    # 立刻广播），但此时 _my_turn_id_holder[0] 还是上一轮的值（或
+    # None），is_own_turn 判断会把这条 turn_start 误判成"别的客户端发
+    # 的"，从而重复打印一遍 "You (web) ❯ <消息>"（跟本端 ptk 自己回显
+    # 的 "You ❯ <消息>" 重复）。
+    # 用消息原文兜底：提交前先把这句话记在这里，turn_start 事件按
+    # message 原文匹配也能识别出"这是我自己发的"，turn_id 拿到手之后就
+    # 清空，交还给正常的 turn_id 比对逻辑。
+    _my_pending_message_holder: list[Optional[str]] = [None]
     # 本端自己 turn 的"当前是否正处于流式输出中间"标记，改成共享容器
     # （而不是每轮 turn 里的局部变量），这样 observer 线程在实时插入其他
     # 端的输出之前，可以安全地把本端未完成的这一行收尾（stream_end()），
@@ -1746,6 +1768,16 @@ def run_connected_repl(daemon_info: dict, token: Optional[str] = None) -> None:
         turn_id = payload.get("turn_id", "")
         my_tid = _my_turn_id_holder[0]
         is_own_turn = bool(turn_id) and turn_id == my_tid
+        if (
+            not is_own_turn
+            and evt_type == "turn_start"
+            and _my_pending_message_holder[0] is not None
+            and payload.get("message", "") == _my_pending_message_holder[0]
+        ):
+            # 还没拿到 turn_id 的竞态窗口（见 _my_pending_message_holder
+            # 定义处的说明）：按消息原文匹配出"这其实是我自己刚发的"，
+            # 当成 own turn 处理，不要重复打印一遍 "You (web) ❯ <消息>"。
+            is_own_turn = True
 
         # ── 权限请求：始终处理，不受 turn_id 归属或 _waiting_input 限制 ────
         if evt_type == "permission_req":
@@ -1827,7 +1859,7 @@ def run_connected_repl(daemon_info: dict, token: Optional[str] = None) -> None:
                     _term.stream_end()
                 turn_prefix_printed.discard(turn_id)
 
-            elif evt_type in ("tool_call", "tool_result", "tool_error", "info", "warning",
+            elif evt_type in ("turn_start", "tool_call", "tool_result", "tool_error", "info", "warning",
                                "session_switched", "fs_change"):
                 _render_sse_event(_term, evt_type, payload, prefix=prefix)
 
@@ -1917,8 +1949,14 @@ def run_connected_repl(daemon_info: dict, token: Optional[str] = None) -> None:
                 continue
 
             # ── 发送消息 ──────────────────────────────────────────────────────
+            # 先记一下"我自己刚提交的这句话"，再发送——见 _my_pending_message_holder
+            # 定义处的说明：这是为了盖住"turn_id 还没拿到"那一小段时间的
+            # 竞态窗口，避免 observer 把自己这轮的 turn_start 误判成
+            # "别的客户端发的"，重复打印一遍"You (web) ❯ <消息>"。
+            _my_pending_message_holder[0] = user_input
             turn_id = client.send_message(user_input, session_id=active_session_id)
             if not turn_id:
+                _my_pending_message_holder[0] = None
                 if not client.health_check():
                     _out("[daemon] Daemon appears to have stopped. Exiting.")
                     break
@@ -1928,6 +1966,7 @@ def run_connected_repl(daemon_info: dict, token: Optional[str] = None) -> None:
             # 标记：本终端正在处理这个 turn，observer 不要重复打印
             _waiting_input.clear()
             _my_turn_id_holder[0] = turn_id
+            _my_pending_message_holder[0] = None   # turn_id 到手了，交给正常判断接管
 
             # ── 流式接收：token / tool_call / tool_result / permission_req ───
             done_event = threading.Event()

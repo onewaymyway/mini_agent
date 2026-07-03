@@ -1964,19 +1964,16 @@ class Terminal:
         这个循环本身只做"判断要不要 flush"，真正的打印动作交给
         _flush_pending_during_input()（里面才会真正调用 run_in_terminal）。
 
-        ★★★ 只在输入框还是空的时候才 flush ★★★
-        实测复现过：用户正在敲 `/session`、`/cron` 这类会触发补全弹窗
-        （NestedCompleter）的命令时，如果这时候后台线程恰好触发了一次
-        flush（`in_terminal()` 会暂停并重绘当前 Application），偶尔会
-        跟补全菜单的状态搅到一起，导致回车提交的不是用户实际打的那串
-        文本（比如补全菜单当时"选中"的某一项被一起提交了），表现为
-        `/命令` 没有被识别成命令，被当成普通聊天消息发了出去。
-        为了彻底避免这整类"跟正在输入的内容互相干扰"的问题，改成只在
-        输入框完全为空（用户还没开始打字）时才 flush；一旦用户开始输入
-        任何字符（哪怕只有一个 `/`），就不再 flush，积压内容等这次输入
-        结束（提交或者清空重来）之后，由正常的 _exit_input_mode() 或者
-        下一次输入框重新变空时的 flush 补上——不会丢，只是会稍微晚一点
-        显示，用"稍微没那么实时"换"绝不干扰正在输入的内容"。
+        ★★★ 这里的"输入框是否为空"检查只是一个廉价的预过滤 ★★★
+        在真正决定要不要 flush 之前，这里先做一次快速判断，避免明知道
+        用户正在打字还去调度一次跨线程协程（有实际开销，也没必要）。
+        但这个判断是从后台线程读 ptk 的 Buffer 状态，Buffer 本身不是
+        线程安全的，而且从这里判断完到真正执行中间有调度延迟，判断结果
+        可能过时——所以这里判断"看起来可以 flush"之后，真正权威、真正
+        原子的判断在 `_flush_pending_during_input()` 调度到 ptk 事件循环
+        线程里的 `_do_flush()` 协程里又做了一遍（那里才是安全的，因为
+        跟 ptk 处理按键的逻辑跑在同一个线程/循环上，检查和动作之间没有
+        任何 await 让出点，不会被"用户刚好在这中间按了回车"打断）。
         """
         while not self._ptk_flush_stop.is_set():
             self._ptk_flush_stop.wait(self._PTK_FLUSH_INTERVAL)
@@ -2078,6 +2075,42 @@ class Terminal:
             return
 
         async def _do_flush() -> None:
+            # ★★★ 关键：这个"能不能 flush"的判断必须在这里、在协程里做，
+            # 不能在 _ptk_flush_loop() 那个后台线程里做 ★★★
+            # 之前是在后台线程里读 app.current_buffer.text 判断"输入框
+            # 是否为空"，但 prompt_toolkit 的 Buffer 不是线程安全的，而且
+            # 从后台线程判断完、到真正通过 run_coroutine_threadsafe 调度
+            # 到这里执行，中间有真实的调度延迟——这段时间里用户完全可能
+            # 已经按下了回车。也就是说后台线程看到的"输入框是空的"这个
+            # 判断结果，到这里执行的时候可能已经过时了，且这里再重新拿到
+            # 的可能是"提交那一刻的过渡态"。
+            # 唯一真正安全的时机，是在这个协程里、拿到 app 之后立刻做这个
+            # 判断——因为协程运行在 ptk 自己的事件循环线程上，只要这一段
+            # 判断和后面的"取出 pending 并处理"之间不出现任何 await（没有
+            # 让出控制权的点），就跟 ptk 处理按键的其它协程互斥，不可能
+            # 被"回车刚好在这中间被处理"这种情况打断——这才是真正原子的
+            # 检查点。这一版之前"只在输入框为空时才 flush"的判断放错了
+            # 线程，等于没做到位，所以你还是复现到了"提交后自己的输入
+            # 没有回显"。
+            if self._active_ptk_app is not app:
+                return
+            try:
+                # 除了 buffer 状态，再确认一下 Application 本身确实还在
+                # 正常运行、没有处于退出过程中——用户按下回车之后，
+                # accept-line 处理会先清空 buffer.text，但这时 Application
+                # 可能还没有真正跑完退出流程；如果我们在这个过渡窗口里
+                # 还去调用 in_terminal() 打断它，就可能跟它自己的退出/
+                # 收尾渲染打架，表现为"提交后自己的输入没有回显"。
+                # is_running=True 且 is_done=False，才是"确实还在稳定
+                # 阻塞等待输入"的状态，此时 flush 才是安全的。
+                if not getattr(app, "is_running", True) or getattr(app, "is_done", False):
+                    return
+                buf = app.current_buffer
+                if buf is not None and (buf.text or buf.complete_state is not None):
+                    return
+            except Exception:
+                return
+
             pending, self._pending_during_input = self._pending_during_input, []
             if not pending:
                 return
