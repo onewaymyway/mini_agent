@@ -304,7 +304,38 @@ class AgentRunner(threading.Thread):
                 # 这样 /v1/status 才能返回 waiting_permission，web 端才能显示权限面板
                 _inject_permission_state_hook(bridge, bridge.agent)
 
-                result = bridge.agent.run_turn(cmd.message)
+                # ── slash 命令：本地执行，不当聊天内容发给 agent ─────────
+                # 所有客户端（daemon connected CLI、web 面板等）统一通过
+                # /v1/chat 提交消息，这里是唯一的、真正驱动 agent 的地方——
+                # 之前这里没有区分，任何 "/xxx" 都被当成普通用户消息传给
+                # agent.run_turn()，agent 会把它当一句话去理解/回答（例如
+                # "/help" 被当成聊天内容，agent 甚至会去调用工具"猜"用户
+                # 想干什么），完全没有执行真正的命令逻辑。
+                #
+                # 现在改成：识别到消息以 "/" 开头，就复用本地 REPL 同一套
+                # cli.repl._handle_slash() 分发器，在这条 AgentRunner 线程上
+                # （与 run_turn() 同一条线程，不会有并发访问 agent 状态的
+                # 竞态）直接执行，通过 term.run_captured() 把它触发的所有
+                # term.print()/rule()/panel()/... 输出捕获成纯文本，作为
+                # "回复内容"通过 turn_done 事件推给发起请求的客户端——
+                # 客户端侧的渲染逻辑完全不用改，就跟收到一段普通回复一样
+                # 显示出来。
+                _stripped = cmd.message.strip()
+                if _stripped.startswith("/") and _stripped.lower() not in ("/exit", "/quit"):
+                    from mini_agent.cli.repl import _handle_slash
+                    from mini_agent.ui.terminal import term as _term_singleton
+
+                    def _run_slash() -> None:
+                        _handle_slash(_stripped, bridge.agent, getattr(bridge.agent, "skill_loader", None))
+
+                    try:
+                        result = _term_singleton.run_captured(_run_slash).strip()
+                    except Exception as _cmd_e:
+                        result = f"[error] command failed: {_cmd_e}"
+                    if not result:
+                        result = "(no output)"
+                else:
+                    result = bridge.agent.run_turn(cmd.message)
 
                 iq.mark_done(turn_id)
                 bridge.emit_turn_done(turn_id, text=result or "", user_id=user_id)

@@ -1912,6 +1912,14 @@ def run_connected_repl(daemon_info: dict, token: Optional[str] = None) -> None:
                 _out("[daemon] Disconnected (daemon continues running)")
                 break
 
+            if cmd in ("/help", "/h"):
+                try:
+                    from mini_agent.cli.parser import build_parser
+                    _out(build_parser().format_help())
+                except Exception as e:
+                    _out(f"[error] Failed to show help: {e}")
+                continue
+
             if cmd in ("/session new", "/new"):
                 new_sid = client.new_session()
                 if new_sid:
@@ -1961,6 +1969,13 @@ def run_connected_repl(daemon_info: dict, token: Optional[str] = None) -> None:
             if cmd in ("/digest", "/autonomous", "/autonomous status"):
                 _handle_connected_digest(client, _out)
                 continue
+
+            # ── 未在上面拦截的 slash 命令：交给 daemon 端执行 ──────────────
+            # daemon 端的 AgentRunner 主循环（api/server.py::_main_loop）
+            # 现在会识别 "/xxx" 开头的消息，复用本地 REPL 同一套
+            # cli.repl._handle_slash() 分发器在服务端真正执行（/help /clear
+            # /stats /skills /model 等），执行结果通过 turn_done 事件正常
+            # 推回来，走下面统一的"发送消息"流程即可，不需要在这里特殊处理。
 
             # ── 发送消息 ──────────────────────────────────────────────────────
             # 先记一下"我自己刚提交的这句话"，再发送——见 _my_pending_message_holder

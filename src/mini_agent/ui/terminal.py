@@ -78,6 +78,11 @@ class Terminal:
         self._q: queue.Queue[_Msg] = queue.Queue()
         self._statusbar_lines: list[str] = []
         self._bar_drawn: int = 0
+        # ── 命令捕获模式（daemon HTTP 端远程执行 slash 命令用）────────────
+        # True 时 _handle() 里所有会触碰真实屏幕的动作（_erase_bar/_draw_bar/
+        # 状态栏悬挂逻辑）一律跳过，只把内容写进临时替换掉的 self._console
+        # （此时指向一个写内存缓冲区的 rich Console）。见 run_captured()。
+        self._capture_mode: bool = False
 
         # ── simple-mode：特殊环境降级显示 ────────────────────────────────
         # True 时关闭一切"先擦除再重绘"的 ANSI 光标控制逻辑，并且完全
@@ -829,6 +834,58 @@ class Terminal:
 
     # ── 输入模式管理 ──────────────────────────────────────────────────────
 
+    def run_captured(self, fn: Callable[[], None]) -> str:
+        """
+        在\"影子控制台\"里执行 fn()，把它触发的所有 term.print()/rule()/panel()/
+        syntax()/markdown() 输出捕获成纯文本返回，不触碰本地真实屏幕（不擦、不画
+        状态栏、不影响本地终端正在展示的任何内容）。
+
+        用途：daemon HTTP 端远程执行 slash 命令（如 web/其他 CLI 客户端发来的
+        "/skills"、"/stats" 等）时，命令处理函数（cli/commands.py 里那些
+        handle_xxx）内部一律调用 term.print() 之类的方法——完全不需要为了
+        "捕获输出返回给远程调用方" 而去改这些函数本身，只需要在调用前后临时
+        把 self._console 换成一个写内存缓冲区的 rich Console，并置位
+        self._capture_mode（见 _handle() 里对这个标志的检查）。
+
+        实现要点：
+          - fn() 内部对 term.print() 等的调用只是把消息放进队列（self._q），
+            真正的渲染发生在渲染线程里、异步执行。所以 fn() 调用完之后必须
+            用"哨兵消息 + join()"确认渲染线程已经把这批消息全部处理完，
+            才能安全地读取缓冲区内容——否则会读到不完整的输出。
+          - 前后各投一次哨兵：前一次是为了确保开始捕获之前，队列里不会有
+            残留的、本该被当作"正常内容"处理的旧消息混进这次捕获里；
+            后一次才是真正等待 fn() 产生的消息处理完毕。
+          - 用 try/finally 确保即使 fn() 抛异常，self._console 和
+            self._capture_mode 也一定会被正确恢复，不会让本地终端从此
+            永久性地"哑掉"（后续所有输出都被无声吞进一个没人读的缓冲区）。
+        """
+        import io
+        from rich.console import Console as _RichConsole
+
+        self._q.put(_Msg("_noop", None))
+        self._q.join()
+
+        old_console = self._console
+        old_capture = self._capture_mode
+        buf = io.StringIO()
+        try:
+            width = old_console.size.width
+        except Exception:
+            width = 100
+        self._console = _RichConsole(
+            file=buf, force_terminal=False, color_system=None,
+            highlight=False, width=max(width, 60),
+        )
+        self._capture_mode = True
+        try:
+            fn()
+        finally:
+            self._q.put(_Msg("_noop", None))
+            self._q.join()
+            self._console = old_console
+            self._capture_mode = old_capture
+        return buf.getvalue()
+
     def _enter_input_mode(self) -> None:
         """
         进入阻塞输入前的准备：
@@ -1020,22 +1077,25 @@ class Terminal:
         # 错乱画面——这正是本函数早期版本的一个回归 bug：当时只拦截了
         # print/rule/panel/syntax/markdown，遗漏了 stream/stream_end，
         # 导致两路消息在 _input_blocking 期间被区别对待、显示不一致。
-        if self._input_blocking and kind in (
+        if not self._capture_mode and self._input_blocking and kind in (
             "print", "rule", "panel", "syntax", "markdown",
             "stream", "stream_end", "_resize_settled",
         ):
             self._pending_during_input.append(msg)
             return
 
-        if self._simple_mode:
+        if self._simple_mode and not self._capture_mode:
             self._handle_simple(msg)
             return
 
         if kind == "print":
             args, kwargs = msg.payload
-            self._erase_bar()
+            if not self._capture_mode:
+                self._erase_bar()
             self._console.print(*args, **kwargs)
-            if kwargs.get("end", "\n") == "":
+            if self._capture_mode:
+                pass
+            elif kwargs.get("end", "\n") == "":
                 # 光标停在行中（如 "orzooo " 前缀），暂停状态栏重绘，
                 # 等待后续 stream/markdown 产生换行后再恢复。
                 # 保存这次调用，供状态栏被画到下方后需要"回到行尾"时
@@ -1049,30 +1109,38 @@ class Terminal:
 
         elif kind == "rule":
             title, kwargs = msg.payload
-            self._erase_bar()
+            if not self._capture_mode:
+                self._erase_bar()
             self._console.rule(title, **kwargs)
-            self._bar_suspended = False
-            self._draw_bar()
+            if not self._capture_mode:
+                self._bar_suspended = False
+                self._draw_bar()
 
         elif kind == "panel":
             content, kwargs = msg.payload
-            self._erase_bar()
+            if not self._capture_mode:
+                self._erase_bar()
             self._console.print(Panel(content, **kwargs))
-            self._bar_suspended = False
-            self._draw_bar()
+            if not self._capture_mode:
+                self._bar_suspended = False
+                self._draw_bar()
 
         elif kind == "syntax":
             code, language, kwargs = msg.payload
-            self._erase_bar()
+            if not self._capture_mode:
+                self._erase_bar()
             self._console.print(Syntax(code, language, **kwargs))
-            self._bar_suspended = False
-            self._draw_bar()
+            if not self._capture_mode:
+                self._bar_suspended = False
+                self._draw_bar()
 
         elif kind == "markdown":
-            self._erase_bar()
+            if not self._capture_mode:
+                self._erase_bar()
             self._console.print(Markdown(msg.payload))
-            self._bar_suspended = False
-            self._draw_bar()
+            if not self._capture_mode:
+                self._bar_suspended = False
+                self._draw_bar()
 
         elif kind == "stream":
             token = msg.payload
