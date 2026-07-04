@@ -21,40 +21,12 @@ from __future__ import annotations
 
 from typing import Optional, TYPE_CHECKING
 
+from mini_agent.prompts import pm
+
 if TYPE_CHECKING:
     from mini_agent.config import AppConfig
     from mini_agent.orchestrator.agent_profiles import AgentProfile
     from mini_agent.goal_mode.spec import GoalSpec
-
-
-DEFAULT_GOAL_JUDGE_SYSTEM = """你是一位严格的目标达成核查员（Goal Judge）。
-你的唯一职责是对照「验收标准清单」逐条核查 AI 助手是否已经达成用户设定的目标。
-
-核查原则：
-1. 逐条核查每一条验收标准，给出"通过 / 不通过"，并说明依据（不是主观印象，是具体证据）
-2. 如果你被授予了工具权限，优先通过实际运行命令（如测试、lint）来验证，而不是单纯相信 AI 助手的自述
-3. 只要有一条标准不通过，整体状态就不能判为 DONE
-4. 如果你怀疑 AI 助手是因为历史上下文混乱、反复卡在同一处、或者上下文已经很臃肿导致失去焦点，
-   可以判定为 NEED_COMPACT，建议压缩历史后重新聚焦
-5. CONTINUE 时反馈必须具体可执行：明确指出"哪条标准没过 + 大概该怎么做"，
-   不要说"请继续完善"这种空话
-
-输出格式（必须严格遵守，GOAL_STATUS 行必须存在且在最后）：
----
-**验收核查**
-- [标准1 摘要]：通过 / 不通过 —— 依据
-- [标准2 摘要]：通过 / 不通过 —— 依据
-（每条标准都要核查，不要遗漏）
-
-**结论**
-简要说明整体情况。
-
-**反馈**
-（仅当 CONTINUE 时必填：给 AI 助手的具体下一步指令）
-
-GOAL_STATUS: DONE
----
-（GOAL_STATUS 只能是 DONE / CONTINUE / NEED_COMPACT 三者之一）"""
 
 
 def build_goal_judge_prompt(
@@ -63,27 +35,24 @@ def build_goal_judge_prompt(
     round_no: int,
     prior_feedback: str = "",
 ) -> str:
-    """构建 GoalJudge 的核查 prompt。"""
+    """构建 GoalJudge 的核查 prompt（模板见 prompts/user/goal_judge_request.md）。"""
     criteria_lines = "\n".join(
         f"{i+1}. {c}" for i, c in enumerate(goal_spec.acceptance_criteria)
     )
-    prior_block = ""
+    prior_feedback_block = ""
     if prior_feedback:
-        prior_block = f"\n\n**上一轮给出的反馈（用于判断本轮是否已解决）：**\n{prior_feedback}"
+        prior_feedback_block = "\n" + pm.fragment(
+            "goal_mode", "PRIOR_FEEDBACK_BLOCK", feedback=prior_feedback
+        )
 
-    return f"""请核查 AI 助手是否已经达成以下目标。这是第 {round_no} 轮核查。
-
-**目标：**
-{goal_spec.goal_text}
-
-**验收标准清单：**
-{criteria_lines}
-
-**AI 助手本轮的产出（含过程与最终回复）：**
-{agent_output}
-{prior_block}
-
-请严格按照你的核查原则和输出格式进行判定。"""
+    return pm.render(
+        "user/goal_judge_request",
+        round_no=round_no,
+        goal_text=goal_spec.goal_text,
+        criteria_lines=criteria_lines,
+        agent_output=agent_output,
+        prior_feedback_block=prior_feedback_block,
+    )
 
 
 def run_goal_judge(
@@ -132,7 +101,7 @@ def run_goal_judge(
     judge_cfg.api_key = base_cfg.api_key
     judge_cfg.max_turns = 6 if tools_enabled else 2   # 挂工具时允许多跑几轮验证命令
     judge_cfg.stream = False
-    judge_cfg.system_extra = profile.system_prompt if profile.system_prompt.strip() else DEFAULT_GOAL_JUDGE_SYSTEM
+    judge_cfg.system_extra = profile.system_prompt if profile.system_prompt.strip() else pm.render("system/goal_judge")
     # [SYS-GOAL-MODE] 给 GoalJudge 内部 Agent 一个专属的显示名，而不是沿用主 Agent 的
     # cfg.agent_name（默认都是同一个名字，会导致 print_assistant_prefix 打印出来的前缀
     # 跟主 Agent 说话一模一样，看不出这是评估者的输出）。

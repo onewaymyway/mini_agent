@@ -27,6 +27,8 @@ import time
 from dataclasses import dataclass, field, asdict
 from typing import Optional, TYPE_CHECKING
 
+from mini_agent.prompts import pm
+
 if TYPE_CHECKING:
     from mini_agent.config import AppConfig
 
@@ -66,16 +68,15 @@ class GoalSpec:
         """渲染成"钉住"消息内容（配合 history.entry.make_goal_context 使用）。
 
         每次 compact / 跨 session 恢复后都要重新附加一份，防止目标信息被
-        摘要策略稀释或丢弃。
+        摘要策略稀释或丢弃。模板见 prompts/user/goal_context.md。
         """
         criteria_lines = "\n".join(
             f"{i+1}. {c}" for i, c in enumerate(self.acceptance_criteria)
         )
-        return (
-            "[Goal 模式 — 目标与验收标准（此消息会在每次压缩历史后重新附加，请始终以此为准）]\n"
-            f"目标：{self.goal_text}\n\n"
-            f"验收标准：\n{criteria_lines}\n\n"
-            "请持续朝这个目标推进，直到所有验收标准都满足为止。"
+        return pm.render(
+            "user/goal_context",
+            goal_text=self.goal_text,
+            criteria_lines=criteria_lines,
         )
 
     def render_summary_for_user(self) -> str:
@@ -109,22 +110,6 @@ def _extract_json(text: str) -> Optional[dict]:
         return None
 
 
-DEFAULT_SPEC_BUILDER_SYSTEM = """你是一个「目标澄清助手」。你的任务是把用户模糊的自然语言目标，
-转化为结构化、可验证的验收标准清单。
-
-原则：
-1. 验收标准要尽量具体、可核查（优先能通过运行命令验证，比如"pytest 全部通过"）
-2. 标准数量控制在 2-6 条，不要过度分解也不要过于笼统
-3. 如果用户的目标本身模糊（比如"提升性能"），要给出你理解的具体化解读，而不是原样照抄
-4. 只输出 JSON，不要有任何 JSON 之外的文字，不要用 markdown 代码块包裹
-
-输出格式（严格遵守，只输出这一个 JSON 对象）：
-{
-  "goal_text": "对目标的清晰复述",
-  "acceptance_criteria": ["标准1", "标准2", "..."],
-  "verification_method": "run_command | file_check | manual_review",
-  "verification_command": "如果 verification_method 是 run_command，给出具体命令；否则留空字符串"
-}"""
 
 
 class GoalSpecBuilder:
@@ -157,7 +142,7 @@ class GoalSpecBuilder:
         builder_cfg.api_key = self._cfg.api_key
         builder_cfg.max_turns = 2
         builder_cfg.stream = False
-        builder_cfg.system_extra = DEFAULT_SPEC_BUILDER_SYSTEM
+        builder_cfg.system_extra = pm.render("system/goal_spec_builder")
         # [SYS-GOAL-MODE] 同理，给 GoalSpecBuilder 一个专属显示名，避免和主 Agent 混淆
         builder_cfg.agent_name = "📋 GoalSpecBuilder"
 
@@ -176,7 +161,7 @@ class GoalSpecBuilder:
 
     def build_initial(self, user_goal_text: str) -> GoalSpec:
         """根据用户的自然语言目标生成第 1 版 GoalSpec。"""
-        prompt = f"用户的目标：\n{user_goal_text}\n\n请生成结构化的验收标准。"
+        prompt = pm.render("user/goal_spec_initial_request", user_goal_text=user_goal_text)
         raw = self._run_builder(prompt)
         data = _extract_json(raw) or {}
 
@@ -200,11 +185,11 @@ class GoalSpecBuilder:
 
     def revise(self, prior_spec: GoalSpec, user_feedback: str) -> GoalSpec:
         """基于用户对上一版 GoalSpec 的反馈重新生成新版本。"""
-        prompt = (
-            f"这是当前的验收标准草案（第 {prior_spec.version} 版）：\n"
-            f"{prior_spec.render_summary_for_user()}\n\n"
-            f"用户对这版草案的修改意见：\n{user_feedback}\n\n"
-            "请基于以上反馈生成修订后的新版本 JSON。"
+        prompt = pm.render(
+            "user/goal_spec_revise_request",
+            prior_version=prior_spec.version,
+            prior_summary=prior_spec.render_summary_for_user(),
+            user_feedback=user_feedback,
         )
         raw = self._run_builder(prompt)
         data = _extract_json(raw)

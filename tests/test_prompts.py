@@ -79,6 +79,22 @@ class TestStripComments(unittest.TestCase):
         result = _strip_comments(text)
         self.assertEqual(result.strip(), "Content")
 
+    def test_strips_bare_hash_separator_line(self):
+        """A lone '#' line (no trailing space), commonly used as a blank
+        separator inside a comment header block (e.g. '# path\\n#\\n# desc'),
+        must be stripped too — not just lines starting with '# '. Without
+        this, a stray '#' character leaks into the start of the rendered
+        prompt (regression: goal_judge.md / goal_spec_builder.md headers)."""
+        text = "# path/to/file.md\n#\n# description here\n\nActual content"
+        result = _strip_comments(text)
+        self.assertEqual(result, "Actual content")
+        self.assertNotIn("#", result)
+
+    def test_bare_hash_with_trailing_whitespace_is_stripped(self):
+        text = "# header\n#   \nContent"
+        result = _strip_comments(text)
+        self.assertEqual(result, "Content")
+
 
 class TestRenderTemplate(unittest.TestCase):
 

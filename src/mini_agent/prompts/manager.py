@@ -389,9 +389,21 @@ def _strip_comments(text: str) -> str:
     """
     Remove lines that start with `#` (prompt file comments).
     Preserves all other content including blank lines.
+
+    Matches both `# some comment` and a bare `#` used as a blank
+    separator line within a comment block (e.g. a header like:
+        # path/to/file.md
+        #
+        # description
+    ) — without this, a lone `#` line would leak into the rendered
+    output as a stray character since it doesn't start with "# "
+    (hash + space) and `.strip()` only trims whitespace, not `#`.
     """
     lines = text.splitlines(keepends=True)
-    cleaned = [line for line in lines if not line.lstrip().startswith("# ")]
+    cleaned = [
+        line for line in lines
+        if not (line.lstrip().startswith("# ") or line.strip() == "#")
+    ]
     # Collapse leading/trailing blank lines
     return "".join(cleaned).strip()
 

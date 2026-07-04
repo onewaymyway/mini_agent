@@ -395,6 +395,17 @@ class GoalStepExecutor(ABC):
 | `cli/commands/goal_mode_cmd.py` | `/goal` 系列 slash 命令 |
 | `config/models.py::GoalModeConfig` | 配置模型 |
 | `storage/paths.py::session_goal_state()` | `goal_state.json` 路径 |
+| `prompts/system/goal_judge.md` | GoalJudge 的 system prompt |
+| `prompts/system/goal_spec_builder.md` | GoalSpecBuilder 的 system prompt |
+| `prompts/user/goal_judge_request.md` | GoalJudge 每轮核查的 user 消息模板 |
+| `prompts/user/goal_spec_initial_request.md` | GoalSpecBuilder 首次生成验收标准的 user 消息模板 |
+| `prompts/user/goal_spec_revise_request.md` | GoalSpecBuilder 修订验收标准的 user 消息模板 |
+| `prompts/user/goal_context.md` | 目标+验收标准"钉住"消息的模板 |
+| `prompts/fragments/goal_mode.md` | `PRIOR_FEEDBACK_BLOCK` 等细粒度文本片段 |
+
+所有发给模型的 prompt（system/user）都通过 `mini_agent.prompts.pm`（`PromptManager`）
+统一加载渲染，不在 Python 代码里硬编码字符串——这是项目的统一约定，参见
+[Prompt 管理模块](../src/mini_agent/prompts/manager.py) 顶部文档。
 
 ---
 

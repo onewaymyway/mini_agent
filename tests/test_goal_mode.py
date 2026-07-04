@@ -195,6 +195,35 @@ def test_goal_judge_tools_enabled_without_yes_mode_keeps_sandbox(monkeypatch, tm
     assert captured["guard_sandbox"] is True
 
 
+def test_goal_judge_prompt_loaded_via_prompt_manager():
+    """GoalJudge 的 system prompt 必须来自 prompts/system/goal_judge.md，
+    不能硬编码在 Python 代码里（不应该再有 DEFAULT_GOAL_JUDGE_SYSTEM 常量）。"""
+    import mini_agent.role_agents.goal_judge as gj_mod
+    from mini_agent.prompts import pm
+
+    assert not hasattr(gj_mod, "DEFAULT_GOAL_JUDGE_SYSTEM"), (
+        "system prompt 不应再硬编码为模块级常量，应通过 pm.render('system/goal_judge') 加载"
+    )
+    rendered = pm.render("system/goal_judge")
+    assert "GOAL_STATUS" in rendered
+    assert not rendered.startswith("#")  # 确认注释头没有残留
+
+
+def test_goal_spec_builder_prompt_loaded_via_prompt_manager():
+    """GoalSpecBuilder 的 system prompt 同理必须来自
+    prompts/system/goal_spec_builder.md。"""
+    import mini_agent.goal_mode.spec as spec_mod
+    from mini_agent.prompts import pm
+
+    assert not hasattr(spec_mod, "DEFAULT_SPEC_BUILDER_SYSTEM"), (
+        "system prompt 不应再硬编码为模块级常量，应通过 "
+        "pm.render('system/goal_spec_builder') 加载"
+    )
+    rendered = pm.render("system/goal_spec_builder")
+    assert "acceptance_criteria" in rendered
+    assert not rendered.startswith("#")
+
+
 def test_goal_judge_uses_distinct_agent_name(monkeypatch, tmp_path):
     """GoalJudge 内部 Agent 必须用专属的 agent_name，不能沿用主 Agent 的名字，
     否则打印出来会看起来像主 Agent 自己在说话，分不清是评估者的输出。"""
