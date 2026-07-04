@@ -122,6 +122,38 @@ def test_find_resumable_session_none_when_no_sessions(tmp_path):
     assert find_resumable_session(tmp_path) is None
 
 
+def test_scan_goal_states_reports_non_running_records(tmp_path):
+    from mini_agent.goal_mode.state import scan_goal_states
+
+    paths = AgentPaths(project_root=tmp_path)
+    GoalStateStore(paths, "sess-a").save(GoalState(status="done", session_id="sess-a", round=5))
+    GoalStateStore(paths, "sess-b").save(GoalState(status="cancelled", session_id="sess-b"))
+
+    records = scan_goal_states(tmp_path)
+    statuses = {r["session_id"]: r["status"] for r in records}
+    assert statuses == {"sess-a": "done", "sess-b": "cancelled"}
+    assert find_resumable_session(tmp_path) is None
+
+
+def test_scan_goal_states_empty_when_no_sessions_dir(tmp_path):
+    from mini_agent.goal_mode.state import scan_goal_states
+    assert scan_goal_states(tmp_path) == []
+
+
+def test_scan_goal_states_reports_corrupted_file(tmp_path):
+    from mini_agent.goal_mode.state import scan_goal_states
+
+    paths = AgentPaths(project_root=tmp_path)
+    store = GoalStateStore(paths, "sess-corrupt")
+    store._path.parent.mkdir(parents=True, exist_ok=True)
+    store._path.write_text("{broken", encoding="utf-8")
+
+    records = scan_goal_states(tmp_path)
+    assert len(records) == 1
+    assert records[0]["session_id"] == "sess-corrupt"
+    assert records[0]["error"] is not None
+
+
 # ── feedback.extract_goal_status ─────────────────────────────────────────
 
 @pytest.mark.parametrize("text,expected", [
@@ -357,6 +389,46 @@ def test_goal_runner_stuck_on_repeated_feedback(monkeypatch, tmp_path):
     assert result.status == "stuck"
     # 应该在耗尽 max_rounds(20) 之前就因为反馈雷同提前终止
     assert result.rounds_used < 20
+
+
+def test_goal_runner_state_survives_mid_round_crash(monkeypatch, tmp_path):
+    """模拟"进程在第 2 轮执行中被强制杀死"：第 1 轮结束时落盘的 running 状态
+    应该在进程重启（这里用 find_resumable_session 模拟）后仍然能被找到。"""
+    agent = FakeAgent(outputs=["attempt 1", "attempt 2"])
+    cfg = _FakeCfg(tmp_path, persist_state=True)
+    spec = _confirmed_spec()
+
+    monkeypatch.setattr(
+        "mini_agent.role_agents.goal_judge.run_goal_judge",
+        lambda **kw: "GOAL_STATUS: CONTINUE\nkeep going",
+    )
+
+    # 第 2 次 run_turn 模拟进程被 kill -9：直接抛异常，代表整个进程终止，
+    # 不会走到任何 finally/except 清理逻辑。
+    original_run_turn = agent.run_turn
+
+    def crashing_run_turn(prompt):
+        if agent._call_idx == 1:  # 第 2 次调用（0-indexed 已经调用过一次）
+            raise RuntimeError("simulated kill -9 mid round 2")
+        return original_run_turn(prompt)
+
+    agent.run_turn = crashing_run_turn
+
+    runner = GoalRunner(agent=agent, cfg=cfg, goal_spec=spec)
+    with pytest.raises(RuntimeError):
+        runner.run()
+
+    # 崩溃发生在第 2 轮的 run_turn 里，第 1 轮结束时应该已经落盘 round=1, status=running
+    sid = find_resumable_session(tmp_path)
+    assert sid == agent.session_id, (
+        "进程被杀死后重启，应该能通过 find_resumable_session 找到未完成的 goal"
+    )
+
+    paths = AgentPaths(project_root=tmp_path)
+    store = GoalStateStore(paths, agent.session_id)
+    state = store.load()
+    assert state.status == "running"
+    assert state.round == 1
 
 
 def test_goal_runner_rejects_unconfirmed_spec(tmp_path):

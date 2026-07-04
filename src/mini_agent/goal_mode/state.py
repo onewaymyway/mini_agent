@@ -116,6 +116,51 @@ class GoalStateStore:
         return self._path.exists()
 
 
+def scan_goal_states(project_root) -> list[dict]:
+    """扫描 sessions_dir 下所有 goal_state.json，返回诊断信息列表（不做任何过滤）。
+
+    用于 `/goal resume` 在找不到可恢复目标时给出具体原因（比如"确实没有任何
+    goal_state.json"，还是"有，但状态都不是 running"，还是"文件损坏"），
+    而不是只回一句"没找到"让用户无从排查。
+    """
+    from mini_agent.storage.paths import AgentPaths
+
+    paths = AgentPaths(project_root=project_root)
+    sessions_dir = paths.sessions_dir
+    results: list[dict] = []
+    if not sessions_dir.exists():
+        return results
+
+    try:
+        entries = list(sessions_dir.iterdir())
+    except Exception as e:
+        return [{"session_id": None, "error": f"无法列出 sessions_dir：{e}"}]
+
+    for entry in entries:
+        try:
+            if not entry.is_dir():
+                continue
+        except Exception:
+            continue
+        gs_path = entry / "goal_state.json"
+        if not gs_path.exists():
+            continue
+        try:
+            with open(gs_path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            results.append({
+                "session_id": entry.name,
+                "status": data.get("status"),
+                "round": data.get("round"),
+                "updated_at": data.get("updated_at"),
+                "error": None,
+            })
+        except Exception as e:
+            results.append({"session_id": entry.name, "error": f"goal_state.json 解析失败：{e}"})
+
+    return results
+
+
 def find_resumable_session(project_root, from_session_id: Optional[str] = None) -> Optional[str]:
     """在 sessions_dir 下扫描，找到最近一个 status=="running" 的 goal_state.json 对应的
     session_id（供启动时的"检测到未完成目标"提示使用）。

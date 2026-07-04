@@ -283,6 +283,42 @@ GOAL_STATUS: DONE | CONTINUE | NEED_COMPACT
 如果恢复时发现状态文件本身损坏（`GoalStateStore.load()` 返回 `None`），
 `/goal resume` 会明确报错，不会静默地用空状态继续跑。
 
+### 排查"重启后找不到可恢复的 goal"
+
+`/goal resume`（不带参数）找不到可恢复目标时，现在会打印具体原因而不是只回
+一句"没找到"：
+
+```
+没有找到可恢复的 goal 任务。（扫描目录：/path/to/project/.agent/sessions）
+该目录下没有任何 goal_state.json 记录——如果你确定之前跑过 goal，
+请检查是否在跟当时相同的项目目录下启动（--project 参数 / 当前工作目录是否一致）。
+```
+
+或者（目录下有记录，但都不是 running 状态）：
+
+```
+找到 2 条 goal_state.json 记录，但状态都不是 running：
+  session=871fae1b  status=done  round=5
+  session=a3f8c210   status=cancelled  round=2
+```
+
+**最常见的原因是项目目录不一致**：`goal_state.json` 存在
+`<project_root>/.agent/sessions/<session_id>/`，`project_root` 由启动时的
+`--project` 参数或当前工作目录（`Path.cwd()`）决定。如果上次启动和这次启动
+时的工作目录不同（比如上次是从某个 IDE 终端启动、这次是双击一个不同工作
+目录的快捷方式启动），扫描到的 `.agent/sessions/` 就会是不同的目录，自然
+"找不到"——**并不是状态丢失了，只是扫描错了地方**。建议始终用同一个
+`--project <绝对路径>` 参数启动，避免依赖隐式的当前工作目录。
+
+如果确认目录一致但仍然找不到，可以直接用 `find_resumable_session()` /
+`scan_goal_states()`（`goal_mode/state.py`）在 Python 里手动排查：
+
+```python
+from mini_agent.goal_mode.state import scan_goal_states
+from pathlib import Path
+print(scan_goal_states(Path("/你的项目目录")))
+```
+
 ---
 
 ## 为细粒度版本预留的扩展点

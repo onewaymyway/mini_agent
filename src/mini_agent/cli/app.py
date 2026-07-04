@@ -505,8 +505,11 @@ def _main_inner() -> None:
                     f"输入 [bold]/goal resume {_resumable_sid}[/bold] 可继续执行，"
                     "或直接忽略进入正常对话。"
                 )
-    except Exception:
-        pass
+    except Exception as e:
+        # 不静默吞掉——检测逻辑本身出错也应该让用户/开发者看到，
+        # 否则会呈现出"明明有未完成的 goal 却什么提示都没有"的假象，无法排查。
+        if getattr(cfg, "verbose", False):
+            R.print_warning(f"[Goal 模式] 启动时检测未完成任务失败：{e}")
 
     try:
         run_repl(agent, skill_loader)

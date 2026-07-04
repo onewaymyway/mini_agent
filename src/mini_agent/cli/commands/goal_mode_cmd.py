@@ -144,8 +144,34 @@ def _run_goal(agent, spec) -> None:
 
 # ── resume ───────────────────────────────────────────────────────────────
 
+def _report_no_resumable(project_root) -> None:
+    """没找到可恢复的 goal 时，打印具体原因，而不是只说一句"没找到"。"""
+    from mini_agent.goal_mode.state import scan_goal_states
+    from mini_agent.storage.paths import AgentPaths
+
+    paths = AgentPaths(project_root=project_root)
+    R.print_info(
+        f"没有找到可恢复的 goal 任务。（扫描目录：{paths.sessions_dir}）"
+    )
+    records = scan_goal_states(project_root)
+    if not records:
+        R.print_info(
+            "该目录下没有任何 goal_state.json 记录——如果你确定之前跑过 goal，"
+            "请检查是否在跟当时相同的项目目录下启动（`--project` 参数 / 当前工作目录是否一致）。"
+        )
+        return
+    R.print_info(f"找到 {len(records)} 条 goal_state.json 记录，但状态都不是 running：")
+    for r in records:
+        if r.get("error"):
+            R.print_warning(f"  session={r.get('session_id')}  {r['error']}")
+        else:
+            R.console.print(
+                f"  session={r['session_id']}  status={r['status']}  round={r['round']}"
+            )
+
+
 def _handle_resume(args: list[str], agent) -> None:
-    from mini_agent.goal_mode.state import find_resumable_session, GoalStateStore
+    from mini_agent.goal_mode.state import find_resumable_session, GoalStateStore, scan_goal_states
     from mini_agent.goal_mode.spec import GoalSpec
     from mini_agent.goal_mode.runner import GoalRunner
     from mini_agent.storage.paths import AgentPaths
@@ -153,7 +179,7 @@ def _handle_resume(args: list[str], agent) -> None:
     project_root = agent.cfg.project_root
     sid = args[0] if args else find_resumable_session(project_root)
     if not sid:
-        R.print_info("没有找到可恢复的 goal 任务。")
+        _report_no_resumable(project_root)
         return
 
     paths = AgentPaths(project_root=project_root)
