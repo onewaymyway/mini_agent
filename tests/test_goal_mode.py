@@ -206,6 +206,7 @@ class FakeAgent:
 
     def compact_with_skills(self):
         self.compact_calls += 1
+        return f"[fake summary #{self.compact_calls}]"
 
 
 def _confirmed_spec():

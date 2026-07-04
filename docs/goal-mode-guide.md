@@ -116,17 +116,43 @@ Evaluator 仍然在每次 `run_turn` 内部做质量把关，GoalRunner 在更�
 
 ### 2. 执行
 
-确认后自动进入 GoalRunner 循环，过程中会打印每轮的判定结果：
+确认后自动进入 GoalRunner 循环，过程中会完整打印每轮 GoalJudge 的核查内容
+（不只是一行 DONE/CONTINUE 状态）和每次 compact 的真实摘要文本：
 
 ```
 [GoalRunner] 第 1/20 轮执行中…
-[GoalRunner] GoalJudge 判定：CONTINUE
+
+[🎯 目标核查 · goal_judge]
+
+**验收核查**
+- pytest 全部通过：不通过 —— 有 2 个用例报错
+- lint 无报错：通过
+
+**结论**
+测试仍有 2 个用例失败，尚未达成目标。
+
+**反馈**
+请检查 test_foo.py 中的 xxx 用例，报错信息显示是 yyy 导致的空指针。
+
+目标状态：🔄 尚未达成，需继续尝试
+
 [GoalRunner] 第 2/20 轮执行中…
-[GoalRunner] GoalJudge 判定：DONE
+
+[GoalRunner] 正在压缩历史…
+
+— Compact 摘要 —
+（LLM 生成的对话摘要正文）
+
+[GoalRunner] compact 完成（第 1 次）。
+
+[🎯 目标核查 · goal_judge]
+...
+GOAL_STATUS: DONE
+
 [GoalRunner] 目标已达成（共 2 轮）。
 
 Goal 执行结果： done
-轮次：2  compact 次数：0
+轮次：2  compact 次数：1
 （GoalJudge 的核查结论文本）
 ```
 

@@ -229,7 +229,13 @@ class GoalRunner:
         inject_typed = dict(inject_msg, _type=role_agent_type)
         self._agent._hist.append_raw_dict(inject_typed)
 
-        R.print_info(f"[GoalRunner] GoalJudge 判定：{status}")
+        # [显示改进] 把 GoalJudge 的完整核查内容打印出来，而不只是一行状态关键字，
+        # 方便用户看到具体核查了哪些标准、依据是什么、CONTINUE 时的具体反馈是什么。
+        from mini_agent.role_agents.feedback import format_feedback
+        R.console.print()
+        R.console.print(format_feedback(feedback_obj))
+        R.console.print()
+
         return status, raw
 
     # ── 内部：卡住检测（连续反馈高度雷同）──────────────────────────────────
@@ -252,10 +258,21 @@ class GoalRunner:
     # ── 内部：compact ────────────────────────────────────────────────────
 
     def _do_compact(self) -> None:
+        R.print_info("[GoalRunner] 正在压缩历史…")
+        summary = ""
         try:
-            self._agent.compact_with_skills()
+            summary = self._agent.compact_with_skills()
         except Exception as e:
             R.print_error(f"[GoalRunner] compact 失败：{e}")
+        else:
+            if summary:
+                R.console.print()
+                R.console.print("[bold]— Compact 摘要 —[/bold]")
+                R.console.print(summary)
+                R.console.print()
+                R.print_success(f"[GoalRunner] compact 完成（第 {self._compacts_done + 1} 次）。")
+            else:
+                R.print_warning("[GoalRunner] compact 完成，但没有生成摘要文本（历史可能为空）。")
         self._compacts_done += 1
         self._pin_goal_context()
         self._save_state(status="running")
