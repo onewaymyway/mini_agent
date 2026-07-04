@@ -22,7 +22,7 @@
 - `src/mini_agent/cli/app.py` — CLI 应用入口
 - `src/mini_agent/cli/parser.py` — 参数解析
 - `src/mini_agent/cli/repl.py` — REPL 交互循环
-- `src/mini_agent/cli/commands/` — REPL 命令处理器（concurrency, plans, sessions, skills, tasks, agents, hooks 等）
+- `src/mini_agent/cli/commands/` — REPL 命令处理器（concurrency, plans, sessions, skills, tasks, agents, hooks, goal_mode_cmd 等）
 - `src/mini_agent/llm/` — LLM 抽象层
 - `src/mini_agent/orchestrator/` — 并发编排（含 `plan.py` 的 `plan_snapshot.json` 持久化、`task.py` 的 `manifest.json` 写入）
 - `src/mini_agent/hooks/` — hooks 机制（关键事件自动执行命令）
@@ -30,6 +30,7 @@
 - `src/mini_agent/ui/` — 终端交互（terminal.py, renderer.py, repl_input.py）
 - `src/mini_agent/api/` — HTTP API 服务
 - `src/mini_agent/history/` — 历史管理（压缩算法 + RawHistory 即时落盘 + 条目类型定义）
+- `src/mini_agent/goal_mode/` — Goal 模式：`spec.py`（`GoalSpec`/`GoalSpecBuilder`，自然语言目标→结构化验收标准，多轮协商）/`executor.py`（`GoalStepExecutor` 接口 + `CoarseStepExecutor`，为细粒度版本预留扩展点）/`state.py`（`GoalState`/`GoalStateStore` 原子落盘 + `find_resumable_session`）/`runner.py`（`GoalRunner` 外层驱动循环：判定/反馈注入/compact整合/安全阀）
 - `src/mini_agent/prompts/` — Prompt 管理
 - `src/mini_agent/storage/` — 存储层（`paths.py` 含 `session_plan_snapshot`/`task_manifest`/`workdir_xxx`/`global_xxx` 等路径方法）
 - `src/mini_agent/env_info/` — 环境信息采集与注入（Provider 抽象基类 + 注册表 + 内置 Provider）
@@ -324,6 +325,18 @@ mini-agent user token u_a1b2c3d4                       # 重新生成 token
 - 支持结构化参数注入、工具/模型限制
 - CLI 命令：`/agents list|show <name>|reload`
 
+### Goal 模式
+
+- 设定一个目标，Agent 自动多轮尝试直至达成或触发安全阀，位于 `src/mini_agent/goal_mode/`
+- `GoalSpecBuilder`：自然语言目标 → 结构化验收标准，支持多轮对话式修订+版本 diff，确认前不占用主 Agent 上下文
+- `GoalJudge`（`role_agents/goal_judge.py`）：对照验收标准逐条核查，输出 `GOAL_STATUS: DONE/CONTINUE/NEED_COMPACT`；不经过 `RoleAgentDispatcher`，由 `GoalRunner` 直接调用；`judge_tools_enabled` 开关控制是否挂只读工具自己验证
+- `GoalRunner`：外层驱动循环（跨多次 `run_turn`，与 Role Agent 的单次 `run_turn` 内修订循环不同）；粗粒度 `CoarseStepExecutor` 每步跑一次完整 `run_turn`，`GoalStepExecutor` 接口为未来细粒度版本预留
+- 安全阀：`max_rounds`、`max_total_compacts`、连续雷同反馈检测（`difflib.SequenceMatcher`）提前终止
+- 异常中断恢复：`GoalState` 原子落盘到 `.agent/sessions/<sid>/goal_state.json`，只在轮次边界写入；复用既有 session 持久化存对话历史，不重复保存；`/goal resume` 续跑
+- 目标上下文用 `HType.GOAL_CONTEXT` 类型消息"钉住"，每轮结束和每次 compact 后都重新附加，防止被压缩策略稀释
+- CLI 命令：`/goal <文本>`、`/goal resume [sid]`、`/goal status`、`/goal cancel`；需 `goal_mode.enabled: true`（默认关闭）
+- 详见 [Goal 模式指南](docs/goal-mode-guide.md)
+
 ### Workflow
 
 - 工作流编排机制，支持多步骤自动化任务执行
@@ -598,9 +611,11 @@ mini-agent user token u_a1b2c3d4                       # 重新生成 token
 - [Stage 9 自主运行时指南](docs/self-evolution-stage9-guide.md) — 常驻守护进程 / Goal Backlog / 三档位 AutonomousLoop / 资源仲裁
 - [具身智能改进指南](docs/embodied-agent-guide.md) — 本体感知 / 余裕感知 / 工具透明性 / AgentSelfModel / 时间加权记忆 / 认知锚点 / 自维护模块（A/B/C 三阶段共 12 项）
 - [微信接入指南](docs/weixin-bot-guide.md) — `weixin_bot.py` 每用户 Agent 隔离 / 远程权限审批 / 同步-异步桥接；含 `_get_or_create` 事件循环死锁问题的根因分析与修复记录
+- [Goal 模式指南](docs/goal-mode-guide.md) — 设定目标后自动多轮尝试直至达成，`/goal` 命令，验收标准协商 / GoalJudge 判定 / 异常中断恢复
 
 ## 当前进展
 
 - Stage 0-8 均已完成（详见 `next_doc/self_evolution_implementation_plan.md` 与 `next_doc/self_evolution_stage4plus_plan.md` 各 Stage 完成记录）
 - Stage 9（Phase H：自主运行时）是决策点而非常规排期 Stage，启动前置清单见 `next_doc/self_evolution_stage4plus_plan.md` 第 9.0 节；细化方案见 `next_doc/self_evolution_stage9_plan.md`
 - 具身智能改进（`next_doc/embodied_agent_improvement_plan_v3.md`）A/B/C 三阶段共 12 项均已完成，详见 [具身智能改进指南](docs/embodied-agent-guide.md)；已知遗留缺口：AffordanceMap（B4）与认知锚点（C3）仅在部分路径生效（分别是"仅多用户 daemon"和"本地 CLI，daemon connected REPL 未接入"），详见改进计划文档对应小节
+- Goal 模式（`src/mini_agent/goal_mode/`）已完成粗粒度版本：验收标准协商 + GoalJudge 判定 + compact 整合 + 安全阀 + 异常中断恢复，详见 [Goal 模式指南](docs/goal-mode-guide.md)；细粒度 executor（`_agentic_loop` 内部工具调用后即可插入 Judge 判断）尚未实现，`GoalStepExecutor` 接口已预留扩展点
