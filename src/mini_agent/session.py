@@ -82,6 +82,7 @@ class Session:
     file_path: str = ""   # 目录格式下指向 meta.json；旧格式为单文件路径
     summary: str = ""
     summary_at_turns: int = 0  # 上次生成摘要/记忆时的 stats.turns，用于判断是否需要重新生成
+    active_persona: Optional[str] = None  # 角色扮演系统：当前激活的 persona name，None=未激活
 
     @property
     def meta(self) -> SessionMeta:
@@ -116,6 +117,8 @@ class Session:
             d["summary"] = self.summary
         if self.summary_at_turns:
             d["summary_at_turns"] = self.summary_at_turns
+        if self.active_persona:
+            d["active_persona"] = self.active_persona
         return d
 
     def to_dict(self) -> dict:
@@ -389,6 +392,7 @@ class SessionManager:
                 file_path=str(meta_path),
                 summary=meta.get("summary", ""),
                 summary_at_turns=meta.get("summary_at_turns", 0),
+                active_persona=meta.get("active_persona"),
             )
         except Exception:
             return None
@@ -473,6 +477,7 @@ class SessionManager:
                 file_path=str(path),
                 summary=meta.get("summary", ""),
                 summary_at_turns=meta.get("summary_at_turns", 0),
+                active_persona=meta.get("active_persona"),
             )
         except Exception:
             return None
