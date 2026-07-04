@@ -502,6 +502,30 @@ class GoalModeConfig:
 只支持从 `agent_config.json` 的 `goal_mode: {...}` 块读取，暂无对应 CLI 参数。
 详见 [Goal 模式指南](goal-mode-guide.md)。
 
+### TurnJudgeConfig
+
+```python
+@dataclass
+class TurnJudgeConfig:
+    enabled: bool = False
+    judge_model: Optional[str] = None
+    judge_provider: Optional[str] = None
+    max_auto_rounds: int = 3
+    judge_show_prompt: bool = False
+    history_window: int = 6
+```
+
+| 字段 | 说明 |
+|------|------|
+| `enabled` | 总开关，默认关闭，不影响任何现有行为 |
+| `judge_model` / `judge_provider` | TurnJudge 用的模型，`null` = 复用主 `cfg.model`（建议用更便宜/更快的模型，高频触发点） |
+| `max_auto_rounds` | 连续自动接管次数上限，防止死循环；判定为 `NEED_USER` 或达到上限后清零 |
+| `judge_show_prompt` | 打印发给 TurnJudge 的完整输入 prompt，排查判定依据用 |
+| `history_window` | 供 TurnJudge 参考的最近历史消息条数 |
+
+只支持从 `agent_config.json` 的 `turn_judge: {...}` 块读取，暂无对应 CLI 参数。
+详见 [轮次守门员指南](turn-judge-guide.md)。
+
 ### PrivacyConfig
 
 ```python
@@ -604,6 +628,7 @@ my_feature_cfg = MyFeatureConfig(
 - [记忆管理指南](memory-management-guide.md) — `MemoryConfig` 新增字段的完整使用场景（Lesson Memory）
 - [多结果合并取优指南](ensemble-best-of-n-guide.md) — `EnsembleConfig` 的完整使用场景与架构说明
 - [Goal 模式指南](goal-mode-guide.md) — `GoalModeConfig` 的完整使用场景与架构说明
+- [轮次守门员指南](turn-judge-guide.md) — `TurnJudgeConfig` 的完整使用场景与架构说明
 
 ---
 

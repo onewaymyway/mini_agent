@@ -25,6 +25,8 @@ class RoleFeedback:
     inject_as: str = "user"          # user | system_reminder
     # [SYS-GOAL-MODE] goal_judge 才有：DONE | CONTINUE | NEED_COMPACT
     goal_status: Optional[str] = None
+    # [SYS-TURN-JUDGE] turn_judge 才有：NEED_USER | AUTO_CONTINUE | NEED_COMPACT
+    turn_status: Optional[str] = None
 
 
 def extract_score(text: str) -> Optional[float]:
@@ -88,6 +90,21 @@ def extract_goal_status(text: str) -> Optional[str]:
     return m.group(1).upper()
 
 
+_TURN_STATUS_RE = re.compile(r'TURN_STATUS\s*:\s*(NEED_USER|AUTO_CONTINUE|NEED_COMPACT)', re.IGNORECASE)
+
+
+def extract_turn_status(text: str) -> Optional[str]:
+    """从 TurnJudge 输出中提取 TURN_STATUS 关键字（NEED_USER / AUTO_CONTINUE / NEED_COMPACT）。
+
+    找不到时返回 None（调用方应将其当作 NEED_USER 处理，保守起见绝不能默认判定为
+    AUTO_CONTINUE，避免解析失败导致本该交还用户的一轮被系统悄悄接管）。
+    """
+    m = _TURN_STATUS_RE.search(text)
+    if not m:
+        return None
+    return m.group(1).upper()
+
+
 def format_feedback(feedback: RoleFeedback) -> str:
     """
     把 RoleFeedback 格式化为注入主 Agent 的消息文本。
@@ -98,6 +115,7 @@ def format_feedback(feedback: RoleFeedback) -> str:
         "coach": "🎯 策略建议",
         "custom": "💬 角色反馈",
         "goal_judge": "🎯 目标核查",
+        "turn_judge": "🧭 轮次核查",
     }
     header = header_map.get(feedback.role_type, "💬 角色反馈")
     role_label = f"[{header} · {feedback.role_name}]"
@@ -119,6 +137,15 @@ def format_feedback(feedback: RoleFeedback) -> str:
             "NEED_COMPACT": "🗜️ 建议先压缩历史再继续",
         }
         lines.append(f"目标状态：{status_map.get(feedback.goal_status, feedback.goal_status)}")
+
+    if feedback.turn_status is not None:
+        lines.append("")
+        turn_status_map = {
+            "NEED_USER": "🙋 需要真人用户输入",
+            "AUTO_CONTINUE": "🤖 自动接管，代替用户继续推进",
+            "NEED_COMPACT": "🗜️ 建议先压缩历史再继续",
+        }
+        lines.append(f"轮次状态：{turn_status_map.get(feedback.turn_status, feedback.turn_status)}")
 
     return "\n".join(lines)
 

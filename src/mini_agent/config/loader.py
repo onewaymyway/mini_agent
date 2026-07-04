@@ -36,6 +36,7 @@ from .models import (
     EnsembleConfig,
     RoleAgentConfig,
     GoalModeConfig,
+    TurnJudgeConfig,
     EnvInfoConfig,
     ReminderConfig,
     ProprioceptionConfig,
@@ -580,6 +581,18 @@ def load_config(
         auto_resume_prompt=bool(_gm.get("auto_resume_prompt", True)),
     )
 
+    # ── TurnJudge 配置组装 ───────────────────────────────────────────────────
+    # [SYS-TURN-JUDGE] 目前只支持从配置文件的 turn_judge: {...} 块读取。
+    _tj = file_cfg.get("turn_judge") if isinstance(file_cfg.get("turn_judge"), dict) else {}
+    turn_judge_cfg = TurnJudgeConfig(
+        enabled=bool(_tj.get("enabled", False)),
+        judge_model=_tj.get("judge_model"),
+        judge_provider=_tj.get("judge_provider"),
+        max_auto_rounds=int(_tj.get("max_auto_rounds", 3)),
+        judge_show_prompt=bool(_tj.get("judge_show_prompt", False)),
+        history_window=int(_tj.get("history_window", 6)),
+    )
+
     # ── EnvInfo 配置组装 ────────────────────────────────────────────────────
     _ei = file_cfg.get("env_info") if isinstance(file_cfg.get("env_info"), dict) else {}
     _ei_enabled = bool(_ei.get("enabled", True))
@@ -681,6 +694,7 @@ def load_config(
         format_correction=format_correction_cfg,
         role_agent=role_agent_cfg,
         goal_mode=goal_mode_cfg,
+        turn_judge=turn_judge_cfg,
         env_info=env_info_cfg,
         workdir_knowledge=workdir_knowledge_cfg,
         global_knowledge=global_knowledge_cfg,

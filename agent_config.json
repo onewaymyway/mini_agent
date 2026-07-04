@@ -69,5 +69,13 @@
     "persist_state": true,
     "auto_resume_prompt": true,
     "judge_show_prompt": true
+  },
+  "turn_judge": {
+    "enabled": true,
+    "judge_model": null,
+    "judge_provider": null,
+    "max_auto_rounds": 99999,
+    "judge_show_prompt": true,
+    "history_window": 6
   }
 }

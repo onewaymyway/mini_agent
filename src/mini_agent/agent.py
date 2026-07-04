@@ -144,6 +144,11 @@ class Agent:
         self.cfg = cfg
         self._is_subagent = is_subagent
 
+        # [SYS-TURN-JUDGE] 本轮是否撞到 max_turns 硬顶（供 TurnJudge 判定参考）；
+        # 连续自动接管计数（每次真正进入真人输入等待后由 repl 重置为 0）。
+        self._last_turn_hit_max_turns: bool = False
+        self._turn_judge_auto_count: int = 0
+
         from mini_agent.tools.builtin import configure_web_search
         configure_web_search(cfg)
 
@@ -2422,6 +2427,16 @@ class Agent:
             except Exception:
                 pass  # TurnEnd hook 失败不影响主流程
 
+            # [SYS-TURN-JUDGE] TurnEnd hook 没有接管（未配置或未返回替代输入）时，
+            # 若开启了 turn_judge，则让 TurnJudgeAgent 核查一次：这到底是真的
+            # 需要真人输入，还是主 Agent 遇到了技术性问题，应该自动代替用户反馈
+            # 让主 Agent 继续处理。
+            if self._turn_end_user_input is None:
+                try:
+                    self._maybe_run_turn_judge(result)
+                except Exception:
+                    pass  # TurnJudge 失败不影响主流程，保守回退到等待真人输入
+
             # [SYS-SUMMARY] session 结束后写入摘要（在 save 前）
             # 摘要写入由 save_session 触发，这里只标记需要摘要
             return result
@@ -2435,6 +2450,141 @@ class Agent:
                 self.save_session()
 
     # ── Agentic loop ───────────────────────────────────────────────────────────
+
+    def _maybe_run_turn_judge(self, assistant_output: str) -> None:
+        """
+        [SYS-TURN-JUDGE] 轮次守门员：一轮对话结束、真正把控制权交还真人用户之前，
+        核查这到底是「真的需要用户输入」还是「主 Agent 遇到了技术性问题（模型
+        输出格式有问题、撞到 max_turns 硬顶需要 compact 等）」，后者由系统自动
+        代替用户反馈，让主 Agent 继续处理，而不是打断真人。
+
+        安全阀：
+          - 子 Agent（is_subagent）从不触发，避免嵌套判定
+          - 未开启 cfg.turn_judge.enabled 时直接跳过（零开销）
+          - 连续自动接管次数达到 max_auto_rounds 后强制交还真人，防止死循环
+          - 判定/执行过程中的任何异常都保守回退到"等待真人输入"
+        """
+        tj_cfg = getattr(self.cfg, "turn_judge", None)
+        if tj_cfg is None or not tj_cfg.enabled or self._is_subagent:
+            return
+
+        if self._turn_judge_auto_count >= tj_cfg.max_auto_rounds:
+            R.print_info(
+                f"[TurnJudge] 已连续自动接管 {self._turn_judge_auto_count} 次，"
+                f"达到上限（{tj_cfg.max_auto_rounds}），强制交还真人用户输入。"
+            )
+            self._turn_judge_auto_count = 0
+            return
+
+        from mini_agent.role_agents.turn_judge import run_turn_judge, build_turn_judge_prompt
+        from mini_agent.role_agents.feedback import RoleFeedback, format_feedback, extract_turn_status, build_inject_message
+        from mini_agent.orchestrator.agent_profiles import AgentProfile
+
+        auto_round_no = self._turn_judge_auto_count + 1
+
+        # 组装最近历史窗口（角色 + 内容摘要），供 judge 参考上下文
+        window = max(0, int(getattr(tj_cfg, "history_window", 6)))
+        recent_msgs = self._hist._history[-window:] if window else []
+        recent_lines = []
+        for m in recent_msgs:
+            role = m.get("role", "")
+            content = m.get("content", "")
+            if not isinstance(content, str):
+                content = str(content)
+            if len(content) > 500:
+                content = content[:500] + "…(截断)"
+            recent_lines.append(f"[{role}] {content}")
+        recent_history = "\n".join(recent_lines)
+
+        profile = AgentProfile(
+            name="turn_judge",
+            role_type="turn_judge",
+            model=tj_cfg.judge_model,
+            provider=tj_cfg.judge_provider,
+        )
+
+        if tj_cfg.judge_show_prompt:
+            prompt_preview = build_turn_judge_prompt(
+                assistant_output=assistant_output,
+                recent_history=recent_history,
+                auto_round_no=auto_round_no,
+                max_auto_rounds=tj_cfg.max_auto_rounds,
+                hit_max_turns=self._last_turn_hit_max_turns,
+            )
+            R.console.print()
+            R.console.print("[bold]— TurnJudge 输入 Prompt —[/bold]")
+            R.console.print(prompt_preview)
+            R.console.print()
+
+        R.print_info(f"[TurnJudge] 正在核查本轮是否需要真人介入…（第 {auto_round_no}/{tj_cfg.max_auto_rounds} 次自动核查）")
+
+        raw = run_turn_judge(
+            profile=profile,
+            base_cfg=self.cfg,
+            assistant_output=assistant_output,
+            recent_history=recent_history,
+            auto_round_no=auto_round_no,
+            max_auto_rounds=tj_cfg.max_auto_rounds,
+            hit_max_turns=self._last_turn_hit_max_turns,
+        )
+
+        status = extract_turn_status(raw) or "NEED_USER"  # 解析失败时保守按 NEED_USER 处理
+
+        feedback_obj = RoleFeedback(
+            role_name="turn_judge",
+            role_type="turn_judge",
+            raw_output=raw,
+            inject_as="user",
+            turn_status=status,
+        )
+
+        R.console.print()
+        R.console.print(format_feedback(feedback_obj))
+        R.console.print()
+
+        if status == "NEED_USER":
+            self._turn_judge_auto_count = 0
+            return
+
+        if status == "NEED_COMPACT":
+            R.print_info("[TurnJudge] 建议先压缩历史再继续，正在自动压缩…")
+            try:
+                summary = self.compact_with_skills()
+                if summary:
+                    R.print_success("[TurnJudge] compact 完成。")
+                else:
+                    R.print_warning("[TurnJudge] compact 完成，但没有生成摘要文本。")
+            except Exception as e:
+                R.print_error(f"[TurnJudge] compact 失败：{e}，回退到等待真人输入。")
+                self._turn_judge_auto_count = 0
+                return
+            auto_msg = "[TurnJudge 自动接管] 历史已压缩，请根据目标继续推进任务。"
+        else:  # AUTO_CONTINUE
+            auto_msg = raw
+            # 尽量提取"反馈"段落作为注入文本，找不到就用完整判定文本兜底
+            import re as _re
+            m = _re.search(r"\*\*反馈\*\*\s*\n(.+?)(?:\n\nTURN_STATUS|\Z)", raw, _re.DOTALL)
+            if m and m.group(1).strip():
+                auto_msg = (
+                    "[TurnJudge 自动接管] 检测到技术性问题（而非任务真正完成），"
+                    "以下是系统代替用户给出的下一步指令：\n\n" + m.group(1).strip()
+                )
+
+        # 把判定反馈也记入历史（与 goal_judge 一致的注入方式），保留可审计的判定痕迹
+        try:
+            from mini_agent.history.entry import HType
+            role_agent_type = HType.ROLE_AGENT
+        except (ImportError, AttributeError):
+            role_agent_type = "role_agent"
+        inject_msg = build_inject_message(feedback_obj)
+        inject_typed = dict(inject_msg, _type=role_agent_type)
+        self._hist.append_raw_dict(inject_typed)
+
+        self._turn_judge_auto_count += 1
+        self._turn_end_user_input = auto_msg
+        R.print_info(
+            f"[TurnJudge] 判定为 {status}，自动代替用户输入继续推进（第 {auto_round_no} 次）。"
+        )
 
     def _agentic_loop(self) -> str:
         """Keep calling the LLM until it produces a final text response (no tool calls)."""
@@ -2684,7 +2834,8 @@ class Agent:
             # [SYS-ROLE-AGENT] tool_use 触发：CoachAgent 等在特定工具调用后给出建议
             self._trigger_role_agents_tool_use(response.tool_calls, result_strs)
 
-        if loop_count >= self.cfg.max_turns:
+        self._last_turn_hit_max_turns = loop_count >= self.cfg.max_turns
+        if self._last_turn_hit_max_turns:
             R.print_warning(f"Reached max turns ({self.cfg.max_turns}).")
 
         return final_text

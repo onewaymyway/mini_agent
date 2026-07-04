@@ -612,6 +612,7 @@ mini-agent user token u_a1b2c3d4                       # 重新生成 token
 - [具身智能改进指南](docs/embodied-agent-guide.md) — 本体感知 / 余裕感知 / 工具透明性 / AgentSelfModel / 时间加权记忆 / 认知锚点 / 自维护模块（A/B/C 三阶段共 12 项）
 - [微信接入指南](docs/weixin-bot-guide.md) — `weixin_bot.py` 每用户 Agent 隔离 / 远程权限审批 / 同步-异步桥接；含 `_get_or_create` 事件循环死锁问题的根因分析与修复记录
 - [Goal 模式指南](docs/goal-mode-guide.md) — 设定目标后自动多轮尝试直至达成，`/goal` 命令，验收标准协商 / GoalJudge 判定 / 异常中断恢复
+- [轮次守门员指南](docs/turn-judge-guide.md) — 轮次结束等待用户输入前自动核查是否真的需要真人 / 是否应由系统代替用户反馈继续（`turn_judge` 配置块，默认关闭）
 
 ## 当前进展
 

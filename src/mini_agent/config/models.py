@@ -446,6 +446,34 @@ class GoalModeConfig:
 
 
 @dataclass
+class TurnJudgeConfig:
+    """[SYS-TURN-JUDGE] 轮次守门员配置：每轮对话结束、真正进入"等待用户输入"之前，
+    先让一个轻量 judge agent 核查一次——这是主 Agent 真的完成了、需要真人介入，
+    还是遇到了纯技术性问题（模型输出格式有问题、撞到 max_turns 硬顶需要 compact
+    等），应该由系统自动代替用户反馈让主 Agent 继续处理。
+
+    总开关默认关闭，不影响现有行为；打开后仅在没有 TurnEnd hook 已经接管
+    （即 agent._turn_end_user_input 仍为 None）时才会触发，避免和用户自定义
+    TurnEnd hook 冲突。
+    """
+    enabled: bool = False
+
+    # ── TurnJudge 模型（None = 复用主 cfg.model / provider，通常建议用更便宜的模型）
+    judge_model: Optional[str] = None
+    judge_provider: Optional[str] = None
+
+    # ── 安全阀：连续自动接管次数上限，防止死循环刷屏 ─────────────────────────
+    # 每次真正等到真人输入后计数会被重置。
+    max_auto_rounds: int = 3
+
+    # ── 调试 ─────────────────────────────────────────────────────────────────
+    judge_show_prompt: bool = False   # 打印发给 TurnJudge 的完整输入 prompt
+
+    # ── 纳入判定上下文的最近历史消息条数 ──────────────────────────────────────
+    history_window: int = 6
+
+
+@dataclass
 class EnvInfoConfig:
     """[SYS-ENV-INFO] 环境信息采集与注入配置。
 
@@ -684,6 +712,7 @@ class AppConfig:
     format_correction: FormatCorrectionConfig = field(default_factory=FormatCorrectionConfig)
     role_agent: RoleAgentConfig  = field(default_factory=RoleAgentConfig)
     goal_mode:  GoalModeConfig   = field(default_factory=GoalModeConfig)
+    turn_judge: TurnJudgeConfig  = field(default_factory=TurnJudgeConfig)
     env_info:   EnvInfoConfig    = field(default_factory=EnvInfoConfig)
     workdir_knowledge: WorkdirKnowledgeConfig = field(default_factory=WorkdirKnowledgeConfig)
     global_knowledge: GlobalKnowledgeConfig = field(default_factory=GlobalKnowledgeConfig)

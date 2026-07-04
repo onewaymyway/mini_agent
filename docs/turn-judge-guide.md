@@ -1,0 +1,159 @@
+# 轮次守门员指南（Turn Judge）
+
+一个可选开关：每轮对话结束、真正把控制权交还给真人用户之前，先让一个轻量的
+判定 Agent（TurnJudgeAgent）核查一次——这到底是主 Agent **真的完成了当前请求，
+需要人类给出新指示**，还是主 Agent 其实**遇到了纯技术性问题**（模型输出格式
+有问题、撞到 `max_turns` 硬顶需要 compact、上下文明显混乱需要先压缩等），
+本不该打扰真人，应该由系统自动代替用户给出反馈，让主 Agent 继续处理。
+
+只有 TurnJudge 判定为"确实需要真人"时，才会真正进入等待用户输入阶段。
+
+与 [Goal 模式](goal-mode-guide.md) 里的 GoalJudge 的关系：两者是同一套设计
+思路在不同触发点上的应用——
+
+| | GoalJudge | TurnJudge |
+|---|---|---|
+| 触发点 | Goal 模式外层循环，每"一整轮任务尝试"结束时 | **任何一轮** `run_turn()` 结束、即将等待真人输入时 |
+| 判断什么 | 对照验收标准清单，目标是否达成 | 这轮结束是"正常完成"还是"技术性卡壳" |
+| 依赖 | 需要先 `/goal` 设定目标（GoalSpec） | 不依赖 Goal 模式，普通对话也能用 |
+| 输出 | `GOAL_STATUS: DONE / CONTINUE / NEED_COMPACT` | `TURN_STATUS: NEED_USER / AUTO_CONTINUE / NEED_COMPACT` |
+
+两者可以同时开启，互不冲突：Goal 模式管"任务级别"的达成判定，TurnJudge 管
+"每一轮"是否需要人工介入。
+
+---
+
+## 设计思路
+
+```
+run_turn() 内部：
+  ... _agentic_loop() 产出 result ...
+        │
+        ▼
+  [SYS-HOOKS] TurnEnd hook（若配置了，且返回了替代输入）
+        │ 未接管（无 hook / hook 未返回替代输入）
+        ▼
+  turn_judge.enabled ?
+        │ 是
+        ▼
+  TurnJudgeAgent 核查（纯文本判定，不挂工具，零风险、低延迟）
+        │
+        ├─ NEED_USER      → 计数清零，正常等待真人输入
+        ├─ AUTO_CONTINUE   → 提取具体反馈，自动作为"下一轮用户输入"注入，
+        │                    复用现有 TurnEnd 注入机制继续跑
+        └─ NEED_COMPACT    → 自动 compact_with_skills()，再注入续跑提示
+        │
+        ▼
+  连续自动接管次数达到 max_auto_rounds → 强制交还真人（防止死循环）
+```
+
+**为什么不直接复用 TurnEnd hook？** TurnEnd hook 是通用的"外部脚本/另一个
+进程决定下一步输入"的机制（见 [hooks.md](hooks.md)），适合队列消费、脚本化
+测试等场景，但它本身不判断"是否该交还真人"——这件事需要理解本轮对话的
+语义（格式错误 vs 正常结束 vs 需要人决策），单靠字符串规则很容易误判，
+所以交给一个轻量 LLM 判定 Agent 来做。两者优先级上 TurnEnd hook 更高：
+只有 hook 没有接管时才会触发 TurnJudge，避免和你自定义的 hook 冲突。
+
+**保守原则（和 GoalJudge 一致）：**
+- 判定/执行过程中任何异常都保守回退为 `NEED_USER`，绝不能让异常被当成
+  `AUTO_CONTINUE`（自动接管出错的代价远比多打扰用户一次严重）
+- 涉及主观决策的场景（"几个方案选哪个""是否要执行有风险的操作"）一律
+  判 `NEED_USER`，TurnJudge 绝不会替用户做决定
+- `TURN_STATUS` 解析失败时按 `NEED_USER` 处理
+
+---
+
+## 启用方式
+
+`agent_config.json` 中新增 `turn_judge` 配置块（默认 `enabled: false`，
+不影响任何现有行为）：
+
+```json
+{
+  "turn_judge": {
+    "enabled": true,
+    "judge_model": null,
+    "judge_provider": null,
+    "max_auto_rounds": 3,
+    "judge_show_prompt": false,
+    "history_window": 6
+  }
+}
+```
+
+| 字段 | 默认值 | 说明 |
+|------|--------|------|
+| `enabled` | `false` | 总开关，关闭时行为与现有版本完全一致 |
+| `judge_model` / `judge_provider` | `null` | TurnJudge 用的模型，`null` = 复用主 `cfg.model`（建议配一个更便宜/更快的模型，因为这是高频触发点） |
+| `max_auto_rounds` | `3` | 连续自动接管次数上限，达到后无论判定结果如何都强制交还真人，防止死循环刷屏；每次真正判定为 `NEED_USER` 或达到上限后计数会清零 |
+| `judge_show_prompt` | `false` | 打印发给 TurnJudge 的完整输入 prompt（本轮产出 + 最近历史），排查判定依据用 |
+| `history_window` | `6` | 供 TurnJudge 参考的最近历史消息条数 |
+
+子 Agent（sub-agent / role agent 内部跑的 Agent 实例）永远不会触发 TurnJudge，
+避免嵌套判定。
+
+---
+
+## 使用体验
+
+开启后，普通对话不会有任何变化——只有当一轮结束、即将等你输入时，才会看到
+类似下面的自动核查过程（打印风格与 GoalJudge 一致）：
+
+```
+ℹ  [TurnJudge] 正在核查本轮是否需要真人介入…（第 1/3 次自动核查）
+
+[🧭 轮次核查 · turn_judge]
+
+**核查**
+本轮助手的输出中包含未闭合的 <tool_use> 标签，JSON 也被截断，说明它本想调用
+bash 工具但格式有误，工具没有被执行，回复戛然而止，不是任务真正完成。
+
+**结论**
+这是纯技术性的格式问题，不应该由用户来处理。
+
+**反馈**
+请重新输出一次工具调用，注意 JSON 必须完整闭合，<tool_use> 标签需要正确闭合。
+
+TURN_STATUS: AUTO_CONTINUE
+
+轮次状态：🤖 自动接管，代替用户继续推进
+
+ℹ  [TurnJudge] 判定为 AUTO_CONTINUE，自动代替用户输入继续推进（第 1 次）。
+
+You ❯ [TurnJudge 自动接管] 检测到技术性问题（而非任务真正完成），以下是系统
+代替用户给出的下一步指令：
+
+请重新输出一次工具调用，注意 JSON 必须完整闭合，<tool_use> 标签需要正确闭合。
+
+[主 Agent 开始新一轮，正常打印回复...]
+```
+
+若判定为 `NEED_USER`（正常完成 / 需要人决策 / 无异常迹象），则不会有任何
+额外提示，直接进入你熟悉的输入提示符，和关闭该开关时体验完全一致。
+
+若连续自动接管次数达到 `max_auto_rounds`，会打印一条提示后强制交还真人：
+
+```
+ℹ  [TurnJudge] 已连续自动接管 3 次，达到上限（3），强制交还真人用户输入。
+```
+
+TurnJudge 每次判定都会作为一条 `role_agent` 类型的消息写入历史（与
+GoalJudge 反馈的注入方式一致），保留可审计的判定痕迹，不影响后续对话的
+连贯性。
+
+---
+
+## 什么情况下建议开启
+
+- 你在跑长时间无人值守的任务（比如配合 Goal 模式、cron 定时任务、daemon
+  模式），希望模型偶发的格式错误 / 撞到 max_turns 不需要人工介入就能自愈
+- 你发现模型有时会"半途而废"（输出到一半的工具调用格式错误就不再重试），
+  希望系统自动帮它纠正格式再继续，而不是把半成品直接展示给你
+
+## 什么情况下不建议开启（或需要谨慎调低 max_auto_rounds）
+
+- 你希望每一轮都亲自确认再继续（比如高风险操作场景）——TurnJudge 已经对
+  主观决策场景做了保守处理，但如果你想要**绝对**不被自动接管，请保持
+  `enabled: false`
+- 你的 `judge_model` 选用了较贵的模型——TurnJudge 是高频触发点，每轮对话
+  结束都可能跑一次，建议配置更便宜/更快的模型
