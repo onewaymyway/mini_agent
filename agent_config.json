@@ -60,7 +60,7 @@
   },
   "goal_mode": {
     "enabled": true,
-    "judge_tools_enabled": false,
+    "judge_tools_enabled": true,
     "max_rounds": 20,
     "max_total_compacts": 10,
     "consecutive_same_feedback_limit": 3,
