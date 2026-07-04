@@ -2357,6 +2357,7 @@ _COMMANDS: list[tuple[str, str, list[str]]] = [
     ("/stats",       "Show session statistics",                      []),
     ("/verbose",     "Toggle verbose tool output",                   []),
     ("/raw-output",  "Toggle raw model output (incl. <tool_use>)",   []),
+    ("/turnjudge",   "Toggle TurnJudge (auto-detect real end-of-turn vs stall)", ["on", "off", "status"]),
     ("/prompts",     "List all managed prompt files",                []),
     ("/retry",       "Discard last response, regenerate with same input", []),
     ("/rollback",    "Undo entire last turn (input + response)",     []),
