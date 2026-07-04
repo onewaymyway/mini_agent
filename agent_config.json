@@ -57,5 +57,15 @@
       {"name": "MY_DB_PASSWORD", "value": "super-secret-pw"}
     ],
     "auto_env_patterns": null
+  },
+  "goal_mode": {
+    "enabled": true,
+    "judge_tools_enabled": false,
+    "max_rounds": 20,
+    "max_total_compacts": 10,
+    "consecutive_same_feedback_limit": 3,
+    "same_feedback_similarity_threshold": 0.9,
+    "persist_state": true,
+    "auto_resume_prompt": true
   }
 }
