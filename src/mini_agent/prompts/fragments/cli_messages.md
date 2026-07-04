@@ -22,6 +22,8 @@ HISTORY_CLEARED: Conversation history cleared.
 VERBOSE_ON: Verbose mode: ON
 VERBOSE_OFF: Verbose mode: OFF
 RAW_OUTPUT_ON: Raw output mode: ON (showing all model output, including <tool_use> blocks)
+TURN_JUDGE_ON: TurnJudge: ON (轮次结束前将自动核查是否需要真人介入)
+TURN_JUDGE_OFF: TurnJudge: OFF (轮次结束将直接等待真人输入，不做自动核查)
 RAW_OUTPUT_OFF: Raw output mode: OFF (<tool_use> blocks hidden again)
 SKILL_ACTIVATED: Skill '{name}' activated.
 SKILL_DEACTIVATED: Skill '{name}' deactivated.

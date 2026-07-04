@@ -153,6 +153,38 @@ GoalJudge 反馈的注入方式一致），保留可审计的判定痕迹，不�
 
 ---
 
+## 运行时开关：`/turnjudge` 命令
+
+除了在 `agent_config.json` 里配置默认开关，也可以在 REPL 会话中随时用
+`/turnjudge` 命令开启或关闭，无需重启会话：
+
+```
+/turnjudge           不带参数 = toggle（和 /verbose 的交互习惯一致）
+/turnjudge on        显式开启
+/turnjudge off        显式关闭
+/turnjudge status     只查询当前状态，不修改
+```
+
+示例：
+
+```
+> /turnjudge on
+ℹ  TurnJudge: ON (轮次结束前将自动核查是否需要真人介入)
+
+> /turnjudge status
+ℹ  [TurnJudge] 当前状态：ON（max_auto_rounds=3，judge_model=(复用主模型)）
+
+> /turnjudge off
+ℹ  TurnJudge: OFF (轮次结束将直接等待真人输入，不做自动核查)
+```
+
+关闭时会同时清零"连续自动接管计数"，避免残留计数影响下次重新开启后的判断。
+这个开关只影响运行时内存里的 `cfg.turn_judge.enabled`，不会回写
+`agent_config.json`——如果希望下次启动默认就是开启/关闭状态，请直接修改
+配置文件。
+
+---
+
 ## 什么情况下建议开启
 
 - 你在跑长时间无人值守的任务（比如配合 Goal 模式、cron 定时任务、daemon

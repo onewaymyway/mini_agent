@@ -46,6 +46,7 @@ def build_parser() -> argparse.ArgumentParser:
               /goal resume [sid] Resume an interrupted goal run (auto-picks latest if sid omitted)
               /goal status       Show current session's goal state (round/compacts/last verdict)
               /goal cancel       Clear current session's goal state record
+              /turnjudge [on|off|status]  Toggle TurnJudge (auto-detect: real end-of-turn vs technical stall)
               /memory            Force-generate/refresh session memory now (bypass interval)
               /profile           Force-refresh user profile now (bypass interval)
               /prompts           List all managed prompt files

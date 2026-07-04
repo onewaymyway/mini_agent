@@ -248,6 +248,9 @@ def _handle_slash(cmd: str, agent: Agent, skill_loader: SkillLoader) -> None:
         key = "RAW_OUTPUT_ON" if new_state else "RAW_OUTPUT_OFF"
         R.print_info(pm.fragment("cli_messages", key))
 
+    elif name in ("turnjudge", "turn-judge", "turn_judge"):
+        _handle_turn_judge_cmd(parts[1:], agent)
+
     elif name == "model" and len(parts) >= 2:
         _handle_model_cmd(parts[1], agent)
 
@@ -462,6 +465,46 @@ def _handle_model_cmd(model_name: str, agent: Agent) -> None:
         )
     except Exception as e:
         R.print_error(f"Failed to switch model: {e}")
+
+
+def _handle_turn_judge_cmd(args: list[str], agent: Agent) -> None:
+    """/turnjudge [on|off|status] — 运行时开关轮次守门员（TurnJudge）。
+
+    不带参数时等同于 toggle（与 /verbose 一致的交互习惯）；
+    显式传 on/off/status 时按指定值设置或仅查询当前状态。
+    """
+    tj_cfg = getattr(agent.cfg, "turn_judge", None)
+    if tj_cfg is None:
+        R.print_error("当前配置不支持 turn_judge（未找到 cfg.turn_judge，可能是旧版本 AppConfig）。")
+        return
+
+    sub = args[0].lower() if args else ""
+
+    if sub == "status":
+        state = "ON" if tj_cfg.enabled else "OFF"
+        R.print_info(
+            f"[TurnJudge] 当前状态：{state}"
+            f"（max_auto_rounds={tj_cfg.max_auto_rounds}，"
+            f"judge_model={tj_cfg.judge_model or '(复用主模型)'}）"
+        )
+        return
+
+    if sub in ("on", "enable", "true", "1"):
+        new_state = True
+    elif sub in ("off", "disable", "false", "0"):
+        new_state = False
+    elif sub == "":
+        new_state = not tj_cfg.enabled
+    else:
+        R.print_error(f"Unknown /turnjudge argument: {sub!r}. Usage: /turnjudge [on|off|status]")
+        return
+
+    tj_cfg.enabled = new_state
+    # 关闭时清零自动接管计数，避免残留计数影响下次重新开启后的判断
+    if not new_state:
+        agent._turn_judge_auto_count = 0
+    key = "TURN_JUDGE_ON" if new_state else "TURN_JUDGE_OFF"
+    R.print_info(pm.fragment("cli_messages", key))
 
 
 def _compact_history(agent: Agent) -> None:
