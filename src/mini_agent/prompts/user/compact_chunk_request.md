@@ -16,7 +16,13 @@ Please summarize this chunk into a dense, structured reference. Include:
 **Decisions & findings** — any technical choices made, important discoveries, or data retrieved
 that would affect future work (error messages, file contents, API responses, etc.).
 
+**Mistakes & corrections in this chunk** — any errors, wrong assumptions, or user corrections/pushback
+observed in this chunk, what caused them, and how (or whether) they were resolved. Also note anything
+that clearly worked well and is worth repeating. This will be consolidated into concrete guardrails
+during the final merge — write it as plain facts, not narrative.
+
 **State at end of chunk** — what was accomplished and what remained open.
 
 Be precise: preserve exact file paths, error text, variable names, and numeric values.
 Omit chitchat. Respond in the same language used in the conversation.
+

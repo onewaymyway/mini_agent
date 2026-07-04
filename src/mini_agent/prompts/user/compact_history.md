@@ -24,6 +24,19 @@ that will affect future steps, API responses, test results, file contents that m
 ## Current State
 Where things stand right now: what works, what is broken, what is partially done.
 
+## Lessons & Guardrails
+Extract concrete, actionable rules for continuing this work, based on what actually happened in
+this conversation:
+- **Mistakes / failures** — anything that went wrong (wrong assumption, wrong flag, tool misuse,
+  misread requirement) and its root cause. State plainly what to avoid repeating.
+- **User corrections** — anything the user explicitly corrected, pushed back on, or had to repeat.
+  Treat these as hard constraints for the rest of the work, not just history.
+- **What worked well** — approaches, commands, or sequences that succeeded and are worth repeating.
+- **Open risks** — anything still fragile, unverified, or likely to bite again if not handled carefully.
+
+Phrase each item as a short, imperative rule (e.g. "Always verify X before Y", "Never assume Z —
+check W first"), not as a narrative retelling. If truly nothing notable occurred, write "None noted."
+
 ## Pending / Next Steps
 Open items, blockers, or next actions that were discussed or implied.
 
@@ -32,3 +45,4 @@ Be factual and precise. Preserve exact file paths, command names, error messages
 — these cannot be reconstructed from a vague summary. Omit pleasantries and meta-commentary.
 This summary will replace the full conversation history, so completeness of actionable detail matters more than brevity.
 Respond in the same language used in the conversation.
+
