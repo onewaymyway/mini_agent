@@ -559,6 +559,7 @@ HTTP 服务通过桥接模式与 Agent 核心解耦：
 - [自我演化 lesson → skill 闭环指南（Stage 3.1）](self-evolution-stage3-1-guide.md) — `skill_propose`/`evolution-agent`
 - [自我演化 eval 反馈环指南（Stage 3.2）](self-evolution-stage3-2-guide.md) — `mini-agent eval`
 - [自我演化 SubAgent 信息继承指南（Stage 3.3）](self-evolution-stage3-3-guide.md) — skill 继承/工具缓存共享/lesson 回流
+- [微信接入指南 v2](weixin-plugin-guide.md) — `apps/weixin_plugin` 基于多用户 Daemon HTTP API 的独立微信接入方案（对比 v1 `weixin_bot.py`）
 
 ---
 

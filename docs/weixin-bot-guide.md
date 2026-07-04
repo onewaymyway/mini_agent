@@ -5,6 +5,11 @@
 
 ---
 
+> **另有一套独立方案**：`apps/weixin_plugin/` 基于多用户 Daemon 的 HTTP API
+> （`/v1/*`），支持微信侧独立进程部署、跨机部署、按角色隔离多个微信用户，
+> 参见 [微信接入指南 v2](weixin-plugin-guide.md)。两者互不共享状态，不要
+> 同时对同一个 mini_agent 实例混用；轻量单机场景可继续使用本文档描述的方案。
+
 ## 1. 概述
 
 `weixin_bot.py` 与 `main.py` 同级放在项目根目录，直接内嵌 `mini_agent`
