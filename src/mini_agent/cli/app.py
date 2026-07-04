@@ -492,6 +492,22 @@ def _main_inner() -> None:
     # ── 交互 REPL ─────────────────────────────────────────────────────────────
     import anthropic  # noqa: F401  延迟导入，使 API key 校验错误有更清晰的信息
     from mini_agent.cli.repl import run_repl
+
+    # [SYS-GOAL-MODE] 启动时检测是否有未完成的 goal 任务（比如上次进程被意外杀死），
+    # 只做提示，不强制打断，用户可以选择 /goal resume 或忽略继续正常对话。
+    try:
+        if getattr(cfg.goal_mode, "auto_resume_prompt", True):
+            from mini_agent.goal_mode.state import find_resumable_session
+            _resumable_sid = find_resumable_session(project_root)
+            if _resumable_sid and _resumable_sid != agent.session_id:
+                R.print_warning(
+                    f"[Goal 模式] 检测到未完成的目标任务（session: {_resumable_sid}），"
+                    f"输入 [bold]/goal resume {_resumable_sid}[/bold] 可继续执行，"
+                    "或直接忽略进入正常对话。"
+                )
+    except Exception:
+        pass
+
     try:
         run_repl(agent, skill_loader)
     finally:

@@ -254,6 +254,11 @@ class AgentPaths:
         每次 PlanTask 状态变更时同步写入，session 意外中断后可据此恢复。"""
         return self.session_dir(session_id) / "plan_snapshot.json"
 
+    def session_goal_state(self, session_id: str) -> Path:
+        """[SYS-GOAL-MODE] .agent/sessions/<sid>/goal_state.json —— Goal 模式运行状态，
+        用于进程异常中断后恢复（详见 goal_mode/state.py）。"""
+        return self.session_dir(session_id) / "goal_state.json"
+
     def session_traces(self, session_id: str) -> Path:
         """<project_root>/.agent/sessions/<session_id>/traces.jsonl
         Stage 6.1：session 内各阶段时序追踪记录（build_system/call_llm/execute_tools/tool_call）。"""

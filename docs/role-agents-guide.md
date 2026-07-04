@@ -262,3 +262,21 @@ SCORE: 7/10
    get_dispatcher().disable()   # 禁用
    get_dispatcher().enable()    # 恢复
    ```
+
+---
+
+## 与 Goal 模式的关系
+
+`role_agents/goal_judge.py` 里的 `GoalJudgeAgent` 是专门为 [Goal 模式](goal-mode-guide.md)
+新增的第四种角色类型 `goal_judge`。和本文档描述的 `evaluator` 有本质区别，
+不通过本文档的 `RoleAgentDispatcher` 触发流程接入：
+
+| | `evaluator` | `goal_judge` |
+|---|---|---|
+| 判断内容 | 输出质量好不好（打分 0-10） | 是否达成 GoalSpec 的验收标准（DONE/CONTINUE/NEED_COMPACT） |
+| 触发范围 | 单次 `run_turn` 内部的修订循环 | 跨多次 `run_turn` 的外层 `GoalRunner` 循环 |
+| 是否可挂工具 | 否（固定无工具） | 可选（`judge_tools_enabled` 开关，能自己跑命令验证） |
+| 调用方式 | `RoleAgentDispatcher.trigger_output()` | `GoalRunner` 直接调用 `run_goal_judge()`，不经过 dispatcher |
+
+两者可以同时存在、互不冲突：`evaluator` 仍在每次 `run_turn` 内部做质量把关，
+`goal_judge` 在外层做"目标是否达成"的把关。

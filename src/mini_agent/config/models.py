@@ -403,6 +403,39 @@ class RoleAgentConfig:
 
 
 @dataclass
+class GoalModeConfig:
+    """[SYS-GOAL-MODE] Goal 模式配置：设定一个目标，Agent 自动多轮尝试直至达成或触发安全阀。
+
+    总开关（enabled）只影响 `/goal` 命令是否可用，不影响其他现有功能。
+    """
+    enabled: bool = False
+
+    # ── 验收标准协商 ─────────────────────────────────────────────────────────
+    # GoalSpecBuilder 用于生成/修订 GoalSpec 的模型（None = 复用主 cfg.model）
+    spec_builder_model: Optional[str] = None
+    spec_builder_provider: Optional[str] = None
+
+    # ── GoalJudge ────────────────────────────────────────────────────────────
+    judge_model: Optional[str] = None
+    judge_provider: Optional[str] = None
+    # 判定 Agent 是否挂载工具（能自己跑命令验证验收标准），默认关闭（最小权限原则）
+    judge_tools_enabled: bool = False
+    # 仅当 judge_tools_enabled=True 时生效的白名单（工具名 / 工具组名均可）
+    judge_allowed_tools: list = field(default_factory=lambda: ["bash", "read_file", "grep", "glob"])
+    judge_allowed_tool_groups: list = field(default_factory=list)
+
+    # ── 外层循环安全阀 ───────────────────────────────────────────────────────
+    max_rounds: int = 20                       # 外层 goal 迭代轮数上限
+    max_total_compacts: int = 10               # 单次 goal 执行期间最多允许几次 compact
+    consecutive_same_feedback_limit: int = 3   # 连续 N 轮 judge 反馈高度雷同 → 提前终止
+    same_feedback_similarity_threshold: float = 0.9  # difflib.SequenceMatcher 相似度阈值
+
+    # ── 状态持久化（异常中断恢复）────────────────────────────────────────────
+    persist_state: bool = True   # 是否在每个轮次边界落盘 goal_state.json
+    auto_resume_prompt: bool = True  # 启动时检测到未完成 goal 是否主动提示恢复
+
+
+@dataclass
 class EnvInfoConfig:
     """[SYS-ENV-INFO] 环境信息采集与注入配置。
 
@@ -640,6 +673,7 @@ class AppConfig:
     workflow:   WorkflowConfig   = field(default_factory=WorkflowConfig)
     format_correction: FormatCorrectionConfig = field(default_factory=FormatCorrectionConfig)
     role_agent: RoleAgentConfig  = field(default_factory=RoleAgentConfig)
+    goal_mode:  GoalModeConfig   = field(default_factory=GoalModeConfig)
     env_info:   EnvInfoConfig    = field(default_factory=EnvInfoConfig)
     workdir_knowledge: WorkdirKnowledgeConfig = field(default_factory=WorkdirKnowledgeConfig)
     global_knowledge: GlobalKnowledgeConfig = field(default_factory=GlobalKnowledgeConfig)

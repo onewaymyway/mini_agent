@@ -35,6 +35,7 @@ from .models import (
     RetryConfig,
     EnsembleConfig,
     RoleAgentConfig,
+    GoalModeConfig,
     EnvInfoConfig,
     ReminderConfig,
     ProprioceptionConfig,
@@ -556,6 +557,27 @@ def load_config(
         agents_dir=_ra_dir,
     )
 
+    # ── GoalMode 配置组装 ────────────────────────────────────────────────────
+    # [SYS-GOAL-MODE] 目前只支持从配置文件的 goal_mode: {...} 块读取，暂不接 CLI 参数
+    # （/goal 命令本身的运行时参数走命令行 slash 参数，不走这里）。
+    _gm = file_cfg.get("goal_mode") if isinstance(file_cfg.get("goal_mode"), dict) else {}
+    goal_mode_cfg = GoalModeConfig(
+        enabled=bool(_gm.get("enabled", False)),
+        spec_builder_model=_gm.get("spec_builder_model"),
+        spec_builder_provider=_gm.get("spec_builder_provider"),
+        judge_model=_gm.get("judge_model"),
+        judge_provider=_gm.get("judge_provider"),
+        judge_tools_enabled=bool(_gm.get("judge_tools_enabled", False)),
+        judge_allowed_tools=list(_gm.get("judge_allowed_tools", ["bash", "read_file", "grep", "glob"])),
+        judge_allowed_tool_groups=list(_gm.get("judge_allowed_tool_groups", [])),
+        max_rounds=int(_gm.get("max_rounds", 20)),
+        max_total_compacts=int(_gm.get("max_total_compacts", 10)),
+        consecutive_same_feedback_limit=int(_gm.get("consecutive_same_feedback_limit", 3)),
+        same_feedback_similarity_threshold=float(_gm.get("same_feedback_similarity_threshold", 0.9)),
+        persist_state=bool(_gm.get("persist_state", True)),
+        auto_resume_prompt=bool(_gm.get("auto_resume_prompt", True)),
+    )
+
     # ── EnvInfo 配置组装 ────────────────────────────────────────────────────
     _ei = file_cfg.get("env_info") if isinstance(file_cfg.get("env_info"), dict) else {}
     _ei_enabled = bool(_ei.get("enabled", True))
@@ -656,6 +678,7 @@ def load_config(
         workflow=workflow_cfg,
         format_correction=format_correction_cfg,
         role_agent=role_agent_cfg,
+        goal_mode=goal_mode_cfg,
         env_info=env_info_cfg,
         workdir_knowledge=workdir_knowledge_cfg,
         global_knowledge=global_knowledge_cfg,

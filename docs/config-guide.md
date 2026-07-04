@@ -460,6 +460,44 @@ class ObservabilityConfig:
 对应的便捷属性：`cfg.observability_enabled` / `cfg.tracing_enabled`。
 详见 [观察性系统指南](observability-guide.md)。
 
+### GoalModeConfig（Goal 模式）
+
+```python
+@dataclass
+class GoalModeConfig:
+    enabled: bool = False
+    spec_builder_model: Optional[str] = None
+    spec_builder_provider: Optional[str] = None
+    judge_model: Optional[str] = None
+    judge_provider: Optional[str] = None
+    judge_tools_enabled: bool = False
+    judge_allowed_tools: list = field(default_factory=lambda: ["bash", "read_file", "grep", "glob"])
+    judge_allowed_tool_groups: list = field(default_factory=list)
+    max_rounds: int = 20
+    max_total_compacts: int = 10
+    consecutive_same_feedback_limit: int = 3
+    same_feedback_similarity_threshold: float = 0.9
+    persist_state: bool = True
+    auto_resume_prompt: bool = True
+```
+
+| 字段 | 说明 |
+|------|------|
+| `enabled` | 整体开关，关闭时 `/goal` 命令报错提示未启用 |
+| `spec_builder_model` / `spec_builder_provider` | GoalSpecBuilder（验收标准协商）用的模型，`null` = 复用主 `cfg.model` |
+| `judge_model` / `judge_provider` | GoalJudge 用的模型，`null` = 复用主 `cfg.model` |
+| `judge_tools_enabled` | GoalJudge 是否挂载工具自己验证验收标准，默认关闭（最小权限原则） |
+| `judge_allowed_tools` / `judge_allowed_tool_groups` | `judge_tools_enabled=true` 时的工具白名单 |
+| `max_rounds` | 外层循环轮次上限 |
+| `max_total_compacts` | 单次 goal 执行期间最多允许几次 compact |
+| `consecutive_same_feedback_limit` | 连续 N 轮反馈高度雷同即判定"卡住"提前终止 |
+| `same_feedback_similarity_threshold` | 判定"雷同"的相似度阈值（`difflib.SequenceMatcher`） |
+| `persist_state` | 是否在轮次边界落盘 `goal_state.json`，供异常中断恢复 |
+| `auto_resume_prompt` | 启动 REPL 时若检测到未完成的 goal 是否主动提示 |
+
+只支持从 `agent_config.json` 的 `goal_mode: {...}` 块读取，暂无对应 CLI 参数。
+详见 [Goal 模式指南](goal-mode-guide.md)。
+
 ### PrivacyConfig
 
 ```python
@@ -561,6 +599,7 @@ my_feature_cfg = MyFeatureConfig(
 - [系统设计概述](system-overview.md) — 整体架构与各子系统关系
 - [记忆管理指南](memory-management-guide.md) — `MemoryConfig` 新增字段的完整使用场景（Lesson Memory）
 - [多结果合并取优指南](ensemble-best-of-n-guide.md) — `EnsembleConfig` 的完整使用场景与架构说明
+- [Goal 模式指南](goal-mode-guide.md) — `GoalModeConfig` 的完整使用场景与架构说明
 
 ---
 

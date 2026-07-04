@@ -70,6 +70,7 @@ Assistant 回复      [assistant_reply]   Assistant 回复    [assistant_reply, 
 | `skill_context` | skill 上下文重附 | `user` |
 | `reminder` | 动态 reminder 注入 | `user` 或 `assistant` |
 | `role_agent` | role agent 反馈注入 | `user` 或 `assistant` |
+| `goal_context` | [Goal 模式](goal-mode-guide.md) 目标+验收标准的"钉住"消息，每轮/每次 compact 后重新附加，防止被压缩策略稀释 | `user` |
 | `session_resume` | 跨 session 恢复标记 | `user` |
 | `hook_context` | hook 注入的额外上下文 | `user` |
 | `file_change` | 文件变化感知通知 | `user` |
@@ -373,6 +374,7 @@ return [
 - [`unit-testing-guide.md`](unit-testing-guide.md) — 测试 helper 中如何构建带 `_hist` 的 agent
 - [`memory-management-guide.md`](memory-management-guide.md) — Lesson Memory：规则触发 / SessionEnd 反思 / 人类反馈纠正检测如何消费类型化 history
 - [`permission-guide.md`](permission-guide.md) — `(e)dit` 审批编辑如何产生 `user_correction` 消息
+- [`goal-mode-guide.md`](goal-mode-guide.md) — `goal_context` 类型的产生方与消费场景（GoalRunner 钉住目标上下文）
 
 ---
 

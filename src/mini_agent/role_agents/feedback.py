@@ -18,11 +18,13 @@ from typing import Optional
 class RoleFeedback:
     """单次角色 Agent 的反馈结果。"""
     role_name: str
-    role_type: str          # evaluator / coach / custom
+    role_type: str          # evaluator / coach / custom / goal_judge
     raw_output: str         # 角色 Agent 的原始输出
     score: Optional[float] = None    # evaluator 才有：0-1 浮点
     passed: Optional[bool] = None    # 是否通过阈值
     inject_as: str = "user"          # user | system_reminder
+    # [SYS-GOAL-MODE] goal_judge 才有：DONE | CONTINUE | NEED_COMPACT
+    goal_status: Optional[str] = None
 
 
 def extract_score(text: str) -> Optional[float]:
@@ -71,6 +73,21 @@ def extract_score(text: str) -> Optional[float]:
     return None
 
 
+_GOAL_STATUS_RE = re.compile(r'GOAL_STATUS\s*:\s*(DONE|CONTINUE|NEED_COMPACT)', re.IGNORECASE)
+
+
+def extract_goal_status(text: str) -> Optional[str]:
+    """从 GoalJudge 输出中提取 GOAL_STATUS 关键字（DONE / CONTINUE / NEED_COMPACT）。
+
+    找不到时返回 None（调用方应将其当作 CONTINUE 处理并原样把输出注入反馈，
+    保守起见不能默认判定为 DONE）。
+    """
+    m = _GOAL_STATUS_RE.search(text)
+    if not m:
+        return None
+    return m.group(1).upper()
+
+
 def format_feedback(feedback: RoleFeedback) -> str:
     """
     把 RoleFeedback 格式化为注入主 Agent 的消息文本。
@@ -80,6 +97,7 @@ def format_feedback(feedback: RoleFeedback) -> str:
         "evaluator": "📊 质量评估",
         "coach": "🎯 策略建议",
         "custom": "💬 角色反馈",
+        "goal_judge": "🎯 目标核查",
     }
     header = header_map.get(feedback.role_type, "💬 角色反馈")
     role_label = f"[{header} · {feedback.role_name}]"
@@ -92,6 +110,15 @@ def format_feedback(feedback: RoleFeedback) -> str:
         score_pct = int(feedback.score * 100)
         status = "✅ 通过" if feedback.passed else "⚠️ 需要修订"
         lines.append(f"综合评分：{score_pct}/100  {status}")
+
+    if feedback.goal_status is not None:
+        lines.append("")
+        status_map = {
+            "DONE": "✅ 目标已达成",
+            "CONTINUE": "🔄 尚未达成，需继续尝试",
+            "NEED_COMPACT": "🗜️ 建议先压缩历史再继续",
+        }
+        lines.append(f"目标状态：{status_map.get(feedback.goal_status, feedback.goal_status)}")
 
     return "\n".join(lines)
 

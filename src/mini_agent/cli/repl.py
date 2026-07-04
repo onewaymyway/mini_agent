@@ -27,6 +27,7 @@ from mini_agent.cli.commands import (
     handle_platform_cmd,
     handle_evolution_cmd,
     handle_evolve_cmd,
+    handle_goal_cmd,
     handle_debug_cmd,
 )
 
@@ -253,6 +254,9 @@ def _handle_slash(cmd: str, agent: Agent, skill_loader: SkillLoader) -> None:
 
     elif name == "compact":
         _compact_history(agent)
+
+    elif name == "goal":
+        handle_goal_cmd(parts[1:], agent)
 
     elif name == "memory":
         agent.trigger_summary_and_profile(force=True)

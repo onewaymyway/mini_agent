@@ -170,6 +170,20 @@ mini-agent --retry-backoff linear --retry-backoff-step 60 --retry-backoff-max 30
 | `/reload` | 强制热重载 Skills 和 Agent Profiles（跳过 debounce，立即重扫磁盘）；详见 [热重载机制说明](hot-reload-guide.md) |
 | `exit` / `quit` | 退出程序 |
 
+### Goal 模式（`src/mini_agent/cli/commands/goal_mode_cmd.py`）
+
+> 设定一个目标，Agent 自动多轮尝试直至达成或触发安全阀。需要在
+> `agent_config.json` 设置 `goal_mode.enabled: true`（无对应 CLI flag）。
+> 与下方 Goal Backlog（Stage 9，跨会话/daemon 的长期目标管理）是不同的机制，
+> `/goal` 是单次会话内的同步执行循环。详见 [Goal 模式指南](goal-mode-guide.md)
+
+| 命令 | 说明 |
+|------|------|
+| `/goal <目标文本>` | 生成验收标准草案并进入确认子对话（输入修改意见可继续调整，`/confirm` 确认开始执行，`/cancel` 放弃） |
+| `/goal resume [sid]` | 恢复上次未完成的目标；不传 `sid` 时自动查找最近一个 `status=running` 的记录 |
+| `/goal status` | 查看当前 session 的 goal 状态（轮次、compact 次数、最后判定） |
+| `/goal cancel` | 清理当前 session 的 `goal_state.json` 记录 |
+
 ### Skill 管理（`src/mini_agent/cli/commands/skills.py`）
 
 | 命令 | 说明 |
@@ -327,6 +341,7 @@ mini-agent --retry-backoff linear --retry-backoff-step 60 --retry-backoff-max 30
 ### Goal Backlog 与自主调度（`src/mini_agent/cli/commands/goals.py`）
 
 > **Stage 9** 跨会话目标层级 + AutonomousLoop 状态查询。详见 [Stage 9 自主运行时指南](self-evolution-stage9-guide.md)
+> （区别于上方单次会话内同步执行的 [`/goal` 命令](goal-mode-guide.md)）
 
 | 命令 | 说明 |
 |------|------|
