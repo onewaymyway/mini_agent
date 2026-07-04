@@ -72,6 +72,7 @@ class ToolExecutor:
         inject_reminder=None,      # Optional[Callable[[Reminder], None]]，由 Agent 提供的注入回调
         llm_client=None,           # Optional[LLMClient]，[SYS-SMARTTRIM] 智能摘要用
         raw_result_store=None,     # Optional[RawResultStore]，[SYS-RAWSTORE] 原始输出留存
+        persona_getter=None,       # Optional[Callable[[], Optional[str]]]，角色扮演系统 [二期]
     ) -> None:
         self.cfg = cfg
         self.registry = registry
@@ -92,6 +93,7 @@ class ToolExecutor:
         self._inject_reminder = inject_reminder
         self._llm_client = llm_client
         self._raw_result_store = raw_result_store
+        self._persona_getter = persona_getter
 
     def execute_all(
         self,
@@ -199,6 +201,33 @@ class ToolExecutor:
                     continue
                 if pre.modified_input:
                     tool_input = pre.modified_input
+
+            # [二期] 角色扮演 allowed_tools 白名单：persona 声明了非空 allowed_tools
+            # 时，不在名单内的工具直接拒绝，不进入 guard.check()（代码强制拦截，
+            # 不依赖角色文件内容或模型自觉）。空 allowed_tools = 不限制。
+            if self._persona_getter is not None:
+                try:
+                    _persona_name = self._persona_getter()
+                except Exception:
+                    _persona_name = None
+                if _persona_name:
+                    try:
+                        from mini_agent.orchestrator.persona_profiles import get_persona_loader
+                        _p_loader = get_persona_loader()
+                        _persona = _p_loader.get(_persona_name) if _p_loader else None
+                    except Exception:
+                        _persona = None
+                    if _persona is not None and _persona.allowed_tools and tc.name not in _persona.allowed_tools:
+                        _reason = (
+                            f"tool '{tc.name}' is not permitted under persona "
+                            f"'{_persona.display_name}' (allowed_tools: {_persona.allowed_tools})"
+                        )
+                        result_str = f"[blocked by persona allowed_tools: {_reason}]"
+                        R.print_tool_error(tc.name, _reason)
+                        if self.cfg.tool_stats_enabled:
+                            self.stats.record_tool_call(tc.name, False, 0)
+                        result_strs.append(result_str)
+                        continue
 
             allowed = self.guard.check(tc.name, tool_input)
 

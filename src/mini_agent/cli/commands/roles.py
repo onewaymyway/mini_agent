@@ -78,7 +78,10 @@ def handle_role_cmd(args: list[str], agent=None) -> None:
         R.console.print(f"[dim]{p.description}[/dim]")
         if p.tone:
             R.console.print(f"[dim]tone: {p.tone}[/dim]")
-        R.console.print(f"break_character_policy: {p.break_character_policy}\n")
+        R.console.print(f"break_character_policy: {p.break_character_policy}")
+        if p.allowed_tools:
+            R.console.print(f"allowed_tools: {p.allowed_tools}")
+        R.console.print()
         R.console.print("[bold]Rendered system prompt fragment:[/bold]")
         R.console.print(render_persona_prompt(p))
         R.console.print()

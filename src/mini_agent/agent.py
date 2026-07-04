@@ -330,6 +330,15 @@ class Agent:
                 reload_fn=_apl.rediscover,
                 category="agent",
             )
+        # personas（角色扮演）由模块级单例管理，与 agent profiles 同模式接入热重载
+        from mini_agent.orchestrator.persona_profiles import get_persona_loader
+        _ppl = get_persona_loader()
+        if _ppl is not None:
+            self._hot_reloader.register(
+                dirs=_ppl._dirs,
+                reload_fn=_ppl.rediscover,
+                category="persona",
+            )
 
         # ── 感知与记忆子系统（按开关初始化）────────────────────────────────
 
@@ -526,6 +535,9 @@ class Agent:
             history_getter=lambda: self._history,
             llm_client=self._llm,
             raw_result_store=self._raw_result_store,
+            # [二期] 角色扮演 allowed_tools 白名单：懒引用，/role use|exit 修改
+            # self.active_persona 后下一次工具调用即可读到最新值。
+            persona_getter=lambda: self.active_persona,
         )
         # [SYS-MCP] 注入 MCPManager（_init_components 在 MCP 注册后调用，此时已就绪）
         self._tool_executor._mcp_manager = getattr(self, "_mcp_manager", None)
@@ -919,6 +931,8 @@ class Agent:
         if not self._session_mgr or not self._session:
             return None
         try:
+            # 角色扮演系统：将当前激活角色同步进 session，随 meta.json 持久化
+            self._session.active_persona = self.active_persona
             stats = {
                 "turns":            self.stats.turns,
                 "input_tokens":     self.stats.input_tokens,
@@ -1593,6 +1607,8 @@ class Agent:
         self.stats.tool_calls    = session.stats.get("tool_calls", 0)
         self.stats.tool_stats    = session.stats.get("tool_stats", {}) or {}
         self.stats.skill_activations = session.stats.get("skill_activations", {}) or {}
+        # 角色扮演系统：从 session 恢复当前激活的角色（未激活则为 None）
+        self.active_persona = session.active_persona
 
         # 同步加载 raw_history（先 clear，再 load，最后 set_path 绑定实时写入）
         self._hist._raw.clear()
@@ -1621,6 +1637,8 @@ class Agent:
             return False
         self._history.clear()
         self.stats = SessionStats()
+        # 角色扮演系统：新 session 不继承上一个 session 的角色状态
+        self.active_persona = None
         self._session = self._session_mgr.new_session(
             provider=getattr(self.cfg, "llm_provider", "unknown"),
             model=self.cfg.model,

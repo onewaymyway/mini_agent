@@ -144,11 +144,11 @@ def build_system_prompt(
 
 不涉及：`ToolRegistry`、`platform_policy.json`、`AgentProfileLoader`、hooks 系统。
 
-## 10. 二期路线图（暂不实施）
+## 10. 二期路线图（已实施部分见第 13 节）
 
-- `allowed_tools` 白名单的代码级强制拦截：接入现有 `platform_policy.json` 的过滤逻辑，实现"某些角色下禁用 bash/write_file 等敏感工具"。
-- `/role` 与 daemon 多用户会话的联动：确认 persona 状态按 `session_id` 隔离，不同用户互不影响（当前设计默认已是会话级隔离，二期需补充多用户场景下的显式测试用例）。
-- 角色使用情况的简单统计（复用现有 skill `tracker.py` 的统计模式），用于后续判断哪些内置角色实际有人用。
+- ~~`allowed_tools` 白名单的代码级强制拦截~~ **已实施**，见第 13 节。
+- ~~`/role` 与 daemon 多用户会话的联动~~ **已确认**：`active_persona` 是 `Agent` 实例属性，`SessionAgentPool` 本身按 session 各自持有独立 `Agent()` 实例，天然隔离，无需额外改动。
+- 角色使用情况的简单统计（复用现有 skill `tracker.py` 的统计模式），用于后续判断哪些内置角色实际有人用——暂缓，非当前优先级。
 
 ## 11. 验收方式
 
@@ -164,4 +164,16 @@ def build_system_prompt(
 - `Session` 数据结构新增 `active_persona` 字段，随 `meta.json` 落盘；`save_session()` 写入前同步、`load_session()` 读取后恢复、`new_session()` 显式重置为 `None`（不继承上一个 session 的角色状态）
 - 已验证：`PersonaLoader` 加载 4 个默认角色 + `render_persona_prompt()` 渲染（含强制安全边界声明）；`SessionManager.save/load` 往返验证 `active_persona` 正确持久化
 - 未验证：完整 CLI 交互流程（需在实际运行环境执行 `/role use` → 下一轮 system prompt 变化 → `/debug system` → `/role exit`）
+
+## 13. 二期实施：allowed_tools 强制拦截 + 命令提示 + 新增角色
+
+- **`/role` slash 命令自动补全提示**：在 `ui/terminal.py` 的 `_COMMANDS` 表中新增 `/role` 条目（含子命令 `list/use/show/exit/status/reload`），与 `/agents` 等其余命令保持一致的提示体验。
+- **热重载接入**：`agent.py` 的 `HotReloader` 新增 `category="persona"` 监视，`/reload` 命令现在也会重新扫描 `.agent/personas/`（与 skill/agent profile 同批次触发）。
+- **新增角色**：`.agent/personas/rem.md`——蕾姆，温柔忠诚、略带反差萌的女仆人设。
+- **`allowed_tools` 代码级强制拦截**（二期核心）：
+  - `ToolExecutor` 新增 `persona_getter` 参数，在 `execute_all()` 循环中、`PreToolUse` hook 之后、`guard.check()` 之前插入检查：若当前 persona 声明了非空 `allowed_tools` 且本次调用的工具不在名单内，直接拒绝（返回 `[blocked by persona allowed_tools: ...]`），不再进入常规权限审批流程。空 `allowed_tools` = 不限制，与一期设计一致。
+  - 这是代码层面的强制拦截，不依赖角色文件内容或模型自觉——与第 6 节"安全边界系统级强制兜底"同一思路的延伸。
+  - `render_persona_prompt()` 同步在渲染的 prompt 片段中告知模型当前允许的工具列表，避免模型盲试被拒绝的工具、浪费轮次。
+  - `/role show <name>` 新增展示 `allowed_tools`（若设置）。
+- **多用户 daemon 隔离**：确认 `SessionAgentPool` 按 session 各自持有独立 `Agent()` 实例（`api/session_pool.py`），`active_persona` 作为 `Agent` 实例属性天然按 session 隔离，不需要额外改动。
 

@@ -182,7 +182,13 @@ def render_persona_prompt(persona: PersonaProfile) -> str:
     确保它是 system prompt 中"最后生效的指令"。
     """
     header = f"## 当前角色扮演设定：{persona.display_name}\n"
-    return (header + "\n" + persona.body).strip() + _SAFETY_SUFFIX
+    body = (header + "\n" + persona.body).strip()
+    if persona.allowed_tools:
+        body += (
+            "\n\n> [二期] 该角色限制了可用工具，仅可调用："
+            f"{', '.join(persona.allowed_tools)}。其余工具调用会被系统拒绝。"
+        )
+    return body + _SAFETY_SUFFIX
 
 
 # ── 模块级单例（与 init_agent_profiles 同一模式） ─────────────────────────
