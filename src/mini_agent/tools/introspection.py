@@ -1021,6 +1021,7 @@ def register_introspection_tools(registry: "ToolRegistry", agent) -> None:
         input_schema={"type": "object", "properties": {}, "required": []},
         requires_approval=False,
         group="introspection",
+        override=True,
     )
 
     # ── Tool 2: agent_inspect ─────────────────────────────────────────────────
@@ -1092,6 +1093,7 @@ def register_introspection_tools(registry: "ToolRegistry", agent) -> None:
         },
         requires_approval=False,
         group="introspection",
+        override=True,
     )
 
     # ── Tool 3: agent_patch ───────────────────────────────────────────────────
@@ -1148,6 +1150,7 @@ def register_introspection_tools(registry: "ToolRegistry", agent) -> None:
         },
         requires_approval=True,
         group="introspection",
+        override=True,
     )
 
     # ── Tool 4: agent_policy ──────────────────────────────────────────────────
@@ -1243,4 +1246,5 @@ def register_introspection_tools(registry: "ToolRegistry", agent) -> None:
         },
         requires_approval=False,
         group="introspection",
+        override=True,
     )
