@@ -158,6 +158,8 @@ class GoalSpecBuilder:
         builder_cfg.max_turns = 2
         builder_cfg.stream = False
         builder_cfg.system_extra = DEFAULT_SPEC_BUILDER_SYSTEM
+        # [SYS-GOAL-MODE] 同理，给 GoalSpecBuilder 一个专属显示名，避免和主 Agent 混淆
+        builder_cfg.agent_name = "📋 GoalSpecBuilder"
 
         guard = PermissionGuard(
             auto_approve=True,

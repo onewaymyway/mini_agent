@@ -122,6 +122,68 @@ def test_find_resumable_session_none_when_no_sessions(tmp_path):
     assert find_resumable_session(tmp_path) is None
 
 
+def test_goal_judge_uses_distinct_agent_name(monkeypatch, tmp_path):
+    """GoalJudge 内部 Agent 必须用专属的 agent_name，不能沿用主 Agent 的名字，
+    否则打印出来会看起来像主 Agent 自己在说话，分不清是评估者的输出。"""
+    import mini_agent.agent as agent_mod
+    from mini_agent.config.loader import load_config
+    from mini_agent.orchestrator.agent_profiles import AgentProfile
+    from mini_agent.role_agents.goal_judge import run_goal_judge
+
+    captured = {}
+
+    class FakeInnerAgent:
+        def __init__(self, cfg, guard, registry):
+            captured["cfg"] = cfg
+
+        def run_turn(self, prompt):
+            return "GOAL_STATUS: DONE"
+
+    monkeypatch.setattr(agent_mod, "Agent", FakeInnerAgent)
+
+    base_cfg = load_config(
+        project_root=tmp_path, verbose=False, sandbox=True,
+        auto_approve=True, model="claude-sonnet-4-6",
+    )
+    base_cfg.api_key = "sk-fake"
+
+    profile = AgentProfile(name="goal_judge", role_type="goal_judge")
+    spec = GoalSpec(goal_text="g", acceptance_criteria=["c"], confirmed=True)
+    run_goal_judge(profile, base_cfg, spec, "output", 1, "")
+
+    assert captured["cfg"].agent_name != base_cfg.agent_name
+    assert "GoalJudge" in captured["cfg"].agent_name
+
+
+def test_goal_spec_builder_uses_distinct_agent_name(monkeypatch, tmp_path):
+    """GoalSpecBuilder 同理，也要用专属 agent_name。"""
+    import mini_agent.agent as agent_mod
+    from mini_agent.config.loader import load_config
+
+    captured = {}
+
+    class FakeInnerAgent:
+        def __init__(self, cfg, guard, registry):
+            captured["cfg"] = cfg
+
+        def run_turn(self, prompt):
+            return '{"goal_text": "g", "acceptance_criteria": ["c"]}'
+
+    monkeypatch.setattr(agent_mod, "Agent", FakeInnerAgent)
+
+    base_cfg = load_config(
+        project_root=tmp_path, verbose=False, sandbox=True,
+        auto_approve=True, model="claude-sonnet-4-6",
+    )
+    base_cfg.api_key = "sk-fake"
+
+    builder = GoalSpecBuilder(base_cfg)
+    builder.build_initial("do the thing")
+
+    assert captured["cfg"].agent_name != base_cfg.agent_name
+    assert "GoalSpecBuilder" in captured["cfg"].agent_name
+
+
 def test_scan_goal_states_reports_non_running_records(tmp_path):
     from mini_agent.goal_mode.state import scan_goal_states
 

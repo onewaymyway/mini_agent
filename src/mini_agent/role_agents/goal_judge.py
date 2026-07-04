@@ -124,6 +124,10 @@ def run_goal_judge(
     judge_cfg.max_turns = 6 if tools_enabled else 2   # 挂工具时允许多跑几轮验证命令
     judge_cfg.stream = False
     judge_cfg.system_extra = profile.system_prompt if profile.system_prompt.strip() else DEFAULT_GOAL_JUDGE_SYSTEM
+    # [SYS-GOAL-MODE] 给 GoalJudge 内部 Agent 一个专属的显示名，而不是沿用主 Agent 的
+    # cfg.agent_name（默认都是同一个名字，会导致 print_assistant_prefix 打印出来的前缀
+    # 跟主 Agent 说话一模一样，看不出这是评估者的输出）。
+    judge_cfg.agent_name = "🎯 GoalJudge"
 
     guard = PermissionGuard(
         auto_approve=True,

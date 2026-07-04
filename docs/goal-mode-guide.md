@@ -199,6 +199,16 @@ Goal 执行结果： done
 GOAL_STATUS: DONE | CONTINUE | NEED_COMPACT
 ```
 
+GoalJudge 的输出通过两层机制确保不会被误认成主 Agent 在说话：
+
+1. **专属显示名**：GoalJudge / GoalSpecBuilder 内部都是独立的 `Agent` 实例，
+   各自设置了专属的 `cfg.agent_name`（`🎯 GoalJudge` / `📋 GoalSpecBuilder`），
+   而不是沿用主 Agent 的 `cfg.agent_name`。这样它们各自调用模型时，终端里
+   打印的前缀（`print_assistant_prefix`）就是 `🎯 GoalJudge ❯ ...`，一眼能
+   看出这是评估者/协商助手在说话，不会和主 Agent 的输出混在一起。
+2. **结构化展示块**：GoalRunner 每轮结束后额外打印一份 `format_feedback()`
+   格式化过的核查结果，带 `[🎯 目标核查 · goal_judge]` 标题。
+
 判定结果通过 `role_agents/feedback.extract_goal_status()` 提取，解析失败时
 **保守按 CONTINUE 处理**（绝不会因为解析异常被误判为 DONE）。
 
