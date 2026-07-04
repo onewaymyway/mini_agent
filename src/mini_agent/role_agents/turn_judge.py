@@ -94,6 +94,13 @@ def run_turn_judge(
     judge_cfg.max_turns = 2
     judge_cfg.stream = False
     judge_cfg.system_extra = profile.system_prompt if profile.system_prompt.strip() else pm.render("system/turn_judge")
+    # [SYS-TURN-JUDGE][BUGFIX] load_config() 会重新从同一个 agent_config.json 读取配置，
+    # 这意味着 judge_cfg.turn_judge.enabled 也会是 True——如果不显式关掉，TurnJudgeAgent
+    # 自己跑 run_turn() 时会对自己再触发一次 TurnJudge 核查，无限递归自我核查，
+    # 表现为一直卡在 "🧭 TurnJudge ❯" 反复核查、永远不把控制权交还真人。
+    # 这里必须显式禁用，不能只依赖下面的 is_subagent 标记（那只是第二道保险）。
+    from mini_agent.config.models import TurnJudgeConfig as _TurnJudgeConfig
+    judge_cfg.turn_judge = _TurnJudgeConfig(enabled=False)
     # [SYS-TURN-JUDGE] 给 TurnJudge 内部 Agent 一个专属的显示名，风格与 GoalJudge 一致，
     # 方便用户在打印输出中一眼看出这是自动核查而非主 Agent 本身在说话。
     judge_cfg.agent_name = "🧭 TurnJudge"
@@ -107,7 +114,10 @@ def run_turn_judge(
     # 纯文本判定，不挂载任何工具（最小权限、最低延迟）
     registry = get_default_registry().filtered(names=[], groups=[])
 
-    judge_agent = Agent(cfg=judge_cfg, guard=guard, registry=registry)
+    # [SYS-TURN-JUDGE][BUGFIX] 显式标记为 subagent，作为第二道保险：即使未来
+    # judge_cfg.turn_judge 的禁用逻辑被误删，agent.py::_maybe_run_turn_judge()
+    # 里的 `self._is_subagent` 检查依然会拦住嵌套触发。
+    judge_agent = Agent(cfg=judge_cfg, guard=guard, registry=registry, is_subagent=True)
 
     prompt = build_turn_judge_prompt(
         assistant_output=assistant_output,

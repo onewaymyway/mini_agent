@@ -145,6 +145,9 @@ class GoalSpecBuilder:
         builder_cfg.system_extra = pm.render("system/goal_spec_builder")
         # [SYS-GOAL-MODE] 同理，给 GoalSpecBuilder 一个专属显示名，避免和主 Agent 混淆
         builder_cfg.agent_name = "📋 GoalSpecBuilder"
+        # [SYS-TURN-JUDGE][BUGFIX] 防止内部 Agent 对自己触发 TurnJudge 造成无限递归核查
+        from mini_agent.config.models import TurnJudgeConfig as _TurnJudgeConfig
+        builder_cfg.turn_judge = _TurnJudgeConfig(enabled=False)
 
         guard = PermissionGuard(
             auto_approve=True,
@@ -152,7 +155,7 @@ class GoalSpecBuilder:
             project_root=self._cfg.project_root,
         )
         empty_registry = get_default_registry().filtered(names=[], groups=[])
-        builder_agent = Agent(cfg=builder_cfg, guard=guard, registry=empty_registry)
+        builder_agent = Agent(cfg=builder_cfg, guard=guard, registry=empty_registry, is_subagent=True)
 
         try:
             return builder_agent.run_turn(prompt)

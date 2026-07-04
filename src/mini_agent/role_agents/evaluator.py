@@ -102,6 +102,9 @@ def run_evaluator(
     eval_cfg.stream = False
     # 用 profile 的 system_prompt，如果没设置则用默认的
     eval_cfg.system_extra = profile.system_prompt if profile.system_prompt.strip() else DEFAULT_EVALUATOR_SYSTEM
+    # [SYS-TURN-JUDGE][BUGFIX] 防止内部 Agent 对自己触发 TurnJudge 造成无限递归核查
+    from mini_agent.config.models import TurnJudgeConfig as _TurnJudgeConfig
+    eval_cfg.turn_judge = _TurnJudgeConfig(enabled=False)
 
     guard = PermissionGuard(
         auto_approve=True,
@@ -114,7 +117,7 @@ def run_evaluator(
     # 只给一个空注册表（无工具），让评估 agent 只做文本推理
     empty_registry = get_default_registry().filtered(names=[], groups=[])
 
-    eval_agent = Agent(cfg=eval_cfg, guard=guard, registry=empty_registry)
+    eval_agent = Agent(cfg=eval_cfg, guard=guard, registry=empty_registry, is_subagent=True)
 
     prompt = build_evaluator_prompt(
         original_request=original_request,

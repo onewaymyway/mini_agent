@@ -106,6 +106,12 @@ def run_goal_judge(
     # cfg.agent_name（默认都是同一个名字，会导致 print_assistant_prefix 打印出来的前缀
     # 跟主 Agent 说话一模一样，看不出这是评估者的输出）。
     judge_cfg.agent_name = "🎯 GoalJudge"
+    # [SYS-TURN-JUDGE][BUGFIX] load_config() 会从同一份 agent_config.json 重新加载配置，
+    # 若其中开启了 turn_judge，会导致 GoalJudge 这个内部 Agent 自己跑 run_turn() 时
+    # 对自己触发一次 TurnJudge 核查，引发无限递归自我核查。显式禁用，不能只依赖
+    # 下面的 is_subagent 标记（那只是第二道保险）。
+    from mini_agent.config.models import TurnJudgeConfig as _TurnJudgeConfig
+    judge_cfg.turn_judge = _TurnJudgeConfig(enabled=False)
 
     guard = PermissionGuard(
         auto_approve=True,
@@ -125,7 +131,7 @@ def run_goal_judge(
     else:
         registry = get_default_registry().filtered(names=[], groups=[])
 
-    judge_agent = Agent(cfg=judge_cfg, guard=guard, registry=registry)
+    judge_agent = Agent(cfg=judge_cfg, guard=guard, registry=registry, is_subagent=True)
 
     prompt = build_goal_judge_prompt(
         goal_spec=goal_spec,

@@ -287,6 +287,9 @@ class RoleAgentDispatcher:
         role_cfg.max_turns = 3
         role_cfg.stream = False
         role_cfg.system_extra = profile.system_prompt
+        # [SYS-TURN-JUDGE][BUGFIX] 防止内部 Agent 对自己触发 TurnJudge 造成无限递归核查
+        from mini_agent.config.models import TurnJudgeConfig as _TurnJudgeConfig
+        role_cfg.turn_judge = _TurnJudgeConfig(enabled=False)
 
         guard = PermissionGuard(
             auto_approve=True,
@@ -294,7 +297,7 @@ class RoleAgentDispatcher:
             project_root=self._cfg.project_root,
         )
         empty_registry = get_default_registry().filtered(names=[], groups=[])
-        role_agent = Agent(cfg=role_cfg, guard=guard, registry=empty_registry)
+        role_agent = Agent(cfg=role_cfg, guard=guard, registry=empty_registry, is_subagent=True)
 
         prompt = f"""请对以下 AI 助手的输出进行分析。
 

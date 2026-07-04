@@ -134,7 +134,7 @@ def test_goal_judge_yes_mode_disables_sandbox(monkeypatch, tmp_path):
     captured = {}
 
     class FakeInnerAgent:
-        def __init__(self, cfg, guard, registry):
+        def __init__(self, cfg, guard, registry, **kwargs):
             captured["cfg_sandbox"] = cfg.sandbox
             captured["guard_sandbox"] = guard.sandbox
             captured["guard_auto_approve"] = guard.auto_approve
@@ -172,7 +172,7 @@ def test_goal_judge_tools_enabled_without_yes_mode_keeps_sandbox(monkeypatch, tm
     captured = {}
 
     class FakeInnerAgent:
-        def __init__(self, cfg, guard, registry):
+        def __init__(self, cfg, guard, registry, **kwargs):
             captured["guard_sandbox"] = guard.sandbox
 
         def run_turn(self, prompt):
@@ -235,7 +235,7 @@ def test_goal_judge_uses_distinct_agent_name(monkeypatch, tmp_path):
     captured = {}
 
     class FakeInnerAgent:
-        def __init__(self, cfg, guard, registry):
+        def __init__(self, cfg, guard, registry, **kwargs):
             captured["cfg"] = cfg
 
         def run_turn(self, prompt):
@@ -265,7 +265,7 @@ def test_goal_spec_builder_uses_distinct_agent_name(monkeypatch, tmp_path):
     captured = {}
 
     class FakeInnerAgent:
-        def __init__(self, cfg, guard, registry):
+        def __init__(self, cfg, guard, registry, **kwargs):
             captured["cfg"] = cfg
 
         def run_turn(self, prompt):

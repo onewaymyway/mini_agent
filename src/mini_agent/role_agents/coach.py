@@ -95,6 +95,9 @@ def run_coach(
     coach_cfg.max_turns = 2
     coach_cfg.stream = False
     coach_cfg.system_extra = profile.system_prompt if profile.system_prompt.strip() else DEFAULT_COACH_SYSTEM
+    # [SYS-TURN-JUDGE][BUGFIX] 防止内部 Agent 对自己触发 TurnJudge 造成无限递归核查
+    from mini_agent.config.models import TurnJudgeConfig as _TurnJudgeConfig
+    coach_cfg.turn_judge = _TurnJudgeConfig(enabled=False)
 
     guard = PermissionGuard(
         auto_approve=True,
@@ -104,7 +107,7 @@ def run_coach(
 
     from mini_agent.tools import get_default_registry
     empty_registry = get_default_registry().filtered(names=[], groups=[])
-    coach_agent = Agent(cfg=coach_cfg, guard=guard, registry=empty_registry)
+    coach_agent = Agent(cfg=coach_cfg, guard=guard, registry=empty_registry, is_subagent=True)
 
     prompt = build_coach_prompt(
         tool_name=tool_name,
