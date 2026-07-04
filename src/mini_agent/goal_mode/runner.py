@@ -213,7 +213,11 @@ class GoalRunner:
 
         # 注入判定反馈到主 Agent 历史（带 _type=role_agent，与现有 role agent 反馈一致）
         from mini_agent.role_agents.feedback import RoleFeedback, build_inject_message
-        from mini_agent.history.entry import HType
+        try:
+            from mini_agent.history.entry import HType
+            role_agent_type = HType.ROLE_AGENT
+        except (ImportError, AttributeError):
+            role_agent_type = "role_agent"
         feedback_obj = RoleFeedback(
             role_name="goal_judge",
             role_type="goal_judge",
@@ -222,7 +226,7 @@ class GoalRunner:
             inject_as="user",
         )
         inject_msg = build_inject_message(feedback_obj)
-        inject_typed = dict(inject_msg, _type=HType.ROLE_AGENT)
+        inject_typed = dict(inject_msg, _type=role_agent_type)
         self._agent._hist.append_raw_dict(inject_typed)
 
         R.print_info(f"[GoalRunner] GoalJudge 判定：{status}")
@@ -259,7 +263,7 @@ class GoalRunner:
     def _pin_goal_context(self) -> None:
         """把目标+验收标准作为一条"钉住"消息重新附加到历史末尾，
         防止 compact 之后被摘要冲淡或丢失。"""
-        from mini_agent.history.entry import make_goal_context
+        from ._compat import make_goal_context
         self._agent._hist.append_raw_dict(make_goal_context(self._spec.render_context_block()))
 
     # ── 内部：状态持久化 ─────────────────────────────────────────────────
