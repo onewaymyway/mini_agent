@@ -48,6 +48,7 @@ class ContextBuilder:
         project_snapshot_getter=None,   # Callable[[], Optional[str]]
         profile_text_getter=None,       # Callable[[], str]
         self_model_getter=None,         # Callable[[], Optional[str]]  [具身改进 C1]
+        persona_getter=None,            # Callable[[], Optional[str]]  当前激活的 persona name
     ) -> None:
         self.cfg = cfg
         self.skill_loader = skill_loader
@@ -57,6 +58,8 @@ class ContextBuilder:
         self._profile_text_getter = profile_text_getter
         # [具身改进 C1] AgentSelfModel：session 级实时聚合视图（每轮读取）
         self._self_model_getter = self_model_getter
+        # 角色扮演（Persona）系统：每轮读取当前激活的 persona name（可能为 None）
+        self._persona_getter = persona_getter
 
         # ── Turn 级缓存 ──────────────────────────────────────────────────────
         # 每次 run_turn 开始时由 refresh_turn_context() 填充，
@@ -141,6 +144,23 @@ class ContextBuilder:
         from mini_agent.config import build_system_prompt
         user_profile = self._profile_text_getter() if self._profile_text_getter else ""
         base = build_system_prompt(cfg, active, skill_context=skill_ctx, user_profile=user_profile)
+
+        # ── 角色扮演（Persona）注入 ──────────────────────────────────────────
+        # 单独成段，不与 skill/tool 使用规范混排：便于 /role exit 时整段摘除，
+        # 也便于 /debug system 直接定位查看。安全边界声明由
+        # render_persona_prompt() 强制追加，不受 persona 文件内容影响。
+        persona_name = self._persona_getter() if self._persona_getter else None
+        if persona_name:
+            try:
+                from mini_agent.orchestrator.persona_profiles import (
+                    get_persona_loader, render_persona_prompt,
+                )
+                loader = get_persona_loader()
+                persona = loader.get(persona_name) if loader else None
+                if persona is not None:
+                    base += "\n\n" + render_persona_prompt(persona)
+            except Exception:
+                pass  # persona 系统失败不应阻断 system prompt 组装
 
         # ── Skill 目录注入（带缓存）────────────────────────────────────────
         if self.skill_loader and self.skill_loader.available:

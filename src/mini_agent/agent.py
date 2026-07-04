@@ -154,6 +154,10 @@ class Agent:
 
         self.registry = registry or get_default_registry()
         self.skill_loader = skill_loader
+
+        # 角色扮演（Persona）系统：当前激活的角色 name，None = 未激活/默认人格。
+        # 由 /role use|exit 命令读写；随 session 持久化（见 session meta）。
+        self.active_persona: Optional[str] = None
         self.guard = guard or PermissionGuard(
             auto_approve=cfg.auto_approve,
             sandbox=cfg.sandbox,
@@ -483,6 +487,10 @@ class Agent:
                 self._self_model.to_system_prompt_fragment()
                 if self._self_model is not None else None
             ),
+            # 角色扮演（Persona）系统：每轮读取当前 active_persona，
+            # /role use|exit 直接修改 self.active_persona 即可生效
+            # （_cached_system 在每轮结束时清空，下一轮 build() 会读到最新值）。
+            persona_getter=lambda: self.active_persona,
         )
 
         # ToolExecutor：持有 file_changes 列表和锁的引用（共享，不拷贝）

@@ -307,6 +307,12 @@ def _main_inner() -> None:
     if profile_loader.available:
         R.print_info(f"Custom sub-agents loaded: {profile_loader.available}")
 
+    # ── 角色扮演（Persona）系统 ────────────────────────────────────────────────
+    from mini_agent.orchestrator.persona_profiles import init_personas
+    persona_loader = init_personas(cfg)
+    if persona_loader.available:
+        R.print_info(f"Personas available: {persona_loader.available}")
+
     # ── Role Agent 系统 ───────────────────────────────────────────────────────
     from mini_agent.role_agents import init_role_agent_system
     if cfg.role_agent.enabled:

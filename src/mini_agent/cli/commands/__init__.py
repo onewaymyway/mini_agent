@@ -13,6 +13,7 @@ cli/commands — slash 命令处理模块包
   goals       — /agent goals|/goals（Stage 9：Goal Backlog）
   debug_cmd   — /debug system|history|all|save（打印/导出 system prompt 与 history，便于分析调试）
   platform    — /platform status|filtered|reload（可加载对象的平台/tag 过滤策略查看与重载）
+  roles       — /role list|use|show|exit|status|reload（角色扮演 Persona 系统）
 """
 
 from mini_agent.cli.commands.skills import handle_skills_list, handle_skill_cmd
@@ -29,6 +30,7 @@ from mini_agent.cli.commands.evolve import handle_evolve_cmd
 from mini_agent.cli.commands.goals import handle_goals_cmd
 from mini_agent.cli.commands.goal_mode_cmd import handle_goal_cmd
 from mini_agent.cli.commands.debug_cmd import handle_debug_cmd
+from mini_agent.cli.commands.roles import handle_role_cmd
 
 __all__ = [
     "handle_skills_list",
@@ -46,4 +48,5 @@ __all__ = [
     "handle_goals_cmd",
     "handle_goal_cmd",
     "handle_debug_cmd",
+    "handle_role_cmd",
 ]

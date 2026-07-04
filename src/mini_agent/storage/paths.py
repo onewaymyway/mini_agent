@@ -344,6 +344,16 @@ class AgentPaths:
         """<project_root>/.agent/agents/ — 项目级自定义子 agent 配置目录"""
         return self.workdir_dir / "agents"
 
+    @property
+    def global_personas_dir(self) -> Path:
+        """~/.agent/personas/ — 全局角色扮演（persona）配置目录"""
+        return self.global_dir / "personas"
+
+    @property
+    def project_personas_dir(self) -> Path:
+        """<project_root>/.agent/personas/ — 项目级角色扮演（persona）配置目录"""
+        return self.workdir_dir / "personas"
+
     def __repr__(self) -> str:
         return f"AgentPaths(project_root={self.project_root})"
 
