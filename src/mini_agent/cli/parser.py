@@ -42,6 +42,10 @@ def build_parser() -> argparse.ArgumentParser:
               /raw-output        Toggle showing raw model output (incl. <tool_use> blocks)
               /model <name>      Switch model mid-session
               /compact           Compress history into a summary
+              /goal <text>       Set a goal; agent negotiates acceptance criteria then runs until done
+              /goal resume [sid] Resume an interrupted goal run (auto-picks latest if sid omitted)
+              /goal status       Show current session's goal state (round/compacts/last verdict)
+              /goal cancel       Clear current session's goal state record
               /memory            Force-generate/refresh session memory now (bypass interval)
               /profile           Force-refresh user profile now (bypass interval)
               /prompts           List all managed prompt files

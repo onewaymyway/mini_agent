@@ -2351,6 +2351,7 @@ _COMMANDS: list[tuple[str, str, list[str]]] = [
     ("/help",        "Show help",                                    []),
     ("/clear",       "Clear conversation history",                   []),
     ("/compact",     "Compress history into a summary",              []),
+    ("/goal",        "Set a goal; agent auto-retries until done",    ["resume", "status", "cancel"]),
     ("/memory",      "Generate/refresh session memory now",          []),
     ("/profile",     "Refresh user profile now",                     []),
     ("/stats",       "Show session statistics",                      []),
