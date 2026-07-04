@@ -15,7 +15,23 @@ Skill 是一组可按需加载到 system prompt 的领域说明。它的核心�
 
 ---
 
-## 2. Skill 文件格式与发现
+## 2. System Prompt 强制规则：先查 Skill，再临时探索
+
+`prompts/system/agent_core.md` 中包含一条对模型的硬性要求（"Check for a matching skill
+first"）：在从零探索一个任务（读代码、搜索、试错）之前，模型必须先检查是否已有 Skill 覆盖
+该任务：
+
+1. 优先检查当前 system prompt 中**已加载**的 skill（这些具有最高优先级）。
+2. 如果已加载的 skill 都不匹配，调用 `skill_list` 查看还有哪些可用。
+3. 如果找到匹配但尚未加载的 skill，调用 `skill_activate` 加载并按其指引操作。
+4. 只有在**没有任何 skill（已加载或可用）适用**，或匹配的 skill 指引明显不足以完成当前任务时，
+   才允许进行临时探索。
+
+这条规则本身不属于 Skill 发现/加载机制的代码逻辑（不在 `SkillLoader` /
+`SkillActivationTool` 中），而是写死在 system prompt 里的行为约束，目的是减少模型
+"绕过已有 Skill 直接读代码摸索" 的情况，提升一致性并降低 token 消耗。
+
+## 3. Skill 文件格式与发现
 
 ### 2.1 支持的目录布局
 
@@ -56,7 +72,7 @@ tag 策略下才会被发现/加载（不满足条件时连描述都不会注入
 
 ---
 
-## 3. 激活与卸载入口
+## 4. 激活与卸载入口
 
 Skill 有三类管理入口：CLI、Agent 工具、关键词辅助激活。
 
@@ -145,7 +161,7 @@ tier 固定 T1）写到一个独立的 `evolve/<date>-skill-<name>` git 分支�
 
 ---
 
-## 4. System Prompt 注入流程
+## 5. System Prompt 注入流程
 
 ### 4.1 Active skills 正文注入
 
@@ -190,7 +206,7 @@ The following skills are currently active and provide additional instructions:
 
 ---
 
-## 5. 实际使用检测
+## 6. 实际使用检测
 
 Skill 系统刻意区分：
 
@@ -230,7 +246,7 @@ used = skill_loader.record_usage(response.text)
 
 ---
 
-## 6. Skill 使用追踪与压缩重附
+## 7. Skill 使用追踪与压缩重附
 
 ### 6.1 LRU 记录
 
@@ -281,7 +297,7 @@ Token 估算采用粗略规则：`1 token ≈ 4 字符`。
 
 ---
 
-## 7. 推荐维护准则
+## 8. 推荐维护准则
 
 1. **Skill 内容应聚焦**：把可执行步骤、约束和示例放在 `SKILL.md` 中，避免泛泛而谈。
 2. **Description 要短而清晰**：它会出现在 CLI、工具结果和 system prompt 目录里。
@@ -292,7 +308,7 @@ Token 估算采用粗略规则：`1 token ≈ 4 字符`。
 
 ---
 
-## 8. 关键代码索引
+## 9. 关键代码索引
 
 | 文件 | 说明 |
 |------|------|
@@ -309,7 +325,7 @@ Token 估算采用粗略规则：`1 token ≈ 4 字符`。
 
 ---
 
-## 9. 热重载
+## 10. 热重载
 
 `SkillLoader` 支持运行时**无重启热重载**：
 
