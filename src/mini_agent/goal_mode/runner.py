@@ -339,6 +339,17 @@ class GoalRunner:
             goal_spec=self._spec,
         )
 
+    def pause(self) -> None:
+        """用户按 Ctrl-C 中断（供 CLI 中断处理调用）。
+
+        与 `cancel()` 的关键区别：中断的真实意图通常是"先停一下，之后还想继续"，
+        不是"放弃这个目标"。所以这里保持 status="running"（和轮次边界正常保存
+        的状态一致），这样 `/goal resume` 才能找到它。如果调用了 `cancel()`
+        把状态改成 "cancelled"，`find_resumable_session()` / `/goal resume`
+        就会认为这个 goal 已经主动放弃，反而无法恢复——这是不对的。
+        """
+        self._save_state(status="running")
+
     def cancel(self) -> None:
-        """用户主动取消（供 CLI 中断处理调用）。"""
+        """用户通过 `/goal cancel` 主动放弃（不是 Ctrl-C 中断）。"""
         self._save_state(status="cancelled", final_report="用户主动取消。")

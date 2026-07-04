@@ -157,13 +157,21 @@ Goal 执行结果： done
 （GoalJudge 的核查结论文本）
 ```
 
-过程中可以 `Ctrl-C` 中断，状态会被保存，之后可用 `/goal resume` 续跑。
+过程中可以 `Ctrl-C` 中断，状态会被保存为 `running`（可继续），之后可用
+`/goal resume` 续跑。
+
+> **`Ctrl-C` 中断 ≠ `/goal cancel`**：两者语义不同，不要混淆。
+> `Ctrl-C` 中断的真实意图通常是"先停一下，之后还想继续"，所以状态会保持
+> `running`（和轮次边界正常保存的状态一致），`/goal resume` 能找到它；
+> `/goal cancel` 才是显式放弃，状态会被标记为 `cancelled`，`/goal resume`
+> 默认不会恢复它（除非加 `--force` 强制恢复，见下）。
 
 ### 3. 恢复（进程被杀死 / 意外中断后）
 
 ```
 /goal resume            # 自动找最近一个 status=running 的 goal
 /goal resume <sid>      # 指定 session id 恢复
+/goal resume <sid> --force  # 强制恢复非 running 状态的记录（比如 cancelled）
 ```
 
 重新打开 REPL 时，如果检测到未完成的 goal，也会主动提示：

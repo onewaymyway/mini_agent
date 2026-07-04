@@ -127,7 +127,7 @@ def _run_goal(agent, spec) -> None:
     try:
         result = runner.run()
     except KeyboardInterrupt:
-        runner.cancel()
+        runner.pause()
         R.print_warning("[Goal 模式] 已中断，状态已保存，可用 /goal resume 继续。")
         return
     except Exception as e:
@@ -176,8 +176,11 @@ def _handle_resume(args: list[str], agent) -> None:
     from mini_agent.goal_mode.runner import GoalRunner
     from mini_agent.storage.paths import AgentPaths
 
+    force = "--force" in args
+    positional = [a for a in args if a != "--force"]
+
     project_root = agent.cfg.project_root
-    sid = args[0] if args else find_resumable_session(project_root)
+    sid = positional[0] if positional else find_resumable_session(project_root)
     if not sid:
         _report_no_resumable(project_root)
         return
@@ -188,8 +191,14 @@ def _handle_resume(args: list[str], agent) -> None:
     if state is None:
         R.print_error(f"session {sid} 的 goal_state.json 不存在或已损坏，无法恢复。")
         return
-    if state.status != "running":
-        R.print_info(f"session {sid} 的 goal 状态是 {state.status}（不是 running），无需恢复。")
+    if state.status != "running" and not force:
+        R.print_info(
+            f"session {sid} 的 goal 状态是 {state.status}（不是 running），默认不恢复。"
+        )
+        R.print_info(
+            f"如果确认要恢复（比如这是旧版本 Ctrl-C 中断时被误存成 cancelled 的记录），"
+            f"加 --force 强制恢复：/goal resume {sid} --force"
+        )
         return
 
     # 若当前 session 不是目标 session，先加载对应历史
@@ -218,7 +227,7 @@ def _handle_resume(args: list[str], agent) -> None:
     try:
         result = runner.run()
     except KeyboardInterrupt:
-        runner.cancel()
+        runner.pause()
         R.print_warning("[Goal 模式] 已中断，状态已保存，可再次 /goal resume 继续。")
         return
     except Exception as e:

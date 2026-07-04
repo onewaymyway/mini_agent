@@ -539,6 +539,47 @@ def test_goal_runner_hides_judge_prompt_by_default(monkeypatch, tmp_path):
     assert "GoalJudge 输入 Prompt" not in joined
 
 
+def test_goal_runner_pause_preserves_running_status(tmp_path):
+    """Ctrl-C 中断的真实意图是"先停一下，之后还想继续"，pause() 必须保持
+    status=running，不能被误存成 cancelled（否则 /goal resume 会找不到它）。"""
+    agent = FakeAgent(outputs=["attempt 1"])
+    cfg = _FakeCfg(tmp_path, persist_state=True)
+    spec = _confirmed_spec()
+
+    runner = GoalRunner(agent=agent, cfg=cfg, goal_spec=spec)
+    runner._round = 3  # 模拟已经跑了几轮
+    runner.pause()
+
+    paths = AgentPaths(project_root=tmp_path)
+    store = GoalStateStore(paths, agent.session_id)
+    state = store.load()
+    assert state.status == "running"
+    assert state.round == 3
+
+    sid = find_resumable_session(tmp_path)
+    assert sid == agent.session_id
+
+
+def test_goal_runner_cancel_sets_cancelled_status(tmp_path):
+    """显式 /goal cancel（对应 cancel()）才应该真正标记为 cancelled，
+    和 pause() 的语义严格区分开。"""
+    agent = FakeAgent(outputs=["attempt 1"])
+    cfg = _FakeCfg(tmp_path, persist_state=True)
+    spec = _confirmed_spec()
+
+    runner = GoalRunner(agent=agent, cfg=cfg, goal_spec=spec)
+    runner._round = 2
+    runner.cancel()
+
+    paths = AgentPaths(project_root=tmp_path)
+    store = GoalStateStore(paths, agent.session_id)
+    state = store.load()
+    assert state.status == "cancelled"
+
+    # cancelled 状态不应该被 find_resumable_session 找到
+    assert find_resumable_session(tmp_path) is None
+
+
 def test_goal_runner_rejects_unconfirmed_spec(tmp_path):
     agent = FakeAgent(outputs=["x"])
     cfg = _FakeCfg(tmp_path)
