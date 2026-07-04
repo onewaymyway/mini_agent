@@ -5,7 +5,7 @@
 
 BANNER: |
   ╔══════════════════════════════════════════╗
-  ║        mini-agent  v0.1.0                ║
+  ║        mini-agent  v{version}                ║
   ║  Type /help for commands, exit to quit   ║
   ╚══════════════════════════════════════════╝
 

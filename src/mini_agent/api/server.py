@@ -31,6 +31,7 @@ from .models import EventType, AgentEvent
 from .multi_auth import MultiUserAuthMiddleware
 from .routes import router
 from .user_store import UserStore, RoleProfileManager
+from .._version import get_version
 
 
 # ── 终端安全打印（可从任意线程调用）─────────────────────────────────────────
@@ -537,7 +538,7 @@ def create_app(
 
     app = FastAPI(
         title       = "mini-agent HTTP API",
-        version     = "1.0.0",
+        version     = get_version(),
         lifespan    = lifespan,
         docs_url    = "/docs",
         redoc_url   = "/redoc",
@@ -569,7 +570,7 @@ def create_app(
     async def root():
         return {
             "name":    "mini-agent HTTP API",
-            "version": "1.0.0",
+            "version": get_version(),
             "docs":    "/docs",
         }
 

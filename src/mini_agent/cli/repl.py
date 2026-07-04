@@ -13,6 +13,7 @@ from __future__ import annotations
 from mini_agent.agent import Agent
 from mini_agent.skills import SkillLoader
 from mini_agent.prompts import pm
+from mini_agent._version import get_version
 import mini_agent.ui.renderer as R
 from mini_agent.cli.commands import (
     handle_skills_list,
@@ -47,7 +48,7 @@ def _print_resume_hint(agent: Agent) -> None:
 
 def run_repl(agent: Agent, skill_loader: SkillLoader) -> None:
     """启动并运行交互式 REPL，直到用户退出。"""
-    R.console.print(pm.fragment("cli_messages", "BANNER"), style="bold blue")
+    R.console.print(pm.fragment("cli_messages", "BANNER", version=get_version()), style="bold blue")
     R.print_info(pm.fragment("cli_messages", "REPL_STARTUP_MODEL", model=agent.cfg.model))
     R.print_info(pm.fragment("cli_messages", "REPL_STARTUP_PROJECT", project_root=agent.cfg.project_root))
     R.print_info(pm.fragment("cli_messages", "REPL_STARTUP_SKILLS", skill_count=len(skill_loader.available)))
