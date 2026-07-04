@@ -122,6 +122,79 @@ def test_find_resumable_session_none_when_no_sessions(tmp_path):
     assert find_resumable_session(tmp_path) is None
 
 
+def test_goal_judge_yes_mode_disables_sandbox(monkeypatch, tmp_path):
+    """judge_tools_enabled=True 且 judge_yes_mode=True 时，GoalJudge 的工具调用
+    应该真实执行（sandbox=False + auto_approve=True），而不是被 sandbox 拦截
+    成"would have executed"。"""
+    import mini_agent.agent as agent_mod
+    from mini_agent.config.loader import load_config
+    from mini_agent.orchestrator.agent_profiles import AgentProfile
+    from mini_agent.role_agents.goal_judge import run_goal_judge
+
+    captured = {}
+
+    class FakeInnerAgent:
+        def __init__(self, cfg, guard, registry):
+            captured["cfg_sandbox"] = cfg.sandbox
+            captured["guard_sandbox"] = guard.sandbox
+            captured["guard_auto_approve"] = guard.auto_approve
+
+        def run_turn(self, prompt):
+            return "GOAL_STATUS: DONE"
+
+    monkeypatch.setattr(agent_mod, "Agent", FakeInnerAgent)
+
+    base_cfg = load_config(
+        project_root=tmp_path, verbose=False, sandbox=True,
+        auto_approve=True, model="claude-sonnet-4-6",
+    )
+    base_cfg.api_key = "sk-fake"
+    base_cfg.goal_mode.judge_tools_enabled = True
+    base_cfg.goal_mode.judge_yes_mode = True
+
+    profile = AgentProfile(name="goal_judge", role_type="goal_judge")
+    spec = GoalSpec(goal_text="g", acceptance_criteria=["c"], confirmed=True)
+    run_goal_judge(profile, base_cfg, spec, "output", 1, "")
+
+    assert captured["guard_sandbox"] is False
+    assert captured["guard_auto_approve"] is True
+    assert captured["cfg_sandbox"] is False
+
+
+def test_goal_judge_tools_enabled_without_yes_mode_keeps_sandbox(monkeypatch, tmp_path):
+    """judge_tools_enabled=True 但 judge_yes_mode 默认 False 时，仍然强制
+    sandbox=True（工具调用会被拦截，只显示 would-have-executed），行为不变。"""
+    import mini_agent.agent as agent_mod
+    from mini_agent.config.loader import load_config
+    from mini_agent.orchestrator.agent_profiles import AgentProfile
+    from mini_agent.role_agents.goal_judge import run_goal_judge
+
+    captured = {}
+
+    class FakeInnerAgent:
+        def __init__(self, cfg, guard, registry):
+            captured["guard_sandbox"] = guard.sandbox
+
+        def run_turn(self, prompt):
+            return "GOAL_STATUS: DONE"
+
+    monkeypatch.setattr(agent_mod, "Agent", FakeInnerAgent)
+
+    base_cfg = load_config(
+        project_root=tmp_path, verbose=False, sandbox=True,
+        auto_approve=True, model="claude-sonnet-4-6",
+    )
+    base_cfg.api_key = "sk-fake"
+    base_cfg.goal_mode.judge_tools_enabled = True
+    # judge_yes_mode 保持默认 False
+
+    profile = AgentProfile(name="goal_judge", role_type="goal_judge")
+    spec = GoalSpec(goal_text="g", acceptance_criteria=["c"], confirmed=True)
+    run_goal_judge(profile, base_cfg, spec, "output", 1, "")
+
+    assert captured["guard_sandbox"] is True
+
+
 def test_goal_judge_uses_distinct_agent_name(monkeypatch, tmp_path):
     """GoalJudge 内部 Agent 必须用专属的 agent_name，不能沿用主 Agent 的名字，
     否则打印出来会看起来像主 Agent 自己在说话，分不清是评估者的输出。"""

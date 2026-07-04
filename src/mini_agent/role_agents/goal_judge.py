@@ -99,8 +99,13 @@ def run_goal_judge(
 
     工具权限由 base_cfg.goal_mode.judge_tools_enabled 控制：
       False（默认）→ 空工具注册表，纯文本判定（与现有 evaluator 行为一致，零风险）
-      True         → 按 judge_allowed_tools / judge_allowed_tool_groups 白名单挂载只读工具，
-                     且强制 sandbox=True，防止 GoalJudge 越权修改代码
+      True         → 按 judge_allowed_tools / judge_allowed_tool_groups 白名单挂载只读工具；
+                     默认仍强制 sandbox=True（工具调用会被拦截，只显示
+                     "would have executed"，不会真的跑）。
+                     如果需要 GoalJudge 真的执行命令来验证（比如跑 pytest/运行脚本），
+                     再额外打开 base_cfg.goal_mode.judge_yes_mode，此时会以
+                     auto_approve=True + 不走 sandbox 的方式真实执行（等价于人工
+                     一直按 --yes 放行），不会逐条弹确认。
     """
     from mini_agent.config import load_config
     from mini_agent.agent import Agent
@@ -109,11 +114,15 @@ def run_goal_judge(
 
     goal_cfg_block = getattr(base_cfg, "goal_mode", None)
     tools_enabled = bool(getattr(goal_cfg_block, "judge_tools_enabled", False))
+    yes_mode = bool(getattr(goal_cfg_block, "judge_yes_mode", False))
+    # tools_enabled 且未开 yes_mode 时强制 sandbox=True（拦截真实执行，只能看到
+    # "would have executed"）；开了 yes_mode 则真实执行，等价于始终 --yes 放行。
+    judge_sandbox = (not yes_mode) if tools_enabled else base_cfg.sandbox
 
     judge_cfg = load_config(
         project_root=base_cfg.project_root,
         verbose=False,
-        sandbox=True if tools_enabled else base_cfg.sandbox,
+        sandbox=judge_sandbox,
         auto_approve=True,
         model=profile.model or (getattr(goal_cfg_block, "judge_model", None)) or base_cfg.model,
         llm_provider=profile.provider or (getattr(goal_cfg_block, "judge_provider", None)) or base_cfg.llm_provider,
@@ -131,7 +140,7 @@ def run_goal_judge(
 
     guard = PermissionGuard(
         auto_approve=True,
-        sandbox=True if tools_enabled else base_cfg.sandbox,
+        sandbox=judge_sandbox,
         project_root=base_cfg.project_root,
     )
 

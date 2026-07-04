@@ -74,6 +74,7 @@ Evaluator 仍然在每次 `run_turn` 内部做质量把关，GoalRunner 在更�
 | `spec_builder_model` / `spec_builder_provider` | `null` | GoalSpecBuilder 用的模型，`null` = 复用主 `cfg.model` |
 | `judge_model` / `judge_provider` | `null` | GoalJudge 用的模型，`null` = 复用主 `cfg.model` |
 | `judge_tools_enabled` | `false` | GoalJudge 是否挂载工具自己验证（见下节），默认关闭（最小权限原则） |
+| `judge_yes_mode` | `false` | 仅当 `judge_tools_enabled=true` 时生效：工具调用是否真实执行（`--yes` 全放行），关闭时仍强制 sandbox 拦截 |
 | `judge_allowed_tools` | `["bash","read_file","grep","glob"]` | `judge_tools_enabled=true` 时的工具白名单 |
 | `judge_allowed_tool_groups` | `[]` | 同上，按工具组授权 |
 | `max_rounds` | `20` | 外层循环轮次上限 |
@@ -229,9 +230,29 @@ GoalJudge 的输出通过两层机制确保不会被误认成主 Agent 在说话
   `role-agents-guide.md` 里的 EvaluatorAgent 行为一致）。零风险，但依赖主
   Agent 的自述和历史记录，存在"轻信"的可能。
 - **`true`**：按 `judge_allowed_tools` / `judge_allowed_tool_groups` 白名单
-  挂载工具（强制 `sandbox=True`），可以自己跑测试/lint 命令来验证验收标准，
+  挂载工具（默认仍强制 `sandbox=True`），可以自己跑测试/lint 命令来验证验收标准，
   而不是单纯相信主 Agent 的自我汇报。适合验收标准是 `verification_method:
   run_command` 的场景。
+
+  **注意**：`judge_tools_enabled=true` 默认仍然是 `sandbox=True`，意味着工具
+  调用会被拦截、只显示"would have executed"、不会真正跑起来——对于"跑一遍
+  测试确认真的通过"这种场景，这样等于形同虚设。如果需要 GoalJudge **真实执行**
+  命令（比如真的跑一遍 `python xxx.py` 或 `pytest`），额外打开：
+
+  ```json
+  {
+    "goal_mode": {
+      "judge_tools_enabled": true,
+      "judge_yes_mode": true
+    }
+  }
+  ```
+
+  `judge_yes_mode=true` 时 GoalJudge 的工具调用会以 `auto_approve=True` +
+  不走 sandbox 的方式真实执行，等价于人工一直按 `--yes` 全部放行，不会逐条
+  弹出确认。**请只在信任验收标准里的验证命令时开启**——这意味着 GoalJudge
+  能不经确认地真实执行 `judge_allowed_tools` 白名单里的工具（默认是
+  `bash`/`read_file`/`grep`/`glob`）。
 
 两种模式下输出格式一致，只是判定依据不同。
 

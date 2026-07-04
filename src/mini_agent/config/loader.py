@@ -570,6 +570,7 @@ def load_config(
         judge_tools_enabled=bool(_gm.get("judge_tools_enabled", False)),
         judge_allowed_tools=list(_gm.get("judge_allowed_tools", ["bash", "read_file", "grep", "glob"])),
         judge_allowed_tool_groups=list(_gm.get("judge_allowed_tool_groups", [])),
+        judge_yes_mode=bool(_gm.get("judge_yes_mode", False)),
         max_rounds=int(_gm.get("max_rounds", 20)),
         max_total_compacts=int(_gm.get("max_total_compacts", 10)),
         consecutive_same_feedback_limit=int(_gm.get("consecutive_same_feedback_limit", 3)),

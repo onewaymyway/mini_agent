@@ -423,6 +423,13 @@ class GoalModeConfig:
     # 仅当 judge_tools_enabled=True 时生效的白名单（工具名 / 工具组名均可）
     judge_allowed_tools: list = field(default_factory=lambda: ["bash", "read_file", "grep", "glob"])
     judge_allowed_tool_groups: list = field(default_factory=list)
+    # [SYS-GOAL-MODE] GoalJudge 挂工具时默认走 sandbox（拦截真实执行，只能看到
+    # "would have executed"），因为验证命令（比如 pytest/python 脚本）往往需要
+    # 真实跑起来才有意义，sandbox 模式下这类验证等于形同虚设。开启后 GoalJudge
+    # 的工具调用会以 auto_approve=True + 不走 sandbox 的方式真实执行（等价于
+    # 人工始终按 --yes 全部放行），不会逐条弹出确认。请只在信任验收标准里的
+    # 验证命令、且愿意让 GoalJudge 自己真实执行命令时开启。
+    judge_yes_mode: bool = False
 
     # ── 外层循环安全阀 ───────────────────────────────────────────────────────
     max_rounds: int = 20                       # 外层 goal 迭代轮数上限

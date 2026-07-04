@@ -473,6 +473,7 @@ class GoalModeConfig:
     judge_tools_enabled: bool = False
     judge_allowed_tools: list = field(default_factory=lambda: ["bash", "read_file", "grep", "glob"])
     judge_allowed_tool_groups: list = field(default_factory=list)
+    judge_yes_mode: bool = False
     max_rounds: int = 20
     max_total_compacts: int = 10
     consecutive_same_feedback_limit: int = 3
@@ -489,6 +490,7 @@ class GoalModeConfig:
 | `judge_model` / `judge_provider` | GoalJudge 用的模型，`null` = 复用主 `cfg.model` |
 | `judge_tools_enabled` | GoalJudge 是否挂载工具自己验证验收标准，默认关闭（最小权限原则） |
 | `judge_allowed_tools` / `judge_allowed_tool_groups` | `judge_tools_enabled=true` 时的工具白名单 |
+| `judge_yes_mode` | 仅当 `judge_tools_enabled=true` 时生效：是否真实执行工具调用（`--yes` 全放行），默认仍强制 sandbox 拦截 |
 | `max_rounds` | 外层循环轮次上限 |
 | `max_total_compacts` | 单次 goal 执行期间最多允许几次 compact |
 | `consecutive_same_feedback_limit` | 连续 N 轮反馈高度雷同即判定"卡住"提前终止 |
