@@ -430,6 +430,9 @@ class GoalModeConfig:
     consecutive_same_feedback_limit: int = 3   # 连续 N 轮 judge 反馈高度雷同 → 提前终止
     same_feedback_similarity_threshold: float = 0.9  # difflib.SequenceMatcher 相似度阈值
 
+    # ── 调试 ─────────────────────────────────────────────────────────────────
+    judge_show_prompt: bool = False   # 打印发给 GoalJudge 的完整输入 prompt（排查判定依据用）
+
     # ── 状态持久化（异常中断恢复）────────────────────────────────────────────
     persist_state: bool = True   # 是否在每个轮次边界落盘 goal_state.json
     auto_resume_prompt: bool = True  # 启动时检测到未完成 goal 是否主动提示恢复

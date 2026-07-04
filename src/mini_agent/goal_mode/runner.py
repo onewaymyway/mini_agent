@@ -187,7 +187,7 @@ class GoalRunner:
     # ── 内部：GoalJudge 调用 ─────────────────────────────────────────────
 
     def _run_judge(self, agent_output: str) -> tuple[str, str]:
-        from mini_agent.role_agents.goal_judge import run_goal_judge
+        from mini_agent.role_agents.goal_judge import run_goal_judge, build_goal_judge_prompt
         from mini_agent.role_agents.feedback import extract_goal_status
         from mini_agent.orchestrator.agent_profiles import AgentProfile
 
@@ -199,6 +199,20 @@ class GoalRunner:
             tools=list(self._gm_cfg.judge_allowed_tools) if self._gm_cfg.judge_tools_enabled else [],
             tool_groups=list(self._gm_cfg.judge_allowed_tool_groups) if self._gm_cfg.judge_tools_enabled else [],
         )
+
+        if self._gm_cfg.judge_show_prompt:
+            # [调试开关] 打印发给 GoalJudge 的完整输入 prompt，方便排查判定依据
+            # （比如怀疑 GoalJudge 判定不准，先看看它到底收到了什么上下文）
+            prompt_preview = build_goal_judge_prompt(
+                goal_spec=self._spec,
+                agent_output=agent_output,
+                round_no=self._round + 1,
+                prior_feedback=self._last_feedback,
+            )
+            R.console.print()
+            R.console.print("[bold]— GoalJudge 输入 Prompt —[/bold]")
+            R.console.print(prompt_preview)
+            R.console.print()
 
         raw = run_goal_judge(
             profile=profile,

@@ -574,6 +574,7 @@ def load_config(
         max_total_compacts=int(_gm.get("max_total_compacts", 10)),
         consecutive_same_feedback_limit=int(_gm.get("consecutive_same_feedback_limit", 3)),
         same_feedback_similarity_threshold=float(_gm.get("same_feedback_similarity_threshold", 0.9)),
+        judge_show_prompt=bool(_gm.get("judge_show_prompt", False)),
         persist_state=bool(_gm.get("persist_state", True)),
         auto_resume_prompt=bool(_gm.get("auto_resume_prompt", True)),
     )

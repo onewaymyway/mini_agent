@@ -66,6 +66,7 @@
     "consecutive_same_feedback_limit": 3,
     "same_feedback_similarity_threshold": 0.9,
     "persist_state": true,
-    "auto_resume_prompt": true
+    "auto_resume_prompt": true,
+    "judge_show_prompt": true
   }
 }

@@ -477,6 +477,7 @@ class GoalModeConfig:
     max_total_compacts: int = 10
     consecutive_same_feedback_limit: int = 3
     same_feedback_similarity_threshold: float = 0.9
+    judge_show_prompt: bool = False
     persist_state: bool = True
     auto_resume_prompt: bool = True
 ```
@@ -492,6 +493,7 @@ class GoalModeConfig:
 | `max_total_compacts` | 单次 goal 执行期间最多允许几次 compact |
 | `consecutive_same_feedback_limit` | 连续 N 轮反馈高度雷同即判定"卡住"提前终止 |
 | `same_feedback_similarity_threshold` | 判定"雷同"的相似度阈值（`difflib.SequenceMatcher`） |
+| `judge_show_prompt` | 打印发给 GoalJudge 的完整输入 prompt，排查判定依据用（默认关闭，内容较长） |
 | `persist_state` | 是否在轮次边界落盘 `goal_state.json`，供异常中断恢复 |
 | `auto_resume_prompt` | 启动 REPL 时若检测到未完成的 goal 是否主动提示 |
 

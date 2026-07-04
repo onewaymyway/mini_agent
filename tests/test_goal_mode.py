@@ -313,6 +313,7 @@ class _FakeGoalModeCfg:
         self.max_total_compacts = kwargs.get("max_total_compacts", 10)
         self.consecutive_same_feedback_limit = kwargs.get("consecutive_same_feedback_limit", 3)
         self.same_feedback_similarity_threshold = kwargs.get("same_feedback_similarity_threshold", 0.9)
+        self.judge_show_prompt = kwargs.get("judge_show_prompt", False)
         self.judge_model = None
         self.judge_provider = None
         self.judge_tools_enabled = False
@@ -491,6 +492,51 @@ def test_goal_runner_state_survives_mid_round_crash(monkeypatch, tmp_path):
     state = store.load()
     assert state.status == "running"
     assert state.round == 1
+
+
+def test_goal_runner_show_judge_prompt_switch(monkeypatch, tmp_path):
+    import mini_agent.goal_mode.runner as runner_mod
+
+    printed = []
+    monkeypatch.setattr(runner_mod.R.console, "print", lambda *a, **kw: printed.append(" ".join(str(x) for x in a)))
+
+    agent = FakeAgent(outputs=["attempt 1"])
+    cfg = _FakeCfg(tmp_path, judge_show_prompt=True)
+    spec = _confirmed_spec()
+
+    monkeypatch.setattr(
+        "mini_agent.role_agents.goal_judge.run_goal_judge",
+        lambda **kw: "GOAL_STATUS: DONE",
+    )
+
+    runner = GoalRunner(agent=agent, cfg=cfg, goal_spec=spec)
+    runner.run()
+
+    joined = "\n".join(printed)
+    assert "GoalJudge 输入 Prompt" in joined
+    assert spec.goal_text in joined
+
+
+def test_goal_runner_hides_judge_prompt_by_default(monkeypatch, tmp_path):
+    import mini_agent.goal_mode.runner as runner_mod
+
+    printed = []
+    monkeypatch.setattr(runner_mod.R.console, "print", lambda *a, **kw: printed.append(" ".join(str(x) for x in a)))
+
+    agent = FakeAgent(outputs=["attempt 1"])
+    cfg = _FakeCfg(tmp_path)  # judge_show_prompt 默认 False
+    spec = _confirmed_spec()
+
+    monkeypatch.setattr(
+        "mini_agent.role_agents.goal_judge.run_goal_judge",
+        lambda **kw: "GOAL_STATUS: DONE",
+    )
+
+    runner = GoalRunner(agent=agent, cfg=cfg, goal_spec=spec)
+    runner.run()
+
+    joined = "\n".join(printed)
+    assert "GoalJudge 输入 Prompt" not in joined
 
 
 def test_goal_runner_rejects_unconfirmed_spec(tmp_path):
