@@ -208,3 +208,70 @@ def init_personas(cfg) -> PersonaLoader:
 
 def get_persona_loader() -> Optional[PersonaLoader]:
     return _persona_loader
+
+
+# ── 使用统计（全局，跨项目，跨会话累计） ──────────────────────────────────
+#
+# 与 skills/tracker.py 的 SkillUsageTracker（服务于 compact 时的 LRU 预算重建）
+# 不同，这里只是最朴素的"哪些角色被激活过多少次"计数，用于回答"这些默认内置
+# 角色有没有人用"这类问题，不参与 system prompt 组装或压缩逻辑。
+#
+# 存储格式：~/.agent/persona_usage.jsonl，每行一条 {"name": str, "ts": float}。
+# 只追加、不改写，容错优先于精确——单行读取失败跳过即可，不影响整体统计。
+
+
+@dataclass
+class PersonaUsageStat:
+    name: str
+    call_count: int = 0
+    last_used: float = 0.0
+
+
+def record_persona_usage(name: str, project_root: Optional[Path] = None) -> None:
+    """记录一次 persona 激活事件（/role use 时调用）。失败静默吞掉，不阻断主流程。"""
+    try:
+        import json
+        import time
+        from mini_agent.storage.paths import AgentPaths
+        paths = AgentPaths(project_root or Path.cwd())
+        log_path = paths.global_persona_usage_log
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        with log_path.open("a", encoding="utf-8") as f:
+            f.write(json.dumps({"name": name, "ts": time.time()}, ensure_ascii=False) + "\n")
+    except Exception:
+        pass
+
+
+def summarize_persona_usage(project_root: Optional[Path] = None) -> list[PersonaUsageStat]:
+    """读取全局使用日志，按调用次数降序返回每个 persona 的统计。
+
+    单行解析失败会被跳过，不影响其余行的统计（与其余 loader 的容错策略一致）。
+    """
+    from mini_agent.storage.paths import AgentPaths
+    paths = AgentPaths(project_root or Path.cwd())
+    log_path = paths.global_persona_usage_log
+    stats: dict[str, PersonaUsageStat] = {}
+    if not log_path.exists():
+        return []
+    try:
+        import json
+        with log_path.open(encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    entry = json.loads(line)
+                    name = str(entry.get("name", ""))
+                    ts = float(entry.get("ts", 0.0))
+                except Exception:
+                    continue
+                if not name:
+                    continue
+                if name not in stats:
+                    stats[name] = PersonaUsageStat(name=name)
+                stats[name].call_count += 1
+                stats[name].last_used = max(stats[name].last_used, ts)
+    except Exception:
+        pass
+    return sorted(stats.values(), key=lambda s: s.call_count, reverse=True)

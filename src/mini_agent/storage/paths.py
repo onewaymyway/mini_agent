@@ -350,6 +350,11 @@ class AgentPaths:
         return self.global_dir / "personas"
 
     @property
+    def global_persona_usage_log(self) -> Path:
+        """~/.agent/persona_usage.jsonl — 角色扮演激活事件日志（跨项目全局统计）"""
+        return self.global_dir / "persona_usage.jsonl"
+
+    @property
     def project_personas_dir(self) -> Path:
         """<project_root>/.agent/personas/ — 项目级角色扮演（persona）配置目录"""
         return self.workdir_dir / "personas"

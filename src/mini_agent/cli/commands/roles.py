@@ -6,6 +6,7 @@ cli/commands/roles.py — /role slash 命令处理（角色扮演 Persona 系统
 /role show <name>    — 预览角色渲染后的完整 prompt 片段（含强制安全边界声明），不激活
 /role exit | off     — 清空 active_persona，回到默认人格
 /role status         — 显示当前是否处于角色扮演及角色名
+/role stats          — 显示各角色的全局激活次数统计（跨项目累计）
 /role reload         — 重新扫描 .agent/personas/ 和 ~/.agent/personas/
 
 详见 next_doc/roleplay_persona_design.md。
@@ -19,6 +20,7 @@ import mini_agent.ui.renderer as R
 def handle_role_cmd(args: list[str], agent=None) -> None:
     from mini_agent.orchestrator.persona_profiles import (
         get_persona_loader, init_personas, render_persona_prompt,
+        record_persona_usage, summarize_persona_usage,
     )
 
     loader = get_persona_loader()
@@ -64,6 +66,7 @@ def handle_role_cmd(args: list[str], agent=None) -> None:
             R.print_error("No active agent/session to apply persona to.")
             return
         agent.active_persona = name
+        record_persona_usage(name, project_root=getattr(agent.cfg, "project_root", None))
         R.print_success(
             f"Persona activated: {p.display_name} ({name}). "
             f"Takes effect from the next turn. Use /role exit to leave the role."
@@ -115,5 +118,29 @@ def handle_role_cmd(args: list[str], agent=None) -> None:
         loader = init_personas(cfg)
         R.print_success(f"Reloaded. Available personas: {loader.available}")
 
+    elif sub == "stats":
+        project_root = getattr(agent.cfg, "project_root", None) if agent is not None else None
+        usage = summarize_persona_usage(project_root=project_root)
+        if not usage:
+            R.print_info("No persona usage recorded yet (activate one with /role use <name>).")
+            return
+
+        import time as _time
+        from rich.table import Table
+        from rich import box as rbox
+
+        t = Table(box=rbox.SIMPLE, show_header=True, header_style="bold dim")
+        t.add_column("Name", style="cyan", min_width=16)
+        t.add_column("Activations", min_width=10)
+        t.add_column("Last used", min_width=16)
+
+        for stat in usage:
+            last_used = _time.strftime("%Y-%m-%d %H:%M", _time.localtime(stat.last_used)) if stat.last_used else "-"
+            t.add_row(stat.name, str(stat.call_count), last_used)
+
+        R.console.print("\n[bold]Persona Usage Stats[/bold] (global, cross-project)")
+        R.console.print(t)
+        R.console.print()
+
     else:
-        R.print_error("Usage: /role [list|use <name>|show <name>|exit|status|reload]")
+        R.print_error("Usage: /role [list|use <name>|show <name>|exit|status|stats|reload]")

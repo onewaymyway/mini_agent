@@ -144,11 +144,11 @@ def build_system_prompt(
 
 不涉及：`ToolRegistry`、`platform_policy.json`、`AgentProfileLoader`、hooks 系统。
 
-## 10. 二期路线图（已实施部分见第 13 节）
+## 10. 二期路线图（已全部实施，见第 13 节）
 
 - ~~`allowed_tools` 白名单的代码级强制拦截~~ **已实施**，见第 13 节。
 - ~~`/role` 与 daemon 多用户会话的联动~~ **已确认**：`active_persona` 是 `Agent` 实例属性，`SessionAgentPool` 本身按 session 各自持有独立 `Agent()` 实例，天然隔离，无需额外改动。
-- 角色使用情况的简单统计（复用现有 skill `tracker.py` 的统计模式），用于后续判断哪些内置角色实际有人用——暂缓，非当前优先级。
+- ~~角色使用情况的简单统计~~ **已实施**，见第 13 节（未复用 `skills/tracker.py` 的 LRU/compact 预算模型——那套是服务于 skill 上下文压缩的，与"计数角色被激活次数"是两回事，改为独立的最简 JSONL 追加日志）。
 
 ## 11. 验收方式
 
@@ -176,4 +176,5 @@ def build_system_prompt(
   - `render_persona_prompt()` 同步在渲染的 prompt 片段中告知模型当前允许的工具列表，避免模型盲试被拒绝的工具、浪费轮次。
   - `/role show <name>` 新增展示 `allowed_tools`（若设置）。
 - **多用户 daemon 隔离**：确认 `SessionAgentPool` 按 session 各自持有独立 `Agent()` 实例（`api/session_pool.py`），`active_persona` 作为 `Agent` 实例属性天然按 session 隔离，不需要额外改动。
+- **使用统计**：`persona_profiles.py` 新增 `record_persona_usage()` / `summarize_persona_usage()`，以最简的追加式 JSONL 日志（`~/.agent/persona_usage.jsonl`，每行 `{"name", "ts"}`）记录每次 `/role use` 激活事件，全局、跨项目累计。`/role use` 命中时自动记录；新增 `/role stats` 子命令按激活次数降序展示每个角色的调用次数与最近使用时间。单行解析失败静默跳过，不影响其余统计，与其余 loader 的容错策略一致。
 

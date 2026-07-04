@@ -2371,7 +2371,7 @@ _COMMANDS: list[tuple[str, str, list[str]]] = [
     ("/cc",          "Concurrency alias (same as /concurrency)",     ["tasks", "llm"]),
     ("/provider",    "LLM provider settings",                        ["list", "models", "switch"]),
     ("/agents",      "Agent profile management",                     ["list", "show", "reload"]),
-    ("/role",        "Roleplay persona: switch/exit agent's persona", ["list", "use", "show", "exit", "status", "reload"]),
+    ("/role",        "Roleplay persona: switch/exit agent's persona", ["list", "use", "show", "exit", "status", "stats", "reload"]),
     ("/hooks",       "Hook management",                              ["list", "reload"]),
     ("/platform",    "Platform/tag load policy for skill/agent/hook/tool", ["status", "filtered", "reload"]),
     ("/evolution",   "Self-evolution history",                       ["log", "show", "diff", "revert"]),
