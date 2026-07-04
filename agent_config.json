@@ -63,7 +63,7 @@
     "judge_tools_enabled": true,
     "judge_yes_mode": true,
     "max_rounds": 20,
-    "max_total_compacts": 10,
+    "max_total_compacts": 500,
     "consecutive_same_feedback_limit": 3,
     "same_feedback_similarity_threshold": 0.9,
     "persist_state": true,
@@ -71,7 +71,7 @@
     "judge_show_prompt": true
   },
   "turn_judge": {
-    "enabled": true,
+    "enabled": false,
     "judge_model": null,
     "judge_provider": null,
     "max_auto_rounds": 99999,
