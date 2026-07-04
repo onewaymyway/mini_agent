@@ -142,6 +142,31 @@ def test_format_feedback_goal_judge_shows_status():
     assert "已达成" in rendered
 
 
+def test_compat_make_goal_context_uses_real_impl_when_available():
+    from mini_agent.goal_mode._compat import make_goal_context
+    d = make_goal_context("hello")
+    assert d["content"] == "hello"
+    assert d["role"] == "user"
+    # 有真实 entry.py 实现时应该拿到 HType 枚举值（字符串值仍是 goal_context）
+    assert str(d["_type"]) == "HType.GOAL_CONTEXT" or d["_type"] == "goal_context"
+
+
+def test_compat_make_goal_context_falls_back_when_entry_lacks_it(monkeypatch):
+    import mini_agent.goal_mode._compat as compat_mod
+    import builtins
+
+    real_import = builtins.__import__
+
+    def fake_import(name, *args, **kwargs):
+        if name == "mini_agent.history.entry":
+            raise ImportError("simulated: entry.py 缺少 make_goal_context")
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", fake_import)
+    d = compat_mod.make_goal_context("fallback content")
+    assert d == {"role": "user", "content": "fallback content", "_type": "goal_context"}
+
+
 # ── GoalRunner（用 FakeAgent + monkeypatch run_goal_judge 隔离真实 LLM）──
 
 class _FakeStats:
