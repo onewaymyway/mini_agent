@@ -70,6 +70,21 @@ class RingBuffer:
 
 # ── OutputBroadcaster ─────────────────────────────────────────────────────────
 
+class _Subscriber:
+    """单个 SSE 订阅者的状态：队列 + 该订阅者关心的过滤范围。"""
+    __slots__ = ("queue", "turn_id_filter", "session_id_filter")
+
+    def __init__(
+        self,
+        queue: asyncio.Queue,
+        turn_id_filter: Optional[str] = None,
+        session_id_filter: Optional[str] = None,
+    ) -> None:
+        self.queue = queue
+        self.turn_id_filter = turn_id_filter
+        self.session_id_filter = session_id_filter
+
+
 class OutputBroadcaster:
     """
     事件广播器：
@@ -78,14 +93,47 @@ class OutputBroadcaster:
 
     线程安全：push() 可从任意线程调用；
     订阅/取消订阅需在 asyncio 事件循环中进行。
+
+    ★ 诊断修复（daemon connected 模式偶发"客户端信息显示不全"）★
+    之前的实现里，_broadcast_sync() 把**每一个**事件无差别地塞进**所有**
+    订阅者的队列，`/v1/stream/{turn_id}` 这种只关心单个 turn 的订阅者
+    也不例外——过滤（_match()）是在 routes.py 的 SSE 生成器里、事件已经
+    从队列里取出来之后才做的。
+
+    问题：一个订阅者的队列（默认 maxsize=512）因此实际装的是"全局所有
+    session、所有 turn"的事件，而不是它真正关心的那一小部分。当同一
+    daemon 下有并发 SubAgent 任务在跑（tool_call/tool_result/info 等
+    事件频率很高，参见 orchestrator/task_manager.py），这些跟当前 turn
+    完全无关的事件会迅速把一个本该很轻量的单 turn 订阅队列填满。队列
+    一旦满了，_broadcast_sync() 的处理方式是**整个丢弃这个订阅者**
+    （从 _subs 里移除）——而不是仅仅丢掉不相关的那部分事件——于是这个
+    正在显示中的 turn，其后续 token 事件全部收不到广播，表现为客户端
+    "内容显示到一半就不完整/后续被截断"。而 daemon 本地终端走的是另一条
+    完全不同的路径（不经过这个订阅队列），所以只有"客户端"一侧复现，
+    这与最初的问题描述完全吻合。
+
+    修复：
+      1. subscribe() 增加 turn_id_filter / session_id_filter 参数，
+         在**推送时**就按订阅者关心的范围过滤，不相关的事件根本不会
+         进入该订阅者的队列——从根源上避免"无关事件把队列挤爆"。
+      2. 队列仍然满了（真正的极端积压）时，不再直接销毁订阅者、让它
+         从此再也收不到任何事件：改为丢弃队首（最旧）的一条事件腾出
+         空间再重试——保证"最新事件优先送达"，牺牲的是最旧的、大概率
+         已经过时的积压事件，而不是让整条流从此死掉。
+      3. 每次丢弃都做一次计数 + 告警日志，方便以后再复现时能直接从
+         日志里定位"是不是队列积压导致的丢事件"，而不必再靠肉眼比对
+         客户端输出去猜。
     """
 
     def __init__(self, ring: RingBuffer) -> None:
         self._ring = ring
-        # asyncio.Queue per subscriber  {sub_id -> asyncio.Queue}
-        self._subs: dict[str, asyncio.Queue] = {}
+        # asyncio.Queue per subscriber  {sub_id -> _Subscriber}
+        self._subs: dict[str, "_Subscriber"] = {}
         self._loop: Optional[asyncio.AbstractEventLoop] = None
         self._lock = threading.Lock()
+        # 诊断计数器：sub_id -> 因队列积压丢弃的事件数（供 /v1/status 等
+        # 诊断端点或日志排查使用，不影响功能）。
+        self.dropped_event_counts: dict[str, int] = {}
 
     def set_loop(self, loop: asyncio.AbstractEventLoop) -> None:
         """绑定 asyncio 事件循环（server 启动时调用）。"""
@@ -101,25 +149,85 @@ class OutputBroadcaster:
             self._loop.call_soon_threadsafe(self._broadcast_sync, event)
         return event
 
+    @staticmethod
+    def _matches(event: AgentEvent, turn_id_filter: Optional[str],
+                 session_id_filter: Optional[str]) -> bool:
+        """
+        判断一个事件是否落在某个订阅者关心的范围内。
+        与 routes.py 里原来的 _match() 语义保持一致（session_switched
+        始终放行，见该函数原有注释），只是把它下沉到推送侧执行。
+        """
+        if turn_id_filter and event.turn_id and event.turn_id != turn_id_filter:
+            return False
+        if (
+            session_id_filter
+            and event.session_id
+            and event.session_id != session_id_filter
+            and event.type != EventType.SESSION_SWITCHED
+        ):
+            return False
+        return True
+
     def _broadcast_sync(self, event: AgentEvent) -> None:
-        """在 asyncio 线程中运行，把事件塞进每个订阅队列。"""
+        """在 asyncio 线程中运行，把事件塞进每个订阅队列（按各自的过滤范围）。"""
         with self._lock:
             subs = list(self._subs.items())
-        dead = []
-        for sub_id, q in subs:
-            try:
-                q.put_nowait(event)
-            except asyncio.QueueFull:
-                dead.append(sub_id)
-        for sub_id in dead:
-            self._remove_sub(sub_id)
+        for sub_id, sub in subs:
+            if not self._matches(event, sub.turn_id_filter, sub.session_id_filter):
+                continue
+            self._put_with_backpressure(sub_id, sub.queue, event)
 
-    def subscribe(self, maxsize: int = 512) -> tuple[str, asyncio.Queue]:
-        """注册一个新订阅者，返回 (sub_id, queue)。"""
+    def _put_with_backpressure(self, sub_id: str, q: asyncio.Queue, event: AgentEvent) -> None:
+        """
+        尝试把事件放进订阅队列；满了就丢弃队首最旧的一条腾出空间再重试，
+        而不是销毁整个订阅者——保证这个订阅者至少还能继续收到"更新的"
+        事件，不会因为一次积压就彻底失联。
+        """
+        try:
+            q.put_nowait(event)
+            return
+        except asyncio.QueueFull:
+            pass
+        try:
+            q.get_nowait()  # 丢弃最旧的一条
+        except asyncio.QueueEmpty:
+            pass
+        try:
+            q.put_nowait(event)
+        except asyncio.QueueFull:
+            pass  # 极端情况：并发写入把刚腾出的位置又占满了，放弃这一条
+        with self._lock:
+            self.dropped_event_counts[sub_id] = self.dropped_event_counts.get(sub_id, 0) + 1
+        try:
+            import logging
+            logging.getLogger("mini_agent.api.bridge").warning(
+                "SSE subscriber %s queue overflow, dropped oldest event "
+                "(turn_id=%s, total_dropped=%d) — 若客户端反馈内容显示不全，"
+                "先查这里的丢弃计数是否持续增长",
+                sub_id, event.turn_id, self.dropped_event_counts[sub_id],
+            )
+        except Exception:
+            pass
+
+    def subscribe(
+        self,
+        maxsize: int = 512,
+        turn_id_filter: Optional[str] = None,
+        session_id_filter: Optional[str] = None,
+    ) -> tuple[str, asyncio.Queue]:
+        """
+        注册一个新订阅者，返回 (sub_id, queue)。
+
+        turn_id_filter / session_id_filter：若提供，推送时就只把匹配的
+        事件放进这个订阅者的队列（见类文档的"诊断修复"说明）。不提供则
+        保持旧行为——接收全部事件（例如 /v1/stream 全局订阅、观察者线程）。
+        """
         sub_id = str(uuid.uuid4())
         q: asyncio.Queue = asyncio.Queue(maxsize=maxsize)
         with self._lock:
-            self._subs[sub_id] = q
+            self._subs[sub_id] = _Subscriber(
+                queue=q, turn_id_filter=turn_id_filter, session_id_filter=session_id_filter,
+            )
         return sub_id, q
 
     def unsubscribe(self, sub_id: str) -> None:
@@ -128,6 +236,7 @@ class OutputBroadcaster:
     def _remove_sub(self, sub_id: str) -> None:
         with self._lock:
             self._subs.pop(sub_id, None)
+            self.dropped_event_counts.pop(sub_id, None)
 
     @property
     def subscriber_count(self) -> int:

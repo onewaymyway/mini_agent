@@ -535,7 +535,15 @@ async def _sse_generator(
     )
 
     # ── 阶段 2：实时推送 ──────────────────────────────────────────────────
-    sub_id, q = bridge.broadcaster.subscribe()
+    # 过滤条件在 subscribe() 时就传下去（见 bridge.py OutputBroadcaster 的
+    # "诊断修复"说明）：这样无关的事件（例如并发 SubAgent 任务产生的高频
+    # tool_call/tool_result）根本不会进入这个订阅者的队列，不会把队列挤爆
+    # 导致本该收到的 token 事件被挤掉/订阅者被销毁。_match() 仍然保留在
+    # 下面作为双重保险（万一未来有旧版客户端命中没有过滤的 subscribe 调用
+    # 路径），但正常情况下不会再有事件在这一步被过滤掉。
+    sub_id, q = bridge.broadcaster.subscribe(
+        turn_id_filter=turn_id_filter, session_id_filter=session_id_filter,
+    )
     try:
         while True:
             try:
