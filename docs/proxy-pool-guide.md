@@ -293,6 +293,27 @@ python scripts/proxy_ctl.py serve --listen-port 1080 --keep-alive 3
 生成的文件都在 `<project_root>/.agent/proxy/`(通过 `storage/paths.py` 的 `AgentPaths` 统一管理,
 和项目里其它全局状态一致的路径规范):`sources.json`、`available.json`、`proxy.log`。
 
+### agent 自己调用: `proxy_manager.py` 工具
+
+除了人在 CLI/REPL 里手动操作，agent 在推理过程中也可以直接调用工具查看/控制代理池
+(`src/mini_agent/tools/proxy_manager.py`,`Agent.__init__` 时自动注册,和
+`skill_manager.py` 的注册方式一致):
+
+| 工具 | 说明 |
+|------|------|
+| `proxy_status` | 查看最近一次 refresh 的可用节点摘要(瞬时,不重新抓取) |
+| `proxy_refresh` | 重新抓取订阅 + 去重 + 验证节点(阻塞,网络密集) |
+| `proxy_sources_list` | 列出已配置的订阅源 |
+| `proxy_sources_add` | 添加一个订阅源(`type` 为 `url` / `mibei77` / `discovered`) |
+| `proxy_integration_get` | 查看接入开关状态 |
+| `proxy_integration_set` | 修改一个接入开关,**必须提供 `reason`** |
+
+和 CLI/`/proxy` 命令读写的是同一份 `sources.json` / `integration.json`,三条路径
+(独立脚本、slash 命令、agent 工具调用)互相一致,不会出现"人开了个开关,agent 那边
+读到的还是旧值"这种不一致。`proxy_integration_set` 特意要求模型说明 `reason` 并会
+打印一条提示日志,是因为这个开关会改变 agent 自身真实流量的路由方式(比如让 LLM
+请求绕道一个不受控的免费节点),比 skill 开关的影响面更大,需要留痕方便事后审计。
+
 ### 集成到 mini_agent 命令: `/proxy`
 
 在 REPL 交互模式里可以直接用 slash 命令,不用切出去开终端:

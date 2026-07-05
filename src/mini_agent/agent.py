@@ -310,6 +310,16 @@ class Agent:
             from mini_agent.tools.orchestration import set_active_skills_provider
             set_active_skills_provider(lambda: self.skill_loader.active)
 
+        # ── 代理池管理工具 ────────────────────────────────────────────────────
+        # 让 agent 自己也能查看/触发代理池刷新、管理订阅源、控制"agent 自身请求是否
+        # 走代理"的开关（llm_use_proxy / web_search_use_proxy 等），而不是只能靠人
+        # 在 CLI（scripts/proxy_ctl.py）或 REPL（/proxy）里手动操作。开关默认全部关闭，
+        # 工具本身不会替用户打开；agent 调用 proxy_integration_set 时必须说明 reason，
+        # 便于事后审计（见 tools/proxy_manager.py 顶部注释）。
+        from mini_agent.tools.proxy_manager import register_proxy_tools
+        from mini_agent.storage.paths import AgentPaths as _AgentPaths
+        register_proxy_tools(self.registry, _AgentPaths(cfg.project_root))
+
         # [SYS-HOT-RELOAD] 热重载监视器：自动感知 skills/ 和 .agent/agents/ 目录变化
         from mini_agent.perception.hot_reload import HotReloader
         self._hot_reloader = HotReloader(

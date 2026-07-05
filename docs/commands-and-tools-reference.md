@@ -429,6 +429,23 @@ cron:<分 时 日 月 周>   标准 cron 5 字段，如 cron:0 */6 * * *（每 6
 
 ---
 
+### 代理池（`src/mini_agent/cli/commands/proxy.py`）
+
+> 订阅抓取 → 去重 → 验证 → 生成可用节点列表；控制"agent 自身请求是否走代理"的开关（默认全部关闭）。
+> 详见 `docs/proxy-pool-guide.md`。
+
+| 命令 | 说明 |
+|------|------|
+| `/proxy` / `/proxy status` | 查看最近一次 refresh 的可用节点摘要（延迟排序、协议分布） |
+| `/proxy refresh` | 立即重新抓取订阅源 + 验证节点（阻塞，可能要几十秒到几分钟） |
+| `/proxy sources` | 列出已配置的订阅源 |
+| `/proxy sources add-mibei77` | 添加 mibei77.com 作为订阅源 |
+| `/proxy sources add-discovered` | 接入 `discovered_sources.json`（由 agent/skill 自动发现地址写入） |
+| `/proxy integration` | 查看代理接入其它模块的开关（`llm_use_proxy` / `web_search_use_proxy` / `fixed_entry_forwarder_*`，默认全 off） |
+| `/proxy integration set <key> <value>` | 修改一个开关，如 `/proxy integration set llm_use_proxy true` |
+
+---
+
 ### 调试（`src/mini_agent/cli/commands/debug_cmd.py`）
 
 > 打印/导出当前 system prompt 与 history，便于分析调试（排查 prompt 注入、history 压缩/截断、`_type` 归类是否符合预期）。
@@ -595,6 +612,21 @@ mini-agent eval --scenario test_cases/                      # 不传 --skill，�
 | 工具 | 需要审批 | 参数 | 说明 |
 |------|----------|------|------|
 | `skill_propose` | ❌（沙箱拦截 + T1 校验流水线把关） | `name`, `content`, `source_lessons`, `reason` | 把新 SKILL.md 提案为一个 `evolve/<date>-skill-<name>` 分支上的 commit（`StateRepo.apply()`，tier=T1），不会自动生效，需人工 review + merge |
+
+### 代理池管理（proxy_manager.py，由 Agent 动态注册）
+
+让 agent 自己也能查看/触发代理池刷新、管理订阅源、控制"agent 自身请求是否走代理"的开关，
+不必只靠人在 `/proxy` 或 `scripts/proxy_ctl.py` 里手动操作。开关默认全部关闭；
+`proxy_integration_set` 要求提供 `reason`，便于事后审计。详见 `docs/proxy-pool-guide.md`。
+
+| 工具 | 需要审批 | 说明 |
+|------|----------|------|
+| `proxy_status` | ❌ | 查看最近一次 refresh 的可用节点摘要（瞬时返回，不重新抓取） |
+| `proxy_refresh` | ❌ | 重新抓取订阅 + 去重 + 验证节点（阻塞，网络密集，可能耗时较长） |
+| `proxy_sources_list` | ❌ | 列出已配置的订阅源 |
+| `proxy_sources_add` | ❌ | 添加一个订阅源（`type` 为 `url` / `mibei77` / `discovered`） |
+| `proxy_integration_get` | ❌ | 查看 `llm_use_proxy` / `web_search_use_proxy` / `fixed_entry_forwarder_*` 开关状态 |
+| `proxy_integration_set` | ❌ | 修改一个开关（需提供 `reason`），默认全部关闭 |
 
 详见 [自我演化 lesson → skill 闭环指南（Stage 3.1）](self-evolution-stage3-1-guide.md)。
 
