@@ -541,7 +541,7 @@ class DaemonClient:
         elif evt_type in (
             "tool_call", "tool_result", "tool_error",
             "info", "warning", "permission_req", "permission_done",
-            "session_switched", "fs_change",
+            "session_switched", "fs_change", "reasoning", "skill_loaded",
         ):
             # 之前这里被静默忽略——是 connected 模式看不到工具调用过程的根因。
             # 统一转发给 on_event，由调用方决定怎么渲染（见 run_connected_repl
@@ -1059,6 +1059,22 @@ def _render_sse_event(term, evt_type: str, payload: dict, *, prefix: str = "") -
                 f"\n{prefix}{icon} [bold cyan]{_esc(tool_name)}[/bold cyan]  "
                 f"[dim]{_esc(summary)}[/dim]"
             )
+            # ★ verbose 入参 JSON 块：与 ui/renderer.py::print_tool_call()
+            # 的 `if verbose: term.syntax(json.dumps(tool_input, ...))`
+            # 保持一致——之前这里完全没有这一步，导致 daemon 本地终端在
+            # verbose 模式下能看到完整入参（比如 read_file 的
+            # path/start_line/end_line），connected 客户端却永远只有一行
+            # 摘要。payload["verbose"] 由 api/server.py 的 _print_tool_call
+            # 钩子转发自 tool_executor.py 调用时传入的 self.cfg.verbose，
+            # 两端因此能做出一致的判断。
+            if payload.get("verbose") and tool_input:
+                try:
+                    term.syntax(
+                        json.dumps(tool_input, indent=2, ensure_ascii=False),
+                        "json", theme="ansi_dark", line_numbers=False,
+                    )
+                except Exception:
+                    pass
 
         elif evt_type == "tool_result":
             tool_name = payload.get("tool_name", "")
@@ -1102,6 +1118,26 @@ def _render_sse_event(term, evt_type: str, payload: dict, *, prefix: str = "") -
             action = payload.get("action", "")
             path   = payload.get("path", "")
             term.print(f"{prefix}[dim]📁 {_esc(action)}: {_esc(path)}[/dim]")
+
+        elif evt_type == "reasoning":
+            # 对应 ui/renderer.py 的 print_reasoning_header()/print_reasoning()/
+            # print_reasoning_footer()——之前完全没有转发，connected 客户端
+            # 看不到模型的思维链输出。marker 标记头尾分隔线，text 是流式
+            # token（用 stream_token 而不是 print()，和本地终端保持一致的
+            # "原地追加"效果，不是每个 token 各占一行）。
+            marker = payload.get("marker")
+            if marker == "start":
+                term.print(f"{prefix}\n[dim]── Reasoning ──────────────────────────────[/dim]")
+            elif marker == "end":
+                term.print(f"{prefix}[dim]──────────────────────────────────────────[/dim]\n")
+            else:
+                text = payload.get("text", "")
+                if text:
+                    term.stream_token(text)
+
+        elif evt_type == "skill_loaded":
+            name = payload.get("skill_name", "")
+            term.print(f"{prefix}[dim]📚 Skill loaded: {_esc(name)}[/dim]")
         # permission_req / permission_done 不在这里渲染——它们需要交互式
         # 审批流程（见 _handle_connected_permission），不是单纯的展示事件。
     except Exception:

@@ -15,12 +15,14 @@ import time
 class EventType(str, Enum):
     # LLM 输出
     TOKEN            = "token"           # 流式文本 token
+    REASONING        = "reasoning"       # 流式思维链（CoT）token / 起止标记
     TURN_START       = "turn_start"      # 一轮开始
     TURN_DONE        = "turn_done"       # 一轮结束
     # 工具
     TOOL_CALL        = "tool_call"       # 工具被调用
     TOOL_RESULT      = "tool_result"     # 工具结果
     TOOL_ERROR       = "tool_error"      # 工具出错
+    SKILL_LOADED     = "skill_loaded"    # skill 被激活（print_skill_loaded）
     # 权限
     PERMISSION_REQ   = "permission_req"  # 需要用户审批
     PERMISSION_DONE  = "permission_done" # 审批结果

@@ -932,11 +932,47 @@ def _install_output_hook(bridge: AgentBridge) -> None:
             bridge.emit_token(token, turn_id=_tid())
     mod.StreamWriter = _PatchedStreamWriter
 
+    # ── print_reasoning / header / footer（思维链流式输出）───────────────────
+    # 之前完全没有转发——是 connected 客户端看不到 "── Reasoning ──" 整块
+    # 内容的根因，见 bridge.py::emit_reasoning() 的详细说明。
+    _orig_print_reasoning = mod.print_reasoning
+    def _print_reasoning(token: str) -> None:
+        _orig_print_reasoning(token)
+        bridge.emit_reasoning(turn_id=_tid(), text=token)
+    mod.print_reasoning = _print_reasoning
+
+    _orig_print_reasoning_header = mod.print_reasoning_header
+    def _print_reasoning_header() -> None:
+        _orig_print_reasoning_header()
+        bridge.emit_reasoning(turn_id=_tid(), marker="start")
+    mod.print_reasoning_header = _print_reasoning_header
+
+    _orig_print_reasoning_footer = mod.print_reasoning_footer
+    def _print_reasoning_footer() -> None:
+        _orig_print_reasoning_footer()
+        bridge.emit_reasoning(turn_id=_tid(), marker="end")
+    mod.print_reasoning_footer = _print_reasoning_footer
+
+    # ── print_skill_loaded ──────────────────────────────────────────────────
+    _orig_print_skill_loaded = mod.print_skill_loaded
+    def _print_skill_loaded(name: str) -> None:
+        _orig_print_skill_loaded(name)
+        bridge.emit_skill_loaded(name, turn_id=_tid())
+    mod.print_skill_loaded = _print_skill_loaded
+
     # ── print_tool_call ───────────────────────────────────────────────────
     _orig_print_tool_call = mod.print_tool_call
     def _print_tool_call(tool_name: str, tool_input: dict, **kw) -> None:
         _orig_print_tool_call(tool_name, tool_input, **kw)
-        bridge.emit_tool_call(tool_name, tool_input, turn_id=_tid())
+        # tool_executor.py 调用 print_tool_call() 时传了
+        # verbose=self.cfg.verbose（决定本地终端是否展示完整入参 JSON）。
+        # 之前这里的 **kw 被吃掉、从未转发给 emit_tool_call()，导致
+        # connected 客户端永远收不到这个信息、只能展示成"非 verbose"
+        # 效果——即便 daemon 本地明明是 verbose 模式。这里显式取出并透传。
+        bridge.emit_tool_call(
+            tool_name, tool_input, turn_id=_tid(),
+            verbose=bool(kw.get("verbose", False)),
+        )
     mod.print_tool_call = _print_tool_call
 
     # ── print_tool_result ─────────────────────────────────────────────────

@@ -625,12 +625,61 @@ class AgentBridge:
             data={"text": token},
         ))
 
-    def emit_tool_call(self, name: str, inp: dict, turn_id: str = "") -> None:
+    def emit_reasoning(
+        self, turn_id: str = "", text: Optional[str] = None, marker: Optional[str] = None,
+    ) -> None:
+        """
+        推送思维链（CoT）相关事件——之前完全没有对应的 emit，导致
+        print_reasoning()/print_reasoning_header()/print_reasoning_footer()
+        产生的"── Reasoning ──"整块内容在 daemon 本地终端可见、connected
+        客户端却完全看不到（连头尾分隔线都没有），是本次排查里发现的另一
+        处"两端显示不一样"。
+
+        text   非空：一个流式 reasoning token（对应 print_reasoning(token)）。
+        marker 非空："start" 或 "end"，对应 print_reasoning_header()/
+               print_reasoning_footer()，让客户端能画出同样的分隔线，
+               而不只是把 reasoning 文本和正文混在一起。
+        """
+        data: dict = {}
+        if text is not None:
+            data["text"] = text
+        if marker is not None:
+            data["marker"] = marker
+        self.broadcaster.push(AgentEvent(
+            type=EventType.REASONING,
+            turn_id=turn_id,
+            session_id=self._current_session_id(),
+            data=data,
+        ))
+
+    def emit_skill_loaded(self, name: str, turn_id: str = "") -> None:
+        """
+        推送 skill 激活通知（对应 print_skill_loaded()）。同样是之前
+        完全没有转发的一类事件——daemon 本地终端能看到"📚 Skill loaded: xxx"，
+        connected 客户端看不到，容易让人误以为两端行为不一致（其实只是
+        没转发，agent 侧逻辑本身没有差异）。
+        """
+        self.broadcaster.push(AgentEvent(
+            type=EventType.SKILL_LOADED,
+            turn_id=turn_id,
+            session_id=self._current_session_id(),
+            data={"skill_name": name},
+        ))
+
+    def emit_tool_call(self, name: str, inp: dict, turn_id: str = "", verbose: bool = False) -> None:
         self.broadcaster.push(AgentEvent(
             type=EventType.TOOL_CALL,
             turn_id=turn_id,
             session_id=self._current_session_id(),
-            data={"tool_name": name, "tool_input": inp},
+            # verbose：透传本地终端当时是否处于"展示完整工具入参 JSON"模式
+            # （tool_executor.py 调用 print_tool_call() 时传的
+            # verbose=self.cfg.verbose）。之前这里没有转发这个字段，导致
+            # daemon 本地终端能看到 tool_input 的 JSON 代码块（.agent 目录
+            # 排查等场景很依赖这个），而 connected 客户端 _render_sse_event()
+            # 根本无从判断要不要展示同样的内容——表现为"同一次 read_file
+            # 调用，daemon 端能看到 path/start_line/end_line 参数，客户端
+            # 只有一行摘要"。加上这个字段，客户端才能做出和本地一致的判断。
+            data={"tool_name": name, "tool_input": inp, "verbose": verbose},
         ))
 
     def emit_tool_result(self, name: str, result: str, turn_id: str = "") -> None:
