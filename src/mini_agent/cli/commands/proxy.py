@@ -13,7 +13,7 @@ cli/commands/proxy.py — /proxy slash 命令处理
 
 后续集成方向(暂未接入，先留好扩展点):
   - agent.llm_client 的 httpx client 初始化处 (llm/client_pool.py 或各 provider 文件)
-    可以读取 AgentPaths().global_proxy_available_list 里延迟最低的节点，
+    可以读取 AgentPaths().workdir_proxy_available_list 里延迟最低的节点，
     在配置里加一个 "use_proxy_pool": true 开关来控制是否启用。
   - web_search/ 下的 provider 可以在被限流/屏蔽时，从 available.json 里换下一个节点重试。
   这两处目前还是手动接线，因为要不要默认启用代理是产品决策，不适合在这里替用户做主。
@@ -76,7 +76,7 @@ def _print_status(paths: AgentPaths) -> None:
     import json
     import time
 
-    p = paths.global_proxy_available_list
+    p = paths.workdir_proxy_available_list
     if not p.exists():
         R.print_info("No proxy pool data yet — run `/proxy refresh` first.")
         return
@@ -84,7 +84,8 @@ def _print_status(paths: AgentPaths) -> None:
     age_min = (time.time() - data.get("generated_at", 0)) / 60
     R.console.print(
         f"\n[bold]Proxy pool[/bold] — generated {age_min:.1f} min ago, "
-        f"{data['nodes_ok']}/{data['nodes_found']} node(s) usable:"
+        f"{data['nodes_ok']}/{data['nodes_found']} node(s) usable "
+        f"(protocol breakdown: {data.get('protocol_breakdown', {})}):"
     )
     for n in data.get("available", [])[:10]:
         R.console.print(

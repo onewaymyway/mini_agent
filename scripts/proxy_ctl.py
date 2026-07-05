@@ -49,27 +49,27 @@ from mini_agent.proxy.validator import validate_nodes  # noqa: E402
 
 
 def _setup_logging(paths: AgentPaths) -> None:
-    paths.ensure_global_proxy_dir()
+    paths.ensure_workdir_proxy_dir()
     logging.basicConfig(
         level=logging.INFO,
         format="%(asctime)s [%(levelname)s] %(message)s",
         handlers=[
-            logging.FileHandler(paths.global_proxy_log, encoding="utf-8"),
+            logging.FileHandler(paths.workdir_proxy_log, encoding="utf-8"),
             logging.StreamHandler(sys.stdout),
         ],
     )
 
 
 def _load_sources_config(paths: AgentPaths) -> list[dict]:
-    p = paths.global_proxy_sources_config
+    p = paths.workdir_proxy_sources_config
     if not p.exists():
         return []
     return json.loads(p.read_text(encoding="utf-8"))
 
 
 def _save_sources_config(paths: AgentPaths, entries: list[dict]) -> None:
-    paths.ensure_global_proxy_dir()
-    paths.global_proxy_sources_config.write_text(
+    paths.ensure_workdir_proxy_dir()
+    paths.workdir_proxy_sources_config.write_text(
         json.dumps(entries, indent=2, ensure_ascii=False), encoding="utf-8"
     )
 
@@ -118,6 +118,8 @@ def cmd_sources_remove(paths: AgentPaths, args) -> None:
 
 
 async def _do_refresh(paths: AgentPaths, keep_alive: int, check_url: str, concurrency: int) -> dict:
+    import collections
+
     entries = _load_sources_config(paths)
     if not entries:
         logging.warning("no subscription sources configured; run `sources add` / `sources add-mibei77` first")
@@ -126,18 +128,69 @@ async def _do_refresh(paths: AgentPaths, keep_alive: int, check_url: str, concur
     sources = _build_sources(entries)
     logging.info("fetching from %d subscription source(s)...", len(sources))
     nodes = await fetch_all(sources)
-    logging.info("parsed %d candidate node(s), validating (concurrency=%d)...", len(nodes), concurrency)
 
+    # 协议分布统计: 帮助判断"验证通过率低"到底是节点普遍失效,还是协议覆盖率不够
+    proto_counts = collections.Counter(n.protocol for n in nodes)
+    logging.info(
+        "parsed %d candidate node(s), protocol breakdown: %s",
+        len(nodes), dict(proto_counts),
+    )
+
+    # 不管是否验证通过,先把全量节点原样落盘一份,方便排查"协议支持了但仍连不上"
+    # 还是"协议压根没支持"这两种情况,也方便以后换协议实现时重新跑验证不用重新抓订阅
+    paths.ensure_workdir_proxy_dir()
+    all_nodes_payload = {
+        "generated_at": time.time(),
+        "total": len(nodes),
+        "protocol_breakdown": dict(proto_counts),
+        "nodes": [
+            {
+                "protocol": n.protocol, "name": n.name, "server": n.server,
+                "port": n.port, "params": n.params, "raw": n.raw,
+            }
+            for n in nodes
+        ],
+    }
+    paths.workdir_proxy_all_nodes_list.write_text(
+        json.dumps(all_nodes_payload, indent=2, ensure_ascii=False), encoding="utf-8"
+    )
+    logging.info("wrote %s (全部解析出的节点,不论是否验证通过)", paths.workdir_proxy_all_nodes_list)
+
+    from mini_agent.proxy.local_proxy import can_handle_pure_python
+    from mini_agent.proxy.external_engine import needs_external_engine, singbox_available, xray_available
+
+    engine_available = singbox_available() or xray_available()
+    # 精确到"这个具体节点"能不能处理,而不是笼统按协议名判断
+    # (比如同样是 vless,带 flow=xtls-rprx-vision 的处理不了,不带的可以)
+    unsupported_nodes = [
+        n for n in nodes
+        if not can_handle_pure_python(n) and (needs_external_engine(n) and not engine_available)
+    ]
+    if unsupported_nodes:
+        by_reason = collections.Counter(
+            f"{n.protocol}"
+            + ("+reality" if n.params.get("security") == "reality" else "")
+            + ("+vision" if n.params.get("flow") else "")
+            for n in unsupported_nodes
+        )
+        logging.info(
+            "当前环境没有 sing-box/xray,以下特性的节点会被跳过(共 %d 个): %s ；"
+            "见 docs/proxy-pool-guide.md 了解如何装 sing-box 覆盖这些协议",
+            len(unsupported_nodes), dict(by_reason),
+        )
+
+    logging.info("validating (concurrency=%d)...", concurrency)
     results = await validate_nodes(nodes, concurrency=concurrency, check_url=check_url)
     ok_results = sorted(
         (r for r in results if r.ok and r.latency_ms is not None), key=lambda r: r.latency_ms
     )
     skipped_unsupported = sum(
-        1 for r in results if not r.ok and r.error and "not supported" in r.error
+        1 for r in results if not r.ok and r.error and "需要外部引擎" in r.error
     )
+    tested_but_failed = len(results) - len(ok_results) - skipped_unsupported
     logging.info(
-        "validation done: %d ok / %d total (%d skipped: unsupported protocol e.g. vmess/vless)",
-        len(ok_results), len(results), skipped_unsupported,
+        "validation done: %d ok / %d total (%d skipped:协议不支持, %d 实际测试但连不上:节点本身失效/被墙/延迟超时)",
+        len(ok_results), len(results), skipped_unsupported, tested_but_failed,
     )
 
     available = [
@@ -157,14 +210,14 @@ async def _do_refresh(paths: AgentPaths, keep_alive: int, check_url: str, concur
         "generated_at": time.time(),
         "nodes_found": len(nodes),
         "nodes_ok": len(ok_results),
+        "protocol_breakdown": dict(proto_counts),
         "keep_alive_recommended": keep_alive,
         "available": available,
     }
-    paths.ensure_global_proxy_dir()
-    paths.global_proxy_available_list.write_text(
+    paths.workdir_proxy_available_list.write_text(
         json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8"
     )
-    logging.info("wrote %s", paths.global_proxy_available_list)
+    logging.info("wrote %s", paths.workdir_proxy_available_list)
     return payload
 
 
@@ -178,7 +231,7 @@ def cmd_refresh(paths: AgentPaths, args) -> None:
 
 
 def cmd_status(paths: AgentPaths, args) -> None:
-    p = paths.global_proxy_available_list
+    p = paths.workdir_proxy_available_list
     if not p.exists():
         print("no available.json yet — run `refresh` first")
         return
@@ -194,7 +247,7 @@ async def _do_serve(paths: AgentPaths, listen_port: int, keep_alive: int) -> Non
     from mini_agent.proxy.local_proxy import start_local_proxy
     from mini_agent.proxy.service import run_fixed_entry_forwarder
 
-    p = paths.global_proxy_available_list
+    p = paths.workdir_proxy_available_list
     if not p.exists():
         logging.error("no available.json — run `refresh` first")
         return

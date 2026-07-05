@@ -13,6 +13,7 @@ agent_permissions.json
 .agent/logs
 .agent/sessions
 .agent/permissions.json
+.agent/proxy
 .claude/skills/skill-creator/
 # Provider 配置（含 API key，禁止提交）
 providers.json

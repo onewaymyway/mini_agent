@@ -1,12 +1,15 @@
 """纯 Python 版本的"本地代理进程"。
 
 和之前依赖 xray-core 子进程的版本相比,这里是在 asyncio 事件循环里直接起一个
-SOCKS5 server task,收到本地连接后按节点协议(ss / trojan)转发——不再需要
-任何外部可执行文件,也没有子进程管理的开销。
+SOCKS5 server task,收到本地连接后按节点协议转发——不再需要任何外部可执行文件,
+也没有子进程管理的开销。
 
-支持: ss(经典 AEAD)、trojan。
-不支持: vmess / vless(协议更复杂,纯 Python 重实现性价比不高,遇到时直接
-在验证阶段跳过,不会假装可用)。
+支持(纯 Python): ss(经典 AEAD)、trojan、普通 vless(tcp/ws + tls/none,
+不带 flow、不用 reality)。
+
+以下情况纯 Python 明确做不了,自动转交外部引擎(见 external_engine.py,
+优先 sing-box、次选 xray): vmess、vless 带 flow=xtls-rprx-vision、
+vless 带 security=reality、hysteria2。原因见 external_engine.py 顶部注释。
 """
 
 from __future__ import annotations
@@ -15,11 +18,41 @@ import asyncio
 import struct
 from dataclasses import dataclass
 
-from .protocols import ShadowsocksConnector, TrojanConnector
+from .protocols import ShadowsocksConnector, TrojanConnector, VlessConnector
 from .subscription import ProxyNode
 from .xray_runner import find_free_port  # 复用找空闲端口的小工具
 
-SUPPORTED_PROTOCOLS = {"ss", "trojan"}
+
+def can_handle_pure_python(node: ProxyNode) -> bool:
+    """按节点的具体特征(不只是协议名)判断纯 Python 能不能处理。
+
+    vless 本身纯 Python 是支持的,但 flow=xtls-rprx-vision 或
+    security=reality 这两个特性纯 Python 没实现,同样协议名下
+    有的节点能处理、有的不能,所以不能只看 node.protocol。
+    """
+    if node.protocol in ("ss", "trojan"):
+        return True
+    if node.protocol == "vless":
+        p = node.params
+        return not p.get("flow") and p.get("security") != "reality"
+    return False
+
+
+def supported_protocols() -> set[str]:
+    """向后兼容: 一个粗粒度的"这个协议名下至少有部分节点能处理"的集合。
+    精确判断请用 can_handle_pure_python() + external_engine.needs_external_engine()。
+    """
+    from . import external_engine
+
+    protocols = {"ss", "trojan", "vless"}
+    if external_engine.singbox_available():
+        protocols |= {"vmess", "hysteria2", "hy2"}
+    elif external_engine.xray_available():
+        protocols |= {"vmess"}
+    return protocols
+
+
+SUPPORTED_PROTOCOLS = supported_protocols()
 
 
 def _build_connector(node: ProxyNode):
@@ -35,6 +68,8 @@ def _build_connector(node: ProxyNode):
             sni=p.get("sni") or p.get("peer"),
             allow_insecure=p.get("allowInsecure") in ("1", "true", True),
         )
+    if node.protocol == "vless":
+        return VlessConnector(node.server, node.port, node.params)
     raise ValueError(f"protocol '{node.protocol}' not supported without xray")
 
 
@@ -135,6 +170,37 @@ async def _relay_shadowsocks(client_reader, client_writer, connector: Shadowsock
     await asyncio.gather(_client_to_remote(), _remote_to_client())
 
 
+async def _relay_vless(client_reader, client_writer, connector: VlessConnector, host: str, port: int) -> None:
+    send, recv, close = await connector.open(host, port)
+    await _reply_success(client_writer)
+
+    async def _client_to_remote():
+        try:
+            while True:
+                data = await client_reader.read(65536)
+                if not data:
+                    break
+                await send(data)
+        except Exception:
+            pass
+
+    async def _remote_to_client():
+        try:
+            while True:
+                data = await recv()
+                if not data:
+                    break
+                client_writer.write(data)
+                await client_writer.drain()
+        except Exception:
+            pass
+        finally:
+            client_writer.close()
+            close()
+
+    await asyncio.gather(_client_to_remote(), _remote_to_client())
+
+
 async def _handle_client(client_reader, client_writer, node: ProxyNode) -> None:
     try:
         await _handshake_no_auth(client_reader, client_writer)
@@ -145,6 +211,9 @@ async def _handle_client(client_reader, client_writer, node: ProxyNode) -> None:
         elif node.protocol == "trojan":
             connector = _build_connector(node)
             await _relay_trojan(client_reader, client_writer, connector, host, port)
+        elif node.protocol == "vless":
+            connector = _build_connector(node)
+            await _relay_vless(client_reader, client_writer, connector, host, port)
         else:
             await _reply_failure(client_writer)
             client_writer.close()
@@ -172,12 +241,14 @@ class RunningProxy:
         await self.server.wait_closed()
 
 
-async def start_local_proxy(node: ProxyNode, local_port: int | None = None) -> RunningProxy:
-    if node.protocol not in SUPPORTED_PROTOCOLS:
-        raise ValueError(
-            f"纯 Python 模式暂不支持协议 '{node.protocol}'(目前只实现了 ss / trojan),"
-            "此节点会在验证阶段被跳过。"
-        )
+async def start_local_proxy(node: ProxyNode, local_port: int | None = None):
+    """返回值满足 .socks_url / .stop() 接口即可(可能是本模块的 RunningProxy,
+    也可能是 external_engine.RunningProxy,取决于该节点是否需要外部引擎)。"""
+    if not can_handle_pure_python(node):
+        from . import external_engine
+
+        return await external_engine.start_local_proxy(node, local_port)
+
     local_port = local_port or find_free_port()
 
     async def _on_client(r, w):

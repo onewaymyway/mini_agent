@@ -13,10 +13,14 @@ from dataclasses import dataclass
 
 import httpx
 
-from .local_proxy import SUPPORTED_PROTOCOLS, RunningProxy, start_local_proxy
+from .local_proxy import RunningProxy, start_local_proxy
 from .subscription import ProxyNode
 
 DEFAULT_CHECK_URL = "https://www.gstatic.com/generate_204"
+# start_local_proxy / external_engine.start_local_proxy 在"这个节点纯 Python 处理不了
+# 且本机没有可用外部引擎"时,抛出的 RuntimeError 里都带这个关键词,用来在统计时
+# 区分"协议/特性不支持被跳过"和"协议支持但实际连不上"这两种情况。
+UNSUPPORTED_MARKER = "需要外部引擎"
 
 
 @dataclass
@@ -30,11 +34,7 @@ class ValidationResult:
 async def validate_node(
     node: ProxyNode, check_url: str = DEFAULT_CHECK_URL, timeout: float = 8.0
 ) -> ValidationResult:
-    if node.protocol not in SUPPORTED_PROTOCOLS:
-        return ValidationResult(
-            node=node, ok=False, latency_ms=None, error=f"protocol '{node.protocol}' not supported (pure-python mode only does ss/trojan)"
-        )
-    running: RunningProxy | None = None
+    running = None
     try:
         running = await start_local_proxy(node)
         start = time.monotonic()

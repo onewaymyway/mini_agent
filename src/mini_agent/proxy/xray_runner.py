@@ -11,6 +11,7 @@ import asyncio
 import json
 import shutil
 import socket
+import sys
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
@@ -24,8 +25,20 @@ def find_free_port() -> int:
         return s.getsockname()[1]
 
 
+def _find_xray_binary() -> str | None:
+    found = shutil.which("xray")
+    if found:
+        return found
+    exe_name = "xray.exe" if sys.platform == "win32" else "xray"
+    project_root = Path.cwd()
+    for c in (project_root / "tools" / exe_name, project_root / "tools" / "xray" / exe_name):
+        if c.is_file():
+            return str(c)
+    return None
+
+
 def xray_binary_available() -> bool:
-    return shutil.which("xray") is not None
+    return _find_xray_binary() is not None
 
 
 def build_outbound(node: ProxyNode) -> dict:
@@ -128,8 +141,9 @@ class RunningProxy:
 
 async def start_local_proxy(node: ProxyNode, local_port: int | None = None) -> RunningProxy:
     """为单个节点起一个本地 xray 进程,监听 SOCKS5。"""
-    if not xray_binary_available():
-        raise RuntimeError("未找到 xray 可执行文件,请先安装 xray-core 并加入 PATH")
+    binary = _find_xray_binary()
+    if not binary:
+        raise RuntimeError("未找到 xray 可执行文件,请安装后放到 PATH 或项目根目录的 tools/ 下")
 
     local_port = local_port or find_free_port()
     config = {
@@ -150,7 +164,7 @@ async def start_local_proxy(node: ProxyNode, local_port: int | None = None) -> R
     config_path.write_text(json.dumps(config), encoding="utf-8")
 
     process = await asyncio.create_subprocess_exec(
-        "xray",
+        binary,
         "run",
         "-c",
         str(config_path),
