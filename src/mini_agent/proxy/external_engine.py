@@ -49,7 +49,10 @@ def _find_binary(name: str) -> str | None:
     candidates = [
         project_root / "tools" / exe_name,
         project_root / "tools" / name / exe_name,
+        project_root / "sing_box" / exe_name,
+        project_root / "sing_box" / name / exe_name,
     ]
+    # print("candidates:",candidates)
     for c in candidates:
         if c.is_file():
             return str(c)
