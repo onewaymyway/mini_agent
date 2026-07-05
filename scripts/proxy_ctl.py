@@ -45,7 +45,7 @@ from mini_agent.proxy.subscription import (  # noqa: E402
     URLSubscriptionSource,
     fetch_all,
 )
-from mini_agent.proxy.validator import validate_nodes  # noqa: E402
+from mini_agent.proxy.validator import UNSUPPORTED_MARKER, validate_nodes  # noqa: E402
 
 
 def _setup_logging(paths: AgentPaths) -> None:
@@ -180,7 +180,20 @@ async def _do_refresh(paths: AgentPaths, keep_alive: int, check_url: str, concur
         )
 
     logging.info("validating (concurrency=%d)...", concurrency)
-    results = await validate_nodes(nodes, concurrency=concurrency, check_url=check_url)
+
+    def _on_progress(done: int, total: int, r) -> None:
+        if r.ok:
+            tag = f"OK {r.latency_ms:>6.1f}ms"
+        elif r.error and UNSUPPORTED_MARKER in r.error:
+            tag = "SKIP(unsupported)"
+        else:
+            err = (r.error or "").splitlines()[0][:60]
+            tag = f"FAIL {err}"
+        print(f"  [{done}/{total}] {r.node.protocol:<7} {r.node.name[:30]:<30} -> {tag}", flush=True)
+
+    results = await validate_nodes(
+        nodes, concurrency=concurrency, check_url=check_url, on_progress=_on_progress
+    )
     ok_results = sorted(
         (r for r in results if r.ok and r.latency_ms is not None), key=lambda r: r.latency_ms
     )

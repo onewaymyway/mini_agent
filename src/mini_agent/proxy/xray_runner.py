@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import shutil
 import socket
 import sys
@@ -118,6 +119,19 @@ def build_outbound(node: ProxyNode) -> dict:
     raise ValueError(f"unsupported protocol for xray: {node.protocol}")
 
 
+async def _unlink_with_retry(path: Path, attempts: int = 5, delay: float = 0.2) -> None:
+    """见 external_engine.py 里同名函数的注释:Windows 上进程刚退出时文件句柄
+    释放有短暂延迟,直接 unlink 容易报 PermissionError,重试几次再放弃。"""
+    for i in range(attempts):
+        try:
+            path.unlink(missing_ok=True)
+            return
+        except PermissionError:
+            if i == attempts - 1:
+                return
+            await asyncio.sleep(delay)
+
+
 @dataclass
 class RunningProxy:
     node: ProxyNode
@@ -136,7 +150,11 @@ class RunningProxy:
                 await asyncio.wait_for(self.process.wait(), timeout=3)
             except asyncio.TimeoutError:
                 self.process.kill()
-        self.config_path.unlink(missing_ok=True)
+                try:
+                    await asyncio.wait_for(self.process.wait(), timeout=3)
+                except asyncio.TimeoutError:
+                    pass
+        await _unlink_with_retry(self.config_path)
 
 
 async def start_local_proxy(node: ProxyNode, local_port: int | None = None) -> RunningProxy:
@@ -160,6 +178,9 @@ async def start_local_proxy(node: ProxyNode, local_port: int | None = None) -> R
     }
 
     fd, path_str = tempfile.mkstemp(prefix="xray_node_", suffix=".json")
+    # 必须关闭 mkstemp 返回的 fd,否则我们自己的进程一直占着文件句柄,
+    # Windows 上后面 unlink 时会报 PermissionError(WinError 32)。
+    os.close(fd)
     config_path = Path(path_str)
     config_path.write_text(json.dumps(config), encoding="utf-8")
 

@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import time
 from dataclasses import dataclass
+from typing import Callable
 
 import httpx
 
@@ -51,12 +52,30 @@ async def validate_node(
 
 
 async def validate_nodes(
-    nodes: list[ProxyNode], concurrency: int = 8, check_url: str = DEFAULT_CHECK_URL
+    nodes: list[ProxyNode],
+    concurrency: int = 8,
+    check_url: str = DEFAULT_CHECK_URL,
+    on_progress: Callable[[int, int, ValidationResult], None] | None = None,
 ) -> list[ValidationResult]:
+    """并发验证一批节点。
+
+    on_progress(done_count, total_count, result) 会在每个节点验证完成时(不论
+    成功/失败/跳过)立刻被调用一次,用来在长耗时的批量验证过程中给用户打印
+    实时进度,而不是等全部跑完才有任何输出。
+    """
     sem = asyncio.Semaphore(concurrency)
+    total = len(nodes)
+    done = 0
+    lock = asyncio.Lock()
 
     async def _run(n: ProxyNode) -> ValidationResult:
+        nonlocal done
         async with sem:
-            return await validate_node(n, check_url=check_url)
+            result = await validate_node(n, check_url=check_url)
+        if on_progress is not None:
+            async with lock:
+                done += 1
+                on_progress(done, total, result)
+        return result
 
     return await asyncio.gather(*[_run(n) for n in nodes])
