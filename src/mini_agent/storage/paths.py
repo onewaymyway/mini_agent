@@ -359,6 +359,31 @@ class AgentPaths:
         """<project_root>/.agent/personas/ — 项目级角色扮演（persona）配置目录"""
         return self.workdir_dir / "personas"
 
+    @property
+    def global_proxy_dir(self) -> Path:
+        """~/.agent/proxy/ — 代理池状态目录"""
+        return self.global_dir / "proxy"
+
+    @property
+    def global_proxy_sources_config(self) -> Path:
+        """~/.agent/proxy/sources.json — 订阅源配置（可插拔多个订阅源）"""
+        return self.global_proxy_dir / "sources.json"
+
+    @property
+    def global_proxy_available_list(self) -> Path:
+        """~/.agent/proxy/available.json — 上一次 refresh 后验证通过的可用节点列表"""
+        return self.global_proxy_dir / "available.json"
+
+    @property
+    def global_proxy_log(self) -> Path:
+        """~/.agent/proxy/proxy.log — 代理池刷新/验证过程日志"""
+        return self.global_proxy_dir / "proxy.log"
+
+    def ensure_global_proxy_dir(self) -> Path:
+        d = self.global_proxy_dir
+        d.mkdir(parents=True, exist_ok=True)
+        return d
+
     def __repr__(self) -> str:
         return f"AgentPaths(project_root={self.project_root})"
 

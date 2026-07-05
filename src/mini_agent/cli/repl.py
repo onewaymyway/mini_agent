@@ -30,8 +30,7 @@ from mini_agent.cli.commands import (
     handle_evolve_cmd,
     handle_goal_cmd,
     handle_debug_cmd,
-    handle_role_cmd,
-)
+    handle_role_cmd,)
 
 
 def _print_resume_hint(agent: Agent) -> None:
@@ -302,6 +301,10 @@ def _handle_slash(cmd: str, agent: Agent, skill_loader: SkillLoader) -> None:
 
     elif name == "role":
         handle_role_cmd(parts[1:], agent)
+
+    elif name == "proxy":
+        from mini_agent.cli.commands.proxy import handle_proxy_cmd
+        handle_proxy_cmd(parts[1:], agent)
 
     elif name == "hooks":
         handle_hooks_cmd(parts[1:], agent)
