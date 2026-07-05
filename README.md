@@ -36,6 +36,7 @@
 | 🔌 MCP 支持 | Model Context Protocol 集成，支持 stdio/SSE 传输，可扩展外部工具服务 |
 | 🔍 Web Search | 支持 DuckDuckGo（默认）、Brave、Serper、Tavily 等多种搜索后端 |
 | 🤖 自定义子 Agent | 预设角色模板（.agent/agents/*.md），结构化参数注入，支持工具/模型限制 |
+| 🎭 角色扮演（Persona） | 主 agent 自身的人格切换，跨轮持续生效直至 `/role exit`；`.agent/personas/*.md` 配置，支持工具白名单强制拦截，安全边界代码级兜底不可被角色文件覆盖 |
 | 🔗 Hooks 机制 | 15 个生命周期事件（Session / Prompt / Tool / Subagent / Task / Stop / Compact / TurnEnd），shell 命令自动执行，支持拦截工具调用、监控 SubAgent 终态、阻止不必要的历史压缩，项目级/全局级配置 |
 | 🎯 Task 日志实时查看 | 运行时方向键切换查看不同任务日志，状态栏显示任务状态概要 |
 | 🖼️ 图片技能 | 图片信息提取与问答（ask_image）、文本生成图片（gen_image_with_text） |
@@ -432,6 +433,7 @@ python weixin_bot.py [--project <路径>] [--yes] [--no-stream]
 | `/agents` | 列出自定义子 agent profiles |
 | `/agents show <name>` | 显示 profile 详细信息 |
 | `/agents reload` | 重新扫描子 agent profiles |
+| `/role list\\|use\\|show\\|exit\\|status\\|stats\\|reload` | 角色扮演系统：切换/退出主 agent 的人格设定 |
 | `/hooks` | 列出已加载的 hooks |
 | `/hooks reload` | 重新加载 hooks 配置 |
 | `/model <name>` | 切换模型 |
@@ -538,6 +540,7 @@ Agent 可以调用以下内置工具：
 | `gen_image_with_text` | 文本生成图片（text-to-image / image-to-image 编辑） |
 | `comic-4panel` | 四格漫画全流程生成：主题构思 → 分镜脚本 → 一次性生成完整漫画图，详见 [四格漫画生成指南](docs/comic-4panel-guide.md) |
 | `agent-generator` | 创建符合项目规范的自定义子 agent（`.agent/agents/*.md`） |
+| `persona-generator` | 创建符合项目规范的角色扮演 persona（`.agent/personas/*.md`），可通过 `/role use` 激活 |
 | `skill-generator` | 创建符合项目规范的新 SKILL.md 技能文件 |
 | `iching_oracle` | 易经智慧顾问，提供人生决策指导 |
 | `git-context` | 分析当前工作目录 Git 仓库状态（commit 历史、变更文件、分支、diff） |
@@ -873,6 +876,7 @@ python -m pytest tests/ -q
 - [Plan 和 Task 指南](docs/plan-and-task-guide.md) — 规划和任务系统，含 `plan_snapshot.json` 持久化与 session 重启恢复
 - [SubAgent 机制](docs/subagent-mechanism.md) — Sub-Agent 执行与重试机制详解
 - [自定义子 Agent](docs/custom-sub-agents.md) — 预设角色模板，结构化参数注入
+- [角色扮演（Persona）系统指南](docs/persona-guide.md) — **新增**：主 agent 自身的人格切换，`/role` 命令组，`allowed_tools` 强制拦截，安全边界代码级兜底
 - [Hooks 机制](docs/hooks.md) — **更新**：15 个生命周期事件（新增 `PostToolUseFailure`、`PostToolBatch`、`SubagentStart`、`SubagentStop`、`TaskCreated`、`TaskCompleted`、`Stop`、`PreCompact`、`PostCompact`；`SessionStart` 从预留升级为已接入），完整事件时序图与用例
 - [Skill/Agent/Hook/Tool 平台与 Tag 过滤指南](docs/platform-tag-loading-guide.md) — **新增**：`platforms`/`tags` 声明式限制，`platform_policy.json` 全局策略，`/platform status|filtered|reload` 命令
 - [Skill 系统指南](docs/skill-system-guide.md) — 技能机制详解
@@ -954,3 +958,5 @@ MIT License
 *2026-07 工具结果智能截断（[SYS-RAWSTORE] + [SYS-SMARTTRIM]）*：`ToolTrimConfig` 新增 `raw_store_*`（原始输出留存，默认开启）与 `smart_summary_*`（LLM 智能摘要，默认关闭）字段；新增 `perception/raw_result_store.py::RawResultStore`（session 内内存 LRU，按条目数/总字符数双重淘汰，内容 md5 去重）；`tool_executor.py::_trim_result` 拆分为 `_rule_trim`（原有规则截断，作为默认策略/降级兜底）+ `_smart_summarize`（LLM 调用，失败静默降级）+ `_remember_raw`（截断/摘要后原文留存）；新增 `tools/builtin.py::view_raw_result` 工具（只读、免审批、支持行号范围，已加入 `_SAFE_TOOLS`/`_DEDUP_TOOLS`）；新增 `prompts/system/tool_result_summarizer.md` + `prompts/user/tool_result_summary_request.md`；详见 [工具结果原始留存与智能摘要指南](docs/tool-result-raw-store-and-smart-summary-guide.md)
 
 *2026-07 轮次守门员（[SYS-TURN-JUDGE]）*：新增 `TurnJudgeConfig`（`turn_judge` 配置块，默认 `enabled=false`）。每轮 `run_turn()` 结束、`[SYS-HOOKS] TurnEnd` hook 未接管时，若开启则调用轻量的 `role_agents/turn_judge.py::run_turn_judge()`（纯文本判定，不挂工具）核查本轮结束是"真的需要真人输入"还是"遇到了技术性问题"（模型输出格式有问题、撞到 `max_turns` 硬顶、上下文臃肿需要 compact 等），输出 `TURN_STATUS: NEED_USER / AUTO_CONTINUE / NEED_COMPACT`；`AUTO_CONTINUE` 时提取具体反馈复用现有 `_turn_end_user_input` 机制自动续跑，`NEED_COMPACT` 时自动 `compact_with_skills()` 后续跑，`NEED_USER` 或达到 `max_auto_rounds` 上限则强制交还真人（防死循环）。判定原则与 GoalJudge 一致：异常/解析失败保守回退 `NEED_USER`，涉及主观决策场景一律 `NEED_USER`。新增 `prompts/system/turn_judge.md` + `prompts/user/turn_judge_request.md`，`role_agents/feedback.py` 新增 `extract_turn_status()` + `turn_status` 字段渲染；详见 [轮次守门员指南](docs/turn-judge-guide.md)
+
+*2026-07 角色扮演（Persona）系统*：新增 `.agent/personas/*.md` 角色扮演机制，与自定义子 Agent（`.agent/agents/`，一次性任务型）不同，作用于**主 agent 自身**的人格，跨轮持续生效直到 `/role exit`。核心组成：`orchestrator/persona_profiles.py::PersonaLoader`（frontmatter 解析，`name`/`display_name`/`description`/`tone`/`break_character_policy`/`allowed_tools`）；`Agent.active_persona` 状态字段随 session `meta.json` 持久化（`new_session()` 不继承）；`ContextBuilder.build()` 单独成段注入渲染后的角色 prompt，`render_persona_prompt()` 强制追加安全边界声明（代码写死，角色文件无法覆盖）；`ToolExecutor.execute_all()` 接入 `allowed_tools` 白名单强制拦截（非白名单工具直接拒绝，不进入常规审批流程）；`~/.agent/persona_usage.jsonl` 记录激活事件供 `/role stats` 查看；新增 `/role list|use|show|exit|status|stats|reload` 命令组与 `persona-generator` skill；`.agent/personas/` 与 `.agent/agents/` 同批次接入热重载（`/reload`）；内置默认角色 `senior-swe-mentor`/`jarvis`/`socratic-tutor`/`storyteller-narrator`/`rem`；详见 [角色扮演（Persona）系统指南](docs/persona-guide.md) 与 [设计文档](next_doc/roleplay_persona_design.md)

@@ -293,6 +293,20 @@ mini-agent user token u_a1b2c3d4                       # 重新生成 token
 - CLI 命令：`/agents list|show <name>|reload`
 - 工具：`list_agent_profiles`、`spawn_named_agent`
 
+### 角色扮演（Persona）系统
+
+- 定位：作用于**主 agent 自身**的人格切换，跨轮持续生效直到显式退出；与"自定义子 Agent"（一次性任务型，独立 context）是两套独立机制，仅共享 frontmatter + Markdown 正文的解析风格
+- persona 文件位置：`.agent/personas/*.md`（项目级）或 `~/.agent/personas/*.md`（全局级），加载逻辑见 `src/mini_agent/orchestrator/persona_profiles.py`
+- frontmatter 字段：`name`/`display_name`/`description`/`tone`/`break_character_policy`（soft|strict）/`allowed_tools`（可选工具白名单）
+- 状态：`Agent.active_persona`（内存态，随 session `meta.json` 持久化，`new_session()` 时重置为 `None`，不跨 session 继承）
+- system prompt 注入：`ContextBuilder.build()` 单独成段注入渲染结果，不与 skill/tool 使用规范混排；渲染结果由 `render_persona_prompt()` 强制追加安全边界声明（代码写死，不受角色文件内容影响，无法被覆盖）
+- `allowed_tools` 强制拦截：`ToolExecutor.execute_all()` 在 `PreToolUse` hook 之后、`guard.check()` 之前检查，非白名单工具直接拒绝，不进入常规审批流程；空 `allowed_tools` = 不限制
+- 使用统计：`~/.agent/persona_usage.jsonl`（全局、跨项目累计），`/role use` 时自动记录，`/role stats` 查看
+- 内置默认角色：`senior-swe-mentor`、`jarvis`、`socratic-tutor`、`storyteller-narrator`、`rem`
+- CLI 命令：`/role list|use <name>|show <name>|exit|status|stats|reload`
+- 生成角色的 skill：`persona-generator`（`.claude/skills/persona-generator/SKILL.md`）
+- 详细设计见 `next_doc/roleplay_persona_design.md`
+
 ### Hooks 机制
 
 - 配置文件：`.agent/hooks.json`（项目级）或 `~/.agent/hooks.json`（全局级）

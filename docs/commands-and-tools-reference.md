@@ -8,6 +8,7 @@
 - [记忆管理指南](memory-management-guide.md) — `/memory` 命令背景
 - [用户画像系统指南](user-profile-guide.md) — `/profile` 命令背景
 - [自定义子 Agent 指南](custom-sub-agents.md) — `/agents` 命令与 `spawn_named_agent` 工具背景
+- [角色扮演（Persona）系统指南](persona-guide.md) — `/role` 命令背景
 - [Hooks 机制指南](hooks.md) — `/hooks` 命令背景
 - [自我演化安全网指南（Stage 2）](self-evolution-stage2-guide.md) — `/evolution` 命令组背景
 - [自我演化 lesson → skill 闭环指南（Stage 3.1）](self-evolution-stage3-1-guide.md) — `/evolve` 命令与 `skill_propose` 工具背景
@@ -300,6 +301,22 @@ mini-agent --retry-backoff linear --retry-backoff-step 60 --retry-backoff-max 30
 | `/agents reload` | 重新扫描 `.agent/agents/`（项目级）与 `~/.agent/agents/`（全局级）目录 |
 
 > 注意命名相似但完全不同的两个系统：本节的 `/agents`（`AgentProfile`，自定义**子 agent 角色模板**，目录在 `.agent/agents/`）与上文的 `/profile`（`UserProfileManager`，自动学习的**用户个人画像**，与 spawn 子 agent 无关）。
+
+### 角色扮演 Persona（`src/mini_agent/cli/commands/roles.py`）
+
+> 详见 [角色扮演（Persona）系统指南](persona-guide.md)
+
+| 命令 | 说明 |
+|------|------|
+| `/role list` | 列出已发现的角色（项目级 `.agent/personas/` + 全局级 `~/.agent/personas/`，同名项目级优先） |
+| `/role use <name>` | 激活角色，主 agent 从下一轮起切换到该人格，跨轮持续生效 |
+| `/role show <name>` | 预览角色渲染后的完整 system prompt 片段（含强制安全边界声明），不激活 |
+| `/role exit` 或 `/role off` | 清空当前角色，回到默认助手身份 |
+| `/role status` | 显示当前是否处于角色扮演及角色名 |
+| `/role stats` | 显示各角色的全局激活次数统计（跨项目累计） |
+| `/role reload` | 重新扫描 `.agent/personas/` 与 `~/.agent/personas/` 目录 |
+
+> 与 `/agents`（子 agent 角色模板，一次性任务型）不同，`/role` 切换的是**主 agent 自身**的人格，跨轮持续生效直到显式退出。
 
 ### Hooks（`src/mini_agent/cli/commands/hooks.py`）
 
