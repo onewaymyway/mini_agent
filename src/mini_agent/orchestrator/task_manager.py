@@ -190,6 +190,31 @@ class TaskManager:
         task_ids = list(self._records.keys())
         return sum(1 for tid in task_ids if self.cancel(tid))
 
+    def reset(self) -> None:
+        """
+        清空所有历史任务记录（_records）与 SubAgent 引用（_agents）。
+
+        用于 `/session new`（Agent.new_session()）场景：新 session 不应该
+        继续看到上一个 session 遗留下来的 SubAgent 任务状态/结果。
+
+        注意：不应在 resume（load_session）场景调用本方法——resume 是回到
+        一个已有 session，用户期望看到该 session 之前的任务记录。
+
+        若存在仍在运行中的任务，会先尝试取消，避免其结束回调/日志写入
+        混入新 session 的目录。
+        """
+        with self._lock:
+            for rec in list(self._records.values()):
+                if not rec.is_terminal:
+                    agent = self._agents.get(rec.task_id)
+                    if agent:
+                        try:
+                            agent.cancel()
+                        except Exception:
+                            pass
+            self._records.clear()
+            self._agents.clear()
+
     # ── 查询 ──────────────────────────────────────────────────────────────────
 
     def get(self, task_id: str) -> Optional[TaskRecord]:

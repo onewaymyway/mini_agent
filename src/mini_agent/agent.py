@@ -1644,6 +1644,22 @@ class Agent:
             model=self.cfg.model,
         )
         self._bind_session_extras()
+
+        # [FIX] /session new 应彻底清空状态：TaskManager 是模块级单例，
+        # _bind_session_extras() 里只做了 set_session_id()（切换日志落盘路径），
+        # 并不会清空上一个 session 遗留下来的 SubAgent 任务记录（_records/_agents）。
+        # 这里显式 reset，避免旧 session 的任务状态泄漏到新 session
+        # （例如 /task list、终端任务面板仍能看到上一个 session 的任务）。
+        # 注意：resume（load_session）不调用此逻辑，因为 resume 应该看到
+        # 该 session 原有的任务记录。
+        try:
+            from mini_agent.tools.orchestration import get_task_manager
+            tm = get_task_manager()
+            if tm is not None:
+                tm.reset()
+        except Exception:
+            pass
+
         return True
 
     @property
