@@ -318,7 +318,12 @@ class Agent:
         # 便于事后审计（见 tools/proxy_manager.py 顶部注释）。
         from mini_agent.tools.proxy_manager import register_proxy_tools
         from mini_agent.storage.paths import AgentPaths as _AgentPaths
-        register_proxy_tools(self.registry, _AgentPaths(cfg.project_root))
+        # 注意：self.registry 可能是跨 Agent 实例共享的全局默认 registry
+        # （get_default_registry()）。/goal 等模式会在同一进程内创建多个 Agent
+        # 实例，若不加判断会导致 proxy_status 等工具重复注册并抛出
+        # "already registered" 的 ValueError。这里做幂等判断，跳过重复注册。
+        if "proxy_status" not in self.registry.names:
+            register_proxy_tools(self.registry, _AgentPaths(cfg.project_root))
 
         # [SYS-HOT-RELOAD] 热重载监视器：自动感知 skills/ 和 .agent/agents/ 目录变化
         from mini_agent.perception.hot_reload import HotReloader
