@@ -187,7 +187,8 @@ async def _do_refresh(paths: AgentPaths, keep_alive: int, check_url: str, concur
         elif r.error and UNSUPPORTED_MARKER in r.error:
             tag = "SKIP(unsupported)"
         else:
-            err = (r.error or "").splitlines()[0][:60]
+            err_lines = (r.error or "").splitlines()
+            err = (err_lines[0] if err_lines else "unknown error")[:60]
             tag = f"FAIL {err}"
         print(f"  [{done}/{total}] {r.node.protocol:<7} {r.node.name[:30]:<30} -> {tag}", flush=True)
 
