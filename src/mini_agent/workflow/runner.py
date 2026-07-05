@@ -552,7 +552,9 @@ class WorkflowRunner:
                 profile = dispatcher._loader.get(step.role)
                 if profile and profile.role_type == "evaluator":
                     return extract_score(output)
-        except Exception:
+        except Exception as _mini_agent_exc:
+            from mini_agent.errors import log_exception
+            log_exception(_mini_agent_exc, where='mini_agent.workflow.runner')
             pass
         # fallback：如果 role 名字包含 evaluator 也提分
         if "evaluator" in (step.role or "").lower():
@@ -570,7 +572,9 @@ class WorkflowRunner:
                 profile = dispatcher._loader.get(step.role)
                 if profile and profile.role_type == "evaluator":
                     return profile.pass_threshold
-        except Exception:
+        except Exception as _mini_agent_exc:
+            from mini_agent.errors import log_exception
+            log_exception(_mini_agent_exc, where='mini_agent.workflow.runner')
             pass
         return None
 

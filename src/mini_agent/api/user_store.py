@@ -161,7 +161,9 @@ def _write_key_file(path: Path, token: str) -> None:
     tmp.write_text(token + "\n", encoding="utf-8")
     try:
         tmp.chmod(stat.S_IRUSR | stat.S_IWUSR)  # 0600
-    except Exception:
+    except Exception as _mini_agent_exc:
+        from mini_agent.errors import log_exception
+        log_exception(_mini_agent_exc, where='mini_agent.api.user_store')
         pass
     os.replace(tmp, path)
 
@@ -397,7 +399,9 @@ class UserStore:
                 record = UserRecord.from_dict(u)
                 self._cache[record.user_id] = record
                 self._token_index[record.token_hash] = record.user_id
-        except Exception:
+        except Exception as _mini_agent_exc:
+            from mini_agent.errors import log_exception
+            log_exception(_mini_agent_exc, where='mini_agent.api.user_store')
             pass
 
     def _save(self) -> None:
@@ -408,7 +412,9 @@ class UserStore:
             tmp = self._users_file.with_suffix(".tmp")
             tmp.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
             os.replace(tmp, self._users_file)
-        except Exception:
+        except Exception as _mini_agent_exc:
+            from mini_agent.errors import log_exception
+            log_exception(_mini_agent_exc, where='mini_agent.api.user_store')
             pass
 
     def _schedule_save(self) -> None:

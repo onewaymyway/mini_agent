@@ -47,7 +47,9 @@ class Skill:
                 try:
                     if _re.search(cond, q, _re.I):
                         return True
-                except Exception:
+                except Exception as _mini_agent_exc:
+                    from mini_agent.errors import log_exception
+                    log_exception(_mini_agent_exc, where='mini_agent.skills')
                     pass
         return False
 

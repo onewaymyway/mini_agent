@@ -52,7 +52,9 @@ class FileWatcher:
                 if new_hash != old_hash:
                     changed.append(abs_path)
                     self._cache[abs_path] = new_hash
-            except Exception:
+            except Exception as _mini_agent_exc:
+                from mini_agent.errors import log_exception
+                log_exception(_mini_agent_exc, where='mini_agent.perception.file_watcher')
                 pass
         return changed
 

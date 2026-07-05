@@ -256,7 +256,9 @@ class ContextBuilder:
                 block = meta.to_prompt_block()
                 if block:
                     lines.append(block)
-        except Exception:
+        except Exception as _mini_agent_exc:
+            from mini_agent.errors import log_exception
+            log_exception(_mini_agent_exc, where='mini_agent.context_builder')
             pass
 
         # active WorkThread 进度

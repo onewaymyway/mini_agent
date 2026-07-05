@@ -137,15 +137,21 @@ class SelfMaintenanceModule:
         report = HealthReport()
         try:
             report.stale_tools = self._check_tool_health(paths)
-        except Exception:
+        except Exception as _mini_agent_exc:
+            from mini_agent.errors import log_exception
+            log_exception(_mini_agent_exc, where='mini_agent.evolution.self_maintenance')
             pass
         try:
             report.stale_skills = self._check_skill_freshness(skill_loader)
-        except Exception:
+        except Exception as _mini_agent_exc:
+            from mini_agent.errors import log_exception
+            log_exception(_mini_agent_exc, where='mini_agent.evolution.self_maintenance')
             pass
         try:
             report.conflicting_lessons = self._check_memory_conflicts(memory_backend)
-        except Exception:
+        except Exception as _mini_agent_exc:
+            from mini_agent.errors import log_exception
+            log_exception(_mini_agent_exc, where='mini_agent.evolution.self_maintenance')
             pass
         return report
 
@@ -334,7 +340,9 @@ def _save_state(paths, data: dict) -> None:
     try:
         p.parent.mkdir(parents=True, exist_ok=True)
         p.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
-    except Exception:
+    except Exception as _mini_agent_exc:
+        from mini_agent.errors import log_exception
+        log_exception(_mini_agent_exc, where='mini_agent.evolution.self_maintenance')
         pass
 
 
@@ -361,7 +369,9 @@ def append_digest_record(paths, extra: dict, initiator: str = "self_maintenance"
         with open(path, "a", encoding="utf-8") as f:
             f.write(json.dumps(record, ensure_ascii=False))
             f.write("\n")
-    except Exception:
+    except Exception as _mini_agent_exc:
+        from mini_agent.errors import log_exception
+        log_exception(_mini_agent_exc, where='mini_agent.evolution.self_maintenance')
         pass
 
 
@@ -385,7 +395,9 @@ def run_self_maintenance(paths, skill_loader=None, memory_backend=None) -> Healt
 
     try:
         record_self_maintenance_run(paths)
-    except Exception:
+    except Exception as _mini_agent_exc:
+        from mini_agent.errors import log_exception
+        log_exception(_mini_agent_exc, where='mini_agent.evolution.self_maintenance')
         pass
 
     return report

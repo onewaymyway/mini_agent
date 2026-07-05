@@ -250,7 +250,9 @@ class SessionTracer:
             self._traces_path.parent.mkdir(parents=True, exist_ok=True)
             with open(self._traces_path, "a", encoding="utf-8") as f:
                 f.write(json.dumps(entry, ensure_ascii=False) + "\n")
-        except Exception:
+        except Exception as _mini_agent_exc:
+            from mini_agent.errors import log_exception
+            log_exception(_mini_agent_exc, where='mini_agent.perception.observability')
             pass
 
 

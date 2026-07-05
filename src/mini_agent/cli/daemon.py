@@ -90,7 +90,9 @@ def _read_daemon_info(project_root: Path) -> Optional[dict]:
         try:
             info = json.loads(info_path.read_text())
             return info
-        except Exception:
+        except Exception as _mini_agent_exc:
+            from mini_agent.errors import log_exception
+            log_exception(_mini_agent_exc, where='mini_agent.cli.daemon')
             pass
 
     return {"pid": pid, "http_port": 8765, "started_at": 0.0}
@@ -172,7 +174,9 @@ class DaemonClient:
                 if key_path.exists():
                     try:
                         self.token = key_path.read_text(encoding="utf-8").strip() or None
-                    except Exception:
+                    except Exception as _mini_agent_exc:
+                        from mini_agent.errors import log_exception
+                        log_exception(_mini_agent_exc, where='mini_agent.cli.daemon')
                         pass
                     if self.token:
                         break
@@ -674,7 +678,9 @@ def cmd_daemon_start(
                         for l in tail:
                             print(f"  {l}", file=sys.stderr)
                         print("[daemon] --- end ---", file=sys.stderr)
-                except Exception:
+                except Exception as _mini_agent_exc:
+                    from mini_agent.errors import log_exception
+                    log_exception(_mini_agent_exc, where='mini_agent.cli.daemon')
                     pass
                 _cleanup_pid_files(project_root)
                 return 1
@@ -734,7 +740,9 @@ def cmd_daemon_stop(project_root: Path) -> int:
     try:
         if sys.platform != "win32":
             os.kill(pid, signal.SIGKILL)
-    except Exception:
+    except Exception as _mini_agent_exc:
+        from mini_agent.errors import log_exception
+        log_exception(_mini_agent_exc, where='mini_agent.cli.daemon')
         pass
     _cleanup_pid_files(project_root)
     return 0
@@ -1073,7 +1081,9 @@ def _render_sse_event(term, evt_type: str, payload: dict, *, prefix: str = "") -
                         json.dumps(tool_input, indent=2, ensure_ascii=False),
                         "json", theme="ansi_dark", line_numbers=False,
                     )
-                except Exception:
+                except Exception as _mini_agent_exc:
+                    from mini_agent.errors import log_exception
+                    log_exception(_mini_agent_exc, where='mini_agent.cli.daemon')
                     pass
 
         elif evt_type == "tool_result":
@@ -1152,7 +1162,9 @@ def _format_permission_summary(tool_name: str, tool_input: dict) -> str:
         s = _r._tool_summary(tool_name, tool_input)
         if s:
             return s
-    except Exception:
+    except Exception as _mini_agent_exc:
+        from mini_agent.errors import log_exception
+        log_exception(_mini_agent_exc, where='mini_agent.cli.daemon')
         pass
     try:
         return json.dumps(tool_input, ensure_ascii=False)[:120]
@@ -1603,7 +1615,9 @@ def run_connected_repl(daemon_info: dict, token: Optional[str] = None) -> None:
     if _term is not None:
         try:
             _term.set_statusbar_provider(lambda: _connected_status_bar_provider(client))
-        except Exception:
+        except Exception as _mini_agent_exc:
+            from mini_agent.errors import log_exception
+            log_exception(_mini_agent_exc, where='mini_agent.cli.daemon')
             pass
 
     # ── Session 选择 ──────────────────────────────────────────────────────────
@@ -1614,7 +1628,9 @@ def run_connected_repl(daemon_info: dict, token: Optional[str] = None) -> None:
         if _term is not None:
             try:
                 _term.set_statusbar_provider(None)
-            except Exception:
+            except Exception as _mini_agent_exc:
+                from mini_agent.errors import log_exception
+                log_exception(_mini_agent_exc, where='mini_agent.cli.daemon')
                 pass
         return
 
@@ -1765,7 +1781,9 @@ def run_connected_repl(daemon_info: dict, token: Optional[str] = None) -> None:
                                 _handle_observer_frame(frame, _turn_prefix_printed)
                             continue
                         frame_lines.append(line)
-            except Exception:
+            except Exception as _mini_agent_exc:
+                from mini_agent.errors import log_exception
+                log_exception(_mini_agent_exc, where='mini_agent.cli.daemon')
                 pass
             if not _observer_stop.is_set():
                 time.sleep(2)  # 断线后等待重连
@@ -1846,7 +1864,9 @@ def run_connected_repl(daemon_info: dict, token: Optional[str] = None) -> None:
                                 f"(req_id={_esc_local(req_id[:8])})，可在当前任务结束后用 "
                                 f"/session 查看，或在 daemon 本地终端/web 端处理[/dim]"
                             )
-                    except Exception:
+                    except Exception as _mini_agent_exc:
+                        from mini_agent.errors import log_exception
+                        log_exception(_mini_agent_exc, where='mini_agent.cli.daemon')
                         pass
                 _release_permission_req(req_id)
             return
@@ -2146,11 +2166,15 @@ def run_connected_repl(daemon_info: dict, token: Optional[str] = None) -> None:
         if _term is not None:
             try:
                 _term.set_statusbar_provider(None)
-            except Exception:
+            except Exception as _mini_agent_exc:
+                from mini_agent.errors import log_exception
+                log_exception(_mini_agent_exc, where='mini_agent.cli.daemon')
                 pass
             try:
                 _term.stop()
-            except Exception:
+            except Exception as _mini_agent_exc:
+                from mini_agent.errors import log_exception
+                log_exception(_mini_agent_exc, where='mini_agent.cli.daemon')
                 pass
 
 

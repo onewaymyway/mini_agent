@@ -202,13 +202,17 @@ class PromptManager:
         # 1b. Workspace hygiene & graceful operation standards
         try:
             parts.append(self.render("system/workspace_hygiene"))
-        except Exception:
+        except Exception as _mini_agent_exc:
+            from mini_agent.errors import log_exception
+            log_exception(_mini_agent_exc, where='mini_agent.prompts.manager')
             pass
 
         # 1c. Execution planning capability
         try:
             parts.append(self.render("system/plan_mode"))
-        except Exception:
+        except Exception as _mini_agent_exc:
+            from mini_agent.errors import log_exception
+            log_exception(_mini_agent_exc, where='mini_agent.prompts.manager')
             pass
 
         # 2. Current time
@@ -271,7 +275,9 @@ class PromptManager:
                         schema_hint = " (" + ", ".join(bits) + ")"
                     lines.append(f"- `{p['name']}`: {p['description']}{schema_hint}")
                 parts.append(self.render("system/available_subagents", agent_list="\n".join(lines)))
-        except Exception:
+        except Exception as _mini_agent_exc:
+            from mini_agent.errors import log_exception
+            log_exception(_mini_agent_exc, where='mini_agent.prompts.manager')
             pass
 
         # 7. 执行计划上下文（如有活跃计划，注入当前进度）
@@ -282,7 +288,9 @@ class PromptManager:
                 plan_block = plan.to_prompt_block()
                 if plan_block:
                     parts.append(plan_block)
-        except Exception:
+        except Exception as _mini_agent_exc:
+            from mini_agent.errors import log_exception
+            log_exception(_mini_agent_exc, where='mini_agent.prompts.manager')
             pass
 
         # 8. Sandbox mode warning (always last)

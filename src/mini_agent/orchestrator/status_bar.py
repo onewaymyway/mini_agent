@@ -209,13 +209,17 @@ def _build_lines() -> list[str]:
                 f"  🚦 RPM    [{rpm_bar}] {used}/{max_rpm}{wait_str}"
             )
 
-    except Exception:
+    except Exception as _mini_agent_exc:
+        from mini_agent.errors import log_exception
+        log_exception(_mini_agent_exc, where='mini_agent.orchestrator.status_bar')
         pass
 
     try:
         from .plan_display import build_plan_status_lines
         lines.extend(build_plan_status_lines())
-    except Exception:
+    except Exception as _mini_agent_exc:
+        from mini_agent.errors import log_exception
+        log_exception(_mini_agent_exc, where='mini_agent.orchestrator.status_bar')
         pass
 
     return lines

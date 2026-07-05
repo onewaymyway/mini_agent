@@ -206,7 +206,9 @@ class OutputBroadcaster:
                 "先查这里的丢弃计数是否持续增长",
                 sub_id, event.turn_id, self.dropped_event_counts[sub_id],
             )
-        except Exception:
+        except Exception as _mini_agent_exc:
+            from mini_agent.errors import log_exception
+            log_exception(_mini_agent_exc, where='mini_agent.api.bridge')
             pass
 
     def subscribe(

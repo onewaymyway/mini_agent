@@ -171,7 +171,9 @@ class ProjectScanner:
                     rel = str(f.relative_to(root))
                     if rel not in key_files:
                         key_files.append(rel)
-        except Exception:
+        except Exception as _mini_agent_exc:
+            from mini_agent.errors import log_exception
+            log_exception(_mini_agent_exc, where='mini_agent.perception.project_scanner')
             pass
 
         # 按频率排序，取前 5 种语言
@@ -190,7 +192,9 @@ class ProjectScanner:
                 snippet = self._extract_deps(p, filename)
                 if snippet:
                     deps[lang] = snippet
-            except Exception:
+            except Exception as _mini_agent_exc:
+                from mini_agent.errors import log_exception
+                log_exception(_mini_agent_exc, where='mini_agent.perception.project_scanner')
                 pass
         return deps
 

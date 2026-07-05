@@ -208,7 +208,9 @@ async def get_status(request: Request):
                 "elapsed":       getattr(ss, "elapsed",       ""),
                 "summary":       ss.summary() if callable(getattr(ss, "summary", None)) else "",
             }
-        except Exception:
+        except Exception as _mini_agent_exc:
+            from mini_agent.errors import log_exception
+            log_exception(_mini_agent_exc, where='mini_agent.api.routes')
             pass
     # Stage 9 §3: 读取 AutonomousLoop 状态（通过 request.app.state 获取 HttpServer 引用）
     autonomy_level = "passive"
@@ -231,7 +233,9 @@ async def get_status(request: Request):
                 subscribers = len(sse_clients) if sse_clients else 0
             else:
                 subscribers = sub_count
-    except Exception:
+    except Exception as _mini_agent_exc:
+        from mini_agent.errors import log_exception
+        log_exception(_mini_agent_exc, where='mini_agent.api.routes')
         pass
 
     return StatusResponse(
@@ -319,7 +323,9 @@ async def get_diagnostics(request: Request):
         if agent and getattr(agent, "_tracer", None):
             try:
                 result["performance"] = agent._tracer.get_summary()
-            except Exception:
+            except Exception as _mini_agent_exc:
+                from mini_agent.errors import log_exception
+                log_exception(_mini_agent_exc, where='mini_agent.api.routes')
                 pass
 
         # ── memory（workdir memory.jsonl）────────────────────────────────────
@@ -335,7 +341,9 @@ async def get_diagnostics(request: Request):
                             if line:
                                 try:
                                     entries.append(_json.loads(line))
-                                except Exception:
+                                except Exception as _mini_agent_exc:
+                                    from mini_agent.errors import log_exception
+                                    log_exception(_mini_agent_exc, where='mini_agent.api.routes')
                                     pass
                     by_type: dict = {}
                     for e in entries:
@@ -345,7 +353,9 @@ async def get_diagnostics(request: Request):
                         "total_entries":  len(entries),
                         "by_type":        by_type,
                     }
-            except Exception:
+            except Exception as _mini_agent_exc:
+                from mini_agent.errors import log_exception
+                log_exception(_mini_agent_exc, where='mini_agent.api.routes')
                 pass
 
         # ── skills ────────────────────────────────────────────────────────────
@@ -365,7 +375,9 @@ async def get_diagnostics(request: Request):
                     "active":       active,
                     "usage_scores": tracker_stats,
                 }
-            except Exception:
+            except Exception as _mini_agent_exc:
+                from mini_agent.errors import log_exception
+                log_exception(_mini_agent_exc, where='mini_agent.api.routes')
                 pass
 
         # ── evolution（Stage 4/5 数据）────────────────────────────────────────
@@ -393,7 +405,9 @@ async def get_diagnostics(request: Request):
                     evo["open_threads_high_count"] = len(high)
                     evo["open_threads_high"]       = high[:5]  # 最多展示 5 条
                 result["evolution"] = evo
-            except Exception:
+            except Exception as _mini_agent_exc:
+                from mini_agent.errors import log_exception
+                log_exception(_mini_agent_exc, where='mini_agent.api.routes')
                 pass
 
         # ── anomaly_flags（异常检测，依赖 activity_log 数据积累）──────────────
@@ -415,7 +429,9 @@ async def get_diagnostics(request: Request):
                     k_sigma=k_sigma, min_samples=min_samples,
                 )
                 result["anomaly_flags"] = [f.to_dict() for f in flags]
-            except Exception:
+            except Exception as _mini_agent_exc:
+                from mini_agent.errors import log_exception
+                log_exception(_mini_agent_exc, where='mini_agent.api.routes')
                 pass
 
     except Exception as e:
@@ -958,7 +974,9 @@ async def resume_session(request: Request, session_id: str):
     # 切换前先把当前会话保存下来，避免未保存的对话丢失
     try:
         agent.save_session()
-    except Exception:
+    except Exception as _mini_agent_exc:
+        from mini_agent.errors import log_exception
+        log_exception(_mini_agent_exc, where='mini_agent.api.routes')
         pass
 
     if not agent.load_session(session_id):
@@ -996,7 +1014,9 @@ async def new_session(request: Request):
     # 切换前先把当前会话保存下来，避免未保存的对话丢失
     try:
         agent.save_session()
-    except Exception:
+    except Exception as _mini_agent_exc:
+        from mini_agent.errors import log_exception
+        log_exception(_mini_agent_exc, where='mini_agent.api.routes')
         pass
 
     if not agent.new_session():
@@ -1151,7 +1171,9 @@ def _persist_permission_preference(bridge, mode: str, pending_info) -> None:
         else:  # deny_always
             guard._denied_tools.add(tool_name)
             guard._save_permissions()
-    except Exception:
+    except Exception as _mini_agent_exc:
+        from mini_agent.errors import log_exception
+        log_exception(_mini_agent_exc, where='mini_agent.api.routes')
         pass
 
 
@@ -1420,7 +1442,9 @@ async def get_self_status(request: Request):
     if al is not None:
         try:
             result["autonomous_loop"] = al.get_digest_status()
-        except Exception:
+        except Exception as _mini_agent_exc:
+            from mini_agent.errors import log_exception
+            log_exception(_mini_agent_exc, where='mini_agent.api.routes')
             pass
 
     try:
@@ -1442,7 +1466,9 @@ async def get_self_status(request: Request):
             since = time.time() - 24 * 3600
             records = read_activity_digest(paths, since_ts=since)
             result["recent_activity"] = records[-50:]  # 最多 50 条，避免响应过大
-    except Exception:
+    except Exception as _mini_agent_exc:
+        from mini_agent.errors import log_exception
+        log_exception(_mini_agent_exc, where='mini_agent.api.routes')
         pass
 
     pool = http_server.session_pool
@@ -1494,7 +1520,9 @@ async def get_autonomous_status(request: Request):
         try:
             result["autonomy_level"] = al.autonomy_level
             result["next_tick_in"] = round(max(0.0, al._last_tick_at + al._tick_interval - time.time()), 1)
-        except Exception:
+        except Exception as _mini_agent_exc:
+            from mini_agent.errors import log_exception
+            log_exception(_mini_agent_exc, where='mini_agent.api.routes')
             pass
 
         # CronScheduler 状态
@@ -1516,7 +1544,9 @@ async def get_autonomous_status(request: Request):
                     }
                     for j in jobs
                 ]
-            except Exception:
+            except Exception as _mini_agent_exc:
+                from mini_agent.errors import log_exception
+                log_exception(_mini_agent_exc, where='mini_agent.api.routes')
                 pass
 
         # ObjectiveExecutor 状态
@@ -1526,7 +1556,9 @@ async def get_autonomous_status(request: Request):
         if oe is not None:
             try:
                 result["objective_executions"] = oe.get_status_summary()
-            except Exception:
+            except Exception as _mini_agent_exc:
+                from mini_agent.errors import log_exception
+                log_exception(_mini_agent_exc, where='mini_agent.api.routes')
                 pass
 
     return result
@@ -1636,7 +1668,9 @@ async def update_goal(goal_id: str, request: Request):
             try:
                 from mini_agent.evolution.soft_goal_deriver import SoftGoalDeriver
                 SoftGoalDeriver(paths, self_agent.cfg).record_rejected(node.title)
-            except Exception:
+            except Exception as _mini_agent_exc:
+                from mini_agent.errors import log_exception
+                log_exception(_mini_agent_exc, where='mini_agent.api.routes')
                 pass
 
         backlog.save()

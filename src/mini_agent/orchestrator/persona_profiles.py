@@ -238,7 +238,9 @@ def record_persona_usage(name: str, project_root: Optional[Path] = None) -> None
         log_path.parent.mkdir(parents=True, exist_ok=True)
         with log_path.open("a", encoding="utf-8") as f:
             f.write(json.dumps({"name": name, "ts": time.time()}, ensure_ascii=False) + "\n")
-    except Exception:
+    except Exception as _mini_agent_exc:
+        from mini_agent.errors import log_exception
+        log_exception(_mini_agent_exc, where='mini_agent.orchestrator.persona_profiles')
         pass
 
 
@@ -272,6 +274,8 @@ def summarize_persona_usage(project_root: Optional[Path] = None) -> list[Persona
                     stats[name] = PersonaUsageStat(name=name)
                 stats[name].call_count += 1
                 stats[name].last_used = max(stats[name].last_used, ts)
-    except Exception:
+    except Exception as _mini_agent_exc:
+        from mini_agent.errors import log_exception
+        log_exception(_mini_agent_exc, where='mini_agent.orchestrator.persona_profiles')
         pass
     return sorted(stats.values(), key=lambda s: s.call_count, reverse=True)

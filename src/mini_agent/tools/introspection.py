@@ -999,7 +999,9 @@ def register_introspection_tools(registry: "ToolRegistry", agent) -> None:
     # 也可以从 cfg 读取，更准确
     try:
         proj_root = Path(agent.cfg.project_root).resolve()
-    except Exception:
+    except Exception as _mini_agent_exc:
+        from mini_agent.errors import log_exception
+        log_exception(_mini_agent_exc, where='mini_agent.tools.introspection')
         pass
 
     # ── Tool 1: agent_status ──────────────────────────────────────────────────

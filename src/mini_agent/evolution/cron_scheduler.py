@@ -297,7 +297,9 @@ class CronScheduler:
                     j = CronJob.from_dict(jd)
                     if j.id:
                         existing[j.id] = j
-            except Exception:
+            except Exception as _mini_agent_exc:
+                from mini_agent.errors import log_exception
+                log_exception(_mini_agent_exc, where='mini_agent.evolution.cron_scheduler')
                 pass
 
         # 注入内置 Job（已存在的不覆盖，保留用户修改的 enabled/schedule）
@@ -364,7 +366,9 @@ class CronScheduler:
         if triggered:
             try:
                 self.save()
-            except Exception:
+            except Exception as _mini_agent_exc:
+                from mini_agent.errors import log_exception
+                log_exception(_mini_agent_exc, where='mini_agent.evolution.cron_scheduler')
                 pass
 
         return triggered

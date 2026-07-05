@@ -465,7 +465,9 @@ class Agent:
                             for p in changed:
                                 if p not in existing:
                                     self._pending_file_changes.append(p)
-                except Exception:
+                except Exception as _mini_agent_exc:
+                    from mini_agent.errors import log_exception
+                    log_exception(_mini_agent_exc, where='mini_agent.agent')
                     pass
 
         t = _threading.Thread(target=_watch, daemon=True, name="file-watcher")
@@ -650,7 +652,9 @@ class Agent:
                         "model": self.cfg.model,
                         "provider": getattr(self.cfg, "llm_provider", "unknown"),
                     })
-            except Exception:
+            except Exception as _mini_agent_exc:
+                from mini_agent.errors import log_exception
+                log_exception(_mini_agent_exc, where='mini_agent.agent')
                 pass
         except Exception as e:
             R.print_warning(f"Session init failed: {e}")
@@ -829,7 +833,9 @@ class Agent:
             tm = get_task_manager()
             if tm is not None:
                 tm.set_session_id(self._session.id)
-        except Exception:
+        except Exception as _mini_agent_exc:
+            from mini_agent.errors import log_exception
+            log_exception(_mini_agent_exc, where='mini_agent.agent')
             pass
 
         # debug logger 绑定到 session：日志写入 sessions/<id>/llm_debug.jsonl
@@ -845,7 +851,9 @@ class Agent:
                     project_root=self.cfg.project_root,
                     session_id=self._session.id,
                 )
-            except Exception:
+            except Exception as _mini_agent_exc:
+                from mini_agent.errors import log_exception
+                log_exception(_mini_agent_exc, where='mini_agent.agent')
                 pass
 
         # raw history 路径绑定：调用独立方法（确保 _hist 已初始化后再绑定）
@@ -866,7 +874,9 @@ class Agent:
             clear_plan()  # 切换 session 时先清空旧 session 残留的内存计划
             try_restore_plan(snapshot_path)   # 存在则恢复，不存在则静默跳过
             bind_plan_session(snapshot_path)  # 无论是否恢复成功，都绑定为当前 session 路径
-        except Exception:
+        except Exception as _mini_agent_exc:
+            from mini_agent.errors import log_exception
+            log_exception(_mini_agent_exc, where='mini_agent.agent')
             pass
 
     def _init_tracer(self) -> None:
@@ -923,7 +933,9 @@ class Agent:
             delta_path.parent.mkdir(parents=True, exist_ok=True)
             with open(delta_path, "a", encoding="utf-8") as f:
                 f.write(_json.dumps(asdict(entry), ensure_ascii=False) + "\n")
-        except Exception:
+        except Exception as _mini_agent_exc:
+            from mini_agent.errors import log_exception
+            log_exception(_mini_agent_exc, where='mini_agent.agent')
             pass
 
     def save_session(self) -> Optional[str]:
@@ -1181,13 +1193,17 @@ class Agent:
         # [Stage 6 / 6.3] 观察性：SessionEnd 时写入量化指标 + 异常检测
         try:
             self._run_observability_on_session_end()
-        except Exception:
+        except Exception as _mini_agent_exc:
+            from mini_agent.errors import log_exception
+            log_exception(_mini_agent_exc, where='mini_agent.agent')
             pass
 
         # [Stage 8 / 8.1] Phase G 时间门控：每 24h 自动触发一次后台循环扫描
         try:
             self._maybe_run_phase_g()
-        except Exception:
+        except Exception as _mini_agent_exc:
+            from mini_agent.errors import log_exception
+            log_exception(_mini_agent_exc, where='mini_agent.agent')
             pass
 
         # [具身改进 C4] 自维护模块：每 24h 自动触发一次健康检查
@@ -1195,7 +1211,9 @@ class Agent:
         # 采用同款时间门控模式，互不干扰（各自独立的 last_run_at 状态文件）。
         try:
             self._maybe_run_self_maintenance()
-        except Exception:
+        except Exception as _mini_agent_exc:
+            from mini_agent.errors import log_exception
+            log_exception(_mini_agent_exc, where='mini_agent.agent')
             pass
 
         # [SYS-LESSON] 反思 LLM 调用：基于 tool_stats + 最后若干轮 history 生成 lesson 候选
@@ -1280,7 +1298,9 @@ class Agent:
                 profile.evolution_state.lifetime_lessons_generated += saved
                 profile.evolution_state.last_reflection_at = _time.time()
                 gk.save_self_profile(paths, profile)
-            except Exception:
+            except Exception as _mini_agent_exc:
+                from mini_agent.errors import log_exception
+                log_exception(_mini_agent_exc, where='mini_agent.agent')
                 pass
 
         return saved
@@ -1337,14 +1357,18 @@ class Agent:
                         unresolved_all.extend(outcome.get("unresolved", []) or [])
                     except Exception:
                         continue
-        except Exception:
+        except Exception as _mini_agent_exc:
+            from mini_agent.errors import log_exception
+            log_exception(_mini_agent_exc, where='mini_agent.agent')
             pass
 
         # ── 4.4：把 unresolved 推进 open_threads.json ────────────────────────
         if unresolved_all:
             try:
                 wk.import_unresolved_from_manifest(paths, session_id, unresolved_all)
-            except Exception:
+            except Exception as _mini_agent_exc:
+                from mini_agent.errors import log_exception
+                log_exception(_mini_agent_exc, where='mini_agent.agent')
                 pass
 
         # ── 4.3：关联到 active WorkThread（轻量启发式，不新建 WorkThread）───
@@ -1361,7 +1385,9 @@ class Agent:
             wk.relate_session_to_work_thread(
                 paths, session_id, first_user_turn, relation_days=relation_days,
             )
-        except Exception:
+        except Exception as _mini_agent_exc:
+            from mini_agent.errors import log_exception
+            log_exception(_mini_agent_exc, where='mini_agent.agent')
             pass
 
         # ── 4.2：timeline.jsonl 一行概览 ──────────────────────────────────
@@ -1377,7 +1403,9 @@ class Agent:
                 task_count=task_count,
                 status="done",
             )
-        except Exception:
+        except Exception as _mini_agent_exc:
+            from mini_agent.errors import log_exception
+            log_exception(_mini_agent_exc, where='mini_agent.agent')
             pass
 
         # ── [W3 / 5.3 + 5.5] Global 知识层 SessionEnd 维护：复用上面已经
@@ -1396,7 +1424,9 @@ class Agent:
                     theme=theme,
                     duration_min=duration_min,
                 )
-            except Exception:
+            except Exception as _mini_agent_exc:
+                from mini_agent.errors import log_exception
+                log_exception(_mini_agent_exc, where='mini_agent.agent')
                 pass
             try:
                 from mini_agent.perception import global_knowledge as gk
@@ -1405,7 +1435,9 @@ class Agent:
                     active_project=str(self.cfg.project_root.resolve()),
                     tokens_used=self.stats.input_tokens + self.stats.output_tokens,
                 )
-            except Exception:
+            except Exception as _mini_agent_exc:
+                from mini_agent.errors import log_exception
+                log_exception(_mini_agent_exc, where='mini_agent.agent')
                 pass
 
     def _maybe_run_phase_g(self) -> None:
@@ -1532,7 +1564,9 @@ class Agent:
                     f"[anomaly] {flag.flag_type}: 当前值 {flag.value:.1f} 超出基线 "
                     f"(均值 {flag.baseline:.1f}, 阈值 {flag.threshold:.1f})"
                 )
-        except Exception:
+        except Exception as _mini_agent_exc:
+            from mini_agent.errors import log_exception
+            log_exception(_mini_agent_exc, where='mini_agent.agent')
             pass
 
     def _session_duration_minutes(self) -> float:
@@ -1657,7 +1691,9 @@ class Agent:
             tm = get_task_manager()
             if tm is not None:
                 tm.reset()
-        except Exception:
+        except Exception as _mini_agent_exc:
+            from mini_agent.errors import log_exception
+            log_exception(_mini_agent_exc, where='mini_agent.agent')
             pass
 
         return True
@@ -2737,7 +2773,9 @@ class Agent:
             if self._self_model is not None and self._proprioception is not None:
                 try:
                     self._self_model.update_internal_state(_pp_state)
-                except Exception:
+                except Exception as _mini_agent_exc:
+                    from mini_agent.errors import log_exception
+                    log_exception(_mini_agent_exc, where='mini_agent.agent')
                     pass
 
             # [Stage 6 / 6.1] call_llm 追踪
@@ -2834,7 +2872,9 @@ class Agent:
                             self._hist.append_user(
                                 f"[stop hook context] {_stop_res.context}"
                             )
-                except Exception:
+                except Exception as _mini_agent_exc:
+                    from mini_agent.errors import log_exception
+                    log_exception(_mini_agent_exc, where='mini_agent.agent')
                     pass
                 break
 
@@ -2856,7 +2896,9 @@ class Agent:
                         if _events:
                             _sp["action_events"] = [e.to_dict() for e in _events]
                             self._last_action_events = _events
-                    except Exception:
+                    except Exception as _mini_agent_exc:
+                        from mini_agent.errors import log_exception
+                        log_exception(_mini_agent_exc, where='mini_agent.agent')
                         pass
             else:
                 tool_results, result_strs = self._execute_tools(response)
@@ -3355,7 +3397,9 @@ class Agent:
                 if _pre_res.blocked:
                     R.print_info("[compress] PreCompact hook blocked compression.")
                     return
-        except Exception:
+        except Exception as _mini_agent_exc:
+            from mini_agent.errors import log_exception
+            log_exception(_mini_agent_exc, where='mini_agent.agent')
             pass
 
         if len(self._history) < 6:
@@ -3399,7 +3443,9 @@ class Agent:
                         payload = _json.loads(entry.get("content", "{}"))
                         payload["trigger_reason"] = trigger_reason
                         entry["content"] = _json.dumps(payload, ensure_ascii=False)
-                    except Exception:
+                    except Exception as _mini_agent_exc:
+                        from mini_agent.errors import log_exception
+                        log_exception(_mini_agent_exc, where='mini_agent.agent')
                         pass
                     break
 
@@ -3421,7 +3467,9 @@ class Agent:
                     "before_count": before_count,
                     "after_count": after_count,
                 })
-        except Exception:
+        except Exception as _mini_agent_exc:
+            from mini_agent.errors import log_exception
+            log_exception(_mini_agent_exc, where='mini_agent.agent')
             pass
 
     def _build_tool_schemas(self) -> list[ToolSchema]:

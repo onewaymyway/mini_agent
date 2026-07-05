@@ -51,7 +51,9 @@ def _os_friendly_name() -> str:
                     if line.startswith("PRETTY_NAME="):
                         pretty = line.split("=", 1)[1].strip().strip('"')
                         return f"Linux ({pretty})"
-        except Exception:
+        except Exception as _mini_agent_exc:
+            from mini_agent.errors import log_exception
+            log_exception(_mini_agent_exc, where='mini_agent.env_info.providers.system')
             pass
         return f"Linux ({platform.release()})"
 
@@ -92,7 +94,9 @@ class SystemInfoProvider(EnvInfoProvider):
                 hostname = socket.gethostname()
                 if hostname:
                     info["Hostname"] = hostname
-            except Exception:
+            except Exception as _mini_agent_exc:
+                from mini_agent.errors import log_exception
+                log_exception(_mini_agent_exc, where='mini_agent.env_info.providers.system')
                 pass
 
         # 用户名（可选）
@@ -102,7 +106,9 @@ class SystemInfoProvider(EnvInfoProvider):
                 user = getpass.getuser()
                 if user:
                     info["User"] = user
-            except Exception:
+            except Exception as _mini_agent_exc:
+                from mini_agent.errors import log_exception
+                log_exception(_mini_agent_exc, where='mini_agent.env_info.providers.system')
                 pass
 
         return info

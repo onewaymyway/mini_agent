@@ -186,7 +186,9 @@ def _detect_invalid_json_in_tool_use(text: str) -> bool:
                 obj = json_repair.repair_json(raw, return_objects=True)
                 if isinstance(obj, dict) and obj.get("name"):
                     continue  # json_repair 能修复，说明上游本不该走到这里；保守跳过
-            except Exception:
+            except Exception as _mini_agent_exc:
+                from mini_agent.errors import log_exception
+                log_exception(_mini_agent_exc, where='mini_agent.perception.format_correction_detector')
                 pass
             return True
     return False

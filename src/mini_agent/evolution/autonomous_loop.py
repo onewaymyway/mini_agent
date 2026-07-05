@@ -116,7 +116,9 @@ class AutonomousLoop:
                         "job_id": job_id,
                         "summary": f"Cron job 触发：{job_id}",
                     })
-            except Exception:
+            except Exception as _mini_agent_exc:
+                from mini_agent.errors import log_exception
+                log_exception(_mini_agent_exc, where='mini_agent.evolution.autonomous_loop')
                 pass
         else:
             # 降级：CronScheduler 未注入时直接调用 Phase G（保持向后兼容）
@@ -125,14 +127,18 @@ class AutonomousLoop:
                 if should_run_phase_g(self._paths):
                     report = run_phase_g(self._paths)
                     self._record_phase_g_for_digest(report)
-            except Exception:
+            except Exception as _mini_agent_exc:
+                from mini_agent.errors import log_exception
+                log_exception(_mini_agent_exc, where='mini_agent.evolution.autonomous_loop')
                 pass
 
         # Workdir knowledge 定期整合（CronScheduler 未注入时的降级路径）
         if self._cron_scheduler is None:
             try:
                 self._run_workdir_consolidation()
-            except Exception:
+            except Exception as _mini_agent_exc:
+                from mini_agent.errors import log_exception
+                log_exception(_mini_agent_exc, where='mini_agent.evolution.autonomous_loop')
                 pass
 
     def _tick_maintenance(self) -> None:
@@ -158,7 +164,9 @@ class AutonomousLoop:
         if self._objective_executor is not None:
             try:
                 self._objective_executor.resume()  # 恢复因资源仲裁暂停的 Objective
-            except Exception:
+            except Exception as _mini_agent_exc:
+                from mini_agent.errors import log_exception
+                log_exception(_mini_agent_exc, where='mini_agent.evolution.autonomous_loop')
                 pass
 
         # 若有 ObjectiveExecutor 且还有并发槽位，从 GoalBacklog 启动新 Objective
@@ -242,7 +250,9 @@ class AutonomousLoop:
 
         except ImportError:
             pass
-        except Exception:
+        except Exception as _mini_agent_exc:
+            from mini_agent.errors import log_exception
+            log_exception(_mini_agent_exc, where='mini_agent.evolution.autonomous_loop')
             pass
 
     def _run_capability_exploration(self, candidate, deriver) -> None:
@@ -315,7 +325,9 @@ class AutonomousLoop:
 
         except ExplorationBudgetExhausted:
             pass
-        except Exception:
+        except Exception as _mini_agent_exc:
+            from mini_agent.errors import log_exception
+            log_exception(_mini_agent_exc, where='mini_agent.evolution.autonomous_loop')
             pass
 
     def _submit_exploration_task(self, goal_text: str, ctx) -> str:
@@ -385,7 +397,9 @@ class AutonomousLoop:
             profile = load_self_profile(self._paths)
             if profile:
                 return profile.operating_state.autonomy_level
-        except Exception:
+        except Exception as _mini_agent_exc:
+            from mini_agent.errors import log_exception
+            log_exception(_mini_agent_exc, where='mini_agent.evolution.autonomous_loop')
             pass
         return "passive"  # 读取失败时保守降级
 
@@ -433,7 +447,9 @@ class AutonomousLoop:
                 "promote_count": promote_count,
                 "capability_count": cap_count,
             })
-        except Exception:
+        except Exception as _mini_agent_exc:
+            from mini_agent.errors import log_exception
+            log_exception(_mini_agent_exc, where='mini_agent.evolution.autonomous_loop')
             pass
 
     def _record_digest(self, extra: dict) -> None:
@@ -450,7 +466,9 @@ class AutonomousLoop:
             with open(path, "a", encoding="utf-8") as f:
                 f.write(json.dumps(record, ensure_ascii=False))
                 f.write("\n")
-        except Exception:
+        except Exception as _mini_agent_exc:
+            from mini_agent.errors import log_exception
+            log_exception(_mini_agent_exc, where='mini_agent.evolution.autonomous_loop')
             pass
 
     def get_digest_status(self) -> dict:

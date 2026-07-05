@@ -165,7 +165,9 @@ def run_repl(agent: Agent, skill_loader: SkillLoader) -> None:
             # 失败静默降级，不影响中断流程本身。
             try:
                 agent._save_cognitive_anchor()
-            except Exception:
+            except Exception as _mini_agent_exc:
+                from mini_agent.errors import log_exception
+                log_exception(_mini_agent_exc, where='mini_agent.cli.repl')
                 pass
         except Exception as e:
             _term.force_end_stream()
@@ -184,7 +186,9 @@ def _cancel_running_tasks() -> None:
             cancelled = mgr.cancel_all()
             if cancelled > 0:
                 R.print_info(f"Cancelled {cancelled} running task(s).")
-    except Exception:
+    except Exception as _mini_agent_exc:
+        from mini_agent.errors import log_exception
+        log_exception(_mini_agent_exc, where='mini_agent.cli.repl')
         pass
 
 

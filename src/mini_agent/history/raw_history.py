@@ -82,7 +82,9 @@ class RawHistory:
                 self._file.flush()
                 os.fsync(self._file.fileno())
                 self._file.close()
-            except Exception:
+            except Exception as _mini_agent_exc:
+                from mini_agent.errors import log_exception
+                log_exception(_mini_agent_exc, where='mini_agent.history.raw_history')
                 pass
             self._file = None
 
@@ -175,7 +177,9 @@ class RawHistory:
                         self._raw.append(json.loads(line))
                     except json.JSONDecodeError:
                         pass  # 跳过损坏行
-        except Exception:
+        except Exception as _mini_agent_exc:
+            from mini_agent.errors import log_exception
+            log_exception(_mini_agent_exc, where='mini_agent.history.raw_history')
             pass
 
     def _load_json_array(self, path: Path) -> None:
@@ -184,7 +188,9 @@ class RawHistory:
             data = json.loads(path.read_text(encoding="utf-8"))
             if isinstance(data, list):
                 self._raw = data
-        except Exception:
+        except Exception as _mini_agent_exc:
+            from mini_agent.errors import log_exception
+            log_exception(_mini_agent_exc, where='mini_agent.history.raw_history')
             pass
 
     # ── 兼容旧代码的 save_to_file（不再主动调用，但保留避免调用方报错）────

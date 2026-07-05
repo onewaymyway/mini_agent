@@ -111,7 +111,9 @@ class TaskManager:
         from .concurrency import set_max_tasks
         try:
             set_max_tasks(value)
-        except Exception:
+        except Exception as _mini_agent_exc:
+            from mini_agent.errors import log_exception
+            log_exception(_mini_agent_exc, where='mini_agent.orchestrator.task_manager')
             pass
 
     def stop(self, cancel_pending: bool = True) -> None:
@@ -160,7 +162,9 @@ class TaskManager:
                     "prompt": task.prompt[:200],
                     "tags": list(task.tags),
                 })
-        except Exception:
+        except Exception as _mini_agent_exc:
+            from mini_agent.errors import log_exception
+            log_exception(_mini_agent_exc, where='mini_agent.orchestrator.task_manager')
             pass
         return task.id
 
@@ -210,7 +214,9 @@ class TaskManager:
                     if agent:
                         try:
                             agent.cancel()
-                        except Exception:
+                        except Exception as _mini_agent_exc:
+                            from mini_agent.errors import log_exception
+                            log_exception(_mini_agent_exc, where='mini_agent.orchestrator.task_manager')
                             pass
             self._records.clear()
             self._agents.clear()
@@ -373,7 +379,9 @@ class TaskManager:
         if self.on_log:
             try:
                 self.on_log(task_id, line)
-            except Exception:
+            except Exception as _mini_agent_exc:
+                from mini_agent.errors import log_exception
+                log_exception(_mini_agent_exc, where='mini_agent.orchestrator.task_manager')
                 pass
 
     def _handle_terminal(self, task_id: str, old_status: TaskStatus, new_status: TaskStatus) -> None:
@@ -406,7 +414,9 @@ class TaskManager:
                     "status": _status_val,
                     "error": (rec.result.error if rec.result else "") or "",
                 })
-        except Exception:
+        except Exception as _mini_agent_exc:
+            from mini_agent.errors import log_exception
+            log_exception(_mini_agent_exc, where='mini_agent.orchestrator.task_manager')
             pass
         self._notify_status(rec)
         # [Phase E / 3.3] 重新加载主 agent memory
@@ -514,7 +524,9 @@ class TaskManager:
                 continue
             try:
                 sink.reload()
-            except Exception:
+            except Exception as _mini_agent_exc:
+                from mini_agent.errors import log_exception
+                log_exception(_mini_agent_exc, where='mini_agent.orchestrator.task_manager')
                 pass
 
     def set_memory_sinks(self, memory=None, global_memory=None) -> None:

@@ -178,7 +178,9 @@ class ExplorationSandbox:
             ws = EvolutionWorkspace(self._paths)
             branch_name = f"{branch_prefix}/{sandbox_id}"
             return ws.create_worktree(branch_name)
-        except Exception:
+        except Exception as _mini_agent_exc:
+            from mini_agent.errors import log_exception
+            log_exception(_mini_agent_exc, where='mini_agent.perception.exploration_sandbox')
             pass
 
         # fallback: 直接用 tempdir（不隔离 git 历史，但功能上可用）
@@ -197,7 +199,9 @@ class ExplorationSandbox:
             try:
                 import shutil
                 shutil.rmtree(str(worktree_path), ignore_errors=True)
-            except Exception:
+            except Exception as _mini_agent_exc:
+                from mini_agent.errors import log_exception
+                log_exception(_mini_agent_exc, where='mini_agent.perception.exploration_sandbox')
                 pass
 
     def _write_report(self, report: ExplorationReport) -> None:
@@ -208,7 +212,9 @@ class ExplorationSandbox:
                 self._paths,
                 {**report.to_digest_entry(), "at": report.ended_at},
             )
-        except Exception:
+        except Exception as _mini_agent_exc:
+            from mini_agent.errors import log_exception
+            log_exception(_mini_agent_exc, where='mini_agent.perception.exploration_sandbox')
             pass
 
 

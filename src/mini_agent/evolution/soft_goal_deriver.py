@@ -104,7 +104,9 @@ class SoftGoalDeriver:
             self._rhythm_path.write_text(
                 json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8"
             )
-        except Exception:
+        except Exception as _mini_agent_exc:
+            from mini_agent.errors import log_exception
+            log_exception(_mini_agent_exc, where='mini_agent.evolution.soft_goal_deriver')
             pass
 
     # ── 已拒绝目标集 ──────────────────────────────────────────────────────────
@@ -132,7 +134,9 @@ class SoftGoalDeriver:
             self._rejected_path.write_text(
                 json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8"
             )
-        except Exception:
+        except Exception as _mini_agent_exc:
+            from mini_agent.errors import log_exception
+            log_exception(_mini_agent_exc, where='mini_agent.evolution.soft_goal_deriver')
             pass
 
     # ── 主入口 ────────────────────────────────────────────────────────────────
@@ -239,7 +243,9 @@ class SoftGoalDeriver:
                     priority=25,
                     urgency=urgency,
                 ))
-        except Exception:
+        except Exception as _mini_agent_exc:
+            from mini_agent.errors import log_exception
+            log_exception(_mini_agent_exc, where='mini_agent.evolution.soft_goal_deriver')
             pass
         return candidates
 
@@ -272,7 +278,9 @@ class SoftGoalDeriver:
                     priority=20,
                     urgency=urgency,
                 ))
-        except Exception:
+        except Exception as _mini_agent_exc:
+            from mini_agent.errors import log_exception
+            log_exception(_mini_agent_exc, where='mini_agent.evolution.soft_goal_deriver')
             pass
         return candidates
 
@@ -308,7 +316,9 @@ class SoftGoalDeriver:
                     priority=30,  # lesson 来源比其他信号优先级略高
                     urgency=urgency,
                 ))
-        except Exception:
+        except Exception as _mini_agent_exc:
+            from mini_agent.errors import log_exception
+            log_exception(_mini_agent_exc, where='mini_agent.evolution.soft_goal_deriver')
             pass
         return candidates
 

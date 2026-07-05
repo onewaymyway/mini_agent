@@ -32,7 +32,9 @@ def _get_timezone() -> str | None:
             import datetime
             local_tz = datetime.datetime.now().astimezone().tzinfo
             tz_name = str(local_tz)
-        except Exception:
+        except Exception as _mini_agent_exc:
+            from mini_agent.errors import log_exception
+            log_exception(_mini_agent_exc, where='mini_agent.env_info.providers.locale')
             pass
 
     # 3. 读取 /etc/timezone (Linux)
@@ -42,7 +44,9 @@ def _get_timezone() -> str | None:
                 candidate = f.read().strip()
                 if "/" in candidate:
                     tz_name = candidate
-        except Exception:
+        except Exception as _mini_agent_exc:
+            from mini_agent.errors import log_exception
+            log_exception(_mini_agent_exc, where='mini_agent.env_info.providers.locale')
             pass
 
     # 4. /etc/localtime 软链接 (Linux / macOS)
@@ -54,7 +58,9 @@ def _get_timezone() -> str | None:
                 if prefix in link:
                     tz_name = link.split(prefix, 1)[1]
                     break
-        except Exception:
+        except Exception as _mini_agent_exc:
+            from mini_agent.errors import log_exception
+            log_exception(_mini_agent_exc, where='mini_agent.env_info.providers.locale')
             pass
 
     # 计算 UTC 偏移
@@ -92,7 +98,9 @@ def _get_locale() -> str | None:
         lc = locale.getlocale()[0]
         if lc and lc not in ("C", "POSIX"):
             return lc
-    except Exception:
+    except Exception as _mini_agent_exc:
+        from mini_agent.errors import log_exception
+        log_exception(_mini_agent_exc, where='mini_agent.env_info.providers.locale')
         pass
 
     return None

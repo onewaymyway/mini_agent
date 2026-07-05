@@ -66,14 +66,18 @@ class RuntimeInfoProvider(EnvInfoProvider):
             else:
                 friendly = str(cwd)
             info["CWD"] = friendly
-        except Exception:
+        except Exception as _mini_agent_exc:
+            from mini_agent.errors import log_exception
+            log_exception(_mini_agent_exc, where='mini_agent.env_info.providers.runtime')
             pass
 
         # 可执行文件（可选，一般不需要）
         if self._include_executable:
             try:
                 info["Python bin"] = sys.executable
-            except Exception:
+            except Exception as _mini_agent_exc:
+                from mini_agent.errors import log_exception
+                log_exception(_mini_agent_exc, where='mini_agent.env_info.providers.runtime')
                 pass
 
         return info

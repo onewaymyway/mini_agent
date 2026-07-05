@@ -127,6 +127,29 @@ class AgentPaths:
         """~/.agent/activity_log.jsonl — 全局活动时序流水（5.3）"""
         return self.global_dir / "activity_log.jsonl"
 
+    # ── 全局错误日志 ───────────────────────────────────────────────────────
+    # 与 session/task 级日志不同：错误日志与"当前在哪个项目/session"无关，
+    # 需要跨项目、跨进程统一汇总到一处，便于事后排查，因此固定挂在 global_dir 下。
+
+    @property
+    def global_logs_dir(self) -> Path:
+        """~/.agent/logs/ — 全局日志目录"""
+        return self.global_dir / "logs"
+
+    @property
+    def global_error_log(self) -> Path:
+        """~/.agent/logs/error.jsonl — 全局异常日志（JSON Lines）。
+        每一行是一条独立的 JSON 记录，包含时间戳、pid、线程名、发生位置、
+        异常类型、异常信息与完整堆栈，见 mini_agent.errors.log_exception()。
+        按 10MB 一个文件轮转，保留最近 5 个（RotatingFileHandler）。"""
+        return self.global_logs_dir / "error.jsonl"
+
+    def ensure_global_logs_dir(self) -> Path:
+        """确保 ~/.agent/logs/ 目录存在并返回路径。"""
+        d = self.global_logs_dir
+        d.mkdir(parents=True, exist_ok=True)
+        return d
+
     def profile_path(self, user_id: Optional[str] = None) -> Path:
         """
         用户 profile 文件路径。

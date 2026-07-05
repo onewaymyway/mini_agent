@@ -399,7 +399,9 @@ def _write_capability_map_to_memory(memory_backend, entries: list[CapabilityMapE
             confidence=1.0,
         )
         memory_backend.add(mem_entry)
-    except Exception:
+    except Exception as _mini_agent_exc:
+        from mini_agent.errors import log_exception
+        log_exception(_mini_agent_exc, where='mini_agent.evolution.phase_g')
         pass
 
 
@@ -547,13 +549,17 @@ def run_phase_g(
         # 记录已提案的 skill 的冷却时间
         for c in report.prune_candidates:
             record_proposal(paths, "prune", c.name)
-    except Exception:
+    except Exception as _mini_agent_exc:
+        from mini_agent.errors import log_exception
+        log_exception(_mini_agent_exc, where='mini_agent.evolution.phase_g')
         pass
 
     # 8.3 能力地图
     try:
         report.capability_map = build_capability_map(paths, memory_backend)
-    except Exception:
+    except Exception as _mini_agent_exc:
+        from mini_agent.errors import log_exception
+        log_exception(_mini_agent_exc, where='mini_agent.evolution.phase_g')
         pass
 
     # 8.4 Scope 晋升候选
@@ -567,13 +573,17 @@ def run_phase_g(
         # 记录已提案的 pattern 的冷却时间
         for c in report.promotion_candidates:
             record_proposal(paths, "promote", c.pattern_id)
-    except Exception:
+    except Exception as _mini_agent_exc:
+        from mini_agent.errors import log_exception
+        log_exception(_mini_agent_exc, where='mini_agent.evolution.phase_g')
         pass
 
     # 记录本次运行时间
     try:
         record_phase_g_run(paths)
-    except Exception:
+    except Exception as _mini_agent_exc:
+        from mini_agent.errors import log_exception
+        log_exception(_mini_agent_exc, where='mini_agent.evolution.phase_g')
         pass
 
     return report

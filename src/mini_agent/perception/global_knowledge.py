@@ -547,7 +547,9 @@ def register_or_touch_project(
         profile = ensure_self_profile(paths)
         profile.operating_state.total_projects_worked = len(index.projects)
         save_self_profile(paths, profile)
-    except Exception:
+    except Exception as _mini_agent_exc:
+        from mini_agent.errors import log_exception
+        log_exception(_mini_agent_exc, where='mini_agent.perception.global_knowledge')
         pass
 
     return entry
@@ -969,7 +971,9 @@ def update_cross_project_capability_map(
             })
             profile.self_assessment.last_assessed_at = time.time()
             save_self_profile(paths, profile)
-        except Exception:
+        except Exception as _mini_agent_exc:
+            from mini_agent.errors import log_exception
+            log_exception(_mini_agent_exc, where='mini_agent.perception.global_knowledge')
             pass
     return index
 

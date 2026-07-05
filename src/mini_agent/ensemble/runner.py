@@ -39,7 +39,9 @@ def _finalize(cfg, result: EnsembleResult, *, session_id: Optional[str] = None) 
             (out_dir / fname).write_text(
                 _json.dumps(run_record, ensure_ascii=False, indent=2), encoding="utf-8",
             )
-    except Exception:
+    except Exception as _mini_agent_exc:
+        from mini_agent.errors import log_exception
+        log_exception(_mini_agent_exc, where='mini_agent.ensemble.runner')
         pass
 
     # hooks
@@ -48,7 +50,9 @@ def _finalize(cfg, result: EnsembleResult, *, session_id: Optional[str] = None) 
         mgr = get_hook_manager()
         if mgr is not None:
             mgr.run("EnsembleJudged", run_record)
-    except Exception:
+    except Exception as _mini_agent_exc:
+        from mini_agent.errors import log_exception
+        log_exception(_mini_agent_exc, where='mini_agent.ensemble.runner')
         pass
 
     return result

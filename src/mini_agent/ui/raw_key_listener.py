@@ -209,7 +209,9 @@ class _UnixKeyReader(_BaseKeyReader):
             if self._fd_owned and fd is not None:
                 try:
                     os.close(fd)
-                except Exception:
+                except Exception as _mini_agent_exc:
+                    from mini_agent.errors import log_exception
+                    log_exception(_mini_agent_exc, where='mini_agent.ui.raw_key_listener')
                     pass
             return False
 
@@ -245,7 +247,9 @@ class _UnixKeyReader(_BaseKeyReader):
         if self._fd_owned:
             try:
                 os.close(self._fd)
-            except Exception:
+            except Exception as _mini_agent_exc:
+                from mini_agent.errors import log_exception
+                log_exception(_mini_agent_exc, where='mini_agent.ui.raw_key_listener')
                 pass
         self._fd = None
         self._old_attrs = None

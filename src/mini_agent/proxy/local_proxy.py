@@ -84,7 +84,9 @@ async def _pipe_raw(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) 
                 break
             writer.write(data)
             await writer.drain()
-    except Exception:
+    except Exception as _mini_agent_exc:
+        from mini_agent.errors import log_exception
+        log_exception(_mini_agent_exc, where='mini_agent.proxy.local_proxy')
         pass
     finally:
         writer.close()
@@ -110,7 +112,9 @@ async def _relay_shadowsocks(client_reader, client_writer, connector: Shadowsock
                 if not data:
                     break
                 await session.send(data)
-        except Exception:
+        except Exception as _mini_agent_exc:
+            from mini_agent.errors import log_exception
+            log_exception(_mini_agent_exc, where='mini_agent.proxy.local_proxy')
             pass
 
     async def _remote_to_client():
@@ -121,7 +125,9 @@ async def _relay_shadowsocks(client_reader, client_writer, connector: Shadowsock
                     break
                 client_writer.write(data)
                 await client_writer.drain()
-        except Exception:
+        except Exception as _mini_agent_exc:
+            from mini_agent.errors import log_exception
+            log_exception(_mini_agent_exc, where='mini_agent.proxy.local_proxy')
             pass
         finally:
             client_writer.close()
@@ -145,7 +151,9 @@ async def _handle_client(client_reader, client_writer, node: ProxyNode) -> None:
     except Exception:
         try:
             client_writer.close()
-        except Exception:
+        except Exception as _mini_agent_exc:
+            from mini_agent.errors import log_exception
+            log_exception(_mini_agent_exc, where='mini_agent.proxy.local_proxy')
             pass
 
 

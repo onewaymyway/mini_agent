@@ -34,7 +34,9 @@ def _read_claude_md(root: Path, filename: str = "CLAUDE.md") -> str:
         if p.exists():
             try:
                 return p.read_text(encoding="utf-8")
-            except Exception:
+            except Exception as _mini_agent_exc:
+                from mini_agent.errors import log_exception
+                log_exception(_mini_agent_exc, where='mini_agent.config.prompt_builder')
                 pass
     return ""
 
@@ -88,7 +90,9 @@ def build_system_prompt(cfg: AppConfig, active_skills: list[str], skill_context:
                 provider_kwargs=cfg.env_info.provider_kwargs,
             )
             env_info_block = registry.build_block()
-        except Exception:
+        except Exception as _mini_agent_exc:
+            from mini_agent.errors import log_exception
+            log_exception(_mini_agent_exc, where='mini_agent.config.prompt_builder')
             pass
 
     return pm.build_system_prompt(

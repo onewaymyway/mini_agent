@@ -65,7 +65,9 @@ def _debug_log(
         }
         with open(events_path, "a", encoding="utf-8") as f:
             f.write(json.dumps(entry, ensure_ascii=False) + "\n")
-    except Exception:
+    except Exception as _mini_agent_exc:
+        from mini_agent.errors import log_exception
+        log_exception(_mini_agent_exc, where='mini_agent.orchestrator.sub_agent')
         pass
 
 
@@ -202,7 +204,9 @@ class SubAgent:
                     "task_name": task.name,
                     "prompt": task.prompt[:200],
                 })
-        except Exception:
+        except Exception as _mini_agent_exc:
+            from mini_agent.errors import log_exception
+            log_exception(_mini_agent_exc, where='mini_agent.orchestrator.sub_agent')
             pass
 
         self._log(f"Starting task: {task.name}")
@@ -286,12 +290,16 @@ class SubAgent:
                                 "status": self.record.status.value if hasattr(self.record.status, 'value') else str(self.record.status),
                                 "error": (self.record.result.error if self.record.result else "") or "",
                             })
-                    except Exception:
+                    except Exception as _mini_agent_exc:
+                        from mini_agent.errors import log_exception
+                        log_exception(_mini_agent_exc, where='mini_agent.orchestrator.sub_agent')
                         pass
                     if self.on_terminal:
                         try:
                             self.on_terminal(self.record.task_id, old_status, self.record.status)
-                        except Exception:
+                        except Exception as _mini_agent_exc:
+                            from mini_agent.errors import log_exception
+                            log_exception(_mini_agent_exc, where='mini_agent.orchestrator.sub_agent')
                             pass
 
     # SubAgent 层的重试配置
@@ -491,7 +499,9 @@ class SubAgent:
                 _json.dumps(data, ensure_ascii=False, indent=2),
                 encoding="utf-8",
             )
-        except Exception:
+        except Exception as _mini_agent_exc:
+            from mini_agent.errors import log_exception
+            log_exception(_mini_agent_exc, where='mini_agent.orchestrator.sub_agent')
             pass
 
     def _log(self, line: str) -> None:
@@ -503,12 +513,16 @@ class SubAgent:
                 ts = time.strftime("%H:%M:%S")
                 with open(self._output_path, "a", encoding="utf-8") as f:
                     f.write(f"[{ts}] {line}\n")
-            except Exception:
+            except Exception as _mini_agent_exc:
+                from mini_agent.errors import log_exception
+                log_exception(_mini_agent_exc, where='mini_agent.orchestrator.sub_agent')
                 pass
         if self.on_log:
             try:
                 self.on_log(self.record.task_id, line)
-            except Exception:
+            except Exception as _mini_agent_exc:
+                from mini_agent.errors import log_exception
+                log_exception(_mini_agent_exc, where='mini_agent.orchestrator.sub_agent')
                 pass
 
 

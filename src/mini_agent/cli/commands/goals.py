@@ -259,7 +259,9 @@ def _cmd_abandon(gb, node_id: str, paths=None, agent=None) -> None:
                 SoftGoalDeriver(paths, cfg).record_rejected(node.title)
                 R.print_success(f"🗑 已拒绝并记录：{node.title}（30 天内不再建议相同主题）")
                 return
-        except Exception:
+        except Exception as _mini_agent_exc:
+            from mini_agent.errors import log_exception
+            log_exception(_mini_agent_exc, where='mini_agent.cli.commands.goals')
             pass
 
     R.print_success(f"🗑 {node_id} 状态: {old_status} → abandoned")

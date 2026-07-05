@@ -49,7 +49,9 @@ def load_or_generate_token(project_root: Path, configured_token: str = "") -> st
     key_path.write_text(token + "\n", encoding="utf-8")
     try:
         key_path.chmod(stat.S_IRUSR | stat.S_IWUSR)   # 0600
-    except Exception:
+    except Exception as _mini_agent_exc:
+        from mini_agent.errors import log_exception
+        log_exception(_mini_agent_exc, where='mini_agent.api.auth')
         pass
     return token
 

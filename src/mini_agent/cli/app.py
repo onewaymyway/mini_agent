@@ -63,6 +63,12 @@ def _extract_project_root(argv: list[str]) -> tuple[Path, list[str]]:
 
 
 def main() -> int:
+    # ── 全局异常日志：进程一启动就安装，覆盖后面所有短路分支 ──────────────────
+    # 见 mini_agent/errors.py。安装后：root logger 的 error/exception 调用、
+    # 主线程/子线程未捕获异常都会额外落盘到 ~/.agent/logs/error.jsonl。
+    from mini_agent.errors import install_global_error_logging
+    install_global_error_logging()
+
     # ── eval 子命令短路：在进入主 argparse 流程之前优先处理 ───────────────────
     # 对应 self_evolution_implementation_plan.md Stage 3.2。`mini-agent eval ...`
     # 与主入口的位置参数 `prompt`（cli/parser.py）共存：argparse 不支持
@@ -99,6 +105,8 @@ def main() -> int:
     try:
         _main_inner()
     except Exception as e:
+        from mini_agent.errors import log_exception
+        log_exception(e, where="cli.app.main")
         # 使用最直接的方式输出错误，不依赖任何库
         import traceback
         print("\n" + "=" * 50, file=sys.stderr)
@@ -474,7 +482,9 @@ def _main_inner() -> None:
         try:
             _signal.signal(_signal.SIGTERM, _shutdown_handler)
             _signal.signal(_signal.SIGINT, _shutdown_handler)
-        except Exception:
+        except Exception as _mini_agent_exc:
+            from mini_agent.errors import log_exception
+            log_exception(_mini_agent_exc, where='mini_agent.cli.app')
             pass
 
         R.print_info("[daemon] Daemon ready. Ctrl-C or SIGTERM to stop.")
@@ -491,7 +501,9 @@ def _main_inner() -> None:
             try:
                 from mini_agent.cli.daemon import _cleanup_pid_files
                 _cleanup_pid_files(project_root)
-            except Exception:
+            except Exception as _mini_agent_exc:
+                from mini_agent.errors import log_exception
+                log_exception(_mini_agent_exc, where='mini_agent.cli.app')
                 pass
         return
 

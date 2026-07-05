@@ -130,7 +130,9 @@ class ToolExecutor:
         if self._history_getter is not None:
             try:
                 _history = self._history_getter()
-            except Exception:
+            except Exception as _mini_agent_exc:
+                from mini_agent.errors import log_exception
+                log_exception(_mini_agent_exc, where='mini_agent.tool_executor')
                 pass
         if _history is None:
             _history = history
@@ -159,7 +161,9 @@ class ToolExecutor:
                             if _tname and not _tout.startswith("[same result"):
                                 _h = _hashlib.md5(_tout.encode()).hexdigest()[:12]
                                 _seen_in_history[(_tname, _h)] = _tout
-                    except Exception:
+                    except Exception as _mini_agent_exc:
+                        from mini_agent.errors import log_exception
+                        log_exception(_mini_agent_exc, where='mini_agent.tool_executor')
                         pass
 
         # ── 当前 turn_id（供 tracer 使用）───────────────────────────────────
@@ -167,7 +171,9 @@ class ToolExecutor:
         if self._turn_id_getter is not None:
             try:
                 _turn_id = self._turn_id_getter()
-            except Exception:
+            except Exception as _mini_agent_exc:
+                from mini_agent.errors import log_exception
+                log_exception(_mini_agent_exc, where='mini_agent.tool_executor')
                 pass
 
         # [SYS-HOOKS] hook manager 引用在整个 batch 中复用（避免每次 tool call 重复查询）
@@ -185,7 +191,9 @@ class ToolExecutor:
                 try:
                     for _r in self._reminder_mgr.check_pre_tool(tc.name, tc.input):
                         self._inject_reminder(_r)
-                except Exception:
+                except Exception as _mini_agent_exc:
+                    from mini_agent.errors import log_exception
+                    log_exception(_mini_agent_exc, where='mini_agent.tool_executor')
                     pass
 
             # [SYS-HOOKS] PreToolUse：可阻断或修改工具输入
@@ -322,7 +330,9 @@ class ToolExecutor:
                                     },
                                     tool_name=tc.name,
                                 )
-                            except Exception:
+                            except Exception as _mini_agent_exc:
+                                from mini_agent.errors import log_exception
+                                log_exception(_mini_agent_exc, where='mini_agent.tool_executor')
                                 pass
 
             # [SYS-HOOKS] PostToolUse：可注入额外上下文（拼接到结果后）
@@ -411,7 +421,9 @@ class ToolExecutor:
                         ),
                     },
                 )
-            except Exception:
+            except Exception as _mini_agent_exc:
+                from mini_agent.errors import log_exception
+                log_exception(_mini_agent_exc, where='mini_agent.tool_executor')
                 pass
 
         return response.tool_calls, result_strs

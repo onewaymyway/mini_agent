@@ -313,7 +313,9 @@ class SessionManager:
                 meta = self._read_meta(path, fmt)
                 if meta:
                     metas.append(meta)
-            except Exception:
+            except Exception as _mini_agent_exc:
+                from mini_agent.errors import log_exception
+                log_exception(_mini_agent_exc, where='mini_agent.session')
                 pass
         return metas
 
@@ -568,5 +570,7 @@ def _flock(f) -> None:
     try:
         import msvcrt
         msvcrt.locking(f.fileno(), msvcrt.LK_NBLCK, 512)
-    except Exception:
+    except Exception as _mini_agent_exc:
+        from mini_agent.errors import log_exception
+        log_exception(_mini_agent_exc, where='mini_agent.session')
         pass

@@ -45,7 +45,9 @@ def _print_to_term(markup: str) -> None:
     try:
         from mini_agent.ui.terminal import term as _term
         _term.print(markup)
-    except Exception:
+    except Exception as _mini_agent_exc:
+        from mini_agent.errors import log_exception
+        log_exception(_mini_agent_exc, where='mini_agent.api.server')
         pass
 
 
@@ -199,14 +201,18 @@ class AgentRunner(threading.Thread):
                 if self._on_ready is not None:
                     try:
                         self._on_ready(agent)
-                    except Exception:
+                    except Exception as _mini_agent_exc:
+                        from mini_agent.errors import log_exception
+                        log_exception(_mini_agent_exc, where='mini_agent.api.server')
                         pass
             except Exception as e:
                 self.init_error = e
                 if self._on_crash is not None:
                     try:
                         self._on_crash(e)
-                    except Exception:
+                    except Exception as _mini_agent_exc:
+                        from mini_agent.errors import log_exception
+                        log_exception(_mini_agent_exc, where='mini_agent.api.server')
                         pass
                 return  # 构造失败，这条线程直接结束，不进入主循环（finally 仍会 set ready_event）
             finally:
@@ -230,7 +236,9 @@ class AgentRunner(threading.Thread):
             if self._on_crash is not None:
                 try:
                     self._on_crash(e)
-                except Exception:
+                except Exception as _mini_agent_exc:
+                    from mini_agent.errors import log_exception
+                    log_exception(_mini_agent_exc, where='mini_agent.api.server')
                     pass
 
     def _main_loop(self, bridge: AgentBridge, iq) -> None:
@@ -349,7 +357,9 @@ class AgentRunner(threading.Thread):
                         _summary = (result or "").strip()
                         _summary = _summary.split("\n")[0][:200]
                         _obj_exec.on_turn_done(turn_id, _summary)
-                    except Exception:
+                    except Exception as _mini_agent_exc:
+                        from mini_agent.errors import log_exception
+                        log_exception(_mini_agent_exc, where='mini_agent.api.server')
                         pass
 
                 # daemon 多用户架构 Phase 2：每轮成功对话后更新该用户的 last_contact/
@@ -385,7 +395,9 @@ class AgentRunner(threading.Thread):
                 if _obj_exec is not None and cmd.initiator in ("autonomous", "cron"):
                     try:
                         _obj_exec.on_turn_failed(turn_id, str(e))
-                    except Exception:
+                    except Exception as _mini_agent_exc:
+                        from mini_agent.errors import log_exception
+                        log_exception(_mini_agent_exc, where='mini_agent.api.server')
                         pass
             finally:
                 bridge.set_state("idle", turn_id=None)
@@ -432,7 +444,9 @@ class AgentRunner(threading.Thread):
                 # 是 Phase 4 之后才会真正用到的扩展点，目前没有处理逻辑，
                 # 静默忽略而不是报错——保持向前兼容，未来加新 msg_type 不需要
                 # 同步改这里的 if/elif 链。
-            except Exception:
+            except Exception as _mini_agent_exc:
+                from mini_agent.errors import log_exception
+                log_exception(_mini_agent_exc, where='mini_agent.api.server')
                 pass
 
     def _handle_session_crashed(self, payload: dict) -> None:
@@ -475,7 +489,9 @@ class AgentRunner(threading.Thread):
                     "user_id":    user_id,
                     "error":      error,
                 })
-        except Exception:
+        except Exception as _mini_agent_exc:
+            from mini_agent.errors import log_exception
+            log_exception(_mini_agent_exc, where='mini_agent.api.server')
             pass
 
     def _handle_session_summary(self, payload: dict) -> None:
@@ -507,7 +523,9 @@ class AgentRunner(threading.Thread):
             })
             recent = recent[-10:]  # 只保留最近 10 条，避免无限增长
             self._role_profile_mgr.update_profile(user_id, {"recent_sessions": recent})
-        except Exception:
+        except Exception as _mini_agent_exc:
+            from mini_agent.errors import log_exception
+            log_exception(_mini_agent_exc, where='mini_agent.api.server')
             pass
 
 
@@ -761,7 +779,9 @@ class HttpServer:
                         progress=f"{done}/{total}",
                         current_step=cur.description[:80] if cur else "",
                     )
-                except Exception:
+                except Exception as _mini_agent_exc:
+                    from mini_agent.errors import log_exception
+                    log_exception(_mini_agent_exc, where='mini_agent.api.server')
                     pass
 
             from mini_agent.evolution.objective_executor import ObjectiveExecutor

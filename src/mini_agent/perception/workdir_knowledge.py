@@ -146,7 +146,9 @@ def capture_environment_fingerprint(project_root: Path) -> dict:
                 except Exception:
                     continue
             fingerprint["key_deps"] = key_deps
-        except Exception:
+        except Exception as _mini_agent_exc:
+            from mini_agent.errors import log_exception
+            log_exception(_mini_agent_exc, where='mini_agent.perception.workdir_knowledge')
             pass
 
     return fingerprint
@@ -307,7 +309,9 @@ def ensure_project_meta(
         if snap.languages:
             root_language = snap.languages[0]
         entry_points = list(snap.key_files[:5])
-    except Exception:
+    except Exception as _mini_agent_exc:
+        from mini_agent.errors import log_exception
+        log_exception(_mini_agent_exc, where='mini_agent.perception.workdir_knowledge')
         pass
 
     meta = ProjectMeta(

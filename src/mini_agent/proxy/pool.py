@@ -82,7 +82,9 @@ class ProxyPool:
             while True:
                 try:
                     await self.refresh()
-                except Exception:
+                except Exception as _mini_agent_exc:
+                    from mini_agent.errors import log_exception
+                    log_exception(_mini_agent_exc, where='mini_agent.proxy.pool')
                     pass
                 await asyncio.sleep(self.refresh_interval_sec)
 

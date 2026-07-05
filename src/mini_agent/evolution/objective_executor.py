@@ -197,7 +197,9 @@ class ObjectiveExecutor:
                     for step in ex.steps:
                         if step.turn_id and step.status == "running":
                             self._turn_to_exec[step.turn_id] = (ex.execution_id, step.step_index)
-        except Exception:
+        except Exception as _mini_agent_exc:
+            from mini_agent.errors import log_exception
+            log_exception(_mini_agent_exc, where='mini_agent.evolution.objective_executor')
             pass
 
     def save(self) -> None:
@@ -425,7 +427,9 @@ class ObjectiveExecutor:
                 steps = self._llm_decompose_fn(objective)
                 if steps and isinstance(steps, list) and len(steps) >= 2:
                     return [str(s) for s in steps[:MAX_STEPS_PER_OBJECTIVE]]
-            except Exception:
+            except Exception as _mini_agent_exc:
+                from mini_agent.errors import log_exception
+                log_exception(_mini_agent_exc, where='mini_agent.evolution.objective_executor')
                 pass
 
         # 降级：单步执行
@@ -469,7 +473,9 @@ class ObjectiveExecutor:
                 step.started_at = time.time()
                 self._turn_to_exec[str(turn_id)] = (ex.execution_id, step_idx)
                 return True
-        except Exception:
+        except Exception as _mini_agent_exc:
+            from mini_agent.errors import log_exception
+            log_exception(_mini_agent_exc, where='mini_agent.evolution.objective_executor')
             pass
         return False
 
@@ -478,7 +484,9 @@ class ObjectiveExecutor:
         if self._on_progress_fn:
             try:
                 self._on_progress_fn(ex)
-            except Exception:
+            except Exception as _mini_agent_exc:
+                from mini_agent.errors import log_exception
+                log_exception(_mini_agent_exc, where='mini_agent.evolution.objective_executor')
                 pass
 
     def _on_objective_completed(self, ex: ObjectiveExecution) -> None:
@@ -493,7 +501,9 @@ class ObjectiveExecutor:
                 "steps": len(ex.steps),
                 "duration": ex.finished_at - ex.started_at,
             })
-        except Exception:
+        except Exception as _mini_agent_exc:
+            from mini_agent.errors import log_exception
+            log_exception(_mini_agent_exc, where='mini_agent.evolution.objective_executor')
             pass
 
     def _on_objective_failed(self, ex: ObjectiveExecution) -> None:
@@ -507,7 +517,9 @@ class ObjectiveExecutor:
                 "title": ex.objective_title,
                 "reason": ex.progress_notes,
             })
-        except Exception:
+        except Exception as _mini_agent_exc:
+            from mini_agent.errors import log_exception
+            log_exception(_mini_agent_exc, where='mini_agent.evolution.objective_executor')
             pass
 
 

@@ -173,7 +173,9 @@ class ResourceArbiter:
                                     paths.add(str(Path(val).resolve()))
                                 except Exception:
                                     paths.add(val)
-        except Exception:
+        except Exception as _mini_agent_exc:
+            from mini_agent.errors import log_exception
+            log_exception(_mini_agent_exc, where='mini_agent.evolution.resource_arbiter')
             pass
         return paths
 
@@ -199,7 +201,9 @@ class ResourceArbiter:
             # 也累加到 used_today（总计数）
             rb.used_today += max(0, tokens)
             save_self_profile(self._paths, profile)
-        except Exception:
+        except Exception as _mini_agent_exc:
+            from mini_agent.errors import log_exception
+            log_exception(_mini_agent_exc, where='mini_agent.evolution.resource_arbiter')
             pass
 
 
@@ -218,7 +222,9 @@ def append_activity_digest(paths: "AgentPaths", record: dict) -> None:
         with open(digest_path, "a", encoding="utf-8") as f:
             f.write(json.dumps(entry, ensure_ascii=False))
             f.write("\n")
-    except Exception:
+    except Exception as _mini_agent_exc:
+        from mini_agent.errors import log_exception
+        log_exception(_mini_agent_exc, where='mini_agent.evolution.resource_arbiter')
         pass
 
 
@@ -243,7 +249,9 @@ def read_activity_digest(
                         records.append(rec)
                 except Exception:
                     continue
-    except Exception:
+    except Exception as _mini_agent_exc:
+        from mini_agent.errors import log_exception
+        log_exception(_mini_agent_exc, where='mini_agent.evolution.resource_arbiter')
         pass
     return records
 

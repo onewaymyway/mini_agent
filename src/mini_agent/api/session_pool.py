@@ -659,7 +659,9 @@ class SessionAgentPool:
                         "turns":      meta.turns,
                         "duration_seconds": time.time() - entry.created_at,
                     }
-        except Exception:
+        except Exception as _mini_agent_exc:
+            from mini_agent.errors import log_exception
+            log_exception(_mini_agent_exc, where='mini_agent.api.session_pool')
             pass
 
         # 停止 Runner（先发 stop 信号，再 join 等它真正退出）
@@ -667,7 +669,9 @@ class SessionAgentPool:
             if entry.runner and entry.runner.is_alive():
                 entry.runner.stop()
                 entry.runner.join(timeout=5)
-        except Exception:
+        except Exception as _mini_agent_exc:
+            from mini_agent.errors import log_exception
+            log_exception(_mini_agent_exc, where='mini_agent.api.session_pool')
             pass
 
         # daemon 多用户架构 Phase 4：向 Self 上报这次对话的摘要。
@@ -729,7 +733,9 @@ class SessionAgentPool:
             try:
                 if entry.agent is not None:
                     entry.agent.save_session()
-            except Exception:
+            except Exception as _mini_agent_exc:
+                from mini_agent.errors import log_exception
+                log_exception(_mini_agent_exc, where='mini_agent.api.session_pool')
                 pass
 
             with self._lock:

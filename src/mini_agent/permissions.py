@@ -607,7 +607,9 @@ def _get_http_gate():
         # 只有 broadcaster 已绑定 asyncio loop（即 server 已 start）才算激活
         if bridge.broadcaster._loop is not None:
             return bridge.permission_gate
-    except Exception:
+    except Exception as _mini_agent_exc:
+        from mini_agent.errors import log_exception
+        log_exception(_mini_agent_exc, where='mini_agent.permissions')
         pass
     return None
 
@@ -619,6 +621,8 @@ def _get_current_turn_id() -> str:
         bridge = get_bridge()
         if bridge.agent:
             return getattr(bridge.agent, "_http_turn_id", "")
-    except Exception:
+    except Exception as _mini_agent_exc:
+        from mini_agent.errors import log_exception
+        log_exception(_mini_agent_exc, where='mini_agent.permissions')
         pass
     return ""

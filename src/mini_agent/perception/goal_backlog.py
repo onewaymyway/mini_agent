@@ -303,7 +303,9 @@ class GoalBacklog:
                 wt = workdir_knowledge.get_work_thread(obj.work_thread_ref)
                 if wt:
                     next_suggested = wt.next_suggested or ""
-            except Exception:
+            except Exception as _mini_agent_exc:
+                from mini_agent.errors import log_exception
+                log_exception(_mini_agent_exc, where='mini_agent.perception.goal_backlog')
                 pass
 
         # 构建 Task 描述
@@ -348,7 +350,9 @@ class GoalBacklog:
                 text = result.strip()
                 if text:
                     return text
-        except Exception:
+        except Exception as _mini_agent_exc:
+            from mini_agent.errors import log_exception
+            log_exception(_mini_agent_exc, where='mini_agent.perception.goal_backlog')
             pass
         return None
 

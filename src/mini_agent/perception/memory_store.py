@@ -165,9 +165,13 @@ class MemoryStore(MemoryBackend):
                 try:
                     data = json.loads(line)
                     self._entries.append(MemoryEntry(**data))
-                except Exception:
+                except Exception as _mini_agent_exc:
+                    from mini_agent.errors import log_exception
+                    log_exception(_mini_agent_exc, where='mini_agent.perception.memory_store')
                     pass
-        except Exception:
+        except Exception as _mini_agent_exc:
+            from mini_agent.errors import log_exception
+            log_exception(_mini_agent_exc, where='mini_agent.perception.memory_store')
             pass
 
     def _append_to_disk(self, entry: MemoryEntry) -> None:
@@ -175,7 +179,9 @@ class MemoryStore(MemoryBackend):
             self._path.parent.mkdir(parents=True, exist_ok=True)
             with self._path.open("a", encoding="utf-8") as f:
                 f.write(json.dumps(asdict(entry), ensure_ascii=False) + "\n")
-        except Exception:
+        except Exception as _mini_agent_exc:
+            from mini_agent.errors import log_exception
+            log_exception(_mini_agent_exc, where='mini_agent.perception.memory_store')
             pass
 
     def _rewrite_disk(self) -> None:
@@ -187,7 +193,9 @@ class MemoryStore(MemoryBackend):
                 for entry in self._entries:
                     f.write(json.dumps(asdict(entry), ensure_ascii=False) + "\n")
             tmp.replace(self._path)
-        except Exception:
+        except Exception as _mini_agent_exc:
+            from mini_agent.errors import log_exception
+            log_exception(_mini_agent_exc, where='mini_agent.perception.memory_store')
             pass
 
     # ── 评分 ─────────────────────────────────────────────────────────────────

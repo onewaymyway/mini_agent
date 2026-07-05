@@ -465,7 +465,9 @@ class Terminal:
         try:
             self._console._width = None
             self._console._height = None
-        except Exception:
+        except Exception as _mini_agent_exc:
+            from mini_agent.errors import log_exception
+            log_exception(_mini_agent_exc, where='mini_agent.ui.terminal')
             pass
 
         app = self._active_ptk_app
@@ -483,7 +485,9 @@ class Terminal:
             self._resize_unsettled = False
             try:
                 app.invalidate()
-            except Exception:
+            except Exception as _mini_agent_exc:
+                from mini_agent.errors import log_exception
+                log_exception(_mini_agent_exc, where='mini_agent.ui.terminal')
                 pass
         elif not self._input_blocking and not self._refresh_paused.is_set():
             # 不在任何阻塞输入路径里（agent 正在运行/状态栏可见）。
@@ -548,13 +552,17 @@ class Terminal:
         try:
             self._console._width = None
             self._console._height = None
-        except Exception:
+        except Exception as _mini_agent_exc:
+            from mini_agent.errors import log_exception
+            log_exception(_mini_agent_exc, where='mini_agent.ui.terminal')
             pass
         # 2. 转发给之前的 handler（如最初进程启动时已有的 handler）
         if callable(self._prev_sigwinch):
             try:
                 self._prev_sigwinch(signum, frame)
-            except Exception:
+            except Exception as _mini_agent_exc:
+                from mini_agent.errors import log_exception
+                log_exception(_mini_agent_exc, where='mini_agent.ui.terminal')
                 pass
         # 3. 调度一次"稳定后再确认"的延迟重绘（debounce）。真正的重绘
         #    动作（以及对 _bar_drawn 的处理）全部放在 settle 阶段，
@@ -973,7 +981,9 @@ class Terminal:
             if _listener.active:
                 _listener.stop()
                 self._key_listener_was_active = True
-        except Exception:
+        except Exception as _mini_agent_exc:
+            from mini_agent.errors import log_exception
+            log_exception(_mini_agent_exc, where='mini_agent.ui.terminal')
             pass
         # 1. 告知所有后台线程停止向队列投递消息
         self._refresh_paused.set()
@@ -1035,7 +1045,9 @@ class Terminal:
             try:
                 from mini_agent.ui.raw_key_listener import get_listener as _get_key_listener
                 _get_key_listener().start()
-            except Exception:
+            except Exception as _mini_agent_exc:
+                from mini_agent.errors import log_exception
+                log_exception(_mini_agent_exc, where='mini_agent.ui.terminal')
                 pass
 
     # ═══════════════════════════════════════════════════════════════════════
@@ -1384,7 +1396,9 @@ class Terminal:
                             sys.stdout.flush()
                             self._bar_suspended = False
                             self._draw_bar()
-            except Exception:
+            except Exception as _mini_agent_exc:
+                from mini_agent.errors import log_exception
+                log_exception(_mini_agent_exc, where='mini_agent.ui.terminal')
                 pass
 
         elif kind == "_force_end_stream":
@@ -1554,7 +1568,9 @@ class Terminal:
                         if old != new_id:
                             sys.stdout.write(f"\n── focus: {new_id} ──\n")
                             sys.stdout.flush()
-            except Exception:
+            except Exception as _mini_agent_exc:
+                from mini_agent.errors import log_exception
+                log_exception(_mini_agent_exc, where='mini_agent.ui.terminal')
                 pass
 
         elif kind == "_force_end_stream":
@@ -2006,7 +2022,9 @@ class Terminal:
                                     self._focus_log_offset = offset + len(new_lines)
                             if new_lines:
                                 self._q.put(_Msg("_focus_lines", new_lines))
-                except Exception:
+                except Exception as _mini_agent_exc:
+                    from mini_agent.errors import log_exception
+                    log_exception(_mini_agent_exc, where='mini_agent.ui.terminal')
                     pass
 
             # 在 refresh_thread 中拉取内容（可以调用任意函数，不写屏幕）
@@ -2214,7 +2232,9 @@ class Terminal:
             # （_do_flush 还没机会清空它），下一个 flush 周期或
             # _exit_input_mode() 会重新尝试，不会丢失。
             fut.result(timeout=5.0)
-        except Exception:
+        except Exception as _mini_agent_exc:
+            from mini_agent.errors import log_exception
+            log_exception(_mini_agent_exc, where='mini_agent.ui.terminal')
             pass
 
     # ── 用户输入底层 ──────────────────────────────────────────────────────
