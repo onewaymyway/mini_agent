@@ -40,14 +40,23 @@ llm/debug_logger.py — LLM 请求/响应调试日志
       "raw": {                         # provider 返回的原始内容
         "text":      "<think>...</think>\\n<tool_use>...</tool_use>",
         "reasoning": "",               # 流式 reasoning_content（若有）
+        "refusal":   "",               # 安全/合规拒答文本（message.refusal，若有）
         "tool_calls": [],              # SDK 原生 tool_calls（通常为空）
-        "stop_reason": "end_turn"
+        "stop_reason": "end_turn",
+        "finish_reason_raw": "stop",   # provider 原始 finish_reason（映射前）
+        "empty_output_with_tokens": false  # text/reasoning/tool_calls/refusal 均为空
+                                            # 但 output_tokens>0 时为 true，提示内容在
+                                            # 解析链路中丢失，需要排查 refusal /
+                                            # reasoning_content 提取或内容过滤
       },
       "processed": {                   # postprocess 后的最终结果
         "text":       "好的，我来创建文件。",   # 去掉 <tool_use> 和 <think> 后
         "reasoning":  "让我思考一下...",        # 从 <think> 提取
+        "refusal":    "",
         "tool_calls": [{"name":"create_file","input":{...}}],
-        "stop_reason": "tool_use"
+        "stop_reason": "tool_use",
+        "finish_reason_raw": "tool_calls",
+        "empty_output_with_tokens": false
       },
       "usage": {
         "input_tokens":  150,
@@ -207,16 +216,31 @@ class LLMDebugLogger:
                 for t in getattr(resp, "tool_calls", [])
             ]
             usage = resp.usage
+            text = resp.text or ""
+            reasoning = getattr(resp, "reasoning", "") or ""
+            refusal = getattr(resp, "refusal", "") or ""
             return {
-                "text":        self._truncate(resp.text or ""),
-                "reasoning":   self._truncate(getattr(resp, "reasoning", "") or ""),
+                "text":        self._truncate(text),
+                "reasoning":   self._truncate(reasoning),
+                "refusal":     self._truncate(refusal),
                 "tool_calls":  tc,
                 "stop_reason": resp.stop_reason,
+                # provider 原始 finish_reason（映射前）。_map_finish() 会把
+                # "content_filter" 也归并成 "end_turn"，只看 stop_reason 无法
+                # 判断内容是否被安全过滤——这里保留原始值便于定位。
+                "finish_reason_raw": getattr(resp, "finish_reason_raw", ""),
                 "usage": {
                     "input_tokens":  usage.input_tokens,
                     "output_tokens": usage.output_tokens,
                     "total_tokens":  usage.total_tokens,
                 },
+                # text/reasoning/tool_calls/refusal 全空，但 output_tokens>0，
+                # 说明生成的内容在解析链路中丢失了（常见原因：refusal 未提取、
+                # reasoning_content 字段名对不上、或被网关过滤）。
+                "empty_output_with_tokens": (
+                    not text and not reasoning and not tc and not refusal
+                    and usage.output_tokens > 0
+                ),
             }
 
         entry = {

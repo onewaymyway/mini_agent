@@ -64,6 +64,8 @@ class OpenAIProvider(ProviderMixin, LLMClient):
         # completions.stream() is a context manager and must not receive stream=True
         kwargs.pop("stream", None)
         collected_text: list[str] = []
+        collected_reasoning: list[str] = []
+        collected_refusal: list[str] = []
         collected_tool_calls: dict[int, dict] = {}
 
         try:
@@ -81,6 +83,19 @@ class OpenAIProvider(ProviderMixin, LLMClient):
                         if delta.content:
                             on_token(delta.content)
                             collected_text.append(delta.content)
+                        # 推理 token（reasoning_content）：部分兼容网关的 thinking
+                        # 模式会走单独的 delta 字段，不提取的话这部分 output_tokens
+                        # 会"凭空消失"（text 和 reasoning 都是空的，但 usage 里有数）。
+                        reasoning_delta = (
+                            getattr(delta, "reasoning_content", None)
+                            or getattr(delta, "reasoning", None)
+                        )
+                        if reasoning_delta:
+                            collected_reasoning.append(reasoning_delta)
+                        # 安全/合规拒答 delta：同非流式路径的 message.refusal。
+                        refusal_delta = getattr(delta, "refusal", None)
+                        if refusal_delta:
+                            collected_refusal.append(refusal_delta)
                         for tc_delta in getattr(delta, "tool_calls", None) or []:
                             idx = tc_delta.index
                             if idx not in collected_tool_calls:
@@ -102,10 +117,21 @@ class OpenAIProvider(ProviderMixin, LLMClient):
             total_tokens=getattr(final.usage, "total_tokens", 0),
         )
         tool_calls = self._parse_tool_calls_stream(collected_tool_calls)
-        finish = getattr(final.choices[0], "finish_reason", "stop") if final.choices else "stop"
+        finish_raw = getattr(final.choices[0], "finish_reason", "stop") if final.choices else "stop"
+
+        # 兜底：流式增量里没读到 refusal delta，但最终 completion 的
+        # message.refusal 仍可能非空（有些网关只在 final completion 里给出）。
+        final_refusal = "".join(collected_refusal)
+        if not final_refusal and final.choices:
+            final_refusal = getattr(final.choices[0].message, "refusal", None) or ""
+
         return LLMResponse(
             text="".join(collected_text), tool_calls=tool_calls,
-            usage=usage, stop_reason=self._map_finish(finish),
+            usage=usage,
+            reasoning="".join(collected_reasoning),
+            refusal=final_refusal,
+            stop_reason=self._map_finish(finish_raw),
+            finish_reason_raw=finish_raw,
         )
 
     def format_tools(self, tools: list[ToolSchema]) -> list[dict]:
@@ -147,10 +173,25 @@ class OpenAIProvider(ProviderMixin, LLMClient):
     def _parse_response(self, resp) -> LLMResponse:
         choice = resp.choices[0] if resp.choices else None
         text = ""
+        reasoning = ""
+        refusal = ""
         tool_calls: list[ToolCall] = []
         if choice:
-            text = choice.message.content or ""
-            for tc in getattr(choice.message, "tool_calls", None) or []:
+            msg = choice.message
+            text = msg.content or ""
+            # 安全/合规拒答：OpenAI 兼容协议里模型拒答时 content 为 None，
+            # 实际拒答文本在 message.refusal 里——不提取的话，output_tokens
+            # 会显示消耗了 token，但 text 却是空的（本次要修的现象之一）。
+            refusal = getattr(msg, "refusal", None) or ""
+            # 思维链/推理内容：不同网关字段名不完全一致，常见的是
+            # reasoning_content（DeepSeek/大部分兼容网关）或 reasoning，
+            # 都尝试读取；读不到则保持空字符串。
+            reasoning = (
+                getattr(msg, "reasoning_content", None)
+                or getattr(msg, "reasoning", None)
+                or ""
+            )
+            for tc in getattr(msg, "tool_calls", None) or []:
                 tool_calls.append(ToolCall(
                     id=tc.id, name=tc.function.name,
                     input=json.loads(tc.function.arguments or "{}"),
@@ -160,9 +201,14 @@ class OpenAIProvider(ProviderMixin, LLMClient):
             output_tokens=getattr(resp.usage, "completion_tokens", 0),
             total_tokens=getattr(resp.usage, "total_tokens", 0),
         )
-        finish = getattr(choice, "finish_reason", "stop") if choice else "stop"
-        return LLMResponse(text=text, tool_calls=tool_calls, usage=usage,
-                           stop_reason=self._map_finish(finish), raw=resp)
+        finish_raw = getattr(choice, "finish_reason", "stop") if choice else "stop"
+        return LLMResponse(
+            text=text, tool_calls=tool_calls, usage=usage,
+            reasoning=reasoning, refusal=refusal,
+            stop_reason=self._map_finish(finish_raw),
+            finish_reason_raw=finish_raw,
+            raw=resp,
+        )
 
     @staticmethod
     def _parse_tool_calls_stream(collected: dict) -> list[ToolCall]:

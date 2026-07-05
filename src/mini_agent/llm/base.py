@@ -57,6 +57,14 @@ class LLMResponse:
     usage: LLMUsage                    # token 用量
     stop_reason: str                   # "end_turn" | "tool_use" | "max_tokens" | "stop"
     reasoning: str = ""                # 思维链内容（CoT），仅部分模型支持（如 NVIDIA reasoning 模型）
+    refusal: str = ""                  # 安全/合规拒答内容（OpenAI 兼容协议 message.refusal）。
+                                        # 非空时说明 output_tokens 消耗在了拒答文本上，而不是
+                                        # 普通 content——这是 "output_tokens>0 但 text 为空"
+                                        # 最常见的原因之一，务必在日志/上层逻辑里单独处理。
+    finish_reason_raw: str = ""        # provider 原始 finish_reason（映射前），用于定位
+                                        # "content_filter" 被误判为正常结束（stop/end_turn）
+                                        # 等场景——_map_finish() 会把 content_filter 也归并成
+                                        # stop，仅看 stop_reason 无法区分内容是否被过滤。
     raw: Any = field(default=None, repr=False)   # 原始 SDK 响应（调试用）
 
     @property
@@ -67,6 +75,15 @@ class LLMResponse:
     def is_complete(self) -> bool:
         """没有工具调用，即模型已给出最终文本答复。"""
         return not self.has_tool_calls
+
+    @property
+    def is_empty_output(self) -> bool:
+        """
+        text / reasoning / tool_calls 均为空，但仍可能消耗了 output_tokens
+        （常见于安全拒答被丢弃、reasoning token 未解析、或被内容过滤）。
+        供上层（重试策略、调试面板）快速判定"疑似内容丢失"场景。
+        """
+        return not self.text and not self.reasoning and not self.tool_calls and not self.refusal
 
 
 # ── 工具 Schema 类型 ──────────────────────────────────────────────────────────
