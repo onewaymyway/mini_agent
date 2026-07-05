@@ -14,6 +14,7 @@ cli/commands — slash 命令处理模块包
   debug_cmd   — /debug system|history|all|save（打印/导出 system prompt 与 history，便于分析调试）
   platform    — /platform status|filtered|reload（可加载对象的平台/tag 过滤策略查看与重载）
   roles       — /role list|use|show|exit|status|reload（角色扮演 Persona 系统）
+  proxy       — /proxy status|refresh|sources（代理订阅池：抓取/验证/查看可用节点，懒加载于 repl.py）
 """
 
 from mini_agent.cli.commands.skills import handle_skills_list, handle_skill_cmd

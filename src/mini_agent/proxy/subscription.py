@@ -179,37 +179,95 @@ class URLSubscriptionSource(SubscriptionSource):
 
 
 class MiBei77Source(SubscriptionSource):
-    """mibei77.com 站点的抓取器示例。
+    """mibei77.com 站点的抓取器。
 
-    该站点页面本身是 HTML,里面嵌了当日订阅链接(链接内容经常变化),
-    所以这里分两步: 1) 抓取页面找到当日订阅直链 2) 再 GET 该直链拿真正的节点列表。
-    具体的页面解析规则需要跟着网站改版调整,这里给出可扩展的骨架和注释,
-    不假设固定的 CSS 选择器(避免网站一改版就失效导致误报"能用")。
+    真实站点结构(2026年观察到的版式,可能随改版变化):
+      1. 首页 https://www.mibei77.com/ 是一个文章列表,每天发一篇标题形如
+         "2026年07月05日免费精选节点203条 ..." 的帖子,链接形如
+         https://www.mibei77.com/340.html。首页本身不包含订阅直链。
+      2. 需要先从首页找到"标题里带日期 + 免费精选节点"的帖子中日期最新的一篇
+         (不能简单取列表第一条,因为顶部可能有置顶的无关广告/资讯贴)。
+      3. 进入该帖子正文后,订阅直链是形如
+         https://mm.mibei77.com/202607/07.0564bacfr.txt (v2ray/小火箭/winxray 通用)
+         https://mm.mibei77.com/202607/0705Clashold.yaml (Clash Meta 专用格式)
+         这两种链接。我们只处理前者(.txt,内容是 ss/vmess/vless/trojan 链接列表或
+         base64 blob),因为 Clash yaml 里的节点写法和这里的 URI 解析器不兼容。
     """
 
     name = "mibei77"
 
+    _POST_LINK_RE = re.compile(
+        r'href="(https://www\.mibei77\.com/\d+\.html)"[^>]*>((?:(?!</a>).)*)</a>',
+        re.S,
+    )
+    _DATE_RE = re.compile(r"(\d{4})年(\d{2})月(\d{2})日免费精选节点")
+    _SUB_LINK_RE = re.compile(r"https://mm\.mibei77\.com/\S+?\.(?:txt|yaml|yml)")
+
     def __init__(self, page_url: str = "https://www.mibei77.com/"):
         self.page_url = page_url
+        self._headers = {
+            "User-Agent": (
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+            ),
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+            "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
+            "Referer": "https://www.mibei77.com/",
+        }
+
+    def _find_latest_post_url(self, homepage_html: str) -> str | None:
+        """在首页 HTML 里找出标题含日期且包含"免费精选节点"的帖子,取日期最新的一个。
+
+        不依赖"列表第一条 = 最新"这个假设,因为首页可能有置顶的无关内容
+        排在真正最新的节点帖前面(实测确实如此)。
+        """
+        candidates: list[tuple[tuple[str, str, str], str]] = []
+        for m in self._POST_LINK_RE.finditer(homepage_html):
+            url, inner_text = m.group(1), m.group(2)
+            date_m = self._DATE_RE.search(inner_text)
+            if date_m:
+                candidates.append((date_m.groups(), url))
+        if not candidates:
+            return None
+        candidates.sort(key=lambda c: c[0], reverse=True)  # 按 (年,月,日) 字符串排序,最新的在前
+        return candidates[0][1]
 
     async def fetch(self, client: httpx.AsyncClient) -> list[ProxyNode]:
-        resp = await client.get(self.page_url, timeout=15.0)
+        import logging
+
+        log = logging.getLogger(__name__)
+        resp = await client.get(self.page_url, headers=self._headers, timeout=15.0)
         resp.raise_for_status()
-        html = resp.text
-        # 找出页面里形如 https://xxx/xxx.txt 或包含 'sub' 关键字的直链
-        candidate_links = re.findall(r'https?://[^\s"\'<>]+\.(?:txt|yaml|yml)', html)
-        candidate_links += re.findall(r'https?://[^\s"\'<>]*sub[^\s"\'<>]*', html)
+        post_url = self._find_latest_post_url(resp.text)
+        if not post_url:
+            log.warning("[mibei77] 首页没找到匹配 '日期+免费精选节点' 的帖子链接,网站版式可能变了")
+            return []
+        log.info("[mibei77] 定位到最新帖子: %s", post_url)
+
+        post_resp = await client.get(post_url, headers=self._headers, timeout=15.0)
+        post_resp.raise_for_status()
+        sub_links = list(dict.fromkeys(self._SUB_LINK_RE.findall(post_resp.text)))
+        if not sub_links:
+            log.warning("[mibei77] 帖子正文里没找到 mm.mibei77.com 订阅直链,页面结构可能变了")
+            return []
+        log.info("[mibei77] 找到 %d 个订阅直链: %s", len(sub_links), sub_links)
+
+        # 优先用 .txt(通用 URI 列表),yaml 是 Clash 专用格式,这里的解析器不支持
+        txt_links = [l for l in sub_links if l.endswith(".txt")]
+        chosen_links = txt_links or sub_links
+
         nodes: list[ProxyNode] = []
-        seen = set()
-        for link in dict.fromkeys(candidate_links):  # 去重保序
-            if link in seen:
-                continue
-            seen.add(link)
+        for link in chosen_links:
             try:
-                sub_resp = await client.get(link, timeout=15.0)
+                sub_resp = await client.get(link, headers=self._headers, timeout=15.0)
                 if sub_resp.status_code == 200:
-                    nodes.extend(parse_subscription_text(sub_resp.text))
-            except Exception:
+                    parsed = parse_subscription_text(sub_resp.text)
+                    log.info("[mibei77] %s -> %d 个节点", link, len(parsed))
+                    nodes.extend(parsed)
+                else:
+                    log.warning("[mibei77] 订阅链接返回 %d: %s", sub_resp.status_code, link)
+            except Exception as e:
+                log.warning("[mibei77] 拉取订阅链接失败 %s: %s", link, e)
                 continue
         return nodes
 

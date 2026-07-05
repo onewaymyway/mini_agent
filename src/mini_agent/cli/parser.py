@@ -69,6 +69,11 @@ def build_parser() -> argparse.ArgumentParser:
               /debug history [full] [n]   Print history as a table (last n msgs; 'full' = no truncation)
               /debug all [n]              Print system + history together
               /debug save [path]          Dump system + full history to a Markdown file for offline analysis
+              /proxy                      Show proxy pool status (shortcut for /proxy status)
+              /proxy status               Show latest refreshed proxy list (latency-sorted)
+              /proxy refresh              Fetch subscriptions + validate nodes now (blocking, may take a while)
+              /proxy sources              List configured subscription sources
+              /proxy sources add-mibei77  Add mibei77.com as a subscription source
               exit / quit        Exit
         """),
     )
