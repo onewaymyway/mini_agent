@@ -74,6 +74,9 @@ def build_parser() -> argparse.ArgumentParser:
               /proxy refresh              Fetch subscriptions + validate nodes now (blocking, may take a while)
               /proxy sources              List configured subscription sources
               /proxy sources add-mibei77  Add mibei77.com as a subscription source
+              /proxy sources add-discovered  Add discovered_sources.json as a source (populated by agent/skill)
+              /proxy integration          Show proxy integration switches (all default OFF)
+              /proxy integration set <key> <value>  Toggle a switch, e.g. llm_use_proxy true
               exit / quit        Exit
         """),
     )

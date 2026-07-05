@@ -2402,6 +2402,7 @@ _COMMANDS: list[tuple[str, str, list[str]]] = [
     ("/digest",      "Show autonomous activity summary (last 24h)",  []),
     ("/debug",       "Print/export system prompt & history for debugging", ["system", "history", "all", "save"]),
     ("/cron",        "Manage periodic daemon tasks",                 ["list", "status", "enable", "disable", "run", "add", "remove", "set-schedule"]),
+    ("/proxy",       "Proxy pool: subscriptions/validation/integration switches", ["status", "refresh", "sources", "integration"]),
     ("/exit",        "Exit mini-agent",                              []),
     ("/quit",        "Exit mini-agent",                              []),
 ]
