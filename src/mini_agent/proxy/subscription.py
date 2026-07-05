@@ -178,6 +178,82 @@ class URLSubscriptionSource(SubscriptionSource):
         return parse_subscription_text(resp.text)
 
 
+class DiscoveredSource(SubscriptionSource):
+    """读取 `discovered_sources.json` 里由 agent/skill 自动发现并写入的订阅地址。
+
+    设计目的: 让"抓订阅源地址"这件事本身也能交给 agent 去做(比如一个专门的
+    skill 去搜索/浏览网页找当天可用的订阅链接),skill 只需要把结果追加写入
+    这个文件,不需要碰 sources.json 或懂 proxy_ctl 内部实现,两边解耦。
+
+    文件格式(list[dict]):
+        [{"name": "xxx", "url": "https://...", "discovered_at": 1234567890.0,
+          "discovered_by": "skill_name (可选)"}]
+
+    每次 fetch 时会用当前的 URL 抓取内容并解析成节点,文件本身只是"地址列表",
+    不缓存节点内容。
+    """
+
+    name = "discovered"
+
+    def __init__(self, file_path):
+        self.file_path = file_path
+
+    def _load_entries(self) -> list[dict]:
+        from pathlib import Path
+
+        p = Path(self.file_path)
+        if not p.exists():
+            return []
+        try:
+            return json.loads(p.read_text(encoding="utf-8"))
+        except Exception:
+            return []
+
+    async def fetch(self, client: httpx.AsyncClient) -> list[ProxyNode]:
+        import logging
+
+        log = logging.getLogger(__name__)
+        entries = self._load_entries()
+        nodes: list[ProxyNode] = []
+        for e in entries:
+            url = e.get("url")
+            if not url:
+                continue
+            try:
+                resp = await client.get(url, headers={"User-Agent": "clash-verge/1.0"}, timeout=15.0)
+                resp.raise_for_status()
+                parsed = parse_subscription_text(resp.text)
+                log.info("[discovered:%s] %s -> %d 个节点", e.get("name", "?"), url, len(parsed))
+                nodes.extend(parsed)
+            except Exception as ex:
+                log.warning("[discovered:%s] 拉取失败 %s: %s", e.get("name", "?"), url, ex)
+        return nodes
+
+    @staticmethod
+    def append_entry(file_path, name: str, url: str, discovered_by: str = "") -> None:
+        """供 agent/skill 调用: 把新发现的订阅地址追加进 discovered_sources.json。
+        按 (name, url) 去重,重复调用不会产生重复条目。"""
+        import time as _time
+        from pathlib import Path
+
+        p = Path(file_path)
+        entries = []
+        if p.exists():
+            try:
+                entries = json.loads(p.read_text(encoding="utf-8"))
+            except Exception:
+                entries = []
+        key = (name, url)
+        if any((e.get("name"), e.get("url")) == key for e in entries):
+            return
+        entries.append({
+            "name": name, "url": url,
+            "discovered_at": _time.time(), "discovered_by": discovered_by,
+        })
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(json.dumps(entries, indent=2, ensure_ascii=False), encoding="utf-8")
+
+
 class MiBei77Source(SubscriptionSource):
     """mibei77.com 站点的抓取器。
 
@@ -272,17 +348,84 @@ class MiBei77Source(SubscriptionSource):
         return nodes
 
 
-async def fetch_all(sources: list[SubscriptionSource]) -> list[ProxyNode]:
+async def fetch_all(sources: list[SubscriptionSource], return_stats: bool = False):
     async with httpx.AsyncClient(follow_redirects=True) as client:
         all_nodes: list[ProxyNode] = []
+        per_source_counts: dict[str, int] = {}
         for src in sources:
             try:
-                all_nodes.extend(await src.fetch(client))
+                fetched = await src.fetch(client)
             except Exception:
                 # 单个订阅源失败不应该影响其它源
-                continue
-        # 按 key 去重
+                fetched = []
+            per_source_counts[getattr(src, "name", src.__class__.__name__)] = len(fetched)
+            all_nodes.extend(fetched)
+        # 按 key(protocol+server+port) 去重: 同一个真实节点常常被多个订阅源
+        # 重复收录(不同站点转发同一批公共节点是常态),验证前先去重能显著减少
+        # 重复的本地代理进程/网络请求开销。后出现的同 key 节点会覆盖前面的
+        # (通常意味着"更新的订阅源",名字/参数更可能是最新的)。
         dedup: dict[str, ProxyNode] = {}
         for n in all_nodes:
             dedup[n.key()] = n
-        return list(dedup.values())
+        deduped = list(dedup.values())
+        if return_stats:
+            return deduped, {
+                "raw_total": len(all_nodes),
+                "deduped_total": len(deduped),
+                "duplicates_removed": len(all_nodes) - len(deduped),
+                "per_source": per_source_counts,
+            }
+        return deduped
+
+
+# 订阅源类型注册表: type 字符串 -> (entry: dict, paths) -> SubscriptionSource | None
+# 新增一种订阅源类型时,只需要在这里注册一个工厂函数,不需要改 proxy_ctl.py /
+# cli/commands/proxy.py 里构造 sources 列表的逻辑,做到"新增来源方式"和
+# "调用来源方式"两边解耦,方便以后接入更多站点或抓取方式(包括未来可能新增的
+# 一个专门"发现订阅源"的 skill,让它产出的地址通过 "discovered" 类型接入)。
+SOURCE_TYPE_REGISTRY: dict[str, Any] = {}
+
+
+def register_source_type(type_name: str):
+    """装饰器: 注册一个 {"type": type_name, ...} 配置条目 -> SubscriptionSource 的工厂函数。
+
+    工厂函数签名: (entry: dict, paths: AgentPaths | None) -> SubscriptionSource | None
+    返回 None 表示这个条目应该被跳过(比如缺少必需字段)。
+    """
+
+    def _decorator(fn):
+        SOURCE_TYPE_REGISTRY[type_name] = fn
+        return fn
+
+    return _decorator
+
+
+def build_source_from_entry(entry: dict, paths=None) -> "SubscriptionSource | None":
+    """根据 sources.json 里一条配置构造对应的 SubscriptionSource。未知 type 返回 None
+    并留给调用方决定是否警告,不在这里抛异常影响其它源的构造。"""
+    factory = SOURCE_TYPE_REGISTRY.get(entry.get("type"))
+    if factory is None:
+        return None
+    return factory(entry, paths)
+
+
+@register_source_type("url")
+def _build_url_source(entry: dict, paths=None) -> "SubscriptionSource | None":
+    if "url" not in entry:
+        return None
+    return URLSubscriptionSource(entry.get("name", entry["url"]), entry["url"])
+
+
+@register_source_type("mibei77")
+def _build_mibei77_source(entry: dict, paths=None) -> "SubscriptionSource | None":
+    return MiBei77Source(entry.get("page_url", "https://www.mibei77.com/"))
+
+
+@register_source_type("discovered")
+def _build_discovered_source(entry: dict, paths=None) -> "SubscriptionSource | None":
+    file_path = entry.get("file_path") or (
+        str(paths.workdir_proxy_discovered_sources) if paths is not None else None
+    )
+    if file_path is None:
+        return None
+    return DiscoveredSource(file_path)

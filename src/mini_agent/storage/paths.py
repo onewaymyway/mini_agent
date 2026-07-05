@@ -407,6 +407,21 @@ class AgentPaths:
         """<project_root>/.agent/proxy/proxy.log — 代理池刷新/验证过程日志"""
         return self.workdir_proxy_dir / "proxy.log"
 
+    @property
+    def workdir_proxy_discovered_sources(self) -> Path:
+        """<project_root>/.agent/proxy/discovered_sources.json — 由 agent/skill 自动发现并
+        追加写入的订阅源地址列表(和 sources.json 手动配置的分开存放,避免 skill 写入时
+        跟用户手动维护的配置互相覆盖)。类型为 "discovered" 的 SubscriptionSource 会读取此文件。
+        """
+        return self.workdir_proxy_dir / "discovered_sources.json"
+
+    @property
+    def workdir_proxy_integration_config(self) -> Path:
+        """<project_root>/.agent/proxy/integration.json — 代理池接入 mini_agent 其它模块的开关,
+        每一路接入(主 LLM 请求 / web_search 抓取工具等)都默认关闭,需要用户显式打开。
+        """
+        return self.workdir_proxy_dir / "integration.json"
+
     def ensure_workdir_proxy_dir(self) -> Path:
         d = self.workdir_proxy_dir
         d.mkdir(parents=True, exist_ok=True)

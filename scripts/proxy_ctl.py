@@ -35,6 +35,7 @@ import logging
 import sys
 import time
 from pathlib import Path
+from typing import Any
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
@@ -74,13 +75,19 @@ def _save_sources_config(paths: AgentPaths, entries: list[dict]) -> None:
     )
 
 
-def _build_sources(entries: list[dict]):
+def _build_sources(entries: list[dict], paths: AgentPaths | None = None):
+    """按 sources.json 里每条配置的 "type" 从注册表里找对应工厂构造 SubscriptionSource。
+    新增订阅源类型只需要在 subscription.py 里用 @register_source_type 注册,这里不用改。
+    未知 type 会打印警告并跳过,不影响其它已识别的源。"""
+    from mini_agent.proxy.subscription import build_source_from_entry
+
     sources = []
     for e in entries:
-        if e.get("type") == "mibei77":
-            sources.append(MiBei77Source(e.get("page_url", "https://www.mibei77.com/")))
-        elif e.get("type") == "url":
-            sources.append(URLSubscriptionSource(e["name"], e["url"]))
+        src = build_source_from_entry(e, paths)
+        if src is None:
+            logging.warning("unknown/invalid source entry, skipped: %s", e)
+            continue
+        sources.append(src)
     return sources
 
 
@@ -110,6 +117,20 @@ def cmd_sources_add_mibei77(paths: AgentPaths, args) -> None:
     print("added mibei77 source")
 
 
+def cmd_sources_add_discovered(paths: AgentPaths, args) -> None:
+    """接入 discovered_sources.json 里的地址(参见 DiscoveredSource):
+    这些地址通常由 agent 里的一个"发现订阅源"skill 写入,而不是手动配置的。
+    这里只是往 sources.json 里加一条 {"type": "discovered"} 声明"要读取这个文件",
+    真正的地址列表始终由 discovered_sources.json 单独维护,不混进 sources.json。"""
+    entries = _load_sources_config(paths)
+    if any(e.get("type") == "discovered" for e in entries):
+        print("discovered source already configured, skip")
+        return
+    entries.append({"type": "discovered", "name": "discovered"})
+    _save_sources_config(paths, entries)
+    print(f"added discovered source (reads {paths.workdir_proxy_discovered_sources})")
+
+
 def cmd_sources_remove(paths: AgentPaths, args) -> None:
     entries = _load_sources_config(paths)
     new_entries = [e for e in entries if e.get("name") != args.name]
@@ -125,9 +146,14 @@ async def _do_refresh(paths: AgentPaths, keep_alive: int, check_url: str, concur
         logging.warning("no subscription sources configured; run `sources add` / `sources add-mibei77` first")
         return {"nodes_found": 0, "nodes_ok": 0, "available": []}
 
-    sources = _build_sources(entries)
+    sources = _build_sources(entries, paths)
     logging.info("fetching from %d subscription source(s)...", len(sources))
-    nodes = await fetch_all(sources)
+    nodes, fetch_stats = await fetch_all(sources, return_stats=True)
+    logging.info(
+        "fetched %d raw node(s) across sources %s, %d duplicate(s) removed -> %d unique node(s)",
+        fetch_stats["raw_total"], fetch_stats["per_source"],
+        fetch_stats["duplicates_removed"], fetch_stats["deduped_total"],
+    )
 
     # 协议分布统计: 帮助判断"验证通过率低"到底是节点普遍失效,还是协议覆盖率不够
     proto_counts = collections.Counter(n.protocol for n in nodes)
@@ -244,6 +270,29 @@ def cmd_refresh(paths: AgentPaths, args) -> None:
         print(f"  [{n['latency_ms']:>6.1f}ms] {n['protocol']:<7} {n['name']} ({n['server']}:{n['port']})")
 
 
+def cmd_integration_show(paths: AgentPaths, args) -> None:
+    from mini_agent.proxy.integration import load_integration_config
+
+    cfg = load_integration_config(paths)
+    print("代理接入其它模块的开关(默认全部关闭,需要显式打开):")
+    for k, v in cfg.items():
+        print(f"  {k} = {v}")
+
+
+def cmd_integration_set(paths: AgentPaths, args) -> None:
+    from mini_agent.proxy.integration import save_integration_config
+
+    raw = args.value
+    if raw.lower() in ("true", "false"):
+        value: Any = raw.lower() == "true"
+    elif raw.isdigit():
+        value = int(raw)
+    else:
+        value = raw
+    cfg = save_integration_config(paths, **{args.key: value})
+    print(f"set {args.key} = {cfg.get(args.key)}")
+
+
 def cmd_status(paths: AgentPaths, args) -> None:
     p = paths.workdir_proxy_available_list
     if not p.exists():
@@ -320,6 +369,9 @@ def build_parser() -> argparse.ArgumentParser:
     p_add.add_argument("url")
     p_add.set_defaults(func=cmd_sources_add)
     src_sub.add_parser("add-mibei77", help="添加 mibei77.com 订阅源").set_defaults(func=cmd_sources_add_mibei77)
+    src_sub.add_parser(
+        "add-discovered", help="接入 discovered_sources.json(由 agent/skill 自动发现地址写入)"
+    ).set_defaults(func=cmd_sources_add_discovered)
     p_rm = src_sub.add_parser("remove", help="移除一个订阅源")
     p_rm.add_argument("name")
     p_rm.set_defaults(func=cmd_sources_remove)
@@ -336,6 +388,14 @@ def build_parser() -> argparse.ArgumentParser:
     p_serve.add_argument("--listen-port", type=int, default=1080)
     p_serve.add_argument("--keep-alive", type=int, default=3)
     p_serve.set_defaults(func=cmd_serve)
+
+    p_int = sub.add_parser("integration", help="管理代理接入其它模块的开关(默认全部关闭)")
+    int_sub = p_int.add_subparsers(dest="integration_action", required=True)
+    int_sub.add_parser("show").set_defaults(func=cmd_integration_show)
+    p_int_set = int_sub.add_parser("set", help="设置一个开关,例如: integration set llm_use_proxy true")
+    p_int_set.add_argument("key")
+    p_int_set.add_argument("value")
+    p_int_set.set_defaults(func=cmd_integration_set)
 
     return parser
 
