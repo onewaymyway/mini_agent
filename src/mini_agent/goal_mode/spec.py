@@ -110,6 +110,62 @@ def _extract_json(text: str) -> Optional[dict]:
         return None
 
 
+_NON_WORD_RE = re.compile(r"[\s,，。.！!？?；;:：\-_/\\'\"“”‘’()（）\[\]【】]+")
+
+
+def _normalize_for_compare(text: str) -> str:
+    """归一化文本用于粗粒度相似度比较：去空白/标点，转小写。"""
+    return _NON_WORD_RE.sub("", text or "").lower()
+
+
+def _is_near_duplicate(a: str, b: str) -> bool:
+    """粗粒度判断两段文本是否"基本是同一句话"（照抄/仅做微小改写）。
+
+    不追求精确的编辑距离算法，只做一个足够便宜、足够保守的启发式：
+    归一化后互为子串，或者字符集合的重叠度很高，就认为是照抄。
+    """
+    na, nb = _normalize_for_compare(a), _normalize_for_compare(b)
+    if not na or not nb:
+        return False
+    if na == nb:
+        return True
+    shorter, longer = (na, nb) if len(na) <= len(nb) else (nb, na)
+    if len(shorter) >= 6 and shorter in longer:
+        return True
+    # 字符级 Jaccard 相似度兜底（应对语序打乱但用词几乎相同的情况）
+    set_a, set_b = set(na), set(nb)
+    if not set_a or not set_b:
+        return False
+    overlap = len(set_a & set_b) / len(set_a | set_b)
+    return overlap > 0.85
+
+
+def _looks_like_verbatim_echo(acceptance_criteria: list[str], user_goal_text: str) -> bool:
+    """判断生成的验收标准是否"几乎原封不动"地照抄了用户目标原文。
+
+    只要有任意一条标准与原始目标高度雷同，就认为加工不充分——正常的加工结果
+    应该比原句更长、更具体，不会和原句"本质上是一句话"。
+    """
+    if not acceptance_criteria:
+        return False
+    return any(_is_near_duplicate(c, user_goal_text) for c in acceptance_criteria)
+
+
+def _fallback_criteria(user_goal_text: str) -> list[str]:
+    """LLM 解析失败时的兜底验收标准。
+
+    相比"完成用户描述的目标：{user_goal_text}"这种纯复述，这里至少从
+    "交付物是否存在 / 是否按目标工作 / 是否引入新问题"三个通用维度给出
+    可核查的表述，避免空验收标准导致 Judge 无从判断，也避免直接照抄原文。
+    """
+    goal = (user_goal_text or "").strip() or "用户描述的目标"
+    return [
+        f"围绕「{goal}」产出的内容/改动是否已实际存在于对应文件或产出物中（而非仅在对话中描述）",
+        f"围绕「{goal}」的核心诉求，功能或结果是否按预期工作，可通过实际运行/查看产出来核实",
+        "本次改动是否未引入新的报错、测试失败或明显破坏原有功能（如适用，运行现有测试全部通过）",
+    ]
+
+
 
 
 class GoalSpecBuilder:
@@ -168,16 +224,39 @@ class GoalSpecBuilder:
         raw = self._run_builder(prompt)
         data = _extract_json(raw) or {}
 
+        criteria = list(data.get("acceptance_criteria") or [])
+        goal_text = data.get("goal_text") or user_goal_text
+
+        # 质量兜底：如果模型几乎原封不动地照抄了用户原话（未做具体化/拆解加工），
+        # 用更强的纠正提示重试一次，而不是默默接受一份"没加工"的验收标准。
+        if criteria and _looks_like_verbatim_echo(criteria, user_goal_text):
+            retry_prompt = (
+                prompt
+                + "\n\n【纠正】你上一次的输出几乎是把用户原话直接当成了验收标准，"
+                "这不符合要求。请重新生成：每一条标准都必须比用户原话更具体、"
+                "更可核查（给出可观察的条件/结果，或可执行的验证方式），"
+                "不能是原句的复述或近义替换。"
+            )
+            retry_raw = self._run_builder(retry_prompt)
+            retry_data = _extract_json(retry_raw) or {}
+            retry_criteria = list(retry_data.get("acceptance_criteria") or [])
+            if retry_criteria and not _looks_like_verbatim_echo(retry_criteria, user_goal_text):
+                raw = retry_raw
+                data = retry_data
+                criteria = retry_criteria
+                goal_text = data.get("goal_text") or goal_text
+
         spec = GoalSpec(
-            goal_text=data.get("goal_text") or user_goal_text,
-            acceptance_criteria=list(data.get("acceptance_criteria") or []),
+            goal_text=goal_text,
+            acceptance_criteria=criteria,
             verification_method=data.get("verification_method") or "manual_review",
             verification_command=data.get("verification_command") or "",
             version=1,
         )
         if not spec.acceptance_criteria:
-            # 兜底：解析失败时至少给一条最朴素的标准，避免空验收标准导致 Judge 无从判断
-            spec.acceptance_criteria = [f"完成用户描述的目标：{user_goal_text}"]
+            # 兜底：解析失败/模型未返回标准时，用分维度的通用标准兜底，
+            # 避免空验收标准导致 Judge 无从判断，也避免直接照抄原文。
+            spec.acceptance_criteria = _fallback_criteria(user_goal_text)
 
         spec.negotiation_log.append({
             "version": 1,
@@ -208,9 +287,15 @@ class GoalSpecBuilder:
             new_spec.updated_at = time.time()
             return new_spec
 
+        new_criteria = list(data.get("acceptance_criteria") or prior_spec.acceptance_criteria)
+        if new_criteria and _looks_like_verbatim_echo(new_criteria, user_feedback):
+            # 模型把用户反馈原话直接塞成了一条"新标准"——保留其余未受影响的标准，
+            # 剔除照抄的那几条，而不是整体接受一份加工不充分的结果。
+            new_criteria = [c for c in new_criteria if not _is_near_duplicate(c, user_feedback)] or new_criteria
+
         new_spec = GoalSpec(
             goal_text=data.get("goal_text") or prior_spec.goal_text,
-            acceptance_criteria=list(data.get("acceptance_criteria") or prior_spec.acceptance_criteria),
+            acceptance_criteria=new_criteria,
             verification_method=data.get("verification_method") or prior_spec.verification_method,
             verification_command=data.get("verification_command", prior_spec.verification_command),
             version=prior_spec.version + 1,

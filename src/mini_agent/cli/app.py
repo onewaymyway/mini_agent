@@ -515,14 +515,28 @@ def _main_inner() -> None:
     # 只做提示，不强制打断，用户可以选择 /goal resume 或忽略继续正常对话。
     try:
         if getattr(cfg.goal_mode, "auto_resume_prompt", True):
-            from mini_agent.goal_mode.state import find_resumable_session
+            from mini_agent.goal_mode.state import find_resumable_session, list_resumable_sessions
             _resumable_sid = find_resumable_session(project_root)
             if _resumable_sid and _resumable_sid != agent.session_id:
-                R.print_warning(
-                    f"[Goal 模式] 检测到未完成的目标任务（session: {_resumable_sid}），"
-                    f"输入 [bold]/goal resume {_resumable_sid}[/bold] 可继续执行，"
-                    "或直接忽略进入正常对话。"
-                )
+                # [FIX] 之前只提示"最近一个" session，如果有多个进程各自 /goal 了
+                # 不同目标、都被意外杀死，这里只报一个会让用户误以为其他的丢了
+                # （其实文件都还在，只是没暴露入口）。这里额外数一下总数，
+                # 超过 1 个时提示用 /goal list 查看全部。
+                _all_sessions = list_resumable_sessions(project_root)
+                _total = len(_all_sessions)
+                if _total > 1:
+                    R.print_warning(
+                        f"[Goal 模式] 检测到 {_total} 个未完成的目标任务，最近一个是 "
+                        f"session: {_resumable_sid}。输入 [bold]/goal list[/bold] 查看全部，"
+                        f"或直接 [bold]/goal resume {_resumable_sid}[/bold] 恢复最近这个，"
+                        "也可忽略进入正常对话。"
+                    )
+                else:
+                    R.print_warning(
+                        f"[Goal 模式] 检测到未完成的目标任务（session: {_resumable_sid}），"
+                        f"输入 [bold]/goal resume {_resumable_sid}[/bold] 可继续执行，"
+                        "或直接忽略进入正常对话。"
+                    )
     except Exception as e:
         # 不静默吞掉——检测逻辑本身出错也应该让用户/开发者看到，
         # 否则会呈现出"明明有未完成的 goal 却什么提示都没有"的假象，无法排查。

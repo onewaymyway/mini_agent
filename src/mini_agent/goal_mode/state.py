@@ -163,6 +163,46 @@ def scan_goal_states(project_root) -> list[dict]:
     return results
 
 
+def list_resumable_sessions(project_root) -> list[dict]:
+    """扫描 sessions_dir 下所有 status=="running" 的 goal_state.json，按更新时间倒序返回。
+
+    与 find_resumable_session() 的区别：后者只返回"最近一个"（供启动提示用一行话
+    简短提醒），这里返回全部——用于 `/goal list`，避免"多个进程各自 /goal 了不同
+    目标、都被杀死后，重启只能看到最近一个，其余的就像丢了"这种情况（其实文件都还
+    在，只是没有入口能看到）。
+    """
+    from mini_agent.storage.paths import AgentPaths
+
+    paths = AgentPaths(project_root=project_root)
+    sessions_dir = paths.sessions_dir
+    if not sessions_dir.exists():
+        return []
+
+    candidates = []
+    for entry in sessions_dir.iterdir():
+        if not entry.is_dir():
+            continue
+        gs_path = entry / "goal_state.json"
+        if not gs_path.exists():
+            continue
+        try:
+            with open(gs_path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+        except Exception:
+            continue
+        if data.get("status") == "running":
+            candidates.append({
+                "session_id": entry.name,
+                "round": data.get("round"),
+                "updated_at": data.get("updated_at"),
+                "mtime": gs_path.stat().st_mtime,
+            })
+    candidates.sort(key=lambda x: x["mtime"], reverse=True)
+    for c in candidates:
+        c.pop("mtime", None)
+    return candidates
+
+
 def find_resumable_session(project_root, from_session_id: Optional[str] = None) -> Optional[str]:
     """在 sessions_dir 下扫描，找到最近一个 status=="running" 的 goal_state.json 对应的
     session_id（供启动时的"检测到未完成目标"提示使用）。

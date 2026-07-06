@@ -44,6 +44,7 @@ def build_parser() -> argparse.ArgumentParser:
               /compact           Compress history into a summary
               /goal <text>       Set a goal; agent negotiates acceptance criteria then runs until done
               /goal resume [sid] Resume an interrupted goal run (auto-picks latest if sid omitted)
+              /goal list         List all resumable goal tasks (status==running, may be more than one)
               /goal status       Show current session's goal state (round/compacts/last verdict)
               /goal cancel       Clear current session's goal state record
               /turnjudge [on|off|status]  Toggle TurnJudge (auto-detect: real end-of-turn vs technical stall)

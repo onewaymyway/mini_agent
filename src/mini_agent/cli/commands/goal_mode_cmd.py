@@ -4,6 +4,7 @@ cli/commands/goal_mode_cmd.py — /goal slash 命令处理
 子命令：
   /goal <目标文本>       — 开始一次新的 Goal 协商（生成验收标准草案，进入确认子对话）
   /goal resume [sid]     — 恢复上次未完成的 goal（sid 可省略，省略时自动找最近一个）
+  /goal list             — 列出所有可恢复的 goal 任务（status==running，可能不止一个）
   /goal status           — 查看当前 session 是否有 goal 状态记录
   /goal cancel           — 取消当前 session 记录的 goal 状态（不会中断正在运行的循环，
                             仅用于清理一个已经卡住/不想再恢复的记录）
@@ -33,6 +34,7 @@ def handle_goal_cmd(args: list[str], agent) -> None:
             "用法：\n"
             "  /goal <目标文本>     开始一个新目标\n"
             "  /goal resume [sid]  恢复未完成的目标\n"
+            "  /goal list          列出所有可恢复的目标（可能不止一个）\n"
             "  /goal status        查看当前 goal 状态\n"
             "  /goal cancel        清理当前 session 的 goal 状态记录"
         )
@@ -44,6 +46,9 @@ def handle_goal_cmd(args: list[str], agent) -> None:
         return
     if sub == "status":
         _handle_status(agent)
+        return
+    if sub == "list":
+        _handle_list(agent)
         return
     if sub == "cancel":
         _handle_cancel(agent)
@@ -272,3 +277,27 @@ def _handle_cancel(agent) -> None:
         return
     store.clear()
     R.print_success("已清理当前 session 的 goal 状态记录。")
+
+
+def _handle_list(agent) -> None:
+    """列出所有 status=="running" 的 goal 会话（可能不止一个——比如多个进程各自
+    /goal 了不同目标、都被意外杀死的场景），避免只能看到"最近一个"就以为其他的丢了。
+    """
+    from mini_agent.goal_mode.state import list_resumable_sessions
+
+    sessions = list_resumable_sessions(agent.cfg.project_root)
+    if not sessions:
+        R.print_info("没有检测到可恢复的 goal 任务（status==running）。")
+        return
+
+    R.console.print(f"[bold]检测到 {len(sessions)} 个可恢复的目标任务：[/bold]")
+    for s in sessions:
+        current_mark = "  [dim](当前 session)[/dim]" if s["session_id"] == agent.session_id else ""
+        R.console.print(
+            f"  - session: {s['session_id']}  round={s['round']}  "
+            f"updated_at={s['updated_at']}{current_mark}"
+        )
+    R.console.print(
+        "\n输入 [bold]/goal resume <session_id>[/bold] 恢复对应的目标。"
+    )
+
