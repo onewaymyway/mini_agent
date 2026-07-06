@@ -267,14 +267,52 @@ def render_permissions(client: AgentClient, pending_list):
 # ═══════════════════════════════════════════════════════════════════════
 # Tab 1: 对话
 # ═══════════════════════════════════════════════════════════════════════
+def _stream_turn_into_placeholder(client: AgentClient, turn_id: str, placeholder):
+    """
+    订阅 turn_id 的 SSE 流，把逐 token 文本实时写进 placeholder，
+    直到该轮结束（turn_done/error/interrupt）或流断开。
+    返回 True 表示这一轮正常结束（可以安全 rerun 去刷新完整历史）。
+    """
+    acc = ""
+    finished = False
+    for evt in client.stream_turn(turn_id, replay=True):
+        etype = evt.get("event")
+        data = evt.get("data") or {}
+        if etype == "token":
+            acc += data.get("text", "")
+            placeholder.markdown(f'<div class="msg-agent">{acc}▌</div>', unsafe_allow_html=True)
+        elif etype == "reasoning":
+            # 思维链 token：淡化展示，不计入最终正文
+            pass
+        elif etype in ("turn_done", "interrupt"):
+            final_text = data.get("text", acc) or acc
+            placeholder.markdown(f'<div class="msg-agent">{final_text}</div>', unsafe_allow_html=True)
+            finished = True
+            break
+        elif etype == "error":
+            placeholder.markdown(
+                f'<div class="msg-agent">⚠️ {data.get("message", "发生错误")}</div>',
+                unsafe_allow_html=True,
+            )
+            finished = True
+            break
+        elif etype == "_error":
+            # SSE 连接本身失败（网络/超时），退回轮询模式，让外层 rerun 兜底
+            if acc:
+                placeholder.markdown(f'<div class="msg-agent">{acc}</div>', unsafe_allow_html=True)
+            break
+    return finished
+
+
 def render_chat_tab(client: AgentClient):
     col_chat, col_events = st.columns([2, 1])
 
     with col_chat:
         st.markdown("#### 💬 对话")
         cur_status = client.status() or {}
-        if cur_status.get("state") == "running":
-            st.caption("⏳ Agent 正在处理中…（页面会自动刷新，无需等待）")
+        running_turn_id = cur_status.get("turn_id") if cur_status.get("state") == "running" else None
+        if running_turn_id:
+            st.caption("⏳ Agent 正在处理中…（下方将实时流式显示输出）")
         hist = client.history() or {}
         entries = hist.get("messages", [])
         # 拉最近事件，把 tool_call / tool_result / tool_error / permission_req 也
@@ -303,6 +341,10 @@ def render_chat_tab(client: AgentClient):
                     elif role in ("assistant", "agent"):
                         st.markdown(f'<div class="msg-agent">{content}</div>', unsafe_allow_html=True)
 
+            # 实时流式占位符：新消息发出后 / 页面刷新时发现有轮次仍在跑，
+            # 都会往这里逐 token 写入，做到"边生成边显示"。
+            stream_placeholder = st.empty()
+
             # 滚动锚点：每次渲染后用下面注入的 JS 把它滚到可视区域，从而把整个
             # 固定高度容器滚到底部，实现"自动滚动到最新消息"。
             st.markdown('<div id="chat-bottom-anchor"></div>', unsafe_allow_html=True)
@@ -314,17 +356,26 @@ def render_chat_tab(client: AgentClient):
             c1, c2 = st.columns([1, 1])
             send = c1.form_submit_button("发送 ➤", use_container_width=True)
             interrupt = c2.form_submit_button("⏹ 中断当前任务", use_container_width=True)
+
+        new_turn_id = None
         if send and msg.strip():
             res = client.chat(msg.strip())
             if res and "_error" in res:
                 st.error(res["_error"])
-            # /chat 是异步排队接口，消息本身会立刻写入 /history（不等 Agent 处理完）。
-            # 所以这里立即 rerun 就能马上看到自己刚发的消息；Agent 的回复由下面
-            # 默认开启的"自动刷新"轮询捕捉，不在这里阻塞等待。
-            st.rerun()
+            else:
+                new_turn_id = res.get("turn_id")
+            st.rerun()  # 立即刷新一次，先把用户刚发的消息显示出来
         if interrupt:
             client.interrupt()
             st.rerun()
+
+        # 实时流式输出：优先处理"刚发出的这一轮"，否则接管"页面加载/刷新时
+        # 发现仍在跑的那一轮"（比如另一个客户端发的消息，或本页刷新过）。
+        turn_to_stream = new_turn_id or running_turn_id
+        if turn_to_stream:
+            finished = _stream_turn_into_placeholder(client, turn_to_stream, stream_placeholder)
+            if finished:
+                st.rerun()  # 该轮结束，刷新一次把正式历史（含工具事件）拉齐
 
         if st.button("🗑️ 清空历史"):
             client.clear_history()

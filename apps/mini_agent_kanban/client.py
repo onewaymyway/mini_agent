@@ -93,6 +93,63 @@ class AgentClient:
     def turns(self):
         return self._get("/turns")
 
+    # ── 流式对话（SSE）────────────────────────────────────────────────
+    def stream_turn(self, turn_id: str, replay: bool = True, timeout: int = 300):
+        """
+        订阅某一轮（turn_id）的 SSE 事件流，逐条 yield 解析后的事件 dict：
+            {"event": "<type>", "id": <int>, "data": {...}}
+        用于在 UI 上实现"逐 token 实时输出"效果。生成器会在收到
+        turn_done / error 事件，或流关闭 / 超时后自然结束。
+        不抛异常给调用方——网络错误会 yield 一条 {"event": "_error", ...}
+        然后结束。
+        """
+        import json as _json
+
+        url = self._url(f"/stream/{turn_id}")
+        try:
+            with requests.get(
+                url, headers=self.headers, params={"replay": replay},
+                stream=True, timeout=(6, timeout),
+            ) as r:
+                if r.status_code != 200:
+                    yield {"event": "_error", "data": {"message": f"HTTP {r.status_code}: {r.text[:200]}"}}
+                    return
+
+                cur_event, cur_id, cur_data_lines = "message", None, []
+
+                def _flush():
+                    if not cur_data_lines:
+                        return None
+                    raw = "\n".join(cur_data_lines)
+                    try:
+                        parsed = _json.loads(raw)
+                    except Exception:
+                        parsed = {"text": raw}
+                    return {"event": cur_event, "id": cur_id, "data": parsed}
+
+                for line in r.iter_lines(decode_unicode=True):
+                    if line is None:
+                        continue
+                    if line == "":
+                        # 空行 = 一条 SSE 帧结束
+                        evt = _flush()
+                        cur_event, cur_id, cur_data_lines = "message", None, []
+                        if evt is not None:
+                            yield evt
+                            if evt["event"] in ("turn_done", "error", "interrupt"):
+                                return
+                        continue
+                    if line.startswith(":"):
+                        continue  # 心跳注释行
+                    if line.startswith("event:"):
+                        cur_event = line[len("event:"):].strip()
+                    elif line.startswith("id:"):
+                        cur_id = line[len("id:"):].strip()
+                    elif line.startswith("data:"):
+                        cur_data_lines.append(line[len("data:"):].strip())
+        except Exception as e:
+            yield {"event": "_error", "data": {"message": str(e)}}
+
     # ── 权限 ──────────────────────────────────────────────────────────
     def pending_permissions(self):
         return self._get("/permissions/pending")
