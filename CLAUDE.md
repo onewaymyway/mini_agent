@@ -342,13 +342,13 @@ mini-agent user token u_a1b2c3d4                       # 重新生成 token
 ### Goal 模式
 
 - 设定一个目标，Agent 自动多轮尝试直至达成或触发安全阀，位于 `src/mini_agent/goal_mode/`
-- `GoalSpecBuilder`：自然语言目标 → 结构化验收标准，支持多轮对话式修订+版本 diff，确认前不占用主 Agent 上下文
+- `GoalSpecBuilder`：自然语言目标 → 结构化验收标准，支持多轮对话式修订+版本 diff，确认前不占用主 Agent 上下文；system prompt 禁止照抄用户原话、要求具体化/分维度拆解，代码层面对照抄结果自动带纠正提示重试一次（`_looks_like_verbatim_echo`）
 - `GoalJudge`（`role_agents/goal_judge.py`）：对照验收标准逐条核查，输出 `GOAL_STATUS: DONE/CONTINUE/NEED_COMPACT`；不经过 `RoleAgentDispatcher`，由 `GoalRunner` 直接调用；`judge_tools_enabled` 开关控制是否挂只读工具自己验证
 - `GoalRunner`：外层驱动循环（跨多次 `run_turn`，与 Role Agent 的单次 `run_turn` 内修订循环不同）；粗粒度 `CoarseStepExecutor` 每步跑一次完整 `run_turn`，`GoalStepExecutor` 接口为未来细粒度版本预留
 - 安全阀：`max_rounds`、`max_total_compacts`、连续雷同反馈检测（`difflib.SequenceMatcher`）提前终止
-- 异常中断恢复：`GoalState` 原子落盘到 `.agent/sessions/<sid>/goal_state.json`，只在轮次边界写入；复用既有 session 持久化存对话历史，不重复保存；`/goal resume` 续跑
+- 异常中断恢复：`GoalState` 原子落盘到 `.agent/sessions/<sid>/goal_state.json`，只在轮次边界写入；复用既有 session 持久化存对话历史，不重复保存；`/goal resume` 续跑；`/goal list`（`list_resumable_sessions`）列出所有可恢复目标，避免多进程各自设定目标都被杀死后只显示最近一个
 - 目标上下文用 `HType.GOAL_CONTEXT` 类型消息"钉住"，每轮结束和每次 compact 后都重新附加，防止被压缩策略稀释
-- CLI 命令：`/goal <文本>`、`/goal resume [sid]`、`/goal status`、`/goal cancel`；需 `goal_mode.enabled: true`（默认关闭）
+- CLI 命令：`/goal <文本>`、`/goal resume [sid]`、`/goal list`、`/goal status`、`/goal cancel`；需 `goal_mode.enabled: true`（默认关闭）
 - 详见 [Goal 模式指南](docs/goal-mode-guide.md)
 
 ### Workflow

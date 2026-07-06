@@ -449,6 +449,7 @@ python weixin_bot.py [--project <路径>] [--yes] [--no-stream]
 | `/compact` | 压缩对话历史 |
 | `/goal <目标文本>` | 设定一个目标，协商验收标准后自动多轮尝试直至达成（需 `goal_mode.enabled`，详见 [Goal 模式指南](docs/goal-mode-guide.md)） |
 | `/goal resume [sid]` | 恢复上次未完成的目标（进程被中断后续跑） |
+| `/goal list` | 列出所有可恢复的目标任务（可能不止一个，比如多个进程各自 `/goal` 了不同目标都被杀死的场景） |
 | `/goal status` | 查看当前 session 的 goal 状态 |
 | `/goal cancel` | 清理当前 session 的 goal 状态记录 |
 | `/prompts` | 列出所有提示词文件 |
@@ -921,7 +922,7 @@ MIT License
 
 *最后更新：2026-07-01* — 具身智能改进 A/B/C 三阶段全部完成（12 项：本体感知/余裕感知/工具透明性/AgentSelfModel/时间加权记忆/认知锚点/自维护模块等），详见 [具身智能改进指南](docs/embodied-agent-guide.md)
 
-*2026-07 Goal 模式*：新增 `goal_mode/` 包，设定一个目标后 Agent 自动多轮尝试直至达成或触发安全阀。核心组成：`GoalSpec` + `GoalSpecBuilder`（自然语言目标→结构化验收标准，支持多轮对话式修订+版本 diff 展示，确认前不占用主 Agent 上下文）、`GoalJudge`（对照验收标准逐条核查，输出 `GOAL_STATUS: DONE/CONTINUE/NEED_COMPACT`，工具权限可选开启以自己跑命令验证）、`GoalRunner`（外层驱动循环，粗粒度 `CoarseStepExecutor` 每步调用一次完整 `run_turn`，为未来细粒度版本预留 `GoalStepExecutor` 接口）。与既有 Evaluator 修订循环的区别：Evaluator 循环在单次 `run_turn` 内部、受 `max_turns` 硬顶约束；GoalRunner 是跨多次 `run_turn` 的外层循环，撞到 `max_turns` 会显式 compact 后继续。安全阀：`max_rounds`（轮次上限）、`max_total_compacts`（防压缩风暴）、连续雷同反馈检测（`difflib.SequenceMatcher`）提前终止并如实汇报。异常中断恢复：`GoalState` 原子落盘到 `.agent/sessions/<sid>/goal_state.json`，只在轮次边界写入，`/goal resume` 续跑；复用既有 session 持久化机制存储对话历史，不重复保存。新增 `/goal` `/goal resume` `/goal status` `/goal cancel` 命令，详见 [Goal 模式指南](docs/goal-mode-guide.md)
+*2026-07 Goal 模式*：新增 `goal_mode/` 包，设定一个目标后 Agent 自动多轮尝试直至达成或触发安全阀。核心组成：`GoalSpec` + `GoalSpecBuilder`（自然语言目标→结构化验收标准，支持多轮对话式修订+版本 diff 展示，确认前不占用主 Agent 上下文；system prompt 要求具体化/分维度拆解、禁止照抄用户原话，代码层面对"几乎原封不动"的生成结果会自动带纠正提示重试一次）、`GoalJudge`（对照验收标准逐条核查，输出 `GOAL_STATUS: DONE/CONTINUE/NEED_COMPACT`，工具权限可选开启以自己跑命令验证）、`GoalRunner`（外层驱动循环，粗粒度 `CoarseStepExecutor` 每步调用一次完整 `run_turn`，为未来细粒度版本预留 `GoalStepExecutor` 接口）。与既有 Evaluator 修订循环的区别：Evaluator 循环在单次 `run_turn` 内部、受 `max_turns` 硬顶约束；GoalRunner 是跨多次 `run_turn` 的外层循环，撞到 `max_turns` 会显式 compact 后继续。安全阀：`max_rounds`（轮次上限）、`max_total_compacts`（防压缩风暴）、连续雷同反馈检测（`difflib.SequenceMatcher`）提前终止并如实汇报。异常中断恢复：`GoalState` 原子落盘到 `.agent/sessions/<sid>/goal_state.json`，只在轮次边界写入，`/goal resume` 续跑；`/goal list` 可列出所有可恢复的目标（跨 session，避免多个进程各自设定目标都被杀死后只能看到最近一个）；复用既有 session 持久化机制存储对话历史，不重复保存。新增 `/goal` `/goal resume` `/goal list` `/goal status` `/goal cancel` 命令，详见 [Goal 模式指南](docs/goal-mode-guide.md)
 
 *2026-06-19* — API Key 配置重构：主推 providers.json 管理 LLM API Key，图片 Skill（ask_image / gen_image_with_text）保留环境变量方式
 

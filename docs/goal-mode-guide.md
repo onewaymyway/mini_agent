@@ -15,8 +15,9 @@ Goal 模式是**跨多次 `run_turn` 的外层驱动循环**，能在撞到轮�
 用户 /goal <目标文本>
         │
         ▼
-GoalSpecBuilder 生成第 1 版验收标准草案（JSON 结构化，独立一次性 LLM 调用，
-不占用主 Agent 上下文）
+GoalSpecBuilder 生成第 1 版验收标准草案（JSON 结构化，独立 LLM 调用，
+不占用主 Agent 上下文；若检测到生成结果"几乎照抄"用户原话，会带纠正提示
+自动重试一次，见下文「验收标准生成质量保障」）
         │
         ▼
 展示给用户 ──反馈──► 修订生成新版本（版本号+1，展示 diff）──┐
@@ -116,6 +117,14 @@ Evaluator 仍然在每次 `run_turn` 内部做质量把关，GoalRunner 在更�
 这个协商过程是**独立的会话态**，不会写入主 Agent 的对话历史，也不消耗
 `max_rounds` / 上下文预算。
 
+> **验收标准生成质量保障**：GoalSpecBuilder 的 system prompt（`prompts/system/
+> goal_spec_builder.md`）明确要求把用户目标"加工"成具体、可客观核查、分维度
+> 的标准，而不是照抄原话（例如禁止把"给函数加单测"直接当成一条标准）。代码层
+> 面还加了一道兜底：如果生成结果与用户原话高度雷同（`_looks_like_verbatim_echo`），
+> 会自动带纠正提示重试一次；`/goal <文本>` 的修订对话（`_looks_like_verbatim_echo`
+> 同样应用于 `revise`）里，也会过滤掉直接照抄你反馈原句的"新标准"。如果生成
+> 仍然不够具体，直接用修改意见让它继续调整即可。
+
 ### 2. 执行
 
 确认后自动进入 GoalRunner 循环，过程中会完整打印每轮 GoalJudge 的核查内容
@@ -173,6 +182,7 @@ Goal 执行结果： done
 /goal resume            # 自动找最近一个 status=running 的 goal
 /goal resume <sid>      # 指定 session id 恢复
 /goal resume <sid> --force  # 强制恢复非 running 状态的记录（比如 cancelled）
+/goal list               # 列出所有可恢复的 goal 任务（status=running，可能不止一个）
 ```
 
 重新打开 REPL 时，如果检测到未完成的 goal，也会主动提示：
@@ -182,10 +192,23 @@ Goal 执行结果： done
 输入 /goal resume 871fae1b 可继续执行，或直接忽略进入正常对话。
 ```
 
+> **多个进程各自 `/goal` 了不同目标、都被意外杀死怎么办？**
+> `sessions_dir` 下每个 session 各有一份独立的 `goal_state.json`，都不会丢。
+> 但启动提示默认只报告"最近更新的那一个"，避免刷屏。如果检测到不止一个可恢复
+> 目标，提示会变成：
+> ```
+> [Goal 模式] 检测到 2 个未完成的目标任务，最近一个是 session: 871fae1b。
+> 输入 /goal list 查看全部，或直接 /goal resume 871fae1b 恢复最近这个，
+> 也可忽略进入正常对话。
+> ```
+> 用 `/goal list` 能看到全部 session_id（含各自的 round / updated_at），
+> 再逐个 `/goal resume <sid>` 恢复即可，不会因为只显示一个而"看起来丢了"。
+
 ### 4. 查看 / 清理状态
 
 ```
 /goal status    # 查看当前 session 的 goal 状态（轮次、compact 次数、最后判定）
+/goal list      # 列出所有可恢复的 goal 任务（跨 session，可能不止一个）
 /goal cancel    # 清理当前 session 的 goal 状态记录（不会中断正在运行的循环）
 ```
 
@@ -388,7 +411,7 @@ class GoalStepExecutor(ABC):
 |------|------|
 | `goal_mode/spec.py` | `GoalSpec` 数据结构 + `GoalSpecBuilder`（自然语言→结构化验收标准，多轮修订） |
 | `goal_mode/executor.py` | `GoalStepExecutor` 接口 + `CoarseStepExecutor` |
-| `goal_mode/state.py` | `GoalState` + `GoalStateStore`（原子落盘/恢复）+ `find_resumable_session` |
+| `goal_mode/state.py` | `GoalState` + `GoalStateStore`（原子落盘/恢复）+ `find_resumable_session` / `list_resumable_sessions`（全量列出，供 `/goal list`）/ `scan_goal_states`（诊断用） |
 | `goal_mode/runner.py` | `GoalRunner` 外层驱动循环 |
 | `role_agents/goal_judge.py` | GoalJudge：`build_goal_judge_prompt` / `run_goal_judge` |
 | `role_agents/feedback.py` | `extract_goal_status()`，`RoleFeedback.goal_status` 字段 |

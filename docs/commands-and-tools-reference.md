@@ -182,6 +182,7 @@ mini-agent --retry-backoff linear --retry-backoff-step 60 --retry-backoff-max 30
 |------|------|
 | `/goal <目标文本>` | 生成验收标准草案并进入确认子对话（输入修改意见可继续调整，`/confirm` 确认开始执行，`/cancel` 放弃） |
 | `/goal resume [sid]` | 恢复上次未完成的目标；不传 `sid` 时自动查找最近一个 `status=running` 的记录 |
+| `/goal list` | 列出所有可恢复的目标任务（`status=running`，跨 session，可能不止一个） |
 | `/goal status` | 查看当前 session 的 goal 状态（轮次、compact 次数、最后判定） |
 | `/goal cancel` | 清理当前 session 的 `goal_state.json` 记录 |
 
