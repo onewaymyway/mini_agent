@@ -291,6 +291,21 @@ class AgentPaths:
         """<project_root>/.agent/sessions/<session_id>/tasks/"""
         return self.session_dir(session_id) / "tasks"
 
+    # ── 产出物 Manifest（Artifacts）────────────────────────────────────────
+    # 用于「产出物看板」：命令行不便展示的文档/图片类产出，统一以 JSON 清单
+    # 登记，看板据此渲染，而不是靠遍历目录猜测。详见 storage/artifacts.py。
+
+    def session_artifacts_dir(self, session_id: str) -> Path:
+        """<project_root>/.agent/sessions/<session_id>/artifacts/
+        存放该 session 产生的每份产出物 manifest（manifest_<ts>_<slug>.json）。"""
+        return self.session_dir(session_id) / "artifacts"
+
+    def artifacts_index(self) -> Path:
+        """<project_root>/.agent/artifacts_index.jsonl
+        全局产出物索引，每行一条 manifest 摘要（追加写），供看板做
+        「全部产出 / 最近产出」的快速聚合查询，避免遍历所有 session 目录。"""
+        return self.workdir_dir / "artifacts_index.jsonl"
+
     # ── Task 级 ────────────────────────────────────────────────────────────
 
     def task_dir(self, session_id: str, task_id: str) -> Path:

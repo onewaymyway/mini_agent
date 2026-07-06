@@ -73,6 +73,7 @@ class ToolExecutor:
         llm_client=None,           # Optional[LLMClient]，[SYS-SMARTTRIM] 智能摘要用
         raw_result_store=None,     # Optional[RawResultStore]，[SYS-RAWSTORE] 原始输出留存
         persona_getter=None,       # Optional[Callable[[], Optional[str]]]，角色扮演系统 [二期]
+        session_id_getter=None,    # Optional[Callable[[], str]]，供产出物自动侦测登记 manifest 用
     ) -> None:
         self.cfg = cfg
         self.registry = registry
@@ -94,6 +95,10 @@ class ToolExecutor:
         self._llm_client = llm_client
         self._raw_result_store = raw_result_store
         self._persona_getter = persona_getter
+        self._session_id_getter = session_id_getter
+        # [产出物自动侦测] 跨多次 execute_all 调用维护去重状态，见 perception/artifact_detector.py
+        from mini_agent.perception.artifact_detector import ArtifactAutoDetector
+        self._artifact_detector = ArtifactAutoDetector()
 
     def execute_all(
         self,
@@ -310,6 +315,31 @@ class ToolExecutor:
                             _path = tool_input.get("path", "")
                             if _path:
                                 self.file_watcher.register(_path, result_str)
+
+                        # [产出物自动侦测] write_file/create_file/patch_file/bash
+                        # 成功执行后，检查是否生成了文档/图片类产出，自动登记
+                        # manifest 供「产出预览」看板展示。默认关闭
+                        # （perception.artifact_auto_detect_enabled），需显式启用；
+                        # 失败静默、不影响主流程。
+                        if (
+                            getattr(self.cfg, "artifact_auto_detect_enabled", False)
+                            and not result_str.startswith("[error")
+                        ):
+                            try:
+                                from mini_agent.perception.artifact_detector import maybe_record_artifact
+                                _session_id = self._session_id_getter() if self._session_id_getter else ""
+                                maybe_record_artifact(
+                                    self._artifact_detector,
+                                    project_root=getattr(self.cfg, "project_root", None),
+                                    session_id=_session_id,
+                                    tool_name=tc.name,
+                                    tool_input=tool_input,
+                                    result_str=result_str,
+                                )
+                            except Exception as _mini_agent_exc:
+                                from mini_agent.errors import log_exception
+                                log_exception(_mini_agent_exc, where='mini_agent.tool_executor')
+                                pass
 
                         if self.cfg.tool_stats_enabled:
                             self.stats.record_tool_call(tc.name, True, len(result_str))

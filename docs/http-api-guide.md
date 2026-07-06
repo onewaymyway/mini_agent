@@ -115,6 +115,18 @@ curl -H "Authorization: Bearer your-secret-token" http://127.0.0.1:8765/v1/healt
 | `/v1/fs/rename` | POST | 重命名/移动文件 |
 | `/v1/fs/upload` | POST | 上传文件 |
 
+### 产出物 Artifacts
+
+供「产出物看板」/「产出预览」Tab 使用，与 `/v1/fs/*`（遍历目录）不同，这里消费的是
+显式登记的产出物 Manifest（`storage/artifacts.py`），详见
+`docs/artifacts-dashboard-guide.md`。
+
+| 端点 | 方法 | 说明 |
+|------|------|------|
+| `/v1/artifacts` | GET | 列出产出物摘要（`?session_id=xxx` 过滤，`?limit=&offset=` 分页） |
+| `/v1/artifacts/{manifest_id}` | GET | 获取单次产出的完整 manifest（含文件明细） |
+| `/v1/artifacts/{manifest_id}/file` | GET | 取 manifest 内某个文件（`?index=0`，`?download=true` 走附件下载） |
+
 ## 使用示例
 
 ### 1. 发送消息
@@ -353,6 +365,7 @@ curl -H "Authorization: Bearer <token>" http://127.0.0.1:8765/v1/diagnostics
 - [CLI I/O 机制](cli-io-mechanism.md) — HTTP 与命令行协同机制
 - [Web Demo 指南](web-demo-guide.md) — Streamlit Web 界面使用
 - [观察性系统指南](observability-guide.md) — `/diagnostics` 端点与 traces.jsonl 详解
+- [产出物看板指南](artifacts-dashboard-guide.md) — 产出物 Manifest 设计、自动侦测开关
 
 ---
 

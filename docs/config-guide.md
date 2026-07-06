@@ -120,9 +120,13 @@ class PerceptionConfig:
     token_estimate_enabled: bool = False
     token_warn_threshold: float = 0.75
     tool_stats_enabled: bool = False
+    artifact_auto_detect_enabled: bool = False  # 产出物自动侦测，默认关闭
 ```
 
 注意：`tool_cache_max_entries` 是 v2 新增字段，控制 `ToolResultCache` 的 LRU 容量上限。
+`artifact_auto_detect_enabled` 打开后，`write_file`/`create_file`/`patch_file(_simple)`/
+`bash` 成功执行时会自动扫描文档/图片类产出并登记到产出物看板，详见
+[产出物看板指南](artifacts-dashboard-guide.md)。
 
 ### SkillConfig
 

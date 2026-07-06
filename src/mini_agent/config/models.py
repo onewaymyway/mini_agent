@@ -209,6 +209,10 @@ class PerceptionConfig:
     token_estimate_enabled: bool = False
     token_warn_threshold: float = 0.75
     tool_stats_enabled: bool = False
+    # 产出物自动侦测：write_file/create_file/patch_file/bash 成功执行后自动
+    # 扫描是否生成了文档/图片类产出并登记到产出物看板。默认关闭——涉及对
+    # bash 命令/输出做正则扫描 + 文件系统访问，需用户显式启用。
+    artifact_auto_detect_enabled: bool = False
 
 
 @dataclass
@@ -780,6 +784,8 @@ class AppConfig:
     def token_warn_threshold(self) -> float:    return self.perception.token_warn_threshold
     @property
     def tool_stats_enabled(self) -> bool:       return self.perception.tool_stats_enabled
+    @property
+    def artifact_auto_detect_enabled(self) -> bool: return self.perception.artifact_auto_detect_enabled
 
     @property
     def workdir_knowledge_enabled(self) -> bool: return self.workdir_knowledge.enabled

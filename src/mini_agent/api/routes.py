@@ -47,6 +47,10 @@ api/routes.py — FastAPI 路由定义
     DELETE /v1/fs/delete             删除
     POST   /v1/fs/rename             重命名/移动
     POST   /v1/fs/upload             上传文件
+  产出物（Artifacts，供「产出物看板」使用）
+    GET    /v1/artifacts             列出产出物摘要（?session_id=xxx 可过滤，?limit=&offset=）
+    GET    /v1/artifacts/{id}        某次产出的完整 manifest（含文件明细）
+    GET    /v1/artifacts/{id}/file   下载/预览 manifest 内某个文件（?index=0）
   自主执行状态（daemon 自主运行能力）
     GET    /v1/autonomous/status     当前 autonomy_level + cron job 状态 + Objective 执行进度
     GET    /v1/goals                 GoalBacklog 完整视图（active goals + objectives）
@@ -1489,6 +1493,91 @@ async def get_self_status(request: Request):
         }
 
     return result
+
+
+# ── 产出物 Artifacts ──────────────────────────────────────────────────────────
+# 供「产出物看板」使用：与 /fs/* 不同，这里不是遍历目录，而是消费 Agent/工具
+# 主动登记的 manifest（storage/artifacts.py），语义化地展示"这次任务产出了什么"。
+
+def _artifacts_project_root(request: Request) -> Path:
+    project_root = getattr(request.app.state, "project_root", None)
+    if project_root is None:
+        raise HTTPException(status_code=503, detail="project_root not configured")
+    return project_root
+
+
+@router.get("/artifacts")
+async def list_artifacts_route(
+    request: Request,
+    session_id: Optional[str] = Query(default=None, description="按 session 过滤"),
+    limit:  int = Query(default=50, le=200),
+    offset: int = Query(default=0, ge=0),
+):
+    """GET /v1/artifacts — 列出产出物摘要（按时间倒序）。"""
+    from mini_agent.storage.paths import AgentPaths
+    from mini_agent.storage.artifacts import list_artifacts
+
+    paths = AgentPaths(_artifacts_project_root(request))
+    items = list_artifacts(paths, session_id=session_id, limit=limit, offset=offset)
+    return {"items": items, "count": len(items)}
+
+
+@router.get("/artifacts/{manifest_id}")
+async def get_artifact_route(
+    request: Request,
+    manifest_id: str,
+    session_id: Optional[str] = Query(default=None, description="已知 session_id 时提供可加速查找"),
+):
+    """GET /v1/artifacts/{manifest_id} — 单次产出的完整 manifest（含文件明细）。"""
+    from mini_agent.storage.paths import AgentPaths
+    from mini_agent.storage.artifacts import get_manifest
+
+    paths = AgentPaths(_artifacts_project_root(request))
+    manifest = get_manifest(paths, manifest_id, session_id=session_id)
+    if manifest is None:
+        raise HTTPException(status_code=404, detail=f"artifact manifest {manifest_id!r} not found")
+    return manifest
+
+
+@router.get("/artifacts/{manifest_id}/file")
+async def get_artifact_file_route(
+    request: Request,
+    manifest_id: str,
+    index: int = Query(default=0, ge=0, description="manifest.files 里的第几个文件"),
+    session_id: Optional[str] = Query(default=None),
+    download: bool = Query(default=False, description="true 强制走附件下载而非内联展示"),
+):
+    """GET /v1/artifacts/{manifest_id}/file — 取 manifest 内某个文件本身。
+
+    注意：manifest.files[].path 是登记时的绝对路径，可能位于 project_root 之外
+    （例如 /mnt/user-data/outputs/），因此这里不走 FsHelper 的 project_root jail，
+    而是直接校验路径存在且的确是 manifest 里登记过的路径（不接受调用方传入任意路径）。
+    """
+    from mini_agent.storage.paths import AgentPaths
+    from mini_agent.storage.artifacts import get_manifest
+
+    paths = AgentPaths(_artifacts_project_root(request))
+    manifest = get_manifest(paths, manifest_id, session_id=session_id)
+    if manifest is None:
+        raise HTTPException(status_code=404, detail=f"artifact manifest {manifest_id!r} not found")
+
+    files = manifest.get("files", [])
+    if index >= len(files):
+        raise HTTPException(status_code=404, detail=f"file index {index} out of range (0..{len(files)-1})")
+
+    file_entry = files[index]
+    full = Path(file_entry["path"])
+    if not full.exists() or full.is_dir():
+        raise HTTPException(status_code=404, detail=f"{file_entry['path']!r} not found or is a directory")
+
+    media_type = file_entry.get("mime") or "application/octet-stream"
+    return FileResponse(
+        path=str(full),
+        filename=full.name,
+        media_type=media_type,
+        content_disposition_type="attachment" if download else "inline",
+    )
+
 
 # ── 自主执行状态 ──────────────────────────────────────────────────────────────
 

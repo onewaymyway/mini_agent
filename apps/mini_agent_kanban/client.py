@@ -163,3 +163,22 @@ class AgentClient:
 
     def fs_download_url(self, path):
         return self._url(f"/fs/download?path={requests.utils.quote(path)}")
+
+    # ── 产出物 Artifacts（产出物看板）────────────────────────────────
+    def list_artifacts(self, session_id: str = None, limit: int = 50, offset: int = 0):
+        params = {"limit": limit, "offset": offset}
+        if session_id:
+            params["session_id"] = session_id
+        return self._get("/artifacts", params=params)
+
+    def get_artifact(self, manifest_id: str, session_id: str = None):
+        params = {"session_id": session_id} if session_id else None
+        return self._get(f"/artifacts/{manifest_id}", params=params)
+
+    def artifact_file_url(self, manifest_id: str, index: int = 0, session_id: str = None, download: bool = False):
+        q = f"index={index}"
+        if session_id:
+            q += f"&session_id={requests.utils.quote(session_id)}"
+        if download:
+            q += "&download=true"
+        return self._url(f"/artifacts/{manifest_id}/file?{q}")

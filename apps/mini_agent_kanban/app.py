@@ -7,6 +7,8 @@ Mini-Agent 看板 (Kanban Dashboard)
   - Tab2 🗂️ 会话管理：会话列表 / 新建 / 恢复 / 删除
   - Tab3 📌 看板：Goal / Objective / Cron Job 看板列
   - Tab4 📁 产出物：.agent/ 目录文件浏览与预览下载
+  - Tab4.5 🖼️ 产出预览：按任务/session 登记的产出物 manifest 语义化展示
+                  （图片内联预览、文档下载，支持 ?manifest_id=/?session_id= 深链接）
   - Tab5 🧠 自我状态：具身智能自省信息、SessionPool 概况
   - Tab6 🔧 诊断：/diagnostics 原始信息，方便调试
 
@@ -146,10 +148,28 @@ def init_state():
         "event_log": [],
         "autorefresh_tick": 0,
         "fs_path": ".",
+        "artifacts_session_filter": "",
+        "artifacts_open_id": None,
     }
     for k, v in defaults.items():
         if k not in st.session_state:
             st.session_state[k] = v
+
+
+def apply_deep_link_query_params():
+    """支持通过 URL 深链接直接定位到某次产出/某个 session 的产出列表：
+        ?manifest_id=xxx            打开该 manifest 详情
+        ?session_id=xxx             产出预览 tab 按该 session 过滤
+        ?session_id=xxx&tab=artifacts   同上，并提示应打开产出预览 tab
+    只在参数存在时写入 session_state，交由渲染函数消费；不清空未出现的参数，
+    避免用户手动改 URL 时把其它 state 冲掉。"""
+    qp = st.query_params
+    manifest_id = qp.get("manifest_id")
+    session_id = qp.get("session_id")
+    if manifest_id:
+        st.session_state.artifacts_open_id = manifest_id
+    if session_id:
+        st.session_state.artifacts_session_filter = session_id
 
 
 def get_client() -> AgentClient:
@@ -512,6 +532,84 @@ def render_artifacts_tab(client: AgentClient):
 
 
 # ═══════════════════════════════════════════════════════════════════════
+# Tab 4.5: 产出预览（语义化产出物看板，区别于上面按目录浏览的 Tab4）
+# ═══════════════════════════════════════════════════════════════════════
+ARTIFACT_TYPE_ICON = {
+    "image": "🖼️", "document": "📄", "pdf": "📕",
+    "code": "💻", "text": "📝", "other": "📦",
+}
+
+
+def _render_artifact_file(client: AgentClient, manifest_id: str, session_id: str, idx: int, f: dict):
+    ftype = f.get("type", "other")
+    title = f.get("title") or f.get("path", "").split("/")[-1]
+    icon = ARTIFACT_TYPE_ICON.get(ftype, "📦")
+    file_url = client.artifact_file_url(manifest_id, index=idx, session_id=session_id)
+    download_url = client.artifact_file_url(manifest_id, index=idx, session_id=session_id, download=True)
+
+    st.markdown(f"**{icon} {title}**  ·  `{f.get('path','')}`")
+    if ftype == "image":
+        st.image(file_url, caption=title)
+    elif ftype == "pdf":
+        st.markdown(f"[🔎 在新标签页打开预览]({file_url})  ·  [⬇️ 下载]({download_url})")
+    elif ftype in ("code", "text"):
+        data = client.fs_read(f.get("path", "")) or {}
+        content = data.get("content")
+        if content is not None:
+            lang = "python" if f.get("path", "").endswith(".py") else None
+            st.code(content[:5000], language=lang)
+        st.markdown(f"[⬇️ 下载]({download_url})")
+    else:
+        st.markdown(f"文档类产出暂不支持内联预览，请下载查看：[⬇️ 下载]({download_url})")
+    st.caption(f"大小: {f.get('size', '?')} bytes")
+
+
+def render_artifacts_preview_tab(client: AgentClient):
+    st.markdown("#### 🖼️ 产出预览")
+    st.caption("按任务/会话登记的产出物（文档、图片等命令行不便展示的内容）。"
+               "可通过 `?manifest_id=xxx` 或 `?session_id=xxx` 深链接直达。")
+
+    c1, c2 = st.columns([3, 1])
+    session_filter = c1.text_input("按 Session ID 过滤（留空=全部）", st.session_state.artifacts_session_filter)
+    st.session_state.artifacts_session_filter = session_filter
+    if c2.button("🔄 刷新列表"):
+        st.rerun()
+
+    resp = client.list_artifacts(session_id=session_filter or None, limit=100)
+    if not resp or "_error" in (resp or {}):
+        st.warning((resp or {}).get("_error", "暂无产出物数据"))
+        return
+
+    items = resp.get("items", [])
+    if not items:
+        st.info("暂无产出物记录。任务完成后可通过 record_artifact() 登记产出。")
+        return
+
+    # 若 URL 深链接指定了 manifest_id，优先展开该项
+    open_id = st.session_state.artifacts_open_id
+
+    for item in items:
+        mid = item.get("manifest_id")
+        sid = item.get("session_id")
+        title = item.get("title", "未命名产出")
+        types_str = " ".join(ARTIFACT_TYPE_ICON.get(t, "📦") for t in item.get("types", []))
+        header = f"{types_str} {title} · session={sid} · {item.get('created_at','')[:19]} · {item.get('file_count',0)} 个文件"
+        expanded = (mid == open_id)
+        with st.expander(header, expanded=expanded):
+            share_link = f"?manifest_id={mid}"
+            st.caption(f"🔗 分享链接参数: `{share_link}`（拼到看板 URL 后即可直达）")
+            detail = client.get_artifact(mid, session_id=sid) or {}
+            if "_error" in detail:
+                st.error(detail["_error"])
+                continue
+            if detail.get("description"):
+                st.markdown(f"> {detail['description']}")
+            for idx, f in enumerate(detail.get("files", [])):
+                _render_artifact_file(client, mid, sid, idx, f)
+                st.divider()
+
+
+# ═══════════════════════════════════════════════════════════════════════
 # Tab 5: 自我状态
 # ═══════════════════════════════════════════════════════════════════════
 def render_self_tab(client: AgentClient):
@@ -564,6 +662,7 @@ def render_diagnostics_tab(client: AgentClient):
 def main():
     inject_css()
     init_state()
+    apply_deep_link_query_params()
     client = render_sidebar()
 
     if not client.health():
@@ -572,7 +671,7 @@ def main():
 
     render_topbar(client)
 
-    tabs = st.tabs(["💬 对话", "🗂️ 会话管理", "📌 目标看板", "📁 产出物", "🧠 自我状态", "🔧 诊断"])
+    tabs = st.tabs(["💬 对话", "🗂️ 会话管理", "📌 目标看板", "📁 产出物", "🖼️ 产出预览", "🧠 自我状态", "🔧 诊断"])
     with tabs[0]:
         render_chat_tab(client)
     with tabs[1]:
@@ -582,8 +681,10 @@ def main():
     with tabs[3]:
         render_artifacts_tab(client)
     with tabs[4]:
-        render_self_tab(client)
+        render_artifacts_preview_tab(client)
     with tabs[5]:
+        render_self_tab(client)
+    with tabs[6]:
         render_diagnostics_tab(client)
 
     if st.session_state.get("auto_refresh"):

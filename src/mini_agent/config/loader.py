@@ -130,6 +130,7 @@ def load_config(
     token_estimate_enabled: Optional[bool] = None,
     token_warn_threshold: Optional[float] = None,
     tool_stats_enabled: Optional[bool] = None,
+    artifact_auto_detect_enabled: Optional[bool] = None,
     # reminder 系统
     reminder_enabled: Optional[bool] = None,
     reminders_dir: Optional[Path] = None,
@@ -357,6 +358,7 @@ def load_config(
         token_estimate_enabled=_fb("token_estimate_enabled", token_estimate_enabled),
         token_warn_threshold=_fn("token_warn_threshold", token_warn_threshold, 0.75),
         tool_stats_enabled=_fb("tool_stats_enabled", tool_stats_enabled),
+        artifact_auto_detect_enabled=_fb("artifact_auto_detect_enabled", artifact_auto_detect_enabled),
     )
 
     _session_dir_str = (

@@ -6,7 +6,8 @@
 
 `apps/mini_agent_kanban/app.py` 是在 `apps/mini_agent_webdemo`（纯聊天 Web Demo）基础上
 扩展出的**多 Tab 综合面板**，一次性提供聊天、会话管理、目标/Cron 看板、产出物浏览、
-具身智能自省状态、诊断信息六大功能区，适合日常观测 daemon 运行状态，而不仅仅是聊天。
+产出预览（语义化产出物看板）、具身智能自省状态、诊断信息七大功能区，适合日常观测 daemon
+运行状态，而不仅仅是聊天。
 
 与 `web-demo-guide.md` 中的 Web Demo 是两个独立的 Streamlit 应用，二者都通过 HTTP API
 （`/v1/*`）连接同一个 daemon，可以按需选用：只想聊天用 Web Demo，想看目标/Cron/多用户
@@ -50,6 +51,7 @@ streamlit run app.py
 | 🗂️ 会话管理 | 会话列表、新建 / 恢复 / 删除会话 |
 | 📌 目标看板 | Goal / Objective 看板（按状态分列）、新建目标、Cron Job 管理与手动触发、Objective 执行进度 |
 | 📁 产出物 | 浏览 `.agent/` 等目录下产出文件，预览与下载 |
+| 🖼️ 产出预览 | 按任务/session 登记的产出物 manifest 语义化展示（图片内联、文档下载），支持深链接直达 |
 | 🧠 自我状态 | 具身智能自省信息（自主循环摘要、活跃目标数、最近活动、多用户会话池 SessionPool 概况） |
 | 🔧 诊断 | `/diagnostics` 原始信息，便于排障 |
 
@@ -70,6 +72,24 @@ Web Demo 的事件流面板类似，但集成在同一多 Tab 界面中。
 
 详见 `docs/autonomous_daemon_design.md`、`docs/goal-mode-guide.md` 了解 Goal/Cron/
 Objective 背后的调度机制。
+
+### 🖼️ 产出预览 Tab
+
+与 📁 产出物 Tab（按目录遍历文件系统）不同，本 Tab 消费的是**产出物 Manifest**——
+一份登记了"这次任务产出了什么"的 JSON 清单（`storage/artifacts.py`），语义更明确，
+渲染方式也按文件类型区分（图片直接内联展示、文档给下载链接、代码/文本内联预览）。
+
+- 顶部可按 `session_id` 过滤，也支持直接留空看全部产出（按时间倒序）。
+- 每条产出可展开查看其下所有文件，并附带一段可复制的深链接参数
+  `?manifest_id=xxx`，拼到看板 URL 后即可直接定位打开该次产出
+  （也支持 `?session_id=xxx` 定位到某个 session 的产出列表）。
+- Manifest 的产生有两种方式：
+  1. **手动登记**：工具/Agent 代码里调用 `storage.artifacts.record_artifact(...)`。
+  2. **自动侦测**（默认关闭）：`write_file` / `create_file` / `patch_file(_simple)` /
+     `bash` 等工具成功执行后，自动扫描是否生成了文档/图片类产出并登记。
+     需要在配置中显式打开 `artifact_auto_detect_enabled: true`（默认
+     `false`，因为涉及对 bash 命令/输出做正则扫描 + 额外文件系统访问）。
+     详见 `docs/artifacts-dashboard-guide.md`。
 
 ### 🧠 自我状态 Tab
 
@@ -98,6 +118,7 @@ Objective 背后的调度机制。
 | `goals()` / `add_goal()` / `update_goal()` | `/v1/goals*` | Goal 看板 |
 | `cron_jobs()` / `add_cron_job()` / `update_cron_job()` / `run_cron_job_now()` | `/v1/cron*` | Cron Job 管理 |
 | `fs_list()` / `fs_read()` / `fs_download_url()` | `/v1/fs/*` | 产出物浏览与下载 |
+| `list_artifacts()` / `get_artifact()` / `artifact_file_url()` | `/v1/artifacts*` | 产出物 Manifest 列表、详情、文件预览/下载 |
 
 ## 使用场景
 
@@ -117,14 +138,15 @@ Objective 背后的调度机制。
 
 ## 相关文件
 
-- `apps/mini_agent_kanban/app.py` — 看板主程序（6 个 Tab）
+- `apps/mini_agent_kanban/app.py` — 看板主程序（7 个 Tab）
 - `apps/mini_agent_kanban/client.py` — `AgentClient` HTTP 封装
 - `apps/mini_agent_kanban/README.md` — 应用自带的简要说明
 - `docs/http-api-guide.md` — HTTP API 完整参考
+- `docs/artifacts-dashboard-guide.md` — 产出物 Manifest 设计与自动侦测开关详解
 - `docs/web-demo-guide.md` — 姊妹应用（纯聊天 Web Demo）
 - `docs/multi-user-guide.md`、`docs/autonomous_daemon_design.md`、
   `docs/goal-mode-guide.md`、`docs/embodied-agent-guide.md` — 看板中各功能区背后的机制
 
 ---
 
-*最后更新：2026-07-04*
+*最后更新：2026-07-06*
