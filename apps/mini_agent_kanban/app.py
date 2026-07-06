@@ -139,12 +139,32 @@ def inject_css():
 # ═══════════════════════════════════════════════════════════════════════
 # Session State
 # ═══════════════════════════════════════════════════════════════════════
+def _parse_cli_args():
+    """
+    解析启动命令行参数（streamlit 需要把参数放在 `--` 之后转发给脚本）：
+        streamlit run apps/mini_agent_kanban/app.py -- --auto-token --project-root "E:\\codes\\mini_claude_code"
+    用 parse_known_args 忽略 streamlit 自身可能残留的未知参数，避免直接
+    `python app.py` 或不同 streamlit 版本转发方式不一致时报错退出。
+    """
+    import argparse
+    import sys
+
+    parser = argparse.ArgumentParser(add_help=False)
+    parser.add_argument("--auto-token", action="store_true", dest="auto_token",
+                         help="启动时自动从项目 .agent 目录读取 token，不用手动粘贴")
+    parser.add_argument("--project-root", dest="project_root", default="",
+                         help="项目根目录（包含 .agent/ 子目录），配合 --auto-token 使用；不传则用当前工作目录")
+    args, _unknown = parser.parse_known_args(sys.argv[1:])
+    return args
+
+
 def init_state():
+    cli_args = _parse_cli_args()
     defaults = {
         "api_base": "http://127.0.0.1:8765/v1",
         "token": "",
-        "project_root": "",
-        "auto_token": False,
+        "project_root": cli_args.project_root,
+        "auto_token": cli_args.auto_token,
         "messages": [],
         "last_event_id": 0,
         "event_log": [],
@@ -181,28 +201,31 @@ def get_client() -> AgentClient:
 def _read_token_from_project(project_root: str) -> tuple:
     """
     按 mini-agent 自身的约定去项目目录里找 token 明文文件，返回
-    (token_or_None, 命中的文件路径_or_None)。
+    (token_or_None, 命中的文件路径_or_None, 已尝试的路径列表)。
     查找顺序（与 cli/daemon.py::DaemonClient 保持一致，外加 owner.key 兜底）：
         1. <project_root>/.agent/agent_api.key         （单用户模式主 token）
         2. <project_root>/.agent/users/tokens/owner.key （多用户模式 owner token）
-    project_root 为空时用当前工作目录。
+    project_root 为空时用当前工作目录。会去掉传参时可能带的首尾引号
+    （比如从资源管理器地址栏复制路径时经常带双引号）。
     """
     from pathlib import Path
 
-    root = Path(project_root).expanduser() if project_root.strip() else Path.cwd()
+    raw = (project_root or "").strip().strip('"').strip("'")
+    root = Path(raw).expanduser().resolve() if raw else Path.cwd().resolve()
     candidates = [
         root / ".agent" / "agent_api.key",
         root / ".agent" / "users" / "tokens" / "owner.key",
     ]
+    tried = [str(p) for p in candidates]
     for p in candidates:
         try:
-            if p.exists():
+            if p.is_file():
                 text = p.read_text(encoding="utf-8").strip()
                 if text:
-                    return text, str(p)
+                    return text, str(p), tried
         except Exception:
             continue
-    return None, None
+    return None, None, tried
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -212,27 +235,19 @@ def render_sidebar():
     st.sidebar.markdown("### ⚙️ 连接配置")
     st.session_state.api_base = st.sidebar.text_input("API Base URL", st.session_state.api_base)
 
-    st.session_state.auto_token = st.sidebar.checkbox(
-        "🔑 自动从项目文件读取 Token", value=st.session_state.get("auto_token", False),
-        help="开启后从 <项目根目录>/.agent/agent_api.key（单用户）"
-             " 或 .agent/users/tokens/owner.key（多用户 owner）读取明文 token，"
-             "不用再手动复制粘贴。",
-    )
-
     if st.session_state.auto_token:
-        st.session_state.project_root = st.sidebar.text_input(
-            "项目根目录", st.session_state.project_root,
-            placeholder="留空则用当前工作目录",
-            help="daemon 启动时所在的 mini_claude_code 项目根目录（含 .agent/ 子目录）",
-        )
-        token, hit_path = _read_token_from_project(st.session_state.project_root)
+        token, hit_path, tried = _read_token_from_project(st.session_state.project_root)
         if token:
             st.session_state.token = token
-            st.sidebar.caption(f"✅ 已从 `{hit_path}` 读取 token")
+            st.sidebar.caption(f"✅ 已从 `{hit_path}` 自动读取 token（--auto-token）")
         else:
-            st.sidebar.warning("未找到 token 文件，请检查项目根目录路径，或关闭此开关手动输入")
-        # 只读展示，避免自动模式下用户误改却看起来像手动生效
-        st.sidebar.text_input("Token（自动读取，只读）", st.session_state.token,
+            st.sidebar.warning(
+                "❌ 未找到 token 文件（--auto-token 已开启），尝试过：\n"
+                + "\n".join(f"- `{p}`" for p in tried)
+            )
+        # 只读展示，避免自动模式下用户误改却看起来像手动生效；
+        # 手动改用命令行去掉 --auto-token 重启即可切回手动输入。
+        st.sidebar.text_input("Token（--auto-token 自动读取，只读）", st.session_state.token,
                                 type="password", disabled=True)
     else:
         st.session_state.token = st.sidebar.text_input(
