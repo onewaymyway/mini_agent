@@ -533,6 +533,15 @@ class Agent:
                 fail_threshold=getattr(self.cfg.memory, "lesson_fail_threshold", 3),
             )
 
+        # [record_artifact 工具] 注入 project_root + session_id 懒引用，供 Agent
+        # 主动调用 record_artifact 工具登记产出物（perception/artifact_detector.py
+        # 是被动自动侦测，这里是工具主动调用，二者并存）。
+        from mini_agent.tools.builtin import configure_artifact_tool
+        configure_artifact_tool(
+            getattr(self.cfg, "project_root", None),
+            lambda: (self._session.id if self._session else ""),
+        )
+
         self._tool_executor = ToolExecutor(
             cfg=self.cfg,
             registry=self.registry,

@@ -1147,3 +1147,119 @@ def web_search(query: str, max_results: Optional[int] = None, provider: Optional
         # 未知 provider 名称
         return f"[web_search error] {exc}"
 
+
+# ── record_artifact [产出物看板] ──────────────────────────────────────────────
+
+# 由 Agent 初始化时注入 (project_root, session_id_getter)，供 record_artifact()
+# 工具使用；未注入时工具直接报错提示（不会静默失败误导 Agent）。
+_artifact_project_root = None
+_artifact_session_id_getter = None
+
+
+def configure_artifact_tool(project_root, session_id_getter) -> None:
+    """由 Agent 初始化时注入 project_root 与 session_id 的懒引用（session 可能
+    在 Agent 构造完成后才创建/恢复，所以用 getter 而不是直接传值）。"""
+    global _artifact_project_root, _artifact_session_id_getter
+    _artifact_project_root = project_root
+    _artifact_session_id_getter = session_id_getter
+
+
+@tool(
+    name="record_artifact",
+    description=(
+        "Register one or more output files (documents, images, PDFs, etc.) as a "
+        "single 'artifact' so the user can view them in the Artifacts Dashboard "
+        "instead of a plain file path printed to the terminal. "
+        "\n\n"
+        "USE THIS whenever you have just produced a deliverable that is awkward "
+        "to show in a chat/CLI response — a Word/PowerPoint/Excel document, a "
+        "PDF, an image or chart, a rendered diagram, etc. — and you want the "
+        "user to be able to open/preview/download it properly. "
+        "\n\n"
+        "Do NOT use this for plain text/code/markdown you can just show inline "
+        "in your response, and do not call it again for a file you already "
+        "registered and haven't changed. "
+        "\n\n"
+        "After a successful call, tell the user their output is ready and that "
+        "they can view it in the Artifacts Dashboard (Kanban app -> "
+        "'🖼️ 产出预览' tab); the tool result includes a manifest_id you can "
+        "mention if useful."
+    ),
+    schema={
+        "type": "object",
+        "properties": {
+            "title": {
+                "type": "string",
+                "description": "Short human-readable title for this artifact, e.g. '季度报告生成' or 'Sales trend chart'.",
+            },
+            "files": {
+                "type": "array",
+                "description": (
+                    "List of output files belonging to this artifact. Each item is "
+                    "either a plain file path string, or an object "
+                    "{path, type?, title?} where type is one of "
+                    "image|document|pdf|code|text|other (auto-inferred from the "
+                    "file extension if omitted)."
+                ),
+                "items": {
+                    "anyOf": [
+                        {"type": "string"},
+                        {
+                            "type": "object",
+                            "properties": {
+                                "path": {"type": "string"},
+                                "type": {
+                                    "type": "string",
+                                    "enum": ["image", "document", "pdf", "code", "text", "other"],
+                                },
+                                "title": {"type": "string"},
+                            },
+                            "required": ["path"],
+                        },
+                    ]
+                },
+            },
+            "description": {
+                "type": "string",
+                "description": "Optional longer description of what this artifact is / how it was produced.",
+            },
+        },
+        "required": ["title", "files"],
+    },
+    requires_approval=False,
+)
+def record_artifact(title: str, files: list, description: Optional[str] = None) -> str:
+    """登记一次产出物，供「产出预览」看板展示（详见 docs/artifacts-dashboard-guide.md）。"""
+    if _artifact_project_root is None:
+        return "[error: record_artifact is not configured (missing project_root); this should not happen — please report it)]"
+
+    session_id = _artifact_session_id_getter() if _artifact_session_id_getter else ""
+    if not session_id:
+        return "[error: no active session_id available; cannot register artifact without a session]"
+
+    if not files:
+        return "[error: 'files' must contain at least one file]"
+
+    try:
+        from mini_agent.storage.paths import AgentPaths
+        from mini_agent.storage.artifacts import record_artifact as _record_artifact
+
+        paths = AgentPaths(_artifact_project_root)
+        manifest = _record_artifact(
+            paths,
+            session_id,
+            title,
+            files,
+            description=description,
+            source={"tool": "record_artifact", "auto_detected": False},
+        )
+    except (ValueError, OSError) as exc:
+        return f"[error: failed to register artifact: {exc}]"
+
+    file_lines = "\n".join(f"  - [{f.type}] {f.title} ({f.path})" for f in manifest.files)
+    return (
+        f"Artifact registered: manifest_id={manifest.manifest_id!r}\n"
+        f"Title: {manifest.title}\n"
+        f"Files:\n{file_lines}\n"
+        f"The user can view this in the Artifacts Dashboard (产出预览 tab)."
+    )
