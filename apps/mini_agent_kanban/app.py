@@ -17,6 +17,7 @@ Mini-Agent 看板 (Kanban Dashboard)
 """
 import time
 from datetime import datetime
+from pathlib import Path
 
 import streamlit as st
 import streamlit.components.v1 as components
@@ -154,6 +155,11 @@ def _parse_cli_args():
                          help="启动时自动从项目 .agent 目录读取 token，不用手动粘贴")
     parser.add_argument("--project-root", dest="project_root", default="",
                          help="项目根目录（包含 .agent/ 子目录），配合 --auto-token 使用；不传则用当前工作目录")
+    parser.add_argument("--require-login", action="store_true", dest="require_login",
+                         help="开启看板登录门禁：必须先用账户密码登录才能看到看板内容")
+    parser.add_argument("--users-file", dest="users_file", default="",
+                         help="账户文件路径，配合 --require-login 使用；不传则用 "
+                              "<项目根目录>/.agent/kanban_users.json（相对路径按项目根目录解析）")
     args, _unknown = parser.parse_known_args(sys.argv[1:])
     return args
 
@@ -208,8 +214,6 @@ def _read_token_from_project(project_root: str) -> tuple:
     project_root 为空时用当前工作目录。会去掉传参时可能带的首尾引号
     （比如从资源管理器地址栏复制路径时经常带双引号）。
     """
-    from pathlib import Path
-
     raw = (project_root or "").strip().strip('"').strip("'")
     root = Path(raw).expanduser().resolve() if raw else Path.cwd().resolve()
     candidates = [
@@ -226,6 +230,107 @@ def _read_token_from_project(project_root: str) -> tuple:
         except Exception:
             continue
     return None, None, tried
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# 登录门禁（可选，--require-login 开启）
+# ═══════════════════════════════════════════════════════════════════════
+def _auth_paths(cli_args) -> tuple:
+    """解析账户文件 / 签名密钥文件 / 登录失败限流记录文件的实际路径，都挂在
+    项目根目录的 .agent/ 下，和 token 自动读取共用同一个"项目根目录"概念，
+    避免用户要理解好几套路径规则。"""
+    root = Path(cli_args.project_root).expanduser().resolve() if cli_args.project_root.strip() else Path.cwd().resolve()
+    if cli_args.users_file.strip():
+        users_file = Path(cli_args.users_file).expanduser()
+        if not users_file.is_absolute():
+            users_file = root / users_file
+    else:
+        users_file = root / ".agent" / "kanban_users.json"
+    secret_file = root / ".agent" / "kanban_session_secret"
+    attempts_file = root / ".agent" / "kanban_login_attempts.json"
+    return users_file, secret_file, attempts_file
+
+
+def _client_id() -> str:
+    """尽量拿到一个能代表"客户端"的标识用于登录限流分桶，拿不到就返回空串
+    （退化成纯按用户名限流，仍然有效，只是没法把"同一 IP 换用户名猛试"
+    和"同一用户名被不同人试"区分开）。取 X-Forwarded-For 是因为看板通常
+    跑在反向代理后面；没有代理时这个头不存在，直接拿不到也没关系。"""
+    try:
+        headers = st.context.headers  # Streamlit >= 1.37
+        fwd = headers.get("X-Forwarded-For", "")
+        if fwd:
+            return fwd.split(",")[0].strip()
+        return headers.get("Host", "") or ""
+    except Exception:
+        return ""
+
+
+def render_login_gate(cli_args) -> bool:
+    """登录门禁。返回 True 表示已通过验证，调用方可以继续往下渲染看板；
+    返回 False 表示这里已经把登录表单/提示画完了，调用方应直接 return，
+    不能再渲染任何看板内容（否则未登录也能看到数据）。"""
+    from auth import UserStore, LoginAttemptTracker, make_token, verify_token, get_or_create_secret
+
+    users_file, secret_file, attempts_file = _auth_paths(cli_args)
+    store = UserStore(users_file)
+    tracker = LoginAttemptTracker(attempts_file)
+
+    if st.session_state.get("authenticated"):
+        return True
+
+    secret = get_or_create_secret(secret_file)
+
+    # 优先尝试用 URL 里的免登录 token 自动恢复登录态，这样刷新页面 /
+    # 重新打开浏览器标签不会强制要求重新输入密码（12 小时内有效）。
+    qp_token = st.query_params.get("auth")
+    if qp_token:
+        username = verify_token(qp_token, secret)
+        if username:
+            st.session_state.authenticated = True
+            st.session_state.username = username
+            return True
+
+    st.markdown("## 🔐 mini-agent 看板登录")
+
+    if store.is_empty():
+        st.warning(
+            "尚未创建任何账户，看板无法登录。请先在服务器上执行：\n\n"
+            f"```\npython apps/mini_agent_kanban/manage_users.py add <用户名> "
+            f"--users-file \"{users_file}\"\n```"
+        )
+        return False
+
+    with st.form("login_form"):
+        username = st.text_input("用户名")
+        password = st.text_input("密码", type="password")
+        submitted = st.form_submit_button("登录", use_container_width=True)
+
+    if submitted:
+        client_id = _client_id()
+        remaining = tracker.seconds_until_unlocked(username, client_id)
+        if remaining > 0:
+            mins = int(remaining // 60) + 1
+            st.error(f"🔒 该账户登录失败次数过多，已被临时锁定，请约 {mins} 分钟后再试。")
+        elif store.verify(username, password):
+            tracker.record_success(username, client_id)
+            st.session_state.authenticated = True
+            st.session_state.username = username
+            st.query_params["auth"] = make_token(username, secret)
+            st.rerun()
+        else:
+            tracker.record_failure(username, client_id)
+            left = max(tracker.max_attempts - _current_fail_count(tracker, username, client_id), 0)
+            st.error(f"用户名或密码错误。（连续失败达到上限会临时锁定该账户，剩余尝试次数：{left}）")
+
+    return False
+
+
+def _current_fail_count(tracker, username: str, client_id: str) -> int:
+    """仅用于登录页给用户展示"还剩几次尝试机会"的提示信息，读一次记录文件。"""
+    data = tracker._load()  # noqa: SLF001 — 同模块内部工具函数，未对外暴露正式 API
+    entry = data.get(tracker._key(username, client_id))
+    return entry.get("count", 0) if entry else 0
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -780,9 +885,24 @@ def render_diagnostics_tab(client: AgentClient):
 # 主流程
 # ═══════════════════════════════════════════════════════════════════════
 def main():
+    cli_args = _parse_cli_args()
     inject_css()
     init_state()
     apply_deep_link_query_params()
+
+    if cli_args.require_login:
+        if not render_login_gate(cli_args):
+            return  # 登录表单已经渲染完，未通过验证前不能往下渲染任何看板内容
+        with st.sidebar:
+            st.caption(f"👤 已登录：{st.session_state.get('username', '')}")
+            if st.button("🚪 退出登录"):
+                st.session_state.authenticated = False
+                st.session_state.pop("username", None)
+                if "auth" in st.query_params:
+                    del st.query_params["auth"]
+                st.rerun()
+            st.divider()
+
     client = render_sidebar()
 
     if not client.health():
