@@ -106,6 +106,7 @@ def _model_based_signal(
     prompt: str,
     cfg,
     judge_model: Optional[str] = None,
+    judge_provider: Optional[str] = None,
 ) -> tuple[bool, str]:
     """
     模型自判层：用一次低成本调用问模型 "是否值得 ensemble"。
@@ -117,7 +118,7 @@ def _model_based_signal(
 
         base_llm_cfg = LLMConfig.from_app_config(cfg)
         llm_cfg = LLMConfig(
-            provider=base_llm_cfg.provider,
+            provider=judge_provider or base_llm_cfg.provider,
             model=judge_model or base_llm_cfg.model,
             api_key=base_llm_cfg.api_key,
             base_url=base_llm_cfg.base_url,
@@ -209,7 +210,12 @@ def should_trigger_ensemble(
             return TriggerDecision(False, "规则判定：任务过简单，不值得 ensemble", task_type, judge_strategy, "rule")
 
         # 规则层不确定 → 模型自判层
-        trigger, reason = _model_based_signal(prompt, cfg, judge_model=getattr(ens_cfg, "judge_model", None))
+        trigger, reason = _model_based_signal(
+            prompt,
+            cfg,
+            judge_model=getattr(ens_cfg, "judge_model", None),
+            judge_provider=getattr(ens_cfg, "judge_provider", None),
+        )
         return TriggerDecision(trigger, reason, task_type, judge_strategy, "model")
 
     return TriggerDecision(False, f"未知 mode={mode}", task_type, judge_strategy, "off")

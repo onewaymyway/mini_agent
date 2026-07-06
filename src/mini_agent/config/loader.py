@@ -423,6 +423,7 @@ def load_config(
         max_concurrency=int(_fn("ensemble_max_concurrency", None, 3)),
         judge_strategy=_f("ensemble_judge_strategy", None) or "llm_judge",
         judge_model=_f("ensemble_judge_model", None) or None,
+        judge_provider=_f("ensemble_judge_provider", None) or None,
         early_stop_on_consensus=_fb("ensemble_early_stop_on_consensus", None, True),
         max_extra_cost_ratio=_fn("ensemble_max_extra_cost_ratio", None, 2.0),
     )

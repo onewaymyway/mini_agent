@@ -80,13 +80,16 @@ def run_turn_judge(
 
     tj_cfg_block = getattr(base_cfg, "turn_judge", None)
 
+    from mini_agent.role_agents.model_resolution import resolve_role_model
+    judge_model, judge_provider = resolve_role_model(profile, tj_cfg_block, base_cfg)
+
     judge_cfg = load_config(
         project_root=base_cfg.project_root,
         verbose=False,
         sandbox=base_cfg.sandbox,
         auto_approve=True,
-        model=profile.model or (getattr(tj_cfg_block, "judge_model", None)) or base_cfg.model,
-        llm_provider=profile.provider or (getattr(tj_cfg_block, "judge_provider", None)) or base_cfg.llm_provider,
+        model=judge_model,
+        llm_provider=judge_provider,
         llm_base_url=base_cfg.llm_base_url,
         debug_llm=False,
     )

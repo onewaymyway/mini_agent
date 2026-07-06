@@ -89,6 +89,7 @@ def run_llm_ensemble(
     early_stop = bool(ens_cfg.early_stop_on_consensus) if ens_cfg else True
     max_concurrency = (ens_cfg.max_concurrency if ens_cfg else 3)
     judge_model = getattr(ens_cfg, "judge_model", None) if ens_cfg else None
+    judge_provider = getattr(ens_cfg, "judge_provider", None) if ens_cfg else None
 
     t0 = time.time()
     candidates: list[Candidate] = []
@@ -117,7 +118,10 @@ def run_llm_ensemble(
                     early_stopped = True
                     break
 
-    result = judge_candidates(candidates, cfg, strategy=strategy, judge_model=judge_model, checker=checker)
+    result = judge_candidates(
+        candidates, cfg, strategy=strategy, judge_model=judge_model,
+        judge_provider=judge_provider, checker=checker,
+    )
     result.granularity = "llm_call"
     result.execution = execution
     result.early_stopped = early_stopped
@@ -151,6 +155,7 @@ def run_subagent_ensemble(
     strategy = strategy or (ens_cfg.judge_strategy if ens_cfg else "llm_judge")
     early_stop = bool(ens_cfg.early_stop_on_consensus) if ens_cfg else True
     judge_model = getattr(ens_cfg, "judge_model", None) if ens_cfg else None
+    judge_provider = getattr(ens_cfg, "judge_provider", None) if ens_cfg else None
 
     mgr = get_task_manager()
     if mgr is None:
@@ -213,7 +218,10 @@ def run_subagent_ensemble(
                     early_stopped = True
                     break
 
-    result = judge_candidates(candidates, cfg, strategy=strategy, judge_model=judge_model, checker=checker)
+    result = judge_candidates(
+        candidates, cfg, strategy=strategy, judge_model=judge_model,
+        judge_provider=judge_provider, checker=checker,
+    )
     result.granularity = "subagent"
     result.execution = execution
     result.early_stopped = early_stopped

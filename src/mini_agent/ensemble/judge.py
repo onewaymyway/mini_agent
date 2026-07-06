@@ -94,6 +94,7 @@ def judge_llm(
     *,
     mode: str = "select",       # "select" | "merge"
     judge_model: Optional[str] = None,
+    judge_provider: Optional[str] = None,
 ) -> tuple[Optional[int], str, str, dict]:
     """
     用模型评判/合并候选。
@@ -111,7 +112,7 @@ def judge_llm(
 
         base_llm_cfg = LLMConfig.from_app_config(cfg)
         llm_cfg = LLMConfig(
-            provider=base_llm_cfg.provider,
+            provider=judge_provider or base_llm_cfg.provider,
             model=judge_model or base_llm_cfg.model,
             api_key=base_llm_cfg.api_key,
             base_url=base_llm_cfg.base_url,
@@ -163,6 +164,7 @@ def judge_candidates(
     *,
     strategy: str = "llm_judge",
     judge_model: Optional[str] = None,
+    judge_provider: Optional[str] = None,
     checker: Optional[Callable[[Candidate], bool]] = None,
 ) -> EnsembleResult:
     """
@@ -178,9 +180,13 @@ def judge_candidates(
         chosen = next((c for c in candidates if c.idx == chosen_idx), None)
         final_content = chosen.content if chosen else ""
     elif strategy == "merge":
-        chosen_idx, final_content, reason, scores = judge_llm(candidates, cfg, mode="merge", judge_model=judge_model)
+        chosen_idx, final_content, reason, scores = judge_llm(
+            candidates, cfg, mode="merge", judge_model=judge_model, judge_provider=judge_provider,
+        )
     else:  # llm_judge / 默认
-        chosen_idx, final_content, reason, scores = judge_llm(candidates, cfg, mode="select", judge_model=judge_model)
+        chosen_idx, final_content, reason, scores = judge_llm(
+            candidates, cfg, mode="select", judge_model=judge_model, judge_provider=judge_provider,
+        )
 
     return EnsembleResult(
         final_content=final_content,

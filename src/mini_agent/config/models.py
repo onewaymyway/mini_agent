@@ -375,6 +375,7 @@ class EnsembleConfig:
     max_concurrency: int = 3
     judge_strategy: str = "llm_judge"           # llm_judge | first_success | vote | merge
     judge_model: Optional[str] = None
+    judge_provider: Optional[str] = None        # None = 复用主 cfg.llm_provider（与 judge_model 独立覆盖）
     early_stop_on_consensus: bool = True
     max_extra_cost_ratio: float = 2.0           # AUTO 模式下的成本保护上限（相对单次调用的倍数）
 

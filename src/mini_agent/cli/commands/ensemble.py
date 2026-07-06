@@ -26,6 +26,7 @@ def handle_ensemble_cmd(args: list[str], agent) -> None:
         R.console.print(f"  execution          : {ens.execution}")
         R.console.print(f"  judge_strategy     : {ens.judge_strategy}")
         R.console.print(f"  judge_model        : {ens.judge_model or '(同主模型)'}")
+        R.console.print(f"  judge_provider     : {ens.judge_provider or '(同主 provider)'}")
         R.console.print(f"  early_stop         : {ens.early_stop_on_consensus}")
         R.console.print(f"  max_concurrency    : {ens.max_concurrency}")
         R.console.print(

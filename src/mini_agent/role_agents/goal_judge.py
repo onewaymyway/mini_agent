@@ -88,13 +88,16 @@ def run_goal_judge(
     # "would have executed"）；开了 yes_mode 则真实执行，等价于始终 --yes 放行。
     judge_sandbox = (not yes_mode) if tools_enabled else base_cfg.sandbox
 
+    from mini_agent.role_agents.model_resolution import resolve_role_model
+    judge_model, judge_provider = resolve_role_model(profile, goal_cfg_block, base_cfg)
+
     judge_cfg = load_config(
         project_root=base_cfg.project_root,
         verbose=False,
         sandbox=judge_sandbox,
         auto_approve=True,
-        model=profile.model or (getattr(goal_cfg_block, "judge_model", None)) or base_cfg.model,
-        llm_provider=profile.provider or (getattr(goal_cfg_block, "judge_provider", None)) or base_cfg.llm_provider,
+        model=judge_model,
+        llm_provider=judge_provider,
         llm_base_url=base_cfg.llm_base_url,
         debug_llm=False,
     )
