@@ -1622,7 +1622,6 @@ async def add_goal(request: Request):
             source=body.get("source", "user"),
             priority=int(body.get("priority", 50)),
         )
-        backlog.save()
         return {"goal": goal.to_dict()}
     except HTTPException:
         raise
@@ -1656,25 +1655,30 @@ async def update_goal(goal_id: str, request: Request):
         if node is None:
             raise HTTPException(status_code=404, detail=f"Goal '{goal_id}' not found")
 
+        fields = {}
         if "status" in body:
-            node.status = body["status"]
+            fields["status"] = body["status"]
         if "progress_notes" in body:
-            node.progress_notes = body["progress_notes"]
+            fields["progress_notes"] = body["progress_notes"]
         if "priority" in body:
-            node.priority = int(body["priority"])
+            fields["priority"] = int(body["priority"])
 
-        # reject 时通知 SoftGoalDeriver 记录拒绝历史
+        updated = backlog.update_fields(goal_id, **fields)
+        if updated is None:
+            raise HTTPException(status_code=404, detail=f"Goal '{goal_id}' not found")
+
+        # reject 时通知 SoftGoalDeriver 记录拒绝历史（用改前的 node 快照判断 source，
+        # 避免并发场景下拿到的是别的进程刚写入、字段含义不同的数据）
         if body.get("status") == "abandoned" and node.source == "agent_derived":
             try:
                 from mini_agent.evolution.soft_goal_deriver import SoftGoalDeriver
-                SoftGoalDeriver(paths, self_agent.cfg).record_rejected(node.title)
+                SoftGoalDeriver(paths, self_agent.cfg).record_rejected(updated.title)
             except Exception as _mini_agent_exc:
                 from mini_agent.errors import log_exception
                 log_exception(_mini_agent_exc, where='mini_agent.api.routes')
                 pass
 
-        backlog.save()
-        return {"goal": node.to_dict()}
+        return {"goal": updated.to_dict()}
     except HTTPException:
         raise
     except Exception as e:

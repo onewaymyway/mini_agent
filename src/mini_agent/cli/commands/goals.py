@@ -160,7 +160,6 @@ def _cmd_add_goal(gb, args: list[str]) -> None:
     tags = [t.strip() for t in parsed.tag.split(",") if t.strip()] if parsed.tag else []
 
     node = gb.add_goal(title, source="user", priority=parsed.priority, tags=tags)
-    gb.save()
     R.print_success(f"Goal 已添加: {node.id} — {node.title}")
 
 
@@ -197,7 +196,6 @@ def _cmd_add_objective(gb, args: list[str]) -> None:
         source="user",
         priority=parsed.priority,
     )
-    gb.save()
     parent_str = f" (under {parsed.goal})" if parsed.goal else ""
     thread_str = f" [thread:{parsed.thread}]" if parsed.thread else ""
     R.print_success(f"Objective 已添加: {node.id} — {node.title}{parent_str}{thread_str}")
@@ -211,7 +209,6 @@ def _cmd_set_status(gb, node_id: str, status: str) -> None:
         return
     old_status = node.status
     gb.set_status(node_id, status)
-    gb.save()
     emoji = {"completed": "✅", "abandoned": "🗑", "paused": "⏸"}.get(status, "")
     R.print_success(f"{emoji} {node_id} 状态: {old_status} → {status}")
 
@@ -228,13 +225,15 @@ def _cmd_accept(gb, node_id: str) -> None:
     if node.status == "active":
         R.print_warning(f"{node_id} 已经是 active 状态")
         return
-    node.status = "active"
-    # agent_derived Goal 被接受后提升到用户 Goal 优先级
+    fields = {"status": "active"}
     if getattr(node, "source", "") == "agent_derived" and node.priority < 50:
-        node.priority = 50
-    gb.save()
-    R.print_success(f"✅ 已接受 Goal：{node.title}")
-    if getattr(node, "source", "") == "agent_derived":
+        fields["priority"] = 50
+    updated = gb.update_fields(node_id, **fields)
+    if not updated:
+        R.print_error(f"Not found: {node_id!r}")
+        return
+    R.print_success(f"✅ 已接受 Goal：{updated.title}")
+    if getattr(updated, "source", "") == "agent_derived":
         R.print_info("提示：使用 /goals obj add <步骤描述> --goal " + node_id + " 为此 Goal 添加 Objective")
 
 
@@ -248,7 +247,6 @@ def _cmd_abandon(gb, node_id: str, paths=None, agent=None) -> None:
         return
     old_status = node.status
     gb.set_status(node_id, "abandoned")
-    gb.save()
 
     # agent_derived Goal 被拒绝时，通知 SoftGoalDeriver 记录 30 天去重
     if getattr(node, "source", "") == "agent_derived":
@@ -274,7 +272,6 @@ def _cmd_progress(gb, node_id: str, notes: str) -> None:
         R.print_error(f"Not found: {node_id!r}")
         return
     gb.update_progress(node_id, notes)
-    gb.save()
     R.print_success(f"进展已更新: {node_id}")
 
 

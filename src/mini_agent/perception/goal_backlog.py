@@ -12,6 +12,12 @@ perception/goal_backlog.py — Stage 9 跨会话目标层级（Phase H，第六�
 存储设计：
   - 纯运行时状态，不经过 StateRepo（与 work_index.json 定位一致）
   - 原子写（tmp + os.replace）
+  - 跨进程并发：goals.json 是全项目共享的单文件，可能被多个进程（多个
+    CLI session / daemon / HTTP API）同时读写。所有会修改内容的方法
+    （add_goal / add_objective / set_status / update_progress）都通过
+    ``_locked()`` 临界区执行：进入时加进程间独占文件锁并从磁盘重新加载
+    最新状态，退出时落盘并释放锁。这样可以避免"A、B 两个进程各自基于
+    旧快照修改后写回，后写的把先写的整个覆盖掉"的丢失更新问题。
 
 档位边界（stage9_plan.md 第七节）：
   - passive 档位：AutonomousLoop.tick() 不读取 GoalBacklog 任何方法
@@ -21,6 +27,7 @@ perception/goal_backlog.py — Stage 9 跨会话目标层级（Phase H，第六�
 
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import tempfile
@@ -31,6 +38,13 @@ from pathlib import Path
 from typing import Optional
 
 from mini_agent.storage.paths import AgentPaths
+
+try:
+    import fcntl  # POSIX only（Linux / macOS）
+    _HAS_FCNTL = True
+except ImportError:  # pragma: no cover - Windows 等无 fcntl 平台
+    fcntl = None  # type: ignore
+    _HAS_FCNTL = False
 
 
 # ── 数据结构 ──────────────────────────────────────────────────────────────────
@@ -122,6 +136,41 @@ class GoalBacklog:
         self._goals_path = paths.workdir_dir / "goals.json"
         self._nodes: dict[str, GoalNode] = {}  # id -> GoalNode
 
+    # ── 跨进程并发控制 ────────────────────────────────────────────────────────
+
+    @property
+    def _lock_path(self) -> Path:
+        return self._goals_path.with_suffix(".json.lock")
+
+    @contextlib.contextmanager
+    def _locked(self):
+        """独占临界区：加进程间文件锁 → 重新加载磁盘最新状态 → yield 给调用方
+        做单个修改 → 落盘 → 释放锁。
+
+        重新 load 这一步是关键：不这样做的话，即使加了锁，调用方内存里
+        仍然是"进入临界区之前"的旧快照，一样会在 save() 时把锁等待期间
+        其他进程写入的改动覆盖掉。加锁只保证互斥，"以最新数据为基础改"
+        才能真正避免丢失更新。
+
+        无 fcntl 的平台（如 Windows）退化为不加锁（仅刷新数据），尽力而为。
+        """
+        self._goals_path.parent.mkdir(parents=True, exist_ok=True)
+        lock_f = None
+        if _HAS_FCNTL:
+            lock_f = open(self._lock_path, "w")
+            fcntl.flock(lock_f.fileno(), fcntl.LOCK_EX)
+        try:
+            self.load()  # 丢弃旧内存状态，换成磁盘上最新的
+            yield
+            self.save()
+        finally:
+            if lock_f is not None:
+                try:
+                    fcntl.flock(lock_f.fileno(), fcntl.LOCK_UN)
+                except Exception:
+                    pass
+                lock_f.close()
+
     # ── 持久化 ────────────────────────────────────────────────────────────────
 
     def load(self) -> None:
@@ -212,19 +261,23 @@ class GoalBacklog:
         添加 Goal 节点（通常由用户 /agent goals add 触发）。
         source="user" 时对应用户手动添加；
         source="agent_derived" 时由第十二节 autonomous 档位 tick 内部调用。
+
+        内部会先重新加载磁盘最新状态再追加，并立即落盘，
+        避免与其他进程并发写入互相覆盖。
         """
-        node = GoalNode(
-            id=f"goal_{uuid.uuid4().hex[:8]}",
-            level="goal",
-            title=title,
-            source=source,
-            status="active",
-            created_at=time.time(),
-            last_touched_at=time.time(),
-            priority=priority,
-            tags=tags or [],
-        )
-        self._nodes[node.id] = node
+        with self._locked():
+            node = GoalNode(
+                id=f"goal_{uuid.uuid4().hex[:8]}",
+                level="goal",
+                title=title,
+                source=source,
+                status="active",
+                created_at=time.time(),
+                last_touched_at=time.time(),
+                priority=priority,
+                tags=tags or [],
+            )
+            self._nodes[node.id] = node
         return node
 
     def add_objective(
@@ -235,42 +288,77 @@ class GoalBacklog:
         source: str = "user",
         priority: int = 0,
     ) -> GoalNode:
-        """添加 Objective 节点，可关联 WorkThread。"""
-        node = GoalNode(
-            id=f"obj_{uuid.uuid4().hex[:8]}",
-            level="objective",
-            title=title,
-            source=source,
-            status="active",
-            created_at=time.time(),
-            last_touched_at=time.time(),
-            parent_id=parent_id,
-            work_thread_ref=work_thread_ref,
-            priority=priority,
-        )
-        self._nodes[node.id] = node
-        # 更新 parent 的 children_ids
-        if parent_id and parent_id in self._nodes:
-            self._nodes[parent_id].children_ids.append(node.id)
+        """添加 Objective 节点，可关联 WorkThread。
+
+        内部会先重新加载磁盘最新状态再追加，并立即落盘，
+        避免与其他进程并发写入互相覆盖。
+        """
+        with self._locked():
+            node = GoalNode(
+                id=f"obj_{uuid.uuid4().hex[:8]}",
+                level="objective",
+                title=title,
+                source=source,
+                status="active",
+                created_at=time.time(),
+                last_touched_at=time.time(),
+                parent_id=parent_id,
+                work_thread_ref=work_thread_ref,
+                priority=priority,
+            )
+            self._nodes[node.id] = node
+            # 更新 parent 的 children_ids（用重新加载后的最新 parent 节点）
+            if parent_id and parent_id in self._nodes:
+                self._nodes[parent_id].children_ids.append(node.id)
         return node
 
     def update_progress(self, node_id: str, notes: str) -> bool:
-        """更新节点进展记录。"""
-        node = self._nodes.get(node_id)
-        if not node:
-            return False
-        node.progress_notes = notes
-        node.last_touched_at = time.time()
+        """更新节点进展记录。
+
+        内部会先重新加载磁盘最新状态，在最新数据基础上改这一个字段再落盘，
+        避免与其他进程并发写入互相覆盖。
+        """
+        with self._locked():
+            node = self._nodes.get(node_id)
+            if not node:
+                return False
+            node.progress_notes = notes
+            node.last_touched_at = time.time()
         return True
 
     def set_status(self, node_id: str, status: str) -> bool:
-        """更新节点状态。"""
-        node = self._nodes.get(node_id)
-        if not node:
-            return False
-        node.status = status
-        node.last_touched_at = time.time()
+        """更新节点状态。
+
+        内部会先重新加载磁盘最新状态，在最新数据基础上改这一个字段再落盘，
+        避免与其他进程并发写入互相覆盖。
+        """
+        with self._locked():
+            node = self._nodes.get(node_id)
+            if not node:
+                return False
+            node.status = status
+            node.last_touched_at = time.time()
         return True
+
+    def update_fields(self, node_id: str, **fields) -> Optional[GoalNode]:
+        """在锁保护下批量更新节点的任意字段（如 status/priority/progress_notes）。
+
+        用于"一次性改好几个字段再存"的场景（例如 accept/PATCH 接口），
+        避免每个字段单独调用一次 set_status/update_progress 时中间态被
+        其他进程读到，也避免调用方自己直接改 node 属性再手动 save()
+        （那样不会重新加载磁盘最新状态，等于绕开了并发保护）。
+
+        内部会先重新加载磁盘最新状态，在最新数据基础上应用这些字段修改再落盘。
+        返回更新后的节点；节点不存在时返回 None（不做任何修改）。
+        """
+        with self._locked():
+            node = self._nodes.get(node_id)
+            if not node:
+                return None
+            for key, value in fields.items():
+                setattr(node, key, value)
+            node.last_touched_at = time.time()
+        return self._nodes.get(node_id)
 
     # ── 从 WorkThread 拆解下一个 Task ─────────────────────────────────────────
 
