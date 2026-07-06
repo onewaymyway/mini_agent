@@ -143,6 +143,8 @@ def init_state():
     defaults = {
         "api_base": "http://127.0.0.1:8765/v1",
         "token": "",
+        "project_root": "",
+        "auto_token": False,
         "messages": [],
         "last_event_id": 0,
         "event_log": [],
@@ -176,13 +178,65 @@ def get_client() -> AgentClient:
     return AgentClient(st.session_state.api_base, st.session_state.token)
 
 
+def _read_token_from_project(project_root: str) -> tuple:
+    """
+    按 mini-agent 自身的约定去项目目录里找 token 明文文件，返回
+    (token_or_None, 命中的文件路径_or_None)。
+    查找顺序（与 cli/daemon.py::DaemonClient 保持一致，外加 owner.key 兜底）：
+        1. <project_root>/.agent/agent_api.key         （单用户模式主 token）
+        2. <project_root>/.agent/users/tokens/owner.key （多用户模式 owner token）
+    project_root 为空时用当前工作目录。
+    """
+    from pathlib import Path
+
+    root = Path(project_root).expanduser() if project_root.strip() else Path.cwd()
+    candidates = [
+        root / ".agent" / "agent_api.key",
+        root / ".agent" / "users" / "tokens" / "owner.key",
+    ]
+    for p in candidates:
+        try:
+            if p.exists():
+                text = p.read_text(encoding="utf-8").strip()
+                if text:
+                    return text, str(p)
+        except Exception:
+            continue
+    return None, None
+
+
 # ═══════════════════════════════════════════════════════════════════════
 # 侧栏：连接配置
 # ═══════════════════════════════════════════════════════════════════════
 def render_sidebar():
     st.sidebar.markdown("### ⚙️ 连接配置")
     st.session_state.api_base = st.sidebar.text_input("API Base URL", st.session_state.api_base)
-    st.session_state.token = st.sidebar.text_input("Token", st.session_state.token, type="password")
+
+    st.session_state.auto_token = st.sidebar.checkbox(
+        "🔑 自动从项目文件读取 Token", value=st.session_state.get("auto_token", False),
+        help="开启后从 <项目根目录>/.agent/agent_api.key（单用户）"
+             " 或 .agent/users/tokens/owner.key（多用户 owner）读取明文 token，"
+             "不用再手动复制粘贴。",
+    )
+
+    if st.session_state.auto_token:
+        st.session_state.project_root = st.sidebar.text_input(
+            "项目根目录", st.session_state.project_root,
+            placeholder="留空则用当前工作目录",
+            help="daemon 启动时所在的 mini_claude_code 项目根目录（含 .agent/ 子目录）",
+        )
+        token, hit_path = _read_token_from_project(st.session_state.project_root)
+        if token:
+            st.session_state.token = token
+            st.sidebar.caption(f"✅ 已从 `{hit_path}` 读取 token")
+        else:
+            st.sidebar.warning("未找到 token 文件，请检查项目根目录路径，或关闭此开关手动输入")
+        # 只读展示，避免自动模式下用户误改却看起来像手动生效
+        st.sidebar.text_input("Token（自动读取，只读）", st.session_state.token,
+                                type="password", disabled=True)
+    else:
+        st.session_state.token = st.sidebar.text_input(
+            "Token", st.session_state.token, type="password")
 
     client = get_client()
     ok = client.health()
