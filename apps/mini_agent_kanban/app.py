@@ -473,7 +473,7 @@ def render_permissions(client: AgentClient, pending_list):
 _ARTIFACT_HINT_TOOLS = ("record_artifact", "artifact")
 
 
-def _stream_turn_into_placeholder(client: AgentClient, turn_id: str, container):
+def _stream_turn_into_placeholder(client: AgentClient, turn_id: str, container, last_rendered_user_msg: str = ""):
     """
     订阅 turn_id 的 SSE 流，把这一轮里的内容实时渲染进 `container`。
 
@@ -521,9 +521,14 @@ def _stream_turn_into_placeholder(client: AgentClient, turn_id: str, container):
             # [SYS-TURN-START-BUBBLE] 这一轮的用户输入——不管是本浏览器刚发的
             # 第二轮消息，还是别的客户端发的——立刻显示出来，不用等这一轮结束
             # 后 rerun 刷新正式历史才第一次看到。
+            #
+            # 但如果调用方发现"正式历史"（entries）本身已经包含这条消息了
+            # （常见于：chat() 提交后立即 rerun，这次 rerun 时后台已经把用户
+            # 消息写进 agent.history，entries 循环已经画过一条一样的气泡），
+            # 这里就跳过，否则会变成同一句话显示两条一模一样的气泡。
             msg = data.get("message", "")
             cur_kind = None
-            if msg:
+            if msg and msg != last_rendered_user_msg:
                 ph = _new_block()
                 ph.markdown(f'<div class="msg-user">{_esc_html(msg)}</div>', unsafe_allow_html=True)
                 cur_ph = None  # 独立气泡，不再被后续文本复用
@@ -642,6 +647,7 @@ def render_chat_tab(client: AgentClient):
         ]
 
         chat_box = st.container(height=460, border=True)
+        last_rendered_user_msg = ""
         with chat_box:
             if isinstance(entries, list):
                 for e in entries[-60:]:
@@ -666,6 +672,7 @@ def render_chat_tab(client: AgentClient):
                     is_agent_reply = role in ("assistant", "agent") and etype in ("", "assistant_reply", "compact_summary")
                     if is_real_user_input:
                         st.markdown(f'<div class="msg-user">{_esc_html(content)}</div>', unsafe_allow_html=True)
+                        last_rendered_user_msg = content if isinstance(content, str) else str(content)
                     elif is_agent_reply:
                         st.markdown(f'<div class="msg-agent">{_esc_html(content)}</div>', unsafe_allow_html=True)
                     elif role in ("user", "human", "assistant", "agent"):
@@ -744,7 +751,7 @@ def render_chat_tab(client: AgentClient):
         turn_to_stream = new_turn_id or running_turn_id
         if turn_to_stream:
             with chat_box:
-                finished = _stream_turn_into_placeholder(client, turn_to_stream, chat_box)
+                finished = _stream_turn_into_placeholder(client, turn_to_stream, chat_box, last_rendered_user_msg)
             if finished:
                 st.rerun()  # 该轮结束，刷新一次把正式历史（含工具事件）拉齐
 
