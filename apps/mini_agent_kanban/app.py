@@ -528,11 +528,18 @@ def _stream_turn_into_placeholder(client: AgentClient, turn_id: str, container, 
     "每个独立内容一个单独的框"，且和刷新后的最终效果保持一致。
 
     返回 True 表示这一轮正常结束（外层可以安全 rerun 去刷新完整历史）。
+
+    [BUGFIX] 新增"因等待权限审批而暂停"的信号：函数内部遇到 permission_req
+    时会 break 出循环（见下方 permission_req 分支的详细说明），此时通过
+    nonlocal `_paused_for_permission`（调用方用 `_last_stream_paused_holder`
+    读取）告知外层"不是真的结束，但应该立即 rerun 一次"，让顶部状态条 /
+    底部审批面板尽快出现并变得可点击，而不是傻等最长 3 秒的自动刷新。
     """
     cur_kind = None      # 当前正在写入的块类型："text" | None
     cur_ph = None        # 当前块对应的占位符
     cur_text = ""         # 当前文本块已累积的内容（含未处理的原始文本）
     finished = False
+    paused_for_permission = False
     saw_artifact_hint = False
 
     def _new_block():
@@ -625,6 +632,35 @@ def _stream_turn_into_placeholder(client: AgentClient, turn_id: str, container, 
             body = _collapsible_html(f'❌ 工具出错 <b>{tool_name}</b> · ', err_raw)
             ph.markdown(f'<div class="msg-tool-error">{body}</div>', unsafe_allow_html=True)
 
+        elif etype == "permission_req":
+            # [BUGFIX] 之前这里完全没有处理 permission_req：Streamlit 单线程
+            # 执行模型下，这个 for 循环正阻塞在 client.stream_turn() 的同步
+            # 网络读取上，只有等这一轮真正结束（turn_done/error）才会 return，
+            # 脚本才能重新跑一遍、让按钮点击生效。
+            # 但工具调用需要审批时，agent 那一轮会一直"卡"在
+            # PermissionGuard.check() 里等审批结果——不会产生 turn_done。
+            # 于是就出现了自死锁：要批准/拒绝就得点按钮 → 点按钮要等页面
+            # 重新运行一遍 → 页面重新运行不了，因为脚本正卡在这个 for 循环里
+            # 等这一轮完成 → 这一轮完成不了，因为在等审批。
+            #
+            # 修复：一看到 permission_req 就主动 break，把控制权交还给
+            # Streamlit（不再傻等 turn_done）。这样本次脚本运行能正常跑完，
+            # 顶部状态条 / 底部"最近工具活动"面板下一次刷新（自动刷新每 3
+            # 秒，或用户任意点击都会触发 rerun）就能看到这个待审批请求并且
+            # 按钮真正可点。turn 本身没有结束，之后（无论从哪个客户端批准）
+            # 都会被这里通过 replay=True 重新订阅并继续渲染。
+            cur_kind = None
+            ph = _new_block()
+            tool_name = _esc_html(data.get("tool_name", "?"))
+            tool_input_raw = str(data.get("tool_input", ""))
+            body = _collapsible_html(
+                f'🔐 等待权限审批 <b>{tool_name}</b>（请到上方"待审批"或下方"最近工具活动"里处理）· 参数: ',
+                tool_input_raw,
+            )
+            ph.markdown(f'<div class="permission-card">{body}</div>', unsafe_allow_html=True)
+            paused_for_permission = True
+            break
+
         elif etype in ("turn_done", "interrupt"):
             final_text = data.get("text", "") or cur_text
             if final_text:
@@ -658,7 +694,7 @@ def _stream_turn_into_placeholder(client: AgentClient, turn_id: str, container, 
             unsafe_allow_html=True,
         )
 
-    return finished
+    return finished, paused_for_permission
 
 
 def render_chat_tab(client: AgentClient):
@@ -783,9 +819,14 @@ def render_chat_tab(client: AgentClient):
         turn_to_stream = new_turn_id or running_turn_id
         if turn_to_stream:
             with chat_box:
-                finished = _stream_turn_into_placeholder(client, turn_to_stream, chat_box, last_rendered_user_msg)
-            if finished:
-                st.rerun()  # 该轮结束，刷新一次把正式历史（含工具事件）拉齐
+                finished, paused_for_permission = _stream_turn_into_placeholder(
+                    client, turn_to_stream, chat_box, last_rendered_user_msg
+                )
+            if finished or paused_for_permission:
+                # [BUGFIX] 之前只有 finished 才 rerun；等待权限审批时也要立即
+                # rerun 一次——不然要等最长 3 秒的自动刷新，页面在此期间
+                # 看起来像是"卡住了，权限请求既看不到也点不了"。
+                st.rerun()
 
         if st.button("🗑️ 清空历史"):
             client.clear_history()

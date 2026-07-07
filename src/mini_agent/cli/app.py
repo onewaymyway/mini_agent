@@ -463,6 +463,15 @@ def _main_inner() -> None:
         import signal as _signal
         import threading as _threading
 
+        # [BUGFIX] 告知 PermissionGuard：这是一个没有真正交互式终端的
+        # 后台 daemon 进程（stdout/stderr 通常已被重定向到 .agent/daemon.log，
+        # stdin 不可靠）。此前权限审批一律尝试本地 CLI 输入 + HTTP 双路，
+        # 本地这一路在 daemon 里读不到真实输入，会白白卡到 120s 超时才
+        # 自动拒绝，且用户在任何地方（CLI attach、web 看板）都看不到、
+        # 也操作不了这个请求。开启 headless 模式后只走 HTTP/SSE 单路审批。
+        from mini_agent.permissions import set_headless_mode
+        set_headless_mode(True)
+
         # 写入 PID 文件
         try:
             from mini_agent.cli.daemon import _write_pid

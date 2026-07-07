@@ -62,10 +62,21 @@ def _inject_permission_state_hook(bridge: AgentBridge, agent: Any) -> None:
     这里 patch PermissionGuard.check()，在其进入等待前设置状态。
     """
     try:
-        guard = getattr(agent, "permission_guard", None)
+        # [BUGFIX] Agent 类（agent.py）里 PermissionGuard 实例的真实属性名是
+        # `guard`（`self.guard = guard or PermissionGuard(...)`），下面这几个
+        # 名字（permission_guard / _permission_guard / permissions）全都不
+        # 存在，导致这里永远匹配不到，guard 恒为 None、hook 直接 return，
+        # bridge._state 永远不会被设成 "waiting_permission"。
+        # 后果：/v1/status 永远看不到 waiting_permission，web/看板前端如果
+        # 依赖这个状态字段来判断"要不要显示权限审批面板"，就会表现为
+        # ——权限请求实际已经通过 SSE 广播出去了，但看板完全没反应、
+        # 也没法操作。这里把真正的属性名 `guard` 放在最前面，同时保留旧的
+        # 候选名字做兼容（万一将来又换了别的属性名）。
+        guard = getattr(agent, "guard", None)
         if guard is None:
-            # 尝试其他常见属性名
-            guard = getattr(agent, "_permission_guard", None) or \
+            # 尝试其他常见属性名（兼容旧版本/自定义 Agent 子类）
+            guard = getattr(agent, "permission_guard", None) or \
+                    getattr(agent, "_permission_guard", None) or \
                     getattr(agent, "permissions", None)
         if guard is None:
             return
@@ -81,13 +92,24 @@ def _inject_permission_state_hook(bridge: AgentBridge, agent: Any) -> None:
             # 在调用原始 check 前后设置 bridge 状态
             # check() 内部如果需要用户审批，会阻塞线程
             # 我们需要在阻塞前设置 waiting_permission，阻塞结束后改回 running
-            from mini_agent.permissions import _SAFE_TOOLS
+            from mini_agent.permissions import _SAFE_TOOLS, _RISKY_TOOLS
             needs_prompt = (
                 not guard.auto_approve
                 and tool_name not in _SAFE_TOOLS
                 and tool_name not in guard._denied_tools
                 and not guard._is_allowed(tool_name, tool_input)
+                # sandbox 拦截 / 工具自己声明 requires_approval=False 时，
+                # check() 根本不会走到审批分支，这里也不该误标 waiting_permission
+                and not (guard.sandbox and tool_name in _RISKY_TOOLS)
             )
+            if needs_prompt and tool_name not in _RISKY_TOOLS:
+                try:
+                    from mini_agent.tools import get_default_registry
+                    td = get_default_registry().get(tool_name)
+                    if td is not None and not td.requires_approval:
+                        needs_prompt = False
+                except Exception:
+                    pass
             if needs_prompt:
                 bridge.set_state("waiting_permission")
 

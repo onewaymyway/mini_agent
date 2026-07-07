@@ -50,6 +50,32 @@ _DANGER_PATTERNS = [
 ]
 
 
+_HEADLESS_MODE = False
+
+
+def set_headless_mode(flag: bool) -> None:
+    """由 cli/app.py 在进入 `--daemon-mode`（无交互终端的后台 daemon 主循环）
+    时调用，告知 PermissionGuard 不要再尝试本地终端交互。
+
+    [BUGFIX] 后台 daemon（--detach）没有真正的交互式终端：stdout/stderr 被
+    重定向到 .agent/daemon.log，stdin 继承自启动它的父 shell（很可能已经
+    不再是前台进程组，读不到任何真实输入）。之前 check() 一律走
+    `_prompt_with_http`（CLI + HTTP 双路审批），其中的本地 CLI 循环会
+    尝试从这个不可靠的 stdin 读入，导致：
+      1) daemon 进程自己"卡住"（实际是在等 120s 超时后才自动拒绝）；
+      2) 打给"本地终端"的提示文字进了 daemon.log，没人能看到；
+    开启 headless 模式后，check() 会跳过本地 CLI 循环，只走纯 HTTP/SSE
+    审批（HttpPermissionGate.request()），由已连接的客户端
+    （CLI attach / web 看板）响应。
+    """
+    global _HEADLESS_MODE
+    _HEADLESS_MODE = bool(flag)
+
+
+def is_headless_mode() -> bool:
+    return _HEADLESS_MODE
+
+
 @dataclass
 class _AllowEntry:
     """白名单条目：按工具名 + 路径前缀精细管理。"""
@@ -181,9 +207,22 @@ class PermissionGuard:
         if http_gate is not None:
             turn_id = _get_current_turn_id()
             original_input_repr = dict(tool_input)  # 用于检测 HTTP 端编辑前后差异
-            approved, edited_input = self._prompt_with_http(
-                tool_name, tool_input, is_dangerous, http_gate, turn_id
-            )
+
+            if _HEADLESS_MODE:
+                # [BUGFIX] headless daemon：没有真正可用的交互式终端，
+                # 不要再走 `_prompt_with_http` 里那个会读本地 stdin 的
+                # CLI 循环（读不到任何真实输入，白白卡 120s 才超时拒绝，
+                # 而且打印内容全进了 daemon.log，没人能看到）。
+                # 直接用纯 HTTP/SSE 阻塞等待：register + push 事件的逻辑
+                # 与 `_prompt_with_http` 完全一致，所有已连接客户端
+                # （CLI attach、web 看板）都能通过 permission_req SSE
+                # 事件看到并响应。
+                approved, edited_input = http_gate.request(tool_name, tool_input, turn_id)
+            else:
+                approved, edited_input = self._prompt_with_http(
+                    tool_name, tool_input, is_dangerous, http_gate, turn_id
+                )
+
             if approved and edited_input:
                 # 用户从 HTTP 端修改了参数，写回 tool_input（in-place）
                 if edited_input != original_input_repr:
