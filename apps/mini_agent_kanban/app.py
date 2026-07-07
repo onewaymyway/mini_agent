@@ -490,7 +490,7 @@ def _stream_turn_into_placeholder(client: AgentClient, turn_id: str, container):
     """
     cur_kind = None      # 当前正在写入的块类型："text" | None
     cur_ph = None        # 当前块对应的占位符
-    cur_text = ""         # 当前文本块已累积的内容
+    cur_text = ""         # 当前文本块已累积的内容（含未处理的原始文本）
     finished = False
     saw_artifact_hint = False
 
@@ -500,11 +500,35 @@ def _stream_turn_into_placeholder(client: AgentClient, turn_id: str, container):
         cur_text = ""
         return cur_ph
 
+    def _visible_text(raw: str) -> str:
+        # [SYS-STREAM-TOOLUSE] use_system_tool_call 模式下，模型是把工具调用
+        # 写成 <tool_use>{...}</tool_use> 这样的纯文本、混在正常回复 token 里
+        # 一起流出来的——真正的"这是一次工具调用"事件要等这段文本生成完、
+        # 框架解析完才会触发。之前流式阶段是把这段原始 JSON 原样显示出来，
+        # 跟轮次结束后（已经被解析剥离、只剩 🔧 调用工具 卡片）的排版完全
+        # 不一样。这里检测到 <tool_use 标记就不再往后展示原始 JSON，
+        # 用一个"正在调用工具…"占位代替，和最终效果保持一致。
+        idx = raw.find("<tool_use")
+        if idx == -1:
+            return raw
+        return raw[:idx].rstrip() + "\n\n🔧 正在调用工具…"
+
     for evt in client.stream_turn(turn_id, replay=True):
         etype = evt.get("event")
         data = evt.get("data") or {}
 
-        if etype == "agent_prefix":
+        if etype == "turn_start":
+            # [SYS-TURN-START-BUBBLE] 这一轮的用户输入——不管是本浏览器刚发的
+            # 第二轮消息，还是别的客户端发的——立刻显示出来，不用等这一轮结束
+            # 后 rerun 刷新正式历史才第一次看到。
+            msg = data.get("message", "")
+            cur_kind = None
+            if msg:
+                ph = _new_block()
+                ph.markdown(f'<div class="msg-user">{_esc_html(msg)}</div>', unsafe_allow_html=True)
+                cur_ph = None  # 独立气泡，不再被后续文本复用
+
+        elif etype == "agent_prefix":
             # 发言角色切换（比如主 Agent → GoalJudge）：新角色的话另起
             # 一个框，避免和上一位发言者的文本挤在同一个 div 里。
             name = data.get("agent_name") or ""
@@ -522,7 +546,7 @@ def _stream_turn_into_placeholder(client: AgentClient, turn_id: str, container):
                 cur_kind = "text"
                 _new_block()
             cur_text += data.get("text", "")
-            cur_ph.markdown(f'<div class="msg-agent">{_esc_html(cur_text)}▌</div>', unsafe_allow_html=True)
+            cur_ph.markdown(f'<div class="msg-agent">{_esc_html(_visible_text(cur_text))}▌</div>', unsafe_allow_html=True)
 
         elif etype == "reasoning":
             # 思维链 token：淡化展示，不计入最终正文
