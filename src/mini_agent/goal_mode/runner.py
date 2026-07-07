@@ -12,15 +12,22 @@ goal_mode/runner.py — GoalRunner：Goal 模式的外层驱动循环
          DONE          → 结束，返回成功
          CONTINUE      → 反馈注入历史，回到 1（消耗一轮 max_rounds 预算）
          NEED_COMPACT  → 显式 compact，回到 1（不消耗 max_rounds 预算）
-    5. 每个轮次边界都落盘 GoalState（若 persist_state=True）
+    5. CONTINUE 分支里还会检测"是否卡住"（连续 N 轮反馈高度相似）：
+         判定卡住后不直接终止——先花一次"卡住恢复额度"（max_stuck_recoveries）
+         压缩历史 + 注入"换个思路重新尝试"的提示，回到 1 继续跑；只有恢复额度
+         或 compact 预算耗尽后再次卡住，才真正终止（status=stuck）。这是因为
+         "反复给出雷同反馈"往往是历史里堆积了太多噪音干扰了 agent 的判断，
+         而不是目标真的做不到，压缩+提示给它一次换角度重来的机会往往能破局。
+    6. 每个轮次边界都落盘 GoalState（若 persist_state=True）
 
 说明：token 阈值 / 轮次计数 / 工具调用计数等常规 compact 触发，agent.py 的
 `_agentic_loop` 内部已经通过 CompositeTrigger 每次 LLM 调用前自动检查并处理
 （见 agent.py `_maybe_run_compact` 调用点），GoalRunner 不重复实现这部分。
-GoalRunner 只需要兜底处理两种"常规触发器没接住"的情况：
+GoalRunner 只需要兜底处理三种"常规触发器没接住"的情况：
   a) 撞到 cfg.max_turns 硬顶（_agentic_loop 内部循环耗尽，不是 compact 能解决的，
      需要先 compact 腾出空间再继续）
   b) GoalJudge 主观判断怀疑历史信息干扰了主 Agent 的判断力（NEED_COMPACT）
+  c) 连续多轮反馈高度雷同、疑似卡住（见上方第 5 点）
 """
 
 from __future__ import annotations
@@ -85,11 +92,13 @@ class GoalRunner:
             self._last_feedback = resume_state.last_judge_feedback
             self._compacts_done = resume_state.compacts_done
             self._consecutive_same = resume_state.consecutive_same_feedback
+            self._stuck_recoveries_used = resume_state.stuck_recoveries_used
         else:
             self._round = 0
             self._last_feedback = ""
             self._compacts_done = 0
             self._consecutive_same = 0
+            self._stuck_recoveries_used = 0
 
         self._prior_feedback_for_similarity: list[str] = []
 
@@ -154,10 +163,13 @@ class GoalRunner:
             self._save_state(status="running")
 
             if self._check_stuck(judge_feedback):
+                if self._try_stuck_recovery():
+                    continue  # 已压缩历史+重置卡住计数，本轮判定不终止，继续跑
                 return self._finish(
                     status="stuck",
                     report=(
                         f"连续 {self._gm_cfg.consecutive_same_feedback_limit} 轮收到高度相似的反馈，"
+                        f"且已用尽 {self._gm_cfg.max_stuck_recoveries} 次压缩历史重试的机会，"
                         f"怀疑卡在同一个问题上，提前终止。最近一次反馈：\n{judge_feedback}"
                     ),
                 )
@@ -264,10 +276,64 @@ class GoalRunner:
             if ratio >= threshold:
                 self._consecutive_same += 1
             else:
+                # 出现了和上一轮明显不同的反馈，说明确实有新进展，不再是"卡住"
+                # 状态——把卡住计数和"卡住恢复额度"都重置，避免本次真实进展
+                # 消耗掉留给未来某次真正卡住时使用的恢复机会。
                 self._consecutive_same = 0
+                self._stuck_recoveries_used = 0
         self._prior_feedback_for_similarity.append(feedback)
 
         return self._consecutive_same >= (limit - 1)
+
+    def _try_stuck_recovery(self) -> bool:
+        """
+        判定"卡住"后的第一反应不应该是直接认输——很可能只是主 Agent 的历史里
+        堆积了太多无关信息、干扰了它看清问题本质，压缩一次历史、显式提醒它
+        换个角度重新梳理，往往就能推进。这里做的事：
+
+          1. 检查还有没有"卡住恢复"额度（max_stuck_recoveries）以及
+             compact 总次数预算（max_total_compacts），任一用尽就不再尝试，
+             交回调用方走正常的"卡住终止"流程。
+          2. 执行一次 compact（复用 _do_compact，会自动重新钉住目标上下文）。
+          3. 显式注入一条提示，点明"连续多轮反馈雷同、疑似卡在同一个问题上"，
+             要求 agent 换一个思路/方法重新尝试，而不是重复同样的动作。
+          4. 重置卡住计数（但不重置 prior_feedback 历史用于后续相似度比较的
+             基准——下一轮反馈依然会和"压缩前最后一次反馈"比较相似度，这样
+             如果压缩后还是给出高度相似的反馈，能被正确地识别为"真的卡住了"）。
+
+        返回 True 表示已经处理（应该 continue 继续跑，不计入 max_rounds 预算），
+        False 表示恢复额度或 compact 预算已耗尽，调用方应该走正常终止流程。
+        """
+        max_compacts = self._gm_cfg.max_total_compacts
+        if self._stuck_recoveries_used >= self._gm_cfg.max_stuck_recoveries:
+            return False
+        if self._compacts_done >= max_compacts:
+            return False
+
+        R.print_warning(
+            f"[GoalRunner] 连续 {self._consecutive_same + 1} 轮反馈高度相似，疑似卡住，"
+            f"尝试压缩历史后给 agent 一次重新整理思路的机会"
+            f"（第 {self._stuck_recoveries_used + 1}/{self._gm_cfg.max_stuck_recoveries} 次恢复额度）。"
+        )
+        self._do_compact()
+
+        from ._compat import make_goal_context
+        hint = (
+            "[GoalRunner 提示] 你最近连续几轮的输出/反馈高度相似，似乎卡在同一个"
+            "问题上反复尝试同样的方法却没有新进展。历史已经压缩过，请不要重复"
+            "上一轮的做法——先重新梳理一下目前的障碍到底是什么，考虑换一个角度、"
+            "换一种工具或方法，或者先做一些诊断性的检查（比如确认前提假设是否"
+            "成立）来找到卡住的真正原因，再继续推进目标。"
+        )
+        self._agent._hist.append_raw_dict(make_goal_context(hint))
+
+        self._stuck_recoveries_used += 1
+        # 卡住计数本身归零：接下来重新判断是否"卡住"，但 _prior_feedback_for_similarity
+        # 里已有的历史反馈不清空——如果压缩+提示之后 agent 还是给出和之前雷同的
+        # 反馈，说明这次恢复没有起作用，应该能被正常识别为再次卡住。
+        self._consecutive_same = 0
+        self._save_state(status="running")
+        return True
 
     # ── 内部：compact ────────────────────────────────────────────────────
 
@@ -311,6 +377,7 @@ class GoalRunner:
             last_judge_status="",
             compacts_done=self._compacts_done,
             consecutive_same_feedback=self._consecutive_same,
+            stuck_recoveries_used=self._stuck_recoveries_used,
             final_report=final_report,
         )
         try:

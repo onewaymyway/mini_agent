@@ -37,7 +37,10 @@ GoalRunner.run()  ← 外层驱动循环
   │        DONE          → 结束，返回成功                 │
   │        CONTINUE       → 反馈注入历史，回到 1           │
   │        NEED_COMPACT   → 显式 compact，回到 1（不计轮次）│
-  │   5. 每个轮次边界都落盘 GoalState                     │
+  │   5. CONTINUE 分支检测"是否卡住"（连续雷同反馈）：       │
+  │        卡住 → 花一次恢复额度：compact+提示换思路，回到1 │
+  │        额度耗尽后再卡住 → 终止，状态 stuck             │
+  │   6. 每个轮次边界都落盘 GoalState                     │
   └───────────────────────────────────────────────────┘
 ```
 
@@ -63,6 +66,7 @@ Evaluator 仍然在每次 `run_turn` 内部做质量把关，GoalRunner 在更�
     "max_total_compacts": 10,
     "consecutive_same_feedback_limit": 3,
     "same_feedback_similarity_threshold": 0.9,
+    "max_stuck_recoveries": 1,
     "persist_state": true,
     "auto_resume_prompt": true
   }
@@ -82,9 +86,34 @@ Evaluator 仍然在每次 `run_turn` 内部做质量把关，GoalRunner 在更�
 | `max_total_compacts` | `10` | 单次 goal 执行期间最多允许几次 compact，防止"压缩风暴" |
 | `consecutive_same_feedback_limit` | `3` | 连续 N 轮 Judge 反馈高度雷同 → 判定为"卡住"，提前终止 |
 | `same_feedback_similarity_threshold` | `0.9` | `difflib.SequenceMatcher` 相似度阈值，达到即计入"雷同" |
+| `max_stuck_recoveries` | `1` | 判定"卡住"后先压缩历史+提示换思路、再给几次机会（见下方"卡住恢复"），额度耗尽后再卡住才真正终止；设为 `0` 等价于旧行为（一卡住就终止） |
 | `judge_show_prompt` | `false` | 打印发给 GoalJudge 的完整输入 prompt（目标、验收标准、主 Agent 产出、上一轮反馈），排查判定依据用 |
 | `persist_state` | `true` | 是否在每个轮次边界落盘 `goal_state.json`（供异常中断恢复） |
 | `auto_resume_prompt` | `true` | 启动 REPL 时若检测到未完成的 goal，是否主动提示 |
+
+---
+
+## 卡住恢复：先 compact 再给一次机会
+
+之前的行为：GoalJudge 连续 `consecutive_same_feedback_limit` 轮给出高度相似的
+反馈（`same_feedback_similarity_threshold` 判定相似度）就直接判定"卡住"、
+终止整个 goal 执行。这其实经常是误判——历史里堆积了大量试错过程和中间产出，
+干扰了主 Agent 的判断力，让它反复陷入同一个思路出不来，而不是目标真的做不到。
+
+现在的行为：判定"卡住"后不直接终止，而是：
+
+1. 执行一次 compact（复用现有的历史压缩机制，并自动重新钉住目标+验收标准）
+2. 显式注入一条提示，点明"你连续几轮反馈高度相似，疑似卡在同一个问题上"，
+   要求换一个角度、方法或先做诊断性检查，而不是重复同样的动作
+3. 重置卡住计数，继续跑（不计入 `max_rounds` 预算）
+
+如果压缩+提示之后还是给出高度雷同的反馈，说明这次恢复没有起作用，等
+`max_stuck_recoveries` 额度耗尽后再次卡住就会真正终止（`status=stuck`）。
+一旦某一轮出现明显不同于上一轮的反馈（判定为"真实进展"），卡住计数和
+恢复额度都会被重置——额度是"每次卡住独立计算"，不是整个 goal 执行期间
+总共只能用一次。
+
+设置 `max_stuck_recoveries: 0` 可以关闭这个行为，回到"一卡住就终止"的旧逻辑。
 
 ---
 
@@ -289,7 +318,7 @@ GoalJudge 的输出通过两层机制确保不会被误认成主 Agent 在说话
 |--------|----------|------|
 | `max_rounds` | 外层循环轮次达到上限 | 终止，状态 `max_rounds_exhausted`，汇报最后一轮反馈 |
 | `max_total_compacts` | compact 次数达到上限 | 终止，避免"跑几轮就 compact 一次"的压缩风暴 |
-| 连续雷同反馈 | 连续 N 轮 Judge 反馈相似度 ≥ 阈值 | 终止，状态 `stuck`，汇报"卡在同一个问题上" |
+| 连续雷同反馈 | 连续 N 轮 Judge 反馈相似度 ≥ 阈值 | 先花一次"卡住恢复额度"（`max_stuck_recoveries`）压缩历史+提示换思路，继续跑；额度耗尽后再次卡住才终止，状态 `stuck`，汇报"卡在同一个问题上"（见上方"卡住恢复"一节） |
 | `hit_max_turns` | 单次 `run_turn` 撞到 `cfg.max_turns` | 不终止，显式 compact 后重跑本步（不计入轮次预算） |
 
 所有安全阀触发时都会**如实汇报**已尝试的轮次、compact 次数、最后一次反馈，

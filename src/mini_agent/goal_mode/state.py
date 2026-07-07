@@ -41,6 +41,7 @@ class GoalState:
     last_judge_status: str = ""
     compacts_done: int = 0
     consecutive_same_feedback: int = 0
+    stuck_recoveries_used: int = 0   # 已用掉几次"卡住→compact→再给一次机会"的恢复额度
     final_report: str = ""           # 结束时的汇报文本
     created_at: float = field(default_factory=time.time)
     updated_at: float = field(default_factory=time.time)
@@ -59,6 +60,7 @@ class GoalState:
             last_judge_status=d.get("last_judge_status", ""),
             compacts_done=int(d.get("compacts_done", 0)),
             consecutive_same_feedback=int(d.get("consecutive_same_feedback", 0)),
+            stuck_recoveries_used=int(d.get("stuck_recoveries_used", 0)),
             final_report=d.get("final_report", ""),
             created_at=float(d.get("created_at", time.time())),
             updated_at=float(d.get("updated_at", time.time())),

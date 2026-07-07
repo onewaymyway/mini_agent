@@ -450,8 +450,14 @@ class GoalModeConfig:
     # ── 外层循环安全阀 ───────────────────────────────────────────────────────
     max_rounds: int = 20                       # 外层 goal 迭代轮数上限
     max_total_compacts: int = 10               # 单次 goal 执行期间最多允许几次 compact
-    consecutive_same_feedback_limit: int = 3   # 连续 N 轮 judge 反馈高度雷同 → 提前终止
+    consecutive_same_feedback_limit: int = 3   # 连续 N 轮 judge 反馈高度雷同 → 判定"卡住"
     same_feedback_similarity_threshold: float = 0.9  # difflib.SequenceMatcher 相似度阈值
+
+    # 判定"卡住"后不直接终止：先压缩一次历史、给 agent 一次重新整理思路的机会，
+    # 再继续跑；如果之后又卡住了才真正终止。max_stuck_recoveries 是这种
+    # "卡住→compact→再给机会"额度的次数上限，用完之后再卡住就直接终止。
+    # 设为 0 等价于旧行为（一卡住就终止，不做恢复尝试）。
+    max_stuck_recoveries: int = 1
 
     # ── 调试 ─────────────────────────────────────────────────────────────────
     judge_show_prompt: bool = False   # 打印发给 GoalJudge 的完整输入 prompt（排查判定依据用）
