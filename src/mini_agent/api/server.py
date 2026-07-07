@@ -937,6 +937,18 @@ def _install_output_hook(bridge: AgentBridge) -> None:
     def _tid() -> str:
         return getattr(bridge.agent, "_http_turn_id", "") if bridge.agent else ""
 
+    # ── print_assistant_prefix（"XXX ❯ " 前缀，标识当前是谁在说话）────────
+    # [SYS-AGENT-PREFIX] 主 Agent 和 GoalJudge/TurnJudge 等内部子 Agent 都会
+    # 各自带着自己的 cfg.agent_name 调用这个函数，之前完全没转发给 SSE，
+    # 是 daemon connected 模式 / kanban 显示错误前缀（永远是启动时那个固定
+    # agent_name）的根因。这里转发一条 agent_prefix 事件，客户端据此更新
+    # "当前这一段输出是谁在说"，而不是自己瞎猜。
+    _orig_print_assistant_prefix = mod.print_assistant_prefix
+    def _print_assistant_prefix(agent_name: str = "orzooo") -> None:
+        _orig_print_assistant_prefix(agent_name)
+        bridge.emit_agent_prefix(agent_name, turn_id=_tid())
+    mod.print_assistant_prefix = _print_assistant_prefix
+
     # ── print_markdown（非流式回复的最终文本走这里）──────────────────────
     _orig_print_markdown = mod.print_markdown
     def _print_markdown(md: str) -> None:

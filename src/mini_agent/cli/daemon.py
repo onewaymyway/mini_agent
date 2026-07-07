@@ -602,6 +602,7 @@ class DaemonClient:
             "tool_call", "tool_result", "tool_error",
             "info", "warning", "permission_req", "permission_done",
             "session_switched", "fs_change", "reasoning", "skill_loaded",
+            "agent_prefix",
         ):
             # 之前这里被静默忽略——是 connected 模式看不到工具调用过程的根因。
             # 统一转发给 on_event，由调用方决定怎么渲染（见 run_connected_repl
@@ -1888,6 +1889,16 @@ def run_connected_repl(daemon_info: dict, token: Optional[str] = None) -> None:
     agent_name_escaped = _esc_agent_name(agent_name)
     agent_prefix_markup = f"\n[bold yellow]{agent_name_escaped}[/bold yellow][bold cyan] \u276f [/bold cyan]"
 
+    # [SYS-AGENT-PREFIX] 共享的"当前发言角色名"容器：默认是 daemon 启动时的
+    # agent_name，一旦收到 agent_prefix 事件（主 Agent 或 GoalJudge/TurnJudge
+    # 等内部子 Agent 调用 print_assistant_prefix 时触发），就更新成事件里带
+    # 的真实角色名。main 循环的 on_token 和 observer 线程共用这一个容器，
+    # 保证两边打印出来的前缀始终一致、且反映真实发言者。
+    _cur_agent_label_holder = [agent_name_escaped]
+
+    def _cur_agent_prefix_markup() -> str:
+        return f"\n[bold yellow]{_cur_agent_label_holder[0]}[/bold yellow][bold cyan] \u276f [/bold cyan]"
+
     # ── 多终端同步：后台 observer 线程 ───────────────────────────────────────
     # 持续订阅全局 /v1/stream（非 per-turn 端点；按 session 隔离，"全局"指
     # 的是"这个 session 里所有 turn"，不是跨 session）。本终端等待用户输入
@@ -2188,13 +2199,22 @@ def run_connected_repl(daemon_info: dict, token: Optional[str] = None) -> None:
                 _term.stream_end()
                 _own_printed_any_holder[0] = False
 
+            if evt_type == "agent_prefix":
+                # [SYS-AGENT-PREFIX] 旁观帧同样可能来自 GoalJudge 等内部子
+                # Agent，更新共享 label，并让下一个 token 重新打印前缀行。
+                from rich.markup import escape as _esc_ap2
+                new_name = payload.get("agent_name") or agent_name
+                _cur_agent_label_holder[0] = _esc_ap2(new_name)
+                turn_prefix_printed.discard(turn_id)
+                return
+
             if evt_type == "token":
                 text = payload.get("text", "")
                 if not text or _term is None:
                     return
                 if turn_id not in turn_prefix_printed:
                     turn_prefix_printed.add(turn_id)
-                    _term.print(f"\n{prefix}[bold yellow]{agent_name_escaped}[/bold yellow][bold cyan] \u276f [/bold cyan]", end="")
+                    _term.print(_cur_agent_prefix_markup(), end="")
                 _term.stream_token(text)
 
             elif evt_type == "turn_done":
@@ -2352,7 +2372,7 @@ def run_connected_repl(daemon_info: dict, token: Optional[str] = None) -> None:
                     return
                 with _observer_lock:  # 与 observer 互斥，避免输出交错
                     if not _own_printed_any_holder[0]:
-                        _term.print(agent_prefix_markup, end="")
+                        _term.print(_cur_agent_prefix_markup(), end="")
                     _term.stream_token(text)
                     _own_printed_any_holder[0] = True
 
@@ -2374,6 +2394,17 @@ def run_connected_repl(daemon_info: dict, token: Optional[str] = None) -> None:
             def on_event(evt_type, payload, _tid=turn_id):
                 """处理本端自己发起的 turn 里出现的非 token 事件——
                 工具调用过程、权限请求等。"""
+                if evt_type == "agent_prefix":
+                    # [SYS-AGENT-PREFIX] 见 _cur_agent_label_holder 定义处的说明。
+                    from rich.markup import escape as _esc_ap
+                    new_name = payload.get("agent_name") or agent_name
+                    with _observer_lock:
+                        if _own_printed_any_holder[0] and _term is not None:
+                            _term.stream_end()
+                            _own_printed_any_holder[0] = False
+                        _cur_agent_label_holder[0] = _esc_ap(new_name)
+                    return
+
                 if evt_type == "permission_req":
                     req_id     = payload.get("req_id", "")
                     tool_name  = payload.get("tool_name", "")

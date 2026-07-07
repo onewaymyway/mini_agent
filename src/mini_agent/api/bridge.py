@@ -743,6 +743,15 @@ class AgentBridge:
             data={"text": token},
         ))
 
+    def emit_agent_prefix(self, agent_name: str, turn_id: str = "") -> None:
+        # [SYS-AGENT-PREFIX] 见 models.py::EventType.AGENT_PREFIX 的说明。
+        self.broadcaster.push(AgentEvent(
+            type=EventType.AGENT_PREFIX,
+            turn_id=turn_id,
+            session_id=self._current_session_id(),
+            data={"agent_name": agent_name},
+        ))
+
     def emit_reasoning(
         self, turn_id: str = "", text: Optional[str] = None, marker: Optional[str] = None,
     ) -> None:

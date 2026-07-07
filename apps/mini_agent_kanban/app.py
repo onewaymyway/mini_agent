@@ -129,6 +129,16 @@ def inject_css():
     background: #16201a; border-left: 3px solid #4CAF50; border-radius: 0 12px 12px 12px;
     padding: 10px 14px; margin: 6px 30px 6px 0; font-size: 14px; color: #d4f0d4;
 }
+.msg-tool {
+    background: #14202b; border-left: 3px solid #3aa0d1; border-radius: 0 12px 12px 12px;
+    padding: 8px 12px; margin: 4px 30px 4px 0; font-size: 12.5px; color: #bfe3f5;
+    font-family: "SF Mono", Consolas, monospace;
+}
+.msg-tool-error {
+    background: #2b1414; border-left: 3px solid #e05555; border-radius: 0 12px 12px 12px;
+    padding: 8px 12px; margin: 4px 30px 4px 0; font-size: 12.5px; color: #f5c2c2;
+    font-family: "SF Mono", Consolas, monospace;
+}
 .permission-card {
     background: #2D1B00; border: 1px solid #FF7043; border-radius: 10px;
     padding: 12px; margin: 8px 0;
@@ -441,40 +451,133 @@ def render_permissions(client: AgentClient, pending_list):
 # ═══════════════════════════════════════════════════════════════════════
 # Tab 1: 对话
 # ═══════════════════════════════════════════════════════════════════════
-def _stream_turn_into_placeholder(client: AgentClient, turn_id: str, placeholder):
+
+# 产出物相关工具名——命中时说明这次 tool_result 很可能新增/更新了产出物，
+# 用来在流式过程中提前给一条"有新产出物"的提示，不必等整轮结束、页面
+# rerun 之后才第一次看到（详见 _stream_turn_into_placeholder 的说明）。
+_ARTIFACT_HINT_TOOLS = ("record_artifact", "artifact")
+
+
+def _stream_turn_into_placeholder(client: AgentClient, turn_id: str, container):
     """
-    订阅 turn_id 的 SSE 流，把逐 token 文本实时写进 placeholder，
-    直到该轮结束（turn_done/error/interrupt）或流断开。
-    返回 True 表示这一轮正常结束（可以安全 rerun 去刷新完整历史）。
+    订阅 turn_id 的 SSE 流，把这一轮里的内容实时渲染进 `container`。
+
+    之前的实现只用了单个 placeholder，把一整轮里所有的文本 token /
+    工具调用 / 工具结果全部拼接进同一个 `<div>`，导致流式过程中看起来
+    像"一个大对话框"，和整轮结束后 rerun 拉取正式历史（每条工具事件、
+    每段文本都是独立展示）的效果完全不一致。
+
+    这里改成：每当内容类型发生切换（文本 → 工具调用 → 工具结果 → 文本…），
+    就在 container 里新开一个 st.empty() 占位符，各自独立更新，从而做到
+    "每个独立内容一个单独的框"，且和刷新后的最终效果保持一致。
+
+    返回 True 表示这一轮正常结束（外层可以安全 rerun 去刷新完整历史）。
     """
-    acc = ""
+    cur_kind = None      # 当前正在写入的块类型："text" | None
+    cur_ph = None        # 当前块对应的占位符
+    cur_text = ""         # 当前文本块已累积的内容
     finished = False
+    saw_artifact_hint = False
+
+    def _new_block():
+        nonlocal cur_ph, cur_text
+        cur_ph = container.empty()
+        cur_text = ""
+        return cur_ph
+
     for evt in client.stream_turn(turn_id, replay=True):
         etype = evt.get("event")
         data = evt.get("data") or {}
-        if etype == "token":
-            acc += data.get("text", "")
-            placeholder.markdown(f'<div class="msg-agent">{acc}▌</div>', unsafe_allow_html=True)
+
+        if etype == "agent_prefix":
+            # 发言角色切换（比如主 Agent → GoalJudge）：新角色的话另起
+            # 一个框，避免和上一位发言者的文本挤在同一个 div 里。
+            name = data.get("agent_name") or ""
+            cur_kind = None
+            if name:
+                ph = _new_block()
+                ph.markdown(
+                    f'<div style="margin:6px 0 0;font-size:11px;color:#888;">▸ {name}</div>',
+                    unsafe_allow_html=True,
+                )
+                cur_ph = None  # 这条本身就是独立小标签，不再被后续文本复用
+
+        elif etype == "token":
+            if cur_kind != "text":
+                cur_kind = "text"
+                _new_block()
+            cur_text += data.get("text", "")
+            cur_ph.markdown(f'<div class="msg-agent">{cur_text}▌</div>', unsafe_allow_html=True)
+
         elif etype == "reasoning":
             # 思维链 token：淡化展示，不计入最终正文
             pass
+
+        elif etype == "tool_call":
+            cur_kind = None
+            ph = _new_block()
+            tool_name = data.get("tool_name", "?")
+            tool_input = str(data.get("tool_input", ""))[:300]
+            ph.markdown(
+                f'<div class="msg-tool">🔧 调用工具 <b>{tool_name}</b> · 参数: {tool_input}</div>',
+                unsafe_allow_html=True,
+            )
+
+        elif etype == "tool_result":
+            cur_kind = None
+            ph = _new_block()
+            tool_name = data.get("tool_name", "?")
+            result = str(data.get("result", ""))[:300]
+            ph.markdown(
+                f'<div class="msg-tool">✅ 工具结果 <b>{tool_name}</b> · {result}</div>',
+                unsafe_allow_html=True,
+            )
+            if any(h in tool_name for h in _ARTIFACT_HINT_TOOLS):
+                saw_artifact_hint = True
+
+        elif etype == "tool_error":
+            cur_kind = None
+            ph = _new_block()
+            tool_name = data.get("tool_name", "?")
+            err = str(data.get("error", data.get("message", "")))[:300]
+            ph.markdown(
+                f'<div class="msg-tool-error">❌ 工具出错 <b>{tool_name}</b> · {err}</div>',
+                unsafe_allow_html=True,
+            )
+
         elif etype in ("turn_done", "interrupt"):
-            final_text = data.get("text", acc) or acc
-            placeholder.markdown(f'<div class="msg-agent">{final_text}</div>', unsafe_allow_html=True)
+            final_text = data.get("text", "") or cur_text
+            if final_text:
+                if cur_kind != "text":
+                    _new_block()
+                cur_ph.markdown(f'<div class="msg-agent">{final_text}</div>', unsafe_allow_html=True)
             finished = True
             break
+
         elif etype == "error":
-            placeholder.markdown(
+            ph = _new_block()
+            ph.markdown(
                 f'<div class="msg-agent">⚠️ {data.get("message", "发生错误")}</div>',
                 unsafe_allow_html=True,
             )
             finished = True
             break
+
         elif etype == "_error":
             # SSE 连接本身失败（网络/超时），退回轮询模式，让外层 rerun 兜底
-            if acc:
-                placeholder.markdown(f'<div class="msg-agent">{acc}</div>', unsafe_allow_html=True)
+            if cur_kind == "text" and cur_text and cur_ph is not None:
+                cur_ph.markdown(f'<div class="msg-agent">{cur_text}</div>', unsafe_allow_html=True)
             break
+
+    if finished and saw_artifact_hint:
+        # 提前给个轻量提示——正式的产出物卡片仍然在 rerun 后、走
+        # render_chat_tab 顶部那段"产出物内联展示"逻辑统一渲染，这里只是
+        # 让用户不必盯着空白等，知道"这一轮有新产出物，即将刷新显示"。
+        container.markdown(
+            '<div style="margin:4px 0;font-size:12px;color:#888;">📦 检测到新产出物，正在刷新…</div>',
+            unsafe_allow_html=True,
+        )
+
     return finished
 
 
@@ -550,10 +653,6 @@ def render_chat_tab(client: AgentClient):
                                 st.divider()
                     st.session_state[seen_key] = len(art_items)
 
-            # 实时流式占位符：新消息发出后 / 页面刷新时发现有轮次仍在跑，
-            # 都会往这里逐 token 写入，做到"边生成边显示"。
-            stream_placeholder = st.empty()
-
             # 滚动锚点：每次渲染后用下面注入的 JS 把它滚到可视区域，从而把整个
             # 固定高度容器滚到底部，实现"自动滚动到最新消息"。
             st.markdown('<div id="chat-bottom-anchor"></div>', unsafe_allow_html=True)
@@ -582,7 +681,8 @@ def render_chat_tab(client: AgentClient):
         # 发现仍在跑的那一轮"（比如另一个客户端发的消息，或本页刷新过）。
         turn_to_stream = new_turn_id or running_turn_id
         if turn_to_stream:
-            finished = _stream_turn_into_placeholder(client, turn_to_stream, stream_placeholder)
+            with chat_box:
+                finished = _stream_turn_into_placeholder(client, turn_to_stream, chat_box)
             if finished:
                 st.rerun()  # 该轮结束，刷新一次把正式历史（含工具事件）拉齐
 

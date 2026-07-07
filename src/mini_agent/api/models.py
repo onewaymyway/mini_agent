@@ -23,6 +23,13 @@ class EventType(str, Enum):
     TOOL_RESULT      = "tool_result"     # 工具结果
     TOOL_ERROR       = "tool_error"      # 工具出错
     SKILL_LOADED     = "skill_loaded"    # skill 被激活（print_skill_loaded）
+    # [SYS-AGENT-PREFIX] 哪个"角色"即将开始说话（主 Agent / GoalJudge / TurnJudge
+    # 等内部子 Agent 都会各自调用 print_assistant_prefix(agent_name=...)）。
+    # 之前这个信息完全没有转发给 SSE 客户端，导致 daemon connected 模式/
+    # kanban 只能用启动时的固定 agent_name 硬编码前缀，GoalJudge 等内部
+    # 子 Agent 说话时前缀显示错误（显示成主 Agent 的名字）。
+    AGENT_PREFIX     = "agent_prefix"    # data: {"agent_name": "..."}
+
     # 权限
     PERMISSION_REQ   = "permission_req"  # 需要用户审批
     PERMISSION_DONE  = "permission_done" # 审批结果
