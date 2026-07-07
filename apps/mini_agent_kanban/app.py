@@ -677,13 +677,17 @@ def render_chat_tab(client: AgentClient):
                         st.markdown(f'<div class="msg-agent">{_esc_html(content)}</div>', unsafe_allow_html=True)
                     elif role in ("user", "human", "assistant", "agent"):
                         # 系统内部消息（工具结果回注/skill注入/reminder 等），
-                        # 折叠成一行淡色小字，不当聊天气泡展示，避免和真实
-                        # 对话混淆，也避免其中的尖括号内容破坏页面结构。
+                        # 用和流式阶段一样的 .msg-tool 卡片样式展示一行摘要，
+                        # 不再用裸 div（没有背景/边框，看起来像"漏在对话框
+                        # 外面"，和流式时的工具卡片视觉不一致）。
                         label = etype or "system"
-                        preview = _esc_html(content)[:80]
+                        content_str = content if isinstance(content, str) else str(content)
+                        # 必须先截断原文再转义——反过来的话会把 &amp; / &lt;
+                        # 这类多字符 HTML 实体从中间切断，显示成破损的 "&…"。
+                        truncated = len(content_str) > 80
+                        preview = _esc_html(content_str[:80])
                         st.markdown(
-                            f'<div style="font-size:11px;color:#666;margin:2px 0;">'
-                            f'⚙️ [{label}] {preview}{"…" if len(str(content)) > 80 else ""}</div>',
+                            f'<div class="msg-tool">⚙️ [{label}] {preview}{"…" if truncated else ""}</div>',
                             unsafe_allow_html=True,
                         )
 
