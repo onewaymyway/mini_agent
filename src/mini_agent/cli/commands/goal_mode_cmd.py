@@ -18,6 +18,7 @@ cli/commands/goal_mode_cmd.py — /goal slash 命令处理
 from __future__ import annotations
 
 from typing import Optional
+from datetime import datetime
 
 import mini_agent.ui.renderer as R
 
@@ -293,9 +294,22 @@ def _handle_list(agent) -> None:
     R.console.print(f"[bold]检测到 {len(sessions)} 个可恢复的目标任务：[/bold]")
     for s in sessions:
         current_mark = "  [dim](当前 session)[/dim]" if s["session_id"] == agent.session_id else ""
+        goal_text = s.get("goal_text") or "(无目标描述，可能是旧版本数据)"
+        # 目标描述可能很长（多行/几百字），命令行里整段甩出来反而看不清哪行是
+        # 哪个 session 的，所以只取第一行 + 截断，完整内容还是原样存在
+        # goal_state.json 里，需要的话可以自己去翻文件。
+        first_line = goal_text.splitlines()[0] if goal_text else ""
+        if len(first_line) > 80:
+            first_line = first_line[:77] + "..."
+        updated_at = s.get("updated_at")
+        updated_str = (
+            datetime.fromtimestamp(updated_at).strftime("%Y-%m-%d %H:%M:%S")
+            if updated_at else "未知"
+        )
         R.console.print(
             f"  - session: {s['session_id']}  round={s['round']}  "
-            f"updated_at={s['updated_at']}{current_mark}"
+            f"更新时间={updated_str}{current_mark}\n"
+            f"    目标：{first_line}"
         )
     R.console.print(
         "\n输入 [bold]/goal resume <session_id>[/bold] 恢复对应的目标。"

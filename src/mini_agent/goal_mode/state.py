@@ -191,10 +191,13 @@ def list_resumable_sessions(project_root) -> list[dict]:
         except Exception:
             continue
         if data.get("status") == "running":
+            goal_spec = data.get("goal_spec") or {}
+            goal_text = (goal_spec.get("goal_text") or "").strip()
             candidates.append({
                 "session_id": entry.name,
                 "round": data.get("round"),
                 "updated_at": data.get("updated_at"),
+                "goal_text": goal_text,
                 "mtime": gs_path.stat().st_mtime,
             })
     candidates.sort(key=lambda x: x["mtime"], reverse=True)
