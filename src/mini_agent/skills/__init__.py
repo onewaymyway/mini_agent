@@ -262,7 +262,19 @@ class SkillLoader:
                 _header += "  ⚠ 置信度较低，请结合实际情况判断"
             elif skill.confidence_score < 0.7:
                 _header += "  ℹ 置信度中等"
-            parts.append(f"{_header}\n\n{_content}")
+            # [路径感知] SKILL.md 里经常写相对路径（引用同目录下的脚本/模板/
+            # 参考资料），但这些路径是相对 SKILL.md 自己所在目录的，不是相对
+            # agent 当前工作目录的——不告诉 agent 这一点，它大概率会拼错路径
+            # 去当前工作目录下找一个根本不存在的文件。这里把 skill 目录路径
+            # 显式注入进去，让 agent 有能力自己算出正确的绝对路径。
+            skill_dir = skill.location.parent
+            _path_note = (
+                f"**Skill 所在目录**：`{skill_dir}`\n"
+                f"以上内容中出现的相对路径（脚本、模板、参考资料等）均相对于这个目录解析，"
+                f"不是相对于当前工作目录或项目根目录。引用时请自行拼接为绝对路径，"
+                f"例如 `{skill_dir}/xxx`。"
+            )
+            parts.append(f"{_header}\n\n{_path_note}\n\n{_content}")
         return "\n\n---\n\n".join(parts)
 
     def _relevant_chunks(self, content: str, query: str, max_chunks: int = 3) -> str:
@@ -297,15 +309,29 @@ class SkillLoader:
         Returns:
             (compact_text, included_names, dropped_names)
         """
+        def _with_path_note(name: str) -> str:
+            skill = self._all[name]
+            content = skill.content
+            # 同 build_context：压缩重附时也要带上 skill 目录路径，否则 agent
+            # 压缩后重新看到 skill 内容时又会丢失"相对路径相对于哪里"这个
+            # 关键信息。路径提示放在内容最前面，即使后面被 tracker 按预算
+            # 截断（_clip 保留头部截断尾部），这条提示也不会被截掉。
+            skill_dir = skill.location.parent
+            note = (
+                f"**Skill 所在目录**：`{skill_dir}`"
+                f"（相对路径相对于此目录解析，不是当前工作目录）\n\n"
+            )
+            return note + content
+
         if include_inactive:
             candidates = {
-                name: self._all[name].content
+                name: _with_path_note(name)
                 for name in self.tracker.recent_names()
                 if name in self._all
             }
         else:
             candidates = {
-                name: self._all[name].content
+                name: _with_path_note(name)
                 for name in self._active
                 if name in self._all
             }
@@ -330,13 +356,16 @@ class SkillLoader:
     def get_catalog(self) -> list[dict]:
         """
         返回所有可用技能的目录（供注入 system prompt 或工具结果使用）。
-        每条记录包含 name / description / active 三个字段，不含全文内容。
+        每条记录包含 name / description / active / location 字段，不含全文内容。
+        location 是 skill 所在目录（不是 SKILL.md 文件本身），方便 agent 在
+        还没激活、只看到目录列表时就能定位到该 skill 下的其它文件。
         """
         return [
             {
                 "name":        name,
                 "description": skill.description,
                 "active":      name in self._active,
+                "location":    str(skill.location.parent),
             }
             for name, skill in sorted(self._all.items())
         ]
@@ -347,6 +376,7 @@ class SkillLoader:
             {
                 "name":        name,
                 "description": self._all[name].description,
+                "location":    str(self._all[name].location.parent),
             }
             for name in self._active
             if name in self._all

@@ -10,6 +10,11 @@ The following skills are currently active and provide additional instructions:
 
 {{ skill_list }}
 
+**关于 skill 中的路径**：每个 skill 下面都标注了"Skill 所在目录"。skill 正文里
+出现的相对路径（脚本、模板、参考资料、示例文件等）都是相对这个目录写的，不是
+相对你当前的工作目录，也不是相对项目根目录。使用这些路径前，先把它和对应 skill
+的"Skill 所在目录"拼接成绝对路径，否则大概率会因为路径基准不对而找不到文件。
+
 ---
 
 {{ skill_context }}
