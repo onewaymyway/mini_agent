@@ -38,6 +38,33 @@ def _esc_html(text) -> str:
     return html.escape(str(text)).replace("\n", "<br>")
 
 
+# 折叠阈值：内容原文超过这个字符数就用 <details> 折叠，而不是硬截断丢内容。
+_COLLAPSE_THRESHOLD = 200
+
+
+def _collapsible_html(inline_html: str, full_content: str, threshold: int = _COLLAPSE_THRESHOLD) -> str:
+    """
+    构造一段"内容短就直接显示、内容长就折叠、点击展开"的 HTML 片段。
+
+    之前工具调用参数/结果/系统消息摘要都是硬编码 [:80]/[:300] 直接截断，
+    超出部分永久丢失，只能去别的 Tab 里翻原始事件才能看全。这里改成用
+    原生 <details>/<summary>——浏览器自带展开/收起交互，不需要额外 JS，
+    也不占用 Streamlit 的 rerun 周期（st.expander 每次展开/收起都会触发
+    一次 rerun，在这种一行套一行的密集列表里体验很差）。
+
+    inline_html: 已经组装好、可以直接展示的"标题行" HTML（自己负责转义）。
+    full_content: 未转义的原始完整内容，函数内部负责转义和折叠判断。
+    """
+    if len(full_content) <= threshold:
+        return f'{inline_html}{_esc_html(full_content)}'
+    return (
+        f'<details class="tool-collapsible"><summary>{inline_html}'
+        f'{_esc_html(full_content[:threshold])}… '
+        f'<span style="color:#888;font-size:11px;">(点击展开，共 {len(full_content)} 字符)</span>'
+        f'</summary><div class="tool-full-body">{_esc_html(full_content)}</div></details>'
+    )
+
+
 
 # ═══════════════════════════════════════════════════════════════════════
 # 页面配置
@@ -153,6 +180,20 @@ def inject_css():
     background: #2b1414; border-left: 3px solid #e05555; border-radius: 0 12px 12px 12px;
     padding: 8px 12px; margin: 4px 30px 4px 0; font-size: 12.5px; color: #f5c2c2;
     font-family: "SF Mono", Consolas, monospace;
+}
+.tool-collapsible summary {
+    cursor: pointer; list-style: none; user-select: none;
+}
+.tool-collapsible summary::-webkit-details-marker { display: none; }
+.tool-collapsible summary::before {
+    content: "▸ "; color: #888; font-size: 11px;
+}
+.tool-collapsible[open] summary::before {
+    content: "▾ "; color: #888; font-size: 11px;
+}
+.tool-collapsible .tool-full-body {
+    white-space: pre-wrap; word-break: break-word; margin-top: 6px;
+    max-height: 320px; overflow-y: auto;
 }
 .permission-card {
     background: #2D1B00; border: 1px solid #FF7043; border-radius: 10px;
@@ -561,22 +602,18 @@ def _stream_turn_into_placeholder(client: AgentClient, turn_id: str, container, 
             cur_kind = None
             ph = _new_block()
             tool_name = _esc_html(data.get("tool_name", "?"))
-            tool_input = _esc_html(str(data.get("tool_input", ""))[:300])
-            ph.markdown(
-                f'<div class="msg-tool">🔧 调用工具 <b>{tool_name}</b> · 参数: {tool_input}</div>',
-                unsafe_allow_html=True,
-            )
+            tool_input_raw = str(data.get("tool_input", ""))
+            body = _collapsible_html(f'🔧 调用工具 <b>{tool_name}</b> · 参数: ', tool_input_raw)
+            ph.markdown(f'<div class="msg-tool">{body}</div>', unsafe_allow_html=True)
 
         elif etype == "tool_result":
             cur_kind = None
             ph = _new_block()
             tool_name_raw = data.get("tool_name", "?")
             tool_name = _esc_html(tool_name_raw)
-            result = _esc_html(str(data.get("result", ""))[:300])
-            ph.markdown(
-                f'<div class="msg-tool">✅ 工具结果 <b>{tool_name}</b> · {result}</div>',
-                unsafe_allow_html=True,
-            )
+            result_raw = str(data.get("result", ""))
+            body = _collapsible_html(f'✅ 工具结果 <b>{tool_name}</b> · ', result_raw)
+            ph.markdown(f'<div class="msg-tool">{body}</div>', unsafe_allow_html=True)
             if any(h in tool_name_raw for h in _ARTIFACT_HINT_TOOLS):
                 saw_artifact_hint = True
 
@@ -584,11 +621,9 @@ def _stream_turn_into_placeholder(client: AgentClient, turn_id: str, container, 
             cur_kind = None
             ph = _new_block()
             tool_name = _esc_html(data.get("tool_name", "?"))
-            err = _esc_html(str(data.get("error", data.get("message", "")))[:300])
-            ph.markdown(
-                f'<div class="msg-tool-error">❌ 工具出错 <b>{tool_name}</b> · {err}</div>',
-                unsafe_allow_html=True,
-            )
+            err_raw = str(data.get("error", data.get("message", "")))
+            body = _collapsible_html(f'❌ 工具出错 <b>{tool_name}</b> · ', err_raw)
+            ph.markdown(f'<div class="msg-tool-error">{body}</div>', unsafe_allow_html=True)
 
         elif etype in ("turn_done", "interrupt"):
             final_text = data.get("text", "") or cur_text
@@ -677,19 +712,12 @@ def render_chat_tab(client: AgentClient):
                         st.markdown(f'<div class="msg-agent">{_esc_html(content)}</div>', unsafe_allow_html=True)
                     elif role in ("user", "human", "assistant", "agent"):
                         # 系统内部消息（工具结果回注/skill注入/reminder 等），
-                        # 用和流式阶段一样的 .msg-tool 卡片样式展示一行摘要，
-                        # 不再用裸 div（没有背景/边框，看起来像"漏在对话框
-                        # 外面"，和流式时的工具卡片视觉不一致）。
+                        # 用和流式阶段一样的 .msg-tool 卡片样式展示，长内容用
+                        # <details> 折叠、点击展开，不再硬截断丢内容。
                         label = etype or "system"
                         content_str = content if isinstance(content, str) else str(content)
-                        # 必须先截断原文再转义——反过来的话会把 &amp; / &lt;
-                        # 这类多字符 HTML 实体从中间切断，显示成破损的 "&…"。
-                        truncated = len(content_str) > 80
-                        preview = _esc_html(content_str[:80])
-                        st.markdown(
-                            f'<div class="msg-tool">⚙️ [{label}] {preview}{"…" if truncated else ""}</div>',
-                            unsafe_allow_html=True,
-                        )
+                        body = _collapsible_html(f'⚙️ [{label}] ', content_str)
+                        st.markdown(f'<div class="msg-tool">{body}</div>', unsafe_allow_html=True)
 
             # 产出物内联展示：把当前 session 已登记的产出物（图片/文档等）直接
             # 嵌在对话流里，不用切去"产出预览" Tab 来回找。按 created_at 倒序
@@ -771,10 +799,11 @@ def render_chat_tab(client: AgentClient):
                     etype = e.get("type")
                     if etype == "permission_req":
                         req_id = e.get("req_id")
+                        _perm_input_body = _collapsible_html("", str(e.get('tool_input', '')))
                         st.markdown(f"""
 <div class="permission-card">
   <b>🔐 权限请求：{_esc_html(e.get('tool_name','未知工具'))}</b><br/>
-  <code style="font-size:11px;">{_esc_html(str(e.get('tool_input',''))[:300])}</code>
+  <code style="font-size:11px;">{_perm_input_body}</code>
 </div>
 """, unsafe_allow_html=True)
                         pc1, pc2, pc3 = st.columns(3)
