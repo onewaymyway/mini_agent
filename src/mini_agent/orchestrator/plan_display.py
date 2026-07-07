@@ -63,7 +63,7 @@ def print_plan_tree(plan: ExecutionPlan | None = None) -> None:
         "[dim]  Legend: "
         "○ pending  ◉ running  ✓ done  ✗ failed  — skipped  │  "
         "[/dim][orange3]← from:id[/orange3][dim] spawned by task  "
-        "[/dim][magenta][user][/magenta][dim] added by user[/dim]"
+        "[/dim][magenta]\\[user][/magenta][dim] added by user[/dim]"
     )
 
     running = [t for t in p.all_tasks() if t.status == PlanTaskStatus.RUNNING]
@@ -110,7 +110,7 @@ def _add_task_node(parent_node, task: PlanTask, plan: ExecutionPlan) -> None:
 
 def _source_markup(task: PlanTask) -> str:
     if task.source == TaskSource.USER:
-        return "  [magenta][user][/magenta]"
+        return "  [magenta]\\[user][/magenta]"
     if task.source == TaskSource.TASK and task.created_by:
         return f"  [orange3]← from:{task.created_by}[/orange3]"
     return ""

@@ -998,7 +998,7 @@ def _pick_session(
         mark  = " [green]● active[/green]" if sid == current_sid else ""
         _out(f"  [cyan][{i}][/cyan] {title:<36} {turns:>3}轮  {age}{mark}")
     _out("  " + "─" * 54)
-    _out("  [cyan][n][/cyan] 新建 session    [cyan][q][/cyan] 退出")
+    _out("  [cyan]\\[n][/cyan] 新建 session    [cyan]\\[q][/cyan] 退出")
     _out("")
 
     while True:
@@ -2379,7 +2379,7 @@ def run_connected_repl(daemon_info: dict, token: Optional[str] = None) -> None:
             def on_error(message):
                 if _term is not None:
                     from rich.markup import escape as _esc_err
-                    _term.print(f"\n[red][error][/red] {_esc_err(str(message))}")
+                    _term.print(f"\n[red]\\[error][/red] {_esc_err(str(message))}")
 
             def on_done(_text, error=None):
                 with _observer_lock:
@@ -2388,7 +2388,7 @@ def run_connected_repl(daemon_info: dict, token: Optional[str] = None) -> None:
                         _own_printed_any_holder[0] = False
                     if error and _term is not None:
                         from rich.markup import escape as _esc_err
-                        _term.print(f"[red][error][/red] {_esc_err(str(error))}")
+                        _term.print(f"[red]\\[error][/red] {_esc_err(str(error))}")
                 done_event.set()
 
             def on_event(evt_type, payload, _tid=turn_id):
@@ -2471,14 +2471,14 @@ def run_connected_repl(daemon_info: dict, token: Optional[str] = None) -> None:
                 except Exception as e:
                     if _term is not None:
                         from rich.markup import escape as _esc_err
-                        _term.print(f"\n[red][daemon-client] stream error:[/red] {_esc_err(str(e))}")
+                        _term.print(f"\n[red]\\[daemon-client] stream error:[/red] {_esc_err(str(e))}")
                 finally:
                     done_event.set()
 
             threading.Thread(target=stream_worker, daemon=True).start()
             if not done_event.wait(timeout=600):
                 if _term is not None:
-                    _term.print("\n[yellow][daemon] Timed out waiting for response.[/yellow]")
+                    _term.print("\n[yellow]\\[daemon] Timed out waiting for response.[/yellow]")
 
             # 本 turn 结束，重新允许 observer 打印
             _my_turn_id_holder[0] = None

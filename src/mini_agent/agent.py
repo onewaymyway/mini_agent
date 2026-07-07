@@ -227,7 +227,7 @@ class Agent:
         if cfg.privacy.verbose and self._privacy_guard.active:
             import mini_agent.ui.renderer as _R
             _R.console.print(
-                f"[dim][privacy] active — registered secrets:\n"
+                f"[dim]\\[privacy] active — registered secrets:\n"
                 f"{self._privacy_guard.summary()}[/dim]"
             )
 
