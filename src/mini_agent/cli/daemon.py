@@ -1459,9 +1459,11 @@ def _handle_connected_interaction(
                 term.print(f"{prefix}   [dim]{_esc(hint)}[/dim]")
             term.print(f"{prefix}  [dim](其他已连接的端也能回答，谁先响应就算谁的)[/dim]")
             try:
-                sys.stdout.write("\nYour answer: ")
-                sys.stdout.flush()
-                answer = _interaction_interruptible_readline(done_event)
+                # 改用 term.interruptible_prompt()：之前这里直接
+                # sys.stdout.write + 独立读 stdin，绕开了 term 的
+                # _enter_input_mode()/_refresh_paused 协调机制，状态栏
+                # 刷新线程会反复覆盖裸写的提示符/输入。
+                answer = term.interruptible_prompt("\nYour answer: ", done_event)
             except (KeyboardInterrupt, EOFError):
                 answer = None
             if done_event.is_set():
@@ -1511,9 +1513,11 @@ def _handle_connected_interaction(
             chosen_idx = None
             while not done_event.is_set():
                 try:
-                    sys.stdout.write(f"\n  Enter number (1-{len(options)}): ")
-                    sys.stdout.flush()
-                    raw = _interaction_interruptible_readline(done_event)
+                    # 同上，改用 term.interruptible_prompt() 避免绕开
+                    # 状态栏刷新协调机制。
+                    raw = term.interruptible_prompt(
+                        f"\n  Enter number (1-{len(options)}): ", done_event
+                    )
                 except (KeyboardInterrupt, EOFError):
                     raw = None
                 if raw is None:
@@ -1542,9 +1546,12 @@ def _handle_connected_interaction(
                     term.print(f"{prefix}   {_esc(line)}")
             term.print(f"{prefix}  [dim](其他已连接的端也能回答，谁先响应就算谁的)[/dim]")
             try:
-                sys.stdout.write("\n> ")
-                sys.stdout.flush()
-                answer = _interaction_interruptible_readline(done_event)
+                # 同上，改用 term.interruptible_prompt()——这是
+                # /goal 协商（goal_negotiation）在 daemon connected
+                # 客户端上实际会走到的分支，之前的裸写 stdout 正是
+                # daemon 模式下 "看不到用户输入提示，输入后立刻被
+                # 状态栏刷新覆盖" 这个 bug 的直接原因。
+                answer = term.interruptible_prompt("\n> ", done_event)
             except (KeyboardInterrupt, EOFError):
                 answer = None
             if done_event.is_set():

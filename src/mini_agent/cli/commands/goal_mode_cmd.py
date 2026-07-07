@@ -92,9 +92,20 @@ def _negotiate_loop(builder, spec, agent):
     通常没有真正连着的本地终端，会导致整个协商永久卡死、远程客户端完全
     看不到这个问题。现在改为通过 mini_agent.interaction.ask() 走双路
     （本地终端 + HTTP 远程客户端），谁先回答就用谁的。
+
+    排查记录：这里"本地"那一路一度直接 sys.stdout.write("\n> ") +
+    独立读 stdin，完全绕开了 Terminal 的 _enter_input_mode()/
+    _refresh_paused 协调机制——状态栏刷新线程仍在按周期擦除/重绘，
+    而这行"裸写"的提示符和用户输入完全不在 Terminal 的 _bar_drawn
+    记账范围内，于是被状态栏刷新反复覆盖，表现为"看不到提示符""输入
+    内容一闪而过被冲掉"。现在改用 term.interruptible_prompt()——
+    和 permissions.py 的 confirm(interrupt_event=...) 走同一套
+    enter/exit input mode，行为对称，不再绕开状态栏协调。
     """
-    import sys
     from mini_agent import interaction
+    from mini_agent.ui.terminal import get_terminal
+
+    term = get_terminal()
 
     while True:
         R.console.print(spec.render_summary_for_user())
@@ -104,9 +115,7 @@ def _negotiate_loop(builder, spec, agent):
         )
 
         def _local_read(interrupt_event):
-            sys.stdout.write("\n> ")
-            sys.stdout.flush()
-            line = interaction.interruptible_readline(interrupt_event)
+            line = term.interruptible_prompt("\n> ", interrupt_event)
             if line is None:
                 return None
             return {"answer": line}

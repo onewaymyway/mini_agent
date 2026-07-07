@@ -874,6 +874,82 @@ class Terminal:
         finally:
             self._exit_input_mode()
 
+    def interruptible_prompt(
+        self,
+        prompt_text: str = "\n> ",
+        interrupt_event=None,
+    ) -> Optional[str]:
+        """
+        自由文本、可中断的本地输入读取——与 confirm() 共享同一套
+        _enter_input_mode()/_exit_input_mode() 双路协调机制，但不像
+        confirm() 那样把结果限制成单字符选项，而是原样返回整行文本
+        （用于 /goal 协商这类需要用户输入任意修改意见的场景）。
+
+        背景（真实复现过的 bug）：goal_mode_cmd.py 之前直接
+        sys.stdout.write("\\n> ") + 独立读 stdin，完全绕过了
+        Terminal 的 _enter_input_mode()/_refresh_paused 机制——状态栏
+        刷新线程（每 250ms）仍在正常运行，会不断擦除/重绘底部状态栏，
+        而这次"裸写"的提示符和用户输入内容完全不在 Terminal 的
+        _bar_drawn 记账范围内，于是被状态栏的 erase/redraw 循环反复
+        覆盖，表现为"看不到提示符""输入内容一闪而过被冲掉"。
+
+        interrupt_event: 可选 threading.Event。为 None 时退化为普通阻塞
+                         读取；不为 None 时若该 Event 被外部 set()
+                         （典型是 HTTP 端已经先给出答案），读取会被中断，
+                         返回 None，调用方应把这理解为"本地未能给出答案"。
+
+        返回：用户输入的原始一行（已去掉尾部换行，不做 strip/lower），
+              或者 None（被中断 / EOF）。
+        """
+        import threading as _threading
+
+        self._enter_input_mode()
+        try:
+            sys.stdout.write(prompt_text)
+            sys.stdout.flush()
+
+            if interrupt_event is not None:
+                result_holder: list = []
+                stdin_done = _threading.Event()
+
+                def _read_stdin():
+                    try:
+                        line = sys.stdin.readline()
+                        result_holder.append(line)
+                    except Exception:
+                        result_holder.append("")
+                    finally:
+                        stdin_done.set()
+
+                reader = _threading.Thread(target=_read_stdin, daemon=True)
+                reader.start()
+
+                while True:
+                    if stdin_done.wait(timeout=0.2):
+                        break
+                    if interrupt_event.is_set():
+                        sys.stdout.write("\n")
+                        sys.stdout.flush()
+                        return None
+
+                line = result_holder[0] if result_holder else ""
+            else:
+                try:
+                    line = sys.stdin.readline()
+                except (EOFError, KeyboardInterrupt):
+                    sys.stdout.write("\n")
+                    sys.stdout.flush()
+                    return None
+
+            if not line:
+                return None  # EOF
+            if not line.endswith("\n"):
+                sys.stdout.write("\n")
+                sys.stdout.flush()
+            return line.rstrip("\n")
+        finally:
+            self._exit_input_mode()
+
     # ── 输入模式管理 ──────────────────────────────────────────────────────
 
     def run_captured(self, fn: Callable[[], None]) -> str:
