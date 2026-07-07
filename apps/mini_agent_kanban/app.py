@@ -15,6 +15,7 @@ Mini-Agent 看板 (Kanban Dashboard)
 运行方式：
     streamlit run apps/mini_agent_kanban/app.py
 """
+import html
 import time
 from datetime import datetime
 from pathlib import Path
@@ -23,6 +24,20 @@ import streamlit as st
 import streamlit.components.v1 as components
 
 from client import AgentClient
+
+
+def _esc_html(text) -> str:
+    """转义 HTML 特殊字符后再插入 unsafe_allow_html 的 div。
+
+    聊天历史里的 content 经常带 <tool_result>...</tool_result>、代码块里的
+    <xxx> 等尖括号文本，如果不转义直接塞进 unsafe_allow_html，会被浏览器
+    当成真实 HTML 标签解析，轻则样式错乱，重则把后面本该正常显示的消息
+    "吃掉"（未闭合/嵌套标签打乱了后续 DOM 结构）。这里统一转义，并把换行
+    还原成 <br>，保持原有的换行显示效果。
+    """
+    return html.escape(str(text)).replace("\n", "<br>")
+
+
 
 # ═══════════════════════════════════════════════════════════════════════
 # 页面配置
@@ -497,7 +512,7 @@ def _stream_turn_into_placeholder(client: AgentClient, turn_id: str, container):
             if name:
                 ph = _new_block()
                 ph.markdown(
-                    f'<div style="margin:6px 0 0;font-size:11px;color:#888;">▸ {name}</div>',
+                    f'<div style="margin:6px 0 0;font-size:11px;color:#888;">▸ {_esc_html(name)}</div>',
                     unsafe_allow_html=True,
                 )
                 cur_ph = None  # 这条本身就是独立小标签，不再被后续文本复用
@@ -507,7 +522,7 @@ def _stream_turn_into_placeholder(client: AgentClient, turn_id: str, container):
                 cur_kind = "text"
                 _new_block()
             cur_text += data.get("text", "")
-            cur_ph.markdown(f'<div class="msg-agent">{cur_text}▌</div>', unsafe_allow_html=True)
+            cur_ph.markdown(f'<div class="msg-agent">{_esc_html(cur_text)}▌</div>', unsafe_allow_html=True)
 
         elif etype == "reasoning":
             # 思维链 token：淡化展示，不计入最终正文
@@ -516,8 +531,8 @@ def _stream_turn_into_placeholder(client: AgentClient, turn_id: str, container):
         elif etype == "tool_call":
             cur_kind = None
             ph = _new_block()
-            tool_name = data.get("tool_name", "?")
-            tool_input = str(data.get("tool_input", ""))[:300]
+            tool_name = _esc_html(data.get("tool_name", "?"))
+            tool_input = _esc_html(str(data.get("tool_input", ""))[:300])
             ph.markdown(
                 f'<div class="msg-tool">🔧 调用工具 <b>{tool_name}</b> · 参数: {tool_input}</div>',
                 unsafe_allow_html=True,
@@ -526,20 +541,21 @@ def _stream_turn_into_placeholder(client: AgentClient, turn_id: str, container):
         elif etype == "tool_result":
             cur_kind = None
             ph = _new_block()
-            tool_name = data.get("tool_name", "?")
-            result = str(data.get("result", ""))[:300]
+            tool_name_raw = data.get("tool_name", "?")
+            tool_name = _esc_html(tool_name_raw)
+            result = _esc_html(str(data.get("result", ""))[:300])
             ph.markdown(
                 f'<div class="msg-tool">✅ 工具结果 <b>{tool_name}</b> · {result}</div>',
                 unsafe_allow_html=True,
             )
-            if any(h in tool_name for h in _ARTIFACT_HINT_TOOLS):
+            if any(h in tool_name_raw for h in _ARTIFACT_HINT_TOOLS):
                 saw_artifact_hint = True
 
         elif etype == "tool_error":
             cur_kind = None
             ph = _new_block()
-            tool_name = data.get("tool_name", "?")
-            err = str(data.get("error", data.get("message", "")))[:300]
+            tool_name = _esc_html(data.get("tool_name", "?"))
+            err = _esc_html(str(data.get("error", data.get("message", "")))[:300])
             ph.markdown(
                 f'<div class="msg-tool-error">❌ 工具出错 <b>{tool_name}</b> · {err}</div>',
                 unsafe_allow_html=True,
@@ -550,14 +566,14 @@ def _stream_turn_into_placeholder(client: AgentClient, turn_id: str, container):
             if final_text:
                 if cur_kind != "text":
                     _new_block()
-                cur_ph.markdown(f'<div class="msg-agent">{final_text}</div>', unsafe_allow_html=True)
+                cur_ph.markdown(f'<div class="msg-agent">{_esc_html(final_text)}</div>', unsafe_allow_html=True)
             finished = True
             break
 
         elif etype == "error":
             ph = _new_block()
             ph.markdown(
-                f'<div class="msg-agent">⚠️ {data.get("message", "发生错误")}</div>',
+                f'<div class="msg-agent">⚠️ {_esc_html(data.get("message", "发生错误"))}</div>',
                 unsafe_allow_html=True,
             )
             finished = True
@@ -566,7 +582,7 @@ def _stream_turn_into_placeholder(client: AgentClient, turn_id: str, container):
         elif etype == "_error":
             # SSE 连接本身失败（网络/超时），退回轮询模式，让外层 rerun 兜底
             if cur_kind == "text" and cur_text and cur_ph is not None:
-                cur_ph.markdown(f'<div class="msg-agent">{cur_text}</div>', unsafe_allow_html=True)
+                cur_ph.markdown(f'<div class="msg-agent">{_esc_html(cur_text)}</div>', unsafe_allow_html=True)
             break
 
     if finished and saw_artifact_hint:
@@ -606,6 +622,7 @@ def render_chat_tab(client: AgentClient):
             if isinstance(entries, list):
                 for e in entries[-60:]:
                     role = e.get("role", "")
+                    etype = e.get("_type", "")  # 见 history/entry.py::HType
                     content = e.get("content", "")
                     if isinstance(content, list):
                         # content 可能是多模态 block 列表（tool_use/tool_result/text）
@@ -613,10 +630,31 @@ def render_chat_tab(client: AgentClient):
                             b.get("text", str(b)) if isinstance(b, dict) else str(b)
                             for b in content
                         )
-                    if role in ("user", "human"):
-                        st.markdown(f'<div class="msg-user">{content}</div>', unsafe_allow_html=True)
-                    elif role in ("assistant", "agent"):
-                        st.markdown(f'<div class="msg-agent">{content}</div>', unsafe_allow_html=True)
+                    # [SYS-HIST-RENDER] role=="user" 不等于"这是真人打的字"——
+                    # tool_result 回注、skill_context、hook_context、file_change、
+                    # format_correction、session_resume、compressed 等系统消息也都
+                    # 挂着 role="user"（只靠 _type 区分），之前不加区分地全部当
+                    # 用户气泡展示，噪音淹没了真实输入，而且这些内容常带
+                    # <tool_result> 这类尖括号文本，直接塞进 unsafe_allow_html
+                    # 的 div 会被当成真 HTML 标签解析，破坏后面的 DOM 结构，
+                    # 导致下一轮的真实用户输入在页面上"看不见"。
+                    is_real_user_input = role in ("user", "human") and etype in ("", "user_input", "user_correction")
+                    is_agent_reply = role in ("assistant", "agent") and etype in ("", "assistant_reply", "compact_summary")
+                    if is_real_user_input:
+                        st.markdown(f'<div class="msg-user">{_esc_html(content)}</div>', unsafe_allow_html=True)
+                    elif is_agent_reply:
+                        st.markdown(f'<div class="msg-agent">{_esc_html(content)}</div>', unsafe_allow_html=True)
+                    elif role in ("user", "human", "assistant", "agent"):
+                        # 系统内部消息（工具结果回注/skill注入/reminder 等），
+                        # 折叠成一行淡色小字，不当聊天气泡展示，避免和真实
+                        # 对话混淆，也避免其中的尖括号内容破坏页面结构。
+                        label = etype or "system"
+                        preview = _esc_html(content)[:80]
+                        st.markdown(
+                            f'<div style="font-size:11px;color:#666;margin:2px 0;">'
+                            f'⚙️ [{label}] {preview}{"…" if len(str(content)) > 80 else ""}</div>',
+                            unsafe_allow_html=True,
+                        )
 
             # 产出物内联展示：把当前 session 已登记的产出物（图片/文档等）直接
             # 嵌在对话流里，不用切去"产出预览" Tab 来回找。按 created_at 倒序
@@ -700,8 +738,8 @@ def render_chat_tab(client: AgentClient):
                         req_id = e.get("req_id")
                         st.markdown(f"""
 <div class="permission-card">
-  <b>🔐 权限请求：{e.get('tool_name','未知工具')}</b><br/>
-  <code style="font-size:11px;">{str(e.get('tool_input',''))[:300]}</code>
+  <b>🔐 权限请求：{_esc_html(e.get('tool_name','未知工具'))}</b><br/>
+  <code style="font-size:11px;">{_esc_html(str(e.get('tool_input',''))[:300])}</code>
 </div>
 """, unsafe_allow_html=True)
                         pc1, pc2, pc3 = st.columns(3)
