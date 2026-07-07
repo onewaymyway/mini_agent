@@ -85,7 +85,7 @@ def run_turn_judge(
 
     judge_cfg = load_config(
         project_root=base_cfg.project_root,
-        verbose=False,
+        verbose=base_cfg.verbose,
         sandbox=base_cfg.sandbox,
         auto_approve=True,
         model=judge_model,

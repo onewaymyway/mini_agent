@@ -93,7 +93,7 @@ def run_goal_judge(
 
     judge_cfg = load_config(
         project_root=base_cfg.project_root,
-        verbose=False,
+        verbose=base_cfg.verbose,
         sandbox=judge_sandbox,
         auto_approve=True,
         model=judge_model,
