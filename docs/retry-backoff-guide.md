@@ -137,6 +137,48 @@ CLI 参数：
 | `llm_retry_backoff_mode` | string | `"fixed"` | 退避策略模式 |
 | `llm_retry_backoff_step` | float | `60.0` | linear: 步长；exponential: 倍数 |
 | `llm_retry_backoff_max_delay` | float | `0.0` | 等待时长上限（0=不限） |
+| `llm_network_aware` | bool | `true` | 是否启用断网感知（见下方"断网感知"章节） |
+| `llm_network_check_interval` | float | `5.0` | 断网等待期间的轮询间隔（秒） |
+| `llm_network_max_wait` | float | `0.0` | 断网等待最长时长（秒），0=不限，一直等到网络恢复 |
+
+---
+
+## 断网感知
+
+请求失败后，如果异常"看起来像"网络层失败（DNS 解析失败、连接被拒、连接超时
+等），且此刻确实探测不到网络，按 backoff 策略盲目重试是没有意义的——网络没
+恢复，重试大概率还是失败，纯粹浪费重试预算和等待时间。
+
+默认（`llm_network_aware: true`）行为：这种情况下不计入正常的 backoff/重试
+预算，而是阻塞轮询直到网络恢复（轮询间隔 `llm_network_check_interval`，默认
+5 秒），恢复后立即重新发起请求。如果异常文案/类型像网络错误但实际探测下来
+网络是通的（比如服务端偶发连接重置），则视为普通异常走正常重试逻辑，不会
+被误判成"断网"进而无限期阻塞。
+
+`llm_network_max_wait` 默认 `0`（不限时长，一直等到网络恢复为止）。如果你的
+场景要求"断网超过 N 秒就放弃，走正常报错流程"，可以设置为正数，超时仍未恢复
+会退回正常异常重试逻辑（消耗一次重试预算）。
+
+关闭这个能力（回到"断网也按 backoff 策略盲目重试"的旧行为）：
+```json
+{ "llm_network_aware": false }
+```
+
+网络连通性探测本身是一个独立、可复用的能力，不绑定 LLM 调用场景：
+```python
+from mini_agent.network.connectivity import is_online, wait_until_online, is_connectivity_exception
+
+if not is_online():
+    ...
+
+recovered = wait_until_online(max_wait=300)  # 阻塞等待，最多 5 分钟
+
+except Exception as e:
+    if is_connectivity_exception(e):
+        ...
+```
+探测方式是 TCP connect 到几个公共地址（Cloudflare/Google/阿里/腾讯 DNS 的
+443 端口），任意一个可达即视为在线，不依赖第三方库，标准库 `socket` 就能跑。
 
 ---
 

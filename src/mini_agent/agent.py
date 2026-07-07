@@ -275,6 +275,11 @@ class Agent:
             if _retry_max > 0
             else no_retry_policy()
         )
+        # [断网感知] 默认开启（RetryPolicy.network_aware 默认 True），这里
+        # 只在 cfg 显式配置时覆盖默认值，不加任何配置也能正常工作。
+        self._retry_policy.network_aware = getattr(cfg, "llm_network_aware", True)
+        self._retry_policy.network_check_interval = getattr(cfg, "llm_network_check_interval", 5.0)
+        self._retry_policy.network_max_wait = getattr(cfg, "llm_network_max_wait", 0.0)
 
         # ── [SYS-UNDO] 手动重试 / 回退快照 ──────────────────────────────────
         # 每次 run_turn 开始时保存一份快照，支持：

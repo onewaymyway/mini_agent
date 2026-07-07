@@ -270,6 +270,16 @@ class RetryPolicy:
                        命中这些异常类型时也直接抛出，不计入重试。
                        默认包含 LLMConfigError —— 配置错误（如缺少 api_key）
                        是确定性的，重试不会让它变成功。
+        network_aware:  是否启用断网感知（默认 True）。异常触发重试前，
+                       先用 mini_agent.network.connectivity 判断这个异常是否
+                       "看起来像"网络层失败；如果是，且此刻确实探测不到网络，
+                       就不按 backoff 策略盲目重试（断网时重试大概率还是失败，
+                       纯粹浪费重试预算），而是阻塞等待网络恢复，恢复后立即
+                       重新调用——这次等待不计入 max_retries 预算。
+        network_check_interval: 断网等待期间的轮询间隔（秒），默认 5s。
+        network_max_wait: 断网等待的最长时长（秒），默认 0 = 不限时长一直等
+                       到网络恢复为止。设置为正数后，等待超时仍未恢复网络时
+                       会退回正常的异常重试流程（消耗一次重试预算）。
     """
 
     max_retries: int = 2
@@ -283,6 +293,9 @@ class RetryPolicy:
     non_retryable_exceptions: tuple = field(
         default_factory=lambda: (LLMConfigError, LLMContextWindowError)
     )
+    network_aware: bool = True
+    network_check_interval: float = 5.0
+    network_max_wait: float = 0.0
 
     def __post_init__(self) -> None:
         # 兼容旧接口：若外部只传了 retry_delay 而未显式设置 backoff，
@@ -328,7 +341,15 @@ class RetryPolicy:
             except self.non_retryable_exceptions:
                 raise
             except Exception as e:
-                if not self.retry_on_exception or attempt >= self.max_retries:
+                if not self.retry_on_exception:
+                    raise
+
+                if self.network_aware and self._handle_if_offline(e, on_retry, attempt):
+                    # 断网期间的等待不计入 attempt/max_retries 预算：
+                    # 网络恢复后直接用同一次 attempt 计数重新调用 call_fn。
+                    continue
+
+                if attempt >= self.max_retries:
                     raise
                 attempt += 1
                 reason = f"[Exception] {type(e).__name__}: {e}"
@@ -356,6 +377,49 @@ class RetryPolicy:
             if on_retry:
                 on_retry(attempt, reason)
             self._do_wait(delay, attempt, _countdown)
+
+    def _handle_if_offline(
+        self,
+        exc: Exception,
+        on_retry: Optional[Callable[[int, str], None]],
+        attempt: int,
+    ) -> bool:
+        """
+        检查这次异常是否"看起来像"网络层失败，并且此刻确实探测不到网络；
+        如果是，阻塞等待网络恢复后返回 True（调用方应该直接重试同一次调用，
+        不增加 attempt 计数——断网期间的等待不消耗重试预算）。
+
+        不是网络问题，或网络等待超时仍未恢复（network_max_wait > 0 时），
+        返回 False，交回调用方按正常异常重试逻辑处理（消耗一次重试预算）。
+        """
+        from mini_agent.network.connectivity import is_connectivity_exception, is_online, wait_until_online
+
+        if not is_connectivity_exception(exc):
+            return False
+        if is_online(use_cache=False):
+            # 异常文案/类型像网络错误，但探测下来其实联网正常——大概率是
+            # 服务端偶发的连接重置之类，不是真的断网，交回正常重试逻辑，
+            # 避免把这类情况也当成"断网"进而无限期阻塞。
+            return False
+
+        reason = f"[NetworkOffline] {type(exc).__name__}: {exc}"
+        logger.warning("检测到疑似网络中断，暂停重试计数，等待网络恢复 — %s", reason)
+        if on_retry:
+            on_retry(attempt, reason + "（等待网络恢复中，不计入重试次数）")
+
+        def _on_waiting(elapsed: float) -> None:
+            logger.warning("网络仍未恢复，已等待 %.0fs …", elapsed)
+            if on_retry:
+                on_retry(attempt, f"[NetworkOffline] 已等待 {elapsed:.0f}s，仍未恢复网络…")
+
+        recovered = wait_until_online(
+            check_interval=self.network_check_interval,
+            max_wait=self.network_max_wait,
+            on_waiting=_on_waiting,
+        )
+        if recovered and on_retry:
+            on_retry(attempt, "[NetworkOffline] 网络已恢复，重新发起请求")
+        return recovered
 
     def _do_wait(self, delay: float, attempt: int, _countdown) -> None:
         """执行等待，同时维护倒计时状态供状态栏显示。"""

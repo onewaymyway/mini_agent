@@ -348,6 +348,14 @@ class RetryConfig:
                       （此时 backoff_step 为倍数，如 1.5 表示每次 ×1.5）
 
     backoff_max_delay — 等待时间上限（秒），0 = 不限制
+
+    network_aware — 是否启用断网感知（默认 True）：请求失败时，如果异常
+      "看起来像"网络层失败（DNS/连接/超时）且此刻确实探测不到网络，就不按
+      backoff 盲目重试，而是阻塞等待网络恢复，恢复后立即重试且不消耗
+      重试预算。真正的断网重试没有意义，等它是唯一有效的策略。
+    network_check_interval — 断网等待期间的轮询间隔（秒）
+    network_max_wait — 断网等待的最长时长（秒），0 = 不限时长一直等到恢复
+      为止；设为正数后，超时仍未恢复会退回正常重试逻辑（消耗一次重试预算）
     """
     max_retries: int = 15
     delay: float = 5.0
@@ -355,6 +363,9 @@ class RetryConfig:
     backoff_mode: str = "fixed"          # "fixed" | "linear" | "exponential"
     backoff_step: float = 60.0           # linear: 步长(s)；exponential: 倍数(>1.0)
     backoff_max_delay: float = 0.0       # 0 = 不限制上限
+    network_aware: bool = True
+    network_check_interval: float = 5.0
+    network_max_wait: float = 0.0
 
 
 @dataclass
@@ -857,6 +868,12 @@ class AppConfig:
     def llm_retry_backoff_step(self) -> float:  return self.retry.backoff_step
     @property
     def llm_retry_backoff_max_delay(self) -> float: return self.retry.backoff_max_delay
+    @property
+    def llm_network_aware(self) -> bool:         return self.retry.network_aware
+    @property
+    def llm_network_check_interval(self) -> float: return self.retry.network_check_interval
+    @property
+    def llm_network_max_wait(self) -> float:     return self.retry.network_max_wait
 
     @property
     def ensemble_enabled(self) -> bool:          return self.ensemble.mode != "off"
