@@ -73,6 +73,20 @@ streamlit run apps/mini_agent_kanban/app.py -- \
 **已知限制**：流式渲染期间 Streamlit 脚本处于阻塞状态，这段时间页面上其它按钮
 （比如"中断"）不会响应交互，直到这一轮结束或 SSE 连接断开。
 
+## 对话内联产出物展示
+
+💬 对话 Tab 现在会把当前 session 已登记的产出物（图片、代码、文档等，来自
+`record_artifact()`）直接嵌在对话流里，不用再切去"产出预览"Tab 来回找：
+
+- 按 `created_at` 倒序展示（最新在前）
+- 相比上一次渲染新出现的产出物默认展开，旧的默认折叠，避免每次刷新都是一整屏
+  展开内容淹没对话本身
+- 复用"产出预览"Tab 同一套内联预览逻辑：图片直接显示、代码/文本内联展示前
+  5000 字符、PDF 提供新标签页预览链接、其余类型提供下载链接
+
+只展示**当前 session**（`status().session_id`）的产出物；跨 session 的产出物
+仍需要去"产出预览"Tab 按 session_id 过滤查看。
+
 ## Token 自动读取
 
 加 `--auto-token --project-root <项目根目录>` 后，侧边栏会按 mini-agent 自身的

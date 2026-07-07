@@ -515,6 +515,41 @@ def render_chat_tab(client: AgentClient):
                     elif role in ("assistant", "agent"):
                         st.markdown(f'<div class="msg-agent">{content}</div>', unsafe_allow_html=True)
 
+            # 产出物内联展示：把当前 session 已登记的产出物（图片/文档等）直接
+            # 嵌在对话流里，不用切去"产出预览" Tab 来回找。按 created_at 倒序
+            # （最新在前），本次渲染相比上次新出现的条目默认展开，其余折叠，
+            # 避免每次刷新都是一整屏都展开的产出物淹没对话内容。
+            cur_session_id = cur_status.get("session_id")
+            if cur_session_id:
+                art_resp = client.list_artifacts(session_id=cur_session_id, limit=20) or {}
+                art_items = art_resp.get("items", []) if "_error" not in art_resp else []
+                if art_items:
+                    seen_key = f"artifacts_seen_count_{cur_session_id}"
+                    prev_seen = st.session_state.get(seen_key, 0)
+                    new_n = max(len(art_items) - prev_seen, 0)
+                    st.markdown(
+                        f'<div style="margin:8px 0 4px;font-size:13px;color:#888;">'
+                        f'📦 本次会话产出物（{len(art_items)} 项{"，" + str(new_n) + " 项为新增" if new_n else ""}）</div>',
+                        unsafe_allow_html=True,
+                    )
+                    for i, item in enumerate(art_items):
+                        mid = item.get("manifest_id")
+                        title = item.get("title", "未命名产出")
+                        types_str = " ".join(ARTIFACT_TYPE_ICON.get(t, "📦") for t in item.get("types", []))
+                        header = (f"{types_str} {title} · {item.get('created_at', '')[:19]} · "
+                                  f"{item.get('file_count', 0)} 个文件")
+                        with st.expander(header, expanded=(i < new_n)):
+                            detail = client.get_artifact(mid, session_id=cur_session_id) or {}
+                            if "_error" in detail:
+                                st.error(detail["_error"])
+                                continue
+                            if detail.get("description"):
+                                st.markdown(f"> {detail['description']}")
+                            for idx, f in enumerate(detail.get("files", [])):
+                                _render_artifact_file(client, mid, cur_session_id, idx, f)
+                                st.divider()
+                    st.session_state[seen_key] = len(art_items)
+
             # 实时流式占位符：新消息发出后 / 页面刷新时发现有轮次仍在跑，
             # 都会往这里逐 token 写入，做到"边生成边显示"。
             stream_placeholder = st.empty()
