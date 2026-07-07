@@ -32,6 +32,7 @@ graph TD
 | 渲染适配 | `ui/renderer.py` | 历史 API → terminal.term 映射 |
 | REPL 输入 | `ui/repl_input.py` | prompt_toolkit 输入封装 |
 | 权限守卫 | `permissions.py` | 工具调用审批提示 |
+| 通用交互提问 | `interaction.py` | ask_user 系列工具 / `/goal` 协商 / 远程 slash 命令输入的双路（本地终端 + HTTP）适配 |
 | Agent | `agent.py` | 主循环与流式输出触发 |
 | 状态栏 | `orchestrator/status_bar.py` | 任务/LLM 状态构建 |
 | 任务 UI | `orchestrator/task_display.py` | 任务表格/看板 |
@@ -365,6 +366,7 @@ HTTP 服务与命令行共享同一个 Agent 实例，通过 `AgentBridge` 实�
 | OutputBroadcaster | `bridge.py` | 事件广播，同时写入 RingBuffer 和 SSE 订阅者 |
 | InputQueue | `bridge.py` | 命令队列，HTTP enqueue、AgentRunner 消费 |
 | PermissionGate | `bridge.py` | HTTP 侧权限审批，支持阻塞等待 |
+| InteractionGate | `bridge.py` | HTTP 侧通用交互式提问（ask_user/`/goal`协商/远程 slash 命令输入），机制与 PermissionGate 对称 |
 | AgentRunner | `server.py` | 后台线程，消费 InputQueue 并驱动 run_turn |
 
 ### 10.3 命令行显示协同
@@ -410,7 +412,8 @@ class _PatchedStreamWriter(_OrigStreamWriter):
 - `token` - 流式 token
 - `tool_call` / `tool_result` - 工具调用/结果
 - `turn_start` / `turn_done` - 轮次开始/结束
-- `permission_req` - 权限请求
+- `permission_req` / `permission_done` - 权限请求/结果
+- `interaction_req` / `interaction_done` - 通用交互式提问请求/结果（见 10.7）
 - `error` / `info` / `warning` - 错误/信息/警告
 
 ### 10.6 断线重连
@@ -425,6 +428,28 @@ const source = new EventSource("http://127.0.0.1:8765/v1/stream", {
 ```
 
 服务端会回放 `since_id` 之后的历史事件，确保不丢失。
+
+### 10.7 capture_mode 与远程 slash 命令的交互适配
+
+daemon connected 客户端发来的 slash 命令（除 `/cron` `/goals` `/digest` 外的其它命令）
+由服务端 `api/server.py` 用 `term.run_captured(fn)` 在 AgentRunner 线程上同步执行
+`cli.repl._handle_slash()`。`run_captured()` 执行期间会把 `Terminal._capture_mode`
+置为 `True`——这个标记同时被下面两处消费，是"daemon 能处理所有非 daemon 模式
+slash 命令"的关键：
+
+1. `Terminal.prompt_user()`：`_capture_mode=True` 时不再尝试读服务端进程自己的
+   stdin（服务端通常没有真正连着的本地终端，这样做之前会永久阻塞），而是转发给
+   `mini_agent.interaction.ask(kind="repl_prompt", ...)`，通过 `interaction_req`
+   事件把输入请求推给触发这个命令的远程客户端。
+2. `ask_user` / `ask_user_confirm` / `ask_user_choice` 三个工具，以及 `/goal`
+   目标协商子对话，都直接调用 `mini_agent.interaction.ask()`（不依赖
+   `_capture_mode`，因为它们在普通对话轮次里也可能被触发，不止是在 slash 命令里）。
+
+`interaction.ask()` 的行为和权限审批的双路机制（见 10.2 `PermissionGuard`）完全
+对称：同时向"本地终端"（如果 `sys.stdin.isatty()` 为真）和"HTTP 远程客户端"发起
+等待，谁先回答就用谁的；纯 headless 的 daemon 进程没有本地终端时，只等 HTTP 那
+一路，不会去抢一个不存在的输入。详见 `src/mini_agent/interaction.py` 顶部文档
+字符串。
 
 ---
 

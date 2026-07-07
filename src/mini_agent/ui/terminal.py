@@ -742,12 +742,46 @@ class Terminal:
         """
         REPL 用户输入。
         阻塞前确保屏幕上没有状态栏干扰，输入完成后恢复状态栏。
+
+        daemon 适配：`self._capture_mode` 为 True 时，说明当前正在
+        run_captured() 里执行一个由远程（daemon connected）客户端发来的
+        slash 命令——这个调用栈跑在服务端 AgentRunner 线程上，没有真正
+        连着的本地终端，盲目走下面的 `_read_line()` 会永久阻塞在一个
+        不存在的输入上（此前 `/goal <目标>` 卡死就是这个原因，且不止
+        `/goal` 一个命令会这样：任何 slash 命令内部只要调用
+        `prompt_user()` 都会中招）。这里统一改为走
+        `mini_agent.interaction.ask()`，把请求转发给远程客户端，
+        由它来回答，而不是假设有一个可读的本地终端。
         """
+        if self._capture_mode:
+            return self._remote_prompt(prompt_text)
         self._enter_input_mode()
         try:
             return self._read_line(prompt_text)
         finally:
             self._exit_input_mode()
+
+    def _remote_prompt(self, prompt_text: str = "") -> str:
+        """`prompt_user()` 在 capture_mode 下的实现：通过 interaction 网关
+        向远程客户端要一行输入，而不是读本地 stdin。"""
+        try:
+            from mini_agent import interaction
+        except Exception:
+            return ""
+
+        def _local_read(interrupt_event):
+            # capture_mode 下这个调用是代表"远程客户端"在等输入，不应该被
+            # daemon 操作者自己的本地终端抢答，所以这里只是阻塞等
+            # interrupt_event（即等 HTTP 那一路真正给出答案），而不是立刻
+            # 返回 None——立刻返回会被 interaction.ask() 误判成"本地没有
+            # 答案"从而过早强制结束等待，HTTP 端还没来得及回答就超时。
+            interrupt_event.wait()
+            return None
+
+        result = interaction.ask(
+            "repl_prompt", {"prompt_text": prompt_text}, _local_read,
+        )
+        return (result or {}).get("answer") or ""
 
     def force_end_stream(self) -> None:
         """

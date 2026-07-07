@@ -100,6 +100,30 @@ curl -H "Authorization: Bearer your-secret-token" http://127.0.0.1:8765/v1/healt
 | `/v1/permissions/pending` | GET | 获取待审批的权限请求 |
 | `/v1/permissions/{req_id}` | POST | 批准/拒绝权限请求 |
 
+### 通用交互式提问
+
+daemon connected 模式下，`ask_user`/`ask_user_confirm`/`ask_user_choice` 三个工具、
+`/goal` 目标协商子对话、以及任意 slash 命令内部残留的 `prompt_user()` 调用，都通过
+这两个端点转发给远程客户端（与权限审批是完全对称的双路机制：本地终端和 HTTP 客户端
+谁先回答就用谁的）。
+
+| 端点 | 方法 | 说明 |
+|------|------|------|
+| `/v1/interactions/pending` | GET | 获取待回答的通用交互请求列表 |
+| `/v1/interactions/{req_id}` | POST | 回答一次交互请求 |
+
+SSE 里对应的事件类型是 `interaction_req`（推送问题）/`interaction_done`（回答结果），
+`data` 里的 `kind` 字段区分问法：`ask_user` / `ask_user_confirm` / `ask_user_choice` /
+`goal_negotiation` / `repl_prompt`。回答 body 按 kind 使用不同字段：
+
+```jsonc
+// ask_user            -> {"answer": "文本回答"}
+// ask_user_confirm     -> {"confirmed": true}
+// ask_user_choice      -> {"choice_index": 0}   // 或 {"answer": "选项文字"}
+// goal_negotiation      -> {"answer": "/confirm" | "/cancel" | "修改意见原文"}
+// repl_prompt           -> {"answer": "原始输入文本"}
+```
+
 ### 文件系统
 
 | 端点 | 方法 | 说明 |
@@ -167,6 +191,8 @@ SSE 事件类型：
 - `tool_result` - 工具执行结果
 - `turn_start` - 新轮次开始
 - `turn_done` - 轮次完成
+- `permission_req` / `permission_done` - 工具调用权限审批请求/结果
+- `interaction_req` / `interaction_done` - 通用交互式提问请求/结果（ask_user 系列工具、/goal 协商、任意 slash 命令的 prompt_user()）
 - `error` - 错误事件
 - `status` - 状态更新
 - `info` / `warning` - 信息/警告
@@ -230,6 +256,34 @@ curl -X POST http://127.0.0.1:8765/v1/permissions/req_123 \
   -H "Authorization: Bearer your-token" \
   -H "Content-Type: application/json" \
   -d '{"approve": false}'
+```
+
+### 5b. 通用交互式提问
+
+当 agent 调用 `ask_user` 等工具，或用户在别的客户端发起了 `/goal <目标>` 协商时：
+
+```bash
+# 查看待回答的交互请求
+curl http://127.0.0.1:8765/v1/interactions/pending \
+  -H "Authorization: Bearer your-token"
+
+# 回答一个开放式问题（ask_user / goal_negotiation / repl_prompt 都用 answer 字段）
+curl -X POST http://127.0.0.1:8765/v1/interactions/req_456 \
+  -H "Authorization: Bearer your-token" \
+  -H "Content-Type: application/json" \
+  -d '{"answer": "蓝色"}'
+
+# 回答一个 y/n 确认（ask_user_confirm）
+curl -X POST http://127.0.0.1:8765/v1/interactions/req_456 \
+  -H "Authorization: Bearer your-token" \
+  -H "Content-Type: application/json" \
+  -d '{"confirmed": true}'
+
+# 回答一个多选一（ask_user_choice）
+curl -X POST http://127.0.0.1:8765/v1/interactions/req_456 \
+  -H "Authorization: Bearer your-token" \
+  -H "Content-Type: application/json" \
+  -d '{"choice_index": 0}'
 ```
 
 ### 6. Python 客户端示例

@@ -86,8 +86,15 @@ def _negotiate_loop(builder, spec, agent):
 
     返回确认后的 GoalSpec，或 None（用户取消）。
     这是一个独立的会话态子循环，不会把协商过程写入主 Agent 历史。
+
+    daemon 适配：之前这里直接调用 `_term.prompt_user()` 阻塞读本地终端——
+    daemon 模式下这段代码是在服务端 AgentRunner 线程里执行的，服务端进程
+    通常没有真正连着的本地终端，会导致整个协商永久卡死、远程客户端完全
+    看不到这个问题。现在改为通过 mini_agent.interaction.ask() 走双路
+    （本地终端 + HTTP 远程客户端），谁先回答就用谁的。
     """
-    from mini_agent.ui.terminal import term as _term
+    import sys
+    from mini_agent import interaction
 
     while True:
         R.console.print(spec.render_summary_for_user())
@@ -95,12 +102,23 @@ def _negotiate_loop(builder, spec, agent):
             "输入 [bold]/confirm[/bold] 确认并开始执行，"
             "输入修改意见继续调整草案，输入 [bold]/cancel[/bold] 放弃。"
         )
-        try:
-            user_input = _term.prompt_user()
-        except (KeyboardInterrupt, EOFError):
-            return None
 
-        user_input = (user_input or "").strip()
+        def _local_read(interrupt_event):
+            sys.stdout.write("\n> ")
+            sys.stdout.flush()
+            line = interaction.interruptible_readline(interrupt_event)
+            if line is None:
+                return None
+            return {"answer": line}
+
+        result = interaction.ask(
+            "goal_negotiation",
+            {"summary": spec.render_summary_for_user()},
+            _local_read,
+        )
+        user_input = (result or {}).get("answer") or ""
+
+        user_input = user_input.strip()
         if not user_input:
             continue
         if user_input in ("/confirm", "confirm", "确认"):

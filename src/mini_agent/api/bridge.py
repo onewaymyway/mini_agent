@@ -534,6 +534,119 @@ class HttpPermissionGate:
             ]
 
 
+# ── InteractionGate（通用交互式提问，daemon connected 适配）────────────────────
+
+class _PendingInteraction:
+    """一次待回答的通用交互式提问。
+
+    kind: "ask_user" | "ask_user_confirm" | "ask_user_choice" |
+          "goal_negotiation" | "repl_prompt"
+    data: 展示给用户看的内容（question/hint/options/choices/prompt_text 等，
+          由调用方自行填充，客户端按 kind 渲染）。
+    answer: 回答结果，统一放在这个 dict 里，字段含义随 kind 变化：
+          ask_user            -> {"answer": str}
+          ask_user_confirm    -> {"confirmed": bool}
+          ask_user_choice     -> {"choice_index": int} 或 {"answer": str}
+          goal_negotiation    -> {"answer": str}
+          repl_prompt         -> {"answer": str}
+    """
+    __slots__ = ("req_id", "kind", "data", "turn_id", "event", "answer")
+
+    def __init__(self, req_id: str, kind: str, data: dict, turn_id: str) -> None:
+        self.req_id  = req_id
+        self.kind    = kind
+        self.data    = data
+        self.turn_id = turn_id
+        self.event   = threading.Event()
+        self.answer: dict = {}
+
+
+class HttpInteractionGate:
+    """
+    通用交互式提问的 HTTP 侧。用途与 HttpPermissionGate 完全对称：
+    ask_user 系列工具、/goal 协商子对话、以及任意 slash 命令内部对
+    term.prompt_user()/term.confirm() 的调用，都通过这里把"需要用户
+    二次输入"的请求同时广播给 CLI（如果有本地终端）和 HTTP 端
+    （daemon connected 的远程客户端），谁先回答就用谁的。
+    """
+
+    def __init__(self, broadcaster: OutputBroadcaster) -> None:
+        self._broadcaster = broadcaster
+        self._pending: dict[str, _PendingInteraction] = {}
+        self._lock = threading.Lock()
+        self._timeout = 300.0  # 5 分钟无响应视为放弃（比权限审批更久，因为可能涉及长文本思考）
+        self._bridge_state_setter = None
+        self._session_id_getter = None
+
+    def _sid(self) -> str:
+        try:
+            return self._session_id_getter() if self._session_id_getter else ""
+        except Exception:
+            return ""
+
+    def register_pending(
+        self,
+        req_id: str,
+        kind: str,
+        data: dict,
+        turn_id: str = "",
+    ) -> _PendingInteraction:
+        """注册一个待回答项并广播 SSE 事件，返回 pending 对象（有 .event/.answer 属性）。"""
+        pending = _PendingInteraction(req_id, kind, data, turn_id)
+        with self._lock:
+            self._pending[req_id] = pending
+
+        self._broadcaster.push(AgentEvent(
+            type=EventType.INTERACTION_REQ,
+            turn_id=turn_id,
+            session_id=self._sid(),
+            data={"req_id": req_id, "kind": kind, **data},
+        ))
+        return pending
+
+    def cancel_pending(self, req_id: str) -> None:
+        """取消一个待回答项（一端已先决定时调用，唤醒另一端的等待）。"""
+        with self._lock:
+            pending = self._pending.pop(req_id, None)
+        if pending is not None:
+            pending.event.set()
+
+    def broadcast_done(self, req_id: str, answer: dict, reason: str, turn_id: str = "") -> None:
+        """广播回答结果给所有 SSE 客户端。幂等：同一 req_id 只广播一次。"""
+        with self._lock:
+            if not hasattr(self, "_broadcast_done_ids"):
+                self._broadcast_done_ids: set = set()
+            if req_id in self._broadcast_done_ids:
+                return
+            self._broadcast_done_ids.add(req_id)
+
+        self._broadcaster.push(AgentEvent(
+            type=EventType.INTERACTION_DONE,
+            turn_id=turn_id,
+            session_id=self._sid(),
+            data={"req_id": req_id, "reason": reason, **answer},
+        ))
+        if self._bridge_state_setter is not None:
+            self._bridge_state_setter("running")
+
+    def respond(self, req_id: str, answer: dict) -> bool:
+        """HTTP 端调用，唤醒阻塞的等待方，并从 pending 列表移除。"""
+        with self._lock:
+            pending = self._pending.pop(req_id, None)
+        if pending is None:
+            return False
+        pending.answer = answer
+        pending.event.set()
+        return True
+
+    def list_pending(self) -> list[dict]:
+        with self._lock:
+            return [
+                {"req_id": p.req_id, "kind": p.kind, "data": p.data, "turn_id": p.turn_id}
+                for p in self._pending.values()
+            ]
+
+
 # ── AgentBridge（单例入口）────────────────────────────────────────────────────
 
 class AgentBridge:
@@ -547,12 +660,15 @@ class AgentBridge:
         self.broadcaster = OutputBroadcaster(self.ring)
         self.input_queue = InputQueue()
         self.permission_gate = HttpPermissionGate(self.broadcaster)
+        self.interaction_gate = HttpInteractionGate(self.broadcaster)
 
         # 注入状态更新回调：权限审批完成时 gate 可以直接更新 bridge 状态
         self.permission_gate._bridge_state_setter = self._set_state_from_gate
-        # 注入 session_id 获取回调：权限相关事件也要打上当前 session 标签，
-        # 否则 /v1/stream?session_id=xxx 按 session 过滤时会漏掉审批事件。
+        self.interaction_gate._bridge_state_setter = self._set_state_from_gate
+        # 注入 session_id 获取回调：权限/交互相关事件也要打上当前 session 标签，
+        # 否则 /v1/stream?session_id=xxx 按 session 过滤时会漏掉这些事件。
         self.permission_gate._session_id_getter = self._current_session_id
+        self.interaction_gate._session_id_getter = self._current_session_id
 
         # 当前运行状态
         self._state:        str = "idle"   # "idle" | "running" | "waiting_permission"

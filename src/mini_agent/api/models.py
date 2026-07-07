@@ -26,6 +26,11 @@ class EventType(str, Enum):
     # 权限
     PERMISSION_REQ   = "permission_req"  # 需要用户审批
     PERMISSION_DONE  = "permission_done" # 审批结果
+    # 通用交互式提问（ask_user 系列工具 / /goal 协商 / 任意 slash 命令内的
+    # prompt_user()/confirm() 调用），daemon connected 模式下用来把"需要
+    # 用户二次输入"的请求转发给远程客户端。
+    INTERACTION_REQ  = "interaction_req"  # 需要用户回答（开放文本/确认/选择/任意 REPL 输入）
+    INTERACTION_DONE = "interaction_done" # 回答结果
     # 文件系统
     FS_CHANGE        = "fs_change"       # 文件被写/删/改
     # Session
@@ -115,6 +120,23 @@ class PermissionRequest(BaseModel):
     mode:         str = "once"             # "once" | "always" | "deny_always"
 
 class PermissionResponse(BaseModel):
+    ok: bool
+
+class InteractionRequestBody(BaseModel):
+    """回答一次通用交互式提问（/v1/interactions/{req_id}）。
+
+    不同 kind 用不同字段：
+      ask_user            -> answer (str)
+      ask_user_confirm    -> confirmed (bool)
+      ask_user_choice     -> choice_index (int)  或 answer（选项文字，模糊匹配）
+      goal_negotiation    -> answer (str，/confirm /cancel 或修改意见原文)
+      repl_prompt         -> answer (str，任意 slash 命令内部 prompt_user() 的原始输入)
+    """
+    answer:       Optional[str]  = None
+    confirmed:    Optional[bool] = None
+    choice_index: Optional[int]  = None
+
+class InteractionResponse(BaseModel):
     ok: bool
 
 class HistoryResponse(BaseModel):

@@ -186,6 +186,10 @@ mini-agent --retry-backoff linear --retry-backoff-step 60 --retry-backoff-max 30
 | `/goal status` | 查看当前 session 的 goal 状态（轮次、compact 次数、最后判定） |
 | `/goal cancel` | 清理当前 session 的 `goal_state.json` 记录 |
 
+> **daemon connected 模式**：`/goal <目标文本>` 的确认子对话在 daemon connected 模式下
+> 同样可用——协商过程通过通用交互式提问网关转发到发起命令的那个远程客户端，详见
+> [Goal 模式指南](goal-mode-guide.md#1-设定目标--验收标准协商)。
+
 ### Skill 管理（`src/mini_agent/cli/commands/skills.py`）
 
 | 命令 | 说明 |
@@ -586,6 +590,11 @@ mini-agent eval --scenario test_cases/                      # 不传 --skill，�
 | `ask_user` | 向用户请求补充文本信息 |
 | `ask_user_confirm` | 向用户请求 yes/no 确认 |
 | `ask_user_choice` | 向用户提供多选项选择 |
+
+> **daemon connected 模式**：这三个工具都通过通用交互式提问网关（`/v1/interactions`，
+> 见 [HTTP API 指南](http-api-guide.md#通用交互式提问)）双路提问——本地终端（如果有）
+> 和远程 connected 客户端同时能看到问题并回答，谁先回答就用谁的，不会因为 daemon
+> 进程本身没有交互终端而卡死或拿到空回答。
 
 ### Skill 管理（skill_manager.py，由 Agent 动态注册）
 

@@ -372,6 +372,62 @@ class DaemonClient:
             print(f"[daemon-client] respond_permission failed: {e}", file=sys.stderr)
             return False
 
+    def list_pending_interactions(self) -> list[dict]:
+        """获取当前待回答的通用交互请求列表（GET /v1/interactions/pending）。
+        用途与 list_pending_permissions 完全对称：ask_user 系列工具 /
+        /goal 协商 / 任意 slash 命令内的 prompt_user() 调用。"""
+        try:
+            import urllib.request
+            req = urllib.request.Request(
+                f"{self.base_url}/v1/interactions/pending",
+                headers=self._headers(),
+            )
+            with urllib.request.urlopen(req, timeout=5) as resp:
+                data = json.loads(resp.read())
+                return data.get("interactions", [])
+        except Exception:
+            return []
+
+    def respond_interaction(
+        self,
+        req_id: str,
+        *,
+        answer: Optional[str] = None,
+        confirmed: Optional[bool] = None,
+        choice_index: Optional[int] = None,
+    ) -> bool:
+        """提交一次通用交互请求的回答（POST /v1/interactions/{req_id}）。
+        与 respond_permission 一样：如果这个 req_id 已经被别的端先处理过，
+        服务端返回 404，这里转换成 False（不是真正的错误）。"""
+        try:
+            import urllib.request
+            import urllib.error
+            payload: dict = {}
+            if answer is not None:
+                payload["answer"] = answer
+            if confirmed is not None:
+                payload["confirmed"] = confirmed
+            if choice_index is not None:
+                payload["choice_index"] = choice_index
+            body = json.dumps(payload).encode()
+            req = urllib.request.Request(
+                f"{self.base_url}/v1/interactions/{req_id}",
+                data=body,
+                headers=self._headers(),
+                method="POST",
+            )
+            with urllib.request.urlopen(req, timeout=10) as resp:
+                data = json.loads(resp.read())
+                return data.get("ok", False)
+        except urllib.error.HTTPError as e:
+            if e.code == 404:
+                return False
+            print(f"[daemon-client] respond_interaction failed: {e}", file=sys.stderr)
+            return False
+        except Exception as e:
+            print(f"[daemon-client] respond_interaction failed: {e}", file=sys.stderr)
+            return False
+
     # ── [具身改进 A1] Connected REPL 命令对等：cron / goals / digest ──────────
     # 复用现有 HTTP API（routes.py 已有 /v1/cron /v1/goals /v1/autonomous/status
     # /v1/self/status），这里只是补上 CLI 连接模式缺失的转发方法，
@@ -1345,6 +1401,174 @@ def _handle_connected_permission(
         term.print(f"{prefix}  [dim](已被其他端处理)[/dim]")
 
 
+def _handle_connected_interaction(
+    client: "DaemonClient",
+    term,
+    req_id: str,
+    kind: str,
+    data: dict,
+    turn_id: str,
+    *,
+    prefix: str = "",
+) -> None:
+    """
+    在 connected CLI 客户端上渲染并回答一次通用交互式提问——是
+    `_handle_connected_permission` 在"非权限审批"场景下的对应物，用途
+    覆盖：ask_user / ask_user_confirm / ask_user_choice 三个工具，
+    /goal 目标协商子对话，以及任意 slash 命令内部残留的
+    term.prompt_user() 调用（kind == "repl_prompt"）。
+
+    与权限审批一样是"多端竞速"设计：谁先回答就算谁的，本函数通过
+    interrupt_event（这里复用 done_event）在别的端先回答时提前结束等待。
+    """
+    if term is None:
+        return
+
+    import threading as _threading
+    from rich.markup import escape as _esc
+
+    done_event = _threading.Event()
+    decided_elsewhere = {"flag": False}
+
+    def _watch_done():
+        import time as _time
+        while not done_event.is_set():
+            _time.sleep(0.5)
+            pending = client.list_pending_interactions()
+            if not any(p.get("req_id") == req_id for p in pending):
+                decided_elsewhere["flag"] = True
+                done_event.set()
+                return
+
+    watcher = _threading.Thread(target=_watch_done, daemon=True)
+    watcher.start()
+
+    try:
+        from mini_agent.permissions import _InterruptedByHTTP
+    except ImportError:
+        class _InterruptedByHTTP(Exception):
+            pass
+
+    try:
+        if kind == "ask_user":
+            question = data.get("question", "")
+            hint = data.get("hint", "")
+            term.print(f"\n{prefix}[bold yellow]❓ Question from agent:[/bold yellow]")
+            term.print(f"{prefix}   [bold]{_esc(question)}[/bold]")
+            if hint:
+                term.print(f"{prefix}   [dim]{_esc(hint)}[/dim]")
+            term.print(f"{prefix}  [dim](其他已连接的端也能回答，谁先响应就算谁的)[/dim]")
+            try:
+                sys.stdout.write("\nYour answer: ")
+                sys.stdout.flush()
+                answer = _interaction_interruptible_readline(done_event)
+            except (KeyboardInterrupt, EOFError):
+                answer = None
+            if done_event.is_set():
+                decided_elsewhere["flag"] = True
+            elif answer is not None:
+                ok = client.respond_interaction(req_id, answer=answer)
+                done_event.set()
+                if ok:
+                    term.print(f"{prefix}  [green]→ answered[/green] (via this terminal)")
+
+        elif kind == "ask_user_confirm":
+            question = data.get("question", "")
+            default_char = data.get("default", "y")
+            hint_str = "[Y/n]" if default_char == "y" else "[y/N]"
+            term.print(f"\n{prefix}[bold yellow]❓ Confirmation needed:[/bold yellow]")
+            term.print(f"{prefix}   [bold]{_esc(question)}[/bold]")
+            term.print(f"{prefix}  [dim](其他已连接的端也能回答，谁先响应就算谁的)[/dim]")
+            try:
+                choice = term.confirm(
+                    prompt_lines=[], choices=hint_str, default=default_char,
+                    interrupt_event=done_event,
+                )
+            except _InterruptedByHTTP:
+                choice = None
+            except (KeyboardInterrupt, EOFError):
+                choice = default_char
+            if done_event.is_set() or choice is None:
+                decided_elsewhere["flag"] = True
+            else:
+                confirmed = choice in ("y", "yes", "")
+                ok = client.respond_interaction(req_id, confirmed=confirmed)
+                done_event.set()
+                if ok:
+                    term.print(f"{prefix}  [green]→ {'confirmed' if confirmed else 'declined'}[/green] (via this terminal)")
+
+        elif kind == "ask_user_choice":
+            question = data.get("question", "")
+            options = data.get("options", []) or []
+            hint = data.get("hint", "")
+            term.print(f"\n{prefix}[bold yellow]❓ Please choose:[/bold yellow]")
+            term.print(f"{prefix}   [bold]{_esc(question)}[/bold]")
+            if hint:
+                term.print(f"{prefix}   [dim]{_esc(hint)}[/dim]")
+            for i, opt in enumerate(options, 1):
+                term.print(f"{prefix}   [cyan]{i}.[/cyan] {_esc(str(opt))}")
+            term.print(f"{prefix}  [dim](其他已连接的端也能回答，谁先响应就算谁的)[/dim]")
+            chosen_idx = None
+            while not done_event.is_set():
+                try:
+                    sys.stdout.write(f"\n  Enter number (1-{len(options)}): ")
+                    sys.stdout.flush()
+                    raw = _interaction_interruptible_readline(done_event)
+                except (KeyboardInterrupt, EOFError):
+                    raw = None
+                if raw is None:
+                    break
+                raw = raw.strip()
+                if raw.isdigit() and 1 <= int(raw) <= len(options):
+                    chosen_idx = int(raw) - 1
+                    break
+            if done_event.is_set() or chosen_idx is None:
+                decided_elsewhere["flag"] = True
+            else:
+                ok = client.respond_interaction(req_id, choice_index=chosen_idx)
+                done_event.set()
+                if ok:
+                    term.print(f"{prefix}  [green]→ chose: {_esc(str(options[chosen_idx]))}[/green] (via this terminal)")
+
+        else:
+            # "goal_negotiation" | "repl_prompt" | 未来新增的任意 kind：
+            # 统一按"展示一段摘要文本 + 读一行自由文本回答"处理，不需要
+            # 逐个 kind 特化——这正是"daemon 模式能处理所有非 daemon 模式
+            # 的 slash 命令"这个诉求的通用兜底实现。
+            summary = data.get("summary") or data.get("prompt_text") or ""
+            if summary:
+                term.print(f"\n{prefix}[bold yellow]❓ [{_esc(kind)}][/bold yellow]")
+                for line in str(summary).splitlines():
+                    term.print(f"{prefix}   {_esc(line)}")
+            term.print(f"{prefix}  [dim](其他已连接的端也能回答，谁先响应就算谁的)[/dim]")
+            try:
+                sys.stdout.write("\n> ")
+                sys.stdout.flush()
+                answer = _interaction_interruptible_readline(done_event)
+            except (KeyboardInterrupt, EOFError):
+                answer = None
+            if done_event.is_set():
+                decided_elsewhere["flag"] = True
+            elif answer is not None:
+                ok = client.respond_interaction(req_id, answer=answer)
+                done_event.set()
+                if ok:
+                    term.print(f"{prefix}  [green]→ answered[/green] (via this terminal)")
+    finally:
+        watcher.join(timeout=1)
+        if decided_elsewhere["flag"]:
+            term.print(f"{prefix}  [dim](已被其他端处理)[/dim]")
+
+
+def _interaction_interruptible_readline(interrupt_event) -> Optional[str]:
+    """`mini_agent.interaction.interruptible_readline` 的本地薄包装，
+    避免 cli/daemon.py（客户端进程）依赖 mini_agent.interaction 模块的
+    其它部分（那个模块主要是给服务端 agent 进程用的，但可中断读取这个
+    小工具函数两边都需要，直接复用实现，不重复造轮子）。"""
+    from mini_agent.interaction import interruptible_readline
+    return interruptible_readline(interrupt_event)
+
+
 def _fmt_ts(ts: Optional[float]) -> str:
     """把 epoch 秒格式化为可读时间，None/0 时返回占位符。"""
     if not ts:
@@ -1709,6 +1933,24 @@ def run_connected_repl(daemon_info: dict, token: Optional[str] = None) -> None:
         with _active_permission_lock:
             _active_permission_reqs.discard(req_id)
 
+    # 与权限请求完全对称的一套 claim/release，用于通用交互式提问
+    # （ask_user 系列工具 / /goal 协商 / 任意 slash 命令的 prompt_user()）：
+    # 避免"本端自己发起的 turn"主路径和 observer 路径同时对同一个
+    # req_id 弹出两次交互。
+    _active_interaction_reqs: set = set()
+    _active_interaction_lock = threading.Lock()
+
+    def _claim_interaction_req(req_id: str) -> bool:
+        with _active_interaction_lock:
+            if req_id in _active_interaction_reqs:
+                return False
+            _active_interaction_reqs.add(req_id)
+            return True
+
+    def _release_interaction_req(req_id: str) -> None:
+        with _active_interaction_lock:
+            _active_interaction_reqs.discard(req_id)
+
     def _observer_worker() -> None:
         """
         后台线程：订阅 /v1/stream SSE，实时把同一 session 里其他终端/
@@ -1878,6 +2120,44 @@ def run_connected_repl(daemon_info: dict, token: Optional[str] = None) -> None:
             req_id = payload.get("req_id", "")
             if req_id:
                 _release_permission_req(req_id)
+            return
+
+        # ── 通用交互式提问：与 permission_req 完全对称的处理规则 ───────────
+        # （ask_user 系列工具 / /goal 协商 / 任意 slash 命令的 prompt_user()）
+        if evt_type == "interaction_req":
+            req_id = payload.get("req_id", "")
+            kind   = payload.get("kind", "")
+            if not req_id or not _claim_interaction_req(req_id):
+                return
+            if is_own_turn or _waiting_input.is_set():
+                try:
+                    with _observer_lock:
+                        _handle_connected_interaction(
+                            client, _term, req_id, kind, payload, turn_id,
+                            prefix="" if is_own_turn else "[dim][其他终端][/dim] ",
+                        )
+                finally:
+                    _release_interaction_req(req_id)
+            else:
+                if _term is not None:
+                    try:
+                        from rich.markup import escape as _esc_local
+                        with _observer_lock:
+                            _term.print(
+                                f"[dim][其他终端] 有交互请求待回答: {_esc_local(kind)} "
+                                f"(req_id={_esc_local(req_id[:8])})，可在当前任务结束后处理[/dim]"
+                            )
+                    except Exception as _mini_agent_exc:
+                        from mini_agent.errors import log_exception
+                        log_exception(_mini_agent_exc, where='mini_agent.cli.daemon')
+                        pass
+                _release_interaction_req(req_id)
+            return
+
+        if evt_type == "interaction_done":
+            req_id = payload.get("req_id", "")
+            if req_id:
+                _release_interaction_req(req_id)
             return
 
         # ── 其它事件：本端自己的 turn 不重复处理（主路径已经在显示了），──────
@@ -2112,6 +2392,29 @@ def run_connected_repl(daemon_info: dict, token: Optional[str] = None) -> None:
                     req_id = payload.get("req_id", "")
                     if req_id:
                         _release_permission_req(req_id)
+                    return
+
+                if evt_type == "interaction_req":
+                    req_id = payload.get("req_id", "")
+                    kind   = payload.get("kind", "")
+                    if not req_id or not _claim_interaction_req(req_id):
+                        return
+                    try:
+                        with _observer_lock:
+                            if _own_printed_any_holder[0] and _term is not None:
+                                _term.stream_end()
+                                _own_printed_any_holder[0] = False
+                            _handle_connected_interaction(
+                                client, _term, req_id, kind, payload, _tid,
+                            )
+                    finally:
+                        _release_interaction_req(req_id)
+                    return
+
+                if evt_type == "interaction_done":
+                    req_id = payload.get("req_id", "")
+                    if req_id:
+                        _release_interaction_req(req_id)
                     return
 
                 # tool_call / tool_result / tool_error / info / warning / ...

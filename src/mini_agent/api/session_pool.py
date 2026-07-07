@@ -387,6 +387,25 @@ class SessionAgentPool:
                     return entry
         return None
 
+    def find_by_interaction_req(self, req_id: str) -> Optional[SessionEntry]:
+        """
+        根据通用交互请求 req_id 找到所属 SessionEntry（ask_user 系列工具 /
+        /goal 协商 / 任意 slash 命令内的 prompt_user() 调用）。
+        与 find_by_permission_req 同样的理由：不能简单依赖"该用户最近活跃
+        的 session"，必须真正定位这个 req_id 是哪个 SessionEntry 的
+        interaction_gate 发出的。
+        """
+        with self._lock:
+            entries = list(self._pool.values())
+        for entry in entries:
+            gate = getattr(entry.bridge, "interaction_gate", None)
+            if gate is None:
+                continue
+            with gate._lock:
+                if req_id in gate._pending:
+                    return entry
+        return None
+
     def list_entries(self, user_id: Optional[str] = None) -> list[SessionEntry]:
         with self._lock:
             entries = list(self._pool.values())

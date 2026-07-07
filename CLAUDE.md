@@ -10,6 +10,7 @@
 - `src/mini_agent/history_manager.py` — 历史管理（追加 + 压缩 + 快照恢复）
 - `src/mini_agent/config/` — 配置管理包（`models.py`/`loader.py`/`prompt_builder.py`，含 providers.json 加载、llm_fallback_chain、退避策略参数；对外 `from mini_agent.config import ...` 路径不变）
 - `src/mini_agent/permissions.py` — 工具调用的权限守卫
+- `src/mini_agent/interaction.py` — 通用交互式提问的双路（本地终端 + HTTP）适配层：ask_user 系列工具 / `/goal` 协商 / daemon connected 模式下任意 slash 命令内 `prompt_user()` 调用的统一入口，与 `permissions.py` 的 HTTP 双路审批机制对称
 - `src/mini_agent/session.py` — 会话管理
 - `src/mini_agent/tools/__init__.py` — 工具注册表和 `@tool` 装饰器
 - `src/mini_agent/tools/builtin.py` — 内置工具（bash、文件 I/O、web_search 等）
@@ -125,6 +126,7 @@ mini-agent user token u_a1b2c3d4                       # 重新生成 token
 - `history_manager.py` — 历史管理（追加 + 压缩 + 快照恢复）
 - `config/` — 配置管理包：`models.py`（14 个配置 dataclass + AppConfig）/ `loader.py`（`load_config` 及 providers.json 加载、llm_fallback_chain、退避策略参数）/ `prompt_builder.py`（`build_system_prompt`）；`__init__.py` 重导出，对外 import 路径不变
 - `permissions.py` — 工具调用的权限守卫
+- `interaction.py` — 通用交互式提问的双路适配层（详见上方项目结构小节）
 - `session.py` — 会话管理
 
 ### 工具系统 (`src/mini_agent/tools/`)
@@ -177,13 +179,13 @@ mini-agent user token u_a1b2c3d4                       # 重新生成 token
 ### HTTP API (`src/mini_agent/api/`)
 
 - `server.py` — FastAPI app 工厂 + AgentRunner 后台线程（Stage 9：内嵌 AutonomousLoop tick，`_build_autonomous_loop()`）+ 输出钩子；`app.state.http_server = self` 供 routes 查询 AutonomousLoop 状态
-- `routes.py` — HTTP 路由定义（对话/SSE/事件/权限/文件系统/`GET /v1/diagnostics` 系统健康检查 Stage 6.2）；`/v1/status` Stage 9 新增 `autonomy_level`/`last_autonomous_tick_at`/`tick_count`/`subscribers` 字段
-- `bridge.py` — 解耦桥梁（RingBuffer/OutputBroadcaster/InputQueue/PermissionGate）；`InputQueue.enqueue()` Stage 9 新增 `initiator`/`meta` 参数
-- `models.py` — Pydantic 请求/响应模型 + AgentEvent；`TurnInfo` Stage 9 新增 `initiator`；`StatusResponse` Stage 9 新增 daemon 状态字段
+- `routes.py` — HTTP 路由定义（对话/SSE/事件/权限/交互/文件系统/`GET /v1/diagnostics` 系统健康检查 Stage 6.2）；`/v1/status` Stage 9 新增 `autonomy_level`/`last_autonomous_tick_at`/`tick_count`/`subscribers` 字段；新增 `/v1/interactions/pending`、`/v1/interactions/{req_id}`（通用交互式提问，daemon 适配）
+- `bridge.py` — 解耦桥梁（RingBuffer/OutputBroadcaster/InputQueue/PermissionGate/InteractionGate）；`InputQueue.enqueue()` Stage 9 新增 `initiator`/`meta` 参数；`HttpInteractionGate` 是 `HttpPermissionGate` 的通用化版本，供 ask_user 系列工具/`/goal` 协商/远程 slash 命令复用
+- `models.py` — Pydantic 请求/响应模型 + AgentEvent；`TurnInfo` Stage 9 新增 `initiator`；`StatusResponse` Stage 9 新增 daemon 状态字段；新增 `INTERACTION_REQ`/`INTERACTION_DONE` 事件类型 + `InteractionRequestBody`/`InteractionResponse`
 - `auth.py` — Bearer Token 认证中间件（单用户模式）
 - `multi_auth.py` — 多用户认证中间件（`MultiUserAuthMiddleware`）；与 `auth.py` 互斥，由 `create_app()` 按 `http_multi_user_enabled` 二选一挂载；认证成功后在 `request.state.user_ctx` 注入 `UserContext`
 - `user_store.py` — 用户注册表（`UserStore`）与角色体系；五种角色（owner/family/colleague/agent/public）对应不同工具权限和资源配额；token 明文存 `.agent/users/tokens/*.key`（0600），hash 存 `users.json`；`RoleProfileManager` 管理每用户社交画像（`profile.json`）
-- `session_pool.py` — 多用户 Session 池（`SessionAgentPool`）；每个 `(user_id, session_id)` 对应独立 Agent 实例和 AgentBridge；含 idle 超时自动挂起（默认 30 分钟）、崩溃恢复、最大并发限制（默认 20）；`SelfMessageBus` 实现 Self 与 SessionAgent 之间的内部消息
+- `session_pool.py` — 多用户 Session 池（`SessionAgentPool`）；每个 `(user_id, session_id)` 对应独立 Agent 实例和 AgentBridge；含 idle 超时自动挂起（默认 30 分钟）、崩溃恢复、最大并发限制（默认 20）；`SelfMessageBus` 实现 Self 与 SessionAgent 之间的内部消息；`find_by_interaction_req()` 与 `find_by_permission_req()` 对称，定位通用交互请求归属的 SessionEntry
 - `fs_helper.py` — 文件系统操作封装
 
 ### CLI (`src/mini_agent/cli/`)
@@ -191,7 +193,7 @@ mini-agent user token u_a1b2c3d4                       # 重新生成 token
 - `app.py` — 应用启动装配（解析参数、初始化组件、启动 REPL）；含 `daemon` 子命令短路、`--daemon-mode` 持续驻留模式（Stage 9）
 - `parser.py` — CLI 参数定义；含 `--daemon-mode` / `--no-daemon` 标志（Stage 9）
 - `repl.py` — REPL 循环和斜杠命令处理；退出时自动打印 resume 提示（`_print_resume_hint()`）；含 `/agent` / `/goals` / `/digest` 路由（Stage 9）
-- `daemon.py` — 守护进程管理：`cmd_daemon_start/stop/status`、PID 文件管理（`.agent/daemon.pid` + `.agent/daemon_info.json`）、`DaemonClient`（HTTP 连接模式 CLI）、`run_connected_repl`（Stage 9）
+- `daemon.py` — 守护进程管理：`cmd_daemon_start/stop/status`、PID 文件管理（`.agent/daemon.pid` + `.agent/daemon_info.json`）、`DaemonClient`（HTTP 连接模式 CLI，含 `respond_permission`/`respond_interaction` 等）、`run_connected_repl`（Stage 9）；`_handle_connected_permission`/`_handle_connected_interaction` 分别渲染权限审批 / 通用交互式提问（ask_user 系列工具、`/goal` 协商、远程 slash 命令输入），两者机制对称
 - `commands/` — REPL 命令处理器（concurrency, plans, sessions, skills, tasks, agents, hooks, providers, evolution, evolve, eval_cmd）
 - `commands/debug_cmd.py` — `/debug system|history|all|save`：打印/导出当前 system prompt 与 history（含 `_type`/估算 token），便于分析调试；补全表 `_COMMANDS`（`ui/terminal.py`）同步注册
 - `commands/user_cmd.py` — `mini-agent user` 子命令（多用户架构）；通过 HTTP 调用 `/v1/users` 端点管理用户，不直接读写文件；支持 list / add / remove / role / token 子命令；需要 daemon 以 `--http-multi-user` 启动
@@ -348,7 +350,7 @@ mini-agent user token u_a1b2c3d4                       # 重新生成 token
 - 安全阀：`max_rounds`、`max_total_compacts`、连续雷同反馈检测（`difflib.SequenceMatcher`）提前终止
 - 异常中断恢复：`GoalState` 原子落盘到 `.agent/sessions/<sid>/goal_state.json`，只在轮次边界写入；复用既有 session 持久化存对话历史，不重复保存；`/goal resume` 续跑；`/goal list`（`list_resumable_sessions`）列出所有可恢复目标，避免多进程各自设定目标都被杀死后只显示最近一个
 - 目标上下文用 `HType.GOAL_CONTEXT` 类型消息"钉住"，每轮结束和每次 compact 后都重新附加，防止被压缩策略稀释
-- CLI 命令：`/goal <文本>`、`/goal resume [sid]`、`/goal list`、`/goal status`、`/goal cancel`；需 `goal_mode.enabled: true`（默认关闭）
+- CLI 命令：`/goal <文本>`、`/goal resume [sid]`、`/goal list`、`/goal status`、`/goal cancel`；需 `goal_mode.enabled: true`（默认关闭）；协商子对话（`_negotiate_loop`）通过 `interaction.py` 双路适配，daemon connected 模式下正常可用，不再依赖 daemon 进程本身的本地终端
 - 详见 [Goal 模式指南](docs/goal-mode-guide.md)
 
 ### Workflow

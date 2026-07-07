@@ -146,6 +146,12 @@ Evaluator 仍然在每次 `run_turn` 内部做质量把关，GoalRunner 在更�
 这个协商过程是**独立的会话态**，不会写入主 Agent 的对话历史，也不消耗
 `max_rounds` / 上下文预算。
 
+> **daemon connected 模式**：如果你是通过 `mini-agent daemon connect` 这样的远程
+> 客户端发起的 `/goal <目标>`，协商过程会通过 daemon 的通用交互式提问网关
+> （`/v1/interactions` 系列端点，见 [HTTP API 指南](http-api-guide.md#通用交互式提问)）
+> 转发到你的客户端——每一版草案和 `/confirm`/`/cancel`/修改意见都在你自己的终端里
+> 完成，不需要也不应该去 daemon 进程本身的终端上操作。
+
 > **验收标准生成质量保障**：GoalSpecBuilder 的 system prompt（`prompts/system/
 > goal_spec_builder.md`）明确要求把用户目标"加工"成具体、可客观核查、分维度
 > 的标准，而不是照抄原话（例如禁止把"给函数加单测"直接当成一条标准）。代码层

@@ -28,6 +28,8 @@ api/routes.py — FastAPI 路由定义
   权限审批
     GET  /v1/permissions/pending     待审批列表
     POST /v1/permissions/{req_id}    批准 / 拒绝
+    GET  /v1/interactions/pending    待回答的通用交互请求列表（ask_user//goal 协商/任意 slash 命令）
+    POST /v1/interactions/{req_id}   回答一次通用交互请求
   用户管理（daemon 多用户架构 Phase 1，owner only；单用户模式下这组端点返回 404）
     GET    /v1/users                 用户列表
     POST   /v1/users                 新增用户，返回 user_id + token（仅此一次明文）
@@ -86,6 +88,7 @@ from .models import (
     SessionActionResponse, SessionDeleteResponse,
     UserInfo, UsersListResponse, UserCreateRequest, UserCreateResponse,
     UserUpdateRequest, UserActionResponse, WhoamiResponse,
+    InteractionRequestBody, InteractionResponse,
 )
 from .user_store import UserStore, VALID_ROLES
 
@@ -1124,6 +1127,54 @@ async def respond_permission(request: Request, req_id: str, body: PermissionRequ
     # 处理 always / deny_always 模式：把决定写入权限白/黑名单。
     _persist_permission_preference(bridge, body.mode, pending_info)
     return PermissionResponse(ok=True)
+
+
+# ── 通用交互式提问（ask_user 系列工具 / /goal 协商 / 任意 slash 命令）───────────
+
+@router.get("/interactions/pending")
+async def list_pending_interactions(request: Request):
+    """待回答的通用交互请求列表（与 /permissions/pending 同样的"最近活跃 session"语义）。"""
+    return {"interactions": _bridge(request).interaction_gate.list_pending()}
+
+
+@router.post("/interactions/{req_id}", response_model=InteractionResponse)
+async def respond_interaction(request: Request, req_id: str, body: InteractionRequestBody):
+    pool = _session_pool(request)
+    if pool is not None:
+        entry = pool.find_by_interaction_req(req_id)
+        if entry is None:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Interaction request {req_id!r} not found or already handled",
+            )
+        user_ctx = getattr(request.state, "user_ctx", None)
+        if user_ctx is not None and not user_ctx.is_owner and entry.user_id != user_ctx.user_id:
+            raise HTTPException(status_code=403, detail="This interaction request does not belong to you")
+        bridge = entry.bridge
+    else:
+        bridge = _bridge(request)
+
+    gate = bridge.interaction_gate
+
+    with gate._lock:
+        pending_info = gate._pending.get(req_id)
+        turn_id = pending_info.turn_id if pending_info else ""
+
+    answer = {k: v for k, v in {
+        "answer": body.answer,
+        "confirmed": body.confirmed,
+        "choice_index": body.choice_index,
+    }.items() if v is not None}
+
+    ok = gate.respond(req_id, answer)
+    if not ok:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Interaction request {req_id!r} not found or already handled",
+        )
+
+    gate.broadcast_done(req_id, answer, "http", turn_id)
+    return InteractionResponse(ok=True)
 
 
 def _persist_permission_preference(bridge, mode: str, pending_info) -> None:

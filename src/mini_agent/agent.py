@@ -3386,13 +3386,36 @@ class Agent:
         if self.cfg.compress.require_confirmation:
             try:
                 from mini_agent.ui.terminal import term as _term
+                from mini_agent import interaction
                 _term.print(
                     f"[dim]即将执行历史压缩（原因: {trigger_result.reason} — "
                     f"{trigger_result.message}），是否继续？[/dim]"
                 )
-                choice = _term.confirm(prompt_lines=[], choices="(y)es  (n)o", default="y")
+
+                def _local_read(interrupt_event):
+                    try:
+                        c = _term.confirm(
+                            prompt_lines=[], choices="(y)es  (n)o",
+                            default="y", interrupt_event=interrupt_event,
+                        )
+                    except Exception:
+                        return None
+                    if interrupt_event.is_set():
+                        return None
+                    return {"confirmed": c in ("y", "yes", "")}
+
+                # daemon 适配：之前这里直接调用 _term.confirm()（无 interrupt_event、
+                # 无 HTTP 广播），daemon 进程没有本地终端时会永久阻塞，且远程
+                # 客户端完全看不到这个确认请求。现在走通用交互网关双路提问。
+                result = interaction.ask(
+                    "compact_confirm",
+                    {"reason": trigger_result.reason, "message": trigger_result.message},
+                    _local_read,
+                )
+                confirmed = bool((result or {}).get("confirmed", True))
+                choice = "y" if confirmed else "n"
             except Exception:
-                # 非交互环境（如 headless/daemon）下无法弹确认，降级为自动执行
+                # 非交互环境（如 headless/daemon 且 interaction 模块不可用）下无法弹确认，降级为自动执行
                 choice = "y"
             if choice not in ("y", "yes"):
                 R.print_info("[compact] 用户拒绝，本次跳过压缩。")
