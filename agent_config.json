@@ -77,6 +77,9 @@
     "judge_provider": null,
     "max_auto_rounds": 99999,
     "judge_show_prompt": true,
-    "history_window": 6
+    "history_window": 6,
+    "consecutive_same_output_limit": 3,
+    "same_output_similarity_threshold": 0.9,
+    "max_stuck_recoveries": 3
   }
 }
