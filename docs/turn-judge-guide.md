@@ -63,6 +63,40 @@ run_turn() 内部：
 
 ---
 
+## 卡住恢复：和 GoalJudge 一样，先 compact 再给一次机会
+
+`max_auto_rounds` 只是"总次数"上限，不区分这几轮自动接管到底有没有实质
+进展——凑够次数就强制交还真人，哪怕其实一直在正常推进任务，只是任务本身
+需要的轮次多一点。反过来，如果主 Agent 连续几轮给出**高度相似**的输出
+（反复卡在同一个报错、同一种格式问题上），说明历史里堆积的信息可能已经
+干扰了它的判断，这时候更好的做法是先压缩一次历史、提示它换个角度重新
+尝试，而不是干等到 `max_auto_rounds` 耗尽才把烂摊子丢给真人。
+
+这就是和 [Goal 模式](goal-mode-guide.md) 里 `max_stuck_recoveries` 完全
+同一套思路的机制，只是触发对象从"GoalJudge 反馈文本"换成了"主 Agent 自己
+的输出"：
+
+1. 每轮 `_maybe_run_turn_judge()` 一开始（在真正调用 TurnJudge LLM 判定
+   之前）就用 `difflib.SequenceMatcher` 比较本轮输出和上一轮输出的相似度
+2. 连续 `consecutive_same_output_limit` 轮相似度都达到
+   `same_output_similarity_threshold` → 判定"卡住"
+3. 判定"卡住"后不直接强制交还真人，而是：
+   - 执行一次 `compact_with_skills()`
+   - 注入一条"你连续几轮输出高度相似，疑似卡住，请换个角度重新尝试"的
+     提示，作为下一轮的用户输入
+   - **这一轮不占用 `max_auto_rounds` 预算**，也不会真的调用 TurnJudge LLM
+     （省了一次 API 调用）
+4. 这样的"卡住恢复"最多连续尝试 `max_stuck_recoveries` 次；额度耗尽后
+   再次判定卡住，才真正强制交还真人（等价于撞到 `max_auto_rounds`）
+5. 一旦某一轮输出明显不同于上一轮（判定为"真实进展"），卡住计数和恢复
+   额度都会被重置——额度是"每次卡住独立计算"，不是整个会话期间总共只能
+   用一次
+
+设置 `consecutive_same_output_limit: 0` 可以关闭这个机制，回到"只看
+`max_auto_rounds`"的旧行为。
+
+---
+
 ## 启用方式
 
 `agent_config.json` 中新增 `turn_judge` 配置块（默认 `enabled: false`，
@@ -76,7 +110,10 @@ run_turn() 内部：
     "judge_provider": null,
     "max_auto_rounds": 3,
     "judge_show_prompt": false,
-    "history_window": 6
+    "history_window": 6,
+    "consecutive_same_output_limit": 3,
+    "same_output_similarity_threshold": 0.9,
+    "max_stuck_recoveries": 3
   }
 }
 ```
@@ -88,6 +125,9 @@ run_turn() 内部：
 | `max_auto_rounds` | `3` | 连续自动接管次数上限，达到后无论判定结果如何都强制交还真人，防止死循环刷屏；每次真正判定为 `NEED_USER` 或达到上限后计数会清零 |
 | `judge_show_prompt` | `false` | 打印发给 TurnJudge 的完整输入 prompt（本轮产出 + 最近历史），排查判定依据用 |
 | `history_window` | `6` | 供 TurnJudge 参考的最近历史消息条数 |
+| `consecutive_same_output_limit` | `3` | 连续 N 轮主 Agent 的输出高度雷同 → 判定"卡住"（没有实质进展），见下方"卡住恢复"一节 |
+| `same_output_similarity_threshold` | `0.9` | `difflib.SequenceMatcher` 相似度阈值，达到即计入"雷同" |
+| `max_stuck_recoveries` | `3` | 判定"卡住"后先压缩历史+提示换思路，最多连续尝试几次（不占用 `max_auto_rounds` 预算），额度耗尽后再卡住才强制交还真人；设为 `0` 关闭这个机制 |
 
 子 Agent（sub-agent / role agent 内部跑的 Agent 实例）永远不会触发 TurnJudge，
 避免嵌套判定。

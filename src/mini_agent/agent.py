@@ -148,6 +148,14 @@ class Agent:
         # 连续自动接管计数（每次真正进入真人输入等待后由 repl 重置为 0）。
         self._last_turn_hit_max_turns: bool = False
         self._turn_judge_auto_count: int = 0
+        # 卡住检测 + compact 恢复（与 goal_mode 的同名机制思路一致，见
+        # TurnJudgeConfig.consecutive_same_output_limit 等字段的说明）：
+        # 记录上一轮 assistant_output 用于相似度比较、连续雷同计数、
+        # 已用掉的"卡住恢复"额度。三者都在真正交还真人输入时随
+        # _turn_judge_auto_count 一起重置。
+        self._turn_judge_prior_output: Optional[str] = None
+        self._turn_judge_consecutive_same: int = 0
+        self._turn_judge_stuck_recoveries_used: int = 0
 
         from mini_agent.tools.builtin import configure_web_search
         configure_web_search(cfg)
@@ -2572,6 +2580,9 @@ class Agent:
           - 子 Agent（is_subagent）从不触发，避免嵌套判定
           - 未开启 cfg.turn_judge.enabled 时直接跳过（零开销）
           - 连续自动接管次数达到 max_auto_rounds 后强制交还真人，防止死循环
+          - 连续 consecutive_same_output_limit 轮输出高度相似 → 判定"卡住"，
+            主动 compact + 换角度提示重试，最多 max_stuck_recoveries 次
+            （不占用 max_auto_rounds 预算），额度耗尽后再次卡住才强制交还真人
           - 判定/执行过程中的任何异常都保守回退到"等待真人输入"
         """
         tj_cfg = getattr(self.cfg, "turn_judge", None)
@@ -2584,7 +2595,81 @@ class Agent:
                 f"达到上限（{tj_cfg.max_auto_rounds}），强制交还真人用户输入。"
             )
             self._turn_judge_auto_count = 0
+            self._turn_judge_consecutive_same = 0
+            self._turn_judge_stuck_recoveries_used = 0
+            self._turn_judge_prior_output = None
             return
+
+        # ── 卡住检测（与 goal_mode 的 _check_stuck/_try_stuck_recovery 思路一致）──
+        # [SYS-TURN-JUDGE] 不等 TurnJudge 自己判定 NEED_COMPACT，先看主 Agent
+        # 连续几轮的输出是否高度相似——高度相似通常意味着反复卡在同一个
+        # 报错/格式问题上打转，没有实质进展。检测到就主动 compact + 提示
+        # 换角度重试，且不占用 max_auto_rounds 预算（与 goal_mode 里"卡住
+        # 恢复"不消耗 max_rounds 预算的语义一致）。
+        limit = getattr(tj_cfg, "consecutive_same_output_limit", 0)
+        if limit > 0:
+            threshold = tj_cfg.same_output_similarity_threshold
+            if self._turn_judge_prior_output is not None:
+                import difflib
+                ratio = difflib.SequenceMatcher(
+                    None, self._turn_judge_prior_output, assistant_output
+                ).ratio()
+                if ratio >= threshold:
+                    self._turn_judge_consecutive_same += 1
+                else:
+                    # 出现了明显不同的输出，说明确实有新进展——重置卡住计数
+                    # 和恢复额度，不让本次真实进展消耗掉留给未来的恢复机会。
+                    self._turn_judge_consecutive_same = 0
+                    self._turn_judge_stuck_recoveries_used = 0
+            self._turn_judge_prior_output = assistant_output
+
+            if self._turn_judge_consecutive_same >= (limit - 1):
+                max_stuck = tj_cfg.max_stuck_recoveries
+                if self._turn_judge_stuck_recoveries_used >= max_stuck:
+                    R.print_warning(
+                        f"[TurnJudge] 连续 {limit} 轮输出高度相似，且已用尽 "
+                        f"{max_stuck} 次压缩重试的恢复额度，疑似卡在同一个问题上，"
+                        "强制交还真人用户输入。"
+                    )
+                    self._turn_judge_auto_count = 0
+                    self._turn_judge_consecutive_same = 0
+                    self._turn_judge_stuck_recoveries_used = 0
+                    self._turn_judge_prior_output = None
+                    return
+
+                R.print_warning(
+                    f"[TurnJudge] 连续 {self._turn_judge_consecutive_same + 1} 轮输出高度相似，"
+                    f"疑似卡住，先压缩历史再给一次换角度重试的机会"
+                    f"（第 {self._turn_judge_stuck_recoveries_used + 1}/{max_stuck} 次恢复，"
+                    "不计入自动接管次数）。"
+                )
+                try:
+                    summary = self.compact_with_skills()
+                    if summary:
+                        R.print_success("[TurnJudge] compact 完成。")
+                    else:
+                        R.print_warning("[TurnJudge] compact 完成，但没有生成摘要文本。")
+                except Exception as e:
+                    R.print_error(f"[TurnJudge] compact 失败：{e}，回退到等待真人输入。")
+                    self._turn_judge_auto_count = 0
+                    self._turn_judge_consecutive_same = 0
+                    self._turn_judge_stuck_recoveries_used = 0
+                    self._turn_judge_prior_output = None
+                    return
+
+                self._turn_judge_stuck_recoveries_used += 1
+                self._turn_judge_consecutive_same = 0
+                self._turn_end_user_input = (
+                    "[TurnJudge 自动接管] 你最近连续几轮的输出高度相似，似乎卡在同一个"
+                    "问题上反复尝试同样的方法却没有新进展。历史已经压缩过，请不要重复"
+                    "上一轮的做法——先重新梳理一下目前的障碍到底是什么，考虑换一个角度、"
+                    "换一种工具或方法，或者先做一些诊断性的检查，再继续推进任务。"
+                )
+                R.print_info(
+                    f"[TurnJudge] 已自动代替用户输入继续推进（卡住恢复 "
+                    f"第 {self._turn_judge_stuck_recoveries_used}/{max_stuck} 次）。"
+                )
+                return  # 本轮不再调用 TurnJudge LLM 判定，直接用换角度提示接管
 
         from mini_agent.role_agents.turn_judge import run_turn_judge, build_turn_judge_prompt
         from mini_agent.role_agents.feedback import RoleFeedback, format_feedback, extract_turn_status, build_inject_message
@@ -2654,6 +2739,9 @@ class Agent:
 
         if status == "NEED_USER":
             self._turn_judge_auto_count = 0
+            self._turn_judge_consecutive_same = 0
+            self._turn_judge_stuck_recoveries_used = 0
+            self._turn_judge_prior_output = None
             return
 
         if status == "NEED_COMPACT":
@@ -2667,6 +2755,9 @@ class Agent:
             except Exception as e:
                 R.print_error(f"[TurnJudge] compact 失败：{e}，回退到等待真人输入。")
                 self._turn_judge_auto_count = 0
+                self._turn_judge_consecutive_same = 0
+                self._turn_judge_stuck_recoveries_used = 0
+                self._turn_judge_prior_output = None
                 return
             auto_msg = "[TurnJudge 自动接管] 历史已压缩，请根据目标继续推进任务。"
         else:  # AUTO_CONTINUE
