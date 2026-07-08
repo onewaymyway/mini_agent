@@ -92,6 +92,11 @@ def _event_text(e: dict) -> str:
     if etype == "permission_done":
         approved = e.get("approve", e.get("approved"))
         return f"{'✅ 已批准' if approved else '❌ 已拒绝'} req={e.get('req_id','')}"
+    if etype == "interaction_req":
+        kind = e.get("kind", "?")
+        return f"💬 请求交互 `{kind}` · {str(e.get('summary', e.get('question', e.get('prompt_text',''))))[:200]}"
+    if etype == "interaction_done":
+        return f"✅ 已回答 req={e.get('req_id','')} · 来源={e.get('reason','')}"
     if etype == "turn_start":
         return f"▶️ 开始新一轮: {str(e.get('message',''))[:150]}"
     if etype == "turn_done":
@@ -462,6 +467,17 @@ def render_topbar(client: AgentClient):
     pending_list = pending.get("permissions", [])
     pending_n = len(pending_list) if isinstance(pending_list, list) else 0
 
+    # [BUGFIX] /goal 协商、ask_user 系列工具走的是"通用交互"网关
+    # （interaction_gate），跟"工具调用权限审批"（permission_gate）是
+    # 两套完全独立的机制。之前这里只查询/展示了 pending_permissions，
+    # 导致 /goal 命令生成验收标准草案后，看板完全看不到"请确认检查
+    # 标准"这个提示，也没有任何地方可以回复 /confirm、/cancel 或修改
+    # 意见——命令行那边能看到是因为它走了 term.interruptible_prompt()
+    # 本地这一路，但看板这边从来没对接过。
+    pending_ix = client.pending_interactions() or {}
+    pending_ix_list = pending_ix.get("interactions", [])
+    pending_ix_n = len(pending_ix_list) if isinstance(pending_ix_list, list) else 0
+
     autostat = client.autonomous_status() or {}
     next_tick = autostat.get("next_tick_in")
     next_tick_str = f"{next_tick:.0f}s" if isinstance(next_tick, (int, float)) else "—"
@@ -475,12 +491,117 @@ def render_topbar(client: AgentClient):
   <div class="item"><span class="label">Tick计数</span> {tick_count}</div>
   <div class="item"><span class="label">订阅者</span> {subscribers}</div>
   <div class="item"><span class="label">待审批</span> {'🔴 ' + str(pending_n) if pending_n else '0'}</div>
+  <div class="item"><span class="label">待回答</span> {'🔴 ' + str(pending_ix_n) if pending_ix_n else '0'}</div>
 </div>
 """, unsafe_allow_html=True)
 
     if pending_n:
         with st.expander(f"⚠️ 有 {pending_n} 个待审批权限请求，点击处理", expanded=True):
             render_permissions(client, pending_list)
+
+    if pending_ix_n:
+        with st.expander(f"💬 有 {pending_ix_n} 个待回答的交互请求，点击处理", expanded=True):
+            render_interactions(client, pending_ix_list)
+
+
+_INTERACTION_KIND_LABEL = {
+    "ask_user":         "🙋 Agent 提问",
+    "ask_user_confirm": "🙋 Agent 请求确认",
+    "ask_user_choice":  "🙋 Agent 请求选择",
+    "goal_negotiation": "🎯 目标验收标准确认",
+    "repl_prompt":      "⌨️ 命令行内部请求输入",
+}
+
+
+def render_interactions(client: AgentClient, pending_list):
+    """
+    渲染并处理通用交互式请求（ask_user 系列工具 / /goal 协商 / 任意 slash
+    命令内部的 prompt_user()）。与 render_permissions 对称，但按 kind
+    渲染不同的输入控件：
+      - goal_negotiation / ask_user / repl_prompt：展示提示内容 + 一个
+        文本框（对 goal_negotiation 额外给 "/confirm"、"/cancel" 快捷
+        按钮，和命令行里输入 /confirm、/cancel 效果一致）
+      - ask_user_confirm：是/否两个按钮
+      - ask_user_choice：按 data 里的 options/choices 列表逐个渲染按钮
+    """
+    for req in pending_list:
+        req_id = req.get("req_id")
+        kind = req.get("kind", "")
+        data = req.get("data", {}) or {}
+        label = _INTERACTION_KIND_LABEL.get(kind, f"🙋 {kind or '未知交互'}")
+
+        st.markdown(f"**{label}**")
+
+        if kind == "goal_negotiation":
+            # data["summary"] 就是 GoalSpec.render_summary_for_user() 的原文——
+            # 里面包含目标文本、验收标准列表、验证方式等，与命令行里
+            # R.console.print(spec.render_summary_for_user()) 展示的完全一致。
+            summary = str(data.get("summary", ""))
+            st.markdown(
+                f'<div class="permission-card"><pre style="white-space:pre-wrap;'
+                f'font-size:12px;margin:0;">{_esc_html(summary)}</pre></div>',
+                unsafe_allow_html=True,
+            )
+            gc1, gc2 = st.columns(2)
+            if gc1.button("✅ /confirm 确认并开始执行", key=f"ix_confirm_{req_id}"):
+                client.respond_interaction(req_id, answer="/confirm")
+                st.rerun()
+            if gc2.button("❌ /cancel 放弃本次目标", key=f"ix_cancel_{req_id}"):
+                client.respond_interaction(req_id, answer="/cancel")
+                st.rerun()
+            with st.form(f"ix_form_{req_id}", clear_on_submit=True):
+                revise_text = st.text_input(
+                    "或输入修改意见（会据此重新生成下一版验收标准草案）",
+                    key=f"ix_input_{req_id}",
+                )
+                if st.form_submit_button("提交修改意见"):
+                    if revise_text.strip():
+                        client.respond_interaction(req_id, answer=revise_text.strip())
+                        st.rerun()
+
+        elif kind == "ask_user_confirm":
+            question = str(data.get("question", data.get("prompt_text", "")))
+            st.markdown(
+                f'<div class="permission-card">{_esc_html(question)}</div>',
+                unsafe_allow_html=True,
+            )
+            cc1, cc2 = st.columns(2)
+            if cc1.button("✅ 是", key=f"ix_yes_{req_id}"):
+                client.respond_interaction(req_id, confirmed=True)
+                st.rerun()
+            if cc2.button("❌ 否", key=f"ix_no_{req_id}"):
+                client.respond_interaction(req_id, confirmed=False)
+                st.rerun()
+
+        elif kind == "ask_user_choice":
+            question = str(data.get("question", ""))
+            options = data.get("options") or data.get("choices") or []
+            st.markdown(
+                f'<div class="permission-card">{_esc_html(question)}</div>',
+                unsafe_allow_html=True,
+            )
+            for idx, opt in enumerate(options):
+                if st.button(f"{idx + 1}. {opt}", key=f"ix_opt_{req_id}_{idx}"):
+                    client.respond_interaction(req_id, choice_index=idx)
+                    st.rerun()
+
+        else:
+            # ask_user / repl_prompt / 其它未预见的 kind：统一退化成
+            # "展示提示文字 + 一个自由文本框"，保证至少能回答，不会因为
+            # 遇到没特殊适配的 kind 就彻底没法操作。
+            prompt_text = str(data.get("question", data.get("prompt_text", data.get("hint", ""))))
+            if prompt_text:
+                st.markdown(
+                    f'<div class="permission-card">{_esc_html(prompt_text)}</div>',
+                    unsafe_allow_html=True,
+                )
+            with st.form(f"ix_form_{req_id}", clear_on_submit=True):
+                free_text = st.text_input("回复", key=f"ix_free_{req_id}")
+                if st.form_submit_button("发送"):
+                    client.respond_interaction(req_id, answer=free_text)
+                    st.rerun()
+
+        st.divider()
 
 
 def render_permissions(client: AgentClient, pending_list):
@@ -656,6 +777,27 @@ def _stream_turn_into_placeholder(client: AgentClient, turn_id: str, container, 
             body = _collapsible_html(
                 f'🔐 等待权限审批 <b>{tool_name}</b>（请到上方"待审批"或下方"最近工具活动"里处理）· 参数: ',
                 tool_input_raw,
+            )
+            ph.markdown(f'<div class="permission-card">{body}</div>', unsafe_allow_html=True)
+            paused_for_permission = True
+            break
+
+        elif etype == "interaction_req":
+            # [BUGFIX] 与上面 permission_req 完全相同的死锁模式，触发场景
+            # 不是"工具权限审批"而是"通用交互式提问"——最典型的就是
+            # `/goal <目标文本>` 生成验收标准草案后进入的确认子对话
+            # （goal_negotiation），以及 ask_user / ask_user_confirm /
+            # ask_user_choice 三个工具。这一轮同样不会产生 turn_done，
+            # 直到有人（CLI 或看板）回答为止，所以这里也必须主动 break，
+            # 交出控制权，让顶部"待回答"面板（render_interactions）能在
+            # 下一次运行里出现并且可以点/填。
+            cur_kind = None
+            ph = _new_block()
+            kind = data.get("kind", "?")
+            hint = str(data.get("summary", data.get("question", data.get("prompt_text", ""))))
+            body = _collapsible_html(
+                f'💬 等待交互回答 <b>{_esc_html(kind)}</b>（请到上方"待回答"里处理）· ',
+                hint,
             )
             ph.markdown(f'<div class="permission-card">{body}</div>', unsafe_allow_html=True)
             paused_for_permission = True

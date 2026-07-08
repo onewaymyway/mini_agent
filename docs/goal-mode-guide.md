@@ -66,7 +66,7 @@ Evaluator 仍然在每次 `run_turn` 内部做质量把关，GoalRunner 在更�
     "max_total_compacts": 10,
     "consecutive_same_feedback_limit": 3,
     "same_feedback_similarity_threshold": 0.9,
-    "max_stuck_recoveries": 1,
+    "max_stuck_recoveries": 3,
     "persist_state": true,
     "auto_resume_prompt": true
   }
@@ -86,7 +86,7 @@ Evaluator 仍然在每次 `run_turn` 内部做质量把关，GoalRunner 在更�
 | `max_total_compacts` | `10` | 单次 goal 执行期间最多允许几次 compact，防止"压缩风暴" |
 | `consecutive_same_feedback_limit` | `3` | 连续 N 轮 Judge 反馈高度雷同 → 判定为"卡住"，提前终止 |
 | `same_feedback_similarity_threshold` | `0.9` | `difflib.SequenceMatcher` 相似度阈值，达到即计入"雷同" |
-| `max_stuck_recoveries` | `1` | 判定"卡住"后先压缩历史+提示换思路、再给几次机会（见下方"卡住恢复"），额度耗尽后再卡住才真正终止；设为 `0` 等价于旧行为（一卡住就终止） |
+| `max_stuck_recoveries` | `3` | 判定"卡住"后先压缩历史+提示换思路、再给几次机会（见下方"卡住恢复"），额度耗尽后再卡住才真正终止；设为 `0` 等价于旧行为（一卡住就终止） |
 | `judge_show_prompt` | `false` | 打印发给 GoalJudge 的完整输入 prompt（目标、验收标准、主 Agent 产出、上一轮反馈），排查判定依据用 |
 | `persist_state` | `true` | 是否在每个轮次边界落盘 `goal_state.json`（供异常中断恢复） |
 | `auto_resume_prompt` | `true` | 启动 REPL 时若检测到未完成的 goal，是否主动提示 |

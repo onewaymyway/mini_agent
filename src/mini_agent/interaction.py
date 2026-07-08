@@ -79,7 +79,34 @@ def interruptible_readline(interrupt_event: threading.Event, timeout: Optional[f
     y/n 确认，不能直接用 term.confirm()）。
 
     返回读到的字符串（已 strip 尾部换行），或者 None（被中断 / EOF）。
+
+    [BUGFIX] 之前这里和 terminal.py 的 confirm()/interruptible_prompt()
+    一样，每次调用都新起一条线程去 sys.stdin.readline()，被打断时那条
+    线程没法真正终止，会一直阻塞在 readline() 上等——等到用户之后在
+    同一个终端上敲下一行真实输入（比如主 REPL 的 "You ❯" 提示符）时，
+    操作系统可能把这行数据交给这条"僵尸"线程而不是当前真正在等待的
+    读取，表现为"提示符显示了、也输入了，但没反应"。现在改用
+    terminal.py::_wait_stdin_readable() 同款的 select() 轮询（不消费
+    数据、不留线程），POSIX 下不再有这个问题；Windows 因 select() 不支持
+    stdin 文件对象，退化回原来的线程实现。
     """
+    if timeout is None and sys.platform != "win32":
+        from mini_agent.ui.terminal import _wait_stdin_readable
+        poll = 0.2
+        while True:
+            ready = _wait_stdin_readable(poll)
+            if ready:
+                break
+            if interrupt_event.is_set():
+                return None
+        try:
+            line = sys.stdin.readline()
+        except Exception:
+            return None
+        if not line:
+            return None
+        return line.rstrip("\n")
+
     result_holder: list = []
     stdin_done = threading.Event()
 

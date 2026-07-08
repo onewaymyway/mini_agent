@@ -37,6 +37,51 @@ from rich.text import Text
 
 _IS_TTY: bool = hasattr(sys.stdout, "isatty") and sys.stdout.isatty()
 
+
+def _wait_stdin_readable(timeout: float) -> Optional[bool]:
+    """
+    [BUGFIX] 非阻塞地判断 stdin 在 `timeout` 秒内是否已经有一整行可读，
+    不消费任何数据。
+
+    背景（真实复现过的 bug）：`confirm()` / `interruptible_prompt()`
+    之前的"可中断读取"实现是每次调用都新起一条线程去 `sys.stdin.readline()`，
+    主线程则轮询 `interrupt_event`。一旦 HTTP 端（另一个已连接的客户端 /
+    web 看板）先给出了答案，主线程就直接返回、抛 `_InterruptedByHTTP`，
+    但那条正阻塞在 `readline()` 里的线程**没有任何办法被强制终止**，
+    只能一直留在那里，成为一条"僵尸读取线程"。
+
+    等到之后用户在同一个终端上真正输入下一行内容时（比如主 REPL 的
+    "You ❯" 提示符），操作系统会把这一行数据交给"当时恰好在
+    readline() 里等待"的**某一个**线程——可能是这次真正当前的读取，
+    也可能是之前遗留的僵尸线程。命中后者时，现在这个真正等待输入的
+    调用永远收不到这行数据，表现为"提示符显示了、字也打了、回车也按了，
+    但完全没反应"——这正是"看到 You ❯ 但实际无法输入"的根因，且
+    一定发生在"之前出现过一次被 HTTP 端抢先响应的权限/交互请求"之后，
+    与实际观察到的复现条件完全吻合。
+
+    修复方式：不再起新线程，而是用 `select()` 在当前调用线程里*轮询*
+    stdin 是否可读——不消费任何字节。POSIX 终端处于行缓冲（canonical/
+    cooked）模式时，只有用户真正按下回车、一整行已经进了内核缓冲区，
+    `select()` 才会报告"可读"；这之前我们只是反复"看一眼"，从不阻塞、
+    也从不留下任何"半路等待"的线程。真被打断时，用户还没敲完的输入
+    原封不动留在内核缓冲区里，交给下一个真正的读取者（无论是下一次
+    confirm()/interruptible_prompt()，还是主 REPL 的 prompt_toolkit
+    读取）干净地拿到，不会被任何遗留线程抢先吃掉。
+
+    返回 True/False 表示 POSIX 下的判断结果；返回 None 表示当前平台
+    不支持这种非消费式探测（Windows 的 `select()` 不能用于 stdin 这类
+    文件对象），调用方需要退化到旧的线程式实现。
+    """
+    if sys.platform == "win32":
+        return None
+    try:
+        import select as _select
+        r, _, _ = _select.select([sys.stdin], [], [], timeout)
+        return bool(r)
+    except Exception:
+        return None
+
+
 # ── simple-mode 默认值 ───────────────────────────────────────────────────────
 # 部分环境（典型如 Termux、某些精简终端模拟器、串口控制台）的 ANSI 光标控制
 # 支持不完整或行为不一致：`\x1b[NA`（上移）、`\x1b[0J`（擦除到屏底）等序列
@@ -820,40 +865,65 @@ class Terminal:
             sys.stdout.flush()
 
             if interrupt_event is not None:
-                # ── 可中断模式：用独立线程读 stdin，主线程等两者之一 ──────
-                result_holder: list = []
-                stdin_done = _threading.Event()
-
-                def _read_stdin():
+                # ── 可中断模式 ─────────────────────────────────────────
+                # [BUGFIX] 见 _wait_stdin_readable() 的详细说明：不再为每次
+                # 调用起一条新的 stdin 读取线程（那条线程在被 HTTP 端抢先
+                # 打断后无法被终止，会变成僵尸线程，日后真实吃掉用户下一次
+                # 输入，表现为"看到提示符却输入不进去"）。POSIX 下改用
+                # select() 轮询（不消费数据，不留线程）；Windows 因为
+                # select() 不支持 stdin 这类文件对象，退化回旧的线程实现
+                # （Windows 场景下这个 bug 概率较低，暂不做等价修复）。
+                if sys.platform != "win32":
+                    while True:
+                        ready = _wait_stdin_readable(0.2)
+                        if ready:
+                            break
+                        if interrupt_event.is_set():
+                            sys.stdout.write("\n")
+                            sys.stdout.flush()
+                            try:
+                                from mini_agent.permissions import _InterruptedByHTTP
+                            except ImportError:
+                                class _InterruptedByHTTP(Exception): pass
+                            raise _InterruptedByHTTP()
                     try:
                         line = sys.stdin.readline()
-                        result_holder.append(line)
-                    except Exception:
-                        result_holder.append("")
-                    finally:
-                        stdin_done.set()
+                    except (EOFError, KeyboardInterrupt):
+                        line = ""
+                else:
+                    result_holder: list = []
+                    stdin_done = _threading.Event()
 
-                reader = _threading.Thread(target=_read_stdin, daemon=True)
-                reader.start()
-
-                # 等待 stdin 读完 或 interrupt_event 先触发
-                finished = _threading.Event()
-                while not finished.is_set():
-                    if stdin_done.wait(timeout=0.2):
-                        finished.set()
-                    elif interrupt_event.is_set():
-                        # HTTP 端先响应了——打印换行保持终端整洁，然后抛出中断
-                        sys.stdout.write("\n")
-                        sys.stdout.flush()
-                        # reader 线程还阻塞在 readline，但它是 daemon 线程，进程退出时自动清理
-                        # 用户下次按回车时 readline 会返回，但调用方已经不在等了
+                    def _read_stdin():
                         try:
-                            from mini_agent.permissions import _InterruptedByHTTP
-                        except ImportError:
-                            class _InterruptedByHTTP(Exception): pass
-                        raise _InterruptedByHTTP()
+                            line = sys.stdin.readline()
+                            result_holder.append(line)
+                        except Exception:
+                            result_holder.append("")
+                        finally:
+                            stdin_done.set()
 
-                line = result_holder[0] if result_holder else ""
+                    reader = _threading.Thread(target=_read_stdin, daemon=True)
+                    reader.start()
+
+                    # 等待 stdin 读完 或 interrupt_event 先触发
+                    finished = _threading.Event()
+                    while not finished.is_set():
+                        if stdin_done.wait(timeout=0.2):
+                            finished.set()
+                        elif interrupt_event.is_set():
+                            # HTTP 端先响应了——打印换行保持终端整洁，然后抛出中断
+                            sys.stdout.write("\n")
+                            sys.stdout.flush()
+                            # reader 线程还阻塞在 readline，但它是 daemon 线程，进程退出时自动清理
+                            # 用户下次按回车时 readline 会返回，但调用方已经不在等了
+                            try:
+                                from mini_agent.permissions import _InterruptedByHTTP
+                            except ImportError:
+                                class _InterruptedByHTTP(Exception): pass
+                            raise _InterruptedByHTTP()
+
+                    line = result_holder[0] if result_holder else ""
             else:
                 # ── 普通模式：直接阻塞 readline ──────────────────────────
                 try:
@@ -909,30 +979,48 @@ class Terminal:
             sys.stdout.flush()
 
             if interrupt_event is not None:
-                result_holder: list = []
-                stdin_done = _threading.Event()
-
-                def _read_stdin():
+                # [BUGFIX] 和 confirm() 同样的根因修复：不再起新线程读 stdin，
+                # 详见 _wait_stdin_readable() 的说明。
+                if sys.platform != "win32":
+                    while True:
+                        ready = _wait_stdin_readable(0.2)
+                        if ready:
+                            break
+                        if interrupt_event.is_set():
+                            sys.stdout.write("\n")
+                            sys.stdout.flush()
+                            return None
                     try:
                         line = sys.stdin.readline()
-                        result_holder.append(line)
-                    except Exception:
-                        result_holder.append("")
-                    finally:
-                        stdin_done.set()
-
-                reader = _threading.Thread(target=_read_stdin, daemon=True)
-                reader.start()
-
-                while True:
-                    if stdin_done.wait(timeout=0.2):
-                        break
-                    if interrupt_event.is_set():
+                    except (EOFError, KeyboardInterrupt):
                         sys.stdout.write("\n")
                         sys.stdout.flush()
                         return None
+                else:
+                    result_holder: list = []
+                    stdin_done = _threading.Event()
 
-                line = result_holder[0] if result_holder else ""
+                    def _read_stdin():
+                        try:
+                            line = sys.stdin.readline()
+                            result_holder.append(line)
+                        except Exception:
+                            result_holder.append("")
+                        finally:
+                            stdin_done.set()
+
+                    reader = _threading.Thread(target=_read_stdin, daemon=True)
+                    reader.start()
+
+                    while True:
+                        if stdin_done.wait(timeout=0.2):
+                            break
+                        if interrupt_event.is_set():
+                            sys.stdout.write("\n")
+                            sys.stdout.flush()
+                            return None
+
+                    line = result_holder[0] if result_holder else ""
             else:
                 try:
                     line = sys.stdin.readline()

@@ -157,6 +157,20 @@ class AgentClient:
     def respond_permission(self, req_id: str, approve: bool, mode: str = "once"):
         return self._post(f"/permissions/{req_id}", {"approve": approve, "mode": mode})
 
+    # ── 通用交互式提问（ask_user / /goal 协商 / slash 命令内部 prompt）──
+    # [BUGFIX] 之前看板前端完全没有对接这一套（只对接了权限审批），
+    # 导致 /goal 协商这类"通用交互"请求——despite 后端已经正确通过
+    # INTERACTION_REQ 广播出来——在看板里彻底不可见、也无法回答。
+    def pending_interactions(self):
+        return self._get("/interactions/pending")
+
+    def respond_interaction(self, req_id: str, answer: str = None,
+                             confirmed: bool = None, choice_index: int = None):
+        body = {k: v for k, v in {
+            "answer": answer, "confirmed": confirmed, "choice_index": choice_index,
+        }.items() if v is not None}
+        return self._post(f"/interactions/{req_id}", body)
+
     # ── 会话管理 ──────────────────────────────────────────────────────
     def sessions(self, limit: int = 50):
         return self._get("/sessions", params={"limit": limit})
