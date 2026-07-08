@@ -457,7 +457,14 @@ class GoalModeConfig:
     # 再继续跑；如果之后又卡住了才真正终止。max_stuck_recoveries 是这种
     # "卡住→compact→再给机会"额度的次数上限，用完之后再卡住就直接终止。
     # 设为 0 等价于旧行为（一卡住就终止，不做恢复尝试）。
-    max_stuck_recoveries: int = 1
+    # [BUGFIX/需求变更] 之前默认是 1——也就是"只给一次机会"：卡住 → compact
+    # 一次 → 再卡住就直接终止。改成默认 3：只要还在"没有新进展"（连续反馈
+    # 高度雷同），就持续压缩历史 + 换角度重试，直到连续 3 次 compact 之后
+    # 仍然没有新进展（即又被判定卡住）才真正终止。任何一轮出现了明显不同
+    # 于上一轮的反馈（说明确实有新进展），_check_stuck() 都会把卡住计数和
+    # 这个恢复额度重新计数（见 runner.py _check_stuck 的重置逻辑），不会被
+    # 提前耗尽。
+    max_stuck_recoveries: int = 3
 
     # ── 调试 ─────────────────────────────────────────────────────────────────
     judge_show_prompt: bool = False   # 打印发给 GoalJudge 的完整输入 prompt（排查判定依据用）
@@ -487,6 +494,31 @@ class TurnJudgeConfig:
     # ── 安全阀：连续自动接管次数上限，防止死循环刷屏 ─────────────────────────
     # 每次真正等到真人输入后计数会被重置。
     max_auto_rounds: int = 3
+
+    # ── 卡住检测 + compact 恢复（与 goal_mode 的同名机制思路一致）───────────
+    # [SYS-TURN-JUDGE] 之前 TurnJudge 唯一的"防止死循环"手段就是
+    # max_auto_rounds：不管这几轮自动接管到底有没有实质进展，凑够次数就
+    # 强制交还真人。这样有两个问题：
+    #   1) 如果模型连续几轮给出高度相似的输出（比如反复卡在同一个报错、
+    #      同一种格式问题），说明历史里可能堆积了噪音干扰判断，这时候
+    #      "先 compact 一次换个角度重试"往往比"硬撑到 max_auto_rounds
+    #      耗尽"更容易破局——但之前只有 TurnJudge 自己主观判定
+    #      NEED_COMPACT 时才会 compact，不会主动因为"检测到没有实质
+    #      进展"而触发。
+    #   2) 万一确实卡住了，之前的 compact（无论是 TurnJudge 主动判定还是
+    #      这里新加的卡住检测触发）会占用 max_auto_rounds 里的一次名额，
+    #      挤占本该留给"真正推进任务"的自动接管次数。
+    # 加入这一组参数后：主 Agent 连续 `consecutive_same_output_limit` 轮
+    # 输出高度相似（`same_output_similarity_threshold` 判定）就判定"没有
+    # 实质进展"，主动 compact + 注入"换个角度重试"的提示，最多连续尝试
+    # `max_stuck_recoveries` 次，且这些"卡住恢复"用的 compact 轮次不计入
+    # max_auto_rounds 预算（与 goal_mode 的 _try_stuck_recovery 语义一致）。
+    # 一旦某一轮输出明显不同于上一轮（真实进展），卡住计数和恢复额度都会
+    # 重置。恢复额度耗尽后再次判定卡住，就强制交还真人（等价于撞到
+    # max_auto_rounds），不会无限重试下去。设为 0 关闭这个机制，回到旧行为。
+    consecutive_same_output_limit: int = 3
+    same_output_similarity_threshold: float = 0.9
+    max_stuck_recoveries: int = 3
 
     # ── 调试 ─────────────────────────────────────────────────────────────────
     judge_show_prompt: bool = False   # 打印发给 TurnJudge 的完整输入 prompt

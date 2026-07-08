@@ -579,6 +579,13 @@ def load_config(
         max_total_compacts=int(_gm.get("max_total_compacts", 10)),
         consecutive_same_feedback_limit=int(_gm.get("consecutive_same_feedback_limit", 3)),
         same_feedback_similarity_threshold=float(_gm.get("same_feedback_similarity_threshold", 0.9)),
+        # [BUGFIX] 之前这里漏读了 max_stuck_recoveries：不管配置文件里
+        # goal_mode.max_stuck_recoveries 写了什么，实际生效的永远是
+        # GoalModeConfig 类定义里的默认值，配置项形同虚设。默认值同时
+        # 从 1 改成 3——"卡住"(连续反馈高度雷同/没有新进展) 后不再只给
+        # 一次 compact 机会，而是连续压缩重试最多 3 次，直到 3 次之后
+        # 仍然没有新进展才真正终止。
+        max_stuck_recoveries=int(_gm.get("max_stuck_recoveries", 3)),
         judge_show_prompt=bool(_gm.get("judge_show_prompt", False)),
         persist_state=bool(_gm.get("persist_state", True)),
         auto_resume_prompt=bool(_gm.get("auto_resume_prompt", True)),
@@ -594,6 +601,9 @@ def load_config(
         max_auto_rounds=int(_tj.get("max_auto_rounds", 3)),
         judge_show_prompt=bool(_tj.get("judge_show_prompt", False)),
         history_window=int(_tj.get("history_window", 6)),
+        consecutive_same_output_limit=int(_tj.get("consecutive_same_output_limit", 3)),
+        same_output_similarity_threshold=float(_tj.get("same_output_similarity_threshold", 0.9)),
+        max_stuck_recoveries=int(_tj.get("max_stuck_recoveries", 3)),
     )
 
     # ── EnvInfo 配置组装 ────────────────────────────────────────────────────
