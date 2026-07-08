@@ -245,6 +245,11 @@ def build_parser() -> argparse.ArgumentParser:
     daemon_grp.add_argument("--no-daemon", action="store_true", default=False,
                              help="[Stage 9] 禁用 daemon 模式，回退到传统的进程内直接持有 Agent 行为。"
                                   "适用于 CI、脚本化场景等不需要持续性的一次性执行。")
+    daemon_grp.add_argument("--daemon-attach-console", action="store_true", default=False,
+                             help="[内部标志] 仅由 'mini-agent daemon start'（不带 --detach 时）传入，"
+                                  "表示当前是前台 daemon 进程，拥有真实终端：daemon 主循环应像 "
+                                  "'mini-agent daemon connect' 一样订阅并渲染 SSE 事件、接受用户输入，"
+                                  "而不是裸等待信号。用户无需直接使用。")
 
     # ── HTTP API 服务 ──────────────────────────────────────────────────────
     http = p.add_argument_group("HTTP API server (optional)")

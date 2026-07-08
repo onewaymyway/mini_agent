@@ -498,8 +498,65 @@ def _main_inner() -> None:
 
         R.print_info("[daemon] Daemon ready. Ctrl-C or SIGTERM to stop.")
 
+        # [FIX] 前台（非 --detach）daemon 进程之前只是在这里裸等信号：
+        # 既不渲染 turn/tool_call/goal 协商等任何内容，也读不到用户输入，
+        # 和"attach 到它的其他客户端看到的样子"完全不一致——用户反馈的
+        # "daemon 进程没有显示 /goal 核查信息、工具调用信息，非 detach
+        # 时应该有用户输入"就是这里。
+        #
+        # 修复方式：--daemon-attach-console（只在前台 exec 时由
+        # cmd_daemon_start 附加，detach 后台模式不会有这个标志）意味着
+        # 当前进程拥有一个真实终端。这种情况下直接复用
+        # run_connected_repl()——也就是 'mini-agent daemon connect' 用的
+        # 那一整套 SSE 观察者线程（渲染 token/tool_call/agent_prefix/
+        # interaction_req/goal 协商等所有事件类型）+ 交互式输入循环——
+        # 让 daemon 把自己的 loopback HTTP 接口当成"自己 attach 自己"，
+        # 效果上前台终端与任何其他 connect 上来的客户端完全对等，
+        # 包括能在这里直接输入消息、审批权限、回答 /goal 协商。
+        #
+        # detach（无真实终端）模式没有这个标志，保持原来的裸等待循环——
+        # 输出已经在重定向到 .agent/daemon.log，也没有 stdin 可读。
+        attach_console = getattr(args, "daemon_attach_console", False)
         try:
-            # 持续等待，直到收到停止信号
+            if attach_console:
+                from mini_agent.cli.daemon import _read_daemon_info, run_connected_repl
+
+                daemon_info = _read_daemon_info(project_root) or {
+                    "pid": os.getpid(),
+                    "http_port": http_port,
+                    "project_root": str(project_root),
+                    "agent_name": getattr(cfg, "agent_name", None),
+                }
+
+                # run_connected_repl 是阻塞的交互循环（读 stdin），在独立
+                # 线程里跑，主线程继续 wait，这样 SIGTERM（比如外部
+                # 'mini-agent daemon stop'）依然能正常触发 stop_event 并
+                # 走到下面统一的 finally 关停逻辑，不会被 input() 卡住。
+                def _console_worker() -> None:
+                    try:
+                        run_connected_repl(
+                            daemon_info,
+                            token=None,
+                            auto_session_id=agent.session_id,
+                            quiet_connect=True,
+                        )
+                    except Exception as _mini_agent_exc:
+                        from mini_agent.errors import log_exception
+                        log_exception(_mini_agent_exc, where='mini_agent.cli.app')
+                    finally:
+                        # 用户在控制台里输入 exit/Ctrl-C 退出了交互循环，
+                        # 等价于要求关停整个 daemon（前台进程本来就是
+                        # "这个终端就是 daemon"的模型，不存在"退出控制台
+                        # 但 daemon 继续留存"的用法）。
+                        stop_event.set()
+
+                _console_thread = _threading.Thread(
+                    target=_console_worker, name="daemon-attach-console", daemon=True
+                )
+                _console_thread.start()
+
+            # 持续等待，直到收到停止信号（SIGTERM/SIGINT，或 attach 控制台
+            # 里用户退出了交互循环）
             while not stop_event.is_set():
                 stop_event.wait(timeout=5.0)
         finally:

@@ -652,10 +652,18 @@ def cmd_daemon_start(
 
     if not detach:
         # 前台运行：直接 exec
+        # [FIX] 之前前台（非 --detach）daemon 进程只是裸 wait 信号，
+        # 完全不显示 turn/tool_call/goal 协商等内容，也读不到用户输入——
+        # 和"其他客户端 attach 上来看到的样子"完全不一致。这里额外带上
+        # --daemon-attach-console，让 app.py 的 --daemon-mode 分支在启动
+        # 完 HTTP 服务后，直接复用 run_connected_repl()（即 'daemon
+        # connect' 用的那套 SSE 渲染 + 输入循环）挂到自己身上，效果上
+        # daemon 自己的前台终端就是"attach 到自己"的一个正常客户端。
+        foreground_cmd = base_cmd + ["--daemon-attach-console"]
         print(f"[daemon] Starting in foreground on port {http_port}...")
         print(f"[daemon] Press Ctrl-C to stop.")
         try:
-            os.execv(python_exec, base_cmd)
+            os.execv(python_exec, foreground_cmd)
         except Exception as e:
             print(f"[daemon] Failed to exec: {e}", file=sys.stderr)
             return 1
@@ -678,12 +686,14 @@ def cmd_daemon_start(
             DETACHED_PROCESS = 0x00000008
             CREATE_NEW_PROCESS_GROUP = 0x00000200
             kwargs = {
+                "stdin": subprocess.DEVNULL,
                 "stdout": log_file,
                 "stderr": log_file,
                 "creationflags": DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP,
             }
         else:
             kwargs = {
+                "stdin": subprocess.DEVNULL,
                 "stdout": log_file,
                 "stderr": log_file,
                 "close_fds": True,
@@ -1716,7 +1726,13 @@ def _handle_connected_digest(client: "DaemonClient", _out) -> None:
             _out(f"         session_pool: active={pool.get('active_count', 0)}")
 
 
-def run_connected_repl(daemon_info: dict, token: Optional[str] = None) -> None:
+def run_connected_repl(
+    daemon_info: dict,
+    token: Optional[str] = None,
+    *,
+    auto_session_id: Optional[str] = None,
+    quiet_connect: bool = False,
+) -> None:
     """
     CLI 连接模式：连接到已存在的 daemon，REPL 输入通过 HTTP API 提交。
 
@@ -1843,7 +1859,8 @@ def run_connected_repl(daemon_info: dict, token: Optional[str] = None) -> None:
             print(line)
 
     # ── 等待 HTTP 就绪 ────────────────────────────────────────────────────────
-    _out(f"[daemon] Connecting to daemon (PID={pid}, port={port})...")
+    if not quiet_connect:
+        _out(f"[daemon] Connecting to daemon (PID={pid}, port={port})...")
     for _attempt in range(10):
         if client.health_check():
             break
@@ -1854,7 +1871,8 @@ def run_connected_repl(daemon_info: dict, token: Optional[str] = None) -> None:
         return
 
     agent_name = daemon_info.get("agent_name") or f"daemon:{port}"
-    _out(f"[daemon] Connected \u2713  (PID={pid}, port={port})")
+    if not quiet_connect:
+        _out(f"[daemon] Connected \u2713  (PID={pid}, port={port})")
 
     # ── 身份确认：多用户 daemon 下，把当前 token 对应的用户打印出来 ─────────
     # 主要是给显式传了 --token/-T 的场景一个明确反馈——万一 token 带错了
@@ -1885,7 +1903,15 @@ def run_connected_repl(daemon_info: dict, token: Optional[str] = None) -> None:
             pass
 
     # ── Session 选择 ──────────────────────────────────────────────────────────
-    chosen_sid = _pick_session(client, term=_term)
+    # [daemon 本地控制台] daemon 前台进程 attach 自己时，Agent 早就已经在
+    # 某个 session 上跑着了（启动时 new Agent()/--resume 决定的那个），
+    # 不应该再弹一遍"最近 session 列表"菜单让用户选——那个菜单是给"从
+    # 另一个终端 connect 上来"的外部客户端准备的，daemon 自己没有"选
+    # session"这个概念，直接 resume 到自己当前这个就行。
+    if auto_session_id is not None:
+        chosen_sid = auto_session_id
+    else:
+        chosen_sid = _pick_session(client, term=_term)
     if chosen_sid is None:
         _out("[daemon] Exited (daemon continues running)")
         # 退出前停止状态栏
