@@ -157,11 +157,14 @@ class ProviderMixin:
         get_rate_limiter().acquire()
 
         # 包装 on_token：同时更新全局 token 计数状态
+        # 注意：start() 返回本路 stream 专属的 stream_id，
+        # increment()/stop() 必须带上它，避免并发多路流互相覆盖/提前清空
+        # （旧版全局单一 active 标志在并发场景下会导致状态栏间歇性消失）。
         _token_state = get_stream_token_state()
-        _token_state.start(model=self.config.model)
+        _stream_id = _token_state.start(model=self.config.model)
 
         def _counting_on_token(token: str) -> None:
-            _token_state.increment()
+            _token_state.increment(_stream_id)
             on_token(token)
 
         sem = get_llm_sem()
@@ -191,7 +194,7 @@ class ProviderMixin:
             logger.log_error(seq, self.config.provider, self.config.model, e, duration_ms)
             raise self._upgrade_error(e)
         finally:
-            _token_state.stop()
+            _token_state.stop(_stream_id)
 
     # ── 错误语义升级 ──────────────────────────────────────────────────────────
 

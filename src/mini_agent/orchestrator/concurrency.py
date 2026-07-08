@@ -313,42 +313,82 @@ def set_rpm_limit(max_rpm: int) -> None:
 # ── 全局流式 token 计数状态（供状态栏实时显示） ────────────────────────────────
 
 class StreamTokenState:
-    """当前正在流式生成的 token 计数状态。"""
+    """当前正在流式生成的 token 计数状态。
+
+    多路并发修复说明：
+    ----------------
+    旧实现只有一份全局 active/token_count/model，遇到 orchestrator/
+    ensemble/sub_agent 等并发发起多个 LLM 流式请求的场景时，会出现
+    竞态：请求 A 和 B 同时 start()，谁的 token_count/model 被覆盖是
+    随机的；更严重的是，A 先完成时其 finally 块调用 stop() 会把全局
+    active 设为 False，即使 B 仍在生成 —— 状态栏因此在多任务并发期间
+    间歇性"消失"。
+
+    现在改为按 stream_id 注册的多路状态表：每次 start() 返回一个唯一
+    id，increment()/stop() 都必须带上这个 id，只影响自己那一路；
+    snapshot() 在仍有任意一路活跃时返回 active=True，并汇总/展示。
+    """
 
     def __init__(self) -> None:
         self._lock = threading.Lock()
-        self.active = False
-        self.token_count = 0
-        self.started_at = 0.0
-        self.model = ""
+        self._streams: dict[int, dict] = {}
+        self._next_id = 0
 
-    def start(self, model: str = "") -> None:
+    def start(self, model: str = "") -> int:
+        """注册一路新的流式生成，返回 stream_id，供 increment/stop 使用。"""
         with self._lock:
-            self.active = True
-            self.token_count = 0
-            self.started_at = time.monotonic()
-            self.model = model
+            stream_id = self._next_id
+            self._next_id += 1
+            self._streams[stream_id] = {
+                "token_count": 0,
+                "started_at": time.monotonic(),
+                "model": model,
+            }
+            return stream_id
 
-    def increment(self) -> None:
-        # 热路径，用非阻塞方式；Python GIL 保证 int += 1 原子
-        if self.active:
-            self.token_count += 1
+    def increment(self, stream_id: int) -> None:
+        # 热路径：不加锁直接改字典里某一路自己的计数，
+        # Python GIL 保证 int += 1 对同一个 dict value 原子。
+        s = self._streams.get(stream_id)
+        if s is not None:
+            s["token_count"] += 1
 
-    def stop(self) -> None:
+    def stop(self, stream_id: int) -> None:
         with self._lock:
-            self.active = False
+            self._streams.pop(stream_id, None)
 
     def snapshot(self) -> dict:
         with self._lock:
-            elapsed = (time.monotonic() - self.started_at) if self.active else 0.0
-            tps = self.token_count / elapsed if elapsed > 0.1 else 0.0
+            streams = list(self._streams.values())
+
+        if not streams:
             return {
-                "active": self.active,
-                "token_count": self.token_count,
-                "elapsed_s": round(elapsed, 1),
-                "tokens_per_sec": round(tps, 1),
-                "model": self.model,
+                "active": False,
+                "token_count": 0,
+                "elapsed_s": 0.0,
+                "tokens_per_sec": 0.0,
+                "model": "",
             }
+
+        # 展示最新发起的一路作为主要信息（耗时/速度按它算），
+        # token_count 汇总所有并发流，model 附加 "+N" 提示还有几路在跑。
+        latest = max(streams, key=lambda s: s["started_at"])
+        now = time.monotonic()
+        elapsed = now - latest["started_at"]
+        tps = latest["token_count"] / elapsed if elapsed > 0.1 else 0.0
+        total_tokens = sum(s["token_count"] for s in streams)
+        model = latest["model"]
+        extra = len(streams) - 1
+        if extra > 0:
+            model = f"{model} +{extra}" if model else f"+{extra}"
+
+        return {
+            "active": True,
+            "token_count": total_tokens,
+            "elapsed_s": round(elapsed, 1),
+            "tokens_per_sec": round(tps, 1),
+            "model": model,
+        }
 
 
 _stream_token_state = StreamTokenState()
