@@ -1171,10 +1171,22 @@ def _render_sse_event(term, evt_type: str, payload: dict, *, prefix: str = "") -
             term.print(f"{prefix}  [red]✗ {_esc(tool_name)} error:[/red] {_esc(message)}")
 
         elif evt_type == "info":
-            term.print(f"{prefix}[blue]ℹ[/blue]  {_esc(payload.get('message', ''))}")
+            # ★ 这里故意不对 message 做 _esc()：ui/renderer.py::print_info()
+            # 在本地终端模式下就是直接 f"[blue]ℹ[/blue]  {msg}" 拼接、不转义，
+            # 调用方（散落在 agent.py/skills.py/goal_mode_cmd.py 等各处）
+            # 大量依赖这一点，故意在 msg 里嵌入 [bold].../[/bold] 之类的
+            # markup 来做强调（例如 /goal 协商提示"输入 [bold]/confirm[/bold]
+            # 确认并开始执行…"）。之前这里统一 _esc() 之后，这些标签在
+            # daemon connected 客户端上会被转义成字面文本原样显示出来
+            # （"[bold]/confirm[/bold]"这种），而看板端/本地终端都能正常
+            # 渲染成粗体——这就是视觉不一致的根因。
+            # 和本地终端保持同样的信任级别，不转义，让 connected 客户端
+            # 看到的效果和本地/看板一致。
+            term.print(f"{prefix}[blue]ℹ[/blue]  {payload.get('message', '')}")
 
         elif evt_type == "warning":
-            term.print(f"{prefix}[yellow]⚠[/yellow]  {_esc(payload.get('message', ''))}")
+            # 同上，print_warning() 本地也不转义。
+            term.print(f"{prefix}[yellow]⚠[/yellow]  {payload.get('message', '')}")
 
         elif evt_type == "session_switched":
             sid = payload.get("session_id", "")
