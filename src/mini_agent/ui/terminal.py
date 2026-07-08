@@ -1167,7 +1167,49 @@ class Terminal:
             self._q.join()
             self._console = old_console
             self._capture_mode = old_capture
-        return buf.getvalue()
+        captured_text = buf.getvalue()
+
+        # ★ 镜像写回真实控制台（daemon 场景下即 daemon.log）───────────────
+        # 背景：daemon 进程以 --daemon-mode 后台运行时，stdout/stderr 被
+        # 重定向到 .agent/daemon.log，但这个进程本身没有真正的交互式
+        # 终端在读输入——它显示什么、不显示什么，只对"事后能不能从
+        # daemon.log 追溯排查"这一件事有意义。
+        #
+        # 之前的实现：run_captured() 期间 self._console 被整个换成一个
+        # 只写内存缓冲区的 rich Console，fn() 内部所有 term.print() 调用
+        # 都进了这个缓冲区，只在函数返回时作为一整段字符串交给调用方
+        # （api/server.py 里当 turn_done 的 text 发出去）。这段内容确实
+        # 会通过 _install_output_hook() 打的 print_info/print_warning 等
+        # 补丁转发成 SSE 事件，所以已连接的客户端（daemon connected CLI、
+        # web 看板）能实时看到；但 daemon 进程自己的 stdout/daemon.log
+        # 完全没有拿到任何一份拷贝——对于 /goal 这种会话式协商（多轮
+        # ask/confirm，中间夹杂 tool_call/info 等大量事件）尤其致命：
+        # 出问题以后翻 daemon.log，完全看不到 agent 当时在跟谁商量什么、
+        # 执行了什么，只能靠已连接客户端当时有没有截图。
+        #
+        # 修复：fn() 执行完、_console 已经换回真实控制台之后，把整段
+        # 捕获到的文本重新回放一次（用 Text() 包装成"已知安全的纯文本"，
+        # 不会被 rich 当作 markup 二次解析——captured_text 本身已经是
+        # rich 渲染过的最终文本，理由和 renderer.py::print_tool_result()
+        # 里对不可信内容用 Text() 包装一致）。加一行来源分隔线，方便在
+        # daemon.log 里区分"这是哪一次远程 slash 命令触发的输出"。
+        #
+        # 权衡：这是"执行完之后一次性补录"，不是逐条实时镜像——run_captured()
+        # 本来就设计成\"完全不接触真实屏幕\"，改成实时双写需要更大改动
+        # （teeing 两个 Console 各自的渲染状态），而 daemon 场景下这里
+        # 只是为了留痕排查，不要求实时性，delay 到 fn() 结束后一次性写
+        # 完全够用，风险也更小。
+        if captured_text.strip() and not self._capture_mode:
+            try:
+                from rich.text import Text as _CapturedText
+                self.print("[dim]── run_captured output (daemon local trace) ──[/dim]")
+                for line in captured_text.splitlines():
+                    self.print(_CapturedText(line))
+                self.print("[dim]── end ──[/dim]")
+            except Exception:
+                pass
+
+        return captured_text
 
     def _enter_input_mode(self) -> None:
         """
