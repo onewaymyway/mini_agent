@@ -1797,11 +1797,31 @@ def run_connected_repl(daemon_info: dict, token: Optional[str] = None) -> None:
     # 单例，多次调用返回同一个实例，不会重复创建渲染线程。
     import sys as _sys
     _term = None
+    RemoteTurnInterrupt = None  # type: ignore[assignment]
     try:
-        from mini_agent.ui.terminal import get_terminal
+        from mini_agent.ui.terminal import get_terminal, RemoteTurnInterrupt
         _term = get_terminal()
     except Exception:
         pass  # 极端兜底：拿不到就退回裸 print，下面 _out() 会处理
+
+    # 同一 session 里，其它客户端当前正在处理中的 turn_id 集合。
+    # 非空 == 应该让本端处于"锁定输入"状态（见 request_input_lock()）。
+    # 用集合而不是单个布尔量，是为了正确处理"上一个 turn 还没 done、
+    # 下一个就 start 了"这种边界情况下的引用计数，避免一个 turn_done
+    # 把另一个还在进行中的 turn 的锁误清掉。
+    _other_active_turns: set = set()
+    _other_active_turns_lock = threading.Lock()
+
+    def _mark_other_turn(turn_id: str, active: bool) -> None:
+        if not turn_id or _term is None:
+            return
+        with _other_active_turns_lock:
+            if active:
+                _other_active_turns.add(turn_id)
+            else:
+                _other_active_turns.discard(turn_id)
+            should_lock = bool(_other_active_turns)
+        _term.request_input_lock(should_lock)
 
     def _out(line: str) -> None:
         """统一输出函数：有 term 就走渲染队列，没有就退回裸 print。"""
@@ -2013,6 +2033,14 @@ def run_connected_repl(daemon_info: dict, token: Optional[str] = None) -> None:
                     _last_event_id[0] = 0
                     _last_seen_session[0] = cur_sid
                     _turn_prefix_printed.clear()
+                    # 兜底：切换 session 时，之前那个 session 里可能还有
+                    # 遗留的"对方 turn 未收到 turn_done"记账（例如恰好在
+                    # turn 进行中切换/断线），不清掉的话本端输入会被永久
+                    # 锁死。切 session 视为全新起点，直接清空。
+                    with _other_active_turns_lock:
+                        _other_active_turns.clear()
+                    if _term is not None:
+                        _term.request_input_lock(False)
 
                 url = f"{client.base_url}/v1/stream?since_id={_last_event_id[0]}"
                 if cur_sid:
@@ -2045,6 +2073,15 @@ def run_connected_repl(daemon_info: dict, token: Optional[str] = None) -> None:
                 from mini_agent.errors import log_exception
                 log_exception(_mini_agent_exc, where='mini_agent.cli.daemon')
                 pass
+                # 兜底：连接异常断开，SSE 里遗留的 turn_done 事件可能永远
+                # 收不到了——如果此时还记着"对方有 turn 在进行中"，锁会
+                # 永久锁死本端输入。断线即视为"不再确定对方状态"，直接
+                # 清空、解锁；重连后如果对方 turn 真的还没结束，会在
+                # since_id 续传里重新收到后续事件，重新加锁。
+                with _other_active_turns_lock:
+                    _other_active_turns.clear()
+                if _term is not None:
+                    _term.request_input_lock(False)
             if not _observer_stop.is_set():
                 time.sleep(2)  # 断线后等待重连
 
@@ -2221,9 +2258,19 @@ def run_connected_repl(daemon_info: dict, token: Optional[str] = None) -> None:
                 if turn_id in turn_prefix_printed and _term is not None:
                     _term.stream_end()
                 turn_prefix_printed.discard(turn_id)
+                # 对方这个 turn 结束了：解除输入锁定（如果还有别的 turn
+                # 同时在进行，_mark_other_turn 内部的引用计数会保证锁
+                # 不会被提前放开）。
+                _mark_other_turn(turn_id, False)
 
             elif evt_type in ("turn_start", "tool_call", "tool_result", "tool_error", "info", "warning",
                                "session_switched", "fs_change"):
+                if evt_type == "turn_start":
+                    # 别的客户端刚发起了一个新 turn：立刻锁定本端输入，
+                    # 哪怕本端此刻正阻塞在 prompt_user() 里也会被强制
+                    # 打断（见 Terminal.request_input_lock()），避免本端
+                    # 继续可编辑的输入行和即将开始的流式输出抢屏幕。
+                    _mark_other_turn(turn_id, True)
                 _render_sse_event(_term, evt_type, payload, prefix=prefix)
 
     # 启动 observer 线程
@@ -2250,6 +2297,19 @@ def run_connected_repl(daemon_info: dict, token: Optional[str] = None) -> None:
             except (EOFError, KeyboardInterrupt):
                 _out("[daemon] Disconnected (daemon continues running)")
                 break
+            except RemoteTurnInterrupt:
+                # 同一 session 里另一个客户端的 turn 正在处理（或者刚在本端
+                # 打字过程中开始）：不把这当成"用户提交了空输入"，而是
+                # 展示一个不可编辑的等待状态，直到对方 turn 结束
+                # （request_input_lock(False)）后再回到循环顶部、重新进入
+                # 正常的 prompt_user()。这就是"任意端输入时，其它端应该
+                # 同步进入不可输入状态"这个需求的落地：本端不再有一个
+                # 停留在屏幕上、随时会被冲掉内容的可编辑输入行。
+                if _term is not None:
+                    _term.print("[dim]⏳ 其他终端正在处理，输入已暂时锁定…[/dim]")
+                    while _term.is_input_locked():
+                        time.sleep(0.15)
+                continue
 
             if not user_input:
                 continue

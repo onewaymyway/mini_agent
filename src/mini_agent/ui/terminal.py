@@ -114,6 +114,27 @@ class _Msg:
         self.payload = payload
 
 
+class _RemoteTurnInterrupt(Exception):
+    """
+    daemon connected 多客户端场景下的输入锁定机制：当同一 session 里
+    *另一个*客户端的 turn 开始时，本端如果正阻塞在 prompt_user() 里
+    等待用户输入，会被这个异常从 ptk 的 .prompt()/降级 readline() 中
+    强制"踢出来"，交由上层（daemon.py 的 REPL 主循环）改为展示一个
+    不可编辑的"等待中"状态，直到对方 turn 结束再重新进入真正的输入态。
+
+    这是解决"任意一端输入时，其它端都应该同步进入不可输入状态"这个
+    需求的关键：单靠 _pending_during_input 的延迟补打印/定时 flush，
+    只解决了"别人的内容会不会显示出来"，没有解决"本端此时还能不能
+    继续敲键盘、且会不会跟正在打印的别人内容抢屏幕"这个更根本的问题。
+    """
+    pass
+
+
+# 公开别名：daemon.py 等外部模块 catch 这个异常时用这个名字，不直接引用
+# 下划线开头的"私有"类名。
+RemoteTurnInterrupt = _RemoteTurnInterrupt
+
+
 class Terminal:
     """唯一的终端 I/O 管理器。通过模块级 `term` 单例访问。"""
 
@@ -300,6 +321,20 @@ class Terminal:
         # SIGWINCH 的 debounce-settle 回调用它来跨线程触发强制重绘。
         # 详见 _read_line() 和 _on_sigwinch_settled() 的说明。
         self._active_ptk_app = None
+
+        # ── 远端忙碌标志（daemon connected 多客户端输入互斥） ─────────────
+        # set 表示"同一 session 里，另一个客户端正有一个 turn 在处理中"。
+        # 由 daemon.py 的 observer 线程在收到别的客户端的 turn_start/
+        # turn_done 事件时调用 request_input_lock(True/False) 维护。
+        # 语义：
+        #   - 为 True 期间，_read_line() 不会开启新的 .prompt() 调用
+        #     （避免和正在打印的旁观输出抢屏幕、看起来"能输入"但其实
+        #     内容马上就要被冲掉）。
+        #   - 如果为 True 的那一刻本端已经在阻塞的 .prompt() 里，会用
+        #     app.exit(exception=...) 把它强制打断，抛出
+        #     _RemoteTurnInterrupt，交给上层 REPL 循环处理成"等待中"
+        #     展示，而不是让用户对着一个随时可能被打断的输入行打字。
+        self._remote_busy = threading.Event()
 
         # ── 阻塞输入期间的"定时补打印"线程 ──────────────────────────────
         # 背景：daemon connected 多客户端场景下，本端正停留在
@@ -782,6 +817,48 @@ class Terminal:
     # ═══════════════════════════════════════════════════════════════════════
     # 输入通道（阻塞，主线程调用）
     # ═══════════════════════════════════════════════════════════════════════
+
+    def request_input_lock(self, locked: bool) -> None:
+        """
+        线程安全地设置/清除"远端忙碌"标志（供 daemon.py 的 observer 线程
+        跨线程调用）。
+
+        locked=True：
+          1. 置位 self._remote_busy，此后 _read_line() 不会再开启新的
+             阻塞输入。
+          2. 如果本端此刻已经在阻塞的 ptk .prompt() 里，通过
+             loop.call_soon_threadsafe() 把 app.exit(exception=...) 安全
+             调度到 ptk 自己的事件循环线程上执行（不能跨线程直接调用
+             app 的方法——同样的理由见 _flush_pending_during_input() 里
+             对 run_in_terminal 的说明），强制其抛出 _RemoteTurnInterrupt，
+             .prompt() 调用方（_read_line）会原样把这个异常继续往上抛，
+             一路传到 daemon.py 的 REPL 主循环，由它改成展示"等待中"。
+
+        locked=False：
+          清除标志，允许 _read_line() 重新开启正常的阻塞输入。
+        """
+        if locked:
+            self._remote_busy.set()
+            app = self._active_ptk_app
+            if app is not None:
+                loop = getattr(app, "loop", None)
+                if loop is not None and not loop.is_closed():
+                    def _kick() -> None:
+                        try:
+                            if not getattr(app, "is_done", True):
+                                app.exit(exception=_RemoteTurnInterrupt())
+                        except Exception:
+                            pass
+                    try:
+                        loop.call_soon_threadsafe(_kick)
+                    except Exception:
+                        pass
+        else:
+            self._remote_busy.clear()
+
+    def is_input_locked(self) -> bool:
+        """当前是否处于"远端忙碌"锁定态（见 request_input_lock()）。"""
+        return self._remote_busy.is_set()
 
     def prompt_user(self, prompt_text: str = "") -> str:
         """
@@ -2464,6 +2541,13 @@ class Terminal:
             持有 app 引用、跨线程调用 invalidate() 即可，不需要也不应该
             直接调用 renderer 内部方法。
         """
+        # 远端忙碌（同一 session 里另一个客户端的 turn 正在处理）：不开启
+        # 新的阻塞输入，直接抛出 _RemoteTurnInterrupt，交给上层 REPL 循环
+        # 展示"等待中"，等对方 turn 结束、_remote_busy 被清除后再重新
+        # 调用 prompt_user()。见 request_input_lock() 的说明。
+        if self._remote_busy.is_set():
+            raise _RemoteTurnInterrupt()
+
         if not getattr(self, "_ptk_failed", False):
             try:
                 from prompt_toolkit.formatted_text import HTML
@@ -2479,17 +2563,29 @@ class Terminal:
                 try:
                     result = self._ptk_session.prompt(html_prompt)
                     return (result or "").strip()
+                except _RemoteTurnInterrupt:
+                    # 由 request_input_lock(True) 通过 app.exit(exception=...)
+                    # 触发：本端正打字的过程中，另一个客户端的 turn 开始了。
+                    # 原样往上抛，不在这里吞掉——daemon.py 的主循环需要知道
+                    # "这次没拿到真正的用户输入"，而不是把 None/空串当成
+                    # 用户提交了空消息处理。
+                    raise
                 finally:
                     self._active_ptk_app = None
             except ImportError:
                 pass  # 未安装 prompt_toolkit，直接降级
             except (KeyboardInterrupt, EOFError):
                 raise  # 由上层处理
+            except _RemoteTurnInterrupt:
+                raise
             except Exception:
                 # ptk 运行时异常（dumb terminal、Windows ConPTY 等），标记后降级
                 self._ptk_failed = True
 
-        # 降级：ANSI 提示符 + readline
+        # 降级：ANSI 提示符 + readline（无法跨线程安全打断阻塞的
+        # sys.stdin.readline()，只能保证"开始前"检查一次 _remote_busy；
+        # 已经在这里阻塞的情况下，只能等用户实际按回车提交后，由主循环
+        # 在下一次调用 prompt_user() 前的检查里补上"等待中"展示）。
         sys.stdout.write("\n")
         if prompt_text:
             sys.stdout.write(str(prompt_text))
