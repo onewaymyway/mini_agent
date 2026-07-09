@@ -352,9 +352,19 @@ class AgentRunner(threading.Thread):
 
                 # ── 在终端模拟显示 Web 端发来的用户输入 ──────────────────
                 # 让命令行侧看到 "You (web) ❯ <message>"，与正常 REPL 输入体验一致
-                _print_to_term(
-                    f"\n[bold green]You (web)[/bold green][bold cyan] ❯ [/bold cyan]{cmd.message}"
-                )
+                #
+                # [FIX] 这条消息同时也会作为 turn_start 事件广播给所有 SSE
+                # 订阅者，包括前台 --daemon-attach-console 场景下"attach 自己"
+                # 的 run_connected_repl（见 cli/daemon.py::_handle_observer_frame
+                # 的 turn_start 分支，同样会打印一遍 "You (web) ❯ <message>"）。
+                # 之前这里没有检查 _SUPPRESS_NATIVE_PRINT，导致 attach-console
+                # 模式下同一条用户输入被打印两次，且两边写终端还会互相打断、
+                # 造成内容错位/被吞。开启该开关后交给 attach 上来的
+                # run_connected_repl 唯一负责显示，这里不再重复打印。
+                if not is_suppress_native_print():
+                    _print_to_term(
+                        f"\n[bold green]You (web)[/bold green][bold cyan] ❯ [/bold cyan]{cmd.message}"
+                    )
 
                 # 注入 turn_id，让 OutputHook 知道当前轮
                 bridge.agent._http_turn_id = turn_id
@@ -469,9 +479,14 @@ class AgentRunner(threading.Thread):
                 clear_current_user()
 
                 # ── run_turn 完成后，提示命令行侧可继续输入 ────────────
-                _print_to_term(
-                    "[dim]─── Web 请求处理完毕，你可以继续在此输入 ───[/dim]"
-                )
+                # [FIX] 同上：attach-console 模式下这条提示没有实际意义
+                # （run_connected_repl 自己的输入循环会在 turn_done 后自然
+                # 恢复可输入状态，不需要额外提示），且如果不加判断会在这里
+                # 又打印一遍、和 observer 端的输出交错，一并纳入抑制开关。
+                if not is_suppress_native_print():
+                    _print_to_term(
+                        "[dim]─── Web 请求处理完毕，你可以继续在此输入 ───[/dim]"
+                    )
 
     def _drain_self_messages(self) -> None:
         """
