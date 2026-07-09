@@ -3130,7 +3130,24 @@ class Agent:
                     resp = client.stream(**stream_kwargs)
                     if not _reasoning_started[0] and resp.reasoning:
                         R.print_reasoning_header()
-                        R.console.print(resp.reasoning, style="dim")
+                        # [FIX] 之前这里直接调用 R.console.print(...)，绕过了
+                        # _install_output_hook() 打的补丁（只 patch 了
+                        # print_reasoning，没有 patch console.print），导致：
+                        # 1) 这段 reasoning 正文从未 emit 给 bridge/SSE，
+                        #    connected 客户端只能看到空的
+                        #    "── Reasoning ── ──────" 头尾、看不到内容；
+                        # 2) console.print() 直接同步写终端，绕开了
+                        #    Terminal 内部的单消费者渲染队列（self._q），
+                        #    在 daemon --daemon-attach-console 模式下会和
+                        #    同一进程里正在消费队列、渲染其他端事件的
+                        #    observer 线程产生真正的写终端竞态，表现为
+                        #    daemon 本地终端看到内容被截断/替换/错位，
+                        #    而走 SSE 的 connected 客户端不受影响（因为它
+                        #    压根没收到这段内容）。
+                        # 改用 R.print_reasoning()：既走了 hook（会被
+                        # emit_reasoning 广播出去），又是通过
+                        # term.stream_token() 走队列，线程安全。
+                        R.print_reasoning(resp.reasoning)
                     if _reasoning_started[0] or resp.reasoning:
                         R.print_reasoning_footer()
                     writer.flush()
@@ -3142,7 +3159,9 @@ class Agent:
                     )
                     if resp.reasoning:
                         R.print_reasoning_header()
-                        R.console.print(resp.reasoning, style="dim")
+                        # [FIX] 同上：改用 R.print_reasoning()，走 hook + 队列，
+                        # 而不是直接 R.console.print() 绕开广播和线程安全。
+                        R.print_reasoning(resp.reasoning)
                         R.print_reasoning_footer()
                     if resp.text:
                         R.print_assistant_prefix(agent_name=self.cfg.agent_name)
