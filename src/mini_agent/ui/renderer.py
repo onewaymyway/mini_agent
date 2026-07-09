@@ -94,10 +94,37 @@ def print_reasoning(token: str) -> None:
 
 
 def print_reasoning_header() -> None:
+    # [FIX] 同下面 print_reasoning_footer() 的说明：在开始 reasoning 之前，
+    # 也先 stream_end() 一次，把正文（或上一段 reasoning）可能还扣在
+    # _pending_stream 里的尾部字符先行 flush 掉，避免它们跟 reasoning 正文
+    # 的开头粘在一起、或者被延迟到更后面才冒出来。
+    term.stream_end()
     term.print("\n[dim]── Reasoning ──────────────────────────────[/dim]")
 
 
 def print_reasoning_footer() -> None:
+    # [FIX] term.stream_token()（print_reasoning() 内部用它输出 reasoning
+    # 正文）和 StreamWriter.write()（输出正文答案）共用同一套 tag-filtering
+    # 前瞻缓冲区（Terminal._pending_stream，为了识别跨 token 边界的
+    # <tool_use> 标签，会把"看起来像标签前缀"的尾部几个字符先扣住不发，
+    # 等下一个 token 或 stream_end() 时才决定要不要吐出来）。
+    #
+    # 之前整条调用链里唯一会触发 stream_end()（从而把这个缓冲区里剩下的
+    # 内容真正 flush 出来）的地方，是 agent.py::_do_single_call() 末尾的
+    # writer.flush()——但那是给"正文" StreamWriter 用的，且写在
+    # print_reasoning_footer() 之后才调用。结果就是：reasoning 正文最后
+    # 几个字符一直被扣在 _pending_stream 里没有真正输出，直到最后那次
+    # （语义上和 reasoning 毫无关系的）writer.flush() 才被动带出来——这时
+    # footer 分隔线、甚至下一轮的状态栏都已经打印过了，表现出来就是
+    # reasoning 结尾那几个字被挪到了 footer/状态栏之后才显示，daemon 和
+    # connected 客户端两边都能复现（因为问题出在事件生成的顺序本身，不是
+    # 某一端的渲染 bug）。
+    #
+    # 这里在打印 footer 分隔线之前，先显式 stream_end() 一次，确保
+    # reasoning 自己的这段流被正确收尾、缓冲区清空，footer 分隔线打印出来
+    # 的时候，reasoning 正文已经完整显示在它上面——不再依赖后面那次跟
+    # reasoning 无关的 writer.flush()。
+    term.stream_end()
     term.print("[dim]──────────────────────────────────────────[/dim]\n")
 
 
