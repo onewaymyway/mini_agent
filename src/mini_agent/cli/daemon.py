@@ -2302,7 +2302,29 @@ def run_connected_repl(
                 _mark_other_turn(turn_id, False)
 
             elif evt_type in ("turn_start", "tool_call", "tool_result", "tool_error", "info", "warning",
-                               "session_switched", "fs_change"):
+                               "session_switched", "fs_change", "reasoning", "skill_loaded"):
+                # [FIX] 之前这里漏掉了 "reasoning"（以及 "skill_loaded"），
+                # 导致旁观路径（本端不是这个 turn 的发起方，比如
+                # --daemon-attach-console 场景下看 web 端触发的 turn）下，
+                # print_reasoning_header()/print_reasoning()/
+                # print_reasoning_footer() 对应的 reasoning 事件既不会走
+                # "token" 分支（evt_type 不匹配），也不会走这里（不在元组
+                # 里），于是被整个 for/elif 链默默吞掉、什么都不做。
+                #
+                # 但 reasoning 的流式正文（marker 为空、只带 text 的那些
+                # 帧）在 _render_sse_event() 里是用 term.stream_token()
+                # 原地追加输出的——和上面 "token" 分支里正常答案用的是
+                # 同一个 stream_token()/_term 缓冲。旁观线程一旦在别的地方
+                # （比如权限审批、其它旁观事件的 term.print）间接触发了
+                # stream_token 的续写状态错乱，这段被吞掉判断路径之外、
+                # 实际仍会零散调用 stream_token 的 reasoning 文本，就可能
+                # 在没有 header/footer 分隔线、没有 turn_prefix_printed
+                # 记账的情况下，被拼接到当前正在显示的答案文本中间——这正是
+                # daemon 本地终端和 connected 客户端内容不一致、看起来像
+                # "内容被截断+接错内容"的根因。显式把 reasoning 纳入这里，
+                # 交给 _render_sse_event() 统一走带 header/footer 分隔线的
+                # 正常渲染路径（和 connected 客户端里"own turn"路径的处理
+                # 完全一致），问题才是真正被修复，而不是恰好没触发。
                 if evt_type == "turn_start":
                     # 别的客户端刚发起了一个新 turn：立刻锁定本端输入，
                     # 哪怕本端此刻正阻塞在 prompt_user() 里也会被强制
