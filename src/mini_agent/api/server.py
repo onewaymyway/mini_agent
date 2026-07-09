@@ -18,6 +18,34 @@ import time
 import traceback
 from contextlib import asynccontextmanager
 from pathlib import Path
+
+# ── 本地原生打印抑制开关 ──────────────────────────────────────────────────────
+# [daemon 前台 attach-console 专用] 默认 False：_install_output_hook() 打的
+# 补丁在广播事件给 SSE 的同时，也会照常调用 renderer.py 原本的
+# print_xxx()，让 daemon 进程自己的终端能看到实时输出——这对"detach 后台
+# 进程，输出只写到 daemon.log"和"没有额外 attach 机制"的场景是必须的。
+#
+# 但如果 daemon 前台进程另外起了一个"attach 自己"的 connected 客户端
+# （cli/daemon.py::run_connected_repl，通过 loopback HTTP 订阅 SSE 并渲染），
+# 两边都会打印同一份内容——一份来自这里的原生 print_xxx()，一份来自
+# run_connected_repl 的 observer 渲染——表现为终端上每条消息都出现两次。
+# 更麻烦的是，两边还会对同一个 permission_req/interaction_req 抢着做本地
+# 交互式应答，导致输入错位、"看似回答了又被判定已被其他端处理"这类怪状态。
+#
+# 开启此开关后，这里的 hook 只广播、不再自己 print，daemon 前台的显示
+# 完全交给 attach 上来的那个 run_connected_repl 负责——和任何其他 connect
+# 上来的外部客户端使用同一套渲染 + 输入协调机制，不会有重复或抢占。
+_SUPPRESS_NATIVE_PRINT = False
+
+
+def set_suppress_native_print(flag: bool) -> None:
+    global _SUPPRESS_NATIVE_PRINT
+    _SUPPRESS_NATIVE_PRINT = bool(flag)
+
+
+def is_suppress_native_print() -> bool:
+    return _SUPPRESS_NATIVE_PRINT
+
 from typing import Optional, Any
 
 import uvicorn
@@ -967,14 +995,16 @@ def _install_output_hook(bridge: AgentBridge) -> None:
     # "当前这一段输出是谁在说"，而不是自己瞎猜。
     _orig_print_assistant_prefix = mod.print_assistant_prefix
     def _print_assistant_prefix(agent_name: str = "orzooo") -> None:
-        _orig_print_assistant_prefix(agent_name)
+        if not _SUPPRESS_NATIVE_PRINT:
+            _orig_print_assistant_prefix(agent_name)
         bridge.emit_agent_prefix(agent_name, turn_id=_tid())
     mod.print_assistant_prefix = _print_assistant_prefix
 
     # ── print_markdown（非流式回复的最终文本走这里）──────────────────────
     _orig_print_markdown = mod.print_markdown
     def _print_markdown(md: str) -> None:
-        _orig_print_markdown(md)
+        if not _SUPPRESS_NATIVE_PRINT:
+            _orig_print_markdown(md)
         bridge.emit_token(md, turn_id=_tid())
     mod.print_markdown = _print_markdown
 
@@ -982,7 +1012,8 @@ def _install_output_hook(bridge: AgentBridge) -> None:
     _OrigStreamWriter = mod.StreamWriter
     class _PatchedStreamWriter(_OrigStreamWriter):
         def write(self, token: str) -> None:
-            super().write(token)
+            if not _SUPPRESS_NATIVE_PRINT:
+                super().write(token)
             bridge.emit_token(token, turn_id=_tid())
     mod.StreamWriter = _PatchedStreamWriter
 
@@ -991,33 +1022,38 @@ def _install_output_hook(bridge: AgentBridge) -> None:
     # 内容的根因，见 bridge.py::emit_reasoning() 的详细说明。
     _orig_print_reasoning = mod.print_reasoning
     def _print_reasoning(token: str) -> None:
-        _orig_print_reasoning(token)
+        if not _SUPPRESS_NATIVE_PRINT:
+            _orig_print_reasoning(token)
         bridge.emit_reasoning(turn_id=_tid(), text=token)
     mod.print_reasoning = _print_reasoning
 
     _orig_print_reasoning_header = mod.print_reasoning_header
     def _print_reasoning_header() -> None:
-        _orig_print_reasoning_header()
+        if not _SUPPRESS_NATIVE_PRINT:
+            _orig_print_reasoning_header()
         bridge.emit_reasoning(turn_id=_tid(), marker="start")
     mod.print_reasoning_header = _print_reasoning_header
 
     _orig_print_reasoning_footer = mod.print_reasoning_footer
     def _print_reasoning_footer() -> None:
-        _orig_print_reasoning_footer()
+        if not _SUPPRESS_NATIVE_PRINT:
+            _orig_print_reasoning_footer()
         bridge.emit_reasoning(turn_id=_tid(), marker="end")
     mod.print_reasoning_footer = _print_reasoning_footer
 
     # ── print_skill_loaded ──────────────────────────────────────────────────
     _orig_print_skill_loaded = mod.print_skill_loaded
     def _print_skill_loaded(name: str) -> None:
-        _orig_print_skill_loaded(name)
+        if not _SUPPRESS_NATIVE_PRINT:
+            _orig_print_skill_loaded(name)
         bridge.emit_skill_loaded(name, turn_id=_tid())
     mod.print_skill_loaded = _print_skill_loaded
 
     # ── print_tool_call ───────────────────────────────────────────────────
     _orig_print_tool_call = mod.print_tool_call
     def _print_tool_call(tool_name: str, tool_input: dict, **kw) -> None:
-        _orig_print_tool_call(tool_name, tool_input, **kw)
+        if not _SUPPRESS_NATIVE_PRINT:
+            _orig_print_tool_call(tool_name, tool_input, **kw)
         # tool_executor.py 调用 print_tool_call() 时传了
         # verbose=self.cfg.verbose（决定本地终端是否展示完整入参 JSON）。
         # 之前这里的 **kw 被吃掉、从未转发给 emit_tool_call()，导致
@@ -1032,14 +1068,16 @@ def _install_output_hook(bridge: AgentBridge) -> None:
     # ── print_tool_result ─────────────────────────────────────────────────
     _orig_print_tool_result = mod.print_tool_result
     def _print_tool_result(tool_name: str, result: str, **kw) -> None:
-        _orig_print_tool_result(tool_name, result, **kw)
+        if not _SUPPRESS_NATIVE_PRINT:
+            _orig_print_tool_result(tool_name, result, **kw)
         bridge.emit_tool_result(tool_name, str(result), turn_id=_tid())
     mod.print_tool_result = _print_tool_result
 
     # ── print_tool_error ──────────────────────────────────────────────────
     _orig_print_tool_error = mod.print_tool_error
     def _print_tool_error(tool_name: str, error: str, **kw) -> None:
-        _orig_print_tool_error(tool_name, error, **kw)
+        if not _SUPPRESS_NATIVE_PRINT:
+            _orig_print_tool_error(tool_name, error, **kw)
         bridge.emit(AgentEvent(
             type=EventType.TOOL_ERROR,
             turn_id=_tid(),
@@ -1052,7 +1090,8 @@ def _install_output_hook(bridge: AgentBridge) -> None:
         _orig = getattr(mod, _fname)
         def _make(orig, etype):
             def _patched(msg: str, **kw) -> None:
-                orig(msg, **kw)
+                if not _SUPPRESS_NATIVE_PRINT:
+                    orig(msg, **kw)
                 bridge.emit(AgentEvent(type=etype, data={"message": str(msg)}))
             return _patched
         setattr(mod, _fname, _make(_orig, _etype))
