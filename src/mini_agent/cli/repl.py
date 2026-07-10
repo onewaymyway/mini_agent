@@ -255,6 +255,11 @@ def _handle_slash(cmd: str, agent: Agent, skill_loader: SkillLoader) -> None:
         key = "RAW_OUTPUT_ON" if new_state else "RAW_OUTPUT_OFF"
         R.print_info(pm.fragment("cli_messages", key))
 
+    elif name in ("reasoning", "show-reasoning", "show_reasoning"):
+        agent.cfg.show_reasoning = not agent.cfg.show_reasoning
+        key = "REASONING_ON" if agent.cfg.show_reasoning else "REASONING_OFF"
+        R.print_info(pm.fragment("cli_messages", key))
+
     elif name in ("turnjudge", "turn-judge", "turn_judge"):
         _handle_turn_judge_cmd(parts[1:], agent)
 

@@ -25,6 +25,8 @@ RAW_OUTPUT_ON: Raw output mode: ON (showing all model output, including <tool_us
 TURN_JUDGE_ON: TurnJudge: ON (轮次结束前将自动核查是否需要真人介入)
 TURN_JUDGE_OFF: TurnJudge: OFF (轮次结束将直接等待真人输入，不做自动核查)
 RAW_OUTPUT_OFF: Raw output mode: OFF (<tool_use> blocks hidden again)
+REASONING_ON: Reasoning display: ON (model's thinking/reasoning process will be shown)
+REASONING_OFF: Reasoning display: OFF (model's thinking/reasoning process will be hidden)
 SKILL_ACTIVATED: Skill '{name}' activated.
 SKILL_DEACTIVATED: Skill '{name}' deactivated.
 SKILL_NOT_FOUND: Skill '{name}' not found. Use /skills to see available skill names.

@@ -54,6 +54,7 @@ def build_parser() -> argparse.ArgumentParser:
               /stats             Show session statistics
               /verbose           Toggle verbose tool output
               /raw-output        Toggle showing raw model output (incl. <tool_use> blocks)
+              /reasoning         Toggle showing the model's reasoning/thinking process (default: on)
               /model <name>      Switch model mid-session
               /compact           Compress history into a summary
               /goal <text>       Set a goal; agent negotiates acceptance criteria then runs until done
@@ -111,6 +112,9 @@ def build_parser() -> argparse.ArgumentParser:
                    help="Disable streaming token filtering: show the model's raw output "
                         "verbatim, including <tool_use>...</tool_use> blocks that are normally "
                         "hidden (overrides MINI_AGENT_RAW_OUTPUT env)")
+    p.add_argument("--hide-reasoning", dest="show_reasoning", action="store_false", default=None,
+                   help="Do not print the model's reasoning/thinking process "
+                        "(overrides MINI_AGENT_SHOW_REASONING env; toggle at runtime with /reasoning)")
     p.add_argument("--yes", "-y", action="store_true", default=None, help="Auto-approve all tool calls")
     p.add_argument("--no-stream", action="store_true", help="Disable streaming")
     p.add_argument("--max-turns", type=int, default=None, help="Max agentic turns per user message")

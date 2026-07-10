@@ -79,6 +79,7 @@ def load_config(
     sandbox: Optional[bool] = None,
     simple_mode: Optional[bool] = None,
     raw_output: Optional[bool] = None,
+    show_reasoning: Optional[bool] = None,
     auto_approve: Optional[bool] = None,
     model: Optional[str] = None,
     llm_provider: Optional[str] = None,
@@ -266,6 +267,10 @@ def load_config(
         "1", "true", "yes", "on",
     )
     _raw_output   = bool(_fb("raw_output",   raw_output,   _raw_output_env))
+    _show_reasoning_env = os.environ.get("MINI_AGENT_SHOW_REASONING", "").strip().lower() not in (
+        "0", "false", "no", "off",
+    ) if os.environ.get("MINI_AGENT_SHOW_REASONING") else True
+    _show_reasoning = bool(_fb("show_reasoning", show_reasoning, _show_reasoning_env))
     _auto_approve = bool(_fb("yes",          auto_approve, False))
     _extra_system = _f("system", extra_system) or ""
     _max_llm_calls_v = _f("max_llm_calls", max_llm_calls)
@@ -677,6 +682,7 @@ def load_config(
         sandbox=_sandbox,
         simple_mode=_simple_mode,
         raw_output=_raw_output,
+        show_reasoning=_show_reasoning,
         auto_approve=_auto_approve,
         claude_md_content=claude_md,
         system_extra=_extra_system,

@@ -18,7 +18,8 @@
   "artifact_auto_detect_enabled": false,
   "max_llm_calls": 4,
   "llm_retry_delay":30,
-
+  "show_reasoning":false,
+  
   "web_search": {
     "provider": "duckduckgo",
     "api_key": "",

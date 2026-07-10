@@ -718,6 +718,7 @@ class AppConfig:
     sandbox: bool = False
     simple_mode: bool = False
     raw_output: bool = False
+    show_reasoning: bool = True   # False 时不打印模型的 reasoning/思考过程（/reasoning 切换）
     auto_approve: bool = False
     stream: bool = True
 

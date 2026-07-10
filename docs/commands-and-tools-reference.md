@@ -168,6 +168,7 @@ mini-agent --retry-backoff linear --retry-backoff-step 60 --retry-backoff-max 30
 | `/memory` | 立即在后台生成/刷新 session 摘要 + 写入长期记忆 + 刷新用户画像（跳过轮次间隔门槛），需 `--memory` 启用；详见 [记忆管理指南](memory-management-guide.md) |
 | `/profile` | 立即在后台刷新用户画像（跳过刷新间隔），需在 `agent_config.json` 中设置 `profile_enabled: true`（无对应 CLI flag）；详见 [用户画像系统指南](user-profile-guide.md) |
 | `/raw-output` | 切换 raw output 模式（Toggle）：开启后工具调用结果不截断传给 LLM，也不截断终端显示；详见 [Raw Output 模式说明](raw-output-mode-guide.md) |
+| `/reasoning` | 切换是否打印模型的 reasoning/思考过程（Toggle，默认开启）。对应 `AppConfig.show_reasoning`，可用 `--hide-reasoning` CLI 参数或 `agent_config.json` 里的 `"show_reasoning": false` 在启动时就关闭 |
 | `/reload` | 强制热重载 Skills 和 Agent Profiles（跳过 debounce，立即重扫磁盘）；详见 [热重载机制说明](hot-reload-guide.md) |
 | `exit` / `quit` | 退出程序 |
 

@@ -173,6 +173,7 @@ def _main_inner() -> None:
         sandbox=args.sandbox,
         simple_mode=getattr(args, "simple_mode", None),
         raw_output=getattr(args, "raw_output", None),
+        show_reasoning=getattr(args, "show_reasoning", None),
         auto_approve=args.yes,
         model=args.model,
         llm_provider=getattr(args, "provider", None),
@@ -463,34 +464,19 @@ def _main_inner() -> None:
         import signal as _signal
         import threading as _threading
 
-        # [FIX] daemon 模式下 permission/interaction 的本地-CLI-输入路径
-        # 和 HTTP/SSE 路径本来就是"双路竞速，谁先答算谁的"设计——但前台
-        # attach-console 场景下，daemon 自己也会作为一个 loopback HTTP
-        # 客户端 attach 自己（见下面 run_connected_repl），它走的正是
-        # HTTP 路径。如果同时把本地 CLI 输入路径也打开（headless=False），
-        # 就会出现"同一个终端里，两套机制同时在读同一个 stdin"——attach
-        # console 自己的输入循环、以及 permissions.py/interaction.py 的
-        # 本地 readline，会互相抢字符，且已经在别处 attach 时收到的
-        # confirm 答案会和本地路径的"决定"互相冒领（"看似回答了又被判定
-        # 已被其他端处理"）。因此这里统一保持 headless=True：所有
-        # 审批/交互都走 HTTP，attach 上来的 run_connected_repl 是唯一
-        # 消费者，不会有第二个本地消费者跟它抢。
-        from mini_agent.permissions import set_headless_mode
-        set_headless_mode(True)
-
+        # [FIX] 之前这里无条件 set_headless_mode(True)，理由（后台 detach
+        # 进程没有真正终端）只对 detach 模式成立。--daemon-attach-console
+        # （只有前台、不带 --detach 时才会被 cmd_daemon_start 附加）意味着
+        # 当前进程有一个真实 tty：permissions.py::_prompt_with_http() 和
+        # interaction.py::ask() 本来就设计成"本地 CLI 输入 + HTTP 双路
+        # 竞速"，这条本地路径靠的正是 sys.stdin.isatty()／_HEADLESS_MODE
+        # 判断——foreground 场景下应该保持 False，让本地终端直接参与审批/
+        # 回答交互，而不是被强制退化成"只能等其他客户端处理"。
+        # detach（真正的后台进程，stdout/stderr 重定向到 daemon.log，没有
+        # 可用 stdin）继续保持 headless，避免白白卡到超时。
         attach_console = getattr(args, "daemon_attach_console", False)
-        if attach_console:
-            # [FIX] api/server.py::_install_output_hook() 打的补丁默认
-            # "广播的同时也在本地原样 print 一遍"——这对 detach 后台进程
-            # （输出只能靠这条路径写进 daemon.log）是必须的，但前台
-            # attach-console 场景下，daemon 马上要把自己当成一个 loopback
-            # HTTP 客户端 attach 自己（run_connected_repl 的 observer 会
-            # 重新渲染同一份广播内容），两边都打印就成了"同一条消息显示
-            # 两遍"。开启这个开关后，本地 hook 只广播、不再自己 print，
-            # 显示完全交给 attach 上来的那个 run_connected_repl，和任何
-            # 其他 connect 上来的外部客户端使用同一套渲染逻辑，不会重复。
-            from mini_agent.api.server import set_suppress_native_print
-            set_suppress_native_print(True)
+        from mini_agent.permissions import set_headless_mode
+        set_headless_mode(not attach_console)
 
         # 写入 PID 文件
         try:
@@ -518,48 +504,76 @@ def _main_inner() -> None:
 
         R.print_info("[daemon] Daemon ready. Ctrl-C or SIGTERM to stop.")
 
-        # [FIX] 前台（非 --detach）daemon 进程之前只是在这里裸等信号：
-        # 不读用户输入，也看不到其他客户端触发的 turn/tool_call/goal
-        # 协商等内容。--daemon-attach-console（只在前台 exec 时由
-        # cmd_daemon_start 附加）意味着当前进程有一个真实终端——这种情况
-        # 下把 daemon 自己也变成一个 attach 到自己（loopback HTTP）的
-        # connected 客户端，复用 run_connected_repl()（'mini-agent daemon
-        # connect' 用的那一整套 SSE 渲染 + 双路审批/交互 + 输入循环），
-        # 效果上前台终端与任何其他 connect 上来的客户端完全对等。
-        # 上面的 set_suppress_native_print(True) 确保不会和本地 hook
-        # 重复渲染；set_headless_mode(True) 确保审批/交互只有这一个
-        # 消费者，不会有第二路本地输入抢答。
-        # auto_session_id/quiet_connect：daemon 早就已经在这个 session 上
-        # 跑着 Agent 了，不需要再弹一遍"最近 session 列表"菜单。
+        # [FIX #1] 前台（非 --detach）daemon 进程之前只是在这里裸等信号：
+        # 不读用户输入。已解决。
+        #
+        # [FIX #2 / 本次修正] 第一版修复直接复用了 run_connected_repl()——
+        # 那一整套是为"从另一个终端 connect 上来的外部客户端"设计的，
+        # 会另起一个 SSE 观察者线程，把同一个 session 的所有事件重新渲染
+        # 一遍。但 api/server.py::_install_output_hook() 这个 monkey-patch
+        # 本来就是"daemon 进程自己（这条终端）先原样 print 一遍，再顺带
+        # 广播给 HTTP/SSE 客户端"——也就是说 daemon 自己的终端从来不需要
+        # 额外订阅 SSE 才能看到内容，它本来就是"第一现场"。复用
+        # run_connected_repl 相当于又订阅了一遍自己已经在打印的东西，
+        # 表现出来就是同一条内容打印两遍（一遍无前缀、一遍
+        # "[其他终端]" 前缀），且 interaction_req/permission_req 这类
+        # "谁先响应算谁的"交互，daemon 自己的本地路径（见上面
+        # set_headless_mode(False)）和这个多余的 observer 路径又会互相
+        # 抢——不是"和 attach 的客户端显示一样"，而是画蛇添足。
+        #
+        # 正确做法：daemon 前台终端不需要 observer/渲染，只需要"能输入"。
+        # 输入仍然通过本地 loopback HTTP 提交（/v1/chat，与其他客户端走
+        # 同一条 AgentRunner 队列，避免多线程直接并发调用 agent.run_turn()
+        # 带来的状态竞争），但提交后只静默等待这一轮结束（不注册任何
+        # token/tool_call 等回调——那些内容已经由本地 hook 原样打印过了），
+        # 结束后再读下一行输入。期间出现的权限审批/交互提问，走的是上面
+        # 打开的"本地 CLI + HTTP 双路"，在同一个终端里直接问、直接答，
+        # 不会被 observer 抢答，也不会重复打印。
         try:
             if attach_console:
-                from mini_agent.cli.daemon import _read_daemon_info, run_connected_repl
+                from mini_agent.cli.daemon import DaemonClient, _read_daemon_info
+                from mini_agent.ui.terminal import get_terminal
 
                 daemon_info = _read_daemon_info(project_root) or {
                     "pid": os.getpid(),
                     "http_port": http_port,
                     "project_root": str(project_root),
-                    "agent_name": getattr(cfg, "agent_name", None),
                 }
+                _client = DaemonClient(
+                    daemon_info["http_port"], token=None,
+                    project_root=daemon_info.get("project_root") or project_root,
+                )
+                _term = get_terminal()
 
-                # 阻塞的交互循环放独立线程，主线程继续 wait，这样 SIGTERM
-                # （比如外部 'mini-agent daemon stop'）依然能正常触发
-                # stop_event 并走到下面统一的关停逻辑，不会被 input() 卡住。
                 def _console_worker() -> None:
                     try:
-                        run_connected_repl(
-                            daemon_info,
-                            token=None,
-                            auto_session_id=agent.session_id,
-                            quiet_connect=True,
-                        )
+                        while not stop_event.is_set():
+                            try:
+                                line = _term.prompt_user("\n> ")
+                            except (KeyboardInterrupt, EOFError):
+                                break
+                            if line is None:
+                                break
+                            line = line.strip()
+                            if not line:
+                                continue
+                            if line in ("exit", "quit", ":q"):
+                                break
+                            turn_id = _client.send_message(line, session_id=agent.session_id)
+                            if not turn_id:
+                                _term.print("[red][daemon] 消息提交失败[/red]")
+                                continue
+                            # 静默等待这一轮结束——内容已经由本地
+                            # output hook 原样打印过，这里不传任何回调，
+                            # 单纯阻塞到 turn_done 以便知道何时可以再次
+                            # 提示输入。
+                            _client.stream_output(turn_id)
                     except Exception as _mini_agent_exc:
                         from mini_agent.errors import log_exception
                         log_exception(_mini_agent_exc, where='mini_agent.cli.app')
                     finally:
-                        # 用户在控制台里输入 exit/Ctrl-C 退出了交互循环，
-                        # 等价于要求关停整个 daemon（前台进程本来就是
-                        # "这个终端就是 daemon"的模型）。
+                        # 用户退出了输入循环，等价于要求关停整个 daemon——
+                        # 前台进程本来就是"这个终端就是 daemon"的模型。
                         stop_event.set()
 
                 _console_thread = _threading.Thread(
@@ -568,7 +582,7 @@ def _main_inner() -> None:
                 _console_thread.start()
 
             # 持续等待，直到收到停止信号（SIGTERM/SIGINT，或 attach 控制台
-            # 里用户退出了交互循环）
+            # 里用户退出了输入循环）
             while not stop_event.is_set():
                 stop_event.wait(timeout=5.0)
         finally:
