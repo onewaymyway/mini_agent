@@ -896,6 +896,7 @@ python -m pytest tests/ -q
 - [自我演化 SubAgent 信息继承指南（Stage 3.3）](docs/self-evolution-stage3-3-guide.md) — **新增**：skill 继承/工具缓存共享/lesson 回流
 - [Workdir/Global 知识层指南（Stage 4 & 5）](docs/self-evolution-stage4-5-guide.md) — **新增**：W2 项目知识层（project.json/timeline/open_threads）+ W3 跨项目知识层（self_profile/cross_project_index/activity_log）
 - [观察性系统指南（Stage 6）](docs/observability-guide.md) — **新增**：traces.jsonl 时序追踪 / `/diagnostics` 端点 / k-σ 异常检测 / 工具调用因果链（error_category/resolves_seq）
+- [日志保存机制指南](docs/logging-mechanisms-guide.md) — **新增**：系统梳理全项目所有日志/审计流（错误日志/LLM调试日志/daemon控制台日志/traces/行为事件/知识编年目录等）的落盘位置、写入机制与已知缺口
 - [Phase G 后台循环指南（Stage 8）](docs/self-evolution-phase-g-guide.md) — **新增**：剪枝候选 / 能力地图 / Scope 晋升候选 / 节奏治理，`/evolve phase-g` 命令
 - [图书馆式知识索引指南](docs/library-index-guide.md) — **新增**：分类树自动生长/合并 + 实体目录（冲突检测/去噪合并）+ 两步检索 + 检索反馈 + 人类纠正→标记过时闭环 + 时间线查询，`/evolve timeline` 命令
 - [Stage 9 自主运行时指南](docs/self-evolution-stage9-guide.md) — **新增**：常驻守护进程 / Goal Backlog / 三档位 AutonomousLoop / 资源仲裁 / `mini-agent daemon` 命令
