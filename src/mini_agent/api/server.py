@@ -397,8 +397,27 @@ class AgentRunner(threading.Thread):
                     def _run_slash() -> None:
                         _handle_slash(_stripped, bridge.agent, getattr(bridge.agent, "skill_loader", None))
 
+                    # ── 实时中继（daemon 模式命令行客户端显示不全 修复）──
+                    # 之前这里只在 fn() 全部跑完后拿到整段 result，一次性
+                    # 通过 turn_done 事件发出去——connected 客户端要么完全
+                    # 不处理这个字段（历史 bug，已在 cli/daemon.py 修复），
+                    # 要么长耗时命令执行期间完全没有任何反馈（"卡住了"的
+                    # 观感）。现在用 run_captured(on_line=...) 把命令产生的
+                    # 每一行输出实时转发成 command_output 事件；配合下面
+                    # _SUPPRESS_TYPED_BROADCAST_DURING_CAPTURE（见其定义处
+                    # 说明），期间 print_info/print_warning 等类型化事件
+                    # 不再重复广播一次，避免同一行内容被显示两遍。turn_done
+                    # 的 text 字段仍然保留完整文本，作为客户端一条实时事件
+                    # 都没收到时（比如命令执行期间掉线重连）的兜底。
+                    def _relay_line(_line: str, _tid=turn_id) -> None:
+                        try:
+                            bridge.emit_command_output(_line, turn_id=_tid)
+                        except Exception as _mini_agent_exc:
+                            from mini_agent.errors import log_exception
+                            log_exception(_mini_agent_exc, where='mini_agent.api.server')
+
                     try:
-                        result = _term_singleton.run_captured(_run_slash).strip()
+                        result = _term_singleton.run_captured(_run_slash, on_line=_relay_line).strip()
                     except Exception as _cmd_e:
                         result = f"[error] command failed: {_cmd_e}"
                     if not result:
@@ -1002,6 +1021,27 @@ def _install_output_hook(bridge: AgentBridge) -> None:
     def _tid() -> str:
         return getattr(bridge.agent, "_http_turn_id", "") if bridge.agent else ""
 
+    # ── capture 模式下抑制类型化事件的重复广播 ──────────────────────────
+    # 背景：run_captured() 现在支持 on_line 回调，把 slash 命令执行期间的
+    # 每一行输出实时转发成 command_output 事件（见 api/server.py 里调用
+    # run_captured(..., on_line=_relay_line) 的地方）。但下面这些
+    # print_info/print_warning/print_tool_call/... 补丁本来就会在*任何*
+    # 时候（包括 run_captured() 期间）把同一次调用广播成一条类型化事件
+    # （info/warning/tool_call/...）——如果不做区分，slash 命令里每一条
+    # R.print_info() 之类的调用都会被广播两次：一次是这里的类型化事件，
+    # 一次是 command_output 的实时中继，客户端就会看到同一行内容显示
+    # 两遍。用 term._capture_mode + term._capture_relay 是否同时为真
+    # （即"正处于一个设置了实时中继的 run_captured() 调用中"）来判断要不要
+    # 跳过这里的广播——只跳过*广播*，本地渲染（_orig_xxx 调用）永远不受
+    # 影响，daemon 本地终端的显示效果不变。
+    def _in_relayed_capture() -> bool:
+        try:
+            return bool(_term_singleton._capture_mode) and _term_singleton._capture_relay is not None
+        except Exception:
+            return False
+
+    from mini_agent.ui.terminal import term as _term_singleton
+
     # ── print_assistant_prefix（"XXX ❯ " 前缀，标识当前是谁在说话）────────
     # [SYS-AGENT-PREFIX] 主 Agent 和 GoalJudge/TurnJudge 等内部子 Agent 都会
     # 各自带着自己的 cfg.agent_name 调用这个函数，之前完全没转发给 SSE，
@@ -1012,7 +1052,8 @@ def _install_output_hook(bridge: AgentBridge) -> None:
     def _print_assistant_prefix(agent_name: str = "orzooo") -> None:
         if not _SUPPRESS_NATIVE_PRINT:
             _orig_print_assistant_prefix(agent_name)
-        bridge.emit_agent_prefix(agent_name, turn_id=_tid())
+        if not _in_relayed_capture():
+            bridge.emit_agent_prefix(agent_name, turn_id=_tid())
     mod.print_assistant_prefix = _print_assistant_prefix
 
     # ── print_markdown（非流式回复的最终文本走这里）──────────────────────
@@ -1020,7 +1061,8 @@ def _install_output_hook(bridge: AgentBridge) -> None:
     def _print_markdown(md: str) -> None:
         if not _SUPPRESS_NATIVE_PRINT:
             _orig_print_markdown(md)
-        bridge.emit_token(md, turn_id=_tid())
+        if not _in_relayed_capture():
+            bridge.emit_token(md, turn_id=_tid())
     mod.print_markdown = _print_markdown
 
     # ── StreamWriter.write（流式 token）──────────────────────────────────
@@ -1039,21 +1081,24 @@ def _install_output_hook(bridge: AgentBridge) -> None:
     def _print_reasoning(token: str) -> None:
         if not _SUPPRESS_NATIVE_PRINT:
             _orig_print_reasoning(token)
-        bridge.emit_reasoning(turn_id=_tid(), text=token)
+        if not _in_relayed_capture():
+            bridge.emit_reasoning(turn_id=_tid(), text=token)
     mod.print_reasoning = _print_reasoning
 
     _orig_print_reasoning_header = mod.print_reasoning_header
     def _print_reasoning_header() -> None:
         if not _SUPPRESS_NATIVE_PRINT:
             _orig_print_reasoning_header()
-        bridge.emit_reasoning(turn_id=_tid(), marker="start")
+        if not _in_relayed_capture():
+            bridge.emit_reasoning(turn_id=_tid(), marker="start")
     mod.print_reasoning_header = _print_reasoning_header
 
     _orig_print_reasoning_footer = mod.print_reasoning_footer
     def _print_reasoning_footer() -> None:
         if not _SUPPRESS_NATIVE_PRINT:
             _orig_print_reasoning_footer()
-        bridge.emit_reasoning(turn_id=_tid(), marker="end")
+        if not _in_relayed_capture():
+            bridge.emit_reasoning(turn_id=_tid(), marker="end")
     mod.print_reasoning_footer = _print_reasoning_footer
 
     # ── print_skill_loaded ──────────────────────────────────────────────────
@@ -1061,7 +1106,8 @@ def _install_output_hook(bridge: AgentBridge) -> None:
     def _print_skill_loaded(name: str) -> None:
         if not _SUPPRESS_NATIVE_PRINT:
             _orig_print_skill_loaded(name)
-        bridge.emit_skill_loaded(name, turn_id=_tid())
+        if not _in_relayed_capture():
+            bridge.emit_skill_loaded(name, turn_id=_tid())
     mod.print_skill_loaded = _print_skill_loaded
 
     # ── print_tool_call ───────────────────────────────────────────────────
@@ -1074,10 +1120,11 @@ def _install_output_hook(bridge: AgentBridge) -> None:
         # 之前这里的 **kw 被吃掉、从未转发给 emit_tool_call()，导致
         # connected 客户端永远收不到这个信息、只能展示成"非 verbose"
         # 效果——即便 daemon 本地明明是 verbose 模式。这里显式取出并透传。
-        bridge.emit_tool_call(
-            tool_name, tool_input, turn_id=_tid(),
-            verbose=bool(kw.get("verbose", False)),
-        )
+        if not _in_relayed_capture():
+            bridge.emit_tool_call(
+                tool_name, tool_input, turn_id=_tid(),
+                verbose=bool(kw.get("verbose", False)),
+            )
     mod.print_tool_call = _print_tool_call
 
     # ── print_tool_result ─────────────────────────────────────────────────
@@ -1085,7 +1132,8 @@ def _install_output_hook(bridge: AgentBridge) -> None:
     def _print_tool_result(tool_name: str, result: str, **kw) -> None:
         if not _SUPPRESS_NATIVE_PRINT:
             _orig_print_tool_result(tool_name, result, **kw)
-        bridge.emit_tool_result(tool_name, str(result), turn_id=_tid())
+        if not _in_relayed_capture():
+            bridge.emit_tool_result(tool_name, str(result), turn_id=_tid())
     mod.print_tool_result = _print_tool_result
 
     # ── print_tool_error ──────────────────────────────────────────────────
@@ -1093,11 +1141,12 @@ def _install_output_hook(bridge: AgentBridge) -> None:
     def _print_tool_error(tool_name: str, error: str, **kw) -> None:
         if not _SUPPRESS_NATIVE_PRINT:
             _orig_print_tool_error(tool_name, error, **kw)
-        bridge.emit(AgentEvent(
-            type=EventType.TOOL_ERROR,
-            turn_id=_tid(),
-            data={"tool_name": tool_name, "message": str(error)},
-        ))
+        if not _in_relayed_capture():
+            bridge.emit(AgentEvent(
+                type=EventType.TOOL_ERROR,
+                turn_id=_tid(),
+                data={"tool_name": tool_name, "message": str(error)},
+            ))
     mod.print_tool_error = _print_tool_error
 
     # ── print_info / print_warning ────────────────────────────────────────
@@ -1107,7 +1156,8 @@ def _install_output_hook(bridge: AgentBridge) -> None:
             def _patched(msg: str, **kw) -> None:
                 if not _SUPPRESS_NATIVE_PRINT:
                     orig(msg, **kw)
-                bridge.emit(AgentEvent(type=etype, data={"message": str(msg)}))
+                if not _in_relayed_capture():
+                    bridge.emit(AgentEvent(type=etype, data={"message": str(msg)}))
             return _patched
         setattr(mod, _fname, _make(_orig, _etype))
 

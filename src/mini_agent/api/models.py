@@ -48,6 +48,19 @@ class EventType(str, Enum):
     INFO             = "info"            # 普通信息（print_info 等）
     WARNING          = "warning"
     INTERRUPT        = "interrupt"       # 执行被中断
+    # slash 命令捕获输出（Stage: daemon 模式命令行客户端显示不全 修复）
+    # run_captured() 执行期间产生的每一行输出，实时逐行转发。之前 slash
+    # 命令（/evolve /skills /stats 等）的完整输出只在 run_captured() 结束
+    # 后整段塞进 turn_done.text 里发一次，connected 客户端完全没处理这个
+    # 字段（见 cli/daemon.py 里的历史 bug），且即便处理了，因为期间
+    # print_info/print_warning 等已经各自广播过一次，会造成同一行内容被
+    # 显示两次。改为：run_captured() 期间统一用这一种事件类型实时逐行转发
+    # （见 ui/terminal.py::run_captured 的 on_line 回调），info/warning 等
+    # 具体类型化事件在 capture 模式下改为不重复广播（见 api/server.py
+    # _install_output_hook 里对 term._capture_mode 的判断），从根上避免
+    # 双重发送；turn_done.text 仍然保留完整文本，作为"这一路事件一条都没
+    # 收到"时的兜底（例如客户端在命令执行期间掉线重连、或老版本客户端）。
+    COMMAND_OUTPUT   = "command_output"
     # 自主执行
     OBJECTIVE_PROGRESS = "objective_progress"  # Objective 步骤推进（daemon 自主执行）
 

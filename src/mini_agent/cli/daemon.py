@@ -621,7 +621,7 @@ class DaemonClient:
             "tool_call", "tool_result", "tool_error",
             "info", "warning", "permission_req", "permission_done",
             "session_switched", "fs_change", "reasoning", "skill_loaded",
-            "agent_prefix",
+            "agent_prefix", "command_output",
         ):
             # 之前这里被静默忽略——是 connected 模式看不到工具调用过程的根因。
             # 统一转发给 on_event，由调用方决定怎么渲染（见 run_connected_repl
@@ -2327,9 +2327,39 @@ def run_connected_repl(
                     _term.print(_cur_agent_prefix_markup(), end="")
                 _term.stream_token(text)
 
+            elif evt_type == "command_output":
+                # slash 命令输出的实时中继（见 api/server.py::run_captured
+                # on_line 回调 → bridge.emit_command_output()）。逐行打印，
+                # 并且和 token 分支一样记入 turn_prefix_printed——这样
+                # 下面 turn_done 分支的兜底判断（"这个 turn 是否已经显示过
+                # 内容"）才能正确识别到"已经实时显示过了，不用再把
+                # turn_done.text 整段重复打印一遍"。
+                _line = payload.get("line", "")
+                if _term is None:
+                    return
+                if turn_id not in turn_prefix_printed:
+                    turn_prefix_printed.add(turn_id)
+                    _term.print(f"{prefix}[dim](command output)[/dim]")
+                from rich.text import Text as _CapturedText
+                _term.print(_CapturedText(_line))
+
             elif evt_type == "turn_done":
                 if turn_id in turn_prefix_printed and _term is not None:
                     _term.stream_end()
+                # 修复：对方发起的 slash 命令（/evolve /skills 等）同样没有
+                # token 流，最终结果只在这一次 turn_done 的 text 字段里
+                # 一次性送达——之前这里跟本端主路径犯了同样的错误，压根没
+                # 打印 payload["text"]，导致旁观时只能看到执行期间零星的
+                # info 事件，看不到最终结果。仅当这个 turn 没有流过 token
+                # （不在 turn_prefix_printed 里）时才打印，避免和已经流式
+                # 展示过的普通聊天回复重复。
+                if turn_id not in turn_prefix_printed:
+                    _text = payload.get("text", "")
+                    if _text and _term is not None:
+                        from rich.text import Text as _CapturedText
+                        _term.print(f"{prefix}[dim](command output)[/dim]")
+                        for _line in str(_text).splitlines():
+                            _term.print(_CapturedText(_line))
                 turn_prefix_printed.discard(turn_id)
                 # 对方这个 turn 结束了：解除输入锁定（如果还有别的 turn
                 # 同时在进行，_mark_other_turn 内部的引用计数会保证锁
@@ -2538,9 +2568,29 @@ def run_connected_repl(
 
             def on_done(_text, error=None):
                 with _observer_lock:
-                    if _own_printed_any_holder[0] and _term is not None:
+                    _had_stream = _own_printed_any_holder[0]
+                    if _had_stream and _term is not None:
                         _term.stream_end()
                         _own_printed_any_holder[0] = False
+                    # ── 修复：slash 命令（/evolve /skills /stats 等）的输出 ──
+                    # 服务端对这类命令不走 token 流式：api/server.py 用
+                    # term.run_captured() 把命令触发的所有 term.print() 输出
+                    # 整段捕获成文本，只在这一次 turn_done 事件的 text 字段
+                    # 里发一次性回来（对照 daemon 本地终端能看到的
+                    # "── run_captured output ── ... ── end ──" 那一整段）。
+                    # 之前这里只处理了 on_token 流式内容和 error，_text 本身
+                    # 从未被打印过——普通聊天回复因为已经通过 on_token 逐字
+                    # 流过一遍，_text 只是重复内容，不打印没问题；但 slash
+                    # 命令完全没有 token 流，导致其输出在 connected 模式下
+                    # 完全不可见，只能看到执行期间零星的 info 事件
+                    # （如"开始扫描…"），看不到最终结果（如能力地图表格、
+                    # "Phase G 完成"总结等）。这里补上：仅当本轮没有任何
+                    # token 流过（_had_stream 为 False）时才打印 _text，
+                    # 避免和已流式展示过的内容重复。
+                    if not _had_stream and _text and _term is not None:
+                        from rich.text import Text as _CapturedText
+                        for _line in str(_text).splitlines():
+                            _term.print(_CapturedText(_line))
                     if error and _term is not None:
                         from rich.markup import escape as _esc_err
                         _term.print(f"[red]\\[error][/red] {_esc_err(str(error))}")
@@ -2549,6 +2599,21 @@ def run_connected_repl(
             def on_event(evt_type, payload, _tid=turn_id):
                 """处理本端自己发起的 turn 里出现的非 token 事件——
                 工具调用过程、权限请求等。"""
+                if evt_type == "command_output":
+                    # slash 命令输出的实时中继（见 api/server.py::run_captured
+                    # on_line 回调）。和 on_token 一样把 _own_printed_any_holder
+                    # 置位——这样 on_done() 里"没有任何流式内容才打印
+                    # turn_done.text 兜底"的判断才不会在这里重复打印一遍。
+                    _line = payload.get("line", "")
+                    if _term is None:
+                        return
+                    with _observer_lock:
+                        if not _own_printed_any_holder[0]:
+                            _own_printed_any_holder[0] = True
+                        from rich.text import Text as _CapturedText
+                        _term.print(_CapturedText(_line))
+                    return
+
                 if evt_type == "agent_prefix":
                     # [SYS-AGENT-PREFIX] 见 _cur_agent_label_holder 定义处的说明。
                     from rich.markup import escape as _esc_ap

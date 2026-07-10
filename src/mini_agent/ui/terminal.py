@@ -149,6 +149,13 @@ class Terminal:
         # 状态栏悬挂逻辑）一律跳过，只把内容写进临时替换掉的 self._console
         # （此时指向一个写内存缓冲区的 rich Console）。见 run_captured()。
         self._capture_mode: bool = False
+        # run_captured() 的实时中继状态（见 _handle() 末尾的中继逻辑和
+        # run_captured() 的 on_line 参数）。_capture_relay 为 None 表示当前
+        # 调用方没有要实时中继（比如只是想拿最终整段文本），此时行为和
+        # 修复前完全一致。
+        self._capture_relay: Optional[Callable[[str], None]] = None
+        self._capture_relay_pos: int = 0
+        self._capture_relay_carry: str = ""
 
         # ── simple-mode：特殊环境降级显示 ────────────────────────────────
         # True 时关闭一切"先擦除再重绘"的 ANSI 光标控制逻辑，并且完全
@@ -1117,7 +1124,7 @@ class Terminal:
 
     # ── 输入模式管理 ──────────────────────────────────────────────────────
 
-    def run_captured(self, fn: Callable[[], None]) -> str:
+    def run_captured(self, fn: Callable[[], None], on_line: Optional[Callable[[str], None]] = None) -> str:
         """
         在\"影子控制台\"里执行 fn()，把它触发的所有 term.print()/rule()/panel()/
         syntax()/markdown() 输出捕获成纯文本返回，不触碰本地真实屏幕（不擦、不画
@@ -1150,6 +1157,9 @@ class Terminal:
 
         old_console = self._console
         old_capture = self._capture_mode
+        old_relay = self._capture_relay
+        old_relay_pos = self._capture_relay_pos
+        old_relay_carry = self._capture_relay_carry
         buf = io.StringIO()
         try:
             width = old_console.size.width
@@ -1160,13 +1170,24 @@ class Terminal:
             highlight=False, width=max(width, 60),
         )
         self._capture_mode = True
+        self._capture_relay = on_line
+        self._capture_relay_pos = 0
+        self._capture_relay_carry = ""
         try:
             fn()
         finally:
             self._q.put(_Msg("_noop", None))
             self._q.join()
+            if self._capture_relay is not None and self._capture_relay_carry:
+                try:
+                    self._capture_relay(self._capture_relay_carry)
+                except Exception:
+                    pass
             self._console = old_console
             self._capture_mode = old_capture
+            self._capture_relay = old_relay
+            self._capture_relay_pos = old_relay_pos
+            self._capture_relay_carry = old_relay_carry
         captured_text = buf.getvalue()
 
         # ★ 镜像写回真实控制台（daemon 场景下即 daemon.log）───────────────
@@ -1754,6 +1775,34 @@ class Terminal:
                 self._bar_suspended = False
                 self._bar_below_prefix = False
                 self._draw_bar()
+
+        # ── capture 模式实时中继（daemon 模式 slash 命令输出完整显示 修复）──
+        # run_captured() 期间，本方法处理的每一条消息最终都写进了被替换成
+        # 内存缓冲区的 self._console（见 run_captured() 的实现）。之前这份
+        # 缓冲区只在 fn() 整体执行完毕后一次性读出、作为 turn_done.text
+        # 发给客户端——这里补一个"实时中继"：每处理完一条消息，就把缓冲区
+        # 里新增的、已经换行结束的完整行立刻通过 self._capture_relay(line)
+        # 回调转发出去（run_captured() 调用方传入，通常是
+        # api/server.py 里包装成 bridge.emit_command_output() 广播给 SSE
+        # 客户端）。只转发"完整行"（以 \n 结尾的部分），不完整的尾部留到
+        # 下一条消息处理完再判断，避免把一行内容拆成两条事件发出去。
+        if self._capture_mode and self._capture_relay is not None:
+            try:
+                buf = self._console.file
+                buf.seek(self._capture_relay_pos)
+                new_text = buf.read()
+                buf.seek(0, 2)  # 复位到末尾，不影响后续继续写入
+                if new_text:
+                    combined = self._capture_relay_carry + new_text
+                    lines = combined.split("\n")
+                    # 最后一段如果没有被 \n 收尾，是不完整的行，留到下次
+                    self._capture_relay_carry = lines[-1]
+                    complete_lines = lines[:-1]
+                    self._capture_relay_pos += len(new_text)
+                    for _ln in complete_lines:
+                        self._capture_relay(_ln)
+            except Exception:
+                pass  # 中继失败不应影响本地渲染/捕获本身
 
     # ── simple-mode 分发（无擦除、无光标控制，仅顺序打印）────────────────
     #

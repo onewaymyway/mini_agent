@@ -849,6 +849,21 @@ class AgentBridge:
             data={"message": msg},
         ))
 
+    def emit_command_output(self, line: str, turn_id: str = "") -> None:
+        """推送 slash 命令（/evolve /skills /stats 等）执行期间产生的一行输出。
+
+        见 models.py::EventType.COMMAND_OUTPUT 的说明：run_captured() 期间
+        逐行实时转发，取代"只在结束时把整段捕获文本塞进 turn_done.text"
+        的旧行为——旧行为在 connected 客户端上要么完全看不到（历史 bug），
+        要么和 info/warning 等类型化事件重复显示一遍。
+        """
+        self.broadcaster.push(AgentEvent(
+            type=EventType.COMMAND_OUTPUT,
+            turn_id=turn_id,
+            session_id=self._current_session_id(),
+            data={"line": line},
+        ))
+
     def emit_info(self, msg: str) -> None:
         self.broadcaster.push(AgentEvent(
             type=EventType.INFO,
