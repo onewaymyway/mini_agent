@@ -39,9 +39,9 @@ def build_parser() -> argparse.ArgumentParser:
               /reload                    Force hot-reload of skills and agent profiles from disk
               /behavior status           Show behavior perception switch/collector status (default: all off)
               /behavior on|off           Toggle the master switch for behavior perception
-              /behavior enable <name>    Enable a collector (active_window/idle/browser_report/clipboard_meta)
+              /behavior enable <name>    Enable a collector (active_window/idle/browser_report/mobile_report/clipboard_meta/cdp_browser/git_activity/terminal_command/now_playing/app_lifecycle/daily_analysis)
               /behavior disable <name>   Disable a collector
-              /behavior token            Show/generate the browser-extension report token
+              /behavior token            Show/generate the external-report token (browser ext/git/terminal/mobile)
               /behavior recent [n]       Show the last n collected events
               /behavior clear            Clear all collected events
               /behavior browser start    Launch a dedicated CDP-debug browser and start collecting

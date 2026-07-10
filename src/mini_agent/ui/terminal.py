@@ -1388,77 +1388,6 @@ class Terminal:
                 if msg.kind != "_stop":
                     self._q.task_done()
 
-    def _force_stream_end(self) -> None:
-        """
-        把一次流式输出安全收尾（原 "stream_end" 分支的逻辑，提取成独立方法）。
-
-        ★★★ 根治方案的核心 ★★★
-        背景：过去只有真正收到 "stream_end" 消息时才会做这套收尾（flush
-        _pending_stream、按需换行、复位 self._streaming/_bar_suspended/
-        _bar_below_prefix、重新 _draw_bar()）。但 "print"/"rule"/"panel"/
-        "syntax"/"markdown" 这些分支从不检查 self._streaming，一旦它们在
-        "逻辑上仍处于流式中"（比如 reasoning 的 marker=start/end 分隔线，
-        只调用 term.print()，从没配套调用过 term.stream_end()）时被触发，
-        就会在光标仍停在正文行中间的情况下，直接对状态栏做 _erase_bar()+
-        _draw_bar()——产生的 ANSI 转义序列会插进正在流式输出的文本中间，
-        并把光标位置搅乱，导致后续通过 sys.stdout.write() 续写的 token
-        错位甚至被"盖掉"（表现为用户看到状态栏 banner 出现在正文/reasoning
-        中间，且 banner 之后的一截文字丢失）。
-
-        修复思路：不再要求每个"可能打断流式输出"的事件类型都精确配对一次
-        显式 stream_end() 调用（那样容易遗漏，reasoning marker=end 就是
-        一次真实的遗漏案例）。而是把"安全收尾"下沉成一个可以随时被其他
-        分支复用的独立方法——任何分支只要发现 self._streaming 仍为 True，
-        在真正触碰屏幕前先调用一次本方法，就能保证收尾逻辑只有一份实现、
-        不会因为遗漏配对而再次踩坑。
-        """
-        # 把过滤器里缓冲的最后几个字符也打印出来（避免末尾内容丢失）
-        if self._pending_stream:
-            sys.stdout.write(self._pending_stream)
-            self._stream_had_output = True
-
-        if self._bar_below_prefix and not self._stream_had_output:
-            # LLM 没有产生任何可见输出（纯工具调用等情况），但状态栏
-            # 已画在 "agent ❯ " 下方。同样不能依赖 \x1b[NA 回到 prefix
-            # 行尾的列位置（原因见 stream 分支的详细注释）——这里
-            # 上移到 prefix 行行首、清除，再重新打印一次 prefix，
-            # 然后让下面的 "_stream_had_output" 判断走兜底换行逻辑
-            # （prefix 后没有内容追加，直接收尾换行）。
-            # 同样改用逐行向上擦除，理由见 stream 分支注释。
-            #
-            # ★ resize 不确定期保护（理由同 stream 分支的对应位置）：
-            # 不确定期内不信任 self._bar_drawn，统一退化为直接换行
-            # 放弃旧内容，再调用 _replay_open_line() 在干净的新行
-            # 重新打印 prefix。
-            if self._resize_unsettled:
-                sys.stdout.write("\r\n")
-                sys.stdout.flush()
-                self._bar_drawn = 0
-                self._resize_unsettled = False
-            else:
-                out = sys.stdout
-                for _ in range(self._bar_drawn if self._bar_drawn > 0 else 0):
-                    out.write("\r\x1b[1A\x1b[2K")
-                out.write("\r\x1b[1A\x1b[0J")  # 额外上移 1 行到 prefix 行，清到屏底
-                out.flush()
-                self._bar_drawn = 0
-            # _replay_open_line() 内部已设置 _stream_had_output=True，
-            # 确保下面的兜底换行逻辑会被触发（prefix 被重新打印后，
-            # 即便本轮无内容，也需要换行收尾，否则下一次输出会接在
-            # prefix 同一行造成粘连）。
-            self._replay_open_line()
-            self._bar_below_prefix = False
-
-        if self._stream_had_output:
-            sys.stdout.write("\n")
-            sys.stdout.flush()
-            self._bar_suspended = False
-            self._bar_below_prefix = False
-            self._draw_bar()
-        self._streaming = False
-        self._stream_had_output = False
-        self._stream_filter_reset()
-
     def _handle(self, msg: _Msg) -> None:
         kind = msg.kind
 
@@ -1491,16 +1420,6 @@ class Terminal:
         if kind == "print":
             args, kwargs = msg.payload
             if not self._capture_mode:
-                # ★ 根治点：print 类消息（比如 reasoning 的 marker=start/end
-                # 分隔线）本来就可能在“逻辑上仍处于流式输出中”时到达——
-                # 之前这里直接 _erase_bar()，完全没检查 self._streaming，
-                # 是导致状态栏内容被插入到正在流式输出的正文中间、并把
-                # 光标位置搅乱、吃掉后续 token 的根因。这里统一在真正触碰
-                # 屏幕之前，先把未正常收尾的流式输出强制收尾（复用
-                # stream_end 的逻辑），确保 _erase_bar()/_draw_bar() 执行时
-                # 光标一定停在一个新行的行首，而不是流式正文行的中间。
-                if self._streaming:
-                    self._force_stream_end()
                 self._erase_bar()
             self._console.print(*args, **kwargs)
             if self._capture_mode:
@@ -1520,8 +1439,6 @@ class Terminal:
         elif kind == "rule":
             title, kwargs = msg.payload
             if not self._capture_mode:
-                if self._streaming:
-                    self._force_stream_end()
                 self._erase_bar()
             self._console.rule(title, **kwargs)
             if not self._capture_mode:
@@ -1531,8 +1448,6 @@ class Terminal:
         elif kind == "panel":
             content, kwargs = msg.payload
             if not self._capture_mode:
-                if self._streaming:
-                    self._force_stream_end()
                 self._erase_bar()
             self._console.print(Panel(content, **kwargs))
             if not self._capture_mode:
@@ -1542,8 +1457,6 @@ class Terminal:
         elif kind == "syntax":
             code, language, kwargs = msg.payload
             if not self._capture_mode:
-                if self._streaming:
-                    self._force_stream_end()
                 self._erase_bar()
             self._console.print(Syntax(code, language, **kwargs))
             if not self._capture_mode:
@@ -1552,8 +1465,6 @@ class Terminal:
 
         elif kind == "markdown":
             if not self._capture_mode:
-                if self._streaming:
-                    self._force_stream_end()
                 self._erase_bar()
             self._console.print(Markdown(msg.payload))
             if not self._capture_mode:
@@ -1623,7 +1534,53 @@ class Terminal:
                 sys.stdout.flush()
 
         elif kind == "stream_end":
-            self._force_stream_end()
+            # 把过滤器里缓冲的最后几个字符也打印出来（避免末尾内容丢失）
+            if self._pending_stream:
+                sys.stdout.write(self._pending_stream)
+                self._stream_had_output = True
+
+            if self._bar_below_prefix and not self._stream_had_output:
+                # LLM 没有产生任何可见输出（纯工具调用等情况），但状态栏
+                # 已画在 "agent ❯ " 下方。同样不能依赖 \x1b[NA 回到 prefix
+                # 行尾的列位置（原因见 stream 分支的详细注释）——这里
+                # 上移到 prefix 行行首、清除，再重新打印一次 prefix，
+                # 然后让下面的 "_stream_had_output" 判断走兜底换行逻辑
+                # （prefix 后没有内容追加，直接收尾换行）。
+                # 同样改用逐行向上擦除，理由见 stream 分支注释。
+                #
+                # ★ resize 不确定期保护（理由同 stream 分支的对应位置）：
+                # 不确定期内不信任 self._bar_drawn，统一退化为直接换行
+                # 放弃旧内容，再调用 _replay_open_line() 在干净的新行
+                # 重新打印 prefix。
+                if self._resize_unsettled:
+                    sys.stdout.write("\r\n")
+                    sys.stdout.flush()
+                    self._bar_drawn = 0
+                    self._resize_unsettled = False
+                else:
+                    out = sys.stdout
+                    for _ in range(self._bar_drawn if self._bar_drawn > 0 else 0):
+                        out.write("\r\x1b[1A\x1b[2K")
+                    out.write("\r\x1b[1A\x1b[0J")  # 额外上移 1 行到 prefix 行，清到屏底
+                    out.flush()
+                    self._bar_drawn = 0
+                # _replay_open_line() 内部已设置 _stream_had_output=True，
+                # 确保下面的兜底换行逻辑会被触发（prefix 被重新打印后，
+                # 即便本轮无内容，也需要换行收尾，否则下一次输出会接在
+                # prefix 同一行造成粘连）。
+                self._replay_open_line()
+                self._bar_below_prefix = False
+
+
+            if self._stream_had_output:
+                sys.stdout.write("\n")
+                sys.stdout.flush()
+                self._bar_suspended = False
+                self._bar_below_prefix = False
+                self._draw_bar()
+            self._streaming = False
+            self._stream_had_output = False
+            self._stream_filter_reset()
 
         elif kind == "statusbar":
             self._statusbar_lines = msg.payload
@@ -2782,6 +2739,7 @@ _COMMANDS: list[tuple[str, str, list[str]]] = [
     ("/debug",       "Print/export system prompt & history for debugging", ["system", "history", "all", "save"]),
     ("/cron",        "Manage periodic daemon tasks",                 ["list", "status", "enable", "disable", "run", "add", "remove", "set-schedule"]),
     ("/proxy",       "Proxy pool: subscriptions/validation/integration switches", ["status", "refresh", "sources", "integration"]),
+    ("/behavior",    "Behavior perception: desktop/browser/mobile activity, work & life daily report", ["status", "on", "off", "enable", "disable", "token", "recent", "clear", "browser", "git", "terminal", "mobile", "report"]),
     ("/exit",        "Exit mini-agent",                              []),
     ("/quit",        "Exit mini-agent",                              []),
 ]
