@@ -17,7 +17,7 @@
 | 全局错误日志 | `~/.agent/logs/error.jsonl` | 全局，跨项目 | 常开 |
 | LLM 调试日志 | `<project>/.agent/sessions/<sid>/llm_debug.jsonl` | session 级 | 关闭（需 `--debug-llm` 或配置开启） |
 | Daemon 控制台日志 | `<project>/.agent/daemon.log` | 项目级，daemon 进程 | daemon 后台模式常开 |
-| 代理池日志 | `<project>/.agent/proxy/proxy.log` | 项目级 | 写入点只在 `scripts/proxy_ctl.py` 独立进程运行时生效，agent 内部两条调用路径都绕开了它，**日常使用下几乎不会产生这个文件**（详见第八节） |
+| 代理池日志 | `<project>/.agent/proxy/proxy.log` | 项目级 | 常开（2026-07 已修复：原来只在独立脚本模式下生效，现在 agent 内部调用路径也会正确写入，详见第八节） |
 
 **B. 观测/审计类数据流**——记录"agent 做了什么"，本质是结构化数据而非
 传统意义的日志，部分会被 Phase G / 自我演化 / 用户画像等模块**读回来当输入
@@ -167,40 +167,46 @@ daemon 以后台模式启动时，子进程的 `stdout`/`stderr` 会被重定向
 
 ---
 
-## 八、已定义但未接入的路径（已知缺口）
+## 八、`proxy.log` 缺口修复记录（2026-07）
 
-排查代码时发现两处"路径定义了，但实际运行路径下大概率不会生效"的点，
-记录下来避免以为它们已经在正常工作：
+### 根因回顾
 
-- `AgentPaths.workdir_proxy_log`（`<project>/.agent/proxy/proxy.log`）——**写入点其实存在，
-  但只在一条从未被触发的路径上生效**：`scripts/proxy_ctl.py::_setup_logging()`
-  会调用 `logging.basicConfig(handlers=[FileHandler(paths.workdir_proxy_log), StreamHandler(stdout)])`，
-  但这个函数只在该脚本以 `python scripts/proxy_ctl.py refresh` **独立进程**方式运行时、
-  由 `if __name__ == "__main__": main()` 触发才会执行。而 agent 内部实际触发
-  proxy 刷新的两条路径——`cli/commands/proxy.py::handle_proxy_cmd()`（`/proxy refresh`
-  命令）和 `tools/proxy_manager.py`（agent 自己可调用的 proxy 工具）——都是用
-  `from scripts.proxy_ctl import _do_refresh` **直接函数级 import 调用**，
-  完全绕开了 `main()`/`_setup_logging()`，所以 `_do_refresh()` 内部一路
-  `logging.info(...)`/`logging.warning(...)` 打的进度日志（订阅拉取数量、
-  协议分布统计等）在这两条路径下会打到没有配置任何 handler 的 root logger
-  上——INFO 级别直接被丢弃，WARNING 级别至多被 Python logging 的
-  "lastResort" 兜底打到 stderr，都不会落进 `proxy.log`。也就是说，除非用户
-  自己在终端手动跑独立脚本（或搭个人 cron），单纯使用 mini_agent 本身
-  （REPL `/proxy` 命令或 agent 自主调用 proxy 工具）这个文件**永远不会被创建**。
-  设计文档 [代理池指南](./proxy-pool-guide.md) 里把 `proxy.log` 和
-  `sources.json`/`available.json` 并列成"产出文件"，但后两者有独立的
-  `write_text()` 调用点（不依赖 `logging` 配置），只有 `proxy.log` 依赖
-  "谁调用了 `_setup_logging()`"这个隐藏前提，这是三者里唯一"看起来该有但
-  实际不一定有"的文件。
-- `errors.py::error_log_path()`——见第二节"已知缺口"，函数存在但没有被
-  任何 CLI 命令实际调用。
+`AgentPaths.workdir_proxy_log`（`<project>/.agent/proxy/proxy.log`）**写入点其实
+一直存在，只是挂在一条几乎不会被触发的路径上**：`scripts/proxy_ctl.py::_setup_logging()`
+原本调 `logging.basicConfig(handlers=[FileHandler(...), StreamHandler(stdout)])`
+配置 **root logger**，这个函数只在该脚本以 `python scripts/proxy_ctl.py refresh`
+**独立进程**方式运行、由 `if __name__ == "__main__": main()` 触发才会执行。
+而 agent 内部实际触发 proxy 刷新的两条路径——`cli/commands/proxy.py::handle_proxy_cmd()`
+（`/proxy refresh` 命令）和 `tools/proxy_manager.py`（agent 自己可调用的 proxy
+工具）——都是用 `from scripts.proxy_ctl import _do_refresh` **直接函数级
+import 调用**，完全绕开了 `main()`/`_setup_logging()`。
 
-**如果要修复 `proxy.log` 这个缺口**：最小改动是把 `_setup_logging(paths)`
-从 `main()` 里挪出来，改成 `_do_refresh()` 内部第一次被调用时惰性初始化
-（类似 `errors.py::_get_file_logger()` 的单例+懒加载写法），这样不管是
-独立脚本、`/proxy refresh` 命令、还是 agent 自主调用 proxy 工具，第一次
-真正发起刷新时都会装上这个 handler，不用依赖"是不是从 `__main__` 进来的"
-这个隐藏前提。
+更深一层的坑：即使强行在这两条路径里也调用一次 `_setup_logging()`，由于
+`logging.basicConfig()` 的规则是"root logger 已经有 handler 时整个调用默认
+是 no-op（除非传 `force=True`）"，而 agent 进程启动时 `errors.py::install_
+global_error_logging()` 早就给 root logger 加过 handler 了，所以就算加一次
+调用也不会真正生效——这是本次修复过程里额外发现的第二层问题。
+
+### 修复方式
+
+`scripts/proxy_ctl.py` 改动：
+1. `_setup_logging()` 不再碰 root logger，改成给专属的具名 logger
+   `logging.getLogger("mini_agent.proxy_ctl")`（`propagate=False`）挂
+   `FileHandler`（总是加）+ `StreamHandler`（仅 `include_console=True` 时加），
+   不受 agent 主进程是否已经配置过 logging 影响。
+2. 用 `_log.handlers` 判断是否已装过 handler，幂等跳过，避免同一进程内多次
+   调用（比如反复 `/proxy refresh`）重复叠加 handler。
+3. 文件内所有 `logging.info/warning/error(...)` 调用改成 `_log.info/warning/error(...)`。
+4. `_do_refresh()`（agent 内部两条调用路径唯一会经过的函数）开头新增
+   `_setup_logging(paths)` 懒加载调用（`include_console` 默认 `False`，
+   agent 内部调用时不会往 stdout 刷屏）；`main()` 里的调用改成显式传
+   `include_console=True`（独立脚本模式下用户仍然能在终端看到实时进度）。
+
+修复后已用单测验证：模拟 root logger 已有 handler 的场景下，`_do_refresh()`
+调用后 `proxy.log` 被正确创建，且多次调用不会重复加 handler。
+
+`errors.py::error_log_path()` 没有被任何 CLI 命令调用这一点**尚未修复**，
+仍是已知缺口，见第二节。
 
 ---
 
@@ -224,7 +230,7 @@ daemon 以后台模式启动时，子进程的 `stdout`/`stderr` 会被重定向
 <project>/.agent/knowledge_timeline_index.json   # 编年目录侧车索引
 <project>/.agent/activity_digest.jsonl # 自主活动摘要/健康报告
 <project>/.agent/artifacts_index.jsonl # 产出物索引
-<project>/.agent/proxy/proxy.log       # [条件生效] 仅独立跑 scripts/proxy_ctl.py 时才会创建
+<project>/.agent/proxy/proxy.log       # 代理池日志（2026-07 已修复：agent 内部调用路径现在也会正确写入）
 <project>/.agent/logs/llm_debug_<日期>.jsonl  # LLM 调试日志兜底路径
 ```
 

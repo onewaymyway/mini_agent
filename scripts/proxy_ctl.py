@@ -23,7 +23,9 @@
 产出文件（默认路径 ~/.agent/proxy/，可通过 AgentPaths 统一管理）：
     sources.json    — 订阅源配置
     available.json  — 最近一次 refresh 后，按延迟排序的可用节点列表
-    proxy.log       — 运行日志
+    proxy.log       — 运行日志（`_setup_logging()` 懒加载初始化，
+                       独立脚本模式和 agent 内部调用 `_do_refresh()` 两条
+                       路径都会写入，详见 `_setup_logging()` 的 docstring）
 """
 
 from __future__ import annotations
@@ -49,16 +51,47 @@ from mini_agent.proxy.subscription import (  # noqa: E402
 from mini_agent.proxy.validator import UNSUPPORTED_MARKER, validate_nodes  # noqa: E402
 
 
-def _setup_logging(paths: AgentPaths) -> None:
+_log = logging.getLogger("mini_agent.proxy_ctl")
+_log.propagate = False  # 不冒泡到 root logger，避免和 errors.py 的全局错误
+                         # 日志转发/agent 自身的 logging 配置互相干扰
+
+
+def _setup_logging(paths: AgentPaths, *, include_console: bool = False) -> None:
+    """
+    配置 proxy.log 的写入 handler。
+
+    [修复记录 2026-07] 原实现直接调 `logging.basicConfig(handlers=[...])`
+    配置 root logger，这在两种调用场景下都有问题：
+      1. 独立脚本模式（`python scripts/proxy_ctl.py refresh`）：本身没问题，
+         但所有 `logging.info/warning/error(...)` 调用走的是 root logger，
+         等于把这个脚本自己的运行日志和其它库的日志混在一起。
+      2. 更严重的是 agent 内部调用（`/proxy refresh` 命令、agent 自主调用
+         proxy 工具）：这两条路径都是直接 import `_do_refresh()` 函数调用，
+         此时已经跑在主 agent 进程里，`errors.py::install_global_error_logging()`
+         早就给 root logger 加过 handler 了——而 `logging.basicConfig()`
+         的行为是"root logger 已有 handler 时默认整个调用是 no-op"（除非
+         传 `force=True`），所以原来的 `_setup_logging()` 在这条路径下
+         实际上什么都没做，`proxy.log` 也就永远不会被创建。
+
+    修复方式：改成给一个专属的具名 logger（`mini_agent.proxy_ctl`，
+    `propagate=False`）挂 handler，不碰 root logger，天然不受 agent 主进程
+    是否已经配置过 logging 影响；用 `logger.handlers` 判断是否已经装过，
+    保证多次调用（比如同一 agent 进程里多次 `/proxy refresh`）不会重复叠加
+    handler。`include_console` 控制是否同时输出到 stdout——独立脚本模式下
+    需要（用户在终端里看得到进度），agent 内部调用时默认关闭，避免刷屏。
+    """
+    if _log.handlers:
+        return  # 已经装过 handler，幂等跳过
     paths.ensure_workdir_proxy_dir()
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s [%(levelname)s] %(message)s",
-        handlers=[
-            logging.FileHandler(paths.workdir_proxy_log, encoding="utf-8"),
-            logging.StreamHandler(sys.stdout),
-        ],
-    )
+    _log.setLevel(logging.INFO)
+    formatter = logging.Formatter("%(asctime)s [%(levelname)s] %(message)s")
+    file_handler = logging.FileHandler(paths.workdir_proxy_log, encoding="utf-8")
+    file_handler.setFormatter(formatter)
+    _log.addHandler(file_handler)
+    if include_console:
+        stream_handler = logging.StreamHandler(sys.stdout)
+        stream_handler.setFormatter(formatter)
+        _log.addHandler(stream_handler)
 
 
 def _load_sources_config(paths: AgentPaths) -> list[dict]:
@@ -85,7 +118,7 @@ def _build_sources(entries: list[dict], paths: AgentPaths | None = None):
     for e in entries:
         src = build_source_from_entry(e, paths)
         if src is None:
-            logging.warning("unknown/invalid source entry, skipped: %s", e)
+            _log.warning("unknown/invalid source entry, skipped: %s", e)
             continue
         sources.append(src)
     return sources
@@ -141,15 +174,21 @@ def cmd_sources_remove(paths: AgentPaths, args) -> None:
 async def _do_refresh(paths: AgentPaths, keep_alive: int, check_url: str, concurrency: int) -> dict:
     import collections
 
+    # [修复] 懒加载初始化 proxy.log handler：这是 agent 内部两条调用路径
+    # （/proxy refresh 命令、agent 自主调用的 proxy 工具）唯一会经过的函数，
+    # 独立脚本模式下 main() 已经调用过一次 _setup_logging(include_console=True)，
+    # 这里再调用是幂等的（_log.handlers 非空直接返回），不会重复加 handler。
+    _setup_logging(paths)
+
     entries = _load_sources_config(paths)
     if not entries:
-        logging.warning("no subscription sources configured; run `sources add` / `sources add-mibei77` first")
+        _log.warning("no subscription sources configured; run `sources add` / `sources add-mibei77` first")
         return {"nodes_found": 0, "nodes_ok": 0, "available": []}
 
     sources = _build_sources(entries, paths)
-    logging.info("fetching from %d subscription source(s)...", len(sources))
+    _log.info("fetching from %d subscription source(s)...", len(sources))
     nodes, fetch_stats = await fetch_all(sources, return_stats=True)
-    logging.info(
+    _log.info(
         "fetched %d raw node(s) across sources %s, %d duplicate(s) removed -> %d unique node(s)",
         fetch_stats["raw_total"], fetch_stats["per_source"],
         fetch_stats["duplicates_removed"], fetch_stats["deduped_total"],
@@ -157,7 +196,7 @@ async def _do_refresh(paths: AgentPaths, keep_alive: int, check_url: str, concur
 
     # 协议分布统计: 帮助判断"验证通过率低"到底是节点普遍失效,还是协议覆盖率不够
     proto_counts = collections.Counter(n.protocol for n in nodes)
-    logging.info(
+    _log.info(
         "parsed %d candidate node(s), protocol breakdown: %s",
         len(nodes), dict(proto_counts),
     )
@@ -180,7 +219,7 @@ async def _do_refresh(paths: AgentPaths, keep_alive: int, check_url: str, concur
     paths.workdir_proxy_all_nodes_list.write_text(
         json.dumps(all_nodes_payload, indent=2, ensure_ascii=False), encoding="utf-8"
     )
-    logging.info("wrote %s (全部解析出的节点,不论是否验证通过)", paths.workdir_proxy_all_nodes_list)
+    _log.info("wrote %s (全部解析出的节点,不论是否验证通过)", paths.workdir_proxy_all_nodes_list)
 
     from mini_agent.proxy.local_proxy import can_handle_pure_python
     from mini_agent.proxy.external_engine import needs_external_engine, singbox_available, xray_available
@@ -199,13 +238,13 @@ async def _do_refresh(paths: AgentPaths, keep_alive: int, check_url: str, concur
             + ("+vision" if n.params.get("flow") else "")
             for n in unsupported_nodes
         )
-        logging.info(
+        _log.info(
             "当前环境没有 sing-box/xray,以下特性的节点会被跳过(共 %d 个): %s ；"
             "见 docs/proxy-pool-guide.md 了解如何装 sing-box 覆盖这些协议",
             len(unsupported_nodes), dict(by_reason),
         )
 
-    logging.info("validating (concurrency=%d)...", concurrency)
+    _log.info("validating (concurrency=%d)...", concurrency)
 
     def _on_progress(done: int, total: int, r) -> None:
         if r.ok:
@@ -228,7 +267,7 @@ async def _do_refresh(paths: AgentPaths, keep_alive: int, check_url: str, concur
         1 for r in results if not r.ok and r.error and "需要外部引擎" in r.error
     )
     tested_but_failed = len(results) - len(ok_results) - skipped_unsupported
-    logging.info(
+    _log.info(
         "validation done: %d ok / %d total (%d skipped:协议不支持, %d 实际测试但连不上:节点本身失效/被墙/延迟超时)",
         len(ok_results), len(results), skipped_unsupported, tested_but_failed,
     )
@@ -257,7 +296,7 @@ async def _do_refresh(paths: AgentPaths, keep_alive: int, check_url: str, concur
     paths.workdir_proxy_available_list.write_text(
         json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8"
     )
-    logging.info("wrote %s", paths.workdir_proxy_available_list)
+    _log.info("wrote %s", paths.workdir_proxy_available_list)
     return payload
 
 
@@ -312,12 +351,12 @@ async def _do_serve(paths: AgentPaths, listen_port: int, keep_alive: int) -> Non
 
     p = paths.workdir_proxy_available_list
     if not p.exists():
-        logging.error("no available.json — run `refresh` first")
+        _log.error("no available.json — run `refresh` first")
         return
     data = json.loads(p.read_text(encoding="utf-8"))
     top = data["available"][:keep_alive]
     if not top:
-        logging.error("available.json has no usable nodes — run `refresh` again")
+        _log.error("available.json has no usable nodes — run `refresh` again")
         return
 
     running_list = []
@@ -329,12 +368,12 @@ async def _do_serve(paths: AgentPaths, listen_port: int, keep_alive: int) -> Non
         try:
             running = await start_local_proxy(node)
             running_list.append(running)
-            logging.info("activated %s (%s) on local port %d", node.name, node.protocol, running.local_port)
+            _log.info("activated %s (%s) on local port %d", node.name, node.protocol, running.local_port)
         except Exception as e:
-            logging.warning("failed to activate %s: %s", node.name, e)
+            _log.warning("failed to activate %s: %s", node.name, e)
 
     if not running_list:
-        logging.error("failed to activate any node")
+        _log.error("failed to activate any node")
         return
 
     class _StaticPool:
@@ -344,8 +383,8 @@ async def _do_serve(paths: AgentPaths, listen_port: int, keep_alive: int) -> Non
             return running_list[0].socks_url
 
     forwarder = await run_fixed_entry_forwarder(_StaticPool(), listen_port=listen_port)
-    logging.info("fixed entry forwarder listening on 127.0.0.1:%d -> %s", listen_port, running_list[0].socks_url)
-    logging.info("point your app's proxy setting to socks5://127.0.0.1:%d and it's done.", listen_port)
+    _log.info("fixed entry forwarder listening on 127.0.0.1:%d -> %s", listen_port, running_list[0].socks_url)
+    _log.info("point your app's proxy setting to socks5://127.0.0.1:%d and it's done.", listen_port)
     async with forwarder:
         await forwarder.serve_forever()
 
@@ -404,7 +443,7 @@ def main() -> None:
     parser = build_parser()
     args = parser.parse_args()
     paths = AgentPaths()
-    _setup_logging(paths)
+    _setup_logging(paths, include_console=True)
     args.func(paths, args)
 
 
