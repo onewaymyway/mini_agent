@@ -2795,12 +2795,30 @@ def prime_model_completions(pool: "LLMClientPool | None") -> None:
             _, _, model = entry["label"].partition("/")
             if model and model not in models:
                 models.append(model)
-        if not models:
-            return
-        # 找到 _COMMANDS 中的 /model 条目并原地替换子命令列表
+        prime_model_completions_from_names(models)
+    except Exception:
+        pass  # 静默降级，补全缺失不应影响主功能
+
+
+def prime_model_completions_from_names(models: "list[str] | None") -> None:
+    """
+    prime_model_completions() 的底层共用逻辑：直接传一份模型名列表，把它
+    注入 _COMMANDS 中 /model 条目的子命令列表。
+
+    供两类调用方使用：
+      - prime_model_completions(pool)：本地直跑模式，从进程内 LLMClientPool
+        读取模型名后调用本函数。
+      - cli/daemon.py::run_connected_repl()：daemon 连接模式，本进程没有
+        LLMClientPool，改为通过 HTTP 从 DaemonClient.get_models() 拿到
+        daemon 端的模型名列表后调用本函数——这样 connected 模式下
+        "/model " 才能 Tab 出候选，修复此前从未补全过的问题。
+    """
+    if not models:
+        return
+    try:
         for i, (name, desc, _subs) in enumerate(_COMMANDS):
             if name == "/model":
-                _COMMANDS[i] = (name, desc, models)
+                _COMMANDS[i] = (name, desc, list(models))
                 break
     except Exception:
         pass  # 静默降级，补全缺失不应影响主功能

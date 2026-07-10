@@ -213,6 +213,25 @@ class DaemonClient:
         except Exception:
             return None
 
+    def get_models(self) -> Optional[dict]:
+        """获取 daemon 端已配置的模型列表（/v1/models 端点）。
+
+        返回 {"models": [...], "current": "..."}；daemon 不支持该端点
+        （旧版本）或请求失败时静默返回 None，调用方按"补全列表拿不到，
+        跳过注入"处理，不影响 /model <name> 本身的功能（那条路径走的是
+        普通 slash 命令转发，与本方法无关）。
+        """
+        try:
+            import urllib.request
+            req = urllib.request.Request(
+                f"{self.base_url}/v1/models",
+                headers=self._headers(),
+            )
+            with urllib.request.urlopen(req, timeout=5) as resp:
+                return json.loads(resp.read())
+        except Exception:
+            return None
+
     def get_whoami(self) -> Optional[dict]:
         """获取当前 token 对应的身份（/v1/whoami 端点）。
 
@@ -1831,6 +1850,22 @@ def run_connected_repl(
         _term = get_terminal()
     except Exception:
         pass  # 极端兜底：拿不到就退回裸 print，下面 _out() 会处理
+
+    # ── /model 补全修复 ────────────────────────────────────────────────────
+    # connected 模式没有本地 Agent/LLMClientPool，run_repl() 那套
+    # prime_model_completions(agent._client_pool) 用不上，导致 "/model "
+    # 后 Tab 永远列不出候选模型（/model <name> 本身仍然能正常切换，
+    # 因为该命令是转发给 daemon 端执行的，跟补全是两回事）。
+    # 这里改为向 daemon 请求 /v1/models，拿到模型名列表后注入同一份
+    # _COMMANDS 补全表；拿不到（旧版 daemon 不支持该端点、网络失败等）
+    # 时静默跳过，不影响连接和正常使用。
+    try:
+        from mini_agent.ui.terminal import prime_model_completions_from_names
+        _models_info = client.get_models()
+        if _models_info and _models_info.get("models"):
+            prime_model_completions_from_names(_models_info["models"])
+    except Exception:
+        pass
 
     # 同一 session 里，其它客户端当前正在处理中的 turn_id 集合。
     # 非空 == 应该让本端处于"锁定输入"状态（见 request_input_lock()）。

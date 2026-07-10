@@ -276,6 +276,37 @@ async def get_status(request: Request):
     )
 
 
+# ── 模型列表（daemon 模式 /model 补全修复）───────────────────────────────────
+# 背景：本地直跑模式下，cli/repl.py::run_repl() 在启动时调用
+# ui/terminal.py::prime_model_completions(agent._client_pool)，从本进程内的
+# LLMClientPool 读取 fallback chain，把模型名注入 "/model " 的 Tab 补全列表。
+# 但 daemon 连接模式（cli/daemon.py::run_connected_repl()）下，CLI 客户端
+# 并不持有本地 Agent/LLMClientPool —— 真正的 Agent 跑在 daemon 进程里 ——
+# 所以 prime_model_completions() 从未被调用过，"/model " 后 Tab 永远补全不出
+# 任何候选，这就是 "daemon 模式下 /model 命令不会出现可选的模型" 的根因。
+# 这里补一个只读端点，把 daemon 端 LLMClientPool.snapshot() 的模型名列表
+# 暴露出来，供 DaemonClient.get_models() 拉取后在客户端本地补全。
+@router.get("/models")
+async def list_models(request: Request):
+    bridge = _bridge(request)
+    models: list[str] = []
+    current: Optional[str] = None
+    try:
+        pool = getattr(bridge.agent, "_client_pool", None) if bridge.agent else None
+        if pool is not None:
+            snap = pool.snapshot()
+            for entry in snap["entries"]:
+                _, _, model = entry["label"].partition("/")
+                if model and model not in models:
+                    models.append(model)
+                if entry.get("active") and model:
+                    current = model
+    except Exception as _mini_agent_exc:
+        from mini_agent.errors import log_exception
+        log_exception(_mini_agent_exc, where='mini_agent.api.routes')
+    return {"models": models, "current": current}
+
+
 # ── 诊断（Stage 6 / 6.2）──────────────────────────────────────────────────────
 
 @router.get("/whoami", response_model=WhoamiResponse)
