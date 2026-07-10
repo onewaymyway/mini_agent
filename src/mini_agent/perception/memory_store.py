@@ -62,6 +62,12 @@ class MemoryEntry:
     occurrence_count: int = 1           # 同类 lesson 重复出现次数（lesson 专属）
     source: str = "self_reflection"     # "self_reflection" | "human_feedback" | "revert_record"
 
+    # ── 图书馆式索引扩展字段（perception/library_index.py）─────────────────
+    # 全部带默认值，保证现有条目零迁移成本继续工作；由 LibraryIndex.on_new_entry()
+    # 在 add() 时填充，不需要调用方手动设置。
+    category: str = ""                  # 分类树节点号，如 "000.003"（未归类为 "000"）
+    entity_ids: list[str] = field(default_factory=list)  # 关联的实体 ID（entity_index.py）
+
     def __post_init__(self) -> None:
         if not self.entry_id:
             import uuid
@@ -98,6 +104,8 @@ class MemoryStore(MemoryBackend):
         path: Optional[Path] = None,
         max_entries: int = _DEFAULT_MAX_ENTRIES,
         decay_half_life_days: float = _DECAY_HALF_LIFE_DAYS,
+        library_index=None,          # Optional["LibraryIndex"]，由 memory_factory 注入
+        llm_classify_call=None,      # Optional[Callable[[str], str]]，规则未命中时的兜底分类调用
     ) -> None:
         self._path = path or Path(".agent") / "memory.jsonl"  # 由 memory_factory 覆盖
         self._entries: list[MemoryEntry] = []
@@ -105,11 +113,21 @@ class MemoryStore(MemoryBackend):
         self._max_entries = max_entries
         # 衰减系数 λ = ln(2) / half_life
         self._decay_lambda = math.log(2) / max(decay_half_life_days, 0.1)
+        # 图书馆式索引（分类树/实体目录/分类目录）：为 None 时 add()/search() 行为
+        # 与改造前完全一致，保证该功能是纯增量、可关闭的。
+        self._library = library_index
+        self._llm_classify_call = llm_classify_call
 
     # ── 写入 ──────────────────────────────────────────────────────────────────
 
     def add(self, entry: MemoryEntry) -> None:
         self._ensure_loaded()
+        if self._library is not None and not entry.category:
+            try:
+                self._library.on_new_entry(entry, llm_call=self._llm_classify_call)
+            except Exception as _mini_agent_exc:
+                from mini_agent.errors import log_exception
+                log_exception(_mini_agent_exc, where='mini_agent.perception.memory_store.library')
         self._entries.append(entry)
         # 超出上限：淘汰最旧条目，并重写全文件
         if len(self._entries) > self._max_entries:
@@ -147,6 +165,65 @@ class MemoryStore(MemoryBackend):
         self._ensure_loaded()
         tag = tag.lower()
         return [e for e in self._entries if tag in [t.lower() for t in e.tags]]
+
+    def rank_subset(self, query: str, subset: list[MemoryEntry], k: int = 3) -> list[MemoryEntry]:
+        """
+        在给定的记忆子集（通常是 LibraryIndex.shelf_search 圈定的"书架"）内
+        做与 search() 相同的 TF-IDF + 时间衰减打分排序，返回 top-k。
+        与 search() 的区别只是候选集合从"全部条目"换成调用方传入的子集，
+        IDF 统计也只在子集范围内计算（书架内的相关性排序，不受书架外文档的
+        IDF 干扰，符合"先定位书架、再在架内精细检索"的语义）。
+        """
+        if not subset:
+            return []
+        query_tokens = _tokenize(query)
+        if not query_tokens:
+            return subset[:k]
+        N = len(subset)
+        doc_texts = [_tokenize(e.to_search_text()) for e in subset]
+        results = []
+        for entry, tokens in zip(subset, doc_texts):
+            if not tokens:
+                results.append((entry, 0.0))
+                continue
+            score = 0.0
+            for qt in query_tokens:
+                tf = tokens.count(qt) / len(tokens)
+                df = sum(1 for t in doc_texts if qt in t)
+                idf = math.log((N + 1) / (df + 1)) + 1
+                score += tf * idf
+            if getattr(entry, "entry_type", "summary") == "lesson":
+                try:
+                    from mini_agent.evolution.memory_aging import compute_decay_factor
+                    decay = compute_decay_factor(entry)
+                except Exception:
+                    decay = math.exp(-self._decay_lambda * entry.age_days)
+            else:
+                decay = math.exp(-self._decay_lambda * entry.age_days)
+            results.append((entry, score * decay))
+        ranked = sorted(results, key=lambda x: -x[1])
+        return [e for e, s in ranked[:k] if s > 0]
+
+    def rewrite_categories(self, updates: dict[str, str]) -> None:
+        """
+        Phase G 巩固时批量更新一批条目的 category 字段（分类树新增节点后，
+        原本挂在 "000" 未分类下的记忆需要重新归位），随后整体重写磁盘文件。
+        updates: {entry_id: new_category}
+        """
+        self._ensure_loaded()
+        changed = False
+        for entry in self._entries:
+            new_category = updates.get(entry.entry_id)
+            if new_category is not None and entry.category != new_category:
+                entry.category = new_category
+                changed = True
+        if changed:
+            self._rewrite_disk()
+
+    @property
+    def library(self):
+        """暴露底层 LibraryIndex（可能为 None），供 Phase G 巩固流程调用。"""
+        return self._library
 
     # ── 持久化 ────────────────────────────────────────────────────────────────
 

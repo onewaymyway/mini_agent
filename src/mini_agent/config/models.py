@@ -115,6 +115,11 @@ class MemoryConfig:
     lesson_fail_threshold: int = 3          # 同一工具连续失败 ≥ N 次触发 lesson
     correction_detection_enabled: bool = True  # 人类反馈纠正检测总开关（1.4）
 
+    # ── 图书馆式索引（perception/library_index.py）──────────────────────────
+    # 分类树自动生长 + 实体目录 + 分类目录，"两步检索"（先定位书架再精排）。
+    library_index_enabled: bool = True      # 总开关，关闭则 MemoryStore 行为与改造前完全一致
+    library_shelf_search_enabled: bool = True  # context_builder 检索时是否走两步检索（可单独关闭，仅保留写入侧归类）
+
 
 @dataclass
 class CompressConfig:

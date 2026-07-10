@@ -502,6 +502,7 @@ class PhaseGReport:
     prune_candidates:    list[PruneCandidate]    = field(default_factory=list)
     capability_map:      list[CapabilityMapEntry] = field(default_factory=list)
     promotion_candidates: list[PromotionCandidate] = field(default_factory=list)
+    knowledge_consolidation: dict = field(default_factory=dict)
     ran_at: float = field(default_factory=time.time)
 
     @property
@@ -514,6 +515,7 @@ class PhaseGReport:
             "prune_candidates":     [c.to_dict() for c in self.prune_candidates],
             "capability_map":       [e.to_dict() for e in self.capability_map],
             "promotion_candidates": [c.to_dict() for c in self.promotion_candidates],
+            "knowledge_consolidation": self.knowledge_consolidation,
         }
 
 
@@ -527,6 +529,9 @@ def run_phase_g(
     promote_min_projects: int = 2,
     promote_min_confidence: float = 0.7,
     observation_window_sessions: int = 5,
+    knowledge_llm_call=None,
+    knowledge_min_cluster_size: int = 5,
+    knowledge_summary_threshold: int = 3,
 ) -> PhaseGReport:
     """
     [8.1] Phase G 整体运行入口。
@@ -576,6 +581,25 @@ def run_phase_g(
     except Exception as _mini_agent_exc:
         from mini_agent.errors import log_exception
         log_exception(_mini_agent_exc, where='mini_agent.evolution.phase_g')
+        pass
+
+    # 8.6 知识巩固（perception/library_index.py）：
+    #   - 批量处理未分类候选，聚类归纳出新的分类节点（"新学科诞生"）
+    #   - 批量重写攒够证据（pending_evidence_count 达阈值）的实体摘要
+    # 只在 memory_backend 是本地 MemoryStore 且带有 library_index 时生效；
+    # 其它 backend（Chroma/Redis 等）尚未接入图书馆式索引，直接跳过。
+    try:
+        library = getattr(memory_backend, "library", None) if memory_backend else None
+        if library is not None:
+            report.knowledge_consolidation = library.consolidate(
+                memory_backend,
+                llm_call=knowledge_llm_call,
+                min_cluster_size=knowledge_min_cluster_size,
+                summary_threshold=knowledge_summary_threshold,
+            )
+    except Exception as _mini_agent_exc:
+        from mini_agent.errors import log_exception
+        log_exception(_mini_agent_exc, where='mini_agent.evolution.phase_g.knowledge_consolidation')
         pass
 
     # 记录本次运行时间

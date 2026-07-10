@@ -417,8 +417,25 @@ class Agent:
         self._memory: Optional[MemoryBackend] = None
         self._global_memory: Optional[MemoryBackend] = None
         if cfg.memory_enabled:
-            from mini_agent.perception.memory_factory import create_both_memory_backends
+            from mini_agent.perception.memory_factory import (
+                create_both_memory_backends,
+                set_llm_classify_call,
+                build_llm_call,
+            )
             self._memory, self._global_memory = create_both_memory_backends(cfg)
+
+            # [SYS-LIBRARY-INDEX] 图书馆式索引的分类兜底（规则未命中时）复用
+            # Agent 当前正在用的 LLMClient，不单独接一个新 provider。
+            # 复用 self._client_pool.current_client 而不是固定住某个 client 引用，
+            # 是因为 client_pool 支持故障转移/切换模型（见 switch_model 等方法），
+            # 这里每次分类调用时都会取当时的 current_client，天然跟随切换。
+            if getattr(cfg.memory, "library_index_enabled", True):
+                _pool = self._client_pool
+                _llm_call = lambda prompt: build_llm_call(_pool.current_client)(prompt)
+                if self._memory is not None:
+                    set_llm_classify_call(self._memory, _llm_call)
+                if self._global_memory is not None:
+                    set_llm_classify_call(self._global_memory, _llm_call)
 
             # [Phase E / 3.3] 向已存在的 TaskManager 登记【主 agent】的 memory
             # backend，使 SubAgent 结束时能触发 reload()（详见
@@ -1497,10 +1514,17 @@ class Agent:
             if not should_run_phase_g(paths):
                 return
 
+            knowledge_llm_call = None
+            _pool = getattr(self, "_client_pool", None)
+            if _pool is not None:
+                from mini_agent.perception.memory_factory import build_llm_call
+                knowledge_llm_call = lambda prompt: build_llm_call(_pool.current_client)(prompt)
+
             report = run_phase_g(
                 paths,
                 skill_loader=getattr(self, "skill_loader", None),
                 memory_backend=getattr(self, "_memory", None),
+                knowledge_llm_call=knowledge_llm_call,
             )
 
             # 只在有发现时打印摘要（避免每次退出都打印噪音）

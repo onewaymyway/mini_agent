@@ -221,6 +221,34 @@ class AgentPaths:
         顺手维护，不等待尚不存在的 evolution-agent 周期扫描）"""
         return self.workdir_dir / "knowledge_index.json"
 
+    # ── 图书馆式知识索引（perception/classification.py, entity_index.py, catalog.py）──
+    # 与 W2 的 project.json/work_index.json 同一定位：观察性数据，可重建，
+    # 不经 StateRepo。命名延续 workdir_xxx 惯例。
+
+    @property
+    def workdir_classification_tree(self) -> Path:
+        """.agent/classification_tree.json — 自动生长的分类树（书架结构）"""
+        return self.workdir_dir / "classification_tree.json"
+
+    @property
+    def workdir_unclassified_candidates(self) -> Path:
+        """.agent/unclassified_candidates.jsonl — 待归类候选（Phase G 批量处理后清空/归档）"""
+        return self.workdir_dir / "unclassified_candidates.jsonl"
+
+    @property
+    def workdir_entity_index(self) -> Path:
+        """.agent/entities.json — 实体卡片（模块/bug模式/概念等），含滚动摘要"""
+        return self.workdir_dir / "entities.json"
+
+    @property
+    def workdir_category_catalog(self) -> Path:
+        """.agent/category_catalog.json — 分类号 → entry_id 列表（指针索引，可重建）"""
+        return self.workdir_dir / "category_catalog.json"
+
+    @property
+    def workdir_knowledge_timeline(self) -> Path:
+        """.agent/knowledge_timeline.jsonl — 知识生命周期编年目录（发现→生成→巩固/推翻）"""
+        return self.workdir_dir / "knowledge_timeline.jsonl"
     @property
     def workdir_cognitive_anchor(self) -> Path:
         """<project_root>/.agent/cognitive_anchor.md — 认知锚点文件（具身改进

@@ -97,14 +97,28 @@ class ContextBuilder:
         self._cached_memory_snippet = ""
 
         if self.memory and query:
-            try:
-                from mini_agent.perception.memory_factory import merge_search
-                memories = merge_search(
-                    self.memory, self.global_memory, query,
-                    k=self.cfg.memory_top_k,
-                )
-            except Exception:
-                memories = self.memory.search(query, k=self.cfg.memory_top_k)
+            memories = None
+            # 图书馆式两步检索：先定位书架（分类号），再只在书架范围内精排。
+            # 只对 project 级记忆生效（global 记忆的分类体系是另一棵独立的树，
+            # merge_search 本身已经做了两级合并，这里不重复处理 global 侧）。
+            if getattr(self.cfg.memory, "library_shelf_search_enabled", True):
+                library = getattr(self.memory, "library", None)
+                if library is not None:
+                    try:
+                        memories = library.shelf_search(
+                            self.memory, query, k=self.cfg.memory_top_k
+                        )
+                    except Exception:
+                        memories = None
+            if not memories:
+                try:
+                    from mini_agent.perception.memory_factory import merge_search
+                    memories = merge_search(
+                        self.memory, self.global_memory, query,
+                        k=self.cfg.memory_top_k,
+                    )
+                except Exception:
+                    memories = self.memory.search(query, k=self.cfg.memory_top_k)
             if memories:
                 snippets = "\n".join(
                     f"- [{m.session_id[:6]}] {m.summary}"

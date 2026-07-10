@@ -435,6 +435,7 @@ register_memory_backend("chroma", lambda cfg: ChromaMemoryBackend(cfg))
 - [自我演化实施计划](../next_doc/self_evolution_implementation_plan.md) - Stage 1 完整需求背景
 - [自我演化 SubAgent 信息继承（Stage 3.3）](self-evolution-stage3-3-guide.md) - SubAgent 产生的 lesson 如何回流主 agent
 - [自我演化 eval 反馈环（Stage 3.2）](self-evolution-stage3-2-guide.md) - 用 eval 验证 lesson → skill 闭环产出的效果
+- [图书馆式知识索引指南](./library-index-guide.md) - 分类树自动生长 + 实体目录 + 两步检索 + Phase G 知识巩固（在本文档描述的 `MemoryStore` 之上新增的结构化索引层）
 
 ## 常见问题
 
@@ -468,4 +469,4 @@ A: 设计上"宁可漏检，不可误判"，已排除了"应该是"/"should be"�
 
 ---
 
-*最后更新：2026-06（新增「Lesson Memory」章节，对应 self_evolution_implementation_plan.md Stage 1）*
+*最后更新：2026-07（新增「图书馆式知识索引」章节链接，详见 library-index-guide.md；原「Lesson Memory」章节对应 2026-06 self_evolution_implementation_plan.md Stage 1）*

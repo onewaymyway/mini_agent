@@ -192,10 +192,17 @@ def _handle_phase_g(rest: list[str], agent) -> None:
 
         R.print_info("[phase-g] 开始扫描…")
 
+        knowledge_llm_call = None
+        _pool = getattr(agent, "_client_pool", None)
+        if _pool is not None:
+            from mini_agent.perception.memory_factory import build_llm_call
+            knowledge_llm_call = lambda prompt: build_llm_call(_pool.current_client)(prompt)
+
         report = run_phase_g(
             paths,
             skill_loader=getattr(agent, "skill_loader", None),
             memory_backend=getattr(agent, "_memory", None),
+            knowledge_llm_call=knowledge_llm_call,
         )
 
         _print_phase_g_report(report)
@@ -257,6 +264,16 @@ def _print_phase_g_report(report) -> None:
         R.console.print("[dim]  提示：用 /evolve review 触发 evolution-agent 将候选转为 skill 提案[/dim]")
     else:
         R.console.print("[dim]  ✓ 无 Scope 晋升候选（跨项目模式数据不足或未达门槛）[/dim]")
+
+    # ── 8.6 知识巩固（图书馆式索引）──
+    kc = getattr(report, "knowledge_consolidation", None)
+    if kc:
+        R.console.print("\n[bold magenta]📚 知识巩固（分类树 / 实体摘要）[/bold magenta]")
+        R.console.print(
+            f"[dim]  新增分类节点 {kc.get('new_categories', 0)} 个，"
+            f"仍待归类候选 {kc.get('remaining_unclassified', 0)} 条，"
+            f"重写实体摘要 {kc.get('entities_summarized', 0)} 个[/dim]"
+        )
 
     R.console.print(f"\n[dim]Phase G 完成，共发现 {len(report.prune_candidates)} 个剪枝候选、"
                     f"{len(report.promotion_candidates)} 个晋升候选[/dim]\n")
