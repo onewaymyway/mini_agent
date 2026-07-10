@@ -175,6 +175,10 @@ mini-agent user token u_a1b2c3d4                       # 重新生成 token
 - `lesson_review.py` — lesson 阈值扫描（Stage 3.1），`/evolve review` 的扫描逻辑
 - `goal_backlog.py` — 跨会话目标层级（Stage 9）：`GoalNode`（Goal/Objective 统一节点）、`GoalBacklog`（持久化 `.agent/goals.json`）；`has_actionable_work()` 和 `active_objectives()` 是 AutonomousLoop/ObjectiveExecutor 的核心调用接口
 - `exploration_sandbox.py` — 探索实验沙盒（Stage 9 Phase 3）：包装 Stage 2 `EvolutionWorkspace` 加预算门控，`ExplorationReport` 结果写入 `activity_digest.jsonl`；`_tick_autonomous()` 对 capability 类软目标候选调用此沙盒做轻量验证，成功才写 GoalBacklog + 触发 `skill_propose`
+- `classification.py` — 图书馆式分类树（书架结构）：`ClassificationTree` 冷启动只有根节点，运行时自动生长（规则关键词匹配 + LLM 兜底只能入座已有节点，新节点只在 Phase G 批量聚类时诞生）；`merge_similar_nodes()` 按 Jaccard 相似度收敛重复书架，`feedback_score` 累积检索反馈调整打分权重
+- `entity_index.py` — 实体目录（图书馆"著者目录"对应物）：`EntityStore` 管理模块/bug模式/概念等实体卡片，`link_entry()` 挂载记忆、`rewrite_summary()` 攒够证据才批量重写摘要（含冲突检测，矛盾时标注 `⚠矛盾已更新：` 并归档 `superseded_notes`）、`consolidate_entities()` 做去噪+近重复合并
+- `catalog.py` — 分类目录（分类号 → entry_id 指针索引，可从 `memory.jsonl` 重建）+ 知识生命周期编年目录（`knowledge_timeline.jsonl` + 侧车索引 `knowledge_timeline_index.json` 支持按实体/分类过滤查询）
+- `library_index.py` — 图书馆式索引组合外观 `LibraryIndex`：`on_new_entry()`（写入上架）/`shelf_search()`（两步检索：先定位书架再精排，不足回退全库）/`record_retrieval_feedback()`/`mark_stale_from_correction()`（人类纠正 → 定位刚检索到的旧知识 → 标记过时闭环）/`timeline_for()`/`consolidate()`（Phase G 巡检：分类生长+合并、实体摘要重写、实体巩固），详见 [图书馆式知识索引指南](docs/library-index-guide.md)
 - `behavior/` — 用户行为感知系统（配置文件 `<project_root>/behavior_config.json`，跟 `agent_config.json` 同级目录，独立于 `AppConfig` 加载流程；采集到的原始事件/分析摘要仍落盘在 `~/.agent/behavior/`，总开关+全部子开关默认关闭）：`config.py`（`BehaviorConfig`）、`events.py`（`ActivityEvent`/`BehaviorEventStore` JSONL 存储）、`manager.py`（`BehaviorPerceptionManager` 单例，启停采集器+外部上报门禁）、`analyzer.py`（把原始事件聚合为工作/生活画像日报）、`mobile_setup.py`（Android/iOS 接入模板生成）、`collectors/`（`active_window`/`idle`/`now_playing`/`app_lifecycle` 本机线程采集器 + `cdp_browser`/`browser_launcher` CDP 专用浏览器方案 + `external_hooks` git/终端 hook 生成器），详见 [用户行为感知系统指南](docs/behavior-perception-guide.md)
 
 ### HTTP API (`src/mini_agent/api/`)
@@ -520,8 +524,9 @@ mini-agent user token u_a1b2c3d4                       # 重新生成 token
 - **8.3 能力地图**：`build_capability_map()` 扫描 `tasks/*/manifest.json`，按 `_infer_domain()` 规则式推断任务类型，聚合成功率，写入 `entry_type="capability_map"` 的 memory 条目——终于激活了早期设计就预留的这个枚举值。Global scope 汇总留待数据积累后扩展
 - **8.4 Scope 晋升**：`check_scope_promotion()` 读 `cross_project_index.json`，判据 `observed_in_projects ≥ 2` 且 `confidence ≥ 0.70` 且 `global_skill_candidate=true`，当前只输出候选列表（`PromotionCandidate`），不直接调用 `skill_propose`
 - **8.5 节奏治理**：`rhythm_is_allowed()`/`record_proposal()`，7 天冷却期，可对任意 `(proposal_type, key)` 限流——回应设计文档开放问题 1（T1 自动合并的观察期）
+- **8.6 知识巩固（图书馆式索引）**：`run_phase_g()` 顺带调用 `LibraryIndex.consolidate()`——未分类候选批量聚类生长分类节点、分类树按关键词 Jaccard 相似度合并收敛、攒够证据的实体摘要批量重写（含冲突检测）、实体去噪+近重复合并；结果并入 `PhaseGReport.knowledge_consolidation`，`/evolve phase-g` 报告展示；新增 `/evolve timeline --entity <id>|--category <code>` 查询知识生命周期编年目录
 - **核心模块**：`evolution/phase_g.py`（`run_phase_g()` 整体入口）+ `cli/commands/evolve.py`（`_handle_phase_g()`）+ `agent.py`（`_maybe_run_phase_g()`，SessionEnd 时间门控接入点）
-- 详见 [Phase G 后台循环指南（Stage 8）](docs/self-evolution-phase-g-guide.md)
+- 详见 [Phase G 后台循环指南（Stage 8）](docs/self-evolution-phase-g-guide.md)、[图书馆式知识索引指南](docs/library-index-guide.md)
 
 ### 自主运行时（Stage 9 / Phase H）
 
@@ -625,6 +630,7 @@ mini-agent user token u_a1b2c3d4                       # 重新生成 token
 - [Workdir 知识层与 Global 知识层指南（Stage 4 & 5）](docs/self-evolution-stage4-5-guide.md) — `project.json`/`work_index.json`/`open_threads.json`/`knowledge.md`（W2）+ `self_profile.json`/`projects_index.json`/`cross_project_index.json`/`activity_log.jsonl`（W3）
 - [观察性系统指南（Stage 6）](docs/observability-guide.md) — `traces.jsonl` 追踪、`/diagnostics` 端点、异常检测、工具调用因果链
 - [Phase G 后台循环指南（Stage 8）](docs/self-evolution-phase-g-guide.md) — 剪枝候选 / 能力地图 / Scope 晋升 / 演化节奏治理
+- [图书馆式知识索引指南](docs/library-index-guide.md) — 分类树自动生长/合并 + 实体目录（冲突检测/去噪/近重复合并）+ 两步检索 + 检索反馈 + 纠正闭环 + 时间线查询 + 多用户书架隔离
 - [Stage 9 自主运行时指南](docs/self-evolution-stage9-guide.md) — 常驻守护进程 / Goal Backlog / 三档位 AutonomousLoop / 资源仲裁
 - [具身智能改进指南](docs/embodied-agent-guide.md) — 本体感知 / 余裕感知 / 工具透明性 / AgentSelfModel / 时间加权记忆 / 认知锚点 / 自维护模块（A/B/C 三阶段共 12 项）
 - [微信接入指南](docs/weixin-bot-guide.md) — `weixin_bot.py` 每用户 Agent 隔离 / 远程权限审批 / 同步-异步桥接；含 `_get_or_create` 事件循环死锁问题的根因分析与修复记录
@@ -637,4 +643,5 @@ mini-agent user token u_a1b2c3d4                       # 重新生成 token
 - Stage 0-8 均已完成（详见 `next_doc/self_evolution_implementation_plan.md` 与 `next_doc/self_evolution_stage4plus_plan.md` 各 Stage 完成记录）
 - Stage 9（Phase H：自主运行时）是决策点而非常规排期 Stage，启动前置清单见 `next_doc/self_evolution_stage4plus_plan.md` 第 9.0 节；细化方案见 `next_doc/self_evolution_stage9_plan.md`
 - 具身智能改进（`next_doc/embodied_agent_improvement_plan_v3.md`）A/B/C 三阶段共 12 项均已完成，详见 [具身智能改进指南](docs/embodied-agent-guide.md)；已知遗留缺口：AffordanceMap（B4）与认知锚点（C3）仅在部分路径生效（分别是"仅多用户 daemon"和"本地 CLI，daemon connected REPL 未接入"），详见改进计划文档对应小节
+- 图书馆式知识索引（分类树自动生长/合并 + 实体目录 + 两步检索 + Phase G 知识巩固）已完成，详见 [图书馆式知识索引指南](docs/library-index-guide.md)；正向检索反馈（"确实有用"）目前只有 API 没有自动触发点，等后续有更明确的信号源（如某 skill 被验证生效）再接入
 - Goal 模式（`src/mini_agent/goal_mode/`）已完成粗粒度版本：验收标准协商 + GoalJudge 判定 + compact 整合 + 安全阀 + 异常中断恢复，详见 [Goal 模式指南](docs/goal-mode-guide.md)；细粒度 executor（`_agentic_loop` 内部工具调用后即可插入 Judge 判断）尚未实现，`GoalStepExecutor` 接口已预留扩展点
