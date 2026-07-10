@@ -233,11 +233,13 @@ def record_persona_usage(name: str, project_root: Optional[Path] = None) -> None
         import json
         import time
         from mini_agent.storage.paths import AgentPaths
+        from mini_agent.time_utils import ts_to_str
         paths = AgentPaths(project_root or Path.cwd())
         log_path = paths.global_persona_usage_log
         log_path.parent.mkdir(parents=True, exist_ok=True)
+        _now = time.time()
         with log_path.open("a", encoding="utf-8") as f:
-            f.write(json.dumps({"name": name, "ts": time.time()}, ensure_ascii=False) + "\n")
+            f.write(json.dumps({"name": name, "ts": _now, "ts_str": ts_to_str(_now)}, ensure_ascii=False) + "\n")
     except Exception as _mini_agent_exc:
         from mini_agent.errors import log_exception
         log_exception(_mini_agent_exc, where='mini_agent.orchestrator.persona_profiles')

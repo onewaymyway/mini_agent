@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import time
 from typing import Any, Optional, TYPE_CHECKING
+from mini_agent.time_utils import ts_to_str
 
 if TYPE_CHECKING:
     from mini_agent.storage.paths import AgentPaths
@@ -460,6 +461,7 @@ class AutonomousLoop:
             path.parent.mkdir(parents=True, exist_ok=True)
             record = {
                 "at": time.time(),
+                "at_str": ts_to_str(time.time()),
                 "initiator": "autonomous",
                 **extra,
             }

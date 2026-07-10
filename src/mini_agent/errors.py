@@ -44,9 +44,10 @@ import os
 import sys
 import threading
 import traceback
-from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
+
+from mini_agent.time_utils import iso_local, now_str
 
 _LOCK = threading.Lock()
 _FILE_LOGGER: Optional[logging.Logger] = None
@@ -146,7 +147,8 @@ def log_exception(
         reraise: 若为 True，记录完成后重新抛出 exc（用于"记录后仍要中断"的场景）。
     """
     record: dict[str, Any] = {
-        "ts": datetime.now(timezone.utc).isoformat(),
+        "ts": iso_local(),
+        "ts_str": now_str(),
         "pid": os.getpid(),
         "thread": threading.current_thread().name,
         "where": where or _infer_caller(),
@@ -183,7 +185,8 @@ class _RootErrorRouteHandler(logging.Handler):
     def emit(self, record: logging.LogRecord) -> None:
         try:
             payload: dict[str, Any] = {
-                "ts": datetime.now(timezone.utc).isoformat(),
+                "ts": iso_local(),
+                "ts_str": now_str(),
                 "pid": os.getpid(),
                 "thread": threading.current_thread().name,
                 "where": f"{record.name}:{record.lineno}",

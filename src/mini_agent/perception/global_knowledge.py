@@ -414,8 +414,8 @@ def _is_new_calendar_day(previous_ts: float, now: float) -> bool:
     if previous_ts <= 0:
         return True
     import datetime as _dt
-    prev_date = _dt.datetime.fromtimestamp(previous_ts, tz=_dt.timezone.utc).date()
-    now_date = _dt.datetime.fromtimestamp(now, tz=_dt.timezone.utc).date()
+    prev_date = _dt.datetime.fromtimestamp(previous_ts).date()
+    now_date = _dt.datetime.fromtimestamp(now).date()
     return now_date != prev_date
 
 
@@ -598,6 +598,7 @@ def append_activity_log(
     """
     record = {
         "at": time.time(),
+        "at_str": ts_to_str(time.time()),
         "project_id": project_id,
         "sid": session_id,
         "theme": theme,
@@ -699,6 +700,7 @@ class CrossProjectIndex:
     def to_dict(self) -> dict:
         return {
             "last_updated": self.last_updated,
+            "last_updated_str": ts_to_str(self.last_updated),
             "cross_project_patterns": [p.to_dict() for p in self.cross_project_patterns],
             "skill_promotion_history": [r.to_dict() for r in self.skill_promotion_history],
             "cross_project_capability_map": dict(self.cross_project_capability_map),

@@ -29,6 +29,7 @@ import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable, Optional
+from mini_agent.time_utils import ts_to_str
 
 ROOT_CODE = "000"
 _MIN_RULE_SCORE = 2          # 关键词命中数达到此值才算规则命中
@@ -414,7 +415,8 @@ class ClassificationTree:
 def record_unclassified_candidate(path: Path, text: str, entry_id: str) -> None:
     """把一条规则+LLM都未命中的记忆记为候选，等待 Phase G 批量聚类生长。"""
     path.parent.mkdir(parents=True, exist_ok=True)
-    record = {"text": text, "entry_id": entry_id, "created_at": time.time()}
+    _now = time.time()
+    record = {"text": text, "entry_id": entry_id, "created_at": _now, "created_at_str": ts_to_str(_now)}
     with path.open("a", encoding="utf-8") as f:
         f.write(json.dumps(record, ensure_ascii=False) + "\n")
 

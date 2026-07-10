@@ -20,6 +20,7 @@ import json
 import time
 from pathlib import Path
 from typing import Optional, TYPE_CHECKING
+from mini_agent.time_utils import ts_to_str
 
 if TYPE_CHECKING:
     from mini_agent.storage.paths import AgentPaths
@@ -218,7 +219,8 @@ def append_activity_digest(paths: "AgentPaths", record: dict) -> None:
     try:
         digest_path = paths.workdir_dir / "activity_digest.jsonl"
         digest_path.parent.mkdir(parents=True, exist_ok=True)
-        entry = {"at": time.time(), **record}
+        _now = time.time()
+        entry = {"at": _now, "at_str": ts_to_str(_now), **record}
         with open(digest_path, "a", encoding="utf-8") as f:
             f.write(json.dumps(entry, ensure_ascii=False))
             f.write("\n")

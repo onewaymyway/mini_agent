@@ -1602,8 +1602,11 @@ class Agent:
             # 格式：单独一行 JSON，flag 字段为 "session_metrics"（与主 activity_log 行区分）
             import json as _json
             al_path.parent.mkdir(parents=True, exist_ok=True)
+            from mini_agent.time_utils import now_ts, ts_to_str
+            _now = now_ts()
             metrics_entry = {
-                "ts":           __import__("time").time(),
+                "ts":           _now,
+                "ts_str":       ts_to_str(_now),
                 "record_type":  "session_metrics",
                 "session_id":   self._session.id,
                 "tool_count":   tool_count,
@@ -1639,10 +1642,9 @@ class Agent:
         if not self._session or not getattr(self._session, "created_at", ""):
             return 0.0
         try:
-            from datetime import datetime, timezone
+            from datetime import datetime
             created = datetime.strptime(self._session.created_at, "%Y-%m-%dT%H:%M:%S")
-            created = created.replace(tzinfo=timezone.utc)
-            now = datetime.now(timezone.utc)
+            now = datetime.now()
             return max(0.0, (now - created).total_seconds() / 60.0)
         except Exception:
             return 0.0

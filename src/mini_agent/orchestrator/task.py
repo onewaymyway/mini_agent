@@ -17,6 +17,7 @@ from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
 from typing import Any, Optional
+from mini_agent.time_utils import ts_to_str
 
 
 class TaskStatus(str, Enum):
@@ -212,6 +213,7 @@ class TaskRecord:
                 "steps_remaining": list(self.steps_remaining),
                 "blockers": list(self.blockers),
                 "last_updated": time.time(),
+                "last_updated_str": ts_to_str(time.time()),
             },
             "decision_log": list(self.decision_log),
             "outcome": outcome,
@@ -251,6 +253,7 @@ class TaskRecord:
         if note:
             self.decision_log.append({
                 "at": time.time(),
+                "at_str": ts_to_str(time.time()),
                 "decision": note,
                 "rationale": "",
                 "alternatives_considered": [],

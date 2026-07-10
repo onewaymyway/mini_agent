@@ -38,6 +38,7 @@ import time
 from dataclasses import dataclass, field, asdict
 from pathlib import Path
 from typing import Optional
+from mini_agent.time_utils import ts_to_str
 
 
 # ── 角色定义 ──────────────────────────────────────────────────────────────────
@@ -468,7 +469,7 @@ class RoleProfileManager:
         """追加 agent 观察备注（用于 agent 在对话中记录关于用户的洞察）。"""
         profile = self.get_profile(user_id)
         notes = profile.get("agent_notes", [])
-        notes.append({"ts": time.time(), "note": note})
+        notes.append({"ts": time.time(), "ts_str": ts_to_str(time.time()), "note": note})
         profile["agent_notes"] = notes[-50:]  # 保留最近 50 条
         self.update_profile(user_id, profile)
 

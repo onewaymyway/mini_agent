@@ -23,7 +23,9 @@ import os
 import uuid
 import time
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import datetime
+
+from mini_agent.time_utils import now_str
 from pathlib import Path
 from typing import Optional
 
@@ -53,9 +55,9 @@ class SessionMeta:
     def age_str(self) -> str:
         try:
             dt = datetime.fromisoformat(self.updated_at.replace("Z", "+00:00"))
-            # _now_iso() 生成的是不带时区信息的 UTC 时间字符串（如 "2026-06-14T02:51:32"），
+            # _now_iso() 生成的是不带时区信息的本地时间字符串（如 "2026-06-14T02:51:32"），
             # 与 timezone-aware 的 now 相减会抛 TypeError，因此按 dt 是否带 tzinfo 选择基准
-            now = datetime.now(timezone.utc) if dt.tzinfo else datetime.now(timezone.utc).replace(tzinfo=None)
+            now = datetime.now().astimezone() if dt.tzinfo else datetime.now()
             diff = now - dt
             s = int(diff.total_seconds())
             if s < 0:     return "刚刚"
@@ -497,7 +499,7 @@ class SessionManager:
 # ── 辅助函数 ──────────────────────────────────────────────────────────────────
 
 def _now_iso() -> str:
-    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S")
+    return datetime.now().strftime("%Y-%m-%dT%H:%M:%S")
 
 
 def _atomic_write_json(path: Path, data: object) -> None:

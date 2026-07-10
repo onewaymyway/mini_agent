@@ -87,9 +87,10 @@ class AgentEvent(BaseModel):
     def sse_format(self) -> str:
         """格式化为 SSE 文本帧（含 id/event/data 三行 + 空行）。"""
         import json
+        from mini_agent.time_utils import ts_to_str
         payload = json.dumps(
             {"turn_id": self.turn_id, "session_id": self.session_id,
-             "ts": self.ts, **self.data},
+             "ts": self.ts, "ts_str": ts_to_str(self.ts), **self.data},
             ensure_ascii=False,
         )
         return f"id: {self.id}\nevent: {self.type.value}\ndata: {payload}\n\n"

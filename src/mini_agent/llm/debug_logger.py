@@ -80,7 +80,9 @@ import logging
 import os
 import time
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime
+
+from mini_agent.time_utils import iso_local, now_str
 from pathlib import Path
 from typing import Any, Optional
 
@@ -174,6 +176,7 @@ class LLMDebugLogger:
         entry = {
             "seq": seq,
             "ts": _now_iso(),
+            "ts_str": now_str(),
             "event": "request",
             "provider": provider,
             "model": model,
@@ -246,6 +249,7 @@ class LLMDebugLogger:
         entry = {
             "seq":         seq,
             "ts":          _now_iso(),
+            "ts_str":      now_str(),
             "event":       "response",
             "provider":    provider,
             "model":       model,
@@ -272,6 +276,7 @@ class LLMDebugLogger:
         entry = {
             "seq":         seq,
             "ts":          _now_iso(),
+            "ts_str":      now_str(),
             "event":       "error",
             "provider":    provider,
             "model":       model,
@@ -451,4 +456,4 @@ def init_debug_logger_for_session(
 
 
 def _now_iso() -> str:
-    return datetime.now(timezone.utc).isoformat()
+    return iso_local()

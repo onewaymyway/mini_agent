@@ -32,6 +32,7 @@ from mini_agent.permissions import PermissionGuard
 from mini_agent.tools import get_default_registry
 from mini_agent.storage.paths import AgentPaths
 import io
+from mini_agent.time_utils import ts_to_str
 
 
 def _get_task_paths(base_cfg: AppConfig, session_id: Optional[str], task_id: str):
@@ -59,6 +60,7 @@ def _debug_log(
         events_path.parent.mkdir(parents=True, exist_ok=True)
         entry = {
             "ts":      time.time(),
+            "ts_str":  ts_to_str(time.time()),
             "task_id": task_id,
             "event":   event,
             "details": details or {},

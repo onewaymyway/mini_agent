@@ -19,6 +19,7 @@ import tempfile
 import time
 from pathlib import Path
 from typing import Optional
+from mini_agent.time_utils import ts_to_str
 
 
 def _atomic_write_json(path: Path, data: object) -> None:
@@ -122,6 +123,7 @@ def append_knowledge_event(
     entity_ids = entity_ids or []
     record = {
         "ts": time.time(),
+        "ts_str": ts_to_str(time.time()),
         "entry_id": entry_id,
         "event_type": event_type,
         "category": category,

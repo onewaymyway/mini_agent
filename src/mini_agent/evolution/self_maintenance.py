@@ -42,6 +42,7 @@ import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Optional
+from mini_agent.time_utils import ts_to_str
 
 _STATE_FILENAME = "self_maintenance_state.json"
 
@@ -365,7 +366,8 @@ def append_digest_record(paths, extra: dict, initiator: str = "self_maintenance"
     try:
         path = paths.workdir_dir / "activity_digest.jsonl"
         path.parent.mkdir(parents=True, exist_ok=True)
-        record = {"at": time.time(), "initiator": initiator, **extra}
+        _now = time.time()
+        record = {"at": _now, "at_str": ts_to_str(_now), "initiator": initiator, **extra}
         with open(path, "a", encoding="utf-8") as f:
             f.write(json.dumps(record, ensure_ascii=False))
             f.write("\n")
