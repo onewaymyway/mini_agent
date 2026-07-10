@@ -1591,7 +1591,7 @@ class Agent:
             from mini_agent.storage.paths import AgentPaths
             from mini_agent.perception.observability import detect_anomalies
             paths = AgentPaths(self.cfg.project_root)
-            al_path = paths.global_activity_log()
+            al_path = paths.global_activity_log
 
             total_tokens = self.stats.input_tokens + self.stats.output_tokens
             tool_count = getattr(self.stats, "tool_calls", 0)

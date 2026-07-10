@@ -350,7 +350,7 @@ async def get_diagnostics(request: Request):
         if paths:
             try:
                 import json as _json
-                mem_path = paths.workdir_memory()
+                mem_path = paths.workdir_memory
                 if mem_path.exists():
                     entries = []
                     with open(mem_path, encoding="utf-8") as f:
@@ -432,7 +432,7 @@ async def get_diagnostics(request: Request):
         if paths and agent:
             try:
                 from mini_agent.perception.observability import detect_anomalies
-                al_path = paths.global_activity_log()
+                al_path = paths.global_activity_log
                 ss = agent.stats
                 current = {
                     "session_id":   agent._session.id if agent._session else "",
@@ -1669,7 +1669,7 @@ async def get_autonomous_status(request: Request):
     al = http_server.autonomous_loop
     if al is not None:
         try:
-            result["autonomy_level"] = al.autonomy_level
+            result["autonomy_level"] = al._get_autonomy_level()
             result["next_tick_in"] = round(max(0.0, al._last_tick_at + al._tick_interval - time.time()), 1)
         except Exception as _mini_agent_exc:
             from mini_agent.errors import log_exception
