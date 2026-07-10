@@ -142,16 +142,37 @@ def _resolve_session_id(request: Request, explicit: Optional[str] = None) -> str
     return _uuid.uuid4().hex[:12]
 
 
+def _default_owner_ctx() -> "UserContext":
+    """单 token（非多用户认证）模式下使用的固定身份。
+
+    session pool 现在无论是否开启多用户认证都会构造（见 api/server.py），
+    用来支撑"不同客户端连接到不同 session 时互不干扰"。单 token 模式没有
+    真实的用户体系，所有客户端共用这个固定的 owner 身份——session 级别的
+    隔离靠 session_id 区分，不靠 user_id。owner 的 session 目录与改造前
+    完全一致（全局 <project_root>/.agent/sessions/），见
+    SessionAgentPool._build_session_cfg() / _user_session_manager()。
+    """
+    from .user_store import UserContext
+    return UserContext(
+        user_id="owner", name="owner", role="owner",
+        trust_level=10, is_loopback=True,
+    )
+
+
 def _bridge(request: Request, session_id: Optional[str] = None) -> AgentBridge:
     """
     取这次请求要操作的 AgentBridge。
 
-    单用户模式（app.state.session_pool 为 None）：完全保持原有行为，
-    直接返回 app.state.bridge——历史上唯一的全局 bridge，不做任何额外判断。
-    这条路径自 Phase 1 起就没有变过，Phase 3 不会让单用户部署多走一步逻辑。
+    多用户模式（已认证，request.state.user_ctx 存在）：按 _resolve_session_id()
+    决定 session_id，向 SessionAgentPool 要 / 建对应的 SessionEntry。
 
-    多用户模式：按 _resolve_session_id() 决定 session_id，
-    再向 SessionAgentPool 要 / 建对应的 SessionEntry，返回它的 bridge。
+    单 token 模式（没有 user_ctx）：session pool 仍然存在，但只有当这次
+    请求明确带了 session_id（显式参数、请求体或 ?session_id= 查询参数）
+    时才走按 session 隔离的路径——这样"某个客户端 resume/new 了一个具体
+    session 之后，后续请求都带着这个 session_id"就会被路由到它自己独立
+    的 Agent，不会影响其它客户端。完全没有带 session_id 的请求（状态查询、
+    模型列表等只读探测，或者从未调用过 /sessions/new|resume 的极简客户端）
+    继续退回原来的全局共享 bridge，行为和资源开销与改造前完全一致。
     """
     pool = _session_pool(request)
     if pool is None:
@@ -159,10 +180,11 @@ def _bridge(request: Request, session_id: Optional[str] = None) -> AgentBridge:
 
     user_ctx = getattr(request.state, "user_ctx", None)
     if user_ctx is None:
-        # 理论上不会发生：开启多用户模式时，MultiUserAuthMiddleware 必然先于
-        # 路由处理函数运行，认证失败已经在中间件那一层就返回 401 了。
-        # 这里是防御性兜底，不应该被正常请求路径触发。
-        raise HTTPException(status_code=401, detail="Authentication required")
+        explicit_sid = session_id or request.query_params.get("session_id")
+        if not explicit_sid:
+            return request.app.state.bridge
+        user_ctx = _default_owner_ctx()
+        session_id = explicit_sid
 
     sid = _resolve_session_id(request, explicit=session_id)
     try:
@@ -1004,11 +1026,11 @@ async def resume_session(request: Request, session_id: str):
     """
     pool = _session_pool(request)
     if pool is not None:
-        user_ctx = request.state.user_ctx
-        # 乐观接受：不在这里强行验证 session_id 是否存在于磁盘——
-        # 如果用户传了一个不存在的 ID，get_or_create() 在第一次 /chat 时
-        # 会发现历史不存在，自然新建一个，不算错误。这样设计是为了不在
-        # "resume"这个轻量动作上引入一次额外的磁盘 I/O 往返。
+        # 多用户模式 / 单 token 模式（session pool 现在总是存在）下都是
+        # "轻量"操作：不立刻构造 Agent（那会在第一次真正 /chat 时由
+        # _bridge() 通过 SessionAgentPool.get_or_create() 触发），这里
+        # 只是确认这个 session_id 存在（或者干脆乐观地接受任意 ID——下次
+        # /chat 时 get_or_create() 会按"是否有历史"决定加载还是新建）。
         return SessionActionResponse(
             ok=True, session_id=session_id,
             message="Session selected (will be loaded on first message)",

@@ -747,28 +747,34 @@ class HttpServer:
         self._multi_user_enabled = multi_user_enabled
         self._role_store: Optional[UserStore] = None
         self._role_profile_mgr: Optional[RoleProfileManager] = None
-        self._session_pool = None
         if multi_user_enabled:
             users_dir = project_root / ".agent" / "users"
             self._role_store = UserStore(users_dir)
             self._role_store.ensure_owner(configured_token=self._token)
             self._role_profile_mgr = RoleProfileManager(users_dir)
 
-            from mini_agent.api.session_pool import SessionAgentPool, SelfMessageBus
+        # daemon 多 session 隔离：无论是否开启多用户认证（multi_user_enabled），
+        # 都要构造 SessionAgentPool——它是"不同客户端连接到不同 session 时
+        # 互不干扰"的关键机制（按 (user_id, session_id) 各自独立的 Agent 实例）。
+        # 之前这里只在 multi_user_enabled 时才创建，导致单 token 部署下所有
+        # 客户端共用 app.state.bridge 上唯一的那个全局 agent：任何一个客户端
+        # 新建/切换 session，都会通过 bridge.agent 影响到其它所有客户端。
+        # 单 token 模式下 AuthMiddleware 会给所有请求注入同一个
+        # user_id="owner" 的 UserContext（见 api/auth.py），owner 的 session
+        # 仍然落在原来的全局 <project_root>/.agent/sessions/ 目录，完全向后兼容。
+        from mini_agent.api.session_pool import SessionAgentPool, SelfMessageBus
 
-            skill_loader = getattr(agent, "skill_loader", None)
-            skill_dirs = list(getattr(skill_loader, "dirs", []) or [])
+        skill_loader = getattr(agent, "skill_loader", None)
+        skill_dirs = list(getattr(skill_loader, "dirs", []) or [])
 
-            self._self_message_bus = SelfMessageBus()
-            self._session_pool = SessionAgentPool(
-                base_cfg=agent.cfg,
-                role_profile_mgr=self._role_profile_mgr,
-                bus=self._self_message_bus,
-                skill_dirs=skill_dirs,
-            )
-            self._session_pool.start_monitor()
-        else:
-            self._self_message_bus = None
+        self._self_message_bus = SelfMessageBus()
+        self._session_pool = SessionAgentPool(
+            base_cfg=agent.cfg,
+            role_profile_mgr=self._role_profile_mgr,
+            bus=self._self_message_bus,
+            skill_dirs=skill_dirs,
+        )
+        self._session_pool.start_monitor()
 
         # daemon 多用户架构 Phase 2：把 RoleProfileManager 注入 remember_about_user
         # 工具（tools/user_memory.py）。多用户模式未开启时传 None，
