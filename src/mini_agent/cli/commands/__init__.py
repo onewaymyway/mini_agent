@@ -9,7 +9,7 @@ cli/commands — slash 命令处理模块包
   concurrency — /concurrency (/cc)
   providers   — /provider
   evolution   — /evolution log|show|diff|revert（Stage 2：自我演化安全网）
-  evolve      — /evolve review|list（Stage 3.1：lesson → skill 提案闭环）
+  evolve      — /evolve review|list|phase-g|timeline（Stage 3.1：lesson → skill 提案闭环 + Phase G 知识巩固）
   goals       — /agent goals|/goals（Stage 9：Goal Backlog）
   debug_cmd   — /debug system|history|all|save（打印/导出 system prompt 与 history，便于分析调试）
   platform    — /platform status|filtered|reload（可加载对象的平台/tag 过滤策略查看与重载）
