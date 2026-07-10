@@ -13,23 +13,27 @@ perception/behavior — 用户行为感知系统（默认关闭）
     健康数据只接受日聚合数字，不接受心率曲线等细粒度数据。
   - 所有开关默认关闭，需要用户显式开启。
 
+配置文件：`<project_root>/behavior_config.json`，跟 `agent_config.json`
+放在同一级目录（缺省用 `Path.cwd()`）；采集到的原始事件/分析摘要仍然
+落盘在 `~/.agent/behavior/`（跨项目共享）。
+
 快速使用：
     from mini_agent.perception.behavior import get_manager
 
-    mgr = get_manager()
+    mgr = get_manager(project_root=cfg.project_root)  # 传 AppConfig.project_root
     mgr.set_enabled(True)
     mgr.set_collector_enabled("active_window", True)
     events = mgr.query(limit=50)
 """
 
-from .config import BehaviorConfig, load_behavior_config, save_behavior_config
+from .config import BehaviorConfig, load_behavior_config, save_behavior_config, CONFIG_FILENAME
 from .events import ActivityEvent, BehaviorEventStore
-from .manager import BehaviorPerceptionManager, get_manager
+from .manager import BehaviorPerceptionManager, get_manager, reset_manager_for_testing
 from .analyzer import generate_daily_summary, load_daily_summary
 
 __all__ = [
-    "BehaviorConfig", "load_behavior_config", "save_behavior_config",
+    "BehaviorConfig", "load_behavior_config", "save_behavior_config", "CONFIG_FILENAME",
     "ActivityEvent", "BehaviorEventStore",
-    "BehaviorPerceptionManager", "get_manager",
+    "BehaviorPerceptionManager", "get_manager", "reset_manager_for_testing",
     "generate_daily_summary", "load_daily_summary",
 ]

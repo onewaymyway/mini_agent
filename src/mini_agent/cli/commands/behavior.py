@@ -54,7 +54,7 @@ def handle_behavior_cmd(args: list[str], cfg=None) -> None:
         R.print_error("Usage: /behavior status|on|off|enable|disable|token|recent|clear|browser|git|terminal|report")
         return
 
-    mgr = get_manager()
+    mgr = get_manager(project_root=getattr(cfg, "project_root", None) if cfg else None)
     action = args[0].lower()
 
     if action == "status":

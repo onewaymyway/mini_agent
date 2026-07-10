@@ -1963,14 +1963,15 @@ async def run_cron_job_now(job_id: str, request: Request):
 # /report 额外再校验 behavior 自己的 report_token，双重保险：即使主 API
 # token 泄露，浏览器插件那一路也需要单独在 /behavior token 里取到的口令。
 
-def _get_behavior_manager():
+def _get_behavior_manager(request: Request):
     from mini_agent.perception.behavior import get_manager
-    return get_manager()
+    project_root = getattr(request.app.state, "project_root", None)
+    return get_manager(project_root=project_root)
 
 
 @router.get("/perception/status")
 async def perception_status(request: Request):
-    mgr = _get_behavior_manager()
+    mgr = _get_behavior_manager(request)
     return mgr.status()
 
 
@@ -1981,7 +1982,7 @@ async def perception_toggle(request: Request):
        or { "collector": "active_window", "enabled": bool } — 单个采集器
     """
     _require_owner(request)
-    mgr = _get_behavior_manager()
+    mgr = _get_behavior_manager(request)
     body = await request.json()
 
     collector = body.get("collector")
@@ -2017,7 +2018,7 @@ async def perception_report(request: Request):
     if not isinstance(events, list):
         raise HTTPException(status_code=400, detail="events must be a list")
 
-    mgr = _get_behavior_manager()
+    mgr = _get_behavior_manager(request)
     ok, message = mgr.report_external(source, events, token, kind=kind)
     if not ok:
         raise HTTPException(status_code=403, detail=message)
@@ -2037,7 +2038,7 @@ async def perception_git_install_hooks(request: Request):
         raise HTTPException(status_code=400, detail="repo_path is required")
 
     from pathlib import Path
-    mgr = _get_behavior_manager()
+    mgr = _get_behavior_manager(request)
     report_url = str(request.base_url).rstrip("/") + "/v1/perception/report"
     api_token = request.headers.get("Authorization", "").removeprefix("Bearer ").strip()
     try:
@@ -2054,7 +2055,7 @@ async def perception_events(
     limit: int = Query(200, le=2000),
     since: Optional[float] = Query(None),
 ):
-    mgr = _get_behavior_manager()
+    mgr = _get_behavior_manager(request)
     events = mgr.query(source=source, limit=limit, since=since)
     return {"events": [e.to_dict() for e in events], "count": len(events)}
 
@@ -2062,7 +2063,7 @@ async def perception_events(
 @router.delete("/perception/events")
 async def perception_events_clear(request: Request):
     _require_owner(request)
-    mgr = _get_behavior_manager()
+    mgr = _get_behavior_manager(request)
     n = mgr.clear()
     return {"cleared_files": n}
 
@@ -2071,7 +2072,7 @@ async def perception_events_clear(request: Request):
 async def perception_browser_start(request: Request):
     """启动专用调试浏览器（CDP 方案），owner only（会拉起本机子进程）。"""
     _require_owner(request)
-    mgr = _get_behavior_manager()
+    mgr = _get_behavior_manager(request)
     try:
         st = mgr.browser_start()
     except Exception as e:
@@ -2087,13 +2088,13 @@ async def perception_browser_stop(request: Request):
         body = await request.json()
     except Exception:
         pass
-    mgr = _get_behavior_manager()
+    mgr = _get_behavior_manager(request)
     return mgr.browser_stop(kill_browser=bool(body.get("kill_browser", False)))
 
 
 @router.get("/perception/browser/status")
 async def perception_browser_status(request: Request):
-    mgr = _get_behavior_manager()
+    mgr = _get_behavior_manager(request)
     return mgr.browser_status()
 
 
@@ -2104,7 +2105,7 @@ async def perception_summary(request: Request, date: Optional[str] = Query(None)
     from mini_agent.perception.behavior.analyzer import generate_daily_summary, load_daily_summary
 
     day = date or _dt.date.today().isoformat()
-    mgr = _get_behavior_manager()
+    mgr = _get_behavior_manager(request)
     summary = load_daily_summary(day)
     if summary is None:
         summary = generate_daily_summary(mgr, day)

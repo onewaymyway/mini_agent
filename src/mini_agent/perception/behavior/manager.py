@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import threading
 import time
+from pathlib import Path
 from typing import Optional
 
 from .config import BehaviorConfig, load_behavior_config, save_behavior_config, ensure_report_token
@@ -31,8 +32,9 @@ from .mobile_setup import android_usage_report_template, ios_shortcuts_template
 
 
 class BehaviorPerceptionManager:
-    def __init__(self) -> None:
-        self._cfg: BehaviorConfig = load_behavior_config()
+    def __init__(self, project_root: Optional[Path] = None) -> None:
+        self._project_root = project_root
+        self._cfg: BehaviorConfig = load_behavior_config(project_root)
         self._store = BehaviorEventStore()
         self._collectors: dict[str, object] = {}
         self._lock = threading.Lock()
@@ -45,14 +47,18 @@ class BehaviorPerceptionManager:
     def config(self) -> BehaviorConfig:
         return self._cfg
 
+    @property
+    def project_root(self):
+        return self._project_root
+
     def reload_config(self) -> None:
         with self._lock:
-            self._cfg = load_behavior_config()
+            self._cfg = load_behavior_config(self._project_root)
 
     def set_enabled(self, enabled: bool) -> None:
         with self._lock:
             self._cfg.enabled = enabled
-            save_behavior_config(self._cfg)
+            save_behavior_config(self._cfg, self._project_root)
         if enabled:
             self.start()
         else:
@@ -63,12 +69,12 @@ class BehaviorPerceptionManager:
             if not hasattr(self._cfg, f"{name}_enabled"):
                 raise ValueError(f"unknown collector: {name}")
             setattr(self._cfg, f"{name}_enabled", enabled)
-            save_behavior_config(self._cfg)
+            save_behavior_config(self._cfg, self._project_root)
         # 重新按最新配置启停
         self.start()
 
     def get_report_token(self) -> str:
-        return ensure_report_token(self._cfg)
+        return ensure_report_token(self._cfg, self._project_root)
 
     # ── 启停 ──────────────────────────────────────────────────────────────
 
@@ -352,11 +358,24 @@ _manager: Optional[BehaviorPerceptionManager] = None
 _manager_lock = threading.Lock()
 
 
-def get_manager() -> BehaviorPerceptionManager:
+def get_manager(project_root: Optional[Path] = None) -> BehaviorPerceptionManager:
+    """获取全局单例。project_root 只在第一次创建时生效（决定 behavior_config.json
+    读写的位置）；后续调用即使传入不同的 project_root 也会复用已经创建好的实例
+    （同一进程通常只服务于一个项目根目录，不做"运行中途切换项目"这种事）。
+    """
     global _manager
     with _manager_lock:
         if _manager is None:
-            _manager = BehaviorPerceptionManager()
+            _manager = BehaviorPerceptionManager(project_root)
             if _manager.config.enabled:
                 _manager.start()
         return _manager
+
+
+def reset_manager_for_testing() -> None:
+    """仅供测试使用：清空单例，让下一次 get_manager() 重新创建。"""
+    global _manager
+    with _manager_lock:
+        if _manager is not None:
+            _manager.stop()
+        _manager = None

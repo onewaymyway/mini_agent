@@ -455,8 +455,8 @@ cron:<分 时 日 月 周>   标准 cron 5 字段，如 cron:0 */6 * * *（每 6
 
 > 采集桌面/浏览器/手机端的行为信号（前台窗口、空闲、浏览器页面、Git/终端、
 > 媒体播放、应用启停、手机 App 使用/解锁/地理围栏标签/健康聚合），聚合成
-> "工作与生活画像"日报。总开关和每个采集器都默认**全部关闭**，配置独立
-> 落盘在 `~/.agent/behavior/config.json`，不经过 `agent_config.json`。
+> "工作与生活画像"日报。总开关和每个采集器都默认**全部关闭**，配置文件是
+> `<project_root>/behavior_config.json`，跟 `agent_config.json` 同级目录。
 > 详见 `docs/behavior-perception-guide.md`。
 
 | 命令 | 说明 |

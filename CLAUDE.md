@@ -175,7 +175,7 @@ mini-agent user token u_a1b2c3d4                       # 重新生成 token
 - `lesson_review.py` — lesson 阈值扫描（Stage 3.1），`/evolve review` 的扫描逻辑
 - `goal_backlog.py` — 跨会话目标层级（Stage 9）：`GoalNode`（Goal/Objective 统一节点）、`GoalBacklog`（持久化 `.agent/goals.json`）；`has_actionable_work()` 和 `active_objectives()` 是 AutonomousLoop/ObjectiveExecutor 的核心调用接口
 - `exploration_sandbox.py` — 探索实验沙盒（Stage 9 Phase 3）：包装 Stage 2 `EvolutionWorkspace` 加预算门控，`ExplorationReport` 结果写入 `activity_digest.jsonl`；`_tick_autonomous()` 对 capability 类软目标候选调用此沙盒做轻量验证，成功才写 GoalBacklog + 触发 `skill_propose`
-- `behavior/` — 用户行为感知系统（独立配置 `~/.agent/behavior/config.json`，不属于 `AppConfig`，总开关+全部子开关默认关闭）：`config.py`（`BehaviorConfig`）、`events.py`（`ActivityEvent`/`BehaviorEventStore` JSONL 存储）、`manager.py`（`BehaviorPerceptionManager` 单例，启停采集器+外部上报门禁）、`analyzer.py`（把原始事件聚合为工作/生活画像日报）、`mobile_setup.py`（Android/iOS 接入模板生成）、`collectors/`（`active_window`/`idle`/`now_playing`/`app_lifecycle` 本机线程采集器 + `cdp_browser`/`browser_launcher` CDP 专用浏览器方案 + `external_hooks` git/终端 hook 生成器），详见 [用户行为感知系统指南](docs/behavior-perception-guide.md)
+- `behavior/` — 用户行为感知系统（配置文件 `<project_root>/behavior_config.json`，跟 `agent_config.json` 同级目录，独立于 `AppConfig` 加载流程；采集到的原始事件/分析摘要仍落盘在 `~/.agent/behavior/`，总开关+全部子开关默认关闭）：`config.py`（`BehaviorConfig`）、`events.py`（`ActivityEvent`/`BehaviorEventStore` JSONL 存储）、`manager.py`（`BehaviorPerceptionManager` 单例，启停采集器+外部上报门禁）、`analyzer.py`（把原始事件聚合为工作/生活画像日报）、`mobile_setup.py`（Android/iOS 接入模板生成）、`collectors/`（`active_window`/`idle`/`now_playing`/`app_lifecycle` 本机线程采集器 + `cdp_browser`/`browser_launcher` CDP 专用浏览器方案 + `external_hooks` git/终端 hook 生成器），详见 [用户行为感知系统指南](docs/behavior-perception-guide.md)
 
 ### HTTP API (`src/mini_agent/api/`)
 
@@ -630,7 +630,7 @@ mini-agent user token u_a1b2c3d4                       # 重新生成 token
 - [微信接入指南](docs/weixin-bot-guide.md) — `weixin_bot.py` 每用户 Agent 隔离 / 远程权限审批 / 同步-异步桥接；含 `_get_or_create` 事件循环死锁问题的根因分析与修复记录
 - [Goal 模式指南](docs/goal-mode-guide.md) — 设定目标后自动多轮尝试直至达成，`/goal` 命令，验收标准协商 / GoalJudge 判定 / 异常中断恢复
 - [轮次守门员指南](docs/turn-judge-guide.md) — 轮次结束等待用户输入前自动核查是否真的需要真人 / 是否应由系统代替用户反馈继续（`turn_judge` 配置块，默认关闭）
-- [用户行为感知系统指南](docs/behavior-perception-guide.md) — 桌面（前台窗口/空闲/浏览器插件+CDP专用浏览器/Git/终端/媒体/应用启停）+ 手机（Tasker/快捷指令/Android伴侣App）行为采集，独立配置 `~/.agent/behavior/config.json`，总开关与全部子开关默认关闭；分析层每日聚合工作与生活画像日报
+- [用户行为感知系统指南](docs/behavior-perception-guide.md) — 桌面（前台窗口/空闲/浏览器插件+CDP专用浏览器/Git/终端/媒体/应用启停）+ 手机（Tasker/快捷指令/Android伴侣App）行为采集，配置文件 `<project_root>/behavior_config.json`（跟 `agent_config.json` 同级），总开关与全部子开关默认关闭；分析层每日聚合工作与生活画像日报
 
 ## 当前进展
 

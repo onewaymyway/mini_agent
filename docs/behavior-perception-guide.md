@@ -29,8 +29,12 @@
      "工作画像 + 生活画像"结构化摘要，落盘 .json + .md
 ```
 
-配置独立落盘在 `~/.agent/behavior/config.json`，不经过 `agent_config.json`
-的加载流程，方便随时整体移除，也方便没有完整 mini_agent 运行环境时单独用。
+配置文件是 `<project_root>/behavior_config.json`，跟 `agent_config.json`
+放在同一级目录，方便一起查看/编辑/纳入 `.gitignore`；读写逻辑仍然完全
+独立于 `config/loader.py` 那套 `AppConfig` 加载流程，不会被 `agent_config.json`
+里的字段覆盖。采集到的原始事件和分析摘要则仍落盘在 `~/.agent/behavior/`
+（跨项目共享，因为"用户在做什么"这件事本来就不该按项目切分），只有
+开关配置这一份跟着项目走。
 
 ## 隐私边界（这是设计的核心，务必保持）
 
@@ -51,7 +55,7 @@
 - **不读通知正文、不读短信/聊天内容**（手机端同样适用这条边界）。
 - **所有开关默认关闭**，需要用户在 CLI 或 HTTP API 里显式打开。
 
-## 配置项（`~/.agent/behavior/config.json`）
+## 配置项（`<project_root>/behavior_config.json`）
 
 由 `perception/behavior/config.py` 里的 `BehaviorConfig` 定义，全部字段
 默认关闭/保守：
@@ -77,6 +81,13 @@
 | `redact_url_path` | `True` | 浏览器上报只保留域名，不保留完整路径/查询参数 |
 | `retention_days` | `30` | 事件保留天数，超期自动清理 |
 | `cdp_debug_port` / `cdp_browser_path` / `cdp_user_data_dir` / `cdp_headless` | — | CDP 方案参数 |
+
+> **配置文件位置解析规则**：`get_manager(project_root=...)` 不传时默认用
+> `Path.cwd()`，跟 `config/loader.py::load_config()` 里 `root = project_root
+> or Path.cwd()` 的默认规则一致。CLI（`/behavior ...`）会自动传入
+> `agent.cfg.project_root`；HTTP API 从 `request.app.state.project_root`
+> 里取。`get_manager()` 是进程内单例，只有第一次调用时的 `project_root`
+> 生效，之后调用即使传入不同的路径也会复用已创建的实例。
 
 ## 采集器一览
 

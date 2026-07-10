@@ -5,8 +5,13 @@ perception/behavior/config.py — 用户行为感知系统：开关与配置
   - 总开关默认 False。总开关关闭时，manager 不启动任何采集线程，
     HTTP 上报接口也会直接拒绝 (403)。
   - 每个采集器有独立子开关，均默认 False，需要显式打开。
-  - 配置独立于 AppConfig 落盘（~/.agent/behavior_config.json），
-    不侵入现有 config/loader.py 的加载流程，方便随时整体移除。
+  - 配置文件是 `<project_root>/behavior_config.json`，跟 `agent_config.json`
+    放在同一级目录，方便一起查看/编辑/纳入 .gitignore；但读写逻辑仍然
+    完全独立于 `config/loader.py` 那套 AppConfig 加载流程，不会被
+    `agent_config.json` 的字段覆盖，也不影响 AppConfig 的加载优先级。
+  - 采集到的事件/分析摘要仍然落盘在 `~/.agent/behavior/`（跨项目共享，
+    因为"用户在做什么"这件事本来就不该按项目切分），只有配置开关这一份
+    跟着项目走。
   - window_title / url 等可能带敏感信息的文本字段支持"脱敏模式"：
     脱敏模式下只记录应用名 / 域名，不记录标题全文或完整路径。
 
@@ -25,12 +30,22 @@ from pathlib import Path
 from typing import Optional
 
 
+CONFIG_FILENAME = "behavior_config.json"
+
+
 def _behavior_dir() -> Path:
+    """事件/分析摘要等运行时数据的落盘目录，跟项目无关，固定在用户主目录下。"""
     return Path.home() / ".agent" / "behavior"
 
 
-def _config_path() -> Path:
-    return _behavior_dir() / "config.json"
+def _config_path(project_root: Optional[Path] = None) -> Path:
+    """配置文件路径：`<project_root>/behavior_config.json`，跟 `agent_config.json` 同级。
+
+    project_root 缺省时用 `Path.cwd()`，跟 `config/loader.py::load_config()`
+    里 `root = project_root or Path.cwd()` 的默认规则保持一致。
+    """
+    root = project_root or Path.cwd()
+    return Path(root) / CONFIG_FILENAME
 
 
 @dataclass
@@ -83,9 +98,9 @@ class BehaviorConfig:
         return cls(**valid)
 
 
-def load_behavior_config() -> BehaviorConfig:
-    """从 ~/.agent/behavior/config.json 加载配置；文件不存在时返回默认（全关闭）配置。"""
-    path = _config_path()
+def load_behavior_config(project_root: Optional[Path] = None) -> BehaviorConfig:
+    """从 `<project_root>/behavior_config.json` 加载配置；文件不存在时返回默认（全关闭）配置。"""
+    path = _config_path(project_root)
     if not path.exists():
         return BehaviorConfig()
     try:
@@ -96,10 +111,9 @@ def load_behavior_config() -> BehaviorConfig:
         return BehaviorConfig()
 
 
-def save_behavior_config(cfg: BehaviorConfig) -> None:
-    d = _behavior_dir()
-    d.mkdir(parents=True, exist_ok=True)
-    path = _config_path()
+def save_behavior_config(cfg: BehaviorConfig, project_root: Optional[Path] = None) -> None:
+    path = _config_path(project_root)
+    path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(cfg.to_dict(), ensure_ascii=False, indent=2), encoding="utf-8")
     try:
         import stat
@@ -108,11 +122,11 @@ def save_behavior_config(cfg: BehaviorConfig) -> None:
         pass
 
 
-def ensure_report_token(cfg: BehaviorConfig) -> str:
-    """确保存在浏览器插件上报用的 token；不存在则生成并落盘。"""
+def ensure_report_token(cfg: BehaviorConfig, project_root: Optional[Path] = None) -> str:
+    """确保存在外部上报（浏览器插件/git/终端/手机端）用的 token；不存在则生成并落盘。"""
     if cfg.report_token:
         return cfg.report_token
     import secrets
     cfg.report_token = secrets.token_hex(24)
-    save_behavior_config(cfg)
+    save_behavior_config(cfg, project_root)
     return cfg.report_token

@@ -562,10 +562,13 @@ hot_reload_interval_s: float = 2.0  # Skills/Agent Profiles 热重载轮询间�
 
 ### BehaviorConfig（用户行为感知系统，独立配置文件）
 
-> 这是唯一**不属于** `AppConfig` / `agent_config.json` 的配置块——独立落盘在
-> `~/.agent/behavior/config.json`，由 `perception/behavior/config.py` 管理，
-> 通过 `/behavior` 命令或 `/v1/perception/toggle` 接口读写，不走
-> `--config` / 环境变量这套加载优先级。总开关和全部子开关默认 `False`。
+> 这是唯一**不属于** `AppConfig` 加载流程的配置块——单独落盘在
+> `<project_root>/behavior_config.json`，跟 `agent_config.json` 放在
+> 同一级目录（缺省用 `Path.cwd()`），由 `perception/behavior/config.py`
+> 管理，通过 `/behavior` 命令或 `/v1/perception/toggle` 接口读写，不走
+> `--config` / 环境变量这套加载优先级，也不会被 `agent_config.json`
+> 里的字段覆盖。总开关和全部子开关默认 `False`。采集到的原始事件/
+> 分析摘要仍然落盘在 `~/.agent/behavior/`（跨项目共享）。
 
 ```python
 @dataclass
