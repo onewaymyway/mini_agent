@@ -16,6 +16,8 @@ cli/commands — slash 命令处理模块包
   roles       — /role list|use|show|exit|status|reload（角色扮演 Persona 系统）
   proxy       — /proxy status|refresh|sources [add-mibei77|add-discovered]|integration [set <key> <value>]
                 （代理订阅池：抓取/验证/查看可用节点、可扩展订阅源类型、接入其它模块的开关，懒加载于 repl.py）
+  behavior    — /behavior status|on|off|enable|disable|token|recent|clear
+                （用户行为感知系统：前台窗口/空闲/浏览器插件上报，默认全部关闭）
 """
 
 from mini_agent.cli.commands.skills import handle_skills_list, handle_skill_cmd
@@ -33,8 +35,10 @@ from mini_agent.cli.commands.goals import handle_goals_cmd
 from mini_agent.cli.commands.goal_mode_cmd import handle_goal_cmd
 from mini_agent.cli.commands.debug_cmd import handle_debug_cmd
 from mini_agent.cli.commands.roles import handle_role_cmd
+from mini_agent.cli.commands.behavior import handle_behavior_cmd
 
 __all__ = [
+    "handle_behavior_cmd",
     "handle_skills_list",
     "handle_skill_cmd",
     "handle_session_cmd",

@@ -62,6 +62,17 @@ api/routes.py — FastAPI 路由定义
     POST   /v1/cron/jobs             添加 cron job
     PUT    /v1/cron/jobs/{id}        修改 job（enable/disable/schedule）
     POST   /v1/cron/jobs/{id}/run    立即运行一次
+  用户行为感知（默认关闭，见 perception/behavior/）
+    GET    /v1/perception/status    总开关/采集器状态
+    POST   /v1/perception/toggle    打开/关闭总开关或某个采集器（owner only）
+    POST   /v1/perception/report    外部系统（浏览器插件等）上报事件
+    GET    /v1/perception/events    查询已采集事件
+    DELETE /v1/perception/events    清空已采集事件（owner only）
+    POST   /v1/perception/browser/start  启动专用调试浏览器（CDP 方案，owner only）
+    POST   /v1/perception/browser/stop   停止采集，可同时关闭浏览器进程（owner only）
+    GET    /v1/perception/browser/status 专用浏览器/CDP 连接状态
+    POST   /v1/perception/git/install-hooks 在指定仓库安装 git commit/checkout 上报 hook（owner only）
+    GET    /v1/perception/summary        查看/生成某天的工作/生活画像摘要（分析层）
 """
 
 from __future__ import annotations
@@ -1938,3 +1949,163 @@ async def run_cron_job_now(job_id: str, request: Request):
             raise HTTPException(status_code=404, detail=f"Job '{job_id}' not found")
         raise HTTPException(status_code=500, detail="Job trigger failed")
     return {"triggered": True, "job_id": job_id}
+
+
+# ── 用户行为感知系统（默认关闭，见 perception/behavior/）───────────────────
+#
+#   GET  /v1/perception/status   总开关/采集器状态
+#   POST /v1/perception/toggle   打开/关闭总开关或某个采集器（owner only）
+#   POST /v1/perception/report   外部系统（如浏览器插件）上报事件
+#   GET  /v1/perception/events   查询已采集事件
+#   DELETE /v1/perception/events 清空已采集事件（owner only）
+#
+# /v1/* 已经过 AuthMiddleware 校验（Bearer token + 127.0.0.1 白名单），
+# /report 额外再校验 behavior 自己的 report_token，双重保险：即使主 API
+# token 泄露，浏览器插件那一路也需要单独在 /behavior token 里取到的口令。
+
+def _get_behavior_manager():
+    from mini_agent.perception.behavior import get_manager
+    return get_manager()
+
+
+@router.get("/perception/status")
+async def perception_status(request: Request):
+    mgr = _get_behavior_manager()
+    return mgr.status()
+
+
+@router.post("/perception/toggle")
+async def perception_toggle(request: Request):
+    """
+    Body: { "enabled": bool }                      — 总开关
+       or { "collector": "active_window", "enabled": bool } — 单个采集器
+    """
+    _require_owner(request)
+    mgr = _get_behavior_manager()
+    body = await request.json()
+
+    collector = body.get("collector")
+    if collector:
+        try:
+            mgr.set_collector_enabled(collector, bool(body.get("enabled", False)))
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e))
+    else:
+        mgr.set_enabled(bool(body.get("enabled", False)))
+    return mgr.status()
+
+
+@router.post("/perception/report")
+async def perception_report(request: Request):
+    """
+    外部系统（浏览器插件等）上报行为事件。
+
+    Body: {
+      "source": "browser_ext",
+      "token": "<behavior report token, 从 /behavior token 或本接口的 owner 调用获取>",
+      "events": [ { "event_type": "page_visit", "domain": "...", ... }, ... ]
+    }
+
+    受总开关 + browser_report_enabled 子开关 + token 三重校验，
+    任意一项不满足都会被拒绝而不是静默丢弃（返回明确原因，便于插件侧调试）。
+    """
+    body = await request.json()
+    source = body.get("source", "browser_ext")
+    kind = body.get("kind", "browser")
+    token = body.get("token", "")
+    events = body.get("events", [])
+    if not isinstance(events, list):
+        raise HTTPException(status_code=400, detail="events must be a list")
+
+    mgr = _get_behavior_manager()
+    ok, message = mgr.report_external(source, events, token, kind=kind)
+    if not ok:
+        raise HTTPException(status_code=403, detail=message)
+    return {"ok": True, "message": message}
+
+
+@router.post("/perception/git/install-hooks")
+async def perception_git_install_hooks(request: Request):
+    """在指定仓库安装 post-commit/post-checkout hook（owner only，会写本机文件）。
+
+    Body: { "repo_path": "/path/to/repo" }
+    """
+    _require_owner(request)
+    body = await request.json()
+    repo_path = body.get("repo_path")
+    if not repo_path:
+        raise HTTPException(status_code=400, detail="repo_path is required")
+
+    from pathlib import Path
+    mgr = _get_behavior_manager()
+    report_url = str(request.base_url).rstrip("/") + "/v1/perception/report"
+    api_token = request.headers.get("Authorization", "").removeprefix("Bearer ").strip()
+    try:
+        written = mgr.install_git_hooks(Path(repo_path), report_url, api_token)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    return {"installed": [str(p) for p in written]}
+
+
+@router.get("/perception/events")
+async def perception_events(
+    request: Request,
+    source: Optional[str] = Query(None),
+    limit: int = Query(200, le=2000),
+    since: Optional[float] = Query(None),
+):
+    mgr = _get_behavior_manager()
+    events = mgr.query(source=source, limit=limit, since=since)
+    return {"events": [e.to_dict() for e in events], "count": len(events)}
+
+
+@router.delete("/perception/events")
+async def perception_events_clear(request: Request):
+    _require_owner(request)
+    mgr = _get_behavior_manager()
+    n = mgr.clear()
+    return {"cleared_files": n}
+
+
+@router.post("/perception/browser/start")
+async def perception_browser_start(request: Request):
+    """启动专用调试浏览器（CDP 方案），owner only（会拉起本机子进程）。"""
+    _require_owner(request)
+    mgr = _get_behavior_manager()
+    try:
+        st = mgr.browser_start()
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    return st
+
+
+@router.post("/perception/browser/stop")
+async def perception_browser_stop(request: Request):
+    _require_owner(request)
+    body = {}
+    try:
+        body = await request.json()
+    except Exception:
+        pass
+    mgr = _get_behavior_manager()
+    return mgr.browser_stop(kill_browser=bool(body.get("kill_browser", False)))
+
+
+@router.get("/perception/browser/status")
+async def perception_browser_status(request: Request):
+    mgr = _get_behavior_manager()
+    return mgr.browser_status()
+
+
+@router.get("/perception/summary")
+async def perception_summary(request: Request, date: Optional[str] = Query(None)):
+    """查看某天的工作/生活画像摘要；不存在则现算一次。date 缺省为今天，格式 YYYY-MM-DD。"""
+    import datetime as _dt
+    from mini_agent.perception.behavior.analyzer import generate_daily_summary, load_daily_summary
+
+    day = date or _dt.date.today().isoformat()
+    mgr = _get_behavior_manager()
+    summary = load_daily_summary(day)
+    if summary is None:
+        summary = generate_daily_summary(mgr, day)
+    return summary

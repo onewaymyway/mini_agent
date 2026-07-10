@@ -18,6 +18,7 @@ import mini_agent.ui.renderer as R
 from mini_agent.cli.commands import (
     handle_skills_list,
     handle_skill_cmd,
+    handle_behavior_cmd,
     handle_session_cmd,
     handle_tasks_cmd,
     handle_plan_cmd,
@@ -217,6 +218,9 @@ def _handle_slash(cmd: str, agent: Agent, skill_loader: SkillLoader) -> None:
 
     elif name == "skill":
         handle_skill_cmd(parts[1:], skill_loader, cfg=agent.cfg)
+
+    elif name == "behavior":
+        handle_behavior_cmd(parts[1:], cfg=agent.cfg)
 
     elif name == "reload":
         # 手动强制热重载：跳过 debounce，立即重新扫描所有监视目录

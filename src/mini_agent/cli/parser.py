@@ -37,6 +37,20 @@ def build_parser() -> argparse.ArgumentParser:
               /skill stats               Show LRU usage tracking and compact budget preview
               /skill reset               Deactivate all active skills
               /reload                    Force hot-reload of skills and agent profiles from disk
+              /behavior status           Show behavior perception switch/collector status (default: all off)
+              /behavior on|off           Toggle the master switch for behavior perception
+              /behavior enable <name>    Enable a collector (active_window/idle/browser_report/clipboard_meta)
+              /behavior disable <name>   Disable a collector
+              /behavior token            Show/generate the browser-extension report token
+              /behavior recent [n]       Show the last n collected events
+              /behavior clear            Clear all collected events
+              /behavior browser start    Launch a dedicated CDP-debug browser and start collecting
+              /behavior browser stop     Stop collecting (add --kill to also close the browser)
+              /behavior browser status   Show dedicated browser / CDP connection status
+              /behavior git install <repo>   Install commit/checkout report hook in a git repo
+              /behavior terminal show|install  Print/append shell hook snippet (bash/zsh)
+              /behavior mobile android|ios     Print mobile (Tasker/Shortcuts) setup template
+              /behavior report [today|<date>]  Show/generate the work & life profile daily summary
               /stats             Show session statistics
               /verbose           Toggle verbose tool output
               /raw-output        Toggle showing raw model output (incl. <tool_use> blocks)
