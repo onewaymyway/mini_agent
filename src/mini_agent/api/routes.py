@@ -404,7 +404,7 @@ async def get_diagnostics(request: Request):
                 import json as _json
                 evo: dict = {}
                 # pending_evolve_branches from global self_profile
-                sp_path = paths.global_self_profile()
+                sp_path = paths.global_self_profile
                 if sp_path.exists():
                     sp = _json.loads(sp_path.read_text(encoding="utf-8"))
                     branches = (
@@ -413,7 +413,7 @@ async def get_diagnostics(request: Request):
                     evo["pending_evolve_branches"] = branches
                     evo["pending_branches_count"]  = len(branches)
                 # high-priority open_threads
-                ot_path = paths.workdir_open_threads()
+                ot_path = paths.workdir_open_threads
                 if ot_path.exists():
                     ot_data = _json.loads(ot_path.read_text(encoding="utf-8"))
                     high = [
