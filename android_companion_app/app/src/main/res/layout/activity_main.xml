@@ -1,0 +1,71 @@
+<?xml version="1.0" encoding="utf-8"?>
+<ScrollView xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent">
+
+<LinearLayout
+    android:orientation="vertical"
+    android:layout_width="match_parent"
+    android:layout_height="wrap_content"
+    android:padding="20dp">
+
+    <TextView
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:text="mini_agent 行为感知伴侣"
+        android:textSize="20sp"
+        android:textStyle="bold"
+        android:layout_marginBottom="4dp"/>
+
+    <TextView
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:text="所有采集默认关闭；只有你手动打开的项目才会被采集和上报。"
+        android:textColor="#666666"
+        android:layout_marginBottom="16dp"/>
+
+    <TextView android:text="上报地址（从电脑上执行 /behavior mobile android 获取）" android:layout_width="wrap_content" android:layout_height="wrap_content"/>
+    <EditText android:id="@+id/editReportUrl" android:layout_width="match_parent" android:layout_height="wrap_content" android:hint="http://192.168.x.x:8765/v1/perception/report"/>
+
+    <TextView android:text="API Token（主 API 鉴权）" android:layout_width="wrap_content" android:layout_height="wrap_content" android:layout_marginTop="8dp"/>
+    <EditText android:id="@+id/editApiToken" android:layout_width="match_parent" android:layout_height="wrap_content"/>
+
+    <TextView android:text="Report Token（行为感知专用）" android:layout_width="wrap_content" android:layout_height="wrap_content" android:layout_marginTop="8dp"/>
+    <EditText android:id="@+id/editReportToken" android:layout_width="match_parent" android:layout_height="wrap_content"/>
+
+    <Button android:id="@+id/btnSaveConfig" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="保存配置" android:layout_marginTop="8dp"/>
+
+    <View android:layout_width="match_parent" android:layout_height="1dp" android:background="#DDDDDD" android:layout_marginVertical="16dp"/>
+
+    <LinearLayout android:orientation="horizontal" android:layout_width="match_parent" android:layout_height="wrap_content">
+        <TextView android:text="App 使用统计（前台切换+时长）" android:layout_width="0dp" android:layout_weight="1" android:layout_height="wrap_content"/>
+        <Switch android:id="@+id/switchUsageStats" android:layout_width="wrap_content" android:layout_height="wrap_content"/>
+    </LinearLayout>
+    <Button android:id="@+id/btnGrantUsageAccess" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="去系统设置授权"/>
+
+    <LinearLayout android:orientation="horizontal" android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="12dp">
+        <TextView android:text="屏幕解锁/息屏事件" android:layout_width="0dp" android:layout_weight="1" android:layout_height="wrap_content"/>
+        <Switch android:id="@+id/switchScreenEvents" android:layout_width="wrap_content" android:layout_height="wrap_content"/>
+    </LinearLayout>
+
+    <LinearLayout android:orientation="horizontal" android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="12dp">
+        <TextView android:text="地理围栏（只上报 home/work 标签，坐标不出设备）" android:layout_width="0dp" android:layout_weight="1" android:layout_height="wrap_content"/>
+        <Switch android:id="@+id/switchGeofence" android:layout_width="wrap_content" android:layout_height="wrap_content"/>
+    </LinearLayout>
+    <Button android:id="@+id/btnSetHome" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="把当前位置设为「家」"/>
+    <Button android:id="@+id/btnSetWork" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="把当前位置设为「公司」"/>
+
+    <LinearLayout android:orientation="horizontal" android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="12dp">
+        <TextView android:text="健康数据（仅日聚合：步数/睡眠时长）" android:layout_width="0dp" android:layout_weight="1" android:layout_height="wrap_content"/>
+        <Switch android:id="@+id/switchHealthConnect" android:layout_width="wrap_content" android:layout_height="wrap_content"/>
+    </LinearLayout>
+
+    <TextView
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="24dp"
+        android:textColor="#999999"
+        android:text="隐私说明：本 App 不读取任何通知正文、短信/聊天内容，不上传心率曲线或 GPS 轨迹，地理位置只在设备本地判断家/公司标签后上报标签本身。"/>
+
+</LinearLayout>
+</ScrollView>

@@ -151,6 +151,25 @@ SSE 里对应的事件类型是 `interaction_req`（推送问题）/`interaction
 | `/v1/artifacts/{manifest_id}` | GET | 获取单次产出的完整 manifest（含文件明细） |
 | `/v1/artifacts/{manifest_id}/file` | GET | 取 manifest 内某个文件（`?index=0`，`?download=true` 走附件下载） |
 
+### 用户行为感知（Behavior Perception，默认全部关闭）
+
+采集桌面/浏览器/手机端的行为信号，聚合成"工作与生活画像"日报，详见
+`docs/behavior-perception-guide.md`。总开关和各采集器子开关默认全部
+关闭，需要用户显式打开（`/behavior on` 或下面的 toggle 接口）。
+
+| 端点 | 方法 | 说明 |
+|------|------|------|
+| `/v1/perception/status` | GET | 总开关/各采集器状态 |
+| `/v1/perception/toggle` | POST | 打开/关闭总开关或某个采集器（owner only） |
+| `/v1/perception/report` | POST | 外部系统（浏览器插件/git hook/终端 hook/手机端）上报事件 |
+| `/v1/perception/events` | GET | 查询已采集事件（`?source=&limit=&since=`） |
+| `/v1/perception/events` | DELETE | 清空已采集事件（owner only） |
+| `/v1/perception/browser/start` | POST | 启动专用调试浏览器（CDP 方案，owner only） |
+| `/v1/perception/browser/stop` | POST | 停止采集，可选同时关闭浏览器进程（owner only） |
+| `/v1/perception/browser/status` | GET | 专用浏览器/CDP 连接状态 |
+| `/v1/perception/git/install-hooks` | POST | 在指定仓库安装 commit/checkout 上报 hook（owner only） |
+| `/v1/perception/summary` | GET | 查看/生成某天的工作/生活画像摘要（`?date=YYYY-MM-DD`） |
+
 ## 使用示例
 
 ### 1. 发送消息
@@ -420,6 +439,7 @@ curl -H "Authorization: Bearer <token>" http://127.0.0.1:8765/v1/diagnostics
 - [Web Demo 指南](web-demo-guide.md) — Streamlit Web 界面使用
 - [观察性系统指南](observability-guide.md) — `/diagnostics` 端点与 traces.jsonl 详解
 - [产出物看板指南](artifacts-dashboard-guide.md) — 产出物 Manifest 设计、自动侦测开关
+- [用户行为感知系统指南](behavior-perception-guide.md) — 桌面/浏览器/手机端行为采集与工作生活画像日报
 
 ---
 

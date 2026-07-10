@@ -560,6 +560,34 @@ hot_reload_interval_s: float = 2.0  # Skills/Agent Profiles 热重载轮询间�
 
 详见 [热重载机制说明](hot-reload-guide.md)。
 
+### BehaviorConfig（用户行为感知系统，独立配置文件）
+
+> 这是唯一**不属于** `AppConfig` / `agent_config.json` 的配置块——独立落盘在
+> `~/.agent/behavior/config.json`，由 `perception/behavior/config.py` 管理，
+> 通过 `/behavior` 命令或 `/v1/perception/toggle` 接口读写，不走
+> `--config` / 环境变量这套加载优先级。总开关和全部子开关默认 `False`。
+
+```python
+@dataclass
+class BehaviorConfig:
+    enabled: bool = False
+    active_window_enabled: bool = False
+    idle_enabled: bool = False
+    browser_report_enabled: bool = False
+    mobile_report_enabled: bool = False
+    clipboard_meta_enabled: bool = False
+    cdp_browser_enabled: bool = False
+    git_activity_enabled: bool = False
+    terminal_command_enabled: bool = False
+    now_playing_enabled: bool = False
+    app_lifecycle_enabled: bool = False
+    daily_analysis_enabled: bool = False
+    daily_analysis_hour: int = 22
+    # ... 详见 docs/behavior-perception-guide.md
+```
+
+详见 [用户行为感知系统指南](behavior-perception-guide.md)。
+
 ---
 
 ## 5. 构建自定义 AppConfig
@@ -633,6 +661,7 @@ my_feature_cfg = MyFeatureConfig(
 - [多结果合并取优指南](ensemble-best-of-n-guide.md) — `EnsembleConfig` 的完整使用场景与架构说明
 - [Goal 模式指南](goal-mode-guide.md) — `GoalModeConfig` 的完整使用场景与架构说明
 - [轮次守门员指南](turn-judge-guide.md) — `TurnJudgeConfig` 的完整使用场景与架构说明
+- [用户行为感知系统指南](behavior-perception-guide.md) — `BehaviorConfig`（独立配置文件，不属于 `AppConfig`）的完整设计与使用
 
 ---
 

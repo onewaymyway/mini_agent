@@ -451,6 +451,30 @@ cron:<分 时 日 月 周>   标准 cron 5 字段，如 cron:0 */6 * * *（每 6
 
 ---
 
+### 用户行为感知（`src/mini_agent/cli/commands/behavior.py`）
+
+> 采集桌面/浏览器/手机端的行为信号（前台窗口、空闲、浏览器页面、Git/终端、
+> 媒体播放、应用启停、手机 App 使用/解锁/地理围栏标签/健康聚合），聚合成
+> "工作与生活画像"日报。总开关和每个采集器都默认**全部关闭**，配置独立
+> 落盘在 `~/.agent/behavior/config.json`，不经过 `agent_config.json`。
+> 详见 `docs/behavior-perception-guide.md`。
+
+| 命令 | 说明 |
+|------|------|
+| `/behavior status` | 查看总开关/各采集器状态 |
+| `/behavior on` / `/behavior off` | 打开/关闭总开关（不会自动打开任何子采集器） |
+| `/behavior enable <collector>` / `/behavior disable <collector>` | 打开/关闭某个采集器（`active_window`/`idle`/`browser_report`/`mobile_report`/`clipboard_meta`/`cdp_browser`/`git_activity`/`terminal_command`/`now_playing`/`app_lifecycle`/`daily_analysis`） |
+| `/behavior token` | 查看/生成外部上报（浏览器插件/git/终端/手机端）用的 token |
+| `/behavior recent [n]` | 查看最近 n 条事件（默认 20） |
+| `/behavior clear` | 清空所有已采集事件 |
+| `/behavior browser start` / `stop [--kill]` / `status` | 启动/停止/查看专用调试浏览器（CDP 方案） |
+| `/behavior git install <repo>` | 在指定仓库安装 commit/checkout 上报 hook |
+| `/behavior terminal show` / `install` | 打印/追加 shell hook 片段（命令级上报，敏感命令自动跳过） |
+| `/behavior mobile android` / `ios` | 打印手机端（Tasker/快捷指令）接入模板 |
+| `/behavior report [today\|<date>]` | 查看/生成"工作与生活画像"日报（分析层） |
+
+---
+
 ### 调试（`src/mini_agent/cli/commands/debug_cmd.py`）
 
 > 打印/导出当前 system prompt 与 history，便于分析调试（排查 prompt 注入、history 压缩/截断、`_type` 归类是否符合预期）。
