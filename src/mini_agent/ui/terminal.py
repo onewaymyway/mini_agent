@@ -2701,9 +2701,13 @@ class _StreamCtx:
 
 # ── 命令定义表 ───────────────────────────────────────────────────────────────
 # 每条命令：(完整命令字符串, 描述, 子命令列表)
-# 子命令列表为空表示叶子命令。
+# 子命令列表为空表示叶子命令。子命令列表里的每一项可以是：
+#   "sub"                  → 叶子子命令，不再往下补全
+#   ("sub", [...])         → 该子命令自己还有下一级子命令，可以任意深度嵌套
+#                            （比如 /behavior browser stop --kill 这种三级）
+# SubEntry = str | tuple[str, list[SubEntry]]
 
-_COMMANDS: list[tuple[str, str, list[str]]] = [
+_COMMANDS: list[tuple[str, str, list]] = [
     ("/help",        "Show help",                                    []),
     ("/clear",       "Clear conversation history",                   []),
     ("/compact",     "Compress history into a summary",              []),
@@ -2726,6 +2730,7 @@ _COMMANDS: list[tuple[str, str, list[str]]] = [
     ("/plan",        "Plan management",                              ["show", "clear", "summary"]),
     ("/concurrency", "Concurrency settings",                         ["tasks", "llm"]),
     ("/cc",          "Concurrency alias (same as /concurrency)",     ["tasks", "llm"]),
+    ("/ensemble",    "Best-of-N ensemble settings",                  ["status", "on", "off", "mode", "granularity", "n", "execution", "strategy"]),
     ("/provider",    "LLM provider settings",                        ["list", "models", "switch"]),
     ("/agents",      "Agent profile management",                     ["list", "show", "reload"]),
     ("/role",        "Roleplay persona: switch/exit agent's persona", ["list", "use", "show", "exit", "status", "stats", "reload"]),
@@ -2739,7 +2744,28 @@ _COMMANDS: list[tuple[str, str, list[str]]] = [
     ("/debug",       "Print/export system prompt & history for debugging", ["system", "history", "all", "save"]),
     ("/cron",        "Manage periodic daemon tasks",                 ["list", "status", "enable", "disable", "run", "add", "remove", "set-schedule"]),
     ("/proxy",       "Proxy pool: subscriptions/validation/integration switches", ["status", "refresh", "sources", "integration"]),
-    ("/behavior",    "Behavior perception: desktop/browser/mobile activity, work & life daily report", ["status", "on", "off", "enable", "disable", "token", "recent", "clear", "browser", "git", "terminal", "mobile", "report"]),
+    (
+        "/behavior", "Behavior perception: desktop/browser/mobile activity, work & life daily report",
+        [
+            "status", "on", "off",
+            ("enable", [
+                "active_window", "idle", "browser_report", "mobile_report", "clipboard_meta",
+                "cdp_browser", "git_activity", "terminal_command", "now_playing",
+                "app_lifecycle", "daily_analysis",
+            ]),
+            ("disable", [
+                "active_window", "idle", "browser_report", "mobile_report", "clipboard_meta",
+                "cdp_browser", "git_activity", "terminal_command", "now_playing",
+                "app_lifecycle", "daily_analysis",
+            ]),
+            "token", "recent", "clear",
+            ("browser", ["start", ("stop", ["--kill"]), "status"]),
+            ("git", ["install"]),
+            ("terminal", ["show", "install"]),
+            ("mobile", ["android", "ios"]),
+            ("report", ["today"]),
+        ],
+    ),
     ("/exit",        "Exit mini-agent",                              []),
     ("/quit",        "Exit mini-agent",                              []),
 ]
@@ -2796,35 +2822,81 @@ def _build_slash_completer():
     except ImportError:
         return None
 
+    def _sub_name(entry):
+        """子命令条目可能是 'sub' 或 ('sub', [children])，统一取出名字部分。"""
+        return entry if isinstance(entry, str) else entry[0]
+
+    def _sub_children(entry):
+        """如果这个子命令条目还有下一级子命令，返回子列表；否则返回空列表（叶子）。"""
+        return entry[1] if isinstance(entry, tuple) else []
+
+    def _descend(tokens, level):
+        """从某一级子命令列表出发，按已经完整输入的 tokens 逐级往下走。
+
+        走到未知 token 时返回 None（说明输入的这一段跟任何已知子命令都不匹配，
+        没有可补全的候选，直接不弹提示，而不是退回到上一级瞎补全）。
+        """
+        for tok in tokens:
+            found = None
+            for entry in level:
+                if _sub_name(entry) == tok:
+                    found = entry
+                    break
+            if found is None:
+                return None
+            level = _sub_children(found)
+        return level
+
     class _SlashCompleter(Completer):
         """
-        两阶段前缀补全：
+        分层前缀补全，支持任意深度（不只是一二级）：
         1. 光标前的最后一个 token 以 "/" 开头 → 顶层命令前缀匹配
-        2. 光标前已有完整命令且后面有空格 → 子命令前缀匹配
+        2. 光标前已有完整命令 → 按已输入的每一级子命令逐级下钻，
+           对当前正在输入的这一段做前缀匹配
+           例如 "/behavior browser st" 会先下钻到 /behavior → browser 这一级，
+           再对 "st" 做前缀匹配，弹出 "start"/"stop"
         """
         def get_completions(self, document, complete_event):
             text = document.text_before_cursor
 
-            # ── 阶段 2：子命令补全 ──────────────────────────────────
-            # 格式："/cmd sub_prefix"，中间有空格
+            # ── 阶段 2：子命令补全（支持任意深度）──────────────────────
             if " " in text:
-                parts = text.split()
-                if not parts:
+                ends_with_space = text.endswith(" ")
+                raw_parts = text.split()
+                if not raw_parts:
                     return
-                cmd = parts[0].lower()
-                sub_prefix = parts[-1].lower() if len(parts) > 1 else ""
-                # 找到对应命令的子命令列表
+                cmd = raw_parts[0].lower()
+
+                if ends_with_space:
+                    typed_tokens = [p.lower() for p in raw_parts[1:]]
+                    prefix = ""
+                else:
+                    typed_tokens = [p.lower() for p in raw_parts[1:-1]]
+                    prefix = raw_parts[-1].lower() if len(raw_parts) > 1 else ""
+
                 for name, _desc, subs in _COMMANDS:
-                    if name == cmd and subs:
-                        for sub in subs:
-                            if sub.startswith(sub_prefix):
-                                # 计算插入偏移：替换光标前的 sub_prefix 部分
-                                yield Completion(
-                                    sub,
-                                    start_position=-len(sub_prefix),
-                                    display_meta=f"{name} {sub}",
-                                )
+                    if name != cmd:
+                        continue
+                    if not subs:
                         return
+                    level = _descend(typed_tokens, subs)
+                    if level is None:
+                        return  # 已输入的某一段子命令未知，没有可补全的候选
+                    path_prefix = " ".join([name] + typed_tokens)
+                    for entry in level:
+                        sub_name = _sub_name(entry)
+                        if not sub_name.startswith(prefix):
+                            continue
+                        children = _sub_children(entry)
+                        hint = f"{path_prefix} {sub_name}"
+                        if children:
+                            hint += f"  [{' | '.join(_sub_name(c) for c in children)}]"
+                        yield Completion(
+                            sub_name,
+                            start_position=-len(prefix),
+                            display_meta=hint,
+                        )
+                    return
 
             # ── 阶段 1：顶层命令前缀补全 ────────────────────────────
             # text 以 "/" 开头（可能后面有字符，但没有空格）
@@ -2835,7 +2907,7 @@ def _build_slash_completer():
                 if name.startswith(prefix):
                     hint = f"  {desc}"
                     if subs:
-                        hint += f"  [{' | '.join(subs)}]"
+                        hint += f"  [{' | '.join(_sub_name(s) for s in subs)}]"
                     yield Completion(
                         name,
                         start_position=-len(text),   # 替换掉已输入的前缀
