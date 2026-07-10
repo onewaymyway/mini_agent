@@ -249,6 +249,12 @@ class AgentPaths:
     def workdir_knowledge_timeline(self) -> Path:
         """.agent/knowledge_timeline.jsonl — 知识生命周期编年目录（发现→生成→巩固/推翻）"""
         return self.workdir_dir / "knowledge_timeline.jsonl"
+
+    @property
+    def workdir_knowledge_timeline_index(self) -> Path:
+        """.agent/knowledge_timeline_index.json — 改进6：实体/分类 -> 行号 的侧车索引，
+        支持 catalog.load_timeline_for() 按实体/分类过滤读取而不必全文件扫描"""
+        return self.workdir_dir / "knowledge_timeline_index.json"
     @property
     def workdir_cognitive_anchor(self) -> Path:
         """<project_root>/.agent/cognitive_anchor.md — 认知锚点文件（具身改进

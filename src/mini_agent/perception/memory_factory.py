@@ -32,7 +32,7 @@ if TYPE_CHECKING:
 # value: Callable[[AppConfig, str], MemoryBackend]
 #        第二个参数 scope = "project" | "global"
 
-def _load_local(cfg: "AppConfig", scope: str = "project") -> MemoryBackend:
+def _load_local(cfg: "AppConfig", scope: str = "project", user_id: Optional[str] = None) -> MemoryBackend:
     from mini_agent.perception.memory_store import MemoryStore
     from mini_agent.storage.paths import AgentPaths
 
@@ -47,7 +47,7 @@ def _load_local(cfg: "AppConfig", scope: str = "project") -> MemoryBackend:
     library_index = None
     if getattr(cfg.memory, "library_index_enabled", True):
         try:
-            library_index = _build_library_index(paths, scope)
+            library_index = _build_library_index(paths, scope, cfg=cfg, user_id=user_id)
         except Exception:
             library_index = None  # 索引组件失败不应阻断记忆系统本身可用
 
@@ -59,26 +59,33 @@ def _load_local(cfg: "AppConfig", scope: str = "project") -> MemoryBackend:
     )
 
 
-def _build_library_index(paths, scope: str):
+def _build_library_index(paths, scope: str, cfg: "AppConfig" = None, user_id: Optional[str] = None):
     """
     构建图书馆式索引（分类树/实体目录/分类目录/知识编年目录）。
     global scope 复用 global_dir 下的同名文件，与 project scope 完全隔离
     （跨项目的分类体系不应该混在一起——global 记忆本身也是"跨项目通用经验"，
     有自己独立的一套书架）。
+
+    改进7（多用户软隔离）：当 cfg.memory.library_index_user_scoped 打开且
+    传入了 user_id 时，各用户拥有独立的一套书架文件（按 user_id 加后缀），
+    避免"同一项目下不同用户的使用习惯差异很大"时互相稀释关键词权重。
+    默认关闭——大多数场景下同项目内不同人的经验值得共享归并，只有明确需要
+    按用户区分书架时才开启。
     """
     from mini_agent.perception.library_index import LibraryIndex
 
-    if scope == "global":
-        base = paths.global_dir
-    else:
-        base = paths.workdir_dir
+    base = paths.global_dir if scope == "global" else paths.workdir_dir
+
+    user_scoped = bool(cfg and getattr(cfg.memory, "library_index_user_scoped", False) and user_id)
+    suffix = f".{user_id}" if user_scoped else ""
 
     return LibraryIndex(
-        classification_tree_path=base / "classification_tree.json",
-        unclassified_candidates_path=base / "unclassified_candidates.jsonl",
-        entity_index_path=base / "entities.json",
-        category_catalog_path=base / "category_catalog.json",
-        knowledge_timeline_path=base / "knowledge_timeline.jsonl",
+        classification_tree_path=base / f"classification_tree{suffix}.json",
+        unclassified_candidates_path=base / f"unclassified_candidates{suffix}.jsonl",
+        entity_index_path=base / f"entities{suffix}.json",
+        category_catalog_path=base / f"category_catalog{suffix}.json",
+        knowledge_timeline_path=base / f"knowledge_timeline{suffix}.jsonl",
+        knowledge_timeline_index_path=base / f"knowledge_timeline_index{suffix}.json",
     )
 
 
@@ -93,25 +100,27 @@ _REGISTRY: dict[str, Callable[["AppConfig", str], MemoryBackend]] = {
 
 # ── 公共 API ──────────────────────────────────────────────────────────────────
 
-def create_memory_backend(cfg: "AppConfig") -> MemoryBackend:
+def create_memory_backend(cfg: "AppConfig", user_id: Optional[str] = None) -> MemoryBackend:
     """
     创建项目级记忆 backend。
     路径：<project_root>/.agent/memory.jsonl
+    user_id: 改进7，多用户软隔离场景下传入，需配合
+             cfg.memory.library_index_user_scoped=True 才会真正按用户分书架。
     """
-    return _create(cfg, scope="project")
+    return _create(cfg, scope="project", user_id=user_id)
 
 
-def create_global_memory_backend(cfg: "AppConfig") -> MemoryBackend:
+def create_global_memory_backend(cfg: "AppConfig", user_id: Optional[str] = None) -> MemoryBackend:
     """
     创建全局级记忆 backend。
     路径：~/.agent/memory.jsonl
     用于存储跨项目通用经验。
     """
-    return _create(cfg, scope="global")
+    return _create(cfg, scope="global", user_id=user_id)
 
 
 def create_both_memory_backends(
-    cfg: "AppConfig",
+    cfg: "AppConfig", user_id: Optional[str] = None,
 ) -> Tuple[MemoryBackend, Optional[MemoryBackend]]:
     """
     同时创建项目级和全局级记忆 backend。
@@ -131,8 +140,8 @@ def create_both_memory_backends(
         # 检索时合并
         results = _merge_search(project_mem, global_mem, query, k)
     """
-    project = create_memory_backend(cfg)
-    global_ = create_global_memory_backend(cfg) if getattr(cfg.memory, "global_enabled", True) else None
+    project = create_memory_backend(cfg, user_id=user_id)
+    global_ = create_global_memory_backend(cfg, user_id=user_id) if getattr(cfg.memory, "global_enabled", True) else None
     return project, global_
 
 
@@ -170,7 +179,7 @@ def merge_search(
     return results[:k]
 
 
-def _create(cfg: "AppConfig", scope: str) -> MemoryBackend:
+def _create(cfg: "AppConfig", scope: str, user_id: Optional[str] = None) -> MemoryBackend:
     backend_key = cfg.memory.backend.lower().strip()
     loader = _REGISTRY.get(backend_key)
     if loader is None:
@@ -180,6 +189,15 @@ def _create(cfg: "AppConfig", scope: str) -> MemoryBackend:
             f"Available: {available}\n"
             f"Register a custom backend via register_memory_backend()."
         )
+    # 改进7：user_id 是新增的可选参数，第三方通过 register_memory_backend()
+    # 注册的自定义 loader 签名仍是 (cfg, scope)，用 inspect 探测一下避免报错。
+    import inspect as _inspect
+    try:
+        params = _inspect.signature(loader).parameters
+    except (TypeError, ValueError):
+        params = {}
+    if "user_id" in params:
+        return loader(cfg, scope, user_id=user_id)
     return loader(cfg, scope)
 
 

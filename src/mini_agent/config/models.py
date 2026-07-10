@@ -119,6 +119,7 @@ class MemoryConfig:
     # 分类树自动生长 + 实体目录 + 分类目录，"两步检索"（先定位书架再精排）。
     library_index_enabled: bool = True      # 总开关，关闭则 MemoryStore 行为与改造前完全一致
     library_shelf_search_enabled: bool = True  # context_builder 检索时是否走两步检索（可单独关闭，仅保留写入侧归类）
+    library_index_user_scoped: bool = False  # 改进7：多用户场景下按 user_id 拆分独立书架（默认关闭，共享归并）
 
 
 @dataclass

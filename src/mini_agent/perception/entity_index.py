@@ -74,6 +74,24 @@ def guess_entity_names(text: str) -> list[str]:
     return result[:5]
 
 
+_NEGATION_MARKERS = (
+    "不再", "已修复", "已解决", "不需要", "无需", "已废弃", "过时", "已经不",
+    "no longer", "fixed", "resolved", "deprecated", "not needed", "outdated",
+)
+
+
+def _looks_contradictory(old_summary: str, new_texts: list[str]) -> bool:
+    """
+    极简启发式冲突判定（改进1，无 LLM 时的兜底）：旧摘要本身不含"否定/已解决"
+    类标记，但新证据里出现了，粗略判断为"新证据在推翻旧结论"。不追求精确，
+    只用来决定要不要在摘要里显式标注"⚠"，误判的代价是摘要多一句提示，
+    比误判为"没有冲突、悄悄丢弃矛盾信息"更安全。
+    """
+    old_has = any(m in old_summary for m in _NEGATION_MARKERS)
+    new_has = any(m in t for t in new_texts for m in _NEGATION_MARKERS)
+    return new_has and not old_has
+
+
 @dataclass
 class Entity:
     entity_id: str
@@ -87,6 +105,7 @@ class Entity:
     pending_evidence_count: int = 0
     first_seen: float = field(default_factory=time.time)
     last_summary_update: float = 0.0
+    superseded_notes: list[str] = field(default_factory=list)  # 改进1：被推翻的历史结论记录
 
 
 class EntityStore:
@@ -174,15 +193,22 @@ class EntityStore:
         llm_call: Optional[Callable[[str], str]] = None,
     ) -> None:
         """
-        用累积的证据文本重写实体摘要。有 llm_call 时用一次轻量摘要调用；
-        没有时退化为"取最近 3 条证据拼接"的朴素实现，保证无 LLM 依赖也能跑。
+        用累积的证据文本重写实体摘要。有 llm_call 时用一次轻量摘要调用，
+        并显式要求模型标注新旧证据之间的矛盾（改进1：冲突检测与知识版本化）；
+        没有 llm_call 时退化为"取最近 3 条证据拼接"+ 简单否定词启发式，
+        保证无 LLM 依赖也能跑，只是不如 LLM 版本精确。
         """
         self._ensure_loaded()
+        old_summary = entity.summary
         if llm_call is not None:
             prompt = (
-                f"以下是关于「{entity.name}」的历史记录片段，请用 2-3 句话总结"
-                f"当前对它最新、最可信的共识认识（如有矛盾，以更晚近的记录为准）：\n\n"
-                + "\n---\n".join(entry_texts[-10:])
+                f"以下是关于「{entity.name}」的历史记录片段和当前已有的共识摘要。"
+                f"请用 2-3 句话给出新的共识摘要：以更晚近的记录为准；如果新记录"
+                f"与旧摘要存在矛盾（比如旧摘要说某问题存在，新记录说已经修复/"
+                f"不再需要），必须在摘要开头加上「⚠矛盾已更新：」并简述旧结论"
+                f"被推翻的原因，不要把矛盾的新旧结论并列堆砌。\n\n"
+                f"当前摘要: {old_summary or '（无）'}\n\n"
+                f"新记录:\n" + "\n---\n".join(entry_texts[-10:])
             )
             try:
                 new_summary = (llm_call(prompt) or "").strip()
@@ -190,8 +216,15 @@ class EntityStore:
                 new_summary = ""
         else:
             new_summary = ""
+            if _looks_contradictory(old_summary, entry_texts):
+                new_summary = "⚠矛盾待复核：" + " | ".join(t[:120] for t in entry_texts[-3:])
         if not new_summary:
             new_summary = " | ".join(t[:120] for t in entry_texts[-3:])
+
+        if new_summary.startswith("⚠矛盾") and old_summary:
+            entity.superseded_notes.append(old_summary[:200])
+            entity.superseded_notes = entity.superseded_notes[-5:]
+
         entity.summary = new_summary
         entity.pending_evidence_count = 0
         entity.last_summary_update = time.time()
@@ -203,4 +236,84 @@ class EntityStore:
         entity = self._entities.get(entity_id)
         if entity is not None:
             entity.status = "superseded"
+            if reason:
+                entity.superseded_notes.append(reason[:200])
+                entity.superseded_notes = entity.superseded_notes[-5:]
             self._save()
+
+    # ── 改进3：实体巩固（去噪 + 近重复合并）─────────────────────────────
+
+    def consolidate_entities(
+        self,
+        llm_call: Optional[Callable[[str], str]] = None,
+        min_name_len: int = 4,
+        similarity_threshold: float = 0.82,
+    ) -> dict:
+        """
+        Phase G 巡检时调用，做两件事：
+          1. 去噪：正则抽取难免抓到噪音（常见英文单词、过短标识符），把明显
+             不像模块名/工具名/概念名的实体标记 deprecated，避免污染实体目录。
+          2. 近重复合并：名字高度相似的实体（比如 "daemon" 和 "daemon.py"，
+             或大小写/下划线差异）大概率是同一个实体，合并成一个规范实体，
+             其余的作为 alias 挂进去，related_entry_ids 也合并。
+
+        都只在 Phase G 批量触发，不在写入侧实时做，原因和分类树合并一样：
+        避免单次判断的抖动污染实体目录。
+        """
+        self._ensure_loaded()
+        deprecated = 0
+        merged = 0
+
+        # 1. 去噪：过短、或是常见停用词/泛化词的实体标记废弃
+        _stoplist = {
+            "self", "this", "that", "true", "false", "none", "null", "return",
+            "import", "class", "print", "value", "error", "config", "result",
+        }
+        for e in list(self._entities.values()):
+            if e.status != "active":
+                continue
+            bare = e.name.replace(".py", "").strip().lower()
+            if len(bare) < min_name_len or bare in _stoplist:
+                e.status = "deprecated"
+                deprecated += 1
+
+        # 2. 近重复合并：对剩余 active 实体两两比较名字相似度
+        import difflib
+        actives = [e for e in self._entities.values() if e.status == "active"]
+        actives.sort(key=lambda e: e.first_seen)
+        merged_ids: set[str] = set()
+        for i, a in enumerate(actives):
+            if a.entity_id in merged_ids:
+                continue
+            for b in actives[i + 1:]:
+                if b.entity_id in merged_ids:
+                    continue
+                name_a = a.name.replace(".py", "").lower()
+                name_b = b.name.replace(".py", "").lower()
+                ratio = difflib.SequenceMatcher(None, name_a, name_b).ratio()
+                is_dup = ratio >= similarity_threshold
+                if not is_dup and llm_call is not None and ratio >= 0.5:
+                    # 相似度中等、规则判断不确定时才兜底问一次 LLM，
+                    # 避免对所有实体对都调用 LLM（组合数会爆炸）。
+                    try:
+                        reply = (llm_call(
+                            f"这两个名字是否指同一个实体（模块/工具/概念）？"
+                            f"只回答 YES 或 NO。\nA: {a.name}\nB: {b.name}"
+                        ) or "").strip().upper()
+                        is_dup = reply.startswith("Y")
+                    except Exception:
+                        is_dup = False
+                if is_dup:
+                    if b.name.lower() not in [x.lower() for x in a.aliases]:
+                        a.aliases.append(b.name)
+                    for eid in b.related_entry_ids:
+                        if eid not in a.related_entry_ids:
+                            a.related_entry_ids.append(eid)
+                    a.pending_evidence_count += b.pending_evidence_count
+                    b.status = "deprecated"
+                    merged_ids.add(b.entity_id)
+                    merged += 1
+
+        if deprecated or merged:
+            self._save()
+        return {"deprecated": deprecated, "merged": merged}

@@ -3341,6 +3341,26 @@ class Agent:
         else:
             self._memory.add(entry)
         self._append_memory_delta(entry)
+
+        # [改进1+5] 人类纠正 → 定位刚才被检索命中、可能已经过时的旧知识 →
+        # 标记冲突/推翻，而不是让新旧知识并存靠时间衰减慢慢覆盖。
+        # 优先用 self._memory 的 library（project scope 更可能是本次纠正的
+        # 对象），global 侧同样尝试一遍（同一批 injected_ids 里可能混有
+        # 来自 global 的记忆，mark_stale_from_correction 对查不到的 id
+        # 会静默跳过，不会误伤）。
+        try:
+            injected_ids = list(getattr(self._ctx_builder, "last_injected_memory_ids", []) or [])
+            if injected_ids:
+                for backend in (self._memory, self._global_memory):
+                    library = getattr(backend, "library", None) if backend else None
+                    if library is not None:
+                        library.mark_stale_from_correction(
+                            backend, injected_ids, correction_text=user_message,
+                        )
+        except Exception as _mini_agent_exc:
+            from mini_agent.errors import log_exception
+            log_exception(_mini_agent_exc, where='mini_agent.agent.mark_stale_from_correction')
+
         return True
 
     def _on_edit_detected(self, edit: dict) -> None:

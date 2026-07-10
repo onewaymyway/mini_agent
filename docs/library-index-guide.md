@@ -145,6 +145,7 @@ report.knowledge_consolidation = library.consolidate(
 ```python
 library_index_enabled: bool = True         # 总开关：分类树/实体目录/两步检索全部
 library_shelf_search_enabled: bool = True  # 只关闭"两步检索"，保留写入侧的分类/实体挂载
+library_index_user_scoped: bool = False    # 改进7：多用户场景下按 user_id 拆分独立书架（默认关闭，共享归并）
 ```
 
 关闭 `library_index_enabled` 后，`MemoryStore` 的行为与改造前完全一致
@@ -156,11 +157,12 @@ library_shelf_search_enabled: bool = True  # 只关闭"两步检索"，保留写
 
 | 文件 | 内容 |
 |---|---|
-| `classification_tree.json` | 分类节点表 |
+| `classification_tree.json` | 分类节点表（含 `feedback_score`/`merged_into`） |
 | `unclassified_candidates.jsonl` | 待归类候选队列 |
-| `entities.json` | 实体卡片（含滚动摘要） |
+| `entities.json` | 实体卡片（含滚动摘要、`superseded_notes`） |
 | `category_catalog.json` | 分类号 → entry_id 指针索引 |
 | `knowledge_timeline.jsonl` | 知识生命周期事件流 |
+| `knowledge_timeline_index.json` | 改进6：实体/分类 → 行号的侧车索引 |
 
 以上路径定义见 `storage/paths.py` 的 `workdir_classification_tree` /
 `workdir_unclassified_candidates` / `workdir_entity_index` /
@@ -179,13 +181,92 @@ library_shelf_search_enabled: bool = True  # 只关闭"两步检索"，保留写
   `MemoryStore` 新增 `library_index`/`llm_classify_call` 注入、
   `rank_subset()`、`rewrite_categories()`、`library` 属性
 - `perception/memory_factory.py` — 构建/注入 `LibraryIndex`，新增
-  `set_llm_classify_call()`、`build_llm_call()`
-- `context_builder.py` — 检索优先走 `shelf_search`，失败/不足回退原逻辑
+  `set_llm_classify_call()`、`build_llm_call()`；`create_memory_backend()`/
+  `create_both_memory_backends()`/`_create()` 新增可选 `user_id` 参数（改进7）
+- `perception/classification.py` — 新增 `feedback_score`/`merged_into`
+  字段、`record_feedback()`、`resolve_code()`、`merge_similar_nodes()`（改进2/4）
+- `perception/entity_index.py` — 新增 `superseded_notes` 字段、冲突检测
+  （`rewrite_summary` 内）、`consolidate_entities()`（改进1/3）
+- `perception/catalog.py` — 新增 `redirect()`、时间线侧车索引与
+  `load_timeline_for()`（改进2/6）
+- `perception/library_index.py` — 新增 `record_retrieval_feedback()`、
+  `mark_stale_from_correction()`、`timeline_for()`；`consolidate()` 串联
+  分类合并/实体巩固（改进1-7 的组合外观）
+- `context_builder.py` — 检索优先走 `shelf_search`，失败/不足回退原逻辑；
+  新增 `last_injected_memory_ids` 追踪（改进5）
 - `evolution/phase_g.py` — 新增知识巩固步骤（8.6）
-- `cli/commands/evolve.py` — `/evolve phase-g` 报告展示巩固统计
-- `agent.py` — 接入 LLM 客户端到分类兜底 + Phase G 知识巩固
-- `storage/paths.py` — 新增 5 个路径属性
-- `config/models.py` — 新增 2 个开关
+- `cli/commands/evolve.py` — `/evolve phase-g` 报告展示巩固统计；新增
+  `/evolve timeline` 命令（改进6）
+- `agent.py` — 接入 LLM 客户端到分类兜底 + Phase G 知识巩固；
+  `_detect_and_record_correction` 接入 `mark_stale_from_correction`（改进5）
+- `storage/paths.py` — 新增 6 个路径属性（含 `knowledge_timeline_index`）
+- `config/models.py` — 新增 3 个开关（含 `library_index_user_scoped`）
+
+## 八、七个改进方向的具体实现
+
+首版落地后梳理出的进一步改进，全部已实现，均只在 Phase G 巡检或明确的
+调用点触发，不影响写入侧的实时性能：
+
+### 1. 冲突检测与知识版本化
+`EntityStore.rewrite_summary()` 重写摘要时，会显式要求 LLM 判断新证据是否
+推翻了旧摘要——推翻时摘要以 `⚠矛盾已更新：` 开头并说明原因，旧结论归档进
+`Entity.superseded_notes`（保留最近 5 条），而不是把新旧结论并列堆砌。无
+LLM 时退化为关键词启发式（`_looks_contradictory`：旧摘要不含"已修复/不再
+需要"等否定词、新证据含有则判定为冲突）。
+
+### 2. 分类树的合并（收敛）机制
+`ClassificationTree.merge_similar_nodes(threshold=0.6)` 在 Phase G 巡检时，
+对同一父节点下的活跃节点两两计算关键词集合的 Jaccard 相似度，超过阈值即
+合并：较早创建的节点保留为规范节点，较晚的标记 `deprecated` 并设置
+`merged_into` 指向规范节点。`classify_by_rule`/`classify_by_llm`/
+`related_codes` 全部通过 `resolve_code()` 自动跳过已合并的旧节点；
+`CategoryCatalog.redirect()` 把旧分类号下的 entry_id 并入新分类号，
+`LibraryIndex.consolidate()` 同时会把历史记忆的 `category` 字段更新到
+规范分类号，避免旧记忆在合并后"查不到"。
+
+### 3. 实体名抽取的巩固：去噪 + 近重复合并
+`EntityStore.consolidate_entities()`（Phase G 调用）：
+- **去噪**：正则抽取难免抓到噪音，实体名过短或落在常见停用词表里的
+  （`self`/`config`/`return` 等）直接标记 `deprecated`。
+- **近重复合并**：用 `difflib.SequenceMatcher` 计算实体名相似度，
+  高于阈值（默认 0.82）直接合并；相似度处于中间地带（0.5~0.82）且提供了
+  `llm_call` 时，才兜底问一次 LLM"这两个名字是否指同一个实体"，避免对
+  所有实体两两组合都调用 LLM。
+
+### 4. 检索命中质量的自我反馈
+`CategoryNode` 新增 `feedback_score`（范围 `[-0.5, 1.0]`），`classify_by_rule`
+打分时按 `(1 + feedback_score)` 加权。`LibraryIndex.record_retrieval_feedback
+(useful, category=None)` 供调用方在确认某次检索命中"有用/没用"后调用，
+`category` 缺省时用 `shelf_search` 最近一次命中的分类号。当前唯一的自动
+调用点是改进5的纠正闭环（命中记忆后来被纠正 → 记一次负反馈）；正向反馈
+（"确实有用"）的自动信号源目前还没有可靠的判定依据，留了 API 但没有自动
+触发，等后续有更明确的"这条记忆被证实有效"信号（比如某个 skill 验证通过）
+时再接上。
+
+### 5. 纠正 → 定位旧知识 → 标记过时的完整闭环
+`ContextBuilder` 新增 `last_injected_memory_ids`，记录本 turn 实际注入到
+system prompt 里的记忆 entry_id。`agent.py::_detect_and_record_correction`
+检测到人类纠正、生成新 lesson 之后，会调用
+`LibraryIndex.mark_stale_from_correction(store, injected_ids, correction_text)`：
+对这些记忆所属的分类记一次负反馈（改进4）、对其关联实体调用
+`mark_superseded()`（改进1），并写一条 `event_type="superseded"` 的编年
+事件。这是一个保守假设（"最近被注入的记忆大概率跟这次纠正相关"），不做
+精确因果判定，宁可多标一次。
+
+### 6. 时间线的查询能力
+`catalog.append_knowledge_event()` 新增 `index_path` 参数，维护一份
+`knowledge_timeline_index.json`（实体/分类号 → 行号列表 + 行数计数器），
+`catalog.load_timeline_for(entity_id=, category=)` 据此直接定位行号读取，
+不必扫描整个 `knowledge_timeline.jsonl`。`LibraryIndex.timeline_for()` 封装
+了这个接口，CLI 新增 `/evolve timeline --entity <id>|--category <code>
+[--limit N]` 命令。
+
+### 7. 多用户/多 Agent 场景下的书架隔离
+默认关闭（`library_index_user_scoped=False`，同项目内所有用户共享同一套
+书架，经验互相归并）。需要按用户拆分时，`create_memory_backend(cfg,
+user_id=...)` / `create_both_memory_backends(cfg, user_id=...)` 会给分类树、
+实体目录等索引文件名加上 `.{user_id}` 后缀，实现文件级的软隔离；`memory.jsonl`
+本身不受影响（依然是同一份数据，只是索引结构按用户各自一份）。
 
 ## 相关文档
 

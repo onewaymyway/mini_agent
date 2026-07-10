@@ -86,6 +86,8 @@ class CategoryNode:
     status: str = "active"                      # active | deprecated
     created_at: float = field(default_factory=time.time)
     entry_count: int = 0                        # 冗余计数，供 Phase G 判断是否该细分
+    feedback_score: float = 0.0                 # 检索反馈累积权重（改进4），影响 classify_by_rule 打分
+    merged_into: Optional[str] = None           # 改进2：被合并掉的旧节点指向新的规范节点
 
 
 class ClassificationTree:
@@ -140,15 +142,22 @@ class ClassificationTree:
         tokens = set(_tokenize(text))
         if not tokens:
             return None
-        best_code, best_score = None, 0
+        best_code, best_score = None, 0.0
         for code, node in self._nodes.items():
             if code == ROOT_CODE or node.status != "active" or not node.keywords:
                 continue
-            score = sum(1 for kw in node.keywords if kw in tokens)
+            if node.merged_into is not None:
+                continue
+            raw = sum(1 for kw in node.keywords if kw in tokens)
+            if raw == 0:
+                continue
+            # 改进4：检索反馈会累积调整 feedback_score（[-0.5, 1.0]），
+            # 命中次数被反复验证有用的书架优先，被纠正过的书架被压低。
+            score = raw * (1.0 + node.feedback_score)
             if score > best_score:
                 best_code, best_score = code, score
         if best_score >= _MIN_RULE_SCORE:
-            return best_code
+            return self.resolve_code(best_code)
         return None
 
     # ── 第二步：LLM 兜底（只能"入座"已有节点，不能新建）───────────────────
@@ -167,7 +176,7 @@ class ClassificationTree:
         candidates = [
             f"{code}: {node.name}"
             for code, node in self._nodes.items()
-            if code != ROOT_CODE and node.status == "active"
+            if code != ROOT_CODE and node.status == "active" and node.merged_into is None
         ]
         if not candidates:
             return None
@@ -184,7 +193,7 @@ class ClassificationTree:
         reply = reply.splitlines()[0].strip() if reply else ""
         if reply.upper() == "NONE":
             return None
-        return reply if reply in self._nodes else None
+        return self.resolve_code(reply) if reply in self._nodes else None
 
     # ── 综合分类入口 ─────────────────────────────────────────────────────
 
@@ -212,7 +221,86 @@ class ClassificationTree:
             node.entry_count += 1
             self._save()
 
-    # ── 第三步：批量生长（仅在 Phase G 巡检时调用）────────────────────────
+    def resolve_code(self, code: str) -> str:
+        """跟随 merged_into 链条，把一个可能已被合并掉的旧分类号解析成当前的
+        规范分类号（改进2：分类树合并）。链条理论上很短，做个保险的步数上限。"""
+        self._ensure_loaded()
+        seen = set()
+        cur = code
+        for _ in range(10):
+            node = self._nodes.get(cur)
+            if node is None or node.merged_into is None or cur in seen:
+                return cur
+            seen.add(cur)
+            cur = node.merged_into
+        return cur
+
+    def record_feedback(self, code: str, useful: bool, delta: float = 0.15) -> None:
+        """
+        改进4：检索命中质量的自我反馈。useful=True 时说明这次从该书架取出的
+        记忆后来被验证有效（比如没有被人纠正），useful=False 说明取出的记忆
+        过时/不相关（比如后续被人类纠正）。用简单的累加+衰减而非复杂的贝叶斯
+        模型，足够解决"越用越准"这个朴素目标，也方便人工检查 feedback_score
+        是否失控。
+        """
+        self._ensure_loaded()
+        code = self.resolve_code(code)
+        node = self._nodes.get(code)
+        if node is None:
+            return
+        node.feedback_score += delta if useful else -delta
+        node.feedback_score = max(-0.5, min(1.0, node.feedback_score))
+        self._save()
+
+    # ── 改进2：分类树合并（只生长不收敛会导致书架越来越碎）─────────────────
+
+    def merge_similar_nodes(
+        self, threshold: float = 0.6
+    ) -> list[tuple[str, str]]:
+        """
+        对同一父节点下的活跃节点两两比较关键词集合的 Jaccard 相似度，超过
+        threshold 就合并：较早创建的节点作为规范节点保留，较晚的节点标记
+        deprecated + merged_into 指向规范节点，关键词/参见关系并入规范节点。
+
+        只在 Phase G 巡检时调用（不是每次分类都检查），避免频繁合并造成
+        分类号语义抖动。返回本次发生的 (旧节点, 新规范节点) 合并列表。
+        """
+        self._ensure_loaded()
+        nodes = [
+            n for n in self._nodes.values()
+            if n.code != ROOT_CODE and n.status == "active" and n.merged_into is None
+        ]
+        nodes.sort(key=lambda n: n.created_at)
+        merges: list[tuple[str, str]] = []
+        merged_codes: set[str] = set()
+        for i, a in enumerate(nodes):
+            if a.code in merged_codes:
+                continue
+            set_a = set(a.keywords)
+            if not set_a:
+                continue
+            for b in nodes[i + 1:]:
+                if b.code in merged_codes or b.parent != a.parent:
+                    continue
+                set_b = set(b.keywords)
+                if not set_b:
+                    continue
+                union = set_a | set_b
+                jaccard = len(set_a & set_b) / len(union) if union else 0.0
+                if jaccard >= threshold:
+                    b.status = "deprecated"
+                    b.merged_into = a.code
+                    a.keywords = list(set_a | set_b)
+                    a.entry_count += b.entry_count
+                    for sa in b.see_also:
+                        if sa not in a.see_also and sa != a.code:
+                            a.see_also.append(sa)
+                    merged_codes.add(b.code)
+                    merges.append((b.code, a.code))
+        if merges:
+            self._save()
+        return merges
+
 
     def grow_from_candidates(
         self,
@@ -306,12 +394,19 @@ class ClassificationTree:
         self._save()
 
     def related_codes(self, code: str) -> list[str]:
-        """返回某分类号自身 + 其"参见"分类号（用于书架内容不足时的扩展检索）。"""
+        """返回某分类号自身 + 其"参见"分类号（用于书架内容不足时的扩展检索）。
+        自动解析合并链，且不返回已废弃（deprecated）的旧节点。"""
         self._ensure_loaded()
+        code = self.resolve_code(code)
         node = self._nodes.get(code)
         if node is None:
             return [code]
-        return [code] + list(node.see_also)
+        result = [code]
+        for sa in node.see_also:
+            sa = self.resolve_code(sa)
+            if sa not in result:
+                result.append(sa)
+        return result
 
 
 # ── 未分类候选队列（Phase G 消费）─────────────────────────────────────────

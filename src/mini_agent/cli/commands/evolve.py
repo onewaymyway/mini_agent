@@ -12,6 +12,10 @@ cli/commands/evolve.py — /evolve slash 命令处理（Stage 3.1 / Phase C）
     只做扫描 + 列出达标分组，不 spawn evolution-agent——用于人工预览"现在
     有哪些 lesson 已经达到提案门槛"，不消耗 LLM 调用。
 
+/evolve timeline --entity <id>|--category <code> [--limit N]
+    改进6：查询图书馆式索引的知识编年目录，按实体/分类号过滤展示知识
+    生命周期事件（created/superseded/new_category/category_merged）。
+
 本命令是设计文档 6.1 节"角色分离"提到的两种触发方式之一（另一种是
 SessionEnd hook 里"待处理 lesson 数量超过阈值"时异步 spawn，留待后续接入）。
 """
@@ -31,10 +35,13 @@ def handle_evolve_cmd(args: list[str], agent=None) -> None:
         _handle_review(rest, agent, spawn=False)
     elif sub in ("phase-g", "phase_g", "phaseg"):
         _handle_phase_g(rest, agent)
+    elif sub == "timeline":
+        _handle_timeline(rest, agent)
     else:
         R.print_error(
             "Usage: /evolve [review [--global] [--tier T1|T2] | "
-            "list [--global] [--tier T1|T2] | phase-g [--dry-run]]"
+            "list [--global] [--tier T1|T2] | phase-g [--dry-run] | "
+            "timeline --entity <id>|--category <code> [--limit N]]"
         )
 
 
@@ -268,12 +275,78 @@ def _print_phase_g_report(report) -> None:
     # ── 8.6 知识巩固（图书馆式索引）──
     kc = getattr(report, "knowledge_consolidation", None)
     if kc:
-        R.console.print("\n[bold magenta]📚 知识巩固（分类树 / 实体摘要）[/bold magenta]")
+        R.console.print("\n[bold magenta]📚 知识巩固（分类树 / 实体目录）[/bold magenta]")
         R.console.print(
             f"[dim]  新增分类节点 {kc.get('new_categories', 0)} 个，"
-            f"仍待归类候选 {kc.get('remaining_unclassified', 0)} 条，"
-            f"重写实体摘要 {kc.get('entities_summarized', 0)} 个[/dim]"
+            f"合并分类节点 {kc.get('category_merges', 0)} 组，"
+            f"仍待归类候选 {kc.get('remaining_unclassified', 0)} 条[/dim]"
+        )
+        R.console.print(
+            f"[dim]  重写实体摘要 {kc.get('entities_summarized', 0)} 个，"
+            f"废弃噪音实体 {kc.get('entities_deprecated', 0)} 个，"
+            f"合并近重复实体 {kc.get('entities_merged', 0)} 组[/dim]"
         )
 
     R.console.print(f"\n[dim]Phase G 完成，共发现 {len(report.prune_candidates)} 个剪枝候选、"
                     f"{len(report.promotion_candidates)} 个晋升候选[/dim]\n")
+
+
+def _handle_timeline(rest: list[str], agent) -> None:
+    """
+    改进6：/evolve timeline --entity <id>|--category <code> [--limit N]
+
+    读取 knowledge_timeline.jsonl，通过 catalog.py 的侧车索引按实体/分类号
+    过滤展示知识生命周期事件（created / superseded / new_category /
+    category_merged），用于回答"这个模块/这类问题过去经历了什么"。
+    """
+    if agent is None or getattr(agent, "_memory", None) is None:
+        R.print_error("当前没有可用的记忆后端")
+        return
+
+    entity_id = None
+    category = None
+    limit = 20
+    if "--entity" in rest:
+        idx = rest.index("--entity")
+        entity_id = rest[idx + 1] if idx + 1 < len(rest) else None
+    if "--category" in rest:
+        idx = rest.index("--category")
+        category = rest[idx + 1] if idx + 1 < len(rest) else None
+    if "--limit" in rest:
+        idx = rest.index("--limit")
+        try:
+            limit = int(rest[idx + 1])
+        except (IndexError, ValueError):
+            pass
+
+    if not entity_id and not category:
+        R.print_error("用法: /evolve timeline --entity <id> | --category <code> [--limit N]")
+        return
+
+    events: list[dict] = []
+    for backend in (getattr(agent, "_memory", None), getattr(agent, "_global_memory", None)):
+        library = getattr(backend, "library", None) if backend else None
+        if library is None:
+            continue
+        try:
+            events.extend(
+                library.timeline_for(entity_id=entity_id, category=category, limit=limit)
+            )
+        except Exception:
+            continue
+
+    if not events:
+        R.console.print("[dim]没有找到匹配的知识编年事件[/dim]")
+        return
+
+    events.sort(key=lambda e: e.get("ts", 0))
+    R.console.print(f"\n[bold magenta]📜 知识编年目录[/bold magenta]"
+                     f"[dim]（entity={entity_id or '-'}, category={category or '-'}）[/dim]")
+    for e in events[-limit:]:
+        import time as _time
+        ts = _time.strftime("%Y-%m-%d %H:%M", _time.localtime(e.get("ts", 0)))
+        R.console.print(
+            f"[dim]{ts}[/dim]  [cyan]{e.get('event_type', '')}[/cyan]  "
+            f"cat={e.get('category', '')}  {e.get('detail', '')}"
+        )
+    R.console.print("")

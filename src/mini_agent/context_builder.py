@@ -66,6 +66,10 @@ class ContextBuilder:
         # 整个 turn 内的多次 LLM 调用共享，不重复检索。
         self._cached_memory_snippet: str = ""
         self._cached_turn_query: str = ""
+        # 改进5：记录本 turn 实际注入到上下文里的记忆 entry_id，供
+        # correction_detector 检测到人类纠正时定位"刚才用到的知识是不是过时了"
+        # （agent.py::_detect_and_record_correction 会读取这个列表）。
+        self.last_injected_memory_ids: list[str] = []
 
         # ── Skill 目录缓存 ───────────────────────────────────────────────────
         # 只在 skill 集合变化时重建，避免每次 build() 重新生成字符串。
@@ -127,6 +131,11 @@ class ContextBuilder:
                 self._cached_memory_snippet = (
                     f"\n\n## Relevant past experience\n{snippets}"
                 )
+                self.last_injected_memory_ids = [
+                    m.entry_id for m in memories if getattr(m, "entry_id", None)
+                ]
+            else:
+                self.last_injected_memory_ids = []
 
     def clear_turn_cache(self) -> None:
         """在 run_turn 结束时调用，清理 turn 级缓存。"""
@@ -227,6 +236,9 @@ class ContextBuilder:
                         for m in memories
                     )
                     base += f"\n\n## Relevant past experience\n{snippets}"
+                    self.last_injected_memory_ids = [
+                        m.entry_id for m in memories if getattr(m, "entry_id", None)
+                    ]
 
         return base
 
