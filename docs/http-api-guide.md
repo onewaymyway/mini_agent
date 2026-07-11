@@ -66,8 +66,13 @@ curl -H "Authorization: Bearer your-secret-token" http://127.0.0.1:8765/v1/healt
 | `/v1/health` | GET | 健康检查 |
 | `/v1/whoami` | GET | 当前 token 对应的身份（多用户模式下返回 user_id/name/role；单用户模式固定返回 owner，向后兼容） |
 | `/v1/status` | GET | Agent 状态（空闲/运行中）+ 统计信息 |
+| `/v1/models` | GET | 列出 daemon 端 `LLMClientPool` 当前可用的模型名（供 daemon 连接模式下 CLI 客户端的 `/model` Tab 补全拉取，见 `api/routes.py` 顶部注释） |
 | `/v1/diagnostics` | GET | **Stage 6** 实时健康诊断（性能 + 内存 + skills + 演化状态 + 异常标记）|
 | `/docs` | GET | Swagger API 文档 |
+
+> **多用户/多 session 相关端点**（`/v1/sessions`、`/v1/sessions/new`、`/v1/sessions/{session_id}`、
+> `/v1/sessions/{session_id}/resume`、`/v1/users`、`/v1/users/{user_id}`、`/v1/users/{user_id}/token`）
+> 单独在 [多用户模式指南](multi-user-guide.md) 的「API 端点」章节说明，这里不重复列出。
 
 ### 对话端点
 
@@ -517,6 +522,32 @@ curl -H "Authorization: Bearer <token>" \
 | `next_tick_in` | 距下次 `AutonomousLoop.tick()` 还有多少秒 |
 | `cron_jobs` | 所有 cron job 状态列表 |
 | `objective_executions` | 活跃 Objective 执行进度列表（完成超过 1h 的自动移除） |
+
+### /v1/self/status — Self（主自我）状态总览（daemon 多用户架构 Phase 4，owner only）
+
+`GET /v1/self/status` 返回 daemon 里"Self"（也就是 `HttpServer` 自己持有的那个固定
+`bridge`/`agent`，不是任何用户的 session）的状态总览：GoalBacklog、自主活动摘要
+（含最近的 `session_crashed` 通知）、以及 `SessionAgentPool` 概况。单用户模式下也能
+正常调用（只是没有 `session_pool` 那部分数据，其它字段仍然有效）——"Self"这个概念
+本来就不是多用户模式特有的。
+
+```bash
+curl -H "Authorization: Bearer <owner_token>" \
+  http://127.0.0.1:8765/v1/self/status
+```
+
+响应字段（均可能为 `null`/空，取决于当前是否开启了对应的自主执行/多 session 功能）：
+
+| 字段 | 说明 |
+|------|------|
+| `autonomous_loop` | 自主循环摘要（等价于 `AutonomousLoop.get_digest_status()`），`AutonomousLoop` 未启用时为 `null` |
+| `goals.active_objectives` / `goals.active_goals` | 当前 GoalBacklog 里活跃的 Objective / Goal 列表 |
+| `recent_activity` | 最近的自主活动摘要（含最近的 `session_crashed` 通知） |
+| `session_pool` | `SessionAgentPool` 概况（多用户/多 session 模式下才有内容） |
+
+> 需要 owner token；非 owner 调用返回 403。和 `/v1/status`（面向当前 token 所在的单个
+> session/agent）的区别是：`/v1/self/status` 固定看的是 daemon 进程自己的 Self agent，
+> 不受调用者当前 session 影响。
 
 ### /v1/goals — Goal Backlog REST API
 
