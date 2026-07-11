@@ -900,6 +900,7 @@ python -m pytest tests/ -q
 - [Phase G 后台循环指南（Stage 8）](docs/self-evolution-phase-g-guide.md) — **新增**：剪枝候选 / 能力地图 / Scope 晋升候选 / 节奏治理，`/evolve phase-g` 命令
 - [图书馆式知识索引指南](docs/library-index-guide.md) — **新增**：分类树自动生长/合并 + 实体目录（冲突检测/去噪合并）+ 两步检索 + 检索反馈 + 人类纠正→标记过时闭环 + 时间线查询，`/evolve timeline` 命令
 - [Stage 9 自主运行时指南](docs/self-evolution-stage9-guide.md) — **新增**：常驻守护进程 / Goal Backlog / 三档位 AutonomousLoop / 资源仲裁 / `mini-agent daemon` 命令
+- [守护进程多客户端架构指南](docs/daemon-multi-client-guide.md) — **新增**：`DaemonClient`/`SessionAgentPool`/`AgentBridge`（RingBuffer/OutputBroadcaster/InputQueue/PermissionGate）三层架构、多端接入同一会话的消息生命周期、`run_connected_repl` 已连接模式渲染与斜杠命令转发，含当前已知问题排查记录
 - [具身智能改进指南](docs/embodied-agent-guide.md) — **新增**：本体感知（ProprioceptionModule）/ 余裕感知（AffordanceMap）/ 工具透明性（IntentActionMapper）/ AgentSelfModel / 时间加权记忆激活 / 认知锚点文件 / 自维护模块（SelfMaintenanceModule），A/B/C 三阶段共 12 项
 - [HTTP API 指南](docs/http-api-guide.md) — REST/SSE 服务使用指南
 - [Web Demo 指南](docs/web-demo-guide.md) — Streamlit Web 界面使用
