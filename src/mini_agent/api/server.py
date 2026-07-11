@@ -631,6 +631,24 @@ def create_app(
         # 绑定 asyncio 事件循环给广播器（必须在 async 上下文中）
         loop = asyncio.get_running_loop()
         bridge.broadcaster.set_loop(loop)
+        # [FIX] daemon 多 session 隔离场景下，SessionAgentPool 会为每个新
+        # session 各自 init_bridge() 出一个独立的 AgentBridge（见
+        # session_pool.py::_create_entry）。之前只有这里传进来的全局
+        # `bridge`（app.state.bridge，单用户模式下唯一真正会被使用的那个）
+        # 绑定了事件循环，SessionAgentPool 新建的那些 per-session bridge
+        # 的 broadcaster._loop 永远是 None——OutputBroadcaster.publish()
+        # 判断 `if self._loop and not self._loop.is_closed()` 为 False 时
+        # 直接跳过 call_soon_threadsafe，事件根本不会被送进任何 SSE 订阅者
+        # 的队列。表现出来就是：任何"带 session_id 落到 SessionAgentPool"
+        # 的会话（典型场景：daemon 多客户端场景下新建的 session），daemon
+        # 自己的终端能正常看到 AgentRunner 跑完、打印出回复（那是
+        # _print_to_term 直接写终端，不走 SSE），但通过 /v1/stream/{turn_id}
+        # 订阅的客户端永远收不到任何 token/turn_done 事件，只能拿到
+        # heartbeat，最终radio静默、连接超时也看不到回复。
+        # 这里把同一个 loop 也告诉 session_pool，让它给此后新建的每个
+        # per-session bridge 都调用 set_loop()，事件才能真正广播出去。
+        if session_pool is not None:
+            session_pool.set_loop(loop)
         bridge.emit(AgentEvent(
             type=EventType.STATUS,
             data={"message": "HTTP API server ready"},

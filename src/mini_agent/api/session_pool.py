@@ -280,6 +280,16 @@ class SessionAgentPool:
 
         self._pool: dict[str, SessionEntry] = {}   # session_id → entry
         self._lock = threading.Lock()
+        # [FIX] 见 api/server.py::create_app().lifespan 里的详细说明：
+        # 每个新建的 per-session bridge 都必须调用一次
+        # bridge.broadcaster.set_loop(...)，否则该 session 的所有 SSE
+        # 事件都发不出去（OutputBroadcaster.publish() 在 _loop 为 None 时
+        # 直接跳过 call_soon_threadsafe）。这里先存一份 loop 引用，供
+        # _create_entry() 在构造新 bridge 时使用；只有在 uvicorn 的 async
+        # 上下文里才能拿到真正的事件循环，所以由外部（create_app 的
+        # lifespan）在启动时调用 set_loop() 注入进来，不在 __init__ 里直接
+        # asyncio.get_event_loop()（此时很可能还没有运行中的循环）。
+        self._loop: Optional["asyncio.AbstractEventLoop"] = None
         # 每个 session_id 一把构造锁，只序列化"同一个 session_id"的并发创建请求，
         # 不同 session_id 之间互不阻塞（见 get_or_create 的详细说明：这是为了
         # 修复一个真实存在过的死锁——构造失败回调需要拿 self._lock，
@@ -353,6 +363,17 @@ class SessionAgentPool:
             with self._lock:
                 self._pool[session_id] = entry
             return entry
+
+    def set_loop(self, loop: "asyncio.AbstractEventLoop") -> None:
+        """由 create_app() 的 lifespan 在启动时注入运行中的事件循环。
+
+        必须在真正拿到新 bridge 之前就调用（daemon 启动早期），这样
+        _create_entry() 里对每个新 session 构造的 bridge 才能在构造时
+        立刻绑好 loop——否则该 session 早期发出的事件（包括第一轮回复）
+        会在 bridge.broadcaster._loop 还是 None 的窗口期内被静默丢弃。
+        """
+        with self._lock:
+            self._loop = loop
 
     def get(self, session_id: str) -> Optional[SessionEntry]:
         with self._lock:
@@ -511,6 +532,31 @@ class SessionAgentPool:
                     existing_session = mgr.load(session_id)
                     if existing_session is not None:
                         agent.load_session(session_id)
+                    elif agent._session is not None and agent._session.id != session_id:
+                        # [FIX] session_id 错位 bug：Agent() 构造时内部调用
+                        # SessionManager.new_session() 会随机生成一个全新的
+                        # 8 位 session id（不接受指定 id），跟这里 pool 用作
+                        # 路由 key 的 session_id（例如 /v1/sessions/new 分配
+                        # 的 12 位 id，或客户端记住、后续每次请求都带着的
+                        # session_id）完全对不上。
+                        #
+                        # 后果：pool._pool 字典按 session_id 路由没问题（靠
+                        # 的是外层 dict key，不依赖 agent 内部 id），但
+                        # agent 自己保存历史时用的是这个不相关的随机 id，
+                        # 客户端下次拿着它记住的 session_id 来 resume /
+                        # 查询历史时，磁盘上根本没有这个目录——历史查不到、
+                        # session 列表里显示的 id 和客户端 UI 上的 id 对不
+                        # 上，正是"多 session 场景下第二个客户端好像没收到
+                        # 回复"这类问题背后的根因之一。
+                        #
+                        # 这里是全新 session（尚未 save() 过、file_path 为
+                        # 空，不存在覆盖已有磁盘文件的风险），可以安全地把
+                        # Agent 内部 session.id 直接改写成 pool 要求的
+                        # session_id，并重新绑定 TaskManager / debug logger /
+                        # raw_history 等依赖 session_id 的周边组件（复用
+                        # load_session/new_session 同款的 _bind_session_extras()）。
+                        agent._session.id = session_id
+                        agent._bind_session_extras()
             except Exception:
                 pass  # 恢复失败不阻断创建，agent 会用一个全新的 session
 
@@ -601,6 +647,23 @@ class SessionAgentPool:
         bridge = init_bridge(ring_maxlen=500)
         # 注意：此刻 bridge.agent 还是 None——AgentRunner.run() 会在它自己的
         # 线程里调用 agent_factory() 之后才赋值（见 api/server.py AgentRunner.run）。
+
+        # [FIX] 必须立刻把事件循环绑定给这个新 bridge 的 broadcaster，
+        # 否则它后续 emit 的所有事件（token / turn_done / ...）都会因为
+        # OutputBroadcaster.publish() 里 `self._loop` 为 None 而被直接
+        # 跳过，不会送进任何 SSE 订阅者的队列——这正是"daemon 多客户端场景下，
+        # 新建 session 的那个客户端发消息后，daemon 自己的终端能看到
+        # AgentRunner 处理完、打印出了回复，但发消息的客户端本身通过
+        # /v1/stream/{turn_id} 什么都收不到"的根因。self._loop 由
+        # create_app() 的 lifespan 在服务启动时通过 set_loop() 注入
+        # （见该处注释），正常情况下这里不会是 None；万一意外是 None
+        # （例如极端情况下 session 在 lifespan 跑之前就被创建），也不阻断
+        # session 创建，只是退化为"这个 session 的 SSE 事件发不出去"，
+        # 不影响 daemon 本地终端和下一次正常请求。
+        with self._lock:
+            loop = self._loop
+        if loop is not None:
+            bridge.broadcaster.set_loop(loop)
 
         bus_id = f"session:{session_id}"
 
