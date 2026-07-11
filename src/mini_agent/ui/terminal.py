@@ -1948,6 +1948,23 @@ class Terminal:
     def _handle_simple(self, msg: _Msg) -> None:
         kind = msg.kind
 
+        # [FIX] daemon 多 session 场景下的兜底保护：正常情况下，同一时刻只有
+        # 一个 session 的 run_turn() 应该持有 server.py::_local_term_write_lock
+        # 在往本地终端写东西（见 agent.py::_locked_print_info/_locked_print_warning
+        # 的修复说明）。这里仍然做一层兜底——万一未来又有新的调用路径
+        # （比如某个 hook、某个尚未接入锁保护的后台任务）漏加了锁，直接
+        # 调用了 term.print()/rule()/panel()/syntax()/markdown()，且恰好撞
+        # 上另一个 session 正在流式输出（self._streaming 为 True）的窗口：
+        # 不去动 _pending_stream/_streaming 等属于"当前流"的状态（避免真正
+        # 破坏那次流式输出的收尾），但先补一个换行，让这条插入的消息独占
+        # 一行，不会被直接拼接在正在流式输出的那一行文字中间——不能根治
+        # （根治见 agent.py 的加锁修复），但能避免"两段不相关内容在字符
+        # 粒度上粘在一起、内容错位"的最坏视觉效果。
+        _mid_stream_insert = kind in ("print", "rule", "panel", "syntax", "markdown") and self._streaming
+        if _mid_stream_insert:
+            sys.stdout.write("\n")
+            sys.stdout.flush()
+
         if kind == "print":
             args, kwargs = msg.payload
             # simple-mode 下不需要"行内挂起"机制：即使调用方传了 end=""

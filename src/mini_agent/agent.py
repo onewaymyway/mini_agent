@@ -45,6 +45,68 @@ from mini_agent.reminders import ReminderManager
 
 import re as _re
 
+
+def _term_write_lock_ctx():
+    """
+    [FIX] daemon 多 session 场景下，`trigger_summary_and_profile()` 触发的
+    `_generate_and_save_summary()` 在独立后台线程（"mini-agent-summary"）里
+    直接调用 R.print_info()/R.print_warning() —— 这两个函数一路往下最终是
+    `term.print(...)`，会不经任何互斥直接把消息投进 Terminal 的渲染队列。
+
+    根因：daemon 模式下，`server.py` 用 `_local_term_write_lock` 把"某个
+    session 的一整轮 run_turn()"当成本地终端写入的临界区，序列化了不同
+    session 之间的输出——但这把锁只在 server.py 里、包住 run_turn() 调用
+    本身。`_generate_and_save_summary()` 是 run_turn() **返回之后**才起的
+    后台线程（save_session() 触发），跑在这把锁的保护范围之外：它的
+    print_info("正在后台生成会话摘要...")/print_info("会话摘要记忆已生成")
+    等调用完全可能在另一个 session 正在流式输出的**中途**插进终端渲染
+    队列——多个消息在同一个物理终端上按到达顺序打印，于是这条"背景摘要"
+    的整行文本会被插在另一个 session 尚未收尾的流式内容中间，表现为：
+      - 内容从中间某处断开、开头几个字"丢失"（其实是被这条插入的打印行
+        实际拆断了视觉连续性，配合 stream 的行内 filter/续写逻辑，看起来
+        像是内容被吃掉）；
+      - print_assistant_prefix() 打印的 "agent_name ❯ " 前缀所在的那一行
+        被无关打印行打断，后续 token 另起一行，看起来"没有 agent 名字"。
+
+    修复：让这些背景线程的打印也去抢同一把 `_local_term_write_lock`——
+    锁在被某个 session 的 run_turn() 持有期间，这里的 print 调用会阻塞
+    等待，直到那一整轮输出收尾之后才真正打印，不会再插入到别的 session
+    正在进行中的流式内容内部。
+
+    非 daemon 场景（比如单进程本地 CLI）下 `mini_agent.api.server` 模块
+    根本不会被 import，这里保持"锁不存在就不加锁"的静默降级，行为和之前
+    完全一致，不引入任何新依赖。
+    """
+    try:
+        import sys as _sys
+        _server_mod = _sys.modules.get("mini_agent.api.server")
+        if _server_mod is not None:
+            return _server_mod._local_term_write_lock
+    except Exception:
+        pass
+    return None
+
+
+class _NullCtx:
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+
+def _locked_print_info(msg: str) -> None:
+    lock = _term_write_lock_ctx()
+    with (lock if lock is not None else _NullCtx()):
+        R.print_info(msg)
+
+
+def _locked_print_warning(msg: str) -> None:
+    lock = _term_write_lock_ctx()
+    with (lock if lock is not None else _NullCtx()):
+        R.print_warning(msg)
+
+
 # ── 工具错误识别（Stage 1.2 起迁移至 perception/lesson_rules.py，供 ──────────
 #    tool_executor.py 共享复用，避免循环依赖；这里保留 _is_tool_error 别名
 #    以兼容本文件内现有调用点）─────────────────────────────────────────────────
@@ -1052,14 +1114,14 @@ class Agent:
         """
         if not self._profile_mgr:
             if force:
-                R.print_warning("用户画像功能未开启（profile.enabled=false）。")
+                _locked_print_warning("用户画像功能未开启（profile.enabled=false）。")
             return
         # 画像基于长期记忆：默认条目写入 project-scope（self._memory），
         # global-scope（self._global_memory）为可选的跨项目记忆，两者都要合并考虑。
         sources = [s for s in (self._memory, self._global_memory) if s is not None]
         if not sources:
             if force:
-                R.print_warning("记忆功能未开启，无法生成用户画像。")
+                _locked_print_warning("记忆功能未开启，无法生成用户画像。")
             return
         try:
             entries = []
@@ -1067,18 +1129,18 @@ class Agent:
                 entries.extend(s.all_entries())
             if not entries:
                 if force:
-                    R.print_warning("暂无可用于生成画像的长期记忆。")
+                    _locked_print_warning("暂无可用于生成画像的长期记忆。")
                 return
             count = len(entries)
             if not force and not self._profile_mgr.should_refresh(count, self.cfg):
                 return
             # 按 created_at 升序取最近 N 条
             entries = sorted(entries, key=lambda e: e.created_at)[-self.cfg.profile.max_entries_for_profile:]
-            R.print_info("正在更新用户画像(profile)...")
+            _locked_print_info("正在更新用户画像(profile)...")
             self._profile_mgr.generate(self._llm, entries)
-            R.print_info("用户画像(profile)已更新")
+            _locked_print_info("用户画像(profile)已更新")
         except Exception as e:
-            R.print_warning(f"用户画像生成失败: {e}")
+            _locked_print_warning(f"用户画像生成失败: {e}")
 
     def trigger_summary_and_profile(self, session_path: Optional[str] = None, force: bool = False) -> bool:
         """
@@ -1096,15 +1158,15 @@ class Agent:
         """
         if session_path is None:
             if not self._session_mgr or not self._session:
-                R.print_warning("当前没有可保存的会话。")
+                _locked_print_warning("当前没有可保存的会话。")
                 return False
             session_path = self._session.file_path or ""
 
         if self._summary_lock.locked():
-            R.print_warning("摘要/画像生成任务正在进行中，请稍后再试。")
+            _locked_print_warning("摘要/画像生成任务正在进行中，请稍后再试。")
             return False
 
-        R.print_info("正在后台生成会话摘要 / 更新长期记忆...")
+        _locked_print_info("正在后台生成会话摘要 / 更新长期记忆...")
         history_snapshot = list(self._history)
         threading.Thread(
             target=self._generate_and_save_summary,
@@ -1129,7 +1191,7 @@ class Agent:
         """
         if not self._summary_lock.acquire(blocking=False):
             if force:
-                R.print_warning("摘要/画像生成任务正在进行中，请稍后再试。")
+                _locked_print_warning("摘要/画像生成任务正在进行中，请稍后再试。")
             return
         try:
             if history is None:
@@ -1141,7 +1203,7 @@ class Agent:
             ]
             if not user_turns:
                 if force:
-                    R.print_warning("当前会话没有可摘要的用户消息。")
+                    _locked_print_warning("当前会话没有可摘要的用户消息。")
                 return
 
             turns_text = "\n".join(f"- {t[:200]}" for t in user_turns[:10])
@@ -1177,7 +1239,7 @@ class Agent:
                         raw_history=self._hist._raw,
                     )
                 except Exception as e:
-                    R.print_warning(f"[summary] session re-save failed: {e}")
+                    _locked_print_warning(f"[summary] session re-save failed: {e}")
 
             # [SYS-MEMORY] 写入长期记忆
             if self._memory and self._session:
@@ -1199,12 +1261,12 @@ class Agent:
                     self._memory.upsert(entry)
                 # 同时写入 memory_delta.jsonl（session 审计）
                 self._append_memory_delta(entry)
-            R.print_info("会话摘要记忆已生成")
+            _locked_print_info("会话摘要记忆已生成")
 
             # [SYS-PROFILE] 同一后台线程内顺带检查并刷新用户画像
             self._maybe_refresh_profile(force=force)
         except Exception as e:
-            R.print_warning(f"[summary] generation failed: {e}")
+            _locked_print_warning(f"[summary] generation failed: {e}")
         finally:
             self._summary_lock.release()
 
