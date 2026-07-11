@@ -2743,21 +2743,76 @@ class Terminal:
                 # ptk 运行时异常（dumb terminal、Windows ConPTY 等），标记后降级
                 self._ptk_failed = True
 
-        # 降级：ANSI 提示符 + readline（无法跨线程安全打断阻塞的
-        # sys.stdin.readline()，只能保证"开始前"检查一次 _remote_busy；
-        # 已经在这里阻塞的情况下，只能等用户实际按回车提交后，由主循环
-        # 在下一次调用 prompt_user() 前的检查里补上"等待中"展示）。
+        # 降级：ANSI 提示符 + readline。
+        #
+        # [FIX] 之前这里是直接同步阻塞在 sys.stdin.readline() 上：等待
+        # 用户输入期间，_pending_during_input 里攒的旁观消息（其它
+        # session/HTTP 触发的 turn 内容）完全没机会安全地提前打印出来，
+        # 只能等用户真正按下回车、_read_line() 返回之后才一次性补打印。
+        #
+        # 更关键的是：没有 prompt_toolkit 时（比如 Windows ConPTY 下 ptk
+        # Application 运行时抛异常，触发上面的 self._ptk_failed = True
+        # 降级），_ptk_flush_loop() 里 `app = self._active_ptk_app; if app
+        # is None: continue` 会让"边等边安全 flush"这整套机制直接失效——
+        # 降级路径下，daemon 前台终端因此完全没有手段在等待期间安全显示
+        # 别的 session 的输出：要么迟迟不出现，要么在某个不可控的时间点
+        # 和这里接下来要写的提示符文字互相竞争同一个 stdout，交织出
+        # "内容和提示符粘连、前缀丢失、正文被腰斩"的画面——这正是本次
+        # 反馈里 daemon 前台终端反复出现的那几个问题。
+        #
+        # 修复：不再直接同步阻塞读 stdin，改成把真正的 sys.stdin.readline()
+        # 丢到后台线程执行，主线程短超时轮询等待，每次醒来检查
+        # _pending_during_input：有内容就打上 bypass_block=True（不会被
+        # _handle() 当成"阻塞期消息"重新缓冲）安全打印、join 渲染队列
+        # 确认真正落地，再重新写一遍提示符文字（因为刚打印的内容可能
+        # 就出现在这一行）。降级模式下没有真正的行编辑器，无法恢复用户
+        # 可能已经敲入但还没提交的字符——这是已知局限，优先保证不丢内容、
+        # 不产生交织乱码。
+        def _write_fallback_prompt() -> None:
+            if prompt_text:
+                sys.stdout.write(str(prompt_text))
+            else:
+                sys.stdout.write("\033[1;32mYou\033[0m\033[1;36m ❯ \033[0m")
+            sys.stdout.flush()
+
         sys.stdout.write("\n")
-        if prompt_text:
-            sys.stdout.write(str(prompt_text))
-        else:
-            sys.stdout.write("\033[1;32mYou\033[0m\033[1;36m ❯ \033[0m")
-        sys.stdout.flush()
-        try:
-            line = sys.stdin.readline()
-            return line.strip() if line else ""
-        except (EOFError, KeyboardInterrupt):
-            raise
+        _write_fallback_prompt()
+
+        _fallback_result: list = []
+        _fallback_exc: list = []
+
+        def _do_read() -> None:
+            try:
+                _fallback_result.append(sys.stdin.readline())
+            except (EOFError, KeyboardInterrupt) as e:
+                _fallback_exc.append(e)
+            except Exception as e:
+                _fallback_exc.append(e)
+
+        import threading as _threading_fallback
+        _reader_thread = _threading_fallback.Thread(
+            target=_do_read, name="terminal-fallback-readline", daemon=True,
+        )
+        _reader_thread.start()
+        while True:
+            _reader_thread.join(timeout=0.3)
+            if not _reader_thread.is_alive():
+                break
+            if not self._pending_during_input:
+                continue
+            pending, self._pending_during_input = self._pending_during_input, []
+            for _msg in pending:
+                _msg.bypass_block = True
+                self._q.put(_msg)
+            self._q.put(_Msg("_noop", None, bypass_block=True))
+            self._q.join()
+            sys.stdout.write("\n")
+            _write_fallback_prompt()
+
+        if _fallback_exc:
+            raise _fallback_exc[0]
+        line = _fallback_result[0] if _fallback_result else ""
+        return line.strip() if line else ""
 
     def stop(self) -> None:
         """程序退出时调用，优雅关闭后台线程，避免 daemon 线程在解释器关闭时
