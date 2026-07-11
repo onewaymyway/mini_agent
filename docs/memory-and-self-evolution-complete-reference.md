@@ -405,6 +405,8 @@ session"）：当前版本只记录，实际"等待 N 个 session"逻辑由晋�
 `objective_executor.py` 限制最多同时跑 `MAX_CONCURRENT_OBJECTIVES`（默认 2）
 个 Objective；`append_activity_digest()` / `read_activity_digest()` /
 `build_digest_summary()` 支撑 `/digest` 命令展示近期自主活动摘要。
+`can_run_autonomous()` 还会读取 B1 落盘的 `proprioception_snapshot.json`，
+`frustration` 达阈值时跳过本次 tick（第 5 节 B1 有详细说明）。
 
 ### 6.5 CronScheduler（`evolution/cron_scheduler.py`）
 daemon 模式下的周期性任务调度，支持固定间隔和类 cron 表达式
@@ -579,7 +581,14 @@ Agent 对自身状态的**轮间快照**——不调用 LLM，是 O(1) 纯计算
 
 每轮快照可选写入 `traces.jsonl`（`trace_enabled`，默认开启），供后续
 Phase G 分析趋势；C1（AgentSelfModel）也读取最新一次快照作为"此刻内部
-感受"维度。测试：`tests/test_proprioception.py`
+感受"维度。
+
+**→ Stage 9 信号桥接**：`frustration` 有意义变化时落盘到
+`AgentPaths.proprioception_snapshot`（`.agent/proprioception_snapshot.json`），
+`evolution/resource_arbiter.py::ResourceArbiter.can_run_autonomous()`
+读取该快照，`frustration` 达到阈值时跳过本次 tick 的自主任务提交——
+避免一个正在反复受挫的 Agent 同时还在后台跑高置信度要求的自主探索。
+快照缺失/超过 10 分钟未更新时不阻塞。测试：`tests/test_proprioception.py`
 
 ## 6. B2. Lesson → Reminder 自动闭环
 
@@ -626,7 +635,9 @@ Agent 路径（`cli/app.py`，Agent 构造完成后立即调用）共用同一�
 use_behavior_context` 与 `perception/behavior/` 的总开关 `enabled` 同时
 为 `True` 时，额外只读查询最近 30 分钟的 `BehaviorEventStore`（用户前台
 窗口/Git 活动/终端命令等采集事件），压缩为 `BehaviorContext`，追加成
-1-2 条"用户近期活动提示"。任一开关为 `False` 时该输入源视为缺失。
+1-2 条"用户近期活动提示"。任一开关为 `False` 时该输入源视为缺失。这份
+`BehaviorContext` 同时会写回 `AgentSelfModel.user_presence`（见下方
+C1），供下游程序化读取，不必解析 system prompt 文本。
 测试：`tests/test_affordance_analyzer.py`
 
 ## 9. 工具透明性（IntentActionMapper）
@@ -661,7 +672,9 @@ use_behavior_context` 与 `perception/behavior/` 的总开关 `enabled` 同时
 `internal_state` 这一个快变量：
 
 - **慢变量**（session 级，构建一次）：来自 `SelfAssessment`（跨 session
-  历史评估摘要引用）+ `capability_map`（当前 workdir 技术领域置信度）
+  历史评估摘要引用）+ `capability_map`（当前 workdir 技术领域置信度）+
+  `user_presence`（B4 交叉分析出的 `BehaviorContext`，通过
+  `is_user_actively_engaged()` 访问，行为感知未启用时为 `None`）
 - **快变量**（每轮更新）：来自 ProprioceptionModule 最新 `sense()` 快照
   （B1）+ AffordanceMap（B4，当前 session 的余裕地图）
 
@@ -704,9 +717,13 @@ lesson 排序应该高于 revert_record）
 什么、为什么这么做、下一步的直觉、还有哪些疑问没解决"——这些是恢复
 思路时最难从原始 history 重建的部分。
 
-**触发**：用户在 REPL 里 Ctrl-C 打断当前任务（`cli/repl.py::run_repl()`
-的 `KeyboardInterrupt` 处理分支）。基于最近 12 轮 history，用 LLM 生成
-固定四段式格式的锚点内容：
+**触发**：本地纯 REPL 模式下用户在 REPL 里 Ctrl-C 打断当前任务
+（`cli/repl.py::run_repl()` 的 `KeyboardInterrupt` 处理分支），直接调用
+`agent._save_cognitive_anchor()`。daemon-connected 模式下（`cli/daemon.py`）
+客户端进程不直接持有 Agent 实例，改为 best-effort POST
+`/v1/sessions/{session_id}/save_anchor`，服务端代为调用同一个方法（详见
+[HTTP API 指南](http-api-guide.md#stage-9-daemon-模式说明)）。基于最近 12
+轮 history，用 LLM 生成固定四段式格式的锚点内容：
 
 ```markdown
 ## 当时在想什么
@@ -719,11 +736,8 @@ lesson 排序应该高于 revert_record）
 存在则读取并注入 `system_extra`，随后立即归档（重命名为带时间戳后缀的
 文件），避免同一份锚点被无限期重复注入到后续每个 session。
 
-**开关**：`AppConfig.cognitive_anchor_enabled`（默认 `True`）。
-
-**已知限制**：daemon connected REPL 模式（`cli/daemon.py`）的 Ctrl-C 暂未
-接入——客户端进程不直接持有 Agent 实例，需要额外的 API 触发路径，留作
-后续迭代。测试：`tests/test_cognitive_anchor.py`（12 个用例）
+**开关**：`AppConfig.cognitive_anchor_enabled`（默认 `True`），本地与
+daemon-connected 两条触发路径共用同一开关。测试：`tests/test_cognitive_anchor.py`（12 个用例）
 
 ## 13. C4. 自维护模块（SelfMaintenanceModule）
 

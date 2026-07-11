@@ -649,6 +649,40 @@ POST /v1/cron/jobs/{job_id}/run
 }
 ```
 
+### POST /v1/sessions/{session_id}/save_anchor — daemon-connected 模式 Ctrl-C 认知锚点
+
+具身改进 C3（认知锚点，见 [具身智能改进指南](embodied-agent-guide.md#12-c3-认知锚点文件思维状态重建指南)）
+原来只在纯本地 REPL 模式下生效：本地进程直接持有 Agent 实例，`cli/repl.py`
+在 `KeyboardInterrupt` 里能直接调用 `agent._save_cognitive_anchor()`。
+daemon-connected 模式下 `cli/daemon.py` 的 `DaemonClient` 不直接持有 Agent
+实例，Ctrl-C 到不了 Agent 那一层——这个端点补上了这条路径。
+
+```bash
+POST /v1/sessions/{session_id}/save_anchor
+```
+
+`cli/daemon.py` 的 `DaemonClient.save_cognitive_anchor(session_id)` 在客户端
+自己的 `KeyboardInterrupt` 处理里 best-effort 调用（2.5s 短超时，失败/超时
+静默降级，不阻塞断开连接本身）。服务端按 `session_id` 找到对应 Agent 后调用
+同一个 `_save_cognitive_anchor()`；`cognitive_anchor_enabled=False` 或该
+session 尚未创建 Agent 时，由 `_save_cognitive_anchor()` 自身的 no-op /
+`_agent_or_404` 处理，不需要调用方额外判断。
+
+响应示例：
+
+```json
+{
+  "ok": true,
+  "session_id": "abc123",
+  "message": "Cognitive anchor save attempted",
+  "history_count": 18
+}
+```
+
+`ok: true` 只表示"这次调用被受理并尝试执行"，不保证锚点一定生成成功
+（锚点内容由 LLM 生成，可能因为 history 太短、LLM 调用失败等原因静默跳过——
+与本地模式的行为一致）。
+
 ### SSE 新增事件类型：`objective_progress`
 
 `GET /v1/stream` 或 `GET /v1/stream/{turn_id}` 中，当 daemon 自主推进 Objective 步骤时，

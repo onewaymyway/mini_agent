@@ -31,6 +31,7 @@ if TYPE_CHECKING:
 
 _EXPLORATION_BUDGET_RATIO_DEFAULT = 0.10  # 默认 10%
 _RESOURCE_LOCK_WINDOW_MINUTES = 10        # 检查最近 N 分钟内用户触碰的路径
+_FRUSTRATION_SNAPSHOT_STALE_MINUTES = 10  # proprioception 快照超过此时长视为过期，不阻塞
 
 
 class ResourceArbiter:
@@ -48,10 +49,15 @@ class ResourceArbiter:
     def can_run_autonomous(self) -> bool:
         """
         综合判断是否可以提交自主任务。
-        三条规则均通过才返回 True。
+        四条规则均通过才返回 True。
         """
         # 规则 3：预算硬限制
         if not self._check_budget():
+            return False
+
+        # 规则 4：本体感知信号（B1 → Stage 9 信号桥接）——一个正在反复受挫的
+        # Agent 不应该同时还在后台跑高置信度要求的自主探索。
+        if not self._check_frustration():
             return False
 
         return True
@@ -88,6 +94,36 @@ class ResourceArbiter:
             if budget <= 0:
                 return True  # 无限制
             return used < budget
+        except Exception:
+            return True
+
+    def _check_frustration(self) -> bool:
+        """
+        规则 4：读取 agent.py 写入的 proprioception_snapshot.json（B1 → Stage 9
+        信号桥接，见 resource_arbiter.py 模块 docstring 之外的设计说明）。
+
+        - 快照不存在 / 读取失败：视为当前没有可用的本体感知信号，不阻塞（与
+          规则 3 predicate 一贯的"读取失败不阻塞"风格一致）。
+        - 快照过旧（超过 _FRUSTRATION_SNAPSHOT_STALE_MINUTES 分钟没更新，说明
+          近期没有活跃 session 在跑）：同样不阻塞，避免用一个过期信号长期卡住
+          自主任务。
+        - frustration 达到阈值：返回 False（阻塞本次自主任务提交）。
+        """
+        try:
+            snapshot_path = self._paths.proprioception_snapshot
+            if not snapshot_path.exists():
+                return True
+            data = json.loads(snapshot_path.read_text(encoding="utf-8"))
+            updated_at = float(data.get("updated_at", 0))
+            if time.time() - updated_at > _FRUSTRATION_SNAPSHOT_STALE_MINUTES * 60:
+                return True
+            threshold = getattr(
+                getattr(self._cfg, "proprioception", None),
+                "frustration_threshold",
+                0.5,
+            )
+            frustration = float(data.get("frustration", 0.0))
+            return frustration < threshold
         except Exception:
             return True
 

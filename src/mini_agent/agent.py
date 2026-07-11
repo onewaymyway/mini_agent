@@ -700,6 +700,9 @@ class Agent:
         if getattr(self.cfg, "proprioception", None) and self.cfg.proprioception.enabled:
             from mini_agent.perception.proprioception import ProprioceptionModule
             self._proprioception = ProprioceptionModule()
+        # [B1 → Stage 9 信号桥接] 上次写入快照文件时的 frustration 值，用于判断
+        # 本轮是否值得再写一次（避免无意义变化时的重复磁盘 IO）。
+        self._last_written_frustration: Optional[float] = None
 
         # [具身改进 C1] AgentSelfModel：三个 profile 概念的聚合视图
         # 慢变量（capability_snapshot, affordance_summary）在此构建一次，
@@ -931,6 +934,30 @@ class Agent:
             R.print_info("[cognitive-anchor] 已记录当前思路，下次恢复时会自动提醒。")
         except Exception:
             pass  # 认知锚点生成失败不应影响中断流程本身
+
+    def _write_proprioception_snapshot(self, state: "AgentInternalState") -> None:
+        """
+        [B1 → Stage 9 信号桥接] 把最新一次 sense() 快照落盘到
+        .agent/proprioception_snapshot.json，供跑在 daemon 后台 tick 里的
+        ResourceArbiter 读取（它不持有活跃 Agent 引用，无法直接读内存状态）。
+
+        单文件覆盖写、不追加历史——只关心"最近一次感受"。纯本地感知信号，
+        不涉及用户数据，不需要额外脱敏。写入失败由调用方 try/except 吞掉，
+        不影响主循环。
+        """
+        import json as _json
+        import time as _time
+        from mini_agent.storage.paths import AgentPaths
+        paths = AgentPaths(self.cfg.project_root)
+        snapshot_path = paths.proprioception_snapshot
+        snapshot_path.parent.mkdir(parents=True, exist_ok=True)
+        payload = {
+            "frustration": round(state.frustration, 3),
+            "consecutive_failures": self._proprioception.consecutive_failures
+                if self._proprioception is not None else 0,
+            "updated_at": _time.time(),
+        }
+        snapshot_path.write_text(_json.dumps(payload, ensure_ascii=False), encoding="utf-8")
 
     def _bind_session_extras(self) -> None:
         """
@@ -2978,6 +3005,19 @@ class Agent:
                         "挫败感信号偏高。建议先停下来总结目前卡在哪里、是否需要换一种方法，"
                         "或者直接向用户说明遇到的困难并请求指引，而不是继续重复同样的尝试。"
                     )
+
+                # [B1 → Stage 9 信号桥接] 把本轮快照落盘，供 ResourceArbiter（跑在
+                # daemon 后台 tick 里，不持有活跃 Agent 引用）读取，避免一个正在
+                # 反复受挫的 Agent 同时还在后台跑高置信度要求的自主探索。只在
+                # frustration 有意义变化时才写，避免每轮都触发磁盘 IO。
+                if _pp_state.frustration != self._last_written_frustration:
+                    self._last_written_frustration = _pp_state.frustration
+                    try:
+                        self._write_proprioception_snapshot(_pp_state)
+                    except Exception as _mini_agent_exc:
+                        from mini_agent.errors import log_exception
+                        log_exception(_mini_agent_exc, where='mini_agent.agent')
+                        pass
 
             # [具身改进 C1] AgentSelfModel 快变量更新：把刚 sense() 到的内部状态
             # 同步给 self_model，ContextBuilder.build() 下次调用时会自动读取。

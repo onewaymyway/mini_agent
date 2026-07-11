@@ -102,6 +102,16 @@ Agent 对自身状态的轮间快照——不调用 LLM，是 O(1) 纯计算：
 Phase G 分析趋势；C1（AgentSelfModel）也读取最新一次快照作为"此刻内部
 感受"维度。
 
+**→ Stage 9 信号桥接**：`ProprioceptionModule` 是每个 Agent 实例内存中的
+状态，而 `evolution/resource_arbiter.py::ResourceArbiter` 跑在 daemon 后台
+tick 里、不持有活跃 Agent 引用，之前两条链路是彻底断开的——一个正在反复
+受挫的 Agent 会同时还在后台跑高置信度要求的自主探索。现在 `frustration`
+有意义变化时会落盘到 `AgentPaths.proprioception_snapshot`
+（`.agent/proprioception_snapshot.json`，单文件覆盖写），`ResourceArbiter.
+can_run_autonomous()` 的规则 4 读取该快照，`frustration` 达到阈值时本次
+tick 跳过自主任务提交；快照缺失或超过 10 分钟未更新视为无有效信号，不
+阻塞。详见 [Stage 9 自主运行时指南](self-evolution-stage9-guide.md#8-资源仲裁evolutionresource_arbiterpy)。
+
 测试：`tests/test_proprioception.py`
 
 ---
@@ -162,9 +172,13 @@ _create_entry()`）与本地单 Agent 路径（`cli/app.py`，Agent 构造完成
 use_behavior_context` 与 `perception/behavior/` 的总开关 `enabled` 同时为
 `True` 时，`inject_affordance_map()` 会额外只读查询最近 30 分钟的
 `BehaviorEventStore`，压缩为 `BehaviorContext`（近期被其他终端触碰的
-git 路径、应用切换频率等），追加成 1-2 条"用户近期活动提示"。任一开关
-为 `False` 时该输入源视为缺失，不影响其余三路分析；查询失败同样静默
-降级。详见 [用户行为感知指南](behavior-perception-guide.md)。
+git 路径、应用切换频率、`is_actively_engaged` 等），追加成 1-2 条"用户
+近期活动提示"。任一开关为 `False` 时该输入源视为缺失，不影响其余三路
+分析；查询失败同样静默降级。详见 [用户行为感知指南](behavior-perception-guide.md)。
+
+`inject_affordance_map()` 同时把这份 `BehaviorContext` 写回
+`AgentSelfModel.user_presence`（见下方 C1），供下游程序化读取
+`is_user_actively_engaged()`，而不必解析 system prompt 文本片段。
 
 测试：`tests/test_affordance_analyzer.py`
 
@@ -207,7 +221,10 @@ session 级构建一次（`AgentSelfModelBuilder`），之后每轮 turn 只更�
 
 - **慢变量**（session 级，构建一次）：来自 `SelfAssessment`（跨 session
   历史评估摘要引用，不重复注入全文）+ `capability_map`（当前 workdir
-  技术领域置信度）
+  技术领域置信度）+ `user_presence`（B4 `AffordanceMap` 交叉分析出的
+  `BehaviorContext`，"用户当前在场/繁忙"的结构化信号，`use_behavior_context`
+  关闭或行为感知未启用时为 `None`——通过 `is_user_actively_engaged()`
+  访问，而不是从 system prompt 文本里反解析）
 - **快变量**（每轮更新）：来自 ProprioceptionModule 最新 `sense()` 快照
   （B1）+ AffordanceMap（B4，当前 session 的余裕地图）
 
@@ -261,10 +278,22 @@ session 级构建一次（`AgentSelfModelBuilder`），之后每轮 turn 只更�
 想什么、为什么这么做、下一步的直觉、还有哪些疑问没解决"——这些是恢复
 思路时最难从原始 history 重建的部分。
 
-**触发**：用户在 REPL 里 Ctrl-C 打断当前任务（`cli/repl.py::run_repl()`
-的 `KeyboardInterrupt` 处理分支）。基于最近 12 轮 history，用 LLM 生成
-固定四段式格式的锚点内容（`prompts/system/cognitive_anchor.md` +
-`prompts/user/cognitive_anchor_request.md`）：
+**触发**：
+
+- 本地纯 REPL 模式：用户 Ctrl-C 打断当前任务（`cli/repl.py::run_repl()`
+  的 `KeyboardInterrupt` 处理分支），本地进程直接持有 Agent 实例，直接调用
+  `agent._save_cognitive_anchor()`。
+- daemon-connected 模式：`cli/daemon.py` 的 `DaemonClient` 进程不直接持有
+  Agent 实例，Ctrl-C 到不了 Agent 那一层——`DaemonClient.
+  save_cognitive_anchor(session_id)` 在客户端自己的 `KeyboardInterrupt`
+  处理里 best-effort POST `/v1/sessions/{session_id}/save_anchor`
+  （2.5s 短超时，失败/超时静默降级，不影响断开连接本身），服务端
+  （`api/routes.py::save_cognitive_anchor()`）按 `session_id` 找到对应
+  Agent 后调用同一个 `_save_cognitive_anchor()`。详见
+  [HTTP API 指南](http-api-guide.md#stage-9-daemon-模式说明)（`/v1/sessions/{session_id}/save_anchor`）。
+
+基于最近 12 轮 history，用 LLM 生成固定四段式格式的锚点内容
+（`prompts/system/cognitive_anchor.md` + `prompts/user/cognitive_anchor_request.md`）：
 
 ```markdown
 ## 当时在想什么
@@ -278,11 +307,8 @@ session 级构建一次（`AgentSelfModelBuilder`），之后每轮 turn 只更�
 恢复，仅供参考）"），随后立即归档（重命名为带时间戳后缀的文件），避免
 同一份锚点被无限期重复注入到后续每个 session。
 
-**开关**：`AppConfig.cognitive_anchor_enabled`（默认 `True`）。
-
-**已知限制**：daemon connected REPL 模式（`cli/daemon.py`）的 Ctrl-C 暂未
-接入——客户端进程不直接持有 Agent 实例，需要额外的 API 触发路径，留作
-后续迭代。
+**开关**：`AppConfig.cognitive_anchor_enabled`（默认 `True`）。两条触发
+路径共用同一个开关和同一个 `_save_cognitive_anchor()` 实现，行为一致。
 
 测试：`tests/test_cognitive_anchor.py`（12 个用例，用 duck-typed fake
 object 以未绑定方法方式调用 `Agent._save_cognitive_anchor` /
@@ -339,9 +365,10 @@ object 以未绑定方法方式调用 `Agent._save_cognitive_anchor` /
 | `cfg.proprioception.consecutive_failure_threshold` | `3` | 连续失败次数阈值 |
 | `cfg.affordance.enabled` | `True` | B4 余裕感知开关（当前仅多用户路径生效）|
 | `cfg.affordance.use_capability_map` | `True` | 是否纳入 Phase G 能力地图数据 |
-| `cfg.cognitive_anchor_enabled` | `True` | C3 认知锚点开关 |
+| `cfg.cognitive_anchor_enabled` | `True` | C3 认知锚点开关（本地 Ctrl-C 与 daemon-connected `/save_anchor` 共用） |
 | `evolution/memory_aging.py` 半衰期表 | 见上表 | C2，不走配置文件，代码内常量 |
 | 自维护间隔 | `24h` | C4，`should_run_self_maintenance(interval_hours=24.0)` |
+| `AgentPaths.proprioception_snapshot` | 不可配置 | B1 → Stage 9 信号桥接落盘路径，见 `ResourceArbiter` 规则 4 |
 
 ---
 

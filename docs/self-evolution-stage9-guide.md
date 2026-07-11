@@ -156,7 +156,7 @@ tick()
  ├─ _tick_passive()
  │   └─ CronScheduler.tick()         ← 检查所有 job 是否到期并触发
  └─ _tick_maintenance()
-     ├─ ResourceArbiter.can_run_autonomous()   ← 预算 + 路径冲突门控
+     ├─ ResourceArbiter.can_run_autonomous()   ← 预算 + 路径冲突 + 本体感知门控
      ├─ ObjectiveExecutor.resume()             ← 恢复因资源仲裁暂停的 Objective
      └─ 若有空闲槽位：
          └─ ObjectiveExecutor.start(objective) ← 启动新 Objective
@@ -386,7 +386,7 @@ _run_capability_exploration(candidate)
 
 `_tick_maintenance()` 在推进 Objective 前必须通过 `ResourceArbiter.can_run_autonomous()`：
 
-### 8.1 三条仲裁规则
+### 8.1 四条仲裁规则
 
 **规则 1：用户优先**（由 `InputQueue` FIFO 天然保证）
 
@@ -399,6 +399,16 @@ _run_capability_exploration(candidate)
 **规则 3：预算硬限**
 
 `used_today < daily_token_budget`，`daily_token_budget <= 0` 时不限制。
+
+**规则 4：本体感知信号（B1 → Stage 9 信号桥接）**
+
+读取 `agent.py` 每轮 sense() 后落盘的 `proprioception_snapshot.json`（`AgentPaths.
+proprioception_snapshot`）：`frustration` 达到 `cfg.proprioception.
+frustration_threshold`（默认 0.5）时，本次 tick 跳过自主任务提交——一个正在
+反复受挫的 Agent 不应该同时还在后台跑高置信度要求的自主探索。快照不存在
+（没有本体感知开启的活跃 session）或超过 10 分钟未更新（近期没有活跃 session
+在跑，信号已过期）时不阻塞，与规则 3 "读取失败不阻塞"是同一保守降级风格。
+详见 [具身智能改进指南](embodied-agent-guide.md#5-b1-本体感知模块proprioceptionmodule)。
 
 ### 8.2 activity_digest.jsonl
 

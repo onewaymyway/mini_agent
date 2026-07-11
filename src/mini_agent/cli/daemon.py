@@ -491,6 +491,20 @@ class DaemonClient:
             print(f"[daemon-client] POST {path} failed: {e}", file=sys.stderr)
             return None
 
+    def save_cognitive_anchor(self, session_id: str, timeout: float = 2.5) -> Optional[dict]:
+        """
+        POST /v1/sessions/{id}/save_anchor — daemon-connected 模式下 Ctrl-C
+        触发认知锚点的补丁路径（具身改进 C3 的已知缺口修复）。
+
+        本地纯模式下 repl.py 直接调用 agent._save_cognitive_anchor()；这里
+        没有本地 Agent 实例，只能通过 HTTP 让 server 侧代为调用同一个方法。
+        Ctrl-C 处理路径要求响应快，超时给得比其它 POST 短很多（默认 2.5s），
+        超时/失败都不重试、静默降级——不能因为这次旁路调用拖慢中断本身。
+        """
+        return self._post_json(
+            f"/v1/sessions/{_urlquote(session_id)}/save_anchor", timeout=timeout,
+        )
+
     def list_cron_jobs(self) -> Optional[dict]:
         """GET /v1/cron/jobs — CronScheduler job 列表。"""
         return self._get_json("/v1/cron/jobs")
@@ -2755,6 +2769,17 @@ def run_connected_repl(
 
     except KeyboardInterrupt:
         _out("[daemon] Disconnected (daemon continues running)")
+        # [具身改进 C3 daemon 缺口修复] 用户明确打断当前任务——daemon-connected
+        # 模式下这个进程不直接持有 Agent 实例，走 HTTP 让 server 侧代为调用
+        # _save_cognitive_anchor()。best-effort，失败/超时都静默降级，不影响
+        # 断开连接本身（daemon 本身继续跑，不受这次旁路调用影响）。
+        if active_session_id:
+            try:
+                client.save_cognitive_anchor(active_session_id)
+            except Exception as _mini_agent_exc:
+                from mini_agent.errors import log_exception
+                log_exception(_mini_agent_exc, where='mini_agent.cli.daemon')
+                pass
     finally:
         # 清理：停止 observer 线程，停止状态栏，并且——这是这次要修的关键
         # 一步——真正关掉 Terminal 自己的后台线程（渲染线程 / 状态栏刷新

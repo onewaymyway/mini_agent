@@ -1127,6 +1127,37 @@ async def new_session(request: Request):
     )
 
 
+@router.post("/sessions/{session_id}/save_anchor", response_model=SessionActionResponse)
+async def save_cognitive_anchor(request: Request, session_id: str):
+    """
+    [具身改进 C3 daemon 缺口修复] daemon-connected 模式下的 Ctrl-C 触发路径。
+
+    纯本地模式下 Ctrl-C 由 cli/repl.py 直接调用 agent._save_cognitive_anchor()；
+    daemon-connected 模式下 cli/daemon.py 的 DaemonClient 进程不直接持有 Agent
+    实例，Ctrl-C 到不了 Agent 那一层——这个路由补上那条路径：client 在自己的
+    KeyboardInterrupt 处理里 best-effort POST 这里，server 侧找到对应 session
+    的 Agent 并调用同一个 _save_cognitive_anchor()。
+
+    与 /sessions/new 等路由一致地走 _bridge(request, session_id) 解析到具体的
+    AgentBridge（单用户模式下退化为全局 bridge，session_id 被忽略）。cognitive_
+    anchor_enabled=False 或 Agent 未初始化时，_save_cognitive_anchor() 自身已经
+    做了 no-op / 静默降级，这里不重复判断。
+    """
+    bridge = _bridge(request, session_id)
+    agent = _agent_or_404(bridge)
+    try:
+        agent._save_cognitive_anchor()
+    except Exception as _mini_agent_exc:
+        from mini_agent.errors import log_exception
+        log_exception(_mini_agent_exc, where='mini_agent.api.routes')
+        # 认知锚点生成失败不应该让这个端点返回 500——对客户端而言这是一次
+        # best-effort 的旁路调用，不影响 Ctrl-C 本身的中断流程。
+    return SessionActionResponse(
+        ok=True, session_id=agent.session_id or session_id,
+        message="Cognitive anchor save attempted", history_count=len(agent.history),
+    )
+
+
 @router.delete("/sessions/{session_id}", response_model=SessionDeleteResponse)
 async def delete_session(request: Request, session_id: str):
     """删除一个已保存的 session（不能删除当前激活的 session）。"""

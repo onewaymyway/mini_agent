@@ -265,6 +265,15 @@ class AgentPaths:
         return self.workdir_dir / "cognitive_anchor.md"
 
     @property
+    def proprioception_snapshot(self) -> Path:
+        """<project_root>/.agent/proprioception_snapshot.json — 本体感知最新快照
+        （具身改进 B1 与 Stage 9 ResourceArbiter 之间的信号桥接）。ProprioceptionModule
+        是每个 Agent 实例内存中的状态，AutonomousLoop/ResourceArbiter 跑在 daemon
+        后台 tick 里、不持有活跃 Agent 引用，因此需要落盘一份轻量快照供其读取。
+        单文件、被覆盖（不追加历史）：只关心"最近一次感受"，不是日志。"""
+        return self.workdir_dir / "proprioception_snapshot.json"
+
+    @property
     def sessions_dir(self) -> Path:
         """<project_root>/.agent/sessions/ — 所有 session 的根目录"""
         return self.workdir_dir / "sessions"

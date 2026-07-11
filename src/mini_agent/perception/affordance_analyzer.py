@@ -391,6 +391,18 @@ def inject_affordance_map(agent: "Agent", cfg: "AppConfig", *, log=None) -> None
             behavior_context=behavior_context,
         )
         fragment = affordance_map.to_system_prompt_fragment()
+
+        # [打通具身感知与行为感知] 放在 "fragment 为空则 return" 之前：
+        # AgentSelfModel 在 Agent.__init__ 阶段构建时 affordance_map 还是 None
+        # （B4 注入本来就晚于 Agent 构造），BehaviorContext 因此从未被写回过
+        # AgentSelfModel 的任何字段。behavior_context 里 is_actively_engaged
+        # 这类信号即使在 known_issues/opportunities 等都为空、fragment 整体为空
+        # 时也可能有值——不应该因为"没有值得写进 system prompt 的文字"就连带
+        # 丢掉这个结构化信号。失败静默降级，不影响 AffordanceMap 本身的注入。
+        self_model = getattr(agent, "_self_model", None)
+        if self_model is not None:
+            self_model.user_presence = behavior_context
+
         if not fragment:
             return
 

@@ -58,7 +58,7 @@ from typing import TYPE_CHECKING, Optional
 
 if TYPE_CHECKING:
     from mini_agent.perception.proprioception import AgentInternalState
-    from mini_agent.perception.affordance_analyzer import AffordanceMap
+    from mini_agent.perception.affordance_analyzer import AffordanceMap, BehaviorContext
 
 
 @dataclass
@@ -102,6 +102,14 @@ class AgentSelfModel:
     affordance_summary: str = ""
     active_skill_count: int = 0
     session_start_at: float = field(default_factory=time.time)
+    # [打通具身感知与行为感知] AffordanceAnalyzer 内部已经算好的 BehaviorContext
+    # （用户近期 git/terminal 活动、是否在场），之前只被揉进
+    # affordance_summary/system prompt 的文本片段里，下游想程序化读取（而不是
+    # 靠模型自己从 prompt 文本里理解）做不到。由 inject_affordance_map() 在
+    # session 开始时连同 AffordanceMap 一起写回，None 表示该输入源缺失（behavior
+    # 感知未启用，或 affordance.use_behavior_context 关闭）。与 AffordanceMap
+    # 本身同一"session 开始时构建一次"的慢变量粒度对齐，不逐 turn 刷新。
+    user_presence: Optional["BehaviorContext"] = None
 
     # 快变量（每轮 turn 开始时由 _update_internal_state 更新）
     internal_state: Optional["AgentInternalState"] = None
@@ -109,6 +117,17 @@ class AgentSelfModel:
     def update_internal_state(self, state: "AgentInternalState") -> None:
         """每轮 turn 开始时由 Agent 调用，更新实时感知快照。"""
         self.internal_state = state
+
+    def is_user_actively_engaged(self) -> Optional[bool]:
+        """
+        程序化读取"用户当前是否在场/专注"的结构化访问入口，代理
+        user_presence.is_actively_engaged。返回 None 表示信号缺失（行为感知
+        未启用，或本 session 观察窗口内没有采集到足够信号做判断）——调用方
+        应把 None 当作"不知道"处理，不要当作 False。
+        """
+        if self.user_presence is None:
+            return None
+        return self.user_presence.is_actively_engaged
 
     def to_system_prompt_fragment(self) -> str:
         """
