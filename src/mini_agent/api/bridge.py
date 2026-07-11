@@ -864,9 +864,15 @@ class AgentBridge:
             data={"line": line},
         ))
 
-    def emit_info(self, msg: str) -> None:
+    def emit_info(self, msg: str, turn_id: str = "") -> None:
+        # [FIX] 之前这里没有 turn_id 参数，所有 info 事件（包括
+        # "[HTTP] Queued message: ..."、"正在后台生成会话摘要..." 等）
+        # 广播出去时 turn_id 恒为空字符串，见调用方 routes.py/server.py
+        # 处的详细说明——这是"connected 客户端每次都重复显示历史 info、
+        # 以及最后一条回复被重复打印两次"两个 bug 的共同根因。
         self.broadcaster.push(AgentEvent(
             type=EventType.INFO,
+            turn_id=turn_id,
             session_id=self._current_session_id(),
             data={"message": msg},
         ))

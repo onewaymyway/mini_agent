@@ -1275,7 +1275,25 @@ def _install_output_hook(bridge: AgentBridge) -> None:
                     with _local_term_write_lock:
                         orig(msg, **kw)
                 if not _in_relayed_capture():
-                    _effective_output_bridge(bridge).emit(AgentEvent(type=etype, data={"message": str(msg)}))
+                    # [FIX] 之前这里没有带 turn_id——任何在 run_turn() 期间
+                    # 调用的 R.print_info()/R.print_warning()（比如
+                    # "正在后台生成会话摘要 / 更新长期记忆..."）广播出去的
+                    # 事件都没有归属到当前这一轮。后果有两个：
+                    #   1. /v1/stream/{turn_id} 的过滤规则对没有 turn_id 的
+                    #      事件不生效（视为"不过滤"），这类事件会被每一次
+                    #      新 turn 的 per-turn SSE 回放重新放送一遍，越到
+                    #      后面回放的历史 info/warning 越多。
+                    #   2. cli/daemon.py 的 observer 线程用 turn_id 判断
+                    #      "这是不是我自己这一轮的事件"，没有 turn_id 会被
+                    #      误判成"别的客户端发的"，不但重复显示、带上多余
+                    #      的"[其他终端]"前缀，还会把 connected 客户端主路径
+                    #      的 `_own_printed_any_holder` 复位，导致它随后在
+                    #      turn_done 时又把已经流式显示过的回复内容当成
+                    #      "本轮没有流过 token"重新整段打印一遍（表现为
+                    #      "最后一条回复重复了两次"）。
+                    _effective_output_bridge(bridge).emit(AgentEvent(
+                        type=etype, turn_id=_tid(), data={"message": str(msg)}
+                    ))
             return _patched
         setattr(mod, _fname, _make(_orig, _etype))
 

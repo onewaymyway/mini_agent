@@ -530,7 +530,11 @@ async def chat(request: Request, body: ChatRequest):
     user_ctx = getattr(request.state, "user_ctx", None)
     meta = {"user_id": user_ctx.user_id, "role": user_ctx.role} if user_ctx else None
     turn_id = bridge.input_queue.enqueue(body.message, body.turn_id, meta=meta)
-    bridge.emit_info(f"[HTTP] Queued message: {body.message[:80]}")
+    # [FIX] 打上 turn_id：否则这条 info 事件会被每一次新 turn 的
+    # /v1/stream/{turn_id} 回放放行（历史 info 越攒越多），也会被
+    # observer 误判成"别的客户端发的"而重复显示、并错误复位
+    # _own_printed_any_holder 导致最终回复被重复打印一遍。
+    bridge.emit_info(f"[HTTP] Queued message: {body.message[:80]}", turn_id=turn_id)
     # daemon 多用户架构 Phase 3：把这次请求实际落到的 session_id 带回去——
     # 客户端如果发请求时没指定 session_id（_resolve_session_id 会自动决定一个），
     # 这样客户端才能知道"刚刚这条消息其实进了哪个 session"。
