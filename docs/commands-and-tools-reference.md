@@ -353,7 +353,8 @@ mini-agent --retry-backoff linear --retry-backoff-step 60 --retry-backoff-max 30
 | `/evolution log [N]` | 展示最近 N 条自我修改 commit（默认 10），表格形式 |
 | `/evolution show <commit>` | 展示单条 commit 的完整结构化信息 + diff |
 | `/evolution diff <commit>` | 展示某次 commit 的改动 diff（语法高亮） |
-| `/evolution revert <commit>` | 生成 revert commit，并自动记录一条 `source="revert_record"` 的 lesson |
+| `/evolution revert <commit>` | 生成 revert commit，并自动记录一条 `source="revert_record"` 的 lesson；若该 commit 正处于效果回填观察期，提前结束观察 |
+| `/evolution outcomes [--worsened]` | **新增**：列出自我进化 commit 的效果回填记录（`observing`/`improved`/`no_change`/`worsened`/`insufficient_data`/`reverted_by_user`）。`--worsened` 只看建议复核 revert 的记录。详见 [效果回填指南](self-evolution-outcome-tracking-guide.md) |
 | `/evolve review [--global] [--tier T1\|T2]` | 扫描 lesson（默认 workdir 级 `memory.jsonl`，`--global` 扫描 `~/.agent/memory.jsonl`），对达标分组 spawn `evolution-agent` 提案 |
 | `/evolve list [--global] [--tier T1\|T2]` | 同 `review`，但只扫描 + 列出达标分组，不 spawn agent、不消耗 LLM 调用 |
 | `/evolve phase-g [--force] [--dry-run]` | **Stage 8** 手动触发 Phase G 后台循环扫描（剪枝候选 + 能力地图 + 晋升候选）。`--force` 跳过 24h 时间门控，`--dry-run` 只展示不写入节奏记录 |

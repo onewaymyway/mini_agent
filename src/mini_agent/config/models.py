@@ -605,6 +605,11 @@ class AffordanceConfig:
     # 是否在分析中纳入 capability_map（依赖 Phase G 历史扫描数据；
     # 项目从未跑过 Phase G 时该字段不影响功能，只是 unexplored_areas 为空）
     use_capability_map: bool = True
+    # [打通具身感知与行为感知] 是否交叉分析用户行为感知层（perception/behavior/）
+    # 的近期活动摘要。双重开关：仅当 BehaviorConfig.enabled 与本字段同时为
+    # True 时才生效；任一为 False 时该输入源视为缺失，不影响其余分析路径。
+    # 默认关闭，避免在未显式启用行为感知采集的项目里意外产生跨层读取。
+    use_behavior_context: bool = False
     # 调试：打印生成的 AffordanceMap
     verbose: bool = False
 

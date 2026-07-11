@@ -48,12 +48,14 @@ def handle_evolution_cmd(args: list[str], agent=None) -> None:
         _handle_diff(repo, rest)
     elif sub == "revert":
         _handle_revert(repo, rest, agent)
+    elif sub == "outcomes":
+        _handle_outcomes(rest, agent)
     elif sub in ("lessons-to-reminders", "lessons2reminders"):
         _handle_lessons_to_reminders(agent)
     else:
         R.print_error(
             "Usage: /evolution [log [N] | show <commit> | diff <commit> | "
-            "revert <commit> | lessons-to-reminders]"
+            "revert <commit> | outcomes [--worsened] | lessons-to-reminders]"
         )
 
 
@@ -174,8 +176,90 @@ def _handle_revert(repo, rest: list[str], agent) -> None:
 
     _record_revert_lesson(agent, match, revert_commit)
 
+    # [方案三] 若该 commit 正处于效果回填观察期，提前结束观察——
+    # 继续观察一个已被撤销的 commit 没有意义。失败静默，不影响 revert 本身。
+    try:
+        from mini_agent.evolution import outcome_tracker
+        from mini_agent.storage.paths import AgentPaths
 
-def _record_revert_lesson(agent, reverted: "CommitInfo", revert_commit: str) -> None:
+        outcome_tracker.mark_reverted(AgentPaths(agent.cfg.project_root), match.commit)
+    except Exception:
+        pass
+
+
+def _handle_outcomes(rest: list[str], agent) -> None:
+    """
+    [方案三] /evolution outcomes [--worsened]
+
+    列出自我进化 commit 的效果回填记录（observing / improved / no_change /
+    worsened / insufficient_data / reverted_by_user）。verdict == worsened
+    的记录只是建议复核，不会自动 revert——最终决策权留给用户，与
+    SoftGoalDeriver 推导出的 Goal 需要人工 accept/reject 是同一套设计哲学。
+    """
+    if agent is None:
+        R.print_error("No active agent context for /evolution outcomes.")
+        return
+
+    from mini_agent.evolution import outcome_tracker
+    from mini_agent.storage.paths import AgentPaths
+
+    only_worsened = "--worsened" in rest
+    paths = AgentPaths(agent.cfg.project_root)
+    records = (
+        outcome_tracker.get_revert_candidates(paths)
+        if only_worsened else outcome_tracker.get_all(paths)
+    )
+    if not records:
+        R.print_info(
+            "No worsened outcome records." if only_worsened
+            else "No outcome-tracking records yet (recorded automatically when "
+                 "skill_propose commits are triggered by a lesson group)."
+        )
+        return
+
+    from rich.table import Table
+    from rich import box as rbox
+    import time as _time
+
+    verdict_style = {
+        "improved": "green", "worsened": "bold red", "no_change": "yellow",
+        "insufficient_data": "dim", "reverted_by_user": "dim",
+    }
+
+    t = Table(box=rbox.SIMPLE, show_header=True, header_style="bold dim")
+    t.add_column("Commit", style="cyan", min_width=8)
+    t.add_column("Lesson Group", min_width=12, max_width=30)
+    t.add_column("Status", min_width=10)
+    t.add_column("Baseline → Post", min_width=14)
+    t.add_column("Verdict", min_width=14)
+    t.add_column("Committed", min_width=12)
+
+    records.sort(key=lambda r: -r.committed_at)
+    for r in records:
+        verdict_text = r.verdict or "-"
+        style = verdict_style.get(r.verdict, "")
+        post = "?" if r.post_trigger_count is None else str(r.post_trigger_count)
+        date_str = _time.strftime("%Y-%m-%d", _time.localtime(r.committed_at))
+        t.add_row(
+            r.commit_id[:8],
+            r.trigger_lesson_group_id[:30],
+            r.status,
+            f"{r.baseline_trigger_count} → {post}",
+            f"[{style}]{verdict_text}[/{style}]" if style else verdict_text,
+            date_str,
+        )
+
+    R.console.print(t)
+
+    worsened = [r for r in records if r.verdict == "worsened"]
+    if worsened and not only_worsened:
+        R.print_warning(
+            f"{len(worsened)} commit(s) judged 'worsened' after their observation window — "
+            f"consider reviewing: /evolution show <commit> or /evolution revert <commit>"
+        )
+
+
+
     """
     设计文档 4.3 节："回退记录反哺 lesson 库——每次 revert 生成一条
     source='revert_record' 的 lesson"。

@@ -60,11 +60,13 @@ class AffordanceMap:
     unexplored_areas: list[str] = field(default_factory=list)   # capability_map 低置信度领域
     high_risk_zones: list[str] = field(default_factory=list)    # 近期有失败历史的领域/操作
     top_opportunities: list[str] = field(default_factory=list)  # 综合排序后的 top N 行动机会
+    behavior_notes: list[str] = field(default_factory=list)     # [新增] 与用户行为感知层交叉得到的提示（可选输入源，默认空）
 
     def is_empty(self) -> bool:
         return not (
             self.known_issues or self.unexplored_areas
             or self.high_risk_zones or self.top_opportunities
+            or self.behavior_notes
         )
 
     def to_dict(self) -> dict:
@@ -73,6 +75,7 @@ class AffordanceMap:
             "unexplored_areas": list(self.unexplored_areas),
             "high_risk_zones": list(self.high_risk_zones),
             "top_opportunities": list(self.top_opportunities),
+            "behavior_notes": list(self.behavior_notes),
         }
 
     def to_system_prompt_fragment(self) -> str:
@@ -92,6 +95,10 @@ class AffordanceMap:
             lines.append("- 当前最值得关注：")
             for opp in self.top_opportunities[:3]:
                 lines.append(f"  · {opp}")
+        if self.behavior_notes:
+            lines.append("- 用户近期活动提示（来自行为感知层，仅供参考）：")
+            for note in self.behavior_notes[:2]:
+                lines.append(f"  · {note}")
         return "\n".join(lines)
 
 
@@ -112,6 +119,7 @@ class AffordanceAnalyzer:
         open_threads: Optional[list["OpenThread"]] = None,
         lesson_entries: Optional[list["MemoryEntry"]] = None,
         capability_entries: Optional[list] = None,
+        behavior_context: Optional["BehaviorContext"] = None,
     ) -> AffordanceMap:
         """
         Args:
@@ -122,18 +130,41 @@ class AffordanceAnalyzer:
             capability_entries: phase_g.CapabilityMapEntry 列表（或具备
                 .domain / .confidence 属性的等价对象）——可选，因为不是
                 每个项目都已经跑过 Phase G 扫描积累出能力地图。
+            behavior_context: [新增] perception/behavior/ 用户行为感知层的
+                只读摘要（可选，默认 None）。为 None 时该输入源视为缺失，
+                不影响其余三路分析结果——调用方（inject_affordance_map）
+                负责按双重开关决定是否加载并传入。
         """
         known_issues = self._extract_known_issues(open_threads or [])
         unexplored = self._find_unexplored(capability_entries or [])
         risky = self._find_risky_zones(lesson_entries or [])
         opportunities = self._rank_opportunities(open_threads or [], unexplored)
+        behavior_notes = self._derive_behavior_notes(behavior_context, known_issues)
 
         return AffordanceMap(
             known_issues=known_issues,
             unexplored_areas=unexplored,
             high_risk_zones=risky,
             top_opportunities=opportunities[:3],
+            behavior_notes=behavior_notes,
         )
+
+    @staticmethod
+    def _derive_behavior_notes(
+        behavior_context: Optional["BehaviorContext"], known_issues: list[str]
+    ) -> list[str]:
+        """把 BehaviorContext 摘要转成 1-2 条行动提示。纯规则匹配，不做语义判断。"""
+        if behavior_context is None:
+            return []
+        notes: list[str] = []
+        if behavior_context.recent_git_touched_paths:
+            paths_preview = ", ".join(behavior_context.recent_git_touched_paths[:3])
+            notes.append(f"用户近期在其他终端提交/切换过：{paths_preview}，建议先确认最新状态再继续相关改动")
+        if behavior_context.context_switch_count >= 15:
+            notes.append("用户近期应用切换频繁，可能处于分心状态，非紧急事项可降低打扰优先级")
+        elif behavior_context.is_actively_engaged is False and behavior_context.context_switch_count == 0:
+            notes.append("用户近期无前台活动信号（可能离开/空闲），非紧急事项可延后汇报")
+        return notes[:2]
 
     # ── 内部计算 ──────────────────────────────────────────────────────────────
 
@@ -230,4 +261,152 @@ class AffordanceAnalyzer:
         return opportunities
 
 
-__all__ = ["AffordanceMap", "AffordanceAnalyzer"]
+__all__ = [
+    "AffordanceMap", "AffordanceAnalyzer", "BehaviorContext", "inject_affordance_map",
+]
+
+
+# ── [打通具身感知与行为感知] 行为感知层只读桥接 ──────────────────────────────
+#
+# 设计原则（详见 next_doc/priority_improvements_implementation_plan.md 方案二）：
+#   - 单向只读：AffordanceAnalyzer 只查询 BehaviorEventStore，不写入、不影响采集。
+#   - 双重开关：behavior.enabled 与 affordance.use_behavior_context 必须同时为
+#     True 才生效，任一为 False 直接返回 None（等同于该输入源缺失）。
+#   - 一次性快照：与 AffordanceMap 本身"session 开始时构建一次"的慢变量粒度
+#     对齐，不做逐 turn 实时查询，降低敏感数据暴露窗口。
+#   - 失败静默降级：behavior perception 未启用/查询异常时完全不影响其余三路分析。
+
+@dataclass
+class BehaviorContext:
+    """交叉分析用的最小摘要，只保留与"当前工作是否有潜在冲突/呼应"相关的字段。"""
+
+    recent_git_touched_paths: list = field(default_factory=list)   # 用户近期在其他终端 commit/checkout 触碰的路径
+    recent_terminal_commands: list = field(default_factory=list)   # 近期 shell 命令
+    is_actively_engaged: Optional[bool] = None   # 前台窗口/idle 信号推导的"用户当前是否专注"
+    context_switch_count: int = 0                # 观察窗口内应用切换次数
+
+
+def _summarize_behavior_events(events: list) -> "BehaviorContext":
+    """把 ActivityEvent 列表压缩成 BehaviorContext。纯规则聚合，不调用 LLM。"""
+    git_paths: list[str] = []
+    terminal_cmds: list[str] = []
+    app_focus_count = 0
+    idle_seen = False
+
+    for e in events:
+        source = getattr(e, "source", "") or ""
+        event_type = getattr(e, "event_type", "") or ""
+        meta = getattr(e, "meta", None) or {}
+        if source == "git_activity":
+            path = meta.get("repo") or meta.get("path")
+            if path and path not in git_paths:
+                git_paths.append(path)
+        elif source == "terminal_command":
+            cmd = meta.get("command")
+            if cmd:
+                terminal_cmds.append(cmd)
+        if event_type == "app_focus":
+            app_focus_count += 1
+        if event_type in ("idle_start", "idle_end"):
+            idle_seen = True
+
+    return BehaviorContext(
+        recent_git_touched_paths=git_paths[:5],
+        recent_terminal_commands=terminal_cmds[:5],
+        is_actively_engaged=(app_focus_count > 0) if (app_focus_count or idle_seen) else None,
+        context_switch_count=app_focus_count,
+    )
+
+
+def _load_behavior_context(cfg: "AppConfig", *, window_minutes: int = 30) -> Optional["BehaviorContext"]:
+    """只读查询 BehaviorEventStore 最近 window_minutes 分钟内的活动，压缩为摘要。
+
+    双重开关：behavior.enabled 与 affordance.use_behavior_context 必须同时为
+    True，任一为 False 直接返回 None（不触发任何 BehaviorPerceptionManager 调用）。
+    """
+    affordance_cfg = getattr(cfg, "affordance", None)
+    if not getattr(affordance_cfg, "use_behavior_context", False):
+        return None
+    try:
+        from mini_agent.perception.behavior.config import load_behavior_config
+        behavior_cfg = load_behavior_config(getattr(cfg, "project_root", None))
+        if not behavior_cfg.enabled:
+            return None
+
+        from mini_agent.perception.behavior.manager import get_manager
+        import time as _time
+
+        mgr = get_manager(getattr(cfg, "project_root", None))
+        since = _time.time() - window_minutes * 60
+        events = mgr.query(since=since, limit=200)
+        return _summarize_behavior_events(events)
+    except Exception:
+        return None
+
+
+def inject_affordance_map(agent: "Agent", cfg: "AppConfig", *, log=None) -> None:
+    """
+    构建一次 AffordanceMap 并拼进 agent.cfg.system_extra。
+
+    daemon 多用户路径（api/session_pool.py::SessionAgentPool._create_entry()）
+    与本地单 Agent 路径（cli/app.py::_main_inner()）共用同一实现，消除此前
+    "AffordanceMap 只在多用户 daemon 路径生效"的已知不对称
+    （见 docs/embodied-agent-guide.md §8）。
+
+    调用时机要求：必须在 Agent() 构造之后（复用 agent._memory，避免重复
+    构造 MemoryStore 实例指向同一文件）。
+
+    失败静默降级：感知层失败不应阻断 Agent 启动/session 创建。
+    """
+    affordance_cfg = getattr(cfg, "affordance", None)
+    if affordance_cfg is None or not getattr(affordance_cfg, "enabled", True):
+        return
+
+    try:
+        from mini_agent.perception.workdir_knowledge import load_open_threads
+        from mini_agent.storage.paths import AgentPaths
+
+        paths = AgentPaths(cfg.project_root)
+        open_threads = load_open_threads(paths)
+
+        memory_backend = getattr(agent, "_memory", None)
+        lesson_entries: list = []
+        capability_entries: list = []
+        if memory_backend is not None and hasattr(memory_backend, "all_entries"):
+            all_entries = memory_backend.all_entries()
+            lesson_entries = [e for e in all_entries if getattr(e, "entry_type", "") == "lesson"]
+            if getattr(affordance_cfg, "use_capability_map", True):
+                try:
+                    from mini_agent.evolution.phase_g import build_capability_map
+                    capability_entries = build_capability_map(paths, None)
+                except Exception:
+                    capability_entries = []
+
+        behavior_context = _load_behavior_context(cfg)
+
+        affordance_map = AffordanceAnalyzer().analyze(
+            open_threads=open_threads,
+            lesson_entries=lesson_entries,
+            capability_entries=capability_entries,
+            behavior_context=behavior_context,
+        )
+        fragment = affordance_map.to_system_prompt_fragment()
+        if not fragment:
+            return
+
+        if getattr(affordance_cfg, "verbose", False) and log is not None:
+            log.info("[AffordanceMap] %s", affordance_map.to_dict())
+
+        # 写到 agent.cfg（ContextBuilder 实际持有、每轮读取的那个对象），
+        # 而不是闭包参数 cfg——二者在当前实现里恰好是同一对象
+        # （Agent(cfg=cfg) 不做深拷贝），但显式走 agent.cfg 更准确地表达
+        # "我要影响的是这个 agent 接下来读到的 system_extra"，不依赖
+        # "cfg 和 agent.cfg 是否同一对象"这个实现细节。
+        target_cfg = getattr(agent, "cfg", None) or cfg
+        existing = getattr(target_cfg, "system_extra", "") or ""
+        target_cfg.system_extra = (existing + "\n\n" + fragment).strip()
+    except Exception:
+        import logging
+        (log or logging.getLogger(__name__)).debug(
+            "[AffordanceMap] injection failed", exc_info=True
+        )

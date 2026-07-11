@@ -387,6 +387,16 @@ def _main_inner() -> None:
     # ── Agent ─────────────────────────────────────────────────────────────────
     agent = Agent(cfg=cfg, skill_loader=skill_loader, guard=guard)
 
+    # [具身改进 B4 本地路径接入] 与 daemon 多用户路径（api/session_pool.py::
+    # SessionAgentPool._create_entry()）共用同一实现，消除"AffordanceMap 只在
+    # daemon 多用户模式生效"的已知不对称。失败静默降级，不阻断 REPL 启动。
+    # 详见 docs/embodied-agent-guide.md §8、next_doc/priority_improvements_implementation_plan.md 方案一。
+    try:
+        from mini_agent.perception.affordance_analyzer import inject_affordance_map
+        inject_affordance_map(agent, cfg)
+    except Exception:
+        pass
+
     # ── Resume session ────────────────────────────────────────────────────────
     if getattr(args, "resume", None):
         if agent.load_session(args.resume):

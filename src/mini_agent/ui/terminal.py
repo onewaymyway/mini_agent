@@ -3114,7 +3114,6 @@ _COMMANDS: list[tuple[str, str, list]] = [
     ("/skill",       "Manage skills",                                ["on", "off", "info", "stats", "reset"]),
     ("/model",       "Switch LLM model mid-session",                 []),   # 子命令在启动时动态注入
     ("/session",     "Session management",                           ["list", "new", "save", "resume", "delete", "dir", "search"]),
-    ("/sessions",    "Session management alias (same as /session)",  ["list", "new", "save", "resume", "delete", "dir", "search"]),
     ("/tasks",       "Task management",                              ["focus", "unfocus", "dashboard", "log", "cancel", "cancel-all", "workers"]),
     ("/plan",        "Plan management",                              ["show", "clear", "summary"]),
     ("/concurrency", "Concurrency settings",                         ["tasks", "llm"]),

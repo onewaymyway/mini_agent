@@ -118,6 +118,26 @@ _VALID_SKILL_NAME_RE = re.compile(r"^[a-z0-9][a-z0-9\-]{1,63}$")
     },
     requires_approval=False,  # 真正的把关在 _RISKY_TOOLS（--sandbox 拦截）+ StateRepo 的 T1 校验流水线 + 提案落在独立分支等人工 merge
 )
+def _get_memory_backend_for_outcome_tracking(project_root: Path):
+    """
+    为 outcome_tracker.record_commit_baseline() 构造一个只读用途的
+    MemoryBackend。skill_propose 是模块级无状态工具函数，没有直接持有
+    调用它的 Agent 实例的 memory backend（同一份顾虑见文件头部关于
+    project_root provider 的说明），这里独立构造一份轻量实例专供基线
+    统计使用——只调用 all_entries()，不写入，构造/使用成本可忽略。
+    失败返回 None，调用方（record_commit_baseline）对 None 会优雅降级
+    （baseline 记为 0，不阻断记录流程）。
+    """
+    try:
+        from mini_agent.config.loader import load_config
+        from mini_agent.perception.memory_factory import create_memory_backend
+
+        cfg = load_config(project_root=project_root)
+        return create_memory_backend(cfg)
+    except Exception:
+        return None
+
+
 def skill_propose(
     name: str,
     content: str,
@@ -204,6 +224,29 @@ def skill_propose(
         }, indent=2, ensure_ascii=False)
 
     ws.destroy(delete_branch=False)
+
+    # [方案三，见 next_doc/priority_improvements_implementation_plan.md]
+    # 自我进化"用户真实反馈"闭环：记录本次 commit 的效果回填基线。
+    # source_lessons 元素约定为 lesson_review.py::LessonGroup.key（evolution-agent
+    # 从 /evolve review 拿到的 lessons_payload 里的 group_key 字段透传而来）。
+    # 失败静默：记录失败完全不影响本次 skill_propose 的返回结果。
+    try:
+        from mini_agent.evolution import outcome_tracker
+        from mini_agent.storage.paths import AgentPaths
+
+        paths = AgentPaths(project_root)
+        for group_id in (source_lessons or []):
+            if not isinstance(group_id, str) or not group_id:
+                continue
+            outcome_tracker.record_commit_baseline(
+                paths,
+                _get_memory_backend_for_outcome_tracking(project_root),
+                commit_id=result.commit,
+                lesson_group_id=group_id,
+                commit_summary=f"skill_propose: {name} ({reason[:80]})" if reason else f"skill_propose: {name}",
+            )
+    except Exception:
+        pass
 
     return json.dumps({
         "ok": True,

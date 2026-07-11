@@ -106,7 +106,7 @@ def build_parser() -> argparse.ArgumentParser:
               /proxy sources add-discovered  Add discovered_sources.json as a source (populated by agent/skill)
               /proxy integration          Show proxy integration switches (all default OFF)
               /proxy integration set <key> <value>  Toggle a switch, e.g. llm_use_proxy true
-              /session list|new|save|resume|delete|dir|search   Session management (alias: /sessions)
+              /session list|new|save|resume|delete|dir|search   Session management
               /tasks focus|unfocus|dashboard|log|cancel|cancel-all|workers   Task management
               /concurrency tasks|llm      Show/adjust concurrency settings (alias: /cc)
               /ensemble status|on|off|mode|granularity|n|execution|strategy   Best-of-N ensemble settings

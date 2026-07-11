@@ -898,6 +898,7 @@ python -m pytest tests/ -q
 - [观察性系统指南（Stage 6）](docs/observability-guide.md) — **新增**：traces.jsonl 时序追踪 / `/diagnostics` 端点 / k-σ 异常检测 / 工具调用因果链（error_category/resolves_seq）
 - [日志保存机制指南](docs/logging-mechanisms-guide.md) — **新增**：系统梳理全项目所有日志/审计流（错误日志/LLM调试日志/daemon控制台日志/traces/行为事件/知识编年目录等）的落盘位置、写入机制与已知缺口
 - [Phase G 后台循环指南（Stage 8）](docs/self-evolution-phase-g-guide.md) — **新增**：剪枝候选 / 能力地图 / Scope 晋升候选 / 节奏治理，`/evolve phase-g` 命令
+- [自我进化效果回填指南](docs/self-evolution-outcome-tracking-guide.md) — **新增**：`skill_propose` commit 落地后的迟滞观察窗口、improved/no_change/worsened 判定、`/evolution outcomes` 命令
 - [图书馆式知识索引指南](docs/library-index-guide.md) — **新增**：分类树自动生长/合并 + 实体目录（冲突检测/去噪合并）+ 两步检索 + 检索反馈 + 人类纠正→标记过时闭环 + 时间线查询，`/evolve timeline` 命令
 - [Stage 9 自主运行时指南](docs/self-evolution-stage9-guide.md) — **新增**：常驻守护进程 / Goal Backlog / 三档位 AutonomousLoop / 资源仲裁 / `mini-agent daemon` 命令
 - [守护进程多客户端架构指南](docs/daemon-multi-client-guide.md) — **新增**：`DaemonClient`/`SessionAgentPool`/`AgentBridge`（RingBuffer/OutputBroadcaster/InputQueue/PermissionGate）三层架构、多端接入同一会话的消息生命周期、`run_connected_repl` 已连接模式渲染与斜杠命令转发，含当前已知问题排查记录

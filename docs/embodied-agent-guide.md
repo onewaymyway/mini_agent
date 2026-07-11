@@ -153,9 +153,18 @@ Phase G 分析趋势；C1（AgentSelfModel）也读取最新一次快照作为"�
 块，拼进 `system_extra`。纯只读分析，不调用 LLM，不写入任何文件，失败
 静默跳过不阻断 session 创建。
 
-**接入点**：目前只在多用户 daemon 路径生效——`api/session_pool.py::
-_inject_affordance_map()`，由 `SessionAgentPool._create_entry()` 调用。
-本地单 Agent 路径（`cli/repl.py`）尚未接入，是已知的不对称，留作后续。
+**接入点**：`perception/affordance_analyzer.py::inject_affordance_map()`
+是唯一实现，daemon 多用户路径（`api/session_pool.py::SessionAgentPool.
+_create_entry()`）与本地单 Agent 路径（`cli/app.py`，Agent 构造完成后
+立即调用）共用同一份逻辑——此前"本地路径未接入"的已知不对称已修复。
+
+**与用户行为感知层的可选交叉分析**（默认关闭）：`AffordanceConfig.
+use_behavior_context` 与 `perception/behavior/` 的总开关 `enabled` 同时为
+`True` 时，`inject_affordance_map()` 会额外只读查询最近 30 分钟的
+`BehaviorEventStore`，压缩为 `BehaviorContext`（近期被其他终端触碰的
+git 路径、应用切换频率等），追加成 1-2 条"用户近期活动提示"。任一开关
+为 `False` 时该输入源视为缺失，不影响其余三路分析；查询失败同样静默
+降级。详见 [用户行为感知指南](behavior-perception-guide.md)。
 
 测试：`tests/test_affordance_analyzer.py`
 

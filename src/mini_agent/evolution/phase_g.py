@@ -503,6 +503,7 @@ class PhaseGReport:
     capability_map:      list[CapabilityMapEntry] = field(default_factory=list)
     promotion_candidates: list[PromotionCandidate] = field(default_factory=list)
     knowledge_consolidation: dict = field(default_factory=dict)
+    outcome_tracking_resolved: list = field(default_factory=list)  # [方案三] 本次 tick 新解决的效果回填记录
     ran_at: float = field(default_factory=time.time)
 
     @property
@@ -516,6 +517,7 @@ class PhaseGReport:
             "capability_map":       [e.to_dict() for e in self.capability_map],
             "promotion_candidates": [c.to_dict() for c in self.promotion_candidates],
             "knowledge_consolidation": self.knowledge_consolidation,
+            "outcome_tracking_resolved": [r.to_dict() for r in self.outcome_tracking_resolved],
         }
 
 
@@ -600,6 +602,18 @@ def run_phase_g(
     except Exception as _mini_agent_exc:
         from mini_agent.errors import log_exception
         log_exception(_mini_agent_exc, where='mini_agent.evolution.phase_g.knowledge_consolidation')
+        pass
+
+    # [方案三，见 next_doc/priority_improvements_implementation_plan.md]
+    # 自我进化"用户真实反馈"闭环：检查已到观察期截止时间的效果回填记录，
+    # 判定 improved/no_change/worsened，供 /digest 与 /evolution outcomes 展示。
+    # 与 8.2~8.6 各步骤保持一致的失败静默降级：异常不阻断 Phase G 主流程。
+    try:
+        from mini_agent.evolution import outcome_tracker
+        report.outcome_tracking_resolved = outcome_tracker.tick(paths, memory_backend)
+    except Exception as _mini_agent_exc:
+        from mini_agent.errors import log_exception
+        log_exception(_mini_agent_exc, where='mini_agent.evolution.phase_g.outcome_tracking')
         pass
 
     # 记录本次运行时间
