@@ -170,6 +170,7 @@ mini-agent --retry-backoff linear --retry-backoff-step 60 --retry-backoff-max 30
 | `/raw-output` | 切换 raw output 模式（Toggle）：开启后工具调用结果不截断传给 LLM，也不截断终端显示；详见 [Raw Output 模式说明](raw-output-mode-guide.md) |
 | `/reasoning` | 切换是否打印模型的 reasoning/思考过程（Toggle，默认开启）。对应 `AppConfig.show_reasoning`，可用 `--hide-reasoning` CLI 参数或 `agent_config.json` 里的 `"show_reasoning": false` 在启动时就关闭 |
 | `/reload` | 强制热重载 Skills 和 Agent Profiles（跳过 debounce，立即重扫磁盘）；详见 [热重载机制说明](hot-reload-guide.md) |
+| `/turnjudge [on\|off\|status]` | 切换/查看 TurnJudge：轮次结束等待用户输入前，自动核查是"真的需要人"还是"技术性卡壳"，后者由系统代替用户反馈继续推进；详见 [轮次守门员指南](turn-judge-guide.md) |
 | `exit` / `quit` | 退出程序 |
 
 ### Goal 模式（`src/mini_agent/cli/commands/goal_mode_cmd.py`）
@@ -489,9 +490,9 @@ cron:<分 时 日 月 周>   标准 cron 5 字段，如 cron:0 */6 * * *（每 6
 
 ---
 
-## 五、`mini-agent daemon` 子命令
+## 四、`mini-agent daemon` 子命令
 
-> **Stage 9** 守护进程管理。详见 [Stage 9 自主运行时指南](self-evolution-stage9-guide.md)
+> **Stage 9** 守护进程管理。详见 [Stage 9 自主运行时指南](self-evolution-stage9-guide.md)、[守护进程多客户端架构指南](daemon-multi-client-guide.md)
 
 ```bash
 # 前台启动（开发调试，Ctrl-C 停止）
@@ -512,6 +513,8 @@ mini-agent daemon status
 
 ---
 
+## 五、`mini-agent eval` 子命令
+
 > 详见 [Stage 3.2 eval 反馈环指南](self-evolution-stage3-2-guide.md)
 
 不属于 REPL slash 命令，是独立的进程入口子命令（`mini-agent eval ...`），用于
@@ -529,7 +532,47 @@ mini-agent eval --scenario test_cases/                      # 不传 --skill，�
 
 ---
 
-## 六、内置工具
+## 六、`mini-agent user` 子命令
+
+> daemon 多用户架构 Phase 1。管理需 daemon 以 `--http-multi-user` 模式运行，通过 HTTP 调用
+> daemon 的 `/v1/users*` 端点（不直接读 daemon 内部状态，CLI 与 daemon 可不在同一台机器）。
+> 详见 [多用户模式指南](multi-user-guide.md)
+
+```bash
+mini-agent user list                                  # 列出所有用户
+mini-agent user add --name "小明" --role colleague     # 新增用户（role: owner/family/colleague/public）
+mini-agent user add --name "小红" --role family --trust 8
+mini-agent user remove u_a1b2c3d4                      # 删除用户
+mini-agent user role u_a1b2c3d4 family                 # 修改用户角色
+mini-agent user token u_a1b2c3d4                       # 重新生成用户 token（旧 token 立即失效）
+```
+
+| 子命令 | 说明 |
+|------|------|
+| `list` | 列出所有用户 |
+| `add --name NAME --role ROLE [--trust N]` | 新增用户 |
+| `remove USER_ID` | 删除用户 |
+| `role USER_ID ROLE` | 修改用户角色 |
+| `token USER_ID` | 重新生成该用户 token |
+
+---
+
+## 七、`mini-agent self` 子命令
+
+> daemon 多用户架构 Phase 4。通过 HTTP 调用 daemon 的 `/v1/self/status` 端点，
+> owner-only：多用户模式下非 owner 调用会被拒绝（403），CLI 层原样打印错误、不重复做权限判断。
+
+```bash
+mini-agent self status
+```
+
+| 子命令 | 说明 |
+|------|------|
+| `status` | 查看 Self 的状态总览：AutonomousLoop（autonomy_level / 上次 tick / tick 计数与间隔）、当前活跃 Goal/Objective、最近 24 小时自主活动记录、Session Pool（多用户模式下各 session 的存活状态） |
+
+---
+
+## 八、内置工具
 
 > 实现位置：`src/mini_agent/tools/`
 
@@ -667,7 +710,7 @@ mini-agent eval --scenario test_cases/                      # 不传 --skill，�
 
 ---
 
-## 七、命令执行流程
+## 九、命令执行流程
 
 ```
 用户输入
@@ -687,7 +730,7 @@ ui/terminal.py（stream_token / print）
 
 ---
 
-## 八、常用命令示例
+## 十、常用命令示例
 
 ```bash
 # 启动并指定模型

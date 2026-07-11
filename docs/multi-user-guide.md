@@ -168,6 +168,21 @@ mini-agent user token u_a1b2c3d4
 
 ---
 
+## 查看 Self 状态总览（`mini-agent self status`）
+
+owner-only 命令，通过 HTTP 调用 daemon 的 `/v1/self/status` 端点查看整体运行状态
+（AutonomousLoop / 当前活跃 Goal 与 Objective / 最近 24 小时自主活动 / Session Pool 中各会话的存活情况）：
+
+```bash
+mini-agent self status
+```
+
+多用户模式下，非 owner token 调用会被拒绝（返回 403，CLI 原样打印错误信息）。
+用途：一眼确认某个用户会话是否还存活、daemon 的自治节奏是否正常，而不必分别去看
+`/agent daemon status`、`/digest`、`/agent goals list` 等多个入口。
+
+---
+
 ## 用户角色与权限
 
 系统内置五种角色，权限从高到低：

@@ -22,6 +22,17 @@ def build_parser() -> argparse.ArgumentParser:
                   /turns/token cost with a skill enabled vs excluded.
                   Run `mini-agent eval --help` for full options.
 
+              mini-agent daemon start|stop|status [--detach] [--http-port N]
+                  Manage a background daemon process (Stage 9). See docs/daemon-multi-client-guide.md.
+
+              mini-agent user list|add|remove|role|token [...]
+                  Manage daemon multi-user accounts (requires --http-multi-user).
+                  See docs/multi-user-guide.md.
+
+              mini-agent self status
+                  Owner-only overview of AutonomousLoop / goals / recent activity / session pool
+                  on a running daemon. See docs/multi-user-guide.md.
+
             Slash commands (in REPL):
               /help              Show this help
               /clear             Clear conversation history
@@ -95,6 +106,16 @@ def build_parser() -> argparse.ArgumentParser:
               /proxy sources add-discovered  Add discovered_sources.json as a source (populated by agent/skill)
               /proxy integration          Show proxy integration switches (all default OFF)
               /proxy integration set <key> <value>  Toggle a switch, e.g. llm_use_proxy true
+              /session list|new|save|resume|delete|dir|search   Session management (alias: /sessions)
+              /tasks focus|unfocus|dashboard|log|cancel|cancel-all|workers   Task management
+              /concurrency tasks|llm      Show/adjust concurrency settings (alias: /cc)
+              /ensemble status|on|off|mode|granularity|n|execution|strategy   Best-of-N ensemble settings
+              /provider list|models|switch   LLM provider settings
+              /agents list|show|reload   Custom sub-agent profile management
+              /role list|use|show|exit|status|stats|reload   Roleplay persona: switch/exit agent's persona
+              /hooks list|reload         Hook management
+              /platform status|filtered|reload   Platform/tag load policy for skill/agent/hook/tool
+              /cron list|status|enable|disable|run|add|remove|set-schedule   Manage periodic daemon tasks
               exit / quit        Exit
         """),
     )
