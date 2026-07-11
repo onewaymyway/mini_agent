@@ -2221,6 +2221,24 @@ def run_connected_repl(
         except Exception:
             return
 
+        # [FIX] 不同 session 的输入状态必须严格独立：正常情况下服务端
+        # /v1/stream?session_id=<cur_sid> 已经按 session 过滤过一遍了，
+        # 但这里再加一层客户端侧兜底防御——尤其是覆盖"刚连接、
+        # active_session_id 还没赋值完成"那个短暂窗口（_observer_worker
+        # 里 `if cur_sid: url += ...session_id=...` 意味着 cur_sid 为空
+        # 时这次订阅是完全不带 session 过滤的），以及任何服务端过滤逻辑
+        # 未来可能出现的边界情况。不这么做的后果就是：别的 session 的
+        # turn_start 被误当成"另一端正在输入"从而调用 _mark_other_turn
+        # (turn_id, True) 锁死本端输入，而这个 turn_id 属于另一个 session，
+        # 其 turn_done 永远不会在本端过滤后的订阅里出现，输入锁再也解不开
+        # ——表现出来就是本端看不到输入提示、卡死。
+        # session_switched 例外：和服务端 _match() 的放行规则保持一致，
+        # 这类系统级通知本来就设计成不受 session 过滤影响。事件没带
+        # session_id（系统级事件，比如 daemon 启动日志）同样放行。
+        _evt_sid = payload.get("session_id") or ""
+        if evt_type != "session_switched" and _evt_sid and _evt_sid != (active_session_id or ""):
+            return
+
         turn_id = payload.get("turn_id", "")
         my_tid = _my_turn_id_holder[0]
         is_own_turn = bool(turn_id) and turn_id == my_tid
