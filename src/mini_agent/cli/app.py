@@ -544,47 +544,87 @@ def _main_inner() -> None:
                     project_root=daemon_info.get("project_root") or project_root,
                 )
                 _term = get_terminal()
+                # [FIX] daemon 前台 attach-console 场景下，本地终端要同时
+                # 承受：主线程自己的输入提示符渲染、AgentRunner 线程为
+                # 其它 session/web 请求打印的内容、状态栏的周期性原地刷新
+                # ——三路都在同一个物理终端上，且正常模式下 Terminal 靠
+                # "记住已经画了几行状态栏/内容处于哪一行"来做相对光标
+                # 移动+擦除（\x1b[nA \x1b[2K 之类）。这套记账只要遇到：
+                # 长文本被终端自动折行（物理行数和逻辑行数对不上）、或者
+                # 多个来源交替写屏幕，就非常容易算错，表现为内容被腰斩/
+                # 前缀被冲掉/整体排版错位——也就是这几轮反馈里反复出现的
+                # 问题。attach-console 这个场景的正确取舍是：宁可没有
+                # 状态栏原地刷新的视觉效果，也要保证内容不丢、不错位。
+                # simple_mode 下 Terminal 完全不做任何擦除/光标控制，
+                # 所有输出按到达顺序原样打印（颜色仍然保留，只是不再有
+                # "原地刷新"的状态栏），从根上避免这一整类竞态。
+                _term.set_simple_mode(True)
 
-                def _console_worker() -> None:
-                    try:
-                        while not stop_event.is_set():
-                            try:
-                                line = _term.prompt_user("\n> ")
-                            except (KeyboardInterrupt, EOFError):
-                                break
-                            if line is None:
-                                break
-                            line = line.strip()
-                            if not line:
-                                continue
-                            if line in ("exit", "quit", ":q"):
-                                break
-                            turn_id = _client.send_message(line, session_id=agent.session_id)
-                            if not turn_id:
-                                _term.print("[red][daemon] 消息提交失败[/red]")
-                                continue
-                            # 静默等待这一轮结束——内容已经由本地
-                            # output hook 原样打印过，这里不传任何回调，
-                            # 单纯阻塞到 turn_done 以便知道何时可以再次
-                            # 提示输入。
-                            _client.stream_output(turn_id)
-                    except Exception as _mini_agent_exc:
-                        from mini_agent.errors import log_exception
-                        log_exception(_mini_agent_exc, where='mini_agent.cli.app')
-                    finally:
-                        # 用户退出了输入循环，等价于要求关停整个 daemon——
-                        # 前台进程本来就是"这个终端就是 daemon"的模型。
-                        stop_event.set()
+                # [FIX] 输入循环之前跑在一条单独的后台线程
+                # （daemon-attach-console）上——这是颜色丢失/状态栏把
+                # 前缀擦掉/输入行排版跑飞、最终整个终端失控吐给底层 shell
+                # 这一整串问题的根因：Terminal 依赖的 prompt_toolkit
+                # Application（含它自己的 asyncio 事件循环、信号处理）
+                # 设计上只能跑在主线程——放到子线程里初始化会静默退化/
+                # 出错，表现出来就是画面完全不受 ptk 正常管理，跟
+                # 状态栏刷新线程、渲染线程各自乱写屏幕，互相打架。
+                # 真正的输入循环必须留在主线程里跑；改成用一条单独的
+                # 后台线程只负责等待外部停止信号（SIGTERM/SIGINT 或
+                # 输入循环自己退出时 set 的 stop_event），不做任何终端
+                # 相关操作，因此放在子线程上是安全的。
+                def _wait_for_stop() -> None:
+                    while not stop_event.is_set():
+                        stop_event.wait(timeout=5.0)
 
-                _console_thread = _threading.Thread(
-                    target=_console_worker, name="daemon-attach-console", daemon=True
+                _stop_wait_thread = _threading.Thread(
+                    target=_wait_for_stop, name="daemon-stop-wait", daemon=True
                 )
-                _console_thread.start()
+                _stop_wait_thread.start()
 
-            # 持续等待，直到收到停止信号（SIGTERM/SIGINT，或 attach 控制台
-            # 里用户退出了输入循环）
-            while not stop_event.is_set():
-                stop_event.wait(timeout=5.0)
+                try:
+                    while not stop_event.is_set():
+                        try:
+                            line = _term.prompt_user()
+                        except (KeyboardInterrupt, EOFError):
+                            break
+                        if line is None:
+                            break
+                        line = line.strip()
+                        if not line:
+                            continue
+                        # ptk 输入行 erase_when_done=True，提交后会自己把
+                        # 那行擦掉；这里走统一渲染队列补打印一次带颜色的
+                        # 回显，和 repl.py（非 daemon 本地 REPL）、
+                        # daemon.py（connected 客户端）保持完全一致的
+                        # 样式，而不是把提示符文字直接传给 prompt_user()
+                        # ——那样既没有颜色，也不会被纳入 Terminal 统一的
+                        # 记账体系。
+                        from rich.markup import escape as _esc_echo_console
+                        _term.print(
+                            f"[bold green]You[/bold green][bold cyan] \u276f [/bold cyan]{_esc_echo_console(line)}"
+                        )
+                        if line in ("exit", "quit", ":q"):
+                            break
+                        turn_id = _client.send_message(line, session_id=agent.session_id)
+                        if not turn_id:
+                            _term.print("[red][daemon] 消息提交失败[/red]")
+                            continue
+                        # 静默等待这一轮结束——内容已经由本地
+                        # output hook 原样打印过，这里不传任何回调，
+                        # 单纯阻塞到 turn_done 以便知道何时可以再次
+                        # 提示输入。
+                        _client.stream_output(turn_id)
+                except Exception as _mini_agent_exc:
+                    from mini_agent.errors import log_exception
+                    log_exception(_mini_agent_exc, where='mini_agent.cli.app')
+                finally:
+                    # 用户退出了输入循环，等价于要求关停整个 daemon——
+                    # 前台进程本来就是"这个终端就是 daemon"的模型。
+                    stop_event.set()
+            else:
+                # 持续等待，直到收到停止信号（SIGTERM/SIGINT）
+                while not stop_event.is_set():
+                    stop_event.wait(timeout=5.0)
         finally:
             R.print_info("[daemon] Shutting down daemon...")
             if http_server:

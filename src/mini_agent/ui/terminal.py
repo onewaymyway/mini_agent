@@ -108,10 +108,22 @@ _RAW_OUTPUT_ENV: bool = os.environ.get("MINI_AGENT_RAW_OUTPUT", "").strip().lowe
 
 
 class _Msg:
-    __slots__ = ("kind", "payload")
-    def __init__(self, kind: str, payload: Any = None):
+    __slots__ = ("kind", "payload", "bypass_block")
+    def __init__(self, kind: str, payload: Any = None, bypass_block: bool = False):
         self.kind = kind
         self.payload = payload
+        # [FIX] 见 _flush_pending_during_input() 里的说明：这个消息是不是
+        # 已经在"阻塞期补打印"批次里，需要绕过 _handle() 的阻塞期拦截。
+        # 之前是靠临时把全局 self._input_blocking 置 False 来做到这一点，
+        # 但那样会打开一个真实的竞态窗口——别的线程在这个窗口里新产生的
+        # 消息（比如另一个 session 的 "orzooo ❯" 前缀）会被误判成
+        # "现在不是阻塞期"，跳过缓存直接写屏幕，而这次写又不在
+        # in_terminal() 的保护范围内，紧跟着 ptk 重绘输入行时就会把它冲掉
+        # ——这正是"回复正文正常显示、但前缀行凭空消失"的根因。改成给
+        # 消息本身打标记，而不是动全局标志，同一时刻其它线程新产生的
+        # 消息永远还是按 self._input_blocking 的真实状态判断，不会再有
+        # 这个窗口。
+        self.bypass_block = bypass_block
 
 
 class _RemoteTurnInterrupt(Exception):
@@ -1427,9 +1439,14 @@ class Terminal:
         # 错乱画面——这正是本函数早期版本的一个回归 bug：当时只拦截了
         # print/rule/panel/syntax/markdown，遗漏了 stream/stream_end，
         # 导致两路消息在 _input_blocking 期间被区别对待、显示不一致。
-        if not self._capture_mode and self._input_blocking and kind in (
-            "print", "rule", "panel", "syntax", "markdown",
-            "stream", "stream_end", "_resize_settled",
+        if (
+            not self._capture_mode
+            and self._input_blocking
+            and not msg.bypass_block
+            and kind in (
+                "print", "rule", "panel", "syntax", "markdown",
+                "stream", "stream_end", "_resize_settled",
+            )
         ):
             self._pending_during_input.append(msg)
             return
@@ -2567,24 +2584,32 @@ class Terminal:
             if not pending:
                 return
             # 再确认一次：调度到真正执行之间可能已经过了一小段时间，
-            # 用户完全可能已经提交了输入——这种情况下就不要再动
-            # _input_blocking 了，把消息原样放回去，让正常的
-            # _exit_input_mode() 补打印路径去处理，避免抢跑。
+            # 用户完全可能已经提交了输入——这种情况下就不要再补打印了，
+            # 把消息原样放回去，让正常的 _exit_input_mode() 补打印路径去
+            # 处理，避免抢跑。
             if self._active_ptk_app is not app:
                 self._pending_during_input = pending + self._pending_during_input
                 return
-            self._input_blocking = False
-            try:
-                for msg in pending:
-                    self._q.put(msg)
-                self._q.put(_Msg("redraw", None))
-                await loop.run_in_executor(None, self._q.join)
-            finally:
-                if self._active_ptk_app is app:
-                    self._input_blocking = True
-                    self._input_blocking_since = time.monotonic()
-                # else：用户已经提交、_exit_input_mode() 已经把
-                # _input_blocking 设成了权威值 False，这里绝不能覆盖。
+            # [FIX] 之前这里临时把 self._input_blocking 置 False，处理完
+            # 这批 pending 后再置回 True，目的是让 _handle() 不再把这批
+            # 消息当成"阻塞期消息"重新缓冲。但 self._input_blocking 是个
+            # 全局标志，"临时置 False"这段时间窗口内，任何*别的*线程
+            # （比如另一个 session 的 AgentRunner）新调用的 term.print()
+            # 也会被一并判定为"现在不是阻塞期"，跳过缓存、直接被渲染线程
+            # 写到屏幕——而这次写不在下面 in_terminal() 的保护范围内，
+            # ptk 紧接着重绘输入行时会把它冲掉。表现出来就是"正文正常
+            # 显示，但紧邻的 'orzooo ❯' 前缀凭空消失"。
+            #
+            # 改法：全局 self._input_blocking 全程保持 True 不动，只给
+            # 这一批要重放的消息本身打上 bypass_block=True 标记，
+            # _handle() 见到这个标记就直接处理、不再缓冲——同一时刻别的
+            # 线程新产生的消息永远还是按 self._input_blocking 的真实值
+            # 走缓冲路径，不会再有这个窗口。
+            for msg in pending:
+                msg.bypass_block = True
+                self._q.put(msg)
+            self._q.put(_Msg("redraw", None, bypass_block=True))
+            await loop.run_in_executor(None, self._q.join)
 
         async def _runner() -> None:
             async with in_terminal():
