@@ -1455,8 +1455,41 @@ class Terminal:
             self._handle_simple(msg)
             return
 
+        # [FIX] daemon 多 session 场景下，这个渲染队列/这个 Terminal 单例是
+        # 进程内所有 session 共享的——print/rule/panel/syntax/markdown 这些
+        # "非流式"消息可能来自任意一个 session（甚至是后台线程，比如摘要/
+        # 画像生成，见 agent.py::trigger_summary_and_profile()），而它们的
+        # 处理逻辑（下面几个分支）一直以来都无条件调用 _erase_bar()/
+        # _draw_bar()，隐含假设"状态栏就在当前光标正上方、erase 完之后
+        # 直接从新行开始画"。
+        #
+        # 这个假设在"另一个 session 正在流式输出"（self._streaming）或者
+        # "prefix 已经打印、正等待第一个 token"（self._bar_suspended）时是
+        # 错的：这两种情况下，光标实际停在某个 session 正在续写的那一行
+        # 中间，状态栏早已不在"当前光标上方几行"的位置（因为 _refresh/
+        # redraw 心跳在 streaming 期间本来就跳过重绘，bar 的物理位置没有
+        # 跟着流式内容一起下移）。此时如果仍然调用 _erase_bar()（按
+        # self._bar_drawn 记的行数往上擦），擦掉的其实是别的 session 正在
+        # 显示的、已经流出来的正文字符——这正是"daemon 本地终端里，某条
+        # 回复的开头被吃掉、只剩下结尾几个字"的根因；而如果这条消息恰好
+        # 落在"prefix 已打印、还没等到第一个 token"的窗口里，它会把
+        # self._bar_suspended 直接置回 False、self._open_line_render 置
+        # 空——真正的第一个 token 到来时不再知道需要重放一次前缀，表现为
+        # "orzooo ❯ 前缀整个消失，回复内容直接另起一行开始"。
+        #
+        # 修复：这几类消息只要检测到"有 stream 正在进行"或"有 prefix 正
+        # 在等待续写"，就只管把自己的内容原样打印出来（不去动状态栏），
+        # 不调用 _erase_bar()/_draw_bar()，也不触碰 _bar_suspended/
+        # _open_line_render——把这些状态完整地留给真正拥有这次 streaming/
+        # prefix 的那个 session 自己收尾（stream_end() 本来就会在结束时
+        # 正确地重新计算并重绘状态栏）。
+        _stream_or_prefix_in_flight = self._streaming or self._bar_suspended
+
         if kind == "print":
             args, kwargs = msg.payload
+            if _stream_or_prefix_in_flight and not self._capture_mode:
+                self._console.print(*args, **kwargs)
+                return
             if not self._capture_mode:
                 self._erase_bar()
             self._console.print(*args, **kwargs)
@@ -1476,6 +1509,9 @@ class Terminal:
 
         elif kind == "rule":
             title, kwargs = msg.payload
+            if _stream_or_prefix_in_flight and not self._capture_mode:
+                self._console.rule(title, **kwargs)
+                return
             if not self._capture_mode:
                 self._erase_bar()
             self._console.rule(title, **kwargs)
@@ -1485,6 +1521,9 @@ class Terminal:
 
         elif kind == "panel":
             content, kwargs = msg.payload
+            if _stream_or_prefix_in_flight and not self._capture_mode:
+                self._console.print(Panel(content, **kwargs))
+                return
             if not self._capture_mode:
                 self._erase_bar()
             self._console.print(Panel(content, **kwargs))
@@ -1494,6 +1533,9 @@ class Terminal:
 
         elif kind == "syntax":
             code, language, kwargs = msg.payload
+            if _stream_or_prefix_in_flight and not self._capture_mode:
+                self._console.print(Syntax(code, language, **kwargs))
+                return
             if not self._capture_mode:
                 self._erase_bar()
             self._console.print(Syntax(code, language, **kwargs))
@@ -1502,6 +1544,9 @@ class Terminal:
                 self._draw_bar()
 
         elif kind == "markdown":
+            if _stream_or_prefix_in_flight and not self._capture_mode:
+                self._console.print(Markdown(msg.payload))
+                return
             if not self._capture_mode:
                 self._erase_bar()
             self._console.print(Markdown(msg.payload))
