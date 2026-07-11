@@ -40,6 +40,7 @@ from pathlib import Path
 from typing import Optional
 
 from mini_agent.storage.paths import AgentPaths
+from mini_agent.time_utils import ts_to_str
 
 
 # ── 原子写入辅助（与 workdir_knowledge.py 同款实现，独立维护避免跨模块耦合）──
