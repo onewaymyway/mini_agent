@@ -484,6 +484,78 @@ def _enter_input_mode(self):
 /session   Session management  [list | new | load | delete]
 ```
 
+### 4.5 阻塞输入期间的旁路补打印（daemon 多 session 场景）
+
+前三节讲的是"本地用户敲回车提交输入"这条主线；daemon 模式下还有一条
+支线：本地 REPL 正阻塞在 `.prompt()` 里等待输入时，**别的 session**（HTTP
+触发的 `session-runner-<id>` 线程）仍然可能有内容要写到这个共享的本地
+终端上。这条支线的机制和一个已修复的 bug 记录如下。
+
+**缓冲：`_pending_during_input`**
+
+`Terminal._handle()` 分发消息时，如果 `self._input_blocking` 为真且消息
+类型是 `print`/`rule`/`panel`/`syntax`/`markdown`/`stream`/`stream_end`/
+`_resize_settled` 之一，且消息没有被标记 `bypass_block=True`，就不会立即
+渲染，而是原样存进 `self._pending_during_input` 列表，直接返回。这避免了
+在用户敲字过程中，别的 session 的输出把 prompt_toolkit 正在管理的输入行
+撕裂。
+
+**补打印：`terminal-ptk-flush` 线程 + `in_terminal()`**
+
+后台线程 `_ptk_flush_loop()` 每隔 `_PTK_FLUSH_INTERVAL` 秒检查一次：如果
+本端正阻塞在 ptk 的 `.prompt()` 里、`_pending_during_input` 非空、且输入
+框当前为空（用户没在打字/没开着补全菜单），就调用
+`_flush_pending_during_input()`。它内部通过
+`asyncio.run_coroutine_threadsafe()` 把一个协程 `_do_flush()` 提交到 ptk
+自己正在跑的事件循环上执行——协程用 `async with in_terminal():` 包住
+"把这批 pending 消息重新塞回主队列、打上 `bypass_block=True`、等渲染
+线程处理完"的过程，`in_terminal()` 退出时 ptk 会自动重绘输入框。
+
+**已修复的 bug：flush 在"未换行"处截断，被 ptk 重绘冲掉**
+
+`in_terminal()` 的设计前提是区间内打印的内容以换行结束——它退出时是
+基于自己记录的光标行去重绘输入框的，并不知道我们额外写了多少个"没有
+换行"的字符。而下面两类内容恰恰经常不以换行结尾：
+
+- `print_assistant_prefix()` 打印 `agent_name ❯ ` 时故意 `end=""`，为了
+  让紧跟着的第一个 stream token 续在同一行；
+- `stream` token 本身逐个 `sys.stdout.write()`，中途不换行，要等
+  `stream_end()` 才补一个 `"\n"`。
+
+如果某次 flush 打印的最后一条消息恰好属于这两类，`in_terminal()` 退出
+后 ptk 的重绘会从它自己认为"干净"的光标位置开始重画输入框，把这些还
+没真正换行的内容覆盖掉。实测复现为两种画面：
+
+1. `agent_name ❯ ` 前缀打印后紧跟着被同一批的收尾重绘冲掉，整行消失；
+2. 一长串 stream token 里，先到的几个在某次 flush 中被冲掉，只剩后到的
+   （已经在下一批、真正跟在 `stream_end()` 换行之后）内容，看起来像是
+   "回复开头被吃掉，只剩结尾几个字"。
+
+**修复**：`Terminal._pending_tail_is_line_complete()` 在 flush 前检查
+`_pending_during_input`（或已取出的快照）末尾一条消息，是否真的会让光标
+换行——`stream_end`/`_force_end_stream`/`rule`/`panel`/`syntax`/`markdown`
+以及默认 `end="\n"` 的 `print` 算"行完整"；`end=""` 的 `print` 和裸
+`stream` token 一律不算。不满足就本轮不 flush，继续攒着，等后面真正
+换行的消息（通常就是 `stream_end()` 补的那个 `"\n"`）到达后再一次性
+打印。这个检查做了两层：
+
+- `_ptk_flush_loop()` 里的检查只是廉价预过滤（后台线程读 ptk Buffer 状态
+  本就不是原子操作，参见 4.1/4.2 的哨兵协议）；
+- `_do_flush()` 协程里，取出 `pending` 快照后会**重新**判断一次尾部状态——
+  因为从预过滤到真正调度执行之间可能又有新 token 到达，把"当时看起来
+  完整"的一批又变得不完整。如果不完整，原样把 pending 放回
+  `_pending_during_input`，本轮什么都不做，交给下一次心跳或
+  `stream_end()` 到达后再 flush。
+
+代价是本该"能露多少先露多少"的前缀和开头几个 token，现在要等这一轮
+回复真正 `stream_end()` 之后才会一次性显示——但这正是应该有的正确
+行为：宁可稍晚但完整，不要显示出会被冲掉、残缺不全的内容。
+
+这个 bug 和另一个更早发现的"后台摘要/画像生成线程未加锁、打印插进
+别的 session 流式输出中途"的 bug 是两个独立的根因，分别在
+`terminal.py`（本节）和 `agent.py` 修复，完整背景见
+[HTTP 与命令行协同 §10.8](cli-io-mechanism.md#108-多-session-本地终端写入序列化daemon-内容错位丢字-bug-修复记录)。
+
 ---
 
 ## 五、流式 token 过滤

@@ -451,6 +451,64 @@ slash 命令"的关键：
 一路，不会去抢一个不存在的输入。详见 `src/mini_agent/interaction.py` 顶部文档
 字符串。
 
+### 10.8 多 session 本地终端写入序列化（daemon 内容错位/丢字 bug 修复记录）
+
+**背景**：daemon 单进程支持多个 session 并发（每个 session 一条
+`session-runner-<id>` 线程，各自独立跑 `run_turn()`）。但本地物理终端
+（daemon 进程自己 attach 的那个 TTY）是进程内唯一的 `Terminal` 单例，
+被所有 session 共享——多个 session 几乎同时有内容要显示到本地终端时，
+如果不做互斥，会出现"内容开头缺字""`agent_name ❯` 前缀整行消失"等
+错位现象。这类问题分两层根因，均已修复：
+
+**根因一：`run_turn()` 主体之外的旁路打印没有纳入同一把锁**
+
+`server.py` 的 `_local_term_write_lock`（`threading.RLock()`）把"某个
+session 一整轮 `run_turn()`"当成本地终端写入的临界区，序列化了不同
+session 之间的输出。但 `agent.py::trigger_summary_and_profile()` 触发的
+`_generate_and_save_summary()`（session 摘要 + 长期记忆写入 + 用户画像
+刷新）是在 `run_turn()` **返回之后**才起的独立后台线程（`mini-agent-summary`），
+不在这把锁的保护范围内——它直接调用 `R.print_info()/R.print_warning()`
+打印"正在后台生成会话摘要..."之类的整行提示，可能恰好插进另一个 session
+正在流式输出的中途，把对方尚未收尾的内容从中间截断，或者把刚打印、还
+没被下一个 token 续上的 `agent_name ❯` 前缀行冲掉。
+
+修复：`agent.py` 新增 `_locked_print_info()` / `_locked_print_warning()`，
+让这条后台线程里的每一次打印也去抢同一把 `_local_term_write_lock`——
+锁被某个 session 的 `run_turn()` 持有期间，这里的打印会阻塞等待，直到
+那一整轮输出收尾之后才真正落地，不会再插入别的 session 正在进行中的
+流式内容内部。非 daemon 场景（`mini_agent.api.server` 模块未被 import）
+下自动降级为不加锁，行为与之前一致。
+
+`terminal.py::_handle_simple()` 同时加了一层兜底：`print`/`rule`/`panel`/
+`syntax`/`markdown` 这几类消息，如果到达时 `self._streaming` 为 `True`
+（说明有其它内容正在流式输出、光标停在行中间），会先补一个换行再打印，
+避免万一未来又有新路径漏加锁，也不至于在字符粒度上把两段无关内容拼在
+一起。
+
+**根因二：阻塞输入期间用 `in_terminal()` 补打印"未换行"的内容，被 ptk
+自己的重绘冲掉**
+
+daemon 本地终端在等待用户输入（`prompt_toolkit.prompt()` 阻塞中）时，
+其它 session 的输出会先缓冲进 `Terminal._pending_during_input`，由后台
+`terminal-ptk-flush` 线程周期性地通过 prompt_toolkit 的 `in_terminal()`
+异步上下文管理器安全打印（见 [终端显示机制深度解析 §4](terminal-display-internals.md#四输入同步协议)
+的详细补充说明）。`in_terminal()` 的设计前提是区间内打印的内容以换行
+结束——退出时 ptk 会基于自己记录的光标行重绘输入框。而 `print_assistant_prefix()`
+打印 `agent_name ❯ ` 时故意 `end=""`（为了让紧跟着的 stream token 续在
+同一行），stream token 本身也是逐个写、不换行，直到 `stream_end()` 才
+补一个 `\n`。如果这批"未换行"的内容恰好是某次 flush 里最后打印的东西，
+`in_terminal()` 退出时 ptk 的重绘会覆盖掉它——表现为前缀整行消失，或者
+一长串 token 中先到的几个被冲掉、只剩后到的尾巴。
+
+修复：`terminal.py` 新增 `_pending_tail_is_line_complete()`，flush 之前
+检查这批待打印消息的**最后一条**是否会让光标真正换行（`stream_end`、
+默认 `end="\n"` 的 `print`、`rule`/`panel`/`markdown` 等算；`end=""` 的
+`print` 和裸 `stream` token 不算）。不是的话本轮不 flush，继续攒着，等
+后面真正换行的消息（通常是 `stream_end()` 补的那个 `\n`）到达后再一次性
+打印，保证每次真正进入 `in_terminal()` 区间时打印的都是完整、换行收尾
+的内容。代价是前缀和开头几个 token 要等到这一轮回复 `stream_end()` 之后
+才会一次性显示，而不是尽早露出一部分——宁可稍晚但完整，不要早但残缺。
+
 ---
 
 ## 十一、关键代码路径
