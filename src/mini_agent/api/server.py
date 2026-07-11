@@ -467,13 +467,32 @@ class AgentRunner(threading.Thread):
                             log_exception(_mini_agent_exc, where='mini_agent.api.server')
 
                     try:
-                        result = _term_singleton.run_captured(_run_slash, on_line=_relay_line).strip()
+                        # [FIX] 见文件头部 _local_term_write_lock 的说明：
+                        # 光是给 output hook 里"单次" _orig_xxx()/write() 调用
+                        # 加锁还不够——Terminal 内部的 _pending_stream 等状态
+                        # 是跨调用累积的（给流式 token 里的标签做前瞻缓冲），
+                        # 只序列化单次调用没法防止"A 的流刚写了一半，B 插进来
+                        # 写了一截，把 A 留在 _pending_stream 里等着拼接的
+                        # 尾部字符污染掉/冲掉"——表现出来就是本地终端显示的
+                        # 内容开头缺字（比如"周杰伦的生日是…"少了"周杰伦"）。
+                        # 这里把整个"这一轮会产生本地终端输出"的区间
+                        # （run_captured / run_turn，内部会触发一整串
+                        # prefix→token→...→结束的本地打印）当成一个不可
+                        # 被别的 session 打断的临界区。不会影响真正的并发：
+                        # 各 session 的 LLM 请求、工具调用本身仍然独立并发
+                        # 执行，只有"这一轮的内容什么时候真正落到本地物理
+                        # 终端上"被序列化了；每个 session 自己的 SSE 推送
+                        # （客户端看到的内容）完全不受这把锁影响，一直都是
+                        # 实时的。
+                        with _local_term_write_lock:
+                            result = _term_singleton.run_captured(_run_slash, on_line=_relay_line).strip()
                     except Exception as _cmd_e:
                         result = f"[error] command failed: {_cmd_e}"
                     if not result:
                         result = "(no output)"
                 else:
-                    result = bridge.agent.run_turn(cmd.message)
+                    with _local_term_write_lock:
+                        result = bridge.agent.run_turn(cmd.message)
 
                 iq.mark_done(turn_id)
                 bridge.emit_turn_done(turn_id, text=result or "", user_id=user_id)
