@@ -64,6 +64,49 @@ from .._version import get_version
 
 # ── 终端安全打印（可从任意线程调用）─────────────────────────────────────────
 
+# ── daemon 多 session：output hook 的 bridge 路由 + 本地终端写锁 ────────────
+#
+# [FIX] _install_output_hook() 只在进程启动时对全局唯一的那个 bridge
+# （self._bridge）调用一次，Monkey-patch 的是 mini_agent.ui.renderer 模块级
+# 函数/类（print_assistant_prefix / print_markdown / StreamWriter / …）——
+# 这些补丁是进程唯一的一份，天生绑定死了当时闭包捕获的那个 bridge 对象。
+#
+# 但 SessionAgentPool 给每个 session 都各自起一条独立的 AgentRunner 线程、
+# 配一个独立的 AgentBridge（session_pool.py::_create_entry）。这些
+# per-session 线程执行 agent.run_turn() 时，底层 renderer.StreamWriter()/
+# print_assistant_prefix() 等仍然会调用同一份补丁——补丁里写死的
+# `bridge.emit_xxx(...)` 永远发去那个当初安装补丁时捕获的全局 bridge，
+# 不会发到这个 session 自己的 bridge 上。表现出来就是：
+#   - agent_prefix（"orzooo ❯" 名字前缀）事件从来发不到正确的 session
+#     bridge，daemon 本地终端和所有 connected 客户端都看不到名字；
+#   - _tid() 读的是全局 bridge.agent._http_turn_id，不是这个 session 自己
+#     正在跑的 turn_id，导致转发出去的事件 turn_id 对不上。
+#
+# 用线程局部变量记录"当前这条线程正在为哪个 session 的 bridge 工作"，
+# AgentRunner._main_loop() 在开始处理一条消息时设置、finally 里清掉
+# （见下面 _main_loop 的改动）。output hook 里所有原本直接使用闭包
+# `bridge` 的地方，改成"线程局部变量里有就用它，没有（比如非 daemon/
+# 非 pool 场景，只有一个全局 bridge 在跑）就退回闭包捕获的那个"——
+# 单 session 场景行为完全不变，多 session 场景才会生效。
+_current_session_bridge_tls = threading.local()
+
+
+def _effective_output_bridge(fallback_bridge: "AgentBridge") -> "AgentBridge":
+    return getattr(_current_session_bridge_tls, "bridge", None) or fallback_bridge
+
+
+# [FIX] daemon 本地终端（mini_agent.ui.terminal.term）是进程内唯一的物理
+# 终端单例，被所有 session 的 AgentRunner 线程共享。output hook 里的
+# `_orig_print_xxx(...)` / StreamWriter.write() 里的 `term.stream_token(...)`
+# 都是直接、无锁地往这同一个终端对象写——多个 session 同时有 turn 在跑时，
+# 谁的 token/print 先到就先写一点，两边内容会在字符粒度上拼到一起，
+# 表现为终端显示内容错位、缺字、乱序（"daemon 进程显示紊乱"）。
+# 这里加一把可重入锁，让 output hook 里"真正往本地物理终端写"的那一小段
+# 临界区互斥——只序列化本地终端的落笔顺序，不影响 agent 本身的并发执行
+# （工具调用、LLM 请求等仍然完全并发，只有"打印这一下"是互斥的）。
+_local_term_write_lock = threading.RLock()
+
+
 def _print_to_term(markup: str) -> None:
     """
     从后台线程安全地向终端队列投递一条 print 消息。
@@ -72,7 +115,8 @@ def _print_to_term(markup: str) -> None:
     """
     try:
         from mini_agent.ui.terminal import term as _term
-        _term.print(markup)
+        with _local_term_write_lock:
+            _term.print(markup)
     except Exception as _mini_agent_exc:
         from mini_agent.errors import log_exception
         log_exception(_mini_agent_exc, where='mini_agent.api.server')
@@ -320,6 +364,12 @@ class AgentRunner(threading.Thread):
             # 单用户模式下 cmd.meta 为空，user_id 就是 ""，行为不变。
             user_id = cmd.meta.get("user_id", "") if cmd.meta else ""
             role    = cmd.meta.get("role", "") if cmd.meta else ""
+            # [FIX] 见文件头部 _current_session_bridge_tls 的说明：这条
+            # AgentRunner 线程接下来（直到 finally 清掉之前）触发的所有
+            # output hook（agent_prefix / token / tool_call / …）都应该
+            # 转发到*这个 session 自己的* bridge，而不是安装补丁时闭包
+            # 捕获的那个全局 bridge。
+            _current_session_bridge_tls.bridge = bridge
             bridge.set_state("running", turn_id=turn_id)
             bridge.emit_turn_start(turn_id, cmd.message, user_id=user_id)
 
@@ -482,6 +532,10 @@ class AgentRunner(threading.Thread):
                 bridge.set_state("idle", turn_id=None)
                 if hasattr(bridge.agent, "_http_turn_id"):
                     bridge.agent._http_turn_id = ""
+                # [FIX] 清掉线程局部变量，避免这条线程后面万一又跑到别的
+                # 代码路径（比如 AutonomousLoop.tick()，同一条线程复用）时
+                # 残留上一轮的 session bridge 指向。
+                _current_session_bridge_tls.bridge = None
 
                 # daemon 多用户架构 Phase 2：还原 system_extra，避免这一轮注入的角色
                 # 上下文残留到"非 web 触发"的下一次使用（比如同一 daemon 进程里
@@ -1043,7 +1097,8 @@ def _install_output_hook(bridge: AgentBridge) -> None:
         return
 
     def _tid() -> str:
-        return getattr(bridge.agent, "_http_turn_id", "") if bridge.agent else ""
+        b = _effective_output_bridge(bridge)
+        return getattr(b.agent, "_http_turn_id", "") if b.agent else ""
 
     # ── capture 模式下抑制类型化事件的重复广播 ──────────────────────────
     # 背景：run_captured() 现在支持 on_line 回调，把 slash 命令执行期间的
@@ -1075,18 +1130,20 @@ def _install_output_hook(bridge: AgentBridge) -> None:
     _orig_print_assistant_prefix = mod.print_assistant_prefix
     def _print_assistant_prefix(agent_name: str = "orzooo") -> None:
         if not _SUPPRESS_NATIVE_PRINT:
-            _orig_print_assistant_prefix(agent_name)
+            with _local_term_write_lock:
+                _orig_print_assistant_prefix(agent_name)
         if not _in_relayed_capture():
-            bridge.emit_agent_prefix(agent_name, turn_id=_tid())
+            _effective_output_bridge(bridge).emit_agent_prefix(agent_name, turn_id=_tid())
     mod.print_assistant_prefix = _print_assistant_prefix
 
     # ── print_markdown（非流式回复的最终文本走这里）──────────────────────
     _orig_print_markdown = mod.print_markdown
     def _print_markdown(md: str) -> None:
         if not _SUPPRESS_NATIVE_PRINT:
-            _orig_print_markdown(md)
+            with _local_term_write_lock:
+                _orig_print_markdown(md)
         if not _in_relayed_capture():
-            bridge.emit_token(md, turn_id=_tid())
+            _effective_output_bridge(bridge).emit_token(md, turn_id=_tid())
     mod.print_markdown = _print_markdown
 
     # ── StreamWriter.write（流式 token）──────────────────────────────────
@@ -1094,8 +1151,18 @@ def _install_output_hook(bridge: AgentBridge) -> None:
     class _PatchedStreamWriter(_OrigStreamWriter):
         def write(self, token: str) -> None:
             if not _SUPPRESS_NATIVE_PRINT:
-                super().write(token)
-            bridge.emit_token(token, turn_id=_tid())
+                # [FIX] 本地物理终端是所有 session 共享的单例，多个 session
+                # 同时流式输出 token 时，不加锁会在字符粒度上相互打断、
+                # 拼接错乱（"daemon 进程显示紊乱"的直接成因）。这里序列化
+                # 每一次 token 落笔，只影响本地终端显示顺序，不影响各
+                # session 各自的 SSE 推送（那部分从来就是各走各的 bridge，
+                # 不受这把锁影响）。
+                with _local_term_write_lock:
+                    super().write(token)
+            # [FIX] 之前这里恒用闭包捕获的全局 bridge，daemon 多 session
+            # 场景下这个 token 属于哪个 session 就完全对不上——见文件头部
+            # _current_session_bridge_tls 的说明。
+            _effective_output_bridge(bridge).emit_token(token, turn_id=_tid())
     mod.StreamWriter = _PatchedStreamWriter
 
     # ── print_reasoning / header / footer（思维链流式输出）───────────────────
@@ -1104,48 +1171,53 @@ def _install_output_hook(bridge: AgentBridge) -> None:
     _orig_print_reasoning = mod.print_reasoning
     def _print_reasoning(token: str) -> None:
         if not _SUPPRESS_NATIVE_PRINT:
-            _orig_print_reasoning(token)
+            with _local_term_write_lock:
+                _orig_print_reasoning(token)
         if not _in_relayed_capture():
-            bridge.emit_reasoning(turn_id=_tid(), text=token)
+            _effective_output_bridge(bridge).emit_reasoning(turn_id=_tid(), text=token)
     mod.print_reasoning = _print_reasoning
 
     _orig_print_reasoning_header = mod.print_reasoning_header
     def _print_reasoning_header() -> None:
         if not _SUPPRESS_NATIVE_PRINT:
-            _orig_print_reasoning_header()
+            with _local_term_write_lock:
+                _orig_print_reasoning_header()
         if not _in_relayed_capture():
-            bridge.emit_reasoning(turn_id=_tid(), marker="start")
+            _effective_output_bridge(bridge).emit_reasoning(turn_id=_tid(), marker="start")
     mod.print_reasoning_header = _print_reasoning_header
 
     _orig_print_reasoning_footer = mod.print_reasoning_footer
     def _print_reasoning_footer() -> None:
         if not _SUPPRESS_NATIVE_PRINT:
-            _orig_print_reasoning_footer()
+            with _local_term_write_lock:
+                _orig_print_reasoning_footer()
         if not _in_relayed_capture():
-            bridge.emit_reasoning(turn_id=_tid(), marker="end")
+            _effective_output_bridge(bridge).emit_reasoning(turn_id=_tid(), marker="end")
     mod.print_reasoning_footer = _print_reasoning_footer
 
     # ── print_skill_loaded ──────────────────────────────────────────────────
     _orig_print_skill_loaded = mod.print_skill_loaded
     def _print_skill_loaded(name: str) -> None:
         if not _SUPPRESS_NATIVE_PRINT:
-            _orig_print_skill_loaded(name)
+            with _local_term_write_lock:
+                _orig_print_skill_loaded(name)
         if not _in_relayed_capture():
-            bridge.emit_skill_loaded(name, turn_id=_tid())
+            _effective_output_bridge(bridge).emit_skill_loaded(name, turn_id=_tid())
     mod.print_skill_loaded = _print_skill_loaded
 
     # ── print_tool_call ───────────────────────────────────────────────────
     _orig_print_tool_call = mod.print_tool_call
     def _print_tool_call(tool_name: str, tool_input: dict, **kw) -> None:
         if not _SUPPRESS_NATIVE_PRINT:
-            _orig_print_tool_call(tool_name, tool_input, **kw)
+            with _local_term_write_lock:
+                _orig_print_tool_call(tool_name, tool_input, **kw)
         # tool_executor.py 调用 print_tool_call() 时传了
         # verbose=self.cfg.verbose（决定本地终端是否展示完整入参 JSON）。
         # 之前这里的 **kw 被吃掉、从未转发给 emit_tool_call()，导致
         # connected 客户端永远收不到这个信息、只能展示成"非 verbose"
         # 效果——即便 daemon 本地明明是 verbose 模式。这里显式取出并透传。
         if not _in_relayed_capture():
-            bridge.emit_tool_call(
+            _effective_output_bridge(bridge).emit_tool_call(
                 tool_name, tool_input, turn_id=_tid(),
                 verbose=bool(kw.get("verbose", False)),
             )
@@ -1155,18 +1227,20 @@ def _install_output_hook(bridge: AgentBridge) -> None:
     _orig_print_tool_result = mod.print_tool_result
     def _print_tool_result(tool_name: str, result: str, **kw) -> None:
         if not _SUPPRESS_NATIVE_PRINT:
-            _orig_print_tool_result(tool_name, result, **kw)
+            with _local_term_write_lock:
+                _orig_print_tool_result(tool_name, result, **kw)
         if not _in_relayed_capture():
-            bridge.emit_tool_result(tool_name, str(result), turn_id=_tid())
+            _effective_output_bridge(bridge).emit_tool_result(tool_name, str(result), turn_id=_tid())
     mod.print_tool_result = _print_tool_result
 
     # ── print_tool_error ──────────────────────────────────────────────────
     _orig_print_tool_error = mod.print_tool_error
     def _print_tool_error(tool_name: str, error: str, **kw) -> None:
         if not _SUPPRESS_NATIVE_PRINT:
-            _orig_print_tool_error(tool_name, error, **kw)
+            with _local_term_write_lock:
+                _orig_print_tool_error(tool_name, error, **kw)
         if not _in_relayed_capture():
-            bridge.emit(AgentEvent(
+            _effective_output_bridge(bridge).emit(AgentEvent(
                 type=EventType.TOOL_ERROR,
                 turn_id=_tid(),
                 data={"tool_name": tool_name, "message": str(error)},
@@ -1179,9 +1253,10 @@ def _install_output_hook(bridge: AgentBridge) -> None:
         def _make(orig, etype):
             def _patched(msg: str, **kw) -> None:
                 if not _SUPPRESS_NATIVE_PRINT:
-                    orig(msg, **kw)
+                    with _local_term_write_lock:
+                        orig(msg, **kw)
                 if not _in_relayed_capture():
-                    bridge.emit(AgentEvent(type=etype, data={"message": str(msg)}))
+                    _effective_output_bridge(bridge).emit(AgentEvent(type=etype, data={"message": str(msg)}))
             return _patched
         setattr(mod, _fname, _make(_orig, _etype))
 
