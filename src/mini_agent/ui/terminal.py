@@ -38,6 +38,63 @@ from rich.text import Text
 _IS_TTY: bool = hasattr(sys.stdout, "isatty") and sys.stdout.isatty()
 
 
+# ── 临时诊断日志 ──────────────────────────────────────────────────────
+# [DIAG] daemon 前台终端反复出现"前缀丢失/内容被腰斩/和提示符粘连"的
+# 问题，静态分析已经排查了 erase_bar 竞态、simple_mode、ptk 降级路径
+# 等好几个假设并逐一修复，但反馈显示表现没变——说明真正的触发路径还没
+# 找到。继续靠静态分析成本已经很高，这里改为直接埋点记录关键事实：
+# ptk 是否降级、_input_blocking 的进入/退出时间、每条消息进出队列时的
+# kind/内容摘要、_streaming/_bar_suspended 状态变化。下次复现后把
+# <project_root>/.agent/terminal_diag.log 发回来，就能看到当时各个
+# 线程的真实交错顺序，而不必再靠猜测。
+#
+# 只在环境变量 MINI_AGENT_TERM_DIAG=1 时启用，避免正常使用时产生额外
+# 磁盘 IO；写入失败（比如目录不存在）一律静默忽略，不能因为诊断日志
+# 本身影响到终端渲染这条主流程。
+import threading as _diag_threading_mod
+
+
+class _DiagLogger:
+    def __init__(self) -> None:
+        self._enabled = os.environ.get("MINI_AGENT_TERM_DIAG") == "1"
+        self._lock = _diag_threading_mod.Lock()
+        self._path = None
+        if self._enabled:
+            try:
+                base = os.environ.get("MINI_AGENT_PROJECT_ROOT") or os.getcwd()
+                d = os.path.join(base, ".agent")
+                os.makedirs(d, exist_ok=True)
+                self._path = os.path.join(d, "terminal_diag.log")
+            except Exception:
+                self._enabled = False
+
+    def log(self, tag: str, msg: str) -> None:
+        if not self._enabled or not self._path:
+            return
+        try:
+            ts = time.strftime("%H:%M:%S", time.localtime()) + f".{int(time.time() * 1000) % 1000:03d}"
+            tid = _diag_threading_mod.current_thread().name
+            line = f"{ts} [{tid}] [{tag}] {msg}\n"
+            with self._lock:
+                with open(self._path, "a", encoding="utf-8", errors="replace") as f:
+                    f.write(line)
+        except Exception:
+            pass
+
+
+_diag = _DiagLogger()
+
+
+def _diag_repr(payload: Any, limit: int = 60) -> str:
+    try:
+        s = repr(payload)
+    except Exception:
+        s = "<unrepr>"
+    if len(s) > limit:
+        s = s[:limit] + "...(%d chars)" % len(s)
+    return s
+
+
 def _wait_stdin_readable(timeout: float) -> Optional[bool]:
     """
     [BUGFIX] 非阻塞地判断 stdin 在 `timeout` 秒内是否已经有一整行可读，
@@ -1346,6 +1403,8 @@ class Terminal:
         # 3. 排空确认完成的瞬间立刻置位，把竞态窗口压缩到最小
         self._input_blocking = True
         self._input_blocking_since = time.monotonic()
+        if _diag._enabled:
+            _diag.log("enter_input_mode", "input_blocking=True, queue drained")
         # 4. 此时渲染线程空闲，且新消息已能被正确缓冲，安全直接操作
         self._erase_bar_direct()
 
@@ -1382,6 +1441,8 @@ class Terminal:
         """
         self._rearm_sigwinch()
         pending, self._pending_during_input = self._pending_during_input, []
+        if _diag._enabled:
+            _diag.log("exit_input_mode", f"requeue_pending_count={len(pending)}")
         for msg in pending:
             self._q.put(msg)
         # 重绘通过队列（让渲染线程来画）
@@ -1423,6 +1484,15 @@ class Terminal:
 
     def _handle(self, msg: _Msg) -> None:
         kind = msg.kind
+        if _diag._enabled and kind not in ("_noop", "_refresh"):
+            _diag.log(
+                "handle_enter",
+                f"kind={kind} bypass_block={msg.bypass_block} "
+                f"capture_mode={self._capture_mode} input_blocking={self._input_blocking} "
+                f"simple_mode={self._simple_mode} streaming={self._streaming} "
+                f"bar_suspended={self._bar_suspended} bar_below_prefix={self._bar_below_prefix} "
+                f"bar_drawn={self._bar_drawn} payload={_diag_repr(msg.payload)}",
+            )
 
         # 阻塞输入期间（主线程正卡在 prompt_toolkit.prompt() 等待用户输入），
         # 业务后台线程（如摘要/画像生成）仍可能调用 term.print() 等方法。
@@ -1448,6 +1518,8 @@ class Terminal:
                 "stream", "stream_end", "_resize_settled",
             )
         ):
+            if _diag._enabled:
+                _diag.log("handle_buffer", f"kind={kind} pending_count={len(self._pending_during_input) + 1}")
             self._pending_during_input.append(msg)
             return
 
@@ -2500,6 +2572,12 @@ class Terminal:
                 # 降级路径（未安装 ptk，或 ptk 运行时异常后已降级到裸
                 # readline）：没有"安全打印到输入行上方"的手段，只能
                 # 维持旧行为——积压到 _exit_input_mode() 统一补打印。
+                if _diag._enabled and self._pending_during_input:
+                    _diag.log(
+                        "ptk_flush_loop",
+                        f"app is None (no ptk active), {len(self._pending_during_input)} "
+                        f"pending msgs stuck until exit_input_mode",
+                    )
                 continue
             if not self._pending_during_input:
                 continue
@@ -2508,11 +2586,15 @@ class Terminal:
                 if buf is not None and (buf.text or buf.complete_state is not None):
                     # 用户正在输入内容，或补全菜单正开着：不打扰，跳过
                     # 这一轮，下次输入框空了再 flush。
+                    if _diag._enabled:
+                        _diag.log("ptk_flush_loop", "buffer non-empty or completing, skip this tick")
                     continue
             except Exception:
                 # 拿不到当前 buffer 状态时，保守起见也跳过这一轮，
                 # 不冒风险去 flush。
                 continue
+            if _diag._enabled:
+                _diag.log("ptk_flush_loop", f"scheduling flush of {len(self._pending_during_input)} pending msgs")
             self._flush_pending_during_input()
 
     def _flush_pending_during_input(self) -> None:
@@ -2721,8 +2803,12 @@ class Terminal:
                     "<b><ansgreen>You</ansgreen></b><ansicyan> ❯ </ansicyan>"
                 )
                 self._active_ptk_app = self._ptk_session.app
+                if _diag._enabled:
+                    _diag.log("read_line", "using prompt_toolkit, entering .prompt()")
                 try:
                     result = self._ptk_session.prompt(html_prompt)
+                    if _diag._enabled:
+                        _diag.log("read_line", f"ptk .prompt() returned {_diag_repr(result)}")
                     return (result or "").strip()
                 except _RemoteTurnInterrupt:
                     # 由 request_input_lock(True) 通过 app.exit(exception=...)
@@ -2730,18 +2816,30 @@ class Terminal:
                     # 原样往上抛，不在这里吞掉——daemon.py 的主循环需要知道
                     # "这次没拿到真正的用户输入"，而不是把 None/空串当成
                     # 用户提交了空消息处理。
+                    if _diag._enabled:
+                        _diag.log("read_line", "ptk .prompt() raised _RemoteTurnInterrupt")
                     raise
                 finally:
                     self._active_ptk_app = None
             except ImportError:
+                if _diag._enabled:
+                    _diag.log("read_line", "prompt_toolkit ImportError, falling back to plain readline")
                 pass  # 未安装 prompt_toolkit，直接降级
             except (KeyboardInterrupt, EOFError):
                 raise  # 由上层处理
             except _RemoteTurnInterrupt:
                 raise
-            except Exception:
+            except Exception as _ptk_exc:
                 # ptk 运行时异常（dumb terminal、Windows ConPTY 等），标记后降级
+                if _diag._enabled:
+                    _diag.log(
+                        "read_line",
+                        f"prompt_toolkit RUNTIME EXCEPTION, setting _ptk_failed=True: "
+                        f"{type(_ptk_exc).__name__}: {_ptk_exc}",
+                    )
                 self._ptk_failed = True
+        elif _diag._enabled:
+            _diag.log("read_line", "_ptk_failed already True, using plain readline fallback")
 
         # 降级：ANSI 提示符 + readline。
         #
@@ -2801,6 +2899,8 @@ class Terminal:
             if not self._pending_during_input:
                 continue
             pending, self._pending_during_input = self._pending_during_input, []
+            if _diag._enabled:
+                _diag.log("fallback_flush", f"flushing {len(pending)} pending msgs mid-wait")
             for _msg in pending:
                 _msg.bypass_block = True
                 self._q.put(_msg)

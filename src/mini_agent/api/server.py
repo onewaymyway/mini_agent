@@ -412,6 +412,13 @@ class AgentRunner(threading.Thread):
                 # 造成内容错位/被吞。开启该开关后交给 attach 上来的
                 # run_connected_repl 唯一负责显示，这里不再重复打印。
                 if not is_suppress_native_print():
+                    from mini_agent.ui.terminal import _diag as _term_diag
+                    if _term_diag._enabled:
+                        _term_diag.log(
+                            "server_turn",
+                            f"echo 'You (web)' turn_id={turn_id!r} session={getattr(bridge.agent, 'session_id', None)!r} "
+                            f"msg={cmd.message[:30]!r}",
+                        )
                     _print_to_term(
                         f"\n[bold green]You (web)[/bold green][bold cyan] ❯ [/bold cyan]{cmd.message}"
                     )
@@ -491,8 +498,19 @@ class AgentRunner(threading.Thread):
                     if not result:
                         result = "(no output)"
                 else:
+                    from mini_agent.ui.terminal import _diag as _term_diag
+                    if _term_diag._enabled:
+                        _term_diag.log(
+                            "server_turn",
+                            f"about to acquire _local_term_write_lock for run_turn "
+                            f"turn_id={turn_id!r} session={getattr(bridge.agent, 'session_id', None)!r}",
+                        )
                     with _local_term_write_lock:
+                        if _term_diag._enabled:
+                            _term_diag.log("server_turn", f"lock acquired, calling run_turn turn_id={turn_id!r}")
                         result = bridge.agent.run_turn(cmd.message)
+                        if _term_diag._enabled:
+                            _term_diag.log("server_turn", f"run_turn returned, releasing lock turn_id={turn_id!r}")
 
                 iq.mark_done(turn_id)
                 bridge.emit_turn_done(turn_id, text=result or "", user_id=user_id)
@@ -1148,6 +1166,14 @@ def _install_output_hook(bridge: AgentBridge) -> None:
     # "当前这一段输出是谁在说"，而不是自己瞎猜。
     _orig_print_assistant_prefix = mod.print_assistant_prefix
     def _print_assistant_prefix(agent_name: str = "orzooo") -> None:
+        from mini_agent.ui.terminal import _diag as _term_diag
+        if _term_diag._enabled:
+            _term_diag.log(
+                "server_hook",
+                f"print_assistant_prefix agent_name={agent_name!r} "
+                f"suppress={_SUPPRESS_NATIVE_PRINT} capture={_in_relayed_capture()} "
+                f"turn_id={_tid()!r}",
+            )
         if not _SUPPRESS_NATIVE_PRINT:
             with _local_term_write_lock:
                 _orig_print_assistant_prefix(agent_name)
@@ -1158,6 +1184,14 @@ def _install_output_hook(bridge: AgentBridge) -> None:
     # ── print_markdown（非流式回复的最终文本走这里）──────────────────────
     _orig_print_markdown = mod.print_markdown
     def _print_markdown(md: str) -> None:
+        from mini_agent.ui.terminal import _diag as _term_diag
+        if _term_diag._enabled:
+            _term_diag.log(
+                "server_hook",
+                f"print_markdown len={len(md)} suppress={_SUPPRESS_NATIVE_PRINT} "
+                f"capture={_in_relayed_capture()} turn_id={_tid()!r} "
+                f"head={md[:30]!r} tail={md[-30:]!r}",
+            )
         if not _SUPPRESS_NATIVE_PRINT:
             with _local_term_write_lock:
                 _orig_print_markdown(md)
@@ -1169,6 +1203,13 @@ def _install_output_hook(bridge: AgentBridge) -> None:
     _OrigStreamWriter = mod.StreamWriter
     class _PatchedStreamWriter(_OrigStreamWriter):
         def write(self, token: str) -> None:
+            from mini_agent.ui.terminal import _diag as _term_diag
+            if _term_diag._enabled:
+                _term_diag.log(
+                    "server_hook",
+                    f"stream_token turn_id={_tid()!r} suppress={_SUPPRESS_NATIVE_PRINT} "
+                    f"token={token!r}",
+                )
             if not _SUPPRESS_NATIVE_PRINT:
                 # [FIX] 本地物理终端是所有 session 共享的单例，多个 session
                 # 同时流式输出 token 时，不加锁会在字符粒度上相互打断、
