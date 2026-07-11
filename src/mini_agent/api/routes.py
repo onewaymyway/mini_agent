@@ -232,8 +232,17 @@ async def health():
 
 
 @router.get("/status", response_model=StatusResponse)
-async def get_status(request: Request):
-    bridge = _bridge(request)
+async def get_status(
+    request: Request,
+    session_id: Optional[str] = Query(
+        default=None,
+        description="查询哪个 session 的状态；不传则退回全局共享 bridge（旧行为）。"
+        "单 token 多客户端场景下，各客户端应带上自己当前的 session_id，"
+        "否则状态栏会显示成全局 bridge 当前所在的 session，与自己实际"
+        "操作的 session 对不上。",
+    ),
+):
+    bridge = _bridge(request, session_id=session_id)
     state  = bridge.get_state()
     stats  = {}
     if bridge.agent:
@@ -863,7 +872,15 @@ def _user_session_manager(request: Request):
 
 
 @router.get("/sessions", response_model=SessionsListResponse)
-async def list_sessions(request: Request, limit: int = Query(default=50, le=200)):
+async def list_sessions(
+    request: Request,
+    limit: int = Query(default=50, le=200),
+    session_id: Optional[str] = Query(
+        default=None,
+        description="单 token 多客户端场景下，传入本连接自己当前的 session_id，"
+        "才能正确标出 is_current；不传则退回全局共享 bridge（旧行为）。",
+    ),
+):
     """列出所有已保存的 session，并标记当前（该用户最近访问过的）session。"""
     user_mgr = _user_session_manager(request)
 
@@ -908,8 +925,12 @@ async def list_sessions(request: Request, limit: int = Query(default=50, le=200)
                 ))
         return SessionsListResponse(sessions=infos, current_session_id=current_id, count=len(infos))
 
-    # ── 单用户模式：原有行为，完全不变 ───────────────────────────────────────
-    agent, mgr = _session_manager_or_404(_bridge(request))
+    # ── 单用户模式（单 token） ────────────────────────────────────────────────
+    # 传了 session_id 的话，_bridge() 会按它路由到 SessionAgentPool 里这个
+    # session 专属的 bridge/Agent，current_id 也就是"这个连接自己的" session，
+    # 而不是全局共享 bridge 当前碰巧停留的那个（否则多客户端下 is_current
+    # 会全部错误地指向同一个、与自己实际操作的 session 无关的 id）。
+    agent, mgr = _session_manager_or_404(_bridge(request, session_id=session_id))
     current_id = agent.session_id
 
     metas = mgr.list_sessions(limit=limit)

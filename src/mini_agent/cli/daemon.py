@@ -29,6 +29,7 @@ import sys
 import time
 from pathlib import Path
 from typing import Optional
+from urllib.parse import quote as _urlquote
 
 
 # ── PID 文件管理 ──────────────────────────────────────────────────────────────
@@ -200,14 +201,22 @@ class DaemonClient:
         except Exception:
             return False
 
-    def get_status(self) -> Optional[dict]:
-        """获取 daemon 状态（/v1/status 端点）。"""
+    def get_status(self, session_id: Optional[str] = None) -> Optional[dict]:
+        """获取 daemon 状态（/v1/status 端点）。
+
+        必须带上 session_id：单 token 多客户端场景下，daemon 的 /v1/status
+        默认落回全局共享 bridge，不传 session_id 的话，每个客户端看到的都是
+        全局 bridge 当前碰巧停留的那个 session（可能是别的客户端的），而不是
+        自己真正在操作的 session——这正是"状态栏显示的 session/queue/clients
+        跟自己实际发消息的 session 对不上"的根因，见 _connected_status_bar_provider
+        的调用方。
+        """
         try:
             import urllib.request
-            req = urllib.request.Request(
-                f"{self.base_url}/v1/status",
-                headers=self._headers(),
-            )
+            url = f"{self.base_url}/v1/status"
+            if session_id:
+                url += f"?session_id={_urlquote(session_id)}"
+            req = urllib.request.Request(url, headers=self._headers())
             with urllib.request.urlopen(req, timeout=5) as resp:
                 return json.loads(resp.read())
         except Exception:
@@ -251,14 +260,19 @@ class DaemonClient:
         except Exception:
             return None
 
-    def list_sessions(self, limit: int = 10) -> list[dict]:
-        """获取 daemon 的 session 列表（GET /v1/sessions）。"""
+    def list_sessions(self, limit: int = 10, session_id: Optional[str] = None) -> list[dict]:
+        """获取 daemon 的 session 列表（GET /v1/sessions）。
+
+        session_id：本连接自己当前的 session_id（如果有）。单 token 多客户端
+        场景下不传的话，返回的 is_current 会全部对着全局共享 bridge 当前
+        所在的 session 标记，而不是这个连接自己实际所在的 session。
+        """
         try:
             import urllib.request
-            req = urllib.request.Request(
-                f"{self.base_url}/v1/sessions?limit={limit}",
-                headers=self._headers(),
-            )
+            url = f"{self.base_url}/v1/sessions?limit={limit}"
+            if session_id:
+                url += f"&session_id={_urlquote(session_id)}"
+            req = urllib.request.Request(url, headers=self._headers())
             with urllib.request.urlopen(req, timeout=5) as resp:
                 data = json.loads(resp.read())
                 return data.get("sessions", [])
@@ -963,6 +977,7 @@ def run_daemon_cli(argv: list[str], project_root: Path) -> int:
 def _pick_session(
     client: "DaemonClient",
     term=None,
+    session_id: Optional[str] = None,
 ) -> Optional[str]:
     """
     展示 session 选择菜单，返回：
@@ -992,12 +1007,15 @@ def _pick_session(
     term 为 None 时（极端情况下没拿到 Terminal 实例）才退回裸
     print()/input()，作为兜底。
     """
-    sessions = client.list_sessions(limit=8)
+    sessions = client.list_sessions(limit=8, session_id=session_id)
     if not sessions:
         return ""  # 没有历史，静默新建
 
-    status = client.get_status() or {}
-    current_sid = status.get("session_id", "")
+    # 带上 session_id 查这次连接自己当前所在的 session，而不是全局共享
+    # bridge 碰巧停留的那个（否则单 token 多客户端下，"● active" 标记会
+    # 全部指向同一个、跟这个连接实际所在的 session 无关的 id）。
+    status = client.get_status(session_id=session_id) or {}
+    current_sid = status.get("session_id", "") or (session_id or "")
 
     def _out(line: str) -> None:
         if term is not None:
@@ -1059,14 +1077,22 @@ def _pick_session(
 # 输出，不再需要这两个函数。
 
 
-def _connected_status_bar_provider(client: "DaemonClient") -> "list[str]":
+def _connected_status_bar_provider(
+    client: "DaemonClient", session_id: Optional[str] = None
+) -> "list[str]":
     """
     connected 模式专用状态栏内容提供者。
     通过 GET /v1/status 轮询 daemon 状态，构建与本地 status_bar 风格一致的状态行。
     注册到 Terminal.set_statusbar_provider() 后由刷新线程定期调用。
+
+    session_id：本连接自己当前的 active_session_id。必须带上，否则单 token
+    多客户端场景下 /v1/status 会退回全局共享 bridge，状态栏显示的
+    session/queue/clients 就会是别的客户端的，而不是自己这个连接实际在
+    操作的 session（调用方按闭包读取外层 active_session_id 的最新值，
+    session 切换后会自动跟着变，不需要重新注册 provider）。
     """
     try:
-        status = client.get_status()
+        status = client.get_status(session_id=session_id)
         if not status:
             return ["  \033[90m⚡ [connected] daemon 无响应\033[0m"]
 
@@ -1931,7 +1957,13 @@ def run_connected_repl(
     # term.prompt_user() 走渲染队列，状态栏刷新自然就不会和它们冲突。
     if _term is not None:
         try:
-            _term.set_statusbar_provider(lambda: _connected_status_bar_provider(client))
+            # 注意：此时 active_session_id 还没赋值（在下面的 Session 选择
+            # 逻辑里才会赋值），但 lambda 是延迟求值的闭包——真正被刷新线程
+            # 调用时 active_session_id 早已经赋好值了，后续 session 切换
+            # （active_session_id 被重新赋值）也会自动反映到状态栏上。
+            _term.set_statusbar_provider(
+                lambda: _connected_status_bar_provider(client, active_session_id)
+            )
         except Exception as _mini_agent_exc:
             from mini_agent.errors import log_exception
             log_exception(_mini_agent_exc, where='mini_agent.cli.daemon')
@@ -2478,7 +2510,7 @@ def run_connected_repl(
                 continue
 
             if cmd in ("/session list", "/sessions", "/session ls"):
-                chosen = _pick_session(client, term=_term)
+                chosen = _pick_session(client, term=_term, session_id=active_session_id)
                 if chosen is None:
                     continue
                 if chosen == "":
@@ -2498,7 +2530,7 @@ def run_connected_repl(
                 continue
 
             if cmd == "/session":
-                st = client.get_status() or {}
+                st = client.get_status(session_id=active_session_id) or {}
                 cur = st.get("session_id") or active_session_id or "(unknown)"
                 state = st.get("state", "?")
                 _out(f"[daemon] session={cur}  state={state}")
