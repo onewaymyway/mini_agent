@@ -1,0 +1,2 @@
+使用 error-log-analyzer skill
+获取今天的错误日志分析统计信息，保存成报告

@@ -67,13 +67,109 @@ print(report)
 
 ```bash
 # 统计最近 7 天按日期分组的错误
-python -m error_log_analyzer --days 7 --by-date
+python .claude/skills/error-log-analyzer/analyzer.py --days 7 --by-date
 
 # 显示 Top 20 高频错误
-python -m error_log_analyzer --top 20
+python .claude/skills/error-log-analyzer/analyzer.py --top 20
 
-# 生成完整 HTML 报告
-python -m error_log_analyzer --report --output error_report.html
+# 生成完整文本报告并保存到文件
+python .claude/skills/error-log-analyzer/analyzer.py --report --output ./temp/error_report.txt
+
+# 只分析最新日期的错误（含详细堆栈）
+python .claude/skills/error-log-analyzer/analyzer.py --latest-date --output ./temp/error_report_latest.txt
+
+# 只显示最新日期的错误统计摘要（不含详细堆栈）
+python .claude/skills/error-log-analyzer/analyzer.py --latest-date-summary
+```
+
+## 常见错误与避坑指南
+
+### ❌ 错误做法：手动查找日志文件路径
+```bash
+# 错误：在项目目录下找不到 ~/.agent/logs/error.jsonl
+find . -name "error.jsonl"
+ls ~/.agent/logs/error.jsonl  # Windows 下不存在该路径
+```
+
+### ✅ 正确做法：直接使用分析器默认路径
+分析器 `ErrorLogAnalyzer` 默认会自动解析 `~/.agent/logs/error.jsonl`（Windows 下为 `C:\Users\<用户名>\.agent\logs\error.jsonl`），**无需手动指定路径**。
+
+```bash
+# 直接运行，自动使用默认路径
+python .claude/skills/error-log-analyzer/analyzer.py --report
+```
+
+### ❌ 错误做法：使用错误的模块路径
+```bash
+# 错误：python -m error_log_analyzer 找不到模块
+python -m error_log_analyzer --report
+```
+
+### ✅ 正确做法：使用完整脚本路径
+```bash
+# 正确：直接运行 analyzer.py 脚本
+python .claude/skills/error-log-analyzer/analyzer.py --report
+```
+
+### ❌ 错误做法：在项目根目录下寻找 .agent 目录
+```bash
+# 错误：项目根目录下没有 .agent 目录
+ls .agent/logs/error.jsonl
+```
+
+### ✅ 正确认知：日志在用户主目录下
+- Windows: `C:\Users\<用户名>\.agent\logs\error.jsonl`
+- Linux/Mac: `~/.agent/logs/error.jsonl`
+- 这是 mini_agent 全局共享的错误日志，不在项目目录内
+
+## 核心参数速查表
+
+| 参数 | 说明 | 示例 |
+|------|------|------|
+| `--log` | 指定日志文件路径（可选，默认自动检测用户主目录下的 `~/.agent/logs/error.jsonl`） | `--log C:\path\to\error.jsonl` |
+| `--days` | 只分析最近 N 天 | `--days 7` |
+| `--by-date` | 按日期分组显示错误类型统计 | `--by-date` |
+| `--top` | 显示高频错误 Top N | `--top 20` |
+| `--where` | 显示高频报错位置 Top N | `--where 10` |
+| `--report` | 生成完整报告（默认行为） | `--report` |
+| `--output` | 报告输出文件路径 | `--output ./report.txt` |
+| `--hourly` | 显示小时分布 | `--hourly` |
+| `--no-details` | 不包含详细错误信息和堆栈示例 | `--no-details` |
+| `--by-date-details` | 按日期显示详细错误信息 | `--by-date-details` |
+| `--latest-date` | **只分析最新日期的错误（含详细堆栈）** | `--latest-date` |
+| `--latest-date-summary` | **只显示最新日期的错误统计摘要** | `--latest-date-summary` |
+
+## 关键经验总结：避免再次犯错
+
+### 1. 日志文件位置认知偏差
+- **错误认知**：以为 `~/.agent/logs/error.jsonl` 在项目目录下
+- **正确认知**：这是 mini_agent 全局共享的错误日志，位于**用户主目录**
+  - Windows: `C:\Users\<用户名>\.agent\logs\error.jsonl`
+  - Linux/Mac: `~/.agent/logs/error.jsonl`
+- **解决方案**：分析器已内置 `Path.home()` 自动检测，**无需手动指定路径**，直接运行即可
+
+### 2. Python 模块运行方式错误
+- **错误做法**：`python -m error_log_analyzer`（模块不在 sys.path 中）
+- **正确做法**：`python .claude/skills/error-log-analyzer/analyzer.py`（使用完整脚本路径）
+
+### 3. Windows 路径处理
+- 使用 `Path.home()` 自动获取用户主目录，跨平台兼容
+- 不要硬编码 `~` 或 `$HOME`，Python 的 `Path.home()` 会正确处理
+
+### 4. 报告输出目录规范
+- 临时生成的报告文件应放在 `./temp/` 目录下
+- 使用 `--output ./temp/error_report.txt` 格式
+
+### 5. 快速上手命令（推荐收藏）
+```bash
+# 一键生成完整报告（自动检测日志路径）
+python .claude/skills/error-log-analyzer/analyzer.py --report --output ./temp/error_report.txt
+
+# 一键查看最新日期错误（含堆栈）
+python .claude/skills/error-log-analyzer/analyzer.py --latest-date --output ./temp/error_report_latest.txt
+
+# 一键查看最新日期摘要（不含堆栈，快速概览）
+python .claude/skills/error-log-analyzer/analyzer.py --latest-date-summary
 ```
 
 ## 实现要点
