@@ -2557,6 +2557,62 @@ class Terminal:
                     self._q.put(_Msg("statusbar", lines))
             self._q.put(_Msg("_refresh", None))
 
+    def _pending_tail_is_line_complete(self) -> bool:
+        """
+        [FIX] daemon 多 session 场景下"daemon 本地终端里，orzooo ❯ 前缀
+        整行消失 / 回复内容开头几个字被吃掉"的根因（第二轮定位）：
+
+        `_flush_pending_during_input()` 是通过 prompt_toolkit 的
+        `in_terminal()` 异步上下文管理器打印积压消息的。`in_terminal()`
+        的设计前提是：区间内打印的内容必须是"完整的、以换行结束的"输出——
+        区间结束（`async with` 退出）时，ptk 会基于**它自己上一次渲染时
+        记录的光标行**去重绘输入框，它并不知道我们在区间内额外写了多少
+        个"没有换行结尾"的字符。
+
+        而我们这里恰恰经常需要打印不以换行结尾的内容：
+          - print_assistant_prefix() 打印 "orzooo ❯ "，故意 end=""，
+            为的是紧跟着的 stream token 能续在同一行；
+          - stream token 本身也是逐个 sys.stdout.write()，中途不换行，
+            要等 stream_end() 才补一个 "\\n"。
+
+        如果这批"没有换行结尾"的内容恰好是这次 flush 里最后打印的东西，
+        `in_terminal()` 退出时 ptk 紧接着的重绘会从一个它认为"干净"的
+        光标位置开始重画输入框——但实际光标已经被我们的内容推到了行中间
+        某处，于是 ptk 的重绘会覆盖/冲掉这些还没换行的内容。表现为：
+          - 前缀 "orzooo ❯ " 打印后紧跟着被这一批的收尾 redraw 冲掉，
+            整行消失；
+          - 一长串 stream token 里，先到的几个 token 在某次 flush 里被
+            冲掉，只留下后到的、跟在下一次 flush（此时前面已经有 stream_end
+            补了换行，光标真的在行首）里的内容，看起来像是"内容开头被
+            吃掉、只剩结尾几个字"。
+
+        修复：flush 之前检查这一批 pending 消息的"末尾状态"是否会让光标
+        停在行中间（而不是真正换行）。如果会，这一轮就不 flush——继续把
+        消息留在 _pending_during_input 里攒着，等到后面某条消息真正换了
+        行（比如 stream_end() 补上的那个 "\\n"，或者 kind=print 且
+        end 是默认的 "\\n"）之后再一起打印。这样每次真正调用
+        `in_terminal()` 时，区间内打印的都是完整的、以换行收尾的内容，
+        退出时 ptk 看到的光标位置和它自己认为的一致，重绘不会覆盖任何
+        还没来得及显示完的内容。
+
+        唯一的代价：前缀和紧跟其后的开头几个 token，要等到这一轮回复
+        真正 stream_end() 之后才会一次性显示出来（而不是像之前那样试图
+        提前露出一部分）——但这就是本来该有的正确行为：宁可稍晚一起显示
+        完整内容，也不要显示出会被冲掉、残缺不全的内容。
+        """
+        if not self._pending_during_input:
+            return True
+        last = self._pending_during_input[-1]
+        kind = last.kind
+        if kind in ("stream_end", "_force_end_stream", "rule", "panel", "syntax", "markdown", "redraw"):
+            return True
+        if kind == "print":
+            args, kwargs = last.payload
+            return kwargs.get("end", "\n") not in ("", None)
+        # kind == "stream"（原始 token，从不换行）以及其它未识别类型，
+        # 一律保守地当成"还没换行"，宁可多等一轮也不冒险冲掉内容。
+        return False
+
     def _ptk_flush_loop(self) -> None:
         """
         每 _PTK_FLUSH_INTERVAL 秒检查一次：如果本端正阻塞在
@@ -2609,6 +2665,18 @@ class Terminal:
             except Exception:
                 # 拿不到当前 buffer 状态时，保守起见也跳过这一轮，
                 # 不冒风险去 flush。
+                continue
+            if not self._pending_tail_is_line_complete():
+                # 见 _pending_tail_is_line_complete() 的说明：这批消息
+                # 末尾还停在行中间（没有真正换行），现在 flush 会被 ptk
+                # 退出 in_terminal() 时的重绘冲掉。先不 flush，等后面
+                # 真正换行的消息到达后再一起打印。
+                if _diag._enabled:
+                    _diag.log(
+                        "ptk_flush_loop",
+                        f"pending tail not line-complete, deferring flush of "
+                        f"{len(self._pending_during_input)} pending msgs",
+                    )
                 continue
             if _diag._enabled:
                 _diag.log("ptk_flush_loop", f"scheduling flush of {len(self._pending_during_input)} pending msgs")
@@ -2726,6 +2794,34 @@ class Terminal:
 
             pending, self._pending_during_input = self._pending_during_input, []
             if not pending:
+                return
+            # [FIX] 见 _pending_tail_is_line_complete() 的说明：这里是真正
+            # 权威的检查点（协程运行在 ptk 自己的事件循环线程上，和上面
+            # 已经做过的读取/清空 self._pending_during_input 之间没有任何
+            # await 让出点，不会被新到达的消息打断）。_ptk_flush_loop() 里
+            # 的检查只是廉价预过滤，从判断到真正调度到这里执行之间，可能
+            # 又有新的 stream token 追加进来，把"当时看起来完整"的一批
+            # 又变得不完整——所以这里必须用刚取出的 pending 快照本身的
+            # 尾部状态重新判断一次，而不是信任外层已经判断过。如果末尾
+            # 仍然停在行中间，原样放回去，这一轮什么都不做，交给下一次
+            # 心跳或者 stream_end() 到达后再 flush。
+            def _tail_is_line_complete(_msgs: list) -> bool:
+                last = _msgs[-1]
+                if last.kind in ("stream_end", "_force_end_stream", "rule", "panel", "syntax", "markdown", "redraw"):
+                    return True
+                if last.kind == "print":
+                    _args, _kwargs = last.payload
+                    return _kwargs.get("end", "\n") not in ("", None)
+                return False
+
+            if not _tail_is_line_complete(pending):
+                self._pending_during_input = pending + self._pending_during_input
+                if _diag._enabled:
+                    _diag.log(
+                        "ptk_flush_loop",
+                        f"do_flush: pending tail not line-complete, "
+                        f"re-queued {len(pending)} msgs without flushing",
+                    )
                 return
             # 再确认一次：调度到真正执行之间可能已经过了一小段时间，
             # 用户完全可能已经提交了输入——这种情况下就不要再补打印了，
