@@ -20,3 +20,4 @@ providers.json
 temp/
 src/mini_agent.egg-info/
 .claude/skills/browser-cdp/temp_chrome_profile/
+.claude/skills/browser-cdp/temp_data/
