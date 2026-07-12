@@ -40,7 +40,7 @@ AppConfig
 @dataclass
 class MemoryConfig:
     enabled: bool = False
-    backend: str = "local"             # "local" | "chroma" | "redis"（扩展点）
+    backend: str = "local"             # "local" | "hybrid" | "chroma" | "redis"（"hybrid" 为新增）
     store_path: Optional[Path] = None  # None = <project_root>/.agent/memory.jsonl
     global_enabled: bool = True
     global_top_k: int = 2
@@ -52,20 +52,38 @@ class MemoryConfig:
     lesson_rules_enabled: bool = True       # 规则触发总开关
     lesson_fail_threshold: int = 3          # 同一工具连续失败 ≥ N 次触发 lesson
     correction_detection_enabled: bool = True  # 人类反馈纠正检测总开关
+
+    # ── 记忆语义检索（混合 TF-IDF + 本地离线 Embedding）──
+    embedding_enabled: bool = False          # [默认关闭] 唯一总开关
+    embedding_model: str = "bge-small-zh-v1.5"
+    embedding_model_cache_dir: Optional[Path] = None  # None = ~/.agent/models/
+    embedding_tfidf_weight: float = 0.5
+    embedding_weight: float = 0.5
+    embedding_top_n: int = 20
+
+    # ── 记忆巩固：淘汰前先归纳 ──
+    consolidation_enabled: bool = True
+    consolidation_min_group_size: int = 3
 ```
 
 | 字段 | 说明 |
 |------|------|
-| `backend` | 指定记忆后端实现，对应 `memory_factory.py` 注册表中的 key |
+| `backend` | 指定记忆后端实现，对应 `memory_factory.py` 注册表中的 key，`"hybrid"` 会在 `embedding_enabled=True` 时启用语义检索，否则等价于 `"local"` |
 | `decay_half_life_days` | 时间衰减半衰期，30 天后旧记忆检索分数衰减 50% |
-| `max_entries` | 超出后淘汰最旧条目并重写文件 |
+| `max_entries` | 超出后先尝试归纳（见 `consolidation_enabled`），归纳失败再淘汰最旧条目并重写文件 |
 | `lesson_rules_enabled` | 关闭后 `_init_components()` 不会创建 `LessonRuleEngine`，规则触发完全不生效 |
 | `lesson_fail_threshold` | 仅影响"连续失败"规则；"拒绝后重试成功"规则不受此参数影响 |
 | `correction_detection_enabled` | 关闭后 `run_turn()` 跳过纠正短语检测，但不影响 `(e)dit` 接入（后者走独立路径） |
+| `embedding_enabled` | [默认关闭] 本地离线 embedding 语义检索总开关。为 `False` 时不 import 任何推理依赖（`onnxruntime`/`tokenizers`），行为与改造前完全一致 |
+| `embedding_model` | 内置候选：`"bge-small-zh-v1.5"`（默认，中文场景）/ `"embedding-gemma-300m"`（多语言）；也可填用户自定义本地模型目录路径 |
+| `embedding_tfidf_weight` / `embedding_weight` | 混合检索合并权重，默认 5:5 |
+| `consolidation_enabled` | 淘汰前是否尝试把即将丢弃的相似 lesson 归纳成一条 `consolidated_lesson`，而不是直接物理删除。失败静默降级为原有淘汰行为 |
+| `consolidation_min_group_size` | 至少聚类到这么多条才触发归纳，避免小样本过度抽象 |
 
 `lesson_rules_enabled`/`lesson_fail_threshold`/`correction_detection_enabled`
 仅支持 JSON 配置文件，暂无对应 CLI 参数。详见
-[记忆管理指南](memory-management-guide.md#lesson-memory) 中 Lesson Memory 完整说明。
+[记忆管理指南](memory-management-guide.md#lesson-memory) 中 Lesson Memory 完整说明，
+以及 [四项优先改进指南](four-priority-improvements-guide.md) 中语义检索/记忆巩固的完整用法。
 
 ### CompressConfig
 
@@ -617,6 +635,24 @@ cfg = load_config(
 )
 ```
 
+### AutonomyConfig（好奇心评分 / 自主探索排序权重）
+
+```python
+@dataclass
+class AutonomyConfig:
+    novelty_weight: float = 0.5           # urgency + novelty_weight * novelty 排序权重
+    exploration_min_calls_threshold: int = 2   # total_calls 低于此值视为"几乎未探索"
+    already_explored_cooldown_days: float = 30.0
+```
+
+| 字段 | 说明 |
+|------|------|
+| `novelty_weight` | `SoftGoalDeriver` 对候选 Goal 排序时，`urgency`（确定性问题的紧急度）与 `novelty`（好奇心/信息增益评分）的合并权重。设为 `0` 等价于改造前纯 `urgency` 排序（回归行为） |
+| `exploration_min_calls_threshold` | `capability_map` 中 `total_calls` 低于此阈值的能力视为"几乎未探索"，novelty 分数按 `1 / (1 + total_calls)` 计算 |
+| `already_explored_cooldown_days` | 同一能力领域最近探索过（见 `activity_digest.jsonl` 中 `type="exploration_result"` 记录）则大幅降权，避免探索预算被重复消耗在同一领域 |
+
+详见 [四项优先改进指南](four-priority-improvements-guide.md#方案三自主探索好奇心评分)。
+
 ---
 
 ## 6. 添加新功能配置
@@ -661,6 +697,7 @@ my_feature_cfg = MyFeatureConfig(
 - [MCP 集成指南](mcp-guide.md) — MCP 外部工具服务的架构、配置与扩展方式
 - [系统设计概述](system-overview.md) — 整体架构与各子系统关系
 - [记忆管理指南](memory-management-guide.md) — `MemoryConfig` 新增字段的完整使用场景（Lesson Memory）
+- [四项优先改进指南](four-priority-improvements-guide.md) — `MemoryConfig`（embedding/consolidation）与 `AutonomyConfig` 新字段的完整使用场景
 - [多结果合并取优指南](ensemble-best-of-n-guide.md) — `EnsembleConfig` 的完整使用场景与架构说明
 - [Goal 模式指南](goal-mode-guide.md) — `GoalModeConfig` 的完整使用场景与架构说明
 - [轮次守门员指南](turn-judge-guide.md) — `TurnJudgeConfig` 的完整使用场景与架构说明

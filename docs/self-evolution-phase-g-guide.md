@@ -268,3 +268,4 @@ merge_cross_project_patterns(paths, patterns)
 - [自我演化 lesson → skill 闭环（Stage 3.1）](self-evolution-stage3-1-guide.md) — 晋升候选的后续处理
 - [Skill 系统指南](skill-system-guide.md) — `conflicts_with` / `confidence_score` 字段说明
 - [命令与工具参考](commands-and-tools-reference.md) — `/evolve phase-g` 命令参数
+- [四项优先改进指南](four-priority-improvements-guide.md) — Affordance 权重闭环校准（`calibrate()`，Phase G 新增步骤）
