@@ -149,6 +149,20 @@ python3 browser_console.py --tab <id> --watch-console --duration 5   # 抓最近
 python3 browser_console.py --tab <id> --watch-network --duration 5   # 抓最近5秒的请求（url/status）
 ```
 
+## 启动失败/进程清理策略
+
+- `--dedicated`/`--ensure --spawn` 启动失败（调试端口超时未就绪）时，脚本**只会杀掉本次自己刚拉起的
+  那一个进程**（`Popen` 返回的 pid），绝不会去扫描或杀死任何其他 Chrome/Edge 进程，不会影响用户
+  已经在用的浏览器窗口。
+- 若某个 `--name` 对应的专用实例此前异常退出（进程崩了但没走 `--stop-dedicated` 清理），下次
+  `--dedicated --name <同名>` 会先检查 registry 里记录的那个旧 pid 是否还活着——**只处理这一个
+  被本技能记录过的 pid**，健在则先关闭它，再清理 profile 目录里的单例锁文件，然后才重新启动，
+  避免"新旧两个进程抢同一个 profile 目录，实际生效的是旧进程"这种状态不一致问题。
+- `--dedicated` 启动成功后不会只凭"调试端口通了"就报告成功，而是会**真正连上第一个 tab、
+  轮询读取 `document.readyState/location.href/document.title`**，直到页面 `complete` 或超时，
+  把读到的真实状态打印出来。判断"网页是否打开成功"应该看这行 `当前页面: url=... readyState=...`，
+  而不是只看进程有没有报错。
+
 ## 安全与边界
 
 - 不用于绕过验证码、自动登录他人账号、批量注册等滥用场景；涉及登录态操作时，让用户自己完成

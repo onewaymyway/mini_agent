@@ -142,13 +142,32 @@ def spawn_browser(
     return proc
 
 
-def wait_port_alive(host: str, port: int, timeout: float = 15.0) -> bool:
+def wait_port_alive(host: str, port: int, timeout: float = 15.0, proc: subprocess.Popen | None = None) -> tuple[bool, str | None]:
+    """轮询等待调试端口就绪。若传入 proc，会同时检测该进程是否提前退出（避免傻等一个已经崩溃的进程）。
+    返回 (是否就绪, 提前退出时的错误信息)。"""
     deadline = time.time() + timeout
     while time.time() < deadline:
         if is_debug_port_alive(host, port, timeout=1.0):
-            return True
+            return True, None
+        if proc is not None:
+            code = proc.poll()
+            if code is not None:
+                return False, f"浏览器进程已退出 (exit code={code})，通常是参数不兼容或 profile 目录被占用"
         time.sleep(0.3)
-    return False
+    return False, None
+
+
+def _cleanup_singleton_lock(profile_dir: str) -> None:
+    """删除 Chrome profile 目录下的单例锁文件（仅在确认对应旧进程已不存在/已被我们杀掉后调用）。
+    Windows 下 Chrome 用命名 mutex 做单例锁，不是文件锁，进程一退出锁自动释放，
+    这里主要是清 Linux/mac 下残留的 SingletonLock/SingletonSocket/SingletonCookie。"""
+    for name in ("SingletonLock", "SingletonSocket", "SingletonCookie"):
+        p = os.path.join(profile_dir, name)
+        try:
+            if os.path.exists(p) or os.path.islink(p):
+                os.remove(p)
+        except Exception:
+            pass
 
 
 # ---------------------------------------------------------------------------
@@ -181,6 +200,21 @@ def _kill_pid(pid: int) -> None:
         pass
 
 
+def _pid_alive(pid: int) -> bool:
+    """仅用于判断本技能自己记录在 registry 里的旧 pid 是否还活着，从不用于探测/操作外部进程。"""
+    try:
+        if platform.system() == "Windows":
+            out = subprocess.run(
+                ["tasklist", "/FI", f"PID eq {pid}"], capture_output=True, text=True
+            ).stdout
+            return str(pid) in out
+        else:
+            os.kill(pid, 0)
+            return True
+    except Exception:
+        return False
+
+
 def cmd_dedicated(args: argparse.Namespace) -> None:
     reg = _load_registry()
     existing = reg.get(args.name)
@@ -192,6 +226,16 @@ def cmd_dedicated(args: argparse.Namespace) -> None:
             f"({info.get('Browser')})，直接复用（如需重开请先 --stop-dedicated {args.name}）"
         )
         return
+
+    # 同名实例存在但端口已经不通了：说明是本技能自己之前启动、后来挂掉/崩溃的孤儿进程。
+    # 只处理 registry 里记录的、由本技能启动的 pid，绝不碰任何其他 Chrome 进程。
+    if existing:
+        old_pid = existing.get("pid")
+        if old_pid and _pid_alive(old_pid):
+            print(f"[info] 发现同名实例 '{args.name}' 的旧进程 (pid={old_pid}) 仍在运行但端口无响应，先清理它")
+            _kill_pid(old_pid)
+            time.sleep(0.5)
+        _cleanup_singleton_lock(existing.get("profile_dir", ""))
 
     binary = args.binary or find_chrome_binary()
     if not binary:
@@ -214,8 +258,12 @@ def cmd_dedicated(args: argparse.Namespace) -> None:
         start_url=args.start_url,
         window_size=args.window_size,
     )
-    if not wait_port_alive(args.host, port, timeout=args.spawn_timeout):
-        die(f"已启动浏览器进程 (pid={proc.pid}) 但调试端口 {port} 在 {args.spawn_timeout}s 内未就绪")
+    ok, early_error = wait_port_alive(args.host, port, timeout=args.spawn_timeout, proc=proc)
+    if not ok:
+        # 只杀本次自己刚拉起的这一个进程（proc.pid 是本次 Popen 返回的，不可能是别的已有进程）
+        _kill_pid(proc.pid)
+        reason = early_error or f"调试端口 {port} 在 {args.spawn_timeout}s 内未就绪"
+        die(f"启动浏览器失败: {reason}（已清理本次启动的进程 pid={proc.pid}，未影响其他浏览器窗口）")
 
     info = version_info(args.host, port)
     reg[args.name] = {
@@ -229,14 +277,50 @@ def cmd_dedicated(args: argparse.Namespace) -> None:
 
     tabs = list_tabs(args.host, port)
     tab_id = tabs[0]["id"] if tabs else None
+
+    # 真正读一次页面状态再报告，而不是只确认"端口通了"——这是 agent 能否正确判断"打开成功"的关键
+    state = _verify_tab_state(args.host, port, tab_id, wait_seconds=min(10.0, args.spawn_timeout))
+
     print(
         f"[ok] 已创建专用浏览器实例 '{args.name}' pid={proc.pid} headless={args.headless}\n"
         f"     -> {args.host}:{port} ({info.get('Browser')})\n"
         f"     profile_dir={profile_dir}\n"
         f"     首个 tab id={tab_id}\n"
+        f"     当前页面: url={state.get('url')!r} title={state.get('title')!r} readyState={state.get('readyState')!r}\n"
         f"后续调用其他脚本时加上 --port {port} 即可连接这个专用实例，例如：\n"
         f"  python browser_nav.py --port {port} --tab {tab_id} --goto \"https://example.com\""
     )
+    if state.get("error"):
+        print(f"[warn] 读取页面状态时出错: {state['error']}，建议用 browser_nav.py --port {port} --tab {tab_id} 手动确认")
+
+
+def _verify_tab_state(host: str, port: int, tab_id: str | None, wait_seconds: float = 10.0) -> dict:
+    """连上目标 tab，轮询直到 document.readyState 不是 loading（或超时），返回真实的 url/title。
+    这一步是为了让上层（agent）拿到的"打开成功"结论是基于实际读取的页面状态，而不是"进程/端口活着"这种间接信号。"""
+    if not tab_id:
+        return {"error": "没有可用的 tab"}
+    try:
+        from cdp_client import find_tab, connect_tab
+
+        target = find_tab(host=host, port=port, tab_id=tab_id)
+        session = connect_tab(target)
+        try:
+            session.send("Page.enable")
+            deadline = time.time() + wait_seconds
+            last = {}
+            while time.time() < deadline:
+                url = session.eval_js("location.href")
+                title = session.eval_js("document.title")
+                ready = session.eval_js("document.readyState")
+                last = {"url": url, "title": title, "readyState": ready}
+                if ready == "complete":
+                    break
+                time.sleep(0.3)
+            return last
+        finally:
+            session.close()
+    except Exception as e:
+        return {"error": str(e)}
 
 
 def cmd_list_dedicated(args: argparse.Namespace) -> None:
@@ -286,8 +370,12 @@ def cmd_ensure(args: argparse.Namespace) -> None:
         headless=args.headless,
         start_url=args.start_url,
     )
-    if not wait_port_alive(args.host, args.port, timeout=args.spawn_timeout):
-        die(f"已启动浏览器进程 (pid={proc.pid}) 但调试端口 {args.port} 在 {args.spawn_timeout}s 内未就绪")
+    ok, early_error = wait_port_alive(args.host, args.port, timeout=args.spawn_timeout, proc=proc)
+    if not ok:
+        # 只杀本次自己刚拉起的这一个进程，不影响任何原本就在运行的浏览器
+        _kill_pid(proc.pid)
+        reason = early_error or f"调试端口 {args.port} 在 {args.spawn_timeout}s 内未就绪"
+        die(f"启动浏览器失败: {reason}（已清理本次启动的进程 pid={proc.pid}，未影响其他浏览器窗口）")
     info = version_info(args.host, args.port)
     print(
         f"[ok] 已启动新浏览器实例 pid={proc.pid} headless={args.headless} "
@@ -346,7 +434,7 @@ def main():
     )
     parser.add_argument("--start-url", default="about:blank")
     parser.add_argument("--window-size", default="1366,900", help="可见窗口大小，例如 1920,1080")
-    parser.add_argument("--spawn-timeout", type=float, default=15.0)
+    parser.add_argument("--spawn-timeout", type=float, default=30.0, help="等待调试端口就绪的超时时间，首次冷启动新 profile 建议保留默认值")
 
     parser.add_argument("--list", action="store_true", help="列出当前所有 tab")
     parser.add_argument("--new", metavar="URL", default=None, help="新建 tab 并打开 URL")
