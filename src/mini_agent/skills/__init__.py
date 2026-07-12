@@ -16,6 +16,22 @@ from .usage_detector import SkillUsageDetector
 
 
 @dataclass
+class SkillResource:
+    """
+    [渐进式加载] 一个可按需加载的子资源（通常对应 references/*.md 里的一个文件）。
+
+    与 browse_paths 的区别：resource 是"结构化、可整段加载进 context"的子文档
+    （体量可控、主题聚焦），会出现在资源清单里，受关键词/工具双通道管理，
+    并计入独立的 token 预算。真正的大型文档库/示例集合不应注册为 resource，
+    而应作为 browse_path 提示 agent 自行用文件工具检索。
+    """
+    id: str
+    path: str                       # 相对 skill 所在目录的路径
+    description: str = ""
+    triggers: list[str] = field(default_factory=list)   # 可为空：留空则只能被 agent 主动加载
+
+
+@dataclass
 class Skill:
     name: str
     description: str
@@ -33,6 +49,9 @@ class Skill:
     # [platform_filter] 平台/tag 限制：空 = 不限制，见 mini_agent.platform_filter
     platforms: list[str] = field(default_factory=list)
     tags: list[str] = field(default_factory=list)
+    # [渐进式加载] 结构化子资源（可加载）与自助浏览提示（不受管理，agent 自己查）
+    resources: list["SkillResource"] = field(default_factory=list)
+    browse_paths: list[dict] = field(default_factory=list)  # [{"path":..., "description":...}]
 
     def matches_query(self, query: str) -> bool:
         """Heuristic: does the user query seem to need this skill?"""
@@ -72,6 +91,7 @@ class SkillLoader:
         skills_dirs: list[Path],
         per_skill_tokens: int = 5_000,
         total_budget:     int = 25_000,
+        per_resource_tokens: int = 3_000,
     ) -> None:
         self._dirs = skills_dirs
         self._all: dict[str, Skill] = {}
@@ -82,6 +102,11 @@ class SkillLoader:
             per_skill_tokens=per_skill_tokens,
             total_budget=total_budget,
         )
+        # [渐进式加载] 已加载的子资源内容缓存：skill_name -> {resource_id: content}
+        # 复用同一个 tracker 记录调用历史（key 为 "skill_name/resource_id"），
+        # 卸载资源时只清缓存，不 forget tracker 记录，保留 LRU/使用统计供 agent 参考。
+        self._loaded_resources: dict[str, dict[str, str]] = {}
+        self.per_resource_tokens = per_resource_tokens
         # [SYS-SKILL-DETECT] 实际使用检测器：通过指纹匹配判断 skill 是否真正被用到
         self.detector = SkillUsageDetector()
         self._discover()
@@ -157,6 +182,10 @@ class SkillLoader:
     def deactivate(self, name: str) -> bool:
         if name in self._active:
             self._active.remove(name)
+            # [渐进式加载] 父 skill 卸载后，其下已加载的子资源内容一并清出 context；
+            # 但 tracker 里的调用记录（skill_name/resource_id）不清零，
+            # 下次重新激活该 skill 时清单仍能展示"之前用过 N 次"作为参考信号。
+            self._loaded_resources.pop(name, None)
             return True
         return False
 
@@ -186,6 +215,112 @@ class SkillLoader:
                 self._active.append(name)
                 self.detector.update_fingerprint(skill)
                 newly.append(name)
+        return newly
+
+    # ── [渐进式加载] 子资源管理 ──────────────────────────────────────────────────
+    #
+    # 两条通道并存，互不冲突：
+    #   A. 关键词自动通道：auto_activate_resources() 与 skill 级 auto_activate() 同级调用
+    #   B. Agent 主动通道：load_resource() / unload_resource()（供 tools/skill_manager.py 里
+    #      的 skill_resource_load / skill_resource_unload 工具调用）
+    # 两者最终都走同一份 _loaded_resources 状态和同一个 tracker，天然幂等。
+
+    def _find_resource(self, skill_name: str, resource_id: str) -> Optional["SkillResource"]:
+        skill = self._all.get(skill_name)
+        if not skill:
+            return None
+        for r in skill.resources:
+            if r.id == resource_id:
+                return r
+        return None
+
+    def _tracker_key(self, skill_name: str, resource_id: str) -> str:
+        return f"{skill_name}/{resource_id}"
+
+    def list_resources(self, skill_name: str) -> list[dict]:
+        """
+        返回某个 skill 的资源清单（结构化 resources + 提示性 browse_paths），
+        含加载状态与历史使用统计，供 skill_resource_list 工具 / build_context 清单渲染复用。
+        """
+        skill = self._all.get(skill_name)
+        if not skill:
+            return []
+        loaded = self._loaded_resources.get(skill_name, {})
+        out = []
+        for r in skill.resources:
+            rec = self.tracker.get_record(self._tracker_key(skill_name, r.id))
+            out.append({
+                "id":          r.id,
+                "description": r.description,
+                "path":        r.path,
+                "loaded":      r.id in loaded,
+                "call_count":  rec.call_count if rec else 0,
+                "last_called": rec.last_called if rec else None,
+            })
+        return out
+
+    def load_resource(self, skill_name: str, resource_id: str) -> tuple[bool, str]:
+        """
+        加载指定子资源内容（从磁盘读取，支持热编辑后拿到最新内容）。
+        幂等：已加载时直接返回成功，仍会 touch tracker。
+        Returns: (ok, message)
+        """
+        skill = self._all.get(skill_name)
+        if not skill:
+            return False, f"skill '{skill_name}' 不存在"
+        resource = self._find_resource(skill_name, resource_id)
+        if not resource:
+            return False, f"skill '{skill_name}' 下没有 resource '{resource_id}'"
+        file_path = skill.location.parent / resource.path
+        try:
+            content = file_path.read_text(encoding="utf-8")
+        except Exception as e:
+            return False, f"读取失败：{file_path} ({e})"
+
+        was_loaded = resource_id in self._loaded_resources.get(skill_name, {})
+        self._loaded_resources.setdefault(skill_name, {})[resource_id] = content
+        key = self._tracker_key(skill_name, resource_id)
+        self.tracker.record(key)
+        note = "重新加载" if was_loaded else "已加载"
+        return True, f"{note}: {skill_name}/{resource_id}"
+
+    def unload_resource(self, skill_name: str, resource_id: str) -> bool:
+        """
+        卸载已加载的子资源内容（只清 context 缓存，不清 tracker 调用记录，
+        保留 LRU/使用次数供下次 list_resources 时展示）。
+        """
+        bucket = self._loaded_resources.get(skill_name)
+        if not bucket or resource_id not in bucket:
+            return False
+        del bucket[resource_id]
+        if not bucket:
+            self._loaded_resources.pop(skill_name, None)
+        return True
+
+    def auto_activate_resources(self, text: str) -> list[str]:
+        """
+        [关键词自动通道] 对所有已激活 skill 下、triggers 非空的 resource 做关键词匹配，
+        命中且未加载则自动加载。留空 triggers 的 resource 不参与此通道，只能被 agent
+        主动调用 skill_resource_load 加载（对应设计里"完全靠 agent 自己判断"的场景）。
+
+        Return: 本次新加载的 "skill_name/resource_id" 列表
+        """
+        if not text:
+            return []
+        q = text.lower()
+        newly: list[str] = []
+        for skill_name in self._active:
+            skill = self._all.get(skill_name)
+            if not skill:
+                continue
+            loaded = self._loaded_resources.get(skill_name, {})
+            for r in skill.resources:
+                if not r.triggers or r.id in loaded:
+                    continue
+                if any(t in q for t in r.triggers):
+                    ok, _ = self.load_resource(skill_name, r.id)
+                    if ok:
+                        newly.append(self._tracker_key(skill_name, r.id))
         return newly
 
     def update_confidence(
@@ -274,8 +409,56 @@ class SkillLoader:
                 f"不是相对于当前工作目录或项目根目录。引用时请自行拼接为绝对路径，"
                 f"例如 `{skill_dir}/xxx`。"
             )
-            parts.append(f"{_header}\n\n{_path_note}\n\n{_content}")
+            _resource_block = self._render_resource_block(skill)
+            parts.append(f"{_header}\n\n{_path_note}\n\n{_content}{_resource_block}")
         return "\n\n---\n\n".join(parts)
+
+    def _render_resource_block(self, skill: "Skill") -> str:
+        """
+        [渐进式加载] 为一个 active skill 渲染：
+          1. 结构化子资源清单（含加载状态 + 历史使用次数，永远展示，很轻量）
+          2. 已加载子资源的完整内容（受 per_resource_tokens 预算截断）
+          3. browse_paths 提示（纯文字，不受管理，agent 自行用文件工具查）
+        没有 resources/browse_paths 时返回空字符串，不影响旧格式 skill。
+        """
+        if not skill.resources and not skill.browse_paths:
+            return ""
+
+        out = []
+
+        if skill.resources:
+            rows = []
+            for info in self.list_resources(skill.name):
+                status = "● 已加载" if info["loaded"] else "○ 未加载"
+                extra = f"（历史使用 {info['call_count']} 次）" if info["call_count"] else ""
+                rows.append(f"| {info['id']} | {info['description']} | {status}{extra} |")
+            manifest = (
+                f"\n\n### 可加载子资源（skill: {skill.name}）\n"
+                f"| id | 说明 | 状态 |\n|---|---|---|\n" + "\n".join(rows) +
+                f"\n\n> 需要时调用 skill_resource_load(skill_name=\"{skill.name}\", "
+                f"resource_id=..., reason=...) 加载对应文档；用完可调用 "
+                f"skill_resource_unload 释放 context。"
+            )
+            out.append(manifest)
+
+            loaded = self._loaded_resources.get(skill.name, {})
+            for resource_id, content in loaded.items():
+                resource = self._find_resource(skill.name, resource_id)
+                clipped = self.tracker._clip(content, self.per_resource_tokens)
+                out.append(
+                    f"\n\n#### Resource: {skill.name}/{resource_id}"
+                    f"{' — ' + resource.description if resource else ''}\n\n{clipped}"
+                )
+
+        if skill.browse_paths:
+            rows = [f"- `{bp.get('path','')}` — {bp.get('description','')}" for bp in skill.browse_paths]
+            out.append(
+                "\n\n### 参考资料库（需自行检索，不通过加载机制注入）\n" + "\n".join(rows) +
+                "\n\n> 体量较大或需要按具体问题定位片段，请用 view/grep/bash 自行查找，"
+                "不要整份加载。"
+            )
+
+        return "".join(out)
 
     def _relevant_chunks(self, content: str, query: str, max_chunks: int = 3) -> str:
         """按 ## 标题分段，返回与 query 最相关的 top-N 段。"""
@@ -500,6 +683,31 @@ def _parse_skill(path: Path) -> Optional[Skill]:
         except (ValueError, KeyError):
             confidence_score = 1.0
 
+    # [渐进式加载] 解析 resources / browse_paths 结构化列表块（旧格式 skill 没有
+    # 这两个 key，_parse_yaml_list_block 直接返回空列表，行为与之前完全一致）
+    resources: list[SkillResource] = []
+    browse_paths: list[dict] = []
+    if fm_match:
+        for item in _parse_yaml_list_block(fm_text, "resources"):
+            rid = item.get("id", "").strip()
+            rpath = item.get("path", "").strip()
+            if not rid or not rpath:
+                continue
+            raw_triggers = item.get("triggers", "")
+            r_triggers = [t.strip().lower() for t in raw_triggers.split(",") if t.strip()]
+            resources.append(SkillResource(
+                id=rid,
+                path=rpath,
+                description=item.get("description", ""),
+                triggers=r_triggers,
+            ))
+        for item in _parse_yaml_list_block(fm_text, "browse_paths"):
+            if item.get("path"):
+                browse_paths.append({
+                    "path": item.get("path", ""),
+                    "description": item.get("description", ""),
+                })
+
     return Skill(
         name=name,
         description=description,
@@ -512,6 +720,8 @@ def _parse_skill(path: Path) -> Optional[Skill]:
         confidence_score=confidence_score,
         platforms=platforms,
         tags=skill_tags,
+        resources=resources,
+        browse_paths=browse_paths,
     )
 
 
@@ -522,6 +732,54 @@ def _skill_allowed(skill: Skill) -> bool:
         platforms=skill.platforms, tags=skill.tags, kind="skill", name=skill.name,
     )
     return allowed
+
+
+def _parse_yaml_list_block(fm_text: str, key: str) -> list[dict]:
+    """
+    轻量解析形如以下结构的 frontmatter 列表块（不是完整 YAML 实现，
+    只覆盖 resources / browse_paths 这种固定浅层结构，够用即可）：
+
+        resources:
+          - id: advanced
+            path: references/advanced.md
+            description: 复杂参数组合与边界情况
+            triggers: 高级用法, edge case
+
+    key 不存在时返回 []（旧格式 SKILL.md 天然兼容，无需任何改动）。
+    """
+    lines = fm_text.splitlines()
+    items: list[dict] = []
+    current: Optional[dict] = None
+    in_block = False
+
+    for line in lines:
+        if not in_block:
+            if line.strip() == f"{key}:":
+                in_block = True
+            continue
+
+        if not line.strip():
+            continue
+        # 顶层新 key（无缩进）意味着列表块结束
+        if not line[:1].isspace():
+            break
+
+        stripped = line.strip()
+        if stripped.startswith("- "):
+            if current is not None:
+                items.append(current)
+            current = {}
+            rest = stripped[2:]
+            if ":" in rest:
+                k, v = rest.split(":", 1)
+                current[k.strip()] = v.strip()
+        elif current is not None and ":" in stripped:
+            k, v = stripped.split(":", 1)
+            current[k.strip()] = v.strip()
+
+    if current is not None:
+        items.append(current)
+    return items
 
 
 def _extract_triggers(name: str, description: str) -> list[str]:

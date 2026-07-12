@@ -374,10 +374,14 @@ class Agent:
                 register_skill_tools,
                 register_compact_tool,
                 register_skill_stats_tool,
+                register_skill_resource_tools,
             )
             register_skill_tools(self.registry, self.skill_loader)
             register_compact_tool(self.registry, self)          # 需要 agent 实例
             register_skill_stats_tool(self.registry, self.skill_loader)
+            # [渐进式加载] 子资源级 skill_resource_list/load/unload，让 agent 能
+            # 自主判断是否需要加载某个子文档，而不是只靠关键词自动触发
+            register_skill_resource_tools(self.registry, self.skill_loader)
 
             # [Phase E / 3.3] 注册"当前激活 skill 列表"provider，供 spawn_agent /
             # spawn_named_agent 工具读取，写入新建 Task 的 active_skills 字段，
@@ -2591,6 +2595,12 @@ class Agent:
                     # [SYS-SKILL-TRACK] 记录技能激活
                     if self.cfg.skill_tracking_enabled:
                         self.stats.record_skill_activation(name)
+                # [渐进式加载] 关键词自动通道：对已激活 skill 下的子资源做同样的匹配，
+                # 命中且带 triggers 的 resource 会被自动加载（留空 triggers 的资源
+                # 不受影响，只能被 agent 通过 skill_resource_load 主动加载）
+                newly_resources = self.skill_loader.auto_activate_resources(user_message)
+                for key in newly_resources:
+                    R.print_info(f"📥 Resource auto-loaded: {key}")
 
             # [SYS-MEMORY] 预检索记忆，缓存到 turn 级别。
             # 整个 turn 内的多次 _call_llm() 复用此缓存，不重复遍历记忆条目。

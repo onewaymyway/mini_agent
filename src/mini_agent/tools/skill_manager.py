@@ -222,6 +222,131 @@ def register_skill_tools(registry: ToolRegistry, skill_loader: "SkillLoader") ->
     )
 
 
+def register_skill_resource_tools(registry: ToolRegistry, skill_loader: "SkillLoader") -> None:
+    """
+    [渐进式加载] 子资源级管理工具，与 skill_activate/deactivate 同级但作用域更细：
+    一个 skill 激活后，其正文只包含"核心内容 + 资源清单"，具体的子文档
+    （references/*.md）通过这三个工具或关键词自动通道按需加载/卸载。
+
+    在 Agent.__init__ 中和 register_skill_tools 一起调用：
+      from mini_agent.tools.skill_manager import register_skill_resource_tools
+      register_skill_resource_tools(registry, skill_loader)
+    """
+
+    # ── skill_resource_list ───────────────────────────────────────────────────
+
+    def skill_resource_list(skill_name: str) -> str:
+        """
+        List all loadable sub-resources of an already-activated skill, along with
+        their loaded status and historical usage count. Call this (or just read
+        the resource manifest already injected alongside the skill content) before
+        deciding whether to load a resource.
+        """
+        if skill_name not in skill_loader.available:
+            return json.dumps({"error": f"skill '{skill_name}' not found",
+                                "available": skill_loader.available})
+        resources = skill_loader.list_resources(skill_name)
+        return json.dumps({"skill": skill_name, "resources": resources},
+                           ensure_ascii=False, indent=2)
+
+    registry.register_fn(
+        fn=skill_resource_list,
+        name="skill_resource_list",
+        description=(
+            "List the loadable sub-resources of a skill (id, description, loaded "
+            "status, historical use count). Sub-resources are focused reference "
+            "documents (e.g. advanced usage, troubleshooting tables) that are NOT "
+            "auto-injected with the main skill content — load them explicitly with "
+            "skill_resource_load when the current task actually needs that detail."
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "skill_name": {"type": "string", "description": "Name of an active skill."},
+            },
+            "required": ["skill_name"],
+        },
+        requires_approval=False,
+        override=True,
+    )
+
+    # ── skill_resource_load ───────────────────────────────────────────────────
+
+    def skill_resource_load(skill_name: str, resource_id: str, reason: str) -> str:
+        """
+        Load a specific sub-resource's full content into context. Idempotent —
+        calling again re-reads the file from disk (picks up edits) and refreshes
+        its usage record.
+        """
+        ok, msg = skill_loader.load_resource(skill_name, resource_id)
+        if ok:
+            R.print_info(f"📥 Resource loaded: {skill_name}/{resource_id}")
+        return json.dumps({
+            "ok": ok, "message": msg, "skill": skill_name, "resource_id": resource_id,
+            "reason": reason,
+        }, ensure_ascii=False)
+
+    registry.register_fn(
+        fn=skill_resource_load,
+        name="skill_resource_load",
+        description=(
+            "Load a sub-resource (a focused reference doc under a skill's "
+            "references/ folder) into the system context. Use this when the "
+            "skill's main content isn't enough and skill_resource_list / the "
+            "resource manifest shows a resource relevant to your current task. "
+            "This is independent of keyword auto-loading — you can and should "
+            "load a resource yourself whenever you judge it's needed, even if no "
+            "trigger word was matched."
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "skill_name":   {"type": "string", "description": "Name of an active skill."},
+                "resource_id":  {"type": "string", "description": "The resource id, from skill_resource_list."},
+                "reason":       {"type": "string", "description": "Why this resource is needed now."},
+            },
+            "required": ["skill_name", "resource_id", "reason"],
+        },
+        requires_approval=False,
+        override=True,
+    )
+
+    # ── skill_resource_unload ─────────────────────────────────────────────────
+
+    def skill_resource_unload(skill_name: str, resource_id: str, reason: str) -> str:
+        """
+        Unload a previously-loaded sub-resource to free up context space.
+        Usage history is preserved (not reset), so it can be reloaded cheaply later.
+        """
+        ok = skill_loader.unload_resource(skill_name, resource_id)
+        if ok:
+            R.print_info(f"📤 Resource unloaded: {skill_name}/{resource_id}")
+        return json.dumps({
+            "ok": ok, "skill": skill_name, "resource_id": resource_id, "reason": reason,
+        }, ensure_ascii=False)
+
+    registry.register_fn(
+        fn=skill_resource_unload,
+        name="skill_resource_unload",
+        description=(
+            "Unload a sub-resource that is no longer needed, freeing context "
+            "window space. Its usage history is kept, so reloading it later "
+            "(via skill_resource_load) stays cheap and its priority isn't lost."
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "skill_name":  {"type": "string", "description": "Name of an active skill."},
+                "resource_id": {"type": "string", "description": "The resource id to unload."},
+                "reason":      {"type": "string", "description": "Why it's no longer needed."},
+            },
+            "required": ["skill_name", "resource_id", "reason"],
+        },
+        requires_approval=False,
+        override=True,
+    )
+
+
 def register_compact_tool(registry: ToolRegistry, agent: "object") -> None:
     """
     注册 compact_history 工具，让 agent 可以主动触发带 skill 重附的压缩。

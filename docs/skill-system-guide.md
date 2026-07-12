@@ -63,12 +63,17 @@ skills/
 | `location` | `SKILL.md` 文件路径 |
 | `content` | 完整 `SKILL.md` 文本 |
 | `trigger_words` | 用于关键词辅助自动激活的触发词 |
+| `resources` | （2026-07 新增）结构化子资源列表，见第 3.6 节「渐进式加载」 |
+| `browse_paths` | （2026-07 新增）纯提示性子资源库路径，不受任何加载机制管理，见第 3.6 节 |
 
 `SKILL.md` 可以使用 frontmatter 声明元数据；若缺失，系统会从正文和文件名推断名称、描述和触发词。
 
 frontmatter 还支持可选的 `platforms` / `tags` 字段，用于限制该 skill 只在特定平台或
 tag 策略下才会被发现/加载（不满足条件时连描述都不会注入 system prompt）；详见
 [Skill/Agent/Hook/Tool 平台与 Tag 过滤指南](platform-tag-loading-guide.md)。
+
+`resources`/`browse_paths` 是纯新增字段，旧格式 `SKILL.md`（不含这两个 key）解析结果
+为空列表，行为与之前完全一致，无需迁移。
 
 ---
 
@@ -102,8 +107,11 @@ Agent 初始化时，如果传入了 `skill_loader`，会注册以下技能管�
 | `skill_deactivate` | 按名称卸载一个或多个技能，并要求提供原因 |
 | `compact_history` | 触发带 skill 重附逻辑的历史压缩 |
 | `skill_stats` | 返回技能使用追踪和预算状态 |
+| `skill_resource_list` | （2026-07 新增）列出某个已激活 skill 下的子资源、加载状态与历史使用次数 |
+| `skill_resource_load` | （2026-07 新增）主动加载指定子资源，不依赖关键词命中 |
+| `skill_resource_unload` | （2026-07 新增）主动卸载子资源，释放 context，使用记录不清零 |
 
-这些工具让模型可以先查看目录，再按任务阶段加载或卸载相关 skill。
+这些工具让模型可以先查看目录，再按任务阶段加载或卸载相关 skill（或 skill 下的子资源）。
 
 ### 3.3 关键词辅助激活
 
@@ -149,7 +157,83 @@ cfg.skill.keyword_activation_enabled = False  # 关闭
 loader.exclude("docx")   # docx 从 _all 中被 del，对本次 SkillLoader 实例彻底不可见
 ```
 
-### 3.5 `skill_propose`：让 agent 自己生成新 skill（2026-06 新增，Stage 3.1）
+### 3.6 渐进式加载：`resources` 与 `browse_paths`（2026-07 新增）
+
+背景：一份 `SKILL.md` 如果塞入所有细节，一旦激活就整段占用 context，且大部分内容
+在具体任务里往往用不上。渐进式加载在"skill 级激活"之上增加了"资源级加载"这一层，
+让 skill 的主文件只保留高频必需内容，长尾细节按需拉取。
+
+#### 数据结构
+
+`Skill` 新增两个字段：
+
+- `resources: list[SkillResource]` —— 结构化、可整段加载的子文档，每项含
+  `id`/`path`/`description`/`triggers`（`triggers` 可留空）。
+- `browse_paths: list[dict]` —— 纯提示性的大型文档库路径（`path`/`description`），
+  **不接入任何加载机制**，agent 应该用 `view`/`grep`/`bash find` 自己检索，
+  不计入 token 预算，也不在 tracker 里留痕。
+
+两者在 frontmatter 中声明：
+
+```yaml
+resources:
+  - id: advanced
+    path: references/advanced.md
+    description: 复杂参数组合与边界情况处理
+    triggers: 高级用法, edge case
+  - id: rare-case
+    path: references/rare-case.md
+    description: 极少见场景，只应由 agent 主动判断加载
+    # triggers 留空 → 不参与关键词自动加载
+browse_paths:
+  - path: references/full-docs/
+    description: 完整参考手册，体量大，请自行检索具体片段
+```
+
+如何选择 `resources` 还是 `browse_paths`：内容是"一份边界清晰、体量可控（建议
+<300 行）、大概率要整份消化的子文档" → `resources`；内容是"一个库"，
+"哪一段有用取决于具体任务" → `browse_paths`。
+
+#### 两条加载通道
+
+1. **关键词自动通道**：`SkillLoader.auto_activate_resources(text)` 在每轮
+   `auto_activate(user_message)` 之后紧接着调用（`agent.py` 里的调用点），对所有
+   **已激活 skill** 名下、`triggers` 非空的资源做匹配，命中且未加载则自动加载。
+   `triggers` 留空的资源不参与此通道。
+2. **Agent 主动通道**：`skill_resource_load(skill_name, resource_id, reason)` /
+   `skill_resource_unload(...)` 工具（见 3.2 节），agent 可以不依赖关键词命中，
+   自主判断当前任务是否需要某个子资源。这是为了覆盖"关键词覆盖不到，但 agent 从
+   已有上下文能判断出需要"的场景。
+
+两条通道共享同一份加载状态和同一个 `SkillUsageTracker`（key 为
+`"{skill_name}/{resource_id}"`），重复加载是幂等的，且会从磁盘重新读取（支持热编辑）。
+
+#### 注入形态
+
+skill 激活后，`build_context()` 会在其正文之后追加：
+
+1. **资源清单**（永远展示，很轻量）：id、说明、加载状态（`● 已加载` /
+   `○ 未加载`）、历史使用次数。
+2. **已加载资源的完整内容**（受独立的 `per_resource_tokens` 预算截断，默认 3000）。
+3. **`browse_paths` 提示**（纯文字，提醒 agent 自行检索，不要整段加载）。
+
+#### 卸载与再加载的行为
+
+- **资源级卸载**（`skill_resource_unload` 或后续可能的预算挤出）：只清 context
+  内容，清单条目**不消失**，状态回到"未加载"；`SkillUsageTracker` 里的调用次数/
+  最近使用时间**保留不清零**，下次 `skill_resource_list` 仍能看到历史使用信号。
+- **父 skill 整体 `deactivate`**：其下所有已加载资源随之清出 context（资源内容
+  本来挂在父 skill 的上下文块下），清单重置为全部"未加载"，但 tracker 统计不清零。
+- **父 skill 再次 `activate`**：清单重新展示，**默认不自动恢复**之前加载过的资源
+  （避免激活时无脑复活旧内容导致 context 膨胀），清单上会标注历史使用次数供 agent
+  参考决定是否立即重新加载。
+
+#### 向后兼容
+
+旧格式 `SKILL.md`（不含 `resources`/`browse_paths`）解析结果为空列表，`build_context()`
+不会追加任何资源相关内容，行为与升级前完全一致，无需迁移。
+
+### 3.7 `skill_propose`：让 agent 自己生成新 skill（2026-06 新增，Stage 3.1）
 
 除了人工编写 SKILL.md，agent 也可以调用 `skill_propose` 工具把
 `memory.jsonl` 中沉淀的 lesson 提炼为一份新的 SKILL.md 提案。提案不会
@@ -305,6 +389,12 @@ Token 估算采用粗略规则：`1 token ≈ 4 字符`。
 4. **激活不等于使用**：调试 LRU 或压缩问题时优先查看 `/skill stats`，确认是否有实际使用记录。
 5. **长 skill 应分章节**：使用 `##` 划分章节可以让 chunking 模式更有效。
 6. **阶段结束及时卸载**：模型和用户都可以卸载不再需要的 skill，以减少后续 system prompt 体积。
+7. **体量大就分层**：正文预估超过 ~150 行或能拆出独立子话题时，把细节挪到
+   `references/*.md` 并在 `resources` 里登记，不要都堆进主文件。
+8. **文档库用 `browse_paths`，不要用 `resources`**：大型多文件文档集合应该让 agent
+   自己检索定位，整段加载既浪费预算又不聚焦。
+9. **别漏登记**：每个 `references/*.md` 都必须出现在 `resources` 或 `browse_paths`
+   里，否则永远不会被加载机制发现。
 
 ---
 
@@ -312,16 +402,19 @@ Token 估算采用粗略规则：`1 token ≈ 4 字符`。
 
 | 文件 | 说明 |
 |------|------|
-| `src/mini_agent/skills/__init__.py` | `Skill`、`SkillLoader`、发现、解析、激活、上下文构建、压缩上下文入口 |
+| `src/mini_agent/skills/__init__.py` | `Skill`、`SkillResource`、`SkillLoader`、发现、解析、激活、上下文构建、渐进式资源加载、压缩上下文入口 |
 | `src/mini_agent/skills/usage_detector.py` | 显式声明和指纹匹配的双轨使用检测 |
-| `src/mini_agent/skills/tracker.py` | LRU 使用追踪与压缩重附预算实现 |
-| `src/mini_agent/tools/skill_manager.py` | `skill_list`、`skill_activate`、`skill_deactivate`、`compact_history`、`skill_stats` 工具注册 |
+| `src/mini_agent/skills/tracker.py` | LRU 使用追踪与压缩重附预算实现（skill 级与资源级共用） |
+| `src/mini_agent/tools/skill_manager.py` | `skill_list`、`skill_activate`、`skill_deactivate`、`compact_history`、`skill_stats`、`skill_resource_list`、`skill_resource_load`、`skill_resource_unload` 工具注册 |
 | `src/mini_agent/prompts/system/active_skills.md` | active skill 注入到 system prompt 的模板 |
-| `src/mini_agent/agent.py` | 自动激活、system prompt 拼装、回复后记录使用、压缩重附 |
+| `src/mini_agent/agent.py` | 自动激活（skill 级 + 资源级）、system prompt 拼装、回复后记录使用、压缩重附 |
 | `src/mini_agent/cli/repl.py` | `/skills` 与 `/skill ...` CLI 命令实现 |
 | `src/mini_agent/tools/evolution.py` | `skill_propose` 工具：lesson → SKILL.md 提案（2026-06 新增，Stage 3.1） |
 | `src/mini_agent/evolution/eval_runner.py` | `mini-agent eval` 调用 `SkillLoader.exclude()` 做严格对比（2026-06 新增，Stage 3.2） |
 | `src/mini_agent/perception/hot_reload.py` | `HotReloader`：mtime 轮询热重载，`SkillLoader.rediscover()` 作为回调 |
+| `.claude/skills/skill-generator/SKILL.md` | 生成新 skill 的规范与流程，含单文件/分层结构判断标准（2026-07 更新） |
+| `.claude/skills/skill-generator/references/progressive-loading.md` | 渐进式加载机制详解（该 skill 自身的可加载子资源，也是分层结构的自举示例） |
+| `.claude/skills/skill-generator/references/examples.md` | 单文件/分层/browse_paths 三种完整示例 |
 
 ---
 
@@ -346,4 +439,6 @@ Token 估算采用粗略规则：`1 token ≈ 4 字符`。
 
 ---
 
-> 最后更新：2026-06（新增热重载 `rediscover()`、`patch_file_simple` 工具、隐私保护、raw-output 模式）
+> 最后更新：2026-07（新增渐进式加载机制：`resources`/`browse_paths` 字段、
+> `skill_resource_list/load/unload` 工具、资源级关键词自动加载、卸载后再加载的
+> 行为约定；此前更新：热重载 `rediscover()`、`patch_file_simple` 工具、隐私保护、raw-output 模式）
