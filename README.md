@@ -887,6 +887,7 @@ python -m pytest tests/ -q
 - [角色扮演（Persona）系统指南](docs/persona-guide.md) — **新增**：主 agent 自身的人格切换，`/role` 命令组，`allowed_tools` 强制拦截，安全边界代码级兜底
 - [Hooks 机制](docs/hooks.md) — **更新**：15 个生命周期事件（新增 `PostToolUseFailure`、`PostToolBatch`、`SubagentStart`、`SubagentStop`、`TaskCreated`、`TaskCompleted`、`Stop`、`PreCompact`、`PostCompact`；`SessionStart` 从预留升级为已接入），完整事件时序图与用例
 - [Skill/Agent/Hook/Tool 平台与 Tag 过滤指南](docs/platform-tag-loading-guide.md) — **新增**：`platforms`/`tags` 声明式限制，`platform_policy.json` 全局策略，`/platform status|filtered|reload` 命令
+- [运行时自动屏蔽（Auto Quarantine）指南](docs/auto-quarantine-guide.md) — **新增**：skill/tool/agent 因反复环境不兼容失败被自动拉黑（默认关闭），`runtime_quarantine.json`，`/quarantine status|list|remove|clear|reload|enable|disable` 命令
 - [Skill 系统指南](docs/skill-system-guide.md) — 技能机制详解
 - [代码结构指南](docs/code-structure-guide.md) — 项目结构说明
 - [受保护路径清单指南](docs/protected-paths-guide.md) — **新增**：T3 治理红线设计与扩展规则（自我演化基础设施）
