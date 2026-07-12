@@ -69,6 +69,7 @@ def build_parser() -> argparse.ArgumentParser:
               /model <name>      Switch model mid-session
               /compact           Compress history into a summary
               /goal <text>       Set a goal; agent negotiates acceptance criteria then runs until done
+              /goal from-history Auto-derive a goal from the current session's conversation history
               /goal resume [sid] Resume an interrupted goal run (auto-picks latest if sid omitted)
               /goal list         List all resumable goal tasks (status==running, may be more than one)
               /goal status       Show current session's goal state (round/compacts/last verdict)

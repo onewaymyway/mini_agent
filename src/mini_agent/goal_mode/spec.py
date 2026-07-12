@@ -168,6 +168,58 @@ def _fallback_criteria(user_goal_text: str) -> list[str]:
 
 
 
+def _extract_history_transcript(
+    history: list[dict],
+    max_messages: int = 40,
+    max_chars: int = 6000,
+) -> tuple[str, bool]:
+    """从 Agent.history 中提取可读的对话摘录，供 build_from_history() 使用。
+
+    只保留 role in (user, assistant) 且带纯文本 content 的消息（跳过纯工具调用/
+    工具结果消息——那些对"归纳用户目标"贡献很小，反而会占用大量篇幅），按时间
+    正序拼接。为控制 prompt 体积：
+      1. 先只取最近 max_messages 条候选消息
+      2. 再对拼接结果做 max_chars 截断（保留最后部分，最近的内容优先级更高）
+
+    返回 (transcript_text, truncated)。truncated 表示是否发生了截断（消息条数
+    或字符数任一超限），用于在提示词里附加"这只是部分历史"的说明，避免模型
+    误以为这就是完整上下文。
+    """
+    candidates: list[str] = []
+    for msg in history:
+        role = msg.get("role")
+        if role not in ("user", "assistant"):
+            continue
+        content = msg.get("content")
+        # content 可能是字符串，也可能是多模态/结构化 list（工具调用等），
+        # 这里只提取其中的纯文本部分，忽略图片/工具调用块。
+        if isinstance(content, str):
+            text = content.strip()
+        elif isinstance(content, list):
+            parts = [
+                block.get("text", "")
+                for block in content
+                if isinstance(block, dict) and block.get("type") == "text"
+            ]
+            text = "\n".join(p.strip() for p in parts if p.strip())
+        else:
+            text = ""
+        if not text:
+            continue
+        candidates.append(f"[{role}] {text}")
+
+    truncated = len(candidates) > max_messages
+    if truncated:
+        candidates = candidates[-max_messages:]
+
+    transcript = "\n\n".join(candidates)
+    if len(transcript) > max_chars:
+        truncated = True
+        transcript = transcript[-max_chars:]
+
+    return transcript, truncated
+
+
 class GoalSpecBuilder:
     """把自然语言目标转化为结构化 GoalSpec，支持基于用户反馈的多轮修订。
 
@@ -261,6 +313,60 @@ class GoalSpecBuilder:
         spec.negotiation_log.append({
             "version": 1,
             "source": "builder",
+            "text": raw[:2000],
+        })
+        return spec
+
+    def build_from_history(self, history: list[dict]) -> GoalSpec:
+        """根据当前 session 的历史对话，归纳出用户当前任务，生成第 1 版 GoalSpec。
+
+        供 `/goal from-history` 使用：不要求用户重新用一句话描述目标，而是
+        从 Agent.history（当前 session 已有的 user/assistant 对话）里自动
+        归纳。与 build_initial() 共用同一个 system prompt（加工方法论），
+        只是 user 消息换成"对话摘录 + 归纳要求"，一次 LLM 调用内完成
+        "归纳任务 + 生成验收标准"，不额外多打一轮总结请求。
+
+        若历史中没有足够信息归纳出目标（比如刚开始、或者都是闲聊），
+        goal_text 会是空字符串——调用方（goal_mode_cmd.py）需要检查这种
+        情况并提示用户改用 `/goal <目标文本>`。
+        """
+        transcript, truncated = _extract_history_transcript(history)
+        if not transcript:
+            # 没有任何可用的文本历史，直接返回一个空目标，交给调用方处理，
+            # 不必浪费一次 LLM 调用。
+            spec = GoalSpec(goal_text="", acceptance_criteria=[])
+            return spec
+
+        truncated_note = (
+            "\n（注意：以上只是当前 session 历史中最近的一部分，更早的内容因篇幅"
+            "限制未包含在内，请仅根据可见部分归纳。）"
+            if truncated else ""
+        )
+        prompt = pm.render(
+            "user/goal_spec_from_history_request",
+            history_transcript=transcript,
+            truncated_note=truncated_note,
+        )
+        raw = self._run_builder(prompt)
+        data = _extract_json(raw) or {}
+
+        goal_text = (data.get("goal_text") or "").strip()
+        criteria = list(data.get("acceptance_criteria") or [])
+
+        spec = GoalSpec(
+            goal_text=goal_text,
+            acceptance_criteria=criteria,
+            verification_method=data.get("verification_method") or "manual_review",
+            verification_command=data.get("verification_command") or "",
+            version=1,
+        )
+        if goal_text and not spec.acceptance_criteria:
+            # 归纳出了目标但没有标准（模型漏填）——用通用兜底，避免空验收标准。
+            spec.acceptance_criteria = _fallback_criteria(goal_text)
+
+        spec.negotiation_log.append({
+            "version": 1,
+            "source": "builder_from_history",
             "text": raw[:2000],
         })
         return spec

@@ -3,6 +3,8 @@ cli/commands/goal_mode_cmd.py — /goal slash 命令处理
 
 子命令：
   /goal <目标文本>       — 开始一次新的 Goal 协商（生成验收标准草案，进入确认子对话）
+  /goal from-history      — 根据当前 session 的历史对话自动归纳目标，
+                            生成验收标准草案后进入和 /goal <文本> 相同的确认子对话
   /goal resume [sid]     — 恢复上次未完成的 goal（sid 可省略，省略时自动找最近一个）
   /goal list             — 列出所有可恢复的 goal 任务（status==running，可能不止一个）
   /goal status           — 查看当前 session 是否有 goal 状态记录
@@ -34,6 +36,7 @@ def handle_goal_cmd(args: list[str], agent) -> None:
         R.print_error(
             "用法：\n"
             "  /goal <目标文本>     开始一个新目标\n"
+            "  /goal from-history   根据当前 session 历史自动归纳目标并开始协商\n"
             "  /goal resume [sid]  恢复未完成的目标\n"
             "  /goal list          列出所有可恢复的目标（可能不止一个）\n"
             "  /goal status        查看当前 goal 状态\n"
@@ -54,6 +57,9 @@ def handle_goal_cmd(args: list[str], agent) -> None:
     if sub == "cancel":
         _handle_cancel(agent)
         return
+    if sub == "from-history":
+        _handle_from_history(agent)
+        return
 
     # 否则整句都是目标文本
     goal_text = " ".join(args)
@@ -71,6 +77,46 @@ def _handle_new_goal(goal_text: str, agent) -> None:
         spec = builder.build_initial(goal_text)
     except Exception as e:
         R.print_error(f"生成验收标准失败：{e}")
+        return
+
+    spec = _negotiate_loop(builder, spec, agent)
+    if spec is None:
+        R.print_info("[Goal 模式] 已放弃本次目标协商。")
+        return
+
+    _run_goal(agent, spec)
+
+
+def _handle_from_history(agent) -> None:
+    """`/goal from-history`：根据当前 session 的历史对话自动归纳目标。
+
+    复用 GoalSpecBuilder，只是草案来源从"用户这次输入的一句话"换成"从
+    agent.history 里归纳"，生成后走和 `_handle_new_goal` 完全相同的
+    协商/确认循环，避免两条命令的后续行为出现分叉。
+    """
+    from mini_agent.goal_mode.spec import GoalSpecBuilder
+
+    history = agent.history
+    if not history:
+        R.print_error(
+            "当前 session 还没有任何历史记录，无法自动归纳目标。\n"
+            "请先进行一些对话，或改用 /goal <目标文本> 手动指定。"
+        )
+        return
+
+    builder = GoalSpecBuilder(agent.cfg)
+    R.print_info("[Goal 模式] 正在根据当前 session 历史归纳目标…")
+    try:
+        spec = builder.build_from_history(history)
+    except Exception as e:
+        R.print_error(f"根据历史归纳目标失败：{e}")
+        return
+
+    if not spec.goal_text:
+        R.print_error(
+            "无法从当前历史中归纳出明确的目标（可能对话内容还不够、或者都是闲聊）。\n"
+            "请改用 /goal <目标文本> 手动指定目标。"
+        )
         return
 
     spec = _negotiate_loop(builder, spec, agent)

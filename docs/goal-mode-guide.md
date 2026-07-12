@@ -160,6 +160,45 @@ Evaluator 仍然在每次 `run_turn` 内部做质量把关，GoalRunner 在更�
 > 同样应用于 `revise`）里，也会过滤掉直接照抄你反馈原句的"新标准"。如果生成
 > 仍然不够具体，直接用修改意见让它继续调整即可。
 
+### 1.5 从当前对话历史自动生成目标
+
+如果你已经和 Agent 聊了一阵、做了一些事情，不想再重新用一句话复述一遍目标，
+可以直接：
+
+```
+/goal from-history
+```
+
+框架会读取当前 session 的历史对话（user/assistant 轮次，跳过纯工具调用/结果），
+自动归纳出"你现在实际在做的任务"，再按和 `/goal <文本>` 完全相同的方式生成
+验收标准草案、展示、进入 `/confirm` / 修改意见 / `/cancel` 协商循环——协商和
+执行阶段的行为没有任何区别，唯一的区别只是草案的**来源**。
+
+```
+[Goal 模式] 正在根据当前 session 历史归纳目标…
+
+目标（第 1 版）：修复多 session 场景下 Client B 消息被静默丢弃的问题
+验收标准：
+  1. 每个 session 的 AgentBridge 实例都正确绑定了 asyncio 事件循环
+  2. 多 session 并发场景下手动验证 Client B 能正常收到回复
+验证方式：manual_review
+
+输入 /confirm 确认并开始执行，输入修改意见继续调整草案，输入 /cancel 放弃。
+```
+
+一些边界情况：
+
+- **当前 session 还没有任何历史**：直接报错提示，让你改用 `/goal <目标文本>`，
+  不会浪费一次 LLM 调用。
+- **历史里没有能归纳出的明确任务**（比如全是闲聊，或者刚打开还没展开）：
+  LLM 会被要求把 `goal_text` 留空，命令会据此报错并提示改用手动输入，而不是
+  编造一个目标。
+- **历史很长**：只会取最近的一部分消息（默认最近 40 条纯文本 user/assistant
+  消息，且整体拼接后不超过约 6000 字符），超出部分会被丢弃，并在发给 LLM 的
+  提示词里附加"这只是部分历史"的说明，避免模型误以为看到了完整上下文。如果
+  归纳结果不准确（比如漏掉了早期的关键背景），直接在协商环节用修改意见补充
+  即可，或者改用 `/goal <文本>` 手动描述。
+
 ### 2. 执行
 
 确认后自动进入 GoalRunner 循环，过程中会完整打印每轮 GoalJudge 的核查内容
@@ -444,13 +483,13 @@ class GoalStepExecutor(ABC):
 
 | 文件 | 职责 |
 |------|------|
-| `goal_mode/spec.py` | `GoalSpec` 数据结构 + `GoalSpecBuilder`（自然语言→结构化验收标准，多轮修订） |
+| `goal_mode/spec.py` | `GoalSpec` 数据结构 + `GoalSpecBuilder`（自然语言→结构化验收标准，多轮修订；`build_from_history()` 从当前 session 历史归纳目标） |
 | `goal_mode/executor.py` | `GoalStepExecutor` 接口 + `CoarseStepExecutor` |
 | `goal_mode/state.py` | `GoalState` + `GoalStateStore`（原子落盘/恢复）+ `find_resumable_session` / `list_resumable_sessions`（全量列出，供 `/goal list`）/ `scan_goal_states`（诊断用） |
 | `goal_mode/runner.py` | `GoalRunner` 外层驱动循环 |
 | `role_agents/goal_judge.py` | GoalJudge：`build_goal_judge_prompt` / `run_goal_judge` |
 | `role_agents/feedback.py` | `extract_goal_status()`，`RoleFeedback.goal_status` 字段 |
-| `cli/commands/goal_mode_cmd.py` | `/goal` 系列 slash 命令 |
+| `cli/commands/goal_mode_cmd.py` | `/goal` 系列 slash 命令（含 `/goal from-history`） |
 | `config/models.py::GoalModeConfig` | 配置模型 |
 | `storage/paths.py::session_goal_state()` | `goal_state.json` 路径 |
 | `prompts/system/goal_judge.md` | GoalJudge 的 system prompt |
