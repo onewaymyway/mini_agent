@@ -9,7 +9,10 @@ Agent 和 ContextBuilder 只依赖此接口，与具体实现完全解耦。
   2. 在 memory_factory.py 的 _REGISTRY 中注册
 
 内置实现：
-  MemoryStore（local）— JSONL + TF-IDF，无外部依赖（默认）
+  MemoryStore（local）           — JSONL + TF-IDF，无外部依赖（默认）
+  HybridMemoryBackend（hybrid）  — TF-IDF + 本地离线 embedding 语义检索
+                                    （perception/hybrid_memory_backend.py，
+                                    embedding_enabled=False 时零依赖引入）
 
 扩展示例（外部依赖，不内置）：
   ChromaMemoryBackend — 向量检索，需要 chromadb

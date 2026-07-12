@@ -131,7 +131,14 @@ def _jaccard(a: frozenset, b: frozenset) -> float:
 _SIMILARITY_THRESHOLD = 0.3
 
 
-def group_lessons(entries: list, min_group_size: int = 1) -> list[LessonGroup]:
+_EMBEDDING_SIMILARITY_THRESHOLD = 0.75  # embedding cosine similarity 判定"同一主题"的阈值
+
+
+def group_lessons(
+    entries: list,
+    min_group_size: int = 1,
+    embed_call=None,
+) -> list[LessonGroup]:
     """
     按 trigger 文本的关键词 Jaccard 相似度对 lesson 条目分组（贪心聚类：
     依次把每条 lesson 并入第一个相似度达标的已有分组，否则新开一组）。
@@ -144,8 +151,17 @@ def group_lessons(entries: list, min_group_size: int = 1) -> list[LessonGroup]:
     只接受 entry_type == "lesson" 的条目（summary/capability_map 类型不参与分组）。
     min_group_size 用于过滤掉分组后条目数不足的噪声分组（默认 1，即不过滤，
     由调用方根据 tier 阈值自行判断是否达标）。
+
+    embed_call（方案一新增，可选）：Optional[Callable[[str], list[float]]]。
+    传入时，聚类判定从"关键词 Jaccard ≥ 阈值"改为"关键词 Jaccard ≥ 阈值
+    或 embedding cosine similarity ≥ 阈值"（两路取并集）——语义聚类的假阳性
+    比假阴性危害更大（错误合并两个不相关 lesson 比漏合并更糟），所以保留
+    关键词路径作为兜底而非替换。embed_call 为 None（默认）或调用失败时，
+    完全退化为原有纯关键词行为，逐条结果一致（回归保证）。
     """
-    groups: list[tuple[frozenset, LessonGroup]] = []  # (代表性关键词集合, 分组)
+    from mini_agent.perception.local_embedding import cosine_similarity
+
+    groups: list[tuple[frozenset, LessonGroup, Optional[list]]] = []  # (代表性关键词集合, 分组, 代表性向量)
 
     for e in entries:
         if getattr(e, "entry_type", "summary") != "lesson":
@@ -156,11 +172,29 @@ def group_lessons(entries: list, min_group_size: int = 1) -> list[LessonGroup]:
         if not kw:
             continue
 
+        vec = None
+        if embed_call is not None:
+            try:
+                vec = embed_call(e.trigger)
+            except Exception:
+                vec = None
+
         best_group = None
         best_score = 0.0
-        for rep_kw, group in groups:
-            score = _jaccard(kw, rep_kw)
-            if score >= _SIMILARITY_THRESHOLD and score > best_score:
+        for rep_kw, group, rep_vec in groups:
+            jaccard_score = _jaccard(kw, rep_kw)
+            embed_score = 0.0
+            if vec is not None and rep_vec is not None:
+                try:
+                    embed_score = cosine_similarity(vec, rep_vec)
+                except Exception:
+                    embed_score = 0.0
+            matched = (
+                jaccard_score >= _SIMILARITY_THRESHOLD
+                or embed_score >= _EMBEDDING_SIMILARITY_THRESHOLD
+            )
+            score = max(jaccard_score, embed_score)
+            if matched and score > best_score:
                 best_group = group
                 best_score = score
 
@@ -169,9 +203,9 @@ def group_lessons(entries: list, min_group_size: int = 1) -> list[LessonGroup]:
         else:
             new_group = LessonGroup(key=_normalize_trigger(e.trigger))
             new_group.entries.append(e)
-            groups.append((kw, new_group))
+            groups.append((kw, new_group, vec))
 
-    return [g for _, g in groups if len(g.entries) >= min_group_size]
+    return [g for _, g, _ in groups if len(g.entries) >= min_group_size]
 
 
 def scan_for_proposals(

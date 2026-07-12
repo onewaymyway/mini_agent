@@ -44,6 +44,7 @@ DEFAULT_HALF_LIFE_DAYS = 30.0
 _LESSON_HALF_LIFE_BASE: dict[str, float] = {
     "human_feedback":       90.0,
     "experiment_confirmed": 60.0,
+    "consolidated":         45.0,  # [方案二] 归纳产物：反复验证过的规律，衰减介于 self_reflection 与 human_feedback 之间
     "self_reflection":      30.0,
     "revert_record":        14.0,
 }
@@ -66,7 +67,7 @@ def compute_half_life_days(entry: "MemoryEntry") -> float:
       只是占位，不代表真实来源）。
     """
     entry_type = getattr(entry, "entry_type", "summary")
-    if entry_type != "lesson":
+    if entry_type not in ("lesson", "consolidated_lesson"):
         return DEFAULT_HALF_LIFE_DAYS
 
     source = getattr(entry, "source", "self_reflection")

@@ -279,7 +279,14 @@ class AutonomousLoop:
             return
 
         try:
-            sandbox = make_exploration_sandbox(self._paths, self._cfg)
+            memory_backend = None
+            try:
+                from mini_agent.perception.memory_factory import create_memory_backend
+                if getattr(self._cfg.memory, "enabled", False):
+                    memory_backend = create_memory_backend(self._cfg)
+            except Exception:
+                memory_backend = None
+            sandbox = make_exploration_sandbox(self._paths, self._cfg, memory_backend=memory_backend)
             goal_text = (
                 f"验证假设：{candidate.title}\n"
                 f"背景：{candidate.description}\n"

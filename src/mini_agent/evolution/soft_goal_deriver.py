@@ -43,6 +43,9 @@ MAX_NEW_GOALS           = 2      # 每次 derive 最多产生新 Goal 数量
 MAX_PENDING_DERIVED     = 5      # GoalBacklog 中 agent_derived active Goal 上限
 REJECTED_TTL_SECONDS    = 30 * 86400  # rejected goal 的去重窗口（30 天）
 
+# ── [方案三] 好奇心评分常量 ─────────────────────────────────────────────────
+MIN_CALLS_FOR_KNOWN     = 2      # total_calls 低于此值视为"几乎未探索"（可被 cfg.autonomy 覆盖）
+
 
 # ── 候选来源 ──────────────────────────────────────────────────────────────────
 
@@ -53,6 +56,7 @@ class _DeriveCandidate:
     source_tag: str     # "capability" | "workthread" | "lesson"
     priority: int = 20  # agent_derived Goal 的优先级（低于用户 Goal 的默认 50）
     urgency: float = 0.0  # 用于排序，越高越先出
+    novelty: float = 0.0  # [方案三/好奇心评分] 信息增益评分，默认0（旧三路信号不产出，行为不变）
 
     def dedupe_key(self) -> str:
         """归一化 title 用于去重。"""
@@ -164,12 +168,14 @@ class SoftGoalDeriver:
         all_candidates.extend(self._from_capability_map())
         all_candidates.extend(self._from_work_index())
         all_candidates.extend(self._from_lesson_review())
+        all_candidates.extend(self._from_unexplored_capabilities())
 
         seen: set[str] = set()
         cap: list[_DeriveCandidate] = []
         other: list[_DeriveCandidate] = []
 
-        for c in sorted(all_candidates, key=lambda x: x.urgency, reverse=True):
+        novelty_weight = getattr(self._cfg.autonomy, "novelty_weight", 0.5) if hasattr(self._cfg, "autonomy") else 0.5
+        for c in sorted(all_candidates, key=lambda x: x.urgency + novelty_weight * x.novelty, reverse=True):
             key = c.dedupe_key()
             if key in seen or key in rejected_keys or key in existing_titles:
                 continue
@@ -209,7 +215,8 @@ class SoftGoalDeriver:
         _tick_autonomous() 使用 derive_candidates() + ExplorationSandbox + commit_goals()。
         """
         cap_c, other_c = self.derive_candidates(goal_backlog)
-        all_c = sorted(cap_c + other_c, key=lambda x: x.urgency, reverse=True)
+        novelty_weight = getattr(self._cfg.autonomy, "novelty_weight", 0.5) if hasattr(self._cfg, "autonomy") else 0.5
+        all_c = sorted(cap_c + other_c, key=lambda x: x.urgency + novelty_weight * x.novelty, reverse=True)
         new_goals = self.commit_goals(all_c, goal_backlog)
         if new_goals:
             self._record_derive()
@@ -217,7 +224,96 @@ class SoftGoalDeriver:
 
     # ── 三路信号采集 ──────────────────────────────────────────────────────────
 
-    def _from_capability_map(self) -> list[_DeriveCandidate]:
+    def _from_unexplored_capabilities(self) -> list[_DeriveCandidate]:
+        """
+        信号 4（方案三新增）：capability_map 里 total_calls 极少（< 阈值，默认2）
+        的能力条目——"几乎没试过"，而不是"试过，效果不好"。
+
+        与 _from_capability_map() 的区别：
+          _from_capability_map — "试过，效果不好" → urgency 来自"确定性的失败信号"
+          _from_unexplored_capabilities — "几乎没试过" → novelty 来自"信息增益"，
+            即"探索这个领域能在多大程度上减少 agent 对自己能力的不确定性"
+
+        失败静默降级：任何异常直接返回空列表，不影响其余三路信号。
+        """
+        candidates = []
+        try:
+            from mini_agent.evolution.phase_g import load_capability_map
+            entries = load_capability_map(self._paths)
+        except Exception:
+            return candidates
+
+        min_calls_threshold = (
+            getattr(self._cfg.autonomy, "exploration_min_calls_threshold", 2)
+            if hasattr(self._cfg, "autonomy") else 2
+        )
+        already_explored = self._recently_explored_domains()
+
+        for entry in entries:
+            total_calls = getattr(entry, "total_calls", 0)
+            if total_calls >= min_calls_threshold:
+                continue  # 已经有一定数据量，不算"几乎未探索"
+
+            domain = getattr(entry, "capability_name", None) or getattr(entry, "domain", "")
+            if not domain:
+                continue
+
+            novelty = 1.0 / (1 + total_calls)
+            if domain in already_explored:
+                novelty *= 0.1  # 最近已探索过，大幅降权避免重复探索
+
+            candidates.append(_DeriveCandidate(
+                title=f"探索未知能力：{domain}",
+                description=(
+                    f"capability_map 记录 {domain} 目前仅有 {total_calls} 次调用样本，"
+                    f"数据量太少无法判断真实能力边界。建议主动尝试一次小型探索任务，"
+                    f"以减少 agent 对自身该能力的不确定性。"
+                ),
+                source_tag="capability",
+                priority=15,   # 好奇心驱动，优先级略低于确定性问题
+                urgency=0.0,
+                novelty=novelty,
+            ))
+        return candidates
+
+    def _recently_explored_domains(self, cooldown_days: Optional[float] = None) -> set[str]:
+        """
+        读取 activity_digest.jsonl 中最近 cooldown_days 天内的
+        type="exploration_result" 记录，返回其 capability_id 集合，
+        用于 novelty 打分时对"最近已探索过"的领域降权。
+        失败静默降级：返回空集合。
+        """
+        if cooldown_days is None:
+            cooldown_days = (
+                getattr(self._cfg.autonomy, "already_explored_cooldown_days", 30.0)
+                if hasattr(self._cfg, "autonomy") else 30.0
+            )
+        try:
+            import json
+            digest_path = self._paths.workdir_dir / "activity_digest.jsonl"
+            if not digest_path.exists():
+                return set()
+            cutoff = time.time() - cooldown_days * 86400
+            domains: set[str] = set()
+            for line in digest_path.read_text(encoding="utf-8").splitlines():
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    data = json.loads(line)
+                except Exception:
+                    continue
+                if data.get("type") != "exploration_result":
+                    continue
+                at = data.get("at", 0.0)
+                if at and at < cutoff:
+                    continue
+                cap_id = data.get("capability_id")
+                if cap_id:
+                    domains.add(cap_id)
+            return domains
+        except Exception:
+            return set()
         """
         信号 1：capability_map 中 confidence < CONFIDENCE_LOW 的条目。
         说明 agent 在该能力上经常失败，有必要主动练习/改进。

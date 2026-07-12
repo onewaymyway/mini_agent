@@ -504,6 +504,7 @@ class PhaseGReport:
     promotion_candidates: list[PromotionCandidate] = field(default_factory=list)
     knowledge_consolidation: dict = field(default_factory=dict)
     outcome_tracking_resolved: list = field(default_factory=list)  # [方案三] 本次 tick 新解决的效果回填记录
+    affordance_weights_updated: object = None  # [方案四] 本次校准后的 AffordanceWeights（校准跳过时为 None）
     ran_at: float = field(default_factory=time.time)
 
     @property
@@ -518,6 +519,10 @@ class PhaseGReport:
             "promotion_candidates": [c.to_dict() for c in self.promotion_candidates],
             "knowledge_consolidation": self.knowledge_consolidation,
             "outcome_tracking_resolved": [r.to_dict() for r in self.outcome_tracking_resolved],
+            "affordance_weights_updated": (
+                self.affordance_weights_updated.to_dict()
+                if self.affordance_weights_updated is not None else None
+            ),
         }
 
 
@@ -614,6 +619,17 @@ def run_phase_g(
     except Exception as _mini_agent_exc:
         from mini_agent.errors import log_exception
         log_exception(_mini_agent_exc, where='mini_agent.evolution.phase_g.outcome_tracking')
+        pass
+
+    # [方案四] Affordance / 自我模型闭环学习：用 outcome_tracker 的效果回填
+    # 结果周期性校准 AffordanceMap 三路来源的展示权重。失败静默降级，
+    # 与其它步骤一致，不阻断 Phase G 主流程。
+    try:
+        from mini_agent.perception.affordance_calibration import calibrate
+        report.affordance_weights_updated = calibrate(paths)
+    except Exception as _mini_agent_exc:
+        from mini_agent.errors import log_exception
+        log_exception(_mini_agent_exc, where='mini_agent.evolution.phase_g.affordance_calibration')
         pass
 
     # 记录本次运行时间

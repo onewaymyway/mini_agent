@@ -121,6 +121,19 @@ class MemoryConfig:
     library_shelf_search_enabled: bool = True  # context_builder 检索时是否走两步检索（可单独关闭，仅保留写入侧归类）
     library_index_user_scoped: bool = False  # 改进7：多用户场景下按 user_id 拆分独立书架（默认关闭，共享归并）
 
+    # ── 方案一：记忆语义检索（混合 TF-IDF + 本地离线 Embedding）────────────
+    # backend 可选值扩展为 "local" | "hybrid" | "chroma" | "redis"，"hybrid" 为新增。
+    embedding_enabled: bool = False          # [默认关闭] 唯一总开关，见 perception/local_embedding.py
+    embedding_model: str = "bge-small-zh-v1.5"   # 内置候选名，或用户自定义模型的本地路径
+    embedding_model_cache_dir: Optional[Path] = None  # None = ~/.agent/models/
+    embedding_tfidf_weight: float = 0.5
+    embedding_weight: float = 0.5
+    embedding_top_n: int = 20
+
+    # ── 方案二：记忆巩固——从"淘汰"变成"归纳"────────────────────────────
+    consolidation_enabled: bool = True       # 淘汰前是否尝试归纳（默认开，失败静默降级不影响可用性）
+    consolidation_min_group_size: int = 3
+
 
 @dataclass
 class CompressConfig:
@@ -615,6 +628,18 @@ class AffordanceConfig:
 
 
 @dataclass
+class AutonomyConfig:
+    """[方案三] 自主探索——好奇心评分 + 探索结果回写记忆 相关配置。
+
+    只影响 SoftGoalDeriver 的排序权重和 ExplorationSandbox 的"已探索"冷却
+    窗口，不改变 ExplorationBudget/exploration_budget_ratio 的预算占比。
+    """
+    novelty_weight: float = 0.5           # urgency + novelty_weight * novelty 排序权重
+    exploration_min_calls_threshold: int = 2   # total_calls 低于此值视为"几乎未探索"
+    already_explored_cooldown_days: float = 30.0
+
+
+@dataclass
 class ReminderConfig:
     """[SYS-REMINDER] 动态 Reminder 提示注入配置。
 
@@ -774,6 +799,7 @@ class AppConfig:
     reminder:   ReminderConfig   = field(default_factory=ReminderConfig)
     proprioception: ProprioceptionConfig = field(default_factory=ProprioceptionConfig)
     affordance: AffordanceConfig = field(default_factory=AffordanceConfig)
+    autonomy: AutonomyConfig = field(default_factory=AutonomyConfig)
     workflow:   WorkflowConfig   = field(default_factory=WorkflowConfig)
     format_correction: FormatCorrectionConfig = field(default_factory=FormatCorrectionConfig)
     role_agent: RoleAgentConfig  = field(default_factory=RoleAgentConfig)

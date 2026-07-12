@@ -98,10 +98,12 @@ class ExplorationSandbox:
         paths: "AgentPaths",
         cfg: "AppConfig",
         arbiter: "ResourceArbiter",
+        memory_backend=None,   # [方案三] Optional[MemoryBackend]，用于探索结果回写记忆
     ) -> None:
         self._paths = paths
         self._cfg = cfg
         self._arbiter = arbiter
+        self._memory_backend = memory_backend
         self._active_sandboxes: int = 0
         self._max_concurrent: int = 1  # 同时只允许一个探索实验（保守策略）
 
@@ -167,6 +169,62 @@ class ExplorationSandbox:
 
             # 写入 activity_digest.jsonl
             self._write_report(report)
+
+            # [方案三] 探索结果回写记忆（无论成功失败），防止同样的探索性
+            # 错误被重复"发现"，也让"最近已探索过的领域"能被
+            # SoftGoalDeriver._recently_explored_domains() 用于降权。
+            self._record_exploration_outcome(report)
+
+    def _record_exploration_outcome(self, report: ExplorationReport) -> None:
+        """
+        探索无论成功失败都应该沉淀为经验，否则同样的探索性错误会被重复
+        "发现"，浪费探索预算。
+
+        - 成功：outcome="验证有效，已提升为 skill 提案候选"，confidence 较高
+        - 失败：outcome="尝试该方案不可行"，confidence 中等（这类"此路不通"的
+          负面经验同样有价值——防止未来的 SoftGoalDeriver 或 skill_propose
+          再次把同一条路径列为候选）
+
+        entry_type="lesson", source="exploration"，半衰期基准与
+        self_reflection 相同（30天）——探索结论不如人类反馈可靠，但也不应该
+        衰减过快导致刚探索过的"此路不通"很快被遗忘又重新尝试。
+
+        失败静默降级：memory_backend 不可用或写入异常都不影响探索流程本身。
+        """
+        if self._memory_backend is None:
+            return
+        try:
+            from mini_agent.perception.memory_store import MemoryEntry
+
+            if report.success:
+                outcome = report.finding or "验证有效，已提升为 skill 提案候选"
+                confidence = 0.7
+            else:
+                outcome = report.finding or (report.error or "尝试该方案不可行，具体原因未知")
+                confidence = 0.5
+
+            entry = MemoryEntry(
+                session_id=report.sandbox_id,
+                summary=f"探索实验 [{report.capability_id}]：{report.goal}",
+                key_outcomes=[outcome],
+                tags=["exploration", report.capability_id],
+                model="",
+                entry_type="lesson",
+                trigger=report.goal,
+                outcome=outcome,
+                root_cause=report.error or "",
+                suggested_action=(
+                    "该方案已验证可行，可考虑正式提案。" if report.success
+                    else "该方案已验证不可行，避免重复尝试同一路径。"
+                ),
+                confidence=confidence,
+                occurrence_count=1,
+                source="exploration",
+            )
+            self._memory_backend.add(entry)
+        except Exception as _mini_agent_exc:
+            from mini_agent.errors import log_exception
+            log_exception(_mini_agent_exc, where='mini_agent.perception.exploration_sandbox.record_outcome')
 
     def _create_worktree(self, sandbox_id: str, branch_prefix: str) -> Path:
         """
@@ -244,14 +302,17 @@ class ExplorationBudgetExhausted(Exception):
 def make_exploration_sandbox(
     paths: "AgentPaths",
     cfg: "AppConfig",
+    memory_backend=None,
 ) -> ExplorationSandbox:
     """
     工厂函数：创建 ExplorationSandbox，内部自动构建 ResourceArbiter。
     第十二节的 _tick_autonomous() 调用此函数。
+    memory_backend: [方案三] 可选，传入后探索结果会回写记忆（见
+    ExplorationSandbox._record_exploration_outcome()）。
     """
     from mini_agent.evolution.resource_arbiter import ResourceArbiter
     arbiter = ResourceArbiter(paths, cfg)
-    return ExplorationSandbox(paths, cfg, arbiter)
+    return ExplorationSandbox(paths, cfg, arbiter, memory_backend=memory_backend)
 
 
 __all__ = [

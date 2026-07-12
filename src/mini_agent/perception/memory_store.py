@@ -106,6 +106,9 @@ class MemoryStore(MemoryBackend):
         decay_half_life_days: float = _DECAY_HALF_LIFE_DAYS,
         library_index=None,          # Optional["LibraryIndex"]，由 memory_factory 注入
         llm_classify_call=None,      # Optional[Callable[[str], str]]，规则未命中时的兜底分类调用
+        consolidation_enabled: bool = True,   # [方案二] 淘汰前是否尝试归纳而非直接丢弃
+        consolidation_min_group_size: int = 3,
+        embed_call=None,             # Optional[Callable[[str], list[float]]]，供归纳时辅助聚类（可选）
     ) -> None:
         self._path = path or Path(".agent") / "memory.jsonl"  # 由 memory_factory 覆盖
         self._entries: list[MemoryEntry] = []
@@ -117,6 +120,10 @@ class MemoryStore(MemoryBackend):
         # 与改造前完全一致，保证该功能是纯增量、可关闭的。
         self._library = library_index
         self._llm_classify_call = llm_classify_call
+        # ── [方案二] 记忆巩固 ──────────────────────────────────────────────
+        self._consolidation_enabled = consolidation_enabled
+        self._consolidation_min_group_size = consolidation_min_group_size
+        self._embed_call = embed_call
 
     # ── 写入 ──────────────────────────────────────────────────────────────────
 
@@ -133,7 +140,29 @@ class MemoryStore(MemoryBackend):
         if len(self._entries) > self._max_entries:
             # 按创建时间排序，保留最新的 max_entries 条
             self._entries.sort(key=lambda e: e.created_at)
-            self._entries = self._entries[-self._max_entries:]
+            evict_count = len(self._entries) - self._max_entries
+            candidates = self._entries[:evict_count]
+            keep = self._entries[evict_count:]
+
+            # [方案二/记忆巩固] 淘汰前尝试归纳而非直接丢弃，
+            # 见 evolution/memory_consolidation.py。失败静默降级为原有行为。
+            if self._consolidation_enabled:
+                try:
+                    from mini_agent.evolution.memory_consolidation import consolidate_before_eviction
+                    consolidated, _truly_evicted = consolidate_before_eviction(
+                        candidates,
+                        embed_call=self._embed_call,
+                        llm_call=self._llm_classify_call,
+                        min_group_size=self._consolidation_min_group_size,
+                    )
+                    self._entries = consolidated + keep
+                except Exception as _mini_agent_exc:
+                    from mini_agent.errors import log_exception
+                    log_exception(_mini_agent_exc, where='mini_agent.perception.memory_store.consolidation')
+                    self._entries = keep
+            else:
+                self._entries = keep
+
             self._rewrite_disk()
         else:
             self._append_to_disk(entry)
@@ -192,7 +221,7 @@ class MemoryStore(MemoryBackend):
                 df = sum(1 for t in doc_texts if qt in t)
                 idf = math.log((N + 1) / (df + 1)) + 1
                 score += tf * idf
-            if getattr(entry, "entry_type", "summary") == "lesson":
+            if getattr(entry, "entry_type", "summary") in ("lesson", "consolidated_lesson"):
                 try:
                     from mini_agent.evolution.memory_aging import compute_decay_factor
                     decay = compute_decay_factor(entry)
@@ -301,7 +330,7 @@ class MemoryStore(MemoryBackend):
             # occurrence_count 计算专属半衰期（human_feedback 衰减最慢、
             # revert_record 最快，被反复印证的经验衰减更慢）；非 lesson 条目
             # （summary 等）沿用构造时传入的全局半衰期配置，保持向后兼容。
-            if getattr(entry, "entry_type", "summary") == "lesson":
+            if getattr(entry, "entry_type", "summary") in ("lesson", "consolidated_lesson"):
                 try:
                     from mini_agent.evolution.memory_aging import compute_decay_factor
                     decay = compute_decay_factor(entry)

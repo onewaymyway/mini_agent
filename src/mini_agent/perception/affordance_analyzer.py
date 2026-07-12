@@ -120,6 +120,7 @@ class AffordanceAnalyzer:
         lesson_entries: Optional[list["MemoryEntry"]] = None,
         capability_entries: Optional[list] = None,
         behavior_context: Optional["BehaviorContext"] = None,
+        weights: Optional["AffordanceWeights"] = None,   # [方案四新增] 默认 None = 现有硬编码行为
     ) -> AffordanceMap:
         """
         Args:
@@ -134,11 +135,19 @@ class AffordanceAnalyzer:
                 只读摘要（可选，默认 None）。为 None 时该输入源视为缺失，
                 不影响其余三路分析结果——调用方（inject_affordance_map）
                 负责按双重开关决定是否加载并传入。
+            weights: [方案四新增] Affordance 排序权重（perception/
+                affordance_calibration.py::AffordanceWeights），由
+                outcome_tracker 效果回填间接校准。为 None 时使用全部为
+                1.0 的默认权重，等价于改造前行为（回归保证）。
         """
+        if weights is None:
+            from mini_agent.perception.affordance_calibration import AffordanceWeights
+            weights = AffordanceWeights()
+
         known_issues = self._extract_known_issues(open_threads or [])
         unexplored = self._find_unexplored(capability_entries or [])
         risky = self._find_risky_zones(lesson_entries or [])
-        opportunities = self._rank_opportunities(open_threads or [], unexplored)
+        opportunities = self._rank_opportunities(open_threads or [], unexplored, weights)
         behavior_notes = self._derive_behavior_notes(behavior_context, known_issues)
 
         return AffordanceMap(
@@ -235,12 +244,17 @@ class AffordanceAnalyzer:
 
     @staticmethod
     def _rank_opportunities(
-        open_threads: list["OpenThread"], unexplored: list[str]
+        open_threads: list["OpenThread"], unexplored: list[str], weights=None,
     ) -> list[str]:
         """top_opportunities：当前最值得关注的行动机会，混合"已知待修问题"
-        （优先级高 + 类型为 bug/blocker 的更靠前）和"待探索能力边界"
-        （提醒一下，但不抢已知问题的位置）。"""
-        scored: list[tuple[str, int]] = []
+        （优先级高 + 类型为 bug/blocker 的更靠前，按 weights.known_issues_weight
+        缩放）和"待探索能力边界"（提醒一下，但不抢已知问题的位置，按
+        weights.unexplored_areas_weight 决定是否/如何靠前展示）。
+        weights 为 None 时等价于全部 1.0（改造前行为）。"""
+        known_weight = getattr(weights, "known_issues_weight", 1.0) if weights else 1.0
+        unexplored_weight = getattr(weights, "unexplored_areas_weight", 1.0) if weights else 1.0
+
+        scored: list[tuple[str, float]] = []
         for t in open_threads:
             if getattr(t, "status", "open") != "open":
                 continue
@@ -250,12 +264,12 @@ class AffordanceAnalyzer:
             score = _PRIORITY_SCORE.get(getattr(t, "priority", "medium"), 2)
             if getattr(t, "type", "") in ("bug", "blocker"):
                 score += 2
-            scored.append((f"{title}（{getattr(t, 'type', 'issue')}/{getattr(t, 'priority', 'medium')}）", score))
+            scored.append((f"{title}（{getattr(t, 'type', 'issue')}/{getattr(t, 'priority', 'medium')}）", score * known_weight))
 
         scored.sort(key=lambda x: -x[1])
         opportunities = [label for label, _ in scored]
 
-        if unexplored:
+        if unexplored and unexplored_weight > 0:
             opportunities.append(f"探索能力盲区：{unexplored[0]}")
 
         return opportunities
@@ -384,11 +398,19 @@ def inject_affordance_map(agent: "Agent", cfg: "AppConfig", *, log=None) -> None
 
         behavior_context = _load_behavior_context(cfg)
 
+        weights = None
+        try:
+            from mini_agent.perception.affordance_calibration import load_weights
+            weights = load_weights(paths)   # 读取上次 calibrate() 持久化的权重，文件不存在则默认权重
+        except Exception:
+            weights = None
+
         affordance_map = AffordanceAnalyzer().analyze(
             open_threads=open_threads,
             lesson_entries=lesson_entries,
             capability_entries=capability_entries,
             behavior_context=behavior_context,
+            weights=weights,
         )
         fragment = affordance_map.to_system_prompt_fragment()
 

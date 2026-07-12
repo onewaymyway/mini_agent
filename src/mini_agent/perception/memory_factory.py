@@ -56,7 +56,52 @@ def _load_local(cfg: "AppConfig", scope: str = "project", user_id: Optional[str]
         max_entries=cfg.memory.max_entries,
         decay_half_life_days=cfg.memory.decay_half_life_days,
         library_index=library_index,
+        consolidation_enabled=getattr(cfg.memory, "consolidation_enabled", True),
+        consolidation_min_group_size=getattr(cfg.memory, "consolidation_min_group_size", 3),
     )
+
+
+def _load_hybrid(cfg: "AppConfig", scope: str = "project", user_id: Optional[str] = None) -> MemoryBackend:
+    """
+    方案一：混合 TF-IDF + 本地离线 embedding 检索后端。
+
+    复用 _load_local() 构造内部 MemoryStore，行为完全不变；
+    embedding_enabled=False 时直接返回内部 MemoryStore（等价于 backend="local"）。
+    embedding 相关 import 全部延迟到这里，未开启开关时不会引入
+    onnxruntime/tokenizers 依赖。
+    """
+    store = _load_local(cfg, scope=scope, user_id=user_id)
+
+    if not getattr(cfg.memory, "embedding_enabled", False):
+        return store   # [默认路径] 未开启 embedding，直接返回原有 MemoryStore，零改动
+
+    try:
+        from mini_agent.perception.hybrid_memory_backend import HybridMemoryBackend
+        from mini_agent.perception.local_embedding import get_shared_embedding_model
+
+        embed_model = get_shared_embedding_model(
+            cfg.memory.embedding_model, cfg.memory.embedding_model_cache_dir
+        )
+        # 让底层 MemoryStore 的 [方案二] 归纳逻辑也能用上语义相似度
+        # （consolidate_before_eviction 内部会用 store._embed_call）。
+        if hasattr(store, "_embed_call"):
+            store._embed_call = embed_model.embed
+        return HybridMemoryBackend(
+            inner=store,
+            embed_call=embed_model.embed,
+            tfidf_weight=cfg.memory.embedding_tfidf_weight,
+            embedding_weight=cfg.memory.embedding_weight,
+            embedding_top_n=cfg.memory.embedding_top_n,
+        )
+    except Exception:
+        # 模型下载失败/onnxruntime 未安装（用户开了开关但没装 extras）/加载出错：
+        # 静默降级为纯 MemoryStore，不阻断 agent 启动，只在 debug 日志里记录原因
+        import logging
+        logging.getLogger(__name__).warning(
+            "[embedding] 加载本地 embedding 模型失败，已降级为纯 TF-IDF 检索。"
+            "如果你已开启 embedding_enabled，请确认已安装 `pip install mini-agent[embedding]`。"
+        )
+        return store
 
 
 def _build_library_index(paths, scope: str, cfg: "AppConfig" = None, user_id: Optional[str] = None):
@@ -91,6 +136,7 @@ def _build_library_index(paths, scope: str, cfg: "AppConfig" = None, user_id: Op
 
 _REGISTRY: dict[str, Callable[["AppConfig", str], MemoryBackend]] = {
     "local": _load_local,
+    "hybrid": _load_hybrid,   # 方案一：混合 TF-IDF + 本地离线 embedding
     # 未来扩展点：
     # "chroma": _load_chroma,
     # "redis":  _load_redis,
