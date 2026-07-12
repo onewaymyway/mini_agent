@@ -162,39 +162,74 @@ Windows 开发环境中额外跑一次 `tests/test_system_events.py::TestSystemE
   的观察，环境变化后可能不再适用；比 `revert_record`（14天）衰减慢，
   因为有实测数据支持（baseline/post 触发次数对比），不是单次用户操作。
 
+### 6.4 goal.candidate_unvalidated → 轻量一致性复核
 
+- 发布点：`soft_goal_deriver.py::commit_goals()`，`source_tag` 为
+  `"workthread"`/`"lesson"` 的候选（不经过 `ExplorationSandbox` 验证）
+  写入 `GoalBacklog` 时，打上 `needs_review` 标签并发布事件
+  （tier=`tick`），缓解第16节提到的"验证不对称"。
+- 消费点：`soft_goal_deriver.py::review_unvalidated_candidates()`，挂在
+  `autonomous_loop._tick_autonomous()` 里、在本轮提交新候选之前先复核
+  上一轮的 `needs_review` 候选（本轮新提交的要等下一次 tick 才被复核，
+  这是"轮询+游标"模型的正常延迟）。复核逻辑不是完整的
+  `ExplorationSandbox`，只是重新核对"当初触发这个候选的信号现在是否
+  还成立"：workthread 类检查对应 `WorkThread` 是否还存在、是否已有新
+  进展；lesson 类检查对应 `LessonGroup` 是否还存在、是否仍达到 T1 阈值。
+  复核通过 → 摘掉 `needs_review` 标签，goal 保持 `active`；不通过 →
+  `status` 改为 `paused`（不是删除，留痕供人工判断），标签换成
+  `review_failed`，`progress_notes` 记录原因。
 
-接入 6.2 时发现 `soft_goal_deriver.py` 的 `_from_capability_map()`（信号1：
-低置信度能力域）此前**缺少独立的 `def` 头**，代码被误拼接进
-`_recently_explored_domains()` 函数体末尾的 `return`/`except` 之后，成为永远
-不可达的死代码。`derive_candidates()` 里 `self._from_capability_map()` 因此
-必然 `AttributeError`，被 `autonomous_loop.py` 外层 `except Exception` 兜住
-写入 `error.jsonl`——不崩溃，但**"软目标自动推导"从代码写下来那天起就从未
-真正产出过一个候选**。同时它依赖的 `phase_g.load_capability_map` 函数
-根本不存在（纯 `ImportError`，同样被吞掉）。
+## 7. 顺带修复的既有 bug（与事件总线本身无关，但在接入过程中发现）
 
-修复：
+在打通四条链路的过程中，`soft_goal_deriver.py`/`goal_backlog.py`/
+`lesson_review.py` 里陆续暴露出**六个**独立的既有 bug——都是同一种
+失败模式：字段名/方法签名对不上导致异常，被外层宽泛的
+`except Exception`/`except ImportError` 静默吞掉，不崩溃但也从未真正
+work 过，常规测试很容易漏掉（这几个模块此前大多没有专门的单元测试）。
+
+| # | 位置 | 问题 | 后果 |
+|---|---|---|---|
+| 1 | `soft_goal_deriver._from_capability_map` | 缺少独立 `def` 头，被误拼接进 `_recently_explored_domains()` 的死代码区 | `derive_candidates()` 调用必然 `AttributeError` |
+| 2 | `phase_g.load_capability_map` | 函数根本不存在 | 上面 #1 修复后仍会 `ImportError` |
+| 3 | `soft_goal_deriver.commit_goals` | 调用 `goal_backlog.add_goal(description=...)`，但该关键字参数不存在（`GoalNode` 也没有 `description` 字段） | 只要有候选要提交就 `TypeError`，**软目标自动推导从未真正提交成功过一个目标节点** |
+| 4 | `soft_goal_deriver._from_work_index` | `thread.thread_id` 不存在（真实字段是 `id`）；`thread.last_activity_at` 也不存在，`getattr` 静默回退成 0.0，使"是否最近有活动"判断永远为 False | 构造 description 时 `AttributeError`；即使修好这处，staleness 判断此前也是失效的 |
+| 5 | `soft_goal_deriver._from_lesson_review` | `LessonGroup.meets_t1_threshold`/`meets_t2_t3_threshold` 是 `@property`，被当方法调用（多了一对括号） | 对 bool 值再调用 `()` 必然 `TypeError` |
+| 6 | `lesson_review.scan_lesson_groups` | 函数根本不存在（`group_lessons`/`scan_for_proposals` 都要求传入已加载的 entries 列表，不是 `paths`） | 上面 #5 修复后仍会 `ImportError` |
+
+修复方式：
 
 - `phase_g.py` 新增 `load_capability_map(paths)`，复用
   `affordance_analyzer.py`/`self_model.py` 已经在用的
   `build_capability_map(paths, None)` 只读惯用法，不引入第二套统计口径；
   `CapabilityMapEntry` 补 `capability_name`/`total_calls` 两个 property 别名，
   桥接与 `domain`/`success_count`/`failure_count` 命名不一致的问题。
-- `soft_goal_deriver.py` 拆出独立的 `_from_capability_map()` 方法。
-- `tests/test_phase_g.py` 新增 `TestLoadCapabilityMap`、
-  `TestSoftGoalDeriverCapabilitySignal` 两个测试类（7 个用例），其中
-  `test_from_capability_map_is_a_real_bound_method` 专门防止这类"方法被
-  意外拼接丢失 def 头"的 bug 复发——这类 bug 不会在 import 阶段报错，
-  只有实际调用才会暴露，常规测试很容易漏掉。
+- `goal_backlog.py`：`GoalNode` 新增 `description` 字段（含 `to_dict`/
+  `from_dict`，向后兼容——老的 `goal_backlog.json` 没有这个字段时
+  静默回退成空字符串）；`add_goal()` 补 `description` 形参。顺带发现
+  `api/routes.py` 的 `/goals` 接口也一直在传这个不存在的关键字参数，
+  同样受益于这次修复。
+- `soft_goal_deriver.py`：拆出独立的 `_from_capability_map()` 方法；
+  `_from_work_index()` 改用 `thread.id`，`last_activity_at` 改用
+  `thread.started_at` 做近似替代（`WorkThread` 目前没有真正的"最后
+  活跃时间"字段，这是一个已知近似，更彻底的修法是给 `WorkThread` 加
+  一个真正的 last_activity_at 字段并在推进时更新，超出本次改动范围）；
+  三处 `meets_t1_threshold()`/`meets_t2_t3_threshold()` 去掉多余括号。
+- `lesson_review.py` 新增 `scan_lesson_groups(paths)`，内部独立构造
+  只读 `MemoryStore` 读取全部条目后委托给 `group_lessons()`。
+- `tests/test_phase_g.py` 新增 `TestSoftGoalDeriverWorkIndexSignal`、
+  `TestSoftGoalDeriverLessonReviewSignal`、
+  `TestGoalCandidateUnvalidatedEventFlow` 三个测试类，`tests/test_goal_backlog.py`
+  （新文件）专门覆盖 `description` 字段的回归防护。
 
 ## 8. 尚未接入、后续可以做的
 
-- **`goal.candidate_unvalidated`**：`SoftGoalDeriver` 产出 workthread/lesson
-  类候选（不经过 `ExplorationSandbox` 验证）时发布事件，供轻量一致性检查器
-  订阅，缓解第16节提到的"验证不对称"问题。
 - **`/diagnostics` 可视化**：目前 `events.jsonl` 只有代码在读，人还看不到
   "最近发生了哪些跨系统事件"。接入点很小——`poll_since(..., advance_cursor=False)`
   读最近 N 条，不影响真实消费者游标。
+- **WorkThread 缺少真正的 last_activity_at 字段**：第7节修复 #4 用
+  `started_at` 做了近似替代，语义上不完全准确（持续被推进的 thread，
+  `started_at` 也不会变）。彻底修法是给 `WorkThread` 加一个真正的
+  最后活跃时间字段，在每次推进时更新。
 
 ## 9. 测试
 
@@ -202,9 +237,15 @@ Windows 开发环境中额外跑一次 `tests/test_system_events.py::TestSystemE
 过滤、只读 peek、非法输入拒绝、写入失败降级、滚动归档、并发安全（8 线程
 共 160 条事件逐行 JSON 解析验证无交错/无丢失）。
 
-`tests/test_phase_g.py` 新增部分（7 用例）：`load_capability_map` 与
-`build_capability_map` 结果一致性、字段别名桥接、`_from_capability_map`
-端到端不再抛异常。
+`tests/test_phase_g.py` 新增部分（53 用例总计，其中新增约 25 个）：
+`load_capability_map` 与 `build_capability_map` 结果一致性、字段别名桥接、
+`_from_capability_map`/`_from_work_index`/`_from_lesson_review` 三个信号
+端到端不再抛异常、`goal.candidate_unvalidated` 完整闭环（发布/复核通过/
+复核不通过/幂等）。
+
+`tests/test_goal_backlog.py`（新文件，5 用例）：`GoalNode.description`
+字段的写入、默认值、序列化往返、向后兼容（老数据没有该字段时不报错）、
+落盘重载。
 
 `tests/test_outcome_tracker.py`（5 用例，新文件——此前这个模块完全没有
 专门的单元测试）：`record_commit_baseline`/`tick()`/`mark_reverted` 基本

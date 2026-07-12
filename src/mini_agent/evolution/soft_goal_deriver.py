@@ -200,13 +200,38 @@ class SoftGoalDeriver:
             return []
         new_goals = []
         for c in candidates[:min(max_new, slots)]:
+            # [事件总线接入] capability 类候选在写入前已经过 ExplorationSandbox
+            # 验证（见 autonomous_loop._run_capability_exploration()），
+            # workthread/lesson 类候选目前没有对应的验证步骤，直接进入
+            # GoalBacklog——这是第16节提到的"验证不对称"。用 needs_review
+            # 标签 + 事件广播补一层轻量一致性复核（不是完整 ExplorationSandbox，
+            # 成本低很多），而不是假装它们已经验证过。
+            needs_review = c.source_tag in ("workthread", "lesson")
             goal = goal_backlog.add_goal(
                 title=c.title,
                 description=c.description,
                 source="agent_derived",
                 priority=c.priority,
+                tags=["needs_review"] if needs_review else None,
             )
             new_goals.append(goal)
+            if needs_review:
+                try:
+                    from mini_agent.perception import system_events as _se
+
+                    _se.publish(
+                        self._paths,
+                        source="soft_goal_deriver",
+                        event_type="goal.candidate_unvalidated",
+                        tier="tick",
+                        payload={
+                            "goal_id": goal.id,
+                            "title": goal.title,
+                            "source_tag": c.source_tag,
+                        },
+                    )
+                except Exception:
+                    pass
         return new_goals
 
     def derive(self, goal_backlog: "GoalBacklog") -> "list[GoalNode]":
@@ -223,6 +248,112 @@ class SoftGoalDeriver:
         return new_goals
 
     # ── 三路信号采集 ──────────────────────────────────────────────────────────
+
+    def review_unvalidated_candidates(self, goal_backlog: "GoalBacklog") -> int:
+        """
+        [事件总线接入] 消费 commit_goals() 发布的 "goal.candidate_unvalidated"
+        事件（tier="tick"），对带 needs_review 标签的 workthread/lesson 类
+        候选做轻量一致性复核——不是完整的 ExplorationSandbox 验证，只重新
+        核对"当初触发这个候选的信号现在是否还成立"：
+
+          - workthread 类：候选是"某个 WorkThread.next_suggested 长期无
+            推进"，复核时重新加载 work_index，看该 thread 是否已经在别处
+            被推进（last_activity_at 已更新到 stale_cutoff 之后），如果是
+            说明候选已经过时。
+          - lesson 类：候选是"某个 LessonGroup 触发次数达到 T1 阈值"，
+            复核时重新扫描 lesson groups，看该分组是否仍然存在且仍达标
+            （可能在候选产出后、复核之前，问题已经被其他修复解决掉）。
+
+        复核通过：移除 needs_review 标签，goal 保持 active。
+        复核不通过：status 改为 "paused"（不是删除——留痕供人工判断，
+        且 GoalNode 现有的 4 态枚举里 paused 语义最贴切：不是失败/完成，
+        是"先别推进"），tags 换成 review_failed，progress_notes 记录原因。
+
+        返回本次实际复核处理的候选数量（供调用方写入 activity_digest）。
+        """
+        try:
+            from mini_agent.perception import system_events as _se
+        except Exception:
+            return 0
+
+        try:
+            events = _se.poll_since(
+                self._paths,
+                consumer_name="goal_consistency_checker",
+                tiers=["tick"],
+                event_types=["goal.candidate_unvalidated"],
+            )
+        except Exception:
+            return 0
+
+        if not events:
+            return 0
+
+        processed = 0
+        for evt in events:
+            try:
+                goal_id = evt.payload.get("goal_id", "")
+                source_tag = evt.payload.get("source_tag", "")
+                node = goal_backlog.get(goal_id)
+                if node is None or node.status != "active" or "needs_review" not in node.tags:
+                    continue  # 已经被处理过/已被用户手动改状态，跳过
+
+                still_valid, reason = self._reverify_candidate_signal(source_tag, node)
+                if still_valid:
+                    goal_backlog.update_fields(
+                        goal_id, tags=[t for t in node.tags if t != "needs_review"],
+                    )
+                else:
+                    goal_backlog.update_fields(
+                        goal_id,
+                        status="paused",
+                        tags=[t for t in node.tags if t != "needs_review"] + ["review_failed"],
+                        progress_notes=(node.progress_notes + f"\n[自动复核] {reason}").strip(),
+                    )
+                processed += 1
+            except Exception as _mini_agent_exc:
+                from mini_agent.errors import log_exception
+                log_exception(_mini_agent_exc, where='mini_agent.evolution.soft_goal_deriver')
+                continue
+        return processed
+
+    def _reverify_candidate_signal(self, source_tag: str, node: "GoalNode") -> tuple[bool, str]:
+        """返回 (是否仍然成立, 不成立时的原因说明)。未知 source_tag 一律
+        判定为仍然成立（保守：不确定就不阻断，避免误伤）。"""
+        if source_tag == "workthread":
+            try:
+                from mini_agent.perception.workdir_knowledge import load_work_index
+
+                now = time.time()
+                stale_cutoff = now - STALE_WORKTHREAD_DAYS * 86400
+                threads = load_work_index(self._paths)
+                for thread in threads:
+                    if thread.next_suggested and thread.next_suggested[:80] == node.title:
+                        # 与 _from_work_index() 用同一个近似字段，保持口径一致
+                        # （见 _from_work_index 的 docstring 说明）。
+                        last_activity = getattr(thread, "started_at", 0.0) or 0.0
+                        if last_activity > stale_cutoff:
+                            return False, "对应 WorkThread 已有新进展，候选目标已过时"
+                        return True, ""
+                return False, "对应 WorkThread 已不存在（可能已被清理或合并）"
+            except Exception:
+                return True, ""  # 复核本身失败，保守放行，不因为复核逻辑的异常阻断候选
+        elif source_tag == "lesson":
+            try:
+                from mini_agent.perception.lesson_review import scan_lesson_groups
+
+                groups = scan_lesson_groups(self._paths)
+                for group in groups:
+                    trigger_sample = group.entries[0].trigger if group.entries else ""
+                    title = f"系统性解决：{trigger_sample[:50]}"
+                    if title == node.title:
+                        if group.meets_t1_threshold:
+                            return True, ""
+                        return False, "对应 LessonGroup 触发次数已回落到阈值以下，问题可能已缓解"
+                return False, "对应 LessonGroup 已不存在（问题可能已被其他修复解决）"
+            except Exception:
+                return True, ""
+        return True, ""
 
     def _from_unexplored_capabilities(self) -> list[_DeriveCandidate]:
         """
@@ -406,6 +537,20 @@ class SoftGoalDeriver:
         """
         信号 2：WorkThread.next_suggested 非空，但超过 STALE_WORKTHREAD_DAYS 天无推进。
         说明 agent 自己建议的后续工作一直没有跟进。
+
+        [修复] 此前这里有两处与 WorkThread 真实字段对不上的问题：
+          1. `thread.thread_id` 不存在（真实字段名是 `id`），构造 description
+             字符串时必然 AttributeError，被外层 except 静默吞掉——信号2
+             从写下来就没能真正产出过候选。
+          2. `thread.last_activity_at` 也不存在，getattr 静默回退成 0.0，
+             使"是否最近有活动"的判断永远为 False（等价于每个有
+             next_suggested 的 thread 都被当成"从纪元开始就没人碰过"）。
+        WorkThread 目前没有真正的"最后活跃时间"字段，只有 `started_at`
+        （线程创建时间）。用它做近似替代：语义上不完全等价（一个持续被
+        推进的 thread，`started_at` 也不会变，可能被误判为"长期无进展"），
+        但至少不是永远 0——这是一个已知的近似，更彻底的修法是给
+        WorkThread 加一个真正的 last_activity_at 字段并在推进时更新，
+        超出本次改动范围，留作后续 TODO。
         """
         candidates = []
         try:
@@ -416,7 +561,7 @@ class SoftGoalDeriver:
             for thread in threads:
                 if not thread.next_suggested:
                     continue
-                last_activity = getattr(thread, "last_activity_at", 0.0) or 0.0
+                last_activity = getattr(thread, "started_at", 0.0) or 0.0
                 if last_activity > stale_cutoff:
                     continue  # 最近有活动，不触发
                 stale_days = (now - last_activity) / 86400
@@ -424,7 +569,7 @@ class SoftGoalDeriver:
                 candidates.append(_DeriveCandidate(
                     title=thread.next_suggested[:80],
                     description=(
-                        f"WorkThread [{thread.thread_id}] 建议的后续工作已搁置 "
+                        f"WorkThread [{thread.id}] 建议的后续工作已搁置 "
                         f"{stale_days:.0f} 天：{thread.next_suggested}"
                     ),
                     source_tag="workthread",
@@ -447,12 +592,17 @@ class SoftGoalDeriver:
             from mini_agent.perception.lesson_review import scan_lesson_groups
             groups = scan_lesson_groups(self._paths)
             for group in groups:
-                if not group.meets_t1_threshold():
+                # [修复] LessonGroup.meets_t1_threshold/meets_t2_t3_threshold
+                # 是 @property，此前这里当方法调用（多了一对括号），对 bool
+                # 值再调用 () 必然 TypeError，被外层 except 静默吞掉——信号3
+                # 从写下来就没能真正产出过候选，见
+                # docs/system-events-bus-guide.md 第7节。
+                if not group.meets_t1_threshold:
                     continue
                 count = group.total_occurrence
                 # urgency 正比于触发次数，T2/T3 额外加权
                 urgency = count * 0.5
-                if group.meets_t2_t3_threshold():
+                if group.meets_t2_t3_threshold:
                     urgency *= 1.5
                 # 从 trigger 文本提取主题关键词作为 Goal 标题
                 trigger_sample = group.entries[0].trigger if group.entries else "未知触发"

@@ -71,6 +71,13 @@ class GoalNode:
     priority: int = 0
     # 标签（用于分类）
     tags: list[str] = field(default_factory=list)
+    # [修复] 目标的静态描述（"为什么要做这件事"），与 progress_notes
+    # （"做到哪一步了"的动态追踪记录）语义不同，此前没有独立字段，
+    # soft_goal_deriver.commit_goals() 一直在调用 add_goal(description=...)
+    # 但该关键字参数根本不存在——每次有候选写入时 TypeError，被外层
+    # except Exception 静默吞掉，"软目标自动推导"从未真正提交成功过一个
+    # 目标节点。见 docs/system-events-bus-guide.md 第7节。
+    description: str = ""
 
     def to_dict(self) -> dict:
         return {
@@ -87,6 +94,7 @@ class GoalNode:
             "work_thread_ref": self.work_thread_ref,
             "priority": self.priority,
             "tags": self.tags,
+            "description": self.description,
         }
 
     @staticmethod
@@ -105,6 +113,7 @@ class GoalNode:
             work_thread_ref=d.get("work_thread_ref"),
             priority=d.get("priority", 0),
             tags=d.get("tags", []),
+            description=d.get("description", ""),
         )
 
     @property
@@ -253,6 +262,7 @@ class GoalBacklog:
     def add_goal(
         self,
         title: str,
+        description: str = "",
         source: str = "user",
         priority: int = 0,
         tags: Optional[list[str]] = None,
@@ -276,6 +286,7 @@ class GoalBacklog:
                 last_touched_at=time.time(),
                 priority=priority,
                 tags=tags or [],
+                description=description,
             )
             self._nodes[node.id] = node
         return node

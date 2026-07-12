@@ -61,6 +61,16 @@ def paths(tmp_path) -> MockPaths:
     return MockPaths(tmp_path)
 
 
+@pytest.fixture
+def real_paths(tmp_path):
+    """真实 AgentPaths（而非窄接口的 MockPaths）——本文件后半部分新增的
+    load_capability_map/_from_work_index/_from_lesson_review/事件总线相关
+    测试都要用到 workdir_memory/workdir_work_index/system_events 等 MockPaths
+    没有实现的属性。"""
+    from mini_agent.storage.paths import AgentPaths
+    return AgentPaths(tmp_path)
+
+
 # ════════════════════════════════════════════════════════════════════════════════
 # 8.5  节奏治理
 # ════════════════════════════════════════════════════════════════════════════════
@@ -471,3 +481,280 @@ class TestSoftGoalDeriverCapabilitySignal:
         assert isinstance(cap_candidates, list)
         assert isinstance(other_candidates, list)
         assert any("refactor" in c.title for c in cap_candidates)
+
+
+# ════════════════════════════════════════════════════════════════════════════════
+# 回归测试：信号2（_from_work_index）与信号3（_from_lesson_review）的既有 bug
+#
+# 信号2：thread.thread_id 不存在（真实字段是 id）导致构造 description 时
+# AttributeError；thread.last_activity_at 也不存在，getattr 静默回退成 0.0，
+# 使"是否最近有活动"的判断永远为 False。
+#
+# 信号3：LessonGroup.meets_t1_threshold/meets_t2_t3_threshold 是 @property，
+# 此前当方法调用（多了一对括号），对 bool 值再调用 () 必然 TypeError；
+# 同时依赖的 lesson_review.scan_lesson_groups(paths) 函数此前根本不存在。
+#
+# 两个信号都被外层 except Exception 静默吞掉，从写下来就没能真正产出过候选。
+# ════════════════════════════════════════════════════════════════════════════════
+
+class TestSoftGoalDeriverWorkIndexSignal:
+    """信号2（_from_work_index）修复后的端到端验证。"""
+
+    def _make_deriver(self, real_paths):
+        from mini_agent.evolution.soft_goal_deriver import SoftGoalDeriver
+
+        class _FakeAutonomyCfg:
+            exploration_min_calls_threshold = 2
+            already_explored_cooldown_days = 30.0
+            novelty_weight = 0.5
+
+        class _FakeCfg:
+            autonomy = _FakeAutonomyCfg()
+
+        return SoftGoalDeriver(real_paths, _FakeCfg())
+
+    def _write_work_index(self, real_paths, threads: list):
+        import json
+
+        real_paths.workdir_dir.mkdir(parents=True, exist_ok=True)
+        real_paths.workdir_work_index.write_text(
+            json.dumps({"work_threads": [t.to_dict() for t in threads]}), encoding="utf-8",
+        )
+
+    def test_stale_workthread_produces_candidate_without_exception(self, real_paths):
+        from mini_agent.perception.workdir_knowledge import WorkThread
+
+        stale_thread = WorkThread(
+            id="wt1", title="认证模块",
+            next_suggested="继续修复认证模块的边界情况",
+            started_at=time.time() - 40 * 86400,  # 40天前，超过 STALE_WORKTHREAD_DAYS(30)
+        )
+        self._write_work_index(real_paths, [stale_thread])
+
+        deriver = self._make_deriver(real_paths)
+        candidates = deriver._from_work_index()  # 修复前这里必然 AttributeError
+
+        assert len(candidates) == 1
+        assert candidates[0].source_tag == "workthread"
+        assert "wt1" in candidates[0].description  # 用的是 thread.id，不是不存在的 thread_id
+        assert "继续修复认证模块" in candidates[0].title
+
+    def test_fresh_workthread_produces_no_candidate(self, real_paths):
+        """[回归] 此前 last_activity_at 恒为 0.0，任何有 next_suggested 的
+        thread 都会被误判为 stale。修复后，刚创建（started_at 接近现在）
+        的 thread 不应该触发候选。"""
+        from mini_agent.perception.workdir_knowledge import WorkThread
+
+        fresh_thread = WorkThread(
+            id="wt2", title="缓存模块",
+            next_suggested="优化缓存命中率",
+            started_at=time.time(),  # 刚刚创建
+        )
+        self._write_work_index(real_paths, [fresh_thread])
+
+        deriver = self._make_deriver(real_paths)
+        candidates = deriver._from_work_index()
+        assert len(candidates) == 0
+
+    def test_no_next_suggested_produces_no_candidate(self, real_paths):
+        from mini_agent.perception.workdir_knowledge import WorkThread
+
+        thread = WorkThread(
+            id="wt3", title="无待办", next_suggested="",
+            started_at=time.time() - 40 * 86400,
+        )
+        self._write_work_index(real_paths, [thread])
+
+        deriver = self._make_deriver(real_paths)
+        candidates = deriver._from_work_index()
+        assert len(candidates) == 0
+
+
+class TestSoftGoalDeriverLessonReviewSignal:
+    """信号3（_from_lesson_review）修复后的端到端验证。"""
+
+    def _make_deriver(self, real_paths):
+        from mini_agent.evolution.soft_goal_deriver import SoftGoalDeriver
+
+        class _FakeAutonomyCfg:
+            exploration_min_calls_threshold = 2
+            already_explored_cooldown_days = 30.0
+            novelty_weight = 0.5
+
+        class _FakeCfg:
+            autonomy = _FakeAutonomyCfg()
+
+        return SoftGoalDeriver(real_paths, _FakeCfg())
+
+    def _add_lessons(self, real_paths, trigger: str, count: int):
+        from mini_agent.perception.memory_store import MemoryStore, MemoryEntry
+
+        store = MemoryStore(real_paths.workdir_memory)
+        for i in range(count):
+            store.add(MemoryEntry(
+                session_id=f"s{i}", summary="lesson", key_outcomes=[], tags=["lesson"],
+                model="t", entry_type="lesson", trigger=trigger, outcome="something happened",
+                source="self_reflection",
+            ))
+        return store
+
+    def test_high_frequency_lesson_group_produces_candidate(self, real_paths):
+        # T1_MIN_OCCURRENCE/T1_MIN_SESSIONS 门槛见 lesson_review.py，
+        # 每条 lesson 来自不同 session_id，数量给足够冗余确保达标。
+        self._add_lessons(real_paths, "数据库连接超时反复出现", count=5)
+
+        deriver = self._make_deriver(real_paths)
+        candidates = deriver._from_lesson_review()  # 修复前这里必然 TypeError/ImportError
+
+        assert len(candidates) == 1
+        assert candidates[0].source_tag == "lesson"
+        assert "数据库连接超时反复出现" in candidates[0].description
+
+    def test_low_frequency_lesson_group_produces_no_candidate(self, real_paths):
+        self._add_lessons(real_paths, "偶发的小问题", count=1)
+
+        deriver = self._make_deriver(real_paths)
+        candidates = deriver._from_lesson_review()
+        assert len(candidates) == 0
+
+    def test_scan_lesson_groups_helper_exists_and_works(self, real_paths):
+        """scan_lesson_groups(real_paths) 此前根本不存在（纯 ImportError）。"""
+        from mini_agent.perception.lesson_review import scan_lesson_groups
+
+        self._add_lessons(real_paths, "网络请求偶尔失败", count=3)
+        groups = scan_lesson_groups(real_paths)
+        assert len(groups) == 1
+        assert groups[0].total_occurrence == 3
+
+
+class TestGoalCandidateUnvalidatedEventFlow:
+    """事件总线第四条链路：goal.candidate_unvalidated 完整闭环。"""
+
+    def _make_deriver(self, real_paths):
+        from mini_agent.evolution.soft_goal_deriver import SoftGoalDeriver
+
+        class _FakeAutonomyCfg:
+            exploration_min_calls_threshold = 2
+            already_explored_cooldown_days = 30.0
+            novelty_weight = 0.5
+
+        class _FakeCfg:
+            autonomy = _FakeAutonomyCfg()
+
+        return SoftGoalDeriver(real_paths, _FakeCfg())
+
+    def test_workthread_candidate_tagged_and_event_published(self, real_paths):
+        from mini_agent.perception.goal_backlog import GoalBacklog
+        from mini_agent.evolution.soft_goal_deriver import _DeriveCandidate
+        from mini_agent.perception import system_events as se
+
+        backlog = GoalBacklog(real_paths)
+        deriver = self._make_deriver(real_paths)
+        candidates = [_DeriveCandidate(
+            title="做一件事", description="desc", source_tag="workthread",
+            priority=20, urgency=1.0,
+        )]
+        new_goals = deriver.commit_goals(candidates, backlog)
+
+        assert len(new_goals) == 1
+        assert "needs_review" in new_goals[0].tags
+        assert new_goals[0].status == "active"
+
+        events = se.poll_since(real_paths, consumer_name="peek", tiers=["tick"], advance_cursor=False)
+        matched = [e for e in events if e.event_type == "goal.candidate_unvalidated"]
+        assert len(matched) == 1
+        assert matched[0].payload["goal_id"] == new_goals[0].id
+        assert matched[0].payload["source_tag"] == "workthread"
+
+    def test_capability_candidate_not_tagged_needs_review(self, real_paths):
+        """capability 类候选走 ExplorationSandbox 验证，不应该被打
+        needs_review 标签，也不应该发布 goal.candidate_unvalidated 事件。"""
+        from mini_agent.perception.goal_backlog import GoalBacklog
+        from mini_agent.evolution.soft_goal_deriver import _DeriveCandidate
+        from mini_agent.perception import system_events as se
+
+        backlog = GoalBacklog(real_paths)
+        deriver = self._make_deriver(real_paths)
+        candidates = [_DeriveCandidate(
+            title="探索能力X", description="desc", source_tag="capability",
+            priority=15, urgency=1.0,
+        )]
+        new_goals = deriver.commit_goals(candidates, backlog)
+
+        assert "needs_review" not in new_goals[0].tags
+        events = se.poll_since(real_paths, consumer_name="peek2", tiers=["tick"], advance_cursor=False)
+        matched = [e for e in events if e.event_type == "goal.candidate_unvalidated"]
+        assert len(matched) == 0
+
+    def test_review_downgrades_goal_when_workthread_gone(self, real_paths):
+        from mini_agent.perception.goal_backlog import GoalBacklog
+        from mini_agent.evolution.soft_goal_deriver import _DeriveCandidate
+
+        backlog = GoalBacklog(real_paths)
+        deriver = self._make_deriver(real_paths)
+        candidates = [_DeriveCandidate(
+            title="做一件已经不存在的事", description="desc", source_tag="workthread",
+            priority=20, urgency=1.0,
+        )]
+        new_goals = deriver.commit_goals(candidates, backlog)
+        goal_id = new_goals[0].id
+
+        # work_index 里没有任何 WorkThread → 复核判定"已不存在"
+        processed = deriver.review_unvalidated_candidates(backlog)
+        assert processed == 1
+
+        node = backlog.get(goal_id)
+        assert node.status == "paused"
+        assert "review_failed" in node.tags
+        assert "needs_review" not in node.tags
+        assert "自动复核" in node.progress_notes
+
+    def test_review_keeps_goal_when_workthread_still_stale(self, real_paths):
+        import json
+        from mini_agent.perception.goal_backlog import GoalBacklog
+        from mini_agent.evolution.soft_goal_deriver import _DeriveCandidate
+        from mini_agent.perception.workdir_knowledge import WorkThread
+
+        thread = WorkThread(
+            id="wt1", title="认证模块",
+            next_suggested="继续修复认证模块",
+            started_at=time.time() - 40 * 86400,
+        )
+        real_paths.workdir_dir.mkdir(parents=True, exist_ok=True)
+        real_paths.workdir_work_index.write_text(
+            json.dumps({"work_threads": [thread.to_dict()]}), encoding="utf-8",
+        )
+
+        backlog = GoalBacklog(real_paths)
+        deriver = self._make_deriver(real_paths)
+        candidates = [_DeriveCandidate(
+            title="继续修复认证模块"[:80], description="desc", source_tag="workthread",
+            priority=20, urgency=1.0,
+        )]
+        new_goals = deriver.commit_goals(candidates, backlog)
+        goal_id = new_goals[0].id
+
+        processed = deriver.review_unvalidated_candidates(backlog)
+        assert processed == 1
+
+        node = backlog.get(goal_id)
+        assert node.status == "active"
+        assert "needs_review" not in node.tags
+        assert "review_failed" not in node.tags
+
+    def test_review_is_idempotent(self, real_paths):
+        from mini_agent.perception.goal_backlog import GoalBacklog
+        from mini_agent.evolution.soft_goal_deriver import _DeriveCandidate
+
+        backlog = GoalBacklog(real_paths)
+        deriver = self._make_deriver(real_paths)
+        candidates = [_DeriveCandidate(
+            title="某候选", description="desc", source_tag="lesson",
+            priority=20, urgency=1.0,
+        )]
+        deriver.commit_goals(candidates, backlog)
+
+        first = deriver.review_unvalidated_candidates(backlog)
+        second = deriver.review_unvalidated_candidates(backlog)
+        assert first == 1
+        assert second == 0  # 游标已推进，不重复处理

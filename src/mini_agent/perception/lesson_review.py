@@ -231,10 +231,39 @@ def scan_for_proposals(
     return qualifying
 
 
+def scan_lesson_groups(paths) -> list["LessonGroup"]:
+    """
+    [修复] soft_goal_deriver.py 的信号3（_from_lesson_review）和事件总线的
+    goal.candidate_unvalidated 复核逻辑（_reverify_candidate_signal）都在
+    调用 `scan_lesson_groups(self._paths)`，但这个函数此前根本不存在——
+    本模块只有 group_lessons(entries)/scan_for_proposals(entries, tier)
+    两个函数，且都接受"已加载的 entries 列表"而不是 paths，签名对不上，
+    必然 ImportError，被外层 except 静默吞掉。
+
+    这里补一个真正"只传 paths 就能用"的便捷包装：从 workdir 记忆文件
+    独立构造一个只读 MemoryStore（不依赖调用方持有 memory_backend 实例——
+    SoftGoalDeriver 目前确实没有持有 memory_backend），读取全部条目后
+    委托给 group_lessons()，返回全部分组（不按 tier 过滤，由调用方
+    自己判断 meets_t1_threshold/meets_t2_t3_threshold，与 _from_lesson_review()
+    原有的调用习惯一致）。
+
+    独立构造 MemoryStore 而不是复用调用方已有的实例，会有一次额外的磁盘
+    读取开销——SoftGoalDeriver 的调用节奏是 tick 级（默认 60s 一次），
+    这个开销可接受；如果后续这个函数被更高频的路径调用，应该改成接受
+    可选的 memory_backend 参数、传入时直接复用。
+    """
+    from mini_agent.perception.memory_store import MemoryStore
+
+    store = MemoryStore(paths.workdir_memory)
+    entries = store.all_entries()
+    return group_lessons(entries)
+
+
 __all__ = [
     "LessonGroup",
     "group_lessons",
     "scan_for_proposals",
+    "scan_lesson_groups",
     "T1_MIN_OCCURRENCE",
     "T1_MIN_SESSIONS",
     "T2_T3_MIN_OCCURRENCE",

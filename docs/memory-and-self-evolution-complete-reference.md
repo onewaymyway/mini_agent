@@ -804,19 +804,22 @@ daemon-connected 两条触发路径共用同一开关。测试：`tests/test_cog
   生效，现已统一为 `inject_affordance_map()` 共享实现。
 - **打通具身自我感知与用户行为感知两层**（已部分实现）：`use_behavior_context`
   双开关桥接，默认关闭、一次性只读快照，不做逐 turn 实时联合决策。
-- **SoftGoalDeriver 验证不对称**（未修复）：只有 capability 类候选经过
-  `ExplorationSandbox` 验证，workthread/lesson 类候选直接写入
-  `GoalBacklog`，正确性依赖后续 GoalJudge 事后把关。
+- **SoftGoalDeriver 验证不对称**（已缓解，见下方跨系统事件总线
+  第6.4节）：workthread/lesson 类候选此前直接写入 `GoalBacklog`、
+  完全不经过验证；现在打 `needs_review` 标签 + 事件驱动的轻量一致性
+  复核（重新核对触发信号是否仍成立），不是完整 `ExplorationSandbox`
+  验证，但不再是"完全不验证"。
 - **自维护模块与 Phase G 职责边界**（未梳理）：两者在"定期审视自身状态
   并调整"的语义上有重叠，尚未做过正式边界梳理。
 - **跨系统事件总线**（已实现，见 `docs/system-events-bus-guide.md`）：
-  补齐了"proprioception → 自主决策"这条链路此前"只落快照、无人主动
-  触发响应"的缺口（frustration 越阈值 → 提前自维护）、"记忆检索
-  稀疏 → 主动探索"的正反馈闭环，以及 outcome 负面判定 → 回写
-  `source="eval_failure"` lesson（闭合 lesson→skill_propose→
-  outcome_tracker→lesson 环，此前这个环是断开的）。workthread/lesson
-  候选的轻量一致性检查（缓解上面 SoftGoalDeriver 验证不对称问题）
-  尚未接入，是这套总线接下来的自然扩展点。
+  四条链路全部打通——proprioception → 提前自维护、记忆检索稀疏 → 探索
+  novelty 加权、outcome 负面判定 → 回写 lesson、workthread/lesson 候选
+  的轻量一致性复核（缓解上面 SoftGoalDeriver 验证不对称问题）。过程中
+  额外发现并修复了 `soft_goal_deriver.py`/`goal_backlog.py`/
+  `lesson_review.py` 里六个独立的既有 bug（字段名/方法签名对不上，
+  详见 `system-events-bus-guide.md` 第7节）——最严重的一处是
+  `commit_goals()` 调用 `add_goal(description=...)` 时该参数根本不存在，
+  导致"软目标自动推导"此前从未真正提交成功过一个目标节点。
 - **`_from_capability_map` 死代码 bug**（已修复，见
   `docs/system-events-bus-guide.md` 第7节）：该方法此前缺少独立 `def` 头，
   被误拼接进 `_recently_explored_domains()` 的不可达死代码区，

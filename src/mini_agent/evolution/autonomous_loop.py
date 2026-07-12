@@ -228,6 +228,17 @@ class AutonomousLoop:
 
             cap_candidates, other_candidates = deriver.derive_candidates(self._goal_backlog)
 
+            # [事件总线接入] 先复核上一轮（或更早）产出的 needs_review 候选，
+            # 再提交本轮新候选——本轮新提交的 workthread/lesson 候选会在
+            # 下一次 tick 才被复核到，这是事件总线"轮询+游标"模型的正常延迟，
+            # 不是 bug（复核本身也不需要"立刻"，见 system-events-bus-guide.md）。
+            reviewed_count = deriver.review_unvalidated_candidates(self._goal_backlog)
+            if reviewed_count:
+                self._record_digest({
+                    "type": "goal_candidates_reviewed",
+                    "summary": f"自动复核了 {reviewed_count} 个待验证的候选目标",
+                })
+
             # 其他类：直接写 Goal
             new_goals = deriver.commit_goals(other_candidates, self._goal_backlog)
             for goal in new_goals:
