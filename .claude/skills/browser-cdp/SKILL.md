@@ -38,6 +38,7 @@ platforms: windows, macos, linux, pc
 - [baidu_search_skill.md](baidu_search_skill.md) — 百度搜索自动化脚本 (`baidu_search.py`)
 - [bing_search_skill.md](bing_search_skill.md) — Bing 搜索自动化脚本 (`bing_search.py`)
 - [zhihu_search_skill.md](zhihu_search_skill.md) — 知乎内容搜索自动化脚本 (`zhihu_search.py`)
+- [arxiv_search_skill.md](arxiv_search_skill.md) — arXiv 论文搜索自动化脚本 (`arxiv_search.py`)
 
 ### 新增子功能步骤
 
@@ -298,6 +299,12 @@ python browser_screenshot.py --tab <id> --out ./temp_data/shot.png   # 写入 sk
 本 skill 目录下提供了一个完整的知乎内容搜索自动化脚本 `zhihu_search.py`，通过百度搜索 `site:zhihu.com` 获取知乎问答和专栏文章。
 
 **详细文档请参考：[zhihu_search_skill.md](zhihu_search_skill.md)**
+
+## arXiv 论文搜索自动化脚本 (`arxiv_search.py`)
+
+本 skill 目录下提供了一个完整的 arXiv 论文搜索自动化脚本 `arxiv_search.py`，支持按关键词搜索最新论文列表和获取论文详细信息。
+
+**详细文档请参考：[arxiv_search_skill.md](arxiv_search_skill.md)**
 
 ## 常见坑
 
