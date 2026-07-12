@@ -64,8 +64,6 @@ def type_text(session, text: str, delay: float = 0.02):
             "Input.dispatchKeyEvent",
             {
                 "type": "keyDown",
-                "text": ch,
-                "unmodifiedText": ch,
                 "key": ch,
             },
         )
@@ -73,7 +71,7 @@ def type_text(session, text: str, delay: float = 0.02):
             "Input.dispatchKeyEvent",
             {"type": "char", "text": ch, "unmodifiedText": ch, "key": ch},
         )
-        session.send("Input.dispatchKeyEvent", {"type": "keyUp", "text": ch, "key": ch})
+        session.send("Input.dispatchKeyEvent", {"type": "keyUp", "key": ch})
         if delay:
             time.sleep(delay)
 
