@@ -248,6 +248,7 @@ class SoftGoalDeriver:
             if hasattr(self._cfg, "autonomy") else 2
         )
         already_explored = self._recently_explored_domains()
+        sparse_tokens = self._recent_sparse_region_tokens()
 
         for entry in entries:
             total_calls = getattr(entry, "total_calls", 0)
@@ -262,12 +263,22 @@ class SoftGoalDeriver:
             if domain in already_explored:
                 novelty *= 0.1  # 最近已探索过，大幅降权避免重复探索
 
+            # [事件总线接入] 如果这个能力领域最近被记忆检索标记为"稀疏"
+            # （即真实发生过查询、但记忆里几乎没有相关条目），说明这不只是
+            # "capability_map 里没数据"的静态推断，而是有实际信号支持的
+            # 空白区，novelty 应该获得额外加权。加权幅度有上限（最多 1.6x），
+            # 避免稀疏信号完全压过 total_calls 本身的基础判断。
+            overlap = self._domain_token_overlap(domain, sparse_tokens)
+            if overlap > 0:
+                novelty *= min(1.6, 1.0 + 0.2 * overlap)
+
             candidates.append(_DeriveCandidate(
                 title=f"探索未知能力：{domain}",
                 description=(
                     f"capability_map 记录 {domain} 目前仅有 {total_calls} 次调用样本，"
                     f"数据量太少无法判断真实能力边界。建议主动尝试一次小型探索任务，"
                     f"以减少 agent 对自身该能力的不确定性。"
+                    + ("（近期记忆检索也发现该领域信息稀疏，信号更强）" if overlap > 0 else "")
                 ),
                 source_tag="capability",
                 priority=15,   # 好奇心驱动，优先级略低于确定性问题
@@ -275,6 +286,42 @@ class SoftGoalDeriver:
                 novelty=novelty,
             ))
         return candidates
+
+    def _recent_sparse_region_tokens(self) -> list[str]:
+        """
+        [事件总线接入] 读取 hybrid_memory_backend 发布的
+        "memory.sparse_region_detected" 事件（tier="tick"，与本类的调用节奏
+        天然匹配），汇总最近一批稀疏 query 的 token，用于给未探索能力的
+        novelty 打分做加权（见 _domain_token_overlap()）。
+
+        失败静默降级：事件总线读取异常/未开启 embedding 检索（不会有这类
+        事件）时返回空列表，novelty 计算退化为改动前的纯 total_calls 逻辑。
+        """
+        try:
+            from mini_agent.perception import system_events as _se
+
+            events = _se.poll_since(
+                self._paths,
+                consumer_name="soft_goal_deriver",
+                tiers=["tick"],
+                event_types=["memory.sparse_region_detected"],
+            )
+            tokens: list[str] = []
+            for evt in events:
+                tokens.extend(evt.payload.get("query_tokens") or [])
+            return tokens
+        except Exception:
+            return []
+
+    @staticmethod
+    def _domain_token_overlap(domain: str, sparse_tokens: list[str]) -> int:
+        """domain 名称与稀疏 query token 集合的重合度（简单计数，不追求精确
+        分词一致性——domain 通常是短语级的 capability_name，用子串包含判断
+        比再跑一遍完整分词器更稳健，也不需要引入额外依赖）。"""
+        if not sparse_tokens:
+            return 0
+        domain_lower = domain.lower()
+        return sum(1 for tok in sparse_tokens if tok and tok.lower() in domain_lower)
 
     def _recently_explored_domains(self, cooldown_days: Optional[float] = None) -> set[str]:
         """
@@ -314,9 +361,19 @@ class SoftGoalDeriver:
             return domains
         except Exception:
             return set()
+
+    def _from_capability_map(self) -> list[_DeriveCandidate]:
         """
         信号 1：capability_map 中 confidence < CONFIDENCE_LOW 的条目。
         说明 agent 在该能力上经常失败，有必要主动练习/改进。
+
+        [修复记录] 这个方法此前缺少独立的 def 头，代码被误拼接进
+        _recently_explored_domains() 函数体末尾（return/except 之后的
+        不可达死代码），导致 self._from_capability_map() 在 derive_candidates()
+        里调用时必然抛 AttributeError（被 autonomous_loop.py 的外层
+        except Exception 兜住、写入 error.jsonl，不会崩溃但也从未真正
+        产出过候选）。同时修复了它依赖的 phase_g.load_capability_map
+        此前根本不存在的问题，见 phase_g.py 新增的 load_capability_map()。
         """
         candidates = []
         try:

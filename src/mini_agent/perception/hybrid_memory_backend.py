@@ -38,6 +38,7 @@ class HybridMemoryBackend(MemoryBackend):
         tfidf_weight: float = 0.5,
         embedding_weight: float = 0.5,
         embedding_top_n: int = 20,
+        paths: Optional["object"] = None,
     ) -> None:
         self._inner = inner
         self._embed_call = embed_call
@@ -47,6 +48,11 @@ class HybridMemoryBackend(MemoryBackend):
         self._vectors_path = Path(str(inner._path)).with_suffix(".embeddings.jsonl")
         self._vectors: dict[str, list] = {}   # entry_id -> vector，懒加载
         self._vectors_loaded = False
+        # [事件总线接入] paths 用于发布 "memory.sparse_region_detected" 事件。
+        # 可选参数、默认 None——不传入时 search() 完全等价于改动前的行为，
+        # 老的调用方（不知道事件总线存在）不会受影响。
+        self._paths = paths
+        self._last_sparse_event_ts: float = 0.0
 
     # ── 委托：与 MemoryStore 行为完全一致 ────────────────────────────────────
 
@@ -102,15 +108,74 @@ class HybridMemoryBackend(MemoryBackend):
         tfidf_ranked = self._inner._score_all(query)
 
         if self._embed_call is None:
-            return [e for e, s in sorted(tfidf_ranked, key=lambda x: -x[1])[:k] if s > 0]
+            result = [e for e, s in sorted(tfidf_ranked, key=lambda x: -x[1])[:k] if s > 0]
+            self._maybe_report_sparse_region(query, tfidf_hits=len(result), embed_hits=0)
+            return result
 
         query_vec = self._safe_embed(query)
         if query_vec is None:
-            return [e for e, s in sorted(tfidf_ranked, key=lambda x: -x[1])[:k] if s > 0]
+            result = [e for e, s in sorted(tfidf_ranked, key=lambda x: -x[1])[:k] if s > 0]
+            self._maybe_report_sparse_region(query, tfidf_hits=len(result), embed_hits=0)
+            return result
 
         embed_ranked = self._embedding_score_all(query_vec)
         merged = self._merge_scores(tfidf_ranked, embed_ranked)
-        return [e for e, s in sorted(merged, key=lambda x: -x[1])[:k] if s > 0]
+        result = [e for e, s in sorted(merged, key=lambda x: -x[1])[:k] if s > 0]
+
+        tfidf_hits = sum(1 for _, s in tfidf_ranked if s > 0)
+        embed_hits = sum(1 for _, s in embed_ranked if s > 0)
+        self._maybe_report_sparse_region(query, tfidf_hits=tfidf_hits, embed_hits=embed_hits)
+        return result
+
+    def _maybe_report_sparse_region(self, query: str, *, tfidf_hits: int, embed_hits: int) -> None:
+        """
+        [事件总线接入] TF-IDF 和 embedding 两路都几乎召回不到内容时，说明
+        query 所在的语义领域记忆条目稀疏——这本身就是"这个领域值得主动去
+        探索补充"的信号，比等 SoftGoalDeriver 靠 capability_map 的 total_calls
+        统计间接推断"没试过"更直接：这里能捕捉到"用户/agent 实际问到了、
+        但记忆里没有"的真实空白，而不只是"从没问过"。
+
+        tier="tick"：不需要像 frustration 那样 0.5s 内响应，SoftGoalDeriver
+        本来就是按自己的节拍（tick）跑 derive_candidates()，稀疏信号能在
+        下一次 tick 被看到即可。
+
+        限流而非严格边沿检测：与 frustration 有明确阈值不同，"query 是否
+        稀疏"每次查询都可能不同，没有一个稳定的"边沿"概念可判断。这里退而
+        求其次，用一个进程内最短发布间隔（默认 60s）防止高频检索把事件日志
+        刷屏，代价是可能漏报一些密集出现在同一分钟内的稀疏 query——可接受，
+        因为 SoftGoalDeriver 消费时本来就是取"最近一段时间内出现过的稀疏
+        领域"做累积判断，不依赖每一次稀疏都被单独记录。
+        """
+        if self._paths is None:
+            return  # 未传入 paths（老调用方/测试）：完全不发布，行为与改动前一致
+        if tfidf_hits > 0 or embed_hits > 0:
+            return  # 有召回结果，不算稀疏
+        if not query or not query.strip():
+            return
+
+        import time as _time
+        now = _time.time()
+        _MIN_INTERVAL_SECONDS = 60.0
+        if now - self._last_sparse_event_ts < _MIN_INTERVAL_SECONDS:
+            return
+        self._last_sparse_event_ts = now
+
+        try:
+            from mini_agent.perception.memory_store import _tokenize
+            from mini_agent.perception import system_events as _se
+
+            tokens = _tokenize(query)[:8]  # 只取前几个 token，事件 payload 不需要完整原文
+            if not tokens:
+                return
+            _se.publish(
+                self._paths,
+                source="hybrid_memory_backend",
+                event_type="memory.sparse_region_detected",
+                tier="tick",
+                payload={"query_tokens": tokens},
+            )
+        except Exception:
+            pass  # 事件发布是旁路增强，不能影响记忆检索本身
 
     def _safe_embed(self, text: str) -> Optional[list]:
         try:

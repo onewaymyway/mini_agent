@@ -3024,6 +3024,7 @@ class Agent:
                 # 反复受挫的 Agent 同时还在后台跑高置信度要求的自主探索。只在
                 # frustration 有意义变化时才写，避免每轮都触发磁盘 IO。
                 if _pp_state.frustration != self._last_written_frustration:
+                    _prev_frustration = self._last_written_frustration
                     self._last_written_frustration = _pp_state.frustration
                     try:
                         self._write_proprioception_snapshot(_pp_state)
@@ -3031,6 +3032,29 @@ class Agent:
                         from mini_agent.errors import log_exception
                         log_exception(_mini_agent_exc, where='mini_agent.agent')
                         pass
+                    # [事件总线接入] 只在"越过阈值边沿"时发布 instant 事件，
+                    # 不是每次快照变化都发——快照文件本身已经覆盖了"任意时刻
+                    # 查询当前状态"的需求，事件总线只负责"状态刚刚变差了，
+                    # 应该有人尽快看一眼"这类边沿通知，避免事件日志被
+                    # 高频采样信号刷屏。
+                    try:
+                        _threshold = self.cfg.proprioception.frustration_threshold
+                        if _pp_state.frustration >= _threshold and _prev_frustration < _threshold:
+                            from mini_agent.perception import system_events as _se
+                            from mini_agent.storage.paths import AgentPaths as _AP
+                            _se.publish(
+                                _AP(self.cfg.project_root),
+                                source=f"session:{self._session.id if self._session else 'unknown'}",
+                                event_type="proprioception.frustration_spike",
+                                tier="instant",
+                                payload={
+                                    "frustration": round(_pp_state.frustration, 3),
+                                    "consecutive_failures": self._proprioception.consecutive_failures
+                                        if self._proprioception is not None else 0,
+                                },
+                            )
+                    except Exception:
+                        pass  # 事件发布是旁路增强，绝不能影响主循环
 
             # [具身改进 C1] AgentSelfModel 快变量更新：把刚 sense() 到的内部状态
             # 同步给 self_model，ContextBuilder.build() 下次调用时会自动读取。

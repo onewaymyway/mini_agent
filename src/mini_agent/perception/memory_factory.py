@@ -78,6 +78,7 @@ def _load_hybrid(cfg: "AppConfig", scope: str = "project", user_id: Optional[str
     try:
         from mini_agent.perception.hybrid_memory_backend import HybridMemoryBackend
         from mini_agent.perception.local_embedding import get_shared_embedding_model
+        from mini_agent.storage.paths import AgentPaths
 
         embed_model = get_shared_embedding_model(
             cfg.memory.embedding_model, cfg.memory.embedding_model_cache_dir
@@ -92,6 +93,7 @@ def _load_hybrid(cfg: "AppConfig", scope: str = "project", user_id: Optional[str
             tfidf_weight=cfg.memory.embedding_tfidf_weight,
             embedding_weight=cfg.memory.embedding_weight,
             embedding_top_n=cfg.memory.embedding_top_n,
+            paths=AgentPaths(cfg.project_root),
         )
     except Exception:
         # 模型下载失败/onnxruntime 未安装（用户开了开关但没装 extras）/加载出错：

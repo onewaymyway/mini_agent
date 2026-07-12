@@ -809,6 +809,21 @@ daemon-connected 两条触发路径共用同一开关。测试：`tests/test_cog
   `GoalBacklog`，正确性依赖后续 GoalJudge 事后把关。
 - **自维护模块与 Phase G 职责边界**（未梳理）：两者在"定期审视自身状态
   并调整"的语义上有重叠，尚未做过正式边界梳理。
+- **跨系统事件总线**（已实现，见 `docs/system-events-bus-guide.md`）：
+  补齐了"proprioception → 自主决策"这条链路此前"只落快照、无人主动
+  触发响应"的缺口（frustration 越阈值 → 提前自维护），以及"记忆检索
+  稀疏 → 主动探索"的正反馈闭环（此前 `SoftGoalDeriver` 只能靠
+  `capability_map.total_calls` 间接推断"没试过"，现在能直接感知
+  "实际问到了但记忆里没有"的真实空白）。outcome 负面判定回写 lesson、
+  workthread/lesson 候选的轻量一致性检查（缓解上面 SoftGoalDeriver
+  验证不对称问题）尚未接入，是这套总线接下来的两个自然扩展点。
+- **`_from_capability_map` 死代码 bug**（已修复，见
+  `docs/system-events-bus-guide.md` 第7节）：该方法此前缺少独立 `def` 头，
+  被误拼接进 `_recently_explored_domains()` 的不可达死代码区，
+  `derive_candidates()` 调用它必然 `AttributeError`（被外层 `except`
+  静默吞掉），导致"软目标自动推导"信号1（低置信度能力域）从未真正
+  产出过候选；同时补上了它依赖的、此前完全不存在的
+  `phase_g.load_capability_map()`。
 
 ---
 
@@ -888,5 +903,6 @@ daemon-connected 两条触发路径共用同一开关。测试：`tests/test_cog
 | `docs/library-index-guide.md` | 图书馆式记忆索引（分类树/实体/编年目录） |
 | `docs/memory-management-guide.md` | 记忆管理命令与配置 |
 | `docs/multi-user-guide.md` | 多用户场景下记忆/自我进化的隔离边界 |
+| `docs/system-events-bus-guide.md` | 跨子系统事件总线（记忆/自我进化/具身感知之间的信号桥接） |
 | `docs/commands-and-tools-reference.md` | 全部命令速查表 |
 | `next_doc/priority_improvements_implementation_plan.md` | 已修复/待修复的架构不对称设计方案 |

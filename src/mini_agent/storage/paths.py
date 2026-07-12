@@ -274,6 +274,30 @@ class AgentPaths:
         return self.workdir_dir / "proprioception_snapshot.json"
 
     @property
+    def system_events(self) -> Path:
+        """<project_root>/.agent/events.jsonl — 跨子系统事件日志（记忆/自我进化/
+        具身感知之间的事件总线，见 perception/system_events.py）。
+
+        与 proprioception_snapshot.json（单文件覆盖、只存"最近一次"）不同，
+        这是追加写的日志：事件是一次性的边沿信号（"刚刚发生了什么"），覆盖写
+        会丢掉还没被某个消费者读到的事件。多 session/多进程可能并发追加，
+        写入必须走 system_events.py 里的跨平台文件锁，不能直接 open(...,'a')。"""
+        return self.workdir_dir / "events.jsonl"
+
+    @property
+    def system_events_archive_dir(self) -> Path:
+        """<project_root>/.agent/events_archive/ — events.jsonl 按天滚动归档目录，
+        避免主日志无限增长（滚动逻辑见 system_events.py::rotate_if_needed()）。"""
+        return self.workdir_dir / "events_archive"
+
+    @property
+    def system_events_cursors_dir(self) -> Path:
+        """<project_root>/.agent/event_cursors/ — 每个消费者各自的读取游标
+        ({consumer_name}.json: last_event_id / last_ts)，重启后不重复处理，
+        也不漏读——与 rhythm.json/self_maintenance_state.json 同源的"小状态文件"模式。"""
+        return self.workdir_dir / "event_cursors"
+
+    @property
     def sessions_dir(self) -> Path:
         """<project_root>/.agent/sessions/ — 所有 session 的根目录"""
         return self.workdir_dir / "sessions"

@@ -271,6 +271,19 @@ class CapabilityMapEntry:
     failure_count: int = 0
     confidence: float = 0.0   # success / (success + failure)
 
+    @property
+    def capability_name(self) -> str:
+        """soft_goal_deriver.py 用的字段名——domain 的别名，两边保持同一份数据，
+        不引入第二份状态。命名不统一是历史遗留，这里用 property 兜底而不是
+        改字段名，避免破坏 affordance_analyzer.py/self_model.py 已经在用的
+        .domain 读法。"""
+        return self.domain
+
+    @property
+    def total_calls(self) -> int:
+        """soft_goal_deriver.py 用的字段名——success_count + failure_count 的别名。"""
+        return self.success_count + self.failure_count
+
     def to_dict(self) -> dict:
         return {
             "domain": self.domain,
@@ -278,6 +291,25 @@ class CapabilityMapEntry:
             "failure_count": self.failure_count,
             "confidence": round(self.confidence, 4),
         }
+
+
+def load_capability_map(paths) -> "list[CapabilityMapEntry]":
+    """
+    只读方式获取当前 workdir 的能力地图，供 soft_goal_deriver.py 的
+    _from_capability_map()（信号1）/_from_unexplored_capabilities()（信号4）使用。
+
+    直接复用 build_capability_map(paths, memory_backend=None) ——这是
+    affordance_analyzer.py/self_model.py 已经在用的"只读、不写回 memory"惯用法
+    （memory_backend=None 时 build_capability_map 内部会跳过
+    _write_capability_map_to_memory()，只返回扫描结果）。不新增第二套计算逻辑，
+    避免和 build_capability_map() 的统计口径产生分歧。
+
+    注：这里选择每次调用都实时重新扫描 task_manifest（而不是读取
+    _write_capability_map_to_memory() 写入的那份人类可读文本摘要），因为后者
+    是给人看的 bar chart 文本，不是结构化数据，重新解析反而更脆弱。
+    task_manifest 扫描量级通常不大（按 session 数递增），实时扫描的开销可接受。
+    """
+    return build_capability_map(paths, None)
 
 
 def build_capability_map(paths, memory_backend) -> list[CapabilityMapEntry]:

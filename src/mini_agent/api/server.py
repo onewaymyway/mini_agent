@@ -357,6 +357,15 @@ class AgentRunner(threading.Thread):
                 # 下一个 tick 周期（默认 60 秒）才处理。
                 if self._self_message_bus is not None:
                     self._drain_self_messages()
+
+                # [事件总线接入] 即时层事件同样"每个 idle 周期顺带查一下"，
+                # 与上面 _drain_self_messages() 同一节奏——都是"不应该等到
+                # 60 秒 tick 周期才被看到"的信号，但走的是 events.jsonl（跨
+                # session/跨进程持久化），不是 SelfMessageBus 的内存队列
+                # （SelfMessageBus 是"实体间点对点通信"，这里是"状态变化广播"，
+                # 语义不同，见 perception/system_events.py 模块 docstring）。
+                if bridge.agent is not None:
+                    self._drain_system_events(bridge)
                 continue
 
             turn_id = cmd.turn_id
@@ -623,6 +632,74 @@ class AgentRunner(threading.Thread):
                 from mini_agent.errors import log_exception
                 log_exception(_mini_agent_exc, where='mini_agent.api.server')
                 pass
+
+    def _drain_system_events(self, bridge: AgentBridge) -> None:
+        """
+        [事件总线] 每个 idle 周期消费一次 events.jsonl 里的 instant 层事件。
+
+        目前只处理 "proprioception.frustration_spike" 一种事件类型，作为
+        事件总线的第一个真实接入案例：某个 session 的挫败感越过阈值时，
+        提前跑一次 SelfMaintenanceModule 健康检查，而不是等 24 小时的
+        should_run_self_maintenance() 时间门控——但依然要过这个时间门控
+        （interval 可以设得比默认 24h 短，见下面注释），避免"一次挫败感尖峰
+        触发自维护 → 自维护本身的工具调用又失败一次 → 又触发一次"的连锁抖动。
+
+        这条 AgentRunner 不一定是产生该事件的那条 session 线程（同一 workdir
+        下任意 session 的 frustration 都会被这里看到）——这正是事件总线要解决
+        的问题：ResourceArbiter/SelfMaintenanceModule 是 workdir 级单例，不
+        持有活跃 Agent 引用，需要靠这类跨 session 广播的信号来感知"当前是不是
+        该缓一缓"。多个 AgentRunner 线程可能同时读到同一条 instant 事件（各自
+        游标独立，consumer_name 目前用固定值 "daemon_instant_consumer"，即
+        同一 workdir 下所有 AgentRunner 共享一个游标——这是有意为之：健康检查
+        只需要跑一次，不需要每个 session 线程各跑一次），第一个跑到的线程
+        推进游标，后续线程自然读不到已消费的事件，不会重复触发。
+        """
+        try:
+            from mini_agent.perception import system_events as _se
+            from mini_agent.storage.paths import AgentPaths as _AP
+
+            paths = _AP(bridge.agent.cfg.project_root)
+            events = _se.poll_since(
+                paths,
+                consumer_name="daemon_instant_consumer",
+                tiers=["instant"],
+            )
+        except Exception:
+            return  # 事件总线读取失败不应影响主循环，静默跳过本轮
+
+        for evt in events:
+            try:
+                if evt.event_type == "proprioception.frustration_spike":
+                    self._maybe_early_self_maintenance(paths)
+                # 其它 instant event_type 是未来扩展点，目前静默忽略，
+                # 与 _drain_self_messages() 对未知 msg_type 的处理方式一致。
+            except Exception as _mini_agent_exc:
+                from mini_agent.errors import log_exception
+                log_exception(_mini_agent_exc, where='mini_agent.api.server')
+                pass
+
+    def _maybe_early_self_maintenance(self, paths) -> None:
+        """被 frustration_spike 事件唤醒时，尝试提前跑一次自维护健康检查。
+
+        依然过 should_run_self_maintenance() 的时间门控——只是把 interval
+        从默认 24h 换成一个更短的"事件触发专用"间隔，而不是完全绕开门控。
+        这样即使短时间内收到多条 frustration_spike 事件（比如同一个 session
+        反复越过阈值），也不会每次都真的重新跑一遍健康检查。
+        """
+        from mini_agent.evolution.self_maintenance import (
+            should_run_self_maintenance,
+            run_self_maintenance,
+        )
+
+        # 事件触发场景比常规 24h 定时扫描更紧急，但也不该短到几分钟内被
+        # 同一个反复受挫的 session 打成刷屏——1 小时是一个保守的起点，
+        # 后续如果观察到确实有价值再考虑做成可配置项。
+        _EVENT_TRIGGERED_INTERVAL_HOURS = 1.0
+
+        if not should_run_self_maintenance(paths, interval_hours=_EVENT_TRIGGERED_INTERVAL_HOURS):
+            return
+
+        run_self_maintenance(paths)
 
     def _handle_session_crashed(self, payload: dict) -> None:
         """
