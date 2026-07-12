@@ -1895,6 +1895,19 @@ class Agent:
     def clear_history(self) -> None:
         self._history.clear()
 
+    def close(self) -> None:
+        """显式关闭 Agent 持有的所有文件句柄（raw_history 等）。
+        
+        测试代码应在 tearDown 中调用此方法，确保 Windows 下
+        TemporaryDirectory 清理时不会出现 PermissionError (WinError 32)。
+        """
+        try:
+            if hasattr(self, '_hist') and self._hist is not None:
+                if hasattr(self._hist, '_raw') and self._hist._raw is not None:
+                    self._hist._raw._close_file()
+        except Exception:
+            pass
+
     def switch_provider(self, llm_config: LLMConfig) -> None:
         """
         运行时切换 LLM provider，不影响对话历史。
