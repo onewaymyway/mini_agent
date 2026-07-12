@@ -28,6 +28,7 @@ from dataclasses import dataclass, field, asdict
 from typing import Optional, TYPE_CHECKING
 
 from mini_agent.prompts import pm
+import mini_agent.ui.renderer as R
 
 
 class GoalSpecBuildError(RuntimeError):
@@ -402,6 +403,12 @@ class GoalSpecBuilder:
             history_transcript=transcript,
             truncated_note=truncated_note + summary_note,
         )
+        R.print_debug_block(
+            f"/goal from-history 发送给 GoalSpecBuilder 的输入"
+            f"（history_transcript {len(transcript)} 字符，"
+            f"has_compact_summary={has_compact_summary}，truncated={truncated}）",
+            prompt,
+        )
         raw = self._run_builder(prompt)
         data = _extract_json(raw)
 
@@ -416,6 +423,7 @@ class GoalSpecBuilder:
                 "空字符串 \"\"，acceptance_criteria 用空数组 []，但整体仍必须是"
                 "合法 JSON。"
             )
+            R.print_debug_block("/goal from-history 重试输入（上次输出无法解析为 JSON）", retry_prompt)
             retry_raw = self._run_builder(retry_prompt)
             retry_data = _extract_json(retry_raw)
             if retry_data is None:

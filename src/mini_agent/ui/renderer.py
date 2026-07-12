@@ -156,6 +156,18 @@ def print_diff(diff_text: str) -> None:
     term.syntax(diff_text, "diff", theme="ansi_dark", background_color="default")
 
 
+def print_debug_block(title: str, text: str) -> None:
+    """打印一段原始调试文本（比如发给 LLM 的完整 prompt）。
+
+    用 term.syntax 而不是 print_info/print(f"...{text}...") 的原因：调试内容
+    往往包含用户历史原文，可能含有形似 rich markup 的方括号片段（比如代码里的
+    列表切片 `a[1:2]`），直接拼进 f-string 交给 print() 有被误解析成样式标签、
+    甚至报错的风险；Syntax 把内容当纯文本高亮，不做 markup 解析，是安全的。
+    """
+    term.print(f"[dim]── {title} ──[/dim]")
+    term.syntax(text, "text", theme="ansi_dark", background_color="default", word_wrap=True)
+
+
 def print_markdown(md: str) -> None:
     term.markdown(md)
 
