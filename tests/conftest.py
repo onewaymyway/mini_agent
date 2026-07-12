@@ -42,3 +42,17 @@ def _isolate_agent_home(tmp_path_factory, monkeypatch):
     fake_home = tmp_path_factory.mktemp("agent_home")
     monkeypatch.setattr(Path, "home", lambda: fake_home)
     yield fake_home
+
+
+@pytest.fixture(autouse=True)
+def _reset_debug_logger_state():
+    """
+    自动重置 debug_logger 模块级全局状态，确保测试间隔离。
+    重置：
+    - 全局序列号计数器 (_seq)
+    - 默认单例 logger (_default_logger)
+    """
+    from mini_agent.llm import debug_logger
+    debug_logger.reset_global_state()
+    yield
+    debug_logger.reset_global_state()

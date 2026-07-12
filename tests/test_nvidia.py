@@ -112,10 +112,11 @@ class TestNvidiaConfig(unittest.TestCase):
 
     def test_validate_raises_without_key(self):
         cfg = LLMConfig(provider="nvidia", model="x", api_key="", requires_api_key=True)
-        with patch.object(NvidiaProvider, "_build_http_client", return_value=MagicMock()):
-            p = NvidiaProvider(cfg)
-        with self.assertRaises(LLMProviderError):
-            p.validate_config()
+        with patch.dict(os.environ, {}, clear=True):
+            with patch.object(NvidiaProvider, "_build_http_client", return_value=MagicMock()):
+                p = NvidiaProvider(cfg)
+            with self.assertRaises(LLMProviderError):
+                p.validate_config()
 
     def test_endpoint_uses_base_url(self):
         p = make_provider()

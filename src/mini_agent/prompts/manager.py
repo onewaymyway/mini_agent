@@ -34,6 +34,7 @@ prompts/manager.py — Prompt Management Module
 
 from __future__ import annotations
 
+import os
 import re
 import textwrap
 from pathlib import Path
@@ -316,7 +317,7 @@ class PromptManager:
                 rel = md_file.relative_to(root)
                 # Exclude fragment files (they use key:value format, not templates)
                 if rel.parts[0] != "fragments":
-                    name = str(rel.with_suffix(""))
+                    name = str(rel.with_suffix("")).replace(os.sep, "/")
                     if name not in seen:
                         seen.add(name)
                         result.append(name)

@@ -443,7 +443,7 @@ class TestRealPromptFiles(unittest.TestCase):
         self.assertIn("SESSION_DENIED_MSG", keys)
 
     def test_banner_has_content(self):
-        banner = self.pm.fragment("cli_messages", "BANNER")
+        banner = self.pm.fragment("cli_messages", "BANNER", version="test")
         self.assertGreater(len(banner.strip()), 0)
 
     def test_session_denied_msg_interpolation(self):

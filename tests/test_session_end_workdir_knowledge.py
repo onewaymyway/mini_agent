@@ -222,9 +222,9 @@ class TestSessionDurationMinutes:
         assert agent._session_duration_minutes() == 0.0
 
     def test_valid_created_at_returns_positive_duration(self, tmp_path):
-        from datetime import datetime, timezone, timedelta
+        from datetime import datetime, timedelta
         agent = make_minimal_agent(tmp_path)
-        ten_min_ago = datetime.now(timezone.utc) - timedelta(minutes=10)
+        ten_min_ago = datetime.now() - timedelta(minutes=10)
         agent._session.created_at = ten_min_ago.strftime("%Y-%m-%dT%H:%M:%S")
         duration = agent._session_duration_minutes()
         assert 9.0 <= duration <= 11.0

@@ -21,6 +21,8 @@ import unittest
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 PROJECT_ROOT = Path(__file__).parent.parent
 sys.path.insert(0, str(PROJECT_ROOT / "src"))
 
@@ -605,6 +607,7 @@ class TestAgentSessionIntegration(unittest.TestCase):
 
 # ── _flock 跨平台兼容性回归测试（Android/Termux 等不支持 flock 的文件系统）──
 
+@pytest.mark.skipif(sys.platform == "win32", reason="fcntl not available on Windows")
 class TestFlockCompat(unittest.TestCase):
     """
     回归测试：fix_android_session_save.md

@@ -422,6 +422,7 @@ class _FakeGoalModeCfg:
         self.judge_allowed_tools = []
         self.judge_allowed_tool_groups = []
         self.persist_state = kwargs.get("persist_state", False)
+        self.max_stuck_recoveries = kwargs.get("max_stuck_recoveries", 3)
 
 
 class _FakeCfg:
@@ -538,8 +539,10 @@ def test_goal_runner_max_rounds_exhausted(monkeypatch, tmp_path):
 
 
 def test_goal_runner_stuck_on_repeated_feedback(monkeypatch, tmp_path):
-    agent = FakeAgent(outputs=[f"attempt {i}" for i in range(5)])
-    cfg = _FakeCfg(tmp_path, max_rounds=20, consecutive_same_feedback_limit=3)
+    # Need enough outputs for: 3 rounds * (1 initial + 3 stuck recoveries) = 12 rounds
+    # Each round calls run_turn once, plus potential compact calls
+    agent = FakeAgent(outputs=[f"attempt {i}" for i in range(15)])
+    cfg = _FakeCfg(tmp_path, max_rounds=20, consecutive_same_feedback_limit=3, max_stuck_recoveries=3)
     spec = _confirmed_spec()
 
     same_feedback = "GOAL_STATUS: CONTINUE\n还是同样的问题，反复卡在这里"

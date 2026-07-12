@@ -314,15 +314,20 @@ class TestDebugConfig(unittest.TestCase):
 class TestLLMDebugLogger(unittest.TestCase):
 
     def setUp(self):
+        from mini_agent.llm.debug_logger import reset_global_state
+        reset_global_state()
         self.tmp = Path(tempfile.mkdtemp())
 
     def tearDown(self):
         import shutil
         shutil.rmtree(self.tmp, ignore_errors=True)
+        from mini_agent.llm.debug_logger import reset_global_state
+        reset_global_state()
 
     def _make_logger(self, console=False) -> LLMDebugLogger:
         cfg = DebugConfig(enabled=True, log_to_file=True,
-                          log_to_console=console, log_dir=self.tmp)
+                          log_to_console=console, log_dir=self.tmp,
+                          max_body_chars=10000)
         return LLMDebugLogger(cfg, project_root=self.tmp)
 
     def _read_log(self, logger: LLMDebugLogger) -> list[dict]:

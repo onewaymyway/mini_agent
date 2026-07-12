@@ -457,3 +457,15 @@ def init_debug_logger_for_session(
 
 def _now_iso() -> str:
     return iso_local()
+
+
+def reset_global_state() -> None:
+    """
+    重置模块级全局状态，用于测试隔离。
+    重置：
+    - 全局序列号计数器 (_seq)
+    - 默认单例 logger (_default_logger)
+    """
+    global _seq, _default_logger
+    _seq = 0
+    _default_logger = None
