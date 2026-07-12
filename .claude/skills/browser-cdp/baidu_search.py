@@ -131,7 +131,7 @@ def search_baidu(port: int, tab_id: str, query: str, max_results: int = 10, wait
 """
     
     result = run_cmd([PYTHON_CMD, "browser_console.py", "--port", str(port), "--tab", tab_id, "--eval", js_code])
-    
+
     if result.returncode != 0:
         print(f"[警告] JS提取失败，尝试备选方案: {result.stderr[:200]}")
         # 备选：使用 browser_extract
@@ -154,11 +154,12 @@ def search_baidu(port: int, tab_id: str, query: str, max_results: int = 10, wait
         return results
     
     try:
-        results = json.loads(result.stdout.strip())
+        # browser_console.py 输出格式: {"result": [...]}
+        output = json.loads(result.stdout.strip())
+        results = output.get('result', [])
     except json.JSONDecodeError:
         print(f"[警告] 无法解析JS结果: {result.stdout[:200]}")
-        return []
-    
+        return []    
     # 过滤和限制数量
     filtered = []
     for r in results:

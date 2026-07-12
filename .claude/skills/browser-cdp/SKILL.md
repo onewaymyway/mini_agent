@@ -24,6 +24,27 @@ triggers: 浏览器, 打开网页, 抓取网页, 网页截图, cdp, chrome devto
 | `browser_console.py` | 执行任意 JS、抓取 console 日志、抓取网络请求 |
 | `browser_watch.py` | 协作场景：轮询判断用户是否已完成某个操作（URL/标题变化） |
 
+## 📁 子功能文档模块化规范
+
+**重要：新增子功能/自动化脚本时，必须遵循以下模块化文档模式：**
+
+1. **主 SKILL.md 只保留引用**，不写详细内容
+2. **每个子功能创建独立的 `<name>_skill.md` 文件**，包含完整文档
+3. **主 SKILL.md 中用链接引用**：`**详细文档请参考：[xxx_skill.md](xxx_skill.md)**`
+
+### 现有子功能文档
+
+- [baidu_search_skill.md](baidu_search_skill.md) — 百度搜索自动化脚本 (`baidu_search.py`)
+
+### 新增子功能步骤
+
+1. 在 skill 目录下创建 `<name>_skill.md`（如 `google_search_skill.md`）
+2. 按标准格式编写：用途、使用示例、参数说明、输出文件、核心实现要点
+3. 在主 SKILL.md 的「现有子功能文档」列表中添加链接
+4. 在主 SKILL.md 对应位置添加简短引用
+
+这样保持主文档精简，按需加载详细文档，避免 token 浪费。
+
 ## ⚠️ 运行前必做：Python 命令检测（极易踩坑，务必遵守）
 
 **本环境同时存在 `python` 和 `python3` 两个命令，但只有一个是真正可用的。**
@@ -256,6 +277,12 @@ python browser_screenshot.py --tab <id> --out ./temp_data/shot.png   # 写入 sk
 **总结：cd 到 skill 目录后，所有 `./xxx` 路径都以 skill 目录为基准。**
 
 任务完成后可清理：`rm -rf .claude/skills/browser-cdp/temp_data/*`（或按需保留产出物）。
+
+## 百度搜索自动化脚本 (`baidu_search.py`)
+
+本 skill 目录下提供了一个完整的百度搜索自动化脚本 `baidu_search.py`。
+
+**详细文档请参考：[baidu_search_skill.md](baidu_search_skill.md)**
 
 ## 常见坑
 
