@@ -249,6 +249,134 @@ def clean_juejin_cn(text: str, max_chars: int = 5000) -> str:
     return clean_juejin(text, max_chars)
 
 
+def clean_toutiao(text: str, max_chars: int = 5000) -> str:
+    """今日头条清理规则"""
+    patterns_to_remove = [
+        r'\b(今日头条|头条|版权声明|原创|首发|独家|作者|来源|编辑|责编|审核|发布时间|更新时间|阅读|点赞|评论|分享|收藏|转发|举报|违规|投诉|建议|反馈|客服|联系我们|关于我们|免责声明|隐私政策|用户协议|版权所有|保留所有权利|未经授权|禁止转载|转载请注明|出处|来源|作者简介|个人简介|更多文章|关注作者|订阅专栏|加入圈子|粉丝|关注|私信|消息|通知|设置|退出登录|登录|注册|下载APP|打开APP|扫码|二维码|微信|公众号|小程序|客户端|移动端|PC端|头条App|头条客户端).*',
+        r'\b(广告|推广|赞助|合作|商务合作|招聘|外包|技术支持|客服|QQ群|微信群|交流群).*',
+        r'^\s*[\d\.]+\s*$',
+        r'^\s*[\-=]{3,}\s*$',
+    ]
+    
+    cleaned = text
+    for pattern in patterns_to_remove:
+        cleaned = re.sub(pattern, '', cleaned, flags=re.IGNORECASE | re.MULTILINE)
+    
+    cleaned = re.sub(r'\n{3,}', '\n\n', cleaned)
+    
+    return clean_generic(cleaned, max_chars)
+
+
+def clean_sohu(text: str, max_chars: int = 5000) -> str:
+    """搜狐清理规则"""
+    patterns_to_remove = [
+        r'\b(搜狐|Sohu|版权声明|原创|首发|独家|作者|来源|编辑|责编|审核|发布时间|更新时间|阅读|点赞|评论|分享|收藏|转发|举报|违规|投诉|建议|反馈|客服|联系我们|关于我们|免责声明|隐私政策|用户协议|版权所有|保留所有权利|未经授权|禁止转载|转载请注明|出处|来源|作者简介|个人简介|更多文章|关注作者|订阅专栏|加入圈子|粉丝|关注|私信|消息|通知|设置|退出登录|登录|注册|下载APP|打开APP|扫码|二维码|微信|公众号|小程序|客户端|移动端|PC端|搜狐App|搜狐客户端).*',
+        r'\b(广告|推广|赞助|合作|商务合作|招聘|外包|技术支持|客服|QQ群|微信群|交流群).*',
+        r'^\s*[\d\.]+\s*$',
+        r'^\s*[\-=]{3,}\s*$',
+    ]
+    
+    cleaned = text
+    for pattern in patterns_to_remove:
+        cleaned = re.sub(pattern, '', cleaned, flags=re.IGNORECASE | re.MULTILINE)
+    
+    cleaned = re.sub(r'\n{3,}', '\n\n', cleaned)
+    
+    return clean_generic(cleaned, max_chars)
+
+
+def clean_163(text: str, max_chars: int = 5000) -> str:
+    """网易清理规则"""
+    patterns_to_remove = [
+        r'\b(网易|163|版权声明|原创|首发|独家|作者|来源|编辑|责编|审核|发布时间|更新时间|阅读|点赞|评论|分享|收藏|转发|举报|违规|投诉|建议|反馈|客服|联系我们|关于我们|免责声明|隐私政策|用户协议|版权所有|保留所有权利|未经授权|禁止转载|转载请注明|出处|来源|作者简介|个人简介|更多文章|关注作者|订阅专栏|加入圈子|粉丝|关注|私信|消息|通知|设置|退出登录|登录|注册|下载APP|打开APP|扫码|二维码|微信|公众号|小程序|客户端|移动端|PC端|网易App|网易客户端|网易新闻).*',
+        r'\b(广告|推广|赞助|合作|商务合作|招聘|外包|技术支持|客服|QQ群|微信群|交流群).*',
+        r'^\s*[\d\.]+\s*$',
+        r'^\s*[\-=]{3,}\s*$',
+    ]
+    
+    cleaned = text
+    for pattern in patterns_to_remove:
+        cleaned = re.sub(pattern, '', cleaned, flags=re.IGNORECASE | re.MULTILINE)
+    
+    cleaned = re.sub(r'\n{3,}', '\n\n', cleaned)
+    
+    return clean_generic(cleaned, max_chars)
+
+
+def clean_qq(text: str, max_chars: int = 5000) -> str:
+    """腾讯新闻清理规则"""
+    patterns_to_remove = [
+        r'\b(腾讯|QQ|版权声明|原创|首发|独家|作者|来源|编辑|责编|审核|发布时间|更新时间|阅读|点赞|评论|分享|收藏|转发|举报|违规|投诉|建议|反馈|客服|联系我们|关于我们|免责声明|隐私政策|用户协议|版权所有|保留所有权利|未经授权|禁止转载|转载请注明|出处|来源|作者简介|个人简介|更多文章|关注作者|订阅专栏|加入圈子|粉丝|关注|私信|消息|通知|设置|退出登录|登录|注册|下载APP|打开APP|扫码|二维码|微信|公众号|小程序|客户端|移动端|PC端|腾讯新闻|腾讯App).*',
+        r'\b(广告|推广|赞助|合作|商务合作|招聘|外包|技术支持|客服|QQ群|微信群|交流群).*',
+        r'^\s*[\d\.]+\s*$',
+        r'^\s*[\-=]{3,}\s*$',
+    ]
+    
+    cleaned = text
+    for pattern in patterns_to_remove:
+        cleaned = re.sub(pattern, '', cleaned, flags=re.IGNORECASE | re.MULTILINE)
+    
+    cleaned = re.sub(r'\n{3,}', '\n\n', cleaned)
+    
+    return clean_generic(cleaned, max_chars)
+
+
+def clean_sina(text: str, max_chars: int = 5000) -> str:
+    """新浪清理规则"""
+    patterns_to_remove = [
+        r'\b(新浪|Sina|版权声明|原创|首发|独家|作者|来源|编辑|责编|审核|发布时间|更新时间|阅读|点赞|评论|分享|收藏|转发|举报|违规|投诉|建议|反馈|客服|联系我们|关于我们|免责声明|隐私政策|用户协议|版权所有|保留所有权利|未经授权|禁止转载|转载请注明|出处|来源|作者简介|个人简介|更多文章|关注作者|订阅专栏|加入圈子|粉丝|关注|私信|消息|通知|设置|退出登录|登录|注册|下载APP|打开APP|扫码|二维码|微信|公众号|小程序|客户端|移动端|PC端|新浪App|新浪客户端|新浪新闻).*',
+        r'\b(广告|推广|赞助|合作|商务合作|招聘|外包|技术支持|客服|QQ群|微信群|交流群).*',
+        r'^\s*[\d\.]+\s*$',
+        r'^\s*[\-=]{3,}\s*$',
+    ]
+    
+    cleaned = text
+    for pattern in patterns_to_remove:
+        cleaned = re.sub(pattern, '', cleaned, flags=re.IGNORECASE | re.MULTILINE)
+    
+    cleaned = re.sub(r'\n{3,}', '\n\n', cleaned)
+    
+    return clean_generic(cleaned, max_chars)
+
+
+def clean_zhihu_answer(text: str, max_chars: int = 5000) -> str:
+    """知乎回答页面清理规则"""
+    patterns_to_remove = [
+        r'\b(知乎|Zhihu|盐选|会员|专栏|圆桌|想法|视频|直播|发现|等你来答|关注问题|邀请回答|收藏|赞同|感谢|分享|评论|发布于|编辑于|更新于|版权声明|禁止转载|授权转载|知识共享|署名-非商业性使用-禁止演绎|CC BY-NC-ND|原创|首发|独家|独家首发).*',
+        r'\b(登录|注册|下载APP|打开APP|扫码|二维码|微信|公众号|小程序|客户端|移动端|PC端|知乎App|知乎客户端).*',
+        r'\b(广告|推广|赞助|合作|商务合作|招聘|外包|技术支持|客服|QQ群|微信群|交流群).*',
+        r'^\s*[\d\.]+\s*$',
+        r'^\s*[\-=]{3,}\s*$',
+        r'\b(展开|收起|查看更多|加载更多|继续阅读|阅读全文|全文|摘要|目录|章节|段落|标题|作者|时间|来源|编辑|责编|审核|发布|更新).*',
+    ]
+    
+    cleaned = text
+    for pattern in patterns_to_remove:
+        cleaned = re.sub(pattern, '', cleaned, flags=re.IGNORECASE | re.MULTILINE)
+    
+    cleaned = re.sub(r'\n{3,}', '\n\n', cleaned)
+    
+    return clean_generic(cleaned, max_chars)
+
+
+def clean_bilibili(text: str, max_chars: int = 5000) -> str:
+    """B站专栏/文章清理规则"""
+    patterns_to_remove = [
+        r'\b(B站|Bilibili|哔哩哔哩|版权声明|原创|首发|独家|作者|来源|编辑|责编|审核|发布时间|更新时间|阅读|点赞|投币|收藏|转发|分享|评论|弹幕|举报|违规|投诉|建议|反馈|客服|联系我们|关于我们|免责声明|隐私政策|用户协议|版权所有|保留所有权利|未经授权|禁止转载|转载请注明|出处|来源|作者简介|个人简介|更多文章|关注作者|订阅专栏|加入圈子|粉丝|关注|私信|消息|通知|设置|退出登录|登录|注册|下载APP|打开APP|扫码|二维码|微信|公众号|小程序|客户端|移动端|PC端|B站App|B站客户端).*',
+        r'\b(广告|推广|赞助|合作|商务合作|招聘|外包|技术支持|客服|QQ群|微信群|交流群).*',
+        r'^\s*[\d\.]+\s*$',
+        r'^\s*[\-=]{3,}\s*$',
+    ]
+    
+    cleaned = text
+    for pattern in patterns_to_remove:
+        cleaned = re.sub(pattern, '', cleaned, flags=re.IGNORECASE | re.MULTILINE)
+    
+    cleaned = re.sub(r'\n{3,}', '\n\n', cleaned)
+    
+    return clean_generic(cleaned, max_chars)
+
+
 # ========== 站点清理器注册表 ==========
 
 # 域名 -> 清理函数映射
@@ -261,6 +389,7 @@ CLEANER_REGISTRY: Dict[str, Callable[[str, int], str]] = {
     'zhihu.com': clean_zhihu,
     'www.zhihu.com': clean_zhihu,
     'zhuanlan.zhihu.com': clean_zhihu,
+    # 注意：父域名匹配逻辑会自动处理 zhihu.com 下的 answer 等子路径
     
     # 百家号
     'baijiahao.baidu.com': clean_baijiahao,
@@ -296,6 +425,32 @@ CLEANER_REGISTRY: Dict[str, Callable[[str, int], str]] = {
     # SegmentFault
     'segmentfault.com': clean_segmentfault,
     'www.segmentfault.com': clean_segmentfault,
+    
+    # 今日头条
+    'www.toutiao.com': clean_toutiao,
+    'toutiao.com': clean_toutiao,
+    
+    # 搜狐
+    'www.sohu.com': clean_sohu,
+    'sohu.com': clean_sohu,
+    
+    # 网易
+    'www.163.com': clean_163,
+    '163.com': clean_163,
+    'news.163.com': clean_163,
+    
+    # 腾讯新闻
+    'news.qq.com': clean_qq,
+    'qq.com': clean_qq,
+    
+    # 新浪
+    'news.sina.com.cn': clean_sina,
+    'sina.com.cn': clean_sina,
+    'sina.com': clean_sina,
+    
+    # B站
+    'www.bilibili.com': clean_bilibili,
+    'bilibili.com': clean_bilibili,
 }
 
 
