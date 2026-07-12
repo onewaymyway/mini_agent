@@ -187,6 +187,41 @@ class CDPSession:
         return collected
 
     # -- convenience -----------------------------------------------------
+    def get_all_cookies(self, timeout: Optional[float] = None) -> list:
+        """获取当前页面的所有 cookies。"""
+        result = self.send("Network.getAllCookies", {}, timeout=timeout)
+        return result.get("cookies", [])
+
+    def set_cookie(self, name: str, value: str, domain: str = "", path: str = "/", 
+                   secure: bool = True, http_only: bool = False, same_site: str = "Lax",
+                   expires: float = -1, timeout: Optional[float] = None) -> dict:
+        """设置 cookie。"""
+        params = {
+            "name": name,
+            "value": value,
+            "domain": domain,
+            "path": path,
+            "secure": secure,
+            "httpOnly": http_only,
+            "sameSite": same_site,
+        }
+        if expires > 0:
+            params["expires"] = expires
+        return self.send("Network.setCookie", params, timeout=timeout)
+
+    def delete_cookie(self, name: str, domain: str = "", path: str = "/", 
+                      timeout: Optional[float] = None) -> dict:
+        """删除 cookie。"""
+        return self.send("Network.deleteCookies", {
+            "name": name,
+            "domain": domain,
+            "path": path,
+        }, timeout=timeout)
+
+    def clear_all_cookies(self, timeout: Optional[float] = None) -> dict:
+        """清除所有 cookies。"""
+        return self.send("Network.clearBrowserCookies", {}, timeout=timeout)
+
     def eval_js(self, expression: str, await_promise: bool = False, timeout: Optional[float] = None) -> Any:
         result = self.send(
             "Runtime.evaluate",

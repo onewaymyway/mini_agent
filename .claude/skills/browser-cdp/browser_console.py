@@ -1,10 +1,14 @@
 """
-browser_console.py - 执行 JS / 抓取 console 日志 / 抓取网络请求
+browser_console.py - 执行 JS / 抓取 console 日志 / 抓取网络请求 / Cookie 管理
 
 用法：
   python browser_console.py --tab <id> --eval "document.title"
   python browser_console.py --tab <id> --watch-console --duration 5     # 打开页面时顺手看5秒内的console输出
   python browser_console.py --tab <id> --watch-network --duration 5     # 5秒内发生的网络请求
+  python browser_console.py --tab <id> --get-cookies                    # 获取当前页面所有 cookies
+  python browser_console.py --tab <id> --set-cookie name value          # 设置 cookie
+  python browser_console.py --tab <id> --delete-cookie name             # 删除 cookie
+  python browser_console.py --tab <id> --clear-cookies                  # 清除所有 cookies
 """
 from __future__ import annotations
 
@@ -62,6 +66,32 @@ def cmd_watch_network(session, duration: float):
     print_json(list(requests.values()))
 
 
+def cmd_get_cookies(session):
+    """获取当前页面的所有 cookies。"""
+    cookies = session.get_all_cookies()
+    print_json(cookies)
+
+
+def cmd_set_cookie(session, name: str, value: str, domain: str = "", path: str = "/",
+                   secure: bool = True, http_only: bool = False, same_site: str = "Lax",
+                   expires: float = -1):
+    """设置 cookie。"""
+    result = session.set_cookie(name, value, domain, path, secure, http_only, same_site, expires)
+    print_json(result)
+
+
+def cmd_delete_cookie(session, name: str, domain: str = "", path: str = "/"):
+    """删除 cookie。"""
+    result = session.delete_cookie(name, domain, path)
+    print_json(result)
+
+
+def cmd_clear_cookies(session):
+    """清除所有 cookies。"""
+    result = session.clear_all_cookies()
+    print_json(result)
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     add_connection_args(parser)
@@ -69,6 +99,17 @@ def main():
     parser.add_argument("--watch-console", action="store_true")
     parser.add_argument("--watch-network", action="store_true")
     parser.add_argument("--duration", type=float, default=5.0, help="watch-* 模式下的采集时长（秒）")
+    # Cookie 相关参数
+    parser.add_argument("--get-cookies", action="store_true", help="获取当前页面的所有 cookies")
+    parser.add_argument("--set-cookie", nargs=2, metavar=("NAME", "VALUE"), help="设置 cookie: --set-cookie name value")
+    parser.add_argument("--cookie-domain", default="", help="cookie 域名")
+    parser.add_argument("--cookie-path", default="/", help="cookie 路径")
+    parser.add_argument("--cookie-secure", action="store_true", default=True, help="cookie secure 标志")
+    parser.add_argument("--cookie-http-only", action="store_true", help="cookie httpOnly 标志")
+    parser.add_argument("--cookie-same-site", default="Lax", choices=["Strict", "Lax", "None"], help="cookie SameSite 策略")
+    parser.add_argument("--cookie-expires", type=float, default=-1, help="cookie 过期时间（Unix 时间戳，-1 表示会话 cookie）")
+    parser.add_argument("--delete-cookie", metavar="NAME", help="删除指定名称的 cookie")
+    parser.add_argument("--clear-cookies", action="store_true", help="清除所有 cookies")
 
     args = parser.parse_args()
     session = get_session(args)
@@ -79,7 +120,18 @@ def main():
             cmd_watch_console(session, args.duration)
         if args.watch_network:
             cmd_watch_network(session, args.duration)
-        if not any([args.eval is not None, args.watch_console, args.watch_network]):
+        if args.get_cookies:
+            cmd_get_cookies(session)
+        if args.set_cookie:
+            name, value = args.set_cookie
+            cmd_set_cookie(session, name, value, args.cookie_domain, args.cookie_path,
+                          args.cookie_secure, args.cookie_http_only, args.cookie_same_site, args.cookie_expires)
+        if args.delete_cookie:
+            cmd_delete_cookie(session, args.delete_cookie, args.cookie_domain, args.cookie_path)
+        if args.clear_cookies:
+            cmd_clear_cookies(session)
+        if not any([args.eval is not None, args.watch_console, args.watch_network, args.get_cookies,
+                    args.set_cookie, args.delete_cookie, args.clear_cookies]):
             parser.print_help()
     finally:
         session.close()
