@@ -174,7 +174,7 @@ python3 browser_console.py --tab <id> --watch-network --duration 5   # 抓最近
 
 ## 临时文件规范（重要）
 
-**所有临时产出文件必须保存到 `./temp/` 目录，严禁直接写入项目根目录、skill 目录或源码目录。**
+**所有临时产出文件必须保存到 `./temp_data/` 目录，严禁直接写入项目根目录、skill 目录或源码目录。**
 
 这包括但不限于：
 - 截图文件（`shot.png`、`after.png` 等）
@@ -185,11 +185,11 @@ python3 browser_console.py --tab <id> --watch-network --duration 5   # 抓最近
 **正确做法：**
 ```bash
 # 先确保 temp 目录存在
-mkdir -p ./temp
+mkdir -p ./temp_data
 
 # 截图、抓取等输出都指向 ./temp/
-python3 browser_screenshot.py --tab <id> --out ./temp/shot.png --annotate
-python3 browser_extract.py --tab <id> --mode text --save ./temp/page_content.txt
+python3 browser_screenshot.py --tab <id> --out ./temp_data/shot.png --annotate
+python3 browser_extract.py --tab <id> --mode text --save ./temp_data/page_content.txt
 ```
 
 **错误做法（会污染项目）：**
@@ -199,7 +199,7 @@ python3 browser_screenshot.py --tab <id> --out shot.png
 python3 browser_extract.py --tab <id> --save out.txt
 ```
 
-任务完成后可清理：`rm -rf ./temp/*`（或按需保留产出物）。
+任务完成后可清理：`rm -rf ./temp_data/*`（或按需保留产出物）。
 
 ## 常见坑
 
@@ -212,4 +212,4 @@ python3 browser_extract.py --tab <id> --save out.txt
   不要死等 load 事件。
 - 编号（`--click-index` 等）依赖当次 DOM 扫描顺序，如果页面在两次调用之间发生了明显变化
   （异步加载、用户自己操作了），编号可能失效，务必先重新截图/扫描再操作。
-- **忘记指定 `./temp/` 路径导致临时文件散落在项目各处** —— 始终显式指定输出路径为 `./temp/xxx`。
+- **忘记指定 `./temp_data/` 路径导致临时文件散落在项目各处** —— 始终显式指定输出路径为 `./temp_data/xxx`。
