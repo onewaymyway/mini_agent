@@ -16,6 +16,7 @@ Bing 搜索自动化脚本
 import argparse
 import json
 import os
+import random
 import subprocess
 import sys
 import time
@@ -27,31 +28,86 @@ import urllib.parse
 SKILL_DIR = Path(__file__).parent
 PYTHON_CMD = sys.executable  # 使用当前Python解释器
 
+# ========== 反爬策略配置 ==========
+USER_AGENTS = [
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:121.0) Gecko/20100101 Firefox/121.0",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.1 Safari/605.1.15",
+]
 
-def run_cmd(cmd: List[str], cwd: Path = None, capture: bool = True) -> subprocess.CompletedProcess:
-    """运行命令并返回结果"""
+MIN_DELAY = 1.5  # 最小请求间隔（秒）
+MAX_DELAY = 3.5  # 最大请求间隔（秒）
+MAX_RETRIES = 3  # 最大重试次数
+BASE_RETRY_DELAY = 2.0  # 基础重试延迟（秒）
+MAX_RETRY_DELAY = 30.0  # 最大重试延迟（秒）
+
+
+def random_delay(min_sec: float = MIN_DELAY, max_sec: float = MAX_DELAY) -> float:
+    """随机延迟，返回实际延迟时间"""
+    delay = random.uniform(min_sec, max_sec)
+    time.sleep(delay)
+    return delay
+
+
+def get_random_ua() -> str:
+    """获取随机 User-Agent"""
+    return random.choice(USER_AGENTS)
+
+
+def exponential_backoff(attempt: int, base_delay: float = BASE_RETRY_DELAY, max_delay: float = MAX_RETRY_DELAY) -> float:
+    """指数退避延迟，返回实际延迟时间"""
+    delay = min(base_delay * (2 ** attempt) + random.uniform(0, 1), max_delay)
+    time.sleep(delay)
+    return delay
+
+
+def run_cmd_with_retry(cmd: List[str], cwd: Path = None, capture: bool = True, max_retries: int = MAX_RETRIES) -> subprocess.CompletedProcess:
+    """带重试机制的命令执行"""
     if cwd is None:
         cwd = SKILL_DIR
-    print(f"  [CMD] {' '.join(cmd)}")
-    result = subprocess.run(cmd, cwd=cwd, capture_output=capture, text=True, timeout=60)
-    if result.returncode != 0:
-        print(f"  [ERROR] 返回码: {result.returncode}")
-        if result.stderr:
-            print(f"  [STDERR] {result.stderr}")
+    
+    last_error = None
+    for attempt in range(max_retries + 1):
+        print(f"  [CMD] {' '.join(cmd)} (尝试 {attempt + 1}/{max_retries + 1})")
+        result = subprocess.run(cmd, cwd=cwd, capture_output=capture, text=True, timeout=60)
+        
+        if result.returncode == 0:
+            return result
+        
+        last_error = result.stderr
+        print(f"  [WARN] 返回码: {result.returncode}, 错误: {last_error[:200] if last_error else '无'}")
+        
+        if attempt < max_retries:
+            delay = exponential_backoff(attempt)
+            print(f"  [RETRY] {delay:.1f}秒后重试...")
+    
+    # 所有重试都失败，返回最后一次结果
     return result
 
 
-def ensure_browser(port: int = 9333, name: str = "bing_search", headless: bool = False, start_url: str = "https://www.bing.com") -> Dict:
+def run_cmd(cmd: List[str], cwd: Path = None, capture: bool = True) -> subprocess.CompletedProcess:
+    """运行命令并返回结果（兼容旧接口，内部使用重试机制）"""
+    return run_cmd_with_retry(cmd, cwd, capture)
+
+
+def ensure_browser(port: int = 9333, name: str = "bing_search", headless: bool = False, start_url: str = "https://www.bing.com", user_agent: str = None) -> Dict:
     """确保浏览器实例运行，返回 {port, tab_id}"""
     print(f"[浏览器] 启动/连接专用浏览器实例: {name} (端口: {port})")
+    
+    if user_agent is None:
+        user_agent = get_random_ua()
     
     cmd = [
         PYTHON_CMD, "browser_launch.py",
         "--dedicated",
         "--name", name,
         "--port", str(port),
-        "--start-url", start_url
+        "--start-url", start_url,
     ]
+    if user_agent:
+        cmd.extend(["--user-agent", user_agent])
     if headless:
         cmd.append("--headless")
     
@@ -86,6 +142,21 @@ def ensure_browser(port: int = 9333, name: str = "bing_search", headless: bool =
                         tab_id = parts[0]
                         break
     
+    # 如果仍然没有 tab_id，尝试重新获取
+    if not tab_id:
+        print(f"[WARN] 未能解析 tab_id，尝试重新获取...")
+        time.sleep(2)
+        list_result = run_cmd([PYTHON_CMD, "browser_launch.py", "--list", "--port", str(port)])
+        try:
+            tabs = json.loads(list_result.stdout.strip())
+            if tabs and isinstance(tabs, list) and len(tabs) > 0:
+                tab_id = tabs[0].get('id')
+        except json.JSONDecodeError:
+            pass
+    
+    if not tab_id:
+        raise RuntimeError(f"无法获取 tab_id，浏览器可能未完全就绪")
+    
     print(f"[浏览器] 就绪 - 端口: {port}, Tab ID: {tab_id}")
     return {"port": port, "tab_id": tab_id}
 
@@ -93,6 +164,10 @@ def ensure_browser(port: int = 9333, name: str = "bing_search", headless: bool =
 def search_bing(port: int, tab_id: str, query: str, max_results: int = 10, wait_timeout: int = 15) -> List[Dict]:
     """在 Bing 搜索并返回结果链接列表"""
     print(f"[搜索] 正在搜索: {query}")
+    
+    # 请求前随机延迟
+    delay = random_delay()
+    print(f"  [延迟] 请求前等待 {delay:.1f} 秒")
     
     # 直接访问搜索结果URL
     encoded_query = urllib.parse.quote(query)
@@ -104,6 +179,10 @@ def search_bing(port: int, tab_id: str, query: str, max_results: int = 10, wait_
     # 增加等待时间，确保搜索结果完全渲染
     nav_result = run_cmd([PYTHON_CMD, "browser_nav.py", "--port", str(port), "--tab", tab_id, "--goto", search_url, "--wait-selector", wait_selector, "--timeout", str(wait_timeout + 5)])
     time.sleep(2)  # 额外等待确保结果完全加载
+    
+    # 搜索后随机延迟
+    delay = random_delay(0.5, 1.5)
+    print(f"  [延迟] 搜索后等待 {delay:.1f} 秒")
     
     # 检查是否遇到验证码/难题页面
     if nav_result.returncode != 0:
@@ -227,56 +306,79 @@ def search_bing(port: int, tab_id: str, query: str, max_results: int = 10, wait_
     return filtered
 
 
-def fetch_detail(port: int, tab_id: str, url: str, wait_timeout: int = 15, max_chars: int = 5000) -> Dict:
-    """访问详情页并提取文本内容"""
-    try:
-        print(f"  [详情] 正在访问: {url[:80]}...")
-        
-        # 导航到详情页
-        nav_result = run_cmd([PYTHON_CMD, "browser_nav.py", "--port", str(port), "--tab", tab_id, "--goto", url, "--wait-selector", "body", "--timeout", str(wait_timeout)])
-        if nav_result.returncode != 0:
-            return {'url': url, 'content': '', 'success': False, 'error': '导航失败'}
-        
-        time.sleep(1.5)  # 等待页面渲染
-        
-        # 提取文本内容
-        extract_result = run_cmd([PYTHON_CMD, "browser_extract.py", "--port", str(port), "--tab", tab_id, "--mode", "text", "--max-chars", str(max_chars)])
-        
-        if extract_result.returncode != 0:
-            return {'url': url, 'content': '', 'success': False, 'error': '提取失败'}
-        
-        text = extract_result.stdout.strip()
-        
-        # 简单清理：移除CSS/JS代码行
-        lines = text.split('\n')
-        cleaned_lines = []
-        for line in lines:
-            line = line.strip()
-            if not line or len(line) < 10:
+def fetch_detail(port: int, tab_id: str, url: str, wait_timeout: int = 15, max_chars: int = 5000, max_retries: int = 3) -> Dict:
+    """访问详情页并提取文本内容（带重试）"""
+    
+    for attempt in range(max_retries):
+        try:
+            print(f"  [详情] 正在访问: {url[:80]}... (尝试 {attempt + 1}/{max_retries})")
+            
+            # 请求前随机延迟
+            delay = random_delay(1.0, 2.5)
+            print(f"  [延迟] 请求前等待 {delay:.1f} 秒")
+            
+            # 导航到详情页
+            nav_result = run_cmd([PYTHON_CMD, "browser_nav.py", "--port", str(port), "--tab", tab_id, "--goto", url, "--wait-selector", "body", "--timeout", str(wait_timeout)])
+            if nav_result.returncode != 0:
+                if attempt < max_retries - 1:
+                    wait_time = exponential_backoff(attempt)
+                    print(f"  [重试] 导航失败，{wait_time:.1f} 秒后重试...")
+                    time.sleep(wait_time)
+                    continue
+                return {'url': url, 'content': '', 'success': False, 'error': '导航失败'}
+            
+            time.sleep(1.5)  # 等待页面渲染
+            
+            # 提取文本内容
+            extract_result = run_cmd([PYTHON_CMD, "browser_extract.py", "--port", str(port), "--tab", tab_id, "--mode", "text", "--max-chars", str(max_chars)])
+            
+            if extract_result.returncode != 0:
+                if attempt < max_retries - 1:
+                    wait_time = exponential_backoff(attempt)
+                    print(f"  [重试] 提取失败，{wait_time:.1f} 秒后重试...")
+                    time.sleep(wait_time)
+                    continue
+                return {'url': url, 'content': '', 'success': False, 'error': '提取失败'}
+            
+            text = extract_result.stdout.strip()
+            
+            # 简单清理：移除CSS/JS代码行
+            lines = text.split('\n')
+            cleaned_lines = []
+            for line in lines:
+                line = line.strip()
+                if not line or len(line) < 10:
+                    continue
+                # 跳过明显的CSS/JS代码行
+                if (line.startswith('.') and '{' in line) or \
+                   (line.startswith('@') and '{' in line) or \
+                   line.startswith('function') or \
+                   line.startswith('var ') or \
+                   line.startswith('const ') or \
+                   line.startswith('let ') or \
+                   line.startswith('import ') or \
+                   line.startswith('export ') or \
+                   line.startswith('require(') or \
+                   line.startswith('module.exports'):
+                    continue
+                cleaned_lines.append(line)
+            
+            cleaned_text = '\n'.join(cleaned_lines[:200])  # 限制行数
+            
+            return {
+                'url': url,
+                'content': cleaned_text[:max_chars],
+                'success': True
+            }
+        except Exception as e:
+            if attempt < max_retries - 1:
+                wait_time = exponential_backoff(attempt)
+                print(f"  [重试] 异常: {e}，{wait_time:.1f} 秒后重试...")
+                time.sleep(wait_time)
                 continue
-            # 跳过明显的CSS/JS代码行
-            if (line.startswith('.') and '{' in line) or \
-               (line.startswith('@') and '{' in line) or \
-               line.startswith('function') or \
-               line.startswith('var ') or \
-               line.startswith('const ') or \
-               line.startswith('let ') or \
-               line.startswith('import ') or \
-               line.startswith('export ') or \
-               line.startswith('require(') or \
-               line.startswith('module.exports'):
-                continue
-            cleaned_lines.append(line)
-        
-        cleaned_text = '\n'.join(cleaned_lines[:200])  # 限制行数
-        
-        return {
-            'url': url,
-            'content': cleaned_text[:max_chars],
-            'success': True
-        }
-    except Exception as e:
-        return {'url': url, 'content': '', 'success': False, 'error': str(e)}
+            return {'url': url, 'content': '', 'success': False, 'error': str(e)}
+    
+    return {'url': url, 'content': '', 'success': False, 'error': '重试次数耗尽'}
 
 
 def take_screenshot(port: int, tab_id: str, output_path: str, annotate: bool = False) -> bool:
@@ -340,10 +442,12 @@ def main():
     
     try:
         # 1. 确保浏览器运行
+        user_agent = get_random_ua()
         browser_info = ensure_browser(
             port=args.port,
             name=args.name,
-            headless=args.headless
+            headless=args.headless,
+            user_agent=user_agent
         )
         port = browser_info["port"]
         tab_id = browser_info["tab_id"]

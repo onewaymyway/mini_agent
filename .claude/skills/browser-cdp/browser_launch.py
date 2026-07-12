@@ -130,6 +130,7 @@ def spawn_browser(
     headless: bool,
     start_url: str = "about:blank",
     window_size: str = "1366,900",
+    user_agent: str = None,
 ) -> subprocess.Popen:
     # 确保使用绝对路径，避免 cwd 变化导致 profile 目录不一致
     user_data_dir = os.path.abspath(user_data_dir)
@@ -149,6 +150,8 @@ def spawn_browser(
         "--disable-renderer-backgrounding",
         "--disable-background-network-requests",
     ]
+    if user_agent:
+        args.append(f"--user-agent={user_agent}")
     if headless:
         args += [
             "--headless=new",
@@ -287,6 +290,7 @@ def cmd_dedicated(args: argparse.Namespace) -> None:
         headless=args.headless,
         start_url=args.start_url,
         window_size=args.window_size,
+        user_agent=args.user_agent,
     )
     ok, early_error = wait_port_alive(args.host, port, timeout=args.spawn_timeout, proc=proc)
     if not ok:
@@ -464,6 +468,7 @@ def main():
     )
     parser.add_argument("--start-url", default="about:blank")
     parser.add_argument("--window-size", default="1366,900", help="可见窗口大小，例如 1920,1080")
+    parser.add_argument("--user-agent", default=None, help="自定义 User-Agent 字符串")
     parser.add_argument("--spawn-timeout", type=float, default=30.0, help="等待调试端口就绪的超时时间，首次冷启动新 profile 建议保留默认值")
 
     parser.add_argument("--list", action="store_true", help="列出当前所有 tab")
