@@ -202,6 +202,14 @@ Evaluator 仍然在每次 `run_turn` 内部做质量把关，GoalRunner 在更�
   提示词里附加"这只是部分历史"的说明，避免模型误以为看到了完整上下文。如果
   归纳结果不准确（比如漏掉了早期的关键背景），直接在协商环节用修改意见补充
   即可，或者改用 `/goal <文本>` 手动描述。
+- **先 `/compact` 再 `/goal from-history`**：这是专门优化过的场景。`/compact`
+  之后历史会变成 `[session_resume 占位符, 结构化摘要, skill 上下文]`，其中
+  占位符文本 `[Previous session summary]` 本身没有信息量，会被自动跳过；
+  真正有价值的是 `/compact` 生成的结构化摘要（包含 Goal / Work Completed /
+  Current State / Pending 等分节）——会被特别标注为「历史摘要（/compact 生成）」
+  并优先依据其中的 Current State（当前进展）和 Pending / Next Steps（待办
+  事项）来归纳目标，同时字符预算也会自动放宽一倍，避免这类信息密度更高的
+  摘要被过早截断。
 
 ### 2. 执行
 

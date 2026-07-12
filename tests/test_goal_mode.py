@@ -89,34 +89,77 @@ def test_extract_history_transcript_filters_non_text_roles():
         {"role": "tool", "content": "tool result, should be ignored"},
         {"role": "assistant", "content": "好的，已定位到问题"},
     ]
-    transcript, truncated = _extract_history_transcript(history)
+    transcript, truncated, has_compact = _extract_history_transcript(history)
     assert "帮我修一下这个 bug" in transcript
     assert "已定位到问题" in transcript
     assert "should be ignored" not in transcript
     assert truncated is False
+    assert has_compact is False
 
 
 def test_extract_history_transcript_extracts_text_blocks_from_list_content():
     history = [
         {"role": "user", "content": [{"type": "text", "text": "看看这个"}, {"type": "image", "url": "x"}]},
     ]
-    transcript, truncated = _extract_history_transcript(history)
+    transcript, truncated, has_compact = _extract_history_transcript(history)
     assert "看看这个" in transcript
     assert truncated is False
+    assert has_compact is False
 
 
 def test_extract_history_transcript_truncates_by_message_count():
     history = [{"role": "user", "content": f"msg-{i}"} for i in range(50)]
-    transcript, truncated = _extract_history_transcript(history, max_messages=10, max_chars=100000)
+    transcript, truncated, has_compact = _extract_history_transcript(history, max_messages=10, max_chars=100000)
     assert truncated is True
     assert "msg-49" in transcript
     assert "msg-0" not in transcript
+    assert has_compact is False
 
 
 def test_extract_history_transcript_empty_history_returns_empty():
-    transcript, truncated = _extract_history_transcript([])
+    transcript, truncated, has_compact = _extract_history_transcript([])
     assert transcript == ""
     assert truncated is False
+    assert has_compact is False
+
+
+def test_extract_history_transcript_skips_session_resume_placeholder():
+    history = [
+        {"role": "user", "content": "[Previous session summary]", "_type": "session_resume"},
+        {"role": "assistant", "content": "some real summary text", "_type": "compact_summary"},
+    ]
+    transcript, truncated, has_compact = _extract_history_transcript(history)
+    assert "[Previous session summary]" not in transcript
+    assert "some real summary text" in transcript
+    assert has_compact is True
+
+
+def test_extract_history_transcript_labels_compact_summary_specially():
+    history = [
+        {
+            "role": "assistant",
+            "content": "## Goal\nfix the bug\n## Pending / Next Steps\nadd tests",
+            "_type": "compact_summary",
+        },
+    ]
+    transcript, truncated, has_compact = _extract_history_transcript(history)
+    assert has_compact is True
+    assert "历史摘要（/compact 生成）" in transcript
+    assert "add tests" in transcript
+
+
+def test_extract_history_transcript_widens_char_budget_for_compact_summary():
+    long_summary = "x" * 5000
+    history = [
+        {"role": "assistant", "content": long_summary, "_type": "compact_summary"},
+    ]
+    # 普通对话的 max_chars=6000 场景下 5000 字符不会被截断；这里验证
+    # has_compact_summary 时字符预算翻倍生效（不会被更严格的默认值提前截断）。
+    transcript, truncated, has_compact = _extract_history_transcript(history, max_chars=3000)
+    assert has_compact is True
+    assert long_summary in transcript
+
+
 
 
 def test_build_from_history_returns_empty_spec_when_no_text_history():
@@ -182,6 +225,38 @@ def test_build_from_history_raises_after_two_unparseable_attempts(monkeypatch):
     history = [{"role": "user", "content": "do the thing"}]
     with pytest.raises(GoalSpecBuildError):
         builder.build_from_history(history)
+
+
+def test_build_from_history_works_after_compact(monkeypatch):
+    builder = GoalSpecBuilder.__new__(GoalSpecBuilder)
+    monkeypatch.setattr(
+        builder,
+        "_run_builder",
+        lambda prompt: '{"goal_text": "补齐 mini_agent 的单测覆盖率", '
+        '"acceptance_criteria": ["pytest --cov 达到 80%"], '
+        '"verification_method": "run_command", '
+        '"verification_command": "pytest --cov=src"}',
+    )
+    # 模拟 /compact 之后的典型历史结构：
+    # [session_resume 占位符, compact_summary 结构化摘要, skill_context]
+    history = [
+        {"role": "user", "content": "[Previous session summary]", "_type": "session_resume"},
+        {
+            "role": "assistant",
+            "content": (
+                "## Goal\n把测试覆盖率提上去\n"
+                "## Current State\n核心模块已实现，尚无单测\n"
+                "## Pending / Next Steps\n为 core.py 补充单测并跑通 pytest --cov"
+            ),
+            "_type": "compact_summary",
+        },
+        {"role": "user", "content": "skill: pytest usage notes", "_type": "skill_context"},
+    ]
+    spec = builder.build_from_history(history)
+    assert spec.goal_text == "补齐 mini_agent 的单测覆盖率"
+    assert spec.acceptance_criteria == ["pytest --cov 达到 80%"]
+
+
 
 
 # ── GoalStateStore ───────────────────────────────────────────────────────

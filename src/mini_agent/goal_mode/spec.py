@@ -182,7 +182,7 @@ def _extract_history_transcript(
     history: list[dict],
     max_messages: int = 40,
     max_chars: int = 6000,
-) -> tuple[str, bool]:
+) -> tuple[str, bool, bool]:
     """从 Agent.history 中提取可读的对话摘录，供 build_from_history() 使用。
 
     只保留 role in (user, assistant) 且带纯文本 content 的消息（跳过纯工具调用/
@@ -191,15 +191,35 @@ def _extract_history_transcript(
       1. 先只取最近 max_messages 条候选消息
       2. 再对拼接结果做 max_chars 截断（保留最后部分，最近的内容优先级更高）
 
-    返回 (transcript_text, truncated)。truncated 表示是否发生了截断（消息条数
-    或字符数任一超限），用于在提示词里附加"这只是部分历史"的说明，避免模型
-    误以为这就是完整上下文。
+    对 `/compact` 产生的两类特殊条目做专门处理（依赖 history/entry.py 写入的
+    `_type` 字段，仅在 active history 中保留，不会发给 LLM）：
+      - `session_resume`：占位符消息，默认内容就是字面的
+        "[Previous session summary]"，本身不带信息，直接跳过，不占用篇幅。
+      - `compact_summary`：`/compact` 生成的结构化摘要（包含 Goal / Current
+        State / Pending 等分节），信息密度远高于普通对话轮次，是判断"当前
+        未完成任务"的最佳来源。标注成 `[历史摘要（/compact 生成）]` 而不是
+        普通的 `[assistant]`，让下游 prompt 能识别出这是压缩摘要而不是随口
+        的一句话，从而在生成目标时更放心地引用其中的 Pending/Current State
+        内容（这属于结构化事实，不是"照抄用户随口一句话"）。
+
+    返回 (transcript_text, truncated, has_compact_summary)。truncated 表示是否
+    发生了截断（消息条数或字符数任一超限）；has_compact_summary 表示摘录里是否
+    包含 `/compact` 摘要，供调用方选择更贴合的 prompt 措辞。
     """
     candidates: list[str] = []
+    has_compact_summary = False
     for msg in history:
         role = msg.get("role")
         if role not in ("user", "assistant"):
             continue
+        entry_type = msg.get("_type")
+        if entry_type == "session_resume":
+            # 默认占位符文案本身没有信息量，直接跳过；万一未来被改成携带
+            # 真实内容，仍然会走下面的通用文本提取逻辑（不在此处特判丢弃）。
+            content = msg.get("content")
+            if isinstance(content, str) and content.strip() == "[Previous session summary]":
+                continue
+
         content = msg.get("content")
         # content 可能是字符串，也可能是多模态/结构化 list（工具调用等），
         # 这里只提取其中的纯文本部分，忽略图片/工具调用块。
@@ -216,18 +236,27 @@ def _extract_history_transcript(
             text = ""
         if not text:
             continue
-        candidates.append(f"[{role}] {text}")
+
+        if entry_type == "compact_summary":
+            has_compact_summary = True
+            candidates.append(f"[历史摘要（/compact 生成）]\n{text}")
+        else:
+            candidates.append(f"[{role}] {text}")
 
     truncated = len(candidates) > max_messages
     if truncated:
         candidates = candidates[-max_messages:]
 
-    transcript = "\n\n".join(candidates)
-    if len(transcript) > max_chars:
-        truncated = True
-        transcript = transcript[-max_chars:]
+    # 摘录里包含 /compact 摘要时，它本身信息密度高（结构化的 Goal/Current
+    # State/Pending 等分节），值得放宽字符预算，避免被普通对话截断挤掉。
+    effective_max_chars = max_chars * 2 if has_compact_summary else max_chars
 
-    return transcript, truncated
+    transcript = "\n\n".join(candidates)
+    if len(transcript) > effective_max_chars:
+        truncated = True
+        transcript = transcript[-effective_max_chars:]
+
+    return transcript, truncated, has_compact_summary
 
 
 class GoalSpecBuilder:
@@ -346,7 +375,7 @@ class GoalSpecBuilder:
              解析失败则抛出 GoalSpecBuildError，调用方应提示"生成失败，
              请重试或手动指定"，而不是"没有明确目标"。
         """
-        transcript, truncated = _extract_history_transcript(history)
+        transcript, truncated, has_compact_summary = _extract_history_transcript(history)
         if not transcript:
             # 没有任何可用的文本历史，直接返回一个空目标，交给调用方处理，
             # 不必浪费一次 LLM 调用。这属于情况 1（正常的"无目标"）。
@@ -358,10 +387,20 @@ class GoalSpecBuilder:
             "限制未包含在内，请仅根据可见部分归纳。）"
             if truncated else ""
         )
+        summary_note = (
+            "\n（提示：上面标注为「历史摘要（/compact 生成）」的部分是系统自动"
+            "生成的结构化压缩摘要，通常包含 Goal / Current State / Pending 等"
+            "分节，信息是可靠的事实陈述而非用户随口的一句话——请优先依据其中的"
+            "Current State（当前进展）和 Pending / Next Steps（待办事项）来判断"
+            "当前尚未完成的任务，可以直接引用其中的具体事实，不需要为了\"避免"
+            "照抄\"而回避这些结构化信息；'照抄'规则针对的是把用户一句话原样"
+            "当成验收标准，不适用于对这类结构化摘要的合理引用。）"
+            if has_compact_summary else ""
+        )
         prompt = pm.render(
             "user/goal_spec_from_history_request",
             history_transcript=transcript,
-            truncated_note=truncated_note,
+            truncated_note=truncated_note + summary_note,
         )
         raw = self._run_builder(prompt)
         data = _extract_json(raw)
