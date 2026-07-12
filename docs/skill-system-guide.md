@@ -43,16 +43,61 @@ skills/
     SKILL.md
   pdf/
     SKILL.md
+  office/
+    excel/
+      SKILL.md       # 嵌套多层同样能被发现
   image.md          # 扁平布局也支持
 ```
 
-发现规则：
+发现规则（对应 `SkillLoader._discover()`）：
 
-- 递归查找 `*/SKILL.md`。
-- 同时读取技能目录根部的 `*.md` 文件，但会跳过根部同名 `SKILL.md`。
-- 同名 skill 后发现的会覆盖先发现的，调用侧应避免重名。
+- 对每个技能目录调用 `d.rglob("SKILL.md")`，这是**任意深度**的递归查找，不局限于
+  `skills/<name>/SKILL.md` 这一层——`SKILL.md` 嵌在几层子目录下都能被发现。上面
+  `office/excel/SKILL.md` 就是两层嵌套的例子。
+- 同时读取技能目录根部的 `*.md` 文件（非递归，只看根部这一层），但会跳过根部同名
+  `SKILL.md`。
+- 同名 skill 后发现的会覆盖先发现的（`self._all[skill.name] = skill`），调用侧应
+  避免重名。
 
-### 2.2 元数据解析
+> 注意区分：这里的递归发现针对的是 `SKILL.md` 本身。第 3.6 节「渐进式加载」里
+> 登记在 `resources`/`browse_paths` 下的子资源文件（如 `references/*.md`）**不会**
+> 被 `_discover()` 扫描到——它们只在对应 `SKILL.md` 被解析、且在 frontmatter 中
+> 显式登记路径后才被感知，不登记就永远不会被加载机制发现（见第 8 节维护准则第 9 条）。
+
+### 2.2 技能目录从哪来：`skills_dirs` 的解析优先级
+
+`SkillLoader.__init__` 接收的 `skills_dirs: list[Path]` 本身支持传入多个目录，但
+默认情况下（不额外传 `--skills-dir` CLI 参数）这个列表**通常只有一个元素**，来自
+`_resolve_skills_dir()`（`config/prompt_builder.py`）按优先级挑选出的**第一个存在的
+目录**，而不是把项目级和全局级目录都合并进来：
+
+```python
+candidates = [
+    root / ".claude" / "skills",           # 项目级，旧路径，兼容保留
+    paths.global_skills_dir,               # ~/.agent/skills，全局级，新路径
+    Path.home() / ".claude" / "skills",    # 旧全局路径，兼容保留
+]
+# 按顺序取第一个 is_dir() 为真的候选，其余候选即使存在也不会被使用
+```
+
+也就是说：如果项目根目录下有 `.claude/skills/`，就只会用它，`~/.agent/skills/`
+里的 skill **不会**被自动一起加载；只有项目级目录不存在时才会退到全局级。
+
+CLI (`cli/app.py`) 在此基础上，如果用户额外传了 `--skills-dir <path>`，会把它
+**追加**到列表里，这时才真正出现"多个目录同时生效"的情况：
+
+```python
+skill_dirs = [cfg.skills_dir] if cfg.skills_dir else []   # 上面优先级解析出的那一个
+if args.skills_dir:
+    skill_dirs.append(Path(args.skills_dir).expanduser()) # 手动追加的第二个
+```
+
+`skill-generator` 里提到的"项目级 `.claude/skills/<name>/SKILL.md`" 和 "全局级
+`~/.agent/skills/<name>/SKILL.md`" 是**互斥候选关系**（谁存在用谁，项目级优先），
+不是两处都会被扫描；理解这一点很重要，否则容易误以为把 skill 放进全局目录也会
+被同一个项目自动捡到。
+
+### 2.3 元数据解析
 
 每个 skill 会被解析成 `Skill` 对象，核心字段包括：
 
@@ -63,6 +108,12 @@ skills/
 | `location` | `SKILL.md` 文件路径 |
 | `content` | 完整 `SKILL.md` 文本 |
 | `trigger_words` | 用于关键词辅助自动激活的触发词 |
+| `requires` | （Stage 7 / 14.2 新增）依赖的其他 skill 名称列表；依赖不存在时 `activate()` 只打印警告，**不阻塞激活** |
+| `conflicts_with` | （Stage 7 / 14.2 新增）互斥 skill 名称列表；其中任一 skill 已激活时，`activate()` 会**拒绝激活**当前 skill 并打印警告 |
+| `activation_conditions` | （Stage 7 / 14.2 新增）正则表达式列表，`matches_query()` 里作为 `trigger_words` 之外的第二种自动匹配条件，命中任一正则即视为匹配 |
+| `confidence_score` | （Stage 7 / 14.3 新增）0.0–1.0，影响注入 skill 内容时的语气强度；默认 1.0 |
+| `positive_count` / `negative_count` | （Stage 7 / 14.3 新增）正向印证 / 反例计数，用于调整 `confidence_score` |
+| `platforms` / `tags` | 限制该 skill 只在特定平台或 tag 策略下才会被发现/加载（不满足条件时连描述都不会注入 system prompt）；详见 [Skill/Agent/Hook/Tool 平台与 Tag 过滤指南](platform-tag-loading-guide.md) |
 | `resources` | （2026-07 新增）结构化子资源列表，见第 3.6 节「渐进式加载」 |
 | `browse_paths` | （2026-07 新增）纯提示性子资源库路径，不受任何加载机制管理，见第 3.6 节 |
 
@@ -73,7 +124,89 @@ tag 策略下才会被发现/加载（不满足条件时连描述都不会注入
 [Skill/Agent/Hook/Tool 平台与 Tag 过滤指南](platform-tag-loading-guide.md)。
 
 `resources`/`browse_paths` 是纯新增字段，旧格式 `SKILL.md`（不含这两个 key）解析结果
-为空列表，行为与之前完全一致，无需迁移。
+为空列表，行为与之前完全一致，无需迁移。`requires`/`conflicts_with`/
+`activation_conditions` 同样是纯新增字段，旧格式 `SKILL.md`（frontmatter 不含对应
+key）解析结果为空列表/默认值，行为同样与升级前完全一致，无需迁移。
+
+### 2.4 `requires` / `conflicts_with` 对激活流程的实际影响
+
+这三个字段不只是元数据，而是直接参与 `SkillLoader.activate()` 的判断逻辑，容易被
+忽略，单独说明一下：
+
+- **`conflicts_with` 是硬约束**：`activate(name)` 时，若 `conflicts_with` 里任一
+  skill 已在 `_active` 列表中，直接返回 `False`（拒绝激活），并打印警告，不会加载
+  该 skill 的内容到 system prompt。
+- **`requires` 只是软提示**：`activate(name)` 时，若 `requires` 里的 skill 不在
+  `_all`（未被发现/不存在），只打印警告，**仍然继续激活**当前 skill——不会因为依赖
+  缺失而失败。
+- **`activation_conditions` 只影响自动匹配**，不影响 `skill_activate` 工具或
+  `/skill on` 命令的手动激活——手动激活始终生效（除非撞上 `conflicts_with`）。
+- 这三者与渐进式加载（3.6 节）的 `resources`/`browse_paths` 是两套独立机制：前者
+  管的是"skill 之间能不能共存/怎么被自动命中"，后者管的是"单个 skill 内部的内容
+  怎么分层加载"，两者可以同时使用，互不影响。
+
+### 2.5 frontmatter 触发词字段名：`triggers` 优先，`trigger_words` 兼容旧名
+
+`_parse_skill()` 解析触发词时的取值顺序是：
+
+```python
+triggers_raw = fields.get("triggers", fields.get("trigger_words", ""))
+```
+
+即 frontmatter 里写 `triggers:` 会被优先采用；只有没写 `triggers` 时才 fallback
+读取旧字段名 `trigger_words:`。两个字段名对应的是同一个东西——解析后都存进
+`Skill.trigger_words`（Python 对象属性名固定用这个），只是**文件里怎么写**允许两种
+拼法。新写 `SKILL.md` 一律用 `triggers:`（`.claude/skills/skill-generator` 也是这么
+推荐的），`trigger_words:` 仅为兼容遗留文件保留，不要在新文件里混用两个字段名
+（同时写会导致 `trigger_words:` 被忽略，因为 `triggers` 已经命中）。
+
+### 2.6 推荐的新 skill 格式（参考 `.claude/skills/skill-generator`）
+
+项目内置的 `.claude/skills/skill-generator/SKILL.md` 本身就是一个分层 skill 的
+自举示例，它给出的是"按体量二选一"的格式规范，而不是单一固定格式：
+
+**第一步：先判断体量，再选格式**
+
+| 体量特征 | 推荐格式 | 做法 |
+|---|---|---|
+| 预估 < 150 行、内容边界单一 | **单文件** | 全部正文直接写进 `SKILL.md`，不要为了"看起来规范"硬拆 `references/` |
+| 预估 > 150 行，或明显能拆成独立子话题（如"基础用法"+"高级配置"+"错误排查表"） | **分层结构** | 主文件只留高频必读内容 + 索引，细节移到 `references/*.md`，在 frontmatter `resources` 里登记 |
+| 内容是"一个库"而不是"一份文档"（完整 API 手册、按语言分文件夹的 SDK 文档、几十个示例），具体用哪段取决于当次任务 | **`browse_paths`** | 不注册进 `resources`，只留提示，让 agent 自己 `view`/`grep`/`bash find` 检索定位 |
+
+**分层格式的目录约定**：
+
+```
+.claude/skills/<skill-name>/
+├── SKILL.md
+├── references/
+│   ├── advanced.md          ← 登记在 resources 里，可被关键词/工具双通道加载
+│   ├── troubleshooting.md
+│   └── rare-case.md         ← triggers 留空，只能靠 agent 主动用 skill_resource_load 拉取
+└── references/full-docs/    ← 登记在 browse_paths 里，不进 resources，agent 自行检索
+```
+
+**技能目录位置**：项目级放 `.claude/skills/<skill-name>/SKILL.md`，全局级放
+`~/.agent/skills/<skill-name>/SKILL.md`，两者是 2.2 节说的互斥候选关系（项目级
+存在则只用项目级），每个 skill 独立一个子目录，目录名建议与 `name` 字段一致。
+
+**正文写作规范**（区别于"字段格式对不对"，这是"内容写得好不好"）：
+
+1. 直接给可执行的规范/知识/checklist，不要写"我将帮你创建一个 skill"之类的元描述。
+2. 用 `##` 二级标题分节，每节聚焦一个子话题，方便 3.6 节提到的 skill chunking
+   按章节打分选取。
+3. 代码示例精炼、可直接复用，避免堆砌无关样板。
+4. 分层结构下，主文件正文只保留高频内容；细节挪到 `references/`，不要图省事把
+   所有内容都堆回主文件，否则和单文件没区别，白白多了一层目录结构。
+
+**创建后的自检 checklist**：确认每个 `references/*.md` 都在 `resources` 或
+`browse_paths` 里有登记（对应 2.1 节末尾的提醒——递归发现只找 `SKILL.md`，子资源
+文件必须显式登记才会被感知），然后用 `skill_list` / `skill_resource_list` 验证是否
+被正确发现。
+
+完整示例（单文件 / 分层 / `browse_paths` 三种）见
+`.claude/skills/skill-generator/references/examples.md`；渐进式加载的机制细节见
+`.claude/skills/skill-generator/references/progressive-loading.md`（与本文档 3.6
+节讲的是同一套机制，互为补充）。
 
 ---
 
@@ -439,6 +572,11 @@ Token 估算采用粗略规则：`1 token ≈ 4 字符`。
 
 ---
 
-> 最后更新：2026-07（新增渐进式加载机制：`resources`/`browse_paths` 字段、
+> 最后更新：2026-07（修正第 3 节「Skill 文件格式与发现」：明确 `rglob` 为任意深度
+> 递归发现、补充 `skills_dirs` 优先级解析（项目级 `.claude/skills` 与全局级
+> `~/.agent/skills` 互斥候选）、补全 `requires`/`conflicts_with`/`activation_conditions`
+> 等 Stage 7 字段及其对 `activate()` 的实际影响、`triggers`/`trigger_words` 字段名
+> fallback 关系、整合 `.claude/skills/skill-generator` 给出的推荐新 skill 格式规范；
+> 此前更新：新增渐进式加载机制：`resources`/`browse_paths` 字段、
 > `skill_resource_list/load/unload` 工具、资源级关键词自动加载、卸载后再加载的
-> 行为约定；此前更新：热重载 `rediscover()`、`patch_file_simple` 工具、隐私保护、raw-output 模式）
+> 行为约定；更早更新：热重载 `rediscover()`、`patch_file_simple` 工具、隐私保护、raw-output 模式）
