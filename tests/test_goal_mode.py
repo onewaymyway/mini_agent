@@ -600,6 +600,7 @@ class _FakeGoalModeCfg:
         self.max_total_compacts = kwargs.get("max_total_compacts", 10)
         self.consecutive_same_feedback_limit = kwargs.get("consecutive_same_feedback_limit", 3)
         self.same_feedback_similarity_threshold = kwargs.get("same_feedback_similarity_threshold", 0.9)
+        self.max_stuck_recoveries = kwargs.get("max_stuck_recoveries", 3)
         self.judge_show_prompt = kwargs.get("judge_show_prompt", False)
         self.judge_model = None
         self.judge_provider = None
@@ -723,7 +724,9 @@ def test_goal_runner_max_rounds_exhausted(monkeypatch, tmp_path):
 
 
 def test_goal_runner_stuck_on_repeated_feedback(monkeypatch, tmp_path):
-    agent = FakeAgent(outputs=[f"attempt {i}" for i in range(5)])
+    # 需要足够的输出覆盖：3轮触发卡住 -> compact -> 3轮触发卡住 -> compact -> 3轮触发卡住 -> compact -> 终止
+    # 共 3*3 + 3 = 12 轮，所以需要至少 12 个输出
+    agent = FakeAgent(outputs=[f"attempt {i}" for i in range(15)])
     cfg = _FakeCfg(tmp_path, max_rounds=20, consecutive_same_feedback_limit=3)
     spec = _confirmed_spec()
 
