@@ -22,6 +22,7 @@ import pytest
 from mini_agent.goal_mode.spec import (
     GoalSpec,
     GoalSpecBuilder,
+    GoalSpecBuildError,
     _extract_json,
     _extract_history_transcript,
 )
@@ -155,6 +156,32 @@ def test_build_from_history_fallback_criteria_when_missing(monkeypatch):
     spec = builder.build_from_history(history)
     assert spec.goal_text == "some inferred goal"
     assert len(spec.acceptance_criteria) > 0
+
+
+def test_build_from_history_retries_on_unparseable_json_then_succeeds(monkeypatch):
+    builder = GoalSpecBuilder.__new__(GoalSpecBuilder)
+    calls = {"n": 0}
+
+    def fake_run_builder(prompt):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return "not json at all, model rambled"
+        return '{"goal_text": "recovered goal", "acceptance_criteria": ["c1"]}'
+
+    monkeypatch.setattr(builder, "_run_builder", fake_run_builder)
+    history = [{"role": "user", "content": "do the thing"}]
+    spec = builder.build_from_history(history)
+    assert calls["n"] == 2
+    assert spec.goal_text == "recovered goal"
+    assert spec.acceptance_criteria == ["c1"]
+
+
+def test_build_from_history_raises_after_two_unparseable_attempts(monkeypatch):
+    builder = GoalSpecBuilder.__new__(GoalSpecBuilder)
+    monkeypatch.setattr(builder, "_run_builder", lambda prompt: "still not json")
+    history = [{"role": "user", "content": "do the thing"}]
+    with pytest.raises(GoalSpecBuildError):
+        builder.build_from_history(history)
 
 
 # ── GoalStateStore ───────────────────────────────────────────────────────
@@ -505,7 +532,6 @@ class _FakeGoalModeCfg:
         self.judge_allowed_tools = []
         self.judge_allowed_tool_groups = []
         self.persist_state = kwargs.get("persist_state", False)
-        self.max_stuck_recoveries = kwargs.get("max_stuck_recoveries", 3)
 
 
 class _FakeCfg:
@@ -622,8 +648,7 @@ def test_goal_runner_max_rounds_exhausted(monkeypatch, tmp_path):
 
 
 def test_goal_runner_stuck_on_repeated_feedback(monkeypatch, tmp_path):
-    # Need enough outputs for: 3 rounds * 3 recoveries + 3 final rounds = 12+ rounds
-    agent = FakeAgent(outputs=[f"attempt {i}" for i in range(20)])
+    agent = FakeAgent(outputs=[f"attempt {i}" for i in range(5)])
     cfg = _FakeCfg(tmp_path, max_rounds=20, consecutive_same_feedback_limit=3)
     spec = _confirmed_spec()
 
