@@ -35,6 +35,7 @@ triggers: 浏览器, 打开网页, 抓取网页, 网页截图, cdp, chrome devto
 ### 现有子功能文档
 
 - [baidu_search_skill.md](baidu_search_skill.md) — 百度搜索自动化脚本 (`baidu_search.py`)
+- [bing_search_skill.md](bing_search_skill.md) — Bing 搜索自动化脚本 (`bing_search.py`)
 
 ### 新增子功能步骤
 
@@ -283,6 +284,12 @@ python browser_screenshot.py --tab <id> --out ./temp_data/shot.png   # 写入 sk
 本 skill 目录下提供了一个完整的百度搜索自动化脚本 `baidu_search.py`。
 
 **详细文档请参考：[baidu_search_skill.md](baidu_search_skill.md)**
+
+## Bing 搜索自动化脚本 (`bing_search.py`)
+
+本 skill 目录下提供了一个完整的 Bing 搜索自动化脚本 `bing_search.py`。
+
+**详细文档请参考：[bing_search_skill.md](bing_search_skill.md)**
 
 ## 常见坑
 
