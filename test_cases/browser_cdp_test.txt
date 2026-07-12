@@ -1,0 +1,5 @@
+打开新的调试浏览器，并使用新的调试浏览器打开百度搜索页面,搜索 自主进化Agent，获取对应的搜索结果
+
+chrome://inspect/#remote-debugging
+
+打开新的调试浏览器，请使用skill中的脚本，而不要直接使用bash命令
