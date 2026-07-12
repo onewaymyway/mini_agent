@@ -409,6 +409,28 @@ class TestLLMDebugLogger(unittest.TestCase):
         self.assertIn("timeout", err_entry["error"])
         self.assertEqual(err_entry["duration_ms"], 1200)
 
+    def test_prepare_error_logged(self):
+        """[BUGFIX] _prepare_tools/_apply_system_format 阶段的失败（发生在
+        log_request() 之前）之前完全没有埋点，现在通过 log_prepare_error()
+        单独记录一条 event=prepare_error，不再是排查时的盲区。"""
+        logger = self._make_logger()
+        logger.log_prepare_error("openai", "gpt-4o", RuntimeError("bad tool schema"), 5)
+        entries = self._read_log(logger)
+        self.assertEqual(len(entries), 1)
+        e = entries[0]
+        self.assertEqual(e["event"], "prepare_error")
+        self.assertEqual(e["provider"], "openai")
+        self.assertEqual(e["model"], "gpt-4o")
+        self.assertIn("bad tool schema", e["error"])
+        self.assertEqual(e["duration_ms"], 5)
+
+    def test_prepare_error_no_op_when_disabled(self):
+        cfg = DebugConfig(enabled=False)
+        logger = LLMDebugLogger(cfg)
+        # 不应抛异常，也不应创建任何文件
+        logger.log_prepare_error("openai", "gpt-4o", RuntimeError("x"), 1)
+        self.assertIsNone(logger.log_file)
+
     def test_seq_increments(self):
         logger = self._make_logger()
         s1 = logger.log_request(provider="a", model="m", raw_system="s", raw_messages=[], raw_tools=[], actual_system="s", actual_api_tools=[], stream=False)

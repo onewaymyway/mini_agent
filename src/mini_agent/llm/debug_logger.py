@@ -71,6 +71,14 @@ llm/debug_logger.py — LLM 请求/响应调试日志
     "seq": 1, "event": "error", "duration_ms": 500,
     "error": "NVIDIA NIM timeout: ..."
   }
+
+  event=prepare_error:
+  # 记录"准备阶段"（_prepare_tools / _apply_system_format，发生在
+  # log_request() 之前）的失败——这一步没有关联的 request，seq 固定为 0。
+  {
+    "seq": 0, "event": "prepare_error", "duration_ms": 5,
+    "error": "..."
+  }
 """
 
 from __future__ import annotations
@@ -285,6 +293,39 @@ class LLMDebugLogger:
         }
         self._emit(entry, label="ERROR", color="red")
 
+    def log_prepare_error(
+        self,
+        provider: str,
+        model: str,
+        error: Exception,
+        duration_ms: int,
+    ) -> None:
+        """记录请求"准备阶段"（_prepare_tools / _apply_system_format，发生在
+        log_request() 之前）的失败。
+
+        这一段之前完全没有埋点：如果异常恰好出在这两步（比如工具 schema
+        序列化失败、system_message_format 合并出错），连 request 记录都不会
+        写，日志文件里什么都看不到——这是"LLM 调用失败但日志为空"最容易被
+        忽略的一种情况，和是否开了 --debug-llm、daemon 模式与否都无关。
+        用独立的 event=prepare_error（而不是复用 log_error 的 seq 机制，因为
+        走到这一步时请求还没有被真正"记录"过，没有关联的 seq）来标记，方便
+        排查时一眼看出"根本没发出请求"和"发出去但失败了"的区别。
+        """
+        if not self.cfg.enabled:
+            return
+
+        entry = {
+            "seq":         0,
+            "ts":          _now_iso(),
+            "ts_str":      now_str(),
+            "event":       "prepare_error",
+            "provider":    provider,
+            "model":       model,
+            "duration_ms": duration_ms,
+            "error":       str(error),
+        }
+        self._emit(entry, label="PREPARE_ERROR", color="red")
+
     @property
     def log_file(self) -> Optional[Path]:
         return self._log_file
@@ -369,9 +410,7 @@ class LLMDebugLogger:
 
     @staticmethod
     def _build_file_logger(path: Path) -> logging.Logger:
-        # Use path string for unique logger name to avoid collisions
-        # when Path objects are garbage collected and memory addresses reused
-        name = f"llm_debug_{path.resolve()}"
+        name = f"llm_debug_{id(path)}"
         logger = logging.getLogger(name)
         logger.setLevel(logging.INFO)
         logger.propagate = False

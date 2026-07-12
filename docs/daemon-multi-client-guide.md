@@ -99,6 +99,16 @@ Agent 核心（`agent.py`）完全不感知 HTTP/SSE 的存在，只通过 `Agen
   而非仅展示新增消息 —— 需检查该客户端 `since_id` / 增量拉取逻辑是否正确落地（见第 3 节第 4 步）。
 - 终端渲染伪影（terminal rendering artifacts）：与状态栏内容被中途注入响应流的历史 bug
   （现已修复，见 `terminal-display-internals.md`）类似的渲染时序问题仍需持续关注。
+- **`--debug-llm` 对已运行的 daemon 不生效（2026-07 已加警告）**：`mini-agent`（或
+  `python main.py`）检测到项目已有存活 daemon 时，会直接短路进入"连接客户端"模式
+  （`run_connected_repl`），根本不会在当前（客户端）进程构建 `Agent`/`cfg`——这次
+  命令行带的 `--debug-llm`/`--debug-llm-console` 因此完全不会生效，实际处理 LLM
+  调用的是那个更早启动、且启动时未必带了这个 flag 的 daemon 进程。现象是
+  "明明加了 `--debug-llm`，但 `llm_debug.jsonl` 一直是空的"，排查成本很高。
+  现在客户端检测到这种情况会打印警告提示；正确用法是先 `mini-agent daemon stop`，
+  再用 `mini-agent daemon start --debug-llm`（或 `--detach --debug-llm` 后台启动）
+  重新拉起 daemon——`daemon start` 子命令会把无法识别的参数（包括 `--debug-llm`）
+  透传给实际的 daemon 子进程。
 
 ## 5. 相关文档
 

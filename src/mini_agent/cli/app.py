@@ -352,6 +352,20 @@ def _main_inner() -> None:
         from mini_agent.cli.daemon import _read_daemon_info, run_connected_repl, DaemonClient
         _daemon_info = _read_daemon_info(project_root)
         if _daemon_info:
+            # [BUGFIX] 已知坑：连接到一个"已经在跑"的 daemon 时，本次命令行带的
+            # --debug-llm / --debug-llm-console 完全不会生效——因为这里根本不会
+            # 在当前（客户端）进程构建 Agent/cfg，实际处理 LLM 调用的是那个更早
+            # 启动、且启动时未必带了这个 flag 的 daemon 进程。这个坑排查成本很高
+            # （现象是"加了 --debug-llm 但 llm_debug.jsonl 一直是空的"），这里
+            # 提前给出明确提示，而不是让用户去猜。
+            if getattr(args, "debug_llm", False) or getattr(args, "debug_llm_console", False):
+                R.print_warning(
+                    "[daemon] 检测到已有 daemon 在运行，本次连接会直接复用它的进程，"
+                    "这次命令行带的 --debug-llm/--debug-llm-console 对它不会生效"
+                    "（该 flag 只在启动 daemon 那一刻起作用）。如果需要调试日志，"
+                    "请先 `mini-agent daemon stop`，再用 "
+                    "`mini-agent daemon start --debug-llm` 重新启动 daemon。"
+                )
             # 额外探活：PID 存在 + HTTP 服务真正就绪才走连接模式
             # --token（-T）：显式指定连接身份用的 token，多用户 daemon 下
             # 用它决定"以哪个用户连接"；不传则 DaemonClient 内部按原有优先级

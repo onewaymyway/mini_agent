@@ -114,6 +114,28 @@ TurnJudge/GoalJudge 判定异常），`llm_debug.jsonl` 里什么都不会有，
 容易误以为"日志系统坏了"。现在已改为这些内部配置统一继承外层
 `--debug-llm` / `--debug-llm-console`，不再单独硬编码关闭。
 
+**另一个更容易踩到的坑（daemon 模式下）**：如果项目已经有一个存活的
+daemon，`mini-agent`/`python main.py` 会直接短路进入"连接客户端"模式，
+根本不会在当前进程构建 Agent，此时命令行带的 `--debug-llm` **完全不生效**——
+真正处理 LLM 调用的是那个更早启动、且启动时未必带了这个 flag 的 daemon 进程。
+详见 `daemon-multi-client-guide.md` 第 4 节；简单说：要给 daemon 开调试日志，
+必须在 `daemon start` 那一刻就带上 `--debug-llm`，而不是在之后连接它的客户端
+命令上加。
+
+**第三个坑（2026-07 已修复，非 daemon 模式也会踩到）**：`_traced_chat` /
+`_traced_stream`（`llm/providers/_base_mixin.py`）里，`_prepare_tools()`
+（注入工具协议到 system）和 `_apply_system_format()`（按
+`system_message_format` 把 system 合并进 messages）这两步是在
+`logger.log_request()` **之前**执行的，完全没有 try/except 保护——如果异常
+恰好出在这两步（比如工具 schema 序列化失败、system 格式合并出错），会直接
+向上抛出，连 request 记录都不会写，`llm_debug.jsonl` 里自然什么都看不到。
+这是"LLM 调用失败但日志完全是空的"里最容易被忽略、也最难排查的一种情况——
+和是否开了 `--debug-llm`、是不是 daemon 模式**都没有关系**，纯粹是这两步
+本身没被日志覆盖到。现在这两步也纳入了保护范围，失败时会写一条独立的
+`event=prepare_error` 记录（`seq` 固定为 0，因为走到这一步时还没有真正
+"发出"过请求，没有关联的 seq），排查时能一眼看出"根本没发出请求"和
+"发出去但失败了"的区别。
+
 ---
 
 ## 四、Daemon 控制台日志（`cli/daemon.py`）

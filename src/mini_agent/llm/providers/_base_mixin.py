@@ -73,14 +73,23 @@ class ProviderMixin:
         """
         包装 _do_chat()，记录完整的原始/实际请求和原始/处理后响应。
         """
-        # 1. 准备工具（注入协议到 system）
-        system_final, api_tools = self._prepare_tools(system, tools)
-
-        # 1b. 根据 system_message_format 决定是否将 system 合并进 messages
-        system_final, messages = self._apply_system_format(system_final, messages)
+        # 1. 准备工具（注入协议到 system）+ 1b. 按 system_message_format 合并
+        # system 到 messages —— 这两步之前完全没有埋点保护，异常会在写任何
+        # 日志之前就直接抛出。用独立的 try/except 兜底，失败时记一条
+        # prepare_error，不再是排查时的盲区。
+        logger = get_debug_logger()
+        _t_prep0 = time.monotonic()
+        try:
+            system_final, api_tools = self._prepare_tools(system, tools)
+            system_final, messages = self._apply_system_format(system_final, messages)
+        except Exception as e:
+            logger.log_prepare_error(
+                self.config.provider, self.config.model, e,
+                int((time.monotonic() - _t_prep0) * 1000),
+            )
+            raise self._upgrade_error(e)
 
         # 2. 记录请求（原始 + 实际发给 API 的）
-        logger = get_debug_logger()
         seq = logger.log_request(
             provider=self.config.provider,
             model=self.config.model,
@@ -137,10 +146,18 @@ class ProviderMixin:
         extra_kwargs 透传给 impl（如 on_reasoning）。
         集成 RPM 限速和实时 token 计数（状态栏显示）。
         """
-        system_final, api_tools = self._prepare_tools(system, tools)
-        system_final, messages = self._apply_system_format(system_final, messages)
-
         logger = get_debug_logger()
+        _t_prep0 = time.monotonic()
+        try:
+            system_final, api_tools = self._prepare_tools(system, tools)
+            system_final, messages = self._apply_system_format(system_final, messages)
+        except Exception as e:
+            logger.log_prepare_error(
+                self.config.provider, self.config.model, e,
+                int((time.monotonic() - _t_prep0) * 1000),
+            )
+            raise self._upgrade_error(e)
+
         seq = logger.log_request(
             provider=self.config.provider,
             model=self.config.model,
