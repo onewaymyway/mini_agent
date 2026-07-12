@@ -115,6 +115,7 @@ def spawn_browser(
         binary,
         f"--remote-debugging-port={port}",
         f"--user-data-dir={user_data_dir}",
+        "--remote-allow-origins=*",
         "--no-first-run",
         "--no-default-browser-check",
         f"--window-size={window_size}",

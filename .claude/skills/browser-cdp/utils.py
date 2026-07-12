@@ -24,7 +24,7 @@ def get_session(args: argparse.Namespace) -> CDPSession:
         url_contains=args.url_contains,
         title_contains=args.title_contains,
     )
-    session = connect_tab(target)
+    session = connect_tab(target, host=args.host, port=args.port)
     # 常用 domain 打开，很多命令/事件依赖这些
     for domain in ("Page", "DOM", "Runtime"):
         try:

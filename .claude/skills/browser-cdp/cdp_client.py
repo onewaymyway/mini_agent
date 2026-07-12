@@ -47,7 +47,11 @@ def version_info(host: str = DEFAULT_HOST, port: int = DEFAULT_PORT) -> dict:
 
 
 def new_tab(url: str = "about:blank", host: str = DEFAULT_HOST, port: int = DEFAULT_PORT) -> dict:
-    return http_json(host, port, f"/json/new?{url}")
+    import urllib.parse
+    url_encoded = urllib.parse.quote(url)
+    resp = requests.post(f"http://{host}:{port}/json/new", data=url_encoded, timeout=5.0)
+    resp.raise_for_status()
+    return resp.json()
 
 
 def close_tab(target_id: str, host: str = DEFAULT_HOST, port: int = DEFAULT_PORT) -> None:
@@ -69,14 +73,17 @@ def is_debug_port_alive(host: str = DEFAULT_HOST, port: int = DEFAULT_PORT, time
 class CDPSession:
     """对单个 tab（page target）建立的 WebSocket 会话。"""
 
-    def __init__(self, ws_url: str, timeout: float = 15.0):
+    def __init__(self, ws_url: str, timeout: float = 15.0, origin: str = None):
         self.ws_url = ws_url
         self.timeout = timeout
         self._id_counter = itertools.count(1)
         self._lock = threading.Lock()
         self._pending: dict[int, dict] = {}
         self._events: list[dict] = []
-        self._ws = websocket.create_connection(ws_url, timeout=timeout)
+        options = {}
+        if origin:
+            options["origin"] = origin
+        self._ws = websocket.create_connection(ws_url, timeout=timeout, **options)
         self._closed = False
         self._recv_lock = threading.Lock()
 
@@ -205,11 +212,13 @@ def method_hint(data: dict) -> str:
     return data.get("method") or "cdp"
 
 
-def connect_tab(target: dict, timeout: float = 15.0) -> CDPSession:
+def connect_tab(target: dict, timeout: float = 15.0, host: str = "127.0.0.1", port: int = 9222) -> CDPSession:
     ws_url = target.get("webSocketDebuggerUrl")
     if not ws_url:
         raise CDPError(f"target 没有 webSocketDebuggerUrl: {target}")
-    return CDPSession(ws_url, timeout=timeout)
+    # Chrome DevTools Protocol requires Origin header for WebSocket connections
+    origin = f"http://{host}:{port}"
+    return CDPSession(ws_url, timeout=timeout, origin=origin)
 
 
 def find_tab(
