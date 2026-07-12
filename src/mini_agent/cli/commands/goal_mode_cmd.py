@@ -94,7 +94,7 @@ def _handle_from_history(agent) -> None:
     agent.history 里归纳"，生成后走和 `_handle_new_goal` 完全相同的
     协商/确认循环，避免两条命令的后续行为出现分叉。
     """
-    from mini_agent.goal_mode.spec import GoalSpecBuilder
+    from mini_agent.goal_mode.spec import GoalSpecBuilder, GoalSpecBuildError
 
     history = agent.history
     if not history:
@@ -108,6 +108,9 @@ def _handle_from_history(agent) -> None:
     R.print_info("[Goal 模式] 正在根据当前 session 历史归纳目标…")
     try:
         spec = builder.build_from_history(history)
+    except GoalSpecBuildError as e:
+        R.print_error(f"根据历史生成目标草案失败：{e}\n请重试一次，或改用 /goal <目标文本> 手动指定。")
+        return
     except Exception as e:
         R.print_error(f"根据历史归纳目标失败：{e}")
         return

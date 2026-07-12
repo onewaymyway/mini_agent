@@ -29,6 +29,16 @@ from typing import Optional, TYPE_CHECKING
 
 from mini_agent.prompts import pm
 
+
+class GoalSpecBuildError(RuntimeError):
+    """GoalSpecBuilder 生成草案时的不可恢复失败（如多次重试仍解析不出合法 JSON）。
+
+    与"LLM 正常解析后主动判断历史里没有明确任务"是两码事——后者不算错误，
+    只是 goal_text 为空字符串；这个异常专门用来把"builder 本身失败了"和
+    "确实没有可归纳的目标"区分开，调用方需要分别给出不同的提示。
+    """
+    pass
+
 if TYPE_CHECKING:
     from mini_agent.config import AppConfig
 
@@ -326,14 +336,20 @@ class GoalSpecBuilder:
         只是 user 消息换成"对话摘录 + 归纳要求"，一次 LLM 调用内完成
         "归纳任务 + 生成验收标准"，不额外多打一轮总结请求。
 
-        若历史中没有足够信息归纳出目标（比如刚开始、或者都是闲聊），
-        goal_text 会是空字符串——调用方（goal_mode_cmd.py）需要检查这种
-        情况并提示用户改用 `/goal <目标文本>`。
+        两种"没结果"的情况需要严格区分，不能混为一谈：
+          1. LLM 正常返回了合法 JSON，但判断历史里确实没有明确任务（比如刚
+             开始、或者都是闲聊）——这是正常结果，goal_text 为空字符串，
+             调用方据此提示用户改用 `/goal <目标文本>`。
+          2. LLM 返回的内容压根解析不出合法 JSON（比如输出格式跑偏，常见于
+             历史被 /compact 压缩过、结构比较特殊的情况）——这是 builder
+             本身的失败，不代表"没有任务"，会先带纠正提示重试一次；仍然
+             解析失败则抛出 GoalSpecBuildError，调用方应提示"生成失败，
+             请重试或手动指定"，而不是"没有明确目标"。
         """
         transcript, truncated = _extract_history_transcript(history)
         if not transcript:
             # 没有任何可用的文本历史，直接返回一个空目标，交给调用方处理，
-            # 不必浪费一次 LLM 调用。
+            # 不必浪费一次 LLM 调用。这属于情况 1（正常的"无目标"）。
             spec = GoalSpec(goal_text="", acceptance_criteria=[])
             return spec
 
@@ -348,7 +364,27 @@ class GoalSpecBuilder:
             truncated_note=truncated_note,
         )
         raw = self._run_builder(prompt)
-        data = _extract_json(raw) or {}
+        data = _extract_json(raw)
+
+        if data is None:
+            # 情况 2：解析失败，带纠正提示重试一次，而不是直接判定"无目标"。
+            retry_prompt = (
+                prompt
+                + "\n\n【纠正】你上一次的输出不是合法的 JSON，无法被解析。"
+                "请只输出一个 JSON 对象（不要有任何前后缀文字或代码块标记），"
+                "字段为 goal_text / acceptance_criteria / verification_method / "
+                "verification_command。如果确实判断不出明确任务，goal_text 用"
+                "空字符串 \"\"，acceptance_criteria 用空数组 []，但整体仍必须是"
+                "合法 JSON。"
+            )
+            retry_raw = self._run_builder(retry_prompt)
+            retry_data = _extract_json(retry_raw)
+            if retry_data is None:
+                raise GoalSpecBuildError(
+                    "根据历史生成目标草案失败：LLM 两次输出都无法解析为合法 JSON。"
+                )
+            raw = retry_raw
+            data = retry_data
 
         goal_text = (data.get("goal_text") or "").strip()
         criteria = list(data.get("acceptance_criteria") or [])
