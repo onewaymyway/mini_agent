@@ -659,6 +659,8 @@ class Agent:
             # [产出物自动侦测] 懒引用 session id，供 write_file/create_file/bash
             # 等工具成功执行后自动登记产出 manifest（perception/artifact_detector.py）。
             session_id_getter=lambda: (self._session.id if self._session else ""),
+            # [auto_quarantine] 懒引用，供工具调用失败时归因给当前 active skill
+            skill_loader_getter=lambda: getattr(self, "skill_loader", None),
         )
         # [SYS-MCP] 注入 MCPManager（_init_components 在 MCP 注册后调用，此时已就绪）
         self._tool_executor._mcp_manager = getattr(self, "_mcp_manager", None)

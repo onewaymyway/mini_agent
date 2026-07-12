@@ -27,6 +27,7 @@ from mini_agent.cli.commands import (
     handle_agents_cmd,
     handle_hooks_cmd,
     handle_platform_cmd,
+    handle_quarantine_cmd,
     handle_evolution_cmd,
     handle_evolve_cmd,
     handle_goal_cmd,
@@ -324,6 +325,9 @@ def _handle_slash(cmd: str, agent: Agent, skill_loader: SkillLoader) -> None:
 
     elif name == "platform":
         handle_platform_cmd(parts[1:], agent)
+
+    elif name == "quarantine":
+        handle_quarantine_cmd(parts[1:], agent)
 
     elif name == "evolution":
         handle_evolution_cmd(parts[1:], agent)

@@ -45,6 +45,39 @@ import mini_agent.ui.renderer as R
 
 from .feedback import RoleFeedback, extract_score, build_inject_message
 
+# ── [auto_quarantine] role agent 失败识别 ────────────────────────────────────
+# evaluator.py / coach.py / _run_custom_role 目前的约定是：内部异常被捕获后
+# 转成 "[XxxAgent 运行失败: <err>]" 这样的字符串返回，而不是向上抛异常。
+# 这里做一个轻量的字符串识别，避免逐个改动 evaluator/coach 的异常处理方式。
+import re as _re
+
+_ROLE_FAILURE_RE = _re.compile(r"^\[\w+Agent 运行失败: (.*)\]$", _re.DOTALL)
+
+
+def _report_role_agent_failure(raw: str, profile_name: str) -> None:
+    """
+    若 raw 匹配 "[XxxAgent 运行失败: ...]" 格式，视为一次角色 Agent 运行失败，
+    上报给 auto_quarantine（总开关默认关闭，关闭时 record_failure 是 no-op）。
+    """
+    m = _ROLE_FAILURE_RE.match(raw or "")
+    if not m:
+        return
+    err_text = m.group(1)
+    try:
+        from mini_agent.perception.observability import classify_error
+        from mini_agent.auto_quarantine import get_quarantine_store
+        cat = classify_error(raw)
+        store = get_quarantine_store()
+        just_q = store.record_failure("agent", profile_name, cat, err_text)
+        if just_q:
+            R.print_warning(
+                f"[quarantine] agent profile '{profile_name}' 在当前平台连续失败达到阈值"
+                f"（{cat}），已自动屏蔽。使用 /quarantine remove agent:{profile_name} 可解除。"
+            )
+    except Exception as _mini_agent_exc:
+        from mini_agent.errors import log_exception
+        log_exception(_mini_agent_exc, where='mini_agent.role_agents.dispatcher')
+
 if TYPE_CHECKING:
     from mini_agent.config import AppConfig
     from mini_agent.orchestrator.agent_profiles import AgentProfileLoader, AgentProfile
@@ -223,6 +256,17 @@ class RoleAgentDispatcher:
                 # custom role：把输出直接作为 prompt 传入
                 raw = self._run_custom_role(profile, current_output, original_request)
 
+            # [auto_quarantine] 识别 "[XxxAgent 运行失败: ...]" 格式，失败则上报
+            # 计数，成功（未匹配失败格式）则清零该 profile 的历史失败计数。
+            _report_role_agent_failure(raw, profile.name)
+            if not _ROLE_FAILURE_RE.match(raw or ""):
+                try:
+                    from mini_agent.auto_quarantine import get_quarantine_store
+                    get_quarantine_store().record_success("agent", profile.name)
+                except Exception as _mini_agent_exc:
+                    from mini_agent.errors import log_exception
+                    log_exception(_mini_agent_exc, where='mini_agent.role_agents.dispatcher')
+
             score = extract_score(raw) if profile.role_type == "evaluator" else None
             passed = (score is not None and score >= profile.pass_threshold) if score is not None else None
 
@@ -356,6 +400,16 @@ class RoleAgentDispatcher:
                 )
             else:
                 raw = self._run_custom_role(profile, tool_output, context)
+
+            # [auto_quarantine] 同 _run_role_with_retry：识别失败格式并上报/清零计数
+            _report_role_agent_failure(raw, profile.name)
+            if not _ROLE_FAILURE_RE.match(raw or ""):
+                try:
+                    from mini_agent.auto_quarantine import get_quarantine_store
+                    get_quarantine_store().record_success("agent", profile.name)
+                except Exception as _mini_agent_exc:
+                    from mini_agent.errors import log_exception
+                    log_exception(_mini_agent_exc, where='mini_agent.role_agents.dispatcher')
 
             feedback = RoleFeedback(
                 role_name=profile.name,

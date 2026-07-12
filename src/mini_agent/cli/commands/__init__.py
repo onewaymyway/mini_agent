@@ -13,6 +13,8 @@ cli/commands — slash 命令处理模块包
   goals       — /agent goals|/goals（Stage 9：Goal Backlog）
   debug_cmd   — /debug system|history|all|save（打印/导出 system prompt 与 history，便于分析调试）
   platform    — /platform status|filtered|reload（可加载对象的平台/tag 过滤策略查看与重载）
+  quarantine  — /quarantine status|list|remove|clear|reload|enable|disable
+                （运行时自动屏蔽：skill/tool/agent 因反复环境不兼容失败被自动拉黑，默认关闭）
   roles       — /role list|use|show|exit|status|reload（角色扮演 Persona 系统）
   proxy       — /proxy status|refresh|sources [add-mibei77|add-discovered]|integration [set <key> <value>]
                 （代理订阅池：抓取/验证/查看可用节点、可扩展订阅源类型、接入其它模块的开关，懒加载于 repl.py）
@@ -29,6 +31,7 @@ from mini_agent.cli.commands.providers import handle_provider_cmd
 from mini_agent.cli.commands.agents import handle_agents_cmd
 from mini_agent.cli.commands.hooks import handle_hooks_cmd
 from mini_agent.cli.commands.platform import handle_platform_cmd
+from mini_agent.cli.commands.quarantine import handle_quarantine_cmd
 from mini_agent.cli.commands.evolution import handle_evolution_cmd
 from mini_agent.cli.commands.evolve import handle_evolve_cmd
 from mini_agent.cli.commands.goals import handle_goals_cmd
@@ -49,6 +52,7 @@ __all__ = [
     "handle_agents_cmd",
     "handle_hooks_cmd",
     "handle_platform_cmd",
+    "handle_quarantine_cmd",
     "handle_evolution_cmd",
     "handle_evolve_cmd",
     "handle_goals_cmd",

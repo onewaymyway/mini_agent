@@ -174,3 +174,8 @@ ToolRegistry.register                   → 不满足条件的 tool 不进入 _t
 1. `/platform status` — 看当前探测到的平台标签是否符合预期
 2. `/platform filtered` — 看该对象是否被过滤，以及具体原因（平台不匹配 / tag 命中 deny / tag 不在 allow 内）
 3. 确认 `<project_root>/platform_policy.json` 的内容和位置正确
+4. 确认不是被**运行时自动屏蔽**机制拉黑的（原因会显示为 `runtime-quarantined: ...`）——
+   见 [运行时自动屏蔽（Auto Quarantine）指南](auto-quarantine-guide.md)。这是与本文档描述的
+   静态声明式过滤完全独立的一套机制：默认关闭，只有显式开启后，才会因为对象在当前平台
+   反复运行失败而被自动记录进 `runtime_quarantine.json` 并拦截加载。
+

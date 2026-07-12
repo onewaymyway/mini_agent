@@ -74,6 +74,7 @@ class ToolExecutor:
         raw_result_store=None,     # Optional[RawResultStore]，[SYS-RAWSTORE] 原始输出留存
         persona_getter=None,       # Optional[Callable[[], Optional[str]]]，角色扮演系统 [二期]
         session_id_getter=None,    # Optional[Callable[[], str]]，供产出物自动侦测登记 manifest 用
+        skill_loader_getter=None,  # Optional[Callable[[], Optional[SkillLoader]]]，[auto_quarantine] 归因当前 active skill
     ) -> None:
         self.cfg = cfg
         self.registry = registry
@@ -96,6 +97,7 @@ class ToolExecutor:
         self._raw_result_store = raw_result_store
         self._persona_getter = persona_getter
         self._session_id_getter = session_id_getter
+        self._skill_loader_getter = skill_loader_getter
         # [产出物自动侦测] 跨多次 execute_all 调用维护去重状态，见 perception/artifact_detector.py
         from mini_agent.perception.artifact_detector import ArtifactAutoDetector
         self._artifact_detector = ArtifactAutoDetector()
@@ -343,11 +345,55 @@ class ToolExecutor:
 
                         if self.cfg.tool_stats_enabled:
                             self.stats.record_tool_call(tc.name, True, len(result_str))
+
+                        # [auto_quarantine] 调用成功：清零该 tool 的失败计数
+                        # （总开关关闭时 record_success 内部是 no-op，成本忽略不计）
+                        try:
+                            from mini_agent.auto_quarantine import get_quarantine_store
+                            get_quarantine_store().record_success("tool", tc.name)
+                        except Exception as _mini_agent_exc:
+                            from mini_agent.errors import log_exception
+                            log_exception(_mini_agent_exc, where='mini_agent.tool_executor')
+                            pass
                     except Exception as e:
                         result_str = f"[tool error: {e}]"
                         R.print_tool_error(tc.name, str(e))
                         if self.cfg.tool_stats_enabled:
                             self.stats.record_tool_call(tc.name, False, 0)
+
+                        # [auto_quarantine] 工具调用异常：按 error_category 判定是否
+                        # 计入"环境不兼容"失败次数，达到阈值自动拉黑（总开关默认关闭）。
+                        # 同时把失败归因给当前所有 active 的 skill——skill 本身不直接
+                        # "运行"，只能靠激活期间的工具调用是否顺利来判断它在本平台是否可用。
+                        try:
+                            from mini_agent.perception.observability import classify_error
+                            from mini_agent.auto_quarantine import get_quarantine_store
+                            _store = get_quarantine_store()
+                            _cat = classify_error(result_str)
+                            _just_q = _store.record_failure("tool", tc.name, _cat, str(e))
+                            if _just_q:
+                                R.print_warning(
+                                    f"[quarantine] 工具 '{tc.name}' 在当前平台连续失败达到阈值"
+                                    f"（{_cat}），已自动屏蔽。使用 /quarantine remove tool:{tc.name} 可解除。"
+                                )
+                            if self._skill_loader_getter is not None:
+                                _sl = self._skill_loader_getter()
+                                if _sl is not None:
+                                    for _skill_name in list(getattr(_sl, "active", [])):
+                                        _just_q_skill = _store.record_failure(
+                                            "skill", _skill_name, _cat, str(e),
+                                        )
+                                        if _just_q_skill:
+                                            R.print_warning(
+                                                f"[quarantine] skill '{_skill_name}' 在当前平台连续失败"
+                                                f"达到阈值（{_cat}），已自动屏蔽。使用 "
+                                                f"/quarantine remove skill:{_skill_name} 可解除。"
+                                            )
+                        except Exception as _mini_agent_exc:
+                            from mini_agent.errors import log_exception
+                            log_exception(_mini_agent_exc, where='mini_agent.tool_executor')
+                            pass
+
                         # [SYS-HOOKS] PostToolUseFailure：工具抛异常后通知
                         if hook_mgr is not None:
                             try:

@@ -344,7 +344,20 @@ mini-agent --retry-backoff linear --retry-backoff-step 60 --retry-backoff-max 30
 | `/platform filtered` | 列出本次运行中因平台/tag 不匹配被过滤掉的 skill/agent/hook/tool（含过滤原因） |
 | `/platform reload` | 重新读取 `<project_root>/platform_policy.json` 并触发一次热重载（skill/agent profile 立即生效；tool/hook 是启动时一次性注册，需重启进程才能生效） |
 
-### 自我演化（`src/mini_agent/cli/commands/evolution.py` / `evolve.py`）
+### 运行时自动屏蔽（`src/mini_agent/cli/commands/quarantine.py`）
+
+> 详见 [运行时自动屏蔽（Auto Quarantine）指南](auto-quarantine-guide.md)
+
+| 命令 | 说明 |
+|------|------|
+| `/quarantine` 或 `/quarantine status` | 显示 auto_quarantine 总开关状态、失败阈值、记录总数/已拉黑数 |
+| `/quarantine list` | 列出当前已被自动屏蔽的 skill/tool/agent（含失败次数、原因、平台标签） |
+| `/quarantine remove <kind>:<name>` | 手动解除单个屏蔽，如 `/quarantine remove tool:xlsx_export` |
+| `/quarantine clear` | 清空所有记录（含未拉黑的失败计数） |
+| `/quarantine reload` | 重新读取 `runtime_quarantine.json`（手动改过文件后热更新） |
+| `/quarantine enable` / `/quarantine disable` | 打开/关闭总开关（写回 `platform_policy.json`，**默认关闭**） |
+
+（`src/mini_agent/cli/commands/evolution.py` / `evolve.py`）
 
 > 详见 [Stage 2 安全网指南](self-evolution-stage2-guide.md)、[Stage 3.1 lesson → skill 闭环指南](self-evolution-stage3-1-guide.md)、[Phase G 后台循环指南](self-evolution-phase-g-guide.md)
 

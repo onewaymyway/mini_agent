@@ -119,9 +119,21 @@ class LoadPolicy:
           "tags": {
             "deny": ["experimental"],
             "allow": []                     // 非空则启用白名单模式
+          },
+          "auto_quarantine": {
+            "enabled": false,               // [运行时自动屏蔽] 总开关，默认关闭
+            "fail_threshold": 3             // 连续多少次"环境不兼容"失败后自动拉黑
           }
         }
+
+    auto_quarantine 说明见 mini_agent.auto_quarantine 模块 docstring：
+    该开关只控制"是否允许运行时因反复失败而自动拉黑对象"这一整套机制，
+    与本文件原有的静态 platforms/tags 声明式过滤是两套独立、互补的机制。
     """
+
+    # auto_quarantine 默认值（未在 platform_policy.json 里声明时使用）
+    _AUTO_QUARANTINE_DEFAULT_ENABLED = False
+    _AUTO_QUARANTINE_DEFAULT_THRESHOLD = 3
 
     def __init__(self, project_root: Optional[Path] = None) -> None:
         self.project_root = (project_root or Path.cwd()).resolve()
@@ -129,6 +141,8 @@ class LoadPolicy:
         self._allow_tags: set[str] = set()
         self._platform_override: Optional[set[str]] = None
         self._filtered_log: list[_FilteredRecord] = []
+        self._auto_quarantine_enabled: bool = self._AUTO_QUARANTINE_DEFAULT_ENABLED
+        self._auto_quarantine_fail_threshold: int = self._AUTO_QUARANTINE_DEFAULT_THRESHOLD
         self._load()
 
     # ── 配置加载 ───────────────────────────────────────────────────────────
@@ -163,12 +177,60 @@ class LoadPolicy:
             if isinstance(allow, list):
                 self._allow_tags = {str(t).strip() for t in allow if str(t).strip()}
 
+        aq_cfg = data.get("auto_quarantine")
+        if isinstance(aq_cfg, dict):
+            enabled = aq_cfg.get("enabled")
+            if isinstance(enabled, bool):
+                self._auto_quarantine_enabled = enabled
+            threshold = aq_cfg.get("fail_threshold")
+            if isinstance(threshold, int) and threshold > 0:
+                self._auto_quarantine_fail_threshold = threshold
+
     def reload(self) -> None:
         """重新读取配置文件（用于热更新场景）。"""
         self._deny_tags = set()
         self._allow_tags = set()
         self._platform_override = None
+        self._auto_quarantine_enabled = self._AUTO_QUARANTINE_DEFAULT_ENABLED
+        self._auto_quarantine_fail_threshold = self._AUTO_QUARANTINE_DEFAULT_THRESHOLD
         self._load()
+
+    # ── auto_quarantine 开关 ──────────────────────────────────────────────
+
+    @property
+    def auto_quarantine_enabled(self) -> bool:
+        """[运行时自动屏蔽] 总开关，默认 False（需在 platform_policy.json 里显式开启）。"""
+        return self._auto_quarantine_enabled
+
+    @property
+    def auto_quarantine_fail_threshold(self) -> int:
+        return self._auto_quarantine_fail_threshold
+
+    def set_auto_quarantine_enabled(self, enabled: bool) -> None:
+        """运行时切换开关并写回 platform_policy.json（供 /quarantine enable|disable 使用）。"""
+        self._auto_quarantine_enabled = enabled
+        self._persist_auto_quarantine()
+
+    def _persist_auto_quarantine(self) -> None:
+        path = self.config_path
+        data: dict = {}
+        if path.is_file():
+            try:
+                data = json.loads(path.read_text(encoding="utf-8"))
+                if not isinstance(data, dict):
+                    data = {}
+            except Exception:
+                data = {}
+        aq = data.get("auto_quarantine")
+        if not isinstance(aq, dict):
+            aq = {}
+        aq["enabled"] = self._auto_quarantine_enabled
+        aq.setdefault("fail_threshold", self._auto_quarantine_fail_threshold)
+        data["auto_quarantine"] = aq
+        try:
+            path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+        except Exception:
+            pass
 
     # ── 平台判定 ───────────────────────────────────────────────────────────
 
@@ -229,7 +291,19 @@ class LoadPolicy:
                 self._filtered_log.append(_FilteredRecord(kind, name, reason))
             return False, reason
 
+        # [auto_quarantine] 运行时自动屏蔽名单检查：默认关闭（见开关说明），
+        # 只有显式开启且该 (kind, name) 因反复"环境不兼容"失败被自动拉黑时才生效。
+        # 与上面两段静态判定不同，这是运行期学习出来的、可随时撤销的动态名单，
+        # 见 mini_agent.auto_quarantine.QuarantineStore。
+        if self._auto_quarantine_enabled and kind and name:
+            from mini_agent.auto_quarantine import get_quarantine_store
+            if get_quarantine_store().is_quarantined(kind, name):
+                reason = "runtime-quarantined: repeated environment-incompatible failures"
+                self._filtered_log.append(_FilteredRecord(kind, name, reason))
+                return False, reason
+
         return True, ""
+
 
     # ── 调试/可观测性 ─────────────────────────────────────────────────────
 

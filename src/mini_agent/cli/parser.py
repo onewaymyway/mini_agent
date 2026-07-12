@@ -116,6 +116,7 @@ def build_parser() -> argparse.ArgumentParser:
               /role list|use|show|exit|status|stats|reload   Roleplay persona: switch/exit agent's persona
               /hooks list|reload         Hook management
               /platform status|filtered|reload   Platform/tag load policy for skill/agent/hook/tool
+              /quarantine status|list|remove|clear|reload|enable|disable   Runtime auto-quarantine (default: off)
               /cron list|status|enable|disable|run|add|remove|set-schedule   Manage periodic daemon tasks
               exit / quit        Exit
         """),
