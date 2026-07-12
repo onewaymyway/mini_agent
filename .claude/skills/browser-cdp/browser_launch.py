@@ -98,8 +98,26 @@ def find_chrome_binary() -> str | None:
         else:
             found = shutil.which(c)
             if found:
+                # shutil.which() 可能只返回可执行文件名（如 "msedge.exe"）
+                # 此时已确认它在 PATH 中，直接返回即可；
+                # 不要再用 os.path.exists(found) 检查，因为相对名在当前目录不存在时会误判
                 return found
     return None
+
+
+def _ensure_fresh_profile(profile_dir: str) -> None:
+    """确保 profile 目录完全干净。
+    
+    Chrome 的单实例机制（Windows 下用命名 mutex）会在检测到已有实例时
+    让新进程直接退出（exit code=0）。如果 profile 目录中有残留的锁文件或
+    旧状态，Chrome 可能误判为"已有实例在用这个 profile"而直接退出。
+    
+    最可靠的做法：删除整个目录，让 Chrome 启动时重新创建。
+    """
+    if os.path.exists(profile_dir):
+        import shutil
+        shutil.rmtree(profile_dir, ignore_errors=True)
+    os.makedirs(profile_dir, exist_ok=True)
 
 
 def spawn_browser(
@@ -110,7 +128,10 @@ def spawn_browser(
     start_url: str = "about:blank",
     window_size: str = "1366,900",
 ) -> subprocess.Popen:
-    os.makedirs(user_data_dir, exist_ok=True)
+    # 确保使用绝对路径，避免 cwd 变化导致 profile 目录不一致
+    user_data_dir = os.path.abspath(user_data_dir)
+    # 彻底清理 profile 目录，防止 Chrome 单实例机制导致 exit code=0
+    _ensure_fresh_profile(user_data_dir)
     args = [
         binary,
         f"--remote-debugging-port={port}",
@@ -119,6 +140,11 @@ def spawn_browser(
         "--no-first-run",
         "--no-default-browser-check",
         f"--window-size={window_size}",
+        # 禁用可能触发单实例重定向的功能
+        "--disable-features=TranslateUI,BackgroundMode,BackgroundFetch",
+        "--disable-backgrounding-occluded-windows",
+        "--disable-renderer-backgrounding",
+        "--disable-background-network-requests",
     ]
     if headless:
         args += [
