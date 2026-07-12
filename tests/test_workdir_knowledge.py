@@ -197,6 +197,47 @@ class TestWorkIndex:
         active = get_active_work_threads(paths)
         assert [t.id for t in active] == ["wt_1"]
 
+    # ── last_activity_at（system-events-bus-guide.md 第8节遗留项）───────────
+
+    def test_last_activity_at_defaults_close_to_now(self, paths):
+        before = time.time()
+        upsert_work_thread(paths, WorkThread(id="wt_1", title="A"))
+        loaded = find_work_thread(paths, "wt_1")
+        assert loaded.last_activity_at >= before
+
+    def test_upsert_refreshes_last_activity_at_even_if_started_at_unchanged(self, paths):
+        """持续被推进的 thread，started_at 不变，但 last_activity_at 应该跟着更新——
+        这正是修复前用 started_at 近似时会误判"长期无进展"的场景。"""
+        old_ts = time.time() - 40 * 86400
+        upsert_work_thread(paths, WorkThread(id="wt_1", title="v1", started_at=old_ts))
+        first = find_work_thread(paths, "wt_1")
+        assert first.started_at == old_ts
+
+        before_second_upsert = time.time()
+        upsert_work_thread(paths, WorkThread(id="wt_1", title="v2", started_at=old_ts))
+        second = find_work_thread(paths, "wt_1")
+        assert second.started_at == old_ts  # 创建时间没变
+        assert second.last_activity_at >= before_second_upsert  # 但活跃时间刷新了
+
+    def test_last_activity_at_backward_compat_missing_field_falls_back_to_started_at(self, paths):
+        """老数据（没有 last_activity_at 字段）加载时应回退到 started_at，
+        而不是报错或变成 0。"""
+        import json
+
+        old_ts = time.time() - 10 * 86400
+        paths.workdir_dir.mkdir(parents=True, exist_ok=True)
+        legacy = {
+            "id": "wt_legacy", "title": "老数据", "status": "active",
+            "started_at": old_ts, "related_sessions": [], "cumulative_progress": "",
+            "open_questions": [], "next_suggested": "", "related_goal_id": None,
+        }
+        paths.workdir_work_index.write_text(
+            json.dumps({"work_threads": [legacy]}), encoding="utf-8",
+        )
+        loaded = find_work_thread(paths, "wt_legacy")
+        assert loaded is not None
+        assert loaded.last_activity_at == old_ts
+
     def test_related_sessions_round_trip(self, paths):
         t = WorkThread(id="wt_1", title="A", related_sessions=["s1", "s2"])
         upsert_work_thread(paths, t)

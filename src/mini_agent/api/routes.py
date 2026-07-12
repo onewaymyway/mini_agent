@@ -387,11 +387,12 @@ async def get_diagnostics(request: Request):
     bridge = _bridge(request)
     agent = bridge.agent
     result: dict = {
-        "performance":   {},
-        "memory":        {},
-        "skills":        {},
-        "evolution":     {},
-        "anomaly_flags": [],
+        "performance":    {},
+        "memory":         {},
+        "skills":         {},
+        "evolution":      {},
+        "anomaly_flags":  [],
+        "system_events":  [],
     }
 
     try:
@@ -509,6 +510,36 @@ async def get_diagnostics(request: Request):
                     k_sigma=k_sigma, min_samples=min_samples,
                 )
                 result["anomaly_flags"] = [f.to_dict() for f in flags]
+            except Exception as _mini_agent_exc:
+                from mini_agent.errors import log_exception
+                log_exception(_mini_agent_exc, where='mini_agent.api.routes')
+                pass
+
+        # ── system_events（跨子系统事件总线，只读 peek）──────────────────────
+        # [system-events-bus-guide.md 第8节] 此前 events.jsonl 只有代码在读，
+        # 人看不到"最近发生了哪些跨系统事件"。用固定 consumer_name +
+        # advance_cursor=False 只读最近 N 条，不推进游标、不影响任何真实
+        # 消费者（daemon_instant_consumer / soft_goal_deriver 等）的进度。
+        if paths:
+            try:
+                from mini_agent.perception import system_events as _se
+                events = _se.poll_since(
+                    paths,
+                    consumer_name="diagnostics_peek",
+                    advance_cursor=False,
+                )
+                recent = events[-20:]  # 最多展示最近 20 条，按时间正序
+                result["system_events"] = [
+                    {
+                        "event_id":   e.event_id,
+                        "ts":         e.ts,
+                        "source":     e.source,
+                        "event_type": e.event_type,
+                        "tier":       e.tier,
+                        "payload":    e.payload,
+                    }
+                    for e in recent
+                ]
             except Exception as _mini_agent_exc:
                 from mini_agent.errors import log_exception
                 log_exception(_mini_agent_exc, where='mini_agent.api.routes')

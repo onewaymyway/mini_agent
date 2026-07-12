@@ -179,6 +179,21 @@ Windows 开发环境中额外跑一次 `tests/test_system_events.py::TestSystemE
   `status` 改为 `paused`（不是删除，留痕供人工判断），标签换成
   `review_failed`，`progress_notes` 记录原因。
 
+### 6.5 `/diagnostics` 可视化
+
+- 接入点：`api/routes.py::get_diagnostics()`，新增 `system_events` 字段，
+  用固定 `consumer_name="diagnostics_peek"` + `advance_cursor=False`
+  只读最近 20 条事件（`ts` 正序），不推进游标、不影响
+  `daemon_instant_consumer`/`soft_goal_deriver` 等任何真实消费者的进度——
+  与其他消费者一样走 `poll_since()`，没有引入第二套读取路径。
+- 返回结构：每条事件展开为 `{event_id, ts, source, event_type, tier, payload}`，
+  与 `events.jsonl` 落盘 schema 一致，不做额外包装，方便前端直接渲染成
+  时间线。
+- 失败降级：读取异常时 `system_events` 保持为空列表，不影响
+  `/diagnostics` 其余字段（`performance`/`memory`/`skills`/`evolution`/
+  `anomaly_flags`）的返回，与该端点其余各段一致的"局部失败不拖垮整体"
+  风格。
+
 ## 7. 顺带修复的既有 bug（与事件总线本身无关，但在接入过程中发现）
 
 在打通四条链路的过程中，`soft_goal_deriver.py`/`goal_backlog.py`/
@@ -223,13 +238,20 @@ work 过，常规测试很容易漏掉（这几个模块此前大多没有专门
 
 ## 8. 尚未接入、后续可以做的
 
-- **`/diagnostics` 可视化**：目前 `events.jsonl` 只有代码在读，人还看不到
-  "最近发生了哪些跨系统事件"。接入点很小——`poll_since(..., advance_cursor=False)`
-  读最近 N 条，不影响真实消费者游标。
-- **WorkThread 缺少真正的 last_activity_at 字段**：第7节修复 #4 用
-  `started_at` 做了近似替代，语义上不完全准确（持续被推进的 thread，
-  `started_at` 也不会变）。彻底修法是给 `WorkThread` 加一个真正的
-  最后活跃时间字段，在每次推进时更新。
+以下两项已完成，记录归档，不再是待办：
+
+- ~~`/diagnostics` 可视化~~：见 6.5 节，`system_events` 字段已接入。
+- ~~WorkThread 缺少真正的 last_activity_at 字段~~：`WorkThread` 已新增
+  `last_activity_at` 字段（`workdir_knowledge.py`），`upsert_work_thread()`
+  每次写入时刷新为当前时间；老数据没有该字段时 `from_dict` 回退到
+  `started_at`，向后兼容。`soft_goal_deriver.py` 里两处曾经用 `started_at`
+  做近似的地方（`_from_work_index()`、`_reverify_candidate_signal()`
+  的 workthread 分支）已切换为读取真实的 `last_activity_at`，不再是近似
+  判断。回归测试见 `tests/test_workdir_knowledge.py::TestWorkIndex` 新增的
+  三个 `last_activity_at` 用例（默认值/刷新行为/向后兼容）。
+
+当前没有新的已知待办项；后续若发现新的"某模块状态变化需要通知另一模块"
+场景，直接复用本模块的 `publish()`/`poll_since()`，不需要新造状态文件。
 
 ## 9. 测试
 
@@ -260,3 +282,17 @@ work 过，常规测试很容易漏掉（这几个模块此前大多没有专门
 就会绕过补丁）——新增 `test_outcome_tracker.py` 在 pytest 收集阶段真实
 导入了该模块，暴露出这个预置问题，改为直接 `mock.patch(
 "mini_agent.evolution.outcome_tracker.get_all", ...)`，不再依赖导入时序。
+
+### 第8节两项遗留 TODO 落地后新增/调整的测试
+
+`tests/test_workdir_knowledge.py::TestWorkIndex` 新增 3 个用例：
+`last_activity_at` 默认值接近当前时间、`upsert_work_thread()` 在
+`started_at` 不变的情况下仍刷新 `last_activity_at`、老数据缺失该字段时
+`from_dict` 回退到 `started_at`。
+
+`tests/test_phase_g.py` 里两个依赖"staleness 判断"的既有用例
+（`TestSoftGoalDeriverWorkIndexSignal::test_stale_workthread_produces_candidate_without_exception`、
+`TestGoalCandidateUnvalidatedEventFlow::test_review_keeps_goal_when_workthread_still_stale`）
+调整为同时设置 `last_activity_at`（不再单独设置 `started_at`）——因为
+staleness 判据已从 `started_at` 近似切换为真实的 `last_activity_at`，
+不调整会导致这两个用例默认拿到"刚刚活跃"的时间戳而失败。

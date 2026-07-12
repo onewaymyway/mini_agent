@@ -378,6 +378,11 @@ class WorkThread:
     open_questions: list[str] = field(default_factory=list)
     next_suggested: str = ""
     related_goal_id: Optional[str] = None
+    # 真正的"最后活跃时间"字段（system-events-bus-guide.md 第8节遗留项）。
+    # started_at 在 thread 持续被推进时不会变，不能代表 staleness；
+    # last_activity_at 在每次 upsert_work_thread()/关联新 session 时更新。
+    # 向后兼容：老数据没有该字段时，from_dict 回退到 started_at。
+    last_activity_at: float = field(default_factory=time.time)
 
     def to_dict(self) -> dict:
         return {
@@ -390,20 +395,23 @@ class WorkThread:
             "open_questions": list(self.open_questions),
             "next_suggested": self.next_suggested,
             "related_goal_id": self.related_goal_id,
+            "last_activity_at": self.last_activity_at,
         }
 
     @staticmethod
     def from_dict(d: dict) -> "WorkThread":
+        started_at = float(d.get("started_at", 0.0) or 0.0)
         return WorkThread(
             id=d.get("id", ""),
             title=d.get("title", ""),
             status=d.get("status", "active"),
-            started_at=float(d.get("started_at", 0.0) or 0.0),
+            started_at=started_at,
             related_sessions=list(d.get("related_sessions", []) or []),
             cumulative_progress=d.get("cumulative_progress", ""),
             open_questions=list(d.get("open_questions", []) or []),
             next_suggested=d.get("next_suggested", ""),
             related_goal_id=d.get("related_goal_id"),
+            last_activity_at=float(d.get("last_activity_at", started_at) or started_at),
         )
 
 
@@ -435,7 +443,13 @@ def find_work_thread(paths: AgentPaths, thread_id: str) -> Optional[WorkThread]:
 
 
 def upsert_work_thread(paths: AgentPaths, thread: WorkThread) -> None:
-    """新建或覆盖更新一个 WorkThread（按 id 匹配）。"""
+    """新建或覆盖更新一个 WorkThread（按 id 匹配）。
+
+    每次 upsert 都视为一次活跃边沿，刷新 last_activity_at（调用方不需要
+    手动维护这个字段——除非显式设置了非默认值，这里统一用当前时间覆盖，
+    保证语义始终是"这个 thread 最近一次被真正更新是什么时候"）。
+    """
+    thread.last_activity_at = time.time()
     threads = load_work_index(paths)
     for i, t in enumerate(threads):
         if t.id == thread.id:

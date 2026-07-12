@@ -528,6 +528,7 @@ class TestSoftGoalDeriverWorkIndexSignal:
             id="wt1", title="认证模块",
             next_suggested="继续修复认证模块的边界情况",
             started_at=time.time() - 40 * 86400,  # 40天前，超过 STALE_WORKTHREAD_DAYS(30)
+            last_activity_at=time.time() - 40 * 86400,  # staleness 判据现在用这个字段
         )
         self._write_work_index(real_paths, [stale_thread])
 
@@ -719,6 +720,7 @@ class TestGoalCandidateUnvalidatedEventFlow:
             id="wt1", title="认证模块",
             next_suggested="继续修复认证模块",
             started_at=time.time() - 40 * 86400,
+            last_activity_at=time.time() - 40 * 86400,  # 仍然 stale
         )
         real_paths.workdir_dir.mkdir(parents=True, exist_ok=True)
         real_paths.workdir_work_index.write_text(

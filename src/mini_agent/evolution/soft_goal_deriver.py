@@ -329,9 +329,10 @@ class SoftGoalDeriver:
                 threads = load_work_index(self._paths)
                 for thread in threads:
                     if thread.next_suggested and thread.next_suggested[:80] == node.title:
-                        # 与 _from_work_index() 用同一个近似字段，保持口径一致
-                        # （见 _from_work_index 的 docstring 说明）。
-                        last_activity = getattr(thread, "started_at", 0.0) or 0.0
+                        # 与 _from_work_index() 用同一个字段，保持口径一致。
+                        # WorkThread 现在有真正的 last_activity_at 字段
+                        # （见 workdir_knowledge.py），不再需要 started_at 近似。
+                        last_activity = getattr(thread, "last_activity_at", 0.0) or 0.0
                         if last_activity > stale_cutoff:
                             return False, "对应 WorkThread 已有新进展，候选目标已过时"
                         return True, ""
@@ -542,15 +543,12 @@ class SoftGoalDeriver:
           1. `thread.thread_id` 不存在（真实字段名是 `id`），构造 description
              字符串时必然 AttributeError，被外层 except 静默吞掉——信号2
              从写下来就没能真正产出过候选。
-          2. `thread.last_activity_at` 也不存在，getattr 静默回退成 0.0，
+          2. `thread.last_activity_at` 当时不存在，getattr 静默回退成 0.0，
              使"是否最近有活动"的判断永远为 False（等价于每个有
              next_suggested 的 thread 都被当成"从纪元开始就没人碰过"）。
-        WorkThread 目前没有真正的"最后活跃时间"字段，只有 `started_at`
-        （线程创建时间）。用它做近似替代：语义上不完全等价（一个持续被
-        推进的 thread，`started_at` 也不会变，可能被误判为"长期无进展"），
-        但至少不是永远 0——这是一个已知的近似，更彻底的修法是给
-        WorkThread 加一个真正的 last_activity_at 字段并在推进时更新，
-        超出本次改动范围，留作后续 TODO。
+        WorkThread 现在有了真正的 `last_activity_at` 字段（`upsert_work_thread()`
+        每次写入时刷新），不再需要 `started_at` 近似——一个持续被推进的
+        thread，`last_activity_at` 会跟着更新，不会被误判为"长期无进展"。
         """
         candidates = []
         try:
@@ -561,7 +559,7 @@ class SoftGoalDeriver:
             for thread in threads:
                 if not thread.next_suggested:
                     continue
-                last_activity = getattr(thread, "started_at", 0.0) or 0.0
+                last_activity = getattr(thread, "last_activity_at", 0.0) or 0.0
                 if last_activity > stale_cutoff:
                     continue  # 最近有活动，不触发
                 stale_days = (now - last_activity) / 86400
