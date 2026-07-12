@@ -172,34 +172,37 @@ python3 browser_console.py --tab <id> --watch-network --duration 5   # 抓最近
   纯抓取公开页面场景优先用这个模式，减少对用户账号的接触面。
 - 调试端口只在需要时开启，用完可以提示用户关闭该 Chrome 窗口恢复正常模式。
 
-## 临时文件规范（重要）
+## ⚠️ 工作目录与路径规则（极易踩坑，务必遵守）
 
-**所有临时产出文件必须保存到 `./temp_data/` 目录，严禁直接写入项目根目录、skill 目录或源码目录。**
+**所有浏览器 CDP 脚本都必须 `cd` 到 skill 目录再运行**（因为脚本内部用了相对导入 `cdp_client`/`utils`），这意味着命令执行时的 `cwd` 是 **skill 目录**（`.claude/skills/browser-cdp/`），**不是项目根目录**。
 
-这包括但不限于：
-- 截图文件（`shot.png`、`after.png` 等）
-- 元素映射 JSON（`shot.elements.json`）
-- 抓取的网页内容（`--save out.txt` 指定的文件）
-- 任何中间调试文件、临时脚本、数据导出
+因此，**所有相对路径（包括 `./temp_data/`）都是相对于 skill 目录解析的**，不是相对于项目根目录。
 
-**正确做法：**
+**正确做法 — 使用绝对路径或 skill 目录下的相对路径：**
 ```bash
-# 先确保 temp 目录存在
-mkdir -p ./temp_data
+# 方法一：用 skill 目录下的相对路径（skill 目录下创建 temp_data 子目录）
+mkdir -p .claude/skills/browser-cdp/temp_data
+python3 browser_screenshot.py --tab <id> --out .claude/skills/browser-cdp/temp_data/shot.png --annotate
+python3 browser_extract.py --tab <id> --mode text --save .claude/skills/browser-cdp/temp_data/page_content.txt
 
-# 截图、抓取等输出都指向 ./temp/
-python3 browser_screenshot.py --tab <id> --out ./temp_data/shot.png --annotate
-python3 browser_extract.py --tab <id> --mode text --save ./temp_data/page_content.txt
+# 方法二：直接用绝对路径（推荐，最稳妥）
+python3 browser_screenshot.py --tab <id> --out E:/codes/mini_claude_code/.claude/skills/browser-cdp/temp_data/shot.png --annotate
+python3 browser_extract.py --tab <id> --mode text --save E:/codes/mini_claude_code/.claude/skills/browser-cdp/temp_data/page_content.txt
 ```
 
-**错误做法（会污染项目）：**
+**错误做法（会找不到目录或写入错误位置）：**
 ```bash
-# ❌ 直接写在当前目录（可能是 skill 目录或项目根目录）
-python3 browser_screenshot.py --tab <id> --out shot.png
-python3 browser_extract.py --tab <id> --save out.txt
+# ❌ 以为 ./temp_data 在项目根目录——实际在 skill 目录下！
+mkdir -p ./temp_data          # 这会在 skill 目录下创建 temp_data，不是项目根目录的
+python3 browser_screenshot.py --tab <id> --out ./temp_data/shot.png   # 写入 skill 目录下的 temp_data
+
+# ❌ 以为 cd 到 skill 目录后 ./temp_data 还是项目根目录的
+# 事实：cd .claude/skills/browser-cdp 后，./temp_data = .claude/skills/browser-cdp/temp_data
 ```
 
-任务完成后可清理：`rm -rf ./temp_data/*`（或按需保留产出物）。
+**总结：cd 到 skill 目录后，所有 `./xxx` 路径都以 skill 目录为基准。**
+
+任务完成后可清理：`rm -rf .claude/skills/browser-cdp/temp_data/*`（或按需保留产出物）。
 
 ## 常见坑
 
