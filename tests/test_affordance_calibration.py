@@ -50,11 +50,16 @@ class TestCalibrate(unittest.TestCase):
             _FakeTrackedCommit("修复了一个已知 bug", "improved"),
             _FakeTrackedCommit("误删文件后已回退", "worsened"),
         ]
-        fake_outcome_tracker = mock.MagicMock()
-        fake_outcome_tracker.get_all.return_value = records
 
-        with mock.patch.dict(
-            "sys.modules", {"mini_agent.evolution.outcome_tracker": fake_outcome_tracker}
+        # [修复] 此前用 mock.patch.dict("sys.modules", ...) 整体替换模块，
+        # 对 "from package import submodule" 形式的导入不是导入顺序无关的
+        # ——一旦 outcome_tracker 之前已被真实导入过（任何测试文件在收集
+        # 阶段 import 它都会触发），parent package 上已缓存的真实模块属性
+        # 会被 getattr() 直接命中，完全绕过 sys.modules 补丁，calibrate()
+        # 拿到的是真实的 outcome_tracker.get_all，而不是这里构造的假记录。
+        # 直接 patch 真实模块对象上的 get_all 属性，不依赖导入时序。
+        with mock.patch(
+            "mini_agent.evolution.outcome_tracker.get_all", return_value=records
         ):
             paths = mock.MagicMock()
             paths.workdir_dir = mock.MagicMock()
@@ -74,11 +79,10 @@ class TestCalibrate(unittest.TestCase):
 
     def test_unassociated_record_does_not_affect_weights(self):
         records = [_FakeTrackedCommit("普通的重构工作", "improved")]
-        fake_outcome_tracker = mock.MagicMock()
-        fake_outcome_tracker.get_all.return_value = records
 
-        with mock.patch.dict(
-            "sys.modules", {"mini_agent.evolution.outcome_tracker": fake_outcome_tracker}
+        # 同上：改为直接 patch 真实模块属性，不依赖导入时序。
+        with mock.patch(
+            "mini_agent.evolution.outcome_tracker.get_all", return_value=records
         ):
             paths = mock.MagicMock()
             fake_path_obj = mock.MagicMock()

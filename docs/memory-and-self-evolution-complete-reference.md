@@ -811,12 +811,12 @@ daemon-connected 两条触发路径共用同一开关。测试：`tests/test_cog
   并调整"的语义上有重叠，尚未做过正式边界梳理。
 - **跨系统事件总线**（已实现，见 `docs/system-events-bus-guide.md`）：
   补齐了"proprioception → 自主决策"这条链路此前"只落快照、无人主动
-  触发响应"的缺口（frustration 越阈值 → 提前自维护），以及"记忆检索
-  稀疏 → 主动探索"的正反馈闭环（此前 `SoftGoalDeriver` 只能靠
-  `capability_map.total_calls` 间接推断"没试过"，现在能直接感知
-  "实际问到了但记忆里没有"的真实空白）。outcome 负面判定回写 lesson、
-  workthread/lesson 候选的轻量一致性检查（缓解上面 SoftGoalDeriver
-  验证不对称问题）尚未接入，是这套总线接下来的两个自然扩展点。
+  触发响应"的缺口（frustration 越阈值 → 提前自维护）、"记忆检索
+  稀疏 → 主动探索"的正反馈闭环，以及 outcome 负面判定 → 回写
+  `source="eval_failure"` lesson（闭合 lesson→skill_propose→
+  outcome_tracker→lesson 环，此前这个环是断开的）。workthread/lesson
+  候选的轻量一致性检查（缓解上面 SoftGoalDeriver 验证不对称问题）
+  尚未接入，是这套总线接下来的自然扩展点。
 - **`_from_capability_map` 死代码 bug**（已修复，见
   `docs/system-events-bus-guide.md` 第7节）：该方法此前缺少独立 `def` 头，
   被误拼接进 `_recently_explored_domains()` 的不可达死代码区，
@@ -847,9 +847,11 @@ daemon-connected 两条触发路径共用同一开关。测试：`tests/test_cog
    `library.consolidate()`（记忆图书馆知识巩固）与 `prune_skills()` /
    `check_scope_promotion()`（自我进化候选生成）在同一个函数里顺序执行，
    共享同一套"演化节奏治理"（`rhythm_is_allowed`）冷却机制。
-4. **效果回填复用记忆检索能力**——`outcome_tracker` 判定 verdict 时，
-   直接复用 `lesson_review.group_lessons()` 对当前记忆状态重新统计，
-   没有另建一套独立的计数体系。
+4. **效果回填复用记忆检索能力，且现在会反向写回**——`outcome_tracker` 判定
+   verdict 时，直接复用 `lesson_review.group_lessons()` 对当前记忆状态重新
+   统计，没有另建一套独立的计数体系；判定为 `worsened` 时还会反向写入一条
+   `source="eval_failure"` 的新 lesson（见 `docs/system-events-bus-guide.md`
+   第6.3节），使负面判定本身也能被后续检索到，不只是单向消费记忆。
 5. **revert 操作反哺记忆，同时终结效果回填观察**——`/evolution revert`
    一次操作同时触发两件事：写入 `revert_record` lesson（记忆侧）+
    `outcome_tracker.mark_reverted()`（自我进化侧），两条链路在同一个

@@ -141,7 +141,28 @@ Windows 开发环境中额外跑一次 `tests/test_system_events.py::TestSystemE
   `_domain_token_overlap()` 做简单子串匹配，novelty 按重合度加权
   （封顶 1.6x，避免稀疏信号完全压过 `total_calls` 本身的基础判断）。
 
-## 7. 顺带修复的既有 bug（与事件总线本身无关，但在接入过程中发现）
+### 6.3 evolution.outcome_negative → 回写 lesson，闭合效果回填环
+
+- 发布点：`outcome_tracker.py::tick()`，`verdict == "worsened"` 时调用
+  `_write_eval_failure_lesson()`——直接把负面判定写成一条
+  `source="eval_failure"` 的新 lesson（不是等一个独立消费者去解析事件
+  payload 重建 lesson 内容，因为 `tick()` 本身已经握有 `memory_backend`
+  和完整的 baseline/post 统计，直接写是最省事也最不容易信息失真的方式），
+  同时 publish `evolution.outcome_negative` 事件（tier=`tick`）广播给
+  其他潜在消费者（比如未来的 `/diagnostics` 展示、`SoftGoalDeriver`
+  避免重复推导同一条已知会变差的候选）。
+- 此前这个环是断开的：`outcome_tracker` 判定失败后只更新自己的追踪记录
+  （`get_revert_candidates()` 供 `/digest` 展示），除非用户手动
+  `/evolution revert`（才会写 `revert_record` lesson），负面判定本身
+  不会成为记忆系统能再次检索到的经验。修复后，同一类问题下次被自我
+  进化尝试修复时，`AffordanceAnalyzer`/`SoftGoalDeriver` 能检索到"上一次
+  类似的修复反而让情况变差了"这条记忆。
+- `memory_aging.py` 补了 `"eval_failure": 21.0` 天的专属半衰期
+  ——比 `self_reflection`（30天）衰减快，因为是针对某次具体 commit
+  的观察，环境变化后可能不再适用；比 `revert_record`（14天）衰减慢，
+  因为有实测数据支持（baseline/post 触发次数对比），不是单次用户操作。
+
+
 
 接入 6.2 时发现 `soft_goal_deriver.py` 的 `_from_capability_map()`（信号1：
 低置信度能力域）此前**缺少独立的 `def` 头**，代码被误拼接进
@@ -168,9 +189,6 @@ Windows 开发环境中额外跑一次 `tests/test_system_events.py::TestSystemE
 
 ## 8. 尚未接入、后续可以做的
 
-- **outcome 负面判定 → 回写 lesson**：`outcome_tracker.py` 判定 verdict 为负时
-  发布 `evolution.outcome_negative`（tier=`cron`），闭合 lesson→skill→eval→lesson
-  环，目前还没接。
 - **`goal.candidate_unvalidated`**：`SoftGoalDeriver` 产出 workthread/lesson
   类候选（不经过 `ExplorationSandbox` 验证）时发布事件，供轻量一致性检查器
   订阅，缓解第16节提到的"验证不对称"问题。
@@ -187,3 +205,17 @@ Windows 开发环境中额外跑一次 `tests/test_system_events.py::TestSystemE
 `tests/test_phase_g.py` 新增部分（7 用例）：`load_capability_map` 与
 `build_capability_map` 结果一致性、字段别名桥接、`_from_capability_map`
 端到端不再抛异常。
+
+`tests/test_outcome_tracker.py`（5 用例，新文件——此前这个模块完全没有
+专门的单元测试）：`record_commit_baseline`/`tick()`/`mark_reverted` 基本
+行为回归，重点覆盖 `worsened` 判定触发 `eval_failure` lesson 写入 +
+`evolution.outcome_negative` 事件发布、`improved` 判定不误写 lesson。
+`tests/test_memory_aging.py` 未改动，但 `TestMemoryAgingEvalFailureSource`
+（在 `test_outcome_tracker.py` 里）额外验证了新半衰期条目生效。
+
+顺带修复了 `tests/test_affordance_calibration.py` 两处 `mock.patch.dict
+("sys.modules", ...)` 的测试隔离缺陷（对 `from package import submodule`
+形式的导入不是导入顺序无关的，一旦 `outcome_tracker` 之前已被真实导入过
+就会绕过补丁）——新增 `test_outcome_tracker.py` 在 pytest 收集阶段真实
+导入了该模块，暴露出这个预置问题，改为直接 `mock.patch(
+"mini_agent.evolution.outcome_tracker.get_all", ...)`，不再依赖导入时序。

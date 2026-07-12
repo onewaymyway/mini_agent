@@ -125,6 +125,24 @@ def _save_all(paths, records: list[TrackedCommit]) -> None:
 
 # ── 触发次数统计（复用 perception/lesson_review.py 的分组逻辑）───────────────
 
+def _find_lesson_group(memory_backend, lesson_group_id: str):
+    """共享逻辑：对当前所有 lesson 条目分组，返回 key == lesson_group_id 的
+    LessonGroup（找不到返回 None）。被 _current_trigger_count()/
+    _lesson_group_baseline()/_write_eval_failure_lesson() 共用，避免三处各
+    自重复"分组再查找"的逻辑。"""
+    if memory_backend is None or not hasattr(memory_backend, "all_entries"):
+        return None
+    from mini_agent.perception.lesson_review import group_lessons
+
+    all_entries = memory_backend.all_entries()
+    lesson_entries = [e for e in all_entries if getattr(e, "entry_type", "") == "lesson"]
+    groups = group_lessons(lesson_entries)
+    for g in groups:
+        if g.key == lesson_group_id:
+            return g
+    return None
+
+
 def _current_trigger_count(paths, memory_backend, lesson_group_id: str) -> Optional[int]:
     """
     重新对当前所有 lesson 条目分组，找到 key == lesson_group_id 的组，
@@ -135,15 +153,8 @@ def _current_trigger_count(paths, memory_backend, lesson_group_id: str) -> Optio
     if memory_backend is None or not hasattr(memory_backend, "all_entries"):
         return None
     try:
-        from mini_agent.perception.lesson_review import group_lessons
-
-        all_entries = memory_backend.all_entries()
-        lesson_entries = [e for e in all_entries if getattr(e, "entry_type", "") == "lesson"]
-        groups = group_lessons(lesson_entries)
-        for g in groups:
-            if g.key == lesson_group_id:
-                return g.total_occurrence
-        return 0
+        group = _find_lesson_group(memory_backend, lesson_group_id)
+        return group.total_occurrence if group is not None else 0
     except Exception:
         return None
 
@@ -155,17 +166,91 @@ def _lesson_group_baseline(memory_backend, lesson_group_id: str) -> int:
     if memory_backend is None or not hasattr(memory_backend, "all_entries"):
         return 0
     try:
-        from mini_agent.perception.lesson_review import group_lessons
-
-        all_entries = memory_backend.all_entries()
-        lesson_entries = [e for e in all_entries if getattr(e, "entry_type", "") == "lesson"]
-        groups = group_lessons(lesson_entries)
-        for g in groups:
-            if g.key == lesson_group_id:
-                return g.total_occurrence
-        return 0
+        group = _find_lesson_group(memory_backend, lesson_group_id)
+        return group.total_occurrence if group is not None else 0
     except Exception:
         return 0
+
+
+def _write_eval_failure_lesson(paths, memory_backend, record: "TrackedCommit") -> None:
+    """
+    [事件总线接入] verdict == "worsened" 时调用：把这次负面判定本身回写成
+    一条新 lesson（source="eval_failure"），闭合 lesson → skill_propose →
+    outcome_tracker → lesson 的环。
+
+    此前这个环是断开的：outcome_tracker 判定失败后只更新自己的追踪记录
+    （get_revert_candidates() 供 /digest 展示），除非用户手动 /evolution revert
+    （才会写 revert_record lesson），负面判定本身不会成为记忆系统能再次检索
+    到的经验——如果同一类问题再次被自我进化尝试修复，agent 不会"记得"
+    上一次类似的修复反而让情况变差了。
+
+    失败静默降级：写入失败不应阻断 tick() 主流程（外层已经有 try/except，
+    这里额外包一层是为了在多条记录同时 resolve 时，一条写入失败不影响
+    其余记录继续处理）。
+    """
+    try:
+        from mini_agent.perception.memory_store import MemoryEntry
+
+        group = _find_lesson_group(memory_backend, record.trigger_lesson_group_id)
+        # 用触发该 commit 的原始 lesson 组里最新一条的 summary 做上下文，
+        # 没有找到分组时退化为只用 commit_summary，仍然可写，只是描述略简。
+        trigger_desc = ""
+        if group is not None and group.entries:
+            latest = max(group.entries, key=lambda e: getattr(e, "created_at", 0.0))
+            trigger_desc = getattr(latest, "summary", "") or getattr(latest, "trigger", "")
+
+        summary = f"自我进化 commit 效果回填：{record.commit_summary or record.commit_id} 未能改善问题，反而变差"
+        entry = MemoryEntry(
+            session_id="outcome_tracker",
+            summary=summary,
+            key_outcomes=[
+                f"baseline 触发次数 {record.baseline_trigger_count} → "
+                f"观察期后 {record.post_trigger_count} 次，判定为 worsened",
+            ],
+            tags=["lesson", "eval_failure", "outcome_tracking"],
+            model="outcome_tracker",
+            entry_type="lesson",
+            source="eval_failure",
+            trigger=trigger_desc or f"lesson_group={record.trigger_lesson_group_id}",
+            outcome=(
+                f"commit {record.commit_id}（{record.commit_summary}）落地后，"
+                f"该问题触发次数从 {record.baseline_trigger_count} 上升到 "
+                f"{record.post_trigger_count}，说明这次修改没有解决根本问题，"
+                f"甚至可能引入了新的副作用。"
+            ),
+            suggested_action=(
+                "下次针对同一类问题提出 skill_propose 前，应先复核这条记录，"
+                "避免重复采用同一种失败过的修复思路；建议人工复核是否需要 "
+                "/evolution revert。"
+            ),
+            confidence=0.6,  # 有实测数据支持，但样本量通常有限，给中等可信度
+        )
+        memory_backend.add(entry)
+    except Exception:
+        import logging
+        logging.getLogger(__name__).debug(
+            "[outcome_tracker] _write_eval_failure_lesson failed", exc_info=True
+        )
+
+    # 事件发布与 lesson 写入解耦：即使上面写入失败，也尝试发布事件——
+    # 至少让其他系统知道"这里发生过一次负面判定"，不完全依赖 lesson 写入成功。
+    try:
+        from mini_agent.perception import system_events as _se
+
+        _se.publish(
+            paths,
+            source="outcome_tracker",
+            event_type="evolution.outcome_negative",
+            tier="tick",
+            payload={
+                "commit_id": record.commit_id,
+                "lesson_group_id": record.trigger_lesson_group_id,
+                "baseline_trigger_count": record.baseline_trigger_count,
+                "post_trigger_count": record.post_trigger_count,
+            },
+        )
+    except Exception:
+        pass
 
 
 # ── 公开 API ──────────────────────────────────────────────────────────────
@@ -256,6 +341,12 @@ def tick(paths, memory_backend) -> list[TrackedCommit]:
             r.verdict = _judge(r.baseline_trigger_count, post_count)
             changed = True
             resolved.append(r)
+
+            # [事件总线接入] 负面判定回写 lesson + 广播事件，闭合
+            # lesson → skill_propose → outcome_tracker → lesson 的环。
+            # 单条记录写入失败不影响其余记录继续处理（内部已有 try/except）。
+            if r.verdict == "worsened":
+                _write_eval_failure_lesson(paths, memory_backend, r)
         if changed:
             _save_all(paths, records)
     except Exception:

@@ -46,6 +46,10 @@ _LESSON_HALF_LIFE_BASE: dict[str, float] = {
     "experiment_confirmed": 60.0,
     "consolidated":         45.0,  # [方案二] 归纳产物：反复验证过的规律，衰减介于 self_reflection 与 human_feedback 之间
     "self_reflection":      30.0,
+    "eval_failure":         21.0,  # [事件总线接入] outcome_tracker 判定 verdict="worsened" 时
+                                    # 自动回写的 lesson——有实测数据支持（不是单次用户操作），
+                                    # 但仍是针对某次具体 commit 的观察，环境/代码变化后可能
+                                    # 不再适用，衰减比 self_reflection 快、比 revert_record 慢。
     "revert_record":        14.0,
 }
 
