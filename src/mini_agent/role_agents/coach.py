@@ -89,7 +89,9 @@ def run_coach(
         model=profile.model or base_cfg.model,
         llm_provider=profile.provider or base_cfg.llm_provider,
         llm_base_url=base_cfg.llm_base_url,
-        debug_llm=False,
+        # [BUGFIX] 同 evaluator.py：继承 base_cfg 的 --debug-llm，而不是硬编码 False。
+        debug_llm=getattr(base_cfg, "debug_llm", False),
+        debug_llm_console=getattr(base_cfg, "debug_llm_console", False),
     )
     coach_cfg.api_key = base_cfg.api_key
     coach_cfg.max_turns = 2

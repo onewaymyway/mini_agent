@@ -103,6 +103,17 @@
 日志的 `~/.agent/logs/`（用户 home 目录）只是同名、不是同一个地方，排查时
 容易搞混，需要看清是 `<project_root>` 还是 `~`。
 
+**已知问题（2026-07 已修复）**：`--debug-llm` 只会传给主 Agent 的配置，但
+框架内部有不少"一次性内部 Agent 调用"——`EvaluatorAgent`、`CoachAgent`、
+`TurnJudgeAgent`、`GoalJudgeAgent`、自定义角色 Dispatcher、Workflow 的
+`step`/生成器、以及 `GoalSpecBuilder`（`/goal from-history` 用到的正是这个）
+——它们会重新构造一份独立的内部配置，之前这份配置里**硬编码写死了
+`debug_llm=False`**，导致外层加了 `--debug-llm` 也完全不影响这些内部调用：
+一旦失败点恰好落在这些内部 Agent 身上（比如 GoalSpecBuilder 判定目标失败、
+TurnJudge/GoalJudge 判定异常），`llm_debug.jsonl` 里什么都不会有，排查时
+容易误以为"日志系统坏了"。现在已改为这些内部配置统一继承外层
+`--debug-llm` / `--debug-llm-console`，不再单独硬编码关闭。
+
 ---
 
 ## 四、Daemon 控制台日志（`cli/daemon.py`）

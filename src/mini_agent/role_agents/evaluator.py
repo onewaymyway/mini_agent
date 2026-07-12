@@ -95,7 +95,11 @@ def run_evaluator(
         model=profile.model or base_cfg.model,
         llm_provider=profile.provider or base_cfg.llm_provider,
         llm_base_url=base_cfg.llm_base_url,
-        debug_llm=False,
+        # [BUGFIX] 之前硬编码 False，导致 --debug-llm 对这个一次性内部 Agent 调用
+        # 完全不生效——一旦这里的 LLM 调用失败，看不到任何调试日志。改为继承
+        # base_cfg（外层 --debug-llm 传下来的配置）。
+        debug_llm=getattr(base_cfg, "debug_llm", False),
+        debug_llm_console=getattr(base_cfg, "debug_llm_console", False),
     )
     eval_cfg.api_key = base_cfg.api_key
     eval_cfg.max_turns = 3       # 评估只需要少量轮次

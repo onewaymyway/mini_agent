@@ -285,7 +285,11 @@ class GoalSpecBuilder:
             model=(getattr(gm, "spec_builder_model", None) or self._cfg.model),
             llm_provider=(getattr(gm, "spec_builder_provider", None) or self._cfg.llm_provider),
             llm_base_url=self._cfg.llm_base_url,
-            debug_llm=False,
+            # [BUGFIX] 之前硬编码 False，导致 --debug-llm 对 GoalSpecBuilder（含
+            # /goal from-history 用到的一次性内部 Agent 调用）完全不生效，一旦
+            # LLM 调用失败看不到任何调试日志。改为继承 self._cfg。
+            debug_llm=getattr(self._cfg, "debug_llm", False),
+            debug_llm_console=getattr(self._cfg, "debug_llm_console", False),
         )
         builder_cfg.api_key = self._cfg.api_key
         builder_cfg.max_turns = 2

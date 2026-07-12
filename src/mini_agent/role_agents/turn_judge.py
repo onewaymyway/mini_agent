@@ -91,7 +91,9 @@ def run_turn_judge(
         model=judge_model,
         llm_provider=judge_provider,
         llm_base_url=base_cfg.llm_base_url,
-        debug_llm=False,
+        # [BUGFIX] 同 evaluator.py：继承 base_cfg 的 --debug-llm，而不是硬编码 False。
+        debug_llm=getattr(base_cfg, "debug_llm", False),
+        debug_llm_console=getattr(base_cfg, "debug_llm_console", False),
     )
     judge_cfg.api_key = base_cfg.api_key
     judge_cfg.max_turns = 2

@@ -281,7 +281,9 @@ class RoleAgentDispatcher:
             model=profile.model or self._cfg.model,
             llm_provider=profile.provider or self._cfg.llm_provider,
             llm_base_url=self._cfg.llm_base_url,
-            debug_llm=False,
+            # [BUGFIX] 同 evaluator.py：继承 self._cfg 的 --debug-llm，而不是硬编码 False。
+            debug_llm=getattr(self._cfg, "debug_llm", False),
+            debug_llm_console=getattr(self._cfg, "debug_llm_console", False),
         )
         role_cfg.api_key = self._cfg.api_key
         role_cfg.max_turns = 3

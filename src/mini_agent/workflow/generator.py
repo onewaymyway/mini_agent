@@ -96,7 +96,9 @@ class WorkflowGenerator:
             model=self._cfg.model,
             llm_provider=self._cfg.llm_provider,
             llm_base_url=self._cfg.llm_base_url,
-            debug_llm=False,
+            # [BUGFIX] 同 evaluator.py：继承 self._cfg 的 --debug-llm，而不是硬编码 False。
+            debug_llm=getattr(self._cfg, "debug_llm", False),
+            debug_llm_console=getattr(self._cfg, "debug_llm_console", False),
         )
         gen_cfg.api_key = self._cfg.api_key
         gen_cfg.max_turns = 3
