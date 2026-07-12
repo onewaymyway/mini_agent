@@ -23,6 +23,10 @@ import time
 from pathlib import Path
 from typing import List, Dict, Optional
 
+# 导入详情页清理模块
+sys.path.insert(0, str(Path(__file__).parent))
+from detail_cleaner import clean_detail_content
+
 
 SKILL_DIR = Path(__file__).parent
 PYTHON_CMD = sys.executable  # 使用当前Python解释器
@@ -257,7 +261,7 @@ def search_baidu(port: int, tab_id: str, query: str, max_results: int = 10, wait
 
 
 def fetch_detail(port: int, tab_id: str, url: str, wait_timeout: int = 15, max_chars: int = 5000, max_retries: int = 3) -> Dict:
-    """访问详情页并提取文本内容（带重试）"""
+    """访问详情页并提取文本内容（带重试，使用站点专用清理规则）"""
     
     for attempt in range(max_retries):
         try:
@@ -292,32 +296,12 @@ def fetch_detail(port: int, tab_id: str, url: str, wait_timeout: int = 15, max_c
             
             text = extract_result.stdout.strip()
             
-            # 简单清理：移除CSS/JS代码行
-            lines = text.split('\n')
-            cleaned_lines = []
-            for line in lines:
-                line = line.strip()
-                if not line or len(line) < 10:
-                    continue
-                # 跳过明显的CSS/JS代码行
-                if (line.startswith('.') and '{' in line) or \
-                   (line.startswith('@') and '{' in line) or \
-                   line.startswith('function') or \
-                   line.startswith('var ') or \
-                   line.startswith('const ') or \
-                   line.startswith('let ') or \
-                   line.startswith('import ') or \
-                   line.startswith('export ') or \
-                   line.startswith('require(') or \
-                   line.startswith('module.exports'):
-                    continue
-                cleaned_lines.append(line)
-            
-            cleaned_text = '\n'.join(cleaned_lines[:200])  # 限制行数
+            # 使用站点专用清理规则
+            cleaned_text = clean_detail_content(url, text, max_chars)
             
             return {
                 'url': url,
-                'content': cleaned_text[:max_chars],
+                'content': cleaned_text,
                 'success': True
             }
         except Exception as e:
@@ -467,4 +451,3 @@ def main():
 
 if __name__ == "__main__":
     sys.exit(main())
-EOF
