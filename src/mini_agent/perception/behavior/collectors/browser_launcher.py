@@ -29,6 +29,24 @@ def default_user_data_dir() -> Path:
     return _behavior_dir() / "browser_profile"
 
 
+def _remove_singleton_locks(profile_dir: Path) -> None:
+    """只删除 Chrome 单实例锁文件，不动其他数据（cookies/sessions 等）。
+
+    Chrome 在 Windows/mac/Linux 下会用以下锁文件标记 profile 正被使用：
+      - SingletonLock
+      - SingletonSocket
+      - SingletonCookie
+    删除它们可以让新进程认为"没有实例在用这个 profile"，从而正常启动。
+    """
+    for name in ("SingletonLock", "SingletonSocket", "SingletonCookie"):
+        p = profile_dir / name
+        try:
+            if p.exists() or p.is_symlink():
+                p.unlink()
+        except Exception:
+            pass
+
+
 _CANDIDATES_BY_OS = {
     "Windows": [
         r"C:\Program Files\Google\Chrome\Application\chrome.exe",
@@ -91,6 +109,8 @@ class DebugBrowserProcess:
         if self.is_running:
             return
         self._user_data_dir.mkdir(parents=True, exist_ok=True)
+        # 只删除单实例锁文件，保留 cookies/sessions 等数据
+        _remove_singleton_locks(self._user_data_dir)
 
         args = [
             self._executable,
@@ -98,6 +118,11 @@ class DebugBrowserProcess:
             f"--user-data-dir={self._user_data_dir}",
             "--no-first-run",
             "--no-default-browser-check",
+            # 禁用可能触发单实例重定向的功能
+            "--disable-features=TranslateUI,BackgroundMode,BackgroundFetch",
+            "--disable-backgrounding-occluded-windows",
+            "--disable-renderer-backgrounding",
+            "--disable-background-network-requests",
         ]
         if self._headless:
             args.append("--headless=new")
