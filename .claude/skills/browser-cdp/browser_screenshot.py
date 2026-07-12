@@ -20,7 +20,7 @@ import os
 from utils import add_connection_args, get_session, scan_interactive_elements
 
 
-def capture(session, full_page: bool, clip: dict | None = None) -> bytes:
+def capture(session, full_page: bool, clip: dict | None = None, timeout: float = 60.0) -> bytes:
     params = {"format": "png"}
     if clip:
         params["clip"] = clip
@@ -36,7 +36,7 @@ def capture(session, full_page: bool, clip: dict | None = None) -> bytes:
             "scale": 1,
         }
         params["captureBeyondViewport"] = True
-    result = session.send("Page.captureScreenshot", params)
+    result = session.send("Page.captureScreenshot", params, timeout=timeout)
     return base64.b64decode(result["data"])
 
 
@@ -82,6 +82,7 @@ def main():
     parser.add_argument("--full-page", action="store_true")
     parser.add_argument("--annotate", action="store_true", help="标注可交互元素编号")
     parser.add_argument("--element-index", type=int, default=None, help="只截取指定编号元素的区域（需先用 --mode elements 或本参数触发扫描）")
+    parser.add_argument("--timeout", type=float, default=60.0, help="截图超时时间（秒），默认 60 秒，大页面建议增加")
 
     args = parser.parse_args()
     session = get_session(args)
@@ -98,7 +99,7 @@ def main():
             r = target["rect"]
             clip = {"x": r["x"], "y": r["y"], "width": r["width"], "height": r["height"], "scale": 1}
 
-        png_bytes = capture(session, full_page=args.full_page, clip=clip)
+        png_bytes = capture(session, full_page=args.full_page, clip=clip, timeout=args.timeout)
 
         if args.annotate and clip is None:
             png_bytes = annotate_png(png_bytes, elements)
