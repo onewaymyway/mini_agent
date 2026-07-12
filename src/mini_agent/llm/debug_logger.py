@@ -369,7 +369,9 @@ class LLMDebugLogger:
 
     @staticmethod
     def _build_file_logger(path: Path) -> logging.Logger:
-        name = f"llm_debug_{id(path)}"
+        # Use path string for unique logger name to avoid collisions
+        # when Path objects are garbage collected and memory addresses reused
+        name = f"llm_debug_{path.resolve()}"
         logger = logging.getLogger(name)
         logger.setLevel(logging.INFO)
         logger.propagate = False
