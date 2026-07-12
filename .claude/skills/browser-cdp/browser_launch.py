@@ -1,29 +1,43 @@
 """
-browser_launch.py - 确保有一个可通过 CDP 连接的 Chrome，并管理 tab。
+browser_launch.py - 确保有一个可通过 CDP 连接的 Chrome，并管理 tab / 专用浏览器实例。
 
-两种模式：
-1. attach（默认）：假设用户已经手动用调试端口启动了浏览器，本脚本只负责发现/连接。
+三种模式：
+1. attach（默认，--ensure）：假设用户已经手动用调试端口启动了浏览器，本脚本只负责发现/连接。
    Windows 下让用户手动创建一个带 --remote-debugging-port 的快捷方式最省心，
    因为直接"接管"一个已经在跑、没开调试端口的 Chrome 是做不到的（Chrome 限制）。
-2. spawn：在当前机器上新开一个 Chrome/Chromium 进程（可无头），专门用于抓取，
-   不影响用户正在使用的浏览器窗口。适合无 GUI 服务器环境。
+2. --spawn（配合 --ensure）：只在调试端口不可用时才临时拉起一个实例，一次性用途。
+3. --dedicated：显式创建一个**专门给 Agent 后续操作用的独立 Chrome 实例**——
+   独立 profile、独立调试端口（默认 9333，与场景1的 9222 互不冲突）、可见窗口（默认非无头，
+   也可加 --headless 用于纯抓取），并把 {name -> port/pid/profile_dir} 记录到本地注册表，
+   后续脚本可以直接用 --port 9333（或 --instance-name）连接，不需要每次重新启动。
 
 用法示例：
-  python browser_launch.py --ensure                      # 检查/发现，不满足则报错并给出指引
-  python browser_launch.py --ensure --spawn               # 若无可用调试端口，自动 spawn 一个无头浏览器
-  python browser_launch.py --list                         # 列出所有 tab
-  python browser_launch.py --new "https://example.com"    # 新建 tab 并打开网址
+  # 场景1/2：连接或临时拉起
+  python browser_launch.py --ensure                       # 检查/发现，不满足则报错并给出指引
+  python browser_launch.py --ensure --spawn                # 若无可用调试端口，自动临时拉起一个
+
+  # 场景3：专用浏览器实例（推荐用于"后续一系列自动化操作"）
+  python browser_launch.py --dedicated                                # 起一个默认名为 default 的可见专用实例
+  python browser_launch.py --dedicated --name work --start-url "https://example.com"
+  python browser_launch.py --dedicated --name scraper --headless      # 服务器/沙盒纯抓取场景
+  python browser_launch.py --list-dedicated                           # 查看当前已注册的专用实例
+  python browser_launch.py --stop-dedicated work                      # 关闭并从注册表移除
+
+  # tab 管理（对 attach/spawn/dedicated 任何一种已建立的连接都适用，指定 --port 即可）
+  python browser_launch.py --list                          # 列出所有 tab
+  python browser_launch.py --new "https://example.com"      # 新建 tab 并打开网址
   python browser_launch.py --close <target_id>
-  python browser_launch.py --activate <target_id>         # 把某个 tab 切到前台（有 GUI 时可见）
+  python browser_launch.py --activate <target_id>           # 把某个 tab 切到前台（有 GUI 时可见）
 """
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import platform
 import shutil
+import signal
 import subprocess
-import sys
 import time
 
 from cdp_client import (
@@ -58,6 +72,14 @@ MAC_CHROME_CANDIDATES = [
     "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
 ]
 
+# 专用实例默认端口，与"attach 用户已有浏览器"的 9222 分开，避免互相冲突
+DEFAULT_DEDICATED_PORT = 9333
+SKILL_HOME = os.path.join(os.path.expanduser("~"), ".cdp_skill")
+REGISTRY_PATH = os.path.join(SKILL_HOME, "registry.json")
+# 浏览器数据目录默认放在当前工作目录下的 temp/cdp_brower_data，而不是用户 home，
+# 方便随项目一起清理、也不会污染用户真实 Chrome profile
+DEFAULT_PROFILE_ROOT = os.path.join("temp", "cdp_brower_data")
+
 
 def find_chrome_binary() -> str | None:
     system = platform.system()
@@ -86,6 +108,7 @@ def spawn_browser(
     user_data_dir: str,
     headless: bool,
     start_url: str = "about:blank",
+    window_size: str = "1366,900",
 ) -> subprocess.Popen:
     os.makedirs(user_data_dir, exist_ok=True)
     args = [
@@ -94,6 +117,7 @@ def spawn_browser(
         f"--user-data-dir={user_data_dir}",
         "--no-first-run",
         "--no-default-browser-check",
+        f"--window-size={window_size}",
     ]
     if headless:
         args += [
@@ -101,7 +125,6 @@ def spawn_browser(
             "--disable-gpu",
             "--hide-scrollbars",
             "--mute-audio",
-            "--window-size=1366,900",
         ]
     args.append(start_url)
     # Windows 下沙盒相关参数一般不需要；Linux 容器里跑 root 常需要 --no-sandbox
@@ -128,6 +151,113 @@ def wait_port_alive(host: str, port: int, timeout: float = 15.0) -> bool:
     return False
 
 
+# ---------------------------------------------------------------------------
+# 专用实例注册表：记录 name -> {port, pid, profile_dir, headless}
+# 这样一次会话里起的浏览器，后续所有脚本调用都能通过 --port 复用，不用每次重新 spawn。
+# ---------------------------------------------------------------------------
+def _load_registry() -> dict:
+    if not os.path.exists(REGISTRY_PATH):
+        return {}
+    try:
+        with open(REGISTRY_PATH, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:
+        return {}
+
+
+def _save_registry(reg: dict) -> None:
+    os.makedirs(SKILL_HOME, exist_ok=True)
+    with open(REGISTRY_PATH, "w", encoding="utf-8") as f:
+        json.dump(reg, f, ensure_ascii=False, indent=2)
+
+
+def _kill_pid(pid: int) -> None:
+    try:
+        if platform.system() == "Windows":
+            subprocess.run(["taskkill", "/PID", str(pid), "/T", "/F"], capture_output=True)
+        else:
+            os.kill(pid, signal.SIGTERM)
+    except Exception:
+        pass
+
+
+def cmd_dedicated(args: argparse.Namespace) -> None:
+    reg = _load_registry()
+    existing = reg.get(args.name)
+
+    if existing and is_debug_port_alive(args.host, existing["port"]):
+        info = version_info(args.host, existing["port"])
+        print(
+            f"[ok] 专用实例 '{args.name}' 已在运行 -> {args.host}:{existing['port']} "
+            f"({info.get('Browser')})，直接复用（如需重开请先 --stop-dedicated {args.name}）"
+        )
+        return
+
+    binary = args.binary or find_chrome_binary()
+    if not binary:
+        die("未找到 Chrome/Chromium 可执行文件，请用 --binary 指定路径")
+
+    port = args.port or (existing or {}).get("port") or DEFAULT_DEDICATED_PORT
+    # 端口被占用（且不是我们自己注册的）时自动往后找一个空闲端口
+    tries = 0
+    while is_debug_port_alive(args.host, port) and tries < 20:
+        port += 1
+        tries += 1
+
+    profile_dir = args.user_data_dir or os.path.join(DEFAULT_PROFILE_ROOT, args.name)
+
+    proc = spawn_browser(
+        binary=binary,
+        port=port,
+        user_data_dir=profile_dir,
+        headless=args.headless,
+        start_url=args.start_url,
+        window_size=args.window_size,
+    )
+    if not wait_port_alive(args.host, port, timeout=args.spawn_timeout):
+        die(f"已启动浏览器进程 (pid={proc.pid}) 但调试端口 {port} 在 {args.spawn_timeout}s 内未就绪")
+
+    info = version_info(args.host, port)
+    reg[args.name] = {
+        "port": port,
+        "pid": proc.pid,
+        "profile_dir": profile_dir,
+        "headless": args.headless,
+        "binary": binary,
+    }
+    _save_registry(reg)
+
+    tabs = list_tabs(args.host, port)
+    tab_id = tabs[0]["id"] if tabs else None
+    print(
+        f"[ok] 已创建专用浏览器实例 '{args.name}' pid={proc.pid} headless={args.headless}\n"
+        f"     -> {args.host}:{port} ({info.get('Browser')})\n"
+        f"     profile_dir={profile_dir}\n"
+        f"     首个 tab id={tab_id}\n"
+        f"后续调用其他脚本时加上 --port {port} 即可连接这个专用实例，例如：\n"
+        f"  python browser_nav.py --port {port} --tab {tab_id} --goto \"https://example.com\""
+    )
+
+
+def cmd_list_dedicated(args: argparse.Namespace) -> None:
+    reg = _load_registry()
+    out = []
+    for name, info in reg.items():
+        alive = is_debug_port_alive(args.host, info["port"])
+        out.append({**info, "name": name, "alive": alive})
+    print_json(out)
+
+
+def cmd_stop_dedicated(args: argparse.Namespace) -> None:
+    reg = _load_registry()
+    info = reg.pop(args.stop_dedicated, None)
+    if not info:
+        die(f"没有找到名为 '{args.stop_dedicated}' 的专用实例")
+    _kill_pid(info["pid"])
+    _save_registry(reg)
+    print(f"[ok] 已停止专用实例 '{args.stop_dedicated}' (pid={info['pid']})")
+
+
 def cmd_ensure(args: argparse.Namespace) -> None:
     if is_debug_port_alive(args.host, args.port):
         info = version_info(args.host, args.port)
@@ -141,7 +271,8 @@ def cmd_ensure(args: argparse.Namespace) -> None:
             "    Windows 下完全关闭 Chrome 后，用以下命令重新打开：\n"
             r'    "C:\Program Files\Google\Chrome\Application\chrome.exe" --remote-debugging-port=9222'
             "\n"
-            "  方式二：加 --spawn 参数，由本脚本自动新开一个专用浏览器实例（不影响你现有窗口）。"
+            "  方式二：加 --spawn 参数，临时拉起一个一次性实例；\n"
+            "  方式三（推荐用于后续多步操作）：改用 --dedicated 创建一个可复用、带注册表的专用实例。"
         )
 
     binary = args.binary or find_chrome_binary()
@@ -151,7 +282,7 @@ def cmd_ensure(args: argparse.Namespace) -> None:
     proc = spawn_browser(
         binary=binary,
         port=args.port,
-        user_data_dir=args.user_data_dir,
+        user_data_dir=args.user_data_dir or os.path.join(DEFAULT_PROFILE_ROOT, "spawn"),
         headless=args.headless,
         start_url=args.start_url,
     )
@@ -161,7 +292,7 @@ def cmd_ensure(args: argparse.Namespace) -> None:
     print(
         f"[ok] 已启动新浏览器实例 pid={proc.pid} headless={args.headless} "
         f"-> {args.host}:{args.port} ({info.get('Browser')})\n"
-        f"     user_data_dir={args.user_data_dir}"
+        f"     user_data_dir={args.user_data_dir or os.path.join(DEFAULT_PROFILE_ROOT, 'spawn')}"
     )
 
 
@@ -193,18 +324,28 @@ def cmd_activate(args: argparse.Namespace) -> None:
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--host", default=DEFAULT_HOST)
-    parser.add_argument("--port", type=int, default=DEFAULT_PORT)
+    parser.add_argument("--port", type=int, default=None, help="不指定时: --ensure用9222，--dedicated用9333起自动探测空闲端口")
 
-    parser.add_argument("--ensure", action="store_true", help="检查调试端口是否可用")
-    parser.add_argument("--spawn", action="store_true", help="配合 --ensure，若不可用则自动拉起一个专用实例")
-    parser.add_argument("--headless", action="store_true", help="配合 --spawn，无 GUI 环境下使用（纯抓取场景）")
+    parser.add_argument("--ensure", action="store_true", help="检查调试端口是否可用（默认端口 9222，即 attach 场景）")
+    parser.add_argument("--spawn", action="store_true", help="配合 --ensure，若不可用则临时拉起一个一次性实例")
+
+    parser.add_argument("--dedicated", action="store_true", help="创建/复用一个专门用于后续自动化操作的独立浏览器实例")
+    parser.add_argument("--name", default="default", help="专用实例名称，可同时维护多个（如 work/scraper）")
+    parser.add_argument("--list-dedicated", action="store_true", help="列出已注册的专用实例")
+    parser.add_argument("--stop-dedicated", metavar="NAME", default=None, help="停止并移除指定名称的专用实例")
+
+    parser.add_argument("--headless", action="store_true", help="无 GUI 环境/纯抓取场景使用")
     parser.add_argument("--binary", default=None, help="浏览器可执行文件路径，不给则自动探测")
     parser.add_argument(
         "--user-data-dir",
-        default=os.path.join(os.path.expanduser("~"), ".cdp_skill_profile"),
-        help="spawn 时使用的独立 profile 目录，默认不会影响用户日常 Chrome profile",
+        default=None,
+        help=(
+            "profile 目录。--ensure --spawn 默认 ./temp/cdp_brower_data/spawn；"
+            "--dedicated 默认 ./temp/cdp_brower_data/<name>；一般不用手动设置"
+        ),
     )
     parser.add_argument("--start-url", default="about:blank")
+    parser.add_argument("--window-size", default="1366,900", help="可见窗口大小，例如 1920,1080")
     parser.add_argument("--spawn-timeout", type=float, default=15.0)
 
     parser.add_argument("--list", action="store_true", help="列出当前所有 tab")
@@ -213,6 +354,20 @@ def main():
     parser.add_argument("--activate", metavar="TARGET_ID", default=None, help="把指定 tab 切到前台")
 
     args = parser.parse_args()
+
+    if args.dedicated:
+        cmd_dedicated(args)
+        return
+    if args.list_dedicated:
+        cmd_list_dedicated(args)
+        return
+    if args.stop_dedicated:
+        cmd_stop_dedicated(args)
+        return
+
+    # --list/--new/--close/--activate 若未显式给 --port，默认走 attach 场景的 9222
+    if args.port is None:
+        args.port = DEFAULT_PORT
 
     if args.ensure:
         cmd_ensure(args)
@@ -231,3 +386,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+

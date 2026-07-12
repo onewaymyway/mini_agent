@@ -42,7 +42,30 @@ pip install websocket-client requests pillow
 
 ## 第一步：确保有可连接的浏览器
 
-### 场景 A：用户本机 Windows，希望和用户共享同一个浏览器窗口（可以看到用户已登录的站点）
+### 场景 A（推荐用于"后续一系列自动化操作"）：打开一个专门的新 Chrome 实例
+
+不依赖用户手动改快捷方式，直接由 Agent 拉起一个**独立的、专门供后续操作使用**的 Chrome：
+独立 profile（不碰用户真实登录态）、独立调试端口（默认 9333，不与场景 B 的 9222 冲突）、
+默认可见窗口（也可以 `--headless` 用于服务器场景），并会把实例信息记到本地注册表，
+之后脚本随时用同一个 `--port` 复用它，不用每次重新启动。
+
+```bash
+cd .claude/skills/browser-cdp
+python3 browser_launch.py --dedicated --name work --start-url "https://example.com"
+# 输出里会给出 port 和首个 tab id，例如 --port 9333 --tab <id>
+python3 browser_nav.py --port 9333 --tab <id> --goto "https://example.com"
+```
+
+常用管理命令：
+```bash
+python3 browser_launch.py --list-dedicated          # 查看已创建的专用实例（含是否存活）
+python3 browser_launch.py --stop-dedicated work     # 用完关闭并从注册表移除
+```
+
+同一次任务里可以按需要开多个（用不同 --name），比如一个用来登录A站点、一个用来查B站点，互不干扰。
+默认可见（非 headless），方便用户随时瞄一眼 Agent 在干什么；纯后台抓取不需要用户看时加 `--headless`。
+
+### 场景 B：连接用户本机正在用的浏览器窗口（共享登录态）
 
 Chrome 不允许对一个"已经在跑、没开调试端口"的实例远程接管，所以需要用户重新用调试端口打开一次：
 
@@ -56,21 +79,22 @@ Chrome 不允许对一个"已经在跑、没开调试端口"的实例远程接�
 
 告知用户：调试端口只监听本机 127.0.0.1，不会被外部网络访问，但仍建议用完后关闭该模式。
 
-### 场景 B：无 GUI 服务器/沙盒环境，只做抓取，不需要用户观察
+### 场景 C：无 GUI 服务器/沙盒环境，只做抓取，不需要可见窗口
 
 ```bash
 cd .claude/skills/browser-cdp
+python3 browser_launch.py --dedicated --headless          # 等价于场景A但不弹窗口
+# 或临时用一次不留注册记录：
 python3 browser_launch.py --ensure --spawn --headless
 ```
 
-会自动探测 Chrome/Chromium 可执行文件，在独立的 `~/.cdp_skill_profile` 目录下起一个无头实例，
-不影响用户任何现有浏览器窗口。第一次探测失败时会提示用 `--binary` 指定路径。
+会自动探测 Chrome/Chromium 可执行文件。第一次探测失败时会提示用 `--binary` 指定路径。
 
 ### 检查/复用已有连接
 
 ```bash
-python3 browser_launch.py --ensure     # 端口已通 -> 直接打印版本信息；不通 -> 报错并给出上面两种指引
-python3 browser_launch.py --list       # 列出所有 tab，拿到 --tab 用的 id
+python3 browser_launch.py --ensure     # 端口已通（默认9222）-> 直接打印版本信息；不通 -> 报错并给出上面几种指引
+python3 browser_launch.py --list --port 9333   # 列出指定端口下的所有 tab，拿到 --tab 用的 id
 ```
 
 ## 典型工作流
