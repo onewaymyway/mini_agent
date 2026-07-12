@@ -105,19 +105,22 @@ def find_chrome_binary() -> str | None:
     return None
 
 
-def _ensure_fresh_profile(profile_dir: str) -> None:
-    """确保 profile 目录完全干净。
-    
-    Chrome 的单实例机制（Windows 下用命名 mutex）会在检测到已有实例时
-    让新进程直接退出（exit code=0）。如果 profile 目录中有残留的锁文件或
-    旧状态，Chrome 可能误判为"已有实例在用这个 profile"而直接退出。
-    
-    最可靠的做法：删除整个目录，让 Chrome 启动时重新创建。
+def _remove_singleton_locks(profile_dir: str) -> None:
+    """只删除 Chrome 单实例锁文件，不动其他数据（cookies/sessions 等）。
+
+    Chrome 在 Windows/mac/Linux 下会用以下锁文件标记 profile 正被使用：
+      - SingletonLock
+      - SingletonSocket
+      - SingletonCookie
+    删除它们可以让新进程认为"没有实例在用这个 profile"，从而正常启动。
     """
-    if os.path.exists(profile_dir):
-        import shutil
-        shutil.rmtree(profile_dir, ignore_errors=True)
-    os.makedirs(profile_dir, exist_ok=True)
+    for name in ("SingletonLock", "SingletonSocket", "SingletonCookie"):
+        p = os.path.join(profile_dir, name)
+        try:
+            if os.path.exists(p) or os.path.islink(p):
+                os.remove(p)
+        except Exception:
+            pass
 
 
 def spawn_browser(
@@ -130,8 +133,8 @@ def spawn_browser(
 ) -> subprocess.Popen:
     # 确保使用绝对路径，避免 cwd 变化导致 profile 目录不一致
     user_data_dir = os.path.abspath(user_data_dir)
-    # 彻底清理 profile 目录，防止 Chrome 单实例机制导致 exit code=0
-    _ensure_fresh_profile(user_data_dir)
+    # 只删除单实例锁文件，保留 cookies/sessions 等数据
+    _remove_singleton_locks(user_data_dir)
     args = [
         binary,
         f"--remote-debugging-port={port}",
