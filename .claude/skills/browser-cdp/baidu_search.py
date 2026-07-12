@@ -218,33 +218,95 @@ def update_cookie_jar(port: int, tab_id: str, domain: str) -> bool:
     return False
 
 
-def resolve_baidu_redirect(port: int, tab_id: str, redirect_url: str, wait_timeout: int = 10) -> str:
-    """解析百度重定向链接，返回真实 URL"""
-    try:
-        print(f"  [重定向] 正在解析: {redirect_url[:80]}...")
-        # 访问重定向链接 - 使用 --no-wait-load 避免等待 load 事件，直接获取最终 URL
-        nav_result = run_cmd([PYTHON_CMD, "browser_nav.py", "--port", str(port), "--tab", tab_id, "--goto", redirect_url, "--no-wait-load", "--timeout", str(wait_timeout)])
-        if nav_result.returncode != 0:
-            return redirect_url
-        
-        # 获取最终 URL - browser_nav.py 输出 JSON 格式
-        import json
-        stdout = nav_result.stdout.strip()
-        # 查找 JSON 部分（可能包含其他输出）
-        json_start = stdout.find('{')
-        if json_start >= 0:
-            output = json.loads(stdout[json_start:])
-            final_url = output.get('url', '')
+def resolve_baidu_redirect(port: int, tab_id: str, redirect_url: str, wait_timeout: int = 10, max_retries: int = 1) -> str:
+    """解析百度重定向链接，返回真实 URL
+    
+    使用两种策略依次尝试：
+    1. JS fetch — 不离开当前页面，通过 fetch 获取重定向后的 URL（受 CORS 限制可能失败）
+    2. 导航到重定向链接 — 使用 browser_nav 导航后读取最终 URL，然后返回原页面
+    """
+    import json as _json
+    
+    # 先保存当前页面 URL，以便策略2导航后返回
+    js_get_url = "location.href"
+    url_result = run_cmd([PYTHON_CMD, "browser_console.py", "--port", str(port), "--tab", tab_id, "--eval", js_get_url])
+    current_url = ""
+    if url_result.returncode == 0:
+        stdout_u = url_result.stdout.strip()
+        json_start_u = stdout_u.find('{')
+        if json_start_u >= 0:
+            try:
+                current_url = _json.loads(stdout_u[json_start_u:]).get('result', '')
+            except Exception:
+                pass
+    
+    for attempt in range(max_retries + 1):
+        try:
+            # 策略1: 使用 JS fetch + redirect:follow 获取最终 URL（不离开当前页面）
+            # 注意：百度 CORS 可能阻止 fetch，此策略可能直接失败
+            if attempt == 0:
+                print(f"  [重定向] 正在解析 (策略1-fetch): {redirect_url[:80]}...")
+                js_fetch = f"""
+(async () => {{
+  try {{
+    const resp = await fetch({redirect_url!r}, {{
+      redirect: 'follow',
+      credentials: 'include'
+    }});
+    const finalUrl = resp.url || '';
+    if (finalUrl && !finalUrl.includes('baidu.com/link?') && finalUrl !== {redirect_url!r}) {{
+      return finalUrl;
+    }}
+    return '';
+  }} catch(e) {{
+    return '';
+  }}
+}})()
+"""
+                result = run_cmd([PYTHON_CMD, "browser_console.py", "--port", str(port), "--tab", tab_id, "--eval", js_fetch])
+                if result.returncode == 0:
+                    stdout = result.stdout.strip()
+                    json_start = stdout.find('{')
+                    if json_start >= 0:
+                        output = _json.loads(stdout[json_start:])
+                        final_url = output.get('result', '')
+                        if final_url and isinstance(final_url, str) and final_url.startswith('http') and 'baidu.com/link?' not in final_url:
+                            print(f"  [重定向] 策略1解析成功: {final_url[:80]}...")
+                            return final_url
             
-            # 如果最终 URL 不是百度重定向链接，则解析成功
-            if final_url and not final_url.startswith('http://www.baidu.com/link?') and not final_url.startswith('https://www.baidu.com/link?'):
-                print(f"  [重定向] 解析成功: {final_url[:80]}...")
-                return final_url
-        
-        return redirect_url
-    except Exception as e:
-        print(f"  [重定向] 解析失败: {e}")
-        return redirect_url
+            # 策略2: 导航到重定向链接，读取最终 URL，然后返回原页面
+            print(f"  [重定向] 策略1未成功，使用策略2(导航)...")
+            nav_result = run_cmd([PYTHON_CMD, "browser_nav.py", "--port", str(port), "--tab", tab_id, "--goto", redirect_url, "--no-wait-load", "--timeout", str(wait_timeout)])
+            if nav_result.returncode == 0:
+                stdout = nav_result.stdout.strip()
+                json_start = stdout.find('{')
+                if json_start >= 0:
+                    output = _json.loads(stdout[json_start:])
+                    final_url = output.get('url', '')
+                    if final_url and not final_url.startswith('http://www.baidu.com/link?') and not final_url.startswith('https://www.baidu.com/link?'):
+                        print(f"  [重定向] 策略2解析成功: {final_url[:80]}...")
+                        # 导航回原搜索结果页
+                        if current_url and current_url != final_url:
+                            run_cmd([PYTHON_CMD, "browser_nav.py", "--port", str(port), "--tab", tab_id, "--goto", current_url, "--no-wait-load", "--timeout", str(wait_timeout)])
+                        return final_url
+            
+            # 导航回原搜索结果页
+            if current_url:
+                run_cmd([PYTHON_CMD, "browser_nav.py", "--port", str(port), "--tab", tab_id, "--goto", current_url, "--no-wait-load", "--timeout", str(wait_timeout)])
+            
+            if attempt < max_retries:
+                delay = exponential_backoff(attempt, base_delay=2.0, max_delay=10.0)
+                print(f"  [重定向] 重试中，{delay:.1f}秒后...")
+        except Exception as e:
+            print(f"  [重定向] 解析异常: {e}")
+            # 确保返回原页面
+            if current_url:
+                run_cmd([PYTHON_CMD, "browser_nav.py", "--port", str(port), "--tab", tab_id, "--goto", current_url, "--no-wait-load", "--timeout", str(wait_timeout)])
+            if attempt < max_retries:
+                time.sleep(2)
+    
+    print(f"  [重定向] 所有策略均失败，返回原始链接")
+    return redirect_url
 
 
 def ensure_browser(port: int = 9333, name: str = "baidu_search", headless: bool = False, start_url: str = "https://www.baidu.com", user_agent: str = None) -> Dict:

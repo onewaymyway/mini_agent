@@ -432,6 +432,19 @@ def search_bing(port: int, tab_id: str, query: str, max_results: int = 10, wait_
             href = link.get('href', '')
             text = link.get('text', '').strip()
             if href and text and len(text) > 2 and href.startswith('http'):
+                # 解析 Bing 重定向链接（备选方案中也需要处理）
+                if 'bing.com/ck/' in href and '&u=' in href:
+                    try:
+                        import base64 as _b64
+                        u_param = href.split('&u=')[1].split('&')[0]
+                        b64_part = u_param[2:] if len(u_param) > 2 else u_param
+                        b64_part = b64_part.replace('-', '+').replace('_', '/')
+                        b64_part += '=' * (4 - len(b64_part) % 4) if len(b64_part) % 4 else ''
+                        decoded = _b64.b64decode(b64_part).decode('utf-8', errors='ignore')
+                        if decoded.startswith('http'):
+                            href = decoded
+                    except Exception:
+                        pass
                 results.append({'title': text, 'url': href, 'snippet': ''})
                 if len(results) >= max_results:
                     break
@@ -449,9 +462,24 @@ def search_bing(port: int, tab_id: str, query: str, max_results: int = 10, wait_
     filtered = []
     for r in results:
         if r.get('title') and r.get('url'):
+            url = r['url']
+            # 如果 JS 端 base64 解码失败，URL 仍为 bing.com/ck/ 格式，尝试 Python 端解码
+            if 'bing.com/ck/' in url and '&u=' in url:
+                try:
+                    import base64 as _b64
+                    u_param = url.split('&u=')[1].split('&')[0]
+                    b64_part = u_param[2:] if len(u_param) > 2 else u_param
+                    b64_part = b64_part.replace('-', '+').replace('_', '/')
+                    pad = (4 - len(b64_part) % 4) % 4
+                    b64_part += '=' * pad
+                    decoded = _b64.b64decode(b64_part).decode('utf-8', errors='ignore')
+                    if decoded.startswith('http'):
+                        url = decoded
+                except Exception:
+                    pass
             filtered.append({
                 'title': r['title'],
-                'url': r['url'],
+                'url': url,
                 'snippet': r.get('snippet', '')
             })
             if len(filtered) >= max_results:
