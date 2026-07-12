@@ -19,7 +19,12 @@ from pathlib import Path
 
 import pytest
 
-from mini_agent.goal_mode.spec import GoalSpec, GoalSpecBuilder, _extract_json
+from mini_agent.goal_mode.spec import (
+    GoalSpec,
+    GoalSpecBuilder,
+    _extract_json,
+    _extract_history_transcript,
+)
 from mini_agent.goal_mode.state import GoalState, GoalStateStore, find_resumable_session
 from mini_agent.goal_mode.executor import GoalStepResult, GoalStepExecutor
 from mini_agent.goal_mode.runner import GoalRunner
@@ -72,6 +77,84 @@ def test_diff_summary_reports_added_and_removed():
     assert "c3" in summary and "新增" in summary
     assert "c2" in summary and "移除" in summary
     assert "a2" in summary
+
+
+# ── build_from_history / _extract_history_transcript ───────────────────
+
+def test_extract_history_transcript_filters_non_text_roles():
+    history = [
+        {"role": "system", "content": "system prompt, should be ignored"},
+        {"role": "user", "content": "帮我修一下这个 bug"},
+        {"role": "tool", "content": "tool result, should be ignored"},
+        {"role": "assistant", "content": "好的，已定位到问题"},
+    ]
+    transcript, truncated = _extract_history_transcript(history)
+    assert "帮我修一下这个 bug" in transcript
+    assert "已定位到问题" in transcript
+    assert "should be ignored" not in transcript
+    assert truncated is False
+
+
+def test_extract_history_transcript_extracts_text_blocks_from_list_content():
+    history = [
+        {"role": "user", "content": [{"type": "text", "text": "看看这个"}, {"type": "image", "url": "x"}]},
+    ]
+    transcript, truncated = _extract_history_transcript(history)
+    assert "看看这个" in transcript
+    assert truncated is False
+
+
+def test_extract_history_transcript_truncates_by_message_count():
+    history = [{"role": "user", "content": f"msg-{i}"} for i in range(50)]
+    transcript, truncated = _extract_history_transcript(history, max_messages=10, max_chars=100000)
+    assert truncated is True
+    assert "msg-49" in transcript
+    assert "msg-0" not in transcript
+
+
+def test_extract_history_transcript_empty_history_returns_empty():
+    transcript, truncated = _extract_history_transcript([])
+    assert transcript == ""
+    assert truncated is False
+
+
+def test_build_from_history_returns_empty_spec_when_no_text_history():
+    builder = GoalSpecBuilder.__new__(GoalSpecBuilder)
+    spec = builder.build_from_history([{"role": "tool", "content": "irrelevant"}])
+    assert spec.goal_text == ""
+    assert spec.acceptance_criteria == []
+
+
+def test_build_from_history_parses_llm_output(monkeypatch):
+    builder = GoalSpecBuilder.__new__(GoalSpecBuilder)
+    monkeypatch.setattr(
+        builder,
+        "_run_builder",
+        lambda prompt: '{"goal_text": "修复多 session 消息丢失问题", '
+        '"acceptance_criteria": ["c1", "c2"], '
+        '"verification_method": "manual_review", "verification_command": ""}',
+    )
+    history = [
+        {"role": "user", "content": "Client B 收不到回复"},
+        {"role": "assistant", "content": "定位到是事件循环没绑定"},
+    ]
+    spec = builder.build_from_history(history)
+    assert spec.goal_text == "修复多 session 消息丢失问题"
+    assert spec.acceptance_criteria == ["c1", "c2"]
+    assert spec.negotiation_log[-1]["source"] == "builder_from_history"
+
+
+def test_build_from_history_fallback_criteria_when_missing(monkeypatch):
+    builder = GoalSpecBuilder.__new__(GoalSpecBuilder)
+    monkeypatch.setattr(
+        builder,
+        "_run_builder",
+        lambda prompt: '{"goal_text": "some inferred goal", "acceptance_criteria": []}',
+    )
+    history = [{"role": "user", "content": "do something"}]
+    spec = builder.build_from_history(history)
+    assert spec.goal_text == "some inferred goal"
+    assert len(spec.acceptance_criteria) > 0
 
 
 # ── GoalStateStore ───────────────────────────────────────────────────────
@@ -422,7 +505,6 @@ class _FakeGoalModeCfg:
         self.judge_allowed_tools = []
         self.judge_allowed_tool_groups = []
         self.persist_state = kwargs.get("persist_state", False)
-        self.max_stuck_recoveries = kwargs.get("max_stuck_recoveries", 3)
 
 
 class _FakeCfg:
@@ -539,10 +621,8 @@ def test_goal_runner_max_rounds_exhausted(monkeypatch, tmp_path):
 
 
 def test_goal_runner_stuck_on_repeated_feedback(monkeypatch, tmp_path):
-    # Need enough outputs for: 3 rounds * (1 initial + 3 stuck recoveries) = 12 rounds
-    # Each round calls run_turn once, plus potential compact calls
-    agent = FakeAgent(outputs=[f"attempt {i}" for i in range(15)])
-    cfg = _FakeCfg(tmp_path, max_rounds=20, consecutive_same_feedback_limit=3, max_stuck_recoveries=3)
+    agent = FakeAgent(outputs=[f"attempt {i}" for i in range(5)])
+    cfg = _FakeCfg(tmp_path, max_rounds=20, consecutive_same_feedback_limit=3)
     spec = _confirmed_spec()
 
     same_feedback = "GOAL_STATUS: CONTINUE\n还是同样的问题，反复卡在这里"
