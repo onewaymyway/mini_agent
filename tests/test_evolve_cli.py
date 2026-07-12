@@ -94,6 +94,8 @@ class TestEvolveCliBase(_CapturedOutputMixin, unittest.TestCase):
     def tearDown(self):
         self._teardown_capture()
         orch._task_manager = None
+        if hasattr(self, 'agent') and self.agent is not None:
+            self.agent.close()
         self._tmpdir.cleanup()
 
 
@@ -225,19 +227,25 @@ class TestEvolveReview(TestEvolveCliBase):
             cfg2 = make_cfg(Path(tmp2))
             cfg2.memory.enabled = False
             agent2 = Agent(cfg=cfg2)
-            handle_evolve_cmd(["review"], agent2)
-            out = self._output()
-            self.assertIn("No project memory backend available", out)
+            try:
+                handle_evolve_cmd(["review"], agent2)
+                out = self._output()
+                self.assertIn("No project memory backend available", out)
+            finally:
+                agent2.close()
 
     def test_review_global_flag_uses_global_memory(self):
         # 没有 global memory backend 时应明确报错而不是静默用错 backend
         with tempfile.TemporaryDirectory() as tmp2:
             cfg2 = make_cfg(Path(tmp2))
             agent2 = Agent(cfg=cfg2)
-            agent2._global_memory = None
-            handle_evolve_cmd(["review", "--global"], agent2)
-            out = self._output()
-            self.assertIn("No global memory backend available", out)
+            try:
+                agent2._global_memory = None
+                handle_evolve_cmd(["review", "--global"], agent2)
+                out = self._output()
+                self.assertIn("No global memory backend available", out)
+            finally:
+                agent2.close()
 
     def test_missing_evolution_agent_profile_shows_error(self):
         with tempfile.TemporaryDirectory() as tmp2:
@@ -247,13 +255,16 @@ class TestEvolveReview(TestEvolveCliBase):
             mgr2 = TaskManager(cfg2, max_workers=2)
             orch._task_manager = mgr2
             agent2 = Agent(cfg=cfg2)
-            add_lesson(agent2._memory, "s1", "forgot to run tests before commit", occurrence_count=2)
-            add_lesson(agent2._memory, "s2", "did not run tests before commit", occurrence_count=1)
+            try:
+                add_lesson(agent2._memory, "s1", "forgot to run tests before commit", occurrence_count=2)
+                add_lesson(agent2._memory, "s2", "did not run tests before commit", occurrence_count=1)
 
-            handle_evolve_cmd(["review"], agent2)
-            out = self._output()
-            self.assertIn("evolution-agent profile not found", out)
-            mgr2.stop()
+                handle_evolve_cmd(["review"], agent2)
+                out = self._output()
+                self.assertIn("evolution-agent profile not found", out)
+            finally:
+                agent2.close()
+                mgr2.stop()
 
 
 if __name__ == "__main__":

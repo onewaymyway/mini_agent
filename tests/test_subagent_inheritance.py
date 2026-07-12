@@ -215,7 +215,10 @@ class TestSubAgentSkillActivation(unittest.TestCase):
         cfg = make_cfg(project_root=self.project_root)
         sub = SubAgent(rec, cfg)
         agent = sub._build_agent(task)
-        self.assertIsNone(agent.skill_loader)
+        try:
+            self.assertIsNone(agent.skill_loader)
+        finally:
+            agent.close()
 
     def test_active_skills_creates_loader_and_activates(self):
         task = make_task(active_skills=["bash-rm-safety"])
@@ -223,8 +226,11 @@ class TestSubAgentSkillActivation(unittest.TestCase):
         cfg = make_cfg(project_root=self.project_root)
         sub = SubAgent(rec, cfg)
         agent = sub._build_agent(task)
-        self.assertIsNotNone(agent.skill_loader)
-        self.assertIn("bash-rm-safety", agent.skill_loader.active)
+        try:
+            self.assertIsNotNone(agent.skill_loader)
+            self.assertIn("bash-rm-safety", agent.skill_loader.active)
+        finally:
+            agent.close()
 
     def test_multiple_active_skills_all_activated(self):
         task = make_task(active_skills=["bash-rm-safety", "code-review"])
@@ -232,7 +238,10 @@ class TestSubAgentSkillActivation(unittest.TestCase):
         cfg = make_cfg(project_root=self.project_root)
         sub = SubAgent(rec, cfg)
         agent = sub._build_agent(task)
-        self.assertEqual(set(agent.skill_loader.active), {"bash-rm-safety", "code-review"})
+        try:
+            self.assertEqual(set(agent.skill_loader.active), {"bash-rm-safety", "code-review"})
+        finally:
+            agent.close()
 
     def test_unknown_skill_name_does_not_crash(self):
         """SkillLoader.activate() 对未知名称静默返回 False，不应该让 SubAgent 构造失败。"""
@@ -241,8 +250,11 @@ class TestSubAgentSkillActivation(unittest.TestCase):
         cfg = make_cfg(project_root=self.project_root)
         sub = SubAgent(rec, cfg)
         agent = sub._build_agent(task)  # 不应抛异常
-        self.assertIsNotNone(agent.skill_loader)
-        self.assertNotIn("does-not-exist", agent.skill_loader.active)
+        try:
+            self.assertIsNotNone(agent.skill_loader)
+            self.assertNotIn("does-not-exist", agent.skill_loader.active)
+        finally:
+            agent.close()
 
     def test_subagent_gets_independent_registry_copy(self):
         """SubAgent 持有 skill_loader 时，不应直接复用全局单例 registry。"""
@@ -251,9 +263,11 @@ class TestSubAgentSkillActivation(unittest.TestCase):
         cfg = make_cfg(project_root=self.project_root)
         sub = SubAgent(rec, cfg)
         agent = sub._build_agent(task)
-
-        from mini_agent.tools import get_default_registry
-        self.assertIsNot(agent.registry, get_default_registry())
+        try:
+            from mini_agent.tools import get_default_registry
+            self.assertIsNot(agent.registry, get_default_registry())
+        finally:
+            agent.close()
 
     def test_main_agent_and_subagent_skill_loader_coexist_without_crash(self):
         """
@@ -278,8 +292,12 @@ class TestSubAgentSkillActivation(unittest.TestCase):
 
         # 不应抛 ValueError("already registered")
         sub_built_agent = sub._build_agent(task)
-        self.assertIsNotNone(sub_built_agent.skill_loader)
-        self.assertIn("bash-rm-safety", sub_built_agent.skill_loader.active)
+        try:
+            self.assertIsNotNone(sub_built_agent.skill_loader)
+            self.assertIn("bash-rm-safety", sub_built_agent.skill_loader.active)
+        finally:
+            main_agent.close()
+            sub_built_agent.close()
 
     def test_main_agent_skill_list_not_polluted_by_subagent(self):
         """
@@ -311,6 +329,8 @@ class TestSubAgentSkillActivation(unittest.TestCase):
         sub_result = json.loads(sub_built_agent.registry.get("skill_list").fn())
         sub_active = {s["name"] for s in sub_result["skills"] if s["active"]}
         self.assertEqual(sub_active, {"code-review"})
+        main_agent.close()
+        sub_built_agent.close()
 
     def test_built_subagent_is_marked_is_subagent(self):
         task = make_task()
@@ -318,7 +338,10 @@ class TestSubAgentSkillActivation(unittest.TestCase):
         cfg = make_cfg(project_root=self.project_root)
         sub = SubAgent(rec, cfg)
         agent = sub._build_agent(task)
-        self.assertTrue(agent._is_subagent)
+        try:
+            self.assertTrue(agent._is_subagent)
+        finally:
+            agent.close()
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -358,8 +381,10 @@ class TestSharedToolResultCache(unittest.TestCase):
         rec = TaskRecord(task=task)
         sub = SubAgent(rec, cfg, shared_tool_cache=shared)
         agent = sub._build_agent(task)
-
-        self.assertIs(agent._tool_cache, shared)
+        try:
+            self.assertIs(agent._tool_cache, shared)
+        finally:
+            agent.close()
 
     def test_two_subagents_share_same_cache_object(self):
         from mini_agent.perception.tool_cache import ToolResultCache
@@ -372,8 +397,11 @@ class TestSharedToolResultCache(unittest.TestCase):
             rec = TaskRecord(task=task)
             sub = SubAgent(rec, cfg, shared_tool_cache=shared)
             agents.append(sub._build_agent(task))
-
-        self.assertIs(agents[0]._tool_cache, agents[1]._tool_cache)
+        try:
+            self.assertIs(agents[0]._tool_cache, agents[1]._tool_cache)
+        finally:
+            for agent in agents:
+                agent.close()
 
     def test_private_cache_when_no_shared_cache_but_enabled(self):
         """没有传 shared_tool_cache，但 cfg 自身开启了 tool_cache：退化为各自私有缓存。"""
@@ -384,7 +412,10 @@ class TestSharedToolResultCache(unittest.TestCase):
         rec = TaskRecord(task=task)
         sub = SubAgent(rec, cfg)  # shared_tool_cache=None（默认）
         agent = sub._build_agent(task)
-        self.assertIsNotNone(agent._tool_cache)
+        try:
+            self.assertIsNotNone(agent._tool_cache)
+        finally:
+            agent.close()
 
     def test_cache_get_put_concurrent_no_corruption(self):
         """并发 get/put/invalidate_file 不应抛异常或破坏内部结构（线程安全冒烟测试）。"""
@@ -557,7 +588,10 @@ class TestMainAgentRegistersMemorySink(unittest.TestCase):
         orch._task_manager = mgr
 
         agent = Agent(cfg=cfg)
-        self.assertIs(mgr._main_memory, agent._memory)
+        try:
+            self.assertIs(mgr._main_memory, agent._memory)
+        finally:
+            agent.close()
         mgr.stop()
 
     def test_subagent_does_not_override_main_registration(self):
@@ -571,16 +605,21 @@ class TestMainAgentRegistersMemorySink(unittest.TestCase):
         orch._task_manager = mgr
 
         main_agent = Agent(cfg=cfg)
-        self.assertIs(mgr._main_memory, main_agent._memory)
+        try:
+            self.assertIs(mgr._main_memory, main_agent._memory)
 
-        # 模拟一个在主 agent 之后才构造完成的 SubAgent（后台线程异步构造）
-        sub_cfg = make_cfg(project_root=self.project_root)
-        sub_cfg.memory.enabled = True
-        sub_agent = Agent(cfg=sub_cfg, is_subagent=True)
-
-        # TaskManager 登记的仍然是主 agent 的 memory，没有被 SubAgent 覆盖
-        self.assertIs(mgr._main_memory, main_agent._memory)
-        self.assertIsNot(mgr._main_memory, sub_agent._memory)
+            # 模拟一个在主 agent 之后才构造完成的 SubAgent（后台线程异步构造）
+            sub_cfg = make_cfg(project_root=self.project_root)
+            sub_cfg.memory.enabled = True
+            sub_agent = Agent(cfg=sub_cfg, is_subagent=True)
+            try:
+                # TaskManager 登记的仍然是主 agent 的 memory，没有被 SubAgent 覆盖
+                self.assertIs(mgr._main_memory, main_agent._memory)
+                self.assertIsNot(mgr._main_memory, sub_agent._memory)
+            finally:
+                sub_agent.close()
+        finally:
+            main_agent.close()
         mgr.stop()
 
 

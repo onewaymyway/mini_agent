@@ -81,8 +81,11 @@ class TestProjectRootProvider(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             project_root = Path(tmp)
             cfg = make_cfg(project_root)
-            Agent(cfg=cfg)
-            self.assertEqual(_get_project_root(), project_root)
+            agent = Agent(cfg=cfg)
+            try:
+                self.assertEqual(_get_project_root(), project_root)
+            finally:
+                agent.close()
 
 
 class TestSkillPropose(unittest.TestCase):
@@ -96,6 +99,8 @@ class TestSkillPropose(unittest.TestCase):
 
     def tearDown(self):
         set_project_root_provider(None)
+        if hasattr(self, 'agent') and self.agent is not None:
+            self.agent.close()
         self._tmpdir.cleanup()
 
     def test_propose_valid_skill_succeeds(self):

@@ -39,37 +39,41 @@ class TestAgentStartupCreatesProjectMeta(unittest.TestCase):
         self.paths = AgentPaths(self.project_root)
 
     def tearDown(self):
+        # 显式关闭 Agent 持有的文件句柄，防止 Windows 下 PermissionError
+        if hasattr(self, '_agent') and self._agent is not None:
+            self._agent.close()
         self._tmpdir.cleanup()
 
     def test_agent_construction_creates_project_meta(self):
         self.assertIsNone(load_project_meta(self.paths))
-        Agent(cfg=make_cfg(self.project_root))
+        self._agent = Agent(cfg=make_cfg(self.project_root))
         meta = load_project_meta(self.paths)
         self.assertIsNotNone(meta)
         self.assertEqual(meta.total_sessions, 1)
 
     def test_second_agent_in_same_dir_increments_total_sessions(self):
-        Agent(cfg=make_cfg(self.project_root))
-        Agent(cfg=make_cfg(self.project_root))
+        agent1 = Agent(cfg=make_cfg(self.project_root))
+        agent1.close()
+        self._agent = Agent(cfg=make_cfg(self.project_root))
         meta = load_project_meta(self.paths)
         self.assertEqual(meta.total_sessions, 2)
 
     def test_disabled_config_skips_creation(self):
         cfg = make_cfg(self.project_root)
         cfg.workdir_knowledge = WorkdirKnowledgeConfig(enabled=False)
-        Agent(cfg=cfg)
+        self._agent = Agent(cfg=cfg)
         self.assertIsNone(load_project_meta(self.paths))
 
     def test_load_session_does_not_increment_total_sessions(self):
         """resume 一个已有 session 不是"启动一次新的 agent 进程"，
         不应重复计入 total_sessions（_maybe_ensure_project_meta 只在
         _init_session 里调用一次）。"""
-        agent = Agent(cfg=make_cfg(self.project_root))
+        self._agent = Agent(cfg=make_cfg(self.project_root))
         meta_before = load_project_meta(self.paths)
         self.assertEqual(meta_before.total_sessions, 1)
 
-        session_id = agent._session.id
-        agent.load_session(session_id)
+        session_id = self._agent._session.id
+        self._agent.load_session(session_id)
 
         meta_after = load_project_meta(self.paths)
         self.assertEqual(meta_after.total_sessions, 1)
@@ -84,19 +88,20 @@ class TestAgentStartupCreatesProjectMeta(unittest.TestCase):
         (workdir / "project.json").mkdir()  # 用目录占住这个路径名
 
         try:
-            Agent(cfg=make_cfg(self.project_root))  # 不应抛异常
+            self._agent = Agent(cfg=make_cfg(self.project_root))  # 不应抛异常
         except Exception as e:
             self.fail(f"Agent construction raised unexpectedly: {e}")
 
     def test_environment_fingerprint_populated_on_startup(self):
-        Agent(cfg=make_cfg(self.project_root))
+        self._agent = Agent(cfg=make_cfg(self.project_root))
         meta = load_project_meta(self.paths)
         self.assertIn("python_version", meta.environment_fingerprint)
 
     def test_environment_drift_detected_prints_info(self):
         """12.2 横向加固：第二次启动时若 fingerprint 变化，应打印提醒
         （通过 mock capture_environment_fingerprint 模拟"环境变了"）。"""
-        Agent(cfg=make_cfg(self.project_root))  # 第一次：建立 baseline fingerprint
+        agent1 = Agent(cfg=make_cfg(self.project_root))  # 第一次：建立 baseline fingerprint
+        agent1.close()
 
         def fake_capture(project_root):
             return {"python_version": "999.0.0", "os": "FakeOS", "key_deps": {}, "captured_at": 0.0}
@@ -106,7 +111,7 @@ class TestAgentStartupCreatesProjectMeta(unittest.TestCase):
         wk_mod.capture_environment_fingerprint = fake_capture
         try:
             with unittest.mock.patch("mini_agent.ui.renderer.print_info") as mock_print:
-                Agent(cfg=make_cfg(self.project_root))  # 第二次：fingerprint 已变化
+                self._agent = Agent(cfg=make_cfg(self.project_root))  # 第二次：fingerprint 已变化
                 self.assertTrue(mock_print.called)
                 call_text = " ".join(str(c) for c in mock_print.call_args_list)
                 self.assertIn("环境变化", call_text)

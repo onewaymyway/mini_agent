@@ -20,9 +20,8 @@ from __future__ import annotations
 import json
 import tempfile
 import unittest
-import unittest.mock
 from pathlib import Path
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -46,58 +45,67 @@ class TestAgentStartupRegistersGlobalProject(unittest.TestCase):
     def setUp(self):
         self._tmpdir = tempfile.TemporaryDirectory()
         self.project_root = Path(self._tmpdir.name)
-        self._home_tmpdir = tempfile.TemporaryDirectory()
-        self.home_dir = Path(self._home_tmpdir.name)
-        self._home_patch = unittest.mock.patch.object(Path, "home", return_value=self.home_dir)
-        self._home_patch.start()
 
         from mini_agent.storage.paths import AgentPaths
         self.paths = AgentPaths(self.project_root)
 
     def tearDown(self):
-        self._home_patch.stop()
         self._tmpdir.cleanup()
-        self._home_tmpdir.cleanup()
+
+    def _make_agent(self, project_root: Path, cfg=None):
+        """创建一个注入了 mock LLM client 的 Agent。"""
+        from mini_agent.agent import Agent
+        from mini_agent.llm.base import LLMClient, LLMResponse, LLMUsage
+        from unittest.mock import MagicMock
+
+        if cfg is None:
+            cfg = make_cfg(project_root)
+        mock_client = MagicMock(spec=LLMClient)
+        mock_client.chat.return_value = LLMResponse(text="OK", tool_calls=[], usage=LLMUsage(), stop_reason="end_turn")
+        mock_client.stream.return_value = iter([LLMResponse(text="OK", tool_calls=[], usage=LLMUsage(), stop_reason="end_turn")])
+        return Agent(cfg=cfg, llm_client=mock_client)
 
     def test_agent_construction_registers_project(self):
-        from mini_agent.agent import Agent
         from mini_agent.perception.global_knowledge import load_projects_index
 
         self.assertEqual(load_projects_index(self.paths).projects, [])
-        Agent(cfg=make_cfg(self.project_root))
+        agent = self._make_agent(self.project_root)
+        agent.close()
         index = load_projects_index(self.paths)
         self.assertEqual(len(index.projects), 1)
         self.assertEqual(index.projects[0].total_sessions, 1)
 
     def test_second_agent_increments_total_sessions(self):
-        from mini_agent.agent import Agent
         from mini_agent.perception.global_knowledge import load_projects_index
 
-        Agent(cfg=make_cfg(self.project_root))
-        Agent(cfg=make_cfg(self.project_root))
+        agent1 = self._make_agent(self.project_root)
+        agent1.close()
+        agent2 = self._make_agent(self.project_root)
+        agent2.close()
         index = load_projects_index(self.paths)
         self.assertEqual(len(index.projects), 1)
         self.assertEqual(index.projects[0].total_sessions, 2)
 
     def test_disabled_config_skips_registration(self):
-        from mini_agent.agent import Agent
         from mini_agent.config import GlobalKnowledgeConfig
         from mini_agent.perception.global_knowledge import load_projects_index
 
         cfg = make_cfg(self.project_root)
         cfg.global_knowledge = GlobalKnowledgeConfig(enabled=False)
-        Agent(cfg=cfg)
+        agent = self._make_agent(self.project_root, cfg=cfg)
+        agent.close()
         index = load_projects_index(self.paths)
         self.assertEqual(index.projects, [])
 
     def test_two_different_workdirs_create_two_entries(self):
-        from mini_agent.agent import Agent
         from mini_agent.perception.global_knowledge import load_projects_index
 
         other_root = Path(tempfile.mkdtemp())
         try:
-            Agent(cfg=make_cfg(self.project_root))
-            Agent(cfg=make_cfg(other_root))
+            agent1 = self._make_agent(self.project_root)
+            agent1.close()
+            agent2 = self._make_agent(other_root)
+            agent2.close()
             index = load_projects_index(self.paths)
             self.assertEqual(len(index.projects), 2)
         finally:
@@ -106,20 +114,18 @@ class TestAgentStartupRegistersGlobalProject(unittest.TestCase):
 
     def test_failure_does_not_block_agent_construction(self):
         """projects_index.json 所在路径不可写时，Agent 构造也不应抛异常。"""
-        from mini_agent.agent import Agent
-
         global_dir = self.paths.global_dir
         global_dir.mkdir(parents=True, exist_ok=True)
         (global_dir / "projects_index.json").mkdir()  # 用目录占住这个路径名
 
         try:
-            Agent(cfg=make_cfg(self.project_root))  # 不应抛异常
+            agent = self._make_agent(self.project_root)  # 不应抛异常
+            agent.close()
         except Exception as e:
             self.fail(f"Agent construction raised unexpectedly: {e}")
 
     def test_runs_dormant_refresh_on_startup(self):
         """启动时顺手跑一遍 dormant 检查：已注册的旧项目超过阈值天数应被标记。"""
-        from mini_agent.agent import Agent
         from mini_agent.perception.global_knowledge import (
             register_or_touch_project, load_projects_index, save_projects_index,
         )
@@ -132,7 +138,8 @@ class TestAgentStartupRegistersGlobalProject(unittest.TestCase):
             index.projects[0].last_active = _time.time() - 31 * 86400
             save_projects_index(self.paths, index)
 
-            Agent(cfg=make_cfg(self.project_root))  # 启动当前项目，顺手触发巡检
+            agent = self._make_agent(self.project_root)  # 启动当前项目，顺手触发巡检
+            agent.close()
 
             index2 = load_projects_index(self.paths)
             other_entry = next(p for p in index2.projects if p.path == str(other_root.resolve()))

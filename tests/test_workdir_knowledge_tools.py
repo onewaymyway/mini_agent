@@ -99,9 +99,12 @@ class TestProviders(unittest.TestCase):
             project_root = Path(tmp)
             cfg = make_cfg(project_root)
             agent = Agent(cfg=cfg)
-            self.assertEqual(_get_project_root(), project_root)
-            # session_id provider 是懒读取的 lambda，调用时读 agent._session.id
-            self.assertEqual(_get_session_id(), agent._session.id)
+            try:
+                self.assertEqual(_get_project_root(), project_root)
+                # session_id provider 是懒读取的 lambda，调用时读 agent._session.id
+                self.assertEqual(_get_session_id(), agent._session.id)
+            finally:
+                agent.close()
 
 
 # ════════════════════════════════════════════════════════════════════════════
@@ -120,6 +123,8 @@ class TestAddOpenThreadTool(unittest.TestCase):
     def tearDown(self):
         set_project_root_provider(None)
         set_session_id_provider(None)
+        if hasattr(self, 'agent') and self.agent is not None:
+            self.agent.close()
         self._tmpdir.cleanup()
 
     def test_no_provider_returns_error(self):
@@ -161,6 +166,8 @@ class TestUpdateWorkThreadTool(unittest.TestCase):
     def tearDown(self):
         set_project_root_provider(None)
         set_session_id_provider(None)
+        if hasattr(self, 'agent') and self.agent is not None:
+            self.agent.close()
         self._tmpdir.cleanup()
 
     def test_create_new_thread_requires_title(self):
@@ -219,6 +226,8 @@ class TestUpdateKnowledgeTool(unittest.TestCase):
     def tearDown(self):
         set_project_root_provider(None)
         set_session_id_provider(None)
+        if hasattr(self, 'agent') and self.agent is not None:
+            self.agent.close()
         self._tmpdir.cleanup()
 
     def test_creates_file_on_first_call(self):
@@ -336,6 +345,8 @@ class TestSearchKnowledgeTool(unittest.TestCase):
     def tearDown(self):
         set_project_root_provider(None)
         set_session_id_provider(None)
+        if hasattr(self, 'agent') and self.agent is not None:
+            self.agent.close()
         self._tmpdir.cleanup()
 
     def test_no_provider_returns_error(self):
@@ -390,9 +401,12 @@ class TestSearchKnowledgeTool(unittest.TestCase):
             empty_root = Path(td2)
             cfg2 = make_cfg(empty_root)
             agent2 = Agent(cfg=cfg2)
-            result = json.loads(search_knowledge("任何东西"))
-            self.assertTrue(result["ok"])
-            self.assertEqual(result["count"], 0)
+            try:
+                result = json.loads(search_knowledge("任何东西"))
+                self.assertTrue(result["ok"])
+                self.assertEqual(result["count"], 0)
+            finally:
+                agent2.close()
 
 
 # ════════════════════════════════════════════════════════════════════════════

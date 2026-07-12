@@ -56,3 +56,67 @@ def _reset_debug_logger_state():
     debug_logger.reset_global_state()
     yield
     debug_logger.reset_global_state()
+
+
+@pytest.fixture(autouse=True)
+def _close_all_resources():
+    """
+    测试结束后显式关闭测试期间创建的文件句柄资源，防止 Windows 下
+    TemporaryDirectory 清理时出现 PermissionError (WinError 32)。
+    
+    只关闭测试代码创建的 handlers（如 llm_debug_* loggers），
+    不触及 root logger 或 pytest 自身的 handlers。
+    """
+    import logging
+    
+    # 记录测试前已存在的 logger handlers（不关闭这些）
+    pre_existing_handlers = {}
+    for name in list(logging.Logger.manager.loggerDict.keys()):
+        logger = logging.getLogger(name)
+        pre_existing_handlers[name] = list(logger.handlers)
+    
+    # 记录 root logger 原有 handlers
+    root_logger = logging.getLogger()
+    pre_existing_root_handlers = list(root_logger.handlers)
+    
+    yield
+    
+    # 1. 只关闭测试期间新增的 handlers（llm_debug_* 等测试专用 loggers）
+    for name in list(logging.Logger.manager.loggerDict.keys()):
+        if not name.startswith('llm_debug_'):
+            continue
+        logger = logging.getLogger(name)
+        for handler in logger.handlers[:]:
+            # 只关闭不在 pre_existing 中的 handlers
+            if name in pre_existing_handlers and handler in pre_existing_handlers[name]:
+                continue
+            try:
+                handler.close()
+            except Exception:
+                pass
+            logger.removeHandler(handler)
+    
+    # 2. 关闭已知的全局资源管理器
+    try:
+        from mini_agent.tools.orchestration import _task_manager
+        if _task_manager is not None:
+            _task_manager.shutdown()
+    except Exception:
+        pass
+    
+    try:
+        from mini_agent.llm.debug_logger import _default_logger
+        if _default_logger is not None:
+            if hasattr(_default_logger, '_py_logger') and _default_logger._py_logger:
+                for h in _default_logger._py_logger.handlers[:]:
+                    try:
+                        h.close()
+                    except Exception:
+                        pass
+                    _default_logger._py_logger.removeHandler(h)
+    except Exception:
+        pass
+    
+    # 3. 仅做轻量 GC，不主动关闭文件对象（避免关闭已在使用的文件）
+    import gc
+    gc.collect()
