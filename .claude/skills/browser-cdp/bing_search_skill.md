@@ -4,6 +4,7 @@ skill: browser-cdp
 script: bing_search.py
 description: Bing 搜索自动化脚本，支持关键词搜索、结构化结果提取、详情页内容获取、结果保存为JSON/Markdown、截图标注。
 triggers: Bing搜索, bing search, 必应搜索, 自动搜索, 搜索自动化
+platforms: windows, macos, linux, pc
 ---
 
 # Bing 搜索自动化脚本 (`bing_search.py`)

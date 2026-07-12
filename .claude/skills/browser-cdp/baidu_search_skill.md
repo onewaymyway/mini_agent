@@ -4,6 +4,7 @@ skill: browser-cdp
 script: baidu_search.py
 description: 百度搜索自动化脚本，支持关键词搜索、结构化结果提取、详情页内容获取、结果保存为JSON/Markdown、截图标注。
 triggers: 百度搜索, baidu search, 自动搜索, 搜索自动化
+platforms: windows, macos, linux, pc
 ---
 
 # 百度搜索自动化脚本 (`baidu_search.py`)
