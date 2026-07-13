@@ -105,7 +105,15 @@ _RESULT_OPEN_TAG_RE = _re.compile(r"<tool_result>", _re.IGNORECASE)
 _RESULT_CLOSE_TAG_RE = _re.compile(r"</tool_result>", _re.IGNORECASE)
 _LEGACY_FENCE_RE = _re.compile(r"```tool_call\b", _re.IGNORECASE)
 
-# 任意\"疑似工具调用\"标签的统一检测——涵盖已知变体和拼写错误
+# 案例5 专用正则：开标签（含别名）后紧跟一个裸标识符独占一行，而不是 JSON。
+# 标准/合法格式里标签后第一行必然是 JSON 的 "{" 起始，不会匹配这个以字母/
+# 下划线开头的标识符正则，因此不会跟合法格式冲突。
+_BARE_NAME_AFTER_TAG_RE = _re.compile(
+    r"<tool_(?:use|call|invoke)\b[^>]*>[ \t]*\n?[ \t]*([A-Za-z_][A-Za-z0-9_.]*)[ \t]*\n",
+    _re.IGNORECASE,
+)
+
+# 任意"疑似工具调用"标签的统一检测——涵盖已知变体和拼写错误
 # 包括：<tool_use>、</tool_use>、<tool_call>、</tool_call>、<tool_invoke> 等
 _ANY_TOOL_OPEN_RE = _re.compile(r"<tool_(?:use|call|invoke)\b[^>]*>", _re.IGNORECASE)
 _ANY_TOOL_CLOSE_RE = _re.compile(r"</tool_(?:use|call|invoke)>", _re.IGNORECASE)
@@ -238,6 +246,36 @@ def _detect_tool_result_used_as_request(text: str) -> bool:
     return False
 
 
+def _detect_bare_name_after_tag(text: str) -> bool:
+    """
+    案例5（新增）：模型把函数名直接写在开标签后面独占一行，而不是放进 JSON
+    的 "name" 字段里，例如（部分模型如 Qwen 系习惯的
+    `<tool_call>func_name\\n{args}\\n</tool_call>` 方言写法，且常伴随开/闭
+    标签别名混用）：
+
+        <tool_call>create_plan
+        {"goal": "...", "tasks": [...]}
+        </tool_use>
+
+    parse_tool_calls 只认标准的 `<tool_use>{"name":..,"input":..}</tool_use>`
+    形状，遇到"名字写在标签外、标签内只是裸参数 JSON"这种写法会直接解析
+    失败。这种情况即使开闭标签都用同一个别名闭合（如 `<tool_call>...
+    </tool_call>`），也不会被 `orphan_close_tag`（要求闭合标签多于开标签）
+    或 `tag_role_confusion`（要求 tool_use/tool_result 标签名不一致）捉到，
+    是一个独立的漏检死角，需要单独一条更精确的诊断规则。
+
+    判断方式：开标签（含别名）后紧跟着一个独占一行的裸标识符（不是 JSON
+    的 "{" 起始，也不是 true/false/null 字面量），即认为模型把函数名写错了
+    位置。
+    """
+    for m in _BARE_NAME_AFTER_TAG_RE.finditer(text):
+        name_token = m.group(1)
+        if name_token.lower() in ("true", "false", "null"):
+            continue
+        return True
+    return False
+
+
 def _detect_orphan_close_tag(text: str) -> bool:
     """
     孤立闭合标签：出现了 </tool_use> 或 </tool_call> 等闭合标签，
@@ -303,6 +341,16 @@ _RULES: list[tuple[str, Callable[[str], bool], str]] = [
         "`<tool_use>`. `<tool_result>` is reserved for the system to send "
         "results back to you — when YOU want to call a tool, use "
         "`<tool_use>` instead.\n",
+    ),
+    (
+        "bare_name_after_tag",
+        _detect_bare_name_after_tag,
+        "It looks like the tool/function name was written as plain text right "
+        "after the opening tag (on its own line), with only the raw arguments "
+        "in the JSON body — e.g. `<tool_call>some_name\\n{...}\\n</tool_call>`. "
+        "That is not the expected format. The name must be a `\"name\"` field "
+        "INSIDE the JSON object, and the tag must be exactly `<tool_use>`, "
+        "with nothing else on its opening line.\n",
     ),
     (
         "unclosed_tool_use",
