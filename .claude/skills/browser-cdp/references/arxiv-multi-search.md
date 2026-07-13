@@ -171,3 +171,95 @@ return JSON.stringify(results);
 2. **使用 `--no-detail` 先获取索引**：确认论文列表后再获取详情，节省时间
 3. **批量获取详情**：脚本默认获取前 10 篇论文的详情，可根据需要调整 `--max-detail`
 4. **增量搜索**：如果之前已经搜索过，可以复用之前的结果，只获取新增论文
+
+## 实战经验总结（2026-07-13 自主进化 Agent 搜索）
+
+### 成功数据
+
+- **搜索主题**：自主进化 Agent（autonomous evolution agent）
+- **关键词数量**：5 个（"self-evolving agent", "autonomous agent evolution", "agent self-improvement", "LLM agent adaptation", "evolutionary agent"）
+- **最终结果**：49 篇去重论文（远超 30 篇目标）
+- **获取详情**：30 篇完整论文信息
+- **运行时间**：约 15 分钟
+
+### 数据质量优化
+
+本次搜索中发现并修复了以下数据质量问题：
+
+#### 1. 作者字段格式
+- **问题**：作者字段最初是字符串格式（"Author1, Author2, ..."）
+- **修复**：改为数组格式 `["Author1", "Author2", ...]`
+- **好处**：便于后续处理，可以精确控制显示数量
+
+#### 2. 日期字段清理
+- **问题**：日期字段包含无用文本（"▽ More"、"doi" 等）
+- **修复**：使用正则表达式清理
+  ```javascript
+  date = date.replace(/▽ More$/, '').replace(/^doi$/, '').trim();
+  ```
+
+#### 3. 摘要字段处理
+- **问题**：摘要可能包含开头的省略号（"…"）
+- **修复**：同时处理开头和结尾的省略号
+  ```javascript
+  abstract = abstract.replace(/▽ More$/, '').replace(/…$/, '').replace(/^…/, '').trim();
+  ```
+
+### 典型论文主题
+
+本次搜索找到的相关论文包括：
+
+1. **SAGEAgent**: Self-Evolving Agent for Cost-Aware Modality Acquisition
+2. **Tool-Making and Self-Evolving LLM Agents** in Low-Latency Systems
+3. **SpaCellAgent**: Self-Evolving LLM-Based Multi-Agent Framework
+4. **The Blind Curator**: How a Biased Judge Silently Disables Skill Retirement
+5. **MetaSkill-Evolve**: Recursive Self-Improvement of LLM Agents
+
+### 关键 DOM 选择器
+
+```javascript
+// 搜索结果页
+li.arxiv-result              — 每个论文结果容器
+p.title.is-5.mathjax         — 论文标题
+a[href*="/abs/"]             — 论文链接 (提取 arXiv ID)
+p.authors                    — 作者列表
+span.abstract-short          — 短摘要
+div.tags                     — 分类标签
+p.is-size-7                  — 提交日期
+
+// 论文详情页
+h1.title.mathjax             — 论文标题
+.authors a                   — 作者列表（每个作者一个 <a>）
+.abstract.mathjax            — 完整摘要
+.dateline                    — 提交日期
+.subjects                    — 主题分类
+a[href*="/pdf/"]             — PDF 下载链接
+link[rel="canonical"]        — 规范链接（提取 arXiv ID）
+```
+
+### 避坑指南
+
+1. **不要依赖 `python3` 命令**：本环境使用 `python`（Anaconda），`python3` 会弹出应用商店提示
+2. **必须先 `cd` 到 skill 目录**：所有脚本都依赖相对导入，必须在 `.claude/skills/browser-cdp/` 下运行
+3. **页面加载时间**：arXiv 服务器响应较慢，建议 `--wait-timeout 30` 或更高
+4. **JS 返回格式**：务必使用 `JSON.stringify()` 返回数据，Python 端再用 `json.loads()` 解析
+5. **去重策略**：使用 arXiv ID 作为唯一标识，保留首次出现的记录（通常是最新的）
+
+### 输出文件示例
+
+运行后生成的文件：
+- `arxiv_multi_search_autonomous_evolution_20260713_121047.json` (29,591 字节)
+- `arxiv_multi_search_autonomous_evolution_20260713_121047.md` (14,114 字节)
+
+JSON 数据结构：
+```json
+{
+  "title": "SAGEAgent: A Self-Evolving Agent...",
+  "url": "https://arxiv.org/abs/2607.09521",
+  "arxivId": "2607.09521",
+  "authors": ["Chongyu Qu", "Can Cui", ...],
+  "abstract": "...for a given patient along this ordered workflow...",
+  "tags": "cs.AI",
+  "date": "2026-07-13"
+}
+```

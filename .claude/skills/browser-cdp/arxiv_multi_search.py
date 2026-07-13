@@ -92,27 +92,29 @@ def search_arxiv_papers(port: int, tab_id: str, query: str, max_results: int = 5
     const url = linkEl ? linkEl.href : '';
     const arxivId = url ? url.split('/abs/')[1] : '';
     
-    // 作者
+    // 作者（返回数组格式，便于后续处理）
     const authorsEl = item.querySelector('p.authors');
-    let authors = '';
+    let authors = [];
     if (authorsEl) {
       const authorLinks = authorsEl.querySelectorAll('a');
-      authors = Array.from(authorLinks).map(a => a.innerText.trim()).join(', ');
+      authors = Array.from(authorLinks).map(a => a.innerText.trim()).filter(n => n);
     }
     
     // 摘要（短版本）
     const abstractEl = item.querySelector('span.abstract-short');
     let abstract = abstractEl ? abstractEl.innerText.trim() : '';
-    // 去除末尾的 "▽ More"
-    abstract = abstract.replace(/▽ More$/, '').replace(/…$/, '').trim();
+    // 去除末尾的 "▽ More" 和省略号，也处理开头的省略号
+    abstract = abstract.replace(/▽ More$/, '').replace(/…$/, '').replace(/^…/, '').trim();
     
     // 分类标签
     const tagsEl = item.querySelector('div.tags');
     const tags = tagsEl ? tagsEl.innerText.trim().replace(/\s+/g, ' ') : '';
     
-    // 提交日期
+    // 提交日期（清理无用文本）
     const dateEl = item.querySelector('p.is-size-7 a, .is-size-7');
-    const date = dateEl ? dateEl.innerText.trim() : '';
+    let date = dateEl ? dateEl.innerText.trim() : '';
+    // 去除 "▽ More"、"doi" 等无用后缀
+    date = date.replace(/▽ More$/, '').replace(/^doi$/, '').trim();
     
     if (title && url) {
       results.push({title, url, arxivId, authors, abstract, tags, date});
@@ -145,7 +147,15 @@ def search_arxiv_papers(port: int, tab_id: str, query: str, max_results: int = 5
     
     print(f"[搜索] 找到 {len(raw_results)} 个结果，取前 {len(filtered)} 个")
     for i, r in enumerate(filtered):
-        print(f"  [{i+1}] {r.get('arxivId', '')} — {r['title'][:60]}")
+        arxiv_id = r.get('arxivId', '')
+        title = r['title'][:60]
+        # 作者处理：可能是字符串或数组
+        authors = r.get('authors', [])
+        if isinstance(authors, list):
+            author_str = ', '.join(authors[:3]) + ('...' if len(authors) > 3 else '')
+        else:
+            author_str = str(authors)[:30]
+        print(f"  [{i+1}] {arxiv_id} — {title} ({author_str})")
     
     return filtered
 
@@ -362,9 +372,14 @@ def save_arxiv_results(results: List[Dict], details: List[Dict],
     for i, r in enumerate(results):
         aid = r.get('arxivId', '')
         title = r.get('title', '')[:40]
-        authors = r.get('authors', '')[:30]
+        # 作者处理：可能是字符串或数组
+        authors = r.get('authors', [])
+        if isinstance(authors, list):
+            author_str = ', '.join(authors[:2])[:30]
+        else:
+            author_str = str(authors)[:30]
         tags = r.get('tags', '')[:20]
-        lines.append(f"| {i+1} | {aid} | {title} | {authors} | {tags} |")
+        lines.append(f"| {i+1} | {aid} | {title} | {author_str} | {tags} |")
     
     with open(md_file, 'w', encoding='utf-8') as f:
         f.write('\n'.join(lines))
