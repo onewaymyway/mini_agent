@@ -27,7 +27,7 @@
 - `src/mini_agent/llm/` — LLM 抽象层
 - `src/mini_agent/orchestrator/` — 并发编排（含 `plan.py` 的 `plan_snapshot.json` 持久化、`task.py` 的 `manifest.json` 写入）
 - `src/mini_agent/hooks/` — hooks 机制（关键事件自动执行命令）
-- `src/mini_agent/perception/` — 感知与记忆子系统（含具身改进：`proprioception.py` 本体感知/`affordance_analyzer.py` 余裕感知/`self_model.py` AgentSelfModel 聚合/`intent_action_mapper.py` 工具调用意图分组）
+- `src/mini_agent/perception/` — 感知与记忆子系统（含具身改进：`proprioception.py` 本体感知/`affordance_analyzer.py` 余裕感知（`high_risk_zones` 落盘只读消费）/`self_model.py` AgentSelfModel 聚合（含负面回填域桥接）/`intent_action_mapper.py` 工具调用意图分组/`system_events.py` 跨子系统事件总线）
 - `src/mini_agent/ui/` — 终端交互（terminal.py, renderer.py, repl_input.py）
 - `src/mini_agent/api/` — HTTP API 服务
 - `src/mini_agent/history/` — 历史管理（压缩算法 + RawHistory 即时落盘 + 条目类型定义）
@@ -35,7 +35,7 @@
 - `src/mini_agent/prompts/` — Prompt 管理
 - `src/mini_agent/storage/` — 存储层（`paths.py` 含 `session_plan_snapshot`/`task_manifest`/`workdir_xxx`/`global_xxx` 等路径方法）
 - `src/mini_agent/env_info/` — 环境信息采集与注入（Provider 抽象基类 + 注册表 + 内置 Provider）
-- `src/mini_agent/evolution/` — 自我演化机制：`state_repo.py`（唯一写入入口，Stage 9 加 `initiator` T0→T1 上浮）/`validators.py`（分级校验）/`workspace.py`（worktree 隔离）/`eval_runner.py`（eval 反馈环）/`phase_g.py`（Stage 8 后台循环：剪枝/能力地图/Scope 晋升/节奏治理）/`autonomous_loop.py`（Stage 9 三档位 tick + ExplorationSandbox + SoftGoalDeriver 接入）/`resource_arbiter.py`（Stage 9 资源仲裁 + activity_digest.jsonl + 六分组 build_digest_summary）/`cron_scheduler.py`（Stage 9 定时任务：interval/cron 双格式，5 个内置系统 job）/`objective_executor.py`（Stage 9 Objective 多步持续执行引擎）/`soft_goal_deriver.py`（Stage 9 autonomous 档位软目标 derive：三路信号 + ExplorationSandbox 验证）/`memory_aging.py`（具身改进 C2，lesson 按 source + occurrence_count 计算专属时间衰减半衰期）/`self_maintenance.py`（具身改进 C4，SelfMaintenanceModule：stale_tools/stale_skills/conflicting_lessons 健康检查，SessionEnd 时间门控 + `sys:self_maintain` cron job）
+- `src/mini_agent/evolution/` — 自我演化机制：`state_repo.py`（唯一写入入口，Stage 9 加 `initiator` T0→T1 上浮）/`validators.py`（分级校验）/`workspace.py`（worktree 隔离）/`eval_runner.py`（eval 反馈环）/`phase_g.py`（Stage 8 后台循环：剪枝/能力地图/Scope 晋升/节奏治理）/`autonomous_loop.py`（Stage 9 三档位 tick + ExplorationSandbox + SoftGoalDeriver 接入）/`resource_arbiter.py`（Stage 9 资源仲裁 + activity_digest.jsonl + 六分组 build_digest_summary；五条仲裁规则，第五条 `_check_user_presence()` 为具身×自治方案二新增）/`cron_scheduler.py`（Stage 9 定时任务：interval/cron 双格式，5 个内置系统 job）/`objective_executor.py`（Stage 9 Objective 多步持续执行引擎）/`soft_goal_deriver.py`（Stage 9 autonomous 档位软目标 derive：三路信号 + ExplorationSandbox 验证；另接入高风险域降权/uncertainty域加权/负面回填域降权三个具身×自治信号）/`outcome_tracker.py`（效果回填：baseline/post 触发次数对比判定 verdict，`worsened` 时回写 `eval_failure` lesson + 发布 `evolution.outcome_negative` 事件，供 `AgentSelfModel.recent_negative_outcome_domains()` 桥接消费）/`memory_aging.py`（具身改进 C2，lesson 按 source + occurrence_count 计算专属时间衰减半衰期）/`self_maintenance.py`（具身改进 C4，SelfMaintenanceModule：stale_tools/stale_skills/conflicting_lessons 健康检查，SessionEnd 时间门控 + `sys:self_maintain` cron job）
 - `scripts/protected_paths.py` — 受保护路径清单（T3 治理红线，独立于 `src/mini_agent/` 包，自我演化相关安全机制使用）
 - `weixin_bot.py` — 微信端接入入口（与 `main.py` 同级，内嵌 `mini_agent`，每个 openid 独立 Agent 实例，权限审批走微信消息 + `threading.Event` 而非终端阻塞）；`Agent()` 首次构造必须经由 `loop.run_in_executor()` 丢进线程池，不能在 `on_text` 协程里同步调用，否则 `MCPManager.register_all()` 内部的 `run_coroutine_threadsafe(...).result()` 会在事件循环自身线程里死锁（详见 [微信接入指南](docs/weixin-bot-guide.md) 第 3 节）
 - `apps/weixin_plugin/weixin/` — 微信网关 SDK（`bot.py`/`types.py`/`login.py`），供 `weixin_bot.py` 使用
@@ -174,7 +174,11 @@ mini-agent user token u_a1b2c3d4                       # 重新生成 token
 - `observability.py` — 观察性（第 9 章，Stage 6）：`SessionTracer`（`traces.jsonl` 打点）、`classify_error()`（14 种 `error_category` 分类）、`detect_anomalies()`（k-σ 异常检测）
 - `lesson_review.py` — lesson 阈值扫描（Stage 3.1），`/evolve review` 的扫描逻辑
 - `goal_backlog.py` — 跨会话目标层级（Stage 9）：`GoalNode`（Goal/Objective 统一节点）、`GoalBacklog`（持久化 `.agent/goals.json`）；`has_actionable_work()` 和 `active_objectives()` 是 AutonomousLoop/ObjectiveExecutor 的核心调用接口
-- `exploration_sandbox.py` — 探索实验沙盒（Stage 9 Phase 3）：包装 Stage 2 `EvolutionWorkspace` 加预算门控，`ExplorationReport` 结果写入 `activity_digest.jsonl`；`_tick_autonomous()` 对 capability 类软目标候选调用此沙盒做轻量验证，成功才写 GoalBacklog + 触发 `skill_propose`
+- `exploration_sandbox.py` — 探索实验沙盒（Stage 9 Phase 3）：包装 Stage 2 `EvolutionWorkspace` 加预算门控，`ExplorationReport` 结果写入 `activity_digest.jsonl`；`_tick_autonomous()` 对 capability 类软目标候选调用此沙盒做轻量验证，成功才写 GoalBacklog + 触发 `skill_propose`；高风险域探索额外收紧 token 上限（`_risk_adjusted_token_limit()`，具身×自治方案一），超限抛 `ExplorationTokenLimitExceeded` 走既有异常收尾路径
+- `system_events.py` — 跨子系统事件总线：轻量 `publish()`/`poll_since()`，事件落盘 `events.jsonl`（滚动归档），按 `consumer_name` 独立游标（同一消费者名同时订阅多种 `event_type` 会共享游标推进，需用独立消费者名区分）；已接入 `frustration_spike`/`memory.sparse_region_detected`/`evolution.outcome_negative`/`goal.candidate_unvalidated`/`proprioception.uncertainty_sustained` 五类事件，详见 [跨子系统事件总线指南](docs/system-events-bus-guide.md)
+- `proprioception.py` — 本体感知模块 `ProprioceptionModule`：认知负荷/不确定性/风险感知/剩余预算/frustration 轮间快照（O(1) 纯计算，不调用 LLM）；`frustration` 落盘供 `ResourceArbiter` 消费，`uncertainty` 连续超阈值时限流发布 `proprioception.uncertainty_sustained` 事件（具身×自治方案三，`agent.py::_maybe_publish_uncertainty_signal()`）
+- `affordance_analyzer.py` — 余裕感知层 `AffordanceMap`：交叉分析 open_threads/capability_map/lesson memory 生成风险/机会提示；`high_risk_zones` 落盘到 `<workdir>/affordance_snapshot.json`（`persist_affordance_map()`/`load_recent_high_risk_zones()`，60 分钟过期），供 `SoftGoalDeriver`/`ExplorationSandbox` 只读消费做候选降权/token 上限收紧（具身×自治方案一）；`load_behavior_context()`（原私有 `_load_behavior_context`，已提升为公共函数）供 `AffordanceAnalyzer` 与 `ResourceArbiter._check_user_presence()`（具身×自治方案二）共用
+- `self_model.py` — `AgentSelfModel` 聚合视图：澄清与 UserProfile/RoleProfileManager/AgentProfile 三个既有 profile 概念的语义边界；新增 `recent_negative_outcome_domains()` 桥接 `outcome_tracker.get_revert_candidates()`，供 `SoftGoalDeriver.derive_candidates()` 对负面回填域候选强降权（具身×自治方案四，单场景验证，暂不做通用聚合接入）
 - `classification.py` — 图书馆式分类树（书架结构）：`ClassificationTree` 冷启动只有根节点，运行时自动生长（规则关键词匹配 + LLM 兜底只能入座已有节点，新节点只在 Phase G 批量聚类时诞生）；`merge_similar_nodes()` 按 Jaccard 相似度收敛重复书架，`feedback_score` 累积检索反馈调整打分权重
 - `entity_index.py` — 实体目录（图书馆"著者目录"对应物）：`EntityStore` 管理模块/bug模式/概念等实体卡片，`link_entry()` 挂载记忆、`rewrite_summary()` 攒够证据才批量重写摘要（含冲突检测，矛盾时标注 `⚠矛盾已更新：` 并归档 `superseded_notes`）、`consolidate_entities()` 做去噪+近重复合并
 - `catalog.py` — 分类目录（分类号 → entry_id 指针索引，可从 `memory.jsonl` 重建）+ 知识生命周期编年目录（`knowledge_timeline.jsonl` + 侧车索引 `knowledge_timeline_index.json` 支持按实体/分类过滤查询）
@@ -633,6 +637,7 @@ mini-agent user token u_a1b2c3d4                       # 重新生成 token
 - [Phase G 后台循环指南（Stage 8）](docs/self-evolution-phase-g-guide.md) — 剪枝候选 / 能力地图 / Scope 晋升 / 演化节奏治理
 - [图书馆式知识索引指南](docs/library-index-guide.md) — 分类树自动生长/合并 + 实体目录（冲突检测/去噪/近重复合并）+ 两步检索 + 检索反馈 + 纠正闭环 + 时间线查询 + 多用户书架隔离
 - [Stage 9 自主运行时指南](docs/self-evolution-stage9-guide.md) — 常驻守护进程 / Goal Backlog / 三档位 AutonomousLoop / 资源仲裁
+- [跨子系统事件总线指南](docs/system-events-bus-guide.md) — `publish()`/`poll_since()` 轻量事件总线，已接入 frustration/记忆稀疏/效果回填负面判定/软目标候选复核/uncertainty 持续五类事件
 - [具身智能改进指南](docs/embodied-agent-guide.md) — 本体感知 / 余裕感知 / 工具透明性 / AgentSelfModel / 时间加权记忆 / 认知锚点 / 自维护模块（A/B/C 三阶段共 12 项）
 - [微信接入指南](docs/weixin-bot-guide.md) — `weixin_bot.py` 每用户 Agent 隔离 / 远程权限审批 / 同步-异步桥接；含 `_get_or_create` 事件循环死锁问题的根因分析与修复记录
 - [Goal 模式指南](docs/goal-mode-guide.md) — 设定目标后自动多轮尝试直至达成，`/goal` 命令，验收标准协商 / GoalJudge 判定 / 异常中断恢复
@@ -644,5 +649,6 @@ mini-agent user token u_a1b2c3d4                       # 重新生成 token
 - Stage 0-8 均已完成（详见 `next_doc/self_evolution_implementation_plan.md` 与 `next_doc/self_evolution_stage4plus_plan.md` 各 Stage 完成记录）
 - Stage 9（Phase H：自主运行时）是决策点而非常规排期 Stage，启动前置清单见 `next_doc/self_evolution_stage4plus_plan.md` 第 9.0 节；细化方案见 `next_doc/self_evolution_stage9_plan.md`
 - 具身智能改进（`next_doc/embodied_agent_improvement_plan_v3.md`）A/B/C 三阶段共 12 项均已完成，详见 [具身智能改进指南](docs/embodied-agent-guide.md)；已知遗留缺口：AffordanceMap（B4）与认知锚点（C3）仅在部分路径生效（分别是"仅多用户 daemon"和"本地 CLI，daemon connected REPL 未接入"），详见改进计划文档对应小节
+- 具身智能 × 自我演化四方案联动（`next_doc/embodied_autonomy_integration_design.md`）已全部完成：AffordanceMap 高风险域接入自主探索门控（方案一）、BehaviorContext 接入自主任务调度门控（方案二）、ProprioceptionModule.uncertainty 接入事件总线（方案三）、AgentSelfModel 接入 SoftGoalDeriver 候选打分单场景验证（方案四），详见 [具身智能改进指南](docs/embodied-agent-guide.md) 5.1/8/8.1 节、[Stage 9 自主运行时指南](docs/self-evolution-stage9-guide.md) 第 7/8 节、[跨子系统事件总线指南](docs/system-events-bus-guide.md) 6.6 节
 - 图书馆式知识索引（分类树自动生长/合并 + 实体目录 + 两步检索 + Phase G 知识巩固）已完成，详见 [图书馆式知识索引指南](docs/library-index-guide.md)；正向检索反馈（"确实有用"）目前只有 API 没有自动触发点，等后续有更明确的信号源（如某 skill 被验证生效）再接入
 - Goal 模式（`src/mini_agent/goal_mode/`）已完成粗粒度版本：验收标准协商 + GoalJudge 判定 + compact 整合 + 安全阀 + 异常中断恢复，详见 [Goal 模式指南](docs/goal-mode-guide.md)；细粒度 executor（`_agentic_loop` 内部工具调用后即可插入 Judge 判断）尚未实现，`GoalStepExecutor` 接口已预留扩展点
