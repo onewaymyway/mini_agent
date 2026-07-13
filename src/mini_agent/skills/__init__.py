@@ -208,10 +208,28 @@ class SkillLoader:
         return True
 
     def auto_activate(self, query: str) -> list[str]:
-        """Activate any skills whose trigger words match the query. Return newly activated names."""
+        """
+        Activate any skills whose trigger words match the query. Return newly activated names.
+
+        [渐进式加载] 资源级 triggers 也参与第一轮激活：未激活 skill 名下某个
+        resource 的 triggers 命中时，同样视为该 skill 命中，先激活父 skill——
+        否则子资源的关键词永远等不到 auto_activate_resources() 那一轮扫描
+        （那一轮只扫描已激活 skill），会出现"资源关键词写了但从不生效"的死角。
+        资源级命中不改变 SkillResource 自身的加载状态，仍由后续
+        auto_activate_resources() 按同一条 query 正常加载该资源。
+        """
         newly = []
+        q = (query or "").lower()
         for name, skill in self._all.items():
-            if name not in self._active and skill.matches_query(query):
+            if name in self._active:
+                continue
+            hit = skill.matches_query(query)
+            if not hit:
+                hit = any(
+                    r.triggers and any(t in q for t in r.triggers)
+                    for r in skill.resources
+                )
+            if hit:
                 self._active.append(name)
                 self.detector.update_fingerprint(skill)
                 newly.append(name)
