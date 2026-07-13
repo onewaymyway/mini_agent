@@ -273,6 +273,9 @@ def _handle_slash(cmd: str, agent: Agent, skill_loader: SkillLoader) -> None:
     elif name == "compact":
         _compact_history(agent)
 
+    elif name in ("compact_continue", "compact-continue", "compactcontinue"):
+        _compact_and_continue(agent)
+
     elif name == "goal":
         handle_goal_cmd(parts[1:], agent)
 
@@ -537,6 +540,59 @@ def _compact_history(agent: Agent) -> None:
         agent.compact_with_skills()
     except Exception as e:
         R.print_error(f"Compact failed: {e}")
+
+
+def _compact_and_continue(agent: Agent) -> None:
+    """/compact_continue — 压缩历史后自动发送"继续"，无需人工等待压缩结束再手动续接。"""
+    if not agent.history:
+        R.print_info(pm.fragment("cli_messages", "COMPACT_EMPTY"))
+        return
+
+    R.print_info(pm.fragment("cli_messages", "COMPACT_CONTINUE_START"))
+    try:
+        agent.compact_with_skills()
+    except Exception as e:
+        R.print_error(f"Compact failed: {e}")
+        R.print_error(pm.fragment("cli_messages", "COMPACT_CONTINUE_FAILED"))
+        return
+
+    from mini_agent.ui.terminal import term as _term
+    from mini_agent.ui.raw_key_listener import get_listener as _get_key_listener
+
+    user_input = "继续"
+    try:
+        _key_listener = _get_key_listener()
+        _key_listener.start()
+        try:
+            while user_input:
+                # 显示自动续接的输入，视觉上与真实用户输入保持一致
+                R.console.print(
+                    f"\n[bold green]You[/bold green][cyan] \u276f [/cyan]"
+                    f"[dim]{user_input}[/dim]"
+                )
+                agent.run_turn(user_input)
+                # 若 turn 内部（例如 TurnEnd hook）又产生了替代输入，继续续接；
+                # 否则结束，交还给主 REPL 循环等待真人输入。
+                _injected = getattr(agent, "_turn_end_user_input", None)
+                agent._turn_end_user_input = None
+                user_input = _injected or ""
+        finally:
+            _key_listener.stop()
+    except KeyboardInterrupt:
+        _term.force_end_stream()
+        _cancel_running_tasks()
+        R.print_interrupt()
+        try:
+            agent._save_cognitive_anchor()
+        except Exception as _mini_agent_exc:
+            from mini_agent.errors import log_exception
+            log_exception(_mini_agent_exc, where='mini_agent.cli.repl')
+    except Exception as e:
+        _term.force_end_stream()
+        R.print_error(f"API error (compact_continue): {e}")
+        if agent.cfg.verbose:
+            import traceback
+            traceback.print_exc()
 
 
 def _list_prompts() -> None:

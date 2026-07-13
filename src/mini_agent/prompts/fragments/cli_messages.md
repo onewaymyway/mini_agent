@@ -18,6 +18,8 @@ INTERRUPT_MSG: ⚡ Interrupted (Ctrl-C). Type 'exit' to quit.
 COMPACT_START: Compacting history… (sending summary request)
 COMPACT_SUCCESS: History compacted.
 COMPACT_EMPTY: History is empty.
+COMPACT_CONTINUE_START: Compacting history… will auto-continue with '继续' when done.
+COMPACT_CONTINUE_FAILED: Compact failed, auto-continue aborted.
 HISTORY_CLEARED: Conversation history cleared.
 VERBOSE_ON: Verbose mode: ON
 VERBOSE_OFF: Verbose mode: OFF

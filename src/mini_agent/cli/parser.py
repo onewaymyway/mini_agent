@@ -68,6 +68,7 @@ def build_parser() -> argparse.ArgumentParser:
               /reasoning         Toggle showing the model's reasoning/thinking process (default: on)
               /model <name>      Switch model mid-session
               /compact           Compress history into a summary
+              /compact_continue  Compress history, then auto-send '继续' to resume the task without waiting
               /goal <text>       Set a goal; agent negotiates acceptance criteria then runs until done
               /goal from-history Auto-derive a goal from the current session's conversation history
               /goal resume [sid] Resume an interrupted goal run (auto-picks latest if sid omitted)
