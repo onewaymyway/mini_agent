@@ -157,44 +157,48 @@ def count_directory(directory: Path, exclude_dirs: set = None) -> dict:
     }
 
 
-def count_docs(directory: Path, exclude_dirs: set = None) -> dict:
-    """递归统计目录下的所有 .md 文档，统计文件数、行数、字数。"""
-    if exclude_dirs is None:
-        exclude_dirs = {
-            '__pycache__', '.git', 'venv', '.venv', 'node_modules',
-            '.pytest_cache', '.mypy_cache', '.eggs', 'dist', 'build',
-            '.agent', 'docs', 'test_cases', 'test_result', 'release_logs',
-            'analyse_data', 'next_doc', 'repair', 'myplugins', 'mcp_servers',
-            'apps', 'temp',
-        }
-
+def count_docs(directory: Path) -> dict:
+    """统计 docs/、next_doc/ 目录和根目录下的 .md 文档，统计文件数、行数、字数。"""
     total_lines = 0
     total_chars = 0
     file_count = 0
     details = []
 
-    for root, dirs, files in os.walk(directory):
-        dirs[:] = [d for d in dirs if d not in exclude_dirs]
+    # 只统计这三个位置的 .md 文件
+    target_dirs = [
+        directory / 'docs',
+        directory / 'next_doc',
+        directory,  # 根目录
+    ]
 
-        for filename in files:
-            if filename.endswith('.md'):
-                filepath = Path(root) / filename
-                try:
-                    with open(filepath, 'r', encoding='utf-8', errors='ignore') as f:
-                        content = f.read()
-                except Exception:
-                    continue
+    for target_dir in target_dirs:
+        if not target_dir.exists() or not target_dir.is_dir():
+            continue
 
-                lines = content.count('\n') + (1 if content and not content.endswith('\n') else 0)
-                chars = len(content)
-                if chars == 0:
-                    continue
+        for root, dirs, files in os.walk(target_dir):
+            # 根目录只统计根目录下的 .md，不递归子目录
+            if target_dir == directory and root != str(directory):
+                continue
 
-                rel_path = str(filepath.relative_to(directory))
-                file_count += 1
-                total_lines += lines
-                total_chars += chars
-                details.append((rel_path, lines, chars))
+            for filename in files:
+                if filename.endswith('.md'):
+                    filepath = Path(root) / filename
+                    try:
+                        with open(filepath, 'r', encoding='utf-8', errors='ignore') as f:
+                            content = f.read()
+                    except Exception:
+                        continue
+
+                    lines = content.count('\n') + (1 if content and not content.endswith('\n') else 0)
+                    chars = len(content)
+                    if chars == 0:
+                        continue
+
+                    rel_path = str(filepath.relative_to(directory))
+                    file_count += 1
+                    total_lines += lines
+                    total_chars += chars
+                    details.append((rel_path, lines, chars))
 
     return {
         'file_count': file_count,
