@@ -12,7 +12,7 @@ evolution/memory_aging.py — 时间加权记忆激活（具身改进 v3 C2）
 （`occurrence_count` 高）的经验也应该比一次性记录更"抗遗忘"。
 
 实现取舍（直接嵌入检索路径，而非批量预计算）：
-  - v3 文档原计划是"Phase G tick 时批量更新所有条目的 temporal_weight 缓存
+  - v3 文档原计划是"巩固循环 tick 时批量更新所有条目的 temporal_weight 缓存
     字段"。但核对 `memory_store.py::_score_all()` 后发现，时间衰减本来就是
     在每次 `search()` 调用时按 `entry.age_days` 实时计算的（`age_days` 是
     一个 property，不是缓存字段）——没有"缓存字段过期"这个问题，批量预计算

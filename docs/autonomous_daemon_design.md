@@ -24,14 +24,14 @@
 
 ## 关键设计决策
 
-### Phase G → CronScheduler
+### 巩固循环 → CronScheduler
 
-原 `_tick_passive()` 直接调用 `should_run_phase_g() / run_phase_g()`。迁移后 Phase G 成为 cron job `sys:phase_g`（`interval:21600`）。好处：
+原 `_tick_passive()` 直接调用 `should_run_consolidation() / run_consolidation()`。迁移后 巩固循环 成为 cron job `sys:consolidation`（`interval:21600`）。好处：
 
-- 用户可通过 `/cron disable sys:phase_g` 临时关闭，不需要改代码
-- 用户可通过 `/cron run sys:phase_g` 手动触发，不需要重启 daemon
+- 用户可通过 `/cron disable sys:consolidation` 临时关闭，不需要改代码
+- 用户可通过 `/cron run sys:consolidation` 手动触发，不需要重启 daemon
 - 同一套机制同时服务系统维护任务和用户自定义任务
-- Phase G 逻辑本身不变，只是触发方式变了
+- 巩固循环 逻辑本身不变，只是触发方式变了
 
 ### ObjectiveExecutor 的 `_turn_to_exec` 索引
 
@@ -59,7 +59,7 @@ urgency 用于同 priority 档位内的排序（lesson 的 urgency 正比于触�
 
 ### CronScheduler 降级兼容
 
-若 `CronScheduler` 注入失败（如 paths 不可用），`_tick_passive()` 回退到直接调用 `should_run_phase_g()`，保持向后兼容。`ObjectiveExecutor` 未注入时，`_tick_maintenance()` 回退到旧的单次 Task 提交逻辑。
+若 `CronScheduler` 注入失败（如 paths 不可用），`_tick_passive()` 回退到直接调用 `should_run_consolidation()`，保持向后兼容。`ObjectiveExecutor` 未注入时，`_tick_maintenance()` 回退到旧的单次 Task 提交逻辑。
 
 ---
 
@@ -71,7 +71,7 @@ urgency 用于同 priority 档位内的排序（lesson 的 urgency 正比于触�
 | `cron_jobs.json` | `.agent/` | CronJob 列表（含内置系统 job 的 `last_run_at` 和 `next_run_at`） |
 | `objective_executions.json` | `.agent/` | 活跃 + 最近完成的 ObjectiveExecution 状态 |
 | `activity_digest.jsonl` | `.agent/` | 自主行为日志（cron_run、objective_started、soft_goal_created 等） |
-| `phase_g_rhythm.json` | `.agent/` | Phase G 节奏治理 + `last_soft_goal_derive_at` |
+| `consolidation_rhythm.json` | `.agent/` | 巩固循环 节奏治理 + `last_soft_goal_derive_at` |
 | `soft_goal_rejected.json` | `.agent/` | 用户 reject 的软目标 dedupe_key + 时间戳（30 天有效） |
 
 ---
@@ -120,7 +120,7 @@ urgency 用于同 priority 档位内的排序（lesson 的 urgency 正比于触�
 daemon tick（autonomous 档位）
   │
   ├─ CronScheduler.tick()
-  │    └─ sys:phase_g 到期 → enqueue("执行 Phase G 扫描", initiator="cron")
+  │    └─ sys:consolidation 到期 → enqueue("执行 巩固循环 扫描", initiator="cron")
   │         └─ AgentRunner 执行 → on_turn_done() （不走 ObjectiveExecutor）
   │
   ├─ ObjectiveExecutor.resume()
@@ -144,7 +144,7 @@ daemon tick（autonomous 档位）
 
 用户 /digest:
   【Objective 进展】  ✅ 完善测试覆盖（4 步完成，用时 23m）[2h前]
-  【Cron 执行记录】   ✓ Phase G 扫描 — 剪枝 2 技能，+3 能力条目 [6h前]
+  【Cron 执行记录】   ✓ 巩固循环 扫描 — 剪枝 2 技能，+3 能力条目 [6h前]
   【探索实验结果】    ✅ 改善 _call_llm 可靠性 → 已提案技能：improve_call_llm [1h前]
   【💡 Agent 建议】  💡 "系统性解决：连续工具调用失败" — 来自 lesson（触发 7 次）[30m前]
                         /goals accept goal_abc123  |  /goals reject goal_abc123

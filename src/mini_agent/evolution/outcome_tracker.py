@@ -15,7 +15,7 @@ turns/token）。这些指标衡量的是"这次自我修改有没有引入明�
     commit 落地之后的、异步的"效果回填"，两者互补不冲突。
   - 只产生建议，不自动执行 revert——与 SoftGoalDeriver 推导出的 Goal 需要
     人工 accept/reject 是同一套设计哲学：自动化到"提出建议"为止。
-  - 失败静默降级：tick() 内部任何异常都不应阻断调用方（Phase G）主流程。
+  - 失败静默降级：tick() 内部任何异常都不应阻断调用方（巩固循环）主流程。
   - 复用现有统计能力：触发次数统计直接调用 perception/lesson_review.py
     的 LessonGroup 聚合逻辑，不重新实现一套计数器。
 """
@@ -315,12 +315,12 @@ def mark_reverted(paths, commit_id: str) -> None:
 
 def tick(paths, memory_backend) -> list[TrackedCommit]:
     """
-    由 Phase G 周期性维护调用（evolution/phase_g.py::run_phase_g()）。
+    由 巩固循环 周期性维护调用（evolution/consolidation.py::run_consolidation()）。
     检查所有 status=="observing" 且已到 observation_deadline 的记录，
     重新查询该 lesson_group 当前触发计数，计算 verdict。
 
-    返回本次 tick 新解决（resolved）的记录列表，供调用方写进 PhaseGReport /
-    /digest 展示。失败静默降级：异常不阻断 Phase G 主流程，返回空列表。
+    返回本次 tick 新解决（resolved）的记录列表，供调用方写进 ConsolidationReport /
+    /digest 展示。失败静默降级：异常不阻断 巩固循环 主流程，返回空列表。
     """
     resolved: list[TrackedCommit] = []
     try:

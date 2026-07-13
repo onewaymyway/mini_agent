@@ -132,7 +132,7 @@ inputs:
 ### 4.1 实现取舍：关键词 Jaccard 相似度分组
 
 `MemoryEntry` 目前没有跨条目的去重/聚类机制（设计文档 6.4 节，明确留给后续
-Phase G 的后台循环）；每条 lesson 各自独立存储，`occurrence_count` 字段语义
+巩固循环 的后台循环）；每条 lesson 各自独立存储，`occurrence_count` 字段语义
 是"同一 session 内连续失败次数"，不是"跨 session 重复出现次数"。
 
 Stage 3.1 用一个轻量级、非语义的分组手段打通闭环：提取 trigger 文本的关键词

@@ -9,7 +9,7 @@ evolution/soft_goal_deriver.py — 软目标 derive（autonomous 档位专属）
   5. 直接写入 GoalBacklog（source="agent_derived"，priority 比用户 Goal 低一级）
 
 节奏治理：
-  - 通过 phase_g_rhythm.json 记录上次 derive 时间，最少间隔 DERIVE_INTERVAL_SECONDS
+  - 通过 consolidation_rhythm.json 记录上次 derive 时间，最少间隔 DERIVE_INTERVAL_SECONDS
   - 若 GoalBacklog 中 agent_derived 类 active Goal 已有 MAX_PENDING_DERIVED 个，跳过
 
 用户体验：
@@ -80,7 +80,7 @@ class SoftGoalDeriver:
     def __init__(self, paths: "AgentPaths", cfg: "AppConfig") -> None:
         self._paths = paths
         self._cfg = cfg
-        self._rhythm_path = paths.workdir_dir / "phase_g_rhythm.json"
+        self._rhythm_path = paths.workdir_dir / "consolidation_rhythm.json"
         self._rejected_path = paths.workdir_dir / "soft_goal_rejected.json"
 
     # ── 节奏控制 ──────────────────────────────────────────────────────────────
@@ -93,11 +93,31 @@ class SoftGoalDeriver:
         return True
 
     def _last_derive_at(self) -> float:
+        self._migrate_legacy_rhythm_file()
         try:
             data = json.loads(self._rhythm_path.read_text(encoding="utf-8"))
             return float(data.get("last_soft_goal_derive_at", 0.0))
         except Exception:
             return 0.0
+
+    def _migrate_legacy_rhythm_file(self) -> None:
+        """
+        重命名兼容：本文件与 consolidation.py 共享同一份节奏状态文件，该文件在
+        phase_g.py 更名为 consolidation.py 之前叫 phase_g_rhythm.json。此处补一份
+        与 consolidation._migrate_legacy_rhythm_file() 相同的一次性迁移，避免两个
+        调用方（本模块可能先于 consolidation.py 被调用）步调不一致。
+        """
+        if self._rhythm_path.exists():
+            return
+        legacy_path = self._paths.workdir_dir / "phase_g_rhythm.json"
+        if not legacy_path.exists():
+            return
+        try:
+            self._rhythm_path.write_text(
+                legacy_path.read_text(encoding="utf-8"), encoding="utf-8"
+            )
+        except Exception:
+            pass
 
     def _record_derive(self) -> None:
         try:
@@ -380,7 +400,7 @@ class SoftGoalDeriver:
         """
         candidates = []
         try:
-            from mini_agent.evolution.phase_g import load_capability_map
+            from mini_agent.evolution.consolidation import load_capability_map
             entries = load_capability_map(self._paths)
         except Exception:
             return candidates
@@ -562,12 +582,12 @@ class SoftGoalDeriver:
         不可达死代码），导致 self._from_capability_map() 在 derive_candidates()
         里调用时必然抛 AttributeError（被 autonomous_loop.py 的外层
         except Exception 兜住、写入 error.jsonl，不会崩溃但也从未真正
-        产出过候选）。同时修复了它依赖的 phase_g.load_capability_map
-        此前根本不存在的问题，见 phase_g.py 新增的 load_capability_map()。
+        产出过候选）。同时修复了它依赖的 consolidation.load_capability_map
+        此前根本不存在的问题，见 consolidation.py 新增的 load_capability_map()。
         """
         candidates = []
         try:
-            from mini_agent.evolution.phase_g import load_capability_map
+            from mini_agent.evolution.consolidation import load_capability_map
             entries = load_capability_map(self._paths)
             high_risk_zones = self._recent_high_risk_zones()  # [方案一新增]
             risk_gating_enabled, risk_downweight_factor = self._risk_gating_config()

@@ -43,7 +43,7 @@ if TYPE_CHECKING:
 
 
 # 高风险关键词：lesson body/trigger 中出现这些词时，将对应 domain/动作
-# 标记为"高风险区域"。规则式判断，不依赖 LLM——与 phase_g.py::_infer_domain
+# 标记为"高风险区域"。规则式判断，不依赖 LLM——与 consolidation.py::_infer_domain
 # 同样的设计取舍：可解释、零额外调用成本，覆盖最常见场景即可。
 _RISK_KEYWORDS = (
     "失败", "出错", "崩溃", "丢失", "误删", "回退", "revert",
@@ -132,9 +132,9 @@ class AffordanceAnalyzer:
                 （调用方负责加载，本方法只做状态为 "open" 的过滤）。
             lesson_entries: entry_type == "lesson" 的 MemoryEntry 列表
                 （调用方负责从 MemoryStore.all_entries() 过滤出来）。
-            capability_entries: phase_g.CapabilityMapEntry 列表（或具备
+            capability_entries: consolidation.CapabilityMapEntry 列表（或具备
                 .domain / .confidence 属性的等价对象）——可选，因为不是
-                每个项目都已经跑过 Phase G 扫描积累出能力地图。
+                每个项目都已经跑过 巩固循环 扫描积累出能力地图。
             behavior_context: [新增] perception/behavior/ 用户行为感知层的
                 只读摘要（可选，默认 None）。为 None 时该输入源视为缺失，
                 不影响其余三路分析结果——调用方（inject_affordance_map）
@@ -200,7 +200,7 @@ class AffordanceAnalyzer:
     @staticmethod
     def _find_unexplored(capability_entries: list) -> list[str]:
         """capability_map 中置信度低于阈值的领域——"能力盲区"。
-        没有 capability_map（尚未跑过 Phase G 扫描）时返回空列表，
+        没有 capability_map（尚未跑过 巩固循环 扫描）时返回空列表，
         这不是错误，只是"暂时没有这层信息"。"""
         unexplored = [
             getattr(e, "domain", "")
@@ -472,7 +472,7 @@ def inject_affordance_map(agent: "Agent", cfg: "AppConfig", *, log=None) -> None
             lesson_entries = [e for e in all_entries if getattr(e, "entry_type", "") == "lesson"]
             if getattr(affordance_cfg, "use_capability_map", True):
                 try:
-                    from mini_agent.evolution.phase_g import build_capability_map
+                    from mini_agent.evolution.consolidation import build_capability_map
                     capability_entries = build_capability_map(paths, None)
                 except Exception:
                     capability_entries = []

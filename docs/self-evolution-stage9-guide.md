@@ -182,9 +182,9 @@ tick()
 
 ### 5.1 设计动机
 
-原 `_tick_passive()` 直接调用 `should_run_phase_g() / run_phase_g()`，每个周期性任务都硬编码在 tick 里。`CronScheduler` 统一所有周期性任务：
+原 `_tick_passive()` 直接调用 `should_run_consolidation() / run_consolidation()`，每个周期性任务都硬编码在 tick 里。`CronScheduler` 统一所有周期性任务：
 
-- Phase G 等系统维护任务注册为 `sys:` 前缀 job，逻辑本身不变
+- 巩固循环 等系统维护任务注册为 `sys:` 前缀 job，逻辑本身不变
 - 用户可以 disable 系统 job、调整触发频率，也可以添加自定义 job
 - 触发记录写入 `activity_digest.jsonl`，`/digest` 可见
 
@@ -203,7 +203,7 @@ cron:<分 时 日 月 周>   5 字段 cron，如 cron:0 */6 * * *（每 6 小时
 
 | id | 默认间隔 | 用途 |
 |----|---------|------|
-| `sys:phase_g` | 6h | Phase G 扫描（技能剪枝 + 能力地图） |
+| `sys:consolidation` | 6h | 巩固循环 扫描（技能剪枝 + 能力地图） |
 | `sys:workdir_sync` | 1h | WorkdirKnowledge 整合（文件变化同步） |
 | `sys:self_eval` | 24h | 能力自评（capability_map 置信度更新） |
 | `sys:goal_review` | 12h | Goal 清理（标记已完成/无进展的目标） |
@@ -458,7 +458,7 @@ frustration_threshold`（默认 0.5）时，本次 tick 跳过自主任务提交
 记录所有自主行为：
 
 ```jsonl
-{"at": 1720000000.0, "type": "cron_run", "job_id": "sys:phase_g", "summary": "..."}
+{"at": 1720000000.0, "type": "cron_run", "job_id": "sys:consolidation", "summary": "..."}
 {"at": 1720003600.0, "type": "objective_started", "objective_id": "obj_xxx", "title": "..."}
 {"at": 1720007200.0, "type": "objective_completed", "execution_id": "exec_yyy", "steps": 4}
 {"at": 1720010800.0, "type": "soft_goal_created", "goal_id": "goal_zzz", "title": "..."}
@@ -547,4 +547,4 @@ autonomous（maintenance + 软目标 derive）
 
 ---
 
-*参见：[HTTP API 指南](http-api-guide.md) · [命令与工具参考](commands-and-tools-reference.md) · [Phase G 后台循环指南](self-evolution-phase-g-guide.md) · [Workdir 知识层指南](self-evolution-stage4-5-guide.md)*
+*参见：[HTTP API 指南](http-api-guide.md) · [命令与工具参考](commands-and-tools-reference.md) · [巩固循环 后台循环指南](self-evolution-consolidation-guide.md) · [Workdir 知识层指南](self-evolution-stage4-5-guide.md)*

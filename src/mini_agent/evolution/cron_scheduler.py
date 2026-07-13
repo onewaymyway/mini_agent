@@ -10,7 +10,7 @@ evolution/cron_scheduler.py — Daemon 模式定时任务调度器
 内置 job（首次初始化时写入 cron_jobs.json，用户可修改 enabled/schedule，
 但 sys: 前缀 job 不可删除，只可 disable）：
 
-  sys:phase_g        — Phase G 扫描（技能剪枝/能力地图）  interval:21600
+  sys:consolidation         — 巩固循环扫描（技能剪枝/能力地图）  interval:21600
   sys:workdir_sync   — 工作区知识整合                     interval:3600
   sys:self_eval      — 能力自评（capability_map 更新）     interval:86400
   sys:goal_review    — 目标清理（已完成/过期 Goal）         interval:43200
@@ -109,11 +109,11 @@ class CronJob:
 
 _BUILTIN_JOBS: list[dict] = [
     {
-        "id": "sys:phase_g",
-        "name": "Phase G 扫描",
+        "id": "sys:consolidation",
+        "name": "巩固循环扫描",
         "schedule": "interval:21600",
         "description": "技能剪枝、去重、能力地图更新（每 6 小时）",
-        "task_template": "[系统维护] 执行 Phase G 扫描：检查技能库冗余、更新能力地图、评估晋升候选",
+        "task_template": "[系统维护] 执行巩固循环扫描：检查技能库冗余、更新能力地图、评估晋升候选",
         "tags": ["maintenance", "evolution"],
         "enabled": True,
     },
@@ -301,6 +301,20 @@ class CronScheduler:
                 from mini_agent.errors import log_exception
                 log_exception(_mini_agent_exc, where='mini_agent.evolution.cron_scheduler')
                 pass
+
+        # 重命名兼容：sys:phase_g 是本 job 重命名为 sys:consolidation 之前的旧 id。
+        # 存量 cron_jobs.json 里可能还留着这个 id——如果不处理，下面的"注入内置 Job"
+        # 会因为找不到 sys:consolidation 而新增一份，导致旧 job 和新 job 同时存在、
+        # 重复触发。这里原地改名，保留用户对旧 job 的 enabled/schedule 自定义。
+        _legacy_id = "sys:phase_g"
+        if _legacy_id in existing and "sys:consolidation" not in existing:
+            legacy_job = existing.pop(_legacy_id)
+            legacy_job.id = "sys:consolidation"
+            existing["sys:consolidation"] = legacy_job
+        elif _legacy_id in existing:
+            # 两者都存在（比如迁移逻辑上线前用户已经手动加过同名 job）：
+            # 保留新 id 的记录，丢弃旧 id，避免重复触发。
+            existing.pop(_legacy_id, None)
 
         # 注入内置 Job（已存在的不覆盖，保留用户修改的 enabled/schedule）
         for bd in _BUILTIN_JOBS:

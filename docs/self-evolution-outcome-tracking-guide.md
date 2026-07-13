@@ -2,7 +2,7 @@
 
 > 实现：`src/mini_agent/evolution/outcome_tracker.py`
 > 接入点：`tools/evolution.py::skill_propose`（记录基线）、
-> `evolution/phase_g.py::run_phase_g()`（周期性判定）、
+> `evolution/consolidation.py::run_consolidation()`（周期性判定）、
 > `cli/commands/evolution.py`（`/evolution outcomes` 命令、`/evolution revert` 联动）
 > 对应设计方案：`next_doc/priority_improvements_implementation_plan.md` 方案三
 
@@ -27,8 +27,8 @@ eval 场景对比（tool 失败率/turns/token）。这些指标回答的是"这
    带有 lesson group id（`perception/lesson_review.py::LessonGroup.key`），
    自动为每个 id 记录一条追踪记录，包含当前该 lesson group 的触发次数
    （`baseline_trigger_count`）和默认 14 天的观察期截止时间。
-2. **周期性判定**：`evolution/phase_g.py::run_phase_g()` 每次运行时（手动
-   `/evolve phase-g` 或 SessionEnd 时间门控触发），顺带调用
+2. **周期性判定**：`evolution/consolidation.py::run_consolidation()` 每次运行时（手动
+   `/evolve consolidate` 或 SessionEnd 时间门控触发），顺带调用
    `outcome_tracker.tick()`，检查所有已到观察期截止时间的记录：
    - 重新统计该 lesson group 当前的触发次数（`post_trigger_count`）
    - 与基线对比，产出判定（`verdict`）
@@ -69,8 +69,8 @@ eval 场景对比（tool 失败率/turns/token）。这些指标回答的是"这
 
 ## 5. 数据存储
 
-追踪记录持久化在 `<project_root>/.agent/outcome_tracking.json`，与 Phase G
-的 `phase_g_rhythm.json` 同级、同样的原子写入方式（写临时文件后 `os.replace`）。
+追踪记录持久化在 `<project_root>/.agent/outcome_tracking.json`，与 巩固循环
+的 `consolidation_rhythm.json` 同级、同样的原子写入方式（写临时文件后 `os.replace`）。
 不属于 git commit 元信息的一部分，纯粹是本地统计数据，可随时删除该文件重置
 所有追踪记录（不影响已经落地的 skill/commit 本身）。
 
@@ -84,12 +84,12 @@ eval 场景对比（tool 失败率/turns/token）。这些指标回答的是"这
 - **查询失败**（`memory_backend` 不可用等）：该条记录保持 `observing` 状态，
   留待下次 `tick()` 重试，不会被误判。
 - **失败静默降级**：`record_commit_baseline()` / `tick()` / `mark_reverted()`
-  内部任何异常都不会阻断 `skill_propose`、Phase G 主流程或 `/evolution revert`
+  内部任何异常都不会阻断 `skill_propose`、巩固循环 主流程或 `/evolution revert`
   本身。
 
 ## 7. 相关文档
 
 - `docs/self-evolution-stage2-guide.md` — T0~T3 安全网三件套（merge 前门槛）
 - `docs/self-evolution-stage3-1-guide.md` — lesson → skill 闭环（`skill_propose` 触发路径）
-- `docs/self-evolution-phase-g-guide.md` — Phase G 后台循环（`tick()` 的调用宿主）
+- `docs/self-evolution-consolidation-guide.md` — 巩固循环 后台循环（`tick()` 的调用宿主）
 - `docs/commands-and-tools-reference.md` — `/evolution outcomes` 命令参考

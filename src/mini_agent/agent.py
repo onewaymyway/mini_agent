@@ -948,7 +948,7 @@ class Agent:
         """
         [方案三新增] 轻量推断"当前任务大致属于哪个 domain"，供
         _maybe_publish_uncertainty_signal() 发布事件时附带。复用
-        evolution/phase_g.py::_infer_domain()（已存在，
+        evolution/consolidation.py::_infer_domain()（已存在，
         _domain_token_overlap() 系列函数依赖的同一套规则式推断），
         不新增第二套 domain 归类逻辑。
 
@@ -956,7 +956,7 @@ class Agent:
         返回空字符串，调用方据此决定是否附带该字段。
         """
         try:
-            from mini_agent.evolution.phase_g import _infer_domain
+            from mini_agent.evolution.consolidation import _infer_domain
             for msg in reversed(self._hist._history):
                 role = msg.get("role") if isinstance(msg, dict) else getattr(msg, "role", "")
                 if role != "user":
@@ -1422,16 +1422,16 @@ class Agent:
             log_exception(_mini_agent_exc, where='mini_agent.agent')
             pass
 
-        # [Stage 8 / 8.1] Phase G 时间门控：每 24h 自动触发一次后台循环扫描
+        # [Stage 8 / 8.1] 巩固循环 时间门控：每 24h 自动触发一次后台循环扫描
         try:
-            self._maybe_run_phase_g()
+            self._maybe_run_consolidation()
         except Exception as _mini_agent_exc:
             from mini_agent.errors import log_exception
             log_exception(_mini_agent_exc, where='mini_agent.agent')
             pass
 
         # [具身改进 C4] 自维护模块：每 24h 自动触发一次健康检查
-        # （可能失效的工具 / 过时 skill / 矛盾的 lesson），与 Phase G
+        # （可能失效的工具 / 过时 skill / 矛盾的 lesson），与 巩固循环
         # 采用同款时间门控模式，互不干扰（各自独立的 last_run_at 状态文件）。
         try:
             self._maybe_run_self_maintenance()
@@ -1664,21 +1664,21 @@ class Agent:
                 log_exception(_mini_agent_exc, where='mini_agent.agent')
                 pass
 
-    def _maybe_run_phase_g(self) -> None:
+    def _maybe_run_consolidation(self) -> None:
         """
-        [Stage 8 / 8.1] SessionEnd 时的 Phase G 时间门控。
+        [Stage 8 / 8.1] SessionEnd 时的 巩固循环 时间门控。
 
-        每次 session 结束时检查"上次 Phase G 运行距今是否超过 24h"，
+        每次 session 结束时检查"上次 巩固循环 运行距今是否超过 24h"，
         是则自动触发一次轻量扫描（剪枝 + 能力地图 + 晋升候选）。
-        不需要后台调度器，用 phase_g_rhythm.json 的 _last_run_at 字段实现。
+        不需要后台调度器，用 consolidation_rhythm.json 的 _last_run_at 字段实现。
         结果只打印摘要（有发现时），不阻塞退出流程。
         """
         try:
             from mini_agent.storage.paths import AgentPaths
-            from mini_agent.evolution.phase_g import run_phase_g, should_run_phase_g
+            from mini_agent.evolution.consolidation import run_consolidation, should_run_consolidation
 
             paths = AgentPaths(self.cfg.project_root)
-            if not should_run_phase_g(paths):
+            if not should_run_consolidation(paths):
                 return
 
             knowledge_llm_call = None
@@ -1687,7 +1687,7 @@ class Agent:
                 from mini_agent.perception.memory_factory import build_llm_call
                 knowledge_llm_call = lambda prompt: build_llm_call(_pool.current_client)(prompt)
 
-            report = run_phase_g(
+            report = run_consolidation(
                 paths,
                 skill_loader=getattr(self, "skill_loader", None),
                 memory_backend=getattr(self, "_memory", None),
@@ -1697,16 +1697,16 @@ class Agent:
             # 只在有发现时打印摘要（避免每次退出都打印噪音）
             if report.prune_candidates:
                 R.print_info(
-                    f"[phase-g] 发现 {len(report.prune_candidates)} 个剪枝候选，"
-                    "用 /evolve phase-g 查看详情。"
+                    f"[consolidate] 发现 {len(report.prune_candidates)} 个剪枝候选，"
+                    "用 /evolve consolidate 查看详情。"
                 )
             if report.promotion_candidates:
                 R.print_info(
-                    f"[phase-g] 发现 {len(report.promotion_candidates)} 个跨项目晋升候选，"
-                    "用 /evolve phase-g 查看详情。"
+                    f"[consolidate] 发现 {len(report.promotion_candidates)} 个跨项目晋升候选，"
+                    "用 /evolve consolidate 查看详情。"
                 )
         except Exception:
-            pass  # Phase G 失败不影响退出流程
+            pass  # 巩固循环失败不影响退出流程
 
     def _maybe_run_self_maintenance(self) -> None:
         """

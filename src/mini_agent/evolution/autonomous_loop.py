@@ -8,7 +8,7 @@ tick 分支，与"检查用户消息"分支并列，共享同一个常驻进程�
 这是本类与"挂在某次 CLI 调用上的循环"的本质区别。
 
 三档位边界（stage9_plan.md 7.2 节）：
-  passive:     只做 Stage 8 已有周期性任务（Phase G），不读 GoalBacklog
+  passive:     只做 Stage 8 已有周期性任务（巩固循环），不读 GoalBacklog
   maintenance: passive + 探索预算分配，不 derive 新 Goal
   autonomous:  maintenance + 软目标 derive（第十二节，暂未实现内部逻辑）
 
@@ -102,7 +102,7 @@ class AutonomousLoop:
     def _tick_passive(self) -> None:
         """
         [passive 档位] 运行所有到期的 cron job。
-        Phase G、workdir_sync、self_eval、goal_review、digest_trim
+        巩固循环、workdir_sync、self_eval、goal_review、digest_trim
         都作为 cron job 注册，不再在此直接调用。
 
         边界的物理体现：本方法体内不引用 self._goal_backlog 任何方法。
@@ -122,12 +122,12 @@ class AutonomousLoop:
                 log_exception(_mini_agent_exc, where='mini_agent.evolution.autonomous_loop')
                 pass
         else:
-            # 降级：CronScheduler 未注入时直接调用 Phase G（保持向后兼容）
+            # 降级：CronScheduler 未注入时直接调用 巩固循环（保持向后兼容）
             try:
-                from mini_agent.evolution.phase_g import should_run_phase_g, run_phase_g
-                if should_run_phase_g(self._paths):
-                    report = run_phase_g(self._paths)
-                    self._record_phase_g_for_digest(report)
+                from mini_agent.evolution.consolidation import should_run_consolidation, run_consolidation
+                if should_run_consolidation(self._paths):
+                    report = run_consolidation(self._paths)
+                    self._record_consolidation_for_digest(report)
             except Exception as _mini_agent_exc:
                 from mini_agent.errors import log_exception
                 log_exception(_mini_agent_exc, where='mini_agent.evolution.autonomous_loop')
@@ -428,7 +428,7 @@ class AutonomousLoop:
         这是"从 SessionEnd 时间门控迁移到 daemon tick"的另一个例子。
         """
         # 目前 Stage 4 的整合是在 session end 时触发，
-        # daemon 化后可以改为 tick 触发，但本节先以 Phase G 为主要验证目标。
+        # daemon 化后可以改为 tick 触发，但本节先以 巩固循环 为主要验证目标。
         pass
 
     def _submit_autonomous_task(
@@ -449,18 +449,18 @@ class AutonomousLoop:
         except Exception:
             return False
 
-    def _record_phase_g_for_digest(self, report: Any) -> None:
-        """将 Phase G 报告记录到 activity_digest.jsonl。"""
+    def _record_consolidation_for_digest(self, report: Any) -> None:
+        """将 巩固循环 报告记录到 activity_digest.jsonl。"""
         try:
             prune_count = len(getattr(report, "prune_candidates", []))
             promote_count = len(getattr(report, "promotion_candidates", []))
             cap_count = len(getattr(report, "capability_map", []))
             summary = (
-                f"Phase G 扫描完成：{prune_count} 个剪枝候选，"
+                f"巩固循环 扫描完成：{prune_count} 个剪枝候选，"
                 f"{promote_count} 个晋升候选，{cap_count} 个能力条目"
             )
             self._record_digest({
-                "type": "phase_g_completed",
+                "type": "consolidation_completed",
                 "summary": summary,
                 "prune_count": prune_count,
                 "promote_count": promote_count,

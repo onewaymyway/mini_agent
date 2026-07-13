@@ -663,7 +663,7 @@ def get_high_priority_open_threads(paths: AgentPaths, limit: int = 5) -> list[Op
 # ════════════════════════════════════════════════════════════════════════════
 #
 # 设计文档 14.1 节原本设想由"evolution-agent 定期从 Markdown 里解析生成"，
-# 但 evolution-agent 周期调度（Phase G）要等到 Stage 8 才存在。Stage 4+ 计划
+# 但 evolution-agent 周期调度（巩固循环）要等到 Stage 8 才存在。Stage 4+ 计划
 # 文档建议提前到 Stage 4 一并完成的做法是：在 update_knowledge() 工具写
 # Markdown 的同一次调用里，直接更新索引里对应的条目——不等待一个尚不存在的
 # 后台调度器。索引条目的 topic/decision_type/affected_modules 没有强行用

@@ -232,7 +232,7 @@ class AgentPaths:
 
     @property
     def workdir_unclassified_candidates(self) -> Path:
-        """.agent/unclassified_candidates.jsonl — 待归类候选（Phase G 批量处理后清空/归档）"""
+        """.agent/unclassified_candidates.jsonl — 待归类候选（巩固循环 批量处理后清空/归档）"""
         return self.workdir_dir / "unclassified_candidates.jsonl"
 
     @property

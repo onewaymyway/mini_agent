@@ -235,7 +235,7 @@ class MemoryStore(MemoryBackend):
 
     def rewrite_categories(self, updates: dict[str, str]) -> None:
         """
-        Phase G 巩固时批量更新一批条目的 category 字段（分类树新增节点后，
+        巩固循环 巩固时批量更新一批条目的 category 字段（分类树新增节点后，
         原本挂在 "000" 未分类下的记忆需要重新归位），随后整体重写磁盘文件。
         updates: {entry_id: new_category}
         """
@@ -251,7 +251,7 @@ class MemoryStore(MemoryBackend):
 
     @property
     def library(self):
-        """暴露底层 LibraryIndex（可能为 None），供 Phase G 巩固流程调用。"""
+        """暴露底层 LibraryIndex（可能为 None），供 巩固循环 巩固流程调用。"""
         return self._library
 
     # ── 持久化 ────────────────────────────────────────────────────────────────

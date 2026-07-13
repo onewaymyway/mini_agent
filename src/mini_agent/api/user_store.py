@@ -439,7 +439,7 @@ class UserStore:
 class RoleProfileManager:
     """
     管理 .agent/users/<user_id>/profile.json。
-    由 SessionAgent 在对话中增量写入，由 Self 的 Phase G tick 汇总。
+    由 SessionAgent 在对话中增量写入，由 Self 的 巩固循环 tick 汇总。
     """
 
     def __init__(self, users_dir: Path) -> None:

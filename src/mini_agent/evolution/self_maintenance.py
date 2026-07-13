@@ -7,8 +7,8 @@ evolution/self_maintenance.py — 自维护模块（具身改进 v3 C4）
 skill 内容过时了要等到产生错误建议才会被发现，记忆库里出现自相矛盾的
 lesson 也不会被主动揪出来——这是"失去免疫系统"的状态。
 
-归属：daemon 后台维护层，与 Phase G（能力/技能层面的扫描）并列，但关注点
-不同——Phase G 回答"我学到了什么、该不该提升"，SelfMaintenanceModule 回答
+归属：daemon 后台维护层，与 巩固循环（能力/技能层面的扫描）并列，但关注点
+不同——巩固循环 回答"我学到了什么、该不该提升"，SelfMaintenanceModule 回答
 "我自己有没有哪里坏了"。
 
 实现取舍（复用已有数据源，不新增追踪基础设施）：
@@ -18,7 +18,7 @@ lesson 也不会被主动揪出来——这是"失去免疫系统"的状态。
     的信号：扫描最近若干 session 的 traces.jsonl 里 phase="tool_call" 记录，
     统计每个工具最近调用的失败率——失败率异常高（且样本量足够）的工具，
     比"许久没调用"更直接地提示"这个工具可能已经失效，需要排查"。
-  - stale_skills：直接复用 phase_g.py::_days_since_last_use() 同款的
+  - stale_skills：直接复用 consolidation.py::_days_since_last_use() 同款的
     skill_loader.tracker 基础设施（prune_skills 已经在用，这里只是从
     "高成本+未使用→建议剪枝"的角度换成"长期未使用→可能过时，建议复核"
     的角度，阈值和触发条件都不同，因此不与 prune_skills 合并实现）。
@@ -27,7 +27,7 @@ lesson 也不会被主动揪出来——这是"失去免疫系统"的状态。
     若同时出现"正面建议"（成功/应该/建议/可以）和"负面信号"（失败/不行/
     不应该/出错）的 outcome 文本，标记为可能矛盾。这是启发式而非精确判断，
     生成的是"建议人工复核"，不是确定性结论。
-  - 触发方式：与 Phase G 同款"时间门控"模式（不需要常驻线程）——
+  - 触发方式：与 巩固循环 同款"时间门控"模式（不需要常驻线程）——
     SessionEnd 检查距上次运行是否超过 interval，超过则跑一次；同时注册为
     cron job（sys:self_maintain），daemon 模式下也能按计划触发。
   - 不自动修复：health_check() 只产出报告和建议文本，写入
@@ -167,7 +167,7 @@ class SelfMaintenanceModule:
         for f in report.stale_skills:
             suggestions.append(
                 f"Skill `{f.skill_name}` 已 {f.last_used_days_ago:.0f} 天未被使用，"
-                "建议审查是否仍然相关，或考虑用 /evolve phase-g 评估剪枝。"
+                "建议审查是否仍然相关，或考虑用 /evolve consolidate 评估剪枝。"
             )
         for f in report.conflicting_lessons:
             suggestions.append(
@@ -242,7 +242,7 @@ class SelfMaintenanceModule:
 
     @staticmethod
     def _check_skill_freshness(skill_loader) -> list[StaleSkillFinding]:
-        """复用 phase_g.py 同款 tracker，找出长期未使用但仍激活的 skill。"""
+        """复用 consolidation.py 同款 tracker，找出长期未使用但仍激活的 skill。"""
         if skill_loader is None:
             return []
         tracker = getattr(skill_loader, "tracker", None)
@@ -320,7 +320,7 @@ class SelfMaintenanceModule:
         return findings
 
 
-# ── 时间门控（与 phase_g.py 同款模式）──────────────────────────────────────────
+# ── 时间门控（与 consolidation.py 同款模式）──────────────────────────────────────────
 
 def _state_path(paths) -> Path:
     return paths.workdir_dir / _STATE_FILENAME

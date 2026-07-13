@@ -180,7 +180,7 @@ def promote_draft(reminder_dir: Path, filename: str) -> Optional[Path]:
 def run_lesson_to_reminder_scan(memory_store, reminder_dir: Path) -> List[Path]:
     """便捷入口：从 MemoryStore 读取全部条目并完成一次扫描+写入。
 
-    供 Phase G 周期扫描或 CLI 命令直接调用，避免调用方重复 boilerplate
+    供 巩固循环 周期扫描或 CLI 命令直接调用，避免调用方重复 boilerplate
     （`entries = memory_store.all_entries(); bridge = LessonToReminderBridge(...)`）。
     """
     entries = memory_store.all_entries()

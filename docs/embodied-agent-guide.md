@@ -99,7 +99,7 @@ Agent 对自身状态的轮间快照——不调用 LLM，是 O(1) 纯计算：
 提示——建议它停下来向用户汇报困境，而不是盲目重试同一种方法。
 
 每轮快照可选写入 `traces.jsonl`（`trace_enabled`，默认开启），供后续
-Phase G 分析趋势；C1（AgentSelfModel）也读取最新一次快照作为"此刻内部
+巩固循环 分析趋势；C1（AgentSelfModel）也读取最新一次快照作为"此刻内部
 感受"维度。
 
 **→ Stage 9 信号桥接**：`ProprioceptionModule` 是每个 Agent 实例内存中的
@@ -121,7 +121,7 @@ tick 跳过自主任务提交；快照缺失或超过 10 分钟未更新视为�
 才发布一次 `proprioception.uncertainty_sustained` 事件（`tier="tick"`），
 限流而非每轮都发——`uncertainty` 本身是逐轮波动的连续值，不像
 `frustration` 有明确阈值边沿。事件 payload 附带
-`recent_domain_hint`（复用 `phase_g._infer_domain()` 对最近一条用户
+`recent_domain_hint`（复用 `consolidation._infer_domain()` 对最近一条用户
 消息的规则式推断），发布后计数重置，避免同一段持续不确定性重复发多条。
 
 `SoftGoalDeriver._recent_uncertainty_domains()` 消费该事件，与既有的
@@ -149,7 +149,7 @@ recent_negative_outcome_domains()`
 `SoftGoalDeriver.derive_candidates()` 排序前，读取
 `AgentSelfModel.recent_negative_outcome_domains()`（桥接
 `outcome_tracker.get_revert_candidates()` ——已有确凿 baseline/post
-实测数据支持"变差了"结论的 commit，经 `phase_g._infer_domain()` 转换
+实测数据支持"变差了"结论的 commit，经 `consolidation._infer_domain()` 转换
 成 domain 字符串），对落在这些域里的新候选做**强降权**（`urgency *=
 0.15`，比方案一风险域的 `0.4` 更激进——这不是具身层的经验性判断，而是
 有实测数据支持的负面结论，可信度更高）。只做降权，不做拒绝，与前三个
@@ -157,7 +157,7 @@ recent_negative_outcome_domains()`
 
 验证通过后的下一步（暂不展开设计）：`AutonomousLoop._tick_autonomous()`
 决定本轮自治节奏时读取 `AgentSelfModel` 的整体健康摘要——建议至少观察
-一个完整 Phase G 周期、确认没有引入误降权后再启动。
+一个完整 巩固循环 周期、确认没有引入误降权后再启动。
 
 测试：`tests/test_negative_outcome_downweighting.py`
 
@@ -205,7 +205,7 @@ recent_negative_outcome_domains()`
 **具身来源**：affordance（余裕/行动可能性）——环境不是中性的信息集合，
 而是"对当前主体呈现出一组行动可能性"。AffordanceAnalyzer 在 session 开始
 时构建一次（不是每轮 turn），交叉分析 `open_threads.json`（未完成线索）、
-`capability_map`（Phase G 历史扫描的能力置信度，`use_capability_map`
+`capability_map`（巩固循环 历史扫描的能力置信度，`use_capability_map`
 可关）、lesson memory，生成"当前环境对我意味着哪些行动机会"的简短文本
 块，拼进 `system_extra`。纯只读分析，不调用 LLM，不写入任何文件，失败
 静默跳过不阻断 session 创建。
@@ -301,7 +301,7 @@ git 路径、应用切换频率、`is_actively_engaged` 等），追加成 1-2 �
 内容关键词细分）、`research`（`web_search`）、`other`。接入
 `agent.py` 主循环的 `execute_tools` span：分组结果作为 `action_events`
 字段写入 `traces.jsonl`，不改变 history 本身，只在可观测性侧补充语义
-标注，供 `/diagnostics` 与后续 Phase G 扫描读取。
+标注，供 `/diagnostics` 与后续 巩固循环 扫描读取。
 
 测试：`tests/test_intent_action_mapper.py`（17 个用例）
 
@@ -345,7 +345,7 @@ session 级构建一次（`AgentSelfModelBuilder`），之后每轮 turn 只更�
 （30 天），不区分"被反复印证的旧知识"和"一次性的新猜测"，也不区分
 "用户亲口纠正"和"Agent 自我反思猜测"。
 
-**实现取舍**：原计划设想"Phase G tick 时批量预计算 `temporal_weight`
+**实现取舍**：原计划设想"巩固循环 tick 时批量预计算 `temporal_weight`
 缓存字段"，但核对 `memory_store.py` 后发现时间衰减本来就是按
 `entry.age_days`（属性，非缓存字段）在每次 `search()` 时实时计算——没有
 "缓存过期"问题，批量预计算反而多一份一致性维护成本。改为新增纯函数
@@ -435,8 +435,8 @@ object 以未绑定方法方式调用 `Agent._save_cognitive_anchor` /
    调用时间"。改用扫描最近 20 个 session 的 `traces.jsonl` 里
    `phase="tool_call"` 记录，统计每个工具近期失败率——样本量 ≥3 且失败率
    ≥60% 判定为"可能失效，建议排查 API/参数是否变更"。
-2. **stale_skills**（长期未用的 skill）：复用 `phase_g.py::prune_skills()`
-   同款 `skill_loader.tracker` 基础设施（角度不同：Phase G 是"高成本 +
+2. **stale_skills**（长期未用的 skill）：复用 `consolidation.py::prune_skills()`
+   同款 `skill_loader.tracker` 基础设施（角度不同：巩固循环 是"高成本 +
    未使用 → 建议剪枝"，这里是"长期未使用 → 可能过时，建议复核"）。
 3. **conflicting_lessons**（可能矛盾的经验）：复用
    `lesson_review.py::group_lessons()` 聚类结果，同一聚类内若同时出现
@@ -448,7 +448,7 @@ object 以未绑定方法方式调用 `Agent._save_cognitive_anchor` /
 原则：结果写入 `activity_digest.jsonl`（`type="health_report"`），下次
 `/digest` 或连接时的晨报里展示。
 
-**触发方式**：与 Phase G 同款"时间门控"模式（独立状态文件
+**触发方式**：与 巩固循环 同款"时间门控"模式（独立状态文件
 `self_maintenance_state.json`，默认 24h 间隔）：
 - `agent.py::_maybe_run_self_maintenance()`——SessionEnd 时检查
 - 内置 cron job `sys:self_maintain`（`evolution/cron_scheduler.py`，
@@ -466,7 +466,7 @@ object 以未绑定方法方式调用 `Agent._save_cognitive_anchor` /
 | `cfg.proprioception.frustration_threshold` | `0.5` | 触发元认知提示的挫败感阈值 |
 | `cfg.proprioception.consecutive_failure_threshold` | `3` | 连续失败次数阈值 |
 | `cfg.affordance.enabled` | `True` | B4 余裕感知开关（当前仅多用户路径生效）|
-| `cfg.affordance.use_capability_map` | `True` | 是否纳入 Phase G 能力地图数据 |
+| `cfg.affordance.use_capability_map` | `True` | 是否纳入 巩固循环 能力地图数据 |
 | `cfg.affordance.risk_gating_enabled` | `True` | [方案一] 高风险域接入自主探索门控总开关 |
 | `cfg.affordance.risk_downweight_factor` | `0.4` | [方案一] 高风险域候选的 urgency 降权系数 |
 | `cfg.autonomy.behavior_gating_enabled` | `False` | [方案二] BehaviorContext 接入自主任务调度门控总开关 |
@@ -488,7 +488,7 @@ object 以未绑定方法方式调用 `Agent._save_cognitive_anchor` /
   （多数是核对代码库后发现已有更合适的基础设施可复用，而不是简单照抄
   伪代码）
 - **相关既有机制**：[记忆管理指南](memory-management-guide.md)（Lesson
-  Memory 基础）、[Phase G 后台循环指南](self-evolution-phase-g-guide.md)
+  Memory 基础）、[巩固循环 后台循环指南](self-evolution-consolidation-guide.md)
   （C4 复用的 skill tracker / capability_map 基础设施来源）、
   [Stage 9 自主运行时指南](self-evolution-stage9-guide.md)（cron job /
   时间门控模式的原型）

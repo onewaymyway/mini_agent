@@ -206,7 +206,7 @@ class SessionTracer:
         [具身改进 B1] 写入一次 ProprioceptionModule.sense() 快照到 traces.jsonl。
 
         phase="internal_state"，不计入 elapsed_ms（这是一次 O(1) 快照，没有
-        耗时意义）。Phase G 扫描可以读取这类记录，分析 frustration /
+        耗时意义）。巩固循环 扫描可以读取这类记录，分析 frustration /
         cognitive_load 的历史趋势（"某类任务系统性地让 agent 感到挫败"）。
         """
         entry: dict = {

@@ -359,7 +359,7 @@ mini-agent --retry-backoff linear --retry-backoff-step 60 --retry-backoff-max 30
 
 （`src/mini_agent/cli/commands/evolution.py` / `evolve.py`）
 
-> 详见 [Stage 2 安全网指南](self-evolution-stage2-guide.md)、[Stage 3.1 lesson → skill 闭环指南](self-evolution-stage3-1-guide.md)、[Phase G 后台循环指南](self-evolution-phase-g-guide.md)
+> 详见 [Stage 2 安全网指南](self-evolution-stage2-guide.md)、[Stage 3.1 lesson → skill 闭环指南](self-evolution-stage3-1-guide.md)、[巩固循环 后台循环指南](self-evolution-consolidation-guide.md)
 
 | 命令 | 说明 |
 |------|------|
@@ -370,7 +370,7 @@ mini-agent --retry-backoff linear --retry-backoff-step 60 --retry-backoff-max 30
 | `/evolution outcomes [--worsened]` | **新增**：列出自我进化 commit 的效果回填记录（`observing`/`improved`/`no_change`/`worsened`/`insufficient_data`/`reverted_by_user`）。`--worsened` 只看建议复核 revert 的记录。详见 [效果回填指南](self-evolution-outcome-tracking-guide.md) |
 | `/evolve review [--global] [--tier T1\|T2]` | 扫描 lesson（默认 workdir 级 `memory.jsonl`，`--global` 扫描 `~/.agent/memory.jsonl`），对达标分组 spawn `evolution-agent` 提案 |
 | `/evolve list [--global] [--tier T1\|T2]` | 同 `review`，但只扫描 + 列出达标分组，不 spawn agent、不消耗 LLM 调用 |
-| `/evolve phase-g [--force] [--dry-run]` | **Stage 8** 手动触发 Phase G 后台循环扫描（剪枝候选 + 能力地图 + 晋升候选）。`--force` 跳过 24h 时间门控，`--dry-run` 只展示不写入节奏记录 |
+| `/evolve consolidate [--force] [--dry-run]` | **Stage 8** 手动触发 巩固循环 后台循环扫描（剪枝候选 + 能力地图 + 晋升候选）。`--force` 跳过 24h 时间门控，`--dry-run` 只展示不写入节奏记录 |
 
 `commit` 参数支持完整 hash 或前缀。
 
@@ -424,7 +424,7 @@ cron:<分 时 日 月 周>   标准 cron 5 字段，如 cron:0 */6 * * *（每 6
 
 | id | 默认触发频率 | 说明 |
 |----|------------|------|
-| `sys:phase_g` | 每 6 小时 | Phase G 扫描：技能剪枝 + 能力地图更新 |
+| `sys:consolidation` | 每 6 小时 | 巩固循环 扫描：技能剪枝 + 能力地图更新 |
 | `sys:workdir_sync` | 每 1 小时 | WorkdirKnowledge 整合：扫描文件变化，更新 WorkThread |
 | `sys:self_eval` | 每 24 小时 | 能力自评：回顾工具使用，更新 capability_map 置信度 |
 | `sys:goal_review` | 每 12 小时 | 目标清理：标记已完成/长期无进展的 Goal/Objective |
@@ -438,8 +438,8 @@ cron:<分 时 日 月 周>   标准 cron 5 字段，如 cron:0 */6 * * *（每 6
 # 添加每天 09:00 执行的用户 job
 /cron add daily-summary "cron:0 9 * * *" "生成昨日工作摘要并更新 work_index.json"
 
-# 禁用 Phase G（临时关闭，不删除）
-/cron disable sys:phase_g
+# 禁用 巩固循环（临时关闭，不删除）
+/cron disable sys:consolidation
 
 # 立即手动触发 workdir_sync
 /cron run sys:workdir_sync

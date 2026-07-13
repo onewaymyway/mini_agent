@@ -26,7 +26,7 @@ perception/intent_action_mapper.py — 工具透明性：意图-动作映射层�
 
 消费方：
   - agent.py 主循环：execute_tools span 内调用，结果写入 traces.jsonl
-    （phase="execute_tools" 记录的 extra 字段），供 /diagnostics 和 Phase G
+    （phase="execute_tools" 记录的 extra 字段），供 /diagnostics 和 巩固循环
     扫描使用，而不污染 history 本身（history 的原始工具调用记录保持不变，
     ActionEvent 只是一层可选的语义标注）。
   - evolution/autonomous_loop.py 的 digest 记录：cron/autonomous 触发的工具

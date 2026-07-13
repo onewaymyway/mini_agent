@@ -400,22 +400,22 @@ Session 启动时自动注入 context，session 结束时自动更新数据。`G
 
 详见 [观察性系统指南](observability-guide.md)。
 
-### 3.18 Phase G 后台循环（evolution/，Stage 8 新增）
+### 3.18 巩固循环 后台循环（evolution/，Stage 8 新增）
 
-定期扫描已有数据，主动识别改进机会——**不需要常驻进程**，通过 `phase_g_rhythm.json` 里的时间戳实现 24h 时间门控：
+定期扫描已有数据，主动识别改进机会——**不需要常驻进程**，通过 `consolidation_rhythm.json` 里的时间戳实现 24h 时间门控：
 
 | 扫描任务 | 数据来源 | 产出 |
 |---------|---------|------|
 | 剪枝候选（8.2）| `SkillLoader` 使用频率 + traces.jsonl token 成本 | 高成本低频 skill 候选列表 |
 | 能力地图（8.3）| `sessions/*/tasks/*/manifest.json` | `entry_type="capability_map"` memory 条目 |
 | Scope 晋升（8.4）| `cross_project_index.json` | 跨项目模式晋升候选列表 |
-| 节奏治理（8.5）| `.agent/phase_g_rhythm.json` | 冷却期限制（7d/次） |
+| 节奏治理（8.5）| `.agent/consolidation_rhythm.json` | 冷却期限制（7d/次） |
 
-触发方式：`/evolve phase-g [--force] [--dry-run]`（手动），或任意 session 结束时自动检查（超过 24h 自动运行，有发现时打印单行摘要）。
+触发方式：`/evolve consolidate [--force] [--dry-run]`（手动），或任意 session 结束时自动检查（超过 24h 自动运行，有发现时打印单行摘要）。
 
 SubAgent 降级重试链（Stage 7 / 13.2+15.3）同步在 `orchestrator/task_manager.py` 实现：任务失败时按 `Task.fallback_profiles` 切换 profile，再按 `Task.demotion_scope` 缩小目标，而非立即宣告失败。
 
-详见 [Phase G 后台循环指南](self-evolution-phase-g-guide.md)、[SubAgent 机制](subagent-mechanism.md)。
+详见 [巩固循环 后台循环指南](self-evolution-consolidation-guide.md)、[SubAgent 机制](subagent-mechanism.md)。
 
 ### 3.19 自主运行时（cli/daemon.py + evolution/，Stage 9 新增）
 
@@ -442,7 +442,7 @@ daemon 进程（常驻）
 
 | 档位 | `passive`（默认） | `maintenance` | `autonomous` |
 |------|-----------------|--------------|-------------|
-| Phase G 时间门控 | ✅ | ✅ | ✅ |
+| 巩固循环 时间门控 | ✅ | ✅ | ✅ |
 | 从 GoalBacklog 提交 Task | ❌ | ✅ | ✅ |
 | 软目标 derive | ❌ | ❌ | ✅（第十二节） |
 

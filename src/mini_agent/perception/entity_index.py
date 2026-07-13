@@ -6,7 +6,7 @@ perception/entity_index.py — 实体目录（图书馆"著者目录"的对应�
 
 摘要滚动更新采用"攒够证据才重写"策略：每条新记忆挂到某实体时只追加
 related_entry_ids、递增 pending_evidence_count，不立即重写 summary；
-真正的 summary 重写只在 Phase G 巡检时、pending_evidence_count 达到阈值
+真正的 summary 重写只在 巩固循环 巡检时、pending_evidence_count 达到阈值
 的实体上批量发生（见 rewrite_due_summaries），避免同一实体被频繁触发的
 lesson 反复重写摘要造成的抖动和不必要的 LLM 调用成本。
 """
@@ -150,7 +150,7 @@ class EntityStore:
         把一条记忆挂到候选实体上。候选实体名来自 guess_entity_names(text)；
         命中已有实体（含别名）则挂载并计入待重写证据数；未命中任何已有实体
         才新建实体卡片——新实体的第一条记忆同时作为其初始 summary 的种子
-        （非常粗糙，等待够 3 条证据后由 Phase G 正式重写为更精炼的摘要）。
+        （非常粗糙，等待够 3 条证据后由 巩固循环 正式重写为更精炼的摘要）。
 
         返回本条记忆最终关联到的 entity_id 列表。
         """
@@ -178,7 +178,7 @@ class EntityStore:
             self._save()
         return linked_ids
 
-    # ── Phase G：批量重写摘要 ─────────────────────────────────────────────
+    # ── 巩固循环：批量重写摘要 ─────────────────────────────────────────────
 
     def due_for_summary_rewrite(
         self, threshold: int = _SUMMARY_REWRITE_THRESHOLD
@@ -250,14 +250,14 @@ class EntityStore:
         similarity_threshold: float = 0.82,
     ) -> dict:
         """
-        Phase G 巡检时调用，做两件事：
+        巩固循环 巡检时调用，做两件事：
           1. 去噪：正则抽取难免抓到噪音（常见英文单词、过短标识符），把明显
              不像模块名/工具名/概念名的实体标记 deprecated，避免污染实体目录。
           2. 近重复合并：名字高度相似的实体（比如 "daemon" 和 "daemon.py"，
              或大小写/下划线差异）大概率是同一个实体，合并成一个规范实体，
              其余的作为 alias 挂进去，related_entry_ids 也合并。
 
-        都只在 Phase G 批量触发，不在写入侧实时做，原因和分类树合并一样：
+        都只在 巩固循环 批量触发，不在写入侧实时做，原因和分类树合并一样：
         避免单次判断的抖动污染实体目录。
         """
         self._ensure_loaded()

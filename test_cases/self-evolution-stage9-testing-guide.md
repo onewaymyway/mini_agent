@@ -400,7 +400,7 @@ print("passive 边界验证通过")
 
 ---
 
-### T4-2 passive 档位触发 Phase G（时间门控）
+### T4-2 passive 档位触发 巩固循环（时间门控）
 
 **步骤**
 
@@ -416,15 +416,15 @@ loop = AutonomousLoop(
 )
 
 with patch.object(loop, "_get_autonomy_level", return_value="passive"), \
-     patch("mini_agent.evolution.autonomous_loop.should_run_phase_g", return_value=True) as mock_should, \
-     patch("mini_agent.evolution.autonomous_loop.run_phase_g") as mock_run:
+     patch("mini_agent.evolution.autonomous_loop.should_run_consolidation", return_value=True) as mock_should, \
+     patch("mini_agent.evolution.autonomous_loop.run_consolidation") as mock_run:
     loop.tick()
     mock_run.assert_called_once()
-    print("Phase G 被触发，验证通过")
+    print("巩固循环 被触发，验证通过")
 ```
 
 **预期结果**
-- `run_phase_g` 被调用一次
+- `run_consolidation` 被调用一次
 
 ---
 
@@ -453,7 +453,7 @@ arbiter.can_run_autonomous.return_value = True
 loop._arbiter = arbiter
 
 with patch.object(loop, "_get_autonomy_level", return_value="maintenance"), \
-     patch("mini_agent.evolution.autonomous_loop.should_run_phase_g", return_value=False):
+     patch("mini_agent.evolution.autonomous_loop.should_run_consolidation", return_value=False):
     loop.tick()
 
 # 验证 enqueue 被调用且 initiator="autonomous"
@@ -475,10 +475,10 @@ print("maintenance 提交任务验证通过")
 **步骤**
 
 ```bash
-# 调小 Phase G 间隔用于测试（通过临时配置）
+# 调小 巩固循环 间隔用于测试（通过临时配置）
 cat > /tmp/test_agent_config.json <<'EOF'
 {
-  "phase_g_interval_hours": 0.01
+  "consolidation_interval_hours": 0.01
 }
 EOF
 
@@ -487,8 +487,8 @@ mini-agent daemon start --detach --config /tmp/test_agent_config.json
 # 等待约 60 秒（不开启任何 CLI/Web 连接）
 sleep 70
 
-# 检查 Phase G 是否被触发
-cat .agent/phase_g_rhythm.json | python3 -m json.tool | grep last_run_at
+# 检查 巩固循环 是否被触发
+cat .agent/consolidation_rhythm.json | python3 -m json.tool | grep last_run_at
 ```
 
 **预期结果**
@@ -668,7 +668,7 @@ import ast, pathlib
 
 target_files = [
     "src/mini_agent/tools/skill_manager.py",
-    "src/mini_agent/evolution/phase_g.py",
+    "src/mini_agent/evolution/consolidation.py",
 ]
 
 for f in target_files:
@@ -792,7 +792,7 @@ import json, time, pathlib
 
 records = [
     {"at": time.time() - 3600, "type": "task_completed",   "summary": "完成 bash-safety 观察", "initiator": "autonomous"},
-    {"at": time.time() - 1800, "type": "phase_g_completed", "prune_count": 1, "capability_count": 10},
+    {"at": time.time() - 1800, "type": "consolidation_completed", "prune_count": 1, "capability_count": 10},
     {"at": time.time() - 900,  "type": "soft_goal_created", "goal_id": "goal_test", "title": "测试软目标"},
 ]
 
@@ -813,7 +813,7 @@ EOF
 **预期结果**
 - 三种类型分组展示，而不是混在一起
 - `soft_goal_created` 类型单独列出（区别于普通任务完成）
-- `phase_g_completed` 类型单独列出（Phase G 运维活动）
+- `consolidation_completed` 类型单独列出（巩固循环 运维活动）
 
 ---
 
@@ -1026,4 +1026,4 @@ pytest tests/test_session.py tests/test_llm.py tests/test_skill_manager.py -v
 
 ---
 
-*参见：[Stage 9 功能设计指南](self-evolution-stage9-guide.md)、[Stage 9 详细方案](../next_doc/self_evolution_stage9_plan.md)、[Phase G 后台循环指南](self-evolution-phase-g-guide.md)*
+*参见：[Stage 9 功能设计指南](self-evolution-stage9-guide.md)、[Stage 9 详细方案](../next_doc/self_evolution_stage9_plan.md)、[巩固循环 后台循环指南](self-evolution-consolidation-guide.md)*

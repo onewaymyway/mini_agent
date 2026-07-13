@@ -60,7 +60,7 @@ Global（用户级）                  ~/.agent/
     ├── work_index.json                        # 工作线索索引（W2/4.3）
     ├── open_threads.json                      # 跨 session 待处理线索池（W2/4.4）
     ├── knowledge_index.json                   # 结构化知识索引（W2/4.5）
-    ├── phase_g_rhythm.json                    # Phase G 节奏治理时间戳（Stage 8/8.5）
+    ├── consolidation_rhythm.json                    # 巩固循环 节奏治理时间戳（Stage 8/8.5）
     ├── goals.json                             # 跨会话目标层级（Stage 9，Goal Backlog）
     ├── activity_digest.jsonl                  # 自主行为粗粒度日志（Stage 9，/digest 数据源）
     ├── daemon.pid                             # daemon 进程 PID 文件（Stage 9）
@@ -135,8 +135,8 @@ paths.global_activity_log()        # ~/.agent/activity_log.jsonl
 # Session 级（Stage 6 新增）
 paths.session_traces(sid)          # <root>/.agent/sessions/<sid>/traces.jsonl
 
-# Phase G 节奏治理（Stage 8）
-paths.workdir_dir() / "phase_g_rhythm.json"   # <root>/.agent/phase_g_rhythm.json
+# 巩固循环 节奏治理（Stage 8）
+paths.workdir_dir() / "consolidation_rhythm.json"   # <root>/.agent/consolidation_rhythm.json
 ```
 
 **为什么需要统一路径管理层：**
@@ -535,7 +535,7 @@ SubAgent 运行过程中每一行输出都追加到此文件，格式为带时�
 |------|---------|---------|
 | `self_profile.json` | `global_self_profile()` | session 结束时更新画像 |
 | `projects_index.json` | `global_projects_index()` | 首次进入新项目时注册；session end 时刷新 `last_active_at` |
-| `cross_project_index.json` | `global_cross_project_index()` | `scan_cross_project_patterns()` 扫描后合并写入（通常由 Phase G 8.4 或手动触发）|
+| `cross_project_index.json` | `global_cross_project_index()` | `scan_cross_project_patterns()` 扫描后合并写入（通常由 巩固循环 8.4 或手动触发）|
 | `activity_log.jsonl` | `global_activity_log()` | session 结束追加两行：`session_end`（主活动记录）+ `session_metrics`（Stage 6.3 异常检测基线）|
 
 `activity_log.jsonl` 是**仅追加**的流水账，不做截断，长期使用后体积会持续增长。建议定期归档或按年/月分割。
@@ -550,11 +550,11 @@ SubAgent 运行过程中每一行输出都追加到此文件，格式为带时�
 
 `traces.jsonl` 随 session 目录存活，不会自动清理。`/diagnostics` 端点只读当前 session 的 traces，不扫描历史。长期项目可随 sessions 目录整体归档。
 
-### 4.8 Phase G 节奏治理（Stage 8）
+### 4.8 巩固循环 节奏治理（Stage 8）
 
 | 文件 | 位置 | 写入时机 |
 |------|------|---------|
-| `phase_g_rhythm.json` | `<root>/.agent/` | Phase G 每次运行后（记录 `_last_run_at`），以及每个提案发出后（记录 `prune:<name>` / `promote:<id>` 时间戳）|
+| `consolidation_rhythm.json` | `<root>/.agent/` | 巩固循环 每次运行后（记录 `_last_run_at`），以及每个提案发出后（记录 `prune:<name>` / `promote:<id>` 时间戳）|
 
 此文件很小（纯时间戳字典），可以 git 提交（便于跨机器同步提案冷却状态），也可加入 `.gitignore`（允许每台机器独立触发）。
 
@@ -576,7 +576,7 @@ SubAgent 运行过程中每一行输出都追加到此文件，格式为带时�
 # .agent/permissions.json       # 权限配置，团队项目建议提交
 # .agent/project.json           # 项目身份证，通常不提交
 # .agent/open_threads.json      # 个人工作线索，通常不提交
-# .agent/phase_g_rhythm.json    # Phase G 冷却状态，按需决定
+# .agent/consolidation_rhythm.json    # 巩固循环 冷却状态，按需决定
 ```
 
 ---
@@ -592,8 +592,8 @@ SubAgent 运行过程中每一行输出都追加到此文件，格式为带时�
 | 工具缓存 | `rm -rf .agent/cache/` | 下次运行重新构建缓存，无数据损失 |
 | 单个 task 的 manifest | `rm .../tasks/<tid>/manifest.json` | 丢失该任务的进度叙事，不影响任务本身已完成的工作或 `result.json` |
 | W2 知识层 | `rm .agent/project.json .agent/timeline.jsonl .agent/open_threads.json` | 丢失项目历史上下文，下次 session 重新初始化；`knowledge_index.json` 建议手动保留 |
-| W3 Global 知识层 | `rm ~/.agent/self_profile.json ~/.agent/projects_index.json` | 丢失自我画像和项目注册表，不影响记忆与技能；Phase G 晋升候选需重新积累 |
-| Phase G 节奏记录 | `rm .agent/phase_g_rhythm.json` | 重置所有提案冷却期，Phase G 下次运行将重新对所有候选提案 |
+| W3 Global 知识层 | `rm ~/.agent/self_profile.json ~/.agent/projects_index.json` | 丢失自我画像和项目注册表，不影响记忆与技能；巩固循环 晋升候选需重新积累 |
+| 巩固循环 节奏记录 | `rm .agent/consolidation_rhythm.json` | 重置所有提案冷却期，巩固循环 下次运行将重新对所有候选提案 |
 | 全局活动日志 | `rm ~/.agent/activity_log.jsonl` | 清空异常检测基线，需重新积累 10+ 条 session_metrics 记录后才能恢复异常检测能力 |
 | 所有项目数据 | `rm -rf .agent/` | 完全重置，相当于全新项目；不影响 `~/.agent/` 全局数据 |
 
@@ -606,7 +606,7 @@ SubAgent 运行过程中每一行输出都追加到此文件，格式为带时�
 - [Plan 与 Task 机制说明](./plan-and-task-guide.md) — `manifest.json`/`plan_snapshot.json` 的写入时机与对应工具
 - [W2/W3 知识层指南](self-evolution-stage4-5-guide.md) — Workdir/Global 知识层详细说明
 - [观察性系统指南](observability-guide.md) — `traces.jsonl` 格式与 `/diagnostics` 端点
-- [Phase G 后台循环指南](self-evolution-phase-g-guide.md) — `phase_g_rhythm.json` 与节奏治理
+- [巩固循环 后台循环指南](self-evolution-consolidation-guide.md) — `consolidation_rhythm.json` 与节奏治理
 - [配置指南](./config-guide.md) — 完整配置字段说明
 - [权限管理](./permission-guide.md) — 权限系统详细说明
 

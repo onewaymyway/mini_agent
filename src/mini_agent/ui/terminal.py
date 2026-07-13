@@ -3125,7 +3125,7 @@ _COMMANDS: list[tuple[str, str, list]] = [
     ("/hooks",       "Hook management",                              ["list", "reload"]),
     ("/platform",    "Platform/tag load policy for skill/agent/hook/tool", ["status", "filtered", "reload"]),
     ("/evolution",   "Self-evolution history",                       ["log", "show", "diff", "revert"]),
-    ("/evolve",      "Spawn evolution-agent on qualifying lessons",  ["review", "list", "phase-g", "timeline"]),
+    ("/evolve",      "Spawn evolution-agent on qualifying lessons",  ["review", "list", "consolidate", "timeline"]),
     ("/agent",       "Goal backlog & daemon management",             ["goals", "digest", "daemon"]),
     ("/goals",       "Shortcut for /agent goals",                    ["list", "add", "obj", "done", "abandon", "pause", "progress", "status"]),
     ("/digest",      "Show autonomous activity summary (last 24h)",  []),

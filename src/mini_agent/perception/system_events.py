@@ -5,7 +5,7 @@ perception/system_events.py — 跨子系统事件总线（记忆 / 自我进化
 
 现有代码里已经有多处"某模块写一个状态文件，另一个模块按自己的节奏去读"的信号
 桥接模式（proprioception_snapshot.json → ResourceArbiter._check_frustration()、
-rhythm.json → phase_g.rhythm_is_allowed()、self_maintenance_state.json →
+rhythm.json → consolidation.rhythm_is_allowed()、self_maintenance_state.json →
 should_run_self_maintenance()）。这些都是"覆盖写、只存最近一次状态"的**快照**模式，
 适合"我想知道当前是什么状态"，但不适合"我想知道刚刚发生了什么事、不想错过"——
 后者需要**日志**语义（追加写、每条独立、可被多个消费者各自按自己的进度读取）。
@@ -133,7 +133,7 @@ class SystemEvent:
 
     event_id: str
     ts: float
-    source: str          # 产生者标识，如 "session:xxxx" / "phase_g" / "outcome_tracker"
+    source: str          # 产生者标识，如 "session:xxxx" / "consolidation" / "outcome_tracker"
     event_type: str
     tier: str            # "instant" | "tick" | "cron"
     payload: dict = field(default_factory=dict)

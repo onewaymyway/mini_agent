@@ -12,7 +12,7 @@
 | ① 记忆语义检索 | TF-IDF 精确匹配 + 本地离线 embedding 语义召回，混合排序 | **关闭**（`embedding_enabled=False`） | `perception/local_embedding.py`<br>`perception/hybrid_memory_backend.py` |
 | ② 记忆巩固 | 淘汰旧 lesson 前先尝试归纳成一条抽象规律，而不是直接丢弃 | **开启**（`consolidation_enabled=True`） | `evolution/memory_consolidation.py` |
 | ③ 自主探索好奇心评分 | 用"信息增益"补充"确定性问题紧急度"，让 agent 主动探索几乎未验证过的能力；探索结果无论成败都回写记忆 | 部分开启（novelty 信号默认参与排序，`novelty_weight=0.5`） | `evolution/soft_goal_deriver.py`<br>`perception/exploration_sandbox.py` |
-| ④ Affordance 权重校准 | 用 `outcome_tracker` 的效果回填数据，周期性调整 AffordanceMap 三路来源的展示权重 | **开启**（Phase G 周期自动运行，失败即用默认权重） | `perception/affordance_calibration.py` |
+| ④ Affordance 权重校准 | 用 `outcome_tracker` 的效果回填数据，周期性调整 AffordanceMap 三路来源的展示权重 | **开启**（巩固循环 周期自动运行，失败即用默认权重） | `perception/affordance_calibration.py` |
 
 ---
 
@@ -240,11 +240,11 @@ lesson_review）全部是"确定性问题"驱动——已经出过错、有明�
   分数，`unexplored_areas_weight` 决定"探索能力盲区"提示是否展示。
 - `inject_affordance_map()` 调用处自动加载 `load_weights(paths)` 并传入。
 
-`evolution/phase_g.py::run_phase_g()`：
+`evolution/consolidation.py::run_consolidation()`：
 
 - 在 `outcome_tracker.tick()` 之后新增一步 `calibrate(paths)` 调用，
-  结果记录在 `PhaseGReport.affordance_weights_updated` 字段。失败静默
-  降级，不阻断 Phase G 主流程其余步骤。
+  结果记录在 `ConsolidationReport.affordance_weights_updated` 字段。失败静默
+  降级，不阻断 巩固循环 主流程其余步骤。
 
 ### 测试
 
@@ -278,5 +278,5 @@ lesson_review）全部是"确定性问题"驱动——已经出过错、有明�
 - [配置系统指南](config-guide.md) — `MemoryConfig`/`AutonomyConfig` 完整字段说明
 - [记忆管理指南](memory-management-guide.md) — Lesson Memory 与记忆检索基础机制
 - [记忆与自我进化完整参考](memory-and-self-evolution-complete-reference.md) — 记忆/自我进化/具身智能的交叉耦合点
-- [Phase G 指南](self-evolution-phase-g-guide.md) — Phase G 周期扫描的完整流程
+- [巩固循环 指南](self-evolution-consolidation-guide.md) — 巩固循环 周期扫描的完整流程
 - [效果回填追踪指南](self-evolution-outcome-tracking-guide.md) — `outcome_tracker` 的数据来源与判定逻辑

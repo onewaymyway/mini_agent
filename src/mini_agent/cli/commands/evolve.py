@@ -33,14 +33,15 @@ def handle_evolve_cmd(args: list[str], agent=None) -> None:
         _handle_review(rest, agent, spawn=True)
     elif sub == "list":
         _handle_review(rest, agent, spawn=False)
-    elif sub in ("phase-g", "phase_g", "phaseg"):
-        _handle_phase_g(rest, agent)
+    elif sub in ("consolidate", "consolidation", "phase-g", "phase_g", "phaseg"):
+        # "phase-g"/"phase_g"/"phaseg" 是重命名前的旧名，保留作为向后兼容别名。
+        _handle_consolidation(rest, agent)
     elif sub == "timeline":
         _handle_timeline(rest, agent)
     else:
         R.print_error(
             "Usage: /evolve [review [--global] [--tier T1|T2] | "
-            "list [--global] [--tier T1|T2] | phase-g [--dry-run] | "
+            "list [--global] [--tier T1|T2] | consolidate [--dry-run] | "
             "timeline --entity <id>|--category <code> [--limit N]]"
         )
 
@@ -170,16 +171,16 @@ def _spawn_evolution_agent(agent, groups) -> None:
     )
 
 
-def _handle_phase_g(rest: list[str], agent) -> None:
+def _handle_consolidation(rest: list[str], agent) -> None:
     """
-    [Stage 8 / 8.1] /evolve phase-g — 手动触发 Phase G 后台循环扫描。
+    [Stage 8 / 8.1] /evolve consolidate — 手动触发巩固循环（后台知识整备扫描，旧名 phase-g）。
 
     子命令选项：
       --dry-run   只展示报告，不写入节奏治理记录（方便反复测试）
       --force     忽略时间门控，强制运行（即使 24h 内已运行过）
     """
     if agent is None:
-        R.print_error("No active agent context for /evolve phase-g.")
+        R.print_error("No active agent context for /evolve consolidate.")
         return
 
     dry_run = "--dry-run" in rest
@@ -187,17 +188,17 @@ def _handle_phase_g(rest: list[str], agent) -> None:
 
     try:
         from mini_agent.storage.paths import AgentPaths
-        from mini_agent.evolution.phase_g import run_phase_g, should_run_phase_g
+        from mini_agent.evolution.consolidation import run_consolidation, should_run_consolidation
 
         paths = AgentPaths(agent.cfg.project_root)
 
-        if not force and not should_run_phase_g(paths):
+        if not force and not should_run_consolidation(paths):
             R.print_info(
-                "[phase-g] 24h 内已运行过，跳过（使用 --force 强制运行）。"
+                "[consolidate] 24h 内已运行过，跳过（使用 --force 强制运行）。"
             )
             return
 
-        R.print_info("[phase-g] 开始扫描…")
+        R.print_info("[consolidate] 开始扫描…")
 
         knowledge_llm_call = None
         _pool = getattr(agent, "_client_pool", None)
@@ -205,23 +206,23 @@ def _handle_phase_g(rest: list[str], agent) -> None:
             from mini_agent.perception.memory_factory import build_llm_call
             knowledge_llm_call = lambda prompt: build_llm_call(_pool.current_client)(prompt)
 
-        report = run_phase_g(
+        report = run_consolidation(
             paths,
             skill_loader=getattr(agent, "skill_loader", None),
             memory_backend=getattr(agent, "_memory", None),
             knowledge_llm_call=knowledge_llm_call,
         )
 
-        _print_phase_g_report(report)
+        _print_consolidation_report(report)
 
         if dry_run:
-            R.print_info("[phase-g] --dry-run 模式，节奏治理记录未写入。")
+            R.print_info("[consolidate] --dry-run 模式，节奏治理记录未写入。")
     except Exception as e:
-        R.print_error(f"[phase-g] 运行失败：{e}")
+        R.print_error(f"[consolidate] 运行失败：{e}")
 
 
-def _print_phase_g_report(report) -> None:
-    """格式化输出 Phase G 报告。"""
+def _print_consolidation_report(report) -> None:
+    """格式化输出巩固循环报告。"""
     from rich.table import Table
     from rich import box as rbox
 
@@ -287,7 +288,7 @@ def _print_phase_g_report(report) -> None:
             f"合并近重复实体 {kc.get('entities_merged', 0)} 组[/dim]"
         )
 
-    R.console.print(f"\n[dim]Phase G 完成，共发现 {len(report.prune_candidates)} 个剪枝候选、"
+    R.console.print(f"\n[dim]巩固循环完成，共发现 {len(report.prune_candidates)} 个剪枝候选、"
                     f"{len(report.promotion_candidates)} 个晋升候选[/dim]\n")
 
 

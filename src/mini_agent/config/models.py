@@ -279,7 +279,7 @@ class GlobalKnowledgeConfig:
     activity_log.jsonl 四个文件的维护与 context 注入开关。默认开启，与
     WorkdirKnowledgeConfig 取舍一致——这是纯粹的"数据沉淀与观察"层（5.4 的
     跨项目扫描函数本身可被调用，但不在本配置下自动周期触发，触发时机留给
-    Stage 8 Phase G），不产生任何自主行为。
+    Stage 8 巩固循环），不产生任何自主行为。
     """
     enabled: bool = True
     # projects_index：项目超过此天数无 last_active 更新则标记 dormant
@@ -599,7 +599,7 @@ class ProprioceptionConfig:
     # 注入一条元认知提示（建议模型停下来汇报困境，而不是盲目重试）。
     frustration_threshold: float = 0.5
     consecutive_failure_threshold: int = 3
-    # 是否把每轮快照写入 traces.jsonl（供 Phase G 后续分析趋势）
+    # 是否把每轮快照写入 traces.jsonl（供 巩固循环 后续分析趋势）
     trace_enabled: bool = True
     # 调试：打印每轮快照
     verbose: bool = False
@@ -620,8 +620,8 @@ class AffordanceConfig:
     文件——失败时静默跳过，不阻断 session 创建。
     """
     enabled: bool = True
-    # 是否在分析中纳入 capability_map（依赖 Phase G 历史扫描数据；
-    # 项目从未跑过 Phase G 时该字段不影响功能，只是 unexplored_areas 为空）
+    # 是否在分析中纳入 capability_map（依赖 巩固循环 历史扫描数据；
+    # 项目从未跑过 巩固循环 时该字段不影响功能，只是 unexplored_areas 为空）
     use_capability_map: bool = True
     # [打通具身感知与行为感知] 是否交叉分析用户行为感知层（perception/behavior/）
     # 的近期活动摘要。双重开关：仅当 BehaviorConfig.enabled 与本字段同时为

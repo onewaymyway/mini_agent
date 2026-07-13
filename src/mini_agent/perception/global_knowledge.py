@@ -23,7 +23,7 @@ self_evolution_stage4plus_plan.md Stage 5）
   - 本模块只负责"数据结构 + 读写 + 聚合函数"，不负责"什么时候调用"——
     调用时机（SessionEnd hook / context 注入）由 agent.py、
     context_builder.py 各自负责；5.4 跨项目扫描函数本身在本 Stage 完成，
-    但"周期性触发"留给 Stage 8（Phase G），本模块只暴露可被手动/未来
+    但"周期性触发"留给 Stage 8（巩固循环），本模块只暴露可被手动/未来
     调度器调用的纯函数。
 """
 
@@ -163,7 +163,7 @@ class SelfAssessment:
 
     confidence_by_domain 是 capability_map（6.6）的 global scope 版本——
     本 Stage 只声明字段与读写函数，真正的"从各 workdir capability_map
-    汇总写回这里"的闭环属于 Stage 8（Phase G），本 Stage 留空或保守默认值
+    汇总写回这里"的闭环属于 Stage 8（巩固循环），本 Stage 留空或保守默认值
     （首次创建时），不在此处臆造数据。
     """
     strengths: list[str] = field(default_factory=list)
@@ -791,7 +791,7 @@ def scan_cross_project_patterns(
 
     本 Stage 范围（计划文档 5.4 节）：只做"读取 + 聚合 + 落盘"，不做
     "自动触发 skill 晋升提案"（那一步需要 evolution-agent 的周期性扫描，
-    属于 Phase G，留给 Stage 8）——因此本函数是纯函数，不接调度触发，
+    属于 巩固循环，留给 Stage 8）——因此本函数是纯函数，不接调度触发，
     调用时机由 Stage 8 的后台循环或人工手动调用决定。
 
     算法：

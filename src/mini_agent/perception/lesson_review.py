@@ -16,7 +16,7 @@ evolution-agent（.agent/agents/evolution-agent.md）的职责，本模块产出
 
 实现取舍（Stage 3.1 范围内的简化）：
   - MemoryEntry 目前没有跨条目的去重/聚类机制（设计文档 6.4 节，明确留给
-    后续 Phase G 的后台循环）；每条 lesson 各自独立存储，occurrence_count
+    后续 巩固循环 的后台循环）；每条 lesson 各自独立存储，occurrence_count
     字段语义是"同一 session 内连续失败次数"（见 perception/lesson_rules.py），
     不是"跨 session 重复出现次数"。
   - 因此"是否达到 T1 门槛"在本模块里按【相似 trigger 文本分组】实现：

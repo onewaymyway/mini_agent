@@ -2648,7 +2648,7 @@ def run_connected_repl(
                     # 命令完全没有 token 流，导致其输出在 connected 模式下
                     # 完全不可见，只能看到执行期间零星的 info 事件
                     # （如"开始扫描…"），看不到最终结果（如能力地图表格、
-                    # "Phase G 完成"总结等）。这里补上：仅当本轮没有任何
+                    # "巩固循环 完成"总结等）。这里补上：仅当本轮没有任何
                     # token 流过（_had_stream 为 False）时才打印 _text，
                     # 避免和已流式展示过的内容重复。
                     if not _had_stream and _text and _term is not None:

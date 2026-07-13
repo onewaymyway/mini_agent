@@ -106,7 +106,7 @@ MemoryBackend（抽象接口，perception/memory_base.py）
 | `search(query, k=3)` | TF-IDF + 时间衰减排序，返回 top-k |
 | `search_by_tag(tag)` | 精确标签匹配 |
 | `rank_subset(query, subset, k=3)` | 只在给定子集内重排（供 `LibraryIndex.shelf_search()` 两步检索的第二步复用） |
-| `rewrite_categories(updates)` | Phase G 知识巩固时批量改写分类号 |
+| `rewrite_categories(updates)` | 巩固循环 知识巩固时批量改写分类号 |
 | `library` | 属性，返回挂载的 `LibraryIndex` 实例（若有） |
 | `count` / `all_entries()` | 条目总数 / 全量条目列表 |
 
@@ -121,7 +121,7 @@ MemoryBackend（抽象接口，perception/memory_base.py）
 ### 4.2 四个子模块的职责划分
 | 模块 | 职责 |
 |---|---|
-| `classification.py` | 分类树（书架结构）本体：节点表、规则匹配、LLM 兜底分类、Phase G 批量新增节点 |
+| `classification.py` | 分类树（书架结构）本体：节点表、规则匹配、LLM 兜底分类、巩固循环 批量新增节点 |
 | `entity_index.py` | 实体/著者目录：记忆条目关联的实体 ID |
 | `catalog.py` | 分类指针索引 + 知识编年目录（`CategoryCatalog`） |
 | `library_index.py` | 组合外观（Facade），把前三者串成统一对外接口 |
@@ -134,13 +134,13 @@ MemoryBackend（抽象接口，perception/memory_base.py）
 3. 规则不中时，允许兜底调用一次 LLM，但 LLM 只被要求"从现有节点里选一个
    最接近的，或明确回答 NONE"——**不会凭一次判断就新建分类节点**，避免树被
    单条易变的记忆污染。
-4. 真正的"新增分类节点"**只在 Phase G 巡检时批量发生**：未分类候选积累到
+4. 真正的"新增分类节点"**只在 巩固循环 巡检时批量发生**：未分类候选积累到
    `_MIN_CLUSTER_SIZE = 5` 条、且彼此关键词高度重合时，才聚类归纳出一个新
    节点（`grow_from_candidates`）——对应图书馆"新学科出现才增设类目"的稳态性。
 5. 候选队列上限 `_MAX_CANDIDATES_KEPT = 500`，超出淘汰最旧。
 
 持久化：`classification_tree.json`（节点表）+ `unclassified_candidates.jsonl`
-（候选队列，Phase G 处理后清空/归档）。两者都是可重建的观察性数据，不经
+（候选队列，巩固循环 处理后清空/归档）。两者都是可重建的观察性数据，不经
 `StateRepo`（不属于"自我修改"，不需要 git 版本化）。
 
 ### 4.4 LibraryIndex 对外接口
@@ -150,7 +150,7 @@ MemoryBackend（抽象接口，perception/memory_base.py）
 | `shelf_search(store, query, k, llm_call=None)` | 两步检索：先定位书架，再只在书架范围内精排；书架内容太少时回退全库检索 |
 | `record_retrieval_feedback(query, useful, llm_call=None)` | 检索命中质量的自我反馈——命中书架后续被验证有效/无效时调用，累积调整该书架 `feedback_score`，让分类器越用越准 |
 | `mark_stale_from_correction(store, injected_entry_ids, correction_text)` | 人类纠正 → 定位刚被检索命中、可能已过时的旧知识 → 标记冲突/推翻，而不是任由新旧知识并存靠时间衰减慢慢盖过去 |
-| `consolidate(store, llm_call=None, min_cluster_size=5, summary_threshold=3)` | Phase G 巡检调用：批量处理未分类候选（新增/合并分类节点）、批量重写攒够证据的实体摘要（含冲突检测）、实体去噪与近重复合并 |
+| `consolidate(store, llm_call=None, min_cluster_size=5, summary_threshold=3)` | 巩固循环 巡检调用：批量处理未分类候选（新增/合并分类节点）、批量重写攒够证据的实体摘要（含冲突检测）、实体去噪与近重复合并 |
 
 ## 5. Lesson Memory 的产生机制
 
@@ -248,7 +248,7 @@ capability_map 完全隔离（详见 `docs/multi-user-guide.md`）。
 | Stage 2.4 | `/evolution` 命令组（log/show/diff/revert） | `cli/commands/evolution.py` |
 | Stage 3.1 | Lesson → Skill 提案闭环 | `perception/lesson_review.py`、`tools/evolution.py::skill_propose` |
 | Stage 3.2 | eval 反馈环 | `evolution/eval_runner.py`、`mini-agent eval` |
-| Stage 8 | Phase G 后台循环（剪枝/能力地图/晋升/知识巩固） | `evolution/phase_g.py` |
+| Stage 8 | 巩固循环 后台循环（剪枝/能力地图/晋升/知识巩固） | `evolution/consolidation.py` |
 | Stage 9 | 自治运行时：GoalBacklog / AutonomousLoop / ResourceArbiter / CronScheduler | `perception/goal_backlog.py`、`evolution/autonomous_loop.py`、`evolution/resource_arbiter.py`、`evolution/cron_scheduler.py` |
 | [新增] | 效果回填（用户真实反馈闭环） | `evolution/outcome_tracker.py` |
 
@@ -356,11 +356,11 @@ mini-agent eval --scenario test_cases/                # 不传 --skill，跑 bas
 验证流水线里"eval 场景对比"这一项的核心引擎，同时也可独立于 CLI 被其他
 代码调用。
 
-## 5. Phase G 后台循环（Stage 8）
+## 5. 巩固循环 后台循环（Stage 8）
 
-`evolution/phase_g.py::run_phase_g()`，触发方式：`/evolve phase-g` 手动触发，
+`evolution/consolidation.py::run_consolidation()`，触发方式：`/evolve consolidate` 手动触发，
 或 SessionEnd 时间门控检查（超过 `interval_hours` 阈值自动触发，
-`should_run_phase_g()`）。一次运行按顺序做以下几件事（每步独立
+`should_run_consolidation()`）。一次运行按顺序做以下几件事（每步独立
 try/except，失败静默降级，不阻断后续步骤）：
 
 | 步骤 | 函数 | 说明 |
@@ -373,10 +373,10 @@ try/except，失败静默降级，不阻断后续步骤）：
 
 `observation_window_sessions` 参数（8.5 节"T1 自动合并前先观察 N 个
 session"）：当前版本只记录，实际"等待 N 个 session"逻辑由晋升提案的
-消费方（evolution-agent）从提案元数据里读取，不在 `run_phase_g()` 内阻塞。
+消费方（evolution-agent）从提案元数据里读取，不在 `run_consolidation()` 内阻塞。
 
 **演化节奏治理**（8.5 节，`_rhythm_path` / `rhythm_is_allowed` /
-`record_proposal`）：状态文件 `phase_g_rhythm.json`，防止同一类提案
+`record_proposal`）：状态文件 `consolidation_rhythm.json`，防止同一类提案
 （prune/promote）过于频繁地重复提出。
 
 ## 6. Stage 9：自治运行时
@@ -425,7 +425,7 @@ mini-agent self status                  # AutonomousLoop/goals/近期活动/sess
 
 ## 7. Self-Maintenance（自维护，`evolution/self_maintenance.py`）
 
-具身智能 C4 阶段能力，定期审视 Agent 自身状态并做出调整；与 Phase G 的
+具身智能 C4 阶段能力，定期审视 Agent 自身状态并做出调整；与 巩固循环 的
 剪枝/能力地图/晋升逻辑在语义上有一定职责重叠（见改进方向分析：两者边界
 尚未做过正式梳理，是潜在的未来重复建设风险点）。
 
@@ -444,7 +444,7 @@ commit 落地之后是否真的不再高频出现**。
 `baseline_trigger_count` / `observation_window_days`（默认 14 天）/
 `observation_deadline` / `status`（`observing`→`resolved`）/
 `post_trigger_count` / `verdict`。持久化在
-`<project_root>/.agent/outcome_tracking.json`（与 `phase_g_rhythm.json`
+`<project_root>/.agent/outcome_tracking.json`（与 `consolidation_rhythm.json`
 同级、同样的 tmp+`os.replace` 原子写）。
 
 ### 8.3 判定规则
@@ -463,7 +463,7 @@ commit 落地之后是否真的不再高频出现**。
 | 接入点 | 调用 |
 |---|---|
 | `tools/evolution.py::skill_propose` 成功后 | `record_commit_baseline()` 记录基线 |
-| `evolution/phase_g.py::run_phase_g()` | `tick()` 周期性判定，结果写入 `PhaseGReport.outcome_tracking_resolved` |
+| `evolution/consolidation.py::run_consolidation()` | `tick()` 周期性判定，结果写入 `ConsolidationReport.outcome_tracking_resolved` |
 | `cli/commands/evolution.py::_handle_revert` | `mark_reverted()`，观察期内被撤销则提前结束 |
 | `cli/commands/evolution.py::_handle_outcomes` | `/evolution outcomes [--worsened]` 命令，展示记录 + `worsened` 复核提示 |
 
@@ -485,7 +485,7 @@ commit 落地之后是否真的不再高频出现**。
 | `/evolution lessons-to-reminders` | lesson → 动态 reminder |
 | `/evolve review [--global] [--tier T1\|T2]` | 扫描达标 lesson 分组，spawn evolution-agent |
 | `/evolve list [--global] [--tier T1\|T2]` | 只扫描列出，不 spawn |
-| `/evolve phase-g [--force] [--dry-run]` | 手动触发 Phase G |
+| `/evolve consolidate [--force] [--dry-run]` | 手动触发 巩固循环 |
 | `mini-agent eval --scenario DIR [--skill NAME]` | eval 反馈环，独立进程子命令 |
 | `mini-agent daemon start\|stop\|status` | 守护进程管理（Stage 9） |
 | `mini-agent self status` | 自治状态总览（owner-only） |
@@ -530,7 +530,7 @@ transparency）、自创生（autopoiesis）——落地成十二个具体、可
 | C4. 自维护模块（SelfMaintenanceModule） | `evolution/self_maintenance.py` | P3 | ✅ |
 
 **与本文档前两部分的关系**：具身智能层大量复用记忆机制（lesson memory、
-capability_map）和自我进化机制（Phase G、ExplorationSandbox）已有的基础
+capability_map）和自我进化机制（巩固循环、ExplorationSandbox）已有的基础
 设施，不是第三套独立系统——具体耦合关系见第四部分。
 
 ## 2. A1. Connected REPL 完整命令对等
@@ -580,7 +580,7 @@ Agent 对自身状态的**轮间快照**——不调用 LLM，是 O(1) 纯计算
 提示——建议它停下来向用户汇报困境，而不是盲目重试同一种方法。
 
 每轮快照可选写入 `traces.jsonl`（`trace_enabled`，默认开启），供后续
-Phase G 分析趋势；C1（AgentSelfModel）也读取最新一次快照作为"此刻内部
+巩固循环 分析趋势；C1（AgentSelfModel）也读取最新一次快照作为"此刻内部
 感受"维度。
 
 **→ Stage 9 信号桥接**：`frustration` 有意义变化时落盘到
@@ -622,7 +622,7 @@ Phase G 分析趋势；C1（AgentSelfModel）也读取最新一次快照作为"�
 **具身来源**：affordance（余裕/行动可能性）——环境不是中性的信息集合，
 而是"对当前主体呈现出一组行动可能性"。`AffordanceAnalyzer` 在 session
 开始时构建一次（不是每轮 turn），交叉分析 `open_threads.json`（第一部分
-第 6 节）、`capability_map`（Phase G 能力地图，第二部分第 5 节）、
+第 6 节）、`capability_map`（巩固循环 能力地图，第二部分第 5 节）、
 lesson memory（第一部分第 5 节），生成"当前环境对我意味着哪些行动机会"
 的简短文本块，拼进 `system_extra`。纯只读分析，不调用 LLM，不写入任何
 文件，失败静默跳过不阻断 session 创建。
@@ -685,7 +685,7 @@ C1），供下游程序化读取，不必解析 system prompt 文本。
 
 **模块**：`evolution/memory_aging.py`（与第一部分第 3.2 节相互引用）
 
-**实现取舍**：原计划设想"Phase G tick 时批量预计算 `temporal_weight`
+**实现取舍**：原计划设想"巩固循环 tick 时批量预计算 `temporal_weight`
 缓存字段"，但核对 `memory_store.py` 后发现时间衰减本来就是按
 `entry.age_days`（属性，非缓存字段）在每次 `search()` 时实时计算——没有
 "缓存过期"问题，批量预计算反而多一份一致性维护成本。改为新增纯函数
@@ -753,8 +753,8 @@ daemon-connected 两条触发路径共用同一开关。测试：`tests/test_cog
 1. **stale_tools**（可能失效的工具）：扫描最近 20 个 session 的
    `traces.jsonl` 里 `phase="tool_call"` 记录，统计每个工具近期失败率——
    样本量 ≥3 且失败率 ≥60% 判定为"可能失效，建议排查 API/参数是否变更"。
-2. **stale_skills**（长期未用的 skill）：复用 `phase_g.py::prune_skills()`
-   同款 `skill_loader.tracker` 基础设施（角度不同：Phase G 是"高成本 +
+2. **stale_skills**（长期未用的 skill）：复用 `consolidation.py::prune_skills()`
+   同款 `skill_loader.tracker` 基础设施（角度不同：巩固循环 是"高成本 +
    未使用 → 建议剪枝"，这里是"长期未使用 → 可能过时，建议复核"）。
 3. **conflicting_lessons**（可能矛盾的经验）：复用
    `lesson_review.py::group_lessons()` 聚类结果，同一聚类内若同时出现
@@ -766,7 +766,7 @@ daemon-connected 两条触发路径共用同一开关。测试：`tests/test_cog
 同一套"保留人类控制权"原则：结果写入 `activity_digest.jsonl`
 （`type="health_report"`），下次 `/digest` 或连接时的晨报里展示。
 
-**触发方式**：与 Phase G 同款"时间门控"模式（独立状态文件
+**触发方式**：与 巩固循环 同款"时间门控"模式（独立状态文件
 `self_maintenance_state.json`，默认 24h 间隔）：
 - `agent.py::_maybe_run_self_maintenance()`——SessionEnd 时检查
 - 内置 cron job `sys:self_maintain`（`evolution/cron_scheduler.py`，
@@ -790,7 +790,7 @@ daemon-connected 两条触发路径共用同一开关。测试：`tests/test_cog
 | `cfg.proprioception.frustration_threshold` | `0.5` | 触发元认知提示的挫败感阈值 |
 | `cfg.proprioception.consecutive_failure_threshold` | `3` | 连续失败次数阈值 |
 | `cfg.affordance.enabled` | `True` | B4 余裕感知开关（daemon 与本地路径均生效）|
-| `cfg.affordance.use_capability_map` | `True` | 是否纳入 Phase G 能力地图数据 |
+| `cfg.affordance.use_capability_map` | `True` | 是否纳入 巩固循环 能力地图数据 |
 | `cfg.affordance.use_behavior_context` | `False` | 是否交叉分析用户行为感知层（双重开关，默认关闭）|
 | `cfg.affordance.risk_gating_enabled` | `True` | [方案一] 高风险域接入自主探索门控总开关 |
 | `cfg.affordance.risk_downweight_factor` | `0.4` | [方案一] 高风险域候选的 urgency 降权系数 |
@@ -815,7 +815,7 @@ daemon-connected 两条触发路径共用同一开关。测试：`tests/test_cog
   完全不经过验证；现在打 `needs_review` 标签 + 事件驱动的轻量一致性
   复核（重新核对触发信号是否仍成立），不是完整 `ExplorationSandbox`
   验证，但不再是"完全不验证"。
-- **自维护模块与 Phase G 职责边界**（未梳理）：两者在"定期审视自身状态
+- **自维护模块与 巩固循环 职责边界**（未梳理）：两者在"定期审视自身状态
   并调整"的语义上有重叠，尚未做过正式边界梳理。
 - **跨系统事件总线**（已实现，见 `docs/system-events-bus-guide.md`）：
   四条链路全部打通——proprioception → 提前自维护、记忆检索稀疏 → 探索
@@ -832,7 +832,7 @@ daemon-connected 两条触发路径共用同一开关。测试：`tests/test_cog
   `derive_candidates()` 调用它必然 `AttributeError`（被外层 `except`
   静默吞掉），导致"软目标自动推导"信号1（低置信度能力域）从未真正
   产出过候选；同时补上了它依赖的、此前完全不存在的
-  `phase_g.load_capability_map()`。
+  `consolidation.load_capability_map()`。
 - **AffordanceMap 高风险域接入自主探索门控**（已实现，方案一，见
   `docs/embodied-agent-guide.md` 8 节）：`high_risk_zones` 落盘 +
   `SoftGoalDeriver`/`ExplorationSandbox` 只读消费，候选降权 + token
@@ -865,11 +865,11 @@ daemon-connected 两条触发路径共用同一开关。测试：`tests/test_cog
    `source_lessons` 参数、`/evolve review` 扫描的对象，都来自
    `perception/lesson_review.py` 对 `MemoryStore` 中 `entry_type="lesson"`
    条目的分组统计。
-2. **能力地图是自我进化的产物，又反哺记忆体系**——`phase_g.py::
+2. **能力地图是自我进化的产物，又反哺记忆体系**——`consolidation.py::
    build_capability_map()` 扫描历史数据生成后，通过
    `_write_capability_map_to_memory()` 写回 `MemoryStore`（`entry_type=
    "capability_map"`），供后续 `AffordanceAnalyzer` 等模块检索使用。
-3. **Phase G 既维护记忆索引，也维护进化节奏**——`run_phase_g()` 一次运行里，
+3. **巩固循环 既维护记忆索引，也维护进化节奏**——`run_consolidation()` 一次运行里，
    `library.consolidate()`（记忆图书馆知识巩固）与 `prune_skills()` /
    `check_scope_promotion()`（自我进化候选生成）在同一个函数里顺序执行，
    共享同一套"演化节奏治理"（`rhythm_is_allowed`）冷却机制。
@@ -904,7 +904,7 @@ daemon-connected 两条触发路径共用同一开关。测试：`tests/test_cog
    "自我进化验证结果 → 记忆 → 具身感知"的完整闭环。
 10. **自维护模块与效果回填是同一治理哲学的两个实例**——C4
     `SelfMaintenanceModule`（具身）与 `outcome_tracker`（自我进化）都遵循
-    "只产出建议，不自动执行"的设计原则，且都挂载在 Phase G/SessionEnd
+    "只产出建议，不自动执行"的设计原则，且都挂载在 巩固循环/SessionEnd
     同款"时间门控"触发节奏上。
 11. **AffordanceMap 与用户行为感知层的桥接，具身×自治已初步融合**——
     `use_behavior_context` 开关此前只服务于 session 级的一次性感知，
@@ -924,7 +924,7 @@ daemon-connected 两条触发路径共用同一开关。测试：`tests/test_cog
 | `docs/self-evolution-stage2-guide.md` | 安全网三件套（T0~T3、StateRepo） |
 | `docs/self-evolution-stage3-1-guide.md` | Lesson → Skill 闭环 |
 | `docs/self-evolution-stage3-2-guide.md` | eval 反馈环 |
-| `docs/self-evolution-phase-g-guide.md` | Phase G 后台循环 |
+| `docs/self-evolution-consolidation-guide.md` | 巩固循环 后台循环 |
 | `docs/self-evolution-stage9-guide.md` | 自治运行时（GoalBacklog/AutonomousLoop/ResourceArbiter/CronScheduler） |
 | `docs/self-evolution-outcome-tracking-guide.md` | 效果回填闭环 |
 | `docs/embodied-agent-guide.md` | 具身智能 12 项能力（含 AffordanceAnalyzer 对 lesson memory 的交叉分析） |

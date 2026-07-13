@@ -10,12 +10,12 @@ perception/classification.py — 图书馆式分类树（书架结构）
   3. 规则匹配不中时，允许兜底调用一次 LLM，但 LLM 只被要求"从现有节点里
      选一个最接近的，或明确回答 NONE"——不会凭一次判断就新建分类节点，
      避免树被单条易变的记忆污染。
-  4. 真正的"新增分类节点"只在 Phase G 巡检时批量发生：未分类候选积累到
+  4. 真正的"新增分类节点"只在 巩固循环 巡检时批量发生：未分类候选积累到
      一定数量、且彼此关键词高度重合时，才聚类归纳出一个新节点（见
      grow_from_candidates）。这对应图书馆"新学科出现才增设类目"的稳态性。
 
 持久化：classification_tree.json（节点表）+ unclassified_candidates.jsonl
-（候选队列，Phase G 处理后清空/归档）。两者都是可重建的观察性数据，不经
+（候选队列，巩固循环 处理后清空/归档）。两者都是可重建的观察性数据，不经
 StateRepo，写入沿用项目内其它 W2/W3 模块的 tmp+rename 原子写风格。
 """
 
@@ -86,7 +86,7 @@ class CategoryNode:
     see_also: list[str] = field(default_factory=list)    # 参见的其它分类号
     status: str = "active"                      # active | deprecated
     created_at: float = field(default_factory=time.time)
-    entry_count: int = 0                        # 冗余计数，供 Phase G 判断是否该细分
+    entry_count: int = 0                        # 冗余计数，供 巩固循环 判断是否该细分
     feedback_score: float = 0.0                 # 检索反馈累积权重（改进4），影响 classify_by_rule 打分
     merged_into: Optional[str] = None           # 改进2：被合并掉的旧节点指向新的规范节点
 
@@ -169,7 +169,7 @@ class ClassificationTree:
         """
         调用方传入一个 llm_call(prompt) -> str 的轻量函数（通常是一次低 token
         的分类调用，而非完整对话）。Prompt 要求模型只能从现有节点里选择，
-        或回答 NONE——分类树的"新增节点"权力收在 Phase G 批量生长里，
+        或回答 NONE——分类树的"新增节点"权力收在 巩固循环 批量生长里，
         单次 LLM 调用不应该有权直接扩张树结构，否则相似说法的多次调用会
         制造大量语义重复的节点。
         """
@@ -263,7 +263,7 @@ class ClassificationTree:
         threshold 就合并：较早创建的节点作为规范节点保留，较晚的节点标记
         deprecated + merged_into 指向规范节点，关键词/参见关系并入规范节点。
 
-        只在 Phase G 巡检时调用（不是每次分类都检查），避免频繁合并造成
+        只在 巩固循环 巡检时调用（不是每次分类都检查），避免频繁合并造成
         分类号语义抖动。返回本次发生的 (旧节点, 新规范节点) 合并列表。
         """
         self._ensure_loaded()
@@ -313,7 +313,7 @@ class ClassificationTree:
         """
         对未分类候选做一次简单的关键词重合聚类，凡是聚出 >= min_cluster_size
         条、且共享关键词数达标的簇，就新增一个分类节点（挂在 ROOT_CODE 下，
-        后续可由 Phase G 后续巡检根据关键词重合度再决定要不要建立父子关系）。
+        后续可由 巩固循环 后续巡检根据关键词重合度再决定要不要建立父子关系）。
 
         candidates: [{"text": str, "entry_id": str, "created_at": float}, ...]
         llm_name_fn: 可选，(top_keywords, sample_texts) -> 节点名称；不提供时
@@ -410,10 +410,10 @@ class ClassificationTree:
         return result
 
 
-# ── 未分类候选队列（Phase G 消费）─────────────────────────────────────────
+# ── 未分类候选队列（巩固循环 消费）─────────────────────────────────────────
 
 def record_unclassified_candidate(path: Path, text: str, entry_id: str) -> None:
-    """把一条规则+LLM都未命中的记忆记为候选，等待 Phase G 批量聚类生长。"""
+    """把一条规则+LLM都未命中的记忆记为候选，等待 巩固循环 批量聚类生长。"""
     path.parent.mkdir(parents=True, exist_ok=True)
     _now = time.time()
     record = {"text": text, "entry_id": entry_id, "created_at": _now, "created_at_str": ts_to_str(_now)}
@@ -440,7 +440,7 @@ def load_unclassified_candidates(path: Path) -> list[dict]:
 
 
 def save_unclassified_candidates(path: Path, records: list[dict]) -> None:
-    """Phase G 处理完一批后，用剩余候选整体重写文件（原子写）。"""
+    """巩固循环 处理完一批后，用剩余候选整体重写文件（原子写）。"""
     path.parent.mkdir(parents=True, exist_ok=True)
     fd, tmp = tempfile.mkstemp(dir=str(path.parent), suffix=".jsonl.tmp")
     try:

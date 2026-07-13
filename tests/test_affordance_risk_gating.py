@@ -93,13 +93,13 @@ class TestSoftGoalDeriverRiskGating(unittest.TestCase):
             def _fake_load_capability_map(_paths):
                 return [_CapEntry("数据库迁移工具", 0.2, 1, 5)]
 
-            import mini_agent.evolution.phase_g as phase_g
-            orig = phase_g.load_capability_map
-            phase_g.load_capability_map = _fake_load_capability_map
+            import mini_agent.evolution.consolidation as consolidation
+            orig = consolidation.load_capability_map
+            consolidation.load_capability_map = _fake_load_capability_map
             try:
                 candidates = deriver._from_capability_map()
             finally:
-                phase_g.load_capability_map = orig
+                consolidation.load_capability_map = orig
 
             self.assertEqual(len(candidates), 1)
             baseline_urgency = (0.35 - 0.2) * 10 + 5 * 0.1
@@ -122,13 +122,13 @@ class TestSoftGoalDeriverRiskGating(unittest.TestCase):
             def _fake_load_capability_map(_paths):
                 return [_CapEntry("数据库迁移工具", 0.2, 1, 5)]
 
-            import mini_agent.evolution.phase_g as phase_g
-            orig = phase_g.load_capability_map
-            phase_g.load_capability_map = _fake_load_capability_map
+            import mini_agent.evolution.consolidation as consolidation
+            orig = consolidation.load_capability_map
+            consolidation.load_capability_map = _fake_load_capability_map
             try:
                 candidates = deriver._from_capability_map()
             finally:
-                phase_g.load_capability_map = orig
+                consolidation.load_capability_map = orig
 
             baseline_urgency = (0.35 - 0.2) * 10 + 5 * 0.1
             self.assertAlmostEqual(candidates[0].urgency, baseline_urgency, places=5)

@@ -6,7 +6,7 @@ uncertainty 信号接入事件总线测试。
   1. Agent._maybe_publish_uncertainty_signal()：连续 N 轮超阈值才发布，
      中途掉回阈值以下时计数重置
   2. 发布后 streak 重置，不会同一段持续状态重复发多条
-  3. _current_task_domain_hint() 复用 phase_g._infer_domain()
+  3. _current_task_domain_hint() 复用 consolidation._infer_domain()
   4. SoftGoalDeriver._recent_uncertainty_domains() 事件读取与降级路径
   5. _from_unexplored_capabilities() 中两路证据（sparse + uncertainty）
      同时命中时 novelty 加权取较大值而非相乘
@@ -145,9 +145,9 @@ class TestSoftGoalDeriverUncertaintyConsumption(unittest.TestCase):
                 capability_name: str
                 total_calls: int = 0
 
-            import mini_agent.evolution.phase_g as phase_g
-            orig_load = phase_g.load_capability_map
-            phase_g.load_capability_map = lambda _paths: [_CapEntry("testing_utils", 0)]
+            import mini_agent.evolution.consolidation as consolidation
+            orig_load = consolidation.load_capability_map
+            consolidation.load_capability_map = lambda _paths: [_CapEntry("testing_utils", 0)]
 
             deriver._recently_explored_domains = lambda cooldown_days=None: set()
             deriver._recent_sparse_region_tokens = lambda: ["testing"]
@@ -156,7 +156,7 @@ class TestSoftGoalDeriverUncertaintyConsumption(unittest.TestCase):
             try:
                 candidates = deriver._from_unexplored_capabilities()
             finally:
-                phase_g.load_capability_map = orig_load
+                consolidation.load_capability_map = orig_load
 
             self.assertEqual(len(candidates), 1)
             base_novelty = 1.0 / (1 + 0)

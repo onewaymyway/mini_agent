@@ -252,7 +252,7 @@ def _create(cfg: "AppConfig", scope: str, user_id: Optional[str] = None) -> Memo
 def set_llm_classify_call(backend: MemoryBackend, llm_call: Optional[Callable[[str], str]]) -> None:
     """
     把一个轻量分类调用（prompt: str -> str）接到已创建好的 backend 上，
-    用于分类规则未命中时的 LLM 兜底、以及 Phase G 巩固时的实体摘要重写。
+    用于分类规则未命中时的 LLM 兜底、以及 巩固循环 巩固时的实体摘要重写。
 
     设计成事后 attach 而不是构造参数，是为了不改变 _REGISTRY 里
     loader 的 (cfg, scope) -> MemoryBackend 签名（自定义 backend 也不用改）。

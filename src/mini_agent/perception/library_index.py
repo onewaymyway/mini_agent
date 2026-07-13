@@ -19,7 +19,7 @@ catalog.py（分类指针索引 + 知识编年目录）三者串起来，对外�
       冲突/推翻，而不是任由新旧知识并存靠时间衰减慢慢盖过去。
 
   consolidate(store, llm_call=None)
-      Phase G 巡检调用：批量处理未分类候选（改进2：新增/合并分类节点）、
+      巩固循环 巡检调用：批量处理未分类候选（改进2：新增/合并分类节点）、
       批量重写攒够证据的实体摘要（含改进1冲突检测）、实体去噪与近重复合并
       （改进3）。
 """
@@ -92,7 +92,7 @@ class LibraryIndex:
             code = None
 
         if code is None:
-            # 规则和 LLM 都未命中已有书架：记候选，等 Phase G 批量生长，
+            # 规则和 LLM 都未命中已有书架：记候选，等 巩固循环 批量生长，
             # 记忆本身临时挂在根节点下（检索时仍可通过全库回退命中）。
             record_unclassified_candidate(self._candidates_path, text, entry.entry_id)
             code = "000"
@@ -245,7 +245,7 @@ class LibraryIndex:
             limit=limit,
         )
 
-    # ── Phase G：批量巩固 ────────────────────────────────────────────────
+    # ── 巩固循环：批量巩固 ────────────────────────────────────────────────
 
     def consolidate(
         self,
@@ -257,7 +257,7 @@ class LibraryIndex:
         entity_similarity_threshold: float = 0.82,
     ) -> dict:
         """
-        返回本次巩固的统计，供 /evolve phase-g 展示。顺序：
+        返回本次巩固的统计，供 /evolve consolidate 展示。顺序：
           1. 分类树生长（未分类候选聚类出新节点）
           2. 分类树合并（改进2：语义重合的节点收敛）
           3. 实体摘要批量重写（含改进1冲突检测）

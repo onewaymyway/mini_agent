@@ -31,7 +31,7 @@ perception/self_model.py — AgentSelfModel（具身改进 v3 C1）
       重复注入这部分，只引用其中 agent 本轮还不知道的"当前 session
       实时状态"部分。
 
-  - 从 capability_map（phase_g.py build_capability_map）读取
+  - 从 capability_map（consolidation.py build_capability_map）读取
     当前 workdir 的技术领域置信度 → 这是"此刻 workdir 视角"的能力
     分布，与 SelfAssessment.confidence_by_domain（全局历史汇总）互补。
 
@@ -87,7 +87,7 @@ class AgentSelfModel:
         → AgentSelfModel 不重复注入这部分，只增量补充实时状态
 
     字段说明：
-      capability_snapshot  — 当前 workdir 的领域置信度（来自 phase_g），
+      capability_snapshot  — 当前 workdir 的领域置信度（来自 consolidation），
                              只在 session 开始时构建一次（慢变量）
       affordance_summary   — 当前环境行动可能性摘要（来自 AffordanceMap，B4），
                              session 开始时构建一次（慢变量）
@@ -207,7 +207,7 @@ class AgentSelfModel:
         TrackedCommit 本身没有独立的 domain 字段，这里复用
         affordance_calibration.py::calibrate() 已经验证过的同一套关联方式：
         优先取 commit_summary（人类可读摘要），缺失时退回
-        trigger_lesson_group_id，再用 phase_g._infer_domain() 做规则式推断
+        trigger_lesson_group_id，再用 consolidation._infer_domain() 做规则式推断
         （与 soft_goal_deriver 里其余候选的 domain 归类同一套逻辑，不引入
         第二套规则）。
 
@@ -215,7 +215,7 @@ class AgentSelfModel:
         失败返回空列表。"""
         try:
             from mini_agent.evolution.outcome_tracker import get_revert_candidates
-            from mini_agent.evolution.phase_g import _infer_domain
+            from mini_agent.evolution.consolidation import _infer_domain
 
             candidates = get_revert_candidates(paths)
             domains: list[str] = []
@@ -254,7 +254,7 @@ class AgentSelfModelBuilder:
             affordance_map: B4 已构建好的 AffordanceMap 实例（由调用方传入，
                 不重复构建），None 表示 B4 未启用或构建失败
             active_skill_count: 当前 session 加载的 skill 数量
-            use_capability_map: 是否尝试从 phase_g 读取能力地图
+            use_capability_map: 是否尝试从 consolidation 读取能力地图
         """
         cap_snapshot: dict[str, float] = {}
         if use_capability_map:
@@ -280,13 +280,13 @@ class AgentSelfModelBuilder:
     @staticmethod
     def _load_capability_snapshot(project_root) -> dict[str, float]:
         """
-        从 phase_g.build_capability_map() 读取当前 workdir 的领域置信度。
+        从 consolidation.build_capability_map() 读取当前 workdir 的领域置信度。
         失败时静默返回空字典——capability_map 是增量积累的数据，
         新项目初始为空是正常状态，不应阻断 session 启动。
         """
         try:
             from mini_agent.storage.paths import AgentPaths
-            from mini_agent.evolution.phase_g import build_capability_map
+            from mini_agent.evolution.consolidation import build_capability_map
 
             paths = AgentPaths(project_root)
             entries = build_capability_map(paths, None)  # None=只读，不写回

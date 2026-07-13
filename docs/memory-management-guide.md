@@ -435,7 +435,7 @@ register_memory_backend("chroma", lambda cfg: ChromaMemoryBackend(cfg))
 - [自我演化实施计划](../next_doc/self_evolution_implementation_plan.md) - Stage 1 完整需求背景
 - [自我演化 SubAgent 信息继承（Stage 3.3）](self-evolution-stage3-3-guide.md) - SubAgent 产生的 lesson 如何回流主 agent
 - [自我演化 eval 反馈环（Stage 3.2）](self-evolution-stage3-2-guide.md) - 用 eval 验证 lesson → skill 闭环产出的效果
-- [图书馆式知识索引指南](./library-index-guide.md) - 分类树自动生长 + 实体目录 + 两步检索 + Phase G 知识巩固（在本文档描述的 `MemoryStore` 之上新增的结构化索引层）
+- [图书馆式知识索引指南](./library-index-guide.md) - 分类树自动生长 + 实体目录 + 两步检索 + 巩固循环 知识巩固（在本文档描述的 `MemoryStore` 之上新增的结构化索引层）
 - [四项优先改进指南](./four-priority-improvements-guide.md) - 混合 TF-IDF + 本地离线 embedding 语义检索、淘汰前记忆巩固归纳（在本文档描述的 `MemoryStore` 检索与淘汰逻辑之上新增）
 
 ## 常见问题

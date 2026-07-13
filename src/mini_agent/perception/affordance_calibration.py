@@ -15,7 +15,7 @@ SoftGoalDeriver derive 成 Goal 并被 outcome_tracker 判定为 improved，
       - outcome_tracker.py 的 verdict 记录（improved/worsened）
       - 通过 title/description 关键词与 AffordanceMap 三路来源做关联，
         判断某条 Affordance 提示最终演变成的 Goal/commit 效果如何。
-  - 权重更新是周期性的（挂在 Phase G 周期扫描里），不是逐 turn 更新。
+  - 权重更新是周期性的（挂在 巩固循环 周期扫描里），不是逐 turn 更新。
 """
 
 from __future__ import annotations
@@ -97,7 +97,7 @@ def _classify_source(text: str) -> str:
 
 def calibrate(paths: "AgentPaths") -> AffordanceWeights:
     """
-    周期性调用（Phase G 里新增一步，类似 outcome_tracker.tick()）：
+    周期性调用（巩固循环 里新增一步，类似 outcome_tracker.tick()）：
       1. 读取 outcome_tracking.json 里已 resolved 的记录
       2. 尝试关联到 AffordanceMap 三路来源之一（关键词匹配，容忍关联失败）
       3. 按 verdict 调整对应来源权重

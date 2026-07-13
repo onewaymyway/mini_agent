@@ -270,7 +270,7 @@ prompt，而是按 8.4 节设计的"按本次 session 意图检索后注入"模�
 }
 ```
 
-`global_skill_candidate: true` 表示这个模式达到了"值得提炼成 global skill"的证据门槛，会被 Phase G（Stage 8）的 Scope 晋升扫描捡到。
+`global_skill_candidate: true` 表示这个模式达到了"值得提炼成 global skill"的证据门槛，会被 巩固循环（Stage 8）的 Scope 晋升扫描捡到。
 
 ### 3.4 activity_log.jsonl — 全局活动日志
 
@@ -436,6 +436,6 @@ resolve_open_thread(thread_id="ot-001")
 
 - [存储设计](storage-design.md) — 完整路径约定与目录结构
 - [观察性系统指南](observability-guide.md) — activity_log.jsonl 的消费方（异常检测基线）
-- [Phase G 后台循环指南](self-evolution-phase-g-guide.md) — cross_project_index 的晋升消费方
+- [巩固循环 后台循环指南](self-evolution-consolidation-guide.md) — cross_project_index 的晋升消费方
 - [配置指南](config-guide.md) — `WorkdirKnowledgeConfig` / `GlobalKnowledgeConfig` 详细参数
 - [计划与任务指南](plan-and-task-guide.md) — `open_threads` 与 task manifest 的联动

@@ -13,7 +13,7 @@
 | 信号源 | 落盘位置 | 消费方 | 触发方式 |
 |---|---|---|---|
 | proprioception（挫败感） | `proprioception_snapshot.json` | `ResourceArbiter._check_frustration()` | `can_run_autonomous()` 被调用时轮询 |
-| Phase G 节奏治理 | `rhythm.json` | `rhythm_is_allowed()` | 每次 prune/promote 前查一次 |
+| 巩固循环 节奏治理 | `rhythm.json` | `rhythm_is_allowed()` | 每次 prune/promote 前查一次 |
 | Self 维护间隔 | `self_maintenance_state.json` | `should_run_self_maintenance()` | SessionEnd / cron 定时查 |
 
 这些都是**快照模式**（覆盖写、只存"最近一次状态"），适合"我想知道当前是什么
@@ -202,7 +202,7 @@ Windows 开发环境中额外跑一次 `tests/test_system_events.py::TestSystemE
   `cfg.proprioception.uncertainty_streak_required`（默认 3）轮都 ≥
   `cfg.proprioception.uncertainty_threshold`（默认 0.45）才发布一次
   （tier=`tick`），发布后计数重置。payload 携带
-  `recent_domain_hint`（复用 `phase_g._infer_domain()` 对最近一条用户
+  `recent_domain_hint`（复用 `consolidation._infer_domain()` 对最近一条用户
   消息的规则式推断，取不到时为空字符串）。
 - 消费点：`soft_goal_deriver.py::_recent_uncertainty_domains()`，使用
   独立的 `consumer_name="soft_goal_deriver_uncertainty"`（而非复用
@@ -227,7 +227,7 @@ work 过，常规测试很容易漏掉（这几个模块此前大多没有专门
 | # | 位置 | 问题 | 后果 |
 |---|---|---|---|
 | 1 | `soft_goal_deriver._from_capability_map` | 缺少独立 `def` 头，被误拼接进 `_recently_explored_domains()` 的死代码区 | `derive_candidates()` 调用必然 `AttributeError` |
-| 2 | `phase_g.load_capability_map` | 函数根本不存在 | 上面 #1 修复后仍会 `ImportError` |
+| 2 | `consolidation.load_capability_map` | 函数根本不存在 | 上面 #1 修复后仍会 `ImportError` |
 | 3 | `soft_goal_deriver.commit_goals` | 调用 `goal_backlog.add_goal(description=...)`，但该关键字参数不存在（`GoalNode` 也没有 `description` 字段） | 只要有候选要提交就 `TypeError`，**软目标自动推导从未真正提交成功过一个目标节点** |
 | 4 | `soft_goal_deriver._from_work_index` | `thread.thread_id` 不存在（真实字段是 `id`）；`thread.last_activity_at` 也不存在，`getattr` 静默回退成 0.0，使"是否最近有活动"判断永远为 False | 构造 description 时 `AttributeError`；即使修好这处，staleness 判断此前也是失效的 |
 | 5 | `soft_goal_deriver._from_lesson_review` | `LessonGroup.meets_t1_threshold`/`meets_t2_t3_threshold` 是 `@property`，被当方法调用（多了一对括号） | 对 bool 值再调用 `()` 必然 `TypeError` |
@@ -235,7 +235,7 @@ work 过，常规测试很容易漏掉（这几个模块此前大多没有专门
 
 修复方式：
 
-- `phase_g.py` 新增 `load_capability_map(paths)`，复用
+- `consolidation.py` 新增 `load_capability_map(paths)`，复用
   `affordance_analyzer.py`/`self_model.py` 已经在用的
   `build_capability_map(paths, None)` 只读惯用法，不引入第二套统计口径；
   `CapabilityMapEntry` 补 `capability_name`/`total_calls` 两个 property 别名，
@@ -253,7 +253,7 @@ work 过，常规测试很容易漏掉（这几个模块此前大多没有专门
   三处 `meets_t1_threshold()`/`meets_t2_t3_threshold()` 去掉多余括号。
 - `lesson_review.py` 新增 `scan_lesson_groups(paths)`，内部独立构造
   只读 `MemoryStore` 读取全部条目后委托给 `group_lessons()`。
-- `tests/test_phase_g.py` 新增 `TestSoftGoalDeriverWorkIndexSignal`、
+- `tests/test_consolidation.py` 新增 `TestSoftGoalDeriverWorkIndexSignal`、
   `TestSoftGoalDeriverLessonReviewSignal`、
   `TestGoalCandidateUnvalidatedEventFlow` 三个测试类，`tests/test_goal_backlog.py`
   （新文件）专门覆盖 `description` 字段的回归防护。
@@ -281,7 +281,7 @@ work 过，常规测试很容易漏掉（这几个模块此前大多没有专门
 过滤、只读 peek、非法输入拒绝、写入失败降级、滚动归档、并发安全（8 线程
 共 160 条事件逐行 JSON 解析验证无交错/无丢失）。
 
-`tests/test_phase_g.py` 新增部分（53 用例总计，其中新增约 25 个）：
+`tests/test_consolidation.py` 新增部分（53 用例总计，其中新增约 25 个）：
 `load_capability_map` 与 `build_capability_map` 结果一致性、字段别名桥接、
 `_from_capability_map`/`_from_work_index`/`_from_lesson_review` 三个信号
 端到端不再抛异常、`goal.candidate_unvalidated` 完整闭环（发布/复核通过/
@@ -321,7 +321,7 @@ work 过，常规测试很容易漏掉（这几个模块此前大多没有专门
 `started_at` 不变的情况下仍刷新 `last_activity_at`、老数据缺失该字段时
 `from_dict` 回退到 `started_at`。
 
-`tests/test_phase_g.py` 里两个依赖"staleness 判断"的既有用例
+`tests/test_consolidation.py` 里两个依赖"staleness 判断"的既有用例
 （`TestSoftGoalDeriverWorkIndexSignal::test_stale_workthread_produces_candidate_without_exception`、
 `TestGoalCandidateUnvalidatedEventFlow::test_review_keeps_goal_when_workthread_still_stale`）
 调整为同时设置 `last_activity_at`（不再单独设置 `started_at`）——因为

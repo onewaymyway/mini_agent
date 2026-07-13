@@ -6,7 +6,7 @@ perception/catalog.py — 分类目录（图书馆"分类目录"入口）+ 知�
 日常运行走增量 add_entry，避免每次都重建整个索引。
 
 知识编年目录（knowledge_timeline.jsonl）记录知识生命周期事件：一条记忆
-何时生成、挂到了哪个分类/实体、何时被 Phase G 巩固合并、何时被更新的
+何时生成、挂到了哪个分类/实体、何时被 巩固循环 巩固合并、何时被更新的
 证据推翻。与 workdir_knowledge.py 里 W2 的 session 活动时间线是不同维度
 （那个记的是"session 做了什么"，这个记的是"某条知识经历了什么"）。
 """
@@ -109,7 +109,7 @@ def append_knowledge_event(
     """
     追加一条知识生命周期事件。event_type 常见取值：
       created         — 记忆条目生成并完成归类/挂载
-      merged          — 被 Phase G 巩固合并进另一条记忆
+      merged          — 被 巩固循环 巩固合并进另一条记忆
       superseded      — 被更晚近的证据推翻
       new_category    — 触发了新分类节点的诞生（entry_id 为空，category 为新分类号）
       category_merged — 分类节点被合并掉（改进2）

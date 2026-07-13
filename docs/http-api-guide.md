@@ -493,8 +493,8 @@ curl -H "Authorization: Bearer <token>" \
   "next_tick_in": 47.3,
   "cron_jobs": [
     {
-      "id": "sys:phase_g",
-      "name": "Phase G 扫描",
+      "id": "sys:consolidation",
+      "name": "巩固循环 扫描",
       "enabled": true,
       "next_run_in": 18420,
       "next_run_str": "in 5.1h",
@@ -634,8 +634,8 @@ POST /v1/cron/jobs/{job_id}/run
 {
   "jobs": [
     {
-      "id": "sys:phase_g",
-      "name": "Phase G 扫描",
+      "id": "sys:consolidation",
+      "name": "巩固循环 扫描",
       "schedule": "interval:21600",
       "description": "技能剪枝、去重、能力地图更新（每 6 小时）",
       "enabled": true,

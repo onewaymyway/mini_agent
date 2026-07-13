@@ -27,7 +27,7 @@
 临时挂在 000 下（检索时仍可通过全库回退命中，不会丢失）
 ```
 
-**新分类节点只在 Phase G 巡检时批量诞生**（`grow_from_candidates`）：未分类
+**新分类节点只在 巩固循环 巡检时批量诞生**（`grow_from_candidates`）：未分类
 候选按关键词重合度做简单聚类，某个簇积累到 `min_cluster_size`（默认 5）条
 才新建一个节点，这对应图书馆"新学科出现才增设类目"的稳态性——避免分类树
 被单条易变的记忆污染成一堆几乎重复的碎类目。
@@ -40,7 +40,7 @@
 - 新记忆写入时，从文本里启发式猜测实体名候选（模块名 `xxx.py`、长度 ≥4
   的标识符），命中已有实体（含别名）就挂上去，都不命中才新建实体卡片。
 - **摘要不是每次写入都重写**：只递增 `pending_evidence_count`，真正的
-  `summary` 重写只在 Phase G 巡检、且该实体积累证据数达到阈值（默认 3）
+  `summary` 重写只在 巩固循环 巡检、且该实体积累证据数达到阈值（默认 3）
   时才批量发生（`rewrite_summary`），避免高频 lesson 反复触发重写造成
   抖动和不必要的 LLM 调用。
 - 没有 LLM 时会退化为"取最近 3 条证据拼接"的朴素摘要，保证零依赖也能跑。
@@ -63,7 +63,7 @@
 |---|---|---|
 | `on_new_entry(entry, llm_call=None)` | `MemoryStore.add()` 内部自动调用 | 分类 → 挂实体 → 更新目录 → 记编年事件 |
 | `shelf_search(store, query, k, llm_call=None)` | `context_builder.py` 检索时 | 两步检索：先定位书架，架内候选太少才回退全库 |
-| `consolidate(store, llm_call=None)` | Phase G 巡检 | 批量生长分类树 + 批量重写实体摘要 |
+| `consolidate(store, llm_call=None)` | 巩固循环 巡检 | 批量生长分类树 + 批量重写实体摘要 |
 
 ## 二、两步检索是如何工作的
 
@@ -100,9 +100,9 @@ store.rank_subset(query, 候选集合, k)  # 只在候选集合内做 TF-IDF+时
 检索；`context_builder.py` 里 `shelf_search` 抛异常也会被捕获并回退到原有
 的 `merge_search`。
 
-## 三、Phase G 知识巩固
+## 三、巩固循环 知识巩固
 
-`evolution/phase_g.py` 的 `run_phase_g()` 新增了一步（8.6），在剪枝候选、
+`evolution/consolidation.py` 的 `run_consolidation()` 新增了一步（8.6），在剪枝候选、
 能力地图、晋升候选之后运行：
 
 ```python
@@ -114,7 +114,7 @@ report.knowledge_consolidation = library.consolidate(
 # → {"new_categories": int, "remaining_unclassified": int, "entities_summarized": int}
 ```
 
-`/evolve phase-g` CLI 命令会在报告里打印这三个数字。只对本地 `MemoryStore`
+`/evolve consolidate` CLI 命令会在报告里打印这三个数字。只对本地 `MemoryStore`
 且带 `library_index` 的 backend 生效；其它 backend（未来的 Chroma/Redis 等）
 尚未接入，会被静默跳过。
 
@@ -132,8 +132,8 @@ report.knowledge_consolidation = library.consolidate(
   把当前 `client_pool` 接上去——每次调用都动态取 `current_client`，天然跟随
   `client_pool` 的故障转移/模型切换。
 - 三处调用点都已接好：`agent.py` 构造时（新增记忆时的分类兜底）、
-  `agent.py:_maybe_run_phase_g`（SessionEnd 自动触发）、
-  `cli/commands/evolve.py:_handle_phase_g`（手动 `/evolve phase-g`）。
+  `agent.py:_maybe_run_consolidation`（SessionEnd 自动触发）、
+  `cli/commands/evolve.py:_handle_consolidation`（手动 `/evolve consolidate`）。
 
 如果某个 backend 不需要 LLM 兜底（比如纯离线场景），保持默认
 `_llm_classify_call=None` 即可，所有涉及 LLM 的路径都有非 LLM 退化实现。
@@ -194,17 +194,17 @@ library_index_user_scoped: bool = False    # 改进7：多用户场景下按 use
   分类合并/实体巩固（改进1-7 的组合外观）
 - `context_builder.py` — 检索优先走 `shelf_search`，失败/不足回退原逻辑；
   新增 `last_injected_memory_ids` 追踪（改进5）
-- `evolution/phase_g.py` — 新增知识巩固步骤（8.6）
-- `cli/commands/evolve.py` — `/evolve phase-g` 报告展示巩固统计；新增
+- `evolution/consolidation.py` — 新增知识巩固步骤（8.6）
+- `cli/commands/evolve.py` — `/evolve consolidate` 报告展示巩固统计；新增
   `/evolve timeline` 命令（改进6）
-- `agent.py` — 接入 LLM 客户端到分类兜底 + Phase G 知识巩固；
+- `agent.py` — 接入 LLM 客户端到分类兜底 + 巩固循环 知识巩固；
   `_detect_and_record_correction` 接入 `mark_stale_from_correction`（改进5）
 - `storage/paths.py` — 新增 6 个路径属性（含 `knowledge_timeline_index`）
 - `config/models.py` — 新增 3 个开关（含 `library_index_user_scoped`）
 
 ## 八、七个改进方向的具体实现
 
-首版落地后梳理出的进一步改进，全部已实现，均只在 Phase G 巡检或明确的
+首版落地后梳理出的进一步改进，全部已实现，均只在 巩固循环 巡检或明确的
 调用点触发，不影响写入侧的实时性能：
 
 ### 1. 冲突检测与知识版本化
@@ -215,7 +215,7 @@ LLM 时退化为关键词启发式（`_looks_contradictory`：旧摘要不含"�
 需要"等否定词、新证据含有则判定为冲突）。
 
 ### 2. 分类树的合并（收敛）机制
-`ClassificationTree.merge_similar_nodes(threshold=0.6)` 在 Phase G 巡检时，
+`ClassificationTree.merge_similar_nodes(threshold=0.6)` 在 巩固循环 巡检时，
 对同一父节点下的活跃节点两两计算关键词集合的 Jaccard 相似度，超过阈值即
 合并：较早创建的节点保留为规范节点，较晚的标记 `deprecated` 并设置
 `merged_into` 指向规范节点。`classify_by_rule`/`classify_by_llm`/
@@ -225,7 +225,7 @@ LLM 时退化为关键词启发式（`_looks_contradictory`：旧摘要不含"�
 规范分类号，避免旧记忆在合并后"查不到"。
 
 ### 3. 实体名抽取的巩固：去噪 + 近重复合并
-`EntityStore.consolidate_entities()`（Phase G 调用）：
+`EntityStore.consolidate_entities()`（巩固循环 调用）：
 - **去噪**：正则抽取难免抓到噪音，实体名过短或落在常见停用词表里的
   （`self`/`config`/`return` 等）直接标记 `deprecated`。
 - **近重复合并**：用 `difflib.SequenceMatcher` 计算实体名相似度，
@@ -271,8 +271,8 @@ user_id=...)` / `create_both_memory_backends(cfg, user_id=...)` 会给分类树�
 ## 相关文档
 
 - [记忆管理指南](./memory-management-guide.md) — `MemoryStore`/lesson/衰减机制的原有设计
-- [自我演化 Stage 4-5 指南](./self-evolution-stage4-5-guide.md) — Phase G 后台循环的其它环节（剪枝/晋升）
+- [自我演化 Stage 4-5 指南](./self-evolution-stage4-5-guide.md) — 巩固循环 后台循环的其它环节（剪枝/晋升）
 
 ---
 
-*首次编写：2026-07（图书馆式索引：分类树自动生长 + 实体目录 + 两步检索 + Phase G 知识巩固）*
+*首次编写：2026-07（图书馆式索引：分类树自动生长 + 实体目录 + 两步检索 + 巩固循环 知识巩固）*

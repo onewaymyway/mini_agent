@@ -84,7 +84,7 @@ def build_parser() -> argparse.ArgumentParser:
               /evolution revert <commit>  Revert a self-evolution commit (records a lesson)
               /evolve review [--global] [--tier T1|T2]   Scan lessons, spawn evolution-agent on qualifying groups
               /evolve list [--global] [--tier T1|T2]     Preview qualifying lesson groups without spawning
-              /evolve phase-g [--dry-run]                 Run Phase G background maintenance (prune/promote/knowledge consolidation)
+              /evolve consolidate [--dry-run]              Run background consolidation (prune/promote/knowledge consolidation) [alias: phase-g]
               /evolve timeline --entity <id>|--category <code> [--limit N]  Query knowledge lifecycle timeline (library index)
               /agent goals                List Goal Backlog (active goals + objectives)
               /agent goals add <title>    Add a Goal

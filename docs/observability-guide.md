@@ -330,7 +330,7 @@ anomaly flag 触发条件：value > mean + k_sigma × std
 | 文件 | 生命周期 | 预期大小 |
 |------|---------|---------|
 | `traces.jsonl` | session 级，随 session 保留 | 每 turn ~3-5 行，约 1-5 KB/session |
-| `phase_g_rhythm.json` | workdir 级，长期保留 | 极小，仅记录时间戳 |
+| `consolidation_rhythm.json` | workdir 级，长期保留 | 极小，仅记录时间戳 |
 | `session_metrics` 行（in `activity_log.jsonl`）| global，长期积累 | 每 session 1 行，约 100-200 bytes |
 
 traces.jsonl 不会自动清理——长期项目可按需用 `git gc` 或定期归档脚本处理。`/diagnostics` 端点只读当前 session 的 traces，不扫描历史文件。
@@ -359,5 +359,5 @@ traces.jsonl 不会自动清理——长期项目可按需用 `git gc` 或定期
 - [配置指南](config-guide.md) — `ObservabilityConfig` 详细参数
 - [HTTP API 指南](http-api-guide.md) — `/diagnostics` 端点完整说明
 - [提示注入系统指南](reminder-system-guide.md) — `error_category` 精确路由
-- [Phase G 后台循环指南](self-evolution-phase-g-guide.md) — 消费 `/diagnostics` 数据的 8.2 剪枝扫描
+- [巩固循环 后台循环指南](self-evolution-consolidation-guide.md) — 消费 `/diagnostics` 数据的 8.2 剪枝扫描
 - [存储设计](storage-design.md) — `traces.jsonl` 路径约定

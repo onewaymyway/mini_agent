@@ -1,12 +1,12 @@
 """
-tests/test_phase_g.py — Stage 8 Phase G 测试
+tests/test_consolidation.py — Stage 8 巩固循环 测试
 
 覆盖：
   8.2  prune_skills（剪枝候选扫描）
   8.3  build_capability_map（能力地图）
   8.4  check_scope_promotion（Scope 晋升候选）
   8.5  rhythm_is_allowed / record_proposal（节奏治理）
-  8.1  run_phase_g / should_run_phase_g（整体入口 + 时间门控）
+  8.1  run_consolidation / should_run_consolidation（整体入口 + 时间门控）
 """
 
 from __future__ import annotations
@@ -18,16 +18,16 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from mini_agent.evolution.phase_g import (
+from mini_agent.evolution.consolidation import (
     rhythm_is_allowed,
     record_proposal,
-    get_last_phase_g_run,
-    record_phase_g_run,
-    should_run_phase_g,
+    get_last_consolidation_run,
+    record_consolidation_run,
+    should_run_consolidation,
     prune_skills,
     build_capability_map,
     check_scope_promotion,
-    run_phase_g,
+    run_consolidation,
     _infer_domain,
     CapabilityMapEntry,
     PruneCandidate,
@@ -94,30 +94,30 @@ class TestRhythmGovernance:
     def test_expired_record_allowed(self, paths):
         # 先记录一个过期的时间（比 min_interval_days 更早）
         data = {f"prune:skill_foo": time.time() - 8 * 86400}  # 8 天前
-        (paths.workdir_dir / "phase_g_rhythm.json").write_text(
+        (paths.workdir_dir / "consolidation_rhythm.json").write_text(
             json.dumps(data), encoding="utf-8"
         )
         assert rhythm_is_allowed(paths, "prune", "skill_foo", min_interval_days=7.0) is True
 
-    def test_phase_g_run_tracking(self, paths):
-        assert get_last_phase_g_run(paths) == 0.0
-        record_phase_g_run(paths)
-        assert get_last_phase_g_run(paths) > 0.0
+    def test_consolidation_run_tracking(self, paths):
+        assert get_last_consolidation_run(paths) == 0.0
+        record_consolidation_run(paths)
+        assert get_last_consolidation_run(paths) > 0.0
 
-    def test_should_run_phase_g_initially(self, paths):
-        assert should_run_phase_g(paths, interval_hours=24.0) is True
+    def test_should_run_consolidation_initially(self, paths):
+        assert should_run_consolidation(paths, interval_hours=24.0) is True
 
     def test_should_not_run_after_recent(self, paths):
-        record_phase_g_run(paths)
-        assert should_run_phase_g(paths, interval_hours=24.0) is False
+        record_consolidation_run(paths)
+        assert should_run_consolidation(paths, interval_hours=24.0) is False
 
     def test_should_run_after_interval(self, paths):
         # 模拟 25 小时前运行过
         data = {"_last_run_at": time.time() - 25 * 3600}
-        (paths.workdir_dir / "phase_g_rhythm.json").write_text(
+        (paths.workdir_dir / "consolidation_rhythm.json").write_text(
             json.dumps(data), encoding="utf-8"
         )
-        assert should_run_phase_g(paths, interval_hours=24.0) is True
+        assert should_run_consolidation(paths, interval_hours=24.0) is True
 
 
 # ════════════════════════════════════════════════════════════════════════════════
@@ -302,26 +302,26 @@ class TestCheckScopePromotion:
 
 
 # ════════════════════════════════════════════════════════════════════════════════
-# 8.1  run_phase_g（整体入口）
+# 8.1  run_consolidation（整体入口）
 # ════════════════════════════════════════════════════════════════════════════════
 
-class TestRunPhaseG:
+class TestRunConsolidation:
     def test_returns_report(self, paths):
-        report = run_phase_g(paths, skill_loader=None, memory_backend=None)
+        report = run_consolidation(paths, skill_loader=None, memory_backend=None)
         assert hasattr(report, "prune_candidates")
         assert hasattr(report, "capability_map")
         assert hasattr(report, "promotion_candidates")
 
     def test_records_last_run(self, paths):
-        assert get_last_phase_g_run(paths) == 0.0
-        run_phase_g(paths, skill_loader=None, memory_backend=None)
-        assert get_last_phase_g_run(paths) > 0.0
+        assert get_last_consolidation_run(paths) == 0.0
+        run_consolidation(paths, skill_loader=None, memory_backend=None)
+        assert get_last_consolidation_run(paths) > 0.0
 
     def test_capability_map_populated(self, paths):
         sessions = paths.sessions_dir
         _make_manifest(sessions, "s1", "t1", "done", "Fix bug in utils.py")
 
-        report = run_phase_g(paths, skill_loader=None, memory_backend=None)
+        report = run_consolidation(paths, skill_loader=None, memory_backend=None)
         assert len(report.capability_map) > 0
 
     def test_promotion_candidates_from_index(self, paths):
@@ -332,11 +332,11 @@ class TestRunPhaseG:
             "confidence": 0.9,
             "global_skill_candidate": True,
         }])
-        report = run_phase_g(paths, skill_loader=None, memory_backend=None)
+        report = run_consolidation(paths, skill_loader=None, memory_backend=None)
         assert len(report.promotion_candidates) == 1
 
     def test_report_to_dict(self, paths):
-        report = run_phase_g(paths, skill_loader=None, memory_backend=None)
+        report = run_consolidation(paths, skill_loader=None, memory_backend=None)
         d = report.to_dict()
         assert "ran_at" in d
         assert "prune_candidates" in d
@@ -344,7 +344,7 @@ class TestRunPhaseG:
         assert "promotion_candidates" in d
 
     def test_has_findings_false_when_empty(self, paths):
-        report = run_phase_g(paths, skill_loader=None, memory_backend=None)
+        report = run_consolidation(paths, skill_loader=None, memory_backend=None)
         # 没有剪枝候选且没有晋升候选
         assert report.has_findings is False
 
@@ -356,7 +356,7 @@ class TestRunPhaseG:
             "confidence": 0.95,
             "global_skill_candidate": True,
         }])
-        report = run_phase_g(paths, skill_loader=None, memory_backend=None)
+        report = run_consolidation(paths, skill_loader=None, memory_backend=None)
         assert report.has_findings is True
 
 
@@ -366,7 +366,7 @@ class TestRunPhaseG:
 #
 # 修复前：self._from_capability_map() 调用必然抛 AttributeError（该方法此前
 # 没有独立的 def 头，代码是 _recently_explored_domains() 内部 return 之后的
-# 死代码），phase_g.load_capability_map 函数本身也完全不存在。
+# 死代码），consolidation.load_capability_map 函数本身也完全不存在。
 # derive_candidates() 无 try/except 保护，异常只在更外层的
 # autonomous_loop._tick_autonomous() 被吞掉——意味着"软目标自动推导"功能
 # 从写下来那天起就从未真正产出过候选，且不会被常规测试发现（因为
@@ -377,7 +377,7 @@ class TestLoadCapabilityMap:
     def test_load_capability_map_matches_build_capability_map(self, paths):
         """load_capability_map(paths) 应该是 build_capability_map(paths, None)
         的只读等价物——两者结果应完全一致（同一份统计口径，不产生分歧）。"""
-        from mini_agent.evolution.phase_g import load_capability_map
+        from mini_agent.evolution.consolidation import load_capability_map
 
         sessions = paths.sessions_dir
         _make_manifest(sessions, "s1", "t1", "done", "refactor the code")
@@ -395,7 +395,7 @@ class TestLoadCapabilityMap:
         CapabilityMapEntry 的真实字段是 domain/success_count/failure_count
         ——这两个 property 必须正确桥接，否则 total_calls 会静默 getattr
         回退成 0（不报错，但 novelty/urgency 计算全部错误）。"""
-        from mini_agent.evolution.phase_g import load_capability_map
+        from mini_agent.evolution.consolidation import load_capability_map
 
         sessions = paths.sessions_dir
         _make_manifest(sessions, "s1", "t1", "done", "refactor the code")
@@ -408,7 +408,7 @@ class TestLoadCapabilityMap:
         assert entry.total_calls == entry.success_count + entry.failure_count == 2
 
     def test_empty_when_no_sessions(self, paths):
-        from mini_agent.evolution.phase_g import load_capability_map
+        from mini_agent.evolution.consolidation import load_capability_map
         assert load_capability_map(paths) == []
 
 
