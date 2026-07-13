@@ -156,12 +156,12 @@ def test_create_reuses_existing_branch(repo, ws_root):
 
 def test_worktree_changes_isolated_from_main_repo(repo, ws_root, seeded_project):
     """在 worktree 里改动文件，不应影响主仓库工作区内容（进程级隔离的核心保证）。"""
-    main_file = seeded_project / "src" / "mini_agent" / "agent.py"
+    main_file = seeded_project / "src" / "mini_agent" / "agent" / "core.py"
     original_content = main_file.read_text()
 
     ws = EvolutionWorkspace.create(repo, branch="evolve/test-isolation", workspace_root=ws_root)
     try:
-        ws_file = ws.path / "src" / "mini_agent" / "agent.py"
+        ws_file = ws.path / "src" / "mini_agent" / "agent" / "core.py"
         ws_file.write_text("# modified in worktree only\n")
         assert main_file.read_text() == original_content
         assert ws_file.read_text() == "# modified in worktree only\n"
@@ -206,7 +206,7 @@ def test_smoke_boot_succeeds_on_unmodified_snapshot(repo, ws_root):
 def test_smoke_boot_fails_on_syntax_error(repo, ws_root):
     ws = EvolutionWorkspace.create(repo, branch="evolve/test-smoke-broken", workspace_root=ws_root)
     try:
-        (ws.path / "src" / "mini_agent" / "agent.py").write_text("this is not valid python !!! ###")
+        (ws.path / "src" / "mini_agent" / "agent" / "core.py").write_text("this is not valid python !!! ###")
         result = ws.smoke_boot(timeout=60)
         assert not result.ok
         assert result.returncode != 0

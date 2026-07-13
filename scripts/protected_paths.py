@@ -45,7 +45,12 @@ from typing import Union
 
 PROTECTED_PATHS: tuple[str, ...] = (
     # 1. agentic loop 主循环
+    # 说明：Stage 12 起，agent.py 已从单文件拆分为 src/mini_agent/agent/ 目录
+    # （core.py + 多个职责 Mixin 文件）。保留旧的单文件路径字符串是无害的
+    # 防御性冗余（该路径已不存在，不会被误判为"未受保护"）；新增的目录条目
+    # 才是实际生效、覆盖整个 agent 包的红线。
     "src/mini_agent/agent.py",
+    "src/mini_agent/agent/",
 
     # 2. 权限/审批门控
     "src/mini_agent/permissions.py",

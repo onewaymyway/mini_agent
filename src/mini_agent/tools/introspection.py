@@ -391,59 +391,75 @@ def _get_class_meta(source_file: Optional[str], class_name: str, proj_root: Opti
 
 def _get_agent_init_snippet(attr_name: str, proj_root: Optional[Path], context_lines: int = 3) -> dict:
     """
-    在 agent.py 中搜索 self.<attr_name> 的赋值行，返回：
-      - 所有赋值出现的行号及带行号标注的上下文代码片段（± context_lines 行）
+    在 mini_agent/agent/ 包（core.py + 各职责 Mixin 文件）中搜索 self.<attr_name>
+    的赋值行，返回：
+      - 所有赋值出现的行号、所在文件及带行号标注的上下文代码片段（± context_lines 行）
       - is_declaration: True 表示仅类型声明（= None/[]/{}），非实际构造
       - assignment: 赋值行原始文本
+
+    [Stage 12] agent.py 已拆分为 agent/ 目录（core.py 保留 __init__，其余
+    方法按职责分散在 lifecycle.py / reflection.py / llm_control.py 等文件中，
+    这些方法里同样可能出现 self.<attr> 赋值），因此需要遍历整个目录而不是
+    单个文件；core.py 优先排在结果最前面（大多数属性的"首次赋值"仍在 __init__ 里）。
 
     snippet 中赋值行用 ">>>" 标注，其余行用空格前缀，方便定位。
     """
     if not proj_root:
         return {}
 
-    agent_py = proj_root / "src" / "mini_agent" / "agent.py"
-    if not agent_py.exists():
+    agent_dir = proj_root / "src" / "mini_agent" / "agent"
+    if not agent_dir.exists():
         return {}
 
-    try:
-        lines = agent_py.read_text(encoding="utf-8").splitlines()
-    except Exception as e:
-        return {"_error": str(e)}
+    # core.py（含 __init__）优先，其余按文件名排序，保证结果顺序稳定
+    py_files = sorted(
+        (p for p in agent_dir.glob("*.py") if p.name != "__init__.py"),
+        key=lambda p: (p.name != "core.py", p.name),
+    )
 
     hits: list[dict] = []
-    for i, line in enumerate(lines, 1):
-        stripped = line.strip()
-        if not stripped.startswith(f"self.{attr_name}"):
+    for py_file in py_files:
+        try:
+            lines = py_file.read_text(encoding="utf-8").splitlines()
+        except Exception as e:
+            hits.append({"_error": f"{py_file.name}: {e}"})
             continue
-        rest = stripped[len(f"self.{attr_name}"):]
-        if "=" not in rest or stripped.startswith("#"):
-            continue
 
-        # 判断是否仅类型声明（无实际构造意义）
-        rhs = rest.split("=", 1)[1].strip() if "=" in rest else ""
-        is_declaration_only = (
-            rest.lstrip().startswith(":") and
-            rhs in ("None", "[]", "{}", '""', "''")
-        )
+        rel_file = f"src/mini_agent/agent/{py_file.name}"
+        for i, line in enumerate(lines, 1):
+            stripped = line.strip()
+            if not stripped.startswith(f"self.{attr_name}"):
+                continue
+            rest = stripped[len(f"self.{attr_name}"):]
+            if "=" not in rest or stripped.startswith("#"):
+                continue
 
-        # 带行号前缀的 snippet，赋值行用 >>> 标注
-        start = max(0, i - 1 - context_lines)
-        end = min(len(lines), i - 1 + context_lines + 1)
-        snippet_lines = []
-        for j in range(start, end):
-            marker = ">>>" if j == i - 1 else "   "
-            snippet_lines.append(f"{marker} {j+1:4d}: {lines[j]}")
+            # 判断是否仅类型声明（无实际构造意义）
+            rhs = rest.split("=", 1)[1].strip() if "=" in rest else ""
+            is_declaration_only = (
+                rest.lstrip().startswith(":") and
+                rhs in ("None", "[]", "{}", '""', "''")
+            )
 
-        hits.append({
-            "line": i,
-            "is_declaration": is_declaration_only,
-            "assignment": stripped[:120],
-            "snippet": "\n".join(snippet_lines),
-            "snippet_start_line": start + 1,
-        })
+            # 带行号前缀的 snippet，赋值行用 >>> 标注
+            start = max(0, i - 1 - context_lines)
+            end = min(len(lines), i - 1 + context_lines + 1)
+            snippet_lines = []
+            for j in range(start, end):
+                marker = ">>>" if j == i - 1 else "   "
+                snippet_lines.append(f"{marker} {j+1:4d}: {lines[j]}")
+
+            hits.append({
+                "file": rel_file,
+                "line": i,
+                "is_declaration": is_declaration_only,
+                "assignment": stripped[:120],
+                "snippet": "\n".join(snippet_lines),
+                "snippet_start_line": start + 1,
+            })
 
     return {
-        "agent_py": "src/mini_agent/agent.py",
+        "agent_dir": "src/mini_agent/agent/",
         "occurrences": hits,
         "total": len(hits),
     }
