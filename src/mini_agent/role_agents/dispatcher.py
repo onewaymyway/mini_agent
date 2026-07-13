@@ -45,38 +45,12 @@ import mini_agent.ui.renderer as R
 
 from .feedback import RoleFeedback, extract_score, build_inject_message
 
-# ── [auto_quarantine] role agent 失败识别 ────────────────────────────────────
-# evaluator.py / coach.py / _run_custom_role 目前的约定是：内部异常被捕获后
-# 转成 "[XxxAgent 运行失败: <err>]" 这样的字符串返回，而不是向上抛异常。
-# 这里做一个轻量的字符串识别，避免逐个改动 evaluator/coach 的异常处理方式。
-import re as _re
-
-_ROLE_FAILURE_RE = _re.compile(r"^\[\w+Agent 运行失败: (.*)\]$", _re.DOTALL)
-
-
-def _report_role_agent_failure(raw: str, profile_name: str) -> None:
-    """
-    若 raw 匹配 "[XxxAgent 运行失败: ...]" 格式，视为一次角色 Agent 运行失败，
-    上报给 auto_quarantine（总开关默认关闭，关闭时 record_failure 是 no-op）。
-    """
-    m = _ROLE_FAILURE_RE.match(raw or "")
-    if not m:
-        return
-    err_text = m.group(1)
-    try:
-        from mini_agent.perception.observability import classify_error
-        from mini_agent.auto_quarantine import get_quarantine_store
-        cat = classify_error(raw)
-        store = get_quarantine_store()
-        just_q = store.record_failure("agent", profile_name, cat, err_text)
-        if just_q:
-            R.print_warning(
-                f"[quarantine] agent profile '{profile_name}' 在当前平台连续失败达到阈值"
-                f"（{cat}），已自动屏蔽。使用 /quarantine remove agent:{profile_name} 可解除。"
-            )
-    except Exception as _mini_agent_exc:
-        from mini_agent.errors import log_exception
-        log_exception(_mini_agent_exc, where='mini_agent.role_agents.dispatcher')
+# [Phase 4] auto_quarantine 上报此前在这里用正则识别 "[XxxAgent 运行失败: ...]"
+# 字符串来判断成败。现在 evaluator/coach/custom 三类角色 Agent 都经由
+# judge_factory.run_judge_turn 运行，该函数在拿到类型化的 JudgeResult.ok 后
+# 会自动上报一次 auto_quarantine（见 judge_factory.report_judge_outcome），
+# 不再需要在这里做字符串匹配，也就消灭了"约定俗成的失败字符串格式"这个
+# 隐性契约——本文件不再需要 _ROLE_FAILURE_RE / _report_role_agent_failure。
 
 if TYPE_CHECKING:
     from mini_agent.config import AppConfig
@@ -256,16 +230,10 @@ class RoleAgentDispatcher:
                 # custom role：把输出直接作为 prompt 传入
                 raw = self._run_custom_role(profile, current_output, original_request)
 
-            # [auto_quarantine] 识别 "[XxxAgent 运行失败: ...]" 格式，失败则上报
-            # 计数，成功（未匹配失败格式）则清零该 profile 的历史失败计数。
-            _report_role_agent_failure(raw, profile.name)
-            if not _ROLE_FAILURE_RE.match(raw or ""):
-                try:
-                    from mini_agent.auto_quarantine import get_quarantine_store
-                    get_quarantine_store().record_success("agent", profile.name)
-                except Exception as _mini_agent_exc:
-                    from mini_agent.errors import log_exception
-                    log_exception(_mini_agent_exc, where='mini_agent.role_agents.dispatcher')
+            # [auto_quarantine] evaluator 走 run_evaluator → run_judge_turn，
+            # custom role 走 _run_custom_role → run_judge_turn，两者内部已经
+            # 自动上报了这次运行的成败（见 judge_factory.report_judge_outcome），
+            # 这里不需要再做任何事。
 
             score = extract_score(raw) if profile.role_type == "evaluator" else None
             passed = (score is not None and score >= profile.pass_threshold) if score is not None else None
@@ -311,39 +279,27 @@ class RoleAgentDispatcher:
         agent_output: str,
         original_request: str,
     ) -> str:
-        """运行自定义角色 Agent。"""
-        from mini_agent.config import load_config
-        from mini_agent.agent import Agent
-        from mini_agent.permissions import PermissionGuard
-        from mini_agent.tools import get_default_registry
+        """运行自定义角色 Agent。
 
-        role_cfg = load_config(
-            project_root=self._cfg.project_root,
-            verbose=False,
-            sandbox=self._cfg.sandbox,
-            auto_approve=True,
-            model=profile.model or self._cfg.model,
-            llm_provider=profile.provider or self._cfg.llm_provider,
-            llm_base_url=self._cfg.llm_base_url,
-            # [BUGFIX] 同 evaluator.py：继承 self._cfg 的 --debug-llm，而不是硬编码 False。
-            debug_llm=getattr(self._cfg, "debug_llm", False),
-            debug_llm_console=getattr(self._cfg, "debug_llm_console", False),
-        )
-        role_cfg.api_key = self._cfg.api_key
-        role_cfg.max_turns = 3
-        role_cfg.stream = False
-        role_cfg.system_extra = profile.system_prompt
-        # [SYS-TURN-JUDGE][BUGFIX] 防止内部 Agent 对自己触发 TurnJudge 造成无限递归核查
-        from mini_agent.config.models import TurnJudgeConfig as _TurnJudgeConfig
-        role_cfg.turn_judge = _TurnJudgeConfig(enabled=False)
+        [Phase 3+4 重构] 样板逻辑收敛到 judge_factory.spawn_judge_agent /
+        run_judge_turn；传入 profile_name 后 run_judge_turn 会自动把这次
+        运行的成败上报给 auto_quarantine，函数返回值保持完全不变。
+        """
+        from mini_agent.role_agents.judge_factory import spawn_judge_agent, run_judge_turn
 
-        guard = PermissionGuard(
-            auto_approve=True,
-            sandbox=self._cfg.sandbox,
-            project_root=self._cfg.project_root,
+        import os
+        from mini_agent.config.models import DEFAULT_AGENT_NAME
+
+        role_agent = spawn_judge_agent(
+            profile=profile,
+            base_cfg=self._cfg,
+            role_cfg_block=None,
+            # [行为保持] custom role 此前从未显式设置 agent_name，等价于 load_config 的默认值
+            display_name=os.environ.get("AGENT_NAME", DEFAULT_AGENT_NAME),
+            system_prompt=profile.system_prompt,
+            max_turns=3,
+            tools_enabled=False,
         )
-        empty_registry = get_default_registry().filtered(names=[], groups=[])
-        role_agent = Agent(cfg=role_cfg, guard=guard, registry=empty_registry, is_subagent=True)
 
         prompt = f"""请对以下 AI 助手的输出进行分析。
 
@@ -353,10 +309,10 @@ class RoleAgentDispatcher:
 **AI 助手输出：**
 {agent_output}"""
 
-        try:
-            return role_agent.run_turn(prompt)
-        except Exception as e:
-            return f"[自定义角色 Agent 运行失败: {e}]"
+        result = run_judge_turn(
+            role_agent, prompt, failure_role_label="自定义角色 Agent", profile_name=profile.name,
+        )
+        return result.raw_output
 
     # ── 主从分发：tool_use 触发 ──────────────────────────────────────────────
 
@@ -401,15 +357,9 @@ class RoleAgentDispatcher:
             else:
                 raw = self._run_custom_role(profile, tool_output, context)
 
-            # [auto_quarantine] 同 _run_role_with_retry：识别失败格式并上报/清零计数
-            _report_role_agent_failure(raw, profile.name)
-            if not _ROLE_FAILURE_RE.match(raw or ""):
-                try:
-                    from mini_agent.auto_quarantine import get_quarantine_store
-                    get_quarantine_store().record_success("agent", profile.name)
-                except Exception as _mini_agent_exc:
-                    from mini_agent.errors import log_exception
-                    log_exception(_mini_agent_exc, where='mini_agent.role_agents.dispatcher')
+            # [auto_quarantine] coach 走 run_coach → run_judge_turn，custom role
+            # 走 _run_custom_role → run_judge_turn，两者内部已自动上报，这里
+            # 同 _run_role_with_retry，不需要再做任何事。
 
             feedback = RoleFeedback(
                 role_name=profile.name,

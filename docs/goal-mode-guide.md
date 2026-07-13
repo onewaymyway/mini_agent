@@ -115,6 +115,13 @@ Evaluator 仍然在每次 `run_turn` 内部做质量把关，GoalRunner 在更�
 
 设置 `max_stuck_recoveries: 0` 可以关闭这个行为，回到"一卡住就终止"的旧逻辑。
 
+> 实现说明：这套"卡住检测 + compact 恢复"逻辑现在和
+> [TurnJudge 的同名机制](turn-judge-guide.md#卡住恢复和goaljudge一样先-compact-再给一次机会)
+> 共用同一份实现——`role_agents/stuck_detector.py::StuckDetector`，详见
+> [role-agents-guide.md](role-agents-guide.md#内部实现判官类-agent-的统一构造工厂judge_factorypy)。
+> 两边的阈值配置（`consecutive_same_feedback_limit` 等 vs
+> `consecutive_same_output_limit` 等）仍然完全独立，互不影响。
+
 ---
 
 ## 使用方式

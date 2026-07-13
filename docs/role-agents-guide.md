@@ -280,3 +280,36 @@ SCORE: 7/10
 
 两者可以同时存在、互不冲突：`evaluator` 仍在每次 `run_turn` 内部做质量把关，
 `goal_judge` 在外层做"目标是否达成"的把关。
+
+---
+
+## 内部实现：判官类 Agent 的统一构造工厂（`judge_factory.py`）
+
+`evaluator` / `coach` / 自定义角色 / [`goal_judge`](goal-mode-guide.md) /
+[`TurnJudge`](turn-judge-guide.md) 这五类"内部判官 Agent"在构造方式上高度
+相似：三层 model/provider 优先级解析、显式禁用递归 `TurnJudge`、按是否
+需要工具决定注册表、标记 `is_subagent=True`、异常兜底。这部分样板逻辑
+统一收敛在 `role_agents/judge_factory.py` 里，对外暴露两个函数：
+
+- `spawn_judge_agent(...)`：按统一规则构造一个受限的内部 `Agent` 实例。
+- `run_judge_turn(agent, prompt, *, failure_role_label, profile_name=None)`：
+  跑一轮判官 Agent，返回类型化的 `JudgeResult(ok, raw_output, error)`，
+  异常在这里统一兜底，不会向上抛出。若传入 `profile_name`，运行结束后
+  会自动把这次运行的成败上报给 [auto_quarantine](auto-quarantine-guide.md)
+  （`report_judge_outcome`），因此 evaluator / coach / goal_judge /
+  turn_judge / 自定义角色五类判官全部自动获得连续失败自动屏蔽的保护，
+  不需要各自接入。
+
+上述五类判官各自的函数（`run_evaluator` / `run_coach` / `run_goal_judge` /
+`run_turn_judge` / `RoleAgentDispatcher._run_custom_role`）现在只保留各自
+专属的 prompt 组装逻辑，函数签名和返回值格式（包括失败时返回的
+`"[XxxAgent 运行失败: ...]"` 兜底文本格式）保持不变，对上层调用方
+完全透明。
+
+另外，`GoalRunner`（[Goal 模式](goal-mode-guide.md)）里"连续多轮反馈高度
+相似 → 判定卡住 → compact 后给一次换角度重试的机会"这套逻辑，和
+[TurnJudge](turn-judge-guide.md) 里几乎一模一样的卡住检测，也已经收敛成
+共享的 `role_agents/stuck_detector.py::StuckDetector`，两边各自传入自己
+要比较的文本（GoalRunner 传 judge 反馈文本，TurnJudge 传主 Agent 输出）即可，
+阈值配置（`consecutive_same_feedback_limit` / `consecutive_same_output_limit`
+等）仍然各自独立，互不影响。

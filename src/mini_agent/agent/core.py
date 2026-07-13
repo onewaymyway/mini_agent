@@ -103,14 +103,14 @@ class Agent(
         # 连续自动接管计数（每次真正进入真人输入等待后由 repl 重置为 0）。
         self._last_turn_hit_max_turns: bool = False
         self._turn_judge_auto_count: int = 0
-        # 卡住检测 + compact 恢复（与 goal_mode 的同名机制思路一致，见
-        # TurnJudgeConfig.consecutive_same_output_limit 等字段的说明）：
-        # 记录上一轮 assistant_output 用于相似度比较、连续雷同计数、
-        # 已用掉的"卡住恢复"额度。三者都在真正交还真人输入时随
-        # _turn_judge_auto_count 一起重置。
-        self._turn_judge_prior_output: Optional[str] = None
-        self._turn_judge_consecutive_same: int = 0
-        self._turn_judge_stuck_recoveries_used: int = 0
+        # 卡住检测 + compact 恢复（与 goal_mode 的同名机制共享同一套实现，
+        # 见 role_agents/stuck_detector.py::StuckDetector）：内部记录上一轮
+        # assistant_output 用于相似度比较、连续雷同计数、已用掉的"卡住恢复"
+        # 额度。真正交还真人输入时随 _turn_judge_auto_count 一起 reset()。
+        # 具体阈值（similarity_threshold / consecutive_limit / max_recoveries）
+        # 由 _maybe_run_turn_judge 按 cfg.turn_judge 的配置动态设置。
+        from mini_agent.role_agents.stuck_detector import StuckDetector
+        self._turn_judge_stuck_detector: StuckDetector = StuckDetector(consecutive_limit=0)
 
         from mini_agent.tools.builtin import configure_web_search
         configure_web_search(cfg)

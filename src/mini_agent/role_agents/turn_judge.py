@@ -73,56 +73,22 @@ def run_turn_judge(
     始终以纯文本方式判定（不挂载任何工具），因为这是一个高频触发点
     （每轮对话结束都可能跑一次），必须足够轻量、快速、零副作用。
     """
-    from mini_agent.config import load_config
-    from mini_agent.agent import Agent
-    from mini_agent.permissions import PermissionGuard
-    from mini_agent.tools import get_default_registry
-
+    # [Phase 3 重构] 样板逻辑收敛到 judge_factory.spawn_judge_agent /
+    # run_judge_turn。函数签名和返回值保持完全不变。
+    from mini_agent.role_agents.judge_factory import spawn_judge_agent, run_judge_turn
     tj_cfg_block = getattr(base_cfg, "turn_judge", None)
 
-    from mini_agent.role_agents.model_resolution import resolve_role_model
-    judge_model, judge_provider = resolve_role_model(profile, tj_cfg_block, base_cfg)
-
-    judge_cfg = load_config(
-        project_root=base_cfg.project_root,
-        verbose=base_cfg.verbose,
-        sandbox=base_cfg.sandbox,
-        auto_approve=True,
-        model=judge_model,
-        llm_provider=judge_provider,
-        llm_base_url=base_cfg.llm_base_url,
-        # [BUGFIX] 同 evaluator.py：继承 base_cfg 的 --debug-llm，而不是硬编码 False。
-        debug_llm=getattr(base_cfg, "debug_llm", False),
-        debug_llm_console=getattr(base_cfg, "debug_llm_console", False),
+    judge_agent = spawn_judge_agent(
+        profile=profile,
+        base_cfg=base_cfg,
+        role_cfg_block=tj_cfg_block,
+        # [SYS-TURN-JUDGE] 给 TurnJudge 内部 Agent 一个专属的显示名，方便用户在
+        # 打印输出中一眼看出这是自动核查而非主 Agent 本身在说话。
+        display_name="🧭 TurnJudge",
+        system_prompt=pm.render("system/turn_judge"),
+        max_turns=2,
+        tools_enabled=False,   # 纯文本判定，不挂载任何工具（最小权限、最低延迟）
     )
-    judge_cfg.api_key = base_cfg.api_key
-    judge_cfg.max_turns = 2
-    judge_cfg.stream = False
-    judge_cfg.system_extra = profile.system_prompt if profile.system_prompt.strip() else pm.render("system/turn_judge")
-    # [SYS-TURN-JUDGE][BUGFIX] load_config() 会重新从同一个 agent_config.json 读取配置，
-    # 这意味着 judge_cfg.turn_judge.enabled 也会是 True——如果不显式关掉，TurnJudgeAgent
-    # 自己跑 run_turn() 时会对自己再触发一次 TurnJudge 核查，无限递归自我核查，
-    # 表现为一直卡在 "🧭 TurnJudge ❯" 反复核查、永远不把控制权交还真人。
-    # 这里必须显式禁用，不能只依赖下面的 is_subagent 标记（那只是第二道保险）。
-    from mini_agent.config.models import TurnJudgeConfig as _TurnJudgeConfig
-    judge_cfg.turn_judge = _TurnJudgeConfig(enabled=False)
-    # [SYS-TURN-JUDGE] 给 TurnJudge 内部 Agent 一个专属的显示名，风格与 GoalJudge 一致，
-    # 方便用户在打印输出中一眼看出这是自动核查而非主 Agent 本身在说话。
-    judge_cfg.agent_name = "🧭 TurnJudge"
-
-    guard = PermissionGuard(
-        auto_approve=True,
-        sandbox=base_cfg.sandbox,
-        project_root=base_cfg.project_root,
-    )
-
-    # 纯文本判定，不挂载任何工具（最小权限、最低延迟）
-    registry = get_default_registry().filtered(names=[], groups=[])
-
-    # [SYS-TURN-JUDGE][BUGFIX] 显式标记为 subagent，作为第二道保险：即使未来
-    # judge_cfg.turn_judge 的禁用逻辑被误删，agent.py::_maybe_run_turn_judge()
-    # 里的 `self._is_subagent` 检查依然会拦住嵌套触发。
-    judge_agent = Agent(cfg=judge_cfg, guard=guard, registry=registry, is_subagent=True)
 
     prompt = build_turn_judge_prompt(
         assistant_output=assistant_output,
@@ -132,9 +98,15 @@ def run_turn_judge(
         hit_max_turns=hit_max_turns,
     )
 
-    try:
-        result = judge_agent.run_turn(prompt)
-        return result
-    except Exception as e:
-        # 判定失败时保守返回 NEED_USER，绝不能让异常被当成 AUTO_CONTINUE
-        return f"**结论**\n[TurnJudgeAgent 运行失败: {e}]，保守判定为需要用户输入。\n\nTURN_STATUS: NEED_USER"
+    result = run_judge_turn(
+        judge_agent, prompt, failure_role_label="TurnJudgeAgent",
+        profile_name=profile.name if profile else "turn_judge",
+    )
+
+    if result.ok:
+        return result.raw_output
+    # 判定失败时保守返回 NEED_USER，绝不能让异常被当成 AUTO_CONTINUE
+    return (
+        f"**结论**\n[TurnJudgeAgent 运行失败: {result.error}]，保守判定为需要用户输入。\n\n"
+        "TURN_STATUS: NEED_USER"
+    )

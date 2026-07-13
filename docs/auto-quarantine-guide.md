@@ -81,7 +81,7 @@ Auto Quarantine 补的是"作者没声明、用户也不知道，但实际跑起
 |------|------------------------|----------|
 | `tool` | `tool_executor.py::execute_all()` 里工具调用抛异常 | 直接按 `tool_name` 记录 |
 | `skill` | Skill 本身不直接"运行"，靠激活期间的工具调用是否顺利体现 | 工具调用失败时，同时归因给当前**所有 active** 的 skill（见下方"归因的宽松性"说明） |
-| `agent` | `role_agents/dispatcher.py` 里角色 Agent（evaluator/coach/custom role）返回 `"[XxxAgent 运行失败: ...]"` 格式 | 按 `AgentProfile.name` 记录 |
+| `agent` | 判官类 Agent（evaluator/coach/custom role/**goal_judge**/**turn_judge**）一次运行失败（异常被捕获） | 按 `AgentProfile.name` 记录 |
 
 **Hook 暂不接入**（hook 执行失败目前是内部静默处理，没有对外暴露统一的"执行
 结果"，接入成本较高，留待后续）。

@@ -82,46 +82,25 @@ def run_evaluator(
     """
     运行 EvaluatorAgent，返回评估文本。
     使用同步的 Agent.run_turn() 在当前线程运行（不起后台线程）。
+
+    [Phase 3 重构] 构造受限内部 Agent + 异常兜底的样板逻辑已收敛到
+    judge_factory.spawn_judge_agent / run_judge_turn，本函数只保留
+    evaluator 专属的 prompt 组装。函数签名和返回值保持完全不变。
     """
-    from mini_agent.config import load_config
-    from mini_agent.agent import Agent
-    from mini_agent.permissions import PermissionGuard
+    import os
+    from mini_agent.config.models import DEFAULT_AGENT_NAME
+    from mini_agent.role_agents.judge_factory import spawn_judge_agent, run_judge_turn
 
-    eval_cfg = load_config(
-        project_root=base_cfg.project_root,
-        verbose=False,
-        sandbox=base_cfg.sandbox,
-        auto_approve=True,   # 评估不需要审批
-        model=profile.model or base_cfg.model,
-        llm_provider=profile.provider or base_cfg.llm_provider,
-        llm_base_url=base_cfg.llm_base_url,
-        # [BUGFIX] 之前硬编码 False，导致 --debug-llm 对这个一次性内部 Agent 调用
-        # 完全不生效——一旦这里的 LLM 调用失败，看不到任何调试日志。改为继承
-        # base_cfg（外层 --debug-llm 传下来的配置）。
-        debug_llm=getattr(base_cfg, "debug_llm", False),
-        debug_llm_console=getattr(base_cfg, "debug_llm_console", False),
+    eval_agent = spawn_judge_agent(
+        profile=profile,
+        base_cfg=base_cfg,
+        role_cfg_block=None,   # evaluator 没有专属配置块，model/provider 走 profile/base_cfg 两层
+        # [行为保持] evaluator 此前从未显式设置 agent_name，等价于 load_config 的默认值
+        display_name=os.environ.get("AGENT_NAME", DEFAULT_AGENT_NAME),
+        system_prompt=DEFAULT_EVALUATOR_SYSTEM,
+        max_turns=3,           # 评估只需要少量轮次
+        tools_enabled=False,   # 评估 agent 不需要任何工具（纯文本输出）
     )
-    eval_cfg.api_key = base_cfg.api_key
-    eval_cfg.max_turns = 3       # 评估只需要少量轮次
-    eval_cfg.stream = False
-    # 用 profile 的 system_prompt，如果没设置则用默认的
-    eval_cfg.system_extra = profile.system_prompt if profile.system_prompt.strip() else DEFAULT_EVALUATOR_SYSTEM
-    # [SYS-TURN-JUDGE][BUGFIX] 防止内部 Agent 对自己触发 TurnJudge 造成无限递归核查
-    from mini_agent.config.models import TurnJudgeConfig as _TurnJudgeConfig
-    eval_cfg.turn_judge = _TurnJudgeConfig(enabled=False)
-
-    guard = PermissionGuard(
-        auto_approve=True,
-        sandbox=base_cfg.sandbox,
-        project_root=base_cfg.project_root,
-    )
-
-    # 评估 agent 不需要任何工具（纯文本输出）
-    from mini_agent.tools import get_default_registry
-    # 只给一个空注册表（无工具），让评估 agent 只做文本推理
-    empty_registry = get_default_registry().filtered(names=[], groups=[])
-
-    eval_agent = Agent(cfg=eval_cfg, guard=guard, registry=empty_registry, is_subagent=True)
 
     prompt = build_evaluator_prompt(
         original_request=original_request,
@@ -130,8 +109,5 @@ def run_evaluator(
         iteration=iteration,
     )
 
-    try:
-        result = eval_agent.run_turn(prompt)
-        return result
-    except Exception as e:
-        return f"[EvaluatorAgent 运行失败: {e}]"
+    result = run_judge_turn(eval_agent, prompt, failure_role_label="EvaluatorAgent", profile_name=profile.name)
+    return result.raw_output

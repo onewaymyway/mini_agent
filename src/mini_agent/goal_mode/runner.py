@@ -32,7 +32,6 @@ GoalRunner 只需要兜底处理三种"常规触发器没接住"的情况：
 
 from __future__ import annotations
 
-import difflib
 import time
 from dataclasses import dataclass, field
 from typing import Optional, TYPE_CHECKING
@@ -42,6 +41,7 @@ import mini_agent.ui.renderer as R
 from .spec import GoalSpec
 from .executor import GoalStepExecutor, CoarseStepExecutor, GoalStepResult
 from .state import GoalState, GoalStateStore
+from mini_agent.role_agents.stuck_detector import StuckDetector, StuckSignal
 
 if TYPE_CHECKING:
     from mini_agent.agent import Agent
@@ -86,21 +86,26 @@ class GoalRunner:
             sid = agent.session_id or "unknown"
             self._state_store = GoalStateStore(paths, sid)
 
+        self._last_stuck_signal: StuckSignal = StuckSignal.NONE
+        self._stuck_detector = StuckDetector(
+            similarity_threshold=self._gm_cfg.same_feedback_similarity_threshold,
+            consecutive_limit=self._gm_cfg.consecutive_same_feedback_limit,
+            max_recoveries=self._gm_cfg.max_stuck_recoveries,
+        )
+
         # 恢复态：从上一次中断处继续
         if resume_state is not None:
             self._round = resume_state.round
             self._last_feedback = resume_state.last_judge_feedback
             self._compacts_done = resume_state.compacts_done
-            self._consecutive_same = resume_state.consecutive_same_feedback
-            self._stuck_recoveries_used = resume_state.stuck_recoveries_used
+            self._stuck_detector.load_counts(
+                consecutive_same=resume_state.consecutive_same_feedback,
+                recoveries_used=resume_state.stuck_recoveries_used,
+            )
         else:
             self._round = 0
             self._last_feedback = ""
             self._compacts_done = 0
-            self._consecutive_same = 0
-            self._stuck_recoveries_used = 0
-
-        self._prior_feedback_for_similarity: list[str] = []
 
     # ── 主循环 ────────────────────────────────────────────────────────────
 
@@ -267,23 +272,13 @@ class GoalRunner:
     # ── 内部：卡住检测（连续反馈高度雷同）──────────────────────────────────
 
     def _check_stuck(self, feedback: str) -> bool:
-        limit = self._gm_cfg.consecutive_same_feedback_limit
-        threshold = self._gm_cfg.same_feedback_similarity_threshold
+        """观察本轮反馈，返回是否已判定为"卡住"（供 run() 决定是否尝试恢复）。
 
-        if self._prior_feedback_for_similarity:
-            prev = self._prior_feedback_for_similarity[-1]
-            ratio = difflib.SequenceMatcher(None, prev, feedback).ratio()
-            if ratio >= threshold:
-                self._consecutive_same += 1
-            else:
-                # 出现了和上一轮明显不同的反馈，说明确实有新进展，不再是"卡住"
-                # 状态——把卡住计数和"卡住恢复额度"都重置，避免本次真实进展
-                # 消耗掉留给未来某次真正卡住时使用的恢复机会。
-                self._consecutive_same = 0
-                self._stuck_recoveries_used = 0
-        self._prior_feedback_for_similarity.append(feedback)
-
-        return self._consecutive_same >= (limit - 1)
+        内部状态（相似度比较基准、连续雷同计数、恢复额度）全部委托给
+        `StuckDetector`，与 TurnJudge 共享同一套实现（见
+        role_agents/stuck_detector.py）。"""
+        self._last_stuck_signal = self._stuck_detector.observe(feedback)
+        return self._last_stuck_signal is not StuckSignal.NONE
 
     def _try_stuck_recovery(self) -> bool:
         """
@@ -303,17 +298,23 @@ class GoalRunner:
 
         返回 True 表示已经处理（应该 continue 继续跑，不计入 max_rounds 预算），
         False 表示恢复额度或 compact 预算已耗尽，调用方应该走正常终止流程。
+
+        "是否还有恢复额度"由 `StuckDetector.observe()`（在 `_check_stuck` 里
+        已经调用过）决定，这里读取上次 observe() 返回的 signal；
+        compact 总次数预算是 GoalRunner 独有的额外约束（TurnJudge 场景没有
+        这个预算概念），单独检查。
         """
-        max_compacts = self._gm_cfg.max_total_compacts
-        if self._stuck_recoveries_used >= self._gm_cfg.max_stuck_recoveries:
+        if self._last_stuck_signal is StuckSignal.GIVE_UP:
             return False
+
+        max_compacts = self._gm_cfg.max_total_compacts
         if self._compacts_done >= max_compacts:
             return False
 
         R.print_warning(
-            f"[GoalRunner] 连续 {self._consecutive_same + 1} 轮反馈高度相似，疑似卡住，"
+            f"[GoalRunner] 连续 {self._gm_cfg.consecutive_same_feedback_limit} 轮反馈高度相似，疑似卡住，"
             f"尝试压缩历史后给 agent 一次重新整理思路的机会"
-            f"（第 {self._stuck_recoveries_used + 1}/{self._gm_cfg.max_stuck_recoveries} 次恢复额度）。"
+            f"（第 {self._stuck_detector.recoveries_used}/{self._gm_cfg.max_stuck_recoveries} 次恢复额度）。"
         )
         self._do_compact()
 
@@ -327,11 +328,6 @@ class GoalRunner:
         )
         self._agent._hist.append_raw_dict(make_goal_context(hint))
 
-        self._stuck_recoveries_used += 1
-        # 卡住计数本身归零：接下来重新判断是否"卡住"，但 _prior_feedback_for_similarity
-        # 里已有的历史反馈不清空——如果压缩+提示之后 agent 还是给出和之前雷同的
-        # 反馈，说明这次恢复没有起作用，应该能被正常识别为再次卡住。
-        self._consecutive_same = 0
         self._save_state(status="running")
         return True
 
@@ -376,8 +372,8 @@ class GoalRunner:
             last_judge_feedback=self._last_feedback,
             last_judge_status="",
             compacts_done=self._compacts_done,
-            consecutive_same_feedback=self._consecutive_same,
-            stuck_recoveries_used=self._stuck_recoveries_used,
+            consecutive_same_feedback=self._stuck_detector.consecutive_same,
+            stuck_recoveries_used=self._stuck_detector.recoveries_used,
             final_report=final_report,
         )
         try:

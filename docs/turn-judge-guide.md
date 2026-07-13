@@ -73,11 +73,14 @@ run_turn() 内部：
 尝试，而不是干等到 `max_auto_rounds` 耗尽才把烂摊子丢给真人。
 
 这就是和 [Goal 模式](goal-mode-guide.md) 里 `max_stuck_recoveries` 完全
-同一套思路的机制，只是触发对象从"GoalJudge 反馈文本"换成了"主 Agent 自己
-的输出"：
+同一套思路的机制——现在两边也确实共用同一份实现
+（`role_agents/stuck_detector.py::StuckDetector`，详见
+[role-agents-guide.md](role-agents-guide.md#内部实现判官类-agent-的统一构造工厂judge_factorypy)），
+只是触发对象从"GoalJudge 反馈文本"换成了"主 Agent 自己的输出"：
 
 1. 每轮 `_maybe_run_turn_judge()` 一开始（在真正调用 TurnJudge LLM 判定
-   之前）就用 `difflib.SequenceMatcher` 比较本轮输出和上一轮输出的相似度
+   之前）就用 `StuckDetector.observe(assistant_output)`（内部用
+   `difflib.SequenceMatcher`）比较本轮输出和上一轮输出的相似度
 2. 连续 `consecutive_same_output_limit` 轮相似度都达到
    `same_output_similarity_threshold` → 判定"卡住"
 3. 判定"卡住"后不直接强制交还真人，而是：

@@ -76,67 +76,27 @@ def run_goal_judge(
                      auto_approve=True + 不走 sandbox 的方式真实执行（等价于人工
                      一直按 --yes 放行），不会逐条弹确认。
     """
-    from mini_agent.config import load_config
-    from mini_agent.agent import Agent
-    from mini_agent.permissions import PermissionGuard
-    from mini_agent.tools import get_default_registry
+    # [Phase 3 重构] 样板逻辑收敛到 judge_factory.spawn_judge_agent /
+    # run_judge_turn。函数签名和返回值保持完全不变。
+    from mini_agent.role_agents.judge_factory import spawn_judge_agent, run_judge_turn
 
     goal_cfg_block = getattr(base_cfg, "goal_mode", None)
     tools_enabled = bool(getattr(goal_cfg_block, "judge_tools_enabled", False))
-    yes_mode = bool(getattr(goal_cfg_block, "judge_yes_mode", False))
-    # tools_enabled 且未开 yes_mode 时强制 sandbox=True（拦截真实执行，只能看到
-    # "would have executed"）；开了 yes_mode 则真实执行，等价于始终 --yes 放行。
-    judge_sandbox = (not yes_mode) if tools_enabled else base_cfg.sandbox
 
-    from mini_agent.role_agents.model_resolution import resolve_role_model
-    judge_model, judge_provider = resolve_role_model(profile, goal_cfg_block, base_cfg)
-
-    judge_cfg = load_config(
-        project_root=base_cfg.project_root,
-        verbose=base_cfg.verbose,
-        sandbox=judge_sandbox,
-        auto_approve=True,
-        model=judge_model,
-        llm_provider=judge_provider,
-        llm_base_url=base_cfg.llm_base_url,
-        # [BUGFIX] 同 evaluator.py：继承 base_cfg 的 --debug-llm，而不是硬编码 False。
-        debug_llm=getattr(base_cfg, "debug_llm", False),
-        debug_llm_console=getattr(base_cfg, "debug_llm_console", False),
+    judge_agent = spawn_judge_agent(
+        profile=profile,
+        base_cfg=base_cfg,
+        role_cfg_block=goal_cfg_block,
+        # [SYS-GOAL-MODE] 给 GoalJudge 内部 Agent 一个专属的显示名，而不是沿用主
+        # Agent 的 cfg.agent_name（默认都是同一个名字，会导致 print_assistant_prefix
+        # 打印出来的前缀跟主 Agent 说话一模一样，看不出这是评估者的输出）。
+        display_name="🎯 GoalJudge",
+        system_prompt=pm.render("system/goal_judge"),
+        max_turns=6 if tools_enabled else 2,   # 挂工具时允许多跑几轮验证命令
+        tools_enabled=tools_enabled,
+        allowed_tools=list(getattr(goal_cfg_block, "judge_allowed_tools", []) or []),
+        allowed_tool_groups=list(getattr(goal_cfg_block, "judge_allowed_tool_groups", []) or []),
     )
-    judge_cfg.api_key = base_cfg.api_key
-    judge_cfg.max_turns = 6 if tools_enabled else 2   # 挂工具时允许多跑几轮验证命令
-    judge_cfg.stream = False
-    judge_cfg.system_extra = profile.system_prompt if profile.system_prompt.strip() else pm.render("system/goal_judge")
-    # [SYS-GOAL-MODE] 给 GoalJudge 内部 Agent 一个专属的显示名，而不是沿用主 Agent 的
-    # cfg.agent_name（默认都是同一个名字，会导致 print_assistant_prefix 打印出来的前缀
-    # 跟主 Agent 说话一模一样，看不出这是评估者的输出）。
-    judge_cfg.agent_name = "🎯 GoalJudge"
-    # [SYS-TURN-JUDGE][BUGFIX] load_config() 会从同一份 agent_config.json 重新加载配置，
-    # 若其中开启了 turn_judge，会导致 GoalJudge 这个内部 Agent 自己跑 run_turn() 时
-    # 对自己触发一次 TurnJudge 核查，引发无限递归自我核查。显式禁用，不能只依赖
-    # 下面的 is_subagent 标记（那只是第二道保险）。
-    from mini_agent.config.models import TurnJudgeConfig as _TurnJudgeConfig
-    judge_cfg.turn_judge = _TurnJudgeConfig(enabled=False)
-
-    guard = PermissionGuard(
-        auto_approve=True,
-        sandbox=judge_sandbox,
-        project_root=base_cfg.project_root,
-    )
-
-    if tools_enabled:
-        allowed_tools = list(getattr(goal_cfg_block, "judge_allowed_tools", []) or [])
-        allowed_groups = list(getattr(goal_cfg_block, "judge_allowed_tool_groups", []) or [])
-        # profile 自己声明的 tools/tool_groups 若非空，取交集收窄（profile 更具体，优先级更高）
-        if profile.tools:
-            allowed_tools = [t for t in profile.tools if t in allowed_tools] or profile.tools
-        if profile.tool_groups:
-            allowed_groups = [g for g in profile.tool_groups if g in allowed_groups] or profile.tool_groups
-        registry = get_default_registry().filtered(names=allowed_tools, groups=allowed_groups)
-    else:
-        registry = get_default_registry().filtered(names=[], groups=[])
-
-    judge_agent = Agent(cfg=judge_cfg, guard=guard, registry=registry, is_subagent=True)
 
     prompt = build_goal_judge_prompt(
         goal_spec=goal_spec,
@@ -145,9 +105,15 @@ def run_goal_judge(
         prior_feedback=prior_feedback,
     )
 
-    try:
-        result = judge_agent.run_turn(prompt)
-        return result
-    except Exception as e:
-        # 判定失败时保守返回 CONTINUE，绝不能让异常被当成 DONE
-        return f"**结论**\n[GoalJudgeAgent 运行失败: {e}]，保守判定为需继续。\n\nGOAL_STATUS: CONTINUE"
+    result = run_judge_turn(
+        judge_agent, prompt, failure_role_label="GoalJudgeAgent",
+        profile_name=profile.name if profile else "goal_judge",
+    )
+
+    if result.ok:
+        return result.raw_output
+    # 判定失败时保守返回 CONTINUE，绝不能让异常被当成 DONE
+    return (
+        f"**结论**\n[GoalJudgeAgent 运行失败: {result.error}]，保守判定为需继续。\n\n"
+        "GOAL_STATUS: CONTINUE"
+    )

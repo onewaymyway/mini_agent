@@ -76,40 +76,24 @@ def run_coach(
 ) -> str:
     """
     运行 CoachAgent，返回建议文本。
+
+    [Phase 3 重构] 样板逻辑收敛到 judge_factory.spawn_judge_agent /
+    run_judge_turn，函数签名和返回值保持完全不变。
     """
-    from mini_agent.config import load_config
-    from mini_agent.agent import Agent
-    from mini_agent.permissions import PermissionGuard
+    import os
+    from mini_agent.config.models import DEFAULT_AGENT_NAME
+    from mini_agent.role_agents.judge_factory import spawn_judge_agent, run_judge_turn
 
-    coach_cfg = load_config(
-        project_root=base_cfg.project_root,
-        verbose=False,
-        sandbox=base_cfg.sandbox,
-        auto_approve=True,
-        model=profile.model or base_cfg.model,
-        llm_provider=profile.provider or base_cfg.llm_provider,
-        llm_base_url=base_cfg.llm_base_url,
-        # [BUGFIX] 同 evaluator.py：继承 base_cfg 的 --debug-llm，而不是硬编码 False。
-        debug_llm=getattr(base_cfg, "debug_llm", False),
-        debug_llm_console=getattr(base_cfg, "debug_llm_console", False),
+    coach_agent = spawn_judge_agent(
+        profile=profile,
+        base_cfg=base_cfg,
+        role_cfg_block=None,
+        # [行为保持] coach 此前从未显式设置 agent_name，等价于 load_config 的默认值
+        display_name=os.environ.get("AGENT_NAME", DEFAULT_AGENT_NAME),
+        system_prompt=DEFAULT_COACH_SYSTEM,
+        max_turns=2,
+        tools_enabled=False,
     )
-    coach_cfg.api_key = base_cfg.api_key
-    coach_cfg.max_turns = 2
-    coach_cfg.stream = False
-    coach_cfg.system_extra = profile.system_prompt if profile.system_prompt.strip() else DEFAULT_COACH_SYSTEM
-    # [SYS-TURN-JUDGE][BUGFIX] 防止内部 Agent 对自己触发 TurnJudge 造成无限递归核查
-    from mini_agent.config.models import TurnJudgeConfig as _TurnJudgeConfig
-    coach_cfg.turn_judge = _TurnJudgeConfig(enabled=False)
-
-    guard = PermissionGuard(
-        auto_approve=True,
-        sandbox=base_cfg.sandbox,
-        project_root=base_cfg.project_root,
-    )
-
-    from mini_agent.tools import get_default_registry
-    empty_registry = get_default_registry().filtered(names=[], groups=[])
-    coach_agent = Agent(cfg=coach_cfg, guard=guard, registry=empty_registry, is_subagent=True)
 
     prompt = build_coach_prompt(
         tool_name=tool_name,
@@ -119,8 +103,5 @@ def run_coach(
         profile=profile,
     )
 
-    try:
-        result = coach_agent.run_turn(prompt)
-        return result
-    except Exception as e:
-        return f"[CoachAgent 运行失败: {e}]"
+    result = run_judge_turn(coach_agent, prompt, failure_role_label="CoachAgent", profile_name=profile.name)
+    return result.raw_output
