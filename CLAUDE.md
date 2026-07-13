@@ -4,7 +4,7 @@
 
 ## 项目结构
 
-- `src/mini_agent/agent.py` — Agent 主类（对话循环与编排）
+- `src/mini_agent/agent/` — Agent 主类（对话循环与编排）。Stage 12 起由单文件拆分为包：`core.py`（`Agent` 类骨架 + `__init__`）+ 9 个按职责拆分的 Mixin 文件（`lifecycle.py`/`reflection.py`/`profile.py`/`llm_control.py`/`turn_loop.py`/`role_judge.py`/`reminders_correction.py`/`compaction.py`/`snapshot.py`）+ `_helpers.py`（共享辅助函数），通过多重继承组装回同一个类；对外 `from mini_agent.agent import Agent` 路径不变
 - `src/mini_agent/context_builder.py` — System prompt 构建（skill/memory/project 注入）
 - `src/mini_agent/tool_executor.py` — 工具执行（权限检查 + 调用 + 截断 + 缓存）
 - `src/mini_agent/history_manager.py` — 历史管理（追加 + 压缩 + 快照恢复）
@@ -120,7 +120,18 @@ mini-agent user token u_a1b2c3d4                       # 重新生成 token
 
 ### Agent 核心 (`src/mini_agent/`)
 
-- `agent.py` — Agent 主类，对话循环与编排
+- `agent/` — Agent 主类，对话循环与编排（Stage 12 起拆分为包，见上方项目结构小节详细文件列表）
+  - `core.py` — `Agent` 类骨架 + `__init__`
+  - `lifecycle.py` — 会话生命周期（初始化/加载/新建/保存/关闭）
+  - `reflection.py` — 会话结束反思流水线（lesson/timeline/workdir 知识/巩固/可观测性）
+  - `profile.py` — 用户画像读取/刷新/摘要生成
+  - `llm_control.py` — LLM 客户端与 Provider/模型切换
+  - `turn_loop.py` — 对话主循环（`run_turn`/`_agentic_loop` 等）
+  - `role_judge.py` — 角色 Agent 联动与轮次质量判定
+  - `reminders_correction.py` — 情境提醒注入与人类反馈纠正检测
+  - `compaction.py` — 历史压缩（skill compact/分块压缩/自动触发）
+  - `snapshot.py` — 轮次快照/重试/回滚
+  - `_helpers.py` — 模块级共享辅助函数
 - `context_builder.py` — System prompt 构建（skill/memory/project 注入）
 - `tool_executor.py` — 工具执行（权限检查 + 调用 + 截断 + 缓存）
 - `history_manager.py` — 历史管理（追加 + 压缩 + 快照恢复）
@@ -176,7 +187,7 @@ mini-agent user token u_a1b2c3d4                       # 重新生成 token
 - `goal_backlog.py` — 跨会话目标层级（Stage 9）：`GoalNode`（Goal/Objective 统一节点）、`GoalBacklog`（持久化 `.agent/goals.json`）；`has_actionable_work()` 和 `active_objectives()` 是 AutonomousLoop/ObjectiveExecutor 的核心调用接口
 - `exploration_sandbox.py` — 探索实验沙盒（Stage 9 Phase 3）：包装 Stage 2 `EvolutionWorkspace` 加预算门控，`ExplorationReport` 结果写入 `activity_digest.jsonl`；`_tick_autonomous()` 对 capability 类软目标候选调用此沙盒做轻量验证，成功才写 GoalBacklog + 触发 `skill_propose`；高风险域探索额外收紧 token 上限（`_risk_adjusted_token_limit()`，具身×自治方案一），超限抛 `ExplorationTokenLimitExceeded` 走既有异常收尾路径
 - `system_events.py` — 跨子系统事件总线：轻量 `publish()`/`poll_since()`，事件落盘 `events.jsonl`（滚动归档），按 `consumer_name` 独立游标（同一消费者名同时订阅多种 `event_type` 会共享游标推进，需用独立消费者名区分）；已接入 `frustration_spike`/`memory.sparse_region_detected`/`evolution.outcome_negative`/`goal.candidate_unvalidated`/`proprioception.uncertainty_sustained` 五类事件，详见 [跨子系统事件总线指南](docs/system-events-bus-guide.md)
-- `proprioception.py` — 本体感知模块 `ProprioceptionModule`：认知负荷/不确定性/风险感知/剩余预算/frustration 轮间快照（O(1) 纯计算，不调用 LLM）；`frustration` 落盘供 `ResourceArbiter` 消费，`uncertainty` 连续超阈值时限流发布 `proprioception.uncertainty_sustained` 事件（具身×自治方案三，`agent.py::_maybe_publish_uncertainty_signal()`）
+- `proprioception.py` — 本体感知模块 `ProprioceptionModule`：认知负荷/不确定性/风险感知/剩余预算/frustration 轮间快照（O(1) 纯计算，不调用 LLM）；`frustration` 落盘供 `ResourceArbiter` 消费，`uncertainty` 连续超阈值时限流发布 `proprioception.uncertainty_sustained` 事件（具身×自治方案三，`agent/reflection.py::_maybe_publish_uncertainty_signal()`）
 - `affordance_analyzer.py` — 余裕感知层 `AffordanceMap`：交叉分析 open_threads/capability_map/lesson memory 生成风险/机会提示；`high_risk_zones` 落盘到 `<workdir>/affordance_snapshot.json`（`persist_affordance_map()`/`load_recent_high_risk_zones()`，60 分钟过期），供 `SoftGoalDeriver`/`ExplorationSandbox` 只读消费做候选降权/token 上限收紧（具身×自治方案一）；`load_behavior_context()`（原私有 `_load_behavior_context`，已提升为公共函数）供 `AffordanceAnalyzer` 与 `ResourceArbiter._check_user_presence()`（具身×自治方案二）共用
 - `self_model.py` — `AgentSelfModel` 聚合视图：澄清与 UserProfile/RoleProfileManager/AgentProfile 三个既有 profile 概念的语义边界；新增 `recent_negative_outcome_domains()` 桥接 `outcome_tracker.get_revert_candidates()`，供 `SoftGoalDeriver.derive_candidates()` 对负面回填域候选强降权（具身×自治方案四，单场景验证，暂不做通用聚合接入）
 - `classification.py` — 图书馆式分类树（书架结构）：`ClassificationTree` 冷启动只有根节点，运行时自动生长（规则关键词匹配 + LLM 兜底只能入座已有节点，新节点只在 巩固循环 批量聚类时诞生）；`merge_similar_nodes()` 按 Jaccard 相似度收敛重复书架，`feedback_score` 累积检索反馈调整打分权重
@@ -420,7 +431,7 @@ mini-agent user token u_a1b2c3d4                       # 重新生成 token
 
 > 对应 `next_doc/self_evolution_implementation_plan.md` Stage 0，为后续 lesson memory / 自动改代码能力打地基
 
-- **受保护路径清单**：`scripts/protected_paths.py`，独立于 `src/mini_agent/` 包外，不 import 任何 mini_agent 模块；`is_protected_path(path)` 命中即强制判定为 T3 风险等级。当前覆盖 `agent.py`/`permissions.py`/`hooks/`/清单自身，并为 Stage 2 的 `evolution/` 包预留正则规则
+- **受保护路径清单**：`scripts/protected_paths.py`，独立于 `src/mini_agent/` 包外，不 import 任何 mini_agent 模块；`is_protected_path(path)` 命中即强制判定为 T3 风险等级。当前覆盖 `agent/`（整个目录）/`agent.py`（历史单文件路径，防御性保留）/`permissions.py`/`hooks/`/清单自身，并为 Stage 2 的 `evolution/` 包预留正则规则
 - **任务进度叙事**：`orchestrator/task.py` 的 `TaskRecord.write_manifest()`，任务创建时落初始 `manifest.json`，agent 可调用 `update_task_progress` 工具主动更新 `progress`/`decision_log`，任务结束时补写 `outcome`
 - **计划持久化与恢复**：`orchestrator/plan.py` 的 `ExecutionPlan` 每次状态变更自动写 `plan_snapshot.json`；session 启动/续接时通过 `try_restore_plan()` 自动恢复，中断时仍 `RUNNING` 的任务状态被忠实保留
 - 详见 [受保护路径清单指南](docs/protected-paths-guide.md)、[Plan 与 Task 机制说明](docs/plan-and-task-guide.md) 第 10 节、[存储设计](docs/storage-design.md) 4.4 节
@@ -479,7 +490,7 @@ mini-agent user token u_a1b2c3d4                       # 重新生成 token
 
 - **五个文件**：`project.json`（项目身份证，含 `name`/`root_language`/`key_modules`/`environment_fingerprint`）、`timeline.jsonl`（session 时序骨架，独立轻量反思生成 `theme`/`key_outcomes`）、`work_index.json`（`WorkThread` 聚合，跨 session 累积 `cumulative_progress`/`next_suggested`）、`open_threads.json`（跨 session 待处理线索池）、`knowledge.md`（项目软知识，T1，走 `StateRepo.apply()`）
 - **核心模块**：`perception/workdir_knowledge.py`（数据模型 + 读写 + 检索：`search_knowledge_index()`/`read_knowledge_section()`）、`tools/workdir_knowledge.py`（`add_open_thread`/`update_work_thread`/`update_knowledge`/`search_knowledge` 四个工具）
-- **维护机制**：SessionStart 时 `agent.py` 的 `_maybe_ensure_project_meta()` 创建/更新 `project.json`（含 12.2 横向加固 `environment_fingerprint` 漂移检测）；SessionEnd 时 `_update_workdir_knowledge_on_session_end()` 追加 `timeline.jsonl`、关联 `work_index.json`、回收 `task_manifest.outcome.unresolved` 进 `open_threads.json`
+- **维护机制**：SessionStart 时 `agent/lifecycle.py` 的 `_maybe_ensure_project_meta()` 创建/更新 `project.json`（含 12.2 横向加固 `environment_fingerprint` 漂移检测）；SessionEnd 时 `agent/reflection.py::_update_workdir_knowledge_on_session_end()` 追加 `timeline.jsonl`、关联 `work_index.json`、回收 `task_manifest.outcome.unresolved` 进 `open_threads.json`
 - **context 注入**：`context_builder.py` always-on 注入 `project.json` 身份信息 + 活跃 WorkThread 进度 + 高优先级 open_threads（数量上限 `WorkdirKnowledgeConfig.open_threads_inject_limit`，默认 5）。`knowledge.md` **不**走 always-on——按设计文档 8.4 节"按意图检索注入"，agent 需要主动调用 `search_knowledge` 工具
 - **横向加固顺带完成**：14.1 `knowledge_index.json`（`update_knowledge()` 写入时同步生成结构化索引）+ 检索侧补全（`search_knowledge` 工具：此前索引建了但从未被读出来用过，TF-IDF 关键词检索，复用 `memory_store.py` 的中英混合分词器）
 - **配置**：`WorkdirKnowledgeConfig`（默认 `enabled=True`），`work_thread_relation_days`（默认 7 天，关联启发式窗口）
@@ -529,7 +540,7 @@ mini-agent user token u_a1b2c3d4                       # 重新生成 token
 - **8.4 Scope 晋升**：`check_scope_promotion()` 读 `cross_project_index.json`，判据 `observed_in_projects ≥ 2` 且 `confidence ≥ 0.70` 且 `global_skill_candidate=true`，当前只输出候选列表（`PromotionCandidate`），不直接调用 `skill_propose`
 - **8.5 节奏治理**：`rhythm_is_allowed()`/`record_proposal()`，7 天冷却期，可对任意 `(proposal_type, key)` 限流——回应设计文档开放问题 1（T1 自动合并的观察期）
 - **8.6 知识巩固（图书馆式索引）**：`run_consolidation()` 顺带调用 `LibraryIndex.consolidate()`——未分类候选批量聚类生长分类节点、分类树按关键词 Jaccard 相似度合并收敛、攒够证据的实体摘要批量重写（含冲突检测）、实体去噪+近重复合并；结果并入 `ConsolidationReport.knowledge_consolidation`，`/evolve consolidate` 报告展示；新增 `/evolve timeline --entity <id>|--category <code>` 查询知识生命周期编年目录
-- **核心模块**：`evolution/consolidation.py`（`run_consolidation()` 整体入口）+ `cli/commands/evolve.py`（`_handle_consolidation()`）+ `agent.py`（`_maybe_run_consolidation()`，SessionEnd 时间门控接入点）
+- **核心模块**：`evolution/consolidation.py`（`run_consolidation()` 整体入口）+ `cli/commands/evolve.py`（`_handle_consolidation()`）+ `agent/reflection.py`（`_maybe_run_consolidation()`，SessionEnd 时间门控接入点）
 - 详见 [巩固循环 后台循环指南（Stage 8）](docs/self-evolution-consolidation-guide.md)、[图书馆式知识索引指南](docs/library-index-guide.md)
 
 ### 自主运行时（Stage 9 / Phase H）
@@ -586,7 +597,7 @@ mini-agent user token u_a1b2c3d4                       # 重新生成 token
   lesson 按 source 区分半衰期基准（human_feedback 90d 最慢 → revert_record
   14d 最快），occurrence_count 越高衰减越慢（封顶 4 倍），接入
   `memory_store.py::_score_all()`；非 lesson 条目行为不变
-- **C3 认知锚点文件**：`agent.py::_save_cognitive_anchor()`/
+- **C3 认知锚点文件**：`agent/lifecycle.py::_save_cognitive_anchor()`/
   `_maybe_load_cognitive_anchor()` + `AgentPaths.workdir_cognitive_anchor`，
   Ctrl-C 打断时 LLM 生成四段式"思维状态重建指南"（`prompts/system/
   cognitive_anchor.md`），下次 session 启动时注入 `system_extra` 并归档；

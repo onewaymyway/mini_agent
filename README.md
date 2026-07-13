@@ -566,7 +566,19 @@ mini_agent/
 ├── src/                       # 源代码（唯一 Python 包 mini_agent）
 │   └── mini_agent/
 │       ├── __init__.py / __main__.py / _version.py
-│       ├── agent.py            # Agent 主类（对话循环、工具派发、流式输出）
+│       ├── agent/               # Agent 主类（对话循环、工具派发、流式输出；Stage 12 起按职责拆分为包）
+│       │   ├── __init__.py      # 重导出 Agent，对外导入路径不变
+│       │   ├── core.py          # Agent 类骨架 + __init__ + 各 Mixin 组装
+│       │   ├── _helpers.py      # 模块级共享辅助函数（锁上下文/JSON 解析等）
+│       │   ├── lifecycle.py     # SessionLifecycleMixin：会话生命周期
+│       │   ├── reflection.py    # ReflectionMixin：会话结束反思流水线
+│       │   ├── profile.py       # ProfileMixin：用户画像/摘要
+│       │   ├── llm_control.py   # LLMControlMixin：LLM 客户端与 Provider/模型切换
+│       │   ├── turn_loop.py     # TurnLoopMixin：对话主循环
+│       │   ├── role_judge.py    # RoleJudgeMixin：角色 Agent 联动与轮次判定
+│       │   ├── reminders_correction.py  # RemindersCorrectionMixin：提醒注入与纠正检测
+│       │   ├── compaction.py    # CompactionMixin：历史压缩
+│       │   └── snapshot.py      # SnapshotMixin：轮次快照/重试/回滚
 │       ├── context_builder.py  # System prompt 构建
 │       ├── tool_executor.py    # 工具执行（权限 + 调用 + 截断 + 缓存）
 │       ├── history_manager.py  # 历史管理（压缩/快照，委托 history/ 包）
@@ -672,7 +684,7 @@ mini_agent 的核心仍是"单 Agent 对话循环"，但在其外围逐渐长出
 └───────────────────────────────┬────────────────────────────────────┘
                                  │
 ┌────────────────────────────────▼───────────────────────────────────┐
-│                       Agent 核心（agent.py）                        │
+│                       Agent 核心（agent/core.py 等）                 │
 │            对话循环 · 工具派发 · 流式输出 · 权限确认                 │
 │  ┌──────────────┐ ┌─────────────┐ ┌────────────┐ ┌───────────────┐ │
 │  │ContextBuilder│ │ToolExecutor │ │HistoryMgr  │ │  Session      │ │
@@ -701,7 +713,7 @@ mini_agent 的核心仍是"单 Agent 对话循环"，但在其外围逐渐长出
 关键点说明：
 
 - **入口层**：`cli/app.py` 是统一启动入口，可直连 REPL、或以 `--daemon-mode` 常驻并通过 `DaemonClient` 支持多端接入同一会话；`api/server.py` 暴露 HTTP/SSE 接口供 Web Demo、Kanban 看板、微信插件等外部应用接入。
-- **Agent 核心**：`agent.py` 仍是对话主循环，`ContextBuilder`/`ToolExecutor`/`HistoryManager`/`Session` 四者协作完成"组装 Prompt → 调用 LLM → 执行工具 → 压缩历史"的单轮闭环。
+- **Agent 核心**：`agent/core.py`（Stage 12 前是单文件 `agent.py`，现已按职责拆分为 `agent/` 包，`core.py` 只保留 `__init__` 与骨架，其余方法分散在 `lifecycle.py`/`reflection.py`/`profile.py`/`llm_control.py`/`turn_loop.py`/`role_judge.py`/`reminders_correction.py`/`compaction.py`/`snapshot.py` 等 Mixin 文件中，通过多重继承组装回同一个 `Agent` 类，对外导入路径与行为不变）仍是对话主循环，`ContextBuilder`/`ToolExecutor`/`HistoryManager`/`Session` 四者协作完成"组装 Prompt → 调用 LLM → 执行工具 → 压缩历史"的单轮闭环。
 - **协同 Agent 层（新增）**：`orchestrator/` 负责派生并发子 Agent 执行拆解后的任务；`role_agents/` 提供一组轻量角色（turn_judge、goal_judge、evaluator、coach）辅助主 Agent 做质量判定与反馈；`ensemble/` 支持同一请求多路生成后择优；`goal_mode/` 支撑长程目标的自动拆解与持续执行；`workflow/` 则是可复用、可视化的多步骤流程引擎。
 - **感知与记忆（Perception）**：是当前体量最大的子系统，除项目扫描、跨 session 记忆、Lesson 规则等基础能力外，新增了 `behavior/` 子包用于跨端（浏览器/Android 伴生 App）行为采集，以及本体感知（`proprioception.py`）、余裕感知（`affordance_analyzer.py`）等自省能力，最终由 `library_index.py`/`self_model.py` 聚合成统一视图。
 - **治理与自我演化（Evolution）**：以 `state_repo.py` 作为唯一写入入口、按 T0~T3 风险分级把关，`workspace.py` 用 git worktree 做进程级隔离；`autonomous_loop.py` + `cron_scheduler.py` + `objective_executor.py` 构成自主运行时，能在无人值守时按节奏执行巩固、自评、目标推进等任务。
@@ -939,3 +951,5 @@ MIT License
 *2026-07 图书馆式知识索引*：在原有 `MemoryStore`（TF-IDF 全库检索）之上新增一层结构化索引，思路是"先建分类体系再检索"而非"关键词碰撞式检索"。核心组成：`perception/classification.py::ClassificationTree` 分类树（书架结构），冷启动只有根节点，运行时靠规则关键词匹配 + LLM 兜底（只能入座已有节点）自动归类，新分类节点只在 巩固循环 巡检时由未分类候选批量聚类诞生（`grow_from_candidates`），`merge_similar_nodes()` 按关键词 Jaccard 相似度定期收敛重复书架（`merged_into`/`resolve_code()` 自动跳转），`feedback_score` 累积检索反馈调整打分权重；`perception/entity_index.py::EntityStore` 实体目录（模块/bug模式/概念卡片），`link_entry()` 挂载记忆，`rewrite_summary()` 攒够 3 条新证据才批量重写摘要（显式让 LLM 标注新旧证据矛盾，`⚠矛盾已更新：` + 旧结论归档进 `superseded_notes`），`consolidate_entities()` 去噪（停用词/过短实体名）+ 近重复合并（`difflib` 相似度，模糊地带才兜底问一次 LLM）；`perception/catalog.py::CategoryCatalog` 分类号→entry_id 指针索引（可从 `memory.jsonl` 重建）+ `knowledge_timeline.jsonl` 知识生命周期编年目录（侧车索引 `knowledge_timeline_index.json` 支持按实体/分类过滤查询，不必全文件扫描）；`perception/library_index.py::LibraryIndex` 组合外观类，对外提供 `on_new_entry()`（写入上架）/`shelf_search()`（两步检索：先定位书架再在架内精排，候选不足自动回退全库检索）/`record_retrieval_feedback()`/`mark_stale_from_correction()`（`agent.py::_detect_and_record_correction` 检测到人类纠正时，把 `ContextBuilder.last_injected_memory_ids` 记录的本轮实际注入记忆标记为可能过时，形成"纠正→定位旧知识→标记过时"闭环）/`timeline_for()`/`consolidate()`（巩固循环 巡检串联以上所有巩固步骤）。LLM 兜底调用复用 `agent.py` 已有的 `LLMClientPool.current_client`（`memory_factory.py::build_llm_call()` 包装），不新开 provider。全部通过 `library_index_enabled`/`library_shelf_search_enabled`/`library_index_user_scoped`（多用户软隔离）三个开关控制，默认开启但完全向后兼容——关闭后 `MemoryStore` 行为与改造前一致。`run_consolidation()` 新增 8.6 知识巩固步骤，`/evolve consolidate` 报告展示统计，新增 `/evolve timeline --entity <id>|--category <code>` 命令；详见 [图书馆式知识索引指南](docs/library-index-guide.md)
 
 *2026-07 具身智能 × 自我演化四方案联动（`next_doc/embodied_autonomy_integration_design.md`）*：方案一 `perception/affordance_analyzer.py` 新增 `persist_affordance_map()`/`load_recent_high_risk_zones()`，`AffordanceMap.high_risk_zones` 落盘到 `<workdir>/affordance_snapshot.json`（超过 60 分钟过期），供 `evolution/soft_goal_deriver.py::_from_capability_map()` 对高风险域候选降权（`urgency *= cfg.affordance.risk_downweight_factor`，默认 0.4）与 `perception/exploration_sandbox.py::ExplorationSandbox.create()` 对高风险域探索收紧 token 上限（探索预算总额的一半，新增 `ExplorationTokenLimitExceeded` 提前止损），总开关 `cfg.affordance.risk_gating_enabled`（默认开启）；方案二私有函数 `_load_behavior_context` 提升为公共 `load_behavior_context()`，`evolution/resource_arbiter.py::ResourceArbiter.can_run_autonomous()` 新增第五条仲裁规则 `_check_user_presence()`——用户明显活跃切换（`context_switch_count` 达 `cfg.autonomy.behavior_gating_switch_threshold`，默认 3）时暂缓自主任务，总开关 `cfg.autonomy.behavior_gating_enabled`（默认关闭）；方案三 `agent.py` 新增 `_maybe_publish_uncertainty_signal()`（连续 `cfg.proprioception.uncertainty_streak_required` 默认 3 轮超 `uncertainty_threshold` 默认 0.45 才限流发布 `proprioception.uncertainty_sustained` 事件）与 `_current_task_domain_hint()`，`soft_goal_deriver.py::_recent_uncertainty_domains()` 消费该事件，与既有 `memory.sparse_region_detected` 信号对同一 domain 的加权取较大值而非相乘（上限仍 1.6x）；方案四 `perception/self_model.py::AgentSelfModel.recent_negative_outcome_domains()` 桥接 `outcome_tracker.get_revert_candidates()`，`derive_candidates()` 排序前对落在负面回填域的候选强降权（`urgency *= 0.15`），验证一个具体、影响面可控的场景，暂不做通用聚合接入。四个方案均遵循"降权不拒绝、失败静默降级、双开关默认不改变原有行为"原则；新增 25 个测试用例（`tests/test_affordance_risk_gating.py`/`test_resource_arbiter_behavior_gating.py`/`test_uncertainty_event_bridge.py`/`test_negative_outcome_downweighting.py`）；详见 [具身智能改进指南](docs/embodied-agent-guide.md)、[Stage 9 自主运行时指南](docs/self-evolution-stage9-guide.md)、[跨子系统事件总线指南](docs/system-events-bus-guide.md)
+
+*2026-07 agent.py 拆分为 agent/ 包（Stage 12 代码结构治理）*：原 `src/mini_agent/agent.py`（3907 行, 近 100 个方法的单体类）按职责拆分为 `src/mini_agent/agent/` 包：`core.py`（`Agent` 类骨架 + `__init__`）+ 9 个 Mixin 文件（`lifecycle.py`/`reflection.py`/`profile.py`/`llm_control.py`/`turn_loop.py`/`role_judge.py`/`reminders_correction.py`/`compaction.py`/`snapshot.py`）+ `_helpers.py`（模块级共享辅助函数），`Agent` 通过多重继承组装回同一个类。纯粹搬迁重构，不改变任何方法签名与运行时行为，对外 `from mini_agent.agent import Agent` 导入路径不变。同步修复两处因此暴露的隐藏耦合：① `scripts/protected_paths.py` 原先按精确文件名 `"src/mini_agent/agent.py"` 保护 agentic loop 主循环（T3 治理红线），拆分后已补充目录级条目 `"src/mini_agent/agent/"`，否则自我演化系统会失去对核心循环的保护；② `tools/introspection.py::_get_agent_init_snippet()` 原先只扫描单文件里的 `self.xxx = ` 赋值，已改为遍历整个 `agent/` 目录并标注来源文件。全量 1791 个测试验证通过 1777 个，剩余 14 个失败经确认是拆分之前就存在、与本次改动无关的既存问题（`SkillLoader` 测试桩缺少 `_loaded_resources` 初始化、环境缺少可选依赖 `jsonschema`）。

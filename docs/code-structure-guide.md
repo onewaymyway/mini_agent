@@ -36,7 +36,7 @@ mini_agent/
         │   ├── renderer.py
         │   └── repl_input.py
         │
-        ├── agent.py        # Agent 核心循环
+        ├── agent/          # Agent 核心循环（Stage 12 起由单文件拆分为包，见 agent-design.md）
         ├── config/         # 配置（AppConfig），v3 起拆分为包
         │   ├── __init__.py # 重导出，对外 import 路径不变
         │   ├── models.py   # 14 个配置 dataclass + AppConfig
@@ -92,7 +92,7 @@ mini_agent/
 
 | 模块 | 原来的位置 | 说明 |
 |------|------------|------|
-| `mini_agent/agent.py` | 根目录 `agent.py` | Agent 主类，对话循环与编排 |
+| `mini_agent/agent/` | 根目录 `agent.py`（Stage 12 起进一步拆分为包，见 [Agent 设计详解](agent-design.md#12-stage-12agentpy-拆分为-agent-包)） | Agent 主类，对话循环与编排 |
 | `mini_agent/context_builder.py` | 新增 | System prompt 构建 |
 | `mini_agent/tool_executor.py` | 新增 | 工具执行器 |
 | `mini_agent/history_manager.py` | 新增 | 历史管理器 |

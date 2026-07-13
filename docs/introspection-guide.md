@@ -102,10 +102,11 @@ agent_inspect(target: str, include_meta: bool = False) → JSON str
       ]
     },
     "agent_construction": {
-      "agent_py": "src/mini_agent/agent.py",
+      "agent_dir": "src/mini_agent/agent/",
       "total": 1,
       "occurrences": [
         {
+          "file": "src/mini_agent/agent/core.py",
           "line": 220,
           "is_declaration": false,
           "assignment": "self._retry_policy: RetryPolicy = (",
@@ -134,7 +135,7 @@ agent_inspect(target: str, include_meta: bool = False) → JSON str
 | `class_meta.dataclass_fields` | dataclass 字段名/类型/默认值（非 dataclass 则无此字段）|
 | `class_meta.methods_public` | 公开方法列表（名称/参数/首行 doc/行号）|
 | `class_meta.methods_private` | 私有方法列表（同上）|
-| `agent_construction.occurrences` | agent.py 中所有赋值位置，含带 `>>>` 标注的上下文代码片段 |
+| `agent_construction.occurrences` | `mini_agent/agent/` 包内（core.py 及各 Mixin 文件，Stage 12 起由单文件 agent.py 拆分而来）所有赋值位置，每条附带来源 `file` 字段，含带 `>>>` 标注的上下文代码片段 |
 | `agent_construction.occurrences[].is_declaration` | `true` 表示仅类型声明，`false` 表示实际构造 |
 
 **元信息采集机制：** 纯静态 AST 分析，不执行 import，无副作用，不触发被分析模块的任何代码。
@@ -236,7 +237,7 @@ agent_status()  →  当前 model/tokens/skills 全貌
 **修改代码前了解目标对象**
 ```
 agent_inspect(target="retry_policy", include_meta=true)
-→ 拿到 RetryPolicy 的源文件路径、类结构、agent.py 中的构造代码片段
+→ 拿到 RetryPolicy 的源文件路径、类结构、agent/ 包中的构造代码片段
 → 直接定位到需要修改的行，无需手动搜索
 ```
 
@@ -267,4 +268,4 @@ agent_patch(target="tool_cache", field="clear", value="")
 | 文件 | 说明 |
 |------|------|
 | `src/mini_agent/tools/introspection.py` | 全部实现：策略类、AST 元信息提取、采集函数、注册函数 |
-| `src/mini_agent/agent.py` | `_init_components` 末尾调用 `register_introspection_tools` |
+| `src/mini_agent/agent/lifecycle.py` | `_init_components` 末尾调用 `register_introspection_tools` |

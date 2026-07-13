@@ -31,7 +31,8 @@
 
 ```python
 PROTECTED_PATHS = (
-    "src/mini_agent/agent.py",        # agentic loop 主循环
+    "src/mini_agent/agent.py",        # agentic loop 主循环（历史单文件路径，防御性保留）
+    "src/mini_agent/agent/",          # agentic loop 主循环（Stage 12 起拆分为包，实际生效条目）
     "src/mini_agent/permissions.py",  # 权限/审批门控
     "src/mini_agent/hooks/",          # 生命周期钩子（整个目录）
     "scripts/protected_paths.py",     # 清单自身
@@ -44,7 +45,8 @@ PROTECTED_PATTERNS = (
 
 | 条目 | 类型 | 为什么受保护 |
 |------|------|-------------|
-| `agent.py` | 精确文件 | agentic loop 主循环，是整个系统行为的核心 |
+| `agent.py` | 精确文件 | agentic loop 主循环的历史单文件路径（Stage 12 已拆分为包，该文件已不存在，条目防御性保留） |
+| `agent/` | 目录（含子文件） | agentic loop 主循环，Stage 12 起由单文件拆分为包（`core.py` + 多个职责 Mixin 文件），是整个系统行为的核心 |
 | `permissions.py` | 精确文件 | 权限/审批门控，是安全机制本身 |
 | `hooks/` | 目录（含子文件） | 生命周期钩子加载与执行，决定"什么时候会运行额外代码" |
 | `scripts/protected_paths.py` | 精确文件 | 清单自身，防止绕过 |
@@ -59,7 +61,7 @@ PROTECTED_PATTERNS = (
 ```python
 from scripts.protected_paths import PROTECTED_PATHS, is_protected_path
 
-if is_protected_path("src/mini_agent/agent.py"):
+if is_protected_path("src/mini_agent/agent/core.py"):
     tier = "T3"  # 强制升级，即使调用方原本传入了 T1/T2
 ```
 
@@ -72,8 +74,8 @@ if is_protected_path("src/mini_agent/agent.py"):
 输入可以是字符串或 `Path` 对象，相对路径（推荐）或带 `./` 前缀都会被正确归一化；绝对路径不保证准确匹配，调用方应尽量传入**相对仓库根目录**的路径。
 
 ```python
-is_protected_path("src/mini_agent/agent.py")              # True（精确匹配）
-is_protected_path("./src/mini_agent/agent.py")             # True（自动去掉 ./ 前缀）
+is_protected_path("src/mini_agent/agent/core.py")          # True（目录前缀匹配，agent/ 整体受保护）
+is_protected_path("./src/mini_agent/agent/llm_control.py")# True（自动去掉 ./ 前缀 + 目录前缀匹配）
 is_protected_path("src/mini_agent/hooks/loader.py")        # True（目录前缀匹配）
 is_protected_path("src/mini_agent/evolution/state_repo.py")# True（正则匹配，预留规则）
 is_protected_path("src/mini_agent/tools/builtin.py")       # False

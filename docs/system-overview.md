@@ -34,7 +34,7 @@ src/mini_agent/
 │   ├── renderer.py
 │   └── repl_input.py
 │
-├── agent.py              ← Agent 核心循环（编排层）
+├── agent/                ← Agent 核心循环（编排层；Stage 12 起由单文件拆分为包，见 agent-design.md）
 ├── context_builder.py    ← System prompt 构建
 ├── tool_executor.py      ← 工具执行（权限 + 调用 + 缓存）
 ├── history_manager.py    ← 历史管理（压缩/快照）
@@ -60,7 +60,7 @@ src/mini_agent/
 └──────────────────────┬───────────────────────────────────┘
                        │
 ┌──────────────────────▼───────────────────────────────────┐
-│  Agent 核心循环（agent.py）                               │
+│  Agent 核心循环（agent/core.py 等）                       │
 │  - 对话历史  - system prompt 构建                         │
 │  - LLM 调用  - 工具执行  - session 保存                  │
 └────────┬──────────────────┬──────────────┬───────────────┘
@@ -119,7 +119,7 @@ slash 命令使用各自的 handler 函数，通过 `cli/commands/__init__.py` �
 
 `ui/raw_key_listener.py` 实现跨平台键盘监听（Unix: `/dev/tty` + `termios` / Windows: `msvcrt`），支持在 Agent 运行期间响应用户快捷键。
 
-### 3.3 Agent 核心循环（agent.py）
+### 3.3 Agent 核心循环（agent/ 包，Stage 12 起由 agent.py 拆分而来）
 
 Agent 作为纯编排层，委托三个核心组件完成具体工作：
 
@@ -311,7 +311,7 @@ system prompt 构建顺序：
 **Lesson Memory**（2026-06 新增）：除了 session 结束时的 summary 型条目，
 `MemoryEntry` 现在还支持 `entry_type="lesson"` 型条目，由四条独立路径触发
 写入——规则触发（连续失败/拒绝重试成功，`perception/lesson_rules.py`）、
-SessionEnd 反思（LLM 调用，`agent.py::_reflect_and_save_lessons`）、人类
+SessionEnd 反思（LLM 调用，`agent/reflection.py::_reflect_and_save_lessons`）、人类
 反馈纠正检测（规则式短语匹配，`perception/correction_detector.py`）、
 `(e)dit` 审批编辑接入。四条路径的 `confidence` 分层反映信号可信度差异。
 
@@ -487,7 +487,7 @@ v2 重构将记忆系统改为接口 + 工厂模式：
 HTTP 服务通过桥接模式与 Agent 核心解耦：
 
 - `AgentBridge` 作为统一接口，Agent 核心无需感知 HTTP 存在
-- 输出拦截通过 monkey-patch `Renderer` 实现，无需修改 agent.py
+- 输出拦截通过 monkey-patch `Renderer` 实现，无需修改 agent/ 包
 - 命令队列模式：HTTP 端 enqueue，AgentRunner 阻塞 dequeue
 - 权限审批双路径：终端交互或 HTTP SSE，自动路由到可用方式
 
@@ -549,7 +549,7 @@ HTTP 服务通过桥接模式与 Agent 核心解耦：
 
 ## 10. 相关文档
 
-- [Agent 设计详解](agent-design.md) — agent.py 的核心架构、组件职责、执行流程
+- [Agent 设计详解](agent-design.md) — agent/ 包（原 agent.py）的核心架构、组件职责、执行流程
 - [代码结构指南](code-structure-guide.md) — 项目结构与导入规范
 - [HTTP API 指南](http-api-guide.md) — REST/SSE 服务使用指南
 - [记忆管理指南](memory-management-guide.md) — 长期记忆系统与可扩展后端

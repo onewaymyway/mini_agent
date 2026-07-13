@@ -1,6 +1,6 @@
 # Agent 设计与实现
 
-> 本文详细说明 `agent.py` 的核心架构、组件职责、执行流程以及关键机制。
+> 本文详细说明 `mini_agent.agent`（对话循环核心）的架构、组件职责、执行流程以及关键机制。Stage 12 起，实现已由单文件 `agent.py` 拆分为 `src/mini_agent/agent/` 包（见 1.2），但本文描述的类结构、职责划分与执行流程本身未变——只是"代码物理上放在哪个文件"发生了变化，`from mini_agent.agent import Agent` 的导入方式与所有方法签名保持不变。
 
 ---
 
@@ -19,13 +19,33 @@
 
 **早期版本**：`agent.py` 承担所有职责，代码臃肿、难以测试。
 
-**当前版本**：拆分为三个独立组件，Agent 本身退化为纯编排层：
+**中期版本**：拆分为三个独立组件，Agent 本身退化为纯编排层：
 
 | 组件 | 职责 | 依赖 |
 |------|------|------|
 | `ContextBuilder` | System prompt 构建（skill/memory/project 注入） | AppConfig, SkillLoader, MemoryStore |
 | `ToolExecutor` | 工具执行（权限检查 + 调用 + 截断 + 缓存） | ToolRegistry, PermissionGuard, ToolResultCache |
 | `HistoryManager` | 历史管理（追加、压缩、快照恢复） | AppConfig, SkillLoader |
+
+即便拆出这三个组件，`agent.py` 本身仍然是一个近 4000 行、近 100 个方法的单体文件——`Agent` 类要负责的"编排"职责本身已经膨胀出了会话生命周期、反思、LLM 切换、角色 Agent 联动、提醒注入、历史压缩、快照回滚等一整套子职责。
+
+### 1.2 Stage 12：agent.py 拆分为 agent/ 包
+
+为了让"编排层"内部也保持可维护，`agent.py` 按职责拆分为 `src/mini_agent/agent/` 包，采用 **Mixin 组合**方式：`core.py` 只保留 `Agent` 类骨架与 `__init__`，其余方法按下表分散到各文件，最终通过多重继承组装回同一个类。这是纯粹的代码搬迁（不改变任何方法签名、调用方式或运行时行为），本文后续章节中出现的 `agent.py::方法名` 均可按此表换算为实际文件位置。
+
+| 文件 | Mixin 类 | 覆盖的职责（对应下文章节） |
+|------|----------|---------------------------|
+| `core.py` | — | `__init__`，见 2.1/2.2 |
+| `lifecycle.py` | `SessionLifecycleMixin` | 会话生命周期、项目扫描/文件监听启动、认知锚点，见 5.4/6.1/6.2 |
+| `reflection.py` | `ReflectionMixin` | SessionEnd 反思流水线（lesson/timeline/workdir 知识/巩固/可观测性） |
+| `profile.py` | `ProfileMixin` | 用户画像读取/刷新、会话摘要生成 |
+| `llm_control.py` | `LLMControlMixin` | LLM 客户端与 Provider/模型切换、`_call_llm`，见 7 |
+| `turn_loop.py` | `TurnLoopMixin` | 对话主循环 `run_turn`/`_agentic_loop`，见 3 |
+| `role_judge.py` | `RoleJudgeMixin` | 角色 Agent 联动与轮次质量判定 |
+| `reminders_correction.py` | `RemindersCorrectionMixin` | 提醒注入与人类反馈纠正检测 |
+| `compaction.py` | `CompactionMixin` | 历史压缩，见 5.3 |
+| `snapshot.py` | `SnapshotMixin` | 轮次快照/重试/回滚，见 5.2 |
+| `_helpers.py` | — | 模块级共享辅助函数（非 Agent 方法） |
 
 ---
 
