@@ -39,6 +39,7 @@ platforms: windows, macos, linux, pc
 - [bing_search_skill.md](bing_search_skill.md) — Bing 搜索自动化脚本 (`bing_search.py`)
 - [zhihu_search_skill.md](zhihu_search_skill.md) — 知乎内容搜索自动化脚本 (`zhihu_search.py`)
 - [arxiv_search_skill.md](arxiv_search_skill.md) — arXiv 论文搜索自动化脚本 (`arxiv_search.py`)
+- [arxiv_multi_search_skill.md](arxiv_multi_search_skill.md) — arXiv 多关键词批量搜索自动化脚本 (`arxiv_multi_search.py`)，支持合并去重和批量获取详情
 
 ### 新增子功能步骤
 
@@ -305,6 +306,12 @@ python browser_screenshot.py --tab <id> --out ./temp_data/shot.png   # 写入 sk
 本 skill 目录下提供了一个完整的 arXiv 论文搜索自动化脚本 `arxiv_search.py`，支持按关键词搜索最新论文列表和获取论文详细信息。
 
 **详细文档请参考：[arxiv_search_skill.md](arxiv_search_skill.md)**
+
+## arXiv 多关键词批量搜索自动化脚本 (`arxiv_multi_search.py`)
+
+本 skill 目录下提供了一个 arXiv 多关键词批量搜索脚本 `arxiv_multi_search.py`，支持传入多个关键词自动搜索、合并去重、批量获取论文详情。
+
+**详细文档请参考：[arxiv_multi_search_skill.md](arxiv_multi_search_skill.md)**
 
 ## 常见坑
 
