@@ -38,6 +38,7 @@ platforms: windows, macos, linux, pc
 - [baidu_search_skill.md](baidu_search_skill.md) — 百度搜索自动化脚本 (`baidu_search.py`)
 - [bing_search_skill.md](bing_search_skill.md) — Bing 搜索自动化脚本 (`bing_search.py`)
 - [zhihu_search_skill.md](zhihu_search_skill.md) — 知乎内容搜索自动化脚本 (`zhihu_search.py`)
+- [zhihu_hot_skill.md](zhihu_hot_skill.md) — 知乎热榜抓取自动化脚本 (`zhihu_hot.py`)，支持免登录发现页和登录态热榜抓取
 - [arxiv_search_skill.md](arxiv_search_skill.md) — arXiv 论文搜索自动化脚本 (`arxiv_search.py`)
 - [arxiv_multi_search_skill.md](arxiv_multi_search_skill.md) — arXiv 多关键词批量搜索自动化脚本 (`arxiv_multi_search.py`)，支持合并去重和批量获取详情
 
