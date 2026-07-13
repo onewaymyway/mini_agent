@@ -1,13 +1,13 @@
 ---
-name: multi-search
+name: arxiv-multi-search
 skill: browser-cdp
-script: multi_search.py
+script: arxiv_multi_search.py
 description: 多关键词批量搜索 arXiv 论文脚本，支持自动合并去重、按相关性排序、批量获取详情。
 triggers: 多关键词搜索, 批量搜索, multi-keyword search, arxiv batch, 论文批量抓取
 platforms: windows, macos, linux, pc
 ---
 
-# 多关键词批量搜索 arXiv 论文 (`multi_search.py`)
+# 多关键词批量搜索 arXiv 论文 (`arxiv_multi_search.py`)
 
 ## 用途
 
@@ -24,16 +24,16 @@ platforms: windows, macos, linux, pc
 cd .claude/skills/browser-cdp
 
 # 基础用法：使用默认关键词列表搜索
-python multi_search.py "自主进化Agent" --max-results-per-keyword 15
+python arxiv_multi_search.py "自主进化Agent" --max-results-per-keyword 15
 
 # 自定义关键词列表
-python multi_search.py "自主进化Agent" \n    --keywords "self-evolving agent,autonomous agent evolution,agent self-improvement,LLM agent adaptation,evolutionary agent"
+python arxiv_multi_search.py "自主进化Agent" \n    --keywords "self-evolving agent,autonomous agent evolution,agent self-improvement,LLM agent adaptation,evolutionary agent"
 
 # 限制每个关键词的结果数 + 获取详情数量
-python multi_search.py "AI Agent" \n    --max-results-per-keyword 10 --max-detail 20
+python arxiv_multi_search.py "AI Agent" \n    --max-results-per-keyword 10 --max-detail 20
 
 # 无头模式
-python multi_search.py "reinforcement learning" --headless --max-results-per-keyword 10
+python arxiv_multi_search.py "reinforcement learning" --headless --max-results-per-keyword 10
 ```
 
 ## 参数说明
@@ -155,8 +155,8 @@ return JSON.stringify(results);
 
 ```
 .claude/skills/browser-cdp/
-├── multi_search.py            # 多关键词批量搜索主脚本
-├── multi_search_skill.md      # 本文档
+├── arxiv_multi_search.py            # 多关键词批量搜索主脚本
+├── arxiv-multi-search.md      # 本文档
 ├── arxiv_search.py            # arXiv 单关键词搜索脚本
 ├── baidu_search.py            # 依赖（复用浏览器管理、延迟等函数）
 ├── search_results/            # 默认输出目录
