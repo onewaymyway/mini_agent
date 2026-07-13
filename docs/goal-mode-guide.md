@@ -250,14 +250,6 @@ JSON 解析失败重试，也会把重试用的输入单独打印一遍。这段
 
 [🎯 目标核查 · goal_judge]
 
-**验收核查**
-- pytest 全部通过：不通过 —— 有 2 个用例报错
-- lint 无报错：通过
-
-**结论**
-测试仍有 2 个用例失败，尚未达成目标。
-
-**反馈**
 请检查 test_foo.py 中的 xxx 用例，报错信息显示是 yyy 导致的空指针。
 
 目标状态：🔄 尚未达成，需继续尝试
@@ -273,13 +265,13 @@ JSON 解析失败重试，也会把重试用的输入单独打印一遍。这段
 
 [🎯 目标核查 · goal_judge]
 ...
-GOAL_STATUS: DONE
+目标状态：✅ 目标已达成
 
 [GoalRunner] 目标已达成（共 2 轮）。
 
 Goal 执行结果： done
 轮次：2  compact 次数：1
-（GoalJudge 的核查结论文本）
+（GoalJudge 判定为 DONE 时的 feedback 文本）
 ```
 
 过程中可以 `Ctrl-C` 中断，状态会被保存为 `running`（可继续），之后可用
@@ -331,21 +323,16 @@ Goal 执行结果： done
 
 ## GoalJudge：目标达成判定
 
-每一轮 `run_turn` 结束后，GoalJudge 对照验收标准清单逐条核查，输出：
+每一轮 `run_turn` 结束后，GoalJudge 对照验收标准清单逐条核查，输出一个 JSON
+对象（详见 [role-agents-guide.md](role-agents-guide.md#内部实现判官类-agent的结构化输出verdictpy)）：
 
+```json
+{"status": "DONE", "feedback": "验收核查：pytest 全部通过 —— 通过；lint 无报错 —— 通过。结论：目标已达成。"}
 ```
-**验收核查**
-- [标准1 摘要]：通过 / 不通过 —— 依据
-- [标准2 摘要]：通过 / 不通过 —— 依据
 
-**结论**
-（简要说明）
-
-**反馈**
-（仅 CONTINUE 时必填：给主 Agent 的具体下一步指令）
-
-GOAL_STATUS: DONE | CONTINUE | NEED_COMPACT
-```
+`status` 只能是 `DONE` / `CONTINUE` / `NEED_COMPACT` 三者之一；`feedback` 是
+人类可读的核查依据/理由，CONTINUE 时约定在末尾给出具体、可执行的下一步指令
+（而不是"请继续完善"这种空话）。
 
 GoalJudge 的输出通过两层机制确保不会被误认成主 Agent 在说话：
 
@@ -355,10 +342,15 @@ GoalJudge 的输出通过两层机制确保不会被误认成主 Agent 在说话
    打印的前缀（`print_assistant_prefix`）就是 `🎯 GoalJudge ❯ ...`，一眼能
    看出这是评估者/协商助手在说话，不会和主 Agent 的输出混在一起。
 2. **结构化展示块**：GoalRunner 每轮结束后额外打印一份 `format_feedback()`
-   格式化过的核查结果，带 `[🎯 目标核查 · goal_judge]` 标题。
+   格式化过的核查结果，带 `[🎯 目标核查 · goal_judge]` 标题——展示/注入
+   主 Agent 历史时用的是解析出的干净 `feedback` 字段内容，不是原始 JSON
+   字符串。
 
-判定结果通过 `role_agents/feedback.extract_goal_status()` 提取，解析失败时
-**保守按 CONTINUE 处理**（绝不会因为解析异常被误判为 DONE）。
+判定结果通过 `role_agents/verdict.parse_judge_verdict()` 解析（`feedback.
+extract_goal_status()` 仍然可用，但已标记 deprecated，内部委托给
+`parse_judge_verdict`，仅作为过渡期兼容），解析失败（非 JSON / 缺 `status`
+字段 / `status` 不在白名单）时**保守按 CONTINUE 处理**（绝不会因为解析
+异常被误判为 DONE）。
 
 ### 工具权限：纯文本判定 vs 自己跑命令验证
 

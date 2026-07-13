@@ -390,8 +390,23 @@ def test_goal_judge_prompt_loaded_via_prompt_manager():
         "system prompt 不应再硬编码为模块级常量，应通过 pm.render('system/goal_judge') 加载"
     )
     rendered = pm.render("system/goal_judge")
-    assert "GOAL_STATUS" in rendered
+    # [Phase 5] 输出格式改为结构化 JSON（见 role_agents/verdict.py），
+    # 具体的 JSON 输出指令由 fragments/judge_json_output.md 渲染注入，
+    # 这里只确认模板里留有对应的占位符，具体渲染效果见 run_goal_judge 的调用。
+    assert "{{json_output_instructions}}" in rendered
     assert not rendered.startswith("#")  # 确认注释头没有残留
+
+    from mini_agent.role_agents.goal_judge import run_goal_judge  # noqa: F401 (import 校验 wiring 不报错)
+    full_rendered = pm.render(
+        "system/goal_judge",
+        json_output_instructions=pm.fragment(
+            "judge_json_output", "JSON_OUTPUT_INSTRUCTIONS",
+            valid_statuses="DONE | CONTINUE | NEED_COMPACT",
+            feedback_hint="...", example_status="DONE", example_feedback="...",
+        ),
+    )
+    assert "\"status\"" in full_rendered
+    assert "DONE | CONTINUE | NEED_COMPACT" in full_rendered
 
 
 def test_goal_spec_builder_prompt_loaded_via_prompt_manager():

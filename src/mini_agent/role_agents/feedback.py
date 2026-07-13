@@ -79,11 +79,25 @@ _GOAL_STATUS_RE = re.compile(r'GOAL_STATUS\s*:\s*(DONE|CONTINUE|NEED_COMPACT)', 
 
 
 def extract_goal_status(text: str) -> Optional[str]:
-    """从 GoalJudge 输出中提取 GOAL_STATUS 关键字（DONE / CONTINUE / NEED_COMPACT）。
+    """从 GoalJudge 输出中提取状态（DONE / CONTINUE / NEED_COMPACT）。
+
+    [Phase 5 重构] GoalJudge 现在约定输出结构化 JSON（见
+    role_agents/verdict.py::parse_judge_verdict + prompts/system/goal_judge.md）。
+    本函数已 deprecated，保留仅为过渡期兼容（还没切换到直接调用
+    `parse_judge_verdict` 的调用方）：优先按 JSON 解析，解析失败时回退到旧的
+    纯文本 "GOAL_STATUS: X" 正则提取，两者都失败才返回 None。
 
     找不到时返回 None（调用方应将其当作 CONTINUE 处理并原样把输出注入反馈，
     保守起见不能默认判定为 DONE）。
     """
+    from mini_agent.role_agents.verdict import parse_judge_verdict
+
+    verdict = parse_judge_verdict(
+        text, valid_statuses=["DONE", "CONTINUE", "NEED_COMPACT"], fallback_status="",
+    )
+    if verdict.parse_ok:
+        return verdict.status
+
     m = _GOAL_STATUS_RE.search(text)
     if not m:
         return None
@@ -94,11 +108,24 @@ _TURN_STATUS_RE = re.compile(r'TURN_STATUS\s*:\s*(NEED_USER|AUTO_CONTINUE|NEED_C
 
 
 def extract_turn_status(text: str) -> Optional[str]:
-    """从 TurnJudge 输出中提取 TURN_STATUS 关键字（NEED_USER / AUTO_CONTINUE / NEED_COMPACT）。
+    """从 TurnJudge 输出中提取状态（NEED_USER / AUTO_CONTINUE / NEED_COMPACT）。
+
+    [Phase 5 重构] TurnJudge 现在约定输出结构化 JSON（见
+    role_agents/verdict.py::parse_judge_verdict + prompts/system/turn_judge.md）。
+    本函数已 deprecated，保留仅为过渡期兼容：优先按 JSON 解析，解析失败时回退到
+    旧的纯文本 "TURN_STATUS: X" 正则提取，两者都失败才返回 None。
 
     找不到时返回 None（调用方应将其当作 NEED_USER 处理，保守起见绝不能默认判定为
     AUTO_CONTINUE，避免解析失败导致本该交还用户的一轮被系统悄悄接管）。
     """
+    from mini_agent.role_agents.verdict import parse_judge_verdict
+
+    verdict = parse_judge_verdict(
+        text, valid_statuses=["NEED_USER", "AUTO_CONTINUE", "NEED_COMPACT"], fallback_status="",
+    )
+    if verdict.parse_ok:
+        return verdict.status
+
     m = _TURN_STATUS_RE.search(text)
     if not m:
         return None

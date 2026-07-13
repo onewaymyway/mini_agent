@@ -91,7 +91,16 @@ def run_goal_judge(
         # Agent 的 cfg.agent_name（默认都是同一个名字，会导致 print_assistant_prefix
         # 打印出来的前缀跟主 Agent 说话一模一样，看不出这是评估者的输出）。
         display_name="🎯 GoalJudge",
-        system_prompt=pm.render("system/goal_judge"),
+        system_prompt=pm.render(
+            "system/goal_judge",
+            json_output_instructions=pm.fragment(
+                "judge_json_output", "JSON_OUTPUT_INSTRUCTIONS",
+                valid_statuses="DONE | CONTINUE | NEED_COMPACT",
+                feedback_hint="先列出每条验收标准的通过情况，CONTINUE 时结尾给出具体下一步指令",
+                example_status="CONTINUE",
+                example_feedback="标准1（xxx）未通过，因为...；请先做 A，再做 B。",
+            ),
+        ),
         max_turns=6 if tools_enabled else 2,   # 挂工具时允许多跑几轮验证命令
         tools_enabled=tools_enabled,
         allowed_tools=list(getattr(goal_cfg_block, "judge_allowed_tools", []) or []),
@@ -112,8 +121,10 @@ def run_goal_judge(
 
     if result.ok:
         return result.raw_output
-    # 判定失败时保守返回 CONTINUE，绝不能让异常被当成 DONE
-    return (
-        f"**结论**\n[GoalJudgeAgent 运行失败: {result.error}]，保守判定为需继续。\n\n"
-        "GOAL_STATUS: CONTINUE"
-    )
+    # 判定失败时保守返回 CONTINUE，绝不能让异常被当成 DONE。
+    # 兜底文本本身也是合法 JSON，保持与正常输出一致的可解析契约。
+    import json as _json
+    return _json.dumps({
+        "status": "CONTINUE",
+        "feedback": f"[GoalJudgeAgent 运行失败: {result.error}]，保守判定为需继续。",
+    }, ensure_ascii=False)

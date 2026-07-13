@@ -16,7 +16,7 @@
 | 触发点 | Goal 模式外层循环，每"一整轮任务尝试"结束时 | **任何一轮** `run_turn()` 结束、即将等待真人输入时 |
 | 判断什么 | 对照验收标准清单，目标是否达成 | 这轮结束是"正常完成"还是"技术性卡壳" |
 | 依赖 | 需要先 `/goal` 设定目标（GoalSpec） | 不依赖 Goal 模式，普通对话也能用 |
-| 输出 | `GOAL_STATUS: DONE / CONTINUE / NEED_COMPACT` | `TURN_STATUS: NEED_USER / AUTO_CONTINUE / NEED_COMPACT` |
+| 输出 | `{"status": "DONE\|CONTINUE\|NEED_COMPACT", "feedback": "..."}` | `{"status": "NEED_USER\|AUTO_CONTINUE\|NEED_COMPACT", "feedback": "..."}` |
 
 两者可以同时开启，互不冲突：Goal 模式管"任务级别"的达成判定，TurnJudge 管
 "每一轮"是否需要人工介入。
@@ -59,7 +59,9 @@ run_turn() 内部：
   `AUTO_CONTINUE`（自动接管出错的代价远比多打扰用户一次严重）
 - 涉及主观决策的场景（"几个方案选哪个""是否要执行有风险的操作"）一律
   判 `NEED_USER`，TurnJudge 绝不会替用户做决定
-- `TURN_STATUS` 解析失败时按 `NEED_USER` 处理
+- `status` 解析失败时按 `NEED_USER` 处理（判定输出约定为 JSON，由
+  `role_agents/verdict.py::parse_judge_verdict` 解析，详见
+  [role-agents-guide.md](role-agents-guide.md#内部实现判官类-agent的结构化输出verdictpy)）
 
 ---
 
@@ -157,17 +159,10 @@ run_turn() 内部：
 
 [🧭 轮次核查 · turn_judge]
 
-**核查**
 本轮助手的输出中包含未闭合的 <tool_use> 标签，JSON 也被截断，说明它本想调用
-bash 工具但格式有误，工具没有被执行，回复戛然而止，不是任务真正完成。
-
-**结论**
-这是纯技术性的格式问题，不应该由用户来处理。
-
-**反馈**
-请重新输出一次工具调用，注意 JSON 必须完整闭合，<tool_use> 标签需要正确闭合。
-
-TURN_STATUS: AUTO_CONTINUE
+bash 工具但格式有误，工具没有被执行，回复戛然而止，不是任务真正完成。这是纯
+技术性的格式问题，不应该由用户来处理。请重新输出一次工具调用，注意 JSON 必须
+完整闭合，<tool_use> 标签需要正确闭合。
 
 轮次状态：🤖 自动接管，代替用户继续推进
 

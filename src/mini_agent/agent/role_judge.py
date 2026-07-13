@@ -313,10 +313,20 @@ class RoleJudgeMixin:
 
         status = extract_turn_status(raw) or "NEED_USER"  # 解析失败时保守按 NEED_USER 处理
 
+        # [Phase 5] TurnJudge 现在约定输出结构化 JSON（见 role_agents/verdict.py）。
+        # 展示层/注入历史/自动接管提示优先用解析出的 `feedback` 字段，而不是
+        # 原始 JSON 字符串或靠正则从 Markdown 里"抠"出的"**反馈**"段落；
+        # JSON 解析失败时（历史遗留纯文本格式等）回退到原始文本，行为与升级前一致。
+        from mini_agent.role_agents.verdict import parse_judge_verdict
+        _verdict = parse_judge_verdict(
+            raw, valid_statuses=["NEED_USER", "AUTO_CONTINUE", "NEED_COMPACT"], fallback_status=status,
+        )
+        display_text = _verdict.feedback if (_verdict.parse_ok and _verdict.feedback) else raw
+
         feedback_obj = RoleFeedback(
             role_name="turn_judge",
             role_type="turn_judge",
-            raw_output=raw,
+            raw_output=display_text,
             inject_as="user",
             turn_status=status,
         )
@@ -345,14 +355,13 @@ class RoleJudgeMixin:
                 return
             auto_msg = "[TurnJudge 自动接管] 历史已压缩，请根据目标继续推进任务。"
         else:  # AUTO_CONTINUE
+            # 优先用解析出的结构化 `feedback` 字段作为注入文本，找不到（JSON 解析
+            # 失败等历史遗留情况）就用完整判定文本兜底。
             auto_msg = raw
-            # 尽量提取"反馈"段落作为注入文本，找不到就用完整判定文本兜底
-            import re as _re
-            m = _re.search(r"\*\*反馈\*\*\s*\n(.+?)(?:\n\nTURN_STATUS|\Z)", raw, _re.DOTALL)
-            if m and m.group(1).strip():
+            if display_text and display_text.strip() and display_text is not raw:
                 auto_msg = (
                     "[TurnJudge 自动接管] 检测到技术性问题（而非任务真正完成），"
-                    "以下是系统代替用户给出的下一步指令：\n\n" + m.group(1).strip()
+                    "以下是系统代替用户给出的下一步指令：\n\n" + display_text.strip()
                 )
 
         # 把判定反馈也记入历史（与 goal_judge 一致的注入方式），保留可审计的判定痕迹

@@ -53,7 +53,9 @@ prompts/
 │   └── tool_result_summary_request.md
 └── fragments/               # 细粒度 UI 文本片段
     ├── cli_messages.md      # CLI 消息文本
-    └── permission_labels.md # 权限标签
+    ├── permission_labels.md # 权限标签
+    ├── goal_mode.md          # Goal 模式相关文案片段
+    └── judge_json_output.md # 判官类 Agent（GoalJudge/TurnJudge）统一 JSON 输出指令
 ```
 
 ---

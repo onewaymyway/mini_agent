@@ -242,6 +242,16 @@ class GoalRunner:
 
         status = extract_goal_status(raw) or "CONTINUE"  # 提取失败时保守按 CONTINUE 处理
 
+        # [Phase 5] GoalJudge 现在约定输出结构化 JSON（见 role_agents/verdict.py）。
+        # 展示层/注入历史时优先用解析出的 `feedback` 字段（干净的人类可读文本），
+        # 而不是原始 JSON 字符串；JSON 解析失败时（如尚未升级的自定义 profile、
+        # 或历史遗留纯文本格式）回退到原始文本，行为与升级前完全一致。
+        from mini_agent.role_agents.verdict import parse_judge_verdict
+        _verdict = parse_judge_verdict(
+            raw, valid_statuses=["DONE", "CONTINUE", "NEED_COMPACT"], fallback_status=status,
+        )
+        display_text = _verdict.feedback if (_verdict.parse_ok and _verdict.feedback) else raw
+
         # 注入判定反馈到主 Agent 历史（带 _type=role_agent，与现有 role agent 反馈一致）
         from mini_agent.role_agents.feedback import RoleFeedback, build_inject_message
         try:
@@ -252,7 +262,7 @@ class GoalRunner:
         feedback_obj = RoleFeedback(
             role_name="goal_judge",
             role_type="goal_judge",
-            raw_output=raw,
+            raw_output=display_text,
             goal_status=status,
             inject_as="user",
         )
@@ -267,7 +277,7 @@ class GoalRunner:
         R.console.print(format_feedback(feedback_obj))
         R.console.print()
 
-        return status, raw
+        return status, display_text
 
     # ── 内部：卡住检测（连续反馈高度雷同）──────────────────────────────────
 

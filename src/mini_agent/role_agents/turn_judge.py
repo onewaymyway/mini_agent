@@ -85,7 +85,16 @@ def run_turn_judge(
         # [SYS-TURN-JUDGE] 给 TurnJudge 内部 Agent 一个专属的显示名，方便用户在
         # 打印输出中一眼看出这是自动核查而非主 Agent 本身在说话。
         display_name="🧭 TurnJudge",
-        system_prompt=pm.render("system/turn_judge"),
+        system_prompt=pm.render(
+            "system/turn_judge",
+            json_output_instructions=pm.fragment(
+                "judge_json_output", "JSON_OUTPUT_INSTRUCTIONS",
+                valid_statuses="NEED_USER | AUTO_CONTINUE | NEED_COMPACT",
+                feedback_hint="先说明观察到的现象和依据，AUTO_CONTINUE 时结尾给出具体下一步指令",
+                example_status="NEED_USER",
+                example_feedback="助手已完整回答用户问题，正在正常等待下一步指示。",
+            ),
+        ),
         max_turns=2,
         tools_enabled=False,   # 纯文本判定，不挂载任何工具（最小权限、最低延迟）
     )
@@ -105,8 +114,10 @@ def run_turn_judge(
 
     if result.ok:
         return result.raw_output
-    # 判定失败时保守返回 NEED_USER，绝不能让异常被当成 AUTO_CONTINUE
-    return (
-        f"**结论**\n[TurnJudgeAgent 运行失败: {result.error}]，保守判定为需要用户输入。\n\n"
-        "TURN_STATUS: NEED_USER"
-    )
+    # 判定失败时保守返回 NEED_USER，绝不能让异常被当成 AUTO_CONTINUE。
+    # 兜底文本本身也是合法 JSON，保持与正常输出一致的可解析契约。
+    import json as _json
+    return _json.dumps({
+        "status": "NEED_USER",
+        "feedback": f"[TurnJudgeAgent 运行失败: {result.error}]，保守判定为需要用户输入。",
+    }, ensure_ascii=False)

@@ -313,3 +313,52 @@ SCORE: 7/10
 要比较的文本（GoalRunner 传 judge 反馈文本，TurnJudge 传主 Agent 输出）即可，
 阈值配置（`consecutive_same_feedback_limit` / `consecutive_same_output_limit`
 等）仍然各自独立，互不影响。
+
+---
+
+## 内部实现：判官类 Agent 的结构化输出（`verdict.py`）
+
+`goal_judge` / `turn_judge` 这类需要用状态机驱动外层循环的判官，此前要求
+模型输出一段 Markdown（形如 `**结论**\n...\nGOAL_STATUS: DONE`），调用方
+靠正则从自由文本里"抠"出状态关键字（`feedback.py::extract_goal_status` /
+`extract_turn_status`）。这在模型输出略有偏差（关键字写进代码块、多写了一行、
+大小写不一致）时很脆弱，而且"反馈内容"和"状态关键字"混在同一段文本里，
+展示层还得再用正则去掰开（比如原先 `agent/role_judge.py` 里那段提取
+`**反馈**` 段落的兜底正则）。
+
+现在这两类判官改为约定输出一个 JSON 对象：
+
+```json
+{"status": "CONTINUE", "feedback": "标准1（xxx）未通过，因为...；请先做 A，再做 B。"}
+```
+
+- system prompt 里的输出格式说明统一由 `prompts/fragments/judge_json_output.md`
+  的 `JSON_OUTPUT_INSTRUCTIONS` 片段渲染（`goal_judge.md` / `turn_judge.md`
+  末尾引用 `{{json_output_instructions}}` 占位符），各自的合法状态白名单/
+  示例通过 `pm.fragment(...)` 调用时传入，不需要在每个判官的 system prompt
+  里手写一遍格式约定。
+- 解析由新增的 `role_agents/verdict.py::parse_judge_verdict(text, *,
+  valid_statuses, fallback_status, status_key="status",
+  feedback_key="feedback")` 负责，内部用 `json_repair` 容错解析（允许有
+  json 代码块围栏包裹、夹杂少量说明文字、状态大小写不一致），返回结构化的
+  `JudgeVerdict(status, feedback, parse_ok, raw, extra)`：
+  - `parse_ok=False`（非 JSON / 缺 `status` 字段 / `status` 不在白名单）时，
+    `status` 恒等于调用方传入的 `fallback_status`、`feedback` 恒为空字符串——
+    绝不会让解析失败被误判成某个具体的合法状态；调用方此时应回退到展示/
+    使用 `raw` 原始文本。
+  - `extra` 保留 `status`/`feedback` 之外的其它字段（比如 GoalJudge 未来
+    想附带逐条验收标准的 `checklist`），不会被丢弃。
+- `feedback.py::extract_goal_status` / `extract_turn_status` 两个正则函数
+  标记为 **deprecated**，内部实现改为优先委托给 `parse_judge_verdict`，
+  解析失败时才回退到旧的纯文本 `GOAL_STATUS:`/`TURN_STATUS:` 正则提取——
+  函数签名和"找不到返回 `None`"的行为保持不变，方便还没切换到直接调用
+  `parse_judge_verdict` 的调用方在过渡期内继续工作。
+- `goal_mode/runner.py::_run_judge` 和 `agent/role_judge.py::
+  _maybe_run_turn_judge` 展示反馈 / 注入主 Agent 历史 / 组装
+  "自动接管"提示时，优先使用解析出的干净 `feedback` 字段内容，
+  JSON 解析失败（比如还没升级的自定义 profile）时回退到原始文本，
+  行为与升级前完全一致。
+- 这是一个新增能力，**不强制所有判官类型迁移**——只有 `goal_judge`/
+  `turn_judge` 这类需要状态机驱动外层循环的判官才调用
+  `parse_judge_verdict`；`evaluator`/`coach` 只是把原始文本转成反馈注入
+  历史，不需要状态机，继续用原来的纯文本 `SCORE: x/10` 输出即可，不受影响。
