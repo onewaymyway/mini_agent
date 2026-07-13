@@ -347,3 +347,17 @@ class LLMContextWindowError(LLMProviderError):
     RetryPolicy.non_retryable_exceptions 默认包含此类型，确保重试循环
     立即退出；调用方（agent._call_llm_with_tools）捕获后触发 auto-compact。
     """
+
+class LLMPermanentError(LLMProviderError):
+    """
+    持久性 / 不可恢复的 provider 错误（如 HTTP 403 Forbidden、账号被封禁、
+    地域 / 权限限制等）。
+
+    这类错误的特征是：在短时间窗口内重试没有意义 —— 相同的 key、相同的
+    请求参数重试大概率会得到完全相同的错误，只会浪费时间和 token 预算。
+
+    RetryPolicy.non_retryable_exceptions 默认包含此类型，确保单个 provider
+    entry 内不做任何重试等待，立即向上传播；LLMClientPool.DEFAULT_FALLBACK_ON
+    同样包含 "LLMPermanentError"，确保 fallback chain 立即切换到下一条配置，
+    而不是先在当前配置上重试若干次再切换。
+    """

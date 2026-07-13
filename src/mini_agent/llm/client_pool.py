@@ -106,7 +106,7 @@ class ApiKeyPool:
             raise ValueError("ApiKeyPool requires at least one key")
         self._states: list[KeyState] = [KeyState(k) for k in keys]
         self._rotation = rotation
-        self._switch_on: set[str] = switch_on or {"LLMRateLimitError"}
+        self._switch_on: set[str] = switch_on or {"LLMRateLimitError", "LLMPermanentError"}
         self._cooldown = cooldown
         self._idx = 0          # 当前 key 索引（round_robin 用）
         self._lock = threading.Lock()
@@ -270,6 +270,7 @@ class LLMClientPool:
         "LLMRateLimitError",
         "LLMTimeoutError",
         "LLMProviderError",
+        "LLMPermanentError",
     }
 
     def __init__(

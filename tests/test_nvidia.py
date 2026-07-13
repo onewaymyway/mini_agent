@@ -241,6 +241,40 @@ class TestNvidiaChat(unittest.TestCase):
         with self.assertRaises(LLMTimeoutError):
             self.provider._do_chat([], "", [])
 
+    def test_forbidden_403_wrapped_as_permanent_error(self):
+        """403 应映射为 LLMPermanentError：不再重试，直接触发 fallback 切换。"""
+        import httpx
+        from mini_agent.llm.base import LLMPermanentError
+
+        mock_resp = MagicMock()
+        mock_resp.status_code = 403
+        mock_resp.json.return_value = {"error": {"message": "Forbidden"}}
+        mock_resp.text = "Forbidden"
+        self.provider._http.post.side_effect = httpx.HTTPStatusError(
+            "403", request=MagicMock(), response=mock_resp
+        )
+        with self.assertRaises(LLMPermanentError) as ctx:
+            self.provider._do_chat([], "", [])
+        self.assertIn("403", str(ctx.exception))
+        # LLMPermanentError 仍是 LLMProviderError 的子类，向后兼容旧的
+        # except LLMProviderError 处理逻辑。
+        self.assertIsInstance(ctx.exception, LLMProviderError)
+
+    def test_unauthorized_401_wrapped_as_permanent_error(self):
+        """401 同样是持久性错误（key 无效），不应重试。"""
+        import httpx
+        from mini_agent.llm.base import LLMPermanentError
+
+        mock_resp = MagicMock()
+        mock_resp.status_code = 401
+        mock_resp.json.return_value = {"error": {"message": "Unauthorized"}}
+        mock_resp.text = "Unauthorized"
+        self.provider._http.post.side_effect = httpx.HTTPStatusError(
+            "401", request=MagicMock(), response=mock_resp
+        )
+        with self.assertRaises(LLMPermanentError):
+            self.provider._do_chat([], "", [])
+
     def test_payload_no_tools_field(self):
         """payload 不应包含 tools 字段（全通过 system prompt）。"""
         payload = self.provider._build_payload([], "system", stream=False)

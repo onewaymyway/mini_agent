@@ -22,6 +22,7 @@ from ..base import (
     LLMClient, LLMConfig, LLMResponse, LLMUsage,
     ToolSchema, StreamCallback, ReasoningCallback,
     LLMProviderError, LLMTimeoutError, LLMRateLimitError,
+    LLMPermanentError,
 )
 from ._base_mixin import ProviderMixin
 
@@ -261,7 +262,12 @@ class NvidiaProvider(ProviderMixin, LLMClient):
                 if status == 429:
                     return LLMRateLimitError(f"NVIDIA NIM rate limit (429): {msg}")
                 if status == 401:
-                    return LLMProviderError(f"NVIDIA NIM auth error (401): check NVIDIA_API_KEY")
+                    return LLMPermanentError(f"NVIDIA NIM auth error (401): check NVIDIA_API_KEY")
+                if status == 403:
+                    # 403 通常意味着该 key/账号 对该模型没有权限、被封禁或触发了
+                    # 地域限制 —— 这是持久性错误，短时间内重试几乎必然得到同样
+                    # 的 403，因此不重试，直接交给上层触发 fallback 切换。
+                    return LLMPermanentError(f"NVIDIA NIM forbidden (403): {msg}")
                 if status == 400:
                     return LLMProviderError(f"NVIDIA NIM bad request (400): {msg}")
                 return LLMProviderError(f"NVIDIA NIM HTTP {status}: {msg}")
