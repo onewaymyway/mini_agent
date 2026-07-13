@@ -11,6 +11,21 @@ role_agents/dispatcher.py — RoleAgentDispatcher
   "output"          → 主 Agent 完成整个 turn 的输出后
   "tool_use:<name>" → 特定工具调用完成后（CoachAgent 常用）
   "turn_end"        → turn 结束时（alias for output）
+  "goal_review"      → [判官接线统一 阶段六] Goal 模式每轮结束后，GoalJudge
+                        核查是否 DONE/CONTINUE/NEED_COMPACT。与下面的
+                        "turn_end_review" 及本文件已有的 "turn_end" 是
+                        三个容易混淆但语义完全不同的概念，务必区分：
+                          - "turn_end"：主 Agent 输出后、还没决定要不要
+                            交还用户之前的质量修订循环（evaluator/coach），
+                            是 "output" 的别名，运行时机最早。
+                          - hooks 系统的 "TurnEnd" 事件：外部脚本/进程的
+                            钩子机制，和这里的 trigger_on 字段是两套不
+                            相关的系统，只是恰好同名。
+                          - "turn_end_review"（本文件新增）：主 Agent
+                            输出 + evaluator/coach 修订都跑完、TurnEnd
+                            hook 也没接管之后，TurnJudge 判断"这轮到底
+                            要不要交还真人"，运行时机最晚。
+  "turn_end_review"  → [判官接线统一 阶段六] TurnJudge 判定，见上条说明。
 
 两种协作模式（profile 的 inject_as 决定）：
   串行管道：evaluator → 反馈注入 → 主 Agent 可以看到并修订
@@ -109,13 +124,34 @@ class RoleAgentDispatcher:
         self._loader = profile_loader
         self._output_roles: list["AgentProfile"] = []
         self._tool_roles: dict[str, list["AgentProfile"]] = {}
+        # [判官接线统一 阶段六] goal_judge/turn_judge 的注册表，与
+        # _output_roles/_tool_roles 平级，但来源可以是磁盘 profile
+        # （用户自定义同名文件）或内建合成 profile（见 builtin_profiles.py）。
+        self._goal_review_roles: list["AgentProfile"] = []
+        self._turn_end_review_roles: list["AgentProfile"] = []
         self._enabled = True
         self._discover()
 
     def _discover(self) -> None:
-        """从 profile_loader 中找出所有 role_type 不为空的 profile 并分类。
+        """发现所有角色 Agent profile 并分类，分两段逻辑：
 
-        过滤优先级：
+          1. 磁盘自定义 evaluator/coach/custom profile：仍然完全受
+             `role_agent.enabled` 门控——`role_agent.enabled=False` 时不
+             加载任何磁盘自定义 evaluator/coach/custom，行为与升级前完全
+             一致。
+          2. goal_judge/turn_judge（判官）：**不**受 `role_agent.enabled`
+             门控，而是分别受各自子系统的开关（`cfg.goal_mode.enabled`/
+             `cfg.turn_judge.enabled`）门控——哪怕 `role_agent.enabled` 为
+             False，只要 `goal_mode.enabled=True`，goal_judge 也应该正常
+             触发（这是 §1.2 发现的兼容性风险，必须保留）。磁盘上如果存在
+             同名的自定义 `.agent/agents/goal_judge.md`/`turn_judge.md`，
+             会覆盖内建合成 profile（磁盘优先）——这个覆盖能力本身也不
+             应该被 `role_agent.enabled` 挡住：判官的"是否生效"由它自己
+             的子系统开关决定，"用什么 profile"（内建还是磁盘自定义）是
+             另一个独立维度，两者不应该被同一个 `role_agent.enabled`
+             耦合在一起。
+
+        allow/block 过滤优先级（对两段逻辑都适用）：
           1. allow 白名单（非空时，只保留名单内的）
           2. block 黑名单（过滤掉名单内的）
           两者均对 profile.name 进行精确匹配。
@@ -124,29 +160,90 @@ class RoleAgentDispatcher:
         allow_set = set(ra_cfg.allow) if ra_cfg.allow else set()
         block_set = set(ra_cfg.block) if ra_cfg.block else set()
 
-        for name in self._loader.available:
-            profile = self._loader.get(name)
-            if not profile or not profile.role_type:
-                continue
+        # 每次重新发现前清空，保证热重载/重复调用时不会重复累加
+        self._output_roles = []
+        self._tool_roles = {}
+        self._goal_review_roles = []
+        self._turn_end_review_roles = []
 
-            # 白名单过滤：allow 非空时，只保留白名单内的
+        _JUDGE_NAMES = ("goal_judge", "turn_judge")
+
+        def _passes_allow_block(name: str, label: str) -> bool:
             if allow_set and name not in allow_set:
-                R.print_info(f"[RoleAgent] 跳过 '{name}'（不在白名单 {sorted(allow_set)} 中）")
-                continue
-
-            # 黑名单过滤：在 block 名单中的屏蔽
+                R.print_info(f"[RoleAgent] 跳过{label} '{name}'（不在白名单 {sorted(allow_set)} 中）")
+                return False
             if name in block_set:
-                R.print_info(f"[RoleAgent] 屏蔽 '{name}'（在黑名单中）")
-                continue
+                R.print_info(f"[RoleAgent] 屏蔽{label} '{name}'（在黑名单中）")
+                return False
+            return True
 
-            trigger = profile.trigger_on.strip().lower()
+        def _register_by_trigger(profile: "AgentProfile", name: str, source_label: str) -> None:
+            trigger = (profile.trigger_on or "").strip().lower()
             if trigger in ("output", "turn_end", ""):
                 self._output_roles.append(profile)
-                R.print_info(f"[RoleAgent] 注册 {profile.role_type} '{name}' → trigger: output")
+                R.print_info(f"[RoleAgent] 注册 {profile.role_type} '{name}'{source_label} → trigger: output")
             elif trigger.startswith("tool_use:"):
                 tool_name = trigger[len("tool_use:"):]
                 self._tool_roles.setdefault(tool_name, []).append(profile)
-                R.print_info(f"[RoleAgent] 注册 {profile.role_type} '{name}' → trigger: tool_use:{tool_name}")
+                R.print_info(f"[RoleAgent] 注册 {profile.role_type} '{name}'{source_label} → trigger: tool_use:{tool_name}")
+            elif trigger == "goal_review":
+                self._goal_review_roles.append(profile)
+                R.print_info(f"[RoleAgent] 注册 {profile.role_type} '{name}'{source_label} → trigger: goal_review")
+            elif trigger == "turn_end_review":
+                self._turn_end_review_roles.append(profile)
+                R.print_info(f"[RoleAgent] 注册 {profile.role_type} '{name}'{source_label} → trigger: turn_end_review")
+
+        # ── 1. 磁盘自定义 evaluator/coach/custom：受 role_agent.enabled 门控 ──
+        judge_names_on_disk: set[str] = set()
+        if ra_cfg.enabled:
+            for name in self._loader.available:
+                profile = self._loader.get(name)
+                if not profile or not profile.role_type:
+                    continue
+                if name in _JUDGE_NAMES or profile.role_type in _JUDGE_NAMES:
+                    # 判官走第 2 段独立处理（不受 role_agent.enabled 门控），
+                    # 这里只是发现阶段顺带跳过，避免重复注册。
+                    continue
+                if not _passes_allow_block(name, ""):
+                    continue
+                _register_by_trigger(profile, name, "")
+
+        # ── 2. 判官（goal_judge/turn_judge）：不受 role_agent.enabled 门控，
+        #        磁盘自定义优先于内建合成 profile ─────────────────────────────
+        for judge_name in _JUDGE_NAMES:
+            disk_profile = self._loader.get(judge_name) if judge_name in self._loader.available else None
+            if disk_profile is not None and disk_profile.role_type == judge_name:
+                judge_names_on_disk.add(judge_name)
+
+        from .builtin_profiles import get_builtin_profiles
+        builtin_by_name = {p.name: p for p in get_builtin_profiles(self._cfg)}
+
+        for judge_name in _JUDGE_NAMES:
+            if judge_name in judge_names_on_disk:
+                profile = self._loader.get(judge_name)
+                source_label = "（磁盘自定义，覆盖内建）"
+            elif judge_name in builtin_by_name:
+                profile = builtin_by_name[judge_name]
+                source_label = "（内建）"
+            else:
+                # 既没有磁盘自定义，对应子系统也未开启：不注册
+                continue
+
+            if not _passes_allow_block(judge_name, "判官"):
+                continue
+            _register_by_trigger(profile, judge_name, source_label)
+
+    def rediscover(self, dirs: Optional[list] = None) -> None:
+        """[SYS-HOT-RELOAD] 重新执行一次 _discover()。
+
+        与 skill/agent-profile loader 的 rediscover 同名同义，供
+        `perception.hot_reload.HotReloader` 在磁盘自定义 profile 文件变化
+        后调用（HotReloader 按 `reload_fn(dirs)` 的约定传参，这里的 dirs
+        未被使用——dispatcher 的发现逻辑总是读取 self._loader.available，
+        接收该参数只是为了匹配调用约定），以刷新 _output_roles/
+        _tool_roles/_goal_review_roles/_turn_end_review_roles 四张注册表。
+        """
+        self._discover()
 
     @property
     def has_output_roles(self) -> bool:
@@ -159,6 +256,30 @@ class RoleAgentDispatcher:
     def get_tool_triggers(self) -> set[str]:
         """返回需要监听的工具名集合，供 agent.py 判断是否触发。"""
         return set(self._tool_roles.keys())
+
+    # ── 判官（goal_review / turn_end_review）─────────────────────────────────
+    # [判官接线统一 阶段六]
+
+    @property
+    def has_goal_review_roles(self) -> bool:
+        return bool(self._goal_review_roles)
+
+    @property
+    def has_turn_end_review_roles(self) -> bool:
+        return bool(self._turn_end_review_roles)
+
+    def get_goal_review_roles(self) -> list["AgentProfile"]:
+        """返回当前注册的 goal_review 判官 profile 列表（通常只有一个内建
+        goal_judge，但保留多个的可能性，方便未来支持自定义 goal 判官协同）。
+
+        当前调用方（goal_mode/runner.py）只取第一个；多判官协同留作未来
+        独立设计课题。
+        """
+        return list(self._goal_review_roles)
+
+    def get_turn_end_review_roles(self) -> list["AgentProfile"]:
+        """返回当前注册的 turn_end_review 判官 profile 列表，语义同上。"""
+        return list(self._turn_end_review_roles)
 
     # ── 串行管道：output 触发 ────────────────────────────────────────────────
 

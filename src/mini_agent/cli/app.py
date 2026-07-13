@@ -323,11 +323,20 @@ def _main_inner() -> None:
         R.print_info(f"Personas available: {persona_loader.available}")
 
     # ── Role Agent 系统 ───────────────────────────────────────────────────────
+    # [判官接线统一 阶段六] dispatcher 从"role_agent 专属对象"升级为"判官
+    # 触发的公共基础设施"：只要 goal_mode/turn_judge 任一子系统开启，即使
+    # role_agent.enabled=False，也需要构造 dispatcher 才能让内建的
+    # goal_judge/turn_judge profile 被统一注册（详见 role_agents/dispatcher.py
+    # 的 _discover() 两段式逻辑）。role_agent.enabled 只影响是否额外加载磁盘上
+    # 的自定义 evaluator/coach 等 profile，不再是 dispatcher 是否存在的唯一条件。
     from mini_agent.role_agents import init_role_agent_system
-    if cfg.role_agent.enabled:
+    if cfg.role_agent.enabled or cfg.goal_mode.enabled or cfg.turn_judge.enabled:
         role_sys = init_role_agent_system(cfg, profile_loader)
         if role_sys.has_output_roles or role_sys.has_tool_roles:
             R.print_info(f"Role agents ready: {role_sys.summary}")
+        if not cfg.role_agent.enabled:
+            R.print_info("[RoleAgent] role_agent.enabled=False（未加载磁盘自定义角色 Agent），"
+                          "dispatcher 仅用于内建判官（goal_judge/turn_judge）接线")
     else:
         R.print_info("[RoleAgent] 未启用（使用 --role-agents 参数开启）")
 

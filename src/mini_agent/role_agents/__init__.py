@@ -18,6 +18,6 @@ role_agents — 多角色 Agent 协作系统
     feedback = role_sys.trigger("output", main_output, context)
 """
 
-from .dispatcher import RoleAgentDispatcher, init_role_agent_system
+from .dispatcher import RoleAgentDispatcher, init_role_agent_system, get_dispatcher
 
-__all__ = ["RoleAgentDispatcher", "init_role_agent_system"]
+__all__ = ["RoleAgentDispatcher", "init_role_agent_system", "get_dispatcher"]

@@ -100,8 +100,8 @@ model: claude-3-5-sonnet      # 可选，覆盖全局模型
 
 | 字段 | 类型 | 默认值 | 说明 |
 |------|------|--------|------|
-| `role_type` | string | `""` | 角色类型，留空 = 普通子 Agent（不自动触发）。可选值：`evaluator` / `coach` / `custom` |
-| `trigger_on` | string | `""` | 触发时机。`output`：主 Agent 完成 turn 输出后；`tool_use:<tool_name>`：指定工具调用完成后；`turn_end`：同 `output` |
+| `role_type` | string | `""` | 角色类型，留空 = 普通子 Agent（不自动触发）。可选值：`evaluator` / `coach` / `custom` / `goal_judge` / `turn_judge`（后两者为内建判官，见下方"内建判官如何接入 dispatcher"一节） |
+| `trigger_on` | string | `""` | 触发时机。`output`：主 Agent 完成 turn 输出后；`tool_use:<tool_name>`：指定工具调用完成后；`turn_end`：同 `output`；`goal_review`：Goal 模式每轮结束核查（GoalJudge）；`turn_end_review`：主 Agent 输出 + evaluator/coach 修订都跑完之后核查是否交还真人（TurnJudge） |
 | `max_iterations` | int | `1` | evaluator 类型生效：最多执行几轮评估-修订循环 |
 | `pass_threshold` | float | `0.8` | evaluator 类型生效：评分（0-1）达到此值才视为通过，否则触发修订 |
 | `inject_as` | string | `"user"` | 反馈注入主 Agent 历史的方式。`user`：追加为 user 消息（主 Agent 正常读取）；`system_reminder`：加前缀区分，适合轻量建议 |
@@ -265,23 +265,104 @@ SCORE: 7/10
 
 ---
 
-## 与 Goal 模式的关系
+## 与 Goal 模式 / TurnJudge 的关系（判官接线统一，阶段六）
 
-`role_agents/goal_judge.py` 里的 `GoalJudgeAgent` 是专门为 [Goal 模式](goal-mode-guide.md)
-新增的第四种角色类型 `goal_judge`。和本文档描述的 `evaluator` 有本质区别，
-不通过本文档的 `RoleAgentDispatcher` 触发流程接入：
+`role_agents/goal_judge.py` 里的 `GoalJudgeAgent`、`agent/role_judge.py` 里的
+TurnJudge，是专门为 [Goal 模式](goal-mode-guide.md) / [TurnJudge](turn-judge-guide.md)
+新增的两种角色类型 `goal_judge` / `turn_judge`。它们判断的内容和触发范围
+与本文档描述的 `evaluator` 有本质区别：
 
-| | `evaluator` | `goal_judge` |
-|---|---|---|
-| 判断内容 | 输出质量好不好（打分 0-10） | 是否达成 GoalSpec 的验收标准（DONE/CONTINUE/NEED_COMPACT） |
-| 触发范围 | 单次 `run_turn` 内部的修订循环 | 跨多次 `run_turn` 的外层 `GoalRunner` 循环 |
-| 是否可挂工具 | 否（固定无工具） | 可选（`judge_tools_enabled` 开关，能自己跑命令验证） |
-| 调用方式 | `RoleAgentDispatcher.trigger_output()` | `GoalRunner` 直接调用 `run_goal_judge()`，不经过 dispatcher |
+| | `evaluator` | `goal_judge` | `turn_judge` |
+|---|---|---|---|
+| 判断内容 | 输出质量好不好（打分 0-10） | 是否达成 GoalSpec 的验收标准（DONE/CONTINUE/NEED_COMPACT） | 这一轮是否真的该交还真人 |
+| 触发范围 | 单次 `run_turn` 内部的修订循环 | 跨多次 `run_turn` 的外层 `GoalRunner` 循环 | 每轮 turn 结束、交还用户之前 |
+| 是否可挂工具 | 否（固定无工具） | 可选（`judge_tools_enabled` 开关，能自己跑命令验证） | 否 |
+| 子系统总开关 | `role_agent.enabled` | `cfg.goal_mode.enabled` | `cfg.turn_judge.enabled` |
 
-两者可以同时存在、互不冲突：`evaluator` 仍在每次 `run_turn` 内部做质量把关，
-`goal_judge` 在外层做"目标是否达成"的把关。
+**阶段六（本节新增）之前**：`goal_judge`/`turn_judge` 完全不经过
+`RoleAgentDispatcher`——`GoalRunner`/`role_judge.py` 各自现场拼一个临时
+`AgentProfile` 直接调用 `run_goal_judge()`/`run_turn_judge()`，`role_agent.
+allow`/`block` 对它们完全不起作用。
+
+**阶段六 a（当前状态）**：`goal_judge` 已经改为经由 dispatcher 统一注册与
+查询（触发路径为 `goal_review`，见下一节），可以被 `role_agent.block`
+屏蔽、也可以被磁盘上的 `.agent/agents/goal_judge.md` 自定义覆盖。
+`turn_judge` 暂时保持原有的直接调用方式不变（阶段 6b 会切换，届时本节
+会同步更新）。
+
+两者都可以和 `evaluator`/`coach` 同时存在、互不冲突：`evaluator` 仍在
+每次 `run_turn` 内部做质量把关，`goal_judge`/`turn_judge` 在外层做
+"目标是否达成"/"是否该交还真人"的把关。
 
 ---
+
+## 内建判官如何接入 dispatcher（`goal_review` / `turn_end_review`）
+
+[判官接线统一 阶段六] `role_agents/builtin_profiles.py::get_builtin_profiles(cfg)`
+按当前配置**在内存中合成**（不落盘为 `.md` 文件）`goal_judge`/`turn_judge`
+两个内建判官 profile：只有对应子系统（`cfg.goal_mode.enabled` /
+`cfg.turn_judge.enabled`）开启时，对应 profile 才会被合成出来。
+`RoleAgentDispatcher._discover()` 每次都会重新调用这个函数，把合成结果
+和磁盘自定义 profile 一起，按 `trigger_on` 分类进两张新注册表：
+
+- `goal_review`（GoalJudge）
+- `turn_end_review`（TurnJudge，阶段 6b 生效）
+
+对应的查询接口：
+
+```python
+dispatcher.has_goal_review_roles       # bool
+dispatcher.has_turn_end_review_roles   # bool
+dispatcher.get_goal_review_roles()     # list[AgentProfile]
+dispatcher.get_turn_end_review_roles() # list[AgentProfile]
+```
+
+**三个容易混淆的"turn end"概念，务必区分**：
+
+| 概念 | 归属 | 触发时机 |
+|---|---|---|
+| `trigger_on: turn_end` | 本文档的 `RoleAgentDispatcher`（`output` 的别名） | 主 Agent 输出后，evaluator/coach 修订循环 |
+| hooks 的 `TurnEnd` 事件 | `hooks.py` 外部钩子机制，与 `trigger_on` 无关 | 供外部脚本/进程订阅的钩子事件 |
+| `trigger_on: turn_end_review` | 本节新增，TurnJudge 专用 | 主 Agent 输出 + evaluator/coach 修订都跑完之后，判断是否交还真人 |
+
+**三层开关如何共存（不合并，各管各的边界）**：
+
+```
+cfg.goal_mode.enabled / cfg.turn_judge.enabled
+    — 子系统总开关：/goal 命令、GoalRunner/TurnJudge 这套机制本身是否可用
+cfg.role_agent.allow / cfg.role_agent.block
+    — 精细化开关：子系统已启用的前提下，具体某个判官 profile
+      （内建的 goal_judge/turn_judge，或任何自定义 profile）要不要真正生效
+```
+
+即：`goal_judge` 真正触发 = `cfg.goal_mode.enabled` 且未被 `role_agent.block`
+命中（`role_agent.allow` 非空时还需要在名单内）。关掉 `goal_mode.enabled`
+时，讨论"要不要触发 goal_judge"本身就无意义；`goal_mode.enabled=true`
+时，`role_agent.allow/block` 才开始起过滤作用（默认空列表，等价于不过滤，
+对现有用户完全向后兼容，不需要修改任何配置）。
+
+**`RoleAgentDispatcher` 的构造条件**也相应放宽：只要
+`role_agent.enabled`/`goal_mode.enabled`/`turn_judge.enabled` 任一为
+`True`，dispatcher 就会被构造——这样只开了 `goal_mode.enabled=true`、
+没有额外打开 `role_agent.enabled=true` 的用户，GoalJudge 依然能正常触发
+（dispatcher 内部会分别按来源门控：磁盘自定义 profile 仍然完全受
+`role_agent.enabled` 门控，不会因为开了 Goal 模式就意外激活用户磁盘上
+定义的自定义 evaluator/coach）。
+
+**用 `.agent/agents/goal_judge.md` 自定义 GoalJudge**：如果该文件存在，
+会覆盖内建的合成 profile（磁盘优先），可以自定义 `model`/`system_prompt`
+等字段，不受 `prompts/system/goal_judge.md` 默认模板限制。`turn_judge.md`
+同理（阶段 6b 生效）。
+
+**用 `role_agent.block` 屏蔽内建判官**：例如
+`role_agent.block: ["goal_judge"]` 会让 `goal_mode.enabled=true` 时仍然
+拿不到任何 goal_review 判官。这是一个自相矛盾的配置组合（开了 Goal 模式
+却拉黑了唯一的验收判官），`GoalRunner` 会在构造时直接报错拒绝启动，
+提示检查配置，而不是静默降级为某种可能出乎意料的行为。
+
+---
+
+
 
 ## 内部实现：判官类 Agent 的统一构造工厂（`judge_factory.py`）
 

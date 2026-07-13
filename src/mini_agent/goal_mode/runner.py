@@ -73,6 +73,31 @@ class GoalRunner:
         if not goal_spec.confirmed:
             raise ValueError("GoalSpec 尚未确认（confirmed=False），不能开始执行。请先完成验收标准协商流程。")
 
+        # [判官接线统一 阶段六] goal_mode.enabled=True 但 "goal_judge" 被
+        # role_agent.block 屏蔽（或磁盘自定义 profile 的 trigger_on 被改坏）
+        # 时，dispatcher.get_goal_review_roles() 会返回空列表——这种组合本身
+        # 就是自相矛盾的配置（开了 Goal 模式却把唯一的验收判官拉黑）。与其
+        # 运行时静默降级成某个可能出乎意料的行为（永远 CONTINUE 跑满
+        # max_rounds，或悄悄当作 DONE 绕过验收），这里选择启动时就明确报错，
+        # 让用户自己决定到底想要哪种（对应设计文档 §8 开放问题 3 的方案 c）。
+        #
+        # 注意区分两种"拿不到 goal_review 判官"的情况：
+        #   - dispatcher 存在（app.py 正常走过 init_role_agent_system），但
+        #     goal_review_roles 为空 → 真的是配置自相矛盾（block 掉了），报错。
+        #   - dispatcher 是 None（全局单例从未被初始化，例如脱离 app.py 独立
+        #     构造 GoalRunner 的场景，如测试用例）→ 不视为"配置错误"，
+        #     保持与升级前完全一致的行为：不报错，_run_judge 里会 fallback
+        #     到现场拼装 profile（见下方 _run_judge 的对应处理）。
+        from mini_agent.role_agents import get_dispatcher
+        _dispatcher = get_dispatcher()
+        if _dispatcher is not None and not _dispatcher.get_goal_review_roles():
+            raise ValueError(
+                "cfg.goal_mode.enabled=True，但 \"goal_judge\" 已被 role_agent.block 屏蔽，"
+                "导致没有任何可用的 goal_review 判官。Goal 模式没有验收判官会导致无法核查"
+                "是否完成，请检查配置：从 role_agent.block 中移除 \"goal_judge\"，"
+                "或关闭 goal_mode.enabled。"
+            )
+
         self._agent = agent
         self._cfg = cfg
         self._spec = goal_spec
@@ -206,16 +231,33 @@ class GoalRunner:
     def _run_judge(self, agent_output: str) -> tuple[str, str]:
         from mini_agent.role_agents.goal_judge import run_goal_judge, build_goal_judge_prompt
         from mini_agent.role_agents.feedback import extract_goal_status
-        from mini_agent.orchestrator.agent_profiles import AgentProfile
 
-        profile = AgentProfile(
-            name="goal_judge",
-            role_type="goal_judge",
-            model=self._gm_cfg.judge_model,
-            provider=self._gm_cfg.judge_provider,
-            tools=list(self._gm_cfg.judge_allowed_tools) if self._gm_cfg.judge_tools_enabled else [],
-            tool_groups=list(self._gm_cfg.judge_allowed_tool_groups) if self._gm_cfg.judge_tools_enabled else [],
-        )
+        # [判官接线统一 阶段六] profile 不再由 runner.py 现场拼一个临时
+        # AgentProfile 对象，而是优先从 dispatcher 的 goal_review 注册表
+        # 查询——这样 "goal_judge" 才有一个真实存在的"注册来源"，可以被
+        # role_agent.block 屏蔽，也可以被磁盘上的 .agent/agents/goal_judge.md
+        # 自定义覆盖（model/system_prompt 等）。
+        #
+        # dispatcher 为 None（未经过 app.py 的 init_role_agent_system，例如
+        # 独立/测试场景直接构造 GoalRunner）时，fallback 到升级前的现场拼装
+        # 方式，保持完全向后兼容；__init__ 里已经确保了"dispatcher 存在但
+        # 拿不到 goal_judge"这种真正的配置错误不会走到这里。
+        from mini_agent.role_agents import get_dispatcher
+        _dispatcher = get_dispatcher()
+        if _dispatcher is not None:
+            goal_review_roles = _dispatcher.get_goal_review_roles()
+            profile = goal_review_roles[0]
+        else:
+            from mini_agent.orchestrator.agent_profiles import AgentProfile
+            profile = AgentProfile(
+                name="goal_judge",
+                role_type="goal_judge",
+                trigger_on="goal_review",
+                model=self._gm_cfg.judge_model,
+                provider=self._gm_cfg.judge_provider,
+                tools=list(self._gm_cfg.judge_allowed_tools) if self._gm_cfg.judge_tools_enabled else [],
+                tool_groups=list(self._gm_cfg.judge_allowed_tool_groups) if self._gm_cfg.judge_tools_enabled else [],
+            )
 
         if self._gm_cfg.judge_show_prompt:
             # [调试开关] 打印发给 GoalJudge 的完整输入 prompt，方便排查判定依据

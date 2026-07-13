@@ -147,6 +147,15 @@ run_turn() 内部：
 > 标记 `is_subagent=True` 双重兜底，用户无需关心这个细节，但如果你在扩展
 > 框架时新增了类似的"内部临时 Agent"，请照此模式处理。
 
+> **判官接线统一（阶段六）现状：** GoalJudge 已经改为经由
+> [`RoleAgentDispatcher`](role-agents-guide.md#内建判官如何接入-dispatcher goal_review--turn_end_review)
+> 统一注册与查询（`role_agent.block: ["goal_judge"]` 可以屏蔽它）。
+> TurnJudge 暂时**保持原有的直接调用方式不变**——`agent/role_judge.py::
+> _maybe_run_turn_judge` 仍然现场构造 `AgentProfile` 直接调用
+> `run_turn_judge()`，`role_agent.allow`/`block` 对它暂不生效。这是刻意的
+> 灰度策略：先只切换 GoalJudge，观察一段时间确认无异常后（阶段 6b）再切换
+> TurnJudge，本节会在那之后同步更新。
+
 ---
 
 ## 使用体验

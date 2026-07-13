@@ -386,6 +386,26 @@ extract_goal_status()` 仍然可用，但已标记 deprecated，内部委托给
 
 两种模式下输出格式一致，只是判定依据不同。
 
+### 接入方式：经由 RoleAgentDispatcher 统一注册（阶段六）
+
+[判官接线统一 阶段六] GoalJudge 不再由 `GoalRunner` 现场拼一个临时
+`AgentProfile` 直接调用，而是作为一个内建判官 profile（`trigger_on:
+goal_review`）注册进 [`RoleAgentDispatcher`](role-agents-guide.md#内建判官如何接入-dispatcher goal_review--turn_end_review)。
+这意味着：
+
+- **`role_agent.block: ["goal_judge"]`** 可以屏蔽 GoalJudge——但这是一个
+  自相矛盾的配置（开了 `goal_mode.enabled` 却拉黑唯一的验收判官），
+  `GoalRunner` 会在构造时直接报错拒绝启动，而不是静默降级。
+- **`.agent/agents/goal_judge.md`** 若存在，会覆盖内建的 GoalJudge
+  profile（磁盘优先），可以自定义 `model`/`system_prompt`，不受
+  `prompts/system/goal_judge.md` 默认模板限制。
+- **不需要额外打开 `role_agent.enabled=true`**：只要
+  `cfg.goal_mode.enabled=true`，dispatcher 就会构造并注册内建
+  GoalJudge，行为与升级前完全一致，不需要用户改动任何现有配置。
+
+`judge_model`/`judge_provider`/`judge_tools_enabled` 等本节描述的所有
+子配置字段含义不变，本次改造只统一了"谁来注册、谁来触发"这一层。
+
 ---
 
 ## 安全阀

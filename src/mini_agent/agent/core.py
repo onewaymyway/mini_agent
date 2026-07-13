@@ -326,6 +326,21 @@ class Agent(
                 reload_fn=_ppl.rediscover,
                 category="persona",
             )
+        # [判官接线统一 阶段六] RoleAgentDispatcher 此前未接入热重载：
+        # agent profiles 的 rediscover 只刷新 AgentProfileLoader 自己的
+        # _all，不会联动刷新 dispatcher 内部的 _output_roles/_tool_roles/
+        # _goal_review_roles/_turn_end_review_roles 四张注册表，导致磁盘上
+        # 新增/修改的 .agent/agents/goal_judge.md 等自定义 profile 文件在
+        # 运行时不会被 dispatcher 感知（需要重启进程）。这里补上：监视同一批
+        # 目录，变化时额外调用一次 dispatcher.rediscover()。
+        from mini_agent.role_agents import get_dispatcher
+        _rad = get_dispatcher()
+        if _rad is not None and _apl is not None:
+            self._hot_reloader.register(
+                dirs=_apl._dirs,
+                reload_fn=_rad.rediscover,
+                category="role_agent",
+            )
 
         # ── 感知与记忆子系统（按开关初始化）────────────────────────────────
 
