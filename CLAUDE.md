@@ -35,7 +35,7 @@
 - `src/mini_agent/prompts/` — Prompt 管理
 - `src/mini_agent/storage/` — 存储层（`paths.py` 含 `session_plan_snapshot`/`task_manifest`/`workdir_xxx`/`global_xxx` 等路径方法）
 - `src/mini_agent/env_info/` — 环境信息采集与注入（Provider 抽象基类 + 注册表 + 内置 Provider）
-- `src/mini_agent/evolution/` — 自我演化机制：`state_repo.py`（唯一写入入口，Stage 9 加 `initiator` T0→T1 上浮）/`validators.py`（分级校验）/`workspace.py`（worktree 隔离）/`eval_runner.py`（eval 反馈环）/`phase_g.py`（Stage 8 后台循环：剪枝/能力地图/Scope 晋升/节奏治理）/`autonomous_loop.py`（Stage 9 三档位 tick + ExplorationSandbox + SoftGoalDeriver 接入）/`resource_arbiter.py`（Stage 9 资源仲裁 + activity_digest.jsonl + 六分组 build_digest_summary；五条仲裁规则，第五条 `_check_user_presence()` 为具身×自治方案二新增）/`cron_scheduler.py`（Stage 9 定时任务：interval/cron 双格式，5 个内置系统 job）/`objective_executor.py`（Stage 9 Objective 多步持续执行引擎）/`soft_goal_deriver.py`（Stage 9 autonomous 档位软目标 derive：三路信号 + ExplorationSandbox 验证；另接入高风险域降权/uncertainty域加权/负面回填域降权三个具身×自治信号）/`outcome_tracker.py`（效果回填：baseline/post 触发次数对比判定 verdict，`worsened` 时回写 `eval_failure` lesson + 发布 `evolution.outcome_negative` 事件，供 `AgentSelfModel.recent_negative_outcome_domains()` 桥接消费）/`memory_aging.py`（具身改进 C2，lesson 按 source + occurrence_count 计算专属时间衰减半衰期）/`self_maintenance.py`（具身改进 C4，SelfMaintenanceModule：stale_tools/stale_skills/conflicting_lessons 健康检查，SessionEnd 时间门控 + `sys:self_maintain` cron job）
+- `src/mini_agent/evolution/` — 自我演化机制：`state_repo.py`（唯一写入入口，Stage 9 加 `initiator` T0→T1 上浮）/`validators.py`（分级校验）/`workspace.py`（worktree 隔离）/`eval_runner.py`（eval 反馈环）/`consolidation.py`（Stage 8 后台循环：剪枝/能力地图/Scope 晋升/节奏治理）/`autonomous_loop.py`（Stage 9 三档位 tick + ExplorationSandbox + SoftGoalDeriver 接入）/`resource_arbiter.py`（Stage 9 资源仲裁 + activity_digest.jsonl + 六分组 build_digest_summary；五条仲裁规则，第五条 `_check_user_presence()` 为具身×自治方案二新增）/`cron_scheduler.py`（Stage 9 定时任务：interval/cron 双格式，5 个内置系统 job）/`objective_executor.py`（Stage 9 Objective 多步持续执行引擎）/`soft_goal_deriver.py`（Stage 9 autonomous 档位软目标 derive：三路信号 + ExplorationSandbox 验证；另接入高风险域降权/uncertainty域加权/负面回填域降权三个具身×自治信号）/`outcome_tracker.py`（效果回填：baseline/post 触发次数对比判定 verdict，`worsened` 时回写 `eval_failure` lesson + 发布 `evolution.outcome_negative` 事件，供 `AgentSelfModel.recent_negative_outcome_domains()` 桥接消费）/`memory_aging.py`（具身改进 C2，lesson 按 source + occurrence_count 计算专属时间衰减半衰期）/`self_maintenance.py`（具身改进 C4，SelfMaintenanceModule：stale_tools/stale_skills/conflicting_lessons 健康检查，SessionEnd 时间门控 + `sys:self_maintain` cron job）
 - `scripts/protected_paths.py` — 受保护路径清单（T3 治理红线，独立于 `src/mini_agent/` 包，自我演化相关安全机制使用）
 - `weixin_bot.py` — 微信端接入入口（与 `main.py` 同级，内嵌 `mini_agent`，每个 openid 独立 Agent 实例，权限审批走微信消息 + `threading.Event` 而非终端阻塞）；`Agent()` 首次构造必须经由 `loop.run_in_executor()` 丢进线程池，不能在 `on_text` 协程里同步调用，否则 `MCPManager.register_all()` 内部的 `run_coroutine_threadsafe(...).result()` 会在事件循环自身线程里死锁（详见 [微信接入指南](docs/weixin-bot-guide.md) 第 3 节）
 - `apps/weixin_plugin/weixin/` — 微信网关 SDK（`bot.py`/`types.py`/`login.py`），供 `weixin_bot.py` 使用
@@ -179,10 +179,10 @@ mini-agent user token u_a1b2c3d4                       # 重新生成 token
 - `proprioception.py` — 本体感知模块 `ProprioceptionModule`：认知负荷/不确定性/风险感知/剩余预算/frustration 轮间快照（O(1) 纯计算，不调用 LLM）；`frustration` 落盘供 `ResourceArbiter` 消费，`uncertainty` 连续超阈值时限流发布 `proprioception.uncertainty_sustained` 事件（具身×自治方案三，`agent.py::_maybe_publish_uncertainty_signal()`）
 - `affordance_analyzer.py` — 余裕感知层 `AffordanceMap`：交叉分析 open_threads/capability_map/lesson memory 生成风险/机会提示；`high_risk_zones` 落盘到 `<workdir>/affordance_snapshot.json`（`persist_affordance_map()`/`load_recent_high_risk_zones()`，60 分钟过期），供 `SoftGoalDeriver`/`ExplorationSandbox` 只读消费做候选降权/token 上限收紧（具身×自治方案一）；`load_behavior_context()`（原私有 `_load_behavior_context`，已提升为公共函数）供 `AffordanceAnalyzer` 与 `ResourceArbiter._check_user_presence()`（具身×自治方案二）共用
 - `self_model.py` — `AgentSelfModel` 聚合视图：澄清与 UserProfile/RoleProfileManager/AgentProfile 三个既有 profile 概念的语义边界；新增 `recent_negative_outcome_domains()` 桥接 `outcome_tracker.get_revert_candidates()`，供 `SoftGoalDeriver.derive_candidates()` 对负面回填域候选强降权（具身×自治方案四，单场景验证，暂不做通用聚合接入）
-- `classification.py` — 图书馆式分类树（书架结构）：`ClassificationTree` 冷启动只有根节点，运行时自动生长（规则关键词匹配 + LLM 兜底只能入座已有节点，新节点只在 Phase G 批量聚类时诞生）；`merge_similar_nodes()` 按 Jaccard 相似度收敛重复书架，`feedback_score` 累积检索反馈调整打分权重
+- `classification.py` — 图书馆式分类树（书架结构）：`ClassificationTree` 冷启动只有根节点，运行时自动生长（规则关键词匹配 + LLM 兜底只能入座已有节点，新节点只在 巩固循环 批量聚类时诞生）；`merge_similar_nodes()` 按 Jaccard 相似度收敛重复书架，`feedback_score` 累积检索反馈调整打分权重
 - `entity_index.py` — 实体目录（图书馆"著者目录"对应物）：`EntityStore` 管理模块/bug模式/概念等实体卡片，`link_entry()` 挂载记忆、`rewrite_summary()` 攒够证据才批量重写摘要（含冲突检测，矛盾时标注 `⚠矛盾已更新：` 并归档 `superseded_notes`）、`consolidate_entities()` 做去噪+近重复合并
 - `catalog.py` — 分类目录（分类号 → entry_id 指针索引，可从 `memory.jsonl` 重建）+ 知识生命周期编年目录（`knowledge_timeline.jsonl` + 侧车索引 `knowledge_timeline_index.json` 支持按实体/分类过滤查询）
-- `library_index.py` — 图书馆式索引组合外观 `LibraryIndex`：`on_new_entry()`（写入上架）/`shelf_search()`（两步检索：先定位书架再精排，不足回退全库）/`record_retrieval_feedback()`/`mark_stale_from_correction()`（人类纠正 → 定位刚检索到的旧知识 → 标记过时闭环）/`timeline_for()`/`consolidate()`（Phase G 巡检：分类生长+合并、实体摘要重写、实体巩固），详见 [图书馆式知识索引指南](docs/library-index-guide.md)
+- `library_index.py` — 图书馆式索引组合外观 `LibraryIndex`：`on_new_entry()`（写入上架）/`shelf_search()`（两步检索：先定位书架再精排，不足回退全库）/`record_retrieval_feedback()`/`mark_stale_from_correction()`（人类纠正 → 定位刚检索到的旧知识 → 标记过时闭环）/`timeline_for()`/`consolidate()`（巩固循环 巡检：分类生长+合并、实体摘要重写、实体巩固），详见 [图书馆式知识索引指南](docs/library-index-guide.md)
 - `behavior/` — 用户行为感知系统（配置文件 `<project_root>/behavior_config.json`，跟 `agent_config.json` 同级目录，独立于 `AppConfig` 加载流程；采集到的原始事件/分析摘要仍落盘在 `~/.agent/behavior/`，总开关+全部子开关默认关闭）：`config.py`（`BehaviorConfig`）、`events.py`（`ActivityEvent`/`BehaviorEventStore` JSONL 存储）、`manager.py`（`BehaviorPerceptionManager` 单例，启停采集器+外部上报门禁）、`analyzer.py`（把原始事件聚合为工作/生活画像日报）、`mobile_setup.py`（Android/iOS 接入模板生成）、`collectors/`（`active_window`/`idle`/`now_playing`/`app_lifecycle` 本机线程采集器 + `cdp_browser`/`browser_launcher` CDP 专用浏览器方案 + `external_hooks` git/终端 hook 生成器），详见 [用户行为感知系统指南](docs/behavior-perception-guide.md)
 
 ### HTTP API (`src/mini_agent/api/`)
@@ -492,14 +492,14 @@ mini-agent user token u_a1b2c3d4                       # 重新生成 token
 - **四个文件**：`self_profile.json`（agent 自我模型，`AgentSelfProfile` 落地版，`autonomy_level` 默认 `"passive"`）、`projects_index.json`（workdir 注册表，30 天无活动自动标记 `dormant`）、`cross_project_index.json`（跨项目模式聚合，`observed_in_projects`/`confidence`/`global_skill_candidate`）、`activity_log.jsonl`（全局活动时序，与 `timeline.jsonl` 同一处代码路径写入）
 - **核心模块**：`perception/global_knowledge.py`（数据模型 + 读写 + `scan_cross_project_patterns()`/`merge_cross_project_patterns()` 跨项目聚合）
 - **维护机制**：session 启动时 `_maybe_register_global_project()` 注册/更新 `projects_index.json` 并做 dormant 巡检；SessionEnd 时复用 Stage 4 的 theme/duration 计算结果追加 `activity_log.jsonl` 并更新 `self_profile.json`
-- **本 Stage 范围**：5.4 节"跨项目模式扫描"只实现扫描聚合函数本身（`scan_cross_project_patterns`），**不接调度自动触发**——触发时机（"该不该自动晋升"）留给 Stage 8 Phase G
+- **本 Stage 范围**：5.4 节"跨项目模式扫描"只实现扫描聚合函数本身（`scan_cross_project_patterns`），**不接调度自动触发**——触发时机（"该不该自动晋升"）留给 Stage 8 巩固循环
 - **context 注入**：`_build_global_knowledge_block()` always-on 注入 `self_assessment` 精简版 + `pending_evolve_branches`；workdir 变化时注入 `projects_index`/`activity_log` 最近若干条（`GlobalKnowledgeConfig.activity_log_inject_limit`，默认 5）
 - **配置**：`GlobalKnowledgeConfig`（默认 `enabled=True`），`dormant_after_days`（默认 30）
 - 详见 [Workdir 知识层与 Global 知识层指南（Stage 4 & 5）](docs/self-evolution-stage4-5-guide.md)
 
 ### 观察性（Stage 6 / 第 9 章）
 
-> 对应 `next_doc/self_evolution_stage4plus_plan.md` Stage 6，设计依据 `next_doc/self_evolution_design.md` 第 9/10/11 章。是 Phase G 剪枝判断和异常检测的数据基础
+> 对应 `next_doc/self_evolution_stage4plus_plan.md` Stage 6，设计依据 `next_doc/self_evolution_design.md` 第 9/10/11 章。是 巩固循环 剪枝判断和异常检测的数据基础
 
 - **6.1 时序性能追踪**：`SessionTracer` + `span()` context manager，在 `_agentic_loop()` 的 `call_llm`/`execute_tools`/`build_system` 三处打点，写入 `session_dir/traces.jsonl`，含 `context_breakdown`（`system_base`/`history`/`total` token 占比）字段——是 Stage 8 剪枝判断的直接数据来源
 - **6.2 系统健康检查**：`GET /v1/diagnostics` 端点，五个分组：`performance`（traces 聚合）/`memory`（条目统计）/`skills`（激活列表）/`evolution`（演化状态）/`anomaly_flags`（异常标记），直接聚合底层数据，不反向依赖 `self_profile.json`
@@ -519,18 +519,18 @@ mini-agent user token u_a1b2c3d4                       # 重新生成 token
 - **12.2（环境漂移检测）**：`detect_environment_drift()` + `_maybe_ensure_project_meta()`，在 Stage 4 顺手完成
 - **暂缓/留待 Stage 9 的条目**：12.1（`FILE_CHANGE_EFFECTS`）、12.3（inbound webhook）、13.1（能力匹配调度）、13.3（中间结果流）、15.1（元认知 checkpoint）、16.2（隐式反馈捕捉）、16.3（澄清优先分支）、17.2（Prompt 工程版本化）——详见计划文档 Stage 7 表格
 
-### Phase G 后台循环（Stage 8）
+### 巩固循环 后台循环（Stage 8）
 
 > 对应 `next_doc/self_evolution_stage4plus_plan.md` Stage 8，设计依据 `next_doc/self_evolution_design.md` 第 6.4/6.5/6.6/6.7 节。不依赖常驻进程的"时间门控"调度，是 Phase H 自主运行时的前置数据沉淀
 
-- **8.1 调度骨架**：`phase_g_rhythm.json` 的 `_last_run_at` 字段替代 cron，`should_run_phase_g()` 在每次 `trigger_session_end()` 时检查（默认 24h 间隔）；手动触发入口 `/evolve phase-g [--force] [--dry-run]`
+- **8.1 调度骨架**：`consolidation_rhythm.json` 的 `_last_run_at` 字段替代 cron，`should_run_consolidation()` 在每次 `trigger_session_end()` 时检查（默认 24h 间隔）；手动触发入口 `/evolve consolidate [--force] [--dry-run]`
 - **8.2 剪枝候选**：`prune_skills()`，规则 A（高 token 成本 + 未使用）+ 规则 B（冲突检测），输出 `PruneCandidate` 列表，不自动执行下线
 - **8.3 能力地图**：`build_capability_map()` 扫描 `tasks/*/manifest.json`，按 `_infer_domain()` 规则式推断任务类型，聚合成功率，写入 `entry_type="capability_map"` 的 memory 条目——终于激活了早期设计就预留的这个枚举值。Global scope 汇总留待数据积累后扩展
 - **8.4 Scope 晋升**：`check_scope_promotion()` 读 `cross_project_index.json`，判据 `observed_in_projects ≥ 2` 且 `confidence ≥ 0.70` 且 `global_skill_candidate=true`，当前只输出候选列表（`PromotionCandidate`），不直接调用 `skill_propose`
 - **8.5 节奏治理**：`rhythm_is_allowed()`/`record_proposal()`，7 天冷却期，可对任意 `(proposal_type, key)` 限流——回应设计文档开放问题 1（T1 自动合并的观察期）
-- **8.6 知识巩固（图书馆式索引）**：`run_phase_g()` 顺带调用 `LibraryIndex.consolidate()`——未分类候选批量聚类生长分类节点、分类树按关键词 Jaccard 相似度合并收敛、攒够证据的实体摘要批量重写（含冲突检测）、实体去噪+近重复合并；结果并入 `PhaseGReport.knowledge_consolidation`，`/evolve phase-g` 报告展示；新增 `/evolve timeline --entity <id>|--category <code>` 查询知识生命周期编年目录
-- **核心模块**：`evolution/phase_g.py`（`run_phase_g()` 整体入口）+ `cli/commands/evolve.py`（`_handle_phase_g()`）+ `agent.py`（`_maybe_run_phase_g()`，SessionEnd 时间门控接入点）
-- 详见 [Phase G 后台循环指南（Stage 8）](docs/self-evolution-phase-g-guide.md)、[图书馆式知识索引指南](docs/library-index-guide.md)
+- **8.6 知识巩固（图书馆式索引）**：`run_consolidation()` 顺带调用 `LibraryIndex.consolidate()`——未分类候选批量聚类生长分类节点、分类树按关键词 Jaccard 相似度合并收敛、攒够证据的实体摘要批量重写（含冲突检测）、实体去噪+近重复合并；结果并入 `ConsolidationReport.knowledge_consolidation`，`/evolve consolidate` 报告展示；新增 `/evolve timeline --entity <id>|--category <code>` 查询知识生命周期编年目录
+- **核心模块**：`evolution/consolidation.py`（`run_consolidation()` 整体入口）+ `cli/commands/evolve.py`（`_handle_consolidation()`）+ `agent.py`（`_maybe_run_consolidation()`，SessionEnd 时间门控接入点）
+- 详见 [巩固循环 后台循环指南（Stage 8）](docs/self-evolution-consolidation-guide.md)、[图书馆式知识索引指南](docs/library-index-guide.md)
 
 ### 自主运行时（Stage 9 / Phase H）
 
@@ -540,7 +540,7 @@ mini-agent user token u_a1b2c3d4                       # 重新生成 token
 - **守护进程管理**（`cli/daemon.py`）：`mini-agent daemon start [--detach]|stop|status`；PID 文件写入 `.agent/daemon.pid` + `.agent/daemon_info.json`
 - **Goal Backlog**（`perception/goal_backlog.py`）：`GoalNode`（Goal/Objective 统一节点），持久化到 `.agent/goals.json`；Objective 可通过 `work_thread_ref` 关联已有 WorkThread（复用 Stage 4 进展文本）；`has_actionable_work()` / `active_objectives()` 是 ObjectiveExecutor 调用的核心接口
 - **AutonomousLoop**（`evolution/autonomous_loop.py`）：三档位（passive/maintenance/autonomous），边界用方法边界物理隔离；`passive` 档位调用 `CronScheduler.tick()`；`maintenance` 档位起调用 `ObjectiveExecutor`；`autonomous` 档位加入 `SoftGoalDeriver` + `ExplorationSandbox`
-- **CronScheduler**（`evolution/cron_scheduler.py`）：interval/cron 双格式，5 个内置系统 job（phase_g/workdir_sync/self_eval/goal_review/digest_trim）；触发的 job 通过 `InputQueue.enqueue(initiator="cron")` 提交
+- **CronScheduler**（`evolution/cron_scheduler.py`）：interval/cron 双格式，5 个内置系统 job（consolidation/workdir_sync/self_eval/goal_review/digest_trim）；触发的 job 通过 `InputQueue.enqueue(initiator="cron")` 提交
 - **ObjectiveExecutor**（`evolution/objective_executor.py`）：Objective 拆解为 3-8 个 Step，每步完成后 `on_turn_done()` 回调推进；SSE 推送 `OBJECTIVE_PROGRESS` 事件；同时最多 2 个 Objective 并行，单步最多重试 2 次
 - **SoftGoalDeriver**（`evolution/soft_goal_deriver.py`）：三路信号（capability_map 低置信度 / WorkThread 积压 / 高频 Lesson）；`derive_candidates()` 分 capability 类和其他类；capability 类经 ExplorationSandbox 验证后才写 GoalBacklog
 - **资源仲裁**（`evolution/resource_arbiter.py`）：用户优先 / 路径冲突检测 / 预算硬限制三条规则；`activity_digest.jsonl` 自主行为粗粒度日志；`build_digest_summary()` 六分组渲染（Objective进展/Cron执行/探索结果/Agent建议/进化提案/其他）
@@ -634,7 +634,7 @@ mini-agent user token u_a1b2c3d4                       # 重新生成 token
 - [Workdir 知识层与 Global 知识层指南（Stage 4 & 5）](docs/self-evolution-stage4-5-guide.md) — `project.json`/`work_index.json`/`open_threads.json`/`knowledge.md`（W2）+ `self_profile.json`/`projects_index.json`/`cross_project_index.json`/`activity_log.jsonl`（W3）
 - [观察性系统指南（Stage 6）](docs/observability-guide.md) — `traces.jsonl` 追踪、`/diagnostics` 端点、异常检测、工具调用因果链
 - [日志保存机制指南](docs/logging-mechanisms-guide.md) — 全项目日志/审计流（错误日志/LLM调试日志/daemon控制台日志/traces/行为事件等）保存机制汇总
-- [Phase G 后台循环指南（Stage 8）](docs/self-evolution-phase-g-guide.md) — 剪枝候选 / 能力地图 / Scope 晋升 / 演化节奏治理
+- [巩固循环 后台循环指南（Stage 8）](docs/self-evolution-consolidation-guide.md) — 剪枝候选 / 能力地图 / Scope 晋升 / 演化节奏治理
 - [图书馆式知识索引指南](docs/library-index-guide.md) — 分类树自动生长/合并 + 实体目录（冲突检测/去噪/近重复合并）+ 两步检索 + 检索反馈 + 纠正闭环 + 时间线查询 + 多用户书架隔离
 - [Stage 9 自主运行时指南](docs/self-evolution-stage9-guide.md) — 常驻守护进程 / Goal Backlog / 三档位 AutonomousLoop / 资源仲裁
 - [跨子系统事件总线指南](docs/system-events-bus-guide.md) — `publish()`/`poll_since()` 轻量事件总线，已接入 frustration/记忆稀疏/效果回填负面判定/软目标候选复核/uncertainty 持续五类事件
@@ -650,5 +650,5 @@ mini-agent user token u_a1b2c3d4                       # 重新生成 token
 - Stage 9（Phase H：自主运行时）是决策点而非常规排期 Stage，启动前置清单见 `next_doc/self_evolution_stage4plus_plan.md` 第 9.0 节；细化方案见 `next_doc/self_evolution_stage9_plan.md`
 - 具身智能改进（`next_doc/embodied_agent_improvement_plan_v3.md`）A/B/C 三阶段共 12 项均已完成，详见 [具身智能改进指南](docs/embodied-agent-guide.md)；已知遗留缺口：AffordanceMap（B4）与认知锚点（C3）仅在部分路径生效（分别是"仅多用户 daemon"和"本地 CLI，daemon connected REPL 未接入"），详见改进计划文档对应小节
 - 具身智能 × 自我演化四方案联动（`next_doc/embodied_autonomy_integration_design.md`）已全部完成：AffordanceMap 高风险域接入自主探索门控（方案一）、BehaviorContext 接入自主任务调度门控（方案二）、ProprioceptionModule.uncertainty 接入事件总线（方案三）、AgentSelfModel 接入 SoftGoalDeriver 候选打分单场景验证（方案四），详见 [具身智能改进指南](docs/embodied-agent-guide.md) 5.1/8/8.1 节、[Stage 9 自主运行时指南](docs/self-evolution-stage9-guide.md) 第 7/8 节、[跨子系统事件总线指南](docs/system-events-bus-guide.md) 6.6 节
-- 图书馆式知识索引（分类树自动生长/合并 + 实体目录 + 两步检索 + Phase G 知识巩固）已完成，详见 [图书馆式知识索引指南](docs/library-index-guide.md)；正向检索反馈（"确实有用"）目前只有 API 没有自动触发点，等后续有更明确的信号源（如某 skill 被验证生效）再接入
+- 图书馆式知识索引（分类树自动生长/合并 + 实体目录 + 两步检索 + 巩固循环 知识巩固）已完成，详见 [图书馆式知识索引指南](docs/library-index-guide.md)；正向检索反馈（"确实有用"）目前只有 API 没有自动触发点，等后续有更明确的信号源（如某 skill 被验证生效）再接入
 - Goal 模式（`src/mini_agent/goal_mode/`）已完成粗粒度版本：验收标准协商 + GoalJudge 判定 + compact 整合 + 安全阀 + 异常中断恢复，详见 [Goal 模式指南](docs/goal-mode-guide.md)；细粒度 executor（`_agentic_loop` 内部工具调用后即可插入 Judge 判断）尚未实现，`GoalStepExecutor` 接口已预留扩展点

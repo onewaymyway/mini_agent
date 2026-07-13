@@ -21,7 +21,7 @@
 | 🌱 自我演化 | agent 可把经验（lesson）提炼为新 skill 并自我提案，全程经过风险分级（T0~T3）安全网 + 隔离验证 + 人工审核 |
 | 🗂️ 知识层 | W2 Workdir 层（项目身份证/时间线/跨session待处理线索）+ W3 Global 层（自我画像/跨项目模式/活动日志）自动维护 |
 | 🔭 观察性 | traces.jsonl 时序追踪 + `/diagnostics` 健康端点 + k-σ 异常检测 + 工具调用因果链（error_category / resolves_seq）|
-| ♻️ Phase G | 后台循环扫描：剪枝候选 + 能力地图 + 跨项目晋升候选 + 知识巩固（分类树生长/合并、实体摘要重写、实体去噪合并），24h 时间门控，`/evolve phase-g` 手动触发 |
+| ♻️ 巩固循环 | 后台循环扫描：剪枝候选 + 能力地图 + 跨项目晋升候选 + 知识巩固（分类树生长/合并、实体摘要重写、实体去噪合并），24h 时间门控，`/evolve consolidate` 手动触发 |
 | 📚 图书馆式知识索引 | 分类树自动生长/合并（书架结构）+ 实体目录（冲突检测/近重复合并）+ 两步检索（先定位书架再精排）+ 检索反馈 + 人类纠正→定位旧知识→标记过时闭环 + 知识生命周期时间线查询，`/evolve timeline` 命令 |
 | 🧘 本体感知 | ProprioceptionModule：认知负荷/不确定性/风险感知/剩余预算/挫败感轮间快照，frustration 累积触发元认知提示 |
 | 🧭 余裕感知 | AffordanceMap：session 级交叉分析未完成线索/能力地图/经验，生成"当前环境行动机会"摘要注入 system prompt |
@@ -46,7 +46,7 @@
 | 🏃 常驻守护进程 | **Stage 9**：`mini-agent daemon start --detach` 让 agent 常驻后台，CLI/Web 均以"连接模式"接入，不依赖会话存活；PID 文件 + daemon_info.json 管理 |
 | 🎯 Goal Backlog | **Stage 9**：跨会话目标层级（Goal → Objective），`.agent/goals.json` 持久化；`/goals accept/reject` 管理 agent 建议目标，关联 WorkThread 复用进展 |
 | ⚙️ 三档位自主调度 | **Stage 9**：`passive`（只跑 cron job）/ `maintenance`（Objective 持续执行）/ `autonomous`（软目标 derive + 探索实验），修改 `self_profile.json` 切换 |
-| ⏰ 定时任务（Cron） | **Stage 9**：`/cron` 命令管理周期性 daemon 任务；支持 `interval:<秒>` 和 `cron:<5字段>` 两种格式；5 个内置系统 job（phase_g / workdir_sync / self_eval / goal_review / digest_trim） |
+| ⏰ 定时任务（Cron） | **Stage 9**：`/cron` 命令管理周期性 daemon 任务；支持 `interval:<秒>` 和 `cron:<5字段>` 两种格式；5 个内置系统 job（consolidation / workdir_sync / self_eval / goal_review / digest_trim） |
 | 🔄 Objective 持续执行 | **Stage 9**：ObjectiveExecutor 将 Objective 拆解为 3-8 个 Step 依次提交，步骤间自动传递上下文摘要；SSE 推送 `objective_progress` 事件实时显示进度 |
 | 🧭 软目标 Derive | **Stage 9**：autonomous 档位下从三路信号（capability_map 低置信度 / WorkThread 积压 / 高频 Lesson）自动生成 Goal 建议，capability 类先经 ExplorationSandbox 验证再提案 |
 | 🔄 Workflow | 工作流编排机制，支持多步骤自动化任务执行 |
@@ -202,7 +202,7 @@ mini-agent daemon status
 # ── 定时任务 ──────────────────────────────────────────────
 /cron list                          # 查看所有 cron job（含 5 个内置系统 job）
 /cron status                        # 下次触发时间总览
-/cron run sys:phase_g               # 立即触发一次 Phase G 扫描
+/cron run sys:consolidation               # 立即触发一次 巩固循环 扫描
 /cron disable sys:workdir_sync      # 临时关闭 workdir 同步
 /cron add "日报" "cron:0 9 * * *" "生成昨日工作摘要"  # 添加用户 job
 
@@ -460,7 +460,7 @@ python weixin_bot.py [--project <路径>] [--yes] [--no-stream]
 | `/rollback` | 回退上一轮 |
 | `/evolution log\|show\|diff\|revert` | 查看/审查/回退自我修改历史（Stage 2 安全网） |
 | `/evolve review\|list` | 扫描达标 lesson 并提案/预览新 skill（Stage 3.1） |
-| `/evolve phase-g [--dry-run]` | 手动触发 Phase G 后台维护（剪枝候选/能力地图/晋升候选/知识巩固，Stage 8） |
+| `/evolve consolidate [--dry-run]` | 手动触发 巩固循环 后台维护（剪枝候选/能力地图/晋升候选/知识巩固，Stage 8） |
 | `/evolve timeline --entity <id>\|--category <code> [--limit N]` | 查询知识生命周期编年目录（图书馆式索引） |
 | `/debug system\|history\|all\|save` | 打印/导出当前 system prompt 与 history，便于分析调试 |
 
@@ -631,7 +631,7 @@ mini_agent/
 │       │   ├── validators.py    # 按 tier 升级的验证流水线（Stage 2）
 │       │   ├── workspace.py     # EvolutionWorkspace：git worktree 进程级隔离（Stage 2）
 │       │   ├── eval_runner.py   # mini-agent eval 核心引擎（Stage 3.2）
-│       │   ├── phase_g.py       # Phase G 后台循环：剪枝/能力地图/Scope晋升/节奏治理（Stage 8）
+│       │   ├── consolidation.py       # 巩固循环 后台循环：剪枝/能力地图/Scope晋升/节奏治理（Stage 8）
 │       │   ├── autonomous_loop.py  # AutonomousLoop：三档位 tick + ExplorationSandbox + SoftGoalDeriver 接入（Stage 9）
 │       │   ├── resource_arbiter.py # 资源仲裁 + activity_digest.jsonl + build_digest_summary() 六分组渲染（Stage 9）
 │       │   ├── cron_scheduler.py   # CronScheduler：interval/cron 双格式，5 个内置系统 job（Stage 9 Phase 1）
@@ -669,7 +669,7 @@ mini_agent/
 │       │   ├── classification.py   # 图书馆式分类树：自动生长/合并（书架结构）
 │       │   ├── entity_index.py     # 实体目录：挂载/冲突检测/去噪合并
 │       │   ├── catalog.py          # 分类指针索引 + 知识生命周期编年目录
-│       │   └── library_index.py    # 图书馆式索引组合外观（两步检索/反馈/纠正闭环/Phase G 巩固）
+│       │   └── library_index.py    # 图书馆式索引组合外观（两步检索/反馈/纠正闭环/巩固循环 巩固）
 │       ├── ui/              # 用户界面
 │       │   ├── __init__.py
 │       │   ├── terminal.py  # 终端 I/O
@@ -902,9 +902,9 @@ python -m pytest tests/ -q
 - [Workdir/Global 知识层指南（Stage 4 & 5）](docs/self-evolution-stage4-5-guide.md) — **新增**：W2 项目知识层（project.json/timeline/open_threads）+ W3 跨项目知识层（self_profile/cross_project_index/activity_log）
 - [观察性系统指南（Stage 6）](docs/observability-guide.md) — **新增**：traces.jsonl 时序追踪 / `/diagnostics` 端点 / k-σ 异常检测 / 工具调用因果链（error_category/resolves_seq）
 - [日志保存机制指南](docs/logging-mechanisms-guide.md) — **新增**：系统梳理全项目所有日志/审计流（错误日志/LLM调试日志/daemon控制台日志/traces/行为事件/知识编年目录等）的落盘位置、写入机制与已知缺口
-- [Phase G 后台循环指南（Stage 8）](docs/self-evolution-phase-g-guide.md) — **新增**：剪枝候选 / 能力地图 / Scope 晋升候选 / 节奏治理，`/evolve phase-g` 命令
+- [巩固循环 后台循环指南（Stage 8）](docs/self-evolution-consolidation-guide.md) — **新增**：剪枝候选 / 能力地图 / Scope 晋升候选 / 节奏治理，`/evolve consolidate` 命令
 - [自我进化效果回填指南](docs/self-evolution-outcome-tracking-guide.md) — **新增**：`skill_propose` commit 落地后的迟滞观察窗口、improved/no_change/worsened 判定、`/evolution outcomes` 命令
-- [记忆机制、自我进化机制与具身智能机制完整技术文档](docs/memory-and-self-evolution-complete-reference.md) — **新增**：系统整理全部记忆存储/检索/图书馆式索引机制、自我进化 Stage 0~9 全流程（安全网/Phase G/效果回填闭环）、具身智能 12 项能力（A1~C4），及三者的交汇点
+- [记忆机制、自我进化机制与具身智能机制完整技术文档](docs/memory-and-self-evolution-complete-reference.md) — **新增**：系统整理全部记忆存储/检索/图书馆式索引机制、自我进化 Stage 0~9 全流程（安全网/巩固循环/效果回填闭环）、具身智能 12 项能力（A1~C4），及三者的交汇点
 - [图书馆式知识索引指南](docs/library-index-guide.md) — **新增**：分类树自动生长/合并 + 实体目录（冲突检测/去噪合并）+ 两步检索 + 检索反馈 + 人类纠正→标记过时闭环 + 时间线查询，`/evolve timeline` 命令
 - [Stage 9 自主运行时指南](docs/self-evolution-stage9-guide.md) — **新增**：常驻守护进程 / Goal Backlog / 三档位 AutonomousLoop / 资源仲裁 / `mini-agent daemon` 命令
 - [守护进程多客户端架构指南](docs/daemon-multi-client-guide.md) — **新增**：`DaemonClient`/`SessionAgentPool`/`AgentBridge`（RingBuffer/OutputBroadcaster/InputQueue/PermissionGate）三层架构、多端接入同一会话的消息生命周期、`run_connected_repl` 已连接模式渲染与斜杠命令转发，含当前已知问题排查记录
@@ -964,7 +964,7 @@ MIT License
 
 *2026-06 SubAgent 信息继承（Stage 3.3）*：`Task` 新增 `active_skills` 字段，spawn 的 SubAgent 自动继承主 agent 当前激活的 skill（thread-local provider 机制，独立 `ToolRegistry` 副本规避重复注册崩溃）；`ToolResultCache` 加锁支持跨 SubAgent 共享，避免重复读取同一文件；SubAgent 结束时触发主 agent memory backend `reload()`，使其产生的 lesson 能被主 agent 检索到
 *2026-06-24 自主运行时（Stage 9 / Phase H）*：新增 `cli/daemon.py`（`mini-agent daemon start|stop|status`，PID 文件，`DaemonClient` CLI 连接模式）；新增 `perception/goal_backlog.py`（`GoalNode`/`GoalBacklog`，持久化 `.agent/goals.json`，`has_actionable_work()` / `next_task_description()`）；新增 `evolution/autonomous_loop.py`（三档位 tick：passive/maintenance/autonomous，方法边界物理隔离）；新增 `evolution/resource_arbiter.py`（用户优先 / 路径冲突 / 预算硬限制三条仲裁规则，探索子配额，`activity_digest.jsonl`）；新增 `cli/commands/goals.py`（`/agent goals` 全部子命令，`/goals`，`/digest`）；新增 `perception/exploration_sandbox.py`（探索沙盒，第十二节接口预留）；`InputQueue.enqueue()` / `TurnInfo` / `StateRepo.apply()` / `resolve_tier()` 均加入 `initiator` 字段，T0→T1 自动上浮规则；`TaskStatus.PAUSED` 新值；`/v1/status` 新增 `autonomy_level` / `last_autonomous_tick_at` / `tick_count` 字段
-*2026-06 自主运行时 Phase 1（Stage 9 基础架构）*：新增 `evolution/cron_scheduler.py`（CronScheduler，interval/cron 双格式，内置 5 个系统 job：phase_g/workdir_sync/self_eval/goal_review/digest_trim）；`AutonomousLoop._tick_passive()` 改调 CronScheduler；新增 `evolution/objective_executor.py`（ObjectiveExecutor，Objective 拆解为 3-8 步 Step，每步完成自动推进，串行+并发上限保护）；`/cron` CLI 命令（list/status/enable/disable/run/add/remove/set-schedule）注册到 REPL 和 `_COMMANDS` 补全
+*2026-06 自主运行时 Phase 1（Stage 9 基础架构）*：新增 `evolution/cron_scheduler.py`（CronScheduler，interval/cron 双格式，内置 5 个系统 job：consolidation/workdir_sync/self_eval/goal_review/digest_trim）；`AutonomousLoop._tick_passive()` 改调 CronScheduler；新增 `evolution/objective_executor.py`（ObjectiveExecutor，Objective 拆解为 3-8 步 Step，每步完成自动推进，串行+并发上限保护）；`/cron` CLI 命令（list/status/enable/disable/run/add/remove/set-schedule）注册到 REPL 和 `_COMMANDS` 补全
 
 *2026-06 自主运行时 Phase 2（Stage 9 接入与 API）*：`server.py` `_build_autonomous_loop()` 注入 CronScheduler + ObjectiveExecutor；AgentRunner turn 完成/失败后回调 `ObjectiveExecutor.on_turn_done()`/`on_turn_failed()`（仅 initiator="autonomous"/"cron" 时触发）；`api/models.py` 新增 `OBJECTIVE_PROGRESS` SSE 事件；`bridge.py` 新增 `emit_objective_progress()`；`api/routes.py` 新增 `/v1/autonomous/status`、`/v1/goals` CRUD、`/v1/cron/jobs` CRUD 共 8 个端点；新增 `evolution/soft_goal_deriver.py`（三路信号：capability_map 低置信度 / WorkThread 积压 / 高频 Lesson，每次最多 derive 2 个 Goal）
 
@@ -982,6 +982,6 @@ MIT License
 
 *2026-07 用户行为感知系统*：新增 `perception/behavior/` 包，配置文件是 `<project_root>/behavior_config.json`（跟 `agent_config.json` 同级目录，独立于 `AppConfig` 加载流程；采集到的原始事件/分析摘要仍落盘在 `~/.agent/behavior/`），总开关与全部子开关默认 `False`。采集层：桌面本机线程采集器（`ActiveWindowCollector`/`IdleCollector`/`NowPlayingCollector`/`AppLifecycleCollector`，跨平台 Windows/macOS/Linux）；浏览器行为两套独立方案（`browser_extension_example/` MV3 插件 + `collectors/cdp_browser.py` 专用调试浏览器 CDP 方案，`/behavior browser start|stop|status`）；外部上报统一复用 `/v1/perception/report`（`kind` 区分 `browser`/`git`/`terminal`/`mobile`）——`collectors/external_hooks.py` 生成 git commit/checkout hook 与终端命令 hook（客户端+服务端双重脱敏，敏感命令整条丢弃）；`mobile_setup.py` 提供 Android(Tasker)/iOS(快捷指令) 接入模板，另有独立的 `android_companion_app/` Kotlin 工程（App 使用统计/屏幕解锁/地理围栏标签/Health Connect 日聚合，坐标全程不出设备、服务端强制剔除任何经纬度字段）。分析层 `analyzer.py` 把原始事件聚合为"工作画像+生活画像"结构化日报（活跃时段/前台切换次数/Top App与网站时长/Git提交/终端命令数/工作娱乐时长估算/媒体播放/手机使用与解锁次数/地点标签序列/健康聚合），落盘 `.json`+`.md`，支持 `daily_analysis_enabled` 定时自动生成。新增 `/behavior` 命令组（`status`/`on`/`off`/`enable`/`disable`/`token`/`recent`/`clear`/`browser`/`git`/`terminal`/`mobile`/`report`）与 `/v1/perception/*` 共 10 个 HTTP 端点。隐私边界：不采集聊天软件消息内容、不做按键内容记录、剪贴板只记录"发生了复制"、CDP 方案不用截图/网络内容/DOM读取、手机端只允许地理围栏标签不接受坐标、健康数据只要日聚合、不读通知正文；详见 [用户行为感知系统指南](docs/behavior-perception-guide.md)
 
-*2026-07 图书馆式知识索引*：在原有 `MemoryStore`（TF-IDF 全库检索）之上新增一层结构化索引，思路是"先建分类体系再检索"而非"关键词碰撞式检索"。核心组成：`perception/classification.py::ClassificationTree` 分类树（书架结构），冷启动只有根节点，运行时靠规则关键词匹配 + LLM 兜底（只能入座已有节点）自动归类，新分类节点只在 Phase G 巡检时由未分类候选批量聚类诞生（`grow_from_candidates`），`merge_similar_nodes()` 按关键词 Jaccard 相似度定期收敛重复书架（`merged_into`/`resolve_code()` 自动跳转），`feedback_score` 累积检索反馈调整打分权重；`perception/entity_index.py::EntityStore` 实体目录（模块/bug模式/概念卡片），`link_entry()` 挂载记忆，`rewrite_summary()` 攒够 3 条新证据才批量重写摘要（显式让 LLM 标注新旧证据矛盾，`⚠矛盾已更新：` + 旧结论归档进 `superseded_notes`），`consolidate_entities()` 去噪（停用词/过短实体名）+ 近重复合并（`difflib` 相似度，模糊地带才兜底问一次 LLM）；`perception/catalog.py::CategoryCatalog` 分类号→entry_id 指针索引（可从 `memory.jsonl` 重建）+ `knowledge_timeline.jsonl` 知识生命周期编年目录（侧车索引 `knowledge_timeline_index.json` 支持按实体/分类过滤查询，不必全文件扫描）；`perception/library_index.py::LibraryIndex` 组合外观类，对外提供 `on_new_entry()`（写入上架）/`shelf_search()`（两步检索：先定位书架再在架内精排，候选不足自动回退全库检索）/`record_retrieval_feedback()`/`mark_stale_from_correction()`（`agent.py::_detect_and_record_correction` 检测到人类纠正时，把 `ContextBuilder.last_injected_memory_ids` 记录的本轮实际注入记忆标记为可能过时，形成"纠正→定位旧知识→标记过时"闭环）/`timeline_for()`/`consolidate()`（Phase G 巡检串联以上所有巩固步骤）。LLM 兜底调用复用 `agent.py` 已有的 `LLMClientPool.current_client`（`memory_factory.py::build_llm_call()` 包装），不新开 provider。全部通过 `library_index_enabled`/`library_shelf_search_enabled`/`library_index_user_scoped`（多用户软隔离）三个开关控制，默认开启但完全向后兼容——关闭后 `MemoryStore` 行为与改造前一致。`run_phase_g()` 新增 8.6 知识巩固步骤，`/evolve phase-g` 报告展示统计，新增 `/evolve timeline --entity <id>|--category <code>` 命令；详见 [图书馆式知识索引指南](docs/library-index-guide.md)
+*2026-07 图书馆式知识索引*：在原有 `MemoryStore`（TF-IDF 全库检索）之上新增一层结构化索引，思路是"先建分类体系再检索"而非"关键词碰撞式检索"。核心组成：`perception/classification.py::ClassificationTree` 分类树（书架结构），冷启动只有根节点，运行时靠规则关键词匹配 + LLM 兜底（只能入座已有节点）自动归类，新分类节点只在 巩固循环 巡检时由未分类候选批量聚类诞生（`grow_from_candidates`），`merge_similar_nodes()` 按关键词 Jaccard 相似度定期收敛重复书架（`merged_into`/`resolve_code()` 自动跳转），`feedback_score` 累积检索反馈调整打分权重；`perception/entity_index.py::EntityStore` 实体目录（模块/bug模式/概念卡片），`link_entry()` 挂载记忆，`rewrite_summary()` 攒够 3 条新证据才批量重写摘要（显式让 LLM 标注新旧证据矛盾，`⚠矛盾已更新：` + 旧结论归档进 `superseded_notes`），`consolidate_entities()` 去噪（停用词/过短实体名）+ 近重复合并（`difflib` 相似度，模糊地带才兜底问一次 LLM）；`perception/catalog.py::CategoryCatalog` 分类号→entry_id 指针索引（可从 `memory.jsonl` 重建）+ `knowledge_timeline.jsonl` 知识生命周期编年目录（侧车索引 `knowledge_timeline_index.json` 支持按实体/分类过滤查询，不必全文件扫描）；`perception/library_index.py::LibraryIndex` 组合外观类，对外提供 `on_new_entry()`（写入上架）/`shelf_search()`（两步检索：先定位书架再在架内精排，候选不足自动回退全库检索）/`record_retrieval_feedback()`/`mark_stale_from_correction()`（`agent.py::_detect_and_record_correction` 检测到人类纠正时，把 `ContextBuilder.last_injected_memory_ids` 记录的本轮实际注入记忆标记为可能过时，形成"纠正→定位旧知识→标记过时"闭环）/`timeline_for()`/`consolidate()`（巩固循环 巡检串联以上所有巩固步骤）。LLM 兜底调用复用 `agent.py` 已有的 `LLMClientPool.current_client`（`memory_factory.py::build_llm_call()` 包装），不新开 provider。全部通过 `library_index_enabled`/`library_shelf_search_enabled`/`library_index_user_scoped`（多用户软隔离）三个开关控制，默认开启但完全向后兼容——关闭后 `MemoryStore` 行为与改造前一致。`run_consolidation()` 新增 8.6 知识巩固步骤，`/evolve consolidate` 报告展示统计，新增 `/evolve timeline --entity <id>|--category <code>` 命令；详见 [图书馆式知识索引指南](docs/library-index-guide.md)
 
 *2026-07 具身智能 × 自我演化四方案联动（`next_doc/embodied_autonomy_integration_design.md`）*：方案一 `perception/affordance_analyzer.py` 新增 `persist_affordance_map()`/`load_recent_high_risk_zones()`，`AffordanceMap.high_risk_zones` 落盘到 `<workdir>/affordance_snapshot.json`（超过 60 分钟过期），供 `evolution/soft_goal_deriver.py::_from_capability_map()` 对高风险域候选降权（`urgency *= cfg.affordance.risk_downweight_factor`，默认 0.4）与 `perception/exploration_sandbox.py::ExplorationSandbox.create()` 对高风险域探索收紧 token 上限（探索预算总额的一半，新增 `ExplorationTokenLimitExceeded` 提前止损），总开关 `cfg.affordance.risk_gating_enabled`（默认开启）；方案二私有函数 `_load_behavior_context` 提升为公共 `load_behavior_context()`，`evolution/resource_arbiter.py::ResourceArbiter.can_run_autonomous()` 新增第五条仲裁规则 `_check_user_presence()`——用户明显活跃切换（`context_switch_count` 达 `cfg.autonomy.behavior_gating_switch_threshold`，默认 3）时暂缓自主任务，总开关 `cfg.autonomy.behavior_gating_enabled`（默认关闭）；方案三 `agent.py` 新增 `_maybe_publish_uncertainty_signal()`（连续 `cfg.proprioception.uncertainty_streak_required` 默认 3 轮超 `uncertainty_threshold` 默认 0.45 才限流发布 `proprioception.uncertainty_sustained` 事件）与 `_current_task_domain_hint()`，`soft_goal_deriver.py::_recent_uncertainty_domains()` 消费该事件，与既有 `memory.sparse_region_detected` 信号对同一 domain 的加权取较大值而非相乘（上限仍 1.6x）；方案四 `perception/self_model.py::AgentSelfModel.recent_negative_outcome_domains()` 桥接 `outcome_tracker.get_revert_candidates()`，`derive_candidates()` 排序前对落在负面回填域的候选强降权（`urgency *= 0.15`），验证一个具体、影响面可控的场景，暂不做通用聚合接入。四个方案均遵循"降权不拒绝、失败静默降级、双开关默认不改变原有行为"原则；新增 25 个测试用例（`tests/test_affordance_risk_gating.py`/`test_resource_arbiter_behavior_gating.py`/`test_uncertainty_event_bridge.py`/`test_negative_outcome_downweighting.py`）；详见 [具身智能改进指南](docs/embodied-agent-guide.md)、[Stage 9 自主运行时指南](docs/self-evolution-stage9-guide.md)、[跨子系统事件总线指南](docs/system-events-bus-guide.md)
