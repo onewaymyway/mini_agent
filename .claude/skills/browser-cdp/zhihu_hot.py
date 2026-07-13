@@ -113,7 +113,7 @@ def extract_hot_items_from_hot_page(session, max_items: int = 50) -> List[Dict]:
     })()
     """
     
-    state = json.loads(session.eval_js(state_check, await_promise=True))
+    state = session.eval_js(state_check, await_promise=True)
     
     if state.get('isSigninPage'):
         print("  [警告] 检测到登录页，知乎热榜需要登录才能访问")
@@ -327,7 +327,7 @@ def main():
               return window.location.pathname === '/signin';
             })()
             """
-            is_signin = json.loads(session.eval_js(check_js, await_promise=True))
+            is_signin = session.eval_js(check_js, await_promise=True)
             
             if is_signin:
                 print("  [降级] 热榜需要登录，切换到发现页模式")
