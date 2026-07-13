@@ -29,7 +29,11 @@ perception/affordance_analyzer.py — 余裕感知层（具身改进 v3 B4）
 
 from __future__ import annotations
 
+import json
+import os
+import time
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import TYPE_CHECKING, Optional
 
 if TYPE_CHECKING:
@@ -277,7 +281,72 @@ class AffordanceAnalyzer:
 
 __all__ = [
     "AffordanceMap", "AffordanceAnalyzer", "BehaviorContext", "inject_affordance_map",
+    "persist_affordance_map", "load_recent_high_risk_zones", "load_behavior_context",
 ]
+
+
+# ── [方案一新增] AffordanceMap 落盘 / 只读消费 ─────────────────────────────────
+#
+# 设计原则（详见 next_doc/embodied_autonomy_integration_design.md 方案一）：
+#   - AffordanceMap 本身只在 session 开始时构建一次，不适合在
+#     _tick_autonomous() 这种后台节奏里重新触发一次 analyze()（会重复读
+#     open_threads/lesson_entries/capability_entries 造成不必要的 IO）。
+#   - 这里补的落盘点不是给"下一次 session"复用，而是让同一时间窗口内的
+#     后台 tick 能读到"当前 session 的具身风险判断"，因此有 max_age 过期
+#     判定，避免几小时前、可能已经被人工修复的风险判断继续压制新候选。
+#   - 失败静默：写入/读取失败都不应影响调用方主流程。
+
+def _affordance_snapshot_path(paths: "AgentPaths") -> Path:
+    return paths.workdir_dir / "affordance_snapshot.json"
+
+
+def _atomic_write_json(path: Path, data: object) -> None:
+    """原子写 JSON（写临时文件后 os.replace），与仓库内其余模块的同名
+    私有工具函数保持同样的实现风格（各模块各自持有一份，不引入跨模块
+    私有函数依赖）。"""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp_path = path.with_suffix(path.suffix + f".tmp{os.getpid()}")
+    tmp_path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+    os.replace(tmp_path, path)
+
+
+def _read_json(path: Path, default: object) -> object:
+    if not path.exists():
+        return default
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return default
+
+
+def persist_affordance_map(paths: "AgentPaths", affordance_map: "AffordanceMap") -> None:
+    """[方案一新增] inject_affordance_map() 构建完 AffordanceMap 后调用一次，
+    落盘到 workdir 供后台自主决策层只读消费（不是给下一次 session 复用——
+    每个 session 开始都会重新 analyze 一次，这里只是让同一时间窗口内的
+    后台 tick 能读到"当前 session 的具身风险判断"）。
+
+    失败静默：写入失败不应阻断 session 启动，风险感知是旁路增强。
+    """
+    try:
+        data = {"ts": time.time(), **affordance_map.to_dict()}
+        _atomic_write_json(_affordance_snapshot_path(paths), data)
+    except Exception:
+        pass
+
+
+def load_recent_high_risk_zones(paths: "AgentPaths", *, max_age_minutes: float = 60.0) -> list[str]:
+    """[方案一新增] 供 SoftGoalDeriver / ExplorationSandbox 只读消费。
+    超过 max_age_minutes 视为过期（避免用几小时前、可能已经被人工修复的
+    风险判断继续压制新候选），过期或文件不存在均返回空列表——空列表
+    语义等价于"没有已知风险"，调用方不需要区分"过期"和"从未产生过"。
+    """
+    try:
+        raw = _read_json(_affordance_snapshot_path(paths), {})
+        if not raw or time.time() - float(raw.get("ts", 0.0)) > max_age_minutes * 60:
+            return []
+        return list(raw.get("high_risk_zones", []))
+    except Exception:
+        return []
 
 
 # ── [打通具身感知与行为感知] 行为感知层只读桥接 ──────────────────────────────
@@ -332,11 +401,19 @@ def _summarize_behavior_events(events: list) -> "BehaviorContext":
     )
 
 
-def _load_behavior_context(cfg: "AppConfig", *, window_minutes: int = 30) -> Optional["BehaviorContext"]:
-    """只读查询 BehaviorEventStore 最近 window_minutes 分钟内的活动，压缩为摘要。
+def load_behavior_context(cfg: "AppConfig", *, window_minutes: int = 30) -> Optional["BehaviorContext"]:
+    """[方案二：提升为公共函数] 只读查询 BehaviorEventStore 最近 window_minutes
+    分钟内的活动，压缩为摘要。
 
     双重开关：behavior.enabled 与 affordance.use_behavior_context 必须同时为
     True，任一为 False 直接返回 None（不触发任何 BehaviorPerceptionManager 调用）。
+
+    此前是 affordance_analyzer.py 内部私有函数（`_load_behavior_context`），
+    只服务于 AffordanceAnalyzer 一个消费方。方案二（BehaviorContext 接入
+    ResourceArbiter 自主任务调度门控）落地后有了第二个消费方
+    （evolution/resource_arbiter.py::ResourceArbiter._check_user_presence()），
+    提升为公共函数，两个模块共用同一份"读取 + 双重开关校验"逻辑，避免
+    resource_arbiter.py 重新实现一遍开关判断分叉出第二套语义。
     """
     affordance_cfg = getattr(cfg, "affordance", None)
     if not getattr(affordance_cfg, "use_behavior_context", False):
@@ -356,6 +433,10 @@ def _load_behavior_context(cfg: "AppConfig", *, window_minutes: int = 30) -> Opt
         return _summarize_behavior_events(events)
     except Exception:
         return None
+
+
+# 向后兼容别名：仓库内其余代码此前可能直接引用下划线前缀的私有名字。
+_load_behavior_context = load_behavior_context
 
 
 def inject_affordance_map(agent: "Agent", cfg: "AppConfig", *, log=None) -> None:
@@ -413,6 +494,12 @@ def inject_affordance_map(agent: "Agent", cfg: "AppConfig", *, log=None) -> None
             weights=weights,
         )
         fragment = affordance_map.to_system_prompt_fragment()
+
+        # [方案一] 落盘供后台自主决策层（SoftGoalDeriver/ExplorationSandbox）
+        # 只读消费，见 persist_affordance_map() docstring。放在 fragment 计算
+        # 之后、system_extra 拼接之前均可——与是否为空块无关，只要
+        # AffordanceMap 构建成功就落盘。
+        persist_affordance_map(paths, affordance_map)
 
         # [打通具身感知与行为感知] 放在 "fragment 为空则 return" 之前：
         # AgentSelfModel 在 Agent.__init__ 阶段构建时 affordance_map 还是 None

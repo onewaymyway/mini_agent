@@ -792,6 +792,12 @@ daemon-connected 两条触发路径共用同一开关。测试：`tests/test_cog
 | `cfg.affordance.enabled` | `True` | B4 余裕感知开关（daemon 与本地路径均生效）|
 | `cfg.affordance.use_capability_map` | `True` | 是否纳入 Phase G 能力地图数据 |
 | `cfg.affordance.use_behavior_context` | `False` | 是否交叉分析用户行为感知层（双重开关，默认关闭）|
+| `cfg.affordance.risk_gating_enabled` | `True` | [方案一] 高风险域接入自主探索门控总开关 |
+| `cfg.affordance.risk_downweight_factor` | `0.4` | [方案一] 高风险域候选的 urgency 降权系数 |
+| `cfg.autonomy.behavior_gating_enabled` | `False` | [方案二] BehaviorContext 接入自主任务调度门控总开关 |
+| `cfg.autonomy.behavior_gating_switch_threshold` | `3` | [方案二] 视为"用户明显忙碌切换"的应用切换次数阈值 |
+| `cfg.proprioception.uncertainty_threshold` | `0.45` | [方案三] 触发 uncertainty 事件发布的单轮阈值 |
+| `cfg.proprioception.uncertainty_streak_required` | `3` | [方案三] 连续超阈值轮次要求（限流发布） |
 | `cfg.cognitive_anchor_enabled` | `True` | C3 认知锚点开关 |
 | `evolution/memory_aging.py` 半衰期表 | 见上表 | C2，不走配置文件，代码内常量 |
 | 自维护间隔 | `24h` | C4，`should_run_self_maintenance(interval_hours=24.0)` |
@@ -827,6 +833,23 @@ daemon-connected 两条触发路径共用同一开关。测试：`tests/test_cog
   静默吞掉），导致"软目标自动推导"信号1（低置信度能力域）从未真正
   产出过候选；同时补上了它依赖的、此前完全不存在的
   `phase_g.load_capability_map()`。
+- **AffordanceMap 高风险域接入自主探索门控**（已实现，方案一，见
+  `docs/embodied-agent-guide.md` 8 节）：`high_risk_zones` 落盘 +
+  `SoftGoalDeriver`/`ExplorationSandbox` 只读消费，候选降权 + token
+  上限收紧，双开关（`risk_gating_enabled`）默认开启。
+- **BehaviorContext 接入自主任务调度门控**（已实现，方案二，见
+  `docs/embodied-agent-guide.md` 8.1 节；呼应第 11 条此前"当前尚未接入"
+  的描述，现已接入）：`ResourceArbiter.can_run_autonomous()` 新增第五条
+  规则，用户明显活跃切换时暂缓自主任务，默认关闭
+  （`behavior_gating_enabled=False`）。
+- **ProprioceptionModule.uncertainty 接入事件总线**（已实现，方案三，
+  见 `docs/system-events-bus-guide.md` 6.6 节）：连续多轮超阈值限流
+  发布 `proprioception.uncertainty_sustained`，与既有的
+  `memory.sparse_region_detected` 信号一起为未探索能力候选加权。
+- **AgentSelfModel 接入 SoftGoalDeriver 候选打分**（已实现单场景验证，
+  方案四，见 `docs/embodied-agent-guide.md` 5.1 节）：负面回填域
+  （`outcome_tracker.get_revert_candidates()`）强降权，验证一个具体、
+  影响面可控的场景，暂不做通用聚合接入。
 
 ---
 
@@ -883,11 +906,12 @@ daemon-connected 两条触发路径共用同一开关。测试：`tests/test_cog
     `SelfMaintenanceModule`（具身）与 `outcome_tracker`（自我进化）都遵循
     "只产出建议，不自动执行"的设计原则，且都挂载在 Phase G/SessionEnd
     同款"时间门控"触发节奏上。
-11. **AffordanceMap 与用户行为感知层的桥接，为未来"具身×自治"融合留了
-    接口**——`use_behavior_context` 开关目前只服务于 session 级的一次性
-    感知，但其数据结构（`BehaviorContext`）已经可以被
-    `SoftGoalDeriver`/`AutonomousLoop` 复用，作为未来"自主决策是否要考虑
-    用户当前是否在场/繁忙"的输入源（当前尚未接入，见第三部分第 16 节）。
+11. **AffordanceMap 与用户行为感知层的桥接，具身×自治已初步融合**——
+    `use_behavior_context` 开关此前只服务于 session 级的一次性感知，
+    现在 `BehaviorContext` 数据结构已被 `ResourceArbiter.
+    can_run_autonomous()`（方案二）真正复用，作为自主任务调度是否要
+    考虑用户当前在场/繁忙的输入源（`behavior_gating_enabled`，默认
+    关闭，见第三部分第 16 节）。
 
 ---
 

@@ -170,6 +170,16 @@ class SoftGoalDeriver:
         all_candidates.extend(self._from_lesson_review())
         all_candidates.extend(self._from_unexplored_capabilities())
 
+        # [方案四·谨慎推进的单场景验证] 落在"最近效果回填为负面"的域里的
+        # 候选做强降权（0.15，比风险域的 0.4 更激进——这不是具身层的经验性
+        # 判断，而是确凿有 baseline/post 实测数据支持的负面结论，可信度
+        # 更高）。只做降权，不做拒绝，与其余三个方案同一条准则一致。
+        negative_domains = self._recent_negative_outcome_domains()
+        if negative_domains:
+            for c in all_candidates:
+                if self._domain_token_overlap(c.title, negative_domains) > 0:
+                    c.urgency *= 0.15
+
         seen: set[str] = set()
         cap: list[_DeriveCandidate] = []
         other: list[_DeriveCandidate] = []
@@ -381,6 +391,7 @@ class SoftGoalDeriver:
         )
         already_explored = self._recently_explored_domains()
         sparse_tokens = self._recent_sparse_region_tokens()
+        uncertainty_domains = self._recent_uncertainty_domains()  # [方案三新增]
 
         for entry in entries:
             total_calls = getattr(entry, "total_calls", 0)
@@ -401,8 +412,25 @@ class SoftGoalDeriver:
             # 空白区，novelty 应该获得额外加权。加权幅度有上限（最多 1.6x），
             # 避免稀疏信号完全压过 total_calls 本身的基础判断。
             overlap = self._domain_token_overlap(domain, sparse_tokens)
+            # [方案三新增] LLM 自陈的"犹豫/不确定"域重合判断，与记忆稀疏
+            # 信号同构：两路证据同时命中同一个域时，加权取两者中较大值
+            # （不是相乘叠加——避免两个都是弱信号时相乘后虚高），上限
+            # 仍然是 1.6x，与既有"加权有封顶"哲学保持一致。
+            uncertainty_overlap = self._domain_token_overlap(domain, uncertainty_domains)
+            weight_factor = 1.0
             if overlap > 0:
-                novelty *= min(1.6, 1.0 + 0.2 * overlap)
+                weight_factor = max(weight_factor, min(1.6, 1.0 + 0.2 * overlap))
+            if uncertainty_overlap > 0:
+                weight_factor = max(weight_factor, min(1.6, 1.0 + 0.2 * uncertainty_overlap))
+            novelty *= weight_factor
+
+            extra_hint = ""
+            if overlap > 0 and uncertainty_overlap > 0:
+                extra_hint = "（近期记忆检索发现该领域信息稀疏，且模型自身也表现出不确定性，信号更强）"
+            elif overlap > 0:
+                extra_hint = "（近期记忆检索也发现该领域信息稀疏，信号更强）"
+            elif uncertainty_overlap > 0:
+                extra_hint = "（近期模型对该领域任务持续表现出不确定性，信号更强）"
 
             candidates.append(_DeriveCandidate(
                 title=f"探索未知能力：{domain}",
@@ -410,7 +438,7 @@ class SoftGoalDeriver:
                     f"capability_map 记录 {domain} 目前仅有 {total_calls} 次调用样本，"
                     f"数据量太少无法判断真实能力边界。建议主动尝试一次小型探索任务，"
                     f"以减少 agent 对自身该能力的不确定性。"
-                    + ("（近期记忆检索也发现该领域信息稀疏，信号更强）" if overlap > 0 else "")
+                    + extra_hint
                 ),
                 source_tag="capability",
                 priority=15,   # 好奇心驱动，优先级略低于确定性问题
@@ -418,6 +446,36 @@ class SoftGoalDeriver:
                 novelty=novelty,
             ))
         return candidates
+
+    def _recent_uncertainty_domains(self) -> list[str]:
+        """[方案三新增] 与 _recent_sparse_region_tokens() 同构，只是订阅
+        不同的 event_type（proprioception.uncertainty_sustained）。两路
+        证据（记忆检索稀疏 + LLM 自陈不确定）同时命中同一个域时，novelty
+        应该比只有一路命中更高——但上限仍然是 1.6x，与既有"加权有封顶"
+        哲学保持一致，不引入新的封顶数字。
+
+        失败静默降级：事件总线读取异常时返回空列表。
+
+        注：使用独立的 consumer_name（而非复用 "soft_goal_deriver"），因为
+        poll_since() 的游标是"每个 consumer_name 一个全局位置"，不是按
+        event_type 分别记录——同一个消费者名同时订阅两种 event_type 会导致
+        其中一次调用按过滤后的结果推进游标，可能跳过另一种事件类型里
+        实际尚未读到的记录。"""
+        try:
+            from mini_agent.perception import system_events as _se
+
+            events = _se.poll_since(
+                self._paths,
+                consumer_name="soft_goal_deriver_uncertainty",
+                tiers=["tick"],
+                event_types=["proprioception.uncertainty_sustained"],
+            )
+            return [
+                e.payload.get("recent_domain_hint", "")
+                for e in events if e.payload.get("recent_domain_hint")
+            ]
+        except Exception:
+            return []
 
     def _recent_sparse_region_tokens(self) -> list[str]:
         """
@@ -511,12 +569,21 @@ class SoftGoalDeriver:
         try:
             from mini_agent.evolution.phase_g import load_capability_map
             entries = load_capability_map(self._paths)
+            high_risk_zones = self._recent_high_risk_zones()  # [方案一新增]
+            risk_gating_enabled, risk_downweight_factor = self._risk_gating_config()
             for entry in entries:
                 if entry.confidence >= CONFIDENCE_LOW:
                     continue
                 if entry.total_calls < 3:
                     continue  # 样本太少，不可靠
                 urgency = (CONFIDENCE_LOW - entry.confidence) * 10 + entry.total_calls * 0.1
+                if (
+                    risk_gating_enabled
+                    and self._domain_token_overlap(entry.capability_name, high_risk_zones) > 0
+                ):
+                    # [方案一] 具身层近期判定这是高风险域：不阻止候选产出，
+                    # 但明显降权，避免自主推导反复往一个刚出过问题的领域里冲。
+                    urgency *= risk_downweight_factor
                 candidates.append(_DeriveCandidate(
                     title=f"改善 {entry.capability_name} 的执行可靠性",
                     description=(
@@ -533,6 +600,37 @@ class SoftGoalDeriver:
             log_exception(_mini_agent_exc, where='mini_agent.evolution.soft_goal_deriver')
             pass
         return candidates
+
+    def _risk_gating_config(self) -> tuple[bool, float]:
+        """[方案一新增] 读取 AffordanceConfig 的风险门控开关/降权系数，
+        默认值保证不改变现有行为（enabled=True, factor=0.4）。"""
+        affordance_cfg = getattr(self._cfg, "affordance", None)
+        enabled = getattr(affordance_cfg, "risk_gating_enabled", True)
+        factor = getattr(affordance_cfg, "risk_downweight_factor", 0.4)
+        return enabled, factor
+
+    def _recent_negative_outcome_domains(self) -> list[str]:
+        """[方案四新增] 通过 AgentSelfModel.recent_negative_outcome_domains()
+        桥接 outcome_tracker.get_revert_candidates()。不持有跨 session 的
+        AgentSelfModel 实例（SoftGoalDeriver 本身是无状态的一次性调用），
+        这里就地构造一个空壳 AgentSelfModel 只是为了复用同一段桥接逻辑，
+        不重复实现一遍 outcome_tracker → domain 的转换规则。
+
+        失败静默降级：返回空列表。"""
+        try:
+            from mini_agent.perception.self_model import AgentSelfModel
+            return AgentSelfModel().recent_negative_outcome_domains(paths=self._paths)
+        except Exception:
+            return []
+
+    def _recent_high_risk_zones(self) -> list[str]:
+        """[方案一新增] 只读消费 AffordanceAnalyzer 落盘的高风险域快照。
+        失败静默降级：返回空列表，不影响候选产出。"""
+        try:
+            from mini_agent.perception.affordance_analyzer import load_recent_high_risk_zones
+            return load_recent_high_risk_zones(self._paths)
+        except Exception:
+            return []
 
     def _from_work_index(self) -> list[_DeriveCandidate]:
         """

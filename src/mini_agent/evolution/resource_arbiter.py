@@ -60,6 +60,11 @@ class ResourceArbiter:
         if not self._check_frustration():
             return False
 
+        # 规则 5：[方案二新增] 用户在场信号（BehaviorContext → Stage 9 信号
+        # 桥接）——用户当前明显活跃切换时，收敛自主任务，避免抢资源/写冲突。
+        if not self._check_user_presence():
+            return False
+
         return True
 
     def can_run_exploration(self) -> bool:
@@ -126,6 +131,35 @@ class ResourceArbiter:
             return frustration < threshold
         except Exception:
             return True
+
+    def _check_user_presence(self) -> bool:
+        """
+        规则 5（方案二新增）：用户当前明显活跃（近期有应用切换）时，收敛
+        自主任务，避免和用户抢资源/写冲突；用户 idle 或信号缺失时不阻塞
+        （保守：不确定就不阻断，behavior 采集本身就是可选组件，缺失是
+        常态而非异常）。
+
+        双开关哲学，与 affordance.use_behavior_context 保持一致：默认
+        autonomy.behavior_gating_enabled=False，关闭时本方法恒真，
+        can_run_autonomous() 行为与改动前完全一致。
+        """
+        gating_cfg = getattr(self._cfg, "autonomy", None)
+        if not gating_cfg or not getattr(gating_cfg, "behavior_gating_enabled", False):
+            return True
+        try:
+            from mini_agent.perception.affordance_analyzer import load_behavior_context
+            # 短窗口：只关心"刚刚"，与 AffordanceAnalyzer 默认的 30 分钟
+            # 观察窗口不同——自主调度门控关心的是"此刻是否该让路"，
+            # 用更短的窗口能更快感知到用户已经离开/恢复空闲。
+            ctx = load_behavior_context(self._cfg, window_minutes=5)
+            if ctx is None:
+                return True  # 信号缺失，不阻断
+            threshold = getattr(gating_cfg, "behavior_gating_switch_threshold", 3)
+            if ctx.is_actively_engaged and ctx.context_switch_count >= threshold:
+                return False  # 用户明显在忙碌切换，暂缓自主任务
+            return True
+        except Exception:
+            return True  # 读取失败保守放行
 
     def _check_exploration_budget(self) -> bool:
         """探索预算：used_today_exploration < exploration_budget（daily_budget * ratio）。"""

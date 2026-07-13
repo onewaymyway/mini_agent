@@ -59,6 +59,7 @@ from typing import TYPE_CHECKING, Optional
 if TYPE_CHECKING:
     from mini_agent.perception.proprioception import AgentInternalState
     from mini_agent.perception.affordance_analyzer import AffordanceMap, BehaviorContext
+    from mini_agent.storage.paths import AgentPaths
 
 
 @dataclass
@@ -198,6 +199,36 @@ class AgentSelfModel:
             and self.internal_state is None
             and self.active_skill_count > 0
         )
+
+    def recent_negative_outcome_domains(self, *, paths: "AgentPaths") -> list[str]:
+        """[方案四新增] 桥接 outcome_tracker.get_revert_candidates()，转换成
+        domain 字符串列表供 SoftGoalDeriver 做子串匹配降权。
+
+        TrackedCommit 本身没有独立的 domain 字段，这里复用
+        affordance_calibration.py::calibrate() 已经验证过的同一套关联方式：
+        优先取 commit_summary（人类可读摘要），缺失时退回
+        trigger_lesson_group_id，再用 phase_g._infer_domain() 做规则式推断
+        （与 soft_goal_deriver 里其余候选的 domain 归类同一套逻辑，不引入
+        第二套规则）。
+
+        只读、不缓存（调用频率低——只在 derive_candidates() 里用一次），
+        失败返回空列表。"""
+        try:
+            from mini_agent.evolution.outcome_tracker import get_revert_candidates
+            from mini_agent.evolution.phase_g import _infer_domain
+
+            candidates = get_revert_candidates(paths)
+            domains: list[str] = []
+            for c in candidates:
+                text = getattr(c, "commit_summary", "") or getattr(c, "trigger_lesson_group_id", "")
+                if not text:
+                    continue
+                domain = _infer_domain(text)
+                if domain and domain != "general":
+                    domains.append(domain)
+            return domains
+        except Exception:
+            return []
 
 
 class AgentSelfModelBuilder:

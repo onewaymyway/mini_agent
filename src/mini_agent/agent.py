@@ -709,6 +709,9 @@ class Agent:
         # [B1 → Stage 9 信号桥接] 上次写入快照文件时的 frustration 值，用于判断
         # 本轮是否值得再写一次（避免无意义变化时的重复磁盘 IO）。
         self._last_written_frustration: Optional[float] = None
+        # [方案三新增] 连续高不确定性轮次计数，供 _maybe_publish_uncertainty_signal()
+        # 判断是否达到"连续 N 轮 uncertainty 都超过阈值"的限流发布条件。
+        self._uncertainty_streak: int = 0
 
         # [具身改进 C1] AgentSelfModel：三个 profile 概念的聚合视图
         # 慢变量（capability_snapshot, affordance_summary）在此构建一次，
@@ -940,6 +943,75 @@ class Agent:
             R.print_info("[cognitive-anchor] 已记录当前思路，下次恢复时会自动提醒。")
         except Exception:
             pass  # 认知锚点生成失败不应影响中断流程本身
+
+    def _current_task_domain_hint(self) -> str:
+        """
+        [方案三新增] 轻量推断"当前任务大致属于哪个 domain"，供
+        _maybe_publish_uncertainty_signal() 发布事件时附带。复用
+        evolution/phase_g.py::_infer_domain()（已存在，
+        _domain_token_overlap() 系列函数依赖的同一套规则式推断），
+        不新增第二套 domain 归类逻辑。
+
+        取最近一条用户消息文本做推断（当前任务的直接来源）；取不到时
+        返回空字符串，调用方据此决定是否附带该字段。
+        """
+        try:
+            from mini_agent.evolution.phase_g import _infer_domain
+            for msg in reversed(self._hist._history):
+                role = msg.get("role") if isinstance(msg, dict) else getattr(msg, "role", "")
+                if role != "user":
+                    continue
+                content = msg.get("content") if isinstance(msg, dict) else getattr(msg, "content", "")
+                text = content if isinstance(content, str) else str(content or "")
+                if text:
+                    return _infer_domain(text)
+            return ""
+        except Exception:
+            return ""
+
+    def _maybe_publish_uncertainty_signal(self, state: "AgentInternalState") -> None:
+        """
+        [方案三新增] ProprioceptionModule.uncertainty 信号接入事件总线。
+
+        限流发布，不是每轮都发（uncertainty 本身就是逐轮波动的连续值，
+        不像 frustration 有明确阈值边沿）：仿照 hybrid_memory_backend.py 的
+        memory.sparse_region_detected 做法，设定"连续 N 轮 uncertainty 都
+        超过阈值"才发布，避免刷屏。发布后重置计数，避免同一段持续不确定性
+        重复发多条。
+
+        失败静默降级：事件发布是旁路增强，任何异常都不应影响主循环。
+        """
+        try:
+            threshold = getattr(self.cfg.proprioception, "uncertainty_threshold", 0.45)
+            streak_required = getattr(self.cfg.proprioception, "uncertainty_streak_required", 3)
+            if state.uncertainty >= threshold:
+                self._uncertainty_streak += 1
+            else:
+                self._uncertainty_streak = 0
+                return
+            if self._uncertainty_streak < streak_required:
+                return
+            try:
+                from mini_agent.perception import system_events as se
+                from mini_agent.storage.paths import AgentPaths as _AP
+                se.publish(
+                    _AP(self.cfg.project_root),
+                    source=f"session:{self._session.id if self._session else 'unknown'}",
+                    event_type="proprioception.uncertainty_sustained",
+                    tier="tick",  # 不是即时响应场景，走 tick 节奏即可
+                    payload={
+                        "uncertainty": round(state.uncertainty, 3),
+                        "streak": self._uncertainty_streak,
+                        "recent_domain_hint": self._current_task_domain_hint(),
+                    },
+                )
+            except Exception:
+                pass
+            # 无论发布是否成功，都重置计数——避免同一段持续不确定性反复
+            # 触发发布尝试；下一段新的连续高不确定性区间会从 0 重新累计。
+            self._uncertainty_streak = 0
+        except Exception:
+            pass
 
     def _write_proprioception_snapshot(self, state: "AgentInternalState") -> None:
         """
@@ -3067,6 +3139,11 @@ class Agent:
                             )
                     except Exception:
                         pass  # 事件发布是旁路增强，绝不能影响主循环
+
+                # [方案三] uncertainty 信号接入事件总线：限流发布（连续 N 轮
+                # 都超阈值才发），与上面 frustration 的"边沿事件"节奏不同，
+                # 不依赖 _pp_state.frustration 是否变化，独立判断。
+                self._maybe_publish_uncertainty_signal(_pp_state)
 
             # [具身改进 C1] AgentSelfModel 快变量更新：把刚 sense() 到的内部状态
             # 同步给 self_model，ContextBuilder.build() 下次调用时会自动读取。

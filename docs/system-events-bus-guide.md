@@ -194,6 +194,28 @@ Windows 开发环境中额外跑一次 `tests/test_system_events.py::TestSystemE
   `anomaly_flags`）的返回，与该端点其余各段一致的"局部失败不拖垮整体"
   风格。
 
+### 6.6 [方案三] proprioception.uncertainty_sustained → 探索 novelty 加权
+
+- 发布点：`agent.py::_maybe_publish_uncertainty_signal()`，每轮 sense()
+  之后判断，与 6.1 的 `frustration_spike`（边沿事件）节奏不同——
+  `uncertainty` 没有稳定的"边沿"，改用限流：连续
+  `cfg.proprioception.uncertainty_streak_required`（默认 3）轮都 ≥
+  `cfg.proprioception.uncertainty_threshold`（默认 0.45）才发布一次
+  （tier=`tick`），发布后计数重置。payload 携带
+  `recent_domain_hint`（复用 `phase_g._infer_domain()` 对最近一条用户
+  消息的规则式推断，取不到时为空字符串）。
+- 消费点：`soft_goal_deriver.py::_recent_uncertainty_domains()`，使用
+  独立的 `consumer_name="soft_goal_deriver_uncertainty"`（而非复用
+  6.2 节的 `"soft_goal_deriver"`）——`poll_since()` 的游标是"每个
+  consumer_name 一个全局位置"，不是按 `event_type` 分别记录，同一个
+  消费者名同时订阅两种 `event_type` 会导致其中一次调用按过滤后的结果
+  推进游标，可能跳过另一种事件类型里实际尚未读到的记录。
+- 与 6.2 节的 `memory.sparse_region_detected` 信号同构，在
+  `_from_unexplored_capabilities()` 里对同一个 domain 做加权判断：两路
+  证据都命中时取**较大值**而非相乘（避免两个都是弱信号时相乘后虚高），
+  上限仍是 1.6x，与 6.2 节"加权有封顶"的既有哲学保持一致，不引入新的
+  封顶数字。
+
 ## 7. 顺带修复的既有 bug（与事件总线本身无关，但在接入过程中发现）
 
 在打通四条链路的过程中，`soft_goal_deriver.py`/`goal_backlog.py`/
@@ -282,6 +304,15 @@ work 过，常规测试很容易漏掉（这几个模块此前大多没有专门
 就会绕过补丁）——新增 `test_outcome_tracker.py` 在 pytest 收集阶段真实
 导入了该模块，暴露出这个预置问题，改为直接 `mock.patch(
 "mini_agent.evolution.outcome_tracker.get_all", ...)`，不再依赖导入时序。
+
+### [方案三] 新增测试
+
+`tests/test_uncertainty_event_bridge.py`（8 用例，新文件）：
+`_maybe_publish_uncertainty_signal()` 连续 streak 才发布、掉回阈值以下
+重置计数、同一段持续状态不重复发布；`_current_task_domain_hint()` 对
+最近一条用户消息的 domain 推断；`SoftGoalDeriver._recent_uncertainty_domains()`
+事件读取与异常降级；`_from_unexplored_capabilities()` 两路证据取较大值
+而非相乘的加权验证。
 
 ### 第8节两项遗留 TODO 落地后新增/调整的测试
 

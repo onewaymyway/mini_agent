@@ -603,6 +603,11 @@ class ProprioceptionConfig:
     trace_enabled: bool = True
     # 调试：打印每轮快照
     verbose: bool = False
+    # [方案三] uncertainty 信号接入事件总线：连续多轮 uncertainty 都超过该
+    # 阈值才发布 "proprioception.uncertainty_sustained" 事件（限流，避免
+    # uncertainty 这种逐轮波动的连续值每次越过阈值就刷屏）。
+    uncertainty_threshold: float = 0.45
+    uncertainty_streak_required: int = 3
 
 
 @dataclass
@@ -625,6 +630,13 @@ class AffordanceConfig:
     use_behavior_context: bool = False
     # 调试：打印生成的 AffordanceMap
     verbose: bool = False
+    # [方案一] 高风险域接入自主探索门控：总开关，关闭则方案一全部逻辑
+    # （SoftGoalDeriver 候选降权 / ExplorationSandbox 预算收紧）不生效，
+    # 行为与改动前完全一致。
+    risk_gating_enabled: bool = True
+    # [方案一] 高风险域候选的 urgency 乘数（降权而非拒绝——具身层的风险
+    # 判断本身也可能过时或误判，不应该直接拉黑一个域）。
+    risk_downweight_factor: float = 0.4
 
 
 @dataclass
@@ -637,6 +649,13 @@ class AutonomyConfig:
     novelty_weight: float = 0.5           # urgency + novelty_weight * novelty 排序权重
     exploration_min_calls_threshold: int = 2   # total_calls 低于此值视为"几乎未探索"
     already_explored_cooldown_days: float = 30.0
+    # [方案二] BehaviorContext 接入自主任务调度门控：双开关哲学，与
+    # affordance.use_behavior_context 保持一致，默认 False——behavior 采集
+    # 依赖桌面/浏览器 collector，不是所有部署场景都装了，强行默认开启会让
+    # 没配置 collector 的用户平白多一次无意义的文件读取。
+    behavior_gating_enabled: bool = False
+    # 观察窗口内应用切换次数达到该阈值时，视为"用户明显在忙碌切换"。
+    behavior_gating_switch_threshold: int = 3
 
 
 @dataclass

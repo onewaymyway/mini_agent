@@ -107,6 +107,51 @@ class ExplorationSandbox:
         self._active_sandboxes: int = 0
         self._max_concurrent: int = 1  # 同时只允许一个探索实验（保守策略）
 
+    def _is_high_risk_domain(self, capability_id: str) -> bool:
+        """[方案一新增] 只读判断 capability_id 是否落在具身层近期标记的
+        高风险域里。复用 SoftGoalDeriver._domain_token_overlap() 同一套
+        "子串包含"匹配模式，不引入新的匹配算法。
+
+        失败静默降级：返回 False（不影响探索照常进行，只是不收紧预算）。
+        """
+        try:
+            affordance_cfg = getattr(self._cfg, "affordance", None)
+            if not getattr(affordance_cfg, "risk_gating_enabled", True):
+                return False
+            from mini_agent.perception.affordance_analyzer import load_recent_high_risk_zones
+            high_risk_zones = load_recent_high_risk_zones(self._paths)
+            if not high_risk_zones:
+                return False
+            capability_lower = (capability_id or "").lower()
+            return any(zone and zone.lower() in capability_lower for zone in high_risk_zones)
+        except Exception:
+            return False
+
+    def _risk_adjusted_token_limit(self, capability_id: str) -> Optional[int]:
+        """[方案一新增] 高风险域：把本次探索的 token 上限收紧到"探索预算
+        总额的一半"（不是"剩余额度的一半"——探索预算总额是慢变量，剩余
+        额度会在同一天内被其他探索实验消耗，用总额的固定比例更稳定、
+        更容易解释）。非高风险域返回 None（不设上限，等价于改动前行为）。
+
+        失败静默降级：返回 None。
+        """
+        if not self._is_high_risk_domain(capability_id):
+            return None
+        try:
+            from mini_agent.perception.global_knowledge import load_self_profile
+            profile = load_self_profile(self._paths)
+            if not profile:
+                return None
+            rb = profile.resource_budget
+            total = getattr(rb, "daily_token_budget", 0)
+            ratio = getattr(rb, "exploration_budget_ratio", 0.10)
+            exploration_budget = int(total * ratio)
+            if exploration_budget <= 0:
+                return None
+            return int(exploration_budget * 0.5)
+        except Exception:
+            return None
+
     @contextlib.contextmanager
     def create(
         self,
@@ -142,11 +187,17 @@ class ExplorationSandbox:
         # 创建 git worktree
         worktree_path = self._create_worktree(sandbox_id, branch_prefix)
 
+        # [方案一新增] 高风险域仍然放行（探索的价值本来就是"验证风险判断
+        # 是否还成立"），但把本次探索的 token 上限收紧到探索预算余量的
+        # 一半（更早止损，失败也更便宜）。
+        token_limit_override = self._risk_adjusted_token_limit(capability_id)
+
         self._active_sandboxes += 1
         ctx = _ExplorationContext(
             sandbox_id=sandbox_id,
             worktree_path=worktree_path,
             report=report,
+            token_limit_override=token_limit_override,
         )
 
         try:
@@ -284,16 +335,40 @@ class _ExplorationContext:
     sandbox_id: str
     worktree_path: Path
     report: ExplorationReport
+    # [方案一新增] 高风险域探索的收紧 token 上限（绝对 token 数），
+    # None 表示不设上限（非高风险域，等价于改动前行为）。
+    token_limit_override: Optional[int] = None
 
     def record_tokens(self, count: int) -> None:
-        """记录本次探索消耗的 token 数（在 with 块内调用）。"""
+        """记录本次探索消耗的 token 数（在 with 块内调用）。
+
+        [方案一新增] 若设置了 token_limit_override 且累计消耗超出限额，
+        抛出 ExplorationTokenLimitExceeded——高风险域探索更早止损，失败
+        也更便宜；调用方应在 with 块内捕获该异常并把已有发现记入
+        report.finding，而不是让探索无限制地跑到默认预算耗尽才停。
+        """
         self.report.tokens_used += max(0, count)
+        if self.token_limit_override is not None and self.report.tokens_used > self.token_limit_override:
+            raise ExplorationTokenLimitExceeded(
+                f"高风险域探索 token 用量 {self.report.tokens_used} 已超过收紧后的"
+                f"上限 {self.token_limit_override}，提前止损"
+            )
 
 
 # ── 异常 ───────────────────────────────────────────────────────────────────────
 
 class ExplorationBudgetExhausted(Exception):
     """探索预算耗尽或并发限制达到时抛出。"""
+    pass
+
+
+class ExplorationTokenLimitExceeded(Exception):
+    """[方案一新增] 高风险域探索超出收紧后的 token 上限时抛出（提前止损）。
+    与 ExplorationBudgetExhausted 语义不同：后者是"根本不允许开始"，
+    前者是"已经在跑、跑到一半发现超支了，提前结束"——create() 的
+    with 块 except Exception 分支会捕获它并把 report.success 标记为
+    False、report.error 记录原因，与其他探索期间异常走同一条收尾路径。
+    """
     pass
 
 
@@ -319,6 +394,7 @@ __all__ = [
     "ExplorationReport",
     "ExplorationSandbox",
     "ExplorationBudgetExhausted",
+    "ExplorationTokenLimitExceeded",
     "_ExplorationContext",
     "make_exploration_sandbox",
 ]

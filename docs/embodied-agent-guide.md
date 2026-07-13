@@ -112,7 +112,54 @@ can_run_autonomous()` 的规则 4 读取该快照，`frustration` 达到阈值�
 tick 跳过自主任务提交；快照缺失或超过 10 分钟未更新视为无有效信号，不
 阻塞。详见 [Stage 9 自主运行时指南](self-evolution-stage9-guide.md#8-资源仲裁evolutionresource_arbiterpy)。
 
-测试：`tests/test_proprioception.py`
+**[方案三] `uncertainty` 信号接入事件总线**：`frustration` 此前是唯一
+被跨模块消费的信号，`uncertainty`（最近回复的犹豫词频）算出来后只在
+当前 session 内部瞬时使用，从未持久化、从未跨 session 累积。现在
+`agent.py::_maybe_publish_uncertainty_signal()` 在每轮 sense() 之后
+判断：连续 `proprioception.uncertainty_streak_required`（默认 3）轮
+`uncertainty` 都 ≥ `proprioception.uncertainty_threshold`（默认 0.45）
+才发布一次 `proprioception.uncertainty_sustained` 事件（`tier="tick"`），
+限流而非每轮都发——`uncertainty` 本身是逐轮波动的连续值，不像
+`frustration` 有明确阈值边沿。事件 payload 附带
+`recent_domain_hint`（复用 `phase_g._infer_domain()` 对最近一条用户
+消息的规则式推断），发布后计数重置，避免同一段持续不确定性重复发多条。
+
+`SoftGoalDeriver._recent_uncertainty_domains()` 消费该事件，与既有的
+`memory.sparse_region_detected`（稀疏区域检测）信号一起，为
+`_from_unexplored_capabilities()` 的候选 novelty 打分做加权——两路证据
+同时命中同一个域时取较大值而非相乘，避免两个弱信号相乘后虚高，上限
+仍是 1.6x。详见
+[system-events-bus-guide.md](system-events-bus-guide.md#已接入的具体案例)。
+
+测试：`tests/test_proprioception.py`、`tests/test_uncertainty_event_bridge.py`
+
+---
+
+## 5.1 [方案四] AgentSelfModel 接入 SoftGoalDeriver 候选打分（单场景验证）
+
+**模块**：`perception/self_model.py::AgentSelfModel.
+recent_negative_outcome_domains()`
+
+`AgentSelfModel` 聚合了 capability_map 摘要、affordance 摘要等慢变量，
+但此前 `evolution/` 目录零引用——是一个建好了但没人真正依赖做决策的
+中枢。方案四不做成通用聚合接入（影响面不可控，参考本项目历史上"一个
+模块的数据结构被另一个模块直接引用、但双方从未真正联调过"导致的多次
+静默失败），只验证一个具体、影响面可控的场景：
+
+`SoftGoalDeriver.derive_candidates()` 排序前，读取
+`AgentSelfModel.recent_negative_outcome_domains()`（桥接
+`outcome_tracker.get_revert_candidates()` ——已有确凿 baseline/post
+实测数据支持"变差了"结论的 commit，经 `phase_g._infer_domain()` 转换
+成 domain 字符串），对落在这些域里的新候选做**强降权**（`urgency *=
+0.15`，比方案一风险域的 `0.4` 更激进——这不是具身层的经验性判断，而是
+有实测数据支持的负面结论，可信度更高）。只做降权，不做拒绝，与前三个
+方案同一条准则一致。
+
+验证通过后的下一步（暂不展开设计）：`AutonomousLoop._tick_autonomous()`
+决定本轮自治节奏时读取 `AgentSelfModel` 的整体健康摘要——建议至少观察
+一个完整 Phase G 周期、确认没有引入误降权后再启动。
+
+测试：`tests/test_negative_outcome_downweighting.py`
 
 ---
 
@@ -180,7 +227,62 @@ git 路径、应用切换频率、`is_actively_engaged` 等），追加成 1-2 �
 `AgentSelfModel.user_presence`（见下方 C1），供下游程序化读取
 `is_user_actively_engaged()`，而不必解析 system prompt 文本片段。
 
-测试：`tests/test_affordance_analyzer.py`
+**[方案一] `high_risk_zones` 落盘 + 接入自主探索门控**：`AffordanceMap`
+此前只作为运行时对象存在，构建完立即拼进 `system_extra` 就不再持有。
+`inject_affordance_map()` 现在额外调用
+`affordance_analyzer.persist_affordance_map()`，把整份 `AffordanceMap`
+（含 `high_risk_zones`）落盘到 `<workdir>/affordance_snapshot.json`，
+供跑在 daemon 后台节奏里的 `SoftGoalDeriver` / `ExplorationSandbox` 只读
+消费（`load_recent_high_risk_zones()`，超过 `max_age_minutes`——默认
+60 分钟——视为过期返回空列表，避免用几小时前可能已被修复的风险判断
+继续压制新候选）：
+
+- `SoftGoalDeriver._from_capability_map()` 对落在高风险域的候选做
+  **降权**（`urgency *= affordance.risk_downweight_factor`，默认
+  `0.4`），不是拒绝——具身层的风险判断本身也可能过时或误判。
+- `ExplorationSandbox.create()` 对高风险域探索把 token 上限收紧到
+  探索预算总额的一半（`_risk_adjusted_token_limit()`），更早止损、
+  失败也更便宜；探索本身仍然放行，因为探索的价值就是验证风险判断
+  是否还成立。超限时 `_ExplorationContext.record_tokens()` 抛
+  `ExplorationTokenLimitExceeded`，与其余探索期间异常走同一条收尾
+  路径（`report.success=False`）。
+
+总开关 `affordance.risk_gating_enabled`（默认 `True`）关闭时以上逻辑
+整体不生效，行为与改动前一致。详见
+[embodied_autonomy_integration_design.md 方案一](../next_doc/embodied_autonomy_integration_design.md)。
+
+测试：`tests/test_affordance_analyzer.py`、`tests/test_affordance_risk_gating.py`
+
+---
+
+## 8.1 [方案二] BehaviorContext 接入自主任务调度门控
+
+**模块**：`evolution/resource_arbiter.py::ResourceArbiter._check_user_presence()`
+
+此前 `BehaviorContext`（用户在场信号）只喂给 `AffordanceAnalyzer.analyze()`
+生成一段"讲给 LLM 自己听"的提示文本，`ResourceArbiter.can_run_autonomous()`
+决定要不要提交自主任务时完全不看用户是否在场。方案二在
+`can_run_autonomous()` 的既有三条规则（预算 / 挫败感 /（原）无）之后
+新增第四条：用户当前明显活跃切换（`context_switch_count` 达到
+`autonomy.behavior_gating_switch_threshold`，默认 3）时暂缓自主任务，
+避免和用户抢资源/写冲突；信号缺失或用户 idle 时不阻塞。
+
+`affordance_analyzer.py` 内部原来的私有函数 `_load_behavior_context()`
+提升为公共函数 `load_behavior_context()`，`ResourceArbiter` 与
+`AffordanceAnalyzer` 共用同一份"读取 + 双重开关校验"逻辑（旧名保留为
+模块级别名，兼容既有引用）。
+
+双开关哲学：`autonomy.behavior_gating_enabled` 默认 `False`（与
+`affordance.use_behavior_context` 一致），关闭时 `can_run_autonomous()`
+行为与改动前完全一致——behavior 采集依赖桌面/浏览器 collector，不是
+所有部署场景都装了，默认开启会让未配置 collector 的用户平白多一次
+无意义的文件读取。
+
+方案一（风险域降权）与方案二（用户在场门控）落地后组合成"预算 /
+挫败感 / 用户在场"三层门控 + `SoftGoalDeriver` 的风险域降权，两条门控
+是独立布尔判断的 AND 关系，不引入"信号融合规则"。
+
+测试：`tests/test_resource_arbiter_behavior_gating.py`
 
 ---
 
@@ -365,6 +467,12 @@ object 以未绑定方法方式调用 `Agent._save_cognitive_anchor` /
 | `cfg.proprioception.consecutive_failure_threshold` | `3` | 连续失败次数阈值 |
 | `cfg.affordance.enabled` | `True` | B4 余裕感知开关（当前仅多用户路径生效）|
 | `cfg.affordance.use_capability_map` | `True` | 是否纳入 Phase G 能力地图数据 |
+| `cfg.affordance.risk_gating_enabled` | `True` | [方案一] 高风险域接入自主探索门控总开关 |
+| `cfg.affordance.risk_downweight_factor` | `0.4` | [方案一] 高风险域候选的 urgency 降权系数 |
+| `cfg.autonomy.behavior_gating_enabled` | `False` | [方案二] BehaviorContext 接入自主任务调度门控总开关 |
+| `cfg.autonomy.behavior_gating_switch_threshold` | `3` | [方案二] 视为"用户明显忙碌切换"的应用切换次数阈值 |
+| `cfg.proprioception.uncertainty_threshold` | `0.45` | [方案三] 触发 uncertainty 事件发布的单轮阈值 |
+| `cfg.proprioception.uncertainty_streak_required` | `3` | [方案三] 连续超阈值轮次要求（限流发布） |
 | `cfg.cognitive_anchor_enabled` | `True` | C3 认知锚点开关（本地 Ctrl-C 与 daemon-connected `/save_anchor` 共用） |
 | `evolution/memory_aging.py` 半衰期表 | 见上表 | C2，不走配置文件，代码内常量 |
 | 自维护间隔 | `24h` | C4，`should_run_self_maintenance(interval_hours=24.0)` |

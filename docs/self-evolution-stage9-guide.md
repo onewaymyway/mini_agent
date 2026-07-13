@@ -309,6 +309,25 @@ if cmd.initiator in ("autonomous", "cron"):
 
 `total_occurrence >= 3` 且来自不止一个 session 的 LessonGroup，说明某类错误模式反复出现，生成「系统性解决：xxx」类型的 Goal。
 
+**[方案一] 高风险域降权**：信号 1 产出的候选，若能力名与
+`AffordanceAnalyzer` 最近落盘的 `high_risk_zones`（见
+[具身智能改进指南 8 节](embodied-agent-guide.md#8-b4-余裕感知层affordancemap)）
+子串重合，`urgency` 乘以 `cfg.affordance.risk_downweight_factor`
+（默认 0.4）——不拒绝，只降权，因为具身层的风险判断本身也可能过时。
+
+**[方案三] 未探索能力 + uncertainty 域重合加权**：`_from_unexplored_capabilities()`
+产出的候选，若命中最近的 `memory.sparse_region_detected` 或
+`proprioception.uncertainty_sustained` 事件所附带的 domain，novelty 获得
+最多 1.6x 加权（两路证据都命中时取较大值，不相乘）。详见
+[system-events-bus-guide.md](system-events-bus-guide.md#已接入的具体案例)。
+
+**[方案四] 负面回填域强降权**：`derive_candidates()` 排序前，读取
+`AgentSelfModel.recent_negative_outcome_domains()`（桥接
+`outcome_tracker.get_revert_candidates()`），落在这些域里的所有候选
+（不分来源）`urgency *= 0.15`——比方案一的 0.4 更激进，因为这是有实测
+baseline/post 数据支持的负面结论。详见
+[具身智能改进指南 5.1 节](embodied-agent-guide.md#51-方案四-agentselfmodel-接入softgoalderiver-候选打分单场景验证)。
+
 ### 7.3 优先级与去重
 
 - Lesson 来源：`priority = 30`（最高，有实证失败）
@@ -380,13 +399,27 @@ _run_capability_exploration(candidate)
 - `ExplorationBudgetExhausted` → 跳过本 tick 的 capability 候选
 - EvolutionWorkspace 不可用 → fallback 到 tempdir（功能可用，不隔离 git 历史）
 
+### [方案一] 高风险域 token 上限收紧
+
+`ExplorationSandbox.create()` 内部会调用 `_risk_adjusted_token_limit()`
+判断 `capability_id` 是否落在 `AffordanceAnalyzer` 最近落盘的
+`high_risk_zones` 里；命中时把本次探索的 token 上限收紧到探索预算总额
+（`daily_token_budget * exploration_budget_ratio`）的一半，而非默认的
+不设上限——高风险域的探索仍然放行（探索的价值就是验证风险判断是否还
+成立），只是更早止损。`_ExplorationContext.record_tokens()` 累计超出
+该上限时抛 `ExplorationTokenLimitExceeded`，与其余探索期间异常
+（如工具调用失败）走同一条收尾路径：`report.success=False`，
+`report.error` 记录原因，不会导致 sandbox 泄漏或 worktree 残留。
+
+总开关：`cfg.affordance.risk_gating_enabled`（默认 `True`）。
+
 ---
 
 ## 8. 资源仲裁（`evolution/resource_arbiter.py`）
 
 `_tick_maintenance()` 在推进 Objective 前必须通过 `ResourceArbiter.can_run_autonomous()`：
 
-### 8.1 四条仲裁规则
+### 8.1 五条仲裁规则
 
 **规则 1：用户优先**（由 `InputQueue` FIFO 天然保证）
 
@@ -409,6 +442,16 @@ frustration_threshold`（默认 0.5）时，本次 tick 跳过自主任务提交
 （没有本体感知开启的活跃 session）或超过 10 分钟未更新（近期没有活跃 session
 在跑，信号已过期）时不阻塞，与规则 3 "读取失败不阻塞"是同一保守降级风格。
 详见 [具身智能改进指南](embodied-agent-guide.md#5-b1-本体感知模块proprioceptionmodule)。
+
+**规则 5：用户在场信号（方案二：BehaviorContext → Stage 9 信号桥接）**
+
+`_check_user_presence()` 在 `cfg.autonomy.behavior_gating_enabled=True`
+（默认 `False`）时生效：调用 `affordance_analyzer.load_behavior_context()`
+读取最近 5 分钟的应用切换活动，`context_switch_count` 达到
+`cfg.autonomy.behavior_gating_switch_threshold`（默认 3）且判定为
+"活跃在场"时，本次 tick 跳过自主任务提交——避免和用户抢资源/写冲突。
+信号缺失（未开启 behavior collector）或读取异常时保守放行，不阻塞。
+详见 [具身智能改进指南 8.1 节](embodied-agent-guide.md#81-方案二-behaviorcontext-接入自主任务调度门控)。
 
 ### 8.2 activity_digest.jsonl
 
