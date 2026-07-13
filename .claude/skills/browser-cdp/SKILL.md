@@ -3,6 +3,47 @@ name: browser-cdp
 description: 通过 Chrome DevTools Protocol (CDP) 控制真实 Chrome/Edge 浏览器：打开网页、抓取网页内容（HTML/纯文本/表单/链接）、截图（含编号标注可交互元素）、模拟点击和输入、执行JS、读取console/网络日志，并支持与用户同时操作同一个浏览器（观察/建议/代劳三种协作模式）。当用户说"帮我打开网页"、"抓取这个网站"、"帮我填一下这个表单"、"看看我浏览器里这个页面"、"截个图分析一下"时使用。
 triggers: 浏览器, 打开网页, 抓取网页, 网页截图, cdp, chrome devtools, 模拟点击, 模拟输入, 网页自动化, 填表单, browser automation, scrape webpage
 platforms: windows, macos, linux, pc
+resources:
+  - id: python-env-detection
+    path: references/python-env-detection.md
+    description: python/python3 命令可用性检测的完整原因说明与自动检测脚本（本环境结论已在正文给出，一般无需展开，环境变了/检测结果对不上时再加载）
+    triggers: python3, python 不是内部或外部命令, 找不到python, ModuleNotFoundError
+  - id: browser-launch-scenarios
+    path: references/browser-launch-scenarios.md
+    description: 三种建立浏览器连接的场景完整说明（专用新实例/连接用户已登录窗口/无GUI headless），含启动失败清理策略细节
+    triggers: 连接现有浏览器, 已登录的浏览器, remote-debugging-port, headless, 场景B, 场景C, 调试端口, 启动失败
+  - id: workflows
+    path: references/workflows.md
+    description: 四类典型工作流完整示例——抓取内容、看图点击填表单、与用户协作三种介入程度、调试网页console/网络
+    triggers: 表单填写, 看图操作, 协作模式, 观察模式, 代劳模式, 调试网页, console日志, 网络请求
+  - id: troubleshooting
+    path: references/troubleshooting.md
+    description: 路径规则详解（skill 目录为 cwd 基准）与截图/DPR/SPA路由/元素编号失效等常见坑
+    triggers: 找不到目录, 路径错误, DPR, SPA, 编号失效, temp_data
+  - id: baidu-search
+    path: references/baidu-search.md
+    description: 百度搜索自动化脚本（baidu_search.py）完整文档：参数、输出格式、核心实现要点
+    triggers: 百度搜索, baidu search, baidu_search.py
+  - id: bing-search
+    path: references/bing-search.md
+    description: Bing 搜索自动化脚本（bing_search.py）完整文档：参数、输出格式、核心实现要点
+    triggers: bing搜索, bing search, bing_search.py
+  - id: zhihu-search
+    path: references/zhihu-search.md
+    description: 知乎内容搜索自动化脚本（zhihu_search.py），通过百度 site:zhihu.com 获取知乎问答和专栏
+    triggers: 知乎搜索, zhihu search, zhihu_search.py
+  - id: zhihu-hot
+    path: references/zhihu-hot.md
+    description: 知乎热榜抓取自动化脚本（zhihu_hot.py），支持免登录发现页和登录态热榜抓取
+    triggers: 知乎热榜, zhihu hot, zhihu_hot.py
+  - id: arxiv-search
+    path: references/arxiv-search.md
+    description: arXiv 论文搜索自动化脚本（arxiv_search.py），按关键词搜索最新论文列表和获取详情
+    triggers: arxiv搜索, arxiv论文, arxiv_search.py
+  - id: arxiv-multi-search
+    path: references/arxiv-multi-search.md
+    description: arXiv 多关键词批量搜索脚本（arxiv_multi_search.py），支持合并去重、批量获取详情
+    triggers: arxiv多关键词, arxiv批量搜索, arxiv_multi_search.py
 ---
 
 # Browser CDP Skill
@@ -24,93 +65,41 @@ platforms: windows, macos, linux, pc
 | `browser_input.py` | 模拟点击、输入文字、按键、滚动、悬停 |
 | `browser_console.py` | 执行任意 JS、抓取 console 日志、抓取网络请求 |
 | `browser_watch.py` | 协作场景：轮询判断用户是否已完成某个操作（URL/标题变化） |
+| `baidu_search.py` / `bing_search.py` | 搜索引擎自动化，见下方对应子资源 |
+| `zhihu_search.py` / `zhihu_hot.py` | 知乎内容/热榜抓取，见下方对应子资源 |
+| `arxiv_search.py` / `arxiv_multi_search.py` | arXiv 论文搜索，见下方对应子资源 |
 
-## 📁 子功能文档模块化规范
+## 子资源（渐进式加载）
 
-**重要：新增子功能/自动化脚本时，必须遵循以下模块化文档模式：**
+本 skill 遵循渐进式加载规范：正文只保留高频必读内容，长尾细节放在 `references/*.md`，
+已在 frontmatter `resources` 中登记，激活本 skill 后可在资源清单里看到全部条目及加载状态。
+命中对应 `triggers` 会自动加载；也可以不依赖关键词，主动调用
+`skill_resource_load(skill_name="browser-cdp", resource_id="<id>", reason=...)` 按需加载：
 
-1. **主 SKILL.md 只保留引用**，不写详细内容
-2. **每个子功能创建独立的 `<name>_skill.md` 文件**，包含完整文档
-3. **主 SKILL.md 中用链接引用**：`**详细文档请参考：[xxx_skill.md](xxx_skill.md)**`
+| id | 内容 |
+|---|---|
+| `python-env-detection` | python/python3 命令检测的完整原因与自动检测脚本 |
+| `browser-launch-scenarios` | 三种建立浏览器连接场景的完整细节（专用实例/连接已登录窗口/headless） |
+| `workflows` | 抓取内容、看图填表单、协作模式、调试网页四类工作流的完整示例 |
+| `troubleshooting` | 路径规则详解 + 截图/DPR/SPA/编号失效等常见坑 |
+| `baidu-search` / `bing-search` | 对应搜索引擎自动化脚本完整文档 |
+| `zhihu-search` / `zhihu-hot` | 知乎内容搜索 / 热榜抓取脚本完整文档 |
+| `arxiv-search` / `arxiv-multi-search` | arXiv 单关键词 / 多关键词批量搜索脚本完整文档 |
 
-### 现有子功能文档
+新增子功能脚本时：在 `.claude/skills/browser-cdp/references/` 下新建 `<name>.md`，并在本文件
+frontmatter 的 `resources` 里登记 `id`/`path`/`description`/`triggers`——不登记就不会被加载机制发现。
 
-- [baidu_search_skill.md](baidu_search_skill.md) — 百度搜索自动化脚本 (`baidu_search.py`)
-- [bing_search_skill.md](bing_search_skill.md) — Bing 搜索自动化脚本 (`bing_search.py`)
-- [zhihu_search_skill.md](zhihu_search_skill.md) — 知乎内容搜索自动化脚本 (`zhihu_search.py`)
-- [zhihu_hot_skill.md](zhihu_hot_skill.md) — 知乎热榜抓取自动化脚本 (`zhihu_hot.py`)，支持免登录发现页和登录态热榜抓取
-- [arxiv_search_skill.md](arxiv_search_skill.md) — arXiv 论文搜索自动化脚本 (`arxiv_search.py`)
-- [arxiv_multi_search_skill.md](arxiv_multi_search_skill.md) — arXiv 多关键词批量搜索自动化脚本 (`arxiv_multi_search.py`)，支持合并去重和批量获取详情
+## 运行前必做：Python 命令检测
 
-### 新增子功能步骤
-
-1. 在 skill 目录下创建 `<name>_skill.md`（如 `google_search_skill.md`）
-2. 按标准格式编写：用途、使用示例、参数说明、输出文件、核心实现要点
-3. 在主 SKILL.md 的「现有子功能文档」列表中添加链接
-4. 在主 SKILL.md 对应位置添加简短引用
-
-这样保持主文档精简，按需加载详细文档，避免 token 浪费。
-
-## ⚠️ 运行前必做：Python 命令检测（极易踩坑，务必遵守）
-
-**本环境同时存在 `python` 和 `python3` 两个命令，但只有一个是真正可用的。**
-
-### 第一步：检测哪个 Python 可用
-
-在调用任何浏览器 CDP 脚本之前，**必须先检测哪个命令可用**，然后后续所有调用都使用那个可用的命令。
+**本环境同时存在 `python` 和 `python3`，只有一个可用。本环境结论：用 `python`（Anaconda），
+`python3` 不可用（会弹出应用商店安装提示）。**
 
 ```bash
-# 先测试 python 是否可用
-python --version 2>&1 | head -1
-# 如果输出类似 "Python 3.x.x"，则用 python
-# 如果报错 "不是内部或外部命令"，则用 python3
-
-# 再测试 python3 是否可用（作为备选）
-python3 --version 2>&1 | head -1
-```
-
-### 本环境的检测结果
-
-- **`python`** ✅ 可用（指向 Anaconda 的 Python，路径如 `D:\ProgramData\anaconda3\python.exe`）
-- **`python3`** ❌ 不可用（指向 Windows 应用商店的重定向器，会弹出安装提示）
-
-**因此，本环境中所有浏览器 CDP 脚本都必须使用 `python` 而不是 `python3` 来调用！**
-
-### 正确用法示例
-
-```bash
-# ✅ 正确：使用 python（Anaconda 版本）
 cd .claude/skills/browser-cdp
 python browser_launch.py --dedicated --name work --start-url "https://example.com"
-python browser_nav.py --port 9333 --tab <id> --goto "https://example.com"
-python browser_extract.py --tab <id> --mode text --save ./temp_data/page_content.txt
-
-# ❌ 错误：使用 python3（会失败）
-python3 browser_launch.py --dedicated --name work  # 报错！
 ```
 
-### 为什么必须检测？
-
-不同环境的 Python 命令可用性不同：
-- **Windows + Anaconda**：通常只有 `python` 可用，`python3` 不存在或重定向
-- **Linux/macOS**：通常 `python3` 可用，`python` 可能不存在（Python 2 已移除）
-- **某些 Docker 容器**：可能两者都有或都没有
-
-**每次在新环境中使用时，必须先运行检测命令确认，然后统一使用那个可用的命令。**
-
-### 检测脚本（可选）
-
-如果不确定当前环境，可以运行以下命令自动检测：
-
-```bash
-if command -v python &> /dev/null && python --version &> /dev/null; then
-    echo "USE: python"
-elif command -v python3 &> /dev/null && python3 --version &> /dev/null; then
-    echo "USE: python3"
-else
-    echo "ERROR: No Python found!"
-fi
-```
+若换了新环境、命令报错，或需要检测脚本，加载 `python-env-detection` 子资源。
 
 ## 前置依赖
 
@@ -122,12 +111,8 @@ pip install websocket-client requests pillow
 
 ## 第一步：确保有可连接的浏览器
 
-### 场景 A（推荐用于"后续一系列自动化操作"）：打开一个专门的新 Chrome 实例
-
-不依赖用户手动改快捷方式，直接由 Agent 拉起一个**独立的、专门供后续操作使用**的 Chrome：
-独立 profile（不碰用户真实登录态）、独立调试端口（默认 9333，不与场景 B 的 9222 冲突）、
-默认可见窗口（也可以 `--headless` 用于服务器场景），并会把实例信息记到本地注册表，
-之后脚本随时用同一个 `--port` 复用它，不用每次重新启动。
+**默认场景（推荐）**：Agent 拉起一个独立的专用 Chrome 实例，独立 profile + 独立调试端口
+（默认 9333），不碰用户真实登录态：
 
 ```bash
 cd .claude/skills/browser-cdp
@@ -136,112 +121,31 @@ python browser_launch.py --dedicated --name work --start-url "https://example.co
 python browser_nav.py --port 9333 --tab <id> --goto "https://example.com"
 ```
 
-常用管理命令：
-```bash
-python browser_launch.py --list-dedicated          # 查看已创建的专用实例（含是否存活）
-python browser_launch.py --stop-dedicated work     # 用完关闭并从注册表移除
-```
+常用管理：`python browser_launch.py --list-dedicated`（查看已建实例）、
+`python browser_launch.py --stop-dedicated work`（用完关闭）。
 
-同一次任务里可以按需要开多个（用不同 --name），比如一个用来登录A站点、一个用来查B站点，互不干扰。
-默认可见（非 headless），方便用户随时瞄一眼 Agent 在干什么；纯后台抓取不需要用户看时加 `--headless`。
+需要连接用户已登录的真实浏览器窗口（共享登录态），或无 GUI 服务器环境用 headless，
+加载 `browser-launch-scenarios` 子资源查看完整步骤。
 
-### 场景 B：连接用户本机正在用的浏览器窗口（共享登录态）
-
-Chrome 不允许对一个"已经在跑、没开调试端口"的实例远程接管，所以需要用户重新用调试端口打开一次：
-
-1. 完全退出 Chrome（包括后台/托盘图标）
-2. 用户运行（或让用户创建一个桌面快捷方式，目标改成下面这样）：
-   ```
-   "C:\Program Files\Google\Chrome\Application\chrome.exe" --remote-debugging-port=9222
-   ```
-   这样打开的还是用户的默认 profile（保留登录态、书签等），只是多开了调试端口。
-3. 之后正常用 `browser_launch.py --list` 之类命令连接 `127.0.0.1:9222` 即可。
-
-告知用户：调试端口只监听本机 127.0.0.1，不会被外部网络访问，但仍建议用完后关闭该模式。
-
-### 场景 C：无 GUI 服务器/沙盒环境，只做抓取，不需要可见窗口
-
-```bash
-cd .claude/skills/browser-cdp
-python browser_launch.py --dedicated --headless          # 等价于场景A但不弹窗口
-# 或临时用一次不留注册记录：
-python browser_launch.py --ensure --spawn --headless
-```
-
-会自动探测 Chrome/Chromium 可执行文件。第一次探测失败时会提示用 `--binary` 指定路径。
-
-### 检查/复用已有连接
-
-```bash
-python browser_launch.py --ensure     # 端口已通（默认9222）-> 直接打印版本信息；不通 -> 报错并给出上面几种指引
-python browser_launch.py --list --port 9333   # 列出指定端口下的所有 tab，拿到 --tab 用的 id
-```
-
-## 典型工作流
-
-### 1. 打开网页并抓取内容
+## 典型工作流速览
 
 ```bash
 python browser_launch.py --new "https://example.com"        # 拿到新 tab 的 id
 python browser_nav.py --tab <id> --goto "https://example.com"
 python browser_extract.py --tab <id> --mode text             # 纯文本正文，适合直接喂给模型分析
-python browser_extract.py --tab <id> --mode links            # 所有链接
-python browser_extract.py --tab <id> --mode meta             # 标题/描述/h1
+python browser_screenshot.py --tab <id> --out shot.png --annotate   # 编号标注截图，用于看图点击/填表单
 ```
 
-大页面注意 `--max-chars`（默认 20000）截断，需要完整内容时用 `--save out.txt` 写文件后自己分段读。
+大页面注意 `--max-chars`（默认 20000）截断，需要完整内容时用 `--save out.txt` 写文件。
 
-### 2. "看图操作"式的表单填写/点击（computer-use 风格）
+表单填写/点击的完整"看图操作"流程、与用户协作的三种介入程度（观察/建议/代劳）、
+调试网页 console/网络请求，加载 `workflows` 子资源查看完整示例。
 
-```bash
-python browser_screenshot.py --tab <id> --out shot.png --annotate
-# 产出 shot.png（带编号红框）+ shot.elements.json（编号 -> 元素信息，tag/text/rect等）
-# 把 shot.png 发给用户看/自己视觉分析，确定要操作第几号元素
-python browser_input.py --tab <id> --type-index 5 --text "张三" --clear-first
-python browser_input.py --tab <id> --click-index 8
-python browser_screenshot.py --tab <id> --out after.png --annotate   # 操作后再截一次确认结果
-```
+## ⚠️ 路径规则（极易踩坑）
 
-也可以不截图，直接用 CSS 选择器：
-```bash
-python browser_input.py --tab <id> --click-selector "#submit-btn"
-python browser_input.py --tab <id> --type-selector "input[name=username]" --text "abc"
-```
-
-### 3. 与用户协作（不同介入程度）
-
-- **观察模式**（只看不动）：`browser_extract.py --mode text` / `browser_screenshot.py` 直接读取
-  用户当前 tab（用 `--url-contains`/`--title-contains` 定位到用户正在看的那个 tab，不要用 `--new`
-  开新 tab，否则不是用户正在看的页面）。
-- **建议模式**：观察后只用文字描述"你可以点击左上角的登录按钮"，不调用 `browser_input.py`。
-- **代劳模式**：用户明确同意后才调用 `browser_input.py` 实际操作；操作前后各截一次图，把结果给用户确认，
-  不要连续做多步高风险操作（比如"提交订单""转账确认"）而不中途反馈。
-- **等待用户完成某步**（比如让用户自己输入验证码/完成支付，Agent 等结果）：
-  ```bash
-  python browser_watch.py --tab <id> --wait-url-contains "/success" --timeout 120 --interval 2
-  ```
-
-### 4. 调试网页问题
-
-```bash
-python browser_console.py --tab <id> --eval "document.querySelectorAll('.item').length"
-python browser_console.py --tab <id> --watch-console --duration 5   # 抓最近5秒的console报错
-python browser_console.py --tab <id> --watch-network --duration 5   # 抓最近5秒的请求（url/status）
-```
-
-## 启动失败/进程清理策略
-
-- `--dedicated`/`--ensure --spawn` 启动失败（调试端口超时未就绪）时，脚本**只会杀掉本次自己刚拉起的
-  那一个进程**（`Popen` 返回的 pid），绝不会去扫描或杀死任何其他 Chrome/Edge 进程，不会影响用户
-  已经在用的浏览器窗口。
-- 若某个 `--name` 对应的专用实例此前异常退出（进程崩了但没走 `--stop-dedicated` 清理），下次
-  `--dedicated --name <同名>` 会先检查 registry 里记录的那个旧 pid 是否还活着——**只处理这一个
-  被本技能记录过的 pid**，健在则先关闭它，再清理 profile 目录里的单例锁文件，然后才重新启动，
-  避免"新旧两个进程抢同一个 profile 目录，实际生效的是旧进程"这种状态不一致问题。
-- `--dedicated` 启动成功后不会只凭"调试端口通了"就报告成功，而是会**真正连上第一个 tab、
-  轮询读取 `document.readyState/location.href/document.title`**，直到页面 `complete` 或超时，
-  把读到的真实状态打印出来。判断"网页是否打开成功"应该看这行 `当前页面: url=... readyState=...`，
-  而不是只看进程有没有报错。
+**所有脚本都必须先 `cd` 到 skill 目录再运行**（相对导入 `cdp_client`/`utils`），这意味着
+所有相对路径（包括 `./temp_data/`）都是**相对于 skill 目录**解析的，不是项目根目录。
+优先使用绝对路径输出产出文件。完整规则和错误示例见 `troubleshooting` 子资源。
 
 ## 安全与边界
 
@@ -252,77 +156,8 @@ python browser_console.py --tab <id> --watch-network --duration 5   # 抓最近5
   纯抓取公开页面场景优先用这个模式，减少对用户账号的接触面。
 - 调试端口只在需要时开启，用完可以提示用户关闭该 Chrome 窗口恢复正常模式。
 
-## ⚠️ 工作目录与路径规则（极易踩坑，务必遵守）
+## 常见坑（速查，完整版见 `troubleshooting` 子资源）
 
-**所有浏览器 CDP 脚本都必须 `cd` 到 skill 目录再运行**（因为脚本内部用了相对导入 `cdp_client`/`utils`），这意味着命令执行时的 `cwd` 是 **skill 目录**（`.claude/skills/browser-cdp/`），**不是项目根目录**。
-
-因此，**所有相对路径（包括 `./temp_data/`）都是相对于 skill 目录解析的**，不是相对于项目根目录。
-
-**正确做法 — 使用绝对路径或 skill 目录下的相对路径：**
-```bash
-# 方法一：用 skill 目录下的相对路径（skill 目录下创建 temp_data 子目录）
-mkdir -p .claude/skills/browser-cdp/temp_data
-python browser_screenshot.py --tab <id> --out .claude/skills/browser-cdp/temp_data/shot.png --annotate
-python browser_extract.py --tab <id> --mode text --save .claude/skills/browser-cdp/temp_data/page_content.txt
-
-# 方法二：直接用绝对路径（推荐，最稳妥）
-python browser_screenshot.py --tab <id> --out E:/codes/mini_claude_code/.claude/skills/browser-cdp/temp_data/shot.png --annotate
-python browser_extract.py --tab <id> --mode text --save E:/codes/mini_claude_code/.claude/skills/browser-cdp/temp_data/page_content.txt
-```
-
-**错误做法（会找不到目录或写入错误位置）：**
-```bash
-# ❌ 以为 ./temp_data 在项目根目录——实际在 skill 目录下！
-mkdir -p ./temp_data          # 这会在 skill 目录下创建 temp_data，不是项目根目录的
-python browser_screenshot.py --tab <id> --out ./temp_data/shot.png   # 写入 skill 目录下的 temp_data
-
-# ❌ 以为 cd 到 skill 目录后 ./temp_data 还是项目根目录的
-# 事实：cd .claude/skills/browser-cdp 后，./temp_data = .claude/skills/browser-cdp/temp_data
-```
-
-**总结：cd 到 skill 目录后，所有 `./xxx` 路径都以 skill 目录为基准。**
-
-任务完成后可清理：`rm -rf .claude/skills/browser-cdp/temp_data/*`（或按需保留产出物）。
-
-## 百度搜索自动化脚本 (`baidu_search.py`)
-
-本 skill 目录下提供了一个完整的百度搜索自动化脚本 `baidu_search.py`。
-
-**详细文档请参考：[baidu_search_skill.md](baidu_search_skill.md)**
-
-## Bing 搜索自动化脚本 (`bing_search.py`)
-
-本 skill 目录下提供了一个完整的 Bing 搜索自动化脚本 `bing_search.py`。
-
-**详细文档请参考：[bing_search_skill.md](bing_search_skill.md)**
-
-## 知乎内容搜索自动化脚本 (`zhihu_search.py`)
-
-本 skill 目录下提供了一个完整的知乎内容搜索自动化脚本 `zhihu_search.py`，通过百度搜索 `site:zhihu.com` 获取知乎问答和专栏文章。
-
-**详细文档请参考：[zhihu_search_skill.md](zhihu_search_skill.md)**
-
-## arXiv 论文搜索自动化脚本 (`arxiv_search.py`)
-
-本 skill 目录下提供了一个完整的 arXiv 论文搜索自动化脚本 `arxiv_search.py`，支持按关键词搜索最新论文列表和获取论文详细信息。
-
-**详细文档请参考：[arxiv_search_skill.md](arxiv_search_skill.md)**
-
-## arXiv 多关键词批量搜索自动化脚本 (`arxiv_multi_search.py`)
-
-本 skill 目录下提供了一个 arXiv 多关键词批量搜索脚本 `arxiv_multi_search.py`，支持传入多个关键词自动搜索、合并去重、批量获取论文详情。
-
-**详细文档请参考：[arxiv_multi_search_skill.md](arxiv_multi_search_skill.md)**
-
-## 常见坑
-
-- `Page.captureScreenshot` 的 `clip` 坐标是 CSS 像素，跟设备像素比无关，直接用
-  `getBoundingClientRect()` 的值即可，不需要额外乘 DPR。
-- 无头模式下 `window.innerHeight/innerWidth` 依赖 `--window-size`，元素扫描的 `inViewport`
-  判断会受此影响，必要时调整 `browser_launch.py --spawn` 里的 `--window-size` 参数。
-- 页面是 SPA（前端路由）时 `Page.loadEventFired` 可能只在首次加载触发，路由跳转后要靠
-  `browser_watch.py --wait-url-contains` 或 `browser_nav.py --wait-selector` 判断状态，
-  不要死等 load 事件。
-- 编号（`--click-index` 等）依赖当次 DOM 扫描顺序，如果页面在两次调用之间发生了明显变化
-  （异步加载、用户自己操作了），编号可能失效，务必先重新截图/扫描再操作。
-- **忘记指定 `./temp_data/` 路径导致临时文件散落在项目各处** —— 始终显式指定输出路径为 `./temp_data/xxx`。
+- `Page.captureScreenshot` 的 `clip` 坐标是 CSS 像素，不需要额外乘 DPR。
+- 页面是 SPA 时不要死等 load 事件，用 `browser_watch.py --wait-url-contains` 判断路由跳转。
+- 元素编号依赖当次 DOM 扫描顺序，页面有明显变化后务必先重新截图/扫描再操作。
