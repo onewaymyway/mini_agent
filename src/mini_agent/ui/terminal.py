@@ -3098,6 +3098,7 @@ _COMMANDS: list[tuple[str, str, list]] = [
     ("/help",        "Show help",                                    []),
     ("/clear",       "Clear conversation history",                   []),
     ("/compact",     "Compress history into a summary",              []),
+    ("/compact_continue", "Compact history, then auto-send '继续' to resume", []),
     ("/goal",        "Set a goal; agent auto-retries until done",    ["from-history", "resume", "status", "list", "cancel"]),
     ("/memory",      "Generate/refresh session memory now",          []),
     ("/profile",     "Refresh user profile now",                     []),

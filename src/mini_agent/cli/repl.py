@@ -273,7 +273,7 @@ def _handle_slash(cmd: str, agent: Agent, skill_loader: SkillLoader) -> None:
     elif name == "compact":
         _compact_history(agent)
 
-    elif name in ("compact_continue", "compact-continue", "compactcontinue"):
+    elif name == "compact_continue":
         _compact_and_continue(agent)
 
     elif name == "goal":
