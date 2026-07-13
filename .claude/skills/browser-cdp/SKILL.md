@@ -36,6 +36,10 @@ resources:
     path: references/zhihu-hot.md
     description: 知乎热榜抓取自动化脚本（zhihu_hot.py），支持免登录发现页和登录态热榜抓取
     triggers: 知乎热榜, zhihu hot, zhihu_hot.py
+  - id: zhihu-column-search
+    path: references/zhihu-column-search.md
+    description: 知乎专栏文章批量搜索与抓取脚本（zhihu_column_search.py），通过百度 site:zhihu.com 搜索专栏文章并抓取详情
+    triggers: 知乎专栏, zhihu column, zhihu_column_search.py
   - id: arxiv-search
     path: references/arxiv-search.md
     description: arXiv 论文搜索自动化脚本（arxiv_search.py），按关键词搜索最新论文列表和获取详情
@@ -67,6 +71,7 @@ resources:
 | `browser_watch.py` | 协作场景：轮询判断用户是否已完成某个操作（URL/标题变化） |
 | `baidu_search.py` / `bing_search.py` | 搜索引擎自动化，见下方对应子资源 |
 | `zhihu_search.py` / `zhihu_hot.py` | 知乎内容/热榜抓取，见下方对应子资源 |
+| `zhihu_column_search.py` | 知乎专栏文章批量搜索与抓取，见下方对应子资源 |
 | `arxiv_search.py` / `arxiv_multi_search.py` | arXiv 论文搜索，见下方对应子资源 |
 
 ## 子资源（渐进式加载）
@@ -84,6 +89,7 @@ resources:
 | `troubleshooting` | 路径规则详解 + 截图/DPR/SPA/编号失效等常见坑 |
 | `baidu-search` / `bing-search` | 对应搜索引擎自动化脚本完整文档 |
 | `zhihu-search` / `zhihu-hot` | 知乎内容搜索 / 热榜抓取脚本完整文档 |
+| `zhihu-column-search` | 知乎专栏文章批量搜索与抓取脚本完整文档 |
 | `arxiv-search` / `arxiv-multi-search` | arXiv 单关键词 / 多关键词批量搜索脚本完整文档 |
 
 新增子功能脚本时：在 `.claude/skills/browser-cdp/references/` 下新建 `<name>.md`，并在本文件
