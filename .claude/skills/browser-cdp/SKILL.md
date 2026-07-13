@@ -48,6 +48,10 @@ resources:
     path: references/arxiv-multi-search.md
     description: arXiv 多关键词批量搜索脚本（arxiv_multi_search.py），支持合并去重、批量获取详情
     triggers: arxiv多关键词, arxiv批量搜索, arxiv_multi_search.py
+  - id: wechat-search
+    path: references/wechat-search.md
+    description: 微信公众号文章搜索自动化脚本（wechat_search.py），通过搜狗微信搜索获取公众号文章并抓取详情
+    triggers: 微信搜索, 微信公众号, wechat search, wechat_search.py, 搜狗微信
 ---
 
 # Browser CDP Skill
@@ -73,6 +77,7 @@ resources:
 | `zhihu_search.py` / `zhihu_hot.py` | 知乎内容/热榜抓取，见下方对应子资源 |
 | `zhihu_column_search.py` | 知乎专栏文章批量搜索与抓取，见下方对应子资源 |
 | `arxiv_search.py` / `arxiv_multi_search.py` | arXiv 论文搜索，见下方对应子资源 |
+| `wechat_search.py` | 微信公众号文章搜索（搜狗微信），见下方对应子资源 |
 
 ## 子资源（渐进式加载）
 
@@ -91,6 +96,7 @@ resources:
 | `zhihu-search` / `zhihu-hot` | 知乎内容搜索 / 热榜抓取脚本完整文档 |
 | `zhihu-column-search` | 知乎专栏文章批量搜索与抓取脚本完整文档 |
 | `arxiv-search` / `arxiv-multi-search` | arXiv 单关键词 / 多关键词批量搜索脚本完整文档 |
+| `wechat-search` | 微信公众号文章搜索自动化脚本完整文档 |
 
 新增子功能脚本时：在 `.claude/skills/browser-cdp/references/` 下新建 `<name>.md`，并在本文件
 frontmatter 的 `resources` 里登记 `id`/`path`/`description`/`triggers`——不登记就不会被加载机制发现。
