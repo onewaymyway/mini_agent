@@ -556,202 +556,156 @@ Agent 可以调用以下内置工具：
 ```
 mini_agent/
 ├── main.py                  # 传统入口（兼容 shim）
-├── pyproject.toml           # 项目元数据
-├── requirements.txt         # 依赖列表
-├── README.md                # 项目说明
-├── CLAUDE.md                # 开发规范
-├── src/                     # 源代码
+├── weixin_bot.py             # 微信机器人独立启动脚本
+├── pyproject.toml            # 项目元数据
+├── requirements.txt          # 依赖列表
+├── README.md / CLAUDE.md / Agent.md / TERMUX_README.md  # 说明与开发规范
+├── agent_config.json          # Agent 运行时配置（模型/权限/记忆等）
+├── behavior_config.json       # 行为感知采集配置
+├── providers.json.example     # LLM Provider 配置样例
+├── src/                       # 源代码（唯一 Python 包 mini_agent）
 │   └── mini_agent/
-│       ├── __init__.py
-│       ├── __main__.py      # 模块入口
-│       ├── agent.py         # Agent 主类（对话循环与编排）
+│       ├── __init__.py / __main__.py / _version.py
+│       ├── agent.py            # Agent 主类（对话循环、工具派发、流式输出）
 │       ├── context_builder.py  # System prompt 构建
 │       ├── tool_executor.py    # 工具执行（权限 + 调用 + 截断 + 缓存）
-│       ├── history_manager.py  # 历史管理（压缩/快照）
-│       ├── config/          # 配置管理包
-│       │   ├── __init__.py  # 重导出，对外 import 路径不变
-│       │   ├── models.py    # 14 个配置 dataclass + AppConfig
-│       │   ├── loader.py    # load_config 及加载辅助函数
-│       │   └── prompt_builder.py  # build_system_prompt 及辅助函数
-│       ├── permissions.py   # 权限守卫
-│       ├── session.py       # 会话管理
-│       ├── skills/          # 技能加载
-│       │   ├── __init__.py
-│       │   ├── tracker.py   # 技能使用追踪
-│       │   └── usage_detector.py  # 使用检测
-│       ├── cli/             # CLI 基础设施
-│       │   ├── __init__.py
-│       │   ├── app.py       # 应用启动入口（含 daemon 子命令短路、--daemon-mode 处理）
-│       │   ├── parser.py    # 参数解析（含 --daemon-mode / --no-daemon 标志）
-│       │   ├── repl.py      # REPL 循环（含 /agent /goals /digest 路由）
-│       │   ├── daemon.py    # 守护进程管理：start/stop/status、DaemonClient（Stage 9）
-│       │   └── commands/    # REPL 命令处理
-│       │       ├── __init__.py
-│       │       ├── concurrency.py
-│       │       ├── plans.py
-│       │       ├── providers.py
-│       │       ├── sessions.py
-│       │       ├── skills.py
-│       │       ├── tasks.py
-│       │       ├── agents.py
-│       │       ├── hooks.py
-│       │       ├── evolution.py  # /evolution log|show|diff|revert（Stage 2）
-│       │       ├── evolve.py     # /evolve review|list（Stage 3.1）
-│       │       ├── eval_cmd.py   # mini-agent eval 子命令入口（Stage 3.2）
-│       │       ├── goals.py      # /agent goals 全部子命令：add/obj/done/abandon/accept/reject/pause/progress/status（Stage 9）
-│       │       └── cron.py       # /cron 全部子命令：list/status/enable/disable/run/add/remove/set-schedule（Stage 9 Phase 1）
-│       ├── llm/             # LLM 抽象层
-│       │   ├── __init__.py
-│       │   ├── base.py      # 基础接口
-│       │   ├── factory.py   # 工厂模式
-│       │   ├── retry.py     # 重试策略（退避策略 + 条件框架）
-│       │   ├── client_pool.py  # 多配置故障转移 & 多 Key 轮转
-│       │   ├── system_tool_call.py  # 工具调用格式
-│       │   ├── debug_logger.py  # 调试日志
-│       │   └── providers/   # LLM 提供商实现
-│       │       ├── __init__.py
-│       │       ├── _base_mixin.py
-│       │       ├── agnes.py
-│       │       ├── anthropic.py
-│       │       ├── openai.py
-│       │       ├── ollama.py
-│       │       ├── openrouter.py
-│       │       └── nvidia.py
-│       ├── tools/           # 工具系统
-│       │   ├── __init__.py  # 工具注册表
-│       │   ├── builtin.py   # 内置工具
-│       │   ├── orchestration.py  # 并发编排工具
-│       │   ├── skill_manager.py  # 技能管理
-│       │   ├── plan.py      # 规划工具
-│       │   ├── user_input.py  # 用户输入工具
-│       │   └── evolution.py # skill_propose 工具（Stage 3.1）
-│       ├── evolution/       # 自我演化安全网与生产闭环
-│       │   ├── __init__.py
-│       │   ├── state_repo.py    # StateRepo：唯一写入入口，风险分级 T0~T3（Stage 2）；initiator T0→T1 上浮（Stage 9）
-│       │   ├── validators.py    # 按 tier 升级的验证流水线（Stage 2）
-│       │   ├── workspace.py     # EvolutionWorkspace：git worktree 进程级隔离（Stage 2）
-│       │   ├── eval_runner.py   # mini-agent eval 核心引擎（Stage 3.2）
-│       │   ├── consolidation.py       # 巩固循环 后台循环：剪枝/能力地图/Scope晋升/节奏治理（Stage 8）
-│       │   ├── autonomous_loop.py  # AutonomousLoop：三档位 tick + ExplorationSandbox + SoftGoalDeriver 接入（Stage 9）
-│       │   ├── resource_arbiter.py # 资源仲裁 + activity_digest.jsonl + build_digest_summary() 六分组渲染（Stage 9）
-│       │   ├── cron_scheduler.py   # CronScheduler：interval/cron 双格式，5 个内置系统 job（Stage 9 Phase 1）
-│       │   ├── objective_executor.py # ObjectiveExecutor：Objective 多步持续执行，SSE objective_progress（Stage 9 Phase 2）
-│       │   └── soft_goal_deriver.py  # SoftGoalDeriver：capability/workthread/lesson 三路信号软目标 derive（Stage 9 Phase 3）
-│       ├── orchestrator/    # 并发编排
-│       │   ├── __init__.py
-│       │   ├── task.py      # 任务定义（含 manifest.json 写入；TaskStatus.PAUSED Stage 9）
-│       │   ├── task_manager.py  # 任务调度
-│       │   ├── sub_agent.py # 子 Agent
-│       │   ├── concurrency.py  # 并发控制
-│       │   ├── status_bar.py  # 状态栏显示
-│       │   ├── plan.py      # 执行计划（含 plan_snapshot.json 持久化与恢复）
-│       │   ├── plan_display.py  # 计划 UI
-│       │   ├── task_display.py  # 任务显示
-│       │   └── agent_profiles.py  # 自定义 agent profile
-│       ├── perception/      # 感知与记忆
-│       │   ├── __init__.py
-│       │   ├── project_scanner.py  # 项目结构扫描
-│       │   ├── file_watcher.py     # 文件变化监听
-│       │   ├── tool_cache.py       # 工具结果缓存
-│       │   ├── memory_store.py     # 跨 session 记忆（含 Lesson Memory 字段）
-│       │   ├── memory_base.py      # 记忆后端抽象
-│       │   ├── memory_factory.py   # 记忆工厂
-│       │   ├── lesson_rules.py     # 规则触发引擎（连续失败/拒绝重试成功）
-│       │   ├── correction_detector.py  # 人类反馈纠正检测
-│       │   ├── lesson_review.py    # lesson 阈值扫描与分组（Stage 3.1，/evolve review）
-│       │   ├── token_counter.py    # Token 预估
-│       │   ├── goal_backlog.py     # 跨会话目标层级 GoalNode/GoalBacklog，goals.json（Stage 9）
-│       │   ├── exploration_sandbox.py  # 探索实验沙盒，包装 EvolutionWorkspace（Stage 9；高风险域 token 上限收紧）
-│       │   ├── system_events.py   # 跨子系统事件总线：轻量 publish/poll_since，按 consumer_name 独立游标
-│       │   ├── proprioception.py  # 本体感知：认知负荷/不确定性/风险感知/剩余预算/frustration 轮间快照
-│       │   ├── affordance_analyzer.py  # 余裕感知：AffordanceMap 交叉分析 + 高风险域落盘只读消费
-│       │   ├── self_model.py       # AgentSelfModel 聚合视图 + 负面回填域桥接
-│       │   ├── classification.py   # 图书馆式分类树：自动生长/合并（书架结构）
-│       │   ├── entity_index.py     # 实体目录：挂载/冲突检测/去噪合并
-│       │   ├── catalog.py          # 分类指针索引 + 知识生命周期编年目录
-│       │   └── library_index.py    # 图书馆式索引组合外观（两步检索/反馈/纠正闭环/巩固循环 巩固）
-│       ├── ui/              # 用户界面
-│       │   ├── __init__.py
-│       │   ├── terminal.py  # 终端 I/O
-│       │   ├── renderer.py  # 终端输出渲染
-│       │   └── repl_input.py  # REPL 输入
-│       ├── api/             # HTTP API 服务
-│       │   ├── __init__.py
-│       │   ├── server.py    # HTTP 服务封装
-│       │   ├── routes.py    # API 路由
-│       │   ├── bridge.py    # Agent 桥梁
-│       │   ├── auth.py      # 认证中间件
-│       │   ├── models.py    # 数据模型
-│       │   └── fs_helper.py # 文件系统助手
-│       ├── history/         # 历史管理
-│       │   ├── __init__.py
-│       │   ├── compression.py  # 压缩算法（turn_aligned/sliding_window/llm_summary/selective）
-│       │   ├── raw_history.py  # Raw history（JSONL 即时落盘）
-│       │   └── entry.py        # 历史条目类型与辅助函数
-│       ├── prompts/         # Prompt 管理
-│       │   ├── __init__.py
-│       │   ├── manager.py   # PromptManager
-│       │   ├── system/      # 系统提示词
-│       │   ├── fragments/   # 文本片段
-│       │   └── user/        # 用户消息
-│       ├── hooks/           # hooks 机制
-│       │   ├── __init__.py
-│       │   ├── loader.py    # HookManager
-│       │   └── runner.py    # HookResult
-│       ├── mcp/             # MCP 支持
-│       │   ├── __init__.py
-│       │   ├── config.py    # 配置
-│       │   ├── transport.py # 传输层
-│       │   └── manager.py   # MCPManager
-│       ├── env_info/        # 环境信息采集
-│       │   ├── __init__.py
-│       │   ├── base.py       # EnvInfoProvider 抽象基类
-│       │   ├── registry.py   # 注册/采集/格式化
-│       │   └── providers/    # 内置 Provider
-│       │       ├── system.py
-│       │       ├── runtime.py
-│       │       └── locale.py
-│       └── storage/         # 存储层
-│           ├── __init__.py
-│           └── paths.py     # 路径管理（含 plan_snapshot/manifest 路径方法）
-├── apps/                    # Web 应用
-│   └── mini_agent_webdemo/ # Streamlit Web Demo
-│       └── app.py
-├── prompts/                 # 提示词模板（外部）
-├── skills/                  # 技能定义（外部）
-├── tests/                   # 单元测试
-├── docs/                    # 文档
-├── sessions/                # 会话历史（生成）
-├── mcp_servers/             # MCP 服务器示例
-├── scripts/                 # 独立治理脚本（不属于 mini_agent 包）
-│   └── protected_paths.py  # 受保护路径清单（T3 治理红线）
-├── .agent/                  # 自定义子 agent profiles
-│   └── agents/              # profile 文件 (*.md，含 evolution-agent.md，Stage 3.1)
-└── hooks/                   # hooks 示例脚本
+│       ├── history_manager.py  # 历史管理（压缩/快照，委托 history/ 包）
+│       ├── session.py          # 会话生命周期管理
+│       ├── permissions.py      # 权限守卫（approve/deny/规则持久化）
+│       ├── platform_filter.py  # 平台标签过滤（skill/prompt 按平台加载）
+│       ├── profile.py          # 用户画像模型
+│       ├── errors.py           # 统一异常类型
+│       ├── time_utils.py       # 时间工具
+│       │
+│       ├── config/             # 配置管理：models / loader / prompt_builder
+│       ├── cli/                # CLI 基础设施：app / parser / repl / daemon
+│       │   └── commands/       # REPL 子命令（20+ 个，如 goals/cron/evolve/eval_cmd 等）
+│       ├── llm/                # LLM 抽象层：base / factory / retry / client_pool
+│       │   └── providers/      # anthropic / openai / ollama / openrouter / nvidia / agnes
+│       ├── tools/               # 工具系统：builtin / orchestration / plan / evolution 等
+│       ├── skills/              # 技能加载：tracker / usage_detector
+│       ├── hooks/               # hooks 机制：loader / runner
+│       ├── mcp/                 # MCP 支持：config / transport / manager
+│       ├── web_search/          # Web 搜索抽象层
+│       │   └── providers/       # brave / duckduckgo / serper / tavily
+│       ├── history/             # 历史管理：compression / raw_history / entry
+│       ├── prompts/             # Prompt 管理：manager + system/fragments/user 模板
+│       ├── reminders/           # 情境提醒：generator / loader / manager / matcher
+│       ├── env_info/            # 环境信息采集：base / registry / providers
+│       ├── storage/             # 存储层：paths（含各子系统落盘路径）/ artifacts
+│       ├── ui/                  # 终端界面：terminal / renderer / repl_input / raw_key_listener
+│       ├── api/                 # HTTP API 服务：server / routes / bridge / auth /
+│       │                        #   multi_auth / session_pool / user_store / fs_helper
+│       │
+│       ├── orchestrator/        # 并发编排（多子 Agent 并行执行任务）
+│       │   ├── task.py / task_manager.py / sub_agent.py / concurrency.py
+│       │   ├── plan.py / plan_display.py / task_display.py / status_bar.py
+│       │   └── agent_profiles.py / persona_profiles.py
+│       ├── role_agents/         # 角色化辅助 Agent（新增）
+│       │   ├── dispatcher.py    # 角色 Agent 统一调度入口
+│       │   ├── turn_judge.py    # 轮次质量判定
+│       │   ├── goal_judge.py    # 目标达成判定
+│       │   ├── evaluator.py / coach.py / feedback.py
+│       │   └── model_resolution.py  # 角色到模型的解析
+│       ├── ensemble/             # Best-of-N 集成推理（新增）
+│       │   ├── runner.py / strategies.py / decision.py / judge.py / types.py
+│       ├── goal_mode/            # 目标模式（新增，长程任务自动执行）
+│       │   ├── spec.py / runner.py / executor.py / state.py / _compat.py
+│       ├── workflow/             # 可视化/可复用工作流引擎（新增）
+│       │   ├── schema.py / generator.py / runner.py / store.py / tools.py
+│       ├── evolution/            # 自我演化安全网与生产闭环
+│       │   ├── state_repo.py / validators.py / workspace.py / eval_runner.py
+│       │   ├── consolidation.py / autonomous_loop.py / resource_arbiter.py
+│       │   ├── cron_scheduler.py / objective_executor.py / soft_goal_deriver.py
+│       │   ├── memory_aging.py / memory_consolidation.py / outcome_tracker.py
+│       │   └── lesson_to_reminder.py / self_maintenance.py
+│       ├── perception/           # 感知与记忆（体量最大的子系统，30+ 模块）
+│       │   ├── project_scanner.py / file_watcher.py / tool_cache.py
+│       │   ├── memory_store.py / memory_base.py / memory_factory.py / hybrid_memory_backend.py
+│       │   ├── lesson_rules.py / lesson_review.py / correction_detector.py / format_correction_detector.py
+│       │   ├── token_counter.py / goal_backlog.py / exploration_sandbox.py
+│       │   ├── system_events.py / proprioception.py / affordance_analyzer.py / affordance_calibration.py
+│       │   ├── self_model.py / classification.py / entity_index.py / catalog.py / library_index.py
+│       │   ├── global_knowledge.py / workdir_knowledge.py / intent_action_mapper.py
+│       │   ├── artifact_detector.py / hot_reload.py / observability.py / privacy_guard.py
+│       │   └── behavior/         # 行为感知子包（新增：跨端行为采集）
+│       │       ├── manager.py / analyzer.py / events.py / config.py / mobile_setup.py
+│       │       └── collectors/   # active_window / app_lifecycle / idle / now_playing / cdp_browser 等
+│       ├── proxy/                # 代理池（新增：科学上网/网络出口管理）
+│       │   ├── pool.py / service.py / local_proxy.py / external_engine.py
+│       │   ├── integration.py / subscription.py / validator.py / xray_runner.py
+│       │   └── protocols/        # shadowsocks / trojan / vless
+│       └── network/              # 网络连通性检测（新增）
+│           └── connectivity.py
+│
+├── apps/                       # 独立应用（与 mini_agent 包解耦）
+│   ├── mini_agent_webdemo/     # Streamlit Web Demo
+│   ├── mini_agent_kanban/      # Kanban 任务看板（Flask app + 多用户 auth）
+│   └── weixin_plugin/          # 微信个人号插件（登录/编解码/消息处理）
+├── android_companion_app/      # Android 伴生 App（行为采集/地理围栏，Kotlin）
+├── browser_extension_example/  # 浏览器扩展示例（配合 behavior 感知）
+├── mcp_servers/                 # MCP 服务器参考实现（如 time_server.py）
+├── scripts/                     # 独立治理脚本（不属于 mini_agent 包）
+│   ├── protected_paths.py       # 受保护路径清单（T3 治理红线）
+│   └── proxy_ctl.py             # 代理池命令行控制
+├── .agent/                      # 自定义子 Agent / Persona / Hook 定义
+│   ├── agents/                  # 子 Agent profile（*.md）
+│   ├── personas/                # 人格 persona 定义（*.md）
+│   ├── hooks/                   # hook 脚本
+│   └── workflows/                # workflow YAML 定义
+├── .claude/skills/               # Claude Code Skill 集合（浏览器自动化/图片/技能生成器等）
+├── docs/                         # 功能设计文档（80+ 篇）
+├── next_doc/                     # 在研 / 规划中特性的设计文档
+├── release_logs/                 # 版本发布记录
+├── test_cases/                   # 手工/回归测试用例脚本
+├── tests/                        # pytest 单元测试
+└── sessions/                     # 会话历史（运行时生成）
 ```
 
 ## 架构设计
 
+mini_agent 的核心仍是"单 Agent 对话循环"，但在其外围逐渐长出了多个可独立运作的子系统：角色化辅助 Agent、并发编排、目标模式、工作流引擎、自我演化闭环，以及贯穿始终的感知/记忆层。整体可以分为四层：
+
 ```
-┌─────────────────────────────────────────────────────────┐
-│                    CLI / REPL                          │
-└──────────────────────────┬──────────────────────────────┘
-                           │
-┌──────────────────────────▼──────────────────────────────┐
-│                  Agent (agent.py)                       │
-│     对话循环 · 工具派发 · 流式输出                      │
-├─────────────────────────────────────────────────────────┤
-│  ┌───────────────┐  ┌───────────────┐  ┌─────────────┐│
-│  │ContextBuilder │  │ ToolExecutor  │  │HistoryMgr   ││
-│  │ (System Prompt)│  │ (权限 + 调用)  │  │(历史/压缩)  ││
-│  └───────────────┘  └───────────────┘  └─────────────┘┘
-└───────┬─────────────────┬──────────────────┬──────────┘
-        │                 │                  │
-┌───────▼────────┐ ┌──────▼────────┐ ┌──────▼──────────┐
-│   LLM Client   │ │  Tool Registry│ │  Perception     │
-│  (多 Provider)   │ │  (内置/技能)  │ │  (缓存/记忆)    │
-└────────────────┘ └───────────────┘ └─────────────────┘
+┌──────────────────────────────────────────────────────────────────────┐
+│  入口层：CLI / REPL │ Daemon(常驻进程 + 多客户端) │ HTTP API │ Web/微信/Kanban│
+└───────────────────────────────┬────────────────────────────────────┘
+                                 │
+┌────────────────────────────────▼───────────────────────────────────┐
+│                       Agent 核心（agent.py）                        │
+│            对话循环 · 工具派发 · 流式输出 · 权限确认                 │
+│  ┌──────────────┐ ┌─────────────┐ ┌────────────┐ ┌───────────────┐ │
+│  │ContextBuilder│ │ToolExecutor │ │HistoryMgr  │ │  Session      │ │
+│  │(System Prompt│ │(权限+调用+  │ │(压缩/快照/ │ │ (会话生命周期) │ │
+│  │ 组装)        │ │ 截断+缓存)  │ │ Raw History)│ │               │ │
+│  └──────────────┘ └─────────────┘ └────────────┘ └───────────────┘ │
+└──┬───────────┬────────────┬──────────────┬───────────────┬────────┘
+   │           │            │              │               │
+┌──▼─────┐ ┌──▼────────┐ ┌─▼──────────┐ ┌──▼───────────┐ ┌─▼──────────┐
+│LLM 层  │ │Tool 层    │ │Perception  │ │协同 Agent 层  │ │治理/演化层  │
+│多      │ │内置工具/  │ │感知与记忆  │ │Orchestrator   │ │Evolution    │
+│Provider│ │Skill/MCP/ │ │（30+ 模块，│ │(子Agent并发)  │ │(state_repo/ │
+│+故障   │ │WebSearch/ │ │含 behavior │ │Role Agents    │ │ validators/ │
+│转移+   │ │Workflow   │ │ 跨端行为   │ │(judge/coach/  │ │ workspace   │
+│多Key   │ │工具       │ │ 采集子包)  │ │ dispatcher)   │ │ 隔离)       │
+│轮转    │ │           │ │            │ │Ensemble       │ │AutonomousLoop│
+│        │ │           │ │            │ │(Best-of-N)    │ │CronScheduler │
+│        │ │           │ │            │ │Goal Mode      │ │              │
+└────────┘ └───────────┘ └────────────┘ └───────────────┘ └─────────────┘
+
+支撑设施（横向贯穿各层）：
+  config（配置） · prompts（提示词模板） · reminders（情境提醒） · hooks（生命周期钩子）
+  storage（落盘路径） · env_info（环境信息） · proxy / network（出口网络管理） · ui（终端渲染）
 ```
+
+关键点说明：
+
+- **入口层**：`cli/app.py` 是统一启动入口，可直连 REPL、或以 `--daemon-mode` 常驻并通过 `DaemonClient` 支持多端接入同一会话；`api/server.py` 暴露 HTTP/SSE 接口供 Web Demo、Kanban 看板、微信插件等外部应用接入。
+- **Agent 核心**：`agent.py` 仍是对话主循环，`ContextBuilder`/`ToolExecutor`/`HistoryManager`/`Session` 四者协作完成"组装 Prompt → 调用 LLM → 执行工具 → 压缩历史"的单轮闭环。
+- **协同 Agent 层（新增）**：`orchestrator/` 负责派生并发子 Agent 执行拆解后的任务；`role_agents/` 提供一组轻量角色（turn_judge、goal_judge、evaluator、coach）辅助主 Agent 做质量判定与反馈；`ensemble/` 支持同一请求多路生成后择优；`goal_mode/` 支撑长程目标的自动拆解与持续执行；`workflow/` 则是可复用、可视化的多步骤流程引擎。
+- **感知与记忆（Perception）**：是当前体量最大的子系统，除项目扫描、跨 session 记忆、Lesson 规则等基础能力外，新增了 `behavior/` 子包用于跨端（浏览器/Android 伴生 App）行为采集，以及本体感知（`proprioception.py`）、余裕感知（`affordance_analyzer.py`）等自省能力，最终由 `library_index.py`/`self_model.py` 聚合成统一视图。
+- **治理与自我演化（Evolution）**：以 `state_repo.py` 作为唯一写入入口、按 T0~T3 风险分级把关，`workspace.py` 用 git worktree 做进程级隔离；`autonomous_loop.py` + `cron_scheduler.py` + `objective_executor.py` 构成自主运行时，能在无人值守时按节奏执行巩固、自评、目标推进等任务。
+- **支撑设施**：`proxy/` 和 `network/` 是新增的网络出口管理能力（代理池、连通性检测），`web_search/` 是独立于工具系统之外的搜索 Provider 抽象层，二者都通过 `tools/` 中的工具函数暴露给 Agent 使用。
 
 ## 扩展开发
 
