@@ -6,17 +6,17 @@ arXiv 多关键词论文搜索脚本
 自动合并去重，批量获取论文详情。
 
 用法:
-    python multi_search.py "self-evolving agent" "autonomous agent evolution" "agent self-improvement"
-    python multi_search.py --keywords keywords.txt --max-results 50
-    python multi_search.py "LLM agent" --max-detail 20 --output-dir ./papers
+    python arxiv_multi_search.py "self-evolving agent" "autonomous agent evolution" "agent self-improvement"
+    python arxiv_multi_search.py --keywords keywords.txt --max-results 50
+    python arxiv_multi_search.py "LLM agent" --max-detail 20 --output-dir ./papers
 
 示例:
     # 自主进化 Agent 相关论文搜索
-    python multi_search.py "self-evolving agent" "autonomous agent evolution" \
+    python arxiv_multi_search.py "self-evolving agent" "autonomous agent evolution" \
         "agent self-improvement" "LLM agent adaptation" "evolutionary agent"
     
     # 从文件读取关键词列表
-    python multi_search.py --keywords search_keywords.txt --max-results 100
+    python arxiv_multi_search.py --keywords search_keywords.txt --max-results 100
 """
 
 import argparse
