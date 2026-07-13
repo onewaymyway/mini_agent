@@ -31,19 +31,37 @@ python wechat_search.py "大模型" --port 9333 --output-dir ./wechat_results --
 
 # 调整页面等待超时
 python wechat_search.py "RAG" --wait-timeout 60
+
+# ========== 新增功能 ==========
+
+# 1. 翻页抓取：抓取前 3 页结果（每页约 10 条）
+python wechat_search.py "RAG" --max-pages 3 --max-results 30
+
+# 2. 公众号主页抓取：搜索公众号并抓取其历史文章
+python wechat_search.py "机器之心" --type account --max-accounts 3 --max-articles-per-account 20
+
+# 3. 多关键词批量搜索：逗号分隔关键词，自动合并去重
+python wechat_search.py "自主进化Agent,AI Agent,Agent记忆" --multi-keywords --max-total 30 --max-per-keyword 10
 ```
 
 ## 参数说明
 
 | 参数 | 类型 | 默认值 | 说明 |
 |------|------|--------|------|
-| `query` | str | 必填 | 搜索关键词 |
+| `query` | str | 必填 | 搜索关键词（多关键词用逗号分隔，或公众号名称） |
 | `--max-results` | int | 10 | 最大抓取文章数 |
 | `--no-detail` | flag | False | 仅获取搜索结果，不抓取文章详情 |
 | `--port` | int | 9333 | CDP 调试端口 |
 | `--output-dir` | str | ./search_results | 输出目录 |
 | `--headless` | flag | False | 无头模式运行 |
 | `--wait-timeout` | int | 30 | 页面等待超时秒数 |
+| `--type` | choice | article | 搜索类型: article=文章搜索, account=公众号搜索+历史文章 |
+| `--max-pages` | int | 1 | 翻页搜索最大页数 (仅 article 类型有效) |
+| `--multi-keywords` | flag | False | 启用多关键词批量搜索（query 用逗号分隔） |
+| `--max-total` | int | 30 | 多关键词模式下最大总文章数 |
+| `--max-per-keyword` | int | 10 | 多关键词模式下每个关键词最大结果数 |
+| `--max-accounts` | int | 3 | 公众号模式下最大公众号数 |
+| `--max-articles-per-account` | int | 20 | 公众号模式下每个公众号最大文章数 |
 
 ## 输出格式
 
@@ -188,6 +206,52 @@ done
 0 8 * * * cd /path/to/skill && python wechat_search.py "自主进化Agent" --max-results 10 --output-dir /data/wechat_daily
 ```
 
+## 新增功能详解
+
+### 1. 翻页抓取 (`--max-pages`)
+
+搜狗微信搜索支持通过 `page` 参数翻页（1-10 页）。脚本实现：
+- 循环请求 `page=1,2,3...` 直到达到 `max_pages` 或结果数达到 `max_results`
+- 每页间随机延迟 2-4 秒，避免触发反爬
+- 实时去重（按文章 URL），避免跨页重复
+- 可选抓取详情，抓取后自动返回对应页继续
+
+```bash
+# 抓取前 3 页，最多 30 篇
+python wechat_search.py "RAG" --max-pages 3 --max-results 30
+```
+
+### 2. 公众号主页抓取 (`--type account`)
+
+流程：搜索公众号(type=1) → 进入主页 → 下拉加载历史文章 → 可选抓取详情
+
+```bash
+# 搜索"机器之心"公众号，抓取前 3 个公众号，每个最多 20 篇历史文章
+python wechat_search.py "机器之心" --type account --max-accounts 3 --max-articles-per-account 20
+```
+
+**关键实现点**：
+- 公众号主页 URL 格式：`https://mp.weixin.qq.com/mp/profile_ext?action=home&__biz=xxx`
+- 历史文章通过下拉触发加载（`window.scrollTo(0, document.body.scrollHeight)`）
+- 文章卡片选择器：`.weui_msg_card, .weui_media_box, [href*="/s?"]`
+- 检测"查看更多"按钮判断是否加载完毕
+- 公众号间随机延迟 3-6 秒
+
+### 3. 多关键词批量搜索 (`--multi-keywords`)
+
+参考 `arxiv_multi_search.py` 实现：
+- 逗号分隔关键词：`"关键词1,关键词2,关键词3"`
+- 遍历每个关键词搜索第一页（或指定页数）
+- 实时去重（按文章 URL），统计每个关键词新增数
+- 达到 `max_total` 提前停止
+- 关键词间随机延迟 3-6 秒
+- 可选统一抓取详情
+
+```bash
+# 3 个关键词，每词最多 10 条，总计最多 30 条
+python wechat_search.py "自主进化Agent,AI Agent,Agent记忆" --multi-keywords --max-total 30 --max-per-keyword 10
+```
+
 ## 与其他搜索脚本对比
 
 | 特性 | baidu_search.py | zhihu_search.py | wechat_search.py |
@@ -198,6 +262,9 @@ done
 | 详情页等待 | 通用选择器 | 知乎特定选择器 | 微信特定选择器 |
 | 反爬强度 | 中 | 中高 | 高 |
 | 登录态价值 | 低 | 中（知乎登录可见更多） | 高（微信登录可绕过验证） |
+| **翻页抓取** | ✅ | ✅ | ✅ (新增) |
+| **公众号/主页抓取** | ❌ | ❌ | ✅ (新增) |
+| **多关键词批量** | ❌ | ❌ | ✅ (新增) |
 
 ## 文件结构
 
@@ -213,6 +280,7 @@ done
 
 ## 更新日志
 
+- **v1.1 (2026-07-13)**：新增三大功能——翻页抓取(`--max-pages`)、公众号主页历史文章抓取(`--type account`)、多关键词批量搜索去重(`--multi-keywords`)，参考 arxiv_multi_search.py 实现
 - **v1.0 (2026-07-13)**：初始版本，支持搜狗微信搜索、重定向解析、文章详情抓取、双格式输出
 
 ## 相关资源
