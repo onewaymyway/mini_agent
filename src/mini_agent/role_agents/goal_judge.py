@@ -34,8 +34,14 @@ def build_goal_judge_prompt(
     agent_output: str,
     round_no: int,
     prior_feedback: str = "",
+    prior_checklist_lines: str = "",
 ) -> str:
-    """构建 GoalJudge 的核查 prompt（模板见 prompts/user/goal_judge_request.md）。"""
+    """构建 GoalJudge 的核查 prompt（模板见 prompts/user/goal_judge_request.md）。
+
+    prior_checklist_lines：[改造项三] 上一轮各条验收标准通过情况的文本行
+    （由调用方基于 GoalState.criteria_status 拼装），空字符串时不生成
+    prior_checklist_block（等价于该功能关闭或尚无历史记录）。
+    """
     criteria_lines = "\n".join(
         f"{i+1}. {c}" for i, c in enumerate(goal_spec.acceptance_criteria)
     )
@@ -45,6 +51,12 @@ def build_goal_judge_prompt(
             "goal_mode", "PRIOR_FEEDBACK_BLOCK", feedback=prior_feedback
         )
 
+    prior_checklist_block = ""
+    if prior_checklist_lines:
+        prior_checklist_block = "\n" + pm.fragment(
+            "goal_mode", "PRIOR_CHECKLIST_BLOCK", checklist_lines=prior_checklist_lines
+        )
+
     return pm.render(
         "user/goal_judge_request",
         round_no=round_no,
@@ -52,6 +64,7 @@ def build_goal_judge_prompt(
         criteria_lines=criteria_lines,
         agent_output=agent_output,
         prior_feedback_block=prior_feedback_block,
+        prior_checklist_block=prior_checklist_block,
     )
 
 
@@ -62,6 +75,8 @@ def run_goal_judge(
     agent_output: str,
     round_no: int = 1,
     prior_feedback: str = "",
+    extended_output_enabled: bool = False,
+    prior_checklist_lines: str = "",
 ) -> str:
     """
     运行 GoalJudgeAgent，返回判定文本（含 GOAL_STATUS 行）。
@@ -75,6 +90,14 @@ def run_goal_judge(
                      再额外打开 base_cfg.goal_mode.judge_yes_mode，此时会以
                      auto_approve=True + 不走 sandbox 的方式真实执行（等价于人工
                      一直按 --yes 放行），不会逐条弹确认。
+
+    extended_output_enabled：[goal_mode_completion_improvement_plan 改造项一/三]
+        True 时在 system prompt 里额外拼接 progress/progress_reason/checklist
+        的输出要求（GOAL_JUDGE_EXTENDED_OUTPUT_INSTRUCTIONS），对应
+        cfg.goal_mode.progress_judge_mode == "llm"。False 时行为与升级前完全
+        一致，不会要求也不会解析这些额外字段。
+    prior_checklist_lines：透传给 build_goal_judge_prompt，供 GoalJudge 参考
+        上一轮各条验收标准的通过情况（见改造项三）。
     """
     # [Phase 3 重构] 样板逻辑收敛到 judge_factory.spawn_judge_agent /
     # run_judge_turn。函数签名和返回值保持完全不变。
@@ -100,6 +123,10 @@ def run_goal_judge(
                 example_status="CONTINUE",
                 example_feedback="标准1（xxx）未通过，因为...；请先做 A，再做 B。",
             ),
+            extended_output_instructions=(
+                pm.fragment("goal_mode", "GOAL_JUDGE_EXTENDED_OUTPUT_INSTRUCTIONS")
+                if extended_output_enabled else ""
+            ),
         ),
         max_turns=6 if tools_enabled else 2,   # 挂工具时允许多跑几轮验证命令
         tools_enabled=tools_enabled,
@@ -112,6 +139,7 @@ def run_goal_judge(
         agent_output=agent_output,
         round_no=round_no,
         prior_feedback=prior_feedback,
+        prior_checklist_lines=prior_checklist_lines,
     )
 
     result = run_judge_turn(

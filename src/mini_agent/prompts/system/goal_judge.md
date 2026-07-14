@@ -19,3 +19,5 @@
    再给出整体结论；CONTINUE 时在 `feedback` 末尾给出具体下一步指令。
 
 {{json_output_instructions}}
+
+{{extended_output_instructions}}

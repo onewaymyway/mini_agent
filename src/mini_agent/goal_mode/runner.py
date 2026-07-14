@@ -118,6 +118,17 @@ class GoalRunner:
             max_recoveries=self._gm_cfg.max_stuck_recoveries,
         )
 
+        # [改造项三] 验收标准逐条状态追踪的初始快照：全部未通过、尚无依据。
+        self._criteria_status: list[dict] = [
+            {"index": i + 1, "text": c, "passed": False, "evidence": "", "last_updated_round": 0}
+            for i, c in enumerate(goal_spec.acceptance_criteria)
+        ]
+        # [改造项二] 最近几轮 progress/progress_reason 记录，供卡住恢复时拼装
+        # "已尝试路径清单"。上限固定取 consecutive_same_feedback_limit（正好
+        # 覆盖一次"卡住判定周期"涉及的轮次），避免无界增长。
+        self._recent_progress_reasons: list[dict] = []
+        self._progress_reasons_cap = max(3, self._gm_cfg.consecutive_same_feedback_limit)
+
         # 恢复态：从上一次中断处继续
         if resume_state is not None:
             self._round = resume_state.round
@@ -127,6 +138,10 @@ class GoalRunner:
                 consecutive_same=resume_state.consecutive_same_feedback,
                 recoveries_used=resume_state.stuck_recoveries_used,
             )
+            if resume_state.criteria_status:
+                self._criteria_status = list(resume_state.criteria_status)
+            if resume_state.recent_progress_reasons:
+                self._recent_progress_reasons = list(resume_state.recent_progress_reasons)
         else:
             self._round = 0
             self._last_feedback = ""
@@ -172,7 +187,7 @@ class GoalRunner:
                 self._do_compact()
                 continue  # 不计入 self._round，重新跑这一步
 
-            judge_status, judge_feedback = self._run_judge(step.output)
+            judge_status, judge_feedback, progress_info = self._run_judge(step.output)
 
             if judge_status == "DONE":
                 return self._finish(status="done", report=judge_feedback)
@@ -192,7 +207,7 @@ class GoalRunner:
             self._round += 1
             self._save_state(status="running")
 
-            if self._check_stuck(judge_feedback):
+            if self._check_stuck(judge_feedback, progress_info):
                 if self._try_stuck_recovery():
                     continue  # 已压缩历史+重置卡住计数，本轮判定不终止，继续跑
                 return self._finish(
@@ -228,9 +243,24 @@ class GoalRunner:
 
     # ── 内部：GoalJudge 调用 ─────────────────────────────────────────────
 
-    def _run_judge(self, agent_output: str) -> tuple[str, str]:
+    def _run_judge(self, agent_output: str) -> tuple[str, str, dict]:
         from mini_agent.role_agents.goal_judge import run_goal_judge, build_goal_judge_prompt
         from mini_agent.role_agents.feedback import extract_goal_status
+
+        # [改造项一/三] 是否要求 GoalJudge 额外输出 progress/progress_reason/
+        # checklist；两者共用同一次扩展 JSON 输出，分别受各自开关控制。
+        progress_mode = getattr(self._gm_cfg, "progress_judge_mode", "llm")
+        criteria_tracking_enabled = getattr(self._gm_cfg, "criteria_tracking_enabled", True)
+        extended_output_enabled = (progress_mode == "llm") or criteria_tracking_enabled
+
+        prior_checklist_lines = ""
+        if criteria_tracking_enabled and any(c.get("last_updated_round", 0) > 0 for c in self._criteria_status):
+            prior_checklist_lines = "\n".join(
+                f"{c['index']}. {c['text']} —— "
+                f"{'已通过' if c.get('passed') else '尚未通过'}"
+                f"（第 {c.get('last_updated_round', 0)} 轮评审依据：{c.get('evidence') or '无'}）"
+                for c in self._criteria_status
+            )
 
         # [判官接线统一 阶段六] profile 不再由 runner.py 现场拼一个临时
         # AgentProfile 对象，而是优先从 dispatcher 的 goal_review 注册表
@@ -267,6 +297,7 @@ class GoalRunner:
                 agent_output=agent_output,
                 round_no=self._round + 1,
                 prior_feedback=self._last_feedback,
+                prior_checklist_lines=prior_checklist_lines,
             )
             R.console.print()
             R.console.print("[bold]— GoalJudge 输入 Prompt —[/bold]")
@@ -280,6 +311,8 @@ class GoalRunner:
             agent_output=agent_output,
             round_no=self._round + 1,
             prior_feedback=self._last_feedback,
+            extended_output_enabled=extended_output_enabled,
+            prior_checklist_lines=prior_checklist_lines,
         )
 
         status = extract_goal_status(raw) or "CONTINUE"  # 提取失败时保守按 CONTINUE 处理
@@ -293,6 +326,50 @@ class GoalRunner:
             raw, valid_statuses=["DONE", "CONTINUE", "NEED_COMPACT"], fallback_status=status,
         )
         display_text = _verdict.feedback if (_verdict.parse_ok and _verdict.feedback) else raw
+
+        # [改造项一/三] 解析扩展字段。verdict.extra 是 parse_judge_verdict 已经
+        # 透传出来的 status/feedback 之外的原始字段，解析失败（_verdict.parse_ok
+        # =False）或模型没有按扩展 schema 输出时，progress/checklist 都拿不到，
+        # progress_info 里 "progress" 为 None——调用方（_check_stuck）据此自动
+        # 回退到旧的文本相似度规则，不会因为字段缺失而报错或误判。
+        progress_info: dict = {"progress": None, "progress_reason": ""}
+        if _verdict.parse_ok:
+            raw_progress = _verdict.extra.get("progress")
+            if isinstance(raw_progress, str) and raw_progress.strip().upper() in (
+                "SUBSTANTIVE_ADVANCE", "SAME_APPROACH_NO_GAIN", "REGRESSED",
+            ):
+                progress_info["progress"] = raw_progress.strip().upper()
+            raw_reason = _verdict.extra.get("progress_reason")
+            if isinstance(raw_reason, str):
+                progress_info["progress_reason"] = raw_reason
+
+            if criteria_tracking_enabled:
+                raw_checklist = _verdict.extra.get("checklist")
+                if isinstance(raw_checklist, list):
+                    by_index = {c.get("index"): c for c in self._criteria_status}
+                    for item in raw_checklist:
+                        if not isinstance(item, dict):
+                            continue
+                        idx = item.get("index")
+                        target = by_index.get(idx)
+                        if target is None:
+                            continue
+                        passed_val = item.get("passed")
+                        if isinstance(passed_val, bool):
+                            target["passed"] = passed_val
+                        evidence_val = item.get("evidence")
+                        if isinstance(evidence_val, str) and evidence_val:
+                            target["evidence"] = evidence_val
+                        target["last_updated_round"] = self._round + 1
+
+        if progress_info["progress"] is not None:
+            self._recent_progress_reasons.append({
+                "round": self._round + 1,
+                "progress": progress_info["progress"],
+                "reason": progress_info["progress_reason"],
+            })
+            if len(self._recent_progress_reasons) > self._progress_reasons_cap:
+                self._recent_progress_reasons = self._recent_progress_reasons[-self._progress_reasons_cap:]
 
         # 注入判定反馈到主 Agent 历史（带 _type=role_agent，与现有 role agent 反馈一致）
         from mini_agent.role_agents.feedback import RoleFeedback, build_inject_message
@@ -319,17 +396,34 @@ class GoalRunner:
         R.console.print(format_feedback(feedback_obj))
         R.console.print()
 
-        return status, display_text
+        return status, display_text, progress_info
 
-    # ── 内部：卡住检测（连续反馈高度雷同）──────────────────────────────────
+    # ── 内部：卡住检测（连续反馈高度雷同 / LLM 判进展）──────────────────────
 
-    def _check_stuck(self, feedback: str) -> bool:
+    def _check_stuck(self, feedback: str, progress_info: Optional[dict] = None) -> bool:
         """观察本轮反馈，返回是否已判定为"卡住"（供 run() 决定是否尝试恢复）。
 
-        内部状态（相似度比较基准、连续雷同计数、恢复额度）全部委托给
-        `StuckDetector`，与 TurnJudge 共享同一套实现（见
-        role_agents/stuck_detector.py）。"""
-        self._last_stuck_signal = self._stuck_detector.observe(feedback)
+        [改造项一] 当 `cfg.goal_mode.progress_judge_mode == "llm"` 且本轮
+        GoalJudge 成功输出了 `progress` 字段时，改用 GoalJudge 的语义判断
+        （是否有实质进展）驱动卡住计数，而不是对反馈文本做规则化的相似度
+        比较——这样能识别"表述不同但本质相同"（原规则的假阴性）和"表述相似
+        但确有进展"（原规则的假阳性）这两类规则算法处理不好的情况。
+
+        `progress` 字段缺失（解析失败 / 模型未按扩展 schema 输出 / 功能关闭）
+        时自动回退到原有的 `StuckDetector.observe(text)` 文本相似度规则，
+        不会因为升级而降低鲁棒性。
+
+        内部计数状态（连续雷同计数、恢复额度）全部委托给 `StuckDetector`，
+        与 TurnJudge 共享同一套实现（见 role_agents/stuck_detector.py）。
+        """
+        progress_mode = getattr(self._gm_cfg, "progress_judge_mode", "llm")
+        progress = (progress_info or {}).get("progress")
+
+        if progress_mode == "llm" and progress is not None:
+            is_same = progress in ("SAME_APPROACH_NO_GAIN", "REGRESSED")
+            self._last_stuck_signal = self._stuck_detector.observe_signal(is_same=is_same)
+        else:
+            self._last_stuck_signal = self._stuck_detector.observe(feedback)
         return self._last_stuck_signal is not StuckSignal.NONE
 
     def _try_stuck_recovery(self) -> bool:
@@ -378,6 +472,26 @@ class GoalRunner:
             "换一种工具或方法，或者先做一些诊断性的检查（比如确认前提假设是否"
             "成立）来找到卡住的真正原因，再继续推进目标。"
         )
+
+        # [改造项二] 如果积累了带具体理由的 progress_reason 历史，把"已验证
+        # 无效的方向"拼进提示，取代/补充上面这段通用话术——让"换角度"有具体
+        # 依据，而不是一句空话导致 agent 换个说法继续同一个思路。
+        attempted_paths_enabled = getattr(self._gm_cfg, "stuck_recovery_attempted_paths_enabled", True)
+        no_gain_reasons = [
+            r for r in self._recent_progress_reasons
+            if r.get("progress") in ("SAME_APPROACH_NO_GAIN", "REGRESSED") and r.get("reason")
+        ]
+        if attempted_paths_enabled and no_gain_reasons:
+            attempted_paths_lines = "\n".join(
+                f"{i + 1}.（第 {r['round']} 轮）{r['reason']}"
+                for i, r in enumerate(no_gain_reasons)
+            )
+            from mini_agent.prompts import pm
+            hint = hint + "\n\n" + pm.fragment(
+                "goal_mode", "STUCK_RECOVERY_ATTEMPTED_PATHS_BLOCK",
+                attempted_paths_lines=attempted_paths_lines,
+            )
+
         self._agent._hist.append_raw_dict(make_goal_context(hint))
 
         self._save_state(status="running")
@@ -427,6 +541,8 @@ class GoalRunner:
             consecutive_same_feedback=self._stuck_detector.consecutive_same,
             stuck_recoveries_used=self._stuck_detector.recoveries_used,
             final_report=final_report,
+            criteria_status=list(self._criteria_status),
+            recent_progress_reasons=list(self._recent_progress_reasons),
         )
         try:
             self._state_store.save(state)
@@ -441,6 +557,9 @@ class GoalRunner:
         }.get(status, "failed")
         self._save_state(status=persisted_status, final_report=report)
 
+        if status in ("stuck", "max_rounds_exhausted"):
+            self._write_failure_lesson(status=status, report=report)
+
         if status == "done":
             R.print_success(f"[GoalRunner] 目标已达成（共 {self._round} 轮）。")
         else:
@@ -453,6 +572,66 @@ class GoalRunner:
             final_report=report,
             goal_spec=self._spec,
         )
+
+    def _write_failure_lesson(self, status: str, report: str) -> None:
+        """[next_doc/goal_mode_completion_improvement_plan.md 改造项五]
+
+        goal 因 stuck / max_rounds_exhausted 终止时，把已尝试路径 + 失败原因
+        整理成一条 entry_type="lesson" 写入 memory（source="goal_mode_failure"），
+        供未来同类目标的 GoalSpecBuilder / 主 Agent 参考，避免重复踩同一个坑。
+
+        只在 cfg.goal_mode.failure_lesson_enabled=True、且主 Agent 确实持有
+        可用的 memory 后端时才会写入；写入失败（含 memory 未启用）不影响 goal
+        本身已经完成的终止流程，只是静默跳过。
+        """
+        if not getattr(self._gm_cfg, "failure_lesson_enabled", True):
+            return
+
+        memory_backend = getattr(self._agent, "_memory", None)
+        if memory_backend is None:
+            return
+
+        try:
+            from mini_agent.perception.memory_store import MemoryEntry
+
+            no_gain_reasons = [
+                r for r in self._recent_progress_reasons
+                if r.get("progress") in ("SAME_APPROACH_NO_GAIN", "REGRESSED") and r.get("reason")
+            ]
+            attempted_lines = "\n".join(
+                f"- （第 {r['round']} 轮）{r['reason']}" for r in no_gain_reasons
+            ) or "（未记录到具体的分轮次进展理由）"
+
+            unmet_criteria = [
+                c["text"] for c in self._criteria_status if not c.get("passed")
+            ]
+            unmet_lines = "\n".join(f"- {t}" for t in unmet_criteria) or "（无法确定具体未通过的标准）"
+
+            summary = f"Goal 模式执行终止（{status}）：{self._spec.goal_text}"
+            entry = MemoryEntry(
+                session_id=self._agent.session_id or "goal_mode",
+                summary=summary,
+                key_outcomes=[
+                    f"共尝试 {self._round} 轮、压缩 {self._compacts_done} 次后仍未达成目标",
+                ],
+                tags=["lesson", "goal_mode_failure", status],
+                model="goal_mode_runner",
+                entry_type="lesson",
+                source="goal_mode_failure",
+                trigger=f"目标：{self._spec.goal_text}",
+                outcome=(
+                    f"终止状态：{status}。以下方向已经验证无效：\n{attempted_lines}\n\n"
+                    f"仍未通过的验收标准：\n{unmet_lines}"
+                ),
+                suggested_action=(
+                    "下次面对类似目标时，建议先确认是否要规避以上已验证无效的方向，"
+                    "或者先做诊断性检查确认这次的前提条件是否与上次不同。"
+                ),
+                confidence=0.5,
+            )
+            memory_backend.add(entry)
+        except Exception as e:
+            R.print_warning(f"[GoalRunner] 失败经验写入 memory 失败（不影响 goal 终止流程）：{e}")
 
     def pause(self) -> None:
         """用户按 Ctrl-C 中断（供 CLI 中断处理调用）。

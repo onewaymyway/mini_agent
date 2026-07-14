@@ -623,6 +623,10 @@ class _FakeGoalModeCfg:
         self.judge_allowed_tools = []
         self.judge_allowed_tool_groups = []
         self.persist_state = kwargs.get("persist_state", False)
+        self.progress_judge_mode = kwargs.get("progress_judge_mode", "llm")
+        self.criteria_tracking_enabled = kwargs.get("criteria_tracking_enabled", True)
+        self.stuck_recovery_attempted_paths_enabled = kwargs.get("stuck_recovery_attempted_paths_enabled", True)
+        self.failure_lesson_enabled = kwargs.get("failure_lesson_enabled", True)
 
 
 class _FakeCfg:
@@ -916,3 +920,248 @@ def test_goal_runner_persists_state_across_rounds(monkeypatch, tmp_path):
     state = store.load()
     assert state.status == "done"
     assert state.round == 1
+
+
+# ── [next_doc/goal_mode_completion_improvement_plan.md] 改造项一～五 ────────
+
+import json
+
+
+def test_stuck_detector_observe_signal_recovers_then_gives_up():
+    from mini_agent.role_agents.stuck_detector import StuckDetector, StuckSignal
+
+    d = StuckDetector(similarity_threshold=0.9, consecutive_limit=3, max_recoveries=1)
+    # 连续两次 is_same=True 才会达到 (consecutive_limit - 1) = 2 次触发
+    assert d.observe_signal(is_same=True) is StuckSignal.NONE
+    assert d.observe_signal(is_same=True) is StuckSignal.RECOVER  # 用掉唯一一次恢复额度
+    assert d.observe_signal(is_same=True) is StuckSignal.NONE
+    assert d.observe_signal(is_same=True) is StuckSignal.GIVE_UP  # 恢复额度已耗尽
+
+
+def test_stuck_detector_observe_signal_resets_on_progress():
+    from mini_agent.role_agents.stuck_detector import StuckDetector, StuckSignal
+
+    d = StuckDetector(similarity_threshold=0.9, consecutive_limit=3, max_recoveries=2)
+    assert d.observe_signal(is_same=True) is StuckSignal.NONE
+    assert d.observe_signal(is_same=False) is StuckSignal.NONE  # 有进展，重置计数
+    assert d.consecutive_same == 0
+    assert d.recoveries_used == 0
+
+
+def test_goal_state_roundtrip_includes_criteria_and_progress_history(tmp_path):
+    paths = AgentPaths(project_root=tmp_path)
+    store = GoalStateStore(paths, "sess-checklist")
+    state = GoalState(
+        status="running",
+        session_id="sess-checklist",
+        round=2,
+        criteria_status=[{"index": 1, "text": "it works", "passed": True, "evidence": "ok", "last_updated_round": 2}],
+        recent_progress_reasons=[{"round": 2, "progress": "SUBSTANTIVE_ADVANCE", "reason": "测试通过"}],
+    )
+    store.save(state)
+    loaded = store.load()
+    assert loaded.criteria_status[0]["passed"] is True
+    assert loaded.recent_progress_reasons[0]["progress"] == "SUBSTANTIVE_ADVANCE"
+
+
+def _judge_json(status, feedback="", progress=None, progress_reason="", checklist=None):
+    d = {"status": status, "feedback": feedback}
+    if progress is not None:
+        d["progress"] = progress
+        d["progress_reason"] = progress_reason
+    if checklist is not None:
+        d["checklist"] = checklist
+    return json.dumps(d, ensure_ascii=False)
+
+
+def test_goal_runner_llm_progress_catches_stuck_despite_varying_feedback_text(monkeypatch, tmp_path):
+    """[改造项一] 每轮反馈文本都不同（若用纯文本相似度规则不会被判定为卡住），
+    但 GoalJudge 判断 progress=SAME_APPROACH_NO_GAIN——应该仍然被识别为卡住，
+    这正是规则算法的假阴性场景。"""
+    agent = FakeAgent(outputs=[f"attempt {i}" for i in range(15)])
+    cfg = _FakeCfg(tmp_path, max_rounds=20, consecutive_same_feedback_limit=3, max_stuck_recoveries=0)
+    spec = _confirmed_spec()
+
+    counter = {"i": 0}
+
+    def fake_judge(**kw):
+        counter["i"] += 1
+        # 每轮反馈文本都刻意造得完全不同，纯文本相似度规则不会命中
+        return _judge_json(
+            "CONTINUE",
+            feedback=f"完全不同的措辞 #{counter['i']} xyz123",
+            progress="SAME_APPROACH_NO_GAIN",
+            progress_reason=f"第 {counter['i']} 轮仍然卡在同一个错误上",
+        )
+
+    monkeypatch.setattr("mini_agent.role_agents.goal_judge.run_goal_judge", lambda **kw: fake_judge(**kw))
+
+    runner = GoalRunner(agent=agent, cfg=cfg, goal_spec=spec)
+    result = runner.run()
+
+    assert result.status == "stuck"
+    assert result.rounds_used < 20
+
+
+def test_goal_runner_llm_progress_avoids_false_positive_on_similar_feedback(monkeypatch, tmp_path):
+    """[改造项一] 反馈文本结构高度相似（若用纯文本相似度规则会被误判卡住），
+    但 GoalJudge 判断每轮都是 SUBSTANTIVE_ADVANCE——不应该被提前终止为 stuck，
+    应该正常跑到 max_rounds 耗尽（证明修复了假阳性场景）。"""
+    agent = FakeAgent(outputs=[f"attempt {i}" for i in range(5)])
+    cfg = _FakeCfg(tmp_path, max_rounds=5, consecutive_same_feedback_limit=3)
+    spec = _confirmed_spec()
+
+    def fake_judge(**kw):
+        # 反馈文本结构高度相似（纯文本相似度规则会误判卡住）
+        return _judge_json(
+            "CONTINUE",
+            feedback="测试 A 通过，测试 B 仍失败",
+            progress="SUBSTANTIVE_ADVANCE",
+            progress_reason="又修复了一个新的失败点",
+        )
+
+    monkeypatch.setattr("mini_agent.role_agents.goal_judge.run_goal_judge", lambda **kw: fake_judge(**kw))
+
+    runner = GoalRunner(agent=agent, cfg=cfg, goal_spec=spec)
+    result = runner.run()
+
+    assert result.status == "max_rounds_exhausted"
+    assert result.rounds_used == 5
+
+
+def test_goal_runner_falls_back_to_text_similarity_when_progress_missing(monkeypatch, tmp_path):
+    """[改造项一兜底] GoalJudge 输出不是合法 JSON（未按扩展 schema 输出）时，
+    progress 字段拿不到，应自动回退到原有的文本相似度规则，行为与升级前一致。"""
+    agent = FakeAgent(outputs=[f"attempt {i}" for i in range(15)])
+    cfg = _FakeCfg(tmp_path, max_rounds=20, consecutive_same_feedback_limit=3)
+    spec = _confirmed_spec()
+
+    same_feedback = "GOAL_STATUS: CONTINUE\n还是同样的问题，反复卡在这里"
+    monkeypatch.setattr("mini_agent.role_agents.goal_judge.run_goal_judge", lambda **kw: same_feedback)
+
+    runner = GoalRunner(agent=agent, cfg=cfg, goal_spec=spec)
+    result = runner.run()
+
+    assert result.status == "stuck"
+
+
+def test_goal_runner_tracks_criteria_checklist(monkeypatch, tmp_path):
+    """[改造项三] GoalJudge 输出 checklist 后，GoalRunner 应该更新
+    self._criteria_status 对应条目的 passed/evidence。"""
+    agent = FakeAgent(outputs=["a1", "a2"])
+    cfg = _FakeCfg(tmp_path)
+    spec = GoalSpec(goal_text="do X", acceptance_criteria=["标准一", "标准二"], confirmed=True)
+
+    responses = iter([
+        _judge_json(
+            "CONTINUE", feedback="标准一过了",
+            progress="SUBSTANTIVE_ADVANCE", progress_reason="标准一通过了",
+            checklist=[{"index": 1, "passed": True, "evidence": "已验证"},
+                       {"index": 2, "passed": False, "evidence": "尚未实现"}],
+        ),
+        _judge_json("DONE", feedback="全部完成"),
+    ])
+    monkeypatch.setattr("mini_agent.role_agents.goal_judge.run_goal_judge", lambda **kw: next(responses))
+
+    runner = GoalRunner(agent=agent, cfg=cfg, goal_spec=spec)
+    runner.run()
+
+    status_by_index = {c["index"]: c for c in runner._criteria_status}
+    assert status_by_index[1]["passed"] is True
+    assert status_by_index[1]["evidence"] == "已验证"
+    assert status_by_index[2]["passed"] is False
+
+
+def test_goal_runner_stuck_recovery_hint_includes_attempted_paths(monkeypatch, tmp_path):
+    """[改造项二] 卡住恢复时注入的提示应该包含此前几轮的 progress_reason，
+    而不只是通用话术。"""
+    agent = FakeAgent(outputs=[f"attempt {i}" for i in range(10)])
+    cfg = _FakeCfg(tmp_path, max_rounds=20, consecutive_same_feedback_limit=3, max_stuck_recoveries=3)
+    spec = _confirmed_spec()
+
+    counter = {"i": 0}
+
+    def fake_judge(**kw):
+        counter["i"] += 1
+        return _judge_json(
+            "CONTINUE", feedback=f"没有进展 #{counter['i']}",
+            progress="SAME_APPROACH_NO_GAIN",
+            progress_reason=f"曾尝试方案 {counter['i']}，验证无效",
+        )
+
+    monkeypatch.setattr("mini_agent.role_agents.goal_judge.run_goal_judge", lambda **kw: fake_judge(**kw))
+
+    runner = GoalRunner(agent=agent, cfg=cfg, goal_spec=spec)
+    runner.run()
+
+    injected_hints = [
+        e.get("content", "") for e in agent._hist.entries
+        if isinstance(e, dict) and "曾尝试方案" in e.get("content", "")
+    ]
+    assert injected_hints, "卡住恢复提示应包含此前的 progress_reason（已验证无效的方向）"
+
+
+def test_goal_runner_writes_failure_lesson_on_stuck(monkeypatch, tmp_path):
+    """[改造项五] goal 因 stuck 终止时，应该把失败经验写入 memory backend。"""
+
+    class _FakeMemory:
+        def __init__(self):
+            self.entries = []
+
+        def add(self, entry):
+            self.entries.append(entry)
+
+    agent = FakeAgent(outputs=[f"attempt {i}" for i in range(15)])
+    agent._memory = _FakeMemory()
+    cfg = _FakeCfg(tmp_path, max_rounds=20, consecutive_same_feedback_limit=3, max_stuck_recoveries=0)
+    spec = _confirmed_spec()
+
+    def fake_judge(**kw):
+        return _judge_json(
+            "CONTINUE", feedback="卡住了",
+            progress="SAME_APPROACH_NO_GAIN", progress_reason="反复尝试同一种修复没有效果",
+        )
+
+    monkeypatch.setattr("mini_agent.role_agents.goal_judge.run_goal_judge", lambda **kw: fake_judge(**kw))
+
+    runner = GoalRunner(agent=agent, cfg=cfg, goal_spec=spec)
+    result = runner.run()
+
+    assert result.status == "stuck"
+    assert len(agent._memory.entries) == 1
+    lesson = agent._memory.entries[0]
+    assert lesson.entry_type == "lesson"
+    assert lesson.source == "goal_mode_failure"
+
+
+def test_goal_runner_no_lesson_written_when_disabled(monkeypatch, tmp_path):
+    """failure_lesson_enabled=False 时不应该写入任何 lesson。"""
+
+    class _FakeMemory:
+        def __init__(self):
+            self.entries = []
+
+        def add(self, entry):
+            self.entries.append(entry)
+
+    agent = FakeAgent(outputs=[f"attempt {i}" for i in range(15)])
+    agent._memory = _FakeMemory()
+    cfg = _FakeCfg(
+        tmp_path, max_rounds=20, consecutive_same_feedback_limit=3, max_stuck_recoveries=0,
+        failure_lesson_enabled=False,
+    )
+    spec = _confirmed_spec()
+
+    def fake_judge(**kw):
+        return _judge_json(
+            "CONTINUE", feedback="卡住了",
+            progress="SAME_APPROACH_NO_GAIN", progress_reason="反复尝试同一种修复没有效果",
+        )
+
+    monkeypatch.setattr("mini_agent.role_agents.goal_judge.run_goal_judge", lambda **kw: fake_judge(**kw))
+
+    runner = GoalRunner(agent=agent, cfg=cfg, goal_spec=spec)
+    result = runner.run()
+
+    assert result.status == "stuck"
+    assert agent._memory.entries == []

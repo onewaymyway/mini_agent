@@ -492,6 +492,49 @@ class GoalModeConfig:
     persist_state: bool = True   # 是否在每个轮次边界落盘 goal_state.json
     auto_resume_prompt: bool = True  # 启动时检测到未完成 goal 是否主动提示恢复
 
+    # ── [next_doc/goal_mode_completion_improvement_plan.md 改造项一]
+    # 卡住判定方式："llm"（默认）→ 让 GoalJudge 在同一次结构化输出里额外判断
+    # progress（是否有实质进展），GoalRunner 据此驱动卡住计数，比纯文本相似度
+    # 更能识别"表述不同但本质相同"或"表述相似但确有进展"这两类规则算法处理不好
+    # 的情况；GoalJudge 输出解析失败/未按新 schema 输出 progress 字段时自动
+    # 回退到 "text_similarity" 规则，不影响鲁棒性。
+    # "text_similarity" → 完全恢复升级前的 difflib 文本相似度规则，一键回退。
+    progress_judge_mode: str = "llm"
+
+    # ── [改造项三] 验收标准逐条状态追踪：GoalJudge 每轮额外输出 checklist
+    # （每条标准 passed/evidence），GoalRunner 据此在 GoalState 里维护
+    # criteria_status，并把上一轮状态回传给下一轮 GoalJudge，减少判定抖动、
+    # 让 CONTINUE 反馈更聚焦"还差哪一条"。仅在 progress_judge_mode="llm" 时
+    # 生效（两者共用同一次扩展 JSON 输出）。
+    criteria_tracking_enabled: bool = True
+
+    # ── [改造项二] 卡住恢复提示携带"已尝试路径清单"：触发卡住恢复时，把最近
+    # 几轮 GoalJudge 给出的 progress_reason 拼成"已验证无效的方向"提示给主
+    # Agent，而不是只给一句通用的"换个角度"。依赖 progress_judge_mode="llm"
+    # 积累的 progress_reason；关闭 progress_judge_mode 或本开关时退化为旧的
+    # 通用提示文本。
+    stuck_recovery_attempted_paths_enabled: bool = True
+
+    # ── [改造项五] 失败经验沉淀：goal 因 stuck / max_rounds_exhausted 终止时，
+    # 把已尝试路径 + 失败原因整理成一条 entry_type="lesson"（source=
+    # "goal_mode_failure"）写入 memory，供未来同类目标的 GoalSpecBuilder /
+    # 主 Agent 参考，避免重复踩坑。写入失败不影响 goal 本身的终止流程。
+    failure_lesson_enabled: bool = True
+
+    # ── [改造项四，预留开关，暂未实现内部逻辑] 卡住恢复时并行生成多个候选
+    # continuation、择优继续，而不是单路径重来。复用 ensemble/ 基础设施，
+    # 涉及额外的并发 LLM 调用成本，默认关闭；stuck_recovery_candidates 是
+    # 届时并行候选数量。见 next_doc/goal_mode_completion_improvement_plan.md
+    # 改造项四——本次改造只占位配置字段，不实现调度逻辑。
+    stuck_recovery_ensemble_enabled: bool = False
+    stuck_recovery_candidates: int = 3
+
+    # ── [改造项六，预留开关，暂未实现] 细粒度执行器：在 run_turn 内部按工具
+    # 调用次数插入轻量判断，而不是等整个 run_turn 跑完才评审。见改造计划
+    # 文档"改造项六"，本次改造只占位配置字段，GoalRunner 仍固定使用
+    # CoarseStepExecutor。
+    fine_grained_execution_enabled: bool = False
+
 
 @dataclass
 class TurnJudgeConfig:

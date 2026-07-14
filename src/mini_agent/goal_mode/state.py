@@ -46,6 +46,20 @@ class GoalState:
     created_at: float = field(default_factory=time.time)
     updated_at: float = field(default_factory=time.time)
 
+    # ── [next_doc/goal_mode_completion_improvement_plan.md 改造项三] ─────────
+    # 验收标准逐条状态追踪：每项 {"index": int, "text": str, "passed": bool,
+    # "evidence": str, "last_updated_round": int}。只在
+    # cfg.goal_mode.criteria_tracking_enabled=True 且 GoalJudge 按扩展 schema
+    # 输出了 checklist 字段时才会被更新；功能关闭或解析失败时保持初始状态
+    # （全部 passed=False），不影响原有判定流程。
+    criteria_status: list = field(default_factory=list)
+
+    # ── [改造项二] 最近几轮 GoalJudge 给出的 progress/progress_reason 记录，
+    # 每项 {"round": int, "progress": str, "reason": str}，供卡住恢复时拼装
+    # "已尝试路径清单"提示使用。只保留最近若干条（由 GoalRunner 控制上限，
+    # 落盘时已经是裁剪后的列表）。
+    recent_progress_reasons: list = field(default_factory=list)
+
     def to_dict(self) -> dict:
         return asdict(self)
 
@@ -64,6 +78,8 @@ class GoalState:
             final_report=d.get("final_report", ""),
             created_at=float(d.get("created_at", time.time())),
             updated_at=float(d.get("updated_at", time.time())),
+            criteria_status=list(d.get("criteria_status", []) or []),
+            recent_progress_reasons=list(d.get("recent_progress_reasons", []) or []),
         )
 
 

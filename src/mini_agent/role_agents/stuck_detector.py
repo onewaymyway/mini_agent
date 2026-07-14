@@ -67,6 +67,38 @@ class StuckDetector:
 
         return StuckSignal.NONE
 
+    def observe_signal(self, *, is_same: bool) -> StuckSignal:
+        """[next_doc/goal_mode_completion_improvement_plan.md 改造项一]
+
+        跳过内部的 difflib 文本比较，直接接受调用方已经判断好的"本轮是否等同
+        于卡住（没有实质进展）"结论，复用既有的连续计数 / 恢复额度 / GIVE_UP
+        逻辑。用于 GoalRunner 在 `progress_judge_mode="llm"` 下，把 GoalJudge
+        结构化输出的 `progress` 字段（SUBSTANTIVE_ADVANCE /
+        SAME_APPROACH_NO_GAIN / REGRESSED）转换为 `is_same` 布尔值后调用。
+
+        与 `observe(text)` 完全独立：TurnJudge 等仍基于文本相似度的调用方
+        继续使用 `observe()`，不受影响；同一个 StuckDetector 实例不应该在
+        同一条调用链路里混用这两个方法。
+        """
+        if self.consecutive_limit <= 0:
+            return StuckSignal.NONE
+
+        if is_same:
+            self._consecutive_same += 1
+        else:
+            # 出现真实进展，重置卡住计数和恢复额度（与 observe() 语义一致）
+            self._consecutive_same = 0
+            self._recoveries_used = 0
+
+        if self._consecutive_same >= (self.consecutive_limit - 1):
+            if self._recoveries_used >= self.max_recoveries:
+                return StuckSignal.GIVE_UP
+            self._recoveries_used += 1
+            self._consecutive_same = 0
+            return StuckSignal.RECOVER
+
+        return StuckSignal.NONE
+
     def reset(self) -> None:
         self._prior_output = None
         self._consecutive_same = 0
