@@ -175,6 +175,12 @@ class CompressConfig:
     # True=先询问用户 y/n，用户拒绝则本次跳过，下次再检查）
     require_confirmation: bool = False
 
+    # ── Compact 预检配置 ─────────────────────────────────────────────────────
+    # compact 前主动预估 token，超过阈值直接走分批路径，避免异常捕获开销
+    compact_precheck_enabled: bool = True          # 是否启用预检（默认开启）
+    compact_precheck_threshold: float = 0.85       # 估算 token 超过上下文窗口此比例视为超限
+    model_context_window: int = 0                  # 模型上下文窗口大小（0=自动从 provider 获取或用默认）
+
 
 @dataclass
 class ToolTrimConfig:

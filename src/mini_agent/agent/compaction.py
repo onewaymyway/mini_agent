@@ -106,6 +106,64 @@ class CompactionMixin:
             )
         return header + compact_text
 
+    def _should_use_chunked_compact(self, compact_prompt: str) -> bool:
+        """
+        主动预估：compact 前估算 (history + system + compact_prompt) 的 token 数，
+        与模型上下文窗口比较。超限返回 True（建议走分批路径）。
+
+        估算包含：
+          - system prompt (含 skill context、reminder 等)
+          - 完整 history (转为 LLM 格式)
+          - compact prompt
+          - 预留输出空间 (max_tokens)
+
+        使用 tiktoken (cl100k_base) 优先，不可用时退化为字符启发式估算。
+        """
+        # 尊重配置开关 (在 compress 子配置下)
+        if not getattr(self.cfg.compress, "compact_precheck_enabled", True):
+            return False
+
+        try:
+            from mini_agent.perception.token_counter import estimate_messages_tokens
+            from mini_agent.llm.system_tool_call import convert_tool_use_to_text
+        except Exception:
+            # 估算工具不可用，保守返回 False 走正常路径（兜底靠异常捕获）
+            return False
+
+        # 1. 构建 system prompt（同 run_turn 逻辑）
+        system = self._build_system()
+
+        # 2. 转换 history 为 LLM 格式（剥离 _type 等内部字段）
+        msgs = convert_tool_use_to_text(self._history)
+
+        # 3. 估算总 token
+        history_tokens = estimate_messages_tokens(msgs, system)
+        prompt_tokens = estimate_messages_tokens([{"role": "user", "content": compact_prompt}], "")
+        output_reserve = getattr(self.cfg, "max_tokens", 8192)  # 预留输出空间 (来自主配置)
+
+        total_est = history_tokens + prompt_tokens + output_reserve
+
+        # 4. 获取模型上下文窗口
+        model_ctx = (
+            getattr(getattr(self, "_llm", None), "context_window", None)
+            or getattr(self.cfg.compress, "model_context_window", None)
+            or 100_000  # 保守默认值
+        )
+
+        # 5. 判断：估算总量超过上下文的 85% 视为超限（留 15% 安全边际）
+        #    也可通过 cfg.compress.compact_precheck_threshold 自定义
+        threshold = getattr(self.cfg.compress, "compact_precheck_threshold", 0.85)
+        limit = int(model_ctx * threshold)
+
+        if total_est > limit:
+            R.print_info(
+                f"[compact] Pre-check: est_tokens={total_est:,} > limit={limit:,} "
+                f"(ctx={model_ctx:,}, threshold={threshold:.0%}) — will use chunked compact"
+            )
+            return True
+
+        return False
+
     def compact_with_skills(self) -> str:
         """
         [SYS-SKILL-COMPACT] 主动触发：用 LLM 生成对话摘要，然后重附 skill 上下文。
@@ -139,28 +197,41 @@ class CompactionMixin:
         compact_prompt = _pm.get_compact_prompt()
         compact_prompt += self._build_notepad_compact_hint()
 
-        # ── 尝试正常路径：run_turn ───────────────────────────────────────────
-        R.print_info("[compact] Generating summary…")
-        result = ""
-        used_chunked = False
-        try:
-            result = self.run_turn(compact_prompt)
-        except Exception as e:
-            from mini_agent.llm.base import LLMContextWindowError
-            if isinstance(e, LLMContextWindowError):
-                # 历史已超限，run_turn 无法执行 → 切换到分批路径
-                R.print_warning(
-                    "[compact] History exceeds context limit — switching to chunked compact…"
-                )
-                try:
-                    result = self._compact_chunked()
-                    used_chunked = True
-                except Exception as ce:
-                    R.print_error(f"[compact] Chunked compact failed: {ce}")
-                    return ""
-            else:
-                R.print_error(f"[compact] Summary generation failed: {e}")
+        # ── 主动预估：compact 前先算 token，超限直接走分批路径 ────────────────
+        if self._should_use_chunked_compact(compact_prompt):
+            R.print_warning(
+                "[compact] Pre-check: history + compact prompt exceeds context limit — "
+                "using chunked compact directly."
+            )
+            try:
+                result = self._compact_chunked()
+                used_chunked = True
+            except Exception as ce:
+                R.print_error(f"[compact] Chunked compact failed: {ce}")
                 return ""
+        else:
+            # ── 尝试正常路径：run_turn ───────────────────────────────────────────
+            R.print_info("[compact] Generating summary…")
+            result = ""
+            used_chunked = False
+            try:
+                result = self.run_turn(compact_prompt)
+            except Exception as e:
+                from mini_agent.llm.base import LLMContextWindowError
+                if isinstance(e, LLMContextWindowError):
+                    # 兜底：预估漏报时捕获异常再切分批
+                    R.print_warning(
+                        "[compact] History exceeds context limit (fallback) — switching to chunked compact…"
+                    )
+                    try:
+                        result = self._compact_chunked()
+                        used_chunked = True
+                    except Exception as ce:
+                        R.print_error(f"[compact] Chunked compact failed: {ce}")
+                        return ""
+                else:
+                    R.print_error(f"[compact] Summary generation failed: {e}")
+                    return ""
 
         if not result:
             R.print_warning("[compact] Got empty summary, aborting.")
