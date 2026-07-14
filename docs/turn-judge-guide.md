@@ -147,14 +147,17 @@ run_turn() 内部：
 > 标记 `is_subagent=True` 双重兜底，用户无需关心这个细节，但如果你在扩展
 > 框架时新增了类似的"内部临时 Agent"，请照此模式处理。
 
-> **判官接线统一（阶段六）现状：** GoalJudge 已经改为经由
+> **判官接线统一（阶段六）现状：** GoalJudge 和 TurnJudge 都已改为经由
 > [`RoleAgentDispatcher`](role-agents-guide.md#内建判官如何接入-dispatcher goal_review--turn_end_review)
-> 统一注册与查询（`role_agent.block: ["goal_judge"]` 可以屏蔽它）。
-> TurnJudge 暂时**保持原有的直接调用方式不变**——`agent/role_judge.py::
-> _maybe_run_turn_judge` 仍然现场构造 `AgentProfile` 直接调用
-> `run_turn_judge()`，`role_agent.allow`/`block` 对它暂不生效。这是刻意的
-> 灰度策略：先只切换 GoalJudge，观察一段时间确认无异常后（阶段 6b）再切换
-> TurnJudge，本节会在那之后同步更新。
+> 统一注册与查询：`role_agent.block: ["goal_judge"]`/`["turn_judge"]`
+> 可以分别屏蔽它们，`.agent/agents/goal_judge.md`/`turn_judge.md` 可以分别
+> 覆盖对应的内建 profile。两者的兜底策略不同（对应设计文档 §8 开放问题 3）：
+> `goal_mode.enabled=true` 但 `goal_judge` 被 block 掉时，`GoalRunner` 会
+> 直接报错拒绝启动（这种配置组合自相矛盾，宁可显式报错也不要静默降级）；
+> `turn_judge.enabled=true` 但 `turn_judge` 被 block 掉时，则直接当作
+> TurnJudge 未启用处理（不报错、不调用判官，直接交还真人），因为 TurnJudge
+> 本来就有"任何异常都保守回退到等待真人输入"的既定原则，这里延续同样的
+> 保守策略。
 
 ---
 

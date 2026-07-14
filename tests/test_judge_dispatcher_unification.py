@@ -236,7 +236,123 @@ trigger_on: output
     assert [p.name for p in dispatcher._output_roles] == ["my_evaluator"]
 
 
-# ── 6. dispatcher 构造条件：cli/app.py 里的组合逻辑（单元级验证）───────────
+# ── 7. TurnJudge（阶段 6b）：block 屏蔽 + 未初始化时的兜底 ──────────────────
+
+def test_role_agent_block_hides_turn_judge_from_dispatcher(tmp_path):
+    cfg = AppConfig(project_root=tmp_path)
+    cfg.turn_judge.enabled = True
+    cfg.role_agent.block = ["turn_judge"]
+
+    loader = _make_loader(tmp_path)
+    dispatcher = RoleAgentDispatcher(cfg, loader)
+
+    assert not dispatcher.has_turn_end_review_roles
+    assert dispatcher.get_turn_end_review_roles() == []
+
+
+def test_disk_turn_judge_profile_overrides_even_when_role_agent_disabled(tmp_path):
+    custom_turn_judge = """---
+name: turn_judge
+role_type: turn_judge
+trigger_on: turn_end_review
+model: my-custom-turn-judge-model
+---
+
+自定义的 TurnJudge system prompt。
+"""
+    cfg = AppConfig(project_root=tmp_path)
+    cfg.turn_judge.enabled = True
+    cfg.role_agent.enabled = False
+
+    loader = _make_loader(tmp_path, {"turn_judge": custom_turn_judge})
+    dispatcher = RoleAgentDispatcher(cfg, loader)
+
+    roles = dispatcher.get_turn_end_review_roles()
+    assert len(roles) == 1
+    assert roles[0].model == "my-custom-turn-judge-model"
+    assert "自定义的 TurnJudge" in roles[0].system_prompt
+
+
+class _FakeTurnJudgeCfg:
+    def __init__(self, **kwargs):
+        self.enabled = True
+        self.judge_model = None
+        self.judge_provider = None
+        self.max_auto_rounds = kwargs.get("max_auto_rounds", 3)
+        self.judge_show_prompt = False
+        self.history_window = 6
+        self.consecutive_same_output_limit = 0  # 关闭卡住检测，简化测试
+        self.same_output_similarity_threshold = 0.9
+        self.max_stuck_recoveries = 3
+
+
+class _FakeHistForTurnJudge:
+    _history: list = []
+
+
+class _FakeAgentForTurnJudge:
+    """最小可用的 RoleJudgeMixin 宿主，只提供 _maybe_run_turn_judge 需要的属性。"""
+
+    def __init__(self, cfg):
+        from mini_agent.agent.role_judge import RoleJudgeMixin
+        from mini_agent.role_agents.stuck_detector import StuckDetector
+
+        self.cfg = cfg
+        self._is_subagent = False
+        self._turn_judge_auto_count = 0
+        self._turn_judge_stuck_detector = StuckDetector()
+        self._hist = _FakeHistForTurnJudge()
+        self._last_turn_hit_max_turns = False
+        self._bound = RoleJudgeMixin()
+        self._bound.__dict__ = self.__dict__  # 共享属性，模拟 mixin 混入
+
+    def _maybe_run_turn_judge(self, assistant_output: str) -> None:
+        from mini_agent.agent.role_judge import RoleJudgeMixin
+        RoleJudgeMixin._maybe_run_turn_judge(self, assistant_output)
+
+
+def test_maybe_run_turn_judge_falls_back_to_wait_for_user_when_blocked(tmp_path, monkeypatch):
+    """§8 开放问题 3：turn_judge 被 block 后，_maybe_run_turn_judge 应该
+    直接当作"未启用"处理（不报错、不调用 LLM），控制权回到真人。"""
+    cfg = AppConfig(project_root=tmp_path)
+    cfg.turn_judge = _FakeTurnJudgeCfg()
+    cfg.role_agent.block = ["turn_judge"]
+
+    loader = _make_loader(tmp_path)
+    dispatcher_module.init_role_agent_system(cfg, loader)
+
+    called = {"n": 0}
+    monkeypatch.setattr(
+        "mini_agent.role_agents.turn_judge.run_turn_judge",
+        lambda **kw: called.__setitem__("n", called["n"] + 1) or "GOAL_STATUS: NEED_USER",
+    )
+
+    agent = _FakeAgentForTurnJudge(cfg)
+    agent._maybe_run_turn_judge("some assistant output")
+
+    assert called["n"] == 0  # 判官从未被调用
+    assert agent._turn_judge_auto_count == 0  # 没有消耗自动接管计数
+
+
+def test_maybe_run_turn_judge_still_works_without_role_agent_enabled(tmp_path, monkeypatch):
+    """回归：只开 turn_judge.enabled，不开 role_agent.enabled，TurnJudge
+    依然必须能正常触发（对称于 GoalJudge 的同类测试）。"""
+    cfg = AppConfig(project_root=tmp_path)
+    cfg.turn_judge = _FakeTurnJudgeCfg()
+    cfg.role_agent.enabled = False
+
+    loader = _make_loader(tmp_path)
+    dispatcher_module.init_role_agent_system(cfg, loader)
+
+    monkeypatch.setattr(
+        "mini_agent.role_agents.turn_judge.run_turn_judge",
+        lambda **kw: "GOAL_STATUS: NEED_USER",
+    )
+
+    agent = _FakeAgentForTurnJudge(cfg)
+    agent._maybe_run_turn_judge("some assistant output")
+
+    assert agent._turn_judge_auto_count == 0  # NEED_USER 会重置计数为 0（本来就是 0）
 
 def test_dispatcher_construction_condition_matches_plan():
     """验证 §3.2 的构造条件表达式本身（不依赖 app.py 的完整启动流程）。"""

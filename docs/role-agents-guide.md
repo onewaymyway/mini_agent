@@ -284,11 +284,14 @@ TurnJudge，是专门为 [Goal 模式](goal-mode-guide.md) / [TurnJudge](turn-ju
 `AgentProfile` 直接调用 `run_goal_judge()`/`run_turn_judge()`，`role_agent.
 allow`/`block` 对它们完全不起作用。
 
-**阶段六 a（当前状态）**：`goal_judge` 已经改为经由 dispatcher 统一注册与
-查询（触发路径为 `goal_review`，见下一节），可以被 `role_agent.block`
-屏蔽、也可以被磁盘上的 `.agent/agents/goal_judge.md` 自定义覆盖。
-`turn_judge` 暂时保持原有的直接调用方式不变（阶段 6b 会切换，届时本节
-会同步更新）。
+**阶段六（当前状态，6a+6b 均已完成）**：`goal_judge`/`turn_judge` 都已改为
+经由 dispatcher 统一注册与查询（触发路径分别为 `goal_review`/
+`turn_end_review`，见下一节），都可以被 `role_agent.block` 屏蔽、也都可以
+被磁盘上的 `.agent/agents/goal_judge.md`/`turn_judge.md` 自定义覆盖。二者
+在"被 block 后如何兜底"上策略不同：`goal_judge` 缺席时 `GoalRunner` 直接
+报错拒绝启动；`turn_judge` 缺席时直接当作未启用处理（不报错，直接交还
+真人），详见 [turn-judge-guide.md](turn-judge-guide.md) 和
+[goal-mode-guide.md](goal-mode-guide.md) 的对应说明。
 
 两者都可以和 `evaluator`/`coach` 同时存在、互不冲突：`evaluator` 仍在
 每次 `run_turn` 内部做质量把关，`goal_judge`/`turn_judge` 在外层做
@@ -306,7 +309,7 @@ allow`/`block` 对它们完全不起作用。
 和磁盘自定义 profile 一起，按 `trigger_on` 分类进两张新注册表：
 
 - `goal_review`（GoalJudge）
-- `turn_end_review`（TurnJudge，阶段 6b 生效）
+- `turn_end_review`（TurnJudge）
 
 对应的查询接口：
 
@@ -352,7 +355,7 @@ cfg.role_agent.allow / cfg.role_agent.block
 **用 `.agent/agents/goal_judge.md` 自定义 GoalJudge**：如果该文件存在，
 会覆盖内建的合成 profile（磁盘优先），可以自定义 `model`/`system_prompt`
 等字段，不受 `prompts/system/goal_judge.md` 默认模板限制。`turn_judge.md`
-同理（阶段 6b 生效）。
+同理。
 
 **用 `role_agent.block` 屏蔽内建判官**：例如
 `role_agent.block: ["goal_judge"]` 会让 `goal_mode.enabled=true` 时仍然

@@ -261,7 +261,6 @@ class RoleJudgeMixin:
 
         from mini_agent.role_agents.turn_judge import run_turn_judge, build_turn_judge_prompt
         from mini_agent.role_agents.feedback import RoleFeedback, format_feedback, extract_turn_status, build_inject_message
-        from mini_agent.orchestrator.agent_profiles import AgentProfile
 
         auto_round_no = self._turn_judge_auto_count + 1
 
@@ -279,12 +278,43 @@ class RoleJudgeMixin:
             recent_lines.append(f"[{role}] {content}")
         recent_history = "\n".join(recent_lines)
 
-        profile = AgentProfile(
-            name="turn_judge",
-            role_type="turn_judge",
-            model=tj_cfg.judge_model,
-            provider=tj_cfg.judge_provider,
-        )
+        # [判官接线统一 阶段六 b] profile 不再由这里现场拼一个临时
+        # AgentProfile 对象，而是优先从 dispatcher 的 turn_end_review 注册表
+        # 查询——这样 "turn_judge" 才有一个真实存在的"注册来源"，可以被
+        # role_agent.block 屏蔽，也可以被磁盘上的 .agent/agents/turn_judge.md
+        # 自定义覆盖（model/system_prompt 等）。
+        #
+        # dispatcher 为 None（未经过 app.py 的 init_role_agent_system，例如
+        # 独立/测试场景直接触发 _maybe_run_turn_judge）时，fallback 到升级前
+        # 的现场拼装方式，保持完全向后兼容。
+        #
+        # dispatcher 存在但查不到任何 turn_end_review profile（"turn_judge"
+        # 被 role_agent.block 屏蔽掉了）：这里**不**像 GoalRunner 那样报错
+        # 拒绝启动——TurnJudge 本来就有"任何异常都保守回退到等待真人输入"
+        # 的既定原则（对应设计文档 §8 开放问题 3 里"分歧较小"的那一条），
+        # 直接当作 TurnJudge 未启用处理：不调用判官、不消耗
+        # `_turn_judge_auto_count`，直接把控制权交还真人。
+        from mini_agent.role_agents import get_dispatcher
+        _dispatcher = get_dispatcher()
+        if _dispatcher is not None:
+            turn_end_review_roles = _dispatcher.get_turn_end_review_roles()
+            if not turn_end_review_roles:
+                R.print_info(
+                    "[TurnJudge] cfg.turn_judge.enabled=True，但 \"turn_judge\" 已被 "
+                    "role_agent.block 屏蔽，本轮当作 TurnJudge 未启用处理，"
+                    "直接交还真人用户输入。"
+                )
+                return
+            profile = turn_end_review_roles[0]
+        else:
+            from mini_agent.orchestrator.agent_profiles import AgentProfile
+            profile = AgentProfile(
+                name="turn_judge",
+                role_type="turn_judge",
+                trigger_on="turn_end_review",
+                model=tj_cfg.judge_model,
+                provider=tj_cfg.judge_provider,
+            )
 
         if tj_cfg.judge_show_prompt:
             prompt_preview = build_turn_judge_prompt(
