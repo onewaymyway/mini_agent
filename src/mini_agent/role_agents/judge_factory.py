@@ -77,6 +77,23 @@ def spawn_judge_agent(
         debug_llm_console=getattr(base_cfg, "debug_llm_console", False),
     )
     judge_cfg.api_key = base_cfg.api_key
+
+    # [BUGFIX] load_config() 的 model=/llm_provider= 参数只影响 judge_cfg 的
+    # 顶层 model/llm_provider 字段；但 Agent.__init__ 里真正决定"实际用哪个
+    # client"的是 LLMClientPool.from_config(cfg)——只要 judge_cfg.llm_fallback_chain
+    # 非空（项目配置了多 provider 故障转移链，很常见），就会完全无视顶层
+    # model/llm_provider，直接用 chain[0]（配置文件里写死的模型）构造 client，
+    # 把上面 resolve_role_model() 精心解析出的 judge_model/judge_provider
+    # （未显式配置 judge_model 时会回退到主 Agent 当前正在用的模型，随
+    # /model、/provider switch 实时变化）整个覆盖掉，退化成"单纯从配置文件
+    # 读取模型"——这正是本函数要避免的情况。
+    #
+    # 判官内部 Agent 是轻量一次性调用，不需要主 Agent 那条多 provider 故障
+    # 转移链，因此这里直接清空 fallback chain，强制 LLMClientPool 退化为单
+    # 条主配置（取 judge_cfg.model / judge_cfg.llm_provider / judge_cfg.api_key），
+    # 确保 resolve_role_model() 解析出的模型才是最终实际生效的模型。
+    judge_cfg.llm_fallback_chain = []
+
     judge_cfg.max_turns = max_turns
     judge_cfg.stream = False
     judge_cfg.system_extra = (
