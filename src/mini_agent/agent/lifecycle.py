@@ -136,6 +136,7 @@ class SessionLifecycleMixin:
         configure_notepad_store(
             lambda: _NotepadAgentPaths(self.cfg.project_root),
             lambda: (self._session.id if self._session else ""),
+            enabled_getter=lambda: getattr(self.cfg, "notepad_enabled", True),
         )
 
         # ToolExecutor：持有 file_changes 列表和锁的引用（共享，不拷贝）

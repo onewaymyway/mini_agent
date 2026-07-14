@@ -578,6 +578,25 @@ hot_reload_interval_s: float = 2.0  # Skills/Agent Profiles 热重载轮询间�
 
 详见 [热重载机制说明](hot-reload-guide.md)。
 
+### `notepad_enabled`（AppConfig 直接字段）
+
+```python
+notepad_enabled: bool = True  # 记事本功能总开关，默认开启
+```
+
+`agent_config.json` 中配置：
+
+```json
+{
+  "notepad_enabled": false
+}
+```
+
+关闭后：不再向 system prompt 注入记事本块，也不再为当前 session 创建/加载
+`notepad.json`；`notepad_*` 工具调用会返回错误提示（工具本身仍注册在全局
+registry 中，与其它 `xxx_enabled` 开关的既有取舍一致——只是功能层面禁用，
+不会让模型看不到工具定义）。详见 [记事本机制说明](notepad-guide.md)。
+
 ### BehaviorConfig（用户行为感知系统，独立配置文件）
 
 > 这是唯一**不属于** `AppConfig` 加载流程的配置块——单独落盘在

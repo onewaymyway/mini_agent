@@ -807,6 +807,13 @@ class AppConfig:
     # _maybe_load_cognitive_anchor 均直接 no-op。
     cognitive_anchor_enabled: bool = True
 
+    # [记事本] 记事本功能总开关。默认开启——常驻 system prompt 的持久便签，
+    # 用于记录任务过程中的关键信息/结果/注意事项，不受 history compact 影响。
+    # 关闭后：不再向 system prompt 注入记事本块，也不再为当前 session 创建/
+    # 加载 notepad.json；notepad_* 工具调用会返回错误提示（工具本身仍注册在
+    # 全局 registry 中，与 workdir_knowledge_enabled 等开关的既有取舍一致）。
+    notepad_enabled: bool = True
+
     # ── 功能子配置块（每个功能域独立聚合）────────────────────────────────────
     memory:     MemoryConfig     = field(default_factory=MemoryConfig)
     compress:   CompressConfig   = field(default_factory=CompressConfig)

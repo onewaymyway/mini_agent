@@ -694,6 +694,7 @@ def load_config(
         max_llm_calls=_max_llm_calls,
         agent_name=_agent_name,
         system_message_format=_sys_msg_fmt,
+        notepad_enabled=_fb("notepad_enabled", None, True),
         # 子配置块
         memory=memory_cfg,
         compress=compress_cfg,

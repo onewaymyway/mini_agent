@@ -8,6 +8,7 @@ mini-agent 的记事本是一个**常驻 system prompt 的持久便签**，供 A
 - [存储路径管理指南](storage-paths-guide.md) — `session_notepad(sid)` 路径定义
 - [Prompt 管理指南](prompts-guide.md) — `system/notepad.md` 在 system prompt 组装链路中的位置
 - [Commands & Tools 参考](commands-and-tools-reference.md) — `/notepad` 命令与 `notepad_*` 工具速查表
+- [配置系统指南](config-guide.md) — `notepad_enabled` 开关字段说明
 
 ---
 
@@ -140,6 +141,40 @@ system prompt 中明确要求 agent 在遇到以下情况时**必须**调用 `no
 | 生命周期 | `/session new`、`/compact` 都不会清空记事本；仅 `/notepad clear`（用户手动）或 `notepad_remove`/`notepad_summarize`（agent 主动）会改变内容 |
 | 多 session 隔离 | 按 `session_id` 严格隔离，与 `SessionAgentPool` 的多会话架构天然兼容 |
 
+### 5.1 配置开关（`notepad_enabled`）
+
+```python
+# config/models.py::AppConfig
+notepad_enabled: bool = True
+```
+
+```json
+// agent_config.json
+{ "notepad_enabled": false }
+```
+
+默认 **开启**。关闭后：
+
+- `ContextBuilder.build()` 不再注入记事本块（`_get_notepad_render_text()` 返回 `None`）
+- `get_current_notepad()` 返回 `None`，`notepad_add`/`update`/`remove`/`list`/`summarize`
+  调用会抛出 `RuntimeError`（提示"记事本已被配置关闭"），被 `ToolExecutor` 捕获后
+  转为工具错误结果返回给模型，而不是让进程崩溃
+- `/notepad` 命令输出"Notepad is disabled"提示
+- `agent/compaction.py::_build_notepad_compact_hint()` 直接返回空字符串（`get_current_notepad()`
+  为 `None`，见其内部判断），不会追加总结提示
+
+工具本身**仍注册在全局 registry 中**（模型仍能看到 `notepad_add` 等工具定义），只是
+调用会失败——这与 `workdir_knowledge_enabled` 等既有开关的取舍一致，不额外做"按 cfg
+动态隐藏工具定义"的机制（那需要改造 `ToolRegistry`，成本与收益不成比例）。
+
+**并发安全**：`configure_notepad_store()` 用 `threading.local()` 存储 paths/session_id/
+enabled 三个 provider（与 `tools/evolution.py::set_project_root_provider`、
+`tools/workdir_knowledge.py::set_project_root_provider` 同款写法），而不是普通模块级
+全局变量——这样在多 Agent/多线程并发场景（`orchestration.py` 的 `spawn_agent` 等）下，
+"Agent A 关闭了记事本"不会影响运行在另一个线程里的"Agent B 开启了记事本"。`NotepadStore`
+实例缓存（按 `session_id` 索引）本身是跨线程共享的只读缓存，session_id 全局唯一，不受
+此影响。
+
 ---
 
 ## 6. 与 History Compact 的联动
@@ -187,6 +222,8 @@ system prompt 中明确要求 agent 在遇到以下情况时**必须**调用 `no
 | `agent/lifecycle.py::_get_notepad_render_text()` | 供 `ContextBuilder` 调用的渲染文本 getter |
 | `agent/compaction.py::_build_notepad_compact_hint()` | 记事本超阈值时追加的 compact 提示语 |
 | `storage/paths.py::AgentPaths.session_notepad()` | `notepad.json` 的路径定义 |
+| `config/models.py::AppConfig.notepad_enabled` | 功能总开关字段（默认 `True`） |
+| `config/loader.py` | `notepad_enabled=_fb("notepad_enabled", None, True)` — JSON 配置加载 |
 | `cli/commands/notepad.py` | `/notepad` 命令实现 |
 | `cli/app.py` | `import mini_agent.tools.notepad` 触发工具注册（side-effect import） |
 | `ui/terminal.py::_COMMANDS` | `/notepad` 命令行自动补全 + 子命令提示（`show`/`clear`/`remove`） |

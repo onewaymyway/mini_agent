@@ -219,28 +219,64 @@ class NotepadStore:
 
 # ── 全局配置（session 级懒引用，与 tools/builtin.py::configure_artifact_tool 同模式）──
 
-_paths_getter = None          # Callable[[], Optional[AgentPaths]]
-_session_id_getter = None     # Callable[[], str]
-_stores: dict[str, NotepadStore] = {}   # session_id -> NotepadStore（进程内缓存，跨轮复用）
+# ── 全局配置（thread-local，与 tools/evolution.py / tools/workdir_knowledge.py
+#    的 set_project_root_provider 同款写法，避免多 session/多 Agent 并发场景下
+#    "后配置的 agent 覆盖前一个 agent 的 provider" 造成串扰）───────────────────
+
+_paths_local = threading.local()          # .provider: Callable[[], Optional[AgentPaths]]
+_session_id_local = threading.local()     # .provider: Callable[[], str]
+_enabled_local = threading.local()        # .provider: Callable[[], bool]
+_stores: dict[str, NotepadStore] = {}     # session_id -> NotepadStore（跨线程共享的只读缓存，
+                                           # key 是全局唯一的 session_id，天然不会串扰）
 _stores_lock = threading.Lock()
 
 
-def configure_notepad_store(paths_getter, session_id_getter) -> None:
-    """由 agent/lifecycle.py 在初始化时调用，注入 AgentPaths / session_id 懒引用。"""
-    global _paths_getter, _session_id_getter
-    _paths_getter = paths_getter
-    _session_id_getter = session_id_getter
+def configure_notepad_store(paths_getter, session_id_getter, enabled_getter=None) -> None:
+    """
+    由 agent/lifecycle.py 在 Agent.__init__ 中调用，为**当前线程**注册 AgentPaths /
+    session_id / 开关的懒引用回调。
+
+    使用 thread-local 而非普通模块级全局变量：mini-agent 的并发编排（orchestration.py
+    spawn_agent 等）以线程为并发单元，每个 Agent 实例通常运行在自己的线程里；若用普通
+    全局变量，后初始化的 Agent 会覆盖先前 Agent 的 provider，导致工具调用把内容写到
+    错误的 session，或者用错误的 notepad_enabled 状态判断是否可用。
+
+    enabled_getter 为 None 时视为"未显式配置"，`is_notepad_enabled()` 默认返回 True。
+    """
+    _paths_local.provider = paths_getter
+    _session_id_local.provider = session_id_getter
+    _enabled_local.provider = enabled_getter
+
+
+def is_notepad_enabled() -> bool:
+    """当前线程是否启用记事本功能。未配置 enabled provider 时默认视为启用。"""
+    provider = getattr(_enabled_local, "provider", None)
+    if provider is None:
+        return True
+    try:
+        return bool(provider())
+    except Exception:
+        return True
 
 
 def get_current_notepad() -> Optional[NotepadStore]:
     """
-    返回当前 session 对应的 NotepadStore；若尚未配置或无 session_id 则返回 None。
-    进程内按 session_id 缓存 NotepadStore 实例，避免每次工具调用都重新读盘。
+    返回当前（线程）session 对应的 NotepadStore；若尚未配置、无 session_id、或记事本
+    功能被配置关闭（notepad_enabled=False），则返回 None。
+    NotepadStore 实例按 session_id 跨线程缓存，避免每次工具调用都重新读盘——session_id
+    全局唯一，缓存本身不会因为多线程/多 Agent 而串扰。
     """
-    if _paths_getter is None or _session_id_getter is None:
+    if not is_notepad_enabled():
         return None
-    paths = _paths_getter()
-    session_id = _session_id_getter()
+    paths_provider = getattr(_paths_local, "provider", None)
+    session_id_provider = getattr(_session_id_local, "provider", None)
+    if paths_provider is None or session_id_provider is None:
+        return None
+    try:
+        paths = paths_provider()
+        session_id = session_id_provider()
+    except Exception:
+        return None
     if paths is None or not session_id:
         return None
     with _stores_lock:
@@ -261,6 +297,11 @@ def reset_notepad_cache(session_id: Optional[str] = None) -> None:
 
 
 def _require_store() -> NotepadStore:
+    if not is_notepad_enabled():
+        raise RuntimeError(
+            "Notepad is disabled for this session (notepad_enabled=false in config). "
+            "Ask the user to enable it in agent_config.json if you need it."
+        )
     store = get_current_notepad()
     if store is None:
         raise RuntimeError(

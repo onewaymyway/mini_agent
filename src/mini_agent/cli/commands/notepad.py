@@ -13,7 +13,11 @@ import mini_agent.ui.renderer as R
 
 
 def handle_notepad_cmd(args: list[str]) -> None:
-    from mini_agent.tools.notepad import get_current_notepad
+    from mini_agent.tools.notepad import get_current_notepad, is_notepad_enabled
+
+    if not is_notepad_enabled():
+        R.print_info("Notepad is disabled (notepad_enabled=false in config).")
+        return
 
     store = get_current_notepad()
     if store is None:

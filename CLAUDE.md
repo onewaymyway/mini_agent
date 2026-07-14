@@ -148,7 +148,7 @@ mini-agent user token u_a1b2c3d4                       # 重新生成 token
 - `orchestration.py` — 并发编排工具（spawn_agent, task 管理, `update_task_progress` 任务进度叙事写入）
 - `skill_manager.py` — 技能管理工具（skill_list, skill_activate 等）
 - `plan.py` — 规划工具
-- `notepad.py` — 记事本工具：`notepad_add`/`notepad_update`/`notepad_remove`/`notepad_list`/`notepad_summarize`，session 级持久化到 `notepad.json`，内容常驻 system prompt 固定位置（`prompts/system/notepad.md`），不受 history compact 影响
+- `notepad.py` — 记事本工具：`notepad_add`/`notepad_update`/`notepad_remove`/`notepad_list`/`notepad_summarize`，session 级持久化到 `notepad.json`，内容常驻 system prompt 固定位置（`prompts/system/notepad.md`），不受 history compact 影响。总开关 `cfg.notepad_enabled`（默认 `True`），provider 用 `threading.local()` 存储（与 evolution.py/workdir_knowledge.py 同款写法，避免多 Agent 并发串扰）
 - `user_input.py` — 用户输入工具
 - `workdir_knowledge.py` — Workdir 知识层工具（Stage 4 + 检索侧补全）：`add_open_thread`/`update_work_thread`/`update_knowledge`/`search_knowledge`，thread-local provider 机制与 `orchestration.py` 同构
 
