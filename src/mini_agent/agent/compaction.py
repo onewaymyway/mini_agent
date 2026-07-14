@@ -377,11 +377,19 @@ class CompactionMixin:
             from mini_agent.history.compression import (
                 cap_oversized_messages, DEFAULT_MAX_MESSAGE_CHARS_FOR_COMPACT,
             )
+            from mini_agent.llm.system_tool_call import convert_tool_use_to_text
             max_chars = getattr(
                 self.cfg.compress, "max_message_chars_for_compact",
                 DEFAULT_MAX_MESSAGE_CHARS_FOR_COMPACT,
             )
-            llm_messages = cap_oversized_messages(to_llm_messages(chunk), max_chars) + [
+            # 与 _should_use_chunked_compact 的预估口径保持一致：
+            # 先剥离 tool_use content block（转为纯文本），避免某些模型
+            # （如 NVIDIA NIM 等 OpenAI 兼容接口）因 assistant content 里
+            # 含 tool_use block 而报 schema 校验错误
+            # （data did not match any variant of untagged enum
+            #  ChatCompletionRequestAssistantMessageContent）。
+            safe_chunk = convert_tool_use_to_text(to_llm_messages(chunk))
+            llm_messages = cap_oversized_messages(safe_chunk, max_chars) + [
                 {"role": "user", "content": chunk_prompt}
             ]
 
@@ -600,4 +608,3 @@ class CompactionMixin:
             from mini_agent.errors import log_exception
             log_exception(_mini_agent_exc, where='mini_agent.agent')
             pass
-
