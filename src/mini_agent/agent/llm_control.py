@@ -58,6 +58,8 @@ class LLMControlMixin:
         self._client_pool = LLMClientPool(entries=[entry])
         self.cfg.model = llm_config.model
         self.cfg.llm_provider = llm_config.provider
+        self.cfg.api_key = llm_config.api_key or ""
+        self.cfg.llm_base_url = llm_config.base_url or ""
         R.print_info(f"Switched to {self._llm}")
 
     def switch_model(self, model: str) -> "ProviderEntry":  # noqa: F821 (前向引用，运行时从 client_pool 导入)
@@ -106,6 +108,8 @@ class LLMControlMixin:
         self._llm = entry.client
         self.cfg.model = entry.config.model
         self.cfg.llm_provider = entry.config.provider
+        self.cfg.api_key = entry.config.api_key or ""
+        self.cfg.llm_base_url = entry.config.base_url or ""
         return entry
 
     def switch_to_provider_default(
@@ -148,6 +152,8 @@ class LLMControlMixin:
         self._llm = entry.client
         self.cfg.model = entry.config.model
         self.cfg.llm_provider = entry.config.provider
+        self.cfg.api_key = entry.config.api_key or ""
+        self.cfg.llm_base_url = entry.config.base_url or ""
         return entry
 
     # ── [SYS-ROLE-AGENT] 角色 Agent 触发 ────────────────────────────────────

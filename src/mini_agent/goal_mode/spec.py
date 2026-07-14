@@ -292,6 +292,15 @@ class GoalSpecBuilder:
             debug_llm_console=getattr(self._cfg, "debug_llm_console", False),
         )
         builder_cfg.api_key = self._cfg.api_key
+        # [BUGFIX] 同 role_agents/judge_factory.py 里的说明：load_config() 的
+        # model=/llm_provider= 只影响 builder_cfg 顶层字段，真正决定用哪个
+        # client 的是 LLMClientPool.from_config(cfg)——只要 builder_cfg
+        # 继承自 self._cfg 的 llm_fallback_chain 非空，就会完全无视上面精心
+        # 解析出的 model/provider/api_key/base_url，直接用 chain[0]（配置文件
+        # 里写死的模型）构造 client。GoalSpecBuilder 是一次性内部调用，不需要
+        # 主 Agent 的多 provider 故障转移链，这里清空以强制生效当前主 Agent
+        # 实际在用的模型和 key（随 /model、/provider switch 实时变化）。
+        builder_cfg.llm_fallback_chain = []
         builder_cfg.max_turns = 2
         builder_cfg.stream = False
         builder_cfg.system_extra = pm.render("system/goal_spec_builder")
