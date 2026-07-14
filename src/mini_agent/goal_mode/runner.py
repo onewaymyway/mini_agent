@@ -133,6 +133,11 @@ class GoalRunner:
         # （去重后），不随 _recent_progress_reasons 的滚动窗口被冲掉。
         self._dead_ends: list[dict] = []
 
+        # [goal_mode_stuck_compact_plan.md §3.1] 进展分数追踪状态。
+        self._last_passed_count: int = 0
+        self._progress_scores: list[float] = []
+        self._progress_scores_cap = max(10, self._gm_cfg.consecutive_same_feedback_limit * 3)
+
         # 恢复态：从上一次中断处继续
         if resume_state is not None:
             self._round = resume_state.round
@@ -148,6 +153,9 @@ class GoalRunner:
                 self._recent_progress_reasons = list(resume_state.recent_progress_reasons)
             if resume_state.dead_ends:
                 self._dead_ends = list(resume_state.dead_ends)
+            self._last_passed_count = int(resume_state.last_passed_count or 0)
+            if resume_state.progress_scores:
+                self._progress_scores = list(resume_state.progress_scores)
         else:
             self._round = 0
             self._last_feedback = ""
@@ -461,6 +469,19 @@ class GoalRunner:
                             target["evidence"] = evidence_val
                         target["last_updated_round"] = self._round + 1
 
+        # [goal_mode_stuck_compact_plan.md §3.1] 计算连续进展分数：结合
+        # checklist 客观通过数增量 + judge 主观 progress 判断。只在开关开启
+        # 且 progress 字段可用（criteria_tracking 相关解析成功）时计算，
+        # 计算失败/关闭时 progress_info 里没有 progress_score 键，不影响
+        # 现有 CONTINUE/DONE/NEED_COMPACT 判定与卡住检测逻辑。
+        if getattr(self._gm_cfg, "progress_score_enabled", True):
+            score = self._compute_progress_score(progress_info.get("progress"))
+            if score is not None:
+                progress_info["progress_score"] = score
+                self._progress_scores.append(score)
+                if len(self._progress_scores) > self._progress_scores_cap:
+                    self._progress_scores = self._progress_scores[-self._progress_scores_cap:]
+
         if progress_info["progress"] is not None:
             self._recent_progress_reasons.append({
                 "round": self._round + 1,
@@ -509,6 +530,51 @@ class GoalRunner:
         R.console.print()
 
         return status, display_text, progress_info
+
+    # ── 内部：进展分数（§3.1）────────────────────────────────────────────
+
+    def _compute_progress_score(self, progress: Optional[str]) -> Optional[float]:
+        """[goal_mode_stuck_compact_plan.md §3.1] 结合 checklist 客观通过数
+        增量 + judge 主观 progress 判断，产出一个连续的进展分数（而不是只有
+        三态分类）。
+
+        `progress` 为 None（判官未按扩展 schema 输出/关闭 progress_judge_mode）
+        时依然可以只依赖客观 checklist 增量计算——两个信号源互相独立，缺一个
+        不影响另一个。两者都缺失（criteria_tracking_enabled=False 且没有
+        progress 字段）时返回 None，调用方不应记录这一轮的分数。
+
+        客观信号（checklist 增量）作为主观判断的校验/加权，而不是替代：
+          - 有新增通过条目（delta > 0）：分数至少是 0.3 * delta（哪怕主观
+            判断认为没有进展，客观有硬指标增量也不该判 0）
+          - 有条目从通过退化为未通过（delta < 0）：分数至多是 -0.5（明确的
+            倒退信号，即使主观判断没有察觉）
+          - 无变化（delta == 0）：分数完全取决于主观判断
+        """
+        subjective_map = {
+            "SUBSTANTIVE_ADVANCE": 1.0,
+            "SAME_APPROACH_NO_GAIN": 0.0,
+            "REGRESSED": -1.0,
+        }
+        subjective = subjective_map.get(progress) if progress else None
+
+        criteria_tracking_enabled = getattr(self._gm_cfg, "criteria_tracking_enabled", True)
+        delta = None
+        if criteria_tracking_enabled and self._criteria_status:
+            passed_now = sum(1 for c in self._criteria_status if c.get("passed"))
+            delta = passed_now - self._last_passed_count
+            self._last_passed_count = passed_now
+
+        if subjective is None and delta is None:
+            return None
+        if subjective is None:
+            subjective = 0.0
+
+        if delta is not None:
+            if delta > 0:
+                return max(subjective, 0.3 * delta)
+            if delta < 0:
+                return min(subjective, -0.5)
+        return subjective
 
     # ── 内部：Dead-end 持久清单 ──────────────────────────────────────────
 
@@ -602,12 +668,30 @@ class GoalRunner:
             f"尝试压缩历史后给 agent 一次重新整理思路的机会"
             f"（第 {self._stuck_detector.recoveries_used}/{self._gm_cfg.max_stuck_recoveries} 次恢复额度）。"
         )
-        self._do_compact()
+
+        # [goal_mode_stuck_compact_plan.md §1.1] 分级 compact：前
+        # light_compact_max_recoveries 次恢复只注入提示、不压缩历史（第一次
+        # 卡住可能只是暂时性的），超过这个次数才真正触发 compact。
+        # StuckDetector.observe()/observe_signal() 判定 RECOVER 时已经把
+        # recoveries_used 计数加过一次，这里读到的就是"本次是第几次恢复"。
+        light_max = getattr(self._gm_cfg, "light_compact_max_recoveries", 1)
+        recovery_index = self._stuck_detector.recoveries_used
+        is_light = recovery_index <= light_max
+        if is_light:
+            R.print_info(
+                f"[GoalRunner] 本次为轻量恢复（第 {recovery_index}/{light_max} 次轻量额度内），"
+                "先只注入提示、不压缩历史，给一次低成本的重新尝试机会。"
+            )
+            self._pin_goal_context()
+        else:
+            self._do_compact()
 
         from ._compat import make_goal_context
         hint = (
             "[GoalRunner 提示] 你最近连续几轮的输出/反馈高度相似，似乎卡在同一个"
-            "问题上反复尝试同样的方法却没有新进展。历史已经压缩过，请不要重复"
+            "问题上反复尝试同样的方法却没有新进展。"
+            + ("历史已经压缩过，" if not is_light else "")
+            + "请不要重复"
             "上一轮的做法——先重新梳理一下目前的障碍到底是什么，考虑换一个角度、"
             "换一种工具或方法，或者先做一些诊断性的检查（比如确认前提假设是否"
             "成立）来找到卡住的真正原因，再继续推进目标。"
@@ -692,6 +776,8 @@ class GoalRunner:
             criteria_status=list(self._criteria_status),
             recent_progress_reasons=list(self._recent_progress_reasons),
             dead_ends=list(self._dead_ends),
+            last_passed_count=self._last_passed_count,
+            progress_scores=list(self._progress_scores),
         )
         try:
             self._state_store.save(state)

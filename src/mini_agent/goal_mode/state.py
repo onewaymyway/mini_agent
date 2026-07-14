@@ -65,6 +65,13 @@ class GoalState:
     # 窗口被冲掉。每项 {"round": int, "reason": str, "progress": str}。
     dead_ends: list = field(default_factory=list)
 
+    # ── [goal_mode_stuck_compact_plan.md §3.1] 进展分数：last_passed_count
+    # 记录上一轮 checklist 通过条数（用于算增量），progress_scores 记录最近
+    # 若干轮的分数序列（供未来 §3.2 伪进展趋势识别复用，本次改造只落地
+    # 分数计算与记录，不改变 stuck 判定逻辑本身）。
+    last_passed_count: int = 0
+    progress_scores: list = field(default_factory=list)
+
     def to_dict(self) -> dict:
         return asdict(self)
 
@@ -86,6 +93,8 @@ class GoalState:
             criteria_status=list(d.get("criteria_status", []) or []),
             recent_progress_reasons=list(d.get("recent_progress_reasons", []) or []),
             dead_ends=list(d.get("dead_ends", []) or []),
+            last_passed_count=int(d.get("last_passed_count", 0)),
+            progress_scores=list(d.get("progress_scores", []) or []),
         )
 
 

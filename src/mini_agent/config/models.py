@@ -505,6 +505,14 @@ class GoalModeConfig:
     # 提前耗尽。
     max_stuck_recoveries: int = 3
 
+    # ── [goal_mode_stuck_compact_plan.md §1.1] 分级 compact：把"卡住恢复"的
+    # 强度和"已经恢复过几次"挂钩，而不是每次都用同一强度的 _do_compact()。
+    # 前 light_compact_max_recoveries 次恢复只注入提示、不做 compact（第一次
+    # 卡住可能只是暂时性的，没必要立刻压历史）；超过这个次数后才真正触发
+    # compact（更激进地清理历史，倒逼换角度重新审视）。设为 0 等价于升级前
+    # 行为（每次恢复都 compact）。
+    light_compact_max_recoveries: int = 1
+
     # ── 调试 ─────────────────────────────────────────────────────────────────
     judge_show_prompt: bool = False   # 打印发给 GoalJudge 的完整输入 prompt（排查判定依据用）
 
@@ -570,6 +578,13 @@ class GoalModeConfig:
     auto_verify_enabled: bool = True
     auto_verify_timeout: int = 120        # 自动执行验证命令的超时时间（秒）
     auto_verify_output_tail_lines: int = 40  # stdout/stderr 各自保留的尾部行数，避免污染 judge 上下文
+
+    # ── [goal_mode_stuck_compact_plan.md §3.1] 进展分数：结合 checklist 客观
+    # 通过数增量 + GoalJudge 主观 progress 判断，产出一个连续的进展分数
+    # （而不是只有三态分类），供未来的伪进展识别（§3.2）等场景使用。
+    # 仅在 criteria_tracking_enabled=True 时才有客观信号可用；关闭本开关时
+    # progress_info 里不会计算/携带 progress_score 字段，不影响现有判断逻辑。
+    progress_score_enabled: bool = True
 
 
 @dataclass

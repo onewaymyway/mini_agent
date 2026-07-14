@@ -631,6 +631,7 @@ class _FakeGoalModeCfg:
         self.auto_verify_enabled = kwargs.get("auto_verify_enabled", True)
         self.auto_verify_timeout = kwargs.get("auto_verify_timeout", 120)
         self.auto_verify_output_tail_lines = kwargs.get("auto_verify_output_tail_lines", 40)
+        self.progress_score_enabled = kwargs.get("progress_score_enabled", True)
 
 
 class _FakeCfg:
@@ -1337,3 +1338,144 @@ def test_build_prompt_includes_self_verify_hint_when_command_set():
     prompt = runner._build_prompt()
     assert "pytest -q" in prompt
     assert "自验证要求" in prompt
+
+
+# ── [goal_mode_stuck_compact_plan.md §3.1] 进展分数 ─────────────────────────
+
+def test_progress_score_objective_delta_overrides_no_gain_subjective(monkeypatch, tmp_path):
+    """客观 checklist 新增通过条目时，即使主观判断是 SAME_APPROACH_NO_GAIN，
+    进展分数也不应该是 0——客观硬指标增量应该被体现出来。"""
+    agent = FakeAgent(outputs=["attempt 1"])
+    cfg = _FakeCfg(tmp_path)
+    spec = GoalSpec(goal_text="do the thing", acceptance_criteria=["a", "b"], confirmed=True)
+
+    def fake_judge(**kw):
+        return _judge_json(
+            "CONTINUE", feedback="still going",
+            progress="SAME_APPROACH_NO_GAIN", progress_reason="没有新进展",
+            checklist=[{"index": 1, "passed": True, "evidence": "通过了"},
+                       {"index": 2, "passed": False, "evidence": "还没通过"}],
+        )
+
+    monkeypatch.setattr("mini_agent.role_agents.goal_judge.run_goal_judge", lambda **kw: fake_judge(**kw))
+
+    runner = GoalRunner(agent=agent, cfg=cfg, goal_spec=spec)
+    status, feedback, progress_info = runner._run_judge("attempt 1")
+
+    assert progress_info["progress_score"] > 0  # delta=1 -> 0.3，覆盖了主观的 0.0
+
+
+def test_progress_score_regression_caps_negative(monkeypatch, tmp_path):
+    """checklist 通过条目退化（delta<0）时，进展分数应该明确为负，
+    即使主观判断没有察觉到退步。"""
+    agent = FakeAgent(outputs=["attempt 1", "attempt 2"])
+    cfg = _FakeCfg(tmp_path)
+    spec = GoalSpec(goal_text="do the thing", acceptance_criteria=["a", "b"], confirmed=True)
+
+    calls = {"i": 0}
+
+    def fake_judge(**kw):
+        calls["i"] += 1
+        if calls["i"] == 1:
+            return _judge_json(
+                "CONTINUE", feedback="progressing",
+                progress="SUBSTANTIVE_ADVANCE", progress_reason="标准1通过了",
+                checklist=[{"index": 1, "passed": True, "evidence": "通过"},
+                           {"index": 2, "passed": False, "evidence": "未通过"}],
+            )
+        return _judge_json(
+            "CONTINUE", feedback="regressed but judge doesn't say so",
+            progress="SUBSTANTIVE_ADVANCE", progress_reason="看起来还行",
+            checklist=[{"index": 1, "passed": False, "evidence": "退化了"},
+                       {"index": 2, "passed": False, "evidence": "未通过"}],
+        )
+
+    monkeypatch.setattr("mini_agent.role_agents.goal_judge.run_goal_judge", lambda **kw: fake_judge(**kw))
+
+    runner = GoalRunner(agent=agent, cfg=cfg, goal_spec=spec)
+    runner._run_judge("attempt 1")
+    _, _, progress_info2 = runner._run_judge("attempt 2")
+
+    assert progress_info2["progress_score"] <= -0.5
+
+
+def test_progress_score_disabled_by_config(monkeypatch, tmp_path):
+    """progress_score_enabled=False 时不应该计算 progress_score。"""
+    agent = FakeAgent(outputs=["attempt 1"])
+    cfg = _FakeCfg(tmp_path, progress_score_enabled=False)
+    spec = _confirmed_spec()
+
+    monkeypatch.setattr(
+        "mini_agent.role_agents.goal_judge.run_goal_judge",
+        lambda **kw: _judge_json("CONTINUE", feedback="x", progress="SUBSTANTIVE_ADVANCE", progress_reason="y"),
+    )
+
+    runner = GoalRunner(agent=agent, cfg=cfg, goal_spec=spec)
+    _, _, progress_info = runner._run_judge("attempt 1")
+
+    assert "progress_score" not in progress_info
+
+
+def test_goal_state_progress_score_fields_roundtrip(tmp_path):
+    from mini_agent.storage.paths import AgentPaths
+    from mini_agent.goal_mode.state import GoalStateStore
+
+    paths = AgentPaths(project_root=tmp_path)
+    store = GoalStateStore(paths, "sess-progress-score")
+    state = GoalState(last_passed_count=2, progress_scores=[0.3, 1.0, -0.5])
+    store.save(state)
+    loaded = store.load()
+    assert loaded.last_passed_count == 2
+    assert loaded.progress_scores == [0.3, 1.0, -0.5]
+
+
+# ── [goal_mode_stuck_compact_plan.md §1.1] 分级 compact ─────────────────────
+
+def test_stuck_recovery_light_then_deep_compact(monkeypatch, tmp_path):
+    """light_compact_max_recoveries=1 时，第一次卡住恢复应该不调用
+    agent.compact_with_skills()（轻量：只注入提示），第二次恢复才应该
+    真正触发 compact（深度）。"""
+    agent = FakeAgent(outputs=[f"attempt {i}" for i in range(20)])
+    cfg = _FakeCfg(
+        tmp_path, max_rounds=30, consecutive_same_feedback_limit=3,
+        max_stuck_recoveries=2,
+    )
+    cfg.goal_mode.light_compact_max_recoveries = 1
+    spec = _confirmed_spec()
+
+    same_feedback = "GOAL_STATUS: CONTINUE\n还是同样的问题，反复卡在这里"
+    monkeypatch.setattr(
+        "mini_agent.role_agents.goal_judge.run_goal_judge",
+        lambda **kw: same_feedback,
+    )
+
+    runner = GoalRunner(agent=agent, cfg=cfg, goal_spec=spec)
+    runner.run()
+
+    # 第一次恢复是轻量（不 compact），第二次恢复才是深度（真正 compact）。
+    # compact_calls 应该明显少于"每次恢复都 compact"时的次数。
+    assert agent.compact_calls >= 1
+    assert agent.compact_calls < runner._stuck_detector.recoveries_used + 2
+
+
+def test_stuck_recovery_light_max_zero_falls_back_to_always_compact(monkeypatch, tmp_path):
+    """light_compact_max_recoveries=0 时应该退化为升级前的"每次恢复都
+    compact"行为。"""
+    agent = FakeAgent(outputs=[f"attempt {i}" for i in range(15)])
+    cfg = _FakeCfg(
+        tmp_path, max_rounds=20, consecutive_same_feedback_limit=3,
+        max_stuck_recoveries=1,
+    )
+    cfg.goal_mode.light_compact_max_recoveries = 0
+    spec = _confirmed_spec()
+
+    same_feedback = "GOAL_STATUS: CONTINUE\n还是同样的问题，反复卡在这里"
+    monkeypatch.setattr(
+        "mini_agent.role_agents.goal_judge.run_goal_judge",
+        lambda **kw: same_feedback,
+    )
+
+    runner = GoalRunner(agent=agent, cfg=cfg, goal_spec=spec)
+    runner.run()
+
+    assert agent.compact_calls >= 1
