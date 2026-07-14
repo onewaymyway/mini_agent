@@ -3117,6 +3117,7 @@ _COMMANDS: list[tuple[str, str, list]] = [
     ("/session",     "Session management",                           ["list", "new", "save", "resume", "delete", "dir", "search"]),
     ("/tasks",       "Task management",                              ["focus", "unfocus", "dashboard", "log", "cancel", "cancel-all", "workers"]),
     ("/plan",        "Plan management",                              ["show", "clear", "summary"]),
+    ("/notepad",     "Persistent notepad: key facts/results/caveats survive compact", ["show", "clear", "remove"]),
     ("/concurrency", "Concurrency settings",                         ["tasks", "llm"]),
     ("/cc",          "Concurrency alias (same as /concurrency)",     ["tasks", "llm"]),
     ("/ensemble",    "Best-of-N ensemble settings",                  ["status", "on", "off", "mode", "granularity", "n", "execution", "strategy"]),

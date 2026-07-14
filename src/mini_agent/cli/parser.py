@@ -41,6 +41,9 @@ def build_parser() -> argparse.ArgumentParser:
               /plan              Show current execution plan
               /plan clear        Clear the active plan
               /plan summary      Print completed plan summary
+              /notepad           Show current notepad (persists across compact)
+              /notepad clear     Clear the current notepad (manual, agent won't auto-call this)
+              /notepad remove <id>  Remove one notepad entry
               /skills                    List all available skills with status and token cost
               /skill on <name> [...]     Activate one or more skills
               /skill off <name> [...]    Deactivate one or more skills

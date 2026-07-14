@@ -170,6 +170,10 @@ system prompt 中明确要求 agent 在遇到以下情况时**必须**调用 `no
 
 实现位于 `cli/commands/notepad.py`，通过 `repl.py::_handle_slash()` 分发。
 
+`/notepad` 及其子命令（`show`/`clear`/`remove`）已注册进 `ui/terminal.py` 的命令补全表
+（`_COMMANDS`），输入 `/notepad` 时会自动提示子命令；同时也已加入 `cli/parser.py` 的
+`/help` 输出。
+
 ---
 
 ## 8. 相关代码位置
@@ -185,6 +189,8 @@ system prompt 中明确要求 agent 在遇到以下情况时**必须**调用 `no
 | `storage/paths.py::AgentPaths.session_notepad()` | `notepad.json` 的路径定义 |
 | `cli/commands/notepad.py` | `/notepad` 命令实现 |
 | `cli/app.py` | `import mini_agent.tools.notepad` 触发工具注册（side-effect import） |
+| `ui/terminal.py::_COMMANDS` | `/notepad` 命令行自动补全 + 子命令提示（`show`/`clear`/`remove`） |
+| `cli/parser.py` | `/help` 输出中的 `/notepad` 说明文本 |
 
 ---
 
