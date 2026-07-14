@@ -21,6 +21,16 @@ src/mini_agent/prompts/reminders/     # 系统默认 reminder 目录
     syntax_error.md
     disk_space.md
     write_large_file.md
+    write_file_fail.md
+    format_issue_write_file_truncated.md      # [SYS-FORMAT-CORRECTION 统一化]
+    format_issue_tag_role_confusion.md
+    format_issue_tool_result_used_as_request.md
+    format_issue_bare_name_after_tag.md
+    format_issue_unclosed_tool_use.md
+    format_issue_invalid_json_in_tool_use.md
+    format_issue_legacy_fence_unclosed.md
+    format_issue_orphan_close_tag.md
+    format_issue_tool_call_alias_tag.md
 
 <自定义目录>/                          # 用户自定义 reminder（--reminders-dir 指定）
     my_reminder.md
@@ -69,11 +79,20 @@ enabled: true
 | `user_intent` | 用户消息进入时 | `keyword`、`intent_pattern` |
 | `pattern` | assistant 输出文本后 | `text_pattern` |
 | `pre_tool` | 工具调用**前**（前馈控制，[具身改进 A3]）| `tool_name` |
+| `format_issue` | `format_correction_detector` 检测到"格式损坏但明显想调用工具"的输出时 | `issue_type` |
 
 > `pre_tool` 在工具真正执行前触发（甚至在权限检查、PreToolUse hook 之前），
 > 用于在危险/容易出错的操作发生前主动提醒，而不是等出错后再补救。
 > 暂不支持按参数内容匹配，只能按工具名（留空则对任意工具都生效）。
 > 受 `ReminderConfig.pre_tool_enabled` 开关控制（默认开启）。
+
+> `format_issue` 是与其它类型语义不同的一种：命中后除了注入 reminder 内容，
+> 调用方（`agent/turn_loop.py`）还会让 agentic loop **自动 `continue`**
+> 到下一轮重新调用 LLM，而不是把当前半成品输出当成最终答案直接结束
+> ——这个"自动续跑"的行为由 `perception/format_correction_detector.py` +
+> `FormatCorrectionConfig` 控制，与 `format_issue_enabled` 开关无关；该开关
+> 只决定"续跑时用哪份文案"（找不到自定义文案时退回内置默认文案）。
+> 详见 [工具调用格式纠错](tool_call_format_correction.md#统一化与-reminder-系统打通--新增-write_file_truncated-规则2026-07)。
 
 ### condition 字段说明
 
@@ -88,6 +107,7 @@ enabled: true
 | `keyword` | `user_intent` | 匹配用户消息中的关键词 |
 | `intent_pattern` | `user_intent` | 更复杂的用户消息模式 |
 | `text_pattern` | `pattern` | 匹配 assistant 输出文本 |
+| `issue_type` | `format_issue` | 匹配 `FormatIssue.issue_type`（正则），如 `write_file_truncated`、`unclosed_tool_use` 等，取值即 `perception/format_correction_detector.py` 里 `_RULES` 各条规则的第一个元素 |
 
 > `keyword` 和 `intent_pattern` 同时设置时，满足其一即匹配。  
 > 两者均未设置的 `user_intent` reminder 不会触发（避免每条消息都注入）。
@@ -184,6 +204,8 @@ mini-agent --reminder-verbose
     "post_tool_enabled": true,
     "user_intent_enabled": true,
     "pattern_enabled": true,
+    "pre_tool_enabled": true,
+    "format_issue_enabled": true,
     "max_per_turn": 3,
     "verbose": false
   }
@@ -216,7 +238,17 @@ mini-agent --reminder-verbose
 | `network_error` | `tool_error` | 网络超时 / 连接拒绝 / SSL 错误 | 78 |
 | `syntax_error` | `tool_error` | SyntaxError / IndentationError | 76 |
 | `file_not_found` | `tool_error` | No such file or directory | 75 |
+| `write_file_fail` | `tool_error` | `write_file`/`create_file` 报错（工具已执行但失败）| 75 |
 | `write_large_file` | `user_intent` | 用户意图：写入/创建文件 | 50 |
+| `write_file_truncated` | `format_issue` | `write_file`/`create_file` 的 `<tool_use>` 因内容过大被截断（工具未执行、解析失败） | 80 |
+| `tag_role_confusion` | `format_issue` | `<tool_use>`/`<tool_result>` 标签角色混用 | 70 |
+| `tool_result_used_as_request` | `format_issue` | 把工具请求误包进了 `<tool_result>` | 70 |
+| `bare_name_after_tag` | `format_issue` | 工具名写在标签外而非 JSON `name` 字段 | 70 |
+| `unclosed_tool_use` | `format_issue` | `<tool_use>` 未正常闭合 | 60 |
+| `invalid_json_in_tool_use` | `format_issue` | 标签闭合但内部 JSON 无法解析 | 60 |
+| `legacy_fence_unclosed` | `format_issue` | 旧版 ` ```tool_call ` 围栏未闭合 | 55 |
+| `orphan_close_tag` | `format_issue` | 存在孤立的闭合标签、没有匹配开标签 | 55 |
+| `tool_call_alias_tag` | `format_issue` | 使用了 `<tool_call>`/`<tool_invoke>` 等非标准标签名 | 55 |
 
 ---
 

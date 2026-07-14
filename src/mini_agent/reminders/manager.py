@@ -130,6 +130,19 @@ class ReminderManager:
         matched = self._matcher.match_pattern(text)
         return self._limit(matched)
 
+    def check_format_issue(self, issue_type: str) -> List[Reminder]:
+        """[SYS-FORMAT-CORRECTION 统一化] 格式纠错检测器命中某条规则时调用。
+
+        与其它 check_* 的区别：调用方（format_correction 续跑逻辑）不仅会
+        注入返回的 reminder 内容，还会让 agentic loop 自动 continue 到下一轮
+        （而不是把半成品输出当成最终答案）。本方法只负责"按 issue_type 找
+        该用什么文案"，续跑与否由调用方决定，与本方法无关。
+        """
+        if not self.enabled or not self._cfg.format_issue_enabled:
+            return []
+        matched = self._matcher.match_format_issue(issue_type)
+        return self._limit(matched)
+
     # ── 注入格式化 ────────────────────────────────────────────────────────────
 
     @staticmethod

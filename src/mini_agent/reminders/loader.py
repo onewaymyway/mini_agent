@@ -7,7 +7,7 @@ Reminder 文件格式示例（.md）：
 
     ---
     name: bash_permission_error
-    trigger_event: tool_error          # tool_error | post_tool | user_intent | pattern | pre_tool
+    trigger_event: tool_error          # tool_error | post_tool | user_intent | pattern | pre_tool | format_issue
     condition:
       tool_name: bash                  # 可选：限定工具名（正则）
       error_pattern: "Permission denied"  # 正则匹配错误/输出内容
@@ -43,6 +43,14 @@ TRIGGER_PATTERN      = "pattern"      # assistant 输出文本模式
 # 而不是等出错/出结果后再补救。条件字段复用 condition.tool_name；
 # 暂不支持按参数内容匹配（tool_input 结构多变，先覆盖"按工具名预警"这一最常见场景）。
 TRIGGER_PRE_TOOL     = "pre_tool"     # 工具调用前（前馈控制）
+# [SYS-FORMAT-CORRECTION 统一化] 格式纠错检测器（perception/format_correction_detector.py）
+# 判定命中某条规则（如 <tool_use> 未闭合、标签角色混淆、写大文件截断等）后触发。
+# 与其它 trigger 的关键区别：这条路径命中后，调用方（agent/turn_loop.py）会
+# 自动以 user 身份注入 reminder 内容，并让 agentic loop continue 到下一轮
+# （而不仅仅是"注入一条提示"），本质是"检测+纠错续跑"，不是单纯的情境提示。
+# condition 字段复用 issue_type（对应 FormatIssue.issue_type，如
+# "unclosed_tool_use" / "write_file_truncated" 等，参见 format_correction_detector.py）。
+TRIGGER_FORMAT_ISSUE = "format_issue"
 
 
 @dataclass
@@ -57,6 +65,9 @@ class ReminderCondition:
     # [Stage 7 / 15.2] 错误分类驱动恢复：按 error_category 精确路由
     # 对应 classify_error() 返回值枚举（observability.py）
     error_category: Optional[str] = None  # permission|not_found|timeout|network|…
+    # [SYS-FORMAT-CORRECTION 统一化] 匹配 FormatIssue.issue_type（正则）
+    # 如 "unclosed_tool_use" / "write_file_truncated" 等
+    issue_type: Optional[str] = None
 
 
 @dataclass
@@ -167,6 +178,7 @@ def _build_condition(cond_raw) -> ReminderCondition:
         intent_pattern=cond_raw.get("intent_pattern"),
         text_pattern=cond_raw.get("text_pattern"),
         error_category=cond_raw.get("error_category"),  # [15.2]
+        issue_type=cond_raw.get("issue_type"),  # [SYS-FORMAT-CORRECTION 统一化]
     )
 
 
@@ -258,6 +270,7 @@ class ReminderLoader:
         if trigger_event not in (
             TRIGGER_TOOL_ERROR, TRIGGER_POST_TOOL,
             TRIGGER_USER_INTENT, TRIGGER_PATTERN, TRIGGER_PRE_TOOL,
+            TRIGGER_FORMAT_ISSUE,
         ):
             if self._verbose:
                 print(

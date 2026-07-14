@@ -243,13 +243,30 @@ class RemindersCorrectionMixin:
         """[SYS-FORMAT-CORRECTION] 检测 assistant 输出中"格式损坏的工具调用"痕迹。
 
         仅在 response.has_tool_calls 为假（即 parse_tool_calls 已判定无有效
-        工具调用）之后调用。委托给 perception.format_correction_detector，
-        新增检测规则只需改那个模块，这里不需要变动。
+        工具调用）之后调用。判定逻辑委托给 perception.format_correction_detector
+        （新增检测规则只需改那个模块，这里不需要变动）；命中后展示给模型的
+        文案则统一走 reminders 系统（trigger_event: format_issue），实现
+        "检测规则写死在代码里、提示文案可由用户在 reminder 文件里自定义"。
 
-        返回 FormatIssue | None。
+        返回 FormatIssue | None（issue.message 已经是最终要注入的文本：优先取
+        reminder 系统里 issue_type 匹配到的自定义内容，找不到/未启用则退回
+        format_correction_detector 自带的内置默认文案）。
         """
-        from mini_agent.perception.format_correction_detector import detect_format_issue
-        return detect_format_issue(assistant_text)
+        from mini_agent.perception.format_correction_detector import (
+            detect_format_issue, PROMPT_HEADER,
+        )
+        issue = detect_format_issue(assistant_text)
+        if issue is None:
+            return None
+        if getattr(self, "_reminder_mgr", None) is not None:
+            matched = self._reminder_mgr.check_format_issue(issue.issue_type)
+            if matched:
+                custom_body = "\n\n".join(r.content for r in matched)
+                issue = type(issue)(
+                    issue_type=issue.issue_type,
+                    message=PROMPT_HEADER + custom_body,
+                )
+        return issue
 
     # ── Tool execution ─────────────────────────────────────────────────────────
 

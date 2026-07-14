@@ -39,6 +39,7 @@
 5. **`orphan_close_tag`**：存在 `</tool_use>` 等闭合标签，但规范开标签 `<tool_use>` 数量不足——对应**案例3**（`<tool_call>` 开、`</tool_use>` 闭）
 6. **`tool_call_alias_tag`**：出现 `<tool_call>` / `<tool_invoke>` 等别名开标签，但没有规范 `<tool_use>`——对应**案例4**（非标准标签开头、内容截断）
 7. **`tool_result_used_as_request`**（2026-07 新增）：`<tool_result>` 开闭标签自身完整闭合（因此不会被 `tag_role_confusion` 捉到，因为它要求开闭标签名不一致），但内容是带 `name` + `input` 字段的请求 payload——例如 `<tool_result>\n{"name": "read_file", "input": {...}}\n</tool_result>`。这是把"发起调用"误写成了"回填结果"标签，本质仍是标签角色误用，只是更隐蔽（标签数量配对、不触发未闭合/孤立闭合等规则）
+8. **`write_file_truncated`**（2026-07 新增）：`write_file` / `create_file` 的 `<tool_use>` 块在写入内容中途被截断（未闭合到文本末尾，且能在残留内容里正则出 `"name": "write_file"` / `"create_file"`，片段长度超过阈值）。与前面几条不同，根因不是"格式写错"而是"内容太大一次性写不完"，因此**不适用**"请完整重发一次"的通用提示，命中后引导模型改为**分片写入再合并**（`<path>.part1`/`.part2`… + `cat` 合并）。该规则在 `_RULES` 中优先级最高（排在 `unclosed_tool_use` 之前），避免被更笼统的规则抢先命中、给出错误的修复建议。详见下方「与 Reminder 系统打通」一节。
 
 详见 [格式纠错检测规则扩展说明](format-correction-detector-update.md)。
 
@@ -107,4 +108,120 @@ _TOOL_RESULT_RE = re.compile(r"<tool_result>\s*(.*?)\s*</tool_result>", re.DOTAL
 验证覆盖：原始换行紧贴闭合标签的 case、多行 JSON + 紧贴闭合、标准带换行格式、
 前后夹杂其他文字、旧版 ` ```tool_call ` 围栏格式，共 5 种场景，均解析正确且
 无回归。
+
+## 统一化：与 Reminder 系统打通 + 新增 `write_file_truncated` 规则（2026-07）
+
+### 背景
+
+在此之前，`format_correction_detector.py` 每条规则的纠错提示文案都硬编码在
+`_RULES` 列表里（Python 字符串），和 `reminders/` 目录下"工具出错/用户意图/
+assistant 输出模式"那套已经支持 `.md` 文件自定义的 reminder 机制是两套互不
+相通的系统。这带来两个问题：
+
+1. 文案改动必须改代码、重新发版，用户无法自定义；
+2. 出现了一类新场景——**大文件写入被截断**（`write_file`/`create_file` 的
+   `<tool_use>` 块因为内容太大，输出到一半就断了）——虽然能被已有的
+   `unclosed_tool_use` 规则捕捉到"没闭合"，但它给出的"请完整重发一次"建议
+   对这个场景是错的：重发大概率还会在同样的位置被截断，陷入死循环。需要一条
+   更具体的规则 + 一套"分片写入再合并"的针对性提示，而这套提示注定需要经常
+   按项目实际情况调整（分片大小、是否有 append 类工具等），天然应该走可自定义
+   的 reminder 文案，而不是写死在代码里。
+
+### 方案：新增第 6 种 trigger_event —— `format_issue`
+
+在原有 5 种 trigger_event（`tool_error` / `post_tool` / `user_intent` /
+`pattern` / `pre_tool`）之外，新增：
+
+| 类型 | 触发时机 | 常用 condition 字段 |
+|------|----------|---------------------|
+| `format_issue` | `format_correction_detector` 命中某条检测规则时 | `issue_type` |
+
+`condition.issue_type` 是一个正则，匹配 `FormatIssue.issue_type`（即 `_RULES`
+里每条规则的第一个元素，如 `unclosed_tool_use` / `write_file_truncated`）。
+
+与其它 5 种 trigger_event 的关键区别：`format_issue` 命中后，调用方
+（`agent/turn_loop.py`）不仅会注入对应 reminder 的内容，还会让 agentic loop
+**自动 `continue` 到下一轮**，而不是把当前这个"半成品"输出当成最终答案直接
+`break`——这一点由 `format_correction_detector` 检测 + `FormatCorrectionConfig`
+的重试次数上限（`max_retries_per_turn`）控制，`format_issue_enabled` 开关只
+影响"用哪份文案"，不影响"要不要自动续跑"。
+
+### 调用链路
+
+```
+turn_loop.py: response.has_tool_calls == False
+    └─> agent/reminders_correction.py: _detect_format_issue(response.text)
+            ├─> perception/format_correction_detector.detect_format_issue(text)
+            │       → 纯正则判定，返回 FormatIssue(issue_type, message=<内置默认文案>)
+            └─> 若 self._reminder_mgr 存在：
+                    ReminderManager.check_format_issue(issue_type)
+                        → matcher.match_format_issue()
+                        → 按 trigger_event=format_issue + condition.issue_type 匹配
+                    命中则用 reminder 内容替换默认文案（PROMPT_HEADER + reminder.content）
+                    未命中/未启用则保留 detect_format_issue 自带的内置默认文案
+    └─> self._hist.append_format_correction(issue.message)
+    └─> continue（回到循环顶部重新调用一次 LLM）
+```
+
+检测规则本身（"是否命中某个 issue_type"）**仍然只在**
+`format_correction_detector.py` 里维护，不受 reminder 系统影响——reminder
+系统只负责"命中之后展示什么文案"，职责边界清晰：**检测逻辑属于代码，提示
+文案属于配置**。
+
+### 新增规则：`write_file_truncated`
+
+判定条件（`_detect_incomplete_large_write`）：
+
+1. 存在未闭合的 `<tool_use>`（或别名 `<tool_call>`/`<tool_invoke>`）开标签
+   （开标签数 > 闭标签数，兼容三种标签名，覆盖面比只认 `<tool_use>` 更广）；
+2. 最后一个未闭合开标签之后的内容里，能正则匹配到
+   `"name": "write_file"` 或 `"name": "create_file"`（不要求 JSON 合法——内容
+   本来就是被从中间截断的）；
+3. 该片段长度超过 `_LARGE_WRITE_MIN_CHARS`（默认 2000 字符），排除"刚开了个
+   头就中断"这种明显不是"内容太大"导致的小片段，避免和 `unclosed_tool_use`
+   抢命中。
+
+在 `_RULES` 中的优先级**高于** `unclosed_tool_use`（排在最前面），因为二者
+判定范围有重叠（"截断的大文件写入"本身也满足"未闭合"），必须让更具体的规则
+先命中，否则会被笼统的"请完整重发一次"提示盖掉。
+
+默认（无 reminder 系统 / 未匹配到自定义文案时的）兜底文案，引导模型改为
+分片写入再合并；正式展示给模型的文案由
+`src/mini_agent/prompts/reminders/format_issue_write_file_truncated.md`
+提供，可在 `reminder.custom_dir` 下放同名 `issue_type` 的文件覆盖（例如
+调整分片大小、补充项目里实际存在的 `append_file` 之类工具的用法）。
+
+### 已迁移的 8 条旧规则文案
+
+其余 8 条已有规则（`tag_role_confusion` / `tool_result_used_as_request` /
+`bare_name_after_tag` / `unclosed_tool_use` / `invalid_json_in_tool_use` /
+`legacy_fence_unclosed` / `orphan_close_tag` / `tool_call_alias_tag`）的文案
+也一并迁移为 `prompts/reminders/format_issue_<issue_type>.md`，`_RULES` 里
+原来的硬编码字符串保留作为**兜底默认值**（reminder 系统被整体禁用，或用户
+手滑删了对应文件时仍能正常工作，不会因为缺文件就失去纠错能力）。
+
+### 新增/修改文件（本次）
+
+| 文件 | 改动 |
+|---|---|
+| `reminders/loader.py` | 新增 `TRIGGER_FORMAT_ISSUE` 常量；`ReminderCondition` 新增 `issue_type` 字段；`_parse_file()` 接受 `format_issue` 作为合法 `trigger_event` |
+| `reminders/matcher.py` | 新增 `match_format_issue(issue_type)` |
+| `reminders/manager.py` | 新增 `check_format_issue(issue_type)` |
+| `config/models.py` | `ReminderConfig` 新增 `format_issue_enabled` 开关 |
+| `config/loader.py` | 配置文件 `reminder.format_issue_enabled`（及此前遗漏接入的 `pre_tool_enabled`）解析进 `ReminderConfig` |
+| `perception/format_correction_detector.py` | 新增 `_detect_incomplete_large_write()` + `write_file_truncated` 规则（插入 `_RULES` 最前）；`PROMPT_HEADER` 改为公开导出，供调用方拼接自定义文案时复用；`write_file_truncated` 不再套用"请完整重发一次"的通用 footer |
+| `agent/reminders_correction.py` | `_detect_format_issue()` 改为优先查询 `self._reminder_mgr.check_format_issue(issue_type)`，命中则替换默认文案 |
+| `prompts/reminders/format_issue_*.md`（9 个） | 新增：8 条旧规则文案迁移 + 1 条新规则 `write_file_truncated` |
+
+### 测试
+
+- 单元测试覆盖：`_detect_incomplete_large_write` 的正例（截断的大文件写入）、
+  反例（正常闭合的 write_file 调用、片段过短的截断、非写文件类工具的截断）；
+  `_RULES` 优先级（同时满足 `write_file_truncated` 和 `unclosed_tool_use` 条件
+  的输入应命中前者）。
+- `reminders` 子系统：`ReminderLoader` 能正确加载 `trigger_event: format_issue`
+  的文件；`ReminderMatcher.match_format_issue()` 按 `issue_type` 精确/正则匹配；
+  `ReminderManager.check_format_issue()` 受 `format_issue_enabled` 开关控制。
+- 集成测试：`format_issue_enabled=False` 时自动退回 `format_correction_detector`
+  内置默认文案，检测和自动 `continue` 续跑逻辑不受影响。
 

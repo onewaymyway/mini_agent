@@ -21,6 +21,7 @@ from .loader import (
     TRIGGER_USER_INTENT,
     TRIGGER_PATTERN,
     TRIGGER_PRE_TOOL,
+    TRIGGER_FORMAT_ISSUE,
 )
 
 
@@ -149,6 +150,24 @@ class ReminderMatcher:
             if not self._match_tool_name(r, tool_name):
                 continue
             matched.append(r)
+
+        return _sort(matched)
+
+    def match_format_issue(self, issue_type: str) -> List[Reminder]:
+        """
+        [SYS-FORMAT-CORRECTION 统一化] format_correction_detector 判定命中某条
+        规则时触发。
+        condition.issue_type → 匹配 FormatIssue.issue_type（正则，必填，为空则
+        视为不匹配——避免一条未设置 issue_type 的 reminder 被所有问题类型命中）。
+        """
+        matched = []
+        for r in self._reminders:
+            if r.trigger_event != TRIGGER_FORMAT_ISSUE:
+                continue
+            if not r.condition.issue_type:
+                continue
+            if _re_search(r.condition.issue_type, issue_type):
+                matched.append(r)
 
         return _sort(matched)
 

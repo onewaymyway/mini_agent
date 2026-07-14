@@ -505,6 +505,8 @@ def load_config(
         post_tool_enabled=bool(_rm.get("post_tool_enabled", True)),
         user_intent_enabled=bool(_rm.get("user_intent_enabled", True)),
         pattern_enabled=bool(_rm.get("pattern_enabled", True)),
+        pre_tool_enabled=bool(_rm.get("pre_tool_enabled", True)),
+        format_issue_enabled=bool(_rm.get("format_issue_enabled", True)),
         max_per_turn=int(_rm.get("max_per_turn", 3)),
         verbose=bool(reminder_verbose if reminder_verbose is not None else _rm.get("verbose", False)),
     )

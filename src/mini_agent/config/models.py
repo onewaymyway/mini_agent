@@ -677,6 +677,11 @@ class ReminderConfig:
     # [具身改进 A3] 前馈控制：工具调用前触发（成熟的运动系统不只靠事后纠错，
     # 还依赖预期动作的预先调节——危险操作发生前先提醒，而不是出错后再补救）
     pre_tool_enabled: bool = True        # 工具调用前触发
+    # [SYS-FORMAT-CORRECTION 统一化] 格式纠错检测器（perception/format_correction_detector.py）
+    # 命中问题时触发，文案由 reminder 文件提供（trigger_event: format_issue）。
+    # 关闭后 format_correction 会退回内置默认文案，但检测+自动续跑逻辑不受影响
+    # （该逻辑受 FormatCorrectionConfig.enabled 单独控制）。
+    format_issue_enabled: bool = True
     # 同一 turn 内最多注入的 reminder 条数（避免大量 reminder 污染上下文）
     max_per_turn: int = 3
     # 调试：打印匹配到的 reminder 名称

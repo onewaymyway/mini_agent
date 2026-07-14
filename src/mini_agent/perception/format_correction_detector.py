@@ -65,19 +65,25 @@ from typing import Callable, Optional
 class FormatIssue:
     """检测到的一种"工具调用格式异常"。"""
 
-    issue_type: str       # 规则标识，如 "unclosed_tool_use" / "tag_role_confusion"
-    message: str          # 注入给模型的纠错提示文本（user 角色）
+    issue_type: str       # 规则标识，如 "unclosed_tool_use" / "write_file_truncated"
+    # 默认（兜底）纠错提示文本——reminder 系统未启用/未命中同名 issue_type
+    # 时使用。正常情况下调用方（agent/reminders_correction.py）会优先用
+    # ReminderManager.check_format_issue(issue_type) 找到的自定义文案替换它，
+    # 但字段名保持 message 不变，兼容原有调用方式（issue.message 始终可用）。
+    message: str
 
 
 # ── 纠错提示模板 ──────────────────────────────────────────────────────────────
 # 统一前缀，明确告诉模型："这不是真实用户的话，是系统对你上一条输出的反馈"，
 # 避免模型把它误当成用户的新请求来回应，而忽略要重新输出工具调用这件事。
 
-_PROMPT_HEADER = (
+PROMPT_HEADER = (
     "[System Notice] Your previous response appears to contain an incomplete "
     "or malformed tool call — it was not recognized as a valid tool use and "
     "no tool was executed.\n\n"
 )
+# 保留下划线别名，兼容模块内部既有引用
+_PROMPT_HEADER = PROMPT_HEADER
 
 _PROMPT_FOOTER = (
     "\nPlease resend a complete, correctly formatted tool call now:\n\n"
@@ -90,7 +96,16 @@ _PROMPT_FOOTER = (
 )
 
 
-def _build_message(detail: str) -> str:
+# 规则命中后，其"默认兜底文案"不适合再套用 _PROMPT_FOOTER 里"请完整重发一次"
+# 的通用建议的 issue_type 集合——例如大文件写入截断，重发一次大概率还是会
+# 截断，正确的建议是分片写入，规则自身的 detail 文本里已经包含完整的修复
+# 步骤，不需要再拼接"resend a complete tool call"的模板。
+_NO_RESEND_FOOTER_ISSUE_TYPES = frozenset({"write_file_truncated"})
+
+
+def _build_message(issue_type: str, detail: str) -> str:
+    if issue_type in _NO_RESEND_FOOTER_ISSUE_TYPES:
+        return _PROMPT_HEADER + detail
     return _PROMPT_HEADER + detail + _PROMPT_FOOTER
 
 
@@ -317,14 +332,92 @@ def _detect_tool_call_alias_tag(text: str) -> bool:
     return True
 
 
+# 用于 _detect_incomplete_large_write：写文件类工具名单。
+# 覆盖内置的 write_file / create_file；如项目里有其它写文件类工具（如自定义的
+# save_file），可以在 reminder 侧通过自定义 condition.issue_type 匹配同一个
+# issue_type 复用文案，但检测本身仍以这份名单为准（如需扩展这份名单，直接改
+# 这里，而不是通过 reminder 系统——reminder 只负责"文案"，不负责"检测规则"）。
+_LARGE_WRITE_TOOL_NAMES_RE = _re.compile(
+    r'"name"\s*:\s*"(?:write_file|create_file)"', _re.IGNORECASE
+)
+# 判定为"大文件写入"截断而非"随手截断"的最小内容长度阈值（字符数）。
+# 低于这个阈值更可能是网络抖动等原因中断，交给通用的 unclosed_tool_use 规则处理。
+_LARGE_WRITE_MIN_CHARS = 2000
+
+
+def _detect_incomplete_large_write(text: str) -> bool:
+    """
+    案例6（新增）：模型正在通过 write_file / create_file 写入一个较大的文件，
+    但输出在中途被截断（通常是达到了单次输出长度限制），导致 <tool_use> 块
+    没有正常闭合。
+
+    这种情况本质上也是"开标签未闭合"（会被 _detect_unclosed_or_duplicated_open_tag
+    捕获），但根因和修复方式都不同：不是模型格式写错了，是内容太大一次性写不完，
+    正确的应对不是"请完整重发一次"（大概率还是写不完，会陷入死循环），而是
+    "分片写入再合并"。因此需要单独识别出来，给出针对性提示，并且要在通用的
+    unclosed_tool_use 规则之前命中（更具体、优先级更高）。
+
+    判断方式：
+      1. 存在未闭合的 <tool_use>（或别名标签）开标签（复用与
+         _detect_unclosed_or_duplicated_open_tag 相同的"开标签数 > 闭标签数"判定，
+         但同时兼容 <tool_call>/<tool_invoke> 等别名，覆盖面比只认 <tool_use>
+         更广）；
+      2. 且最后一个未闭合的开标签之后的内容里，能匹配到
+         "name": "write_file" 或 "name": "create_file"（正则匹配，不要求
+         JSON 本身合法——因为内容就是被从中间截断的，本来就不是合法 JSON）；
+      3. 且该片段长度超过 _LARGE_WRITE_MIN_CHARS，排除"刚开了个头就中断"这种
+         明显不是"内容太大"导致的小片段（避免和其它更通用规则抢命中）。
+    """
+    open_iter = list(_re.finditer(r"<tool_(?:use|call|invoke)\b[^>]*>", text, _re.IGNORECASE))
+    if not open_iter:
+        return False
+    close_count = len(_re.findall(r"</tool_(?:use|call|invoke)>", text, _re.IGNORECASE))
+    if len(open_iter) <= close_count:
+        return False  # 所有开标签都能配对到闭标签，不是截断
+
+    # 取最后一个开标签之后的内容作为"未写完"的候选片段
+    last_open = open_iter[-1]
+    tail = text[last_open.end():]
+    if len(tail) < _LARGE_WRITE_MIN_CHARS:
+        return False
+    return bool(_LARGE_WRITE_TOOL_NAMES_RE.search(tail))
+
+
 # ── 规则注册表 ────────────────────────────────────────────────────────────────
-# 顺序即优先级：先匹配"标签角色混淆"（更具体、信息量更大的诊断——明确指出
-# 模型把请求标签和结果标签搞混了），再匹配范围更宽的"开标签未闭合"
-# （否则像 <tool_use>...</tool_result> 这种同时符合两条规则的输入，会被更
-# 笼统的"未闭合"规则先捞走，盖掉更精确的"标签混淆"诊断），然后是 JSON
-# 内容问题，最后才是旧格式兼容兜底。
+# 顺序即优先级：先匹配"大文件写入截断"（write_file_truncated，最具体，且修复
+# 方式与其它规则截然不同——不是"重发一次"而是"分片写入"，必须在通用的
+# unclosed_tool_use 之前命中，否则会被后者的笼统提示盖掉），然后是"标签角色
+# 混淆"（更具体、信息量更大的诊断——明确指出模型把请求标签和结果标签搞混
+# 了），再匹配范围更宽的"开标签未闭合"（否则像 <tool_use>...</tool_result>
+# 这种同时符合两条规则的输入，会被更笼统的"未闭合"规则先捞走，盖掉更精确的
+# "标签混淆"诊断），然后是 JSON 内容问题，最后才是旧格式兼容兜底。
+#
+# 每条规则的第三个元素是"默认兜底文案"：当 reminder 系统未启用、未配置，或
+# 没有找到对应 issue_type 的自定义 reminder 时使用。正常情况下最终展示给
+# 模型的文案由 reminders/ 系统提供（trigger_event: format_issue），可在
+# prompts/reminders/ 或用户 custom_dir 里按 issue_type 自定义，
+# 参见 agent/reminders_correction.py 中 _detect_format_issue 的拼接逻辑。
 
 _RULES: list[tuple[str, Callable[[str], bool], str]] = [
+    (
+        "write_file_truncated",
+        _detect_incomplete_large_write,
+        "It looks like a large `write_file` / `create_file` call was cut off "
+        "mid-content before the closing `</tool_use>` tag — the content was "
+        "likely too large to output in one shot.\n\n"
+        "Do NOT try to resend the entire content again in one call — it will "
+        "likely be truncated the same way. Instead, split the content into "
+        "smaller chunks and write them incrementally, then merge:\n\n"
+        "1. Split the target content into chunks (by paragraph/code-block "
+        "boundaries), each roughly 1500-2000 characters.\n"
+        "2. Call `write_file` once per chunk, writing to `<path>.part1`, "
+        "`<path>.part2`, ... (one complete, valid `<tool_use>` call per "
+        "chunk).\n"
+        "3. After all chunks are written, merge them with a `bash` call, e.g. "
+        "`cat <path>.part1 <path>.part2 ... > <path> && rm <path>.part1 "
+        "<path>.part2 ...`\n"
+        "4. Optionally verify with `bash(\"wc -c <path>\")`.\n",
+    ),
     (
         "tag_role_confusion",
         _detect_tag_role_confusion,
@@ -407,8 +500,8 @@ def detect_format_issue(text: str) -> Optional[FormatIssue]:
         return None
     for issue_type, detector, detail in _RULES:
         if detector(text):
-            return FormatIssue(issue_type=issue_type, message=_build_message(detail))
+            return FormatIssue(issue_type=issue_type, message=_build_message(issue_type, detail))
     return None
 
 
-__all__ = ["FormatIssue", "detect_format_issue"]
+__all__ = ["FormatIssue", "detect_format_issue", "PROMPT_HEADER"]
