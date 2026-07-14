@@ -541,7 +541,9 @@ def _compact_history(agent: Agent) -> None:
         return
     R.print_info(pm.fragment("cli_messages", "COMPACT_START"))
     try:
-        agent.compact_with_skills()
+        summary = agent.compact_with_skills()
+        if summary:
+            R.print_markdown(summary)
     except Exception as e:
         R.print_error(f"Compact failed: {e}")
 
@@ -554,7 +556,9 @@ def _compact_and_continue(agent: Agent) -> None:
 
     R.print_info(pm.fragment("cli_messages", "COMPACT_CONTINUE_START"))
     try:
-        agent.compact_with_skills()
+        summary = agent.compact_with_skills()
+        if summary:
+            R.print_markdown(summary)
     except Exception as e:
         R.print_error(f"Compact failed: {e}")
         R.print_error(pm.fragment("cli_messages", "COMPACT_CONTINUE_FAILED"))
