@@ -46,6 +46,11 @@ _CONTEXT_WINDOW_KEYWORDS: tuple[str, ...] = (
     "prompt is too long",          # Anthropic
     "context window is full",      # 部分兼容层
     "input is too long",           # 部分本地模型
+    # NVIDIA NIM 特有错误消息
+    "payload is below",            # NVIDIA: "Please make sure your payload is below 26214400"
+    "payload too large",           # NVIDIA 变体
+    "request too large",           # 通用大请求错误
+    "max payload",                 # 通用最大载荷限制
 )
 
 
