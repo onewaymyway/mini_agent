@@ -555,6 +555,22 @@ class GoalModeConfig:
     # CoarseStepExecutor。
     fine_grained_execution_enabled: bool = False
 
+    # ── [goal_mode_stuck_compact_plan.md §1.2] Dead-end 持久清单：不同于
+    # 按窗口滚动、会被冲掉的 recent_progress_reasons，dead_ends 只增不删
+    # （去重后），确保"已经验证无效的方向"无论隔了多少轮都不会失效。
+    # 默认开启；关闭后退化为纯窗口行为（回到升级前 §1.1 的实现）。
+    dead_ends_persist_enabled: bool = True
+
+    # ── [goal_mode_stuck_compact_plan.md §2.2] 自验证优先：如果 GoalSpec
+    # 设置了 verification_command，GoalRunner 在拿到主 Agent 本轮输出、
+    # 送进 GoalJudge 评审之前，会程序化地（不经过任何 LLM）执行一次该命令，
+    # 把 {returncode, stdout_tail, stderr_tail} 作为客观证据一并传给判官。
+    # 默认开启；关闭后退化为升级前的行为（判官只能看到 verification_command
+    # 的文本描述，不会有代码路径主动执行它）。
+    auto_verify_enabled: bool = True
+    auto_verify_timeout: int = 120        # 自动执行验证命令的超时时间（秒）
+    auto_verify_output_tail_lines: int = 40  # stdout/stderr 各自保留的尾部行数，避免污染 judge 上下文
+
 
 @dataclass
 class TurnJudgeConfig:

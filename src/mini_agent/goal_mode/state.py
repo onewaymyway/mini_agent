@@ -60,6 +60,11 @@ class GoalState:
     # 落盘时已经是裁剪后的列表）。
     recent_progress_reasons: list = field(default_factory=list)
 
+    # ── [goal_mode_stuck_compact_plan.md §1.2] Dead-end 持久清单：只增不减
+    # （去重后）的"已验证无效路径"记录，不随 recent_progress_reasons 的滚动
+    # 窗口被冲掉。每项 {"round": int, "reason": str, "progress": str}。
+    dead_ends: list = field(default_factory=list)
+
     def to_dict(self) -> dict:
         return asdict(self)
 
@@ -80,6 +85,7 @@ class GoalState:
             updated_at=float(d.get("updated_at", time.time())),
             criteria_status=list(d.get("criteria_status", []) or []),
             recent_progress_reasons=list(d.get("recent_progress_reasons", []) or []),
+            dead_ends=list(d.get("dead_ends", []) or []),
         )
 
 

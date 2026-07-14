@@ -50,6 +50,20 @@ PRIOR_CHECKLIST_BLOCK: |
   **上一轮各条验收标准的通过情况（除非本轮有明确相反证据，否则请保持一致，不要无理由回退）：**
   {checklist_lines}
 
+# [goal_mode_stuck_compact_plan.md §2.2] 自验证优先：GoalRunner 在送进 GoalJudge
+# 之前，如果 GoalSpec.verification_command 非空，会程序化地（不依赖任何 LLM）
+# 执行一次该命令，把客观结果拼进这个块传给判官，作为不依赖主 Agent 自述的
+# 硬证据。auto_verify_enabled=False 或 GoalSpec 未设置 verification_command 时
+# 不会生成这个块。
+VERIFICATION_RESULT_BLOCK: |
+  **系统自动执行验证命令的客观结果（不依赖 AI 助手自述，请优先参考这里的结果）：**
+  验证命令：{verification_command}
+  退出码：{returncode}
+  标准输出（尾部）：
+  {stdout_tail}
+  标准错误（尾部）：
+  {stderr_tail}
+
 STUCK_RECOVERY_ATTEMPTED_PATHS_BLOCK: |
   以下是最近几轮已经验证过、没有取得实质进展的方向，请不要重复：
   {attempted_paths_lines}

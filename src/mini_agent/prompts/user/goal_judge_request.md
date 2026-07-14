@@ -10,6 +10,9 @@
 #   {{prior_feedback_block}}   上一轮反馈块（无上一轮反馈时为空字符串）
 #   {{prior_checklist_block}} [goal_mode_completion_improvement_plan 改造项三]
 #                              上一轮逐条验收标准状态块（无历史记录/功能关闭时为空字符串）
+#   {{verification_result_block}} [goal_mode_stuck_compact_plan.md §2.2]
+#                              系统自动执行 verification_command 的客观结果块
+#                              （未设置验证命令/功能关闭时为空字符串）
 
 请核查 AI 助手是否已经达成以下目标。这是第 {{round_no}} 轮核查。
 
@@ -23,5 +26,6 @@
 {{agent_output}}
 {{prior_feedback_block}}
 {{prior_checklist_block}}
+{{verification_result_block}}
 
 请严格按照你的核查原则和输出格式进行判定。

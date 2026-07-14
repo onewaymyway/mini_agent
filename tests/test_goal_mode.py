@@ -627,6 +627,10 @@ class _FakeGoalModeCfg:
         self.criteria_tracking_enabled = kwargs.get("criteria_tracking_enabled", True)
         self.stuck_recovery_attempted_paths_enabled = kwargs.get("stuck_recovery_attempted_paths_enabled", True)
         self.failure_lesson_enabled = kwargs.get("failure_lesson_enabled", True)
+        self.dead_ends_persist_enabled = kwargs.get("dead_ends_persist_enabled", True)
+        self.auto_verify_enabled = kwargs.get("auto_verify_enabled", True)
+        self.auto_verify_timeout = kwargs.get("auto_verify_timeout", 120)
+        self.auto_verify_output_tail_lines = kwargs.get("auto_verify_output_tail_lines", 40)
 
 
 class _FakeCfg:
@@ -1165,3 +1169,171 @@ def test_goal_runner_no_lesson_written_when_disabled(monkeypatch, tmp_path):
 
     assert result.status == "stuck"
     assert agent._memory.entries == []
+
+
+# ── [goal_mode_stuck_compact_plan.md §1.2] Dead-end 持久清单 ────────────────
+
+def test_goal_state_dead_ends_roundtrip(tmp_path):
+    """GoalState 应该能正确落盘/恢复 dead_ends 字段。"""
+    from mini_agent.storage.paths import AgentPaths
+    from mini_agent.goal_mode.state import GoalStateStore
+
+    paths = AgentPaths(project_root=tmp_path)
+    store = GoalStateStore(paths, "sess-dead-ends")
+    state = GoalState(dead_ends=[{"round": 2, "progress": "SAME_APPROACH_NO_GAIN", "reason": "同一个错误反复出现"}])
+    store.save(state)
+    loaded = store.load()
+    assert loaded.dead_ends[0]["reason"] == "同一个错误反复出现"
+
+
+def test_goal_runner_dead_ends_survive_progress_reasons_window_eviction(monkeypatch, tmp_path):
+    """[§1.2] recent_progress_reasons 是滚动窗口，会被后续记录冲掉；
+    但 dead_ends 是持久清单，不应该被冲掉——多轮之后第一次记录的 dead-end
+    依然应该出现在 stuck 恢复注入的提示里。"""
+    agent = FakeAgent(outputs=[f"attempt {i}" for i in range(15)])
+    # 窗口上限固定为 max(3, consecutive_same_feedback_limit) = 3，第一条会被冲掉
+    cfg = _FakeCfg(tmp_path, max_rounds=20, consecutive_same_feedback_limit=3, max_stuck_recoveries=1)
+    spec = _confirmed_spec()
+
+    counter = {"i": 0}
+
+    def fake_judge(**kw):
+        counter["i"] += 1
+        # 第一轮给一个独特的、可识别的失败理由
+        if counter["i"] == 1:
+            reason = "尝试了直接修改 UNIQUE_MARKER_PATH_A，但发现前提假设不成立"
+        else:
+            reason = f"反复尝试同一种修复没有效果（第{counter['i']}次）"
+        return _judge_json(
+            "CONTINUE", feedback="卡住了",
+            progress="SAME_APPROACH_NO_GAIN", progress_reason=reason,
+        )
+
+    monkeypatch.setattr("mini_agent.role_agents.goal_judge.run_goal_judge", lambda **kw: fake_judge(**kw))
+
+    runner = GoalRunner(agent=agent, cfg=cfg, goal_spec=spec)
+    runner.run()
+
+    # dead_ends 持久清单应该仍保留第一轮记录的具体理由
+    assert any("UNIQUE_MARKER_PATH_A" in d["reason"] for d in runner._dead_ends)
+
+    # 而窗口内的 _recent_progress_reasons 容量为 3，早期记录已被冲掉
+    assert not any("UNIQUE_MARKER_PATH_A" in r["reason"] for r in runner._recent_progress_reasons)
+
+    # 注入给主 agent 历史里的提示（compact 恢复时）应该包含这条持久化的 dead-end
+    injected_texts = [e.get("content", "") for e in agent._hist.entries if isinstance(e, dict)]
+    assert any("UNIQUE_MARKER_PATH_A" in t for t in injected_texts)
+
+
+def test_goal_runner_dead_ends_dedup_near_duplicate(monkeypatch, tmp_path):
+    """同一条（近似重复的）失败理由不应该被反复记录进 dead_ends。"""
+    agent = FakeAgent(outputs=[f"attempt {i}" for i in range(15)])
+    cfg = _FakeCfg(tmp_path, max_rounds=20, consecutive_same_feedback_limit=3, max_stuck_recoveries=0)
+    spec = _confirmed_spec()
+
+    same_reason = "反复尝试同一种修复方式没有任何效果"
+
+    def fake_judge(**kw):
+        return _judge_json(
+            "CONTINUE", feedback="卡住了",
+            progress="SAME_APPROACH_NO_GAIN", progress_reason=same_reason,
+        )
+
+    monkeypatch.setattr("mini_agent.role_agents.goal_judge.run_goal_judge", lambda **kw: fake_judge(**kw))
+
+    runner = GoalRunner(agent=agent, cfg=cfg, goal_spec=spec)
+    runner.run()
+
+    assert len(runner._dead_ends) == 1
+
+
+# ── [goal_mode_stuck_compact_plan.md §2.2] 自验证优先 ───────────────────────
+
+def test_goal_runner_auto_verify_executes_command_and_passes_result_to_judge(monkeypatch, tmp_path):
+    """GoalSpec.verification_command 非空时，GoalRunner 应该在调用判官之前
+    程序化执行一次该命令，并把结果透传给 run_goal_judge 的 verification_result 参数。"""
+    agent = FakeAgent(outputs=["did the thing"])
+    cfg = _FakeCfg(tmp_path)
+    spec = GoalSpec(
+        goal_text="do the thing",
+        acceptance_criteria=["it works"],
+        confirmed=True,
+        verification_method="run_command",
+        verification_command="echo hello-verification",
+    )
+
+    captured = {}
+
+    def fake_run_goal_judge(**kw):
+        captured["verification_result"] = kw.get("verification_result")
+        return "GOAL_STATUS: DONE\n全部通过"
+
+    monkeypatch.setattr("mini_agent.role_agents.goal_judge.run_goal_judge", fake_run_goal_judge)
+
+    runner = GoalRunner(agent=agent, cfg=cfg, goal_spec=spec)
+    result = runner.run()
+
+    assert result.status == "done"
+    vr = captured["verification_result"]
+    assert vr is not None
+    assert vr["command"] == "echo hello-verification"
+    assert vr["returncode"] == 0
+    assert "hello-verification" in vr["stdout_tail"]
+
+
+def test_goal_runner_auto_verify_disabled_by_config(monkeypatch, tmp_path):
+    """auto_verify_enabled=False 时不应该执行验证命令（verification_result 应为 None）。"""
+    agent = FakeAgent(outputs=["did the thing"])
+    cfg = _FakeCfg(tmp_path, auto_verify_enabled=False)
+    spec = GoalSpec(
+        goal_text="do the thing",
+        acceptance_criteria=["it works"],
+        confirmed=True,
+        verification_method="run_command",
+        verification_command="echo should-not-run",
+    )
+
+    captured = {}
+
+    def fake_run_goal_judge(**kw):
+        captured["verification_result"] = kw.get("verification_result")
+        return "GOAL_STATUS: DONE\n全部通过"
+
+    monkeypatch.setattr("mini_agent.role_agents.goal_judge.run_goal_judge", fake_run_goal_judge)
+
+    runner = GoalRunner(agent=agent, cfg=cfg, goal_spec=spec)
+    runner.run()
+
+    assert captured["verification_result"] is None
+
+
+def test_goal_runner_auto_verify_no_command_returns_none(monkeypatch, tmp_path):
+    """GoalSpec 未设置 verification_command 时，_run_verification_command 应返回 None。"""
+    agent = FakeAgent(outputs=["did the thing"])
+    cfg = _FakeCfg(tmp_path)
+    spec = _confirmed_spec()
+
+    monkeypatch.setattr(
+        "mini_agent.role_agents.goal_judge.run_goal_judge",
+        lambda **kw: "GOAL_STATUS: DONE\n全部通过",
+    )
+
+    runner = GoalRunner(agent=agent, cfg=cfg, goal_spec=spec)
+    assert runner._run_verification_command() is None
+
+
+def test_build_prompt_includes_self_verify_hint_when_command_set():
+    """_build_prompt 应该在设置了 verification_command 时提醒主 Agent 自行执行验证。"""
+    agent = FakeAgent(outputs=["x"])
+    cfg = _FakeCfg(Path("/tmp"))
+    spec = GoalSpec(
+        goal_text="do the thing",
+        acceptance_criteria=["it works"],
+        confirmed=True,
+        verification_method="run_command",
+        verification_command="pytest -q",
+    )
+    runner = GoalRunner(agent=agent, cfg=cfg, goal_spec=spec)
+    prompt = runner._build_prompt()
+    assert "pytest -q" in prompt
+    assert "自验证要求" in prompt

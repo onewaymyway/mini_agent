@@ -35,12 +35,18 @@ def build_goal_judge_prompt(
     round_no: int,
     prior_feedback: str = "",
     prior_checklist_lines: str = "",
+    verification_result: Optional[dict] = None,
 ) -> str:
     """构建 GoalJudge 的核查 prompt（模板见 prompts/user/goal_judge_request.md）。
 
     prior_checklist_lines：[改造项三] 上一轮各条验收标准通过情况的文本行
     （由调用方基于 GoalState.criteria_status 拼装），空字符串时不生成
     prior_checklist_block（等价于该功能关闭或尚无历史记录）。
+
+    verification_result：[goal_mode_stuck_compact_plan.md §2.2] GoalRunner
+    程序化执行 verification_command 后的结果字典
+    {"command": str, "returncode": int, "stdout_tail": str, "stderr_tail": str}，
+    None 表示未设置验证命令、执行失败或功能关闭——不生成 verification_result_block。
     """
     criteria_lines = "\n".join(
         f"{i+1}. {c}" for i, c in enumerate(goal_spec.acceptance_criteria)
@@ -57,6 +63,16 @@ def build_goal_judge_prompt(
             "goal_mode", "PRIOR_CHECKLIST_BLOCK", checklist_lines=prior_checklist_lines
         )
 
+    verification_result_block = ""
+    if verification_result:
+        verification_result_block = "\n" + pm.fragment(
+            "goal_mode", "VERIFICATION_RESULT_BLOCK",
+            verification_command=verification_result.get("command", ""),
+            returncode=verification_result.get("returncode", ""),
+            stdout_tail=verification_result.get("stdout_tail", "") or "（无输出）",
+            stderr_tail=verification_result.get("stderr_tail", "") or "（无输出）",
+        )
+
     return pm.render(
         "user/goal_judge_request",
         round_no=round_no,
@@ -65,6 +81,7 @@ def build_goal_judge_prompt(
         agent_output=agent_output,
         prior_feedback_block=prior_feedback_block,
         prior_checklist_block=prior_checklist_block,
+        verification_result_block=verification_result_block,
     )
 
 
@@ -77,6 +94,7 @@ def run_goal_judge(
     prior_feedback: str = "",
     extended_output_enabled: bool = False,
     prior_checklist_lines: str = "",
+    verification_result: Optional[dict] = None,
 ) -> str:
     """
     运行 GoalJudgeAgent，返回判定文本（含 GOAL_STATUS 行）。
@@ -98,6 +116,7 @@ def run_goal_judge(
         一致，不会要求也不会解析这些额外字段。
     prior_checklist_lines：透传给 build_goal_judge_prompt，供 GoalJudge 参考
         上一轮各条验收标准的通过情况（见改造项三）。
+    verification_result：透传给 build_goal_judge_prompt（见 goal_mode_stuck_compact_plan.md §2.2）。
     """
     # [Phase 3 重构] 样板逻辑收敛到 judge_factory.spawn_judge_agent /
     # run_judge_turn。函数签名和返回值保持完全不变。
@@ -140,6 +159,7 @@ def run_goal_judge(
         round_no=round_no,
         prior_feedback=prior_feedback,
         prior_checklist_lines=prior_checklist_lines,
+        verification_result=verification_result,
     )
 
     result = run_judge_turn(

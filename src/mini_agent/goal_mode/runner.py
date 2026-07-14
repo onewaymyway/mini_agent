@@ -129,6 +129,10 @@ class GoalRunner:
         self._recent_progress_reasons: list[dict] = []
         self._progress_reasons_cap = max(3, self._gm_cfg.consecutive_same_feedback_limit)
 
+        # [goal_mode_stuck_compact_plan.md §1.2] Dead-end 持久清单：只增不减
+        # （去重后），不随 _recent_progress_reasons 的滚动窗口被冲掉。
+        self._dead_ends: list[dict] = []
+
         # 恢复态：从上一次中断处继续
         if resume_state is not None:
             self._round = resume_state.round
@@ -142,6 +146,8 @@ class GoalRunner:
                 self._criteria_status = list(resume_state.criteria_status)
             if resume_state.recent_progress_reasons:
                 self._recent_progress_reasons = list(resume_state.recent_progress_reasons)
+            if resume_state.dead_ends:
+                self._dead_ends = list(resume_state.dead_ends)
         else:
             self._round = 0
             self._last_feedback = ""
@@ -187,7 +193,10 @@ class GoalRunner:
                 self._do_compact()
                 continue  # 不计入 self._round，重新跑这一步
 
-            judge_status, judge_feedback, progress_info = self._run_judge(step.output)
+            verification_result = self._run_verification_command()
+            judge_status, judge_feedback, progress_info = self._run_judge(
+                step.output, verification_result=verification_result,
+            )
 
             if judge_status == "DONE":
                 return self._finish(status="done", report=judge_feedback)
@@ -200,6 +209,13 @@ class GoalRunner:
                         report=f"已达到最大 compact 次数上限（{max_compacts}）。",
                     )
                 self._do_compact()
+                # [goal_mode_stuck_compact_plan.md §1.3] 判官主动建议 compact 时
+                # 也应该受益于已积累的 dead-end 信息，不需要非得先经历一次
+                # StuckDetector 判定才能用上。
+                dead_ends_block = self._render_dead_ends_block()
+                if dead_ends_block:
+                    from ._compat import make_goal_context
+                    self._agent._hist.append_raw_dict(make_goal_context(dead_ends_block))
                 continue  # 不计入轮次
 
             # CONTINUE（或判定异常时的保守兜底）
@@ -230,20 +246,101 @@ class GoalRunner:
     # ── 内部：prompt 组装 ────────────────────────────────────────────────
 
     def _build_prompt(self) -> str:
+        # [goal_mode_stuck_compact_plan.md §2.2 步骤1] 自验证优先：如果设置了
+        # verification_command，显式要求主 Agent 在本轮结束前主动执行一次，
+        # 并把结果总结进回复——prompt 层面的强约束，成本低，与 GoalRunner
+        # 自己的程序化执行（§2.2 步骤2）互补，不冲突。
+        verify_hint = ""
+        if self._spec.verification_command:
+            verify_hint = (
+                "\n\n【自验证要求】在结束本轮回复之前，请主动执行一次验证命令：\n"
+                f"`{self._spec.verification_command}`\n"
+                "并把执行结果（是否通过、关键输出）总结进你的回复，而不是仅凭自己的判断。"
+            )
         if self._round == 0 and not self._last_feedback:
             return (
                 f"{self._spec.render_context_block()}\n\n"
                 "请开始尝试完成这个目标。"
+                f"{verify_hint}"
             )
         return (
             "请根据上一轮的核查反馈继续推进目标：\n\n"
             f"{self._last_feedback}\n\n"
             f"{self._spec.render_context_block()}"
+            f"{verify_hint}"
         )
+
+    # ── 内部：自验证（程序化执行 verification_command）───────────────────
+
+    def _run_verification_command(self) -> Optional[dict]:
+        """[goal_mode_stuck_compact_plan.md §2.2 步骤2] 在送进 GoalJudge 之前，
+        GoalRunner 自己（不经过任何 LLM）程序化地执行一次 GoalSpec.verification_command，
+        把 {command, returncode, stdout_tail, stderr_tail} 作为客观证据返回，
+        供 _run_judge 拼进 judge prompt。
+
+        不满足以下任一条件时返回 None（不影响现有流程，判官依然只能看到
+        verification_command 的文本描述）：
+          - cfg.goal_mode.auto_verify_enabled 为 False
+          - GoalSpec.verification_command 为空
+          - 执行过程本身抛出异常（超时、命令不存在等）——此时把异常信息本身
+            也作为证据返回（returncode=None），而不是完全静默吞掉，因为
+            "验证命令执行失败"本身对判官也是有价值的信息。
+        """
+        if not getattr(self._gm_cfg, "auto_verify_enabled", True):
+            return None
+        command = (self._spec.verification_command or "").strip()
+        if not command:
+            return None
+
+        import subprocess
+
+        timeout = getattr(self._gm_cfg, "auto_verify_timeout", 120)
+        tail_lines = getattr(self._gm_cfg, "auto_verify_output_tail_lines", 40)
+
+        def _tail(text: str) -> str:
+            lines = text.splitlines()
+            if len(lines) > tail_lines:
+                lines = lines[-tail_lines:]
+            return "\n".join(lines)
+
+        R.print_info(f"[GoalRunner] 自动执行验证命令：{command}")
+        try:
+            result = subprocess.run(
+                command,
+                shell=True,
+                cwd=str(self._cfg.project_root) if getattr(self._cfg, "project_root", None) else None,
+                capture_output=True,
+                timeout=timeout,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+            )
+            return {
+                "command": command,
+                "returncode": result.returncode,
+                "stdout_tail": _tail(result.stdout or ""),
+                "stderr_tail": _tail(result.stderr or ""),
+            }
+        except subprocess.TimeoutExpired:
+            R.print_warning(f"[GoalRunner] 验证命令执行超时（{timeout}s）。")
+            return {
+                "command": command,
+                "returncode": None,
+                "stdout_tail": "",
+                "stderr_tail": f"[验证命令执行超时，已等待 {timeout} 秒]",
+            }
+        except Exception as e:
+            R.print_warning(f"[GoalRunner] 验证命令执行失败（不影响本轮流程）：{e}")
+            return {
+                "command": command,
+                "returncode": None,
+                "stdout_tail": "",
+                "stderr_tail": f"[验证命令执行异常：{e}]",
+            }
 
     # ── 内部：GoalJudge 调用 ─────────────────────────────────────────────
 
-    def _run_judge(self, agent_output: str) -> tuple[str, str, dict]:
+    def _run_judge(self, agent_output: str, verification_result: Optional[dict] = None) -> tuple[str, str, dict]:
         from mini_agent.role_agents.goal_judge import run_goal_judge, build_goal_judge_prompt
         from mini_agent.role_agents.feedback import extract_goal_status
 
@@ -298,6 +395,7 @@ class GoalRunner:
                 round_no=self._round + 1,
                 prior_feedback=self._last_feedback,
                 prior_checklist_lines=prior_checklist_lines,
+                verification_result=verification_result,
             )
             R.console.print()
             R.console.print("[bold]— GoalJudge 输入 Prompt —[/bold]")
@@ -313,6 +411,7 @@ class GoalRunner:
             prior_feedback=self._last_feedback,
             extended_output_enabled=extended_output_enabled,
             prior_checklist_lines=prior_checklist_lines,
+            verification_result=verification_result,
         )
 
         status = extract_goal_status(raw) or "CONTINUE"  # 提取失败时保守按 CONTINUE 处理
@@ -371,6 +470,19 @@ class GoalRunner:
             if len(self._recent_progress_reasons) > self._progress_reasons_cap:
                 self._recent_progress_reasons = self._recent_progress_reasons[-self._progress_reasons_cap:]
 
+            # [goal_mode_stuck_compact_plan.md §1.2] 无进展/退步且带具体理由时，
+            # 追加进持久化的 dead_ends 清单（去重，不随窗口滚动被冲掉）。
+            if (
+                getattr(self._gm_cfg, "dead_ends_persist_enabled", True)
+                and progress_info["progress"] in ("SAME_APPROACH_NO_GAIN", "REGRESSED")
+                and progress_info["progress_reason"]
+            ):
+                self._record_dead_end(
+                    round_no=self._round + 1,
+                    progress=progress_info["progress"],
+                    reason=progress_info["progress_reason"],
+                )
+
         # 注入判定反馈到主 Agent 历史（带 _type=role_agent，与现有 role agent 反馈一致）
         from mini_agent.role_agents.feedback import RoleFeedback, build_inject_message
         try:
@@ -397,6 +509,34 @@ class GoalRunner:
         R.console.print()
 
         return status, display_text, progress_info
+
+    # ── 内部：Dead-end 持久清单 ──────────────────────────────────────────
+
+    def _record_dead_end(self, round_no: int, progress: str, reason: str) -> None:
+        """[goal_mode_stuck_compact_plan.md §1.2] 追加一条 dead-end 记录，
+        与已有记录做粗粒度相似度去重（复用 spec.py 现成的 _is_near_duplicate），
+        避免同一条已验证无效的路径被反复记录、把提示block撑得又臭又长。
+        """
+        from .spec import _is_near_duplicate
+
+        if any(_is_near_duplicate(reason, d.get("reason", "")) for d in self._dead_ends):
+            return
+        self._dead_ends.append({"round": round_no, "progress": progress, "reason": reason})
+
+    def _render_dead_ends_block(self) -> str:
+        """把持久化 dead_ends 清单渲染成"已验证无效路径"提示文本，
+        用于任何 compact 场景（stuck 恢复 / NEED_COMPACT）注入。"""
+        if not self._dead_ends:
+            return ""
+        attempted_paths_lines = "\n".join(
+            f"{i + 1}.（第 {d['round']} 轮）{d['reason']}"
+            for i, d in enumerate(self._dead_ends)
+        )
+        from mini_agent.prompts import pm
+        return pm.fragment(
+            "goal_mode", "STUCK_RECOVERY_ATTEMPTED_PATHS_BLOCK",
+            attempted_paths_lines=attempted_paths_lines,
+        )
 
     # ── 内部：卡住检测（连续反馈高度雷同 / LLM 判进展）──────────────────────
 
@@ -476,21 +616,29 @@ class GoalRunner:
         # [改造项二] 如果积累了带具体理由的 progress_reason 历史，把"已验证
         # 无效的方向"拼进提示，取代/补充上面这段通用话术——让"换角度"有具体
         # 依据，而不是一句空话导致 agent 换个说法继续同一个思路。
+        # [goal_mode_stuck_compact_plan.md §1.2] 优先使用不随窗口滚动的持久化
+        # dead_ends 清单；关闭该开关时退化为原有的窗口内 _recent_progress_reasons
+        # （升级前行为，保持向后兼容）。
         attempted_paths_enabled = getattr(self._gm_cfg, "stuck_recovery_attempted_paths_enabled", True)
-        no_gain_reasons = [
-            r for r in self._recent_progress_reasons
-            if r.get("progress") in ("SAME_APPROACH_NO_GAIN", "REGRESSED") and r.get("reason")
-        ]
-        if attempted_paths_enabled and no_gain_reasons:
-            attempted_paths_lines = "\n".join(
-                f"{i + 1}.（第 {r['round']} 轮）{r['reason']}"
-                for i, r in enumerate(no_gain_reasons)
-            )
-            from mini_agent.prompts import pm
-            hint = hint + "\n\n" + pm.fragment(
-                "goal_mode", "STUCK_RECOVERY_ATTEMPTED_PATHS_BLOCK",
-                attempted_paths_lines=attempted_paths_lines,
-            )
+        if attempted_paths_enabled and getattr(self._gm_cfg, "dead_ends_persist_enabled", True):
+            dead_ends_block = self._render_dead_ends_block()
+            if dead_ends_block:
+                hint = hint + "\n\n" + dead_ends_block
+        elif attempted_paths_enabled:
+            no_gain_reasons = [
+                r for r in self._recent_progress_reasons
+                if r.get("progress") in ("SAME_APPROACH_NO_GAIN", "REGRESSED") and r.get("reason")
+            ]
+            if no_gain_reasons:
+                attempted_paths_lines = "\n".join(
+                    f"{i + 1}.（第 {r['round']} 轮）{r['reason']}"
+                    for i, r in enumerate(no_gain_reasons)
+                )
+                from mini_agent.prompts import pm
+                hint = hint + "\n\n" + pm.fragment(
+                    "goal_mode", "STUCK_RECOVERY_ATTEMPTED_PATHS_BLOCK",
+                    attempted_paths_lines=attempted_paths_lines,
+                )
 
         self._agent._hist.append_raw_dict(make_goal_context(hint))
 
@@ -543,6 +691,7 @@ class GoalRunner:
             final_report=final_report,
             criteria_status=list(self._criteria_status),
             recent_progress_reasons=list(self._recent_progress_reasons),
+            dead_ends=list(self._dead_ends),
         )
         try:
             self._state_store.save(state)
@@ -594,8 +743,11 @@ class GoalRunner:
         try:
             from mini_agent.perception.memory_store import MemoryEntry
 
+            # [goal_mode_stuck_compact_plan.md §1.2] 失败经验沉淀时优先使用
+            # 持久化的 dead_ends 清单（覆盖更完整，不受窗口滚动限制）。
+            source_reasons = self._dead_ends if self._dead_ends else self._recent_progress_reasons
             no_gain_reasons = [
-                r for r in self._recent_progress_reasons
+                r for r in source_reasons
                 if r.get("progress") in ("SAME_APPROACH_NO_GAIN", "REGRESSED") and r.get("reason")
             ]
             attempted_lines = "\n".join(
