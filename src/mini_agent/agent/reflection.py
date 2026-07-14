@@ -195,23 +195,13 @@ class ReflectionMixin:
             log_exception(_mini_agent_exc, where='mini_agent.agent')
             pass
 
-        # [Stage 8 / 8.1] 巩固循环 时间门控：每 24h 自动触发一次后台循环扫描
-        try:
-            self._maybe_run_consolidation()
-        except Exception as _mini_agent_exc:
-            from mini_agent.errors import log_exception
-            log_exception(_mini_agent_exc, where='mini_agent.agent')
-            pass
-
-        # [具身改进 C4] 自维护模块：每 24h 自动触发一次健康检查
-        # （可能失效的工具 / 过时 skill / 矛盾的 lesson），与 巩固循环
-        # 采用同款时间门控模式，互不干扰（各自独立的 last_run_at 状态文件）。
-        try:
-            self._maybe_run_self_maintenance()
-        except Exception as _mini_agent_exc:
-            from mini_agent.errors import log_exception
-            log_exception(_mini_agent_exc, where='mini_agent.agent')
-            pass
+        # [Stage 8 / 8.1] 巩固循环 与 [具身改进 C4] 自维护模块的时间门控扫描
+        # 已迁移到 daemon 模式的 CronScheduler（sys:consolidation /
+        # sys:self_maintain，见 evolution/cron_scheduler.py），不再在
+        # 非 daemon REPL 的 session-end 同步路径里触发：这两步都可能
+        # 发起真实 LLM 调用且没有超时保护，放在 exit 关键路径上会导致
+        # exit/quit 卡死甚至只能靠 Ctrl+C 强制中断。daemon 模式下用户
+        # 持续在线，由 CronScheduler 按 interval 在后台异步跑更合适。
 
         # [SYS-LESSON] 反思 LLM 调用：基于 tool_stats + 最后若干轮 history 生成 lesson 候选
         if not self.cfg.memory.enabled or self._memory is None:
@@ -437,84 +427,6 @@ class ReflectionMixin:
                 log_exception(_mini_agent_exc, where='mini_agent.agent')
                 pass
 
-    def _maybe_run_consolidation(self) -> None:
-        """
-        [Stage 8 / 8.1] SessionEnd 时的 巩固循环 时间门控。
-
-        每次 session 结束时检查"上次 巩固循环 运行距今是否超过 24h"，
-        是则自动触发一次轻量扫描（剪枝 + 能力地图 + 晋升候选）。
-        不需要后台调度器，用 consolidation_rhythm.json 的 _last_run_at 字段实现。
-        结果只打印摘要（有发现时），不阻塞退出流程。
-        """
-        try:
-            from mini_agent.storage.paths import AgentPaths
-            from mini_agent.evolution.consolidation import run_consolidation, should_run_consolidation
-
-            paths = AgentPaths(self.cfg.project_root)
-            if not should_run_consolidation(paths):
-                return
-
-            knowledge_llm_call = None
-            _pool = getattr(self, "_client_pool", None)
-            if _pool is not None:
-                from mini_agent.perception.memory_factory import build_llm_call
-                knowledge_llm_call = lambda prompt: build_llm_call(_pool.current_client)(prompt)
-
-            report = run_consolidation(
-                paths,
-                skill_loader=getattr(self, "skill_loader", None),
-                memory_backend=getattr(self, "_memory", None),
-                knowledge_llm_call=knowledge_llm_call,
-            )
-
-            # 只在有发现时打印摘要（避免每次退出都打印噪音）
-            if report.prune_candidates:
-                R.print_info(
-                    f"[consolidate] 发现 {len(report.prune_candidates)} 个剪枝候选，"
-                    "用 /evolve consolidate 查看详情。"
-                )
-            if report.promotion_candidates:
-                R.print_info(
-                    f"[consolidate] 发现 {len(report.promotion_candidates)} 个跨项目晋升候选，"
-                    "用 /evolve consolidate 查看详情。"
-                )
-        except Exception:
-            pass  # 巩固循环失败不影响退出流程
-
-    def _maybe_run_self_maintenance(self) -> None:
-        """
-        [具身改进 C4] SessionEnd 时的自维护时间门控。
-
-        每次 session 结束时检查"上次自维护扫描距今是否超过 24h"，是则触发
-        一次健康检查（可能失效的工具 / 过时 skill / 矛盾的 lesson）。结果
-        写入 activity_digest.jsonl，只在有发现时打印摘要，不阻塞退出流程。
-        """
-        try:
-            from mini_agent.storage.paths import AgentPaths
-            from mini_agent.evolution.self_maintenance import (
-                run_self_maintenance, should_run_self_maintenance,
-            )
-
-            paths = AgentPaths(self.cfg.project_root)
-            if not should_run_self_maintenance(paths):
-                return
-
-            report = run_self_maintenance(
-                paths,
-                skill_loader=getattr(self, "skill_loader", None),
-                memory_backend=getattr(self, "_memory", None),
-            )
-
-            if report.has_findings:
-                R.print_info(
-                    f"[self-maintenance] 发现 {len(report.stale_tools)} 个可能失效工具、"
-                    f"{len(report.stale_skills)} 个过时 skill、"
-                    f"{len(report.conflicting_lessons)} 组可能矛盾的经验，"
-                    "详情见 activity_digest.jsonl / 下次连接的晨报。"
-                )
-        except Exception:
-            pass  # 自维护扫描失败不影响退出流程
-
     def _run_observability_on_session_end(self) -> None:
         """[Stage 6 / 6.3] SessionEnd 时：
         1. 把本 session 的 total_tokens / tool_count 写入 activity_log（为异常检测提供基线数据）
@@ -629,4 +541,3 @@ class ReflectionMixin:
             raw_outcomes = []
         key_outcomes = [str(o)[:200] for o in raw_outcomes[:5]]
         return theme, key_outcomes
-
