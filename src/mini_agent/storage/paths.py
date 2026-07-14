@@ -257,11 +257,21 @@ class AgentPaths:
         return self.workdir_dir / "knowledge_timeline_index.json"
     @property
     def workdir_cognitive_anchor(self) -> Path:
-        """<project_root>/.agent/cognitive_anchor.md — 认知锚点文件（具身改进
-        v3 C3）。任务被用户明确打断时（Ctrl-C / /stop）生成的"思维状态重建
-        指南"——记录的是"当时在想什么"而不是"做了什么"（后者是 session
-        历史的职责）。单文件、被新内容覆盖（不追加历史）：这是工作台上的
-        便条，不是日志，只需要最新的一份。"""
+        """<project_root>/.agent/cognitive_anchor.md — [已废弃，仅保留属性
+        避免外部代码直接访问时报 AttributeError] 认知锚点旧版存储位置
+        （具身改进 v3 C3 的最初实现）。
+
+        问题：这是 workdir 级单文件，任何一个新建/恢复的 session 在
+        `_init_session()` 时都会读到它，与"锚点应该只属于留下它的那个具体
+        session"的语义不符——例如 session-1 被打断留下锚点后，session-2
+        （哪怕是完全不相关的任务）也会读到并消费掉它。
+
+        现已改为 session 级存储：`<sessions_dir>/<session_id>/
+        cognitive_anchor.md`（见 `agent/lifecycle.py::
+        AgentLifecycleMixin._cognitive_anchor_path`），只在
+        `load_session(session_id)` resume 到具体某个 session 时才检查
+        该 session 自己目录下的锚点文件，天然不会跨 session 串味。
+        """
         return self.workdir_dir / "cognitive_anchor.md"
 
     @property

@@ -68,7 +68,7 @@ print(paths.session_history("abc"))  # .agent/sessions/abc/history.json
 | `workdir_open_threads` | `<project>/.agent/open_threads.json` | 跨 session 待处理线索（W2） |
 | `workdir_knowledge_md` | `<project>/.agent/knowledge.md` | 项目软知识（W2） |
 | `workdir_knowledge_index` | `<project>/.agent/knowledge_index.json` | 知识索引（W2） |
-| `workdir_cognitive_anchor` | `<project>/.agent/cognitive_anchor.md` | 认知锚点文件（具身改进） |
+| `workdir_cognitive_anchor` | `<project>/.agent/cognitive_anchor.md` | **[已废弃]** 认知锚点旧版 workdir 级存储位置；现已改为 session 级 `<sessions_dir>/<session_id>/cognitive_anchor.md`（见 `agent/lifecycle.py::_cognitive_anchor_path`），本属性仅为兼容保留 |
 | `proprioception_snapshot` | `<project>/.agent/proprioception_snapshot.json` | 本体感知最新快照（B1 → Stage 9 信号桥接，供 `ResourceArbiter` 读取，单文件覆盖写） |
 | `sessions_dir` | `<project>/.agent/sessions/` | Session 根目录 |
 | `cache_dir` | `<project>/.agent/cache/` | 可安全删除的缓存 |

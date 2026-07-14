@@ -296,7 +296,9 @@ class SessionLifecycleMixin:
             self._bind_session_extras()
             self._maybe_ensure_project_meta()
             self._maybe_register_global_project()
-            self._maybe_load_cognitive_anchor()
+            # 注：认知锚点不在这里加载——新建 session 是全新随机 id，其目录下
+            # 不可能已存在锚点文件。锚点只在 resume 一个已有 session 时才有
+            # 意义，见 load_session() 里对应的 _maybe_load_cognitive_anchor 调用。
             # [SYS-HOOKS] SessionStart：session 初始化完成后触发（通知型）
             try:
                 from mini_agent.hooks import get_hook_manager as _ghm_ss
@@ -381,23 +383,43 @@ class SessionLifecycleMixin:
         except Exception:
             pass  # 观察性数据，失败不应影响 agent 主流程
 
-    def _maybe_load_cognitive_anchor(self) -> None:
+    def _cognitive_anchor_path(self, session_id: str):
         """
-        [具身改进 C3] session 启动时检查是否存在认知锚点文件，若存在则
-        优先注入 system_extra（"恢复记忆"），并归档（重命名加时间戳后缀）——
-        消费一次即归档，避免同一份锚点被无限期重复注入到后续每个 session。
+        [具身改进 C3 / 认知锚点 session 化] 返回指定 session 目录下的认知锚点
+        文件路径：`<sessions_dir>/<session_id>/cognitive_anchor.md`。
+
+        锚点记录的是"某个具体 session 被打断时脑子里在想什么"，天然应该
+        跟着那个 session 走，而不是挂在整个 workdir 下——旧实现里锚点是
+        workdir 级单文件，会导致"在 session-1 被打断留下的锚点，被后续
+        任意一个新建/恢复的 session（哪怕是完全不相关的 session-99）读到"
+        这种跨 session 串味的问题。改为存进 session 自己的目录后，读取时
+        天然只会命中"正在恢复的这个 session"，不需要额外的 session_id
+        匹配逻辑。
+        """
+        from pathlib import Path
+        return Path(self._session_mgr.session_dir) / session_id / "cognitive_anchor.md"
+
+    def _maybe_load_cognitive_anchor(self, session_id: str) -> None:
+        """
+        [具身改进 C3 / 认知锚点 session 化] resume 一个已有 session
+        （`load_session()`）时检查该 session 自己目录下是否存在认知锚点
+        文件，若存在则注入 `system_extra`（"恢复记忆"），并归档（重命名加
+        时间戳后缀）——消费一次即归档，避免同一份锚点被无限期重复注入。
+
+        注意：这里**不**在 `_init_session()`（新建 session）里调用——新建的
+        session 是一个全新的随机 id，其目录下必然还没有任何锚点文件，
+        检查它没有意义；锚点只可能存在于"之前被打断过、现在正在被 resume"
+        的那个已有 session 目录下。
 
         与 B4 AffordanceMap 的协作：二者都写入 cfg.system_extra，但分别在
         不同时机调用（AffordanceMap 由 SessionAgentPool 在多用户路径里注入，
-        认知锚点在 agent.py 这里对本地/daemon 两条路径统一生效）——拼接顺序
-        不强制，system_extra 是简单的文本累加。
+        认知锚点在这里对本地/daemon 两条路径统一生效）——拼接顺序不强制，
+        system_extra 是简单的文本累加。
         """
         if not getattr(self.cfg, "cognitive_anchor_enabled", True):
             return
         try:
-            from mini_agent.storage.paths import AgentPaths
-            paths = AgentPaths(self.cfg.project_root)
-            anchor_path = paths.workdir_cognitive_anchor
+            anchor_path = self._cognitive_anchor_path(session_id)
             if not anchor_path.exists():
                 return
             content = anchor_path.read_text(encoding="utf-8").strip()
@@ -417,13 +439,15 @@ class SessionLifecycleMixin:
             )
             anchor_path.rename(archived)
         except Exception:
-            pass  # 锚点恢复失败不应影响 session 启动
+            pass  # 锚点恢复失败不应影响 session 加载流程
 
     def _save_cognitive_anchor(self) -> None:
         """
         [具身改进 C3] 任务被用户明确打断时（Ctrl-C / /stop）调用，生成一份
-        "思维状态重建指南"写入 .agent/cognitive_anchor.md，供下次 session
-        恢复时读取（见 _maybe_load_cognitive_anchor）。
+        "思维状态重建指南"写入**当前 session 自己目录下**的
+        `cognitive_anchor.md`（见 `_cognitive_anchor_path`），供下次
+        `load_session()` 恢复这个具体 session 时读取（见
+        `_maybe_load_cognitive_anchor`）。
 
         内容由 LLM 生成，格式固定（见 prompts/system/cognitive_anchor.md），
         是"给被打断后返回的自己看的便条"，不是给人类看的进展报告——后者已经
@@ -432,6 +456,8 @@ class SessionLifecycleMixin:
         if not getattr(self.cfg, "cognitive_anchor_enabled", True):
             return
         if self._llm is None or not self._history:
+            return
+        if not self._session_mgr or not self._session:
             return
         try:
             recent: list[str] = []
@@ -459,12 +485,10 @@ class SessionLifecycleMixin:
             if not anchor_content:
                 return
 
-            from mini_agent.storage.paths import AgentPaths
-            paths = AgentPaths(self.cfg.project_root)
-            anchor_path = paths.workdir_cognitive_anchor
+            anchor_path = self._cognitive_anchor_path(self._session.id)
             anchor_path.parent.mkdir(parents=True, exist_ok=True)
             anchor_path.write_text(anchor_content, encoding="utf-8")
-            R.print_info("[cognitive-anchor] 已记录当前思路，下次恢复时会自动提醒。")
+            R.print_info("[cognitive-anchor] 已记录当前思路，下次 resume 这个 session 时会自动提醒。")
         except Exception:
             pass  # 认知锚点生成失败不应影响中断流程本身
 
@@ -646,6 +670,13 @@ class SessionLifecycleMixin:
 
         # 切换 session 后重新绑定 TaskManager / debug logger / raw_history 路径
         self._bind_session_extras()
+
+        # [具身改进 C3 / 认知锚点 session 化] resume 到具体某个 session 时，
+        # 检查这个 session 自己目录下是否留有认知锚点——用 self._session.id
+        # （已经过 SessionManager.load() 的前缀匹配解析出的完整 id）而不是
+        # 入参 session_id（可能只是前缀），确保定位到正确的目录。
+        self._maybe_load_cognitive_anchor(self._session.id)
+
         return True
 
     def new_session(self) -> bool:

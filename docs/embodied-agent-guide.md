@@ -370,15 +370,35 @@ session 级构建一次（`AgentSelfModelBuilder`），之后每轮 turn 只更�
 
 ## 12. C3. 认知锚点文件——思维状态重建指南
 
-**模块**：`agent.py::_save_cognitive_anchor()` / `_maybe_load_cognitive_anchor()`
-+ `storage/paths.py::AgentPaths.workdir_cognitive_anchor`
-（`<project_root>/.agent/cognitive_anchor.md`）
+**模块**：`agent/lifecycle.py::_save_cognitive_anchor()` /
+`_maybe_load_cognitive_anchor(session_id)` / `_cognitive_anchor_path(session_id)`
+（`<sessions_dir>/<session_id>/cognitive_anchor.md`，**session 级存储**）
 
 **具身来源**：与自创生（autopoiesis）呼应——生物体被打断后不会丢失
 "当时在想什么"，只是需要一点提示就能快速恢复状态。Agent 被 Ctrl-C
 打断当前任务时，history 本身已经记录了"做了什么"，但没有记录"当时在
 想什么、为什么这么做、下一步的直觉、还有哪些疑问没解决"——这些是恢复
 思路时最难从原始 history 重建的部分。
+
+**存储粒度（认知锚点 session 化，重要变更）**：锚点记录的是"某个具体
+session 被打断时脑子里在想什么"，语义上天然属于那一个 session，因此
+存储路径是 `<sessions_dir>/<session_id>/cognitive_anchor.md`，而不是旧版
+的 workdir 级单文件（`<project_root>/.agent/cognitive_anchor.md`，已废弃，
+`storage/paths.py::AgentPaths.workdir_cognitive_anchor` 属性仅为避免外部
+代码 `AttributeError` 而保留，标注为 deprecated）。
+
+旧版实现有一个隐蔽的串味问题：因为是 workdir 级单文件，**任何**一个新建
+或恢复的 session 在启动时都会读到它——哪怕这个新 session 和留下锚点的
+那个 session 完全无关。改为 session 级存储后：
+
+- **写入**（`_save_cognitive_anchor()`）：写入**当前** session（`self._session.id`）
+  自己的目录，不再是 workdir 根目录。
+- **读取**（`_maybe_load_cognitive_anchor(session_id)`）：只在
+  `load_session(session_id)` **resume 到具体某个已有 session** 时调用，
+  检查的是"即将恢复的这个 session 自己的目录"，天然不会读到其他 session
+  留下的锚点。**不再**在 `_init_session()`（新建全新 session）时调用——
+  新建的 session 是全新随机 id，其目录下不可能已存在锚点文件，检查它
+  没有意义。
 
 **触发**：
 
@@ -404,17 +424,20 @@ session 级构建一次（`AgentSelfModelBuilder`），之后每轮 turn 只更�
 ## 未解决的疑问
 ```
 
-**恢复**：下次 session 启动时（`agent.py::_init_session()`），若锚点
-文件存在则读取并注入 `system_extra`（"上次中断时留下的认知锚点（自动
-恢复，仅供参考）"），随后立即归档（重命名为带时间戳后缀的文件），避免
-同一份锚点被无限期重复注入到后续每个 session。
+**恢复**：resume 一个已有 session 时（`agent/lifecycle.py::load_session()`
+内部调用 `_maybe_load_cognitive_anchor(self._session.id)`），若该 session
+自己目录下存在锚点文件则读取并注入 `system_extra`（"上次中断时留下的
+认知锚点（自动恢复，仅供参考）"），随后立即归档（重命名为带时间戳后缀
+的文件，仍在同一 session 目录下），避免同一份锚点被无限期重复注入。
 
 **开关**：`AppConfig.cognitive_anchor_enabled`（默认 `True`）。两条触发
 路径共用同一个开关和同一个 `_save_cognitive_anchor()` 实现，行为一致。
 
-测试：`tests/test_cognitive_anchor.py`（12 个用例，用 duck-typed fake
+测试：`tests/test_cognitive_anchor.py`（15 个用例，用 duck-typed fake
 object 以未绑定方法方式调用 `Agent._save_cognitive_anchor` /
-`_maybe_load_cognitive_anchor`，不构造完整 Agent 实例）
+`_maybe_load_cognitive_anchor` / `_cognitive_anchor_path`，不构造完整
+Agent 实例；含两条专门验证 session 隔离的用例）
+
 
 ---
 

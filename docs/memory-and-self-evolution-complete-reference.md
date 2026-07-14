@@ -707,9 +707,11 @@ lesson 排序应该高于 revert_record）
 
 ## 12. C3. 认知锚点文件——思维状态重建指南
 
-**模块**：`agent.py::_save_cognitive_anchor()` / `_maybe_load_cognitive_anchor()`
-+ `storage/paths.py::AgentPaths.workdir_cognitive_anchor`
-（`<project_root>/.agent/cognitive_anchor.md`）
+**模块**：`agent/lifecycle.py::_save_cognitive_anchor()` /
+`_maybe_load_cognitive_anchor(session_id)` / `_cognitive_anchor_path(session_id)`
+（`<sessions_dir>/<session_id>/cognitive_anchor.md`，**session 级存储**，
+详见 [具身智能改进指南 §12](embodied-agent-guide.md#12-c3-认知锚点文件思维状态重建指南)
+的完整变更说明）
 
 **具身来源**：与自创生（autopoiesis）呼应——生物体被打断后不会丢失
 "当时在想什么"，只是需要一点提示就能快速恢复状态。Agent 被 Ctrl-C 打断
@@ -717,11 +719,16 @@ lesson 排序应该高于 revert_record）
 什么、为什么这么做、下一步的直觉、还有哪些疑问没解决"——这些是恢复
 思路时最难从原始 history 重建的部分。
 
+**存储粒度**：锚点属于具体某一个 session，因此按 session 存储而非
+workdir 级单文件（旧版实现，已废弃）——避免"session-A 留下的锚点被
+后续任意一个不相关的 session 读到"这种串味问题。
+
 **触发**：本地纯 REPL 模式下用户在 REPL 里 Ctrl-C 打断当前任务
 （`cli/repl.py::run_repl()` 的 `KeyboardInterrupt` 处理分支），直接调用
-`agent._save_cognitive_anchor()`。daemon-connected 模式下（`cli/daemon.py`）
-客户端进程不直接持有 Agent 实例，改为 best-effort POST
-`/v1/sessions/{session_id}/save_anchor`，服务端代为调用同一个方法（详见
+`agent._save_cognitive_anchor()`（写入**当前** session 自己的目录）。
+daemon-connected 模式下（`cli/daemon.py`）客户端进程不直接持有 Agent
+实例，改为 best-effort POST `/v1/sessions/{session_id}/save_anchor`，
+服务端代为调用同一个方法（详见
 [HTTP API 指南](http-api-guide.md#stage-9-daemon-模式说明)）。基于最近 12
 轮 history，用 LLM 生成固定四段式格式的锚点内容：
 
@@ -732,12 +739,15 @@ lesson 排序应该高于 revert_record）
 ## 未解决的疑问
 ```
 
-**恢复**：下次 session 启动时（`agent.py::_init_session()`），若锚点文件
-存在则读取并注入 `system_extra`，随后立即归档（重命名为带时间戳后缀的
-文件），避免同一份锚点被无限期重复注入到后续每个 session。
+**恢复**：resume 一个已有 session 时（`agent/lifecycle.py::load_session()`），
+若该 session 自己目录下存在锚点文件则读取并注入 `system_extra`，随后
+立即归档（重命名为带时间戳后缀的文件），避免同一份锚点被无限期重复
+注入。**不**在新建全新 session 时检查（新 session 不可能有自己的锚点）。
 
 **开关**：`AppConfig.cognitive_anchor_enabled`（默认 `True`），本地与
-daemon-connected 两条触发路径共用同一开关。测试：`tests/test_cognitive_anchor.py`（12 个用例）
+daemon-connected 两条触发路径共用同一开关。测试：`tests/test_cognitive_anchor.py`
+（15 个用例，含 2 条 session 隔离专项验证）
+
 
 ## 13. C4. 自维护模块（SelfMaintenanceModule）
 
