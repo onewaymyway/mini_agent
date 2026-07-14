@@ -22,6 +22,7 @@ from mini_agent.cli.commands import (
     handle_session_cmd,
     handle_tasks_cmd,
     handle_plan_cmd,
+    handle_notepad_cmd,
     handle_concurrency_cmd,
     handle_provider_cmd,
     handle_agents_cmd,
@@ -302,6 +303,9 @@ def _handle_slash(cmd: str, agent: Agent, skill_loader: SkillLoader) -> None:
 
     elif name == "plan":
         handle_plan_cmd(parts[1:])
+
+    elif name == "notepad":
+        handle_notepad_cmd(parts[1:])
 
     elif name in ("concurrency", "cc"):
         handle_concurrency_cmd(parts[1:])

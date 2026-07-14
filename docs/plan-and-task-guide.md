@@ -5,6 +5,7 @@ mini-agent 的执行计划系统让 Agent 在运行过程中能够明确地规�
 **补充阅读**：
 - [Task 日志实时查看与切换](task-focus-viewing.md) — 方向键实时查看任务日志机制
 - [存储设计](storage-design.md) — `plan_snapshot.json`/`manifest.json` 的文件布局（第 10 节有详细说明）
+- [记事本机制说明](notepad-guide.md) — 与 Plan 互补的扁平化便签，记录零散关键信息
 
 ---
 

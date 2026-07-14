@@ -49,6 +49,7 @@ class ContextBuilder:
         profile_text_getter=None,       # Callable[[], str]
         self_model_getter=None,         # Callable[[], Optional[str]]  [具身改进 C1]
         persona_getter=None,            # Callable[[], Optional[str]]  当前激活的 persona name
+        notepad_getter=None,            # Callable[[], Optional[str]]  记事本渲染文本，每轮读取
     ) -> None:
         self.cfg = cfg
         self.skill_loader = skill_loader
@@ -60,6 +61,8 @@ class ContextBuilder:
         self._self_model_getter = self_model_getter
         # 角色扮演（Persona）系统：每轮读取当前激活的 persona name（可能为 None）
         self._persona_getter = persona_getter
+        # 记事本：每轮读取当前 session 的记事本渲染文本（persist across compact）
+        self._notepad_getter = notepad_getter
 
         # ── Turn 级缓存 ──────────────────────────────────────────────────────
         # 每次 run_turn 开始时由 refresh_turn_context() 填充，
@@ -188,6 +191,18 @@ class ContextBuilder:
         # ── Skill 目录注入（带缓存）────────────────────────────────────────
         if self.skill_loader and self.skill_loader.available:
             base += "\n\n" + self._get_skill_directory()
+
+        # ── 记事本（persist across compact）──────────────────────────────
+        # 固定位置注入，每次 build() 都重新读取最新记事本内容，天然不受
+        # history compact 影响（system prompt 每轮都会重新组装）。
+        if self._notepad_getter is not None:
+            try:
+                notepad_content = self._notepad_getter()
+            except Exception:
+                notepad_content = None
+            if notepad_content is not None:
+                from mini_agent.prompts import pm as _pm
+                base += "\n\n" + _pm.render("system/notepad", notepad_content=notepad_content)
 
         # ── 项目结构快照 ──────────────────────────────────────────────────
         snapshot = (

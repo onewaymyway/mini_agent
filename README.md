@@ -852,6 +852,7 @@ python -m pytest tests/ -q
 - [终端 I/O 指南](docs/terminal-io-guide.md) — 终端交互细节
 - [命令与工具参考](docs/commands-and-tools-reference.md) — 所有命令和工具
 - [Plan 和 Task 指南](docs/plan-and-task-guide.md) — 规划和任务系统，含 `plan_snapshot.json` 持久化与 session 重启恢复
+- [记事本机制说明](docs/notepad-guide.md) — **新增**：常驻 system prompt 的持久便签，`notepad_add`/`update`/`remove`/`summarize` 工具 + `/notepad` 命令，记录关键信息/结果/注意事项且不受 history compact 影响
 - [SubAgent 机制](docs/subagent-mechanism.md) — Sub-Agent 执行与重试机制详解
 - [自定义子 Agent](docs/custom-sub-agents.md) — 预设角色模板，结构化参数注入
 - [角色扮演（Persona）系统指南](docs/persona-guide.md) — **新增**：主 agent 自身的人格切换，`/role` 命令组，`allowed_tools` 强制拦截，安全边界代码级兜底
@@ -905,6 +906,8 @@ MIT License
 ---
 
 *最后更新：2026-07-01* — 具身智能改进 A/B/C 三阶段全部完成（12 项：本体感知/余裕感知/工具透明性/AgentSelfModel/时间加权记忆/认知锚点/自维护模块等），详见 [具身智能改进指南](docs/embodied-agent-guide.md)
+
+*2026-07 记事本（Notepad）机制*：新增 `tools/notepad.py`，Agent 在执行任务过程中可通过 `notepad_add`/`notepad_update`/`notepad_remove`/`notepad_list`/`notepad_summarize` 工具记录关键信息、结果、注意事项。记事本内容通过 `context_builder.py::ContextBuilder.build()` 在每轮 system prompt 固定位置重新注入（`prompts/system/notepad.md`），因此不受 history compact 影响；持久化到 `.agent/sessions/<sid>/notepad.json`（原子写）。system prompt 中强制引导 Agent 在遇到关键结果/约束/用户明确要求记住的信息时主动记录。当记事本总字数超过 `NOTEPAD_COMPACT_HINT_THRESHOLD`（默认 20000 字符）时，`compact_with_skills()` 正常路径会在 compact prompt 中追加建议性提示，引导模型调用 `notepad_summarize` 合并冗余条目（不自动截断，取舍由模型决定）；分批降级路径（`_compact_chunked`）因不支持工具调用而不追加该提示。新增 `/notepad`、`/notepad clear`、`/notepad remove <id>` 命令。详见 [记事本机制说明](docs/notepad-guide.md)
 
 *2026-07 Goal 模式*：新增 `goal_mode/` 包，设定一个目标后 Agent 自动多轮尝试直至达成或触发安全阀。核心组成：`GoalSpec` + `GoalSpecBuilder`（自然语言目标→结构化验收标准，支持多轮对话式修订+版本 diff 展示，确认前不占用主 Agent 上下文；system prompt 要求具体化/分维度拆解、禁止照抄用户原话，代码层面对"几乎原封不动"的生成结果会自动带纠正提示重试一次）、`GoalJudge`（对照验收标准逐条核查，输出 `GOAL_STATUS: DONE/CONTINUE/NEED_COMPACT`，工具权限可选开启以自己跑命令验证）、`GoalRunner`（外层驱动循环，粗粒度 `CoarseStepExecutor` 每步调用一次完整 `run_turn`，为未来细粒度版本预留 `GoalStepExecutor` 接口）。与既有 Evaluator 修订循环的区别：Evaluator 循环在单次 `run_turn` 内部、受 `max_turns` 硬顶约束；GoalRunner 是跨多次 `run_turn` 的外层循环，撞到 `max_turns` 会显式 compact 后继续。安全阀：`max_rounds`（轮次上限）、`max_total_compacts`（防压缩风暴）、连续雷同反馈检测（`difflib.SequenceMatcher`）提前终止并如实汇报。异常中断恢复：`GoalState` 原子落盘到 `.agent/sessions/<sid>/goal_state.json`，只在轮次边界写入，`/goal resume` 续跑；`/goal list` 可列出所有可恢复的目标（跨 session，避免多个进程各自设定目标都被杀死后只能看到最近一个）；复用既有 session 持久化机制存储对话历史，不重复保存。新增 `/goal` `/goal resume` `/goal list` `/goal status` `/goal cancel` 命令，详见 [Goal 模式指南](docs/goal-mode-guide.md)
 

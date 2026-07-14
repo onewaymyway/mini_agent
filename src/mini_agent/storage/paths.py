@@ -338,6 +338,12 @@ class AgentPaths:
         本 session 产生的记忆条目（审计用）"""
         return self.session_dir(session_id) / "memory_delta.jsonl"
 
+    def session_notepad(self, session_id: str) -> Path:
+        """<project_root>/.agent/sessions/<session_id>/notepad.json
+        本 session 的记事本（关键信息/结果/注意事项），常驻 system prompt，
+        不受 history compact 影响。"""
+        return self.session_dir(session_id) / "notepad.json"
+
     def session_plan_snapshot(self, session_id: str) -> Path:
         """<project_root>/.agent/sessions/<session_id>/plan_snapshot.json
         ExecutionPlan 的持久化快照（W1，对应设计文档 8.1 节）。

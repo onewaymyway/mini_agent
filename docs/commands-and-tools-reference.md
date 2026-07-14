@@ -260,6 +260,17 @@ mini-agent --retry-backoff linear --retry-backoff-step 60 --retry-backoff-max 30
 | `/plan clear` | 清除当前计划 |
 | `/plan summary` | 打印完成摘要表格（含用时、结果、来源） |
 
+### 记事本（`src/mini_agent/cli/commands/notepad.py`）
+
+| 命令 | 说明 |
+|------|------|
+| `/notepad` 或 `/notepad show` | 显示当前 session 记事本内容（含 id、tag、总字数） |
+| `/notepad clear` | 清空当前记事本（用户手动操作，Agent 不会自动调用） |
+| `/notepad remove <id>` | 删除指定条目 |
+
+记事本是常驻 system prompt 的持久便签，供 Agent 记录任务过程中的关键信息/结果/注意事项，
+不受 history compact 影响。详见 [记事本机制说明](notepad-guide.md)。
+
 ### 并发控制（`src/mini_agent/cli/commands/concurrency.py`）
 
 | 命令 | 说明 |
@@ -664,6 +675,18 @@ mini-agent self status
 | `add_task` | 运行时动态追加任务节点 |
 | `get_plan_status` | 返回完整计划状态 JSON |
 | `clear_plan` | 清除当前计划 |
+
+### 记事本（notepad.py）
+
+| 工具 | 说明 |
+|------|------|
+| `notepad_add` | 新增一条记事（关键信息/结果/注意事项），返回分配的 id |
+| `notepad_update` | 按 id 修改已有条目内容 |
+| `notepad_remove` | 按 id 删除条目 |
+| `notepad_list` | 列出全部条目及 id（一般无需调用，记事本内容已常驻 system prompt） |
+| `notepad_summarize` | 将多条条目合并为一条（瘦身/总结用，compact 阈值提示会建议调用） |
+
+详见 [记事本机制说明](notepad-guide.md)。
 
 ### 用户交互（user_input.py）
 

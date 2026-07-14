@@ -38,6 +38,36 @@ from mini_agent.agent._helpers import (
 class CompactionMixin:
     """历史压缩：skill compact、分块压缩、自动压缩触发。"""
 
+    # [记事本] 记事本总字数超过该阈值时，compact 提示中追加"建议总结记事本"
+    # 的引导语（不自动截断，取舍仍由 agent 通过 notepad_summarize 决定）。
+    NOTEPAD_COMPACT_HINT_THRESHOLD = 20000
+
+    def _build_notepad_compact_hint(self) -> str:
+        """
+        若当前记事本总字数超过阈值，返回一段追加到 compact prompt 末尾的提示文本，
+        建议模型调用 notepad_summarize 合并冗余/过时条目；否则返回空字符串。
+        失败时静默返回空字符串，不影响 compact 主流程。
+        """
+        try:
+            from mini_agent.tools.notepad import get_current_notepad
+            store = get_current_notepad()
+            if store is None:
+                return ""
+            total = store.total_chars()
+            if total <= self.NOTEPAD_COMPACT_HINT_THRESHOLD:
+                return ""
+            return (
+                "\n\n---\n"
+                f"Note: your notepad currently holds {total} characters across "
+                f"{len(store.entries)} entries, above the "
+                f"{self.NOTEPAD_COMPACT_HINT_THRESHOLD}-character guideline. "
+                "After finishing the summary above, consider calling `notepad_summarize` "
+                "to merge redundant or outdated notepad entries into more condensed ones. "
+                "Do not delete anything still relevant to the ongoing task."
+            )
+        except Exception:
+            return ""
+
     def _build_skill_compact_block(self) -> str:
         """
         按 LRU 顺序、受 budget 约束构建 skill 重附上下文块。
@@ -107,6 +137,7 @@ class CompactionMixin:
 
         from mini_agent.prompts import pm as _pm
         compact_prompt = _pm.get_compact_prompt()
+        compact_prompt += self._build_notepad_compact_hint()
 
         # ── 尝试正常路径：run_turn ───────────────────────────────────────────
         R.print_info("[compact] Generating summary…")

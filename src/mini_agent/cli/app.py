@@ -129,6 +129,7 @@ def _main_inner() -> None:
     import mini_agent.tools.user_input    # noqa: F401
     import mini_agent.tools.evolution     # noqa: F401  [Phase C / 3.1] skill_propose
     import mini_agent.tools.workdir_knowledge  # noqa: F401  [W2 / Stage 4] add_open_thread/update_work_thread/update_knowledge/search_knowledge
+    import mini_agent.tools.notepad       # noqa: F401  [记事本] notepad_add/update/remove/list/summarize
     # tools.skill_manager 由 Agent.__init__ 懒注册（需要 SkillLoader 实例）
 
     from mini_agent.cli.parser import build_parser

@@ -26,6 +26,7 @@ from mini_agent.cli.commands.skills import handle_skills_list, handle_skill_cmd
 from mini_agent.cli.commands.sessions import handle_session_cmd
 from mini_agent.cli.commands.tasks import handle_tasks_cmd
 from mini_agent.cli.commands.plans import handle_plan_cmd
+from mini_agent.cli.commands.notepad import handle_notepad_cmd
 from mini_agent.cli.commands.concurrency import handle_concurrency_cmd
 from mini_agent.cli.commands.providers import handle_provider_cmd
 from mini_agent.cli.commands.agents import handle_agents_cmd
@@ -47,6 +48,7 @@ __all__ = [
     "handle_session_cmd",
     "handle_tasks_cmd",
     "handle_plan_cmd",
+    "handle_notepad_cmd",
     "handle_concurrency_cmd",
     "handle_provider_cmd",
     "handle_agents_cmd",

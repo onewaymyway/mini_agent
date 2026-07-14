@@ -17,13 +17,14 @@
 - `src/mini_agent/tools/orchestration.py` — 并发编排工具（含 `update_task_progress` 任务进度叙事写入）
 - `src/mini_agent/tools/skill_manager.py` — 技能管理工具
 - `src/mini_agent/tools/plan.py` — 规划工具
+- `src/mini_agent/tools/notepad.py` — 记事本工具（`notepad_add`/`update`/`remove`/`list`/`summarize`），常驻 system prompt、不受 compact 影响，详见 [记事本机制说明](docs/notepad-guide.md)
 - `src/mini_agent/tools/user_input.py` — 用户输入工具
 - `src/mini_agent/mcp/` — MCP（Model Context Protocol）支持
 - `src/mini_agent/skills/` — 技能发现和加载
 - `src/mini_agent/cli/app.py` — CLI 应用入口
 - `src/mini_agent/cli/parser.py` — 参数解析
 - `src/mini_agent/cli/repl.py` — REPL 交互循环
-- `src/mini_agent/cli/commands/` — REPL 命令处理器（concurrency, plans, sessions, skills, tasks, agents, hooks, goal_mode_cmd 等）
+- `src/mini_agent/cli/commands/` — REPL 命令处理器（concurrency, plans, notepad, sessions, skills, tasks, agents, hooks, goal_mode_cmd 等）
 - `src/mini_agent/llm/` — LLM 抽象层
 - `src/mini_agent/orchestrator/` — 并发编排（含 `plan.py` 的 `plan_snapshot.json` 持久化、`task.py` 的 `manifest.json` 写入）
 - `src/mini_agent/hooks/` — hooks 机制（关键事件自动执行命令）
@@ -33,7 +34,7 @@
 - `src/mini_agent/history/` — 历史管理（压缩算法 + RawHistory 即时落盘 + 条目类型定义）
 - `src/mini_agent/goal_mode/` — Goal 模式：`spec.py`（`GoalSpec`/`GoalSpecBuilder`，自然语言目标→结构化验收标准，多轮协商）/`executor.py`（`GoalStepExecutor` 接口 + `CoarseStepExecutor`，为细粒度版本预留扩展点）/`state.py`（`GoalState`/`GoalStateStore` 原子落盘 + `find_resumable_session`）/`runner.py`（`GoalRunner` 外层驱动循环：判定/反馈注入/compact整合/安全阀）
 - `src/mini_agent/prompts/` — Prompt 管理
-- `src/mini_agent/storage/` — 存储层（`paths.py` 含 `session_plan_snapshot`/`task_manifest`/`workdir_xxx`/`global_xxx` 等路径方法）
+- `src/mini_agent/storage/` — 存储层（`paths.py` 含 `session_plan_snapshot`/`session_notepad`/`task_manifest`/`workdir_xxx`/`global_xxx` 等路径方法）
 - `src/mini_agent/env_info/` — 环境信息采集与注入（Provider 抽象基类 + 注册表 + 内置 Provider）
 - `src/mini_agent/evolution/` — 自我演化机制：`state_repo.py`（唯一写入入口，Stage 9 加 `initiator` T0→T1 上浮）/`validators.py`（分级校验）/`workspace.py`（worktree 隔离）/`eval_runner.py`（eval 反馈环）/`consolidation.py`（Stage 8 后台循环：剪枝/能力地图/Scope 晋升/节奏治理）/`autonomous_loop.py`（Stage 9 三档位 tick + ExplorationSandbox + SoftGoalDeriver 接入）/`resource_arbiter.py`（Stage 9 资源仲裁 + activity_digest.jsonl + 六分组 build_digest_summary；五条仲裁规则，第五条 `_check_user_presence()` 为具身×自治方案二新增）/`cron_scheduler.py`（Stage 9 定时任务：interval/cron 双格式，5 个内置系统 job）/`objective_executor.py`（Stage 9 Objective 多步持续执行引擎）/`soft_goal_deriver.py`（Stage 9 autonomous 档位软目标 derive：三路信号 + ExplorationSandbox 验证；另接入高风险域降权/uncertainty域加权/负面回填域降权三个具身×自治信号）/`outcome_tracker.py`（效果回填：baseline/post 触发次数对比判定 verdict，`worsened` 时回写 `eval_failure` lesson + 发布 `evolution.outcome_negative` 事件，供 `AgentSelfModel.recent_negative_outcome_domains()` 桥接消费）/`memory_aging.py`（具身改进 C2，lesson 按 source + occurrence_count 计算专属时间衰减半衰期）/`self_maintenance.py`（具身改进 C4，SelfMaintenanceModule：stale_tools/stale_skills/conflicting_lessons 健康检查，SessionEnd 时间门控 + `sys:self_maintain` cron job）
 - `scripts/protected_paths.py` — 受保护路径清单（T3 治理红线，独立于 `src/mini_agent/` 包，自我演化相关安全机制使用）
@@ -147,6 +148,7 @@ mini-agent user token u_a1b2c3d4                       # 重新生成 token
 - `orchestration.py` — 并发编排工具（spawn_agent, task 管理, `update_task_progress` 任务进度叙事写入）
 - `skill_manager.py` — 技能管理工具（skill_list, skill_activate 等）
 - `plan.py` — 规划工具
+- `notepad.py` — 记事本工具：`notepad_add`/`notepad_update`/`notepad_remove`/`notepad_list`/`notepad_summarize`，session 级持久化到 `notepad.json`，内容常驻 system prompt 固定位置（`prompts/system/notepad.md`），不受 history compact 影响
 - `user_input.py` — 用户输入工具
 - `workdir_knowledge.py` — Workdir 知识层工具（Stage 4 + 检索侧补全）：`add_open_thread`/`update_work_thread`/`update_knowledge`/`search_knowledge`，thread-local provider 机制与 `orchestration.py` 同构
 
@@ -625,6 +627,7 @@ mini-agent user token u_a1b2c3d4                       # 重新生成 token
 - [终端显示机制深度解析](docs/terminal-display-internals.md) — 线程模型、状态栏控制、三阶段状态机、token 过滤
 - [终端 I/O 指南](docs/terminal-io-guide.md) — 终端渲染与输入机制
 - [任务与规划指南](docs/plan-and-task-guide.md) — 执行计划与并发任务，含 `plan_snapshot.json` 持久化与恢复
+- [记事本机制说明](docs/notepad-guide.md) — 常驻 system prompt 的持久便签（`notepad_add`/`update`/`remove`/`summarize` 工具 + `/notepad` 命令），不受 history compact 影响，超阈值时 compact 提示建议总结
 - [SubAgent 机制](docs/subagent-mechanism.md) — 子 Agent 实现细节
 - [命令与工具参考](docs/commands-and-tools-reference.md) — 所有 slash 命令和工具
 - [代码结构指南](docs/code-structure-guide.md) — 项目结构说明，含 `config/` 包拆分

@@ -73,6 +73,20 @@ compact_with_skills()
           → 用最终摘要替换历史 + 重附 skill 块
 ```
 
+### 与记事本（Notepad）的联动
+
+记事本（`tools/notepad.py`，见 [记事本机制说明](notepad-guide.md)）本身**不参与**
+compact 的输入/输出流程——它常驻 system prompt，不需要被"摘要进"compact 结果里。
+
+但 `compact_with_skills()` 在走**正常路径**（`run_turn(compact_prompt)`）时，会检查当前
+记事本总字数：若超过 `CompactionMixin.NOTEPAD_COMPACT_HINT_THRESHOLD`（默认 20000 字符），
+会在 `compact_prompt` 末尾追加一段提示，建议模型在生成完对话摘要后，调用
+`notepad_summarize` 合并冗余/过时的记事本条目。这只是**建议性提示**，不会自动截断或删除
+任何记事本内容——是否总结、总结成什么样，仍由模型在该轮工具调用中自行决定。
+
+**超限路径（`_compact_chunked`）不追加该提示**：该路径直接调用 `_llm.chat_with_retry`，
+绕开 `run_turn`，模型在这个调用里无法执行工具调用，所以提示放了也没有意义。
+
 ## 分批摘要（Chunked Compact）详解
 
 ### 为什么需要分批
@@ -247,6 +261,8 @@ CompositeTrigger
 | `prompts/user/compact_history.md` | 正常路径 compact prompt |
 | `prompts/user/compact_chunk_request.md` | 分批路径 chunk prompt |
 | `prompts/user/compact_merge_request.md` | 分批路径合并 prompt |
+| `agent/compaction.py::_build_notepad_compact_hint()` | 记事本超阈值时追加的 compact 提示语 |
+| `tools/notepad.py` | 记事本数据结构与工具实现 |
 
 ---
 

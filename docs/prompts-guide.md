@@ -32,6 +32,7 @@ prompts/
 │   ├── current_time.md      # 当前时间
 │   ├── orchestration.md     # 编排能力说明
 │   ├── plan_mode.md         # Plan 模式能力
+│   ├── notepad.md           # 记事本使用说明 + 当前记事本内容注入
 │   ├── profile_summarizer.md # 画像摘要器
 │   ├── session_reflection.md # 会话反思
 │   ├── summarizer.md        # 摘要器
@@ -136,6 +137,12 @@ keys = pm.list_fragments("cli_messages")
 12. **执行计划上下文** — 当前活跃计划的状态
 13. **沙箱模式警告** — `system/sandbox_mode.md`（如果启用）
 
+> 以上是 `build_system_prompt()`（`config/prompt_builder.py`）内部的组装顺序。再往上一层，
+> `context_builder.py::ContextBuilder.build()` 会在这份 base system prompt 之后继续追加更多
+> **每轮动态**的内容块：skill 目录、项目结构快照、workdir/global 知识层、AgentSelfModel，
+> 以及**记事本**（`system/notepad.md`，见 [记事本机制说明](notepad-guide.md)）——记事本内容
+> 每轮都会重新读取最新状态并注入固定位置，因此天然不受 history compact 影响。
+
 ---
 
 ## 5. Fragment 文件格式
@@ -199,7 +206,8 @@ msg = pm.fragment("cli_messages", "BANNER", version="0.7.1")
 - [系统设计概述](system-overview.md) — Prompt 管理在整体架构中的位置
 - [代码结构指南](code-structure-guide.md) — `prompts/` 包的职责边界
 - [热重载机制说明](hot-reload-guide.md) — Prompt 文件热重载
+- [记事本机制说明](notepad-guide.md) — `system/notepad.md` 的注入机制与配套工具
 
 ---
 
-*最后更新：2026-07*
+*最后更新：2026-07（新增 `system/notepad.md`）*

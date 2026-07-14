@@ -88,6 +88,7 @@ print(paths.session_history("abc"))  # .agent/sessions/abc/history.json
 | `session_llm_debug(sid)` | `.../llm_debug.jsonl` | LLM 调试日志 |
 | `session_memory_delta(sid)` | `.../memory_delta.jsonl` | Session 记忆条目（审计用） |
 | `session_plan_snapshot(sid)` | `.../plan_snapshot.json` | ExecutionPlan 持久化快照（W1） |
+| `session_notepad(sid)` | `.../notepad.json` | 记事本（关键信息/结果/注意事项，常驻 system prompt，不受 compact 影响） |
 | `session_goal_state(sid)` | `.../goal_state.json` | Goal 模式运行状态 |
 | `session_traces(sid)` | `.../traces.jsonl` | 时序追踪记录（Stage 6.1） |
 | `tasks_dir(sid)` | `.../tasks/` | 任务目录根 |
@@ -122,7 +123,8 @@ print(paths.session_history("abc"))  # .agent/sessions/abc/history.json
 - [系统设计概述](system-overview.md) — 整体架构与各子系统关系
 - [W2/W3 知识层指南](self-evolution-stage4-5-guide.md) — Workdir/Global 知识层详细说明
 - [Plan 与 Task 指南](plan-and-task-guide.md) — 执行计划与任务管理机制
+- [记事本机制说明](notepad-guide.md) — 常驻 system prompt 的持久便签，不受 compact 影响
 
 ---
 
-*最后更新：2026-07（新增 `proprioception_snapshot`）*
+*最后更新：2026-07（新增 `session_notepad`；此前新增 `proprioception_snapshot`）*

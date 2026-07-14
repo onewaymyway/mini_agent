@@ -235,6 +235,10 @@ system prompt 构建顺序：
 
 所有文本片段在 `prompts/fragments/*.md` 中管理，通过 `PromptManager.fragment()` 取用。
 
+以上是 `build_system_prompt()` 内部顺序；再往上一层，`context_builder.py::ContextBuilder`
+会在此基础上继续追加更多**每轮动态**内容，包括记事本（Notepad，见 3.10.1 节）、skill 目录、
+项目结构快照、workdir/global 知识层、AgentSelfModel、长期记忆检索结果。
+
 ### 3.9 Skill 系统（skills/）
 
 详见 [skill-system-guide.md](skill-system-guide.md)。核心流程：
@@ -268,6 +272,15 @@ system prompt 构建顺序：
 - **ExecutionPlan / PlanTask** — 结构化执行计划，注入 system prompt，不启动线程
 - **TaskManager / SubAgent** — 真正的并发执行，纯线程模型，不依赖 asyncio
 - **Task 日志实时查看**：支持方向键切换查看各任务实时日志，状态栏显示任务状态概要
+
+#### 3.10.1 记事本（Notepad）
+
+详见 [记事本机制说明](notepad-guide.md)。与 ExecutionPlan 类似的"常驻 system prompt"
+思路，但结构更扁平：agent 通过 `notepad_add`/`notepad_update`/`notepad_remove`/
+`notepad_summarize` 等工具记录任务过程中的关键信息、结果、注意事项。每轮 `ContextBuilder.build()`
+都会重新读取并注入固定位置，因此**不受 history compact 影响**；持久化到
+`.agent/sessions/<sid>/notepad.json`。当记事本总字数超过阈值时，compact 流程会建议
+（而非强制）模型调用 `notepad_summarize` 瘦身。
 
 **SubAgent 关键特性**：
 - 独立的对话历史、独立的统计信息
@@ -555,6 +568,7 @@ HTTP 服务通过桥接模式与 Agent 核心解耦：
 - [记忆管理指南](memory-management-guide.md) — 长期记忆系统与可扩展后端
 - [MCP 集成指南](mcp-guide.md) — MCP 外部工具服务架构与配置
 - [Task 日志实时查看](task-focus-viewing.md) — 方向键切换查看任务日志机制
+- [记事本机制说明](notepad-guide.md) — 常驻 system prompt 的持久便签，不受 compact 影响
 - [自我演化安全网指南（Stage 2）](self-evolution-stage2-guide.md) — `StateRepo`/验证流水线/`EvolutionWorkspace`
 - [自我演化 lesson → skill 闭环指南（Stage 3.1）](self-evolution-stage3-1-guide.md) — `skill_propose`/`evolution-agent`
 - [自我演化 eval 反馈环指南（Stage 3.2）](self-evolution-stage3-2-guide.md) — `mini-agent eval`

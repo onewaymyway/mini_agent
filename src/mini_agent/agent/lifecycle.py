@@ -79,6 +79,22 @@ class SessionLifecycleMixin:
         t = _threading.Thread(target=_watch, daemon=True, name="file-watcher")
         t.start()
 
+    def _get_notepad_render_text(self) -> Optional[str]:
+        """
+        返回当前 session 记事本的渲染文本，供 ContextBuilder 每轮注入 system prompt。
+        返回 None 表示记事本系统当前不可用（尚无 session 等），此时
+        ContextBuilder 会整体跳过记事本块，而不是注入一个空壳。
+        失败时同样返回 None，避免异常影响 system prompt 组装主流程。
+        """
+        try:
+            from mini_agent.tools.notepad import get_current_notepad
+            store = get_current_notepad()
+            if store is None:
+                return None
+            return store.render()
+        except Exception:
+            return None
+
     def _init_components(self) -> None:
         """
         初始化三个拆分组件（在 __init__ 末尾调用，确保所有字段已就绪）。
@@ -108,6 +124,18 @@ class SessionLifecycleMixin:
             # /role use|exit 直接修改 self.active_persona 即可生效
             # （_cached_system 在每轮结束时清空，下一轮 build() 会读到最新值）。
             persona_getter=lambda: self.active_persona,
+            # 记事本：每轮读取当前 session 的记事本渲染文本（NotepadStore 内部按
+            # session_id 缓存，重复实例化 AgentPaths 无实际 IO 开销）。
+            notepad_getter=lambda: self._get_notepad_render_text(),
+        )
+
+        # [Notepad] 注入 project_root + session_id 懒引用，供 notepad_add/update/
+        # remove/list/summarize 等工具定位到当前 session 的 notepad.json。
+        from mini_agent.tools.notepad import configure_notepad_store
+        from mini_agent.storage.paths import AgentPaths as _NotepadAgentPaths
+        configure_notepad_store(
+            lambda: _NotepadAgentPaths(self.cfg.project_root),
+            lambda: (self._session.id if self._session else ""),
         )
 
         # ToolExecutor：持有 file_changes 列表和锁的引用（共享，不拷贝）
