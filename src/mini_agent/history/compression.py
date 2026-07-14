@@ -48,6 +48,95 @@ if TYPE_CHECKING:
 
 
 # ════════════════════════════════════════════════════════════════════════════════
+# 单条消息过长兜底截断（compact 专用，供 LLMSummaryStrategy / _compact_chunked 共用）
+# ════════════════════════════════════════════════════════════════════════════════
+
+DEFAULT_MAX_MESSAGE_CHARS_FOR_COMPACT = 10000
+
+# 截断后保留的头/尾比例（头部保留更多，因为通常包含关键上下文/指令）
+_TRUNC_HEAD_RATIO = 0.6
+_TRUNC_TAIL_RATIO = 0.2
+
+
+def _truncate_str(text: str, max_chars: int) -> str:
+    """保留头尾、截断中段。仅在 len(text) > max_chars 时生效。"""
+    if len(text) <= max_chars:
+        return text
+    head_len = int(max_chars * _TRUNC_HEAD_RATIO)
+    tail_len = int(max_chars * _TRUNC_TAIL_RATIO)
+    omitted = len(text) - head_len - tail_len
+    marker = f"\n\n… [{omitted} chars truncated for compaction — content too long for a single LLM request] …\n\n"
+    return text[:head_len] + marker + text[-tail_len:] if tail_len > 0 else text[:head_len] + marker
+
+
+def _truncate_content_value(value, max_chars: int):
+    """
+    递归截断消息 content 里超长的字符串叶子节点。
+
+    content 可能是：
+      - str（最常见，工具输出/长文本粘贴等）
+      - list[dict]（多模态/分块格式，如 [{"type": "text", "text": "..."}, ...]）
+      - 其他（None / dict 等）原样返回，不做处理
+
+    只截断字符串本身，不改变消息的结构（role / tool_call_id / type 等字段保留）。
+    """
+    if isinstance(value, str):
+        return _truncate_str(value, max_chars)
+    if isinstance(value, list):
+        return [_truncate_content_value(item, max_chars) for item in value]
+    if isinstance(value, dict):
+        new_d = dict(value)
+        for key in ("text", "content"):
+            if key in new_d:
+                new_d[key] = _truncate_content_value(new_d[key], max_chars)
+        return new_d
+    return value
+
+
+def cap_oversized_messages(
+    messages: list[dict],
+    max_chars: int = DEFAULT_MAX_MESSAGE_CHARS_FOR_COMPACT,
+) -> list[dict]:
+    """
+    [SYS-COMPACT-TRUNCATE] compact 发起 LLM 摘要请求前的兜底防线。
+
+    背景：compact 会把（部分）历史消息整体发给 LLM 生成摘要。如果历史里混入
+    一条异常长的消息（典型场景：某次工具调用返回了超大输出，且因
+    raw_output / 未走常规截断路径等原因绕过了 tool_executor 的输出截断），
+    单条消息本身就可能超过模型单次请求的限制，导致该次 LLM 调用直接报错——
+    而且 chunked 路径的切分粒度是"轮"而非"消息"，巨型单消息无法再被切小，
+    会反复失败，拖垮整个 compact 流程。
+
+    这里在送入 LLM 之前，对每条消息的 content 做保留头尾、截断中段的兜底
+    处理，只影响这次摘要请求本身，不修改传入的原始消息（新建副本），也
+    不影响原始历史 / 记事本 / 正式回复。
+
+    Args:
+        messages: 待发送给 LLM 的消息列表（已经过 to_llm_messages 剥离内部字段）
+        max_chars: 单条消息 content 允许的最大字符数，超过则截断
+
+    Returns:
+        新的消息列表（未超限的消息原样引用，超限的消息被替换为截断后的副本）
+    """
+    if max_chars <= 0:
+        return messages
+    result: list[dict] = []
+    for msg in messages:
+        content = msg.get("content")
+        # 快速路径：str content 直接量长度判断，避免对每条消息都做递归遍历
+        if isinstance(content, str) and len(content) <= max_chars:
+            result.append(msg)
+            continue
+        if content is None:
+            result.append(msg)
+            continue
+        new_msg = dict(msg)
+        new_msg["content"] = _truncate_content_value(content, max_chars)
+        result.append(new_msg)
+    return result
+
+
+# ════════════════════════════════════════════════════════════════════════════════
 # 抽象基类
 # ════════════════════════════════════════════════════════════════════════════════
 
@@ -193,7 +282,8 @@ class LLMSummaryStrategy(CompressionStrategy):
         from mini_agent.prompts import pm
         from mini_agent.history.entry import to_llm_messages
         # 构建摘要请求：把被压缩的历史（剥离 _type）+ 摘要指令发给 LLM
-        summary_messages = to_llm_messages(list(old_turns)) + [
+        max_chars = getattr(cfg.compress, "max_message_chars_for_compact", DEFAULT_MAX_MESSAGE_CHARS_FOR_COMPACT)
+        summary_messages = cap_oversized_messages(to_llm_messages(list(old_turns)), max_chars) + [
             {"role": "user", "content": pm.render("user/compress_summary_request")}
         ]
 

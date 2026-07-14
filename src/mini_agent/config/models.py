@@ -182,6 +182,20 @@ class CompressConfig:
     model_context_window: int = 0                  # 模型上下文窗口大小（0=自动从 provider 获取或用默认）
 
 
+    # ── 单条消息过长兜底截断（compact 专用）─────────────────────────────────
+    # compact 会把（部分）历史消息整体发给 LLM 生成摘要。如果历史里混入了
+    # 一条异常长的消息（典型场景：某次工具调用返回了超大输出，且因
+    # raw_output/未走常规截断路径等原因绕过了 tool_executor 的输出截断），
+    # 单条消息本身就可能超过模型的单次请求上限，导致该次 LLM 调用直接
+    # 报错（而不是被模型"自动忽略"多余部分），进而拖垮整个 compact 流程
+    # （chunked 路径下这类 chunk 会反复失败，因为拆分粒度是"轮"而非"消息"，
+    # 巨型单消息无法再被切小）。
+    #
+    # 这里在送入 LLM 之前，对超过该字符数的单条消息做保留头尾、截断中段的
+    # 兜底处理（仅用于 compact 摘要请求，不影响原始历史/记事本/正式回复）。
+    max_message_chars_for_compact: int = 40_000
+
+
 @dataclass
 class ToolTrimConfig:
     """[SYS-TRIM] 工具调用结果截断配置。"""

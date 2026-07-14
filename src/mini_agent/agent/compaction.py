@@ -351,7 +351,8 @@ class CompactionMixin:
             chunks.append(current_chunk)
 
         # 极端情况：单个 turn 本身就超限 → 强制每个 turn 单独成 chunk
-        # （不拆 turn 内部，LLM 调用会自动截断，摘要质量降低但不会崩溃）
+        # （不拆 turn 内部；单条消息若仍然超限，靠上面 cap_oversized_messages
+        # 兜底截断，不会再导致该 chunk 的 LLM 调用直接报错）
         if not chunks:
             chunks = [[m] for m in history]
 
@@ -373,7 +374,14 @@ class CompactionMixin:
                 chunk_index=chunk_num,
                 total_chunks=total_chunks,
             )
-            llm_messages = to_llm_messages(chunk) + [
+            from mini_agent.history.compression import (
+                cap_oversized_messages, DEFAULT_MAX_MESSAGE_CHARS_FOR_COMPACT,
+            )
+            max_chars = getattr(
+                self.cfg.compress, "max_message_chars_for_compact",
+                DEFAULT_MAX_MESSAGE_CHARS_FOR_COMPACT,
+            )
+            llm_messages = cap_oversized_messages(to_llm_messages(chunk), max_chars) + [
                 {"role": "user", "content": chunk_prompt}
             ]
 

@@ -325,6 +325,7 @@ def load_config(
         redundancy_tool_result_ratio=_fn("compact_redundancy_tool_result_ratio", None, 0.6),
         compact_cooldown_turns=_fn("compact_cooldown_turns", None, 3),
         require_confirmation=_fb("compact_require_confirmation", None, False),
+        max_message_chars_for_compact=_fn("compact_max_message_chars", None, 10000),
     )
 
     tool_trim_cfg = ToolTrimConfig(
