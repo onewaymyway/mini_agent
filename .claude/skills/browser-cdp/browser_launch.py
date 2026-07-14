@@ -149,6 +149,12 @@ def spawn_browser(
         "--disable-backgrounding-occluded-windows",
         "--disable-renderer-backgrounding",
         "--disable-background-network-requests",
+        # 禁用缓存，确保每次获取最新数据
+        "--disable-cache",
+        "--disable-application-cache",
+        "--disable-offline-load-stale-cache",
+        "--disk-cache-size=0",
+        "--media-cache-size=0",
     ]
     if user_agent:
         args.append(f"--user-agent={user_agent}")
