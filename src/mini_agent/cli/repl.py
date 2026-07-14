@@ -212,7 +212,7 @@ def _handle_slash(cmd: str, agent: Agent, skill_loader: SkillLoader) -> None:
         R.print_success(pm.fragment("cli_messages", "HISTORY_CLEARED"))
 
     elif name == "retry":
-        _handle_retry(agent)
+        _handle_retry(agent, parts[1:])
 
     elif name == "rollback":
         _handle_rollback(agent, parts[1:])
@@ -430,13 +430,22 @@ def _handle_digest_cmd(agent) -> None:
         R.print_warning(f"无法读取 activity_digest: {e}")
 
 
-def _handle_retry(agent: Agent) -> None:
-    """/retry — 丢弃上一轮模型输出，用相同输入重新生成。"""
-    if agent._turn_snapshot is None:
-        R.print_warning("Nothing to retry — no previous turn in this session.")
-        return
+def _handle_retry(agent: Agent, args: Optional[list[str]] = None) -> None:
+    """/retry [N] — 丢弃最近 N 轮（默认 1 轮）模型输出，用相同输入重新生成。
+    基于 history 中的用户输入轮次边界定位，可以重试 resume 之前 session
+    历史中的任意一轮（只要该轮还没被 /compact 折叠掉）。"""
+    n = 1
+    if args:
+        try:
+            n = int(args[0])
+        except ValueError:
+            R.print_error(f"Invalid retry count: {args[0]!r}. Usage: /retry [N]")
+            return
+
     try:
-        agent.retry_last_turn()
+        ok, msg, _ = agent.retry_to_turn(n)
+        if not ok:
+            R.print_warning(msg)
     except KeyboardInterrupt:
         R.print_interrupt()
     except Exception as e:

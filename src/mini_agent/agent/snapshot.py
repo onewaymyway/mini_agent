@@ -62,6 +62,93 @@ class SnapshotMixin:
         self.stats.tool_calls     = self._turn_snapshot["stats_tool"]
         return True
 
+    def retry_to_turn(self, n: int = 1) -> tuple[bool, str, str]:
+        """
+        [SYS-UNDO-N] 基于 turn 边界回退到第 N 轮并重新执行，不依赖内存快照。
+
+        与 retry_last_turn()（单层快照重试）的区别：
+          - retry_last_turn：只能重试"最近一轮"，且依赖 `_turn_snapshot`，
+                              resume 后在发出第一条新消息之前 `_turn_snapshot`
+                              就是 resume 时刻的状态，找不到快照之后的用户
+                              消息，无法重试。
+          - retry_to_turn  ：直接在当前 `_history` 里定位真实用户输入
+                              （turn 边界），提取出该轮的用户消息文本，
+                              截断历史到该轮开始前，再用相同消息重新调用
+                              run_turn()。可以重试 resume 之前 session
+                              历史中的任意一轮——只要该轮还留在 `_history`
+                              里、没有被 /compact 折叠进摘要。
+
+        限制：
+          - /compact 是不可逆的，折叠掉的轮次无法重试。
+          - 仅支持纯文本用户消息（content 为 str）；非文本内容
+            （例如带图片的多模态消息）暂不支持，会失败并给出提示。
+          - token 统计同 rollback_to_turn，是 best-effort。
+
+        Args:
+            n: 从最近往前数第 n 轮，默认为 1（即最近一轮）。
+
+        Returns:
+            (成功与否, 提示信息, 新生成的 assistant 文本（失败时为空字符串）)
+        """
+        from mini_agent.history.entry import is_turn_boundary
+
+        if n < 1:
+            return False, "回退轮数必须 >= 1。", ""
+
+        turn_starts = [i for i, m in enumerate(self._history) if is_turn_boundary(m)]
+
+        if not turn_starts:
+            return False, (
+                "当前 history 中没有找到可识别的用户输入轮次"
+                "（可能已被 /compact 全部折叠进摘要，不可重试）。"
+            ), ""
+
+        if n > len(turn_starts):
+            return False, (
+                f"当前 history 中只有 {len(turn_starts)} 个可重试的轮次"
+                f"（更早的轮次可能已被 /compact 折叠进摘要，不可逆），"
+                f"无法回退 {n} 轮。"
+            ), ""
+
+        target = turn_starts[-n]
+        user_entry = self._history[target]
+        user_msg = user_entry.get("content")
+
+        if not isinstance(user_msg, str):
+            return False, (
+                "目标轮次的用户消息不是纯文本（可能是多模态内容），"
+                "暂不支持 retry。"
+            ), ""
+
+        turns_before = self.stats.turns
+        R.print_retry_banner(turns_before)
+
+        before_count = len(self._history)
+        # 截断到该轮用户消息之前（含该轮用户消息本身也一并丢弃，
+        # run_turn(user_msg) 会重新把它作为新一轮的用户输入追加进去）
+        del self._history[target:]
+
+        # best-effort：轮数计数相应减少
+        self.stats.turns = max(0, self.stats.turns - n)
+
+        # 清除单层快照，避免与新状态不一致
+        self._turn_snapshot = None
+
+        _hist = getattr(self, "_hist", None)
+        if _hist is not None:
+            try:
+                _hist._raw.append_compact_event(
+                    before_count=before_count,
+                    after_count=len(self._history),
+                    strategy="retry_to_turn",
+                    trigger_reason=f"manual_retry_{n}",
+                )
+            except Exception:
+                pass
+
+        result = self.run_turn(user_msg)
+        return True, f"Retried turn (rolled back {n}, then resent).", result
+
     def retry_last_turn(self) -> str:
         """
         [SYS-UNDO] 重试：丢弃上一轮模型输出，用相同的用户消息重新调用。

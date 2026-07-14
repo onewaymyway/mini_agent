@@ -36,7 +36,11 @@ def build_parser() -> argparse.ArgumentParser:
             Slash commands (in REPL):
               /help              Show this help
               /clear             Clear conversation history
-              /retry             Discard last response, regenerate with same input
+              /retry [N]         Discard last N responses (default 1) and
+                                 regenerate with same input. Can retry any
+                                 turn still in history (including turns
+                                 before a --resume), as long as it hasn't
+                                 been folded away by /compact.
               /rollback [N]      Undo last N turns (default 1), sync session.
                                  Can roll back to any turn still in history
                                  (including turns before a --resume), as long
