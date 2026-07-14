@@ -103,6 +103,86 @@ class SnapshotMixin:
         # 用相同消息重新执行
         return self.run_turn(user_msg)
 
+    def rollback_to_turn(self, n: int = 1) -> tuple[bool, str]:
+        """
+        [SYS-UNDO-N] 基于 turn 边界回退 N 轮，不依赖内存快照。
+
+        与 rollback_turn()（单层快照回退）的区别：
+          - rollback_turn   ：只能撤销"最近一轮"，且依赖 `_turn_snapshot`
+                               （resume 后 / compact 后，快照会被覆盖或重置，
+                               无法跨越更早的轮次）
+          - rollback_to_turn：直接在当前 `_history` 里定位真实用户输入
+                               （turn 边界），可以回退到 resume 之前 session
+                               历史中的任意一轮——只要那一轮还留在 `_history`
+                               里、没有被 /compact 折叠进摘要。
+
+        限制：
+          - /compact 是不可逆的——折叠掉的轮次只以摘要文字形式保留，
+            不再是可识别的 turn 边界，无法回退回去。
+          - token 统计（input/output tokens）不会精确回滚到目标轮次的
+            真实值（历史上每一轮的 token 快照没有逐条持久化），这里只
+            做 best-effort：把 stats.turns 相应减少，input/output/tool_calls
+            计数保持不变（仅供参考，不代表回退后的真实累计值）。
+
+        Args:
+            n: 回退的轮数，默认为 1。
+
+        Returns:
+            (成功与否, 提示信息)
+        """
+        from mini_agent.history.entry import is_turn_boundary
+
+        if n < 1:
+            return False, "回退轮数必须 >= 1。"
+
+        turn_starts = [i for i, m in enumerate(self._history) if is_turn_boundary(m)]
+
+        if not turn_starts:
+            return False, (
+                "当前 history 中没有找到可识别的用户输入轮次"
+                "（可能已被 /compact 全部折叠进摘要，不可回退）。"
+            )
+
+        if n > len(turn_starts):
+            return False, (
+                f"当前 history 中只有 {len(turn_starts)} 个可回退的轮次"
+                f"（更早的轮次可能已被 /compact 折叠进摘要，不可逆），"
+                f"无法回退 {n} 轮。"
+            )
+
+        target = turn_starts[-n]
+        before_count = len(self._history)
+
+        # 原地截断，保持 self._history 与 self._hist._history 指向同一对象
+        del self._history[target:]
+        after_count = len(self._history)
+
+        # best-effort：轮数计数相应减少，token 统计无法精确回滚，保持不变
+        self.stats.turns = max(0, self.stats.turns - n)
+
+        # 单层快照与新截断状态可能不一致，清除避免误用
+        self._turn_snapshot = None
+
+        # 记录一次事件到 raw history（复用 compact_event 的通用字段结构）
+        _hist = getattr(self, "_hist", None)
+        if _hist is not None:
+            try:
+                _hist._raw.append_compact_event(
+                    before_count=before_count,
+                    after_count=after_count,
+                    strategy="rollback_to_turn",
+                    trigger_reason=f"manual_rollback_{n}",
+                )
+            except Exception:
+                pass
+
+        if getattr(self.cfg, "auto_save_session", True):
+            self.save_session()
+
+        return True, (
+            f"Rolled back {n} turn(s): history {before_count} → {after_count} messages."
+        )
+
     def rollback_turn(self) -> bool:
         """
         [SYS-UNDO] 回退：完全撤销上一轮 turn，恢复到本轮开始前的状态。

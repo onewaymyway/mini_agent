@@ -37,7 +37,10 @@ def build_parser() -> argparse.ArgumentParser:
               /help              Show this help
               /clear             Clear conversation history
               /retry             Discard last response, regenerate with same input
-              /rollback          Undo entire last turn (input + response), sync session
+              /rollback [N]      Undo last N turns (default 1), sync session.
+                                 Can roll back to any turn still in history
+                                 (including turns before a --resume), as long
+                                 as it hasn't been folded away by /compact.
               /plan              Show current execution plan
               /plan clear        Clear the active plan
               /plan summary      Print completed plan summary

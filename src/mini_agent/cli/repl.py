@@ -10,6 +10,8 @@ cli/repl.py — 交互式 REPL 主循环与 slash 命令路由
 
 from __future__ import annotations
 
+from typing import Optional
+
 from mini_agent.agent import Agent
 from mini_agent.skills import SkillLoader
 from mini_agent.prompts import pm
@@ -213,7 +215,7 @@ def _handle_slash(cmd: str, agent: Agent, skill_loader: SkillLoader) -> None:
         _handle_retry(agent)
 
     elif name == "rollback":
-        _handle_rollback(agent)
+        _handle_rollback(agent, parts[1:])
 
     elif name == "skills":
         handle_skills_list(skill_loader)
@@ -444,19 +446,23 @@ def _handle_retry(agent: Agent) -> None:
             traceback.print_exc()
 
 
-def _handle_rollback(agent: Agent) -> None:
-    """/rollback — 完整撤销上一轮（用户消息 + 模型回复），同步 session 文件。"""
-    if agent._turn_snapshot is None:
-        R.print_warning("Nothing to rollback — no previous turn in this session.")
-        return
-    ok = agent.rollback_turn()
+def _handle_rollback(agent: Agent, args: Optional[list[str]] = None) -> None:
+    """/rollback [N] — 回退最近 N 轮（默认 1 轮），基于 history 中的用户输入
+    轮次边界定位，可以回退到 resume 之前 session 历史中的任意一轮（只要
+    该轮次还没被 /compact 折叠掉）。"""
+    n = 1
+    if args:
+        try:
+            n = int(args[0])
+        except ValueError:
+            R.print_error(f"Invalid rollback count: {args[0]!r}. Usage: /rollback [N]")
+            return
+
+    ok, msg = agent.rollback_to_turn(n)
     if ok:
-        R.print_success(
-            f"Rollback complete. History now has {len(agent.history)} messages. "
-            "Session saved."
-        )
+        R.print_success(f"{msg} Session saved.")
     else:
-        R.print_error("Rollback failed unexpectedly.")
+        R.print_warning(msg)
 
 
 def _get_http_bridge():

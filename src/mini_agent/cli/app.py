@@ -427,6 +427,16 @@ def _main_inner() -> None:
             R.print_success(
                 f"Resumed session [{agent.session_id}] — {len(agent.history)} messages loaded"
             )
+            # 保存一份"resume 时刻"的快照，使得在本次进程内尚未执行任何新
+            # run_turn 之前，/rollback 也能回到刚 resume 完的状态（而不是
+            # 报 "Nothing to rollback" —— _turn_snapshot 是纯内存态，不随
+            # session 文件持久化，resume 后默认是 None）。
+            # /retry 语义上需要"上一轮的用户输入"来重新发送，resume 时刻没有
+            # 这个信息，所以 /retry 在这里仍然无法工作，需要用户先手动发一轮。
+            try:
+                agent._save_turn_snapshot()
+            except Exception:
+                pass
         else:
             R.print_error(f"Session '{args.resume}' not found. Starting fresh.")
 
