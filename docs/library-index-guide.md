@@ -65,6 +65,8 @@
 | `shelf_search(store, query, k, llm_call=None)` | `context_builder.py` 检索时 | 两步检索：先定位书架，架内候选太少才回退全库 |
 | `consolidate(store, llm_call=None)` | 巩固循环 巡检 | 批量生长分类树 + 批量重写实体摘要 |
 
+> **`wiki_paths` 与 `wiki_search()`**：`LibraryIndex.__init__` 另有一个可选参数 `wiki_paths: Optional[AgentPaths]`（默认 `None`），开启后 `on_new_entry`/`consolidate` 会把实体镜像进一套平行的 wiki 式知识库（md 页面 + 显式关系图），并额外暴露 `wiki_search(query, k, llm_call, tags)`——三段式检索（规则粗筛→图扩展→LLM精排）的入口，与本文档描述的两步检索完全并存、互不替换。详见 [Wiki 式知识库指南](./wiki-knowledge-base-guide.md)。
+
 ## 二、两步检索是如何工作的
 
 原来的 `context_builder.py` 每轮对话都对 `MemoryStore` 里**全部条目**做一次
@@ -272,6 +274,7 @@ user_id=...)` / `create_both_memory_backends(cfg, user_id=...)` 会给分类树�
 
 - [记忆管理指南](./memory-management-guide.md) — `MemoryStore`/lesson/衰减机制的原有设计
 - [自我演化 Stage 4-5 指南](./self-evolution-stage4-5-guide.md) — 巩固循环 后台循环的其它环节（剪枝/晋升）
+- [Wiki 式知识库指南](./wiki-knowledge-base-guide.md) — **新增**：本系统的平行新实现，用 md 页面 + 显式关系图代替分类树/滚动摘要，解决"关系表达能力不足"与"知识不可直接阅读"两个结构性局限；`LibraryIndex.on_new_entry()`/`consolidate()` 会把实体双写镜像进 wiki（`wiki_paths` 非 `None` 时），两套检索（`shelf_search` vs `wiki_search`）并存，尚未替换
 
 ---
 

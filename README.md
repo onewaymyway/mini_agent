@@ -23,6 +23,7 @@
 | 🔭 观察性 | traces.jsonl 时序追踪 + `/diagnostics` 健康端点 + k-σ 异常检测 + 工具调用因果链（error_category / resolves_seq）|
 | ♻️ 巩固循环 | 后台循环扫描：剪枝候选 + 能力地图 + 跨项目晋升候选 + 知识巩固（分类树生长/合并、实体摘要重写、实体去噪合并），24h 时间门控，`/evolve consolidate` 手动触发 |
 | 📚 图书馆式知识索引 | 分类树自动生长/合并（书架结构）+ 实体目录（冲突检测/近重复合并）+ 两步检索（先定位书架再精排）+ 检索反馈 + 人类纠正→定位旧知识→标记过时闭环 + 知识生命周期时间线查询，`/evolve timeline` 命令 |
+| 🕸️ Wiki 式知识库 | 图书馆式索引的平行新实现：md 页面存储（frontmatter + 显式关系图）+ 双写镜像 + 三段式检索（规则粗筛→图扩展→LLM精排）+ 专题页自动生成，`/wiki` 命令组，与旧检索并存待 A/B 验证 |
 | 🧘 本体感知 | ProprioceptionModule：认知负荷/不确定性/风险感知/剩余预算/挫败感轮间快照，frustration 累积触发元认知提示 |
 | 🧭 余裕感知 | AffordanceMap：session 级交叉分析未完成线索/能力地图/经验，生成"当前环境行动机会"摘要注入 system prompt |
 | 🪄 工具透明性 | IntentActionMapper：工具调用按意图（探索/代码编辑/测试/环境配置/版本控制等）分组，写入 traces.jsonl，避免原始流水账 |
@@ -462,6 +463,8 @@ python weixin_bot.py [--project <路径>] [--yes] [--no-stream]
 | `/evolve review\|list` | 扫描达标 lesson 并提案/预览新 skill（Stage 3.1） |
 | `/evolve consolidate [--dry-run]` | 手动触发 巩固循环 后台维护（剪枝候选/能力地图/晋升候选/知识巩固，Stage 8） |
 | `/evolve timeline --entity <id>\|--category <code> [--limit N]` | 查询知识生命周期编年目录（图书馆式索引） |
+| `/wiki <page-id>` | 浏览 wiki 页面：frontmatter 概要 + 正文 + backlinks |
+| `/wiki list [--type T]` \| `/wiki search <query>` \| `/wiki rebuild [--full]` | 列出/三段式检索/重建 wiki 式知识库索引（阶段三/四，与图书馆式索引并存） |
 | `/debug system\|history\|all\|save` | 打印/导出当前 system prompt 与 history，便于分析调试 |
 
 ### 键盘快捷键（Task 日志查看）
@@ -643,6 +646,10 @@ mini_agent/
 │       │   └── behavior/         # 行为感知子包（新增：跨端行为采集）
 │       │       ├── manager.py / analyzer.py / events.py / config.py / mobile_setup.py
 │       │       └── collectors/   # active_window / app_lifecycle / idle / now_playing / cdp_browser 等
+│       ├── wiki/                 # Wiki 式知识库（新增：图书馆式索引的平行实现）
+│       │   ├── parser.py / graph.py / indexer.py / writer.py / validator.py
+│       │   ├── migration.py / dedup.py / search.py / topics.py
+│       │   └── _templates/       # entity/decision/process/experience/topic 五种页面模板
 │       ├── proxy/                # 代理池（新增：科学上网/网络出口管理）
 │       │   ├── pool.py / service.py / local_proxy.py / external_engine.py
 │       │   ├── integration.py / subscription.py / validator.py / xray_runner.py
@@ -873,6 +880,7 @@ python -m pytest tests/ -q
 - [自我进化效果回填指南](docs/self-evolution-outcome-tracking-guide.md) — **新增**：`skill_propose` commit 落地后的迟滞观察窗口、improved/no_change/worsened 判定、`/evolution outcomes` 命令
 - [记忆机制、自我进化机制与具身智能机制完整技术文档](docs/memory-and-self-evolution-complete-reference.md) — **新增**：系统整理全部记忆存储/检索/图书馆式索引机制、自我进化 Stage 0~9 全流程（安全网/巩固循环/效果回填闭环）、具身智能 12 项能力（A1~C4），及三者的交汇点
 - [图书馆式知识索引指南](docs/library-index-guide.md) — **新增**：分类树自动生长/合并 + 实体目录（冲突检测/去噪合并）+ 两步检索 + 检索反馈 + 人类纠正→标记过时闭环 + 时间线查询，`/evolve timeline` 命令
+- [Wiki 式知识库指南](docs/wiki-knowledge-base-guide.md) — **新增**：图书馆式索引的平行新实现，md 页面存储 + 显式关系图 + 双写镜像 + 三段式检索（规则粗筛→图扩展→LLM精排）+ 专题页自动生成，`/wiki` 命令组
 - [Stage 9 自主运行时指南](docs/self-evolution-stage9-guide.md) — **新增**：常驻守护进程 / Goal Backlog / 三档位 AutonomousLoop / 资源仲裁 / `mini-agent daemon` 命令
 - [守护进程多客户端架构指南](docs/daemon-multi-client-guide.md) — **新增**：`DaemonClient`/`SessionAgentPool`/`AgentBridge`（RingBuffer/OutputBroadcaster/InputQueue/PermissionGate）三层架构、多端接入同一会话的消息生命周期、`run_connected_repl` 已连接模式渲染与斜杠命令转发，含当前已知问题排查记录
 - [具身智能改进指南](docs/embodied-agent-guide.md) — **新增**：本体感知（ProprioceptionModule）/ 余裕感知（AffordanceMap）/ 工具透明性（IntentActionMapper）/ AgentSelfModel / 时间加权记忆激活 / 认知锚点文件 / 自维护模块（SelfMaintenanceModule），A/B/C 三阶段共 12 项
@@ -956,3 +964,5 @@ MIT License
 *2026-07 具身智能 × 自我演化四方案联动（`next_doc/embodied_autonomy_integration_design.md`）*：方案一 `perception/affordance_analyzer.py` 新增 `persist_affordance_map()`/`load_recent_high_risk_zones()`，`AffordanceMap.high_risk_zones` 落盘到 `<workdir>/affordance_snapshot.json`（超过 60 分钟过期），供 `evolution/soft_goal_deriver.py::_from_capability_map()` 对高风险域候选降权（`urgency *= cfg.affordance.risk_downweight_factor`，默认 0.4）与 `perception/exploration_sandbox.py::ExplorationSandbox.create()` 对高风险域探索收紧 token 上限（探索预算总额的一半，新增 `ExplorationTokenLimitExceeded` 提前止损），总开关 `cfg.affordance.risk_gating_enabled`（默认开启）；方案二私有函数 `_load_behavior_context` 提升为公共 `load_behavior_context()`，`evolution/resource_arbiter.py::ResourceArbiter.can_run_autonomous()` 新增第五条仲裁规则 `_check_user_presence()`——用户明显活跃切换（`context_switch_count` 达 `cfg.autonomy.behavior_gating_switch_threshold`，默认 3）时暂缓自主任务，总开关 `cfg.autonomy.behavior_gating_enabled`（默认关闭）；方案三 `agent.py` 新增 `_maybe_publish_uncertainty_signal()`（连续 `cfg.proprioception.uncertainty_streak_required` 默认 3 轮超 `uncertainty_threshold` 默认 0.45 才限流发布 `proprioception.uncertainty_sustained` 事件）与 `_current_task_domain_hint()`，`soft_goal_deriver.py::_recent_uncertainty_domains()` 消费该事件，与既有 `memory.sparse_region_detected` 信号对同一 domain 的加权取较大值而非相乘（上限仍 1.6x）；方案四 `perception/self_model.py::AgentSelfModel.recent_negative_outcome_domains()` 桥接 `outcome_tracker.get_revert_candidates()`，`derive_candidates()` 排序前对落在负面回填域的候选强降权（`urgency *= 0.15`），验证一个具体、影响面可控的场景，暂不做通用聚合接入。四个方案均遵循"降权不拒绝、失败静默降级、双开关默认不改变原有行为"原则；新增 25 个测试用例（`tests/test_affordance_risk_gating.py`/`test_resource_arbiter_behavior_gating.py`/`test_uncertainty_event_bridge.py`/`test_negative_outcome_downweighting.py`）；详见 [具身智能改进指南](docs/embodied-agent-guide.md)、[Stage 9 自主运行时指南](docs/self-evolution-stage9-guide.md)、[跨子系统事件总线指南](docs/system-events-bus-guide.md)
 
 *2026-07 agent.py 拆分为 agent/ 包（Stage 12 代码结构治理）*：原 `src/mini_agent/agent.py`（3907 行, 近 100 个方法的单体类）按职责拆分为 `src/mini_agent/agent/` 包：`core.py`（`Agent` 类骨架 + `__init__`）+ 9 个 Mixin 文件（`lifecycle.py`/`reflection.py`/`profile.py`/`llm_control.py`/`turn_loop.py`/`role_judge.py`/`reminders_correction.py`/`compaction.py`/`snapshot.py`）+ `_helpers.py`（模块级共享辅助函数），`Agent` 通过多重继承组装回同一个类。纯粹搬迁重构，不改变任何方法签名与运行时行为，对外 `from mini_agent.agent import Agent` 导入路径不变。同步修复两处因此暴露的隐藏耦合：① `scripts/protected_paths.py` 原先按精确文件名 `"src/mini_agent/agent.py"` 保护 agentic loop 主循环（T3 治理红线），拆分后已补充目录级条目 `"src/mini_agent/agent/"`，否则自我演化系统会失去对核心循环的保护；② `tools/introspection.py::_get_agent_init_snippet()` 原先只扫描单文件里的 `self.xxx = ` 赋值，已改为遍历整个 `agent/` 目录并标注来源文件。全量 1791 个测试验证通过 1777 个，剩余 14 个失败经确认是拆分之前就存在、与本次改动无关的既存问题（`SkillLoader` 测试桩缺少 `_loaded_resources` 初始化、环境缺少可选依赖 `jsonschema`）。
+
+*2026-07 Wiki 式知识库（`wiki式知识库重构计划.md`）*：图书馆式知识索引之外的一套平行新实现，核心动机是分类树"每条知识只有一个最合适位置"的假设与软件工程知识天然网状的结构不匹配。阶段一（基础设施）：新增 `src/mini_agent/wiki/` 包，`parser.py` 解析 frontmatter + 正文 + `[[link]]` 弱引用的 md 页面（`entity`/`decision`/`process`/`experience`/`topic` 五种类型），`graph.py::GraphIndex` 内存图结构（正向边+反向边，`expand()` 一跳扩展，区分 frontmatter 强关系与正文弱引用），`indexer.py::build_index()` 遍历 `wiki/` 生成 `_index/` 下 `graph.json`/`tags.json`/`backlinks.json`/`search_index.json` 四个可随时删除重建的派生索引（支持增量模式），`writer.py` 原子写，`validator.py` 死链/id冲突/孤儿页面校验。阶段二（迁移与双写）：`migration.py::migrate_entity_store()` 一次性导出脚本 + `mirror_entity()` 双写共用函数，`LibraryIndex.on_new_entry()`/`consolidate()` 命中已有实体页追加"历史沿革"、命中不到新建页面；`dedup.py::find_similar_page()` 判重默认走规则打分（tag重合度+关键词Jaccard）+ 不确定区间才问一次 LLM 确认，embedding 方案保留为显式可选路径，替代原先 `difflib` 字符串相似度。阶段三（检索切换）：新增 `search.py::wiki_shelf_search()` 三段式检索——规则粗筛（tag+关键词打分取 top-N）→ 图扩展（复用 `GraphIndex.expand(strong_only=True)`）→ LLM 精排（完整正文排序+"基于页面:"标注依据），通过 `LibraryIndex.wiki_search()` 暴露，与 `shelf_search` 完全并存、不替换，供后续 A/B 对比效果；`consolidate()` 新增步骤 6，wiki 有写入时自动触发增量索引重建。阶段四（专题页与收尾）：新增 `topics.py::consolidate_topics()`，按 tag 聚类且组内 frontmatter 强链接密度达标（默认页面数≥4、密度≥0.5）时触发 LLM 综合聚合成 `topics/*.md`（`relation: absorbs`），接入 `consolidate()` 步骤 7；新增 `/wiki <page-id>|list|search|rebuild` CLI 命令供人工浏览页面/backlinks 及检索 A/B 对比。顺带修复：核对代码发现 `wiki_paths` 参数虽已加入 `LibraryIndex.__init__` 但 `memory_factory.py` 从未真正传递，导致双写路径此前从未在真实 agent 运行中触发——补上 `MemoryConfig.wiki_enabled`（默认开启）总开关完成接线。"验证新检索路径效果稳定后下线旧路径"这一条有意保留未完成，理由是三段式检索刚落地尚未经过实际 A/B 验证。详见 [Wiki 式知识库指南](docs/wiki-knowledge-base-guide.md)

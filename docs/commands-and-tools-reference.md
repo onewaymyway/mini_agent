@@ -381,9 +381,23 @@ mini-agent --retry-backoff linear --retry-backoff-step 60 --retry-backoff-max 30
 | `/evolution outcomes [--worsened]` | **新增**：列出自我进化 commit 的效果回填记录（`observing`/`improved`/`no_change`/`worsened`/`insufficient_data`/`reverted_by_user`）。`--worsened` 只看建议复核 revert 的记录。详见 [效果回填指南](self-evolution-outcome-tracking-guide.md) |
 | `/evolve review [--global] [--tier T1\|T2]` | 扫描 lesson（默认 workdir 级 `memory.jsonl`，`--global` 扫描 `~/.agent/memory.jsonl`），对达标分组 spawn `evolution-agent` 提案 |
 | `/evolve list [--global] [--tier T1\|T2]` | 同 `review`，但只扫描 + 列出达标分组，不 spawn agent、不消耗 LLM 调用 |
-| `/evolve consolidate [--force] [--dry-run]` | **Stage 8** 手动触发 巩固循环 后台循环扫描（剪枝候选 + 能力地图 + 晋升候选）。`--force` 跳过 24h 时间门控，`--dry-run` 只展示不写入节奏记录 |
+| `/evolve consolidate [--force] [--dry-run]` | **Stage 8** 手动触发 巩固循环 后台循环扫描（剪枝候选 + 能力地图 + 晋升候选 + 知识巩固，含 wiki 镜像/索引重建/专题页生成）。`--force` 跳过 24h 时间门控，`--dry-run` 只展示不写入节奏记录 |
+| `/evolve timeline --entity <id>\|--category <code> [--limit N]` | 查询图书馆式索引的知识生命周期编年目录（`created`/`superseded`/`new_category`/`category_merged` 事件） |
 
 `commit` 参数支持完整 hash 或前缀。
+
+---
+
+### Wiki 式知识库（`src/mini_agent/cli/commands/wiki.py`）
+
+> 详见 [Wiki 式知识库指南](wiki-knowledge-base-guide.md)。这套系统是图书馆式索引的平行新实现（md 页面 + 显式关系图），与旧的两步检索并存，尚未替换，需要 `MemoryConfig.wiki_enabled`（默认开启）。
+
+| 命令 | 说明 |
+|------|------|
+| `/wiki <page-id>` | 展示指定页面的 frontmatter 概要、正文、frontmatter 强关系，以及反向链接（backlinks） |
+| `/wiki list [--type T]` | 列出全部 wiki 页面，可按 `type`（entity/decision/process/experience/topic）过滤 |
+| `/wiki search <query>` | 三段式检索（规则粗筛 → 图扩展 → LLM 精排）的命令行封装，用于 A/B 对比新旧检索路径效果 |
+| `/wiki rebuild [--full]` | 手动触发一次 `_index/` 索引重建（默认增量，`--full` 强制全量） |
 
 ---
 

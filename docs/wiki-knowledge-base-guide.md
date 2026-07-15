@@ -1,0 +1,181 @@
+# Wiki 式知识库指南
+
+对应设计文档：项目根目录《wiki式知识库重构计划.md》。这是[图书馆式知识索引](library-index-guide.md)（分类树 + 实体索引 + 目录）之外的一套**平行新实现**，不替换旧系统，两者在过渡期并存运行，直到新检索路径经过实际验证效果稳定。
+
+## 一、为什么需要这套新系统
+
+图书馆式索引把"归类"这一件事做得很细（分类树自动生长/合并、实体去噪/近重复合并），但它的核心假设是"每条知识只有一个最合适的位置"——一条记忆只能挂一个分类号，一个实体只有一段滚动覆盖的摘要字符串。这个假设在纸质图书馆里成立，但软件工程知识天然是网状的：一个模块的设计离不开它依赖的模块、它取代的旧方案、它引出的新问题，这些关系没有地方能被显式表达。
+
+Wiki 式知识库用三条设计原则解决这个问题：
+
+1. **知识以 md 文件为唯一真相**——人可以直接打开、直接读、直接手改，不需要通过工具才能查看知识内容。
+2. **页面之间的关系是一等公民**——`depends_on`、`supersedes`、`absorbs` 这些关系本身就是知识的一部分，不是挂载关系的副产品。
+3. **索引全部是可重建的编译产物**——`_index/` 下的四个文件随时可以删除、随时能从 md 重新生成，不会因为索引损坏丢失任何真实信息。
+
+## 二、目录结构
+
+```
+.agent/wiki/                    # project scope；global scope 是 ~/.agent/wiki/
+├── entities/     # 实体型：模块、工具、bug 模式、外部依赖
+├── decisions/    # 决策型：某个取舍为什么这么定
+├── processes/    # 流程型：怎么做某件事的标准步骤
+├── experiences/  # 经验型：非正式的踩坑总结、直觉性知识
+├── topics/       # 专题页：聚合多篇页面的综合叙事（阶段四新增，LLM 自动生成）
+├── _migration_map.json   # entity_id → page_id 映射，双写路径依赖的持久状态（不属于可随时删除的 _index/）
+└── _index/       # 全部为脚本生成的派生产物，可随时删除重建
+    ├── graph.json          # 页面间链接图
+    ├── tags.json           # tag -> 页面列表
+    ├── backlinks.json      # 反向链接
+    ├── search_index.json   # 关键词倒排索引
+    └── _manifest.json      # indexer.py 自用的增量重建状态（mtime+hash）
+```
+
+页面格式是 frontmatter + 结构化正文：
+
+```yaml
+---
+id: role-agent-dispatcher
+type: entity          # entity | decision | process | experience | topic
+tags: [judge-system, dispatcher]
+status: active         # active | deprecated | superseded | revisited
+confidence: 0.8
+created: 2026-06-01
+updated: 2026-07-10
+links:
+  - target: turn-judge
+    relation: absorbs
+    note: "Phase6b将TurnJudge的职责迁移至此"
+source_entries: [entry_a1b2, entry_c3d4]   # 指回原始 MemoryStore 记忆，可追溯
+---
+
+正文...包含 [[turn-judge]] 这样的弱引用...
+```
+
+正文内的 `[[page-id]]` 是自然行文中的弱引用（自动记为 `relation: mentions`），frontmatter 的 `links` 是结构化强关系。两类链接并存于 `WikiPage.links`，通过 `source` 字段区分（`"frontmatter"` | `"body"`），`strong_links()`/`weak_links()` 两个方法分别取用。若同一 target 既被 frontmatter 声明又在正文里被提及，解析时丢弃重复的弱引用，只保留强关系。
+
+## 三、模块地图（`src/mini_agent/wiki/`）
+
+| 模块 | 阶段 | 作用 |
+|---|---|---|
+| `parser.py` | 一 | 解析单个 md 页面：frontmatter + 正文 + `[[link]]` |
+| `graph.py` | 一 | `GraphIndex`：内存图结构，正向边+反向边，`expand()` 一跳扩展 |
+| `indexer.py` | 一 | 遍历 `wiki/` 生成 `_index/` 下四个派生索引，支持增量模式 |
+| `writer.py` | 一 | 原子写：新建/更新页面、追加 section、更新 status |
+| `validator.py` | 一 | 死链检测、id 冲突检测、孤儿页面提示 |
+| `migration.py` | 二 | `migrate_entity_store()` 一次性导出 + `mirror_entity()` 双写共用函数 |
+| `dedup.py` | 二 | 页面相似度判断：默认规则+LLM，embedding 作为可选路径 |
+| `search.py` | 三 | 三段式检索：规则粗筛 → 图扩展 → LLM 精排 |
+| `topics.py` | 四 | 专题页生成：tag 聚类 + 强链接密度判断 + LLM 综合聚合 |
+
+## 四、写入侧：与图书馆式索引双写
+
+`LibraryIndex.__init__` 的可选参数 `wiki_paths: Optional[AgentPaths]`（默认 `None`）控制是否启用双写：
+
+- `on_new_entry()` 挂载实体后，尝试把实体镜像进 `wiki/entities/*.md`（`_mirror_entities_to_wiki()`）。
+- `mark_stale_from_correction()` 标记某实体 `superseded` 时，同步把新状态写回对应 wiki 页面的 frontmatter。
+- `consolidate()` 每轮重写过摘要的实体也会被镜像（步骤 5），镜像前先判重（见下）。
+
+所有镜像动作都包在 `try/except` 里，失败只是"少镜像一次"，不会让分类树/实体索引/编年目录这些主索引的写入跟着失败——wiki 目前的定位是**镜像层**，不是**真相来源**。
+
+`MemoryConfig.wiki_enabled: bool = True` 是这条双写路径的总开关，`perception/memory_factory.py::_build_library_index()` 据此决定是否把 `wiki_paths` 传给 `LibraryIndex`。关闭后 `wiki/` 目录完全不被触碰，行为与不存在这套系统时一致。
+
+> **实现记录**：这个开关是本轮（阶段三）补上的接线。核对代码时发现 `wiki_paths` 参数虽然在阶段二就加进了 `LibraryIndex.__init__`，但 `memory_factory.py` 从未真正传过这个参数——阶段二的双写代码路径在真实运行的 agent 里此前一直不会被触发，只有手动构造 `LibraryIndex` 时才生效。
+
+### 判重：默认规则打分 + LLM 确认，而非 embedding
+
+`consolidate()` 把实体镜像进 wiki 前，先用 `wiki/dedup.py::find_similar_page()` 判断是否已有语义相近的既有页面：
+
+- **默认方案**：tag 重合度 + 正文关键词 Jaccard 相似度加权打分。分数落在高阈值以上直接判定相似；落在中间不确定区间时，只对分数最高的 top-1 候选调一次 LLM 做 YES/NO 确认；低于低阈值直接判定不相似。全程不需要 embedding 依赖。
+- **可选方案**：显式传入 `embed_call` 时切换为 embedding 余弦相似度，两条路径互斥，由调用方决定用哪个。
+
+命中相似页面则把这条更新并入该页面的"历史沿革"，而不是各自新建成割裂的两篇页面——这是原计划"替代 `difflib` 字符串相似度判重"的具体落地方式。
+
+## 五、检索侧：三段式检索（阶段三）
+
+`wiki/search.py::wiki_shelf_search()` 是图书馆式索引 `shelf_search`（两步检索：定位书架 → 架内精排）的**平行实现**，通过 `LibraryIndex.wiki_search(query, k, llm_call, tags)` 暴露：
+
+```
+query
+  │
+  ▼
+第一段 规则粗筛（零 LLM 成本）
+    对 query 与每篇既有页面做 tag 重合度 + 正文关键词 Jaccard 相似度加权打分，
+    取 top tag_top_n（默认 25）篇候选
+  │ 零命中 → 返回空结果（stage_reached="none"），调用方应回退到 shelf_search
+  ▼
+第二段 图扩展（零 LLM 成本）
+    命中候选的 frontmatter 强链接展开一跳（GraphIndex.expand(strong_only=True)），
+    把依赖/取代/因果关系带入候选池——这是相对分类树检索的核心增量能力
+  │ 没有传 llm_call → 到此为止，返回候选（stage_reached="rule"|"graph"）
+  ▼
+第三段 LLM 精排
+    候选收窄到 rerank_top_n（默认 8）篇后，把完整正文（不是摘要）交给 llm_call
+    排序并生成综合回答，回答后标注"基于页面: ..."，解析进
+    WikiSearchResult.grounded_page_ids（stage_reached="llm"）
+```
+
+`WikiSearchResult` 字段：`pages`（候选页面列表）、`answer`（综合回答，未走 LLM 精排时为空）、`grounded_page_ids`（LLM 标注的依据页面）、`stage_reached`（实际走到了哪一段，供调用方/人工判断检索质量）。
+
+**这套检索目前只是"平行实现"，不替换 `shelf_search`**：`wiki_paths=None` 或 wiki/ 下没有页面时永远返回空结果，两条路径完全独立运行，便于 A/B 对比效果后再决定是否收敛。
+
+## 六、专题页生成（阶段四）
+
+`wiki/topics.py::consolidate_topics()` 是 `consolidate()` 步骤 7 的入口，解决"没有可读的综合层"问题——一次跨模块的大重构（比如判断/调度系统整合），此前没有任何地方能承载"这件事的完整来龙去脉"，只能靠人去几个实体的摘要里拼凑。
+
+判断逻辑：按 tag 对全部非 topic 类型页面分组，**页面数达到阈值**（`min_pages`，默认 4）**且组内 frontmatter 强链接密度达到阈值**（`min_density`，默认 0.5，定义为"组内强链接边数 / 组内页面数"）才算候选——只是恰好共享同一个 tag 不够，必须真的紧密关联。
+
+命中候选后，把组内全部页面正文交给 LLM 综合改写成一篇叙事（不是逐篇复述），写入 `topics/<tag>.md`，frontmatter 用 `relation: absorbs` 声明对每篇成员页面的强链接。已经生成过专题页的 tag（读取既有 `topics/*.md` 里的 `source_tag` 附加字段）会被排除，避免同一批页面反复触发生成——当前版本只支持"生成新专题页"，不支持"更新既有专题页"。
+
+只在传入 `llm_call` 时生效——规则本身只负责"值不值得生成"的判断，没有 LLM 就没有能力生成综合叙事正文，直接跳过而不是勉强拼接。
+
+## 七、`consolidate()` 完整步骤（含 wiki 相关的 5/6/7）
+
+`LibraryIndex.consolidate(store, llm_call=None, wiki_dedup=True, wiki_embed_call=None)`：
+
+1. 分类树生长（未分类候选聚类出新节点）
+2. 分类树合并（语义重合的节点收敛）
+3. 实体摘要批量重写（含冲突检测）
+4. 实体巩固：去噪 + 近重复合并
+5. **wiki 镜像**：本轮重写过摘要的实体，判重后镜像/并入 wiki 页面
+6. **wiki 索引重建**：步骤 5 有任何写入时，触发 `indexer.py::build_index(incremental=True)`，刷新 `_index/` 下四个派生文件
+7. **专题页生成**：tag 聚类 + 链接密度达标时，触发 LLM 综合聚合成 `topics/*.md`
+
+返回值新增字段：`wiki_mirrored`、`wiki_dedup_merged`、`wiki_index_rebuilt`、`wiki_pages_indexed`、`wiki_topics_generated`（新生成的专题页 id 列表）。`/evolve consolidate` 报告会展示这些统计。
+
+## 八、`/wiki` CLI 命令（阶段四）
+
+| 命令 | 说明 |
+|---|---|
+| `/wiki <page-id>` | 展示指定页面的 frontmatter 概要、正文、frontmatter 强关系，以及从 `_index/backlinks.json` 读出的反向链接 |
+| `/wiki list [--type T]` | 列出全部页面，可按 `type`（entity/decision/process/experience/topic）过滤 |
+| `/wiki search <query>` | `LibraryIndex.wiki_search()` 的命令行封装，展示三段式检索走到了哪一段、综合回答、候选页面（LLM 精排标注过的打 ★），用于人工对比新旧检索路径的实际效果 |
+| `/wiki rebuild [--full]` | 手动触发一次索引重建（默认增量，`--full` 强制全量），相当于把 `consolidate()` 步骤 6 单独拎出来手动跑一次，并展示 `validator.py` 校验出的死链/孤儿页面问题 |
+
+`/wiki <page-id>` 找不到 backlinks 时会提示先跑 `/wiki rebuild`，而不是静默显示"无 backlinks"——backlinks 只存在于 `_index/` 里，页面本身刚写入还没重建索引时是看不到的。
+
+## 九、新增的落盘文件（均可重建或明确标注为持久状态）
+
+在 `.agent/wiki/`（project scope）和 `~/.agent/wiki/`（global scope）下各自独立一套，路径定义见 `storage/paths.py`：
+
+| 文件/目录 | 内容 | 是否可随时删除重建 |
+|---|---|---|
+| `entities/`、`decisions/`、`processes/`、`experiences/`、`topics/` | 页面 md 文件 | 否——这是知识本身，唯一真相 |
+| `_migration_map.json` | entity_id → page_id 映射 | 否——双写路径依赖的持久状态，删除会导致同一实体被重复创建新页面 |
+| `_index/graph.json` / `tags.json` / `backlinks.json` / `search_index.json` | 派生索引 | 是——`/wiki rebuild` 随时可重建 |
+| `_index/_manifest.json` | indexer 自用的增量重建状态 | 是——删除后下次退化为全量重建 |
+
+## 十、与图书馆式索引的关系与后续计划
+
+- `MemoryStore` 的原始 jsonl 记忆条目保持不变，作为"证据层"不受影响。Wiki 页面是"提炼层"，`source_entries` 字段始终指回原始证据，保证可追溯。
+- 旧的 `classification.py`/`entity_index.py`/`catalog.py` 在过渡期并存，新知识双写，待新检索效果验证稳定后逐步下线旧路径——**这一步本次有意保持未完成**：三段式检索刚刚落地，还没有经过任何实际使用周期的 A/B 验证，现在下线旧路径会让"先不替换，AB 对比"失去意义。
+- 后续工作方向：实际跑一段时间积累 A/B 数据、根据真实 tag 分布调优专题页生成阈值、评估是否需要支持"更新既有专题页"而不只是生成新的。
+
+## 相关文档
+
+- [图书馆式知识索引指南](library-index-guide.md) — 旧的分类树/实体索引/两步检索系统，仍是当前的主索引
+- [巩固循环 后台循环指南（Stage 8）](self-evolution-consolidation-guide.md) — `consolidate()` 挂载的完整巡检流程
+- 项目根目录《wiki式知识库重构计划.md》— 完整设计动机、阶段划分与逐条实现记录
+
+---
+
+*首次编写：2026-07（wiki 式知识库阶段一~四：md 页面存储 + 双写镜像 + 三段式检索 + 专题页生成 + `/wiki` 命令）*
