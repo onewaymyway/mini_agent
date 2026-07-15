@@ -277,12 +277,28 @@ class LLMClientPool:
         self,
         entries: list[ProviderEntry],
         fallback_on: Optional[set[str]] = None,
+        max_rounds: int = 2,
+        round_wait: float = 5.0,
     ) -> None:
+        """
+        Args:
+            entries:      ProviderEntry 列表，第一条为主配置
+            fallback_on:  触发 fallback 到下一条配置的错误类名称集合
+            max_rounds:   fallback chain 最多整体轮询的轮数（默认 2）。
+                          原实现只会把链条里的每个 entry 各试一次，全部
+                          失败后立即抛出；这里改为可以从头再走一轮或多轮，
+                          给限流/冷却中的 key 和配置一个恢复的机会。
+                          设为 1 等价于旧行为（只走一轮）。
+            round_wait:   每一轮整体失败后、开始下一轮之前的等待秒数
+                          （默认 5s）。设为 0 表示不等待、立即开始下一轮。
+        """
         if not entries:
             raise ValueError("LLMClientPool requires at least one entry")
         self._entries = entries
         self._current_idx = 0
         self._fallback_on: set[str] = fallback_on or self.DEFAULT_FALLBACK_ON
+        self._max_rounds = max(1, max_rounds)
+        self._round_wait = max(0.0, round_wait)
         self._lock = threading.Lock()
 
     # ── 对外主接口 ────────────────────────────────────────────────────────────
@@ -358,6 +374,7 @@ class LLMClientPool:
         retry_policy: "RetryPolicy",
         on_switch_key: Optional[Callable[[str, str, Exception], None]] = None,
         on_switch_config: Optional[Callable[[str, str, Exception], None]] = None,
+        max_rounds: Optional[int] = None,
     ) -> LLMResponse:
         """
         执行 call_fn，自动处理 key 切换和配置 fallback。
@@ -367,12 +384,23 @@ class LLMClientPool:
             retry_policy:     用于单个 provider entry 内的重试策略
             on_switch_key:    key 切换时的通知回调 (old_key_suffix, new_key_suffix, exc)
             on_switch_config: 配置切换时的通知回调 (old_label, new_label, exc)
+            max_rounds:       本次调用覆盖实例默认的轮询轮数（不传则用
+                              构造时的 max_rounds，默认 2）
 
         Returns:
             LLMResponse
 
         Raises:
-            LLMError: 所有配置均已用尽仍然失败
+            LLMError: 所有轮次、所有配置均已用尽仍然失败
+
+        Note:
+            修复说明：原实现里外层只有一层 for 循环，把 fallback chain 的
+            每个 entry 各试一次；如果链条里所有 entry 在这一轮里恰好都
+            触发了 fallback 条件（例如短时间内被同一波限流/临时封禁波及），
+            会直接 raise last_exc，不会给"稍等一下、从头再试一轮"的机会。
+            现在改成外层再套一层轮次循环：一轮所有 entry 都失败后，等待
+            round_wait 秒（给限流/冷却中的 key 一点恢复时间），再从
+            start_idx 重新开始新的一轮，最多尝试 max_rounds 轮。
         """
         last_exc: Optional[Exception] = None
 
@@ -380,38 +408,61 @@ class LLMClientPool:
             start_idx = self._current_idx
             total = len(self._entries)
 
-        for config_attempt in range(total):
-            with self._lock:
-                entry_idx = (start_idx + config_attempt) % total
-                entry = self._entries[entry_idx]
+        rounds = self._max_rounds if max_rounds is None else max(1, max_rounds)
 
-            try:
-                response = self._call_entry(
-                    entry=entry,
-                    call_fn=call_fn,
-                    retry_policy=retry_policy,
-                    on_switch_key=on_switch_key,
-                )
-                # 成功：记录当前 idx 并返回
+        for round_num in range(1, rounds + 1):
+            for config_attempt in range(total):
                 with self._lock:
-                    self._current_idx = entry_idx
-                return response
+                    entry_idx = (start_idx + config_attempt) % total
+                    entry = self._entries[entry_idx]
 
-            except Exception as exc:
-                last_exc = exc
-                # 判断是否触发 fallback
-                if not self._should_fallback(exc):
-                    raise
-                if config_attempt < total - 1:
-                    next_entry = self._entries[(entry_idx + 1) % total]
-                    logger.warning(
-                        "LLMClientPool: [%s] failed (%s: %s), falling back to [%s]",
-                        entry.label, type(exc).__name__, exc, next_entry.label,
+                try:
+                    response = self._call_entry(
+                        entry=entry,
+                        call_fn=call_fn,
+                        retry_policy=retry_policy,
+                        on_switch_key=on_switch_key,
                     )
-                    if on_switch_config:
-                        on_switch_config(entry.label, next_entry.label, exc)
+                    # 成功：记录当前 idx 并返回
+                    with self._lock:
+                        self._current_idx = entry_idx
+                    return response
 
-        raise last_exc  # 所有配置都失败了
+                except Exception as exc:
+                    last_exc = exc
+                    # 判断是否触发 fallback；不触发的错误（如配置错误）
+                    # 无论第几轮都应该立即抛出，多等/多轮没有意义。
+                    if not self._should_fallback(exc):
+                        raise
+
+                    is_last_in_round = config_attempt == total - 1
+                    if not is_last_in_round:
+                        next_entry = self._entries[(entry_idx + 1) % total]
+                        logger.warning(
+                            "LLMClientPool: [%s] failed (%s: %s), falling back to [%s]",
+                            entry.label, type(exc).__name__, exc, next_entry.label,
+                        )
+                        if on_switch_config:
+                            on_switch_config(entry.label, next_entry.label, exc)
+                    elif round_num < rounds:
+                        # 本轮（第 round_num 轮）链条里所有 entry 都失败了，
+                        # 但还有下一轮机会：等待一小段时间后从头开始重试，
+                        # 给被限流/冷却的 key 和配置一点恢复时间。
+                        first_entry = self._entries[start_idx]
+                        logger.warning(
+                            "LLMClientPool: 第 %d/%d 轮所有配置均已失败 (最后一个 [%s]: %s: %s)，"
+                            "等待 %.1fs 后从头开始第 %d 轮重试",
+                            round_num, rounds, entry.label, type(exc).__name__, exc,
+                            self._round_wait, round_num + 1,
+                        )
+                        if on_switch_config:
+                            on_switch_config(entry.label, first_entry.label, exc)
+                        if self._round_wait > 0:
+                            time.sleep(self._round_wait)
+                    # else: 已经是最后一轮的最后一个 entry，跳出内层循环，
+                    # 内层 for 结束、外层 for 也结束，落到函数末尾统一抛出
+
+        raise last_exc  # 所有轮次、所有配置都已尝试失败
 
     def snapshot(self) -> dict:
         """返回当前状态快照（供状态栏/日志使用）。"""
@@ -448,13 +499,22 @@ class LLMClientPool:
         chain_cfg: list[dict] = getattr(cfg, "llm_fallback_chain", []) or []
         fallback_on_cfg: Optional[list] = getattr(cfg, "llm_fallback_on", None)
         fallback_on = set(fallback_on_cfg) if fallback_on_cfg else None
+        # 可选：整条 fallback chain 失败后回头重试的轮数/等待秒数，
+        # 配置文件里不写就用 __init__ 里的默认值（2 轮，每轮间隔 5s）。
+        max_rounds = int(getattr(cfg, "llm_fallback_max_rounds", 2) or 2)
+        round_wait = float(getattr(cfg, "llm_fallback_round_wait", 5.0) or 0.0)
 
         # 若未配置 fallback chain，退化为单条主配置
         if not chain_cfg:
             main_llm_cfg = LLMConfig.from_app_config(cfg)
             main_client = create_client(main_llm_cfg)
             entry = ProviderEntry(config=main_llm_cfg, client=main_client, key_pool=None)
-            return cls(entries=[entry], fallback_on=fallback_on)
+            return cls(
+                entries=[entry],
+                fallback_on=fallback_on,
+                max_rounds=max_rounds,
+                round_wait=round_wait,
+            )
 
         entries: list[ProviderEntry] = []
         for item in chain_cfg:
@@ -478,7 +538,12 @@ class LLMClientPool:
 
             entries.append(ProviderEntry(config=llm_cfg, client=client, key_pool=key_pool))
 
-        return cls(entries=entries, fallback_on=fallback_on)
+        return cls(
+            entries=entries,
+            fallback_on=fallback_on,
+            max_rounds=max_rounds,
+            round_wait=round_wait,
+        )
 
     # ── 内部辅助 ──────────────────────────────────────────────────────────────
 
