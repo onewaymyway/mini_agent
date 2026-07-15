@@ -240,8 +240,24 @@ def list_resumable_sessions(project_root) -> list[dict]:
 
 
 def find_resumable_session(project_root, from_session_id: Optional[str] = None) -> Optional[str]:
-    """在 sessions_dir 下扫描，找到最近一个 status=="running" 的 goal_state.json 对应的
-    session_id（供启动时的"检测到未完成目标"提示使用）。
+    """在 sessions_dir 下扫描，找到可恢复的 goal_state.json 对应的 session_id。
+
+    [BUGFIX] 此前 from_session_id 参数虽然存在，但函数体里完全没有用到它——
+    导致 `/goal resume`（不带参数）无论当前在哪个 session 里，永远是"全局按
+    文件 mtime 找最近一个 running 的 goal"，而不是"优先继续本 session 自己
+    的 goal"。典型翻车场景：session A 的 goal 还在 running，但 session B
+    之前跑过 goal 且 mtime 更新（哪怕早就结束/取消，只要文件被后续操作碰过
+    导致 mtime 更晚），在 session A 里执行 `/goal resume` 就会被错误地
+    恢复成 session B 的 goal。
+
+    现在的优先级：
+      1. 若传入 from_session_id，且该 session 自己的 goal_state.json 存在
+         且 status == "running"，直接返回 from_session_id（不管其他 session
+         里有没有更新的 goal）——这是"默认继续本 session 的 goal"这个直觉
+         预期。
+      2. 否则退化为原有行为：全局扫描所有 session，按 goal_state.json 的
+         mtime 取最新一个 status == "running" 的（供启动时的"检测到未完成
+         目标"提示、或本 session 确实没有可恢复目标时的兜底使用）。
 
     只做粗粒度扫描（按文件 mtime 取最新一个），不做复杂索引——这足够覆盖
     "上次进程被杀掉、重新打开项目"这个核心场景。
@@ -253,6 +269,19 @@ def find_resumable_session(project_root, from_session_id: Optional[str] = None) 
     if not sessions_dir.exists():
         return None
 
+    # 1. 优先检查当前 session 自己是否有可恢复的 goal
+    if from_session_id:
+        own_gs_path = sessions_dir / from_session_id / "goal_state.json"
+        if own_gs_path.exists():
+            try:
+                with open(own_gs_path, "r", encoding="utf-8") as f:
+                    own_data = json.load(f)
+                if own_data.get("status") == "running":
+                    return from_session_id
+            except Exception:
+                pass  # 本 session 的记录读取失败，落到下面的全局兜底扫描
+
+    # 2. 全局兜底：按 mtime 取最新一个 running 的 goal_state.json
     candidates = []
     for entry in sessions_dir.iterdir():
         if not entry.is_dir():

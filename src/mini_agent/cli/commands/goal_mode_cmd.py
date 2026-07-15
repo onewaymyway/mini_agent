@@ -5,7 +5,8 @@ cli/commands/goal_mode_cmd.py — /goal slash 命令处理
   /goal <目标文本>       — 开始一次新的 Goal 协商（生成验收标准草案，进入确认子对话）
   /goal from-history      — 根据当前 session 的历史对话自动归纳目标，
                             生成验收标准草案后进入和 /goal <文本> 相同的确认子对话
-  /goal resume [sid]     — 恢复上次未完成的 goal（sid 可省略，省略时自动找最近一个）
+  /goal resume [sid]     — 恢复未完成的 goal（sid 可省略：省略时优先继续本 session
+                            自己的 goal；本 session 没有可恢复的才全局找最近一个）
   /goal list             — 列出所有可恢复的 goal 任务（status==running，可能不止一个）
   /goal status           — 查看当前 session 是否有 goal 状态记录
   /goal cancel           — 取消当前 session 记录的 goal 状态（不会中断正在运行的循环，
@@ -262,7 +263,9 @@ def _handle_resume(args: list[str], agent) -> None:
     positional = [a for a in args if a != "--force"]
 
     project_root = agent.cfg.project_root
-    sid = positional[0] if positional else find_resumable_session(project_root)
+    sid = positional[0] if positional else find_resumable_session(
+        project_root, from_session_id=agent.session_id
+    )
     if not sid:
         _report_no_resumable(project_root)
         return
