@@ -596,6 +596,21 @@ class GoalModeConfig:
     # DONE 判定只取决于 checklist）。
     process_integrity_check_enabled: bool = True
 
+    # ── [goal_mode_stuck_compact_plan.md §3.2] 伪进展趋势识别：StuckDetector
+    # 只能识别"完全没有变化/退步"，识别不了"每轮都有一点点进展，但累积起来
+    # 毫无实质意义"这种模式。ProgressTracker 在 StuckDetector 之外新增一层，
+    # 跟踪最近 pseudo_progress_window 轮的进展分数（§3.1），用早期/后期均值
+    # 差值识别"平缓但非零"的趋势；一旦识别到，与 StuckDetector 判定卡住一样
+    # 触发恢复流程（compact + 换角度提示），共享同一份 max_stuck_recoveries
+    # 额度，不会因为触发路径不同获得额外的恢复次数。
+    # 依赖 progress_score_enabled=True（没有分数就无法判断趋势）；关闭本开关
+    # 时完全不做这层判断，行为与升级前一致，只依赖 StuckDetector 的"连续雷同"
+    # 判定。
+    pseudo_progress_detection_enabled: bool = True
+    pseudo_progress_window: int = 5
+    pseudo_progress_stagnation_threshold: float = 0.15
+    pseudo_progress_max_score_cap: float = 0.5
+
 
 @dataclass
 class TurnJudgeConfig:

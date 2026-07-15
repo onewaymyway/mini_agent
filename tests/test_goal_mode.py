@@ -633,6 +633,10 @@ class _FakeGoalModeCfg:
         self.auto_verify_output_tail_lines = kwargs.get("auto_verify_output_tail_lines", 40)
         self.progress_score_enabled = kwargs.get("progress_score_enabled", True)
         self.process_integrity_check_enabled = kwargs.get("process_integrity_check_enabled", True)
+        self.pseudo_progress_detection_enabled = kwargs.get("pseudo_progress_detection_enabled", True)
+        self.pseudo_progress_window = kwargs.get("pseudo_progress_window", 5)
+        self.pseudo_progress_stagnation_threshold = kwargs.get("pseudo_progress_stagnation_threshold", 0.15)
+        self.pseudo_progress_max_score_cap = kwargs.get("pseudo_progress_max_score_cap", 0.5)
 
 
 class _FakeCfg:
@@ -1621,3 +1625,118 @@ def test_run_goal_judge_includes_process_integrity_instructions_in_system_prompt
 
     run_goal_judge(profile, base_cfg, spec, "output", 1, "", process_integrity_enabled=False)
     assert marker not in captured["system_extra"]
+
+
+# ── §3.2 伪进展趋势识别（ProgressTracker 接入 _check_stuck）──────────────────
+
+def test_goal_runner_pseudo_progress_triggers_recovery_despite_nonzero_scores(monkeypatch, tmp_path):
+    """[goal_mode_stuck_compact_plan.md §3.2] 每轮 checklist 都有微小的、
+    非零的新增通过数（比如始终是 SUBSTANTIVE_ADVANCE），StuckDetector 本身
+    识别不出这是"卡住"（因为每轮判断都是有进展），但进展分数长期平缓——
+    ProgressTracker 应该识别出伪进展并触发和 stuck 同等级别的恢复流程。"""
+    agent = FakeAgent(outputs=[f"attempt {i}" for i in range(15)])
+    cfg = _FakeCfg(
+        tmp_path, max_rounds=20, consecutive_same_feedback_limit=100,  # 让规则化 stuck 判定不生效
+        max_stuck_recoveries=1,
+        pseudo_progress_window=5, pseudo_progress_stagnation_threshold=0.15,
+        pseudo_progress_max_score_cap=0.5,
+    )
+    spec = GoalSpec(goal_text="do X", acceptance_criteria=[f"c{i}" for i in range(1, 30)], confirmed=True)
+
+    counter = {"i": 0}
+
+    def fake_judge(**kw):
+        counter["i"] += 1
+        # 每轮都有恰好一个新标准从"未通过"变为"通过"（delta=1），但主观判断给
+        # SAME_APPROACH_NO_GAIN（不是 SUBSTANTIVE_ADVANCE），使得
+        # progress_score = max(0.0, 0.3*1) = 0.3——一个"平缓但非零"的分数，
+        # 而不是被主观判断的高分（1.0）掩盖。consecutive_same_feedback_limit
+        # 设得很高（100），确保规则化 StuckDetector 不会自己先触发，
+        # 这样能确认真正起作用的是 ProgressTracker。
+        idx = counter["i"]
+        checklist = [
+            {"index": i, "passed": (i <= idx), "evidence": "微量进展"} for i in range(1, idx + 2)
+        ]
+        return _judge_json(
+            "CONTINUE", feedback=f"微小进展 #{idx}",
+            progress="SAME_APPROACH_NO_GAIN", progress_reason="每轮都只多过一条标准，没有实质推进",
+            checklist=checklist,
+        )
+
+    monkeypatch.setattr("mini_agent.role_agents.goal_judge.run_goal_judge", lambda **kw: fake_judge(**kw))
+
+    runner = GoalRunner(agent=agent, cfg=cfg, goal_spec=spec)
+    result = runner.run()
+
+    assert result.status == "stuck"
+    assert "伪进展" in result.final_report
+
+
+def test_goal_runner_pseudo_progress_disabled_by_config(monkeypatch, tmp_path):
+    """pseudo_progress_detection_enabled=False 时，即使进展分数长期平缓，
+    也不应该触发额外的恢复流程——应该正常跑到 max_rounds 耗尽。"""
+    agent = FakeAgent(outputs=[f"attempt {i}" for i in range(6)])
+    cfg = _FakeCfg(
+        tmp_path, max_rounds=6, consecutive_same_feedback_limit=100,
+        max_stuck_recoveries=1, pseudo_progress_detection_enabled=False,
+    )
+    spec = GoalSpec(goal_text="do X", acceptance_criteria=[f"c{i}" for i in range(1, 30)], confirmed=True)
+
+    counter = {"i": 0}
+
+    def fake_judge(**kw):
+        counter["i"] += 1
+        idx = counter["i"]
+        checklist = [
+            {"index": i, "passed": (i <= idx), "evidence": "微量进展"} for i in range(1, idx + 2)
+        ]
+        return _judge_json(
+            "CONTINUE", feedback=f"微小进展 #{idx}",
+            progress="SUBSTANTIVE_ADVANCE", progress_reason="又推进了一小步",
+            checklist=checklist,
+        )
+
+    monkeypatch.setattr("mini_agent.role_agents.goal_judge.run_goal_judge", lambda **kw: fake_judge(**kw))
+
+    runner = GoalRunner(agent=agent, cfg=cfg, goal_spec=spec)
+    result = runner.run()
+
+    assert result.status == "max_rounds_exhausted"
+    assert result.rounds_used == 6
+
+
+def test_goal_runner_pseudo_progress_shares_recovery_budget_with_stuck_detector(monkeypatch, tmp_path):
+    """伪进展触发的恢复应该消耗和 StuckDetector 规则判定同一份
+    max_stuck_recoveries 额度——用尽后即便还在"伪进展"也应该终止，
+    而不是无限循环下去。"""
+    agent = FakeAgent(outputs=[f"attempt {i}" for i in range(30)])
+    cfg = _FakeCfg(
+        tmp_path, max_rounds=30, consecutive_same_feedback_limit=100,
+        max_stuck_recoveries=2,
+        pseudo_progress_window=3, pseudo_progress_stagnation_threshold=0.15,
+        pseudo_progress_max_score_cap=0.5,
+    )
+    spec = GoalSpec(goal_text="do X", acceptance_criteria=[f"c{i}" for i in range(1, 30)], confirmed=True)
+
+    counter = {"i": 0}
+
+    def fake_judge(**kw):
+        counter["i"] += 1
+        idx = counter["i"]
+        checklist = [
+            {"index": i, "passed": (i <= idx), "evidence": "微量进展"} for i in range(1, idx + 2)
+        ]
+        return _judge_json(
+            "CONTINUE", feedback=f"微小进展 #{idx}",
+            progress="SAME_APPROACH_NO_GAIN", progress_reason="每轮都只多过一条标准，没有实质推进",
+            checklist=checklist,
+        )
+
+    monkeypatch.setattr("mini_agent.role_agents.goal_judge.run_goal_judge", lambda **kw: fake_judge(**kw))
+
+    runner = GoalRunner(agent=agent, cfg=cfg, goal_spec=spec)
+    result = runner.run()
+
+    assert result.status == "stuck"
+    # 恢复额度上限是 2，不应该跑到 max_rounds=30 才停
+    assert result.rounds_used < 30

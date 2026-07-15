@@ -99,6 +99,23 @@ class StuckDetector:
 
         return StuckSignal.NONE
 
+    def trigger_recovery(self) -> StuckSignal:
+        """[goal_mode_stuck_compact_plan.md §3.2] 供外部信号源（如 ProgressTracker
+        判定的"伪进展"）复用同一份恢复额度计数，而不必先经过 observe()/observe_signal()
+        的文本或语义相似度比较。语义上等价于"这一轮被判定为需要恢复"，直接走
+        现有的"消耗一次恢复额度，额度耗尽则 GIVE_UP"逻辑，并重置连续计数（下一轮
+        重新开始累计）。
+
+        与 observe()/observe_signal() 共享同一套 `_recoveries_used` 计数器，因此
+        两种触发来源（规则相似度 / LLM 语义判断 / 伪进展趋势）会共同消耗同一份
+        `max_recoveries` 额度，不会因为触发路径不同而变相获得双倍额度。
+        """
+        if self._recoveries_used >= self.max_recoveries:
+            return StuckSignal.GIVE_UP
+        self._recoveries_used += 1
+        self._consecutive_same = 0
+        return StuckSignal.RECOVER
+
     def reset(self) -> None:
         self._prior_output = None
         self._consecutive_same = 0
@@ -129,3 +146,61 @@ class StuckDetector:
         完整输出文本，恢复后的第一次 observe() 只会记录基准，不会误判）。"""
         self._consecutive_same = int(consecutive_same)
         self._recoveries_used = int(recoveries_used)
+
+
+@dataclass
+class ProgressTracker:
+    """[goal_mode_stuck_compact_plan.md §3.2] 伪进展趋势识别。
+
+    `StuckDetector` 只回答"当前是否等同于上一次"这个二元问题，识别不了
+    "每轮都有一点点进展，但累积起来毫无实质意义"这种模式（比如连续 N 轮
+    进展分数都非负，但从来没有真正积累出实质推进）。`ProgressTracker`
+    在 `StuckDetector` 之外新增一层，跟踪最近 `window` 轮的进展分数序列
+    （见 `GoalRunner._compute_progress_score`），用"早期均值 vs 后期均值"
+    的粗粒度趋势估计识别这种"平缓但非零"的伪进展。
+
+    与 `StuckDetector` 是互补关系，不是替代：`StuckDetector` 抓"完全没有
+    变化/退步"的情况，`ProgressTracker` 抓"看起来一直有点变化，但趋势没有
+    实质抬升"的情况——两者任一个判定为需要干预，调用方都应该触发恢复流程
+    （见 `GoalRunner._check_stuck`）。
+    """
+    window: int = 5
+    stagnation_score_threshold: float = 0.15   # 早期均值/后期均值之差低于此值视为"平缓"
+    max_score_cap: float = 0.5                 # 窗口内最高分仍低于此值，才可能是"伪进展"
+
+    _scores: list = field(default_factory=list)
+
+    def observe(self, score: float) -> bool:
+        """返回 True 表示"检测到伪进展趋势"，调用方应据此触发和 stuck 同等级别
+        的干预（见 `StuckDetector.trigger_recovery`）。
+
+        窗口未填满（不足 `window` 个样本）时始终返回 False——数据点太少时
+        任何趋势估计都不可靠，宁可漏检也不要在早期就误判。
+        """
+        self._scores.append(score)
+        if len(self._scores) > self.window:
+            self._scores = self._scores[-self.window:]
+        if len(self._scores) < self.window:
+            return False
+
+        half = self.window // 2
+        early_avg = sum(self._scores[:half]) / half
+        late_avg = sum(self._scores[half:]) / (self.window - half)
+        # checklist 通过数长期没有实质累积增长，即便主观 progress 一直非负，
+        # 也判定为伪进展；窗口内出现过明显高分（>= max_score_cap）说明确实有
+        # 过实质性推进，不应该被判定为"伪进展"。
+        return (late_avg - early_avg) < self.stagnation_score_threshold and max(self._scores) < self.max_score_cap
+
+    def reset(self) -> None:
+        self._scores = []
+
+    # ── 落盘 / 恢复：ProgressTracker 本身不需要独立持久化字段——它的全部
+    # 状态就是"最近 window 个进展分数"，而这份数据已经作为
+    # `GoalState.progress_scores`（§3.1）持久化。GoalRunner 恢复时直接用
+    # `replay()` 把落盘的分数序列末尾 `window` 个重新喂给一个新实例即可，
+    # 不需要额外的落盘字段，避免数据重复维护。
+    def replay(self, scores: list) -> None:
+        """用已有的历史分数序列（如 GoalState.progress_scores）重建窗口状态，
+        不触发任何返回值判断（仅用于恢复内部状态，不代表"这些历史分数刚刚
+        被观察到"）。"""
+        self._scores = list(scores[-self.window:]) if scores else []

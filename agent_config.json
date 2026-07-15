@@ -83,5 +83,27 @@
     "consecutive_same_output_limit": 3,
     "same_output_similarity_threshold": 0.9,
     "max_stuck_recoveries": 3
-  }
+  },
+  "token_estimate_enabled":true,
+  "auto_compress_enabled": true,
+  "auto_compress_threshold": 0.7,
+  "auto_compress_strategy": "turn_aligned",
+
+  "compact_turn_count_trigger_enabled": true,
+  "compact_max_turns": 20,
+
+  "compact_tool_call_count_trigger_enabled": true,
+  "compact_max_tool_calls": 30,
+
+  "compact_topic_shift_detection": "heuristic",
+  "compact_topic_shift_keyword_overlap_threshold": 0.15,
+
+  "compact_redundancy_detection_enabled": true,
+  "compact_redundancy_tool_result_ratio": 0.6,
+
+  "compact_cooldown_turns": 3,
+  "compact_require_confirmation": false,
+  "compact_max_message_chars": 10000,
+
+  "model_context_window": 120000
 }

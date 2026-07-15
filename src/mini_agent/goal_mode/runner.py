@@ -41,7 +41,7 @@ import mini_agent.ui.renderer as R
 from .spec import GoalSpec
 from .executor import GoalStepExecutor, CoarseStepExecutor, GoalStepResult
 from .state import GoalState, GoalStateStore
-from mini_agent.role_agents.stuck_detector import StuckDetector, StuckSignal
+from mini_agent.role_agents.stuck_detector import StuckDetector, StuckSignal, ProgressTracker
 
 if TYPE_CHECKING:
     from mini_agent.agent import Agent
@@ -138,6 +138,20 @@ class GoalRunner:
         self._progress_scores: list[float] = []
         self._progress_scores_cap = max(10, self._gm_cfg.consecutive_same_feedback_limit * 3)
 
+        # [goal_mode_stuck_compact_plan.md §3.2] 伪进展趋势识别：ProgressTracker
+        # 自身不需要独立落盘字段，其全部状态就是"最近 window 个进展分数"，
+        # resume 时直接从 self._progress_scores（已经持久化）末尾 window 个
+        # 重建（见下方 resume_state 分支），不需要额外持久化。
+        self._progress_tracker = ProgressTracker(
+            window=getattr(self._gm_cfg, "pseudo_progress_window", 5),
+            stagnation_score_threshold=getattr(self._gm_cfg, "pseudo_progress_stagnation_threshold", 0.15),
+            max_score_cap=getattr(self._gm_cfg, "pseudo_progress_max_score_cap", 0.5),
+        )
+        # 记录本轮触发 stuck 的来源（"similarity" 规则化相似度判定 / LLM 语义判定，
+        # 还是 "pseudo_progress" §3.2 伪进展趋势），仅用于终止报告文案更准确，
+        # 不影响判定逻辑本身。
+        self._last_stuck_reason: str = "similarity"
+
         # 恢复态：从上一次中断处继续
         if resume_state is not None:
             self._round = resume_state.round
@@ -156,6 +170,7 @@ class GoalRunner:
             self._last_passed_count = int(resume_state.last_passed_count or 0)
             if resume_state.progress_scores:
                 self._progress_scores = list(resume_state.progress_scores)
+                self._progress_tracker.replay(self._progress_scores)
         else:
             self._round = 0
             self._last_feedback = ""
@@ -234,10 +249,19 @@ class GoalRunner:
             if self._check_stuck(judge_feedback, progress_info):
                 if self._try_stuck_recovery():
                     continue  # 已压缩历史+重置卡住计数，本轮判定不终止，继续跑
+                if self._last_stuck_reason == "pseudo_progress":
+                    stuck_reason_text = (
+                        f"最近 {getattr(self._gm_cfg, 'pseudo_progress_window', 5)} 轮进展分数"
+                        "长期平缓、没有实质累积增长（伪进展）"
+                    )
+                else:
+                    stuck_reason_text = (
+                        f"连续 {self._gm_cfg.consecutive_same_feedback_limit} 轮收到高度相似的反馈"
+                    )
                 return self._finish(
                     status="stuck",
                     report=(
-                        f"连续 {self._gm_cfg.consecutive_same_feedback_limit} 轮收到高度相似的反馈，"
+                        f"{stuck_reason_text}，"
                         f"且已用尽 {self._gm_cfg.max_stuck_recoveries} 次压缩历史重试的机会，"
                         f"怀疑卡在同一个问题上，提前终止。最近一次反馈：\n{judge_feedback}"
                     ),
@@ -658,6 +682,17 @@ class GoalRunner:
 
         内部计数状态（连续雷同计数、恢复额度）全部委托给 `StuckDetector`，
         与 TurnJudge 共享同一套实现（见 role_agents/stuck_detector.py）。
+
+        [goal_mode_stuck_compact_plan.md §3.2] 在 `StuckDetector` 判定为
+        `NONE`（没有识别到"完全没有变化/退步"）的基础上，额外用
+        `ProgressTracker` 检查"最近几轮进展分数是否呈现有意义的上升趋势"——
+        识别"每轮都有一点点进展，但累积起来毫无实质意义"的伪进展模式。
+        任一个判定为需要干预都应该触发恢复流程；`ProgressTracker` 触发时
+        通过 `StuckDetector.trigger_recovery()` 复用同一份恢复额度，不会
+        因为触发路径不同而获得额外的恢复次数。仅在
+        `pseudo_progress_detection_enabled=True` 且本轮有可用的
+        `progress_score`（依赖 §3.1）时才会检查；关闭或没有分数可用时，
+        行为与升级前完全一致。
         """
         progress_mode = getattr(self._gm_cfg, "progress_judge_mode", "llm")
         progress = (progress_info or {}).get("progress")
@@ -667,6 +702,23 @@ class GoalRunner:
             self._last_stuck_signal = self._stuck_detector.observe_signal(is_same=is_same)
         else:
             self._last_stuck_signal = self._stuck_detector.observe(feedback)
+        self._last_stuck_reason = "similarity"
+
+        if (
+            self._last_stuck_signal is StuckSignal.NONE
+            and getattr(self._gm_cfg, "pseudo_progress_detection_enabled", True)
+        ):
+            score = (progress_info or {}).get("progress_score")
+            if score is not None:
+                pseudo_detected = self._progress_tracker.observe(score)
+                if pseudo_detected:
+                    R.print_warning(
+                        "[GoalRunner] 最近几轮进展分数长期平缓但不为零，疑似伪进展，"
+                        "触发和卡住同等级别的恢复流程。"
+                    )
+                    self._last_stuck_signal = self._stuck_detector.trigger_recovery()
+                    self._last_stuck_reason = "pseudo_progress"
+
         return self._last_stuck_signal is not StuckSignal.NONE
 
     def _try_stuck_recovery(self) -> bool:
@@ -700,8 +752,15 @@ class GoalRunner:
         if self._compacts_done >= max_compacts:
             return False
 
+        if self._last_stuck_reason == "pseudo_progress":
+            recovery_log_reason = (
+                f"最近 {getattr(self._gm_cfg, 'pseudo_progress_window', 5)} 轮进展分数长期平缓、"
+                "疑似伪进展"
+            )
+        else:
+            recovery_log_reason = f"连续 {self._gm_cfg.consecutive_same_feedback_limit} 轮反馈高度相似，疑似卡住"
         R.print_warning(
-            f"[GoalRunner] 连续 {self._gm_cfg.consecutive_same_feedback_limit} 轮反馈高度相似，疑似卡住，"
+            f"[GoalRunner] {recovery_log_reason}，"
             f"尝试压缩历史后给 agent 一次重新整理思路的机会"
             f"（第 {self._stuck_detector.recoveries_used}/{self._gm_cfg.max_stuck_recoveries} 次恢复额度）。"
         )

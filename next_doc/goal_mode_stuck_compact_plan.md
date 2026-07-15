@@ -4,15 +4,16 @@
 > `role_agents/stuck_detector.py`、`role_agents/verdict.py`、`role_agents/goal_judge.py`、
 > `config/models.py`）梳理。每一节先说明现状（已经做到什么程度），再给出具体缺口和改进方案。
 
-> **实现状态（本次改造，累计三轮）**：
+> **实现状态（本次改造，累计四轮）**：
 > - §1.2 Dead-end 从滚动窗口升级为持久清单 —— **已实现**
 > - §2.2 自验证优先（GoalRunner 强制执行 verification_command 拿客观证据）—— **已实现**
 > - §1.3 NEED_COMPACT 路径共享 dead-end 注入 —— **已实现**
 > - §3.1 进展分数纳入 checklist 通过数变化 —— **已实现**
 > - §1.1 分级 compact（轻量/深度两级，与恢复次数挂钩）—— **已实现**
-> - §2.1 过程判断 / 结果判断分离（process_flags）—— **已实现**（本轮新增）
+> - §2.1 过程判断 / 结果判断分离（process_flags）—— **已实现**
+> - §3.2 伪进展趋势识别（ProgressTracker）—— **已实现**（本轮新增）
 >
-> 尚未实现：§3.2（伪进展趋势识别）、§4（探索/收敛双模式）、§5（Goal 重规划提议）。
+> 尚未实现：§4（探索/收敛双模式）、§5（Goal 重规划提议）。
 > 保留原方案文本，可作为后续迭代依据。
 
 ---
@@ -410,6 +411,47 @@ class ProgressTracker:
 的检查——**任一个判定为"卡住/伪进展"都应该触发恢复流程**，而不是只依赖 `StuckDetector` 的
 "连续相同"这一种模式。这直接对应你提出的"进展分数长期平缓但不为零时也应该触发干预"。
 
+#### 实现记录（本次改造）
+
+基本按方案落地，`ProgressTracker` 的字段/算法与示例代码一致（`max_score_cap` 做成可配置项，
+而不是硬编码的 `0.5`）：
+
+- `role_agents/stuck_detector.py` 新增 `ProgressTracker` dataclass：`window`（默认 5）、
+  `stagnation_score_threshold`（默认 0.15）、`max_score_cap`（默认 0.5，新增的可配置项，
+  对应示例代码里硬编码的 `< 0.5`）。窗口未填满（样本数 < window）时恒返回 `False`——数据点
+  太少时任何趋势估计都不可靠，宁可漏检也不要在早期就误判。另外提供 `replay(scores)` 方法，
+  用于从已持久化的 `GoalState.progress_scores`（§3.1）重建窗口状态而不触发误判，避免
+  `ProgressTracker` 自身还要新增一份持久化字段（它的全部状态就是"最近 window 个分数"，
+  这份数据本来就已经被 §3.1 落盘了）。
+- `role_agents/stuck_detector.py::StuckDetector` 新增 `trigger_recovery()` 方法：语义上等价于
+  "这一轮被判定为需要恢复"，直接复用现有的 `_recoveries_used` 计数器（消耗一次额度、额度耗尽则
+  `GIVE_UP`），让 `ProgressTracker` 触发的恢复和 `StuckDetector.observe()`/`observe_signal()`
+  触发的恢复共享同一份 `max_recoveries` 预算，不会因为触发路径不同就变相获得双倍恢复次数。
+- `config/models.py` 新增：`pseudo_progress_detection_enabled`（默认 `True`）、
+  `pseudo_progress_window`（默认 5）、`pseudo_progress_stagnation_threshold`（默认 0.15）、
+  `pseudo_progress_max_score_cap`（默认 0.5）。
+- `runner.py::GoalRunner`：
+  - `__init__` 新增 `self._progress_tracker`；resume 分支里如果落盘状态带有
+    `progress_scores`，用 `ProgressTracker.replay()` 重建窗口，不需要额外的落盘字段。
+  - `_check_stuck()`：仅在 `StuckDetector` 本身判定为 `NONE`（没有识别到"完全没有变化/退步"）
+    且 `pseudo_progress_detection_enabled=True` 且本轮有可用的 `progress_score`（依赖 §3.1）时，
+    才调用 `ProgressTracker.observe()`；一旦判定为伪进展，通过 `trigger_recovery()` 复用同一份
+    恢复额度，并记录触发来源（`self._last_stuck_reason`）供后续文案使用。
+  - `run()` 的终止报告文案 / `_try_stuck_recovery()` 的恢复提示日志都根据
+    `self._last_stuck_reason` 区分"连续反馈高度相似"和"最近 N 轮进展分数长期平缓、疑似伪进展"，
+    避免用户看到误导性的相似度措辞。
+  - `pseudo_progress_detection_enabled=False` 时完全不做这层判断，行为与升级前完全一致，只依赖
+    `StuckDetector` 的"连续雷同"判定（一键回退）。
+- **关联修复**：排查过程中发现 `prompts/manager.py::_BLOCK_FRAGMENT_PATTERN` 的多段落
+  fragment 截断 bug（见 §2.1 实现记录），当时已修复，本节无需重复处理。
+- 新增测试：
+  - `tests/test_progress_tracker.py`（8 个用例）：窗口未填满、平缓非零判定、上升趋势不误判、
+    窗口内出现高分不误判、`replay()` 重建窗口、`reset()`、`trigger_recovery()` 与
+    `observe()`/`observe_signal()` 共享恢复额度。
+  - `tests/test_goal_mode.py` 新增 3 个 GoalRunner 集成测试：伪进展触发恢复直至 `stuck`
+    终止、`pseudo_progress_detection_enabled=False` 时不触发（正常跑到 `max_rounds_exhausted`）、
+    伪进展与规则化 `StuckDetector` 共享同一份 `max_stuck_recoveries` 额度。
+
 ---
 
 ## 4. Compact 时机的"探索 vs 收敛"双模式
@@ -534,6 +576,6 @@ JSON 协议思路，让判官在最后一次恢复窗口的输出里增加一个
 | P1 | §3.1 进展分数纳入 checklist 通过数变化 | 数据已存在，只是没被使用，改动小、见效快 | ✅ 已实现 |
 | P1 | §1.1 / §1.3 分级 compact + NEED_COMPACT 路径共享 dead-end 注入 | 依赖 §1.2 的持久清单先落地 | ✅ 均已实现 |
 | P2 | §2.1 过程判断 / 结果判断分离（process_flags） | 需要改判官 prompt + 新状态语义,改动面稍大,但风险收益都高,建议紧随 P1 | ✅ 已实现（复用 DONE→CONTINUE 降级，未新增状态） |
-| P2 | §3.2 伪进展趋势识别（ProgressTracker） | 依赖 §3.1 先有分数化的进展信号 | 未实现 |
+| P2 | §3.2 伪进展趋势识别（ProgressTracker） | 依赖 §3.1 先有分数化的进展信号 | ✅ 已实现 |
 | P3 | §4 探索/收敛双模式主动 compact | 新机制，默认关闭，建议在前面几项稳定后再引入，避免同时改动太多变量难以定位问题 | 未实现 |
 | P3 | §5 Goal 重规划提议 | 收益明确但涉及新交互流程（CLI 展示 + `/goal revise` 联动），建议放在最后，且严格限制"只能在耗尽额度前提议一次" | 未实现 |
