@@ -236,11 +236,12 @@ class TurnLoopMixin:
                     _sys_preview = self._build_system()   # 首次调用时填充缓存
                     _msgs_preview = convert_tool_use_to_text(self._history)
                     _est = estimate_messages_tokens(_msgs_preview, _sys_preview)
-                _budget_pct = _est / max(self.cfg.max_tokens, 1)
+                _ctx_window = self._resolve_context_window()
+                _budget_pct = _est / max(_ctx_window, 1)
                 if self.cfg.token_estimate_enabled and self.cfg.verbose:
                     R.print_info(
                         f"[token] ~{_est:,} tokens "
-                        f"({_budget_pct:.0%} of {self.cfg.max_tokens:,})"
+                        f"({_budget_pct:.0%} of {_ctx_window:,})"
                     )
             # [SYS-COMPACT-TRIGGERS] 组合触发器检查：token 阈值 / 轮次计数 /
             # 工具调用计数 / 冗余检测 / 话题切换，任一命中即可能触发 compact。
@@ -532,6 +533,31 @@ class TurnLoopMixin:
         return {"role": "user", "content": content}
 
     # ── Helpers ────────────────────────────────────────────────────────────────
+
+    def _resolve_context_window(self) -> int:
+        """
+        [SYS-TOKEN][BUGFIX] 解析用于计算 token 占用率的"分母"——模型的
+        上下文窗口大小（而不是 cfg.max_tokens，那是单次响应的输出 token
+        上限，默认只有 8192，跟上下文窗口是完全不同的两个概念）。
+
+        修复前的 bug：`_budget_pct = _est / cfg.max_tokens` 把估算出的
+        "历史 + system prompt 的输入 token 数" 除以了"单次输出上限"，
+        分母天然远小于真实上下文窗口（如 8192 vs 真实的 120000），
+        导致占用率轻易算出 100%+（例如报错里看到的 109%），
+        token_threshold 触发器几乎必然频繁误报、频繁强制 compact。
+
+        解析优先级（与 compaction.py::_should_use_chunked_compact 保持一致）：
+          1. 当前 LLM client 若暴露了 context_window 属性（provider 自带的
+             准确值），优先使用；
+          2. 否则用 cfg.compress.model_context_window（用户在配置文件里
+             显式指定的窗口大小，如 120000）；
+          3. 都没有时，保守兜底为 100_000。
+        """
+        return (
+            getattr(getattr(self, "_llm", None), "context_window", None)
+            or getattr(self.cfg.compress, "model_context_window", None)
+            or 100_000  # 保守默认值
+        )
 
     def _build_system(self) -> str:
         """

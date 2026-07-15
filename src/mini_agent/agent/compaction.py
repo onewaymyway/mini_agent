@@ -144,11 +144,10 @@ class CompactionMixin:
         total_est = history_tokens + prompt_tokens + output_reserve
 
         # 4. 获取模型上下文窗口
-        model_ctx = (
-            getattr(getattr(self, "_llm", None), "context_window", None)
-            or getattr(self.cfg.compress, "model_context_window", None)
-            or 100_000  # 保守默认值
-        )
+        #    [BUGFIX] 与 turn_loop.py::_resolve_context_window() 共用同一份
+        #    解析逻辑（LLM client.context_window > cfg.compress.model_context_window
+        #    > 100_000 保守默认值），避免两处各自维护导致口径不一致。
+        model_ctx = self._resolve_context_window()
 
         # 5. 判断：估算总量超过上下文的 85% 视为超限（留 15% 安全边际）
         #    也可通过 cfg.compress.compact_precheck_threshold 自定义
