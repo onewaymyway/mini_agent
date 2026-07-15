@@ -260,7 +260,19 @@ class TurnLoopMixin:
             )
             _trigger_result = self._compact_triggers.check(_trigger_ctx, self.cfg)
             if _trigger_result.triggered:
-                self._maybe_run_compact(_trigger_result)
+                _did_compact = self._maybe_run_compact(_trigger_result)
+                # [AUTO-COMPACT-CONTINUE] 压缩真正执行后，自动注入一条模拟的
+                # "继续"用户消息，让 agent 自动接着往下走，而不是把压缩后的
+                # 历史晾在那里、等真人手动敲一句话才会继续（跟 /compact_continue
+                # 手动命令的"压缩后自动续接"行为保持一致）。
+                #
+                # 只在 loop_count > 1（即这是同一个 run_turn 内、已经在
+                # 多轮工具调用过程中触发的压缩）时才注入：如果是 loop_count==1
+                # （刚追加完用户这次的真实输入、还没来得及回复过）触发的压缩，
+                # 说明本来就要立即用压缩后的历史回答用户这次的真实提问，
+                # 不需要、也不应该在用户消息后面再插一条"继续"把话题带偏。
+                if _did_compact and loop_count > 1:
+                    self._hist.append_user("继续")
 
             # [具身改进 B1] 本体感知快照：每轮 LLM 调用前 sense 一次。
             # O(1)，不调用 LLM；frustration 超阈值时注入一次元认知提示，

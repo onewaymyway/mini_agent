@@ -454,13 +454,19 @@ class CompactionMixin:
 
         return final_summary
 
-    def _maybe_run_compact(self, trigger_result) -> None:
+    def _maybe_run_compact(self, trigger_result) -> bool:
         """
         [SYS-COMPACT-TRIGGERS] 触发器命中后的统一入口。
 
         根据 cfg.compress.require_confirmation 决定是否需要用户确认：
           False（默认）—— 全自动静默压缩，仅打印提示（保持原有行为）
           True          —— 先询问用户 y/n，拒绝则本次跳过（下一轮循环还会再检查一次）
+
+        Returns:
+            bool: 是否真正执行了一次压缩（False 表示用户拒绝确认、被跳过）。
+            调用方（turn_loop.py）据此决定是否需要在压缩完成后自动注入一条
+            模拟的"继续"用户消息，让 agent 自动接着往下走，而不是停在这里
+            等真人输入。
         """
         R.print_info(f"[compact] 触发条件命中（{trigger_result.reason}）：{trigger_result.message}")
 
@@ -500,11 +506,12 @@ class CompactionMixin:
                 choice = "y"
             if choice not in ("y", "yes"):
                 R.print_info("[compact] 用户拒绝，本次跳过压缩。")
-                return
+                return False
 
         # 压缩后 system 内容可能变化，清除缓存强制重建
         self._cached_system = None
         self._auto_compress_history(trigger_result=trigger_result)
+        return True
 
     def _auto_compress_history(self, trigger_result=None) -> None:
         """
