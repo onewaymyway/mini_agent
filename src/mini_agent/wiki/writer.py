@@ -55,8 +55,14 @@ def render_page(
     updated: Optional[str] = None,
     links: Optional[list[WikiLink]] = None,
     source_entries: Optional[list[str]] = None,
+    extra_frontmatter: Optional[dict] = None,
 ) -> str:
-    """把结构化字段渲染为完整的 md 文本（frontmatter + 正文）。"""
+    """把结构化字段渲染为完整的 md 文本（frontmatter + 正文）。
+
+    extra_frontmatter: 附加的非核心 frontmatter 字段（比如迁移脚本写入的
+    legacy_entity_id，用于追溯旧 entity_index.py 的原始 entity_id）。
+    parser.py 不会校验这些字段，只是原样保留在 raw_frontmatter 里。
+    """
     if yaml is None:
         raise PageParseError("渲染 wiki 页面需要 pyyaml，请先安装：pip install pyyaml")
     if page_type not in PAGE_TYPES:
@@ -86,6 +92,10 @@ def render_page(
             ]
     if source_entries:
         fm["source_entries"] = source_entries
+    if extra_frontmatter:
+        for k, v in extra_frontmatter.items():
+            if k not in fm:
+                fm[k] = v
 
     frontmatter_text = yaml.safe_dump(fm, allow_unicode=True, sort_keys=False).strip()
     body_text = body if body.startswith("\n") else "\n" + body
@@ -105,6 +115,7 @@ def write_page(
     updated: Optional[str] = None,
     links: Optional[list[WikiLink]] = None,
     source_entries: Optional[list[str]] = None,
+    extra_frontmatter: Optional[dict] = None,
     overwrite: bool = True,
 ) -> Path:
     """渲染并原子写入一个页面，返回写入路径。
@@ -129,9 +140,38 @@ def write_page(
         updated=updated,
         links=links,
         source_entries=source_entries,
+        extra_frontmatter=extra_frontmatter,
     )
     _atomic_write_text(target_path, text)
     return target_path
+
+
+def set_status(paths: AgentPaths, page: WikiPage, *, status: str, note: str = "") -> Path:
+    """更新既有页面的 status 字段（如 active -> superseded），可选追加一条说明
+    到"历史沿革"。用于旧 EntityStore.mark_superseded 的镜像场景。"""
+    body = page.body
+    if note:
+        body = body.rstrip("\n") + f"\n\n## 历史沿革\n\n{note.strip()}\n"
+    _core_keys = {
+        "id", "type", "tags", "status", "confidence", "created", "updated",
+        "links", "source_entries",
+    }
+    extra = {k: v for k, v in page.raw_frontmatter.items() if k not in _core_keys}
+    text = render_page(
+        page_id=page.id,
+        page_type=page.type,
+        body=body,
+        tags=page.tags,
+        status=status,
+        confidence=page.confidence,
+        created=page.created,
+        updated=date.today().isoformat(),
+        links=page.strong_links(),
+        source_entries=page.source_entries,
+        extra_frontmatter=extra,
+    )
+    _atomic_write_text(page.path, text)
+    return page.path
 
 
 def append_section(paths: AgentPaths, page: WikiPage, *, heading: str, content: str) -> Path:
@@ -141,6 +181,11 @@ def append_section(paths: AgentPaths, page: WikiPage, *, heading: str, content: 
     frontmatter 字段（updated 会刷新为今天）。
     """
     new_body = page.body.rstrip("\n") + f"\n\n## {heading}\n\n{content.strip()}\n"
+    _core_keys = {
+        "id", "type", "tags", "status", "confidence", "created", "updated",
+        "links", "source_entries",
+    }
+    extra = {k: v for k, v in page.raw_frontmatter.items() if k not in _core_keys}
     text = render_page(
         page_id=page.id,
         page_type=page.type,
@@ -152,6 +197,7 @@ def append_section(paths: AgentPaths, page: WikiPage, *, heading: str, content: 
         updated=date.today().isoformat(),
         links=page.strong_links(),
         source_entries=page.source_entries,
+        extra_frontmatter=extra,
     )
     _atomic_write_text(page.path, text)
     return page.path

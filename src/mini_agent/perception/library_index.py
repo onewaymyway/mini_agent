@@ -44,6 +44,8 @@ from mini_agent.perception.catalog import (
 
 if TYPE_CHECKING:
     from mini_agent.perception.memory_store import MemoryEntry, MemoryStore
+    from mini_agent.storage.paths import AgentPaths
+    from mini_agent.wiki.dedup import EmbedCall
 
 _MIN_SHELF_SIZE = 3   # 书架内候选数少于此值时，扩展到"参见"分类或回退全库检索
 
@@ -59,12 +61,18 @@ class LibraryIndex:
         category_catalog_path: Path,
         knowledge_timeline_path: Path,
         knowledge_timeline_index_path: Optional[Path] = None,
+        wiki_paths: Optional["AgentPaths"] = None,
     ) -> None:
         self.tree = ClassificationTree(classification_tree_path)
         self.entities = EntityStore(entity_index_path)
         self.catalog = CategoryCatalog(category_catalog_path)
         self._candidates_path = unclassified_candidates_path
         self._timeline_path = knowledge_timeline_path
+        self._entity_index_path = entity_index_path
+        # wiki式知识库重构计划 5.5 节：过渡期新知识双写。wiki_paths=None
+        # （默认）时完全不触碰 wiki/ 目录，旧行为零改动；传入后 on_new_entry
+        # / consolidate 会尽力镜像到 wiki，镜像失败不影响图书馆索引主流程。
+        self._wiki_paths = wiki_paths
         # 改进6：编年目录的侧车索引；不给时退化为"只能读最近 N 条"，不支持
         # 按实体/分类过滤（旧调用点/测试仍然可用，只是查询能力弱一点）。
         self._timeline_index_path = (
@@ -104,6 +112,7 @@ class LibraryIndex:
 
         entity_ids = self.entities.link_entry(entry.entry_id, text, category=code)
         entry.entity_ids = entity_ids
+        self._mirror_entities_to_wiki(entity_ids)
 
         append_knowledge_event(
             self._timeline_path,
@@ -113,6 +122,30 @@ class LibraryIndex:
             entity_ids=entity_ids,
             index_path=self._timeline_index_path,
         )
+
+    # ── wiki式知识库重构计划 5.5 节：过渡期双写 ──────────────────────────
+
+    def _mirror_entities_to_wiki(self, entity_ids: list[str], note: Optional[str] = None) -> None:
+        """把给定实体的当前状态镜像进 wiki/entities/*.md，最佳努力、不阻断主流程。
+
+        失败原因通常是：wiki_paths 未配置（默认）、pyyaml 未安装、磁盘写
+        入偶发失败。这些都不应该影响图书馆索引（分类/实体/编年目录）本身
+        的写入成功——wiki 是过渡期的镜像层，不是当前的主索引。
+        """
+        if self._wiki_paths is None or not entity_ids:
+            return
+        try:
+            from mini_agent.wiki.migration import mirror_entity
+        except ImportError:
+            return
+        for eid in entity_ids:
+            entity = self.entities.get(eid)
+            if entity is None:
+                continue
+            try:
+                mirror_entity(entity, self._wiki_paths, note=note)
+            except Exception:
+                continue
 
     # ── 读取侧：两步检索 ─────────────────────────────────────────────────
 
@@ -208,9 +241,9 @@ class LibraryIndex:
             for entity_id in getattr(entry, "entity_ids", []) or []:
                 if entity_id in marked_entities:
                     continue
-                self.entities.mark_superseded(
-                    entity_id, reason=f"人类纠正：{correction_text[:150]}"
-                )
+                reason = f"人类纠正：{correction_text[:150]}"
+                self.entities.mark_superseded(entity_id, reason=reason)
+                self._mirror_entities_to_wiki([entity_id], note=f"⚠已标记 superseded — {reason}")
                 marked_entities.add(entity_id)
             append_knowledge_event(
                 self._timeline_path,
@@ -255,6 +288,8 @@ class LibraryIndex:
         summary_threshold: int = 3,
         merge_threshold: float = 0.6,
         entity_similarity_threshold: float = 0.82,
+        wiki_dedup: bool = True,
+        wiki_embed_call: Optional["EmbedCall"] = None,
     ) -> dict:
         """
         返回本次巩固的统计，供 /evolve consolidate 展示。顺序：
@@ -262,6 +297,20 @@ class LibraryIndex:
           2. 分类树合并（改进2：语义重合的节点收敛）
           3. 实体摘要批量重写（含改进1冲突检测）
           4. 实体巩固：去噪 + 近重复合并（改进3）
+          5. wiki 镜像（wiki式知识库重构计划阶段二）：
+             a. 把本轮重写过摘要的实体，把新摘要作为一条"历史沿革"追加
+                镜像进 wiki
+             b. wiki_dedup=True（默认）时，在追加前先判断是否已有语义相近
+                的既有页面：默认方案是规则打分（tag 重合度 + 关键词
+                Jaccard）+ 对不确定区间的候选复用本方法已有的 llm_call
+                做一次 YES/NO 确认，不需要额外配置、不依赖 embedding；
+                命中则把镜像并入该页面而不是各自新建，替代
+                entity_index.py 里基于 difflib 字符串相似度的近重复
+                判断（重构计划问题 7）。
+                若显式传入 wiki_embed_call，则改用 embedding 余弦相似度
+                代替规则+LLM 方案（两者互斥，wiki_embed_call 优先）。
+                wiki_dedup=False 时完全跳过判重，每个到期实体各自镜像/
+                追加到自己的页面。
         """
         # 1. 分类树生长
         candidates = load_unclassified_candidates(self._candidates_path)
@@ -341,6 +390,14 @@ class LibraryIndex:
             llm_call=llm_call, similarity_threshold=entity_similarity_threshold,
         )
 
+        # 5. wiki 镜像（wiki式知识库重构计划阶段二）
+        wiki_mirrored, wiki_dedup_merged = self._consolidate_wiki_mirror(
+            due_entities,
+            wiki_dedup=wiki_dedup,
+            llm_call=llm_call,
+            wiki_embed_call=wiki_embed_call,
+        )
+
         return {
             "new_categories": len(new_nodes),
             "category_merges": len(merges),
@@ -348,4 +405,85 @@ class LibraryIndex:
             "entities_summarized": rewritten,
             "entities_deprecated": entity_stats.get("deprecated", 0),
             "entities_merged": entity_stats.get("merged", 0),
+            "wiki_mirrored": wiki_mirrored,
+            "wiki_dedup_merged": wiki_dedup_merged,
         }
+
+    def _consolidate_wiki_mirror(
+        self,
+        due_entities: list,
+        wiki_dedup: bool = True,
+        llm_call: Optional[Callable[[str], str]] = None,
+        wiki_embed_call: Optional["EmbedCall"] = None,
+    ) -> tuple[int, int]:
+        """consolidate() 步骤 5：把本轮重写过摘要的实体镜像进 wiki。
+
+        默认判重方案是规则打分 + llm_call 兜底确认（wiki/dedup.py::
+        find_similar_page_rules），不需要 embedding；显式传入
+        wiki_embed_call 时改用 embedding 余弦相似度。wiki_dedup=False 时
+        跳过判重，直接逐个镜像。
+
+        返回 (mirrored_count, dedup_merged_count)。任何环节失败都吞掉异常、
+        返回已完成的部分统计——wiki 镜像是巩固循环里"锦上添花"的一步，
+        不应该因为它失败而让分类/实体巩固的主统计也报错。
+        """
+        if self._wiki_paths is None or not due_entities:
+            return (0, 0)
+        try:
+            from mini_agent.wiki.dedup import embed_pages, find_similar_page
+            from mini_agent.wiki.indexer import discover_pages
+            from mini_agent.wiki.migration import mirror_entity
+            from mini_agent.wiki.parser import parse_page
+            from mini_agent.wiki.writer import append_section
+        except ImportError:
+            return (0, 0)
+
+        mirrored = 0
+        dedup_merged = 0
+
+        existing_pages: list = []
+        page_embeddings: dict = {}
+        if wiki_dedup:
+            try:
+                existing_pages = [parse_page(p) for p in discover_pages(self._wiki_paths)]
+                if wiki_embed_call is not None:
+                    page_embeddings = embed_pages(existing_pages, wiki_embed_call)
+            except Exception:
+                existing_pages, page_embeddings = [], {}
+
+        for entity in due_entities:
+            try:
+                if wiki_dedup and existing_pages:
+                    candidate_text = entity.summary or entity.name
+                    match = find_similar_page(
+                        candidate_text,
+                        [entity.entity_type],
+                        existing_pages,
+                        llm_call=llm_call,
+                        embed_call=wiki_embed_call,
+                        page_embeddings=page_embeddings,
+                    )
+                    if match is not None:
+                        # 已有语义相近的页面：把这条更新并入该页面的历史
+                        # 沿革，而不是各自维护成两篇割裂的页面。默认路径
+                        # 靠"规则打分 + 不确定时问一次 LLM"判定，不依赖
+                        # embedding（替代 difflib 字符串相似度判重，见
+                        # 重构计划问题 7）。
+                        matched_page = next(
+                            (p for p in existing_pages if p.id == match.page_id), None
+                        )
+                        if matched_page is not None:
+                            append_section(
+                                self._wiki_paths,
+                                matched_page,
+                                heading="历史沿革",
+                                content=f"（合并自 {entity.name}，判定方式：{match.method}，分数 {match.score:.2f}）{candidate_text}",
+                            )
+                            dedup_merged += 1
+                            continue
+                mirror_entity(entity, self._wiki_paths)
+                mirrored += 1
+            except Exception:
+                continue
+
+        return (mirrored, dedup_merged)
