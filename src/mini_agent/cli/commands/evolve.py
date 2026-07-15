@@ -287,6 +287,20 @@ def _print_consolidation_report(report) -> None:
             f"废弃噪音实体 {kc.get('entities_deprecated', 0)} 个，"
             f"合并近重复实体 {kc.get('entities_merged', 0)} 组[/dim]"
         )
+        wiki_mirrored = kc.get("wiki_mirrored", 0)
+        wiki_dedup_merged = kc.get("wiki_dedup_merged", 0)
+        if wiki_mirrored or wiki_dedup_merged:
+            R.console.print(
+                f"[dim]  wiki 镜像 {wiki_mirrored} 个，判重合并 {wiki_dedup_merged} 组[/dim]"
+            )
+        if kc.get("wiki_index_rebuilt"):
+            R.console.print(
+                f"[dim]  wiki 索引已重建，共 {kc.get('wiki_pages_indexed', 0)} 篇页面"
+                "（graph/tags/backlinks/search_index）[/dim]"
+            )
+        topics = kc.get("wiki_topics_generated") or []
+        if topics:
+            R.console.print(f"[dim]  新生成专题页 {len(topics)} 篇：{', '.join(topics)}[/dim]")
 
     R.console.print(f"\n[dim]巩固循环完成，共发现 {len(report.prune_candidates)} 个剪枝候选、"
                     f"{len(report.promotion_candidates)} 个晋升候选[/dim]\n")

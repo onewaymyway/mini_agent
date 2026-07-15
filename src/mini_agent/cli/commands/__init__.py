@@ -20,6 +20,8 @@ cli/commands — slash 命令处理模块包
                 （代理订阅池：抓取/验证/查看可用节点、可扩展订阅源类型、接入其它模块的开关，懒加载于 repl.py）
   behavior    — /behavior status|on|off|enable|disable|token|recent|clear
                 （用户行为感知系统：前台窗口/空闲/浏览器插件上报，默认全部关闭）
+  wiki        — /wiki <page-id>|list|search|rebuild（wiki式知识库重构计划阶段四：
+                人工浏览页面/backlinks、三段式检索 A/B 对比、手动索引重建）
 """
 
 from mini_agent.cli.commands.skills import handle_skills_list, handle_skill_cmd
@@ -40,9 +42,11 @@ from mini_agent.cli.commands.goal_mode_cmd import handle_goal_cmd
 from mini_agent.cli.commands.debug_cmd import handle_debug_cmd
 from mini_agent.cli.commands.roles import handle_role_cmd
 from mini_agent.cli.commands.behavior import handle_behavior_cmd
+from mini_agent.cli.commands.wiki import handle_wiki_cmd
 
 __all__ = [
     "handle_behavior_cmd",
+    "handle_wiki_cmd",
     "handle_skills_list",
     "handle_skill_cmd",
     "handle_session_cmd",

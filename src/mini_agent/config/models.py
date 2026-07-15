@@ -121,6 +121,10 @@ class MemoryConfig:
     library_shelf_search_enabled: bool = True  # context_builder 检索时是否走两步检索（可单独关闭，仅保留写入侧归类）
     library_index_user_scoped: bool = False  # 改进7：多用户场景下按 user_id 拆分独立书架（默认关闭，共享归并）
 
+    # ── wiki 式知识库（wiki式知识库重构计划.md，perception/library_index.py
+    #    的 wiki_paths 参数）─────────────────────────────────────────────
+    wiki_enabled: bool = True  # 过渡期双写总开关；关闭则 LibraryIndex.wiki_paths=None，wiki/ 完全不被触碰
+
     # ── 方案一：记忆语义检索（混合 TF-IDF + 本地离线 Embedding）────────────
     # backend 可选值扩展为 "local" | "hybrid" | "chroma" | "redis"，"hybrid" 为新增。
     embedding_enabled: bool = False          # [默认关闭] 唯一总开关，见 perception/local_embedding.py

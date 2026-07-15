@@ -35,7 +35,8 @@ from mini_agent.cli.commands import (
     handle_evolve_cmd,
     handle_goal_cmd,
     handle_debug_cmd,
-    handle_role_cmd,)
+    handle_role_cmd,
+    handle_wiki_cmd,)
 
 
 def _print_resume_hint(agent: Agent) -> None:
@@ -343,6 +344,9 @@ def _handle_slash(cmd: str, agent: Agent, skill_loader: SkillLoader) -> None:
 
     elif name == "evolve":
         handle_evolve_cmd(parts[1:], agent)
+
+    elif name == "wiki":
+        handle_wiki_cmd(parts[1:], agent)
 
     elif name == "debug":
         # /debug system|history [full] [n]|all [n]|save [path]

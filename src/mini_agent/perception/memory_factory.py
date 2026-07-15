@@ -126,6 +126,15 @@ def _build_library_index(paths, scope: str, cfg: "AppConfig" = None, user_id: Op
     user_scoped = bool(cfg and getattr(cfg.memory, "library_index_user_scoped", False) and user_id)
     suffix = f".{user_id}" if user_scoped else ""
 
+    # wiki式知识库重构计划 5.5 节：过渡期双写。此前 wiki_enabled 一直没有
+    # 接到这里，LibraryIndex.wiki_paths 实际上永远是 None——阶段二的双写
+    # 代码路径虽然存在但从未被真正触发过。这里补上这条接线，wiki_enabled
+    # 默认开启（对应"新知识双写"的过渡期定位），user_scoped 场景下 wiki/
+    # 目录本身不按用户拆分（沿用同一份 project/global wiki，与实体索引不同，
+    # 见 5.1 节目录结构本身没有 per-user 维度）。
+    wiki_enabled = getattr(cfg.memory, "wiki_enabled", True) if cfg else True
+    wiki_paths = paths if wiki_enabled else None
+
     return LibraryIndex(
         classification_tree_path=base / f"classification_tree{suffix}.json",
         unclassified_candidates_path=base / f"unclassified_candidates{suffix}.jsonl",
@@ -133,6 +142,7 @@ def _build_library_index(paths, scope: str, cfg: "AppConfig" = None, user_id: Op
         category_catalog_path=base / f"category_catalog{suffix}.json",
         knowledge_timeline_path=base / f"knowledge_timeline{suffix}.jsonl",
         knowledge_timeline_index_path=base / f"knowledge_timeline_index{suffix}.json",
+        wiki_paths=wiki_paths,
     )
 
 

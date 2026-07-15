@@ -147,6 +147,29 @@ class LibraryIndex:
             except Exception:
                 continue
 
+    # ── wiki式知识库重构计划阶段三：三段式检索的平行实现 ──────────────────
+
+    def wiki_search(
+        self,
+        query: str,
+        k: int = 5,
+        llm_call: Optional[Callable[[str], str]] = None,
+        tags: Optional[list] = None,
+    ):
+        """
+        三段式检索（规则粗筛 → 图扩展 → LLM 精排）的入口，与 shelf_search
+        并存、互不替换，供 A/B 对比新旧检索路径效果（重构计划 5.4 节 /
+        阶段三）。wiki_paths 未配置（默认）或 wiki/ 下没有页面时返回一个
+        空的 WikiSearchResult，调用方应据此回退到 shelf_search。
+        """
+        from mini_agent.wiki.search import WikiSearchResult, wiki_shelf_search
+
+        if self._wiki_paths is None:
+            return WikiSearchResult()
+        return wiki_shelf_search(
+            self._wiki_paths, query, tags=tags, k=k, llm_call=llm_call,
+        )
+
     # ── 读取侧：两步检索 ─────────────────────────────────────────────────
 
     def shelf_search(
@@ -311,6 +334,16 @@ class LibraryIndex:
                 代替规则+LLM 方案（两者互斥，wiki_embed_call 优先）。
                 wiki_dedup=False 时完全跳过判重，每个到期实体各自镜像/
                 追加到自己的页面。
+          6. wiki 索引重建（wiki式知识库重构计划阶段三）：步骤5产生了任何
+             wiki 写入（新建/追加）时，触发一次 wiki/indexer.py 的增量
+             重建，刷新 _index/ 下的 graph.json / tags.json /
+             backlinks.json / search_index.json，让 wiki_search() 和
+             /wiki 命令能看到最新状态，不需要人工单独跑重建。
+          7. 专题页生成（wiki式知识库重构计划阶段四）：某个 tag 下页面数
+             与 frontmatter 强链接密度都达标时，触发 LLM 综合聚合成
+             topics/*.md（wiki/topics.py::consolidate_topics）。只在传入
+             llm_call 时生效——没有 llm_call 时规则本身没有能力生成综合
+             叙事正文，直接跳过。
         """
         # 1. 分类树生长
         candidates = load_unclassified_candidates(self._candidates_path)
@@ -398,6 +431,31 @@ class LibraryIndex:
             wiki_embed_call=wiki_embed_call,
         )
 
+        # 6. wiki 索引重建（wiki式知识库重构计划阶段三）
+        wiki_index_rebuilt = False
+        wiki_pages_indexed = 0
+        if self._wiki_paths is not None and (wiki_mirrored or wiki_dedup_merged):
+            try:
+                from mini_agent.wiki.indexer import build_index
+
+                idx_result = build_index(self._wiki_paths, incremental=True)
+                wiki_index_rebuilt = True
+                wiki_pages_indexed = len(idx_result.pages)
+            except Exception:
+                # 索引重建失败不应该让巩固循环本身报错——下次巩固循环或
+                # 手动 /wiki rebuild 都能重试。
+                pass
+
+        # 7. 专题页生成（wiki式知识库重构计划阶段四）
+        topics_generated: list[str] = []
+        if self._wiki_paths is not None and llm_call is not None:
+            try:
+                from mini_agent.wiki.topics import consolidate_topics
+
+                topics_generated = consolidate_topics(self._wiki_paths, llm_call)
+            except Exception:
+                topics_generated = []
+
         return {
             "new_categories": len(new_nodes),
             "category_merges": len(merges),
@@ -407,6 +465,9 @@ class LibraryIndex:
             "entities_merged": entity_stats.get("merged", 0),
             "wiki_mirrored": wiki_mirrored,
             "wiki_dedup_merged": wiki_dedup_merged,
+            "wiki_index_rebuilt": wiki_index_rebuilt,
+            "wiki_pages_indexed": wiki_pages_indexed,
+            "wiki_topics_generated": topics_generated,
         }
 
     def _consolidate_wiki_mirror(
