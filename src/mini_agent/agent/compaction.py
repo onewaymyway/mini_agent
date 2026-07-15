@@ -517,10 +517,14 @@ class CompactionMixin:
         """
         [SYS-COMPRESS] 自动压缩历史。
 
-        委托给 HistoryManager.auto_compress()，使用 cfg.compress.strategy
-        指定的可插拔压缩策略（turn_aligned / sliding_window / llm_summary /
-        selective），而不是硬编码的切割逻辑，从而让 trigger 建议的
-        suggested_strategy（例如话题切换建议 llm_summary）真正生效。
+        默认复用 compact_with_skills()（与手动 /compact 完全一致的实现：
+        LLM 生成结构化摘要 + skill 上下文重附），保证自动/手动触发的压缩
+        质量与行为一致。
+
+        若 cfg.compress.strategy（或 trigger 给出的 suggested_strategy）
+        指定为其它可插拔策略（turn_aligned / sliding_window / llm_summary /
+        selective），则退回旧的 HistoryManager.auto_compress() 路径，
+        便于对压缩延迟/开销更敏感的场景使用轻量策略。
         """
         strategy_name = "auto_compress"
         trigger_reason = None
@@ -552,31 +556,56 @@ class CompactionMixin:
         if _hist is None:
             return
 
-        # ── 临时切换压缩策略（若 trigger 给出了建议策略）───────────────────
-        from mini_agent.history.compression import create_strategy
-        original_strategy = _hist._strategy
-        if trigger_result is not None and trigger_result.suggested_strategy:
-            try:
-                saved_cfg_strategy = self.cfg.compress.strategy
-                self.cfg.compress.strategy = trigger_result.suggested_strategy
-                _hist._strategy = create_strategy(self.cfg)
-            except Exception:
-                _hist._strategy = original_strategy
-            finally:
-                self.cfg.compress.strategy = saved_cfg_strategy
+        # ── 决定本次实际使用的压缩方式：trigger 建议 > cfg 默认 ───────────
+        effective_strategy = (
+            trigger_result.suggested_strategy
+            if trigger_result is not None and trigger_result.suggested_strategy
+            else self.cfg.compress.strategy
+        )
 
         before_count = len(self._history)
-        try:
-            _hist.auto_compress(
-                skill_compact_fn=self._build_skill_compact_block,
-                llm_client=self._llm,
-            )
-        finally:
-            # 恢复原策略实例，避免临时覆盖影响后续默认压缩
-            _hist._strategy = original_strategy
+        summary_text = ""
+
+        if effective_strategy == "compact_with_skills":
+            # ── 与 /compact 手动触发完全一致的实现：LLM 摘要 + skill 重附 ──
+            try:
+                summary_text = self.compact_with_skills()
+            except Exception as _mini_agent_exc:
+                from mini_agent.errors import log_exception
+                log_exception(_mini_agent_exc, where='mini_agent.agent')
+                R.print_error(f"[compact] Auto-compact (compact_with_skills) failed: {_mini_agent_exc}")
+                return
+        else:
+            # ── 旧路径：委托给 HistoryManager.auto_compress 的可插拔策略 ──
+            from mini_agent.history.compression import create_strategy
+            original_strategy = _hist._strategy
+            if effective_strategy and effective_strategy != self.cfg.compress.strategy:
+                try:
+                    saved_cfg_strategy = self.cfg.compress.strategy
+                    self.cfg.compress.strategy = effective_strategy
+                    _hist._strategy = create_strategy(self.cfg)
+                except Exception:
+                    _hist._strategy = original_strategy
+                finally:
+                    self.cfg.compress.strategy = saved_cfg_strategy
+
+            try:
+                _hist.auto_compress(
+                    skill_compact_fn=self._build_skill_compact_block,
+                    llm_client=self._llm,
+                )
+            finally:
+                # 恢复原策略实例，避免临时覆盖影响后续默认压缩
+                _hist._strategy = original_strategy
+
+            # 提取本次压缩生成的摘要文本，供下方统一打印
+            for _msg in reversed(self._history):
+                if _msg.get("_type") == "compact_summary":
+                    summary_text = _msg.get("content", "")
+                    break
 
         # ── 若使用了 trigger_reason，重写最后一条 compact_event 的 reason ───
-        # （HistoryManager.auto_compress 内部已写入不带 reason 的 compact_event，
+        # （压缩内部已写入不带 reason 的 compact_event，
         #  这里补充写入 trigger_reason，便于事后统计各触发器命中效果）
         if trigger_reason and _hist._raw.entries:
             for entry in reversed(_hist._raw.entries):
@@ -598,6 +627,18 @@ class CompactionMixin:
         self._last_compact_turns = self.stats.turns
         self._last_compact_tool_calls = self.stats.tool_calls
         self._turns_since_last_compact = 0
+
+        # ── 打印本次 auto-compact 的结果（无论走哪条路径，不做截断）───────────
+        if summary_text:
+            R.print_success(
+                f"[compact] Auto-compact 完成（触发原因: {strategy_name}，"
+                f"{before_count} → {after_count} 条消息）。摘要：\n{summary_text}"
+            )
+        else:
+            R.print_success(
+                f"[compact] Auto-compact 完成（触发原因: {strategy_name}），"
+                f"{before_count} → {after_count} 条消息。"
+            )
 
         # [SYS-HOOKS] PostCompact：压缩完成后通知 hook（通知型）
         try:

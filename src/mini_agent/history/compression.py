@@ -12,7 +12,10 @@ history/compression.py — 历史压缩策略框架
   LLMSummaryStrategy    — 用 LLM 生成语义摘要（质量最高，需要 llm_client）
 
 注册/切换策略（通过 CompressConfig.strategy 字段名）：
-  cfg.compress.strategy = "turn_aligned"   # 默认
+  cfg.compress.strategy = "compact_with_skills"  # 默认，见 agent/compaction.py::_auto_compress_history
+                                                  # （不在本文件的 _STRATEGY_REGISTRY 中，由 agent 层直接
+                                                  #  复用 compact_with_skills() 实现，非 CompressionStrategy 子类）
+  cfg.compress.strategy = "turn_aligned"   # 轻量可插拔策略
   cfg.compress.strategy = "sliding_window"
   cfg.compress.strategy = "llm_summary"
 

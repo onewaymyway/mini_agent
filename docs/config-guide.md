@@ -92,7 +92,8 @@ class MemoryConfig:
 class CompressConfig:
     enabled: bool = False
     threshold: float = 0.7             # token 占用率超过此值触发压缩
-    strategy: str = "turn_aligned"     # 压缩策略名，对应 history/compression.py 注册表
+    strategy: str = "compact_with_skills"  # 压缩策略名，"compact_with_skills" 为特殊值（见下），
+                                            # 其余对应 history/compression.py 注册表
     forget_orphan_tool_results: bool = False
 
     # ── SelectiveStrategy 专用 ──
@@ -114,7 +115,7 @@ class CompressConfig:
 
 | 字段 | 说明 |
 |------|------|
-| `strategy` | `"turn_aligned"`（默认）/ `"llm_summary"` / `"sliding_window"` / `"selective"` / 自定义注册名 |
+| `strategy` | `"compact_with_skills"`（默认，与手动 `/compact` 一致：LLM 摘要 + skill 重附，见 [compact-design.md](compact-design.md)）/ `"turn_aligned"` / `"llm_summary"` / `"sliding_window"` / `"selective"`（轻量可插拔策略，走 `HistoryManager.auto_compress()` 旧路径）/ 自定义注册名 |
 | `forget_orphan_tool_results` | 压缩后是否剔除保留段中无对应 tool_use 的 tool_result |
 | `turn_count_trigger_enabled` / `max_turns_before_compact` | 距上次 compact 满 N 轮自动触发（常规维护性压缩，建议策略 `selective`） |
 | `tool_call_count_trigger_enabled` / `max_tool_calls_before_compact` | 距上次 compact 累计 N 次工具调用自动触发 |
@@ -380,7 +381,7 @@ JSON 配置文件  >  命令行参数  >  环境变量  >  内置默认值
   "memory_decay_half_life_days": 30.0,
   "memory_max_entries": 500,
   "auto_compress_enabled": true,
-  "auto_compress_strategy": "turn_aligned",
+  "auto_compress_strategy": "compact_with_skills",
   "compact_turn_count_trigger_enabled": true,
   "compact_max_turns": 20,
   "compact_tool_call_count_trigger_enabled": true,

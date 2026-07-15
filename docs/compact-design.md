@@ -20,14 +20,21 @@ mini_agent 对话历史会随时间增长，最终超出模型上下文窗口限
 
 所有开关**默认关闭**（`TokenThresholdTrigger` 由已有的 `compress.enabled` 控制，默认也是关闭），完全向后兼容旧行为。
 
-**触发后执行什么策略**：每个触发器可以给出 `suggested_strategy`（见下表），
-`_auto_compress_history()` 会临时切换 `cfg.compress.strategy` 为该建议值来执行压缩，
-执行完毕后恢复原配置。若触发器未给出建议（如 `TokenThresholdTrigger`），
-则使用 `cfg.compress.strategy` 配置的默认策略。
+**触发后执行什么策略（2026-07 二次更新：默认改为复用路径 B）**：每个触发器可以给出
+`suggested_strategy`（见下表），`_auto_compress_history()` 会算出
+`effective_strategy = trigger.suggested_strategy or cfg.compress.strategy`：
+
+- 若 `effective_strategy == "compact_with_skills"`（**新默认值**）：不再走
+  `HistoryManager.auto_compress()`，而是直接调用 `compact_with_skills()`——
+  即与手动 `/compact` **完全相同**的实现（LLM 生成结构化摘要 + skill 重附，
+  超限时自动降级为 `_compact_chunked()` 分批摘要）。
+- 若 `effective_strategy` 是其它值（`turn_aligned` / `sliding_window` /
+  `llm_summary` / `selective`）：退回旧路径，临时切换 `cfg.compress.strategy`
+  为该值，委托给 `HistoryManager.auto_compress()` 执行，执行完毕后恢复原配置。
 
 | 触发器 | 建议策略 | 原因 |
 |---|---|---|
-| Token 阈值 | 使用 `cfg.compress.strategy`（默认 `turn_aligned`） | 硬约束，按用户配置执行 |
+| Token 阈值 | 使用 `cfg.compress.strategy`（默认 `compact_with_skills`） | 硬约束，按用户配置执行 |
 | 轮次 / 工具调用计数 | `selective` | 常规维护性压缩，逐条按价值裁剪，不需要很激进 |
 | 冗余检测 | `selective` | 只需要清理噪音（tool_result 权重低），不动用户意图部分 |
 | 话题切换 | `llm_summary` | 天然的压缩边界，最适合生成干净的"旧话题收尾摘要" |
@@ -35,18 +42,26 @@ mini_agent 对话历史会随时间增长，最终超出模型上下文窗口限
 **冷却期**：`compress.compact_cooldown_turns`（默认 3 轮）——compact 后这么多轮内，
 除 `TokenThresholdTrigger` 外的其他触发器不生效，避免短时间内被反复触发。
 
-**执行方式（2026-07 起改为委托）**：`_auto_compress_history()` 不再自己实现切割逻辑，
-而是委托给 `HistoryManager.auto_compress()`，由 `cfg.compress.strategy` 指定的
-可插拔 `CompressionStrategy`（`turn_aligned` / `sliding_window` / `llm_summary` / `selective`）
-真正执行压缩。旧版本中 `_auto_compress_history()` 是一段独立于策略注册表之外的硬编码
-turn-aligned 切割实现——这导致除 `token_threshold` 外配置的策略从未真正生效；
-现已修复，触发器的 `suggested_strategy` 能够按预期切换实际执行的策略。
+**执行方式（2026-07 二次更新）**：`_auto_compress_history()` 现在优先复用
+`compact_with_skills()`（默认策略 `compact_with_skills`），保证自动触发与手动
+`/compact` 的压缩质量完全一致；仅当显式配置为其它轻量策略时，才委托给
+`HistoryManager.auto_compress()` 执行（该路径由 `cfg.compress.strategy` 指定的
+可插拔 `CompressionStrategy`：`turn_aligned` / `sliding_window` / `llm_summary` /
+`selective` 真正执行压缩，`_auto_compress_history()` 不再自己实现切割逻辑）。
+
+**结果打印**：无论走哪条路径，`_auto_compress_history()` 都会在压缩完成后打印
+本次生成的完整摘要文本（不截断），前缀标明触发原因和消息数变化，例如：
+```
+[compact] Auto-compact 完成（触发原因: token_threshold，182 → 4 条消息）。摘要：
+[Summary of earlier conversation: ...]
+```
 
 **用户确认开关**：`compress.require_confirmation`（默认 `False`，全自动静默压缩）。
 设为 `True` 时，压缩前会通过终端 `confirm()` 询问用户 `(y)es/(n)o`，用户拒绝则本次跳过
 （下一轮循环还会再次检查触发条件）。非交互环境（daemon/HTTP 等）下确认会自动降级为执行。
 
-适合：日常对话中的预防性/维护性压缩，可选是否需要 LLM 参与（取决于选中的策略）。
+适合：默认即与手动 `/compact` 同等质量的语义压缩；如需更低延迟/开销，可将
+`compress.strategy` 显式设为 `turn_aligned` / `sliding_window` 等轻量策略退回旧路径。
 
 ### 路径 B：`compact_with_skills()`（主动语义压缩）
 
@@ -183,15 +198,22 @@ self._history.extend(new_history)
 
 ## 与 `compact_with_skills` 的区别
 
-| 维度 | `_auto_compress_history`（路径 A） | `compact_with_skills`（路径 B） |
-|---|---|---|
-| 触发时机 | 触发器体系（token / 轮次 / 工具调用 / 冗余 / 话题切换） | 手动 / 工具 / 超限（响应性） |
-| LLM 调用 | 取决于选中的策略（`turn_aligned`/`sliding_window` 无 LLM；`llm_summary` 有） | 有（1 次或 N+1 次） |
-| 摘要质量 | 取决于策略；`llm_summary`（话题切换默认建议）质量高，其余为字符串拼接 | 高（语义理解，保留关键细节） |
-| 超限处理 | 不适用 | 自动切换分批路径 |
-| Skill 重附 | 有 | 有 |
-| 用户确认 | 可选（`compress.require_confirmation`） | 手动触发，天然是用户发起 |
-| 延迟 | 视策略而定（0 或 1 次 LLM 调用） | 有（1–N 次 LLM 调用） |
+> 2026-07 二次更新后，默认配置下路径 A 在执行层面**直接复用**路径 B
+> （`compact_with_skills()`），下表中"默认策略"列即为此时的行为；仅当
+> 显式把 `compress.strategy` 设为轻量策略时，路径 A 才会走独立的
+> `HistoryManager.auto_compress()` 实现，此时行为见"轻量策略"列。
+
+| 维度 | `_auto_compress_history`（路径 A，默认策略） | `_auto_compress_history`（路径 A，轻量策略） | `compact_with_skills`（路径 B） |
+|---|---|---|---|
+| 触发时机 | 触发器体系（token / 轮次 / 工具调用 / 冗余 / 话题切换） | 同左 | 手动 / 工具 / 超限（响应性） |
+| 实际执行的实现 | 直接调用 `compact_with_skills()` | `HistoryManager.auto_compress()` + 可插拔策略 | 自身 |
+| LLM 调用 | 有（1 次或 N+1 次，同路径 B） | 取决于策略（`turn_aligned`/`sliding_window` 无 LLM；`llm_summary` 有） | 有（1 次或 N+1 次） |
+| 摘要质量 | 高（语义理解，保留关键细节，同路径 B） | 取决于策略；`llm_summary` 质量高，其余为字符串拼接 | 高（语义理解，保留关键细节） |
+| 超限处理 | 自动切换分批路径（同路径 B） | 不适用 | 自动切换分批路径 |
+| Skill 重附 | 有 | 有 | 有 |
+| 结果打印 | 压缩完成后打印完整摘要文本（不截断） | 同左 | `/compact` 命令自身打印 |
+| 用户确认 | 可选（`compress.require_confirmation`） | 可选（`compress.require_confirmation`） | 手动触发，天然是用户发起 |
+| 延迟 | 有（1–N 次 LLM 调用） | 视策略而定（0 或 1 次 LLM 调用） | 有（1–N 次 LLM 调用） |
 
 ## 触发器架构（`history/triggers.py`）
 
@@ -227,7 +249,7 @@ CompositeTrigger
 |---|---|---|
 | `auto_compress_enabled` / `compress.enabled` | `false` | `TokenThresholdTrigger` 总开关 |
 | `auto_compress_threshold` / `compress.threshold` | `0.7` | token 使用率阈值，超过时触发 |
-| `auto_compress_strategy` / `compress.strategy` | `"turn_aligned"` | 默认压缩策略（无触发器给出建议时使用） |
+| `auto_compress_strategy` / `compress.strategy` | `"compact_with_skills"` | 默认压缩策略（无触发器给出建议时使用）；默认值即复用手动 `/compact` 实现，设为 `turn_aligned`/`sliding_window`/`llm_summary`/`selective` 可退回轻量策略 |
 | `compress.turn_count_trigger_enabled` | `false` | 轮次计数触发器开关 |
 | `compress.max_turns_before_compact` | `20` | 距上次 compact 满 N 轮触发 |
 | `compress.tool_call_count_trigger_enabled` | `false` | 工具调用计数触发器开关 |
@@ -253,7 +275,7 @@ CompositeTrigger
 | `agent.py::compact_with_skills()` | 主入口，路径选择，skill 重附，session 保存 |
 | `agent.py::_compact_chunked()` | 分批摘要核心实现 |
 | `agent.py::_maybe_run_compact()` | 触发器命中后的统一入口，处理确认开关 |
-| `agent.py::_auto_compress_history()` | 委托给 `HistoryManager.auto_compress()` 执行实际压缩 |
+| `agent/compaction.py::_auto_compress_history()` | 默认直接复用 `compact_with_skills()`；轻量策略时委托给 `HistoryManager.auto_compress()`；压缩完成后打印完整摘要 |
 | `agent.py::_agentic_loop()` | 组合触发器检查点 + `LLMContextWindowError` 捕获（触发路径 B） |
 | `history/triggers.py` | `CompactTrigger` / `CompositeTrigger` 及内置触发器实现 |
 | `history/compression.py` | `CompressionStrategy` 及内置策略类（`turn_aligned`/`sliding_window`/`llm_summary`/`selective`） |
@@ -280,8 +302,12 @@ CompositeTrigger
 > `"auto_compress"`。
 
 `PreCompact` 返回 exit code 2 或 `{"decision": "block"}` 可跳过本次压缩。
-`compact_with_skills()`（`/compact` 命令路径）和分批路径（`_compact_chunked`）
-目前不经过 `_auto_compress_history()`，不触发这两个事件。
+
+> 2026-07 二次更新：`_auto_compress_history()` 默认策略下会在内部调用
+> `compact_with_skills()`，此时 `PreCompact`/`PostCompact` **依然会触发**
+> （因为是从 `_auto_compress_history()` 发起的）；只有用户手动执行 `/compact`
+> 命令、或 agent 主动调用 `compact_history` 工具时——即完全绕开触发器体系、
+> 直接调用 `compact_with_skills()`——才不会触发这两个 hook 事件。
 
 详见 [Hooks 机制](hooks.md#context-compact-生命周期)。
 
@@ -292,3 +318,10 @@ CompositeTrigger
 新增触发-确认开关 `compress.require_confirmation`；修复 `_auto_compress_history()`
 未委托给 `CompressionStrategy` 注册表导致 `compress.strategy` 配置实际不生效的问题；
 `compact_event` 新增 `trigger_reason` 字段用于事后统计各触发器命中效果）*
+
+*二次更新：2026-07（`compress.strategy` 默认值由 `turn_aligned` 改为
+`compact_with_skills`；`_auto_compress_history()` 在该默认值下直接复用
+`compact_with_skills()`，使自动触发的 compact 与手动 `/compact` 压缩质量完全一致，
+仅在显式配置为 `turn_aligned`/`sliding_window`/`llm_summary`/`selective` 时才退回
+`HistoryManager.auto_compress()` 轻量路径；`_auto_compress_history()` 压缩完成后
+新增打印本次生成的完整摘要文本（不截断），无论走哪条路径）*

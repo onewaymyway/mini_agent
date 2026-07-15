@@ -140,7 +140,8 @@ class CompressConfig:
     """[SYS-COMPRESS] 自动上下文压缩配置。"""
     enabled: bool = False
     threshold: float = 0.7             # token 占用率超过此值触发压缩
-    strategy: str = "turn_aligned"     # "turn_aligned" | "llm_summary" | "sliding_window" | "selective"
+    strategy: str = "compact_with_skills"  # "compact_with_skills"（默认，与手动 /compact 一致：LLM 摘要 + skill 重附）
+                                            # | "turn_aligned" | "llm_summary" | "sliding_window" | "selective"（轻量可插拔策略，退回旧路径）
     forget_orphan_tool_results: bool = False  # 剔除保留段中无对应 tool_use 的 tool_result
 
     # ── SelectiveStrategy 专用 ───────────────────────────────────────────────

@@ -87,7 +87,7 @@
   "token_estimate_enabled":true,
   "auto_compress_enabled": true,
   "auto_compress_threshold": 0.7,
-  "auto_compress_strategy": "turn_aligned",
+  "auto_compress_strategy": "compact_with_skills",
 
   "compact_turn_count_trigger_enabled": true,
   "compact_max_turns": 20,
