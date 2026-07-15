@@ -4,17 +4,17 @@
 > `role_agents/stuck_detector.py`、`role_agents/verdict.py`、`role_agents/goal_judge.py`、
 > `config/models.py`）梳理。每一节先说明现状（已经做到什么程度），再给出具体缺口和改进方案。
 
-> **实现状态（本次改造，累计四轮）**：
+> **实现状态（本次改造，累计五轮）**：
 > - §1.2 Dead-end 从滚动窗口升级为持久清单 —— **已实现**
 > - §2.2 自验证优先（GoalRunner 强制执行 verification_command 拿客观证据）—— **已实现**
 > - §1.3 NEED_COMPACT 路径共享 dead-end 注入 —— **已实现**
 > - §3.1 进展分数纳入 checklist 通过数变化 —— **已实现**
 > - §1.1 分级 compact（轻量/深度两级，与恢复次数挂钩）—— **已实现**
 > - §2.1 过程判断 / 结果判断分离（process_flags）—— **已实现**
-> - §3.2 伪进展趋势识别（ProgressTracker）—— **已实现**（本轮新增）
+> - §3.2 伪进展趋势识别（ProgressTracker）—— **已实现**
+> - §4 探索/收敛双模式主动 compact —— **已实现**（本轮新增，默认关闭）
 >
-> 尚未实现：§4（探索/收敛双模式）、§5（Goal 重规划提议）。
-> 保留原方案文本，可作为后续迭代依据。
+> 尚未实现：§5（Goal 重规划提议）。保留原方案文本，可作为后续迭代依据。
 
 ---
 
@@ -502,6 +502,43 @@ phase_convergence_window: int = 3           # 连续 N 轮正向进展分数才�
 默认关闭是必要的——这是一个行为改动较大的新机制，应该让用户显式开启，观察一段时间效果后再考虑
 调整默认值。
 
+#### 实现记录（本次改造）
+
+基本按方案落地：
+
+- `role_agents/stuck_detector.py` 新增 `GoalPhase` 枚举（`EXPLORING` / `CONVERGING`），与
+  `StuckSignal` 放在同一模块，语义上是"状态标签"而非有状态的检测器（阶段迁移逻辑放在
+  `GoalRunner` 里，因为它天然依赖 `GoalRunner` 已有的进展分数序列，不需要再抽一层）。
+- `config/models.py` 新增 `proactive_compact_enabled`（默认 `False`）、
+  `exploring_compact_interval`（默认 2）、`phase_convergence_window`（默认 3），与方案一致。
+- `runner.py::GoalRunner`：
+  - `__init__` 新增 `self._phase`（初始 `EXPLORING`）、`self._consecutive_positive_rounds`、
+    `self._last_proactive_compact_round`；resume 分支里用已经落盘的 `progress_scores`
+    重放 `_update_goal_phase()` 重建阶段状态，不需要新增落盘字段（原理与 `ProgressTracker`
+    一致），并把 `_last_proactive_compact_round` 对齐到恢复时的轮次，避免恢复后立刻被
+    判定为"该触发了"。
+  - 新增 `_update_goal_phase(progress_info)`：连续 `phase_convergence_window` 轮
+    `progress_score > 0` 才切到 `CONVERGING`；**任意一轮分数不为正（含缺失）都立刻打回
+    `EXPLORING`**——收敛判定"严进宽出"，没有分数化信号（`progress_score_enabled=False`）
+    时永远停留在 `EXPLORING`，保守处理。
+  - 新增 `_maybe_proactive_compact()`：仅在 `proactive_compact_enabled=True` 且
+    `self._phase is EXPLORING` 且距上次主动触发已过 `exploring_compact_interval` 轮时才
+    触发；触发的动作是方案里说的"轻量"档——只调用 `_pin_goal_context()` 重新钉住目标
+    上下文，**不做真正的历史压缩**，成本很低。`CONVERGING` 阶段直接返回 `False`，只保留
+    三个被动安全阀。
+  - 接入点：`run()` 主循环里在 `_save_state` 之后、`_check_stuck` 之前调用
+    `_update_goal_phase` + `_maybe_proactive_compact`（与方案描述的位置一致）；主动
+    compact 触发时直接 `continue`，本轮不再走 `_check_stuck`（略去了这一轮的相似度/伪进展
+    观察，代价很小——毕竟这一轮本身已经做了一次上下文刷新）。这是纯增量旁路，不改变
+    `hit_max_turns` / `NEED_COMPACT` / stuck 三条既有路径的判断逻辑。
+  - `proactive_compact_enabled=False`（默认）时 `_maybe_proactive_compact()` 恒返回
+    `False`，主循环行为与升级前完全一致；`_phase`/`_consecutive_positive_rounds` 仍会正常
+    计算和维护，方便用户后续开启前先观察阶段变化是否符合预期。
+- 新增测试（`tests/test_goal_mode.py`）：`GoalPhase` 初始状态、连续正向进展切换到
+  `CONVERGING`、非正分数/缺失分数立刻打回 `EXPLORING`、默认关闭时不触发、探索阶段按
+  interval 周期触发、收敛阶段暂停触发、以及"关闭时不改变现有 `run()` 主循环行为"的
+  基线回归用例。
+
 ---
 
 ## 5. Goal 分解与重规划的显式支持
@@ -577,5 +614,5 @@ JSON 协议思路，让判官在最后一次恢复窗口的输出里增加一个
 | P1 | §1.1 / §1.3 分级 compact + NEED_COMPACT 路径共享 dead-end 注入 | 依赖 §1.2 的持久清单先落地 | ✅ 均已实现 |
 | P2 | §2.1 过程判断 / 结果判断分离（process_flags） | 需要改判官 prompt + 新状态语义,改动面稍大,但风险收益都高,建议紧随 P1 | ✅ 已实现（复用 DONE→CONTINUE 降级，未新增状态） |
 | P2 | §3.2 伪进展趋势识别（ProgressTracker） | 依赖 §3.1 先有分数化的进展信号 | ✅ 已实现 |
-| P3 | §4 探索/收敛双模式主动 compact | 新机制，默认关闭，建议在前面几项稳定后再引入，避免同时改动太多变量难以定位问题 | 未实现 |
+| P3 | §4 探索/收敛双模式主动 compact | 新机制，默认关闭，建议在前面几项稳定后再引入，避免同时改动太多变量难以定位问题 | ✅ 已实现（默认关闭） |
 | P3 | §5 Goal 重规划提议 | 收益明确但涉及新交互流程（CLI 展示 + `/goal revise` 联动），建议放在最后，且严格限制"只能在耗尽额度前提议一次" | 未实现 |

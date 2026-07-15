@@ -611,6 +611,18 @@ class GoalModeConfig:
     pseudo_progress_stagnation_threshold: float = 0.15
     pseudo_progress_max_score_cap: float = 0.5
 
+    # ── [goal_mode_stuck_compact_plan.md §4] Compact 时机的"探索 vs 收敛"双模式：
+    # 目前所有 compact 触发点都是被动响应（撞硬顶/判官建议/StuckDetector 判定卡住），
+    # 没有任何机制根据"当前处于探索阶段还是收敛阶段"主动调整 compact 节奏。开启后，
+    # 尚未出现稳定正向进展的"探索阶段"会按固定轮次节奏主动做一次轻量 compact（只
+    # 重新钉住目标上下文，不做真正的历史压缩），给 agent 一次跳出当前上下文重新
+    # 审视的机会；一旦连续多轮出现正向进展、判定进入"收敛阶段"，则暂停这层主动
+    # 触发，只保留三个被动安全阀，避免把正在起效的上下文过早打断。
+    # 默认关闭——这是一个会改变现有 compact 节奏的新机制，需要用户显式开启。
+    proactive_compact_enabled: bool = False
+    exploring_compact_interval: int = 2     # 探索阶段每 N 轮主动触发一次轻量 compact
+    phase_convergence_window: int = 3       # 连续 N 轮正向进展分数才切换到 converging
+
 
 @dataclass
 class TurnJudgeConfig:

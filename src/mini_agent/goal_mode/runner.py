@@ -41,7 +41,7 @@ import mini_agent.ui.renderer as R
 from .spec import GoalSpec
 from .executor import GoalStepExecutor, CoarseStepExecutor, GoalStepResult
 from .state import GoalState, GoalStateStore
-from mini_agent.role_agents.stuck_detector import StuckDetector, StuckSignal, ProgressTracker
+from mini_agent.role_agents.stuck_detector import StuckDetector, StuckSignal, ProgressTracker, GoalPhase
 
 if TYPE_CHECKING:
     from mini_agent.agent import Agent
@@ -152,6 +152,13 @@ class GoalRunner:
         # 不影响判定逻辑本身。
         self._last_stuck_reason: str = "similarity"
 
+        # [goal_mode_stuck_compact_plan.md §4] 探索/收敛阶段追踪。默认关闭
+        # （proactive_compact_enabled=False）时这套状态仍会被计算但不产生任何
+        # 额外动作，方便用户先观察 self._phase 的变化再决定是否开启。
+        self._phase: GoalPhase = GoalPhase.EXPLORING
+        self._consecutive_positive_rounds: int = 0
+        self._last_proactive_compact_round: int = 0
+
         # 恢复态：从上一次中断处继续
         if resume_state is not None:
             self._round = resume_state.round
@@ -171,6 +178,13 @@ class GoalRunner:
             if resume_state.progress_scores:
                 self._progress_scores = list(resume_state.progress_scores)
                 self._progress_tracker.replay(self._progress_scores)
+                # [goal_mode_stuck_compact_plan.md §4] 用历史分数序列重建
+                # 探索/收敛阶段，不需要额外的落盘字段（原理同 ProgressTracker）。
+                for s in self._progress_scores:
+                    self._update_goal_phase({"progress_score": s})
+                # 避免恢复后立刻被判定为"已经到了该主动 compact 的轮次"，
+                # 把基准对齐到恢复时的轮次。
+                self._last_proactive_compact_round = self._round
         else:
             self._round = 0
             self._last_feedback = ""
@@ -245,6 +259,15 @@ class GoalRunner:
             self._last_feedback = judge_feedback
             self._round += 1
             self._save_state(status="running")
+
+            # [goal_mode_stuck_compact_plan.md §4] 更新探索/收敛阶段（计算本身
+            # 成本很低，始终执行；是否据此触发主动 compact 由
+            # proactive_compact_enabled 控制，默认关闭时只是单纯维护状态，不
+            # 产生任何额外动作）。必须在 _check_stuck 之前调用，好让本轮主动
+            # compact 判断用到的是"刚更新过的阶段"。
+            self._update_goal_phase(progress_info)
+            if self._maybe_proactive_compact():
+                continue  # 主动 compact 只重新钉住上下文，不计入卡住恢复额度，直接进入下一轮
 
             if self._check_stuck(judge_feedback, progress_info):
                 if self._try_stuck_recovery():
@@ -664,6 +687,64 @@ class GoalRunner:
             "goal_mode", "STUCK_RECOVERY_ATTEMPTED_PATHS_BLOCK",
             attempted_paths_lines=attempted_paths_lines,
         )
+
+    # ── 内部：探索/收敛阶段 + 主动 compact（§4，默认关闭）──────────────────
+
+    def _update_goal_phase(self, progress_info: Optional[dict]) -> None:
+        """[goal_mode_stuck_compact_plan.md §4] 依据进展分数序列（§3.1）更新
+        当前所处阶段：连续 `phase_convergence_window` 轮出现正向进展分数
+        （> 0）才切换到 `CONVERGING`；任意一轮分数不为正（含缺失/None，
+        视为保守起见的"未确认进展"）都会立刻打回 `EXPLORING`，并重置连续
+        计数——收敛阶段的判定要"严进宽出"，避免过早放松警惕。
+
+        没有可用的 `progress_score`（比如 `progress_score_enabled=False`）
+        时，永远停留在 `EXPLORING`：没有分数化的进展信号，就没有依据判断
+        "已经进入稳定收敛"，保守处理。
+        """
+        score = (progress_info or {}).get("progress_score")
+        if score is not None and score > 0:
+            self._consecutive_positive_rounds += 1
+        else:
+            self._consecutive_positive_rounds = 0
+            self._phase = GoalPhase.EXPLORING
+            return
+
+        window = getattr(self._gm_cfg, "phase_convergence_window", 3)
+        if self._consecutive_positive_rounds >= window:
+            self._phase = GoalPhase.CONVERGING
+
+    def _maybe_proactive_compact(self) -> bool:
+        """[goal_mode_stuck_compact_plan.md §4] `proactive_compact_enabled=True`
+        且当前处于 `EXPLORING` 阶段时，按固定轮次节奏（`exploring_compact_interval`）
+        主动做一次"轻量"动作——只重新钉住目标上下文（`_pin_goal_context`），
+        不做真正的历史压缩，成本很低，给 agent 一次跳出当前上下文重新审视的
+        机会，不需要等 `StuckDetector` 正式判定为卡住。
+
+        `CONVERGING` 阶段暂停这层主动触发（只保留被动的三个安全阀：撞硬顶 /
+        判官建议 / 真正卡住），避免把正在起效的上下文过早打断。
+
+        返回 True 表示本轮已经执行了主动 compact（调用方应该直接进入下一轮，
+        不再走 `_check_stuck`）；这是纯增量的旁路判断，不影响现有的
+        `hit_max_turns` / `NEED_COMPACT` / stuck 三条已有路径。默认
+        `proactive_compact_enabled=False` 时恒返回 `False`，行为与升级前
+        完全一致。
+        """
+        if not getattr(self._gm_cfg, "proactive_compact_enabled", False):
+            return False
+        if self._phase is not GoalPhase.EXPLORING:
+            return False
+
+        interval = max(1, getattr(self._gm_cfg, "exploring_compact_interval", 2))
+        if self._round - self._last_proactive_compact_round < interval:
+            return False
+
+        self._last_proactive_compact_round = self._round
+        R.print_info(
+            f"[GoalRunner] 探索阶段主动触发一次轻量 compact（每 {interval} 轮一次，"
+            "重新钉住目标上下文，帮助换个角度重新审视）。"
+        )
+        self._pin_goal_context()
+        return True
 
     # ── 内部：卡住检测（连续反馈高度雷同 / LLM 判进展）──────────────────────
 

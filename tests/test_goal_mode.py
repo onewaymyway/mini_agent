@@ -637,6 +637,9 @@ class _FakeGoalModeCfg:
         self.pseudo_progress_window = kwargs.get("pseudo_progress_window", 5)
         self.pseudo_progress_stagnation_threshold = kwargs.get("pseudo_progress_stagnation_threshold", 0.15)
         self.pseudo_progress_max_score_cap = kwargs.get("pseudo_progress_max_score_cap", 0.5)
+        self.proactive_compact_enabled = kwargs.get("proactive_compact_enabled", False)
+        self.exploring_compact_interval = kwargs.get("exploring_compact_interval", 2)
+        self.phase_convergence_window = kwargs.get("phase_convergence_window", 3)
 
 
 class _FakeCfg:
@@ -1740,3 +1743,125 @@ def test_goal_runner_pseudo_progress_shares_recovery_budget_with_stuck_detector(
     assert result.status == "stuck"
     # 恢复额度上限是 2，不应该跑到 max_rounds=30 才停
     assert result.rounds_used < 30
+
+
+# ── §4 探索/收敛双模式（GoalPhase + 主动 compact，默认关闭）─────────────────
+
+def test_goal_phase_starts_as_exploring(tmp_path):
+    from mini_agent.role_agents.stuck_detector import GoalPhase
+    agent = FakeAgent(outputs=["x"])
+    cfg = _FakeCfg(tmp_path)
+    spec = _confirmed_spec()
+    runner = GoalRunner(agent=agent, cfg=cfg, goal_spec=spec)
+    assert runner._phase is GoalPhase.EXPLORING
+
+
+def test_goal_phase_switches_to_converging_after_consecutive_positive_scores(tmp_path):
+    from mini_agent.role_agents.stuck_detector import GoalPhase
+    agent = FakeAgent(outputs=["x"])
+    cfg = _FakeCfg(tmp_path, phase_convergence_window=3)
+    spec = _confirmed_spec()
+    runner = GoalRunner(agent=agent, cfg=cfg, goal_spec=spec)
+
+    runner._update_goal_phase({"progress_score": 0.3})
+    assert runner._phase is GoalPhase.EXPLORING  # 只有 1 轮正向，还不够
+    runner._update_goal_phase({"progress_score": 0.5})
+    assert runner._phase is GoalPhase.EXPLORING  # 2 轮，还不够
+    runner._update_goal_phase({"progress_score": 1.0})
+    assert runner._phase is GoalPhase.CONVERGING  # 连续 3 轮正向，切换到收敛
+
+
+def test_goal_phase_reverts_to_exploring_on_non_positive_score(tmp_path):
+    from mini_agent.role_agents.stuck_detector import GoalPhase
+    agent = FakeAgent(outputs=["x"])
+    cfg = _FakeCfg(tmp_path, phase_convergence_window=2)
+    spec = _confirmed_spec()
+    runner = GoalRunner(agent=agent, cfg=cfg, goal_spec=spec)
+
+    runner._update_goal_phase({"progress_score": 0.5})
+    runner._update_goal_phase({"progress_score": 0.5})
+    assert runner._phase is GoalPhase.CONVERGING
+
+    runner._update_goal_phase({"progress_score": 0.0})
+    assert runner._phase is GoalPhase.EXPLORING  # 非正分立刻打回探索阶段
+
+    # 缺失分数（None）也保守地视为未确认进展
+    runner._update_goal_phase({"progress_score": 0.5})
+    runner._update_goal_phase({"progress_score": 0.5})
+    assert runner._phase is GoalPhase.CONVERGING
+    runner._update_goal_phase({})
+    assert runner._phase is GoalPhase.EXPLORING
+
+
+def test_maybe_proactive_compact_disabled_by_default(tmp_path):
+    """proactive_compact_enabled 默认 False，即使处于探索阶段也不应该触发。"""
+    agent = FakeAgent(outputs=["x"])
+    cfg = _FakeCfg(tmp_path)  # proactive_compact_enabled 默认 False
+    spec = _confirmed_spec()
+    runner = GoalRunner(agent=agent, cfg=cfg, goal_spec=spec)
+    runner._round = 10
+    assert runner._maybe_proactive_compact() is False
+
+
+def test_maybe_proactive_compact_triggers_at_interval_in_exploring_phase(tmp_path):
+    agent = FakeAgent(outputs=["x"])
+    cfg = _FakeCfg(tmp_path, proactive_compact_enabled=True, exploring_compact_interval=2)
+    spec = _confirmed_spec()
+    runner = GoalRunner(agent=agent, cfg=cfg, goal_spec=spec)
+
+    pin_calls = {"n": 0}
+    monkeypatch_target = runner._pin_goal_context
+    def fake_pin():
+        pin_calls["n"] += 1
+    runner._pin_goal_context = fake_pin
+
+    # 阶段保持 EXPLORING（从不喂入正向分数）。
+    triggered_rounds = []
+    for r in range(1, 7):
+        runner._round = r
+        if runner._maybe_proactive_compact():
+            triggered_rounds.append(r)
+
+    # interval=2：第 2、4、6 轮应该触发（第 0 轮是初始基准）。
+    assert triggered_rounds == [2, 4, 6]
+    assert pin_calls["n"] == 3
+
+
+def test_maybe_proactive_compact_paused_in_converging_phase(tmp_path):
+    agent = FakeAgent(outputs=["x"])
+    cfg = _FakeCfg(
+        tmp_path, proactive_compact_enabled=True, exploring_compact_interval=1,
+        phase_convergence_window=2,
+    )
+    spec = _confirmed_spec()
+    runner = GoalRunner(agent=agent, cfg=cfg, goal_spec=spec)
+
+    # 连续 2 轮正向进展 → 切到 CONVERGING。
+    runner._update_goal_phase({"progress_score": 0.5})
+    runner._update_goal_phase({"progress_score": 0.5})
+    from mini_agent.role_agents.stuck_detector import GoalPhase
+    assert runner._phase is GoalPhase.CONVERGING
+
+    runner._round = 5
+    # 即使 interval=1（每轮都该触发），收敛阶段应该暂停主动触发。
+    assert runner._maybe_proactive_compact() is False
+
+
+def test_goal_runner_proactive_compact_disabled_matches_baseline_behavior(monkeypatch, tmp_path):
+    """proactive_compact_enabled=False（默认）时，整条 run() 主循环的行为应该
+    和升级前完全一致——本用例只是确认新增的旁路判断不会意外改变现有主循环
+    （不会在不该 continue 的地方提前 continue）。"""
+    agent = FakeAgent(outputs=["done"])
+    cfg = _FakeCfg(tmp_path)
+    spec = _confirmed_spec()
+
+    monkeypatch.setattr(
+        "mini_agent.role_agents.goal_judge.run_goal_judge",
+        lambda **kw: _judge_json("DONE", feedback="全部完成"),
+    )
+
+    runner = GoalRunner(agent=agent, cfg=cfg, goal_spec=spec)
+    result = runner.run()
+
+    assert result.status == "done"
+    assert result.rounds_used == 0

@@ -24,6 +24,17 @@ class StuckSignal(str, Enum):
     GIVE_UP = "give_up"     # 判定卡住，且恢复额度已耗尽 → 调用方应终止/交还用户
 
 
+class GoalPhase(str, Enum):
+    """[goal_mode_stuck_compact_plan.md §4] Compact 时机的"探索 vs 收敛"双模式。
+
+    仅在 `cfg.goal_mode.proactive_compact_enabled=True` 时才会影响实际行为
+    （见 `GoalRunner._maybe_proactive_compact`），默认关闭时该状态仍会被
+    追踪计算，但不会触发任何额外动作。
+    """
+    EXPLORING = "exploring"    # 尚未出现稳定正向进展（早期，或伪进展/退步中）
+    CONVERGING = "converging"  # 最近连续出现正向进展
+
+
 @dataclass
 class StuckDetector:
     """连续输出相似度卡死检测器。
