@@ -580,15 +580,35 @@ async def fetch_guba_user_profile(user_id: str, cdp_endpoint: str = 'http://127.
 
 # ============== 同步包装器（供同步代码调用） ==============
 
+def _run_async(coro):
+    """安全运行异步协程：检测是否在已有事件循环中"""
+    try:
+        # 检查是否已在事件循环中
+        loop = asyncio.get_running_loop()
+        # 已在事件循环中，无法使用 asyncio.run，抛出友好错误
+        raise RuntimeError(
+            "sync_fetch_guba_posts 不能在 async 事件循环内调用。"
+            "请改用 async 版本：await fetch_guba_posts(...)"
+            "或者安装 nest_asyncio 并调用 nest_asyncio.apply() 后再使用同步包装器。"
+        )
+    except RuntimeError as e:
+        # asyncio.get_running_loop() 在没有事件循环时会抛出 "no running event loop"
+        if "no running event loop" in str(e):
+            # 没有事件循环，可以安全使用 asyncio.run
+            return asyncio.run(coro)
+        else:
+            # 其他 RuntimeError（包括已在事件循环中的情况），重新抛出
+            raise
+
 def sync_fetch_guba_posts(stock_code: str, page: int = 1, page_size: int = 50,
                           sort: str = 'time', proxy: str = None) -> List[GubaPost]:
     """同步版本获取股吧帖子列表"""
-    return asyncio.run(fetch_guba_posts(stock_code, page, page_size, sort, proxy))
+    return _run_async(fetch_guba_posts(stock_code, page, page_size, sort, proxy))
 
 
 def sync_fetch_guba_hot_posts(board: str = 'concept', top_n: int = 20, proxy: str = None) -> List[GubaPost]:
     """同步版本获取板块热帖"""
-    return asyncio.run(fetch_guba_hot_posts(board, top_n, proxy))
+    return _run_async(fetch_guba_hot_posts(board, top_n, proxy))
 
 
 if __name__ == '__main__':

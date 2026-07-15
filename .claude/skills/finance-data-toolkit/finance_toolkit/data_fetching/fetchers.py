@@ -9,7 +9,7 @@ import os
 import json
 import time
 import subprocess
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import List, Dict, Any, Optional
 from dataclasses import dataclass
@@ -94,7 +94,16 @@ def fetch_realtime_quote(symbols: List[str], source: str = 'akshare') -> List[Fi
     if source == 'akshare' and HAS_AKSHARE:
         # AKShare 获取全市场行情再筛选
         try:
-            df = ak.stock_zh_a_spot_em()
+            # 添加重试机制
+            max_retries = 3
+            for attempt in range(max_retries):
+                try:
+                    df = ak.stock_zh_a_spot_em()
+                    break
+                except Exception as retry_err:
+                    if attempt == max_retries - 1:
+                        raise retry_err
+                    time.sleep(1 * (attempt + 1))  # 指数退避
             df['symbol'] = df['代码'].apply(lambda x: f'{x}.SH' if x.startswith(('60','68','90')) else f'{x}.SZ')
             
             for sym in symbols:
@@ -359,7 +368,17 @@ def fetch_dividend(symbol: str, source: str = 'akshare') -> List[FinanceData]:
     
     if source == 'akshare' and HAS_AKSHARE:
         try:
-            df = ak.stock_fhps_em(symbol=code)
+            import pandas as pd
+            # stock_fhps_em 不接受 symbol 参数，改用 stock_fhps_em_table
+            df_all = ak.stock_fhps_em_table()
+            # 过滤出目标股票的数据
+            if '股票代码' in df_all.columns:
+                df = df_all[df_all['股票代码'] == code]
+            elif '代码' in df_all.columns:
+                df = df_all[df_all['代码'] == code]
+            else:
+                df = pd.DataFrame()
+            
             for _, row in df.iterrows():
                 results.append(FinanceData(
                     source='akshare',
@@ -450,9 +469,11 @@ def fetch_stock_basic(source: str = 'akshare') -> List[FinanceData]:
     
     if source == 'akshare' and HAS_AKSHARE:
         try:
-            df = ak.stock_info_a_code_name()
+            # stock_info_a_code_name 依赖 openpyxl，换用不依赖的接口
+            # 使用 stock_zh_a_spot_em 获取基础信息（包含代码和名称）
+            df = ak.stock_zh_a_spot_em()
             for _, row in df.iterrows():
-                code = row['code']
+                code = row['代码']
                 std_sym = f'{code}.SH' if code.startswith(('60','68','90')) else f'{code}.SZ'
                 results.append(FinanceData(
                     source='akshare',
@@ -461,7 +482,7 @@ def fetch_stock_basic(source: str = 'akshare') -> List[FinanceData]:
                     timestamp=datetime.utcnow().isoformat(),
                     payload={
                         'code': code,
-                        'name': row['name'],
+                        'name': row['名称'],
                         'exchange': 'SH' if code.startswith(('60','68','90')) else 'SZ',
                     }
                 ))
