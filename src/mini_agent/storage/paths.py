@@ -186,6 +186,89 @@ class AgentPaths:
         """<project_root>/.agent/permissions.json — 权限白名单/黑名单"""
         return self.workdir_dir / "permissions.json"
 
+    # ── Wiki 式知识库（wiki式知识库重构计划.md 5.1 节）─────────────────────
+
+    @property
+    def wiki_dir(self) -> Path:
+        """<project_root>/.agent/wiki/ — wiki 页面根目录"""
+        return self.workdir_dir / "wiki"
+
+    @property
+    def wiki_entities_dir(self) -> Path:
+        """<project_root>/.agent/wiki/entities/ — 实体型页面"""
+        return self.wiki_dir / "entities"
+
+    @property
+    def wiki_decisions_dir(self) -> Path:
+        """<project_root>/.agent/wiki/decisions/ — 决策型页面"""
+        return self.wiki_dir / "decisions"
+
+    @property
+    def wiki_processes_dir(self) -> Path:
+        """<project_root>/.agent/wiki/processes/ — 流程型页面"""
+        return self.wiki_dir / "processes"
+
+    @property
+    def wiki_experiences_dir(self) -> Path:
+        """<project_root>/.agent/wiki/experiences/ — 经验型页面"""
+        return self.wiki_dir / "experiences"
+
+    @property
+    def wiki_topics_dir(self) -> Path:
+        """<project_root>/.agent/wiki/topics/ — 专题聚合页面"""
+        return self.wiki_dir / "topics"
+
+    @property
+    def wiki_index_dir(self) -> Path:
+        """<project_root>/.agent/wiki/_index/ — 脚本生成的派生索引，可随时删除重建"""
+        return self.wiki_dir / "_index"
+
+    @property
+    def wiki_graph_index(self) -> Path:
+        """<project_root>/.agent/wiki/_index/graph.json — 页面间链接图"""
+        return self.wiki_index_dir / "graph.json"
+
+    @property
+    def wiki_tags_index(self) -> Path:
+        """<project_root>/.agent/wiki/_index/tags.json — tag -> 页面列表"""
+        return self.wiki_index_dir / "tags.json"
+
+    @property
+    def wiki_backlinks_index(self) -> Path:
+        """<project_root>/.agent/wiki/_index/backlinks.json — 反向链接"""
+        return self.wiki_index_dir / "backlinks.json"
+
+    @property
+    def wiki_search_index(self) -> Path:
+        """<project_root>/.agent/wiki/_index/search_index.json — 关键词 + 向量粗筛索引"""
+        return self.wiki_index_dir / "search_index.json"
+
+    def wiki_type_dir(self, page_type: str) -> Path:
+        """按 type 取对应目录，type 取值见 wiki.parser.PAGE_TYPES。"""
+        mapping = {
+            "entity": self.wiki_entities_dir,
+            "decision": self.wiki_decisions_dir,
+            "process": self.wiki_processes_dir,
+            "experience": self.wiki_experiences_dir,
+            "topic": self.wiki_topics_dir,
+        }
+        if page_type not in mapping:
+            raise ValueError(f"未知的 wiki 页面类型: {page_type!r}，可选: {sorted(mapping)}")
+        return mapping[page_type]
+
+    def ensure_wiki_dirs(self) -> Path:
+        """确保 wiki 全部子目录存在（含 _index/），返回 wiki_dir。"""
+        for d in (
+            self.wiki_entities_dir,
+            self.wiki_decisions_dir,
+            self.wiki_processes_dir,
+            self.wiki_experiences_dir,
+            self.wiki_topics_dir,
+            self.wiki_index_dir,
+        ):
+            d.mkdir(parents=True, exist_ok=True)
+        return self.wiki_dir
+
     # ── Workdir 知识层（W2，对应设计文档 8.2 节）────────────────────────────
     # 命名延续 workdir_xxx 惯例（对齐已有的 workdir_memory / workdir_prompts_dir）。
 
