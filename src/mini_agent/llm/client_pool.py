@@ -495,36 +495,51 @@ class LLMClientPool:
         key_pool = entry.key_pool
 
         def _single_call() -> LLMResponse:
-            # 获取当前 key（round_robin 模式下每次推进）
-            if key_pool:
-                current_key = key_pool.acquire_key()
-                # 若当前 client 的 key 与 pool 给出的 key 不同，重建 client
-                if current_key != entry.config.api_key:
-                    entry.rebuild_client_with_key(current_key)
-
-            try:
-                resp = call_fn(entry.client)
+            # 修复说明（对应问题：key 轮转重试后若再次失败会绕过后续切换/fallback）：
+            # 原实现里"换新 key 后立即重试"只裸调用一次 call_fn，且没有
+            # try/except 包裹——如果这次重试仍然失败（例如新 key 同样被
+            # 限流/封禁），异常会直接原样抛出，既不会再给 key_pool 一次
+            # on_error() 的机会去尝试池子里的下一把 key，也会跳过
+            # on_switch_key 的通知。
+            #
+            # 改成 while 循环后：只要 key_pool.on_error() 还能找到可用的
+            # 下一把 key（未全部处于冷却中），就会不断切换、不断重试；
+            # 只有当 on_error() 返回 None（错误类型不触发切换，或者所有
+            # key 都已耗尽/冷却）时才会真正把异常向上抛出，交给
+            # retry_policy / call_with_pool 的 fallback 逻辑处理。
+            while True:
+                # 获取当前 key（round_robin 模式下每次推进）
                 if key_pool:
-                    key_pool.on_success(entry.config.api_key)
-                return resp
+                    current_key = key_pool.acquire_key()
+                    # 若当前 client 的 key 与 pool 给出的 key 不同，重建 client
+                    if current_key != entry.config.api_key:
+                        entry.rebuild_client_with_key(current_key)
 
-            except Exception as exc:
-                if not key_pool:
-                    raise
-                old_key = entry.config.api_key
-                new_key = key_pool.on_error(old_key, exc)
-                if new_key is None:
-                    raise   # 错误不触发切换，或已无可用 key
+                try:
+                    resp = call_fn(entry.client)
+                    if key_pool:
+                        key_pool.on_success(entry.config.api_key)
+                    return resp
 
-                logger.info(
-                    "ApiKeyPool: key ...%s → ...%s (%s)",
-                    old_key[-8:], new_key[-8:], type(exc).__name__,
-                )
-                if on_switch_key:
-                    on_switch_key(old_key[-8:], new_key[-8:], exc)
-                entry.rebuild_client_with_key(new_key)
-                # 立即用新 key 重试（不算入 retry_policy 的退避等待）
-                return call_fn(entry.client)
+                except Exception as exc:
+                    if not key_pool:
+                        raise
+                    old_key = entry.config.api_key
+                    new_key = key_pool.on_error(old_key, exc)
+                    if new_key is None:
+                        raise   # 错误不触发切换，或已无可用 key —— 真正抛出，交给上层 fallback
+
+                    logger.info(
+                        "ApiKeyPool: key ...%s → ...%s (%s)",
+                        old_key[-8:], new_key[-8:], type(exc).__name__,
+                    )
+                    if on_switch_key:
+                        on_switch_key(old_key[-8:], new_key[-8:], exc)
+                    entry.rebuild_client_with_key(new_key)
+                    # 不立即 return，而是回到循环开头用新 key 重新尝试；
+                    # 若这次依然失败，会再次进入 except 分支，继续尝试
+                    # 下一把 key（不算入 retry_policy 的退避等待）
+                    continue
 
         return retry_policy.call_with_retry(call_fn=_single_call)
 
