@@ -290,6 +290,8 @@ class LLMSummaryStrategy(CompressionStrategy):
             {"role": "user", "content": pm.render("user/compress_summary_request")}
         ]
 
+        summary_text = None
+        decisions = []
         try:
             response = llm_client.chat_with_retry(
                 messages=summary_messages,
@@ -297,10 +299,30 @@ class LLMSummaryStrategy(CompressionStrategy):
                 tools=[],
                 max_retries=10
             )
-            summary_text = response.text.strip() or _build_summary_text(old_turns, cutoff)
+            raw_text = response.text.strip()
+            if raw_text:
+                from mini_agent.history.decision_extraction import parse_decision_response
+                extraction = parse_decision_response(raw_text)
+                summary_text = extraction.compact_summary
+                decisions = extraction.decisions
         except Exception:
-            # 任何 LLM 调用失败都降级到字符串摘要
+            pass  # 任何 LLM 调用失败都降级到字符串摘要（下方兜底）
+
+        if not summary_text:
             summary_text = _build_summary_text(old_turns, cutoff)
+
+        # 决策落盘是"锦上添花"：默认开启，但任何异常（配置缺失/磁盘不可写/
+        # wiki 目录尚未初始化）都不能影响 compact 本身的成功，只静默跳过。
+        if decisions and getattr(cfg.compress, "extract_decisions", True):
+            try:
+                from pathlib import Path
+                from mini_agent.storage.paths import AgentPaths
+                from mini_agent.wiki.decision_writer import process_candidates
+
+                paths = AgentPaths(Path(getattr(cfg, "project_root", None) or Path.cwd()))
+                process_candidates(paths, decisions, source_entries=[f"compact@{cutoff}"])
+            except Exception:
+                pass
 
         if cfg.compress.forget_orphan_tool_results:
             keep = _drop_orphan_tool_results(keep)

@@ -38,6 +38,7 @@ id: role-agent-dispatcher
 type: entity          # entity | decision | process | experience | topic
 tags: [judge-system, dispatcher]
 status: active         # active | deprecated | superseded | revisited
+                       # decision 类型页面单独用一套生命周期：settled | revisited | overturned（见九·2）
 confidence: 0.8
 created: 2026-06-01
 updated: 2026-07-10
@@ -66,6 +67,7 @@ source_entries: [entry_a1b2, entry_c3d4]   # 指回原始 MemoryStore 记忆，�
 | `dedup.py` | 二 | 页面相似度判断：默认规则+LLM，embedding 作为可选路径 |
 | `search.py` | 三 | 三段式检索：规则粗筛 → 图扩展 → LLM 精排 |
 | `topics.py` | 四 | 专题页生成：tag 聚类 + 强链接密度判断 + LLM 综合聚合 |
+| `decision_writer.py` | 决策提炼 | 决策候选落盘：命中已有决策页则更新/推翻，命中不到才新建 |
 
 ## 四、写入侧：与图书馆式索引双写
 
@@ -163,6 +165,103 @@ query
 | `_migration_map.json` | entity_id → page_id 映射 | 否——双写路径依赖的持久状态，删除会导致同一实体被重复创建新页面 |
 | `_index/graph.json` / `tags.json` / `backlinks.json` / `search_index.json` | 派生索引 | 是——`/wiki rebuild` 随时可重建 |
 | `_index/_manifest.json` | indexer 自用的增量重建状态 | 是——删除后下次退化为全量重建 |
+
+## 九·2、决策/取舍知识提炼（对应《决策/取舍知识提炼计划.md》）
+
+工程决策的价值在"为什么这么做、否决了什么方案、为什么否决"，这类知识只有在
+有人打算换一种做法时才需要被翻出来——目标不是"记录得全"，而是**防止同一个
+已经被否决过的方案被重新提出、重新论证一遍**。这条提炼线独立于 lesson
+（规则触发）和 correction（人类显式纠正）之外，因为决策往往发生在一切顺利、
+没有报错、没有人纠正的正常推进过程中，前两条线完全覆盖不到。
+
+### 提取时机：复用 compact 的 LLM 调用，不新增调用次数
+
+`history/compression.py::LLMSummaryStrategy` 原本请求纯文本摘要，现在把输出
+改成结构化 JSON（`system/compress_summarizer.md` / `user/compress_summary_request.md`
+两个 prompt 已同步改造）：
+
+```json
+{
+  "compact_summary": "……（原有的上下文恢复摘要，字段含义不变）",
+  "decisions": [
+    {
+      "topic": "分类树合并策略",
+      "options_considered": ["纯规则相似度", "纯LLM判断所有实体对", "规则+LLM兜底"],
+      "chosen": "规则+LLM兜底",
+      "rejected_because": {"纯LLM判断所有实体对": "组合数会爆炸，成本不可控"},
+      "related_entities": ["classification-tree"]
+    }
+  ]
+}
+```
+
+`history/decision_extraction.py::parse_decision_response()` 负责解析这段 JSON
+（容错：允许被代码块包裹；解析失败时整段原文退化为 `compact_summary`，
+`decisions` 置空，不阻断 compact 本身）。`decisions` 允许为空数组——大多数
+turn 段落里不存在值得记录的决策，只有"讨论了多个方案并做出取舍"的段落才会
+产生条目。由 `CompressConfig.extract_decisions`（默认 `True`）控制是否启用
+这一步，关闭后 `LLMSummaryStrategy` 的行为与改造前完全一致。
+
+### 落盘：命中已有决策页则更新状态，命中不到才新建
+
+`wiki/decision_writer.py::process_candidates()` 实现三分支逻辑：
+
+1. **命中已有决策页且 `chosen` 与已有页面一致** → 只更新 `source_entries` /
+   `updated`，不新建重复内容。
+2. **命中已有决策页但 `chosen` 不一致** → 说明决策被重新做过：旧页面
+   `status` 改为 `overturned`，新建一条决策页并用
+   `links: relation=supersedes` 指回旧页面，旧页面反向追加
+   `links: relation=superseded_by` 指向新页面，形成双向可追溯的沿革链条。
+3. **未命中任何已有决策页** → 新建一条决策候选页（`status=settled`）。
+
+"命中"的判定：`related_entities` 中的某个 id，是否与某个既有 decision 页面
+`frontmatter.links` 里 `relation=affects/part_of` 的 target 重合——直接复用
+`parser.py` 已经解析好的 `WikiPage.strong_links()`，不需要给实体侧单独建索引。
+
+决策页 `confidence` 固定为 `0.5`，独立于 lesson（规则触发，0.6）与 human
+correction（人类显式纠正，0.7）两档——决策复盘是 agent 对自己历史行为的二次
+解读，主观重构风险高于前两者，不能直接套用同一套 confidence 语义。
+
+`status` 生命周期改为决策页专用的三段：`settled`（尚未被重新审视）→
+`revisited`（被重新提起讨论但维持原判，本轮实现未接入自动判定，需人工/后续
+迭代补充触发路径）→ `overturned`（被推翻，此时必有一条 `superseded_by` 指向
+替代页面）。`parser.py::STATUS_VALUES` 为兼容 entity/topic 等页面沿用的旧词表
+（`active`/`deprecated`/`superseded`/`revisited`），采用合并词表而非按 type
+拆分校验；`validator.py` 新增 `_check_supersession_pairs()`，校验
+`supersedes`/`superseded_by` 是否成对出现、`status=overturned` 的页面是否都
+有 `superseded_by` 出边，缺失时给 warning（不阻断整体索引重建）。
+
+### 提案前主动召回：决策提炼真正的价值出口
+
+`evolution/decision_recall.py::recall_related_decisions()` 直接复用
+`wiki/search.py::wiki_shelf_search()` 的三段式检索（不新增检索通路），把候选
+限定在 `type=decision` 的页面，按 `status` 分成两类分别渲染：
+
+- 命中 `status=settled`（或 `revisited`）的历史决策 → 提示"这个方向已经被
+  采纳过，请先确认是否要重复论证"
+- 命中 `status=overturned` 的历史决策 → 提示"这个方案之前被考虑过又被否决，
+  请先确认新提案是否与被否决的方案相同"
+
+返回一段可以直接注入 prompt 的提醒文字（没有命中时返回空字符串）。这一步
+设计成同步查询接口，由调用方在生成新的架构改动/重构提案之前主动调用——不同于
+`evolution/lesson_to_reminder.py` 那种"离线批量生成 reminder 文件、靠
+`ReminderLoader` 轮询加载"的模式，因为决策召回的触发条件（"即将提出新方案"）
+本质上是语义性的，没有 lesson 场景里"连续失败 N 次"那样可以离线预生成的确定
+性信号，接入现有 `pre_tool`/`user_intent` 等 `trigger_event` 文件轮询机制价值
+有限，因此本轮先落地为可以直接调用的函数，接入具体触发点（比如生成重构方案
+的 prompt 组装位置）留给后续迭代按实际使用场景决定挂载点。
+
+### 本轮未完成事项（按原计划三阶段对照）
+
+- 阶段一（结构与置信度体系）：已完成。
+- 阶段二（提取改造）：已完成核心链路（prompt 改造 + 解析 + 落盘三分支）；
+  未实现"巩固循环批量决定是否新建"的节流批处理——当前 `process_candidates()`
+  每次 compact 触发就直接落盘，未命中时的新建没有做碎片化节流，规模变大后
+  需要补上这一层（`decision_writer.py` 模块文档里已注明这一点，接口设计上
+  预留了给巩固循环包一层调用的空间）。
+- 阶段三（图关联与召回）：检索/召回逻辑已完成，但"提案前主动召回"尚未接入
+  任何具体触发点（见上一节），也未在实际重构场景中验证 `overturned` 沿革链条
+  的召回效果，这是原计划里明确写的验收标准，本轮未覆盖。
 
 ## 十、与图书馆式索引的关系与后续计划
 

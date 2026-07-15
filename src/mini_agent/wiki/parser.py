@@ -42,7 +42,15 @@ except ImportError:  # pragma: no cover - 环境缺少 pyyaml 时的兜底提示
     yaml = None  # type: ignore[assignment]
 
 PAGE_TYPES = ("entity", "decision", "process", "experience", "topic")
-STATUS_VALUES = ("active", "deprecated", "superseded", "revisited")
+# 通用 status 词表 + 决策页专用的 settled/overturned（决策/取舍知识提炼计划 5.1 节）。
+# decision 页面的生命周期语义是 settled -> revisited -> overturned，与 entity/topic
+# 等页面沿用的 active/deprecated/superseded/revisited 共享同一个 frontmatter 字段，
+# 因此在这里合并成一个词表，而不是按 type 拆分校验（parser 不感知业务语义，只做
+# 结构校验；status 的业务含义由各 type 自行解释）。
+STATUS_VALUES = (
+    "active", "deprecated", "superseded", "revisited",
+    "settled", "overturned",
+)
 
 _FRONTMATTER_RE = re.compile(r"\A---\s*\n(.*?\n)---\s*\n?", re.DOTALL)
 _WIKILINK_RE = re.compile(r"\[\[([^\]|#]+?)(?:#[^\]|]*)?(?:\|[^\]]*)?\]\]")

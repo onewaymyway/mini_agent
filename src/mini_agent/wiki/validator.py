@@ -95,4 +95,57 @@ def validate_pages(pages: Iterable[WikiPage]) -> ValidationReport:
                 )
             )
 
+    report.issues.extend(_check_supersession_pairs(pages))
+
     return report
+
+
+def _check_supersession_pairs(pages: Iterable["WikiPage"]) -> list[ValidationIssue]:
+    """校验 supersedes / superseded_by 关系对的一致性（决策/取舍知识提炼计划阶段一）。
+
+    - superseded_by 指向的页面必须存在，且该页面须有反向 supersedes 指回本页。
+    - supersedes 指向的旧页面若没有反向 superseded_by 指回本页，给 warning
+      （旧页面可能还没来得及补写，不阻断整体重建）。
+    - status=overturned 的 decision 页面若完全没有 superseded_by 出边，给
+      warning：推翻了却没有指向替代方案，沿革链条不完整。
+    """
+    issues: list[ValidationIssue] = []
+    by_id = {p.id: p for p in pages}
+
+    for p in by_id.values():
+        supersedes_targets = {l.target for l in p.strong_links() if l.relation == "supersedes"}
+        superseded_by_targets = {l.target for l in p.strong_links() if l.relation == "superseded_by"}
+
+        for target in superseded_by_targets:
+            new_page = by_id.get(target)
+            if new_page is None:
+                issues.append(ValidationIssue(
+                    severity="error", kind="dead_link", page_id=p.id,
+                    detail=f"superseded_by 指向不存在的页面: {p.id} -> {target}",
+                ))
+                continue
+            back = {l.target for l in new_page.strong_links() if l.relation == "supersedes"}
+            if p.id not in back:
+                issues.append(ValidationIssue(
+                    severity="warning", kind="inconsistent_supersession", page_id=p.id,
+                    detail=f"{p.id} 声明 superseded_by -> {target}，但 {target} 没有反向的 supersedes -> {p.id}",
+                ))
+
+        for target in supersedes_targets:
+            old_page = by_id.get(target)
+            if old_page is None:
+                continue  # dead_link 已由通用检查覆盖
+            back = {l.target for l in old_page.strong_links() if l.relation == "superseded_by"}
+            if p.id not in back:
+                issues.append(ValidationIssue(
+                    severity="warning", kind="inconsistent_supersession", page_id=p.id,
+                    detail=f"{p.id} 声明 supersedes -> {target}，但 {target} 没有反向的 superseded_by -> {p.id}",
+                ))
+
+        if p.type == "decision" and p.status == "overturned" and not superseded_by_targets:
+            issues.append(ValidationIssue(
+                severity="warning", kind="incomplete_supersession_chain", page_id=p.id,
+                detail=f"{p.id} status=overturned 但没有 superseded_by 指向替代方案",
+            ))
+
+    return issues
