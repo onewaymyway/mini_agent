@@ -326,6 +326,14 @@ def load_config(
         compact_cooldown_turns=_fn("compact_cooldown_turns", None, 3),
         require_confirmation=_fb("compact_require_confirmation", None, False),
         max_message_chars_for_compact=_fn("compact_max_message_chars", None, 10000),
+        # [BUGFIX] 以下三个字段此前漏了从配置文件读取，dataclass 默认值会
+        # 无条件生效，导致 agent_config.json 里配置的 model_context_window
+        # 等值永远不生效（compact_precheck_enabled 默认 True、
+        # compact_precheck_threshold 默认 0.85 恰好"看起来正常"，容易被忽略；
+        # model_context_window 默认 0，最容易暴露问题）。
+        compact_precheck_enabled=_fb("compact_precheck_enabled", None, True),
+        compact_precheck_threshold=_fn("compact_precheck_threshold", None, 0.85),
+        model_context_window=_fn("model_context_window", None, 0),
     )
 
     tool_trim_cfg = ToolTrimConfig(
