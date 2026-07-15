@@ -586,6 +586,16 @@ class GoalModeConfig:
     # progress_info 里不会计算/携带 progress_score 字段，不影响现有判断逻辑。
     progress_score_enabled: bool = True
 
+    # ── [goal_mode_stuck_compact_plan.md §2.1] 过程判断 / 结果判断分离：
+    # GoalJudge 除了对每条验收标准给出结果判断（passed/evidence），额外独立
+    # 输出 process_flags 字段，标记"达成方式本身有问题"的投机行为（测试被
+    # 弱化、检查被绕过、结果被伪造等）。process_flags 非空时，即使 checklist
+    # 全部通过，GoalRunner 也不会放行 DONE，会强制降级为 CONTINUE 并在反馈里
+    # 说明原因。与 progress_judge_mode / criteria_tracking_enabled 是独立开关，
+    # 可任意组合；关闭后退化为升级前行为（完全不请求也不解析 process_flags，
+    # DONE 判定只取决于 checklist）。
+    process_integrity_check_enabled: bool = True
+
 
 @dataclass
 class TurnJudgeConfig:

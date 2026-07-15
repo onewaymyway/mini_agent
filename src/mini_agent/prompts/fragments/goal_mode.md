@@ -46,6 +46,45 @@ GOAL_JUDGE_EXTENDED_OUTPUT_INSTRUCTIONS: |
                   {"index": 2, "passed": false, "evidence": "lint 仍有 3 处报错"}]}
   ```
 
+# [goal_mode_stuck_compact_plan.md §2.1] 过程判断 / 结果判断分离：单独要求
+# 判官额外输出 process_flags 字段，标记"表面结果满足但达成方式有问题"的情况
+# （例如把测试断言改成恒真、删掉失败用例、绕过检查等）。process_flags 是否
+# 请求由 cfg.goal_mode.process_integrity_check_enabled 独立控制，和
+# progress/checklist（GOAL_JUDGE_EXTENDED_OUTPUT_INSTRUCTIONS）是两个独立开关，
+# 可以任意组合开关。
+PROCESS_INTEGRITY_INSTRUCTIONS: |
+  ## 过程正当性判断（独立于结果判断，同一个 JSON 对象里一并输出）
+
+  除了核对每条验收标准是否"通过"（结果判断），还请额外核查达成方式是否正当
+  （过程判断）——即使 checklist 全部 passed: true，也不代表可以直接判定为
+  DONE，如果达成方式本身有问题，请通过 `"process_flags"` 字段明确指出。
+
+  请在同一个 JSON 对象中额外包含：
+
+  - `"process_flags"`：数组，默认应该是空数组 `[]`（表示过程判断无异议）。
+    只有在你发现存在以下这类投机行为的**具体证据**时才添加条目，不要无依据
+    臆测：
+    - 测试被弱化（比如断言被改成恒真、关键校验被注释掉或删除）
+    - 检查被绕过（比如本该跑的验证步骤被跳过、用 mock/stub 替代了本该真实
+      验证的部分而不是覆盖本身就要求 mock）
+    - 结果被人为伪造（比如手写"预期输出"直接覆盖实际运行结果、编造不存在
+      的运行记录）
+    - 验收标准范围被悄悄缩小以规避真正的困难点（比如标准要求"所有测试通过"，
+      实现却只是删除了会失败的那部分测试）
+    每条格式为 `{"concern": "简短类别标签", "detail": "具体证据和位置"}`。
+
+  **`process_flags` 非空时，即使所有 checklist 都 passed: true，也绝不能判定
+  为 DONE**——请判定为 CONTINUE，并在 feedback 中明确指出"结果表面达标但
+  存在过程问题，需要恢复真实的验证方式后重做"，具体说明是哪一条、问题在哪。
+
+  示例（发现问题时）：
+  ```
+  {"status": "CONTINUE", "feedback": "标准1对应的测试断言被改成了 assert True，
+    这不是真正的验证，需要恢复原有的实质性断言后重新验证。",
+    "process_flags": [{"concern": "test_weakened",
+      "detail": "test_foo.py 第 42 行的 assert result == expected 被改成了 assert True"}]}
+  ```
+
 PRIOR_CHECKLIST_BLOCK: |
   **上一轮各条验收标准的通过情况（除非本轮有明确相反证据，否则请保持一致，不要无理由回退）：**
   {checklist_lines}

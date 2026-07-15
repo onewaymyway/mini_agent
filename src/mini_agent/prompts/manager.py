@@ -46,7 +46,15 @@ _DEFAULT_PROMPTS_DIR = Path(__file__).parent
 _VAR_PATTERN = re.compile(r"\{\{\s*(\w+)\s*\}\}")       # {{ variable }}
 _FRAGMENT_PATTERN = re.compile(r"^(\w+):\s*(.*)$")       # KEY: value
 _BLOCK_FRAGMENT_PATTERN = re.compile(                     # KEY: |\n  indented...
-    r"^(\w+):\s*\|\s*\n((?:[ \t]+.*\n?)*)", re.MULTILINE
+    # [goal_mode_stuck_compact_plan.md §2.1 关联修复] 原正则 `(?:[ \t]+.*\n?)*`
+    # 只匹配"以空白开头的行"，导致块内任何空白行（没有前导空格/tab 的纯换行）
+    # 都会提前截断整个块——多段落 fragment（如本文件里的
+    # GOAL_JUDGE_EXTENDED_OUTPUT_INSTRUCTIONS / PROCESS_INTEGRITY_INSTRUCTIONS，
+    # 段落间用空行分隔）实际只有第一段被渲染出来，后面的字段说明/示例全部
+    # 被静默丢弃，且此前没有测试覆盖到"完整多段内容是否被渲染"这一点，
+    # 所以一直没被发现。这里让正则额外接受"纯空行"（`\n` 本身）作为块内容的
+    # 一部分，只有真正非缩进、非空白的行（如下一个 `KEY:` 或注释）才会终止块。
+    r"^(\w+):\s*\|\s*\n((?:[ \t]+.*\n|\n)*)", re.MULTILINE
 )
 
 

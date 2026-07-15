@@ -632,6 +632,7 @@ class _FakeGoalModeCfg:
         self.auto_verify_timeout = kwargs.get("auto_verify_timeout", 120)
         self.auto_verify_output_tail_lines = kwargs.get("auto_verify_output_tail_lines", 40)
         self.progress_score_enabled = kwargs.get("progress_score_enabled", True)
+        self.process_integrity_check_enabled = kwargs.get("process_integrity_check_enabled", True)
 
 
 class _FakeCfg:
@@ -1479,3 +1480,144 @@ def test_stuck_recovery_light_max_zero_falls_back_to_always_compact(monkeypatch,
     runner.run()
 
     assert agent.compact_calls >= 1
+
+
+# ── §2.1 process_flags 过程判断 / 结果判断分离 ──────────────────────────────
+
+def test_goal_runner_process_flags_downgrade_done_to_continue(monkeypatch, tmp_path):
+    """[goal_mode_stuck_compact_plan.md §2.1] 判官给出 DONE，但 process_flags
+    非空（发现测试被弱化等投机行为）——GoalRunner 应该强制降级为 CONTINUE，
+    不能直接放行 DONE，且反馈里要体现出过程问题。"""
+    agent = FakeAgent(outputs=["did the thing", "did it properly"])
+    cfg = _FakeCfg(tmp_path)
+    spec = _confirmed_spec()
+
+    responses = iter([
+        _judge_json(
+            "DONE", feedback="标准都通过了",
+            checklist=[{"index": 1, "passed": True, "evidence": "测试通过"}],
+        ),
+    ])
+
+    def fake_judge(**kw):
+        d = json.loads(next(responses))
+        d["process_flags"] = [
+            {"concern": "test_weakened", "detail": "断言被改成了 assert True"}
+        ]
+        return json.dumps(d, ensure_ascii=False)
+
+    monkeypatch.setattr("mini_agent.role_agents.goal_judge.run_goal_judge", lambda **kw: fake_judge(**kw))
+
+    runner = GoalRunner(agent=agent, cfg=cfg, goal_spec=spec)
+    status, feedback, progress_info = runner._run_judge("did the thing")
+
+    assert status == "CONTINUE"
+    assert "过程正当性问题" in feedback
+    assert progress_info["process_flags"]
+    assert progress_info["process_flags"][0]["concern"] == "test_weakened"
+
+
+def test_goal_runner_process_flags_empty_allows_done(monkeypatch, tmp_path):
+    """process_flags 为空数组（或缺省）时，DONE 判定不受影响，正常放行。"""
+    agent = FakeAgent(outputs=["did the thing"])
+    cfg = _FakeCfg(tmp_path)
+    spec = _confirmed_spec()
+
+    monkeypatch.setattr(
+        "mini_agent.role_agents.goal_judge.run_goal_judge",
+        lambda **kw: _judge_json(
+            "DONE", feedback="都通过了",
+            checklist=[{"index": 1, "passed": True, "evidence": "测试通过"}],
+        ),
+    )
+
+    runner = GoalRunner(agent=agent, cfg=cfg, goal_spec=spec)
+    status, feedback, progress_info = runner._run_judge("did the thing")
+
+    assert status == "DONE"
+    assert progress_info["process_flags"] == []
+
+
+def test_goal_runner_process_integrity_disabled_allows_done_despite_flags(monkeypatch, tmp_path):
+    """cfg.goal_mode.process_integrity_check_enabled=False 时，即使判官（异常地）
+    给出了 process_flags，也完全不解析/不做降级检查，行为与升级前一致。"""
+    agent = FakeAgent(outputs=["did the thing"])
+    cfg = _FakeCfg(tmp_path, process_integrity_check_enabled=False)
+    spec = _confirmed_spec()
+
+    def fake_judge(**kw):
+        d = json.loads(_judge_json(
+            "DONE", feedback="都通过了",
+            checklist=[{"index": 1, "passed": True, "evidence": "测试通过"}],
+        ))
+        d["process_flags"] = [{"concern": "test_weakened", "detail": "xxx"}]
+        return json.dumps(d, ensure_ascii=False)
+
+    monkeypatch.setattr("mini_agent.role_agents.goal_judge.run_goal_judge", lambda **kw: fake_judge(**kw))
+
+    runner = GoalRunner(agent=agent, cfg=cfg, goal_spec=spec)
+    status, feedback, progress_info = runner._run_judge("did the thing")
+
+    assert status == "DONE"
+    assert progress_info["process_flags"] == []
+
+
+def test_goal_runner_process_flags_continue_status_unaffected(monkeypatch, tmp_path):
+    """process_flags 非空但判官本来就给的是 CONTINUE（不是 DONE），不需要额外
+    降级动作，只是把 process_flags 透传出来供上层可见。"""
+    agent = FakeAgent(outputs=["still working"])
+    cfg = _FakeCfg(tmp_path)
+    spec = _confirmed_spec()
+
+    def fake_judge(**kw):
+        d = json.loads(_judge_json("CONTINUE", feedback="还没完成"))
+        d["process_flags"] = [{"concern": "check_bypassed", "detail": "跳过了 lint 检查"}]
+        return json.dumps(d, ensure_ascii=False)
+
+    monkeypatch.setattr("mini_agent.role_agents.goal_judge.run_goal_judge", lambda **kw: fake_judge(**kw))
+
+    runner = GoalRunner(agent=agent, cfg=cfg, goal_spec=spec)
+    status, feedback, progress_info = runner._run_judge("still working")
+
+    assert status == "CONTINUE"
+    assert progress_info["process_flags"][0]["concern"] == "check_bypassed"
+
+
+def test_run_goal_judge_includes_process_integrity_instructions_in_system_prompt(monkeypatch, tmp_path):
+    """[goal_mode_stuck_compact_plan.md §2.1] process_integrity_enabled=True 时，
+    system prompt（judge_cfg.system_extra）里应该拼接 PROCESS_INTEGRITY_INSTRUCTIONS
+    片段（含 process_flags 字段说明）；False 时不应该出现。"""
+    import mini_agent.agent as agent_mod
+    from mini_agent.config.loader import load_config
+    from mini_agent.orchestrator.agent_profiles import AgentProfile
+    from mini_agent.role_agents.goal_judge import run_goal_judge
+
+    captured = {}
+
+    class FakeInnerAgent:
+        def __init__(self, cfg, guard, registry, **kwargs):
+            captured["system_extra"] = cfg.system_extra
+
+        def run_turn(self, prompt):
+            return json.dumps({"status": "CONTINUE", "feedback": "ok"})
+
+    monkeypatch.setattr(agent_mod, "Agent", FakeInnerAgent)
+
+    base_cfg = load_config(
+        project_root=tmp_path, verbose=False, sandbox=True,
+        auto_approve=True, model="claude-sonnet-4-6",
+    )
+    base_cfg.api_key = "sk-fake"
+
+    profile = AgentProfile(name="goal_judge", role_type="goal_judge")
+    spec = GoalSpec(goal_text="do X", acceptance_criteria=["a"], confirmed=True)
+
+    marker = "test_weakened"  # PROCESS_INTEGRITY_INSTRUCTIONS 片段里的示例类别标签，
+    # 只会在片段被拼接时出现，比泛泛搜索 "process_flags"（system prompt 核查
+    # 原则第7条本身也会提到这个词）更能确认片段是否真的被拼接。
+
+    run_goal_judge(profile, base_cfg, spec, "output", 1, "", process_integrity_enabled=True)
+    assert marker in captured["system_extra"]
+
+    run_goal_judge(profile, base_cfg, spec, "output", 1, "", process_integrity_enabled=False)
+    assert marker not in captured["system_extra"]

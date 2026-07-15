@@ -95,6 +95,7 @@ def run_goal_judge(
     extended_output_enabled: bool = False,
     prior_checklist_lines: str = "",
     verification_result: Optional[dict] = None,
+    process_integrity_enabled: bool = False,
 ) -> str:
     """
     运行 GoalJudgeAgent，返回判定文本（含 GOAL_STATUS 行）。
@@ -117,6 +118,12 @@ def run_goal_judge(
     prior_checklist_lines：透传给 build_goal_judge_prompt，供 GoalJudge 参考
         上一轮各条验收标准的通过情况（见改造项三）。
     verification_result：透传给 build_goal_judge_prompt（见 goal_mode_stuck_compact_plan.md §2.2）。
+    process_integrity_enabled：[goal_mode_stuck_compact_plan.md §2.1] True 时在 system prompt
+        里额外拼接"过程正当性判断"指令（PROCESS_INTEGRITY_INSTRUCTIONS），要求判官额外输出
+        process_flags 字段标记投机行为（测试被弱化/检查被绕过/结果被伪造等）。对应
+        cfg.goal_mode.process_integrity_check_enabled，与 extended_output_enabled
+        （progress/checklist）是两个独立开关，可任意组合。False 时行为与升级前完全一致，
+        不会要求也不会解析 process_flags。
     """
     # [Phase 3 重构] 样板逻辑收敛到 judge_factory.spawn_judge_agent /
     # run_judge_turn。函数签名和返回值保持完全不变。
@@ -143,8 +150,15 @@ def run_goal_judge(
                 example_feedback="标准1（xxx）未通过，因为...；请先做 A，再做 B。",
             ),
             extended_output_instructions=(
-                pm.fragment("goal_mode", "GOAL_JUDGE_EXTENDED_OUTPUT_INSTRUCTIONS")
-                if extended_output_enabled else ""
+                (
+                    pm.fragment("goal_mode", "GOAL_JUDGE_EXTENDED_OUTPUT_INSTRUCTIONS")
+                    if extended_output_enabled else ""
+                )
+                + (
+                    ("\n" if extended_output_enabled else "")
+                    + pm.fragment("goal_mode", "PROCESS_INTEGRITY_INSTRUCTIONS")
+                    if process_integrity_enabled else ""
+                )
             ),
         ),
         max_turns=6 if tools_enabled else 2,   # 挂工具时允许多跑几轮验证命令

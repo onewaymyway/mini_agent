@@ -410,6 +410,7 @@ class GoalRunner:
             R.console.print(prompt_preview)
             R.console.print()
 
+        process_integrity_enabled = getattr(self._gm_cfg, "process_integrity_check_enabled", True)
         raw = run_goal_judge(
             profile=profile,
             base_cfg=self._cfg,
@@ -420,6 +421,7 @@ class GoalRunner:
             extended_output_enabled=extended_output_enabled,
             prior_checklist_lines=prior_checklist_lines,
             verification_result=verification_result,
+            process_integrity_enabled=process_integrity_enabled,
         )
 
         status = extract_goal_status(raw) or "CONTINUE"  # 提取失败时保守按 CONTINUE 处理
@@ -439,7 +441,8 @@ class GoalRunner:
         # =False）或模型没有按扩展 schema 输出时，progress/checklist 都拿不到，
         # progress_info 里 "progress" 为 None——调用方（_check_stuck）据此自动
         # 回退到旧的文本相似度规则，不会因为字段缺失而报错或误判。
-        progress_info: dict = {"progress": None, "progress_reason": ""}
+        progress_info: dict = {"progress": None, "progress_reason": "", "process_flags": []}
+        process_info: dict = {"process_flags": []}
         if _verdict.parse_ok:
             raw_progress = _verdict.extra.get("progress")
             if isinstance(raw_progress, str) and raw_progress.strip().upper() in (
@@ -468,6 +471,40 @@ class GoalRunner:
                         if isinstance(evidence_val, str) and evidence_val:
                             target["evidence"] = evidence_val
                         target["last_updated_round"] = self._round + 1
+
+            # [goal_mode_stuck_compact_plan.md §2.1] 过程判断：解析 process_flags，
+            # 非空即代表判官发现了"表面结果满足但达成方式有问题"的投机行为证据。
+            if process_integrity_enabled:
+                raw_process_flags = _verdict.extra.get("process_flags")
+                if isinstance(raw_process_flags, list):
+                    process_info["process_flags"] = [
+                        item for item in raw_process_flags if isinstance(item, dict)
+                    ]
+
+        progress_info.update(process_info)
+
+        # [goal_mode_stuck_compact_plan.md §2.1] process_flags 非空时，即使
+        # checklist 全部 passed=true、判官给出 DONE，也不能直接放行——强制
+        # 降级为 CONTINUE，并在展示给主 Agent 的反馈里明确指出"结果表面达标
+        # 但存在过程问题，需要恢复真实的验证方式后重做"，而不是允许它蒙混
+        # 成 DONE。process_integrity_check_enabled=False 时完全不做这个检查，
+        # 行为与升级前一致（只取决于 checklist）。
+        if process_integrity_enabled and status == "DONE" and progress_info["process_flags"]:
+            flags_lines = "\n".join(
+                f"- [{f.get('concern', '未分类')}] {f.get('detail', '')}"
+                for f in progress_info["process_flags"]
+            )
+            R.print_warning(
+                "[GoalRunner] GoalJudge 判定 DONE，但发现过程正当性问题，强制降级为 CONTINUE："
+                f"\n{flags_lines}"
+            )
+            status = "CONTINUE"
+            display_text = (
+                f"{display_text}\n\n"
+                "【系统提示】虽然验收标准表面看起来已通过，但核查发现以下过程正当性问题，"
+                "结果不能视为真正达成，请恢复真实的验证方式后重新完成对应标准：\n"
+                f"{flags_lines}"
+            )
 
         # [goal_mode_stuck_compact_plan.md §3.1] 计算连续进展分数：结合
         # checklist 客观通过数增量 + judge 主观 progress 判断。只在开关开启
