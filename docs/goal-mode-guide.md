@@ -67,12 +67,27 @@ Evaluator 仍然在每次 `run_turn` 内部做质量把关，GoalRunner 在更�
     "consecutive_same_feedback_limit": 3,
     "same_feedback_similarity_threshold": 0.9,
     "max_stuck_recoveries": 3,
+    "light_compact_max_recoveries": 1,
     "persist_state": true,
     "auto_resume_prompt": true,
     "progress_judge_mode": "llm",
     "criteria_tracking_enabled": true,
     "stuck_recovery_attempted_paths_enabled": true,
     "failure_lesson_enabled": true,
+    "dead_ends_persist_enabled": true,
+    "auto_verify_enabled": true,
+    "auto_verify_timeout": 120,
+    "auto_verify_output_tail_lines": 40,
+    "progress_score_enabled": true,
+    "process_integrity_check_enabled": true,
+    "pseudo_progress_detection_enabled": true,
+    "pseudo_progress_window": 5,
+    "pseudo_progress_stagnation_threshold": 0.15,
+    "pseudo_progress_max_score_cap": 0.5,
+    "proactive_compact_enabled": false,
+    "exploring_compact_interval": 2,
+    "phase_convergence_window": 3,
+    "replan_proposal_mode": "off",
     "stuck_recovery_ensemble_enabled": false,
     "fine_grained_execution_enabled": false
   }
@@ -93,13 +108,28 @@ Evaluator 仍然在每次 `run_turn` 内部做质量把关，GoalRunner 在更�
 | `consecutive_same_feedback_limit` | `3` | 连续 N 轮判定为"没有实质进展" → 判定为"卡住"，提前终止（判定方式见 `progress_judge_mode`） |
 | `same_feedback_similarity_threshold` | `0.9` | `progress_judge_mode="text_similarity"` 时使用：`difflib.SequenceMatcher` 相似度阈值，达到即计入"雷同" |
 | `max_stuck_recoveries` | `3` | 判定"卡住"后先压缩历史+提示换思路、再给几次机会（见下方"卡住恢复"），额度耗尽后再卡住才真正终止；设为 `0` 等价于旧行为（一卡住就终止） |
+| `light_compact_max_recoveries` | `1` | **[§1.1 分级 compact]** 前 N 次卡住恢复只注入提示、不压缩历史（第一次卡住可能只是暂时性的），超过后才真正触发 compact；设为 `0` 等价于每次恢复都 compact |
 | `judge_show_prompt` | `false` | 打印发给 GoalJudge 的完整输入 prompt（目标、验收标准、主 Agent 产出、上一轮反馈、上一轮验收标准状态），排查判定依据用 |
 | `persist_state` | `true` | 是否在每个轮次边界落盘 `goal_state.json`（供异常中断恢复） |
 | `auto_resume_prompt` | `true` | 启动 REPL 时若检测到未完成的 goal，是否主动提示 |
 | `progress_judge_mode` | `"llm"` | **[改造项一]** 卡住判定方式：`"llm"` → 让 GoalJudge 在结构化输出里额外判断本轮是否有实质进展（`progress` 字段），比纯文本相似度更能识别"表述不同但本质相同"或"表述相似但确有进展"这两类规则算法的误判场景；解析失败/未按新 schema 输出时自动回退到 `"text_similarity"` 规则。设为 `"text_similarity"` 可一键恢复升级前的纯规则行为 |
 | `criteria_tracking_enabled` | `true` | **[改造项三]** GoalJudge 每轮额外输出逐条验收标准的通过情况（`checklist`），`GoalRunner` 据此维护 `GoalState.criteria_status` 并回传给下一轮 GoalJudge，减少判定抖动、让反馈更聚焦"还差哪一条" |
-| `stuck_recovery_attempted_paths_enabled` | `true` | **[改造项二]** 卡住恢复时，把最近几轮 GoalJudge 给出的失败原因（`progress_reason`）拼成"已验证无效的方向"清单一起注入提示，而不是只给一句通用的"换个角度" |
+| `stuck_recovery_attempted_paths_enabled` | `true` | **[改造项二]** 卡住恢复时，把已知的失败原因拼成"已验证无效的方向"清单一起注入提示，而不是只给一句通用的"换个角度"（具体来源见下方"Dead-end 持久清单"） |
+| `dead_ends_persist_enabled` | `true` | **[§1.2 Dead-end 持久清单]** "已验证无效的方向"清单是否使用不随窗口滚动、只增不减（去重后）的持久化 `dead_ends` 列表；关闭后退化为按 `consecutive_same_feedback_limit` 窗口滚动、会被冲掉的旧行为 |
 | `failure_lesson_enabled` | `true` | **[改造项五]** goal 因 `stuck` / `max_rounds_exhausted` 终止时，把已尝试路径 + 失败原因整理成一条 lesson 写入 memory，供未来同类目标参考，避免重复踩坑 |
+| `auto_verify_enabled` | `true` | **[§2.2 自验证优先]** `GoalSpec.verification_command` 非空时，`GoalRunner` 是否在每轮送进 GoalJudge 评审前，自己（不经过任何 LLM）程序化执行一次该命令，把客观结果传给判官 |
+| `auto_verify_timeout` | `120` | 自动执行验证命令的超时时间（秒） |
+| `auto_verify_output_tail_lines` | `40` | 验证命令 stdout/stderr 各自保留的尾部行数，避免污染判官上下文 |
+| `progress_score_enabled` | `true` | **[§3.1 进展分数]** 是否计算连续的进展分数（结合 checklist 通过数增量 + judge 主观 progress 判断），供伪进展识别（§3.2）等场景使用 |
+| `process_integrity_check_enabled` | `true` | **[§2.1 过程判断]** GoalJudge 是否额外输出 `process_flags` 字段，标记"表面结果满足但达成方式有问题"的投机行为；非空时即使 checklist 全部通过也会强制降级为 CONTINUE |
+| `pseudo_progress_detection_enabled` | `true` | **[§3.2 伪进展识别]** 是否用 `ProgressTracker` 识别"每轮都有一点点进展，但累积起来毫无实质意义"的伪进展趋势，识别到后触发和卡住同等级别的恢复流程 |
+| `pseudo_progress_window` | `5` | 伪进展识别的观察窗口（最近 N 轮进展分数） |
+| `pseudo_progress_stagnation_threshold` | `0.15` | 早期均值 / 后期均值之差低于此值视为"平缓" |
+| `pseudo_progress_max_score_cap` | `0.5` | 窗口内出现过 ≥ 此值的高分则不判定为伪进展（说明确实有过实质推进） |
+| `proactive_compact_enabled` | `false` | **[§4 探索/收敛双模式]** 是否开启"探索阶段按固定节奏主动做一次轻量 compact"的新机制；默认关闭，是会改变现有 compact 节奏的新行为，需要用户显式开启 |
+| `exploring_compact_interval` | `2` | 探索阶段每 N 轮主动触发一次轻量 compact（只重新钉住目标上下文，不做真正的历史压缩） |
+| `phase_convergence_window` | `3` | 连续 N 轮正向进展分数才从"探索阶段"切换到"收敛阶段"（切换后暂停主动触发，只保留被动安全阀） |
+| `replan_proposal_mode` | `"off"` | **[§5 Goal 重规划提议]** 多次卡住恢复即将耗尽额度时，是否要求 agent 额外提出"重规划提议"，以及提议如何生效：`"off"` 完全不开启 / `"confirm"` 只展示给用户由其手动 `/goal revise` 采纳 / `"auto"` 解析到提议后自动应用并继续执行。详见下方"Goal 重规划提议"一节 |
 | `stuck_recovery_ensemble_enabled` | `false` | **[改造项四，预留]** 尚未实现调度逻辑，仅占位配置；见 [`goal_mode_stage2_ensemble_and_fine_grained_plan.md`](../next_doc/goal_mode_stage2_ensemble_and_fine_grained_plan.md) |
 | `stuck_recovery_candidates` | `3` | 同上，届时并行候选数量 |
 | `fine_grained_execution_enabled` | `false` | **[改造项六，预留]** 尚未实现细粒度执行器，仅占位配置；见同上文档 |
@@ -192,6 +222,278 @@ schema 输出 `progress` 字段（比如用了尚未升级的自定义 profile�
 这样"换思路"才有具体依据，避免主 Agent 只是换个说法继续同一个思路。
 `progress_judge_mode="text_similarity"` 时没有 `progress_reason` 可用，
 这条提示会退化为原来的通用话术。
+
+### 分级 compact：第一次卡住先不压历史
+
+> 对应 [`next_doc/goal_mode_stuck_compact_plan.md`](../next_doc/goal_mode_stuck_compact_plan.md) §1.1，
+> `light_compact_max_recoveries` 控制。
+
+早期版本每次触发卡住恢复都是同一个动作——完整压缩一次历史。但"第一次卡住"
+很可能只是暂时性的（比如换个说法马上就能想明白），没必要立刻付出一次完整
+compact 的代价（丢失细节 + LLM 调用开销）。
+
+现在把 compact 强度和"已经恢复过几次"挂钩：
+
+- 第 1 ~ `light_compact_max_recoveries` 次恢复（默认 1 次）：**只注入提示，
+  不压缩历史**，只是把目标+验收标准重新钉一次（成本很低），给一次低成本的
+  重新尝试机会。
+- 超过这个次数之后：真正触发 compact（更激进地清理历史，倒逼换角度重新
+  审视）。
+
+`light_compact_max_recoveries: 0` 等价于升级前的行为（每次恢复都 compact），
+可一键回退。
+
+### Dead-end 持久清单：不会被窗口滚动冲掉的"已验证无效路径"
+
+> 对应 [`next_doc/goal_mode_stuck_compact_plan.md`](../next_doc/goal_mode_stuck_compact_plan.md) §1.2 / §1.3，
+> `dead_ends_persist_enabled` 控制（默认开启）。
+
+上面"卡住恢复提示携带已尝试路径清单"一节里的清单，早期实现是从
+`recent_progress_reasons`（一个容量固定的滚动窗口，`max(3,
+consecutive_same_feedback_limit)`）现场拼装的——窗口会覆盖旧记录：如果
+第 4 轮排除了"直接改配置文件"这条路径，几轮之后窗口滚动，这条记录可能被
+新的 `progress_reason` 挤出去；如果 agent 后来又绕回这条路径，就不会再被
+提示"这条已经试过"。
+
+`dead_ends_persist_enabled=true`（默认）时，`GoalRunner` 额外维护一份独立
+的 `GoalState.dead_ends` 清单：判官给出 `SAME_APPROACH_NO_GAIN` /
+`REGRESSED` 且带具体理由时追加进去，**只增不减**（去重逻辑复用
+`spec.py::_is_near_duplicate`，避免同一条路径被反复记录），不随
+`recent_progress_reasons` 的滚动窗口被冲掉——无论卡住恢复发生在第 2 轮还是
+第 15 轮，都不会丢失更早排除的路径。`dead_ends` 也会跟随 `criteria_status`
+一起落盘/恢复（见下方"异常中断恢复"），进程重启后依然完整。
+
+同时，GoalJudge 主动建议的 `NEED_COMPACT`（判官主观判断"历史太乱建议压缩"）
+现在也会共享这份 dead-end 信息——不再只有真正被 `StuckDetector` 判定卡住时
+才有"提醒你别再走某条老路"的提示。
+
+`dead_ends_persist_enabled=false` 时退化为纯窗口行为（回到升级前逻辑）。
+
+### 过程判断 / 结果判断分离：不能只看"表面结果满足"
+
+> 对应 [`next_doc/goal_mode_stuck_compact_plan.md`](../next_doc/goal_mode_stuck_compact_plan.md) §2.1，
+> `process_integrity_check_enabled` 控制（默认开启）。
+
+只看"验收标准是否通过"（结果判断）有一个漏洞：agent 可能为了让某条标准
+"通过"而投机取巧——把测试断言改成恒真、删掉失败用例、用 mock 替代本该真实
+执行的验证、悄悄缩小验收范围。如果判官只看"测试现在跑通了"这个结果，不会
+发现过程有问题。
+
+`process_integrity_check_enabled=true` 时，GoalJudge 在核对每条验收标准的
+"结果判断"之外，额外独立输出一个 `process_flags` 字段（同一次结构化 JSON
+输出，不新增调用），标记类似问题的具体证据：
+
+```json
+{"status": "CONTINUE", "feedback": "标准1对应的测试断言被改成了 assert True，
+  这不是真正的验证，需要恢复原有的实质性断言后重新验证。",
+ "process_flags": [{"concern": "test_weakened",
+   "detail": "test_foo.py 第 42 行的 assert result == expected 被改成了 assert True"}]}
+```
+
+**`process_flags` 非空时，即使 checklist 全部 `passed: true`、判官给出
+`DONE`，GoalRunner 也不会直接放行**——会强制降级为 `CONTINUE`，并在反馈里
+明确指出"结果表面达标但存在过程问题，需要恢复真实的验证方式后重做"。
+
+关闭后完全不请求也不解析 `process_flags`，`DONE` 判定只取决于 checklist，
+与升级前行为一致；这是一个独立开关，可以和 `progress_judge_mode` /
+`criteria_tracking_enabled` 任意组合。
+
+### 自验证优先：程序化执行 verification_command，不只是相信自述
+
+> 对应 [`next_doc/goal_mode_stuck_compact_plan.md`](../next_doc/goal_mode_stuck_compact_plan.md) §2.2，
+> `auto_verify_enabled` 控制（默认开启）。
+
+`GoalSpec.verification_command`（比如 `pytest --cov=src`）此前只是作为一段
+**文本描述**传给判官，判官挂了工具时才有机会自己去跑；纯文本判定模式下这
+条命令实际上完全没有被执行过，等于形同虚设。
+
+`auto_verify_enabled=true` 且 `GoalSpec.verification_command` 非空时，
+`GoalRunner` 在把主 Agent 本轮输出送进 GoalJudge 评审**之前**，会自己（不
+经过任何 LLM）程序化地执行一次这条命令（`subprocess.run`，
+`auto_verify_timeout` 秒超时、`auto_verify_output_tail_lines` 控制
+stdout/stderr 各自保留的尾部行数），把 `{command, returncode, stdout_tail,
+stderr_tail}` 作为客观证据一并拼进判官 prompt：
+
+```
+【自验证要求】在结束本轮回复之前，请主动执行一次验证命令：
+`pytest --cov=src --cov-report=term-missing`
+...
+
+**系统自动执行验证命令的客观结果（不依赖 AI 助手自述，请优先参考这里的结果）：**
+验证命令：pytest --cov=src --cov-report=term-missing
+退出码：0
+标准输出（尾部）：
+...
+```
+
+这样判官既能看到主 Agent 自己汇报的执行情况，也能看到系统程序化执行的客观
+结果，两者互相校验。执行失败（超时/命令不存在等）不会被静默吞掉——异常信息
+本身也会作为证据传给判官，因为"验证命令执行失败"本身对判官也是有价值的
+信息。
+
+关闭后（或 `GoalSpec` 未设置 `verification_command`）退化为升级前的行为：
+判官只能看到命令的文本描述，不会有代码路径主动执行它。
+
+### 进展分数与伪进展识别
+
+> 对应 [`next_doc/goal_mode_stuck_compact_plan.md`](../next_doc/goal_mode_stuck_compact_plan.md) §3.1 / §3.2，
+> `progress_score_enabled` / `pseudo_progress_detection_enabled` 控制（均默认开启）。
+
+`StuckDetector` 只能识别"完全没有变化/退步"这种二元情况，识别不了"每轮都
+有一点点进展，但累积起来毫无实质意义"的模式——比如连续多轮 `progress` 都是
+`SUBSTANTIVE_ADVANCE`，但从来没有真正积累出实质推进（比如判官对"进展"的
+判断标准一直在放松）。
+
+`progress_score_enabled=true` 时，`GoalRunner` 每轮结合两个信号计算一个
+连续的进展分数（而不是只有三态分类）：
+
+- **客观信号**：checklist 通过条数相比上一轮的增量（`delta`）
+- **主观信号**：判官给出的 `progress` 判断（`SUBSTANTIVE_ADVANCE`=1.0 /
+  `SAME_APPROACH_NO_GAIN`=0.0 / `REGRESSED`=-1.0）
+
+客观信号作为主观判断的校验/加权而不是替代：有新增通过条目时分数至少是
+`0.3 * delta`（哪怕主观判断认为没有进展，客观硬指标增量也不该判 0）；有
+条目退化为未通过时分数至多是 `-0.5`（明确的倒退信号）。分数序列落盘为
+`GoalState.progress_scores`。
+
+`pseudo_progress_detection_enabled=true` 时，`ProgressTracker` 在
+`StuckDetector` 判定为"没有问题"的基础上，额外检查最近
+`pseudo_progress_window`（默认 5）轮的分数序列是否呈现"平缓但非零"的
+趋势（早期均值 vs 后期均值之差 < `pseudo_progress_stagnation_threshold`，
+且窗口内没有出现过 ≥ `pseudo_progress_max_score_cap` 的高分）——一旦识别
+到，会触发和 `StuckDetector` 判定卡住**同等级别**的恢复流程（compact +
+换角度提示），并**共享同一份 `max_stuck_recoveries` 额度**，不会因为触发
+路径不同就获得双倍恢复次数。终止报告的文案会区分是"连续反馈高度相似"还是
+"进展分数长期平缓、疑似伪进展"，避免误导性的措辞。
+
+窗口未填满（样本数不足 `pseudo_progress_window`）时恒不判定为伪进展——
+数据点太少时任何趋势估计都不可靠，宁可漏检也不要在早期就误判。
+
+### 探索 / 收敛双模式主动 compact（默认关闭）
+
+> 对应 [`next_doc/goal_mode_stuck_compact_plan.md`](../next_doc/goal_mode_stuck_compact_plan.md) §4，
+> `proactive_compact_enabled` 控制（默认关闭）。
+
+目前为止提到的所有 compact 触发点都是**被动响应**：撞 `max_turns` 硬顶、
+判官主动建议 `NEED_COMPACT`、`StuckDetector` 判定卡住。没有任何机制会
+根据"当前处于探索阶段还是收敛阶段"主动调整 compact 节奏——顺利推进和到处
+试错但还没触发卡住阈值，走的是完全一样的节奏。
+
+开启 `proactive_compact_enabled` 后，`GoalRunner` 依据进展分数序列维护一个
+阶段标签：
+
+- **`EXPLORING`（探索）**：尚未出现稳定正向进展（早期，或伪进展/退步中）。
+  会按固定节奏（每 `exploring_compact_interval` 轮，默认 2）主动做一次
+  **轻量**动作——只重新钉住目标上下文，不做真正的历史压缩，成本很低，给
+  agent 一次跳出当前上下文重新审视的机会，不需要等 `StuckDetector` 正式
+  判定为卡住。
+- **`CONVERGING`（收敛）**：连续 `phase_convergence_window`（默认 3）轮
+  出现正向进展分数后切入这个阶段，暂停上面这层主动触发，只保留三个被动
+  安全阀，避免把正在起效的上下文过早打断。收敛判定"严进宽出"——任意一轮
+  分数不为正（含缺失）都会立刻打回 `EXPLORING`。
+
+没有可用的进展分数（`progress_score_enabled=false`）时永远停留在
+`EXPLORING`，保守处理。这是一个会改变现有 compact 节奏的新机制，默认关闭，
+需要显式开启；关闭时该阶段状态仍会被追踪计算（方便开启前先观察一段时间是
+否符合预期），但不会触发任何额外动作。
+
+### Goal 重规划提议：卡住到底是因为目标定义本身有问题？
+
+> 对应 [`next_doc/goal_mode_stuck_compact_plan.md`](../next_doc/goal_mode_stuck_compact_plan.md) §5，
+> `replan_proposal_mode` 控制（默认 `"off"`）。
+
+反复卡住恢复到极限（额度耗尽）之前，很可能不是"多试几次就能解决"，而是
+**目标定义本身有问题**——比如某条验收标准依赖了一个不存在的前提、目标
+范围过大难以一次性完成、验证方式设定不合理。此前唯一的结局是额度耗尽后
+直接终止（`status=stuck`），用户需要凭记忆手动重新走一遍 `/goal` 协商流程。
+
+`replan_proposal_mode` 是一个三态开关，同时控制"是否开启这个机制"和
+"提议解析出来之后怎么处理"：
+
+| 取值 | 行为 |
+|------|------|
+| `"off"`（默认） | 完全不开启：不会额外要求 agent 输出提议，也不会解析/展示任何内容，与升级前完全一致 |
+| `"confirm"` | 需要人工确认：提议只展示给用户，不自动改写 `GoalSpec`，由用户决定是否执行 `/goal revise` 采纳 |
+| `"auto"` | 自动应用：解析到非空提议后立即生成新版本 `GoalSpec` 并自动确认，替换当前目标继续执行（不终止） |
+
+**触发条件**：只在"即将耗尽恢复额度的最后一次机会"这一轮（
+`recoveries_used >= max_stuck_recoveries`）额外要求主 Agent 在回复末尾用
+一个 ` ```replan_proposal ` 代码块给出建议（只有真的认为目标定义有问题时
+才输出，正常继续尝试的轮次不会被问）：
+
+````
+这是本次自动恢复的最后一次机会。如果你认为反复卡住的根本原因是目标定义
+本身有问题……请在本轮回复的末尾额外输出一个 ```replan_proposal 代码块：
+
+```replan_proposal
+{"suggested_split": ["先实现子功能A", "再实现子功能B"],
+ "suggested_criteria_changes": ["把标准3放宽为覆盖80%场景即可，理由：..."],
+ "reason": "原验收标准依赖了一个不存在的前提"}
+```
+````
+
+**`"confirm"` 档位**：goal 最终因 `stuck`（或再次触发提议后仍失败）终止时，
+提议会被打印出来，并提示可以采纳：
+
+```
+⚠  [GoalRunner] 目标未达成（状态：stuck）：...
+
+— Agent 提出的重规划提议（仅供参考，不会自动生效）—
+Agent 在多次卡住恢复后提出了以下重规划建议：
+建议拆分为子目标：
+  - 先实现子功能A
+  - 再实现子功能B
+建议调整验收标准：
+  - 把标准3放宽为覆盖80%场景即可，理由：...
+理由：原验收标准依赖了一个不存在的前提
+
+如果认可以上建议，可执行 `/goal revise` 基于该提议重新协商目标
+（也可以在协商过程中输入自己的修改意见）。
+```
+
+`GoalRunResult.replan_proposal` 也会携带这份数据（供上层代码集成使用），
+`GoalState.replan_proposal` 会一并落盘——即使进程重启，`/goal revise` 依然
+能读到上次终止时的提议。
+
+**`"auto"` 档位**：解析到非空提议后，`GoalRunner` 自动调用
+`GoalSpecBuilder.revise()`（把提议渲染成一段 `user_feedback` 文本喂给它）
+生成新版本并 `confirmed=True`，替换 `self._spec` 后**继续跑，不终止**：
+
+```
+ℹ  [GoalRunner] 收到 Agent 提出的重规划提议。
+✓  [GoalRunner] 已自动采纳重规划提议，目标更新为第 2 版：
+目标（第 2 版）：拆分后的新目标
+验收标准：
+  1. 先完成子功能A
+```
+
+目标变了之后，之前累积的"卡住/进展"相关状态（`StuckDetector` 计数、
+`dead_ends`、`criteria_status`、进展分数、探索/收敛阶段）都是针对旧标准的，
+会被全部重置，相当于用新目标重新开始一轮观察窗口。**每次 `run()` 最多只
+允许自动应用一次**（`_replan_auto_applied`），即使之后又反复卡住、又收集
+到新的提议，也不会被再次自动应用——避免变成"反复卡住→反复自动放宽标准"
+的隐蔽漏洞。生成新版本失败（LLM 调用异常等）或新版本没有任何验收标准时，
+会静默保留原 `GoalSpec` 继续按原目标跑，只打印警告，不影响正常的卡住终止
+/继续流程。
+
+**关键约束**（无论哪个档位都成立）：`replan_proposal` 全程只是数据；除
+`"auto"` 档位这一条显式受开关控制的路径外，没有任何代码路径允许 agent 的
+输出绕过用户确认直接改写 `self._spec`；提议请求只在最后一次恢复机会触发
+一次，不会让 agent 每一轮都尝试"申请改标准"。
+
+**`/goal revise [sid]`**：新增的 slash 命令，用于基于一个已经冻结过的
+`GoalSpec`（不要求还在 `running`——`stuck` / `max_rounds_exhausted` 终止的
+目标同样可以修订）重新走一遍协商子对话：
+
+```
+/goal revise            # 修订当前 session 的（或最近一个可恢复的）目标
+/goal revise <sid>      # 指定 session id
+```
+
+如果对应 session 落盘的状态里带有非空 `replan_proposal`，会先用它作为起点
+自动生成一份新草案再进入协商循环——你只需要"确认/继续调整/拒绝"，不需要
+凭记忆重新组织语言描述问题；没有提议时和直接对旧 `GoalSpec` 手动输入修改
+意见没有区别。确认（`/confirm`）后会重新开始执行（不是恢复旧的执行状态）。
 
 ---
 
@@ -432,12 +734,14 @@ Goal 执行结果： done
 > 用 `/goal list` 能看到全部 session_id（含各自的 round / updated_at），
 > 再逐个 `/goal resume <sid>` 恢复即可，不会因为只显示一个而"看起来丢了"。
 
-### 4. 查看 / 清理状态
+### 4. 查看 / 清理状态 / 修订
 
 ```
 /goal status    # 查看当前 session 的 goal 状态（轮次、compact 次数、最后判定）
 /goal list      # 列出所有可恢复的 goal 任务（跨 session，可能不止一个）
 /goal cancel    # 清理当前 session 的 goal 状态记录（不会中断正在运行的循环）
+/goal revise [sid]  # 基于已冻结的目标（以及上次终止时的重规划提议，若有）重新协商，
+                     # 详见上方"Goal 重规划提议"一节
 ```
 
 ---
@@ -537,7 +841,8 @@ goal_review`）注册进 [`RoleAgentDispatcher`](role-agents-guide.md#内建判�
 |--------|----------|------|
 | `max_rounds` | 外层循环轮次达到上限 | 终止，状态 `max_rounds_exhausted`，汇报最后一轮反馈 |
 | `max_total_compacts` | compact 次数达到上限 | 终止，避免"跑几轮就 compact 一次"的压缩风暴 |
-| 连续判定无实质进展 | 连续 N 轮被判定为"没有实质进展"（`progress_judge_mode="llm"` 时由 GoalJudge 语义判断；`"text_similarity"` 时按反馈文本相似度 ≥ 阈值） | 先花一次"卡住恢复额度"（`max_stuck_recoveries`）压缩历史+提示换思路（含已尝试路径清单），继续跑；额度耗尽后再次卡住才终止，状态 `stuck`，汇报"卡在同一个问题上"，并沉淀为 lesson（见上方"卡住恢复"/"失败经验沉淀"两节） |
+| 连续判定无实质进展 | 连续 N 轮被判定为"没有实质进展"（`progress_judge_mode="llm"` 时由 GoalJudge 语义判断；`"text_similarity"` 时按反馈文本相似度 ≥ 阈值） | 先花一次"卡住恢复额度"（`max_stuck_recoveries`）压缩历史+提示换思路（含 dead-end 清单，见"卡住恢复"一节），继续跑；额度耗尽后再次卡住才终止，状态 `stuck`，汇报"卡在同一个问题上"，并沉淀为 lesson（见上方"卡住恢复"/"失败经验沉淀"两节） |
+| 伪进展趋势（`pseudo_progress_detection_enabled`，默认开启） | 最近 `pseudo_progress_window` 轮进展分数呈"平缓但非零"趋势，且没有出现过明显高分 | 触发和上一行同等级别的恢复流程，共享同一份 `max_stuck_recoveries` 额度，终止时文案会区分"高度相似"还是"长期平缓疑似伪进展" |
 | `hit_max_turns` | 单次 `run_turn` 撞到 `cfg.max_turns` | 不终止，显式 compact 后重跑本步（不计入轮次预算） |
 
 所有安全阀触发时都会**如实汇报**已尝试的轮次、compact 次数、最后一次反馈，
@@ -580,13 +885,26 @@ goal_review`）注册进 [`RoleAgentDispatcher`](role-agents-guide.md#内建判�
   "recent_progress_reasons": [
     {"round": 6, "progress": "SAME_APPROACH_NO_GAIN", "reason": "..."},
     {"round": 7, "progress": "SUBSTANTIVE_ADVANCE", "reason": "..."}
-  ]
+  ],
+  "dead_ends": [
+    "直接改配置文件，报错信息没有变化",
+    "加了重试逻辑，仍然是同一个断言失败"
+  ],
+  "last_passed_count": 1,
+  "progress_scores": [0.0, 1.0, 0.3, -0.5],
+  "replan_proposal": {
+    "suggested_split": ["先实现子功能A", "再实现子功能B"],
+    "suggested_criteria_changes": ["把标准3放宽为覆盖80%场景即可"],
+    "reason": "原验收标准依赖了一个不存在的前提"
+  }
 }
 ```
 
-`criteria_status` / `recent_progress_reasons` 分别对应改造项三/一二，仅在
-对应功能开启且 GoalJudge 成功输出扩展字段时才会被填充，功能关闭或解析失败
-时保持空列表，不影响其余状态的落盘/恢复。
+`criteria_status` / `recent_progress_reasons` 分别对应改造项三/一二；
+`dead_ends`（§1.2）/ `last_passed_count`+`progress_scores`（§3.1）/
+`replan_proposal`（§5）是本轮新增字段。以上字段均仅在对应功能开启且
+GoalJudge 成功输出扩展字段时才会被填充，功能关闭或解析失败时保持空
+列表/空字典，不影响其余状态的落盘/恢复。
 
 **写入时机**（只在轮次边界写，不在轮次内部频繁写）：
 
@@ -678,10 +996,10 @@ class GoalStepExecutor(ABC):
 | `goal_mode/spec.py` | `GoalSpec` 数据结构 + `GoalSpecBuilder`（自然语言→结构化验收标准，多轮修订；`build_from_history()` 从当前 session 历史归纳目标） |
 | `goal_mode/executor.py` | `GoalStepExecutor` 接口 + `CoarseStepExecutor` |
 | `goal_mode/state.py` | `GoalState` + `GoalStateStore`（原子落盘/恢复）+ `find_resumable_session` / `list_resumable_sessions`（全量列出，供 `/goal list`）/ `scan_goal_states`（诊断用） |
-| `goal_mode/runner.py` | `GoalRunner` 外层驱动循环 |
+| `goal_mode/runner.py` | `GoalRunner` 外层驱动循环；`render_replan_proposal()` 模块级函数（§5，`GoalRunner`/CLI 共用） |
 | `role_agents/goal_judge.py` | GoalJudge：`build_goal_judge_prompt` / `run_goal_judge` |
 | `role_agents/feedback.py` | `extract_goal_status()`，`RoleFeedback.goal_status` 字段 |
-| `cli/commands/goal_mode_cmd.py` | `/goal` 系列 slash 命令（含 `/goal from-history`） |
+| `cli/commands/goal_mode_cmd.py` | `/goal` 系列 slash 命令（含 `/goal from-history`、`/goal revise`，见 §5） |
 | `config/models.py::GoalModeConfig` | 配置模型 |
 | `storage/paths.py::session_goal_state()` | `goal_state.json` 路径 |
 | `prompts/system/goal_judge.md` | GoalJudge 的 system prompt |
@@ -690,7 +1008,7 @@ class GoalStepExecutor(ABC):
 | `prompts/user/goal_spec_initial_request.md` | GoalSpecBuilder 首次生成验收标准的 user 消息模板 |
 | `prompts/user/goal_spec_revise_request.md` | GoalSpecBuilder 修订验收标准的 user 消息模板 |
 | `prompts/user/goal_context.md` | 目标+验收标准"钉住"消息的模板 |
-| `prompts/fragments/goal_mode.md` | `PRIOR_FEEDBACK_BLOCK`、`GOAL_JUDGE_EXTENDED_OUTPUT_INSTRUCTIONS`（改造项一/三）、`PRIOR_CHECKLIST_BLOCK`（改造项三）、`STUCK_RECOVERY_ATTEMPTED_PATHS_BLOCK`（改造项二）等细粒度文本片段 |
+| `prompts/fragments/goal_mode.md` | `PRIOR_FEEDBACK_BLOCK`、`GOAL_JUDGE_EXTENDED_OUTPUT_INSTRUCTIONS`（改造项一/三）、`PRIOR_CHECKLIST_BLOCK`（改造项三）、`STUCK_RECOVERY_ATTEMPTED_PATHS_BLOCK`（改造项二/§1.2）、`REPLAN_PROPOSAL_REQUEST_BLOCK`（§5）等细粒度文本片段 |
 
 所有发给模型的 prompt（system/user）都通过 `mini_agent.prompts.pm`（`PromptManager`）
 统一加载渲染，不在 Python 代码里硬编码字符串——这是项目的统一约定，参见
