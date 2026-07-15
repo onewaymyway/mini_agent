@@ -39,6 +39,7 @@ def handle_goal_cmd(args: list[str], agent) -> None:
             "  /goal <目标文本>     开始一个新目标\n"
             "  /goal from-history   根据当前 session 历史自动归纳目标并开始协商\n"
             "  /goal resume [sid]  恢复未完成的目标\n"
+            "  /goal revise [sid]  基于已冻结的目标（以及上次终止时的重规划提议，若有）重新协商\n"
             "  /goal list          列出所有可恢复的目标（可能不止一个）\n"
             "  /goal status        查看当前 goal 状态\n"
             "  /goal cancel        清理当前 session 的 goal 状态记录"
@@ -48,6 +49,9 @@ def handle_goal_cmd(args: list[str], agent) -> None:
     sub = args[0].lower()
     if sub == "resume":
         _handle_resume(args[1:], agent)
+        return
+    if sub == "revise":
+        _handle_revise(args[1:], agent)
         return
     if sub == "status":
         _handle_status(agent)
@@ -321,6 +325,73 @@ def _handle_resume(args: list[str], agent) -> None:
 
     R.console.print(f"\n[bold]Goal 执行结果：[/bold] {result.status}")
     R.console.print(result.final_report)
+
+
+def _handle_revise(args: list[str], agent) -> None:
+    """[goal_mode_stuck_compact_plan.md §5] `/goal revise [sid]`：基于一个
+    已经冻结过的 GoalSpec（不要求 status==running——stuck/max_rounds_exhausted
+    终止的目标也可以修订）重新走一遍协商子对话，用户 /confirm 之后重新开始
+    执行。
+
+    如果对应 session 落盘的 GoalState 里带有非空 replan_proposal（"confirm"
+    档位下 agent 在最后一次卡住恢复机会提出的重规划建议），会先用它作为
+    起点调用一次 `GoalSpecBuilder.revise()` 生成一份新草案再进入协商循环——
+    用户只需要"确认/继续调整/拒绝"，不需要凭记忆重新组织语言描述问题。
+    没有提议时和直接对旧 spec 手动输入修改意见没有区别，进入协商循环后
+    用户自己输入反馈即可。
+    """
+    from mini_agent.goal_mode.state import GoalStateStore, find_resumable_session
+    from mini_agent.goal_mode.spec import GoalSpec, GoalSpecBuilder
+    from mini_agent.goal_mode.runner import render_replan_proposal
+    from mini_agent.storage.paths import AgentPaths
+
+    project_root = agent.cfg.project_root
+    sid = args[0] if args else (
+        agent.session_id or find_resumable_session(project_root, from_session_id=agent.session_id)
+    )
+    if not sid:
+        R.print_error("没有找到可修订的 goal 状态记录，请指定 session id：/goal revise <session_id>")
+        return
+
+    paths = AgentPaths(project_root=project_root)
+    store = GoalStateStore(paths, sid)
+    state = store.load()
+    if state is None:
+        R.print_error(f"session {sid} 的 goal_state.json 不存在或已损坏，无法修订。")
+        return
+    if not state.goal_spec:
+        R.print_error(f"session {sid} 没有已冻结的 goal_spec，无法修订。")
+        return
+
+    spec = GoalSpec.from_dict(state.goal_spec)
+    spec.confirmed = False  # 重新进入协商，须重新走一遍 /confirm
+    builder = GoalSpecBuilder(agent.cfg)
+
+    if state.replan_proposal:
+        proposal_text = render_replan_proposal(state.replan_proposal)
+        R.console.print("[bold]— 上次终止时 Agent 提出的重规划提议 —[/bold]")
+        R.console.print(proposal_text)
+        R.print_info("[Goal 模式] 正在基于以上提议生成新草案…")
+        try:
+            spec = builder.revise(spec, proposal_text)
+        except Exception as e:
+            R.print_error(f"基于提议生成新草案失败：{e}，将展示原草案供你手动修改。")
+            spec = GoalSpec.from_dict(state.goal_spec)
+            spec.confirmed = False
+
+    new_spec = _negotiate_loop(builder, spec, agent)
+    if new_spec is None:
+        R.print_info("[Goal 模式] 已放弃本次修订。")
+        return
+
+    if agent.session_id != sid:
+        try:
+            agent.load_session(sid)
+        except Exception as e:
+            R.print_error(f"加载 session {sid} 历史失败：{e}")
+            return
+
+    _run_goal(agent, new_spec)
 
 
 def _handle_status(agent) -> None:

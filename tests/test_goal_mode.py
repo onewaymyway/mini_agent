@@ -640,6 +640,9 @@ class _FakeGoalModeCfg:
         self.proactive_compact_enabled = kwargs.get("proactive_compact_enabled", False)
         self.exploring_compact_interval = kwargs.get("exploring_compact_interval", 2)
         self.phase_convergence_window = kwargs.get("phase_convergence_window", 3)
+        self.replan_proposal_mode = kwargs.get("replan_proposal_mode", "off")
+        self.spec_builder_model = None
+        self.spec_builder_provider = None
 
 
 class _FakeCfg:
@@ -1865,3 +1868,146 @@ def test_goal_runner_proactive_compact_disabled_matches_baseline_behavior(monkey
 
     assert result.status == "done"
     assert result.rounds_used == 0
+
+
+# ── §5 Goal 重规划提议 ───────────────────────────────────────────────────
+
+_REPLAN_BLOCK = (
+    "已经尝试了好几种办法，但是都卡在同一个地方。\n"
+    "```replan_proposal\n"
+    '{"suggested_split": ["先实现子功能A", "再实现子功能B"], '
+    '"suggested_criteria_changes": ["把标准1放宽为覆盖80%场景即可"], '
+    '"reason": "原验收标准依赖了一个不存在的前提"}\n'
+    "```\n"
+)
+
+
+def test_replan_proposal_off_by_default_no_hint_no_parse(monkeypatch, tmp_path):
+    """默认 replan_proposal_mode="off" 时，即使 agent 输出里恰好带了一个
+    ```replan_proposal 代码块，也不应该被解析/展示——功能完全不生效。"""
+    agent = FakeAgent(outputs=["attempt 1", _REPLAN_BLOCK, "attempt 3"])
+    cfg = _FakeCfg(tmp_path, max_rounds=20, consecutive_same_feedback_limit=2, max_stuck_recoveries=1)
+    spec = _confirmed_spec()
+
+    same_feedback = "GOAL_STATUS: CONTINUE\n还是同样的问题"
+    monkeypatch.setattr(
+        "mini_agent.role_agents.goal_judge.run_goal_judge", lambda **kw: same_feedback,
+    )
+
+    runner = GoalRunner(agent=agent, cfg=cfg, goal_spec=spec)
+    result = runner.run()
+
+    assert result.status == "stuck"
+    assert result.replan_proposal is None
+    assert runner._awaiting_replan_proposal is False
+
+
+def test_replan_proposal_confirm_mode_collects_but_does_not_apply(monkeypatch, tmp_path):
+    """"confirm" 档位：最后一次恢复机会里请求提议、解析到非空提议后，
+    只展示不自动改写 self._spec，goal_spec 应该仍然是原始版本。"""
+    agent = FakeAgent(outputs=["attempt 1", "attempt 2", _REPLAN_BLOCK])
+    cfg = _FakeCfg(
+        tmp_path, max_rounds=20, consecutive_same_feedback_limit=2,
+        max_stuck_recoveries=1, replan_proposal_mode="confirm",
+    )
+    spec = _confirmed_spec()
+
+    same_feedback = "GOAL_STATUS: CONTINUE\n还是同样的问题"
+    monkeypatch.setattr(
+        "mini_agent.role_agents.goal_judge.run_goal_judge", lambda **kw: same_feedback,
+    )
+
+    runner = GoalRunner(agent=agent, cfg=cfg, goal_spec=spec)
+    result = runner.run()
+
+    assert result.status == "stuck"
+    assert result.replan_proposal is not None
+    assert result.replan_proposal["reason"] == "原验收标准依赖了一个不存在的前提"
+    assert result.goal_spec.goal_text == "do the thing"  # 未被自动改写
+    assert result.goal_spec.version == 1
+
+
+def test_replan_proposal_auto_mode_applies_and_continues(monkeypatch, tmp_path):
+    """"auto" 档位：解析到非空提议后自动调用 revise() 生成新版本并
+    confirmed=True，替换 self._spec 后继续跑（不终止），最终能正常 DONE。"""
+    agent = FakeAgent(outputs=["attempt 1", "attempt 2", _REPLAN_BLOCK, "attempt after replan"])
+    cfg = _FakeCfg(
+        tmp_path, max_rounds=20, consecutive_same_feedback_limit=2,
+        max_stuck_recoveries=1, replan_proposal_mode="auto",
+    )
+    spec = _confirmed_spec()
+
+    same_feedback = "GOAL_STATUS: CONTINUE\n还是同样的问题"
+    responses = iter([same_feedback, same_feedback, "GOAL_STATUS: DONE\n全部通过"])
+    monkeypatch.setattr(
+        "mini_agent.role_agents.goal_judge.run_goal_judge", lambda **kw: next(responses),
+    )
+
+    def fake_revise(self, prior_spec, user_feedback):
+        return GoalSpec(
+            goal_text="拆分后的新目标",
+            acceptance_criteria=["先完成子功能A"],
+            version=prior_spec.version + 1,
+        )
+
+    monkeypatch.setattr(
+        "mini_agent.goal_mode.spec.GoalSpecBuilder.revise", fake_revise,
+    )
+
+    runner = GoalRunner(agent=agent, cfg=cfg, goal_spec=spec)
+    result = runner.run()
+
+    assert result.status == "done"
+    assert result.replan_proposal is None  # 已自动应用，不再展示为待确认
+    assert result.goal_spec.goal_text == "拆分后的新目标"
+    assert result.goal_spec.version == 2
+    assert result.goal_spec.confirmed is True
+    # 第三个输出（含 replan block）不会被送去 judge 评审（自动应用后直接
+    # continue），所以 judge 总共只被调用 3 次：round1 CONTINUE、round2
+    # CONTINUE(触发恢复)、以及应用新 spec 之后 round4(agent output "attempt
+    # after replan") 才是 DONE。
+    assert agent._call_idx == 4
+
+
+def test_replan_proposal_auto_mode_applies_only_once_per_run(monkeypatch, tmp_path):
+    """即使反复卡住、反复给出提议，"auto" 档位每次 run() 也只允许自动应用
+    一次重规划，不会变成"每次卡住就自动放宽标准"的隐蔽漏洞。"""
+    agent = FakeAgent(outputs=[
+        "attempt 1", "attempt 2", _REPLAN_BLOCK,     # 触发第一次自动重规划
+        "attempt 4", "attempt 5", _REPLAN_BLOCK,     # 再次卡住，但不应再自动应用
+    ])
+    cfg = _FakeCfg(
+        tmp_path, max_rounds=20, consecutive_same_feedback_limit=2,
+        max_stuck_recoveries=1, replan_proposal_mode="auto",
+    )
+    spec = _confirmed_spec()
+
+    same_feedback = "GOAL_STATUS: CONTINUE\n还是同样的问题"
+    monkeypatch.setattr(
+        "mini_agent.role_agents.goal_judge.run_goal_judge", lambda **kw: same_feedback,
+    )
+
+    def fake_revise(self, prior_spec, user_feedback):
+        return GoalSpec(
+            goal_text="拆分后的新目标",
+            acceptance_criteria=["先完成子功能A"],
+            version=prior_spec.version + 1,
+        )
+
+    monkeypatch.setattr(
+        "mini_agent.goal_mode.spec.GoalSpecBuilder.revise", fake_revise,
+    )
+
+    runner = GoalRunner(agent=agent, cfg=cfg, goal_spec=spec)
+    result = runner.run()
+
+    assert runner._replan_auto_applied is True
+    # 第二次同样触发了"最后一次恢复机会"，也解析到了提议，但因为
+    # _replan_auto_applied 已经是 True，不会再自动应用——最终仍然是 stuck
+    # 终止（且展示的 replan_proposal 是第二次收集到的那份，因为"confirm"
+    # 逻辑与"auto 已用尽"是独立的：mode=="auto" 时 _finish() 不展示，只有
+    # "confirm" 档位才展示，这里保持 result.replan_proposal 存在但不会有
+    # 第二次自动应用）。
+    assert result.status == "stuck"
+    assert result.goal_spec.goal_text == "拆分后的新目标"  # 仍是第一次应用后的版本
+    assert result.goal_spec.version == 2

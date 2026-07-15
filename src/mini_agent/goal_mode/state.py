@@ -72,6 +72,14 @@ class GoalState:
     last_passed_count: int = 0
     progress_scores: list = field(default_factory=list)
 
+    # ── [goal_mode_stuck_compact_plan.md §5] Goal 重规划提议：仅在
+    # cfg.goal_mode.replan_proposal_mode != "off" 且主 Agent 在最后一次卡住
+    # 恢复机会里给出过非空提议时才非空，格式为
+    # {"suggested_split": [...], "suggested_criteria_changes": [...],
+    # "reason": str}。落盘后即使进程重启，`/goal revise` 也能读到上次终止时
+    # 的提议作为修订起点，不需要用户凭记忆重新描述问题。
+    replan_proposal: dict = field(default_factory=dict)
+
     def to_dict(self) -> dict:
         return asdict(self)
 
@@ -95,6 +103,7 @@ class GoalState:
             dead_ends=list(d.get("dead_ends", []) or []),
             last_passed_count=int(d.get("last_passed_count", 0)),
             progress_scores=list(d.get("progress_scores", []) or []),
+            replan_proposal=dict(d.get("replan_proposal", {}) or {}),
         )
 
 

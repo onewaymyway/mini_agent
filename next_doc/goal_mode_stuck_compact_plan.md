@@ -13,8 +13,11 @@
 > - §2.1 过程判断 / 结果判断分离（process_flags）—— **已实现**
 > - §3.2 伪进展趋势识别（ProgressTracker）—— **已实现**
 > - §4 探索/收敛双模式主动 compact —— **已实现**（本轮新增，默认关闭）
+> - §5 Goal 重规划提议 —— **已实现**（本轮新增，默认关闭；新增
+>   `cfg.goal_mode.replan_proposal_mode` 三态开关：`off`/`confirm`/`auto`，
+>   见本节"实现记录"）
 >
-> 尚未实现：§5（Goal 重规划提议）。保留原方案文本，可作为后续迭代依据。
+> 五节全部完成。
 
 ---
 
@@ -602,6 +605,71 @@ JSON 协议思路，让判官在最后一次恢复窗口的输出里增加一个
 - 这个提议动作**只在即将耗尽恢复额度时触发一次**，不应该让 agent 在每一轮都尝试"申请改标准"——
   否则会变成一个更隐蔽的"说服判官放宽标准"的漏洞,这是要严格避免的。
 
+#### 实现记录（本次改造）
+
+与方案的核心差异：没有让 GoalJudge 在结构化判定 JSON 里带 `replan_proposal` 字段，而是让主
+Agent 自己在本轮回复末尾用一个独立的 ` ```replan_proposal ` 代码块给出（`role_agents/verdict.py`
+的判官 JSON schema 保持不变，改动面更小；判官职责仍然只是"核查目标达成情况"，不掺入"是否该
+改目标"这个正交问题）。落地方式：
+
+- 新增 `cfg.goal_mode.replan_proposal_mode`（`config/models.py`），三态字符串开关（这是本次改造
+  按需求新增的"可以控制实际行为"的参数）：
+  - `"off"`（默认）：完全不开启——不请求、不解析、不展示，行为与升级前完全一致。
+  - `"confirm"`：需要人工接入确认——解析到非空提议后只展示给用户，不自动改写 `GoalSpec`，
+    用户可执行新增的 `/goal revise` 命令采纳。
+  - `"auto"`：自动应用——解析到非空提议后立即调用 `GoalSpecBuilder.revise()` 生成新版本并自动
+    `confirmed=True`，替换 `self._spec` 后继续跑（不终止本次 `run()`）。
+- `prompts/fragments/goal_mode.md` 新增 `REPLAN_PROPOSAL_REQUEST_BLOCK` 片段，只有
+  `replan_proposal_mode != "off"` 且 `_try_stuck_recovery()` 判定为"最后一次恢复机会"
+  （`recovery_index >= max_stuck_recoveries`）时才会拼进卡住恢复提示，且只拼一次
+  （`self._awaiting_replan_proposal` 标记下一轮消费后立即复位）。
+- `goal_mode/runner.py`：
+  - 新增模块级 `render_replan_proposal(proposal)`（纯函数，`GoalRunner` 和
+    `cli/commands/goal_mode_cmd.py` 共用同一份渲染逻辑）与 `_extract_replan_proposal()`
+    （从主 Agent 输出里正则提取 ` ```replan_proposal ` 代码块，`json_repair` 解析，空壳提议
+    返回 `None`，不会把"格式对但没有实质建议"的空块当成一份真提议）。
+  - `GoalRunResult` 新增 `replan_proposal: Optional[dict]` 字段。
+  - `run()` 主循环里，`executor.execute()` 返回后立即（早于 `hit_max_turns` / judge 分支）
+    消费一次 `_awaiting_replan_proposal`：解析成功则记录 `self._replan_proposal`；
+    `"auto"` 档位且 `self._replan_auto_applied` 尚为 `False` 时调用
+    `_try_auto_apply_replan()`，成功则直接 `continue`（跳过本轮 judge 评审，用新目标重新开始
+    下一轮，不消耗额外的"卡住终止"）。
+  - `_try_auto_apply_replan()`：调用 `GoalSpecBuilder(self._cfg).revise(self._spec,
+    render_replan_proposal(proposal))` 生成新版本并自动确认；新版本没有任何验收标准时放弃
+    应用（保留原 spec）；成功后重置 `StuckDetector`、`criteria_status`、`dead_ends`、
+    `progress_scores`、`ProgressTracker`、探索/收敛阶段等所有"针对旧标准"的旁路状态（目标已经
+    变了，继续复用旧的卡住/进展观察窗口没有意义），并把 `self._last_feedback` 改成一句提示
+    agent"目标已更新，基于新目标重新开始"的通用文本（避免下一轮 prompt 拼接一段指向已经不存在
+    的旧标准的过期反馈）；`self._replan_auto_applied` 置位后**同一次 `run()` 内不会再自动应用
+    第二次**，即使之后又触发了新的"最后一次恢复机会"提议收集（仍然会更新
+    `self._replan_proposal` 供 `"confirm"`/最终展示使用，但不会再改写 `self._spec`）。
+  - `_finish()`：非 `"done"` 终止时，若 `self._replan_proposal` 非空且
+    `replan_proposal_mode == "confirm"`，在终止报告后追加打印提议内容 + 提示可执行
+    `/goal revise` 采纳；`GoalRunResult.replan_proposal` 始终携带最近一次收集到的提议
+    （`"auto"` 应用成功后已被清空为 `None`）。
+- `goal_mode/state.py`：`GoalState` 新增 `replan_proposal: dict` 字段，随其余状态一起落盘/
+  恢复——即使进程重启，`/goal revise` 也能读到上次终止时的提议。
+- `cli/commands/goal_mode_cmd.py` 新增 `/goal revise [sid]` 子命令：加载目标 session 已冻结的
+  `GoalSpec`，如果落盘状态带有非空 `replan_proposal`，先用 `render_replan_proposal()` 渲染展示，
+  再调用一次 `GoalSpecBuilder.revise(spec, proposal_text)` 生成新草案作为协商起点（用户只需要
+  "确认/继续调整/拒绝"，不需要凭记忆重新描述问题），否则直接进入原有的 `_negotiate_loop()`
+  协商子对话，用户 `/confirm` 后调用 `_run_goal()` 重新开始执行。
+- 关键约束落实情况：
+  - `replan_proposal` 全程只是数据——除 `"auto"` 档位这一条显式、受
+    `replan_proposal_mode` 开关控制的路径外，没有任何代码路径允许它绕过用户确认直接改写
+    `self._spec`；`"confirm"`（以及 `/goal revise` 里的手动流程）全程只展示、不改写。
+  - 提议请求**只在即将耗尽恢复额度的最后一次机会触发一次**（`_awaiting_replan_proposal`
+    单次标记 + `recovery_index >= max_stuck_recoveries` 判定），不会让 agent 每轮都申请改标准；
+    `"auto"` 档位额外用 `self._replan_auto_applied` 保证每次 `run()` 最多真正生效一次，
+    避免变成"反复卡住→反复自动放宽标准"的隐蔽漏洞。
+- 新增测试（`tests/test_goal_mode.py`）：`test_replan_proposal_off_by_default_no_hint_no_parse`
+  （默认关闭时即使输出里恰好带了提议代码块也完全不生效）、
+  `test_replan_proposal_confirm_mode_collects_but_does_not_apply`（"confirm" 档位收集但不改写
+  `goal_spec`）、`test_replan_proposal_auto_mode_applies_and_continues`（"auto" 档位自动应用后
+  跳过当轮 judge、用新目标继续跑直至 DONE）、
+  `test_replan_proposal_auto_mode_applies_only_once_per_run`（同一次 run() 里第二次提议不会被
+  再次自动应用）。
+
 ---
 
 ## 优先级建议（仅限本次讨论的五个方向内部排序）
@@ -615,4 +683,4 @@ JSON 协议思路，让判官在最后一次恢复窗口的输出里增加一个
 | P2 | §2.1 过程判断 / 结果判断分离（process_flags） | 需要改判官 prompt + 新状态语义,改动面稍大,但风险收益都高,建议紧随 P1 | ✅ 已实现（复用 DONE→CONTINUE 降级，未新增状态） |
 | P2 | §3.2 伪进展趋势识别（ProgressTracker） | 依赖 §3.1 先有分数化的进展信号 | ✅ 已实现 |
 | P3 | §4 探索/收敛双模式主动 compact | 新机制，默认关闭，建议在前面几项稳定后再引入，避免同时改动太多变量难以定位问题 | ✅ 已实现（默认关闭） |
-| P3 | §5 Goal 重规划提议 | 收益明确但涉及新交互流程（CLI 展示 + `/goal revise` 联动），建议放在最后，且严格限制"只能在耗尽额度前提议一次" | 未实现 |
+| P3 | §5 Goal 重规划提议 | 收益明确但涉及新交互流程（CLI 展示 + `/goal revise` 联动），建议放在最后，且严格限制"只能在耗尽额度前提议一次" | ✅ 已实现（默认 `off`，`confirm`/`auto` 两档可选） |

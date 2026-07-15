@@ -108,3 +108,22 @@ STUCK_RECOVERY_ATTEMPTED_PATHS_BLOCK: |
   {attempted_paths_lines}
   请基于以上信息，明确选择一个不同于以上的新方向，并说明为什么这次会不同，
   而不是换个说法继续同一个思路。
+
+# [goal_mode_stuck_compact_plan.md §5] Goal 重规划提议：只在"即将耗尽卡住
+# 恢复额度的最后一次机会"这一轮拼进提示，只出现一次，不是每轮都问。
+# 只是征求提议，不代表验收标准或目标会被自动放宽——是否采纳由
+# cfg.goal_mode.replan_proposal_mode 决定（"confirm" 需要用户后续手动
+# /goal revise 采纳；"auto" 会在解析到非空提议后自动应用一次）。
+REPLAN_PROPOSAL_REQUEST_BLOCK: |
+  这是本次自动恢复的最后一次机会。如果你认为反复卡住的根本原因是目标定义
+  本身有问题（比如某条验收标准依赖了不存在的前提、目标范围过大难以一次性
+  完成、验证方式设定不合理等），请在本轮回复的**末尾**额外输出一个
+  ```replan_proposal 代码块（只有真的认为目标定义有问题时才输出，如果你
+  认为只是需要换个方法继续尝试，不要输出这个块），格式如下：
+
+  ```replan_proposal
+  {{"suggested_split": ["子目标1", "子目标2"], "suggested_criteria_changes": ["建议把标准3放宽为...，理由：..."], "reason": "反复卡住的根本原因简述"}}
+  ```
+
+  这只是一份供参考的提议，不会自动生效改写验收标准——请继续按原目标正常
+  完成本轮任务，提议只是附加在回复末尾的额外信息。

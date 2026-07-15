@@ -623,6 +623,32 @@ class GoalModeConfig:
     exploring_compact_interval: int = 2     # 探索阶段每 N 轮主动触发一次轻量 compact
     phase_convergence_window: int = 3       # 连续 N 轮正向进展分数才切换到 converging
 
+    # ── [goal_mode_stuck_compact_plan.md §5] Goal 重规划提议：多次卡住恢复即将
+    # 耗尽额度的最后一次机会时，额外要求主 Agent 在本轮输出中给出一份"重规划
+    # 提议"（建议如何拆分目标为更小的子目标，或建议修改/放宽哪条验收标准及
+    # 理由），用一个专门的 ```replan_proposal 代码块标记，供 GoalRunner 解析。
+    # 三档取值，控制这份提议解析出来之后的实际处理方式：
+    #   "off"     —— 默认。完全不开启本功能：不会在提示里额外要求 agent 输出
+    #                提议，也不会解析/展示任何 replan_proposal，行为与升级前
+    #                完全一致。
+    #   "confirm" —— 需要人工确认：解析到非空提议后不会自动修改 GoalSpec，
+    #                只会在最终 stuck/max_rounds_exhausted 终止时把提议展示
+    #                给用户，由用户决定是否执行 `/goal revise` 采纳（不采纳
+    #                就当作没有发生过）。这是比 "auto" 更保守、建议优先使用
+    #                的档位。
+    #   "auto"    —— 自动应用：解析到非空提议后立即调用
+    #                GoalSpecBuilder.revise() 生成新版本 GoalSpec 并自动
+    #                confirmed=True，替换当前目标后继续执行（不终止本次
+    #                run()），全程不需要人工介入。
+    #
+    # 关键约束（无论哪个档位都成立）：这份提议**只在即将耗尽恢复额度的最后
+    # 一次机会触发一次**，不会让 agent 在每一轮都尝试"申请改标准"——"auto"
+    # 档位额外保证每次 goal 执行最多只自动应用一次重规划（见 runner.py
+    # `_replan_auto_applied`），避免变成一个更隐蔽的"说服系统放宽标准"的漏洞。
+    # `self._spec` 本身除 "auto" 档位这一条路径外，没有任何代码路径允许被
+    # agent 的输出直接改写。
+    replan_proposal_mode: str = "off"
+
 
 @dataclass
 class TurnJudgeConfig:

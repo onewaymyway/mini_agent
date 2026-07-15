@@ -32,6 +32,7 @@ GoalRunner 只需要兜底处理三种"常规触发器没接住"的情况：
 
 from __future__ import annotations
 
+import re
 import time
 from dataclasses import dataclass, field
 from typing import Optional, TYPE_CHECKING
@@ -48,6 +49,39 @@ if TYPE_CHECKING:
     from mini_agent.config import AppConfig
 
 
+# [goal_mode_stuck_compact_plan.md §5] 主 Agent 提出重规划提议时约定用一个
+# ```replan_proposal 代码块包裹（见 prompts/fragments/goal_mode.md
+# REPLAN_PROPOSAL_REQUEST_BLOCK），block 内是一段 JSON，容忍围栏内有多余空白。
+_REPLAN_PROPOSAL_BLOCK_RE = re.compile(r"```replan_proposal\s*(\{.*?\})\s*```", re.DOTALL)
+
+
+def render_replan_proposal(proposal: dict) -> str:
+    """把 replan_proposal 字典渲染成人类可读文本，供终止报告 / CLI `/goal
+    revise` 展示，以及"auto"档位自动应用时作为 GoalSpecBuilder.revise() 的
+    user_feedback 起点使用。是模块级函数（不依赖 GoalRunner 实例），方便
+    goal_mode_cmd.py 在独立于本次 run() 的场景（比如恢复后的 `/goal
+    revise`）里复用同一份渲染逻辑。"""
+    if not proposal:
+        return ""
+    lines = ["Agent 在多次卡住恢复后提出了以下重规划建议："]
+    split = proposal.get("suggested_split")
+    if split:
+        lines.append("建议拆分为子目标：")
+        for s in (split if isinstance(split, list) else [split]):
+            lines.append(f"  - {s}")
+    changes = proposal.get("suggested_criteria_changes")
+    if changes:
+        lines.append("建议调整验收标准：")
+        for c in (changes if isinstance(changes, list) else [changes]):
+            lines.append(f"  - {c}")
+    reason = proposal.get("reason")
+    if reason:
+        lines.append(f"理由：{reason}")
+    if len(lines) == 1:
+        lines.append("（提议内容为空，仅有一份不完整的标记）")
+    return "\n".join(lines)
+
+
 @dataclass
 class GoalRunResult:
     """GoalRunner.run() 的最终结果。"""
@@ -56,6 +90,12 @@ class GoalRunResult:
     compacts_done: int
     final_report: str
     goal_spec: GoalSpec
+    # [goal_mode_stuck_compact_plan.md §5] 若 cfg.goal_mode.replan_proposal_mode
+    # != "off" 且本次运行中 agent 提出过重规划提议，这里携带最近一次的提议
+    # 字典（{"suggested_split": [...], "suggested_criteria_changes": [...],
+    # "reason": str}）；"auto" 档位已经自动应用过的提议不会再出现在这里
+    # （应用后会被清空）。其余情况恒为 None。
+    replan_proposal: Optional[dict] = None
 
 
 class GoalRunner:
@@ -159,6 +199,18 @@ class GoalRunner:
         self._consecutive_positive_rounds: int = 0
         self._last_proactive_compact_round: int = 0
 
+        # [goal_mode_stuck_compact_plan.md §5] Goal 重规划提议状态。
+        # _awaiting_replan_proposal：本轮是否刚刚在提示里请求过提议（只在
+        # "最后一次恢复机会"这一轮为 True，下一步 executor 产出后立即消费
+        # 并复位，不会跨轮持续等待）。
+        # _replan_proposal：最近一次解析到的非空提议（"confirm" 档位下终止
+        # 时展示给用户；"auto" 档位自动应用后会被清空）。
+        # _replan_auto_applied：每次 run() 最多只允许自动应用一次重规划，
+        # 防止变成"每次卡住都自动放宽标准"的隐蔽漏洞。
+        self._awaiting_replan_proposal: bool = False
+        self._replan_proposal: Optional[dict] = None
+        self._replan_auto_applied: bool = False
+
         # 恢复态：从上一次中断处继续
         if resume_state is not None:
             self._round = resume_state.round
@@ -185,6 +237,8 @@ class GoalRunner:
                 # 避免恢复后立刻被判定为"已经到了该主动 compact 的轮次"，
                 # 把基准对齐到恢复时的轮次。
                 self._last_proactive_compact_round = self._round
+            if getattr(resume_state, "replan_proposal", None):
+                self._replan_proposal = dict(resume_state.replan_proposal)
         else:
             self._round = 0
             self._last_feedback = ""
@@ -206,6 +260,21 @@ class GoalRunner:
                 f"[GoalRunner] 第 {self._round + 1}/{max_rounds} 轮执行中…"
             )
             step = self._executor.execute(self._agent, prompt)
+
+            # [goal_mode_stuck_compact_plan.md §5] 如果上一轮的提示里刚刚
+            # 请求过重规划提议（只会发生在"最后一次恢复机会"那一轮），
+            # 立即从本轮输出里消费一次，不管有没有解析到，都复位等待标记，
+            # 保证"只在耗尽额度前提议一次"，不会跨轮持续询问。
+            if self._awaiting_replan_proposal:
+                self._awaiting_replan_proposal = False
+                proposal = self._extract_replan_proposal(step.output)
+                if proposal:
+                    self._replan_proposal = proposal
+                    R.print_info("[GoalRunner] 收到 Agent 提出的重规划提议。")
+                    replan_mode = getattr(self._gm_cfg, "replan_proposal_mode", "off")
+                    if replan_mode == "auto" and not self._replan_auto_applied:
+                        if self._try_auto_apply_replan(proposal):
+                            continue  # 已应用新目标并重新钉住上下文，直接进入下一轮
 
             # [兜底] agent.py 内部的 auto-compact（CompositeTrigger 命中，
             # 发生在本步 run_turn 执行过程中）可能已经把上一轮钉住的
@@ -688,6 +757,92 @@ class GoalRunner:
             attempted_paths_lines=attempted_paths_lines,
         )
 
+    # ── 内部：Goal 重规划提议（§5，默认关闭）────────────────────────────────
+
+    def _extract_replan_proposal(self, text: str) -> Optional[dict]:
+        """从主 Agent 本轮输出里解析 ```replan_proposal 代码块，解析失败或
+        内容为空壳（没有任何建议字段）时返回 None——不把"格式对但没有实质
+        建议"的空块当成一份真提议来展示/自动应用。"""
+        if not text:
+            return None
+        m = _REPLAN_PROPOSAL_BLOCK_RE.search(text)
+        if not m:
+            return None
+        try:
+            import json_repair
+            data = json_repair.loads(m.group(1))
+        except Exception:
+            return None
+        if not isinstance(data, dict):
+            return None
+        if not (
+            data.get("reason")
+            or data.get("suggested_split")
+            or data.get("suggested_criteria_changes")
+        ):
+            return None
+        return data
+
+    def _try_auto_apply_replan(self, proposal: dict) -> bool:
+        """[goal_mode_stuck_compact_plan.md §5] `replan_proposal_mode="auto"`
+        时，收到非空重规划提议后自动调用 `GoalSpecBuilder.revise()` 生成新版本
+        `GoalSpec` 并自动确认（`confirmed=True`），替换 `self._spec` 后继续
+        执行（不终止 `run()`）。
+
+        每次 `run()` 最多只允许自动应用一次（`self._replan_auto_applied`），
+        且只会在 `_try_stuck_recovery()` 判定"最后一次恢复机会"时才有机会
+        被调用——不会让 agent 每一轮都尝试"申请改标准"。
+
+        目标变了之后，之前累积的"卡住/进展"相关旁路状态都是针对旧标准的，
+        继续复用没有意义甚至会误导判断，全部重置，相当于用新目标重新开始
+        观察窗口（但不重置 `self._round` / `self._compacts_done` 等运行期
+        累计计数，这些仍然是同一次 `run()` 执行过程的一部分）。
+
+        失败（LLM 调用异常等）时静默保留原 spec 不变，只打印警告，不影响
+        正常的卡住终止/继续流程。
+        """
+        try:
+            from .spec import GoalSpecBuilder
+            feedback_text = render_replan_proposal(proposal)
+            builder = GoalSpecBuilder(self._cfg)
+            new_spec = builder.revise(self._spec, feedback_text)
+        except Exception as e:
+            R.print_warning(f"[GoalRunner] 自动应用重规划提议失败（保留原目标继续）：{e}")
+            return False
+
+        if not new_spec.acceptance_criteria:
+            R.print_warning("[GoalRunner] 重规划后的新版本没有任何验收标准，放弃自动应用，保留原目标继续。")
+            return False
+
+        new_spec.confirmed = True
+        R.print_success(f"[GoalRunner] 已自动采纳重规划提议，目标更新为第 {new_spec.version} 版：")
+        R.console.print(new_spec.render_summary_for_user())
+
+        self._spec = new_spec
+        self._replan_auto_applied = True
+        self._replan_proposal = None  # 已经应用，不再是"待用户确认"的提议
+
+        self._stuck_detector.reset()
+        self._criteria_status = [
+            {"index": i + 1, "text": c, "passed": False, "evidence": "", "last_updated_round": 0}
+            for i, c in enumerate(new_spec.acceptance_criteria)
+        ]
+        self._recent_progress_reasons = []
+        self._dead_ends = []
+        self._last_passed_count = 0
+        self._progress_scores = []
+        self._progress_tracker.reset()
+        self._phase = GoalPhase.EXPLORING
+        self._consecutive_positive_rounds = 0
+        # 上一轮反馈是针对旧验收标准给出的，目标已经变了，继续拼进下一轮
+        # prompt 会造成误导（"根据上一轮反馈继续推进"却引用着已经不存在的
+        # 标准），改成一句通用提示，让 agent 基于新目标重新开始。
+        self._last_feedback = "目标定义已根据你提出的重规划建议更新，请基于新的目标和验收标准重新开始尝试。"
+
+        self._pin_goal_context()
+        self._save_state(status="running")
+        return True
+
     # ── 内部：探索/收敛阶段 + 主动 compact（§4，默认关闭）──────────────────
 
     def _update_goal_phase(self, progress_info: Optional[dict]) -> None:
@@ -901,6 +1056,18 @@ class GoalRunner:
                     attempted_paths_lines=attempted_paths_lines,
                 )
 
+        # [goal_mode_stuck_compact_plan.md §5] 即将耗尽恢复额度的最后一次
+        # 机会：额外请求一份"重规划提议"，只在这一轮问一次（不是每次卡住恢复
+        # 都问），由 run() 在拿到本轮输出后立即消费一次
+        # （self._awaiting_replan_proposal）。cfg.goal_mode.replan_proposal_mode
+        # == "off"（默认）时完全跳过，不拼接任何额外提示、不解析任何输出，
+        # 行为与升级前完全一致。
+        replan_mode = getattr(self._gm_cfg, "replan_proposal_mode", "off")
+        if replan_mode != "off" and recovery_index >= self._gm_cfg.max_stuck_recoveries:
+            from mini_agent.prompts import pm
+            hint = hint + "\n\n" + pm.fragment("goal_mode", "REPLAN_PROPOSAL_REQUEST_BLOCK")
+            self._awaiting_replan_proposal = True
+
         self._agent._hist.append_raw_dict(make_goal_context(hint))
 
         self._save_state(status="running")
@@ -955,6 +1122,7 @@ class GoalRunner:
             dead_ends=list(self._dead_ends),
             last_passed_count=self._last_passed_count,
             progress_scores=list(self._progress_scores),
+            replan_proposal=dict(self._replan_proposal) if self._replan_proposal else {},
         )
         try:
             self._state_store.save(state)
@@ -976,6 +1144,19 @@ class GoalRunner:
             R.print_success(f"[GoalRunner] 目标已达成（共 {self._round} 轮）。")
         else:
             R.print_warning(f"[GoalRunner] 目标未达成（状态：{status}）：{report}")
+            # [goal_mode_stuck_compact_plan.md §5] "confirm" 档位下，如果本次
+            # 运行中收集到了非空的重规划提议，在终止时明确展示给用户（不只是
+            # 写进 memory），并提示可以通过 /goal revise 采纳——提议本身不会
+            # 自动生效改写 self._spec。"auto" 档位应用成功后
+            # self._replan_proposal 已被清空，不会重复展示。
+            if self._replan_proposal and getattr(self._gm_cfg, "replan_proposal_mode", "off") == "confirm":
+                R.console.print()
+                R.console.print("[bold]— Agent 提出的重规划提议（仅供参考，不会自动生效）—[/bold]")
+                R.console.print(render_replan_proposal(self._replan_proposal))
+                R.print_info(
+                    "如果认可以上建议，可执行 `/goal revise` 基于该提议重新协商目标"
+                    "（也可以在协商过程中输入自己的修改意见）。"
+                )
 
         return GoalRunResult(
             status=status,
@@ -983,6 +1164,7 @@ class GoalRunner:
             compacts_done=self._compacts_done,
             final_report=report,
             goal_spec=self._spec,
+            replan_proposal=self._replan_proposal,
         )
 
     def _write_failure_lesson(self, status: str, report: str) -> None:
