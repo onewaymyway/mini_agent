@@ -158,6 +158,19 @@ class CompressConfig:
                                         # 再决定要不要默认开启，避免误报打断正常对话
     decision_recall_gate_k: int = 5    # 门控命中时 wiki_shelf_search 的候选数量上限
 
+    # ── Compact 机制主动化改进计划（compact_mechanism_improvement_plan.md）──
+    # P0-A：goal_mode 卡住恢复 compact 时，把尚未通过的验收标准作为提示追加到
+    # compact_prompt，让摘要模型对相关内容保留更多细节。仅在 goal_mode 内生效，
+    # 对普通对话/无验收标准场景无影响。
+    goal_aware_weighting_enabled: bool = False
+
+    # P0-B：compact_with_skills()（默认策略，供 goal_mode 卡住恢复 / /compact /
+    # auto-compact 使用）压缩时顺带提取决策候选，入队交给巩固循环批量落盘。
+    # 与 LLMSummaryStrategy 已有的 extract_decisions 是同一套解析/落盘逻辑，
+    # 只是把触发点扩展到 compact_with_skills() 这条默认路径上，独立开关，
+    # 默认关闭，不影响 extract_decisions 原有行为。
+    decision_extraction_on_compact_with_skills_enabled: bool = False
+
     # ── SelectiveStrategy 专用 ───────────────────────────────────────────────
     # 各 _type 保留权重（0.0=最先丢弃，1.0=始终保留），None 使用内置默认
     selective_weights: dict = None

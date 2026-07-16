@@ -68,6 +68,56 @@ class CompactionMixin:
         except Exception:
             return ""
 
+    _DECISIONS_BLOCK_RE = _re.compile(
+        r"===DECISIONS_JSON===\s*(.*?)\s*===END_DECISIONS_JSON===",
+        _re.DOTALL,
+    )
+
+    def _extract_and_queue_decisions_from_compact_result(self, result: str) -> str:
+        """
+        [compact_mechanism_improvement_plan P0-B]
+        从 compact_with_skills() 的 LLM 输出里剥离追加在末尾的
+        ===DECISIONS_JSON===...===END_DECISIONS_JSON=== 块（若存在），
+        解析为 DecisionCandidate 列表并入队（复用 wiki/decision_writer.py 已有
+        的 pending 队列 + 巩固循环批量落盘，不新增落盘路径）。
+
+        任何解析/入队失败都不能影响 compact 主流程：失败时静默跳过，
+        返回值仍然是"剥离掉 JSON 块之后"的摘要文本（即使解析失败也要剥离，
+        避免这段格式指令泄漏进最终摘要）。
+        """
+        match = self._DECISIONS_BLOCK_RE.search(result)
+        if not match:
+            return result
+
+        cleaned = (result[: match.start()] + result[match.end():]).strip()
+
+        try:
+            import json
+            from mini_agent.history.decision_extraction import DecisionCandidate
+
+            payload = json.loads(match.group(1))
+            raw_decisions = payload.get("decisions") or []
+            candidates = [
+                DecisionCandidate.from_dict(d) for d in raw_decisions
+                if isinstance(d, dict)
+            ]
+            candidates = [c for c in candidates if c.is_meaningful]
+
+            if candidates:
+                from pathlib import Path
+                from mini_agent.storage.paths import AgentPaths
+                from mini_agent.wiki.decision_writer import queue_candidates
+
+                paths = AgentPaths(Path(getattr(self.cfg, "project_root", None) or Path.cwd()))
+                queue_candidates(
+                    paths, candidates,
+                    source_entries=[f"compact_with_skills@{len(self._history)}"],
+                )
+        except Exception:
+            pass  # 解析/入队失败不影响 compact 主流程，摘要文本仍已剥离 JSON 块
+
+        return cleaned
+
     def _build_skill_compact_block(self) -> str:
         """
         按 LRU 顺序、受 budget 约束构建 skill 重附上下文块。
@@ -163,7 +213,7 @@ class CompactionMixin:
 
         return False
 
-    def compact_with_skills(self) -> str:
+    def compact_with_skills(self, goal_hint: str = "") -> str:
         """
         [SYS-SKILL-COMPACT] 主动触发：用 LLM 生成对话摘要，然后重附 skill 上下文。
 
@@ -176,6 +226,7 @@ class CompactionMixin:
           2. tool `compact_history`（供 agent 自主调用）
           3. 直接调用 agent.compact_with_skills()
           4. auto-compact（上下文超限时自动触发）
+          5. goal_mode/runner.py::_do_compact()（卡住恢复触发的 compact）
 
         实现路径（自动选择）：
           - 正常路径：历史未超限时，通过 run_turn() 发送 compact prompt，
@@ -184,6 +235,13 @@ class CompactionMixin:
             把历史按 turn 边界切成多个小批，每批独立调用 LLM 生成摘要，
             最后合并成一个统一摘要替换历史。此路径完全绕开 run_turn()，
             直接使用 _llm.chat_with_retry。
+
+        Args:
+            goal_hint: [compact_mechanism_improvement_plan P0-A] 可选，调用方
+                （目前是 goal_mode/runner.py）在存在未通过验收标准时传入的
+                提示文本（未通过标准的文字列表拼装好的一段说明），会被追加到
+                compact_prompt 末尾，提醒摘要模型对相关内容保留更多细节。
+                空字符串（默认）时行为与升级前完全一致。
 
         Returns:
             摘要文本（assistant 的压缩结果），失败时返回空字符串
@@ -195,6 +253,14 @@ class CompactionMixin:
         from mini_agent.prompts import pm as _pm
         compact_prompt = _pm.get_compact_prompt()
         compact_prompt += self._build_notepad_compact_hint()
+        if goal_hint:
+            compact_prompt += "\n\n" + goal_hint
+
+        extract_decisions = bool(
+            getattr(self.cfg.compress, "decision_extraction_on_compact_with_skills_enabled", False)
+        )
+        if extract_decisions:
+            compact_prompt += "\n\n" + _pm.fragment("compress", "DECISION_EXTRACTION_APPEND_BLOCK")
 
         # ── 主动预估：compact 前先算 token，超限直接走分批路径 ────────────────
         if self._should_use_chunked_compact(compact_prompt):
@@ -235,6 +301,14 @@ class CompactionMixin:
         if not result:
             R.print_warning("[compact] Got empty summary, aborting.")
             return ""
+
+        # ── [compact_mechanism_improvement_plan P0-B] 剥离决策候选 JSON 块 ──────
+        # 只在正常路径（run_turn，追加了 DECISION_EXTRACTION_APPEND_BLOCK 指令）
+        # 生效；chunked 路径每个 chunk 独立调用、未追加该指令，暂不支持，属于
+        # 已知范围缩减（见 compact_mechanism_improvement_plan.md P0-B 涉及文件说明，
+        # 后续如需支持可在 _compact_chunked 的合并步骤里单独追加同样的指令）。
+        if extract_decisions and not used_chunked:
+            result = self._extract_and_queue_decisions_from_compact_result(result)
 
         # ── 重附 skill 块 ────────────────────────────────────────────────────
         skill_block = self._build_skill_compact_block()

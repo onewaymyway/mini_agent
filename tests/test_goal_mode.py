@@ -600,8 +600,9 @@ class FakeAgent:
         self.last_turn_hit_max_turns = self._hit_flags[idx]
         return self._outputs[idx]
 
-    def compact_with_skills(self):
+    def compact_with_skills(self, goal_hint: str = ""):
         self.compact_calls += 1
+        self.last_goal_hint = goal_hint
         return f"[fake summary #{self.compact_calls}]"
 
 

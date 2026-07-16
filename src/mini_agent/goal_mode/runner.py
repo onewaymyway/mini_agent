@@ -1075,11 +1075,30 @@ class GoalRunner:
 
     # ── 内部：compact ────────────────────────────────────────────────────
 
+    def _build_goal_aware_compact_hint(self) -> str:
+        """
+        [compact_mechanism_improvement_plan P0-A]
+        cfg.goal_mode... 复用 cfg.compress.goal_aware_weighting_enabled 开关
+        （放在 compress 子配置下，因为这本质是 compact 行为的一个参数，
+        goal_mode 只是其中一个调用方）。存在未通过的验收标准时，构建一段
+        提示文本传给 compact_with_skills(goal_hint=...)；关闭或没有未通过
+        标准时返回空字符串，行为与升级前完全一致。
+        """
+        if not getattr(getattr(self._cfg, "compress", None), "goal_aware_weighting_enabled", False):
+            return ""
+        unmet = [c.get("text", "") for c in self._criteria_status if not c.get("passed") and c.get("text")]
+        if not unmet:
+            return ""
+        from mini_agent.prompts import pm
+        lines = "\n".join(f"- {text}" for text in unmet)
+        return pm.fragment("compress", "GOAL_AWARE_COMPACT_HINT_BLOCK", unmet_criteria_lines=lines)
+
     def _do_compact(self) -> None:
         R.print_info("[GoalRunner] 正在压缩历史…")
         summary = ""
         try:
-            summary = self._agent.compact_with_skills()
+            goal_hint = self._build_goal_aware_compact_hint()
+            summary = self._agent.compact_with_skills(goal_hint=goal_hint)
         except Exception as e:
             R.print_error(f"[GoalRunner] compact 失败：{e}")
         else:
