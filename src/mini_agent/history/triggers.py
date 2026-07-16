@@ -63,6 +63,9 @@ class TriggerResult:
     suggested_strategy: Optional[str] = None   # 建议使用的压缩策略，None=使用 cfg 默认策略
     priority: int = 0
     bypass_cooldown: bool = False      # 是否无视冷却时间（仅 token 硬阈值应设 True）
+    # [P1-B 触发信号强度叠加] 硬命中时该字段无实际用途（固定为 0.0，仅语义完整）；
+    # 未命中时各触发器通过 intensity_hint() 单独提供"接近阈值程度"，不写入本字段。
+    intensity: float = 0.0
 
 
 _NOT_TRIGGERED = TriggerResult(triggered=False)
@@ -86,6 +89,12 @@ class CompactTrigger:
 
     def should_trigger(self, ctx: TriggerContext, cfg: "AppConfig") -> TriggerResult:
         raise NotImplementedError
+
+    def intensity_hint(self, ctx: TriggerContext, cfg: "AppConfig") -> float:
+        """[P1-B] 未硬命中时的"接近阈值程度"，0=完全不接近，1=达到自身阈值。
+        默认返回 0（不参与强度叠加），子类可覆盖。开关关闭/触发器本身
+        未启用时也应返回 0，避免污染叠加总和。"""
+        return 0.0
 
     def check(self, ctx: TriggerContext, cfg: "AppConfig") -> TriggerResult:
         """外部统一入口：先查开关，再判断。"""
@@ -139,6 +148,12 @@ class TurnCountTrigger(CompactTrigger):
             )
         return _NOT_TRIGGERED
 
+    def intensity_hint(self, ctx: TriggerContext, cfg: "AppConfig") -> float:
+        if not self.is_enabled(cfg):
+            return 0.0
+        delta = ctx.turns - ctx.last_compact_turns
+        return min(1.0, delta / max(1, cfg.compress.max_turns_before_compact))
+
 
 class ToolCallCountTrigger(CompactTrigger):
     """距上次 compact 累计 N 次工具调用自动触发。"""
@@ -159,6 +174,12 @@ class ToolCallCountTrigger(CompactTrigger):
                 priority=self.priority,
             )
         return _NOT_TRIGGERED
+
+    def intensity_hint(self, ctx: TriggerContext, cfg: "AppConfig") -> float:
+        if not self.is_enabled(cfg):
+            return 0.0
+        delta = ctx.tool_calls - ctx.last_compact_tool_calls
+        return min(1.0, delta / max(1, cfg.compress.max_tool_calls_before_compact))
 
 
 class RedundancyTrigger(CompactTrigger):
@@ -192,6 +213,18 @@ class RedundancyTrigger(CompactTrigger):
                 priority=self.priority,
             )
         return _NOT_TRIGGERED
+
+    def intensity_hint(self, ctx: TriggerContext, cfg: "AppConfig") -> float:
+        if not self.is_enabled(cfg):
+            return 0.0
+        history = ctx.history
+        if len(history) < 6:
+            return 0.0
+        tool_result_count = sum(
+            1 for m in history if str(m.get("_type", "")) == "tool_result"
+        )
+        ratio = tool_result_count / len(history)
+        return min(1.0, ratio / max(1e-6, cfg.compress.redundancy_tool_result_ratio))
 
 
 class TopicShiftTrigger(CompactTrigger):
@@ -311,6 +344,56 @@ class TopicShiftTrigger(CompactTrigger):
 
 
 # ════════════════════════════════════════════════════════════════════════════════
+# 安全点判定（P1-A，对应 compact_mechanism_improvement_plan.md 第 3 节）
+# ════════════════════════════════════════════════════════════════════════════════
+
+#: 安全点判定时回溯检查的最近消息条数上限（超过这个窗口还没遇到 turn 边界，
+#: 说明工具调用链条较长，只看窗口内出现的工具名即可，无需回溯全部历史）
+_SAFE_POINT_LOOKBACK = 8
+
+
+class SafePointGate:
+    """
+    判断当前是否处于"安全点"（可以被 compact 打断而不破坏执行连续性）。
+
+    安全点定义：
+      - history 为空，或最后一条消息本身就是 turn 边界（真实用户输入）——
+        意味着还没开始新一轮的多步骤执行，此时打断没有代价；
+      - 或者：从末尾往前回溯（直到遇到 turn 边界或超出回溯窗口）出现的工具调用
+        全部是"只读探索型"（不在 permissions.py::_RISKY_TOOLS 里）。
+
+    只要回溯窗口内出现过任意一次 _RISKY_TOOLS 命中的工具调用（bash / 写文件 /
+    patch 等有副作用的操作），就认为当前处于一次不适合被打断的执行序列中间。
+    """
+
+    def is_safe_point(self, ctx: "TriggerContext") -> bool:
+        history = ctx.history
+        if not history:
+            return True
+        if is_turn_boundary(history[-1]):
+            return True
+
+        try:
+            from mini_agent.permissions import _RISKY_TOOLS
+        except Exception:
+            # permissions 模块不可用时保守放行（不新增额外的打断限制）
+            return True
+
+        window = history[-_SAFE_POINT_LOOKBACK:]
+        for msg in reversed(window):
+            if is_turn_boundary(msg):
+                break  # 回溯到上一个 turn 边界，窗口内检查结束
+            content = msg.get("content")
+            if not isinstance(content, list):
+                continue
+            for block in content:
+                if isinstance(block, dict) and block.get("type") == "tool_use":
+                    if block.get("name") in _RISKY_TOOLS:
+                        return False
+        return True
+
+
+# ════════════════════════════════════════════════════════════════════════════════
 # 组合触发器
 # ════════════════════════════════════════════════════════════════════════════════
 
@@ -320,10 +403,28 @@ class CompositeTrigger:
 
     check() 依次调用所有子触发器，命中多个时取 priority 最高的一个，
     避免同一轮内被多次触发导致重复 compact。
+
+    [P1-B] 若没有触发器硬命中，且 `composite_intensity_enabled` 开启，
+    会额外用各触发器的 intensity_hint() 求和，达到阈值也视为命中一次
+    `composite_intensity` 软触发。
+
+    [P1-A] 若命中结果（硬命中或软触发信号叠加）落在"不安全点"（详见
+    SafePointGate），且 `safe_point_gating_enabled` 开启，会把这次命中
+    挂起（不立即执行 compact），保存在实例的 `_pending` 字段里，下一次
+    `check()` 调用时若已到达安全点则直接放行挂起的结果——不落盘、不需要
+    额外改动调用方（Agent 只需要像以前一样持有同一个 CompositeTrigger 实例）。
+    token 阈值等 `bypass_cooldown=True` 的硬约束不受安全点限制，无条件立即执行。
     """
 
-    def __init__(self, triggers: Optional[list] = None) -> None:
+    def __init__(
+        self,
+        triggers: Optional[list] = None,
+        safe_point_gate: Optional[SafePointGate] = None,
+    ) -> None:
         self._triggers = triggers if triggers is not None else build_default_triggers()
+        self._safe_point_gate = safe_point_gate if safe_point_gate is not None else SafePointGate()
+        # 挂起的触发结果（P1-A），非空时表示上一次命中因不在安全点而被延迟执行
+        self._pending: Optional[TriggerResult] = None
 
     def check(self, ctx: TriggerContext, cfg: "AppConfig") -> TriggerResult:
         # ── 冷却期：非硬约束触发器在冷却期内不生效 ──────────────────────────
@@ -338,6 +439,44 @@ class CompositeTrigger:
                 continue
             if result.priority > best.priority:
                 best = result
+
+        # ── P1-B：硬触发都未命中时，尝试软触发信号强度叠加 ───────────────────
+        if (
+            not best.triggered
+            and not in_cooldown
+            and getattr(cfg.compress, "composite_intensity_enabled", False)
+        ):
+            total_intensity = sum(t.intensity_hint(ctx, cfg) for t in self._triggers)
+            threshold = getattr(cfg.compress, "composite_intensity_threshold", 1.2)
+            if total_intensity >= threshold:
+                best = TriggerResult(
+                    triggered=True,
+                    reason="composite_intensity",
+                    message=(
+                        f"多个弱触发信号叠加强度 {total_intensity:.2f} "
+                        f"达到阈值 {threshold:.2f}"
+                    ),
+                    suggested_strategy="selective",
+                    priority=35,
+                )
+
+        # ── P1-A：安全点判定 ────────────────────────────────────────────────
+        if best.triggered:
+            if best.bypass_cooldown or not getattr(cfg.compress, "safe_point_gating_enabled", False):
+                self._pending = None
+                return best
+            if self._safe_point_gate.is_safe_point(ctx):
+                self._pending = None
+                return best
+            # 挂起：本轮不打断执行，等下次到达安全点时再放行
+            self._pending = best
+            return _NOT_TRIGGERED
+
+        # 本轮没有新的命中；若存在挂起项且现在已到安全点，放行挂起的结果
+        if self._pending is not None and self._safe_point_gate.is_safe_point(ctx):
+            pending = self._pending
+            self._pending = None
+            return pending
         return best
 
 

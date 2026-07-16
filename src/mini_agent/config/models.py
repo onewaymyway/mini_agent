@@ -199,6 +199,21 @@ class CompressConfig:
     # 冷却时间：compact 后这么多轮内，屏蔽除 token 硬阈值外的其他触发器，防止反复触发
     compact_cooldown_turns: int = 3
 
+    # ── Compact 机制主动化改进计划 P1（compact_mechanism_improvement_plan.md）──
+    # P1-A：安全点判定。开启后，非 token 硬阈值的触发命中若落在"最近一段工具调用
+    # 链条包含有副作用操作（bash/写文件等）"的不安全点，会被挂起，等下一次到达
+    # 安全点（turn 边界，或最近工具调用全是只读探索型）时才真正执行 compact，
+    # 避免在一次多步骤执行序列中间被打断。默认关闭，不影响现有行为。
+    safe_point_gating_enabled: bool = False
+
+    # P1-B：触发信号强度叠加。开启后，当所有触发器都未硬命中时，会把每个触发器
+    # 各自的"接近阈值程度"（intensity_hint，0~1）求和，超过阈值也视为命中一次
+    # composite_intensity 软触发。用于捕捉"多个弱信号同时出现但都没单独越过
+    # 自身阈值"的场景。默认关闭；阈值建议先用 observe 方式在预发环境收集
+    # 若干次真实叠加强度分布后再调整。
+    composite_intensity_enabled: bool = False
+    composite_intensity_threshold: float = 1.2
+
     # 触发后是否需要用户确认才执行（False=全自动静默压缩，仅打印提示；
     # True=先询问用户 y/n，用户拒绝则本次跳过，下次再检查）
     require_confirmation: bool = False

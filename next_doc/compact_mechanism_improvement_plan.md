@@ -13,6 +13,22 @@
 
 ---
 
+## 实施状态
+
+| 阶段 | 状态 | 备注 |
+|------|------|------|
+| P0-A 目标相关性动态权重 | ✅ 已完成 | 实际落地为 goal_mode 卡住恢复 compact 时把未通过验收标准作为 hint 传给 `compact_with_skills()`（`GoalRunner._build_goal_aware_compact_hint`），而非直接改造 `SelectiveStrategy` 打分函数——因为项目默认压缩策略已是 `compact_with_skills`（LLM 摘要 + skill 重附），`SelectiveStrategy` 只是保留的轻量退回路径，改造默认路径收益更大。配置字段 `compress.goal_aware_weighting_enabled`。 |
+| P0-B Compact 兼做经验沉淀检查点 | ✅ 已完成 | 落地为 `compact_with_skills()` 压缩后解析 `===DECISIONS_JSON===` 块并入队（`CompactionMixin._extract_and_queue_decisions_from_compact_result`），与已有的 `extract_decisions` 走同一套解析/落盘逻辑。配置字段 `compress.decision_extraction_on_compact_with_skills_enabled`。 |
+| P1-A 安全点判定 | ✅ 已完成 | 新增 `history/triggers.py::SafePointGate`；挂起态直接持有在 `CompositeTrigger._pending` 实例字段上（比原设计的独立 `_PENDING` 包装类型更简单，无需改动 `turn_loop.py` 存取挂起态）。配置字段 `compress.safe_point_gating_enabled`。测试见 `tests/test_triggers.py`。 |
+| P1-B 触发信号强度叠加 | ✅ 已完成 | `TriggerResult` 新增 `intensity` 字段（硬命中时恒为 0，仅语义完整）；`CompactTrigger` 基类新增 `intensity_hint()` 钩子，`TurnCountTrigger` / `ToolCallCountTrigger` / `RedundancyTrigger` 三个软触发器提供实现，`TopicShiftTrigger` 保持默认 0（话题切换本身是布尔判断，没有天然的"接近程度"度量，不参与叠加）。配置字段 `compress.composite_intensity_enabled` / `compress.composite_intensity_threshold`。测试见 `tests/test_triggers.py`。 |
+| P2-A 压缩质量事后自检 + lesson 反馈闭环 | ⏳ 未开始 | 依赖 P0/P1 跑出真实数据后再评估是否需要新增一次 LLM 校验调用。 |
+| P2-B Raw history 按需找回工具 | ⏳ 未开始 | |
+| P3 预测式压缩节奏 | ⏳ 未开始（仅设计） | 依赖 P0-B/P2-A 积累的数据。 |
+
+以下 §1-§7 为原始设计文档（保留作为历史设计记录），部分实现细节与"实施状态"表格中的说明有出入时，以上表和代码为准。
+
+---
+
 ## 0. 结论先行：七个方向按"复用程度 / 改造成本 / 价值"排序
 
 | # | 方向 | 复用现有框架程度 | 改造成本 | 价值 | 建议阶段 |
@@ -383,21 +399,23 @@ compress:
 ## 8. 落地顺序总览
 
 ```
-P0（可立即并行开工，互不依赖）
-  ├─ P0-A 目标相关性动态权重      [compression.py + goal_mode/runner.py]
-  └─ P0-B Compact 兼做沉淀检查点   [compaction.py + decision_extraction.py]
+P0（可立即并行开工，互不依赖）                                        ✅ 已完成
+  ├─ P0-A 目标相关性动态权重      [goal_mode/runner.py]                ✅
+  └─ P0-B Compact 兼做沉淀检查点   [agent/compaction.py]                ✅
 
-P1（依赖 P0 跑稳，安全网优先于强化触发）
-  ├─ P1-A 安全点判定               [triggers.py + turn_loop.py]
-  └─ P1-B 触发信号强度叠加         [triggers.py]
+P1（依赖 P0 跑稳，安全网优先于强化触发）                               ✅ 已完成
+  ├─ P1-A 安全点判定               [history/triggers.py]               ✅
+  └─ P1-B 触发信号强度叠加         [history/triggers.py]                ✅
 
-P2（依赖 P0/P1 的埋点数据，且各自新增一条执行路径，需要独立评估）
+P2（依赖 P0/P1 的埋点数据，且各自新增一条执行路径，需要独立评估）      ⏳ 未开始
   ├─ P2-A 压缩质量事后自检+反馈闭环 [新增 compact_audit.py]
   └─ P2-B Raw history 按需找回工具  [新增 recall_history.py]
 
-P3（依赖 P0-B + P2-A 积累的真实数据，暂不列入具体实现清单，先设计）
+P3（依赖 P0-B + P2-A 积累的真实数据，暂不列入具体实现清单，先设计）    ⏳ 未开始
   └─ 预测式压缩节奏
 ```
+
+P1 落地说明：安全点判定和信号强度叠加都以"开关默认 false，先跑通全部现有回归测试确认零行为变化"的方式完成，新增 `tests/test_triggers.py` 覆盖两项的核心行为和"开关关闭时行为不变"的回归断言。下一步可在预发环境打开 `safe_point_gating_enabled` / `composite_intensity_enabled` 观察实际命中频率，再决定 P2 的优先级和参数。
 
 所有项统一遵循：**新增配置默认为 `false`，先以 `false` 状态跑完整回归测试确认零行为变化，再逐项在测试/预发环境打开观察，最后才考虑默认值调整**。这与项目现有的 `light_compact_max_recoveries=0` 一键回退、`replan_proposal_mode` 三态开关等做法保持一致的风格。
 
@@ -405,15 +423,15 @@ P3（依赖 P0-B + P2-A 积累的真实数据，暂不列入具体实现清单�
 
 ## 9. 需要新增/修改的测试清单（对应现有 `tests/` 目录风格）
 
-| 测试文件 | 覆盖内容 |
-|---------|----------|
-| `tests/test_compression.py`（若不存在需新建） | P0-A 目标相关性权重打分；开关关闭时零行为变化回归 |
-| `tests/test_triggers.py`（若不存在需新建） | P1-A 安全点挂起/恢复；P1-B 信号强度叠加触发 |
-| `tests/test_compaction.py`（若已存在则追加） | P0-B 沉淀候选提取调用时机；P2-A 审计流程的正常/异常路径 |
-| `tests/test_goal_mode.py`（追加用例） | Goal 模式下 `RelevanceHint` 正确构建并传入 compact 流程 |
+| 测试文件 | 覆盖内容 | 状态 |
+|---------|----------|------|
+| `tests/test_compact_autopilot_improvements.py` | P0-A goal-aware compact hint；P0-B 决策候选提取入队时机 | ✅ 已有 |
+| `tests/test_triggers.py` | P1-A 安全点挂起/恢复；P1-B 信号强度叠加触发；两项开关关闭时的零行为回归 | ✅ 已新增 |
+| `tests/test_compaction.py`（若已存在则追加） | P2-A 审计流程的正常/异常路径 | ⏳ 未开始 |
+| `tests/test_goal_mode.py`（追加用例） | Goal 模式下 goal-aware compact hint 正确构建并传入 compact 流程 | ✅ 已覆盖（含在 `test_compact_autopilot_improvements.py`） |
 
 ---
 
 ## 10. 一句话总结
 
-七个方向里，**P0 两项（目标相关性权重、compact 兼做沉淀检查点）都是"在现有框架里多接一根线"，没有新执行路径、没有新增 LLM 调用成本，应该最先做**；P1 是给后续更激进的主动触发上安全带；P2 两项各自新增了一条独立执行路径（审计调用、检索工具），价值最高但要独立评估成本，且互为犄角——P2-B（按需找回）让 P0-A/P2-A 揭示出的"压缩策略可以更激进"变得敢于落地；P3 完全依赖前面积累的数据，不应该在没有数据支撑前设计具体参数。
+七个方向里，**P0 两项（目标相关性权重、compact 兼做沉淀检查点）和 P1 两项（安全点判定、触发信号强度叠加）已全部完成落地**，均遵循"新增配置默认 false → 全量回归测试零行为变化 → 后续再决定是否默认开启"的节奏；P2 两项各自新增了一条独立执行路径（审计调用、检索工具），价值最高但要独立评估成本，且互为犄角——P2-B（按需找回）让 P0-A/P2-A 揭示出的"压缩策略可以更激进"变得敢于落地；P3 完全依赖前面积累的数据，不应该在没有数据支撑前设计具体参数。下一步建议：在预发环境打开 P1 的两个开关观察实际触发频率和挂起时长分布，再启动 P2。
