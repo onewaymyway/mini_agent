@@ -118,6 +118,108 @@ class CompactionMixin:
 
         return cleaned
 
+    def _maybe_audit_compact_quality(
+        self, trigger_reason: Optional[str], pre_compact_history: list, summary_text: str,
+    ) -> None:
+        """
+        [compact_mechanism_improvement_plan P2-A]
+        deep compact（非高频触发）完成后，执行一次压缩质量事后自检：判断摘要
+        是否遗漏了决定性信息。发现遗漏时补一条 compact_supplement 历史条目，
+        并写入 activity_digest.jsonl（type=compact_audit_issue）。
+
+        仅在 cfg.compress.audit_enabled=true 且 trigger_reason 命中
+        cfg.compress.audit_compact_reasons 白名单时生效——只对 topic_shift_*/
+        stuck_recovery_deep 这类非高频触发生效，避免 turn_count/tool_call_count
+        这类高频触发都额外增加一次 LLM 调用成本。
+
+        这是事后校验，不能影响 compact 主流程：任何异常都静默吞掉。
+        cfg.compress.audit_async=True（默认）时在后台线程执行，不阻塞当前轮次；
+        =False 时同步执行（主要用于测试，避免测试里出现不确定的线程时序）。
+        """
+        try:
+            if not getattr(self.cfg.compress, "audit_enabled", False):
+                return
+            reasons = getattr(self.cfg.compress, "audit_compact_reasons", None) or []
+            if not trigger_reason or trigger_reason not in reasons:
+                return
+            if not summary_text or not pre_compact_history:
+                return
+        except Exception:
+            return
+
+        def _run_audit() -> None:
+            try:
+                from mini_agent.history.compact_audit import audit_compact_quality
+                result = audit_compact_quality(
+                    pre_compact_history, summary_text, getattr(self, "_llm", None),
+                )
+                if result.has_issue:
+                    self._apply_compact_audit_issue(trigger_reason, result)
+            except Exception as _mini_agent_exc:
+                from mini_agent.errors import log_exception
+                log_exception(_mini_agent_exc, where='mini_agent.agent')
+                pass
+
+        if getattr(self.cfg.compress, "audit_async", True):
+            import threading
+            threading.Thread(target=_run_audit, daemon=True, name="compact-audit").start()
+        else:
+            _run_audit()
+
+    def _apply_compact_audit_issue(self, trigger_reason: Optional[str], result) -> None:
+        """
+        [compact_mechanism_improvement_plan P2-A] 审计发现遗漏信息后的落地：
+          ① 追加一条 compact_supplement 历史条目，把遗漏信息补回去；
+          ② 写入 activity_digest.jsonl（type=compact_audit_issue），累计统计
+             "哪个触发原因/哪种压缩策略遗漏率更高"，供后续 lesson/软目标衍生
+             链路消费（evolution/soft_goal_deriver.py，属于后续独立小改造，
+             本项只负责把统计数据写出来）。
+        可能运行在后台线程里（audit_async=True 时），用 _compact_audit_lock
+        保护对 self._history / raw history 的并发追加。
+        """
+        try:
+            from mini_agent.history.entry import make_compact_supplement
+            supplement = make_compact_supplement(
+                "[compact audit] 上一次历史压缩可能遗漏了以下信息，供参考：\n"
+                + (result.missing_info or "")
+            )
+            _lock = getattr(self, "_compact_audit_lock", None)
+            _hist = getattr(self, "_hist", None)
+            if _lock is not None:
+                with _lock:
+                    self._history.append(supplement)
+                    if _hist is not None:
+                        _hist._raw.append(supplement)
+            else:
+                self._history.append(supplement)
+                if _hist is not None:
+                    _hist._raw.append(supplement)
+        except Exception as _mini_agent_exc:
+            from mini_agent.errors import log_exception
+            log_exception(_mini_agent_exc, where='mini_agent.agent')
+            pass
+
+        try:
+            import json
+            import time
+            from pathlib import Path
+            from mini_agent.storage.paths import AgentPaths
+            paths = AgentPaths(Path(getattr(self.cfg, "project_root", None) or Path.cwd()))
+            digest_path = paths.workdir_dir / "activity_digest.jsonl"
+            digest_path.parent.mkdir(parents=True, exist_ok=True)
+            record = {
+                "at": time.time(),
+                "type": "compact_audit_issue",
+                "trigger_reason": trigger_reason,
+                "missing_info": result.missing_info,
+            }
+            with open(digest_path, "a", encoding="utf-8") as f:
+                f.write(json.dumps(record, ensure_ascii=False) + "\n")
+        except Exception as _mini_agent_exc:
+            from mini_agent.errors import log_exception
+            log_exception(_mini_agent_exc, where='mini_agent.agent')
+            pass
+
     def _build_skill_compact_block(self) -> str:
         """
         按 LRU 顺序、受 budget 约束构建 skill 重附上下文块。
@@ -641,6 +743,10 @@ class CompactionMixin:
         summary_text = ""
 
         if effective_strategy == "compact_with_skills":
+            # [compact_mechanism_improvement_plan P2-A] 压缩质量事后自检需要
+            # 拿到压缩前的原始历史做对比；compact_with_skills() 内部会清空
+            # self._history，必须在调用前先拷贝一份快照。
+            _pre_compact_history_snapshot = list(self._history)
             # ── 与 /compact 手动触发完全一致的实现：LLM 摘要 + skill 重附 ──
             try:
                 summary_text = self.compact_with_skills()
@@ -649,6 +755,9 @@ class CompactionMixin:
                 log_exception(_mini_agent_exc, where='mini_agent.agent')
                 R.print_error(f"[compact] Auto-compact (compact_with_skills) failed: {_mini_agent_exc}")
                 return
+            self._maybe_audit_compact_quality(
+                trigger_reason, _pre_compact_history_snapshot, summary_text,
+            )
         else:
             # ── 旧路径：委托给 HistoryManager.auto_compress 的可插拔策略 ──
             from mini_agent.history.compression import create_strategy

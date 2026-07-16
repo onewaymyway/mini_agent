@@ -449,6 +449,10 @@ class Agent(
 
         # [SYS-SUMMARY] 防止多个摘要/记忆生成任务并发运行（互斥，非阻塞获取）
         self._summary_lock = threading.Lock()
+        # [compact_mechanism_improvement_plan P2-A] 压缩质量事后自检可能运行在
+        # 后台线程里（audit_async=True 时），保护对 self._history / raw history
+        # 的并发追加（追加一条 compact_supplement 条目）。
+        self._compact_audit_lock = threading.Lock()
 
         # ── [SYS-MCP] MCP 工具注册 ─────────────────────────────────────────────
         # 连接 agent_config.json 中配置的所有 MCP server，

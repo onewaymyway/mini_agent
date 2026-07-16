@@ -21,8 +21,8 @@
 | P0-B Compact 兼做经验沉淀检查点 | ✅ 已完成 | 落地为 `compact_with_skills()` 压缩后解析 `===DECISIONS_JSON===` 块并入队（`CompactionMixin._extract_and_queue_decisions_from_compact_result`），与已有的 `extract_decisions` 走同一套解析/落盘逻辑。配置字段 `compress.decision_extraction_on_compact_with_skills_enabled`。 |
 | P1-A 安全点判定 | ✅ 已完成 | 新增 `history/triggers.py::SafePointGate`；挂起态直接持有在 `CompositeTrigger._pending` 实例字段上（比原设计的独立 `_PENDING` 包装类型更简单，无需改动 `turn_loop.py` 存取挂起态）。配置字段 `compress.safe_point_gating_enabled`。测试见 `tests/test_triggers.py`。 |
 | P1-B 触发信号强度叠加 | ✅ 已完成 | `TriggerResult` 新增 `intensity` 字段（硬命中时恒为 0，仅语义完整）；`CompactTrigger` 基类新增 `intensity_hint()` 钩子，`TurnCountTrigger` / `ToolCallCountTrigger` / `RedundancyTrigger` 三个软触发器提供实现，`TopicShiftTrigger` 保持默认 0（话题切换本身是布尔判断，没有天然的"接近程度"度量，不参与叠加）。配置字段 `compress.composite_intensity_enabled` / `compress.composite_intensity_threshold`。测试见 `tests/test_triggers.py`。 |
-| P2-A 压缩质量事后自检 + lesson 反馈闭环 | ⏳ 未开始 | 依赖 P0/P1 跑出真实数据后再评估是否需要新增一次 LLM 校验调用。 |
-| P2-B Raw history 按需找回工具 | ⏳ 未开始 | |
+| P2-A 压缩质量事后自检 + lesson 反馈闭环 | ✅ 已完成 | 新增 `history/compact_audit.py::audit_compact_quality()`（单次 LLM 调用，输入摘要+压缩前原始片段截断，判断是否遗漏约束/失败原因/用户要求）；`CompactionMixin._maybe_audit_compact_quality()` 只对 `audit_compact_reasons` 白名单（默认 `topic_shift_heuristic`/`topic_shift_llm`/`stuck_recovery_deep`）生效，挂在 `_auto_compress_history()` 里 `compact_with_skills()` 调用之后。发现遗漏时 `_apply_compact_audit_issue()` 追加 `compact_supplement` 历史条目（新增 `HType.COMPACT_SUPPLEMENT`）+ 写入 `activity_digest.jsonl`（`type=compact_audit_issue`），后续可接入 `evolution/soft_goal_deriver.py` 消费这份统计，本次不改动该消费端。配置字段 `compress.audit_enabled` / `compress.audit_compact_reasons` / `compress.audit_async`（默认异步线程执行，不阻塞当前轮次）。测试见 `tests/test_compact_audit.py`。 |
+| P2-B Raw history 按需找回工具 | ✅ 已完成 | 新增 `tools/recall_history.py::recall_from_raw_history`，只读、免审批，复用 `triggers.py::_simple_keywords` 做关键词匹配（不引入向量检索依赖），按重合度+时间倒序返回命中片段与近似 turn 编号。沿用 `notepad.py::configure_notepad_store` 的线程本地 provider 注入模式（`configure_recall_history()`，在 `agent/lifecycle.py` 里紧邻 notepad 那行注入），工具本身始终注册在全局 registry（与 `notepad_enabled` 既有取舍一致），未启用时调用直接返回错误提示。配置字段用 `AppConfig` 顶层 `recall_history_enabled` / `recall_history_mode`（而非原设计里的 `tools.*` 命名空间——项目里没有独立的 `ToolsConfig` 类，`notepad_enabled` 同样是顶层字段，跟随既有约定）。测试见 `tests/test_recall_history.py`。 |
 | P3 预测式压缩节奏 | ⏳ 未开始（仅设计） | 依赖 P0-B/P2-A 积累的数据。 |
 
 以下 §1-§7 为原始设计文档（保留作为历史设计记录），部分实现细节与"实施状态"表格中的说明有出入时，以上表和代码为准。
@@ -407,15 +407,17 @@ P1（依赖 P0 跑稳，安全网优先于强化触发）                       
   ├─ P1-A 安全点判定               [history/triggers.py]               ✅
   └─ P1-B 触发信号强度叠加         [history/triggers.py]                ✅
 
-P2（依赖 P0/P1 的埋点数据，且各自新增一条执行路径，需要独立评估）      ⏳ 未开始
-  ├─ P2-A 压缩质量事后自检+反馈闭环 [新增 compact_audit.py]
-  └─ P2-B Raw history 按需找回工具  [新增 recall_history.py]
+P2（依赖 P0/P1 的埋点数据，且各自新增一条执行路径，需要独立评估）      ✅ 已完成
+  ├─ P2-A 压缩质量事后自检+反馈闭环 [新增 history/compact_audit.py]      ✅
+  └─ P2-B Raw history 按需找回工具  [新增 tools/recall_history.py]       ✅
 
 P3（依赖 P0-B + P2-A 积累的真实数据，暂不列入具体实现清单，先设计）    ⏳ 未开始
   └─ 预测式压缩节奏
 ```
 
-P1 落地说明：安全点判定和信号强度叠加都以"开关默认 false，先跑通全部现有回归测试确认零行为变化"的方式完成，新增 `tests/test_triggers.py` 覆盖两项的核心行为和"开关关闭时行为不变"的回归断言。下一步可在预发环境打开 `safe_point_gating_enabled` / `composite_intensity_enabled` 观察实际命中频率，再决定 P2 的优先级和参数。
+P1 落地说明：安全点判定和信号强度叠加都以"开关默认 false，先跑通全部现有回归测试确认零行为变化"的方式完成，新增 `tests/test_triggers.py` 覆盖两项的核心行为和"开关关闭时行为不变"的回归断言。
+
+P2 落地说明：两项都是新增执行路径，因此都做了额外的失败隔离——P2-A 的审计调用异常/digest 写入异常都不能影响 compact 主流程（静默吞掉，日志记录）；P2-B 未配置/关闭时直接返回错误提示字符串而不是抛异常，工具本身默认注册但功能默认关闭（`recall_history_enabled=false`），与项目里 `notepad_enabled` 的既有取舍一致。下一步可在预发环境依次打开 P1→P2 的开关，观察：① 安全点挂起的实际发生频率和挂起时长；② `composite_intensity` 的实际叠加分布，校准阈值；③ `compact_audit_issue` 在 `activity_digest.jsonl` 里的命中率，判断是否需要把 audit 的触发原因白名单扩大；④ agent 是否会主动调用 `recall_from_raw_history`，调用后是否真的减少了"重新执行一遍"的浪费。
 
 所有项统一遵循：**新增配置默认为 `false`，先以 `false` 状态跑完整回归测试确认零行为变化，再逐项在测试/预发环境打开观察，最后才考虑默认值调整**。这与项目现有的 `light_compact_max_recoveries=0` 一键回退、`replan_proposal_mode` 三态开关等做法保持一致的风格。
 
@@ -427,11 +429,12 @@ P1 落地说明：安全点判定和信号强度叠加都以"开关默认 false�
 |---------|----------|------|
 | `tests/test_compact_autopilot_improvements.py` | P0-A goal-aware compact hint；P0-B 决策候选提取入队时机 | ✅ 已有 |
 | `tests/test_triggers.py` | P1-A 安全点挂起/恢复；P1-B 信号强度叠加触发；两项开关关闭时的零行为回归 | ✅ 已新增 |
-| `tests/test_compaction.py`（若已存在则追加） | P2-A 审计流程的正常/异常路径 | ⏳ 未开始 |
+| `tests/test_compact_audit.py` | P2-A `audit_compact_quality()` 判断逻辑；`_maybe_audit_compact_quality()` 开关/白名单门控；`_apply_compact_audit_issue()` 追加历史+写 digest；各失败路径不抛异常 | ✅ 已新增 |
+| `tests/test_recall_history.py` | P2-B `recall_from_raw_history` 关键词检索、开关门控、占位符条目跳过、异常兜底 | ✅ 已新增 |
 | `tests/test_goal_mode.py`（追加用例） | Goal 模式下 goal-aware compact hint 正确构建并传入 compact 流程 | ✅ 已覆盖（含在 `test_compact_autopilot_improvements.py`） |
 
 ---
 
 ## 10. 一句话总结
 
-七个方向里，**P0 两项（目标相关性权重、compact 兼做沉淀检查点）和 P1 两项（安全点判定、触发信号强度叠加）已全部完成落地**，均遵循"新增配置默认 false → 全量回归测试零行为变化 → 后续再决定是否默认开启"的节奏；P2 两项各自新增了一条独立执行路径（审计调用、检索工具），价值最高但要独立评估成本，且互为犄角——P2-B（按需找回）让 P0-A/P2-A 揭示出的"压缩策略可以更激进"变得敢于落地；P3 完全依赖前面积累的数据，不应该在没有数据支撑前设计具体参数。下一步建议：在预发环境打开 P1 的两个开关观察实际触发频率和挂起时长分布，再启动 P2。
+七个方向（P0 两项、P1 两项、P2 两项）**已全部完成落地**，均遵循"新增配置默认 `false` → 全量回归测试零行为变化 → 后续再决定是否默认开启"的节奏；P2 两项各自新增了一条独立执行路径（审计调用、检索工具），都做了额外的失败隔离，不影响 compact 主流程，且互为犄角——P2-B（按需找回）让 P0-A/P2-A 揭示出的"压缩策略可以更激进"变得敢于落地；P3 完全依赖前面积累的数据，不应该在没有数据支撑前设计具体参数，是当前唯一还停留在设计阶段、尚未开工的方向。下一步建议：在预发环境依次打开 P1→P2 的开关跑一段时间，用 §8 末尾列出的四个观察点收集真实数据后再启动 P3。

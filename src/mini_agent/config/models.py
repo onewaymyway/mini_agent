@@ -214,6 +214,18 @@ class CompressConfig:
     composite_intensity_enabled: bool = False
     composite_intensity_threshold: float = 1.2
 
+    # P2-A：压缩质量事后自检 + lesson 反馈闭环。deep compact（非高频触发）完成后
+    # 异步执行一次 LLM 校验，判断摘要是否遗漏决定性信息（约束条件/失败原因/
+    # 用户明确要求）；发现遗漏时补一条 compact_supplement 历史条目，并写入
+    # activity_digest.jsonl（type=compact_audit_issue）供后续统计分析。
+    # 仅对 audit_compact_reasons 里列出的触发原因生效，避免每次高频触发都
+    # 额外增加一次 LLM 调用成本。默认关闭。
+    audit_enabled: bool = False
+    audit_compact_reasons: list = field(
+        default_factory=lambda: ["topic_shift_heuristic", "topic_shift_llm", "stuck_recovery_deep"]
+    )
+    audit_async: bool = True   # True=后台线程执行，不阻塞当前轮次；False=同步执行（主要用于测试）
+
     # 触发后是否需要用户确认才执行（False=全自动静默压缩，仅打印提示；
     # True=先询问用户 y/n，用户拒绝则本次跳过，下次再检查）
     require_confirmation: bool = False
@@ -1013,6 +1025,16 @@ class AppConfig:
     # 加载 notepad.json；notepad_* 工具调用会返回错误提示（工具本身仍注册在
     # 全局 registry 中，与 workdir_knowledge_enabled 等开关的既有取舍一致）。
     notepad_enabled: bool = True
+
+    # ── Compact 机制主动化改进计划 P2-B（compact_mechanism_improvement_plan.md）──
+    # recall_from_raw_history 只读工具总开关。默认关闭——工具本身仍注册在
+    # 全局 registry 中（与 notepad_enabled 等既有取舍一致），关闭时调用直接
+    # 返回错误提示，不做任何检索。开启后可按关键词在当前 session 的完整
+    # raw history（含已被 compact 掉的片段）里找回原始内容。
+    recall_history_enabled: bool = False
+    # "keyword"（默认，复用 triggers.py::_simple_keywords 关键词匹配，
+    # 不引入额外依赖）| "embedding"（预留，当前未实现，退回 keyword 档）
+    recall_history_mode: str = "keyword"
 
     # ── 功能子配置块（每个功能域独立聚合）────────────────────────────────────
     memory:     MemoryConfig     = field(default_factory=MemoryConfig)

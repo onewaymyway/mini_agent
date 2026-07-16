@@ -64,6 +64,10 @@ class HType(str, Enum):
     # ── 压缩相关（当前状态 history）─────────────────────────────────────────
     COMPRESSED       = "compressed"       # auto-compress 产生的占位符（user 侧）
     COMPACT_SUMMARY  = "compact_summary"  # /compact 产生的 LLM 摘要（assistant 侧）
+    # [compact_mechanism_improvement_plan P2-A] 压缩质量事后自检发现遗漏信息时，
+    # 追加回历史的补充条目。role=user（系统对上一次压缩结果的补充说明，
+    # 与 format_correction 一样借用 user 角色让模型能"看到"并据此调整）。
+    COMPACT_SUPPLEMENT = "compact_supplement"
 
     # ── role agent ───────────────────────────────────────────────────────────
     ROLE_AGENT       = "role_agent"       # role agent 反馈注入
@@ -185,6 +189,12 @@ def make_compressed(content: str = "[Previous conversation compressed]") -> dict
 
 def make_compact_summary(content: str) -> dict:
     return {"role": "assistant", "content": content, "_type": HType.COMPACT_SUMMARY}
+
+
+def make_compact_supplement(content: str) -> dict:
+    """[compact_mechanism_improvement_plan P2-A] 压缩质量事后自检发现摘要遗漏
+    决定性信息（约束条件/失败原因/用户明确要求等）时，把遗漏信息追加回历史。"""
+    return {"role": "user", "content": content, "_type": HType.COMPACT_SUPPLEMENT}
 
 
 def make_session_resume(content: str = "[Previous session summary]") -> dict:

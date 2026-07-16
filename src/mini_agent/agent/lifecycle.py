@@ -139,6 +139,20 @@ class SessionLifecycleMixin:
             enabled_getter=lambda: getattr(self.cfg, "notepad_enabled", True),
         )
 
+        # [compact_mechanism_improvement_plan P2-B] recall_from_raw_history 只读
+        # 工具：注入"当前 session 的 raw history 条目列表"懒引用。放在这里
+        # （而不是等 self._hist 构造完之后）是因为下面几行马上就会构造
+        # self._hist = HistoryManager(...)；用 getattr(self, "_hist", None) 做
+        # 懒引用即可保证调用时（工具真正被执行时）self._hist 已经就绪，不需要
+        # 调整初始化顺序。
+        from mini_agent.tools.recall_history import configure_recall_history
+        configure_recall_history(
+            lambda: (
+                self._hist._raw.entries if getattr(self, "_hist", None) is not None else []
+            ),
+            enabled_getter=lambda: getattr(self.cfg, "recall_history_enabled", False),
+        )
+
         # ToolExecutor：持有 file_changes 列表和锁的引用（共享，不拷贝）
         # [SYS-LESSON] 规则触发引擎（Stage 1.2）：仅当记忆功能启用且规则开关打开时创建
         _lesson_engine = None
