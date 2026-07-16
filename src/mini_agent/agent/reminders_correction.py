@@ -88,6 +88,57 @@ class RemindersCorrectionMixin:
         for r in self._reminder_mgr.check_user_intent(user_message):
             self._inject_reminder(r)
 
+    def _maybe_recall_decisions_for_user_message(self, user_message: str) -> None:
+        """[决策/取舍知识提炼计划 5.4 节，路径 B] 每轮用户消息进入时的启发式门控。
+
+        跟 `_inject_reminders_for_user_intent` 是同一个挂载时机，但触发条件不同：
+        不是靠预先写好的 reminder 规则文件匹配，而是靠
+        `decision_recall.should_trigger_recall()` 便宜的关键词判断"这轮像不像
+        在重新讨论一个方案取舍"，命中才真正调用 `wiki_shelf_search` 做检索
+        （成本比常驻 reminder 高，所以必须先过一道门控）。
+
+        默认关闭（`CompressConfig.decision_recall_turn_gate_enabled=False`），
+        先观察启发式命中率再决定要不要默认打开，避免对正常对话造成噪音。
+        命中后走跟 lesson reminder 一样的一次性注入 + 同轮去重逻辑
+        （`_inject_reminder` 内部的 `_reminder_already_in_turn` 守卫），不会在
+        历史里常驻占用 context。任何异常都静默降级，不影响正常对话。
+        """
+        if not getattr(self.cfg.compress, "decision_recall_turn_gate_enabled", False):
+            return
+        if not isinstance(user_message, str) or not user_message.strip():
+            return
+        try:
+            from mini_agent.evolution.decision_recall import (
+                should_trigger_recall, recall_related_decisions,
+            )
+            if not should_trigger_recall(user_message):
+                return
+
+            from mini_agent.storage.paths import AgentPaths
+            paths = AgentPaths(self.cfg.project_root)
+
+            llm_call = None
+            _pool = getattr(self, "_client_pool", None)
+            if _pool is not None:
+                from mini_agent.perception.memory_factory import build_llm_call
+                llm_call = lambda prompt: build_llm_call(_pool.current_client)(prompt)
+
+            k = getattr(self.cfg.compress, "decision_recall_gate_k", 5)
+            note = recall_related_decisions(paths, user_message, k=k, llm_call=llm_call)
+            if not note:
+                return
+
+            from mini_agent.reminders.loader import Reminder, TRIGGER_USER_INTENT
+            reminder = Reminder(
+                name="decision_recall_gate",
+                trigger_event=TRIGGER_USER_INTENT,
+                inject_as="user",
+                content=note,
+            )
+            self._inject_reminder(reminder)
+        except Exception:
+            pass  # 决策召回失败不应影响正常对话主流程
+
     def _detect_and_record_correction(self, user_message: str) -> bool:
         """
         [SYS-LESSON] 人类反馈纠正检测（Stage 1.4）。

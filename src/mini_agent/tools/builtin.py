@@ -1094,6 +1094,64 @@ def view_raw_result(
     return numbered or "(empty range)"
 
 
+# ── recall_decisions [决策/取舍知识提炼计划 5.4 节，路径 C] ──────────────────
+# 只读工具，供 agent 在自己意识到"这是个需要取舍的架构/技术决定"时主动调用，
+# 查一遍 wiki/decisions/*.md 里是否已经讨论过。不同于路径 B（每轮启发式门控
+# 自动触发），这里完全由 agent 自主决定要不要查——哪怕门控没命中，agent 主动
+# 查也能拿到收益，覆盖"用户直接问技术选型"这类门控关键词可能漏判的场景。
+
+_decision_recall_paths = None       # AgentPaths，由 configure_decision_recall 注入
+_decision_recall_llm_call = None    # 可选，供 wiki_shelf_search 的 LLM 精排阶段使用
+
+
+def configure_decision_recall(paths, llm_call=None) -> None:
+    """由 Agent 初始化时注入 AgentPaths + 可选 llm_call，供 recall_decisions() 使用。"""
+    global _decision_recall_paths, _decision_recall_llm_call
+    _decision_recall_paths = paths
+    _decision_recall_llm_call = llm_call
+
+
+@tool(
+    name="recall_decisions",
+    description=(
+        "Search past architectural/design decisions recorded in this project's "
+        "decision wiki (wiki/decisions/*.md). Call this BEFORE proposing a new "
+        "approach, reconsidering a past choice, or answering a question about "
+        "why something was built a certain way — it tells you whether the topic "
+        "was already settled (adopted) or already tried and rejected (overturned), "
+        "so you don't re-litigate a decision or repeat a rejected approach."
+    ),
+    schema={
+        "type": "object",
+        "properties": {
+            "proposal": {
+                "type": "string",
+                "description": "The topic or new approach you're about to propose/discuss, in your own words.",
+            },
+            "tags": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": "Optional tag filters to narrow the search.",
+            },
+        },
+        "required": ["proposal"],
+    },
+    requires_approval=False,
+)
+def recall_decisions(proposal: str, tags: Optional[list] = None) -> str:
+    """查询相关历史决策，命中时返回可直接阅读的提醒文字。"""
+    if _decision_recall_paths is None:
+        return "[error: decision recall is not enabled]"
+    try:
+        from mini_agent.evolution.decision_recall import recall_related_decisions
+        note = recall_related_decisions(
+            _decision_recall_paths, proposal, tags=tags, llm_call=_decision_recall_llm_call,
+        )
+    except Exception as e:
+        return f"[error: decision recall failed: {e}]"
+    return note or "No related historical decisions found for this topic."
+
+
 def configure_web_search(cfg) -> None:
     """注入 AppConfig，供 web_search 工具读取 provider/api_key/timeout 等配置。"""
     global _web_search_cfg

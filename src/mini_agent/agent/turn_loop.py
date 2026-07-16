@@ -100,6 +100,10 @@ class TurnLoopMixin:
             # [SYS-REMINDER] 用户意图触发：在用户消息入队后，检查是否需要注入 reminder
             self._inject_reminders_for_user_intent(user_message)
 
+            # [决策/取舍知识提炼计划 5.4 节，路径 B] 启发式门控命中时自动召回
+            # 相关历史决策，注入方式与上面的 reminder 完全一致（一次性、同轮去重）。
+            self._maybe_recall_decisions_for_user_message(user_message)
+
             # [SYS-ENSEMBLE] AUTO 模式：框架自行判断本轮是否值得做 best-of-N，
             # 判断为"值得"时，用多个 SubAgent（不同上下文）跑完整这一轮任务，
             # 评判/合并出最终结果后直接作为本轮回复，跳过常规单路 _agentic_loop()。

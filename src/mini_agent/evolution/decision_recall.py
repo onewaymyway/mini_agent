@@ -37,6 +37,34 @@ from mini_agent.wiki.search import LLMCall, wiki_shelf_search
 _SETTLED_HEADER = "以下历史决策与当前讨论的方向相关，可能已经采纳过，请先确认是否要重复论证："
 _OVERTURNED_HEADER = "以下方案此前被考虑过又被否决，请先确认新提案是否与被否决的方案相同："
 
+# ── 路径 B：轻量前置门控（对应本轮"C和B"实现计划）─────────────────────────────
+# 便宜的规则判断——"这条用户消息像不像是在重新讨论一个方案取舍"——命中才触发
+# recall_related_decisions()，避免每轮都做三段式检索（wiki_shelf_search 最后一段
+# 可能触发 LLM 精排，成本不低）。宁可漏判（少数该提醒的没提醒），也不要错判
+# （把正常讨论误判成"在重新做决定"进而频繁打断），所以关键词故意选得比较窄、
+# 偏向方案取舍类的表达，而不是任何提到技术名词的句子都命中。
+_GATE_KEYWORDS = (
+    "要不要", "换成", "换一种", "换一个", "改成", "改用", "选型", "重构成",
+    "重新设计", "以前是不是", "之前是不是", "为什么用", "为什么选", "为什么不用",
+    "考虑过", "方案", "取舍", "要不要用", "还是用", "对比一下", "哪个更好",
+)
+
+
+def should_trigger_recall(user_message: str) -> bool:
+    """路径 B 的启发式门控：命中任一关键词才认为"值得查一次历史决策"。
+
+    纯字符串包含判断，无正则/无 LLM 调用，成本可忽略。设计成独立的公开函数
+    （而不是内联在调用方），方便后续替换成更精细的规则或加一档 LLM 二次确认
+    （对齐 CompressConfig.topic_shift_detection 的 off/heuristic/llm 分档思路），
+    调用方不需要跟着改。
+    """
+    if not user_message or not isinstance(user_message, str):
+        return False
+    text = user_message.strip()
+    if not text:
+        return False
+    return any(kw in text for kw in _GATE_KEYWORDS)
+
 
 @dataclass
 class DecisionRecallResult:
@@ -116,4 +144,5 @@ __all__ = [
     "find_related_decisions",
     "render_recall_reminder",
     "recall_related_decisions",
+    "should_trigger_recall",
 ]

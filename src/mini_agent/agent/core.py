@@ -435,6 +435,18 @@ class Agent(
             from mini_agent.storage.paths import AgentPaths
             self._profile_mgr = UserProfileManager(AgentPaths(cfg.project_root), user_id=None)
 
+        # [决策/取舍知识提炼计划 5.4 节，路径 C] recall_decisions 只读工具：
+        # 注入 AgentPaths + 复用 client_pool 的 llm_call（跟随 switch_model 切换，
+        # 不固定住某个 client 引用，与上面 library_index 分类兜底 llm_call 同一模式）。
+        # 只读、免审批，注册与否由 CompressConfig.decision_recall_tool_enabled 控制。
+        if getattr(cfg.compress, "decision_recall_tool_enabled", True):
+            from mini_agent.storage.paths import AgentPaths as _DecisionAgentPaths
+            from mini_agent.tools.builtin import configure_decision_recall
+            from mini_agent.perception.memory_factory import build_llm_call as _build_llm_call_dr
+            _dr_pool = self._client_pool
+            _dr_llm_call = lambda prompt: _build_llm_call_dr(_dr_pool.current_client)(prompt)
+            configure_decision_recall(_DecisionAgentPaths(cfg.project_root), llm_call=_dr_llm_call)
+
         # [SYS-SUMMARY] 防止多个摘要/记忆生成任务并发运行（互斥，非阻塞获取）
         self._summary_lock = threading.Lock()
 

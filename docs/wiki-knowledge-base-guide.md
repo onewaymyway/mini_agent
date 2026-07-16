@@ -278,6 +278,23 @@ lesson 分组的 `key` 拼成 `proposal_summary`，调用 `recall_related_decisi
 `recall_related_decisions()` 可以原样复用；目前只有这一个确定性入口，暂不提前
 挂载其它位置。
 
+**日常对话里的两条消费路径**（区别于上面"自我演化提案"这一条离线路径）：
+
+- **路径 C（工具化，`recall_decisions`）**：`tools/builtin.py` 注册了一个只读、
+  免审批的 `recall_decisions` 工具（`CompressConfig.decision_recall_tool_enabled`
+  控制是否注册，默认开启），由 agent 在自己意识到"这是个需要取舍的架构/技术
+  决定"时主动调用，不依赖任何门控命中——哪怕路径 B 的启发式没命中，agent 主动
+  查也能拿到收益，同时覆盖"用户直接问技术选型"这类场景。
+- **路径 B（前置门控自动注入）**：`agent/reminders_correction.py::
+  _maybe_recall_decisions_for_user_message()` 挂在 `turn_loop.py` 里跟
+  `_inject_reminders_for_user_intent()` 同一个时机——每轮用户消息入队后，先用
+  `decision_recall.should_trigger_recall()` 做便宜的关键词判断（"要不要"/
+  "换成"/"选型"/"重构成"等），命中才真正调用 `recall_related_decisions()`。
+  命中结果走跟 lesson reminder 完全一样的一次性注入机制（`_inject_reminder()`，
+  同轮去重，不常驻占用 context）。默认关闭
+  （`CompressConfig.decision_recall_turn_gate_enabled=False`），先观察启发式
+  命中率再决定是否默认打开。
+
 ### 本轮未完成事项（按原计划三阶段对照）
 
 - 阶段一（结构与置信度体系）：已完成。
