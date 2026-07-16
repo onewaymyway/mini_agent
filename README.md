@@ -24,6 +24,7 @@
 | ♻️ 巩固循环 | 后台循环扫描：剪枝候选 + 能力地图 + 跨项目晋升候选 + 知识巩固（分类树生长/合并、实体摘要重写、实体去噪合并），24h 时间门控，`/evolve consolidate` 手动触发 |
 | 📚 图书馆式知识索引 | 分类树自动生长/合并（书架结构）+ 实体目录（冲突检测/近重复合并）+ 两步检索（先定位书架再精排）+ 检索反馈 + 人类纠正→定位旧知识→标记过时闭环 + 知识生命周期时间线查询，`/evolve timeline` 命令 |
 | 🕸️ Wiki 式知识库 | 图书馆式索引的平行新实现：md 页面存储（frontmatter + 显式关系图）+ 双写镜像 + 三段式检索（规则粗筛→图扩展→LLM精排）+ 专题页自动生成，`/wiki` 命令组，与旧检索并存待 A/B 验证 |
+| ⚖️ 决策/取舍知识提炼 | compact 时顺带提炼"考虑过哪些方案/最终选了什么/为什么否决其它方案"结构化决策候选，入队等巩固循环批量合并落盘为 `wiki/decisions/*.md`（命中已有决策则更新，方案变了则推翻旧页新建并双向 `supersedes`/`superseded_by` 串联沿革链），`/evolve review` 生成新提案前自动召回相关历史决策提醒 evolution-agent 避免重复论证或重蹈被否决的方案 |
 | 🧘 本体感知 | ProprioceptionModule：认知负荷/不确定性/风险感知/剩余预算/挫败感轮间快照，frustration 累积触发元认知提示 |
 | 🧭 余裕感知 | AffordanceMap：session 级交叉分析未完成线索/能力地图/经验，生成"当前环境行动机会"摘要注入 system prompt |
 | 🪄 工具透明性 | IntentActionMapper：工具调用按意图（探索/代码编辑/测试/环境配置/版本控制等）分组，写入 traces.jsonl，避免原始流水账 |
@@ -461,7 +462,7 @@ python weixin_bot.py [--project <路径>] [--yes] [--no-stream]
 | `/rollback` | 回退上一轮 |
 | `/evolution log\|show\|diff\|revert` | 查看/审查/回退自我修改历史（Stage 2 安全网） |
 | `/evolve review\|list` | 扫描达标 lesson 并提案/预览新 skill（Stage 3.1） |
-| `/evolve consolidate [--dry-run]` | 手动触发 巩固循环 后台维护（剪枝候选/能力地图/晋升候选/知识巩固，Stage 8） |
+| `/evolve consolidate [--dry-run]` | 手动触发 巩固循环 后台维护（剪枝候选/能力地图/晋升候选/知识巩固/决策候选批量落盘，Stage 8） |
 | `/evolve timeline --entity <id>\|--category <code> [--limit N]` | 查询知识生命周期编年目录（图书馆式索引） |
 | `/wiki <page-id>` | 浏览 wiki 页面：frontmatter 概要 + 正文 + backlinks |
 | `/wiki list [--type T]` \| `/wiki search <query>` \| `/wiki rebuild [--full]` | 列出/三段式检索/重建 wiki 式知识库索引（阶段三/四，与图书馆式索引并存） |
@@ -648,7 +649,7 @@ mini_agent/
 │       │       └── collectors/   # active_window / app_lifecycle / idle / now_playing / cdp_browser 等
 │       ├── wiki/                 # Wiki 式知识库（新增：图书馆式索引的平行实现）
 │       │   ├── parser.py / graph.py / indexer.py / writer.py / validator.py
-│       │   ├── migration.py / dedup.py / search.py / topics.py
+│       │   ├── migration.py / dedup.py / search.py / topics.py / decision_writer.py
 │       │   └── _templates/       # entity/decision/process/experience/topic 五种页面模板
 │       ├── proxy/                # 代理池（新增：科学上网/网络出口管理）
 │       │   ├── pool.py / service.py / local_proxy.py / external_engine.py
@@ -966,3 +967,5 @@ MIT License
 *2026-07 agent.py 拆分为 agent/ 包（Stage 12 代码结构治理）*：原 `src/mini_agent/agent.py`（3907 行, 近 100 个方法的单体类）按职责拆分为 `src/mini_agent/agent/` 包：`core.py`（`Agent` 类骨架 + `__init__`）+ 9 个 Mixin 文件（`lifecycle.py`/`reflection.py`/`profile.py`/`llm_control.py`/`turn_loop.py`/`role_judge.py`/`reminders_correction.py`/`compaction.py`/`snapshot.py`）+ `_helpers.py`（模块级共享辅助函数），`Agent` 通过多重继承组装回同一个类。纯粹搬迁重构，不改变任何方法签名与运行时行为，对外 `from mini_agent.agent import Agent` 导入路径不变。同步修复两处因此暴露的隐藏耦合：① `scripts/protected_paths.py` 原先按精确文件名 `"src/mini_agent/agent.py"` 保护 agentic loop 主循环（T3 治理红线），拆分后已补充目录级条目 `"src/mini_agent/agent/"`，否则自我演化系统会失去对核心循环的保护；② `tools/introspection.py::_get_agent_init_snippet()` 原先只扫描单文件里的 `self.xxx = ` 赋值，已改为遍历整个 `agent/` 目录并标注来源文件。全量 1791 个测试验证通过 1777 个，剩余 14 个失败经确认是拆分之前就存在、与本次改动无关的既存问题（`SkillLoader` 测试桩缺少 `_loaded_resources` 初始化、环境缺少可选依赖 `jsonschema`）。
 
 *2026-07 Wiki 式知识库（`wiki式知识库重构计划.md`）*：图书馆式知识索引之外的一套平行新实现，核心动机是分类树"每条知识只有一个最合适位置"的假设与软件工程知识天然网状的结构不匹配。阶段一（基础设施）：新增 `src/mini_agent/wiki/` 包，`parser.py` 解析 frontmatter + 正文 + `[[link]]` 弱引用的 md 页面（`entity`/`decision`/`process`/`experience`/`topic` 五种类型），`graph.py::GraphIndex` 内存图结构（正向边+反向边，`expand()` 一跳扩展，区分 frontmatter 强关系与正文弱引用），`indexer.py::build_index()` 遍历 `wiki/` 生成 `_index/` 下 `graph.json`/`tags.json`/`backlinks.json`/`search_index.json` 四个可随时删除重建的派生索引（支持增量模式），`writer.py` 原子写，`validator.py` 死链/id冲突/孤儿页面校验。阶段二（迁移与双写）：`migration.py::migrate_entity_store()` 一次性导出脚本 + `mirror_entity()` 双写共用函数，`LibraryIndex.on_new_entry()`/`consolidate()` 命中已有实体页追加"历史沿革"、命中不到新建页面；`dedup.py::find_similar_page()` 判重默认走规则打分（tag重合度+关键词Jaccard）+ 不确定区间才问一次 LLM 确认，embedding 方案保留为显式可选路径，替代原先 `difflib` 字符串相似度。阶段三（检索切换）：新增 `search.py::wiki_shelf_search()` 三段式检索——规则粗筛（tag+关键词打分取 top-N）→ 图扩展（复用 `GraphIndex.expand(strong_only=True)`）→ LLM 精排（完整正文排序+"基于页面:"标注依据），通过 `LibraryIndex.wiki_search()` 暴露，与 `shelf_search` 完全并存、不替换，供后续 A/B 对比效果；`consolidate()` 新增步骤 6，wiki 有写入时自动触发增量索引重建。阶段四（专题页与收尾）：新增 `topics.py::consolidate_topics()`，按 tag 聚类且组内 frontmatter 强链接密度达标（默认页面数≥4、密度≥0.5）时触发 LLM 综合聚合成 `topics/*.md`（`relation: absorbs`），接入 `consolidate()` 步骤 7；新增 `/wiki <page-id>|list|search|rebuild` CLI 命令供人工浏览页面/backlinks 及检索 A/B 对比。顺带修复：核对代码发现 `wiki_paths` 参数虽已加入 `LibraryIndex.__init__` 但 `memory_factory.py` 从未真正传递，导致双写路径此前从未在真实 agent 运行中触发——补上 `MemoryConfig.wiki_enabled`（默认开启）总开关完成接线。"验证新检索路径效果稳定后下线旧路径"这一条有意保留未完成，理由是三段式检索刚落地尚未经过实际 A/B 验证。详见 [Wiki 式知识库指南](docs/wiki-knowledge-base-guide.md)
+
+*2026-07 决策/取舍知识提炼*：在 Wiki 式知识库之上新增一条独立提炼线，专门捕捉"考虑过哪些方案、最终选了什么、为什么否决其它方案"这类工程决策——lesson（规则触发）和 correction（人类显式纠正）都覆盖不到正常推进、没有报错也没人纠正的决策场景。提取：`history/compression.py::LLMSummaryStrategy` 复用 compact 阶段本就要发的那次摘要 LLM 调用，把输出从纯文本摘要改成 `{compact_summary, decisions[]}` 结构化 JSON（`prompts/system/compress_summarizer.md`/`prompts/user/compress_summary_request.md` 同步改造），`history/decision_extraction.py::parse_decision_response()` 负责容错解析（失败退化为纯摘要，不阻断 compact），`CompressConfig.extract_decisions` 开关默认开启。落盘：不再逐条即时落盘导致碎片化，而是 `wiki/decision_writer.py::queue_candidates()` 先把候选 append 到 `.agent/decision_candidates_pending.jsonl` pending 队列，真正的落盘延后到巩固循环（`evolution/consolidation.py::run_consolidation` 新增一步调用 `decision_writer.consolidate_pending()`）批量执行——先合并同一批次里指向同一件事的多条候选（topic slug 相同或 related_entities 有交集，只留最新一条 chosen），再走 `process_candidates()` 三分支逻辑（命中已有决策页且方案一致→只更新；命中但方案变了→旧页 `status` 改 `overturned`、新建页用 `supersedes`/`superseded_by` 双向串联沿革链；未命中→新建 `status=settled`），"新建"动作额外套 8.5 节奏治理冷却（`CompressConfig.decision_batch_min_interval_days` 可调，默认 1 天）避免同一决定短期内被反复提炼出候选。决策页 `confidence` 固定 0.5（低于 lesson 的 0.6 与 human correction 的 0.7），`parser.py::STATUS_VALUES` 新增 `settled`/`overturned`，`validator.py` 新增 supersedes/superseded_by 成对性校验。召回：`evolution/decision_recall.py::recall_related_decisions()` 复用 `wiki_shelf_search()` 三段式检索、限定 `type=decision`，按 `settled`（"已采纳过，请先确认是否要重复论证"）/`overturned`（"之前被否决，请先确认新提案是否相同"）分别渲染提醒文字，接入 `cli/commands/evolve.py::_spawn_evolution_agent()`——`/evolve review` spawn evolution-agent 前自动查一遍相关历史决策并把提醒前置注入 task context，异常静默降级不影响主流程；详见 [Wiki 式知识库指南](docs/wiki-knowledge-base-guide.md) 九·2 节、[巩固循环 后台循环指南](docs/self-evolution-consolidation-guide.md) 4.4 节

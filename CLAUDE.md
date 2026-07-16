@@ -36,7 +36,7 @@
 - `src/mini_agent/prompts/` — Prompt 管理
 - `src/mini_agent/storage/` — 存储层（`paths.py` 含 `session_plan_snapshot`/`session_notepad`/`task_manifest`/`workdir_xxx`/`global_xxx` 等路径方法）
 - `src/mini_agent/env_info/` — 环境信息采集与注入（Provider 抽象基类 + 注册表 + 内置 Provider）
-- `src/mini_agent/evolution/` — 自我演化机制：`state_repo.py`（唯一写入入口，Stage 9 加 `initiator` T0→T1 上浮）/`validators.py`（分级校验）/`workspace.py`（worktree 隔离）/`eval_runner.py`（eval 反馈环）/`consolidation.py`（Stage 8 后台循环：剪枝/能力地图/Scope 晋升/节奏治理）/`autonomous_loop.py`（Stage 9 三档位 tick + ExplorationSandbox + SoftGoalDeriver 接入）/`resource_arbiter.py`（Stage 9 资源仲裁 + activity_digest.jsonl + 六分组 build_digest_summary；五条仲裁规则，第五条 `_check_user_presence()` 为具身×自治方案二新增）/`cron_scheduler.py`（Stage 9 定时任务：interval/cron 双格式，5 个内置系统 job）/`objective_executor.py`（Stage 9 Objective 多步持续执行引擎）/`soft_goal_deriver.py`（Stage 9 autonomous 档位软目标 derive：三路信号 + ExplorationSandbox 验证；另接入高风险域降权/uncertainty域加权/负面回填域降权三个具身×自治信号）/`outcome_tracker.py`（效果回填：baseline/post 触发次数对比判定 verdict，`worsened` 时回写 `eval_failure` lesson + 发布 `evolution.outcome_negative` 事件，供 `AgentSelfModel.recent_negative_outcome_domains()` 桥接消费）/`memory_aging.py`（具身改进 C2，lesson 按 source + occurrence_count 计算专属时间衰减半衰期）/`self_maintenance.py`（具身改进 C4，SelfMaintenanceModule：stale_tools/stale_skills/conflicting_lessons 健康检查，SessionEnd 时间门控 + `sys:self_maintain` cron job）
+- `src/mini_agent/evolution/` — 自我演化机制：`state_repo.py`（唯一写入入口，Stage 9 加 `initiator` T0→T1 上浮）/`validators.py`（分级校验）/`workspace.py`（worktree 隔离）/`eval_runner.py`（eval 反馈环）/`consolidation.py`（Stage 8 后台循环：剪枝/能力地图/Scope 晋升/节奏治理）/`autonomous_loop.py`（Stage 9 三档位 tick + ExplorationSandbox + SoftGoalDeriver 接入）/`resource_arbiter.py`（Stage 9 资源仲裁 + activity_digest.jsonl + 六分组 build_digest_summary；五条仲裁规则，第五条 `_check_user_presence()` 为具身×自治方案二新增）/`cron_scheduler.py`（Stage 9 定时任务：interval/cron 双格式，5 个内置系统 job）/`objective_executor.py`（Stage 9 Objective 多步持续执行引擎）/`soft_goal_deriver.py`（Stage 9 autonomous 档位软目标 derive：三路信号 + ExplorationSandbox 验证；另接入高风险域降权/uncertainty域加权/负面回填域降权三个具身×自治信号）/`outcome_tracker.py`（效果回填：baseline/post 触发次数对比判定 verdict，`worsened` 时回写 `eval_failure` lesson + 发布 `evolution.outcome_negative` 事件，供 `AgentSelfModel.recent_negative_outcome_domains()` 桥接消费）/`memory_aging.py`（具身改进 C2，lesson 按 source + occurrence_count 计算专属时间衰减半衰期）/`self_maintenance.py`（具身改进 C4，SelfMaintenanceModule：stale_tools/stale_skills/conflicting_lessons 健康检查，SessionEnd 时间门控 + `sys:self_maintain` cron job）/`decision_recall.py`（决策/取舍知识提炼计划"提案前主动召回"：`recall_related_decisions()` 复用 wiki 三段式检索限定 `type=decision`，接入 `/evolve review` 的 `_spawn_evolution_agent()`）
 - `scripts/protected_paths.py` — 受保护路径清单（T3 治理红线，独立于 `src/mini_agent/` 包，自我演化相关安全机制使用）
 - `weixin_bot.py` — 微信端接入入口（与 `main.py` 同级，内嵌 `mini_agent`，每个 openid 独立 Agent 实例，权限审批走微信消息 + `threading.Event` 而非终端阻塞）；`Agent()` 首次构造必须经由 `loop.run_in_executor()` 丢进线程池，不能在 `on_text` 协程里同步调用，否则 `MCPManager.register_all()` 内部的 `run_coroutine_threadsafe(...).result()` 会在事件循环自身线程里死锁（详见 [微信接入指南](docs/weixin-bot-guide.md) 第 3 节）
 - `apps/weixin_plugin/weixin/` — 微信网关 SDK（`bot.py`/`types.py`/`login.py`），供 `weixin_bot.py` 使用
@@ -211,6 +211,7 @@ mini-agent user token u_a1b2c3d4                       # 重新生成 token
 - `dedup.py` — `find_similar_page()`：页面相似度判断，默认规则打分（tag重合度+关键词Jaccard加权）+ 不确定区间只对 top-1 候选问一次 LLM 确认，`find_similar_page_embedding()` 保留为需显式传 `embed_call` 才启用的可选路径，两者互斥
 - `search.py` — `wiki_shelf_search()`：三段式检索（规则粗筛 → `GraphIndex.expand(strong_only=True)` 图扩展 → LLM 精排，精排要求回答后标注"基于页面:"解析进 `grounded_page_ids`），`LibraryIndex.wiki_search()` 暴露给外部，与 `shelf_search()` 并存不替换，`stage_reached` 标注实际走到哪一段
 - `topics.py` — `consolidate_topics()`：按 tag 聚类且组内 frontmatter 强链接密度达标（默认页面数≥4、密度≥0.5）时触发 LLM 综合聚合成 `topics/*.md`（`relation: absorbs`），已生成过的 tag（读 `source_tag` frontmatter）会被排除避免重复生成，接入 `LibraryIndex.consolidate()` 步骤 7
+- `decision_writer.py` — **[2026-07 新增]** 决策/取舍知识提炼落盘：`queue_candidates()` 供 compact 阶段把决策候选 append 到 `.agent/decision_candidates_pending.jsonl`（不落盘）；`consolidate_pending()` 供巩固循环批量消费——合并同批次指向同一件事的候选后调用 `process_candidates()`（命中已有决策页且方案一致→更新；方案变了→旧页 `status=overturned`、新建页用 `supersedes`/`superseded_by` 双向串联；未命中→新建 `status=settled`），"新建"动作套 `evolution/consolidation.py::rhythm_is_allowed()` 冷却
 - `_templates/` — `entity.md`/`decision.md`/`process.md`/`experience.md`/`topic.md` 五种页面类型的 frontmatter 骨架
 
 ### HTTP API (`src/mini_agent/api/`)
@@ -254,7 +255,8 @@ mini-agent user token u_a1b2c3d4                       # 重新生成 token
 ### 历史管理 (`src/mini_agent/history/`)
 
 - `__init__.py` — 公开接口导出
-- `compression.py` — 历史压缩算法（turn_aligned / sliding_window / llm_summary / **selective**）
+- `compression.py` — 历史压缩算法（turn_aligned / sliding_window / llm_summary / **selective**）；`LLMSummaryStrategy` 顺带请求结构化 `{compact_summary, decisions[]}` JSON，`decisions` 只 `wiki/decision_writer.py::queue_candidates()` 入队，不在此处落盘（`CompressConfig.extract_decisions`）
+- `decision_extraction.py` — **[2026-07 新增]** `parse_decision_response()` 解析 compact 阶段 LLM 输出的决策候选 JSON（容错：解析失败退化为纯摘要），`DecisionCandidate.to_dict()`/`from_dict()` 供 pending 队列 JSONL 序列化
 - `triggers.py` — **[2026-07 新增]** Compact 触发器框架（`CompactTrigger` / `CompositeTrigger`），决定"何时"触发压缩，与 `compression.py` 决定"怎么压缩"分离
 - `raw_history.py` — Raw history 管理器（JSONL 即时落盘，每次 append() 立即写文件 + fsync，防崩溃丢失）
 - `entry.py` — 历史条目类型定义（HType 枚举）、构造辅助函数、时间戳生成（本地时间 + 时区偏移）
@@ -558,6 +560,7 @@ mini-agent user token u_a1b2c3d4                       # 重新生成 token
 - **8.4 Scope 晋升**：`check_scope_promotion()` 读 `cross_project_index.json`，判据 `observed_in_projects ≥ 2` 且 `confidence ≥ 0.70` 且 `global_skill_candidate=true`，当前只输出候选列表（`PromotionCandidate`），不直接调用 `skill_propose`
 - **8.5 节奏治理**：`rhythm_is_allowed()`/`record_proposal()`，7 天冷却期，可对任意 `(proposal_type, key)` 限流——回应设计文档开放问题 1（T1 自动合并的观察期）
 - **8.6 知识巩固（图书馆式索引）**：`run_consolidation()` 顺带调用 `LibraryIndex.consolidate()`——未分类候选批量聚类生长分类节点、分类树按关键词 Jaccard 相似度合并收敛、攒够证据的实体摘要批量重写（含冲突检测）、实体去噪+近重复合并；结果并入 `ConsolidationReport.knowledge_consolidation`，`/evolve consolidate` 报告展示；新增 `/evolve timeline --entity <id>|--category <code>` 查询知识生命周期编年目录
+- **决策候选批量落盘（对应决策/取舍知识提炼计划）**：`run_consolidation()` 顺带调用 `wiki/decision_writer.py::consolidate_pending()`——批量读取 compact 阶段入队的 `.agent/decision_candidates_pending.jsonl`，合并同批次指向同一件事的候选后落盘（更新/推翻新建/新建三分支），"新建"套本节 8.5 节奏治理冷却；结果并入 `ConsolidationReport.decision_consolidation`，`/evolve consolidate` 报告展示；详见 [巩固循环 后台循环指南](docs/self-evolution-consolidation-guide.md) 4.4 节
 - **核心模块**：`evolution/consolidation.py`（`run_consolidation()` 整体入口）+ `cli/commands/evolve.py`（`_handle_consolidation()`）+ `agent/reflection.py`（`_maybe_run_consolidation()`，SessionEnd 时间门控接入点）
 - 详见 [巩固循环 后台循环指南（Stage 8）](docs/self-evolution-consolidation-guide.md)、[图书馆式知识索引指南](docs/library-index-guide.md)
 
@@ -570,6 +573,16 @@ mini-agent user token u_a1b2c3d4                       # 重新生成 token
 - **阶段三（检索切换）**：`search.py::wiki_shelf_search()` 三段式检索——规则粗筛 → `GraphIndex.expand(strong_only=True)` 图扩展 → LLM 精排（标注"基于页面:"依据），`LibraryIndex.wiki_search()` 暴露，与 `shelf_search()` 完全并存不替换；`consolidate()` 新增步骤 6 自动触发增量索引重建
 - **阶段四（专题页与收尾）**：`topics.py::consolidate_topics()` 按 tag 聚类且强链接密度达标（默认页面数≥4、密度≥0.5）时 LLM 综合聚合成 `topics/*.md`，接入 `consolidate()` 步骤 7；新增 `/wiki <page-id>|list|search|rebuild` 命令；"验证新检索路径效果稳定后下线旧路径"这一条有意保留未完成
 - **接线修复**：`wiki_paths` 参数虽在阶段二就加入 `LibraryIndex.__init__`，但 `memory_factory.py` 此前从未真正传递过，双写路径在真实 agent 运行中从未被触发；本次补上 `MemoryConfig.wiki_enabled`（默认开启）完成接线
+
+### 决策/取舍知识提炼
+
+> 对应《决策/取舍知识提炼计划》，Wiki 式知识库 `decision` 页面类型之上的独立提炼线，捕捉 lesson（规则触发）和 correction（人类显式纠正）都覆盖不到的场景——正常推进、没报错也没人纠正时做出的工程决策取舍
+
+- **提取**：`history/compression.py::LLMSummaryStrategy` 复用 compact 阶段本就要发的摘要 LLM 调用，输出改成 `{compact_summary, decisions[]}` 结构化 JSON；`history/decision_extraction.py::parse_decision_response()` 容错解析（失败退化为纯摘要，不阻断 compact）；`CompressConfig.extract_decisions` 默认开启
+- **批量节流落盘**：compact 阶段只调用 `wiki/decision_writer.py::queue_candidates()` 把候选 append 到 `.agent/decision_candidates_pending.jsonl`，不立即落盘；巩固循环（`run_consolidation()`）批量调用 `consolidate_pending()`——先合并同批次里指向同一件事的多条候选（topic slug 相同或 `related_entities` 有交集，只留最新一条 `chosen`），再走 `process_candidates()` 三分支（命中且方案一致→只更新；命中但方案变了→旧页 `status=overturned` + 新建页 `supersedes`/`superseded_by` 双向串联沿革链；未命中→新建 `status=settled`），"新建"动作套 8.5 节奏治理冷却（`CompressConfig.decision_batch_min_interval_days`，默认 1 天）
+- **置信度与状态**：决策页 `confidence` 固定 `0.5`（低于 lesson 的 0.6、human correction 的 0.7，因为决策复盘是 agent 对自身历史行为的二次解读，主观重构风险更高）；`parser.py::STATUS_VALUES` 新增 `settled`/`overturned`，`validator.py` 新增 supersedes/superseded_by 成对性校验
+- **提案前主动召回**：`evolution/decision_recall.py::recall_related_decisions()` 复用 `wiki_shelf_search()` 三段式检索、限定 `type=decision`，按 `settled`/`overturned` 分别渲染提醒文字；已接入 `cli/commands/evolve.py::_spawn_evolution_agent()`——`/evolve review` spawn evolution-agent 前自动查一遍相关历史决策，把提醒前置注入 task context，异常静默降级不影响主流程
+- 详见 [Wiki 式知识库指南](docs/wiki-knowledge-base-guide.md) 九·2 节、[巩固循环 后台循环指南](docs/self-evolution-consolidation-guide.md) 4.4 节
 - 详见 [Wiki 式知识库指南](docs/wiki-knowledge-base-guide.md)
 
 ### 自主运行时（Stage 9 / Phase H）
