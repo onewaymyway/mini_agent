@@ -334,6 +334,26 @@ def load_config(
         compact_precheck_enabled=_fb("compact_precheck_enabled", None, True),
         compact_precheck_threshold=_fn("compact_precheck_threshold", None, 0.85),
         model_context_window=_fn("model_context_window", None, 0),
+        # [compact_mechanism_improvement_plan P0/P1/P2，2026-07 三次更新]
+        # 此前遗漏了从配置文件读取（dataclass 默认值无条件生效，导致
+        # agent_config.json 里配置这些字段永远不生效），补齐 flat-key 映射：
+        goal_aware_weighting_enabled=_fb("compact_goal_aware_weighting_enabled", None, False),
+        decision_extraction_on_compact_with_skills_enabled=_fb(
+            "compact_decision_extraction_enabled", None, False
+        ),
+        decision_recall_tool_enabled=_fb("compact_decision_recall_tool_enabled", None, True),
+        safe_point_gating_enabled=_fb("compact_safe_point_gating_enabled", None, False),
+        composite_intensity_enabled=_fb("compact_composite_intensity_enabled", None, False),
+        composite_intensity_threshold=_fn(
+            "compact_composite_intensity_threshold", None, 1.2
+        ),
+        audit_enabled=_fb("compact_audit_enabled", None, False),
+        audit_async=_fb("compact_audit_async", None, True),
+        **(
+            {"audit_compact_reasons": file_cfg["compact_audit_reasons"]}
+            if isinstance(file_cfg.get("compact_audit_reasons"), list)
+            else {}
+        ),
     )
 
     tool_trim_cfg = ToolTrimConfig(
@@ -704,6 +724,9 @@ def load_config(
         agent_name=_agent_name,
         system_message_format=_sys_msg_fmt,
         notepad_enabled=_fb("notepad_enabled", None, True),
+        # [compact_mechanism_improvement_plan P2-B]
+        recall_history_enabled=_fb("recall_history_enabled", None, False),
+        recall_history_mode=_f("recall_history_mode", None) or "keyword",
         # 子配置块
         memory=memory_cfg,
         compress=compress_cfg,

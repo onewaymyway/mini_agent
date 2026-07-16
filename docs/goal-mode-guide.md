@@ -165,6 +165,13 @@ Evaluator 仍然在每次 `run_turn` 内部做质量把关，GoalRunner 在更�
 > 两边的阈值配置（`consecutive_same_feedback_limit` 等 vs
 > `consecutive_same_output_limit` 等）仍然完全独立，互不影响。
 
+> **[compact_mechanism_improvement_plan.md P0-A]** 上面第 1 步"执行一次
+> compact"时，若 `compress.goal_aware_weighting_enabled=true`（默认关闭），
+> `GoalRunner._build_goal_aware_compact_hint()` 会把当前尚未通过的验收标准
+> 拼成一段提示，通过 `compact_with_skills(goal_hint=...)` 传给压缩 prompt，
+> 让 LLM 生成摘要时优先保留与未完成目标相关的信息，而不是等权重摘要所有
+> 内容。详见 [Compact 设计文档](compact-design.md#p0-a目标相关性动态权重goal_mode-卡住恢复)。
+
 ### "是否卡住"的判定方式：LLM 语义判断 优先于 文本相似度规则
 
 > 对应 [`next_doc/goal_mode_completion_improvement_plan.md`](../next_doc/goal_mode_completion_improvement_plan.md) 改造项一。

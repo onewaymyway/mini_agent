@@ -702,6 +702,18 @@ mini-agent self status
 
 详见 [记事本机制说明](notepad-guide.md)。
 
+### 决策/历史检索（`tools/builtin.py`、`tools/recall_history.py`）
+
+| 工具 | 说明 |
+|------|------|
+| `recall_decisions` | 只读、免审批。检索 [Compact 机制改进 P0-B](compact-design.md#p0-b-compact-兼做经验沉淀检查点) 从历次 compact 摘要里提炼并沉淀的结构化技术决策（`topic`/`chosen`/`rejected_because`），需 `compress.decision_recall_tool_enabled=true`（默认开启） |
+| `recall_from_raw_history` | 只读、免审批。检索 [Compact 机制改进 P2-B](compact-design.md#p2-b-raw-history-按需找回工具) 全量持久化的原始对话记录（含已被 compact 掉的片段），按关键词匹配返回命中片段和近似 turn 编号，需 `recall_history_enabled=true`（默认关闭） |
+
+两者分工：`recall_decisions` 检索"已经提炼过的决策结论"，`recall_from_raw_history`
+检索"未经提炼的原始对话内容"——前者更省 token、适合"这个技术选型当时为什么这么定"
+这类问题；后者更完整、适合"我记得处理过这个但细节记不清了"这类问题。工具本身均
+**始终**注册在全局 registry 中，关闭时调用直接返回错误提示，不影响模型看到工具定义。
+
 ### 用户交互（user_input.py）
 
 | 工具 | 说明 |

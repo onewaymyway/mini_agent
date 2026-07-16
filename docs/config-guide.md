@@ -111,6 +111,19 @@ class CompressConfig:
     redundancy_tool_result_ratio: float = 0.6
     compact_cooldown_turns: int = 3
     require_confirmation: bool = False
+
+    # ── compact_mechanism_improvement_plan.md P0/P1/P2（2026-07 三次更新，均默认关闭）──
+    goal_aware_weighting_enabled: bool = False
+    decision_extraction_on_compact_with_skills_enabled: bool = False
+    decision_recall_tool_enabled: bool = True
+    safe_point_gating_enabled: bool = False
+    composite_intensity_enabled: bool = False
+    composite_intensity_threshold: float = 1.2
+    audit_enabled: bool = False
+    audit_compact_reasons: list = field(default_factory=lambda: [
+        "topic_shift_heuristic", "topic_shift_llm", "stuck_recovery_deep",
+    ])
+    audit_async: bool = True
 ```
 
 | 字段 | 说明 |
@@ -124,8 +137,21 @@ class CompressConfig:
 | `redundancy_detection_enabled` / `redundancy_tool_result_ratio` | `tool_result` 消息占比超过此值时触发（历史信息冗余），建议策略 `selective` |
 | `compact_cooldown_turns` | compact 后这么多轮内，除 token 硬阈值外的其他触发器不生效，防止反复触发 |
 | `require_confirmation` | `False`（默认）全自动静默压缩；`True` 触发后先询问用户 y/n，拒绝则本次跳过 |
+| `goal_aware_weighting_enabled`（P0-A） | goal_mode 卡住恢复触发 compact 时，是否把未通过的验收标准作为 hint 传给 `compact_with_skills()`，让摘要优先保留目标相关信息 |
+| `decision_extraction_on_compact_with_skills_enabled`（P0-B） | compact 摘要是否额外要求 LLM 附带结构化决策候选块，解析后入队沉淀（复用 `wiki/decision_writer.py` 巩固循环） |
+| `decision_recall_tool_enabled` | 是否注册 `recall_decisions` 只读工具（检索 P0-B 沉淀下来的决策，工具本身始终注册，关闭时功能层面禁用） |
+| `safe_point_gating_enabled`（P1-A） | 非 token 硬阈值的触发命中，若落在有副作用工具调用链条中间（`bash`/`write_file` 等），是否挂起等到安全点再执行 |
+| `composite_intensity_enabled` / `composite_intensity_threshold`（P1-B） | 硬触发均未命中时，是否把各触发器的"接近阈值程度"求和，达到阈值也视为命中一次 `composite_intensity` 软触发 |
+| `audit_enabled` / `audit_compact_reasons` / `audit_async`（P2-A） | deep compact（默认仅话题切换/卡住恢复）完成后是否异步执行一次 LLM 质量自检，发现遗漏信息时追加历史条目 + 写 `activity_digest.jsonl` |
 
-> 各触发器相互独立、可任意组合开启，详见 [Compact 设计文档](compact-design.md)。
+> 各触发器相互独立、可任意组合开启；P0/P1/P2 六项改造的设计取舍和实施状态详见
+> [Compact 设计文档](compact-design.md)（"Compact 机制主动化改进"一节）
+> 与源设计文档 `next_doc/compact_mechanism_improvement_plan.md`。
+
+> 平坦 key 映射：`compact_goal_aware_weighting_enabled` / `compact_decision_extraction_enabled` /
+> `compact_decision_recall_tool_enabled` / `compact_safe_point_gating_enabled` /
+> `compact_composite_intensity_enabled` / `compact_composite_intensity_threshold` /
+> `compact_audit_enabled` / `compact_audit_reasons`（JSON 数组）/ `compact_audit_async`。
 
 ### PerceptionConfig
 
@@ -597,6 +623,28 @@ notepad_enabled: bool = True  # 记事本功能总开关，默认开启
 `notepad.json`；`notepad_*` 工具调用会返回错误提示（工具本身仍注册在全局
 registry 中，与其它 `xxx_enabled` 开关的既有取舍一致——只是功能层面禁用，
 不会让模型看不到工具定义）。详见 [记事本机制说明](notepad-guide.md)。
+
+### `recall_history_enabled` / `recall_history_mode`（AppConfig 直接字段，P2-B）
+
+```python
+recall_history_enabled: bool = False   # recall_from_raw_history 工具总开关，默认关闭
+recall_history_mode: str = "keyword"   # "keyword"（已实现）| "embedding"（预留，未实现）
+```
+
+`agent_config.json` 中配置：
+
+```json
+{
+  "recall_history_enabled": true,
+  "recall_history_mode": "keyword"
+}
+```
+
+开启后，agent 可以主动调用 `recall_from_raw_history(query, max_results=5)`
+按关键词在当前 session 的完整 raw history（含已被 compact 掉的片段）里检索
+原始内容，用于"隐约记得处理过某事但当前上下文已经找不到细节"的场景。工具本身
+**始终**注册在全局 registry 中（与 `notepad_enabled` 一致的取舍），关闭时调用
+直接返回错误提示，不做任何检索。详见 [Compact 设计文档](compact-design.md#p2-b-raw-history-按需找回工具)。
 
 ### BehaviorConfig（用户行为感知系统，独立配置文件）
 

@@ -77,6 +77,7 @@ Assistant 回复      [assistant_reply]   Assistant 回复    [assistant_reply, 
 | `assistant_reply` | 正常 assistant 回复 | `assistant` |
 | `compressed` | auto-compress 占位符 | `user` |
 | `compact_summary` | /compact 摘要占位符 | `assistant` |
+| `compact_supplement` | [Compact 机制改进 P2-A](compact-design.md#p2-a压缩质量事后自检--lesson-反馈闭环) 压缩质量事后自检发现摘要遗漏决定性信息（约束条件/失败原因/用户明确要求）时，追加回历史的补充条目；与 `format_correction` 一样借用 `user` 角色，让模型能"看到"这段系统补充说明 | `user` |
 | `compact_event` | **Raw History 专用**：compact 操作记录 | `user` |
 
 `compact_event` 只出现在 Raw History 中，`to_llm_messages()` 遇到它会直接跳过。

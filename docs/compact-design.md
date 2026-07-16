@@ -243,6 +243,131 @@ CompositeTrigger
 加入 `build_default_triggers()` 返回的列表即可，无需修改 `agent.py` 主循环逻辑
 （与 `history/compression.py` 的 `CompressionStrategy` 注册表是同一设计哲学）。
 
+## Compact 机制主动化改进（`next_doc/compact_mechanism_improvement_plan.md`）
+
+2026-07 三次更新新增六项独立改造，全部遵循"配置默认关闭 → 不改变现有行为 →
+用户按需开启"的原则；来源设计文档见 `next_doc/compact_mechanism_improvement_plan.md`
+（含每项的取舍说明和实施状态表）。
+
+### P0-A：目标相关性动态权重（goal_mode 卡住恢复）
+
+Goal 模式下，`GoalRunner` 判定卡住（stuck）触发恢复性 compact 时，会把当前
+尚未通过的验收标准拼成一段提示（`_build_goal_aware_compact_hint()`），通过
+`compact_with_skills(goal_hint=...)` 传给压缩 prompt，让 LLM 生成摘要时优先
+保留与未完成目标相关的信息，而不是等权重摘要所有内容。
+
+> 实际落地路径与最初设计（改造 `SelectiveStrategy` 打分函数）不同：因为项目
+> 默认压缩策略已经是 `compact_with_skills`（`SelectiveStrategy` 只是保留的
+> 轻量退回路径），改造默认路径收益更大，实现上更简单。
+
+开关：`compress.goal_aware_weighting_enabled`（默认 `false`）。
+
+### P0-B：Compact 兼做经验沉淀检查点
+
+`compact_with_skills()` 生成摘要时，若开关打开，会要求 LLM 在摘要末尾追加一段
+`===DECISIONS_JSON===...===END_DECISIONS_JSON===` 结构化块，描述本轮对话里做过的
+关键技术决策（`topic` / `options_considered` / `chosen` / `rejected_because`）。
+`CompactionMixin._extract_and_queue_decisions_from_compact_result()` 剥离并解析
+这个块，转成 `DecisionCandidate` 列表，复用 `wiki/decision_writer.py` 已有的
+pending 队列 + 巩固循环批量落盘（不新增落盘路径）；解析/入队失败静默跳过，
+不影响摘要文本本身（该块总会被剥离，避免格式指令泄漏进最终摘要）。
+
+沉淀下来的决策可以通过 `recall_decisions` 工具（见 `tools/builtin.py`）由 agent
+主动检索——这是 P0-B 与 P2-B（`recall_from_raw_history`）的分工边界：前者检索
+"提炼过的决策"，后者检索"原始对话片段"。
+
+开关：`compress.decision_extraction_on_compact_with_skills_enabled`（默认 `false`）。
+
+### P1-A：安全点判定（`history/triggers.py::SafePointGate`）
+
+问题：非 token 硬阈值的触发命中（轮次计数/工具调用计数/冗余检测/话题切换）如果
+恰好落在"一次多步骤有副作用操作执行到一半"（例如连续几次 `bash`/`write_file`
+调用还没执行完），被打断可能导致执行上下文断裂。
+
+`SafePointGate.is_safe_point(ctx)` 判定当前是否处于安全点：
+- history 为空，或最后一条消息本身就是真实用户输入（turn 边界）→ 安全；
+- 否则回溯最近若干条消息（`_SAFE_POINT_LOOKBACK=8`，直到遇到 turn 边界为止），
+  只要出现过 `permissions.py::_RISKY_TOOLS`（`bash`/`write_file`/`patch_file`/
+  `delete_file`/`create_file`/`skill_propose`）里的工具调用，就判定不安全。
+
+`CompositeTrigger` 命中软触发但落在不安全点时，会把这次命中挂起（保存在
+`CompositeTrigger._pending` 实例字段上，**不落盘**，因为 Agent 生命周期内
+持有的是同一个 `CompositeTrigger` 实例），本轮不执行 compact；下一次
+`check()` 调用时若已到达安全点，直接放行挂起结果，不需要重新满足触发条件。
+`token_threshold`（`bypass_cooldown=True`）不受此限制，始终立即执行。
+
+开关：`compress.safe_point_gating_enabled`（默认 `false`）。
+
+### P1-B：触发信号强度叠加
+
+问题：多个软触发器可能"各自都接近但都没达到自身阈值"（例如轮次计数达到
+60%、工具调用计数达到 70%），传统 OR 组合逻辑下谁都不会触发，直到某一个
+单独越线，可能错过更早的"综合信号已经很强"的时机。
+
+每个 `CompactTrigger` 新增 `intensity_hint(ctx, cfg) -> float`（0~1，默认 0，
+不参与叠加）钩子，`TurnCountTrigger` / `ToolCallCountTrigger` /
+`RedundancyTrigger` 提供了各自"接近阈值程度"的实现（`TopicShiftTrigger`
+本身是布尔判断，没有天然的连续度量，不参与叠加）。所有硬触发都未命中时，
+若 `composite_intensity_enabled` 开启，`CompositeTrigger.check()` 会把各触发器
+的 `intensity_hint()` 求和，超过 `composite_intensity_threshold`（默认 `1.2`）
+也视为命中一次 `composite_intensity` 软触发，建议策略 `selective`。
+
+开关：`compress.composite_intensity_enabled` / `compress.composite_intensity_threshold`（默认 `false` / `1.2`）。
+
+### P2-A：压缩质量事后自检 + lesson 反馈闭环
+
+`history/compact_audit.py::audit_compact_quality()`：单次 LLM 调用，输入
+"压缩后的摘要 + 压缩前原始片段（从最新往前截断到预算内，默认 6000 字符）"，
+判断摘要是否遗漏了决定性信息（约束条件 / 失败原因 / 用户明确要求）。这是
+**事后**校验，不阻塞主流程——任何异常都静默降级为"无遗漏"。
+
+`CompactionMixin._maybe_audit_compact_quality()` 只对
+`compress.audit_compact_reasons` 白名单里的触发原因生效（默认
+`topic_shift_heuristic` / `topic_shift_llm` / `stuck_recovery_deep`，即非高频
+触发），避免 `turn_count`/`tool_call_count` 这类高频触发都额外增加一次 LLM
+调用成本；挂在 `_auto_compress_history()` 里 `compact_with_skills()` 调用之后，
+默认在后台线程异步执行（`compress.audit_async=True`），不阻塞当前轮次返回。
+
+发现遗漏时，`_apply_compact_audit_issue()` 做两件事：
+1. 追加一条 `compact_supplement` 历史条目（新增 `HType.COMPACT_SUPPLEMENT`，
+   见 [历史类型化设计](history-typed-design.md)），把遗漏信息补回当前历史，
+   模型下一轮就能看到；
+2. 写入 `<project_root>/.agent/activity_digest.jsonl`（`type=compact_audit_issue`，
+   含 `trigger_reason` / `missing_info`），累计"哪种触发原因遗漏率更高"的统计，
+   供后续 `evolution/soft_goal_deriver.py` 等 lesson/软目标衍生链路消费
+   （本次只负责把数据写出来，消费端是后续独立的小改造）。
+
+可能运行在后台线程里的写操作（历史追加、raw history 追加）用
+`Agent._compact_audit_lock` 保护并发。
+
+开关：`compress.audit_enabled` / `compress.audit_compact_reasons` / `compress.audit_async`（默认 `false` / 见上 / `true`）。
+
+### P2-B：Raw history 按需找回工具
+
+`raw_history.jsonl` 一直全量持久化压缩前的所有原始记录，但此前只是"死档案"，
+agent 自己运行中无法主动检索找回。新增只读、免审批工具
+`recall_from_raw_history(query, max_results=5)`（`tools/recall_history.py`）：
+
+- 复用 `history/triggers.py::_simple_keywords` 做关键词匹配（不引入向量检索
+  依赖），按重合度降序 + 时间倒序返回命中片段，附带近似 turn 编号
+  （`turn_index` / `turns_ago`）；
+- 跳过 `compact_event`/`compressed`/`compact_summary`/`session_resume` 等占位符
+  类型条目；
+- 沿用 `tools/notepad.py::configure_notepad_store` 的线程本地 provider 注入
+  模式（`configure_recall_history()`，在 `agent/lifecycle.py` 里紧邻 notepad
+  那行调用），注入的是"当前 session 的 raw history 条目列表"懒引用（活的
+  `list` 引用，每次调用都拿最新数据，无需重新解析磁盘文件）；
+- 工具本身**始终**注册在全局 registry（与 `notepad_enabled` 等既有取舍
+  一致），未启用/未配置时调用直接返回错误提示字符串，不抛异常。
+
+意义：给更激进的压缩策略兜底——反正删掉的东西找得回来，压缩策略可以更敢于
+"压狠一点"，把"怕删错"这个心理负担从压缩阶段转移到"按需找回"阶段。
+
+开关：`recall_history_enabled` / `recall_history_mode`（AppConfig 顶层字段，默认 `false` / `"keyword"`；`"embedding"` 档预留未实现）。
+
+> P3（预测式压缩节奏）仍停留在设计阶段，依赖 P0-B / P2-A 积累的真实数据，
+> 详见 `next_doc/compact_mechanism_improvement_plan.md` 第 7 节。
+
 ## 配置项
 
 | 配置项 | 默认值 | 说明 |
@@ -260,13 +385,29 @@ CompositeTrigger
 | `compress.redundancy_tool_result_ratio` | `0.6` | `tool_result` 占比超过此值触发 |
 | `compress.compact_cooldown_turns` | `3` | compact 后冷却轮数，期间非硬约束触发器不生效 |
 | `compress.require_confirmation` | `false` | 触发后是否需要用户 y/n 确认才执行 |
+| `compress.goal_aware_weighting_enabled`（P0-A） | `false` | goal_mode 卡住恢复 compact 时是否传入目标相关性 hint |
+| `compress.decision_extraction_on_compact_with_skills_enabled`（P0-B） | `false` | compact 摘要是否额外提取决策候选并入队沉淀 |
+| `compress.decision_recall_tool_enabled` | `true` | 是否注册 `recall_decisions` 只读工具（沉淀决策检索，区别于 P2-B 的原始片段检索） |
+| `compress.safe_point_gating_enabled`（P1-A） | `false` | 软触发命中是否需要等到安全点才真正执行 compact |
+| `compress.composite_intensity_enabled`（P1-B） | `false` | 硬触发均未命中时是否叠加各触发器的"接近阈值程度" |
+| `compress.composite_intensity_threshold`（P1-B） | `1.2` | 强度叠加总和达到此值即视为命中 `composite_intensity` 软触发 |
+| `compress.audit_enabled`（P2-A） | `false` | deep compact 完成后是否执行一次压缩质量事后自检 |
+| `compress.audit_compact_reasons`（P2-A） | `["topic_shift_heuristic", "topic_shift_llm", "stuck_recovery_deep"]` | 审计只对这些触发原因生效 |
+| `compress.audit_async`（P2-A） | `true` | 审计是否在后台线程异步执行（不阻塞当前轮次） |
+| `recall_history_enabled`（P2-B，AppConfig 顶层） | `false` | `recall_from_raw_history` 工具总开关 |
+| `recall_history_mode`（P2-B，AppConfig 顶层） | `"keyword"` | `"keyword"`（已实现）/ `"embedding"`（预留） |
 | `model_context_window` | `None`（从 LLM 读取） | 覆盖模型上下文大小估算（token 数） |
 | `skill_compact_budget` | `25000` | compact 后重附 skill 的总字符预算 |
 | `skill_compact_per_skill` | `5000` | 单个 skill 重附字符上限 |
 | `forget_orphan_tool_results` | 策略相关 | 是否丢弃孤立的 tool_result 消息 |
 
 > 所有触发器开关均只支持 JSON 配置文件平坦 key（例如 `compact_turn_count_trigger_enabled`、
-> `compact_topic_shift_detection`），暂无对应 CLI 参数，详见 [配置系统指南](config-guide.md#compressconfig)。
+> `compact_topic_shift_detection`；P0/P1/P2 新增字段对应
+> `compact_goal_aware_weighting_enabled` / `compact_decision_extraction_enabled` /
+> `compact_safe_point_gating_enabled` / `compact_composite_intensity_enabled` /
+> `compact_composite_intensity_threshold` / `compact_audit_enabled` /
+> `compact_audit_reasons` / `compact_audit_async`），暂无对应 CLI 参数，
+> 详见 [配置系统指南](config-guide.md#compressconfig)。
 
 ## 相关代码位置
 
@@ -275,11 +416,17 @@ CompositeTrigger
 | `agent.py::compact_with_skills()` | 主入口，路径选择，skill 重附，session 保存 |
 | `agent.py::_compact_chunked()` | 分批摘要核心实现 |
 | `agent.py::_maybe_run_compact()` | 触发器命中后的统一入口，处理确认开关 |
-| `agent/compaction.py::_auto_compress_history()` | 默认直接复用 `compact_with_skills()`；轻量策略时委托给 `HistoryManager.auto_compress()`；压缩完成后打印完整摘要 |
+| `agent/compaction.py::_auto_compress_history()` | 默认直接复用 `compact_with_skills()`；轻量策略时委托给 `HistoryManager.auto_compress()`；压缩完成后打印完整摘要；P2-A 审计钩子挂在此处 |
 | `agent.py::_agentic_loop()` | 组合触发器检查点 + `LLMContextWindowError` 捕获（触发路径 B） |
-| `history/triggers.py` | `CompactTrigger` / `CompositeTrigger` 及内置触发器实现 |
+| `history/triggers.py` | `CompactTrigger` / `CompositeTrigger` 及内置触发器实现；`SafePointGate`（P1-A）；`intensity_hint()`（P1-B） |
 | `history/compression.py` | `CompressionStrategy` 及内置策略类（`turn_aligned`/`sliding_window`/`llm_summary`/`selective`） |
+| `history/compact_audit.py` | `audit_compact_quality()`（P2-A 压缩质量事后自检） |
 | `history_manager.py::auto_compress()` | 委托给 `CompressionStrategy` 执行压缩的统一入口 |
+| `agent/compaction.py::_extract_and_queue_decisions_from_compact_result()` | P0-B 决策候选提取与入队 |
+| `agent/compaction.py::_maybe_audit_compact_quality() / _apply_compact_audit_issue()` | P2-A 审计触发门控与落地（历史条目 + activity_digest.jsonl） |
+| `goal_mode/runner.py::_build_goal_aware_compact_hint()` | P0-A goal-aware compact hint 构建 |
+| `tools/recall_history.py` | P2-B `recall_from_raw_history` 只读工具 |
+| `tools/builtin.py`（`recall_decisions`） | P0-B 沉淀决策的检索工具（与 P2-B 分工：一个查决策，一个查原始片段） |
 | `prompts/user/compact_history.md` | 正常路径 compact prompt |
 | `prompts/user/compact_chunk_request.md` | 分批路径 chunk prompt |
 | `prompts/user/compact_merge_request.md` | 分批路径合并 prompt |
@@ -287,6 +434,8 @@ CompositeTrigger
 | `tools/notepad.py` | 记事本数据结构与工具实现 |
 
 ---
+
+
 
 ## Hooks 集成
 
@@ -325,3 +474,13 @@ CompositeTrigger
 仅在显式配置为 `turn_aligned`/`sliding_window`/`llm_summary`/`selective` 时才退回
 `HistoryManager.auto_compress()` 轻量路径；`_auto_compress_history()` 压缩完成后
 新增打印本次生成的完整摘要文本（不截断），无论走哪条路径）*
+
+*三次更新：2026-07（落地 `next_doc/compact_mechanism_improvement_plan.md` 全部
+六项改造，见"Compact 机制主动化改进"一节：P0-A 目标相关性动态权重、P0-B
+compact 兼做经验沉淀检查点、P1-A 安全点判定（`SafePointGate`）、P1-B 触发信号
+强度叠加（`intensity_hint()`）、P2-A 压缩质量事后自检 + lesson 反馈闭环
+（新增 `history/compact_audit.py`、`HType.COMPACT_SUPPLEMENT`）、P2-B Raw
+history 按需找回工具（新增 `tools/recall_history.py::recall_from_raw_history`）；
+全部默认关闭，且补齐了此前遗漏的 `config/loader.py` 平坦 key 映射——这批新增
+字段此前虽然在 `CompressConfig`/`AppConfig` 里存在，但未接入 JSON 配置文件
+解析，实际上不可通过 `agent_config.json` 配置，现已修复）*
