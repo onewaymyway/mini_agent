@@ -165,6 +165,7 @@ query
 | `_migration_map.json` | entity_id → page_id 映射 | 否——双写路径依赖的持久状态，删除会导致同一实体被重复创建新页面 |
 | `_index/graph.json` / `tags.json` / `backlinks.json` / `search_index.json` | 派生索引 | 是——`/wiki rebuild` 随时可重建 |
 | `_index/_manifest.json` | indexer 自用的增量重建状态 | 是——删除后下次退化为全量重建 |
+| `decision_candidates_pending.jsonl`（workdir 根目录，非 wiki/ 下） | compact 提炼出的决策候选，尚未经巩固循环批量落盘 | 否——删除会丢失尚未处理的候选（不影响已落盘的 decisions/*.md），见九·2 |
 
 ## 九·2、决策/取舍知识提炼（对应《决策/取舍知识提炼计划.md》）
 
@@ -202,9 +203,19 @@ turn 段落里不存在值得记录的决策，只有"讨论了多个方案并�
 产生条目。由 `CompressConfig.extract_decisions`（默认 `True`）控制是否启用
 这一步，关闭后 `LLMSummaryStrategy` 的行为与改造前完全一致。
 
-### 落盘：命中已有决策页则更新状态，命中不到才新建
+### 落盘：巩固循环批量合并后，命中已有决策页则更新状态，命中不到才新建
 
-`wiki/decision_writer.py::process_candidates()` 实现三分支逻辑：
+`history/compression.py::LLMSummaryStrategy` 提炼出的决策候选不再由 compact 直接
+落盘，而是先由 `wiki/decision_writer.py::queue_candidates()` 原样 append 到
+`.agent/decision_candidates_pending.jsonl`（pending 队列），真正的落盘延后到
+巩固循环（`evolution/consolidation.py::run_consolidation` →
+`decision_writer.consolidate_pending()`）批量执行，见九·2 末尾"批量节流新建"
+一节的详细说明。
+
+`consolidate_pending()` 先做**批内合并**：同一批 pending 候选里 `topic` slug
+相同或 `related_entities` 有交集的，视为指向同一件事，只保留最新一条 `chosen`
+（这一步就是解决"逐条即时落盘导致碎片化"的关键）。合并后的候选交给
+`process_candidates()` 走三分支逻辑（这部分逻辑完全没变）：
 
 1. **命中已有决策页且 `chosen` 与已有页面一致** → 只更新 `source_entries` /
    `updated`，不新建重复内容。
@@ -217,6 +228,12 @@ turn 段落里不存在值得记录的决策，只有"讨论了多个方案并�
 "命中"的判定：`related_entities` 中的某个 id，是否与某个既有 decision 页面
 `frontmatter.links` 里 `relation=affects/part_of` 的 target 重合——直接复用
 `parser.py` 已经解析好的 `WikiPage.strong_links()`，不需要给实体侧单独建索引。
+
+"新建"这个动作（分支 2 和分支 3）额外套一层节奏治理冷却（复用
+`evolution/consolidation.py::rhythm_is_allowed()`/`record_proposal()`，key 为
+`decision_new:<topic slug>`，默认冷却 1 天，`CompressConfig.
+decision_batch_min_interval_days` 可调），避免同一个决定短时间内被反复提炼出
+候选而多次新建页面；"更新"不受此限制。
 
 决策页 `confidence` 固定为 `0.5`，独立于 lesson（规则触发，0.6）与 human
 correction（人类显式纠正，0.7）两档——决策复盘是 agent 对自己历史行为的二次
@@ -247,21 +264,32 @@ correction（人类显式纠正，0.7）两档——决策复盘是 agent 对自
 `evolution/lesson_to_reminder.py` 那种"离线批量生成 reminder 文件、靠
 `ReminderLoader` 轮询加载"的模式，因为决策召回的触发条件（"即将提出新方案"）
 本质上是语义性的，没有 lesson 场景里"连续失败 N 次"那样可以离线预生成的确定
-性信号，接入现有 `pre_tool`/`user_intent` 等 `trigger_event` 文件轮询机制价值
-有限，因此本轮先落地为可以直接调用的函数，接入具体触发点（比如生成重构方案
-的 prompt 组装位置）留给后续迭代按实际使用场景决定挂载点。
+性信号。
+
+**已接入的触发点**：`cli/commands/evolve.py::_spawn_evolution_agent()`——
+这是当前仓库里唯一"生成新方案"的确定性入口：`/evolve review` 把攒够证据的
+lesson 分组 spawn 给 evolution-agent 去提炼 skill 提案。spawn 之前会以各
+lesson 分组的 `key` 拼成 `proposal_summary`，调用 `recall_related_decisions()`
+查一遍相关历史决策，命中时把提醒文字前置拼进 `spawn_named_agent(..., context=...)`
+的 `context` 参数，让 evolution-agent 先看到提醒再动笔。查询/渲染失败不影响
+`/evolve review` 本身（静默降级）。
+
+如果后续 `AutonomousLoop` 长出新的"自动生成重构目标"入口，同一套
+`recall_related_decisions()` 可以原样复用；目前只有这一个确定性入口，暂不提前
+挂载其它位置。
 
 ### 本轮未完成事项（按原计划三阶段对照）
 
 - 阶段一（结构与置信度体系）：已完成。
-- 阶段二（提取改造）：已完成核心链路（prompt 改造 + 解析 + 落盘三分支）；
-  未实现"巩固循环批量决定是否新建"的节流批处理——当前 `process_candidates()`
-  每次 compact 触发就直接落盘，未命中时的新建没有做碎片化节流，规模变大后
-  需要补上这一层（`decision_writer.py` 模块文档里已注明这一点，接口设计上
-  预留了给巩固循环包一层调用的空间）。
-- 阶段三（图关联与召回）：检索/召回逻辑已完成，但"提案前主动召回"尚未接入
-  任何具体触发点（见上一节），也未在实际重构场景中验证 `overturned` 沿革链条
-  的召回效果，这是原计划里明确写的验收标准，本轮未覆盖。
+- 阶段二（提取改造）：已完成，包括原先缺失的"巩固循环批量决定是否新建"的
+  节流批处理——现在 compact 只把候选写入 pending 队列，真正落盘延后到
+  `run_consolidation()` 批量执行，见上文"落盘"一节与
+  [巩固循环指南 4.4 节](self-evolution-consolidation-guide.md#44-决策候选批量落盘对应决策取舍知识提炼计划)。
+- 阶段三（图关联与召回）：检索/召回逻辑已完成，"提案前主动召回"也已接入
+  `/evolve review` 的 `_spawn_evolution_agent()`（见上一节）。仍未覆盖的：
+  尚未在真实重构场景中长期观察 `overturned` 沿革链条的召回效果——这需要
+  实际跑几轮 `/compact` + `/evolve review` 积累数据后才能评估，属于"需要
+  使用周期"而非"代码未写"的遗留项。
 
 ## 十、与图书馆式索引的关系与后续计划
 

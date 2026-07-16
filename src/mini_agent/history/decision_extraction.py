@@ -41,6 +41,31 @@ class DecisionCandidate:
         """过滤掉解析出来但内容空洞的候选（没有 topic 或没有 chosen 方案）。"""
         return bool(self.topic.strip()) and bool(self.chosen.strip())
 
+    def to_dict(self) -> dict:
+        """序列化为可 json.dumps 的 dict，供 pending 队列 JSONL 落盘使用。"""
+        return {
+            "topic": self.topic,
+            "options_considered": list(self.options_considered),
+            "chosen": self.chosen,
+            "rejected_because": dict(self.rejected_because),
+            "related_entities": list(self.related_entities),
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict) -> "DecisionCandidate":
+        """to_dict() 的逆操作，容错处理字段缺失/类型不对的情况（pending 队列文件
+        可能是历史版本写入的，字段集合可能演进过）。"""
+        rejected_because = data.get("rejected_because") or {}
+        if not isinstance(rejected_because, dict):
+            rejected_because = {}
+        return cls(
+            topic=str(data.get("topic") or "").strip(),
+            options_considered=[str(o) for o in (data.get("options_considered") or []) if str(o).strip()],
+            chosen=str(data.get("chosen") or "").strip(),
+            rejected_because={str(k): str(v) for k, v in rejected_because.items()},
+            related_entities=[str(e) for e in (data.get("related_entities") or []) if str(e).strip()],
+        )
+
 
 @dataclass
 class DecisionExtractionResult:

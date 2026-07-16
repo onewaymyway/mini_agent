@@ -147,8 +147,10 @@ class CompressConfig:
     strategy: str = "compact_with_skills"  # "compact_with_skills"（默认，与手动 /compact 一致：LLM 摘要 + skill 重附）
                                             # | "turn_aligned" | "llm_summary" | "sliding_window" | "selective"（轻量可插拔策略，退回旧路径）
     forget_orphan_tool_results: bool = False  # 剔除保留段中无对应 tool_use 的 tool_result
-    extract_decisions: bool = True     # LLMSummaryStrategy 是否顺带提炼 decisions[] 并落盘到 wiki/decisions/
+    extract_decisions: bool = True     # LLMSummaryStrategy 是否顺带提炼 decisions[] 并存入 pending 队列
                                         # （决策/取舍知识提炼计划 5.2 节；不增加额外 LLM 调用，仅解析开关）
+    decision_batch_min_interval_days: float = 1.0  # 巩固循环批量落盘时，"新建"决策页的冷却天数
+                                        # （同一 topic 冷却期内跳过新建，只影响新建，不影响更新已有决策页）
 
     # ── SelectiveStrategy 专用 ───────────────────────────────────────────────
     # 各 _type 保留权重（0.0=最先丢弃，1.0=始终保留），None 使用内置默认

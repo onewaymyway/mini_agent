@@ -311,16 +311,19 @@ class LLMSummaryStrategy(CompressionStrategy):
         if not summary_text:
             summary_text = _build_summary_text(old_turns, cutoff)
 
-        # 决策落盘是"锦上添花"：默认开启，但任何异常（配置缺失/磁盘不可写/
-        # wiki 目录尚未初始化）都不能影响 compact 本身的成功，只静默跳过。
+        # 决策候选只入队，不在这里落盘：真正的匹配/新建/推翻延后到巩固循环
+        # （evolution/consolidation.py::run_consolidation -> decision_writer.
+        # consolidate_pending()）批量处理，避免每次 compact 都逐条即时落盘
+        # 导致 wiki/decisions/ 碎片化。入队本身是"锦上添花"：默认开启，但任何
+        # 异常（配置缺失/磁盘不可写）都不能影响 compact 本身的成功，只静默跳过。
         if decisions and getattr(cfg.compress, "extract_decisions", True):
             try:
                 from pathlib import Path
                 from mini_agent.storage.paths import AgentPaths
-                from mini_agent.wiki.decision_writer import process_candidates
+                from mini_agent.wiki.decision_writer import queue_candidates
 
                 paths = AgentPaths(Path(getattr(cfg, "project_root", None) or Path.cwd()))
-                process_candidates(paths, decisions, source_entries=[f"compact@{cutoff}"])
+                queue_candidates(paths, decisions, source_entries=[f"compact@{cutoff}"])
             except Exception:
                 pass
 

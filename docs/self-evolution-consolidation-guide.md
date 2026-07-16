@@ -159,6 +159,38 @@ general:     ▓▓▓░░░░░░░ 30% (success=3 fail=7)
 
 ---
 
+### 4.4 决策候选批量落盘（对应《决策/取舍知识提炼计划》）
+
+**目标**：把 `/compact` 阶段提炼出的决策候选（`wiki/decisions/*.md`）批量落盘，避免每次 compact 都立即新建页面导致碎片化。
+
+**流程**：
+
+```
+/compact（LLMSummaryStrategy）
+  └─ decision_writer.queue_candidates()  只 append 到 pending 队列
+       .agent/decision_candidates_pending.jsonl
+                    │
+                    │（不会立刻落盘）
+                    ▼
+巩固循环（run_consolidation）
+  └─ decision_writer.consolidate_pending()
+       1. 读取 pending 队列全部候选
+       2. 批内合并：topic slug 相同 / related_entities 有交集的候选
+          视为同一件事，只保留最新一条 chosen（source_entries 取并集）
+       3. 对合并结果调用 process_candidates() 核心匹配/落盘逻辑
+          （命中已有页→更新 / chosen 不一致→推翻新建 / 未命中→新建）
+       4. "新建"动作套 8.5 节奏治理冷却（key=`decision_new:<topic slug>`，
+          默认 1 天，可用 CompressConfig.decision_batch_min_interval_days 调整）；
+          "更新"不受此限制
+       5. 消费完成后原子清空 pending 队列
+```
+
+pending 队列文件本身也遵循"可随时删除"的原则之外的例外——它是**未落盘的候选**，删除会丢失尚未处理的决策候选（不影响已落盘的 `wiki/decisions/*.md`）。
+
+**报告展示**：`/evolve consolidate` 的输出里新增"🗂 决策候选批量落盘"表格，列出本次 created / updated / overturned_and_created / skipped 各条动作。
+
+---
+
 ## 5. 节奏治理（8.5）
 
 ### 5.1 冷却期机制
@@ -213,10 +245,13 @@ Stage 3.1 (/evolve review / skill_propose)
 | `build_capability_map()` | 8.3 能力地图生成 |
 | `check_scope_promotion()` | 8.4 晋升候选扫描 |
 | `rhythm_is_allowed()` / `record_proposal()` | 8.5 节奏治理 |
+| `decision_writer.queue_candidates()` | compact 阶段决策候选入队（不落盘） |
+| `decision_writer.consolidate_pending()` | 4.4 决策候选批量合并 + 落盘 |
 | `_infer_domain()` | goal 文本 → domain 标签推断 |
 | 时间门控接入点 | `agent.py → _maybe_run_consolidation()` |
 | CLI 命令 | `src/mini_agent/cli/commands/evolve.py → _handle_consolidation()` |
 | 节奏治理状态文件 | `.agent/consolidation_rhythm.json` |
+| 决策候选 pending 队列 | `.agent/decision_candidates_pending.jsonl` |
 
 ---
 

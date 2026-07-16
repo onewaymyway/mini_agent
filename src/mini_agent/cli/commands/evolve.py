@@ -145,11 +145,37 @@ def _spawn_evolution_agent(agent, groups) -> None:
 
     lessons_payload = [g.to_dict() for g in groups]
 
+    context = f"Triggered by /evolve review ({len(groups)} lesson group(s) above threshold)."
+
+    # 决策/取舍知识提炼计划 5.4 节"提案前主动召回"接入点：evolution-agent 即将
+    # 针对这些 lesson 分组提炼新的 skill 提案，在 spawn 之前查一遍是否已经有
+    # 相关的历史决策（settled/overturned），把提醒文字前置注入 context，让
+    # evolution-agent 先看到再动笔，避免重复论证或重蹈已被否决的方案。
+    # 查询/渲染失败不应阻断 /evolve review 本身，静默降级即可。
+    try:
+        from mini_agent.storage.paths import AgentPaths
+        from mini_agent.evolution.decision_recall import recall_related_decisions
+
+        proposal_summary = "\n".join(g.key for g in groups)
+        paths = AgentPaths(agent.cfg.project_root)
+
+        recall_llm_call = None
+        _pool = getattr(agent, "_client_pool", None)
+        if _pool is not None:
+            from mini_agent.perception.memory_factory import build_llm_call
+            recall_llm_call = lambda prompt: build_llm_call(_pool.current_client)(prompt)
+
+        note = recall_related_decisions(paths, proposal_summary, k=5, llm_call=recall_llm_call)
+        if note:
+            context = f"{note}\n\n{context}"
+    except Exception:
+        pass
+
     import json
     result_raw = spawn_named_agent(
         agent_type="evolution-agent",
         inputs={"lessons": lessons_payload, "existing_skills": existing_skills},
-        context=f"Triggered by /evolve review ({len(groups)} lesson group(s) above threshold).",
+        context=context,
         name="evolve-review",
         tags=["evolution", "auto-triggered"],
     )
@@ -211,6 +237,9 @@ def _handle_consolidation(rest: list[str], agent) -> None:
             skill_loader=getattr(agent, "skill_loader", None),
             memory_backend=getattr(agent, "_memory", None),
             knowledge_llm_call=knowledge_llm_call,
+            decision_batch_min_interval_days=getattr(
+                agent.cfg.compress, "decision_batch_min_interval_days", 1.0
+            ),
         )
 
         _print_consolidation_report(report)
@@ -301,6 +330,20 @@ def _print_consolidation_report(report) -> None:
         topics = kc.get("wiki_topics_generated") or []
         if topics:
             R.console.print(f"[dim]  新生成专题页 {len(topics)} 篇：{', '.join(topics)}[/dim]")
+
+    # ── 决策候选批量落盘（pending 队列 → wiki/decisions/）──
+    dc = getattr(report, "decision_consolidation", None)
+    if dc:
+        t = Table(box=rbox.SIMPLE, show_header=True, header_style="bold dim")
+        t.add_column("Action", min_width=20)
+        t.add_column("Page", min_width=24)
+        t.add_column("Detail", min_width=40)
+        for a in dc:
+            t.add_row(a.kind, a.page_id or "-", a.detail[:60])
+        R.console.print("\n[bold cyan]🗂  决策候选批量落盘[/bold cyan]")
+        R.console.print(t)
+    else:
+        R.console.print("[dim]  ─ 无待处理决策候选（pending 队列为空）[/dim]")
 
     R.console.print(f"\n[dim]巩固循环完成，共发现 {len(report.prune_candidates)} 个剪枝候选、"
                     f"{len(report.promotion_candidates)} 个晋升候选[/dim]\n")

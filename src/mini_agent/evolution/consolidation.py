@@ -557,6 +557,7 @@ class ConsolidationReport:
     capability_map:      list[CapabilityMapEntry] = field(default_factory=list)
     promotion_candidates: list[PromotionCandidate] = field(default_factory=list)
     knowledge_consolidation: dict = field(default_factory=dict)
+    decision_consolidation: list = field(default_factory=list)  # 本次批量消费 pending 决策候选的动作列表（DecisionWriteAction）
     outcome_tracking_resolved: list = field(default_factory=list)  # [方案三] 本次 tick 新解决的效果回填记录
     affordance_weights_updated: object = None  # [方案四] 本次校准后的 AffordanceWeights（校准跳过时为 None）
     ran_at: float = field(default_factory=time.time)
@@ -572,6 +573,10 @@ class ConsolidationReport:
             "capability_map":       [e.to_dict() for e in self.capability_map],
             "promotion_candidates": [c.to_dict() for c in self.promotion_candidates],
             "knowledge_consolidation": self.knowledge_consolidation,
+            "decision_consolidation": [
+                {"kind": a.kind, "page_id": a.page_id, "detail": a.detail}
+                for a in self.decision_consolidation
+            ],
             "outcome_tracking_resolved": [r.to_dict() for r in self.outcome_tracking_resolved],
             "affordance_weights_updated": (
                 self.affordance_weights_updated.to_dict()
@@ -593,6 +598,7 @@ def run_consolidation(
     knowledge_llm_call=None,
     knowledge_min_cluster_size: int = 5,
     knowledge_summary_threshold: int = 3,
+    decision_batch_min_interval_days: float = 1.0,
 ) -> ConsolidationReport:
     """
     [8.1] 巩固循环 整体运行入口。
@@ -661,6 +667,22 @@ def run_consolidation(
     except Exception as _mini_agent_exc:
         from mini_agent.errors import log_exception
         log_exception(_mini_agent_exc, where='mini_agent.evolution.consolidation.knowledge_consolidation')
+        pass
+
+    # 决策/取舍知识提炼计划 —— 巩固循环批量节流新建：
+    # compact 阶段只把决策候选 append 到 pending 队列（wiki/decision_writer.py::
+    # queue_candidates），这里批量读取、合并同批次里指向同一件事的多条候选后
+    # 才真正落盘，避免逐条即时落盘导致 wiki/decisions/ 碎片化。与其它步骤一致，
+    # 失败静默降级，不阻断 巩固循环 主流程。
+    try:
+        from mini_agent.wiki.decision_writer import consolidate_pending
+        decision_report = consolidate_pending(
+            paths, min_new_interval_days=decision_batch_min_interval_days
+        )
+        report.decision_consolidation = decision_report.actions
+    except Exception as _mini_agent_exc:
+        from mini_agent.errors import log_exception
+        log_exception(_mini_agent_exc, where='mini_agent.evolution.consolidation.decision_consolidation')
         pass
 
     # [方案三，见 next_doc/priority_improvements_implementation_plan.md]

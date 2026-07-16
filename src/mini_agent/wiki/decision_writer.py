@@ -13,14 +13,27 @@ wiki/decision_writer.py — 决策候选落盘（决策/取舍知识提炼计划
 frontmatter.links 里 relation 为 affects/part_of 的 target 重合。这一跳直接复用
 parser.py 已经解析好的 WikiPage.strong_links()，不需要额外的实体侧索引。
 
-本模块不负责“要不要新建”的节流（计划里说的“巩固循环批量决定是否新建，避免
-碎片化”）——那是调度层面的策略，本模块只提供 process_candidates() 作为可以被
-巩固循环包一层节流逻辑再调用的基础动作，保持职责单一。
+批量节流新建（避免碎片化）：
+  compact 阶段不再直接调用 process_candidates()，而是调用本模块的
+  queue_candidates() 把候选原样 append 到一个 pending JSONL 队列文件
+  （AgentPaths.decision_candidates_pending_path）。真正的落盘延后到
+  巩固循环（evolution/consolidation.py::run_consolidation）里调用本模块的
+  consolidate_pending()：批量读取 pending 队列 → 按 topic/related_entities
+  合并同批次里指向同一件事的多条候选（只留最新一条 chosen）→ 对合并结果
+  逐条调用 process_candidates() 的核心匹配/落盘逻辑（未变）→ 清空 pending
+  队列。"新建"这个动作额外套 evolution/consolidation.py 的
+  rhythm_is_allowed()/record_proposal() 冷却治理（key 为 topic 的 slug），
+  避免同一个决定短时间内被反复提炼出候选而多次新建页面；"更新"不受此限制。
 """
 
 from __future__ import annotations
 
+import json
+import os
 import re
+import tempfile
+import time
+from collections import defaultdict
 from dataclasses import dataclass, field
 from datetime import date
 from typing import Optional
@@ -188,14 +201,23 @@ def process_candidates(
     candidates: list["DecisionCandidate"],
     *,
     source_entries: Optional[list[str]] = None,
+    rhythm_check: Optional["Callable[[str], bool]"] = None,
+    rhythm_record: Optional["Callable[[str], None]"] = None,
 ) -> DecisionWriteReport:
     """处理一批决策候选，返回本次采取的动作列表。
 
     Args:
         paths: 项目 AgentPaths（用于定位 wiki/decisions/ 目录）。
-        candidates: DecisionCandidate 列表（通常来自一次 compact 的结构化输出）。
+        candidates: DecisionCandidate 列表（通常来自一次 compact 的结构化输出，
+            或 consolidate_pending() 合并批次后的候选）。
         source_entries: 本次触发提取的来源标识（如 compact 的 turn 范围 id），
             写入决策页 frontmatter.source_entries，供追溯。
+        rhythm_check: 可选。传入时，每次即将"新建"决策页前调用
+            rhythm_check(topic_slug)，返回 False 表示该 topic 处于冷却期，
+            本次跳过新建（记为 skipped 动作），不影响 update 分支。
+            用于 consolidate_pending() 接入 evolution/consolidation.py 的
+            节奏治理；直接调用本函数（不传该参数）时行为与之前完全一致。
+        rhythm_record: 可选，与 rhythm_check 配套，新建成功后记录一次提案时间。
     """
     report = DecisionWriteReport()
     source_entries = source_entries or []
@@ -203,6 +225,16 @@ def process_candidates(
         return report
 
     decision_pages = _load_decision_pages(paths)
+
+    def _gate_new(topic: str) -> bool:
+        """新建前的节奏门控：无 rhythm_check 时不限制（保持旧行为）。"""
+        if rhythm_check is None:
+            return True
+        return rhythm_check(_slugify(topic))
+
+    def _record_new(topic: str) -> None:
+        if rhythm_record is not None:
+            rhythm_record(_slugify(topic))
 
     for candidate in candidates:
         if not candidate.is_meaningful:
@@ -212,8 +244,14 @@ def process_candidates(
         matched = _find_matching_decision(candidate, decision_pages)
 
         if matched is None:
+            if not _gate_new(candidate.topic):
+                report.actions.append(
+                    DecisionWriteAction("skipped", "", f"新建冷却期内，跳过：{candidate.topic}")
+                )
+                continue
             new_page = _create_decision_page(paths, candidate, source_entries=source_entries)
             decision_pages.append(new_page)
+            _record_new(candidate.topic)
             report.actions.append(DecisionWriteAction("created", new_page.id, candidate.topic))
             continue
 
@@ -227,11 +265,20 @@ def process_candidates(
             continue
 
         # chosen 不一致 → 旧决定被推翻：新建替代页，双向 supersedes/superseded_by
+        if not _gate_new(candidate.topic):
+            report.actions.append(
+                DecisionWriteAction(
+                    "skipped", matched.id,
+                    f"推翻新建冷却期内，跳过：{candidate.topic}",
+                )
+            )
+            continue
         new_page = _create_decision_page(
             paths, candidate, source_entries=source_entries, supersedes=matched
         )
         _link_back_superseded_by(paths, matched, new_page.id)
         decision_pages.append(new_page)
+        _record_new(candidate.topic)
         report.actions.append(
             DecisionWriteAction(
                 "overturned_and_created", new_page.id,
@@ -242,4 +289,175 @@ def process_candidates(
     return report
 
 
-__all__ = ["DecisionWriteAction", "DecisionWriteReport", "process_candidates"]
+# ════════════════════════════════════════════════════════════════════════════
+# 批量节流新建：pending 队列（compact 时写入）+ consolidate_pending（巩固循环时消费）
+# ════════════════════════════════════════════════════════════════════════════
+
+def queue_candidates(
+    paths: AgentPaths,
+    candidates: list["DecisionCandidate"],
+    *,
+    source_entries: Optional[list[str]] = None,
+) -> None:
+    """compact 阶段调用：把决策候选原样 append 到 pending JSONL 队列，不做任何
+    匹配/落盘。轻量、只追加，失败也不应影响 compact 主流程（调用方已有 try/except）。
+    """
+    if not candidates:
+        return
+    source_entries = source_entries or []
+    p = paths.decision_candidates_pending_path
+    p.parent.mkdir(parents=True, exist_ok=True)
+    with open(p, "a", encoding="utf-8") as f:
+        for candidate in candidates:
+            if not candidate.is_meaningful:
+                continue
+            row = {
+                "candidate": candidate.to_dict(),
+                "source_entries": source_entries,
+                "queued_at": time.time(),
+            }
+            f.write(json.dumps(row, ensure_ascii=False) + "\n")
+
+
+def _read_pending_queue(paths: AgentPaths) -> list[dict]:
+    p = paths.decision_candidates_pending_path
+    if not p.exists():
+        return []
+    rows: list[dict] = []
+    try:
+        with open(p, "r", encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    rows.append(json.loads(line))
+                except Exception:
+                    continue  # 单行损坏跳过，不影响其它行
+    except Exception:
+        return []
+    return rows
+
+
+def _clear_pending_queue(paths: AgentPaths) -> None:
+    """原子清空 pending 队列（consolidate_pending 消费完成后调用）。"""
+    p = paths.decision_candidates_pending_path
+    if not p.exists():
+        return
+    tmp = p.with_suffix(".tmp")
+    try:
+        tmp.write_text("", encoding="utf-8")
+        os.replace(tmp, p)
+    except Exception:
+        try:
+            tmp.unlink(missing_ok=True)
+        except Exception:
+            pass
+
+
+def _merge_same_batch_candidates(
+    rows: list[dict],
+) -> list[tuple["DecisionCandidate", list[str]]]:
+    """批内合并：同一批 pending 队列里，topic slug 相同或 related_entities 有交集
+    的多条候选视为指向同一件事，只保留 queued_at 最新的一条 chosen 作为代表，
+    source_entries 取并集。这是解决"逐条即时落盘"碎片化的核心一步——同一个
+    决定在短时间内被多次 compact 提炼出候选时，不应该新建好几条决策页。
+
+    分组用简单并查集：按 topic slug 分桶，再看 related_entities 是否与已有桶
+    有交集，有则合并入该桶。启发式实现，宁可少合并（多新建几条，靠 rhythm
+    冷却兜底）也不要把明显不相关的候选误合并。
+    """
+    from mini_agent.history.decision_extraction import DecisionCandidate
+
+    groups: list[dict] = []  # 每个 group: {"slugs": set, "entities": set, "items": [(candidate, source_entries, queued_at)]}
+
+    for row in rows:
+        try:
+            candidate = DecisionCandidate.from_dict(row["candidate"])
+        except Exception:
+            continue
+        if not candidate.is_meaningful:
+            continue
+        slug = _slugify(candidate.topic)
+        entities = set(candidate.related_entities)
+        source_entries = row.get("source_entries") or []
+        queued_at = row.get("queued_at", 0.0)
+
+        target = None
+        for g in groups:
+            if slug in g["slugs"] or (entities and entities & g["entities"]):
+                target = g
+                break
+        if target is None:
+            target = {"slugs": set(), "entities": set(), "items": []}
+            groups.append(target)
+        target["slugs"].add(slug)
+        target["entities"] |= entities
+        target["items"].append((candidate, source_entries, queued_at))
+
+    merged: list[tuple["DecisionCandidate", list[str]]] = []
+    for g in groups:
+        items = sorted(g["items"], key=lambda t: t[2])  # 按 queued_at 升序，最后一个最新
+        representative = items[-1][0]
+        all_sources: list[str] = []
+        for _, sources, _ in items:
+            for s in sources:
+                if s not in all_sources:
+                    all_sources.append(s)
+        merged.append((representative, all_sources))
+
+    return merged
+
+
+def consolidate_pending(
+    paths: AgentPaths,
+    *,
+    min_new_interval_days: float = 1.0,
+) -> DecisionWriteReport:
+    """巩固循环批量消费入口（对齐 perception/library_index.py::consolidate 的
+    命名风格）。由 evolution/consolidation.py::run_consolidation 调用。
+
+    流程：读取 pending 队列 → 批内合并同一件事的多条候选 → 对合并结果调用
+    process_candidates()（core 匹配/落盘逻辑不变，"新建"动作套节奏治理冷却）
+    → 清空 pending 队列。
+
+    任何异常都不应该向上抛出中断整个巩固循环——调用方（run_consolidation）
+    已经用 try/except 包裹每一步，这里保持一致的防御性风格。
+    """
+    rows = _read_pending_queue(paths)
+    if not rows:
+        return DecisionWriteReport()
+
+    merged = _merge_same_batch_candidates(rows)
+    if not merged:
+        _clear_pending_queue(paths)
+        return DecisionWriteReport()
+
+    # 延迟导入，避免与 evolution/consolidation.py 的模块级循环依赖
+    # （consolidation.py 会在其 run_consolidation 里导入本模块）。
+    from mini_agent.evolution.consolidation import rhythm_is_allowed, record_proposal
+
+    report = DecisionWriteReport()
+    for candidate, source_entries in merged:
+        sub_report = process_candidates(
+            paths,
+            [candidate],
+            source_entries=source_entries,
+            rhythm_check=lambda slug: rhythm_is_allowed(
+                paths, "decision_new", slug, min_new_interval_days
+            ),
+            rhythm_record=lambda slug: record_proposal(paths, "decision_new", slug),
+        )
+        report.actions.extend(sub_report.actions)
+
+    _clear_pending_queue(paths)
+    return report
+
+
+__all__ = [
+    "DecisionWriteAction",
+    "DecisionWriteReport",
+    "process_candidates",
+    "queue_candidates",
+    "consolidate_pending",
+]

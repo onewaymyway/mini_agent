@@ -204,6 +204,16 @@ class AgentPaths:
         return self.wiki_dir / "decisions"
 
     @property
+    def decision_candidates_pending_path(self) -> Path:
+        """<project_root>/.agent/decision_candidates_pending.jsonl — 决策候选待批量落盘队列。
+
+        compact 时只 append 到这里，真正的落盘（匹配/新建/推翻）延后到巩固循环
+        （evolution/consolidation.py::consolidate_pending）批量执行，避免逐条即时
+        落盘导致 wiki/decisions/ 碎片化。
+        """
+        return self.workdir_dir / "decision_candidates_pending.jsonl"
+
+    @property
     def wiki_processes_dir(self) -> Path:
         """<project_root>/.agent/wiki/processes/ — 流程型页面"""
         return self.wiki_dir / "processes"
