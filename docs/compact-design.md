@@ -365,6 +365,12 @@ agent 自己运行中无法主动检索找回。新增只读、免审批工具
 
 开关：`recall_history_enabled` / `recall_history_mode`（AppConfig 顶层字段，默认 `false` / `"keyword"`；`"embedding"` 档预留未实现）。
 
+配套还提供了 `/recall <query>` / `/recall --max N <query>` slash 命令
+（`cli/commands/recall.py`），走同一套底层实现，给用户一个不用等模型决定
+调不调用、随时手动查的入口——和 `/notepad show` 之于 `notepad_*` 工具是
+同一种关系；已加入 `_COMMANDS` 补全提示（`ui/terminal.py`）和 `/help`
+帮助文本（`cli/parser.py`）。
+
 > P3（预测式压缩节奏）仍停留在设计阶段，依赖 P0-B / P2-A 积累的真实数据，
 > 详见 `next_doc/compact_mechanism_improvement_plan.md` 第 7 节。
 
@@ -426,6 +432,7 @@ agent 自己运行中无法主动检索找回。新增只读、免审批工具
 | `agent/compaction.py::_maybe_audit_compact_quality() / _apply_compact_audit_issue()` | P2-A 审计触发门控与落地（历史条目 + activity_digest.jsonl） |
 | `goal_mode/runner.py::_build_goal_aware_compact_hint()` | P0-A goal-aware compact hint 构建 |
 | `tools/recall_history.py` | P2-B `recall_from_raw_history` 只读工具 |
+| `cli/commands/recall.py` | P2-B `/recall` slash 命令（手动 CLI 入口，同一套底层实现） |
 | `tools/builtin.py`（`recall_decisions`） | P0-B 沉淀决策的检索工具（与 P2-B 分工：一个查决策，一个查原始片段） |
 | `prompts/user/compact_history.md` | 正常路径 compact prompt |
 | `prompts/user/compact_chunk_request.md` | 分批路径 chunk prompt |
@@ -484,3 +491,9 @@ history 按需找回工具（新增 `tools/recall_history.py::recall_from_raw_hi
 全部默认关闭，且补齐了此前遗漏的 `config/loader.py` 平坦 key 映射——这批新增
 字段此前虽然在 `CompressConfig`/`AppConfig` 里存在，但未接入 JSON 配置文件
 解析，实际上不可通过 `agent_config.json` 配置，现已修复）*
+
+*四次更新：2026-07（为 P2-B 新增的 `recall_from_raw_history` 工具补上对应的
+`/recall <query>` \| `/recall --max N <query>` slash 命令：`cli/commands/recall.py`
++ `cli/repl.py` 分发 + `ui/terminal.py::_COMMANDS` 补全提示 + `cli/parser.py`
+`/help` 帮助文本，四处一起改，与项目里"工具 + 手动 CLI 入口"成对出现的既有
+惯例（如 `notepad_*` 工具与 `/notepad` 命令）保持一致）*

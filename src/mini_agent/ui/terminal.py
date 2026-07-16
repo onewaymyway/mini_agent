@@ -3118,6 +3118,7 @@ _COMMANDS: list[tuple[str, str, list]] = [
     ("/tasks",       "Task management",                              ["focus", "unfocus", "dashboard", "log", "cancel", "cancel-all", "workers"]),
     ("/plan",        "Plan management",                              ["show", "clear", "summary"]),
     ("/notepad",     "Persistent notepad: key facts/results/caveats survive compact", ["show", "clear", "remove"]),
+    ("/recall",      "Search raw history for content removed by compact (needs recall_history_enabled=true)", ["--max"]),
     ("/concurrency", "Concurrency settings",                         ["tasks", "llm"]),
     ("/cc",          "Concurrency alias (same as /concurrency)",     ["tasks", "llm"]),
     ("/ensemble",    "Best-of-N ensemble settings",                  ["status", "on", "off", "mode", "granularity", "n", "execution", "strategy"]),

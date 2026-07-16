@@ -271,6 +271,18 @@ mini-agent --retry-backoff linear --retry-backoff-step 60 --retry-backoff-max 30
 记事本是常驻 system prompt 的持久便签，供 Agent 记录任务过程中的关键信息/结果/注意事项，
 不受 history compact 影响。详见 [记事本机制说明](notepad-guide.md)。
 
+### Raw history 检索（`src/mini_agent/cli/commands/recall.py`，P2-B）
+
+| 命令 | 说明 |
+|------|------|
+| `/recall <query>` | 按关键词在当前 session 的 raw history（含已被 compact 掉的片段）里检索，最多返回 5 条命中片段 |
+| `/recall --max N <query>` | 同上，自定义返回条数（1~20） |
+
+需要 `recall_history_enabled=true`（默认关闭）；关闭时执行会提示配置未开启。
+与 agent 自己调用的 `recall_from_raw_history` 工具走同一套底层实现——`/recall`
+是给用户的手动查询入口，不需要等模型自己决定要不要调用。详见
+[Compact 设计文档](compact-design.md#p2-b-raw-history-按需找回工具)。
+
 ### 并发控制（`src/mini_agent/cli/commands/concurrency.py`）
 
 | 命令 | 说明 |
@@ -713,6 +725,9 @@ mini-agent self status
 检索"未经提炼的原始对话内容"——前者更省 token、适合"这个技术选型当时为什么这么定"
 这类问题；后者更完整、适合"我记得处理过这个但细节记不清了"这类问题。工具本身均
 **始终**注册在全局 registry 中，关闭时调用直接返回错误提示，不影响模型看到工具定义。
+
+`recall_from_raw_history` 还配有对应的 `/recall` slash 命令（见"REPL Slash
+命令"一节），供用户手动检索，无需等模型自己决定要不要调用。
 
 ### 用户交互（user_input.py）
 

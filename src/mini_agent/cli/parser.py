@@ -51,6 +51,9 @@ def build_parser() -> argparse.ArgumentParser:
               /notepad           Show current notepad (persists across compact)
               /notepad clear     Clear the current notepad (manual, agent won't auto-call this)
               /notepad remove <id>  Remove one notepad entry
+              /recall <query>            Search raw history (incl. content removed by compact)
+                                         for fragments matching a query (needs recall_history_enabled=true)
+              /recall --max N <query>    Same, but return up to N results (default 5, max 20)
               /skills                    List all available skills with status and token cost
               /skill on <name> [...]     Activate one or more skills
               /skill off <name> [...]    Deactivate one or more skills

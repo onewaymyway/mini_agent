@@ -36,7 +36,8 @@ from mini_agent.cli.commands import (
     handle_goal_cmd,
     handle_debug_cmd,
     handle_role_cmd,
-    handle_wiki_cmd,)
+    handle_wiki_cmd,
+    handle_recall_cmd,)
 
 
 def _print_resume_hint(agent: Agent) -> None:
@@ -309,6 +310,9 @@ def _handle_slash(cmd: str, agent: Agent, skill_loader: SkillLoader) -> None:
 
     elif name == "notepad":
         handle_notepad_cmd(parts[1:])
+
+    elif name == "recall":
+        handle_recall_cmd(parts[1:])
 
     elif name in ("concurrency", "cc"):
         handle_concurrency_cmd(parts[1:])

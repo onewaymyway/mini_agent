@@ -22,6 +22,8 @@ cli/commands — slash 命令处理模块包
                 （用户行为感知系统：前台窗口/空闲/浏览器插件上报，默认全部关闭）
   wiki        — /wiki <page-id>|list|search|rebuild（wiki式知识库重构计划阶段四：
                 人工浏览页面/backlinks、三段式检索 A/B 对比、手动索引重建）
+  recall      — /recall <query>（compact_mechanism_improvement_plan.md P2-B：
+                手动检索被 compact 掉的原始 raw history 片段）
 """
 
 from mini_agent.cli.commands.skills import handle_skills_list, handle_skill_cmd
@@ -43,6 +45,7 @@ from mini_agent.cli.commands.debug_cmd import handle_debug_cmd
 from mini_agent.cli.commands.roles import handle_role_cmd
 from mini_agent.cli.commands.behavior import handle_behavior_cmd
 from mini_agent.cli.commands.wiki import handle_wiki_cmd
+from mini_agent.cli.commands.recall import handle_recall_cmd
 
 __all__ = [
     "handle_behavior_cmd",
@@ -65,4 +68,5 @@ __all__ = [
     "handle_goal_cmd",
     "handle_debug_cmd",
     "handle_role_cmd",
+    "handle_recall_cmd",
 ]
