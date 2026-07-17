@@ -97,6 +97,12 @@ class SkillLoader:
         self._dirs = skills_dirs
         self._all: dict[str, Skill] = {}
         self._active: list[str] = []
+        # [SYS-SKILL-AUTO-UNLOAD] 被"卸载"（工具调用 deactivate 或 compact 自动
+        # 卸载）过的 skill 名称集合：这些 skill 只能通过显式调用（activate() /
+        # skill_activate 工具）重新激活，不会再被关键词 auto_activate() 命中，
+        # 避免"刚判断长期不需要就又被关键词误触发"的抖动。activate() 显式激活
+        # 成功后会把对应名字从这里移除。
+        self._auto_activate_blocked: set[str] = set()
         # [SYS-SKILL-TRACK] 调用追踪器：记录每个 skill 最近的调用时间，
         # 用于压缩时按 LRU 顺序重附 skill 上下文
         self.tracker = SkillUsageTracker(
@@ -175,6 +181,9 @@ class SkillLoader:
                     f"[skill] '{name}' 依赖 '{dep}' 但该 skill 不存在（requires）"
                 )
         self._active.append(name)
+        # 显式调用 activate() 视为用户/agent 主动决定要用这个 skill，
+        # 解除之前因 deactivate/auto_unload_idle 留下的"禁止关键词自动激活"标记
+        self._auto_activate_blocked.discard(name)
         # 激活只是"加载"，在 tracker 里以 load_count 区分；
         # 真正的使用通过 record_usage() 在推理结束后更新
         self.detector.update_fingerprint(skill)
@@ -187,6 +196,10 @@ class SkillLoader:
             # 但 tracker 里的调用记录（skill_name/resource_id）不清零，
             # 下次重新激活该 skill 时清单仍能展示"之前用过 N 次"作为参考信号。
             self._loaded_resources.pop(name, None)
+            # [SYS-SKILL-AUTO-UNLOAD] 无论是工具调用主动卸载，还是 compact 时
+            # 自动卸载，都视为"暂时判断不需要"，之后只允许显式 activate() 重新
+            # 拉起，屏蔽关键词自动激活，避免刚卸载又被同一批关键词立刻拉回来。
+            self._auto_activate_blocked.add(name)
             return True
         return False
 
@@ -229,11 +242,18 @@ class SkillLoader:
                     unloaded.append(name)
         return unloaded
 
+    @property
+    def auto_activate_blocked(self) -> list[str]:
+        """当前被屏蔽关键词自动激活的 skill 名称（只能靠显式 activate() 拉起）。"""
+        return sorted(self._auto_activate_blocked)
+
     def exclude(self, name: str) -> bool:
         """
-        [Phase D / 3.2] 把某个 skill 从"可用集合"中临时移除：既不能被 auto_activate()
-        自动命中，也不能被 activate() 显式激活（与 deactivate() 的区别——deactivate
-        只是取消激活，skill 仍在 _all 里，关键词命中时会被 auto_activate 重新拉起）。
+        [Phase D / 3.2] 把某个 skill 从"可用集合"中彻底移除：从 self._all 里删掉，
+        之后 available/auto_activate/activate 都看不到它了（与 deactivate() 的
+        区别——deactivate 只是取消激活并屏蔽关键词自动激活，skill 仍在 _all 里，
+        仍可以被显式 activate() 重新拉起；exclude 是连显式激活都不再可能，
+        因为条目本身已经不存在）。
 
         用于 `mini-agent eval --without-skill <name>` 场景：需要严格保证该 skill
         在本次评测中完全不参与，而不是"默认不激活但仍可能被关键词触发"。
@@ -245,6 +265,7 @@ class SkillLoader:
         del self._all[name]
         if name in self._active:
             self._active.remove(name)
+        self._auto_activate_blocked.discard(name)
         return True
 
     def auto_activate(self, query: str) -> list[str]:
@@ -262,6 +283,10 @@ class SkillLoader:
         q = (query or "").lower()
         for name, skill in self._all.items():
             if name in self._active:
+                continue
+            # [SYS-SKILL-AUTO-UNLOAD] 被卸载过（工具调用或 compact 自动卸载）的
+            # skill 不参与关键词自动激活，只能被显式 activate() 重新拉起
+            if name in self._auto_activate_blocked:
                 continue
             hit = skill.matches_query(query)
             if not hit:
@@ -534,6 +559,7 @@ class SkillLoader:
     def build_compact_context(
         self,
         include_inactive: bool = False,
+        exclude_names: Optional[set] = None,
     ) -> tuple[str, list[str], list[str]]:
         """
         压缩时重建 skill 上下文：按 LRU 顺序、受 budget 约束填充 skill 内容。
@@ -546,6 +572,11 @@ class SkillLoader:
         Args:
             include_inactive: True = 同时考虑曾经被追踪但当前未激活的 skill
                               False = 只处理当前激活的 skill（默认）
+            exclude_names: 本轮不参与重附的 skill 名称集合。用于 compact 时
+                           刚被 auto_unload_idle() 卸载的 skill —— 若不排除，
+                           include_inactive=True 会把它们当作"曾用过的候选"重新
+                           塞回这次摘要，导致"自动卸载"在当前这一轮完全不生效，
+                           要等下一次 compact 才看得出差别。
 
         Returns:
             (compact_text, included_names, dropped_names)
@@ -564,17 +595,19 @@ class SkillLoader:
             )
             return note + content
 
+        exclude_names = exclude_names or set()
+
         if include_inactive:
             candidates = {
                 name: _with_path_note(name)
                 for name in self.tracker.recent_names()
-                if name in self._all
+                if name in self._all and name not in exclude_names
             }
         else:
             candidates = {
                 name: _with_path_note(name)
                 for name in self._active
-                if name in self._all
+                if name in self._all and name not in exclude_names
             }
 
         # 当前激活的 skill 作为受保护集合传入 tracker

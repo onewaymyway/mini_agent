@@ -245,15 +245,21 @@ class CompactionMixin:
             )
         return unloaded
 
-    def _build_skill_compact_block(self) -> str:
+    def _build_skill_compact_block(self, exclude_names: Optional[set] = None) -> str:
         """
         按 LRU 顺序、受 budget 约束构建 skill 重附上下文块。
         无 skill_loader 或无调用记录时返回空字符串。
+
+        Args:
+            exclude_names: 本轮不重附的 skill 名称（例如刚被 _auto_unload_idle_skills()
+                           卸载的 skill）——不传则维持原行为，include_inactive=True
+                           时仍会把它们当"曾用过的候选"重新竞争进这次摘要。
         """
         if not self.skill_loader:
             return ""
         compact_text, included, dropped = self.skill_loader.build_compact_context(
-            include_inactive=True   # 曾经用过但已卸载的 skill 也参与竞争
+            include_inactive=True,   # 曾经用过但已卸载的 skill 也参与竞争
+            exclude_names=exclude_names,
         )
         budget  = getattr(self.cfg, "skill_compact_budget",     25_000)
         per_sk  = getattr(self.cfg, "skill_compact_per_skill",   5_000)
@@ -442,10 +448,13 @@ class CompactionMixin:
         # include_inactive=True 让"已卸载但曾用过"的 skill 仍参与本次重附内容
         # 的 LRU/budget 竞争，不影响这次摘要的完整性；但卸载会真正从 _active
         # 移除，之后每一轮 build_context() 就不会再把它的全文塞进 system prompt。
-        self._auto_unload_idle_skills()
+        just_unloaded = self._auto_unload_idle_skills()
 
         # ── 重附 skill 块 ────────────────────────────────────────────────────
-        skill_block = self._build_skill_compact_block()
+        # exclude_names=just_unloaded：让"自动卸载"在当前这一轮就生效——
+        # 不排除的话 include_inactive=True 会把刚卸载的 skill 当"曾用过的候选"
+        # 重新塞回这次摘要，等于卸载要等下一次 compact 才看得出差别。
+        skill_block = self._build_skill_compact_block(exclude_names=set(just_unloaded))
 
         from mini_agent.history.entry import (
             make_session_resume, make_compact_summary, make_skill_context
