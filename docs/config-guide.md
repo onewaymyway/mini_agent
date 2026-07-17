@@ -523,11 +523,13 @@ class GoalModeConfig:
     judge_allowed_tools: list = field(default_factory=lambda: ["bash", "read_file", "grep", "glob"])
     judge_allowed_tool_groups: list = field(default_factory=list)
     judge_yes_mode: bool = False
+    judge_max_turns: int = 40
     max_rounds: int = 20
     max_total_compacts: int = 10
     consecutive_same_feedback_limit: int = 3
     same_feedback_similarity_threshold: float = 0.9
     judge_show_prompt: bool = False
+    judge_show_raw_output: bool = False
     persist_state: bool = True
     auto_resume_prompt: bool = True
 ```
@@ -540,11 +542,13 @@ class GoalModeConfig:
 | `judge_tools_enabled` | GoalJudge 是否挂载工具自己验证验收标准，默认关闭（最小权限原则） |
 | `judge_allowed_tools` / `judge_allowed_tool_groups` | `judge_tools_enabled=true` 时的工具白名单 |
 | `judge_yes_mode` | 仅当 `judge_tools_enabled=true` 时生效：是否真实执行工具调用（`--yes` 全放行），默认仍强制 sandbox 拦截 |
+| `judge_max_turns` | **[BUGFIX]** GoalJudge 单次核查内部允许跑的最大轮次上限，默认 `40`。此前硬编码为"不挂工具 2 / 挂工具 6"且不可配置，挂工具场景很容易在验证命令（如 `pytest`）跑完前就撞顶，导致空输出、被迫保守判 `CONTINUE`；现在统一改为读这个配置项 |
 | `max_rounds` | 外层循环轮次上限 |
 | `max_total_compacts` | 单次 goal 执行期间最多允许几次 compact |
 | `consecutive_same_feedback_limit` | 连续 N 轮反馈高度雷同即判定"卡住"提前终止 |
 | `same_feedback_similarity_threshold` | 判定"雷同"的相似度阈值（`difflib.SequenceMatcher`） |
 | `judge_show_prompt` | 打印发给 GoalJudge 的完整输入 prompt，排查判定依据用（默认关闭，内容较长） |
+| `judge_show_raw_output` | **[BUGFIX]** 打印 GoalJudge 返回的原始 JSON 判定结果，排查解析/判定依据用。同时修复了"GoalJudge 撞到 `judge_max_turns` 仍未产出最终文本时被当成成功返回空字符串"的问题，现在会显式识别并附带明确原因注入反馈 |
 | `persist_state` | 是否在轮次边界落盘 `goal_state.json`，供异常中断恢复 |
 | `auto_resume_prompt` | 启动 REPL 时若检测到未完成的 goal 是否主动提示 |
 

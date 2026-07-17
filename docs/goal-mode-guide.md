@@ -103,6 +103,7 @@ Evaluator 仍然在每次 `run_turn` 内部做质量把关，GoalRunner 在更�
 | `judge_yes_mode` | `false` | 仅当 `judge_tools_enabled=true` 时生效：工具调用是否真实执行（`--yes` 全放行），关闭时仍强制 sandbox 拦截 |
 | `judge_allowed_tools` | `["bash","read_file","grep","glob"]` | `judge_tools_enabled=true` 时的工具白名单 |
 | `judge_allowed_tool_groups` | `[]` | 同上，按工具组授权 |
+| `judge_max_turns` | `40` | **[BUGFIX]** GoalJudge 单次核查内部允许跑的最大轮次（LLM 调用+工具调用循环上限，与外层 `max_rounds` 是两回事）。此前硬编码为"不挂工具 2 / 挂工具 6"，挂工具场景常常不够 GoalJudge 把验证命令（比如 `pytest`）跑完并收敛到最终判定，会撞顶导致空输出、被迫保守判 `CONTINUE`；现在统一改为读这个配置项，不再区分是否挂工具 |
 | `max_rounds` | `20` | 外层循环轮次上限 |
 | `max_total_compacts` | `10` | 单次 goal 执行期间最多允许几次 compact，防止"压缩风暴" |
 | `consecutive_same_feedback_limit` | `3` | 连续 N 轮判定为"没有实质进展" → 判定为"卡住"，提前终止（判定方式见 `progress_judge_mode`） |
@@ -110,6 +111,7 @@ Evaluator 仍然在每次 `run_turn` 内部做质量把关，GoalRunner 在更�
 | `max_stuck_recoveries` | `3` | 判定"卡住"后先压缩历史+提示换思路、再给几次机会（见下方"卡住恢复"），额度耗尽后再卡住才真正终止；设为 `0` 等价于旧行为（一卡住就终止） |
 | `light_compact_max_recoveries` | `1` | **[§1.1 分级 compact]** 前 N 次卡住恢复只注入提示、不压缩历史（第一次卡住可能只是暂时性的），超过后才真正触发 compact；设为 `0` 等价于每次恢复都 compact |
 | `judge_show_prompt` | `false` | 打印发给 GoalJudge 的完整输入 prompt（目标、验收标准、主 Agent 产出、上一轮反馈、上一轮验收标准状态），排查判定依据用 |
+| `judge_show_raw_output` | `false` | **[BUGFIX]** 打印 GoalJudge 返回的原始 JSON 判定结果（排查解析/判定依据用）。此前 GoalJudge 挂工具时若在 `judge_max_turns` 内一直调用工具、没有收敛出最终文本，会被当成"正常成功"返回空字符串，导致状态被静默兜底成 `CONTINUE` 且用户看不到任何判定内容；现在这种情况会被显式识别，附带明确原因文案（"可能一直在调用工具验证、没有收敛到结论"）注入反馈，不再是空白 |
 | `persist_state` | `true` | 是否在每个轮次边界落盘 `goal_state.json`（供异常中断恢复） |
 | `auto_resume_prompt` | `true` | 启动 REPL 时若检测到未完成的 goal，是否主动提示 |
 | `progress_judge_mode` | `"llm"` | **[改造项一]** 卡住判定方式：`"llm"` → 让 GoalJudge 在结构化输出里额外判断本轮是否有实质进展（`progress` 字段），比纯文本相似度更能识别"表述不同但本质相同"或"表述相似但确有进展"这两类规则算法的误判场景；解析失败/未按新 schema 输出时自动回退到 `"text_similarity"` 规则。设为 `"text_similarity"` 可一键恢复升级前的纯规则行为 |
@@ -718,9 +720,22 @@ Goal 执行结果： done
 ```
 /goal resume            # 自动找最近一个 status=running 的 goal
 /goal resume <sid>      # 指定 session id 恢复
-/goal resume <sid> --force  # 强制恢复非 running 状态的记录（比如 cancelled）
+/goal resume <sid> --force  # 强制恢复非 running 状态的记录（比如 cancelled、stuck）
 /goal list               # 列出所有可恢复的 goal 任务（status=running，可能不止一个）
 ```
+
+> **[BUGFIX] `stuck` 终止的会话现在也会出现在 `/goal list` 里。** 此前 `stuck` /
+> `max_rounds_exhausted` 落盘时会被统一记成 `status=failed`（丢失具体终止原因），
+> 且 `/goal list` 只列 `status==running`，导致因"判定卡住"而终止的目标彻底从
+> 列表里消失，用户找不到、也不知道其实还能用 `--force` 恢复。现在：
+> - 落盘的 `status` 保留真实值（`stuck` / `max_rounds_exhausted`），不再折叠成
+>   笼统的 `failed`；
+> - `/goal list` 会单独列出因"卡住"而终止的任务（附带终止原因摘要），并提示
+>   `/goal resume <sid> --force`；
+> - 用 `--force` 恢复一个 `stuck` 会话时，`GoalRunner` 会**重置卡住检测计数**
+>   （重新给一份完整的 `max_stuck_recoveries` 额度），而不是原样带回"已耗尽"的
+>   计数——否则第一次判定又相似就会立刻再次 `GIVE_UP`，表现为"resume 之后完全
+>   无法继续"。
 
 重新打开 REPL 时，如果检测到未完成的 goal，也会主动提示：
 
