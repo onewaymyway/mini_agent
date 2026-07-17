@@ -205,13 +205,19 @@ def scan_goal_states(project_root) -> list[dict]:
     return results
 
 
-def list_resumable_sessions(project_root) -> list[dict]:
+def list_resumable_sessions(project_root, include_stuck: bool = False) -> list[dict]:
     """扫描 sessions_dir 下所有 status=="running" 的 goal_state.json，按更新时间倒序返回。
 
     与 find_resumable_session() 的区别：后者只返回"最近一个"（供启动提示用一行话
     简短提醒），这里返回全部——用于 `/goal list`，避免"多个进程各自 /goal 了不同
     目标、都被杀死后，重启只能看到最近一个，其余的就像丢了"这种情况（其实文件都还
     在，只是没有入口能看到）。
+
+    include_stuck=True 时，额外把 status=="stuck" 的会话也一起收进结果（用
+    "status" 字段区分，"running" 会话不显式带这个字段以保持向后兼容）。
+    [BUGFIX] 此前 stuck 终止的 goal 一旦落盘就彻底从 /goal list 里消失，用户
+    完全不知道还能用 `/goal resume <sid> --force` 把它捞回来继续——这里让它
+    至少"可见"，恢复动作本身仍然需要显式 --force，不会误导成可以无脑续跑。
     """
     from mini_agent.storage.paths import AgentPaths
 
@@ -219,6 +225,8 @@ def list_resumable_sessions(project_root) -> list[dict]:
     sessions_dir = paths.sessions_dir
     if not sessions_dir.exists():
         return []
+
+    wanted_statuses = {"running", "stuck"} if include_stuck else {"running"}
 
     candidates = []
     for entry in sessions_dir.iterdir():
@@ -232,16 +240,21 @@ def list_resumable_sessions(project_root) -> list[dict]:
                 data = json.load(f)
         except Exception:
             continue
-        if data.get("status") == "running":
+        status = data.get("status")
+        if status in wanted_statuses:
             goal_spec = data.get("goal_spec") or {}
             goal_text = (goal_spec.get("goal_text") or "").strip()
-            candidates.append({
+            entry_dict = {
                 "session_id": entry.name,
                 "round": data.get("round"),
                 "updated_at": data.get("updated_at"),
                 "goal_text": goal_text,
                 "mtime": gs_path.stat().st_mtime,
-            })
+            }
+            if status != "running":
+                entry_dict["status"] = status
+                entry_dict["final_report"] = (data.get("final_report") or "").strip()
+            candidates.append(entry_dict)
     candidates.sort(key=lambda x: x["mtime"], reverse=True)
     for c in candidates:
         c.pop("mtime", None)

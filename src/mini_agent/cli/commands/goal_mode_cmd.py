@@ -436,32 +436,65 @@ def _handle_list(agent) -> None:
     """
     from mini_agent.goal_mode.state import list_resumable_sessions
 
-    sessions = list_resumable_sessions(agent.cfg.project_root)
+    sessions = list_resumable_sessions(agent.cfg.project_root, include_stuck=True)
     if not sessions:
         R.print_info("没有检测到可恢复的 goal 任务（status==running）。")
         return
 
-    R.console.print(f"[bold]检测到 {len(sessions)} 个可恢复的目标任务：[/bold]")
-    for s in sessions:
-        current_mark = "  [dim](当前 session)[/dim]" if s["session_id"] == agent.session_id else ""
+    def _first_line(s: dict) -> str:
         goal_text = s.get("goal_text") or "(无目标描述，可能是旧版本数据)"
         # 目标描述可能很长（多行/几百字），命令行里整段甩出来反而看不清哪行是
         # 哪个 session 的，所以只取第一行 + 截断，完整内容还是原样存在
         # goal_state.json 里，需要的话可以自己去翻文件。
-        first_line = goal_text.splitlines()[0] if goal_text else ""
-        if len(first_line) > 80:
-            first_line = first_line[:77] + "..."
+        line = goal_text.splitlines()[0] if goal_text else ""
+        return line[:77] + "..." if len(line) > 80 else line
+
+    def _updated_str(s: dict) -> str:
         updated_at = s.get("updated_at")
-        updated_str = (
+        return (
             datetime.fromtimestamp(updated_at).strftime("%Y-%m-%d %H:%M:%S")
             if updated_at else "未知"
         )
+
+    running_sessions = [s for s in sessions if s.get("status") != "stuck"]
+    stuck_sessions = [s for s in sessions if s.get("status") == "stuck"]
+
+    if running_sessions:
+        R.console.print(f"[bold]检测到 {len(running_sessions)} 个可恢复的目标任务：[/bold]")
+        for s in running_sessions:
+            current_mark = "  [dim](当前 session)[/dim]" if s["session_id"] == agent.session_id else ""
+            R.console.print(
+                f"  - session: {s['session_id']}  round={s['round']}  "
+                f"更新时间={_updated_str(s)}{current_mark}\n"
+                f"    目标：{_first_line(s)}"
+            )
         R.console.print(
-            f"  - session: {s['session_id']}  round={s['round']}  "
-            f"更新时间={updated_str}{current_mark}\n"
-            f"    目标：{first_line}"
+            "\n输入 [bold]/goal resume <session_id>[/bold] 恢复对应的目标。"
         )
-    R.console.print(
-        "\n输入 [bold]/goal resume <session_id>[/bold] 恢复对应的目标。"
-    )
+
+    if stuck_sessions:
+        # [BUGFIX] 此前 stuck 终止的 goal 落盘后彻底从这里消失，用户完全
+        # 看不到、也不知道还能用 --force 捞回来继续；这里明确列出来，并
+        # 提示需要 --force（resume 时会重置卡住恢复额度，不会立刻又终止）。
+        if running_sessions:
+            R.console.print()
+        R.console.print(
+            f"[bold yellow]另有 {len(stuck_sessions)} 个因判定为\"卡住\"而终止的目标任务"
+            "（可用 --force 强制恢复，恢复时会重新给予一次完整的卡住检测额度）：[/bold yellow]"
+        )
+        for s in stuck_sessions:
+            current_mark = "  [dim](当前 session)[/dim]" if s["session_id"] == agent.session_id else ""
+            report = s.get("final_report") or ""
+            report_first_line = report.splitlines()[0] if report else ""
+            if len(report_first_line) > 100:
+                report_first_line = report_first_line[:97] + "..."
+            R.console.print(
+                f"  - session: {s['session_id']}  round={s['round']}  "
+                f"更新时间={_updated_str(s)}{current_mark}\n"
+                f"    目标：{_first_line(s)}\n"
+                f"    终止原因：{report_first_line or '（无记录）'}"
+            )
+        R.console.print(
+            "\n输入 [bold]/goal resume <session_id> --force[/bold] 强制恢复对应的目标。"
+        )
 

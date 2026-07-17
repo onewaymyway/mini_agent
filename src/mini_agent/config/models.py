@@ -575,6 +575,7 @@ class GoalModeConfig:
 
     # ── 调试 ─────────────────────────────────────────────────────────────────
     judge_show_prompt: bool = False   # 打印发给 GoalJudge 的完整输入 prompt（排查判定依据用）
+    judge_show_raw_output: bool = False  # 打印 GoalJudge 返回的原始 JSON 判定结果（排查解析/判定依据用）
 
     # ── 状态持久化（异常中断恢复）────────────────────────────────────────────
     persist_state: bool = True   # 是否在每个轮次边界落盘 goal_state.json

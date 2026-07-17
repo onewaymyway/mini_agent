@@ -181,11 +181,37 @@ def run_goal_judge(
         profile_name=profile.name if profile else "goal_judge",
     )
 
-    if result.ok:
+    if result.ok and result.raw_output and result.raw_output.strip():
         return result.raw_output
+
+    import json as _json
+    if result.ok:
+        # [BUGFIX] result.ok=True 但 raw_output 为空/空白：GoalJudge 挂了
+        # 只读工具（judge_tools_enabled=True）时，可能在 max_turns 内一直在
+        # 调用工具验证（read_file/grep/bash 等），始终没有在最后一轮收敛成
+        # 最终 JSON 文本判定。此前这种情况会被当成"正常成功"直接返回空
+        # 字符串，导致上层 extract_goal_status/parse_judge_verdict 拿到空
+        # 文本、静默兜底成 CONTINUE，且没有任何可展示的判定内容——用户只能
+        # 看到状态行，看不到"为什么没完成"。这里显式识别出来，走同一条
+        # "判定失败"兜底路径，附带明确原因。
+        fallback_msg = (
+            "GoalJudgeAgent 在允许的轮次内未产出最终文本判定（可能一直在调用"
+            "工具验证、没有收敛到结论），保守判定为需继续。建议检查 "
+            "cfg.goal_mode.judge_tools_enabled 及判官 max_turns 配置，或打开 "
+            "judge_show_prompt 排查判官具体在做什么。"
+        )
+        try:
+            import mini_agent.ui.renderer as R
+            R.print_warning(f"[GoalJudgeAgent] 命中空输出兜底：{fallback_msg}")
+        except Exception:
+            pass
+        return _json.dumps({
+            "status": "CONTINUE",
+            "feedback": fallback_msg,
+        }, ensure_ascii=False)
+
     # 判定失败时保守返回 CONTINUE，绝不能让异常被当成 DONE。
     # 兜底文本本身也是合法 JSON，保持与正常输出一致的可解析契约。
-    import json as _json
     return _json.dumps({
         "status": "CONTINUE",
         "feedback": f"[GoalJudgeAgent 运行失败: {result.error}]，保守判定为需继续。",

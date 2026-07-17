@@ -216,10 +216,27 @@ class GoalRunner:
             self._round = resume_state.round
             self._last_feedback = resume_state.last_judge_feedback
             self._compacts_done = resume_state.compacts_done
-            self._stuck_detector.load_counts(
-                consecutive_same=resume_state.consecutive_same_feedback,
-                recoveries_used=resume_state.stuck_recoveries_used,
-            )
+            # [BUGFIX] 只有从 status=="running" 正常中断（Ctrl-C/进程被杀）恢复时，
+            # 才应该原样带回卡住计数——那种情况下恢复额度确实还没耗尽。但如果
+            # 这个 goal 是因为 status=="stuck" 才落盘的（意味着当时
+            # recoveries_used 已经 >= max_stuck_recoveries，是"已用尽额度后
+            # 主动终止"），此时走 /goal resume --force 恢复，如果原样带回这份
+            # "已耗尽"的计数，第一次 _check_stuck 命中相似反馈就会立刻再次
+            # GIVE_UP、直接终止——用户表现为"resume 之后完全无法继续"。
+            # 这里对 stuck 恢复的场景重置一次计数，给它一份全新的恢复额度，
+            # 相当于"人工介入后重新开始观察是否还卡住"，而不是延续一个已经
+            # 判定过"救不回来"的状态。
+            if resume_state.status == "stuck":
+                self._stuck_detector.load_counts(consecutive_same=0, recoveries_used=0)
+                R.print_info(
+                    "[GoalRunner] 检测到从 stuck 状态恢复，已重置卡住检测计数"
+                    "（重新给予一份完整的卡住恢复额度）。"
+                )
+            else:
+                self._stuck_detector.load_counts(
+                    consecutive_same=resume_state.consecutive_same_feedback,
+                    recoveries_used=resume_state.stuck_recoveries_used,
+                )
             if resume_state.criteria_status:
                 self._criteria_status = list(resume_state.criteria_status)
             if resume_state.recent_progress_reasons:
@@ -551,6 +568,18 @@ class GoalRunner:
             raw, valid_statuses=["DONE", "CONTINUE", "NEED_COMPACT"], fallback_status=status,
         )
         display_text = _verdict.feedback if (_verdict.parse_ok and _verdict.feedback) else raw
+
+        # [显示改进] display_text 理论上不应为空（goal_judge.run_goal_judge 已经
+        # 对"空输出"做了兜底），但保留最后一道防线：万一自定义 profile / 未来
+        # 改动导致 raw 也是空白，至少展示一句明确提示，而不是让用户看到完全
+        # 空白的判定内容。
+        if not display_text or not display_text.strip():
+            display_text = "[GoalJudge 未返回任何可展示的判定内容，已保守判定为需继续]"
+
+        if getattr(self._gm_cfg, "judge_show_raw_output", False):
+            R.console.print()
+            R.console.print("[bold]— GoalJudge 原始返回 —[/bold]")
+            R.console.print(raw)
 
         # [改造项一/三] 解析扩展字段。verdict.extra 是 parse_judge_verdict 已经
         # 透传出来的 status/feedback 之外的原始字段，解析失败（_verdict.parse_ok
@@ -1149,11 +1178,10 @@ class GoalRunner:
             R.print_warning(f"[GoalRunner] 状态落盘失败（不影响本轮执行）：{e}")
 
     def _finish(self, status: str, report: str) -> GoalRunResult:
-        persisted_status = {
-            "done": "done",
-            "max_rounds_exhausted": "failed",
-            "stuck": "failed",
-        }.get(status, "failed")
+        # [BUGFIX] 此前 stuck / max_rounds_exhausted 都被折叠成同一个 "failed"，
+        # resume 时读不出真实的终止原因；下面新增的"stuck 恢复时重置卡住计数"
+        # 逻辑依赖这里保留 "stuck" 这个具体值，因此不再统一折叠。
+        persisted_status = status if status in ("done", "stuck", "max_rounds_exhausted") else "failed"
         self._save_state(status=persisted_status, final_report=report)
 
         if status in ("stuck", "max_rounds_exhausted"):
