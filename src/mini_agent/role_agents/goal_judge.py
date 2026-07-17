@@ -161,7 +161,7 @@ def run_goal_judge(
                 )
             ),
         ),
-        max_turns=6 if tools_enabled else 2,   # 挂工具时允许多跑几轮验证命令
+        max_turns=int(getattr(goal_cfg_block, "judge_max_turns", 40)),
         tools_enabled=tools_enabled,
         allowed_tools=list(getattr(goal_cfg_block, "judge_allowed_tools", []) or []),
         allowed_tool_groups=list(getattr(goal_cfg_block, "judge_allowed_tool_groups", []) or []),

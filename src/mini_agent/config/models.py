@@ -545,6 +545,13 @@ class GoalModeConfig:
     # 人工始终按 --yes 全部放行），不会逐条弹出确认。请只在信任验收标准里的
     # 验证命令、且愿意让 GoalJudge 自己真实执行命令时开启。
     judge_yes_mode: bool = False
+    # [BUGFIX/需求变更] GoalJudge 单次核查内部允许跑的最大轮次（LLM 调用+工具
+    # 调用循环的上限，与外层 max_rounds 是两回事）。此前硬编码在 judge_factory
+    # 里：不挂工具时 2，挂工具时 6——挂工具场景 6 轮往往不够 GoalJudge 把验证
+    # 命令（比如 pytest）跑完并收敛到最终 JSON 判定，会撞顶导致空输出、被迫
+    # 保守判 CONTINUE。现在统一改成读这个配置项，不再区分是否挂工具，默认
+    # 提高到 40。
+    judge_max_turns: int = 40
 
     # ── 外层循环安全阀 ───────────────────────────────────────────────────────
     max_rounds: int = 20                       # 外层 goal 迭代轮数上限
