@@ -220,6 +220,14 @@ class SessionLifecycleMixin:
         self._last_compact_tool_calls: int = 0
         # 距上次 compact 经过的轮数（用于冷却期判断）
         self._turns_since_last_compact: int = 0
+        # [BUGFIX 重入保护] compact_with_skills() 的"正常路径"会调用 run_turn()，
+        # 而 run_turn() 内部又会重新进入 _agentic_loop()。如果不加保护，
+        # 这个嵌套的 _agentic_loop() 会在压缩尚未完成、self._history 尚未清空
+        # （甚至因为新塞入的 compact_prompt 而 token 数不降反升）的情况下，
+        # 再次命中 token_threshold 等触发器，导致 compact 过程中递归/重复
+        # 触发 compact。此标志位在 _auto_compress_history() 执行期间置 True，
+        # _agentic_loop() 触发检查前先看它，为 True 则直接跳过本轮触发检查。
+        self._compacting_in_progress: bool = False
 
         # raw history 路径绑定（_init_session 在 _init_components 之前调用，
         # 彼时 _hist 尚不存在，set_path 被吞掉了。在这里补绑定。）

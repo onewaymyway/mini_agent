@@ -702,6 +702,26 @@ class CompactionMixin:
         selective），则退回旧的 HistoryManager.auto_compress() 路径，
         便于对压缩延迟/开销更敏感的场景使用轻量策略。
         """
+        # [BUGFIX 重入保护] 双保险：即使某条调用路径绕过了
+        # _agentic_loop() 里的短路检查直接调到这里，只要已经有一次
+        # compact 在执行（_compacting_in_progress=True），本次调用
+        # 也直接跳过，不重复执行压缩。真正生效的锁在下面的
+        # try/finally 里设置。
+        if getattr(self, "_compacting_in_progress", False):
+            R.print_info("[compact] 检测到 compact 正在执行中，跳过本次重入触发。")
+            return
+
+        self._compacting_in_progress = True
+        try:
+            self._auto_compress_history_impl(trigger_result)
+        finally:
+            self._compacting_in_progress = False
+
+    def _auto_compress_history_impl(self, trigger_result=None) -> None:
+        """
+        _auto_compress_history() 的实际实现，被重入锁包裹调用。
+        逻辑与原来完全一致，仅做了函数拆分以便加锁。
+        """
         strategy_name = "auto_compress"
         trigger_reason = None
         if trigger_result is not None:

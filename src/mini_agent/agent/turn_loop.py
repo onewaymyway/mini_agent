@@ -262,8 +262,15 @@ class TurnLoopMixin:
                 turns_since_last_compact=self._turns_since_last_compact,
                 llm_client=self._llm,
             )
-            _trigger_result = self._compact_triggers.check(_trigger_ctx, self.cfg)
-            if _trigger_result.triggered:
+            # [BUGFIX 重入保护] compact_with_skills() 的"正常路径"会调用
+            # run_turn()，从而重新进入本函数（_agentic_loop）。若此时
+            # 已经处于 compact 执行过程中（_compacting_in_progress=True），
+            # 直接跳过本轮触发检查，避免压缩尚未完成、历史尚未清空时
+            # 又一次被 token_threshold 等触发器命中，递归/重复触发 compact。
+            _trigger_result = None
+            if not getattr(self, "_compacting_in_progress", False):
+                _trigger_result = self._compact_triggers.check(_trigger_ctx, self.cfg)
+            if _trigger_result is not None and _trigger_result.triggered:
                 _did_compact = self._maybe_run_compact(_trigger_result)
                 # [AUTO-COMPACT-CONTINUE] 压缩真正执行后，自动注入一条模拟的
                 # "继续"用户消息，让 agent 自动接着往下走，而不是把压缩后的
