@@ -10,7 +10,10 @@ cli/commands/debug_cmd.py — /debug slash 命令
   /debug system          打印完整 system prompt（含估算 token 数）
   /debug history [n]     以表格形式打印 history（默认全部，内容截断预览）
   /debug history full [n]  同上，但不截断内容（可能刷屏，谨慎使用）
-  /debug all [n]         system + history 摘要一起打印
+  /debug tokens          打印 system / history / 合计 三者各自的估算 token 数
+                          （与 _agentic_loop 里 "[token] ~X tokens" 打印口径完全一致，
+                          用于排查该数字里 system 和 history 各占多少）
+  /debug all [n]         system + history + tokens 摘要一起打印
   /debug save [path]     将 system + 完整 history 落盘为 Markdown 文件，
                           不指定 path 时写入 <project_root>/.agent/debug/
 """
@@ -35,14 +38,17 @@ def handle_debug_cmd(args: list[str], agent: Agent) -> None:
         _print_system(agent)
     elif sub == "history":
         _print_history(agent, rest)
+    elif sub == "tokens":
+        _print_tokens(agent)
     elif sub == "all":
         _print_system(agent)
         _print_history(agent, rest)
+        _print_tokens(agent)
     elif sub == "save":
         _save_debug_dump(agent, rest[0] if rest else None)
     else:
         R.print_error(
-            "Usage: /debug [system | history [full] [n] | all [n] | save [path]]"
+            "Usage: /debug [system | history [full] [n] | tokens | all [n] | save [path]]"
         )
 
 
@@ -66,6 +72,55 @@ def _print_system(agent: Agent) -> None:
         f"[dim]({len(text)} chars, ~{tokens} tokens)[/dim]\n"
     )
     R.console.print(text)
+
+
+def _print_tokens(agent: Agent) -> None:
+    """
+    打印 system / history / 合计 三者各自的估算 token 数。
+
+    刻意复用与 turn_loop.py::_agentic_loop() 里 "[token] ~X tokens" 打印
+    完全相同的计算路径（先 convert_tool_use_to_text 再 estimate_messages_tokens），
+    这样这里打印出来的 total 应该和运行中日志里看到的数字一致 —— 如果 total 和
+    日志对不上，说明是别的原因（比如两次打印时机不同、历史又新增了消息），
+    而不是这里的估算口径有问题。
+
+    system 和 history 两个子项分开算，方便定位"到底是 system prompt 大，
+    还是 history 大"：compact 只会影响 history，不会影响 system prompt。
+    """
+    from mini_agent.perception.token_counter import estimate_tokens, estimate_messages_tokens
+    from mini_agent.llm.system_tool_call import convert_tool_use_to_text
+
+    system_text = _get_system_text(agent)
+    history = agent.history
+
+    sys_tokens = estimate_tokens(system_text)
+    msgs_for_estimate = convert_tool_use_to_text(history)
+    total_tokens = estimate_messages_tokens(msgs_for_estimate, system_text)
+    # 与 total 使用同一份 convert_tool_use_to_text 处理后的消息，
+    # 只是不传 system，这样 total - hist_tokens 应该正好等于 sys_tokens
+    # （允许 estimate_tokens("") == 0 时的浮点/取整误差在 1 以内）。
+    hist_tokens = estimate_messages_tokens(msgs_for_estimate, "")
+
+    ctx_window = None
+    pct_str = ""
+    try:
+        ctx_window = agent._resolve_context_window()
+        if ctx_window:
+            pct_str = f"  [dim]({total_tokens / ctx_window:.0%} of {ctx_window:,})[/dim]"
+    except Exception:
+        pass
+
+    R.console.print("\n[bold]── Token Breakdown ──[/bold]\n")
+    R.console.print(f"  system prompt : ~{sys_tokens:,} tokens")
+    R.console.print(f"  history ({len(history)} msgs): ~{hist_tokens:,} tokens")
+    R.console.print(f"  [bold]total{'':<6}[/bold]: ~{total_tokens:,} tokens{pct_str}")
+    if sys_tokens > hist_tokens:
+        R.console.print(
+            "\n[dim]提示：system prompt 占比更大。/compact 只会压缩 history，"
+            "不会缩小 system prompt（基础指令 + 工具 schema + 重附的 skill 内容等），"
+            "如果 total 压缩后仍然偏高，多半是这部分没降。可用 /debug system "
+            "查看具体内容找出占用大头。[/dim]"
+        )
 
 
 def _parse_history_args(rest: list[str]) -> tuple[bool, Optional[int]]:

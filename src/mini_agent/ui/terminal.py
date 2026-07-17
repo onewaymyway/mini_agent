@@ -3132,7 +3132,7 @@ _COMMANDS: list[tuple[str, str, list]] = [
     ("/agent",       "Goal backlog & daemon management",             ["goals", "digest", "daemon"]),
     ("/goals",       "Shortcut for /agent goals",                    ["list", "add", "obj", "done", "abandon", "pause", "progress", "status"]),
     ("/digest",      "Show autonomous activity summary (last 24h)",  []),
-    ("/debug",       "Print/export system prompt & history for debugging", ["system", "history", "all", "save"]),
+    ("/debug",       "Print/export system prompt & history for debugging", ["system", "history", "tokens", "all", "save"]),
     ("/cron",        "Manage periodic daemon tasks",                 ["list", "status", "enable", "disable", "run", "add", "remove", "set-schedule"]),
     ("/proxy",       "Proxy pool: subscriptions/validation/integration switches", ["status", "refresh", "sources", "integration"]),
     (
