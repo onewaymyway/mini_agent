@@ -205,19 +205,29 @@ def scan_goal_states(project_root) -> list[dict]:
     return results
 
 
-def list_resumable_sessions(project_root, include_stuck: bool = False) -> list[dict]:
-    """扫描 sessions_dir 下所有 status=="running" 的 goal_state.json，按更新时间倒序返回。
+def list_resumable_sessions(
+    project_root, include_stuck: bool = False, include_all: bool = False,
+) -> list[dict]:
+    """扫描 sessions_dir 下所有 goal_state.json，按更新时间倒序返回。
 
     与 find_resumable_session() 的区别：后者只返回"最近一个"（供启动提示用一行话
     简短提醒），这里返回全部——用于 `/goal list`，避免"多个进程各自 /goal 了不同
     目标、都被杀死后，重启只能看到最近一个，其余的就像丢了"这种情况（其实文件都还
     在，只是没有入口能看到）。
 
-    include_stuck=True 时，额外把 status=="stuck" 的会话也一起收进结果（用
-    "status" 字段区分，"running" 会话不显式带这个字段以保持向后兼容）。
-    [BUGFIX] 此前 stuck 终止的 goal 一旦落盘就彻底从 /goal list 里消失，用户
-    完全不知道还能用 `/goal resume <sid> --force` 把它捞回来继续——这里让它
-    至少"可见"，恢复动作本身仍然需要显式 --force，不会误导成可以无脑续跑。
+    默认（`include_stuck=False, include_all=False`）只返回 `status=="running"`，
+    behavior 与升级前一致，供 app.py 启动时的"检测到未完成目标"提示复用。
+
+    include_stuck=True 时，额外把 status=="stuck" 的会话也一起收进结果。
+
+    include_all=True 时（优先级最高，会覆盖 include_stuck）：**不做任何状态
+    过滤**，返回 sessions_dir 下的全部 goal_state.json（running / done / stuck /
+    max_rounds_exhausted / cancelled / failed 等）。用于 `/goal list` ——此前
+    只列 `running`（后来加了 `stuck`），但 `done`/`cancelled`/`max_rounds_exhausted`
+    等状态的记录同样彻底看不到，用户没有一个"查看全部历史 goal"的入口。
+
+    非 `running` 的条目会额外带 `status` / `final_report` 两个字段（"running"
+    条目不带这两个字段，保持向后兼容）。
     """
     from mini_agent.storage.paths import AgentPaths
 
@@ -226,7 +236,10 @@ def list_resumable_sessions(project_root, include_stuck: bool = False) -> list[d
     if not sessions_dir.exists():
         return []
 
-    wanted_statuses = {"running", "stuck"} if include_stuck else {"running"}
+    if include_all:
+        wanted_statuses = None  # None 表示不过滤，全部状态都要
+    else:
+        wanted_statuses = {"running", "stuck"} if include_stuck else {"running"}
 
     candidates = []
     for entry in sessions_dir.iterdir():
@@ -241,7 +254,7 @@ def list_resumable_sessions(project_root, include_stuck: bool = False) -> list[d
         except Exception:
             continue
         status = data.get("status")
-        if status in wanted_statuses:
+        if wanted_statuses is None or status in wanted_statuses:
             goal_spec = data.get("goal_spec") or {}
             goal_text = (goal_spec.get("goal_text") or "").strip()
             entry_dict = {

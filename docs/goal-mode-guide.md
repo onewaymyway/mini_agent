@@ -720,18 +720,19 @@ Goal 执行结果： done
 ```
 /goal resume            # 自动找最近一个 status=running 的 goal
 /goal resume <sid>      # 指定 session id 恢复
-/goal resume <sid> --force  # 强制恢复非 running 状态的记录（比如 cancelled、stuck）
-/goal list               # 列出所有可恢复的 goal 任务（status=running，可能不止一个）
+/goal resume <sid> --force  # 强制恢复非 running 状态的记录（比如 cancelled、stuck、done）
+/goal list               # 列出**所有**状态的 goal 任务（running/done/stuck/max_rounds_exhausted/cancelled 等），按状态分组
 ```
 
-> **[BUGFIX] `stuck` 终止的会话现在也会出现在 `/goal list` 里。** 此前 `stuck` /
-> `max_rounds_exhausted` 落盘时会被统一记成 `status=failed`（丢失具体终止原因），
-> 且 `/goal list` 只列 `status==running`，导致因"判定卡住"而终止的目标彻底从
-> 列表里消失，用户找不到、也不知道其实还能用 `--force` 恢复。现在：
-> - 落盘的 `status` 保留真实值（`stuck` / `max_rounds_exhausted`），不再折叠成
->   笼统的 `failed`；
-> - `/goal list` 会单独列出因"卡住"而终止的任务（附带终止原因摘要），并提示
->   `/goal resume <sid> --force`；
+> **[BUGFIX/需求变更] `/goal list` 现在展示全部状态的 goal，不再只是 `running`。**
+> 此前只列 `status==running`（后来加了 `stuck`），`done`/`cancelled`/
+> `max_rounds_exhausted` 等状态的记录彻底看不到，用户没有一个"查看全部历史
+> goal"的入口。现在：
+> - 落盘的 `status` 保留真实值（`stuck` / `max_rounds_exhausted` 等），不再
+>   折叠成笼统的 `failed`；
+> - `/goal list` 按状态分组展示全部记录：`running`（可直接 `/goal resume` 恢复）、
+>   `stuck`/`max_rounds_exhausted`/`done`/`cancelled`（需要 `/goal resume <sid> --force`），
+>   非 `running` 的条目会附带一行终止/完成时的结果摘要；
 > - 用 `--force` 恢复一个 `stuck` 会话时，`GoalRunner` 会**重置卡住检测计数**
 >   （重新给一份完整的 `max_stuck_recoveries` 额度），而不是原样带回"已耗尽"的
 >   计数——否则第一次判定又相似就会立刻再次 `GIVE_UP`，表现为"resume 之后完全
@@ -760,7 +761,7 @@ Goal 执行结果： done
 
 ```
 /goal status    # 查看当前 session 的 goal 状态（轮次、compact 次数、最后判定）
-/goal list      # 列出所有可恢复的 goal 任务（跨 session，可能不止一个）
+/goal list      # 列出所有 goal 任务（跨 session，全部状态，按状态分组）
 /goal cancel    # 清理当前 session 的 goal 状态记录（不会中断正在运行的循环）
 /goal revise [sid]  # 基于已冻结的目标（以及上次终止时的重规划提议，若有）重新协商，
                      # 详见上方"Goal 重规划提议"一节
@@ -1017,7 +1018,7 @@ class GoalStepExecutor(ABC):
 |------|------|
 | `goal_mode/spec.py` | `GoalSpec` 数据结构 + `GoalSpecBuilder`（自然语言→结构化验收标准，多轮修订；`build_from_history()` 从当前 session 历史归纳目标） |
 | `goal_mode/executor.py` | `GoalStepExecutor` 接口 + `CoarseStepExecutor` |
-| `goal_mode/state.py` | `GoalState` + `GoalStateStore`（原子落盘/恢复）+ `find_resumable_session` / `list_resumable_sessions`（全量列出，供 `/goal list`）/ `scan_goal_states`（诊断用） |
+| `goal_mode/state.py` | `GoalState` + `GoalStateStore`（原子落盘/恢复）+ `find_resumable_session` / `list_resumable_sessions`（全量列出，支持 `include_all` 展示全部状态，供 `/goal list`）/ `scan_goal_states`（诊断用） |
 | `goal_mode/runner.py` | `GoalRunner` 外层驱动循环；`render_replan_proposal()` 模块级函数（§5，`GoalRunner`/CLI 共用） |
 | `role_agents/goal_judge.py` | GoalJudge：`build_goal_judge_prompt` / `run_goal_judge` |
 | `role_agents/feedback.py` | `extract_goal_status()`，`RoleFeedback.goal_status` 字段 |

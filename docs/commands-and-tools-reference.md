@@ -184,7 +184,7 @@ mini-agent --retry-backoff linear --retry-backoff-step 60 --retry-backoff-max 30
 |------|------|
 | `/goal <目标文本>` | 生成验收标准草案并进入确认子对话（输入修改意见可继续调整，`/confirm` 确认开始执行，`/cancel` 放弃） |
 | `/goal resume [sid]` | 恢复上次未完成的目标；不传 `sid` 时自动查找最近一个 `status=running` 的记录；对非 `running` 状态（如 `cancelled`、`stuck`）需加 `--force` |
-| `/goal list` | 列出所有可恢复的目标任务（`status=running`，跨 session，可能不止一个），**[BUGFIX]** 现在还会额外列出因判定"卡住"而终止的任务（`status=stuck`，附终止原因摘要），提示可用 `--force` 恢复；`--force` 恢复 `stuck` 会话时会重置卡住检测计数，重新给予一份完整恢复额度 |
+| `/goal list` | **[BUGFIX/需求变更]** 列出**所有状态**的目标任务（`running`/`done`/`stuck`/`max_rounds_exhausted`/`cancelled` 等，跨 session），按状态分组展示，非 `running` 条目附带结果摘要；`running` 可直接 `/goal resume <sid>` 恢复，其余状态需加 `--force`（恢复 `stuck` 会话时会重置卡住检测计数，重新给予一份完整恢复额度） |
 | `/goal status` | 查看当前 session 的 goal 状态（轮次、compact 次数、最后判定） |
 | `/goal cancel` | 清理当前 session 的 `goal_state.json` 记录 |
 
