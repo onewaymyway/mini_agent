@@ -125,6 +125,8 @@ def load_config(
     skill_compact_budget: Optional[int] = None,
     skill_compact_per_skill: Optional[int] = None,
     skill_keyword_activation_enabled: Optional[bool] = None,
+    skill_auto_unload_enabled: Optional[bool] = None,
+    skill_auto_unload_idle_seconds: Optional[int] = None,
     project_scan_enabled: Optional[bool] = None,
     file_watch_enabled: Optional[bool] = None,
     tool_cache_enabled: Optional[bool] = None,
@@ -382,6 +384,8 @@ def load_config(
         compact_per_skill=_fn("skill_compact_per_skill", skill_compact_per_skill, 5_000),
         matcher=_f("skill_matcher", None) or "keyword",
         keyword_activation_enabled=_fb("skill_keyword_activation_enabled", skill_keyword_activation_enabled, default=False),
+        auto_unload_enabled=_fb("skill_auto_unload_enabled", skill_auto_unload_enabled, default=True),
+        auto_unload_idle_seconds=_fn("skill_auto_unload_idle_seconds", skill_auto_unload_idle_seconds, 1800),
     )
 
     perception_cfg = PerceptionConfig(

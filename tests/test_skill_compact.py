@@ -54,6 +54,7 @@ def make_loader(skill_defs: list[dict], per_skill=5_000, total=25_000) -> SkillL
     loader._dirs   = []
     loader._all    = {}
     loader._active = []
+    loader._loaded_resources = {}
     loader.tracker = SkillUsageTracker(per_skill_tokens=per_skill, total_budget=total)
     from mini_agent.skills.usage_detector import SkillUsageDetector
     loader.detector = SkillUsageDetector()
@@ -177,6 +178,51 @@ class TestSkillUsageTracker:
 
 
 # ── SkillLoader 集成 ──────────────────────────────────────────────────────────
+
+class TestSkillLoaderAutoUnloadIdle:
+    """SkillLoader.auto_unload_idle() — compact 时自动卸载长期未用 skill。"""
+
+    def test_never_used_skill_gets_unloaded(self):
+        loader = make_loader([{"name": "docx"}, {"name": "pptx"}])
+        loader.activate("docx")
+        loader.activate("pptx")
+        # 从未调用 record_usage → tracker 无记录 → 应被卸载
+        unloaded = loader.auto_unload_idle(idle_seconds=1800)
+        assert set(unloaded) == {"docx", "pptx"}
+        assert loader.active == []
+
+    def test_recently_used_skill_survives(self):
+        loader = make_loader([{"name": "docx"}])
+        loader.activate("docx")
+        loader.tracker.record("docx")
+        unloaded = loader.auto_unload_idle(idle_seconds=1800)
+        assert unloaded == []
+        assert "docx" in loader.active
+
+    def test_stale_skill_gets_unloaded(self):
+        loader = make_loader([{"name": "docx"}])
+        loader.activate("docx")
+        loader.tracker.record("docx")
+        # 手动把 last_called 拨回很久以前
+        loader.tracker.get_record("docx").last_called = time.time() - 999_999
+        unloaded = loader.auto_unload_idle(idle_seconds=1800)
+        assert unloaded == ["docx"]
+        assert loader.active == []
+
+    def test_protect_set_is_respected(self):
+        loader = make_loader([{"name": "docx"}, {"name": "pptx"}])
+        loader.activate("docx")
+        loader.activate("pptx")
+        unloaded = loader.auto_unload_idle(idle_seconds=1800, protect={"docx"})
+        assert unloaded == ["pptx"]
+        assert loader.active == ["docx"]
+
+    def test_inactive_skill_is_not_affected(self):
+        loader = make_loader([{"name": "docx"}])
+        # never activated
+        unloaded = loader.auto_unload_idle(idle_seconds=1800)
+        assert unloaded == []
+
 
 class TestSkillLoaderTrackerIntegration:
 

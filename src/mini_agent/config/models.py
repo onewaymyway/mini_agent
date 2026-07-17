@@ -291,6 +291,11 @@ class SkillConfig:
     compact_per_skill: int = 5_000     # 单个 skill 最多贡献的 token 数
     matcher: str = "keyword"           # "keyword" | "ngram" | "semantic"（预留扩展点）
     keyword_activation_enabled: bool = False  # 是否允许根据关键词自动激活 skill（默认关闭，需显式启用）
+    # [SYS-SKILL-AUTO-UNLOAD] compact 时自动卸载长期未用的已激活 skill。
+    # 默认开启：这是纯粹的上下文瘦身行为（只影响之后轮次的 system prompt
+    # 注入内容），不影响已产生的历史记录，风险低。
+    auto_unload_enabled: bool = True
+    auto_unload_idle_seconds: int = 1800   # 超过 30 分钟未被实际调用即视为闲置
 
 
 @dataclass
@@ -1107,6 +1112,10 @@ class AppConfig:
     def skill_chunking_enabled(self) -> bool:   return self.skill.chunking_enabled
     @property
     def skill_compact_budget(self) -> int:      return self.skill.compact_budget
+    @property
+    def skill_auto_unload_enabled(self) -> bool:      return self.skill.auto_unload_enabled
+    @property
+    def skill_auto_unload_idle_seconds(self) -> int:  return self.skill.auto_unload_idle_seconds
     @property
     def skill_compact_per_skill(self) -> int:   return self.skill.compact_per_skill
     @property

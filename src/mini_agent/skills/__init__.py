@@ -7,6 +7,7 @@ and injects relevant skill context into the system prompt.
 from __future__ import annotations
 
 import re
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
@@ -188,6 +189,45 @@ class SkillLoader:
             self._loaded_resources.pop(name, None)
             return True
         return False
+
+    def auto_unload_idle(
+        self,
+        idle_seconds: float,
+        protect: Optional[set] = None,
+    ) -> list[str]:
+        """
+        [SYS-SKILL-AUTO-UNLOAD] 卸载长期未被实际使用的已激活 skill（垃圾回收）。
+
+        与 build_compact_context() 的区别：那里只是在"压缩后重附多少内容"这
+        一层做 LRU + budget 截断（仍然把已卸载 skill 的内容当作候选参与竞争，
+        include_inactive=True）；这里是真正把 skill 从 _active 里移除，让它
+        从此不再出现在每一轮 build_context() 注入的 system prompt 里，直到
+        再次被关键词 / 工具显式激活——这才是用户语境下的"卸载"。
+
+        判定规则（满足其一即卸载）：
+          1. skill 处于 active 状态，但 tracker 里从未记录过一次实际调用
+             （即激活后从未被检测到真正用到，纯粹占着 context 预算）；
+          2. tracker 有记录，但最近一次调用距今超过 idle_seconds。
+
+        Args:
+            idle_seconds: 判定为"长期未用"的时间阈值（秒）
+            protect: 不参与卸载的 skill 名称集合（例如本轮刚激活、或调用方
+                     判断当前仍在使用中的 skill）
+
+        Returns:
+            实际被卸载的 skill 名称列表（保持原 active 顺序）
+        """
+        protect = protect or set()
+        now = time.time()
+        unloaded: list[str] = []
+        for name in list(self._active):
+            if name in protect:
+                continue
+            rec = self.tracker.get_record(name)
+            if rec is None or (now - rec.last_called) > idle_seconds:
+                if self.deactivate(name):
+                    unloaded.append(name)
+        return unloaded
 
     def exclude(self, name: str) -> bool:
         """

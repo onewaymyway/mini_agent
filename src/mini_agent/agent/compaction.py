@@ -220,6 +220,31 @@ class CompactionMixin:
             log_exception(_mini_agent_exc, where='mini_agent.agent')
             pass
 
+    def _auto_unload_idle_skills(self) -> list[str]:
+        """
+        [SYS-SKILL-AUTO-UNLOAD] compact 时自动卸载长期未用的已激活 skill。
+
+        受 cfg.skill.auto_unload_enabled 开关控制（默认开启）；阈值取
+        cfg.skill.auto_unload_idle_seconds（默认 1800s）。无 skill_loader 或
+        当前无任何 active skill 时直接返回空列表。
+        """
+        if not self.skill_loader:
+            return []
+        if not getattr(self.cfg, "skill_auto_unload_enabled", True):
+            return []
+        if not self.skill_loader.active:
+            return []
+
+        idle_seconds = getattr(self.cfg, "skill_auto_unload_idle_seconds", 1800)
+        unloaded = self.skill_loader.auto_unload_idle(idle_seconds)
+
+        if unloaded:
+            R.print_info(
+                f"[skill-compact] auto-unloaded {len(unloaded)} idle skill(s) "
+                f"(idle > {idle_seconds}s or never used): {unloaded}"
+            )
+        return unloaded
+
     def _build_skill_compact_block(self) -> str:
         """
         按 LRU 顺序、受 budget 约束构建 skill 重附上下文块。
@@ -411,6 +436,13 @@ class CompactionMixin:
         # 后续如需支持可在 _compact_chunked 的合并步骤里单独追加同样的指令）。
         if extract_decisions and not used_chunked:
             result = self._extract_and_queue_decisions_from_compact_result(result)
+
+        # ── [SYS-SKILL-AUTO-UNLOAD] 卸载长期未用的已激活 skill ──────────────────
+        # 必须在 _build_skill_compact_block() 之前做：build_compact_context 用
+        # include_inactive=True 让"已卸载但曾用过"的 skill 仍参与本次重附内容
+        # 的 LRU/budget 竞争，不影响这次摘要的完整性；但卸载会真正从 _active
+        # 移除，之后每一轮 build_context() 就不会再把它的全文塞进 system prompt。
+        self._auto_unload_idle_skills()
 
         # ── 重附 skill 块 ────────────────────────────────────────────────────
         skill_block = self._build_skill_compact_block()
