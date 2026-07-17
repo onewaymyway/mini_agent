@@ -17,7 +17,7 @@ from mini_agent.skills import SkillLoader
 from mini_agent.tools import ToolRegistry, get_default_registry
 from mini_agent.session import SessionManager, Session
 import mini_agent.ui.renderer as R
-from mini_agent.perception.token_counter import estimate_messages_tokens
+from mini_agent.perception.token_counter import estimate_messages_tokens, estimate_tokens
 from mini_agent.perception.project_scanner import ProjectScanner
 from mini_agent.perception.file_watcher import FileWatcher
 from mini_agent.perception.tool_cache import ToolResultCache
@@ -240,12 +240,26 @@ class TurnLoopMixin:
                     _sys_preview = self._build_system()   # 首次调用时填充缓存
                     _msgs_preview = convert_tool_use_to_text(self._history)
                     _est = estimate_messages_tokens(_msgs_preview, _sys_preview)
+                    if self.cfg.verbose:
+                        # 非 tracer 路径下 verbose 打印同样需要 sys/history 拆分，
+                        # 与 tracer 分支保持一致，避免打印代码依赖未定义变量。
+                        _sys_tokens = estimate_messages_tokens([], _sys_preview)
+                        _hist_tokens = _est - _sys_tokens
                 _ctx_window = self._resolve_context_window()
                 _budget_pct = _est / max(_ctx_window, 1)
                 if self.cfg.token_estimate_enabled and self.cfg.verbose:
+                    # [SYS-TOKEN] 详细拆分：system（去除 skill 部分）/ skill / history / total。
+                    # skill 文本已包含在 system prompt 内，_sys_tokens 是未拆分前的
+                    # system 总量，这里单独估算 skill 部分并从中扣除，避免重复计入。
+                    _skill_text = ""
+                    if self._ctx_builder is not None:
+                        _skill_text = getattr(self._ctx_builder, "last_skill_text", "") or ""
+                    _skill_tokens = estimate_tokens(_skill_text) if _skill_text else 0
+                    _sys_only_tokens = max(_sys_tokens - _skill_tokens, 0)
                     R.print_info(
-                        f"[token] ~{_est:,} tokens "
-                        f"({_budget_pct:.0%} of {_ctx_window:,})"
+                        f"[token] ~{_est:,} tokens ({_budget_pct:.0%} of {_ctx_window:,}) "
+                        f"| system={_sys_only_tokens:,} skill={_skill_tokens:,} "
+                        f"history={_hist_tokens:,} total={_est:,}"
                     )
             # [SYS-COMPACT-TRIGGERS] 组合触发器检查：token 阈值 / 轮次计数 /
             # 工具调用计数 / 冗余检测 / 话题切换，任一命中即可能触发 compact。

@@ -79,6 +79,10 @@ class ContextBuilder:
         self._cached_skill_dir: str = ""
         self._cached_skill_dir_key: tuple = ()   # (frozenset(active), frozenset(available))
 
+        # [SYS-TOKEN] 最近一次 build() 中"skill"相关内容（skill_context 正文 +
+        # skill 目录块）的原始文本，供 turn_loop 的 token 详细统计拆分使用。
+        self.last_skill_text: str = ""
+
         # ── Global 知识层（W3，5.5）：workdir 切换检测 ───────────────────────
         # 记录上一次 build() 时的 project_root，用于判断"projects_index +
         # activity_log 最近几条"是否需要注入（8.4 节表格：仅在 workdir 变化
@@ -189,8 +193,14 @@ class ContextBuilder:
                 pass  # persona 系统失败不应阻断 system prompt 组装
 
         # ── Skill 目录注入（带缓存）────────────────────────────────────────
+        _skill_dir_text = ""
         if self.skill_loader and self.skill_loader.available:
-            base += "\n\n" + self._get_skill_directory()
+            _skill_dir_text = self._get_skill_directory()
+            base += "\n\n" + _skill_dir_text
+
+        # [SYS-TOKEN] 记录本次 build() 中 skill 相关文本（正文 chunk + 目录块），
+        # 供 turn_loop 的 verbose token 详细统计按 system/skill/history 拆分。
+        self.last_skill_text = (skill_ctx or "") + _skill_dir_text
 
         # ── 记事本（persist across compact）──────────────────────────────
         # 固定位置注入，每次 build() 都重新读取最新记事本内容，天然不受
