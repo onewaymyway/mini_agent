@@ -119,6 +119,22 @@ class AgentSelfModel:
         """每轮 turn 开始时由 Agent 调用，更新实时感知快照。"""
         self.internal_state = state
 
+    def refresh_active_skill_count(self, count: int) -> None:
+        """
+        [Bug 修复] active_skill_count 曾被当作"慢变量"只在 session 初始化时
+        赋值一次，但 skill 可能在 session 运行期间被动态加载/卸载（例如
+        `/skill` 命令、按需触发式加载），导致这里缓存的计数与 prompt 里
+        `## Active skills` 段（每次 build_system_prompt() 都实时读取
+        skill_loader.active）不一致——会出现两段互相矛盾的提示（一边说
+        "无激活 skill"，一边列出了具体 skill 名）。
+
+        与 update_internal_state 同构：由调用方（Agent）在每次渲染
+        system prompt 之前，用 skill_loader.active 的实时长度调用本方法，
+        使 active_skill_count 变成每轮都刷新的"快变量"，而不是 session
+        开始时的一次性快照。
+        """
+        self.active_skill_count = count
+
     def is_user_actively_engaged(self) -> Optional[bool]:
         """
         程序化读取"用户当前是否在场/专注"的结构化访问入口，代理

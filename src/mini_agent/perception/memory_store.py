@@ -207,7 +207,13 @@ class MemoryStore(MemoryBackend):
             return []
         query_tokens = _tokenize(query)
         if not query_tokens:
-            return subset[:k]
+            # [Bug 修复] 原来这里直接 `return subset[:k]`——query 分词为空
+            # （例如 query 主要是标点/表情/分词器未覆盖的语言片段）时，
+            # 没有任何相关性信号却仍然把书架里的前 k 条原样返回，导致
+            # `## Relevant past experience` 注入一堆和当前对话毫不相关的
+            # 历史摘要。与 search() 的语义对齐：查不到相关性信号就不注入，
+            # 而不是随便凑数返回。
+            return []
         N = len(subset)
         doc_texts = [_tokenize(e.to_search_text()) for e in subset]
         results = []

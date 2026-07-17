@@ -95,6 +95,27 @@ class SessionLifecycleMixin:
         except Exception:
             return None
 
+    def _self_model_fragment_with_fresh_skill_count(self) -> Optional[str]:
+        """
+        [Bug 修复：active_skill_count 陈旧] AgentSelfModel 在 session 初始化时
+        把 active_skill_count 当慢变量赋值一次；但 skill 可能在 session 期间
+        动态加载/卸载，导致 self_model 渲染出的"当前 session 无激活 skill"
+        提示与同一份 prompt 里、每轮都实时渲染的 `## Active skills` 段相矛盾。
+
+        这里每次真正渲染 self_model 片段之前，用 skill_loader.active 的
+        实时长度同步一次 active_skill_count，再调用 to_system_prompt_fragment()，
+        使这个字段变成和 internal_state 一样"每轮刷新"的快变量，
+        而不是 session 开始时的一次性快照。
+        """
+        if self._self_model is None:
+            return None
+        try:
+            live_count = len(self.skill_loader.active) if self.skill_loader else 0
+            self._self_model.refresh_active_skill_count(live_count)
+        except Exception:
+            pass  # 刷新失败不影响其余字段的正常渲染
+        return self._self_model.to_system_prompt_fragment()
+
     def _init_components(self) -> None:
         """
         初始化三个拆分组件（在 __init__ 末尾调用，确保所有字段已就绪）。
@@ -117,8 +138,7 @@ class SessionLifecycleMixin:
             # 所以不存在"先用后赋"问题：getter 在第一次 build() 被调用时，
             # self._self_model 已经完成初始化（或为 None）。
             self_model_getter=lambda: (
-                self._self_model.to_system_prompt_fragment()
-                if self._self_model is not None else None
+                self._self_model_fragment_with_fresh_skill_count()
             ),
             # 角色扮演（Persona）系统：每轮读取当前 active_persona，
             # /role use|exit 直接修改 self.active_persona 即可生效
