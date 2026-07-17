@@ -277,6 +277,13 @@ cfg.skill.keyword_activation_enabled = True   # 开启
 cfg.skill.keyword_activation_enabled = False  # 关闭
 ```
 
+> **卸载过的 skill 不参与关键词重新命中（2026-07）**：`auto_activate()` 会跳过
+> 当前处于"卸载屏蔽"状态的 skill——即被 `deactivate()`（CLI/工具调用或 6.5 节
+> 的 compact 自动卸载）卸载过、还没有被显式 `skill_activate` 重新拉起的 skill。
+> 可以通过 `loader.auto_activate_blocked` 查看当前被屏蔽的名单。这是为了避免
+> "模型/用户/自动垃圾回收刚判断不需要，下一句用户消息里的同一批关键词又把它
+> 立刻拉回来"这种抖动；显式重新 `activate()` 会清除该 skill 的屏蔽状态。
+
 ### 3.4 `exclude()`：彻底排除（2026-06 新增，Stage 3.2）
 
 `SkillLoader.exclude(name)` 与 `deactivate(name)` 的区别是把 skill 从
@@ -289,6 +296,14 @@ cfg.skill.keyword_activation_enabled = False  # 关闭
 ```python
 loader.exclude("docx")   # docx 从 _all 中被 del，对本次 SkillLoader 实例彻底不可见
 ```
+
+> **与 `deactivate()` 的最新区别（2026-07）**：`deactivate(name)`（无论是
+> CLI `/skill off`、`skill_deactivate` 工具调用，还是 6.5 节的 compact 自动
+> 卸载）现在也会屏蔽该 skill 的关键词自动激活，但 skill 条目本身仍留在
+> `_all` 里——区别在于**能否被显式 `skill_activate` 重新拉起**：
+> `deactivate()` 之后仍然可以，`exclude()` 之后彻底不可以（条目已被删除）。
+> 简单说：`deactivate` = "先收起来，模型/用户想用时还能显式拿回来"；
+> `exclude` = "这次会话/评测里这个 skill 根本不存在"。
 
 ### 3.6 渐进式加载：`resources` 与 `browse_paths`（2026-07 新增）
 
@@ -507,10 +522,57 @@ Token 估算采用粗略规则：`1 token ≈ 4 字符`。
 压缩流程：
 
 1. 用 LLM 生成历史摘要。
-2. 调用 `_build_skill_compact_block()` 生成 skill 重附块。
-3. 将历史替换为摘要消息。
-4. 如果有重附块，将其作为新的 user 消息写入历史。
-5. 保存 session。
+2. 调用 `_auto_unload_idle_skills()` 卸载长期未用的 active skill（见 6.5 节）。
+3. 调用 `_build_skill_compact_block(exclude_names=...)` 生成 skill 重附块——
+   本轮刚被步骤 2 卸载的 skill 会被排除在外，不会再混进这次重附内容。
+4. 将历史替换为摘要消息。
+5. 如果有重附块，将其作为新的 user 消息写入历史。
+6. 保存 session。
+
+### 6.5 自动卸载长期未用 skill（compact 时的垃圾回收，2026-07 新增）
+
+**动机**：在这个功能之前，compact 只是"按 LRU/预算截断这次重附给多少内容"，
+`SkillLoader._active` 本身不变——意味着即便某个 skill 已经很久没被真正用到，
+它依然会在**之后每一轮** `build_context()` 里把全文塞进 system prompt，白白
+占用上下文。
+
+**实现**：`SkillLoader.auto_unload_idle(idle_seconds, protect=None)` 在
+compact 时扫描所有 active skill，满足以下任一条件即调用 `deactivate()` 真正
+卸载：
+
+1. 自激活以来，`tracker` 从未记录过一次实际调用；
+2. 有调用记录，但 `last_called` 距今超过 `idle_seconds`。
+
+`Agent._auto_unload_idle_skills()` 是接入点，受两个配置项控制：
+
+| 配置 | 默认值 | 含义 |
+|------|--------|------|
+| `skill_auto_unload_enabled` | `true` | 是否在 compact 时执行自动卸载 |
+| `skill_auto_unload_idle_seconds` | `1800` | 判定「长期未用」的空闲时间阈值（秒） |
+
+**当轮生效**：`_build_skill_compact_block()` 会把本次卸载掉的 skill 名字
+通过 `exclude_names` 传给 `build_compact_context()`，让它们不参与本轮重附内容
+的候选竞争（默认 `include_inactive=True` 本来会把"曾用过但已卸载"的 skill
+重新拉回摘要——如果不排除，卸载效果要等下一次 compact 才能体现出来）。
+
+**卸载后如何重新拿回**：卸载不等于`exclude()`那种彻底移除（见 3.4 节），
+skill 条目仍在 `_all` 里；但为了避免"刚判断不需要就被同一批关键词立刻拉回来"
+的抖动，卸载会屏蔽该 skill 的关键词自动激活（`auto_activate()` 会跳过它，
+见 3.3 节），只能通过显式 `skill_activate` 工具或 `/skill on <name>` 重新
+激活；显式激活成功后会自动解除这个屏蔽状态。
+
+```python
+# 卸载（工具调用/CLI/compact 自动卸载都走这一个方法）
+loader.deactivate("docx")
+loader.auto_activate("帮我处理这个 word 文档")   # → 不会命中 docx，被屏蔽
+loader.activate("docx")                          # 显式激活 → 解除屏蔽
+
+# 查看当前被屏蔽的名单
+loader.auto_activate_blocked   # -> ['docx', ...]
+```
+
+如果需要关闭这个行为（例如希望 compact 只做内容截断、不动 `_active` 状态），
+在配置里设置 `"skill_auto_unload_enabled": false` 即可。
 
 ---
 
@@ -521,7 +583,10 @@ Token 估算采用粗略规则：`1 token ≈ 4 字符`。
 3. **Trigger words 不应过宽**：过宽会导致无关任务自动加载 skill，浪费上下文。
 4. **激活不等于使用**：调试 LRU 或压缩问题时优先查看 `/skill stats`，确认是否有实际使用记录。
 5. **长 skill 应分章节**：使用 `##` 划分章节可以让 chunking 模式更有效。
-6. **阶段结束及时卸载**：模型和用户都可以卸载不再需要的 skill，以减少后续 system prompt 体积。
+6. **阶段结束及时卸载**：模型和用户都可以主动卸载不再需要的 skill 以节省
+   上下文；compact 时也会按 `skill_auto_unload_idle_seconds` 自动卸载长期未用
+   的 skill（见 6.5 节），但不应完全依赖自动机制——空闲阈值内的"半死不活"
+   skill 仍会占用预算，主动卸载依然是更省心的做法。
 7. **体量大就分层**：正文预估超过 ~150 行或能拆出独立子话题时，把细节挪到
    `references/*.md` 并在 `resources` 里登记，不要都堆进主文件。
 8. **文档库用 `browse_paths`，不要用 `resources`**：大型多文件文档集合应该让 agent
@@ -535,7 +600,8 @@ Token 估算采用粗略规则：`1 token ≈ 4 字符`。
 
 | 文件 | 说明 |
 |------|------|
-| `src/mini_agent/skills/__init__.py` | `Skill`、`SkillResource`、`SkillLoader`、发现、解析、激活、上下文构建、渐进式资源加载、压缩上下文入口 |
+| `src/mini_agent/skills/__init__.py` | `Skill`、`SkillResource`、`SkillLoader`、发现、解析、激活/卸载、`auto_unload_idle()` 自动卸载 GC、`_auto_activate_blocked` 屏蔽集合、上下文构建、渐进式资源加载、压缩上下文入口 |
+| `src/mini_agent/agent/compaction.py` | `compact_with_skills()`、`_auto_unload_idle_skills()`、`_build_skill_compact_block()`：压缩流程、自动卸载接入点、skill 重附 |
 | `src/mini_agent/skills/usage_detector.py` | 显式声明和指纹匹配的双轨使用检测 |
 | `src/mini_agent/skills/tracker.py` | LRU 使用追踪与压缩重附预算实现（skill 级与资源级共用） |
 | `src/mini_agent/tools/skill_manager.py` | `skill_list`、`skill_activate`、`skill_deactivate`、`compact_history`、`skill_stats`、`skill_resource_list`、`skill_resource_load`、`skill_resource_unload` 工具注册 |

@@ -88,6 +88,26 @@ compact_with_skills()
           → 用最终摘要替换历史 + 重附 skill 块
 ```
 
+### Skill 重附前的自动卸载（垃圾回收）
+
+无论走正常路径还是超限路径，`compact_with_skills()` 在拿到摘要之后、重附 skill
+块**之前**，都会先做一次 skill 垃圾回收：`SkillLoader.auto_unload_idle()` 检查
+所有当前 active 的 skill，把满足以下任一条件的直接从 `_active` 移除：
+
+1. 激活以来 tracker 从未记录过一次实际调用（纯粹占着 context 预算没用上）；
+2. 有调用记录，但最近一次调用距今超过 `skill_auto_unload_idle_seconds`。
+
+卸载在**当前这一轮**就生效：`_build_skill_compact_block()` 会把刚被回收的
+skill 名字传给 `build_compact_context(exclude_names=...)`，排除在本轮重附内容
+之外，不需要等到下一次 compact 才体现出差别。
+
+卸载之后，这些 skill 只能再被**显式** `skill_activate` 工具或 `/skill on`
+重新拉起；[关键词自动激活](skill-system-guide.md#33-关键词辅助激活)不会再命中
+它们，直到显式激活成功、解除这个屏蔽标记为止（详见
+[skill-system-guide.md 6.5 节](skill-system-guide.md)）。这一行为受
+`skill_auto_unload_enabled` 开关控制（默认 `true`），阈值为
+`skill_auto_unload_idle_seconds`（默认 `1800` 秒）。
+
 ### 与记事本（Notepad）的联动
 
 记事本（`tools/notepad.py`，见 [记事本机制说明](notepad-guide.md)）本身**不参与**
@@ -405,6 +425,8 @@ agent 自己运行中无法主动检索找回。新增只读、免审批工具
 | `model_context_window` | `None`（从 LLM 读取） | 覆盖模型上下文大小估算（token 数） |
 | `skill_compact_budget` | `25000` | compact 后重附 skill 的总字符预算 |
 | `skill_compact_per_skill` | `5000` | 单个 skill 重附字符上限 |
+| `skill_auto_unload_enabled` | `true` | compact 时是否自动卸载长期未用的 active skill |
+| `skill_auto_unload_idle_seconds` | `1800` | 判定 skill「长期未用」的空闲时间阈值（秒） |
 | `forget_orphan_tool_results` | 策略相关 | 是否丢弃孤立的 tool_result 消息 |
 
 > 所有触发器开关均只支持 JSON 配置文件平坦 key（例如 `compact_turn_count_trigger_enabled`、
