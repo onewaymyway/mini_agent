@@ -553,6 +553,34 @@ def _handle_turn_judge_cmd(args: list[str], agent: Agent) -> None:
     # 关闭时清零自动接管计数，避免残留计数影响下次重新开启后的判断
     if not new_state:
         agent._turn_judge_auto_count = 0
+
+    # [BUGFIX] RoleAgentDispatcher 的 turn_judge 内建 profile 只在
+    # _discover()（启动时跑一次，或磁盘 agent-profile 热重载触发）时
+    # 按当时的 cfg.turn_judge.enabled 合成——这里只是运行时翻转了配置
+    # 标志位，如果不主动同步一次，dispatcher 的注册表不会更新：
+    # - 开启前 enabled=False 时启动的进程，_discover() 根本没合成过
+    #   turn_judge profile，/turnjudge on 之后 get_turn_end_review_roles()
+    #   仍然是空列表，_maybe_run_turn_judge() 会一直误判成"被
+    #   role_agent.block 屏蔽"（实际上只是从未注册过）。
+    # - 反过来 /turnjudge off 后，dispatcher 里仍留着旧的 turn_judge
+    #   profile，也需要重新发现一次才能把它摘掉。
+    # - 更极端的情况：启动时 role_agent.enabled / goal_mode.enabled /
+    #   turn_judge.enabled 全为 False，app.py 里根本没调用
+    #   init_role_agent_system()，全局 dispatcher 单例是 None——单纯
+    #   rediscover() 也无济于事，这里需要现场把它初始化出来。
+    from mini_agent.role_agents import get_dispatcher, init_role_agent_system
+    _dispatcher = get_dispatcher()
+    if _dispatcher is None:
+        from mini_agent.orchestrator.agent_profiles import get_profile_loader, AgentProfileLoader
+        _profile_loader = get_profile_loader()
+        if _profile_loader is None:
+            # 理论上 app.py 启动时总会调用一次 init_agent_profiles()；
+            # 这里只是兜底，避免因为找不到 loader 而彻底放弃同步。
+            _profile_loader = AgentProfileLoader([])
+        init_role_agent_system(agent.cfg, _profile_loader)
+    else:
+        _dispatcher.rediscover()
+
     key = "TURN_JUDGE_ON" if new_state else "TURN_JUDGE_OFF"
     R.print_info(pm.fragment("cli_messages", key))
 
