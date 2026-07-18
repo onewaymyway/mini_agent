@@ -1,6 +1,6 @@
 # wiki 式知识库改进计划
 
-> **执行状态（本次更新）**：P0（可观测性）、P1（世界模型抽取）、P2（经验页面落地，含自我进化正面判定与会话级正面反思两条路径）均已实现，通过端到端功能验证，并对全量测试套件做了修改前后逐条比对（无新增回归）；P3/P4 保留为设计，尚未实施。各节标题旁标注了 `[已实现]` / `[未实施]`。
+> **执行状态（本次更新）**：P0（可观测性）、P1（世界模型抽取）、P2（经验页面落地）、P3（检索与聚合优化）均已实现，通过端到端功能验证；P4（主索引转正评估）仍保留为设计，尚未实施（其前置条件是 P1-P3 在真实项目里稳定运行一段时间，本次改动均在临时验证环境完成，还不满足前置条件）。各节标题旁标注了 `[已实现]` / `[未实施]`。
 
 > 背景：当前 wiki（`src/mini_agent/wiki/`）在架构上已经比较完整（parser/graph/indexer/writer/dedup/search/topics 齐全），但**内容来源单一**——现有 `entities/*.md` 几乎全部来自"纠正/编辑/反思/进化失败"这几类事件，本质上是一个"错题本"，而不是"对世界的理解"。本计划的目标不是重写架构，而是**在现有架构基础上，补齐被遗漏的输入源**，让 wiki 真正承担起记忆（发生过什么）、认知（世界里有什么、彼此什么关系）、经验（怎么做是有效的）三类职能。
 
@@ -24,7 +24,7 @@ wiki 的抽取入口目前只有两条：
 | P0 可观测性 | 先把"内容分布单一"这件事量化出来，作为改进前后的基线 | 0.5 天 | 无 | **已实现** |
 | P1 世界模型抽取 | 新增一条与"决策提炼"并列的"实体/事实/经验"抽取流程 | 3-4 天 | P0 | **已实现** |
 | P2 经验页面落地 | 让 `experience.md` 真正被写入，覆盖正面案例 | 1-2 天 | P1 | **已实现**（自我进化正面判定 + session 级正面反思两条路径均已接入） |
-| P3 检索与聚合优化 | topic 聚类降低门槛、命名实体识别增强 | 2-3 天 | P1 | 未实施 |
+| P3 检索与聚合优化 | topic 聚类降低门槛、命名实体识别增强 | 2-3 天 | P1 | **已实现** |
 | P4 主索引切换评估 | 建立 wiki 替代旧图书馆模式的量化标准 | 1 天设计 + 持续观测 | P1-P3 稳定运行后 | 未实施 |
 
 ---
@@ -106,13 +106,21 @@ wiki 的抽取入口目前只有两条：
 
 ---
 
-## 5. P3：检索与聚合优化（在 P1 数据量上来之后再做，避免过早优化）[未实施]
+## 5. P3：检索与聚合优化（在 P1 数据量上来之后再做，避免过早优化）[已实现]
 
-1. **topic 聚类降低门槛**：`wiki/topics.py::find_topic_candidates` 目前要求同 tag 下 ≥4 篇且强链接密度 ≥0.5，这个阈值只对"决策沿革链"这种本就强关联的场景友好。给 `consolidate_topics` 增加一条基于 `wiki/dedup.py` 里 embedding 可选路径的**语义聚类候选生成函数**（不改变现有 tag+密度路径，二者并存，两套候选池合并后去重），使得实体/事实类内容也有机会被聚合成专题页。
-2. **命名实体识别增强**：`entity_index.py::guess_entity_names` 目前只能抓代码标识符（正则 `xxx.py` / 长度≥4 英文单词），抓不到人名、项目名、中文概念词。P1 的 LLM 结构化抽取已经承担了这部分能力，因此这里**不需要改正则本身**，只需要确保 `EntityCandidate.entity_type` 覆盖 `person/project/external_system` 等新分类，并在 `wiki/parser.py` 的 tag 体系里允许这些新 entity_type 值（当前无枚举限制，天然兼容，只需在文档/校验里显式承认）。
+### 实际改动
+
+1. **topic 语义聚类候选（已实现）**：新增 `wiki/topics.py::find_semantic_topic_candidates(pages, embed_call, ...)`——基于 embedding 余弦相似度两两打分、按阈值连边、并查集取连通分量，分量大小达标（默认 ≥4）才算候选；候选打上 `source_tag=f"semantic-{代表tag或内容hash}"`，与原有 tag+密度路径共用"已生成过就排除"机制（`_existing_topic_source_tags`），不会重复生成。`consolidate_topics()` 新增 `embed_call` 参数：不传时行为与升级前完全一致（只走 tag+密度路径）；显式传入时两套候选池合并（按 `source_tag` 去重）后一起生成。`perception/library_index.py::consolidate()` 里已有的 `wiki_embed_call` 参数顺手透传给 `consolidate_topics()`，不需要新增配置项。
+   - 语义聚类前会先排除已被现有专题页 `absorbs` 过的页面（`already_absorbed` 集合），避免同一批页面反复被不同专题页收编。
+   - 相似度阈值取 0.80（略低于 `wiki/dedup.py` 的合并阈值 0.86）——这里只是"值不值得生成一篇综合页"的判断，聚类不够精确的代价最多是"话题略宽泛"，不像 dedup 误判合并那样会真的丢失信息，因此可以比合并判断更宽松一些。
+2. **命名实体识别增强（确认已满足，无需改动）**：`entity_index.py::guess_entity_names` 的正则规则本身确实只能抓代码标识符，但 P1 的 `EntityCandidate.entity_type` 已经覆盖 `module/tool/concept/person/project/external_system`，且核查 `wiki/parser.py` 后确认 tag 体系没有枚举限制、天然兼容这些新分类——不需要额外改动，本条从"设计"状态直接确认为"已满足"。
+
+### 验收结果
+
+- 端到端脚本验证：4 篇 embedding 相近但彼此无 tag/强链接的实体页面被正确聚类并生成语义专题页；2 篇不相关页面未被误聚；重复运行 `consolidate_topics()` 不会对同一批页面重复生成（幂等性验证通过）。
+- 全项目搜索确认目前没有测试文件直接引用 `wiki.topics` 或 `perception.library_index`，属于本次改动的低风险区域；仍执行了全量测试套件回归确认无 collection 报错、无新增失败类别。
 
 ---
-
 ## 6. P4：wiki 转正为主索引的评估标准（暂不执行，先定指标）[未实施]
 
 当前设计文档明确"过渡期双写、效果验证稳定前不下线旧图书馆模式"。建议提前定义"转正"的量化条件，避免长期停留在镜像层地位：
@@ -144,9 +152,10 @@ wiki 的抽取入口目前只有两条：
 | source_kind=experience_success 页面数 | 0 | 验证脚本中 1 |
 | source_kind=experience_session_reflection 页面数 | 0 | 验证脚本中 1 |
 | experiences/ 非空页面数 | 0 | 2（两条路径各产生 1 篇，仅验证脚本产生，真实环境需接入后持续观测） |
-| topic 页面生成数（含语义聚类路径） | — | 未实施（P3） |
+| topic 页面生成数（tag+密度路径） | 0 | 依赖真实数据量达标才触发，验证脚本未构造该场景 |
+| topic 页面生成数（语义聚类路径，P3 新增） | 0 | 验证脚本中 1（4 篇相似页面正确聚类；重复运行验证幂等，不重复生成） |
 | wiki_shelf_search 命中率（对比 shelf_search） | — | 未实施（P4 前置） |
 | 既有单测回归（定向） | — | `test_outcome_tracker.py`、`test_correction_detector.py`、`test_format_correction_detector.py`、`test_session.py`、`test_session_end_reflection.py`、`test_session_end_workdir_knowledge.py`、`test_evolution_agent_profile.py`、`test_selective_compression.py` 等全部通过 |
-| 既有单测回归（全量对比） | 138 failed / 1766 passed / 12 errors（原始未修改代码，沙盒缺部分可选依赖导致的预先失败） | 138 failed / 1766 passed / 12 errors（逐条比对失败用例集合相同，无新增/无意外修复） |
+| 既有单测回归（全量对比） | 138 failed / 1766 passed / 12 errors（原始未修改代码，沙盒缺部分可选依赖导致的预先失败） | 138 failed / 1766 passed / 12 errors（逐条比对失败用例集合相同，无新增/无意外修复；P3 改动的两个文件均无对应测试文件，额外做了针对性端到端脚本验证） |
 
-> 待办：接入真实项目运行后，替换上表为真实分布数据，并把 P3、P4 排入下一轮迭代。
+> 待办：接入真实项目运行后，替换上表为真实分布数据；P4（主索引转正评估）需要 P1-P3 在真实项目中稳定运行一段时间后，用 `/wiki stats` 与 wiki_shelf_search/shelf_search 的 A/B 数据回填 §6 的三条量化条件，再决定是否切换默认检索路径。

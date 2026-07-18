@@ -1,5 +1,5 @@
 """
-wiki/topics.py — 专题页生成（重构计划阶段四第一条）
+wiki/topics.py — 专题页生成（重构计划阶段四第一条 + wiki 改进计划 P3）
 
 巩固循环里判断：如果某个 tag 下聚集的页面数达到阈值，且这些页面之间的
 frontmatter 强链接密度较高，说明它们描述的是同一次跨模块的大动作（比如
@@ -16,6 +16,20 @@ LLM 只在真正需要语言能力的地方被调用）。
 `source_tag`，下次扫描据此排除，避免每次巩固循环都对同一批页面重新生成一遍
 （如果这批页面又新增了成员，未来可以扩展成"更新既有专题页"而不是本模块当前
 支持的"只生成新专题页"，暂不在阶段四范围内）。
+
+[wiki 改进计划 P3] 语义聚类候选（find_semantic_topic_candidates）：
+    上面这条 tag+链接密度路径只对"决策沿革链"这类本来就强关联的场景友好——
+    P1 新增的 world_model 实体/事实内容彼此之间未必共享 tag、也未必有强链接，
+    但仍然可能是同一个主题下的一组相关知识（比如同一个项目下的多条零散
+    事实）。这里增加一条基于 embedding 余弦相似度的连通分量聚类作为补充
+    候选源，与 tag+密度路径并存、合并后一起生成，互不替代：
+      - 只有调用方显式传入 embed_call 才会启用（复用 wiki/dedup.py 的
+        "两条路径互斥，由调用方决定，不做隐式降级"原则）。
+      - 聚类算法：对每一对页面计算余弦相似度 >= 阈值则连一条边，用并查集
+        取连通分量，分量大小达标才算候选（简单的单链接聚类，足够应付
+        "论文引用图"体量下的 wiki 页面数，不追求聚类算法的精细度）。
+      - 候选打上 `source_tag=f"semantic-{代表 tag 或 hash}"`，与 tag 路径
+        共用同一套"已生成过就排除"机制，不会重复生成。
 """
 
 from __future__ import annotations
@@ -30,10 +44,19 @@ from mini_agent.wiki.parser import WikiPage, parse_page
 from mini_agent.wiki.writer import WikiLink, write_page
 
 LLMCall = Callable[[str], str]
+EmbedCall = Callable[[str], list[float]]
 
 _MIN_PAGES_PER_TAG = 4     # tag 下页面数达到此阈值才考虑生成专题页
 _MIN_LINK_DENSITY = 0.5    # 组内强链接边数 / 页面数 达到此阈值才算"密度较高"
 _BODY_CHARS_FOR_PROMPT = 1500
+
+# [P3] 语义聚类参数：分量大小阈值与两两页面的相似度门槛。语义聚类天然比
+# tag+密度路径更容易"误聚"，门槛设得比 wiki/dedup.py 的合并阈值（0.86）
+# 略低一点点也没关系——这里只是"值不值得生成一篇综合页"的判断，即便聚类
+# 不完全精确，生成出来的专题页最多是"话题略宽泛"，不像 dedup 误判合并那样
+# 会真的丢失信息。
+_MIN_PAGES_PER_SEMANTIC_CLUSTER = 4
+_SEMANTIC_SIMILARITY_THRESHOLD = 0.80
 
 
 @dataclass
@@ -93,6 +116,99 @@ def find_topic_candidates(
             out.append(TopicCandidate(tag=tag, page_ids=sorted(ids), link_density=density))
 
     out.sort(key=lambda c: -c.link_density)
+    return out
+
+
+class _UnionFind:
+    """极简并查集，只用于语义聚类的连通分量计算，不追求通用性。"""
+
+    def __init__(self, ids: list[str]) -> None:
+        self._parent = {i: i for i in ids}
+
+    def find(self, x: str) -> str:
+        while self._parent[x] != x:
+            self._parent[x] = self._parent[self._parent[x]]
+            x = self._parent[x]
+        return x
+
+    def union(self, a: str, b: str) -> None:
+        ra, rb = self.find(a), self.find(b)
+        if ra != rb:
+            self._parent[ra] = rb
+
+
+def find_semantic_topic_candidates(
+    pages: list[WikiPage],
+    embed_call: EmbedCall,
+    *,
+    min_pages: int = _MIN_PAGES_PER_SEMANTIC_CLUSTER,
+    similarity_threshold: float = _SEMANTIC_SIMILARITY_THRESHOLD,
+    exclude_page_ids: Optional[set[str]] = None,
+) -> list[TopicCandidate]:
+    """[wiki 改进计划 P3] 基于 embedding 余弦相似度的连通分量聚类，作为
+    tag+链接密度路径的补充候选源——覆盖那些彼此没有强链接、也未必共享 tag，
+    但语义上属于同一主题的页面（典型场景：P1 世界模型抽取产出的零散
+    entity/fact 页面）。
+
+    exclude_page_ids：已经被某篇专题页 absorbs 过的页面 id，聚类时跳过，
+    避免同一批页面反复被不同专题页收编。
+
+    embedding/相似度计算任何一步失败都不应该中断整个巩固循环——单个页面
+    embed 失败时跳过该页面（复用 wiki/dedup.py::embed_pages 的容错逻辑），
+    整体异常时返回空列表。
+    """
+    exclude_page_ids = exclude_page_ids or set()
+    candidate_pages = [p for p in pages if p.type != "topic" and p.id not in exclude_page_ids]
+    if len(candidate_pages) < min_pages:
+        return []
+
+    try:
+        from mini_agent.wiki.dedup import embed_pages
+        from mini_agent.perception.local_embedding import cosine_similarity
+
+        embeddings = embed_pages(candidate_pages, embed_call)
+    except Exception:
+        return []
+
+    ids = list(embeddings.keys())
+    if len(ids) < min_pages:
+        return []
+
+    uf = _UnionFind(ids)
+    for i in range(len(ids)):
+        for j in range(i + 1, len(ids)):
+            try:
+                score = cosine_similarity(embeddings[ids[i]], embeddings[ids[j]])
+            except Exception:
+                continue
+            if score >= similarity_threshold:
+                uf.union(ids[i], ids[j])
+
+    clusters: dict[str, list[str]] = {}
+    for pid in ids:
+        clusters.setdefault(uf.find(pid), []).append(pid)
+
+    out: list[TopicCandidate] = []
+    for root, members in clusters.items():
+        if len(members) < min_pages:
+            continue
+        # 用聚类内出现频率最高的 tag（如果有）做候选标签，方便人工浏览时
+        # 大致知道这个专题在讲什么；完全没有共享 tag 时退化为按内容 hash
+        # 生成一个稳定短标签，避免 page_id 拼接成 source_tag 过长。
+        tag_counts: dict[str, int] = {}
+        for pid in members:
+            page = next((p for p in candidate_pages if p.id == pid), None)
+            if page is None:
+                continue
+            for t in page.tags:
+                tag_counts[t] = tag_counts.get(t, 0) + 1
+        if tag_counts:
+            label = max(tag_counts.items(), key=lambda kv: kv[1])[0]
+        else:
+            import hashlib
+            label = "cluster-" + hashlib.sha1("|".join(sorted(members)).encode("utf-8")).hexdigest()[:8]
+        out.append(TopicCandidate(tag=f"semantic-{label}", page_ids=sorted(members), link_density=0.0))
+
     return out
 
 
@@ -159,11 +275,21 @@ def consolidate_topics(
     *,
     min_pages: int = _MIN_PAGES_PER_TAG,
     min_density: float = _MIN_LINK_DENSITY,
+    embed_call: Optional[EmbedCall] = None,
+    semantic_min_pages: int = _MIN_PAGES_PER_SEMANTIC_CLUSTER,
+    semantic_similarity_threshold: float = _SEMANTIC_SIMILARITY_THRESHOLD,
 ) -> list[str]:
     """consolidate() 步骤 7 的入口：扫描候选、逐个生成专题页。
 
     返回本次新生成的 page_id 列表。没有 llm_call（专题页正文依赖 LLM 综合
     改写，规则本身只判断"值不值得生成"）或没有 wiki 页面时直接返回空列表。
+
+    embed_call：[wiki 改进计划 P3] 显式传入时，额外跑一遍语义聚类候选
+    （find_semantic_topic_candidates），与 tag+密度候选合并后一起生成；
+    不传时行为与升级前完全一致，只走 tag+密度这一条路径。两条路径各自
+    产出的候选按 source_tag 去重合并——理论上不会撞名（tag 路径用原始
+    tag 名，语义路径统一加 `semantic-` 前缀），保留这一步只是为了防御性
+    地避免未来任何一边改动导致意外重复生成。
     """
     if llm_call is None or not paths.wiki_dir.exists():
         return []
@@ -185,6 +311,30 @@ def consolidate_topics(
     candidates = find_topic_candidates(
         pages, min_pages=min_pages, min_density=min_density, exclude_tags=exclude
     )
+
+    if embed_call is not None:
+        # 已经被现有专题页 absorbs 过的页面 id，语义聚类时跳过，避免同一批
+        # 页面反复被不同专题页收编。
+        already_absorbed: set[str] = set()
+        for p in pages:
+            if p.type != "topic":
+                continue
+            for link in p.strong_links():
+                if link.relation == "absorbs":
+                    already_absorbed.add(link.target)
+
+        semantic_candidates = find_semantic_topic_candidates(
+            pages, embed_call,
+            min_pages=semantic_min_pages,
+            similarity_threshold=semantic_similarity_threshold,
+            exclude_page_ids=already_absorbed,
+        )
+        seen_tags = {c.tag for c in candidates}
+        for c in semantic_candidates:
+            if c.tag not in seen_tags and c.tag not in exclude:
+                candidates.append(c)
+                seen_tags.add(c.tag)
+
     if not candidates:
         return []
 

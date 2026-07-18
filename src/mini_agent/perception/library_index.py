@@ -478,13 +478,15 @@ class LibraryIndex:
                 # 手动 /wiki rebuild 都能重试。
                 pass
 
-        # 7. 专题页生成（wiki式知识库重构计划阶段四）
+        # 7. 专题页生成（wiki式知识库重构计划阶段四 + wiki 改进计划 P3 语义聚类候选）
         topics_generated: list[str] = []
         if self._wiki_paths is not None and llm_call is not None:
             try:
                 from mini_agent.wiki.topics import consolidate_topics
 
-                topics_generated = consolidate_topics(self._wiki_paths, llm_call)
+                topics_generated = consolidate_topics(
+                    self._wiki_paths, llm_call, embed_call=wiki_embed_call,
+                )
             except Exception:
                 topics_generated = []
 

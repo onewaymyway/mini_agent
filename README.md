@@ -16,7 +16,8 @@
 - `src/mini_agent/wiki/migration.py`（`mirror_entity` 新增 `source_kind` 参数）
 - `src/mini_agent/wiki/decision_writer.py`（修复更新分支丢失 `source_kind` 的 bug；新建页面打上 `source_kind=decision`）
 - `src/mini_agent/wiki/__init__.py`（导出新模块）
-- `src/mini_agent/perception/library_index.py`（`consolidate()` 新增步骤 5b；`source_kind` 透传）
+- `src/mini_agent/perception/library_index.py`（`consolidate()` 新增步骤 5b；`source_kind` 透传；步骤 7 透传 `wiki_embed_call` 给 `consolidate_topics`）
+- `src/mini_agent/wiki/topics.py`（新增语义聚类候选生成 `find_semantic_topic_candidates`，`consolidate_topics` 新增 `embed_call` 参数，与既有 tag+密度路径并存）
 - `src/mini_agent/history/compression.py`（compact 阶段解析并入队 entities/facts）
 - `src/mini_agent/evolution/outcome_tracker.py`（新增 `_write_eval_success_experience`：自我进化正面判定 → 经验页面）
 - `src/mini_agent/agent/reminders_correction.py`（新增 session 级纠正计数器 `_session_correction_count`）
@@ -38,6 +39,9 @@
    errors，两次结果完全一致（失败用例集合逐条比对相同），确认未引入新的
    回归；失败均为沙盒环境缺少可选依赖（如 `rich`/`json_repair`/`pydantic`/
    `uvicorn`）或与本次改动无关的既有 mock 问题。
+4. `wiki/topics.py` 的语义聚类候选路径（P3）额外用端到端脚本验证：4 篇
+   embedding 相近但彼此无 tag/强链接的页面被正确聚类生成专题页，2 篇不
+   相关页面未被误聚，且重复运行不会对同一批页面重复生成（幂等性验证）。
 
 ## 快速体验新增能力
 
