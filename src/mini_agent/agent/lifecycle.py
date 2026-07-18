@@ -836,6 +836,20 @@ class SessionLifecycleMixin:
         测试代码应在 tearDown 中调用此方法，确保 Windows 下
         TemporaryDirectory 清理时不会出现 PermissionError (WinError 32)。
         """
+        # [wiki 提取层与组织层改进计划 E1 §1.2.1 规则3] session 结束兜底：
+        # 如果本次 session 有任何未被独立抽取路径覆盖的窗口，强制触发一次
+        # （force=True 跳过规则判定，只要 cursor 之后还有新内容就抽取）。
+        # 必须在关闭 raw_history 文件句柄之前调用——force 触发内部要读取
+        # self._raw.entries，不依赖文件句柄仍然打开，但保持"先做完所有
+        # 收尾工作、最后才关闭句柄"的顺序更安全。任何异常都不能阻断正常
+        # 的资源清理，因此整体包在 try/except 里，与原有 close() 逻辑一致。
+        try:
+            if hasattr(self, "_hist") and self._hist is not None:
+                self._hist.maybe_trigger_extraction(
+                    llm_client=getattr(self, "_llm", None), force=True
+                )
+        except Exception:
+            pass
         try:
             if hasattr(self, '_hist') and self._hist is not None:
                 if hasattr(self._hist, '_raw') and self._hist._raw is not None:

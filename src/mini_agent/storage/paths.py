@@ -237,6 +237,26 @@ class AgentPaths:
         return self.workdir_dir / "extraction_stats.jsonl"
 
     @property
+    def extraction_cursor_path(self) -> Path:
+        """<project_root>/.agent/extraction_cursor.json — 记录独立抽取触发器
+        （history/extraction_trigger.py，wiki 提取层与组织层改进计划 E1
+        §1.2.2）"抽取到 raw history 的第几条了"，避免同一段内容被反复抽取。
+
+        与 compact 的 cursor（active history 里的位置）是两套独立坐标，
+        本字段只针对 raw history（append-only、永不删减）计数。
+        """
+        return self.workdir_dir / "extraction_cursor.json"
+
+    @property
+    def extraction_trigger_log(self) -> Path:
+        """<project_root>/.agent/extraction_trigger_log.jsonl — 抽取候选窗口
+        探测记录（E1 §1.4）：先只记录候选窗口命中情况、不实际发起 LLM 调用，
+        用真实数据校准触发阈值后再打开实际抽取开关，避免重蹈 P4"零数据
+        切换"的教训。纯 append-only，写入失败静默跳过。
+        """
+        return self.workdir_dir / "extraction_trigger_log.jsonl"
+
+    @property
     def wiki_processes_dir(self) -> Path:
         """<project_root>/.agent/wiki/processes/ — 流程型页面"""
         return self.wiki_dir / "processes"

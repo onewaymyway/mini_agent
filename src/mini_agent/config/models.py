@@ -169,6 +169,24 @@ class CompressConfig:
     strategy: str = "compact_with_skills"  # "compact_with_skills"（默认，与手动 /compact 一致：LLM 摘要 + skill 重附）
                                             # | "turn_aligned" | "llm_summary" | "sliding_window" | "selective"（轻量可插拔策略，退回旧路径）
     forget_orphan_tool_results: bool = False  # 剔除保留段中无对应 tool_use 的 tool_result
+    # ── wiki 提取层与组织层改进计划 E1：抽取时机与对话粒度解耦 ──────────────
+    # 独立于 compact 的轻量抽取触发器（history/extraction_trigger.py +
+    # history_manager.py::maybe_trigger_extraction）总开关。默认关闭——
+    # 这条路径在 compact 触发器之外新增了一次"每轮工具调用批次结束后"的
+    # 纯规则扫描，虽然零 LLM 成本，仍需要先确认不影响主循环性能/行为再
+    # 默认开启。
+    extraction_trigger_enabled: bool = False
+    # 触发器命中后，是否真的发起一次独立的"仅抽取、不压缩" LLM 调用。
+    # 默认关闭：即使打开了 extraction_trigger_enabled，也只把候选窗口记录
+    # 到 extraction_trigger_log.jsonl，不产生额外 LLM 调用——用真实数据
+    # 校准触发阈值（连接词密度是否合理）后再打开，避免重蹈 P4"零数据切换"
+    # 的教训（计划 §1.4）。
+    extraction_trigger_dispatch_enabled: bool = False
+    # 轮次计数触发规则的阈值：距上次抽取满 N 轮真实用户输入且从未抽取过
+    # （或连接词密度一直不够）时也触发一次，避免长期空转的 session 永远
+    # 不被抽取（计划 §1.2.1 触发规则 2）。
+    extraction_trigger_min_window_turns: int = 6
+
     extract_decisions: bool = True     # LLMSummaryStrategy 是否顺带提炼 decisions[] 并存入 pending 队列
                                         # （决策/取舍知识提炼计划 5.2 节；不增加额外 LLM 调用，仅解析开关）
     # ── wiki 提取层与组织层改进计划 E3：抽取"看不到"已有知识库的反向注入 ──

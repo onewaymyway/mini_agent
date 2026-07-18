@@ -284,6 +284,16 @@ class TurnLoopMixin:
                 if _did_compact and loop_count > 1:
                     self._hist.append_user("继续")
 
+            # [wiki 提取层与组织层改进计划 E1] 独立于 compact 的轻量抽取
+            # 触发检查：纯规则扫描，成本极低，默认关闭
+            # （cfg.compress.extraction_trigger_enabled）。与上面的 compact
+            # 触发器检查相互独立，不占用同一个"本轮是否触发了什么"的判断，
+            # 允许同一轮里既不触发 compact、又触发一次独立抽取。
+            try:
+                self._hist.maybe_trigger_extraction(llm_client=self._llm)
+            except Exception:
+                pass
+
             # [具身改进 B1] 本体感知快照：每轮 LLM 调用前 sense 一次。
             # O(1)，不调用 LLM；frustration 超阈值时注入一次元认知提示，
             # 建议模型停下来向用户汇报困境而不是盲目重试——但不强制中断循环，

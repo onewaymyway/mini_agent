@@ -283,6 +283,186 @@ class HistoryManager:
             f"→ {len(self._history)} messages."
         )
 
+    # ── 独立抽取触发（wiki 提取层与组织层改进计划 E1）───────────────────────
+
+    def maybe_trigger_extraction(
+        self,
+        llm_client: Optional["LLMClient"] = None,
+        *,
+        force: bool = False,
+    ) -> None:
+        """独立于 compact 的轻量抽取触发入口（E1 §1.2.2）。
+
+        每轮工具调用批次结束后调用（成本极低：命中判断纯规则扫描，见
+        history/extraction_trigger.py::scan_for_extraction_window）。命中
+        候选窗口时，异步排队一次"仅抽取、不压缩"的 LLM 调用——抽取结果
+        依然走现有的 pending 队列（decision_writer/world_writer），落盘
+        判断逻辑完全复用，不新增巩固路径。
+
+        `force=True`：跳过规则判定，只要 cursor 之后还有任何新内容就
+        视为命中（session 结束兜底，计划 §1.2.1 触发规则 3），调用方是
+        agent/lifecycle.py::close()。
+
+        默认关闭（`cfg.compress.extraction_trigger_enabled=False`）。开启
+        后默认仍只记录候选窗口到 `extraction_trigger_log.jsonl`、不实际
+        发起 LLM 调用（`cfg.compress.extraction_trigger_dispatch_enabled=
+        False`）——这是吸取 P4"零数据切换"教训后的做法，先用真实数据
+        校准触发阈值，再打开实际抽取开关。
+
+        任何异常都静默吞掉，不影响调用方——这是"锦上添花"的观测/增强
+        路径，不能因为它失败影响 agent 主循环。
+        """
+        cfg_compress = getattr(self.cfg, "compress", None)
+        if cfg_compress is None or not getattr(cfg_compress, "extraction_trigger_enabled", False):
+            return
+        try:
+            self._maybe_trigger_extraction_impl(cfg_compress, llm_client, force=force)
+        except Exception:
+            pass
+
+    def _maybe_trigger_extraction_impl(
+        self, cfg_compress, llm_client: Optional["LLMClient"], *, force: bool
+    ) -> None:
+        from pathlib import Path
+
+        from mini_agent.storage.paths import AgentPaths
+        from mini_agent.history.extraction_trigger import (
+            ExtractionWindowCandidate,
+            scan_for_extraction_window,
+            load_extraction_cursor,
+            save_extraction_cursor,
+            log_extraction_trigger_event,
+        )
+
+        paths = AgentPaths(Path(getattr(self.cfg, "project_root", None) or Path.cwd()))
+        raw_entries = self._raw.entries
+        last_index = load_extraction_cursor(paths)
+
+        candidate: Optional[ExtractionWindowCandidate]
+        if force:
+            if last_index >= len(raw_entries):
+                return
+            candidate = ExtractionWindowCandidate(
+                start_index=last_index,
+                end_index=len(raw_entries),
+                trigger_reason="session_end",
+                signal_score=float(len(raw_entries) - last_index),
+            )
+        else:
+            candidate = scan_for_extraction_window(
+                raw_entries,
+                last_extracted_index=last_index,
+                min_window_turns=getattr(cfg_compress, "extraction_trigger_min_window_turns", 6),
+            )
+        if candidate is None:
+            return
+
+        dispatch_enabled = bool(getattr(cfg_compress, "extraction_trigger_dispatch_enabled", False))
+        log_extraction_trigger_event(paths, candidate, dispatched=dispatch_enabled)
+
+        if not dispatch_enabled:
+            # §1.4 校准阶段：只记录候选窗口，不实际发起 LLM 调用，也不推进
+            # cursor（下次仍会看到同一段新增内容，日志会重复记录同一窗口的
+            # "又变大了一点"，这是刻意的——校准阶段关心的是"命中频率"，不
+            # 是精确的窗口边界）。
+            return
+        if llm_client is None:
+            return
+
+        self._dispatch_lightweight_extraction(paths, raw_entries, candidate, llm_client)
+        save_extraction_cursor(paths, candidate.end_index)
+
+    def _dispatch_lightweight_extraction(
+        self, paths, raw_entries: list[dict], candidate, llm_client: "LLMClient"
+    ) -> None:
+        """实际发起一次"仅抽取、不压缩"的 LLM 调用并入队结果。
+
+        与 history/compression.py::LLMSummaryStrategy 共用同一套
+        cap_oversized_messages/parse_decision_response/parse_world_response/
+        queue_candidates/queue_entities/queue_facts，只是 prompt 换成
+        §2 新增的"轻量抽取"专用模板（不含摘要要求），保持与 compact 路径
+        产出格式一致，落盘逻辑完全复用。
+        """
+        from mini_agent.prompts import pm
+        from mini_agent.history.entry import to_llm_messages
+        from mini_agent.history.compression import (
+            cap_oversized_messages,
+            DEFAULT_MAX_MESSAGE_CHARS_FOR_COMPACT,
+        )
+
+        window_entries = raw_entries[candidate.start_index:candidate.end_index]
+        max_chars = getattr(
+            self.cfg.compress, "max_message_chars_for_compact", DEFAULT_MAX_MESSAGE_CHARS_FOR_COMPACT
+        )
+        window_messages = cap_oversized_messages(to_llm_messages(window_entries), max_chars) + [
+            {"role": "user", "content": pm.render("user/lightweight_extraction_request")}
+        ]
+
+        # wiki 提取层与组织层改进计划 E3：与 compact 路径一致，注入已知实体
+        # 索引，供模型判断是否应复用已有实体 id。
+        entity_digest_section = ""
+        if getattr(self.cfg.compress, "entity_digest_enabled", True):
+            try:
+                from mini_agent.wiki.entity_digest import build_entity_digest_section
+
+                max_entities = getattr(self.cfg.compress, "entity_digest_max_entities", 40)
+                entity_digest_section = build_entity_digest_section(
+                    paths,
+                    max_entities=max_entities,
+                    relevance_hint=str(getattr(self.cfg, "project_root", "") or ""),
+                )
+            except Exception:
+                entity_digest_section = ""
+
+        try:
+            response = llm_client.chat_with_retry(
+                messages=window_messages,
+                system=pm.render(
+                    "system/lightweight_extractor", entity_digest_section=entity_digest_section
+                ),
+                tools=[],
+                max_retries=10,
+            )
+        except Exception:
+            return
+
+        raw_text = (response.text or "").strip()
+        if not raw_text:
+            return
+
+        from mini_agent.history.decision_extraction import parse_decision_response
+        extraction = parse_decision_response(raw_text)
+        decisions = extraction.decisions
+
+        world_entities: list = []
+        world_facts: list = []
+        try:
+            from mini_agent.history.world_extraction import parse_world_response
+            world_extraction = parse_world_response(raw_text)
+            world_entities = world_extraction.entities
+            world_facts = world_extraction.facts
+        except Exception:
+            pass
+
+        source_entries = [
+            f"extraction_trigger@{candidate.trigger_reason}@{candidate.start_index}-{candidate.end_index}"
+        ]
+
+        if decisions and getattr(self.cfg.compress, "extract_decisions", True):
+            try:
+                from mini_agent.wiki.decision_writer import queue_candidates
+                queue_candidates(paths, decisions, source_entries=source_entries)
+            except Exception:
+                pass
+
+        if (world_entities or world_facts) and getattr(self.cfg.compress, "extract_world_model", True):
+            try:
+                from mini_agent.wiki.world_writer import queue_entities, queue_facts
+                queue_entities(paths, world_entities, source_entries=source_entries)
+                queue_facts(paths, world_facts, source_entries=source_entries)
+            except Exception:
+                pass
+
     def compact_with_llm(self, compact_prompt: str, run_turn_fn) -> str:
         """
         [SYS-SKILL-COMPACT] 用 LLM 生成摘要，然后重附 skill 上下文。
