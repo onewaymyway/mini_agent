@@ -251,16 +251,21 @@ class TurnLoopMixin:
                     # [SYS-TOKEN] 详细拆分：system（去除 skill 部分）/ skill / history / total。
                     # skill 文本已包含在 system prompt 内，_sys_tokens 是未拆分前的
                     # system 总量，这里单独估算 skill 部分并从中扣除，避免重复计入。
+                    # 只记录最新一次的拆分结果，实际打印挪到本轮（turn）结束时只打一次，
+                    # 避免 while 循环内每次 LLM 调用都刷屏。
                     _skill_text = ""
                     if self._ctx_builder is not None:
                         _skill_text = getattr(self._ctx_builder, "last_skill_text", "") or ""
                     _skill_tokens = estimate_tokens(_skill_text) if _skill_text else 0
                     _sys_only_tokens = max(_sys_tokens - _skill_tokens, 0)
-                    R.print_info(
-                        f"[token] ~{_est:,} tokens ({_budget_pct:.0%} of {_ctx_window:,}) "
-                        f"| system={_sys_only_tokens:,} skill={_skill_tokens:,} "
-                        f"history={_hist_tokens:,} total={_est:,}"
-                    )
+                    self._last_token_breakdown = {
+                        "system": _sys_only_tokens,
+                        "skill": _skill_tokens,
+                        "history": _hist_tokens,
+                        "total": _est,
+                        "budget_pct": _budget_pct,
+                        "ctx_window": _ctx_window,
+                    }
             # [SYS-COMPACT-TRIGGERS] 组合触发器检查：token 阈值 / 轮次计数 /
             # 工具调用计数 / 冗余检测 / 话题切换，任一命中即可能触发 compact。
             # 独立于 token_estimate_enabled 之外运行（多数子触发器不依赖 token 估算）。
@@ -526,6 +531,16 @@ class TurnLoopMixin:
         self._last_turn_hit_max_turns = loop_count >= self.cfg.max_turns
         if self._last_turn_hit_max_turns:
             R.print_warning(f"Reached max turns ({self.cfg.max_turns}).")
+
+        # [SYS-TOKEN] 本轮（turn）结束，只打印一次最新的 token 统计，
+        # 而不是循环内每次 LLM 调用都打印一次。
+        if self.cfg.token_estimate_enabled and self.cfg.verbose and getattr(self, "_last_token_breakdown", None):
+            _b = self._last_token_breakdown
+            R.print_info(
+                f"[token] ~{_b['total']:,} tokens ({_b['budget_pct']:.0%} of {_b['ctx_window']:,}) "
+                f"| system={_b['system']:,} skill={_b['skill']:,} "
+                f"history={_b['history']:,} total={_b['total']:,}"
+            )
 
         return final_text
 
