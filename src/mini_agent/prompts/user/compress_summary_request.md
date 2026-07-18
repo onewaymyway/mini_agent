@@ -33,4 +33,11 @@ Separately, populate the `decisions` array (can be empty) with any genuine trade
 settled — i.e. places where multiple concrete approaches were weighed and one was chosen over the others.
 Do not fabricate decisions that were not actually discussed.
 
+Also populate the `entities` and `facts` arrays (both can be empty) with general world knowledge from the
+conversation — this is separate from `decisions` and from the "Lessons & Guardrails" section above, which
+are error/correction-focused. `entities`/`facts` should capture what the conversation established about the
+world: people, projects, modules, tools, concepts, or external systems discussed, and factual statements
+about them — even when nothing went wrong and nothing was decided. Do not fabricate content to fill these
+arrays; leave them empty when the segment has nothing beyond what the summary already says.
+
 Remember: your entire response must be the single JSON object itself — no markdown fences, no extra text.

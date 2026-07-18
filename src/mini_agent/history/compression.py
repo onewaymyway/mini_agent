@@ -292,6 +292,8 @@ class LLMSummaryStrategy(CompressionStrategy):
 
         summary_text = None
         decisions = []
+        world_entities = []
+        world_facts = []
         try:
             response = llm_client.chat_with_retry(
                 messages=summary_messages,
@@ -305,6 +307,17 @@ class LLMSummaryStrategy(CompressionStrategy):
                 extraction = parse_decision_response(raw_text)
                 summary_text = extraction.compact_summary
                 decisions = extraction.decisions
+
+                # wiki 改进计划 P1：与 decisions 同一次 LLM 输出里附带解析
+                # entities[]/facts[]，不产生额外调用。解析失败不影响
+                # summary_text/decisions 已经拿到的结果。
+                try:
+                    from mini_agent.history.world_extraction import parse_world_response
+                    world_extraction = parse_world_response(raw_text)
+                    world_entities = world_extraction.entities
+                    world_facts = world_extraction.facts
+                except Exception:
+                    pass
         except Exception:
             pass  # 任何 LLM 调用失败都降级到字符串摘要（下方兜底）
 
@@ -324,6 +337,23 @@ class LLMSummaryStrategy(CompressionStrategy):
 
                 paths = AgentPaths(Path(getattr(cfg, "project_root", None) or Path.cwd()))
                 queue_candidates(paths, decisions, source_entries=[f"compact@{cutoff}"])
+            except Exception:
+                pass
+
+        # wiki 改进计划 P1：世界模型候选（entities[]/facts[]）同样只入队，
+        # 真正的判重/落盘延后到巩固循环（world_writer.consolidate_pending）
+        # 批量执行。独立开关 extract_world_model，默认开启，不影响
+        # extract_decisions 原有行为。
+        if (world_entities or world_facts) and getattr(cfg.compress, "extract_world_model", True):
+            try:
+                from pathlib import Path
+                from mini_agent.storage.paths import AgentPaths
+                from mini_agent.wiki.world_writer import queue_entities, queue_facts
+
+                paths = AgentPaths(Path(getattr(cfg, "project_root", None) or Path.cwd()))
+                source_entries = [f"compact@{cutoff}"]
+                queue_entities(paths, world_entities, source_entries=source_entries)
+                queue_facts(paths, world_facts, source_entries=source_entries)
             except Exception:
                 pass
 

@@ -214,6 +214,17 @@ class AgentPaths:
         return self.workdir_dir / "decision_candidates_pending.jsonl"
 
     @property
+    def world_candidates_pending_path(self) -> Path:
+        """<project_root>/.agent/world_candidates_pending.jsonl — 世界模型候选
+        （entities[]/facts[]，wiki 改进计划 P1）待批量落盘队列。
+
+        与 decision_candidates_pending_path 同一套节流模式：compact 时只
+        append，真正的匹配/新建/合并延后到巩固循环
+        （wiki/world_writer.py::consolidate_pending）批量执行。
+        """
+        return self.workdir_dir / "world_candidates_pending.jsonl"
+
+    @property
     def wiki_processes_dir(self) -> Path:
         """<project_root>/.agent/wiki/processes/ — 流程型页面"""
         return self.wiki_dir / "processes"

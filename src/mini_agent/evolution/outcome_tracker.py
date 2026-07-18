@@ -313,6 +313,47 @@ def mark_reverted(paths, commit_id: str) -> None:
         pass
 
 
+def _write_eval_success_experience(paths, record: "TrackedCommit") -> None:
+    """
+    [wiki 改进计划 P2] verdict == "improved" 时调用：把这次正面判定写成一条
+    wiki/experiences/*.md，与 _write_eval_failure_lesson() 的负面分支对称。
+
+    与负面分支的关键区别：不写 MemoryEntry/lesson（那是"错题本"语义），
+    直接调用 wiki/experience_writer.write_experience() 落盘，不经过
+    perception 图书馆索引这条链路——因为经验知识本身不需要走"攒够证据
+    才重写摘要"的实体巩固流程，样本量小，直接落盘更合适。
+
+    失败静默降级：不应阻断 tick() 主流程（外层已有 try/except）。
+    """
+    try:
+        from mini_agent.wiki.experience_writer import write_experience
+
+        group = _find_lesson_group(memory_backend, record.trigger_lesson_group_id)
+        trigger_desc = ""
+        if group is not None and group.entries:
+            latest = max(group.entries, key=lambda e: getattr(e, "created_at", 0.0))
+            trigger_desc = getattr(latest, "summary", "") or getattr(latest, "trigger", "")
+        trigger_desc = trigger_desc or f"lesson_group={record.trigger_lesson_group_id}"
+
+        write_experience(
+            paths,
+            trigger=trigger_desc,
+            approach=f"自我进化 commit：{record.commit_summary or record.commit_id}",
+            outcome=(
+                f"该问题触发次数从 {record.baseline_trigger_count} 下降到 "
+                f"{record.post_trigger_count}，判定为 improved，说明这次修改"
+                f"确实解决了根本问题，值得在类似场景下复用同样的思路。"
+            ),
+            reusable=True,
+            confidence=0.6,
+        )
+    except Exception:
+        import logging
+        logging.getLogger(__name__).debug(
+            "[outcome_tracker] _write_eval_success_experience failed", exc_info=True
+        )
+
+
 def tick(paths, memory_backend) -> list[TrackedCommit]:
     """
     由 巩固循环 周期性维护调用（evolution/consolidation.py::run_consolidation()）。
@@ -347,6 +388,12 @@ def tick(paths, memory_backend) -> list[TrackedCommit]:
             # 单条记录写入失败不影响其余记录继续处理（内部已有 try/except）。
             if r.verdict == "worsened":
                 _write_eval_failure_lesson(paths, memory_backend, r)
+            elif r.verdict == "improved":
+                # wiki 改进计划 P2：与 worsened 分支对称——正面判定不该只是
+                # 内部计数，也应该沉淀成一条可复用的经验，而不是让 wiki 里
+                # 永远只有"哪里错了"的记录。直接写 experience 页面，不走
+                # MemoryEntry/lesson 语义。
+                _write_eval_success_experience(paths, r)
         if changed:
             _save_all(paths, records)
     except Exception:

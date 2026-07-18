@@ -162,7 +162,10 @@ def migrate_entity_store(
                 created=_epoch_to_date(entity.first_seen),
                 updated=_epoch_to_date(entity.last_summary_update or entity.first_seen),
                 source_entries=entity.related_entry_ids,
-                extra_frontmatter={"legacy_entity_id": entity.entity_id},
+                extra_frontmatter={
+                    "legacy_entity_id": entity.entity_id,
+                    "source_kind": "migration",
+                },
                 overwrite=True,
             )
             mapping[entity.entity_id] = page_id
@@ -176,7 +179,13 @@ def migrate_entity_store(
     return report
 
 
-def mirror_entity(entity: Entity, paths: AgentPaths, *, note: Optional[str] = None) -> Optional[Path]:
+def mirror_entity(
+    entity: Entity,
+    paths: AgentPaths,
+    *,
+    note: Optional[str] = None,
+    source_kind: str = "entity_mirror",
+) -> Optional[Path]:
     """把单个实体的当前状态镜像进 wiki（library_index 双写路径 / consolidate 复用）。
 
     - 实体第一次出现（映射表里没有）：新建页面，内容取当前 summary 快照。
@@ -200,7 +209,10 @@ def mirror_entity(entity: Entity, paths: AgentPaths, *, note: Optional[str] = No
             tags=_entity_tags(entity),
             status=_entity_status(entity),
             source_entries=entity.related_entry_ids,
-            extra_frontmatter={"legacy_entity_id": entity.entity_id},
+            extra_frontmatter={
+                "legacy_entity_id": entity.entity_id,
+                "source_kind": source_kind,
+            },
             overwrite=False,
         )
         mapping[entity.entity_id] = page_id
@@ -214,7 +226,7 @@ def mirror_entity(entity: Entity, paths: AgentPaths, *, note: Optional[str] = No
         # 因为文件缺失而永久失败。
         del mapping[entity.entity_id]
         save_entity_map(paths, mapping)
-        return mirror_entity(entity, paths, note=note)
+        return mirror_entity(entity, paths, note=note, source_kind=source_kind)
 
     page = parse_page(page_path)
     content = note or entity.summary or "（无新增摘要内容）"

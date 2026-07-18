@@ -125,12 +125,19 @@ class LibraryIndex:
 
     # ── wiki式知识库重构计划 5.5 节：过渡期双写 ──────────────────────────
 
-    def _mirror_entities_to_wiki(self, entity_ids: list[str], note: Optional[str] = None) -> None:
+    def _mirror_entities_to_wiki(
+        self, entity_ids: list[str], note: Optional[str] = None, *, source_kind: str = "entity_mirror"
+    ) -> None:
         """把给定实体的当前状态镜像进 wiki/entities/*.md，最佳努力、不阻断主流程。
 
         失败原因通常是：wiki_paths 未配置（默认）、pyyaml 未安装、磁盘写
         入偶发失败。这些都不应该影响图书馆索引（分类/实体/编年目录）本身
         的写入成功——wiki 是过渡期的镜像层，不是当前的主索引。
+
+        source_kind 透传给 wiki/migration.py::mirror_entity，供
+        wiki/stats.py 统计来源分布（wiki 改进计划 P0）：默认
+        "entity_mirror"（on_new_entry 的常规镜像），
+        mark_stale_from_correction() 调用时会传 "correction"。
         """
         if self._wiki_paths is None or not entity_ids:
             return
@@ -143,7 +150,7 @@ class LibraryIndex:
             if entity is None:
                 continue
             try:
-                mirror_entity(entity, self._wiki_paths, note=note)
+                mirror_entity(entity, self._wiki_paths, note=note, source_kind=source_kind)
             except Exception:
                 continue
 
@@ -266,7 +273,9 @@ class LibraryIndex:
                     continue
                 reason = f"人类纠正：{correction_text[:150]}"
                 self.entities.mark_superseded(entity_id, reason=reason)
-                self._mirror_entities_to_wiki([entity_id], note=f"⚠已标记 superseded — {reason}")
+                self._mirror_entities_to_wiki(
+                    [entity_id], note=f"⚠已标记 superseded — {reason}", source_kind="correction",
+                )
                 marked_entities.add(entity_id)
             append_knowledge_event(
                 self._timeline_path,
@@ -431,10 +440,33 @@ class LibraryIndex:
             wiki_embed_call=wiki_embed_call,
         )
 
+        # 5b. 世界模型候选批量落盘（wiki 式知识库改进计划 P1）：消费 compact
+        # 阶段（history/compression.py::LLMSummaryStrategy）攒下的
+        # entities[]/facts[] pending 队列——这是解决"wiki 内容只有错误信息"
+        # 问题的核心补充链路，与步骤5（实体镜像）并列但来源不同：步骤5来自
+        # 纠正/反思等错题本事件，这里来自对话中正常提到的世界知识。
+        world_entities_created = 0
+        world_facts_merged = 0
+        if self._wiki_paths is not None:
+            try:
+                from mini_agent.wiki.world_writer import consolidate_pending as world_consolidate_pending
+
+                world_report = world_consolidate_pending(self._wiki_paths, llm_call=llm_call)
+                world_entities_created = sum(
+                    1 for a in world_report.actions if a.kind in ("entity_created", "entity_updated")
+                )
+                world_facts_merged = sum(
+                    1 for a in world_report.actions if a.kind in ("fact_merged", "fact_fallback")
+                )
+            except Exception:
+                pass
+
         # 6. wiki 索引重建（wiki式知识库重构计划阶段三）
         wiki_index_rebuilt = False
         wiki_pages_indexed = 0
-        if self._wiki_paths is not None and (wiki_mirrored or wiki_dedup_merged):
+        if self._wiki_paths is not None and (
+            wiki_mirrored or wiki_dedup_merged or world_entities_created or world_facts_merged
+        ):
             try:
                 from mini_agent.wiki.indexer import build_index
 
@@ -465,6 +497,8 @@ class LibraryIndex:
             "entities_merged": entity_stats.get("merged", 0),
             "wiki_mirrored": wiki_mirrored,
             "wiki_dedup_merged": wiki_dedup_merged,
+            "world_entities_created": world_entities_created,
+            "world_facts_merged": world_facts_merged,
             "wiki_index_rebuilt": wiki_index_rebuilt,
             "wiki_pages_indexed": wiki_pages_indexed,
             "wiki_topics_generated": topics_generated,

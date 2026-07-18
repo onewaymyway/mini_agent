@@ -22,12 +22,25 @@ catalog.py + library_index.py）的平行新实现，解决其在关系表达、
 旧的 perception 图书馆模式（classification.py/entity_index.py/catalog.py/
 library_index.py）在过渡期保持不变、并存运行，效果验证稳定前不下线
 （见重构计划 5.5 节 / 阶段四第二条）。
+
+《wiki 式知识库改进计划》新增模块（解决"wiki 内容只有错误信息"的问题）：
+    stats.py            — 按 page_type/entity_type/source_kind 统计内容
+                           分布，供 /wiki stats 命令使用［P0 可观测性］
+    world_writer.py      — 消费 history/world_extraction.py 解析出的
+                           entities[]/facts[] 候选，批量落盘为 entity
+                           页面，与 decision_writer.py 同构的 pending
+                           队列节流模式［P1 世界模型抽取］
+    experience_writer.py — 把正面案例（自我进化 commit 判定为
+                           improved 等）直接落盘为 experience 页面
+                           ［P2 经验页面落地］
 """
 
 from __future__ import annotations
 
+from mini_agent.wiki.experience_writer import write_experience
 from mini_agent.wiki.parser import PAGE_TYPES, PageParseError, WikiPage, parse_page
 from mini_agent.wiki.search import WikiSearchResult, wiki_shelf_search
+from mini_agent.wiki.stats import WikiStats, compute_stats
 from mini_agent.wiki.topics import TopicCandidate, consolidate_topics, find_topic_candidates
 from mini_agent.wiki.writer import write_page
 
@@ -42,4 +55,7 @@ __all__ = [
     "TopicCandidate",
     "consolidate_topics",
     "find_topic_candidates",
+    "WikiStats",
+    "compute_stats",
+    "write_experience",
 ]

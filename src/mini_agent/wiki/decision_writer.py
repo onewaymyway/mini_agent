@@ -156,12 +156,23 @@ def _create_decision_page(
         confidence=_DECISION_CONFIDENCE,
         links=links,
         source_entries=source_entries,
+        extra_frontmatter={"source_kind": "decision"},
     )
     return parse_page(target_path)
 
 
+_CORE_FRONTMATTER_KEYS = {
+    "id", "type", "tags", "status", "confidence", "created", "updated",
+    "links", "source_entries",
+}
+
+
 def _update_existing(paths: AgentPaths, page: WikiPage, *, source_entries: list[str]) -> None:
     merged_sources = sorted(set(page.source_entries) | set(source_entries))
+    # 保留原有的非核心 frontmatter 字段（尤其是 source_kind），否则每次
+    # "更新"分支都会悄悄抹掉页面创建时打上的来源标记——wiki/stats.py 的
+    # 统计口径依赖这个字段在整个页面生命周期里保持稳定。
+    extra = {k: v for k, v in page.raw_frontmatter.items() if k not in _CORE_FRONTMATTER_KEYS}
     write_page(
         paths,
         page_id=page.id,
@@ -174,6 +185,7 @@ def _update_existing(paths: AgentPaths, page: WikiPage, *, source_entries: list[
         updated=date.today().isoformat(),
         links=page.strong_links(),
         source_entries=merged_sources,
+        extra_frontmatter=extra,
         overwrite=True,
     )
 
@@ -181,6 +193,7 @@ def _update_existing(paths: AgentPaths, page: WikiPage, *, source_entries: list[
 def _link_back_superseded_by(paths: AgentPaths, old_page: WikiPage, new_page_id: str) -> None:
     """给旧页面追加一条 superseded_by -> new_page_id 的反向链接，保持双向可追溯。"""
     new_links = [*old_page.strong_links(), WikiLink(target=new_page_id, relation="superseded_by", source="frontmatter")]
+    extra = {k: v for k, v in old_page.raw_frontmatter.items() if k not in _CORE_FRONTMATTER_KEYS}
     text = render_page(
         page_id=old_page.id,
         page_type=old_page.type,
@@ -192,6 +205,7 @@ def _link_back_superseded_by(paths: AgentPaths, old_page: WikiPage, new_page_id:
         updated=date.today().isoformat(),
         links=new_links,
         source_entries=old_page.source_entries,
+        extra_frontmatter=extra,
     )
     _writer_mod._atomic_write_text(old_page.path, text)  # noqa: SLF001 - writer 内部原子写复用
 

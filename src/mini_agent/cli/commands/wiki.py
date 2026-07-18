@@ -26,7 +26,7 @@ def handle_wiki_cmd(args: list[str], agent=None) -> None:
     if not args:
         R.print_error(
             "Usage: /wiki <page-id> | /wiki list [--type T] | "
-            "/wiki search <query> | /wiki rebuild [--full]"
+            "/wiki search <query> | /wiki rebuild [--full] | /wiki stats"
         )
         return
 
@@ -39,6 +39,8 @@ def handle_wiki_cmd(args: list[str], agent=None) -> None:
         _handle_search(rest, agent)
     elif sub == "rebuild":
         _handle_rebuild(rest, agent)
+    elif sub == "stats":
+        _handle_stats(rest, agent)
     else:
         _handle_show(sub, agent)
 
@@ -195,6 +197,55 @@ def _handle_search(rest: list[str], agent) -> None:
         mark = " [bold yellow]★[/bold yellow]" if p.id in result.grounded_page_ids else ""
         R.console.print(f"  - {p.id}{mark}")
     R.console.print("")
+
+
+def _handle_stats(rest: list[str], agent) -> None:
+    """/wiki stats —— wiki 内容来源分布统计（wiki 式知识库改进计划 P0）。
+
+    输出各 page_type / entity 页面的 entity_type / source_kind 分布，
+    用于量化"wiki 是不是只有错误信息"这件事，作为改进前后的基线对比。
+    """
+    paths = _get_paths(agent)
+    if paths is None:
+        return
+
+    from mini_agent.wiki.stats import compute_stats
+
+    stats = compute_stats(paths)
+    if stats.total_pages == 0:
+        R.console.print("[dim]wiki/ 下没有任何页面[/dim]")
+        return
+
+    from rich import box as rbox
+    from rich.table import Table
+
+    R.console.print(f"\n[bold]Wiki 内容分布[/bold] [dim](共 {stats.total_pages} 篇)[/dim]")
+
+    t1 = Table(box=rbox.SIMPLE, show_header=True, header_style="bold dim", title="按 page_type")
+    t1.add_column("type")
+    t1.add_column("count", justify="right")
+    for k, v in stats.by_type.items():
+        t1.add_row(k, str(v))
+    R.console.print(t1)
+
+    if stats.by_entity_type:
+        t2 = Table(box=rbox.SIMPLE, show_header=True, header_style="bold dim", title="entity 页面按 entity_type")
+        t2.add_column("entity_type")
+        t2.add_column("count", justify="right")
+        for k, v in stats.by_entity_type.items():
+            t2.add_row(k, str(v))
+        R.console.print(t2)
+
+    t3 = Table(box=rbox.SIMPLE, show_header=True, header_style="bold dim", title="按 source_kind（写入来源）")
+    t3.add_column("source_kind")
+    t3.add_column("count", justify="right")
+    for k, v in stats.by_source_kind.items():
+        t3.add_row(k, str(v))
+    R.console.print(t3)
+    R.console.print(
+        "\n[dim]source_kind=correction/entity_mirror 偏多说明内容仍偏\"错题本\"；"
+        "world_model/experience_success/decision 占比上升说明改进计划 P1/P2 生效[/dim]\n"
+    )
 
 
 def _handle_rebuild(rest: list[str], agent) -> None:

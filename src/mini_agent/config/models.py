@@ -149,6 +149,9 @@ class CompressConfig:
     forget_orphan_tool_results: bool = False  # 剔除保留段中无对应 tool_use 的 tool_result
     extract_decisions: bool = True     # LLMSummaryStrategy 是否顺带提炼 decisions[] 并存入 pending 队列
                                         # （决策/取舍知识提炼计划 5.2 节；不增加额外 LLM 调用，仅解析开关）
+    extract_world_model: bool = True   # LLMSummaryStrategy 是否顺带提炼 entities[]/facts[] 并存入 pending
+                                        # 队列（wiki 改进计划 P1：世界模型抽取，与 extract_decisions 同一次
+                                        # LLM 调用里附带解析，不增加额外调用，仅解析开关）
     decision_batch_min_interval_days: float = 1.0  # 巩固循环批量落盘时，"新建"决策页的冷却天数
                                         # （同一 topic 冷却期内跳过新建，只影响新建，不影响更新已有决策页）
     decision_recall_tool_enabled: bool = True  # 是否注册 recall_decisions 只读工具，供 agent 主动
