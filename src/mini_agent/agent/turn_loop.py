@@ -240,32 +240,12 @@ class TurnLoopMixin:
                     _sys_preview = self._build_system()   # 首次调用时填充缓存
                     _msgs_preview = convert_tool_use_to_text(self._history)
                     _est = estimate_messages_tokens(_msgs_preview, _sys_preview)
-                    if self.cfg.verbose:
-                        # 非 tracer 路径下 verbose 打印同样需要 sys/history 拆分，
-                        # 与 tracer 分支保持一致，避免打印代码依赖未定义变量。
-                        _sys_tokens = estimate_messages_tokens([], _sys_preview)
-                        _hist_tokens = _est - _sys_tokens
                 _ctx_window = self._resolve_context_window()
                 _budget_pct = _est / max(_ctx_window, 1)
-                if self.cfg.token_estimate_enabled and self.cfg.verbose:
-                    # [SYS-TOKEN] 详细拆分：system（去除 skill 部分）/ skill / history / total。
-                    # skill 文本已包含在 system prompt 内，_sys_tokens 是未拆分前的
-                    # system 总量，这里单独估算 skill 部分并从中扣除，避免重复计入。
-                    # 只记录最新一次的拆分结果，实际打印挪到本轮（turn）结束时只打一次，
-                    # 避免 while 循环内每次 LLM 调用都刷屏。
-                    _skill_text = ""
-                    if self._ctx_builder is not None:
-                        _skill_text = getattr(self._ctx_builder, "last_skill_text", "") or ""
-                    _skill_tokens = estimate_tokens(_skill_text) if _skill_text else 0
-                    _sys_only_tokens = max(_sys_tokens - _skill_tokens, 0)
-                    self._last_token_breakdown = {
-                        "system": _sys_only_tokens,
-                        "skill": _skill_tokens,
-                        "history": _hist_tokens,
-                        "total": _est,
-                        "budget_pct": _budget_pct,
-                        "ctx_window": _ctx_window,
-                    }
+                # 注：verbose 场景下的详细 system/skill/history 拆分打印已挪到
+                # _agentic_loop 结束处统一重算并打印一次，这里不再逐次打印
+                # （循环内此时的 history 还没算上本次迭代的 LLM 回复，打印会是
+                # 上一步的旧值）。
             # [SYS-COMPACT-TRIGGERS] 组合触发器检查：token 阈值 / 轮次计数 /
             # 工具调用计数 / 冗余检测 / 话题切换，任一命中即可能触发 compact。
             # 独立于 token_estimate_enabled 之外运行（多数子触发器不依赖 token 估算）。
@@ -532,14 +512,29 @@ class TurnLoopMixin:
         if self._last_turn_hit_max_turns:
             R.print_warning(f"Reached max turns ({self.cfg.max_turns}).")
 
-        # [SYS-TOKEN] 本轮（turn）结束，只打印一次最新的 token 统计，
-        # 而不是循环内每次 LLM 调用都打印一次。
-        if self.cfg.token_estimate_enabled and self.cfg.verbose and getattr(self, "_last_token_breakdown", None):
-            _b = self._last_token_breakdown
+        # [SYS-TOKEN] 本轮（turn）结束，重新估算一次并只打印这一次。
+        # 注意：不能直接复用循环内保存的 _last_token_breakdown ——
+        # 那是每次 while 迭代"顶部"算的，取自当时的 self._history，
+        # 而当次迭代的 LLM 回复 / 工具结果是在那之后才 append 进 history 的，
+        # 所以循环内的值永远落后最后一步。这里用当前最终的 history 重新算一遍。
+        if self.cfg.token_estimate_enabled and self.cfg.verbose:
+            from mini_agent.llm.system_tool_call import convert_tool_use_to_text
+            _final_sys = self._build_system()
+            _final_msgs = convert_tool_use_to_text(self._history)
+            _final_est = estimate_messages_tokens(_final_msgs, _final_sys)
+            _final_sys_tokens = estimate_messages_tokens([], _final_sys)
+            _final_hist_tokens = _final_est - _final_sys_tokens
+            _final_skill_text = ""
+            if self._ctx_builder is not None:
+                _final_skill_text = getattr(self._ctx_builder, "last_skill_text", "") or ""
+            _final_skill_tokens = estimate_tokens(_final_skill_text) if _final_skill_text else 0
+            _final_sys_only = max(_final_sys_tokens - _final_skill_tokens, 0)
+            _final_ctx_window = self._resolve_context_window()
+            _final_budget_pct = _final_est / max(_final_ctx_window, 1)
             R.print_info(
-                f"[token] ~{_b['total']:,} tokens ({_b['budget_pct']:.0%} of {_b['ctx_window']:,}) "
-                f"| system={_b['system']:,} skill={_b['skill']:,} "
-                f"history={_b['history']:,} total={_b['total']:,}"
+                f"[token] ~{_final_est:,} tokens ({_final_budget_pct:.0%} of {_final_ctx_window:,}) "
+                f"| system={_final_sys_only:,} skill={_final_skill_tokens:,} "
+                f"history={_final_hist_tokens:,} total={_final_est:,}"
             )
 
         return final_text
