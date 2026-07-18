@@ -348,10 +348,15 @@ class LibraryIndex:
              重建，刷新 _index/ 下的 graph.json / tags.json /
              backlinks.json / search_index.json，让 wiki_search() 和
              /wiki 命令能看到最新状态，不需要人工单独跑重建。
-          7. 专题页生成（wiki式知识库重构计划阶段四）：某个 tag 下页面数
-             与 frontmatter 强链接密度都达标时，触发 LLM 综合聚合成
+          7. 专题页生成（wiki式知识库重构计划阶段四 + 改进计划 P3）：候选
+             来自两条并存路径——a) 某个 tag 下页面数与 frontmatter 强链接
+             密度都达标（规则）；b) 不依赖 embedding、直接用同一个 llm_call
+             对规则路径没覆盖到的页面做一次语义聚类（wiki/topics.py::
+             find_topic_candidates_llm_cluster，默认开启，可通过
+             consolidate_topics(use_llm_clustering=False) 关闭）。两个
+             候选池按页面重合度去重后统一生成综合叙事
              topics/*.md（wiki/topics.py::consolidate_topics）。只在传入
-             llm_call 时生效——没有 llm_call 时规则本身没有能力生成综合
+             llm_call 时生效——没有 llm_call 时两条路径都没有能力生成综合
              叙事正文，直接跳过。
         """
         # 1. 分类树生长
@@ -478,15 +483,13 @@ class LibraryIndex:
                 # 手动 /wiki rebuild 都能重试。
                 pass
 
-        # 7. 专题页生成（wiki式知识库重构计划阶段四 + wiki 改进计划 P3 语义聚类候选）
+        # 7. 专题页生成（wiki式知识库重构计划阶段四）
         topics_generated: list[str] = []
         if self._wiki_paths is not None and llm_call is not None:
             try:
                 from mini_agent.wiki.topics import consolidate_topics
 
-                topics_generated = consolidate_topics(
-                    self._wiki_paths, llm_call, embed_call=wiki_embed_call,
-                )
+                topics_generated = consolidate_topics(self._wiki_paths, llm_call)
             except Exception:
                 topics_generated = []
 

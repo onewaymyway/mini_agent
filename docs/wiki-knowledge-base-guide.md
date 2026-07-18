@@ -66,7 +66,7 @@ source_entries: [entry_a1b2, entry_c3d4]   # 指回原始 MemoryStore 记忆，�
 | `migration.py` | 二 | `migrate_entity_store()` 一次性导出 + `mirror_entity()` 双写共用函数 |
 | `dedup.py` | 二 | 页面相似度判断：默认规则+LLM，embedding 作为可选路径 |
 | `search.py` | 三 | 三段式检索：规则粗筛 → 图扩展 → LLM 精排 |
-| `topics.py` | 四 | 专题页生成：tag 聚类 + 强链接密度判断 + LLM 综合聚合 |
+| `topics.py` | 四 + P3 | 专题页生成：tag 聚类 + 强链接密度（规则）与不依赖 embedding 的 LLM 直接聚类两条路径并存，候选池合并去重后 LLM 综合聚合 |
 | `decision_writer.py` | 决策提炼 | 决策候选落盘：命中已有决策页则更新/推翻，命中不到才新建 |
 
 ## 四、写入侧：与图书馆式索引双写
@@ -120,15 +120,20 @@ query
 
 **这套检索目前只是"平行实现"，不替换 `shelf_search`**：`wiki_paths=None` 或 wiki/ 下没有页面时永远返回空结果，两条路径完全独立运行，便于 A/B 对比效果后再决定是否收敛。
 
-## 六、专题页生成（阶段四）
+## 六、专题页生成（阶段四 + P3 检索与聚合优化）
 
 `wiki/topics.py::consolidate_topics()` 是 `consolidate()` 步骤 7 的入口，解决"没有可读的综合层"问题——一次跨模块的大重构（比如判断/调度系统整合），此前没有任何地方能承载"这件事的完整来龙去脉"，只能靠人去几个实体的摘要里拼凑。
 
-判断逻辑：按 tag 对全部非 topic 类型页面分组，**页面数达到阈值**（`min_pages`，默认 4）**且组内 frontmatter 强链接密度达到阈值**（`min_density`，默认 0.5，定义为"组内强链接边数 / 组内页面数"）才算候选——只是恰好共享同一个 tag 不够，必须真的紧密关联。
+候选来自两条并存的路径：
 
-命中候选后，把组内全部页面正文交给 LLM 综合改写成一篇叙事（不是逐篇复述），写入 `topics/<tag>.md`，frontmatter 用 `relation: absorbs` 声明对每篇成员页面的强链接。已经生成过专题页的 tag（读取既有 `topics/*.md` 里的 `source_tag` 附加字段）会被排除，避免同一批页面反复触发生成——当前版本只支持"生成新专题页"，不支持"更新既有专题页"。
+1. **tag + 链接密度（规则，阶段四原有路径）**：按 tag 对全部非 topic 类型页面分组，**页面数达到阈值**（`min_pages`，默认 4）**且组内 frontmatter 强链接密度达到阈值**（`min_density`，默认 0.5，定义为"组内强链接边数 / 组内页面数"）才算候选——只是恰好共享同一个 tag 不够，必须真的紧密关联。
+2. **LLM 直接聚类（P3 新增，`find_topic_candidates_llm_cluster`）**：不依赖任何 embedding 模型——把规则路径没覆盖到的候选页面的 id/tags/正文摘要整体交给同一个 `llm_call`，一次调用输出"哪几篇页面在讲同一件事"（JSON 数组 `[{"topic": ..., "page_ids": [...]}]`），弥补规则路径抓不住的场景：tag 不同、没有强链接，但语义上确实相关的实体/事实/经验页面（这类页面在 P1/P2 落地后大量产生）。聚类簇成员数阈值 `llm_cluster_min_pages` 默认 3（比规则路径的 4 更低，因为语义聚类天然比"共享 tag"更精确）。`consolidate_topics(..., use_llm_clustering=False)` 可关闭这条路径，退回纯规则行为。
 
-只在传入 `llm_call` 时生效——规则本身只负责"值不值得生成"的判断，没有 LLM 就没有能力生成综合叙事正文，直接跳过而不是勉强拼接。
+两个候选池合并时按页面重合度（Jaccard）去重（`_merge_candidate_pools`，阈值默认 0.5）：规则路径候选优先保留，LLM 候选与已接受候选重合度过高则判定为重复候选丢弃，避免同一批页面被两条路径各生成一篇内容重复的专题页。
+
+命中候选后，把组内全部页面正文交给 LLM 综合改写成一篇叙事（不是逐篇复述），写入 `topics/<tag>.md`，frontmatter 用 `relation: absorbs` 声明对每篇成员页面的强链接，并新增 `cluster_source`（`tag_density` | `llm_cluster`）与（LLM 聚类路径特有的）`topic_label` 字段，标注该专题页来自哪条候选路径。已经生成过专题页的 tag（读取既有 `topics/*.md` 里的 `source_tag` 附加字段）会被排除，避免同一批页面反复触发生成——当前版本只支持"生成新专题页"，不支持"更新既有专题页"。
+
+只在传入 `llm_call` 时生效——两条路径的候选生成规则本身只负责"值不值得生成"的判断（LLM 聚类路径连"候选生成"这一步都要靠 LLM），没有 LLM 就没有能力生成综合叙事正文，直接跳过而不是勉强拼接。
 
 ## 七、`consolidate()` 完整步骤（含 wiki 相关的 5/6/7）
 
@@ -140,7 +145,7 @@ query
 4. 实体巩固：去噪 + 近重复合并
 5. **wiki 镜像**：本轮重写过摘要的实体，判重后镜像/并入 wiki 页面
 6. **wiki 索引重建**：步骤 5 有任何写入时，触发 `indexer.py::build_index(incremental=True)`，刷新 `_index/` 下四个派生文件
-7. **专题页生成**：tag 聚类 + 链接密度达标时，触发 LLM 综合聚合成 `topics/*.md`
+7. **专题页生成**：tag+链接密度（规则）与不依赖 embedding 的 LLM 直接聚类两条候选路径并存，合并去重后触发 LLM 综合聚合成 `topics/*.md`
 
 返回值新增字段：`wiki_mirrored`、`wiki_dedup_merged`、`wiki_index_rebuilt`、`wiki_pages_indexed`、`wiki_topics_generated`（新生成的专题页 id 列表）。`/evolve consolidate` 报告会展示这些统计。
 

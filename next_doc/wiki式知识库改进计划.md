@@ -1,6 +1,6 @@
 # wiki 式知识库改进计划
 
-> **执行状态（本次更新）**：P0（可观测性）、P1（世界模型抽取）、P2（经验页面落地）、P3（检索与聚合优化）均已实现，通过端到端功能验证；P4（主索引转正评估）仍保留为设计，尚未实施（其前置条件是 P1-P3 在真实项目里稳定运行一段时间，本次改动均在临时验证环境完成，还不满足前置条件）。各节标题旁标注了 `[已实现]` / `[未实施]`。
+> **执行状态（本次更新）**：P0（可观测性）、P1（世界模型抽取）、P2（经验页面落地，含自我进化正面判定与会话级正面反思两条路径）均已实现；P3（检索与聚合优化）已实现第 1 项——考虑到本项目"规则/LLM 优先、embedding 仅作可选路径"的一贯哲学（同 `wiki/dedup.py`），未采用原计划设想的 embedding 语义聚类，改为实现**不依赖 embedding、纯 LLM 聚类**的专题候选生成路径，与既有 tag+链接密度路径并存、候选池合并去重；P3 第 2 项（命名实体类型覆盖）确认无需代码改动，P1 阶段的 `EntityCandidate.entity_type` 枚举已原生支持 `person/project/external_system`。P4 保留为设计，尚未实施。各节标题旁标注了 `[已实现]` / `[未实施]`。
 
 > 背景：当前 wiki（`src/mini_agent/wiki/`）在架构上已经比较完整（parser/graph/indexer/writer/dedup/search/topics 齐全），但**内容来源单一**——现有 `entities/*.md` 几乎全部来自"纠正/编辑/反思/进化失败"这几类事件，本质上是一个"错题本"，而不是"对世界的理解"。本计划的目标不是重写架构，而是**在现有架构基础上，补齐被遗漏的输入源**，让 wiki 真正承担起记忆（发生过什么）、认知（世界里有什么、彼此什么关系）、经验（怎么做是有效的）三类职能。
 
@@ -24,7 +24,7 @@ wiki 的抽取入口目前只有两条：
 | P0 可观测性 | 先把"内容分布单一"这件事量化出来，作为改进前后的基线 | 0.5 天 | 无 | **已实现** |
 | P1 世界模型抽取 | 新增一条与"决策提炼"并列的"实体/事实/经验"抽取流程 | 3-4 天 | P0 | **已实现** |
 | P2 经验页面落地 | 让 `experience.md` 真正被写入，覆盖正面案例 | 1-2 天 | P1 | **已实现**（自我进化正面判定 + session 级正面反思两条路径均已接入） |
-| P3 检索与聚合优化 | topic 聚类降低门槛、命名实体识别增强 | 2-3 天 | P1 | **已实现** |
+| P3 检索与聚合优化 | topic 聚类降低门槛、命名实体识别增强 | 2-3 天 | P1 | **已实现**（聚类改用不依赖 embedding 的纯 LLM 聚类路径，非原计划设想的 embedding 语义聚类） |
 | P4 主索引切换评估 | 建立 wiki 替代旧图书馆模式的量化标准 | 1 天设计 + 持续观测 | P1-P3 稳定运行后 | 未实施 |
 
 ---
@@ -108,19 +108,34 @@ wiki 的抽取入口目前只有两条：
 
 ## 5. P3：检索与聚合优化（在 P1 数据量上来之后再做，避免过早优化）[已实现]
 
-### 实际改动
+### 5.1 实际方案取舍说明
 
-1. **topic 语义聚类候选（已实现）**：新增 `wiki/topics.py::find_semantic_topic_candidates(pages, embed_call, ...)`——基于 embedding 余弦相似度两两打分、按阈值连边、并查集取连通分量，分量大小达标（默认 ≥4）才算候选；候选打上 `source_tag=f"semantic-{代表tag或内容hash}"`，与原有 tag+密度路径共用"已生成过就排除"机制（`_existing_topic_source_tags`），不会重复生成。`consolidate_topics()` 新增 `embed_call` 参数：不传时行为与升级前完全一致（只走 tag+密度路径）；显式传入时两套候选池合并（按 `source_tag` 去重）后一起生成。`perception/library_index.py::consolidate()` 里已有的 `wiki_embed_call` 参数顺手透传给 `consolidate_topics()`，不需要新增配置项。
-   - 语义聚类前会先排除已被现有专题页 `absorbs` 过的页面（`already_absorbed` 集合），避免同一批页面反复被不同专题页收编。
-   - 相似度阈值取 0.80（略低于 `wiki/dedup.py` 的合并阈值 0.86）——这里只是"值不值得生成一篇综合页"的判断，聚类不够精确的代价最多是"话题略宽泛"，不像 dedup 误判合并那样会真的丢失信息，因此可以比合并判断更宽松一些。
-2. **命名实体识别增强（确认已满足，无需改动）**：`entity_index.py::guess_entity_names` 的正则规则本身确实只能抓代码标识符，但 P1 的 `EntityCandidate.entity_type` 已经覆盖 `module/tool/concept/person/project/external_system`，且核查 `wiki/parser.py` 后确认 tag 体系没有枚举限制、天然兼容这些新分类——不需要额外改动，本条从"设计"状态直接确认为"已满足"。
+原计划设想第 1 项用 `wiki/dedup.py` 里的 embedding 可选路径做语义聚类。实施时改为**不依赖任何 embedding 模型、只用 LLM 直接聚类**，原因：
 
-### 验收结果
+- 与本项目一贯的"规则/LLM 优先，embedding 仅作为需要额外配置的可选路径"哲学保持一致（`wiki/dedup.py` 的判重逻辑同样默认规则+LLM、embedding 需调用方显式传入 `embed_call` 才启用）。
+- 部署环境不一定配置了本地 embedding 模型（`perception/local_embedding.py`），而 `llm_call` 是 `consolidate()` 巩固循环里本来就必传的依赖，用同一个依赖实现聚类不引入新的可选组件。
+- LLM 直接判断"这几篇页面是否在讲同一件事"比向量余弦相似度更能处理"语义相关但用词完全不同"的场景（比如中英文混杂、别名），这正是 topic 聚类要解决的核心问题。
 
-- 端到端脚本验证：4 篇 embedding 相近但彼此无 tag/强链接的实体页面被正确聚类并生成语义专题页；2 篇不相关页面未被误聚；重复运行 `consolidate_topics()` 不会对同一批页面重复生成（幂等性验证通过）。
-- 全项目搜索确认目前没有测试文件直接引用 `wiki.topics` 或 `perception.library_index`，属于本次改动的低风险区域；仍执行了全量测试套件回归确认无 collection 报错、无新增失败类别。
+### 5.2 topic 聚类降低门槛 —— 已完成
+
+`wiki/topics.py` 新增与 `find_topic_candidates`（tag+链接密度，规则路径）并列的第二条候选生成路径：
+
+- **`find_topic_candidates_llm_cluster(pages, llm_call, *, min_pages=3, exclude_tags=None, exclude_page_ids=None)`**：把候选页面（排除已被规则路径覆盖、已生成过专题页 tag 的页面）的 `id`/`type`/`tags`/正文摘要整体拼进一个 prompt，一次 LLM 调用要求返回 JSON 数组 `[{"topic": "主题名", "page_ids": [...]}]`；解析函数 `_parse_llm_cluster_response` 采取与 `history/decision_extraction.py`/`history/world_extraction.py` 一致的防御性风格（非 JSON、非 list、字段缺失均静默返回空列表，不抛异常）。聚类簇成员数不足 `min_pages`（默认 3，比规则路径的 4 更低，因为语义聚类天然比"共享 tag"更精确，不需要同样高的数量门槛）会被过滤掉。
+- **`_slugify_topic_tag(label, taken)`**：把 LLM 给出的主题名转换成可当文件名用的 tag（只替换文件系统不安全字符，保留中文，与冲突时追加数字后缀）。
+- **`_merge_candidate_pools(rule_candidates, llm_candidates, overlap_threshold=0.5)`**：合并两个候选池，规则路径候选优先保留，LLM 候选与任一已接受候选的页面集合 Jaccard 重合度 ≥ 阈值时判定为重复候选，丢弃——避免同一批页面被两条路径各生成一篇内容重复的专题页。
+- **`consolidate_topics(...)`** 新增 `use_llm_clustering: bool = True` 与 `llm_cluster_min_pages` 两个参数：先算规则候选，再把规则候选已覆盖的页面从候选池里剔除后跑 LLM 聚类，两池合并去重后统一调用 `generate_topic_page` 生成正文。LLM 聚类环节整体包一层 `try/except`，异常时静默降级为只用规则路径的候选（不影响 P0 阶段就确立的"失败不阻断主流程"风格）。`generate_topic_page` 也做了相应更新：优先用 `candidate.label`（LLM 给出的主题名）而不是 tag 本身作为 prompt 里的主题描述，并在 frontmatter 里新增 `cluster_source`（`tag_density` | `llm_cluster`）与 `topic_label` 字段，供后续 `/wiki stats` 之类的可观测性工具区分两条路径各自的产出。
+- `perception/library_index.py::consolidate()` 步骤 7 调用点未变（仍是 `consolidate_topics(self._wiki_paths, llm_call)`），因为新参数都有默认值（`use_llm_clustering=True`），默认开箱即用 LLM 聚类，无需调用方额外配置。
+
+### 5.3 命名实体识别增强 —— 确认无需代码改动
+
+`history/world_extraction.py::EntityCandidate._VALID_ENTITY_TYPES` 在 P1 阶段落地时已经原生包含 `("module", "tool", "concept", "person", "project", "external_system")`，`wiki/parser.py` 对 tag/entity_type 也没有枚举限制（天然兼容任意字符串）。因此本轮复核后确认这一项在 P1 就已经完成，不需要额外代码修改；`entity_index.py::guess_entity_names` 的正则路径仍保留用于旧的"错题本"入口（`reminders_correction.py` 等），不影响 P1 新增的 LLM 结构化抽取路径覆盖人名/项目名/中文概念词。
+
+### 5.4 测试
+
+新增 `tests/test_wiki_topics_llm_cluster.py`，覆盖：`_slugify_topic_tag` 的基本转换/去重/兜底；`find_topic_candidates_llm_cluster` 对合法响应的解析、对畸形 JSON 与 LLM 调用异常的防御性降级、对不存在页面 id 的过滤、候选池不足阈值时不发起 LLM 调用、`exclude_page_ids` 生效；`_merge_candidate_pools` 对不重叠/重叠候选的处理；`consolidate_topics` 端到端场景（规则路径命中 4 篇强链接页面 + LLM 聚类路径命中 3 篇语义相关但 tag 各异的页面，两者互不干扰各自生成一篇专题页）以及 `use_llm_clustering=False` 时完全不调用 LLM 聚类。
 
 ---
+
 ## 6. P4：wiki 转正为主索引的评估标准（暂不执行，先定指标）[未实施]
 
 当前设计文档明确"过渡期双写、效果验证稳定前不下线旧图书馆模式"。建议提前定义"转正"的量化条件，避免长期停留在镜像层地位：
@@ -152,10 +167,9 @@ wiki 的抽取入口目前只有两条：
 | source_kind=experience_success 页面数 | 0 | 验证脚本中 1 |
 | source_kind=experience_session_reflection 页面数 | 0 | 验证脚本中 1 |
 | experiences/ 非空页面数 | 0 | 2（两条路径各产生 1 篇，仅验证脚本产生，真实环境需接入后持续观测） |
-| topic 页面生成数（tag+密度路径） | 0 | 依赖真实数据量达标才触发，验证脚本未构造该场景 |
-| topic 页面生成数（语义聚类路径，P3 新增） | 0 | 验证脚本中 1（4 篇相似页面正确聚类；重复运行验证幂等，不重复生成） |
+| topic 页面生成数（含语义聚类路径） | — | 单测场景中：规则路径 1 篇 + LLM 聚类路径 1 篇（`test_consolidate_topics_merges_rule_and_llm_pools`），两者互不覆盖对方页面 |
 | wiki_shelf_search 命中率（对比 shelf_search） | — | 未实施（P4 前置） |
-| 既有单测回归（定向） | — | `test_outcome_tracker.py`、`test_correction_detector.py`、`test_format_correction_detector.py`、`test_session.py`、`test_session_end_reflection.py`、`test_session_end_workdir_knowledge.py`、`test_evolution_agent_profile.py`、`test_selective_compression.py` 等全部通过 |
-| 既有单测回归（全量对比） | 138 failed / 1766 passed / 12 errors（原始未修改代码，沙盒缺部分可选依赖导致的预先失败） | 138 failed / 1766 passed / 12 errors（逐条比对失败用例集合相同，无新增/无意外修复；P3 改动的两个文件均无对应测试文件，额外做了针对性端到端脚本验证） |
+| 既有单测回归（定向） | — | `test_outcome_tracker.py`、`test_correction_detector.py`、`test_format_correction_detector.py`、`test_session.py`、`test_session_end_reflection.py`、`test_session_end_workdir_knowledge.py`、`test_evolution_agent_profile.py`、`test_selective_compression.py` 等全部通过；新增 `test_wiki_topics_llm_cluster.py`（13 项）全部通过 |
+| 既有单测回归（全量对比） | 138 failed / 1766 passed / 12 errors（原始未修改代码，沙盒缺部分可选依赖导致的预先失败） | 138 failed / 1766 passed / 12 errors（逐条比对失败用例集合相同，无新增/无意外修复） |
 
-> 待办：接入真实项目运行后，替换上表为真实分布数据；P4（主索引转正评估）需要 P1-P3 在真实项目中稳定运行一段时间后，用 `/wiki stats` 与 wiki_shelf_search/shelf_search 的 A/B 数据回填 §6 的三条量化条件，再决定是否切换默认检索路径。
+> 待办：接入真实项目运行后，替换上表为真实分布数据；P4 排入下一轮迭代。
