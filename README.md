@@ -18,7 +18,10 @@
 - `src/mini_agent/wiki/__init__.py`（导出新模块）
 - `src/mini_agent/perception/library_index.py`（`consolidate()` 新增步骤 5b；`source_kind` 透传）
 - `src/mini_agent/history/compression.py`（compact 阶段解析并入队 entities/facts）
-- `src/mini_agent/evolution/outcome_tracker.py`（新增 `_write_eval_success_experience`）
+- `src/mini_agent/evolution/outcome_tracker.py`（新增 `_write_eval_success_experience`：自我进化正面判定 → 经验页面）
+- `src/mini_agent/agent/reminders_correction.py`（新增 session 级纠正计数器 `_session_correction_count`）
+- `src/mini_agent/agent/lifecycle.py`（三处 session 边界重置纠正计数器）
+- `src/mini_agent/agent/profile.py`（session 结束、摘要生成后，若无纠正且有工具调用，写入会话级正面经验）
 - `src/mini_agent/cli/commands/wiki.py`（新增 `/wiki stats` 子命令）
 - `src/mini_agent/storage/paths.py`（新增 `world_candidates_pending_path`）
 - `src/mini_agent/config/models.py`（新增 `CompressConfig.extract_world_model`）
@@ -28,12 +31,13 @@
 
 1. 全部改动文件已通过 `py_compile` 语法检查。
 2. 端到端功能脚本验证过 `parse_world_response → queue_entities/queue_facts →
-   consolidate_pending → compute_stats` 全链路，以及 `decision_writer` 更新分支
-   `source_kind` 保留的回归测试。
-3. 项目自带测试 `tests/test_outcome_tracker.py`（5 passed）、
-   `tests/test_selective_compression.py`（21 passed）、
-   `tests/test_exploration_outcome_recording.py`、
-   `tests/test_negative_outcome_downweighting.py` 全部保持通过，无新增失败。
+   consolidate_pending → compute_stats` 全链路、`decision_writer` 更新分支
+   `source_kind` 保留的回归测试、以及 `experience_writer` 两条来源
+   （`experience_success` / `experience_session_reflection`）的写入。
+3. 对 `tests/` 目录做了修改前后的全量比对：138 failed / 1766 passed / 12
+   errors，两次结果完全一致（失败用例集合逐条比对相同），确认未引入新的
+   回归；失败均为沙盒环境缺少可选依赖（如 `rich`/`json_repair`/`pydantic`/
+   `uvicorn`）或与本次改动无关的既有 mock 问题。
 
 ## 快速体验新增能力
 

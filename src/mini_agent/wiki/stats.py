@@ -7,12 +7,13 @@ _index/ 下的派生索引（直接 parse_page 全量扫描，用法与
 wiki/search.py::wiki_shelf_search 一致，当前规模下足够快）。
 
 source_kind 取值约定（各写入模块负责在 extra_frontmatter 里打上）：
-    correction         —— perception/library_index.py 因人类纠正触发的镜像
-    entity_mirror       —— perception/library_index.py 常规实体镜像（on_new_entry）
-    decision            —— wiki/decision_writer.py
-    world_model         —— wiki/world_writer.py（wiki 改进计划 P1）
-    experience_success   —— wiki/experience_writer.py（wiki 改进计划 P2）
-    (缺失/其它)          —— 历史遗留页面，写入时尚未打上该字段
+    correction                    —— perception/library_index.py 因人类纠正触发的镜像
+    entity_mirror                 —— perception/library_index.py 常规实体镜像（on_new_entry）
+    decision                      —— wiki/decision_writer.py
+    world_model                   —— wiki/world_writer.py（wiki 改进计划 P1）
+    experience_success            —— wiki/experience_writer.py，自我进化 verdict=improved 触发（P2）
+    experience_session_reflection —— wiki/experience_writer.py，session 结束且全程无纠正触发（P2）
+    (缺失/其它)                    —— 历史遗留页面，写入时尚未打上该字段
 """
 
 from __future__ import annotations

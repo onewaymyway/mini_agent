@@ -210,6 +210,15 @@ class RemindersCorrectionMixin:
             from mini_agent.errors import log_exception
             log_exception(_mini_agent_exc, where='mini_agent.agent.mark_stale_from_correction')
 
+        # wiki 改进计划 P2：会话级正面经验路径（agent/profile.py::
+        # _generate_and_save_summary）需要知道"这个 session 有没有发生过
+        # 纠正"，才能判断要不要在 session 结束时补一条正面经验。这里只做
+        # 计数，不做任何写入，失败也不应该影响纠正检测本身已经完成的工作。
+        try:
+            self._session_correction_count = getattr(self, "_session_correction_count", 0) + 1
+        except Exception:
+            pass
+
         return True
 
     def _on_edit_detected(self, edit: dict) -> None:
@@ -265,6 +274,15 @@ class RemindersCorrectionMixin:
                 self._append_memory_delta(entry)
             except Exception:
                 pass  # lesson 生成失败不应影响编辑本身已经成功写入 history
+            else:
+                # 与 _detect_and_record_correction 一致：编辑类纠正也计入
+                # session 级计数（wiki 改进计划 P2）。放在 else 分支：只有
+                # 上面的 lesson 记录真正成功写入才计数，避免异常路径下
+                # "记录失败但仍计数"造成误判。
+                try:
+                    self._session_correction_count = getattr(self, "_session_correction_count", 0) + 1
+                except Exception:
+                    pass
 
     def _inject_reminders_for_tool_results(self, tool_calls, result_strs: list) -> None:
         """工具执行后，逐个工具检查 tool_error / post_tool reminder。"""

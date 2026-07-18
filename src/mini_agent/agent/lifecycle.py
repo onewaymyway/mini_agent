@@ -335,6 +335,10 @@ class SessionLifecycleMixin:
                 provider=getattr(self.cfg, "llm_provider", "unknown"),
                 model=self.cfg.model,
             )
+            # wiki 改进计划 P2：会话级纠正计数按 session 归零，避免跨 session
+            # 累积导致"只要进程生命周期内出现过一次纠正，后续所有 session
+            # 都再也不会生成正面经验"这种不合理的永久抑制。
+            self._session_correction_count = 0
             self._bind_session_extras()
             self._maybe_ensure_project_meta()
             self._maybe_register_global_project()
@@ -685,6 +689,10 @@ class SessionLifecycleMixin:
         if session is None:
             return False
         self._session = session
+        # wiki 改进计划 P2：resume 到某个已有 session，本次 tick 的纠正计数
+        # 从 0 开始重新统计——历史纠正已经沉淀过 lesson，不需要再影响这次
+        # resume 之后是否生成正面经验的判定。
+        self._session_correction_count = 0
         # 必须原地替换列表内容，保持 self._history 与 self._hist._history 指向同一对象
         self._history.clear()
         self._history.extend(session.history)
@@ -731,6 +739,8 @@ class SessionLifecycleMixin:
             return False
         self._history.clear()
         self.stats = SessionStats()
+        # wiki 改进计划 P2：同上，新 session 不继承旧 session 的纠正计数。
+        self._session_correction_count = 0
         # 角色扮演系统：新 session 不继承上一个 session 的角色状态
         self.active_persona = None
         self._session = self._session_mgr.new_session(

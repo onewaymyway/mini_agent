@@ -209,6 +209,37 @@ class ProfileMixin:
                 self._append_memory_delta(entry)
             _locked_print_info("会话摘要记忆已生成")
 
+            # wiki 改进计划 P2（会话级正面经验路径）：session 结束、摘要成功
+            # 生成、且这个 session 里一次纠正都没发生（self._session_correction_count
+            # 由 reminders_correction.py 在纠正命中/编辑纠正时递增）——满足这两个
+            # 条件才认为"这轮做得不错，值得沉淀成经验"，避免和现有的负面
+            # lesson 路径一样被高频事件淹没成毫无信息量的默认行为（大多数
+            # session 本来就没有纠正，如果不加限制，几乎每个 session 都会
+            # 生成一条经验，反而稀释掉真正有参考价值的案例）。这里额外要求
+            # 至少发生过一次工具调用，排除纯聊天、没有实际产出的 session。
+            try:
+                correction_count = getattr(self, "_session_correction_count", 0)
+                had_tool_activity = bool(self.stats.tool_calls)
+                if correction_count == 0 and had_tool_activity and self.cfg.memory.enabled:
+                    from mini_agent.storage.paths import AgentPaths
+                    from mini_agent.wiki.experience_writer import write_experience
+
+                    write_experience(
+                        AgentPaths(self.cfg.project_root),
+                        trigger=turns_text[:300] or "（未记录具体用户请求）",
+                        approach=summary,
+                        outcome=(
+                            f"session 全程 {self.stats.tool_calls} 次工具调用、"
+                            f"{self.stats.turns} 轮，期间没有触发任何人工纠正，"
+                            "判定为一次顺利完成的正面案例。"
+                        ),
+                        reusable=True,
+                        source_kind="experience_session_reflection",
+                        confidence=0.5,
+                    )
+            except Exception:
+                pass  # 经验沉淀失败不应影响摘要/记忆本身已经成功写入
+
             # [SYS-PROFILE] 同一后台线程内顺带检查并刷新用户画像
             self._maybe_refresh_profile(force=force)
         except Exception as e:
