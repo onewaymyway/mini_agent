@@ -208,6 +208,10 @@ def _tool_icon(name: str) -> str:
 
 
 def _tool_summary(tool_name: str, inp: dict) -> str:
+    if not isinstance(inp, dict):
+        # 防御性兜底：极端情况下上游解析出的 input 可能不是 dict（如模型
+        # 误吐出 list），此处降级返回空摘要，而不是让整个渲染流程崩溃。
+        return ""
     if tool_name == "bash":
         cmd = inp.get("command", "")
         return cmd[:80] + ("…" if len(cmd) > 80 else "")

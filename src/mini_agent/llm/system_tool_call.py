@@ -143,6 +143,16 @@ def _parse_single_call(raw_json: str) -> Optional[ToolCall]:
         except json.JSONDecodeError:
             params = {}
 
+    # 兜底：模型偶尔会把 input/arguments 写成 list（或其他非 dict 类型），
+    # 若不在此处拦截，脏数据会一路流到 renderer._tool_summary() 等下游
+    # 假定 dict 的地方，触发 'list' object has no attribute 'get' 之类的崩溃。
+    if not isinstance(params, dict):
+        warnings.warn(
+            f"[system_tool_call] Tool call params 不是 dict（实际是 {type(params).__name__}），"
+            f"已降级为空 dict: {raw_json[:150]}"
+        )
+        params = {}
+
     if not name:
         warnings.warn(f"[system_tool_call] Tool call missing 'name' field: {raw_json[:100]}")
         return None
