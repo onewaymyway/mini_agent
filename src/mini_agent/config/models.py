@@ -121,6 +121,17 @@ class MemoryConfig:
     library_shelf_search_enabled: bool = True  # context_builder 检索时是否走两步检索（可单独关闭，仅保留写入侧归类）
     library_index_user_scoped: bool = False  # 改进7：多用户场景下按 user_id 拆分独立书架（默认关闭，共享归并）
 
+    # ── wiki 转正为主检索路径（wiki 式知识库改进计划 P4）────────────────────
+    # 默认开：context_builder 每轮检索时优先尝试 wiki_search（三段式，需要
+    # llm_call 才能产出 grounded_page_ids），命中则采用其结果并跳过
+    # shelf_search；未命中（wiki/ 为空、没有 grounded 结果、wiki_search 本身
+    # 异常）时自动退回原有 shelf_search → merge_search → 全库 search 链路，
+    # 行为与切换前完全一致，不存在"切换后反而检索不到东西"的风险。
+    # 关闭（设为 False）即可完全退回旧默认路径，等价于本次改动前的行为；
+    # `/wiki promotion` 可以随时查看 wiki 侧当前是否已经稳定达到 P4 定义的
+    # 三项转正标准，作为要不要继续保持这条路径开启的参考。
+    library_wiki_search_primary: bool = True
+
     # ── wiki 式知识库（wiki式知识库重构计划.md，perception/library_index.py
     #    的 wiki_paths 参数）─────────────────────────────────────────────
     wiki_enabled: bool = True  # 过渡期双写总开关；关闭则 LibraryIndex.wiki_paths=None，wiki/ 完全不被触碰

@@ -50,6 +50,10 @@ class ContextBuilder:
         self_model_getter=None,         # Callable[[], Optional[str]]  [具身改进 C1]
         persona_getter=None,            # Callable[[], Optional[str]]  当前激活的 persona name
         notepad_getter=None,            # Callable[[], Optional[str]]  记事本渲染文本，每轮读取
+        llm_call_getter=None,           # Callable[[], Optional[Callable[[str], str]]]  wiki 式知识库改进
+                                         # 计划 P4：wiki_search 转正为主检索路径时，LLM 精排需要一个
+                                         # llm_call；懒取（而不是构造时固定住），因为 client_pool 的
+                                         # current_client 可能在 session 期间切换模型
     ) -> None:
         self.cfg = cfg
         self.skill_loader = skill_loader
@@ -63,6 +67,10 @@ class ContextBuilder:
         self._persona_getter = persona_getter
         # 记事本：每轮读取当前 session 的记事本渲染文本（persist across compact）
         self._notepad_getter = notepad_getter
+        # wiki 式知识库改进计划 P4：wiki_search 转正为主检索路径所需的 llm_call
+        # 懒取器，None（未传，或调用时返回 None）时 refresh_turn_context() 会
+        # 自动跳过 wiki_search 的 LLM 精排环节，退化为既有 shelf_search 路径。
+        self._llm_call_getter = llm_call_getter
 
         # ── Turn 级缓存 ──────────────────────────────────────────────────────
         # 每次 run_turn 开始时由 refresh_turn_context() 填充，
@@ -108,41 +116,119 @@ class ContextBuilder:
         self._cached_memory_snippet = ""
 
         if self.memory and query:
-            memories = None
-            # 图书馆式两步检索：先定位书架（分类号），再只在书架范围内精排。
-            # 只对 project 级记忆生效（global 记忆的分类体系是另一棵独立的树，
-            # merge_search 本身已经做了两级合并，这里不重复处理 global 侧）。
-            if getattr(self.cfg.memory, "library_shelf_search_enabled", True):
-                library = getattr(self.memory, "library", None)
-                if library is not None:
-                    try:
-                        memories = library.shelf_search(
-                            self.memory, query, k=self.cfg.memory_top_k
-                        )
-                    except Exception:
-                        memories = None
-            if not memories:
+            wiki_used = self._try_inject_wiki_search(query)
+            if not wiki_used:
+                self._inject_shelf_search_chain(query)
+
+    def _try_inject_wiki_search(self, query: str) -> bool:
+        """P4 实际切换：wiki_search 转正为主检索路径，命中则填充缓存并返回 True。
+
+        只在配置开启（`library_wiki_search_primary`，默认开）且 wiki_search
+        给出了"有依据的结果"（`grounded_page_ids` 非空——依赖 LLM 精排环节，
+        没有 llm_call 可用时这里天然拿不到，从而自动走 shelf_search 兜底）
+        时才采用；任何异常或零命中都返回 False，调用方据此走既有链路，不会
+        因为这条新路径出问题而丢失记忆注入能力。
+
+        `last_injected_memory_ids` 在这里填的是 grounded 页面的
+        `source_entries`（wiki 页面写入时保留的原始记忆条目 id），而不是
+        wiki page id 本身——`agent/reminders_correction.py` 的纠正检测 /
+        `mark_stale_from_correction()` 都是按 MemoryStore 的 entry_id 工作
+        的，保留这份"血缘"是这条新路径能接入既有纠正机制、而不需要单独
+        再实现一套"wiki 页面过时检测"的关键。
+        """
+        if not getattr(self.cfg.memory, "library_wiki_search_primary", True):
+            return False
+        library = getattr(self.memory, "library", None)
+        if library is None:
+            return False
+
+        llm_call = None
+        if self._llm_call_getter is not None:
+            try:
+                llm_call = self._llm_call_getter()
+            except Exception:
+                llm_call = None
+
+        try:
+            result = library.wiki_search(query, llm_call=llm_call)
+        except Exception:
+            return False
+
+        if not result or not result.grounded_page_ids:
+            return False
+
+        pages_by_id = {p.id: p for p in result.pages}
+        source_entries: set = set()
+        for pid in result.grounded_page_ids:
+            page = pages_by_id.get(pid)
+            if page is not None:
+                source_entries.update(getattr(page, "source_entries", None) or [])
+
+        snippet_body = result.answer.strip() if result.answer else "\n".join(
+            f"- [{pid}] {pages_by_id[pid].body[:200].strip()}"
+            for pid in result.grounded_page_ids
+            if pid in pages_by_id
+        )
+        if not snippet_body:
+            return False
+
+        self._cached_memory_snippet = f"\n\n## Relevant knowledge (wiki)\n{snippet_body}"
+        self.last_injected_memory_ids = sorted(source_entries)
+
+        # A/B 对比样本顺带记一条（wiki 侧命中；shelf 侧留给下一次 /wiki search
+        # 手动对比或未来接入自动兜底对比，这里不为了记样本而额外多跑一次
+        # shelf_search，避免给每轮 turn 都增加一次分类树检索的开销）。
+        try:
+            from mini_agent.wiki.promotion import record_search_comparison
+
+            wiki_paths = getattr(library, "_wiki_paths", None)
+            if wiki_paths is not None:
+                record_search_comparison(
+                    wiki_paths, wiki_grounded=True, shelf_grounded=False, query=query,
+                )
+        except Exception:
+            pass
+
+        return True
+
+    def _inject_shelf_search_chain(self, query: str) -> None:
+        """wiki_search 未启用或未命中时的既有检索链路（shelf_search →
+        merge_search → 全库 search），行为与切换前完全一致。"""
+        memories = None
+        # 图书馆式两步检索：先定位书架（分类号），再只在书架范围内精排。
+        # 只对 project 级记忆生效（global 记忆的分类体系是另一棵独立的树，
+        # merge_search 本身已经做了两级合并，这里不重复处理 global 侧）。
+        if getattr(self.cfg.memory, "library_shelf_search_enabled", True):
+            library = getattr(self.memory, "library", None)
+            if library is not None:
                 try:
-                    from mini_agent.perception.memory_factory import merge_search
-                    memories = merge_search(
-                        self.memory, self.global_memory, query,
-                        k=self.cfg.memory_top_k,
+                    memories = library.shelf_search(
+                        self.memory, query, k=self.cfg.memory_top_k
                     )
                 except Exception:
-                    memories = self.memory.search(query, k=self.cfg.memory_top_k)
-            if memories:
-                snippets = "\n".join(
-                    f"- [{m.session_id[:6]}] {m.summary}"
-                    for m in memories
+                    memories = None
+        if not memories:
+            try:
+                from mini_agent.perception.memory_factory import merge_search
+                memories = merge_search(
+                    self.memory, self.global_memory, query,
+                    k=self.cfg.memory_top_k,
                 )
-                self._cached_memory_snippet = (
-                    f"\n\n## Relevant past experience\n{snippets}"
-                )
-                self.last_injected_memory_ids = [
-                    m.entry_id for m in memories if getattr(m, "entry_id", None)
-                ]
-            else:
-                self.last_injected_memory_ids = []
+            except Exception:
+                memories = self.memory.search(query, k=self.cfg.memory_top_k)
+        if memories:
+            snippets = "\n".join(
+                f"- [{m.session_id[:6]}] {m.summary}"
+                for m in memories
+            )
+            self._cached_memory_snippet = (
+                f"\n\n## Relevant past experience\n{snippets}"
+            )
+            self.last_injected_memory_ids = [
+                m.entry_id for m in memories if getattr(m, "entry_id", None)
+            ]
+        else:
+            self.last_injected_memory_ids = []
 
     def clear_turn_cache(self) -> None:
         """在 run_turn 结束时调用，清理 turn 级缓存。"""

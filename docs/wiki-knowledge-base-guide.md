@@ -119,7 +119,7 @@ query
 
 `WikiSearchResult` 字段：`pages`（候选页面列表）、`answer`（综合回答，未走 LLM 精排时为空）、`grounded_page_ids`（LLM 标注的依据页面）、`stage_reached`（实际走到了哪一段，供调用方/人工判断检索质量）。
 
-**这套检索目前只是"平行实现"，不替换 `shelf_search`**：`wiki_paths=None` 或 wiki/ 下没有页面时永远返回空结果，两条路径完全独立运行，便于 A/B 对比效果后再决定是否收敛。
+**这套检索最初是"平行实现"，现在已经是默认优先路径**（wiki 式知识库改进计划 P4 §6.5）：`context_builder.py` 每轮检索优先尝试 `wiki_search`，`grounded_page_ids` 非空才采用其结果，否则退回 `shelf_search`。`wiki_paths=None`、wiki/ 下没有页面、或没有 `llm_call` 走不到 LLM 精排时，`wiki_search` 自然返回空/无 grounded 结果，退化行为与"两条路径完全独立运行"时期完全一致——只是现在默认顺序是"先试 wiki，不行再兜底 shelf"，而不是两条各自平行、由人工挑选。详见「八·2」。
 
 ## 六、专题页生成（阶段四 + P3 检索与聚合优化）
 
@@ -172,7 +172,9 @@ query
 2. **校验通过**：连续 7 天 `validator.py` 全量校验无 error 级别问题（死链/id 冲突）。
 3. **检索 A/B**：`wiki_search` 与 `shelf_search` 的 grounded 命中率对比，样本量 >= 20 条才下结论，`wiki_hit_rate >= shelf_hit_rate` 才算达标。
 
-三项标准同时满足才是 `overall_ready=True`。数据来源：`consolidate()` 每轮自动记一条每日快照（`_index/promotion_log.jsonl`），`/wiki search` 每次顺带记一条 A/B 对比样本（`_index/search_ab_log.jsonl`），两份都是可随时删除重新累积的观测记录，不是知识本身。**当前实现只到"能查询达成情况"为止，不包含任何自动切换默认检索路径的逻辑**——是否把 `library_index_enabled` 的默认路径从 `shelf_search` 切到 `wiki_search`，仍然需要人工看 `/wiki promotion` 的输出后自行决定。
+三项标准同时满足才是 `overall_ready=True`。数据来源：`consolidate()` 每轮自动记一条每日快照（`_index/promotion_log.jsonl`），`/wiki search` 每次顺带记一条 A/B 对比样本（`_index/search_ab_log.jsonl`），两份都是可随时删除重新累积的观测记录，不是知识本身。
+
+**实际切换（应用户明确要求追加执行，详见改进计划 §6.5）**：`context_builder.py::refresh_turn_context()` 现在默认（`MemoryConfig.library_wiki_search_primary = True`）优先尝试 `wiki_search`，只有拿到有依据的结果（`grounded_page_ids` 非空，需要 `llm_call` 走完 LLM 精排）才采用其输出并跳过 `shelf_search`；未命中/无可用 `llm_call`/异常时自动退回原有 `shelf_search → merge_search → 全库 search` 链路，接口行为与切换前完全一致。**这次切换是在没有任何真实 P4 观测数据的情况下执行的**，与"先持续观测达标再切"的原始设计意图不完全一致——生产使用前建议先跑 `/wiki promotion` 确认三项标准是否站得住脚，不放心可以随时把 `library_wiki_search_primary` 设为 `False` 完全退回旧默认路径，不需要改代码。
 
 ## 九、新增的落盘文件（均可重建或明确标注为持久状态）
 

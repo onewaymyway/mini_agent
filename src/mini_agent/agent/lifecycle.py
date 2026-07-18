@@ -116,6 +116,24 @@ class SessionLifecycleMixin:
             pass  # 刷新失败不影响其余字段的正常渲染
         return self._self_model.to_system_prompt_fragment()
 
+    def _context_builder_llm_call(self):
+        """供 ContextBuilder 懒取的 llm_call 封装（wiki 式知识库改进计划 P4）。
+
+        client_pool 未就绪（比如某些测试场景直接构造 Agent 而不走完整
+        __init__）时返回 None，ContextBuilder 内部据此跳过 wiki_search 的
+        LLM 精排环节，退化为规则/图扩展候选——不是错误，只是那一轮拿不到
+        grounded_page_ids，自动走既有的 shelf_search 兜底链路。
+        """
+        pool = getattr(self, "_client_pool", None)
+        if pool is None:
+            return None
+        from mini_agent.perception.memory_factory import build_llm_call
+
+        try:
+            return build_llm_call(pool.current_client)
+        except Exception:
+            return None
+
     def _init_components(self) -> None:
         """
         初始化三个拆分组件（在 __init__ 末尾调用，确保所有字段已就绪）。
@@ -147,6 +165,12 @@ class SessionLifecycleMixin:
             # 记事本：每轮读取当前 session 的记事本渲染文本（NotepadStore 内部按
             # session_id 缓存，重复实例化 AgentPaths 无实际 IO 开销）。
             notepad_getter=lambda: self._get_notepad_render_text(),
+            # wiki 式知识库改进计划 P4：wiki_search 转正为主检索路径时需要
+            # LLM 精排才能产出 grounded_page_ids（否则退化成规则/图扩展候选，
+            # 不满足"给出有依据的结果"这个判定）。懒取 client_pool.current_client，
+            # 与 cli/commands/wiki.py::_handle_search() 用同一套
+            # build_llm_call 封装，行为一致。
+            llm_call_getter=lambda: self._context_builder_llm_call(),
         )
 
         # [Notepad] 注入 project_root + session_id 懒引用，供 notepad_add/update/
