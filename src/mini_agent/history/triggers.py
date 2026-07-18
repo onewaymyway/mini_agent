@@ -31,7 +31,7 @@ import re
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Optional
 
-from mini_agent.history.entry import is_turn_boundary, is_real_user_input
+from mini_agent.history.entry import is_turn_boundary, is_real_user_input, is_compressed_placeholder
 
 if TYPE_CHECKING:
     from mini_agent.config import AppConfig
@@ -307,7 +307,7 @@ class TopicShiftTrigger(CompactTrigger):
                 priority=self.priority,
             )
 
-        confirmed, llm_detail = self._llm_confirm(prev_text, cur_text, ctx.llm_client, cfg)
+        confirmed, llm_detail = self._llm_confirm_with_context(history, cur_idx, cur_text, ctx.llm_client, cfg)
         if confirmed:
             return TriggerResult(
                 triggered=True,
@@ -357,26 +357,95 @@ class TopicShiftTrigger(CompactTrigger):
 
         return False, ""
 
+    #: LLM 二次确认时最多回看多少条"自上次 compact 以来"的用户输入，避免
+    #: 长会话里这份上下文本身过大（超出这个条数只取最近的 N 条，因为离当前
+    #: 越远的用户输入对"当前是否延续"的判断力越弱）。
+    _MAX_CONTEXT_USER_TURNS = 20
+
     @staticmethod
-    def _llm_confirm(prev_text: str, cur_text: str, llm_client, cfg) -> tuple:
-        """用一次简短 LLM 调用二次确认话题是否真的切换。失败时保守返回 False（不触发）。"""
+    def _collect_context_since_last_compact(history: list, cur_idx: int) -> tuple:
+        """收集自上次 compact 以来的上下文：(compact 摘要文本或 None, 之前各轮用户输入列表)。
+
+        "自上次 compact 以来"的边界用 active history 里最近一条压缩占位符
+        （compressed / compact_summary / session_resume）来定位——compact 发生后，
+        更早的历史会被这类占位符取代，所以占位符之后到 cur_idx 之前的所有
+        turn 边界消息，就是"上次 compact 之后到目前为止"的完整用户输入序列。
+        若本次会话还没发生过 compact，则占位符不存在，直接从 history 开头算起
+        （语义上等价于"自会话开始以来"）。
+        """
+        start_idx = 0
+        summary_text = None
+        for i in range(cur_idx - 1, -1, -1):
+            if is_compressed_placeholder(history[i]):
+                summary_text = _extract_text(history[i])
+                start_idx = i + 1
+                break
+
+        user_texts = []
+        for i in range(start_idx, cur_idx):
+            if is_turn_boundary(history[i]):
+                t = _extract_text(history[i])
+                if t:
+                    user_texts.append(t)
+
+        if len(user_texts) > TopicShiftTrigger._MAX_CONTEXT_USER_TURNS:
+            user_texts = user_texts[-TopicShiftTrigger._MAX_CONTEXT_USER_TURNS:]
+
+        return summary_text, user_texts
+
+    def _llm_confirm_with_context(
+        self, history: list, cur_idx: int, cur_text: str, llm_client, cfg
+    ) -> tuple:
+        """用一次 LLM 调用二次确认话题是否真的切换，判断依据是"自上次 compact
+        以来的完整用户输入历史（含 compact 摘要）"，而不只是"上一轮输入"。
+
+        只看相邻两轮容易漏判"中途绕了个弯子、又绕回同一个任务"这类情况：
+        比如上一轮在问 CI 配置细节，当前轮回到最初的大任务上——两者字面差异
+        很大，但结合更早的用户输入（甚至 compact 摘要里记录的任务背景）看，
+        其实一直是同一件事的延续。
+        """
+        summary_text, user_texts = self._collect_context_since_last_compact(history, cur_idx)
+        return self._llm_confirm(summary_text, user_texts, cur_text, llm_client, cfg)
+
+    @staticmethod
+    def _llm_confirm(summary_text, user_texts: list, cur_text: str, llm_client, cfg) -> tuple:
+        """用一次简短 LLM 调用二次确认话题是否真的切换。失败时保守返回 False（不触发）。
+
+        参数：
+          summary_text — 上次 compact 产生的摘要文本（没有发生过 compact 则为 None），
+                          代表"当前正在进行的任务/话题"的背景。
+          user_texts   — 自上次 compact 以来、当前这一轮之前的所有用户输入（按时间顺序），
+                          不含当前这一轮。
+          cur_text     — 当前这一轮用户输入。
+        """
         try:
-            # 提供比单纯"上一句"更宽的窗口：小模型只看最近一句话时，很容易把
-            # "继续处理同一个任务，但换了个说法/带了新的具体要求"误判为切换。
-            # 把两句的截断长度适当放宽，并在 prompt 里显式提醒：只要是同一个
-            # 任务/项目/问题下的后续步骤、补充要求、追问细节，都算延续，不算切换。
+            context_lines = []
+            if summary_text:
+                context_lines.append(f"【此前任务背景（compact 摘要）】\n{summary_text[:800]}")
+            if user_texts:
+                # 只保留最近几轮的原文用于判断，过早的轮次仅通过 compact 摘要体现，
+                # 避免 prompt 本身过长；每条截断到合理长度防止单条超长消息占满预算。
+                recent = user_texts[-8:]
+                numbered = "\n".join(
+                    f"  {i + 1}. {t[:200]}" for i, t in enumerate(recent)
+                )
+                context_lines.append(f"【自上次 compact 以来的用户历史请求（按时间顺序）】\n{numbered}")
+
+            context_block = "\n\n".join(context_lines) if context_lines else "（无更早的上下文，这是本次会话/本轮 compact 周期内的第一个后续请求）"
+
             prompt = (
-                "判断【当前请求】是否是【上一个请求】所在任务/话题的延续。\n"
+                "判断【当前请求】是否是下面上下文所代表的任务/话题的延续。\n"
                 "以下情况都应判定为「延续」（同一话题），即使措辞、关注点或\n"
                 "具体要求发生了变化：\n"
                 "  - 继续推进同一个任务的后续步骤；\n"
                 "  - 针对同一个问题/模块/项目提出新的具体要求或修改意见；\n"
-                "  - 补充说明、追问细节、纠正之前的理解。\n"
-                "只有当当前请求明显在处理一个不相关的新任务/新项目/新话题时，\n"
-                "才判定为「切换」。\n\n"
-                "只回答一个词：yes（延续）或 no（切换）。\n\n"
-                f"上一个请求：{prev_text[:500]}\n"
-                f"当前请求：{cur_text[:500]}"
+                "  - 补充说明、追问细节、纠正之前的理解；\n"
+                "  - 中途绕开去处理了一个子问题，现在又绕回最初的任务。\n"
+                "只有当当前请求明显在处理一个和上下文完全不相关的新任务/新项目/\n"
+                "新话题时，才判定为「切换」。\n\n"
+                f"{context_block}\n\n"
+                f"【当前请求】\n{cur_text[:500]}\n\n"
+                "只回答一个词：yes（延续）或 no（切换）。"
             )
             response = llm_client.chat_with_retry(
                 messages=[{"role": "user", "content": prompt}],
