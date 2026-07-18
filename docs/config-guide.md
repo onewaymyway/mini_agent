@@ -132,7 +132,7 @@ class CompressConfig:
 | `forget_orphan_tool_results` | 压缩后是否剔除保留段中无对应 tool_use 的 tool_result |
 | `turn_count_trigger_enabled` / `max_turns_before_compact` | 距上次 compact 满 N 轮自动触发（常规维护性压缩，建议策略 `selective`） |
 | `tool_call_count_trigger_enabled` / `max_tool_calls_before_compact` | 距上次 compact 累计 N 次工具调用自动触发 |
-| `topic_shift_detection` | `"off"` 不检测；`"heuristic"` 用关键词重合度+切换语关键词，无额外 LLM 调用；`"llm"` 在 heuristic 命中后追加一次小模型调用二次确认。命中后建议策略为 `llm_summary`。两档均内置续接短语白名单（如"继续"/"continue"/"好的"等，整句匹配）和短文本豁免（当前消息关键词数 <2 时不参与重合度判断），避免短回复被误判为话题切换 |
+| `topic_shift_detection` | `"off"` 不检测；`"heuristic"` 用关键词重合度+切换语关键词，无额外 LLM 调用；`"llm"` 在 heuristic 命中后追加一次小模型调用二次确认（判断依据是自上次 compact 以来的**全部用户输入 + compact 摘要**，而不只是相邻一轮，见 [compact-design.md](compact-design.md)）。命中后建议策略为 `compact_with_skills`（与手动 `/compact` 一致）。两档均内置续接短语白名单（如"继续"/"continue"/"好的"等整句匹配，以及"继续想办法解决XXX"这类以续接词开头的长句前缀豁免）和短文本豁免（当前消息关键词数 <2 时不参与重合度判断），避免短回复被误判为话题切换 |
 | `topic_shift_keyword_overlap_threshold` | 相邻两条用户消息关键词重合度低于此值视为疑似话题切换 |
 | `redundancy_detection_enabled` / `redundancy_tool_result_ratio` | `tool_result` 消息占比超过此值时触发（历史信息冗余），建议策略 `selective` |
 | `compact_cooldown_turns` | compact 后这么多轮内，除 token 硬阈值外的其他触发器不生效，防止反复触发 |
