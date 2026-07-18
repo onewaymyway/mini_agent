@@ -329,6 +329,29 @@ class LibraryIndex:
                 self._mirror_entities_to_wiki(
                     [entity_id], note=f"⚠已标记 superseded — {reason}", source_kind="correction",
                 )
+                # wiki 提取层与组织层改进计划 O4 §7.2.2：纠正检测覆盖面从
+                # "仅 decision 页面（旧 mark_stale_from_correction 只标注
+                # 遗留 EntityStore 的 status）"扩展到"任意页面类型"——只要
+                # 这条被纠正的实体已经镜像进 wiki（load_entity_map 能解析
+                # 出对应 page_id），就用统一入口 mark_page_state() 补一次
+                # knowledge_state=superseded 标记，与旧的 EntityStore 标注
+                # 并行存在，互不冲突。镜像未开启（wiki_paths=None）或页面
+                # 不存在时静默跳过，不影响上面已经完成的旧路径标注。
+                if self._wiki_paths is not None:
+                    try:
+                        from mini_agent.wiki.migration import load_entity_map
+                        from mini_agent.wiki.lifecycle import mark_page_state
+
+                        page_id = load_entity_map(self._wiki_paths).get(entity_id)
+                        if page_id:
+                            mark_page_state(
+                                self._wiki_paths, page_id,
+                                confidence="superseded",
+                                reason=reason,
+                                validated_by="correction_check",
+                            )
+                    except Exception:
+                        pass
                 marked_entities.add(entity_id)
             append_knowledge_event(
                 self._timeline_path,

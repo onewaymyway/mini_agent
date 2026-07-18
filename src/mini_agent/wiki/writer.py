@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import os
 import tempfile
-from datetime import date
+from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Optional
 
@@ -198,6 +198,94 @@ def set_status(paths: AgentPaths, page: WikiPage, *, status: str, note: str = ""
         body=body,
         tags=page.tags,
         status=status,
+        confidence=page.confidence,
+        created=page.created,
+        updated=date.today().isoformat(),
+        links=page.strong_links(),
+        source_entries=page.source_entries,
+        extra_frontmatter=extra,
+    )
+    _atomic_write_text(page.path, text)
+    return page.path
+
+
+def update_lifecycle_fields(
+    paths: AgentPaths,
+    page: WikiPage,
+    *,
+    knowledge_state: Optional[str] = None,
+    validated_by_append: str = "",
+    note: str = "",
+) -> Path:
+    """更新知识生命周期 frontmatter 字段（wiki 提取层与组织层改进计划 O4）：
+    `knowledge_state`（fresh | stale | superseded）、`last_validated_at`、
+    `validated_by`。
+
+    字段名用 `knowledge_state` 而非原计划 §7.2.1 里设想的复用 `confidence`
+    字段——`confidence` 在 parser.py 里已经是一个 0-1 的数值型置信度分数
+    （见 render_page 的 confidence 参数），语义与"新鲜度状态机"完全不同，
+    复用会导致同名字段两种类型冲突，因此改用独立字段名，属于对原计划的
+    必要调整（详见 O4 实施记录 §2）。
+
+    只更新状态相关字段，不刷新 `updated`（与 `increment_grounded_hit_count`
+    一致：状态标记本身不是一次内容编辑），除非 note 非空——此时会在正文追加
+    一段"历史沿革"，才随之刷新 updated。
+    """
+    _core_keys = {
+        "id", "type", "tags", "status", "confidence", "created", "updated",
+        "links", "source_entries",
+    }
+    extra = {k: v for k, v in page.raw_frontmatter.items() if k not in _core_keys}
+    if knowledge_state is not None:
+        extra["knowledge_state"] = knowledge_state
+    extra["last_validated_at"] = datetime.now(timezone.utc).isoformat()
+    if validated_by_append:
+        validated_by = list(extra.get("validated_by") or [])
+        if validated_by_append not in validated_by:
+            validated_by.append(validated_by_append)
+        extra["validated_by"] = validated_by
+
+    body = page.body
+    updated = page.updated
+    if note:
+        body = body.rstrip("\n") + f"\n\n## 历史沿革\n\n{note.strip()}\n"
+        updated = date.today().isoformat()
+
+    text = render_page(
+        page_id=page.id,
+        page_type=page.type,
+        body=body,
+        tags=page.tags,
+        status=page.status,
+        confidence=page.confidence,
+        created=page.created,
+        updated=updated,
+        links=page.strong_links(),
+        source_entries=page.source_entries,
+        extra_frontmatter=extra,
+    )
+    _atomic_write_text(page.path, text)
+    return page.path
+
+
+def replace_body(paths: AgentPaths, page: WikiPage, *, body: str) -> Path:
+    """整体替换页面正文，frontmatter 保持不变（除 `updated` 刷新为今天）。
+
+    用于 O4 §7.2.3 的 fact 锚点粒度状态标记——锚点标记是正文内的一条 HTML
+    注释（`<!-- fact_id: ...; knowledge_state: ... -->`），需要整体重写正文
+    而不是走 frontmatter 更新路径。
+    """
+    _core_keys = {
+        "id", "type", "tags", "status", "confidence", "created", "updated",
+        "links", "source_entries",
+    }
+    extra = {k: v for k, v in page.raw_frontmatter.items() if k not in _core_keys}
+    text = render_page(
+        page_id=page.id,
+        page_type=page.type,
+        body=body,
+        tags=page.tags,
+        status=page.status,
         confidence=page.confidence,
         created=page.created,
         updated=date.today().isoformat(),

@@ -11,8 +11,12 @@ cli/commands/wiki.py — /wiki slash 命令（wiki式知识库重构计划阶段
                          不足时自动升级
 /wiki rebuild [--full]   手动触发一次索引重建（默认增量，--full 强制全量），
                          相当于单独拎出 consolidate() 步骤6手动跑一次
-/wiki stats              内容来源分布统计（改进计划 P0）
+/wiki stats              内容来源分布统计（改进计划 P0）+ 知识生命周期状态
+                         分布（O4）
 /wiki promotion          wiki 转正为主索引的三项标准达成情况（改进计划 P4）
+/wiki lifecycle-scan [--days N]
+                         知识生命周期巡检（改进计划 O4）：把久未验证的
+                         fresh 页面标记为 stale
 
 对应重构计划阶段四"补充 /wiki 类 CLI 命令，供人工直接浏览页面及其
 backlinks"这一条：wiki 页面本身虽然是可以直接打开的 md 文件，但
@@ -32,7 +36,7 @@ def handle_wiki_cmd(args: list[str], agent=None) -> None:
         R.print_error(
             "Usage: /wiki <page-id> | /wiki list [--type T] | "
             "/wiki search <query> [--deep] | /wiki rebuild [--full] | "
-            "/wiki stats | /wiki promotion"
+            "/wiki stats | /wiki promotion | /wiki lifecycle-scan [--days N]"
         )
         return
 
@@ -49,6 +53,8 @@ def handle_wiki_cmd(args: list[str], agent=None) -> None:
         _handle_stats(rest, agent)
     elif sub == "promotion":
         _handle_promotion(rest, agent)
+    elif sub == "lifecycle-scan":
+        _handle_lifecycle_scan(rest, agent)
     else:
         _handle_show(sub, agent)
 
@@ -280,6 +286,19 @@ def _handle_stats(rest: list[str], agent) -> None:
         "world_model/experience_success/decision 占比上升说明改进计划 P1/P2 生效[/dim]\n"
     )
 
+    # wiki 提取层与组织层改进计划 O4：知识生命周期状态分布。
+    if stats.by_knowledge_state:
+        t3b = Table(box=rbox.SIMPLE, show_header=True, header_style="bold dim", title="按 knowledge_state（生命周期状态，O4）")
+        t3b.add_column("knowledge_state")
+        t3b.add_column("count", justify="right")
+        for k, v in stats.by_knowledge_state.items():
+            t3b.add_row(k, str(v))
+        R.console.print(t3b)
+        R.console.print(
+            "[dim]stale/superseded 占比过高说明知识老化速度快于验证速度，"
+            "可用 `/wiki lifecycle-scan` 手动跑一次巡检刷新 stale 标记[/dim]\n"
+        )
+
     # wiki 提取层改进计划 E2 方案B：结构化抽取批次数量（decisions/entities/
     # facts per compact），用于观测 schema 字段顺序调整前后的抽取充分性。
     from mini_agent.wiki.stats import compute_extraction_stats
@@ -379,3 +398,38 @@ def _handle_promotion(rest: list[str], agent) -> None:
             "\n[dim]尚未同时满足三项标准，继续观测（每轮巩固循环自动记一条每日快照，"
             "/wiki search 会顺带记一条 A/B 对比样本）[/dim]\n"
         )
+
+
+def _handle_lifecycle_scan(rest: list[str], agent) -> None:
+    """/wiki lifecycle-scan [--days N] —— 知识生命周期巡检（改进计划 O4）。
+
+    手动触发一次 `wiki/lifecycle.py::stale_candidate_scan()`：把
+    `knowledge_state=fresh` 且已经超过 N 天（默认取
+    `MemoryConfig.lifecycle_stale_threshold_days`，可用 --days 临时覆盖）
+    未被验证过的页面标记为 stale。只做标记，默认不影响检索排序（是否影响
+    排序由 `MemoryConfig.lifecycle_discount_enabled` 独立控制）。
+    """
+    paths = _get_paths(agent)
+    if paths is None:
+        return
+
+    threshold_days = None
+    if "--days" in rest:
+        try:
+            threshold_days = int(rest[rest.index("--days") + 1])
+        except (ValueError, IndexError):
+            R.print_error("--days 需要一个整数参数")
+            return
+    if threshold_days is None:
+        threshold_days = 90
+        if agent is not None:
+            threshold_days = getattr(agent.cfg.memory, "lifecycle_stale_threshold_days", 90)
+
+    from mini_agent.wiki.lifecycle import stale_candidate_scan
+
+    result = stale_candidate_scan(paths, threshold_days=threshold_days)
+    R.print_success(
+        f"生命周期巡检完成：扫描 {result['scanned']} 篇，"
+        f"新标记 stale {result['marked_stale']} 篇（阈值 {threshold_days} 天）"
+    )
+

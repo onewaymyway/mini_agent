@@ -33,6 +33,7 @@ class WikiStats:
     by_type: dict = field(default_factory=dict)          # page_type -> count
     by_entity_type: dict = field(default_factory=dict)   # entity_type（仅 entity 页面）-> count
     by_source_kind: dict = field(default_factory=dict)   # source_kind -> count
+    by_knowledge_state: dict = field(default_factory=dict)  # O4：fresh/stale/superseded -> count
 
     def to_dict(self) -> dict:
         return {
@@ -40,6 +41,7 @@ class WikiStats:
             "by_type": dict(sorted(self.by_type.items())),
             "by_entity_type": dict(sorted(self.by_entity_type.items())),
             "by_source_kind": dict(sorted(self.by_source_kind.items())),
+            "by_knowledge_state": dict(sorted(self.by_knowledge_state.items())),
         }
 
 
@@ -134,6 +136,11 @@ def compute_stats(paths: AgentPaths) -> WikiStats:
 
         source_kind = str(page.raw_frontmatter.get("source_kind") or _UNKNOWN)
         stats.by_source_kind[source_kind] = stats.by_source_kind.get(source_kind, 0) + 1
+
+        # O4：未标记过的历史遗留页面视为 fresh（frontmatter 缺省语义与
+        # wiki/lifecycle.py 保持一致）。
+        knowledge_state = str(page.raw_frontmatter.get("knowledge_state") or "fresh")
+        stats.by_knowledge_state[knowledge_state] = stats.by_knowledge_state.get(knowledge_state, 0) + 1
 
     return stats
 

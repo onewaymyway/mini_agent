@@ -18,7 +18,7 @@
 | O1 | 全量扫描架构没有为增长设计分层 | 组织 | 中 | 无前置依赖，且是 E3/O2/O3 的基础设施 | **已完成**（§4.2.3分区组织除外，原计划本就不实现） |
 | O2 | 实体关系图过于扁平，缺层级/路径概念 | 组织 | 中 | 依赖 O1（分层索引） | **已完成** |
 | O3 | topic 聚类是纯事后归纳，不会动态更新已有页面 | 组织 | 中 | 依赖 O1 | **已完成** |
-| O4 | decision/experience/entity/fact 四类页面缺统一知识生命周期状态机 | 组织 | 高 | 无前置依赖，但改动面最广，建议最后做 | 待实施 |
+| O4 | decision/experience/entity/fact 四类页面缺统一知识生命周期状态机 | 组织 | 高 | 无前置依赖，但改动面最广，建议最后做 | **已完成** |
 
 **建议实施顺序**：O1 → E3 → E1 → E2 → O2 → O3 → O4
 
@@ -385,7 +385,16 @@ decision/entity/experience/fact（fact 目前依附于 entity 页面的"事实" 
 
 这导致：一条从 world_model 路径写入的 fact 被后续对话证明是错的，没有任何机制能把它标记为过时；纠正检测目前只覆盖 decision 页面来源的内容，覆盖面不完整。
 
-### 7.2 改进方案 `[设计]`
+> **实施状态：已完成**，详见 `next_doc/wiki提取层改进计划_O4实施记录.md`
+> （`wiki/lifecycle.py` 统一状态标记入口 `mark_page_state()`/`touch_validated()`/
+> `stale_candidate_scan()` + `wiki/writer.py::update_lifecycle_fields()`/
+> `replace_body()` + fact 锚点粒度状态标记（`world_writer.py` 生成
+> `<page-id>#fact-N` 锚点注释）+ `reminders_correction.py` 纠正检测覆盖面扩展
+> + `search.py` 的 `lifecycle_discount_enabled` 折扣开关（默认关闭）+
+> `/wiki stats`/`/wiki lifecycle-scan` CLI + 单测）。字段名从原计划设想的
+> 复用 `confidence` 改为独立的 `knowledge_state`，理由见实施记录 §2。
+
+### 7.2 改进方案 `[设计]`（已完成，见上方实施状态；实现细节较原计划有调整，见实施记录）
 
 #### 7.2.1 抽象统一的最小状态字段集合
 
@@ -452,12 +461,16 @@ def mark_page_state(
 | 第三批 | E2 方案 C（compact 与独立抽取路径的开关切换） | 1 天 + 观测期 | 依赖 E1 完成并观测稳定 | 机制已就位（`extract_decisions`/`extract_world_model` 开关），切换本身待观测期后人工执行 |
 | 第三批 | O2（多跳衰减图扩展） | 2 天 | 依赖 O1 | **已完成**（`wiki提取层改进计划_O2实施记录.md`） |
 | 第三批 | O3（topic 再巩固） | 2 天 | 依赖 O1 | **已完成**（`wiki提取层改进计划_O3实施记录.md`） |
-| 第四批 | O4（统一知识生命周期状态机） | 3-4 天 | 依赖 O1-O3、E1-E3 均验证稳定 | 待实施 |
+| 第四批 | O4（统一知识生命周期状态机） | 3-4 天 | 依赖 O1-O3、E1-E3 均验证稳定 | **已完成**（`wiki提取层改进计划_O4实施记录.md`） |
 
-> 当前进度：第一批（O1、E2方案B）、第二批（E3、E1）、第三批（O2、O3）已全部完成。下一项是
-> O4（统一知识生命周期状态机，依赖 O1-O3、E1-E3 均验证稳定，改动面最广，建议在前面各项
-> 跑过一段真实观测期、确认稳定后再开工）；E2 方案 C 的代码机制已经就位，剩下的是跑一段观测期、
-> 用 `extraction_trigger_log.jsonl`/`extraction_stats.jsonl` 校准数据后再决定是否切换默认开关。
+> 当前进度：第一批（O1、E2方案B）、第二批（E3、E1）、第三批（O2、O3）、第四批（O4）
+> 已全部完成。计划中列出的全部条目（O1-O4、E1-E3）均已落地；E2 方案 C 的代码机制
+> 已经就位，剩下的是跑一段观测期、用 `extraction_trigger_log.jsonl`/
+> `extraction_stats.jsonl` 校准数据后再决定是否切换默认开关（这是本计划唯一
+> 仍处于"人工决策待触发"状态的事项，其余均为已落地代码）。O4 新增的
+> `lifecycle_discount_enabled`（检索排序折扣）同样默认关闭，需要
+> `/wiki lifecycle-scan` 积累一段观测数据后再决定是否默认开启，遵循同样的
+> 执行纪律。
 
 > 每一批完成后都应该跑一段真实使用周期，用 `/wiki stats` / `/wiki promotion` 现有观测工具（以及本计划新增的 `avg_entities_per_extraction` 等指标）采集数据，确认改动方向有效后再进入下一批——这是吸取 P4 §6.5"零数据切换"教训后，本计划贯穿始终的执行纪律。
 

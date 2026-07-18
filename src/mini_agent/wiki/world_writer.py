@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import time
 from collections import defaultdict
 from dataclasses import dataclass, field
@@ -237,6 +238,28 @@ def _write_or_merge_entity(
     return WorldWriteAction("entity_created", page_id, candidate.name)
 
 
+_FACT_ANCHOR_RE = re.compile(r"<!--\s*fact_id:\s*[\w\-]+#fact-(\d+)")
+
+
+def _next_fact_anchor(body: str, page_id: str) -> str:
+    """生成本页下一个 fact 锚点 id（wiki 提取层与组织层改进计划 O4 §7.2.3）：
+    `<page_id>#fact-<n>`，n 取正文中已有锚点注释的最大序号 + 1。不为每条
+    fact 单独开物理页面，只在正文里用一行 HTML 注释标记锚点 + 状态，供
+    `wiki/lifecycle.py::mark_page_state(..., anchor=...)` 定位并原地更新。
+    """
+    nums = [int(m.group(1)) for m in _FACT_ANCHOR_RE.finditer(body)]
+    n = (max(nums) + 1) if nums else 1
+    return f"{page_id}#fact-{n}"
+
+
+def _fact_content_with_anchor(page_id: str, page_body: str, candidate: "FactCandidate") -> str:
+    anchor = _next_fact_anchor(page_body, page_id)
+    return (
+        f"<!-- fact_id: {anchor}; knowledge_state: fresh -->\n"
+        f"（confidence={candidate.confidence}）{candidate.statement}"
+    )
+
+
 def _merge_fact(
     paths: AgentPaths,
     candidate: "FactCandidate",
@@ -255,7 +278,7 @@ def _merge_fact(
         append_section(
             paths, target_page,
             heading="事实",
-            content=f"（confidence={candidate.confidence}）{candidate.statement}",
+            content=_fact_content_with_anchor(target_page.id, target_page.body, candidate),
         )
         return WorldWriteAction("fact_merged", target_page.id, candidate.statement)
 

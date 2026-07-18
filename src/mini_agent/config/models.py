@@ -160,6 +160,17 @@ class MemoryConfig:
     # 权重压过内容相关性本身；设为 0 等价于改动前的排序结果（回归保护）。
     wiki_confidence_weight: float = 0.1
 
+    # ── wiki 提取层与组织层改进计划 O4：统一知识生命周期状态机 ──────────────
+    # `wiki/lifecycle.py::stale_candidate_scan()` 的判定阈值（天）：
+    # `knowledge_state=fresh` 且 `last_validated_at`（或历史遗留页面的
+    # `created`）超过这个天数未被验证过，标记为 stale。
+    lifecycle_stale_threshold_days: int = 90
+    # 是否让 _rule_score 按 knowledge_state 打折（stale 减半、superseded
+    # 归零）。默认关闭——按 O4 §7.4 风险条款的执行纪律，先只记录状态、
+    # 观察 stale 标记比例是否合理，用真实数据校准后再决定是否默认开启，
+    # 避免重蹈 P4 §6.5"零数据切换"的覆辙。
+    lifecycle_discount_enabled: bool = False
+
 
 @dataclass
 class CompressConfig:

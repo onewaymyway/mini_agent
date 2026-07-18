@@ -88,6 +88,7 @@ def _rule_score(
     page: WikiPage,
     *,
     confidence_weight: float = _DEFAULT_CONFIDENCE_WEIGHT,
+    lifecycle_discount_enabled: bool = False,
 ) -> float:
     page_tokens = set(_tokenize(page.body[:_BODY_CHARS_FOR_SCORING]) + _tokenize(page.id))
     token_score = _jaccard(query_tokens, page_tokens)
@@ -105,7 +106,21 @@ def _rule_score(
         grounded_hit_count = 0
     confidence_score = confidence_weight * math.log(1 + max(grounded_hit_count, 0))
 
-    return _RULE_TOKEN_WEIGHT * token_score + _RULE_TAG_WEIGHT * tag_score + confidence_score
+    total = _RULE_TOKEN_WEIGHT * token_score + _RULE_TAG_WEIGHT * tag_score + confidence_score
+
+    # wiki 提取层与组织层改进计划 O4 §7.2.2：知识生命周期状态折扣——
+    # knowledge_state=stale 的页面打五折、superseded 的页面直接归零（相当于
+    # 从粗筛候选池里排除，但不物理删除，仍可被 /wiki <page-id> 直接浏览）。
+    # 默认关闭（lifecycle_discount_enabled=False 时与改动前完全一致），
+    # 需要显式开启，符合 O4 §7.4 风险条款"先只记录不影响排序"的执行纪律。
+    if lifecycle_discount_enabled:
+        state = str(page.raw_frontmatter.get("knowledge_state") or "fresh")
+        if state == "superseded":
+            return 0.0
+        if state == "stale":
+            total *= 0.5
+
+    return total
 
 
 def _rule_prefilter(
