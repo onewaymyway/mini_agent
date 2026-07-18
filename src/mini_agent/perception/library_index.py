@@ -401,16 +401,25 @@ class LibraryIndex:
              重建，刷新 _index/ 下的 graph.json / tags.json /
              backlinks.json / search_index.json，让 wiki_search() 和
              /wiki 命令能看到最新状态，不需要人工单独跑重建。
-          7. 专题页生成（wiki式知识库重构计划阶段四 + 改进计划 P3）：候选
-             来自两条并存路径——a) 某个 tag 下页面数与 frontmatter 强链接
-             密度都达标（规则）；b) 不依赖 embedding、直接用同一个 llm_call
-             对规则路径没覆盖到的页面做一次语义聚类（wiki/topics.py::
-             find_topic_candidates_llm_cluster，默认开启，可通过
-             consolidate_topics(use_llm_clustering=False) 关闭）。两个
-             候选池按页面重合度去重后统一生成综合叙事
+          7. 专题页生成（wiki式知识库重构计划阶段四 + 改进计划 P3 + O3）：
+             候选来自两条并存路径——a) 某个 tag 下页面数与 frontmatter 强
+             链接密度都达标（规则）；b) 不依赖 embedding、直接用同一个
+             llm_call 对规则路径没覆盖到的页面做一次语义聚类
+             （wiki/topics.py::find_topic_candidates_llm_cluster，默认
+             开启，可通过 consolidate_topics(use_llm_clustering=False)
+             关闭）。两个候选池按页面重合度去重后统一生成综合叙事
              topics/*.md（wiki/topics.py::consolidate_topics）。只在传入
              llm_call 时生效——没有 llm_call 时两条路径都没有能力生成综合
              叙事正文，直接跳过。
+             生成新候选簇之前，每隔
+             `reconsolidation_interval_runs`（默认 5）次运行还会先做一遍
+             已有 topic 页面的"再巩固"扫描（wiki 提取层与组织层改进计划
+             O3）：把与已有 topic 关联 tag 集合重合度达标的新页面直接并入
+             该 topic 正文（追加"新增关联" section + 补充 frontmatter
+             `absorbs` 链接），而不是任其继续静态失真、或再凑一次聚类
+             阈值生成内容重叠的新专题页。事件记录进
+             wiki/_index/topics_reconsolidation_log.jsonl，供后续校准
+             扫描频率与重合度阈值。
           7b. 转正评估每日快照（wiki式知识库改进计划 P4）：记录当天的
              source_kind 目标占比与校验错误数，供 `/wiki promotion` 命令
              累积判断"wiki 转正为主索引"的三项标准是否达成，仅观测记录，

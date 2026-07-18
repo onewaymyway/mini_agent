@@ -313,6 +313,28 @@ class AgentPaths:
         shelf_search 命中率 A/B 对比日志（wiki 式知识库改进计划 P4）。"""
         return self.wiki_index_dir / "search_ab_log.jsonl"
 
+    @property
+    def wiki_topics_run_counter_path(self) -> Path:
+        """<project_root>/.agent/wiki/_index/topics_run_counter.json — topic
+
+        巩固循环运行计数（wiki 提取层与组织层改进计划 O3）：记录
+        `consolidate_topics()` 累计运行次数，用于按
+        `TopicConfig.reconsolidation_interval_runs` 控制"再巩固扫描"的
+        触发频率（不需要每次巩固循环都跑一遍全部已有 topic 页面）。
+        属于可重建的运行时计数，不是知识本身，读写失败时静默降级为
+        "本次不触发再巩固"，不影响新专题页生成这条主路径。"""
+        return self.wiki_index_dir / "topics_run_counter.json"
+
+    @property
+    def wiki_topics_reconsolidation_log_path(self) -> Path:
+        """<project_root>/.agent/wiki/_index/topics_reconsolidation_log.jsonl
+
+        topic 再巩固事件日志（wiki 提取层与组织层改进计划 O3）：每次
+        `append_to_topic_page()` 成功并入新成员时追加一条记录，供后续
+        用真实数据校准 `TopicConfig.reconsolidation_interval_runs` 与重合度
+        阈值，延续本改进计划一贯的"先观测、再调参"执行纪律。"""
+        return self.wiki_index_dir / "topics_reconsolidation_log.jsonl"
+
     def wiki_type_dir(self, page_type: str) -> Path:
         """按 type 取对应目录，type 取值见 wiki.parser.PAGE_TYPES。"""
         mapping = {

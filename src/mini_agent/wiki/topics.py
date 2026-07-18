@@ -42,7 +42,7 @@ from mini_agent.storage.paths import AgentPaths
 from mini_agent.wiki.graph import GraphIndex
 from mini_agent.wiki.indexer import discover_pages
 from mini_agent.wiki.parser import WikiPage, parse_page
-from mini_agent.wiki.writer import WikiLink, write_page
+from mini_agent.wiki.writer import WikiLink, append_section, write_page
 
 LLMCall = Callable[[str], str]
 
@@ -55,6 +55,11 @@ _LLM_CLUSTER_MIN_PAGES = 3        # 一簇至少要几篇页面才值得生成�
 _LLM_CLUSTER_MAX_CANDIDATE_PAGES = 80  # 单次喂给 LLM 的候选页面数上限，超出截断，避免 prompt 过长
 _LLM_CLUSTER_BODY_CHARS = 200      # 聚类阶段每篇页面摘要给 LLM 看的正文字符数（只需要够判断主题，不需要全文）
 _MERGE_OVERLAP_THRESHOLD = 0.5     # 两个候选簇的页面重合度（Jaccard）超过此值视为重复候选，只保留一个
+
+# ── 再巩固路径（wiki 提取层与组织层改进计划 O3）相关常量 ─────────────────
+_RECONSOLIDATION_OVERLAP_THRESHOLD = 0.35   # 新页面 tag 集合与既有 topic 关联 tag 集合的 Jaccard 重合度阈值
+_RECONSOLIDATION_INTERVAL_RUNS = 5          # 每隔多少次 consolidate_topics() 运行才做一次再巩固扫描
+_RECONSOLIDATION_SOFT_CAP = 8               # 单个 topic 页面累计被追加次数超过此值时标记 needs_review
 
 
 @dataclass
@@ -348,6 +353,124 @@ def generate_topic_page(
     return page_id
 
 
+def _topic_entity_tag_set(topic_page: WikiPage, pages_by_id: dict[str, WikiPage]) -> set[str]:
+    """一个 topic 页面的"关联实体集合"：自身 tag + 已吸收成员页面的 tag 并集。
+
+    topic 页面本身 tags 只有一个（生成时的 source tag/slug），真正能反映
+    "这个主题都涉及哪些概念"的是它已经 absorbs 的成员页面的 tag 集合，
+    因此把两者合并，用于和新页面做 Jaccard 重合度比较。
+    """
+    tags: set[str] = set(topic_page.tags)
+    for link in topic_page.strong_links():
+        if link.relation != "absorbs":
+            continue
+        member = pages_by_id.get(link.target)
+        if member is not None:
+            tags |= set(member.tags)
+    return tags
+
+
+def _find_topic_reconsolidation_candidates(
+    existing_topic_pages: list[WikiPage],
+    new_pages_since_last_run: list[WikiPage],
+    pages_by_id: dict[str, WikiPage],
+    *,
+    overlap_threshold: float = _RECONSOLIDATION_OVERLAP_THRESHOLD,
+) -> list[tuple[WikiPage, list[WikiPage]]]:
+    """对每个已有 topic 页面，检查其关联实体（tag）集合与新增页面集合的
+    重合度，超过阈值的新页面视为"应当并入该 topic"的候选，而不是参与
+    新一轮独立聚类。
+
+    返回 `[(topic_page, [matched_new_pages, ...]), ...]`，只包含至少命中
+    一篇新页面的 topic。重合度用 tag 集合的 Jaccard 相似度衡量——比字面
+    "frontmatter links 与新页面重合"更宽松，能覆盖 tag 相同但尚未产生
+    强链接的新页面，与 §3.2 的整体"规则优先、用 tag 做粗筛"哲学一致。
+    """
+    out: list[tuple[WikiPage, list[WikiPage]]] = []
+    for topic in existing_topic_pages:
+        topic_tags = _topic_entity_tag_set(topic, pages_by_id)
+        if not topic_tags:
+            continue
+        already_absorbed = {l.target for l in topic.strong_links() if l.relation == "absorbs"}
+        matched: list[WikiPage] = []
+        for page in new_pages_since_last_run:
+            if page.id in already_absorbed:
+                continue
+            page_tags = set(page.tags)
+            if not page_tags:
+                continue
+            union = page_tags | topic_tags
+            overlap = len(page_tags & topic_tags) / len(union) if union else 0.0
+            if overlap >= overlap_threshold:
+                matched.append(page)
+        if matched:
+            out.append((topic, matched))
+    return out
+
+
+def append_to_topic_page(
+    paths: AgentPaths,
+    topic_page: WikiPage,
+    new_pages: list[WikiPage],
+    *,
+    soft_cap: int = _RECONSOLIDATION_SOFT_CAP,
+) -> Optional[str]:
+    """把新命中的成员页面并入既有 topic 页面：追加"新增关联" section，
+    补充 frontmatter `absorbs` 链接，并维护累计追加次数。
+
+    累计追加次数超过 `soft_cap` 时在 frontmatter 写入 `needs_review: true`，
+    提示后续巩固循环/人工考虑拆分该 topic（避免话题漂移无限追加下去，
+    见改进计划 O3 §6.4 风险与兜底）。写入失败返回 None，调用方
+    （`consolidate_topics`）应当继续处理下一个候选而不是中断。
+    """
+    if not new_pages:
+        return None
+    content = "\n".join(
+        f"- [[{p.id}]]（{p.type}）：{p.body.strip().splitlines()[0][:80] if p.body.strip() else ''}"
+        for p in new_pages
+    )
+    extra_links = [
+        WikiLink(target=p.id, relation="absorbs", source="frontmatter") for p in new_pages
+    ]
+    prior_count = int(topic_page.raw_frontmatter.get("reconsolidation_count") or 0)
+    new_count = prior_count + 1
+    frontmatter_updates: dict = {"reconsolidation_count": new_count}
+    if new_count > soft_cap:
+        frontmatter_updates["needs_review"] = True
+    try:
+        append_section(
+            paths,
+            topic_page,
+            heading="新增关联",
+            content=content,
+            extra_links=extra_links,
+            extra_frontmatter_updates=frontmatter_updates,
+        )
+    except Exception:
+        return None
+    return topic_page.id
+
+
+def _load_topics_run_count(paths: AgentPaths) -> int:
+    """读取累计运行次数，读取失败（文件不存在/损坏）静默降级为 0。"""
+    try:
+        raw = json.loads(paths.wiki_topics_run_counter_path.read_text(encoding="utf-8"))
+        return int(raw.get("run_count") or 0)
+    except Exception:
+        return 0
+
+
+def _save_topics_run_count(paths: AgentPaths, run_count: int) -> None:
+    """写入累计运行次数，写入失败静默忽略——这是运行时计数，不是知识本身，
+    丢失最多导致再巩固扫描的触发节奏偏移，不影响正确性。"""
+    try:
+        path = paths.wiki_topics_run_counter_path
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps({"run_count": run_count}), encoding="utf-8")
+    except Exception:
+        pass
+
+
 def consolidate_topics(
     paths: AgentPaths,
     llm_call: Optional[LLMCall],
@@ -356,6 +479,8 @@ def consolidate_topics(
     min_density: float = _MIN_LINK_DENSITY,
     use_llm_clustering: bool = True,
     llm_cluster_min_pages: int = _LLM_CLUSTER_MIN_PAGES,
+    reconsolidation_interval_runs: int = _RECONSOLIDATION_INTERVAL_RUNS,
+    reconsolidation_overlap_threshold: float = _RECONSOLIDATION_OVERLAP_THRESHOLD,
 ) -> list[str]:
     """consolidate() 步骤 7 的入口：扫描候选、逐个生成专题页。
 
@@ -367,8 +492,21 @@ def consolidate_topics(
          `use_llm_clustering=False` 可关闭这条路径，退回纯规则行为。
     两个候选池按页面重合度去重后（`_merge_candidate_pools`）统一生成。
 
-    返回本次新生成的 page_id 列表。没有 llm_call（专题页正文依赖 LLM 综合
-    改写，规则本身只判断"值不值得生成"）或没有 wiki 页面时直接返回空列表。
+    O3：生成新候选簇**之前**，每 `reconsolidation_interval_runs` 次运行
+    先跑一遍已有 topic 页面的"再巩固"扫描（`_find_topic_reconsolidation_candidates`），
+    把与已有 topic 关联 tag 集合重合度达标的新页面并入既有 topic
+    （`append_to_topic_page`），而不是任由它们只能靠"再凑够一次新聚类阈值"
+    才被纳入、进而产生内容重叠的新 topic 页。参与再巩固的新页面从本次
+    "生成新候选簇"的候选池中剔除，避免同一批页面既被并入已有 topic、
+    又被拿去生成新 topic。
+
+    返回本次新生成的 page_id 列表（不含被再巩固并入已有 topic 的页面，
+    那部分变更只追加进既有 topic 页面正文，不产生新页面，因此不计入这个
+    返回值——调用方如需观测再巩固活动，读取
+    `paths.wiki_topics_reconsolidation_log_path` 即可）。没有 llm_call
+    （专题页正文依赖 LLM 综合改写，规则本身只判断"值不值得生成"）或没有
+    wiki 页面时直接返回空列表（再巩固扫描同样需要 llm_call 生成的既有
+    topic 页面作为基础，因此一并跳过）。
     """
     if llm_call is None or not paths.wiki_dir.exists():
         return []
@@ -386,9 +524,63 @@ def consolidate_topics(
     if not pages:
         return []
 
-    exclude = _existing_topic_source_tags(pages)
+    pages_by_id = {p.id: p for p in pages}
+
+    # ── O3 第一步：按运行计数控制频率的再巩固扫描 ──────────────────────
+    run_count = _load_topics_run_count(paths) + 1
+    _save_topics_run_count(paths, run_count)
+
+    reconsolidated_page_ids: set[str] = set()
+    if run_count % max(reconsolidation_interval_runs, 1) == 0:
+        existing_topic_pages = [p for p in pages if p.type == "topic"]
+        if existing_topic_pages:
+            already_absorbed: set[str] = set()
+            for t in existing_topic_pages:
+                already_absorbed |= {l.target for l in t.strong_links() if l.relation == "absorbs"}
+            candidate_pool = [
+                p for p in pages if p.type != "topic" and p.id not in already_absorbed
+            ]
+            try:
+                recon_matches = _find_topic_reconsolidation_candidates(
+                    existing_topic_pages,
+                    candidate_pool,
+                    pages_by_id,
+                    overlap_threshold=reconsolidation_overlap_threshold,
+                )
+            except Exception:
+                recon_matches = []
+            for topic_page, matched in recon_matches:
+                result = append_to_topic_page(paths, topic_page, matched)
+                if result is None:
+                    continue
+                ids = [p.id for p in matched]
+                reconsolidated_page_ids.update(ids)
+                try:
+                    with paths.wiki_topics_reconsolidation_log_path.open(
+                        "a", encoding="utf-8"
+                    ) as f:
+                        f.write(
+                            json.dumps(
+                                {
+                                    "topic_id": topic_page.id,
+                                    "added_page_ids": ids,
+                                    "run_count": run_count,
+                                }
+                            )
+                            + "\n"
+                        )
+                except Exception:
+                    pass
+
+    pages_for_new_candidates = (
+        [p for p in pages if p.id not in reconsolidated_page_ids]
+        if reconsolidated_page_ids
+        else pages
+    )
+
+    exclude = _existing_topic_source_tags(pages_for_new_candidates)
     rule_candidates = find_topic_candidates(
-        pages, min_pages=min_pages, min_density=min_density, exclude_tags=exclude
+        pages_for_new_candidates, min_pages=min_pages, min_density=min_density, exclude_tags=exclude
     )
 
     llm_candidates: list[TopicCandidate] = []
@@ -396,7 +588,7 @@ def consolidate_topics(
         already_covered = {pid for c in rule_candidates for pid in c.page_ids}
         try:
             llm_candidates = find_topic_candidates_llm_cluster(
-                pages,
+                pages_for_new_candidates,
                 llm_call,
                 min_pages=llm_cluster_min_pages,
                 exclude_tags=exclude,
@@ -409,7 +601,6 @@ def consolidate_topics(
     if not candidates:
         return []
 
-    pages_by_id = {p.id: p for p in pages}
     created: list[str] = []
     for cand in candidates:
         page_id = generate_topic_page(cand, pages_by_id, paths, llm_call)

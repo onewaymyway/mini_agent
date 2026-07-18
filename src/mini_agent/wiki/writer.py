@@ -209,11 +209,28 @@ def set_status(paths: AgentPaths, page: WikiPage, *, status: str, note: str = ""
     return page.path
 
 
-def append_section(paths: AgentPaths, page: WikiPage, *, heading: str, content: str) -> Path:
+def append_section(
+    paths: AgentPaths,
+    page: WikiPage,
+    *,
+    heading: str,
+    content: str,
+    extra_links: Optional[list[WikiLink]] = None,
+    extra_frontmatter_updates: Optional[dict] = None,
+) -> Path:
     """在既有页面正文末尾追加一个 section（用于"历史沿革"类追加更新）。
 
     直接操作已解析的 WikiPage.body，重新渲染整份文件后原子写回，保留原有
     frontmatter 字段（updated 会刷新为今天）。
+
+    `extra_links`（wiki 提取层与组织层改进计划 O3）：追加时顺带补充的
+    frontmatter 强链接（比如 topic 页面吸收新成员时补充 `absorbs` 关系），
+    与既有 `page.strong_links()` 按 target 去重合并（新链接优先覆盖同
+    target 的旧记录），不传时行为与改动前完全一致。
+
+    `extra_frontmatter_updates`：追加时顺带更新/新增的非核心 frontmatter
+    字段（比如 topic 再巩固计数、`needs_review` 标记），与既有
+    `raw_frontmatter` 合并（新值覆盖同名旧值），不传时行为不变。
     """
     new_body = page.body.rstrip("\n") + f"\n\n## {heading}\n\n{content.strip()}\n"
     _core_keys = {
@@ -221,6 +238,16 @@ def append_section(paths: AgentPaths, page: WikiPage, *, heading: str, content: 
         "links", "source_entries",
     }
     extra = {k: v for k, v in page.raw_frontmatter.items() if k not in _core_keys}
+    if extra_frontmatter_updates:
+        extra.update(extra_frontmatter_updates)
+
+    links = list(page.strong_links())
+    if extra_links:
+        by_target = {l.target: l for l in links}
+        for l in extra_links:
+            by_target[l.target] = l
+        links = list(by_target.values())
+
     text = render_page(
         page_id=page.id,
         page_type=page.type,
@@ -230,7 +257,7 @@ def append_section(paths: AgentPaths, page: WikiPage, *, heading: str, content: 
         confidence=page.confidence,
         created=page.created,
         updated=date.today().isoformat(),
-        links=page.strong_links(),
+        links=links,
         source_entries=page.source_entries,
         extra_frontmatter=extra,
     )
