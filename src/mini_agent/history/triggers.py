@@ -269,6 +269,14 @@ class TopicShiftTrigger(CompactTrigger):
 
     def should_trigger(self, ctx: TriggerContext, cfg: "AppConfig") -> TriggerResult:
         history = ctx.history
+        # 门槛：token 占用率过低时，历史本来就短，压缩收益很小（甚至可能"越压越大"，
+        # 因为摘要本身也要占 token），还会白白多花一次 LLM 二次确认调用，不值得。
+        # 仅当 ctx.budget_pct 是有效估算值（>0，即 token 占用率估算功能已开启）时才生效；
+        # 未开启估算（budget_pct 恒为 0）时没有可靠信号，不做该项过滤，保留旧行为。
+        min_budget = cfg.compress.topic_shift_min_budget_pct
+        if min_budget > 0 and ctx.budget_pct > 0 and ctx.budget_pct < min_budget:
+            return _NOT_TRIGGERED
+
         user_indices = [i for i, m in enumerate(history) if is_turn_boundary(m)]
         if len(user_indices) < 2:
             return _NOT_TRIGGERED

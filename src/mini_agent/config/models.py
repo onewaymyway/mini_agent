@@ -205,6 +205,11 @@ class CompressConfig:
     #   llm       —— 启发式命中疑似切换后，再用一次小模型调用做二次确认
     topic_shift_detection: str = "off"
     topic_shift_keyword_overlap_threshold: float = 0.15  # 关键词重合度低于此值视为疑似切换
+    # 话题切换触发的最低 token 占用率门槛：低于此值时即使检测到话题切换也不触发
+    # compact（历史本来就很短，压缩收益很小，且可能白白消耗一次 LLM 二次确认调用）。
+    # 设为 0 表示不设门槛（旧行为）。仅当 ctx.budget_pct 有效估算（>0）时才生效，
+    # 未启用 token 占用率估算的场景不受此项影响。
+    topic_shift_min_budget_pct: float = 0.2
 
     # 冗余信息检测：tool_result 占比过高 / 重复调用堆积
     redundancy_detection_enabled: bool = False

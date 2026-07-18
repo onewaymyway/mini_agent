@@ -323,6 +323,9 @@ def load_config(
         topic_shift_keyword_overlap_threshold=_fn(
             "compact_topic_shift_keyword_overlap_threshold", None, 0.15
         ),
+        topic_shift_min_budget_pct=_fn(
+            "compact_topic_shift_min_budget_pct", None, 0.2
+        ),
         redundancy_detection_enabled=_fb("compact_redundancy_detection_enabled", None, False),
         redundancy_tool_result_ratio=_fn("compact_redundancy_tool_result_ratio", None, 0.6),
         compact_cooldown_turns=_fn("compact_cooldown_turns", None, 3),

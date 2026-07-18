@@ -40,6 +40,14 @@ mini_agent 对话历史会随时间增长，最终超出模型上下文窗口限
 > 默认 20 条时只取最近 20 条），**并把该压缩占位符本身的摘要文本一并作为"此前任务背景"**
 > 传给 LLM，而不再只看相邻一轮。
 
+> **低 token 占用率门槛（2026-07 四次更新）**：`TopicShiftTrigger.should_trigger()` 开头
+> 新增 `cfg.compress.topic_shift_min_budget_pct`（默认 `0.2`）门槛——仅当 token 占用率
+> 估算已启用（`ctx.budget_pct > 0`）且当前占用率低于该阈值时，直接跳过本次话题切换检测
+> （heuristic 和 llm 两档都跳过，包括那次小模型二次确认调用）。起因：历史很短时即使
+> 检测到话题切换也没必要 compact——收益很小（摘要本身也要占 token，甚至可能"越压越大"），
+> 还会白白多花一次 LLM 调用。未启用 token 占用率估算的场景（`budget_pct` 恒为 0）不受
+> 此项影响，保留旧行为；设为 `0` 可关闭该门槛。
+
 所有开关**默认关闭**（`TokenThresholdTrigger` 由已有的 `compress.enabled` 控制，默认也是关闭），完全向后兼容旧行为。
 
 **触发后执行什么策略（2026-07 二次更新：默认改为复用路径 B）**：每个触发器可以给出
@@ -429,6 +437,7 @@ agent 自己运行中无法主动检索找回。新增只读、免审批工具
 | `compress.max_tool_calls_before_compact` | `50` | 距上次 compact 累计 N 次工具调用触发 |
 | `compress.topic_shift_detection` | `"off"` | `"off"` / `"heuristic"` / `"llm"` |
 | `compress.topic_shift_keyword_overlap_threshold` | `0.15` | 关键词重合度低于此值视为疑似话题切换 |
+| `compress.topic_shift_min_budget_pct` | `0.2` | token 占用率低于此值时跳过话题切换检测（仅当已启用占用率估算），设为 `0` 关闭 |
 | `compress.redundancy_detection_enabled` | `false` | 冗余检测触发器开关 |
 | `compress.redundancy_tool_result_ratio` | `0.6` | `tool_result` 占比超过此值触发 |
 | `compress.compact_cooldown_turns` | `3` | compact 后冷却轮数，期间非硬约束触发器不生效 |
