@@ -6,7 +6,13 @@
 # 本文件只描述 compact_summary 字段本身应当包含的内容，decisions[] 的字段含义
 # 见 system prompt。
 
-Please create a concise but complete summary of the conversation above, to
+Please first completely identify and populate the `decisions`, `entities`,
+and `facts` arrays described in the system prompt — read through the
+conversation specifically looking for trade-offs, entities, and factual
+statements before you start writing the summary. Only after those three
+arrays are fully populated should you write the `compact_summary` field.
+
+Then create a concise but complete summary of the conversation above, to
 be placed in the `compact_summary` field of the JSON object described in
 the system prompt. The summary will replace the full conversation history,
 so it must preserve all actionable detail:

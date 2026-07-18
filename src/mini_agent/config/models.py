@@ -149,6 +149,17 @@ class MemoryConfig:
     consolidation_enabled: bool = True       # 淘汰前是否尝试归纳（默认开，失败静默降级不影响可用性）
     consolidation_min_group_size: int = 3
 
+    # ── wiki 提取层与组织层改进计划 O1：全量扫描架构分层 ────────────────────
+    # wiki_shelf_search 是否优先复用 indexer.py 生成的 _index/ 派生索引做
+    # 规则粗筛（索引缺失/明显过期时自动退回全量 parse_page 扫描，行为不变，
+    # 只是数据来源不同）。默认开，关闭即完全等价于本次改动前的全量扫描行为。
+    wiki_index_reuse_enabled: bool = True
+    # _rule_score 里 grounded_hit_count 信度加权的系数（见 wiki/search.py::
+    # _rule_score 公式 score = 0.6*token_jaccard + 0.4*tag_jaccard +
+    # confidence_weight*log(1+grounded_hit_count)）。默认较小，避免信度
+    # 权重压过内容相关性本身；设为 0 等价于改动前的排序结果（回归保护）。
+    wiki_confidence_weight: float = 0.1
+
 
 @dataclass
 class CompressConfig:

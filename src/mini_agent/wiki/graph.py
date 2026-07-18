@@ -94,6 +94,31 @@ class GraphIndex:
                 expanded.add(e.source)
         return expanded - seed
 
+    @classmethod
+    def from_dict(cls, graph_data: dict, *, known_ids: Iterable[str]) -> "GraphIndex":
+        """从 indexer.py 落盘的 graph.json 结构（to_dict() 的逆操作）重建
+        GraphIndex，不需要重新 parse_page 全部页面（wiki 提取层与组织层
+        改进计划 O1 §4.2.1：search.py 复用已有派生索引时用它重建图，
+        反向边由正向边推导，行为与 build() 完全一致）。
+
+        known_ids 由调用方传入当前磁盘上实际存在的页面 id 集合（比如
+        wiki/index_reader.py 通过文件名 stem 得到，零解析成本），用于
+        dead_links() 等判断，不从 graph_data 本身推断（graph_data 只有
+        出边，可能引用已删除的页面）。
+        """
+        g = cls()
+        g._known_ids = set(known_ids)
+        for source, edges in graph_data.items():
+            for e in edges:
+                g.add_edge(
+                    source=source,
+                    target=e.get("target", ""),
+                    relation=e.get("relation", "mentions"),
+                    note=e.get("note", ""),
+                    strong=bool(e.get("strong", True)),
+                )
+        return g
+
     def to_dict(self) -> dict:
         """序列化为 graph.json 结构：{page_id: [{target, relation, note, strong}, ...]}"""
         return {

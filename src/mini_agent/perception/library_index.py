@@ -162,19 +162,30 @@ class LibraryIndex:
         k: int = 5,
         llm_call: Optional[Callable[[str], str]] = None,
         tags: Optional[list] = None,
+        confidence_weight: Optional[float] = None,
+        use_index: bool = True,
     ):
         """
         三段式检索（规则粗筛 → 图扩展 → LLM 精排）的入口，与 shelf_search
         并存、互不替换，供 A/B 对比新旧检索路径效果（重构计划 5.4 节 /
         阶段三）。wiki_paths 未配置（默认）或 wiki/ 下没有页面时返回一个
         空的 WikiSearchResult，调用方应据此回退到 shelf_search。
+
+        confidence_weight / use_index：wiki 提取层与组织层改进计划 O1
+        （分层索引 + 信度加权）的透传参数，对应 MemoryConfig.
+        wiki_confidence_weight / wiki_index_reuse_enabled；调用方不传时
+        使用 wiki/search.py 自身的默认值。
         """
         from mini_agent.wiki.search import WikiSearchResult, wiki_shelf_search
 
         if self._wiki_paths is None:
             return WikiSearchResult()
+        kwargs = {}
+        if confidence_weight is not None:
+            kwargs["confidence_weight"] = confidence_weight
         return wiki_shelf_search(
             self._wiki_paths, query, tags=tags, k=k, llm_call=llm_call,
+            use_index=use_index, **kwargs,
         )
 
     # ── 读取侧：两步检索 ─────────────────────────────────────────────────

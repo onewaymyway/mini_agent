@@ -12,7 +12,6 @@ no markdown code fences, no trailing commentary. The JSON object has this
 shape:
 
 {
-  "compact_summary": "<the full conversation summary, see user instructions>",
   "decisions": [
     {
       "topic": "<what was being decided>",
@@ -36,8 +35,17 @@ shape:
       "confidence": "<one of: confirmed | inferred | user_stated>",
       "related_entities": ["<entity names this fact is about, if any>"]
     }
-  ]
+  ],
+  "compact_summary": "<the full conversation summary, see user instructions>"
 }
+
+IMPORTANT — processing order: first fully identify and populate
+`decisions`, `entities`, and `facts` by carefully re-reading the
+conversation for trade-offs, entities, and factual statements; only
+after that is done, write `compact_summary`. Do not treat the
+structured fields as an afterthought to the summary — they deserve the
+same level of care as the summary text since they feed a durable
+knowledge base.
 
 `decisions` must be an empty array `[]` when the conversation segment does
 not contain a genuine trade-off between multiple concrete options — do not

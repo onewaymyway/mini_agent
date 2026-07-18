@@ -146,6 +146,41 @@ def write_page(
     return target_path
 
 
+def increment_grounded_hit_count(paths: AgentPaths, page: WikiPage) -> Path:
+    """把 `grounded_hit_count` frontmatter 字段 +1（wiki 提取层与组织层
+    改进计划 O1 §4.2.2：被 LLM 精排判定为"回答主要依据"的页面视为一次
+    隐式信度验证）。
+
+    只更新这一个字段，不改动 `updated`（这不是一次内容编辑，不应刷新
+    "最近修改时间"语义），也不追加任何正文内容。回写属于非关键路径，
+    调用方应当把异常静默吞掉（context_builder.py 调用点已经这样处理），
+    不能因为回写失败影响本轮检索结果返回。
+    """
+    _core_keys = {
+        "id", "type", "tags", "status", "confidence", "created", "updated",
+        "links", "source_entries",
+    }
+    extra = {k: v for k, v in page.raw_frontmatter.items() if k not in _core_keys}
+    current = int(extra.get("grounded_hit_count") or 0)
+    extra["grounded_hit_count"] = current + 1
+
+    text = render_page(
+        page_id=page.id,
+        page_type=page.type,
+        body=page.body,
+        tags=page.tags,
+        status=page.status,
+        confidence=page.confidence,
+        created=page.created,
+        updated=page.updated,
+        links=page.strong_links(),
+        source_entries=page.source_entries,
+        extra_frontmatter=extra,
+    )
+    _atomic_write_text(page.path, text)
+    return page.path
+
+
 def set_status(paths: AgentPaths, page: WikiPage, *, status: str, note: str = "") -> Path:
     """更新既有页面的 status 字段（如 active -> superseded），可选追加一条说明
     到"历史沿革"。用于旧 EntityStore.mark_superseded 的镜像场景。"""

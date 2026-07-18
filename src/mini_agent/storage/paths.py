@@ -225,6 +225,18 @@ class AgentPaths:
         return self.workdir_dir / "world_candidates_pending.jsonl"
 
     @property
+    def extraction_stats_log(self) -> Path:
+        """<project_root>/.agent/extraction_stats.jsonl — 每次结构化抽取批次
+        （LLMSummaryStrategy 里与 compact 同一次 LLM 输出解析出的
+        decisions/entities/facts）的数量记录（wiki 提取层改进计划 E2 方案B）。
+
+        只用于观测 schema 顺序调整（decisions/entities/facts 提到
+        compact_summary 之前）前后的抽取充分性对比，纯 append-only，
+        不参与任何决策逻辑；写入失败静默跳过，不影响 compact 主流程。
+        """
+        return self.workdir_dir / "extraction_stats.jsonl"
+
+    @property
     def wiki_processes_dir(self) -> Path:
         """<project_root>/.agent/wiki/processes/ — 流程型页面"""
         return self.wiki_dir / "processes"

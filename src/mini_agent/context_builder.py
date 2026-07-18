@@ -150,7 +150,12 @@ class ContextBuilder:
                 llm_call = None
 
         try:
-            result = library.wiki_search(query, llm_call=llm_call)
+            result = library.wiki_search(
+                query,
+                llm_call=llm_call,
+                confidence_weight=getattr(self.cfg.memory, "wiki_confidence_weight", None),
+                use_index=getattr(self.cfg.memory, "wiki_index_reuse_enabled", True),
+            )
         except Exception:
             return False
 
@@ -163,6 +168,22 @@ class ContextBuilder:
             page = pages_by_id.get(pid)
             if page is not None:
                 source_entries.update(getattr(page, "source_entries", None) or [])
+
+        # wiki 提取层与组织层改进计划 O1 §4.2.2：被 LLM 精排判定为"回答
+        # 主要依据"的页面回写 grounded_hit_count，作为一次隐式信度验证，
+        # 供下一次检索的 _rule_score 信度加权使用。非关键路径，任何异常
+        # （包括并发写冲突、磁盘不可写）都不能影响本轮检索结果的返回。
+        try:
+            from mini_agent.wiki.writer import increment_grounded_hit_count
+
+            wiki_paths = getattr(library, "_wiki_paths", None)
+            if wiki_paths is not None:
+                for pid in result.grounded_page_ids:
+                    page = pages_by_id.get(pid)
+                    if page is not None:
+                        increment_grounded_hit_count(wiki_paths, page)
+        except Exception:
+            pass
 
         snippet_body = result.answer.strip() if result.answer else "\n".join(
             f"- [{pid}] {pages_by_id[pid].body[:200].strip()}"

@@ -258,6 +258,37 @@ class SlidingWindowStrategy(CompressionStrategy):
         return f"SlidingWindowStrategy(window={self.window_turns})"
 
 
+def _log_extraction_stats(cfg, num_decisions: int, num_entities: int, num_facts: int) -> None:
+    """
+    wiki 提取层改进计划 E2 方案B：把本次结构化抽取批次（LLMSummaryStrategy 里
+    与 compact 摘要同一次 LLM 调用产出的 decisions/entities/facts 数量）
+    追加写入 paths.extraction_stats_log，供 wiki/stats.py::compute_extraction_stats
+    统计 avg_entities_per_extraction / avg_facts_per_extraction，用来对比
+    schema 字段顺序调整（decisions/entities/facts 提到 compact_summary 之前）
+    前后的抽取充分性变化。
+
+    纯观测、append-only，任何异常（路径不可写、cfg 缺 project_root 等）都
+    静默跳过，不影响 compact 主流程。
+    """
+    import json
+    import time
+    from pathlib import Path
+
+    from mini_agent.storage.paths import AgentPaths
+
+    paths = AgentPaths(Path(getattr(cfg, "project_root", None) or Path.cwd()))
+    log_path = paths.extraction_stats_log
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    record = {
+        "ts": time.time(),
+        "decisions": num_decisions,
+        "entities": num_entities,
+        "facts": num_facts,
+    }
+    with open(log_path, "a", encoding="utf-8") as f:
+        f.write(json.dumps(record, ensure_ascii=False) + "\n")
+
+
 class LLMSummaryStrategy(CompressionStrategy):
     """
     用 LLM 生成语义摘要，质量最高。
@@ -316,6 +347,15 @@ class LLMSummaryStrategy(CompressionStrategy):
                     world_extraction = parse_world_response(raw_text)
                     world_entities = world_extraction.entities
                     world_facts = world_extraction.facts
+                except Exception:
+                    pass
+
+                # wiki 提取层改进计划 E2 方案B：记录本次抽取批次的
+                # decisions/entities/facts 数量，用于观测 schema 字段顺序
+                # 调整（decisions/entities/facts 提到 compact_summary 之前）
+                # 前后的抽取充分性变化。纯观测、append-only，任何异常静默跳过。
+                try:
+                    _log_extraction_stats(cfg, len(decisions), len(world_entities), len(world_facts))
                 except Exception:
                     pass
         except Exception:

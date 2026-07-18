@@ -51,7 +51,7 @@ class _FakeLibrary:
         self.wiki_search_calls = []
         self.shelf_search_calls = 0
 
-    def wiki_search(self, query, llm_call=None, tags=None, k=5):
+    def wiki_search(self, query, llm_call=None, tags=None, k=5, confidence_weight=None, use_index=True):
         self.wiki_search_calls.append(llm_call)
         if self._wiki_exc is not None:
             raise self._wiki_exc

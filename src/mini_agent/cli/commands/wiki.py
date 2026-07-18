@@ -269,6 +269,26 @@ def _handle_stats(rest: list[str], agent) -> None:
         "world_model/experience_success/decision 占比上升说明改进计划 P1/P2 生效[/dim]\n"
     )
 
+    # wiki 提取层改进计划 E2 方案B：结构化抽取批次数量（decisions/entities/
+    # facts per compact），用于观测 schema 字段顺序调整前后的抽取充分性。
+    from mini_agent.wiki.stats import compute_extraction_stats
+
+    ex_stats = compute_extraction_stats(paths)
+    if ex_stats.total_batches:
+        t4 = Table(box=rbox.SIMPLE, show_header=True, header_style="bold dim", title="抽取批次统计（compact 附带的结构化抽取）")
+        t4.add_column("指标")
+        t4.add_column("值", justify="right")
+        t4.add_row("批次数", str(ex_stats.total_batches))
+        t4.add_row("avg_decisions_per_extraction", f"{ex_stats.avg_decisions_per_extraction:.2f}")
+        t4.add_row("avg_entities_per_extraction", f"{ex_stats.avg_entities_per_extraction:.2f}")
+        t4.add_row("avg_facts_per_extraction", f"{ex_stats.avg_facts_per_extraction:.2f}")
+        t4.add_row("两者皆空批次占比", f"{ex_stats.zero_entities_and_facts_ratio:.0%}")
+        R.console.print(t4)
+        R.console.print(
+            "[dim]E2 方案B 验收：schema 字段顺序调整（decisions/entities/facts 提前）"
+            "前后各跑约 20 次 compact，对比 avg_entities/avg_facts 是否有可观测提升[/dim]\n"
+        )
+
 
 def _handle_rebuild(rest: list[str], agent) -> None:
     paths = _get_paths(agent)
