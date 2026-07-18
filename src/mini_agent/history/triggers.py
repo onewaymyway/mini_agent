@@ -248,6 +248,21 @@ class TopicShiftTrigger(CompactTrigger):
         "new task", "on another note", "separately",
     ]
 
+    # 续接/确认类短语：本质是"继续当前话题"，即使与上一条消息关键词重合度为 0
+    # 也不应被判定为话题切换。必须是整句（去除首尾标点/空白后）完全匹配，
+    # 避免误伤"继续帮我看看另一个项目"这类真正切换话题但带了"继续"二字的句子。
+    _CONTINUATION_PHRASES = {
+        "继续", "继续吧", "继续做", "继续干", "继续弄", "继续写", "继续改",
+        "接着", "接着做", "接着写", "接着来", "接着弄", "往下", "往下走",
+        "继续执行", "go on", "go ahead", "continue", "keep going",
+        "keep going.", "proceed", "yes", "yes.", "yep", "ok", "ok.", "okay",
+        "okay.", "好的", "好", "嗯", "嗯嗯", "可以", "行", "行的", "没问题",
+    }
+
+    # 当前输入过短时，关键词重合度天然趋近 0（分母很小/分子几乎不可能命中），
+    # 不能作为话题切换信号，否则"继续"之类的短指令会被误判。
+    _MIN_KEYWORDS_FOR_OVERLAP = 2
+
     def is_enabled(self, cfg: "AppConfig") -> bool:
         return cfg.compress.topic_shift_detection in ("heuristic", "llm")
 
@@ -303,6 +318,13 @@ class TopicShiftTrigger(CompactTrigger):
     @staticmethod
     def _heuristic_check(prev_text: str, cur_text: str, overlap_threshold: float):
         """返回 (是否疑似切换, 说明文字)。"""
+        # 信号 0：续接/确认类短语白名单，直接豁免，不进入后续判断。
+        # 例如"继续"“continue”这种回复，字面上和上一条消息几乎不可能有关键词
+        # 重合，但语义上是延续当前话题，必须最先排除，优先级高于其他信号。
+        stripped = cur_text.strip().strip("。.!！~～").lower()
+        if stripped in TopicShiftTrigger._CONTINUATION_PHRASES:
+            return False, ""
+
         # 信号 1：话题切换语关键词命中
         lowered = cur_text.lower()
         for phrase in TopicShiftTrigger._SHIFT_PHRASES:
@@ -313,6 +335,10 @@ class TopicShiftTrigger(CompactTrigger):
         prev_kw = _simple_keywords(prev_text)
         cur_kw = _simple_keywords(cur_text)
         if not prev_kw or not cur_kw:
+            return False, ""
+        # 当前输入关键词过少（如短指令、确认语）时，重合度天然趋近 0，
+        # 不具备判断力，跳过该信号，避免误判。
+        if len(cur_kw) < TopicShiftTrigger._MIN_KEYWORDS_FOR_OVERLAP:
             return False, ""
         overlap = len(prev_kw & cur_kw) / max(1, len(prev_kw | cur_kw))
         if overlap < overlap_threshold:

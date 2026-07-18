@@ -95,7 +95,7 @@
   "compact_tool_call_count_trigger_enabled": true,
   "compact_max_tool_calls": 30,
 
-  "compact_topic_shift_detection": "heuristic",
+  "compact_topic_shift_detection": "llm",
   "compact_topic_shift_keyword_overlap_threshold": 0.15,
 
   "compact_redundancy_detection_enabled": true,
