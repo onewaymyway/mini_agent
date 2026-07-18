@@ -164,6 +164,7 @@ class LibraryIndex:
         tags: Optional[list] = None,
         confidence_weight: Optional[float] = None,
         use_index: bool = True,
+        deep: Optional[bool] = None,
     ):
         """
         三段式检索（规则粗筛 → 图扩展 → LLM 精排）的入口，与 shelf_search
@@ -175,6 +176,10 @@ class LibraryIndex:
         （分层索引 + 信度加权）的透传参数，对应 MemoryConfig.
         wiki_confidence_weight / wiki_index_reuse_enabled；调用方不传时
         使用 wiki/search.py 自身的默认值。
+
+        deep：O2（多跳衰减图扩展）的透传参数，`None`=按候选数量自动
+        判断，`True`=强制多跳，`False`=强制维持一跳；不传时使用
+        wiki/search.py 自身的默认值（`None`）。
         """
         from mini_agent.wiki.search import WikiSearchResult, wiki_shelf_search
 
@@ -183,6 +188,8 @@ class LibraryIndex:
         kwargs = {}
         if confidence_weight is not None:
             kwargs["confidence_weight"] = confidence_weight
+        if deep is not None:
+            kwargs["deep"] = deep
         return wiki_shelf_search(
             self._wiki_paths, query, tags=tags, k=k, llm_call=llm_call,
             use_index=use_index, **kwargs,

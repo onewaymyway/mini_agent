@@ -4,8 +4,11 @@ cli/commands/wiki.py — /wiki slash 命令（wiki式知识库重构计划阶段
 /wiki <page-id>          浏览指定页面：frontmatter 概要 + 正文 + backlinks
 /wiki list [--type T]    列出全部页面，可选按 type 过滤（entity/decision/
                          process/experience/topic）
-/wiki search <query>     三段式检索（LibraryIndex.wiki_search）的命令行
-                         封装，用于人工 A/B 对比新旧检索路径效果
+/wiki search <query> [--deep]
+                         三段式检索（LibraryIndex.wiki_search）的命令行
+                         封装，用于人工 A/B 对比新旧检索路径效果；--deep
+                         强制多跳图扩展（O2 §5.2.2），不传则规则粗筛候选
+                         不足时自动升级
 /wiki rebuild [--full]   手动触发一次索引重建（默认增量，--full 强制全量），
                          相当于单独拎出 consolidate() 步骤6手动跑一次
 /wiki stats              内容来源分布统计（改进计划 P0）
@@ -28,8 +31,8 @@ def handle_wiki_cmd(args: list[str], agent=None) -> None:
     if not args:
         R.print_error(
             "Usage: /wiki <page-id> | /wiki list [--type T] | "
-            "/wiki search <query> | /wiki rebuild [--full] | /wiki stats | "
-            "/wiki promotion"
+            "/wiki search <query> [--deep] | /wiki rebuild [--full] | "
+            "/wiki stats | /wiki promotion"
         )
         return
 
@@ -168,7 +171,15 @@ def _handle_search(rest: list[str], agent) -> None:
         R.print_error("当前没有可用的 agent 上下文")
         return
     if not rest:
-        R.print_error("用法: /wiki search <query>")
+        R.print_error("用法: /wiki search <query> [--deep]")
+        return
+
+    # wiki 提取层与组织层改进计划 O2 §5.2.2：--deep 强制多跳（max_hops=2）
+    # 图扩展，位置不限（可在 query 前后），过滤掉后剩余部分拼成 query。
+    deep = "--deep" in rest
+    rest = [tok for tok in rest if tok != "--deep"]
+    if not rest:
+        R.print_error("用法: /wiki search <query> [--deep]")
         return
     query = " ".join(rest)
 
@@ -184,7 +195,7 @@ def _handle_search(rest: list[str], agent) -> None:
 
         llm_call = lambda prompt: build_llm_call(pool.current_client)(prompt)  # noqa: E731
 
-    result = library.wiki_search(query, llm_call=llm_call)
+    result = library.wiki_search(query, llm_call=llm_call, deep=deep or None)
 
     # P4 A/B 对比：同一次 /wiki search 顺带跑一次 shelf_search，记一条命中
     # 对比日志（wiki_grounded 取三段式检索是否给出了有依据的 grounded 结果，

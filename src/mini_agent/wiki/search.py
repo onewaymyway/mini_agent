@@ -11,9 +11,14 @@ LibraryIndex.wiki_search() 暴露，两套检索并存、互不替换，供 A/B 
        top tag_top_n 篇候选。复用 wiki/indexer.py 的分词逻辑（wiki/
        dedup.py 判重也用同一套），保持粗筛口径全库一致。
     2. 图扩展（零 LLM 成本）：命中候选的 frontmatter 强链接展开一跳
-       （GraphIndex.expand(strong_only=True)），把结构化相关页面（依赖/
-       取代/因果关系）自动带入候选池——这是相对分类树检索的核心增量
-       能力，不走正文 [[..]] 弱引用，避免被泛泛的 mentions 关系稀释。
+       （GraphIndex.expand_legacy(strong_only=True)），把结构化相关页面
+       （依赖/取代/因果关系）自动带入候选池——这是相对分类树检索的核心
+       增量能力，不走正文 [[..]] 弱引用，避免被泛泛的 mentions 关系稀释。
+       规则粗筛候选数量明显不足以覆盖 rerank_top_n（或调用方显式传
+       `deep=True`）时，自动切到多跳衰减扩展（GraphIndex.expand()，
+       `max_hops=2`），把更深一层但确实相关的页面也带进来，权重随跳数
+       衰减，供第 3 步 LLM 精排参考（wiki 提取层与组织层改进计划 O2
+       §5.2.2）。
     3. LLM 精排：候选收窄到 rerank_top_n 篇后，把完整正文（不是摘要）
        交给 llm_call 排序并生成综合回答，同时要求标注"回答主要基于哪几
        篇页面"（WikiSearchResult.grounded_page_ids），供后续反馈定位到
@@ -49,12 +54,19 @@ _DEFAULT_CONFIDENCE_WEIGHT = 0.1
 
 _GROUNDED_MARKER = "基于页面:"
 
+# wiki 提取层与组织层改进计划 O2 §5.2.2：深度检索（多跳图扩展）参数。
+_DEEP_MAX_HOPS = 2
+_DEEP_DECAY = 0.5
+_DEEP_CANDIDATE_MULTIPLIER = 3  # 深度扩展候选硬上限 = rerank_top_n * 此倍数（计划 §5.4）
+
 
 @dataclass
 class WikiSearchResult:
     """三段式检索的结果。stage_reached 标注实际走到了哪一段：
     "none"（零命中）| "rule"（未传 llm_call，规则粗筛结果）|
-    "graph"（未传 llm_call，图扩展后的候选）| "llm"（走完三段）。
+    "graph"（未传 llm_call，一跳图扩展后的候选）|
+    "graph_deep"（未传 llm_call，多跳图扩展后的候选，O2 §5.2.2）|
+    "llm"（走完三段，一跳/多跳均可能）。
     """
 
     pages: list[WikiPage] = field(default_factory=list)
@@ -116,15 +128,28 @@ def _rule_prefilter(
 
 
 def _llm_rerank(
-    query: str, candidates: list[WikiPage], llm_call: LLMCall
+    query: str,
+    candidates: list[WikiPage],
+    llm_call: LLMCall,
+    *,
+    weights: Optional[dict[str, float]] = None,
 ) -> WikiSearchResult:
+    weights = weights or {}
     numbered = "\n\n".join(
-        f"[{i + 1}] id={p.id} (type={p.type}, status={p.status})\n{p.body[:1500]}"
+        f"[{i + 1}] id={p.id} (type={p.type}, status={p.status}"
+        + (
+            f", graph_relation=indirect~{weights[p.id]:.2f}"
+            if p.id in weights else ""
+        )
+        + f")\n{p.body[:1500]}"
         for i, p in enumerate(candidates)
     )
     prompt = (
         "以下是若干候选 wiki 页面（已按初步相关性粗筛），请只依据这些页面的"
-        "正文内容回答用户问题，不要编造页面中没有的信息。"
+        "正文内容回答用户问题，不要编造页面中没有的信息。部分页面标注了"
+        "`graph_relation=indirect~<权重>`，代表它是通过图谱间接关联带入的"
+        "候选（权重越低说明关系跳数越深、越不直接），排序/引用时请酌情"
+        "降低这类页面的优先级，除非其内容确实是回答问题所必需的。"
         f"回答完成后另起一行，以「{_GROUNDED_MARKER}」开头，列出你主要依据的"
         "页面 id（逗号分隔，按重要性排序）。\n\n"
         f"用户问题: {query}\n\n候选页面:\n{numbered}"
@@ -224,6 +249,7 @@ def wiki_shelf_search(
     llm_call: Optional[LLMCall] = None,
     confidence_weight: float = _DEFAULT_CONFIDENCE_WEIGHT,
     use_index: bool = True,
+    deep: Optional[bool] = None,
 ) -> WikiSearchResult:
     """三段式检索入口：规则粗筛 → 图扩展 → （可选）LLM 精排。
 
@@ -234,6 +260,13 @@ def wiki_shelf_search(
     use_index=True（默认）时优先复用 wiki/index_reader.py 加载的派生索引
     做候选粗筛；索引缺失/过期或 use_index=False 时退回全量 parse_page
     扫描（与本次改动前完全一致的行为，可用作回归对比）。
+
+    deep（wiki 提取层与组织层改进计划 O2 §5.2.2）：
+      - `None`（默认）：规则粗筛候选数不足以覆盖 `rerank_top_n` 时自动
+        切到多跳（`max_hops=2`）图扩展，否则维持一跳（行为、性能特征与
+        本次改动前完全一致）。
+      - `True`：强制多跳图扩展（对应 `/wiki search --deep`）。
+      - `False`：强制维持一跳，即使候选数量不足也不自动升级。
     """
     if not paths.wiki_dir.exists():
         return WikiSearchResult()
@@ -258,7 +291,19 @@ def wiki_shelf_search(
         return WikiSearchResult()
 
     rule_hit_ids = [p.id for p in rule_hits]
-    expanded_ids = graph.expand(rule_hit_ids, strong_only=True)
+
+    use_deep = deep if deep is not None else len(rule_hit_ids) < rerank_top_n
+    if use_deep:
+        expanded_weights = graph.expand(
+            rule_hit_ids,
+            strong_only=True,
+            max_hops=_DEEP_MAX_HOPS,
+            decay=_DEEP_DECAY,
+            max_candidates=rerank_top_n * _DEEP_CANDIDATE_MULTIPLIER,
+        )
+    else:
+        expanded_weights = {pid: 1.0 for pid in graph.expand_legacy(rule_hit_ids, strong_only=True)}
+    expanded_ids = set(expanded_weights.keys())
 
     # 惰性补解析图扩展带入的新页面（索引路径下 by_id 只包含粗筛命中的
     # 候选，图扩展新增的 id 需要按需单独 parse_page；全量扫描路径下
@@ -266,13 +311,22 @@ def wiki_shelf_search(
     for pid in expanded_ids:
         _resolve_lazy(pid, by_id, index)
 
-    # 规则命中排在前面（已按分数排序），图扩展带入的新增页面接在后面；
-    # dict.fromkeys 去重同时保序。
-    ordered_ids = list(dict.fromkeys([*rule_hit_ids, *sorted(expanded_ids)]))
+    # 规则命中排在前面（已按分数排序），图扩展带入的新增页面按权重降序
+    # 接在后面；dict.fromkeys 去重同时保序。
+    expanded_ordered = sorted(expanded_ids, key=lambda pid: -expanded_weights.get(pid, 0.0))
+    ordered_ids = list(dict.fromkeys([*rule_hit_ids, *expanded_ordered]))
     candidate_pages = [by_id[pid] for pid in ordered_ids if pid in by_id][:rerank_top_n]
 
     if llm_call is None:
-        stage = "graph" if expanded_ids else "rule"
+        if expanded_ids:
+            stage = "graph_deep" if use_deep else "graph"
+        else:
+            stage = "rule"
         return WikiSearchResult(pages=candidate_pages[:k], stage_reached=stage)
 
-    return _llm_rerank(query, candidate_pages, llm_call)
+    # 只把"确实是通过图扩展带入、且不是 1.0（一跳兼容权重）"的页面标注
+    # 权重信息，一跳模式下不改变 LLM prompt 的既有格式。
+    rerank_weights = (
+        {pid: w for pid, w in expanded_weights.items() if w < 1.0} if use_deep else {}
+    )
+    return _llm_rerank(query, candidate_pages, llm_call, weights=rerank_weights)

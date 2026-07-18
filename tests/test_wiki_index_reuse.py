@@ -64,7 +64,10 @@ def test_graph_from_dict_matches_build(paths):
 
     for pid in ("client-pool", "key-rotation-decision"):
         assert {e.target for e in built.outgoing(pid)} == {e.target for e in loaded.outgoing(pid)}
-        assert built.expand([pid], strong_only=True) == loaded.expand([pid], strong_only=True)
+        # 一跳兼容路径（O2 之前的行为，仍需与改动前完全一致）
+        assert built.expand_legacy([pid], strong_only=True) == loaded.expand_legacy([pid], strong_only=True)
+        # 多跳衰减路径（O2 新增）：build()/from_dict() 重建的图在权重上也应一致
+        assert built.expand([pid], strong_only=True, max_hops=2) == loaded.expand([pid], strong_only=True, max_hops=2)
 
 
 def test_load_index_none_when_manifest_missing(paths):
