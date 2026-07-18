@@ -97,6 +97,19 @@ def _llm_confirm_same_topic(text: str, page: WikiPage, llm_call: LLMCall) -> boo
     return reply.startswith("Y")
 
 
+def score_similarity(text: str, tags: list[str], page: WikiPage) -> float:
+    """公开的规则打分入口，供调用方对一个"已知候选" page 单独算一次相似度
+    （而不是在全部 existing_pages 里找最高分的一篇）。
+
+    用于 wiki 提取层与组织层改进计划 E3 §3.4：模型自报的
+    `reused_existing_id` 命中某个已有页面后，仍需要这一分数做校验兜底——
+    分数过低说明模型可能"过度复用"，调用方应忽略该判断，走原有的
+    find_similar_page 全量判重流程。与 find_similar_page_rules 内部用的
+    是同一套打分逻辑，只是不做排序/阈值判定，原样返回分数。
+    """
+    return _rule_score(text, tags, page)
+
+
 def find_similar_page_rules(
     text: str,
     tags: list[str],

@@ -41,6 +41,10 @@ except ImportError:  # pragma: no cover - 允许独立单测本模块
 LLMCall = Callable[[str], str]
 SOURCE_KIND = "world_model"
 _FALLBACK_PAGE_PREFIX = "session-facts-"
+# wiki 提取层与组织层改进计划 E3 §3.4：reused_existing_id 命中后的最低校验
+# 分数，低于此分数视为模型误判，忽略并退回规则判重流程（阈值取自计划原文
+# "分数过低（比如 <0.15）"的建议值）。
+_REUSED_ID_MIN_SCORE = 0.15
 
 
 @dataclass
@@ -177,19 +181,39 @@ def _write_or_merge_entity(
     existing_pages: list[WikiPage],
     llm_call: Optional[LLMCall],
 ) -> WorldWriteAction:
-    from mini_agent.wiki.dedup import find_similar_page
+    from mini_agent.wiki.dedup import find_similar_page, score_similarity
 
     text = f"{candidate.name}\n{candidate.description}"
-    match = find_similar_page(text, [candidate.entity_type], existing_pages, llm_call=llm_call)
-    if match is not None:
-        matched_page = next((p for p in existing_pages if p.id == match.page_id), None)
-        if matched_page is not None:
-            append_section(
-                paths, matched_page,
-                heading="新增认知",
-                content=candidate.description,
-            )
-            return WorldWriteAction("entity_updated", matched_page.id, candidate.name)
+
+    # wiki 提取层与组织层改进计划 E3 §3.2.2/§3.4：模型自报的
+    # reused_existing_id 优先信任，但仍用 score_similarity 校验一次分数，
+    # 分数过低（模型"过度复用"误判）则忽略，退回下面的规则判重流程——
+    # "模型优先判断 + 规则兜底"的两段式，不是纯规则判重，也不是无条件
+    # 信任模型判断。
+    matched_page: Optional[WikiPage] = None
+    match_label = candidate.name
+    if candidate.reused_existing_id:
+        reused_page = next(
+            (p for p in existing_pages if p.id == candidate.reused_existing_id), None
+        )
+        if reused_page is not None:
+            score = score_similarity(text, [candidate.entity_type], reused_page)
+            if score >= _REUSED_ID_MIN_SCORE:
+                matched_page = reused_page
+                match_label = f"reused_existing_id={candidate.reused_existing_id} score={score:.2f}"
+
+    if matched_page is None:
+        match = find_similar_page(text, [candidate.entity_type], existing_pages, llm_call=llm_call)
+        if match is not None:
+            matched_page = next((p for p in existing_pages if p.id == match.page_id), None)
+
+    if matched_page is not None:
+        append_section(
+            paths, matched_page,
+            heading="新增认知",
+            content=candidate.description,
+        )
+        return WorldWriteAction("entity_updated", matched_page.id, match_label)
 
     page_id = _slugify(candidate.name)
     body = (

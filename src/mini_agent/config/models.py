@@ -171,6 +171,14 @@ class CompressConfig:
     forget_orphan_tool_results: bool = False  # 剔除保留段中无对应 tool_use 的 tool_result
     extract_decisions: bool = True     # LLMSummaryStrategy 是否顺带提炼 decisions[] 并存入 pending 队列
                                         # （决策/取舍知识提炼计划 5.2 节；不增加额外 LLM 调用，仅解析开关）
+    # ── wiki 提取层与组织层改进计划 E3：抽取"看不到"已有知识库的反向注入 ──
+    # LLMSummaryStrategy 生成摘要/结构化抽取的 system prompt 里，是否注入一份
+    # 已有实体索引摘要（wiki/entity_digest.py::build_entity_digest_section），
+    # 供模型判断新识别的实体是否应复用已有 id（EntityCandidate.
+    # reused_existing_id）。默认开；关闭则完全退回本次改动前的"裸识别"行为。
+    entity_digest_enabled: bool = True
+    entity_digest_max_entities: int = 40  # 注入 prompt 的实体条目数上限，控制 token 开销
+
     extract_world_model: bool = True   # LLMSummaryStrategy 是否顺带提炼 entities[]/facts[] 并存入 pending
                                         # 队列（wiki 改进计划 P1：世界模型抽取，与 extract_decisions 同一次
                                         # LLM 调用里附带解析，不增加额外调用，仅解析开关）

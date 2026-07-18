@@ -321,6 +321,27 @@ class LLMSummaryStrategy(CompressionStrategy):
             {"role": "user", "content": pm.render("user/compress_summary_request")}
         ]
 
+        # wiki 提取层与组织层改进计划 E3 §3.2.2：把已有实体索引反向注入抽取
+        # system prompt，供模型判断"新识别的实体是不是已有某个实体的近义
+        # 复述"。默认开启，异常/无实体页面时静默降级为不注入任何索引段落
+        # （等同于本次改动前的行为），不影响 compact 主流程。
+        entity_digest_section = ""
+        if getattr(cfg.compress, "entity_digest_enabled", True):
+            try:
+                from pathlib import Path
+                from mini_agent.storage.paths import AgentPaths
+                from mini_agent.wiki.entity_digest import build_entity_digest_section
+
+                paths = AgentPaths(Path(getattr(cfg, "project_root", None) or Path.cwd()))
+                max_entities = getattr(cfg.compress, "entity_digest_max_entities", 40)
+                entity_digest_section = build_entity_digest_section(
+                    paths,
+                    max_entities=max_entities,
+                    relevance_hint=str(getattr(cfg, "project_root", "") or ""),
+                )
+            except Exception:
+                entity_digest_section = ""
+
         summary_text = None
         decisions = []
         world_entities = []
@@ -328,7 +349,7 @@ class LLMSummaryStrategy(CompressionStrategy):
         try:
             response = llm_client.chat_with_retry(
                 messages=summary_messages,
-                system=pm.render("system/compress_summarizer"),
+                system=pm.render("system/compress_summarizer", entity_digest_section=entity_digest_section),
                 tools=[],
                 max_retries=10
             )

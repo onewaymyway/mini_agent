@@ -26,7 +26,8 @@ shape:
       "name": "<canonical name of a person, project, module, tool, concept, or external system discussed>",
       "entity_type": "<one of: module | tool | concept | person | project | external_system>",
       "description": "<what was newly established or updated about it in this conversation segment>",
-      "related_entities": ["<other entity names this one relates to, if any>"]
+      "related_entities": ["<other entity names this one relates to, if any>"],
+      "reused_existing_id": "<if this entity matches one of the already-known entities listed below, put its id here verbatim; otherwise null>"
     }
   ],
   "facts": [
@@ -59,3 +60,4 @@ something is, how components relate, domain facts, project context, user
 preferences, external systems mentioned, etc. Both arrays may be empty
 `[]` when the segment genuinely contains nothing worth remembering beyond
 the summary — do not pad them with trivial restatements of the summary.
+{{ entity_digest_section }}

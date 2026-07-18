@@ -36,6 +36,12 @@ class EntityCandidate:
     entity_type: str = "concept"
     description: str = ""
     related_entities: list[str] = field(default_factory=list)
+    # wiki 提取层与组织层改进计划 E3 §3.2.2：模型如果判断这是抽取 prompt
+    # 注入的"当前已知实体"索引（见 wiki/entity_digest.py::build_entity_digest）
+    # 里的某一项，直接在这里填对应的已知 id，而不是重新识别成一个近义新实体。
+    # 模型自报、不保证准确，consolidate_pending() 落盘前仍要用
+    # wiki/dedup.py::score_similarity 做一次校验兜底（计划 §3.4）。
+    reused_existing_id: Optional[str] = None
 
     @property
     def is_meaningful(self) -> bool:
@@ -47,6 +53,7 @@ class EntityCandidate:
             "entity_type": self.entity_type,
             "description": self.description,
             "related_entities": list(self.related_entities),
+            "reused_existing_id": self.reused_existing_id,
         }
 
     @classmethod
@@ -54,6 +61,8 @@ class EntityCandidate:
         entity_type = str(data.get("entity_type") or "concept").strip().lower()
         if entity_type not in _VALID_ENTITY_TYPES:
             entity_type = "concept"
+        reused_existing_id = data.get("reused_existing_id")
+        reused_existing_id = str(reused_existing_id).strip() if reused_existing_id else None
         return cls(
             name=str(data.get("name") or "").strip(),
             entity_type=entity_type,
@@ -61,6 +70,7 @@ class EntityCandidate:
             related_entities=[
                 str(e) for e in (data.get("related_entities") or []) if str(e).strip()
             ],
+            reused_existing_id=reused_existing_id or None,
         )
 
 
