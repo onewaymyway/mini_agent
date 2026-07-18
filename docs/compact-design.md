@@ -45,7 +45,7 @@ mini_agent 对话历史会随时间增长，最终超出模型上下文窗口限
 | Token 阈值 | 使用 `cfg.compress.strategy`（默认 `compact_with_skills`） | 硬约束，按用户配置执行 |
 | 轮次 / 工具调用计数 | `selective` | 常规维护性压缩，逐条按价值裁剪，不需要很激进 |
 | 冗余检测 | `selective` | 只需要清理噪音（tool_result 权重低），不动用户意图部分 |
-| 话题切换 | `llm_summary` | 天然的压缩边界，最适合生成干净的"旧话题收尾摘要" |
+| 话题切换 | `compact_with_skills`（2026-07 三次更新：原为 `llm_summary`，现改为与手动 `/compact` 一致） | 天然的压缩边界，且应享有与手动 `/compact` 相同的 skill 重附与压缩质量自检 |
 
 **冷却期**：`compress.compact_cooldown_turns`（默认 3 轮）——compact 后这么多轮内，
 除 `TokenThresholdTrigger` 外的其他触发器不生效，避免短时间内被反复触发。

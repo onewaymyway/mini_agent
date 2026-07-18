@@ -233,8 +233,9 @@ class TopicShiftTrigger(CompactTrigger):
       heuristic —— 关键词重合度 + 话题切换语关键词，无额外 LLM 调用
       llm       —— heuristic 命中疑似切换后，再用一次小模型调用二次确认
 
-    话题切换是天然的压缩边界，命中后建议使用 llm_summary 策略生成
-    干净的"旧话题收尾摘要"。
+    话题切换是天然的压缩边界，命中后建议使用 compact_with_skills 策略（与手动
+    /compact 完全一致：LLM 摘要 + skill 重附 + 压缩质量事后自检），而不是轻量的
+    llm_summary 插件路径。
     """
     reason_key = "topic_shift"
     priority = 60
@@ -289,7 +290,9 @@ class TopicShiftTrigger(CompactTrigger):
                 triggered=True,
                 reason="topic_shift_heuristic",
                 message=f"启发式检测到话题切换：{heuristic_detail}",
-                suggested_strategy="llm_summary",
+                # 与手动 /compact 使用完全一致的压缩实现（LLM 摘要 + skill 重附 +
+                # 压缩质量事后自检），而不是走轻量的旧 llm_summary 插件路径。
+                suggested_strategy="compact_with_skills",
                 priority=self.priority,
             )
 
@@ -300,7 +303,7 @@ class TopicShiftTrigger(CompactTrigger):
                 triggered=True,
                 reason="topic_shift_heuristic",
                 message=f"启发式检测到话题切换（llm 档降级，无可用 llm_client）：{heuristic_detail}",
-                suggested_strategy="llm_summary",
+                suggested_strategy="compact_with_skills",
                 priority=self.priority,
             )
 
@@ -310,7 +313,7 @@ class TopicShiftTrigger(CompactTrigger):
                 triggered=True,
                 reason="topic_shift_llm",
                 message=f"LLM 确认话题切换：{llm_detail}",
-                suggested_strategy="llm_summary",
+                suggested_strategy="compact_with_skills",
                 priority=self.priority,
             )
         return _NOT_TRIGGERED
@@ -324,6 +327,14 @@ class TopicShiftTrigger(CompactTrigger):
         stripped = cur_text.strip().strip("。.!！~～").lower()
         if stripped in TopicShiftTrigger._CONTINUATION_PHRASES:
             return False, ""
+        # 信号 0b：以续接词开头的长句同样豁免。例如"继续想办法解决XXX问题"
+        # 不会整句命中白名单（后面还带了具体任务描述），但开头的"继续/接着/
+        # go on"等词已经明确表达"延续当前话题"的语义，不应仅因为后半句关键词
+        # 和上一条消息重合度低就被判定为切换。只用真正的续接动词类短语做前缀
+        # 匹配，纯确认词（yes/ok/好的等）太短太宽泛，不适合前缀豁免。
+        for _prefix in ("继续", "接着", "往下", "go on", "go ahead", "continue", "keep going", "proceed"):
+            if stripped.startswith(_prefix):
+                return False, ""
 
         # 信号 1：话题切换语关键词命中
         lowered = cur_text.lower()
@@ -350,11 +361,22 @@ class TopicShiftTrigger(CompactTrigger):
     def _llm_confirm(prev_text: str, cur_text: str, llm_client, cfg) -> tuple:
         """用一次简短 LLM 调用二次确认话题是否真的切换。失败时保守返回 False（不触发）。"""
         try:
+            # 提供比单纯"上一句"更宽的窗口：小模型只看最近一句话时，很容易把
+            # "继续处理同一个任务，但换了个说法/带了新的具体要求"误判为切换。
+            # 把两句的截断长度适当放宽，并在 prompt 里显式提醒：只要是同一个
+            # 任务/项目/问题下的后续步骤、补充要求、追问细节，都算延续，不算切换。
             prompt = (
-                "判断下面两个用户请求是否属于同一个任务/话题的延续。"
-                "只回答一个词：yes（是同一话题延续）或 no（话题已切换）。\n\n"
-                f"上一个请求：{prev_text[:300]}\n"
-                f"当前请求：{cur_text[:300]}"
+                "判断【当前请求】是否是【上一个请求】所在任务/话题的延续。\n"
+                "以下情况都应判定为「延续」（同一话题），即使措辞、关注点或\n"
+                "具体要求发生了变化：\n"
+                "  - 继续推进同一个任务的后续步骤；\n"
+                "  - 针对同一个问题/模块/项目提出新的具体要求或修改意见；\n"
+                "  - 补充说明、追问细节、纠正之前的理解。\n"
+                "只有当当前请求明显在处理一个不相关的新任务/新项目/新话题时，\n"
+                "才判定为「切换」。\n\n"
+                "只回答一个词：yes（延续）或 no（切换）。\n\n"
+                f"上一个请求：{prev_text[:500]}\n"
+                f"当前请求：{cur_text[:500]}"
             )
             response = llm_client.chat_with_retry(
                 messages=[{"role": "user", "content": prompt}],
