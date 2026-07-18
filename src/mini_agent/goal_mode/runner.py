@@ -211,6 +211,12 @@ class GoalRunner:
         self._replan_proposal: Optional[dict] = None
         self._replan_auto_applied: bool = False
 
+        # [恢复时的轮次/compact 预算追加] 详见下方 resume_state 分支：
+        # 只有从 max_rounds_exhausted 恢复时才会被赋值，其余情况保持 None，
+        # run() 里 fallback 到 self._gm_cfg 的原始上限。
+        self._max_rounds_override: Optional[int] = None
+        self._max_compacts_override: Optional[int] = None
+
         # 恢复态：从上一次中断处继续
         if resume_state is not None:
             self._round = resume_state.round
@@ -256,6 +262,29 @@ class GoalRunner:
                 self._last_proactive_compact_round = self._round
             if getattr(resume_state, "replan_proposal", None):
                 self._replan_proposal = dict(resume_state.replan_proposal)
+
+            # [BUGFIX] 恢复一个 status=="max_rounds_exhausted" 的 goal（必然是
+            # /goal resume --force，因为非 running 状态默认不允许恢复）时，
+            # self._round / self._compacts_done 会原样带回"已经耗尽"的计数，
+            # 而 run() 里的循环上限只读 self._gm_cfg.max_rounds / max_total_compacts
+            # 这两个"全局配置值"——resume 之后第一次判断
+            # `self._round < max_rounds` 就已经是 False，一轮都不会跑，立刻
+            # 又落回同一个 max_rounds_exhausted，用户表现为"resume 之后立刻
+            # 又停了"，完全没有意义。这里给它追加一整份全新预算（在原本已用
+            # 掉的基础上，再给一次 max_rounds/max_total_compacts 的量），
+            # 效果上等价于 stuck 恢复时"重置卡住计数、给一份全新恢复额度"的
+            # 处理思路——人工介入 --force 恢复本身就代表"我知道之前额度用完
+            # 了，我要它接着跑"，不追加预算的话这个操作没有意义。
+            if resume_state.status == "max_rounds_exhausted":
+                self._max_rounds_override = resume_state.round + self._gm_cfg.max_rounds
+                self._max_compacts_override = resume_state.compacts_done + self._gm_cfg.max_total_compacts
+                R.print_info(
+                    "[GoalRunner] 检测到从 max_rounds_exhausted 状态恢复，"
+                    f"已追加一份全新预算：轮次上限 {self._gm_cfg.max_rounds} → "
+                    f"{self._max_rounds_override}，compact 上限 "
+                    f"{self._gm_cfg.max_total_compacts} → {self._max_compacts_override}"
+                    "（否则恢复后会因预算已耗尽立即再次终止）。"
+                )
         else:
             self._round = 0
             self._last_feedback = ""
@@ -267,8 +296,10 @@ class GoalRunner:
         self._pin_goal_context()
         self._save_state(status="running")
 
-        max_rounds = self._gm_cfg.max_rounds
-        max_compacts = self._gm_cfg.max_total_compacts
+        # 正常从 0 开始时用全局配置；从 max_rounds_exhausted 恢复时用
+        # __init__ 里追加过的更高上限（见上方 resume_state 分支的说明）。
+        max_rounds = self._max_rounds_override or self._gm_cfg.max_rounds
+        max_compacts = self._max_compacts_override or self._gm_cfg.max_total_compacts
 
         while self._round < max_rounds:
             prompt = self._build_prompt()
