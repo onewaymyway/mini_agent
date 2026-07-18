@@ -70,6 +70,13 @@ class TriggerResult:
 
 _NOT_TRIGGERED = TriggerResult(triggered=False)
 
+#: 实际执行 compact 的最低历史条数门槛，与 agent/compaction.py::_auto_compress_history_impl()
+#: 里的 `if len(self._history) < 6: return`（静默跳过，不压缩）保持一致。
+#: 各触发器的 should_trigger() 必须复用同一个值做前置判断，否则会出现"触发器命中、
+#: 打印了触发提示，但实际压缩因历史太短被静默跳过"的诡异现象（用户看到提示却发现
+#: history 根本没变化）。
+MIN_HISTORY_FOR_COMPACT = 6
+
 
 # ════════════════════════════════════════════════════════════════════════════════
 # 抽象基类
@@ -197,7 +204,7 @@ class RedundancyTrigger(CompactTrigger):
 
     def should_trigger(self, ctx: TriggerContext, cfg: "AppConfig") -> TriggerResult:
         history = ctx.history
-        if len(history) < 6:
+        if len(history) < MIN_HISTORY_FOR_COMPACT:
             return _NOT_TRIGGERED
 
         tool_result_count = sum(
@@ -218,7 +225,7 @@ class RedundancyTrigger(CompactTrigger):
         if not self.is_enabled(cfg):
             return 0.0
         history = ctx.history
-        if len(history) < 6:
+        if len(history) < MIN_HISTORY_FOR_COMPACT:
             return 0.0
         tool_result_count = sum(
             1 for m in history if str(m.get("_type", "")) == "tool_result"
@@ -269,6 +276,14 @@ class TopicShiftTrigger(CompactTrigger):
 
     def should_trigger(self, ctx: TriggerContext, cfg: "AppConfig") -> TriggerResult:
         history = ctx.history
+        # 门槛 0：历史条数太少时，即使检测到话题切换，实际执行层
+        # （_auto_compress_history_impl）也会因为同样的 < MIN_HISTORY_FOR_COMPACT
+        # 判断而静默跳过压缩——不加这道前置判断就会出现"打印了触发提示，
+        # 但 /debug history 一看什么都没变"的诡异现象。必须最先判断，
+        # 避免后面白跑一次 heuristic 甚至 LLM 二次确认。
+        if len(history) < MIN_HISTORY_FOR_COMPACT:
+            return _NOT_TRIGGERED
+
         # 门槛：token 占用率过低时，历史本来就短，压缩收益很小（甚至可能"越压越大"，
         # 因为摘要本身也要占 token），还会白白多花一次 LLM 二次确认调用，不值得。
         # 仅当 ctx.budget_pct 是有效估算值（>0，即 token 占用率估算功能已开启）时才生效；

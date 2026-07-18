@@ -48,6 +48,17 @@ mini_agent 对话历史会随时间增长，最终超出模型上下文窗口限
 > 还会白白多花一次 LLM 调用。未启用 token 占用率估算的场景（`budget_pct` 恒为 0）不受
 > 此项影响，保留旧行为；设为 `0` 可关闭该门槛。
 
+> **触发提示与实际执行不一致的 bug 修复（2026-07 五次更新）**：`_auto_compress_history_impl()`
+> 里一直有一道 `if len(self._history) < MIN_HISTORY_FOR_COMPACT: return`（历史太短，压缩没
+> 意义，静默跳过），但此前各触发器（除 `RedundancyTrigger` 外）的 `should_trigger()` 都没有
+> 复用同一个阈值判断，导致出现过这种诡异现象：`TopicShiftTrigger` 只需要 2 条用户输入就能
+> 命中并打印 `[compact] 触发条件命中（topic_shift_llm）...`，但此时 `self._history` 总条数
+> 可能只有 5 条（< 6），实际执行层直接静默 return，用户看到"触发了"的提示，`/debug history`
+> 却发现历史根本没变化。现在把这个阈值提到 `history/triggers.py::MIN_HISTORY_FOR_COMPACT`
+> 常量（值仍为 6），`TopicShiftTrigger`、`RedundancyTrigger` 的 `should_trigger()` 都在最开始
+> 复用它，`agent/compaction.py::_auto_compress_history_impl()` 里的判断也改为引用同一个常量，
+> 三处永远保持一致，不会再出现"命中提示但静默不执行"的情况。
+
 所有开关**默认关闭**（`TokenThresholdTrigger` 由已有的 `compress.enabled` 控制，默认也是关闭），完全向后兼容旧行为。
 
 **触发后执行什么策略（2026-07 二次更新：默认改为复用路径 B）**：每个触发器可以给出

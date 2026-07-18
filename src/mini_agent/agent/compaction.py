@@ -33,6 +33,7 @@ from mini_agent.agent._helpers import (
     _term_write_lock_ctx, _NullCtx, _locked_print_info, _locked_print_warning,
     _is_tool_error, _clamp_confidence, _parse_lesson_candidates, _parse_timeline_summary,
 )
+from mini_agent.history.triggers import MIN_HISTORY_FOR_COMPACT
 
 
 class CompactionMixin:
@@ -786,7 +787,11 @@ class CompactionMixin:
             log_exception(_mini_agent_exc, where='mini_agent.agent')
             pass
 
-        if len(self._history) < 6:
+        if len(self._history) < MIN_HISTORY_FOR_COMPACT:
+            # 历史太短，压缩没有意义。这个阈值必须和 history/triggers.py 里各触发器
+            # 前置判断的阈值保持一致（同一个 MIN_HISTORY_FOR_COMPACT 常量）——否则会
+            # 出现"触发器命中、打印了触发提示，但这里静默 return 导致实际没有压缩"的
+            # 诡异现象（用户看到提示却发现 /debug history 什么都没变）。
             return
 
         _hist = getattr(self, "_hist", None)
