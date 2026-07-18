@@ -233,6 +233,41 @@ class LibraryIndex:
             return
         self.tree.record_feedback(code, useful)
 
+    # ── wiki 式知识库改进计划 P4：转正评估 ────────────────────────────────
+
+    def record_search_comparison(
+        self, *, wiki_grounded: bool, shelf_grounded: bool, query: str = ""
+    ) -> None:
+        """记一条 wiki_search vs shelf_search 的 A/B 命中对比（P4 标准 2）。
+
+        调用方通常在同一次检索请求里先后跑了 `wiki_search()` 和
+        `shelf_search()` 两条路径做人工/自动对比时调用；`wiki_paths` 未配置
+        时静默跳过（没有 wiki 就无从谈起"转正"）。
+        """
+        if self._wiki_paths is None:
+            return
+        from mini_agent.wiki.promotion import record_search_comparison as _record
+
+        _record(
+            self._wiki_paths,
+            wiki_grounded=wiki_grounded,
+            shelf_grounded=shelf_grounded,
+            query=query,
+        )
+
+    def promotion_status(self):
+        """返回 P4 三项"转正"标准的当前达成情况（`PromotionReadiness`）。
+
+        `wiki_paths` 未配置时返回一个全部指标默认值（未达标）的空结果——
+        没有 wiki 就没有转正的前提。数据来源见 `consolidate()` 步骤 7b
+        （每日快照）与 `record_search_comparison()`（A/B 对比）。
+        """
+        from mini_agent.wiki.promotion import PromotionReadiness, evaluate_promotion_readiness
+
+        if self._wiki_paths is None:
+            return PromotionReadiness()
+        return evaluate_promotion_readiness(self._wiki_paths)
+
     # ── 改进1 + 改进5：人类纠正 → 定位并标记过时知识 ─────────────────────
 
     def mark_stale_from_correction(
@@ -358,6 +393,10 @@ class LibraryIndex:
              topics/*.md（wiki/topics.py::consolidate_topics）。只在传入
              llm_call 时生效——没有 llm_call 时两条路径都没有能力生成综合
              叙事正文，直接跳过。
+          7b. 转正评估每日快照（wiki式知识库改进计划 P4）：记录当天的
+             source_kind 目标占比与校验错误数，供 `/wiki promotion` 命令
+             累积判断"wiki 转正为主索引"的三项标准是否达成，仅观测记录，
+             不触发任何索引路径切换。
         """
         # 1. 分类树生长
         candidates = load_unclassified_candidates(self._candidates_path)
@@ -492,6 +531,22 @@ class LibraryIndex:
                 topics_generated = consolidate_topics(self._wiki_paths, llm_call)
             except Exception:
                 topics_generated = []
+
+        # 7b. wiki 转正评估每日快照（wiki 式知识库改进计划 P4）：记录当天的
+        # source_kind 目标占比与校验错误数，供 /wiki promotion 命令累积判断
+        # "转正"三项标准是否达成。同一天只记一次（record_daily_snapshot 内部
+        # 幂等），复用步骤 6 已经算出的 idx_result.validation（没跑到步骤 6
+        # 时——即本轮巩固循环没有任何 wiki 写入——传 None 让函数自己算一遍）。
+        if self._wiki_paths is not None:
+            try:
+                from mini_agent.wiki.promotion import record_daily_snapshot
+
+                record_daily_snapshot(
+                    self._wiki_paths,
+                    validation=idx_result.validation if wiki_index_rebuilt else None,
+                )
+            except Exception:
+                pass
 
         return {
             "new_categories": len(new_nodes),

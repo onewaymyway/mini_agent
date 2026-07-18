@@ -67,6 +67,7 @@ source_entries: [entry_a1b2, entry_c3d4]   # 指回原始 MemoryStore 记忆，�
 | `dedup.py` | 二 | 页面相似度判断：默认规则+LLM，embedding 作为可选路径 |
 | `search.py` | 三 | 三段式检索：规则粗筛 → 图扩展 → LLM 精排 |
 | `topics.py` | 四 + P3 | 专题页生成：tag 聚类 + 强链接密度（规则）与不依赖 embedding 的 LLM 直接聚类两条路径并存，候选池合并去重后 LLM 综合聚合 |
+| `promotion.py` | P4 | wiki 转正为主索引的三项标准量化：每日快照、检索 A/B 对比日志、连续达标判断（只观测，不切换） |
 | `decision_writer.py` | 决策提炼 | 决策候选落盘：命中已有决策页则更新/推翻，命中不到才新建 |
 
 ## 四、写入侧：与图书馆式索引双写
@@ -146,19 +147,32 @@ query
 5. **wiki 镜像**：本轮重写过摘要的实体，判重后镜像/并入 wiki 页面
 6. **wiki 索引重建**：步骤 5 有任何写入时，触发 `indexer.py::build_index(incremental=True)`，刷新 `_index/` 下四个派生文件
 7. **专题页生成**：tag+链接密度（规则）与不依赖 embedding 的 LLM 直接聚类两条候选路径并存，合并去重后触发 LLM 综合聚合成 `topics/*.md`
+7b. **转正评估每日快照**（P4）：无条件记一条当日快照（同一天幂等），累积 `source_kind` 目标占比与校验错误数，供 `/wiki promotion` 判断三项转正标准
 
 返回值新增字段：`wiki_mirrored`、`wiki_dedup_merged`、`wiki_index_rebuilt`、`wiki_pages_indexed`、`wiki_topics_generated`（新生成的专题页 id 列表）。`/evolve consolidate` 报告会展示这些统计。
 
-## 八、`/wiki` CLI 命令（阶段四）
+## 八、`/wiki` CLI 命令（阶段四 + P4）
 
 | 命令 | 说明 |
 |---|---|
 | `/wiki <page-id>` | 展示指定页面的 frontmatter 概要、正文、frontmatter 强关系，以及从 `_index/backlinks.json` 读出的反向链接 |
 | `/wiki list [--type T]` | 列出全部页面，可按 `type`（entity/decision/process/experience/topic）过滤 |
-| `/wiki search <query>` | `LibraryIndex.wiki_search()` 的命令行封装，展示三段式检索走到了哪一段、综合回答、候选页面（LLM 精排标注过的打 ★），用于人工对比新旧检索路径的实际效果 |
+| `/wiki search <query>` | `LibraryIndex.wiki_search()` 的命令行封装，展示三段式检索走到了哪一段、综合回答、候选页面（LLM 精排标注过的打 ★），用于人工对比新旧检索路径的实际效果；同时顺带跑一次 `shelf_search` 并把两边"是否给出有依据的结果"记一条 A/B 对比样本，供 `/wiki promotion` 累积统计 |
 | `/wiki rebuild [--full]` | 手动触发一次索引重建（默认增量，`--full` 强制全量），相当于把 `consolidate()` 步骤 6 单独拎出来手动跑一次，并展示 `validator.py` 校验出的死链/孤儿页面问题 |
+| `/wiki stats` | 内容来源分布统计（P0），展示 `by_type`/`by_entity_type`/`by_source_kind` |
+| `/wiki promotion` | wiki 转正为主索引的三项标准（P4）当前达成情况：内容占比连续达标天数、校验无错误连续天数、检索 A/B 命中率对比，末尾给出仅供参考的一句话结论——**该命令只读、不触发任何切换动作** |
 
 `/wiki <page-id>` 找不到 backlinks 时会提示先跑 `/wiki rebuild`，而不是静默显示"无 backlinks"——backlinks 只存在于 `_index/` 里，页面本身刚写入还没重建索引时是看不到的。
+
+## 八·2、wiki 转正为主索引的评估（P4）
+
+`wiki/promotion.py` 把《wiki 式知识库改进计划》P4 定义的三条"转正"标准从文字描述变成可持续观测的量化指标：
+
+1. **内容占比**：连续 14 天，`world_model + decision + experience_success + experience_session_reflection` 四类 `source_kind` 合计占比 >= 50%（即不再是"错题本"）。
+2. **校验通过**：连续 7 天 `validator.py` 全量校验无 error 级别问题（死链/id 冲突）。
+3. **检索 A/B**：`wiki_search` 与 `shelf_search` 的 grounded 命中率对比，样本量 >= 20 条才下结论，`wiki_hit_rate >= shelf_hit_rate` 才算达标。
+
+三项标准同时满足才是 `overall_ready=True`。数据来源：`consolidate()` 每轮自动记一条每日快照（`_index/promotion_log.jsonl`），`/wiki search` 每次顺带记一条 A/B 对比样本（`_index/search_ab_log.jsonl`），两份都是可随时删除重新累积的观测记录，不是知识本身。**当前实现只到"能查询达成情况"为止，不包含任何自动切换默认检索路径的逻辑**——是否把 `library_index_enabled` 的默认路径从 `shelf_search` 切到 `wiki_search`，仍然需要人工看 `/wiki promotion` 的输出后自行决定。
 
 ## 九、新增的落盘文件（均可重建或明确标注为持久状态）
 
@@ -170,6 +184,8 @@ query
 | `_migration_map.json` | entity_id → page_id 映射 | 否——双写路径依赖的持久状态，删除会导致同一实体被重复创建新页面 |
 | `_index/graph.json` / `tags.json` / `backlinks.json` / `search_index.json` | 派生索引 | 是——`/wiki rebuild` 随时可重建 |
 | `_index/_manifest.json` | indexer 自用的增量重建状态 | 是——删除后下次退化为全量重建 |
+| `_index/promotion_log.jsonl` | P4 每日快照（占比、校验错误数） | 是——删除只是重新开始累积观测天数，不丢知识本身 |
+| `_index/search_ab_log.jsonl` | P4 检索 A/B 对比样本 | 是——删除只是重新开始累积样本，不丢知识本身 |
 | `decision_candidates_pending.jsonl`（workdir 根目录，非 wiki/ 下） | compact 提炼出的决策候选，尚未经巩固循环批量落盘 | 否——删除会丢失尚未处理的候选（不影响已落盘的 decisions/*.md），见九·2 |
 
 ## 九·2、决策/取舍知识提炼（对应《决策/取舍知识提炼计划.md》）

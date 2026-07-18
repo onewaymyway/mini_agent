@@ -1,6 +1,6 @@
 # wiki 式知识库改进计划
 
-> **执行状态（本次更新）**：P0（可观测性）、P1（世界模型抽取）、P2（经验页面落地，含自我进化正面判定与会话级正面反思两条路径）均已实现；P3（检索与聚合优化）已实现第 1 项——考虑到本项目"规则/LLM 优先、embedding 仅作可选路径"的一贯哲学（同 `wiki/dedup.py`），未采用原计划设想的 embedding 语义聚类，改为实现**不依赖 embedding、纯 LLM 聚类**的专题候选生成路径，与既有 tag+链接密度路径并存、候选池合并去重；P3 第 2 项（命名实体类型覆盖）确认无需代码改动，P1 阶段的 `EntityCandidate.entity_type` 枚举已原生支持 `person/project/external_system`。P4 保留为设计，尚未实施。各节标题旁标注了 `[已实现]` / `[未实施]`。
+> **执行状态（本次更新）**：P0（可观测性）、P1（世界模型抽取）、P2（经验页面落地，含自我进化正面判定与会话级正面反思两条路径）均已实现；P3（检索与聚合优化）已实现第 1 项——考虑到本项目"规则/LLM 优先、embedding 仅作可选路径"的一贯哲学（同 `wiki/dedup.py`），未采用原计划设想的 embedding 语义聚类，改为实现**不依赖 embedding、纯 LLM 聚类**的专题候选生成路径，与既有 tag+链接密度路径并存、候选池合并去重；P3 第 2 项（命名实体类型覆盖）确认无需代码改动，P1 阶段的 `EntityCandidate.entity_type` 枚举已原生支持 `person/project/external_system`。P4（主索引切换评估）按计划原文"暂不执行，先定指标"的定位已实现：新增 `wiki/promotion.py` 把三项转正标准从文字描述变成可持续观测、随时查询的量化指标（每日快照 + 检索 A/B 对比日志 + 连续达标判断），接入 `consolidate()` 自动记录与 `/wiki search` 自动采样，新增 `/wiki promotion` 命令展示当前达成情况；**本次改动不包含任何实际切换默认检索路径的逻辑**，`library_index_enabled` 默认检索路径仍是 `shelf_search`，是否切换仍需人工决策。各节标题旁标注了 `[已实现]` / `[未实施]`。
 
 > 背景：当前 wiki（`src/mini_agent/wiki/`）在架构上已经比较完整（parser/graph/indexer/writer/dedup/search/topics 齐全），但**内容来源单一**——现有 `entities/*.md` 几乎全部来自"纠正/编辑/反思/进化失败"这几类事件，本质上是一个"错题本"，而不是"对世界的理解"。本计划的目标不是重写架构，而是**在现有架构基础上，补齐被遗漏的输入源**，让 wiki 真正承担起记忆（发生过什么）、认知（世界里有什么、彼此什么关系）、经验（怎么做是有效的）三类职能。
 
@@ -25,7 +25,7 @@ wiki 的抽取入口目前只有两条：
 | P1 世界模型抽取 | 新增一条与"决策提炼"并列的"实体/事实/经验"抽取流程 | 3-4 天 | P0 | **已实现** |
 | P2 经验页面落地 | 让 `experience.md` 真正被写入，覆盖正面案例 | 1-2 天 | P1 | **已实现**（自我进化正面判定 + session 级正面反思两条路径均已接入） |
 | P3 检索与聚合优化 | topic 聚类降低门槛、命名实体识别增强 | 2-3 天 | P1 | **已实现**（聚类改用不依赖 embedding 的纯 LLM 聚类路径，非原计划设想的 embedding 语义聚类） |
-| P4 主索引切换评估 | 建立 wiki 替代旧图书馆模式的量化标准 | 1 天设计 + 持续观测 | P1-P3 稳定运行后 | 未实施 |
+| P4 主索引切换评估 | 建立 wiki 替代旧图书馆模式的量化标准 | 1 天设计 + 持续观测 | P1-P3 稳定运行后 | **已实现**（把标准变成可持续观测的量化指标，不含实际切换动作） |
 
 ---
 
@@ -136,15 +136,30 @@ wiki 的抽取入口目前只有两条：
 
 ---
 
-## 6. P4：wiki 转正为主索引的评估标准（暂不执行，先定指标）[未实施]
+## 6. P4：wiki 转正为主索引的评估标准（暂不执行，先定指标）[已实现]
 
-当前设计文档明确"过渡期双写、效果验证稳定前不下线旧图书馆模式"。建议提前定义"转正"的量化条件，避免长期停留在镜像层地位：
+### 6.1 实现范围说明
 
-- 连续 2 周，`/wiki stats` 显示 `world_model` + `decision` + `experience` 三类来源合计占比 ≥ 50%（即不再是"错题本"）。
-- `wiki_shelf_search`（三段式）与旧 `shelf_search`（分类树两步）做 A/B，wiki 侧 grounded 命中率不低于旧方案。
-- `validator.py` 全量校验无 error 级别问题（死链/id 冲突）持续 1 周。
+原计划明确"过渡期双写、效果验证稳定前不下线旧图书馆模式"，P4 的定位是"先定指标"而不是"先切换"。本轮实施严格遵循这个边界：**只把三条量化标准从文字描述变成可持续观测、随时查询的指标，不包含任何实际切换默认检索路径的代码**——`library_index_enabled` 的默认检索路径仍然是 `shelf_search`，`wiki_search` 依旧是平行实现，是否切换、何时切换仍然是需要人工判断的决策，不是本模块能替人做的事。
 
-满足以上三条后，评估把 `library_index_enabled` 的默认检索路径切到 wiki_search，旧图书馆模式转为只读归档。
+### 6.2 新增模块：`wiki/promotion.py`
+
+对应原计划三条标准分别实现：
+
+1. **内容占比标准**（`record_daily_snapshot` + `evaluate_promotion_readiness`）：每次 `consolidate()` 巩固循环跑完后，自动记一条当日快照（`total_pages`、`target_ratio` = world_model+decision+experience 三类 `source_kind` 合计占比、`validation_errors`），追加进 `paths.wiki_promotion_log_path`（`.agent/wiki/_index/promotion_log.jsonl`）。同一天只记一次（按日期去重，避免一天内多次巩固循环刷屏）。`evaluate_promotion_readiness()` 从最新一条记录的日期往前数连续自然日，逐天检查是否都满足 `target_ratio >= 0.5`，中断（缺记录或某天不达标）则连续计数清零重算——"持续观测都达标"是标准本身的要求，观测缺口就说明还不够稳定，不能跳过缺口继续计数。
+2. **校验标准**：同一份每日快照里的 `validation_errors` 字段复用同样的"连续自然日"判断逻辑（阈值 0 个 error），默认要求连续 7 天。`consolidate()` 步骤 6 已经跑过一次 `build_index()`（内部调用 `validator.py::validate_pages`），步骤 7b 直接复用其 `IndexResult.validation`，没有触发索引重建（本轮巩固循环没有任何 wiki 写入）时才让 `record_daily_snapshot` 自己重新跑一遍全量校验。
+3. **检索 A/B 标准**（`record_search_comparison`）：`cli/commands/wiki.py::_handle_search()`（`/wiki search`）在跑三段式检索的同时顺带跑一次 `shelf_search` 做对比，把两边"是否给出有依据的结果"（wiki 侧取 `grounded_page_ids` 是否非空，shelf 侧取候选列表是否非空）记一条进 `paths.wiki_search_ab_log_path`。样本量低于 `ab_min_samples`（默认 20）时不下结论（`ab_ok=None`），避免小样本噪声误判；达到样本量后比较两侧累计命中率，`wiki_hit_rate >= shelf_hit_rate` 才算达标。
+
+### 6.3 接线
+
+- `perception/library_index.py::consolidate()` 新增步骤 7b：无条件调用 `record_daily_snapshot()`（内部自行判断当天是否已记录），不需要调用方额外配置。
+- `LibraryIndex` 新增两个门面方法：`record_search_comparison(wiki_grounded, shelf_grounded, query="")` 与 `promotion_status() -> PromotionReadiness`，`wiki_paths` 未配置时分别静默跳过 / 返回全部未达标的空结果。
+- `cli/commands/wiki.py` 新增 `/wiki promotion` 命令，展示三项标准当前的达成情况（连续观测天数、当前占比、A/B 命中率对比），并在末尾给出"是否可以评估切换"的一句话结论——**结论仅供人工参考，命令本身不执行任何切换动作**。
+- `storage/paths.py` 新增 `wiki_promotion_log_path` / `wiki_search_ab_log_path` 两个属性，落在既有 `wiki_index_dir`（`_index/`）下——虽然语义上是"观测记录"而不是"可随时删除重建的索引"，但考虑到丢失这份日志只是"重新观测一段时间"而不是丢失知识本身，与其它派生索引放在同一目录便于整体管理。
+
+### 6.4 测试
+
+新增 `tests/test_wiki_promotion.py`（13 项）：每日快照的占比计算、同日幂等、复用外部传入的校验结果、跨天各自记录；A/B 对比记录追加；三项标准在无数据/连续达标/中间断档/样本不足/样本充足但命中率不如旧方案等场景下的判断；以及 `LibraryIndex.record_search_comparison()` / `promotion_status()` 两个门面方法的接线（含 `wiki_paths=None` 时的静默降级）。另外跑了一次手工端到端验证：构造真实 `MemoryStore` + `LibraryIndex` 调用 `consolidate()`，确认步骤 7b 在"本轮没有任何 wiki 写入、`build_index()` 未被触发"的分支下依然能正确写入每日快照。
 
 ---
 
@@ -153,6 +168,8 @@ wiki 的抽取入口目前只有两条：
 - 所有新增写入路径（`world_writer.py`、`experience_writer.py`）均遵循项目现有的"失败不阻断主流程"风格（try/except 吞掉异常），因为它们都挂在巩固循环 / `outcome_tracker.tick()` 这些非关键路径上——已在代码中落实（`consolidate_pending()` 内部逐条候选 try/except，`_write_eval_success_experience()` 整体 try/except）。
 - compact 提示词扩展后确实会增加输出 token（多两个结构化字段），`history/world_extraction.py::parse_world_response()` 与 `history/compression.py` 的接入点均做了防御性解析：JSON 解析失败、非 list、非 dict 都直接返回空结果，不影响 `compact_summary`/`decisions` 已经解析出的部分。
 - `source_kind` 字段已在 P0 阶段随 P1 一起落地，并额外修复了 `wiki/decision_writer.py` 更新分支此前会丢失该字段（及其它 extra frontmatter）的既有 bug——这是本次实施中发现的、不在原计划范围内但必须一并修复的问题，否则 P0 的统计口径会被"更新过的决策页"污染。
+- P4 的每日快照/A/B 对比记录写入失败（磁盘满、权限问题等）均静默降级（`record_daily_snapshot`/`record_search_comparison` 内部 try/except），不影响 `consolidate()` 主流程或 `/wiki search` 本身的检索结果——观测记录丢一天不算大事，但检索检索不可用就是真问题，优先级顺序不能反。
+- P4 三项标准里的"连续达标"判断严格按自然日计算，长期不运行 `consolidate()`（比如项目被搁置几周）会导致连续计数清零重新累积——这是有意为之：转正标准考察的是"持续稳定"，不应该被长期空窗期后偶然的一天达标绕过去。
 
 ---
 
@@ -168,8 +185,9 @@ wiki 的抽取入口目前只有两条：
 | source_kind=experience_session_reflection 页面数 | 0 | 验证脚本中 1 |
 | experiences/ 非空页面数 | 0 | 2（两条路径各产生 1 篇，仅验证脚本产生，真实环境需接入后持续观测） |
 | topic 页面生成数（含语义聚类路径） | — | 单测场景中：规则路径 1 篇 + LLM 聚类路径 1 篇（`test_consolidate_topics_merges_rule_and_llm_pools`），两者互不覆盖对方页面 |
-| wiki_shelf_search 命中率（对比 shelf_search） | — | 未实施（P4 前置） |
-| 既有单测回归（定向） | — | `test_outcome_tracker.py`、`test_correction_detector.py`、`test_format_correction_detector.py`、`test_session.py`、`test_session_end_reflection.py`、`test_session_end_workdir_knowledge.py`、`test_evolution_agent_profile.py`、`test_selective_compression.py` 等全部通过；新增 `test_wiki_topics_llm_cluster.py`（13 项）全部通过 |
+| wiki 转正评估三项标准的可计算性 | — | 单测场景中验证三项标准均可从日志正确算出：连续 14 天占比达标、连续 7 天校验无错误、A/B 样本不足 20 条不下结论、samples 充足后按累计命中率判定（`test_wiki_promotion.py`，13 项全部通过）；`overall_ready` 三项同时满足场景已覆盖 |
+| wiki_shelf_search 命中率（对比 shelf_search，真实分布） | — | 尚无真实样本（`/wiki search` 已接入自动采样，需接入真实项目运行后累积） |
+| 既有单测回归（定向） | — | `test_outcome_tracker.py`、`test_correction_detector.py`、`test_format_correction_detector.py`、`test_session.py`、`test_session_end_reflection.py`、`test_session_end_workdir_knowledge.py`、`test_evolution_agent_profile.py`、`test_selective_compression.py` 等全部通过；新增 `test_wiki_topics_llm_cluster.py`（13 项）、`test_wiki_promotion.py`（13 项）全部通过 |
 | 既有单测回归（全量对比） | 138 failed / 1766 passed / 12 errors（原始未修改代码，沙盒缺部分可选依赖导致的预先失败） | 138 failed / 1766 passed / 12 errors（逐条比对失败用例集合相同，无新增/无意外修复） |
 
-> 待办：接入真实项目运行后，替换上表为真实分布数据；P4 排入下一轮迭代。
+> 待办：接入真实项目运行后，替换上表为真实分布数据；P4 的三项标准需要真实累积至少 2 周的每日快照与 20+ 条检索 A/B 样本才能产出有意义的 `overall_ready` 结论，当前只验证了计算逻辑本身正确。

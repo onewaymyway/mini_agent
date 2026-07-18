@@ -264,6 +264,23 @@ class AgentPaths:
         """<project_root>/.agent/wiki/_index/search_index.json — 关键词 + 向量粗筛索引"""
         return self.wiki_index_dir / "search_index.json"
 
+    @property
+    def wiki_promotion_log_path(self) -> Path:
+        """<project_root>/.agent/wiki/_index/promotion_log.jsonl — wiki 转正评估
+
+        每日快照日志（wiki 式知识库改进计划 P4）：source_kind 占比、校验错误数，
+        用于判断是否满足"wiki 转正为主索引"的量化标准。属于可重建的观测记录，
+        不是知识本身，但需要跨日累积，因此没有放进 _migration_map.json 那种
+        单次持久状态里，而是独立开一个 jsonl 追加日志。
+        """
+        return self.wiki_index_dir / "promotion_log.jsonl"
+
+    @property
+    def wiki_search_ab_log_path(self) -> Path:
+        """<project_root>/.agent/wiki/_index/search_ab_log.jsonl — wiki_search 与
+        shelf_search 命中率 A/B 对比日志（wiki 式知识库改进计划 P4）。"""
+        return self.wiki_index_dir / "search_ab_log.jsonl"
+
     def wiki_type_dir(self, page_type: str) -> Path:
         """按 type 取对应目录，type 取值见 wiki.parser.PAGE_TYPES。"""
         mapping = {

@@ -8,6 +8,8 @@ cli/commands/wiki.py — /wiki slash 命令（wiki式知识库重构计划阶段
                          封装，用于人工 A/B 对比新旧检索路径效果
 /wiki rebuild [--full]   手动触发一次索引重建（默认增量，--full 强制全量），
                          相当于单独拎出 consolidate() 步骤6手动跑一次
+/wiki stats              内容来源分布统计（改进计划 P0）
+/wiki promotion          wiki 转正为主索引的三项标准达成情况（改进计划 P4）
 
 对应重构计划阶段四"补充 /wiki 类 CLI 命令，供人工直接浏览页面及其
 backlinks"这一条：wiki 页面本身虽然是可以直接打开的 md 文件，但
@@ -26,7 +28,8 @@ def handle_wiki_cmd(args: list[str], agent=None) -> None:
     if not args:
         R.print_error(
             "Usage: /wiki <page-id> | /wiki list [--type T] | "
-            "/wiki search <query> | /wiki rebuild [--full] | /wiki stats"
+            "/wiki search <query> | /wiki rebuild [--full] | /wiki stats | "
+            "/wiki promotion"
         )
         return
 
@@ -41,6 +44,8 @@ def handle_wiki_cmd(args: list[str], agent=None) -> None:
         _handle_rebuild(rest, agent)
     elif sub == "stats":
         _handle_stats(rest, agent)
+    elif sub == "promotion":
+        _handle_promotion(rest, agent)
     else:
         _handle_show(sub, agent)
 
@@ -180,6 +185,23 @@ def _handle_search(rest: list[str], agent) -> None:
         llm_call = lambda prompt: build_llm_call(pool.current_client)(prompt)  # noqa: E731
 
     result = library.wiki_search(query, llm_call=llm_call)
+
+    # P4 A/B 对比：同一次 /wiki search 顺带跑一次 shelf_search，记一条命中
+    # 对比日志（wiki_grounded 取三段式检索是否给出了有依据的 grounded 结果，
+    # shelf_grounded 取旧方案是否返回了任何候选）。失败静默降级，不影响本次
+    # 检索结果展示。
+    try:
+        store = getattr(agent, "_memory", None)
+        if store is not None:
+            shelf_results = library.shelf_search(store, query, llm_call=llm_call)
+            library.record_search_comparison(
+                wiki_grounded=bool(result.grounded_page_ids),
+                shelf_grounded=bool(shelf_results),
+                query=query,
+            )
+    except Exception:
+        pass
+
     if not result.pages:
         R.console.print(
             "[dim]三段式检索没有找到候选页面"
@@ -269,3 +291,60 @@ def _handle_rebuild(rest: list[str], agent) -> None:
         R.print_error(f"{len(result.parse_errors)} 个页面解析失败：")
         for err in result.parse_errors[:5]:
             R.console.print(f"  [dim]{err}[/dim]")
+
+
+def _handle_promotion(rest: list[str], agent) -> None:
+    """/wiki promotion —— wiki 转正为主索引的三项标准达成情况（改进计划 P4）。
+
+    数据来自 consolidate() 每轮巩固循环自动记的每日快照
+    （wiki/promotion.py::record_daily_snapshot）与 /wiki search 顺带记录的
+    A/B 对比（record_search_comparison）——本命令本身只读，不触发任何观测
+    记录或索引路径切换。
+    """
+    paths = _get_paths(agent)
+    if paths is None:
+        return
+
+    from mini_agent.wiki.promotion import evaluate_promotion_readiness
+
+    readiness = evaluate_promotion_readiness(paths)
+    data = readiness.to_dict()
+
+    R.console.print("\n[bold]Wiki 转正评估[/bold] [dim](改进计划 P4，三项标准)[/dim]")
+
+    ratio = data["ratio"]
+    mark1 = "[bold green]✓[/bold green]" if ratio["ok"] else "[dim]✗[/dim]"
+    R.console.print(
+        f"\n{mark1} 标准1 内容占比：连续 {ratio['days_observed']}/{ratio['days_required']} 天 "
+        f"world_model+decision+experience 占比 >= {ratio['threshold']:.0%}"
+        f"（当前 {ratio['current_ratio']:.1%}）"
+    )
+
+    val = data["validation"]
+    mark2 = "[bold green]✓[/bold green]" if val["ok"] else "[dim]✗[/dim]"
+    latest_err = val["latest_errors"]
+    err_desc = "无记录" if latest_err is None else f"{latest_err} 个"
+    R.console.print(
+        f"{mark2} 标准2 全量校验：连续 {val['days_observed']}/{val['days_required']} 天 "
+        f"无 error 级别问题（最近一次: {err_desc}）"
+    )
+
+    ab = data["search_ab"]
+    if ab["ok"] is None:
+        mark3 = "[dim]?[/dim]"
+        ab_desc = f"样本不足（{ab['sample_size']} 条，用 /wiki search 累积对比样本）"
+    else:
+        mark3 = "[bold green]✓[/bold green]" if ab["ok"] else "[dim]✗[/dim]"
+        ab_desc = (
+            f"wiki 命中率 {ab['wiki_hit_rate']:.1%} vs shelf 命中率 "
+            f"{ab['shelf_hit_rate']:.1%}（{ab['sample_size']} 条样本）"
+        )
+    R.console.print(f"{mark3} 标准3 检索 A/B：wiki_search 命中率不低于 shelf_search（{ab_desc}）")
+
+    if data["overall_ready"]:
+        R.print_success("\n三项标准均已达成，可以评估把默认检索路径切到 wiki_search。")
+    else:
+        R.console.print(
+            "\n[dim]尚未同时满足三项标准，继续观测（每轮巩固循环自动记一条每日快照，"
+            "/wiki search 会顺带记一条 A/B 对比样本）[/dim]\n"
+        )
