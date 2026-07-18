@@ -288,7 +288,7 @@ mini-agent user token u_a1b2c3d4                       # 重新生成 token
   - `TurnCountTrigger` — `turn_count_trigger_enabled` / `max_turns_before_compact`（默认 20）
   - `ToolCallCountTrigger` — `tool_call_count_trigger_enabled` / `max_tool_calls_before_compact`（默认 50）
   - `RedundancyTrigger` — `redundancy_detection_enabled` / `redundancy_tool_result_ratio`（默认 0.6）
-  - `TopicShiftTrigger` — `topic_shift_detection`（`"off"`/`"heuristic"`/`"llm"`），heuristic 用关键词重合度+切换语关键词，llm 档追加一次小模型二次确认
+  - `TopicShiftTrigger` — `topic_shift_detection`（`"off"`/`"heuristic"`/`"llm"`），heuristic 用关键词重合度+切换语关键词，llm 档追加一次小模型二次确认；两档均内置续接短语白名单（"继续"/"continue"等整句匹配）+ 短文本豁免（当前消息关键词数 <2 跳过重合度判断），防止短回复误判为话题切换
 - 每个触发器可给出 `suggested_strategy`（如话题切换建议 `llm_summary`，轮次/工具调用/冗余建议 `selective`），`_auto_compress_history()` 临时切换 `cfg.compress.strategy` 执行后再恢复
 - `compact_cooldown_turns`（默认 3）：compact 后这么多轮内，非硬约束触发器不生效
 - `require_confirmation`（默认 `False`）：触发后是否需要 `term.confirm()` 询问用户 y/n

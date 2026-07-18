@@ -18,6 +18,14 @@ mini_agent 对话历史会随时间增长，最终超出模型上下文窗口限
 | `RedundancyTrigger` | `compress.redundancy_detection_enabled` | `redundancy_tool_result_ratio=0.6` | `tool_result` 消息占比过高，历史信息冗余 |
 | `TopicShiftTrigger` | `compress.topic_shift_detection`（`"off"/"heuristic"/"llm"`） | `topic_shift_keyword_overlap_threshold=0.15` | 检测到用户话题切换（关键词重合度低 / 切换语关键词 / LLM 二次确认） |
 
+> **误判防护（2026-07 新增）**：`TopicShiftTrigger._heuristic_check()` 在判断前先过滤两类情况，
+> 两档（heuristic/llm）均生效：
+> 1. 当前消息命中续接短语白名单（`_CONTINUATION_PHRASES`，如"继续"/"continue"/"go on"/
+>    "好的"，需整句匹配，去除首尾标点后比对）——直接判定非切换，不进入后续信号；
+> 2. 当前消息分词后关键词数 `< _MIN_KEYWORDS_FOR_OVERLAP`（默认 2）——跳过关键词重合度信号，
+>    因为短文本重合度天然趋近 0，不具备判断力。
+> 起因：`"关键词重合度 0% 低于阈值 15%"` 曾把"继续"这类续接指令误判为话题切换。
+
 所有开关**默认关闭**（`TokenThresholdTrigger` 由已有的 `compress.enabled` 控制，默认也是关闭），完全向后兼容旧行为。
 
 **触发后执行什么策略（2026-07 二次更新：默认改为复用路径 B）**：每个触发器可以给出
