@@ -43,6 +43,18 @@ class LLMControlMixin:
     def llm_client(self) -> LLMClient:
         return self._llm
 
+    @property
+    def llm_helper(self) -> "LLMHelper":
+        """
+        主对话循环之外场景（judge / ensemble / 目标拆解 / 摘要重写……）
+        统一使用的轻量 LLM 调用入口，详见 llm/service.py 顶部说明。
+
+        每次访问都基于 self._client_pool（懒取，不缓存），因此 /model
+        切换后下一次调用自动跟随，语义与 llm_client 属性一致。
+        """
+        from mini_agent.llm.service import LLMHelper
+        return LLMHelper(self._client_pool, self.cfg)
+
     def switch_provider(self, llm_config: LLMConfig) -> None:
         """
         运行时切换 LLM provider，不影响对话历史。

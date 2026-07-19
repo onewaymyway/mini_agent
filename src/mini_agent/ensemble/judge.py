@@ -97,10 +97,17 @@ def judge_llm(
     mode: str = "select",       # "select" | "merge"
     judge_model: Optional[str] = None,
     judge_provider: Optional[str] = None,
+    llm_helper=None,
 ) -> tuple[Optional[int], str, str, dict]:
     """
     用模型评判/合并候选。
     返回 (chosen_idx_or_None, final_content_if_merge_or_chosen_content, reason, scores)
+
+    llm_helper — 可选，传入 Agent.llm_helper（见 llm/service.py::LLMHelper）
+    以复用主 agent 当前 provider/model 与重试策略；不传时退化为
+    LLMHelper.from_config(cfg)（单次构造，不跟随 /model 切换，行为等价于
+    此函数迁移前的旧实现）。judge_model/judge_provider 仍然可以覆盖评审
+    用的模型——即使传了 llm_helper，也会走它的 override_* 分支。
     """
     ok = _ok_candidates(candidates)
     if not ok:
@@ -109,31 +116,21 @@ def judge_llm(
         return ok[0].idx, ok[0].content, "只有一个有效候选，直接采用", {}
 
     try:
-        from mini_agent.llm.base import LLMConfig
-        from mini_agent.llm.factory import create_client
+        from mini_agent.llm.service import LLMHelper
 
-        base_llm_cfg = LLMConfig.from_app_config(cfg)
-        llm_cfg = LLMConfig(
-            provider=judge_provider or base_llm_cfg.provider,
-            model=judge_model or base_llm_cfg.model,
-            api_key=base_llm_cfg.api_key,
-            base_url=base_llm_cfg.base_url,
-            max_tokens=base_llm_cfg.max_tokens,
-            temperature=0.0,
-            requires_api_key=base_llm_cfg.requires_api_key,
-            use_system_tool_call=base_llm_cfg.use_system_tool_call,
-            system_message_format=base_llm_cfg.system_message_format,
-        )
-        client = create_client(llm_cfg)
+        helper = llm_helper or LLMHelper.from_config(cfg)
         system = (
             "你是一个严格的结果评审员，负责从多个候选答案中选优或合并出最终答案。"
             "评判时关注：正确性、完整性、是否真正完成了任务要求、表达是否清晰。"
         )
         prompt = _build_judge_prompt(ok, mode)
-        resp = client.chat(
+        resp = helper.chat(
             messages=[{"role": "user", "content": prompt}],
             system=system,
             tools=[],
+            override_model=judge_model,
+            override_provider=judge_provider,
+            override_temperature=0.0,
         )
         raw = (resp.text or "").strip()
         if raw.startswith("```"):
@@ -170,10 +167,13 @@ def judge_candidates(
     judge_model: Optional[str] = None,
     judge_provider: Optional[str] = None,
     checker: Optional[Callable[[Candidate], bool]] = None,
+    llm_helper=None,
 ) -> EnsembleResult:
     """
     统一评判入口。strategy: "llm_judge" | "first_success" | "vote" | "merge"
     返回的 EnsembleResult 只填 judge 相关字段，granularity/execution 由 runner 补充。
+
+    llm_helper — 透传给 judge_llm，见其 docstring。
     """
     if strategy == "first_success":
         chosen_idx, reason, scores = judge_first_success(candidates, checker=checker)
@@ -186,10 +186,12 @@ def judge_candidates(
     elif strategy == "merge":
         chosen_idx, final_content, reason, scores = judge_llm(
             candidates, cfg, mode="merge", judge_model=judge_model, judge_provider=judge_provider,
+            llm_helper=llm_helper,
         )
     else:  # llm_judge / 默认
         chosen_idx, final_content, reason, scores = judge_llm(
             candidates, cfg, mode="select", judge_model=judge_model, judge_provider=judge_provider,
+            llm_helper=llm_helper,
         )
 
     return EnsembleResult(

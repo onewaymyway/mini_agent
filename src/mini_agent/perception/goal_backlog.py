@@ -379,7 +379,7 @@ class GoalBacklog:
 
     def next_task_description(
         self,
-        llm_client=None,
+        llm_helper=None,
         *,
         workdir_knowledge=None,
     ) -> Optional[tuple[str, str]]:
@@ -390,8 +390,12 @@ class GoalBacklog:
         拆解逻辑：
         1. 取最高优先级 active Objective
         2. 若有 work_thread_ref，从 WorkThread 的 next_suggested 获取提示
-        3. 用轻量 LLM 调用生成具体 Task 描述（若有 llm_client）
+        3. 用轻量 LLM 调用生成具体 Task 描述（若有 llm_helper）
            否则直接用 Objective.title 作为 Task 描述
+
+        llm_helper — 需实现 .ask(prompt, ...) -> str，通常传入
+        Agent.llm_helper（见 llm/service.py::LLMHelper），
+        天然复用主 agent 当前的 provider/model 与统一重试策略。
         """
         objectives = self.active_objectives()
         if not objectives:
@@ -418,9 +422,9 @@ class GoalBacklog:
             base_desc = obj.title
 
         # 有 LLM 时做一次轻量拆解
-        if llm_client:
+        if llm_helper:
             try:
-                task_desc = self._llm_decompose(llm_client, obj, next_suggested)
+                task_desc = self._llm_decompose(llm_helper, obj, next_suggested)
                 if task_desc:
                     return obj.id, task_desc
             except Exception as _mini_agent_exc:
@@ -430,10 +434,15 @@ class GoalBacklog:
 
         return obj.id, base_desc
 
-    def _llm_decompose(self, llm_client, obj: GoalNode, next_suggested: str) -> Optional[str]:
+    def _llm_decompose(self, llm_helper, obj: GoalNode, next_suggested: str) -> Optional[str]:
         """
         轻量 LLM 调用：将 Objective 拆解为具体可执行的 Task 描述。
         参照 Stage 4.2 timeline.jsonl 反思调用的独立轻量调用模式。
+
+        历史提示：此函数曾直接接收裸 LLMClient 并调用
+        `llm_client.chat(messages=msgs, max_tokens=200)`——签名不匹配，
+        实际每次都抛 TypeError 被吞掉，此方法一直静默返回 None。
+        改用 LLMHelper.ask() 后签名统一、自带重试。
         """
         prompt = f"""将以下目标拆解为一个具体可在单次 Task 中完成、有明确验收标准的任务描述。
 
@@ -449,12 +458,9 @@ class GoalBacklog:
 只输出任务描述，不要其他内容。"""
 
         try:
-            msgs = [{"role": "user", "content": prompt}]
-            result = llm_client.chat(messages=msgs, max_tokens=200)
-            if result:
-                text = result.strip()
-                if text:
-                    return text
+            text = llm_helper.ask(prompt).strip()
+            if text:
+                return text
         except Exception as _mini_agent_exc:
             from mini_agent.errors import log_exception
             log_exception(_mini_agent_exc, where='mini_agent.perception.goal_backlog')

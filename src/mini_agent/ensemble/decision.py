@@ -107,29 +107,21 @@ def _model_based_signal(
     cfg,
     judge_model: Optional[str] = None,
     judge_provider: Optional[str] = None,
+    llm_helper=None,
 ) -> tuple[bool, str]:
     """
     模型自判层：用一次低成本调用问模型 "是否值得 ensemble"。
     返回 (是否触发, 理由)。任何异常都视为"不触发"，避免因为判定本身出错而拖垮主流程。
+
+    llm_helper — 可选，见 llm/service.py::LLMHelper；不传时退化为
+    LLMHelper.from_config(cfg)。这里只是一次路由判定（不是最终结果），
+    重试预算刻意调低（max_retries=2 而非默认的 3），失败就直接落到
+    except 分支判定为"不触发"，不必和真正的 judge 一样反复重试。
     """
     try:
-        from mini_agent.llm.base import LLMConfig
-        from mini_agent.llm.factory import create_client
+        from mini_agent.llm.service import LLMHelper
 
-        base_llm_cfg = LLMConfig.from_app_config(cfg)
-        llm_cfg = LLMConfig(
-            provider=judge_provider or base_llm_cfg.provider,
-            model=judge_model or base_llm_cfg.model,
-            api_key=base_llm_cfg.api_key,
-            base_url=base_llm_cfg.base_url,
-            max_tokens=200,
-            temperature=0.0,
-            requires_api_key=base_llm_cfg.requires_api_key,
-            use_system_tool_call=base_llm_cfg.use_system_tool_call,
-            system_message_format=base_llm_cfg.system_message_format,
-        )
-        client = create_client(llm_cfg)
-
+        helper = llm_helper or LLMHelper.from_config(cfg)
         system = (
             "你是一个成本敏感的任务路由助手。判断给定任务是否值得用"
             "“多次采样/多路径取优(ensemble)”来提高质量——只有当任务存在出错风险、"
@@ -137,10 +129,14 @@ def _model_based_signal(
             "对于简单、明确、低风险的任务不值得（会浪费 token/时间）。"
             "只输出严格 JSON：{\"trigger\": true|false, \"reason\": \"一句话理由\"}，不要任何其他文字。"
         )
-        resp = client.chat(
+        resp = helper.chat(
             messages=[{"role": "user", "content": f"任务：{prompt}"}],
             system=system,
             tools=[],
+            max_retries=2,
+            override_model=judge_model,
+            override_provider=judge_provider,
+            override_temperature=0.0,
         )
         raw = (resp.text or "").strip()
         # 容错：去掉可能的 markdown 代码块包裹
@@ -164,6 +160,7 @@ def should_trigger_ensemble(
     failed_recently: bool = False,
     has_acceptance_criteria: bool = False,
     has_verifier_tool: bool = False,
+    llm_helper=None,
 ) -> TriggerDecision:
     """
     统一判定入口。
@@ -175,6 +172,7 @@ def should_trigger_ensemble(
                   优先级最高，跳过 mode 判定
         failed_recently: 上一次结果被校验/格式检测判定失败（用于升级触发）
         has_acceptance_criteria / has_verifier_tool: 传给 classify_task_type
+        llm_helper: 透传给 _model_based_signal，见其 docstring
     """
     ens_cfg = getattr(cfg, "ensemble", None)
     task_type = classify_task_type(
@@ -217,6 +215,7 @@ def should_trigger_ensemble(
             cfg,
             judge_model=getattr(ens_cfg, "judge_model", None),
             judge_provider=getattr(ens_cfg, "judge_provider", None),
+            llm_helper=llm_helper,
         )
         return TriggerDecision(trigger, reason, task_type, judge_strategy, "model")
 

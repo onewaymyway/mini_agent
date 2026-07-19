@@ -30,32 +30,39 @@ def make_llm_call(
     *,
     model: Optional[str] = None,
     temperature: Optional[float] = None,
+    llm_helper=None,
 ) -> Candidate:
-    """同一输入下发起一次独立的 LLM 调用，返回一个 Candidate。"""
+    """同一输入下发起一次独立的 LLM 调用，返回一个 Candidate。
+
+    llm_helper — 可选，见 llm/service.py::LLMHelper；不传时退化为
+    LLMHelper.from_config(cfg)。model/temperature 任一被指定时都会走
+    helper 的 override_* 分支（临时构造独立 client，用于制造候选间的
+    多样性）；都不指定时走 helper 默认路径，复用主 agent 当前
+    provider/model 及其 fallback chain。
+
+    候选生成场景刻意不重试（max_retries=1，即失败就返回错误 Candidate）：
+    单个候选失败应该快速让路给其它候选，多候选机制本身已经保证了整体
+    产出的健壮性，没必要在单个候选上消耗重试预算拖慢整体产出时间。
+    """
     t0 = time.time()
     try:
-        from mini_agent.llm.base import LLMConfig
-        from mini_agent.llm.factory import create_client
+        from mini_agent.llm.service import LLMHelper
 
-        base_llm_cfg = LLMConfig.from_app_config(cfg)
-        llm_cfg = LLMConfig(
-            provider=base_llm_cfg.provider,
-            model=model or base_llm_cfg.model,
-            api_key=base_llm_cfg.api_key,
-            base_url=base_llm_cfg.base_url,
-            max_tokens=base_llm_cfg.max_tokens,
-            temperature=base_llm_cfg.temperature if temperature is None else temperature,
-            requires_api_key=base_llm_cfg.requires_api_key,
-            use_system_tool_call=base_llm_cfg.use_system_tool_call,
-            system_message_format=base_llm_cfg.system_message_format,
+        helper = llm_helper or LLMHelper.from_config(cfg)
+        resp = helper.chat(
+            messages=messages,
+            system=system,
+            tools=[],
+            max_retries=1,
+            override_model=model,
+            override_temperature=temperature,
         )
-        client = create_client(llm_cfg)
-        resp = client.chat(messages=messages, system=system, tools=[])
+        meta_model = model or getattr(getattr(helper, "_cfg", None), "model", None) or ""
         return Candidate(
             idx=idx,
             content=resp.text or "",
             source="llm_call",
-            meta={"model": llm_cfg.model, "temperature": llm_cfg.temperature},
+            meta={"model": meta_model, "temperature": temperature},
             latency_s=time.time() - t0,
         )
     except Exception as e:

@@ -283,19 +283,23 @@ def build_llm_call(client) -> Callable[[str], str]:
     的摘要重写复用——不需要单独接一个新的 LLM provider 或新开一次会话，
     直接复用 Agent 已经建立好的 client_pool.current_client。
 
-    这类调用是单轮、无工具、无历史的最简 chat()：
-        client.chat(messages=[{"role": "user", "content": prompt}], system="", tools=[])
-    如果调用失败（网络错误/超限/provider 异常），返回空字符串而不是抛异常——
+    这类调用是单轮、无工具、无历史的最简调用，走 LLMClient.chat_with_retry()
+    （而不是裸 chat()），自带"空响应重试 + 异常重试"，默认 max_retries=3
+    （分场景重试次数见 next_doc/llm_helper_unification_plan.md 第 6.1 节：
+    这里失败反正会静默降级为规则兜底/朴素摘要，多试几次换成功的性价比高，
+    且本来就是异步/后台路径，不影响响应体感）。
+    如果重试预算耗尽仍失败，返回空字符串而不是抛异常——
     调用方（classification.py / entity_index.py）本身已经把"LLM 不可用"当作
     一等公民处理（规则兜底 / 朴素拼接摘要），失败了直接退化，不影响主流程。
     """
 
     def _call(prompt: str) -> str:
         try:
-            response = client.chat(
+            response = client.chat_with_retry(
                 messages=[{"role": "user", "content": prompt}],
                 system="",
                 tools=[],
+                max_retries=3,
             )
             return (response.text or "").strip()
         except Exception as _mini_agent_exc:

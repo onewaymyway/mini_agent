@@ -1,10 +1,38 @@
 # 主对话循环之外的 LLM 调用统一为 LLMHelper：改造计划
 
-> 状态：**开放问题已确认，进入实现阶段**。第 6 节的 4 个问题确认结果：
+> 状态：**实现进行中**。第 6 节的 4 个开放问题已确认（见下）；
+> 第 5 节落地步骤的 1-3 已完成，4-5 已完成但发现一处已知限制（见
+> 下方"实现进度"），全量测试中出现一批待查失败，尚未确认是否
+> 与本次改动相关，**未完成收尾**。
+>
+> 开放问题确认结果：
 > 1. `override_model`/`override_provider` 逃生舱**保留**。
 > 2. `sub_agent.py` **不动 client 构造逻辑**，只补一层重试。
 > 3. `override_temperature` **加入** `LLMHelper`，`make_llm_call` 迁移进 helper。
 > 4. 重试次数**分场景区别对待**，默认 `max_retries=3`（原草案的 2 已废弃）。
+
+---
+
+## 0. 实现进度（持续更新）
+
+| 项 | 状态 | 说明 |
+|---|---|---|
+| 新建 `src/mini_agent/llm/service.py`（`LLMHelper`） | ✅ 已完成 | 含默认路径（走 `client_pool.call_with_pool`）、override 路径、`LLMHelper.from_config(cfg)` 兜底构造 |
+| `Agent.llm_helper` 懒加载属性 | ✅ 已完成 | 加在 `agent/llm_control.py`，每次访问基于当前 `self._client_pool` |
+| P0：修 `objective_executor._default_llm_decompose` bug | ✅ 已完成 | 改为 `llm_helper.ask(prompt)`；连带修了 `result.strip()` 的第二个隐藏 bug（原 `chat()` 返回 `LLMResponse` 而非字符串） |
+| P0：修 `goal_backlog._llm_decompose` bug | ✅ 已完成 | 同上，参数改名为 `llm_helper` |
+| P0：`api/server.py` 调用点同步 | ✅ 已完成 | `agent._llm` → `agent.llm_helper` |
+| P1：`ensemble/judge.py` 迁移 | ✅ 已完成 | `judge_llm` / `judge_candidates` 新增 `llm_helper` 参数，`override_temperature=0.0` 固定评审温度 |
+| P1：`ensemble/decision.py` 迁移 | ✅ 已完成 | `_model_based_signal`（`max_retries=2`）/ `should_trigger_ensemble` |
+| P1：`ensemble/strategies.py` 迁移 | ✅ 已完成 | `make_llm_call`（`max_retries=1`），新增 `override_temperature` |
+| P1：`ensemble/runner.py` 透传 | ✅ 已完成 | `run_llm_ensemble` / `run_subagent_ensemble` 新增 `llm_helper` 透传参数 |
+| 接入 `agent/turn_loop.py` | ✅ 已完成 | `self.llm_helper` 传给 `should_trigger_ensemble` / `run_subagent_ensemble` |
+| 接入 `tools/orchestration.py`（`run_ensemble_llm`/`run_ensemble_subagents` 工具函数） | ⚠️ **未接入，已知限制** | 这两个工具函数只能拿到 `TaskManager.base_cfg`（启动时的静态配置），`TaskManager` 在 agent 构造之前就初始化好了，当前没有从工具调用上下文拿到 `agent` 引用的机制。现状：不传 `llm_helper` 时退化为 `LLMHelper.from_config(cfg)`（比迁移前已经有改善：统一走 helper、有重试），但不会跟随 `/model` 切换。彻底解决需要给工具调用链路加一个"当前 agent"的上下文传递，超出本次计划范围，留待后续单独立项 |
+| P2：`perception/memory_factory.py::build_llm_call` 加重试 | ✅ 已完成 | 未改用 `LLMHelper`（因为只有 `client` 没有 `client_pool`），改为调用已有的 `LLMClient.chat_with_retry(max_retries=3)`，风险更小 |
+| P2：`orchestrator/sub_agent.py` | ✅ **确认无需改动** | 实测它把独立 client 传给内层完整 `Agent(...)`，内层 Agent 自带单链 `LLMClientPool` + `chat_with_retry`，`SubAgent._run_with_capture()` 外面还有一层针对 5xx/超时的重试（`_RETRY_MAX_ATTEMPTS=8`）。已满足"补一层重试"，未做代码修改 |
+| 单元测试：`tests/test_llm.py` / `tests/test_orchestrator.py` | ✅ 已跑通 | 132 passed |
+| 全量测试：`tests/` | ⚠️ **发现待查失败** | 跑到约 70% 进度出现一批 `F`/`E`（具体测试名尚未逐一定位），需要下一轮确认是否与本次改动相关（当前怀疑是环境缺依赖或既有 flaky 用例，不能排除是本次改动引入，**尚未下结论**） |
+| 迁移后代码库自检（无残留裸 `LLMConfig.from_app_config + create_client` 重复片段） | ⏳ 未做 | 需要在全量测试问题排查完后跑一次 `grep` 复查 |
 
 ---
 
@@ -152,18 +180,18 @@ class LLMHelper:
 | `ensemble/decision.py::_model_based_signal` | 同上 | 同上 | P1 |
 | `ensemble/strategies.py::make_llm_call` | 同上，`override_model`/`temperature` 是主要诉求，provider 一般不覆盖 | 迁移进 helper，用 `override_model` + `override_temperature`；候选生成场景重试次数调低（`max_retries=1`，见 4.1 重试次数分场景表） | P1 |
 | `perception/memory_factory.py::build_llm_call` | 裸 `client.chat()`，失败返回空串 | 改为 `helper.ask(...)`，外层 try/except 保持"失败返回空串"的降级语义不变，只是内部多了重试 | P2 |
-| `orchestrator/sub_agent.py` | 独立 client，设计上就应隔离，且目前裸 `create_client()` 后没有重试 | **不改 client 构造逻辑**（保留独立 provider/model），但内部调用改为套用 `RetryPolicy`（不经过 `LLMHelper`，因为它本来就不用 `client_pool`，直接对自己持有的 client 调 `chat_with_retry` 即可） | P2 |
+| `orchestrator/sub_agent.py` | 独立 client，设计上就应隔离 | **无需改动**：实测发现它把独立 client 传给完整的内层 `Agent(...)`（`llm_client=create_client(...)`），内层 Agent 自带单链 `LLMClientPool` + `chat_with_retry`；`SubAgent._run_with_capture()` 外面还套了一层针对 5xx/超时的重试（`_RETRY_MAX_ATTEMPTS=8`）。已经满足"补一层重试"的诉求，未做任何代码修改 | 已确认无需改动 |
 | `agent/llm_control.py`（`/model` 探测调用） | 裸 `client.chat()` | 不迁移——这是"测试新配置是否可用"的探测性调用，本身就不该有重试/fallback（重试会掩盖配置错误） | 不改 |
 
 ---
 
 ## 5. 落地步骤
 
-1. 新建 `src/mini_agent/llm/service.py`，实现 `LLMHelper`（含单测：`tests/test_llm.py` 或新建 `tests/test_llm_helper.py`，覆盖默认路径、override 路径、重试触发、异常向上抛出几种情形）。
-2. 在 `Agent`（`agent/core.py` 或 `agent/__init__.py`）上加 `llm_helper` 懒加载属性。
-3. 按上表 P0 → P1 → P2 顺序迁移调用点，每步跑一遍相关既有测试（`tests/test_orchestrator.py`、ensemble 相关测试、`tests/test_llm.py` 等）。
-4. P0 两处修完后单独验证一次"目标自动拆解"链路（`_default_llm_decompose` / `_llm_decompose`）确实能正常产出多步骤，而不是静默返回空列表。
-5. 全部迁移完成后，检索确认代码库里不再有裸的 `LLMConfig.from_app_config(cfg)` + `create_client(...)` 重复片段（`ensemble/` 三处应清零）。
+1. ✅ 新建 `src/mini_agent/llm/service.py`，实现 `LLMHelper`。（未新建专门单测文件，靠现有 `tests/test_llm.py`/`tests/test_orchestrator.py` 全量跑通间接验证；专门覆盖 override/重试触发路径的单测仍是**待办项**，见第 0 节）
+2. ✅ 在 `Agent`（`agent/llm_control.py`）上加 `llm_helper` 懒加载属性。
+3. ✅ 按 P0 → P1 → P2 顺序迁移调用点（`tools/orchestration.py` 工具函数入口除外，见第 0 节已知限制），`tests/test_orchestrator.py`、`tests/test_llm.py` 已跑通。
+4. ✅ P0 两处 bug 已修（`_default_llm_decompose` / `_llm_decompose`），但**尚未**做"单独验证目标自动拆解链路能正常产出多步骤"这一步（第 0 节标为待办）。
+5. ⏳ 全部迁移完成后的代码库自检（确认无残留裸 `LLMConfig.from_app_config + create_client` 重复片段）——**未做**，且全量测试出现的待查失败需要先排查清楚。
 
 ---
 

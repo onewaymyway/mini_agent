@@ -80,8 +80,15 @@ def run_llm_ensemble(
     strategy: Optional[str] = None,
     checker: Optional[Callable[[Candidate], bool]] = None,
     session_id: Optional[str] = None,
+    llm_helper=None,
 ) -> EnsembleResult:
-    """对相同的 messages/system 做多次独立 LLM 调用，再综合评判出最终结果。"""
+    """对相同的 messages/system 做多次独立 LLM 调用，再综合评判出最终结果。
+
+    llm_helper — 可选，见 llm/service.py::LLMHelper。传入时（通常是
+    Agent.llm_helper）候选生成与最终评判都会复用主 agent 当前的
+    provider/model；不传时各自退化为基于 cfg 的一次性构造
+    （LLMHelper.from_config(cfg)），行为等价于迁移前的实现。
+    """
     ens_cfg = getattr(cfg, "ensemble", None)
     n = n or (ens_cfg.n if ens_cfg else 3)
     execution = execution or (ens_cfg.execution if ens_cfg else "parallel")
@@ -98,7 +105,7 @@ def run_llm_ensemble(
     if execution == "parallel":
         with ThreadPoolExecutor(max_workers=max(1, min(n, max_concurrency))) as pool:
             futures = {
-                pool.submit(make_llm_call, cfg, messages, system, i): i
+                pool.submit(make_llm_call, cfg, messages, system, i, llm_helper=llm_helper): i
                 for i in range(n)
             }
             for fut in as_completed(futures):
@@ -106,7 +113,7 @@ def run_llm_ensemble(
         candidates.sort(key=lambda c: c.idx)
     else:
         for i in range(n):
-            c = make_llm_call(cfg, messages, system, i)
+            c = make_llm_call(cfg, messages, system, i, llm_helper=llm_helper)
             candidates.append(c)
             if early_stop:
                 if strategy == "first_success" and checker is not None and c.ok:
@@ -120,7 +127,7 @@ def run_llm_ensemble(
 
     result = judge_candidates(
         candidates, cfg, strategy=strategy, judge_model=judge_model,
-        judge_provider=judge_provider, checker=checker,
+        judge_provider=judge_provider, checker=checker, llm_helper=llm_helper,
     )
     result.granularity = "llm_call"
     result.execution = execution
@@ -141,10 +148,15 @@ def run_subagent_ensemble(
     checker: Optional[Callable[[Candidate], bool]] = None,
     timeout: float = 600,
     session_id: Optional[str] = None,
+    llm_helper=None,
 ) -> EnsembleResult:
     """
     用多个 SubAgent（不同上下文/提示词）各自完整跑一遍任务，再综合评判。
     依赖 tools/orchestration.py 里已初始化的全局 TaskManager（init_task_manager）。
+
+    llm_helper — 仅用于最终 judge_candidates 评判环节（候选本身由独立的
+    SubAgent 产出，各自持有自己的 provider/model，不受此参数影响，
+    见 next_doc/llm_helper_unification_plan.md 第 6.2 节的结论）。
     """
     from mini_agent.tools.orchestration import get_task_manager
     from mini_agent.orchestrator.task import Task, TaskStatus
@@ -220,7 +232,7 @@ def run_subagent_ensemble(
 
     result = judge_candidates(
         candidates, cfg, strategy=strategy, judge_model=judge_model,
-        judge_provider=judge_provider, checker=checker,
+        judge_provider=judge_provider, checker=checker, llm_helper=llm_helper,
     )
     result.granularity = "subagent"
     result.execution = execution

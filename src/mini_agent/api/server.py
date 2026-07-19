@@ -1046,13 +1046,13 @@ class HttpServer:
                     return None
 
             def _llm_decompose(objective):
-                """用 agent 当前 LLM client 拆解 Objective。"""
+                """用 agent 当前 LLM provider/model 拆解 Objective。"""
                 try:
                     from mini_agent.evolution.objective_executor import _default_llm_decompose
-                    llm = getattr(agent, "_llm", None)
-                    if llm is None:
+                    helper = getattr(agent, "llm_helper", None)
+                    if helper is None:
                         return []
-                    return _default_llm_decompose(llm, objective)
+                    return _default_llm_decompose(helper, objective)
                 except Exception as _mini_agent_exc:
                     from mini_agent.errors import log_exception
                     log_exception(_mini_agent_exc, where='mini_agent.api.server.HttpServer._build_autonomous_loop._llm_decompose')

@@ -525,10 +525,19 @@ class ObjectiveExecutor:
 
 # ── 便捷函数 ──────────────────────────────────────────────────────────────────
 
-def _default_llm_decompose(llm_client, objective: "GoalNode") -> list[str]:
+def _default_llm_decompose(llm_helper, objective: "GoalNode") -> list[str]:
     """
     轻量 LLM 调用：将 Objective 拆解为步骤列表。
     返回字符串列表，每项是一个步骤的任务描述。
+
+    llm_helper — 需实现 .ask(prompt, ...) -> str，通常传入
+    Agent.llm_helper（见 llm/service.py::LLMHelper）。
+
+    历史提示：此函数曾直接接收裸 LLMClient 并调用
+    `llm_client.chat(messages=msgs, max_tokens=500)`——LLMClient.chat()
+    的真实签名是 (messages, system, tools)，不接受 max_tokens，会直接
+    抛 TypeError，被下面的 except 吞掉，导致这个函数一直静默返回 []。
+    改用 LLMHelper.ask() 后签名统一、自带重试，且不会再犯这个错误。
     """
     prompt = f"""将以下目标拆解为 3-6 个具体的执行步骤，每步可在单次 Task 中完成。
 
@@ -547,8 +556,7 @@ def _default_llm_decompose(llm_client, objective: "GoalNode") -> list[str]:
 ...
 """
     try:
-        msgs = [{"role": "user", "content": prompt}]
-        result = llm_client.chat(messages=msgs, max_tokens=500)
+        result = llm_helper.ask(prompt)
         if not result:
             return []
         steps = []

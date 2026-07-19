@@ -116,7 +116,7 @@ class TurnLoopMixin:
                     from mini_agent.ensemble import should_trigger_ensemble, run_subagent_ensemble
                     from mini_agent.tools.orchestration import get_task_manager
 
-                    decision = should_trigger_ensemble(user_message, self.cfg)
+                    decision = should_trigger_ensemble(user_message, self.cfg, llm_helper=self.llm_helper)
                     if decision.trigger and get_task_manager() is not None:
                         R.print_info(
                             f"[ensemble] auto-triggered (source={decision.source}): {decision.reason}"
@@ -125,6 +125,7 @@ class TurnLoopMixin:
                             self.cfg, user_message,
                             strategy=decision.judge_strategy,
                             session_id=getattr(self, "session_id", None),
+                            llm_helper=self.llm_helper,
                         )
                         if ens_result.final_content:
                             result = ens_result.final_content
