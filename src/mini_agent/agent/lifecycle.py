@@ -684,6 +684,17 @@ class SessionLifecycleMixin:
                 "tool_calls":       self.stats.tool_calls,
                 "tool_stats":       self.stats.tool_stats,
                 "skill_activations": self.stats.skill_activations,
+                # [BUGFIX 2026-07] compact 触发器（history/triggers.py::
+                # ToolCallCountTrigger/TurnCountTrigger）用 self.stats.turns/
+                # tool_calls 减去这两个"上次 compact 时的快照"算增量。此前
+                # 这两个字段只存在内存里、从不持久化——resume 一个 session
+                # 时 self.stats.turns/tool_calls 会从 meta.json 恢复成历史
+                # 累计值，但快照字段在 Agent 重新构造时被重置为 0，导致
+                # delta 变成"整个 session 历史累计次数"而不是"距上次 compact
+                # 的次数"，resume 后几乎必然立刻触发一次不合理的 compact
+                # （典型症状：日志里报出几百上千次工具调用触发 compact）。
+                "last_compact_turns":      self._last_compact_turns,
+                "last_compact_tool_calls": self._last_compact_tool_calls,
             }
             path = self._session_mgr.save(
                 self._session,
@@ -726,6 +737,18 @@ class SessionLifecycleMixin:
         self.stats.tool_calls    = session.stats.get("tool_calls", 0)
         self.stats.tool_stats    = session.stats.get("tool_stats", {}) or {}
         self.stats.skill_activations = session.stats.get("skill_activations", {}) or {}
+        # [BUGFIX 2026-07] 见 save_session() 里的说明。旧 session 文件没有
+        # 这两个字段（老格式，或者 save_session 修复之前保存的）时，不能
+        # 回退成 0——那样 delta 会被算成整段历史的累计轮次/工具调用数，
+        # resume 后立刻触发一次不合理的 compact。退而求其次，把"上次
+        # compact 快照"当作等于当前恢复出来的 turns/tool_calls（即"视为
+        # resume 这一刻刚 compact 过"），触发器从 0 增量重新开始计数，
+        # 跟"session 刚开始、还没攒够触发阈值"的正常状态行为一致。
+        self._last_compact_turns = session.stats.get("last_compact_turns", self.stats.turns)
+        self._last_compact_tool_calls = session.stats.get(
+            "last_compact_tool_calls", self.stats.tool_calls
+        )
+        self._turns_since_last_compact = self.stats.turns - self._last_compact_turns
         # 角色扮演系统：从 session 恢复当前激活的角色（未激活则为 None）
         self.active_persona = session.active_persona
 
@@ -763,6 +786,17 @@ class SessionLifecycleMixin:
             return False
         self._history.clear()
         self.stats = SessionStats()
+        # [BUGFIX 2026-07] 见 load_session()/save_session() 里的说明：
+        # 同一个 Agent 实例上执行 `/session new` 时，stats 会重置为 0，但
+        # 如果不同步重置这两个快照字段，它们会保留上一个 session 遗留的
+        # 数值（比如 800），导致新 session 的 tool_calls 增量在追上这个
+        # 遗留值之前 delta 一直是负数，compact 触发器长期"装死"不生效
+        # ——跟 resume 场景的 bug 是同一个根因（快照字段没有跟 stats 一起
+        # 同步重置/持久化），只是表现相反（一个是虚高误触发，一个是虚低
+        # 不触发）。
+        self._last_compact_turns = 0
+        self._last_compact_tool_calls = 0
+        self._turns_since_last_compact = 0
         # wiki 改进计划 P2：同上，新 session 不继承旧 session 的纠正计数。
         self._session_correction_count = 0
         # 角色扮演系统：新 session 不继承上一个 session 的角色状态
