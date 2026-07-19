@@ -14,6 +14,7 @@
   "session_summary_enabled": true,
   "session_summary_min_turns": 3,
   "profile_enabled":true,
+  "bash_stream_output_enabled": false,
   "skill_keyword_activation_enabled":false,
   "artifact_auto_detect_enabled": false,
   "max_llm_calls": 4,
