@@ -303,11 +303,12 @@ class HistoryManager:
         视为命中（session 结束兜底，计划 §1.2.1 触发规则 3），调用方是
         agent/lifecycle.py::close()。
 
-        默认关闭（`cfg.compress.extraction_trigger_enabled=False`）。开启
-        后默认仍只记录候选窗口到 `extraction_trigger_log.jsonl`、不实际
-        发起 LLM 调用（`cfg.compress.extraction_trigger_dispatch_enabled=
-        False`）——这是吸取 P4"零数据切换"教训后的做法，先用真实数据
-        校准触发阈值，再打开实际抽取开关。
+        [2026-07 默认开启]（`cfg.compress.extraction_trigger_enabled=True`，
+        `cfg.compress.extraction_trigger_dispatch_enabled=True`）：应用户
+        明确要求提前打开，跳过了原计划 §1.4"先只记录候选窗口到
+        `extraction_trigger_log.jsonl`、观测阈值合理后再打开实际抽取"的
+        观察期。两个开关仍然独立存在，需要临时退回只记录不抽取，可以单独
+        把 `extraction_trigger_dispatch_enabled` 设为 `False`。
 
         任何异常都静默吞掉，不影响调用方——这是"锦上添花"的观测/增强
         路径，不能因为它失败影响 agent 主循环。

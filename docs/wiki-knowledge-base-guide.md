@@ -378,7 +378,7 @@ score = 0.6 * token_jaccard + 0.4 * tag_jaccard + confidence_weight * log(1 + gr
 
 原本 `decision_extraction.py`/`world_extraction.py` 只在 compact 触发时被调用，而 compact 靠 token 预算触发，跟"这段对话是否已经积累了值得提炼的知识"是两个独立信号。E1 新增 `history/extraction_trigger.py::scan_for_extraction_window()`：零 LLM 成本的规则扫描（连接词密度"因为/所以/决定/改为"等 + 轮次计数兜底），命中候选窗口时 `history_manager.py::maybe_trigger_extraction()` 异步排队一次"仅抽取、不压缩"的轻量 LLM 调用，独立于 `compaction.py` 的触发路径。
 
-`last_extracted_index` 持久化在 `extraction_cursor.json`，避免同一段内容被反复抽取。由 `CompressConfig.extraction_trigger_enabled`/`extraction_trigger_dispatch_enabled` 两级开关控制（前者控制"是否扫描并记日志"，后者控制"命中后是否真的发起 LLM 调用"），便于先只跑观察期收集 `extraction_trigger_log.jsonl` 校准阈值，再打开真正的抽取开关。
+`last_extracted_index` 持久化在 `extraction_cursor.json`，避免同一段内容被反复抽取。由 `CompressConfig.extraction_trigger_enabled`/`extraction_trigger_dispatch_enabled` 两级开关控制（前者控制"是否扫描并记日志"，后者控制"命中后是否真的发起 LLM 调用"）。**[2026-07 更新]** 两者均已默认开启（应用户明确要求提前打开，跳过了原计划设想的"先观察 `extraction_trigger_log.jsonl` 校准阈值再打开"的观察期）；如需临时退回只记录不抽取，可单独把 `extraction_trigger_dispatch_enabled` 设为 `False`。
 
 ### E2：抽取任务耦合度过高
 

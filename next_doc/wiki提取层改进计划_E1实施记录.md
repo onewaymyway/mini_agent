@@ -78,15 +78,24 @@
 
 | 字段 | 默认值 | 作用 |
 |---|---|---|
-| `extraction_trigger_enabled` | `False` | 独立抽取触发器总开关 |
-| `extraction_trigger_dispatch_enabled` | `False` | 命中候选窗口后是否真的发起 LLM 调用；关闭时只记录到 `extraction_trigger_log.jsonl`（计划 §1.4 校准阶段） |
+| `extraction_trigger_enabled` | `True`（**[2026-07 更新]** 原为 `False`） | 独立抽取触发器总开关 |
+| `extraction_trigger_dispatch_enabled` | `True`（**[2026-07 更新]** 原为 `False`） | 命中候选窗口后是否真的发起 LLM 调用 |
 | `extraction_trigger_min_window_turns` | `6` | 触发规则 2 的轮次阈值 |
 
-三者默认全部关闭/保守，是刻意的：这条路径在既有 compact 触发器之外新增
-了一次"每轮工具调用批次结束后"的扫描，即使零 LLM 成本，仍需要先跑一段
-真实使用周期、用 `extraction_trigger_log.jsonl` 校准连接词密度阈值是否
+三者最初设计为默认全部关闭/保守：这条路径在既有 compact 触发器之外新增
+了一次"每轮工具调用批次结束后"的扫描，即使零 LLM 成本，原计划设想是先跑
+一段真实使用周期、用 `extraction_trigger_log.jsonl` 校准连接词密度阈值是否
 合理，再逐步打开 `extraction_trigger_dispatch_enabled`——这是吸取原计划
 反复提到的 P4"零数据切换"教训后的做法，与 O1/E2/E3 一贯的执行纪律一致。
+
+**[2026-07 更新]**：应用户明确要求，`extraction_trigger_enabled` 与
+`extraction_trigger_dispatch_enabled` 两者均已改为默认 `True`，跳过了上面
+描述的观察期——这是本条记录里唯一与原计划执行纪律不一致的地方，如果后续
+发现触发过于频繁或抽取质量不理想，可以查 `extraction_trigger_log.jsonl`
+的命中率反推调低 `EXTRACTION_TRIGGER_MIN_CONNECTOR_DENSITY`（见
+`history/extraction_trigger.py` 里的默认阈值常量），或者单独把
+`extraction_trigger_dispatch_enabled` 重新设为 `False`，退回"只记录不抽取"
+的观察模式，不需要改代码。
 
 ## 2. 验收方式
 

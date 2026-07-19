@@ -182,17 +182,18 @@ class CompressConfig:
     forget_orphan_tool_results: bool = False  # 剔除保留段中无对应 tool_use 的 tool_result
     # ── wiki 提取层与组织层改进计划 E1：抽取时机与对话粒度解耦 ──────────────
     # 独立于 compact 的轻量抽取触发器（history/extraction_trigger.py +
-    # history_manager.py::maybe_trigger_extraction）总开关。默认关闭——
-    # 这条路径在 compact 触发器之外新增了一次"每轮工具调用批次结束后"的
-    # 纯规则扫描，虽然零 LLM 成本，仍需要先确认不影响主循环性能/行为再
-    # 默认开启。
-    extraction_trigger_enabled: bool = False
+    # history_manager.py::maybe_trigger_extraction）总开关。
+    # [2026-07 默认开启]：观察期已确认零 LLM 成本的规则扫描不影响主循环
+    # 性能/行为（见 extraction_trigger_log.jsonl 校准记录），应用户要求
+    # 打开默认值。
+    extraction_trigger_enabled: bool = True
     # 触发器命中后，是否真的发起一次独立的"仅抽取、不压缩" LLM 调用。
-    # 默认关闭：即使打开了 extraction_trigger_enabled，也只把候选窗口记录
-    # 到 extraction_trigger_log.jsonl，不产生额外 LLM 调用——用真实数据
-    # 校准触发阈值（连接词密度是否合理）后再打开，避免重蹈 P4"零数据切换"
-    # 的教训（计划 §1.4）。
-    extraction_trigger_dispatch_enabled: bool = False
+    # [2026-07 默认开启]：与 extraction_trigger_enabled 一起打开——原计划
+    # §1.4 设想的"先只记日志、观测阈值合理后再打开"这一步，应用户明确要求
+    # 提前执行，跳过了持续观测期。如果发现触发过于频繁（可查
+    # extraction_trigger_log.jsonl 命中率），可以调低连接词密度阈值或把
+    # 这个开关重新关掉，只退回 compact 路径的抽取。
+    extraction_trigger_dispatch_enabled: bool = True
     # 轮次计数触发规则的阈值：距上次抽取满 N 轮真实用户输入且从未抽取过
     # （或连接词密度一直不够）时也触发一次，避免长期空转的 session 永远
     # 不被抽取（计划 §1.2.1 触发规则 2）。

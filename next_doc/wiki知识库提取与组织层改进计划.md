@@ -40,7 +40,8 @@
 > （`history/extraction_trigger.py` 独立候选窗口探测器 + `HistoryManager.maybe_trigger_extraction`
 > + 轻量抽取专用 prompt + `extraction_trigger_enabled`/`extraction_trigger_dispatch_enabled` 配置项 + 单测）。
 > §1.2.2 提到的"与 compact 共存时动态跳过重复抽取"未按精确范围匹配实现，改为复用 §2.2.2
-> 本就设想的粗粒度开关方案，理由见实施记录 §3。
+> 本就设想的粗粒度开关方案，理由见实施记录 §3。**[2026-07 更新]** 两个配置开关应用户明确要求
+> 已改为默认 `True`（跳过原计划设想的"先观察后打开"阶段），详见实施记录 §1.4。
 
 ### 1.2 改进方案 `[设计]`（已完成，见上方实施状态）
 
