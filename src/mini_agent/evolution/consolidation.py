@@ -561,10 +561,19 @@ class ConsolidationReport:
     outcome_tracking_resolved: list = field(default_factory=list)  # [方案三] 本次 tick 新解决的效果回填记录
     affordance_weights_updated: object = None  # [方案四] 本次校准后的 AffordanceWeights（校准跳过时为 None）
     ran_at: float = field(default_factory=time.time)
+    # 改进计划第 3 节：各子步骤的限时执行结果（evolution/step_runner.py::StepResult）。
+    # 包含 run_consolidation 本身的顶层步骤，以及 library.consolidate() 透传上来的
+    # 内部子步骤。
+    step_timings: list = field(default_factory=list)
 
     @property
     def has_findings(self) -> bool:
         return bool(self.prune_candidates or self.promotion_candidates)
+
+    @property
+    def timed_out_steps(self) -> list:
+        """本轮里超时被跳过的步骤名列表，供 /evolve consolidate 高亮展示。"""
+        return [s.name for s in self.step_timings if getattr(s, "status", None) == "timeout"]
 
     def to_dict(self) -> dict:
         return {
@@ -582,6 +591,8 @@ class ConsolidationReport:
                 self.affordance_weights_updated.to_dict()
                 if self.affordance_weights_updated is not None else None
             ),
+            "step_timings": [s.to_dict() for s in self.step_timings],
+            "timed_out_steps": self.timed_out_steps,
         }
 
 
@@ -610,103 +621,135 @@ def run_consolidation(
     当前版本只记录，实际的\"等待 N 个 session\"逻辑由晋升提案的消费方（evolution-agent）
     从提案元数据里读取，不在本函数内阻塞。
     """
+    from mini_agent.evolution.step_runner import DEFAULT_STEP_TIMEOUTS, run_step
+
     report = ConsolidationReport()
 
     # 8.2 剪枝候选
-    try:
-        report.prune_candidates = prune_skills(
+    def _run_prune():
+        candidates = prune_skills(
             paths, skill_loader,
             min_interval_days=prune_min_interval_days,
         )
-        # 记录已提案的 skill 的冷却时间
-        for c in report.prune_candidates:
+        for c in candidates:
             record_proposal(paths, "prune", c.name)
-    except Exception as _mini_agent_exc:
-        from mini_agent.errors import log_exception
-        log_exception(_mini_agent_exc, where='mini_agent.evolution.consolidation')
-        pass
+        return candidates
+
+    result, timing = run_step(
+        "prune_candidates", _run_prune,
+        timeout_seconds=DEFAULT_STEP_TIMEOUTS["prune_candidates"], default=[],
+    )
+    report.prune_candidates = result or []
+    report.step_timings.append(timing)
 
     # 8.3 能力地图
-    try:
-        report.capability_map = build_capability_map(paths, memory_backend)
-    except Exception as _mini_agent_exc:
-        from mini_agent.errors import log_exception
-        log_exception(_mini_agent_exc, where='mini_agent.evolution.consolidation')
-        pass
+    result, timing = run_step(
+        "capability_map",
+        lambda: build_capability_map(paths, memory_backend),
+        timeout_seconds=DEFAULT_STEP_TIMEOUTS["capability_map"], default=[],
+    )
+    report.capability_map = result or []
+    report.step_timings.append(timing)
 
     # 8.4 Scope 晋升候选
-    try:
-        report.promotion_candidates = check_scope_promotion(
+    def _run_scope_promotion():
+        candidates = check_scope_promotion(
             paths,
             min_projects=promote_min_projects,
             min_confidence=promote_min_confidence,
             min_interval_days=promote_min_interval_days,
         )
-        # 记录已提案的 pattern 的冷却时间
-        for c in report.promotion_candidates:
+        for c in candidates:
             record_proposal(paths, "promote", c.pattern_id)
-    except Exception as _mini_agent_exc:
-        from mini_agent.errors import log_exception
-        log_exception(_mini_agent_exc, where='mini_agent.evolution.consolidation')
-        pass
+        return candidates
+
+    result, timing = run_step(
+        "scope_promotion", _run_scope_promotion,
+        timeout_seconds=DEFAULT_STEP_TIMEOUTS["scope_promotion"], default=[],
+    )
+    report.promotion_candidates = result or []
+    report.step_timings.append(timing)
 
     # 8.6 知识巩固（perception/library_index.py）：
     #   - 批量处理未分类候选，聚类归纳出新的分类节点（"新学科诞生"）
     #   - 批量重写攒够证据（pending_evidence_count 达阈值）的实体摘要
     # 只在 memory_backend 是本地 MemoryStore 且带有 library_index 时生效；
     # 其它 backend（Chroma/Redis 等）尚未接入图书馆式索引，直接跳过。
-    try:
-        library = getattr(memory_backend, "library", None) if memory_backend else None
-        if library is not None:
-            report.knowledge_consolidation = library.consolidate(
+    library = getattr(memory_backend, "library", None) if memory_backend else None
+    if library is not None:
+        # library.consolidate() 内部自己也用 run_step 拆了更细的子步骤
+        # （见 perception/library_index.py），这里给它的总超时是内部各子步骤
+        # 超时之和的一个较宽松上界，纯粹是最后一道保险，正常情况下不应该触发
+        # （内部子步骤各自超时后会自行跳过，不会拖到这个外层超时）。
+        _library_total_timeout = sum(
+            DEFAULT_STEP_TIMEOUTS[k] for k in (
+                "entity_summary_rewrite", "entity_consolidate", "wiki_mirror",
+                "wiki_index_rebuild", "topics_generation", "world_model_pending",
+            )
+        ) + 30.0
+        result, timing = run_step(
+            "knowledge_consolidation",
+            lambda: library.consolidate(
                 memory_backend,
                 llm_call=knowledge_llm_call,
                 min_cluster_size=knowledge_min_cluster_size,
                 summary_threshold=knowledge_summary_threshold,
-            )
-    except Exception as _mini_agent_exc:
-        from mini_agent.errors import log_exception
-        log_exception(_mini_agent_exc, where='mini_agent.evolution.consolidation.knowledge_consolidation')
-        pass
+            ),
+            timeout_seconds=_library_total_timeout, default={},
+        )
+        report.knowledge_consolidation = result or {}
+        report.step_timings.append(timing)
+        # library.consolidate() 内部子步骤计时（如果实现了 step_timings 透传）
+        # 一并合并进顶层报告，供 /evolve consolidate 统一展示。
+        inner_timings = (result or {}).get("step_timings") or []
+        report.step_timings.extend(inner_timings)
 
     # 决策/取舍知识提炼计划 —— 巩固循环批量节流新建：
     # compact 阶段只把决策候选 append 到 pending 队列（wiki/decision_writer.py::
     # queue_candidates），这里批量读取、合并同批次里指向同一件事的多条候选后
     # 才真正落盘，避免逐条即时落盘导致 wiki/decisions/ 碎片化。与其它步骤一致，
     # 失败静默降级，不阻断 巩固循环 主流程。
-    try:
+    def _run_decision_consolidation():
         from mini_agent.wiki.decision_writer import consolidate_pending
-        decision_report = consolidate_pending(
+        return consolidate_pending(
             paths, min_new_interval_days=decision_batch_min_interval_days
-        )
-        report.decision_consolidation = decision_report.actions
-    except Exception as _mini_agent_exc:
-        from mini_agent.errors import log_exception
-        log_exception(_mini_agent_exc, where='mini_agent.evolution.consolidation.decision_consolidation')
-        pass
+        ).actions
+
+    result, timing = run_step(
+        "decision_consolidation", _run_decision_consolidation,
+        timeout_seconds=DEFAULT_STEP_TIMEOUTS["decision_consolidation"], default=[],
+    )
+    report.decision_consolidation = result or []
+    report.step_timings.append(timing)
 
     # [方案三，见 next_doc/priority_improvements_implementation_plan.md]
     # 自我进化"用户真实反馈"闭环：检查已到观察期截止时间的效果回填记录，
     # 判定 improved/no_change/worsened，供 /digest 与 /evolution outcomes 展示。
     # 与 8.2~8.6 各步骤保持一致的失败静默降级：异常不阻断 巩固循环 主流程。
-    try:
+    def _run_outcome_tracking():
         from mini_agent.evolution import outcome_tracker
-        report.outcome_tracking_resolved = outcome_tracker.tick(paths, memory_backend)
-    except Exception as _mini_agent_exc:
-        from mini_agent.errors import log_exception
-        log_exception(_mini_agent_exc, where='mini_agent.evolution.consolidation.outcome_tracking')
-        pass
+        return outcome_tracker.tick(paths, memory_backend)
+
+    result, timing = run_step(
+        "outcome_tracking", _run_outcome_tracking,
+        timeout_seconds=DEFAULT_STEP_TIMEOUTS["outcome_tracking"], default=[],
+    )
+    report.outcome_tracking_resolved = result or []
+    report.step_timings.append(timing)
 
     # [方案四] Affordance / 自我模型闭环学习：用 outcome_tracker 的效果回填
     # 结果周期性校准 AffordanceMap 三路来源的展示权重。失败静默降级，
     # 与其它步骤一致，不阻断 巩固循环 主流程。
-    try:
+    def _run_affordance_calibration():
         from mini_agent.perception.affordance_calibration import calibrate
-        report.affordance_weights_updated = calibrate(paths)
-    except Exception as _mini_agent_exc:
-        from mini_agent.errors import log_exception
-        log_exception(_mini_agent_exc, where='mini_agent.evolution.consolidation.affordance_calibration')
-        pass
+        return calibrate(paths)
+
+    result, timing = run_step(
+        "affordance_calibration", _run_affordance_calibration,
+        timeout_seconds=DEFAULT_STEP_TIMEOUTS["affordance_calibration"], default=None,
+    )
+    report.affordance_weights_updated = result
+    report.step_timings.append(timing)
 
     # 记录本次运行时间
     try:

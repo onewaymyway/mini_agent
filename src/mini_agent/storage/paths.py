@@ -335,6 +335,28 @@ class AgentPaths:
         阈值，延续本改进计划一贯的"先观测、再调参"执行纪律。"""
         return self.wiki_index_dir / "topics_reconsolidation_log.jsonl"
 
+    @property
+    def wiki_decommission_report_path(self) -> Path:
+        """<project_root>/.agent/wiki/_index/decommission_report.json — 旧图书馆索引
+        （classification.py/entity_index.py/catalog.py）下线评估报告
+        （next_doc/wiki_next_phase_improvement_plan.md 第 1 节）。
+
+        由 wiki/decommission.py::check_and_plan() 写入，只读评估结果的快照，
+        不是可执行的下线动作本身——是否真的下线仍需人工确认。可随时删除重建。
+        """
+        return self.wiki_index_dir / "decommission_report.json"
+
+    @property
+    def wiki_gap_scan_log_path(self) -> Path:
+        """<project_root>/.agent/wiki/_index/gap_scan_log.jsonl — 知识缺口扫描历史
+        （next_doc/wiki_next_phase_improvement_plan.md 第 4.2.3 / 5 节）。
+
+        每次 `wiki/gap_scanner.py::scan_gaps()` 被 daemon cron job 调用时追加一条
+        记录（发现了多少个缺口、是否触发了 --dispatch），供后续校准扫描频率与
+        `max_results` 参数。append-only，可随时清空不影响后续扫描。
+        """
+        return self.wiki_index_dir / "gap_scan_log.jsonl"
+
     def wiki_type_dir(self, page_type: str) -> Path:
         """按 type 取对应目录，type 取值见 wiki.parser.PAGE_TYPES。"""
         mapping = {

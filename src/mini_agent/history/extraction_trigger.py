@@ -35,6 +35,77 @@ _DEFAULT_CONNECTIVE_KEYWORDS = (
 # 时间后再调整。
 _DEFAULT_CONNECTIVE_DENSITY_THRESHOLD = 0.6  # 每 100 字符至少 0.6 次命中
 
+# 改进计划第 4 节：独立的"实体密度"触发信号，和上面的连接词密度并列、
+# 互不干扰——connective_density 本质上是"决策/纠正语境探测器"，对纯描述性的
+# 世界知识（"这个项目用 FastAPI + PostgreSQL"）天然低敏感，永远攒不够密度。
+# 这里用一组很粗的正则去抓"看起来像专有名词/版本号/路径"的候选词，
+# 不做真正 NER（成本要保持零 LLM），宁可粗一点多触发几次。
+import re as _re
+
+_ENTITY_TERM_PATTERNS = (
+    # CamelCase / PascalCase 词（如 FastAPI、PostgreSQL）
+    _re.compile(r"\b[A-Z][a-zA-Z]*[A-Z][a-zA-Z]*\b"),
+    # 名称+版本号（如 Python3.11、React 18、node v20）
+    _re.compile(r"\b[A-Za-z][A-Za-z._-]{1,20}\s?v?\d+(?:\.\d+){0,3}\b"),
+    # 路径/配置项风格token（含 / 或 . 且长度 >=4，避免命中普通小数）
+    _re.compile(r"\b[\w-]+(?:[./][\w-]+){1,}\b"),
+    # 全大写缩写（3 位以上，如 API、SDK、ORM）
+    _re.compile(r"\b[A-Z]{3,}\b"),
+)
+
+_DEFAULT_MIN_NEW_ENTITY_TERMS = 3
+
+
+def _extract_entity_terms(entries: list[dict]) -> set[str]:
+    """从条目文本里用一组粗正则抓候选实体词，不做语义判断。"""
+    text = "".join(_extract_text(e) for e in entries)
+    if not text:
+        return set()
+    terms: set[str] = set()
+    for pattern in _ENTITY_TERM_PATTERNS:
+        for m in pattern.finditer(text):
+            token = m.group(0).strip()
+            if token:
+                terms.add(token)
+    return terms
+
+
+def load_known_entity_names(paths) -> set[str]:
+    """从已有 wiki entity 页面粗略取一份"已知名字"集合，用于过滤掉
+    `_extract_entity_terms()` 里已经在 wiki 里出现过的词，避免对已经记录过的
+    实体反复触发。只用页面 id 的原始 slug 分词做近似匹配（不追求精确），
+    读取失败（wiki 目录不存在等）返回空集合，调用方据此退化为"所有候选词
+    都算新词"，宁可多触发也不要因为读取失败永久停止触发。
+    """
+    try:
+        from mini_agent.wiki.indexer import discover_pages
+        from mini_agent.wiki.parser import parse_page
+    except ImportError:
+        return set()
+    names: set[str] = set()
+    try:
+        for p in discover_pages(paths):
+            if "entities" not in str(p):
+                continue
+            try:
+                page = parse_page(p)
+            except Exception:
+                continue
+            names.add(page.id.lower())
+            names.update(part.lower() for part in page.id.split("-") if len(part) > 2)
+    except Exception:
+        return set()
+    return names
+
+
+def _entity_density_new_terms(
+    entries: list[dict], known_entity_names: frozenset[str]
+) -> set[str]:
+    terms = _extract_entity_terms(entries)
+    if not known_entity_names:
+        return terms
+    return {t for t in terms if t.lower() not in known_entity_names}
+
 
 @dataclass
 class ExtractionWindowCandidate:
@@ -42,7 +113,7 @@ class ExtractionWindowCandidate:
 
     start_index: int          # raw history 起始条目 index（含）
     end_index: int             # 结束 index（不含），即调用时刻的 len(raw_entries)
-    trigger_reason: str        # "connective_density" | "turn_count" | "session_end"
+    trigger_reason: str        # "connective_density" | "entity_density" | "turn_count" | "session_end"
     signal_score: float        # 触发强度，用于排队优先级（本模块不做排队，仅透传）
 
 
@@ -82,12 +153,22 @@ def scan_for_extraction_window(
     min_window_turns: int = 6,
     connective_keywords: tuple[str, ...] = _DEFAULT_CONNECTIVE_KEYWORDS,
     connective_density_threshold: float = _DEFAULT_CONNECTIVE_DENSITY_THRESHOLD,
+    known_entity_names: frozenset[str] = frozenset(),
+    min_new_entity_terms: int = _DEFAULT_MIN_NEW_ENTITY_TERMS,
 ) -> Optional[ExtractionWindowCandidate]:
-    """规则驱动、零 LLM 成本的候选窗口探测（计划 §1.2.1 触发规则 1/2）。
+    """规则驱动、零 LLM 成本的候选窗口探测（计划 §1.2.1 触发规则 1/2，
+    改进计划第 4 节新增规则 1b）。
 
     触发规则（满足任一即返回候选窗口）：
     1. **连接词密度**：`last_extracted_index` 之后新增条目文本中，
        "因为/所以/决定/改为/放弃/取代/而不是"等词的密度超过阈值。
+       这条规则本质上是"决策/纠正语境探测器"。
+    1b. **实体密度**（改进计划第 4 节）：新增条目里出现的"看起来像专有名词/
+       版本号/路径"的候选词（不在 `known_entity_names` 里的"新词"）数量达到
+       `min_new_entity_terms`。这条规则是 1 的补充，专门覆盖 1 抓不到的
+       纯描述性世界知识（"这个项目用 FastAPI + PostgreSQL"这类没有转折词的
+       陈述句）——两条规则触发原因分开记录在 `trigger_reason` 里，方便后续
+       统计各自覆盖的知识类型是否真的不同，而不是重叠冗余。
     2. **轮次计数**：新增条目里的真实用户输入轮次（`is_turn_boundary`）
        达到 `min_window_turns`，无论连接词密度如何——避免长期空转、话题
        平淡但确实积累了内容的 session 永远不被抽取。
@@ -119,6 +200,15 @@ def scan_for_extraction_window(
             end_index=end_index,
             trigger_reason="connective_density",
             signal_score=density,
+        )
+
+    new_terms = _entity_density_new_terms(new_entries, known_entity_names)
+    if len(new_terms) >= min_new_entity_terms:
+        return ExtractionWindowCandidate(
+            start_index=last_extracted_index,
+            end_index=end_index,
+            trigger_reason="entity_density",
+            signal_score=float(len(new_terms)),
         )
 
     turn_count = sum(1 for e in new_entries if is_turn_boundary(e))

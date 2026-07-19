@@ -118,6 +118,40 @@ _BUILTIN_JOBS: list[dict] = [
         "enabled": True,
     },
     {
+        # next_doc/wiki_next_phase_improvement_plan.md 第 5 节：wiki 巩固此前
+        # 完全捆在 sys:consolidation 一次 6 小时任务里跑（且 wiki 部分只是
+        # 其中一个子步骤），无法单独观测/调频/手动触发。这里拆出"主动缺口
+        # 发现"这一类动作单独调度——它和 sys:consolidation 里的被动镜像/
+        # 判重不是一回事：sys:consolidation 处理"已经进了 pending 队列的
+        # 内容该怎么整理"，这个 job 处理"wiki 里哪些地方明显缺内容，该不该
+        # 主动补"。频率比 sys:consolidation 更低（12h），因为触发的补全
+        # 子任务本身成本更高。
+        "id": "sys:wiki_gap_scan",
+        "name": "wiki 知识缺口扫描",
+        "schedule": "interval:43200",
+        "description": "扫描浅层实体/孤儿页面/陈旧专题页，标注陈旧专题页并可派发补全子任务（每 12 小时）",
+        "task_template": (
+            "[wiki 维护] 执行一次 /wiki gap-scan --max-results 3，"
+            "查看是否发现浅层实体或孤儿页面；如果发现的缺口确实值得花时间补全"
+            "（比如某个核心模块只有一句描述、缺乏关系），可以自行读源码/文档"
+            "补全对应 wiki 页面，不需要机械地对每条缺口都行动"
+        ),
+        "tags": ["maintenance", "wiki"],
+        "enabled": True,
+    },
+    {
+        # next_doc/wiki_next_phase_improvement_plan.md 第 5 节：低频清理类，
+        # 和 sys:digest_trim 同属一档（7d 一次），处理 wiki/world_writer.py
+        # 兜底页长期堆积、没人整理的问题。
+        "id": "sys:wiki_fallback_cleanup",
+        "name": "wiki 兜底页面清理",
+        "schedule": "interval:604800",
+        "description": "归并/标记 session-facts 兜底页里长期未被合并的 fact（每 7 天）",
+        "task_template": "[wiki 维护] 执行一次 /wiki fallback-cleanup --days 30",
+        "tags": ["maintenance", "wiki"],
+        "enabled": True,
+    },
+    {
         "id": "sys:workdir_sync",
         "name": "工作区知识整合",
         "schedule": "interval:3600",

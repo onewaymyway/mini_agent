@@ -506,33 +506,69 @@ class LibraryIndex:
             if old_ids:
                 store.rewrite_categories({eid: new_code for eid in old_ids})
 
+        # 改进计划第 3 节：内部子步骤级限时执行。以下步骤 3/4/5/5b/6/7 各自
+        # 用 run_step 包一层独立超时预算（evolution/step_runner.py::
+        # DEFAULT_STEP_TIMEOUTS），超时或异常都按"本轮跳过、下一轮自然重试"
+        # 处理，和原有的裸 try/except 语义一致，只是新增了耗时上界。
+        from mini_agent.evolution.step_runner import DEFAULT_STEP_TIMEOUTS, run_step
+
+        step_timings: list = []
+
         # 3. 实体摘要批量重写（含改进1冲突检测，见 EntityStore.rewrite_summary）
         due_entities = self.entities.due_for_summary_rewrite(threshold=summary_threshold)
         all_entries_by_id = {e.entry_id: e for e in store.all_entries()}
-        rewritten = 0
-        for entity in due_entities:
-            texts = [
-                all_entries_by_id[eid].to_search_text()
-                for eid in entity.related_entry_ids
-                if eid in all_entries_by_id
-            ]
-            if not texts:
-                continue
-            self.entities.rewrite_summary(entity, texts, llm_call=llm_call)
-            rewritten += 1
+
+        def _rewrite_summaries():
+            count = 0
+            for entity in due_entities:
+                texts = [
+                    all_entries_by_id[eid].to_search_text()
+                    for eid in entity.related_entry_ids
+                    if eid in all_entries_by_id
+                ]
+                if not texts:
+                    continue
+                self.entities.rewrite_summary(entity, texts, llm_call=llm_call)
+                count += 1
+            return count
+
+        rewritten, timing = run_step(
+            "entity_summary_rewrite", _rewrite_summaries,
+            timeout_seconds=DEFAULT_STEP_TIMEOUTS["entity_summary_rewrite"], default=0,
+        )
+        rewritten = rewritten or 0
+        step_timings.append(timing)
+        # 超时时可能只完成了部分实体的摘要重写，due_entities 里剩下"没轮到"的
+        # 实体本轮不再镜像进 wiki（步骤5只镜像"已确认重写完成"的实体，避免
+        # 把摘要还是旧版本的实体也当作"本轮更新"镜像出去）——这里退化处理：
+        # 超时时后续 wiki 镜像步骤直接跳过整批 due_entities，宁可少镜像一轮，
+        # 也不引入"镜像了摘要未更新的实体"这种不一致。
+        if timing.status != "ok":
+            due_entities = []
 
         # 4. 实体巩固：去噪 + 近重复合并（改进3）
-        entity_stats = self.entities.consolidate_entities(
-            llm_call=llm_call, similarity_threshold=entity_similarity_threshold,
+        entity_stats, timing = run_step(
+            "entity_consolidate",
+            lambda: self.entities.consolidate_entities(
+                llm_call=llm_call, similarity_threshold=entity_similarity_threshold,
+            ),
+            timeout_seconds=DEFAULT_STEP_TIMEOUTS["entity_consolidate"], default={},
         )
+        entity_stats = entity_stats or {}
+        step_timings.append(timing)
 
         # 5. wiki 镜像（wiki式知识库重构计划阶段二）
-        wiki_mirrored, wiki_dedup_merged = self._consolidate_wiki_mirror(
-            due_entities,
-            wiki_dedup=wiki_dedup,
-            llm_call=llm_call,
-            wiki_embed_call=wiki_embed_call,
+        (wiki_mirrored, wiki_dedup_merged), timing = run_step(
+            "wiki_mirror",
+            lambda: self._consolidate_wiki_mirror(
+                due_entities,
+                wiki_dedup=wiki_dedup,
+                llm_call=llm_call,
+                wiki_embed_call=wiki_embed_call,
+            ),
+            timeout_seconds=DEFAULT_STEP_TIMEOUTS["wiki_mirror"], default=(0, 0),
         )
+        step_timings.append(timing)
 
         # 5b. 世界模型候选批量落盘（wiki 式知识库改进计划 P1）：消费 compact
         # 阶段（history/compression.py::LLMSummaryStrategy）攒下的
@@ -542,51 +578,65 @@ class LibraryIndex:
         world_entities_created = 0
         world_facts_merged = 0
         if self._wiki_paths is not None:
-            try:
+            def _world_consolidate():
                 from mini_agent.wiki.world_writer import consolidate_pending as world_consolidate_pending
 
                 world_report = world_consolidate_pending(self._wiki_paths, llm_call=llm_call)
-                world_entities_created = sum(
+                created = sum(
                     1 for a in world_report.actions if a.kind in ("entity_created", "entity_updated")
                 )
-                world_facts_merged = sum(
+                merged = sum(
                     1 for a in world_report.actions if a.kind in ("fact_merged", "fact_fallback")
                 )
-            except Exception:
-                pass
+                return (created, merged)
+
+            result, timing = run_step(
+                "world_model_pending", _world_consolidate,
+                timeout_seconds=DEFAULT_STEP_TIMEOUTS["world_model_pending"], default=(0, 0),
+            )
+            world_entities_created, world_facts_merged = result or (0, 0)
+            step_timings.append(timing)
 
         # 6. wiki 索引重建（wiki式知识库重构计划阶段三）
         wiki_index_rebuilt = False
         wiki_pages_indexed = 0
+        idx_result = None
         if self._wiki_paths is not None and (
             wiki_mirrored or wiki_dedup_merged or world_entities_created or world_facts_merged
         ):
-            try:
+            def _rebuild_index():
                 from mini_agent.wiki.indexer import build_index
+                return build_index(self._wiki_paths, incremental=True)
 
-                idx_result = build_index(self._wiki_paths, incremental=True)
+            idx_result, timing = run_step(
+                "wiki_index_rebuild", _rebuild_index,
+                timeout_seconds=DEFAULT_STEP_TIMEOUTS["wiki_index_rebuild"], default=None,
+            )
+            step_timings.append(timing)
+            if idx_result is not None:
                 wiki_index_rebuilt = True
                 wiki_pages_indexed = len(idx_result.pages)
-            except Exception:
-                # 索引重建失败不应该让巩固循环本身报错——下次巩固循环或
-                # 手动 /wiki rebuild 都能重试。
-                pass
 
         # 7. 专题页生成（wiki式知识库重构计划阶段四）
         topics_generated: list[str] = []
         if self._wiki_paths is not None and llm_call is not None:
-            try:
-                from mini_agent.wiki.topics import consolidate_topics
-
-                topics_generated = consolidate_topics(self._wiki_paths, llm_call)
-            except Exception:
-                topics_generated = []
+            result, timing = run_step(
+                "topics_generation",
+                lambda: __import__(
+                    "mini_agent.wiki.topics", fromlist=["consolidate_topics"]
+                ).consolidate_topics(self._wiki_paths, llm_call),
+                timeout_seconds=DEFAULT_STEP_TIMEOUTS["topics_generation"], default=[],
+            )
+            topics_generated = result or []
+            step_timings.append(timing)
 
         # 7b. wiki 转正评估每日快照（wiki 式知识库改进计划 P4）：记录当天的
         # source_kind 目标占比与校验错误数，供 /wiki promotion 命令累积判断
         # "转正"三项标准是否达成。同一天只记一次（record_daily_snapshot 内部
         # 幂等），复用步骤 6 已经算出的 idx_result.validation（没跑到步骤 6
         # 时——即本轮巩固循环没有任何 wiki 写入——传 None 让函数自己算一遍）。
+        # 这一步本身很轻量（一次 jsonl 追加），不单独进 DEFAULT_STEP_TIMEOUTS，
+        # 仍保留裸 try/except。
         if self._wiki_paths is not None:
             try:
                 from mini_agent.wiki.promotion import record_daily_snapshot
@@ -612,6 +662,7 @@ class LibraryIndex:
             "wiki_index_rebuilt": wiki_index_rebuilt,
             "wiki_pages_indexed": wiki_pages_indexed,
             "wiki_topics_generated": topics_generated,
+            "step_timings": step_timings,
         }
 
     def _consolidate_wiki_mirror(

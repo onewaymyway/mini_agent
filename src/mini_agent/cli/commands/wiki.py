@@ -36,7 +36,8 @@ def handle_wiki_cmd(args: list[str], agent=None) -> None:
         R.print_error(
             "Usage: /wiki <page-id> | /wiki list [--type T] | "
             "/wiki search <query> [--deep] | /wiki rebuild [--full] | "
-            "/wiki stats | /wiki promotion | /wiki lifecycle-scan [--days N]"
+            "/wiki stats | /wiki promotion | /wiki lifecycle-scan [--days N] | "
+            "/wiki gap-scan [--max-results N] [--dispatch] | /wiki fallback-cleanup [--days N]"
         )
         return
 
@@ -55,6 +56,10 @@ def handle_wiki_cmd(args: list[str], agent=None) -> None:
         _handle_promotion(rest, agent)
     elif sub == "lifecycle-scan":
         _handle_lifecycle_scan(rest, agent)
+    elif sub == "gap-scan":
+        _handle_gap_scan(rest, agent)
+    elif sub == "fallback-cleanup":
+        _handle_fallback_cleanup(rest, agent)
     else:
         _handle_show(sub, agent)
 
@@ -432,4 +437,132 @@ def _handle_lifecycle_scan(rest: list[str], agent) -> None:
         f"生命周期巡检完成：扫描 {result['scanned']} 篇，"
         f"新标记 stale {result['marked_stale']} 篇（阈值 {threshold_days} 天）"
     )
+
+
+def _handle_gap_scan(rest: list[str], agent) -> None:
+    """/wiki gap-scan [--max-results N] [--dispatch] —— 知识缺口主动扫描
+    （改进计划第 4.2.3 / 5 节）。
+
+    默认（不带 --dispatch）只打印报告，方便先手动跑几次观察缺口质量；
+    带 --dispatch 时，把 shallow_entity/orphan_page 类缺口包装成任务描述
+    提交进 InputQueue（stale_topic 类缺口不需要派发，扫描时已经直接标注）。
+    """
+    paths = _get_paths(agent)
+    if paths is None:
+        return
+
+    max_results = 5
+    if "--max-results" in rest:
+        try:
+            max_results = int(rest[rest.index("--max-results") + 1])
+        except (ValueError, IndexError):
+            R.print_error("--max-results 需要一个整数参数")
+            return
+    dispatch = "--dispatch" in rest
+
+    from mini_agent.wiki.gap_scanner import mark_stale_topics, scan_gaps
+
+    gaps = scan_gaps(paths, max_results=max_results)
+    if not gaps:
+        R.console.print("[dim]本次扫描没有发现明显的知识缺口[/dim]")
+        return
+
+    stale_marked = mark_stale_topics(paths, gaps)
+
+    from rich import box as rbox
+    from rich.table import Table
+
+    t = Table(box=rbox.SIMPLE, show_header=True, header_style="bold dim")
+    t.add_column("page_id", min_width=24)
+    t.add_column("gap_kind", min_width=14)
+    t.add_column("suggested_action", min_width=40)
+    for g in gaps:
+        t.add_row(g.page_id, g.gap_kind, g.suggested_action)
+
+    R.console.print(f"\n[bold]知识缺口扫描[/bold] [dim]({len(gaps)} 条，"
+                     f"其中 {stale_marked} 篇陈旧专题页已自动标注)[/dim]")
+    R.console.print(t)
+
+    dispatched = 0
+    if dispatch and agent is not None:
+        queue = getattr(agent, "_input_queue", None)
+        dispatchable = [g for g in gaps if g.gap_kind != "stale_topic"]
+        if queue is not None and hasattr(queue, "enqueue"):
+            for g in dispatchable:
+                try:
+                    queue.enqueue(
+                        f"[wiki_gap_scan] {g.suggested_action}（page_id={g.page_id}）",
+                        initiator="wiki_gap_scan",
+                        meta={"gap_kind": g.gap_kind, "page_id": g.page_id},
+                    )
+                    dispatched += 1
+                except Exception:
+                    continue
+        elif dispatchable:
+            R.console.print(
+                "\n[dim]当前上下文没有可用的 InputQueue（--dispatch 只在 daemon "
+                "autonomous_loop 上下文里生效，交互式 CLI 里只展示报告）[/dim]"
+            )
+    R.console.print(
+        f"\n[dim]{'已派发 ' + str(dispatched) + ' 个补全任务' if dispatch else '未加 --dispatch，仅展示报告，不派发任务'}[/dim]\n"
+    )
+
+    try:
+        import json as _json
+        import time as _time
+
+        with paths.wiki_gap_scan_log_path.open("a", encoding="utf-8") as f:
+            f.write(_json.dumps({
+                "ran_at": _time.time(),
+                "gaps_found": len(gaps),
+                "stale_marked": stale_marked,
+                "dispatched": dispatched,
+            }, ensure_ascii=False) + "\n")
+    except Exception:
+        pass
+
+
+def _handle_fallback_cleanup(rest: list[str], agent) -> None:
+    """/wiki fallback-cleanup [--days N] —— session-facts 兜底页归并/清理
+    （改进计划第 5.2 节）。
+
+    对超过 N 天（默认 30）且尚未被本命令处理过的 `entities/session-facts-*.md`
+    兜底页，重新跑一次判重：命中正式实体页则合并，未命中则标记 stale。
+    """
+    paths = _get_paths(agent)
+    if paths is None:
+        return
+
+    min_age_days = 30
+    if "--days" in rest:
+        try:
+            min_age_days = int(rest[rest.index("--days") + 1])
+        except (ValueError, IndexError):
+            R.print_error("--days 需要一个整数参数")
+            return
+
+    llm_call = None
+    pool = getattr(agent, "_client_pool", None) if agent is not None else None
+    if pool is not None:
+        from mini_agent.perception.memory_factory import build_llm_call
+
+        llm_call = lambda prompt: build_llm_call(pool.current_client)(prompt)  # noqa: E731
+
+    from mini_agent.wiki.fallback_cleanup import cleanup_fallback_pages
+
+    report = cleanup_fallback_pages(paths, min_age_days=min_age_days, llm_call=llm_call)
+    if report.scanned == 0:
+        R.console.print(
+            f"[dim]没有超过 {min_age_days} 天且未处理过的 session-facts 兜底页[/dim]"
+        )
+        return
+
+    R.print_success(
+        f"兜底页清理完成：扫描 {report.scanned} 篇，"
+        f"归并 {report.merged} 篇，标记 stale {report.marked_stale} 篇"
+        + (f"，{len(report.errors)} 篇处理失败" if report.errors else "")
+    )
+    if report.errors:
+        for e in report.errors[:5]:
+            R.console.print(f"[dim]  - {e}[/dim]")
 
