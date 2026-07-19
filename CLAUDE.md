@@ -200,19 +200,27 @@ mini-agent user token u_a1b2c3d4                       # 重新生成 token
 
 ### Wiki 式知识库 (`src/mini_agent/wiki/`)
 
-> 图书馆式索引（`perception/classification.py`/`entity_index.py`/`catalog.py`/`library_index.py`）之外的平行新实现，用 md 页面 + 显式关系图代替分类树 + 滚动覆盖摘要，解决"关系表达能力不足"与"知识不可直接阅读"两个结构性局限。两套系统过渡期并存，`LibraryIndex.wiki_paths` 非 `None` 时才启用双写/双检索，默认由 `MemoryConfig.wiki_enabled=True` 控制。详见 [Wiki 式知识库指南](docs/wiki-knowledge-base-guide.md)
+> 图书馆式索引（`perception/classification.py`/`entity_index.py`/`catalog.py`/`library_index.py`）之外的平行实现，用 md 页面 + 显式关系图代替分类树 + 滚动覆盖摘要，解决"关系表达能力不足"与"知识不可直接阅读"两个结构性局限。两套系统过渡期并存，`LibraryIndex.wiki_paths` 非 `None` 时才启用双写/双检索，默认由 `MemoryConfig.wiki_enabled=True` 控制；`MemoryConfig.library_wiki_search_primary=True`（默认）时 wiki 检索是优先路径，未命中才回退 `shelf_search`。经 O1-O4/E1-E3 改进计划（`next_doc/wiki知识库提取与组织层改进计划.md`，全部已完成）深化。详见 [Wiki 式知识库指南](docs/wiki-knowledge-base-guide.md)
 
-- `parser.py` — 解析单个 md 页面：frontmatter（`id`/`type`/`tags`/`status`/`links`/`source_entries` 等）+ 正文 + 正文内 `[[page-id]]` 弱引用（自动记为 `relation: mentions`）；`WikiPage.strong_links()`/`weak_links()` 按 `source` 字段（`"frontmatter"`|`"body"`）区分
-- `graph.py` — `GraphIndex`：内存图结构（正向边+反向边 dict，不引入 networkx），`expand(page_ids, strong_only=)` 对命中页面做一跳扩展，供检索"图扩展"阶段与 `validator.py` 死链检测复用
+- `parser.py` — 解析单个 md 页面：frontmatter（`id`/`type`/`tags`/`status`/`links`/`source_entries`/`grounded_hit_count`（O1）/`knowledge_state`/`last_validated_at`/`validated_by`（O4）等）+ 正文 + 正文内 `[[page-id]]` 弱引用（自动记为 `relation: mentions`）；`WikiPage.strong_links()`/`weak_links()` 按 `source` 字段（`"frontmatter"`|`"body"`）区分
+- `graph.py` — `GraphIndex`：内存图结构（正向边+反向边 dict，不引入 networkx），`expand(page_ids, strong_only=, max_hops=, decay=)`（O2：多跳衰减扩展，同节点多路径取最大权重）供检索"图扩展"阶段与 `validator.py` 死链检测复用，`expand_legacy()` 保留原一跳签名兼容既有调用
 - `indexer.py` — `discover_pages()`/`build_index()`：遍历 `wiki/` 生成 `_index/` 下 `graph.json`/`tags.json`/`backlinks.json`/`search_index.json` 四个可随时删除重建的派生索引，`incremental=True`（默认）时用 `_manifest.json`（mtime+hash）跳过未改动文件
-- `writer.py` — `write_page()`/`set_status()`/`append_section()`：原子写（tmp+fsync+`os.replace`），`append_section()` 用于双写路径的"追加历史沿革"场景
-- `validator.py` — `validate_pages()`：死链（`links.target` 指向不存在页面）、id 冲突、孤儿页面（无入边无出边）三类跨页面问题
-- `migration.py` — `migrate_entity_store()` 一次性把 `EntityStore` 现有实体导出成 `entities/*.md`（可重复运行，增量迁移）；`mirror_entity()` 单个实体的增量镜像，供 `library_index.py::on_new_entry()`/`consolidate()` 双写路径共用；`_migration_map.json` 维护 `entity_id → page_id` 映射（不属于可随时删除的 `_index/`，是双写路径依赖的持久状态）
-- `dedup.py` — `find_similar_page()`：页面相似度判断，默认规则打分（tag重合度+关键词Jaccard加权）+ 不确定区间只对 top-1 候选问一次 LLM 确认，`find_similar_page_embedding()` 保留为需显式传 `embed_call` 才启用的可选路径，两者互斥
-- `search.py` — `wiki_shelf_search()`：三段式检索（规则粗筛 → `GraphIndex.expand(strong_only=True)` 图扩展 → LLM 精排，精排要求回答后标注"基于页面:"解析进 `grounded_page_ids`），`LibraryIndex.wiki_search()` 暴露给外部，与 `shelf_search()` 并存不替换，`stage_reached` 标注实际走到哪一段
-- `topics.py` — `consolidate_topics()`：按 tag 聚类且组内 frontmatter 强链接密度达标（默认页面数≥4、密度≥0.5）时触发 LLM 综合聚合成 `topics/*.md`（`relation: absorbs`），已生成过的 tag（读 `source_tag` frontmatter）会被排除避免重复生成，接入 `LibraryIndex.consolidate()` 步骤 7
-- `decision_writer.py` — **[2026-07 新增]** 决策/取舍知识提炼落盘：`queue_candidates()` 供 compact 阶段把决策候选 append 到 `.agent/decision_candidates_pending.jsonl`（不落盘）；`consolidate_pending()` 供巩固循环批量消费——合并同批次指向同一件事的候选后调用 `process_candidates()`（命中已有决策页且方案一致→更新；方案变了→旧页 `status=overturned`、新建页用 `supersedes`/`superseded_by` 双向串联；未命中→新建 `status=settled`），"新建"动作套 `evolution/consolidation.py::rhythm_is_allowed()` 冷却
+- `index_reader.py` — **[O1 新增]** 读取 `_index/` 派生索引供 `search.py`/`dedup.py` 复用，避免每次调用都全量 `parse_page` 扫描 `wiki/`；索引缺失/过期时透明退回全量扫描
+- `writer.py` — `write_page()`/`set_status()`/`append_section()`：原子写（tmp+fsync+`os.replace`），`append_section()` 用于双写路径的"追加历史沿革"场景；`increment_grounded_hit_count()`（O1）/`update_lifecycle_fields()`/`replace_body()`（O4）
+- `validator.py` — `validate_pages()`：死链（`links.target` 指向不存在页面）、id 冲突、孤儿页面（无入边无出边）、`supersedes`/`superseded_by` 成对性（决策提炼）四类跨页面问题
+- `migration.py` — `migrate_entity_store()` 一次性把 `EntityStore` 现有实体导出成 `entities/*.md`（可重复运行，增量迁移）；`mirror_entity()` 单个实体的增量镜像，`load_entity_map()` 供 `library_index.py::on_new_entry()`/`consolidate()`/`mark_stale_from_correction()`（O4）共用；`_migration_map.json` 维护 `entity_id → page_id` 映射（不属于可随时删除的 `_index/`，是双写路径依赖的持久状态）
+- `entity_digest.py` — **[E3 新增]** `build_entity_digest()` 生成极简实体索引（`id + entity_type + 一句话描述`）反哺抽取 prompt，让模型识别实体时能复用已有 id 而不是裸命名；`world_writer.py` 用 `dedup.py` 分数对模型自报的 `reused_existing_id` 做二次校验
+- `dedup.py` — `find_similar_page()`：页面相似度判断，默认规则打分（tag重合度+关键词Jaccard加权）+ 不确定区间只对 top-1 候选问一次 LLM 确认，`find_similar_page_embedding()` 保留为需显式传 `embed_call` 才启用的可选路径，两者互斥；O1 后优先复用 `index_reader.py` 派生索引
+- `search.py` — `wiki_shelf_search()`：三段式检索（规则粗筛（含 O1 信度加权 + O4 `lifecycle_discount_enabled` 折扣开关，默认关闭）→ `GraphIndex.expand(strong_only=True, max_hops=)` 图扩展（O2 多跳）→ LLM 精排，精排要求回答后标注"基于页面:"解析进 `grounded_page_ids`），`LibraryIndex.wiki_search()` 暴露给外部，`stage_reached` 标注实际走到哪一段
+- `topics.py` — `consolidate_topics()`：按 tag 聚类且组内 frontmatter 强链接密度达标（默认页面数≥4、密度≥0.5）与 LLM 直接聚类（P3）两条候选路径并存生成新专题页；O3 新增再巩固扫描 `_find_topic_reconsolidation_candidates()`/`append_to_topic_page()`，达标新页面追加进已有 topic 而非参与新聚类（`TopicConfig.reconsolidation_interval_runs` 控制频率，`_index/topics_reconsolidation_log.jsonl` 记事件，累计追加超软上限标记 `needs_review`），接入 `LibraryIndex.consolidate()` 步骤 7
+- `world_writer.py` — 世界模型候选（`entities[]`/`facts[]`）批量落盘；O4 新增 `_next_fact_anchor()`/`_fact_content_with_anchor()`，fact 以正文内锚点注释（`<page-id>#fact-N; knowledge_state: ...`）实现独立于页面级 frontmatter 的状态标记
+- `lifecycle.py` — **[O4 新增]** `mark_page_state(paths, page_id, *, confidence, anchor=None)` 跨页面类型（entity/decision/experience/...）统一状态标记入口（`confidence` 取值 `fresh`/`stale`/`superseded`，写入独立字段 `knowledge_state`）；`touch_validated()` 隐式验证回升（`stale→fresh`，`superseded` 不回升）；`stale_candidate_scan()` 巡检久未验证页面，供 `/wiki lifecycle-scan` 调用
+- `stats.py` — `compute_stats()`（`by_type`/`by_entity_type`/`by_source_kind`/`by_knowledge_state`（O4））+ `compute_extraction_stats()`（E2 方案B：`avg_entities_per_extraction`/`avg_facts_per_extraction` 抽取充分性观测），供 `/wiki stats` 展示
+- `decision_writer.py` — 决策/取舍知识提炼落盘：`queue_candidates()` 供 compact 阶段把决策候选 append 到 `.agent/decision_candidates_pending.jsonl`（不落盘）；`consolidate_pending()` 供巩固循环批量消费——合并同批次指向同一件事的候选后调用 `process_candidates()`（命中已有决策页且方案一致→更新；方案变了→旧页 `status=overturned`、新建页用 `supersedes`/`superseded_by` 双向串联；未命中→新建 `status=settled`），"新建"动作套 `evolution/consolidation.py::rhythm_is_allowed()` 冷却
+- `promotion.py` — wiki 转正为主索引的三项标准量化（P4）：内容占比/校验通过率/检索 A/B 命中率，`/wiki promotion` 只读展示
 - `_templates/` — `entity.md`/`decision.md`/`process.md`/`experience.md`/`topic.md` 五种页面类型的 frontmatter 骨架
+
+`history/extraction_trigger.py::scan_for_extraction_window()` — **[E1 新增，不在 `wiki/` 目录下]** 独立于 compact 的候选窗口探测器（连接词密度+轮次兜底，零 LLM 成本），命中后 `history_manager.py::maybe_trigger_extraction()` 异步排队"仅抽取"LLM 调用，游标持久化在 `extraction_cursor.json`，`CompressConfig.extraction_trigger_enabled`/`extraction_trigger_dispatch_enabled` 两级开关
 
 ### HTTP API (`src/mini_agent/api/`)
 
@@ -233,7 +241,7 @@ mini-agent user token u_a1b2c3d4                       # 重新生成 token
 - `repl.py` — REPL 循环和斜杠命令处理；退出时自动打印 resume 提示（`_print_resume_hint()`）；含 `/agent` / `/goals` / `/digest` 路由（Stage 9）
 - `daemon.py` — 守护进程管理：`cmd_daemon_start/stop/status`、PID 文件管理（`.agent/daemon.pid` + `.agent/daemon_info.json`）、`DaemonClient`（HTTP 连接模式 CLI，含 `respond_permission`/`respond_interaction` 等）、`run_connected_repl`（Stage 9）；`_handle_connected_permission`/`_handle_connected_interaction` 分别渲染权限审批 / 通用交互式提问（ask_user 系列工具、`/goal` 协商、远程 slash 命令输入），两者机制对称
 - `commands/` — REPL 命令处理器（concurrency, plans, sessions, skills, tasks, agents, hooks, providers, evolution, evolve, eval_cmd, wiki）
-- `commands/wiki.py` — `/wiki <page-id>|list|search|rebuild`：浏览 wiki 式知识库页面/backlinks、三段式检索命令行封装、手动索引重建，详见 [Wiki 式知识库指南](docs/wiki-knowledge-base-guide.md)
+- `commands/wiki.py` — `/wiki <page-id>|list|search [--deep]|rebuild|stats|promotion|lifecycle-scan`：浏览 wiki 式知识库页面/backlinks、三段式检索（`--deep` 强制多跳图扩展，O2）、手动索引重建、内容来源与生命周期状态分布（O4）、转正评估（P4）、生命周期巡检（O4），详见 [Wiki 式知识库指南](docs/wiki-knowledge-base-guide.md)
 - `commands/debug_cmd.py` — `/debug system|history|all|save`：打印/导出当前 system prompt 与 history（含 `_type`/估算 token），便于分析调试；补全表 `_COMMANDS`（`ui/terminal.py`）同步注册
 - `commands/user_cmd.py` — `mini-agent user` 子命令（多用户架构）；通过 HTTP 调用 `/v1/users` 端点管理用户，不直接读写文件；支持 list / add / remove / role / token 子命令；需要 daemon 以 `--http-multi-user` 启动
   - `goals.py` — `/agent goals` 全部子命令（add/obj/done/abandon/accept/reject/pause/progress/status），`/goals`/`/digest` 快捷命令，`/goals accept|reject` 含 `SoftGoalDeriver.record_rejected()` 30天去重（Stage 9）
@@ -571,8 +579,10 @@ mini-agent user token u_a1b2c3d4                       # 重新生成 token
 - **阶段一（基础设施）**：新增 `src/mini_agent/wiki/` 包，页面用 md（frontmatter + 正文 + `[[link]]`）存储，`_index/` 下 `graph.json`/`tags.json`/`backlinks.json`/`search_index.json` 四个索引全部可随时删除、随时从 md 重新生成
 - **阶段二（迁移与双写）**：`migration.py::mirror_entity()` 把 `EntityStore` 实体镜像进 `wiki/entities/*.md`，接入 `LibraryIndex.on_new_entry()`/`consolidate()`；`dedup.py::find_similar_page()` 判重默认规则打分（tag重合度+关键词Jaccard）+ 不确定区间才问一次 LLM，embedding 保留为显式可选路径
 - **阶段三（检索切换）**：`search.py::wiki_shelf_search()` 三段式检索——规则粗筛 → `GraphIndex.expand(strong_only=True)` 图扩展 → LLM 精排（标注"基于页面:"依据），`LibraryIndex.wiki_search()` 暴露，与 `shelf_search()` 完全并存不替换；`consolidate()` 新增步骤 6 自动触发增量索引重建
-- **阶段四（专题页与收尾）**：`topics.py::consolidate_topics()` 按 tag 聚类且强链接密度达标（默认页面数≥4、密度≥0.5）时 LLM 综合聚合成 `topics/*.md`，接入 `consolidate()` 步骤 7；新增 `/wiki <page-id>|list|search|rebuild` 命令；"验证新检索路径效果稳定后下线旧路径"这一条有意保留未完成
+- **阶段四（专题页与收尾）**：`topics.py::consolidate_topics()` 按 tag 聚类且强链接密度达标（默认页面数≥4、密度≥0.5）时 LLM 综合聚合成 `topics/*.md`，接入 `consolidate()` 步骤 7；新增 `/wiki <page-id>|list|search|rebuild` 命令
 - **接线修复**：`wiki_paths` 参数虽在阶段二就加入 `LibraryIndex.__init__`，但 `memory_factory.py` 此前从未真正传递过，双写路径在真实 agent 运行中从未被触发；本次补上 `MemoryConfig.wiki_enabled`（默认开启）完成接线
+- **P4 转正 + 实际切换**：`wiki/promotion.py` 把"内容占比/校验通过率/检索 A/B 命中率"三项转正标准量化为可持续观测的指标（`/wiki promotion` 只读展示）；`context_builder.py` 现在默认（`MemoryConfig.library_wiki_search_primary=True`）优先尝试 `wiki_search`，未命中才回退 `shelf_search`——这次切换是在没有完整 P4 观测数据支撑下执行的，`library_wiki_search_primary` 设为 `False` 可随时完全退回旧路径
+- **O1-O4、E1-E3 提取层与组织层改进计划**（`next_doc/wiki知识库提取与组织层改进计划.md`，全部已完成）：O1 索引复用（`index_reader.py`）+ 信度分层（`grounded_hit_count`）；E3 实体摘要反哺抽取（`entity_digest.py`）；E1 抽取与 compact 解耦（`history/extraction_trigger.py`，独立触发窗口）；E2 抽取任务拆分（JSON schema 字段重排到 decisions/entities/facts 优先于 compact_summary）；O2 多跳衰减图扩展（`GraphIndex.expand(max_hops=, decay=)`）；O3 topic 再巩固（追加进已有 topic 而非只生成新的）；O4 统一知识生命周期状态机（`wiki/lifecycle.py`，`knowledge_state`/`last_validated_at`/`validated_by` 三个新 frontmatter 字段，`/wiki lifecycle-scan` 命令）。详见 [Wiki 式知识库指南](docs/wiki-knowledge-base-guide.md) §十 与各项独立实施记录（`next_doc/wiki提取层改进计划_*.md`）
 
 ### 决策/取舍知识提炼
 
@@ -583,7 +593,6 @@ mini-agent user token u_a1b2c3d4                       # 重新生成 token
 - **置信度与状态**：决策页 `confidence` 固定 `0.5`（低于 lesson 的 0.6、human correction 的 0.7，因为决策复盘是 agent 对自身历史行为的二次解读，主观重构风险更高）；`parser.py::STATUS_VALUES` 新增 `settled`/`overturned`，`validator.py` 新增 supersedes/superseded_by 成对性校验
 - **提案前主动召回**：`evolution/decision_recall.py::recall_related_decisions()` 复用 `wiki_shelf_search()` 三段式检索、限定 `type=decision`，按 `settled`/`overturned` 分别渲染提醒文字；已接入 `cli/commands/evolve.py::_spawn_evolution_agent()`——`/evolve review` spawn evolution-agent 前自动查一遍相关历史决策，把提醒前置注入 task context，异常静默降级不影响主流程
 - 详见 [Wiki 式知识库指南](docs/wiki-knowledge-base-guide.md) 九·2 节、[巩固循环 后台循环指南](docs/self-evolution-consolidation-guide.md) 4.4 节
-- 详见 [Wiki 式知识库指南](docs/wiki-knowledge-base-guide.md)
 
 ### 自主运行时（Stage 9 / Phase H）
 
@@ -690,7 +699,7 @@ mini-agent user token u_a1b2c3d4                       # 重新生成 token
 - [日志保存机制指南](docs/logging-mechanisms-guide.md) — 全项目日志/审计流（错误日志/LLM调试日志/daemon控制台日志/traces/行为事件等）保存机制汇总
 - [巩固循环 后台循环指南（Stage 8）](docs/self-evolution-consolidation-guide.md) — 剪枝候选 / 能力地图 / Scope 晋升 / 演化节奏治理
 - [图书馆式知识索引指南](docs/library-index-guide.md) — 分类树自动生长/合并 + 实体目录（冲突检测/去噪/近重复合并）+ 两步检索 + 检索反馈 + 纠正闭环 + 时间线查询 + 多用户书架隔离
-- [Wiki 式知识库指南](docs/wiki-knowledge-base-guide.md) — 图书馆式索引的平行新实现：md 页面存储 + 显式关系图 + 双写镜像 + 三段式检索（规则粗筛→图扩展→LLM精排）+ 专题页自动生成，`/wiki` 命令组
+- [Wiki 式知识库指南](docs/wiki-knowledge-base-guide.md) — 图书馆式索引的平行实现（已切换为默认优先检索路径）：md 页面存储 + 显式关系图 + 双写镜像 + 三段式检索（规则粗筛→多跳图扩展→LLM精排）+ 专题页自动生成与再巩固 + 统一知识生命周期状态机（O1-O4、E1-E3 提取层与组织层改进计划）
 - [Stage 9 自主运行时指南](docs/self-evolution-stage9-guide.md) — 常驻守护进程 / Goal Backlog / 三档位 AutonomousLoop / 资源仲裁
 - [跨子系统事件总线指南](docs/system-events-bus-guide.md) — `publish()`/`poll_since()` 轻量事件总线，已接入 frustration/记忆稀疏/效果回填负面判定/软目标候选复核/uncertainty 持续五类事件
 - [具身智能改进指南](docs/embodied-agent-guide.md) — 本体感知 / 余裕感知 / 工具透明性 / AgentSelfModel / 时间加权记忆 / 认知锚点 / 自维护模块（A/B/C 三阶段共 12 项）
