@@ -12,6 +12,7 @@ WikiPage 后传进来。
 from __future__ import annotations
 
 import os
+import re
 import tempfile
 from datetime import date, datetime, timezone
 from pathlib import Path
@@ -297,6 +298,26 @@ def replace_body(paths: AgentPaths, page: WikiPage, *, body: str) -> Path:
     return page.path
 
 
+def _last_section_content(body: str, heading: str) -> Optional[str]:
+    """提取正文里最后一个 `## <heading>` 段落的内容（到下一个 `## ` 或文末）。
+
+    找不到该 heading 时返回 `None`。用于 `append_section()` 的重复内容检测
+    ——修复的 bug：`wiki/migration.py::mirror_entity()` 每次有新记忆链接到
+    某实体就会调用一次 `_mirror_entities_to_wiki()`，摘要没变时追加的
+    "历史沿革"内容跟上一次一字不差，同一个高频实体（比如 goal 模式的
+    `goal` 概念实体）短时间内被反复镜像，正文里会堆出几十段完全相同的
+    "## 历史沿革"，页面失去可读性。
+    """
+    pattern = re.compile(
+        r"^## " + re.escape(heading) + r"[ \t]*\n\n(.*?)(?=\n## |\Z)",
+        re.MULTILINE | re.DOTALL,
+    )
+    matches = pattern.findall(body)
+    if not matches:
+        return None
+    return matches[-1].strip()
+
+
 def append_section(
     paths: AgentPaths,
     page: WikiPage,
@@ -305,11 +326,20 @@ def append_section(
     content: str,
     extra_links: Optional[list[WikiLink]] = None,
     extra_frontmatter_updates: Optional[dict] = None,
+    dedupe: bool = True,
 ) -> Path:
     """在既有页面正文末尾追加一个 section（用于"历史沿革"类追加更新）。
 
     直接操作已解析的 WikiPage.body，重新渲染整份文件后原子写回，保留原有
     frontmatter 字段（updated 会刷新为今天）。
+
+    `dedupe`（默认开启）：追加前跟同名 heading 下最后一段已有内容做精确
+    比较，完全相同则视为无意义的重复调用，直接跳过（不写文件、不刷新
+    `updated`，`page.path` 原样返回）——修复"同一实体反复被镜像、正文里
+    堆出几十段一字不差的历史沿革"的问题（见 `_last_section_content()` 的
+    说明）。只在追加内容真的和上一次不同、或该 heading 首次出现时才会
+    真正写入。传 `dedupe=False` 可以恢复旧行为（比如确实需要允许连续两条
+    内容相同的记录时）。
 
     `extra_links`（wiki 提取层与组织层改进计划 O3）：追加时顺带补充的
     frontmatter 强链接（比如 topic 页面吸收新成员时补充 `absorbs` 关系），
@@ -320,6 +350,11 @@ def append_section(
     字段（比如 topic 再巩固计数、`needs_review` 标记），与既有
     `raw_frontmatter` 合并（新值覆盖同名旧值），不传时行为不变。
     """
+    if dedupe:
+        last = _last_section_content(page.body, heading)
+        if last is not None and last == content.strip():
+            return page.path
+
     new_body = page.body.rstrip("\n") + f"\n\n## {heading}\n\n{content.strip()}\n"
     _core_keys = {
         "id", "type", "tags", "status", "confidence", "created", "updated",
