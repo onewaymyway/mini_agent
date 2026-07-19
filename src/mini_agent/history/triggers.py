@@ -144,7 +144,13 @@ class TurnCountTrigger(CompactTrigger):
         return cfg.compress.turn_count_trigger_enabled
 
     def should_trigger(self, ctx: TriggerContext, cfg: "AppConfig") -> TriggerResult:
-        delta = ctx.turns - ctx.last_compact_turns
+        # clamp(0, ...)：`agent/snapshot.py::_restore_turn_snapshot()`（/undo /retry
+        # 回滚）只回滚 stats.turns，不会同步回滚 _last_compact_turns 快照，
+        # 理论上可能出现 turns < last_compact_turns 的短暂负值区间——不 clamp
+        # 的话不影响触发判断本身（负数天然小于阈值），但会污染下面
+        # intensity_hint 的强度叠加（负值参与 min/max 计算语义不清晰），
+        # 统一在这里防御一次。
+        delta = max(0, ctx.turns - ctx.last_compact_turns)
         if delta >= cfg.compress.max_turns_before_compact:
             return TriggerResult(
                 triggered=True,
@@ -158,7 +164,7 @@ class TurnCountTrigger(CompactTrigger):
     def intensity_hint(self, ctx: TriggerContext, cfg: "AppConfig") -> float:
         if not self.is_enabled(cfg):
             return 0.0
-        delta = ctx.turns - ctx.last_compact_turns
+        delta = max(0, ctx.turns - ctx.last_compact_turns)
         return min(1.0, delta / max(1, cfg.compress.max_turns_before_compact))
 
 
@@ -171,7 +177,7 @@ class ToolCallCountTrigger(CompactTrigger):
         return cfg.compress.tool_call_count_trigger_enabled
 
     def should_trigger(self, ctx: TriggerContext, cfg: "AppConfig") -> TriggerResult:
-        delta = ctx.tool_calls - ctx.last_compact_tool_calls
+        delta = max(0, ctx.tool_calls - ctx.last_compact_tool_calls)
         if delta >= cfg.compress.max_tool_calls_before_compact:
             return TriggerResult(
                 triggered=True,
@@ -185,7 +191,7 @@ class ToolCallCountTrigger(CompactTrigger):
     def intensity_hint(self, ctx: TriggerContext, cfg: "AppConfig") -> float:
         if not self.is_enabled(cfg):
             return 0.0
-        delta = ctx.tool_calls - ctx.last_compact_tool_calls
+        delta = max(0, ctx.tool_calls - ctx.last_compact_tool_calls)
         return min(1.0, delta / max(1, cfg.compress.max_tool_calls_before_compact))
 
 
