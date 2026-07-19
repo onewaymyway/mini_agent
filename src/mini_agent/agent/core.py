@@ -112,8 +112,9 @@ class Agent(
         from mini_agent.role_agents.stuck_detector import StuckDetector
         self._turn_judge_stuck_detector: StuckDetector = StuckDetector(consecutive_limit=0)
 
-        from mini_agent.tools.builtin import configure_web_search
+        from mini_agent.tools.builtin import configure_web_search, configure_bash
         configure_web_search(cfg)
+        configure_bash(cfg)
 
         self.registry = registry or get_default_registry()
         self.skill_loader = skill_loader

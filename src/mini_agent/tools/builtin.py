@@ -63,6 +63,9 @@ def bash(command: str, timeout: int = 300, workdir: Optional[str] = None) -> str
     _env.setdefault("PYTHONUTF8", "1")
     _env.setdefault("PYTHONIOENCODING", "utf-8")
 
+    if _BASH_STREAM_OUTPUT_ENABLED:
+        return _bash_stream(command, timeout=timeout, cwd=cwd, env=_env)
+
     try:
         result = subprocess.run(
             command,
@@ -99,6 +102,145 @@ def bash(command: str, timeout: int = 300, workdir: Optional[str] = None) -> str
         import traceback
         traceback.print_exc()
         return f"[error: {e}]"
+
+
+# [SYS-BASH-STREAM] bash 工具"边跑边看"开关，由 AppConfig.bash_stream_output_enabled
+# 驱动。工具函数本身（被 ToolRegistry.call 以 **tool_input 方式调用）拿不到 cfg，
+# 沿用本文件里 configure_web_search(cfg) 同款写法：Agent.__init__ 时注入一次，
+# 之后 bash() 读这个模块级变量。默认 False，行为与旧版完全一致。
+_BASH_STREAM_OUTPUT_ENABLED = False
+
+
+def configure_bash(cfg) -> None:
+    """注入 AppConfig，控制 bash 工具是否边执行边把输出实时打印到终端。"""
+    global _BASH_STREAM_OUTPUT_ENABLED
+    _BASH_STREAM_OUTPUT_ENABLED = bool(getattr(cfg, "bash_stream_output_enabled", False))
+
+
+def _bash_decode(data: bytes) -> str:
+    for enc in ("utf-8", "gbk", "cp936"):
+        try:
+            return data.decode(enc)
+        except UnicodeDecodeError:
+            pass
+    return data.decode("utf-8", errors="replace")
+
+
+def _bash_stream(command: str, *, timeout: int, cwd: Path, env: dict) -> str:
+    """bash() 的流式实现：逐行读取子进程输出，边读边打印到终端；
+
+    超时时不再像旧版那样直接丢弃已产生的输出、只返回一句
+    "[timeout after Ns]"——而是把 timeout 之前已经拿到的内容原样保留在
+    返回结果里，并在末尾追加一个明确的超时标记，让调用方（无论是 LLM
+    还是人）既能看到已经发生了什么，也能明确知道命令没有正常跑完。
+
+    超时检测用独立看门狗线程（threading.Timer）强制 kill 进程，而不是
+    "每读到一行就检查一次时间"——后者对"命令长时间不产生任何输出"（比如
+    纯 `sleep N`）完全无效，因为 readline() 会一直阻塞到有数据或进程退出
+    才返回，循环体内的时间检查根本没有机会被执行到。
+    """
+    import mini_agent.ui.renderer as R
+    import threading
+    import signal
+    import platform
+
+    _is_windows = platform.system() == "Windows"
+    _popen_kwargs: dict = {}
+    if _is_windows:
+        # Windows 没有 os.setsid/os.killpg 这套 POSIX 进程组机制，改用
+        # CREATE_NEW_PROCESS_GROUP，超时时配合 taskkill /T /F 按进程树整棵杀。
+        _popen_kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
+    else:
+        # [BUGFIX] shell=True 时 command 实际是 "/bin/sh -c <command>"，
+        # proc 只是这层 shell 本身；shell 派生出的孙子进程（真正干活的那个）
+        # 默认继承同一个 stdout 管道写端。如果超时只 kill 掉 shell 这一层，
+        # 孙子进程会继续占着管道写端不放，readline() 拿不到 EOF，会一路
+        # 阻塞到孙子进程自然结束——超时机制形同虚设。这里用
+        # start_new_session=True 把整棵进程树放进独立进程组，超时时对
+        # 整个进程组发信号（os.killpg），才能真正杀干净。
+        _popen_kwargs["start_new_session"] = True
+
+    try:
+        proc = subprocess.Popen(
+            command,
+            shell=True,
+            cwd=cwd,
+            env=env,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,  # 合并到一路，保证时间顺序不错乱
+            bufsize=0,
+            **_popen_kwargs,
+        )
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return f"[error: {e}]"
+
+    timed_out_flag = threading.Event()
+
+    def _kill_on_timeout():
+        timed_out_flag.set()
+        if _is_windows:
+            try:
+                subprocess.run(
+                    ["taskkill", "/PID", str(proc.pid), "/T", "/F"],
+                    capture_output=True,
+                )
+            except Exception:
+                try:
+                    proc.kill()
+                except Exception:
+                    pass
+        else:
+            try:
+                os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+            except Exception:
+                try:
+                    proc.kill()
+                except Exception:
+                    pass
+
+    watchdog = threading.Timer(timeout, _kill_on_timeout)
+    watchdog.daemon = True
+    watchdog.start()
+
+    chunks: list[bytes] = []
+    try:
+        assert proc.stdout is not None
+        for line in iter(proc.stdout.readline, b""):
+            chunks.append(line)
+            try:
+                R.console.print(_bash_decode(line), end="")
+            except Exception:
+                pass  # 终端打印失败不应影响命令本身的执行/结果收集
+        proc.wait()
+    finally:
+        watchdog.cancel()
+        # 进程被 kill 后，管道里可能还残留一点没读完的缓冲内容，补读一次。
+        if proc.stdout is not None:
+            try:
+                rest = proc.stdout.read()
+                if rest:
+                    chunks.append(rest)
+                    try:
+                        R.console.print(_bash_decode(rest), end="")
+                    except Exception:
+                        pass
+            except Exception:
+                pass
+
+    combined = _bash_decode(b"".join(chunks)).rstrip()
+
+    if timed_out_flag.is_set():
+        # 关键行为：超时不丢弃已产生的部分输出，同时明确告知调用方"没跑完"。
+        note = f"[timeout after {timeout}s — partial output above, process killed]"
+        return (combined + "\n" + note) if combined else note
+
+    returncode = proc.returncode
+    if returncode not in (0, None):
+        combined += f"\n[exit code: {returncode}]"
+
+    return combined or "(no output)"
 
 
 # ── read_file ─────────────────────────────────────────────────────────────────

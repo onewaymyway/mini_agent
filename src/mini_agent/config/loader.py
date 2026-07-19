@@ -734,6 +734,10 @@ def load_config(
         # [compact_mechanism_improvement_plan P2-B]
         recall_history_enabled=_fb("recall_history_enabled", None, False),
         recall_history_mode=_f("recall_history_mode", None) or "keyword",
+        # [SYS-BASH-STREAM] bash 工具是否实时打印子进程输出（边跑边看），
+        # 默认 False，保持旧版一次性返回行为不变；agent_config.json 里
+        # 配置 "bash_stream_output_enabled": true 即可开启。
+        bash_stream_output_enabled=_fb("bash_stream_output_enabled", None, False),
         # 子配置块
         memory=memory_cfg,
         compress=compress_cfg,
