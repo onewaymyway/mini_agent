@@ -1,0 +1,1380 @@
+Revision: 2db460f403137a07cd68b156b039d8a80d0f0f78
+Author: oneway <onewaymyway0415@gmail.com>
+Date: 2026/7/11 19:11:08
+Message:
+nvdia 模型抓取skill
+
+----
+Added: .claude/skills/nvidia-build-scraper/SKILL.md
+Added: .claude/skills/nvidia-build-scraper/generate_providers_config.py
+Added: .claude/skills/nvidia-build-scraper/scrape_all.py
+Added: .claude/skills/nvidia-build-scraper/scrape_model_details.py
+Added: .claude/skills/nvidia-build-scraper/scrape_nvidia_models.py
+
+Revision: 94bcac99044738db627b91a16fa3a7fb1ae336f1
+Author: oneway <onewaymyway0415@gmail.com>
+Date: 2026/7/11 19:10:56
+Message:
+项目代码文档统计skill
+
+----
+Added: .claude/skills/project-stats/SKILL.md
+Added: .claude/skills/project-stats/count_lines.py
+
+Revision: 42a124030de2805eb3460ddc2eb7d8cb0d4e97f6
+Author: oneway <onewaymyway0415@gmail.com>
+Date: 2026/7/11 19:10:40
+Message:
+文档一致性检查skill
+
+----
+Added: .claude/skills/doc-consistency-check/SKILL.md
+
+Revision: 08a6bb7c47ef7782129e52942fa33479965c2bf1
+Author: oneway <onewaymyway0415@gmail.com>
+Date: 2026/7/11 19:00:01
+Message:
+优化daemon多session表现
+
+----
+Modified: src/mini_agent/ui/terminal.py
+
+Revision: bd72ec235099cda5ef91d1f3141a37ae605fc8b2
+Author: oneway <onewaymyway0415@gmail.com>
+Date: 2026/7/11 18:49:09
+Message:
+优化daemon多session表现
+
+----
+Modified: src/mini_agent/agent.py
+Modified: src/mini_agent/ui/terminal.py
+
+Revision: f62765094b51e341e0d161eceac346b13a10ea08
+Author: oneway <onewaymyway0415@gmail.com>
+Date: 2026/7/11 18:30:43
+Message:
+优化daemon多session表现
+
+----
+Modified: src/mini_agent/api/server.py
+Modified: src/mini_agent/ui/terminal.py
+
+Revision: d2203807207abd45728cecf0cdd2f50e900baf5d
+Author: oneway <onewaymyway0415@gmail.com>
+Date: 2026/7/11 18:22:27
+Message:
+优化daemon多session表现
+
+----
+Modified: src/mini_agent/ui/terminal.py
+
+Revision: 69eaa2db6a95f64c9eea722210e73f19f8399242
+Author: oneway <onewaymyway0415@gmail.com>
+Date: 2026/7/11 18:04:39
+Message:
+优化daemon多session表现
+
+----
+Modified: src/mini_agent/ui/terminal.py
+
+Revision: eca0f17029fb57a248a7521a6bd75cf2b4437dab
+Author: oneway <onewaymyway0415@gmail.com>
+Date: 2026/7/11 13:24:52
+Message:
+优化daemon多session表现
+
+----
+Modified: src/mini_agent/api/bridge.py
+Modified: src/mini_agent/api/routes.py
+Modified: src/mini_agent/api/server.py
+
+Revision: 987f73c3cff42dd967b1f4077f966c781d212df9
+Author: oneway <onewaymyway0415@gmail.com>
+Date: 2026/7/11 12:52:13
+Message:
+优化daemon多session表现
+
+----
+Modified: src/mini_agent/cli/app.py
+Modified: src/mini_agent/ui/terminal.py
+
+Revision: ac00ab8361a9011f38a58ed9d1b9484a43d9c41b
+Author: oneway <onewaymyway0415@gmail.com>
+Date: 2026/7/11 12:09:10
+Message:
+优化daemon多session表现
+
+----
+Modified: src/mini_agent/api/server.py
+
+Revision: 30995c4909b40dc2213caab4f7f13c7fb0dc6858
+Author: oneway <onewaymyway0415@gmail.com>
+Date: 2026/7/11 12:00:55
+Message:
+优化daemon多session表现
+
+----
+Modified: src/mini_agent/api/server.py
+
+Revision: 15674a07e4a3617610fea28f08fcb4943f4536df
+Author: oneway <onewaymyway0415@gmail.com>
+Date: 2026/7/11 11:45:56
+Message:
+优化daemon多session表现
+
+----
+Modified: src/mini_agent/cli/daemon.py
+
+Revision: 0ce01d20ea6e4b7a433df060df9e626ce9de4f49
+Author: oneway <onewaymyway0415@gmail.com>
+Date: 2026/7/11 8:37:46
+Message:
+优化daemon多session表现
+
+----
+Modified: src/mini_agent/api/server.py
+Modified: src/mini_agent/api/session_pool.py
+
+Revision: 9992eb9c5c9256c29124ed7e9ad9d11c8ba64b3d
+Author: oneway <onewaymyway0415@gmail.com>
+Date: 2026/7/11 8:11:45
+Message:
+daemon模式优化
+
+----
+Modified: src/mini_agent/api/routes.py
+Modified: src/mini_agent/cli/daemon.py
+
+Revision: f52dbd5ea8fe3aa3cdf4cd40b674d0210a234599
+Author: oneway <onewaymyway0415@gmail.com>
+Date: 2026/7/11 7:55:43
+Message:
+daemon模式优化
+
+----
+Modified: src/mini_agent/api/routes.py
+Modified: src/mini_agent/api/server.py
+
+Revision: 1b64d4fc9fc1cff7642b3694eccaeabd82c2263b
+Author: oneway <onewaymyway0415@gmail.com>
+Date: 2026/7/11 7:32:30
+Message:
+时间戳相关修改，统一使用本地时间
+
+----
+Modified: src/mini_agent/agent.py
+Modified: src/mini_agent/api/models.py
+Modified: src/mini_agent/api/user_store.py
+Modified: src/mini_agent/errors.py
+Modified: src/mini_agent/evolution/autonomous_loop.py
+Modified: src/mini_agent/evolution/resource_arbiter.py
+Modified: src/mini_agent/evolution/self_maintenance.py
+Modified: src/mini_agent/llm/debug_logger.py
+Modified: src/mini_agent/orchestrator/persona_profiles.py
+Modified: src/mini_agent/orchestrator/sub_agent.py
+Modified: src/mini_agent/orchestrator/task.py
+Modified: src/mini_agent/perception/catalog.py
+Modified: src/mini_agent/perception/classification.py
+Modified: src/mini_agent/perception/global_knowledge.py
+Modified: src/mini_agent/perception/workdir_knowledge.py
+Modified: src/mini_agent/session.py
+Added: src/mini_agent/time_utils.py
+
+Revision: 19d7cd36b9b7c60e7cd2ed8d891c096300246f40
+Author: oneway <onewaymyway0415@gmail.com>
+Date: 2026/7/11 7:16:31
+Message:
+daemon模式优化/命令结果显示
+
+----
+Modified: src/mini_agent/api/bridge.py
+Modified: src/mini_agent/api/models.py
+Modified: src/mini_agent/api/server.py
+Modified: src/mini_agent/cli/daemon.py
+Modified: src/mini_agent/ui/terminal.py
+
+Revision: e604a416c7accb70b65fff8420bd75f1cd4c867b
+Author: oneway <onewaymyway0415@gmail.com>
+Date: 2026/7/11 7:13:29
+Message:
+log机制相关修改
+
+----
+Modified: docs/logging-mechanisms-guide.md
+Modified: scripts/proxy_ctl.py
+
+Revision: 2caec0dd3abeb93244f71547f56d00b0bc1a107c
+Author: oneway <onewaymyway0415@gmail.com>
+Date: 2026/7/10 19:04:25
+Message:
+增加错误日志分析skill
+
+----
+Added: .claude/skills/error-log-analyzer/SKILL.md
+Added: .claude/skills/error-log-analyzer/analyzer.py
+
+Revision: 8b034636b7ea191e85691ea3786876903aadef69
+Author: oneway <onewaymyway0415@gmail.com>
+Date: 2026/7/10 19:02:26
+Message:
+解决daemon模式，命令行客户端/model不显示模型提示的问题
+
+----
+Modified: src/mini_agent/api/routes.py
+Modified: src/mini_agent/cli/daemon.py
+Modified: src/mini_agent/ui/terminal.py
+
+Revision: 195216a917470ade9935593434cce8b85060be2f
+Author: oneway <onewaymyway0415@gmail.com>
+Date: 2026/7/10 18:50:58
+Message:
+解决报错问题
+
+----
+Modified: src/mini_agent/api/routes.py
+
+Revision: d70dbe0edaaff5e94a503169ce82e69d61b74614
+Author: oneway <onewaymyway0415@gmail.com>
+Date: 2026/7/10 18:48:10
+Message:
+解决报错问题
+
+----
+Modified: src/mini_agent/agent.py
+Modified: src/mini_agent/api/routes.py
+
+Revision: 937a247069f480338c26e9884846fced2a42df9d
+Author: oneway <onewaymyway0415@gmail.com>
+Date: 2026/7/10 18:25:49
+Message:
+更新项目文档
+
+----
+Modified: docs/logging-mechanisms-guide.md
+
+Revision: 68cbbae9734fe0e42a9412df8ec1814792e1a78e
+Author: oneway <onewaymyway0415@gmail.com>
+Date: 2026/7/10 18:16:08
+Message:
+更新项目日志
+
+----
+Modified: CLAUDE.md
+Modified: README.md
+Added: docs/logging-mechanisms-guide.md
+
+Revision: 253e159a9f73edb8f4caa1ce1dde43e8e3b48e49
+Author: oneway <onewaymyway0415@gmail.com>
+Date: 2026/7/10 18:01:35
+Message:
+更新项目文档
+
+----
+Modified: CLAUDE.md
+Modified: README.md
+
+Revision: 0910ac2c529f5368142795bb46db648ffdbca1c4
+Author: oneway <onewaymyway0415@gmail.com>
+Date: 2026/7/10 17:54:44
+Message:
+更新命令提示
+
+----
+Modified: src/mini_agent/cli/commands/__init__.py
+Modified: src/mini_agent/cli/parser.py
+Modified: src/mini_agent/ui/terminal.py
+
+Revision: fee3d4be24f71a6fcf5852e3069bf580497e7579
+Author: oneway <onewaymyway0415@gmail.com>
+Date: 2026/7/10 17:46:50
+Message:
+知识索引相关修改
+
+----
+Modified: docs/library-index-guide.md
+Modified: src/mini_agent/agent.py
+Modified: src/mini_agent/cli/commands/evolve.py
+Modified: src/mini_agent/config/models.py
+Modified: src/mini_agent/context_builder.py
+Modified: src/mini_agent/perception/catalog.py
+Modified: src/mini_agent/perception/classification.py
+Modified: src/mini_agent/perception/entity_index.py
+Modified: src/mini_agent/perception/library_index.py
+Modified: src/mini_agent/perception/memory_factory.py
+Modified: src/mini_agent/storage/paths.py
+
+Revision: fff16331fa258bb23dc6debe4afe9c8e3894d742
+Author: oneway <onewaymyway0415@gmail.com>
+Date: 2026/7/10 13:02:13
+Message:
+知识索引相关修改
+
+----
+Added: docs/library-index-guide.md
+Modified: docs/memory-management-guide.md
+Modified: src/mini_agent/agent.py
+Modified: src/mini_agent/cli/commands/evolve.py
+Modified: src/mini_agent/config/models.py
+Modified: src/mini_agent/context_builder.py
+Modified: src/mini_agent/evolution/phase_g.py
+Added: src/mini_agent/perception/catalog.py
+Added: src/mini_agent/perception/classification.py
+Added: src/mini_agent/perception/entity_index.py
+Added: src/mini_agent/perception/library_index.py
+Modified: src/mini_agent/perception/memory_factory.py
+Modified: src/mini_agent/perception/memory_store.py
+Modified: src/mini_agent/storage/paths.py
+
+Revision: bd787d5f3b5c2c43bfcc1919457e05c4be024b62
+Author: oneway <onewaymyway0415@gmail.com>
+Date: 2026/7/10 12:49:13
+Message:
+增加控制是否显示reasoning的开关
+
+----
+Modified: agent_config.json
+Modified: docs/commands-and-tools-reference.md
+Modified: src/mini_agent/agent.py
+Modified: src/mini_agent/cli/app.py
+Modified: src/mini_agent/cli/parser.py
+Modified: src/mini_agent/cli/repl.py
+Modified: src/mini_agent/config/loader.py
+Modified: src/mini_agent/config/models.py
+Modified: src/mini_agent/prompts/fragments/cli_messages.md
+Modified: src/mini_agent/ui/terminal.py
+
+Revision: d2ce6437da84d4798dcbd1912ce01d95cc3c608e
+Author: oneway <onewaymyway0415@gmail.com>
+Date: 2026/7/10 12:35:24
+Message:
+更新命令提示
+
+----
+Modified: src/mini_agent/ui/terminal.py
+
+Revision: a4d546592225332085b8f3e5ad9a6bb5e18db2ae
+Author: oneway <onewaymyway0415@gmail.com>
+Date: 2026/7/10 12:24:46
+Message:
+用户行为感知相关功能
+
+----
+Modified: behavior_config.json
+Modified: src/mini_agent/cli/parser.py
+Modified: src/mini_agent/ui/terminal.py
+
+Revision: 2f07acab87149276dc5f94ca7f6cc67015447a4c
+Author: oneway <onewaymyway0415@gmail.com>
+Date: 2026/7/10 12:14:46
+Message:
+用户行为感知相关功能
+
+----
+Modified: .gitignore
+Added: behavior_config.json
+
+Revision: 6659d11ecb5fab8b3e493b7069830817dab39adb
+Author: oneway <onewaymyway0415@gmail.com>
+Date: 2026/7/10 12:11:25
+Message:
+更新ignore
+
+----
+Modified: .gitignore
+
+Revision: c795e14c435d50989f24d23c34d9005613217854
+Author: oneway <onewaymyway0415@gmail.com>
+Date: 2026/7/10 12:10:42
+Message:
+用户行为感知相关功能
+
+----
+Modified: CLAUDE.md
+Modified: README.md
+Modified: docs/behavior-perception-guide.md
+Modified: docs/commands-and-tools-reference.md
+Modified: docs/config-guide.md
+Modified: src/mini_agent/api/routes.py
+Modified: src/mini_agent/cli/commands/behavior.py
+Modified: src/mini_agent/perception/behavior/__init__.py
+Modified: src/mini_agent/perception/behavior/config.py
+Modified: src/mini_agent/perception/behavior/manager.py
+
+Revision: bb3327e0608e8484357b9dc5084e9db0f1cab632
+Author: oneway <onewaymyway0415@gmail.com>
+Date: 2026/7/10 8:08:39
+Message:
+用户行为感知相关功能
+
+----
+Modified: CLAUDE.md
+Modified: README.md
+Added: android_companion_app/README.md
+Added: android_companion_app/app/build.gradle.kts
+Added: android_companion_app/app/src/main/AndroidManifest.xml
+Added: android_companion_app/app/src/main/java/com/miniagent/behavior/BootReceiver.kt
+Added: android_companion_app/app/src/main/java/com/miniagent/behavior/GeofenceBroadcastReceiver.kt
+Added: android_companion_app/app/src/main/java/com/miniagent/behavior/GeofenceHelper.kt
+Added: android_companion_app/app/src/main/java/com/miniagent/behavior/GeofenceReportWorker.kt
+Added: android_companion_app/app/src/main/java/com/miniagent/behavior/HealthConnectWorker.kt
+Added: android_companion_app/app/src/main/java/com/miniagent/behavior/MainActivity.kt
+Added: android_companion_app/app/src/main/java/com/miniagent/behavior/Prefs.kt
+Added: android_companion_app/app/src/main/java/com/miniagent/behavior/ReportClient.kt
+Added: android_companion_app/app/src/main/java/com/miniagent/behavior/ScreenEventReceiver.kt
+Added: android_companion_app/app/src/main/java/com/miniagent/behavior/ScreenEventReportWorker.kt
+Added: android_companion_app/app/src/main/java/com/miniagent/behavior/UsageStatsWorker.kt
+Added: android_companion_app/app/src/main/java/com/miniagent/behavior/WorkScheduler.kt
+Added: android_companion_app/app/src/main/res/layout/activity_main.xml
+Added: android_companion_app/app/src/main/res/values/strings.xml
+Added: android_companion_app/app/src/main/res/values/themes.xml
+Added: android_companion_app/build.gradle.kts
+Added: android_companion_app/gradle.properties
+Added: android_companion_app/settings.gradle.kts
+Added: browser_extension_example/background.js
+Added: browser_extension_example/manifest.json
+Added: browser_extension_example/popup.html
+Added: browser_extension_example/popup.js
+Added: docs/behavior-perception-guide.md
+Modified: docs/commands-and-tools-reference.md
+Modified: docs/config-guide.md
+Modified: docs/http-api-guide.md
+Modified: pyproject.toml
+
+Revision: 3d89f4f791eb11e4cf0e1534f9e3d1d80fb047b9
+Author: oneway <onewaymyway0415@gmail.com>
+Date: 2026/7/10 8:01:10
+Message:
+用户行为感知相关功能
+
+----
+Modified: src/mini_agent/api/routes.py
+Modified: src/mini_agent/cli/commands/__init__.py
+Added: src/mini_agent/cli/commands/behavior.py
+Modified: src/mini_agent/cli/parser.py
+Modified: src/mini_agent/cli/repl.py
+Added: src/mini_agent/perception/behavior/__init__.py
+Added: src/mini_agent/perception/behavior/analyzer.py
+Added: src/mini_agent/perception/behavior/collectors/__init__.py
+Added: src/mini_agent/perception/behavior/collectors/active_window.py
+Added: src/mini_agent/perception/behavior/collectors/app_lifecycle.py
+Added: src/mini_agent/perception/behavior/collectors/base.py
+Added: src/mini_agent/perception/behavior/collectors/browser_launcher.py
+Added: src/mini_agent/perception/behavior/collectors/cdp_browser.py
+Added: src/mini_agent/perception/behavior/collectors/external_hooks.py
+Added: src/mini_agent/perception/behavior/collectors/idle.py
+Added: src/mini_agent/perception/behavior/collectors/now_playing.py
+Added: src/mini_agent/perception/behavior/config.py
+Added: src/mini_agent/perception/behavior/events.py
+Added: src/mini_agent/perception/behavior/manager.py
+Added: src/mini_agent/perception/behavior/mobile_setup.py
+
+Revision: 298f8702de718dca89b0932523a7d2ae35fd6fba
+Author: oneway <onewaymyway0415@gmail.com>
+Date: 2026/7/10 7:54:09
+Message:
+daemon显示更新
+
+----
+Modified: src/mini_agent/ui/terminal.py
+
+Revision: 455d0c952bd4768ff01d3baacce2ac695ff65b80
+Author: oneway <onewaymyway0415@gmail.com>
+Date: 2026/7/10 7:39:16
+Message:
+daemon显示更新
+
+----
+Modified: src/mini_agent/ui/renderer.py
+
+Revision: be69e2140c8ebbd18079d650f36b2a8aa1b99e6e
+Author: oneway <onewaymyway0415@gmail.com>
+Date: 2026/7/10 7:25:24
+Message:
+优化daemon显示
+
+----
+Modified: src/mini_agent/agent.py
+
+Revision: b2de7a9c1c4863d9df17388bb7573fdae0121e7f
+Author: oneway <onewaymyway0415@gmail.com>
+Date: 2026/7/10 7:16:30
+Message:
+优化daemon显示
+
+----
+Modified: src/mini_agent/cli/daemon.py
+
+Revision: ada24279a72877eb9e593bc389cb830c8bf02331
+Author: oneway <onewaymyway0415@gmail.com>
+Date: 2026/7/9 21:13:17
+Message:
+更新daemon显示
+
+----
+Modified: src/mini_agent/api/server.py
+
+Revision: 45754974ec5c4648928b9eeb17e4e1d462a7f860
+Author: oneway <onewaymyway0415@gmail.com>
+Date: 2026/7/9 20:52:57
+Message:
+更新deamon显示
+
+----
+Modified: src/mini_agent/api/server.py
+Modified: src/mini_agent/cli/app.py
+
+Revision: 4b2e69f2bd382afd150986188f1cdabb9215ef9e
+Author: oneway <onewaymyway0415@gmail.com>
+Date: 2026/7/9 6:56:50
+Message:
+daemon相关修改
+
+----
+Modified: src/mini_agent/cli/app.py
+
+Revision: ae531211c6d85a47c4cc42f59beb308e448be28b
+Author: oneway <onewaymyway0415@gmail.com>
+Date: 2026/7/9 6:37:17
+Message:
+优化daemon显示
+
+----
+Modified: src/mini_agent/cli/app.py
+Modified: src/mini_agent/cli/daemon.py
+Modified: src/mini_agent/cli/parser.py
+
+Revision: df04066cd4e9f7126c44473066faadf754207cf5
+Author: oneway <onewaymyway0415@gmail.com>
+Date: 2026/7/9 5:51:25
+Message:
+更新damon显示
+
+----
+Modified: src/mini_agent/ui/terminal.py
+
+Revision: 0f54fc2e9edf116dfbcded9b3a11d8921eb908c1
+Author: oneway <onewaymyway0415@gmail.com>
+Date: 2026/7/9 5:48:11
+Message:
+优化daemon模式显示
+
+----
+Modified: src/mini_agent/cli/daemon.py
+
+Revision: f0e4438aa87726381bc607822010241e743b0850
+Author: oneway <onewaymyway0415@gmail.com>
+Date: 2026/7/9 5:37:13
+Message:
+解决daemon模式，命令行客户端显示不对的问题
+
+----
+Modified: src/mini_agent/cli/daemon.py
+Modified: src/mini_agent/ui/terminal.py
+
+Revision: 2653e3589d3992b215f716adb3d29060dd4efec6
+Author: oneway <onewaymyway0415@gmail.com>
+Date: 2026/7/8 21:02:47
+Message:
+修改项目配置
+
+----
+Modified: agent_config.json
+
+Revision: 43e6c2c0240b3c4d94f0595c562abf3dfb6b9fbd
+Author: oneway <onewaymyway0415@gmail.com>
+Date: 2026/7/8 21:00:33
+Message:
+看板修改
+
+----
+Modified: apps/mini_agent_kanban/client.py
+
+Revision: afb91e0ff00a4b6d54e32f7656245ee606d32676
+Author: oneway <onewaymyway0415@gmail.com>
+Date: 2026/7/8 20:54:43
+Message:
+看板以及daemon模式优化
+
+----
+Modified: apps/mini_agent_kanban/app.py
+Modified: apps/mini_agent_kanban/client.py
+Modified: docs/goal-mode-guide.md
+Modified: src/mini_agent/interaction.py
+Modified: src/mini_agent/ui/terminal.py
+
+Revision: 18b8914c1a7ed353e912b26868328df4e8c33c8f
+Author: oneway <onewaymyway0415@gmail.com>
+Date: 2026/7/8 20:52:17
+Message:
+goal模式优化
+
+----
+Modified: src/mini_agent/config/loader.py
+Modified: src/mini_agent/config/models.py
+
+Revision: 75004f533ea6684b970f2d563fddb3b9acd9d28d
+Author: oneway <onewaymyway0415@gmail.com>
+Date: 2026/7/8 20:50:59
+Message:
+turn judge优化
+
+----
+Modified: docs/turn-judge-guide.md
+Modified: src/mini_agent/agent.py
+
+Revision: 2718f15b589c6fe3621e711bedbf3530c5f55418
+Author: oneway <onewaymyway0415@gmail.com>
+Date: 2026/7/8 20:48:06
+Message:
+状态栏相关修改
+
+----
+Modified: src/mini_agent/llm/providers/_base_mixin.py
+Modified: src/mini_agent/orchestrator/concurrency.py
+
+Revision: 1f1fbdd5f5a2f587b83ee512b90f05f333a8ed67
+Author: oneway <onewaymyway0415@gmail.com>
+Date: 2026/7/8 6:43:55
+Message:
+解决daemon模式，权限请求不对的问题
+
+----
+Modified: apps/mini_agent_kanban/app.py
+Modified: src/mini_agent/api/server.py
+Modified: src/mini_agent/cli/app.py
+Modified: src/mini_agent/permissions.py
+
+Revision: a7deebe68db291192cb2b0b4a987a9812a47dc72
+Author: oneway <onewaymyway0415@gmail.com>
+Date: 2026/7/8 6:01:31
+Message:
+修改看板显示
+
+----
+Modified: apps/mini_agent_kanban/app.py
+
+Revision: 3a7726f0d751bff273fa0939af8412729b1b70eb
+Author: oneway <onewaymyway0415@gmail.com>
+Date: 2026/7/8 5:56:33
+Message:
+修改看板显示
+
+----
+Modified: apps/mini_agent_kanban/app.py
+
+Revision: 75a9a2f8d22e473e882d2ba9ca72776a959647bc
+Author: oneway <onewaymyway0415@gmail.com>
+Date: 2026/7/8 5:55:10
+Message:
+解析命令行显示有时候不合适的问题
+
+----
+Modified: src/mini_agent/agent.py
+Modified: src/mini_agent/cli/daemon.py
+Modified: src/mini_agent/orchestrator/plan_display.py
+
+Revision: c2afbfc4394275d0942cf9f09826c3d64dfdc8ba
+Author: oneway <onewaymyway0415@gmail.com>
+Date: 2026/7/8 5:50:48
+Message:
+修改看板
+
+----
+Modified: apps/mini_agent_kanban/app.py
+
+Revision: 76bb52a5320f48e185aec756559358711d3cf427
+Author: oneway <onewaymyway0415@gmail.com>
+Date: 2026/7/8 5:46:47
+Message:
+修改看板
+
+----
+Modified: apps/mini_agent_kanban/app.py
+
+Revision: b311ce1ce269e5b91d63ee99eac85c2e09b0f010
+Author: oneway <onewaymyway0415@gmail.com>
+Date: 2026/7/8 5:42:55
+Message:
+修改看板
+
+----
+Modified: apps/mini_agent_kanban/app.py
+
+Revision: df837c238a4f1a96ae834ff4e729518e5ad59147
+Author: oneway <onewaymyway0415@gmail.com>
+Date: 2026/7/7 22:27:15
+Message:
+修改goal工具输出显示
+
+----
+Modified: src/mini_agent/role_agents/goal_judge.py
+Modified: src/mini_agent/role_agents/turn_judge.py
+
+Revision: dd193e467a70fbfd553570f7d2f7880756d5574d
+Author: oneway <onewaymyway0415@gmail.com>
+Date: 2026/7/7 22:23:45
+Message:
+优化看板显示
+
+----
+Modified: apps/mini_agent_kanban/app.py
+Modified: src/mini_agent/api/bridge.py
+Modified: src/mini_agent/api/models.py
+Modified: src/mini_agent/api/server.py
+Modified: src/mini_agent/cli/daemon.py
+
+Revision: 379d164dae3bd98f421314b88c43b1084f0bb2c9
+Author: oneway <onewaymyway0415@gmail.com>
+Date: 2026/7/7 21:37:48
+Message:
+优化goal相关交互
+
+----
+Modified: src/mini_agent/cli/commands/goal_mode_cmd.py
+Modified: src/mini_agent/cli/daemon.py
+Modified: src/mini_agent/ui/terminal.py
+
+Revision: 90f361278a3bf789e6e2482fec84537c95ada787
+Author: oneway <onewaymyway0415@gmail.com>
+Date: 2026/7/7 21:14:33
+Message:
+daemon模式优化
+
+----
+Modified: CLAUDE.md
+Modified: docs/cli-io-mechanism.md
+Modified: docs/commands-and-tools-reference.md
+Modified: docs/goal-mode-guide.md
+Modified: docs/http-api-guide.md
+Modified: src/mini_agent/agent.py
+Modified: src/mini_agent/api/bridge.py
+Modified: src/mini_agent/api/models.py
+Modified: src/mini_agent/api/routes.py
+Modified: src/mini_agent/api/session_pool.py
+Modified: src/mini_agent/cli/commands/goal_mode_cmd.py
+Modified: src/mini_agent/cli/daemon.py
+Added: src/mini_agent/interaction.py
+Modified: src/mini_agent/tools/user_input.py
+Modified: src/mini_agent/ui/terminal.py
+
+Revision: abd6e178f7c1462f44fbe39a1e91dbb1ad6430c6
+Author: oneway <onewaymyway0415@gmail.com>
+Date: 2026/7/7 21:06:08
+Message:
+优化goal模式
+
+----
+Modified: docs/goal-mode-guide.md
+Modified: src/mini_agent/config/models.py
+Modified: src/mini_agent/goal_mode/runner.py
+Modified: src/mini_agent/goal_mode/state.py
+
+Revision: 6475cd98a640150b04e36bcd81dd3d781a50d09c
+Author: oneway <onewaymyway0415@gmail.com>
+Date: 2026/7/7 21:02:37
+Message:
+增加断网感知功能
+
+----
+Modified: docs/retry-backoff-guide.md
+Modified: src/mini_agent/agent.py
+Modified: src/mini_agent/config/models.py
+Modified: src/mini_agent/llm/retry.py
+Added: src/mini_agent/network/__init__.py
+Added: src/mini_agent/network/connectivity.py
+
+Revision: 6c54dd740ceba233da5f3e6a68508312904db3ea
+Author: oneway <onewaymyway0415@gmail.com>
+Date: 2026/7/7 21:00:15
+Message:
+skill增加对应的路径
+
+----
+Modified: src/mini_agent/prompts/system/active_skills.md
+Modified: src/mini_agent/skills/__init__.py
+
+Revision: d6bceefd403bb85494cb295642724bb0c13e8fef
+Author: oneway <onewaymyway0415@gmail.com>
+Date: 2026/7/7 20:58:16
+Message:
+看板对话增加产出物显示
+
+----
+Modified: apps/mini_agent_kanban/README.md
+Modified: apps/mini_agent_kanban/app.py
+
+Revision: e51a1020c69f08aaa4e08ad1c8d938b648964df3
+Author: oneway <onewaymyway0415@gmail.com>
+Date: 2026/7/7 20:56:09
+Message:
+优化goal list显示
+
+----
+Modified: src/mini_agent/cli/commands/goal_mode_cmd.py
+Modified: src/mini_agent/goal_mode/state.py
+
+Revision: e09affa9a382c003974a35063432374a783a637b
+Author: oneway <onewaymyway0415@gmail.com>
+Date: 2026/7/7 6:54:50
+Message:
+更新看板文档
+
+----
+Modified: apps/mini_agent_kanban/README.md
+
+Revision: 9eafcb2d026145158252a1775046125a9ebf79d4
+Author: oneway <onewaymyway0415@gmail.com>
+Date: 2026/7/7 6:51:57
+Message:
+更新看板
+
+----
+Modified: apps/mini_agent_kanban/app.py
+Added: apps/mini_agent_kanban/auth.py
+Added: apps/mini_agent_kanban/manage_users.py
+
+Revision: c3d42f5560c96f44dce7878d9e5ed66444242151
+Author: oneway <onewaymyway0415@gmail.com>
+Date: 2026/7/7 6:25:22
+Message:
+更新看板
+
+----
+Modified: apps/mini_agent_kanban/app.py
+
+Revision: e7a7951a568fb69fa7f458d926759c935b3401d2
+Author: oneway <onewaymyway0415@gmail.com>
+Date: 2026/7/7 6:22:10
+Message:
+看板修改
+
+----
+Modified: apps/mini_agent_kanban/app.py
+
+Revision: be5900968d981c34338bd89fe89d23f5e7e1ea9f
+Author: oneway <onewaymyway0415@gmail.com>
+Date: 2026/7/7 6:14:22
+Message:
+看板修改
+
+----
+Modified: apps/mini_agent_kanban/app.py
+Modified: apps/mini_agent_kanban/client.py
+
+Revision: da6f92c454f17ebc7f8c4366315c6486ca81bbd3
+Author: oneway <onewaymyway0415@gmail.com>
+Date: 2026/7/7 6:13:22
+Message:
+更新项目文档
+
+----
+Modified: CLAUDE.md
+Modified: README.md
+Modified: docs/commands-and-tools-reference.md
+Modified: docs/goal-mode-guide.md
+
+Revision: 101284353712212cd12e089f9fb6ea115d1ceeb2
+Author: oneway <onewaymyway0415@gmail.com>
+Date: 2026/7/7 6:02:26
+Message:
+goal相关修改
+
+----
+Modified: src/mini_agent/cli/app.py
+Modified: src/mini_agent/cli/commands/goal_mode_cmd.py
+Modified: src/mini_agent/cli/parser.py
+Modified: src/mini_agent/goal_mode/spec.py
+Modified: src/mini_agent/goal_mode/state.py
+Modified: src/mini_agent/prompts/system/goal_spec_builder.md
+Modified: src/mini_agent/prompts/user/goal_spec_initial_request.md
+Modified: src/mini_agent/prompts/user/goal_spec_revise_request.md
+Modified: src/mini_agent/ui/terminal.py
+
+Revision: 9fd24d15afe1d63cc913a72fe2b95285603182c7
+Author: oneway <onewaymyway0415@gmail.com>
+Date: 2026/7/6 21:52:13
+Message:
+产出物测试
+
+----
+Modified: test_cases/artifact_test.txt
+
+Revision: 092eeccfcf8d19c6e862fa9b6e230369ee8455f4
+Author: oneway <onewaymyway0415@gmail.com>
+Date: 2026/7/6 21:48:34
+Message:
+产出物看板相关
+
+----
+Modified: src/mini_agent/agent.py
+Modified: src/mini_agent/tools/builtin.py
+Added: test_cases/artifact_test.txt
+
+Revision: cb466a67612515c28cc401fb6df43562b8c3e8a4
+Author: oneway <onewaymyway0415@gmail.com>
+Date: 2026/7/6 21:23:20
+Message:
+增加产出物看板
+
+----
+Modified: agent_config.json
+Modified: apps/mini_agent_kanban/app.py
+Modified: apps/mini_agent_kanban/client.py
+Added: docs/artifacts-dashboard-guide.md
+Modified: docs/config-guide.md
+Modified: docs/http-api-guide.md
+Modified: docs/kanban-dashboard-guide.md
+Modified: src/mini_agent/agent.py
+Modified: src/mini_agent/api/routes.py
+Modified: src/mini_agent/config/loader.py
+Modified: src/mini_agent/config/models.py
+Added: src/mini_agent/perception/artifact_detector.py
+Added: src/mini_agent/storage/artifacts.py
+Modified: src/mini_agent/storage/paths.py
+Modified: src/mini_agent/tool_executor.py
+
+Revision: dcad820294d20cfa863ea0b04aebc8bdc0af9740
+Author: oneway <onewaymyway0415@gmail.com>
+Date: 2026/7/6 21:09:43
+Message:
+优化多agent,配置加载
+
+----
+Modified: src/mini_agent/cli/commands/ensemble.py
+Modified: src/mini_agent/config/loader.py
+Modified: src/mini_agent/config/models.py
+Modified: src/mini_agent/ensemble/decision.py
+Modified: src/mini_agent/ensemble/judge.py
+Modified: src/mini_agent/ensemble/runner.py
+Modified: src/mini_agent/role_agents/goal_judge.py
+Added: src/mini_agent/role_agents/model_resolution.py
+Modified: src/mini_agent/role_agents/turn_judge.py
+
+Revision: fb8a29e0b6442fa56f5b7f5e8dccd36cb8230c22
+Author: oneway <onewaymyway0415@gmail.com>
+Date: 2026/7/6 21:01:01
+Message:
+goal持久化相关修改
+
+----
+Modified: src/mini_agent/api/routes.py
+Modified: src/mini_agent/cli/commands/goals.py
+Modified: src/mini_agent/perception/goal_backlog.py
+
+Revision: 9d751d30d3d02949f02394f5c30f9fc61151ba0e
+Author: oneway <onewaymyway0415@gmail.com>
+Date: 2026/7/6 3:29:02
+Message:
+解决/goal报错
+
+----
+Modified: src/mini_agent/agent.py
+
+Revision: 74943c13c2bb69f5fe1dad3594af6c559baff41e
+Author: oneway <onewaymyway0415@gmail.com>
+Date: 2026/7/5 19:31:20
+Message:
+proxy相关修改
+
+----
+Modified: docs/commands-and-tools-reference.md
+Modified: docs/proxy-pool-guide.md
+Modified: src/mini_agent/agent.py
+Added: src/mini_agent/tools/proxy_manager.py
+
+Revision: f2163e8de85993b53d08eb194d742380b51ade5d
+Author: oneway <onewaymyway0415@gmail.com>
+Date: 2026/7/5 19:27:09
+Message:
+proxy相关修改
+
+----
+Modified: docs/proxy-pool-guide.md
+Modified: src/mini_agent/cli/commands/__init__.py
+Modified: src/mini_agent/cli/commands/proxy.py
+Modified: src/mini_agent/cli/parser.py
+Modified: src/mini_agent/ui/terminal.py
+
+Revision: 07a780ca4efa97e12fb60118141891f3f02e4e49
+Author: oneway <onewaymyway0415@gmail.com>
+Date: 2026/7/5 19:17:43
+Message:
+proxy相关修改
+
+----
+Modified: scripts/proxy_ctl.py
+Added: src/mini_agent/proxy/integration.py
+Modified: src/mini_agent/proxy/subscription.py
+Modified: src/mini_agent/storage/paths.py
+
+Revision: dce7f3181f5fead1009242cd2f03e437b4ab17d7
+Author: oneway <onewaymyway0415@gmail.com>
+Date: 2026/7/5 18:58:08
+Message:
+proxy相关修改
+
+----
+Modified: scripts/proxy_ctl.py
+
+Revision: bed1a2a9a21056e2dc4cc976318a34cdfbf9c025
+Author: oneway <onewaymyway0415@gmail.com>
+Date: 2026/7/5 18:48:53
+Message:
+代理相关修改
+
+----
+Modified: scripts/proxy_ctl.py
+Modified: src/mini_agent/proxy/external_engine.py
+Modified: src/mini_agent/proxy/validator.py
+Modified: src/mini_agent/proxy/xray_runner.py
+
+Revision: a7e15105d925d1f41179c3dfb16e780339fde9d8
+Author: oneway <onewaymyway0415@gmail.com>
+Date: 2026/7/5 18:37:52
+Message:
+解决找不到sing box问题
+
+----
+Modified: src/mini_agent/proxy/external_engine.py
+
+Revision: f15db09a4a3e37f96b6796010db24a6a165bd171
+Author: oneway <onewaymyway0415@gmail.com>
+Date: 2026/7/5 18:37:35
+Message:
+代理相关修改
+
+----
+Modified: .gitignore
+Modified: docs/proxy-pool-guide.md
+Modified: pyproject.toml
+Modified: requirements.txt
+Modified: scripts/proxy_ctl.py
+Modified: src/mini_agent/cli/commands/proxy.py
+Added: src/mini_agent/proxy/external_engine.py
+Modified: src/mini_agent/proxy/local_proxy.py
+Modified: src/mini_agent/proxy/protocols/__init__.py
+Added: src/mini_agent/proxy/protocols/vless.py
+Modified: src/mini_agent/proxy/validator.py
+Modified: src/mini_agent/proxy/xray_runner.py
+Modified: src/mini_agent/storage/paths.py
+
+Revision: c0bec727c88973ff660387322b175e4ce5785657
+Author: oneway <onewaymyway0415@gmail.com>
+Date: 2026/7/5 17:43:17
+Message:
+代理相关功能
+
+----
+Modified: src/mini_agent/cli/commands/__init__.py
+Modified: src/mini_agent/cli/parser.py
+Modified: src/mini_agent/proxy/subscription.py
+
+Revision: 6865a748cf675c1d641a73872af5d393f34f0799
+Author: oneway <onewaymyway0415@gmail.com>
+Date: 2026/7/5 13:25:30
+Message:
+异常log检测脚本
+
+----
+Added: codemod_log_exceptions.py
+
+Revision: 93bbeee010a554107761c619f6e9ca1b374f8c3f
+Author: oneway <onewaymyway0415@gmail.com>
+Date: 2026/7/5 12:52:36
+Message:
+增加异常日志保存机制
+
+----
+Modified: src/mini_agent/agent.py
+Modified: src/mini_agent/api/auth.py
+Modified: src/mini_agent/api/bridge.py
+Modified: src/mini_agent/api/routes.py
+Modified: src/mini_agent/api/server.py
+Modified: src/mini_agent/api/session_pool.py
+Modified: src/mini_agent/api/user_store.py
+Modified: src/mini_agent/cli/app.py
+Modified: src/mini_agent/cli/commands/goals.py
+Modified: src/mini_agent/cli/daemon.py
+Modified: src/mini_agent/cli/repl.py
+Modified: src/mini_agent/config/prompt_builder.py
+Modified: src/mini_agent/context_builder.py
+Modified: src/mini_agent/ensemble/runner.py
+Modified: src/mini_agent/env_info/providers/locale.py
+Modified: src/mini_agent/env_info/providers/runtime.py
+Modified: src/mini_agent/env_info/providers/system.py
+Added: src/mini_agent/errors.py
+Modified: src/mini_agent/evolution/autonomous_loop.py
+Modified: src/mini_agent/evolution/cron_scheduler.py
+Modified: src/mini_agent/evolution/objective_executor.py
+Modified: src/mini_agent/evolution/phase_g.py
+Modified: src/mini_agent/evolution/resource_arbiter.py
+Modified: src/mini_agent/evolution/self_maintenance.py
+Modified: src/mini_agent/evolution/soft_goal_deriver.py
+Modified: src/mini_agent/goal_mode/state.py
+Modified: src/mini_agent/history/raw_history.py
+Modified: src/mini_agent/orchestrator/persona_profiles.py
+Modified: src/mini_agent/orchestrator/status_bar.py
+Modified: src/mini_agent/orchestrator/sub_agent.py
+Modified: src/mini_agent/orchestrator/task_manager.py
+Modified: src/mini_agent/perception/exploration_sandbox.py
+Modified: src/mini_agent/perception/file_watcher.py
+Modified: src/mini_agent/perception/format_correction_detector.py
+Modified: src/mini_agent/perception/global_knowledge.py
+Modified: src/mini_agent/perception/goal_backlog.py
+Modified: src/mini_agent/perception/memory_store.py
+Modified: src/mini_agent/perception/observability.py
+Modified: src/mini_agent/perception/project_scanner.py
+Modified: src/mini_agent/perception/workdir_knowledge.py
+Modified: src/mini_agent/permissions.py
+Modified: src/mini_agent/prompts/manager.py
+Modified: src/mini_agent/proxy/local_proxy.py
+Modified: src/mini_agent/proxy/pool.py
+Modified: src/mini_agent/proxy/service.py
+Modified: src/mini_agent/proxy/subscription.py
+Modified: src/mini_agent/session.py
+Modified: src/mini_agent/skills/__init__.py
+Modified: src/mini_agent/storage/paths.py
+Modified: src/mini_agent/tool_executor.py
+Modified: src/mini_agent/tools/introspection.py
+Modified: src/mini_agent/tools/workdir_knowledge.py
+Modified: src/mini_agent/ui/raw_key_listener.py
+Modified: src/mini_agent/ui/terminal.py
+Modified: src/mini_agent/workflow/runner.py
+
+Revision: 57609d9f4ecc3641e1b4bd95b25cf308cde1b628
+Author: oneway <onewaymyway0415@gmail.com>
+Date: 2026/7/5 12:20:15
+Message:
+更新项目文档
+
+----
+Modified: CLAUDE.md
+Modified: README.md
+Modified: docs/commands-and-tools-reference.md
+Added: docs/persona-guide.md
+
+Revision: 3af69b63a8ca81d248236996b4f34c2d77e8427c
+Author: oneway <onewaymyway0415@gmail.com>
+Date: 2026/7/5 11:23:00
+Message:
+代理相关功能
+
+----
+Modified: docs/proxy-pool-guide.md
+Added: scripts/proxy_ctl.py
+Added: src/mini_agent/cli/commands/proxy.py
+Modified: src/mini_agent/cli/repl.py
+Modified: src/mini_agent/storage/paths.py
+
+Revision: d31e501da3c89354489110db4ccff907e0e3a339
+Author: oneway <onewaymyway0415@gmail.com>
+Date: 2026/7/5 11:13:12
+Message:
+代理相关功能
+
+----
+Added: docs/proxy-pool-guide.md
+Added: src/mini_agent/proxy/__init__.py
+Added: src/mini_agent/proxy/local_proxy.py
+Added: src/mini_agent/proxy/pool.py
+Added: src/mini_agent/proxy/protocols/__init__.py
+Added: src/mini_agent/proxy/protocols/shadowsocks.py
+Added: src/mini_agent/proxy/protocols/trojan.py
+Added: src/mini_agent/proxy/service.py
+Added: src/mini_agent/proxy/subscription.py
+Added: src/mini_agent/proxy/validator.py
+Added: src/mini_agent/proxy/xray_runner.py
+
+Revision: 5d104f46c0f93f50f35ea995a9c3514c35eb3e10
+Author: oneway <onewaymyway0415@gmail.com>
+Date: 2026/7/5 9:11:53
+Message:
+优化daemon模式客户端显示
+
+----
+Modified: src/mini_agent/api/bridge.py
+Modified: src/mini_agent/api/models.py
+Modified: src/mini_agent/api/server.py
+Modified: src/mini_agent/cli/daemon.py
+
+Revision: 0a86150c240bb5a0e29df93f36e40750ba7d8a25
+Author: oneway <onewaymyway0415@gmail.com>
+Date: 2026/7/5 8:58:17
+Message:
+daemon模式优化，尝试解决有时候客户端显示内容不完整的问题
+
+----
+Modified: src/mini_agent/api/bridge.py
+Modified: src/mini_agent/api/routes.py
+
+Revision: a9eed3f4eadb69075ceeebfb339bb9c30bd1f7d3
+Author: oneway <onewaymyway0415@gmail.com>
+Date: 2026/7/5 8:37:19
+Message:
+优化llm调用和调试信息记录
+
+----
+Modified: src/mini_agent/llm/base.py
+Modified: src/mini_agent/llm/debug_logger.py
+Modified: src/mini_agent/llm/providers/openai.py
+
+Revision: 4054c36495b754d6d62bf88c7d583e45da7d7ef0
+Author: oneway <onewaymyway0415@gmail.com>
+Date: 2026/7/5 8:28:32
+Message:
+解决new session不对的问题
+
+----
+Modified: src/mini_agent/agent.py
+Modified: src/mini_agent/orchestrator/task_manager.py
+
+Revision: 2a77bc3fe4f27a44609ec3e2c16f00efe90116bd
+Author: oneway <onewaymyway0415@gmail.com>
+Date: 2026/7/5 7:38:13
+Message:
+修改system
+
+----
+Modified: src/mini_agent/prompts/system/agent_core.md
+
+Revision: 0d8a3594dd74241e639c7ea092226909b888543c
+Author: oneway <onewaymyway0415@gmail.com>
+Date: 2026/7/5 7:35:14
+Message:
+更新命令提示
+
+----
+Modified: src/mini_agent/ui/terminal.py
+
+Revision: c9a6da9533f305bd5f2ba01dcb2ad87536622e47
+Author: oneway <onewaymyway0415@gmail.com>
+Date: 2026/7/5 7:32:52
+Message:
+轮次守门员
+
+----
+Modified: docs/turn-judge-guide.md
+Modified: src/mini_agent/cli/parser.py
+Modified: src/mini_agent/cli/repl.py
+Modified: src/mini_agent/prompts/fragments/cli_messages.md
+
+Revision: 9e279910eec44f6ee6e860a8e0463b4b2320bafb
+Author: oneway <onewaymyway0415@gmail.com>
+Date: 2026/7/5 7:30:12
+Message:
+角色扮演系统
+
+----
+Modified: next_doc/roleplay_persona_design.md
+Modified: src/mini_agent/cli/commands/roles.py
+Modified: src/mini_agent/orchestrator/persona_profiles.py
+Modified: src/mini_agent/storage/paths.py
+Modified: src/mini_agent/ui/terminal.py
+
+Revision: f6a7435ec2b4fc19530b2cbb9155671719970302
+Author: oneway <onewaymyway0415@gmail.com>
+Date: 2026/7/5 7:27:36
+Message:
+角色扮演系统
+
+----
+Added: .agent/personas/rem.md
+Modified: .claude/skills/persona-generator/SKILL.md
+Modified: next_doc/roleplay_persona_design.md
+Modified: src/mini_agent/agent.py
+Modified: src/mini_agent/cli/commands/roles.py
+Modified: src/mini_agent/orchestrator/persona_profiles.py
+Modified: src/mini_agent/tool_executor.py
+Modified: src/mini_agent/ui/terminal.py
+
+Revision: 6cb8f08bf898c4999a95604c58ff67ae82e7f6d3
+Author: oneway <onewaymyway0415@gmail.com>
+Date: 2026/7/5 7:24:54
+Message:
+修改配置
+
+----
+Modified: agent_config.json
+
+Revision: a9cc975df3576db238a29e2bc7d025903999f0f9
+Author: oneway <onewaymyway0415@gmail.com>
+Date: 2026/7/5 7:21:20
+Message:
+角色扮演系统
+
+----
+Added: next_doc/roleplay_persona_design.md
+Modified: src/mini_agent/session.py
+
+Revision: b2bc73b0f379ae3f2e1b6ac79a2b134398fe0565
+Author: oneway <onewaymyway0415@gmail.com>
+Date: 2026/7/5 7:14:31
+Message:
+角色扮演系统
+
+----
+Added: .agent/personas/jarvis.md
+Added: .agent/personas/senior-swe-mentor.md
+Added: .agent/personas/socratic-tutor.md
+Added: .agent/personas/storyteller-narrator.md
+Added: .claude/skills/persona-generator/SKILL.md
+Modified: src/mini_agent/agent.py
+Modified: src/mini_agent/cli/app.py
+Modified: src/mini_agent/cli/commands/__init__.py
+Added: src/mini_agent/cli/commands/roles.py
+Modified: src/mini_agent/cli/repl.py
+Modified: src/mini_agent/context_builder.py
+Added: src/mini_agent/orchestrator/persona_profiles.py
+Modified: src/mini_agent/storage/paths.py
+
+Revision: c6b07ea292207520a338b88cc04385db4fe5ea68
+Author: oneway <onewaymyway0415@gmail.com>
+Date: 2026/7/5 6:49:23
+Message:
+解决一直卡在重复judge的问题
+
+----
+Modified: docs/turn-judge-guide.md
+Modified: src/mini_agent/goal_mode/spec.py
+Modified: src/mini_agent/role_agents/coach.py
+Modified: src/mini_agent/role_agents/dispatcher.py
+Modified: src/mini_agent/role_agents/evaluator.py
+Modified: src/mini_agent/role_agents/goal_judge.py
+Modified: src/mini_agent/role_agents/turn_judge.py
+Modified: tests/test_goal_mode.py
+
+Revision: 06901b11c9e36ce187ab9065a5124d4a792bc1db
+Author: oneway <onewaymyway0415@gmail.com>
+Date: 2026/7/5 6:31:19
+Message:
+轮次守门员
+
+----
+Modified: CLAUDE.md
+Modified: README.md
+Modified: agent_config.json
+Modified: docs/config-guide.md
+Added: docs/turn-judge-guide.md
+Modified: src/mini_agent/agent.py
+Modified: src/mini_agent/config/__init__.py
+Modified: src/mini_agent/config/loader.py
+Modified: src/mini_agent/config/models.py
+Added: src/mini_agent/prompts/system/turn_judge.md
+Added: src/mini_agent/prompts/user/turn_judge_request.md
+Modified: src/mini_agent/role_agents/feedback.py
+Added: src/mini_agent/role_agents/turn_judge.py
+
+Revision: cc675d7b3f6405e208abd6eaf918d4083295e692
+Author: oneway <onewaymyway0415@gmail.com>
+Date: 2026/7/5 5:48:24
+Message:
+增加版本号配置
+
+----
+Added: VERSION
+Modified: src/mini_agent/__init__.py
+Added: src/mini_agent/_version.py
+Modified: src/mini_agent/api/server.py
+Modified: src/mini_agent/cli/repl.py
+Modified: src/mini_agent/prompts/fragments/cli_messages.md
+
