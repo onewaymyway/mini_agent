@@ -404,6 +404,27 @@ def _handle_promotion(rest: list[str], agent) -> None:
             "/wiki search 会顺带记一条 A/B 对比样本）[/dim]\n"
         )
 
+    # next_doc/wiki_next_phase_improvement_plan.md 第 1 节：三项标准满足只是
+    # "评估结果"，这里顺带跑一次 check_and_plan() 把它落到"下一步具体做什么"
+    # 的执行清单，避免转正评估通过了却没人跟进。只读，不执行任何下线动作。
+    try:
+        from mini_agent.wiki.decommission import check_and_plan
+
+        plan = check_and_plan(paths)
+        if plan.ready:
+            R.console.print("[bold]旧图书馆索引下线执行清单[/bold] [dim](§1，仅评估，需人工确认执行)[/dim]")
+            for step in plan.steps:
+                R.console.print(f"  {step['step']}. [bold]{step['name']}[/bold]：{step['action']}")
+                if not step["reversible"]:
+                    R.console.print("     [dim](此步骤不可逆，务必确认观察期已通过再执行)[/dim]")
+            R.console.print("")
+        elif plan.blocking_reasons:
+            R.console.print(
+                "[dim]距离可以评估下线旧图书馆索引还差：" + "；".join(plan.blocking_reasons) + "[/dim]\n"
+            )
+    except Exception:
+        pass
+
 
 def _handle_lifecycle_scan(rest: list[str], agent) -> None:
     """/wiki lifecycle-scan [--days N] —— 知识生命周期巡检（改进计划 O4）。

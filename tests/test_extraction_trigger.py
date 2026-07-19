@@ -91,6 +91,46 @@ def test_scan_returns_none_when_neither_signal_hits():
     assert candidate is None
 
 
+def test_scan_detects_entity_density_for_descriptive_content():
+    # 改进计划第 4 节：纯描述性内容（没有转折/决策连接词）也应该能触发，
+    # 覆盖 connective_density 天然抓不到的世界知识场景。
+    entries = [
+        make_user_input(
+            "这个项目用 FastAPI 和 PostgreSQL，部署在 AWS 上，配置文件在 config/app.yaml"
+        ),
+    ]
+    candidate = scan_for_extraction_window(
+        entries, last_extracted_index=0, min_window_turns=100,
+    )
+    assert candidate is not None
+    assert candidate.trigger_reason == "entity_density"
+
+
+def test_scan_entity_density_filters_known_entity_names():
+    entries = [
+        make_user_input("这个项目用 FastAPI，部署在 AWS 上。"),
+    ]
+    # 三个候选词（FastAPI/AWS + 可能的其它匹配）都已经在 known_entity_names 里，
+    # 不应该再触发。
+    candidate = scan_for_extraction_window(
+        entries, last_extracted_index=0, min_window_turns=100,
+        known_entity_names=frozenset({"fastapi", "aws"}),
+    )
+    assert candidate is None
+
+
+def test_scan_connective_density_takes_priority_over_entity_density():
+    # 两个信号都能命中时，connective_density 检查在前，优先返回它。
+    entries = [
+        make_user_input(
+            "因为 FastAPI 在 AWS 上部署有性能问题，所以我们决定改为 PostgreSQL 连接池方案。"
+        ),
+    ]
+    candidate = scan_for_extraction_window(entries, last_extracted_index=0, min_window_turns=100)
+    assert candidate is not None
+    assert candidate.trigger_reason == "connective_density"
+
+
 # ── cursor 持久化 ─────────────────────────────────────────────────────────
 
 def test_load_cursor_defaults_to_zero_when_missing(paths):

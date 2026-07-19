@@ -41,23 +41,39 @@
   （"这个项目用 FastAPI 和 PostgreSQL，部署在 AWS 上，配置文件在 config/app.yaml"）
   能正确触发 `trigger_reason="entity_density"`，验证了该规则确实覆盖了
   `connective_density` 规则抓不到的场景。
-- 运行改动直接相关的既有测试文件：
+- **新增了 4 个专属单测文件**（共 30 个用例，全部通过）：
+  - `tests/test_step_runner.py`（4 用例）：正常完成/异常/超时三种结果、超时后
+    不阻塞主流程等待原线程跑完。
+  - `tests/test_wiki_gap_scanner.py`（7 用例）：浅层实体检测（含"1条链接仍算
+    浅层、2条不算"的边界）、孤儿页面检测、陈旧专题页检测+标注+去重复报告、
+    max_results 截断、空 wiki。过程中发现一个易错点：`WikiLink` 的
+    `source` 字段默认是 `"body"`（弱引用），`render_page()` 只序列化
+    `source="frontmatter"` 的链接进 frontmatter——测试用例最初没有显式传
+    `source="frontmatter"`，导致强链接被静默过滤、图谱为空，已修正。
+  - `tests/test_wiki_decommission.py`（5 用例）：未达标给 blocking_reasons、
+    达标给三步清单、报告落盘/读取、状态翻转只提醒一次。
+  - `tests/test_wiki_fallback_cleanup.py`（5 用例）：命中合并、未命中标 stale、
+    未到年龄阈值跳过、已处理过跳过、无兜底页时空跑。
+  - `tests/test_extraction_trigger.py` 追加 3 个用例覆盖 `entity_density`：
+    纯描述性内容触发、`known_entity_names` 过滤已知词后不触发、两个信号都
+    命中时 `connective_density` 优先。
+- 运行改动直接相关的既有测试文件（不含新增）：
   `test_extraction_trigger.py` `test_consolidation.py` `test_memory_consolidation.py`
   `test_wiki_promotion.py` `test_wiki_lifecycle.py` `test_wiki_topics_reconsolidation.py`
   `test_wiki_index_reuse.py` `test_context_builder_wiki_search_primary.py`
-  `test_wiki_append_section_dedupe.py` —— **125 个用例全部通过**。
-- 全量测试套件（2029 个用例）单次运行超过执行时间限制未能完整跑完；抽样比对显示
-  未完成区间的失败用例分布（F/E 位置）在**修改前的原始代码**上逐字符一致，判断为
-  环境相关的既有失败（大概率是需要真实 LLM/网络访问的测试在离线环境下预期失败），
-  非本轮改动引入的回归。**未新增本模块专属的 pytest 单测文件**——如果要进一步加固，
-  建议后续补 `tests/test_step_runner.py`、`tests/test_wiki_gap_scanner.py`、
-  `tests/test_wiki_decommission.py`、`tests/test_wiki_fallback_cleanup.py`。
+  `test_wiki_append_section_dedupe.py` —— 125 个用例全部通过。
+- **合计**：相关既有测试 + 新增测试，**149 个用例全部通过**。
+- 全量测试套件（2029 个用例）单次运行超过执行时间限制未能完整跑完；抽样
+  比对显示未完成区间的失败用例分布（F/E 位置）在**修改前的原始代码**上逐字符
+  一致，判断为环境相关的既有失败（大概率是需要真实 LLM/网络访问的测试在离线
+  环境下预期失败），非本轮改动引入的回归。
 
 ## 遗留 TODO（下一轮可继续）
 
-- `wiki/decommission.py::check_and_plan()` 尚未接入 `evolution/autonomous_loop.py`
-  的巩固循环，目前需要手动调用或后续在 `/wiki promotion` 命令里接入展示。
-- 未补充针对新模块的专属单元测试。
 - `sys:wiki_gap_scan` / `sys:wiki_fallback_cleanup` 两个 cron job 的 `task_template`
   是自然语言指令（走 agent 一轮对话解释执行，与既有内置 job 风格一致），未在真实
   daemon 环境里做端到端联调，建议上线后观察首批几次触发日志。
+- `wiki/decommission.py::check_and_plan()` 目前只接入了 `/wiki promotion` 命令
+  （命令末尾会顺带展示下线执行清单/差距原因），**尚未接入** daemon
+  `evolution/autonomous_loop.py` 的巩固循环——`check_ready_transition()` 提供的
+  "只在状态翻转时提醒一次"能力目前需要外部按需调用，还没有自动挂载触发点。
