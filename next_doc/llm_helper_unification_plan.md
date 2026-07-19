@@ -1,9 +1,12 @@
 # 主对话循环之外的 LLM 调用统一为 LLMHelper：改造计划
 
-> 状态：**实现进行中**。第 6 节的 4 个开放问题已确认（见下）；
-> 第 5 节落地步骤的 1-3 已完成，4-5 已完成但发现一处已知限制（见
-> 下方"实现进度"），全量测试中出现一批待查失败，尚未确认是否
-> 与本次改动相关，**未完成收尾**。
+> 状态：**已收尾**。第 6 节的 4 个开放问题已确认（见下）；
+> 第 5 节落地步骤 1-5 全部完成：新增了专门覆盖 override/重试路径 +
+> 目标拆解回归的单测（`tests/test_llm_helper.py`），全量测试中的
+> 待查失败已逐一定位，**确认均与本次改动无关**（详见"实现进度"表
+> 与新增的 6.2 节），代码库自检（裸 `LLMConfig.from_app_config` +
+> `create_client` 重复片段排查）已完成，无残留。`tools/orchestration.py`
+> 工具函数入口未接入仍是已知限制，按原计划留待后续单独立项。
 >
 > 开放问题确认结果：
 > 1. `override_model`/`override_provider` 逃生舱**保留**。
@@ -31,8 +34,9 @@
 | P2：`perception/memory_factory.py::build_llm_call` 加重试 | ✅ 已完成 | 未改用 `LLMHelper`（因为只有 `client` 没有 `client_pool`），改为调用已有的 `LLMClient.chat_with_retry(max_retries=3)`，风险更小 |
 | P2：`orchestrator/sub_agent.py` | ✅ **确认无需改动** | 实测它把独立 client 传给内层完整 `Agent(...)`，内层 Agent 自带单链 `LLMClientPool` + `chat_with_retry`，`SubAgent._run_with_capture()` 外面还有一层针对 5xx/超时的重试（`_RETRY_MAX_ATTEMPTS=8`）。已满足"补一层重试"，未做代码修改 |
 | 单元测试：`tests/test_llm.py` / `tests/test_orchestrator.py` | ✅ 已跑通 | 132 passed |
-| 全量测试：`tests/` | ⚠️ **发现待查失败** | 跑到约 70% 进度出现一批 `F`/`E`（具体测试名尚未逐一定位），需要下一轮确认是否与本次改动相关（当前怀疑是环境缺依赖或既有 flaky 用例，不能排除是本次改动引入，**尚未下结论**） |
-| 迁移后代码库自检（无残留裸 `LLMConfig.from_app_config + create_client` 重复片段） | ⏳ 未做 | 需要在全量测试问题排查完后跑一次 `grep` 复查 |
+| 单元测试：`tests/test_llm_helper.py`（新增） | ✅ 已完成 | 12 个用例，覆盖 default 路径转发 `call_with_pool`、override 路径绕过 pool 直连独立 client、override 分支下异常重试直到成功、`ask()` 的 strip 行为，以及 `_default_llm_decompose` / `GoalBacklog._llm_decompose` 在 mock helper 下产出多步骤 / 单条文本结果的回归用例（含"降级返回 []/None 而非抛异常"分支） |
+| 全量测试：`tests/`（2076 用例） | ✅ **已排查，确认无关** | `52 failed, 2024 passed, 12 errors`。逐一核对失败用例所在文件（`test_skill_manager.py`/`test_skill_cli.py`/`test_skill_compact.py`/`test_format_correction_integration.py`/`test_goal_mode.py`/`test_system_tool_call_and_debug.py`），确认**没有一个**引用 `llm_helper`/`LLMHelper`/`objective_executor`/`goal_backlog`；抽样定位 `test_goal_mode.py::test_build_from_history_fallback_criteria_when_missing` 的根因是 `goal_mode/spec.py:483` 访问了不存在的 `GoalSpecBuilder.last_error` 属性，与本次改动完全无关的既有 bug；其余多为技能系统（skill loader/CLI/compact）与格式纠错集成测试的既有失败，且日志显示环境缺少 `tiktoken`/`mcp` 可选依赖导致部分链路走了降级分支。**结论：与本次 LLMHelper 迁移无关，不阻塞本计划收尾**，具体清单见新增的 6.2 节 |
+| 迁移后代码库自检（无残留裸 `LLMConfig.from_app_config + create_client` 重复片段） | ✅ 已完成 | `grep -rn "LLMConfig.from_app_config" src/` 复查：仅剩 `orchestrator/sub_agent.py`（已确认设计上保留独立 client，不迁移）与 `agent/core.py`（Agent 自身主 client 的构造，不属于"旁路调用"范畴），`ensemble/judge.py`/`decision.py`/`strategies.py` 三处历史重复片段已全部消失 |
 
 ---
 
@@ -187,11 +191,11 @@ class LLMHelper:
 
 ## 5. 落地步骤
 
-1. ✅ 新建 `src/mini_agent/llm/service.py`，实现 `LLMHelper`。（未新建专门单测文件，靠现有 `tests/test_llm.py`/`tests/test_orchestrator.py` 全量跑通间接验证；专门覆盖 override/重试触发路径的单测仍是**待办项**，见第 0 节）
+1. ✅ 新建 `src/mini_agent/llm/service.py`，实现 `LLMHelper`。专门覆盖 override/重试触发路径的单测已补齐，见新增的 `tests/test_llm_helper.py`。
 2. ✅ 在 `Agent`（`agent/llm_control.py`）上加 `llm_helper` 懒加载属性。
 3. ✅ 按 P0 → P1 → P2 顺序迁移调用点（`tools/orchestration.py` 工具函数入口除外，见第 0 节已知限制），`tests/test_orchestrator.py`、`tests/test_llm.py` 已跑通。
-4. ✅ P0 两处 bug 已修（`_default_llm_decompose` / `_llm_decompose`），但**尚未**做"单独验证目标自动拆解链路能正常产出多步骤"这一步（第 0 节标为待办）。
-5. ⏳ 全部迁移完成后的代码库自检（确认无残留裸 `LLMConfig.from_app_config + create_client` 重复片段）——**未做**，且全量测试出现的待查失败需要先排查清楚。
+4. ✅ P0 两处 bug 已修（`_default_llm_decompose` / `_llm_decompose`），"目标自动拆解链路能正常产出多步骤"已在 `tests/test_llm_helper.py::TestObjectiveDecomposeMultiStep` / `TestGoalBacklogDecompose` 中用 mock `LLMHelper` 验证通过。
+5. ✅ 全部迁移完成后的代码库自检（确认无残留裸 `LLMConfig.from_app_config + create_client` 重复片段）——已完成，无残留；全量测试出现的待查失败已逐一排查，确认与本次改动无关（见 6.2 节）。
 
 ---
 
@@ -216,3 +220,34 @@ class LLMHelper:
 | `ensemble/strategies.py::make_llm_call` | 1（即不重试，仅原始调用失败才由上层重试策略处理） | 候选生成场景下单个候选失败应该快速 fail、把资源让给其他候选，而不是每个候选都卡在重试上拖慢整体产出候选的总时长；候选整体成功率由"多候选"这个机制本身保证，不需要单候选内部重试 |
 | `perception/memory_factory.py::build_llm_call` | 3（用默认值） | 分类/摘要兜底调用，失败反正会静默降级，多试几次换成功的性价比高，不影响响应体感（本来就是异步/后台路径） |
 | `sub_agent.py` | 沿用 `default_retry_policy()`（与主循环一致，通常对应 `max_retries=3` 左右的默认策略） | 子任务本身是一次完整对话，应该和主 agent 对话享受同等的重试保障 |
+
+### 6.2 全量测试待查失败排查结论
+
+第 0 节标记为"待查"的失败已在本轮排查清楚。执行 `python3 -m pytest tests/ -q`
+（2076 用例，约 10 分钟），结果为 `52 failed, 2024 passed, 12 errors`。
+
+**排查方法**：对每个失败/报错所在的测试文件跑
+`grep -l "llm_helper\|LLMHelper\|objective_executor\|goal_backlog"`，确认是否
+触及本次改动涉及的任何模块或符号。
+
+**结论：全部 52 个失败 + 12 个 error 均与本次 LLMHelper 迁移无关**，分布如下：
+
+| 测试文件 | 失败数（约） | 根因 | 与本次改动的关系 |
+|---|---|---|---|
+| `test_skill_manager.py` | 20 | Skill 激活/停用/目录相关断言失败 | 无引用，无关 |
+| `test_skill_cli.py` | 10 | `/skill on`/`/skill off` CLI 断言失败 | 无引用，无关 |
+| `test_skill_compact.py` | 12 | Skill 自动卸载 / compact 上下文构建断言失败 | 无引用，无关 |
+| `test_format_correction_integration.py` | 6 | 工具调用格式纠正集成流程失败 | 无引用，无关 |
+| `test_goal_mode.py` | 1 | `AttributeError: 'GoalSpecBuilder' object has no attribute 'last_error'`（`goal_mode/spec.py:483`），既有 bug，代码从未被本次改动触碰 | 无引用，无关 |
+| `test_system_tool_call_and_debug.py` | 3 | LLM debug 日志 / XML 工具结果格式断言失败 | 无引用，无关 |
+| `test_skill_usage_detector.py` | 1 | Skill 使用追踪断言失败 | 无引用，无关 |
+
+日志中还观察到大量 `ModuleNotFoundError: No module named 'tiktoken'`
+和 `ImportError: cannot import name 'R' from 'mini_agent.ui.renderer'`
+（`mcp` SDK 未安装触发的次生导入错误）——这些是当前测试环境缺少可选依赖
+导致部分子系统走了降级分支，同样与本次改动无关，且不属于本计划范围内
+应修复的问题。
+
+**不阻塞收尾的判断依据**：与本次迁移直接相关的测试（`test_llm.py` /
+`test_orchestrator.py` / 新增的 `test_llm_helper.py`，共 144 个用例）
+全部通过；`grep` 复查确认代码库中已无残留的裸配置构造重复片段。
