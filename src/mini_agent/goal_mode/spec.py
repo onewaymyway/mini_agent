@@ -269,59 +269,73 @@ class GoalSpecBuilder:
 
     def __init__(self, cfg: "AppConfig") -> None:
         self._cfg = cfg
+        # 上一次 _run_builder 调用的诊断信息，供 build_initial/build_from_history
+        # 在命中 _fallback_criteria 时打印具体原因，而不是让用户只看到一份
+        # "看起来像拼出来的"验收标准却不知道为什么。
+        self.last_error: Optional[str] = None
 
     def _run_builder(self, prompt: str) -> str:
-        from mini_agent.config import load_config
-        from mini_agent.agent import Agent
-        from mini_agent.permissions import PermissionGuard
-        from mini_agent.tools import get_default_registry
+        """调用一次性内部 Agent 生成/修订 GoalSpec 草案。
+
+        [REFACTOR] 之前这里是手写的一份构造 Agent 的样板代码（load_config 三层
+        model/provider 解析 + try/except 静默兜底），是独立维护的一份旧代码，
+        和 role_agents/judge_factory.py 里 GoalJudge/Evaluator/Coach 等其他内部
+        Agent 的调用方式几乎一模一样，但存在两个实质性问题：
+          1. 失败时直接拼一段假 JSON 字符串返回、吞掉异常，上层完全看不到报错，
+             只会表现为"验收标准很通用"（命中 _fallback_criteria），排查起来
+             无从下手——这正是"看起来像字符串拼接"问题的根源：不是设计上用
+             拼接生成，而是真正的 LLM 调用失败被静默吞掉，退到了拼接兜底。
+          2. 和其他判官类内部 Agent 的构造方式不一致，一些已经在 judge_factory
+             里修过的 bug（llm_fallback_chain 清空、TurnJudge 防递归等）需要
+             两处分别维护，容易漏改。
+        现在改为复用 judge_factory.spawn_judge_agent / run_judge_turn（GoalJudge
+        已经在用的同一套），行为对齐、失败会被显式记录到 self.last_error 并打印。
+        """
+        from mini_agent.role_agents.judge_factory import spawn_judge_agent, run_judge_turn
+        from types import SimpleNamespace
 
         gm = getattr(self._cfg, "goal_mode", None)
-        builder_cfg = load_config(
-            project_root=self._cfg.project_root,
-            verbose=False,
-            sandbox=self._cfg.sandbox,
-            auto_approve=True,
-            model=(getattr(gm, "spec_builder_model", None) or self._cfg.model),
-            llm_provider=(getattr(gm, "spec_builder_provider", None) or self._cfg.llm_provider),
-            llm_base_url=self._cfg.llm_base_url,
-            # [BUGFIX] 之前硬编码 False，导致 --debug-llm 对 GoalSpecBuilder（含
-            # /goal from-history 用到的一次性内部 Agent 调用）完全不生效，一旦
-            # LLM 调用失败看不到任何调试日志。改为继承 self._cfg。
-            debug_llm=getattr(self._cfg, "debug_llm", False),
-            debug_llm_console=getattr(self._cfg, "debug_llm_console", False),
+        # GoalModeConfig 用的是 spec_builder_model/spec_builder_provider 字段
+        # （不是 judge_model/judge_provider），这里包一层轻量适配对象，复用
+        # spawn_judge_agent 期望的 role_cfg_block.judge_model/.judge_provider 接口，
+        # 避免另写一份三层模型优先级解析逻辑。
+        role_cfg_block = SimpleNamespace(
+            judge_model=getattr(gm, "spec_builder_model", None),
+            judge_provider=getattr(gm, "spec_builder_provider", None),
         )
-        builder_cfg.api_key = self._cfg.api_key
-        # [BUGFIX] 同 role_agents/judge_factory.py 里的说明：load_config() 的
-        # model=/llm_provider= 只影响 builder_cfg 顶层字段，真正决定用哪个
-        # client 的是 LLMClientPool.from_config(cfg)——只要 builder_cfg
-        # 继承自 self._cfg 的 llm_fallback_chain 非空，就会完全无视上面精心
-        # 解析出的 model/provider/api_key/base_url，直接用 chain[0]（配置文件
-        # 里写死的模型）构造 client。GoalSpecBuilder 是一次性内部调用，不需要
-        # 主 Agent 的多 provider 故障转移链，这里清空以强制生效当前主 Agent
-        # 实际在用的模型和 key（随 /model、/provider switch 实时变化）。
-        builder_cfg.llm_fallback_chain = []
-        builder_cfg.max_turns = 2
-        builder_cfg.stream = False
-        builder_cfg.system_extra = pm.render("system/goal_spec_builder")
-        # [SYS-GOAL-MODE] 同理，给 GoalSpecBuilder 一个专属显示名，避免和主 Agent 混淆
-        builder_cfg.agent_name = "📋 GoalSpecBuilder"
-        # [SYS-TURN-JUDGE][BUGFIX] 防止内部 Agent 对自己触发 TurnJudge 造成无限递归核查
-        from mini_agent.config.models import TurnJudgeConfig as _TurnJudgeConfig
-        builder_cfg.turn_judge = _TurnJudgeConfig(enabled=False)
 
-        guard = PermissionGuard(
-            auto_approve=True,
-            sandbox=self._cfg.sandbox,
-            project_root=self._cfg.project_root,
+        builder_agent = spawn_judge_agent(
+            profile=None,
+            base_cfg=self._cfg,
+            role_cfg_block=role_cfg_block,
+            display_name="📋 GoalSpecBuilder",
+            system_prompt=pm.render("system/goal_spec_builder"),
+            max_turns=2,
+            tools_enabled=False,
         )
-        empty_registry = get_default_registry().filtered(names=[], groups=[])
-        builder_agent = Agent(cfg=builder_cfg, guard=guard, registry=empty_registry, is_subagent=True)
 
-        try:
-            return builder_agent.run_turn(prompt)
-        except Exception as e:
-            return f'{{"goal_text": "", "acceptance_criteria": [], "verification_method": "manual_review", "verification_command": "", "_error": "{e}"}}'
+        result = run_judge_turn(
+            builder_agent, prompt,
+            failure_role_label="GoalSpecBuilder",
+            profile_name="goal_spec_builder",
+        )
+
+        if result.ok and result.raw_output and result.raw_output.strip():
+            self.last_error = None
+            return result.raw_output
+
+        if result.ok:
+            # LLM 调用没抛异常，但没产出任何文本（比如在 max_turns 内没收敛）。
+            self.last_error = "GoalSpecBuilder 未产出任何文本输出（可能在允许轮次内未收敛）"
+        else:
+            self.last_error = result.error or "未知错误"
+
+        R.print_warning(f"[GoalSpecBuilder] LLM 调用失败，将使用兜底验收标准。原因：{self.last_error}")
+        return (
+            '{"goal_text": "", "acceptance_criteria": [], '
+            '"verification_method": "manual_review", "verification_command": "", '
+            f'"_error": {json.dumps(self.last_error)}}}'
+        )
 
     def build_initial(self, user_goal_text: str) -> GoalSpec:
         """根据用户的自然语言目标生成第 1 版 GoalSpec。"""
@@ -361,6 +375,12 @@ class GoalSpecBuilder:
         if not spec.acceptance_criteria:
             # 兜底：解析失败/模型未返回标准时，用分维度的通用标准兜底，
             # 避免空验收标准导致 Judge 无从判断，也避免直接照抄原文。
+            reason = self.last_error or "LLM 返回内容解析后 acceptance_criteria 字段为空"
+            R.print_warning(
+                f"[GoalSpecBuilder] 未能从 LLM 输出中获得有效验收标准，"
+                f"已使用通用兜底标准代替。原因：{reason}\n"
+                f"LLM 原始输出（截断）：{raw[:500]!r}"
+            )
             spec.acceptance_criteria = _fallback_criteria(user_goal_text)
 
         spec.negotiation_log.append({
@@ -458,6 +478,12 @@ class GoalSpecBuilder:
         )
         if goal_text and not spec.acceptance_criteria:
             # 归纳出了目标但没有标准（模型漏填）——用通用兜底，避免空验收标准。
+            reason = self.last_error or "LLM 返回内容解析后 acceptance_criteria 字段为空"
+            R.print_warning(
+                f"[GoalSpecBuilder] from-history 未能获得有效验收标准，"
+                f"已使用通用兜底标准代替。原因：{reason}\n"
+                f"LLM 原始输出（截断）：{raw[:500]!r}"
+            )
             spec.acceptance_criteria = _fallback_criteria(goal_text)
 
         spec.negotiation_log.append({
