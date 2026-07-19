@@ -246,6 +246,20 @@ def _handle_consolidation(rest: list[str], agent) -> None:
 
         if dry_run:
             R.print_info("[consolidate] --dry-run 模式，节奏治理记录未写入。")
+
+        # wiki_next_phase_improvement_plan.md §1.2.3：手动巩固循环收尾后同样
+        # 顺带检查一次 wiki 下线评估翻转，与 daemon 侧 AutonomousLoop 的挂载点
+        # 保持一致行为；只读、只在状态翻转时提示，异常不影响巩固循环本身。
+        try:
+            from mini_agent.wiki.decommission import check_ready_transition
+
+            if check_ready_transition(paths):
+                R.print_info(
+                    "[consolidate] wiki 转正三条量化标准已连续达标，"
+                    "可用 /wiki promotion 查看三步下线执行清单。"
+                )
+        except Exception:
+            pass
     except Exception as e:
         R.print_error(f"[consolidate] 运行失败：{e}")
 

@@ -471,6 +471,31 @@ class AutonomousLoop:
             log_exception(_mini_agent_exc, where='mini_agent.evolution.autonomous_loop')
             pass
 
+        # wiki_next_phase_improvement_plan.md §1.2.3：巩固循环触发后顺带检查一次
+        # wiki 转正下线评估，只在"未就绪 -> 就绪"翻转的瞬间写一条提醒进 digest，
+        # 不在每次巩固循环（默认 6h 一次）都重复打扰。任何异常都不影响巩固循环
+        # 本身已经完成的事实，只吞掉不上抛。
+        self._check_decommission_transition()
+
+    def _check_decommission_transition(self) -> None:
+        """巩固循环收尾后顺带跑一次 wiki 下线评估（只读，不执行任何下线动作）。"""
+        try:
+            from mini_agent.wiki.decommission import check_ready_transition
+
+            if check_ready_transition(self._paths):
+                self._record_digest({
+                    "type": "wiki_decommission_ready",
+                    "summary": (
+                        "wiki 转正三条量化标准已连续达标，旧图书馆索引"
+                        "（分类树/实体索引/编年目录）具备下线评估条件，"
+                        "详见 /wiki promotion 输出的三步下线执行清单。"
+                    ),
+                })
+        except Exception as _mini_agent_exc:
+            from mini_agent.errors import log_exception
+            log_exception(_mini_agent_exc, where='mini_agent.evolution.autonomous_loop')
+            pass
+
     def _record_digest(self, extra: dict) -> None:
         """向 activity_digest.jsonl 追加一条记录。"""
         try:

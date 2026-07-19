@@ -348,6 +348,7 @@ def scan_gaps(paths: AgentPaths, *, max_results: int = 5) -> list[KnowledgeGap]:
 | §4.2.1/4.2.2 | entity_density 独立触发信号 | ✅ 已实现 | `history/extraction_trigger.py` |
 | §4.2.3 | 知识缺口主动扫描 | ✅ 已实现（规则扫描；子任务补全由 daemon/人工执行，未接自动 LLM 补全） | `wiki/gap_scanner.py`（新）、`cli/commands/wiki.py` `/wiki gap-scan` |
 | §5 | daemon 定时任务（gap_scan / fallback_cleanup） | ✅ 已实现 | `evolution/cron_scheduler.py`（新增 2 个内置 job）、`cli/commands/wiki.py` `/wiki fallback-cleanup`、`wiki/fallback_cleanup.py`（新） |
+| §1.2.3 | 下线评估自动挂载巩固循环收尾 | ✅ 已实现（本轮新增） | `evolution/autonomous_loop.py::_check_decommission_transition`、`cli/commands/evolve.py::_handle_consolidation` |
 
 **已知简化 / 未完成事项**（诚实列出，避免过度宣称）：
 - §5.2 兜底页清理简化为**页面级粒度**（整篇 `session-facts-<date>.md` 一起判重/标注），
@@ -357,10 +358,21 @@ def scan_gaps(paths: AgentPaths, *, max_results: int = 5) -> list[KnowledgeGap]:
   `InputQueue`（且只在 daemon `autonomous_loop` 上下文里生效，交互式 CLI 里没有
   `InputQueue` 可用，会给出提示而不是报错）——是否要在 daemon 里默认开启
   `--dispatch` 仍是 §7 里的未决问题，本轮默认不开启。
-- §1.2.3「`check_and_plan()` 挂在巩固触发后顺带跑一次」已接入 `/wiki promotion`
-  命令（末尾展示下线执行清单或差距原因），但**尚未接入** daemon
-  `evolution/autonomous_loop.py` 的巩固循环本身——`check_ready_transition()`
-  提供的"只在状态翻转时提醒一次"能力目前仍需要外部按需调用。
+- §1.2.3「`check_and_plan()` 挂在巩固触发后顺带跑一次」：**已实现**——除了此前
+  已接入的 `/wiki promotion` 命令（末尾展示下线执行清单或差距原因），本轮补上了
+  两处直接调用 `run_consolidation()` 的收尾点：`evolution/autonomous_loop.py::
+  AutonomousLoop._record_consolidation_for_digest()`（daemon 侧巩固循环收尾，
+  新增 `_check_decommission_transition()`）以及 `cli/commands/evolve.py::
+  _handle_consolidation()`（手动 `/evolve consolidate` 收尾）。两处都调用
+  `check_ready_transition()`，只在"未就绪 -> 就绪"翻转的瞬间写一条提醒
+  （daemon 侧写进 `activity_digest.jsonl`，CLI 侧打印一行提示），不会每次
+  巩固循环（默认 6h 一次）都重复打扰。
+  - 说明：daemon 内置的 `sys:consolidation` cron job 走的是"提交自然语言任务到
+    `InputQueue`，由 agent 对话式执行"的路径（`evolution/cron_scheduler.py::
+    CronScheduler._fire()`），Python 层面拿不到该次巩固循环何时真正跑完的
+    回调；因此挂载点选在两个**直接同步调用** `run_consolidation()` 的位置
+    （降级路径 `_tick_passive()` 和手动 CLI 命令），覆盖了"巩固循环执行完
+    立刻能拿到结果"的场景。
 - 本轮验证方式：新增代码逐一 `ast.parse` 语法检查通过；新增 4 个专属单测文件
   （`test_step_runner.py`/`test_wiki_gap_scanner.py`/`test_wiki_decommission.py`/
   `test_wiki_fallback_cleanup.py`，共 30 用例）+ `test_extraction_trigger.py`
@@ -368,5 +380,13 @@ def scan_gaps(paths: AgentPaths, *, max_results: int = 5) -> list[KnowledgeGap]:
   用例）全部通过——**合计 149 个用例全部通过**。全量测试套件因单次执行时间
   超限未能跑完，但抽样比对显示失败用例在**修改前的原始代码上同样失败**
   （逐字符核对一致的 F/E 分布），判断为环境相关的既有失败，非本轮改动引入。
+- **后续补充轮**（§1.2.3 收尾）：新增 `tests/test_autonomous_loop_decommission_hook.py`
+  （4 用例：未就绪时不记录、翻转时记录且只记录一次、异常吞掉不影响
+  `consolidation_completed` 记录本身）；与改动相关的既有测试
+  `test_wiki_decommission.py`/`test_wiki_promotion.py`/`test_step_runner.py`/
+  `test_wiki_gap_scanner.py`/`test_wiki_fallback_cleanup.py`/`test_evolve_cli.py`
+  共 157+16 用例全部通过（`test_evolve_cli.py` 16 用例在补装 `anthropic` SDK
+  依赖后通过，环境缺包非本轮改动引入）。按关键字 `consolidat/decommission/
+  wiki/autonomous_loop/cron` 筛选运行相关测试子集，共 **157 个用例全部通过**。
 
 ---

@@ -21,6 +21,8 @@
 | `src/mini_agent/storage/paths.py` | 新增 `wiki_decommission_report_path`、`wiki_gap_scan_log_path` 两个路径属性 |
 | `src/mini_agent/cli/commands/wiki.py` | 新增 `/wiki gap-scan [--max-results N] [--dispatch]`、`/wiki fallback-cleanup [--days N]` 两个子命令 |
 | `src/mini_agent/evolution/cron_scheduler.py` | `_BUILTIN_JOBS` 新增 `sys:wiki_gap_scan`（12h）、`sys:wiki_fallback_cleanup`（7d）两个内置 job |
+| `src/mini_agent/evolution/autonomous_loop.py` | **（补充轮）** `_record_consolidation_for_digest()` 收尾新增调用 `_check_decommission_transition()`：调用 `wiki/decommission.py::check_ready_transition()`，翻转时写一条 `type=wiki_decommission_ready` 记录进 `activity_digest.jsonl`；异常吞掉不影响巩固循环本身已完成的事实 |
+| `src/mini_agent/cli/commands/evolve.py` | **（补充轮）** `_handle_consolidation()`（`/evolve consolidate`）收尾新增同样的 `check_ready_transition()` 调用，翻转时打印一行提示，行为与 daemon 侧一致 |
 
 ## 设计决策修正（与计划文档草稿的差异）
 
@@ -33,6 +35,17 @@
 3. **`--dispatch` 的执行环境限制**：`/wiki gap-scan --dispatch` 依赖 `agent._input_queue`
    （`api/bridge.py::InputQueue`），该对象目前只在 daemon `autonomous_loop` 上下文里存在，
    交互式 CLI 会话没有；命令对此做了显式检测和提示，而不是静默失败或报错。
+4. **（补充轮）下线评估的挂载点选择**：原计划设想"巩固触发后顺带跑一次"，核实
+   `evolution/cron_scheduler.py::CronScheduler._fire()` 后发现内置 `sys:consolidation`
+   job 是把自然语言任务提交进 `InputQueue`，由 agent 对话式执行——Python 层面
+   没有该次巩固循环"真正跑完"的同步回调可挂载。因此改为挂在两个**直接同步调用**
+   `evolution/consolidation.py::run_consolidation()` 的位置：
+   - `evolution/autonomous_loop.py::AutonomousLoop._tick_passive()` 里
+     `CronScheduler` 未注入时的降级路径（`_record_consolidation_for_digest()`）；
+   - `cli/commands/evolve.py::_handle_consolidation()`（手动 `/evolve consolidate`）。
+   
+   两处行为一致：调用 `check_ready_transition()`，只在状态翻转的瞬间提醒一次，
+   不在每次巩固循环都重复打扰；异常一律吞掉，不影响巩固循环本身已经完成的事实。
 
 ## 验证记录
 
@@ -68,12 +81,38 @@
   一致，判断为环境相关的既有失败（大概率是需要真实 LLM/网络访问的测试在离线
   环境下预期失败），非本轮改动引入的回归。
 
+### 补充轮验证（§1.2.3 收尾）
+
+- 新增文件与全部修改文件均通过 `python3 -m ast.parse` 语法检查。
+- **新增 1 个专属单测文件** `tests/test_autonomous_loop_decommission_hook.py`
+  （4 用例，全部通过）：
+  - `test_no_transition_when_not_ready`：未达标时只写 `consolidation_completed`，
+    不写 `wiki_decommission_ready`。
+  - `test_transition_recorded_once`：达标后第一次收尾写一条翻转提醒，第二次
+    收尾（仍是就绪状态）不重复写。
+  - `test_hook_exception_does_not_raise`：`check_ready_transition()` 抛异常时
+    不向上抛出，且不影响 `consolidation_completed` 记录本身已经写入。
+- 运行改动直接相关的既有测试文件：`test_wiki_decommission.py`
+  `test_wiki_promotion.py`（下线评估依赖的转正评估）、`test_step_runner.py`
+  `test_wiki_gap_scanner.py` `test_wiki_fallback_cleanup.py`（回归确认未受影响）、
+  `test_evolve_cli.py`（`/evolve consolidate` 所在文件，16 用例，本地环境需
+  补装 `anthropic` SDK 依赖后通过——环境缺包，非本轮改动引入）。
+- 按关键字 `consolidat/decommission/wiki/autonomous_loop/cron` 筛选运行的
+  测试子集（排除因缺 `uvicorn` 依赖而无法采集的 `test_permissions_persist_
+  preference.py`，与本轮改动无关）：**157 个用例全部通过**。
+
 ## 遗留 TODO（下一轮可继续）
 
 - `sys:wiki_gap_scan` / `sys:wiki_fallback_cleanup` 两个 cron job 的 `task_template`
   是自然语言指令（走 agent 一轮对话解释执行，与既有内置 job 风格一致），未在真实
   daemon 环境里做端到端联调，建议上线后观察首批几次触发日志。
-- `wiki/decommission.py::check_and_plan()` 目前只接入了 `/wiki promotion` 命令
-  （命令末尾会顺带展示下线执行清单/差距原因），**尚未接入** daemon
-  `evolution/autonomous_loop.py` 的巩固循环——`check_ready_transition()` 提供的
-  "只在状态翻转时提醒一次"能力目前需要外部按需调用，还没有自动挂载触发点。
+- ~~`wiki/decommission.py::check_and_plan()` 目前只接入了 `/wiki promotion` 命令
+  （命令末尾会顺带展示下线执行清单/差距原因），尚未接入 daemon
+  `evolution/autonomous_loop.py` 的巩固循环~~ —— **补充轮已完成**：
+  `AutonomousLoop._record_consolidation_for_digest()` 与 `/evolve consolidate`
+  均已挂载 `check_ready_transition()`，翻转时各自写 digest 记录/打印提示。
+  仍未覆盖的场景是内置 `sys:consolidation` cron job 本身（走 agent 对话式
+  执行，Python 层拿不到同步完成回调）——如果未来该 job 的执行方式改为直接
+  调用 `run_consolidation()` 而非提交自然语言任务，需要同步把下线评估挂上去，
+  否则那条路径仍然只能靠 `/wiki promotion` 按需查看。
+- §5.2 兜底页清理的"页面级粒度 vs 逐条 fact_id 粒度"取舍仍是已知简化，未变。
