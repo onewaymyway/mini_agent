@@ -3134,6 +3134,15 @@ _COMMANDS: list[tuple[str, str, list]] = [
     ("/digest",      "Show autonomous activity summary (last 24h)",  []),
     ("/debug",       "Print/export system prompt & history for debugging", ["system", "history", "tokens", "all", "save"]),
     ("/cron",        "Manage periodic daemon tasks",                 ["list", "status", "enable", "disable", "run", "add", "remove", "set-schedule"]),
+    (
+        "/wiki", "Browse wiki knowledge base pages / gap-scan / cleanup",
+        [
+            "list", "search", "rebuild", "stats", "promotion",
+            ("lifecycle-scan", ["--days"]),
+            ("gap-scan", ["--max-results", "--dispatch"]),
+            ("fallback-cleanup", ["--days"]),
+        ],
+    ),
     ("/proxy",       "Proxy pool: subscriptions/validation/integration switches", ["status", "refresh", "sources", "integration"]),
     (
         "/behavior", "Behavior perception: desktop/browser/mobile activity, work & life daily report",

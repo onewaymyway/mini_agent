@@ -23,6 +23,13 @@
 | `src/mini_agent/evolution/cron_scheduler.py` | `_BUILTIN_JOBS` 新增 `sys:wiki_gap_scan`（12h）、`sys:wiki_fallback_cleanup`（7d）两个内置 job |
 | `src/mini_agent/evolution/autonomous_loop.py` | **（补充轮）** `_record_consolidation_for_digest()` 收尾新增调用 `_check_decommission_transition()`：调用 `wiki/decommission.py::check_ready_transition()`，翻转时写一条 `type=wiki_decommission_ready` 记录进 `activity_digest.jsonl`；异常吞掉不影响巩固循环本身已完成的事实 |
 | `src/mini_agent/cli/commands/evolve.py` | **（补充轮）** `_handle_consolidation()`（`/evolve consolidate`）收尾新增同样的 `check_ready_transition()` 调用，翻转时打印一行提示，行为与 daemon 侧一致 |
+| `src/mini_agent/ui/terminal.py` | **（再补充轮）** `_COMMANDS` 补上此前从未注册过的 `/wiki` 顶级命令及其全部 8 个子命令（`list`/`search`/`rebuild`/`stats`/`promotion`/`lifecycle-scan --days`/`gap-scan --max-results --dispatch`/`fallback-cleanup --days`），交互式终端 Tab 补全 / 敲 `/` 弹出列表现在能看到 `/wiki` 及其子命令提示 |
+
+## 新增文件（再补充轮）
+
+| 文件 | 作用 |
+|---|---|
+| `tests/test_wiki_slash_completer.py` | 校验 `/wiki` 已注册进 `ui/terminal.py::_COMMANDS`；用 `inspect.getsource(handle_wiki_cmd)` 反解真实支持的子命令集合，和补全表逐一比对防止再次遗漏；用 `_build_slash_completer()` 实跑补全验证 `/w`→`/wiki`、`/wiki `→8个子命令、`/wiki gap-scan `→`--max-results`/`--dispatch`、`/wiki fallback-cleanup `→`--days` 的实际行为（6 用例，全部通过） |
 
 ## 设计决策修正（与计划文档草稿的差异）
 
@@ -116,3 +123,21 @@
   调用 `run_consolidation()` 而非提交自然语言任务，需要同步把下线评估挂上去，
   否则那条路径仍然只能靠 `/wiki promotion` 按需查看。
 - §5.2 兜底页清理的"页面级粒度 vs 逐条 fact_id 粒度"取舍仍是已知简化，未变。
+
+## 再补充轮：命令行输入提示 + 文档同步
+
+用户核对时提出"本计划新增的 `/` 命令应该有命令行输入提示"。核查发现
+`cli/commands/wiki.py::handle_wiki_cmd` 一直能正常处理 `gap-scan`/
+`fallback-cleanup`，但驱动 REPL 交互式补全的 `ui/terminal.py::_COMMANDS`
+里从未有过 `/wiki` 这个顶级条目——命令执行链路和补全提示链路是两套完全独立
+的代码，前者早就实现了，后者被漏掉了。本轮已修复（见上表），并同步：
+
+- `docs/wiki-knowledge-base-guide.md` 新增"十一·5、下一阶段改进"一节，
+  汇总本计划 §1-§5 全部功能点（此前该文档完全没有覆盖这一轮改动）以及
+  本次补上的补全提示细节，"相关文档"列表补上本计划的两份 `next_doc` 文档链接。
+- `wiki_next_phase_improvement_plan.md` 的"实施状态总览"表新增一行，
+  验证记录追加一段说明。
+
+验证：`tests/test_wiki_slash_completer.py`（6 用例）全部通过；
+`tests/test_terminal.py`（既有 51 用例）全部通过，无回归；
+`python3 -m ast.parse` 对改动文件语法检查通过。

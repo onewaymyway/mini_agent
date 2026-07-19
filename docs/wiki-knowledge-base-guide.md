@@ -420,6 +420,56 @@ fact 不再是完全无状态的正文片段：`world_writer.py::queue_facts()` 
 
 O4 未覆盖的部分（详见实施记录 §5）：`stale_candidate_scan()` 尚未自动挂载进 `consolidate()` 巡检链路，仍需手动 `/wiki lifecycle-scan` 触发；LLM 精排 prompt 尚未按 section 粒度排除 `superseded` 内容；人类纠正的覆盖广播仅限纠正事件命中实体自身对应的页面，未做基于 `source_entries` 的跨页面血缘追溯。
 
+## 十一·5、下一阶段改进：退轨评估 / 巩固熔断 / 世界知识 / daemon 定时（本轮新增）
+
+对应 `next_doc/wiki_next_phase_improvement_plan.md`，四个互相独立的补丁，均已实现：
+
+| 模块 | 文件 | 作用 |
+|---|---|---|
+| 双轨制退出评估 | `wiki/decommission.py` | `check_and_plan()` 只读评估三项转正标准是否达标，达标给出「关闭 `legacy_index_enabled` → 观察 ≥2周 → 移除旧索引文件」三步执行清单；`check_ready_transition()` 在"未就绪→就绪"翻转的瞬间提醒一次（daemon 侧写 `activity_digest.jsonl`，`/evolve consolidate` 侧打印一行提示），不做任何自动下线动作 |
+| 陈旧专题页标注 | `wiki/gap_scanner.py::mark_stale_topics()` | topic 页面 `absorbs` 链接指向的成员页面里 `knowledge_state != fresh` 占比超过阈值（默认 0.6）时，把该 topic 标记为过时，只标注不删除 |
+| 巩固分步超时熔断 | `evolution/step_runner.py` | `run_step()` 给 `consolidate()` 每个子步骤独立的超时预算（线程+轮询，不用 `signal.alarm`），超时即跳过、不重试，下一轮巩固自然覆盖；`ConsolidationReport.step_timings` 记录每步耗时供排查 |
+| 世界知识独立触发信号 | `history/extraction_trigger.py` | 新增 `trigger_reason="entity_density"`，规则扫描纯描述性内容里的"新词"密度（不依赖"因为/所以"这类决策语境连接词），与既有 `connective_density` 并行、互不干扰 |
+| 知识缺口主动扫描 | `wiki/gap_scanner.py::scan_gaps()` | 规则扫描浅层实体（强链接 ≤1）、孤儿页面、陈旧专题页，零 LLM 成本；是否派发补全子任务由 `/wiki gap-scan --dispatch` 决定 |
+| 兜底页清理 | `wiki/fallback_cleanup.py` | 对创建超过 N 天（默认 30）且从未被判重合并过的 `session-facts-<date>.md` 页面重新跑一次判重，命中则合并，命中不到则标记 `stale`（页面级粒度，不细到逐条 fact） |
+| daemon 定时任务 | `evolution/cron_scheduler.py::_BUILTIN_JOBS` | 新增 `sys:wiki_gap_scan`（12h）、`sys:wiki_fallback_cleanup`（7d）两个内置 job，与已有 `sys:consolidation`（6h）并行、互不影响 |
+
+### 新增 `/wiki` 子命令
+
+| 命令 | 说明 |
+|---|---|
+| `/wiki gap-scan [--max-results N] [--dispatch]` | 触发一次知识缺口扫描（浅层实体/孤儿页面/陈旧专题页），默认只打印报告；`--dispatch` 把每条缺口包装成任务提交进 `InputQueue`（仅在 daemon `autonomous_loop` 上下文里可用，交互式 CLI 会话没有 `InputQueue`，会提示而非报错） |
+| `/wiki fallback-cleanup [--days N]` | 对超过 N 天（默认 30）未处理的 `session-facts` 兜底页重新判重，命中合并、未命中标 `stale` |
+
+### 命令行输入提示（本轮补上的缺口）
+
+`cli/commands/wiki.py::handle_wiki_cmd` 早已支持上述两个子命令，但驱动 REPL 里
+`Tab` 补全 / 敲 `/` 弹出候选列表的命令定义表 `ui/terminal.py::_COMMANDS` 之前
+**从未注册过 `/wiki` 这个顶级命令**——不影响命令本身能不能跑（`handle_wiki_cmd`
+自己解析 `args`，跟补全表是两套独立逻辑），但用户在交互式终端里敲 `/wiki `
+不会有任何提示，新加的 `gap-scan`/`fallback-cleanup` 更是无从发现，只能翻文档
+才知道存在。本轮补上：
+
+```python
+(
+    "/wiki", "Browse wiki knowledge base pages / gap-scan / cleanup",
+    [
+        "list", "search", "rebuild", "stats", "promotion",
+        ("lifecycle-scan", ["--days"]),
+        ("gap-scan", ["--max-results", "--dispatch"]),
+        ("fallback-cleanup", ["--days"]),
+    ],
+),
+```
+
+补全效果：敲 `/w` → 弹出 `/wiki`；敲 `/wiki ` → 弹出全部 8 个子命令；敲
+`/wiki gap-scan ` → 弹出 `--max-results`/`--dispatch`；敲
+`/wiki fallback-cleanup ` / `/wiki lifecycle-scan ` → 弹出 `--days`。
+回归测试见 `tests/test_wiki_slash_completer.py`（用
+`inspect.getsource(handle_wiki_cmd)` 反解出真实处理的子命令集合，和补全表逐一
+比对，防止未来再次出现"能处理但没提示"的不一致；并用 `_build_slash_completer()`
+真跑一遍补全验证实际行为，不只是核对表结构）。
+
 ## 十一、与图书馆式索引的关系与后续计划
 
 - `MemoryStore` 的原始 jsonl 记忆条目保持不变，作为"证据层"不受影响。Wiki 页面是"提炼层"，`source_entries` 字段始终指回原始证据，保证可追溯。
@@ -434,8 +484,11 @@ O4 未覆盖的部分（详见实施记录 §5）：`stale_candidate_scan()` 尚
 - 项目根目录 `next_doc/wiki式知识库改进计划.md` — P0-P4 的完整设计动机与实现记录
 - 项目根目录 `next_doc/wiki知识库提取与组织层改进计划.md` — O1-O4、E1-E3 的完整设计动机与问题分析（§十涉及部分的原始设计文档）
 - 项目根目录 `next_doc/wiki提取层改进计划_O1实施记录.md` ~ `_O4实施记录.md`、`_E1实施记录.md` ~ `_E3实施记录.md`（含 E2 方案B专项记录）— 每一项的详细实施记录、与原计划的差异说明、验收方式
+- 项目根目录 `next_doc/wiki_next_phase_improvement_plan.md` — 退轨评估 / 专题页退场 / 巩固分步熔断 / 世界知识独立触发 / daemon 定时任务的完整设计动机与实施状态总览
+- 项目根目录 `next_doc/wiki_next_phase_implementation_record.md` — 上述改进的逐文件改动清单、设计决策修正、测试验证记录
 
 ---
 
 *首次编写：2026-07（wiki 式知识库阶段一~四：md 页面存储 + 双写镜像 + 三段式检索 + 专题页生成 + `/wiki` 命令）*
 *更新：2026-07（提取层与组织层改进计划 O1-O4、E1-E3 全部完成：索引复用与信度分层、实体摘要反哺抽取、抽取与 compact 解耦、抽取任务拆分、多跳图扩展、topic 再巩固、统一知识生命周期状态机）*
+*更新：2026-07（下一阶段改进：退轨评估 `wiki/decommission.py`、专题页退场标注、`consolidate()` 分步超时熔断、`entity_density` 独立触发信号、`/wiki gap-scan`/`fallback-cleanup` 新命令、daemon 新增 2 个内置 cron job；并补上此前遗漏的 `/wiki` 命令行 Tab 补全提示）*

@@ -349,6 +349,7 @@ def scan_gaps(paths: AgentPaths, *, max_results: int = 5) -> list[KnowledgeGap]:
 | §4.2.3 | 知识缺口主动扫描 | ✅ 已实现（规则扫描；子任务补全由 daemon/人工执行，未接自动 LLM 补全） | `wiki/gap_scanner.py`（新）、`cli/commands/wiki.py` `/wiki gap-scan` |
 | §5 | daemon 定时任务（gap_scan / fallback_cleanup） | ✅ 已实现 | `evolution/cron_scheduler.py`（新增 2 个内置 job）、`cli/commands/wiki.py` `/wiki fallback-cleanup`、`wiki/fallback_cleanup.py`（新） |
 | §1.2.3 | 下线评估自动挂载巩固循环收尾 | ✅ 已实现（本轮新增） | `evolution/autonomous_loop.py::_check_decommission_transition`、`cli/commands/evolve.py::_handle_consolidation` |
+| §5.2（补充） | `/wiki` 及新增子命令 `gap-scan`/`fallback-cleanup` 的命令行输入提示（Tab 补全） | ✅ 已实现（本轮新增） | `ui/terminal.py::_COMMANDS`（新增 `/wiki` 顶级条目及全部子命令/选项）、`tests/test_wiki_slash_completer.py`（新）、`docs/wiki-knowledge-base-guide.md`（新增“十一·5”节） |
 
 **已知简化 / 未完成事项**（诚实列出，避免过度宣称）：
 - §5.2 兜底页清理简化为**页面级粒度**（整篇 `session-facts-<date>.md` 一起判重/标注），
@@ -388,5 +389,17 @@ def scan_gaps(paths: AgentPaths, *, max_results: int = 5) -> list[KnowledgeGap]:
   共 157+16 用例全部通过（`test_evolve_cli.py` 16 用例在补装 `anthropic` SDK
   依赖后通过，环境缺包非本轮改动引入）。按关键字 `consolidat/decommission/
   wiki/autonomous_loop/cron` 筛选运行相关测试子集，共 **157 个用例全部通过**。
+- **再补充轮（本轮）**：核对 `cli/commands/wiki.py::handle_wiki_cmd` 与
+  `ui/terminal.py::_COMMANDS`（驱动交互式终端 Tab 补全的命令定义表）时发现
+  `/wiki` 这一顶级命令此前**从未注册进补全表**——命令本身可以正常执行（两者是
+  独立的两套逻辑），但用户在 REPL 里敲 `/wiki ` 或 `/wiki gap-scan ` 得不到
+  任何补全提示，本轮新增的 `gap-scan`/`fallback-cleanup` 因此更难被发现。
+  已在 `_COMMANDS` 里补上 `/wiki` 条目（覆盖全部 8 个子命令及各自的选项，
+  含 `gap-scan` 的 `--max-results`/`--dispatch`、`fallback-cleanup`/
+  `lifecycle-scan` 的 `--days`），新增 `tests/test_wiki_slash_completer.py`
+  （6 用例：表结构核对 + 用 `_build_slash_completer()` 实跑补全验证行为），
+  全部通过；运行既有 `tests/test_terminal.py`（51 用例）确认无回归。
+  同步在 `docs/wiki-knowledge-base-guide.md` 新增"十一·5"节，汇总本计划
+  §1-§5 全部功能点及本次补上的补全提示。
 
 ---
