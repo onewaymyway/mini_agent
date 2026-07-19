@@ -25,6 +25,32 @@ from typing import Callable, Optional
 _SUMMARY_REWRITE_THRESHOLD = 3   # pending_evidence_count 达到此值才重写摘要
 _MAX_RELATED_ENTRIES = 50        # 单实体挂载的记忆上限，超出淘汰最旧
 
+# 句子边界字符（中英文标点都算），供 `_truncate_at_boundary()` 找断点用。
+_SENTENCE_BOUNDARY_RE = re.compile(r"[。！？.!?；;\n]")
+
+
+def _truncate_at_boundary(text: str, max_len: int) -> str:
+    """截断到 `max_len` 字符以内，优先在句子边界（句号/问号/感叹号/分号/换行）
+    截断，而不是硬切在字符数上——`text[:max_len]` 硬截断经常切在词语中间，
+    如果原文里恰好包含系统拼接进来的结构化片段（比如 goal 模式的"钉住"提醒
+    消息模板），硬切会把提醒消息切得残缺不全，摘要里出现读不通的半句话。
+
+    找不到句子边界（比如整段都是没有标点的短语拼接）时退回硬截断并加省略号，
+    行为等价于原来的 `text[:max_len]`（多一个省略号，不影响功能，只是更清楚
+    地标注"这里被截断了"）。
+    """
+    if len(text) <= max_len:
+        return text
+    window = text[:max_len]
+    matches = list(_SENTENCE_BOUNDARY_RE.finditer(window))
+    if matches:
+        cut = matches[-1].end()
+        # 边界离 max_len 太远（比如只在开头就有一个句号，后面一大段没有
+        # 任何标点）时不值得为了"整句"牺牲太多信息量，退回硬截断。
+        if cut >= max_len * 0.4:
+            return window[:cut].rstrip()
+    return window.rstrip() + "…"
+
 
 def _atomic_write_json(path: Path, data: object) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -166,7 +192,7 @@ class EntityStore:
                     name=name,
                     entity_type=entity_type,
                     category=category,
-                    summary=text[:200],
+                    summary=_truncate_at_boundary(text, 200),
                 )
                 self._entities[entity.entity_id] = entity
             entity.related_entry_ids.append(entry_id)
@@ -217,12 +243,14 @@ class EntityStore:
         else:
             new_summary = ""
             if _looks_contradictory(old_summary, entry_texts):
-                new_summary = "⚠矛盾待复核：" + " | ".join(t[:120] for t in entry_texts[-3:])
+                new_summary = "⚠矛盾待复核：" + " | ".join(
+                    _truncate_at_boundary(t, 120) for t in entry_texts[-3:]
+                )
         if not new_summary:
-            new_summary = " | ".join(t[:120] for t in entry_texts[-3:])
+            new_summary = " | ".join(_truncate_at_boundary(t, 120) for t in entry_texts[-3:])
 
         if new_summary.startswith("⚠矛盾") and old_summary:
-            entity.superseded_notes.append(old_summary[:200])
+            entity.superseded_notes.append(_truncate_at_boundary(old_summary, 200))
             entity.superseded_notes = entity.superseded_notes[-5:]
 
         entity.summary = new_summary
@@ -237,7 +265,7 @@ class EntityStore:
         if entity is not None:
             entity.status = "superseded"
             if reason:
-                entity.superseded_notes.append(reason[:200])
+                entity.superseded_notes.append(_truncate_at_boundary(reason, 200))
                 entity.superseded_notes = entity.superseded_notes[-5:]
             self._save()
 
