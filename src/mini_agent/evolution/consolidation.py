@@ -51,7 +51,9 @@ def _migrate_legacy_rhythm_file(paths) -> None:
         return
     try:
         new_path.write_text(legacy_path.read_text(encoding="utf-8"), encoding="utf-8")
-    except Exception:
+    except Exception as _mini_agent_exc:
+        from mini_agent.errors import log_exception
+        log_exception(_mini_agent_exc, where='mini_agent.evolution.consolidation._migrate_legacy_rhythm_file')
         pass  # 迁移失败静默降级：退化为"从未运行过"，不阻断主流程
 
 
@@ -62,7 +64,9 @@ def _load_rhythm(paths) -> dict:
         return {}
     try:
         return json.loads(p.read_text(encoding="utf-8"))
-    except Exception:
+    except Exception as _mini_agent_exc:
+        from mini_agent.errors import log_exception
+        log_exception(_mini_agent_exc, where='mini_agent.evolution.consolidation._load_rhythm')
         return {}
 
 
@@ -74,7 +78,9 @@ def _save_rhythm(paths, data: dict) -> None:
     try:
         tmp.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
         os.replace(tmp, p)
-    except Exception:
+    except Exception as _mini_agent_exc:
+        from mini_agent.errors import log_exception
+        log_exception(_mini_agent_exc, where='mini_agent.evolution.consolidation._save_rhythm')
         tmp.unlink(missing_ok=True)
 
 
@@ -234,7 +240,9 @@ def _estimate_skill_token_costs(paths) -> dict[str, float]:
                 key=lambda d: d.stat().st_mtime,
                 reverse=True,
             )[:20]  # 最多看最近 20 个 session
-    except Exception:
+    except Exception as _mini_agent_exc:
+        from mini_agent.errors import log_exception
+        log_exception(_mini_agent_exc, where='mini_agent.evolution.consolidation._estimate_skill_token_costs')
         return {}
 
     cost_totals: dict[str, float] = {}
@@ -263,7 +271,9 @@ def _estimate_skill_token_costs(paths) -> dict[str, float]:
                         # 粒度不够，但不影响阈值判断
                         cost_totals["_system"] = cost_totals.get("_system", 0.0) + system_base
                         cost_counts["_system"] = cost_counts.get("_system", 0) + 1
-        except Exception:
+        except Exception as _mini_agent_exc:
+            from mini_agent.errors import log_exception
+            log_exception(_mini_agent_exc, where='mini_agent.evolution.consolidation._estimate_skill_token_costs')
             continue
 
     return {}  # 当前近似度不足，返回空；caller 里 token_cost 为 0 不触发规则 A
@@ -366,7 +376,9 @@ def build_capability_map(paths, memory_backend) -> list[CapabilityMapEntry]:
                 continue
             try:
                 manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-            except Exception:
+            except Exception as _mini_agent_exc:
+                from mini_agent.errors import log_exception
+                log_exception(_mini_agent_exc, where='mini_agent.evolution.consolidation.build_capability_map')
                 continue
 
             outcome = manifest.get("outcome", {}) or {}
@@ -506,7 +518,9 @@ def check_scope_promotion(
 
     try:
         data = json.loads(cross_index_path.read_text(encoding="utf-8"))
-    except Exception:
+    except Exception as _mini_agent_exc:
+        from mini_agent.errors import log_exception
+        log_exception(_mini_agent_exc, where='mini_agent.evolution.consolidation.check_scope_promotion')
         return []
 
     patterns = data.get("cross_project_patterns", [])

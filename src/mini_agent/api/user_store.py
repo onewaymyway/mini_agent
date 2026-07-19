@@ -173,7 +173,9 @@ def _read_key_file(path: Path) -> Optional[str]:
     try:
         t = path.read_text(encoding="utf-8").strip()
         return t if len(t) >= 32 else None
-    except Exception:
+    except Exception as _mini_agent_exc:
+        from mini_agent.errors import log_exception
+        log_exception(_mini_agent_exc, where='mini_agent.api.user_store._read_key_file')
         return None
 
 
@@ -451,7 +453,9 @@ class RoleProfileManager:
             return {}
         try:
             return json.loads(path.read_text(encoding="utf-8"))
-        except Exception:
+        except Exception as _mini_agent_exc:
+            from mini_agent.errors import log_exception
+            log_exception(_mini_agent_exc, where='mini_agent.api.user_store.RoleProfileManager.get_profile')
             return {}
 
     def update_profile(self, user_id: str, updates: dict) -> None:

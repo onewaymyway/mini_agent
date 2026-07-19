@@ -141,6 +141,8 @@ def build_index(paths: AgentPaths, *, incremental: bool = True) -> IndexResult:
         try:
             page = parse_page(md_path)
         except Exception as exc:  # noqa: BLE001 - 单页失败不阻断整体重建
+            from mini_agent.errors import log_exception
+            log_exception(exc, where='mini_agent.wiki.indexer.build_index')
             result.parse_errors.append(f"{md_path}: {exc}")
             continue
         result.pages.append(page)

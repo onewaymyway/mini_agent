@@ -34,6 +34,8 @@ def handle_provider_cmd(args: list[str], agent: Agent) -> None:
             entry = agent.switch_to_provider_default(provider, model)
             R.print_success(f"Switched to {entry.config.provider} / {entry.config.model}")
         except Exception as e:
+            from mini_agent.errors import log_exception
+            log_exception(e, where='mini_agent.cli.commands.providers.handle_provider_cmd')
             R.print_error(str(e))
 
     else:

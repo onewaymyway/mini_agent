@@ -48,7 +48,9 @@ def _load_local(cfg: "AppConfig", scope: str = "project", user_id: Optional[str]
     if getattr(cfg.memory, "library_index_enabled", True):
         try:
             library_index = _build_library_index(paths, scope, cfg=cfg, user_id=user_id)
-        except Exception:
+        except Exception as _mini_agent_exc:
+            from mini_agent.errors import log_exception
+            log_exception(_mini_agent_exc, where='mini_agent.perception.memory_factory._load_local')
             library_index = None  # 索引组件失败不应阻断记忆系统本身可用
 
     return MemoryStore(
@@ -95,9 +97,11 @@ def _load_hybrid(cfg: "AppConfig", scope: str = "project", user_id: Optional[str
             embedding_top_n=cfg.memory.embedding_top_n,
             paths=AgentPaths(cfg.project_root),
         )
-    except Exception:
+    except Exception as _mini_agent_exc:
         # 模型下载失败/onnxruntime 未安装（用户开了开关但没装 extras）/加载出错：
         # 静默降级为纯 MemoryStore，不阻断 agent 启动，只在 debug 日志里记录原因
+        from mini_agent.errors import log_exception
+        log_exception(_mini_agent_exc, where='mini_agent.perception.memory_factory._load_hybrid')
         import logging
         logging.getLogger(__name__).warning(
             "[embedding] 加载本地 embedding 模型失败，已降级为纯 TF-IDF 检索。"
@@ -294,7 +298,9 @@ def build_llm_call(client) -> Callable[[str], str]:
                 tools=[],
             )
             return (response.text or "").strip()
-        except Exception:
+        except Exception as _mini_agent_exc:
+            from mini_agent.errors import log_exception
+            log_exception(_mini_agent_exc, where='mini_agent.perception.memory_factory.build_llm_call._call')
             return ""
 
     return _call

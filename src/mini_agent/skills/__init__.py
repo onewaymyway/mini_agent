@@ -358,6 +358,8 @@ class SkillLoader:
         try:
             content = file_path.read_text(encoding="utf-8")
         except Exception as e:
+            from mini_agent.errors import log_exception
+            log_exception(e, where='mini_agent.skills.SkillLoader.load_resource')
             return False, f"读取失败：{file_path} ({e})"
 
         was_loaded = resource_id in self._loaded_resources.get(skill_name, {})
@@ -713,7 +715,9 @@ _TRIGGER_VERBS = [
 def _parse_skill(path: Path) -> Optional[Skill]:
     try:
         content = path.read_text(encoding="utf-8")
-    except Exception:
+    except Exception as _mini_agent_exc:
+        from mini_agent.errors import log_exception
+        log_exception(_mini_agent_exc, where='mini_agent.skills._parse_skill')
         return None
 
     # Try YAML-like front matter

@@ -38,8 +38,10 @@ class BaseCollector:
                 events = self.poll()
                 if events:
                     self._store.append_many(events)
-            except Exception:
+            except Exception as _mini_agent_exc:
                 # 采集器故障不应影响主流程；静默跳过本轮。
+                from mini_agent.errors import log_exception
+                log_exception(_mini_agent_exc, where='mini_agent.perception.behavior.collectors.base.BaseCollector._run_loop')
                 pass
             self._stop_flag.wait(self._interval)
 

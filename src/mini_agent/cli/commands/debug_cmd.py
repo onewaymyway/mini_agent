@@ -59,6 +59,8 @@ def _get_system_text(agent: Agent) -> str:
     try:
         return agent._build_system()
     except Exception as e:
+        from mini_agent.errors import log_exception
+        log_exception(e, where='mini_agent.cli.commands.debug_cmd._get_system_text')
         return f"[error building system prompt: {e}]"
 
 
@@ -107,7 +109,9 @@ def _print_tokens(agent: Agent) -> None:
         ctx_window = agent._resolve_context_window()
         if ctx_window:
             pct_str = f"  [dim]({total_tokens / ctx_window:.0%} of {ctx_window:,})[/dim]"
-    except Exception:
+    except Exception as _mini_agent_exc:
+        from mini_agent.errors import log_exception
+        log_exception(_mini_agent_exc, where='mini_agent.cli.commands.debug_cmd._print_tokens')
         pass
 
     R.console.print("\n[bold]── Token Breakdown ──[/bold]\n")
@@ -139,7 +143,9 @@ def _content_to_text(content) -> str:
         return content
     try:
         return json.dumps(content, ensure_ascii=False)
-    except Exception:
+    except Exception as _mini_agent_exc:
+        from mini_agent.errors import log_exception
+        log_exception(_mini_agent_exc, where='mini_agent.cli.commands.debug_cmd._content_to_text')
         return str(content)
 
 
@@ -200,7 +206,9 @@ def _save_debug_dump(agent: Agent, path_arg: Optional[str]) -> None:
         try:
             from mini_agent.storage.paths import AgentPaths
             out_dir = AgentPaths(agent.cfg.project_root).workdir_dir / "debug"
-        except Exception:
+        except Exception as _mini_agent_exc:
+            from mini_agent.errors import log_exception
+            log_exception(_mini_agent_exc, where='mini_agent.cli.commands.debug_cmd._save_debug_dump')
             out_dir = Path(".agent") / "debug"
         out_dir.mkdir(parents=True, exist_ok=True)
         import time
@@ -239,4 +247,6 @@ def _save_debug_dump(agent: Agent, path_arg: Optional[str]) -> None:
         out_path.write_text("\n".join(lines), encoding="utf-8")
         R.print_success(f"Debug dump saved → {out_path}")
     except Exception as e:
+        from mini_agent.errors import log_exception
+        log_exception(e, where='mini_agent.cli.commands.debug_cmd._save_debug_dump')
         R.print_error(f"Failed to save debug dump: {e}")

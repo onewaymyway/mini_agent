@@ -66,7 +66,9 @@ class CompactionMixin:
                 "to merge redundant or outdated notepad entries into more condensed ones. "
                 "Do not delete anything still relevant to the ongoing task."
             )
-        except Exception:
+        except Exception as _mini_agent_exc:
+            from mini_agent.errors import log_exception
+            log_exception(_mini_agent_exc, where='mini_agent.agent.compaction.CompactionMixin._build_notepad_compact_hint')
             return ""
 
     _DECISIONS_BLOCK_RE = _re.compile(
@@ -114,7 +116,9 @@ class CompactionMixin:
                     paths, candidates,
                     source_entries=[f"compact_with_skills@{len(self._history)}"],
                 )
-        except Exception:
+        except Exception as _mini_agent_exc:
+            from mini_agent.errors import log_exception
+            log_exception(_mini_agent_exc, where='mini_agent.agent.compaction.CompactionMixin._extract_and_queue_decisions_from_compact_result')
             pass  # 解析/入队失败不影响 compact 主流程，摘要文本仍已剥离 JSON 块
 
         return cleaned
@@ -145,7 +149,9 @@ class CompactionMixin:
                 return
             if not summary_text or not pre_compact_history:
                 return
-        except Exception:
+        except Exception as _mini_agent_exc:
+            from mini_agent.errors import log_exception
+            log_exception(_mini_agent_exc, where='mini_agent.agent.compaction.CompactionMixin._maybe_audit_compact_quality')
             return
 
         def _run_audit() -> None:
@@ -310,8 +316,10 @@ class CompactionMixin:
         try:
             from mini_agent.perception.token_counter import estimate_messages_tokens
             from mini_agent.llm.system_tool_call import convert_tool_use_to_text
-        except Exception:
+        except Exception as _mini_agent_exc:
             # 估算工具不可用，保守返回 False 走正常路径（兜底靠异常捕获）
+            from mini_agent.errors import log_exception
+            log_exception(_mini_agent_exc, where='mini_agent.agent.compaction.CompactionMixin._should_use_chunked_compact')
             return False
 
         # 1. 构建 system prompt（同 run_turn 逻辑）
@@ -406,6 +414,8 @@ class CompactionMixin:
                 result = self._compact_chunked()
                 used_chunked = True
             except Exception as ce:
+                from mini_agent.errors import log_exception
+                log_exception(ce, where='mini_agent.agent.compaction.CompactionMixin.compact_with_skills')
                 R.print_error(f"[compact] Chunked compact failed: {ce}")
                 return ""
         else:
@@ -416,6 +426,8 @@ class CompactionMixin:
             try:
                 result = self.run_turn(compact_prompt)
             except Exception as e:
+                from mini_agent.errors import log_exception
+                log_exception(e, where='mini_agent.agent.compaction.CompactionMixin.compact_with_skills')
                 from mini_agent.llm.base import LLMContextWindowError
                 if isinstance(e, LLMContextWindowError):
                     # 兜底：预估漏报时捕获异常再切分批
@@ -426,6 +438,8 @@ class CompactionMixin:
                         result = self._compact_chunked()
                         used_chunked = True
                     except Exception as ce:
+                        from mini_agent.errors import log_exception
+                        log_exception(ce, where='mini_agent.agent.compaction.CompactionMixin.compact_with_skills')
                         R.print_error(f"[compact] Chunked compact failed: {ce}")
                         return ""
                 else:
@@ -620,6 +634,8 @@ class CompactionMixin:
                 chunk_text = resp.text.strip()
             except Exception as e:
                 # 单 chunk 失败：用字符串摘要降级（不中断整体流程）
+                from mini_agent.errors import log_exception
+                log_exception(e, where='mini_agent.agent.compaction.CompactionMixin._compact_chunked')
                 R.print_warning(f"[compact]   chunk {chunk_num} LLM failed ({e}), using fallback summary.")
                 from mini_agent.history.compression import _build_summary_text
                 chunk_text = _build_summary_text(chunk, len(chunk))
@@ -646,6 +662,8 @@ class CompactionMixin:
                 )
                 final_summary = resp.text.strip()
             except Exception as e:
+                from mini_agent.errors import log_exception
+                log_exception(e, where='mini_agent.agent.compaction.CompactionMixin._compact_chunked')
                 R.print_warning(f"[compact] Merge LLM call failed ({e}), concatenating chunks.")
                 final_summary = "\n\n".join(chunk_summaries)
 
@@ -703,7 +721,9 @@ class CompactionMixin:
                             prompt_lines=[], choices="(y)es  (n)o",
                             default="y", interrupt_event=interrupt_event,
                         )
-                    except Exception:
+                    except Exception as _mini_agent_exc:
+                        from mini_agent.errors import log_exception
+                        log_exception(_mini_agent_exc, where='mini_agent.agent.compaction.CompactionMixin._maybe_run_compact._local_read')
                         return None
                     if interrupt_event.is_set():
                         return None
@@ -719,8 +739,10 @@ class CompactionMixin:
                 )
                 confirmed = bool((result or {}).get("confirmed", True))
                 choice = "y" if confirmed else "n"
-            except Exception:
+            except Exception as _mini_agent_exc:
                 # 非交互环境（如 headless/daemon 且 interaction 模块不可用）下无法弹确认，降级为自动执行
+                from mini_agent.errors import log_exception
+                log_exception(_mini_agent_exc, where='mini_agent.agent.compaction.CompactionMixin._maybe_run_compact')
                 choice = "y"
             if choice not in ("y", "yes"):
                 R.print_info("[compact] 用户拒绝，本次跳过压缩。")
@@ -833,7 +855,9 @@ class CompactionMixin:
                     saved_cfg_strategy = self.cfg.compress.strategy
                     self.cfg.compress.strategy = effective_strategy
                     _hist._strategy = create_strategy(self.cfg)
-                except Exception:
+                except Exception as _mini_agent_exc:
+                    from mini_agent.errors import log_exception
+                    log_exception(_mini_agent_exc, where='mini_agent.agent.compaction.CompactionMixin._auto_compress_history_impl')
                     _hist._strategy = original_strategy
                 finally:
                     self.cfg.compress.strategy = saved_cfg_strategy

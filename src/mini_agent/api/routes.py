@@ -546,6 +546,8 @@ async def get_diagnostics(request: Request):
                 pass
 
     except Exception as e:
+        from mini_agent.errors import log_exception
+        log_exception(e, where='mini_agent.api.routes.get_diagnostics')
         result["_error"] = str(e)
 
     return JSONResponse(content=result)
@@ -587,7 +589,9 @@ async def get_history(request: Request):
         try:
             msgs = [m.model_dump() if hasattr(m, "model_dump") else dict(m)
                     for m in bridge.agent.history]
-        except Exception:
+        except Exception as _mini_agent_exc:
+            from mini_agent.errors import log_exception
+            log_exception(_mini_agent_exc, where='mini_agent.api.routes.get_history')
             msgs = []
     return HistoryResponse(messages=msgs, count=len(msgs))
 
@@ -2226,7 +2230,9 @@ async def perception_browser_stop(request: Request):
     body = {}
     try:
         body = await request.json()
-    except Exception:
+    except Exception as _mini_agent_exc:
+        from mini_agent.errors import log_exception
+        log_exception(_mini_agent_exc, where='mini_agent.api.routes.perception_browser_stop')
         pass
     mgr = _get_behavior_manager(request)
     return mgr.browser_stop(kill_browser=bool(body.get("kill_browser", False)))

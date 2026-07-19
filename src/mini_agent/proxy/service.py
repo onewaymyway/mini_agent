@@ -71,7 +71,9 @@ async def _handle_conn(client_reader, client_writer, get_upstream_port):
         return
     try:
         upstream_reader, upstream_writer = await asyncio.open_connection("127.0.0.1", port)
-    except Exception:
+    except Exception as _mini_agent_exc:
+        from mini_agent.errors import log_exception
+        log_exception(_mini_agent_exc, where='mini_agent.proxy.service._handle_conn')
         client_writer.close()
         return
     await asyncio.gather(

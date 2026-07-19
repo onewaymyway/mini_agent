@@ -183,7 +183,9 @@ def _handle_revert(repo, rest: list[str], agent) -> None:
         from mini_agent.storage.paths import AgentPaths
 
         outcome_tracker.mark_reverted(AgentPaths(agent.cfg.project_root), match.commit)
-    except Exception:
+    except Exception as _mini_agent_exc:
+        from mini_agent.errors import log_exception
+        log_exception(_mini_agent_exc, where='mini_agent.cli.commands.evolution._handle_revert')
         pass
 
 
@@ -300,6 +302,8 @@ def _handle_outcomes(rest: list[str], agent) -> None:
         if hasattr(agent, "_append_memory_delta"):
             agent._append_memory_delta(entry)
     except Exception as e:
+        from mini_agent.errors import log_exception
+        log_exception(e, where='mini_agent.cli.commands.evolution._handle_outcomes')
         R.print_warning(f"[evolution] failed to record revert lesson: {e}")
 
 
@@ -346,6 +350,8 @@ def _record_revert_lesson(agent, match, revert_commit: str) -> None:
         if hasattr(agent, "_append_memory_delta"):
             agent._append_memory_delta(entry)
     except Exception as e:
+        from mini_agent.errors import log_exception
+        log_exception(e, where='mini_agent.cli.commands.evolution._record_revert_lesson')
         R.print_warning(f"[evolution] failed to record revert lesson: {e}")
 
 
@@ -406,6 +412,8 @@ def _handle_lessons_to_reminders(agent) -> None:
             agent._reminder_mgr.reload()
             R.print_info("[evolution] ReminderManager 已热重载。")
         except Exception as e:
+            from mini_agent.errors import log_exception
+            log_exception(e, where='mini_agent.cli.commands.evolution._handle_lessons_to_reminders')
             R.print_warning(f"[evolution] ReminderManager 热重载失败: {e}")
 
 

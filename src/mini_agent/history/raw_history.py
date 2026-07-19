@@ -124,6 +124,8 @@ class RawHistory:
                 os.fsync(self._file.fileno())
             except Exception as e:
                 # 写入失败不抛出（不阻断主流程），但打印警告
+                from mini_agent.errors import log_exception
+                log_exception(e, where='mini_agent.history.raw_history.RawHistory.append')
                 import sys
                 print(f"[raw_history] write error: {e}", file=sys.stderr)
 
@@ -213,6 +215,8 @@ class RawHistory:
                 f.flush()
                 os.fsync(f.fileno())
         except Exception as e:
+            from mini_agent.errors import log_exception
+            log_exception(e, where='mini_agent.history.raw_history.RawHistory.save_to_file')
             import sys
             print(f"[raw_history] save_to_file error: {e}", file=sys.stderr)
 

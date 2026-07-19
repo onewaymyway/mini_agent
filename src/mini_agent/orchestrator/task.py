@@ -230,7 +230,9 @@ class TaskRecord:
                 encoding="utf-8",
             )
             return self._manifest_path
-        except Exception:
+        except Exception as _mini_agent_exc:
+            from mini_agent.errors import log_exception
+            log_exception(_mini_agent_exc, where='mini_agent.orchestrator.task.TaskRecord.write_manifest')
             return None
 
     def update_progress(

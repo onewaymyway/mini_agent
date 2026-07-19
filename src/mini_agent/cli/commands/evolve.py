@@ -168,7 +168,9 @@ def _spawn_evolution_agent(agent, groups) -> None:
         note = recall_related_decisions(paths, proposal_summary, k=5, llm_call=recall_llm_call)
         if note:
             context = f"{note}\n\n{context}"
-    except Exception:
+    except Exception as _mini_agent_exc:
+        from mini_agent.errors import log_exception
+        log_exception(_mini_agent_exc, where='mini_agent.cli.commands.evolve._spawn_evolution_agent')
         pass
 
     import json
@@ -182,7 +184,9 @@ def _spawn_evolution_agent(agent, groups) -> None:
 
     try:
         result = json.loads(result_raw)
-    except Exception:
+    except Exception as _mini_agent_exc:
+        from mini_agent.errors import log_exception
+        log_exception(_mini_agent_exc, where='mini_agent.cli.commands.evolve._spawn_evolution_agent')
         R.print_error(f"Failed to spawn evolution-agent: {result_raw}")
         return
 
@@ -258,9 +262,13 @@ def _handle_consolidation(rest: list[str], agent) -> None:
                     "[consolidate] wiki 转正三条量化标准已连续达标，"
                     "可用 /wiki promotion 查看三步下线执行清单。"
                 )
-        except Exception:
+        except Exception as _mini_agent_exc:
+            from mini_agent.errors import log_exception
+            log_exception(_mini_agent_exc, where='mini_agent.cli.commands.evolve._handle_consolidation')
             pass
     except Exception as e:
+        from mini_agent.errors import log_exception
+        log_exception(e, where='mini_agent.cli.commands.evolve._handle_consolidation')
         R.print_error(f"[consolidate] 运行失败：{e}")
 
 
@@ -404,7 +412,9 @@ def _handle_timeline(rest: list[str], agent) -> None:
             events.extend(
                 library.timeline_for(entity_id=entity_id, category=category, limit=limit)
             )
-        except Exception:
+        except Exception as _mini_agent_exc:
+            from mini_agent.errors import log_exception
+            log_exception(_mini_agent_exc, where='mini_agent.cli.commands.evolve._handle_timeline')
             continue
 
     if not events:

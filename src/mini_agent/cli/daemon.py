@@ -198,7 +198,9 @@ class DaemonClient:
             )
             with urllib.request.urlopen(req, timeout=3) as resp:
                 return resp.status == 200
-        except Exception:
+        except Exception as _mini_agent_exc:
+            from mini_agent.errors import log_exception
+            log_exception(_mini_agent_exc, where='mini_agent.cli.daemon.DaemonClient.health_check')
             return False
 
     def get_status(self, session_id: Optional[str] = None) -> Optional[dict]:
@@ -219,7 +221,9 @@ class DaemonClient:
             req = urllib.request.Request(url, headers=self._headers())
             with urllib.request.urlopen(req, timeout=5) as resp:
                 return json.loads(resp.read())
-        except Exception:
+        except Exception as _mini_agent_exc:
+            from mini_agent.errors import log_exception
+            log_exception(_mini_agent_exc, where='mini_agent.cli.daemon.DaemonClient.get_status')
             return None
 
     def get_models(self) -> Optional[dict]:
@@ -238,7 +242,9 @@ class DaemonClient:
             )
             with urllib.request.urlopen(req, timeout=5) as resp:
                 return json.loads(resp.read())
-        except Exception:
+        except Exception as _mini_agent_exc:
+            from mini_agent.errors import log_exception
+            log_exception(_mini_agent_exc, where='mini_agent.cli.daemon.DaemonClient.get_models')
             return None
 
     def get_whoami(self) -> Optional[dict]:
@@ -257,7 +263,9 @@ class DaemonClient:
             )
             with urllib.request.urlopen(req, timeout=5) as resp:
                 return json.loads(resp.read())
-        except Exception:
+        except Exception as _mini_agent_exc:
+            from mini_agent.errors import log_exception
+            log_exception(_mini_agent_exc, where='mini_agent.cli.daemon.DaemonClient.get_whoami')
             return None
 
     def list_sessions(self, limit: int = 10, session_id: Optional[str] = None) -> list[dict]:
@@ -276,7 +284,9 @@ class DaemonClient:
             with urllib.request.urlopen(req, timeout=5) as resp:
                 data = json.loads(resp.read())
                 return data.get("sessions", [])
-        except Exception:
+        except Exception as _mini_agent_exc:
+            from mini_agent.errors import log_exception
+            log_exception(_mini_agent_exc, where='mini_agent.cli.daemon.DaemonClient.list_sessions')
             return []
 
     def resume_session(self, session_id: str) -> bool:
@@ -292,7 +302,9 @@ class DaemonClient:
             with urllib.request.urlopen(req, timeout=10) as resp:
                 data = json.loads(resp.read())
                 return data.get("ok", False)
-        except Exception:
+        except Exception as _mini_agent_exc:
+            from mini_agent.errors import log_exception
+            log_exception(_mini_agent_exc, where='mini_agent.cli.daemon.DaemonClient.resume_session')
             return False
 
     def new_session(self) -> Optional[str]:
@@ -308,7 +320,9 @@ class DaemonClient:
             with urllib.request.urlopen(req, timeout=10) as resp:
                 data = json.loads(resp.read())
                 return data.get("session_id") if data.get("ok") else None
-        except Exception:
+        except Exception as _mini_agent_exc:
+            from mini_agent.errors import log_exception
+            log_exception(_mini_agent_exc, where='mini_agent.cli.daemon.DaemonClient.new_session')
             return None
 
     def send_message(self, message: str, session_id: Optional[str] = None) -> Optional[str]:
@@ -329,6 +343,8 @@ class DaemonClient:
                 data = json.loads(resp.read())
                 return data.get("turn_id")
         except Exception as e:
+            from mini_agent.errors import log_exception
+            log_exception(e, where='mini_agent.cli.daemon.DaemonClient.send_message')
             print(f"[daemon-client] send_message failed: {e}", file=sys.stderr)
             return None
 
@@ -352,7 +368,9 @@ class DaemonClient:
             with urllib.request.urlopen(req, timeout=5) as resp:
                 data = json.loads(resp.read())
                 return data.get("permissions", [])
-        except Exception:
+        except Exception as _mini_agent_exc:
+            from mini_agent.errors import log_exception
+            log_exception(_mini_agent_exc, where='mini_agent.cli.daemon.DaemonClient.list_pending_permissions')
             return []
 
     def respond_permission(
@@ -402,6 +420,8 @@ class DaemonClient:
             print(f"[daemon-client] respond_permission failed: {e}", file=sys.stderr)
             return False
         except Exception as e:
+            from mini_agent.errors import log_exception
+            log_exception(e, where='mini_agent.cli.daemon.DaemonClient.respond_permission')
             print(f"[daemon-client] respond_permission failed: {e}", file=sys.stderr)
             return False
 
@@ -418,7 +438,9 @@ class DaemonClient:
             with urllib.request.urlopen(req, timeout=5) as resp:
                 data = json.loads(resp.read())
                 return data.get("interactions", [])
-        except Exception:
+        except Exception as _mini_agent_exc:
+            from mini_agent.errors import log_exception
+            log_exception(_mini_agent_exc, where='mini_agent.cli.daemon.DaemonClient.list_pending_interactions')
             return []
 
     def respond_interaction(
@@ -458,6 +480,8 @@ class DaemonClient:
             print(f"[daemon-client] respond_interaction failed: {e}", file=sys.stderr)
             return False
         except Exception as e:
+            from mini_agent.errors import log_exception
+            log_exception(e, where='mini_agent.cli.daemon.DaemonClient.respond_interaction')
             print(f"[daemon-client] respond_interaction failed: {e}", file=sys.stderr)
             return False
 
@@ -474,6 +498,8 @@ class DaemonClient:
             with urllib.request.urlopen(req, timeout=timeout) as resp:
                 return json.loads(resp.read())
         except Exception as e:
+            from mini_agent.errors import log_exception
+            log_exception(e, where='mini_agent.cli.daemon.DaemonClient._get_json')
             print(f"[daemon-client] GET {path} failed: {e}", file=sys.stderr)
             return None
 
@@ -488,6 +514,8 @@ class DaemonClient:
             with urllib.request.urlopen(req, timeout=timeout) as resp:
                 return json.loads(resp.read())
         except Exception as e:
+            from mini_agent.errors import log_exception
+            log_exception(e, where='mini_agent.cli.daemon.DaemonClient._post_json')
             print(f"[daemon-client] POST {path} failed: {e}", file=sys.stderr)
             return None
 
@@ -599,6 +627,8 @@ class DaemonClient:
                         continue
                     frame_lines.append(line)
         except Exception as e:
+            from mini_agent.errors import log_exception
+            log_exception(e, where='mini_agent.cli.daemon.DaemonClient.stream_output')
             err = str(e)
             if "timed out" not in err.lower() and "RemoteDisconnected" not in err:
                 print(f"[daemon-client] stream error: {e}", file=sys.stderr)
@@ -626,7 +656,9 @@ class DaemonClient:
             return False
         try:
             payload = json.loads(data_line)
-        except Exception:
+        except Exception as _mini_agent_exc:
+            from mini_agent.errors import log_exception
+            log_exception(_mini_agent_exc, where='mini_agent.cli.daemon.DaemonClient._handle_sse_frame')
             return False
 
         if evt_type == "token":
@@ -712,6 +744,8 @@ def cmd_daemon_start(
         try:
             os.execv(python_exec, foreground_cmd)
         except Exception as e:
+            from mini_agent.errors import log_exception
+            log_exception(e, where='mini_agent.cli.daemon.cmd_daemon_start')
             print(f"[daemon] Failed to exec: {e}", file=sys.stderr)
             return 1
     else:
@@ -750,6 +784,8 @@ def cmd_daemon_start(
         try:
             proc = subprocess.Popen(base_cmd, **kwargs)
         except Exception as e:
+            from mini_agent.errors import log_exception
+            log_exception(e, where='mini_agent.cli.daemon.cmd_daemon_start')
             print(f"[daemon] Failed to start: {e}", file=sys.stderr)
             return 1
 
@@ -839,6 +875,8 @@ def cmd_daemon_stop(project_root: Path) -> int:
         _cleanup_pid_files(project_root)
         return 0
     except Exception as e:
+        from mini_agent.errors import log_exception
+        log_exception(e, where='mini_agent.cli.daemon.cmd_daemon_stop')
         print(f"[daemon] Error sending signal: {e}", file=sys.stderr)
         return 1
 
@@ -1129,7 +1167,9 @@ def _connected_status_bar_provider(
             f"  \033[90mqueue={queue_depth}  clients={subscribers}\033[0m"
         ]
         return lines
-    except Exception:
+    except Exception as _mini_agent_exc:
+        from mini_agent.errors import log_exception
+        log_exception(_mini_agent_exc, where='mini_agent.cli.daemon._connected_status_bar_provider')
         return ["  \033[90m⚡ [connected] status error\033[0m"]
 
 
@@ -1166,7 +1206,9 @@ def _render_sse_event(term, evt_type: str, payload: dict, *, prefix: str = "") -
         return
     try:
         from mini_agent.ui import renderer as _r
-    except Exception:
+    except Exception as _mini_agent_exc:
+        from mini_agent.errors import log_exception
+        log_exception(_mini_agent_exc, where='mini_agent.cli.daemon._render_sse_event')
         _r = None
 
     from rich.markup import escape as _esc
@@ -1288,7 +1330,9 @@ def _render_sse_event(term, evt_type: str, payload: dict, *, prefix: str = "") -
             term.print(f"{prefix}[dim]📚 Skill loaded: {_esc(name)}[/dim]")
         # permission_req / permission_done 不在这里渲染——它们需要交互式
         # 审批流程（见 _handle_connected_permission），不是单纯的展示事件。
-    except Exception:
+    except Exception as _mini_agent_exc:
+        from mini_agent.errors import log_exception
+        log_exception(_mini_agent_exc, where='mini_agent.cli.daemon._render_sse_event')
         pass  # 渲染失败不应该打断主流程（比如某条事件字段缺失）
 
 
@@ -1306,7 +1350,9 @@ def _format_permission_summary(tool_name: str, tool_input: dict) -> str:
         pass
     try:
         return json.dumps(tool_input, ensure_ascii=False)[:120]
-    except Exception:
+    except Exception as _mini_agent_exc:
+        from mini_agent.errors import log_exception
+        log_exception(_mini_agent_exc, where='mini_agent.cli.daemon._format_permission_summary')
         return str(tool_input)[:120]
 
 
@@ -1427,9 +1473,11 @@ def _handle_connected_permission(
             break
         except (KeyboardInterrupt, EOFError):
             choice = "n"
-        except Exception:
+        except Exception as _mini_agent_exc:
             # 兜底：未预见的其它异常类型，同样通过 permission_done_event
             # 状态判断下一步，不强行区分异常类型。
+            from mini_agent.errors import log_exception
+            log_exception(_mini_agent_exc, where='mini_agent.cli.daemon._handle_connected_permission')
             if permission_done_event.is_set():
                 break
             choice = "n"
@@ -1469,7 +1517,9 @@ def _handle_connected_permission(
             try:
                 term.syntax(json.dumps(tool_input, ensure_ascii=False, indent=2),
                             "json", theme="ansi_dark", line_numbers=False)
-            except Exception:
+            except Exception as _mini_agent_exc:
+                from mini_agent.errors import log_exception
+                log_exception(_mini_agent_exc, where='mini_agent.cli.daemon._handle_connected_permission')
                 term.print(f"{prefix}  [dim]{_esc(repr(tool_input))}[/dim]")
             continue  # 显示完继续等待下一次选择，不算决定
 
@@ -1664,7 +1714,9 @@ def _fmt_ts(ts: Optional[float]) -> str:
         return "-"
     try:
         return time.strftime("%Y-%m-%d %H:%M", time.localtime(ts))
-    except Exception:
+    except Exception as _mini_agent_exc:
+        from mini_agent.errors import log_exception
+        log_exception(_mini_agent_exc, where='mini_agent.cli.daemon._fmt_ts')
         return str(ts)
 
 
@@ -1888,7 +1940,9 @@ def run_connected_repl(
     try:
         from mini_agent.ui.terminal import get_terminal, RemoteTurnInterrupt
         _term = get_terminal()
-    except Exception:
+    except Exception as _mini_agent_exc:
+        from mini_agent.errors import log_exception
+        log_exception(_mini_agent_exc, where='mini_agent.cli.daemon.run_connected_repl')
         pass  # 极端兜底：拿不到就退回裸 print，下面 _out() 会处理
 
     # ── /model 补全修复 ────────────────────────────────────────────────────
@@ -1904,7 +1958,9 @@ def run_connected_repl(
         _models_info = client.get_models()
         if _models_info and _models_info.get("models"):
             prime_model_completions_from_names(_models_info["models"])
-    except Exception:
+    except Exception as _mini_agent_exc:
+        from mini_agent.errors import log_exception
+        log_exception(_mini_agent_exc, where='mini_agent.cli.daemon.run_connected_repl')
         pass
 
     # 同一 session 里，其它客户端当前正在处理中的 turn_id 集合。
@@ -2232,7 +2288,9 @@ def run_connected_repl(
             return
         try:
             payload = json.loads(data_line)
-        except Exception:
+        except Exception as _mini_agent_exc:
+            from mini_agent.errors import log_exception
+            log_exception(_mini_agent_exc, where='mini_agent.cli.daemon.run_connected_repl._handle_observer_frame')
             return
 
         # [FIX] 不同 session 的输入状态必须严格独立：正常情况下服务端
@@ -2529,6 +2587,8 @@ def run_connected_repl(
                     from mini_agent.cli.parser import build_parser
                     _out(build_parser().format_help())
                 except Exception as e:
+                    from mini_agent.errors import log_exception
+                    log_exception(e, where='mini_agent.cli.daemon.run_connected_repl')
                     _out(f"[error] Failed to show help: {e}")
                 continue
 
@@ -2753,6 +2813,8 @@ def run_connected_repl(
                         on_error=on_error, on_event=on_event,
                     )
                 except Exception as e:
+                    from mini_agent.errors import log_exception
+                    log_exception(e, where='mini_agent.cli.daemon.run_connected_repl.stream_worker')
                     if _term is not None:
                         from rich.markup import escape as _esc_err
                         _term.print(f"\n[red]\\[daemon-client] stream error:[/red] {_esc_err(str(e))}")

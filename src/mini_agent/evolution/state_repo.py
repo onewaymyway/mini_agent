@@ -40,9 +40,11 @@ if str(_REPO_ROOT_FOR_PROTECTED_PATHS) not in sys.path:
 
 try:
     from scripts.protected_paths import is_protected_path
-except Exception:
+except Exception as _mini_agent_exc:
     # 极端降级：如果连受保护路径清单都加载不了，安全的做法是"什么都不放过"，
     # 而不是静默放行——把所有路径都判定为受保护，强制需要人工介入。
+    from mini_agent.errors import log_exception
+    log_exception(_mini_agent_exc, where='mini_agent.evolution.state_repo')
     def is_protected_path(path) -> bool:  # type: ignore[misc]
         return True
 

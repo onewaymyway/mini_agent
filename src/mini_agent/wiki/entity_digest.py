@@ -89,7 +89,9 @@ def _load_entity_pages(paths: AgentPaths) -> list[WikiPage]:
     for md_path in sorted(paths.wiki_entities_dir.glob("*.md")):
         try:
             pages.append(parse_page(md_path))
-        except Exception:
+        except Exception as _mini_agent_exc:
+            from mini_agent.errors import log_exception
+            log_exception(_mini_agent_exc, where='mini_agent.wiki.entity_digest._load_entity_pages')
             continue
     return pages
 
@@ -144,7 +146,9 @@ def build_entity_digest(
     """
     try:
         pages = _load_entity_pages(paths)
-    except Exception:
+    except Exception as _mini_agent_exc:
+        from mini_agent.errors import log_exception
+        log_exception(_mini_agent_exc, where='mini_agent.wiki.entity_digest.build_entity_digest')
         return ""
     if not pages:
         return ""

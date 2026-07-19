@@ -127,6 +127,8 @@ def remember_about_user(note: str) -> str:
     try:
         _role_profile_mgr.add_agent_note(user_id, note)
     except Exception as e:
+        from mini_agent.errors import log_exception
+        log_exception(e, where='mini_agent.tools.user_memory.remember_about_user')
         return f"Failed to record note: {type(e).__name__}: {e}"
 
     return f"Recorded a note about user {user_id}."

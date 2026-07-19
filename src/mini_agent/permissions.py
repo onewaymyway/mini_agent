@@ -156,7 +156,9 @@ class PermissionGuard:
         try:
             import json as _json
             return _json.dumps(tool_input, ensure_ascii=False)
-        except Exception:
+        except Exception as _mini_agent_exc:
+            from mini_agent.errors import log_exception
+            log_exception(_mini_agent_exc, where='mini_agent.permissions.PermissionGuard._edit_repr')
             return str(tool_input)
 
     def check(self, tool_name: str, tool_input: dict) -> bool:
@@ -308,6 +310,8 @@ class PermissionGuard:
                     f"{allow_count} allowed, {deny_count} denied[/dim]"
                 )
         except Exception as e:
+            from mini_agent.errors import log_exception
+            log_exception(e, where='mini_agent.permissions.PermissionGuard._load_permissions')
             _term.print(f"[yellow]Warning: failed to load .agent/permissions.json: {e}[/yellow]")
 
     def _save_permissions(self) -> None:
@@ -324,6 +328,8 @@ class PermissionGuard:
             }
             path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
         except Exception as e:
+            from mini_agent.errors import log_exception
+            log_exception(e, where='mini_agent.permissions.PermissionGuard._save_permissions')
             _term.print(f"[yellow]Warning: failed to save .agent/permissions.json: {e}[/yellow]")
 
     def _prompt_with_http(
@@ -401,6 +407,8 @@ class PermissionGuard:
                 choice = "n"
             except Exception as _e:
                 # _InterruptedByHTTP 或其他中断：HTTP端已先决定，退出循环
+                from mini_agent.errors import log_exception
+                log_exception(_e, where='mini_agent.permissions.PermissionGuard._prompt_with_http')
                 if decided_event.is_set():
                     break
                 _term.print("")
@@ -445,7 +453,9 @@ class PermissionGuard:
                 _term.print(f"\n[dim]Full parameters:[/dim]")
                 try:
                     _term.print(f"[dim]{_json.dumps(tool_input, ensure_ascii=False, indent=2)}[/dim]")
-                except Exception:
+                except Exception as _mini_agent_exc:
+                    from mini_agent.errors import log_exception
+                    log_exception(_mini_agent_exc, where='mini_agent.permissions.PermissionGuard._prompt_with_http')
                     _term.print(f"[dim]{tool_input!r}[/dim]")
 
             elif choice in ("e", "edit") and tool_name == "bash":
@@ -549,7 +559,9 @@ class PermissionGuard:
                 _term.print(f"\n[dim]Full parameters:[/dim]")
                 try:
                     _term.print(f"[dim]{_json.dumps(tool_input, ensure_ascii=False, indent=2)}[/dim]")
-                except Exception:
+                except Exception as _mini_agent_exc:
+                    from mini_agent.errors import log_exception
+                    log_exception(_mini_agent_exc, where='mini_agent.permissions.PermissionGuard._prompt')
                     _term.print(f"[dim]{tool_input!r}[/dim]")
                 # 循环继续，重新询问
 

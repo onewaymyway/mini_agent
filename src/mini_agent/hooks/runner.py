@@ -90,6 +90,8 @@ def run_hook(spec: HookSpec, payload: dict[str, Any]) -> HookResult:
     except subprocess.TimeoutExpired:
         return HookResult(decision="allow", error=f"hook timed out after {spec.timeout}s: {spec.command}")
     except Exception as e:
+        from mini_agent.errors import log_exception
+        log_exception(e, where='mini_agent.hooks.runner.run_hook')
         import traceback
         traceback.print_exc()
         return HookResult(decision="allow", error=f"hook failed to start: {e}")
@@ -107,8 +109,10 @@ def run_hook(spec: HookSpec, payload: dict[str, Any]) -> HookResult:
 
     try:
         data = json.loads(out)
-    except Exception:
+    except Exception as _mini_agent_exc:
         # 非 JSON 输出：当作额外上下文文本附加（不阻断）
+        from mini_agent.errors import log_exception
+        log_exception(_mini_agent_exc, where='mini_agent.hooks.runner.run_hook')
         return HookResult(decision="allow", context=out, error=err, raw_stdout=out)
 
     if not isinstance(data, dict):

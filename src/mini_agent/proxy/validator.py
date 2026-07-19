@@ -45,6 +45,8 @@ async def validate_node(
             ok = resp.status_code in (200, 204)
             return ValidationResult(node=node, ok=ok, latency_ms=latency if ok else None)
     except Exception as e:  # noqa: BLE001
+        from mini_agent.errors import log_exception
+        log_exception(e, where='mini_agent.proxy.validator.validate_node')
         return ValidationResult(node=node, ok=False, latency_ms=None, error=str(e))
     finally:
         if running is not None:

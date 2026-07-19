@@ -30,7 +30,9 @@ def _idle_seconds_windows() -> Optional[float]:
         if ctypes.windll.user32.GetLastInputInfo(ctypes.byref(info)):  # type: ignore[attr-defined]
             millis = ctypes.windll.kernel32.GetTickCount() - info.dwTime  # type: ignore[attr-defined]
             return millis / 1000.0
-    except Exception:
+    except Exception as _mini_agent_exc:
+        from mini_agent.errors import log_exception
+        log_exception(_mini_agent_exc, where='mini_agent.perception.behavior.collectors.idle._idle_seconds_windows')
         pass
     return None
 
@@ -42,7 +44,9 @@ def _idle_seconds_macos() -> Optional[float]:
         return Quartz.CGEventSourceSecondsSinceLastEventType(
             Quartz.kCGEventSourceStateHIDSystemState, Quartz.kCGAnyInputEventType
         )
-    except Exception:
+    except Exception as _mini_agent_exc:
+        from mini_agent.errors import log_exception
+        log_exception(_mini_agent_exc, where='mini_agent.perception.behavior.collectors.idle._idle_seconds_macos')
         return None
 
 
@@ -51,7 +55,9 @@ def _idle_seconds_linux() -> Optional[float]:
         out = subprocess.run(["xprintidle"], capture_output=True, text=True, timeout=2)
         if out.returncode == 0:
             return float(out.stdout.strip()) / 1000.0
-    except Exception:
+    except Exception as _mini_agent_exc:
+        from mini_agent.errors import log_exception
+        log_exception(_mini_agent_exc, where='mini_agent.perception.behavior.collectors.idle._idle_seconds_linux')
         pass
     return None
 

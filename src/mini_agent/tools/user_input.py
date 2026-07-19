@@ -121,7 +121,9 @@ def ask_user_confirm(question: str, default: str = "yes") -> str:
                 default=default_char,
                 interrupt_event=interrupt_event,
             )
-        except Exception:
+        except Exception as _mini_agent_exc:
+            from mini_agent.errors import log_exception
+            log_exception(_mini_agent_exc, where='mini_agent.tools.user_input.ask_user_confirm._local_read')
             return None
         if interrupt_event.is_set():
             return None

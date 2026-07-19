@@ -502,6 +502,8 @@ class GoalRunner:
                 "stderr_tail": f"[验证命令执行超时，已等待 {timeout} 秒]",
             }
         except Exception as e:
+            from mini_agent.errors import log_exception
+            log_exception(e, where='mini_agent.goal_mode.runner.GoalRunner._run_verification_command')
             R.print_warning(f"[GoalRunner] 验证命令执行失败（不影响本轮流程）：{e}")
             return {
                 "command": command,
@@ -831,7 +833,9 @@ class GoalRunner:
         try:
             import json_repair
             data = json_repair.loads(m.group(1))
-        except Exception:
+        except Exception as _mini_agent_exc:
+            from mini_agent.errors import log_exception
+            log_exception(_mini_agent_exc, where='mini_agent.goal_mode.runner.GoalRunner._extract_replan_proposal')
             return None
         if not isinstance(data, dict):
             return None
@@ -867,6 +871,8 @@ class GoalRunner:
             builder = GoalSpecBuilder(self._cfg)
             new_spec = builder.revise(self._spec, feedback_text)
         except Exception as e:
+            from mini_agent.errors import log_exception
+            log_exception(e, where='mini_agent.goal_mode.runner.GoalRunner._try_auto_apply_replan')
             R.print_warning(f"[GoalRunner] 自动应用重规划提议失败（保留原目标继续）：{e}")
             return False
 
@@ -1160,6 +1166,8 @@ class GoalRunner:
             goal_hint = self._build_goal_aware_compact_hint()
             summary = self._agent.compact_with_skills(goal_hint=goal_hint)
         except Exception as e:
+            from mini_agent.errors import log_exception
+            log_exception(e, where='mini_agent.goal_mode.runner.GoalRunner._do_compact')
             R.print_error(f"[GoalRunner] compact 失败：{e}")
         else:
             if summary:
@@ -1206,6 +1214,8 @@ class GoalRunner:
         try:
             self._state_store.save(state)
         except Exception as e:
+            from mini_agent.errors import log_exception
+            log_exception(e, where='mini_agent.goal_mode.runner.GoalRunner._save_state')
             R.print_warning(f"[GoalRunner] 状态落盘失败（不影响本轮执行）：{e}")
 
     def _finish(self, status: str, report: str) -> GoalRunResult:
@@ -1306,6 +1316,8 @@ class GoalRunner:
             )
             memory_backend.add(entry)
         except Exception as e:
+            from mini_agent.errors import log_exception
+            log_exception(e, where='mini_agent.goal_mode.runner.GoalRunner._write_failure_lesson')
             R.print_warning(f"[GoalRunner] 失败经验写入 memory 失败（不影响 goal 终止流程）：{e}")
 
     def pause(self) -> None:

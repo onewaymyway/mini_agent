@@ -92,7 +92,9 @@ def _llm_confirm_same_topic(text: str, page: WikiPage, llm_call: LLMCall) -> boo
     )
     try:
         reply = (llm_call(prompt) or "").strip().upper()
-    except Exception:
+    except Exception as _mini_agent_exc:
+        from mini_agent.errors import log_exception
+        log_exception(_mini_agent_exc, where='mini_agent.wiki.dedup._llm_confirm_same_topic')
         return False
     return reply.startswith("Y")
 
@@ -154,7 +156,9 @@ def embed_pages(pages: list[WikiPage], embed_call: EmbedCall) -> dict[str, list[
     for p in pages:
         try:
             out[p.id] = embed_call(_page_text(p))
-        except Exception:
+        except Exception as _mini_agent_exc:
+            from mini_agent.errors import log_exception
+            log_exception(_mini_agent_exc, where='mini_agent.wiki.dedup.embed_pages')
             continue
     return out
 
@@ -174,7 +178,9 @@ def find_similar_page_embedding(
         return None
     try:
         vec = embed_call(text)
-    except Exception:
+    except Exception as _mini_agent_exc:
+        from mini_agent.errors import log_exception
+        log_exception(_mini_agent_exc, where='mini_agent.wiki.dedup.find_similar_page_embedding')
         return None
     best: Optional[SimilarPageMatch] = None
     for pid, pvec in page_embeddings.items():

@@ -122,6 +122,8 @@ def _parse_single_call(raw_json: str) -> Optional[ToolCall]:
                 warnings.warn(f"[tool_parser] JSON 已修复 : {raw_json[:80]!r}")
                 data=obj
         except Exception as e2:
+            from mini_agent.errors import log_exception
+            log_exception(e2, where='mini_agent.llm.system_tool_call._parse_single_call')
             warnings.warn(f"[tool_parser] json_repair 失败 {raw_json}: {e2}")
         if not data:
             return None

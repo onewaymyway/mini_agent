@@ -57,7 +57,9 @@ def _log(msg: "bytes | str") -> None:
         text = msg if isinstance(msg, str) else repr(msg)
         with open(_LOG_FILE, "a") as f:
             f.write(text + "\n")
-    except Exception:
+    except Exception as _mini_agent_exc:
+        from mini_agent.errors import log_exception
+        log_exception(_mini_agent_exc, where='mini_agent.ui.raw_key_listener._log')
         print("log fail:")
         import traceback
         traceback.print_exc()
@@ -112,6 +114,8 @@ class _BaseKeyReader(ABC):
             from mini_agent.ui.terminal import get_terminal
             t = get_terminal()
         except Exception as e:
+            from mini_agent.errors import log_exception
+            log_exception(e, where='mini_agent.ui.raw_key_listener._BaseKeyReader._dispatch')
             _log(f"[get_terminal error: {e}]")
             return
 
@@ -223,6 +227,8 @@ class _UnixKeyReader(_BaseKeyReader):
             _log(f"[Unix] opened /dev/tty as fd={fd}")
             return fd
         except Exception as e:
+            from mini_agent.errors import log_exception
+            log_exception(e, where='mini_agent.ui.raw_key_listener._UnixKeyReader._find_tty_fd')
             _log(f"[Unix] /dev/tty failed: {e}")
 
         # 策略2：找第一个 isatty 为 True 的标准 fd
@@ -243,6 +249,8 @@ class _UnixKeyReader(_BaseKeyReader):
                 termios.tcsetattr(self._fd, termios.TCSADRAIN, self._old_attrs)
                 _log(f"[Unix] termios restored on fd={self._fd}")
         except Exception as e:
+            from mini_agent.errors import log_exception
+            log_exception(e, where='mini_agent.ui.raw_key_listener._UnixKeyReader._teardown')
             _log(f"[Unix] termios restore error: {e}")
         if self._fd_owned:
             try:
@@ -263,6 +271,8 @@ class _UnixKeyReader(_BaseKeyReader):
             try:
                 r, _, _ = _select.select([fd], [], [], 0.1)
             except Exception as e:
+                from mini_agent.errors import log_exception
+                log_exception(e, where='mini_agent.ui.raw_key_listener._UnixKeyReader._loop')
                 _log(f"[Unix] select error: {e}")
                 break
 
@@ -272,6 +282,8 @@ class _UnixKeyReader(_BaseKeyReader):
             try:
                 first = os.read(fd, 1)
             except Exception as e:
+                from mini_agent.errors import log_exception
+                log_exception(e, where='mini_agent.ui.raw_key_listener._UnixKeyReader._loop')
                 _log(f"[Unix] read error: {e}")
                 break
 
@@ -287,7 +299,9 @@ class _UnixKeyReader(_BaseKeyReader):
                     if r2:
                         rest = os.read(fd, 7)
                         seq = first + rest
-                except Exception:
+                except Exception as _mini_agent_exc:
+                    from mini_agent.errors import log_exception
+                    log_exception(_mini_agent_exc, where='mini_agent.ui.raw_key_listener._UnixKeyReader._loop')
                     pass   # 50ms 超时 → 单独 ESC
 
             _log(seq)

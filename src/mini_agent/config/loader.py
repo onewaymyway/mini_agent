@@ -788,6 +788,8 @@ def _load_config_file(path: Path) -> dict:
         _warnings.warn(f"[config] Failed to parse config file {path}: {e}")
         return {}
     except Exception as e:
+        from mini_agent.errors import log_exception
+        log_exception(e, where='mini_agent.config.loader._load_config_file')
         _warnings.warn(f"[config] Error loading config file {path}: {e}")
         return {}
 
@@ -831,6 +833,8 @@ def _load_providers_config(path: Path) -> dict:
         _warnings.warn(f"[config] Failed to parse providers config {path}: {e}")
         return {}
     except Exception as e:
+        from mini_agent.errors import log_exception
+        log_exception(e, where='mini_agent.config.loader._load_providers_config')
         _warnings.warn(f"[config] Error loading providers config {path}: {e}")
         return {}
 

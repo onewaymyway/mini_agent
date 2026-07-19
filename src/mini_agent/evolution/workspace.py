@@ -201,7 +201,9 @@ class EvolutionWorkspace:
                     [str(py_path), "-m", "pip", "install", "-e", ".", "--break-system-packages", "-q"],
                     cwd=str(self.path), capture_output=True, text=True, timeout=300,
                 )
-            except Exception:
+            except Exception as _mini_agent_exc:
+                from mini_agent.errors import log_exception
+                log_exception(_mini_agent_exc, where='mini_agent.evolution.workspace.EvolutionWorkspace.ensure_venv')
                 pass  # 安装失败不阻塞 workspace 创建，smoke_boot() 会在实际跑的时候反映出问题
         return py_path
 
@@ -255,6 +257,8 @@ class EvolutionWorkspace:
                 stdout=e.stdout or "", stderr=e.stderr or "",
             )
         except Exception as e:
+            from mini_agent.errors import log_exception
+            log_exception(e, where='mini_agent.evolution.workspace.EvolutionWorkspace.smoke_boot')
             return SmokeBootResult(ok=False, reason=f"failed to spawn smoke boot subprocess: {e}")
 
         duration = time.time() - start

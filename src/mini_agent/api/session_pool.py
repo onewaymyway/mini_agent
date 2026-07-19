@@ -512,7 +512,9 @@ class SessionAgentPool:
                         per_skill_tokens=getattr(session_cfg, "skill_compact_per_skill", 5_000),
                         total_budget=getattr(session_cfg, "skill_compact_budget", 25_000),
                     )
-                except Exception:
+                except Exception as _mini_agent_exc:
+                    from mini_agent.errors import log_exception
+                    log_exception(_mini_agent_exc, where='mini_agent.api.session_pool.SessionAgentPool._make_agent_factory._factory')
                     skill_loader = None  # skill 目录有问题不应该阻断整个 session 创建
 
             with _agent_construction_lock:
@@ -557,7 +559,9 @@ class SessionAgentPool:
                         # load_session/new_session 同款的 _bind_session_extras()）。
                         agent._session.id = session_id
                         agent._bind_session_extras()
-            except Exception:
+            except Exception as _mini_agent_exc:
+                from mini_agent.errors import log_exception
+                log_exception(_mini_agent_exc, where='mini_agent.api.session_pool.SessionAgentPool._make_agent_factory._factory')
                 pass  # 恢复失败不阻断创建，agent 会用一个全新的 session
 
             return agent

@@ -106,8 +106,10 @@ class NotepadStore:
                     entry = NotepadEntry.from_dict(e)
                     self.entries[entry.id] = entry
                     self._order.append(entry.id)
-        except Exception:
+        except Exception as _mini_agent_exc:
             # 读取失败不阻塞 agent 主流程，视为空记事本
+            from mini_agent.errors import log_exception
+            log_exception(_mini_agent_exc, where='mini_agent.tools.notepad.NotepadStore._load')
             self.entries = {}
             self._order = []
 
@@ -255,7 +257,9 @@ def is_notepad_enabled() -> bool:
         return True
     try:
         return bool(provider())
-    except Exception:
+    except Exception as _mini_agent_exc:
+        from mini_agent.errors import log_exception
+        log_exception(_mini_agent_exc, where='mini_agent.tools.notepad.is_notepad_enabled')
         return True
 
 
@@ -275,7 +279,9 @@ def get_current_notepad() -> Optional[NotepadStore]:
     try:
         paths = paths_provider()
         session_id = session_id_provider()
-    except Exception:
+    except Exception as _mini_agent_exc:
+        from mini_agent.errors import log_exception
+        log_exception(_mini_agent_exc, where='mini_agent.tools.notepad.get_current_notepad')
         return None
     if paths is None or not session_id:
         return None

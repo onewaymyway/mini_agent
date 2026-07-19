@@ -259,6 +259,8 @@ class SubAgent:
                 self.record.result = TaskResult(output="", error=f"Timeout: {exc}")
 
         except Exception as exc:
+            from mini_agent.errors import log_exception
+            log_exception(exc, where='mini_agent.orchestrator.sub_agent.SubAgent._run_body')
             tb = traceback.format_exc()
             self._log(f"ERROR: {exc}")
             # 完整 traceback 写入 debug jsonl，方便离线排查

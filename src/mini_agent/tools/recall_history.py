@@ -65,7 +65,9 @@ def is_recall_history_enabled() -> bool:
         return False
     try:
         return bool(provider())
-    except Exception:
+    except Exception as _mini_agent_exc:
+        from mini_agent.errors import log_exception
+        log_exception(_mini_agent_exc, where='mini_agent.tools.recall_history.is_recall_history_enabled')
         return False
 
 
@@ -77,7 +79,9 @@ def _get_current_entries() -> Optional[list]:
         return None
     try:
         entries = provider()
-    except Exception:
+    except Exception as _mini_agent_exc:
+        from mini_agent.errors import log_exception
+        log_exception(_mini_agent_exc, where='mini_agent.tools.recall_history._get_current_entries')
         return None
     return entries if isinstance(entries, list) else None
 
@@ -214,6 +218,8 @@ def recall_from_raw_history(query: str, max_results: int = 5) -> str:
     try:
         results = _search_raw_entries(entries, query, max_results)
     except Exception as e:
+        from mini_agent.errors import log_exception
+        log_exception(e, where='mini_agent.tools.recall_history.recall_from_raw_history')
         return f"[error: recall_from_raw_history failed: {e}]"
 
     if not results:

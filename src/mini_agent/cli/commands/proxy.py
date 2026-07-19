@@ -50,6 +50,8 @@ def handle_proxy_cmd(args: list[str], agent: Agent) -> None:
         try:
             payload = asyncio.run(_do_refresh(paths, keep_alive=3, check_url="https://www.gstatic.com/generate_204", concurrency=8))
         except Exception as e:
+            from mini_agent.errors import log_exception
+            log_exception(e, where='mini_agent.cli.commands.proxy.handle_proxy_cmd')
             R.print_error(f"proxy refresh failed: {e}")
             return
         R.print_success(f"{payload['nodes_ok']} / {payload['nodes_found']} node(s) usable.")

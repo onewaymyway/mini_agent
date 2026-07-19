@@ -39,7 +39,9 @@ def _b64_decode(s: str) -> str:
     s += "=" * (-len(s) % 4)
     try:
         return base64.urlsafe_b64decode(s).decode("utf-8", errors="ignore")
-    except Exception:
+    except Exception as _mini_agent_exc:
+        from mini_agent.errors import log_exception
+        log_exception(_mini_agent_exc, where='mini_agent.proxy.subscription._b64_decode')
         return base64.b64decode(s).decode("utf-8", errors="ignore")
 
 
@@ -70,7 +72,9 @@ def parse_ss_uri(uri: str) -> ProxyNode | None:
             raw=uri,
             params={"method": method, "password": password},
         )
-    except Exception:
+    except Exception as _mini_agent_exc:
+        from mini_agent.errors import log_exception
+        log_exception(_mini_agent_exc, where='mini_agent.proxy.subscription.parse_ss_uri')
         return None
 
 
@@ -86,7 +90,9 @@ def parse_vmess_uri(uri: str) -> ProxyNode | None:
             raw=uri,
             params=payload,
         )
-    except Exception:
+    except Exception as _mini_agent_exc:
+        from mini_agent.errors import log_exception
+        log_exception(_mini_agent_exc, where='mini_agent.proxy.subscription.parse_vmess_uri')
         return None
 
 
@@ -102,7 +108,9 @@ def _parse_uri_style(uri: str, protocol: str) -> ProxyNode | None:
         return ProxyNode(
             protocol=protocol, name=name, server=server, port=int(port), raw=uri, params=query
         )
-    except Exception:
+    except Exception as _mini_agent_exc:
+        from mini_agent.errors import log_exception
+        log_exception(_mini_agent_exc, where='mini_agent.proxy.subscription._parse_uri_style')
         return None
 
 
@@ -206,7 +214,9 @@ class DiscoveredSource(SubscriptionSource):
             return []
         try:
             return json.loads(p.read_text(encoding="utf-8"))
-        except Exception:
+        except Exception as _mini_agent_exc:
+            from mini_agent.errors import log_exception
+            log_exception(_mini_agent_exc, where='mini_agent.proxy.subscription.DiscoveredSource._load_entries')
             return []
 
     async def fetch(self, client: httpx.AsyncClient) -> list[ProxyNode]:
@@ -241,7 +251,9 @@ class DiscoveredSource(SubscriptionSource):
         if p.exists():
             try:
                 entries = json.loads(p.read_text(encoding="utf-8"))
-            except Exception:
+            except Exception as _mini_agent_exc:
+                from mini_agent.errors import log_exception
+                log_exception(_mini_agent_exc, where='mini_agent.proxy.subscription.DiscoveredSource.append_entry')
                 entries = []
         key = (name, url)
         if any((e.get("name"), e.get("url")) == key for e in entries):
@@ -355,8 +367,10 @@ async def fetch_all(sources: list[SubscriptionSource], return_stats: bool = Fals
         for src in sources:
             try:
                 fetched = await src.fetch(client)
-            except Exception:
+            except Exception as _mini_agent_exc:
                 # 单个订阅源失败不应该影响其它源
+                from mini_agent.errors import log_exception
+                log_exception(_mini_agent_exc, where='mini_agent.proxy.subscription.fetch_all')
                 fetched = []
             per_source_counts[getattr(src, "name", src.__class__.__name__)] = len(fetched)
             all_nodes.extend(fetched)

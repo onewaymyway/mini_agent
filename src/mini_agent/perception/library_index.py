@@ -151,7 +151,9 @@ class LibraryIndex:
                 continue
             try:
                 mirror_entity(entity, self._wiki_paths, note=note, source_kind=source_kind)
-            except Exception:
+            except Exception as _mini_agent_exc:
+                from mini_agent.errors import log_exception
+                log_exception(_mini_agent_exc, where='mini_agent.perception.library_index.LibraryIndex._mirror_entities_to_wiki')
                 continue
 
     # ── wiki式知识库重构计划阶段三：三段式检索的平行实现 ──────────────────
@@ -350,7 +352,9 @@ class LibraryIndex:
                                 reason=reason,
                                 validated_by="correction_check",
                             )
-                    except Exception:
+                    except Exception as _mini_agent_exc:
+                        from mini_agent.errors import log_exception
+                        log_exception(_mini_agent_exc, where='mini_agent.perception.library_index.LibraryIndex.mark_stale_from_correction')
                         pass
                 marked_entities.add(entity_id)
             append_knowledge_event(
@@ -645,7 +649,9 @@ class LibraryIndex:
                     self._wiki_paths,
                     validation=idx_result.validation if wiki_index_rebuilt else None,
                 )
-            except Exception:
+            except Exception as _mini_agent_exc:
+                from mini_agent.errors import log_exception
+                log_exception(_mini_agent_exc, where='mini_agent.perception.library_index.LibraryIndex.consolidate')
                 pass
 
         return {
@@ -704,7 +710,9 @@ class LibraryIndex:
                 existing_pages = [parse_page(p) for p in discover_pages(self._wiki_paths)]
                 if wiki_embed_call is not None:
                     page_embeddings = embed_pages(existing_pages, wiki_embed_call)
-            except Exception:
+            except Exception as _mini_agent_exc:
+                from mini_agent.errors import log_exception
+                log_exception(_mini_agent_exc, where='mini_agent.perception.library_index.LibraryIndex._consolidate_wiki_mirror')
                 existing_pages, page_embeddings = [], {}
 
         for entity in due_entities:
@@ -739,7 +747,9 @@ class LibraryIndex:
                             continue
                 mirror_entity(entity, self._wiki_paths)
                 mirrored += 1
-            except Exception:
+            except Exception as _mini_agent_exc:
+                from mini_agent.errors import log_exception
+                log_exception(_mini_agent_exc, where='mini_agent.perception.library_index.LibraryIndex._consolidate_wiki_mirror')
                 continue
 
         return (mirrored, dedup_merged)

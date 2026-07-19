@@ -146,7 +146,9 @@ def record_daily_snapshot(
         for md_path in discover_pages(paths):
             try:
                 pages.append(parse_page(md_path))
-            except Exception:
+            except Exception as _mini_agent_exc:
+                from mini_agent.errors import log_exception
+                log_exception(_mini_agent_exc, where='mini_agent.wiki.promotion.record_daily_snapshot')
                 continue
         validation = validate_pages(pages)
 
@@ -158,7 +160,9 @@ def record_daily_snapshot(
     }
     try:
         _append_jsonl(log_path, record)
-    except Exception:
+    except Exception as _mini_agent_exc:
+        from mini_agent.errors import log_exception
+        log_exception(_mini_agent_exc, where='mini_agent.wiki.promotion.record_daily_snapshot')
         return None
     return record
 
@@ -187,7 +191,9 @@ def record_search_comparison(
     }
     try:
         _append_jsonl(paths.wiki_search_ab_log_path, record)
-    except Exception:
+    except Exception as _mini_agent_exc:
+        from mini_agent.errors import log_exception
+        log_exception(_mini_agent_exc, where='mini_agent.wiki.promotion.record_search_comparison')
         pass
 
 

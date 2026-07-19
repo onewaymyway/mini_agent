@@ -128,6 +128,8 @@ class MCPManager:
                 self._call_tool_async(server_cfg, raw_tool_name, tool_input)
             )
         except Exception as e:
+            from mini_agent.errors import log_exception
+            log_exception(e, where='mini_agent.mcp.manager.MCPManager.call_tool_sync')
             return f"[mcp] Tool call failed ({tool_name}): {e}"
 
     def list_server_tools(self) -> dict[str, list[str]]:
@@ -204,6 +206,8 @@ class MCPManager:
         except ImportError as e:
             _print_warning(f"[mcp] Skipping {server_cfg.name!r}: {e}")
         except Exception as e:
+            from mini_agent.errors import log_exception
+            log_exception(e, where='mini_agent.mcp.manager.MCPManager._register_server')
             _print_warning(
                 f"[mcp] Failed to connect {server_cfg.name!r} "
                 f"({server_cfg.transport}): {e}"
@@ -267,7 +271,9 @@ def _print_info(msg: str) -> None:
     try:
         from mini_agent.ui.renderer import R
         R.print_info(msg)
-    except Exception:
+    except Exception as _mini_agent_exc:
+        from mini_agent.errors import log_exception
+        log_exception(_mini_agent_exc, where='mini_agent.mcp.manager._print_info')
         print(msg)
 
 
@@ -275,5 +281,7 @@ def _print_warning(msg: str) -> None:
     try:
         from mini_agent.ui.renderer import R
         R.print_warning(msg)
-    except Exception:
+    except Exception as _mini_agent_exc:
+        from mini_agent.errors import log_exception
+        log_exception(_mini_agent_exc, where='mini_agent.mcp.manager._print_warning')
         print(f"WARNING: {msg}")

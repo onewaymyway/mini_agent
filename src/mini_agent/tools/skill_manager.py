@@ -372,6 +372,8 @@ def register_compact_tool(registry: ToolRegistry, agent: "object") -> None:
                 "skill_context_reattached": included,
             }, ensure_ascii=False)
         except Exception as e:
+            from mini_agent.errors import log_exception
+            log_exception(e, where='mini_agent.tools.skill_manager.register_compact_tool.compact_history')
             return _json.dumps({"status": "error", "message": str(e)})
 
     registry.register_fn(

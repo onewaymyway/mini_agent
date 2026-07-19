@@ -57,7 +57,9 @@ def _read_json(path: Path, default: object) -> object:
         return default
     try:
         return json.loads(path.read_text(encoding="utf-8"))
-    except Exception:
+    except Exception as _mini_agent_exc:
+        from mini_agent.errors import log_exception
+        log_exception(_mini_agent_exc, where='mini_agent.perception.classification._read_json')
         return default
 
 
@@ -189,7 +191,9 @@ class ClassificationTree:
         )
         try:
             reply = (llm_call(prompt) or "").strip()
-        except Exception:
+        except Exception as _mini_agent_exc:
+            from mini_agent.errors import log_exception
+            log_exception(_mini_agent_exc, where='mini_agent.perception.classification.ClassificationTree.classify_by_llm')
             return None
         reply = reply.splitlines()[0].strip() if reply else ""
         if reply.upper() == "NONE":
@@ -361,7 +365,9 @@ class ClassificationTree:
             if llm_name_fn is not None:
                 try:
                     name = llm_name_fn(top_keywords, sample_texts)
-                except Exception:
+                except Exception as _mini_agent_exc:
+                    from mini_agent.errors import log_exception
+                    log_exception(_mini_agent_exc, where='mini_agent.perception.classification.ClassificationTree.grow_from_candidates')
                     name = "、".join(top_keywords[:3]) or top_token
             else:
                 name = "、".join(top_keywords[:3]) or top_token
@@ -432,9 +438,13 @@ def load_unclassified_candidates(path: Path) -> list[dict]:
                 continue
             try:
                 records.append(json.loads(line))
-            except Exception:
+            except Exception as _mini_agent_exc:
+                from mini_agent.errors import log_exception
+                log_exception(_mini_agent_exc, where='mini_agent.perception.classification.load_unclassified_candidates')
                 continue
-    except Exception:
+    except Exception as _mini_agent_exc:
+        from mini_agent.errors import log_exception
+        log_exception(_mini_agent_exc, where='mini_agent.perception.classification.load_unclassified_candidates')
         return []
     return records[-_MAX_CANDIDATES_KEPT:]
 

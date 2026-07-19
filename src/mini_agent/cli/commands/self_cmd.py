@@ -50,9 +50,13 @@ def _request(client, method: str, path: str):
         body = e.read()
         try:
             return e.code, json.loads(body)
-        except Exception:
+        except Exception as _mini_agent_exc:
+            from mini_agent.errors import log_exception
+            log_exception(_mini_agent_exc, where='mini_agent.cli.commands.self_cmd._request')
             return e.code, {"detail": body.decode(errors="replace")}
     except Exception as e:
+        from mini_agent.errors import log_exception
+        log_exception(e, where='mini_agent.cli.commands.self_cmd._request')
         return 0, {"detail": str(e)}
 
 
@@ -61,7 +65,9 @@ def _fmt_ts(ts: Optional[float]) -> str:
         return "-"
     try:
         return datetime.datetime.fromtimestamp(ts).strftime("%Y-%m-%d %H:%M:%S")
-    except Exception:
+    except Exception as _mini_agent_exc:
+        from mini_agent.errors import log_exception
+        log_exception(_mini_agent_exc, where='mini_agent.cli.commands.self_cmd._fmt_ts')
         return str(ts)
 
 

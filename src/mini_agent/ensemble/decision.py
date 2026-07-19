@@ -151,6 +151,8 @@ def _model_based_signal(
         data = json.loads(raw)
         return bool(data.get("trigger", False)), str(data.get("reason", ""))
     except Exception as e:
+        from mini_agent.errors import log_exception
+        log_exception(e, where='mini_agent.ensemble.decision._model_based_signal')
         return False, f"模型自判失败，默认不触发（{type(e).__name__}）"
 
 

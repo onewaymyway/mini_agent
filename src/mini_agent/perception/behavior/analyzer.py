@@ -243,5 +243,7 @@ def load_daily_summary(day: str) -> Optional[dict]:
         return None
     try:
         return json.loads(path.read_text(encoding="utf-8"))
-    except Exception:
+    except Exception as _mini_agent_exc:
+        from mini_agent.errors import log_exception
+        log_exception(_mini_agent_exc, where='mini_agent.perception.behavior.analyzer.load_daily_summary')
         return None

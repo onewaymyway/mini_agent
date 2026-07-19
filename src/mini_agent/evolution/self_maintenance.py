@@ -183,7 +183,9 @@ class SelfMaintenanceModule:
         """扫描最近若干 session 的 traces.jsonl，统计每个工具的近期失败率。"""
         try:
             sessions_root = paths.sessions_dir
-        except Exception:
+        except Exception as _mini_agent_exc:
+            from mini_agent.errors import log_exception
+            log_exception(_mini_agent_exc, where='mini_agent.evolution.self_maintenance.SelfMaintenanceModule._check_tool_health')
             return []
         if not sessions_root.exists():
             return []
@@ -219,7 +221,9 @@ class SelfMaintenanceModule:
                         calls[name] = calls.get(name, 0) + 1
                         if entry.get("is_error"):
                             errors[name] = errors.get(name, 0) + 1
-            except Exception:
+            except Exception as _mini_agent_exc:
+                from mini_agent.errors import log_exception
+                log_exception(_mini_agent_exc, where='mini_agent.evolution.self_maintenance.SelfMaintenanceModule._check_tool_health')
                 continue
 
         findings: list[StaleToolFinding] = []
@@ -255,7 +259,9 @@ class SelfMaintenanceModule:
             rec = None
             try:
                 rec = tracker.get_record(name)
-            except Exception:
+            except Exception as _mini_agent_exc:
+                from mini_agent.errors import log_exception
+                log_exception(_mini_agent_exc, where='mini_agent.evolution.self_maintenance.SelfMaintenanceModule._check_skill_freshness')
                 rec = None
             last_ts = getattr(rec, "last_used_at", 0.0) if rec is not None else 0.0
             if not last_ts:
@@ -287,7 +293,9 @@ class SelfMaintenanceModule:
 
         try:
             groups = group_lessons(lesson_entries, min_group_size=2)
-        except Exception:
+        except Exception as _mini_agent_exc:
+            from mini_agent.errors import log_exception
+            log_exception(_mini_agent_exc, where='mini_agent.evolution.self_maintenance.SelfMaintenanceModule._check_memory_conflicts')
             return []
 
         findings: list[ConflictingLessonFinding] = []
@@ -332,7 +340,9 @@ def _load_state(paths) -> dict:
         return {}
     try:
         return json.loads(p.read_text(encoding="utf-8"))
-    except Exception:
+    except Exception as _mini_agent_exc:
+        from mini_agent.errors import log_exception
+        log_exception(_mini_agent_exc, where='mini_agent.evolution.self_maintenance._load_state')
         return {}
 
 

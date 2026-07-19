@@ -65,7 +65,9 @@ class _DiagLogger:
                 d = os.path.join(base, ".agent")
                 os.makedirs(d, exist_ok=True)
                 self._path = os.path.join(d, "terminal_diag.log")
-            except Exception:
+            except Exception as _mini_agent_exc:
+                from mini_agent.errors import log_exception
+                log_exception(_mini_agent_exc, where='mini_agent.ui.terminal._DiagLogger.__init__')
                 self._enabled = False
 
     def log(self, tag: str, msg: str) -> None:
@@ -78,7 +80,9 @@ class _DiagLogger:
             with self._lock:
                 with open(self._path, "a", encoding="utf-8", errors="replace") as f:
                     f.write(line)
-        except Exception:
+        except Exception as _mini_agent_exc:
+            from mini_agent.errors import log_exception
+            log_exception(_mini_agent_exc, where='mini_agent.ui.terminal._DiagLogger.log')
             pass
 
 
@@ -88,7 +92,9 @@ _diag = _DiagLogger()
 def _diag_repr(payload: Any, limit: int = 60) -> str:
     try:
         s = repr(payload)
-    except Exception:
+    except Exception as _mini_agent_exc:
+        from mini_agent.errors import log_exception
+        log_exception(_mini_agent_exc, where='mini_agent.ui.terminal._diag_repr')
         s = "<unrepr>"
     if len(s) > limit:
         s = s[:limit] + "...(%d chars)" % len(s)
@@ -135,7 +141,9 @@ def _wait_stdin_readable(timeout: float) -> Optional[bool]:
         import select as _select
         r, _, _ = _select.select([sys.stdin], [], [], timeout)
         return bool(r)
-    except Exception:
+    except Exception as _mini_agent_exc:
+        from mini_agent.errors import log_exception
+        log_exception(_mini_agent_exc, where='mini_agent.ui.terminal._wait_stdin_readable')
         return None
 
 
@@ -879,7 +887,9 @@ class Terminal:
         """
         try:
             return max(20, self._console.width)
-        except Exception:
+        except Exception as _mini_agent_exc:
+            from mini_agent.errors import log_exception
+            log_exception(_mini_agent_exc, where='mini_agent.ui.terminal.Terminal.get_width')
             return 80
 
     def focus_next_task(self) -> None:
@@ -923,11 +933,15 @@ class Terminal:
                         try:
                             if not getattr(app, "is_done", True):
                                 app.exit(exception=_RemoteTurnInterrupt())
-                        except Exception:
+                        except Exception as _mini_agent_exc:
+                            from mini_agent.errors import log_exception
+                            log_exception(_mini_agent_exc, where='mini_agent.ui.terminal.Terminal.request_input_lock._kick')
                             pass
                     try:
                         loop.call_soon_threadsafe(_kick)
-                    except Exception:
+                    except Exception as _mini_agent_exc:
+                        from mini_agent.errors import log_exception
+                        log_exception(_mini_agent_exc, where='mini_agent.ui.terminal.Terminal.request_input_lock')
                         pass
         else:
             self._remote_busy.clear()
@@ -964,7 +978,9 @@ class Terminal:
         向远程客户端要一行输入，而不是读本地 stdin。"""
         try:
             from mini_agent import interaction
-        except Exception:
+        except Exception as _mini_agent_exc:
+            from mini_agent.errors import log_exception
+            log_exception(_mini_agent_exc, where='mini_agent.ui.terminal.Terminal._remote_prompt')
             return ""
 
         def _local_read(interrupt_event):
@@ -1051,7 +1067,9 @@ class Terminal:
                         try:
                             line = sys.stdin.readline()
                             result_holder.append(line)
-                        except Exception:
+                        except Exception as _mini_agent_exc:
+                            from mini_agent.errors import log_exception
+                            log_exception(_mini_agent_exc, where='mini_agent.ui.terminal.Terminal.confirm._read_stdin')
                             result_holder.append("")
                         finally:
                             stdin_done.set()
@@ -1157,7 +1175,9 @@ class Terminal:
                         try:
                             line = sys.stdin.readline()
                             result_holder.append(line)
-                        except Exception:
+                        except Exception as _mini_agent_exc:
+                            from mini_agent.errors import log_exception
+                            log_exception(_mini_agent_exc, where='mini_agent.ui.terminal.Terminal.interruptible_prompt._read_stdin')
                             result_holder.append("")
                         finally:
                             stdin_done.set()
@@ -1232,7 +1252,9 @@ class Terminal:
         buf = io.StringIO()
         try:
             width = old_console.size.width
-        except Exception:
+        except Exception as _mini_agent_exc:
+            from mini_agent.errors import log_exception
+            log_exception(_mini_agent_exc, where='mini_agent.ui.terminal.Terminal.run_captured')
             width = 100
         self._console = _RichConsole(
             file=buf, force_terminal=False, color_system=None,
@@ -1250,7 +1272,9 @@ class Terminal:
             if self._capture_relay is not None and self._capture_relay_carry:
                 try:
                     self._capture_relay(self._capture_relay_carry)
-                except Exception:
+                except Exception as _mini_agent_exc:
+                    from mini_agent.errors import log_exception
+                    log_exception(_mini_agent_exc, where='mini_agent.ui.terminal.Terminal.run_captured')
                     pass
             self._console = old_console
             self._capture_mode = old_capture
@@ -1296,7 +1320,9 @@ class Terminal:
                 for line in captured_text.splitlines():
                     self.print(_CapturedText(line))
                 self.print("[dim]── end ──[/dim]")
-            except Exception:
+            except Exception as _mini_agent_exc:
+                from mini_agent.errors import log_exception
+                log_exception(_mini_agent_exc, where='mini_agent.ui.terminal.Terminal.run_captured')
                 pass
 
         return captured_text
@@ -1935,7 +1961,9 @@ class Terminal:
                     self._capture_relay_pos += len(new_text)
                     for _ln in complete_lines:
                         self._capture_relay(_ln)
-            except Exception:
+            except Exception as _mini_agent_exc:
+                from mini_agent.errors import log_exception
+                log_exception(_mini_agent_exc, where='mini_agent.ui.terminal.Terminal._handle')
                 pass  # 中继失败不应影响本地渲染/捕获本身
 
     # ── simple-mode 分发（无擦除、无光标控制，仅顺序打印）────────────────
@@ -2171,7 +2199,9 @@ class Terminal:
         """
         try:
             width = max(1, self._console.width)
-        except Exception:
+        except Exception as _mini_agent_exc:
+            from mini_agent.errors import log_exception
+            log_exception(_mini_agent_exc, where='mini_agent.ui.terminal.Terminal._physical_line_count')
             width = 80  # 极端兜底：拿不到宽度时退化为不折行估算
         total = 0
         for line in lines:
@@ -2180,10 +2210,14 @@ class Terminal:
                 # 只统计真正可见字符的显示宽度——转义码本身不占用
                 # 任何屏幕列位置，绝不能被计入折行判断。
                 w = Text.from_ansi(line).cell_len
-            except Exception:
+            except Exception as _mini_agent_exc:
+                from mini_agent.errors import log_exception
+                log_exception(_mini_agent_exc, where='mini_agent.ui.terminal.Terminal._physical_line_count')
                 try:
                     w = cell_len(line)
-                except Exception:
+                except Exception as _mini_agent_exc:
+                    from mini_agent.errors import log_exception
+                    log_exception(_mini_agent_exc, where='mini_agent.ui.terminal.Terminal._physical_line_count')
                     w = len(line)
             # 每条逻辑行至少占 1 个物理行；超过终端宽度时按列宽折行。
             # 注意：空行（w == 0）也至少占 1 行。
@@ -2550,7 +2584,9 @@ class Terminal:
             if provider is not None:
                 try:
                     lines = provider()
-                except Exception:
+                except Exception as _mini_agent_exc:
+                    from mini_agent.errors import log_exception
+                    log_exception(_mini_agent_exc, where='mini_agent.ui.terminal.Terminal._refresh_loop')
                     lines = []
                 # 同步更新状态栏内容缓存（通过队列，确保 render_thread 安全读写）
                 if lines:
@@ -2662,9 +2698,11 @@ class Terminal:
                     if _diag._enabled:
                         _diag.log("ptk_flush_loop", "buffer non-empty or completing, skip this tick")
                     continue
-            except Exception:
+            except Exception as _mini_agent_exc:
                 # 拿不到当前 buffer 状态时，保守起见也跳过这一轮，
                 # 不冒风险去 flush。
+                from mini_agent.errors import log_exception
+                log_exception(_mini_agent_exc, where='mini_agent.ui.terminal.Terminal._ptk_flush_loop')
                 continue
             if not self._pending_tail_is_line_complete():
                 # 见 _pending_tail_is_line_complete() 的说明：这批消息
@@ -2789,7 +2827,9 @@ class Terminal:
                 buf = app.current_buffer
                 if buf is not None and (buf.text or buf.complete_state is not None):
                     return
-            except Exception:
+            except Exception as _mini_agent_exc:
+                from mini_agent.errors import log_exception
+                log_exception(_mini_agent_exc, where='mini_agent.ui.terminal.Terminal._flush_pending_during_input._do_flush')
                 return
 
             pending, self._pending_during_input = self._pending_during_input, []
@@ -2944,6 +2984,8 @@ class Terminal:
                 raise
             except Exception as _ptk_exc:
                 # ptk 运行时异常（dumb terminal、Windows ConPTY 等），标记后降级
+                from mini_agent.errors import log_exception
+                log_exception(_ptk_exc, where='mini_agent.ui.terminal.Terminal._read_line')
                 if _diag._enabled:
                     _diag.log(
                         "read_line",
@@ -2998,6 +3040,8 @@ class Terminal:
             except (EOFError, KeyboardInterrupt) as e:
                 _fallback_exc.append(e)
             except Exception as e:
+                from mini_agent.errors import log_exception
+                log_exception(e, where='mini_agent.ui.terminal.Terminal._read_line._do_read')
                 _fallback_exc.append(e)
 
         import threading as _threading_fallback
@@ -3195,7 +3239,9 @@ def prime_model_completions(pool: "LLMClientPool | None") -> None:
             if model and model not in models:
                 models.append(model)
         prime_model_completions_from_names(models)
-    except Exception:
+    except Exception as _mini_agent_exc:
+        from mini_agent.errors import log_exception
+        log_exception(_mini_agent_exc, where='mini_agent.ui.terminal.prime_model_completions')
         pass  # 静默降级，补全缺失不应影响主功能
 
 
@@ -3219,7 +3265,9 @@ def prime_model_completions_from_names(models: "list[str] | None") -> None:
             if name == "/model":
                 _COMMANDS[i] = (name, desc, list(models))
                 break
-    except Exception:
+    except Exception as _mini_agent_exc:
+        from mini_agent.errors import log_exception
+        log_exception(_mini_agent_exc, where='mini_agent.ui.terminal.prime_model_completions_from_names')
         pass  # 静默降级，补全缺失不应影响主功能
 
 

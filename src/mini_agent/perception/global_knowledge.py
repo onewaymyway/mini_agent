@@ -83,7 +83,9 @@ def _read_json(path: Path, default: object) -> object:
         return default
     try:
         return json.loads(path.read_text(encoding="utf-8"))
-    except Exception:
+    except Exception as _mini_agent_exc:
+        from mini_agent.errors import log_exception
+        log_exception(_mini_agent_exc, where='mini_agent.perception.global_knowledge._read_json')
         return default
 
 
@@ -99,9 +101,13 @@ def _read_jsonl(path: Path, limit: Optional[int] = None) -> list[dict]:
                 continue
             try:
                 records.append(json.loads(line))
-            except Exception:
+            except Exception as _mini_agent_exc:
+                from mini_agent.errors import log_exception
+                log_exception(_mini_agent_exc, where='mini_agent.perception.global_knowledge._read_jsonl')
                 continue
-    except Exception:
+    except Exception as _mini_agent_exc:
+        from mini_agent.errors import log_exception
+        log_exception(_mini_agent_exc, where='mini_agent.perception.global_knowledge._read_jsonl')
         return []
     if limit is not None and limit > 0:
         return records[-limit:]
@@ -832,16 +838,22 @@ def scan_cross_project_patterns(
                     continue
                 try:
                     data = json.loads(line)
-                except Exception:
+                except Exception as _mini_agent_exc:
+                    from mini_agent.errors import log_exception
+                    log_exception(_mini_agent_exc, where='mini_agent.perception.global_knowledge.scan_cross_project_patterns')
                     continue
                 if data.get("entry_type") != "lesson":
                     continue
                 try:
                     entry = MemoryEntry(**data)
-                except Exception:
+                except Exception as _mini_agent_exc:
+                    from mini_agent.errors import log_exception
+                    log_exception(_mini_agent_exc, where='mini_agent.perception.global_knowledge.scan_cross_project_patterns')
                     continue
                 lesson_refs.append(_LessonRef(project_id=pid, entry=entry))
-        except Exception:
+        except Exception as _mini_agent_exc:
+            from mini_agent.errors import log_exception
+            log_exception(_mini_agent_exc, where='mini_agent.perception.global_knowledge.scan_cross_project_patterns')
             continue
 
     if not lesson_refs:

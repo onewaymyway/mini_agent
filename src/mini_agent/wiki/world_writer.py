@@ -140,9 +140,13 @@ def _read_pending_queue(paths: AgentPaths) -> list[dict]:
                     continue
                 try:
                     rows.append(json.loads(line))
-                except Exception:
+                except Exception as _mini_agent_exc:
+                    from mini_agent.errors import log_exception
+                    log_exception(_mini_agent_exc, where='mini_agent.wiki.world_writer._read_pending_queue')
                     continue
-    except Exception:
+    except Exception as _mini_agent_exc:
+        from mini_agent.errors import log_exception
+        log_exception(_mini_agent_exc, where='mini_agent.wiki.world_writer._read_pending_queue')
         return []
     return rows
 
@@ -155,10 +159,14 @@ def _clear_pending_queue(paths: AgentPaths) -> None:
     try:
         tmp.write_text("", encoding="utf-8")
         os.replace(tmp, p)
-    except Exception:
+    except Exception as _mini_agent_exc:
+        from mini_agent.errors import log_exception
+        log_exception(_mini_agent_exc, where='mini_agent.wiki.world_writer._clear_pending_queue')
         try:
             tmp.unlink(missing_ok=True)
-        except Exception:
+        except Exception as _mini_agent_exc:
+            from mini_agent.errors import log_exception
+            log_exception(_mini_agent_exc, where='mini_agent.wiki.world_writer._clear_pending_queue')
             pass
 
 
@@ -167,7 +175,9 @@ def _load_entity_pages(paths: AgentPaths) -> list[WikiPage]:
     for md_path in discover_pages(paths):
         try:
             page = parse_page(md_path)
-        except Exception:
+        except Exception as _mini_agent_exc:
+            from mini_agent.errors import log_exception
+            log_exception(_mini_agent_exc, where='mini_agent.wiki.world_writer._load_entity_pages')
             continue
         if page.type == "entity":
             pages.append(page)
@@ -345,7 +355,9 @@ def consolidate_pending(
                 llm_call=llm_call,
             )
             report.actions.append(action)
-        except Exception:
+        except Exception as _mini_agent_exc:
+            from mini_agent.errors import log_exception
+            log_exception(_mini_agent_exc, where='mini_agent.wiki.world_writer.consolidate_pending')
             continue
 
     for row in fact_rows:
@@ -355,7 +367,9 @@ def consolidate_pending(
                 continue
             action = _merge_fact(paths, candidate, existing_pages=existing_pages)
             report.actions.append(action)
-        except Exception:
+        except Exception as _mini_agent_exc:
+            from mini_agent.errors import log_exception
+            log_exception(_mini_agent_exc, where='mini_agent.wiki.world_writer.consolidate_pending')
             continue
 
     _clear_pending_queue(paths)

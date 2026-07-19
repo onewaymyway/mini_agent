@@ -93,7 +93,9 @@ def _get_project_root() -> Optional[Path]:
         return None
     try:
         return provider()
-    except Exception:
+    except Exception as _mini_agent_exc:
+        from mini_agent.errors import log_exception
+        log_exception(_mini_agent_exc, where='mini_agent.tools.workdir_knowledge._get_project_root')
         return None
 
 
@@ -103,7 +105,9 @@ def _get_session_id() -> str:
         return ""
     try:
         return provider() or ""
-    except Exception:
+    except Exception as _mini_agent_exc:
+        from mini_agent.errors import log_exception
+        log_exception(_mini_agent_exc, where='mini_agent.tools.workdir_knowledge._get_session_id')
         return ""
 
 
@@ -394,7 +398,9 @@ def update_knowledge(
     if knowledge_path.is_file():
         try:
             existing = knowledge_path.read_text(encoding="utf-8")
-        except Exception:
+        except Exception as _mini_agent_exc:
+            from mini_agent.errors import log_exception
+            log_exception(_mini_agent_exc, where='mini_agent.tools.workdir_knowledge.update_knowledge')
             existing = ""
 
     new_text = _upsert_markdown_section(existing, section, content)
@@ -528,6 +534,8 @@ def search_knowledge(
     try:
         ranked = search_knowledge_index(paths, query, k=k, topic=topic or None)
     except Exception as e:
+        from mini_agent.errors import log_exception
+        log_exception(e, where='mini_agent.tools.workdir_knowledge.search_knowledge')
         return _error(f"search failed: {e}")
 
     results = []
@@ -537,7 +545,9 @@ def search_knowledge(
         if include_content:
             try:
                 item["content"] = read_knowledge_section(paths, entry.heading)
-            except Exception:
+            except Exception as _mini_agent_exc:
+                from mini_agent.errors import log_exception
+                log_exception(_mini_agent_exc, where='mini_agent.tools.workdir_knowledge.search_knowledge')
                 item["content"] = None
         results.append(item)
 

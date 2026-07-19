@@ -173,6 +173,8 @@ def migrate_entity_store(
             report.migrated += 1
             report.page_ids.append(page_id)
         except Exception as exc:  # noqa: BLE001 - 单个实体迁移失败不阻断整批
+            from mini_agent.errors import log_exception
+            log_exception(exc, where='mini_agent.wiki.migration.migrate_entity_store')
             report.errors.append(f"{entity.entity_id} ({entity.name}): {exc}")
 
     save_entity_map(paths, mapping)

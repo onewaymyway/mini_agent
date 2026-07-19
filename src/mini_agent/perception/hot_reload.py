@@ -119,6 +119,8 @@ class _DirectoryWatch:
                 self._reload_fn(self._dirs)
             except Exception as exc:
                 # reload 失败不应崩溃 agent，打印警告即可
+                from mini_agent.errors import log_exception
+                log_exception(exc, where='mini_agent.perception.hot_reload._DirectoryWatch.check')
                 import mini_agent.ui.renderer as _R
                 _R.print_warning(f"[hot-reload:{self._category}] reload error: {exc}")
 
@@ -207,6 +209,8 @@ class HotReloader:
                 try:
                     watch._reload_fn(watch._dirs)
                 except Exception as exc:
+                    from mini_agent.errors import log_exception
+                    log_exception(exc, where='mini_agent.perception.hot_reload.HotReloader.force_reload')
                     import mini_agent.ui.renderer as _R
                     _R.print_warning(f"[hot-reload:{watch._category}] reload error: {exc}")
             reports.append(r)

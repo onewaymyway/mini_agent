@@ -136,7 +136,9 @@ class RemindersCorrectionMixin:
                 content=note,
             )
             self._inject_reminder(reminder)
-        except Exception:
+        except Exception as _mini_agent_exc:
+            from mini_agent.errors import log_exception
+            log_exception(_mini_agent_exc, where='mini_agent.agent.reminders_correction.RemindersCorrectionMixin._maybe_recall_decisions_for_user_message')
             pass  # 决策召回失败不应影响正常对话主流程
 
     def _detect_and_record_correction(self, user_message: str) -> bool:
@@ -216,7 +218,9 @@ class RemindersCorrectionMixin:
         # 计数，不做任何写入，失败也不应该影响纠正检测本身已经完成的工作。
         try:
             self._session_correction_count = getattr(self, "_session_correction_count", 0) + 1
-        except Exception:
+        except Exception as _mini_agent_exc:
+            from mini_agent.errors import log_exception
+            log_exception(_mini_agent_exc, where='mini_agent.agent.reminders_correction.RemindersCorrectionMixin._detect_and_record_correction')
             pass
 
         return True
@@ -272,7 +276,9 @@ class RemindersCorrectionMixin:
                 else:
                     self._memory.add(entry)
                 self._append_memory_delta(entry)
-            except Exception:
+            except Exception as _mini_agent_exc:
+                from mini_agent.errors import log_exception
+                log_exception(_mini_agent_exc, where='mini_agent.agent.reminders_correction.RemindersCorrectionMixin._on_edit_detected')
                 pass  # lesson 生成失败不应影响编辑本身已经成功写入 history
             else:
                 # 与 _detect_and_record_correction 一致：编辑类纠正也计入
@@ -281,7 +287,9 @@ class RemindersCorrectionMixin:
                 # "记录失败但仍计数"造成误判。
                 try:
                     self._session_correction_count = getattr(self, "_session_correction_count", 0) + 1
-                except Exception:
+                except Exception as _mini_agent_exc:
+                    from mini_agent.errors import log_exception
+                    log_exception(_mini_agent_exc, where='mini_agent.agent.reminders_correction.RemindersCorrectionMixin._on_edit_detected')
                     pass
 
     def _inject_reminders_for_tool_results(self, tool_calls, result_strs: list) -> None:

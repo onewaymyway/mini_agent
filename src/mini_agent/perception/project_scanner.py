@@ -209,7 +209,9 @@ class ProjectScanner:
                             **data.get("devDependencies", {})}
                 names = list(all_deps.keys())[:12]
                 return ", ".join(names) + ("..." if len(all_deps) > 12 else "")
-            except Exception:
+            except Exception as _mini_agent_exc:
+                from mini_agent.errors import log_exception
+                log_exception(_mini_agent_exc, where='mini_agent.perception.project_scanner.ProjectScanner._extract_deps')
                 return ""
 
         if filename == "requirements.txt":
@@ -254,5 +256,7 @@ class ProjectScanner:
                 cwd=root, stderr=subprocess.DEVNULL, timeout=3
             ).decode().strip()
             return branch, bool(dirty_output)
-        except Exception:
+        except Exception as _mini_agent_exc:
+            from mini_agent.errors import log_exception
+            log_exception(_mini_agent_exc, where='mini_agent.perception.project_scanner.ProjectScanner._git_info')
             return "", False

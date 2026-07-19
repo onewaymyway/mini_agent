@@ -84,7 +84,9 @@ def _read_json(path: Path, default: object) -> object:
         return default
     try:
         return json.loads(path.read_text(encoding="utf-8"))
-    except Exception:
+    except Exception as _mini_agent_exc:
+        from mini_agent.errors import log_exception
+        log_exception(_mini_agent_exc, where='mini_agent.perception.workdir_knowledge._read_json')
         return default
 
 
@@ -100,9 +102,13 @@ def _read_jsonl(path: Path, limit: Optional[int] = None) -> list[dict]:
                 continue
             try:
                 records.append(json.loads(line))
-            except Exception:
+            except Exception as _mini_agent_exc:
+                from mini_agent.errors import log_exception
+                log_exception(_mini_agent_exc, where='mini_agent.perception.workdir_knowledge._read_jsonl')
                 continue
-    except Exception:
+    except Exception as _mini_agent_exc:
+        from mini_agent.errors import log_exception
+        log_exception(_mini_agent_exc, where='mini_agent.perception.workdir_knowledge._read_jsonl')
         return []
     if limit is not None and limit > 0:
         return records[-limit:]
@@ -133,7 +139,9 @@ def capture_environment_fingerprint(project_root: Path) -> dict:
 
     try:
         import importlib.metadata as _ilm
-    except Exception:
+    except Exception as _mini_agent_exc:
+        from mini_agent.errors import log_exception
+        log_exception(_mini_agent_exc, where='mini_agent.perception.workdir_knowledge.capture_environment_fingerprint')
         _ilm = None
 
     pyproject = project_root / "pyproject.toml"
@@ -144,7 +152,9 @@ def capture_environment_fingerprint(project_root: Path) -> dict:
             for name in dep_names:
                 try:
                     key_deps[name] = _ilm.version(name)
-                except Exception:
+                except Exception as _mini_agent_exc:
+                    from mini_agent.errors import log_exception
+                    log_exception(_mini_agent_exc, where='mini_agent.perception.workdir_knowledge.capture_environment_fingerprint')
                     continue
             fingerprint["key_deps"] = key_deps
         except Exception as _mini_agent_exc:
@@ -880,7 +890,9 @@ def read_knowledge_section(paths: AgentPaths, heading: str) -> Optional[str]:
         return None
     try:
         text = path.read_text(encoding="utf-8")
-    except Exception:
+    except Exception as _mini_agent_exc:
+        from mini_agent.errors import log_exception
+        log_exception(_mini_agent_exc, where='mini_agent.perception.workdir_knowledge.read_knowledge_section')
         return None
 
     target = f"## {heading}".strip()

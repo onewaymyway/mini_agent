@@ -136,7 +136,9 @@ class QuarantineStore:
             return
         try:
             data = json.loads(path.read_text(encoding="utf-8"))
-        except Exception:
+        except Exception as _mini_agent_exc:
+            from mini_agent.errors import log_exception
+            log_exception(_mini_agent_exc, where='mini_agent.auto_quarantine.QuarantineStore._load')
             return
         entries = data.get("entries") if isinstance(data, dict) else None
         if not isinstance(entries, dict):
@@ -155,7 +157,9 @@ class QuarantineStore:
         data = {"entries": {k: r.to_dict() for k, r in self._records.items()}}
         try:
             path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
-        except Exception:
+        except Exception as _mini_agent_exc:
+            from mini_agent.errors import log_exception
+            log_exception(_mini_agent_exc, where='mini_agent.auto_quarantine.QuarantineStore._save')
             pass
 
     def reload(self) -> None:

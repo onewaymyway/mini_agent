@@ -79,7 +79,9 @@ def _load_fallback_pages(paths: AgentPaths) -> list[WikiPage]:
             continue
         try:
             pages.append(parse_page(p))
-        except Exception:
+        except Exception as _mini_agent_exc:
+            from mini_agent.errors import log_exception
+            log_exception(_mini_agent_exc, where='mini_agent.wiki.fallback_cleanup._load_fallback_pages')
             continue
     return pages
 
@@ -93,7 +95,9 @@ def _load_candidate_entity_pages(paths: AgentPaths) -> list[WikiPage]:
             continue
         try:
             page = parse_page(p)
-        except Exception:
+        except Exception as _mini_agent_exc:
+            from mini_agent.errors import log_exception
+            log_exception(_mini_agent_exc, where='mini_agent.wiki.fallback_cleanup._load_candidate_entity_pages')
             continue
         if page.type == "entity":
             pages.append(page)
@@ -156,6 +160,8 @@ def cleanup_fallback_pages(
                 )
                 report.marked_stale += 1
         except Exception as exc:  # noqa: BLE001
+            from mini_agent.errors import log_exception
+            log_exception(exc, where='mini_agent.wiki.fallback_cleanup.cleanup_fallback_pages')
             report.errors.append(f"{page.id}: {exc}")
 
     return report

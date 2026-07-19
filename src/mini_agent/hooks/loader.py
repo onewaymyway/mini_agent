@@ -88,7 +88,9 @@ def _load_hooks_file(path: Path, source: str, cwd: Optional[Path]) -> dict[str, 
         return result
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
-    except Exception:
+    except Exception as _mini_agent_exc:
+        from mini_agent.errors import log_exception
+        log_exception(_mini_agent_exc, where='mini_agent.hooks.loader._load_hooks_file')
         return result
     if not isinstance(data, dict):
         return result

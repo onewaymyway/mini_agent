@@ -231,7 +231,9 @@ class MemoryStore(MemoryBackend):
                 try:
                     from mini_agent.evolution.memory_aging import compute_decay_factor
                     decay = compute_decay_factor(entry)
-                except Exception:
+                except Exception as _mini_agent_exc:
+                    from mini_agent.errors import log_exception
+                    log_exception(_mini_agent_exc, where='mini_agent.perception.memory_store.MemoryStore.rank_subset')
                     decay = math.exp(-self._decay_lambda * entry.age_days)
             else:
                 decay = math.exp(-self._decay_lambda * entry.age_days)
@@ -340,7 +342,9 @@ class MemoryStore(MemoryBackend):
                 try:
                     from mini_agent.evolution.memory_aging import compute_decay_factor
                     decay = compute_decay_factor(entry)
-                except Exception:
+                except Exception as _mini_agent_exc:
+                    from mini_agent.errors import log_exception
+                    log_exception(_mini_agent_exc, where='mini_agent.perception.memory_store.MemoryStore._score_all')
                     decay = math.exp(-self._decay_lambda * entry.age_days)
             else:
                 decay = math.exp(-self._decay_lambda * entry.age_days)

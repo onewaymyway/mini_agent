@@ -47,7 +47,9 @@ def _read_json(path: Path) -> Optional[dict]:
         return None
     try:
         return json.loads(path.read_text(encoding="utf-8"))
-    except Exception:
+    except Exception as _mini_agent_exc:
+        from mini_agent.errors import log_exception
+        log_exception(_mini_agent_exc, where='mini_agent.wiki.index_reader._read_json')
         return None
 
 
@@ -95,7 +97,9 @@ def load_index(paths: AgentPaths) -> Optional[IndexData]:
     id_to_path = {p.stem: p for p in md_paths}
     try:
         graph = GraphIndex.from_dict(graph_raw, known_ids=id_to_path.keys())
-    except Exception:
+    except Exception as _mini_agent_exc:
+        from mini_agent.errors import log_exception
+        log_exception(_mini_agent_exc, where='mini_agent.wiki.index_reader.load_index')
         return None
 
     return IndexData(

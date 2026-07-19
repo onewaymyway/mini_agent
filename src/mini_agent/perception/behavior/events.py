@@ -99,14 +99,18 @@ class BehaviorEventStore:
         for path in files:
             try:
                 lines = path.read_text(encoding="utf-8").splitlines()
-            except Exception:
+            except Exception as _mini_agent_exc:
+                from mini_agent.errors import log_exception
+                log_exception(_mini_agent_exc, where='mini_agent.perception.behavior.events.BehaviorEventStore.query')
                 continue
             for line in reversed(lines):
                 if not line.strip():
                     continue
                 try:
                     d = json.loads(line)
-                except Exception:
+                except Exception as _mini_agent_exc:
+                    from mini_agent.errors import log_exception
+                    log_exception(_mini_agent_exc, where='mini_agent.perception.behavior.events.BehaviorEventStore.query')
                     continue
                 if since is not None and d.get("timestamp", 0) < since:
                     continue
@@ -126,7 +130,9 @@ class BehaviorEventStore:
             try:
                 path.unlink()
                 n += 1
-            except Exception:
+            except Exception as _mini_agent_exc:
+                from mini_agent.errors import log_exception
+                log_exception(_mini_agent_exc, where='mini_agent.perception.behavior.events.BehaviorEventStore.clear')
                 pass
         return n
 
@@ -141,6 +147,8 @@ class BehaviorEventStore:
                 if day_ts < cutoff:
                     path.unlink()
                     n += 1
-            except Exception:
+            except Exception as _mini_agent_exc:
+                from mini_agent.errors import log_exception
+                log_exception(_mini_agent_exc, where='mini_agent.perception.behavior.events.BehaviorEventStore.purge_older_than')
                 continue
         return n

@@ -49,7 +49,9 @@ def _find_page(paths: AgentPaths, page_id: str) -> Optional[WikiPage]:
             continue
         try:
             return parse_page(md_path)
-        except Exception:
+        except Exception as _mini_agent_exc:
+            from mini_agent.errors import log_exception
+            log_exception(_mini_agent_exc, where='mini_agent.wiki.lifecycle._find_page')
             return None
     return None
 
@@ -97,7 +99,9 @@ def mark_page_state(
             note=reason,
         )
         return True
-    except Exception:
+    except Exception as _mini_agent_exc:
+        from mini_agent.errors import log_exception
+        log_exception(_mini_agent_exc, where='mini_agent.wiki.lifecycle.mark_page_state')
         return False
 
 
@@ -141,7 +145,9 @@ def touch_validated(paths: AgentPaths, page_id: str, *, validated_by: str) -> bo
             validated_by_append=validated_by,
         )
         return True
-    except Exception:
+    except Exception as _mini_agent_exc:
+        from mini_agent.errors import log_exception
+        log_exception(_mini_agent_exc, where='mini_agent.wiki.lifecycle.touch_validated')
         return False
 
 
@@ -173,7 +179,9 @@ def stale_candidate_scan(
     for md_path in discover_pages(paths):
         try:
             page = parse_page(md_path)
-        except Exception:
+        except Exception as _mini_agent_exc:
+            from mini_agent.errors import log_exception
+            log_exception(_mini_agent_exc, where='mini_agent.wiki.lifecycle.stale_candidate_scan')
             continue
         scanned += 1
         state = str(page.raw_frontmatter.get("knowledge_state") or "fresh")
@@ -188,7 +196,9 @@ def stale_candidate_scan(
             )
             if last_validated.tzinfo is None:
                 last_validated = last_validated.replace(tzinfo=timezone.utc)
-        except Exception:
+        except Exception as _mini_agent_exc:
+            from mini_agent.errors import log_exception
+            log_exception(_mini_agent_exc, where='mini_agent.wiki.lifecycle.stale_candidate_scan')
             continue
         age_days = (now - last_validated).total_seconds() / 86400
         if age_days < threshold_days:
@@ -198,7 +208,9 @@ def stale_candidate_scan(
                 paths, page, knowledge_state="stale", validated_by_append="stale_scan",
             )
             marked += 1
-        except Exception:
+        except Exception as _mini_agent_exc:
+            from mini_agent.errors import log_exception
+            log_exception(_mini_agent_exc, where='mini_agent.wiki.lifecycle.stale_candidate_scan')
             continue
     return {"scanned": scanned, "marked_stale": marked}
 

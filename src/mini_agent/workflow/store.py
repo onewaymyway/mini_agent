@@ -79,6 +79,8 @@ class WorkflowStore:
                 data = json.loads(text)
             return WorkflowDef.from_dict(data)
         except Exception as e:
+            from mini_agent.errors import log_exception
+            log_exception(e, where='mini_agent.workflow.store.WorkflowStore._load_path')
             import mini_agent.ui.renderer as R
             R.print_warning(f"[WorkflowStore] 加载 {path.name} 失败: {e}")
             return None

@@ -564,7 +564,9 @@ def _default_llm_decompose(llm_client, objective: "GoalNode") -> list[str]:
             if line:
                 steps.append(line)
         return steps[:MAX_STEPS_PER_OBJECTIVE]
-    except Exception:
+    except Exception as _mini_agent_exc:
+        from mini_agent.errors import log_exception
+        log_exception(_mini_agent_exc, where='mini_agent.evolution.objective_executor._default_llm_decompose')
         return []
 
 

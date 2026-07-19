@@ -72,7 +72,9 @@ def _read_json(path: Path, default: object) -> object:
         return default
     try:
         return json.loads(path.read_text(encoding="utf-8"))
-    except Exception:
+    except Exception as _mini_agent_exc:
+        from mini_agent.errors import log_exception
+        log_exception(_mini_agent_exc, where='mini_agent.perception.entity_index._read_json')
         return default
 
 
@@ -238,7 +240,9 @@ class EntityStore:
             )
             try:
                 new_summary = (llm_call(prompt) or "").strip()
-            except Exception:
+            except Exception as _mini_agent_exc:
+                from mini_agent.errors import log_exception
+                log_exception(_mini_agent_exc, where='mini_agent.perception.entity_index.EntityStore.rewrite_summary')
                 new_summary = ""
         else:
             new_summary = ""
@@ -329,7 +333,9 @@ class EntityStore:
                             f"只回答 YES 或 NO。\nA: {a.name}\nB: {b.name}"
                         ) or "").strip().upper()
                         is_dup = reply.startswith("Y")
-                    except Exception:
+                    except Exception as _mini_agent_exc:
+                        from mini_agent.errors import log_exception
+                        log_exception(_mini_agent_exc, where='mini_agent.perception.entity_index.EntityStore.consolidate_entities')
                         is_dup = False
                 if is_dup:
                     if b.name.lower() not in [x.lower() for x in a.aliases]:

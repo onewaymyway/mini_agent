@@ -180,7 +180,9 @@ def _inject_permission_state_hook(bridge: AgentBridge, agent: Any) -> None:
                     td = get_default_registry().get(tool_name)
                     if td is not None and not td.requires_approval:
                         needs_prompt = False
-                except Exception:
+                except Exception as _mini_agent_exc:
+                    from mini_agent.errors import log_exception
+                    log_exception(_mini_agent_exc, where='mini_agent.api.server._inject_permission_state_hook._hooked_check')
                     pass
             if needs_prompt:
                 bridge.set_state("waiting_permission")
@@ -198,6 +200,8 @@ def _inject_permission_state_hook(bridge: AgentBridge, agent: Any) -> None:
         guard.check = _hooked_check
 
     except Exception as e:
+        from mini_agent.errors import log_exception
+        log_exception(e, where='mini_agent.api.server._inject_permission_state_hook')
         _print_to_term(f"[yellow]⚠ permission hook failed: {e}[/yellow]")
 
 
@@ -348,7 +352,9 @@ class AgentRunner(threading.Thread):
                         and self._autonomous_loop.should_tick()):
                     try:
                         self._autonomous_loop.tick()
-                    except Exception:
+                    except Exception as _mini_agent_exc:
+                        from mini_agent.errors import log_exception
+                        log_exception(_mini_agent_exc, where='mini_agent.api.server.AgentRunner._main_loop')
                         pass  # tick 异常不影响主循环
 
                 # daemon 多用户架构 Phase 4：每个 idle 周期都顺带处理一下 Self
@@ -503,6 +509,8 @@ class AgentRunner(threading.Thread):
                         with _local_term_write_lock:
                             result = _term_singleton.run_captured(_run_slash, on_line=_relay_line).strip()
                     except Exception as _cmd_e:
+                        from mini_agent.errors import log_exception
+                        log_exception(_cmd_e, where='mini_agent.api.server.AgentRunner._main_loop')
                         result = f"[error] command failed: {_cmd_e}"
                     if not result:
                         result = "(no output)"
@@ -552,7 +560,9 @@ class AgentRunner(threading.Thread):
                             "last_contact": time.time(),
                             "contact_count": contact_count,
                         })
-                    except Exception:
+                    except Exception as _mini_agent_exc:
+                        from mini_agent.errors import log_exception
+                        log_exception(_mini_agent_exc, where='mini_agent.api.server.AgentRunner._main_loop')
                         pass  # 画像更新失败不应影响主对话流程
 
             except Exception as e:
@@ -664,7 +674,9 @@ class AgentRunner(threading.Thread):
                 consumer_name="daemon_instant_consumer",
                 tiers=["instant"],
             )
-        except Exception:
+        except Exception as _mini_agent_exc:
+            from mini_agent.errors import log_exception
+            log_exception(_mini_agent_exc, where='mini_agent.api.server.AgentRunner._drain_system_events')
             return  # 事件总线读取失败不应影响主循环，静默跳过本轮
 
         for evt in events:
@@ -1011,7 +1023,9 @@ class HttpServer:
                         initiator=initiator,
                         meta=meta,
                     )
-                except Exception:
+                except Exception as _mini_agent_exc:
+                    from mini_agent.errors import log_exception
+                    log_exception(_mini_agent_exc, where='mini_agent.api.server.HttpServer._build_autonomous_loop._cron_submit')
                     return None
 
             from mini_agent.evolution.cron_scheduler import load_cron_scheduler
@@ -1026,7 +1040,9 @@ class HttpServer:
                         initiator=initiator,
                         meta=meta,
                     )
-                except Exception:
+                except Exception as _mini_agent_exc:
+                    from mini_agent.errors import log_exception
+                    log_exception(_mini_agent_exc, where='mini_agent.api.server.HttpServer._build_autonomous_loop._obj_submit')
                     return None
 
             def _llm_decompose(objective):
@@ -1037,7 +1053,9 @@ class HttpServer:
                     if llm is None:
                         return []
                     return _default_llm_decompose(llm, objective)
-                except Exception:
+                except Exception as _mini_agent_exc:
+                    from mini_agent.errors import log_exception
+                    log_exception(_mini_agent_exc, where='mini_agent.api.server.HttpServer._build_autonomous_loop._llm_decompose')
                     return []
 
             bridge_ref = self._bridge
@@ -1087,7 +1105,9 @@ class HttpServer:
                 cron_scheduler=cron_scheduler,
                 objective_executor=objective_executor,
             )
-        except Exception:
+        except Exception as _mini_agent_exc:
+            from mini_agent.errors import log_exception
+            log_exception(_mini_agent_exc, where='mini_agent.api.server.HttpServer._build_autonomous_loop')
             return None
 
     @property
@@ -1207,6 +1227,8 @@ def _install_output_hook(bridge: AgentBridge) -> None:
     try:
         from mini_agent.ui import renderer as mod
     except Exception as e:
+        from mini_agent.errors import log_exception
+        log_exception(e, where='mini_agent.api.server._install_output_hook')
         _print_to_term(f"[yellow]⚠ output hook import failed: {e}[/yellow]")
         return
 
@@ -1230,7 +1252,9 @@ def _install_output_hook(bridge: AgentBridge) -> None:
     def _in_relayed_capture() -> bool:
         try:
             return bool(_term_singleton._capture_mode) and _term_singleton._capture_relay is not None
-        except Exception:
+        except Exception as _mini_agent_exc:
+            from mini_agent.errors import log_exception
+            log_exception(_mini_agent_exc, where='mini_agent.api.server._install_output_hook._in_relayed_capture')
             return False
 
     from mini_agent.ui.terminal import term as _term_singleton

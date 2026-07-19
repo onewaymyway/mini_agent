@@ -230,6 +230,8 @@ def run_scenario(
             ok=True, final_response=final_response,
         )
     except Exception as e:
+        from mini_agent.errors import log_exception
+        log_exception(e, where='mini_agent.evolution.eval_runner.run_scenario')
         duration = time.time() - start
         return _stats_to_result(
             scenario.name, mode, agent.stats, duration,

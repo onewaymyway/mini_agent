@@ -81,6 +81,8 @@ def _handle_new_goal(goal_text: str, agent) -> None:
     try:
         spec = builder.build_initial(goal_text)
     except Exception as e:
+        from mini_agent.errors import log_exception
+        log_exception(e, where='mini_agent.cli.commands.goal_mode_cmd._handle_new_goal')
         R.print_error(f"生成验收标准失败：{e}")
         return
 
@@ -117,6 +119,8 @@ def _handle_from_history(agent) -> None:
         R.print_error(f"根据历史生成目标草案失败：{e}\n请重试一次，或改用 /goal <目标文本> 手动指定。")
         return
     except Exception as e:
+        from mini_agent.errors import log_exception
+        log_exception(e, where='mini_agent.cli.commands.goal_mode_cmd._handle_from_history')
         R.print_error(f"根据历史归纳目标失败：{e}")
         return
 
@@ -194,6 +198,8 @@ def _negotiate_loop(builder, spec, agent):
         try:
             new_spec = builder.revise(spec, user_input)
         except Exception as e:
+            from mini_agent.errors import log_exception
+            log_exception(e, where='mini_agent.cli.commands.goal_mode_cmd._negotiate_loop')
             R.print_error(f"修订失败：{e}，请重试或输入 /cancel 放弃。")
             continue
 
@@ -218,6 +224,8 @@ def _run_goal(agent, spec) -> None:
         R.print_warning("[Goal 模式] 已中断，状态已保存，可用 /goal resume 继续。")
         return
     except Exception as e:
+        from mini_agent.errors import log_exception
+        log_exception(e, where='mini_agent.cli.commands.goal_mode_cmd._run_goal')
         R.print_error(f"[Goal 模式] 执行异常终止：{e}")
         if agent.cfg.verbose:
             import traceback
@@ -295,6 +303,8 @@ def _handle_resume(args: list[str], agent) -> None:
         try:
             agent.load_session(sid)
         except Exception as e:
+            from mini_agent.errors import log_exception
+            log_exception(e, where='mini_agent.cli.commands.goal_mode_cmd._handle_resume')
             R.print_error(f"加载 session {sid} 历史失败：{e}")
             return
 
@@ -320,6 +330,8 @@ def _handle_resume(args: list[str], agent) -> None:
         R.print_warning("[Goal 模式] 已中断，状态已保存，可再次 /goal resume 继续。")
         return
     except Exception as e:
+        from mini_agent.errors import log_exception
+        log_exception(e, where='mini_agent.cli.commands.goal_mode_cmd._handle_resume')
         R.print_error(f"[Goal 模式] 执行异常终止：{e}")
         return
 
@@ -375,6 +387,8 @@ def _handle_revise(args: list[str], agent) -> None:
         try:
             spec = builder.revise(spec, proposal_text)
         except Exception as e:
+            from mini_agent.errors import log_exception
+            log_exception(e, where='mini_agent.cli.commands.goal_mode_cmd._handle_revise')
             R.print_error(f"基于提议生成新草案失败：{e}，将展示原草案供你手动修改。")
             spec = GoalSpec.from_dict(state.goal_spec)
             spec.confirmed = False
@@ -388,6 +402,8 @@ def _handle_revise(args: list[str], agent) -> None:
         try:
             agent.load_session(sid)
         except Exception as e:
+            from mini_agent.errors import log_exception
+            log_exception(e, where='mini_agent.cli.commands.goal_mode_cmd._handle_revise')
             R.print_error(f"加载 session {sid} 历史失败：{e}")
             return
 

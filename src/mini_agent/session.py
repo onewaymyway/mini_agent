@@ -65,7 +65,9 @@ class SessionMeta:
             if s < 3600:  return f"{s//60}分钟前"
             if s < 86400: return f"{s//3600}小时前"
             return f"{s//86400}天前"
-        except Exception:
+        except Exception as _mini_agent_exc:
+            from mini_agent.errors import log_exception
+            log_exception(_mini_agent_exc, where='mini_agent.session.SessionMeta.age_str')
             return self.updated_at[:16]
 
 
@@ -398,7 +400,9 @@ class SessionManager:
                 summary_at_turns=meta.get("summary_at_turns", 0),
                 active_persona=meta.get("active_persona"),
             )
-        except Exception:
+        except Exception as _mini_agent_exc:
+            from mini_agent.errors import log_exception
+            log_exception(_mini_agent_exc, where='mini_agent.session.SessionManager._read_dir')
             return None
 
     @staticmethod
@@ -447,7 +451,9 @@ class SessionManager:
                     fmt=path.suffix.lstrip("."),
                     summary=data.get("summary", ""),
                 )
-        except Exception:
+        except Exception as _mini_agent_exc:
+            from mini_agent.errors import log_exception
+            log_exception(_mini_agent_exc, where='mini_agent.session.SessionManager._read_meta')
             return None
 
     # ── 内部：旧格式兼容读取 ──────────────────────────────────────────────────
@@ -483,7 +489,9 @@ class SessionManager:
                 summary_at_turns=meta.get("summary_at_turns", 0),
                 active_persona=meta.get("active_persona"),
             )
-        except Exception:
+        except Exception as _mini_agent_exc:
+            from mini_agent.errors import log_exception
+            log_exception(_mini_agent_exc, where='mini_agent.session.SessionManager._read_legacy_file')
             return None
 
     def _find_legacy_files(self, session_id: str) -> list[Path]:
@@ -542,7 +550,9 @@ def _serialize_history(history: list[dict]) -> list[dict]:
                         if hasattr(block, "name"):    d["name"]  = block.name
                         if hasattr(block, "input"):   d["input"] = block.input
                         serialized_content.append(d)
-                    except Exception:
+                    except Exception as _mini_agent_exc:
+                        from mini_agent.errors import log_exception
+                        log_exception(_mini_agent_exc, where='mini_agent.session._serialize_history')
                         serialized_content.append({"type": "unknown", "raw": str(block)})
             entry = {"role": role, "content": serialized_content}
         else:

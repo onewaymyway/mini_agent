@@ -38,7 +38,9 @@ def judge_first_success(
             try:
                 passed = checker(c)
                 c.passed_check = passed
-            except Exception:
+            except Exception as _mini_agent_exc:
+                from mini_agent.errors import log_exception
+                log_exception(_mini_agent_exc, where='mini_agent.ensemble.judge.judge_first_success')
                 passed = False
                 c.passed_check = False
         if passed:
@@ -155,6 +157,8 @@ def judge_llm(
             return chosen.idx, chosen.content, reason, scores
     except Exception as e:
         # 评判失败时保守回退：直接用第一个有效候选，避免阻塞主流程
+        from mini_agent.errors import log_exception
+        log_exception(e, where='mini_agent.ensemble.judge.judge_llm')
         return ok[0].idx, ok[0].content, f"评判出错，回退使用候选 #{ok[0].idx}（{type(e).__name__}: {e}）", {}
 
 

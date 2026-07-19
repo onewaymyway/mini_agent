@@ -486,6 +486,8 @@ class TopicShiftTrigger(CompactTrigger):
             is_shift = answer.startswith("no")
             return is_shift, f"模型回答: {answer[:20]}"
         except Exception as e:
+            from mini_agent.errors import log_exception
+            log_exception(e, where='mini_agent.history.triggers.TopicShiftTrigger._llm_confirm')
             return False, f"LLM 判定失败，跳过本次检测: {e}"
 
 
@@ -521,8 +523,10 @@ class SafePointGate:
 
         try:
             from mini_agent.permissions import _RISKY_TOOLS
-        except Exception:
+        except Exception as _mini_agent_exc:
             # permissions 模块不可用时保守放行（不新增额外的打断限制）
+            from mini_agent.errors import log_exception
+            log_exception(_mini_agent_exc, where='mini_agent.history.triggers.SafePointGate.is_safe_point')
             return True
 
         window = history[-_SAFE_POINT_LOOKBACK:]

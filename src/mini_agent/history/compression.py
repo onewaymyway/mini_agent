@@ -339,7 +339,9 @@ class LLMSummaryStrategy(CompressionStrategy):
                     max_entities=max_entities,
                     relevance_hint=str(getattr(cfg, "project_root", "") or ""),
                 )
-            except Exception:
+            except Exception as _mini_agent_exc:
+                from mini_agent.errors import log_exception
+                log_exception(_mini_agent_exc, where='mini_agent.history.compression.LLMSummaryStrategy.compress')
                 entity_digest_section = ""
 
         summary_text = None
@@ -368,7 +370,9 @@ class LLMSummaryStrategy(CompressionStrategy):
                     world_extraction = parse_world_response(raw_text)
                     world_entities = world_extraction.entities
                     world_facts = world_extraction.facts
-                except Exception:
+                except Exception as _mini_agent_exc:
+                    from mini_agent.errors import log_exception
+                    log_exception(_mini_agent_exc, where='mini_agent.history.compression.LLMSummaryStrategy.compress')
                     pass
 
                 # wiki 提取层改进计划 E2 方案B：记录本次抽取批次的
@@ -377,9 +381,13 @@ class LLMSummaryStrategy(CompressionStrategy):
                 # 前后的抽取充分性变化。纯观测、append-only，任何异常静默跳过。
                 try:
                     _log_extraction_stats(cfg, len(decisions), len(world_entities), len(world_facts))
-                except Exception:
+                except Exception as _mini_agent_exc:
+                    from mini_agent.errors import log_exception
+                    log_exception(_mini_agent_exc, where='mini_agent.history.compression.LLMSummaryStrategy.compress')
                     pass
-        except Exception:
+        except Exception as _mini_agent_exc:
+            from mini_agent.errors import log_exception
+            log_exception(_mini_agent_exc, where='mini_agent.history.compression.LLMSummaryStrategy.compress')
             pass  # 任何 LLM 调用失败都降级到字符串摘要（下方兜底）
 
         if not summary_text:
@@ -398,7 +406,9 @@ class LLMSummaryStrategy(CompressionStrategy):
 
                 paths = AgentPaths(Path(getattr(cfg, "project_root", None) or Path.cwd()))
                 queue_candidates(paths, decisions, source_entries=[f"compact@{cutoff}"])
-            except Exception:
+            except Exception as _mini_agent_exc:
+                from mini_agent.errors import log_exception
+                log_exception(_mini_agent_exc, where='mini_agent.history.compression.LLMSummaryStrategy.compress')
                 pass
 
         # wiki 改进计划 P1：世界模型候选（entities[]/facts[]）同样只入队，
@@ -415,7 +425,9 @@ class LLMSummaryStrategy(CompressionStrategy):
                 source_entries = [f"compact@{cutoff}"]
                 queue_entities(paths, world_entities, source_entries=source_entries)
                 queue_facts(paths, world_facts, source_entries=source_entries)
-            except Exception:
+            except Exception as _mini_agent_exc:
+                from mini_agent.errors import log_exception
+                log_exception(_mini_agent_exc, where='mini_agent.history.compression.LLMSummaryStrategy.compress')
                 pass
 
         if cfg.compress.forget_orphan_tool_results:

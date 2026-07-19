@@ -97,7 +97,9 @@ class SoftGoalDeriver:
         try:
             data = json.loads(self._rhythm_path.read_text(encoding="utf-8"))
             return float(data.get("last_soft_goal_derive_at", 0.0))
-        except Exception:
+        except Exception as _mini_agent_exc:
+            from mini_agent.errors import log_exception
+            log_exception(_mini_agent_exc, where='mini_agent.evolution.soft_goal_deriver.SoftGoalDeriver._last_derive_at')
             return 0.0
 
     def _migrate_legacy_rhythm_file(self) -> None:
@@ -116,7 +118,9 @@ class SoftGoalDeriver:
             self._rhythm_path.write_text(
                 legacy_path.read_text(encoding="utf-8"), encoding="utf-8"
             )
-        except Exception:
+        except Exception as _mini_agent_exc:
+            from mini_agent.errors import log_exception
+            log_exception(_mini_agent_exc, where='mini_agent.evolution.soft_goal_deriver.SoftGoalDeriver._migrate_legacy_rhythm_file')
             pass
 
     def _record_derive(self) -> None:
@@ -144,7 +148,9 @@ class SoftGoalDeriver:
                 k for k, ts in data.items()
                 if now - float(ts) < REJECTED_TTL_SECONDS
             }
-        except Exception:
+        except Exception as _mini_agent_exc:
+            from mini_agent.errors import log_exception
+            log_exception(_mini_agent_exc, where='mini_agent.evolution.soft_goal_deriver.SoftGoalDeriver._load_rejected_keys')
             return set()
 
     def record_rejected(self, goal_title: str) -> None:
@@ -260,7 +266,9 @@ class SoftGoalDeriver:
                             "source_tag": c.source_tag,
                         },
                     )
-                except Exception:
+                except Exception as _mini_agent_exc:
+                    from mini_agent.errors import log_exception
+                    log_exception(_mini_agent_exc, where='mini_agent.evolution.soft_goal_deriver.SoftGoalDeriver.commit_goals')
                     pass
         return new_goals
 
@@ -303,7 +311,9 @@ class SoftGoalDeriver:
         """
         try:
             from mini_agent.perception import system_events as _se
-        except Exception:
+        except Exception as _mini_agent_exc:
+            from mini_agent.errors import log_exception
+            log_exception(_mini_agent_exc, where='mini_agent.evolution.soft_goal_deriver.SoftGoalDeriver.review_unvalidated_candidates')
             return 0
 
         try:
@@ -313,7 +323,9 @@ class SoftGoalDeriver:
                 tiers=["tick"],
                 event_types=["goal.candidate_unvalidated"],
             )
-        except Exception:
+        except Exception as _mini_agent_exc:
+            from mini_agent.errors import log_exception
+            log_exception(_mini_agent_exc, where='mini_agent.evolution.soft_goal_deriver.SoftGoalDeriver.review_unvalidated_candidates')
             return 0
 
         if not events:
@@ -367,7 +379,9 @@ class SoftGoalDeriver:
                             return False, "对应 WorkThread 已有新进展，候选目标已过时"
                         return True, ""
                 return False, "对应 WorkThread 已不存在（可能已被清理或合并）"
-            except Exception:
+            except Exception as _mini_agent_exc:
+                from mini_agent.errors import log_exception
+                log_exception(_mini_agent_exc, where='mini_agent.evolution.soft_goal_deriver.SoftGoalDeriver._reverify_candidate_signal')
                 return True, ""  # 复核本身失败，保守放行，不因为复核逻辑的异常阻断候选
         elif source_tag == "lesson":
             try:
@@ -382,7 +396,9 @@ class SoftGoalDeriver:
                             return True, ""
                         return False, "对应 LessonGroup 触发次数已回落到阈值以下，问题可能已缓解"
                 return False, "对应 LessonGroup 已不存在（问题可能已被其他修复解决）"
-            except Exception:
+            except Exception as _mini_agent_exc:
+                from mini_agent.errors import log_exception
+                log_exception(_mini_agent_exc, where='mini_agent.evolution.soft_goal_deriver.SoftGoalDeriver._reverify_candidate_signal')
                 return True, ""
         return True, ""
 
@@ -402,7 +418,9 @@ class SoftGoalDeriver:
         try:
             from mini_agent.evolution.consolidation import load_capability_map
             entries = load_capability_map(self._paths)
-        except Exception:
+        except Exception as _mini_agent_exc:
+            from mini_agent.errors import log_exception
+            log_exception(_mini_agent_exc, where='mini_agent.evolution.soft_goal_deriver.SoftGoalDeriver._from_unexplored_capabilities')
             return candidates
 
         min_calls_threshold = (
@@ -494,7 +512,9 @@ class SoftGoalDeriver:
                 e.payload.get("recent_domain_hint", "")
                 for e in events if e.payload.get("recent_domain_hint")
             ]
-        except Exception:
+        except Exception as _mini_agent_exc:
+            from mini_agent.errors import log_exception
+            log_exception(_mini_agent_exc, where='mini_agent.evolution.soft_goal_deriver.SoftGoalDeriver._recent_uncertainty_domains')
             return []
 
     def _recent_sparse_region_tokens(self) -> list[str]:
@@ -520,7 +540,9 @@ class SoftGoalDeriver:
             for evt in events:
                 tokens.extend(evt.payload.get("query_tokens") or [])
             return tokens
-        except Exception:
+        except Exception as _mini_agent_exc:
+            from mini_agent.errors import log_exception
+            log_exception(_mini_agent_exc, where='mini_agent.evolution.soft_goal_deriver.SoftGoalDeriver._recent_sparse_region_tokens')
             return []
 
     @staticmethod
@@ -558,7 +580,9 @@ class SoftGoalDeriver:
                     continue
                 try:
                     data = json.loads(line)
-                except Exception:
+                except Exception as _mini_agent_exc:
+                    from mini_agent.errors import log_exception
+                    log_exception(_mini_agent_exc, where='mini_agent.evolution.soft_goal_deriver.SoftGoalDeriver._recently_explored_domains')
                     continue
                 if data.get("type") != "exploration_result":
                     continue
@@ -569,7 +593,9 @@ class SoftGoalDeriver:
                 if cap_id:
                     domains.add(cap_id)
             return domains
-        except Exception:
+        except Exception as _mini_agent_exc:
+            from mini_agent.errors import log_exception
+            log_exception(_mini_agent_exc, where='mini_agent.evolution.soft_goal_deriver.SoftGoalDeriver._recently_explored_domains')
             return set()
 
     def _from_capability_map(self) -> list[_DeriveCandidate]:
@@ -640,7 +666,9 @@ class SoftGoalDeriver:
         try:
             from mini_agent.perception.self_model import AgentSelfModel
             return AgentSelfModel().recent_negative_outcome_domains(paths=self._paths)
-        except Exception:
+        except Exception as _mini_agent_exc:
+            from mini_agent.errors import log_exception
+            log_exception(_mini_agent_exc, where='mini_agent.evolution.soft_goal_deriver.SoftGoalDeriver._recent_negative_outcome_domains')
             return []
 
     def _recent_high_risk_zones(self) -> list[str]:
@@ -649,7 +677,9 @@ class SoftGoalDeriver:
         try:
             from mini_agent.perception.affordance_analyzer import load_recent_high_risk_zones
             return load_recent_high_risk_zones(self._paths)
-        except Exception:
+        except Exception as _mini_agent_exc:
+            from mini_agent.errors import log_exception
+            log_exception(_mini_agent_exc, where='mini_agent.evolution.soft_goal_deriver.SoftGoalDeriver._recent_high_risk_zones')
             return []
 
     def _from_work_index(self) -> list[_DeriveCandidate]:

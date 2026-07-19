@@ -257,7 +257,9 @@ class NvidiaProvider(ProviderMixin, LLMClient):
                 try:
                     body = exc.response.json()
                     msg = body.get("error", {}).get("message", str(exc))
-                except Exception:
+                except Exception as _mini_agent_exc:
+                    from mini_agent.errors import log_exception
+                    log_exception(_mini_agent_exc, where='mini_agent.llm.providers.nvidia.NvidiaProvider._wrap_error')
                     msg = exc.response.text[:300]
                 if status == 429:
                     return LLMRateLimitError(f"NVIDIA NIM rate limit (429): {msg}")

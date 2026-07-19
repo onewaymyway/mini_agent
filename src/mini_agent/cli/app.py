@@ -419,7 +419,9 @@ def _main_inner() -> None:
     try:
         from mini_agent.perception.affordance_analyzer import inject_affordance_map
         inject_affordance_map(agent, cfg)
-    except Exception:
+    except Exception as _mini_agent_exc:
+        from mini_agent.errors import log_exception
+        log_exception(_mini_agent_exc, where='mini_agent.cli.app._main_inner')
         pass
 
     # ── Resume session ────────────────────────────────────────────────────────
@@ -436,7 +438,9 @@ def _main_inner() -> None:
             # 这个信息，所以 /retry 在这里仍然无法工作，需要用户先手动发一轮。
             try:
                 agent._save_turn_snapshot()
-            except Exception:
+            except Exception as _mini_agent_exc:
+                from mini_agent.errors import log_exception
+                log_exception(_mini_agent_exc, where='mini_agent.cli.app._main_inner')
                 pass
         else:
             R.print_error(f"Session '{args.resume}' not found. Starting fresh.")
@@ -495,6 +499,8 @@ def _main_inner() -> None:
         except KeyboardInterrupt:
             R.print_interrupt()
         except Exception as e:
+            from mini_agent.errors import log_exception
+            log_exception(e, where='mini_agent.cli.app._main_inner')
             R.print_error(str(e))
             sys.exit(1)
         finally:
@@ -531,6 +537,8 @@ def _main_inner() -> None:
             _write_pid(project_root, os.getpid(), http_port, agent_name=_agent_name)
             R.print_info(f"[daemon] Running in daemon mode, PID={os.getpid()}, port={http_port}")
         except Exception as e:
+            from mini_agent.errors import log_exception
+            log_exception(e, where='mini_agent.cli.app._main_inner')
             R.print_warning(f"[daemon] Failed to write PID file: {e}")
 
         stop_event = _threading.Event()
@@ -717,6 +725,8 @@ def _main_inner() -> None:
     except Exception as e:
         # 不静默吞掉——检测逻辑本身出错也应该让用户/开发者看到，
         # 否则会呈现出"明明有未完成的 goal 却什么提示都没有"的假象，无法排查。
+        from mini_agent.errors import log_exception
+        log_exception(e, where='mini_agent.cli.app._main_inner')
         if getattr(cfg, "verbose", False):
             R.print_warning(f"[Goal 模式] 启动时检测未完成任务失败：{e}")
 

@@ -41,7 +41,9 @@ def _now_playing_macos() -> Optional[tuple[str, str, str]]:
                 title = parts[0] if parts else ""
                 artist = parts[1] if len(parts) > 1 else ""
                 return (app, title, artist)
-        except Exception:
+        except Exception as _mini_agent_exc:
+            from mini_agent.errors import log_exception
+            log_exception(_mini_agent_exc, where='mini_agent.perception.behavior.collectors.now_playing._now_playing_macos')
             continue
     return None
 
@@ -62,7 +64,9 @@ def _now_playing_linux() -> Optional[tuple[str, str, str]]:
         ).stdout.strip().splitlines()
         app = player[0] if player else "unknown"
         return (app, title, artist)
-    except Exception:
+    except Exception as _mini_agent_exc:
+        from mini_agent.errors import log_exception
+        log_exception(_mini_agent_exc, where='mini_agent.perception.behavior.collectors.now_playing._now_playing_linux')
         return None
 
 
@@ -82,7 +86,9 @@ def _now_playing_windows() -> Optional[tuple[str, str, str]]:
             return (session.source_app_user_model_id or "unknown", info.title or "", info.artist or "")
 
         return asyncio.run(_get())
-    except Exception:
+    except Exception as _mini_agent_exc:
+        from mini_agent.errors import log_exception
+        log_exception(_mini_agent_exc, where='mini_agent.perception.behavior.collectors.now_playing._now_playing_windows')
         return None
 
 

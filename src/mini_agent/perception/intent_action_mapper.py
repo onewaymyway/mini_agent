@@ -158,7 +158,9 @@ class IntentActionMapper:
             if result_strs is not None and idx < len(result_strs):
                 try:
                     is_err = is_tool_error(result_strs[idx])
-                except Exception:
+                except Exception as _mini_agent_exc:
+                    from mini_agent.errors import log_exception
+                    log_exception(_mini_agent_exc, where='mini_agent.perception.intent_action_mapper.IntentActionMapper.group_calls')
                     is_err = False
 
             if current is None or current.intent != intent:

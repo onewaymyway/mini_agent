@@ -176,7 +176,9 @@ class GoalBacklog:
             if lock_f is not None:
                 try:
                     fcntl.flock(lock_f.fileno(), fcntl.LOCK_UN)
-                except Exception:
+                except Exception as _mini_agent_exc:
+                    from mini_agent.errors import log_exception
+                    log_exception(_mini_agent_exc, where='mini_agent.perception.goal_backlog.GoalBacklog._locked')
                     pass
                 lock_f.close()
 
@@ -194,8 +196,10 @@ class GoalBacklog:
                 for g in goals_list
                 if isinstance(g, dict) and "id" in g
             }
-        except Exception:
+        except Exception as _mini_agent_exc:
             # 读取失败不阻塞 agent 主流程
+            from mini_agent.errors import log_exception
+            log_exception(_mini_agent_exc, where='mini_agent.perception.goal_backlog.GoalBacklog.load')
             self._nodes = {}
 
     def save(self) -> None:
@@ -419,7 +423,9 @@ class GoalBacklog:
                 task_desc = self._llm_decompose(llm_client, obj, next_suggested)
                 if task_desc:
                     return obj.id, task_desc
-            except Exception:
+            except Exception as _mini_agent_exc:
+                from mini_agent.errors import log_exception
+                log_exception(_mini_agent_exc, where='mini_agent.perception.goal_backlog.GoalBacklog.next_task_description')
                 pass  # 降级为直接使用 title
 
         return obj.id, base_desc

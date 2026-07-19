@@ -77,7 +77,9 @@ def _parse_simple_frontmatter(fm_text: str) -> dict:
 def _parse_persona(path: Path) -> Optional[PersonaProfile]:
     try:
         text = path.read_text(encoding="utf-8")
-    except Exception:
+    except Exception as _mini_agent_exc:
+        from mini_agent.errors import log_exception
+        log_exception(_mini_agent_exc, where='mini_agent.orchestrator.persona_profiles._parse_persona')
         return None
 
     fm_match = _FRONTMATTER_RE.match(text)
@@ -88,7 +90,9 @@ def _parse_persona(path: Path) -> Optional[PersonaProfile]:
         try:
             import yaml  # type: ignore
             meta = yaml.safe_load(fm_match.group(1)) or {}
-        except Exception:
+        except Exception as _mini_agent_exc:
+            from mini_agent.errors import log_exception
+            log_exception(_mini_agent_exc, where='mini_agent.orchestrator.persona_profiles._parse_persona')
             meta = _parse_simple_frontmatter(fm_match.group(1))
 
     if not isinstance(meta, dict):
@@ -122,8 +126,10 @@ def _persona_allowed(persona: PersonaProfile) -> bool:
             platforms=persona.platforms, tags=persona.tags, kind="persona", name=persona.name,
         )
         return allowed
-    except Exception:
+    except Exception as _mini_agent_exc:
         # platform_filter 不可用时不阻断（与其余 loader 的容错策略一致）
+        from mini_agent.errors import log_exception
+        log_exception(_mini_agent_exc, where='mini_agent.orchestrator.persona_profiles._persona_allowed')
         return True
 
 
@@ -268,7 +274,9 @@ def summarize_persona_usage(project_root: Optional[Path] = None) -> list[Persona
                     entry = json.loads(line)
                     name = str(entry.get("name", ""))
                     ts = float(entry.get("ts", 0.0))
-                except Exception:
+                except Exception as _mini_agent_exc:
+                    from mini_agent.errors import log_exception
+                    log_exception(_mini_agent_exc, where='mini_agent.orchestrator.persona_profiles.summarize_persona_usage')
                     continue
                 if not name:
                     continue

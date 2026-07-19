@@ -61,7 +61,9 @@ def _load_pages(paths: AgentPaths) -> list[WikiPage]:
     for p in discover_pages(paths):
         try:
             pages.append(parse_page(p))
-        except Exception:
+        except Exception as _mini_agent_exc:
+            from mini_agent.errors import log_exception
+            log_exception(_mini_agent_exc, where='mini_agent.wiki.gap_scanner._load_pages')
             continue
     return pages
 
@@ -154,14 +156,18 @@ def scan_gaps(paths: AgentPaths, *, max_results: int = 5) -> list[KnowledgeGap]:
     """
     try:
         pages = _load_pages(paths)
-    except Exception:
+    except Exception as _mini_agent_exc:
+        from mini_agent.errors import log_exception
+        log_exception(_mini_agent_exc, where='mini_agent.wiki.gap_scanner.scan_gaps')
         return []
     if not pages:
         return []
 
     try:
         graph = GraphIndex.build(pages)
-    except Exception:
+    except Exception as _mini_agent_exc:
+        from mini_agent.errors import log_exception
+        log_exception(_mini_agent_exc, where='mini_agent.wiki.gap_scanner.scan_gaps')
         graph = GraphIndex()
 
     gaps: list[KnowledgeGap] = []
@@ -172,7 +178,9 @@ def scan_gaps(paths: AgentPaths, *, max_results: int = 5) -> list[KnowledgeGap]:
     ):
         try:
             gaps.extend(scanner())
-        except Exception:
+        except Exception as _mini_agent_exc:
+            from mini_agent.errors import log_exception
+            log_exception(_mini_agent_exc, where='mini_agent.wiki.gap_scanner.scan_gaps')
             continue
         if len(gaps) >= max_results:
             break
@@ -210,7 +218,9 @@ def mark_stale_topics(paths: AgentPaths, gaps: list[KnowledgeGap]) -> int:
             )
             if ok:
                 marked += 1
-        except Exception:
+        except Exception as _mini_agent_exc:
+            from mini_agent.errors import log_exception
+            log_exception(_mini_agent_exc, where='mini_agent.wiki.gap_scanner.mark_stale_topics')
             continue
     return marked
 

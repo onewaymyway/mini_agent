@@ -129,7 +129,9 @@ class ToolExecutor:
         try:
             from mini_agent.history.entry import HType as _HType
             _have_htype = True
-        except Exception:
+        except Exception as _mini_agent_exc:
+            from mini_agent.errors import log_exception
+            log_exception(_mini_agent_exc, where='mini_agent.tool_executor.ToolExecutor.execute_all')
             _have_htype = False
 
         # 解析 history：优先 getter，其次参数
@@ -223,14 +225,18 @@ class ToolExecutor:
             if self._persona_getter is not None:
                 try:
                     _persona_name = self._persona_getter()
-                except Exception:
+                except Exception as _mini_agent_exc:
+                    from mini_agent.errors import log_exception
+                    log_exception(_mini_agent_exc, where='mini_agent.tool_executor.ToolExecutor.execute_all')
                     _persona_name = None
                 if _persona_name:
                     try:
                         from mini_agent.orchestrator.persona_profiles import get_persona_loader
                         _p_loader = get_persona_loader()
                         _persona = _p_loader.get(_persona_name) if _p_loader else None
-                    except Exception:
+                    except Exception as _mini_agent_exc:
+                        from mini_agent.errors import log_exception
+                        log_exception(_mini_agent_exc, where='mini_agent.tool_executor.ToolExecutor.execute_all')
                         _persona = None
                     if _persona is not None and _persona.allowed_tools and tc.name not in _persona.allowed_tools:
                         _reason = (
@@ -255,7 +261,9 @@ class ToolExecutor:
                 if edit is not None:
                     try:
                         self.on_edit_detected(edit)
-                    except Exception:
+                    except Exception as _mini_agent_exc:
+                        from mini_agent.errors import log_exception
+                        log_exception(_mini_agent_exc, where='mini_agent.tool_executor.ToolExecutor.execute_all')
                         pass  # 编辑事件处理失败不应影响工具调用主流程
 
             if not allowed:
@@ -435,7 +443,9 @@ class ToolExecutor:
                     )
                     if entry is not None:
                         self._memory_sink.add(entry)
-                except Exception:
+                except Exception as _mini_agent_exc:
+                    from mini_agent.errors import log_exception
+                    log_exception(_mini_agent_exc, where='mini_agent.tool_executor.ToolExecutor.execute_all')
                     pass  # lesson 生成失败不应影响工具调用主流程
 
             # [SYS-DEDUP] Turn 内幂等工具结果去重
@@ -478,7 +488,9 @@ class ToolExecutor:
                         error_category=_err_cat,
                         resolves_seq=_resolves_seq,
                     )
-                except Exception:
+                except Exception as _mini_agent_exc:
+                    from mini_agent.errors import log_exception
+                    log_exception(_mini_agent_exc, where='mini_agent.tool_executor.ToolExecutor.execute_all')
                     pass  # tracer 失败不影响主流程
 
             result_strs.append(result_str)
@@ -551,7 +563,9 @@ class ToolExecutor:
             return trimmed
         try:
             result_id = self._raw_result_store.put(original, tool_name=tool_name)
-        except Exception:
+        except Exception as _mini_agent_exc:
+            from mini_agent.errors import log_exception
+            log_exception(_mini_agent_exc, where='mini_agent.tool_executor.ToolExecutor._remember_raw')
             return trimmed
         return (
             f"{trimmed}\n\n"
@@ -587,7 +601,9 @@ class ToolExecutor:
                 # 若 LLMClient 支持临时切换模型（更便宜/更快），优先使用
                 try:
                     client = client.with_model(model_override)
-                except Exception:
+                except Exception as _mini_agent_exc:
+                    from mini_agent.errors import log_exception
+                    log_exception(_mini_agent_exc, where='mini_agent.tool_executor.ToolExecutor._smart_summarize')
                     client = self._llm_client
 
             response = client.chat_with_retry(
@@ -603,7 +619,9 @@ class ToolExecutor:
                 f"[LLM-extracted summary of {tool_name} output "
                 f"({len(result)} chars original)]\n{summary_text}"
             )
-        except Exception:
+        except Exception as _mini_agent_exc:
+            from mini_agent.errors import log_exception
+            log_exception(_mini_agent_exc, where='mini_agent.tool_executor.ToolExecutor._smart_summarize')
             return None
 
     def _rule_trim(self, tool_name: str, result: str) -> str:

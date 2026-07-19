@@ -158,7 +158,9 @@ class AutonomousLoop:
                 if self._objective_executor is not None:
                     self._objective_executor.pause_all()
                 return
-        except Exception:
+        except Exception as _mini_agent_exc:
+            from mini_agent.errors import log_exception
+            log_exception(_mini_agent_exc, where='mini_agent.evolution.autonomous_loop.AutonomousLoop._tick_maintenance')
             return
 
         # ObjectiveExecutor：推进已有活跃 Objective
@@ -295,7 +297,9 @@ class AutonomousLoop:
                 from mini_agent.perception.memory_factory import create_memory_backend
                 if getattr(self._cfg.memory, "enabled", False):
                     memory_backend = create_memory_backend(self._cfg)
-            except Exception:
+            except Exception as _mini_agent_exc:
+                from mini_agent.errors import log_exception
+                log_exception(_mini_agent_exc, where='mini_agent.evolution.autonomous_loop.AutonomousLoop._run_capability_exploration')
                 memory_backend = None
             sandbox = make_exploration_sandbox(self._paths, self._cfg, memory_backend=memory_backend)
             goal_text = (
@@ -375,7 +379,9 @@ class AutonomousLoop:
                 if status in ("error", "cancelled"):
                     return ""
             return ""
-        except Exception:
+        except Exception as _mini_agent_exc:
+            from mini_agent.errors import log_exception
+            log_exception(_mini_agent_exc, where='mini_agent.evolution.autonomous_loop.AutonomousLoop._submit_exploration_task')
             return ""
 
     def _maybe_propose_skill(self, candidate, exploration_result: str) -> str:
@@ -404,7 +410,9 @@ class AutonomousLoop:
                 source_lessons=[],
             )
             return (result or {}).get("branch", "") if isinstance(result, dict) else ""
-        except Exception:
+        except Exception as _mini_agent_exc:
+            from mini_agent.errors import log_exception
+            log_exception(_mini_agent_exc, where='mini_agent.evolution.autonomous_loop.AutonomousLoop._maybe_propose_skill')
             return ""
 
 
@@ -446,7 +454,9 @@ class AutonomousLoop:
                 meta={"objective_id": objective_id},
             )
             return bool(turn_id)
-        except Exception:
+        except Exception as _mini_agent_exc:
+            from mini_agent.errors import log_exception
+            log_exception(_mini_agent_exc, where='mini_agent.evolution.autonomous_loop.AutonomousLoop._submit_autonomous_task')
             return False
 
     def _record_consolidation_for_digest(self, report: Any) -> None:

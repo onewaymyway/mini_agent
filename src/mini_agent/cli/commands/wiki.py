@@ -151,7 +151,9 @@ def _handle_list(rest: list[str], agent) -> None:
     for md_path in discover_pages(paths):
         try:
             page = parse_page(md_path)
-        except Exception:
+        except Exception as _mini_agent_exc:
+            from mini_agent.errors import log_exception
+            log_exception(_mini_agent_exc, where='mini_agent.cli.commands.wiki._handle_list')
             continue
         if type_filter and page.type != type_filter:
             continue
@@ -221,7 +223,9 @@ def _handle_search(rest: list[str], agent) -> None:
                 shelf_grounded=bool(shelf_results),
                 query=query,
             )
-    except Exception:
+    except Exception as _mini_agent_exc:
+        from mini_agent.errors import log_exception
+        log_exception(_mini_agent_exc, where='mini_agent.cli.commands.wiki._handle_search')
         pass
 
     if not result.pages:
@@ -422,7 +426,9 @@ def _handle_promotion(rest: list[str], agent) -> None:
             R.console.print(
                 "[dim]距离可以评估下线旧图书馆索引还差：" + "；".join(plan.blocking_reasons) + "[/dim]\n"
             )
-    except Exception:
+    except Exception as _mini_agent_exc:
+        from mini_agent.errors import log_exception
+        log_exception(_mini_agent_exc, where='mini_agent.cli.commands.wiki._handle_promotion')
         pass
 
 
@@ -517,7 +523,9 @@ def _handle_gap_scan(rest: list[str], agent) -> None:
                         meta={"gap_kind": g.gap_kind, "page_id": g.page_id},
                     )
                     dispatched += 1
-                except Exception:
+                except Exception as _mini_agent_exc:
+                    from mini_agent.errors import log_exception
+                    log_exception(_mini_agent_exc, where='mini_agent.cli.commands.wiki._handle_gap_scan')
                     continue
         elif dispatchable:
             R.console.print(
@@ -539,7 +547,9 @@ def _handle_gap_scan(rest: list[str], agent) -> None:
                 "stale_marked": stale_marked,
                 "dispatched": dispatched,
             }, ensure_ascii=False) + "\n")
-    except Exception:
+    except Exception as _mini_agent_exc:
+        from mini_agent.errors import log_exception
+        log_exception(_mini_agent_exc, where='mini_agent.cli.commands.wiki._handle_gap_scan')
         pass
 
 

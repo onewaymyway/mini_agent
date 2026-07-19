@@ -203,7 +203,9 @@ def run_goal_judge(
         try:
             import mini_agent.ui.renderer as R
             R.print_warning(f"[GoalJudgeAgent] 命中空输出兜底：{fallback_msg}")
-        except Exception:
+        except Exception as _mini_agent_exc:
+            from mini_agent.errors import log_exception
+            log_exception(_mini_agent_exc, where='mini_agent.role_agents.goal_judge.run_goal_judge')
             pass
         return _json.dumps({
             "status": "CONTINUE",

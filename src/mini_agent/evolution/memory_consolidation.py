@@ -143,12 +143,16 @@ def consolidate_before_eviction(
             if llm_call is not None:
                 try:
                     new_entry = _llm_based_merge(group.entries, llm_call)
-                except Exception:
+                except Exception as _mini_agent_exc:
+                    from mini_agent.errors import log_exception
+                    log_exception(_mini_agent_exc, where='mini_agent.evolution.memory_consolidation.consolidate_before_eviction')
                     new_entry = None
             if new_entry is None:
                 try:
                     new_entry = _rule_based_merge(group.entries)
-                except Exception:
+                except Exception as _mini_agent_exc:
+                    from mini_agent.errors import log_exception
+                    log_exception(_mini_agent_exc, where='mini_agent.evolution.memory_consolidation.consolidate_before_eviction')
                     new_entry = None
 
             if new_entry is not None:
@@ -162,7 +166,9 @@ def consolidate_before_eviction(
                 truly_evicted.append(e)
 
         return consolidated, truly_evicted
-    except Exception:
+    except Exception as _mini_agent_exc:
+        from mini_agent.errors import log_exception
+        log_exception(_mini_agent_exc, where='mini_agent.evolution.memory_consolidation.consolidate_before_eviction')
         return [], entries_to_evict
 
 

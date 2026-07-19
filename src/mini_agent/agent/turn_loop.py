@@ -136,6 +136,8 @@ class TurnLoopMixin:
                             R.print_markdown(result)
                             _ensemble_used = True
                 except Exception as _e:
+                    from mini_agent.errors import log_exception
+                    log_exception(_e, where='mini_agent.agent.turn_loop.TurnLoopMixin.run_turn')
                     R.print_warning(f"[ensemble] auto-trigger 失败，回退到常规流程: {_e}")
 
             if not _ensemble_used:
@@ -166,7 +168,9 @@ class TurnLoopMixin:
                     )
                     if _te_result.user_input is not None:
                         self._turn_end_user_input = _te_result.user_input
-            except Exception:
+            except Exception as _mini_agent_exc:
+                from mini_agent.errors import log_exception
+                log_exception(_mini_agent_exc, where='mini_agent.agent.turn_loop.TurnLoopMixin.run_turn')
                 pass  # TurnEnd hook 失败不影响主流程
 
             # [SYS-TURN-JUDGE] TurnEnd hook 没有接管（未配置或未返回替代输入）时，
@@ -176,7 +180,9 @@ class TurnLoopMixin:
             if self._turn_end_user_input is None:
                 try:
                     self._maybe_run_turn_judge(result)
-                except Exception:
+                except Exception as _mini_agent_exc:
+                    from mini_agent.errors import log_exception
+                    log_exception(_mini_agent_exc, where='mini_agent.agent.turn_loop.TurnLoopMixin.run_turn')
                     pass  # TurnJudge 失败不影响主流程，保守回退到等待真人输入
 
             # [SYS-SUMMARY] session 结束后写入摘要（在 save 前）
@@ -291,7 +297,9 @@ class TurnLoopMixin:
             # 允许同一轮里既不触发 compact、又触发一次独立抽取。
             try:
                 self._hist.maybe_trigger_extraction(llm_client=self._llm)
-            except Exception:
+            except Exception as _mini_agent_exc:
+                from mini_agent.errors import log_exception
+                log_exception(_mini_agent_exc, where='mini_agent.agent.turn_loop.TurnLoopMixin._agentic_loop')
                 pass
 
             # [具身改进 B1] 本体感知快照：每轮 LLM 调用前 sense 一次。
@@ -360,7 +368,9 @@ class TurnLoopMixin:
                                         if self._proprioception is not None else 0,
                                 },
                             )
-                    except Exception:
+                    except Exception as _mini_agent_exc:
+                        from mini_agent.errors import log_exception
+                        log_exception(_mini_agent_exc, where='mini_agent.agent.turn_loop.TurnLoopMixin._agentic_loop')
                         pass  # 事件发布是旁路增强，绝不能影响主循环
 
                 # [方案三] uncertainty 信号接入事件总线：限流发布（连续 N 轮

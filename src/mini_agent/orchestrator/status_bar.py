@@ -132,7 +132,9 @@ def _build_lines() -> list[str]:
             lines.append(
                 "  ⚡ Tasks [\033[90m░░░░\033[0m] 0/4   \033[90midle\033[0m"
             )
-    except Exception:
+    except Exception as _mini_agent_exc:
+        from mini_agent.errors import log_exception
+        log_exception(_mini_agent_exc, where='mini_agent.orchestrator.status_bar._build_lines')
         lines.append("  \033[90m⚡ Tasks: error getting status\033[0m")
 
     try:

@@ -73,7 +73,9 @@ def _get_timezone() -> str | None:
             utc_str = f"UTC{sign}{abs(offset_h)}:{offset_m:02d}"
         else:
             utc_str = f"UTC{sign}{abs(offset_h)}"
-    except Exception:
+    except Exception as _mini_agent_exc:
+        from mini_agent.errors import log_exception
+        log_exception(_mini_agent_exc, where='mini_agent.env_info.providers.locale._get_timezone')
         utc_str = ""
 
     if tz_name and utc_str:

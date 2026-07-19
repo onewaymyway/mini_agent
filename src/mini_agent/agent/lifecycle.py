@@ -47,6 +47,8 @@ class SessionLifecycleMixin:
                 snap = ProjectScanner().scan(project_root)
                 self._project_snapshot = snap.to_prompt_block()
             except Exception as e:
+                from mini_agent.errors import log_exception
+                log_exception(e, where='mini_agent.agent.lifecycle.SessionLifecycleMixin._start_project_scan_async._scan')
                 R.print_warning(f"[perception] project scan failed: {e}")
 
         t = _threading.Thread(target=_scan, daemon=True, name="project-scan")
@@ -92,7 +94,9 @@ class SessionLifecycleMixin:
             if store is None:
                 return None
             return store.render()
-        except Exception:
+        except Exception as _mini_agent_exc:
+            from mini_agent.errors import log_exception
+            log_exception(_mini_agent_exc, where='mini_agent.agent.lifecycle.SessionLifecycleMixin._get_notepad_render_text')
             return None
 
     def _self_model_fragment_with_fresh_skill_count(self) -> Optional[str]:
@@ -112,7 +116,9 @@ class SessionLifecycleMixin:
         try:
             live_count = len(self.skill_loader.active) if self.skill_loader else 0
             self._self_model.refresh_active_skill_count(live_count)
-        except Exception:
+        except Exception as _mini_agent_exc:
+            from mini_agent.errors import log_exception
+            log_exception(_mini_agent_exc, where='mini_agent.agent.lifecycle.SessionLifecycleMixin._self_model_fragment_with_fresh_skill_count')
             pass  # 刷新失败不影响其余字段的正常渲染
         return self._self_model.to_system_prompt_fragment()
 
@@ -131,7 +137,9 @@ class SessionLifecycleMixin:
 
         try:
             return build_llm_call(pool.current_client)
-        except Exception:
+        except Exception as _mini_agent_exc:
+            from mini_agent.errors import log_exception
+            log_exception(_mini_agent_exc, where='mini_agent.agent.lifecycle.SessionLifecycleMixin._context_builder_llm_call')
             return None
 
     def _init_components(self) -> None:
@@ -284,6 +292,8 @@ class SessionLifecycleMixin:
                 self._reminder_mgr = ReminderManager(self.cfg)
             except Exception as _e:
                 # reminder 系统初始化失败不影响 agent 主流程
+                from mini_agent.errors import log_exception
+                log_exception(_e, where='mini_agent.agent.lifecycle.SessionLifecycleMixin._init_components')
                 import warnings
                 warnings.warn(f"[ReminderManager] 初始化失败，已禁用: {_e}")
 
@@ -318,7 +328,9 @@ class SessionLifecycleMixin:
                     getattr(self.cfg, 'affordance', None), 'use_capability_map', True
                 ),
             )
-        except Exception:
+        except Exception as _mini_agent_exc:
+            from mini_agent.errors import log_exception
+            log_exception(_mini_agent_exc, where='mini_agent.agent.lifecycle.SessionLifecycleMixin._init_components')
             pass  # AgentSelfModel 构建失败不阻断 Agent 启动
 
         # [具身改进 A3] ReminderManager 在 ToolExecutor 构造之后才初始化完成，
@@ -336,6 +348,8 @@ class SessionLifecycleMixin:
             from mini_agent.tools.introspection import register_introspection_tools
             register_introspection_tools(self.registry, self)
         except Exception as _e:
+            from mini_agent.errors import log_exception
+            log_exception(_e, where='mini_agent.agent.lifecycle.SessionLifecycleMixin._init_components')
             import warnings
             warnings.warn(f"[Introspection] 自省工具注册失败，已跳过: {_e}")
 
@@ -384,6 +398,8 @@ class SessionLifecycleMixin:
                 log_exception(_mini_agent_exc, where='mini_agent.agent')
                 pass
         except Exception as e:
+            from mini_agent.errors import log_exception
+            log_exception(e, where='mini_agent.agent.lifecycle.SessionLifecycleMixin._init_session')
             R.print_warning(f"Session init failed: {e}")
 
     def _maybe_ensure_project_meta(self) -> None:
@@ -423,7 +439,9 @@ class SessionLifecycleMixin:
                         "检测到运行环境变化（" + "; ".join(drift[:3]) + "）："
                         "之前积累的部分经验/技能可能需要重新验证。"
                     )
-        except Exception:
+        except Exception as _mini_agent_exc:
+            from mini_agent.errors import log_exception
+            log_exception(_mini_agent_exc, where='mini_agent.agent.lifecycle.SessionLifecycleMixin._maybe_ensure_project_meta')
             pass  # 观察性数据，失败不应影响 agent 主流程
 
     def _maybe_register_global_project(self) -> None:
@@ -450,7 +468,9 @@ class SessionLifecycleMixin:
                 self.cfg.global_knowledge, "dormant_after_days", 30.0
             )
             gk.refresh_dormant_status(paths, dormant_after_days=dormant_after_days)
-        except Exception:
+        except Exception as _mini_agent_exc:
+            from mini_agent.errors import log_exception
+            log_exception(_mini_agent_exc, where='mini_agent.agent.lifecycle.SessionLifecycleMixin._maybe_register_global_project')
             pass  # 观察性数据，失败不应影响 agent 主流程
 
     def _cognitive_anchor_path(self, session_id: str):
@@ -508,7 +528,9 @@ class SessionLifecycleMixin:
                 f"cognitive_anchor.{int(_time.time())}.md"
             )
             anchor_path.rename(archived)
-        except Exception:
+        except Exception as _mini_agent_exc:
+            from mini_agent.errors import log_exception
+            log_exception(_mini_agent_exc, where='mini_agent.agent.lifecycle.SessionLifecycleMixin._maybe_load_cognitive_anchor')
             pass  # 锚点恢复失败不应影响 session 加载流程
 
     def _save_cognitive_anchor(self) -> None:
@@ -559,7 +581,9 @@ class SessionLifecycleMixin:
             anchor_path.parent.mkdir(parents=True, exist_ok=True)
             anchor_path.write_text(anchor_content, encoding="utf-8")
             R.print_info("[cognitive-anchor] 已记录当前思路，下次 resume 这个 session 时会自动提醒。")
-        except Exception:
+        except Exception as _mini_agent_exc:
+            from mini_agent.errors import log_exception
+            log_exception(_mini_agent_exc, where='mini_agent.agent.lifecycle.SessionLifecycleMixin._save_cognitive_anchor')
             pass  # 认知锚点生成失败不应影响中断流程本身
 
     def _bind_session_extras(self) -> None:
@@ -643,7 +667,9 @@ class SessionLifecycleMixin:
             session_dir = paths.session_dir(self._session.id)
             enabled = getattr(self.cfg, "tracing_enabled", True)
             self._tracer = SessionTracer(session_dir, self._session.id, enabled=enabled)
-        except Exception:
+        except Exception as _mini_agent_exc:
+            from mini_agent.errors import log_exception
+            log_exception(_mini_agent_exc, where='mini_agent.agent.lifecycle.SessionLifecycleMixin._init_tracer')
             self._tracer = None
         # 同步更新 ToolExecutor 的 tracer 引用
         if hasattr(self, '_tool_executor') and self._tool_executor is not None:
@@ -667,6 +693,8 @@ class SessionLifecycleMixin:
             )
             self._hist._raw.set_path(raw_path)
         except Exception as _e:
+            from mini_agent.errors import log_exception
+            log_exception(_e, where='mini_agent.agent.lifecycle.SessionLifecycleMixin._bind_raw_path')
             import sys
             print(f"[raw_history] set_path failed: {_e}", file=sys.stderr)
 
@@ -713,6 +741,8 @@ class SessionLifecycleMixin:
 
             return str(path)
         except Exception as e:
+            from mini_agent.errors import log_exception
+            log_exception(e, where='mini_agent.agent.lifecycle.SessionLifecycleMixin.save_session')
             R.print_warning(f"Session save failed: {e}")
             return None
 
@@ -882,12 +912,16 @@ class SessionLifecycleMixin:
                 self._hist.maybe_trigger_extraction(
                     llm_client=getattr(self, "_llm", None), force=True
                 )
-        except Exception:
+        except Exception as _mini_agent_exc:
+            from mini_agent.errors import log_exception
+            log_exception(_mini_agent_exc, where='mini_agent.agent.lifecycle.SessionLifecycleMixin.close')
             pass
         try:
             if hasattr(self, '_hist') and self._hist is not None:
                 if hasattr(self._hist, '_raw') and self._hist._raw is not None:
                     self._hist._raw._close_file()
-        except Exception:
+        except Exception as _mini_agent_exc:
+            from mini_agent.errors import log_exception
+            log_exception(_mini_agent_exc, where='mini_agent.agent.lifecycle.SessionLifecycleMixin.close')
             pass
 

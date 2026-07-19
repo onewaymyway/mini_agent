@@ -318,7 +318,9 @@ class HistoryManager:
             return
         try:
             self._maybe_trigger_extraction_impl(cfg_compress, llm_client, force=force)
-        except Exception:
+        except Exception as _mini_agent_exc:
+            from mini_agent.errors import log_exception
+            log_exception(_mini_agent_exc, where='mini_agent.history_manager.HistoryManager.maybe_trigger_extraction')
             pass
 
     def _maybe_trigger_extraction_impl(
@@ -412,7 +414,9 @@ class HistoryManager:
                     max_entities=max_entities,
                     relevance_hint=str(getattr(self.cfg, "project_root", "") or ""),
                 )
-            except Exception:
+            except Exception as _mini_agent_exc:
+                from mini_agent.errors import log_exception
+                log_exception(_mini_agent_exc, where='mini_agent.history_manager.HistoryManager._dispatch_lightweight_extraction')
                 entity_digest_section = ""
 
         try:
@@ -424,7 +428,9 @@ class HistoryManager:
                 tools=[],
                 max_retries=10,
             )
-        except Exception:
+        except Exception as _mini_agent_exc:
+            from mini_agent.errors import log_exception
+            log_exception(_mini_agent_exc, where='mini_agent.history_manager.HistoryManager._dispatch_lightweight_extraction')
             return
 
         raw_text = (response.text or "").strip()
@@ -442,7 +448,9 @@ class HistoryManager:
             world_extraction = parse_world_response(raw_text)
             world_entities = world_extraction.entities
             world_facts = world_extraction.facts
-        except Exception:
+        except Exception as _mini_agent_exc:
+            from mini_agent.errors import log_exception
+            log_exception(_mini_agent_exc, where='mini_agent.history_manager.HistoryManager._dispatch_lightweight_extraction')
             pass
 
         source_entries = [
@@ -453,7 +461,9 @@ class HistoryManager:
             try:
                 from mini_agent.wiki.decision_writer import queue_candidates
                 queue_candidates(paths, decisions, source_entries=source_entries)
-            except Exception:
+            except Exception as _mini_agent_exc:
+                from mini_agent.errors import log_exception
+                log_exception(_mini_agent_exc, where='mini_agent.history_manager.HistoryManager._dispatch_lightweight_extraction')
                 pass
 
         if (world_entities or world_facts) and getattr(self.cfg.compress, "extract_world_model", True):
@@ -461,7 +471,9 @@ class HistoryManager:
                 from mini_agent.wiki.world_writer import queue_entities, queue_facts
                 queue_entities(paths, world_entities, source_entries=source_entries)
                 queue_facts(paths, world_facts, source_entries=source_entries)
-            except Exception:
+            except Exception as _mini_agent_exc:
+                from mini_agent.errors import log_exception
+                log_exception(_mini_agent_exc, where='mini_agent.history_manager.HistoryManager._dispatch_lightweight_extraction')
                 pass
 
     def compact_with_llm(self, compact_prompt: str, run_turn_fn) -> str:
@@ -480,6 +492,8 @@ class HistoryManager:
         try:
             result = run_turn_fn(compact_prompt)
         except Exception as e:
+            from mini_agent.errors import log_exception
+            log_exception(e, where='mini_agent.history_manager.HistoryManager.compact_with_llm')
             R.print_error(f"[compact] Summary generation failed: {e}")
             return ""
 

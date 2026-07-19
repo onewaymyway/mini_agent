@@ -242,6 +242,8 @@ class RoleJudgeMixin:
                     else:
                         R.print_warning("[TurnJudge] compact 完成，但没有生成摘要文本。")
                 except Exception as e:
+                    from mini_agent.errors import log_exception
+                    log_exception(e, where='mini_agent.agent.role_judge.RoleJudgeMixin._maybe_run_turn_judge')
                     R.print_error(f"[TurnJudge] compact 失败：{e}，回退到等待真人输入。")
                     self._turn_judge_auto_count = 0
                     detector.reset()
@@ -379,6 +381,8 @@ class RoleJudgeMixin:
                 else:
                     R.print_warning("[TurnJudge] compact 完成，但没有生成摘要文本。")
             except Exception as e:
+                from mini_agent.errors import log_exception
+                log_exception(e, where='mini_agent.agent.role_judge.RoleJudgeMixin._maybe_run_turn_judge')
                 R.print_error(f"[TurnJudge] compact 失败：{e}，回退到等待真人输入。")
                 self._turn_judge_auto_count = 0
                 self._turn_judge_stuck_detector.reset()

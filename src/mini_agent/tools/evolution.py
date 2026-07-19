@@ -62,7 +62,9 @@ def _get_project_root() -> Optional[Path]:
         return None
     try:
         return provider()
-    except Exception:
+    except Exception as _mini_agent_exc:
+        from mini_agent.errors import log_exception
+        log_exception(_mini_agent_exc, where='mini_agent.tools.evolution._get_project_root')
         return None
 
 
@@ -134,7 +136,9 @@ def _get_memory_backend_for_outcome_tracking(project_root: Path):
 
         cfg = load_config(project_root=project_root)
         return create_memory_backend(cfg)
-    except Exception:
+    except Exception as _mini_agent_exc:
+        from mini_agent.errors import log_exception
+        log_exception(_mini_agent_exc, where='mini_agent.tools.evolution._get_memory_backend_for_outcome_tracking')
         return None
 
 
@@ -204,6 +208,8 @@ def skill_propose(
         # apply() 内部异常（git 子进程崩溃等）：清理 worktree + 删分支
         # （没有任何有意义的 commit 产生，留着只会污染 git branch 列表），
         # 然后把错误原样报告给调用方，而不是让 worktree 静默残留在 /tmp 下。
+        from mini_agent.errors import log_exception
+        log_exception(e, where='mini_agent.tools.evolution.skill_propose')
         ws.destroy(delete_branch=True)
         return json.dumps({
             "ok": False,
@@ -245,7 +251,9 @@ def skill_propose(
                 lesson_group_id=group_id,
                 commit_summary=f"skill_propose: {name} ({reason[:80]})" if reason else f"skill_propose: {name}",
             )
-    except Exception:
+    except Exception as _mini_agent_exc:
+        from mini_agent.errors import log_exception
+        log_exception(_mini_agent_exc, where='mini_agent.tools.evolution.skill_propose')
         pass
 
     return json.dumps({

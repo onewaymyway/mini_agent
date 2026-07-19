@@ -127,4 +127,6 @@ def audit_compact_quality(
             return CompactAuditResult(raw_response=answer)
         return CompactAuditResult(has_issue=True, missing_info=answer, raw_response=answer)
     except Exception as e:
+        from mini_agent.errors import log_exception
+        log_exception(e, where='mini_agent.history.compact_audit.audit_compact_quality')
         return CompactAuditResult(raw_response=f"[audit failed, treated as no_issue: {e}]")

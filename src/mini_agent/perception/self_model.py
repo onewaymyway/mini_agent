@@ -243,7 +243,9 @@ class AgentSelfModel:
                 if domain and domain != "general":
                     domains.append(domain)
             return domains
-        except Exception:
+        except Exception as _mini_agent_exc:
+            from mini_agent.errors import log_exception
+            log_exception(_mini_agent_exc, where='mini_agent.perception.self_model.AgentSelfModel.recent_negative_outcome_domains')
             return []
 
 
@@ -307,7 +309,9 @@ class AgentSelfModelBuilder:
             paths = AgentPaths(project_root)
             entries = build_capability_map(paths, None)  # None=只读，不写回
             return {e.domain: e.confidence for e in entries}
-        except Exception:
+        except Exception as _mini_agent_exc:
+            from mini_agent.errors import log_exception
+            log_exception(_mini_agent_exc, where='mini_agent.perception.self_model.AgentSelfModelBuilder._load_capability_snapshot')
             return {}
 
 

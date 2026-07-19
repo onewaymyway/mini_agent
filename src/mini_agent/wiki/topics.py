@@ -233,7 +233,9 @@ def find_topic_candidates_llm_cluster(
     )
     try:
         raw = llm_call(prompt)
-    except Exception:
+    except Exception as _mini_agent_exc:
+        from mini_agent.errors import log_exception
+        log_exception(_mini_agent_exc, where='mini_agent.wiki.topics.find_topic_candidates_llm_cluster')
         return []
 
     clusters = _parse_llm_cluster_response(raw)
@@ -323,7 +325,9 @@ def generate_topic_page(
     )
     try:
         body = llm_call(prompt)
-    except Exception:
+    except Exception as _mini_agent_exc:
+        from mini_agent.errors import log_exception
+        log_exception(_mini_agent_exc, where='mini_agent.wiki.topics.generate_topic_page')
         return None
     if not body or not body.strip():
         return None
@@ -348,7 +352,9 @@ def generate_topic_page(
             source_entries=[],
             extra_frontmatter=extra_frontmatter,
         )
-    except Exception:
+    except Exception as _mini_agent_exc:
+        from mini_agent.errors import log_exception
+        log_exception(_mini_agent_exc, where='mini_agent.wiki.topics.generate_topic_page')
         return None
     return page_id
 
@@ -446,7 +452,9 @@ def append_to_topic_page(
             extra_links=extra_links,
             extra_frontmatter_updates=frontmatter_updates,
         )
-    except Exception:
+    except Exception as _mini_agent_exc:
+        from mini_agent.errors import log_exception
+        log_exception(_mini_agent_exc, where='mini_agent.wiki.topics.append_to_topic_page')
         return None
     return topic_page.id
 
@@ -456,7 +464,9 @@ def _load_topics_run_count(paths: AgentPaths) -> int:
     try:
         raw = json.loads(paths.wiki_topics_run_counter_path.read_text(encoding="utf-8"))
         return int(raw.get("run_count") or 0)
-    except Exception:
+    except Exception as _mini_agent_exc:
+        from mini_agent.errors import log_exception
+        log_exception(_mini_agent_exc, where='mini_agent.wiki.topics._load_topics_run_count')
         return 0
 
 
@@ -467,7 +477,9 @@ def _save_topics_run_count(paths: AgentPaths, run_count: int) -> None:
         path = paths.wiki_topics_run_counter_path
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(json.dumps({"run_count": run_count}), encoding="utf-8")
-    except Exception:
+    except Exception as _mini_agent_exc:
+        from mini_agent.errors import log_exception
+        log_exception(_mini_agent_exc, where='mini_agent.wiki.topics._save_topics_run_count')
         pass
 
 
@@ -519,7 +531,9 @@ def consolidate_topics(
     for md_path in md_paths:
         try:
             pages.append(parse_page(md_path))
-        except Exception:
+        except Exception as _mini_agent_exc:
+            from mini_agent.errors import log_exception
+            log_exception(_mini_agent_exc, where='mini_agent.wiki.topics.consolidate_topics')
             continue
     if not pages:
         return []
@@ -547,7 +561,9 @@ def consolidate_topics(
                     pages_by_id,
                     overlap_threshold=reconsolidation_overlap_threshold,
                 )
-            except Exception:
+            except Exception as _mini_agent_exc:
+                from mini_agent.errors import log_exception
+                log_exception(_mini_agent_exc, where='mini_agent.wiki.topics.consolidate_topics')
                 recon_matches = []
             for topic_page, matched in recon_matches:
                 result = append_to_topic_page(paths, topic_page, matched)
@@ -569,7 +585,9 @@ def consolidate_topics(
                             )
                             + "\n"
                         )
-                except Exception:
+                except Exception as _mini_agent_exc:
+                    from mini_agent.errors import log_exception
+                    log_exception(_mini_agent_exc, where='mini_agent.wiki.topics.consolidate_topics')
                     pass
 
     pages_for_new_candidates = (
@@ -594,7 +612,9 @@ def consolidate_topics(
                 exclude_tags=exclude,
                 exclude_page_ids=already_covered,
             )
-        except Exception:
+        except Exception as _mini_agent_exc:
+            from mini_agent.errors import log_exception
+            log_exception(_mini_agent_exc, where='mini_agent.wiki.topics.consolidate_topics')
             llm_candidates = []
 
     candidates = _merge_candidate_pools(rule_candidates, llm_candidates)

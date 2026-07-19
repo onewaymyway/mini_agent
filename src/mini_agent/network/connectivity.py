@@ -124,7 +124,9 @@ def wait_until_online(
         if on_waiting:
             try:
                 on_waiting(elapsed)
-            except Exception:
+            except Exception as _mini_agent_exc:
+                from mini_agent.errors import log_exception
+                log_exception(_mini_agent_exc, where='mini_agent.network.connectivity.wait_until_online')
                 pass
         time.sleep(check_interval)
 
@@ -200,7 +202,9 @@ def is_connectivity_exception(exc: BaseException) -> bool:
     for module_name, class_name in _THIRD_PARTY_NETWORK_EXCEPTIONS:
         try:
             module = __import__(module_name, fromlist=[class_name])
-        except Exception:
+        except Exception as _mini_agent_exc:
+            from mini_agent.errors import log_exception
+            log_exception(_mini_agent_exc, where='mini_agent.network.connectivity.is_connectivity_exception')
             continue
         cls = getattr(module, class_name, None)
         if cls is not None and isinstance(exc, cls):

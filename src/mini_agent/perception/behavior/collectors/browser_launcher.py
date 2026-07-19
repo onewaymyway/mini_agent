@@ -43,7 +43,9 @@ def _remove_singleton_locks(profile_dir: Path) -> None:
         try:
             if p.exists() or p.is_symlink():
                 p.unlink()
-        except Exception:
+        except Exception as _mini_agent_exc:
+            from mini_agent.errors import log_exception
+            log_exception(_mini_agent_exc, where='mini_agent.perception.behavior.collectors.browser_launcher._remove_singleton_locks')
             pass
 
 
@@ -140,6 +142,8 @@ class DebugBrowserProcess:
                 self.fetch_version_info()
                 return
             except Exception as e:  # noqa: BLE001
+                from mini_agent.errors import log_exception
+                log_exception(e, where='mini_agent.perception.behavior.collectors.browser_launcher.DebugBrowserProcess.start')
                 last_err = e
                 time.sleep(0.3)
         raise RuntimeError(f"浏览器启动后 {startup_timeout}s 内未探测到 CDP 端口 {self._port}: {last_err}")

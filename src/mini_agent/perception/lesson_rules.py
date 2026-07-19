@@ -242,6 +242,8 @@ class LessonRuleEngine:
         try:
             import json as _json
             s = _json.dumps(tool_input, ensure_ascii=False)
-        except Exception:
+        except Exception as _mini_agent_exc:
+            from mini_agent.errors import log_exception
+            log_exception(_mini_agent_exc, where='mini_agent.perception.lesson_rules.LessonRuleEngine._safe_repr')
             s = str(tool_input)
         return s if len(s) <= max_len else s[:max_len] + "…"

@@ -96,7 +96,9 @@ def _parse_simple_frontmatter(fm_text: str) -> dict:
 def _parse_profile(path: Path) -> Optional[AgentProfile]:
     try:
         text = path.read_text(encoding="utf-8")
-    except Exception:
+    except Exception as _mini_agent_exc:
+        from mini_agent.errors import log_exception
+        log_exception(_mini_agent_exc, where='mini_agent.orchestrator.agent_profiles._parse_profile')
         return None
 
     fm_match = _FRONTMATTER_RE.match(text)
@@ -107,7 +109,9 @@ def _parse_profile(path: Path) -> Optional[AgentProfile]:
         try:
             import yaml  # type: ignore
             meta = yaml.safe_load(fm_match.group(1)) or {}
-        except Exception:
+        except Exception as _mini_agent_exc:
+            from mini_agent.errors import log_exception
+            log_exception(_mini_agent_exc, where='mini_agent.orchestrator.agent_profiles._parse_profile')
             meta = _parse_simple_frontmatter(fm_match.group(1))
 
     if not isinstance(meta, dict):

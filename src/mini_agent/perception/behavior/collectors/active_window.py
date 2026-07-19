@@ -41,10 +41,14 @@ def _detect_windows() -> Optional[tuple[str, str]]:
         app_name = ""
         try:
             app_name = psutil.Process(pid).name()
-        except Exception:
+        except Exception as _mini_agent_exc:
+            from mini_agent.errors import log_exception
+            log_exception(_mini_agent_exc, where='mini_agent.perception.behavior.collectors.active_window._detect_windows')
             pass
         return (app_name or "unknown", title)
-    except Exception:
+    except Exception as _mini_agent_exc:
+        from mini_agent.errors import log_exception
+        log_exception(_mini_agent_exc, where='mini_agent.perception.behavior.collectors.active_window._detect_windows')
         return None
 
 
@@ -57,7 +61,9 @@ def _detect_macos() -> Optional[tuple[str, str]]:
         app_name = app.localizedName() if app else "unknown"
         # AppKit 拿不到窗口标题，标题留空，交由 osascript 兜底（可选，成本更高，默认不做）
         return (app_name or "unknown", "")
-    except Exception:
+    except Exception as _mini_agent_exc:
+        from mini_agent.errors import log_exception
+        log_exception(_mini_agent_exc, where='mini_agent.perception.behavior.collectors.active_window._detect_macos')
         pass
     try:
         script = (
@@ -69,7 +75,9 @@ def _detect_macos() -> Optional[tuple[str, str]]:
         )
         if out.returncode == 0:
             return (out.stdout.strip() or "unknown", "")
-    except Exception:
+    except Exception as _mini_agent_exc:
+        from mini_agent.errors import log_exception
+        log_exception(_mini_agent_exc, where='mini_agent.perception.behavior.collectors.active_window._detect_macos')
         pass
     return None
 
@@ -89,12 +97,16 @@ def _detect_linux() -> Optional[tuple[str, str]]:
                 ["xdotool", "getwindowclassname", wid], capture_output=True, text=True, timeout=2
             ).stdout.strip()
             return (cls or "unknown", title)
-    except Exception:
+    except Exception as _mini_agent_exc:
+        from mini_agent.errors import log_exception
+        log_exception(_mini_agent_exc, where='mini_agent.perception.behavior.collectors.active_window._detect_linux')
         pass
     try:
         out = subprocess.run(["wmctrl", "-a", ":ACTIVE:"], capture_output=True, text=True, timeout=2)
         # wmctrl 本身不直接给"当前活跃窗口"，这里仅作为占位，实际环境建议装 xdotool
-    except Exception:
+    except Exception as _mini_agent_exc:
+        from mini_agent.errors import log_exception
+        log_exception(_mini_agent_exc, where='mini_agent.perception.behavior.collectors.active_window._detect_linux')
         pass
     return None
 

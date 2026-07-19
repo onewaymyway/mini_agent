@@ -83,6 +83,8 @@ class EnvInfoRegistry:
                 data = p.safe_collect()
                 merged.update(data)
             except Exception as e:
+                from mini_agent.errors import log_exception
+                log_exception(e, where='mini_agent.env_info.registry.EnvInfoRegistry.collect')
                 logger.debug("[env_info] Provider %s failed: %s", p.name, e)
         return merged
 

@@ -99,7 +99,9 @@ class ResourceArbiter:
             if budget <= 0:
                 return True  # 无限制
             return used < budget
-        except Exception:
+        except Exception as _mini_agent_exc:
+            from mini_agent.errors import log_exception
+            log_exception(_mini_agent_exc, where='mini_agent.evolution.resource_arbiter.ResourceArbiter._check_budget')
             return True
 
     def _check_frustration(self) -> bool:
@@ -129,7 +131,9 @@ class ResourceArbiter:
             )
             frustration = float(data.get("frustration", 0.0))
             return frustration < threshold
-        except Exception:
+        except Exception as _mini_agent_exc:
+            from mini_agent.errors import log_exception
+            log_exception(_mini_agent_exc, where='mini_agent.evolution.resource_arbiter.ResourceArbiter._check_frustration')
             return True
 
     def _check_user_presence(self) -> bool:
@@ -158,7 +162,9 @@ class ResourceArbiter:
             if ctx.is_actively_engaged and ctx.context_switch_count >= threshold:
                 return False  # 用户明显在忙碌切换，暂缓自主任务
             return True
-        except Exception:
+        except Exception as _mini_agent_exc:
+            from mini_agent.errors import log_exception
+            log_exception(_mini_agent_exc, where='mini_agent.evolution.resource_arbiter.ResourceArbiter._check_user_presence')
             return True  # 读取失败保守放行
 
     def _check_exploration_budget(self) -> bool:
@@ -176,7 +182,9 @@ class ResourceArbiter:
             if exploration_budget <= 0:
                 return False
             return used_exploration < exploration_budget
-        except Exception:
+        except Exception as _mini_agent_exc:
+            from mini_agent.errors import log_exception
+            log_exception(_mini_agent_exc, where='mini_agent.evolution.resource_arbiter.ResourceArbiter._check_exploration_budget')
             return True
 
     def _recent_user_touched_paths(
@@ -209,7 +217,9 @@ class ResourceArbiter:
                 touched.update(paths)
 
             return touched
-        except Exception:
+        except Exception as _mini_agent_exc:
+            from mini_agent.errors import log_exception
+            log_exception(_mini_agent_exc, where='mini_agent.evolution.resource_arbiter.ResourceArbiter._recent_user_touched_paths')
             return None
 
     def _extract_paths_from_traces(
@@ -226,7 +236,9 @@ class ResourceArbiter:
                         continue
                     try:
                         rec = json.loads(line)
-                    except Exception:
+                    except Exception as _mini_agent_exc:
+                        from mini_agent.errors import log_exception
+                        log_exception(_mini_agent_exc, where='mini_agent.evolution.resource_arbiter.ResourceArbiter._extract_paths_from_traces')
                         continue
                     if rec.get("ts", 0) < cutoff:
                         continue
@@ -242,7 +254,9 @@ class ResourceArbiter:
                             if val and isinstance(val, str):
                                 try:
                                     paths.add(str(Path(val).resolve()))
-                                except Exception:
+                                except Exception as _mini_agent_exc:
+                                    from mini_agent.errors import log_exception
+                                    log_exception(_mini_agent_exc, where='mini_agent.evolution.resource_arbiter.ResourceArbiter._extract_paths_from_traces')
                                     paths.add(val)
         except Exception as _mini_agent_exc:
             from mini_agent.errors import log_exception
@@ -319,7 +333,9 @@ def read_activity_digest(
                     rec = json.loads(line)
                     if since_ts is None or rec.get("at", 0) >= since_ts:
                         records.append(rec)
-                except Exception:
+                except Exception as _mini_agent_exc:
+                    from mini_agent.errors import log_exception
+                    log_exception(_mini_agent_exc, where='mini_agent.evolution.resource_arbiter.read_activity_digest')
                     continue
     except Exception as _mini_agent_exc:
         from mini_agent.errors import log_exception

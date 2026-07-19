@@ -176,7 +176,9 @@ def group_lessons(
         if embed_call is not None:
             try:
                 vec = embed_call(e.trigger)
-            except Exception:
+            except Exception as _mini_agent_exc:
+                from mini_agent.errors import log_exception
+                log_exception(_mini_agent_exc, where='mini_agent.perception.lesson_review.group_lessons')
                 vec = None
 
         best_group = None
@@ -187,7 +189,9 @@ def group_lessons(
             if vec is not None and rep_vec is not None:
                 try:
                     embed_score = cosine_similarity(vec, rep_vec)
-                except Exception:
+                except Exception as _mini_agent_exc:
+                    from mini_agent.errors import log_exception
+                    log_exception(_mini_agent_exc, where='mini_agent.perception.lesson_review.group_lessons')
                     embed_score = 0.0
             matched = (
                 jaccard_score >= _SIMILARITY_THRESHOLD

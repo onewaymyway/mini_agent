@@ -284,7 +284,9 @@ def _cmd_loop_status(agent, paths) -> None:
         if not info:
             # 尝试用当前 workdir
             info = _read_daemon_info(paths.workdir_dir)
-    except Exception:
+    except Exception as _mini_agent_exc:
+        from mini_agent.errors import log_exception
+        log_exception(_mini_agent_exc, where='mini_agent.cli.commands.goals._cmd_loop_status')
         info = None
 
     if info:
@@ -315,6 +317,8 @@ def _cmd_loop_status(agent, paths) -> None:
         else:
             R.print_info("暂无自主活动记录（daemon 未启动或尚未执行过 tick）")
     except Exception as e:
+        from mini_agent.errors import log_exception
+        log_exception(e, where='mini_agent.cli.commands.goals._cmd_loop_status')
         R.print_warning(f"无法读取 activity_digest.jsonl: {e}")
 
 
@@ -341,5 +345,7 @@ def _get_paths(agent):
     try:
         from mini_agent.storage.paths import AgentPaths
         return AgentPaths(cfg.project_root)
-    except Exception:
+    except Exception as _mini_agent_exc:
+        from mini_agent.errors import log_exception
+        log_exception(_mini_agent_exc, where='mini_agent.cli.commands.goals._get_paths')
         return None

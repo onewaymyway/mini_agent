@@ -311,7 +311,9 @@ def _aggregate_traces(path: Path) -> dict:
                         cat = entry.get("error_category") or "other"
                         error_categories[cat] = error_categories.get(cat, 0) + 1
 
-    except Exception:
+    except Exception as _mini_agent_exc:
+        from mini_agent.errors import log_exception
+        log_exception(_mini_agent_exc, where='mini_agent.perception.observability._aggregate_traces')
         return {}
 
     if not turn_ids and not call_llm_times and not build_system_times:
@@ -407,7 +409,9 @@ def detect_anomalies(
                     token_totals.append(float(rec["total_tokens"]))
                 if rec.get("duration_min") is not None:
                     durations.append(float(rec["duration_min"]))
-    except Exception:
+    except Exception as _mini_agent_exc:
+        from mini_agent.errors import log_exception
+        log_exception(_mini_agent_exc, where='mini_agent.perception.observability.detect_anomalies')
         return []
 
     flags: list[AnomalyFlag] = []

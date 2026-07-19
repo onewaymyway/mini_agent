@@ -50,7 +50,9 @@ def _project_root() -> Optional[Path]:
     """尝试从本文件位置推导项目根（src/mini_agent/tools/introspection.py → 上三级）。"""
     try:
         return Path(__file__).resolve().parent.parent.parent.parent
-    except Exception:
+    except Exception as _mini_agent_exc:
+        from mini_agent.errors import log_exception
+        log_exception(_mini_agent_exc, where='mini_agent.tools.introspection._project_root')
         return None
 
 
@@ -316,6 +318,8 @@ def _get_class_meta(source_file: Optional[str], class_name: str, proj_root: Opti
         tree = ast.parse(src_text)
         lines = src_text.splitlines()
     except Exception as e:
+        from mini_agent.errors import log_exception
+        log_exception(e, where='mini_agent.tools.introspection._get_class_meta')
         return {"_parse_error": str(e)}
 
     # 找目标类
@@ -422,6 +426,8 @@ def _get_agent_init_snippet(attr_name: str, proj_root: Optional[Path], context_l
         try:
             lines = py_file.read_text(encoding="utf-8").splitlines()
         except Exception as e:
+            from mini_agent.errors import log_exception
+            log_exception(e, where='mini_agent.tools.introspection._get_agent_init_snippet')
             hits.append({"_error": f"{py_file.name}: {e}"})
             continue
 
@@ -520,6 +526,8 @@ def _safe_json(obj: Any, indent: int = 2) -> str:
     try:
         return json.dumps(obj, indent=indent, ensure_ascii=False, default=_default)
     except Exception as e:
+        from mini_agent.errors import log_exception
+        log_exception(e, where='mini_agent.tools.introspection._safe_json')
         return json.dumps({"_error": f"序列化失败: {e}"}, indent=indent, ensure_ascii=False)
 
 
@@ -545,6 +553,8 @@ def _safe_get(fn, default="N/A"):
     try:
         return fn()
     except Exception as e:
+        from mini_agent.errors import log_exception
+        log_exception(e, where='mini_agent.tools.introspection._safe_get')
         return f"<error: {e}>"
 
 
@@ -832,7 +842,9 @@ def _build_status(agent, policy: IntrospectionPolicy) -> dict:
     def _s(fn, default="N/A"):
         try:
             return fn()
-        except Exception:
+        except Exception as _mini_agent_exc:
+            from mini_agent.errors import log_exception
+            log_exception(_mini_agent_exc, where='mini_agent.tools.introspection._build_status._s')
             return default
 
     sections: dict[str, Any] = {}
@@ -989,6 +1001,8 @@ def _do_patch(agent, target: str, field: str, value: str, policy: IntrospectionP
                                "new": activate}, ensure_ascii=False)
 
     except Exception as e:
+        from mini_agent.errors import log_exception
+        log_exception(e, where='mini_agent.tools.introspection._do_patch')
         return json.dumps({"success": False, "error": f"patch 执行异常: {e}"}, ensure_ascii=False)
 
     return json.dumps({"success": False,
@@ -1081,6 +1095,8 @@ def register_introspection_tools(registry: "ToolRegistry", agent) -> None:
                 result["meta"] = _build_meta(target, proj_root)
             return _safe_json(result)
         except Exception as e:
+            from mini_agent.errors import log_exception
+            log_exception(e, where='mini_agent.tools.introspection.register_introspection_tools.agent_inspect')
             return json.dumps({"target": target, "error": str(e)}, ensure_ascii=False)
 
     registry.register_fn(

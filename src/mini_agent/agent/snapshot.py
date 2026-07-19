@@ -143,7 +143,9 @@ class SnapshotMixin:
                     strategy="retry_to_turn",
                     trigger_reason=f"manual_retry_{n}",
                 )
-            except Exception:
+            except Exception as _mini_agent_exc:
+                from mini_agent.errors import log_exception
+                log_exception(_mini_agent_exc, where='mini_agent.agent.snapshot.SnapshotMixin.retry_to_turn')
                 pass
 
         result = self.run_turn(user_msg)
@@ -260,7 +262,9 @@ class SnapshotMixin:
                     strategy="rollback_to_turn",
                     trigger_reason=f"manual_rollback_{n}",
                 )
-            except Exception:
+            except Exception as _mini_agent_exc:
+                from mini_agent.errors import log_exception
+                log_exception(_mini_agent_exc, where='mini_agent.agent.snapshot.SnapshotMixin.rollback_to_turn')
                 pass
 
         if getattr(self.cfg, "auto_save_session", True):

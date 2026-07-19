@@ -87,7 +87,9 @@ def _load_decision_pages(paths: AgentPaths) -> list[WikiPage]:
     for md_path in sorted(decisions_dir.glob("*.md")):
         try:
             pages.append(parse_page(md_path))
-        except Exception:
+        except Exception as _mini_agent_exc:
+            from mini_agent.errors import log_exception
+            log_exception(_mini_agent_exc, where='mini_agent.wiki.decision_writer._load_decision_pages')
             continue
     return pages
 
@@ -346,9 +348,13 @@ def _read_pending_queue(paths: AgentPaths) -> list[dict]:
                     continue
                 try:
                     rows.append(json.loads(line))
-                except Exception:
+                except Exception as _mini_agent_exc:
+                    from mini_agent.errors import log_exception
+                    log_exception(_mini_agent_exc, where='mini_agent.wiki.decision_writer._read_pending_queue')
                     continue  # 单行损坏跳过，不影响其它行
-    except Exception:
+    except Exception as _mini_agent_exc:
+        from mini_agent.errors import log_exception
+        log_exception(_mini_agent_exc, where='mini_agent.wiki.decision_writer._read_pending_queue')
         return []
     return rows
 
@@ -362,10 +368,14 @@ def _clear_pending_queue(paths: AgentPaths) -> None:
     try:
         tmp.write_text("", encoding="utf-8")
         os.replace(tmp, p)
-    except Exception:
+    except Exception as _mini_agent_exc:
+        from mini_agent.errors import log_exception
+        log_exception(_mini_agent_exc, where='mini_agent.wiki.decision_writer._clear_pending_queue')
         try:
             tmp.unlink(missing_ok=True)
-        except Exception:
+        except Exception as _mini_agent_exc:
+            from mini_agent.errors import log_exception
+            log_exception(_mini_agent_exc, where='mini_agent.wiki.decision_writer._clear_pending_queue')
             pass
 
 
@@ -388,7 +398,9 @@ def _merge_same_batch_candidates(
     for row in rows:
         try:
             candidate = DecisionCandidate.from_dict(row["candidate"])
-        except Exception:
+        except Exception as _mini_agent_exc:
+            from mini_agent.errors import log_exception
+            log_exception(_mini_agent_exc, where='mini_agent.wiki.decision_writer._merge_same_batch_candidates')
             continue
         if not candidate.is_meaningful:
             continue

@@ -35,7 +35,9 @@ def _redact(url: str, redact_path: bool) -> tuple[Optional[str], Optional[str]]:
     """返回 (domain, path)；redact_path=True 时 path 为 None。"""
     try:
         parsed = urlparse(url)
-    except Exception:
+    except Exception as _mini_agent_exc:
+        from mini_agent.errors import log_exception
+        log_exception(_mini_agent_exc, where='mini_agent.perception.behavior.collectors.cdp_browser._redact')
         return None, None
     domain = parsed.netloc or None
     path = None if redact_path else (parsed.path or "")
@@ -121,7 +123,9 @@ class CDPBrowserCollector(BaseCollector):
 
         try:
             ws_url = self._proc.browser_ws_url() if self._proc else None
-        except Exception:
+        except Exception as _mini_agent_exc:
+            from mini_agent.errors import log_exception
+            log_exception(_mini_agent_exc, where='mini_agent.perception.behavior.collectors.cdp_browser.CDPBrowserCollector._run_ws_loop')
             ws_url = None
         if not ws_url:
             return
@@ -138,8 +142,10 @@ class CDPBrowserCollector(BaseCollector):
                     except ConnectionClosed:
                         break
                     self._handle_message(raw)
-        except Exception:
+        except Exception as _mini_agent_exc:
             # 浏览器被手动关闭 / 网络异常等，静默退出线程，不刷屏重试。
+            from mini_agent.errors import log_exception
+            log_exception(_mini_agent_exc, where='mini_agent.perception.behavior.collectors.cdp_browser.CDPBrowserCollector._run_ws_loop')
             pass
         finally:
             self._flush_all_pages()
@@ -148,7 +154,9 @@ class CDPBrowserCollector(BaseCollector):
     def _handle_message(self, raw: str) -> None:
         try:
             msg = json.loads(raw)
-        except Exception:
+        except Exception as _mini_agent_exc:
+            from mini_agent.errors import log_exception
+            log_exception(_mini_agent_exc, where='mini_agent.perception.behavior.collectors.cdp_browser.CDPBrowserCollector._handle_message')
             return
         method = msg.get("method")
         if method not in (

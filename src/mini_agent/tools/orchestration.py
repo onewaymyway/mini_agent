@@ -91,7 +91,9 @@ def _get_active_skills() -> list[str]:
         return []
     try:
         return list(provider())
-    except Exception:
+    except Exception as _mini_agent_exc:
+        from mini_agent.errors import log_exception
+        log_exception(_mini_agent_exc, where='mini_agent.tools.orchestration._get_active_skills')
         return []
 
 

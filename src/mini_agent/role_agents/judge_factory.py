@@ -139,6 +139,8 @@ def run_judge_turn(
         raw = agent.run_turn(prompt)
         result = JudgeResult(ok=True, raw_output=raw)
     except Exception as e:
+        from mini_agent.errors import log_exception
+        log_exception(e, where='mini_agent.role_agents.judge_factory.run_judge_turn')
         result = JudgeResult(ok=False, error=str(e), raw_output=f"[{failure_role_label} 运行失败: {e}]")
 
     if profile_name:

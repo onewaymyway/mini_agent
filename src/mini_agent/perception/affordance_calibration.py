@@ -66,7 +66,9 @@ def load_weights(paths: "AgentPaths") -> AffordanceWeights:
             unexplored_areas_weight=float(data.get("unexplored_areas_weight", 1.0)),
             high_risk_zones_weight=float(data.get("high_risk_zones_weight", 1.0)),
         ).clamp()
-    except Exception:
+    except Exception as _mini_agent_exc:
+        from mini_agent.errors import log_exception
+        log_exception(_mini_agent_exc, where='mini_agent.perception.affordance_calibration.load_weights')
         return AffordanceWeights()
 
 
@@ -75,7 +77,9 @@ def _save_weights(paths: "AgentPaths", weights: AffordanceWeights) -> None:
         path = _weights_path(paths)
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(json.dumps(weights.to_dict(), ensure_ascii=False, indent=2), encoding="utf-8")
-    except Exception:
+    except Exception as _mini_agent_exc:
+        from mini_agent.errors import log_exception
+        log_exception(_mini_agent_exc, where='mini_agent.perception.affordance_calibration._save_weights')
         pass
 
 
@@ -111,7 +115,9 @@ def calibrate(paths: "AgentPaths") -> AffordanceWeights:
 
         all_records = outcome_tracker.get_all(paths)
         records = [r for r in all_records if getattr(r, "status", "") == "resolved"]
-    except Exception:
+    except Exception as _mini_agent_exc:
+        from mini_agent.errors import log_exception
+        log_exception(_mini_agent_exc, where='mini_agent.perception.affordance_calibration.calibrate')
         return weights
 
     try:
@@ -135,7 +141,9 @@ def calibrate(paths: "AgentPaths") -> AffordanceWeights:
         weights = weights.clamp()
         _save_weights(paths, weights)
         return weights
-    except Exception:
+    except Exception as _mini_agent_exc:
+        from mini_agent.errors import log_exception
+        log_exception(_mini_agent_exc, where='mini_agent.perception.affordance_calibration.calibrate')
         return AffordanceWeights()
 
 

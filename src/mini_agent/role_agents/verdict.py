@@ -70,7 +70,9 @@ def parse_judge_verdict(
 
     try:
         result: Any = json_repair.loads(raw)
-    except Exception:
+    except Exception as _mini_agent_exc:
+        from mini_agent.errors import log_exception
+        log_exception(_mini_agent_exc, where='mini_agent.role_agents.verdict.parse_judge_verdict')
         result = None
 
     if not isinstance(result, dict):

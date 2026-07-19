@@ -60,7 +60,9 @@ class ReflectionMixin:
                 if text:
                     return _infer_domain(text)
             return ""
-        except Exception:
+        except Exception as _mini_agent_exc:
+            from mini_agent.errors import log_exception
+            log_exception(_mini_agent_exc, where='mini_agent.agent.reflection.ReflectionMixin._current_task_domain_hint')
             return ""
 
     def _maybe_publish_uncertainty_signal(self, state: "AgentInternalState") -> None:
@@ -99,12 +101,16 @@ class ReflectionMixin:
                         "recent_domain_hint": self._current_task_domain_hint(),
                     },
                 )
-            except Exception:
+            except Exception as _mini_agent_exc:
+                from mini_agent.errors import log_exception
+                log_exception(_mini_agent_exc, where='mini_agent.agent.reflection.ReflectionMixin._maybe_publish_uncertainty_signal')
                 pass
             # 无论发布是否成功，都重置计数——避免同一段持续不确定性反复
             # 触发发布尝试；下一段新的连续高不确定性区间会从 0 重新累计。
             self._uncertainty_streak = 0
-        except Exception:
+        except Exception as _mini_agent_exc:
+            from mini_agent.errors import log_exception
+            log_exception(_mini_agent_exc, where='mini_agent.agent.reflection.ReflectionMixin._maybe_publish_uncertainty_signal')
             pass
 
     def _write_proprioception_snapshot(self, state: "AgentInternalState") -> None:
@@ -175,7 +181,9 @@ class ReflectionMixin:
         if hook_mgr is not None:
             try:
                 hook_mgr.run("SessionEnd", payload)
-            except Exception:
+            except Exception as _mini_agent_exc:
+                from mini_agent.errors import log_exception
+                log_exception(_mini_agent_exc, where='mini_agent.agent.reflection.ReflectionMixin.trigger_session_end')
                 pass  # SessionEnd hook 失败不应阻塞退出流程
 
         # [W2+W3 / 4.2-4.4 + 5.3 + 5.5] Workdir + Global 知识层更新：timeline /
@@ -185,6 +193,8 @@ class ReflectionMixin:
         try:
             self._update_workdir_knowledge_on_session_end()
         except Exception as e:
+            from mini_agent.errors import log_exception
+            log_exception(e, where='mini_agent.agent.reflection.ReflectionMixin.trigger_session_end')
             R.print_warning(f"[session-end] workdir knowledge update failed: {e}")
 
         # [Stage 6 / 6.3] 观察性：SessionEnd 时写入量化指标 + 异常检测
@@ -210,6 +220,8 @@ class ReflectionMixin:
             self._reflect_and_save_lessons()
         except Exception as e:
             # 反思失败是可接受的降级（不影响本次对话已有的价值），仅打印警告
+            from mini_agent.errors import log_exception
+            log_exception(e, where='mini_agent.agent.reflection.ReflectionMixin.trigger_session_end')
             R.print_warning(f"[session-end] reflection failed: {e}")
 
     def _reflect_and_save_lessons(self, max_lessons: int = 5) -> int:
@@ -342,7 +354,9 @@ class ReflectionMixin:
                         data = _json.loads(manifest_path.read_text(encoding="utf-8"))
                         outcome = data.get("outcome") or {}
                         unresolved_all.extend(outcome.get("unresolved", []) or [])
-                    except Exception:
+                    except Exception as _mini_agent_exc:
+                        from mini_agent.errors import log_exception
+                        log_exception(_mini_agent_exc, where='mini_agent.agent.reflection.ReflectionMixin._update_workdir_knowledge_on_session_end')
                         continue
         except Exception as _mini_agent_exc:
             from mini_agent.errors import log_exception
@@ -498,7 +512,9 @@ class ReflectionMixin:
             created = datetime.strptime(self._session.created_at, "%Y-%m-%dT%H:%M:%S")
             now = datetime.now()
             return max(0.0, (now - created).total_seconds() / 60.0)
-        except Exception:
+        except Exception as _mini_agent_exc:
+            from mini_agent.errors import log_exception
+            log_exception(_mini_agent_exc, where='mini_agent.agent.reflection.ReflectionMixin._session_duration_minutes')
             return 0.0
 
     def _reflect_timeline_summary(self) -> tuple[str, list[str]]:
@@ -532,7 +548,9 @@ class ReflectionMixin:
                 max_retries=3,
             )
             data = _parse_timeline_summary(resp.text)
-        except Exception:
+        except Exception as _mini_agent_exc:
+            from mini_agent.errors import log_exception
+            log_exception(_mini_agent_exc, where='mini_agent.agent.reflection.ReflectionMixin._reflect_timeline_summary')
             return "", []
 
         theme = str(data.get("theme", ""))[:200]

@@ -385,7 +385,9 @@ class HttpPermissionGate:
     def _sid(self) -> str:
         try:
             return self._session_id_getter() if self._session_id_getter else ""
-        except Exception:
+        except Exception as _mini_agent_exc:
+            from mini_agent.errors import log_exception
+            log_exception(_mini_agent_exc, where='mini_agent.api.bridge.HttpPermissionGate._sid')
             return ""
 
     def request(
@@ -581,7 +583,9 @@ class HttpInteractionGate:
     def _sid(self) -> str:
         try:
             return self._session_id_getter() if self._session_id_getter else ""
-        except Exception:
+        except Exception as _mini_agent_exc:
+            from mini_agent.errors import log_exception
+            log_exception(_mini_agent_exc, where='mini_agent.api.bridge.HttpInteractionGate._sid')
             return ""
 
     def register_pending(
@@ -687,7 +691,9 @@ class AgentBridge:
         """
         try:
             return getattr(self.agent, "session_id", "") or ""
-        except Exception:
+        except Exception as _mini_agent_exc:
+            from mini_agent.errors import log_exception
+            log_exception(_mini_agent_exc, where='mini_agent.api.bridge.AgentBridge._current_session_id')
             return ""
 
     def _set_state_from_gate(self, new_state: str) -> None:

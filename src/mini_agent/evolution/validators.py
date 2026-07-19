@@ -136,6 +136,8 @@ def _validate_skill_content(path: Path, content: str) -> ValidationResult:
     try:
         from mini_agent.skills import _parse_skill
     except Exception as e:
+        from mini_agent.errors import log_exception
+        log_exception(e, where='mini_agent.evolution.validators._validate_skill_content')
         return ValidationResult.failure(f"T1 加载校验失败：无法导入 SkillLoader 解析逻辑（{e}）")
 
     import tempfile
@@ -145,6 +147,8 @@ def _validate_skill_content(path: Path, content: str) -> ValidationResult:
             tmp_path.write_text(content, encoding="utf-8")
             skill = _parse_skill(tmp_path)
     except Exception as e:
+        from mini_agent.errors import log_exception
+        log_exception(e, where='mini_agent.evolution.validators._validate_skill_content')
         return ValidationResult.failure(f"T1 加载校验失败：{path} 解析时抛出异常（{e}）")
 
     if skill is None:
@@ -176,6 +180,8 @@ def _validate_agent_profile_content(path: Path, content: str) -> ValidationResul
                 key, _, value = line.partition(":")
                 fm[key.strip()] = value.strip()
     except Exception as e:
+        from mini_agent.errors import log_exception
+        log_exception(e, where='mini_agent.evolution.validators._validate_agent_profile_content')
         return ValidationResult.failure(f"T1 加载校验失败：{path} frontmatter 不是合法 YAML（{e}）")
 
     if not isinstance(fm, dict) or not fm.get("name"):
@@ -231,9 +237,11 @@ def _try_run_ruff(root: Path, py_changes: dict) -> Optional[ValidationResult]:
         if proc.returncode != 0:
             return ValidationResult.failure(f"T2 lint 失败（ruff）：\n{proc.stdout or proc.stderr}")
         return ValidationResult.success()
-    except Exception:
+    except Exception as _mini_agent_exc:
         # lint 工具本身的调用异常不应阻塞流水线（环境问题，不是代码问题）；
         # 已经做过的 compile() 语法检查仍然生效，这里仅做"锦上添花"。
+        from mini_agent.errors import log_exception
+        log_exception(_mini_agent_exc, where='mini_agent.evolution.validators._try_run_ruff')
         return None
 
 

@@ -368,7 +368,9 @@ class LLMDebugLogger:
                 pretty = json.dumps(entry, ensure_ascii=False, indent=2)
                 console.print(Syntax(pretty, "json", theme="ansi_dark",
                                      background_color="default", line_numbers=False))
-        except Exception:
+        except Exception as _mini_agent_exc:
+            from mini_agent.errors import log_exception
+            log_exception(_mini_agent_exc, where='mini_agent.llm.debug_logger.LLMDebugLogger._print_entry')
             print(f"\n[LLM {label} #{entry.get('seq')}] {json.dumps(entry)}", flush=True)
 
     @staticmethod
@@ -386,7 +388,9 @@ class LLMDebugLogger:
             from rich.console import Console
             from mini_agent.ui.terminal import term
             term.debug(msg)
-        except Exception:
+        except Exception as _mini_agent_exc:
+            from mini_agent.errors import log_exception
+            log_exception(_mini_agent_exc, where='mini_agent.llm.debug_logger.LLMDebugLogger._print_info')
             from mini_agent.ui.terminal import term
             term.debug(msg, prefix="[DEBUG]")
 

@@ -112,7 +112,9 @@ def _parse_frontmatter(text: str) -> tuple[Dict, str]:
     if _HAS_YAML:
         try:
             meta = _yaml.safe_load(raw_yaml) or {}
-        except Exception:
+        except Exception as _mini_agent_exc:
+            from mini_agent.errors import log_exception
+            log_exception(_mini_agent_exc, where='mini_agent.reminders.loader._parse_frontmatter')
             meta = {}
     else:
         # 极简 YAML 解析（仅支持顶层 key: value）

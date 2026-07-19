@@ -254,7 +254,9 @@ def _detect_tool_result_used_as_request(text: str) -> bool:
             try:
                 import json_repair
                 obj = json_repair.repair_json(raw, return_objects=True)
-            except Exception:
+            except Exception as _mini_agent_exc:
+                from mini_agent.errors import log_exception
+                log_exception(_mini_agent_exc, where='mini_agent.perception.format_correction_detector._detect_tool_result_used_as_request')
                 obj = None
         if isinstance(obj, dict) and "name" in obj and "input" in obj:
             return True

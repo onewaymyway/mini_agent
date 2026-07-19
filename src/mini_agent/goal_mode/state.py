@@ -142,8 +142,10 @@ class GoalStateStore:
             with open(path, "r", encoding="utf-8") as f:
                 data = json.load(f)
             return GoalState.from_dict(data)
-        except Exception:
+        except Exception as _mini_agent_exc:
             # 状态文件本身损坏：不静默用空状态继续，返回 None 让调用方明确处理
+            from mini_agent.errors import log_exception
+            log_exception(_mini_agent_exc, where='mini_agent.goal_mode.state.GoalStateStore.load')
             return None
 
     def clear(self) -> None:
@@ -178,13 +180,17 @@ def scan_goal_states(project_root) -> list[dict]:
     try:
         entries = list(sessions_dir.iterdir())
     except Exception as e:
+        from mini_agent.errors import log_exception
+        log_exception(e, where='mini_agent.goal_mode.state.scan_goal_states')
         return [{"session_id": None, "error": f"无法列出 sessions_dir：{e}"}]
 
     for entry in entries:
         try:
             if not entry.is_dir():
                 continue
-        except Exception:
+        except Exception as _mini_agent_exc:
+            from mini_agent.errors import log_exception
+            log_exception(_mini_agent_exc, where='mini_agent.goal_mode.state.scan_goal_states')
             continue
         gs_path = entry / "goal_state.json"
         if not gs_path.exists():
@@ -200,6 +206,8 @@ def scan_goal_states(project_root) -> list[dict]:
                 "error": None,
             })
         except Exception as e:
+            from mini_agent.errors import log_exception
+            log_exception(e, where='mini_agent.goal_mode.state.scan_goal_states')
             results.append({"session_id": entry.name, "error": f"goal_state.json 解析失败：{e}"})
 
     return results
@@ -251,7 +259,9 @@ def list_resumable_sessions(
         try:
             with open(gs_path, "r", encoding="utf-8") as f:
                 data = json.load(f)
-        except Exception:
+        except Exception as _mini_agent_exc:
+            from mini_agent.errors import log_exception
+            log_exception(_mini_agent_exc, where='mini_agent.goal_mode.state.list_resumable_sessions')
             continue
         status = data.get("status")
         if wanted_statuses is None or status in wanted_statuses:
@@ -313,7 +323,9 @@ def find_resumable_session(project_root, from_session_id: Optional[str] = None) 
                     own_data = json.load(f)
                 if own_data.get("status") == "running":
                     return from_session_id
-            except Exception:
+            except Exception as _mini_agent_exc:
+                from mini_agent.errors import log_exception
+                log_exception(_mini_agent_exc, where='mini_agent.goal_mode.state.find_resumable_session')
                 pass  # 本 session 的记录读取失败，落到下面的全局兜底扫描
 
     # 2. 全局兜底：按 mtime 取最新一个 running 的 goal_state.json
@@ -327,7 +339,9 @@ def find_resumable_session(project_root, from_session_id: Optional[str] = None) 
         try:
             with open(gs_path, "r", encoding="utf-8") as f:
                 data = json.load(f)
-        except Exception:
+        except Exception as _mini_agent_exc:
+            from mini_agent.errors import log_exception
+            log_exception(_mini_agent_exc, where='mini_agent.goal_mode.state.find_resumable_session')
             continue
         if data.get("status") == "running":
             candidates.append((gs_path.stat().st_mtime, entry.name))

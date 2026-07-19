@@ -42,7 +42,9 @@ def _read_json(path: Path, default: object) -> object:
         return default
     try:
         return json.loads(path.read_text(encoding="utf-8"))
-    except Exception:
+    except Exception as _mini_agent_exc:
+        from mini_agent.errors import log_exception
+        log_exception(_mini_agent_exc, where='mini_agent.perception.catalog._read_json')
         return default
 
 
@@ -197,7 +199,9 @@ def load_timeline_for(
                     continue
                 try:
                     results.append(json.loads(line))
-                except Exception:
+                except Exception as _mini_agent_exc:
+                    from mini_agent.errors import log_exception
+                    log_exception(_mini_agent_exc, where='mini_agent.perception.catalog.load_timeline_for')
                     continue
     results.sort(key=lambda r: r.get("ts", 0))
     return results[-limit:]
@@ -214,8 +218,12 @@ def load_recent_knowledge_events(path: Path, limit: int = 20) -> list[dict]:
                 continue
             try:
                 records.append(json.loads(line))
-            except Exception:
+            except Exception as _mini_agent_exc:
+                from mini_agent.errors import log_exception
+                log_exception(_mini_agent_exc, where='mini_agent.perception.catalog.load_recent_knowledge_events')
                 continue
-    except Exception:
+    except Exception as _mini_agent_exc:
+        from mini_agent.errors import log_exception
+        log_exception(_mini_agent_exc, where='mini_agent.perception.catalog.load_recent_knowledge_events')
         return []
     return records[-limit:]

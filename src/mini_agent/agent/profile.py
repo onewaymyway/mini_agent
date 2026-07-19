@@ -44,7 +44,9 @@ class ProfileMixin:
             return ""
         try:
             profile = self._profile_mgr.load()
-        except Exception:
+        except Exception as _mini_agent_exc:
+            from mini_agent.errors import log_exception
+            log_exception(_mini_agent_exc, where='mini_agent.agent.profile.ProfileMixin._get_profile_text')
             return ""
         return profile.derived.get("summary", "") if profile.derived else ""
 
@@ -86,6 +88,8 @@ class ProfileMixin:
             self._profile_mgr.generate(self._llm, entries)
             _locked_print_info("用户画像(profile)已更新")
         except Exception as e:
+            from mini_agent.errors import log_exception
+            log_exception(e, where='mini_agent.agent.profile.ProfileMixin._maybe_refresh_profile')
             _locked_print_warning(f"用户画像生成失败: {e}")
 
     def trigger_summary_and_profile(self, session_path: Optional[str] = None, force: bool = False) -> bool:
@@ -185,6 +189,8 @@ class ProfileMixin:
                         raw_history=self._hist._raw,
                     )
                 except Exception as e:
+                    from mini_agent.errors import log_exception
+                    log_exception(e, where='mini_agent.agent.profile.ProfileMixin._generate_and_save_summary')
                     _locked_print_warning(f"[summary] session re-save failed: {e}")
 
             # [SYS-MEMORY] 写入长期记忆
@@ -237,12 +243,16 @@ class ProfileMixin:
                         source_kind="experience_session_reflection",
                         confidence=0.5,
                     )
-            except Exception:
+            except Exception as _mini_agent_exc:
+                from mini_agent.errors import log_exception
+                log_exception(_mini_agent_exc, where='mini_agent.agent.profile.ProfileMixin._generate_and_save_summary')
                 pass  # 经验沉淀失败不应影响摘要/记忆本身已经成功写入
 
             # [SYS-PROFILE] 同一后台线程内顺带检查并刷新用户画像
             self._maybe_refresh_profile(force=force)
         except Exception as e:
+            from mini_agent.errors import log_exception
+            log_exception(e, where='mini_agent.agent.profile.ProfileMixin._generate_and_save_summary')
             _locked_print_warning(f"[summary] generation failed: {e}")
         finally:
             self._summary_lock.release()

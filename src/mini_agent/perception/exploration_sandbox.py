@@ -124,7 +124,9 @@ class ExplorationSandbox:
                 return False
             capability_lower = (capability_id or "").lower()
             return any(zone and zone.lower() in capability_lower for zone in high_risk_zones)
-        except Exception:
+        except Exception as _mini_agent_exc:
+            from mini_agent.errors import log_exception
+            log_exception(_mini_agent_exc, where='mini_agent.perception.exploration_sandbox.ExplorationSandbox._is_high_risk_domain')
             return False
 
     def _risk_adjusted_token_limit(self, capability_id: str) -> Optional[int]:
@@ -149,7 +151,9 @@ class ExplorationSandbox:
             if exploration_budget <= 0:
                 return None
             return int(exploration_budget * 0.5)
-        except Exception:
+        except Exception as _mini_agent_exc:
+            from mini_agent.errors import log_exception
+            log_exception(_mini_agent_exc, where='mini_agent.perception.exploration_sandbox.ExplorationSandbox._risk_adjusted_token_limit')
             return None
 
     @contextlib.contextmanager
@@ -203,6 +207,8 @@ class ExplorationSandbox:
         try:
             yield ctx
         except Exception as e:
+            from mini_agent.errors import log_exception
+            log_exception(e, where='mini_agent.perception.exploration_sandbox.ExplorationSandbox.create')
             report.error = str(e)
             report.success = False
         finally:

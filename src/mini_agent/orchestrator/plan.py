@@ -358,7 +358,9 @@ class ExecutionPlan:
                 encoding="utf-8",
             )
             return self._snapshot_path
-        except Exception:
+        except Exception as _mini_agent_exc:
+            from mini_agent.errors import log_exception
+            log_exception(_mini_agent_exc, where='mini_agent.orchestrator.plan.ExecutionPlan.save_snapshot')
             return None
 
     @classmethod
@@ -374,7 +376,9 @@ class ExecutionPlan:
             if not path.exists():
                 return None
             data = json.loads(path.read_text(encoding="utf-8"))
-        except Exception:
+        except Exception as _mini_agent_exc:
+            from mini_agent.errors import log_exception
+            log_exception(_mini_agent_exc, where='mini_agent.orchestrator.plan.ExecutionPlan.load_snapshot')
             return None
 
         try:
@@ -392,7 +396,9 @@ class ExecutionPlan:
                 plan._tasks[task.id] = task
             plan.bind_snapshot_path(path)
             return plan
-        except Exception:
+        except Exception as _mini_agent_exc:
+            from mini_agent.errors import log_exception
+            log_exception(_mini_agent_exc, where='mini_agent.orchestrator.plan.ExecutionPlan.load_snapshot')
             return None
 
 

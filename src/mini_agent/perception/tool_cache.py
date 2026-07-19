@@ -84,7 +84,9 @@ def _normalize_path(path: str) -> str:
     """
     try:
         return Path(path).resolve().as_posix()
-    except Exception:
+    except Exception as _mini_agent_exc:
+        from mini_agent.errors import log_exception
+        log_exception(_mini_agent_exc, where='mini_agent.perception.tool_cache._normalize_path')
         return path
 
 

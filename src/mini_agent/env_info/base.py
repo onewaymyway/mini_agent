@@ -58,5 +58,7 @@ class EnvInfoProvider(ABC):
             return {}
         try:
             return self.collect() or {}
-        except Exception:
+        except Exception as _mini_agent_exc:
+            from mini_agent.errors import log_exception
+            log_exception(_mini_agent_exc, where='mini_agent.env_info.base.EnvInfoProvider.safe_collect')
             return {}

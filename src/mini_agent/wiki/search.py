@@ -171,7 +171,9 @@ def _llm_rerank(
     )
     try:
         reply = llm_call(prompt) or ""
-    except Exception:
+    except Exception as _mini_agent_exc:
+        from mini_agent.errors import log_exception
+        log_exception(_mini_agent_exc, where='mini_agent.wiki.search._llm_rerank')
         reply = ""
 
     answer = reply
@@ -194,7 +196,9 @@ def _load_all_pages_full_scan(paths: AgentPaths) -> list[WikiPage]:
     for md_path in discover_pages(paths):
         try:
             all_pages.append(parse_page(md_path))
-        except Exception:
+        except Exception as _mini_agent_exc:
+            from mini_agent.errors import log_exception
+            log_exception(_mini_agent_exc, where='mini_agent.wiki.search._load_all_pages_full_scan')
             continue
     return all_pages
 
@@ -224,7 +228,9 @@ def _gather_via_index(
             continue
         try:
             by_id[pid] = parse_page(md_path)
-        except Exception:
+        except Exception as _mini_agent_exc:
+            from mini_agent.errors import log_exception
+            log_exception(_mini_agent_exc, where='mini_agent.wiki.search._gather_via_index')
             continue
 
     rule_hits = _rule_prefilter(
@@ -247,7 +253,9 @@ def _resolve_lazy(
         return None
     try:
         page = parse_page(md_path)
-    except Exception:
+    except Exception as _mini_agent_exc:
+        from mini_agent.errors import log_exception
+        log_exception(_mini_agent_exc, where='mini_agent.wiki.search._resolve_lazy')
         return None
     by_id[pid] = page
     return page

@@ -31,13 +31,17 @@ class AppLifecycleCollector(BaseCollector):
     def _snapshot(self) -> set[str]:
         try:
             import psutil  # type: ignore
-        except Exception:
+        except Exception as _mini_agent_exc:
+            from mini_agent.errors import log_exception
+            log_exception(_mini_agent_exc, where='mini_agent.perception.behavior.collectors.app_lifecycle.AppLifecycleCollector._snapshot')
             return set()
         names = set()
         for p in psutil.process_iter(["name"]):
             try:
                 n = p.info.get("name") or ""
-            except Exception:
+            except Exception as _mini_agent_exc:
+                from mini_agent.errors import log_exception
+                log_exception(_mini_agent_exc, where='mini_agent.perception.behavior.collectors.app_lifecycle.AppLifecycleCollector._snapshot')
                 continue
             if not n or n.lower().startswith(_NOISE_PREFIXES):
                 continue

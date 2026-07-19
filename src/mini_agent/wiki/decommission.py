@@ -121,7 +121,9 @@ def check_and_plan(paths: AgentPaths, *, write_report: bool = True) -> Decommiss
 
     try:
         readiness = evaluate_promotion_readiness(paths)
-    except Exception:
+    except Exception as _mini_agent_exc:
+        from mini_agent.errors import log_exception
+        log_exception(_mini_agent_exc, where='mini_agent.wiki.decommission.check_and_plan')
         return DecommissionPlan(ready=False, blocking_reasons=["评估过程出错，本次视为未就绪"])
 
     ready = readiness.overall_ready
@@ -137,7 +139,9 @@ def check_and_plan(paths: AgentPaths, *, write_report: bool = True) -> Decommiss
     if write_report:
         try:
             _write_report(paths, plan)
-        except Exception:
+        except Exception as _mini_agent_exc:
+            from mini_agent.errors import log_exception
+            log_exception(_mini_agent_exc, where='mini_agent.wiki.decommission.check_and_plan')
             pass
 
     return plan
@@ -168,7 +172,9 @@ def load_last_report(paths: AgentPaths) -> Optional[dict]:
         return None
     try:
         return json.loads(path.read_text(encoding="utf-8"))
-    except Exception:
+    except Exception as _mini_agent_exc:
+        from mini_agent.errors import log_exception
+        log_exception(_mini_agent_exc, where='mini_agent.wiki.decommission.load_last_report')
         return None
 
 

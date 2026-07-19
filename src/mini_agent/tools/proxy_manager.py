@@ -98,6 +98,8 @@ def register_proxy_tools(registry: ToolRegistry, paths) -> None:
                 _do_refresh(paths, keep_alive=3, check_url="https://www.gstatic.com/generate_204", concurrency=concurrency)
             )
         except Exception as e:  # noqa: BLE001
+            from mini_agent.errors import log_exception
+            log_exception(e, where='mini_agent.tools.proxy_manager.register_proxy_tools.proxy_refresh')
             return json.dumps({"status": "error", "error": str(e)})
         return json.dumps(
             {

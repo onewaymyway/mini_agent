@@ -39,7 +39,9 @@ def _get_http_gate():
         bridge = get_bridge()
         if bridge.broadcaster._loop is not None:
             return bridge
-    except Exception:
+    except Exception as _mini_agent_exc:
+        from mini_agent.errors import log_exception
+        log_exception(_mini_agent_exc, where='mini_agent.interaction._get_http_gate')
         return None
     return None
 
@@ -50,7 +52,9 @@ def _get_current_turn_id() -> str:
         bridge = get_bridge()
         if bridge.agent:
             return getattr(bridge.agent, "_http_turn_id", "")
-    except Exception:
+    except Exception as _mini_agent_exc:
+        from mini_agent.errors import log_exception
+        log_exception(_mini_agent_exc, where='mini_agent.interaction._get_current_turn_id')
         pass
     return ""
 
@@ -65,7 +69,9 @@ def _has_local_terminal() -> bool:
     """
     try:
         return sys.stdin is not None and sys.stdin.isatty()
-    except Exception:
+    except Exception as _mini_agent_exc:
+        from mini_agent.errors import log_exception
+        log_exception(_mini_agent_exc, where='mini_agent.interaction._has_local_terminal')
         return False
 
 
@@ -101,7 +107,9 @@ def interruptible_readline(interrupt_event: threading.Event, timeout: Optional[f
                 return None
         try:
             line = sys.stdin.readline()
-        except Exception:
+        except Exception as _mini_agent_exc:
+            from mini_agent.errors import log_exception
+            log_exception(_mini_agent_exc, where='mini_agent.interaction.interruptible_readline')
             return None
         if not line:
             return None
@@ -114,7 +122,9 @@ def interruptible_readline(interrupt_event: threading.Event, timeout: Optional[f
         try:
             line = sys.stdin.readline()
             result_holder.append(line)
-        except Exception:
+        except Exception as _mini_agent_exc:
+            from mini_agent.errors import log_exception
+            log_exception(_mini_agent_exc, where='mini_agent.interaction.interruptible_readline._read_stdin')
             result_holder.append("")
         finally:
             stdin_done.set()
@@ -176,7 +186,9 @@ def ask(
 
     try:
         bridge.set_state("waiting_permission")  # 复用现成的"等待用户"状态展示
-    except Exception:
+    except Exception as _mini_agent_exc:
+        from mini_agent.errors import log_exception
+        log_exception(_mini_agent_exc, where='mini_agent.interaction.ask')
         pass
 
     result_holder: dict = {"answer": None, "source": ""}
@@ -203,7 +215,9 @@ def ask(
         # 与 permissions.py::confirm(interrupt_event=...) 的约定完全一致。
         try:
             local_answer = local_read(decided_event)
-        except Exception:
+        except Exception as _mini_agent_exc:
+            from mini_agent.errors import log_exception
+            log_exception(_mini_agent_exc, where='mini_agent.interaction.ask')
             local_answer = None
 
         if local_answer is not None and not decided_event.is_set():
@@ -235,7 +249,9 @@ def ask(
     try:
         if bridge._state == "waiting_permission":
             bridge.set_state("running")
-    except Exception:
+    except Exception as _mini_agent_exc:
+        from mini_agent.errors import log_exception
+        log_exception(_mini_agent_exc, where='mini_agent.interaction.ask')
         pass
 
     return answer

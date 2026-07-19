@@ -398,6 +398,8 @@ class WorkflowRunner:
         try:
             return bool(eval(condition, {"__builtins__": {}}, ns))  # noqa: S307
         except Exception as e:
+            from mini_agent.errors import log_exception
+            log_exception(e, where='mini_agent.workflow.runner.WorkflowRunner._eval_condition')
             import mini_agent.ui.renderer as R
             R.print_warning(f"[Workflow] 条件表达式执行失败 {condition!r}: {e}，默认跳过步骤")
             return False
@@ -533,6 +535,8 @@ class WorkflowRunner:
                 duration_seconds=time.monotonic() - t_start,
             )
         except Exception as e:
+            from mini_agent.errors import log_exception
+            log_exception(e, where='mini_agent.workflow.runner.WorkflowRunner._execute_step')
             return StepResult(
                 step_id=step.id,
                 status=StepStatus.FAILED,

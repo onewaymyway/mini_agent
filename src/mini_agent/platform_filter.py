@@ -157,7 +157,9 @@ class LoadPolicy:
             return
         try:
             data = json.loads(path.read_text(encoding="utf-8"))
-        except Exception:
+        except Exception as _mini_agent_exc:
+            from mini_agent.errors import log_exception
+            log_exception(_mini_agent_exc, where='mini_agent.platform_filter.LoadPolicy._load')
             return
         if not isinstance(data, dict):
             return
@@ -219,7 +221,9 @@ class LoadPolicy:
                 data = json.loads(path.read_text(encoding="utf-8"))
                 if not isinstance(data, dict):
                     data = {}
-            except Exception:
+            except Exception as _mini_agent_exc:
+                from mini_agent.errors import log_exception
+                log_exception(_mini_agent_exc, where='mini_agent.platform_filter.LoadPolicy._persist_auto_quarantine')
                 data = {}
         aq = data.get("auto_quarantine")
         if not isinstance(aq, dict):
@@ -229,7 +233,9 @@ class LoadPolicy:
         data["auto_quarantine"] = aq
         try:
             path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
-        except Exception:
+        except Exception as _mini_agent_exc:
+            from mini_agent.errors import log_exception
+            log_exception(_mini_agent_exc, where='mini_agent.platform_filter.LoadPolicy._persist_auto_quarantine')
             pass
 
     # ── 平台判定 ───────────────────────────────────────────────────────────

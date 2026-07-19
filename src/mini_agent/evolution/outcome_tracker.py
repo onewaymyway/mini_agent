@@ -99,14 +99,18 @@ def _load_all(paths) -> list[TrackedCommit]:
         return []
     try:
         data = json.loads(p.read_text(encoding="utf-8"))
-    except Exception:
+    except Exception as _mini_agent_exc:
+        from mini_agent.errors import log_exception
+        log_exception(_mini_agent_exc, where='mini_agent.evolution.outcome_tracker._load_all')
         return []
     records = data.get("tracked_commits", [])
     result = []
     for r in records:
         try:
             result.append(TrackedCommit.from_dict(r))
-        except Exception:
+        except Exception as _mini_agent_exc:
+            from mini_agent.errors import log_exception
+            log_exception(_mini_agent_exc, where='mini_agent.evolution.outcome_tracker._load_all')
             continue
     return result
 
@@ -119,7 +123,9 @@ def _save_all(paths, records: list[TrackedCommit]) -> None:
     try:
         tmp.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
         os.replace(tmp, p)
-    except Exception:
+    except Exception as _mini_agent_exc:
+        from mini_agent.errors import log_exception
+        log_exception(_mini_agent_exc, where='mini_agent.evolution.outcome_tracker._save_all')
         tmp.unlink(missing_ok=True)
 
 
@@ -155,7 +161,9 @@ def _current_trigger_count(paths, memory_backend, lesson_group_id: str) -> Optio
     try:
         group = _find_lesson_group(memory_backend, lesson_group_id)
         return group.total_occurrence if group is not None else 0
-    except Exception:
+    except Exception as _mini_agent_exc:
+        from mini_agent.errors import log_exception
+        log_exception(_mini_agent_exc, where='mini_agent.evolution.outcome_tracker._current_trigger_count')
         return None
 
 
@@ -168,7 +176,9 @@ def _lesson_group_baseline(memory_backend, lesson_group_id: str) -> int:
     try:
         group = _find_lesson_group(memory_backend, lesson_group_id)
         return group.total_occurrence if group is not None else 0
-    except Exception:
+    except Exception as _mini_agent_exc:
+        from mini_agent.errors import log_exception
+        log_exception(_mini_agent_exc, where='mini_agent.evolution.outcome_tracker._lesson_group_baseline')
         return 0
 
 
@@ -226,7 +236,9 @@ def _write_eval_failure_lesson(paths, memory_backend, record: "TrackedCommit") -
             confidence=0.6,  # 有实测数据支持，但样本量通常有限，给中等可信度
         )
         memory_backend.add(entry)
-    except Exception:
+    except Exception as _mini_agent_exc:
+        from mini_agent.errors import log_exception
+        log_exception(_mini_agent_exc, where='mini_agent.evolution.outcome_tracker._write_eval_failure_lesson')
         import logging
         logging.getLogger(__name__).debug(
             "[outcome_tracker] _write_eval_failure_lesson failed", exc_info=True
@@ -249,7 +261,9 @@ def _write_eval_failure_lesson(paths, memory_backend, record: "TrackedCommit") -
                 "post_trigger_count": record.post_trigger_count,
             },
         )
-    except Exception:
+    except Exception as _mini_agent_exc:
+        from mini_agent.errors import log_exception
+        log_exception(_mini_agent_exc, where='mini_agent.evolution.outcome_tracker._write_eval_failure_lesson')
         pass
 
 
@@ -286,7 +300,9 @@ def record_commit_baseline(
             commit_summary=commit_summary,
         ))
         _save_all(paths, records)
-    except Exception:
+    except Exception as _mini_agent_exc:
+        from mini_agent.errors import log_exception
+        log_exception(_mini_agent_exc, where='mini_agent.evolution.outcome_tracker.record_commit_baseline')
         import logging
         logging.getLogger(__name__).debug(
             "[outcome_tracker] record_commit_baseline failed", exc_info=True
@@ -309,7 +325,9 @@ def mark_reverted(paths, commit_id: str) -> None:
                 changed = True
         if changed:
             _save_all(paths, records)
-    except Exception:
+    except Exception as _mini_agent_exc:
+        from mini_agent.errors import log_exception
+        log_exception(_mini_agent_exc, where='mini_agent.evolution.outcome_tracker.mark_reverted')
         pass
 
 
@@ -347,7 +365,9 @@ def _write_eval_success_experience(paths, record: "TrackedCommit") -> None:
             reusable=True,
             confidence=0.6,
         )
-    except Exception:
+    except Exception as _mini_agent_exc:
+        from mini_agent.errors import log_exception
+        log_exception(_mini_agent_exc, where='mini_agent.evolution.outcome_tracker._write_eval_success_experience')
         import logging
         logging.getLogger(__name__).debug(
             "[outcome_tracker] _write_eval_success_experience failed", exc_info=True
@@ -396,7 +416,9 @@ def tick(paths, memory_backend) -> list[TrackedCommit]:
                 _write_eval_success_experience(paths, r)
         if changed:
             _save_all(paths, records)
-    except Exception:
+    except Exception as _mini_agent_exc:
+        from mini_agent.errors import log_exception
+        log_exception(_mini_agent_exc, where='mini_agent.evolution.outcome_tracker.tick')
         import logging
         logging.getLogger(__name__).debug("[outcome_tracker] tick failed", exc_info=True)
     return resolved

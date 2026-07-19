@@ -59,6 +59,8 @@ def make_llm_call(
             latency_s=time.time() - t0,
         )
     except Exception as e:
+        from mini_agent.errors import log_exception
+        log_exception(e, where='mini_agent.ensemble.strategies.make_llm_call')
         return Candidate(
             idx=idx, content="", source="llm_call",
             meta={}, error=f"{type(e).__name__}: {e}", latency_s=time.time() - t0,

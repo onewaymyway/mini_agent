@@ -146,7 +146,9 @@ class ContextBuilder:
         if self._llm_call_getter is not None:
             try:
                 llm_call = self._llm_call_getter()
-            except Exception:
+            except Exception as _mini_agent_exc:
+                from mini_agent.errors import log_exception
+                log_exception(_mini_agent_exc, where='mini_agent.context_builder.ContextBuilder._try_inject_wiki_search')
                 llm_call = None
 
         try:
@@ -156,7 +158,9 @@ class ContextBuilder:
                 confidence_weight=getattr(self.cfg.memory, "wiki_confidence_weight", None),
                 use_index=getattr(self.cfg.memory, "wiki_index_reuse_enabled", True),
             )
-        except Exception:
+        except Exception as _mini_agent_exc:
+            from mini_agent.errors import log_exception
+            log_exception(_mini_agent_exc, where='mini_agent.context_builder.ContextBuilder._try_inject_wiki_search')
             return False
 
         if not result or not result.grounded_page_ids:
@@ -182,7 +186,9 @@ class ContextBuilder:
                     page = pages_by_id.get(pid)
                     if page is not None:
                         increment_grounded_hit_count(wiki_paths, page)
-        except Exception:
+        except Exception as _mini_agent_exc:
+            from mini_agent.errors import log_exception
+            log_exception(_mini_agent_exc, where='mini_agent.context_builder.ContextBuilder._try_inject_wiki_search')
             pass
 
         snippet_body = result.answer.strip() if result.answer else "\n".join(
@@ -207,7 +213,9 @@ class ContextBuilder:
                 record_search_comparison(
                     wiki_paths, wiki_grounded=True, shelf_grounded=False, query=query,
                 )
-        except Exception:
+        except Exception as _mini_agent_exc:
+            from mini_agent.errors import log_exception
+            log_exception(_mini_agent_exc, where='mini_agent.context_builder.ContextBuilder._try_inject_wiki_search')
             pass
 
         return True
@@ -226,7 +234,9 @@ class ContextBuilder:
                     memories = library.shelf_search(
                         self.memory, query, k=self.cfg.memory_top_k
                     )
-                except Exception:
+                except Exception as _mini_agent_exc:
+                    from mini_agent.errors import log_exception
+                    log_exception(_mini_agent_exc, where='mini_agent.context_builder.ContextBuilder._inject_shelf_search_chain')
                     memories = None
         if not memories:
             try:
@@ -235,7 +245,9 @@ class ContextBuilder:
                     self.memory, self.global_memory, query,
                     k=self.cfg.memory_top_k,
                 )
-            except Exception:
+            except Exception as _mini_agent_exc:
+                from mini_agent.errors import log_exception
+                log_exception(_mini_agent_exc, where='mini_agent.context_builder.ContextBuilder._inject_shelf_search_chain')
                 memories = self.memory.search(query, k=self.cfg.memory_top_k)
         if memories:
             snippets = "\n".join(
@@ -296,7 +308,9 @@ class ContextBuilder:
                 persona = loader.get(persona_name) if loader else None
                 if persona is not None:
                     base += "\n\n" + render_persona_prompt(persona)
-            except Exception:
+            except Exception as _mini_agent_exc:
+                from mini_agent.errors import log_exception
+                log_exception(_mini_agent_exc, where='mini_agent.context_builder.ContextBuilder.build')
                 pass  # persona 系统失败不应阻断 system prompt 组装
 
         # ── Skill 目录注入（带缓存）────────────────────────────────────────
@@ -315,7 +329,9 @@ class ContextBuilder:
         if self._notepad_getter is not None:
             try:
                 notepad_content = self._notepad_getter()
-            except Exception:
+            except Exception as _mini_agent_exc:
+                from mini_agent.errors import log_exception
+                log_exception(_mini_agent_exc, where='mini_agent.context_builder.ContextBuilder.build')
                 notepad_content = None
             if notepad_content is not None:
                 from mini_agent.prompts import pm as _pm
@@ -350,7 +366,9 @@ class ContextBuilder:
                 sm_fragment = self._self_model_getter()
                 if sm_fragment:
                     base += "\n\n" + sm_fragment
-            except Exception:
+            except Exception as _mini_agent_exc:
+                from mini_agent.errors import log_exception
+                log_exception(_mini_agent_exc, where='mini_agent.context_builder.ContextBuilder.build')
                 pass  # 感知层失败不阻断 system prompt 组装
 
         # ── 长期记忆（使用 turn 级缓存，不重复检索）──────────────────────
@@ -397,12 +415,16 @@ class ContextBuilder:
         try:
             from mini_agent.storage.paths import AgentPaths
             from mini_agent.perception import workdir_knowledge as wk
-        except Exception:
+        except Exception as _mini_agent_exc:
+            from mini_agent.errors import log_exception
+            log_exception(_mini_agent_exc, where='mini_agent.context_builder.ContextBuilder._build_workdir_knowledge_block')
             return ""
 
         try:
             paths = AgentPaths(self.cfg.project_root)
-        except Exception:
+        except Exception as _mini_agent_exc:
+            from mini_agent.errors import log_exception
+            log_exception(_mini_agent_exc, where='mini_agent.context_builder.ContextBuilder._build_workdir_knowledge_block')
             return ""
 
         lines: list[str] = []
@@ -422,7 +444,9 @@ class ContextBuilder:
         # active WorkThread 进度
         try:
             active_threads = wk.get_active_work_threads(paths)
-        except Exception:
+        except Exception as _mini_agent_exc:
+            from mini_agent.errors import log_exception
+            log_exception(_mini_agent_exc, where='mini_agent.context_builder.ContextBuilder._build_workdir_knowledge_block')
             active_threads = []
         if active_threads:
             thread_lines = ["## Active work threads (cross-session)"]
@@ -441,7 +465,9 @@ class ContextBuilder:
         try:
             limit = getattr(self.cfg.workdir_knowledge, "open_threads_inject_limit", 5)
             high_priority = wk.get_high_priority_open_threads(paths, limit=limit)
-        except Exception:
+        except Exception as _mini_agent_exc:
+            from mini_agent.errors import log_exception
+            log_exception(_mini_agent_exc, where='mini_agent.context_builder.ContextBuilder._build_workdir_knowledge_block')
             high_priority = []
         if high_priority:
             ot_lines = ["## High-priority open threads"]
@@ -475,12 +501,16 @@ class ContextBuilder:
         try:
             from mini_agent.storage.paths import AgentPaths
             from mini_agent.perception import global_knowledge as gk
-        except Exception:
+        except Exception as _mini_agent_exc:
+            from mini_agent.errors import log_exception
+            log_exception(_mini_agent_exc, where='mini_agent.context_builder.ContextBuilder._build_global_knowledge_block')
             return ""
 
         try:
             paths = AgentPaths(self.cfg.project_root)
-        except Exception:
+        except Exception as _mini_agent_exc:
+            from mini_agent.errors import log_exception
+            log_exception(_mini_agent_exc, where='mini_agent.context_builder.ContextBuilder._build_global_knowledge_block')
             return ""
 
         lines: list[str] = []
@@ -488,12 +518,16 @@ class ContextBuilder:
         # self_assessment（always-on，精简注入）+ pending_evolve_branches
         try:
             profile = gk.load_self_profile(paths)
-        except Exception:
+        except Exception as _mini_agent_exc:
+            from mini_agent.errors import log_exception
+            log_exception(_mini_agent_exc, where='mini_agent.context_builder.ContextBuilder._build_global_knowledge_block')
             profile = None
         if profile is not None:
             try:
                 assessment_block = profile.self_assessment.to_prompt_block()
-            except Exception:
+            except Exception as _mini_agent_exc:
+                from mini_agent.errors import log_exception
+                log_exception(_mini_agent_exc, where='mini_agent.context_builder.ContextBuilder._build_global_knowledge_block')
                 assessment_block = ""
             if assessment_block:
                 lines.append(assessment_block)
@@ -512,12 +546,16 @@ class ContextBuilder:
             try:
                 limit = getattr(self.cfg.global_knowledge, "activity_log_inject_limit", 5)
                 recent_activity = gk.load_recent_activity(paths, limit=limit)
-            except Exception:
+            except Exception as _mini_agent_exc:
+                from mini_agent.errors import log_exception
+                log_exception(_mini_agent_exc, where='mini_agent.context_builder.ContextBuilder._build_global_knowledge_block')
                 recent_activity = []
             try:
                 index = gk.load_projects_index(paths)
                 total_projects = len(index.projects)
-            except Exception:
+            except Exception as _mini_agent_exc:
+                from mini_agent.errors import log_exception
+                log_exception(_mini_agent_exc, where='mini_agent.context_builder.ContextBuilder._build_global_knowledge_block')
                 total_projects = 0
 
             if recent_activity or total_projects:

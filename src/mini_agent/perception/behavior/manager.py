@@ -304,7 +304,9 @@ class BehaviorPerceptionManager:
             while not self._purge_stop.is_set():
                 try:
                     self._store.purge_older_than(self._cfg.retention_days)
-                except Exception:
+                except Exception as _mini_agent_exc:
+                    from mini_agent.errors import log_exception
+                    log_exception(_mini_agent_exc, where='mini_agent.perception.behavior.manager.BehaviorPerceptionManager._start_purge_loop._loop')
                     pass
                 self._purge_stop.wait(3600)  # 每小时检查一次
 
@@ -332,7 +334,9 @@ class BehaviorPerceptionManager:
                     try:
                         generate_daily_summary(self, now.date().isoformat())
                         last_run_day = now.date()
-                    except Exception:
+                    except Exception as _mini_agent_exc:
+                        from mini_agent.errors import log_exception
+                        log_exception(_mini_agent_exc, where='mini_agent.perception.behavior.manager.BehaviorPerceptionManager._start_analysis_loop._loop')
                         pass
                 self._analysis_stop.wait(60)
 

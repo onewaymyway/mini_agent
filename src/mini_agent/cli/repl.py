@@ -159,6 +159,8 @@ def run_repl(agent: Agent, skill_loader: SkillLoader) -> None:
                     _cancel_running_tasks()
                     R.print_interrupt()
                 except Exception as e:
+                    from mini_agent.errors import log_exception
+                    log_exception(e, where='mini_agent.cli.repl.run_repl')
                     _term.force_end_stream()
                     R.print_error(f"API error (injected turn): {e}")
                     if agent.cfg.verbose:
@@ -177,6 +179,8 @@ def run_repl(agent: Agent, skill_loader: SkillLoader) -> None:
                 log_exception(_mini_agent_exc, where='mini_agent.cli.repl')
                 pass
         except Exception as e:
+            from mini_agent.errors import log_exception
+            log_exception(e, where='mini_agent.cli.repl.run_repl')
             _term.force_end_stream()
             R.print_error(f"API error: {e}")
             if agent.cfg.verbose:
@@ -421,7 +425,9 @@ def _handle_digest_cmd(agent) -> None:
         try:
             from mini_agent.storage.paths import AgentPaths
             paths = AgentPaths(agent.cfg.project_root)
-        except Exception:
+        except Exception as _mini_agent_exc:
+            from mini_agent.errors import log_exception
+            log_exception(_mini_agent_exc, where='mini_agent.cli.repl._handle_digest_cmd')
             R.print_error("Cannot access project paths.")
             return
 
@@ -435,6 +441,8 @@ def _handle_digest_cmd(agent) -> None:
         summary = build_digest_summary(records)
         R.print_info(summary)
     except Exception as e:
+        from mini_agent.errors import log_exception
+        log_exception(e, where='mini_agent.cli.repl._handle_digest_cmd')
         R.print_warning(f"无法读取 activity_digest: {e}")
 
 
@@ -457,6 +465,8 @@ def _handle_retry(agent: Agent, args: Optional[list[str]] = None) -> None:
     except KeyboardInterrupt:
         R.print_interrupt()
     except Exception as e:
+        from mini_agent.errors import log_exception
+        log_exception(e, where='mini_agent.cli.repl._handle_retry')
         R.print_error(f"Retry failed: {e}")
         if agent.cfg.verbose:
             import traceback
@@ -492,7 +502,9 @@ def _get_http_bridge():
         bridge = get_bridge()
         # 只有 agent 已注入（即 HttpServer 真正启动了）才视为 HTTP 模式
         return bridge if bridge.agent is not None else None
-    except Exception:
+    except Exception as _mini_agent_exc:
+        from mini_agent.errors import log_exception
+        log_exception(_mini_agent_exc, where='mini_agent.cli.repl._get_http_bridge')
         return None
 
 
@@ -514,6 +526,8 @@ def _handle_model_cmd(model_name: str, agent: Agent) -> None:
             + f"  (provider: {entry.config.provider})"
         )
     except Exception as e:
+        from mini_agent.errors import log_exception
+        log_exception(e, where='mini_agent.cli.repl._handle_model_cmd')
         R.print_error(f"Failed to switch model: {e}")
 
 
@@ -596,6 +610,8 @@ def _compact_history(agent: Agent) -> None:
         if summary:
             R.print_markdown(summary)
     except Exception as e:
+        from mini_agent.errors import log_exception
+        log_exception(e, where='mini_agent.cli.repl._compact_history')
         R.print_error(f"Compact failed: {e}")
 
 
@@ -611,6 +627,8 @@ def _compact_and_continue(agent: Agent) -> None:
         if summary:
             R.print_markdown(summary)
     except Exception as e:
+        from mini_agent.errors import log_exception
+        log_exception(e, where='mini_agent.cli.repl._compact_and_continue')
         R.print_error(f"Compact failed: {e}")
         R.print_error(pm.fragment("cli_messages", "COMPACT_CONTINUE_FAILED"))
         return
@@ -647,6 +665,8 @@ def _compact_and_continue(agent: Agent) -> None:
             from mini_agent.errors import log_exception
             log_exception(_mini_agent_exc, where='mini_agent.cli.repl')
     except Exception as e:
+        from mini_agent.errors import log_exception
+        log_exception(e, where='mini_agent.cli.repl._compact_and_continue')
         _term.force_end_stream()
         R.print_error(f"API error (compact_continue): {e}")
         if agent.cfg.verbose:

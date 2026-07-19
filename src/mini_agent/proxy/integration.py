@@ -57,7 +57,9 @@ def load_integration_config(paths) -> dict[str, Any]:
         return dict(_DEFAULT_CONFIG)
     try:
         data = json.loads(p.read_text(encoding="utf-8"))
-    except Exception:
+    except Exception as _mini_agent_exc:
+        from mini_agent.errors import log_exception
+        log_exception(_mini_agent_exc, where='mini_agent.proxy.integration.load_integration_config')
         return dict(_DEFAULT_CONFIG)
     merged = dict(_DEFAULT_CONFIG)
     merged.update(data)

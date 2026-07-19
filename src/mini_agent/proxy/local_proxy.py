@@ -181,7 +181,9 @@ async def _relay_vless(client_reader, client_writer, connector: VlessConnector, 
                 if not data:
                     break
                 await send(data)
-        except Exception:
+        except Exception as _mini_agent_exc:
+            from mini_agent.errors import log_exception
+            log_exception(_mini_agent_exc, where='mini_agent.proxy.local_proxy._relay_vless._client_to_remote')
             pass
 
     async def _remote_to_client():
@@ -192,7 +194,9 @@ async def _relay_vless(client_reader, client_writer, connector: VlessConnector, 
                     break
                 client_writer.write(data)
                 await client_writer.drain()
-        except Exception:
+        except Exception as _mini_agent_exc:
+            from mini_agent.errors import log_exception
+            log_exception(_mini_agent_exc, where='mini_agent.proxy.local_proxy._relay_vless._remote_to_client')
             pass
         finally:
             client_writer.close()

@@ -331,7 +331,9 @@ class RetryPolicy:
         try:
             from mini_agent.orchestrator.concurrency import get_retry_countdown_state
             _countdown = get_retry_countdown_state()
-        except Exception:
+        except Exception as _mini_agent_exc:
+            from mini_agent.errors import log_exception
+            log_exception(_mini_agent_exc, where='mini_agent.llm.retry.RetryPolicy.call_with_retry')
             _countdown = None
 
         attempt = 0

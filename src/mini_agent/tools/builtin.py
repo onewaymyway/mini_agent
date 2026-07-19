@@ -99,6 +99,8 @@ def bash(command: str, timeout: int = 300, workdir: Optional[str] = None) -> str
         return f"[timeout after {timeout}s]"
 
     except Exception as e:
+        from mini_agent.errors import log_exception
+        log_exception(e, where='mini_agent.tools.builtin.bash')
         import traceback
         traceback.print_exc()
         return f"[error: {e}]"
@@ -172,6 +174,8 @@ def _bash_stream(command: str, *, timeout: int, cwd: Path, env: dict) -> str:
             **_popen_kwargs,
         )
     except Exception as e:
+        from mini_agent.errors import log_exception
+        log_exception(e, where='mini_agent.tools.builtin._bash_stream')
         import traceback
         traceback.print_exc()
         return f"[error: {e}]"
@@ -186,18 +190,26 @@ def _bash_stream(command: str, *, timeout: int, cwd: Path, env: dict) -> str:
                     ["taskkill", "/PID", str(proc.pid), "/T", "/F"],
                     capture_output=True,
                 )
-            except Exception:
+            except Exception as _mini_agent_exc:
+                from mini_agent.errors import log_exception
+                log_exception(_mini_agent_exc, where='mini_agent.tools.builtin._bash_stream._kill_on_timeout')
                 try:
                     proc.kill()
-                except Exception:
+                except Exception as _mini_agent_exc:
+                    from mini_agent.errors import log_exception
+                    log_exception(_mini_agent_exc, where='mini_agent.tools.builtin._bash_stream._kill_on_timeout')
                     pass
         else:
             try:
                 os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
-            except Exception:
+            except Exception as _mini_agent_exc:
+                from mini_agent.errors import log_exception
+                log_exception(_mini_agent_exc, where='mini_agent.tools.builtin._bash_stream._kill_on_timeout')
                 try:
                     proc.kill()
-                except Exception:
+                except Exception as _mini_agent_exc:
+                    from mini_agent.errors import log_exception
+                    log_exception(_mini_agent_exc, where='mini_agent.tools.builtin._bash_stream._kill_on_timeout')
                     pass
 
     watchdog = threading.Timer(timeout, _kill_on_timeout)
@@ -211,7 +223,9 @@ def _bash_stream(command: str, *, timeout: int, cwd: Path, env: dict) -> str:
             chunks.append(line)
             try:
                 R.console.print(_bash_decode(line), end="")
-            except Exception:
+            except Exception as _mini_agent_exc:
+                from mini_agent.errors import log_exception
+                log_exception(_mini_agent_exc, where='mini_agent.tools.builtin._bash_stream')
                 pass  # 终端打印失败不应影响命令本身的执行/结果收集
         proc.wait()
     finally:
@@ -224,9 +238,13 @@ def _bash_stream(command: str, *, timeout: int, cwd: Path, env: dict) -> str:
                     chunks.append(rest)
                     try:
                         R.console.print(_bash_decode(rest), end="")
-                    except Exception:
+                    except Exception as _mini_agent_exc:
+                        from mini_agent.errors import log_exception
+                        log_exception(_mini_agent_exc, where='mini_agent.tools.builtin._bash_stream')
                         pass
-            except Exception:
+            except Exception as _mini_agent_exc:
+                from mini_agent.errors import log_exception
+                log_exception(_mini_agent_exc, where='mini_agent.tools.builtin._bash_stream')
                 pass
 
     combined = _bash_decode(b"".join(chunks)).rstrip()
@@ -327,7 +345,9 @@ def read_file(
                 try:
                     with p.open("rb") as f:
                         line_count = f.read().count(b"\n") + 1
-                except Exception:
+                except Exception as _mini_agent_exc:
+                    from mini_agent.errors import log_exception
+                    log_exception(_mini_agent_exc, where='mini_agent.tools.builtin.read_file')
                     line_count = None
                 line_info = f", {line_count} lines" if line_count is not None else ""
                 return (
@@ -343,6 +363,8 @@ def read_file(
     try:
         lines = p.read_text(encoding="utf-8", errors="replace").splitlines(keepends=True)
     except Exception as e:
+        from mini_agent.errors import log_exception
+        log_exception(e, where='mini_agent.tools.builtin.read_file')
         return f"[error reading {path}: {e}]"
 
     sl = (start_line - 1) if start_line else 0
@@ -386,6 +408,8 @@ def write_file(path: str, content: str) -> str:
         lines = content.count("\n") + 1
         return f"Written {lines} lines to {path}"
     except Exception as e:
+        from mini_agent.errors import log_exception
+        log_exception(e, where='mini_agent.tools.builtin.write_file')
         return f"[error writing {path}: {e}]"
 
 
@@ -418,6 +442,8 @@ def create_file(path: str, content: str = "") -> str:
         p.write_text(content, encoding="utf-8")
         return f"Created {path}"
     except Exception as e:
+        from mini_agent.errors import log_exception
+        log_exception(e, where='mini_agent.tools.builtin.create_file')
         return f"[error creating {path}: {e}]"
 
 
@@ -443,6 +469,8 @@ def delete_file(path: str) -> str:
         p.unlink()
         return f"Deleted {path}"
     except Exception as e:
+        from mini_agent.errors import log_exception
+        log_exception(e, where='mini_agent.tools.builtin.delete_file')
         return f"[error: {e}]"
 
 
@@ -645,7 +673,9 @@ def _tree_walk(
     for d in dirs:
         try:
             sub_files, sub_bytes = _tree_count(d, include_hidden=include_hidden)
-        except Exception:
+        except Exception as _mini_agent_exc:
+            from mini_agent.errors import log_exception
+            log_exception(_mini_agent_exc, where='mini_agent.tools.builtin._tree_walk')
             sub_files, sub_bytes = 0, 0
         size_str = f"  [{_fmt_size(sub_bytes)}, {sub_files} files]" if not show_files else ""
         out.append(f"{prefix}📁 {d.name}/{size_str}")
@@ -758,7 +788,9 @@ def grep(
             continue
         try:
             all_lines = fpath.read_text(encoding="utf-8", errors="replace").splitlines()
-        except Exception:
+        except Exception as _mini_agent_exc:
+            from mini_agent.errors import log_exception
+            log_exception(_mini_agent_exc, where='mini_agent.tools.builtin.grep')
             continue
         rel = str(fpath.relative_to(root)) if root.is_dir() else str(fpath)
         for i, line in enumerate(all_lines):
@@ -845,6 +877,8 @@ def patch_file(path: str, old_string: str, new_string: str) -> str:
     try:
         original = p.read_text(encoding="utf-8")
     except Exception as e:
+        from mini_agent.errors import log_exception
+        log_exception(e, where='mini_agent.tools.builtin.patch_file')
         return f"[error reading {path}: {e}]"
 
     # ── 第一步：精确匹配 ───────────────────────────────────────────────────────
@@ -893,6 +927,8 @@ def patch_file(path: str, old_string: str, new_string: str) -> str:
     try:
         p.write_text(updated, encoding="utf-8")
     except Exception as e:
+        from mini_agent.errors import log_exception
+        log_exception(e, where='mini_agent.tools.builtin.patch_file')
         return f"[error writing {path}: {e}]"
 
     diff = "".join(
@@ -1010,6 +1046,8 @@ def patch_file_simple(
     try:
         original = p.read_text(encoding="utf-8")
     except Exception as e:
+        from mini_agent.errors import log_exception
+        log_exception(e, where='mini_agent.tools.builtin.patch_file_simple')
         return f"[error reading {path}: {e}]"
 
     lines = original.splitlines(keepends=True)
@@ -1096,6 +1134,8 @@ def patch_file_simple(
     try:
         p.write_text(updated, encoding="utf-8")
     except Exception as e:
+        from mini_agent.errors import log_exception
+        log_exception(e, where='mini_agent.tools.builtin.patch_file_simple')
         return f"[error writing {path}: {e}]"
 
     diff = "".join(
@@ -1149,6 +1189,8 @@ def diff_files(path_a: str, path_b: str, context_lines: int = 3) -> str:
         lines_a = pa.read_text(encoding="utf-8", errors="replace").splitlines(keepends=True)
         lines_b = pb.read_text(encoding="utf-8", errors="replace").splitlines(keepends=True)
     except Exception as e:
+        from mini_agent.errors import log_exception
+        log_exception(e, where='mini_agent.tools.builtin.diff_files')
         return f"[error reading files: {e}]"
 
     context_lines = max(0, min(context_lines, 20))
@@ -1290,6 +1332,8 @@ def recall_decisions(proposal: str, tags: Optional[list] = None) -> str:
             _decision_recall_paths, proposal, tags=tags, llm_call=_decision_recall_llm_call,
         )
     except Exception as e:
+        from mini_agent.errors import log_exception
+        log_exception(e, where='mini_agent.tools.builtin.recall_decisions')
         return f"[error: decision recall failed: {e}]"
     return note or "No related historical decisions found for this topic."
 

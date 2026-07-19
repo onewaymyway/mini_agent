@@ -198,10 +198,12 @@ def publish(
         _maybe_rotate(paths)
         with _LockedFile(events_path) as f:
             f.write(evt.to_json_line() + "\n")
-    except Exception:
+    except Exception as _mini_agent_exc:
         # 发布失败不应该拖垮调用方的主流程（proprioception 写入、outcome 判定
         # 等都是"顺带产出事件"，不是这些流程本身的核心职责）。调用方如果需要
         # 感知发布失败，可以自行 try/except 包一层再调用 publish()。
+        from mini_agent.errors import log_exception
+        log_exception(_mini_agent_exc, where='mini_agent.perception.system_events.publish')
         pass
     return evt
 
@@ -222,7 +224,9 @@ def _maybe_rotate(paths: "AgentPaths") -> None:
             # 锁住主文件期间做 rename，避免和正在写入的另一个进程交错。
             # rename 是同一文件系统内的原子操作（POSIX 和 Windows 均如此）。
             events_path.replace(archive_path)
-    except Exception:
+    except Exception as _mini_agent_exc:
+        from mini_agent.errors import log_exception
+        log_exception(_mini_agent_exc, where='mini_agent.perception.system_events._maybe_rotate')
         pass  # 归档失败不影响主流程，下次 publish 时会再尝试
 
 
@@ -238,7 +242,9 @@ def _load_cursor(paths: "AgentPaths", consumer_name: str) -> dict:
         return {"last_event_id": "", "last_ts": 0.0}
     try:
         return json.loads(p.read_text(encoding="utf-8"))
-    except Exception:
+    except Exception as _mini_agent_exc:
+        from mini_agent.errors import log_exception
+        log_exception(_mini_agent_exc, where='mini_agent.perception.system_events._load_cursor')
         return {"last_event_id": "", "last_ts": 0.0}
 
 
@@ -250,7 +256,9 @@ def _save_cursor(paths: "AgentPaths", consumer_name: str, evt: SystemEvent) -> N
             json.dumps({"last_event_id": evt.event_id, "last_ts": evt.ts}, ensure_ascii=False),
             encoding="utf-8",
         )
-    except Exception:
+    except Exception as _mini_agent_exc:
+        from mini_agent.errors import log_exception
+        log_exception(_mini_agent_exc, where='mini_agent.perception.system_events._save_cursor')
         pass
 
 
@@ -289,7 +297,9 @@ def poll_since(
                     continue
                 try:
                     d = json.loads(line)
-                except Exception:
+                except Exception as _mini_agent_exc:
+                    from mini_agent.errors import log_exception
+                    log_exception(_mini_agent_exc, where='mini_agent.perception.system_events.poll_since')
                     continue
                 evt = SystemEvent.from_dict(d)
                 # ts 相同时用 event_id 兜底去重（同一时刻可能有多条事件）
@@ -300,7 +310,9 @@ def poll_since(
                 if event_types is not None and evt.event_type not in event_types:
                     continue
                 result.append(evt)
-    except Exception:
+    except Exception as _mini_agent_exc:
+        from mini_agent.errors import log_exception
+        log_exception(_mini_agent_exc, where='mini_agent.perception.system_events.poll_since')
         return []
 
     if advance_cursor and result:

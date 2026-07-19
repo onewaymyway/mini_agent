@@ -88,7 +88,9 @@ def compute_extraction_stats(paths: AgentPaths, *, last_n: int | None = None) ->
                 continue
             try:
                 records.append(json.loads(line))
-            except Exception:
+            except Exception as _mini_agent_exc:
+                from mini_agent.errors import log_exception
+                log_exception(_mini_agent_exc, where='mini_agent.wiki.stats.compute_extraction_stats')
                 continue
 
     if last_n is not None:
@@ -122,7 +124,9 @@ def compute_stats(paths: AgentPaths) -> WikiStats:
     for md_path in discover_pages(paths):
         try:
             page = parse_page(md_path)
-        except Exception:
+        except Exception as _mini_agent_exc:
+            from mini_agent.errors import log_exception
+            log_exception(_mini_agent_exc, where='mini_agent.wiki.stats.compute_stats')
             continue
         stats.total_pages += 1
         stats.by_type[page.type] = stats.by_type.get(page.type, 0) + 1

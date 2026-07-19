@@ -315,7 +315,9 @@ def _read_json(path: Path, default: object) -> object:
         return default
     try:
         return json.loads(path.read_text(encoding="utf-8"))
-    except Exception:
+    except Exception as _mini_agent_exc:
+        from mini_agent.errors import log_exception
+        log_exception(_mini_agent_exc, where='mini_agent.perception.affordance_analyzer._read_json')
         return default
 
 
@@ -330,7 +332,9 @@ def persist_affordance_map(paths: "AgentPaths", affordance_map: "AffordanceMap")
     try:
         data = {"ts": time.time(), **affordance_map.to_dict()}
         _atomic_write_json(_affordance_snapshot_path(paths), data)
-    except Exception:
+    except Exception as _mini_agent_exc:
+        from mini_agent.errors import log_exception
+        log_exception(_mini_agent_exc, where='mini_agent.perception.affordance_analyzer.persist_affordance_map')
         pass
 
 
@@ -345,7 +349,9 @@ def load_recent_high_risk_zones(paths: "AgentPaths", *, max_age_minutes: float =
         if not raw or time.time() - float(raw.get("ts", 0.0)) > max_age_minutes * 60:
             return []
         return list(raw.get("high_risk_zones", []))
-    except Exception:
+    except Exception as _mini_agent_exc:
+        from mini_agent.errors import log_exception
+        log_exception(_mini_agent_exc, where='mini_agent.perception.affordance_analyzer.load_recent_high_risk_zones')
         return []
 
 
@@ -431,7 +437,9 @@ def load_behavior_context(cfg: "AppConfig", *, window_minutes: int = 30) -> Opti
         since = _time.time() - window_minutes * 60
         events = mgr.query(since=since, limit=200)
         return _summarize_behavior_events(events)
-    except Exception:
+    except Exception as _mini_agent_exc:
+        from mini_agent.errors import log_exception
+        log_exception(_mini_agent_exc, where='mini_agent.perception.affordance_analyzer.load_behavior_context')
         return None
 
 
@@ -474,7 +482,9 @@ def inject_affordance_map(agent: "Agent", cfg: "AppConfig", *, log=None) -> None
                 try:
                     from mini_agent.evolution.consolidation import build_capability_map
                     capability_entries = build_capability_map(paths, None)
-                except Exception:
+                except Exception as _mini_agent_exc:
+                    from mini_agent.errors import log_exception
+                    log_exception(_mini_agent_exc, where='mini_agent.perception.affordance_analyzer.inject_affordance_map')
                     capability_entries = []
 
         behavior_context = _load_behavior_context(cfg)
@@ -483,7 +493,9 @@ def inject_affordance_map(agent: "Agent", cfg: "AppConfig", *, log=None) -> None
         try:
             from mini_agent.perception.affordance_calibration import load_weights
             weights = load_weights(paths)   # 读取上次 calibrate() 持久化的权重，文件不存在则默认权重
-        except Exception:
+        except Exception as _mini_agent_exc:
+            from mini_agent.errors import log_exception
+            log_exception(_mini_agent_exc, where='mini_agent.perception.affordance_analyzer.inject_affordance_map')
             weights = None
 
         affordance_map = AffordanceAnalyzer().analyze(
@@ -526,7 +538,9 @@ def inject_affordance_map(agent: "Agent", cfg: "AppConfig", *, log=None) -> None
         target_cfg = getattr(agent, "cfg", None) or cfg
         existing = getattr(target_cfg, "system_extra", "") or ""
         target_cfg.system_extra = (existing + "\n\n" + fragment).strip()
-    except Exception:
+    except Exception as _mini_agent_exc:
+        from mini_agent.errors import log_exception
+        log_exception(_mini_agent_exc, where='mini_agent.perception.affordance_analyzer.inject_affordance_map')
         import logging
         (log or logging.getLogger(__name__)).debug(
             "[AffordanceMap] injection failed", exc_info=True

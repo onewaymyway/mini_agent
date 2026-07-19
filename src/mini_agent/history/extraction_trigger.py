@@ -89,11 +89,15 @@ def load_known_entity_names(paths) -> set[str]:
                 continue
             try:
                 page = parse_page(p)
-            except Exception:
+            except Exception as _mini_agent_exc:
+                from mini_agent.errors import log_exception
+                log_exception(_mini_agent_exc, where='mini_agent.history.extraction_trigger.load_known_entity_names')
                 continue
             names.add(page.id.lower())
             names.update(part.lower() for part in page.id.split("-") if len(part) > 2)
-    except Exception:
+    except Exception as _mini_agent_exc:
+        from mini_agent.errors import log_exception
+        log_exception(_mini_agent_exc, where='mini_agent.history.extraction_trigger.load_known_entity_names')
         return set()
     return names
 
@@ -230,7 +234,9 @@ def _read_json_dict(path) -> dict:
         import json
         data = json.loads(path.read_text(encoding="utf-8"))
         return data if isinstance(data, dict) else {}
-    except Exception:
+    except Exception as _mini_agent_exc:
+        from mini_agent.errors import log_exception
+        log_exception(_mini_agent_exc, where='mini_agent.history.extraction_trigger._read_json_dict')
         return {}
 
 
@@ -267,14 +273,18 @@ def save_extraction_cursor(paths, last_extracted_index: int) -> None:
                 json.dump({"last_extracted_index": last_extracted_index}, f)
                 f.flush()
                 os.fsync(f.fileno())
-        except Exception:
+        except Exception as _mini_agent_exc:
+            from mini_agent.errors import log_exception
+            log_exception(_mini_agent_exc, where='mini_agent.history.extraction_trigger.save_extraction_cursor')
             try:
                 os.unlink(tmp)
             except OSError:
                 pass
             return
         os.replace(tmp, path)
-    except Exception:
+    except Exception as _mini_agent_exc:
+        from mini_agent.errors import log_exception
+        log_exception(_mini_agent_exc, where='mini_agent.history.extraction_trigger.save_extraction_cursor')
         pass
 
 
@@ -302,7 +312,9 @@ def log_extraction_trigger_event(
         }
         with open(path, "a", encoding="utf-8") as f:
             f.write(json.dumps(record, ensure_ascii=False) + "\n")
-    except Exception:
+    except Exception as _mini_agent_exc:
+        from mini_agent.errors import log_exception
+        log_exception(_mini_agent_exc, where='mini_agent.history.extraction_trigger.log_extraction_trigger_event')
         pass
 
 

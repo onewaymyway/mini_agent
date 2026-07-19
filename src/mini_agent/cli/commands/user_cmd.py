@@ -63,9 +63,13 @@ def _request(client, method: str, path: str, json_body: Optional[dict] = None):
         body = e.read()
         try:
             return e.code, json.loads(body)
-        except Exception:
+        except Exception as _mini_agent_exc:
+            from mini_agent.errors import log_exception
+            log_exception(_mini_agent_exc, where='mini_agent.cli.commands.user_cmd._request')
             return e.code, {"detail": body.decode(errors="replace")}
     except Exception as e:
+        from mini_agent.errors import log_exception
+        log_exception(e, where='mini_agent.cli.commands.user_cmd._request')
         return 0, {"detail": str(e)}
 
 

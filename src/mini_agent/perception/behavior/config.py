@@ -106,8 +106,10 @@ def load_behavior_config(project_root: Optional[Path] = None) -> BehaviorConfig:
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
         return BehaviorConfig.from_dict(data)
-    except Exception:
+    except Exception as _mini_agent_exc:
         # 配置文件损坏时，安全兜底为默认关闭状态，不让感知系统"默认打开"。
+        from mini_agent.errors import log_exception
+        log_exception(_mini_agent_exc, where='mini_agent.perception.behavior.config.load_behavior_config')
         return BehaviorConfig()
 
 
@@ -118,7 +120,9 @@ def save_behavior_config(cfg: BehaviorConfig, project_root: Optional[Path] = Non
     try:
         import stat
         path.chmod(stat.S_IRUSR | stat.S_IWUSR)
-    except Exception:
+    except Exception as _mini_agent_exc:
+        from mini_agent.errors import log_exception
+        log_exception(_mini_agent_exc, where='mini_agent.perception.behavior.config.save_behavior_config')
         pass
 
 

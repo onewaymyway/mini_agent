@@ -75,7 +75,9 @@ def _term_write_lock_ctx():
         _server_mod = _sys.modules.get("mini_agent.api.server")
         if _server_mod is not None:
             return _server_mod._local_term_write_lock
-    except Exception:
+    except Exception as _mini_agent_exc:
+        from mini_agent.errors import log_exception
+        log_exception(_mini_agent_exc, where='mini_agent.agent._helpers._term_write_lock_ctx')
         pass
     return None
 
@@ -139,7 +141,9 @@ def _parse_lesson_candidates(text: str) -> list[dict]:
     import json as _json
     try:
         data = _json.loads(cleaned)
-    except Exception:
+    except Exception as _mini_agent_exc:
+        from mini_agent.errors import log_exception
+        log_exception(_mini_agent_exc, where='mini_agent.agent._helpers._parse_lesson_candidates')
         return []
 
     if not isinstance(data, list):
@@ -169,7 +173,9 @@ def _parse_timeline_summary(text: str) -> dict:
     import json as _json
     try:
         data = _json.loads(cleaned)
-    except Exception:
+    except Exception as _mini_agent_exc:
+        from mini_agent.errors import log_exception
+        log_exception(_mini_agent_exc, where='mini_agent.agent._helpers._parse_timeline_summary')
         return {}
 
     if not isinstance(data, dict):

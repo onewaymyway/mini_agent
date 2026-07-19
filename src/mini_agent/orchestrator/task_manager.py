@@ -103,7 +103,9 @@ class TaskManager:
         from .concurrency import get_task_sem
         try:
             return get_task_sem().limit
-        except Exception:
+        except Exception as _mini_agent_exc:
+            from mini_agent.errors import log_exception
+            log_exception(_mini_agent_exc, where='mini_agent.orchestrator.task_manager.TaskManager.max_workers')
             return 4
 
     @max_workers.setter
@@ -543,5 +545,7 @@ class TaskManager:
         if self.on_status_change:
             try:
                 self.on_status_change(rec)
-            except Exception:
+            except Exception as _mini_agent_exc:
+                from mini_agent.errors import log_exception
+                log_exception(_mini_agent_exc, where='mini_agent.orchestrator.task_manager.TaskManager._notify_status')
                 pass

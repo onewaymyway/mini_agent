@@ -165,6 +165,8 @@ def _handle_git_sub(args: list[str], mgr, cfg) -> None:
     try:
         written = mgr.install_git_hooks(Path(args[1]).expanduser().resolve(), report_url, api_token)
     except Exception as e:
+        from mini_agent.errors import log_exception
+        log_exception(e, where='mini_agent.cli.commands.behavior._handle_git_sub')
         R.print_error(f"安装失败: {e}")
         return
     R.print_success(f"已安装 git hook: {', '.join(str(p) for p in written)}")
@@ -255,6 +257,8 @@ def _handle_browser_sub(args: list[str], mgr) -> None:
         try:
             st = mgr.browser_start()
         except Exception as e:
+            from mini_agent.errors import log_exception
+            log_exception(e, where='mini_agent.cli.commands.behavior._handle_browser_sub')
             R.print_error(f"启动失败: {e}")
             return
         R.print_success(f"专用调试浏览器已启动并开始采集: {st}")

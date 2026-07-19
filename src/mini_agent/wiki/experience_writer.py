@@ -73,7 +73,9 @@ def write_experience(
             extra_frontmatter={"source_kind": source_kind},
             overwrite=True,
         )
-    except Exception:
+    except Exception as _mini_agent_exc:
+        from mini_agent.errors import log_exception
+        log_exception(_mini_agent_exc, where='mini_agent.wiki.experience_writer.write_experience')
         return None
 
 

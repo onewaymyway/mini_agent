@@ -174,13 +174,17 @@ class HybridMemoryBackend(MemoryBackend):
                 tier="tick",
                 payload={"query_tokens": tokens},
             )
-        except Exception:
+        except Exception as _mini_agent_exc:
+            from mini_agent.errors import log_exception
+            log_exception(_mini_agent_exc, where='mini_agent.perception.hybrid_memory_backend.HybridMemoryBackend._maybe_report_sparse_region')
             pass  # 事件发布是旁路增强，不能影响记忆检索本身
 
     def _safe_embed(self, text: str) -> Optional[list]:
         try:
             return self._embed_call(text)
-        except Exception:
+        except Exception as _mini_agent_exc:
+            from mini_agent.errors import log_exception
+            log_exception(_mini_agent_exc, where='mini_agent.perception.hybrid_memory_backend.HybridMemoryBackend._safe_embed')
             return None
 
     def _embedding_score_all(self, query_vec: list) -> list:
@@ -242,7 +246,9 @@ class HybridMemoryBackend(MemoryBackend):
                     continue
                 data = json.loads(line)
                 self._vectors[data["entry_id"]] = data["vector"]
-        except Exception:
+        except Exception as _mini_agent_exc:
+            from mini_agent.errors import log_exception
+            log_exception(_mini_agent_exc, where='mini_agent.perception.hybrid_memory_backend.HybridMemoryBackend._ensure_vectors_loaded')
             pass
 
     def _append_vector_to_disk(self, entry_id: str, vector: list) -> None:
@@ -250,7 +256,9 @@ class HybridMemoryBackend(MemoryBackend):
             self._vectors_path.parent.mkdir(parents=True, exist_ok=True)
             with self._vectors_path.open("a", encoding="utf-8") as f:
                 f.write(json.dumps({"entry_id": entry_id, "vector": vector}) + "\n")
-        except Exception:
+        except Exception as _mini_agent_exc:
+            from mini_agent.errors import log_exception
+            log_exception(_mini_agent_exc, where='mini_agent.perception.hybrid_memory_backend.HybridMemoryBackend._append_vector_to_disk')
             pass
 
     def _rewrite_vectors_disk(self) -> None:
@@ -261,7 +269,9 @@ class HybridMemoryBackend(MemoryBackend):
                 for eid, vec in self._vectors.items():
                     f.write(json.dumps({"entry_id": eid, "vector": vec}) + "\n")
             tmp.replace(self._vectors_path)
-        except Exception:
+        except Exception as _mini_agent_exc:
+            from mini_agent.errors import log_exception
+            log_exception(_mini_agent_exc, where='mini_agent.perception.hybrid_memory_backend.HybridMemoryBackend._rewrite_vectors_disk')
             pass
 
     def _maybe_embed_async(self, entry: "MemoryEntry") -> None:
@@ -276,7 +286,9 @@ class HybridMemoryBackend(MemoryBackend):
                 self._ensure_vectors_loaded()
                 self._vectors[entry.entry_id] = vec
                 self._append_vector_to_disk(entry.entry_id, vec)
-        except Exception:
+        except Exception as _mini_agent_exc:
+            from mini_agent.errors import log_exception
+            log_exception(_mini_agent_exc, where='mini_agent.perception.hybrid_memory_backend.HybridMemoryBackend._maybe_embed_async')
             pass
 
 
