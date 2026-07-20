@@ -23,3 +23,4 @@ src/mini_agent.egg-info/
 .claude/skills/browser-cdp/temp_data/
 .claude/skills/browser-cdp/search_results/
 .claude/skills/browser-cdp/zhihu_results/
+temp_data/
