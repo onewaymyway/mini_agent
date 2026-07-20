@@ -840,6 +840,12 @@ LLM Provider 的 API Key 和 Fallback Chain 配置详见上方 [配置 API Key �
 
 详见 [重试退避指南](docs/retry-backoff-guide.md)。
 
+### 旁路 LLM 调用（LLMHelper）
+
+主对话循环之外的 LLM 调用（judge 评审、ensemble 候选生成、目标自动拆解、记忆摘要重写、路由判定等）统一通过 `LLMHelper`（`src/mini_agent/llm/service.py`）发起：默认跟随 agent 当前正在用的 provider/model（含 `/model` 切换），自带统一重试，需要临时切换模型/温度时可用 `override_model` / `override_provider` / `override_temperature` 显式覆盖。
+
+详见 [LLMHelper 使用指南](docs/llm-helper-guide.md)。
+
 ## 测试
 
 ```bash
@@ -898,6 +904,7 @@ python -m pytest tests/ -q
 - [工具结果原始留存与智能摘要指南](docs/tool-result-raw-store-and-smart-summary-guide.md) — **新增**：超长工具结果截断后原文留存（`view_raw_result` 回看）+ 可选 LLM 智能摘要（`smart_summary_enabled`），失败自动降级
 - [单元测试指南](docs/unit-testing-guide.md) — 测试结构、编写规范与运行方式
 - [Role Agent 指南](docs/role-agents-guide.md) — EvaluatorAgent/CoachAgent 等框架自动触发的角色 Agent（不同于 `/agents` 命令管理的、由 `spawn_named_agent` 主动调用的自定义子 Agent）
+- [LLMHelper 使用指南](docs/llm-helper-guide.md) — **新增**：主对话循环之外（judge/ensemble/目标拆解/摘要重写/路由判定）的统一 LLM 调用入口，跟随 `/model` 切换 + 统一重试 + `override_*` 逃生舱，含新增旁路调用的检查清单
 - [Goal 模式指南](docs/goal-mode-guide.md) — **新增**：设定一个目标，Agent 自动多轮尝试直至达成或触发安全阀，`/goal` 命令，验收标准协商、GoalJudge 判定、异常中断恢复
 - [轮次守门员指南（Turn Judge）](docs/turn-judge-guide.md) — **新增**：轮次结束等待用户输入前，自动核查是"真的需要人"还是"技术性卡壳"，后者由系统代替用户反馈继续推进
 - [Workflow 指南](docs/workflow-guide.md) — 工作流编排机制

@@ -49,6 +49,7 @@
 - 编辑文件时优先使用 `patch_file` 而非 `write_file`
 - 核心代码放在 `src/mini_agent/` 目录下，使用包导入方式
 - 所有与 LLM 的交互通过 `llm.LLMClient` 接口，切换 provider 只需修改配置
+- **主对话循环之外**的 LLM 调用（judge / ensemble / 目标拆解 / 摘要重写 / 路由判定等旁路场景）一律通过 `LLMHelper`（`agent.llm_helper` 或 `LLMHelper.from_config(cfg)`），**禁止**再手写 `LLMConfig.from_app_config(cfg)` + `create_client()` 的重复组合；详见"LLMHelper：旁路 LLM 调用统一入口"章节与 [LLMHelper 使用指南](docs/llm-helper-guide.md)
 - 所有系统或者模块都应该在/docs 目录下有对应的设计与功能说明
 - 未来规划相关的文档放在/next_doc 目录下
 - 关键功能都应该在/tests 下有对应的单元测试
@@ -118,6 +119,7 @@ mini-agent user token u_a1b2c3d4                       # 重新生成 token
 - `system_tool_call.py` — 系统工具调用格式转换
 - `providers/` — 各 LLM 提供商实现（anthropic, openai, ollama, nvidia）
 - `debug_logger.py` — LLM 调试日志记录
+- `service.py` — `LLMHelper`：**主对话循环之外**场景（judge / ensemble / 目标拆解 / 摘要重写 / 路由判定……）统一的轻量 LLM 调用入口，详见下方"LLMHelper：旁路 LLM 调用统一入口"与 [LLMHelper 使用指南](docs/llm-helper-guide.md)
 
 ### Agent 核心 (`src/mini_agent/`)
 
@@ -436,6 +438,23 @@ mini-agent user token u_a1b2c3d4                       # 重新生成 token
 - **providers.json**：独立存放含 API key 的敏感配置，已自动加入 `.gitignore`
 - **providers 块合并**：`providers` 字段的全局设置（api_keys、key_rotation 等）自动合并到 chain 每条条目中
 - 参见 [LLM 故障转移指南](docs/llm-failover-guide.md)
+
+### LLMHelper：旁路 LLM 调用统一入口（2026-07 新增）
+
+- 核心模块：`src/mini_agent/llm/service.py`（`LLMHelper`）
+- **解决的问题**：主对话循环之外的 LLM 调用（judge 评审 / ensemble 候选生成 / 目标自动拆解 / 记忆摘要重写 / 路由判定……）此前各处各写各的：有的裸调 `client.chat()` 无重试，有的每次 `LLMConfig.from_app_config(cfg)` 重新读一份**启动时的静态配置**（不跟随会话中 `/model` 切换），甚至有两处传了 `chat()` 不支持的 `max_tokens=` 参数被静默吞掉异常（`objective_executor.py` / `goal_backlog.py` 的历史 bug，均已修复）。
+- **获取方式**：
+  - 有 `Agent` 引用 → `agent.llm_helper`（懒加载属性，每次访问基于当前 `_client_pool`，跟随 `/model` 切换）
+  - 无 `Agent` 引用（独立工具函数/后台任务） → `LLMHelper.from_config(app_cfg)`
+  - 只有单个 `client` 没有 `client_pool`（如 `memory_factory.py`） → 直接用 `LLMClient.chat_with_retry()`，不必强套 `LLMHelper`
+- **两个入口**：`ask(prompt, ...) -> str`（单轮文本，最常用）、`chat(messages, system, tools, ...) -> LLMResponse`（完整能力）
+- **默认路径**：走 `client_pool.call_with_pool`，复用多 key 轮转 + 多配置 fallback
+- **override 逃生舱**：`override_model` / `override_provider` / `override_temperature` 任一传入时，一次性构造独立 client（不进 fallback chain），仍套用同一个 `RetryPolicy`——用于 judge 想固定用更强模型评审这类场景
+- **`max_retries` 按场景区别对待**，无统一默认值套用所有场景：目标拆解/judge 用默认 3，decision 路由判定用 2，ensemble 候选生成用 1（不重试，交给"多候选"机制兜底整体成功率）
+- **工具函数入口**（`tools/orchestration.py` 的 `run_ensemble_llm`/`run_ensemble_subagents`）通过 thread-local provider 机制（`set_current_llm_helper_provider`，与 `active_skills` 同款模式）拿到当前 agent 的 `llm_helper`，未绑定 agent 的线程自动降级为 `LLMHelper.from_config(cfg)`
+- **例外（不接入）**：`orchestrator/sub_agent.py`（独立隔离对话，自带 `LLMClientPool` + 外层重试，设计上不迁移）、`agent/llm_control.py` 的 `/model` 探测调用（故意不重试，避免掩盖配置错误）
+- **新增旁路 LLM 调用的硬性要求**：一律通过 `LLMHelper`（或明确记录例外原因），**禁止**再手写 `LLMConfig.from_app_config(cfg)` + `create_client()` 的组合；自检命令：`grep -rn "LLMConfig.from_app_config" src/`，预期只剩 `sub_agent.py` 与 `agent/core.py` 两处
+- 参见 [LLMHelper 使用指南](docs/llm-helper-guide.md)、`next_doc/llm_helper_unification_plan.md`（完整改造计划）
 
 ### 重试退避策略
 
