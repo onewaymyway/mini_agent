@@ -283,6 +283,14 @@ class Agent(
             from mini_agent.tools.orchestration import set_active_skills_provider
             set_active_skills_provider(lambda: self.skill_loader.active)
 
+        # 跟进 llm_helper_unification_plan.md 第 0 节已知限制：注册"当前
+        # agent.llm_helper"provider，供 run_ensemble_llm / run_ensemble_subagents
+        # 工具读取，使其跟随 /model 切换，而不是退化为启动时的静态配置。
+        # 与上面的 active_skills provider 不同，这个注册不依赖 skill_loader
+        # 是否启用，任何 Agent 实例都应该让 ensemble 工具能拿到自己的 helper。
+        from mini_agent.tools.orchestration import set_current_llm_helper_provider
+        set_current_llm_helper_provider(lambda: self.llm_helper)
+
         # ── 代理池管理工具 ────────────────────────────────────────────────────
         # 让 agent 自己也能查看/触发代理池刷新、管理订阅源、控制"agent 自身请求是否
         # 走代理"的开关（llm_use_proxy / web_search_use_proxy 等），而不是只能靠人

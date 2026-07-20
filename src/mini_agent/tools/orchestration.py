@@ -17,6 +17,15 @@ thread-local 而不是普通单例（Phase E，3.3，对应设计文档第 5 节
     写入新建 Task 的 active_skills 字段，SubAgent 启动时据此激活同名 skill
   - 用 thread-local 是因为每个 SubAgent 在独立线程里构造自己的 Agent 实例，
     普通模块级变量会在并发场景下被互相覆盖（见下方实现注释）
+
+与"主 agent 当前正在用的 llm_helper（跟随 /model 切换）"的连接同样走
+thread-local 机制（跟进 next_doc/llm_helper_unification_plan.md 第 0 节
+已知限制）：
+  - Agent.__init__ 尾部调用 set_current_llm_helper_provider(lambda: self.llm_helper)
+  - run_ensemble_llm / run_ensemble_subagents 通过 _get_current_llm_helper()
+    读取当前线程注册的 helper，传给 ensemble/runner.py；读不到时（如
+    TaskManager 独立运行、无关联 Agent 的场景）退化为原来的
+    LLMHelper.from_config(cfg)，不影响原有行为
 """
 
 from __future__ import annotations
@@ -97,7 +106,39 @@ def _get_active_skills() -> list[str]:
         return []
 
 
-# ── spawn_agent 工具 ──────────────────────────────────────────────────────────
+# ── 模块级"当前 agent 的 llm_helper"提供者（跟进 llm_helper_unification_plan.md
+#    第 0 节已知限制）─────────────────────────────────────────────────────────
+#
+# run_ensemble_llm / run_ensemble_subagents 此前只能拿到 TaskManager.base_cfg
+# （启动时的静态配置），不传 llm_helper 时退化为 LLMHelper.from_config(cfg)，
+# 不会跟随 /model 切换。这里复用与 _active_skills_local 完全相同的 thread-local
+# 模式：Agent.__init__ 尾部注册一个"返回当前 agent.llm_helper"的回调，
+# 工具函数调用时从当前线程读取，从而拿到跟随 /model 切换的 helper，而不是
+# 一份启动时的静态配置。thread-local 而非普通模块级变量的原因同上：
+# 每个 SubAgent 在独立线程里构造自己的 Agent 实例，用普通变量会在并发场景下
+# 被互相覆盖。
+
+_current_llm_helper_local = _threading.local()
+
+
+def set_current_llm_helper_provider(provider: Optional[Callable[[], object]]) -> None:
+    """由 Agent.__init__ 调用，为当前线程注册一个返回 `agent.llm_helper` 的回调。"""
+    _current_llm_helper_local.provider = provider
+
+
+def _get_current_llm_helper():
+    """run_ensemble_llm / run_ensemble_subagents 内部调用；当前线程未注册
+    provider 或调用失败时返回 None（调用方退化为 LLMHelper.from_config(cfg)）。"""
+    provider = getattr(_current_llm_helper_local, "provider", None)
+    if provider is None:
+        return None
+    try:
+        return provider()
+    except Exception as _mini_agent_exc:
+        from mini_agent.errors import log_exception
+        log_exception(_mini_agent_exc, where='mini_agent.tools.orchestration._get_current_llm_helper')
+        return None
+
 
 @tool(
     name="spawn_agent",
@@ -417,6 +458,7 @@ def run_ensemble_llm(
         n=n,
         execution=execution,
         strategy=effective_strategy,
+        llm_helper=_get_current_llm_helper(),
     )
     return json.dumps({
         "final_content": result.final_content,
@@ -491,6 +533,7 @@ def run_ensemble_subagents(
         strategy=effective_strategy,
         variant_prompts=variant_prompts,
         active_skills=_get_active_skills(),
+        llm_helper=_get_current_llm_helper(),
     )
     return json.dumps({
         "final_content": result.final_content,
