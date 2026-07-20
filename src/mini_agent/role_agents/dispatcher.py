@@ -290,6 +290,7 @@ class RoleAgentDispatcher:
         inject_into: list,
         *,
         verbose: bool = True,
+        parent_session_id: Optional[str] = None,
     ) -> list[RoleFeedback]:
         """
         主 Agent 完成输出后触发所有 output 类角色。
@@ -310,6 +311,7 @@ class RoleAgentDispatcher:
                 original_request=original_request,
                 inject_into=inject_into,
                 verbose=verbose,
+                parent_session_id=parent_session_id,
             )
             all_feedbacks.extend(feedbacks)
 
@@ -322,6 +324,7 @@ class RoleAgentDispatcher:
         original_request: str,
         inject_into: list,
         verbose: bool,
+        parent_session_id: Optional[str] = None,
     ) -> list[RoleFeedback]:
         """
         对单个角色 Agent 执行（含多轮修订循环）。
@@ -346,10 +349,14 @@ class RoleAgentDispatcher:
                     original_request=original_request,
                     agent_output=current_output,
                     iteration=iteration,
+                    parent_session_id=parent_session_id,
                 )
             else:
                 # custom role：把输出直接作为 prompt 传入
-                raw = self._run_custom_role(profile, current_output, original_request)
+                raw = self._run_custom_role(
+                    profile, current_output, original_request,
+                    parent_session_id=parent_session_id,
+                )
 
             # [auto_quarantine] evaluator 走 run_evaluator → run_judge_turn，
             # custom role 走 _run_custom_role → run_judge_turn，两者内部已经
@@ -399,6 +406,7 @@ class RoleAgentDispatcher:
         profile: "AgentProfile",
         agent_output: str,
         original_request: str,
+        parent_session_id: Optional[str] = None,
     ) -> str:
         """运行自定义角色 Agent。
 
@@ -420,6 +428,7 @@ class RoleAgentDispatcher:
             system_prompt=profile.system_prompt,
             max_turns=3,
             tools_enabled=False,
+            parent_session_id=parent_session_id,
         )
 
         prompt = f"""请对以下 AI 助手的输出进行分析。
@@ -446,6 +455,7 @@ class RoleAgentDispatcher:
         inject_into: list,
         *,
         verbose: bool = True,
+        parent_session_id: Optional[str] = None,
     ) -> list[RoleFeedback]:
         """
         特定工具调用后触发相关角色 Agent（通常是 CoachAgent）。
@@ -474,9 +484,13 @@ class RoleAgentDispatcher:
                     tool_input=tool_input,
                     tool_output=tool_output,
                     context=context,
+                    parent_session_id=parent_session_id,
                 )
             else:
-                raw = self._run_custom_role(profile, tool_output, context)
+                raw = self._run_custom_role(
+                    profile, tool_output, context,
+                    parent_session_id=parent_session_id,
+                )
 
             # [auto_quarantine] coach 走 run_coach → run_judge_turn，custom role
             # 走 _run_custom_role → run_judge_turn，两者内部已自动上报，这里

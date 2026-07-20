@@ -73,6 +73,7 @@ def run_coach(
     tool_input: dict,
     tool_output: str,
     context: str = "",
+    parent_session_id: Optional[str] = None,
 ) -> str:
     """
     运行 CoachAgent，返回建议文本。
@@ -93,6 +94,7 @@ def run_coach(
         system_prompt=DEFAULT_COACH_SYSTEM,
         max_turns=2,
         tools_enabled=False,
+        parent_session_id=parent_session_id,
     )
 
     prompt = build_coach_prompt(

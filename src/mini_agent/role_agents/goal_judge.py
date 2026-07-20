@@ -96,6 +96,7 @@ def run_goal_judge(
     prior_checklist_lines: str = "",
     verification_result: Optional[dict] = None,
     process_integrity_enabled: bool = False,
+    parent_session_id: Optional[str] = None,
 ) -> str:
     """
     运行 GoalJudgeAgent，返回判定文本（含 GOAL_STATUS 行）。
@@ -165,6 +166,7 @@ def run_goal_judge(
         tools_enabled=tools_enabled,
         allowed_tools=list(getattr(goal_cfg_block, "judge_allowed_tools", []) or []),
         allowed_tool_groups=list(getattr(goal_cfg_block, "judge_allowed_tool_groups", []) or []),
+        parent_session_id=parent_session_id,
     )
 
     prompt = build_goal_judge_prompt(

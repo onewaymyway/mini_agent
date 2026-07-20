@@ -41,6 +41,7 @@ def spawn_judge_agent(
     allowed_tools: Optional[list] = None,
     allowed_tool_groups: Optional[list] = None,
     force_sandbox_when_tools: bool = True,
+    parent_session_id: Optional[str] = None,
 ) -> "Agent":
     """按统一规则构造一个受限的内部判官 Agent 实例。
 
@@ -50,6 +51,12 @@ def spawn_judge_agent(
       - 显式禁用 judge_cfg.turn_judge，防止内部 Agent 对自己递归触发 TurnJudge
       - 按 tools_enabled 开关决定空注册表 or 过滤注册表
       - is_subagent=True 标记（第二道防递归保险）
+
+    parent_session_id：调用方（主 Agent / 上层判官）当前的 session id。
+    传入后，本判官内部 Agent 的 session 会落在
+    <project_root>/.agent/sessions/<parent_session_id>/<自己的 session_id>/
+    下，而不是和主 session 平级——避免子 agent session 散落在
+    sessions_dir 根目录，与主 session 无法区分归属。
     """
     from mini_agent.config import load_config
     from mini_agent.agent import Agent
@@ -77,6 +84,13 @@ def spawn_judge_agent(
         debug_llm_console=getattr(base_cfg, "debug_llm_console", False),
     )
     judge_cfg.api_key = base_cfg.api_key
+
+    # [子 agent session 嵌套] 若调用方提供了 parent_session_id，让本判官内部
+    # Agent 的 session 落在主 session 目录下的子目录，而不是与主 session
+    # 平级散落在 sessions_dir 根目录下。
+    if parent_session_id:
+        from mini_agent.storage.paths import AgentPaths
+        judge_cfg.session_dir = AgentPaths(base_cfg.project_root).session_dir(parent_session_id)
 
     # [BUGFIX] load_config() 的 model=/llm_provider= 参数只影响 judge_cfg 的
     # 顶层 model/llm_provider 字段；但 Agent.__init__ 里真正决定"实际用哪个

@@ -66,6 +66,7 @@ def run_turn_judge(
     auto_round_no: int = 1,
     max_auto_rounds: int = 3,
     hit_max_turns: bool = False,
+    parent_session_id: Optional[str] = None,
 ) -> str:
     """
     运行 TurnJudgeAgent，返回判定文本（含 TURN_STATUS 行）。
@@ -97,6 +98,7 @@ def run_turn_judge(
         ),
         max_turns=2,
         tools_enabled=False,   # 纯文本判定，不挂载任何工具（最小权限、最低延迟）
+        parent_session_id=parent_session_id,
     )
 
     prompt = build_turn_judge_prompt(

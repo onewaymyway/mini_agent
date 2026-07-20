@@ -78,6 +78,7 @@ def run_evaluator(
     original_request: str,
     agent_output: str,
     iteration: int = 1,
+    parent_session_id: Optional[str] = None,
 ) -> str:
     """
     运行 EvaluatorAgent，返回评估文本。
@@ -98,6 +99,7 @@ def run_evaluator(
         # [行为保持] evaluator 此前从未显式设置 agent_name，等价于 load_config 的默认值
         display_name=os.environ.get("AGENT_NAME", DEFAULT_AGENT_NAME),
         system_prompt=DEFAULT_EVALUATOR_SYSTEM,
+        parent_session_id=parent_session_id,
         max_turns=3,           # 评估只需要少量轮次
         tools_enabled=False,   # 评估 agent 不需要任何工具（纯文本输出）
     )

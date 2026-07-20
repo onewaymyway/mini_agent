@@ -398,6 +398,11 @@ class SubAgent:
             # （未启用）的私有缓存，而不是按预期各自新建一份私有缓存。
             tool_cache_enabled=self.base_cfg.tool_cache_enabled,
         )
+        # [session 嵌套] 若有主 session id，让本 SubAgent（task）的 session
+        # 落在 <project_root>/.agent/sessions/<main_session_id>/<自己的 session_id>/
+        # 下，而不是与主 session 平级散落在 sessions_dir 根目录。
+        if self._session_id:
+            cfg.session_dir = AgentPaths(self.base_cfg.project_root).session_dir(self._session_id)
         # 显式设置 API key（从主配置继承）
         if not cfg.api_key and self._api_key:
             cfg.api_key = self._api_key

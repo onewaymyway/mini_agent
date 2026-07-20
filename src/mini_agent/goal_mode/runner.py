@@ -588,6 +588,7 @@ class GoalRunner:
             prior_checklist_lines=prior_checklist_lines,
             verification_result=verification_result,
             process_integrity_enabled=process_integrity_enabled,
+            parent_session_id=getattr(self._agent, "session_id", None),
         )
 
         status = extract_goal_status(raw) or "CONTINUE"  # 提取失败时保守按 CONTINUE 处理
