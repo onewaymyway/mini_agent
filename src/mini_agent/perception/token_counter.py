@@ -24,7 +24,7 @@ def estimate_tokens(text: str) -> int:
         return len(enc.encode(text))
     except Exception as _mini_agent_exc:
         from mini_agent.errors import log_exception
-        log_exception(_mini_agent_exc, where='mini_agent.perception.token_counter.estimate_tokens')
+        # log_exception(_mini_agent_exc, where='mini_agent.perception.token_counter.estimate_tokens')
         return _heuristic_count(text)
 
 
