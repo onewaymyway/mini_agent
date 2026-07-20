@@ -90,7 +90,7 @@ def spawn_judge_agent(
     # 平级散落在 sessions_dir 根目录下。
     if parent_session_id:
         from mini_agent.storage.paths import AgentPaths
-        judge_cfg.session_dir = AgentPaths(base_cfg.project_root).session_dir(parent_session_id)
+        judge_cfg.session.dir = AgentPaths(base_cfg.project_root).session_dir(parent_session_id)
 
     # [BUGFIX] load_config() 的 model=/llm_provider= 参数只影响 judge_cfg 的
     # 顶层 model/llm_provider 字段；但 Agent.__init__ 里真正决定"实际用哪个
