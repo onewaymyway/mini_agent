@@ -82,8 +82,20 @@ def _read_json(path: Path, default: object) -> object:
     观察性数据，读取失败不应阻塞 agent 主流程）。"""
     if not path.exists():
         return default
+    text = path.read_text(encoding="utf-8")
     try:
-        return json.loads(path.read_text(encoding="utf-8"))
+        return json.loads(text)
+    except json.JSONDecodeError:
+        # 容错：文件里可能混入了未转义的原始控制字符（如裸露的 \n / \t），
+        # 常见于非本模块写入路径（手工编辑、其它进程直接 append 等）。
+        # strict=False 允许 JSON 字符串内出现这些控制字符，尽量抢救内容，
+        # 而不是因为一个字符就整份文件报废回退到 default。
+        try:
+            return json.loads(text, strict=False)
+        except Exception as _mini_agent_exc:
+            from mini_agent.errors import log_exception
+            log_exception(_mini_agent_exc, where='mini_agent.perception.workdir_knowledge._read_json')
+            return default
     except Exception as _mini_agent_exc:
         from mini_agent.errors import log_exception
         log_exception(_mini_agent_exc, where='mini_agent.perception.workdir_knowledge._read_json')
@@ -102,6 +114,13 @@ def _read_jsonl(path: Path, limit: Optional[int] = None) -> list[dict]:
                 continue
             try:
                 records.append(json.loads(line))
+            except json.JSONDecodeError:
+                try:
+                    records.append(json.loads(line, strict=False))
+                except Exception as _mini_agent_exc:
+                    from mini_agent.errors import log_exception
+                    log_exception(_mini_agent_exc, where='mini_agent.perception.workdir_knowledge._read_jsonl')
+                    continue
             except Exception as _mini_agent_exc:
                 from mini_agent.errors import log_exception
                 log_exception(_mini_agent_exc, where='mini_agent.perception.workdir_knowledge._read_jsonl')

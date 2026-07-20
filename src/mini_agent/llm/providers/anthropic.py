@@ -21,6 +21,13 @@ from ._base_mixin import ProviderMixin
 
 class AnthropicProvider(ProviderMixin, LLMClient):
 
+    # Anthropic messages.create() 原生接受 content 为 block 列表
+    # （[{"type":"text",...}, {"type":"tool_use",...}]），不需要（也不应该）
+    # 被 ProviderMixin 扁平化成字符串——那样会丢失 Anthropic 自己能理解的
+    # 结构化信息，且没有必要（扁平化只是为了兼容不支持 list content 的
+    # OpenAI 风格端点）。
+    _native_block_content = True
+
     def __init__(self, config: LLMConfig) -> None:
         super().__init__(config)
         self._client = self._build_client()

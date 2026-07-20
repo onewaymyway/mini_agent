@@ -185,7 +185,63 @@ def render_tool_results(tool_calls: list[ToolCall], results: list[str]) -> str:
     return "\n\n".join(parts)
 
 
-# ── thinking/reasoning 提取 ───────────────────────────────────────────────────
+# ── content-block 扁平化（OpenAI 兼容 provider 专用） ──────────────────────────
+#
+# history_manager.append_assistant() 把 assistant 回复存成 Anthropic 风格的
+# content-block 列表：[{"type":"text","text":...}, {"type":"tool_use","id":...,
+# "name":...,"input":...}]（见 history/entry.py）。Anthropic 原生 API 的
+# messages.create() 接受这种 list content，原样传下去没问题。
+#
+# 但所有走 system-prompt 工具协议的 OpenAI 兼容 provider（NVIDIA NIM / OpenAI /
+# Ollama / OpenRouter / Agnes）的 chat/completions 端点，message.content 字段
+# 只接受字符串或 null——传入 list 会被网关的严格 schema 直接拒绝（例如 NVIDIA
+# NIM 返回 400: "data did not match any variant of untagged enum
+# ChatCompletionRequestAssistantMessageContent"）。这些历史消息一旦包含之前的
+# 工具调用（第二轮及以后的对话必然会有），content 就是 list，直接把裸
+# messages 转发给这些 provider 必然触发此错误。
+#
+# 这里补的是转换：把 content-block 列表重新序列化为该协议本身使用的纯文本
+# 格式（<tool_use>{"name":...,"input":...}</tool_use>），与 parse_tool_calls()
+# 能解析的格式完全一致——下一轮模型看到的历史里，自己之前的工具调用仍然是
+# 用它认识的 <tool_use> 标签表示的，语义不丢失，只是从"结构化 block"变回了
+# "协议约定的文本"。
+def flatten_message_content(messages: list[dict]) -> list[dict]:
+    """
+    将 messages 中 content 为 block 列表的条目转换为纯字符串（服务于 OpenAI
+    兼容协议）。content 已经是字符串（或其他非 list 类型）的消息原样返回，
+    不做任何改动——只处理需要转换的那部分，避免影响已经符合协议的消息。
+    """
+    result: list[dict] = []
+    for msg in messages:
+        content = msg.get("content")
+        if not isinstance(content, list):
+            result.append(msg)
+            continue
+        parts: list[str] = []
+        for block in content:
+            if not isinstance(block, dict):
+                continue
+            btype = block.get("type")
+            if btype == "text":
+                text = block.get("text", "")
+                if text:
+                    parts.append(text)
+            elif btype == "tool_use":
+                payload = {"name": block.get("name", ""), "input": block.get("input", {})}
+                parts.append(
+                    f"<tool_use>\n{json.dumps(payload, ensure_ascii=False)}\n</tool_use>"
+                )
+            else:
+                # 未知 block 类型：兜底保留可读文本，避免信息静默丢失，
+                # 优先于"直接跳过"（跳过会让模型看不到这段历史内容）。
+                parts.append(str(block))
+        new_msg = dict(msg)
+        new_msg["content"] = "\n\n".join(parts)
+        result.append(new_msg)
+    return result
+
+
+
 
 def extract_thinking_blocks(text: str) -> tuple[str, str]:
     """

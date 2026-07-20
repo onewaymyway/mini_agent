@@ -33,6 +33,7 @@ from ..system_tool_call import (
     render_tool_results,
     postprocess_response,
     convert_system_to_message,
+    flatten_message_content,
 )
 from mini_agent.prompts import pm as _pm
 
@@ -65,6 +66,11 @@ class ProviderMixin:
     横切 Mixin，必须与 LLMClient 子类一起使用。
     在 MRO 中放在 LLMClient 之前：class MyProvider(ProviderMixin, LLMClient)
     """
+
+    # 是否原生支持 content 为 block 列表（Anthropic messages.create() 支持，
+    # OpenAI 兼容 chat/completions 端点不支持，只接受字符串/null）。
+    # 子类按需覆盖为 True（目前仅 AnthropicProvider）。
+    _native_block_content: bool = False
 
     # ── 带日志和 system tool call 的调用入口 ──────────────────────────────────
 
@@ -293,7 +299,9 @@ class ProviderMixin:
         """
         fmt = getattr(self.config, "system_message_format", "system_field")
         if fmt == "system_role":
-            return convert_system_to_message(system, messages)
+            system, messages = convert_system_to_message(system, messages)
+        if not self._native_block_content:
+            messages = flatten_message_content(messages)
         return system, messages
 
 

@@ -241,3 +241,40 @@ def _result_lang(tool_name: str, result: str) -> Optional[str]:
     if r.startswith("diff ") or r.startswith("---"):
         return "diff"
     return None
+
+
+# ── R：向后兼容命名空间 ─────────────────────────────────────────────────────
+# 大量调用方（tool_executor.py、agent/*.py、cli/*.py 等）历史上都是
+# `from mini_agent.ui.renderer import R` 再 `R.print_xxx(...)` / `R.console.print(...)`
+# / `R.StreamWriter()` 这种"命名空间对象"调用方式（本文件顶部注释也写了这个
+# 约定），但本模块此前只导出了裸的模块级函数，从未真正定义过 R——导致所有
+# 这些调用方在运行时才 ImportError。这里补一个轻量代理类，把本模块的
+# console / StreamWriter / print_* 都挂到 R 上，不改动任何调用方代码。
+class _RendererNamespace:
+    console = console
+    StreamWriter = StreamWriter
+
+    print_tool_call = staticmethod(print_tool_call)
+    print_tool_result = staticmethod(print_tool_result)
+    print_tool_error = staticmethod(print_tool_error)
+    print_header = staticmethod(print_header)
+    print_assistant_prefix = staticmethod(print_assistant_prefix)
+    print_reasoning = staticmethod(print_reasoning)
+    print_reasoning_header = staticmethod(print_reasoning_header)
+    print_reasoning_footer = staticmethod(print_reasoning_footer)
+    print_stats = staticmethod(print_stats)
+    print_skill_loaded = staticmethod(print_skill_loaded)
+    print_info = staticmethod(print_info)
+    print_warning = staticmethod(print_warning)
+    print_error = staticmethod(print_error)
+    print_success = staticmethod(print_success)
+    print_diff = staticmethod(print_diff)
+    print_debug_block = staticmethod(print_debug_block)
+    print_markdown = staticmethod(print_markdown)
+    print_interrupt = staticmethod(print_interrupt)
+    print_retry_banner = staticmethod(print_retry_banner)
+    print_rollback_banner = staticmethod(print_rollback_banner)
+    print_user_prompt = staticmethod(print_user_prompt)
+
+
+R = _RendererNamespace()
