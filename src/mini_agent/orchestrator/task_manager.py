@@ -59,6 +59,7 @@ class TaskManager:
         self._agents:  dict[str, SubAgent] = {}     # task_id → SubAgent
         self._lock = threading.Lock()
         self._session_id: Optional[str] = None      # 由主 Agent 在 session 建立后注入
+        self._session_dir = None                     # [BUGFIX 嵌套] 主 Agent 当前 session 的真实落盘目录
         self._scheduler_thread: Optional[threading.Thread] = None
         self._stop_event = threading.Event()
         self._poll_interval = 0.3   # 调度间隔（秒）
@@ -97,6 +98,19 @@ class TaskManager:
     def set_session_id(self, session_id: str) -> None:
         """由主 Agent 在 session 建立后调用，使后续 SubAgent 任务日志写到正确目录。"""
         self._session_id = session_id
+
+    def set_session_dir(self, session_dir) -> None:
+        """[BUGFIX 子 agent session 嵌套] 由主 Agent 在 session 建立后调用，传入
+        主 Agent 当前 session 的真实落盘目录（Agent._current_session_dir()）。
+
+        与 set_session_id 并列维护：_session_id 单独重新拼接
+        `AgentPaths(project_root).session_dir(session_id)` 时，隐含假设该 session
+        直接挂在 sessions_dir 根目录下——当主 Agent 自己就是一个嵌套的子 agent
+        （例如 SubAgent 内部又派生 SubAgent）时这个假设是错的。有了显式的
+        _session_dir 后，SubAgent._build_agent() 优先使用它，只有它为空时才
+        退回按 id 重新拼接的旧逻辑。
+        """
+        self._session_dir = session_dir
 
     @property
     def max_workers(self) -> int:
@@ -364,6 +378,7 @@ class TaskManager:
             on_log=self._handle_log,
             on_terminal=self._handle_terminal,
             session_id=self._session_id,
+            session_dir=self._session_dir,
             shared_tool_cache=self._shared_tool_cache,
         )
         with self._lock:

@@ -16,6 +16,7 @@ from __future__ import annotations
 from typing import Optional, TYPE_CHECKING
 
 if TYPE_CHECKING:
+    from pathlib import Path
     from mini_agent.config import AppConfig
     from mini_agent.orchestrator.agent_profiles import AgentProfile
 
@@ -79,6 +80,7 @@ def run_evaluator(
     agent_output: str,
     iteration: int = 1,
     parent_session_id: Optional[str] = None,
+    parent_session_dir: Optional["Path"] = None,
 ) -> str:
     """
     运行 EvaluatorAgent，返回评估文本。
@@ -100,6 +102,7 @@ def run_evaluator(
         display_name=os.environ.get("AGENT_NAME", DEFAULT_AGENT_NAME),
         system_prompt=DEFAULT_EVALUATOR_SYSTEM,
         parent_session_id=parent_session_id,
+        parent_session_dir=parent_session_dir,
         max_turns=3,           # 评估只需要少量轮次
         tools_enabled=False,   # 评估 agent 不需要任何工具（纯文本输出）
     )

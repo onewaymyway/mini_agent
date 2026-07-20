@@ -16,6 +16,7 @@ from dataclasses import dataclass
 from typing import Optional, TYPE_CHECKING
 
 if TYPE_CHECKING:
+    from pathlib import Path
     from mini_agent.config import AppConfig
     from mini_agent.agent import Agent
     from mini_agent.orchestrator.agent_profiles import AgentProfile
@@ -42,6 +43,7 @@ def spawn_judge_agent(
     allowed_tool_groups: Optional[list] = None,
     force_sandbox_when_tools: bool = True,
     parent_session_id: Optional[str] = None,
+    parent_session_dir: Optional["Path"] = None,
 ) -> "Agent":
     """按统一规则构造一个受限的内部判官 Agent 实例。
 
@@ -85,10 +87,20 @@ def spawn_judge_agent(
     )
     judge_cfg.api_key = base_cfg.api_key
 
-    # [子 agent session 嵌套] 若调用方提供了 parent_session_id，让本判官内部
-    # Agent 的 session 落在主 session 目录下的子目录，而不是与主 session
-    # 平级散落在 sessions_dir 根目录下。
-    if parent_session_id:
+    # [子 agent session 嵌套] 若调用方提供了 parent_session_id/parent_session_dir，
+    # 让本判官内部 Agent 的 session 落在主 session 目录下的子目录，而不是与主
+    # session 平级散落在 sessions_dir 根目录下。
+    #
+    # [BUGFIX] 优先使用调用方显式传入的 parent_session_dir（调用方通过
+    # Agent._current_session_dir() 取得的真实落盘目录）。只有 parent_session_id
+    # 而没有 parent_session_dir 时，才退回"用 AgentPaths 在 sessions_dir 根目录
+    # 下按 id 拼路径"这种平级假设——当调用方自身就是一个嵌套的子 agent（例如
+    # SubAgent 内部再触发 TurnJudge）时，这个假设是错的：调用方的 session 本来
+    # 就不在 sessions_dir 根目录下，按 id 重新拼出来的路径会指向一个不存在的
+    # 平级目录，导致本判官的 llm_debug.jsonl 等和它真正的 history.json 对不上。
+    if parent_session_dir:
+        judge_cfg.session.dir = parent_session_dir
+    elif parent_session_id:
         from mini_agent.storage.paths import AgentPaths
         judge_cfg.session.dir = AgentPaths(base_cfg.project_root).session_dir(parent_session_id)
 

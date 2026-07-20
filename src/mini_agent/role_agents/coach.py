@@ -16,6 +16,7 @@ from __future__ import annotations
 from typing import Optional, TYPE_CHECKING
 
 if TYPE_CHECKING:
+    from pathlib import Path
     from mini_agent.config import AppConfig
     from mini_agent.orchestrator.agent_profiles import AgentProfile
 
@@ -74,6 +75,7 @@ def run_coach(
     tool_output: str,
     context: str = "",
     parent_session_id: Optional[str] = None,
+    parent_session_dir: Optional["Path"] = None,
 ) -> str:
     """
     运行 CoachAgent，返回建议文本。
@@ -95,6 +97,7 @@ def run_coach(
         max_turns=2,
         tools_enabled=False,
         parent_session_id=parent_session_id,
+        parent_session_dir=parent_session_dir,
     )
 
     prompt = build_coach_prompt(

@@ -98,6 +98,7 @@ class SubAgent:
         on_log: Optional[LogCallback] = None,
         on_terminal: Optional[TerminalCallback] = None,
         session_id: Optional[str] = None,
+        session_dir=None,   # [BUGFIX 子 agent session 嵌套] 主 Agent 当前 session 的真实落盘目录
         shared_tool_cache=None,   # Optional[ToolResultCache]，Phase E / 3.3 跨 SubAgent 共享缓存
     ) -> None:
         self.record = record
@@ -116,12 +117,23 @@ class SubAgent:
 
         # Task 级路径（需要 session_id）
         self._session_id = session_id
+        self._session_dir = session_dir
         if session_id:
-            _paths = AgentPaths(base_cfg.project_root)
-            self._events_path: Optional[Path] = _paths.task_events(session_id, record.task_id)
-            self._output_path: Optional[Path] = _paths.task_output(session_id, record.task_id)
-            self._result_path: Optional[Path] = _paths.task_result(session_id, record.task_id)
-            self._manifest_path: Optional[Path] = _paths.task_manifest(session_id, record.task_id)
+            # [BUGFIX] 优先使用调用方传入的真实 session_dir（Agent._current_session_dir()），
+            # 只有它为空时才退回 AgentPaths 按 id 在 sessions_dir 根目录下重新拼接的旧逻辑
+            # ——那个假设对"主 Agent 自己也是嵌套子 agent"的场景是错的。
+            if session_dir is not None:
+                _tasks_base = Path(session_dir) / "tasks" / record.task_id
+                self._events_path: Optional[Path] = _tasks_base / "events.jsonl"
+                self._output_path: Optional[Path] = _tasks_base / "output.log"
+                self._result_path: Optional[Path] = _tasks_base / "result.json"
+                self._manifest_path: Optional[Path] = _tasks_base / "manifest.json"
+            else:
+                _paths = AgentPaths(base_cfg.project_root)
+                self._events_path: Optional[Path] = _paths.task_events(session_id, record.task_id)
+                self._output_path: Optional[Path] = _paths.task_output(session_id, record.task_id)
+                self._result_path: Optional[Path] = _paths.task_result(session_id, record.task_id)
+                self._manifest_path: Optional[Path] = _paths.task_manifest(session_id, record.task_id)
             # 绑定 manifest 路径，并立即写一份初始 manifest（任务创建时落初始 manifest.json）
             record.bind_manifest_path(self._manifest_path)
             record.write_manifest()
@@ -402,7 +414,10 @@ class SubAgent:
         # 落在 <project_root>/.agent/sessions/<main_session_id>/<自己的 session_id>/
         # 下，而不是与主 session 平级散落在 sessions_dir 根目录。
         if self._session_id:
-            cfg.session.dir = AgentPaths(self.base_cfg.project_root).session_dir(self._session_id)
+            if self._session_dir is not None:
+                cfg.session.dir = self._session_dir
+            else:
+                cfg.session.dir = AgentPaths(self.base_cfg.project_root).session_dir(self._session_id)
         # 显式设置 API key（从主配置继承）
         if not cfg.api_key and self._api_key:
             cfg.api_key = self._api_key

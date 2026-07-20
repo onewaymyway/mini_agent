@@ -468,16 +468,27 @@ def init_debug_logger_for_session(
     cfg: DebugConfig,
     project_root: Path,
     session_id: str,
+    session_dir: Optional[Path] = None,
 ) -> LLMDebugLogger:
     """
     为特定 session 初始化调试日志，输出到 session 目录下的 llm_debug.jsonl。
-    路径：<project_root>/.agent/sessions/<session_id>/llm_debug.jsonl
+    默认路径：<project_root>/.agent/sessions/<session_id>/llm_debug.jsonl
 
     在 Agent._init_session() 之后调用（此时 session_id 已确定）。
+
+    [BUGFIX 子 agent session 嵌套] session_dir 若显式传入，直接用作 session
+    目录（调用方通过 Agent._current_session_dir() 得到的真实落盘目录）。不传
+    时才退回 "<project_root>/.agent/sessions/<session_id>/" 这个平级假设——
+    对于 TurnJudge/GoalJudge/evaluator/coach/SubAgent 这类嵌套在父 session
+    目录下的子 agent，不传 session_dir 会算出与其 history.json 实际所在
+    位置（父 session 目录下的子目录）不一致的错误路径。
     """
     global _default_logger
     from mini_agent.storage.paths import AgentPaths
-    session_log_path = AgentPaths(project_root).session_llm_debug(session_id)
+    if session_dir is not None:
+        session_log_path = Path(session_dir) / "llm_debug.jsonl"
+    else:
+        session_log_path = AgentPaths(project_root).session_llm_debug(session_id)
     # 创建一个 log_dir 指向 session 目录的 DebugConfig
     # _resolve_log_file 会在此目录下生成 llm_debug.jsonl（filename by session, not date）
     session_cfg = DebugConfig(

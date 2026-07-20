@@ -476,6 +476,29 @@ class SessionLifecycleMixin:
             log_exception(_mini_agent_exc, where='mini_agent.agent.lifecycle.SessionLifecycleMixin._maybe_register_global_project')
             pass  # 观察性数据，失败不应影响 agent 主流程
 
+    def _current_session_dir(self):
+        """返回"当前激活 session"真正落盘所在的目录。
+
+        [BUGFIX 子 agent session 嵌套] 不能用
+        `AgentPaths(project_root).session_dir(session_id)` 重新拼接——那个方法
+        永远假定 `<project_root>/.agent/sessions/<session_id>/` 这种平级结构，
+        对于通过 judge_factory.spawn_judge_agent() / orchestrator.sub_agent
+        以 `cfg.session.dir = 父 session 目录` 方式嵌套创建的子 agent（TurnJudge、
+        GoalJudge、evaluator、coach、SubAgent 等）而言，会算出一个完全不存在
+        的平级目录，导致 llm_debug.jsonl / traces.jsonl / raw_history.jsonl /
+        temp、output 目录 / plan_snapshot.json / memory_delta.jsonl 等继续写到
+        旧的错误位置，即便 SessionManager 自身（history.json）已经正确落在
+        嵌套目录下。
+
+        唯一权威来源是 `self._session_mgr.session_dir`——SessionManager 初始化时
+        记录的真实基目录（可能是 workdir 根 sessions_dir，也可能是父 session
+        的目录），真正的 session 目录永远是 `session_dir / session_id`。
+        """
+        from pathlib import Path
+        if self._session_mgr is None or self._session is None:
+            return None
+        return Path(self._session_mgr.session_dir) / self._session.id
+
     def _cognitive_anchor_path(self, session_id: str):
         """
         [具身改进 C3 / 认知锚点 session 化] 返回指定 session 目录下的认知锚点
@@ -609,6 +632,7 @@ class SessionLifecycleMixin:
             tm = get_task_manager()
             if tm is not None:
                 tm.set_session_id(self._session.id)
+                tm.set_session_dir(self._current_session_dir())
         except Exception as _mini_agent_exc:
             from mini_agent.errors import log_exception
             log_exception(_mini_agent_exc, where='mini_agent.agent')
@@ -626,6 +650,7 @@ class SessionLifecycleMixin:
                     cfg=existing.cfg,
                     project_root=self.cfg.project_root,
                     session_id=self._session.id,
+                    session_dir=self._current_session_dir(),
                 )
             except Exception as _mini_agent_exc:
                 from mini_agent.errors import log_exception
@@ -638,9 +663,16 @@ class SessionLifecycleMixin:
         # 走到这里，确保无论新建还是 resume，这两个目录都已就绪，
         # 后续可直接使用，无需每次现建。
         try:
-            from mini_agent.storage.paths import AgentPaths
-            paths = AgentPaths(self.cfg.project_root)
-            temp_dir, output_dir = paths.ensure_session_working_dirs(self._session.id)
+            session_dir = self._current_session_dir()
+            if session_dir is not None:
+                temp_dir = session_dir / "temp"
+                output_dir = session_dir / "output"
+                temp_dir.mkdir(parents=True, exist_ok=True)
+                output_dir.mkdir(parents=True, exist_ok=True)
+            else:
+                from mini_agent.storage.paths import AgentPaths
+                paths = AgentPaths(self.cfg.project_root)
+                temp_dir, output_dir = paths.ensure_session_working_dirs(self._session.id)
             self._session_temp_dir = temp_dir
             self._session_output_dir = output_dir
         except Exception as _mini_agent_exc:
@@ -663,7 +695,11 @@ class SessionLifecycleMixin:
             from mini_agent.storage.paths import AgentPaths
             from mini_agent.orchestrator.plan import bind_plan_session, try_restore_plan, clear_plan
 
-            snapshot_path = AgentPaths(self.cfg.project_root).session_plan_snapshot(self._session.id)
+            _sdir = self._current_session_dir()
+            snapshot_path = (
+                (_sdir / "plan_snapshot.json") if _sdir is not None
+                else AgentPaths(self.cfg.project_root).session_plan_snapshot(self._session.id)
+            )
             clear_plan()  # 切换 session 时先清空旧 session 残留的内存计划
             try_restore_plan(snapshot_path)   # 存在则恢复，不存在则静默跳过
             bind_plan_session(snapshot_path)  # 无论是否恢复成功，都绑定为当前 session 路径
@@ -682,9 +718,10 @@ class SessionLifecycleMixin:
             return
         try:
             from mini_agent.perception.observability import SessionTracer
-            from mini_agent.storage.paths import AgentPaths
-            paths = AgentPaths(self.cfg.project_root)
-            session_dir = paths.session_dir(self._session.id)
+            session_dir = self._current_session_dir()
+            if session_dir is None:
+                from mini_agent.storage.paths import AgentPaths
+                session_dir = AgentPaths(self.cfg.project_root).session_dir(self._session.id)
             enabled = getattr(self.cfg, "tracing_enabled", True)
             self._tracer = SessionTracer(session_dir, self._session.id, enabled=enabled)
         except Exception as _mini_agent_exc:
@@ -705,12 +742,11 @@ class SessionLifecycleMixin:
         if self._session is None or not hasattr(self, "_hist"):
             return
         try:
-            from mini_agent.storage.paths import AgentPaths
-            from pathlib import Path as _Path
-            raw_path = (
-                AgentPaths(self.cfg.project_root)
-                .session_dir(self._session.id) / "raw_history.jsonl"
-            )
+            session_dir = self._current_session_dir()
+            if session_dir is None:
+                from mini_agent.storage.paths import AgentPaths
+                session_dir = AgentPaths(self.cfg.project_root).session_dir(self._session.id)
+            raw_path = session_dir / "raw_history.jsonl"
             self._hist._raw.set_path(raw_path)
         except Exception as _e:
             from mini_agent.errors import log_exception

@@ -29,6 +29,7 @@ from typing import Optional, TYPE_CHECKING
 from mini_agent.prompts import pm
 
 if TYPE_CHECKING:
+    from pathlib import Path
     from mini_agent.config import AppConfig
     from mini_agent.orchestrator.agent_profiles import AgentProfile
 
@@ -67,6 +68,7 @@ def run_turn_judge(
     max_auto_rounds: int = 3,
     hit_max_turns: bool = False,
     parent_session_id: Optional[str] = None,
+    parent_session_dir: Optional["Path"] = None,
 ) -> str:
     """
     运行 TurnJudgeAgent，返回判定文本（含 TURN_STATUS 行）。
@@ -99,6 +101,7 @@ def run_turn_judge(
         max_turns=2,
         tools_enabled=False,   # 纯文本判定，不挂载任何工具（最小权限、最低延迟）
         parent_session_id=parent_session_id,
+        parent_session_dir=parent_session_dir,
     )
 
     prompt = build_turn_judge_prompt(

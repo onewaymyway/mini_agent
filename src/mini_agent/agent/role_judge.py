@@ -77,6 +77,7 @@ class RoleJudgeMixin:
                 context=context,
                 inject_into=self._history,
                 parent_session_id=self._session.id if self._session else None,
+                parent_session_dir=self._current_session_dir(),
             )
 
     def _run_role_agents_output(self, original_request: str, initial_output: str) -> str:
@@ -123,12 +124,14 @@ class RoleJudgeMixin:
                         agent_output=current_output,
                         iteration=iteration,
                         parent_session_id=self._session.id if self._session else None,
+                parent_session_dir=self._current_session_dir(),
                     )
                 else:
                     from mini_agent.role_agents.dispatcher import RoleAgentDispatcher
                     raw = dispatcher._run_custom_role(
                         profile, current_output, original_request,
                         parent_session_id=self._session.id if self._session else None,
+                parent_session_dir=self._current_session_dir(),
                     )
 
                 score = extract_score(raw) if profile.role_type == "evaluator" else None
@@ -345,6 +348,7 @@ class RoleJudgeMixin:
             max_auto_rounds=tj_cfg.max_auto_rounds,
             hit_max_turns=self._last_turn_hit_max_turns,
             parent_session_id=self._session.id if self._session else None,
+                parent_session_dir=self._current_session_dir(),
         )
 
         status = extract_turn_status(raw) or "NEED_USER"  # 解析失败时保守按 NEED_USER 处理

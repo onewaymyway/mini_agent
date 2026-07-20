@@ -68,6 +68,7 @@ from .feedback import RoleFeedback, extract_score, build_inject_message
 # 隐性契约——本文件不再需要 _ROLE_FAILURE_RE / _report_role_agent_failure。
 
 if TYPE_CHECKING:
+    from pathlib import Path
     from mini_agent.config import AppConfig
     from mini_agent.orchestrator.agent_profiles import AgentProfileLoader, AgentProfile
 
@@ -291,6 +292,7 @@ class RoleAgentDispatcher:
         *,
         verbose: bool = True,
         parent_session_id: Optional[str] = None,
+        parent_session_dir: Optional["Path"] = None,
     ) -> list[RoleFeedback]:
         """
         主 Agent 完成输出后触发所有 output 类角色。
@@ -312,6 +314,7 @@ class RoleAgentDispatcher:
                 inject_into=inject_into,
                 verbose=verbose,
                 parent_session_id=parent_session_id,
+                parent_session_dir=parent_session_dir,
             )
             all_feedbacks.extend(feedbacks)
 
@@ -325,6 +328,7 @@ class RoleAgentDispatcher:
         inject_into: list,
         verbose: bool,
         parent_session_id: Optional[str] = None,
+        parent_session_dir: Optional["Path"] = None,
     ) -> list[RoleFeedback]:
         """
         对单个角色 Agent 执行（含多轮修订循环）。
@@ -350,12 +354,14 @@ class RoleAgentDispatcher:
                     agent_output=current_output,
                     iteration=iteration,
                     parent_session_id=parent_session_id,
+                    parent_session_dir=parent_session_dir,
                 )
             else:
                 # custom role：把输出直接作为 prompt 传入
                 raw = self._run_custom_role(
                     profile, current_output, original_request,
                     parent_session_id=parent_session_id,
+                    parent_session_dir=parent_session_dir,
                 )
 
             # [auto_quarantine] evaluator 走 run_evaluator → run_judge_turn，
@@ -407,6 +413,7 @@ class RoleAgentDispatcher:
         agent_output: str,
         original_request: str,
         parent_session_id: Optional[str] = None,
+        parent_session_dir: Optional["Path"] = None,
     ) -> str:
         """运行自定义角色 Agent。
 
@@ -429,6 +436,7 @@ class RoleAgentDispatcher:
             max_turns=3,
             tools_enabled=False,
             parent_session_id=parent_session_id,
+            parent_session_dir=parent_session_dir,
         )
 
         prompt = f"""请对以下 AI 助手的输出进行分析。
@@ -456,6 +464,7 @@ class RoleAgentDispatcher:
         *,
         verbose: bool = True,
         parent_session_id: Optional[str] = None,
+        parent_session_dir: Optional["Path"] = None,
     ) -> list[RoleFeedback]:
         """
         特定工具调用后触发相关角色 Agent（通常是 CoachAgent）。
@@ -485,11 +494,13 @@ class RoleAgentDispatcher:
                     tool_output=tool_output,
                     context=context,
                     parent_session_id=parent_session_id,
+                    parent_session_dir=parent_session_dir,
                 )
             else:
                 raw = self._run_custom_role(
                     profile, tool_output, context,
                     parent_session_id=parent_session_id,
+                    parent_session_dir=parent_session_dir,
                 )
 
             # [auto_quarantine] coach 走 run_coach → run_judge_turn，custom role

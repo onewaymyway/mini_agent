@@ -142,10 +142,14 @@ class ReflectionMixin:
         if not self._session:
             return
         try:
-            from mini_agent.storage.paths import AgentPaths
             from dataclasses import asdict
             import json as _json
-            delta_path = AgentPaths(self.cfg.project_root).session_memory_delta(self._session.id)
+            session_dir = self._current_session_dir()
+            if session_dir is not None:
+                delta_path = session_dir / "memory_delta.jsonl"
+            else:
+                from mini_agent.storage.paths import AgentPaths
+                delta_path = AgentPaths(self.cfg.project_root).session_memory_delta(self._session.id)
             delta_path.parent.mkdir(parents=True, exist_ok=True)
             with open(delta_path, "a", encoding="utf-8") as f:
                 f.write(_json.dumps(asdict(entry), ensure_ascii=False) + "\n")

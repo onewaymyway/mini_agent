@@ -269,12 +269,17 @@ class GoalSpecBuilder:
     参考 role_agents/evaluator.py 的调用方式。
     """
 
-    def __init__(self, cfg: "AppConfig", parent_session_id: Optional[str] = None) -> None:
+    def __init__(self, cfg: "AppConfig", parent_session_id: Optional[str] = None,
+                 parent_session_dir=None) -> None:
         self._cfg = cfg
         # 生成该 GoalSpec 草案时所属的主 session id（若有），用于让
         # spawn_judge_agent 把这个一次性 builder 内部 Agent 的 session
         # 嵌套到主 session 目录下，而不是散落在 sessions_dir 根目录。
         self._parent_session_id = parent_session_id
+        # [BUGFIX 子 agent session 嵌套] 主 Agent 当前 session 的真实落盘目录
+        # （Agent._current_session_dir()）。优先于 parent_session_id 使用——
+        # 详见 judge_factory.spawn_judge_agent 的同名参数说明。
+        self._parent_session_dir = parent_session_dir
         # 上一次 _run_builder 调用的诊断信息，供 build_initial/build_from_history
         # 在命中 _fallback_criteria 时打印具体原因，而不是让用户只看到一份
         # "看起来像拼出来的"验收标准却不知道为什么。
@@ -319,6 +324,7 @@ class GoalSpecBuilder:
             max_turns=2,
             tools_enabled=False,
             parent_session_id=self._parent_session_id,
+            parent_session_dir=self._parent_session_dir,
         )
 
         result = run_judge_turn(

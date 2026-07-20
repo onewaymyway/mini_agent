@@ -76,7 +76,11 @@ def handle_goal_cmd(args: list[str], agent) -> None:
 def _handle_new_goal(goal_text: str, agent) -> None:
     from mini_agent.goal_mode.spec import GoalSpecBuilder
 
-    builder = GoalSpecBuilder(agent.cfg, parent_session_id=getattr(agent, "session_id", None))
+    builder = GoalSpecBuilder(
+        agent.cfg,
+        parent_session_id=getattr(agent, "session_id", None),
+        parent_session_dir=agent._current_session_dir() if hasattr(agent, "_current_session_dir") else None,
+    )
     R.print_info("[Goal 模式] 正在根据你的描述生成验收标准草案…")
     try:
         spec = builder.build_initial(goal_text)
@@ -111,7 +115,11 @@ def _handle_from_history(agent) -> None:
         )
         return
 
-    builder = GoalSpecBuilder(agent.cfg, parent_session_id=getattr(agent, "session_id", None))
+    builder = GoalSpecBuilder(
+        agent.cfg,
+        parent_session_id=getattr(agent, "session_id", None),
+        parent_session_dir=agent._current_session_dir() if hasattr(agent, "_current_session_dir") else None,
+    )
     R.print_info("[Goal 模式] 正在根据当前 session 历史归纳目标…")
     try:
         spec = builder.build_from_history(history)
