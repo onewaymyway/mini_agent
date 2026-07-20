@@ -297,6 +297,18 @@ class LLMControlMixin:
                 f"({type(exc).__name__}: {str(exc)[:80]})"
             )
             self._llm = self._client_pool.current_client
+            # [BUGFIX] 自动 fallback 切换 provider/model 后，之前只更新了
+            # self._llm，没有同步 self.cfg.model / self.cfg.llm_provider——
+            # 导致 self.cfg 里的 model 字段停留在配置文件写死的 chain[0]，
+            # 与实际正在使用的模型不一致。这会让所有读取 base_cfg.model 做
+            # "复用主 Agent 当前模型"兜底的地方（如
+            # role_agents/model_resolution.py 的 resolve_role_model）拿到
+            # 过期的、可能已经确认不可用的模型名（例如 TurnJudge 重新踩一遍
+            # 已经 403 的模型）。这里补上同步，行为与显式 /model、/provider
+            # switch（switch_model / switch_provider）保持一致。
+            _entry = self._client_pool.current_entry
+            self.cfg.model = _entry.config.model
+            self.cfg.llm_provider = _entry.config.provider
 
         response = self._client_pool.call_with_pool(
             call_fn=_do_single_call,
