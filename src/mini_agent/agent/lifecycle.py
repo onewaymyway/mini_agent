@@ -173,6 +173,9 @@ class SessionLifecycleMixin:
             # 记事本：每轮读取当前 session 的记事本渲染文本（NotepadStore 内部按
             # session_id 缓存，重复实例化 AgentPaths 无实际 IO 开销）。
             notepad_getter=lambda: self._get_notepad_render_text(),
+            # session 级 temp/output 目录说明：每轮读取当前 session id
+            # （resume/new session 后自动切换到新目录，无需重建 ContextBuilder）
+            session_id_getter=lambda: self._session.id if self._session else None,
             # wiki 式知识库改进计划 P4：wiki_search 转正为主检索路径时需要
             # LLM 精排才能产出 grounded_page_ids（否则退化成规则/图扩展候选，
             # 不满足"给出有依据的结果"这个判定）。懒取 client_pool.current_client，
@@ -629,6 +632,23 @@ class SessionLifecycleMixin:
                 log_exception(_mini_agent_exc, where='mini_agent.agent')
                 pass
 
+        # 自动创建本 session 的 temp/ output/ 目录（用户未指定目标目录时的
+        # 默认落地位置，见 storage/paths.py::ensure_session_working_dirs）。
+        # 三个调用场景（_init_session / load_session / new_session）都会
+        # 走到这里，确保无论新建还是 resume，这两个目录都已就绪，
+        # 后续可直接使用，无需每次现建。
+        try:
+            from mini_agent.storage.paths import AgentPaths
+            paths = AgentPaths(self.cfg.project_root)
+            temp_dir, output_dir = paths.ensure_session_working_dirs(self._session.id)
+            self._session_temp_dir = temp_dir
+            self._session_output_dir = output_dir
+        except Exception as _mini_agent_exc:
+            from mini_agent.errors import log_exception
+            log_exception(_mini_agent_exc, where='mini_agent.agent.lifecycle.SessionLifecycleMixin._bind_session_extras')
+            self._session_temp_dir = None
+            self._session_output_dir = None
+
         # raw history 路径绑定：调用独立方法（确保 _hist 已初始化后再绑定）
         self._bind_raw_path()
 
@@ -859,6 +879,18 @@ class SessionLifecycleMixin:
     @property
     def session_id(self) -> Optional[str]:
         return self._session.id if self._session else None
+
+    @property
+    def session_temp_dir(self):
+        """当前 session 的临时文件目录（.agent/sessions/<id>/temp/），
+        由 _bind_session_extras 在 session 初始化/切换时自动创建并绑定。"""
+        return getattr(self, "_session_temp_dir", None)
+
+    @property
+    def session_output_dir(self):
+        """当前 session 的输出目录（.agent/sessions/<id>/output/），
+        由 _bind_session_extras 在 session 初始化/切换时自动创建并绑定。"""
+        return getattr(self, "_session_output_dir", None)
 
     @property
     def session_meta(self):

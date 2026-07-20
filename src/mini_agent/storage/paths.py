@@ -571,6 +571,38 @@ class AgentPaths:
         """<project_root>/.agent/sessions/<session_id>/tasks/"""
         return self.session_dir(session_id) / "tasks"
 
+    # ── Session 级临时/输出目录 ───────────────────────────────────────────
+    # 用户未显式指定目标目录时的默认落地位置：
+    #   temp   — 临时文件、一次性脚本、中间产物，任务结束后可随时清空
+    #   output — 明确作为最终交付物的文件（报告/代码/文档等）
+    # 两者在 session 初始化时（_init_session / load_session / new_session，
+    # 见 agent/lifecycle.py::_bind_session_extras）就自动创建好，
+    # 后续 agent 可以直接引用，无需每次现建。
+
+    def session_temp_dir(self, session_id: str) -> Path:
+        """<project_root>/.agent/sessions/<session_id>/temp/
+        存放临时文件、一次性脚本、中间产物。未指定目标目录时的默认落地位置，
+        任务结束后可随时清空，不影响正式产出。"""
+        return self.session_dir(session_id) / "temp"
+
+    def session_output_dir(self, session_id: str) -> Path:
+        """<project_root>/.agent/sessions/<session_id>/output/
+        存放明确作为最终交付物的文件（报告/代码/文档/生成结果等）。
+        未指定目标目录、但用户明确要求"保存/生成/输出一个文件"时的默认落地位置。"""
+        return self.session_dir(session_id) / "output"
+
+    def ensure_session_working_dirs(self, session_id: str) -> tuple[Path, Path]:
+        """确保 session 的 temp/ 与 output/ 目录都存在，返回 (temp_dir, output_dir)。
+
+        在 session 初始化时调用一次即可，后续可直接假定这两个目录已存在。
+        """
+        self.ensure_session_dir(session_id)
+        temp_dir = self.session_temp_dir(session_id)
+        output_dir = self.session_output_dir(session_id)
+        temp_dir.mkdir(parents=True, exist_ok=True)
+        output_dir.mkdir(parents=True, exist_ok=True)
+        return temp_dir, output_dir
+
     # ── 产出物 Manifest（Artifacts）────────────────────────────────────────
     # 用于「产出物看板」：命令行不便展示的文档/图片类产出，统一以 JSON 清单
     # 登记，看板据此渲染，而不是靠遍历目录猜测。详见 storage/artifacts.py。

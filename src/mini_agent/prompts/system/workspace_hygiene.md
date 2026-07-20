@@ -5,37 +5,59 @@
 
 ## Workspace Hygiene
 
-### ⚠️ Default Path Rule — No Path Specified = `./temp/`
+### ⚠️ Default Directory Rule — No Path Specified = Session Working Dirs
 
-**When the user asks to create a file, script, or any output artifact WITHOUT specifying a path, always place it under `./temp/`.**
+This session already has two dedicated working directories, created automatically
+at session start — **do not `mkdir` your own `./temp/` or `./output/` in the
+project root, use these instead**:
+
+- **Temp dir** (throwaway files, scripts, intermediate artifacts):
+  `{{temp_dir}}`
+- **Output dir** (final deliverables the user asked for):
+  `{{output_dir}}`
+
+**When the user asks to create a file, script, or any output artifact WITHOUT
+specifying a path:**
+- If it's a throwaway/intermediate artifact (diagnostic script, scratch data,
+  captured command output, a "let me check something" file) → put it in the
+  **temp dir** above.
+- If it's the actual deliverable the user asked for (a report, a generated
+  document, finished code they asked you to produce, a result file they will
+  read/download) → put it in the **output dir** above.
 
 This applies to every request of the form:
-- "帮我写一个脚本" / "write me a script"
-- "生成一个 JSON 文件" / "generate a config file"
-- "创建一个测试文件" / "make a helper"
+- "帮我写一个脚本" / "write me a script" → temp dir
+- "生成一个报告/文档" / "generate a report" → output dir
+- "创建一个测试文件" / "make a helper" → temp dir
 - Any file creation where the user did not say where it should go
 
 **Do NOT:**
 - Create files in the project root (`./foo.py`)
 - Create files in `src/` or any source directory
-- Ask the user "where should I put it?" for throwaway artifacts — just use `./temp/`
+- Create your own ad-hoc `./temp/` or `./output/` folder — the session ones
+  above already exist, just use them
+- Ask the user "where should I put it?" for throwaway or output artifacts —
+  just pick temp dir vs. output dir per the rule above
 
 **Do:**
 ```
-bash("mkdir -p ./temp")
-create_file("./temp/<descriptive_name>.<ext>", ...)
+create_file("{{temp_dir}}/<descriptive_name>.<ext>", ...)      # throwaway
+create_file("{{output_dir}}/<descriptive_name>.<ext>", ...)    # deliverable
 ```
 
-The only exception is when the file is clearly a permanent project deliverable (e.g. user says "add a new module to the project", "create `src/utils/parser.py`") — in that case, use the specified or implied project path.
+The only exception is when the file is clearly a permanent project deliverable
+that belongs inside the project's own source tree (e.g. user says "add a new
+module to the project", "create `src/utils/parser.py`") — in that case, use
+the specified or implied project path instead of the session output dir.
 
 ---
 
 ### Temporary Files & Scripts
 
-All temporary files and throwaway scripts **must** go into `./temp/`:
+All temporary files and throwaway scripts **must** go into the session temp dir:
 
 ```
-./temp/
+{{temp_dir}}/
   check_env.py          # one-off diagnostic scripts
   fix_imports.sh        # temporary shell helpers
   data_dump.json        # intermediate data snapshots
@@ -43,36 +65,55 @@ All temporary files and throwaway scripts **must** go into `./temp/`:
 ```
 
 **Rules:**
-- Always create `./temp/` before writing anything there: `bash("mkdir -p ./temp")`
-- Use descriptive names — `temp/check_db_schema.py`, not `temp/t1.py`
-- Prefix with a short task hint when running multiple jobs: `temp/migration_verify.sh`
+- The temp dir already exists — no need to `mkdir` it before writing
+- Use descriptive names — `<temp_dir>/check_db_schema.py`, not `<temp_dir>/t1.py`
+- Prefix with a short task hint when running multiple jobs: `<temp_dir>/migration_verify.sh`
 - **Never** create temporary files in the project root, `src/`, or any source directory
 - **Never** leave `*.pyc`, `__pycache__`, or swap files (`.swp`, `.tmp`) in source dirs
-- After a task completes, clean up: `bash("rm -rf ./temp/*")` — or ask the user if they want to keep the artifacts
+- After a task completes, clean up: `bash("rm -rf {{temp_dir}}/*")` — or ask the user if they want to keep the artifacts
+
+### Final Outputs
+
+Files that are the actual result the user asked for — reports, generated
+documents, finished scripts they will run/keep, exported data — go into the
+session output dir instead of the temp dir:
+
+```
+{{output_dir}}/
+  report.md              # a requested report/summary document
+  final_script.py        # a script the user asked you to deliver
+  export.csv             # a generated data export
+```
+
+- The output dir already exists — no need to `mkdir` it before writing
+- Don't mix throwaway intermediate files into the output dir — keep it clean,
+  containing only what the user actually asked to receive
+- If a file starts life as an intermediate step, build/verify it in the temp
+  dir first, then move the finished version into the output dir
 
 ### Intermediate Outputs
 
 For multi-step tasks that produce intermediate files (e.g. code generation → test → report):
-- Stage files as `./temp/<step>_<name>` (e.g. `temp/step1_scaffold.py`, `temp/step2_tested.py`)
-- Only promote a file to its final location once it's verified and complete
-- Never overwrite an existing project file as a "scratch" target — write to `./temp/` first, then move
+- Stage files as `{{temp_dir}}/<step>_<name>` (e.g. `<temp_dir>/step1_scaffold.py`, `<temp_dir>/step2_tested.py`)
+- Only promote a file to its final location (project path, or `{{output_dir}}`
+  if it's a deliverable) once it's verified and complete
+- Never overwrite an existing project file as a "scratch" target — write to the temp dir first, then move
 
 ### Script Lifecycle
 
 When writing a temporary script to solve a task:
 
-1. **Write** → `./temp/<purpose>.py` (or `.sh`)
+1. **Write** → `{{temp_dir}}/<purpose>.py` (or `.sh`)
 2. **Run** → capture stdout/stderr
 3. **Inspect** → act on results
-4. **Clean up** → `rm ./temp/<purpose>.py` when no longer needed
+4. **Clean up** → `rm {{temp_dir}}/<purpose>.py` when no longer needed
 
 Example:
 ```python
 # Good: self-contained diagnostic script
-bash("mkdir -p ./temp")
-write_file("./temp/check_schema.py", "import sqlite3; ...")
-bash("python ./temp/check_schema.py")
-bash("rm ./temp/check_schema.py")
+write_file("{{temp_dir}}/check_schema.py", "import sqlite3; ...")
+bash("python {{temp_dir}}/check_schema.py")
+bash("rm {{temp_dir}}/check_schema.py")
 ```
 
 ---

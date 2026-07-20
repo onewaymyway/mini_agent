@@ -198,10 +198,19 @@ class PromptManager:
         agent_name: str = "orzooo",
         user_profile: str = "",
         env_info: str = "",
+        temp_dir: str = "",
+        output_dir: str = "",
     ) -> str:
         """
         Assemble the complete system prompt from individual fragments.
         This is the single authoritative place where system prompts are composed.
+
+        Args:
+            temp_dir: 本 session 的临时文件目录（绝对路径），用户未指定目标
+                目录时的默认落地位置。为空时回退为通用占位说明 "./temp/"
+                （例如尚未绑定 session 的极早期阶段）。
+            output_dir: 本 session 的输出目录（绝对路径），存放明确作为最终
+                交付物的文件。为空时回退为 "./output/"。
         """
         parts: list[str] = []
 
@@ -210,7 +219,11 @@ class PromptManager:
 
         # 1b. Workspace hygiene & graceful operation standards
         try:
-            parts.append(self.render("system/workspace_hygiene"))
+            parts.append(self.render(
+                "system/workspace_hygiene",
+                temp_dir=temp_dir or "./temp",
+                output_dir=output_dir or "./output",
+            ))
         except Exception as _mini_agent_exc:
             from mini_agent.errors import log_exception
             log_exception(_mini_agent_exc, where='mini_agent.prompts.manager')

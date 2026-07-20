@@ -74,7 +74,13 @@ def _resolve_skills_dir(root: Path) -> Optional[Path]:
     return None
 
 
-def build_system_prompt(cfg: AppConfig, active_skills: list[str], skill_context: str = "", user_profile: str = "") -> str:
+def build_system_prompt(
+    cfg: AppConfig,
+    active_skills: list[str],
+    skill_context: str = "",
+    user_profile: str = "",
+    session_id: Optional[str] = None,
+) -> str:
     from datetime import datetime
     from mini_agent.prompts import pm
     if cfg.prompts_dir and pm.custom_dir != cfg.prompts_dir:
@@ -95,6 +101,22 @@ def build_system_prompt(cfg: AppConfig, active_skills: list[str], skill_context:
             log_exception(_mini_agent_exc, where='mini_agent.config.prompt_builder')
             pass
 
+    # Session 级 temp/output 目录（用户未指定目标目录时的默认落地位置）。
+    # 目录本身已在 session 初始化时（agent/lifecycle.py::_bind_session_extras）
+    # 创建好，这里只负责推导绝对路径字符串注入 system prompt，不重复建目录。
+    temp_dir_str = ""
+    output_dir_str = ""
+    if session_id:
+        try:
+            from mini_agent.storage.paths import AgentPaths
+            paths = AgentPaths(cfg.project_root)
+            temp_dir_str = str(paths.session_temp_dir(session_id))
+            output_dir_str = str(paths.session_output_dir(session_id))
+        except Exception as _mini_agent_exc:
+            from mini_agent.errors import log_exception
+            log_exception(_mini_agent_exc, where='mini_agent.config.prompt_builder')
+            pass
+
     return pm.build_system_prompt(
         claude_md_content=cfg.claude_md_content,
         active_skills=active_skills,
@@ -105,4 +127,6 @@ def build_system_prompt(cfg: AppConfig, active_skills: list[str], skill_context:
         agent_name=cfg.agent_name,
         user_profile=user_profile,
         env_info=env_info_block,
+        temp_dir=temp_dir_str,
+        output_dir=output_dir_str,
     )

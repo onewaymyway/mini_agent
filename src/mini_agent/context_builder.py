@@ -50,6 +50,8 @@ class ContextBuilder:
         self_model_getter=None,         # Callable[[], Optional[str]]  [具身改进 C1]
         persona_getter=None,            # Callable[[], Optional[str]]  当前激活的 persona name
         notepad_getter=None,            # Callable[[], Optional[str]]  记事本渲染文本，每轮读取
+        session_id_getter=None,         # Callable[[], Optional[str]]  当前 session id，用于注入
+                                         # session 级 temp/output 目录说明（见 workspace_hygiene.md）
         llm_call_getter=None,           # Callable[[], Optional[Callable[[str], str]]]  wiki 式知识库改进
                                          # 计划 P4：wiki_search 转正为主检索路径时，LLM 精排需要一个
                                          # llm_call；懒取（而不是构造时固定住），因为 client_pool 的
@@ -67,6 +69,9 @@ class ContextBuilder:
         self._persona_getter = persona_getter
         # 记事本：每轮读取当前 session 的记事本渲染文本（persist across compact）
         self._notepad_getter = notepad_getter
+        # 当前 session id：每轮读取，用于向 system prompt 注入本 session 的
+        # temp/output 目录绝对路径（见 workspace_hygiene.md）
+        self._session_id_getter = session_id_getter
         # wiki 式知识库改进计划 P4：wiki_search 转正为主检索路径所需的 llm_call
         # 懒取器，None（未传，或调用时返回 None）时 refresh_turn_context() 会
         # 自动跳过 wiki_search 的 LLM 精排环节，退化为既有 shelf_search 路径。
@@ -292,7 +297,11 @@ class ContextBuilder:
 
         from mini_agent.config import build_system_prompt
         user_profile = self._profile_text_getter() if self._profile_text_getter else ""
-        base = build_system_prompt(cfg, active, skill_context=skill_ctx, user_profile=user_profile)
+        session_id = self._session_id_getter() if self._session_id_getter else None
+        base = build_system_prompt(
+            cfg, active, skill_context=skill_ctx, user_profile=user_profile,
+            session_id=session_id,
+        )
 
         # ── 角色扮演（Persona）注入 ──────────────────────────────────────────
         # 单独成段，不与 skill/tool 使用规范混排：便于 /role exit 时整段摘除，
