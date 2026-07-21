@@ -51,12 +51,21 @@ steps:
     prompt: |              # Prompt 模板（支持占位符）
       ...
     role: null             # 执行角色：null（主 Agent）或角色 profile name
+    type: null             # [P5] 显式类型：null=按role自动推断 / agent / role_agent /
+                           #      sub_workflow / tool_call / human_input / script
+    workflow_name: null    # [P5] type=sub_workflow 时必填：引用的工作流名称
+    tool_name: null        # [P5] type=tool_call 时必填：要调用的工具名称
+    tool_args: {}          # [P5] type=tool_call 时的工具入参（为空则用 prompt 作为唯一实参）
+    input_prompt: null     # [P5] type=human_input 时展示给人类的提示语（为空则用 prompt）
+    script: null           # [P5] type=script 时必填：要执行的 shell 命令
+    require_approval: false # 是否要求人工审批门放行
     depends_on: []         # 依赖的步骤 id 列表，控制执行顺序
     condition: null        # 执行条件，null 表示无条件执行
     max_turns: 10          # 该步骤允许的最大 LLM 轮数（默认 10）
     model: null            # 覆盖模型（null = 继承全局）
     timeout: null          # 超时秒数（null = 不限制）
     retry_on_gate_fail: 0  # 质检不达标时重跑次数（0 = 不重跑）
+    retry_on_error: 0      # 普通异常重试次数（0 = 不重试）
 ```
 
 ### Prompt 占位符
@@ -125,7 +134,8 @@ condition: "evaluate.score >= 60 and analyze.passed"  # 多条件组合
 
 ## 内置工具（主 Agent 可直接调用）
 
-工作流系统向主 Agent 注册了 6 个工具：
+工作流系统向主 Agent 注册了 16 个工具（P1 基础 6 个 + P2-P4 看护机制 7 个 +
+P5/P6 新增 3 个）：
 
 ### `generate_workflow`
 
@@ -177,6 +187,33 @@ condition: "evaluate.score >= 60 and analyze.passed"  # 多条件组合
 ### `delete_workflow`
 
 删除指定工作流文件。
+
+### `provide_workflow_step_input`（P5）
+
+向一个正在等待人工输入（`human_input` 类型 step）的执行送入文本。
+
+```
+参数：
+  workflow_session_id (str)   正在执行的工作流的执行 ID
+  input_text (str)            要送入的文本
+```
+
+### `list_workflow_templates`（P6）
+
+列举内置工作流模板（`code_review` / `research_report` / `multi_perspective_debate`）。
+
+### `create_workflow_from_template`（P6）
+
+基于内置模板创建并保存一个新工作流，比 `generate_workflow` 更稳定。
+
+```
+参数：
+  template_name (str)   模板名称，见 list_workflow_templates 的输出
+  new_name (str)        新工作流的名称
+
+示例：
+  create_workflow_from_template("code_review", "my_pr_review")
+```
 
 ---
 
@@ -460,6 +497,124 @@ run_workflow("article_writer", {
 
 ---
 
+## Step 类型化（P5）
+
+`WorkflowStep.type` 显式声明该步骤"怎么被执行"，未设置时按旧语义自动推断
+（`role` 非空 → `role_agent`，否则 → `agent`），**完全向后兼容旧 YAML**：
+
+| `type` | 说明 | 专属字段 |
+|---|---|---|
+| `agent`（默认） | 独立主 Agent 实例执行 | — |
+| `role_agent` | 指定角色 Agent 执行（`role` 非空时的旧默认行为） | `role` |
+| `sub_workflow` | 把另一个已保存的工作流当作一个 step 执行 | `workflow_name` |
+| `tool_call` | 直接调用一个已注册工具，不启动整个 Agent 会话 | `tool_name`, `tool_args` |
+| `human_input` | 阻塞等待人工通过 `provide_workflow_step_input` 送入文本 | `input_prompt` |
+| `script` | 执行一段 shell 命令 | `script` |
+
+```yaml
+- id: notify
+  type: tool_call
+  tool_name: send_slack_message
+  tool_args:
+    channel: "#eng"
+    text: "审查通过"
+
+- id: ask_reviewer
+  type: human_input
+  input_prompt: "请输入本次发布的审批意见"
+
+- id: sub_report
+  type: sub_workflow
+  workflow_name: research_report   # 引用另一个已保存的工作流
+  depends_on: [sub_report_input]
+
+- id: build
+  type: script
+  script: "npm run build"
+```
+
+**安全默认值**（均可在 `agent_config.json` 的 `workflow` 节里配置，见下文）：
+- `sub_workflow` 有递归深度保护（`max_sub_workflow_depth`，默认 3），避免
+  A 引用 B、B 又引用 A 造成的无限递归。
+- `tool_call` 默认视为高风险步骤，即使没有显式写 `require_approval: true`，
+  也会走人工审批门（除非把 `tool_call_step_auto_approve` 显式设为 `true`）。
+- `script` **默认关闭**（`script_step_enabled: false`），工作流 YAML 可能来自
+  LLM 生成或他人分享，默认不允许执行任意 shell 命令，需要显式打开开关。
+- `human_input` 等待有超时保护（`human_input_wait_timeout_seconds`，默认
+  1800 秒），超时后该步骤标记为 `FAILED`。
+
+在 CLI 里对正在等待人工输入的执行送入文本：
+
+```
+/workflow input <workflow_session_id> <要送入的文本>
+```
+
+Agent 侧对应的工具是 `provide_workflow_step_input(workflow_session_id, input_text)`。
+
+---
+
+## 生命周期 Hook（P5）
+
+Workflow 执行时会触发以下 Hook 事件（复用项目现有的 `mini_agent.hooks` 体系，
+在 `.agent/hooks.json` 里声明命令即可挂钩，无需改动源码）：
+
+| 事件 | 触发时机 |
+|---|---|
+| `WorkflowStart` | 一次 `run()` 开始执行 |
+| `WorkflowStepStart` | 每个 step 实际开始执行前 |
+| `WorkflowStepEnd` | 每个 step 执行结束后（无论成功/失败/跳过） |
+| `WorkflowGateFailed` | evaluator 质检门判定 `GATE_FAILED` 时 |
+| `WorkflowEnd` | 一次执行结束（`done`/`failed`/`partial`/`paused`/`cancelled`） |
+
+受 `workflow.hooks_enabled` 开关控制（默认开启）；Hook 触发失败不会影响
+工作流主流程（异常会被吞掉并记录日志）。
+
+---
+
+## 保存前引用完整性校验（P6）
+
+`save_workflow` / `create_workflow_from_template` 保存前会调用
+`WorkflowDef.validate()`，除了原有的 id 重复/依赖缺失检查，新增：
+
+- **类型专属必填字段**：`sub_workflow` 缺少 `workflow_name`、`tool_call`
+  缺少 `tool_name`、`script` 缺少 `script` 命令都会被拒绝；`sub_workflow`
+  引用自身（导致无限递归）也会被拒绝。
+- **占位符引用完整性**（受 `workflow.validate_placeholders_on_save` 控制，
+  默认开启）：扫描 `prompt` 中 `{step_id.output}` / `{step_id.score}` 形式
+  的占位符，检查 `step_id` 是否真的存在于工作流里，避免笔误导致运行时
+  才发现引用了不存在的步骤。`{param_name}` 这种不带 `.` 的占位符属于运行时
+  `inputs`，不受此项检查。
+- **角色引用校验**（受 `workflow.validate_role_refs_on_save` 控制，默认
+  开启）：校验 `role` 字段是否为已注册的角色 Agent profile（需要调用方
+  传入 `role_checker`，未传入时自动跳过，不影响单测/无 dispatcher 环境）。
+
+---
+
+## 内置工作流模板库（P6）
+
+不想从零手写 YAML 或依赖 LLM 生成时，可以直接基于内置模板创建：
+
+```
+/workflow templates                          列举内置模板
+/workflow from-template code_review my_review   基于模板创建新工作流
+```
+
+对应 Agent 工具：`list_workflow_templates()` / `create_workflow_from_template(template_name, new_name)`。
+
+当前内置模板：
+
+| 模板名 | 说明 |
+|---|---|
+| `code_review` | 静态分析 → 深度审查 → 质量评估（evaluator 打分门）→ 生成报告 |
+| `research_report` | 资料收集 → 要点提炼 → 交叉验证（evaluator 打分门）→ 生成报告 |
+| `multi_perspective_debate` | 正方/反方论证并行展开 → 综合裁决（evaluator 打分门）→ 生成结论 |
+
+模板本身只是随包分发的只读 YAML（`workflow/templates/*.yaml`），
+`create_workflow_from_template` 只是把模板加载出来、替换 `name` 字段后
+交给普通的 `save()` 落盘——会经过和手写 YAML 完全一样的校验路径。
+
+---
+
 ## workflow 相关配置（`agent_config.json`）
 
 ```json
@@ -472,7 +627,15 @@ run_workflow("article_writer", {
   "approval_poll_interval_seconds": 3.0,
   "approval_wait_timeout_seconds": 600.0,
   "retry_on_error_backoff_seconds": 5.0,
-  "background_execution_default": false
+  "background_execution_default": false,
+  "hooks_enabled": true,
+  "max_sub_workflow_depth": 3,
+  "script_step_enabled": false,
+  "script_step_timeout_seconds": 60.0,
+  "tool_call_step_auto_approve": false,
+  "human_input_wait_timeout_seconds": 1800.0,
+  "validate_placeholders_on_save": true,
+  "validate_role_refs_on_save": true
 }
 ```
 
@@ -487,6 +650,14 @@ run_workflow("article_writer", {
 | `approval_wait_timeout_seconds` | `600.0` | 审批等待超时（秒），`null`=无限等待 |
 | `retry_on_error_backoff_seconds` | `5.0` | `retry_on_error` 重试的基础退避时长（秒） |
 | `background_execution_default` | `false` | `run_workflow` 未显式传 `background` 时的默认行为 |
+| `hooks_enabled`（P5） | `true` | 是否触发 WorkflowStart/StepStart/StepEnd/GateFailed/WorkflowEnd 生命周期 Hook |
+| `max_sub_workflow_depth`（P5） | `3` | `sub_workflow` 类型 step 允许的最大嵌套深度 |
+| `script_step_enabled`（P5） | `false` | 是否允许 `script` 类型 step 执行 shell 命令，默认关闭 |
+| `script_step_timeout_seconds`（P5） | `60.0` | `script` 类型 step 的默认超时（可被 `step.timeout` 覆盖） |
+| `tool_call_step_auto_approve`（P5） | `false` | `tool_call` 类型 step 是否默认跳过审批门 |
+| `human_input_wait_timeout_seconds`（P5） | `1800.0` | `human_input` 类型 step 等待人工输入的超时（秒），`null`=无限等待 |
+| `validate_placeholders_on_save`（P6） | `true` | 保存工作流时是否校验占位符引用完整性 |
+| `validate_role_refs_on_save`（P6） | `true` | 保存工作流时是否校验 `role` 是否为已注册的角色 Agent profile |
 
 ---
 
@@ -509,10 +680,15 @@ run_workflow("article_writer", {
 /workflow approve <workflow_session_id>     批准当前等待审批的步骤
 /workflow reject <workflow_session_id> [reason]
                                              拒绝当前等待审批的步骤
+/workflow input <workflow_session_id> <text>
+                                             向等待人工输入的步骤送入文本（P5）
+/workflow templates                         列举内置工作流模板（P6）
+/workflow from-template <template_name> <new_name>
+                                             基于内置模板创建工作流（P6）
 /workflow delete <name>                     删除工作流定义
 ```
 
-**已知限制**：`pause`/`cancel`/`approve`/`reject` 依赖进程内的控制状态
+**已知限制**：`pause`/`cancel`/`approve`/`reject`/`input` 依赖进程内的控制状态
 （`workflow/registry.py`），只在**同一个进程**里对正在跑的后台执行有效；
 若 CLI 进程重启，只能依赖磁盘上 `session.json` 的最终状态，配合
 `resume_workflow_run` 重新接续执行。

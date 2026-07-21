@@ -898,6 +898,18 @@ class WorkflowConfig:
     # ── 后台执行（P4）──────────────────────────────────────────────────────
     background_execution_default: bool = False           # run_workflow 未显式传 background 参数时的默认行为
 
+    # ── Step 类型化 / 生命周期 Hook（P5）─────────────────────────────────────
+    hooks_enabled: bool = True                # 是否触发 WorkflowStart/StepStart/StepEnd/GateFailed/WorkflowEnd 生命周期 Hook
+    max_sub_workflow_depth: int = 3            # sub_workflow 类型 step 允许的最大嵌套深度（防止 A→B→A 循环递归）
+    script_step_enabled: bool = False          # 是否允许 script 类型 step 执行 shell 命令（默认关闭，避免任意 YAML 变成命令执行入口）
+    script_step_timeout_seconds: float = 60.0  # script 类型 step 的默认超时（被 step.timeout 覆盖）
+    tool_call_step_auto_approve: bool = False  # tool_call 类型 step 默认是否跳过人工审批门（默认 False：除非显式 require_approval=false，否则仍会走审批）
+    human_input_wait_timeout_seconds: Optional[float] = 1800.0  # human_input 类型 step 等待人工输入的超时（None=无限等待），超时后该 step 标记为 FAILED
+
+    # ── 保存前校验 / 模板库（P6）─────────────────────────────────────────────
+    validate_placeholders_on_save: bool = True   # save_workflow 时是否校验 {step_id.output}/{step_id.score} 占位符引用完整性
+    validate_role_refs_on_save: bool = True      # save_workflow 时是否校验 step.role 是否为已注册的角色 Agent profile
+
 
 @dataclass
 class ProprioceptionConfig:

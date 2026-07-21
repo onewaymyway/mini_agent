@@ -79,6 +79,13 @@ KNOWN_EVENTS = (
 
     # mini_agent 扩展
     "TurnEnd",              # 一轮 run_turn 结束、等待用户下一次输入前
+
+    # Workflow 生命周期（workflow机制改进计划.md P5，生命周期 Hook 对称化）
+    "WorkflowStart",        # WorkflowRunner.run() 开始执行一次工作流时（通知，不可阻止）
+    "WorkflowStepStart",    # 每个 step 实际开始执行前（通知，不可阻止）
+    "WorkflowStepEnd",      # 每个 step 执行结束后，无论成功/失败/跳过（通知，不可阻止）
+    "WorkflowGateFailed",   # evaluator 质检门判定 GATE_FAILED 时（通知，不可阻止）
+    "WorkflowEnd",          # 一次工作流执行结束（done/failed/partial/paused/cancelled）
 )
 
 

@@ -18,6 +18,13 @@ workflow/tools.py — 工作流工具注册
   approve_workflow_step   人工审批门放行
   reject_workflow_step    人工审批门拒绝
 
+  [workflow机制改进计划.md P5 新增，Step 类型化配套工具]
+  provide_workflow_step_input  向正在等待 human_input 类型 step 送入文本
+
+  [workflow机制改进计划.md P6 新增，模板库]
+  list_workflow_templates      列举内置工作流模板
+  create_workflow_from_template 基于内置模板创建并保存一个新工作流
+
 在 app.py 里调用 register_workflow_tools(cfg) 即可完成注册。
 """
 
@@ -90,7 +97,7 @@ def register_workflow_tools(cfg: "AppConfig") -> None:
             return f"❌ YAML 解析失败：{e}"
 
         try:
-            path = store.save(wf)
+            path = store.save(wf, cfg=cfg)
             return (
                 f"✅ 工作流 **{wf.name}** 已保存到 `{path}`\n"
                 f"步骤：{' → '.join(s.id for s in wf.steps)}\n"
@@ -139,7 +146,8 @@ def register_workflow_tools(cfg: "AppConfig") -> None:
         if run_in_background is None:
             run_in_background = bool(getattr(getattr(cfg, "workflow", None), "background_execution_default", False))
 
-        has_approval_step = any(getattr(s, "require_approval", False) for s in wf.steps)
+        from mini_agent.workflow.runner import step_requires_approval
+        has_approval_step = any(step_requires_approval(s, getattr(cfg, "workflow", None)) for s in wf.steps)
         if has_approval_step and not run_in_background:
             run_in_background = True  # 强制后台，否则审批门必然超时判拒绝
 
@@ -369,3 +377,58 @@ def register_workflow_tools(cfg: "AppConfig") -> None:
         step_id = control.pending_approval_step
         control.request_reject(step_id, reason)
         return f"❌ 已拒绝步骤 `{step_id}`（workflow_session_id=`{workflow_session_id}`）{('，原因：' + reason) if reason else ''}"
+
+    # ── human_input 步骤送入文本（P5）────────────────────────────────────────
+
+    @tool(name="provide_workflow_step_input", group="workflow",
+          description="向一个正在等待人工输入（human_input 类型 step）的工作流执行送入文本，使其继续执行。")
+    def provide_workflow_step_input(workflow_session_id: str, input_text: str) -> str:
+        """
+        workflow_session_id: 正在执行的工作流的执行 ID
+        input_text: 要送入的文本，将作为该 step 的 output，可被后续 step 用 {step_id.output} 引用
+        """
+        from mini_agent.workflow import registry as wf_registry
+        control = wf_registry.get(workflow_session_id)
+        if control is None or not control.pending_input_step:
+            return f"⚠️ 执行 {workflow_session_id!r} 当前没有正在等待人工输入的步骤。"
+        step_id = control.pending_input_step
+        control.request_provide_input(step_id, input_text)
+        return f"✅ 已向步骤 `{step_id}` 送入文本（workflow_session_id=`{workflow_session_id}`）"
+
+    # ── 模板库（P6）──────────────────────────────────────────────────────────
+
+    @tool(name="list_workflow_templates", group="workflow",
+          description="列举内置工作流模板（code_review / research_report / multi_perspective_debate 等），供 create_workflow_from_template 使用。")
+    def list_workflow_templates() -> str:
+        from mini_agent.workflow.store import WorkflowStore
+        store = WorkflowStore(Path(store_path))
+        templates = store.list_templates()
+        if not templates:
+            return "📭 当前没有内置模板。"
+        lines = [f"📋 共 {len(templates)} 个内置模板：\n"]
+        for t in templates:
+            lines.append(f"**{t['name']}**：{t['description'] or '无描述'}（{t['step_count']} 步）")
+        return "\n".join(lines)
+
+    @tool(name="create_workflow_from_template", group="workflow",
+          description="基于内置模板创建一个新工作流并保存，比 generate_workflow 更稳定（模板经过验证，只需换个名字即可使用）。")
+    def create_workflow_from_template(template_name: str, new_name: str) -> str:
+        """
+        template_name: 模板名称，参考 list_workflow_templates 的输出
+        new_name: 新工作流的名称（保存后可直接用 run_workflow 执行）
+        """
+        from mini_agent.workflow.store import WorkflowStore
+        store = WorkflowStore(Path(store_path))
+        try:
+            wf = store.instantiate_template(template_name, new_name)
+        except ValueError as e:
+            return f"❌ {e}"
+        try:
+            path = store.save(wf, cfg=cfg)
+        except ValueError as e:
+            return f"❌ 保存失败：{e}"
+        return (
+            f"✅ 已基于模板 **{template_name}** 创建工作流 **{wf.name}**，保存到 `{path}`\n"
+            f"步骤：{' → '.join(s.id for s in wf.steps)}\n"
+            f"运行方式：调用 `run_workflow` 工具，传入 name=\"{wf.name}\""
+        )

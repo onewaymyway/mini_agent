@@ -32,6 +32,13 @@ class ControlState:
     # 后台线程句柄，便于 join / 状态查询（不强制要求设置）
     thread: Optional[threading.Thread] = None
 
+    # [workflow机制改进计划.md P5] human_input 类型 step：当前正等待人工
+    # 输入的 step_id（None=当前没有 step 在等输入），与审批门是两套独立
+    # 信号（同一个 step 不会同时处于两种等待状态）。
+    pending_input_step: Optional[str] = None
+    input_provided: threading.Event = field(default_factory=threading.Event)
+    provided_input_text: str = ""
+
     def request_pause(self) -> None:
         self.pause_requested.set()
 
@@ -52,6 +59,13 @@ class ControlState:
             return False
         self.rejection_reason = reason
         self.rejected.set()
+        return True
+
+    def request_provide_input(self, step_id: str, text: str) -> bool:
+        if self.pending_input_step != step_id:
+            return False
+        self.provided_input_text = text
+        self.input_provided.set()
         return True
 
 

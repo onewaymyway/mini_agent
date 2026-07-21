@@ -16,6 +16,12 @@ CLI 里操作，不需要绕一圈让主 Agent 去调用工具）：
   /workflow approve <workflow_session_id> — 批准当前等待审批的步骤
   /workflow reject <workflow_session_id> [reason]
                                            — 拒绝当前等待审批的步骤
+  /workflow input <workflow_session_id> <text>
+                                           — [P5] 向正在等待人工输入（human_input
+                                             类型 step）的执行送入文本
+  /workflow templates                     — [P6] 列举内置工作流模板
+  /workflow from-template <template_name> <new_name>
+                                           — [P6] 基于内置模板创建并保存一个新工作流
   /workflow delete <name>                 — 删除工作流定义
 """
 
@@ -45,6 +51,11 @@ def handle_workflow_cmd(args: list[str], agent) -> None:
             "  /workflow approve <workflow_session_id> 批准当前等待审批的步骤\n"
             "  /workflow reject <workflow_session_id> [reason]\n"
             "                                          拒绝当前等待审批的步骤\n"
+            "  /workflow input <workflow_session_id> <text>\n"
+            "                                          向等待人工输入的步骤送入文本\n"
+            "  /workflow templates                     列举内置工作流模板\n"
+            "  /workflow from-template <template_name> <new_name>\n"
+            "                                          基于内置模板创建工作流\n"
             "  /workflow delete <name>                 删除工作流定义"
         )
         return
@@ -73,6 +84,12 @@ def handle_workflow_cmd(args: list[str], agent) -> None:
         _handle_approve(rest)
     elif sub == "reject":
         _handle_reject(rest)
+    elif sub == "input":
+        _handle_input(rest)
+    elif sub == "templates":
+        _handle_templates(cfg)
+    elif sub == "from-template":
+        _handle_from_template(cfg, rest)
     elif sub == "delete":
         _handle_delete(cfg, rest)
     else:
@@ -127,7 +144,8 @@ def _handle_run(cfg, rest: list[str]) -> None:
         R.print_error(f"inputs 不是合法 JSON：{e}")
         return
 
-    has_approval_step = any(getattr(s, "require_approval", False) for s in wf.steps)
+    from mini_agent.workflow.runner import step_requires_approval
+    has_approval_step = any(step_requires_approval(s, getattr(cfg, "workflow", None)) for s in wf.steps)
     if has_approval_step and not background:
         R.print_warning("该工作流包含需要人工审批的步骤，已自动切换为 --background 执行")
         background = True
@@ -298,6 +316,61 @@ def _handle_reject(rest: list[str]) -> None:
     reason = " ".join(rest[1:])
     control.request_reject(step_id, reason)
     R.print_info(f"❌ 已拒绝步骤 {step_id}" + (f"，原因：{reason}" if reason else ""))
+
+
+def _handle_input(rest: list[str]) -> None:
+    """[workflow机制改进计划.md P5] 向正在等待 human_input 类型 step 的执行送入文本。"""
+    if len(rest) < 2:
+        R.print_error("用法：/workflow input <workflow_session_id> <text>")
+        return
+    wf_session_id = rest[0]
+    text = " ".join(rest[1:])
+    from mini_agent.workflow import registry as wf_registry
+    control = wf_registry.get(wf_session_id)
+    if control is None or not control.pending_input_step:
+        R.print_warning(f"执行 {wf_session_id!r} 当前没有正在等待人工输入的步骤")
+        return
+    step_id = control.pending_input_step
+    control.request_provide_input(step_id, text)
+    R.print_info(f"✅ 已向步骤 {step_id} 送入文本")
+
+
+def _handle_templates(cfg) -> None:
+    """[workflow机制改进计划.md P6] 列举内置工作流模板。"""
+    from mini_agent.workflow.store import WorkflowStore
+    store = WorkflowStore(Path(cfg.project_root))
+    templates = store.list_templates()
+    if not templates:
+        R.print_info("📭 当前没有内置模板。")
+        return
+    R.print_info(f"📋 共 {len(templates)} 个内置模板：")
+    for t in templates:
+        R.print_info(f"  - {t['name']}：{t['description'] or '无描述'}（{' → '.join(t['steps'])}）")
+
+
+def _handle_from_template(cfg, rest: list[str]) -> None:
+    """[workflow机制改进计划.md P6] 基于内置模板创建并保存一个新工作流。"""
+    if len(rest) < 2:
+        R.print_error("用法：/workflow from-template <template_name> <new_name>")
+        return
+    template_name, new_name = rest[0], rest[1]
+    from mini_agent.workflow.store import WorkflowStore
+    store = WorkflowStore(Path(cfg.project_root))
+    try:
+        wf = store.instantiate_template(template_name, new_name)
+    except ValueError as e:
+        R.print_error(str(e))
+        return
+    try:
+        path = store.save(wf, cfg=cfg)
+    except ValueError as e:
+        R.print_error(f"保存失败：{e}")
+        return
+    R.print_info(
+        f"✅ 已基于模板 {template_name} 创建工作流 {wf.name}，保存到 {path}\n"
+        f"步骤：{' → '.join(s.id for s in wf.steps)}\n"
+        f"运行方式：/workflow run {wf.name}"
+    )
 
 
 def _handle_delete(cfg, rest: list[str]) -> None:

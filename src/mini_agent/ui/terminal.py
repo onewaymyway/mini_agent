@@ -3146,7 +3146,8 @@ _COMMANDS: list[tuple[str, str, list]] = [
     ("/goal",        "Set a goal; agent auto-retries until done",    ["from-history", "resume", "status", "list", "cancel"]),
     ("/workflow",     "Generate/run/monitor multi-step agent workflows", [
         "list", "show", "run", "runs", "status", "resume",
-        "pause", "cancel", "approve", "reject", "delete",
+        "pause", "cancel", "approve", "reject", "input",
+        "templates", "from-template", "delete",
     ]),
     ("/memory",      "Generate/refresh session memory now",          []),
     ("/profile",     "Refresh user profile now",                     []),

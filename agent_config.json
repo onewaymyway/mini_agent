@@ -133,6 +133,14 @@
     "approval_poll_interval_seconds": 3.0,
     "approval_wait_timeout_seconds": 600.0,
     "retry_on_error_backoff_seconds": 5.0,
-    "background_execution_default": false
+    "background_execution_default": false,
+    "hooks_enabled": true,
+    "max_sub_workflow_depth": 3,
+    "script_step_enabled": false,
+    "script_step_timeout_seconds": 60.0,
+    "tool_call_step_auto_approve": false,
+    "human_input_wait_timeout_seconds": 1800.0,
+    "validate_placeholders_on_save": true,
+    "validate_role_refs_on_save": true
   }
 }

@@ -38,6 +38,12 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, Optional
 
+# [workflow机制改进计划.md P5] Step 类型化：把 role: Optional[str] 的隐式
+# "主 Agent / 角色 Agent" 二选一显式化为一个枚举，同时新增三种类型。
+# 未显式设置 type 时（旧版 YAML），由 WorkflowStep.effective_type 按
+# "role 是否为空"自动推断为 "agent"/"role_agent"，保证向后兼容。
+STEP_TYPES = ("agent", "role_agent", "sub_workflow", "tool_call", "human_input", "script")
+
 
 class StepStatus(str, Enum):
     PENDING      = "pending"
@@ -79,6 +85,28 @@ class WorkflowStep:
     # 线程能在阻塞期间调用 approve_workflow_step，审批会一直等到超时。
     require_approval: bool = False
 
+    # ── [workflow机制改进计划.md P5] Step 类型化 ────────────────────────────
+    # type 为 None 时按旧语义推断（见 effective_type）；显式设置后由
+    # runner._dispatch_step 分发到对应 Executor，新增类型不影响旧 YAML。
+    type: Optional[str] = None
+    # sub_workflow 专用：引用的另一个已保存工作流名称
+    workflow_name: Optional[str] = None
+    # tool_call 专用：直接调用某个已注册工具（而不是启动一整个 Agent）
+    tool_name: Optional[str] = None
+    tool_args: dict = field(default_factory=dict)
+    # human_input 专用：展示给人类的提示语（为空则用 prompt 本身）
+    input_prompt: Optional[str] = None
+    # script 专用：要执行的 shell 命令（受 cfg.workflow.script_step_enabled
+    # 开关保护，默认关闭，避免任意 workflow YAML 被当作命令执行入口）
+    script: Optional[str] = None
+
+    @property
+    def effective_type(self) -> str:
+        """未显式设置 type 时，按旧语义推断：role 非空 → role_agent，否则 → agent。"""
+        if self.type:
+            return self.type
+        return "role_agent" if self.role else "agent"
+
 
 @dataclass
 class WorkflowDef:
@@ -114,6 +142,12 @@ class WorkflowDef:
                 allow_parallel=bool(s.get("allow_parallel", True)),
                 retry_on_error=int(s.get("retry_on_error", 0)),
                 require_approval=bool(s.get("require_approval", False)),
+                type=s.get("type"),
+                workflow_name=s.get("workflow_name"),
+                tool_name=s.get("tool_name"),
+                tool_args=dict(s.get("tool_args") or {}),
+                input_prompt=s.get("input_prompt"),
+                script=s.get("script"),
             ))
         return cls(
             name=str(data.get("name", "unnamed")),
@@ -145,13 +179,31 @@ class WorkflowDef:
                     **({"allow_parallel": s.allow_parallel} if not s.allow_parallel else {}),
                     **({"retry_on_error": s.retry_on_error} if s.retry_on_error else {}),
                     **({"require_approval": s.require_approval} if s.require_approval else {}),
+                    **({"type": s.type} if s.type else {}),
+                    **({"workflow_name": s.workflow_name} if s.workflow_name else {}),
+                    **({"tool_name": s.tool_name} if s.tool_name else {}),
+                    **({"tool_args": s.tool_args} if s.tool_args else {}),
+                    **({"input_prompt": s.input_prompt} if s.input_prompt else {}),
+                    **({"script": s.script} if s.script else {}),
                 }
                 for s in self.steps
             ],
         }
 
-    def validate(self) -> list[str]:
-        """校验工作流定义，返回错误列表（空列表=合法）。"""
+    def validate(self, *, check_placeholders: bool = True, role_checker=None) -> list[str]:
+        """校验工作流定义，返回错误列表（空列表=合法）。
+
+        [workflow机制改进计划.md P6] 保存前引用完整性校验：
+          - check_placeholders=True 时，额外扫描 prompt 中形如
+            {step_id.output}/{step_id.score} 的占位符，检查引用的 step_id
+            是否存在于当前工作流（弱校验：不要求显式声明 depends_on，具体
+            "运行时该依赖是否已产生结果"由 runner._resolve_prompt 的 KeyError
+            兜底，这里只挡"引用了根本不存在的步骤 id"这类明显笔误）。
+          - role_checker：可选的 callable(role_name) -> bool，由调用方传入
+            （通常来自 role_agents dispatcher），用于校验 step.role 是否为
+            当前已注册的角色 profile。不传时跳过该项检查（保持向后兼容，
+            单元测试/无 dispatcher 环境下 validate() 行为不变）。
+        """
         errors: list[str] = []
         seen_ids: set[str] = set()
 
@@ -163,14 +215,53 @@ class WorkflowDef:
             else:
                 seen_ids.add(step.id)
 
-            if not step.prompt.strip():
+            if not step.prompt.strip() and step.effective_type != "human_input":
                 errors.append(f"步骤 {step.id!r} 的 prompt 为空")
+
+            # [P5] 类型专属必填字段校验
+            etype = step.effective_type
+            if etype not in STEP_TYPES:
+                errors.append(f"步骤 {step.id!r} 的 type 非法：{etype!r}（可选：{STEP_TYPES}）")
+            if etype == "sub_workflow" and not step.workflow_name:
+                errors.append(f"步骤 {step.id!r} 是 sub_workflow 类型但未指定 workflow_name")
+            if etype == "sub_workflow" and step.workflow_name == self.name:
+                errors.append(f"步骤 {step.id!r} 引用了当前工作流自身（{self.name!r}），会导致无限递归")
+            if etype == "tool_call" and not step.tool_name:
+                errors.append(f"步骤 {step.id!r} 是 tool_call 类型但未指定 tool_name")
+            if etype == "script" and not step.script:
+                errors.append(f"步骤 {step.id!r} 是 script 类型但未指定 script 命令")
 
         # 检查依赖是否存在
         for step in self.steps:
             for dep in step.depends_on:
                 if dep not in seen_ids:
                     errors.append(f"步骤 {step.id!r} 依赖不存在的步骤 {dep!r}")
+
+        # [P6] role 引用校验（可选，需要调用方传入 role_checker）
+        if role_checker is not None:
+            for step in self.steps:
+                if step.role and not role_checker(step.role):
+                    errors.append(f"步骤 {step.id!r} 引用了不存在的角色 Agent profile：{step.role!r}")
+
+        # [P6] Prompt 占位符引用完整性校验：{step_id.output}/{step_id.score}
+        if check_placeholders:
+            import re
+            for step in self.steps:
+                for m in re.finditer(r'\{([^}]+)\}', step.prompt or ""):
+                    key = m.group(1)
+                    if "." not in key:
+                        continue  # {param} 形式，属于运行时 inputs，无法静态校验
+                    ref_id, ref_field = key.split(".", 1)
+                    if ref_id not in seen_ids:
+                        errors.append(
+                            f"步骤 {step.id!r} 的 prompt 引用了不存在的步骤 {ref_id!r}"
+                            f"（占位符 {{{key}}}）"
+                        )
+                    elif ref_field not in ("output", "score"):
+                        errors.append(
+                            f"步骤 {step.id!r} 的 prompt 占位符 {{{key}}} 引用了未知字段 "
+                            f"{ref_field!r}（只支持 .output / .score）"
+                        )
 
         return errors
 

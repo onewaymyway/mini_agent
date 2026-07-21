@@ -63,6 +63,21 @@ if TYPE_CHECKING:
     from mini_agent.config import AppConfig
 
 
+def step_requires_approval(step: "WorkflowStep", wf_cfg: Any = None) -> bool:
+    """
+    [workflow机制改进计划.md P5] 模块级辅助函数：判定某个 step 是否需要人工
+    审批门。逻辑与 WorkflowRunner._effective_require_approval 完全一致，
+    抽成独立函数是因为 workflow/tools.py 和 cli/commands/workflow_cmd.py
+    需要在真正调用 runner.run() 之前（决定是否强制 background 执行）就
+    做同样的判断，那两处没有 WorkflowRunner 实例可用。
+    """
+    if getattr(step, "require_approval", False):
+        return True
+    if getattr(step, "effective_type", None) == "tool_call":
+        return not bool(getattr(wf_cfg, "tool_call_step_auto_approve", False))
+    return False
+
+
 @dataclass
 class WorkflowRunResult:
     """一次工作流执行的完整结果。"""
@@ -112,6 +127,32 @@ class WorkflowRunner:
 
     def __init__(self, cfg: "AppConfig") -> None:
         self._cfg = cfg
+        # [workflow机制改进计划.md P5] sub_workflow 递归深度，由
+        # SubWorkflowStepExecutor 在创建嵌套 WorkflowRunner 时设置；
+        # 顶层 run() 始终为 0。
+        self._sub_workflow_depth: int = 0
+
+    # ── [workflow机制改进计划.md P5] 生命周期 Hook 对称化 ─────────────────────
+
+    def _emit_hook(self, event: str, payload: dict) -> None:
+        """触发 workflow 生命周期 Hook（WorkflowStart/StepStart/StepEnd/GateFailed/WorkflowEnd）。
+
+        复用项目现有的 hooks 注册体系（mini_agent.hooks），定制方无需改
+        runner 源码，通过 .agent/hooks.json 声明命令即可挂钩。受
+        cfg.workflow.hooks_enabled 开关控制（默认开启）；触发失败不影响
+        主流程（吞异常，只记录日志）。
+        """
+        wf_cfg = getattr(self._cfg, "workflow", None)
+        if not bool(getattr(wf_cfg, "hooks_enabled", True)):
+            return
+        try:
+            from mini_agent.hooks.loader import get_hook_manager
+            mgr = get_hook_manager()
+            if mgr is not None:
+                mgr.run(event, payload)
+        except Exception as e:
+            from mini_agent.errors import log_exception
+            log_exception(e, where=f"mini_agent.workflow.runner.WorkflowRunner._emit_hook[{event}]")
 
     def run(
         self,
@@ -169,6 +210,12 @@ class WorkflowRunner:
             f"[Workflow] 开始执行：{wf.name}（共 {len(wf.steps)} 步，"
             f"workflow_session_id={wf_session_id}）"
         )
+        self._emit_hook("WorkflowStart", {
+            "workflow_name": wf.name,
+            "workflow_session_id": wf_session_id,
+            "resumed": loaded is not None,
+            "step_count": len(wf.steps),
+        })
 
         # 供 _run_step_with_gate_retry 引用步骤定义
         self._current_wf_steps = wf.steps
@@ -204,6 +251,13 @@ class WorkflowRunner:
             wf_session.error = error
             wf_session.save(paths)
             wf_session.append_event(paths, "workflow_end", {"status": status, "error": error})
+            self._emit_hook("WorkflowEnd", {
+                "workflow_name": wf.name,
+                "workflow_session_id": wf_session_id,
+                "status": status,
+                "error": error,
+                "total_duration": time.monotonic() - t_start,
+            })
             wf_registry.unregister(wf_session_id)
             return WorkflowRunResult(
                 workflow_name=wf.name,
@@ -385,10 +439,10 @@ class WorkflowRunner:
                 )
                 return
 
-        # [workflow机制改进计划.md P4] 人工审批门：在锁外阻塞等待，避免长时间
+        # [workflow机制改进计划.md P4/P5] 人工审批门：在锁外阻塞等待，避免长时间
         # 占用 results_lock。前台同步执行时没有其它线程能调用 approve/reject，
         # 会一直等到 poll_timeout 后自动判 REJECTED（避免永久挂死）。
-        if step.require_approval:
+        if self._effective_require_approval(step):
             approved = self._await_step_approval(step)
             if approved is False:
                 with results_lock:
@@ -406,6 +460,10 @@ class WorkflowRunner:
         watchdog = getattr(self, "_current_watchdog", None)
         if watchdog is not None:
             watchdog.register_step_start(step.id, step.timeout)
+
+        self._emit_hook("WorkflowStepStart", {
+            "step_id": step.id, "step_name": step.name, "type": step.effective_type,
+        })
 
         # 实际执行（LLM 调用等耗时操作）故意放在锁外：并发批次的核心收益就是
         # 让多个步骤的 LLM 调用真正同时在跑，锁只保护 step_results 的读写。
@@ -434,6 +492,25 @@ class WorkflowRunner:
                     "duration_seconds": sr.duration_seconds,
                     "retries_used": sr.retries_used,
                 })
+            self._emit_hook("WorkflowStepEnd", {
+                "step_id": step.id,
+                "status": sr.status.value,
+                "duration_seconds": sr.duration_seconds,
+                "score": sr.score,
+            })
+
+    def _effective_require_approval(self, step: "WorkflowStep") -> bool:
+        """
+        [workflow机制改进计划.md P5] 计算某个 step 实际是否需要人工审批。
+
+        step.require_approval=True 时始终生效（用户显式声明的意愿优先）。
+        额外地，tool_call 类型 step 涉及外部副作用（直接调用工具，而非在
+        独立 Agent 沙箱里执行），属于设计文档 3.3 节里说的"高风险 step"，
+        默认也要求审批——除非 cfg.workflow.tool_call_step_auto_approve=True
+        （显式打开"tool_call 自动放行"开关）。
+        """
+        wf_cfg = getattr(self._cfg, "workflow", None)
+        return step_requires_approval(step, wf_cfg)
 
     def _await_step_approval(self, step: "WorkflowStep") -> Optional[bool]:
         """
@@ -816,12 +893,12 @@ class WorkflowRunner:
         t_start = time.monotonic()
 
         try:
-            if step.role:
-                output = self._execute_with_role_agent(step, resolved_prompt)
-            else:
-                output = self._execute_with_main_agent(step, resolved_prompt)
+            from . import executors as _executors
+            executor = _executors.get_executor(step.effective_type)
+            output = executor.execute(self, step, resolved_prompt)
 
-            # 提取评分（只要 role 对应的 profile 是 evaluator 类型就提取）
+            # 提取评分（只要 role 对应的 profile 是 evaluator 类型就提取；
+            # sub_workflow/tool_call/human_input/script 均无 role，天然跳过）
             score = self._extract_step_score(step, output)
 
             # evaluator 质检门：评分不达标时标记为 GATE_FAILED
@@ -832,6 +909,9 @@ class WorkflowRunner:
                     f"[Workflow] ⚠️ 步骤 {step.id} 质检不达标："
                     f"{int(score*100)}/100 < {int(gate_threshold*100)}/100"
                 )
+                self._emit_hook("WorkflowGateFailed", {
+                    "step_id": step.id, "score": score, "gate_threshold": gate_threshold,
+                })
                 return StepResult(
                     step_id=step.id,
                     status=StepStatus.GATE_FAILED,

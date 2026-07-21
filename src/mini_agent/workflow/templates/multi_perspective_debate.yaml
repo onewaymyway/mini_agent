@@ -1,0 +1,80 @@
+name: multi_perspective_debate
+description: 多视角辩论流程：正方论证与反方论证并行展开 → 综合裁决（evaluator 打分门）→ 生成结论
+version: "1.0"
+steps:
+  - id: proponent
+    name: 正方论证
+    prompt: |
+      请就以下议题，从支持/赞成的立场出发，给出尽可能有力的论证：
+
+      议题：
+      {topic}
+
+      要求：
+      - 至少给出 3 条独立的支撑论据
+      - 每条论据尽量给出依据或类比
+      - 主动预判并回应最有力的一条反对意见
+
+  - id: opponent
+    name: 反方论证
+    prompt: |
+      请就以下议题，从反对/质疑的立场出发，给出尽可能有力的论证：
+
+      议题：
+      {topic}
+
+      要求：
+      - 至少给出 3 条独立的反对论据
+      - 每条论据尽量给出依据或类比
+      - 主动预判并回应最有力的一条支持意见
+
+  - id: judge
+    name: 综合裁决
+    prompt: |
+      请作为中立裁判，评估以下正反双方的论证质量，不要预设立场：
+
+      议题：{topic}
+
+      正方论证：
+      {proponent.output}
+
+      反方论证：
+      {opponent.output}
+
+      请从论据充分性、逻辑严密性、对对方观点的回应质量三个维度打分（1-10），
+      并在最后一行输出：SCORE: [综合分]/10
+    depends_on:
+      - proponent
+      - opponent
+    role: evaluator
+    retry_on_gate_fail: 1
+
+  - id: conclusion
+    name: 生成结论
+    prompt: |
+      请基于以下正反论证和裁决意见，撰写一份平衡、中立的结论：
+
+      议题：{topic}
+
+      正方论证：
+      {proponent.output}
+
+      反方论证：
+      {opponent.output}
+
+      裁决意见：
+      {judge.output}
+      裁决评分：{judge.score}/100
+
+      结论格式：
+      ## {topic}：结论
+
+      ### 双方核心分歧
+
+      ### 更有说服力的一方及理由（如难分伯仲请明确说明）
+
+      ### 尚待进一步探讨的问题
+      裁决评分：{judge.score}/100
+    depends_on:
+      - judge
+    condition: "judge.score >= 40"

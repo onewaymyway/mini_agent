@@ -1,0 +1,84 @@
+name: research_report
+description: 调研报告完整流程：资料收集 → 要点提炼 → 交叉验证（evaluator 打分门）→ 生成报告
+version: "1.0"
+steps:
+  - id: gather
+    name: 资料收集
+    prompt: |
+      请围绕以下主题，系统性地梳理已知的相关信息、背景和关键事实：
+
+      主题：
+      {topic}
+
+      要求：
+      1. 覆盖主题的核心定义与背景
+      2. 列出当前公认的关键事实/数据
+      3. 标注哪些地方存在争议或信息不足
+
+  - id: synthesize
+    name: 要点提炼
+    prompt: |
+      基于以下收集到的资料，提炼出本次调研的核心论点和结构化要点：
+
+      主题：
+      {topic}
+
+      收集到的资料：
+      {gather.output}
+
+      请输出：
+      - 3-5 个核心论点
+      - 每个论点的支撑依据
+      - 尚待确认或存在分歧的部分
+    depends_on:
+      - gather
+
+  - id: verify
+    name: 交叉验证
+    prompt: |
+      请对以下调研要点进行交叉验证和质量评估：
+
+      主题：{topic}
+      核心要点：
+      {synthesize.output}
+
+      请检查：
+      - 论点之间是否自洽，有无逻辑矛盾
+      - 是否有明显的事实性错误或过时信息
+      - 论证是否有足够支撑
+
+      请给出各维度 1-10 分并在最后一行输出：SCORE: [综合分]/10
+    depends_on:
+      - synthesize
+    role: evaluator
+    retry_on_gate_fail: 1
+
+  - id: report
+    name: 生成调研报告
+    prompt: |
+      请基于以下内容撰写一份完整的调研报告：
+
+      主题：{topic}
+
+      核心要点：
+      {synthesize.output}
+
+      验证结论：
+      {verify.output}
+
+      可信度评分：{verify.score}/100
+
+      报告格式：
+      ## {topic} 调研报告
+
+      ### 摘要
+
+      ### 关键发现
+
+      ### 结论与建议
+
+      ### 局限性说明
+      可信度评分：{verify.score}/100
+    depends_on:
+      - verify
+    condition: "verify.score >= 40"

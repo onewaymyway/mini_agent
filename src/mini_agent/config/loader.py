@@ -720,6 +720,17 @@ def load_config(
         ),
         retry_on_error_backoff_seconds=float(_wf.get("retry_on_error_backoff_seconds", 5.0)),
         background_execution_default=bool(_wf.get("background_execution_default", False)),
+        hooks_enabled=bool(_wf.get("hooks_enabled", True)),
+        max_sub_workflow_depth=int(_wf.get("max_sub_workflow_depth", 3)),
+        script_step_enabled=bool(_wf.get("script_step_enabled", False)),
+        script_step_timeout_seconds=float(_wf.get("script_step_timeout_seconds", 60.0)),
+        tool_call_step_auto_approve=bool(_wf.get("tool_call_step_auto_approve", False)),
+        human_input_wait_timeout_seconds=(
+            1800.0 if "human_input_wait_timeout_seconds" not in _wf
+            else (float(_wf["human_input_wait_timeout_seconds"]) if _wf["human_input_wait_timeout_seconds"] is not None else None)
+        ),
+        validate_placeholders_on_save=bool(_wf.get("validate_placeholders_on_save", True)),
+        validate_role_refs_on_save=bool(_wf.get("validate_role_refs_on_save", True)),
     )
 
     # ── 日报融合 / 主动推荐 / 决策画像配置组装（主动推荐与数字分身机制设计方案）──

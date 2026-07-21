@@ -1,6 +1,6 @@
 # Workflow 机制改进计划
 
-> 状态：**P1-P4 已实施完成 / P5-P6 待评审**（实施记录见文末"六、实施记录"）
+> 状态：**P1-P6 已实施完成**（实施记录见文末"六、实施记录"）
 > 关联模块：`src/mini_agent/workflow/`、`src/mini_agent/storage/paths.py`
 > 参考文档：`docs/workflow-guide.md`、`docs/storage-paths-guide.md`
 
@@ -239,17 +239,72 @@ step.type: Literal["agent", "role_agent", "sub_workflow", "tool_call", "human_in
 > （见下方"实施后的配置样例"），所有新增命令均已同时补充 `/workflow`
 > CLI 子命令与 Tab 补全提示。
 
-### P5 — Step 类型化重构（改动面最大，单独提案）
+### P5 — Step 类型化重构（改动面最大，单独提案）✅ 已完成
 
 - `StepExecutor` 分发架构
 - `sub_workflow` 类型支持
 - 生命周期 Hook 对称化
 - 验收标准：现有 workflow YAML 无需修改即可继续运行（向后兼容）
 
-### P6 — 定制性增强（可并行，优先级最低）
+> 实施记录：新增 `workflow/executors.py`，6 个 `StepExecutor` 子类
+> （Agent/RoleAgent/SubWorkflow/ToolCall/HumanInput/Script）+ 分发表
+> `get_executor()`；`WorkflowStep` 新增 `type` 字段与 `effective_type`
+> 属性——`type` 为空时按“`role` 是否非空”自动推断为 `agent`/`role_agent`，
+> 旧 YAML 无需任何修改即可继续跑（`test_workflow_parallel.py` 17 项全绿，
+> 新增 `test_workflow_step_types.py` 34 项全绿，均验证通过）。
+> `runner._execute_step` 从 `if step.role: ... else: ...` 改为
+> `executors.get_executor(step.effective_type).execute(self, step, prompt)`，
+> 新增类型只需在 `executors.py` 里加一个类 + 注册一行，无需改动 runner
+> 核心循环。生命周期 Hook（`WorkflowStart`/`WorkflowStepStart`/
+> `WorkflowStepEnd`/`WorkflowGateFailed`/`WorkflowEnd`）复用项目现有的
+> `mini_agent.hooks` 体系（新增到 `hooks/loader.py` 的 `KNOWN_EVENTS`），
+> 通过新增的 `WorkflowRunner._emit_hook()` 触发，受 `workflow.hooks_enabled`
+> 开关控制（默认开启），触发失败不影响主流程。
+>
+> 安全默认值（均可在 `agent_config.json` 配置）：`sub_workflow` 有递归
+> 深度保护（`max_sub_workflow_depth`，默认 3，超限抛 `RuntimeError`，端到
+> 端单测覆盖）；`tool_call` 默认视为高风险步骤、即使未显式声明
+> `require_approval` 也会走审批门（`tool_call_step_auto_approve`，默认
+> `false`，判定逻辑抽成模块级 `runner.step_requires_approval()` 供
+> `workflow/tools.py` 和 `cli/commands/workflow_cmd.py` 共用，避免两处
+> 判断逻辑不一致）；`script` **默认关闭**
+> （`script_step_enabled`，默认 `false`），因为 workflow YAML 可能来自
+> LLM 生成或他人分享，默认允许执行任意 shell 命令风险过高；`human_input`
+> 复用 `registry.ControlState` 的等待模式（新增 `pending_input_step` /
+> `input_provided` / `provided_input_text` / `request_provide_input()`），
+> 有超时保护（`human_input_wait_timeout_seconds`，默认 1800 秒）。
+>
+> 新增 1 个工具 `provide_workflow_step_input(workflow_session_id, input_text)`，
+> 新增 CLI 子命令 `/workflow input <workflow_session_id> <text>`，均已同步
+> 补充到 `/workflow` 的 Tab 补全提示（`ui/terminal.py` 的 `_COMMANDS` 表）。
+
+### P6 — 定制性增强（可并行，优先级最低）✅ 已完成
 
 - 保存前引用完整性校验
 - 内置模板库
+
+> 实施记录：`WorkflowDef.validate()` 新增 `check_placeholders`（默认
+> `True`）和 `role_checker`（默认 `None`）两个可选参数——扫描 `prompt`
+> 里 `{step_id.output}`/`{step_id.score}` 形式的占位符，检查引用的
+> `step_id` 是否存在于当前工作流（不带 `.` 的 `{param_name}` 占位符属于
+> 运行时 `inputs`，不做静态校验，避免误报）；`role_checker` 为可选回调，
+> 未传入时自动跳过角色校验，保持向后兼容（单测/无 dispatcher 环境下
+> `validate()` 行为不变）。`WorkflowStore.save()` 新增 `cfg` 参数，按
+> `workflow.validate_placeholders_on_save` / `workflow.validate_role_refs_on_save`
+> 两个开关（均默认 `true`）决定是否启用这两项校验，`cfg=None` 时行为与
+> 改造前完全一致。
+>
+> 内置模板库：新增 `workflow/templates/*.yaml`（`code_review` /
+> `research_report` / `multi_perspective_debate` 三个模板，其中
+> `multi_perspective_debate` 的正反方论证步骤互不依赖，可展示 P… 阶段的
+> 并行执行能力），`WorkflowStore` 新增 `list_templates()` /
+> `instantiate_template()`；模板本身是随包分发的只读 YAML，
+> `instantiate_template` 只替换顶层 `name` 字段，不做其它魔改，保证
+> "从模板创建"与"手写 YAML 保存"走完全相同的 `save()` 校验路径。新增
+> 2 个工具 `list_workflow_templates()` / `create_workflow_from_template()`，
+> 新增 CLI 子命令 `/workflow templates` / `/workflow from-template`，均已
+> 同步补充到 Tab 补全提示。单测（`test_workflow_step_types.py`）覆盖了
+> 全部 3 个内置模板的加载/实例化/校验/保存 round-trip。
 
 ---
 
