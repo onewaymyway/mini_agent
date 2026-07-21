@@ -34,6 +34,7 @@ from __future__ import annotations
 
 import subprocess
 import time
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 from .schema import WorkflowStep
@@ -234,6 +235,71 @@ class ScriptStepExecutor(StepExecutor):
         return proc.stdout
 
 
+class SkillAgentStepExecutor(StepExecutor):
+    """type=skill_agent（workflow_directory_mode_design.md 阶段3）：
+    临时启动一个只强制挂载 step.skill_name 指定的 skill 的最小 Agent 执行
+    prompt，不做关键词触发判断——用于"这一步明确要用某个 skill 的能力"，
+    比依赖关键词命中更直接。查找顺序：先 workflow 本地资源包
+    （文件夹模式 workflow 的 skills/ 目录），再全局 skills_dir。
+    """
+
+    def execute(self, runner: "WorkflowRunner", step: WorkflowStep, prompt: str) -> str:
+        from mini_agent.config import load_config
+        from mini_agent.agent import Agent
+        from mini_agent.permissions import PermissionGuard
+        from mini_agent.tools import get_default_registry
+        from mini_agent.skills import SkillLoader
+
+        if not step.skill_name:
+            raise ValueError(f"步骤 {step.id!r} 是 skill_agent 类型但未指定 skill_name")
+
+        bundle = getattr(runner, "_current_resource_bundle", None)
+        skill = bundle.get_skill(step.skill_name) if bundle else None
+        skill_loader = bundle.skill_loader if (bundle and skill is not None) else None
+
+        if skill_loader is None:
+            # 本地资源包里没有，退回全局 skills_dir 重新构造一个 loader。
+            global_skills_dir = getattr(runner._cfg, "skills_dir", None)
+            if not global_skills_dir:
+                raise ValueError(
+                    f"步骤 {step.id!r} 引用的 skill 不存在：{step.skill_name!r}"
+                    "（未配置 skills_dir，也没有 workflow 本地 skills/ 目录）"
+                )
+            skill_loader = SkillLoader([Path(global_skills_dir)])
+            if skill_loader._all.get(step.skill_name) is None:
+                raise ValueError(f"步骤 {step.id!r} 引用的 skill 不存在：{step.skill_name!r}")
+
+        step_cfg = load_config(
+            project_root=runner._cfg.project_root,
+            verbose=runner._cfg.verbose,
+            sandbox=runner._cfg.sandbox,
+            auto_approve=True,
+            model=step.model or runner._cfg.model,
+            llm_provider=runner._cfg.llm_provider,
+            llm_base_url=runner._cfg.llm_base_url,
+            debug_llm=getattr(runner._cfg, "debug_llm", False),
+            debug_llm_console=getattr(runner._cfg, "debug_llm_console", False),
+        )
+        step_cfg.api_key = runner._cfg.api_key
+        step_cfg.max_turns = step.max_turns
+        step_cfg.stream = False
+        if step.timeout:
+            step_cfg.request_timeout = step.timeout
+
+        guard = PermissionGuard(
+            auto_approve=True,
+            sandbox=runner._cfg.sandbox,
+            project_root=runner._cfg.project_root,
+        )
+        agent = Agent(cfg=step_cfg, guard=guard, registry=get_default_registry(), skill_loader=skill_loader)
+        # 强制激活指定 skill，不依赖关键词触发。
+        try:
+            skill_loader.activate(step.skill_name)
+        except Exception:
+            pass
+        return agent.run_turn(prompt)
+
+
 # ── 分发表 ────────────────────────────────────────────────────────────────────
 # runner._dispatch_step() 按 step.effective_type 查表；新增类型只需在这里
 # 加一行注册，不需要改动 runner 的核心循环。
@@ -245,6 +311,7 @@ _EXECUTORS: dict[str, StepExecutor] = {
     "tool_call": ToolCallStepExecutor(),
     "human_input": HumanInputStepExecutor(),
     "script": ScriptStepExecutor(),
+    "skill_agent": SkillAgentStepExecutor(),
 }
 
 

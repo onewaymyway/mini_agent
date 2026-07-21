@@ -305,3 +305,26 @@ def init_agent_profiles(cfg) -> AgentProfileLoader:
 
 def get_profile_loader() -> Optional[AgentProfileLoader]:
     return _profile_loader
+
+
+# ── [workflow_directory_mode_design.md 阶段3] 本地 agent profile 覆盖 ──────
+# 与 tools/orchestration.py 的 set_active_skills_provider 同一模式：模块级
+# 全局变量，由 Agent.__init__ 在构造时（如果拿到了 workflow 本地资源包）
+# 写入，spawn_named_agent / list_agent_profiles 通过 get_effective_profile_loader()
+# 读取。注意：这不是 thread-local，与现有 active_skills_provider 一样，
+# 并发跑多个 workflow step 时"最后一个写入的生效"，这是延续既有约定，
+# 不是本次改动引入的新风险面。
+
+_effective_profile_loader_override: Optional[AgentProfileLoader] = None
+
+
+def set_effective_profile_loader(loader: Optional[AgentProfileLoader]) -> None:
+    """由 Agent.__init__ 在拿到 workflow 本地 agent_profile_loader 时调用。"""
+    global _effective_profile_loader_override
+    _effective_profile_loader_override = loader
+
+
+def get_effective_profile_loader() -> Optional[AgentProfileLoader]:
+    """spawn_named_agent / list_agent_profiles 应使用这个而不是 get_profile_loader()，
+    这样才能看到 workflow 本地 agents/ 目录里覆盖/新增的 profile。"""
+    return _effective_profile_loader_override or _profile_loader

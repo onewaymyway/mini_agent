@@ -42,7 +42,7 @@ from typing import Any, Optional
 # "主 Agent / 角色 Agent" 二选一显式化为一个枚举，同时新增三种类型。
 # 未显式设置 type 时（旧版 YAML），由 WorkflowStep.effective_type 按
 # "role 是否为空"自动推断为 "agent"/"role_agent"，保证向后兼容。
-STEP_TYPES = ("agent", "role_agent", "sub_workflow", "tool_call", "human_input", "script")
+STEP_TYPES = ("agent", "role_agent", "sub_workflow", "tool_call", "human_input", "script", "skill_agent")
 
 
 class StepStatus(str, Enum):
@@ -100,6 +100,15 @@ class WorkflowStep:
     # 开关保护，默认关闭，避免任意 workflow YAML 被当作命令执行入口）
     script: Optional[str] = None
 
+    # ── [workflow_directory_mode_design.md 阶段1] 目录化 Workflow 扩展 ─────
+    # prompt 模板文件路径（相对 workflow 所在目录，如 "prompts/analyze.md"）。
+    # 与 prompt 二选一，有值时由 WorkflowStore 加载阶段读取文件内容覆盖
+    # 填充 self.prompt；序列化时只写 prompt_file，不写展开后的文本，
+    # 便于连同 prompt 文件一起迁移项目。
+    prompt_file: Optional[str] = None
+    # skill_agent 专用：要强制加载执行的 skill 名称（不走关键词触发判断）
+    skill_name: Optional[str] = None
+
     @property
     def effective_type(self) -> str:
         """未显式设置 type 时，按旧语义推断：role 非空 → role_agent，否则 → agent。"""
@@ -119,6 +128,12 @@ class WorkflowDef:
     # 看护线程主动请求 cancel。None=不限制，走全局配置
     # cfg.workflow.max_total_duration_seconds 作为兜底。
     max_total_duration: Optional[float] = None
+    # ── [workflow_directory_mode_design.md 阶段1] 目录化 Workflow 扩展 ─────
+    # 文件夹模式下指向 workflow 所在目录（<workflows_dir>/<name>/），
+    # 单文件模式下为 None。纯运行时字段，不参与 to_dict 序列化，由
+    # WorkflowStore 在加载/保存时设置，用于解析 prompt_file 相对路径、
+    # 拼装本地 agents/skills 目录。
+    source_dir: Optional[Any] = None
 
     @classmethod
     def from_dict(cls, data: dict) -> "WorkflowDef":
@@ -148,6 +163,8 @@ class WorkflowDef:
                 tool_args=dict(s.get("tool_args") or {}),
                 input_prompt=s.get("input_prompt"),
                 script=s.get("script"),
+                prompt_file=s.get("prompt_file"),
+                skill_name=s.get("skill_name"),
             ))
         return cls(
             name=str(data.get("name", "unnamed")),
@@ -168,7 +185,10 @@ class WorkflowDef:
                 {
                     "id": s.id,
                     "name": s.name,
-                    "prompt": s.prompt,
+                    # [阶段1] prompt_file 有值时只写 prompt_file，不写展开后的
+                    # 文本，避免迁移时重复落盘、避免编辑 prompt 文件后 YAML 里
+                    # 的旧文本"假装"还生效。
+                    **({"prompt_file": s.prompt_file} if s.prompt_file else {"prompt": s.prompt}),
                     **({"role": s.role} if s.role else {}),
                     **({"depends_on": s.depends_on} if s.depends_on else {}),
                     **({"condition": s.condition} if s.condition else {}),
@@ -185,6 +205,7 @@ class WorkflowDef:
                     **({"tool_args": s.tool_args} if s.tool_args else {}),
                     **({"input_prompt": s.input_prompt} if s.input_prompt else {}),
                     **({"script": s.script} if s.script else {}),
+                    **({"skill_name": s.skill_name} if s.skill_name else {}),
                 }
                 for s in self.steps
             ],
@@ -215,7 +236,10 @@ class WorkflowDef:
             else:
                 seen_ids.add(step.id)
 
-            if not step.prompt.strip() and step.effective_type != "human_input":
+            # [阶段1] prompt_file 指定了外部文件时，允许内嵌 prompt 为空
+            # （加载阶段会用文件内容填充 step.prompt；validate() 常在保存
+            # 前调用，此时若尚未经过加载流程 prompt 可能还是空的，不应误报）。
+            if not step.prompt.strip() and not step.prompt_file and step.effective_type != "human_input":
                 errors.append(f"步骤 {step.id!r} 的 prompt 为空")
 
             # [P5] 类型专属必填字段校验
@@ -230,6 +254,8 @@ class WorkflowDef:
                 errors.append(f"步骤 {step.id!r} 是 tool_call 类型但未指定 tool_name")
             if etype == "script" and not step.script:
                 errors.append(f"步骤 {step.id!r} 是 script 类型但未指定 script 命令")
+            if etype == "skill_agent" and not step.skill_name:
+                errors.append(f"步骤 {step.id!r} 是 skill_agent 类型但未指定 skill_name")
 
         # 检查依赖是否存在
         for step in self.steps:

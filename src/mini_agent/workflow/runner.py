@@ -222,6 +222,13 @@ class WorkflowRunner:
         self._current_wf_session = wf_session
         self._current_paths = paths
 
+        # [workflow_directory_mode_design.md 阶段3] 文件夹模式 workflow
+        # （wf.source_dir 不为 None）构造一次本地 agent/skill 资源包，供
+        # 本次运行内各 step 使用；单文件模式 wf.source_dir 为 None 时为 None，
+        # 各处使用方需判空回退到原有全局资源查找逻辑。
+        from .resource_bundle import build_resource_bundle
+        self._current_resource_bundle = build_resource_bundle(self._cfg, wf)
+
         control = wf_registry.register(wf_session_id)
         max_total_duration = wf.max_total_duration or getattr(wf_cfg, "max_total_duration_seconds", None)
         watchdog_enabled = bool(getattr(wf_cfg, "watchdog_enabled", True))
@@ -1026,7 +1033,20 @@ class WorkflowRunner:
             sandbox=self._cfg.sandbox,
             project_root=self._cfg.project_root,
         )
-        agent = Agent(cfg=step_cfg, guard=guard, registry=get_default_registry())
+        # [workflow_directory_mode_design.md 阶段3] 若本次运行有本地资源包
+        # （文件夹模式 workflow），把本地 skill_loader / agent_profile_loader
+        # 传给该 step 的独立主 Agent 实例，使其在执行期间能加载 workflow
+        # 私有的 skill（触发/skill_activate 工具）与 agent profile
+        # （spawn_named_agent）。bundle 为 None（单文件模式）时行为与改动前
+        # 完全一致（不传 skill_loader，agent profile 走全局单例）。
+        bundle = getattr(self, "_current_resource_bundle", None)
+        agent = Agent(
+            cfg=step_cfg,
+            guard=guard,
+            registry=get_default_registry(),
+            skill_loader=bundle.skill_loader if bundle else None,
+            agent_profile_loader=bundle.agent_loader if bundle else None,
+        )
         return agent.run_turn(prompt)
 
     def _execute_with_role_agent(self, step: WorkflowStep, prompt: str) -> str:
@@ -1038,8 +1058,14 @@ class WorkflowRunner:
             # 没有 dispatcher（如单元测试环境），回退到主 Agent
             return self._execute_with_main_agent(step, prompt)
 
-        # 从 dispatcher 中找到对应的 profile
-        profile = dispatcher._loader.get(step.role)
+        # [workflow_directory_mode_design.md 阶段3] 优先查 workflow 本地
+        # agents/ 目录（文件夹模式），查不到再退回全局 dispatcher 的
+        # profile loader——这样 step.role 既可以指向 workflow 私有的
+        # agents/<role>.md，也兼容引用全局角色，不需要新增 step 类型。
+        bundle = getattr(self, "_current_resource_bundle", None)
+        profile = bundle.get_agent_profile(step.role) if bundle else None
+        if profile is None:
+            profile = dispatcher._loader.get(step.role)
         if profile is None:
             raise ValueError(f"找不到角色 Agent profile：{step.role!r}")
 

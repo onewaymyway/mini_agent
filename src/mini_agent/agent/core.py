@@ -95,8 +95,18 @@ class Agent(
         llm_client: Optional[LLMClient] = None,
         tool_cache: Optional[ToolResultCache] = None,
         is_subagent: bool = False,
+        agent_profile_loader: Optional["AgentProfileLoader"] = None,
     ) -> None:
         self.cfg = cfg
+        # [workflow_directory_mode_design.md 阶段3] 若调用方（目前是
+        # WorkflowRunner）传入了 workflow 本地的 agent profile loader，
+        # 生效期间 spawn_named_agent / list_agent_profiles 通过
+        # get_effective_profile_loader() 能看到本地 agents/ 目录里的 profile，
+        # 覆盖同名的全局 profile。为 None 时不影响现有全局单例行为。
+        self.agent_profile_loader = agent_profile_loader
+        if agent_profile_loader is not None:
+            from mini_agent.orchestrator.agent_profiles import set_effective_profile_loader
+            set_effective_profile_loader(agent_profile_loader)
         self._is_subagent = is_subagent
 
         # [SYS-TURN-JUDGE] 本轮是否撞到 max_turns 硬顶（供 TurnJudge 判定参考）；

@@ -29,10 +29,18 @@ WorkflowDef（工作流定义）
 ## 文件位置
 
 ```
-<project_root>/.agent/workflows/*.yaml   # 工作流定义文件
+<project_root>/.agent/workflows/*.yaml   # 单文件模式（原有）
+
+<project_root>/.agent/workflows/<name>/  # 文件夹模式（新增，见下方专门章节）
+  workflow.yaml                          # 主入口
+  agents/*.md                            # 本工作流私有的 agent profile
+  skills/*/SKILL.md                      # 本工作流私有的 skill
+  prompts/*.md                           # 抽出来的 prompt 模板文件
 ```
 
-框架启动时不预加载工作流，按需通过 `run_workflow` 工具名称加载。
+框架启动时不预加载工作流，按需通过 `run_workflow` 工具名称加载。两种模式
+可以在同一个 `.agent/workflows/` 目录下共存，`WorkflowStore` 会优先查找
+文件夹模式（`<name>/workflow.yaml`），找不到再退回单文件模式。
 
 ---
 
@@ -585,6 +593,94 @@ Agent 侧对应的工具是 `provide_workflow_step_input(workflow_session_id, in
 
 ---
 
+## 文件夹模式 Workflow：私有 Agent / Skill / Prompt 文件
+
+（workflow_directory_mode_design.md）复杂 workflow 可以组织成一个文件夹，
+携带只属于自己的 agent profile、skill、prompt 模板文件，与单文件模式
+完全向后兼容、可共存。
+
+### 目录结构
+
+```
+.agent/workflows/
+  code_review.yaml            单文件模式（原有，继续可用）
+  my_pipeline/                 文件夹模式（新增）
+    workflow.yaml              主入口，字段结构与单文件模式一致
+    agents/
+      reviewer.md              工作流私有 agent profile（同 .agent/agents/*.md 格式）
+    skills/
+      pdf-diff/
+        SKILL.md                工作流私有 skill（同 .claude/skills 目录格式）
+    prompts/
+      analyze.md                抽出来的 prompt 模板文件
+```
+
+用 `/workflow to-dir <name>` 把已有的单文件工作流一键升级为文件夹模式
+（自动创建 `agents/`、`skills/`、`prompts/` 空目录，原 YAML 移入
+`workflow.yaml`，删除旧的单文件）。
+
+### Prompt 文件引用（`prompt_file`）
+
+step 里的 `prompt` 字段可以换成 `prompt_file`，值是相对 workflow 所在
+目录的相对路径：
+
+```yaml
+steps:
+  - id: analyze
+    name: 静态分析
+    prompt_file: prompts/analyze.md   # 相对路径，便于连同文件一起迁移项目
+```
+
+- `prompt_file` 与 `prompt` 二选一，都填时 `prompt_file` 优先。
+- 加载时会把文件内容读出来填充到运行时的 `step.prompt`；保存
+  （`to_dict`/YAML 序列化）时只写 `prompt_file`，不会把展开后的文本重复
+  写回 YAML——编辑 prompt 文件、迁移项目都只需要处理这一份文件。
+- `prompt_file` 指向的文件不存在时，加载阶段会打印警告，`step.prompt`
+  保留为空串（不会阻断该工作流的查看/编辑），执行到该 step 时会用空
+  prompt 运行，建议尽快补上文件。
+
+### 直接调用本地 Agent / Skill
+
+- **调用本地 agent**：跟调用全局角色 Agent 写法一样，`type: role_agent` +
+  `role: <name>`。工作流有 `agents/<name>.md` 时优先匹配这个本地文件，
+  没有则退回全局 `.agent/agents/` 目录里同名的 profile。
+
+  ```yaml
+  - id: review
+    type: role_agent
+    role: reviewer          # 优先匹配 my_pipeline/agents/reviewer.md
+    prompt_file: prompts/review.md
+  ```
+
+- **调用本地 skill**：新增 `type: skill_agent`，指定 `skill_name`，会
+  临时启动一个只强制挂载该 skill（不走关键词触发判断）的最小 Agent 执行
+  该 step 的 prompt。优先匹配工作流 `skills/` 目录，没有则退回全局
+  `skills_dir`。
+
+  ```yaml
+  - id: diff_check
+    type: skill_agent
+    skill_name: pdf-diff
+    prompt: "对比这两份 PDF 的差异：{a_path} vs {b_path}"
+  ```
+
+- **主 Agent（`type: agent`）执行的 step**：执行期间会自动带上该工作流的
+  本地 `skill_loader` 和 `agent_profile_loader`，因此主 Agent 在该 step
+  内通过 `spawn_named_agent` 能看到本地 `agents/` 里定义的 sub-agent，
+  技能触发 / `skill_activate` 工具也能看到本地 `skills/` 里定义的 skill，
+  不需要额外配置。
+
+### 边界与限制
+
+- 子工作流（`type: sub_workflow`）**不继承**父工作流的本地资源包：被引用
+  的子工作流若自己是文件夹模式，按它自己的目录解析本地资源；若是单文件
+  模式，则完全不使用本地资源，行为与改动前一致。这是为了避免跨工作流的
+  隐式资源泄漏。
+- 单文件模式的工作流（`source_dir` 为 `None`）完全不受本节功能影响，
+  `role`/`prompt`/`type` 等字段的既有行为保持不变。
+
+---
+
 ## 生命周期 Hook（P5）
 
 Workflow 执行时会触发以下 Hook 事件（复用项目现有的 `mini_agent.hooks` 体系，
@@ -718,6 +814,8 @@ Workflow 执行时会触发以下 Hook 事件（复用项目现有的 `mini_agen
 /workflow from-template <template_name> <new_name>
                                              基于内置模板创建工作流（P6）
 /workflow delete <name>                     删除工作流定义
+/workflow to-dir <name>                     将单文件工作流升级为文件夹模式
+                                             （生成 agents/skills/prompts 子目录）
 ```
 
 **已知限制**：`pause`/`cancel`/`approve`/`reject`/`input` 依赖进程内的控制状态

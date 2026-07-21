@@ -224,8 +224,8 @@ def spawn_agent(
     requires_approval=False,
 )
 def list_agent_profiles() -> str:
-    from mini_agent.orchestrator.agent_profiles import get_profile_loader
-    loader = get_profile_loader()
+    from mini_agent.orchestrator.agent_profiles import get_effective_profile_loader
+    loader = get_effective_profile_loader()
     if loader is None or not loader.available:
         return "[no custom agent profiles found]"
     return json.dumps(loader.get_catalog(), indent=2, ensure_ascii=False)
@@ -289,9 +289,9 @@ def spawn_named_agent(
         return "[error: TaskManager not initialized. Call init_task_manager() first.]"
 
     from mini_agent.orchestrator.agent_profiles import (
-        get_profile_loader, render_profile_prompt, validate_inputs,
+        get_effective_profile_loader, render_profile_prompt, validate_inputs,
     )
-    loader = get_profile_loader()
+    loader = get_effective_profile_loader()
     if loader is None:
         return "[error: agent profiles not initialized. Call init_agent_profiles() first.]"
 

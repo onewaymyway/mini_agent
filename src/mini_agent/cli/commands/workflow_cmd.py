@@ -23,6 +23,8 @@ CLI 里操作，不需要绕一圈让主 Agent 去调用工具）：
   /workflow from-template <template_name> <new_name>
                                            — [P6] 基于内置模板创建并保存一个新工作流
   /workflow delete <name>                 — 删除工作流定义
+  /workflow to-dir <name>                 — 将单文件工作流升级为文件夹模式
+                                             （生成 agents/skills/prompts 子目录）
 """
 
 from __future__ import annotations
@@ -56,7 +58,8 @@ def handle_workflow_cmd(args: list[str], agent) -> None:
             "  /workflow templates                     列举内置工作流模板\n"
             "  /workflow from-template <template_name> <new_name>\n"
             "                                          基于内置模板创建工作流\n"
-            "  /workflow delete <name>                 删除工作流定义"
+            "  /workflow delete <name>                 删除工作流定义\n"
+            "  /workflow to-dir <name>                 升级为文件夹模式（agents/skills/prompts）"
         )
         return
 
@@ -92,6 +95,8 @@ def handle_workflow_cmd(args: list[str], agent) -> None:
         _handle_from_template(cfg, rest)
     elif sub == "delete":
         _handle_delete(cfg, rest)
+    elif sub == "to-dir":
+        _handle_to_dir(cfg, rest)
     else:
         R.print_error(f"未知子命令：/workflow {sub}（输入 /workflow 查看用法）")
 
@@ -383,3 +388,28 @@ def _handle_delete(cfg, rest: list[str]) -> None:
         R.print_info(f"✅ 工作流 {rest[0]!r} 已删除")
     else:
         R.print_error(f"找不到工作流 {rest[0]!r}，无法删除")
+
+
+def _handle_to_dir(cfg, rest: list[str]) -> None:
+    """[workflow_directory_mode_design.md 阶段5] 把已有单文件工作流升级为文件夹模式，
+    生成 agents/skills/prompts 子目录，方便后续放置工作流私有的 agent/skill/prompt 文件。"""
+    if not rest:
+        R.print_error("用法：/workflow to-dir <name>")
+        return
+    from mini_agent.workflow.store import WorkflowStore
+    store = WorkflowStore(Path(cfg.project_root))
+    name = rest[0]
+    if not store.exists(name):
+        R.print_error(f"找不到工作流 {name!r}")
+        return
+    try:
+        path = store.to_dir(name)
+    except Exception as e:
+        R.print_error(f"转换失败：{e}")
+        return
+    R.print_info(
+        f"✅ 工作流 {name!r} 已转换为文件夹模式：{path}\n"
+        f"   可在同目录下的 agents/、skills/、prompts/ 中放置私有资源，\n"
+        f"   step 里用 prompt_file（相对路径）引用 prompts/ 下的模板文件，\n"
+        f"   role/skill_name 会优先匹配本地 agents/、skills/ 目录。"
+    )
