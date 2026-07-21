@@ -16,6 +16,9 @@ evolution/cron_scheduler.py — Daemon 模式定时任务调度器
   sys:goal_review    — 目标清理（已完成/过期 Goal）         interval:43200
   sys:digest_trim    — activity_digest 日志修剪            interval:604800
   sys:self_maintain  — 自维护健康检查（具身改进 C4）         interval:86400
+  sys:daily_digest           — 每日融合日报（行为+目标+提交）      cron:0 22 * * *
+  sys:next_action_digest     — 主动推荐排序（停滞目标/注意力错配）  interval:10800
+  sys:decision_profile_update — 决策画像归纳（默认关闭，见改进计划）interval:604800
 
 存储：<project_root>/.agent/cron_jobs.json
 """
@@ -195,6 +198,33 @@ _BUILTIN_JOBS: list[dict] = [
         "task_template": "[系统维护] 执行自维护健康检查：扫描近期工具调用失败率、长期未使用的 skill、记忆库中可能矛盾的经验，生成修复建议",
         "tags": ["maintenance", "self_awareness"],
         "enabled": True,
+    },
+    {
+        "id": "sys:daily_digest",
+        "name": "每日融合日报",
+        "schedule": "cron:0 22 * * *",
+        "description": "合并当天行为分布、目标进展、代码提交，生成融合日报（每天 22:00）",
+        "task_template": "[日报] 执行一次 /digest daily，生成当天融合日报并落盘",
+        "tags": ["digest", "behavior", "goals"],
+        "enabled": True,
+    },
+    {
+        "id": "sys:next_action_digest",
+        "name": "主动推荐排序",
+        "schedule": "interval:10800",
+        "description": "对停滞目标/注意力错配候选排序生成推荐（每 3 小时，候选为空则不生成）",
+        "task_template": "[推荐] 执行一次 /next refresh，重新计算候选并排序，如果没有候选则跳过",
+        "tags": ["advisor", "goals"],
+        "enabled": True,
+    },
+    {
+        "id": "sys:decision_profile_update",
+        "name": "决策画像归纳",
+        "schedule": "interval:604800",
+        "description": "从历史决策记录归纳可追溯的用户价值模式（每 7 天，证据不足 3 条的模式不落地）",
+        "task_template": "[画像] 执行一次 /profile update，归纳决策画像并落盘",
+        "tags": ["profile", "wiki"],
+        "enabled": False,
     },
 ]
 

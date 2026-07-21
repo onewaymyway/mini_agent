@@ -46,6 +46,9 @@ from mini_agent.cli.commands.roles import handle_role_cmd
 from mini_agent.cli.commands.behavior import handle_behavior_cmd
 from mini_agent.cli.commands.wiki import handle_wiki_cmd
 from mini_agent.cli.commands.recall import handle_recall_cmd
+from mini_agent.cli.commands.digest_cmd import handle_digest_cmd
+from mini_agent.cli.commands.next_action_cmd import handle_next_action_cmd
+from mini_agent.cli.commands.profile_cmd import handle_profile_cmd
 
 __all__ = [
     "handle_behavior_cmd",
@@ -69,4 +72,7 @@ __all__ = [
     "handle_debug_cmd",
     "handle_role_cmd",
     "handle_recall_cmd",
+    "handle_digest_cmd",
+    "handle_next_action_cmd",
+    "handle_profile_cmd",
 ]

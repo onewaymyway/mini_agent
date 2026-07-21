@@ -203,6 +203,32 @@ class AgentPaths:
         """<project_root>/.agent/wiki/decisions/ — 决策型页面"""
         return self.wiki_dir / "decisions"
 
+    # ── 主动推荐 / 日报 / 决策画像（次日议程改进计划）───────────────────────
+
+    @property
+    def daily_reports_dir(self) -> Path:
+        """<project_root>/.agent/daily_reports/ — 每日融合报告（行为+目标+提交）"""
+        return self.workdir_dir / "daily_reports"
+
+    def daily_report_path(self, day: str) -> Path:
+        """<project_root>/.agent/daily_reports/<YYYY-MM-DD>.md"""
+        return self.daily_reports_dir / f"{day}.md"
+
+    @property
+    def next_actions_path(self) -> Path:
+        """<project_root>/.agent/next_actions.json — 主动推荐候选与展示状态"""
+        return self.workdir_dir / "next_actions.json"
+
+    @property
+    def user_value_profile_path(self) -> Path:
+        """<project_root>/.agent/wiki/user_value_profile.md — 决策画像（归纳后的用户价值模式）"""
+        return self.wiki_dir / "user_value_profile.md"
+
+    @property
+    def decision_profile_state_path(self) -> Path:
+        """<project_root>/.agent/decision_profile_state.json — 决策画像归纳的运行状态（上次扫描时间等）"""
+        return self.workdir_dir / "decision_profile_state.json"
+
     @property
     def decision_candidates_pending_path(self) -> Path:
         """<project_root>/.agent/decision_candidates_pending.jsonl — 决策候选待批量落盘队列。

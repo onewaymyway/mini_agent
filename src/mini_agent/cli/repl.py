@@ -37,7 +37,10 @@ from mini_agent.cli.commands import (
     handle_debug_cmd,
     handle_role_cmd,
     handle_wiki_cmd,
-    handle_recall_cmd,)
+    handle_recall_cmd,
+    handle_digest_cmd,
+    handle_next_action_cmd,
+    handle_profile_cmd,)
 
 
 def _print_resume_hint(agent: Agent) -> None:
@@ -53,6 +56,51 @@ def _print_resume_hint(agent: Agent) -> None:
     )
 
 
+def _print_startup_digest_and_advisor(agent: Agent) -> None:
+    """启动时打印一次未展示过的日报摘要 + 推荐摘要（各占一行，不合并，
+    见 主动推荐与数字分身机制设计方案.md 第 4.3 节）。任何一步失败都静默跳过，
+    不能因为这个附加提示影响正常启动。
+    """
+    paths = None
+    try:
+        paths = getattr(agent, "_paths", None)
+        if paths is None:
+            from mini_agent.storage.paths import AgentPaths
+            paths = AgentPaths(agent.cfg.project_root)
+
+        from mini_agent.evolution.daily_digest import (
+            load_pending_digest,
+            render_startup_summary as render_digest_summary,
+            mark_shown as mark_digest_shown,
+        )
+        digest_data = load_pending_digest(paths)
+        if digest_data:
+            line = render_digest_summary(digest_data)
+            if line:
+                R.print_info(line)
+            mark_digest_shown(paths, digest_data["day"])
+    except Exception:
+        pass
+
+    if paths is None:
+        return
+
+    try:
+        from mini_agent.evolution.next_action_advisor import (
+            load_pending_next_actions,
+            render_startup_summary as render_next_summary,
+            mark_shown as mark_next_shown,
+        )
+        next_data = load_pending_next_actions(paths)
+        if next_data:
+            line = render_next_summary(next_data)
+            if line:
+                R.print_info(line)
+            mark_next_shown(paths)
+    except Exception:
+        pass
+
+
 def run_repl(agent: Agent, skill_loader: SkillLoader) -> None:
     """启动并运行交互式 REPL，直到用户退出。"""
     R.console.print(pm.fragment("cli_messages", "BANNER", version=get_version()), style="bold blue")
@@ -63,6 +111,8 @@ def run_repl(agent: Agent, skill_loader: SkillLoader) -> None:
         R.print_warning(pm.fragment("cli_messages", "REPL_SANDBOX_WARNING"))
     if agent.session_id:
         R.print_info(f"Session: \\[{agent.session_id}] — /session list to browse history")
+
+    _print_startup_digest_and_advisor(agent)
 
     from mini_agent.ui.terminal import term as _term, prime_model_completions as _prime_models
     _prime_models(getattr(agent, "_client_pool", None))
@@ -355,6 +405,18 @@ def _handle_slash(cmd: str, agent: Agent, skill_loader: SkillLoader) -> None:
 
     elif name == "wiki":
         handle_wiki_cmd(parts[1:], agent)
+
+    elif name == "digest":
+        # 主动推荐与数字分身机制设计方案.md 第 4.1 节（阶段一）
+        handle_digest_cmd(parts[1:], agent)
+
+    elif name == "next":
+        # 同上文档第 4.2 节（阶段二）
+        handle_next_action_cmd(parts[1:], agent)
+
+    elif name == "profile":
+        # 同上文档第 4.4 节（阶段三）
+        handle_profile_cmd(parts[1:], agent)
 
     elif name == "debug":
         # /debug system|history [full] [n]|all [n]|save [path]
