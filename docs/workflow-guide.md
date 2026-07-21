@@ -217,6 +217,38 @@ P5/P6 新增 3 个）：
 
 ---
 
+## 示例工作流：Step 类型化全览（`release_pipeline.yaml`）
+
+`.agent/workflows/release_pipeline.yaml`（配套 `notify_summary.yaml` 作为
+被引用的子工作流）演示了 P5 新增的全部 6 种 step 类型，可作为编写自定义
+工作流时的参考模板：
+
+| step id | type | 说明 |
+|---|---|---|
+| `inspect_project` | `tool_call` | 直接调用 `list_dir` 工具检查项目结构 |
+| `run_smoke_test` | `script` | 执行 shell 命令模拟冒烟测试（需开启 `script_step_enabled`） |
+| `collect_release_notes` | `human_input` | 阻塞等待人工输入本次发布要点 |
+| `draft_changelog` | `agent`（默认） | 独立主 Agent 撰写正式 changelog |
+| `quality_check` | `role_agent` | evaluator 角色打分门，`SCORE < 60` 判 `GATE_FAILED` |
+| `notify` | `sub_workflow` | 引用 `notify_summary.yaml` 生成一句话摘要通知 |
+
+试跑（人工审批 + script 默认关闭，需要按需调整 `agent_config.json` 或加
+`--background`）：
+
+```
+/workflow run release_pipeline --background
+# 另开一个终端等 collect_release_notes 步骤挂起后：
+/workflow input <workflow_session_id> "1. 新增暗黑模式\n2. 修复登录闪退"
+```
+
+> 提示：`sub_workflow` 执行器固定只把已解析占位符的 prompt 文本作为
+> `{"input": ...}` 传给子工作流，因此任何打算被 `sub_workflow` 引用的
+> 工作流（如 `notify_summary.yaml`），顶层步骤都应该用 `{input}` 接收
+> 这唯一的一份文本，而不能像 `code_review.yaml` 那样用 `{code}` 这类
+> 自定义参数名（那类工作流只能被 `run_workflow` 直接调用）。
+
+---
+
 ## 示例工作流：代码审查（`code_review.yaml`）
 
 框架内置了一个完整示例，位于 `.agent/workflows/code_review.yaml`：
