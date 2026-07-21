@@ -1,0 +1,87 @@
+name: release_pipeline
+description: >
+  发布流水线示例工作流——覆盖 workflow机制改进计划.md P5 新增的全部 6 种
+  step 类型（agent / role_agent / sub_workflow / tool_call / human_input /
+  script），可作为编写自定义工作流时的参考模板。
+
+  运行前请注意（均可在 agent_config.json 的 workflow 节里配置）：
+    - inspect_project 是 tool_call 类型，默认视为高风险步骤，会走人工
+      审批门（除非 workflow.tool_call_step_auto_approve=true）；
+      前台同步执行时无法审批，请用 run_workflow(..., background=True)
+      或 /workflow run release_pipeline --background 执行。
+    - run_smoke_test 是 script 类型，默认被 workflow.script_step_enabled
+      =false 关闭，需要显式打开开关才能跑通本示例。
+    - collect_release_notes 是 human_input 类型，会阻塞等待人工通过
+      provide_workflow_step_input 工具或 /workflow input 命令送入文本。
+version: "1.0"
+steps:
+  # ── 1. tool_call：直接调用一个已注册工具，不启动整个 Agent 会话 ──────────
+  - id: inspect_project
+    name: 检查项目结构
+    type: tool_call
+    tool_name: list_dir
+    tool_args:
+      path: "."
+      depth: 1
+      show_size: false
+    prompt: "列出项目根目录结构，确认待发布内容完整"
+
+  # ── 2. script：执行 shell 命令（默认关闭，需显式开启开关）───────────────
+  - id: run_smoke_test
+    name: 冒烟测试
+    type: script
+    script: "echo '模拟运行测试套件...'; echo '全部通过 ✅'"
+    prompt: "运行发布前的冒烟测试"
+    depends_on:
+      - inspect_project
+    timeout: 30
+
+  # ── 3. human_input：阻塞等待人工送入一段文本 ────────────────────────────
+  - id: collect_release_notes
+    name: 收集发布说明
+    type: human_input
+    input_prompt: "请输入本次发布的变更要点（简要列出即可）"
+    prompt: "等待人工提供本次发布的变更要点"
+    depends_on:
+      - run_smoke_test
+
+  # ── 4. agent（默认类型）：独立主 Agent 实例，撰写正式 changelog ─────────
+  - id: draft_changelog
+    name: 撰写正式 changelog
+    prompt: |
+      请把以下发布要点整理成一份正式的 Changelog 条目：
+
+      {collect_release_notes.output}
+
+      格式：
+      ## [版本号占位] - 日期占位
+      ### 新增
+      ### 修复
+      ### 变更
+    depends_on:
+      - collect_release_notes
+
+  # ── 5. role_agent：evaluator 角色打分门，不达标可通过 retry_on_gate_fail 重跑 ──
+  - id: quality_check
+    name: Changelog 质量检查
+    role: evaluator
+    prompt: |
+      请评估以下 Changelog 条目是否清晰、准确、适合对外发布：
+
+      {draft_changelog.output}
+
+      请从"清晰度""完整性""对外合适度"三个维度打分（1-10），
+      并在最后一行输出：SCORE: [综合分]/10
+    depends_on:
+      - draft_changelog
+    retry_on_gate_fail: 1
+
+  # ── 6. sub_workflow：把另一个已保存的工作流当作一个 step 执行 ───────────
+  - id: notify
+    name: 生成通知摘要
+    type: sub_workflow
+    workflow_name: notify_summary
+    prompt: "{draft_changelog.output}"
+    depends_on:
+      - quality_check
+    condition: "quality_check.score >= 60"

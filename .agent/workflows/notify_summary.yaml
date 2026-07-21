@@ -1,0 +1,17 @@
+name: notify_summary
+description: >
+  极简的"摘要通知"工作流，专门设计成可被其它工作流以 sub_workflow 类型
+  引用（workflow机制改进计划.md P5）：sub_workflow 执行器固定只会把父
+  工作流里解析好占位符的 prompt 文本，作为 {"input": ...} 传给子工作流，
+  所以任何打算被别的工作流当子流程调用的工作流，顶层步骤都应该用
+  {input} 接收这唯一的一份文本，而不是像 code_review.yaml 那样用
+  {code}/{topic} 这类自定义参数名（那类工作流只能被 run_workflow 直接
+  调用，不能被 sub_workflow 引用）。
+version: "1.0"
+steps:
+  - id: summarize
+    name: 生成一句话摘要
+    prompt: |
+      请把以下内容压缩成一句话摘要（不超过 50 字），语气客观中立：
+
+      {input}
