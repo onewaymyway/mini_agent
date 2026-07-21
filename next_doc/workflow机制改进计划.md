@@ -1,6 +1,6 @@
 # Workflow 机制改进计划
 
-> 状态：提案 / 待评审
+> 状态：**P1-P4 已实施完成 / P5-P6 待评审**（实施记录见文末"六、实施记录"）
 > 关联模块：`src/mini_agent/workflow/`、`src/mini_agent/storage/paths.py`
 > 参考文档：`docs/workflow-guide.md`、`docs/storage-paths-guide.md`
 
@@ -182,31 +182,62 @@ step.type: Literal["agent", "role_agent", "sub_workflow", "tool_call", "human_in
 
 遵循"提案先行、diff 化实现、零回归、保守默认开启"的一贯节奏，建议按以下顺序推进，每阶段独立可评审、独立可回滚：
 
-### P1 — 目录结构先行（纯增量，不改变现有默认行为）
+### P1 — 目录结构先行（纯增量，不改变现有默认行为）✅ 已完成
 
 - `AgentPaths` 新增 workflow_session 相关路径方法
 - `sessions_dir` 根路径支持覆盖参数（默认行为不变）
 - 验收标准：新增方法有单测覆盖，现有 session/task 相关测试全绿
 
-### P2 — Runner Session 化（断点恢复能力）
+> 实施记录：新增方法均在 `storage/paths.py` 里；未新增 `sessions_root` 覆盖
+> 参数——发现 `Agent`/`SessionManager` 已有 `cfg.session_dir` 这一现成覆盖点
+> （`SessionManager(session_dir=...)` 直接把该目录作为 `self.session_dir`），
+> 复用它即可让 step 的 Agent session 落到 workflow_session 目录下，
+> 无需改动 `AgentPaths` 的默认拼接逻辑，侵入性更小。
+
+### P2 — Runner Session 化（断点恢复能力）✅ 已完成
 
 - 引入 `WorkflowSession` 数据结构 + `session.json` / `step_results.json` 落盘
 - `_execute_with_main_agent` / `_execute_with_role_agent` 改为使用 `workflow_step_agent_dir` 绑定 Agent session
 - 新增 `resume_workflow(workflow_session_id)` 能力
 - 验收标准：中途 kill 进程后可从断点续跑，已完成 step 不重跑
 
-### P3 — 看护线程（心跳超时 + 暂停/取消）
+> 实施记录：新增 `workflow/session.py`（`WorkflowSession`/`WorkflowRunStatus`）。
+> `_execute_with_role_agent` 通过角色 Agent 执行函数已有的 `parent_session_dir`
+> 参数（子 agent session 嵌套机制）直接对接，未新增代码路径。
+> `resume_workflow_run` 实现为 `workflow/tools.py` 里的新工具 + `runner.run()`
+> 的 `workflow_session_id` 参数，而不是独立函数，用法：
+> `resume_workflow_run(workflow_session_id="wfs_xxx")`。
+
+### P3 — 看护线程（心跳超时 + 暂停/取消）✅ 已完成
 
 - 心跳检测 + 硬超时中断
 - `control_flags` 轮询与响应
 - 验收标准：模拟卡死 step 能被看护线程强制中断并正确记录状态
 
-### P4 — 人工审批门 + 通用失败重试
+> 实施记录：新增 `workflow/watchdog.py`（`WorkflowWatchdog`）+ `workflow/registry.py`
+> （`ControlState`，进程内 pause/cancel/approve/reject 信号载体）。硬超时
+> 通过 `runner._execute_step_bounded()` 用 `ThreadPoolExecutor(max_workers=1)`
+> + `future.result(timeout=...)` 实现；已知限制见"风险与兼容性说明"——
+> Python 线程无法被安全强杀，超时后底层线程可能仍在后台跑完。
+
+### P4 — 人工审批门 + 通用失败重试 ✅ 已完成
 
 - `step.require_approval` + `AWAITING_APPROVAL` 状态
 - `retry_on_error` 通用重试框架
 - 新增 5 个对称工具（3.7 节）
 - 验收标准：高风险 step 默认阻塞等待审批；瞬时失败可自动恢复
+
+> 实施记录：共新增 7 个工具（比原计划多 `resume_workflow_run` 和
+> `list_workflow_runs`）：`resume_workflow_run`、`list_workflow_runs`、
+> `get_workflow_run_status`、`pause_workflow_run`、`cancel_workflow_run`、
+> `approve_workflow_step`、`reject_workflow_step`。审批等待通过轮询
+> `ControlState` 的 `threading.Event` 实现，超时后自动判拒绝
+> （`workflow.approval_wait_timeout_seconds`，默认 600 秒），避免前台同步
+> 执行时永久挂死。`retry_on_error` 独立于原有 `retry_on_gate_fail`，两套
+> 机制互不影响，均已跑通 `tests/test_workflow_parallel.py`（17 项全绿）。
+> 所有新增开关均已接入 `agent_config.json` 的 `workflow` 配置节
+> （见下方"实施后的配置样例"），所有新增命令均已同时补充 `/workflow`
+> CLI 子命令与 Tab 补全提示。
 
 ### P5 — Step 类型化重构（改动面最大，单独提案）
 

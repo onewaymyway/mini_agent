@@ -34,6 +34,7 @@ from mini_agent.cli.commands import (
     handle_evolution_cmd,
     handle_evolve_cmd,
     handle_goal_cmd,
+    handle_workflow_cmd,
     handle_debug_cmd,
     handle_role_cmd,
     handle_wiki_cmd,
@@ -348,6 +349,9 @@ def _handle_slash(cmd: str, agent: Agent, skill_loader: SkillLoader) -> None:
 
     elif name == "goal":
         handle_goal_cmd(parts[1:], agent)
+
+    elif name == "workflow":
+        handle_workflow_cmd(parts[1:], agent)
 
     elif name == "memory":
         agent.trigger_summary_and_profile(force=True)

@@ -3144,6 +3144,10 @@ _COMMANDS: list[tuple[str, str, list]] = [
     ("/compact",     "Compress history into a summary",              []),
     ("/compact_continue", "Compact history, then auto-send '继续' to resume", []),
     ("/goal",        "Set a goal; agent auto-retries until done",    ["from-history", "resume", "status", "list", "cancel"]),
+    ("/workflow",     "Generate/run/monitor multi-step agent workflows", [
+        "list", "show", "run", "runs", "status", "resume",
+        "pause", "cancel", "approve", "reject", "delete",
+    ]),
     ("/memory",      "Generate/refresh session memory now",          []),
     ("/profile",     "Refresh user profile now",                     []),
     ("/stats",       "Show session statistics",                      []),

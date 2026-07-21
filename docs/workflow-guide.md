@@ -366,5 +366,153 @@ run_workflow("article_writer", {
 4. **inputs 参数**：`run_workflow` 的 `inputs` 必须是合法 JSON 字符串。
    工作流 prompt 中没有对应变量的占位符会保持原样（不报错），方便调试。
 
-5. **并发限制**：当前工作流步骤按拓扑顺序**串行**执行，无并发机制。
-   如需并发可并行度为 1 的步骤，可手动拆分为多个独立工作流。
+5. **并发执行**：同一拓扑层内互不依赖的步骤默认并发执行（线程池），
+   可通过 `agent_config.json` 的 `workflow.parallel_enabled` / `max_parallel`
+   全局控制，或在单个步骤上设置 `allow_parallel: false` 强制串行。
+
+---
+
+## Workflow Session：执行会话与数据目录（P1/P2）
+
+自本次改进起，**每一次 `run_workflow` 调用都会创建一个 WorkflowSession**，
+不再是"跑完即焚"的一次性调用。所有相关数据聚合在：
+
+```
+.agent/workflow_sessions/<workflow_session_id>/
+  ├── session.json          # 执行状态：status/当前批次/control_flags/待审批step
+  ├── workflow_def.yaml     # 执行时使用的工作流定义快照（防止运行中途原文件被改）
+  ├── events.jsonl          # 结构化事件流（workflow_start/step_end/paused/...）
+  ├── watchdog.jsonl        # 看护线程的心跳超时/资源护栏告警记录
+  └── step_<step_id>/       # 该 step 对应 Agent 的完整数据
+      └── <session_id>/     # history / meta / traces / temp / output / artifacts
+```
+
+`workflow_session_id` 在调用 `run_workflow` 时自动生成并在返回结果里给出
+（后台模式下直接在返回文本里）；`list_workflow_runs` / `get_workflow_run_status`
+可以查询任意一次执行的实时进度。
+
+**断点恢复**：进程崩溃或主动暂停后，用 `resume_workflow_run(workflow_session_id)`
+即可从已完成的批次之后继续跑，不会重跑已经 `done` 的步骤。
+
+---
+
+## 后台执行、暂停、取消（P3）
+
+`run_workflow` 新增 `background` 参数：
+
+- `background=False`（默认，或 `agent_config.json` 里
+  `workflow.background_execution_default=false`）：**前台同步执行**，
+  工具调用会一直阻塞到工作流跑完，返回完整的结果摘要，行为与改进前一致。
+- `background=True`：立即返回 `workflow_session_id`，工作流在**后台线程**
+  继续执行。此时可以用：
+  - `get_workflow_run_status(workflow_session_id)` 查看进度
+  - `pause_workflow_run(workflow_session_id)`：请求暂停，会在当前批次
+    跑完后停下，可用 `resume_workflow_run` 续跑
+  - `cancel_workflow_run(workflow_session_id)`：请求取消，正在跑的步骤
+    尽快中止，未开始的步骤标记为 `cancelled`
+
+**看护线程**（`workflow.watchdog_enabled`，默认开启）在后台监控：
+- 每个步骤的心跳是否超过其 `timeout` 未更新，超时后强制标记该步骤为
+  `timeout` 状态并继续推进（已知限制：Python 线程无法被安全强杀，超时
+  后底层线程可能仍在后台跑完，但 runner 不再等待）；
+- 累计执行时长是否超过 `WorkflowDef.max_total_duration` 或全局配置
+  `workflow.max_total_duration_seconds`，超过则主动请求取消。
+
+---
+
+## 人工审批门（P4）
+
+在步骤定义里加上 `require_approval: true`，工作流跑到该步骤前会暂停，
+等待人工调用 `approve_workflow_step(workflow_session_id)` 放行，或
+`reject_workflow_step(workflow_session_id, reason="...")` 拒绝（该步骤会
+被标记为 `rejected` 并跳过，下游依赖它的步骤按 `SKIPPED`/`FAILED` 语义
+处理）。
+
+```yaml
+- id: send_notification
+  role: main
+  prompt: "..."
+  require_approval: true   # 高风险/有外部副作用的步骤，默认要求人工放行
+```
+
+**必须配合 `background=True` 使用**：前台同步执行时没有其它线程能在
+阻塞期间调用 approve/reject，等待会在
+`workflow.approval_wait_timeout_seconds`（默认 600 秒）后自动判定为拒绝。
+若工作流里检测到任何 `require_approval` 步骤，`run_workflow`/`resume_workflow_run`
+会自动切换为后台执行，无需手动传 `background=True`。
+
+---
+
+## 通用失败重试（P4）
+
+`retry_on_error`（区别于原有的 `retry_on_gate_fail` 质检门重试）用于处理
+网络超时、工具报错等**普通异常**：
+
+```yaml
+- id: fetch_external_api
+  role: main
+  prompt: "..."
+  retry_on_error: 2   # 失败后最多重试 2 次，每次退避时长递增
+```
+
+退避时长由 `workflow.retry_on_error_backoff_seconds`（默认 5 秒）线性递增
+（第 N 次重试等待 N × backoff 秒）。
+
+---
+
+## workflow 相关配置（`agent_config.json`）
+
+```json
+"workflow": {
+  "parallel_enabled": true,
+  "max_parallel": 4,
+  "watchdog_enabled": true,
+  "heartbeat_check_interval_seconds": 5.0,
+  "max_total_duration_seconds": null,
+  "approval_poll_interval_seconds": 3.0,
+  "approval_wait_timeout_seconds": 600.0,
+  "retry_on_error_backoff_seconds": 5.0,
+  "background_execution_default": false
+}
+```
+
+| 配置项 | 默认值 | 说明 |
+|---|---|---|
+| `parallel_enabled` | `true` | 是否允许同层步骤并发执行 |
+| `max_parallel` | `4` | 同层并发的最大 worker 数 |
+| `watchdog_enabled` | `true` | 是否启用看护线程（心跳超时检测+资源护栏） |
+| `heartbeat_check_interval_seconds` | `5.0` | 看护线程轮询间隔（秒） |
+| `max_total_duration_seconds` | `null` | 全局总执行时长护栏（秒），`null`=不限制，可被单个工作流的 `max_total_duration` 覆盖 |
+| `approval_poll_interval_seconds` | `3.0` | 审批门等待时的轮询间隔（秒） |
+| `approval_wait_timeout_seconds` | `600.0` | 审批等待超时（秒），`null`=无限等待 |
+| `retry_on_error_backoff_seconds` | `5.0` | `retry_on_error` 重试的基础退避时长（秒） |
+| `background_execution_default` | `false` | `run_workflow` 未显式传 `background` 时的默认行为 |
+
+---
+
+## CLI 命令：`/workflow`
+
+除了让主 Agent 调用工具，也可以在 CLI 里直接输入 `/workflow` 系列命令
+（支持 Tab 补全）：
+
+```
+/workflow list                              列举所有已保存的工作流
+/workflow show <name>                       查看工作流 YAML 定义
+/workflow run <name> [inputs_json] [--background]
+                                             执行工作流
+/workflow runs [name]                       列举执行记录（可按工作流名过滤）
+/workflow status <workflow_session_id>      查看某次执行的详细进度
+/workflow resume <workflow_session_id> [--background]
+                                             从断点续跑
+/workflow pause <workflow_session_id>       暂停一次后台执行
+/workflow cancel <workflow_session_id>      取消一次执行
+/workflow approve <workflow_session_id>     批准当前等待审批的步骤
+/workflow reject <workflow_session_id> [reason]
+                                             拒绝当前等待审批的步骤
+/workflow delete <name>                     删除工作流定义
+```
+
+**已知限制**：`pause`/`cancel`/`approve`/`reject` 依赖进程内的控制状态
+（`workflow/registry.py`），只在**同一个进程**里对正在跑的后台执行有效；
+若 CLI 进程重启，只能依赖磁盘上 `session.json` 的最终状态，配合
+`resume_workflow_run` 重新接续执行。

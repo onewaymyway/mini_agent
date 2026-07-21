@@ -79,7 +79,7 @@ class AgentPaths:
     """
 
     def __init__(self, project_root: Optional[Path] = None) -> None:
-        self.project_root = (project_root or Path.cwd()).resolve()
+        self.project_root = (Path(project_root) if project_root else Path.cwd()).resolve()
 
     # ── Global 级 ──────────────────────────────────────────────────────────
 
@@ -204,6 +204,72 @@ class AgentPaths:
         return self.wiki_dir / "decisions"
 
     # ── 主动推荐 / 日报 / 决策画像（次日议程改进计划）───────────────────────
+
+    # ── Workflow Session（workflow机制改进计划.md P1）───────────────────────
+    # 一次 run_workflow 执行 = 一个 workflow_session_id，该目录下聚合本次执行
+    # 涉及的所有数据：执行元信息、增量落盘的 step 结果、结构化事件流、看护
+    # 日志，以及每个 step 对应的 Agent 完整数据子目录（复用 cfg.session_dir
+    # 覆盖机制，让 SessionManager 把该 step 的 session 直接创建在此目录下，
+    # 不需要改动 SessionManager/AgentPaths 的 sessions_dir 默认拼接逻辑）。
+
+    @property
+    def workflow_sessions_dir(self) -> Path:
+        """<project_root>/.agent/workflow_sessions/ — 所有工作流执行记录的根目录"""
+        return self.workdir_dir / "workflow_sessions"
+
+    def workflow_session_dir(self, workflow_session_id: str) -> Path:
+        """<project_root>/.agent/workflow_sessions/<workflow_session_id>/"""
+        return self.workflow_sessions_dir / workflow_session_id
+
+    def workflow_session_meta(self, workflow_session_id: str) -> Path:
+        """…/workflow_sessions/<wf_session_id>/session.json
+        WorkflowSession 元信息：status/进度/control_flags，增量更新。"""
+        return self.workflow_session_dir(workflow_session_id) / "session.json"
+
+    def workflow_session_def_snapshot(self, workflow_session_id: str) -> Path:
+        """…/workflow_sessions/<wf_session_id>/workflow_def.yaml
+        执行开始时保存的工作流定义快照，防止运行中途原文件被修改导致
+        resume 时用到不一致的定义。"""
+        return self.workflow_session_dir(workflow_session_id) / "workflow_def.yaml"
+
+    def workflow_session_step_results(self, workflow_session_id: str) -> Path:
+        """…/workflow_sessions/<wf_session_id>/step_results.json
+        增量落盘的 StepResult 集合，断点恢复用。"""
+        return self.workflow_session_dir(workflow_session_id) / "step_results.json"
+
+    def workflow_session_events(self, workflow_session_id: str) -> Path:
+        """…/workflow_sessions/<wf_session_id>/events.jsonl
+        结构化事件流：workflow_start/step_start/step_end/gate_failed/
+        paused/resumed/cancelled/approval_requested/approved/rejected/
+        workflow_end。"""
+        return self.workflow_session_dir(workflow_session_id) / "events.jsonl"
+
+    def workflow_session_watchdog_log(self, workflow_session_id: str) -> Path:
+        """…/workflow_sessions/<wf_session_id>/watchdog.jsonl
+        看护线程的心跳/超时/资源护栏告警记录。"""
+        return self.workflow_session_dir(workflow_session_id) / "watchdog.jsonl"
+
+    def workflow_step_agent_dir(self, workflow_session_id: str, agent_session_id: str) -> Path:
+        """…/workflow_sessions/<wf_session_id>/<agent_session_id>/
+        单个 step 对应的 Agent 完整数据目录（history/meta/traces/temp/output/
+        artifacts），通过把该目录整体作为 cfg.session_dir 传给 SessionManager
+        实现（SessionManager 会在其下再建一层 <session_id>/，因此调用方应把
+        agent_session_id 同时用作 cfg.session_dir 的最后一级，具体见
+        workflow/runner.py 的 _execute_with_main_agent）。"""
+        return self.workflow_session_dir(workflow_session_id) / agent_session_id
+
+    def ensure_workflow_session_dir(self, workflow_session_id: str) -> Path:
+        """确保 workflow_session 目录存在并返回路径。"""
+        d = self.workflow_session_dir(workflow_session_id)
+        d.mkdir(parents=True, exist_ok=True)
+        return d
+
+    def list_workflow_session_ids(self) -> list[str]:
+        """列举本项目下所有已存在的 workflow_session_id（按目录名，未做排序保证）。"""
+        d = self.workflow_sessions_dir
+        if not d.exists():
+            return []
+        return [p.name for p in d.iterdir() if p.is_dir()]
 
     @property
     def daily_reports_dir(self) -> Path:

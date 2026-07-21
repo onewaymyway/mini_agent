@@ -41,6 +41,7 @@ from mini_agent.cli.commands.evolution import handle_evolution_cmd
 from mini_agent.cli.commands.evolve import handle_evolve_cmd
 from mini_agent.cli.commands.goals import handle_goals_cmd
 from mini_agent.cli.commands.goal_mode_cmd import handle_goal_cmd
+from mini_agent.cli.commands.workflow_cmd import handle_workflow_cmd
 from mini_agent.cli.commands.debug_cmd import handle_debug_cmd
 from mini_agent.cli.commands.roles import handle_role_cmd
 from mini_agent.cli.commands.behavior import handle_behavior_cmd
@@ -69,6 +70,7 @@ __all__ = [
     "handle_evolve_cmd",
     "handle_goals_cmd",
     "handle_goal_cmd",
+    "handle_workflow_cmd",
     "handle_debug_cmd",
     "handle_role_cmd",
     "handle_recall_cmd",

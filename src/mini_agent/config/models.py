@@ -868,15 +868,35 @@ class EnvInfoConfig:
 
 @dataclass
 class WorkflowConfig:
-    """[具身改进 B3] Workflow 并发执行配置。
+    """[具身改进 B3][workflow机制改进计划.md] Workflow 执行/看护配置。
 
     `workflow/runner.py` 按 depends_on 拓扑分层（batch），同一层内互不依赖的
     步骤默认并发执行（每个步骤本来就用独立的 Agent 实例，互不共享可变状态，
-    详见 runner.py 模块文档）。这里只控制"是否启用并发"和"并发上限"，
-    单步骤可通过 WorkflowStep.allow_parallel=False 单独强制串行。
+    详见 runner.py 模块文档）。parallel_enabled/max_parallel 控制"是否启用
+    并发"和"并发上限"，单步骤可通过 WorkflowStep.allow_parallel=False 单独
+    强制串行。
+
+    watchdog_* / approval_* / retry_on_error_* 为看护机制（P3/P4）相关配置，
+    均为可选开关，默认值保证与改造前行为兼容（不强制开启审批门、不强制
+    通用重试）。
     """
     parallel_enabled: bool = True
     max_parallel: int = 4   # 同一拓扑层最多同时执行的步骤数
+
+    # ── 看护线程（P3）──────────────────────────────────────────────────────
+    watchdog_enabled: bool = True                       # 是否启用看护线程（心跳超时检测+资源护栏）
+    heartbeat_check_interval_seconds: float = 5.0        # 看护线程轮询间隔
+    max_total_duration_seconds: Optional[float] = None   # 单次工作流执行的总时长护栏（None=不限制，可被 WorkflowDef.max_total_duration 覆盖）
+
+    # ── 人工审批门（P4）────────────────────────────────────────────────────
+    approval_poll_interval_seconds: float = 3.0          # 审批门等待时的轮询间隔
+    approval_wait_timeout_seconds: Optional[float] = 600.0  # 审批等待超时（None=无限等待），超时后自动判拒绝
+
+    # ── 通用失败重试（P4，区别于 WorkflowStep.retry_on_gate_fail 质检门重试）──
+    retry_on_error_backoff_seconds: float = 5.0          # 重试前的基础退避时长（乘以已重试次数）
+
+    # ── 后台执行（P4）──────────────────────────────────────────────────────
+    background_execution_default: bool = False           # run_workflow 未显式传 background 参数时的默认行为
 
 
 @dataclass

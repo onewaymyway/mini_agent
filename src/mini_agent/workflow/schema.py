@@ -46,6 +46,11 @@ class StepStatus(str, Enum):
     SKIPPED      = "skipped"      # condition 不满足
     FAILED       = "failed"
     GATE_FAILED  = "gate_failed"  # evaluator 评分不达标（质检门未通过）
+    # ── workflow机制改进计划.md P2/P4 新增状态 ──────────────────────────────
+    TIMEOUT            = "timeout"             # 硬超时被看护线程强制中断
+    CANCELLED          = "cancelled"            # 收到 cancel 信号后未开始/被中止
+    AWAITING_APPROVAL  = "awaiting_approval"    # 等待人工审批门放行
+    REJECTED           = "rejected"             # 人工审批被拒绝
 
 
 @dataclass
@@ -65,6 +70,14 @@ class WorkflowStep:
     # 默认 True；若某步骤有 depends_on 未声明的隐式副作用（如读写同一外部文件/
     # 状态），可显式设为 False 强制串行，保留人工对并发风险的控制权。
     allow_parallel: bool = True
+    # [workflow机制改进计划.md P4] 普通异常（非质检门）重试次数，0=不重试。
+    # 与 retry_on_gate_fail 是两套独立机制：这个只处理 FAILED（网络超时/工具
+    # 报错等），不涉及"重跑依赖步骤+带反馈"的质检门语义。
+    retry_on_error: int = 0
+    # [workflow机制改进计划.md P4] 是否要求人工审批门放行才能执行该步骤。
+    # 需要配合 run_workflow(background=True) 使用：前台同步执行时没有其他
+    # 线程能在阻塞期间调用 approve_workflow_step，审批会一直等到超时。
+    require_approval: bool = False
 
 
 @dataclass
@@ -74,6 +87,10 @@ class WorkflowDef:
     steps: list[WorkflowStep]
     description: str = ""
     version: str = "1.0"
+    # [workflow机制改进计划.md P3] 整体资源护栏：累计执行时长（秒）超过该值，
+    # 看护线程主动请求 cancel。None=不限制，走全局配置
+    # cfg.workflow.max_total_duration_seconds 作为兜底。
+    max_total_duration: Optional[float] = None
 
     @classmethod
     def from_dict(cls, data: dict) -> "WorkflowDef":
@@ -95,12 +112,15 @@ class WorkflowDef:
                 timeout=float(s["timeout"]) if s.get("timeout") else None,
                 retry_on_gate_fail=int(s.get("retry_on_gate_fail", 0)),
                 allow_parallel=bool(s.get("allow_parallel", True)),
+                retry_on_error=int(s.get("retry_on_error", 0)),
+                require_approval=bool(s.get("require_approval", False)),
             ))
         return cls(
             name=str(data.get("name", "unnamed")),
             steps=steps,
             description=str(data.get("description", "")),
             version=str(data.get("version", "1.0")),
+            max_total_duration=float(data["max_total_duration"]) if data.get("max_total_duration") else None,
         )
 
     def to_dict(self) -> dict:
@@ -109,6 +129,7 @@ class WorkflowDef:
             "name": self.name,
             "description": self.description,
             "version": self.version,
+            **({"max_total_duration": self.max_total_duration} if self.max_total_duration else {}),
             "steps": [
                 {
                     "id": s.id,
@@ -122,6 +143,8 @@ class WorkflowDef:
                     **({"timeout": s.timeout} if s.timeout else {}),
                     **({"retry_on_gate_fail": s.retry_on_gate_fail} if s.retry_on_gate_fail else {}),
                     **({"allow_parallel": s.allow_parallel} if not s.allow_parallel else {}),
+                    **({"retry_on_error": s.retry_on_error} if s.retry_on_error else {}),
+                    **({"require_approval": s.require_approval} if s.require_approval else {}),
                 }
                 for s in self.steps
             ],
@@ -161,3 +184,27 @@ class StepResult:
     score: Optional[float] = None    # evaluator 角色才会填写
     error: Optional[str] = None
     duration_seconds: float = 0.0
+    retries_used: int = 0             # retry_on_error 实际消耗的重试次数
+
+    def to_dict(self) -> dict:
+        return {
+            "step_id": self.step_id,
+            "status": self.status.value,
+            "output": self.output,
+            "score": self.score,
+            "error": self.error,
+            "duration_seconds": self.duration_seconds,
+            "retries_used": self.retries_used,
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict) -> "StepResult":
+        return cls(
+            step_id=str(data.get("step_id", "")),
+            status=StepStatus(data.get("status", "pending")),
+            output=str(data.get("output", "")),
+            score=data.get("score"),
+            error=data.get("error"),
+            duration_seconds=float(data.get("duration_seconds", 0.0)),
+            retries_used=int(data.get("retries_used", 0)),
+        )

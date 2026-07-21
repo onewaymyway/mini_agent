@@ -703,11 +703,23 @@ def load_config(
         verbose=bool(_af.get("verbose", False)),
     )
 
-    # [具身改进 B3] Workflow 并发执行配置组装
+    # [具身改进 B3][workflow机制改进计划.md] Workflow 执行/看护配置组装
     _wf = file_cfg.get("workflow") if isinstance(file_cfg.get("workflow"), dict) else {}
+    _approval_timeout_raw = _wf.get("approval_wait_timeout_seconds", 600.0)
     workflow_cfg = WorkflowConfig(
         parallel_enabled=bool(_wf.get("parallel_enabled", True)),
         max_parallel=int(_wf.get("max_parallel", 4)),
+        watchdog_enabled=bool(_wf.get("watchdog_enabled", True)),
+        heartbeat_check_interval_seconds=float(_wf.get("heartbeat_check_interval_seconds", 5.0)),
+        max_total_duration_seconds=(
+            float(_wf["max_total_duration_seconds"]) if _wf.get("max_total_duration_seconds") else None
+        ),
+        approval_poll_interval_seconds=float(_wf.get("approval_poll_interval_seconds", 3.0)),
+        approval_wait_timeout_seconds=(
+            float(_approval_timeout_raw) if _approval_timeout_raw is not None else None
+        ),
+        retry_on_error_backoff_seconds=float(_wf.get("retry_on_error_backoff_seconds", 5.0)),
+        background_execution_default=bool(_wf.get("background_execution_default", False)),
     )
 
     # ── 日报融合 / 主动推荐 / 决策画像配置组装（主动推荐与数字分身机制设计方案）──
