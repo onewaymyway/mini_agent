@@ -123,5 +123,16 @@
     "next_action_push_max_per_session": 1,
     "decision_profile_enabled": false,
     "decision_profile_min_evidence_count": 3
+  },
+  "workflow": {
+    "parallel_enabled": true,
+    "max_parallel": 4,
+    "watchdog_enabled": true,
+    "heartbeat_check_interval_seconds": 5.0,
+    "max_total_duration_seconds": null,
+    "approval_poll_interval_seconds": 3.0,
+    "approval_wait_timeout_seconds": 600.0,
+    "retry_on_error_backoff_seconds": 5.0,
+    "background_execution_default": false
   }
 }
