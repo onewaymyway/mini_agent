@@ -1,26 +1,27 @@
 {
-
   "system_message_format": "system_role",
   "system_tool_call": true,
-  "claude_md_file":"Agent.md",
+  "claude_md_file": "Agent.md",
   "verbose": true,
   "memory_enabled": true,
   "lesson_rules_enabled": true,
   "lesson_fail_threshold": 3,
   "correction_detection_enabled": true,
-  "profile_min_entries":3,
-  "profile_refresh_interval_entries":5,
-  "profile_max_entries":20,
+  "profile_min_entries": 3,
+  "profile_refresh_interval_entries": 5,
+  "profile_max_entries": 20,
   "session_summary_enabled": true,
   "session_summary_min_turns": 3,
-  "profile_enabled":true,
+  "profile_enabled": true,
   "bash_stream_output_enabled": false,
-  "skill_keyword_activation_enabled":false,
+  "skill_keyword_activation_enabled": false,
   "artifact_auto_detect_enabled": false,
   "max_llm_calls": 4,
-  "llm_retry_delay":30,
-  "show_reasoning":false,
-  "tool_trim": { "enabled": true },
+  "llm_retry_delay": 30,
+  "show_reasoning": false,
+  "tool_trim": {
+    "enabled": true
+  },
   "raw_output": false,
   "web_search": {
     "provider": "duckduckgo",
@@ -28,13 +29,14 @@
     "max_results": 5,
     "timeout": 10.0
   },
-
   "mcp_servers": [
     {
       "name": "time_server",
       "transport": "stdio",
       "command": "python",
-      "args": ["mcp_servers/time_server.py"],
+      "args": [
+        "mcp_servers/time_server.py"
+      ],
       "auto_approve": true,
       "timeout": 10.0,
       "enabled": true
@@ -58,7 +60,10 @@
     "enabled": true,
     "verbose": true,
     "secrets": [
-      {"name": "MY_DB_PASSWORD", "value": "super-secret-pw"}
+      {
+        "name": "MY_DB_PASSWORD",
+        "value": "super-secret-pw"
+      }
     ],
     "auto_env_patterns": null
   },
@@ -85,26 +90,38 @@
     "same_output_similarity_threshold": 0.9,
     "max_stuck_recoveries": 3
   },
-  "token_estimate_enabled":true,
+  "token_estimate_enabled": true,
   "auto_compress_enabled": true,
   "auto_compress_threshold": 0.7,
   "auto_compress_strategy": "compact_with_skills",
-
   "compact_turn_count_trigger_enabled": true,
   "compact_max_turns": 20,
-
   "compact_tool_call_count_trigger_enabled": true,
   "compact_max_tool_calls": 30,
-
   "compact_topic_shift_detection": "llm",
   "compact_topic_shift_keyword_overlap_threshold": 0.15,
-
   "compact_redundancy_detection_enabled": true,
   "compact_redundancy_tool_result_ratio": 0.6,
-
   "compact_cooldown_turns": 3,
   "compact_require_confirmation": false,
   "compact_max_message_chars": 10000,
-
-  "model_context_window": 120000
+  "model_context_window": 120000,
+  "digest_advisor": {
+    "daily_digest_enabled": true,
+    "daily_digest_startup_print_enabled": true,
+    "next_action_enabled": true,
+    "next_action_startup_print_enabled": true,
+    "next_action_rank_with_llm": false,
+    "next_action_stale_days": 7.0,
+    "next_action_stale_priority_floor": 1,
+    "next_action_attention_window_hours": 6.0,
+    "next_action_attention_mismatch_ratio": 0.5,
+    "next_action_profile_weighting_enabled": false,
+    "next_action_profile_weighting_min_confidence": 0.5,
+    "next_action_push_enabled": false,
+    "next_action_push_threshold_hours": 2.0,
+    "next_action_push_max_per_session": 1,
+    "decision_profile_enabled": false,
+    "decision_profile_min_evidence_count": 3
+  }
 }
