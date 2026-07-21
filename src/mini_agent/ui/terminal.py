@@ -3175,7 +3175,9 @@ _COMMANDS: list[tuple[str, str, list]] = [
     ("/evolve",      "Spawn evolution-agent on qualifying lessons",  ["review", "list", "consolidate", "timeline"]),
     ("/agent",       "Goal backlog & daemon management",             ["goals", "digest", "daemon"]),
     ("/goals",       "Shortcut for /agent goals",                    ["list", "add", "obj", "done", "abandon", "pause", "progress", "status"]),
-    ("/digest",      "Show autonomous activity summary (last 24h)",  []),
+    ("/digest",      "Show autonomous activity summary (last 24h); '/digest daily [date]' for the fused daily report", ["daily"]),
+    ("/next",        "Show ranked next-action recommendations (stale goals / attention mismatch)", ["refresh"]),
+    ("/decision_profile", "Show/update the decision & value profile derived from historical decisions", ["update"]),
     ("/debug",       "Print/export system prompt & history for debugging", ["system", "history", "tokens", "all", "save"]),
     ("/cron",        "Manage periodic daemon tasks",                 ["list", "status", "enable", "disable", "run", "add", "remove", "set-schedule"]),
     (

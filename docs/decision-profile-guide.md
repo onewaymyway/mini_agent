@@ -31,8 +31,8 @@
 ## 使用方式
 
 ```
-/profile           # 查看当前决策画像
-/profile update     # 触发一次归纳（需要 agent 提供 llm_helper，否则跳过）
+/decision_profile           # 查看当前决策画像
+/decision_profile update    # 触发一次归纳（需要 agent 提供 llm_helper，否则跳过）
 ```
 
 ## 定时任务
@@ -41,15 +41,31 @@
 **默认 `enabled: False`**——这是有意的：建议先让阶段一（日报）和阶段二（推荐）
 稳定运行数周、积累足够的行为/决策数据后，再由用户手动执行
 `/cron enable sys:decision_profile_update` 开启，避免样本不足导致画像失真。
+这个默认值本身也可以通过 `agent_config.json` 的 `digest_advisor.decision_profile_enabled`
+配置项覆盖（仅影响 job 首次被写入 `cron_jobs.json` 时的初始状态，之后用户通过
+`/cron enable|disable` 做的手动修改不会被配置覆盖）。
 
 ## 目前仅支持的两个初期用法（明确限定范围）
 
 1. **决策问答检索**：直接读 `user_value_profile.md` 做检索式回答"为什么当初
    放弃/选择了 X"，回答时引用具体 `evidence_refs`，不脑补细节。本文件不实现
    问答本身，只产出可被检索的画像文档。
-2. **`next_action_advisor` 排序加权**：advisor 可选读取本文件产出的 pattern
-   列表，对同优先级候选按已验证的高置信度模式调整排序（本轮代码未接入此加权，
-   留待观察画像归纳质量后再连接，避免过早让推荐依赖一个还未验证准确的画像）。
+2. **`next_action_advisor` 排序加权**（本轮已接入）：`agent_config.json` 的
+   `digest_advisor.next_action_profile_weighting_enabled` 开启后，`/next refresh`
+   与 `sys:next_action_digest` cron job 会读取本文件归纳出的高置信度模式
+   （置信度需 ≥ `next_action_profile_weighting_min_confidence`，默认 0.5），
+   对同类候选（`stale_goal` 内部或 `attention_mismatch` 内部）做"排序内加权"：
+   候选标题/理由与某条模式关键词重合时优先展示。加权只影响同类候选的相对顺序，
+   不跨类别提升、不新增候选、不影响候选本身的产生逻辑。默认关闭。
+
+## 相关配置（`agent_config.json` → `digest_advisor`）
+
+| 字段 | 默认值 | 说明 |
+|---|---|---|
+| `decision_profile_enabled` | `false` | 控制 `sys:decision_profile_update` cron job 的初始 enabled 状态 |
+| `decision_profile_min_evidence_count` | `3` | 归纳一条模式所需的最少独立决策记录数（对应 `MIN_EVIDENCE_COUNT`） |
+| `next_action_profile_weighting_enabled` | `false` | 是否用本画像对 `next_action_advisor` 排序做加权 |
+| `next_action_profile_weighting_min_confidence` | `0.5` | 参与加权的模式最低置信度门槛 |
 
 ## 明确不做的事
 

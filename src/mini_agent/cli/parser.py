@@ -109,6 +109,10 @@ def build_parser() -> argparse.ArgumentParser:
               /agent goals status         Show AutonomousLoop tick status
               /goals                      Shortcut for /agent goals
               /digest                     Show autonomous activity summary since last interaction
+              /digest daily [YYYY-MM-DD]  Generate/show the fused daily report (behavior + goal progress + commits)
+              /next [refresh]             Show (or recompute) the ranked next-action recommendations
+              /decision_profile           Show the current decision/value profile (wiki/user_value_profile.md)
+              /decision_profile update    Re-summarize the decision profile now (requires LLM helper)
               /debug system               Print current system prompt (with token estimate)
               /debug history [full] [n]   Print history as a table (last n msgs; 'full' = no truncation)
               /debug all [n]              Print system + history together

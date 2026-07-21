@@ -1029,7 +1029,10 @@ class HttpServer:
                     return None
 
             from mini_agent.evolution.cron_scheduler import load_cron_scheduler
-            cron_scheduler = load_cron_scheduler(paths, submit_fn=_cron_submit)
+            cron_scheduler = load_cron_scheduler(
+                paths, submit_fn=_cron_submit,
+                digest_advisor_cfg=getattr(cfg, "digest_advisor", None),
+            )
 
             # ── ObjectiveExecutor ────────────────────────────────────────────
             def _obj_submit(message: str, initiator: str, meta: dict):

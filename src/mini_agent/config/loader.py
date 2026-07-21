@@ -46,6 +46,7 @@ from .models import (
     PrivacyConfig,
     WorkdirKnowledgeConfig,
     GlobalKnowledgeConfig,
+    DigestAdvisorConfig,
     DEFAULT_MODEL,
     DEFAULT_AGENT_NAME,
     DEFAULT_MAX_TOKENS,
@@ -709,6 +710,29 @@ def load_config(
         max_parallel=int(_wf.get("max_parallel", 4)),
     )
 
+    # ── 日报融合 / 主动推荐 / 决策画像配置组装（主动推荐与数字分身机制设计方案）──
+    _da = file_cfg.get("digest_advisor") if isinstance(file_cfg.get("digest_advisor"), dict) else {}
+    digest_advisor_cfg = DigestAdvisorConfig(
+        daily_digest_enabled=bool(_da.get("daily_digest_enabled", True)),
+        daily_digest_startup_print_enabled=bool(_da.get("daily_digest_startup_print_enabled", True)),
+        next_action_enabled=bool(_da.get("next_action_enabled", True)),
+        next_action_startup_print_enabled=bool(_da.get("next_action_startup_print_enabled", True)),
+        next_action_rank_with_llm=bool(_da.get("next_action_rank_with_llm", False)),
+        next_action_stale_days=float(_da.get("next_action_stale_days", 7.0)),
+        next_action_stale_priority_floor=int(_da.get("next_action_stale_priority_floor", 1)),
+        next_action_attention_window_hours=float(_da.get("next_action_attention_window_hours", 6.0)),
+        next_action_attention_mismatch_ratio=float(_da.get("next_action_attention_mismatch_ratio", 0.5)),
+        next_action_profile_weighting_enabled=bool(_da.get("next_action_profile_weighting_enabled", False)),
+        next_action_profile_weighting_min_confidence=float(
+            _da.get("next_action_profile_weighting_min_confidence", 0.5)
+        ),
+        next_action_push_enabled=bool(_da.get("next_action_push_enabled", False)),
+        next_action_push_threshold_hours=float(_da.get("next_action_push_threshold_hours", 2.0)),
+        next_action_push_max_per_session=int(_da.get("next_action_push_max_per_session", 1)),
+        decision_profile_enabled=bool(_da.get("decision_profile_enabled", False)),
+        decision_profile_min_evidence_count=int(_da.get("decision_profile_min_evidence_count", 3)),
+    )
+
     return AppConfig(
         api_key=api_key,
         model=_model,
@@ -764,6 +788,7 @@ def load_config(
         workdir_knowledge=workdir_knowledge_cfg,
         global_knowledge=global_knowledge_cfg,
         privacy=privacy_cfg,
+        digest_advisor=digest_advisor_cfg,
         llm_fallback_chain=_llm_fallback_chain,
         llm_fallback_on=_llm_fallback_on,
     )

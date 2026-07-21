@@ -91,8 +91,8 @@ def _extract_json_array(text: str) -> str:
     return text[start : end + 1]
 
 
-def _llm_summarize_patterns(pages: list, llm_helper) -> list[dict]:
-    """要求 LLM 只做归纳：每条候选模式必须列出至少 MIN_EVIDENCE_COUNT 个
+def _llm_summarize_patterns(pages: list, llm_helper, min_evidence_count: int = MIN_EVIDENCE_COUNT) -> list[dict]:
+    """要求 LLM 只做归纳：每条候选模式必须列出至少 min_evidence_count 个
     decision 页面 id 作为证据，不满足的模式由本函数事后过滤掉（不完全信任
     LLM 自己声称的证据数量）。
     """
@@ -106,7 +106,7 @@ def _llm_summarize_patterns(pages: list, llm_helper) -> list[dict]:
     ]
     prompt = (
         "以下是一批用户的历史技术决策记录（wiki 决策页摘要）。请归纳出其中"
-        "反复出现、至少能被 3 条独立记录支持的价值取向或决策偏好模式，"
+        f"反复出现、至少能被 {min_evidence_count} 条独立记录支持的价值取向或决策偏好模式，"
         "不要凭单条记录臆断。每条模式给出 pattern（一句话）和 evidence_refs"
         "（引用的决策页 id 列表，必须真实来自输入数据）。"
         "只返回 JSON 数组，不要其他文字：\n" + json.dumps(entries, ensure_ascii=False)
@@ -121,7 +121,7 @@ def _llm_summarize_patterns(pages: list, llm_helper) -> list[dict]:
     out = []
     for item in parsed:
         refs = [r for r in item.get("evidence_refs", []) if r in valid_ids]
-        if len(refs) < MIN_EVIDENCE_COUNT:
+        if len(refs) < min_evidence_count:
             continue  # 证据不足，不落地，即使 LLM 自己声称满足
         out.append({"pattern": item.get("pattern", "").strip(), "evidence_refs": refs})
     return [p for p in out if p["pattern"]]
@@ -157,21 +157,28 @@ def _apply_contradiction(existing: list[ValuePattern], new_raw: list[dict], now_
     return list(by_pattern.values())
 
 
-def generate_decision_profile(paths: AgentPaths, *, llm_helper=None) -> Optional[dict]:
+def generate_decision_profile(
+    paths: AgentPaths, *, llm_helper=None, min_evidence_count: int = MIN_EVIDENCE_COUNT
+) -> Optional[dict]:
     """归纳一轮决策画像。llm_helper 为 None 时直接返回 None（本层归纳依赖 LLM
     做语义总结，规则层无法替代，不强行做无意义的关键词聚类）。
+
+    min_evidence_count 对应 agent_config.json 里 digest_advisor.
+    decision_profile_min_evidence_count（默认 3，即模块常量 MIN_EVIDENCE_COUNT），
+    用于覆盖"至少多少条独立决策记录才归纳一条模式"这一门槛，不传时保持
+    模块默认值，向后兼容。
     """
     if llm_helper is None:
         return None
 
     pages = _load_decision_pages(paths)
-    if len(pages) < MIN_EVIDENCE_COUNT:
+    if len(pages) < min_evidence_count:
         return None  # 决策记录本身不足，归纳没有意义
 
     state = _load_state(paths)
     existing = [ValuePattern.from_dict(d) for d in state.get("patterns", [])]
 
-    raw_patterns = _llm_summarize_patterns(pages, llm_helper)
+    raw_patterns = _llm_summarize_patterns(pages, llm_helper, min_evidence_count=min_evidence_count)
     if not raw_patterns:
         return None
 

@@ -230,6 +230,13 @@ class AgentPaths:
         return self.workdir_dir / "decision_profile_state.json"
 
     @property
+    def attention_mismatch_state_path(self) -> Path:
+        """<project_root>/.agent/attention_mismatch_state.json — 注意力错配信号的
+        首次发现时间/推送次数跟踪，供 next_action_advisor 的 daemon 主动推送判断
+        "持续超过阈值时长"使用（避免每次扫描都重新计时导致误判）。"""
+        return self.workdir_dir / "attention_mismatch_state.json"
+
+    @property
     def decision_candidates_pending_path(self) -> Path:
         """<project_root>/.agent/decision_candidates_pending.jsonl — 决策候选待批量落盘队列。
 

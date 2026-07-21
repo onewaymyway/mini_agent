@@ -12,6 +12,20 @@ soft_goal_deriver 负责"发现该不该新建一个 Goal"（写入 GoalBacklog�
      要求输出必须带 evidence_refs，不允许无引用的理由。
 
 克制阈值：候选为空时返回 None，不生成"凑数"的建议。
+
+配置化（本轮新增）：所有阈值此前是模块级常量，现在改为可选从
+config/models.py::DigestAdvisorConfig 读取（agent_config.json 的
+"digest_advisor" 字段），不传 cfg 时回退到模块级默认常量，保持向后兼容。
+
+decision_profile 加权（本轮新增，见 4.4 节"初期用法 2"）：next_action_enabled
+且 cfg.next_action_profile_weighting_enabled=True 时，读取
+decision_profile_builder 产出的高置信度模式，对候选做"排序内加权"——
+只调整同类候选之间的相对顺序，不改变候选本身、不引入新候选，符合方案里
+"仅影响排序，不替代候选本身"的限定。
+
+注意力错配 daemon 推送（本轮新增，见 4.3 节）：check_persistent_attention_mismatch()
+供 AutonomousLoop._tick_passive() 调用，跟踪同一错配信号连续被检测到的时长，
+超过阈值且未超过每会话推送次数上限时才返回待推送内容，避免打断式骚扰。
 """
 
 from __future__ import annotations
@@ -19,11 +33,15 @@ from __future__ import annotations
 import json
 import time
 from dataclasses import dataclass, field
-from typing import Optional
+from typing import Optional, TYPE_CHECKING
 
 from mini_agent.storage.paths import AgentPaths
 
+if TYPE_CHECKING:
+    from mini_agent.config.models import DigestAdvisorConfig
+
 # 停滞判定：高优先级（priority >= STALE_PRIORITY_FLOOR）且超过此天数无 last_touched_at 更新
+# （以下模块级常量作为 cfg 未提供时的默认值，保持向后兼容）
 STALE_DAYS = 7
 STALE_PRIORITY_FLOOR = 1
 
@@ -31,6 +49,10 @@ STALE_PRIORITY_FLOOR = 1
 # 且其名称/域名与任何 active Goal 的 title/tags 都没有关键词重合，则判定为可能错配。
 ATTENTION_WINDOW_HOURS = 6
 ATTENTION_MISMATCH_RATIO = 0.5
+
+# daemon 推送默认阈值（cfg 未提供时使用）
+PUSH_THRESHOLD_HOURS = 2.0
+PUSH_MAX_PER_SESSION = 1
 
 
 @dataclass
@@ -43,7 +65,9 @@ class Candidate:
     rank: int = 0
 
 
-def _find_stale_active_goals(paths: AgentPaths) -> list[Candidate]:
+def _find_stale_active_goals(
+    paths: AgentPaths, *, stale_days: float = STALE_DAYS, priority_floor: int = STALE_PRIORITY_FLOOR
+) -> list[Candidate]:
     try:
         from mini_agent.perception.goal_backlog import load_goal_backlog
     except Exception:
@@ -57,19 +81,19 @@ def _find_stale_active_goals(paths: AgentPaths) -> list[Candidate]:
     now = time.time()
     out: list[Candidate] = []
     for node in backlog.active_goals() + backlog.active_objectives():
-        if node.priority < STALE_PRIORITY_FLOOR:
+        if node.priority < priority_floor:
             continue
         last_touched = node.last_touched_at or node.created_at
         if not last_touched:
             continue
-        stale_days = (now - last_touched) / 86400
-        if stale_days >= STALE_DAYS:
+        days_since = (now - last_touched) / 86400
+        if days_since >= stale_days:
             out.append(
                 Candidate(
                     kind="stale_goal",
                     ref_id=node.id,
                     title=node.title,
-                    reason=f"已 {stale_days:.0f} 天无进展记录，优先级 {node.priority}",
+                    reason=f"已 {days_since:.0f} 天无进展记录，优先级 {node.priority}",
                     evidence_refs=[f"goal:{node.id}"],
                 )
             )
@@ -84,24 +108,22 @@ def _keyword_overlap(text_a: str, tags: list[str], text_b: str) -> bool:
     return False
 
 
-def _find_attention_mismatch(paths: AgentPaths) -> list[Candidate]:
+def _measure_attention_durations(paths: AgentPaths, window_hours: float) -> tuple[dict[str, float], float]:
+    """扫描行为事件，返回 (每个 app/域名的累计时长, 窗口起始时间戳)。
+    独立抽出来是为了让 check_persistent_attention_mismatch() 和
+    _find_attention_mismatch() 共用同一份采集逻辑，不重复实现。
+    """
     try:
         from mini_agent.perception.behavior.manager import BehaviorPerceptionManager
-        from mini_agent.perception.goal_backlog import load_goal_backlog
     except Exception:
-        return []
+        return {}, time.time() - window_hours * 3600
 
+    since = time.time() - window_hours * 3600
     try:
         mgr = BehaviorPerceptionManager(project_root=paths.project_root)
-        backlog = load_goal_backlog(paths)
-    except Exception:
-        return []
-
-    since = time.time() - ATTENTION_WINDOW_HOURS * 3600
-    try:
         events = mgr.query(since=since, limit=100000)
     except Exception:
-        return []
+        return {}, since
 
     duration: dict[str, float] = {}
     for e in events:
@@ -109,7 +131,19 @@ def _find_attention_mismatch(paths: AgentPaths) -> list[Candidate]:
         dur = getattr(e, "duration_sec", 0.0) or 0.0
         if key and dur:
             duration[key] = duration.get(key, 0.0) + dur
+    return duration, since
 
+
+def _find_attention_mismatch(
+    paths: AgentPaths, *, window_hours: float = ATTENTION_WINDOW_HOURS, mismatch_ratio: float = ATTENTION_MISMATCH_RATIO
+) -> list[Candidate]:
+    try:
+        from mini_agent.perception.goal_backlog import load_goal_backlog
+        backlog = load_goal_backlog(paths)
+    except Exception:
+        return []
+
+    duration, since = _measure_attention_durations(paths, window_hours)
     total = sum(duration.values())
     if total <= 0:
         return []
@@ -118,7 +152,7 @@ def _find_attention_mismatch(paths: AgentPaths) -> list[Candidate]:
     out: list[Candidate] = []
     for key, dur in duration.items():
         ratio = dur / total
-        if ratio < ATTENTION_MISMATCH_RATIO:
+        if ratio < mismatch_ratio:
             continue
         matched = any(_keyword_overlap(g.title, g.tags, key) for g in active_goals)
         if matched:
@@ -129,7 +163,7 @@ def _find_attention_mismatch(paths: AgentPaths) -> list[Candidate]:
                 ref_id=key,
                 title=key,
                 reason=(
-                    f"最近 {ATTENTION_WINDOW_HOURS} 小时内 {ratio:.0%} 的时间花在"
+                    f"最近 {window_hours:g} 小时内 {ratio:.0%} 的时间花在"
                     f" {key} 上，但没有关联到任何登记中的目标"
                 ),
                 evidence_refs=[f"behavior_window:{int(since)}-{int(time.time())}:{key}"],
@@ -144,6 +178,47 @@ def _rule_based_rank(candidates: list[Candidate]) -> list[Candidate]:
     """
     order = {"stale_goal": 0, "attention_mismatch": 1}
     ranked = sorted(candidates, key=lambda c: (order.get(c.kind, 9), c.ref_id))
+    for i, c in enumerate(ranked):
+        c.rank = i + 1
+    return ranked
+
+
+def _load_profile_patterns(paths: AgentPaths, min_confidence: float) -> list[dict]:
+    """读取 decision_profile_builder 产出的模式列表，只取置信度达标、且没有
+    未解决矛盾（或矛盾后置信度仍达标）的模式。读取失败（未生成过画像等）
+    时静默返回空列表——加权是可选加成，不能因为画像不存在而让推荐报错。
+    """
+    try:
+        state = json.loads(paths.decision_profile_state_path.read_text(encoding="utf-8"))
+    except Exception:
+        return []
+    patterns = state.get("patterns", [])
+    return [p for p in patterns if float(p.get("confidence", 0.0)) >= min_confidence]
+
+
+def _apply_profile_weighting(candidates: list[Candidate], patterns: list[dict]) -> list[Candidate]:
+    """用画像模式对同类候选做"排序内加权"：候选的 title/reason 与某条高置信度
+    模式的 pattern 文本有关键词重合时，视为该候选与用户已验证的价值取向相关，
+    优先级略微提升（组内排序前移），但不跨类别提升（stale_goal 永远先于
+    attention_mismatch，加权只影响同类内部顺序，遵循方案"仅影响排序，不替代
+    候选本身"的限定）。
+    """
+    if not patterns:
+        return candidates
+
+    def _matches_any_pattern(c: Candidate) -> bool:
+        hay = (c.title + " " + c.reason).lower()
+        for p in patterns:
+            for token in p.get("pattern", "").lower().replace("_", " ").replace("-", " ").split():
+                if len(token) >= 2 and token in hay:
+                    return True
+        return False
+
+    order = {"stale_goal": 0, "attention_mismatch": 1}
+    ranked = sorted(
+        candidates,
+        key=lambda c: (order.get(c.kind, 9), 0 if _matches_any_pattern(c) else 1, c.ref_id),
+    )
     for i, c in enumerate(ranked):
         c.rank = i + 1
     return ranked
@@ -201,14 +276,35 @@ def _extract_json_array(text: str) -> str:
 
 
 def generate_next_actions(
-    paths: AgentPaths, *, rank_with_llm: bool = False, llm_helper=None
+    paths: AgentPaths,
+    *,
+    rank_with_llm: bool = False,
+    llm_helper=None,
+    cfg: Optional["DigestAdvisorConfig"] = None,
 ) -> Optional[dict]:
-    """生成一批推荐候选并落盘。候选为空时返回 None（克制阈值，见模块头注释）。"""
-    candidates = _find_stale_active_goals(paths) + _find_attention_mismatch(paths)
+    """生成一批推荐候选并落盘。候选为空时返回 None（克制阈值，见模块头注释）。
+
+    cfg 不为 None 时，停滞天数/注意力窗口阈值/是否接 LLM/是否用画像加权
+    均从 cfg 读取，覆盖调用方显式传入的 rank_with_llm（cfg 存在时以 cfg 为准，
+    因为 cfg 反映的是用户在 agent_config.json 里的显式配置）。
+    """
+    stale_days = cfg.next_action_stale_days if cfg is not None else STALE_DAYS
+    priority_floor = cfg.next_action_stale_priority_floor if cfg is not None else STALE_PRIORITY_FLOOR
+    window_hours = cfg.next_action_attention_window_hours if cfg is not None else ATTENTION_WINDOW_HOURS
+    mismatch_ratio = cfg.next_action_attention_mismatch_ratio if cfg is not None else ATTENTION_MISMATCH_RATIO
+    use_llm = cfg.next_action_rank_with_llm if cfg is not None else rank_with_llm
+
+    candidates = _find_stale_active_goals(
+        paths, stale_days=stale_days, priority_floor=priority_floor
+    ) + _find_attention_mismatch(paths, window_hours=window_hours, mismatch_ratio=mismatch_ratio)
     if not candidates:
         return None
 
-    ranked = _llm_rank(candidates, llm_helper) if rank_with_llm else _rule_based_rank(candidates)
+    ranked = _llm_rank(candidates, llm_helper) if use_llm else _rule_based_rank(candidates)
+
+    if cfg is not None and cfg.next_action_profile_weighting_enabled:
+        patterns = _load_profile_patterns(paths, cfg.next_action_profile_weighting_min_confidence)
+        ranked = _apply_profile_weighting(ranked, patterns)
 
     data = {
         "generated_at": time.time(),
@@ -263,3 +359,94 @@ def mark_shown(paths: AgentPaths) -> None:
         return
     data["shown_at"] = time.time()
     p.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+# ── 注意力错配 daemon 主动推送（设计方案 4.3 节）──────────────────────────────
+
+def _load_mismatch_state(paths: AgentPaths) -> dict:
+    p = paths.attention_mismatch_state_path
+    if not p.exists():
+        return {"signals": {}}
+    try:
+        return json.loads(p.read_text(encoding="utf-8"))
+    except Exception:
+        return {"signals": {}}
+
+
+def _save_mismatch_state(paths: AgentPaths, state: dict) -> None:
+    p = paths.attention_mismatch_state_path
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def check_persistent_attention_mismatch(
+    paths: AgentPaths, cfg: Optional["DigestAdvisorConfig"] = None
+) -> Optional[dict]:
+    """供 AutonomousLoop._tick_passive() 周期性调用（不经过 LLM 对话轮次）。
+
+    跟踪同一错配信号（按 ref_id，即 app/域名 key）连续被检测到的时长：
+      - 首次检测到：记录 first_detected_at，本次不推送
+      - 持续检测到且 (now - first_detected_at) >= push_threshold_hours
+        且该信号历史推送次数 < push_max_per_session：返回待推送 payload，
+        推送次数 +1
+      - 信号消失（这次没检测到）：清除跟踪记录，下次重新计时
+
+    cfg 为 None 或 cfg.next_action_push_enabled=False 时直接返回 None，
+    不做任何跟踪/推送（总开关默认关闭，见方案 4.3 节"避免打断式骚扰"）。
+    """
+    if cfg is None or not cfg.next_action_push_enabled:
+        return None
+
+    window_hours = cfg.next_action_attention_window_hours
+    mismatch_ratio = cfg.next_action_attention_mismatch_ratio
+    threshold_hours = cfg.next_action_push_threshold_hours
+    max_per_session = cfg.next_action_push_max_per_session
+
+    current = {c.ref_id: c for c in _find_attention_mismatch(
+        paths, window_hours=window_hours, mismatch_ratio=mismatch_ratio
+    )}
+
+    state = _load_mismatch_state(paths)
+    signals: dict = state.setdefault("signals", {})
+    now = time.time()
+    to_push: Optional[dict] = None
+
+    # 清理已消失的信号，避免跟踪记录无限增长
+    for ref_id in list(signals.keys()):
+        if ref_id not in current:
+            del signals[ref_id]
+
+    for ref_id, cand in current.items():
+        rec = signals.get(ref_id)
+        if rec is None:
+            signals[ref_id] = {"first_detected_at": now, "push_count": 0}
+            continue
+
+        elapsed_hours = (now - rec["first_detected_at"]) / 3600
+        if elapsed_hours < threshold_hours:
+            continue
+        if rec.get("push_count", 0) >= max_per_session:
+            continue
+
+        # 只推送第一个满足条件的信号（一次 tick 最多推一条，避免多条同时轰炸）
+        if to_push is None:
+            to_push = {
+                "ref_id": ref_id,
+                "title": cand.title,
+                "reason": cand.reason,
+                "elapsed_hours": round(elapsed_hours, 1),
+            }
+            rec["push_count"] = rec.get("push_count", 0) + 1
+
+    _save_mismatch_state(paths, state)
+    return to_push
+
+
+def render_push_message(payload: dict) -> str:
+    """把 check_persistent_attention_mismatch() 的返回值渲染成推送文案。"""
+    return (
+        f"⏰ 注意力提醒：最近 {payload['elapsed_hours']:.1f} 小时持续在"
+        f" {payload['title']} 上，但这个活动没有关联到任何登记中的目标。"
+        f"{payload['reason']}。如果这是有意为之可以忽略，否则可以 `/next` 查看建议"
+        f"或 `/agent goals add` 补登记一个目标。"
+    )

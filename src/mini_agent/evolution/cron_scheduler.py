@@ -222,7 +222,7 @@ _BUILTIN_JOBS: list[dict] = [
         "name": "决策画像归纳",
         "schedule": "interval:604800",
         "description": "从历史决策记录归纳可追溯的用户价值模式（每 7 天，证据不足 3 条的模式不落地）",
-        "task_template": "[画像] 执行一次 /profile update，归纳决策画像并落盘",
+        "task_template": "[画像] 执行一次 /decision_profile update，归纳决策画像并落盘",
         "tags": ["profile", "wiki"],
         "enabled": False,
     },
@@ -338,14 +338,23 @@ class CronScheduler:
         self,
         paths: "AgentPaths",
         submit_fn: Optional[Callable[[str, str, dict], bool]] = None,
+        digest_advisor_cfg: Optional["DigestAdvisorConfig"] = None,
     ) -> None:
         """
         paths       — AgentPaths，用于定位 cron_jobs.json
         submit_fn   — 触发 job 时的提交回调：submit_fn(message, initiator, meta) -> bool
                       通常注入 InputQueue.enqueue 的包装
+        digest_advisor_cfg — 日报/推荐/画像三层功能的配置（config/models.py::
+                      DigestAdvisorConfig）。只在 sys:daily_digest /
+                      sys:next_action_digest / sys:decision_profile_update
+                      三个内置 job **首次注入**时用来决定初始 enabled 状态，
+                      不影响用户后续通过 /cron enable|disable 做的手动修改
+                      （见 load() 里"已存在的不覆盖"注释）。为 None 时使用
+                      _BUILTIN_JOBS 里写死的默认值，保持向后兼容。
         """
         self._paths = paths
         self._submit_fn = submit_fn
+        self._digest_advisor_cfg = digest_advisor_cfg
         self._jobs: dict[str, CronJob] = {}
         self._jobs_path = paths.workdir_dir / "cron_jobs.json"
 
@@ -381,10 +390,27 @@ class CronScheduler:
             existing.pop(_legacy_id, None)
 
         # 注入内置 Job（已存在的不覆盖，保留用户修改的 enabled/schedule）
+        _cfg_enabled_overrides = {
+            "sys:daily_digest": (
+                self._digest_advisor_cfg.daily_digest_enabled
+                if self._digest_advisor_cfg is not None else None
+            ),
+            "sys:next_action_digest": (
+                self._digest_advisor_cfg.next_action_enabled
+                if self._digest_advisor_cfg is not None else None
+            ),
+            "sys:decision_profile_update": (
+                self._digest_advisor_cfg.decision_profile_enabled
+                if self._digest_advisor_cfg is not None else None
+            ),
+        }
         for bd in _BUILTIN_JOBS:
             bid = bd["id"]
             if bid not in existing:
                 j = CronJob.from_dict(bd)
+                override = _cfg_enabled_overrides.get(bid)
+                if override is not None:
+                    j.enabled = bool(override)
                 j.next_run_at = compute_next_run(j.schedule, 0.0)
                 existing[bid] = j
 
@@ -580,9 +606,11 @@ class CronScheduler:
 def load_cron_scheduler(
     paths: "AgentPaths",
     submit_fn: Optional[Callable] = None,
+    digest_advisor_cfg: Optional["DigestAdvisorConfig"] = None,
 ) -> CronScheduler:
-    """加载并返回 CronScheduler（便捷函数）。"""
-    cs = CronScheduler(paths, submit_fn=submit_fn)
+    """加载并返回 CronScheduler（便捷函数）。digest_advisor_cfg 透传给
+    CronScheduler，用于内置日报/推荐/画像三个 job 首次注入时的默认 enabled。"""
+    cs = CronScheduler(paths, submit_fn=submit_fn, digest_advisor_cfg=digest_advisor_cfg)
     cs.load()
     return cs
 

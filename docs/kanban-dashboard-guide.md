@@ -69,9 +69,17 @@ Web Demo 的事件流面板类似，但集成在同一多 Tab 界面中。
   来源）。
 - Cron Job 列表、新增、编辑，以及"立即执行一次"按钮。
 - Objective 执行进度展示。
+- **🗞️ 每日融合日报 / 💡 主动推荐 / 🧭 决策画像**（`主动推荐与数字分身机制设计方案.md`）：
+  三张并排只读卡片，分别展示 `sys:daily_digest`（行为+目标进展融合日报）、
+  `sys:next_action_digest`（停滞目标/注意力错配排序推荐）、
+  `sys:decision_profile_update`（决策价值模式归纳，默认关闭）三个 cron job 的
+  最新产出。卡片本身不触发生成，避免刷新看板页面时意外产生额外 LLM 调用；
+  要立即刷新内容，仍需在 CLI 侧执行 `/digest daily`、`/next refresh`、
+  `/decision_profile update`，或用 Cron Job 列表的"立即执行一次"按钮触发对应 job。
 
 详见 `docs/autonomous_daemon_design.md`、`docs/goal-mode-guide.md` 了解 Goal/Cron/
-Objective 背后的调度机制。
+Objective 背后的调度机制；`docs/decision-profile-guide.md` 了解决策画像的归纳与
+矛盾处理逻辑。
 
 ### 🖼️ 产出预览 Tab
 
@@ -119,6 +127,9 @@ Objective 背后的调度机制。
 | `cron_jobs()` / `add_cron_job()` / `update_cron_job()` / `run_cron_job_now()` | `/v1/cron*` | Cron Job 管理 |
 | `fs_list()` / `fs_read()` / `fs_download_url()` | `/v1/fs/*` | 产出物浏览与下载 |
 | `list_artifacts()` / `get_artifact()` / `artifact_file_url()` | `/v1/artifacts*` | 产出物 Manifest 列表、详情、文件预览/下载 |
+| `daily_digest()` | `GET /v1/digest/daily` | 每日融合日报（只读，不触发生成） |
+| `next_actions()` | `GET /v1/next_actions` | 主动推荐候选（只读，不触发重新计算） |
+| `decision_profile()` | `GET /v1/decision_profile` | 决策画像 Markdown + 结构化模式列表（只读） |
 
 ## 使用场景
 

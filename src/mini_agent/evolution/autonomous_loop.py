@@ -142,6 +142,34 @@ class AutonomousLoop:
                 log_exception(_mini_agent_exc, where='mini_agent.evolution.autonomous_loop')
                 pass
 
+        # ── 注意力错配 daemon 主动推送（主动推荐与数字分身机制设计方案 4.3 节）──
+        # 直接在 tick 里做，不经过 cron job 的 LLM 任务描述——这里需要的是
+        # "持续超过阈值时长才推送一次"这种精确的跨 tick 状态判断，不适合交给
+        # 模型每次自己判断"要不要提醒"。复用 InputQueue（与 CronScheduler 提交
+        # 任务用的是同一条通道），这样推送出的消息会像普通一轮对话一样，通过
+        # 已有的多客户端 SSE 推送流转发给所有连接中的客户端（看板/微信/移动端）。
+        try:
+            digest_advisor_cfg = getattr(self._cfg, "digest_advisor", None)
+            if digest_advisor_cfg is not None and digest_advisor_cfg.next_action_push_enabled:
+                from mini_agent.evolution.next_action_advisor import (
+                    check_persistent_attention_mismatch,
+                    render_push_message,
+                )
+                payload = check_persistent_attention_mismatch(self._paths, digest_advisor_cfg)
+                if payload is not None and self._input_queue is not None:
+                    self._input_queue.enqueue(
+                        message=render_push_message(payload),
+                        initiator="scheduled",
+                        meta={
+                            "source": "attention_mismatch_push",
+                            "ref_id": payload["ref_id"],
+                        },
+                    )
+        except Exception as _mini_agent_exc:
+            from mini_agent.errors import log_exception
+            log_exception(_mini_agent_exc, where='mini_agent.evolution.autonomous_loop._tick_passive.attention_mismatch_push')
+            pass
+
     def _tick_maintenance(self) -> None:
         """
         [maintenance 档位] passive 的全部任务 + Objective 持续执行推进。

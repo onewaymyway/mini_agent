@@ -60,29 +60,40 @@ def _print_startup_digest_and_advisor(agent: Agent) -> None:
     """启动时打印一次未展示过的日报摘要 + 推荐摘要（各占一行，不合并，
     见 主动推荐与数字分身机制设计方案.md 第 4.3 节）。任何一步失败都静默跳过，
     不能因为这个附加提示影响正常启动。
+
+    两条提示分别受 digest_advisor.daily_digest_startup_print_enabled /
+    next_action_startup_print_enabled 独立开关控制（agent_config.json），
+    关闭某一项只是不在启动时打扰用户，不影响对应 cron job 正常生成文件、
+    也不影响 /digest daily 与 /next 手动查看。
     """
     paths = None
+    digest_advisor_cfg = getattr(getattr(agent, "cfg", None), "digest_advisor", None)
+
     try:
         paths = getattr(agent, "_paths", None)
         if paths is None:
             from mini_agent.storage.paths import AgentPaths
             paths = AgentPaths(agent.cfg.project_root)
 
-        from mini_agent.evolution.daily_digest import (
-            load_pending_digest,
-            render_startup_summary as render_digest_summary,
-            mark_shown as mark_digest_shown,
-        )
-        digest_data = load_pending_digest(paths)
-        if digest_data:
-            line = render_digest_summary(digest_data)
-            if line:
-                R.print_info(line)
-            mark_digest_shown(paths, digest_data["day"])
+        if digest_advisor_cfg is None or digest_advisor_cfg.daily_digest_startup_print_enabled:
+            from mini_agent.evolution.daily_digest import (
+                load_pending_digest,
+                render_startup_summary as render_digest_summary,
+                mark_shown as mark_digest_shown,
+            )
+            digest_data = load_pending_digest(paths)
+            if digest_data:
+                line = render_digest_summary(digest_data)
+                if line:
+                    R.print_info(line)
+                mark_digest_shown(paths, digest_data["day"])
     except Exception:
         pass
 
     if paths is None:
+        return
+
+    if digest_advisor_cfg is not None and not digest_advisor_cfg.next_action_startup_print_enabled:
         return
 
     try:
@@ -406,16 +417,25 @@ def _handle_slash(cmd: str, agent: Agent, skill_loader: SkillLoader) -> None:
     elif name == "wiki":
         handle_wiki_cmd(parts[1:], agent)
 
-    elif name == "digest":
+    elif name == "digest" and parts[1:2] == ["daily"]:
         # 主动推荐与数字分身机制设计方案.md 第 4.1 节（阶段一）
+        # [BUGFIX] 之前这里是无条件的独立 `elif name == "digest"` 分支，排在
+        # 下面"/digest 显示自主活动摘要"这个既有分支之前，导致既有 /digest
+        # （无参数）分支永远走不到；这里改成只在显式带 `daily` 子命令时才
+        # 分流到日报逻辑，不带参数时继续走下面既有的活动摘要分支。
         handle_digest_cmd(parts[1:], agent)
 
     elif name == "next":
         # 同上文档第 4.2 节（阶段二）
         handle_next_action_cmd(parts[1:], agent)
 
-    elif name == "profile":
-        # 同上文档第 4.4 节（阶段三）
+    elif name == "decision_profile":
+        # 同上文档第 4.4 节（阶段三）。
+        # [BUGFIX] 最初这里也叫 `/profile`，与既有的"强制刷新用户画像"命令
+        # （见下方 `elif name == "profile"` 分支）重名，导致本命令因为分支
+        # 顺序靠后而永远无法触发。改名为 `/decision_profile`，与本方案
+        # 已经在用的 `sys:decision_profile_update` cron job 命名保持一致，
+        # 避免语义混淆的同时也不需要再抢占既有的 /profile 语义。
         handle_profile_cmd(parts[1:], agent)
 
     elif name == "debug":

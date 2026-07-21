@@ -225,6 +225,17 @@ class AgentClient:
     def run_cron_job_now(self, job_id: str):
         return self._post(f"/cron/jobs/{job_id}/run")
 
+    # ── 日报 / 主动推荐 / 决策画像（主动推荐与数字分身机制设计方案）───────
+    def daily_digest(self, date: str = None):
+        params = {"date": date} if date else None
+        return self._get("/digest/daily", params=params)
+
+    def next_actions(self):
+        return self._get("/next_actions")
+
+    def decision_profile(self):
+        return self._get("/decision_profile")
+
     # ── 文件系统（产出物浏览）────────────────────────────────────────
     def fs_list(self, path="."):
         return self._get("/fs/list", params={"path": path})

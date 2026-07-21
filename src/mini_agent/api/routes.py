@@ -2256,3 +2256,95 @@ async def perception_summary(request: Request, date: Optional[str] = Query(None)
     if summary is None:
         summary = generate_daily_summary(mgr, day)
     return summary
+
+
+# ── 主动推荐与数字分身机制设计方案：日报 / 推荐 / 决策画像 只读端点 ─────────────
+# 供 Kanban 看板等前端展示用，均为只读；生成/刷新仍分别走 cron job 或
+# /digest daily、/next refresh、/decision_profile update 命令，这里不重复触发。
+
+def _get_paths_for_request(request: Request) -> "AgentPaths":
+    http_server = getattr(request.app.state, "http_server", None)
+    if http_server is None:
+        raise HTTPException(status_code=503, detail="HttpServer not available")
+    from mini_agent.storage.paths import AgentPaths
+    self_agent = http_server.bridge.agent
+    project_root = getattr(self_agent.cfg, "project_root", None) if self_agent else None
+    if not project_root:
+        raise HTTPException(status_code=503, detail="project_root not configured")
+    return AgentPaths(project_root)
+
+
+@router.get("/digest/daily")
+async def get_daily_digest(request: Request, date: Optional[str] = Query(None)):
+    """GET /v1/digest/daily?date=YYYY-MM-DD — 读取（不生成）某天的融合日报。
+    date 缺省为最近一份已生成的日报；都没有时返回 {"digest": None}。
+    """
+    _require_owner(request)
+    try:
+        paths = _get_paths_for_request(request)
+        if date:
+            json_path = paths.daily_reports_dir / f"{date}.json"
+            if not json_path.exists():
+                return {"digest": None}
+            import json as _json
+            return {"digest": _json.loads(json_path.read_text(encoding="utf-8"))}
+
+        # 未指定日期：取目录里最新的一份
+        d = paths.daily_reports_dir
+        if not d.exists():
+            return {"digest": None}
+        files = sorted(d.glob("*.json"))
+        if not files:
+            return {"digest": None}
+        import json as _json
+        return {"digest": _json.loads(files[-1].read_text(encoding="utf-8"))}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/next_actions")
+async def get_next_actions(request: Request):
+    """GET /v1/next_actions — 读取当前落盘的主动推荐候选（不重新计算）。
+    对应设计方案第 4.2 节，/next 命令的只读版本。
+    """
+    _require_owner(request)
+    try:
+        from mini_agent.evolution.next_action_advisor import load_pending_next_actions
+        paths = _get_paths_for_request(request)
+        p = paths.next_actions_path
+        if not p.exists():
+            return {"next_actions": None}
+        import json as _json
+        return {"next_actions": _json.loads(p.read_text(encoding="utf-8"))}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/decision_profile")
+async def get_decision_profile(request: Request):
+    """GET /v1/decision_profile — 读取当前决策画像（Markdown 原文 + 结构化模式列表）。
+    对应设计方案第 4.4 节。画像不存在时返回 {"exists": false}。
+    """
+    _require_owner(request)
+    try:
+        paths = _get_paths_for_request(request)
+        md_path = paths.user_value_profile_path
+        if not md_path.exists():
+            return {"exists": False, "markdown": None, "patterns": []}
+        markdown = md_path.read_text(encoding="utf-8")
+        patterns = []
+        try:
+            import json as _json
+            state = _json.loads(paths.decision_profile_state_path.read_text(encoding="utf-8"))
+            patterns = state.get("patterns", [])
+        except Exception:
+            pass
+        return {"exists": True, "markdown": markdown, "patterns": patterns}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))

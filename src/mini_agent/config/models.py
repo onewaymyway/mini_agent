@@ -952,6 +952,57 @@ class AutonomyConfig:
 
 
 @dataclass
+class DigestAdvisorConfig:
+    """[主动推荐与数字分身机制设计方案] 日报融合 / 主动推荐 / 决策画像
+    三层功能的总开关与阈值配置。三者运行节奏依次变慢（日级 → 小时级候选
+    扫描 → 周级归纳），对应 cron job：sys:daily_digest / sys:next_action_digest /
+    sys:decision_profile_update，具体调度频率仍由 cron job 的 schedule 字段
+    控制，这里只控制"要不要跑""跑出来的东西展示到什么程度"。
+    """
+
+    # ── 阶段一：每日融合报告 daily_digest ──────────────────────────────
+    daily_digest_enabled: bool = True
+    # 启动时是否打印一行未展示过的日报摘要（关闭后 cron job 仍会正常生成
+    # 文件，只是不在 REPL 启动时打扰用户，用户仍可 /digest daily 主动查看）
+    daily_digest_startup_print_enabled: bool = True
+
+    # ── 阶段二：主动推荐排序层 next_action_advisor ─────────────────────
+    next_action_enabled: bool = True
+    next_action_startup_print_enabled: bool = True
+    # 是否接入 LLM 排序层（默认 False，先跑规则层观察准确度，见方案 4.2 节
+    # 和改进计划阶段二）
+    next_action_rank_with_llm: bool = False
+    # 停滞目标判定：与 evolution/next_action_advisor.py 的 STALE_DAYS /
+    # STALE_PRIORITY_FLOOR 模块级常量对应，可在此覆盖而不用改代码
+    next_action_stale_days: float = 7.0
+    next_action_stale_priority_floor: int = 1
+    # 注意力错配判定窗口/阈值，对应模块级 ATTENTION_WINDOW_HOURS /
+    # ATTENTION_MISMATCH_RATIO
+    next_action_attention_window_hours: float = 6.0
+    next_action_attention_mismatch_ratio: float = 0.5
+    # 是否用 decision_profile 已归纳出的高置信度模式对候选排序做加权
+    # （方案 4.4 节"初期用法 2"），默认 False——依赖 decision_profile 本身
+    # 已经积累出可信模式，画像质量未经人工确认前不默认影响推荐排序
+    next_action_profile_weighting_enabled: bool = False
+    # 参与加权的模式最低置信度门槛，低于此值的模式即使存在也不参与排序
+    next_action_profile_weighting_min_confidence: float = 0.5
+    # 注意力错配 daemon 主动推送：默认关闭，避免打断式骚扰（见方案 4.3 节
+    # "daemon 主动推送"一行）。开启后，若同一错配信号连续被检测到超过
+    # push_threshold_hours，daemon 才会通过多客户端推送通道主动提醒一次。
+    next_action_push_enabled: bool = False
+    next_action_push_threshold_hours: float = 2.0
+    # 同一 daemon 会话内最多推送次数（避免重复错配信号反复推送）
+    next_action_push_max_per_session: int = 1
+
+    # ── 阶段三：决策画像 decision_profile_builder ──────────────────────
+    # 归纳逻辑本身默认可用（/decision_profile update 手动触发不受此项影响），
+    # 这里的 enabled 只控制 sys:decision_profile_update cron job 的默认状态；
+    # 与方案文档"阶段三 cron job 默认 enabled: False"保持一致。
+    decision_profile_enabled: bool = False
+    decision_profile_min_evidence_count: int = 3
+
+
+@dataclass
 class ReminderConfig:
     """[SYS-REMINDER] 动态 Reminder 提示注入配置。
 
@@ -1142,6 +1193,7 @@ class AppConfig:
     proprioception: ProprioceptionConfig = field(default_factory=ProprioceptionConfig)
     affordance: AffordanceConfig = field(default_factory=AffordanceConfig)
     autonomy: AutonomyConfig = field(default_factory=AutonomyConfig)
+    digest_advisor: DigestAdvisorConfig = field(default_factory=DigestAdvisorConfig)
     workflow:   WorkflowConfig   = field(default_factory=WorkflowConfig)
     format_correction: FormatCorrectionConfig = field(default_factory=FormatCorrectionConfig)
     role_agent: RoleAgentConfig  = field(default_factory=RoleAgentConfig)

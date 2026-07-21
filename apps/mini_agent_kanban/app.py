@@ -1136,6 +1136,70 @@ def render_kanban_tab(client: AgentClient):
     for ex in execs:
         st.json(ex, expanded=False)
 
+    # ── 主动推荐与数字分身机制设计方案：日报 / 推荐 / 决策画像 卡片 ──────
+    # 三张卡片均为只读展示（数据由对应 cron job 或用户手动执行 /digest daily、
+    # /next refresh、/decision_profile update 生成），这里不重复触发生成，
+    # 避免看板刷新页面时意外产生额外的 LLM 调用。
+    st.markdown("---")
+    st.markdown("#### 🗞️ 每日融合日报 / 💡 主动推荐 / 🧭 决策画像")
+    d1, d2, d3 = st.columns(3)
+
+    with d1:
+        st.markdown("**🗞️ 每日融合日报**")
+        digest_resp = client.daily_digest() or {}
+        if "_error" in digest_resp:
+            st.caption(f"获取失败：{digest_resp['_error']}")
+        else:
+            digest = digest_resp.get("digest")
+            if not digest:
+                st.caption("暂无日报（daily_digest 未生成，或已在 agent_config.json 中禁用）")
+            else:
+                st.caption(f"日期：{digest.get('day', '?')}")
+                behavior = digest.get("behavior") or {}
+                if behavior:
+                    st.json(behavior, expanded=False)
+                deltas = digest.get("goal_deltas") or []
+                if deltas:
+                    for gd in deltas[:5]:
+                        st.markdown(f"- {gd.get('title', gd.get('id', ''))}: {gd.get('summary', '')}")
+                else:
+                    st.caption("当天没有目标进展变化")
+
+    with d2:
+        st.markdown("**💡 主动推荐**")
+        next_resp = client.next_actions() or {}
+        if "_error" in next_resp:
+            st.caption(f"获取失败：{next_resp['_error']}")
+        else:
+            next_data = next_resp.get("next_actions")
+            if not next_data or not next_data.get("items"):
+                st.caption("暂无推荐候选（没有停滞目标或注意力错配，或功能已禁用）")
+            else:
+                for item in next_data["items"][:5]:
+                    kind_label = "🐢 停滞目标" if item.get("kind") == "stale_goal" else "👀 注意力错配"
+                    st.markdown(f"**#{item.get('rank')} {kind_label}：{item.get('title')}**")
+                    st.caption(item.get("reason", ""))
+
+    with d3:
+        st.markdown("**🧭 决策画像**")
+        profile_resp = client.decision_profile() or {}
+        if "_error" in profile_resp:
+            st.caption(f"获取失败：{profile_resp['_error']}")
+        elif not profile_resp.get("exists"):
+            st.caption("暂无决策画像（默认关闭，`/cron enable sys:decision_profile_update` 或 `/decision_profile update` 手动生成）")
+        else:
+            patterns = profile_resp.get("patterns", [])
+            if not patterns:
+                st.caption("画像文件存在，但还没有归纳出任何模式")
+            for p in patterns[:5]:
+                confidence = float(p.get("confidence") or 0)
+                st.markdown(f"- **{p.get('pattern', '')}**（置信度 {confidence:.0%}）")
+                if p.get("contradicted_by"):
+                    st.caption(f"⚠️ 存在矛盾证据：{p.get('contradicted_by')}")
+            with st.expander("查看完整画像文档"):
+                st.markdown(profile_resp.get("markdown") or "")
+
+
 
 # ═══════════════════════════════════════════════════════════════════════
 # Tab 4: 产出物（文件浏览）
