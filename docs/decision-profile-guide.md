@@ -67,6 +67,21 @@
 | `next_action_profile_weighting_enabled` | `false` | 是否用本画像对 `next_action_advisor` 排序做加权 |
 | `next_action_profile_weighting_min_confidence` | `0.5` | 参与加权的模式最低置信度门槛 |
 
+## 命令行提示
+
+`/decision_profile [update]` 已加入 `cli/parser.py` 的 `--help` 文本与
+`ui/terminal.py` 的斜杠命令自动补全列表。注意命令名是 `/decision_profile`
+而不是 `/profile`——后者是既有的"强制刷新用户画像"命令（`UserProfileManager`，
+见 `docs/user-profile-guide.md`），两者完全无关，命名上刻意避开重名。
+
+## Kanban 看板
+
+`apps/mini_agent_kanban` 的"📌 目标看板" Tab 有一张"🧭 决策画像"卡片，对接
+只读端点 `GET /v1/decision_profile`，展示已归纳出的模式列表（含置信度、
+矛盾提示）和完整 Markdown 原文，不会因为看板刷新页面而重复触发归纳（归纳
+依赖 LLM 调用，成本比日报/推荐高得多，更不应该被动触发）。详见
+`docs/kanban-dashboard-guide.md`。
+
 ## 明确不做的事
 
 "模拟用户直接做决策"这类更激进的数字分身用法不在本轮计划内，需要用户主动开关

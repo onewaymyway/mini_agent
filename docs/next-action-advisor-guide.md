@@ -42,6 +42,60 @@
 内置 cron job `sys:next_action_digest`，`interval:10800`（3 小时一次），
 task_template 调用 `/next refresh`。候选为空时任务本身也会跳过输出。
 
+## 配置（`agent_config.json` → `digest_advisor`）
+
+| 字段 | 默认值 | 说明 |
+|---|---|---|
+| `next_action_enabled` | `true` | 控制 `sys:next_action_digest` cron job **首次**被写入 `cron_jobs.json` 时的初始 `enabled` 状态 |
+| `next_action_startup_print_enabled` | `true` | 是否在启动时打印排名第一条推荐的摘要 |
+| `next_action_rank_with_llm` | `false` | 是否启用下面"分步落地"第 2 步的 LLM 排序层 |
+| `next_action_stale_days` | `7.0` | 停滞目标判定天数阈值（覆盖模块常量 `STALE_DAYS`） |
+| `next_action_stale_priority_floor` | `1` | 参与停滞判定的最低优先级（覆盖 `STALE_PRIORITY_FLOOR`） |
+| `next_action_attention_window_hours` | `6.0` | 注意力错配观察窗口小时数（覆盖 `ATTENTION_WINDOW_HOURS`） |
+| `next_action_attention_mismatch_ratio` | `0.5` | 注意力错配占比阈值（覆盖 `ATTENTION_MISMATCH_RATIO`） |
+| `next_action_profile_weighting_enabled` | `false` | 是否用决策画像对同类候选做排序加权（见下） |
+| `next_action_profile_weighting_min_confidence` | `0.5` | 参与加权的画像模式最低置信度门槛 |
+| `next_action_push_enabled` | `false` | 是否启用"注意力错配持续超时"的 daemon 主动推送（见下） |
+| `next_action_push_threshold_hours` | `2.0` | 同一错配信号需要连续检测到多久才推送一次 |
+| `next_action_push_max_per_session` | `1` | 同一 daemon 会话内、同一信号最多推送次数 |
+
+`rank_with_llm`/停滞天数/注意力窗口等参数以前是 `next_action_advisor.py`
+里写死的模块级常量，现在改为优先从上表读取；`generate_next_actions()`
+未显式传 `cfg` 时仍回退到模块常量，向后兼容。
+
+## decision_profile 排序加权（已接入，默认关闭）
+
+`next_action_profile_weighting_enabled=true` 时，`/next refresh`（含 cron job
+触发的那次）会读取 `evolution/decision_profile_builder.py` 归纳出的、置信度
+≥ `next_action_profile_weighting_min_confidence` 的模式，对候选做**排序内
+加权**：候选的 title/reason 与某条模式的关键词有重合时，在**同一类别内部**
+（`stale_goal` 内部或 `attention_mismatch` 内部）排到更前面。不跨类别提升——
+`stale_goal` 整体依然先于 `attention_mismatch`，只影响同类候选的相对顺序，
+不新增候选、不改变候选发现逻辑本身。默认关闭，因为这依赖 `decision_profile`
+本身的归纳质量，建议先人工检查 `.agent/wiki/user_value_profile.md` 里的模式
+是否合理，再开启加权。详见 `docs/decision-profile-guide.md`。
+
+## 注意力错配 daemon 主动推送（已接入，默认关闭）
+
+`next_action_push_enabled=true` 时，`evolution/autonomous_loop.py` 的
+`_tick_passive()` 每次 tick 都会调用
+`next_action_advisor.check_persistent_attention_mismatch()`：
+
+- 用 `.agent/attention_mismatch_state.json` 跟踪每个错配信号（按 app/域名
+  key）**连续**被检测到的起始时间
+- 信号首次出现：只记录，不推送
+- 持续存在且已超过 `next_action_push_threshold_hours`、且该信号推送次数未
+  超过 `next_action_push_max_per_session`：生成一条推送消息
+- 信号消失：清除跟踪记录，下次重新计时
+
+推送走 `InputQueue.enqueue(initiator="scheduled")`——与 `CronScheduler` 提交
+任务是同一条通道，因此会像普通一轮对话一样通过已有的多客户端 SSE 推送流
+转发给所有连接中的客户端（看板/微信/移动端），不需要另外新建推送机制。
+默认关闭，避免默认状态下产生打断式提醒；这也是与 daily_digest/next_action
+"只在用户主动查看或启动时才展示一次"原则的刻意区别——只有这一项因为设计
+目的就是"持续超时才提醒"，才允许在非用户主动请求的情况下产生一次新的
+对话轮次。
+
 ## 启动展示与看板
 
 - CLI/daemon 启动时若存在 `shown_at` 为空的推荐，打印排名第一条的摘要，例如：
@@ -50,12 +104,20 @@ task_template 调用 `/next refresh`。候选为空时任务本身也会跳过�
   💡 建议：wiki 提取层 O3——已 12 天无进展记录，优先级 2（`/next` 查看全部）
   ```
 
-- 看板"建议"卡片（前端部分，见 kanban dashboard 相关改动）读取同一份
-  `next_actions.json` 展示完整列表。
+  可通过 `digest_advisor.next_action_startup_print_enabled=false` 关闭。
+
+- Kanban 看板"📌 目标看板" Tab 有一张"💡 主动推荐"卡片，对接只读端点
+  `GET /v1/next_actions`，展示同一份 `next_actions.json` 里排名前几条的
+  内容，不会因为看板刷新页面而重复触发计算。详见 `docs/kanban-dashboard-guide.md`。
+
+## 命令行提示
+
+`/next [refresh]` 已加入 `cli/parser.py` 的 `--help` 文本与 `ui/terminal.py`
+的斜杠命令自动补全列表。
 
 ## 有意暂不做的事
 
-- 不会主动打断式推送，除非"注意力错配"信号连续超过设定时长（该推送渠道
-  复用已有多客户端推送机制，未在本轮代码中实现，留待后续观察规则准确度后再接入）。
 - 不做"计划 vs 实际"式反拖延对比（需要用户主动声明当天计划），本机制刻意
   只做纯行为推断，不引入任何需要用户额外输入的环节。
+- 不做"模拟用户直接做决策"这类更激进的数字分身用法，画像归纳有误时造成的
+  "被误解"负面体验比没有这个功能更糟，需要用户主动开关的独立后续设计。

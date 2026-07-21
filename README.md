@@ -51,6 +51,7 @@
 | ⏰ 定时任务（Cron） | **Stage 9**：`/cron` 命令管理周期性 daemon 任务；支持 `interval:<秒>` 和 `cron:<5字段>` 两种格式；8 个内置系统 job（consolidation / wiki_gap_scan / wiki_fallback_cleanup / workdir_sync / self_eval / goal_review / digest_trim / self_maintain） |
 | 🔄 Objective 持续执行 | **Stage 9**：ObjectiveExecutor 将 Objective 拆解为 3-8 个 Step 依次提交，步骤间自动传递上下文摘要；SSE 推送 `objective_progress` 事件实时显示进度 |
 | 🧭 软目标 Derive | **Stage 9**：autonomous 档位下从三路信号（capability_map 低置信度 / WorkThread 积压 / 高频 Lesson）自动生成 Goal 建议，capability 类先经 ExplorationSandbox 验证再提案 |
+| 🗞️ 日报 / 💡 推荐 / 🧭 决策画像 | 每日融合日报（`/digest daily`，行为+目标+git提交）、主动推荐排序（`/next`，停滞目标/注意力错配）、决策画像归纳（`/decision_profile`，默认关闭）；三者开关与阈值均可通过 `agent_config.json` 的 `digest_advisor` 配置块调整，Kanban 看板有对应可视化卡片 |
 | 🔄 Workflow | 工作流编排机制，支持多步骤自动化任务执行 |
 | 🌍 Env Info | 环境信息自动采集与注入，内置 OS/Python/时区 Provider，支持自定义扩展 |
 | 💾 History 即时落盘 | RawHistory 采用 JSONL 追加写 + fsync，每次操作立即持久化，防崩溃丢失 |
@@ -196,6 +197,12 @@ mini-agent daemon status
 
 # 查看自上次交互以来的自主活动（Objective 进展 / Cron 执行 / Agent 建议目标）
 /digest
+
+# 每日融合日报（行为分布+目标进展+git提交，与上面的 /digest 是两个不同功能）
+/digest daily
+
+# 主动推荐（停滞目标 / 注意力错配排序建议）
+/next
 
 # 接受或拒绝 Agent 建议的软目标
 /goals accept goal_abc123           # 接受，提升优先级
@@ -458,6 +465,9 @@ python weixin_bot.py [--project <路径>] [--yes] [--no-stream]
 | `/prompts` | 列出所有提示词文件 |
 | `/memory` | 立即后台生成/刷新 session 摘要 + 写入长期记忆 + 刷新用户画像（需 `--memory`） |
 | `/profile` | 立即后台刷新用户画像（需 `agent_config.json` 设置 `profile_enabled: true`） |
+| `/decision_profile [update]` | 查看/更新决策画像（历史技术决策归纳出的价值取向模式，默认关闭 cron，与上一行 `/profile` 无关，见 [决策画像指南](docs/decision-profile-guide.md)） |
+| `/digest daily [日期]` | 生成/查看每日融合日报（行为分布+目标进展+git提交，见 [每日融合日报指南](docs/daily-digest-guide.md)） |
+| `/next [refresh]` | 查看/重新计算主动推荐（停滞目标+注意力错配排序，见 [主动推荐排序指南](docs/next-action-advisor-guide.md)） |
 | `/retry` | 重试上一轮 |
 | `/rollback` | 回退上一轮 |
 | `/evolution log\|show\|diff\|revert` | 查看/审查/回退自我修改历史（Stage 2 安全网） |
@@ -893,6 +903,10 @@ python -m pytest tests/ -q
 - [Wiki 式知识库指南](docs/wiki-knowledge-base-guide.md) — 图书馆式索引的平行实现（已切换为默认优先检索路径），md 页面存储 + 显式关系图 + 双写镜像 + 三段式检索（规则粗筛→多跳图扩展→LLM精排）+ 专题页自动生成与再巩固 + 统一知识生命周期状态机 + 索引复用/信度分层/实体摘要反哺抽取/抽取与compact解耦（O1-O4、E1-E3 提取层与组织层改进计划）
 - [Stage 9 自主运行时指南](docs/self-evolution-stage9-guide.md) — **新增**：常驻守护进程 / Goal Backlog / 三档位 AutonomousLoop / 资源仲裁 / `mini-agent daemon` 命令
 - [守护进程多客户端架构指南](docs/daemon-multi-client-guide.md) — **新增**：`DaemonClient`/`SessionAgentPool`/`AgentBridge`（RingBuffer/OutputBroadcaster/InputQueue/PermissionGate）三层架构、多端接入同一会话的消息生命周期、`run_connected_repl` 已连接模式渲染与斜杠命令转发，含当前已知问题排查记录
+- [每日融合日报指南](docs/daily-digest-guide.md) — **新增**：行为分布+目标进展+git提交融合为一份日报（`/digest daily`），`sys:daily_digest` cron job，启动打印摘要
+- [主动推荐排序指南](docs/next-action-advisor-guide.md) — **新增**：停滞目标/注意力错配规则层排序（`/next`），可选 LLM 排序层、决策画像加权、持续超时 daemon 主动推送，均可配置开关
+- [决策画像指南](docs/decision-profile-guide.md) — **新增**：从历史技术决策归纳可追溯的用户价值取向模式（`/decision_profile`），矛盾证据不覆盖只记录，默认关闭 cron job
+- [Kanban 看板使用指南](docs/kanban-dashboard-guide.md) — Streamlit 看板：目标 Kanban / Cron 管理 / 产出物浏览 / 自我状态 / 日报-推荐-决策画像三卡片
 - [具身智能改进指南](docs/embodied-agent-guide.md) — **新增**：本体感知（ProprioceptionModule）/ 余裕感知（AffordanceMap）/ 工具透明性（IntentActionMapper）/ AgentSelfModel / 时间加权记忆激活 / 认知锚点文件 / 自维护模块（SelfMaintenanceModule），A/B/C 三阶段共 12 项
 - [HTTP API 指南](docs/http-api-guide.md) — REST/SSE 服务使用指南
 - [Web Demo 指南](docs/web-demo-guide.md) — Streamlit Web 界面使用
@@ -983,3 +997,5 @@ MIT License
 *2026-07 wiki 知识库提取层与组织层改进计划（O1-O4、E1-E3，`next_doc/wiki知识库提取与组织层改进计划.md`，全部已完成）*：在 wiki 式知识库阶段一~四 + P0-P4 落地后，针对暴露出的"提取时机/耦合度/知识盲视"（E1-E3）与"组织结构信度分层/图谱表达力/动态性/生命周期一致性"（O1-O4）两类深层问题的后续深化。**O1 全量扫描架构分层**：`search.py`/`dedup.py` 优先复用 `indexer.py` 已生成的 `_index/` 派生索引（新增 `wiki/index_reader.py`），索引缺失/明显过期才退回全量扫描；页面 frontmatter 新增 `grounded_hit_count`（每次被 LLM 精排判定为回答依据 +1），`_rule_score()` 打分公式加入 `confidence_weight * log(1+grounded_hit_count)` 信度加权项（`MemoryConfig.wiki_confidence_weight` 默认 0.1，设为 0 与改动前完全一致）。**E3 抽取"看不到"已有知识库**：新增 `wiki/entity_digest.py::build_entity_digest()` 生成极简实体索引反哺抽取 prompt，`EntityCandidate.reused_existing_id` 模型自报复用 id，`world_writer.py` 用 `dedup.py` 分数二次校验（模型优先+规则兜底），`CompressConfig.entity_digest_enabled` 默认开启。**E1 抽取时机与 compact 解耦**：新增 `history/extraction_trigger.py::scan_for_extraction_window()` 零 LLM 成本规则扫描（连接词密度+轮次兜底），命中后 `history_manager.py::maybe_trigger_extraction()` 异步排队独立的"仅抽取"LLM 调用，游标持久化在 `extraction_cursor.json`，`CompressConfig.extraction_trigger_enabled`/`extraction_trigger_dispatch_enabled` 两级开关**（2026-07 应用户要求已改为默认开启，跳过了原计划设想的观察期）**控制是否扫描/是否真正派发。**E2 抽取任务耦合度**：方案B（已生效）把 JSON schema 字段顺序调整为 `{decisions[], entities[], facts[], compact_summary}` 并要求先完整识别结构化字段再给摘要，`wiki/stats.py::compute_extraction_stats()` 新增 `avg_entities_per_extraction`/`avg_facts_per_extraction` 观测指标；方案A随 E1 独立触发路径自然解决；方案C（`extract_world_model`/`extract_decisions` 关闭 compact 路径的结构化抽取）机制就位但仍保持默认开启，待观测数据支撑后再人工切换，是本轮改进计划中唯一仍处于"代码就位、待人工决策"状态的事项。**O2 实体关系图过于扁平**：`graph.py::GraphIndex.expand()` 新增多跳衰减扩展（`max_hops`/`decay` 参数，同节点多路径取最大权重），`expand_legacy()` 保留原一跳签名兼容既有调用；`wiki_shelf_search()` 候选不足或 `/wiki search --deep` 时自动/强制升级 `max_hops=2`。**O3 topic 聚类是纯事后归纳**：`topics.py` 新增再巩固扫描 `_find_topic_reconsolidation_candidates()`，达标新页面走 `append_to_topic_page()` 追加进已有 topic 而非参与新聚类，`TopicConfig.reconsolidation_interval_runs`（默认 5）控制频率，事件记入 `_index/topics_reconsolidation_log.jsonl`，累计追加超软上限（8 次）标记 `needs_review`。**O4 统一知识生命周期状态机**：新增 `wiki/lifecycle.py::mark_page_state()`（跨页面类型统一状态标记，支持 fact 锚点粒度）/`touch_validated()`（隐式验证回升，`superseded` 不因命中回升）/`stale_candidate_scan()`（久未验证的 `fresh` 页面标记 `stale`），frontmatter 新增独立字段 `knowledge_state`/`last_validated_at`/`validated_by`（未复用已有的数值型 `confidence` 字段，避免类型冲突）；`world_writer.py` 给 fact 生成正文内锚点注释（`<page-id>#fact-N`）实现独立状态标记；`reminders_correction.py`/`library_index.py::mark_stale_from_correction()` 扩展为同步标记镜像 wiki 页面为 `superseded`；`search.py::_rule_score()` 新增 `lifecycle_discount_enabled` 折扣开关（默认关闭，`stale` 减半/`superseded` 归零）；新增 `/wiki lifecycle-scan [--days N]` 命令与 `/wiki stats` 的 `by_knowledge_state` 分布展示。全部条目均遵循"先只记录/观测，默认不改变现有行为，用真实数据校准后再决定是否切换默认值"的执行纪律；详见 [Wiki 式知识库指南](docs/wiki-knowledge-base-guide.md) §十 与 `next_doc/wiki提取层改进计划_O1实施记录.md` ~ `_O4实施记录.md`、`_E1实施记录.md` ~ `_E3实施记录.md`
 
 *2026-07 wiki 知识库改进计划 · 下一阶段（`next_doc/wiki_next_phase_improvement_plan.md`，全部已完成）*：在 O1-O4/E1-E3 落地后，聚焦四个真实存在的缺口。**双轨制退出评估**：新增 `wiki/decommission.py::check_and_plan()`，只读复用 `promotion.py` 的三项转正标准，达标时给出「关闭 `legacy_index_enabled` → 观察 ≥2周 → 移除旧索引文件」三步执行清单而不自动删代码；`check_ready_transition()` 在"未就绪→就绪"翻转瞬间提醒一次，已挂载到 `evolution/autonomous_loop.py` 巩固循环收尾与 `/evolve consolidate` 两处直接同步调用点。**陈旧专题页标注**：`wiki/gap_scanner.py::mark_stale_topics()` 复用 O4 的 `knowledge_state` 字段，topic 页面 `absorbs` 链接成员中非 `fresh` 占比超阈值（默认 0.6）即标注过时，只标注不删除。**`consolidate()` 分步超时熔断**：新增 `evolution/step_runner.py::run_step()`，线程+轮询给每个子步骤独立超时预算，超时跳过不阻塞、不重试，下一轮巩固自然覆盖，`ConsolidationReport` 新增 `step_timings` 字段。**世界知识独立触发信号**：`history/extraction_trigger.py` 新增 `trigger_reason="entity_density"`，规则扫描纯描述性内容（不含"因为/所以"决策语境词）里的新词密度，与既有 `connective_density` 并行不冲突。**知识缺口主动扫描**：新增 `wiki/gap_scanner.py::scan_gaps()`（浅层实体/孤儿页面/陈旧专题页规则扫描，零 LLM 成本）与 `wiki/fallback_cleanup.py::cleanup_fallback_pages()`（超期兜底页重新判重，命中合并/未命中标 stale，页面级粒度），分别接入新命令 `/wiki gap-scan [--max-results N] [--dispatch]` 与 `/wiki fallback-cleanup [--days N]`，以及两个新内置 cron job `sys:wiki_gap_scan`（12h）/`sys:wiki_fallback_cleanup`（7d）。**命令行输入提示补漏**：核对发现 `/wiki` 顶级命令此前从未注册进 `ui/terminal.py::_COMMANDS`（驱动交互式终端 Tab 补全的命令表），导致新增的 `gap-scan`/`fallback-cleanup` 敲出来没有任何提示——已补上 `/wiki` 及全部 8 个子命令/选项，新增 `tests/test_wiki_slash_completer.py` 防止未来再漏。详见 [Wiki 式知识库指南](docs/wiki-knowledge-base-guide.md) 十一·5 节、`next_doc/wiki_next_phase_improvement_plan.md`、`next_doc/wiki_next_phase_implementation_record.md`
+
+*2026-07 主动推荐、日报生成与决策画像（`next_doc/主动推荐与数字分身机制设计方案.md`，全部已完成）*：三层机制。**日报融合**：新增 `evolution/daily_digest.py` 合并行为分布+目标进展+git提交为 `.agent/daily_reports/<日期>.json/.md`，`/digest daily [日期]` 命令，内置 cron job `sys:daily_digest`（每天 22:00），启动打印一行未展示过的摘要。**主动推荐**：新增 `evolution/next_action_advisor.py`，规则层识别"停滞目标"（优先级≥1 且超 7 天无进展）与"注意力错配"（窗口内单一活动占比超阈值且与任何 active Goal 无关键词重合）两类候选并排序（可选 `rank_with_llm` 切换 LLM 排序层，失败自动回退规则排序），`/next [refresh]` 命令，内置 cron job `sys:next_action_digest`（3 小时一次，候选为空则跳过）。**决策画像**：新增 `evolution/decision_profile_builder.py`，从历史决策记录（复用 `wiki/decision_writer.py`）归纳需 ≥3 条独立证据支持的用户价值取向模式，矛盾证据记录到 `contradicted_by` 并下调置信度而非覆盖，产出 `.agent/wiki/user_value_profile.md`，`/decision_profile [update]` 命令，内置 cron job `sys:decision_profile_update`（周级，**默认关闭**，建议积累数周数据后手动开启）。三者均可通过 `agent_config.json` 新增的 `digest_advisor` 配置块调整全部开关与阈值（含是否接 LLM 排序、停滞天数、注意力窗口/占比、决策画像最少证据数等）。第二轮补齐三项：decision_profile 归纳出的高置信度模式可对 next_action_advisor 排序做同类别内加权（`next_action_profile_weighting_enabled`，默认关闭）；"注意力错配"信号持续超过阈值时长会触发 daemon 主动推送（`next_action_push_enabled`，默认关闭，复用 `InputQueue` 已有的多客户端 SSE 推送通道，不新建推送机制）；Kanban 看板新增日报/推荐/决策画像三张只读卡片（`GET /v1/digest/daily`、`/v1/next_actions`、`/v1/decision_profile` 三个新端点）。过程中发现并修复一个分发 Bug：`cli/repl.py` 里 `/digest`、`/profile` 命令分发链各自存在重复的 `elif` 分支，导致第一轮新增的日报/决策画像命令排在既有同名分支之后、从未被真正执行过；修复后决策画像命令改名为 `/decision_profile`（不再叫 `/profile`，避免与既有"强制刷新用户画像"命令重名），`/digest daily` 改为仅在显式带 `daily` 子命令时才分流。明确不做"计划 vs 实际"反拖延对比与"模拟用户直接做决策"等更激进用法。详见 [每日融合日报指南](docs/daily-digest-guide.md)、[主动推荐排序指南](docs/next-action-advisor-guide.md)、[决策画像指南](docs/decision-profile-guide.md)、[Kanban 看板使用指南](docs/kanban-dashboard-guide.md)

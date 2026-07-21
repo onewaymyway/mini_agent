@@ -7,6 +7,10 @@
 - [Plan 与 Task 指南](plan-and-task-guide.md) — 执行计划机制
 - [记忆管理指南](memory-management-guide.md) — `/memory` 命令背景
 - [用户画像系统指南](user-profile-guide.md) — `/profile` 命令背景
+- [决策画像指南](decision-profile-guide.md) — `/decision_profile` 命令背景（注意与上一行的 `/profile` 是两个不相关的系统）
+- [每日融合日报指南](daily-digest-guide.md) — `/digest daily` 命令背景
+- [主动推荐排序指南](next-action-advisor-guide.md) — `/next` 命令背景
+- [Kanban 看板使用指南](kanban-dashboard-guide.md) — 日报/推荐/决策画像三张卡片的可视化入口
 - [自定义子 Agent 指南](custom-sub-agents.md) — `/agents` 命令与 `spawn_named_agent` 工具背景
 - [角色扮演（Persona）系统指南](persona-guide.md) — `/role` 命令背景
 - [Hooks 机制指南](hooks.md) — `/hooks` 命令背景
@@ -167,6 +171,7 @@ mini-agent --retry-backoff linear --retry-backoff-step 60 --retry-backoff-max 30
 | `/prompts` | 列出所有 PromptManager 管理的 prompt 文件 |
 | `/memory` | 立即在后台生成/刷新 session 摘要 + 写入长期记忆 + 刷新用户画像（跳过轮次间隔门槛），需 `--memory` 启用；详见 [记忆管理指南](memory-management-guide.md) |
 | `/profile` | 立即在后台刷新用户画像（跳过刷新间隔），需在 `agent_config.json` 中设置 `profile_enabled: true`（无对应 CLI flag）；详见 [用户画像系统指南](user-profile-guide.md) |
+| `/decision_profile [update]` | 查看/更新**决策画像**（`UserProfile` 的自动学习之外，另一套从历史技术决策归纳出的价值取向模式）；命名上与上一行的 `/profile` 刻意区分，两者互不相关；详见 [决策画像指南](decision-profile-guide.md) |
 | `/raw-output` | 切换 raw output 模式（Toggle）：开启后工具调用结果不截断传给 LLM，也不截断终端显示；详见 [Raw Output 模式说明](raw-output-mode-guide.md) |
 | `/reasoning` | 切换是否打印模型的 reasoning/思考过程（Toggle，默认开启）。对应 `AppConfig.show_reasoning`，可用 `--hide-reasoning` CLI 参数或 `agent_config.json` 里的 `"show_reasoning": false` 在启动时就关闭 |
 | `/reload` | 强制热重载 Skills 和 Agent Profiles（跳过 debounce，立即重扫磁盘）；详见 [热重载机制说明](hot-reload-guide.md) |
@@ -431,6 +436,8 @@ mini-agent --retry-backoff linear --retry-backoff-step 60 --retry-backoff-max 30
 | `/agent goals status` | 显示 AutonomousLoop tick 状态（档位/上次 tick/tick 次数） |
 | `/digest` | 显示自上次交互以来的自主活动摘要（来自 `activity_digest.jsonl`） |
 | `/agent digest` | 同 `/digest` |
+| `/digest daily [YYYY-MM-DD]` | 生成/查看**融合日报**（行为分布+目标进展+git提交，与上面的 `/digest` 是两个不同功能，须显式加 `daily` 子命令）；详见 [每日融合日报指南](daily-digest-guide.md) |
+| `/next [refresh]` | 查看/重新计算**主动推荐**（停滞目标 + 注意力错配排序建议）；详见 [主动推荐排序指南](next-action-advisor-guide.md) |
 
 ### 定时任务（`src/mini_agent/cli/commands/cron.py`）
 
@@ -466,6 +473,9 @@ cron:<分 时 日 月 周>   标准 cron 5 字段，如 cron:0 */6 * * *（每 6
 | `sys:self_eval` | 每 24 小时 | 能力自评：回顾工具使用，更新 capability_map 置信度 |
 | `sys:goal_review` | 每 12 小时 | 目标清理：标记已完成/长期无进展的 Goal/Objective |
 | `sys:digest_trim` | 每 7 天 | 日志修剪：删除 30 天前的 `activity_digest.jsonl` 记录 |
+| `sys:daily_digest` | 每天 22:00 | 融合日报：合并行为分布+目标进展+git提交，默认开启（`digest_advisor.daily_digest_enabled`） |
+| `sys:next_action_digest` | 每 3 小时 | 主动推荐：停滞目标/注意力错配排序，候选为空则跳过，默认开启（`digest_advisor.next_action_enabled`） |
+| `sys:decision_profile_update` | 每 7 天 | 决策画像归纳，**默认关闭**（`digest_advisor.decision_profile_enabled`），建议积累数周数据后手动开启 |
 
 系统 job 可以 `disable`，但不可 `remove`；可以用 `set-schedule` 调整触发频率。
 
