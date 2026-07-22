@@ -36,7 +36,9 @@ Agent 工具（或 CLI `/workflow from-session <session_id>`）的场景，设�
 `next_doc/session_to_workflow_design.md`，使用说明见
 `docs/workflow-guide.md`"从历史 Session 生成 Workflow"一节。区分方式：
 用户给的是"一段流程描述"→ 本 skill；用户指的是"之前发生过的一次具体任务"
-→ 那两个工具。
+→ 那两个工具。该路径受 `agent_config.json` 里
+`workflow.session_to_workflow_enabled` 开关控制（默认开启），关闭后这两个
+工具和对应 CLI 子命令会返回"功能已关闭"提示。
 
 **默认按文件夹模式创建**：即使当前只有 2-3 步，文件夹模式也不吃亏
 （`agents/`/`skills/` 目录为空即可，不强制使用），而且用户后续加步骤、
