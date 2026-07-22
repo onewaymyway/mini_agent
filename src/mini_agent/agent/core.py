@@ -287,6 +287,18 @@ class Agent(
             # 自主判断是否需要加载某个子文档，而不是只靠关键词自动触发
             register_skill_resource_tools(self.registry, self.skill_loader)
 
+        # ── [SYS-SLASH-TOOL] 注册 run_slash_command 工具 ──────────────────────
+        # 根因修复：cron/自主任务提交的消息经常是"自然语言 + 内嵌 /xxx 命令"
+        # （如 "[推荐] 执行一次 /next refresh，..."），不会被 api/server.py 的
+        # "消息以 / 开头才走本地直接执行"快速路径识别到，之前 agent 只能自己
+        # 瞎猜（翻代码、开子进程跑一个全新的、无关的 session，等于假装执行成功）。
+        # 现在给 agent 一个正经工具：直接复用 REPL 同一套 _handle_slash 分发器
+        # 在当前 session 里执行，不需要再靠猜或开子进程。幂等：/goal 等模式会
+        # 在同一进程内创建多个 Agent 实例共享全局 registry，重复注册需要跳过。
+        if "run_slash_command" not in self.registry.names:
+            from mini_agent.tools.slash_command import register_slash_command_tool
+            register_slash_command_tool(self.registry, self)
+
             # [Phase E / 3.3] 注册"当前激活 skill 列表"provider，供 spawn_agent /
             # spawn_named_agent 工具读取，写入新建 Task 的 active_skills 字段，
             # 使 SubAgent 启动时能继承主 agent 当前激活的 skill（设计文档第 5 节）。
