@@ -3148,7 +3148,7 @@ _COMMANDS: list[tuple[str, str, list]] = [
         "list", "show", "run", "runs", "status", "resume",
         "pause", "cancel", "approve", "reject", "input",
         "templates", "from-template", "delete", "to-dir",
-        "sessions", "from-session",
+        "sessions", "from-session", "stats", "history", "diff",
     ]),
     ("/memory",      "Generate/refresh session memory now",          []),
     ("/profile",     "Refresh user profile now",                     []),

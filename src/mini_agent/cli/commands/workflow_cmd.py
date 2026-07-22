@@ -447,6 +447,9 @@ def _handle_to_dir(cfg, rest: list[str]) -> None:
 
 def _handle_sessions(cfg, rest: list[str]) -> None:
     """/workflow sessions — 等价于 workflow/tools.py 的 list_recent_sessions 工具。"""
+    if not getattr(cfg.workflow, "session_to_workflow_enabled", True):
+        R.print_error("session→workflow 功能已在配置中关闭（agent_config.json → workflow.session_to_workflow_enabled）。")
+        return
     from mini_agent.session import SessionManager
 
     limit = 10
@@ -492,6 +495,9 @@ def _handle_from_session(cfg, rest: list[str]) -> None:
     """
     if not rest:
         R.print_error("用法：/workflow from-session <session_id>")
+        return
+    if not getattr(cfg.workflow, "session_to_workflow_enabled", True):
+        R.print_error("session→workflow 功能已在配置中关闭（agent_config.json → workflow.session_to_workflow_enabled）。")
         return
     session_id = rest[0]
 

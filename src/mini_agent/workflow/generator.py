@@ -252,7 +252,8 @@ class WorkflowGenerator:
             raise ValueError("YAML 顶层必须是字典结构")
 
         wf = WorkflowDef.from_dict(data)
-        errors = wf.validate()
+        check_condition = bool(getattr(getattr(self._cfg, "workflow", None), "condition_static_check_enabled", True))
+        errors = wf.validate(check_condition=check_condition)
         if errors:
             raise ValueError("工作流定义校验失败：\n" + "\n".join(f"  - {e}" for e in errors))
         return wf

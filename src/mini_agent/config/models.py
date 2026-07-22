@@ -914,6 +914,31 @@ class WorkflowConfig:
     validate_placeholders_on_save: bool = True   # save_workflow 时是否校验 {step_id.output}/{step_id.score} 占位符引用完整性
     validate_role_refs_on_save: bool = True      # save_workflow 时是否校验 step.role 是否为已注册的角色 Agent profile
 
+    # ── session → workflow 转换（session_to_workflow_design.md P8）───────────
+    session_to_workflow_enabled: bool = True
+    # 是否注册 list_recent_sessions / summarize_session_for_workflow /
+    # build_workflow_from_summary 三个 Agent 工具，以及 CLI 的
+    # /workflow sessions、/workflow from-session 子命令。默认开启；
+    # 关闭后这两类入口都会提示"该功能已在配置中关闭"，不影响其余 workflow
+    # 功能（generate_workflow/save_workflow/run_workflow 等不受影响）。
+
+    # ── P9 候选池第一批（workflow_system_next_directions.md §6）──────────────
+    condition_static_check_enabled: bool = True
+    # [P9-3] save_workflow/WorkflowDef.validate() 时是否额外做一轮 condition
+    # 表达式的静态一致性检查（引用的 step 是否存在、是否在 depends_on 声明的
+    # 依赖范围内）。默认开启；关闭后仍会做原有的语法/占位符等其它校验，
+    # 只跳过这一项，行为等价于 P9-3 之前的版本。
+    dry_run_preview_on_generate: bool = True
+    # [P9-1b] generate_workflow / build_workflow_from_summary 生成 YAML 后，
+    # 是否自动追加一次 dry-run 预览（并发分批 + condition 求值）。默认开启；
+    # 关闭后只展示步骤列表预览和 YAML 本身，不做 dry-run（可用于生成体积较大
+    # 的工作流时减少一次额外计算）。
+    git_hint_enabled: bool = True
+    # [P9-2] save_workflow 保存成功后，若 project_root 是 git 仓库，是否追加
+    # 一句"建议 git commit"的提示文案。默认开启，只是提示，从不自动 commit；
+    # 关闭后 save_workflow 的返回文本里不再出现这段提示，
+    # /workflow history、/workflow diff 命令本身不受此开关影响（仍可直接用）。
+
 
 @dataclass
 class ProprioceptionConfig:

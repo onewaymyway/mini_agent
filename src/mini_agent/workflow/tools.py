@@ -127,15 +127,16 @@ def register_workflow_tools(cfg: "AppConfig") -> None:
             preview = generator.preview(wf)
 
             dry_run_section = ""
-            try:
-                parsed_inputs = json.loads(example_input) if example_input else {}
-                if not isinstance(parsed_inputs, dict):
-                    parsed_inputs = {}
-                dry_run_section = "\n\n" + _format_dry_run_preview(wf, parsed_inputs)
-            except Exception as e:
-                # dry-run 只是锦上添花，失败不影响主流程（YAML 已经生成）
-                from mini_agent.errors import log_exception
-                log_exception(e, where="mini_agent.workflow.tools.generate_workflow.dry_run")
+            if getattr(cfg.workflow, "dry_run_preview_on_generate", True):
+                try:
+                    parsed_inputs = json.loads(example_input) if example_input else {}
+                    if not isinstance(parsed_inputs, dict):
+                        parsed_inputs = {}
+                    dry_run_section = "\n\n" + _format_dry_run_preview(wf, parsed_inputs)
+                except Exception as e:
+                    # dry-run 只是锦上添花，失败不影响主流程（YAML 已经生成）
+                    from mini_agent.errors import log_exception
+                    log_exception(e, where="mini_agent.workflow.tools.generate_workflow.dry_run")
 
             return (
                 f"{preview}{dry_run_section}\n\n"
@@ -167,8 +168,10 @@ def register_workflow_tools(cfg: "AppConfig") -> None:
 
         try:
             path = store.save(wf, cfg=cfg)
-            from mini_agent.workflow.git_integration import save_hint
-            hint = save_hint(Path(cfg.project_root), path)
+            hint = ""
+            if getattr(cfg.workflow, "git_hint_enabled", True):
+                from mini_agent.workflow.git_integration import save_hint
+                hint = save_hint(Path(cfg.project_root), path)
             return (
                 f"✅ 工作流 **{wf.name}** 已保存到 `{path}`\n"
                 f"步骤：{' → '.join(s.id for s in wf.steps)}\n"
@@ -188,6 +191,8 @@ def register_workflow_tools(cfg: "AppConfig") -> None:
         """
         limit: 列出最近 N 个 session，默认 10
         """
+        if not getattr(cfg.workflow, "session_to_workflow_enabled", True):
+            return "❌ session→workflow 功能已在配置中关闭（agent_config.json → workflow.session_to_workflow_enabled）。"
         from mini_agent.session import SessionManager
 
         mgr = SessionManager(project_root=cfg.project_root)
@@ -225,6 +230,8 @@ def register_workflow_tools(cfg: "AppConfig") -> None:
         """
         session_id: 要总结的 session 的完整 id 或前缀
         """
+        if not getattr(cfg.workflow, "session_to_workflow_enabled", True):
+            return "❌ session→workflow 功能已在配置中关闭（agent_config.json → workflow.session_to_workflow_enabled）。"
         from mini_agent.session import SessionManager
         from mini_agent.workflow.session_summarizer import summarize_session_for_workflow as _summarize
 
@@ -257,6 +264,8 @@ def register_workflow_tools(cfg: "AppConfig") -> None:
         session_id: 与 summarize_session_for_workflow 调用时相同的 session_id
         adjustments: 用户对①阶段总结提出的调整意见，如"修复阶段不要做成质检门"
         """
+        if not getattr(cfg.workflow, "session_to_workflow_enabled", True):
+            return "❌ session→workflow 功能已在配置中关闭（agent_config.json → workflow.session_to_workflow_enabled）。"
         from mini_agent.session import SessionManager
         from mini_agent.workflow.generator import WorkflowGenerator
 
@@ -287,16 +296,17 @@ def register_workflow_tools(cfg: "AppConfig") -> None:
                 )
 
             dry_run_section = ""
-            try:
-                parsed_inputs = {
-                    p.name: p.example_value
-                    for p in (summary.candidate_parameters or [])
-                    if p.name
-                }
-                dry_run_section = "\n\n" + _format_dry_run_preview(wf, parsed_inputs)
-            except Exception as e:
-                from mini_agent.errors import log_exception
-                log_exception(e, where="mini_agent.workflow.tools.build_workflow_from_summary.dry_run")
+            if getattr(cfg.workflow, "dry_run_preview_on_generate", True):
+                try:
+                    parsed_inputs = {
+                        p.name: p.example_value
+                        for p in (summary.candidate_parameters or [])
+                        if p.name
+                    }
+                    dry_run_section = "\n\n" + _format_dry_run_preview(wf, parsed_inputs)
+                except Exception as e:
+                    from mini_agent.errors import log_exception
+                    log_exception(e, where="mini_agent.workflow.tools.build_workflow_from_summary.dry_run")
 
             return (
                 f"{preview}{dry_run_section}\n\n"

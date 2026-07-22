@@ -141,6 +141,10 @@
     "tool_call_step_auto_approve": false,
     "human_input_wait_timeout_seconds": 1800.0,
     "validate_placeholders_on_save": true,
-    "validate_role_refs_on_save": true
+    "validate_role_refs_on_save": true,
+    "session_to_workflow_enabled": true,
+    "condition_static_check_enabled": true,
+    "dry_run_preview_on_generate": true,
+    "git_hint_enabled": true
   }
 }

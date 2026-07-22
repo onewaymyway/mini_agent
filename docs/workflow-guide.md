@@ -1039,7 +1039,11 @@ Workflow 执行时会触发以下 Hook 事件（复用项目现有的 `mini_agen
   "tool_call_step_auto_approve": false,
   "human_input_wait_timeout_seconds": 1800.0,
   "validate_placeholders_on_save": true,
-  "validate_role_refs_on_save": true
+  "validate_role_refs_on_save": true,
+  "session_to_workflow_enabled": true,
+  "condition_static_check_enabled": true,
+  "dry_run_preview_on_generate": true,
+  "git_hint_enabled": true
 }
 ```
 
@@ -1063,6 +1067,10 @@ Workflow 执行时会触发以下 Hook 事件（复用项目现有的 `mini_agen
 | `human_input_wait_timeout_seconds`（P5） | `1800.0` | `human_input` 类型 step 等待人工输入的超时（秒），`null`=无限等待 |
 | `validate_placeholders_on_save`（P6） | `true` | 保存工作流时是否校验占位符引用完整性 |
 | `validate_role_refs_on_save`（P6） | `true` | 保存工作流时是否校验 `role` 是否为已注册的角色 Agent profile |
+| `session_to_workflow_enabled`（P8） | `true` | 是否启用 session→workflow 转换（`list_recent_sessions`/`summarize_session_for_workflow`/`build_workflow_from_summary` 三个工具 + CLI 的 `/workflow sessions`/`/workflow from-session`）。关闭后这些入口会返回明确的"功能已关闭"提示，不影响其余 workflow 功能 |
+| `condition_static_check_enabled`（P9-3） | `true` | 保存工作流时是否额外做一轮 condition 表达式的静态一致性检查（引用的 step 是否存在/是否在 depends_on 声明范围内）。关闭后仍会做基本的 ast 语法检查 |
+| `dry_run_preview_on_generate`（P9-1b） | `true` | `generate_workflow`/`build_workflow_from_summary` 生成 YAML 后是否自动追加一次 dry-run 预览（并发分批 + condition 求值） |
+| `git_hint_enabled`（P9-2） | `true` | `save_workflow` 保存成功后，若项目是 git 仓库，是否追加一句"建议 git commit"的提示（只提示，不自动 commit） |
 
 ---
 
@@ -1096,7 +1104,16 @@ Workflow 执行时会触发以下 Hook 事件（复用项目现有的 `mini_agen
 /workflow sessions                          列出最近的历史 session（P8）
 /workflow from-session <session_id>         从指定 session 生成 workflow，
                                              总结→确认→构建→确认→保存（P8）
+/workflow stats <name>                       汇总历史执行统计：成功率/各步骤
+                                             平均耗时评分重试率/condition命中率（P9-1a）
+/workflow history <name>                     查看该 workflow 定义文件的
+                                             git 提交历史（P9-2，需项目是 git 仓库）
+/workflow diff <name>                        查看该 workflow 定义相对上次
+                                             commit 的改动：结构化 step 级别
+                                             摘要 + 原始 git diff（P9-2）
 ```
+
+以上全部子命令均已加入 CLI 的 Tab 补全列表。
 
 **已知限制**：`pause`/`cancel`/`approve`/`reject`/`input` 依赖进程内的控制状态
 （`workflow/registry.py`），只在**同一个进程**里对正在跑的后台执行有效；

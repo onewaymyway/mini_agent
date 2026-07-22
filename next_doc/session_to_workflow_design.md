@@ -5,6 +5,11 @@
 > 编号延续 `workflow_mechanism_improvement_plan.md`（P1-P7）之后，记为 **P8**。
 > 目标：让用户可以把"之前某次 session 里实际做成的一件事"沉淀成一个可复用的
 > `WorkflowDef`，而不是每次都要么重新一步步指挥 Agent，要么手写 YAML。
+>
+> **补充更新**：三个 Agent 工具 + CLI 的 `sessions`/`from-session` 子命令
+> 已补充 `agent_config.json` → `workflow.session_to_workflow_enabled` 开关
+> （默认开启），关闭后返回明确提示；详见
+> `next_doc/p8_p9_config_toggle_and_cli_hint_record.md`。
 
 ---
 

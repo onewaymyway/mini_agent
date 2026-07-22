@@ -12,6 +12,12 @@
 > `next_doc/workflow_system_p9_implementation_record.md`。§4（主动感知与
 > 建议）、§5（权限与信任模型）按下文结论继续搁置，未启动。
 >
+> **再次更新**：1b/2/3 三项已补充对应的 `agent_config.json` 开关
+> （`dry_run_preview_on_generate`/`git_hint_enabled`/
+> `condition_static_check_enabled`），且 `/workflow stats`/`history`/`diff`
+> 三个 CLI 子命令已补进 Tab 补全列表（此前遗漏）；详见
+> `next_doc/p8_p9_config_toggle_and_cli_hint_record.md`。
+>
 > 编号延续：`workflow_mechanism_improvement_plan.md`（P1-P7）→
 > `session_to_workflow_design.md`（P8）→ 本文档讨论的是 **P9 候选池**，
 > 不是单一一个 P9，因为下面几个方向互相独立，可以任选其一先做，不要求

@@ -68,17 +68,21 @@ class WorkflowStore:
         """
         保存工作流到 YAML 文件，返回文件路径。
 
-        [workflow机制改进计划.md P6] 保存前引用完整性校验受 cfg 里的两个开关
+        [workflow机制改进计划.md P6] 保存前引用完整性校验受 cfg 里的开关
         控制（cfg 为 None 时按默认值 True 全部开启，保持向后兼容）：
           - cfg.workflow.validate_placeholders_on_save
           - cfg.workflow.validate_role_refs_on_save（需配合 role_checker 使用，
             role_checker 为 None 时即使开关打开也无法真正校验，直接跳过）
+          - cfg.workflow.condition_static_check_enabled（P9-3，见 schema.py::
+            WorkflowDef.validate() 的 check_condition 参数）
         """
         wf_cfg = getattr(cfg, "workflow", None) if cfg is not None else None
         check_placeholders = bool(getattr(wf_cfg, "validate_placeholders_on_save", True))
         check_roles = bool(getattr(wf_cfg, "validate_role_refs_on_save", True))
+        check_condition = bool(getattr(wf_cfg, "condition_static_check_enabled", True))
         errors = wf.validate(
             check_placeholders=check_placeholders,
+            check_condition=check_condition,
             role_checker=(role_checker if (check_roles and role_checker is not None) else None),
         )
         if errors:

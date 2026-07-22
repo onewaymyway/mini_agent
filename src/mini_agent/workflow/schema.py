@@ -265,7 +265,7 @@ class WorkflowDef:
             ],
         }
 
-    def validate(self, *, check_placeholders: bool = True, role_checker=None) -> list[str]:
+    def validate(self, *, check_placeholders: bool = True, check_condition: bool = True, role_checker=None) -> list[str]:
         """校验工作流定义，返回错误列表（空列表=合法）。
 
         [workflow机制改进计划.md P6] 保存前引用完整性校验：
@@ -278,6 +278,10 @@ class WorkflowDef:
             （通常来自 role_agents dispatcher），用于校验 step.role 是否为
             当前已注册的角色 profile。不传时跳过该项检查（保持向后兼容，
             单元测试/无 dispatcher 环境下 validate() 行为不变）。
+          - check_condition=True 时（默认），额外做一轮 condition 表达式的
+            静态一致性检查（P9-3，见下方对应代码块注释）；可由
+            cfg.workflow.condition_static_check_enabled 关闭，关闭后仍会做
+            condition 的 ast 语法检查（该检查在开关判断之前，不受此参数影响）。
         """
         errors: list[str] = []
         seen_ids: set[str] = set()
@@ -346,18 +350,6 @@ class WorkflowDef:
         # runner.py::_eval_condition），不受 depends_on 约束，跳过检查。
         import ast
 
-        step_deps_map = {s.id: set(s.depends_on) for s in self.steps}
-
-        def _transitive_deps(step_id: str, _visited: Optional[set] = None) -> set:
-            _visited = _visited if _visited is not None else set()
-            if step_id in _visited:
-                return set()
-            _visited.add(step_id)
-            result = set(step_deps_map.get(step_id, ()))
-            for d in list(result):
-                result |= _transitive_deps(d, _visited)
-            return result
-
         for step in self.steps:
             if not step.condition:
                 continue
@@ -365,25 +357,49 @@ class WorkflowDef:
                 ast.parse(step.condition, mode="eval")
             except SyntaxError as e:
                 errors.append(f"步骤 {step.id!r} 的 condition 表达式语法错误：{e}")
-                continue
 
-            ancestors = _transitive_deps(step.id)
-            referenced = condition_referenced_names(step.condition)
+        # [P9-3] 引用一致性检查（引用的 step 是否存在/是否在 depends_on 范围
+        # 内）单独受 check_condition 开关控制（对应
+        # cfg.workflow.condition_static_check_enabled）；语法检查本身始终
+        # 执行，不受此开关影响——语法错误无论如何都不该被放过。
+        if check_condition:
+            step_deps_map = {s.id: set(s.depends_on) for s in self.steps}
 
-            for ref in sorted(referenced):
-                if ref == "inputs":
+            def _transitive_deps(step_id: str, _visited: Optional[set] = None) -> set:
+                _visited = _visited if _visited is not None else set()
+                if step_id in _visited:
+                    return set()
+                _visited.add(step_id)
+                result = set(step_deps_map.get(step_id, ()))
+                for d in list(result):
+                    result |= _transitive_deps(d, _visited)
+                return result
+
+            for step in self.steps:
+                if not step.condition:
                     continue
-                if ref not in seen_ids:
-                    errors.append(
-                        f"步骤 {step.id!r} 的 condition 引用了不存在的步骤 {ref!r}"
-                        f"（{step.condition!r}）"
-                    )
-                elif ref not in ancestors:
-                    errors.append(
-                        f"步骤 {step.id!r} 的 condition 引用了步骤 {ref!r}，"
-                        f"但未在 depends_on 中声明依赖（直接或传递），"
-                        f"运行时该步骤结果可能还不存在（{step.condition!r}）"
-                    )
+                try:
+                    ast.parse(step.condition, mode="eval")
+                except SyntaxError:
+                    continue  # 语法错误已在上面记录过，这里跳过避免重复报错
+
+                ancestors = _transitive_deps(step.id)
+                referenced = condition_referenced_names(step.condition)
+
+                for ref in sorted(referenced):
+                    if ref == "inputs":
+                        continue
+                    if ref not in seen_ids:
+                        errors.append(
+                            f"步骤 {step.id!r} 的 condition 引用了不存在的步骤 {ref!r}"
+                            f"（{step.condition!r}）"
+                        )
+                    elif ref not in ancestors:
+                        errors.append(
+                            f"步骤 {step.id!r} 的 condition 引用了步骤 {ref!r}，"
+                            f"但未在 depends_on 中声明依赖（直接或传递），"
+                            f"运行时该步骤结果可能还不存在（{step.condition!r}）"
+                        )
 
         # [P6] role 引用校验（可选，需要调用方传入 role_checker）
         if role_checker is not None:
