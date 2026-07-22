@@ -560,6 +560,25 @@ class DaemonClient:
         """
         return self._get_json("/v1/self/status")
 
+    def get_pending_startup_digest(self) -> Optional[dict]:
+        """GET /v1/digest/pending_startup — 取一份尚未展示过的日报（若有）。
+
+        [新增] 对接 api/routes.py 新增的只读端点，用于 daemon connected
+        模式下补上本地 run_repl() 才有的"启动打印一行未读日报"体验。
+        返回值形如 {"digest": {...}} 或 {"digest": None}；请求失败时
+        （旧版 daemon 不支持该端点等）跟其它 get_* 方法一样静默返回 None，
+        调用方按"拿不到就跳过这行提示"处理，不影响正常连接。
+        """
+        return self._get_json("/v1/digest/pending_startup")
+
+    def ack_pending_startup_digest(self, day: str) -> Optional[dict]:
+        """POST /v1/digest/pending_startup/ack {"day": ...} — 标记已展示。
+
+        必须在客户端真正把这行提示打印出来之后才调用，避免"服务端已经
+        标记已读，但客户端因为网络问题没显示出来"导致这份日报被跳过。
+        """
+        return self._post_json("/v1/digest/pending_startup/ack", {"day": day})
+
     def stream_output(
         self,
         turn_id: str,
@@ -1794,6 +1813,40 @@ def _handle_connected_goals(client: "DaemonClient", _out) -> None:
             )
 
 
+def _print_startup_digest_connected(client: "DaemonClient", _out) -> None:
+    """daemon connected 模式下的启动日报提示（对应本地 run_repl() 里的
+    cli/repl.py::_print_startup_digest_and_advisor()）。
+
+    [新增] 之前 connected 客户端连接时完全没有这行提示——因为原函数依赖
+    本地 Agent 对象直接读文件，这里改用 HTTP：
+      1. GET /v1/digest/pending_startup 取一份 shown_at 为空的日报
+      2. 有的话，用同一套 render_startup_summary() 渲染成一行文字打印
+      3. 打印成功后再 POST /ack 标记已读，避免下次连接重复展示
+
+    任何一步失败（旧版 daemon 不支持这两个端点、网络问题等）都静默跳过，
+    不能因为这行附加提示影响正常连接流程。
+    """
+    try:
+        resp = client.get_pending_startup_digest()
+        if not resp:
+            return
+        data = resp.get("digest")
+        if not data:
+            return
+        from mini_agent.evolution.daily_digest import render_startup_summary
+        line = render_startup_summary(data)
+        if not line:
+            return
+        _out(f"[daemon] {line}")
+        day = data.get("day")
+        if day:
+            client.ack_pending_startup_digest(day)
+    except Exception as _mini_agent_exc:
+        from mini_agent.errors import log_exception
+        log_exception(_mini_agent_exc, where='mini_agent.cli.daemon._print_startup_digest_connected')
+        pass
+
+
 def _handle_connected_digest(client: "DaemonClient", _out) -> None:
     """
     [具身改进 A1] /digest（晨报视图）：自主化档位 + 待办目标 + 最近活动摘要。
@@ -2018,6 +2071,10 @@ def run_connected_repl(
                 f"(user_id={_whoami.get('user_id')}, role={_whoami.get('role')})"
             )
         # 单用户模式下 whoami 固定返回 owner，信息量为零，不用刷屏打印。
+
+    # ── 启动日报提示：daemon connected 客户端专用（对齐 run_repl() 体验）──
+    if not quiet_connect:
+        _print_startup_digest_connected(client, _out)
 
     # ── 状态栏：注册 connected 模式专用 provider ─────────────────────────────
     # app.py 在检测到 daemon 存在后调用了 stop_status_bar()，这里重新启动，

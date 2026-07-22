@@ -2554,6 +2554,58 @@ def _get_paths_for_request(request: Request) -> "AgentPaths":
     return AgentPaths(project_root)
 
 
+@router.get("/digest/pending_startup")
+async def get_pending_startup_digest(request: Request):
+    """GET /v1/digest/pending_startup — daemon connected 客户端专用。
+
+    [新增] 之前只有本地直连模式（cli/repl.py::run_repl）在启动时会调用
+    _print_startup_digest_and_advisor() 打印一行"未读日报"摘要，因为它
+    直接持有本地 Agent 对象，能直接读 paths / cfg。daemon 模式下的
+    run_connected_repl() 只有一个走 HTTP 的 DaemonClient，没有本地 Agent，
+    之前完全没有对接这块——导致 daemon 客户端连接时永远看不到这行提示。
+
+    这里补一个只读端点：复用 evolution/daily_digest.py::load_pending_digest()
+    读取"最近一份 shown_at 为空的日报"，不做任何生成/刷新（生成仍然只由
+    cron job 负责），也不在这里标记为已读——标记动作交给下面的
+    POST /digest/pending_startup/ack，由客户端确认真正打印出来之后再调用，
+    避免"服务端一返回就标记已读，但客户端因为网络问题没显示出来"的丢失。
+    """
+    _require_owner(request)
+    try:
+        paths = _get_paths_for_request(request)
+        from mini_agent.evolution.daily_digest import load_pending_digest
+        data = load_pending_digest(paths)
+        return {"digest": data}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/digest/pending_startup/ack")
+async def ack_pending_startup_digest(request: Request):
+    """POST /v1/digest/pending_startup/ack {"day": "YYYY-MM-DD"}
+
+    客户端把 GET /digest/pending_startup 返回的日报实际打印出来之后，
+    调用这个端点把对应日期标记为 shown_at，避免下次连接（或其它客户端
+    连接）时重复展示同一份日报。
+    """
+    _require_owner(request)
+    try:
+        body = await request.json()
+        day = (body or {}).get("day")
+        if not day:
+            raise HTTPException(status_code=400, detail="missing 'day'")
+        paths = _get_paths_for_request(request)
+        from mini_agent.evolution.daily_digest import mark_shown
+        mark_shown(paths, day)
+        return {"ok": True}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @router.get("/digest/daily")
 async def get_daily_digest(request: Request, date: Optional[str] = Query(None)):
     """GET /v1/digest/daily?date=YYYY-MM-DD — 读取（不生成）某天的融合日报。
