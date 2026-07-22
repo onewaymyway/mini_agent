@@ -302,7 +302,7 @@ def summarize_session_for_workflow(history_entries: list[dict], cfg: "AppConfig"
         sandbox=cfg.sandbox,
         project_root=cfg.project_root,
     )
-    empty_registry = get_default_registry().filtered(names=[], groups=[])
+    empty_registry = get_default_registry().empty()  # [BUGFIX] filtered(names=[], groups=[]) 会被当成"未筛选"返回全量工具，见 tools/__init__.py::ToolRegistry.empty() 说明
     agent = Agent(cfg=gen_cfg, guard=guard, registry=empty_registry)
 
     prompt = pm.render("user/session_to_workflow_summary_request", timeline_text=timeline_text)

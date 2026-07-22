@@ -141,7 +141,13 @@ def spawn_judge_agent(
             allowed_groups = [g for g in profile.tool_groups if g in allowed_groups] or profile.tool_groups
         registry = get_default_registry().filtered(names=allowed_tools, groups=allowed_groups)
     else:
-        registry = get_default_registry().filtered(names=[], groups=[])
+        # [BUGFIX] 此前这里写的是 filtered(names=[], groups=[])，两个参数
+        # 都是空列表时会被 filtered() 当成"未筛选"返回全量工具，导致
+        # tools_enabled=False 完全没有生效——GoalSpecBuilder/GoalJudge 等
+        # 声称"不给工具"的内部 Agent，实际拿到了包括 tree_summary/list_dir/
+        # bash 在内的全部工具，会在 max_turns 有限的情况下把轮次耗在探索
+        # 项目结构上，导致真正该产出的文本内容没有机会生成。
+        registry = get_default_registry().empty()
 
     return Agent(cfg=judge_cfg, guard=guard, registry=registry, is_subagent=True)
 

@@ -129,6 +129,17 @@ class ToolRegistry:
         - 两者都给出 -> 取并集
 
         用于自定义子 agent（AgentProfile.tools / tool_groups）限制可用工具集。
+
+        [BUGFIX] 这里"两者都为空"用的是 Python 真值判断（`not names`），
+        意味着传入 `names=[]`/`groups=[]`（显式空列表，非 None）跟完全不传
+        效果相同，都会返回全量工具——这是本方法从一开始就有意的设计（"没有
+        限制条件时给全部工具"，供 tools_enabled=True 但调用方未指定
+        allowed_tools/allowed_tool_groups 时使用），**不能改成"空列表=空
+        registry"**，否则会破坏这条路径。如果需要的是"明确构造一个不含任何
+        工具的 registry"，请用 `empty()`，不要指望 `filtered(names=[],
+        groups=[])` 能表达这个语义——历史上 judge_factory.py /
+        workflow/generator.py / workflow/session_summarizer.py 都曾经这样
+        误用，导致"不给工具"的内部 Agent 实际拿到了全量工具集。
         """
         if not names and not groups:
             allowed = set(self._tools)
@@ -142,6 +153,16 @@ class ToolRegistry:
                 sub._tools[tool_name] = td
                 sub._groups.setdefault(td.group, []).append(tool_name)
         return sub
+
+    def empty(self) -> "ToolRegistry":
+        """返回一个不包含任何工具的空 registry（同一 namespace）。
+
+        用于"这个内部 Agent 不应该有任何工具"的场景——不要用
+        `filtered(names=[], groups=[])` 代替，那个调用在两个参数都是空列表
+        时会被当成"未筛选"，返回的是全量工具而不是空集（见 filtered() 的
+        说明）。
+        """
+        return ToolRegistry(namespace=self.namespace)
 
     def subset(self, groups: list[str]) -> "ToolRegistry":
         """

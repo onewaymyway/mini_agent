@@ -111,7 +111,7 @@ class WorkflowGenerator:
             sandbox=self._cfg.sandbox,
             project_root=self._cfg.project_root,
         )
-        empty_registry = get_default_registry().filtered(names=[], groups=[])
+        empty_registry = get_default_registry().empty()  # [BUGFIX] filtered(names=[], groups=[]) 会被当成"未筛选"返回全量工具，见 tools/__init__.py::ToolRegistry.empty() 说明
         agent = Agent(cfg=gen_cfg, guard=guard, registry=empty_registry)
 
         prompt_parts = [f"请为以下需求设计一个工作流：\n\n{description}"]
@@ -161,7 +161,7 @@ class WorkflowGenerator:
             project_root=self._cfg.project_root,
         )
         registered_tool_names = set(get_default_registry().names)
-        empty_registry = get_default_registry().filtered(names=[], groups=[])
+        empty_registry = get_default_registry().empty()  # [BUGFIX] filtered(names=[], groups=[]) 会被当成"未筛选"返回全量工具，见 tools/__init__.py::ToolRegistry.empty() 说明
         agent = Agent(cfg=gen_cfg, guard=guard, registry=empty_registry)
 
         import json as _json
