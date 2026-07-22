@@ -73,6 +73,22 @@ api/routes.py — FastAPI 路由定义
     GET    /v1/perception/browser/status 专用浏览器/CDP 连接状态
     POST   /v1/perception/git/install-hooks 在指定仓库安装 git commit/checkout 上报 hook（owner only）
     GET    /v1/perception/summary        查看/生成某天的工作/生活画像摘要（分析层）
+  Workflow（工作流机制改进计划（P7）一、1.2，供看板集成使用，owner only）
+    GET    /v1/workflows                     列出已保存的工作流
+    GET    /v1/workflows/{name}               查看 YAML 定义
+    POST   /v1/workflows/{name}/preview       dry-run 预览执行计划（不实际执行）
+    POST   /v1/workflows/{name}/run           启动一次执行（前台/后台，语义同 run_workflow 工具）
+    GET    /v1/workflow_runs                  列出所有执行记录（?name= 可按工作流名过滤）
+    GET    /v1/workflow_runs/{id}             单次执行详情
+    GET    /v1/workflow_runs/{id}/events      events.jsonl 增量拉取（?since_line=N）
+    POST   /v1/workflow_runs/{id}/pause       请求暂停
+    POST   /v1/workflow_runs/{id}/cancel      请求取消
+    POST   /v1/workflow_runs/{id}/resume      断点续跑（Body 可选 force_rerun_from 做单步编辑续跑）
+    POST   /v1/workflow_runs/{id}/approve     批准当前等待审批的 step
+    POST   /v1/workflow_runs/{id}/reject      拒绝当前等待审批的 step（Body: {"reason": str}）
+    POST   /v1/workflow_runs/{id}/input       向等待 human_input 的 step 送入文本（Body: {"text": str}）
+    POST   /v1/workflow_runs/{id}/steps/{step_id}/override
+                                              人工编辑已完成 step 的输出（单步编辑续跑，见改进计划二、3.3）
 """
 
 from __future__ import annotations
@@ -2093,6 +2109,270 @@ async def run_cron_job_now(job_id: str, request: Request):
             raise HTTPException(status_code=404, detail=f"Job '{job_id}' not found")
         raise HTTPException(status_code=500, detail="Job trigger failed")
     return {"triggered": True, "job_id": job_id}
+
+
+# ── Workflow REST API（workflow机制改进计划（P7）一）───────────────────────
+#
+# 这批端点是 workflow/tools.py 里同名 @tool 工具的"薄封装"：真正的状态机
+# 逻辑都在 workflow/api_helpers.py 的纯函数里，两边共用，不重复维护。
+# 鉴权沿用 owner-only（与 cron jobs 一致）。
+
+def _workflow_cfg(request: Request):
+    """取出 AppConfig，用于调用 workflow/api_helpers.py 里的纯函数。"""
+    http_server = getattr(request.app.state, "http_server", None)
+    if http_server is None:
+        raise HTTPException(status_code=503, detail="HttpServer not available")
+    agent = getattr(http_server.bridge, "agent", None)
+    cfg = getattr(agent, "cfg", None) if agent else None
+    if cfg is None:
+        raise HTTPException(status_code=503, detail="AppConfig not available")
+    return cfg
+
+
+def _workflow_api_error_to_http(e) -> HTTPException:
+    from mini_agent.workflow.api_helpers import WorkflowApiError
+    if not isinstance(e, WorkflowApiError):
+        return HTTPException(status_code=500, detail=str(e))
+    status_map = {
+        "not_found": 404,
+        "no_pending": 409,
+        "not_active": 409,
+        "bad_snapshot": 422,
+        "bad_step": 422,
+        "cyclic": 422,
+    }
+    return HTTPException(status_code=status_map.get(e.code, 400), detail=e.message)
+
+
+@router.get("/workflows")
+async def list_workflows_route(request: Request):
+    """GET /v1/workflows — 列出已保存的工作流。"""
+    cfg = _workflow_cfg(request)
+    _require_owner(request)
+    from mini_agent.workflow import api_helpers
+    return {"workflows": api_helpers.list_workflows(cfg)}
+
+
+@router.get("/workflows/{name}")
+async def get_workflow_yaml_route(name: str, request: Request):
+    """GET /v1/workflows/{name} — 查看 YAML 定义。"""
+    cfg = _workflow_cfg(request)
+    _require_owner(request)
+    from mini_agent.workflow import api_helpers
+    try:
+        yaml_str = api_helpers.get_workflow_yaml(cfg, name)
+    except api_helpers.WorkflowApiError as e:
+        raise _workflow_api_error_to_http(e)
+    return {"name": name, "yaml": yaml_str}
+
+
+@router.post("/workflows/{name}/preview")
+async def preview_workflow_route(name: str, request: Request):
+    """
+    POST /v1/workflows/{name}/preview — dry-run 预览，不实际执行。
+    Body: {"inputs": {...}}
+    """
+    cfg = _workflow_cfg(request)
+    _require_owner(request)
+    from mini_agent.workflow import api_helpers
+    body = await request.json() if await request.body() else {}
+    inputs = body.get("inputs") or {}
+    try:
+        return api_helpers.preview_workflow(cfg, name, inputs)
+    except api_helpers.WorkflowApiError as e:
+        raise _workflow_api_error_to_http(e)
+
+
+@router.post("/workflows/{name}/run")
+async def run_workflow_route(name: str, request: Request):
+    """
+    POST /v1/workflows/{name}/run
+    Body: {"inputs": {...}, "background": true}
+    background 语义同 run_workflow 工具：含 require_approval 步骤时强制后台执行。
+    """
+    cfg = _workflow_cfg(request)
+    _require_owner(request)
+    from mini_agent.workflow import api_helpers
+
+    body = await request.json() if await request.body() else {}
+    inputs = body.get("inputs") or {}
+    background = body.get("background")
+
+    try:
+        outcome = api_helpers.start_workflow_run(cfg, name, inputs, background)
+    except api_helpers.WorkflowApiError as e:
+        raise _workflow_api_error_to_http(e)
+
+    if outcome["mode"] == "sync":
+        result = outcome["result"]
+        return {
+            "mode": "sync",
+            "workflow_session_id": result.workflow_session_id,
+            "status": result.status,
+            "total_duration": result.total_duration,
+            "final_output": result.final_output,
+            "output_dir": result.output_dir,
+            "step_results": [sr.to_dict() for sr in result.step_results],
+        }
+    return {
+        "mode": "async",
+        "workflow_session_id": outcome["workflow_session_id"],
+        "output_dir": outcome["output_dir"],
+        "has_approval_step": outcome["has_approval_step"],
+    }
+
+
+@router.get("/workflow_runs")
+async def list_workflow_runs_route(request: Request, name: Optional[str] = Query(default=None)):
+    """GET /v1/workflow_runs — 列出所有执行记录（?name= 可过滤）。"""
+    cfg = _workflow_cfg(request)
+    _require_owner(request)
+    from mini_agent.workflow import api_helpers
+    return {"runs": api_helpers.list_workflow_runs(cfg, name)}
+
+
+@router.get("/workflow_runs/{run_id}")
+async def get_workflow_run_detail_route(run_id: str, request: Request):
+    """GET /v1/workflow_runs/{id} — 单次执行详情。"""
+    cfg = _workflow_cfg(request)
+    _require_owner(request)
+    from mini_agent.workflow import api_helpers
+    try:
+        return api_helpers.get_workflow_run_detail(cfg, run_id)
+    except api_helpers.WorkflowApiError as e:
+        raise _workflow_api_error_to_http(e)
+
+
+@router.get("/workflow_runs/{run_id}/events")
+async def get_workflow_run_events_route(
+    run_id: str, request: Request, since_line: int = Query(default=0)
+):
+    """GET /v1/workflow_runs/{id}/events — events.jsonl 增量拉取。"""
+    cfg = _workflow_cfg(request)
+    _require_owner(request)
+    from mini_agent.workflow import api_helpers
+    return api_helpers.read_workflow_run_events(cfg, run_id, since_line)
+
+
+@router.post("/workflow_runs/{run_id}/pause")
+async def pause_workflow_run_route(run_id: str, request: Request):
+    """POST /v1/workflow_runs/{id}/pause"""
+    cfg = _workflow_cfg(request)
+    _require_owner(request)
+    from mini_agent.workflow import api_helpers
+    try:
+        api_helpers.pause_workflow_run(cfg, run_id)
+    except api_helpers.WorkflowApiError as e:
+        raise _workflow_api_error_to_http(e)
+    return {"paused": True, "workflow_session_id": run_id}
+
+
+@router.post("/workflow_runs/{run_id}/cancel")
+async def cancel_workflow_run_route(run_id: str, request: Request):
+    """POST /v1/workflow_runs/{id}/cancel"""
+    cfg = _workflow_cfg(request)
+    _require_owner(request)
+    from mini_agent.workflow import api_helpers
+    try:
+        api_helpers.cancel_workflow_run(cfg, run_id)
+    except api_helpers.WorkflowApiError as e:
+        raise _workflow_api_error_to_http(e)
+    return {"cancelled": True, "workflow_session_id": run_id}
+
+
+@router.post("/workflow_runs/{run_id}/resume")
+async def resume_workflow_run_route(run_id: str, request: Request):
+    """
+    POST /v1/workflow_runs/{id}/resume
+    Body: {"background": true, "force_rerun_from": "step_id"}
+    force_rerun_from 为单步编辑续跑场景：配合 .../steps/{step_id}/override 先改输出，
+    再传同一个 step_id 触发"该 step 之后全部重跑"。
+    """
+    cfg = _workflow_cfg(request)
+    _require_owner(request)
+    from mini_agent.workflow import api_helpers
+
+    body = await request.json() if await request.body() else {}
+    background = body.get("background")
+    force_rerun_from = body.get("force_rerun_from")
+
+    try:
+        outcome = api_helpers.resume_workflow_run(cfg, run_id, background, force_rerun_from)
+    except api_helpers.WorkflowApiError as e:
+        raise _workflow_api_error_to_http(e)
+
+    if outcome["mode"] == "sync":
+        result = outcome["result"]
+        return {
+            "mode": "sync",
+            "workflow_session_id": result.workflow_session_id,
+            "status": result.status,
+            "final_output": result.final_output,
+        }
+    return {"mode": "async", "workflow_session_id": run_id}
+
+
+@router.post("/workflow_runs/{run_id}/approve")
+async def approve_workflow_step_route(run_id: str, request: Request):
+    """POST /v1/workflow_runs/{id}/approve"""
+    cfg = _workflow_cfg(request)
+    _require_owner(request)
+    from mini_agent.workflow import api_helpers
+    try:
+        step_id = api_helpers.approve_workflow_step(cfg, run_id)
+    except api_helpers.WorkflowApiError as e:
+        raise _workflow_api_error_to_http(e)
+    return {"approved": True, "step_id": step_id, "workflow_session_id": run_id}
+
+
+@router.post("/workflow_runs/{run_id}/reject")
+async def reject_workflow_step_route(run_id: str, request: Request):
+    """POST /v1/workflow_runs/{id}/reject — Body: {"reason": str}"""
+    cfg = _workflow_cfg(request)
+    _require_owner(request)
+    from mini_agent.workflow import api_helpers
+    body = await request.json() if await request.body() else {}
+    reason = body.get("reason", "")
+    try:
+        step_id = api_helpers.reject_workflow_step(cfg, run_id, reason)
+    except api_helpers.WorkflowApiError as e:
+        raise _workflow_api_error_to_http(e)
+    return {"rejected": True, "step_id": step_id, "workflow_session_id": run_id}
+
+
+@router.post("/workflow_runs/{run_id}/input")
+async def provide_workflow_input_route(run_id: str, request: Request):
+    """POST /v1/workflow_runs/{id}/input — Body: {"text": str}"""
+    cfg = _workflow_cfg(request)
+    _require_owner(request)
+    from mini_agent.workflow import api_helpers
+    body = await request.json() if await request.body() else {}
+    text = body.get("text", "")
+    try:
+        step_id = api_helpers.provide_workflow_step_input(cfg, run_id, text)
+    except api_helpers.WorkflowApiError as e:
+        raise _workflow_api_error_to_http(e)
+    return {"provided": True, "step_id": step_id, "workflow_session_id": run_id}
+
+
+@router.post("/workflow_runs/{run_id}/steps/{step_id}/override")
+async def override_workflow_step_output_route(run_id: str, step_id: str, request: Request):
+    """
+    POST /v1/workflow_runs/{id}/steps/{step_id}/override
+    Body: {"output": str}
+    人工编辑已完成 step 的输出（单步编辑续跑第一步，第二步用
+    POST .../resume 传 force_rerun_from=step_id 触发下游重跑）。
+    """
+    cfg = _workflow_cfg(request)
+    _require_owner(request)
+    from mini_agent.workflow import api_helpers
+    body = await request.json() if await request.body() else {}
+    output = body.get("output", "")
+    try:
+        api_helpers.override_step_output(cfg, run_id, step_id, output)
+    except api_helpers.WorkflowApiError as e:
+        raise _workflow_api_error_to_http(e)
+    return {"overridden": True, "step_id": step_id, "workflow_session_id": run_id}
 
 
 # ── 用户行为感知系统（默认关闭，见 perception/behavior/）───────────────────

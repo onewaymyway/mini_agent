@@ -326,14 +326,46 @@ or self._cfg.model`，跟现有 `model=step.model or self._cfg.model`
 
 ## 实施检查清单
 
-- [ ] ①-1 `routes.py` 新增 11 个 workflow REST 端点（含鉴权、错误处理）
-- [ ] ①-2 抽取 `workflow/tools.py` 共用逻辑到 `workflow/api_helpers.py`
-- [ ] ①-3 `client.py` 新增对称方法
-- [ ] ①-4 `app.py` 新增 `render_workflow_tab()` + main() 挂载新 tab
-- [ ] ②-1 `WorkflowDef.max_total_tokens` + watchdog token 护栏
-- [ ] ②-2 `preview_workflow` 工具 + REST 端点
-- [ ] ②-3 `override_step_output` + `resume_workflow_run(force_rerun_from=)`
-- [ ] ③-1 `WorkflowDef.defaults` + `_execute_step` 继承合并
-- [ ] ③-2 `workflow_snippets` + `include:` 展开
-- [ ] ④-1 `StepExecutor` 公开化 + `register_step_executor`
-- [ ] ④-2 `myplugins/` 插件发现机制（若不存在则先补）
+- [x] ①-1 `routes.py` 新增 workflow REST 端点（含鉴权、错误处理）——
+      实际新增 14 个端点：`GET /workflows`、`GET /workflows/{name}`、
+      `POST /workflows/{name}/preview`、`POST /workflows/{name}/run`、
+      `GET /workflow_runs`、`GET /workflow_runs/{id}`、
+      `GET /workflow_runs/{id}/events`、`POST .../pause|cancel|resume|
+      approve|reject|input`、`POST .../steps/{step_id}/override`。
+      鉴权沿用 `_require_owner`（owner-only，与 cron jobs 一致）。
+- [x] ①-2 抽取 `workflow/tools.py` 共用逻辑到 `workflow/api_helpers.py`——
+      `run_workflow`/`resume_workflow_run`/`list_workflow_runs`/
+      `pause`/`cancel`/`approve`/`reject`/`provide_input` 等工具已改为
+      调用 `api_helpers` 里的纯函数，`routes.py` 调用同一批函数；
+      `get_workflow_run_status` 工具因输出格式（含图标/评分展示）与 REST
+      JSON 差异较大，暂未合并，保留原实现（`api_helpers.get_workflow_run_detail`
+      仍提供等价的结构化数据供 REST 使用）。
+- [x] ①-3 `client.py` 新增对称方法（`workflows`/`workflow_yaml`/
+      `preview_workflow`/`run_workflow`/`workflow_runs`/
+      `workflow_run_detail`/`workflow_run_events`/`pause_workflow_run`/
+      `cancel_workflow_run`/`resume_workflow_run`/`approve_workflow_step`/
+      `reject_workflow_step`/`provide_workflow_input`/
+      `override_workflow_step_output`）
+- [x] ①-4 `app.py` 新增 `render_workflow_tab()` + main() 挂载新 tab
+      （"🔄 工作流"，含运行面板/看板视图/历史执行列表三区块）
+- [ ] ②-1 `WorkflowDef.max_total_tokens` + watchdog token 护栏——**未实现**，
+      需要先确认 Agent 侧 token 用量统计的暴露点（见原设计 3.1），留待后续。
+- [x] ②-2 `preview_workflow` 工具 + REST 端点（`api_helpers.preview_workflow`，
+      复用 `WorkflowRunner._compute_parallel_batches` 做并发分批展示，
+      `{param}` 占位符按 inputs 静态替换，`{step_id.output}` 等运行时占位符
+      原样保留并标注；condition 表达式对纯 inputs 依赖的做沙箱 `eval` 求值，
+      含运行期依赖的标注"运行时决定"）
+- [x] ②-3 `override_step_output` + `resume_workflow_run(force_rerun_from=)`——
+      `api_helpers.override_step_output` 编辑已完成 step 的输出并落盘；
+      `api_helpers.resume_workflow_run(force_rerun_from=...)` 通过反向依赖图
+      计算下游 step 集合，从 session 里摘掉对应 `step_results` 使其被
+      runner 当作未完成重新执行；Streamlit Tab 里对应"✏️ 编辑此步骤输出
+      并续跑"交互已接入。
+- [ ] ③-1 `WorkflowDef.defaults` + `_execute_step` 继承合并——**未实现**
+- [ ] ③-2 `workflow_snippets` + `include:` 展开——**未实现**
+- [ ] ④-1 `StepExecutor` 公开化 + `register_step_executor`——**未实现**
+- [ ] ④-2 `myplugins/` 插件发现机制（若不存在则先补）——**未实现**
+
+> 本轮（2026-07）完成了①看板集成全部四项与②可控性护栏三项中的两项
+> （dry-run 预览、单步编辑续跑）；②-1 token 预算护栏与③可定制性、
+> ④可扩展性两大项按原文档建议顺序推后，留待下一轮迭代。

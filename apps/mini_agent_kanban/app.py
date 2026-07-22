@@ -140,6 +140,26 @@ GOAL_STATUS_COLUMNS = [
     ("abandoned", "🗑️ 已放弃"),
 ]
 
+# workflow机制改进计划（P7）二、2.2：StepStatus 归并为 5 栏展示。
+# 每项：(展示列标题, 归入这一列的 StepResult.status 取值集合)
+WORKFLOW_STEP_COLUMNS = [
+    ("⚪ 未开始", ("pending",)),
+    ("🟠 进行中", ("running",)),
+    ("✅ 已完成", ("done", "skipped")),
+    ("🔴 需要关注", ("gate_failed", "failed")),
+    ("🟣 等待审批", ("awaiting_approval",)),
+]
+
+WORKFLOW_RUN_STATUS_LABELS = {
+    "running": "🟠 运行中",
+    "paused": "⏸️ 已暂停",
+    "awaiting_approval": "🟣 等待审批",
+    "done": "✅ 已完成",
+    "failed": "❌ 失败",
+    "partial": "🟡 部分完成",
+    "cancelled": "🗑️ 已取消",
+}
+
 
 def inject_css():
     st.markdown("""
@@ -249,6 +269,9 @@ def init_state():
         "fs_path": ".",
         "artifacts_session_filter": "",
         "artifacts_open_id": None,
+        # workflow机制改进计划（P7）二、Streamlit "🔄 工作流" Tab
+        "wf_active_run_id": None,
+        "wf_history_open_id": None,
     }
     for k, v in defaults.items():
         if k not in st.session_state:
@@ -1202,6 +1225,186 @@ def render_kanban_tab(client: AgentClient):
 
 
 # ═══════════════════════════════════════════════════════════════════════
+# Tab: 🔄 工作流（workflow机制改进计划（P7）二）
+# ═══════════════════════════════════════════════════════════════════════
+
+import re as _wf_re
+
+
+def _wf_extract_input_params(yaml_text: str) -> list:
+    """从工作流 YAML 里扫描 `{xxx}` 占位符，只取不含 '.' 的 {param} 形式
+    （那些才是需要用户在运行前填的 inputs，`{step_id.output}` 这类运行时
+    占位符会被排除）。思路与 schema.py::validate() 里 check_placeholders
+    一致。"""
+    keys = []
+    for m in _wf_re.finditer(r"\{([^}]+)\}", yaml_text):
+        key = m.group(1)
+        if "." not in key and key not in keys:
+            keys.append(key)
+    return keys
+
+
+def _render_workflow_run_panel(client: AgentClient):
+    st.markdown("##### ▶️ 运行面板")
+    wf_data = client.workflows() or {}
+    if "_error" in wf_data:
+        st.warning(f"工作流列表获取失败：{wf_data['_error']}")
+        return
+    workflows = wf_data.get("workflows", [])
+    if not workflows:
+        st.info("暂无已保存的工作流（可让主 Agent 调用 generate_workflow / create_workflow_from_template 创建）。")
+        return
+
+    names = [w["name"] for w in workflows]
+    selected = st.selectbox("选择工作流", names, key="wf_selected_name")
+
+    yaml_resp = client.workflow_yaml(selected) or {}
+    yaml_text = yaml_resp.get("yaml", "")
+    params = _wf_extract_input_params(yaml_text) if yaml_text else []
+
+    inputs = {}
+    if params:
+        st.caption("需要填写的参数：")
+        cols = st.columns(min(len(params), 3) or 1)
+        for i, p in enumerate(params):
+            with cols[i % len(cols)]:
+                inputs[p] = st.text_input(p, key=f"wf_input_{selected}_{p}")
+    else:
+        st.caption("该工作流没有需要用户填写的 {param} 占位符。")
+
+    with st.expander("查看 YAML 定义"):
+        st.code(yaml_text, language="yaml")
+
+    c1, c2 = st.columns([1, 1])
+    if c1.button("🔍 预览执行计划", key="wf_preview_btn"):
+        preview = client.preview_workflow(selected, inputs)
+        if preview and "_error" in preview:
+            st.error(preview["_error"])
+        else:
+            st.json(preview, expanded=True)
+
+    if c2.button("🚀 运行", key="wf_run_btn", type="primary"):
+        res = client.run_workflow(selected, inputs, background=True)
+        if res and "_error" in res:
+            st.error(res["_error"])
+        else:
+            st.session_state.wf_active_run_id = res.get("workflow_session_id")
+            st.rerun()
+
+
+def _render_workflow_step_card(client: AgentClient, run_id: str, step_id: str, sr: dict):
+    status = sr.get("status", "pending")
+    score = sr.get("score")
+    duration = sr.get("duration_seconds", 0.0)
+    meta = f"{duration:.1f}s"
+    if score is not None:
+        meta += f"　评分 {score}"
+    st.markdown(f"""
+<div class="kanban-card">
+  <div class="title">{step_id}</div>
+  <div class="meta">{meta}</div>
+</div>
+""", unsafe_allow_html=True)
+    output = sr.get("output") or ""
+    if output:
+        preview_text = output[:200].replace("\n", " ")
+        if len(output) > 200:
+            preview_text += "..."
+        st.caption(preview_text)
+    if status == "failed" and sr.get("error"):
+        st.caption(f"❌ {sr['error']}")
+
+    if status == "awaiting_approval":
+        reason_key = f"wf_reject_reason_{run_id}_{step_id}"
+        reason = st.text_input("拒绝原因（可选）", key=reason_key, label_visibility="collapsed", placeholder="拒绝原因（可选）")
+        ac1, ac2 = st.columns(2)
+        if ac1.button("✅ 批准", key=f"wf_approve_{run_id}_{step_id}"):
+            client.approve_workflow_step(run_id)
+            st.rerun()
+        if ac2.button("❌ 拒绝", key=f"wf_reject_{run_id}_{step_id}"):
+            client.reject_workflow_step(run_id, reason)
+            st.rerun()
+
+    if status == "done":
+        with st.expander("✏️ 编辑此步骤输出并续跑"):
+            edited = st.text_area("新的输出内容", value=output, key=f"wf_override_{run_id}_{step_id}", height=120)
+            if st.button("以此结果继续（重跑下游步骤）", key=f"wf_override_btn_{run_id}_{step_id}"):
+                client.override_workflow_step_output(run_id, step_id, edited)
+                client.resume_workflow_run(run_id, background=True, force_rerun_from=step_id)
+                st.rerun()
+
+
+def _render_workflow_run_detail(client: AgentClient, run_id: str):
+    detail = client.workflow_run_detail(run_id)
+    if detail and "_error" in detail:
+        st.error(f"执行详情获取失败：{detail['_error']}")
+        return
+
+    status = detail.get("status", "unknown")
+    st.markdown(f"##### 🔄 {detail.get('workflow_name', run_id)}　`{run_id}`")
+    st.caption(f"状态：{WORKFLOW_RUN_STATUS_LABELS.get(status, status)}")
+
+    tc1, tc2, tc3 = st.columns(3)
+    if tc1.button("⏸️ 暂停", key=f"wf_pause_{run_id}"):
+        client.pause_workflow_run(run_id)
+        st.rerun()
+    if tc2.button("🛑 取消", key=f"wf_cancel_{run_id}"):
+        client.cancel_workflow_run(run_id)
+        st.rerun()
+    if tc3.button("▶️ 续跑", key=f"wf_resume_{run_id}"):
+        client.resume_workflow_run(run_id, background=True)
+        st.rerun()
+
+    step_results = detail.get("step_results", {})
+    cols = st.columns(len(WORKFLOW_STEP_COLUMNS))
+    for col, (label, status_values) in zip(cols, WORKFLOW_STEP_COLUMNS):
+        with col:
+            st.markdown(f'<div class="kanban-col"><h4>{label}</h4>', unsafe_allow_html=True)
+            for step_id, sr in step_results.items():
+                if sr.get("status") in status_values:
+                    _render_workflow_step_card(client, run_id, step_id, sr)
+            st.markdown("</div>", unsafe_allow_html=True)
+
+    if detail.get("output_dir"):
+        st.caption(f"📁 输出目录：`{detail['output_dir']}`")
+
+    # 只在运行中才轮询，跑完自动停止，避免空转耗资源
+    # （Streamlit 不擅长长连接，用定长轮询代替 SSE）
+    if status == "running":
+        time.sleep(2)
+        st.rerun()
+
+
+def render_workflow_tab(client: AgentClient):
+    st.markdown("#### 🔄 工作流")
+
+    _render_workflow_run_panel(client)
+    st.markdown("---")
+
+    active_run_id = st.session_state.get("wf_active_run_id")
+    if active_run_id:
+        _render_workflow_run_detail(client, active_run_id)
+        st.markdown("---")
+
+    with st.expander("📜 历史执行记录", expanded=not active_run_id):
+        runs_resp = client.workflow_runs() or {}
+        if "_error" in runs_resp:
+            st.warning(f"执行记录获取失败：{runs_resp['_error']}")
+        else:
+            runs = runs_resp.get("runs", [])
+            if not runs:
+                st.caption("暂无工作流执行记录。")
+            for r in sorted(runs, key=lambda x: x.get("started_at", 0), reverse=True):
+                rid = r.get("workflow_session_id")
+                label = r.get("summary_line", rid)
+                rc1, rc2 = st.columns([5, 1])
+                rc1.markdown(f"`{rid}`　{label}")
+                if rc2.button("查看", key=f"wf_open_{rid}"):
+                    st.session_state.wf_active_run_id = rid
+                    st.rerun()
+
+
+# ═══════════════════════════════════════════════════════════════════════
 # Tab 4: 产出物（文件浏览）
 # ═══════════════════════════════════════════════════════════════════════
 def render_artifacts_tab(client: AgentClient):
@@ -1395,7 +1598,7 @@ def main():
 
     render_topbar(client)
 
-    tabs = st.tabs(["💬 对话", "🗂️ 会话管理", "📌 目标看板", "📁 产出物", "🖼️ 产出预览", "🧠 自我状态", "🔧 诊断"])
+    tabs = st.tabs(["💬 对话", "🗂️ 会话管理", "📌 目标看板", "🔄 工作流", "📁 产出物", "🖼️ 产出预览", "🧠 自我状态", "🔧 诊断"])
     with tabs[0]:
         render_chat_tab(client)
     with tabs[1]:
@@ -1403,12 +1606,14 @@ def main():
     with tabs[2]:
         render_kanban_tab(client)
     with tabs[3]:
-        render_artifacts_tab(client)
+        render_workflow_tab(client)
     with tabs[4]:
-        render_artifacts_preview_tab(client)
+        render_artifacts_tab(client)
     with tabs[5]:
-        render_self_tab(client)
+        render_artifacts_preview_tab(client)
     with tabs[6]:
+        render_self_tab(client)
+    with tabs[7]:
         render_diagnostics_tab(client)
 
     if st.session_state.get("auto_refresh"):

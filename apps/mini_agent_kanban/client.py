@@ -225,6 +225,55 @@ class AgentClient:
     def run_cron_job_now(self, job_id: str):
         return self._post(f"/cron/jobs/{job_id}/run")
 
+    # ── 看板：Workflow（workflow机制改进计划（P7）一、1.3）─────────────
+    def workflows(self):
+        return self._get("/workflows")
+
+    def workflow_yaml(self, name: str):
+        return self._get(f"/workflows/{name}")
+
+    def preview_workflow(self, name: str, inputs: dict = None):
+        return self._post(f"/workflows/{name}/preview", {"inputs": inputs or {}})
+
+    def run_workflow(self, name: str, inputs: dict = None, background: bool = True):
+        return self._post(f"/workflows/{name}/run", {
+            "inputs": inputs or {}, "background": background,
+        })
+
+    def workflow_runs(self, name: str = None):
+        params = {"name": name} if name else None
+        return self._get("/workflow_runs", params=params)
+
+    def workflow_run_detail(self, run_id: str):
+        return self._get(f"/workflow_runs/{run_id}")
+
+    def workflow_run_events(self, run_id: str, since_line: int = 0):
+        return self._get(f"/workflow_runs/{run_id}/events", params={"since_line": since_line})
+
+    def pause_workflow_run(self, run_id: str):
+        return self._post(f"/workflow_runs/{run_id}/pause")
+
+    def cancel_workflow_run(self, run_id: str):
+        return self._post(f"/workflow_runs/{run_id}/cancel")
+
+    def resume_workflow_run(self, run_id: str, background: bool = True, force_rerun_from: str = None):
+        body = {"background": background}
+        if force_rerun_from:
+            body["force_rerun_from"] = force_rerun_from
+        return self._post(f"/workflow_runs/{run_id}/resume", body)
+
+    def approve_workflow_step(self, run_id: str):
+        return self._post(f"/workflow_runs/{run_id}/approve")
+
+    def reject_workflow_step(self, run_id: str, reason: str = ""):
+        return self._post(f"/workflow_runs/{run_id}/reject", {"reason": reason})
+
+    def provide_workflow_input(self, run_id: str, text: str):
+        return self._post(f"/workflow_runs/{run_id}/input", {"text": text})
+
+    def override_workflow_step_output(self, run_id: str, step_id: str, output: str):
+        return self._post(f"/workflow_runs/{run_id}/steps/{step_id}/override", {"output": output})
+
     # ── 日报 / 主动推荐 / 决策画像（主动推荐与数字分身机制设计方案）───────
     def daily_digest(self, date: str = None):
         params = {"date": date} if date else None

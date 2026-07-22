@@ -25,6 +25,14 @@ workflow/tools.py — 工作流工具注册
   list_workflow_templates      列举内置工作流模板
   create_workflow_from_template 基于内置模板创建并保存一个新工作流
 
+  [workflow机制改进计划（P7）新增]
+  preview_workflow      dry-run 预览执行计划（并发分批/prompt占位符/condition求值），不实际执行
+
+  以上工具"真正做事"的核心逻辑已抽取到 workflow/api_helpers.py 的纯函数中，
+  本模块只负责把返回的结构化结果包装成给 LLM 看的 Markdown 字符串；
+  api/routes.py 的 REST 端点调用同一批纯函数，包装成 JSON 给看板前端用，
+  两边共享同一套状态机逻辑，不重复维护。
+
 在 app.py 里调用 register_workflow_tools(cfg) 即可完成注册。
 """
 
@@ -125,58 +133,26 @@ def register_workflow_tools(cfg: "AppConfig") -> None:
                     workflow.background_execution_default 的配置（默认 False，
                     即前台同步执行、直接返回完整结果摘要）。
         """
-        from mini_agent.workflow.store import WorkflowStore
-        from mini_agent.workflow.runner import WorkflowRunner
-
-        store = WorkflowStore(Path(store_path))
-        wf = store.load(name)
-        if wf is None:
-            available = [w["name"] for w in store.list_all()]
-            return (
-                f"❌ 找不到工作流 {name!r}\n"
-                f"可用工作流：{available or '（无）'}"
-            )
+        from mini_agent.workflow import api_helpers
 
         try:
             parsed_inputs = json.loads(inputs) if inputs.strip() else {}
         except json.JSONDecodeError as e:
             return f"❌ inputs 参数不是合法 JSON：{e}"
 
-        run_in_background = background
-        if run_in_background is None:
-            run_in_background = bool(getattr(getattr(cfg, "workflow", None), "background_execution_default", False))
+        try:
+            outcome = api_helpers.start_workflow_run(cfg, name, parsed_inputs, background)
+        except api_helpers.WorkflowApiError as e:
+            return f"❌ {e.message}"
 
-        from mini_agent.workflow.runner import step_requires_approval
-        has_approval_step = any(step_requires_approval(s, getattr(cfg, "workflow", None)) for s in wf.steps)
-        if has_approval_step and not run_in_background:
-            run_in_background = True  # 强制后台，否则审批门必然超时判拒绝
+        if outcome["mode"] == "sync":
+            return outcome["result"].to_summary()
 
-        runner = WorkflowRunner(cfg)
-
-        if not run_in_background:
-            result = runner.run(wf, parsed_inputs)
-            return result.to_summary()
-
-        import uuid
-        from mini_agent.storage.paths import AgentPaths
-        wf_session_id = f"wfs_{uuid.uuid4().hex[:12]}"
-        # 提前建好本次执行的输出目录（不用等 runner.run 在后台线程里跑到才建），
-        # 这样这条工具返回消息就能立刻告诉主 Agent 正确的落盘位置，避免它在
-        # 工作流跑完后转而把结果写进自己的 session output 目录。
-        wf_output_dir = AgentPaths(project_root=cfg.project_root).ensure_workflow_session_output_dir(wf_session_id)
-
-        def _bg_run():
-            try:
-                runner.run(wf, parsed_inputs, workflow_session_id=wf_session_id)
-            except Exception as e:
-                from mini_agent.errors import log_exception
-                log_exception(e, where="mini_agent.workflow.tools.run_workflow._bg_run")
-
-        t = threading.Thread(target=_bg_run, daemon=True, name=f"wf-run-{wf_session_id}")
-        t.start()
-
+        wf_session_id = outcome["workflow_session_id"]
+        wf_output_dir = outcome["output_dir"]
+        has_approval_step = outcome["has_approval_step"]
         return (
-            f"🚀 工作流 **{wf.name}** 已在后台开始执行\n"
+            f"🚀 工作流 **{name}** 已在后台开始执行\n"
             f"workflow_session_id：`{wf_session_id}`\n"
             f"可用 `get_workflow_run_status(workflow_session_id=\"{wf_session_id}\")` 查看进度，"
             f"`pause_workflow_run` / `cancel_workflow_run` 控制执行"
@@ -236,45 +212,15 @@ def register_workflow_tools(cfg: "AppConfig") -> None:
         workflow_session_id: 之前一次 run_workflow 返回的执行 ID
         background: 是否后台续跑，含义同 run_workflow 的 background 参数
         """
-        from mini_agent.storage.paths import AgentPaths
-        from mini_agent.workflow.session import WorkflowSession
-        from mini_agent.workflow.store import WorkflowStore
-        from mini_agent.workflow.runner import WorkflowRunner
-        from mini_agent.workflow.generator import WorkflowGenerator
+        from mini_agent.workflow import api_helpers
 
-        paths = AgentPaths(project_root=cfg.project_root)
-        wf_session = WorkflowSession.load(paths, workflow_session_id)
-        if wf_session is None:
-            return f"❌ 找不到执行记录 {workflow_session_id!r}"
-
-        snap_path = paths.workflow_session_def_snapshot(workflow_session_id)
-        if not snap_path.exists():
-            return f"❌ 执行 {workflow_session_id!r} 缺少工作流定义快照，无法续跑"
-
-        generator = WorkflowGenerator(cfg)
         try:
-            wf = generator.parse_yaml(snap_path.read_text(encoding="utf-8"))
-        except ValueError as e:
-            return f"❌ 定义快照解析失败：{e}"
+            outcome = api_helpers.resume_workflow_run(cfg, workflow_session_id, background)
+        except api_helpers.WorkflowApiError as e:
+            return f"❌ {e.message}"
 
-        run_in_background = background
-        if run_in_background is None:
-            run_in_background = bool(getattr(getattr(cfg, "workflow", None), "background_execution_default", False))
-
-        runner = WorkflowRunner(cfg)
-        if not run_in_background:
-            result = runner.run(wf, wf_session.inputs, workflow_session_id=workflow_session_id)
-            return result.to_summary()
-
-        def _bg_resume():
-            try:
-                runner.run(wf, wf_session.inputs, workflow_session_id=workflow_session_id)
-            except Exception as e:
-                from mini_agent.errors import log_exception
-                log_exception(e, where="mini_agent.workflow.tools.resume_workflow_run._bg_resume")
-
-        t = threading.Thread(target=_bg_resume, daemon=True, name=f"wf-resume-{workflow_session_id}")
-        t.start()
+        if outcome["mode"] == "sync":
+            return outcome["result"].to_summary()
         return f"🚀 已在后台续跑 workflow_session_id=`{workflow_session_id}`"
 
     # ── 执行记录查询（P2/P3）──────────────────────────────────────────────────
@@ -285,25 +231,12 @@ def register_workflow_tools(cfg: "AppConfig") -> None:
         """
         name: 可选，只看指定工作流名称的执行记录
         """
-        from mini_agent.storage.paths import AgentPaths
-        from mini_agent.workflow.session import WorkflowSession
+        from mini_agent.workflow import api_helpers
 
-        paths = AgentPaths(project_root=cfg.project_root)
-        ids = paths.list_workflow_session_ids()
-        if not ids:
-            return "📭 当前没有任何工作流执行记录。"
-
-        lines = []
-        for wf_session_id in sorted(ids):
-            s = WorkflowSession.load(paths, wf_session_id)
-            if s is None:
-                continue
-            if name and s.workflow_name != name:
-                continue
-            lines.append(f"- {s.summary_line()}")
-
-        if not lines:
+        runs = api_helpers.list_workflow_runs(cfg, name)
+        if not runs:
             return f"📭 没有找到工作流 {name!r} 的执行记录。" if name else "📭 当前没有任何工作流执行记录。"
+        lines = [f"- {r['summary_line']}" for r in runs]
         return f"📋 共 {len(lines)} 条执行记录：\n\n" + "\n".join(lines)
 
     @tool(name="get_workflow_run_status", group="workflow",
@@ -340,25 +273,21 @@ def register_workflow_tools(cfg: "AppConfig") -> None:
     @tool(name="pause_workflow_run", group="workflow",
           description="暂停一次正在后台执行的工作流，会在当前批次跑完后停在下一批次前，可用 resume_workflow_run 续跑。")
     def pause_workflow_run(workflow_session_id: str) -> str:
-        from mini_agent.workflow import registry as wf_registry
-        control = wf_registry.get(workflow_session_id)
-        if control is None:
-            return (
-                f"⚠️ 进程内没有找到执行 {workflow_session_id!r} 的活跃控制状态"
-                "（可能已结束、或所在进程已重启）。若确实还在运行，请稍后用 "
-                "get_workflow_run_status 确认其状态。"
-            )
-        control.request_pause()
+        from mini_agent.workflow import api_helpers
+        try:
+            api_helpers.pause_workflow_run(cfg, workflow_session_id)
+        except api_helpers.WorkflowApiError as e:
+            return f"⚠️ {e.message}"
         return f"⏸️ 已请求暂停 workflow_session_id=`{workflow_session_id}`，将在当前批次结束后生效"
 
     @tool(name="cancel_workflow_run", group="workflow",
           description="取消一次正在执行的工作流，正在跑的步骤会尽快中止，未开始的步骤标记为已取消。")
     def cancel_workflow_run(workflow_session_id: str) -> str:
-        from mini_agent.workflow import registry as wf_registry
-        control = wf_registry.get(workflow_session_id)
-        if control is None:
-            return f"⚠️ 进程内没有找到执行 {workflow_session_id!r} 的活跃控制状态，可能已经结束。"
-        control.request_cancel()
+        from mini_agent.workflow import api_helpers
+        try:
+            api_helpers.cancel_workflow_run(cfg, workflow_session_id)
+        except api_helpers.WorkflowApiError as e:
+            return f"⚠️ {e.message}"
         return f"🛑 已请求取消 workflow_session_id=`{workflow_session_id}`"
 
     # ── 人工审批门（P4）──────────────────────────────────────────────────────
@@ -366,23 +295,21 @@ def register_workflow_tools(cfg: "AppConfig") -> None:
     @tool(name="approve_workflow_step", group="workflow",
           description="批准一个正在等待人工审批的工作流步骤，使其继续执行。")
     def approve_workflow_step(workflow_session_id: str) -> str:
-        from mini_agent.workflow import registry as wf_registry
-        control = wf_registry.get(workflow_session_id)
-        if control is None or not control.pending_approval_step:
-            return f"⚠️ 执行 {workflow_session_id!r} 当前没有正在等待审批的步骤。"
-        step_id = control.pending_approval_step
-        control.request_approve(step_id)
+        from mini_agent.workflow import api_helpers
+        try:
+            step_id = api_helpers.approve_workflow_step(cfg, workflow_session_id)
+        except api_helpers.WorkflowApiError as e:
+            return f"⚠️ {e.message}"
         return f"✅ 已批准步骤 `{step_id}`（workflow_session_id=`{workflow_session_id}`）"
 
     @tool(name="reject_workflow_step", group="workflow",
           description="拒绝一个正在等待人工审批的工作流步骤，该步骤会被标记为 rejected 并跳过。")
     def reject_workflow_step(workflow_session_id: str, reason: str = "") -> str:
-        from mini_agent.workflow import registry as wf_registry
-        control = wf_registry.get(workflow_session_id)
-        if control is None or not control.pending_approval_step:
-            return f"⚠️ 执行 {workflow_session_id!r} 当前没有正在等待审批的步骤。"
-        step_id = control.pending_approval_step
-        control.request_reject(step_id, reason)
+        from mini_agent.workflow import api_helpers
+        try:
+            step_id = api_helpers.reject_workflow_step(cfg, workflow_session_id, reason)
+        except api_helpers.WorkflowApiError as e:
+            return f"⚠️ {e.message}"
         return f"❌ 已拒绝步骤 `{step_id}`（workflow_session_id=`{workflow_session_id}`）{('，原因：' + reason) if reason else ''}"
 
     # ── human_input 步骤送入文本（P5）────────────────────────────────────────
@@ -394,12 +321,11 @@ def register_workflow_tools(cfg: "AppConfig") -> None:
         workflow_session_id: 正在执行的工作流的执行 ID
         input_text: 要送入的文本，将作为该 step 的 output，可被后续 step 用 {step_id.output} 引用
         """
-        from mini_agent.workflow import registry as wf_registry
-        control = wf_registry.get(workflow_session_id)
-        if control is None or not control.pending_input_step:
-            return f"⚠️ 执行 {workflow_session_id!r} 当前没有正在等待人工输入的步骤。"
-        step_id = control.pending_input_step
-        control.request_provide_input(step_id, input_text)
+        from mini_agent.workflow import api_helpers
+        try:
+            step_id = api_helpers.provide_workflow_step_input(cfg, workflow_session_id, input_text)
+        except api_helpers.WorkflowApiError as e:
+            return f"⚠️ {e.message}"
         return f"✅ 已向步骤 `{step_id}` 送入文本（workflow_session_id=`{workflow_session_id}`）"
 
     # ── 模板库（P6）──────────────────────────────────────────────────────────
@@ -439,3 +365,43 @@ def register_workflow_tools(cfg: "AppConfig") -> None:
             f"步骤：{' → '.join(s.id for s in wf.steps)}\n"
             f"运行方式：调用 `run_workflow` 工具，传入 name=\"{wf.name}\""
         )
+
+    # ── Dry-run 预览（workflow机制改进计划（P7）二、3.2）───────────────────────
+
+    @tool(name="preview_workflow", group="workflow",
+          description="预览工作流执行计划（不实际运行）：展示并发分批、prompt 占位符替换结果、"
+                      "condition 表达式的静态求值情况，用于运行前确认。")
+    def preview_workflow(name: str, inputs: str = "{}") -> str:
+        """
+        name: 工作流名称
+        inputs: JSON 字符串，与 run_workflow 的 inputs 含义一致
+        """
+        from mini_agent.workflow import api_helpers
+        try:
+            parsed_inputs = json.loads(inputs) if inputs.strip() else {}
+        except json.JSONDecodeError as e:
+            return f"❌ inputs 参数不是合法 JSON：{e}"
+
+        try:
+            preview = api_helpers.preview_workflow(cfg, name, parsed_inputs)
+        except api_helpers.WorkflowApiError as e:
+            return f"❌ {e.message}"
+
+        lines = [f"### 工作流预览：{preview['workflow_name']}", ""]
+        lines.append("**并发批次：**")
+        for i, batch in enumerate(preview["batches"], start=1):
+            step_desc = "、".join(f"`{s['id']}`({s['type']})" for s in batch)
+            lines.append(f"{i}. {step_desc}")
+        lines.append("")
+        lines.append("**Prompt 预览（`{step_id.output}` 等运行时占位符原样保留）：**")
+        for step_id, prompt in preview["resolved_prompts"].items():
+            preview_text = prompt[:200].replace("\n", " ")
+            if len(prompt) > 200:
+                preview_text += "..."
+            lines.append(f"- `{step_id}`：{preview_text}")
+        if preview["conditions"]:
+            lines.append("")
+            lines.append("**Condition 表达式：**")
+            for step_id, cond in preview["conditions"].items():
+                lines.append(f"- `{step_id}`：{cond}")
+        return "\n".join(lines)
