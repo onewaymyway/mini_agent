@@ -52,15 +52,21 @@ WorkflowDef（工作流定义）
 name: workflow_name        # 工作流唯一名称（英文小写，对应文件名）
 description: 描述          # 用于 list_workflows 展示，中文可用
 version: "1.0"             # 版本号，纯标识用途
+max_total_duration: null   # 该工作流的总时长护栏（秒），覆盖全局配置
+max_total_tokens: null     # [P7-②1] 该工作流的总 token 用量护栏，覆盖全局配置
+defaults: {}               # [P7-③1] model/timeout/max_turns/retry_on_error/
+                            #          allow_parallel 的统一默认值，见下文专门章节
 
 steps:
   - id: step_id            # 步骤唯一标识，英文小写下划线
     name: 步骤名称          # 可读名称
     prompt: |              # Prompt 模板（支持占位符）
       ...
+    include: null          # [P7-③2] 引用可复用 step 片段，见下文专门章节
     role: null             # 执行角色：null（主 Agent）或角色 profile name
     type: null             # [P5] 显式类型：null=按role自动推断 / agent / role_agent /
-                           #      sub_workflow / tool_call / human_input / script
+                           #      sub_workflow / tool_call / human_input / script /
+                           #      skill_agent，或插件注册的自定义类型（见 P7-④1/④2）
     workflow_name: null    # [P5] type=sub_workflow 时必填：引用的工作流名称
     tool_name: null        # [P5] type=tool_call 时必填：要调用的工具名称
     tool_args: {}          # [P5] type=tool_call 时的工具入参（为空则用 prompt 作为唯一实参）
@@ -69,11 +75,15 @@ steps:
     require_approval: false # 是否要求人工审批门放行
     depends_on: []         # 依赖的步骤 id 列表，控制执行顺序
     condition: null        # 执行条件，null 表示无条件执行
-    max_turns: 10          # 该步骤允许的最大 LLM 轮数（默认 10）
-    model: null            # 覆盖模型（null = 继承全局）
-    timeout: null          # 超时秒数（null = 不限制）
-    retry_on_gate_fail: 0  # 质检不达标时重跑次数（0 = 不重跑）
-    retry_on_error: 0      # 普通异常重试次数（0 = 不重试）
+    # [P7-③1] 下面几个字段不写（null）时按"本字段 → 顶层 defaults 同名
+    # 值 → 硬编码兜底"三层继承，兜底值见括号，详见下文"workflow 级默认
+    # 配置"一节。
+    max_turns: null        # 该步骤允许的最大 LLM 轮数（硬编码兜底 10）
+    model: null            # 覆盖模型（null = 继承 defaults/全局）
+    timeout: null          # 超时秒数（硬编码兜底：不限制）
+    retry_on_gate_fail: 0  # 质检不达标时重跑次数（0 = 不重跑，不参与 defaults 继承）
+    retry_on_error: null   # 普通异常重试次数（硬编码兜底 0）
+    allow_parallel: null   # 是否允许与同层步骤并发执行（硬编码兜底 true）
 ```
 
 ### Prompt 占位符
@@ -493,7 +503,12 @@ run_workflow("article_writer", {
   `timeout` 状态并继续推进（已知限制：Python 线程无法被安全强杀，超时
   后底层线程可能仍在后台跑完，但 runner 不再等待）；
 - 累计执行时长是否超过 `WorkflowDef.max_total_duration` 或全局配置
-  `workflow.max_total_duration_seconds`，超过则主动请求取消。
+  `workflow.max_total_duration_seconds`，超过则主动请求取消；
+- 累计 token 用量（`P7-②1`）是否超过 `WorkflowDef.max_total_tokens` 或全局
+  配置 `workflow.max_total_tokens`，超过则同样主动请求取消。只统计
+  `type: agent` / `type: skill_agent` 这两类步骤的 `input_tokens +
+  output_tokens`（能拿到独立 `Agent.stats` 的类型），`role_agent` /
+  `sub_workflow` / `tool_call` 等类型暂不计入。
 
 ---
 
@@ -590,6 +605,157 @@ run_workflow("article_writer", {
 ```
 
 Agent 侧对应的工具是 `provide_workflow_step_input(workflow_session_id, input_text)`。
+
+---
+
+## workflow 级默认配置（`defaults`，P7-③1）
+
+`WorkflowDef` 顶层可以加一个 `defaults` 字段，为 `model` / `timeout` /
+`max_turns` / `retry_on_error` / `allow_parallel` 这 5 个 step 级字段提供
+统一默认值。查找顺序是**三层**："step 显式写的值 → `defaults` 里的值 →
+运行时硬编码兜底"（`max_turns` 兜底 10，`retry_on_error` 兜底 0，
+`allow_parallel` 兜底 `true`，`model`/`timeout` 兜底不限制/走全局配置）：
+
+```yaml
+name: data_pipeline
+defaults:
+  model: gpt-4.1-mini      # 除非某个 step 单独写了 model，否则都用这个
+  max_turns: 6
+  retry_on_error: 1
+
+steps:
+  - id: fetch
+    prompt: "抓取原始数据"
+    # 没写 max_turns/model/retry_on_error → 继承上面 defaults 里的值
+
+  - id: analyze
+    prompt: "深度分析 {fetch.output}"
+    max_turns: 20            # 显式写了 → 优先于 defaults，只对这一个 step 生效
+```
+
+**这是完全向后兼容的改动**：没写 `defaults` 的旧 YAML 行为不变（直接落到
+硬编码兜底，和改进前完全一样）。保存（`to_dict`）时只有 step **显式**
+写过的字段才会出现在 YAML 里——哪怕显式值恰好等于硬编码默认值（例如显式
+写 `allow_parallel: true`）也会被保留下来，这样才能和"没写、跟随
+`defaults` 走"区分开。
+
+---
+
+## 可复用 step 片段（`workflow_snippets`，P7-③2）
+
+多个工作流经常需要重复同一段 step（例如"打分 → 生成报告"这套质检
+组合），P7-③2 允许把这样一段 `steps` 提取成独立文件复用，通过
+`include:` 字段引用，纯**加载期展开**，不改变 runner 的执行逻辑，展开
+之后跟手写完整 YAML 完全一样。
+
+**片段文件位置**：`<project_root>/.agent/workflow_snippets/<n>.yaml`，
+格式是一段 `steps:` 列表（与 workflow YAML 里的 `steps` 字段同构，不含
+`name`/`description` 等顶层字段）：
+
+```yaml
+# .agent/workflow_snippets/quality_check.yaml
+steps:
+  - id: score
+    prompt: "对上面的产出打分（0-100）"
+  - id: report
+    depends_on: [score]
+    prompt: "根据 {score.output} 生成质检报告"
+```
+
+在工作流 YAML 里引用：
+
+```yaml
+steps:
+  - id: analyze
+    prompt: "分析 {input}"
+
+  - id: qc                 # 这个 id 会作为片段内所有 step 的命名空间前缀
+    include: quality_check  # 引用上面那个片段文件（不带 .yaml 后缀）
+    depends_on: [analyze]   # 挂到片段"入口" step 上（片段内没有依赖的 step）
+
+  - id: final
+    depends_on: [qc]        # 引用 include 条目本身的 id，自动指向片段
+    prompt: "汇总：{qc.output}"   # 展开后自动指向片段里最后一个 step 的输出
+```
+
+展开后实际生效的 step 是 `analyze` → `qc__score` → `qc__report` →
+`final`：片段内每个 step 的 `id` 会加上 `"qc__"` 前缀（避免同一片段被
+多处 `include` 时 id 冲突），片段内部的 `depends_on` 与 prompt 占位符
+引用会同步改写为加前缀后的 id；片段里"没有依赖"的入口 step（这里是
+`score`）自动接上 `include` 条目自己声明的外部 `depends_on`
+（这里是 `analyze`）；工作流里其它 step 对 `qc` 这个 id 的引用
+（`depends_on: [qc]`、`prompt` 里的 `{qc.output}`）会被自动改写为指向
+片段展开后的最后一个 step（这里是 `qc__report`）。
+
+管理片段可以直接读写 `.agent/workflow_snippets/*.yaml` 文件，也可以用
+`WorkflowStore` 的 `list_snippets()` / `load_snippet(name)` /
+`save_snippet(name, steps)` / `delete_snippet(name)` 几个方法（目前还
+没有对应的 CLI/工具封装，需要在 Python 代码里调用）。
+
+---
+
+## 自定义 Step 类型：插件化扩展（P7-④1/④2）
+
+内置的 7 种 step 类型（`agent`/`role_agent`/`sub_workflow`/`tool_call`/
+`human_input`/`script`/`skill_agent`）之外，可以通过插件注册新的 step
+类型，不需要改动本包源码。
+
+**1. 实现一个 `StepExecutor`**：
+
+```python
+from mini_agent.workflow.executors import StepExecutor, register_step_executor
+
+class HttpStepExecutor(StepExecutor):
+    def execute(self, runner, step, prompt: str) -> str:
+        # runner: 当前 WorkflowRunner 实例（可用 runner._effective_step_field()
+        #         读取 defaults 合并后的字段、runner._cfg 读取全局配置）
+        # step:   WorkflowStep 定义（自定义字段可以放 tool_args）
+        # prompt: 占位符替换后的 prompt 文本
+        ...
+        return "该 step 的输出文本"
+
+    def validate_step(self, step) -> list[str]:
+        # 可选：自定义类型专属的必填字段校验，返回错误文案列表（空=合法）。
+        # 内置 7 种类型的必填字段校验写死在 schema.py 里，不走这个钩子；
+        # 只有通过 register_step_executor() 注册的自定义类型才会调用这里。
+        errors = []
+        if not (step.tool_args or {}).get("url"):
+            errors.append(f"步骤 {step.id!r} 是 http 类型但未指定 url")
+        return errors
+```
+
+**2. 通过 `myplugins/` 目录自动注册**：项目根目录下的
+`myplugins/*.py`（文件名不以 `_` 开头）会在启动时被自动扫描、逐个
+`import`，如果模块定义了顶层 `register(cfg)` 函数就会被调用——这是插件
+的统一入口：
+
+```python
+# myplugins/my_http_step.py
+def register(cfg):
+    register_step_executor("http", HttpStepExecutor())
+```
+
+之后 workflow YAML 里就能直接写 `type: http` 了：
+
+```yaml
+- id: fetch
+  type: http
+  tool_args:
+    url: "https://example.com/api/status"
+  prompt: "（http 类型不使用 prompt，占位即可）"
+```
+
+仓库自带一个可参考的完整示例：`myplugins/example_http_step.py`（不需要
+就直接删掉，不影响其它插件或核心功能）。
+
+**已知边界**：
+- 单个插件加载失败（import 报错）或 `register(cfg)` 调用失败，只会打印
+  一条警告并跳过，不影响其余插件与主程序启动。
+- `register_step_executor()` 覆盖内置 7 种类型的实现会打印警告但仍然
+  允许（便于测试环境替换实现），生产场景不建议这么做。
+- 自定义类型没有 `retry_on_gate_fail` 之外的内置安全默认值（不像
+  `script`/`tool_call` 那样有专门的开关保护），插件作者需要自行评估
+  该类型的风险面。
 
 ---
 
@@ -715,7 +881,10 @@ Workflow 执行时会触发以下 Hook 事件（复用项目现有的 `mini_agen
 
 - **类型专属必填字段**：`sub_workflow` 缺少 `workflow_name`、`tool_call`
   缺少 `tool_name`、`script` 缺少 `script` 命令都会被拒绝；`sub_workflow`
-  引用自身（导致无限递归）也会被拒绝。
+  引用自身（导致无限递归）也会被拒绝。插件通过 `register_step_executor()`
+  注册的自定义类型（见"自定义 Step 类型：插件化扩展"一节）不走这套写死
+  的内置检查，改为调用对应 `StepExecutor.validate_step(step)`，由插件
+  自己定义必填字段规则。
 - **占位符引用完整性**（受 `workflow.validate_placeholders_on_save` 控制，
   默认开启）：扫描 `prompt` 中 `{step_id.output}` / `{step_id.score}` 形式
   的占位符，检查 `step_id` 是否真的存在于工作流里，避免笔误导致运行时
@@ -761,6 +930,7 @@ Workflow 执行时会触发以下 Hook 事件（复用项目现有的 `mini_agen
   "watchdog_enabled": true,
   "heartbeat_check_interval_seconds": 5.0,
   "max_total_duration_seconds": null,
+  "max_total_tokens": null,
   "approval_poll_interval_seconds": 3.0,
   "approval_wait_timeout_seconds": 600.0,
   "retry_on_error_backoff_seconds": 5.0,
@@ -783,6 +953,7 @@ Workflow 执行时会触发以下 Hook 事件（复用项目现有的 `mini_agen
 | `watchdog_enabled` | `true` | 是否启用看护线程（心跳超时检测+资源护栏） |
 | `heartbeat_check_interval_seconds` | `5.0` | 看护线程轮询间隔（秒） |
 | `max_total_duration_seconds` | `null` | 全局总执行时长护栏（秒），`null`=不限制，可被单个工作流的 `max_total_duration` 覆盖 |
+| `max_total_tokens`（P7-②1） | `null` | 全局总 token 用量护栏，`null`=不限制，可被单个工作流的 `max_total_tokens` 覆盖，见上文"看护线程"说明 |
 | `approval_poll_interval_seconds` | `3.0` | 审批门等待时的轮询间隔（秒） |
 | `approval_wait_timeout_seconds` | `600.0` | 审批等待超时（秒），`null`=无限等待 |
 | `retry_on_error_backoff_seconds` | `5.0` | `retry_on_error` 重试的基础退避时长（秒） |
