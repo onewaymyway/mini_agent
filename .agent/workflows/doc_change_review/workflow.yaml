@@ -1,0 +1,46 @@
+name: doc_change_review
+description: >-
+  文档变更审查流水线（文件夹模式示例，见 next_doc/workflow_directory_mode_design.md）。
+  演示：prompt_file 抽出的 prompt 模板、type: skill_agent 调用工作流私有 skill、
+  type: role_agent 调用工作流私有 agent profile，以及主 Agent step 自动感知本地
+  agents/skills 目录。运行前提供 {old_path} / {new_path} 两个文档版本路径。
+version: "1.0"
+steps:
+  - id: collect
+    name: 提取变更摘要
+    type: agent
+    prompt_file: prompts/collect.md
+    # 主 Agent 执行期间会自动带上本工作流的 agents/、skills/ 目录，
+    # 因此这一步如果需要，也可以通过 spawn_named_agent 直接调用
+    # 本地的 reviewer profile，不局限于后面的 role_agent step。
+
+  - id: diff
+    name: 生成结构化变更清单
+    type: skill_agent
+    skill_name: changelog-diff       # 优先匹配 skills/changelog-diff/SKILL.md
+    prompt: |
+      旧版本路径：{old_path}
+      新版本路径：{new_path}
+
+      前一步提取的变更摘要：
+      {collect.output}
+
+      请按 changelog-diff skill 的规范，输出结构化的变更清单。
+    depends_on:
+      - collect
+
+  - id: review
+    name: 审查变更影响
+    type: role_agent
+    role: reviewer                    # 优先匹配 agents/reviewer.md（本工作流私有）
+    prompt_file: prompts/review.md
+    depends_on:
+      - diff
+
+  - id: report
+    name: 生成审查报告
+    type: agent
+    prompt_file: prompts/report.md
+    depends_on:
+      - review
+    condition: "review.output != ''"

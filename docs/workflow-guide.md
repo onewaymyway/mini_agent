@@ -619,6 +619,15 @@ Agent 侧对应的工具是 `provide_workflow_step_input(workflow_session_id, in
 （自动创建 `agents/`、`skills/`、`prompts/` 空目录，原 YAML 移入
 `workflow.yaml`，删除旧的单文件）。
 
+> 仓库里带了一个可以直接运行的完整示例：
+> `.agent/workflows/doc_change_review/`，一个"文档变更审查"流水线，
+> 覆盖了本节讲到的全部能力——`prompt_file`（`prompts/*.md`）、
+> `type: role_agent` 调用私有 agent（`agents/reviewer.md`）、
+> `type: skill_agent` 调用私有 skill（`skills/changelog-diff/SKILL.md`），
+> 以及一个普通的 `type: agent` 主 Agent step。可以用
+> `/workflow run doc_change_review` 结合 `{old_path}`/`{new_path}` 两个
+> 文档路径直接跑起来，也可以照着它的结构改成自己的 workflow。
+
 ### Prompt 文件引用（`prompt_file`）
 
 step 里的 `prompt` 字段可以换成 `prompt_file`，值是相对 workflow 所在
