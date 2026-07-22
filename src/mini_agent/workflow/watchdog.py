@@ -7,7 +7,9 @@ workflow/watchdog.py — WorkflowWatchdog 看护线程（workflow机制改进计
      轮询点强制判 TIMEOUT（真正的硬中断仍由 runner 侧的 future.result(timeout)
      完成，watchdog 只负责判定与记录，不直接杀线程——Python 线程无法被安全
      强杀，这是已知限制，见 next_doc 的风险说明）。
-  2. 资源/成本护栏：累计运行时长超过 max_total_duration 时，主动请求 cancel。
+  2. 资源/成本护栏：累计运行时长超过 max_total_duration 时，主动请求 cancel；
+     [P7-②1] 累计 token 用量（由 runner 回填）超过 max_total_tokens 时同样
+     主动请求 cancel。
   3. 把关键事件写入 watchdog.jsonl，供事后审计。
 
 不负责：控制信号（pause/cancel/approve/reject）的存储——那部分由
@@ -36,18 +38,25 @@ class WorkflowWatchdog:
         control: "ControlState",
         poll_interval: float = 5.0,
         max_total_duration: Optional[float] = None,
+        max_total_tokens: Optional[int] = None,
     ) -> None:
         self._paths = paths
         self._wf_id = workflow_session_id
         self._control = control
         self._poll_interval = max(0.5, poll_interval)
         self._max_total_duration = max_total_duration
+        self._max_total_tokens = max_total_tokens
         self._t_start = time.monotonic()
 
         self._heartbeats: dict[str, float] = {}
         self._timeouts: dict[str, float] = {}
         self._timed_out_steps: set[str] = set()
         self._hb_lock = threading.Lock()
+
+        # [P7-②1 workflow_mechanism_improvement_plan.md] 累计 token 用量，
+        # 由 runner._report_step_tokens() 在每个 step 的 Agent 跑完后回填。
+        self._total_tokens = 0
+        self._token_lock = threading.Lock()
 
         self._stop_event = threading.Event()
         self._thread: Optional[threading.Thread] = None
@@ -73,6 +82,20 @@ class WorkflowWatchdog:
     def is_step_timed_out(self, step_id: str) -> bool:
         with self._hb_lock:
             return step_id in self._timed_out_steps
+
+    # ── token 预算护栏接口（由 runner 在每个 step 的 Agent 跑完后调用）──────
+
+    def register_step_tokens(self, step_id: str, tokens_used: int) -> None:
+        """累加本次工作流执行的 token 用量。跨线程安全（同层并发多个 step）。"""
+        if tokens_used <= 0:
+            return
+        with self._token_lock:
+            self._total_tokens += tokens_used
+
+    @property
+    def total_tokens(self) -> int:
+        with self._token_lock:
+            return self._total_tokens
 
     # ── 生命周期 ────────────────────────────────────────────────────────────
 
@@ -113,15 +136,23 @@ class WorkflowWatchdog:
                     })
 
     def _check_resource_guard(self) -> None:
-        if not self._max_total_duration:
-            return
-        elapsed = time.monotonic() - self._t_start
-        if elapsed > self._max_total_duration and not self._control.cancel_requested.is_set():
-            self._control.request_cancel()
-            self._log_event("max_total_duration_exceeded", {
-                "elapsed": elapsed,
-                "max_total_duration": self._max_total_duration,
-            })
+        if self._max_total_duration:
+            elapsed = time.monotonic() - self._t_start
+            if elapsed > self._max_total_duration and not self._control.cancel_requested.is_set():
+                self._control.request_cancel()
+                self._log_event("max_total_duration_exceeded", {
+                    "elapsed": elapsed,
+                    "max_total_duration": self._max_total_duration,
+                })
+
+        if self._max_total_tokens:
+            total = self.total_tokens
+            if total > self._max_total_tokens and not self._control.cancel_requested.is_set():
+                self._control.request_cancel()
+                self._log_event("max_total_tokens_exceeded", {
+                    "total_tokens": total,
+                    "max_total_tokens": self._max_total_tokens,
+                })
 
     # ── 日志 ────────────────────────────────────────────────────────────────
 

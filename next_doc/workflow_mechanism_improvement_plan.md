@@ -348,8 +348,16 @@ or self._cfg.model`，跟现有 `model=step.model or self._cfg.model`
       `override_workflow_step_output`）
 - [x] ①-4 `app.py` 新增 `render_workflow_tab()` + main() 挂载新 tab
       （"🔄 工作流"，含运行面板/看板视图/历史执行列表三区块）
-- [ ] ②-1 `WorkflowDef.max_total_tokens` + watchdog token 护栏——**未实现**，
-      需要先确认 Agent 侧 token 用量统计的暴露点（见原设计 3.1），留待后续。
+- [x] ②-1 `WorkflowDef.max_total_tokens` + watchdog token 护栏——已实现：
+      `WorkflowConfig.max_total_tokens`/`WorkflowDef.max_total_tokens` 双层
+      配置（wf 优先，cfg 兜底）；`WorkflowWatchdog.register_step_tokens()`
+      线程安全累加，`_check_resource_guard()` 超限时与 `max_total_duration`
+      一样 `request_cancel()` + 记 `max_total_tokens_exceeded` 事件；
+      `WorkflowRunner._execute_with_main_agent()` 跑完后用
+      `agent.stats.input_tokens/output_tokens` 回填（`_report_step_tokens()`）。
+      **已知范围限制**：只统计 `agent`/`skill_agent` 类型 step（能拿到独立
+      `Agent.stats` 的类型），`role_agent`/`sub_workflow`/`tool_call` 等
+      类型暂不计入，见 runner.py 对应注释。
 - [x] ②-2 `preview_workflow` 工具 + REST 端点（`api_helpers.preview_workflow`，
       复用 `WorkflowRunner._compute_parallel_batches` 做并发分批展示，
       `{param}` 占位符按 inputs 静态替换，`{step_id.output}` 等运行时占位符
@@ -361,11 +369,46 @@ or self._cfg.model`，跟现有 `model=step.model or self._cfg.model`
       计算下游 step 集合，从 session 里摘掉对应 `step_results` 使其被
       runner 当作未完成重新执行；Streamlit Tab 里对应"✏️ 编辑此步骤输出
       并续跑"交互已接入。
-- [ ] ③-1 `WorkflowDef.defaults` + `_execute_step` 继承合并——**未实现**
-- [ ] ③-2 `workflow_snippets` + `include:` 展开——**未实现**
-- [ ] ④-1 `StepExecutor` 公开化 + `register_step_executor`——**未实现**
-- [ ] ④-2 `myplugins/` 插件发现机制（若不存在则先补）——**未实现**
+- [x] ③-1 `WorkflowDef.defaults` + `_execute_step` 继承合并——已实现：
+      `WorkflowStep.max_turns/allow_parallel/retry_on_error` 改为
+      `Optional`（`None`=未显式设置），新增 `WorkflowDef.defaults: dict`；
+      `WorkflowRunner._effective_step_field(step, field, hardcoded_default)`
+      做"step 显式值 → wf.defaults → 硬编码兜底"三层查找，接入并发分批、
+      普通异常重试、`_execute_with_main_agent`（model/max_turns/timeout）、
+      `_execute_step_bounded` 硬超时、看护线程心跳注册、`skill_agent`
+      Executor 共 7 处调用点。`to_dict`/`from_dict` 同步调整：`None` 不再
+      写入 YAML（代表"继承"），显式写的值（即使等于硬编码默认值）会被
+      保留，与"未设置"区分开——这是一处行为变化，`test_workflow_parallel.py`
+      里两个断言旧语义的用例已同步更新。
+- [x] ③-2 `workflow_snippets` + `include:` 展开——已实现：
+      `WorkflowStore.SNIPPETS_DIR`（`.agent/workflow_snippets/<n>.yaml`）+
+      `list_snippets()`/`load_snippet()`/`save_snippet()`/`delete_snippet()`；
+      `_expand_includes()` 在 `_load_path()` 内、`WorkflowDef.from_dict()`
+      之前对原始 dict 做纯文本级展开：片段内每个 step 的 `id` 加
+      `"{include_step_id}__"` 前缀，片段内部 `depends_on` 与 prompt 占位符
+      引用同步改写为加前缀后的 id；片段"入口" step 自动接上 include 条目
+      自己声明的外部 `depends_on`；外部其它 step 对 include 条目 id 的引用
+      （`depends_on` + prompt 占位符）改写为指向片段展开后的最后一个 step。
+      `WorkflowStep.include` 字段 + `to_dict`/`from_dict` 序列化；
+      `schema.py::validate()` 对 `include` 非空的 step 豁免"prompt 为空"
+      校验（真正的 prompt 校验发生在展开之后）。
+- [x] ④-1 `StepExecutor` 公开化 + `register_step_executor`——已实现：
+      `StepExecutor` 新增 `validate_step(step) -> list[str]` 钩子（默认空
+      列表）；`executors.py` 新增 `register_step_executor(type_name, executor)`
+      和 `get_registered_types()`；`schema.py::validate()` 的类型合法性检查
+      从写死的 `STEP_TYPES` 改为懒加载查询 `get_registered_types()`
+      （容错：import 失败退回 `STEP_TYPES`），自定义类型的必填字段校验
+      委托给对应 Executor 的 `validate_step()`。
+- [x] ④-2 `myplugins/` 插件发现机制——已实现：新增
+      `src/mini_agent/plugins.py::discover_and_register_plugins(cfg)`，
+      扫描 `<project_root>/myplugins/*.py`（跳过 `_` 开头文件），逐个
+      `importlib` 动态加载并调用模块级 `register(cfg)`（若存在）；单个
+      插件加载/调用失败只记警告，不影响其余插件与主程序启动。接入点：
+      `cli/app.py` 在 `register_workflow_tools(cfg)` 之后调用。新增示例
+      插件 `myplugins/example_http_step.py` 演示
+      `register_step_executor()` 用法（新增 `type: http` step 类型）。
 
-> 本轮（2026-07）完成了①看板集成全部四项与②可控性护栏三项中的两项
-> （dry-run 预览、单步编辑续跑）；②-1 token 预算护栏与③可定制性、
-> ④可扩展性两大项按原文档建议顺序推后，留待下一轮迭代。
+> 本轮（2026-07，第二次迭代）完成了②可控性护栏剩余的 token 预算护栏
+> （②-1），以及③可定制性、④可扩展性两大项的全部四个子项
+> （③-1/③-2/④-1/④-2）。至此本文档四大项（①②③④）的全部子项均已
+> 完成实现并通过 `tests/` 中 workflow 相关用例（86 个）。

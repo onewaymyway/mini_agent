@@ -236,6 +236,8 @@ class WorkflowRunner:
 
         # 供 _run_step_with_gate_retry 引用步骤定义
         self._current_wf_steps = wf.steps
+        # [P7-③1] 供 _effective_step_field() 读取 wf.defaults 做继承合并
+        self._current_wf = wf
         self._current_wf_session = wf_session
         self._current_paths = paths
 
@@ -248,6 +250,8 @@ class WorkflowRunner:
 
         control = wf_registry.register(wf_session_id)
         max_total_duration = wf.max_total_duration or getattr(wf_cfg, "max_total_duration_seconds", None)
+        # [P7-②1] token 预算护栏：WorkflowDef 优先，全局 cfg.workflow.max_total_tokens 兜底。
+        max_total_tokens = wf.max_total_tokens or getattr(wf_cfg, "max_total_tokens", None)
         watchdog_enabled = bool(getattr(wf_cfg, "watchdog_enabled", True))
         watchdog: Optional[WorkflowWatchdog] = None
         if watchdog_enabled:
@@ -257,6 +261,7 @@ class WorkflowRunner:
                 control=control,
                 poll_interval=float(getattr(wf_cfg, "heartbeat_check_interval_seconds", 5.0)),
                 max_total_duration=max_total_duration,
+                max_total_tokens=max_total_tokens,
             )
             watchdog.start()
         self._current_watchdog = watchdog
@@ -333,8 +338,8 @@ class WorkflowRunner:
                 )
             ]
 
-            parallel_steps = [s for s in pending_in_batch if s.allow_parallel]
-            serial_steps = [s for s in pending_in_batch if not s.allow_parallel]
+            parallel_steps = [s for s in pending_in_batch if self._effective_step_field(s, "allow_parallel", True)]
+            serial_steps = [s for s in pending_in_batch if not self._effective_step_field(s, "allow_parallel", True)]
 
             for step in serial_steps:
                 self._run_one_step(step, step_results, inputs, results_lock)
@@ -390,6 +395,26 @@ class WorkflowRunner:
         return _finish(status)
 
     # ── Session/看护辅助 ──────────────────────────────────────────────────
+
+    def _effective_step_field(self, step: WorkflowStep, field_name: str, hardcoded_default: Any) -> Any:
+        """
+        [P7-③1 workflow_mechanism_improvement_plan.md] 三层查找："step 显式值
+        → wf.defaults[field_name] → 硬编码兜底"，用于 model/timeout/
+        max_turns/retry_on_error/allow_parallel 这几个字段。
+
+        step 上对应属性为 None 视为"未显式设置"；wf.defaults 是一个普通
+        dict，缺 key 或值为 None 也视为未设置，继续往下一层找。
+        """
+        val = getattr(step, field_name, None)
+        if val is not None:
+            return val
+        wf = getattr(self, "_current_wf", None)
+        if wf is not None:
+            defaults = getattr(wf, "defaults", None) or {}
+            dv = defaults.get(field_name)
+            if dv is not None:
+                return dv
+        return hardcoded_default
 
     def _persist_progress(
         self,
@@ -484,7 +509,7 @@ class WorkflowRunner:
 
         watchdog = getattr(self, "_current_watchdog", None)
         if watchdog is not None:
-            watchdog.register_step_start(step.id, step.timeout)
+            watchdog.register_step_start(step.id, self._effective_step_field(step, "timeout", None))
 
         self._emit_hook("WorkflowStepStart", {
             "step_id": step.id, "step_name": step.name, "type": step.effective_type,
@@ -849,7 +874,7 @@ class WorkflowRunner:
 
         wf_cfg = getattr(self._cfg, "workflow", None)
         backoff = float(getattr(wf_cfg, "retry_on_error_backoff_seconds", 5.0))
-        max_retry = max(0, step.retry_on_error)
+        max_retry = max(0, self._effective_step_field(step, "retry_on_error", 0))
 
         sr = self._execute_step_bounded(step, resolved_prompt, step_results)
         retries_used = 0
@@ -880,7 +905,8 @@ class WorkflowRunner:
         把该 step 标记为 TIMEOUT 并继续推进后续批次。这是纯 Python 线程模型
         的固有限制，见改进计划文档"风险与兼容性说明"一节。
         """
-        if not step.timeout:
+        eff_timeout = self._effective_step_field(step, "timeout", None)
+        if not eff_timeout:
             return self._execute_step(step, resolved_prompt, step_results)
 
         from concurrent.futures import ThreadPoolExecutor as _TPE
@@ -890,14 +916,14 @@ class WorkflowRunner:
         with _TPE(max_workers=1) as pool:
             future = pool.submit(self._execute_step, step, resolved_prompt, step_results)
             try:
-                return future.result(timeout=step.timeout)
+                return future.result(timeout=eff_timeout)
             except _cf.TimeoutError:
                 import mini_agent.ui.renderer as R
-                R.print_warning(f"[Workflow] ⏱️ 步骤 {step.id} 超过 {step.timeout}s 未完成，强制标记 TIMEOUT")
+                R.print_warning(f"[Workflow] ⏱️ 步骤 {step.id} 超过 {eff_timeout}s 未完成，强制标记 TIMEOUT")
                 return StepResult(
                     step_id=step.id,
                     status=StepStatus.TIMEOUT,
-                    error=f"步骤执行超过 timeout={step.timeout}s",
+                    error=f"步骤执行超过 timeout={eff_timeout}s",
                     duration_seconds=time.monotonic() - t_start,
                 )
 
@@ -1061,7 +1087,7 @@ class WorkflowRunner:
             verbose=self._cfg.verbose,
             sandbox=self._cfg.sandbox,
             auto_approve=True,
-            model=step.model or self._cfg.model,
+            model=self._effective_step_field(step, "model", None) or self._cfg.model,
             llm_provider=self._cfg.llm_provider,
             llm_base_url=self._cfg.llm_base_url,
             # [BUGFIX] 同 evaluator.py：继承 self._cfg 的 --debug-llm，而不是硬编码 False。
@@ -1069,10 +1095,11 @@ class WorkflowRunner:
             debug_llm_console=getattr(self._cfg, "debug_llm_console", False),
         )
         step_cfg.api_key = self._cfg.api_key
-        step_cfg.max_turns = step.max_turns
+        step_cfg.max_turns = self._effective_step_field(step, "max_turns", 10)
         step_cfg.stream = False
-        if step.timeout:
-            step_cfg.request_timeout = step.timeout
+        eff_timeout = self._effective_step_field(step, "timeout", None)
+        if eff_timeout:
+            step_cfg.request_timeout = eff_timeout
 
         # [workflow机制改进计划.md P2] 数据聚合：把该 step 对应 Agent 的
         # session 数据（history/traces/temp/output/artifacts）绑到
@@ -1117,7 +1144,25 @@ class WorkflowRunner:
             skill_loader=bundle.skill_loader if bundle else None,
             agent_profile_loader=bundle.agent_loader if bundle else None,
         )
-        return agent.run_turn(prompt)
+        output = agent.run_turn(prompt)
+        self._report_step_tokens(step, agent)
+        return output
+
+    def _report_step_tokens(self, step: WorkflowStep, agent: Any) -> None:
+        """
+        [P7-②1 workflow_mechanism_improvement_plan.md] 把该 step 对应
+        Agent 的 token 用量回填给看护线程做累计护栏检查。只有走独立 Agent
+        实例的类型（agent/skill_agent）能拿到 agent.stats，role_agent/
+        sub_workflow/tool_call/human_input/script 暂不计入（各自要么没有
+        独立 Agent.stats，要么本身就不产生 LLM token 消耗）。
+        """
+        watchdog = getattr(self, "_current_watchdog", None)
+        stats = getattr(agent, "stats", None)
+        if watchdog is None or stats is None:
+            return
+        tokens = int(getattr(stats, "input_tokens", 0)) + int(getattr(stats, "output_tokens", 0))
+        if tokens:
+            watchdog.register_step_tokens(step.id, tokens)
 
     def _execute_with_role_agent(self, step: WorkflowStep, prompt: str) -> str:
         """用指定角色 Agent 执行步骤。"""

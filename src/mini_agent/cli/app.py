@@ -347,6 +347,15 @@ def _main_inner() -> None:
     register_workflow_tools(cfg)
     R.print_info("Workflow tools registered (generate/save/run/list/show/delete_workflow)")
 
+    # ── myplugins/ 插件发现（P7-④2） ─────────────────────────────────────────
+    # 放在 register_workflow_tools 之后：插件的 register(cfg) 里若要调用
+    # workflow.executors.register_step_executor() 注册自定义 step 类型，
+    # 此时 workflow 子系统（executors 模块）已可用。
+    from mini_agent.plugins import discover_and_register_plugins
+    loaded_plugins = discover_and_register_plugins(cfg)
+    if loaded_plugins:
+        R.print_info(f"Plugins loaded from myplugins/: {loaded_plugins}")
+
     from mini_agent.hooks import init_hooks
     hook_mgr = init_hooks(cfg.project_root)
     if hook_mgr.has_any:

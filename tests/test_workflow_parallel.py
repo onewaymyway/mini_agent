@@ -270,12 +270,16 @@ class TestGateRetryUnderConcurrency(unittest.TestCase):
 
 
 class TestWorkflowStepAllowParallelSerialization(unittest.TestCase):
-    def test_from_dict_defaults_allow_parallel_true(self):
+    def test_from_dict_defaults_allow_parallel_none(self):
+        # [P7-③1 workflow_mechanism_improvement_plan.md] 未显式设置时，
+        # allow_parallel 的原始属性值现在是 None（"继承 wf.defaults / 硬编码
+        # 兜底 True"），不再直接等于 True——运行时由
+        # WorkflowRunner._effective_step_field() 解出最终生效值。
         wf = WorkflowDef.from_dict({
             "name": "wf",
             "steps": [{"id": "a", "name": "a", "prompt": "p"}],
         })
-        self.assertTrue(wf.steps[0].allow_parallel)
+        self.assertIsNone(wf.steps[0].allow_parallel)
 
     def test_from_dict_respects_explicit_false(self):
         wf = WorkflowDef.from_dict({
@@ -284,8 +288,16 @@ class TestWorkflowStepAllowParallelSerialization(unittest.TestCase):
         })
         self.assertFalse(wf.steps[0].allow_parallel)
 
-    def test_to_dict_omits_default_true(self):
+    def test_to_dict_includes_explicit_true(self):
+        # [P7-③1] 显式写 True 与"未设置"（None）现在语义不同——显式值即使
+        # 与硬编码兜底相同也要写入 YAML，才能和"未设置、跟随 defaults 走"
+        # 区分开。
         wf = WorkflowDef(name="wf", steps=[_step("a", allow_parallel=True)])
+        d = wf.to_dict()
+        self.assertEqual(d["steps"][0]["allow_parallel"], True)
+
+    def test_to_dict_omits_none(self):
+        wf = WorkflowDef(name="wf", steps=[_step("a", allow_parallel=None)])
         d = wf.to_dict()
         self.assertNotIn("allow_parallel", d["steps"][0])
 

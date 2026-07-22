@@ -44,10 +44,31 @@ if TYPE_CHECKING:
 
 
 class StepExecutor:
-    """单个 Step 类型的执行器基类。子类只需实现 execute()。"""
+    """
+    单个 Step 类型的执行器基类，是 workflow 系统的公开扩展点
+    （[P7-④1 workflow_mechanism_improvement_plan.md]）。
+
+    外部插件（如 myplugins/ 下的模块）新增一种 step 类型时，继承本类实现
+    execute()（必选）和 validate_step()（可选），再调用模块级
+    register_step_executor(type_name, executor实例) 完成注册，不需要改动
+    本包源码，也不需要改动 runner.py 的核心循环——runner._execute_step()
+    只按 step.effective_type 查表分发。
+    """
 
     def execute(self, runner: "WorkflowRunner", step: WorkflowStep, prompt: str) -> str:
+        """执行该 step，返回输出文本。子类必须实现。"""
         raise NotImplementedError
+
+    def validate_step(self, step: WorkflowStep) -> list[str]:
+        """
+        校验该 step 定义是否合法，返回错误信息列表（空列表=合法）。
+
+        仅对通过 register_step_executor() 注册的自定义类型生效——内置的
+        7 种类型的必填字段校验写死在 schema.py::WorkflowDef.validate() 里，
+        不经过这个钩子。自定义类型若有专属必填字段（例如"调用外部 HTTP
+        API 的 step 必须填 url"），在这里检查并返回错误文案。
+        """
+        return []
 
 
 class AgentStepExecutor(StepExecutor):
@@ -274,17 +295,18 @@ class SkillAgentStepExecutor(StepExecutor):
             verbose=runner._cfg.verbose,
             sandbox=runner._cfg.sandbox,
             auto_approve=True,
-            model=step.model or runner._cfg.model,
+            model=runner._effective_step_field(step, "model", None) or runner._cfg.model,
             llm_provider=runner._cfg.llm_provider,
             llm_base_url=runner._cfg.llm_base_url,
             debug_llm=getattr(runner._cfg, "debug_llm", False),
             debug_llm_console=getattr(runner._cfg, "debug_llm_console", False),
         )
         step_cfg.api_key = runner._cfg.api_key
-        step_cfg.max_turns = step.max_turns
+        step_cfg.max_turns = runner._effective_step_field(step, "max_turns", 10)
         step_cfg.stream = False
-        if step.timeout:
-            step_cfg.request_timeout = step.timeout
+        eff_timeout = runner._effective_step_field(step, "timeout", None)
+        if eff_timeout:
+            step_cfg.request_timeout = eff_timeout
 
         guard = PermissionGuard(
             auto_approve=True,
@@ -320,3 +342,48 @@ def get_executor(step_type: str) -> StepExecutor:
     if executor is None:
         raise ValueError(f"未知的 step 类型：{step_type!r}（可选：{list(_EXECUTORS)}）")
     return executor
+
+
+def get_registered_types() -> tuple[str, ...]:
+    """返回当前所有已注册的 step 类型（内置 7 种 + 插件注册的自定义类型）。"""
+    return tuple(_EXECUTORS.keys())
+
+
+def register_step_executor(type_name: str, executor: StepExecutor) -> None:
+    """
+    [P7-④1 workflow_mechanism_improvement_plan.md] 注册一个自定义 step
+    Executor，供外部插件调用（地位类似 tools.py 的 @tool 装饰器）。
+
+    典型用法（myplugins/my_http_step.py）：
+
+        from mini_agent.workflow.executors import StepExecutor, register_step_executor
+
+        class HttpStepExecutor(StepExecutor):
+            def execute(self, runner, step, prompt):
+                ...
+                return response_text
+
+            def validate_step(self, step):
+                errs = []
+                if not step.tool_args.get("url"):
+                    errs.append(f"步骤 {step.id!r} 是 http 类型但未指定 url")
+                return errs
+
+        def register(cfg):
+            register_step_executor("http", HttpStepExecutor())
+
+    `register(cfg)` 由 mini_agent.plugins.discover_and_register_plugins()
+    在启动阶段扫描 myplugins/*.py 时自动调用（见 plugins.py）。
+
+    覆盖内置类型（"agent"/"role_agent"/... 这 7 个）会打印警告但仍然允许
+    （便于测试环境替换实现），生产场景不建议覆盖内置类型。
+    """
+    if type_name in _EXECUTORS and type_name in (
+        "agent", "role_agent", "sub_workflow", "tool_call", "human_input", "script", "skill_agent",
+    ):
+        import logging
+        logging.getLogger(__name__).warning(
+            "[workflow] register_step_executor 覆盖了内置 step 类型 %r，"
+            "这通常只应在测试中发生", type_name,
+        )
+    _EXECUTORS[type_name] = executor

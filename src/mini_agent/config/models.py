@@ -887,6 +887,10 @@ class WorkflowConfig:
     watchdog_enabled: bool = True                       # 是否启用看护线程（心跳超时检测+资源护栏）
     heartbeat_check_interval_seconds: float = 5.0        # 看护线程轮询间隔
     max_total_duration_seconds: Optional[float] = None   # 单次工作流执行的总时长护栏（None=不限制，可被 WorkflowDef.max_total_duration 覆盖）
+    # [P7-②1 workflow_mechanism_improvement_plan.md] 单次工作流执行的累计
+    # token（input+output）护栏，None=不限制，可被 WorkflowDef.max_total_tokens
+    # 覆盖。只统计 agent/skill_agent 类型 step（见 runner.py 的回填点说明）。
+    max_total_tokens: Optional[int] = None
 
     # ── 人工审批门（P4）────────────────────────────────────────────────────
     approval_poll_interval_seconds: float = 3.0          # 审批门等待时的轮询间隔
