@@ -2025,12 +2025,21 @@ def run_connected_repl(
     # 跟之前版本不同的是：现在不再需要任何手动暂停/恢复逻辑——只要本函数
     # 剩下的所有输出都通过 term.print()/term.stream_token()/
     # term.prompt_user() 走渲染队列，状态栏刷新自然就不会和它们冲突。
+    # [FIX] active_session_id NameError：Python 对闭包变量的判定是"函数内
+    # 只要出现过赋值，就整函数当作局部变量"，下面的 lambda 引用的
+    # active_session_id 属于 run_connected_repl 这整个函数的局部变量。
+    # 之前这里的注释假设"刷新线程调用 lambda 时 active_session_id 早已
+    # 赋好值"，但状态栏刷新线程（Terminal._refresh_loop）是独立于本函数
+    # 主线程运行、按固定间隔轮询的——如果它在主线程走到下面 Session 选择
+    # 逻辑（真正给 active_session_id 赋值）之前就先调用了一次 provider，
+    # 就会触发 NameError: free variable 'active_session_id' where it is
+    # not associated with a value。这里提前声明并赋值为 None，保证
+    # provider 被注册的那一刻起，这个名字在函数作用域里就已经绑定好了，
+    # 后面 Session 选择逻辑里的重新赋值不受影响，状态栏依旧能实时反映。
+    active_session_id: Optional[str] = None
+
     if _term is not None:
         try:
-            # 注意：此时 active_session_id 还没赋值（在下面的 Session 选择
-            # 逻辑里才会赋值），但 lambda 是延迟求值的闭包——真正被刷新线程
-            # 调用时 active_session_id 早已经赋好值了，后续 session 切换
-            # （active_session_id 被重新赋值）也会自动反映到状态栏上。
             _term.set_statusbar_provider(
                 lambda: _connected_status_bar_provider(client, active_session_id)
             )
@@ -2061,7 +2070,8 @@ def run_connected_repl(
                 pass
         return
 
-    active_session_id: Optional[str] = None
+    # active_session_id 已在上面（注册状态栏 provider 之前）声明为 None，
+    # 这里正式赋值为选中的 session。
     if chosen_sid == "":
         new_sid = client.new_session()
         active_session_id = new_sid

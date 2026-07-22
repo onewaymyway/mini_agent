@@ -94,11 +94,24 @@ def _read_json(path: Path, default: object) -> object:
             return json.loads(text, strict=False)
         except Exception as _mini_agent_exc:
             from mini_agent.errors import log_exception
-            log_exception(_mini_agent_exc, where='mini_agent.perception.workdir_knowledge._read_json')
+            # [FIX] 之前这里没有把 path 记进日志，报错信息里只有
+            # "Expecting ',' delimiter: line 71 column 7"，完全不知道
+            # 是 project.json / work_index.json / open_threads.json /
+            # knowledge_index.json 里的哪一个坏了，只能挨个打开猜。
+            # 通过 extra 把具体路径带上，日志里就能直接定位到文件。
+            log_exception(
+                _mini_agent_exc,
+                where='mini_agent.perception.workdir_knowledge._read_json',
+                extra={"path": str(path)},
+            )
             return default
     except Exception as _mini_agent_exc:
         from mini_agent.errors import log_exception
-        log_exception(_mini_agent_exc, where='mini_agent.perception.workdir_knowledge._read_json')
+        log_exception(
+            _mini_agent_exc,
+            where='mini_agent.perception.workdir_knowledge._read_json',
+            extra={"path": str(path)},
+        )
         return default
 
 
