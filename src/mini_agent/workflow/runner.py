@@ -88,6 +88,10 @@ class WorkflowRunResult:
     total_duration: float = 0.0
     error: Optional[str] = None
     workflow_session_id: str = ""
+    # 本次执行的默认落盘输出目录（.agent/workflow_sessions/<id>/output/），
+    # 用户未指定输出路径时，任何"要保存为文件"的产出都应写到这里，而不是
+    # 触发本次工作流的主 Agent 自己的 session output 目录。
+    output_dir: str = ""
 
     @property
     def final_output(self) -> str:
@@ -120,6 +124,13 @@ class WorkflowRunResult:
             lines.append("---")
             lines.append("### 最终输出")
             lines.append(self.final_output)
+        if self.output_dir:
+            lines.append("")
+            lines.append(
+                f"📁 本次工作流的默认输出目录：`{self.output_dir}`\n"
+                f"若需要把以上内容保存为文件，且用户没有另外指定路径，请写入此目录，"
+                f"不要写入你自己（主 Agent）的 session output 目录。"
+            )
         return "\n".join(lines)
 
 
@@ -194,6 +205,9 @@ class WorkflowRunner:
             )
             paths.ensure_workflow_session_dir(wf_session_id)
             # 保存本次执行使用的工作流定义快照，防止运行中途原 YAML 被改动
+            #（下面顺带把 output/ 目录也建好——见 workflow_session_output_dir
+            # 的说明：本次执行的落盘产出默认应该去这里，而不是主 Agent 自己
+            # 的 session output 目录）。
             try:
                 import yaml  # type: ignore
                 snap = yaml.dump(wf.to_dict(), allow_unicode=True, sort_keys=False)
@@ -201,6 +215,8 @@ class WorkflowRunner:
                 import json as _json
                 snap = _json.dumps(wf.to_dict(), ensure_ascii=False, indent=2)
             paths.workflow_session_def_snapshot(wf_session_id).write_text(snap, encoding="utf-8")
+
+        wf_output_dir = paths.ensure_workflow_session_output_dir(wf_session_id)
 
         step_results: dict[str, StepResult] = dict(wf_session.step_results)
         wf_session.step_results = step_results
@@ -274,6 +290,7 @@ class WorkflowRunner:
                 total_duration=time.monotonic() - t_start,
                 error=error,
                 workflow_session_id=wf_session_id,
+                output_dir=str(wf_output_dir),
             )
 
         # [具身改进 B3] 拓扑分层：同一层内互不依赖的步骤可以并发执行。

@@ -264,6 +264,24 @@ class AgentPaths:
         d.mkdir(parents=True, exist_ok=True)
         return d
 
+    def workflow_session_output_dir(self, workflow_session_id: str) -> Path:
+        """…/workflow_sessions/<wf_session_id>/output/
+
+        本次 workflow 执行的"最终交付物"落地目录。用户在触发工作流时若未
+        显式指定输出路径，任何需要落盘的产出（汇总报告、生成的文件等）都
+        应该默认写到这里，而不是写到触发本次 workflow 的主 Agent 自己的
+        session output 目录（.agent/sessions/<agent_session_id>/output/）——
+        那是主 Agent 自己对话过程中的产出目录，与"这次 workflow 跑出来的
+        东西"是两回事，混在一起会导致同一个 workflow 多次运行 / 多个
+        workflow 交替运行时输出相互覆盖、难以追溯是哪次执行产生的文件。"""
+        return self.workflow_session_dir(workflow_session_id) / "output"
+
+    def ensure_workflow_session_output_dir(self, workflow_session_id: str) -> Path:
+        """确保 workflow_session 的 output/ 目录存在并返回路径。"""
+        d = self.workflow_session_output_dir(workflow_session_id)
+        d.mkdir(parents=True, exist_ok=True)
+        return d
+
     def list_workflow_session_ids(self) -> list[str]:
         """列举本项目下所有已存在的 workflow_session_id（按目录名，未做排序保证）。"""
         d = self.workflow_sessions_dir

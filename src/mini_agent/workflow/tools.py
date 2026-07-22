@@ -158,7 +158,12 @@ def register_workflow_tools(cfg: "AppConfig") -> None:
             return result.to_summary()
 
         import uuid
+        from mini_agent.storage.paths import AgentPaths
         wf_session_id = f"wfs_{uuid.uuid4().hex[:12]}"
+        # 提前建好本次执行的输出目录（不用等 runner.run 在后台线程里跑到才建），
+        # 这样这条工具返回消息就能立刻告诉主 Agent 正确的落盘位置，避免它在
+        # 工作流跑完后转而把结果写进自己的 session output 目录。
+        wf_output_dir = AgentPaths(project_root=cfg.project_root).ensure_workflow_session_output_dir(wf_session_id)
 
         def _bg_run():
             try:
@@ -176,6 +181,7 @@ def register_workflow_tools(cfg: "AppConfig") -> None:
             f"可用 `get_workflow_run_status(workflow_session_id=\"{wf_session_id}\")` 查看进度，"
             f"`pause_workflow_run` / `cancel_workflow_run` 控制执行"
             + ("，此工作流包含需要人工审批的步骤，跑到该步骤时会等待 `approve_workflow_step` / `reject_workflow_step`。" if has_approval_step else "")
+            + f"\n📁 本次工作流的默认输出目录：`{wf_output_dir}`（用户未指定路径时，产出文件请写入这里，不要写入你自己的 session output 目录）"
         )
 
     # ── 列举工作流 ──────────────────────────────────────────────────────────
@@ -321,6 +327,7 @@ def register_workflow_tools(cfg: "AppConfig") -> None:
             lines.append(f"- ⏳ 等待人工审批的步骤：`{s.pending_approval_step}`")
         if s.error:
             lines.append(f"- 错误：{s.error}")
+        lines.append(f"- 📁 默认输出目录：`{paths.workflow_session_output_dir(workflow_session_id)}`")
         lines.append("\n**各步骤状态：**")
         for step_id, sr in s.step_results.items():
             score_str = f" 评分={sr.score}" if sr.score is not None else ""
