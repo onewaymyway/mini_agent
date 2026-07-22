@@ -1,12 +1,17 @@
 """
 evolution/daily_digest.py — 每日融合报告（设计方案第 4.1 节，阶段一）
 
-职责：把三条已经存在但彼此割裂的数据线合并成一份用户能一眼看懂的日报：
+职责：把几条已经存在但彼此割裂的数据线合并成一份用户能一眼看懂的日报：
   1. perception/behavior/analyzer.py::load_daily_summary()  — 行为时间分布
      （app_duration / domain_duration / git_repos 等，已经产出，不重算）
   2. perception/goal_backlog.py::GoalBacklog                — 当天 Goal/Objective 进展变化
   3. behavior 摘要里的 git_repos（analyzer 已采集提交次数，这里只做展示整合，
      不重新对接 git，避免和 analyzer 的采集逻辑产生第二套实现）
+  4. ~/.agent/logs/error.jsonl（mini_agent.errors.log_exception() 写入）
+     — 当天异常统计（按 exc_type / where 的 Top N），逻辑对齐
+     .claude/skills/error-log-analyzer 但不直接依赖该 skill 模块
+  5. session.py::SessionManager.list_sessions()             — 当天活跃过的
+     session 摘要（复用已有的 summary/title 字段，不触发新的 LLM 调用）
 
 明确不做的事：
   - 不重新采集行为数据（复用 analyzer 的产出）
@@ -132,6 +137,52 @@ def _error_log_summary(target_day: str, top_n: int = 5) -> dict:
     }
 
 
+def _session_activity_summary(paths: AgentPaths, target_day: str, limit: int = 50) -> list[dict]:
+    """从当天活跃过的 session 里提取"当天都干了什么"。
+
+    直接复用 SessionManager.list_sessions()——它只读 meta.json（不加载
+    完整 history，不构造 Agent），成本很低，跟 /v1/sessions 端点走的是
+    同一套逻辑。按 updated_at 的日期前缀过滤出落在 target_day 当天的
+    session（updated_at 是 _now_iso() 生成的不带时区本地时间字符串，
+    直接取前 10 位比较即可，不需要额外做时区转换）。
+
+    每个 session 优先用已有的 `summary` 字段（由 agent 侧
+    trigger_summary_and_profile() 生成，内容是"这个 session 做了什么"的
+    摘要）；没有 summary 的（比如刚开的、没触发过摘要生成的短 session）
+    退化为用 `title`（首条消息截断），最次退化为"（无标题）"。
+
+    只做展示整合，不在这里触发任何摘要生成——那是 agent 运行时的职责，
+    日报生成不应该反过来触发一次可能很重的 LLM 调用。
+    """
+    try:
+        from mini_agent.session import SessionManager
+    except Exception:
+        return []
+
+    try:
+        mgr = SessionManager(project_root=paths.project_root)
+        metas = mgr.list_sessions(limit=limit)
+    except Exception:
+        return []
+
+    out = []
+    for m in metas:
+        if not m.updated_at or m.updated_at[:10] != target_day:
+            continue
+        desc = m.summary or m.title or "（无标题）"
+        out.append(
+            {
+                "id": m.id,
+                "title": m.title or "(untitled)",
+                "turns": m.turns,
+                "tool_calls": m.tool_calls,
+                "desc": desc,
+            }
+        )
+    # list_sessions() 已经按 mtime 倒序，这里保持原顺序（最近的在前）
+    return out
+
+
 def generate_daily_digest(paths: AgentPaths, day: Optional[str] = None) -> dict:
     """生成融合日报。day 默认是"昨天"（因为 sys:daily_digest 在当天 22 点跑，
     覆盖的是当天数据；若在次日凌晨补跑，day 应传前一天日期）。
@@ -144,6 +195,7 @@ def generate_daily_digest(paths: AgentPaths, day: Optional[str] = None) -> dict:
     behavior = load_daily_summary(target_day) or {}
     goal_deltas = _goal_progress_delta(paths, since)
     errors = _error_log_summary(target_day)
+    sessions = _session_activity_summary(paths, target_day)
 
     data = {
         "day": target_day,
@@ -151,6 +203,7 @@ def generate_daily_digest(paths: AgentPaths, day: Optional[str] = None) -> dict:
         "behavior": behavior,
         "goal_deltas": goal_deltas,
         "errors": errors,
+        "sessions": sessions,
         "shown_at": None,
     }
 
@@ -237,6 +290,16 @@ def _write_markdown(paths: AgentPaths, day: str, data: dict) -> None:
     else:
         lines.append("- （当天没有记录到异常，或 error.jsonl 不存在）")
 
+    sessions = data.get("sessions") or []
+    lines.append("")
+    lines.append("## Session 活动")
+    if sessions:
+        for s in sessions:
+            lines.append(f"- [{s['id']}] {s['turns']} 轮 / {s['tool_calls']} 次工具调用")
+            lines.append(f"  {s['desc']}")
+    else:
+        lines.append("- （当天没有活跃的 session）")
+
     lines.append("")
     md = "\n".join(lines) + "\n"
 
@@ -253,6 +316,7 @@ def render_startup_summary(data: dict) -> Optional[str]:
     git_repos = behavior.get("git_repos") or {}
     goal_deltas = data.get("goal_deltas") or []
     errors = data.get("errors") or {}
+    sessions = data.get("sessions") or []
 
     commit_total = sum(git_repos.values()) if git_repos else 0
     parts = []
@@ -260,6 +324,8 @@ def render_startup_summary(data: dict) -> Optional[str]:
         parts.append(f"提交 {commit_total} 次")
     if goal_deltas:
         parts.append(f"{len(goal_deltas)} 个目标有进展")
+    if sessions:
+        parts.append(f"{len(sessions)} 个 session 活跃")
     error_total = errors.get("total") or 0
     if error_total:
         # 只报数量，不在这一行里展开具体类型——避免这条本该"一眼扫过"的
