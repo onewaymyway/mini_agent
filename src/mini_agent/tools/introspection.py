@@ -598,7 +598,7 @@ def _collect_stats(agent) -> dict:
         "input_tokens": s.input_tokens,
         "output_tokens": s.output_tokens,
         "tool_calls": s.tool_calls,
-        "elapsed": _safe_get(lambda: s.elapsed()),
+        "elapsed": _safe_get(lambda: s.elapsed),
     }
     if hasattr(s, "tool_stats"):
         result["tool_stats"] = dict(s.tool_stats)
@@ -876,7 +876,7 @@ def _build_status(agent, policy: IntrospectionPolicy) -> dict:
         "input_tokens":  stats.input_tokens,
         "output_tokens": stats.output_tokens,
         "tool_calls":    stats.tool_calls,
-        "elapsed":       _s(lambda: stats.elapsed()),
+        "elapsed":       _s(lambda: stats.elapsed),
     }
     sections["history"] = {
         "message_count":    _s(lambda: len(agent._history)),
