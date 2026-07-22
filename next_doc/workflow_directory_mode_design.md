@@ -1,6 +1,6 @@
 # Workflow 文件夹化 + 本地 Agent/Skill/Prompt 文件改进计划
 
-> 状态：**进行中**。本文档随每个阶段完成同步更新"实施记录"部分，
+> 状态：**已完成**（含阶段 6 已知限制修复）。本文档随每个阶段完成同步更新"实施记录"部分，
 > 设计部分（一~四节）为最终确认版本，实施中如有偏离会在对应阶段的
 > 实施记录里注明并说明原因。
 
@@ -180,11 +180,44 @@ workflow 私有 agent"，不需要额外 step 类型。
   调用方式、边界与限制），CLI 命令列表补充 `to-dir`。
 
 ### 已知限制
-- `set_effective_profile_loader()`（`orchestrator/agent_profiles.py`）
+- ~~`set_effective_profile_loader()`（`orchestrator/agent_profiles.py`）
   沿用了本项目里 `set_active_skills_provider` 的既有写法：模块级全局
-  变量，不是 thread-local。多个 workflow step 并发执行（`allow_parallel`）
-  且各自引用不同本地 agent 时，`spawn_named_agent` 在同一时刻可能读到
-  "最后一个构造的 Agent 实例设置的" profile_loader，而不是各自 step
-  对应的那个。这是延续现有代码的既有约定/既有风险面，不是本次改动新
-  引入的问题；如果后续要收紧，可以把这里也改造成 thread-local，同时
-  一并改造 `_get_active_skills()`。
+  变量，不是 thread-local。~~ **已修复（阶段 6）**：见下方。
+
+### 阶段 6：修复"已知限制" — profile_loader 改为 thread-local
+状态：✅ 已完成
+
+问题重新核实：`tools/orchestration.py` 里的 `set_active_skills_provider` /
+`_get_active_skills()` 实际上**已经**是用 `threading.local` 实现的（见该
+文件顶部注释与 `_active_skills_local = threading.local()`），并不是模块级
+普通全局变量——本文档此前"沿用了……的既有写法：模块级全局变量"这句描述
+本身不准确。真正的问题只在于阶段 3 新增的
+`_effective_profile_loader_override` 没有对齐这个已有的正确模式，用的是
+普通模块级变量，因此才会在并发 workflow step / 并发 SubAgent 场景下出
+现"读到别的线程刚设置的 profile_loader"的串台风险。
+
+修复方式：`orchestrator/agent_profiles.py`
+- 引入 `import threading as _threading`。
+- `_effective_profile_loader_override`（普通模块级变量）替换为
+  `_effective_profile_loader_local = threading.local()`。
+- `set_effective_profile_loader(loader)` 改为写入
+  `_effective_profile_loader_local.loader`（当前线程）。
+- `get_effective_profile_loader()` 改为 `getattr(_effective_profile_loader_local, "loader", None) or _profile_loader`：
+  当前线程未注册（或注册为 `None`）时透明回退全局单例，行为与之前
+  "没有 bundle 的普通场景"保持一致。
+
+`Agent.__init__` 调用点不变（仍然只在 `agent_profile_loader is not None`
+时才调用 `set_effective_profile_loader`），因为现在是 thread-local，
+每个线程各自的 Agent 实例独立注册、互不覆盖，`workflow/runner.py`
+`allow_parallel` 并发跑多个 step、`orchestrator/sub_agent.py` 每个
+SubAgent 独立线程递归 spawn 的场景都不再有串台风险。
+
+新增测试 `tests/test_agent_profile_loader_thread_local.py`：
+- 同一线程内 set/get 往返；
+- 两个并发线程各自注册不同 loader，用 `threading.Barrier` 让两者都完
+  成注册后再读取，断言各自只看到自己注册的实例（验证不会被覆盖）；
+- 子线程未注册时不会"看到"父线程注册的 loader（验证不再是模块级全局
+  共享，而是回退全局单例）。
+
+未改动 `_get_active_skills()`（它本来就已经是 thread-local 实现，
+不需要修复）。

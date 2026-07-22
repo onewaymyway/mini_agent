@@ -15,6 +15,7 @@ context，由 render_profile_prompt 拼出最终 prompt。
 from __future__ import annotations
 
 import re
+import threading as _threading
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Optional
@@ -307,24 +308,29 @@ def get_profile_loader() -> Optional[AgentProfileLoader]:
     return _profile_loader
 
 
-# ── [workflow_directory_mode_design.md 阶段3] 本地 agent profile 覆盖 ──────
-# 与 tools/orchestration.py 的 set_active_skills_provider 同一模式：模块级
-# 全局变量，由 Agent.__init__ 在构造时（如果拿到了 workflow 本地资源包）
-# 写入，spawn_named_agent / list_agent_profiles 通过 get_effective_profile_loader()
-# 读取。注意：这不是 thread-local，与现有 active_skills_provider 一样，
-# 并发跑多个 workflow step 时"最后一个写入的生效"，这是延续既有约定，
-# 不是本次改动引入的新风险面。
+# ── [workflow_directory_mode_design.md 阶段3 + 已知限制修复] 本地 agent
+# profile 覆盖 ──────────────────────────────────────────────────────────
+# 与 tools/orchestration.py 的 set_active_skills_provider 同一模式：用
+# threading.local 而不是普通模块级变量，由 Agent.__init__ 在构造时（如果
+# 拿到了 workflow 本地资源包）写入当前线程，spawn_named_agent /
+# list_agent_profiles 通过 get_effective_profile_loader() 读取当前线程注
+# 册的 loader。每个并发 workflow step / SubAgent 都在独立线程里构造自己
+# 的 Agent 实例（见 orchestrator/sub_agent.py、workflow/runner.py 的
+# allow_parallel 执行），用 thread-local 保证互不覆盖：线程 A 里
+# spawn_named_agent 读到的一定是线程 A 自己的 Agent 实例注册的
+# profile_loader，不会被并发的线程 B 覆盖。
 
-_effective_profile_loader_override: Optional[AgentProfileLoader] = None
+_effective_profile_loader_local = _threading.local()
 
 
 def set_effective_profile_loader(loader: Optional[AgentProfileLoader]) -> None:
-    """由 Agent.__init__ 在拿到 workflow 本地 agent_profile_loader 时调用。"""
-    global _effective_profile_loader_override
-    _effective_profile_loader_override = loader
+    """由 Agent.__init__ 调用，为当前线程注册 workflow 本地 agent_profile_loader。"""
+    _effective_profile_loader_local.loader = loader
 
 
 def get_effective_profile_loader() -> Optional[AgentProfileLoader]:
     """spawn_named_agent / list_agent_profiles 应使用这个而不是 get_profile_loader()，
-    这样才能看到 workflow 本地 agents/ 目录里覆盖/新增的 profile。"""
-    return _effective_profile_loader_override or _profile_loader
+    这样才能看到当前线程对应的 workflow 本地 agents/ 目录里覆盖/新增的 profile。
+    当前线程未注册（或注册为 None）时回退全局单例。"""
+    loader = getattr(_effective_profile_loader_local, "loader", None)
+    return loader or _profile_loader
