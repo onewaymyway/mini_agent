@@ -1,0 +1,52 @@
+mini_agent 里"长期目标"对应的是 **GoalBacklog**（跨会话目标层级，`.agent/goals.json`），跟你之前提到的 `/goal`（Goal 模式，单 session 内带验收标准的交互式目标协商）是两套不同的系统，注意别搞混：
+
+| | GoalBacklog（长期目标） | Goal 模式 |
+|---|---|---|
+| 命令 | `/goals` / `/agent goals` | `/goal` |
+| 定位 | 跨会话、长期存在的意图 + 具体子目标（Objective），供 AutonomousLoop/日报/`/next` 引用 | 单 session 内，带验收标准、自动验证的一次性任务执行 |
+| 存储 | `.agent/goals.json`（全局共享，进程间加锁） | 挂在具体 session 状态里 |
+
+## 添加长期目标
+
+```
+/goals add <目标标题> [--priority N] [--tag tag1,tag2]
+```
+
+例如：
+
+```
+/goals add 完善行为感知系统测试覆盖 --priority 50 --tag testing,behavior
+```
+
+- `--priority`：数字越大优先级越高，默认 0；
+- `--tag`：逗号分隔的标签，用于分类；
+- 加完会提示 `Goal 已添加: goal_xxxxxxxx — 完善行为感知系统测试覆盖`。
+
+`/agent goals add ...` 是完整写法，`/goals add ...` 是等价的快捷方式，两个都能用。
+
+## 常用配套命令
+
+```
+/goals                          # 列出所有 active goal + objective
+/goals obj add <标题> --goal <goal_id> [--thread <work_thread_id>]
+                                 # 给某个 goal 挂一个具体可执行的子目标（Objective）
+/goals progress <id> <文字>      # 更新某个节点的进展记录
+/goals done <id>                # 标记完成
+/goals abandon <id>              # 标记放弃
+/goals status                    # 查看 AutonomousLoop 当前档位/tick 状态
+```
+
+## daemon 模式下
+
+连接的客户端里同样能用 `/goals` 系列（会转发到 daemon 端执行）；如果你是写代码/脚本调用，也有对应的 HTTP 端点：
+
+```
+POST /v1/goals
+Body: {"title": "...", "description": "...", "priority": 50, "source": "user"}
+```
+
+## 补充说明
+
+- 添加的 goal 默认 `status=active`，`source=user`（区别于 `agent_derived`，后者是 autonomous 档位下 agent 自己推导出来的软目标）；
+- 目前 GoalBacklog 只在 **maintenance/autonomous 档位**下才会被 `AutonomousLoop.tick()` 主动读取用来推进/推荐（`passive` 档位完全不读）；具体当前是哪个档位可以用 `/goals status` 看；
+- 这些手动添加的长期目标，正是我们之前给日报加的"目标进展变化"那一节所引用的数据源（`last_touched_at` 落在当天的节点会出现在日报里）。
