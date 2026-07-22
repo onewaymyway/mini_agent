@@ -72,6 +72,66 @@ def _goal_progress_delta(paths: AgentPaths, since_ts: float) -> list[dict]:
     return out
 
 
+def _error_log_summary(target_day: str, top_n: int = 5) -> dict:
+    """统计 ~/.agent/logs/error.jsonl 里落在 target_day 这一天的异常。
+
+    逻辑对齐 .claude/skills/error-log-analyzer/analyzer.py（按 exc_type
+    计数、取高频 Top N），但不直接 import 那个 skill 模块——skill 目录
+    是给 agent 在对话里按需加载用的工具脚本，不是稳定的 Python 包路径
+    （没有 __init__.py，位置/命名都可能随 skill 迭代变化），日报生成是
+    每天 cron 触发的核心链路，不应该依赖一个可能被移动/重命名的 skill
+    文件是否还在原地。这里在 daily_digest 内部直接实现同一套统计口径，
+    两边各自独立、互不影响。
+
+    Returns:
+        {"total": int, "top_types": [(exc_type, count), ...], "top_where": [(where, count), ...]}
+        日志文件不存在或当天没有记录时，total 为 0，两个列表为空。
+    """
+    from collections import Counter
+    import datetime as _dt
+
+    empty = {"total": 0, "top_types": [], "top_where": []}
+    try:
+        from mini_agent.storage.paths import AgentPaths
+        log_path = AgentPaths().global_error_log
+    except Exception:
+        return empty
+    if not log_path.exists():
+        return empty
+
+    by_type: Counter = Counter()
+    by_where: Counter = Counter()
+    total = 0
+    try:
+        with log_path.open("r", encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    record = json.loads(line)
+                except Exception:
+                    continue
+                ts_str = record.get("ts", "")
+                try:
+                    date = _dt.datetime.fromisoformat(ts_str.replace("Z", "+00:00")).date().isoformat()
+                except Exception:
+                    continue
+                if date != target_day:
+                    continue
+                total += 1
+                by_type[record.get("exc_type", "Unknown")] += 1
+                by_where[record.get("where", "unknown")] += 1
+    except Exception:
+        return empty
+
+    return {
+        "total": total,
+        "top_types": by_type.most_common(top_n),
+        "top_where": by_where.most_common(top_n),
+    }
+
+
 def generate_daily_digest(paths: AgentPaths, day: Optional[str] = None) -> dict:
     """生成融合日报。day 默认是"昨天"（因为 sys:daily_digest 在当天 22 点跑，
     覆盖的是当天数据；若在次日凌晨补跑，day 应传前一天日期）。
@@ -83,12 +143,14 @@ def generate_daily_digest(paths: AgentPaths, day: Optional[str] = None) -> dict:
 
     behavior = load_daily_summary(target_day) or {}
     goal_deltas = _goal_progress_delta(paths, since)
+    errors = _error_log_summary(target_day)
 
     data = {
         "day": target_day,
         "generated_at": time.time(),
         "behavior": behavior,
         "goal_deltas": goal_deltas,
+        "errors": errors,
         "shown_at": None,
     }
 
@@ -157,6 +219,24 @@ def _write_markdown(paths: AgentPaths, day: str, data: dict) -> None:
     else:
         lines.append("- （当天没有 Goal/Objective 有记录到的进展变化）")
 
+    errors = data.get("errors") or {}
+    lines.append("")
+    lines.append("## 错误日志")
+    if errors.get("total"):
+        lines.append(f"- 当天共记录 {errors['total']} 条异常")
+        top_types = errors.get("top_types") or []
+        if top_types:
+            lines.append("- 按类型 Top：")
+            for exc_type, count in top_types:
+                lines.append(f"  - {exc_type}：{count} 次")
+        top_where = errors.get("top_where") or []
+        if top_where:
+            lines.append("- 按发生位置 Top：")
+            for where, count in top_where:
+                lines.append(f"  - {where}：{count} 次")
+    else:
+        lines.append("- （当天没有记录到异常，或 error.jsonl 不存在）")
+
     lines.append("")
     md = "\n".join(lines) + "\n"
 
@@ -172,6 +252,7 @@ def render_startup_summary(data: dict) -> Optional[str]:
     behavior = data.get("behavior") or {}
     git_repos = behavior.get("git_repos") or {}
     goal_deltas = data.get("goal_deltas") or []
+    errors = data.get("errors") or {}
 
     commit_total = sum(git_repos.values()) if git_repos else 0
     parts = []
@@ -179,6 +260,11 @@ def render_startup_summary(data: dict) -> Optional[str]:
         parts.append(f"提交 {commit_total} 次")
     if goal_deltas:
         parts.append(f"{len(goal_deltas)} 个目标有进展")
+    error_total = errors.get("total") or 0
+    if error_total:
+        # 只报数量，不在这一行里展开具体类型——避免这条本该"一眼扫过"的
+        # 提示行过长；想看明细走 `/digest daily <day>` 看完整报告。
+        parts.append(f"{error_total} 条异常")
     if not parts:
         return None
     return f"📋 {day} 日报：" + "，".join(parts) + f"（`/digest daily {day}` 查看完整内容）"
