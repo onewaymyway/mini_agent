@@ -235,6 +235,103 @@ P5/P6 新增 3 个）：
 
 ---
 
+## 从历史 Session 生成 Workflow（`session_to_workflow`，P8）
+
+除了"用自然语言描述一个流程"（`generate_workflow`），还可以把**之前某次
+session 里实际做成的一件事**直接沉淀成一个可复用的 workflow，不需要重新
+用自然语言把流程描述一遍。
+
+设计文档：`next_doc/session_to_workflow_design.md`。
+
+### 两段式流程
+
+生成过程拆成两个独立阶段，中间产物会先展示给用户确认，避免"总结阶段理解
+错了任务"这种错误被直接带进最终 YAML：
+
+```
+① 总结：session 历史（压缩后）→ LLM 一次调用 → TaskSummary（结构化摘要）
+         │
+         ▼ 展示给用户，人工确认/纠正
+② 构建：TaskSummary（不是原始 history）→ LLM 一次调用 → workflow YAML 预览
+         │
+         ▼ 复用 generate_workflow 同一套 "预览 + save_workflow" 交互
+```
+
+### Agent 工具
+
+```
+list_recent_sessions(limit=10)
+    列出最近 N 个 session 的 id、时间、首条用户输入摘要，帮用户定位
+    session_id（不确定具体是哪次 session 时先调用这个）。
+
+summarize_session_for_workflow(session_id)
+    第①阶段：读取指定 session 的历史，起一个干净的临时 Agent 生成
+    TaskSummary（目标、主线阶段、每个阶段是否经历失败重试、建议参数化的
+    值、是否有重复的阶段组合），返回人类可读摘要供用户确认。
+    对当前正在运行的这个 session 自己生成 workflow 时，session_id 传当前
+    session 的 id 即可，逻辑完全一致（总是起临时 Agent 读 history，不借用
+    当前 Agent 续调用，避免无关对话内容污染总结质量）。
+
+build_workflow_from_summary(session_id, adjustments="")
+    第②阶段：读回上一步生成的 TaskSummary，结合用户对总结提出的调整意见
+    （adjustments，如"修复阶段不要做成质检门"），生成 workflow YAML 预览。
+    满意后像 generate_workflow 一样调用 save_workflow 保存。
+```
+
+三个工具需要按顺序调用，中间等待用户确认（跟 `generate_workflow` →
+`save_workflow` 是同一个设计原则的延伸：合并成一个工具会丢失"总结确认"
+这个可以打断/纠正的落点）。
+
+### 完整流程示例
+
+```
+用户：把刚才那次修 xxx bug 的过程整理成一个 workflow
+Agent 调用 summarize_session_for_workflow(session_id="<当前 session_id>")
+返回：摘要（目标/主线阶段/是否建议质检门/建议参数化的值），Agent 转述给用户
+
+用户：对，但"修复"那步不需要做成质检门，就是普通重试就行
+Agent 调用 build_workflow_from_summary(
+    session_id="...",
+    adjustments="修复阶段不要做成质检门，用普通 retry_on_error 即可",
+)
+返回：预览 + YAML
+
+用户：可以，保存吧
+Agent 调用 save_workflow(yaml_content=...)
+```
+
+### 生成规则要点
+
+- `stages[]` 里每个阶段映射成一个 step，`id` 直接用 `stage.id`；
+  `depends_on` 用 `stage.depends_on_stage_ids`。
+- 阶段被标记 `gate_candidate=true`（该阶段的失败重试模式值得抽象成质检门）
+  时，生成 `role: evaluator` + `condition` + `retry_on_gate_fail`，而不是
+  把重试展开成多个 step。
+- `candidate_parameters[]` 里"这次实际用的具体值"会被换成 `{参数名}`
+  占位符，并据此生成 `example_input`。
+- **工具名幻觉防护**：阶段描述默认生成 `type: agent`（让主 Agent 执行时
+  自己决定用什么工具），只有确定性很强的阶段才会生成 `tool_call`/`script`
+  类型；生成结果里 `tool_name` 若不在已注册工具表里，会被自动降级为
+  `type: agent`（prompt 约束是第一道防线，生成后校验降级是兜底）。
+- 如果原 session 里某几个阶段的组合重复出现（比如对多个文件重复执行了
+  同一套"打分→报告"），生成结果末尾会提示"这段可以存成可复用 step 片段"
+  （见下文 `workflow_snippets`），需要用户确认后手动调用 `save_snippet`。
+
+### CLI 命令
+
+```
+/workflow sessions                      列出最近的历史 session
+/workflow from-session <session_id>     从指定 session 生成 workflow：
+                                         总结→展示确认（回车确认/输入调整意见/q 取消）
+                                         →构建→展示确认（y/N 保存）
+```
+
+CLI 路径下没有"主 Agent 编排多个工具调用"这一层，`/workflow from-session`
+内部直接顺序调用"总结→展示确认→构建→展示确认→保存"，用同步阻塞的方式
+做完整个流程。
+
+---
+
 ## 示例工作流：Step 类型化全览（`release_pipeline.yaml`）
 
 `.agent/workflows/release_pipeline.yaml`（配套 `notify_summary.yaml` 作为
@@ -996,6 +1093,9 @@ Workflow 执行时会触发以下 Hook 事件（复用项目现有的 `mini_agen
 /workflow delete <name>                     删除工作流定义
 /workflow to-dir <name>                     将单文件工作流升级为文件夹模式
                                              （生成 agents/skills/prompts 子目录）
+/workflow sessions                          列出最近的历史 session（P8）
+/workflow from-session <session_id>         从指定 session 生成 workflow，
+                                             总结→确认→构建→确认→保存（P8）
 ```
 
 **已知限制**：`pause`/`cancel`/`approve`/`reject`/`input` 依赖进程内的控制状态

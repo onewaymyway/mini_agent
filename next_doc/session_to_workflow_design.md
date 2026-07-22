@@ -1,6 +1,7 @@
 # Session → Workflow 转换机制设计（P8）
 
-> 状态：**设计稿，未开始任何代码修改**，需要确认后再动手。
+> 状态：**核心功能已实现**（总结阶段 + 构建阶段 + 三个 Agent 工具 + CLI +
+> 单元测试 + 文档），实施记录见文末"实施检查清单"勾选情况与备注。
 > 编号延续 `workflow_mechanism_improvement_plan.md`（P1-P7）之后，记为 **P8**。
 > 目标：让用户可以把"之前某次 session 里实际做成的一件事"沉淀成一个可复用的
 > `WorkflowDef`，而不是每次都要么重新一步步指挥 Agent，要么手写 YAML。
@@ -496,27 +497,53 @@ Agent 调用 save_workflow(yaml_content=...)
 
 ## 7. 实施检查清单
 
-- [ ] `perception/lesson_rules.py::is_tool_error()` 复用确认；
+- [x] `perception/lesson_rules.py::is_tool_error()` 复用确认；
       `mini_agent/llm/system_tool_call.py::render_tool_results()` 的输出
       格式确认（用于按 `tool_call_id` 关联 tool_result 到具体 tool_use，
-      判断每次调用成功/失败）
-- [ ] `workflow/session_summarizer.py`：`build_timeline_text()` +
+      判断每次调用成功/失败）——实际实现按"同一批 assistant_reply 之后
+      紧随的一条 tool_result 消息，内含按顺序拼接的 `<tool_result>{json}
+      </tool_result>` 块"这个不变式做位置对应，不依赖显式 `tool_call_id`
+      字段（`render_tool_results()` 目前不写 `tool_call_id`）。
+- [x] `workflow/session_summarizer.py`：`build_timeline_text()` +
       `TaskSummary`（dataclass + `to_markdown()`）+
       `summarize_session_for_workflow()`
-- [ ] `agent/_helpers.py` 新增 `_parse_task_summary()`（沿用
+- [x] `agent/_helpers.py` 新增 `_parse_task_summary()`（沿用
       `_parse_lesson_candidates` 的解析模式）
-- [ ] 新增 prompt 模板：`prompts/system/session_to_workflow_summary.md` +
+- [x] 新增 prompt 模板：`prompts/system/session_to_workflow_summary.md` +
       `prompts/user/session_to_workflow_summary_request.md`
-- [ ] `workflow/generator.py`：`WorkflowGenerator.generate_from_summary()`
+- [x] `workflow/generator.py`：`WorkflowGenerator.generate_from_summary()`
       + 对应 prompt 文案；工具名幻觉防护（生成前 prompt 约束 + 生成后
-      `get_registered_types()`/工具注册表校验降级）
-- [ ] `workflow/tools.py`：新增 `list_recent_sessions` /
+      `get_default_registry().names` 校验降级为 `_downgrade_unknown_tool_types()`）
+- [x] `workflow/tools.py`：新增 `list_recent_sessions` /
       `summarize_session_for_workflow` / `build_workflow_from_summary`
-      三个 `@tool`；`TaskSummary` 中间产物的临时落盘/传递方式确定
-- [ ] CLI：`/workflow sessions` / `/workflow from-session <session_id>`
-- [ ] 文档：完成后同步更新 `docs/workflow-guide.md`（新增一节）和
-      `.claude/skills/workflow-generator/SKILL.md`（提及这条从 session
-      反向生成的路径，跟现有"从自然语言描述生成"路径做区分）
+      三个 `@tool`；`TaskSummary` 中间产物落地方式：进程内内存缓存
+      （`_task_summary_cache: dict[str, TaskSummary]`，按 session_id 索引，
+      供②阶段直接复用；进程重启会丢失缓存，属于可接受降级——重新总结一次
+      即可，不是数据丢失）
+- [x] CLI：`/workflow sessions` / `/workflow from-session <session_id>`
+      （`cli/commands/workflow_cmd.py::_handle_sessions/_handle_from_session`，
+      同步阻塞完成"总结→确认→构建→确认→保存"全流程；同时把两个子命令
+      补进 `ui/terminal.py` 的 Tab 补全列表 `_COMMANDS`）
+- [x] 文档：完成后同步更新 `docs/workflow-guide.md`（新增"从历史 Session
+      生成 Workflow（session_to_workflow，P8）"一节）和
+      `.claude/skills/workflow-generator/SKILL.md`（新增"另一条生成路径"
+      说明，区分"手写 YAML"场景与"从 session 反向生成"场景）
+- [x] 单元测试：`tests/test_session_to_workflow.py`（`build_timeline_text`
+      的交替拼接与出错计数、`TaskSummary.from_dict`/`to_markdown`、
+      `_parse_task_summary` 的围栏剥离/非法 JSON 降级、
+      `summarize_session_for_workflow` 的空 timeline/无效 LLM 输出报错路径、
+      `_downgrade_unknown_tool_types` 的降级/保留分支）
+
+**已知未完成 / 后续可做**：
+- 2.4 节"长 session 截断策略"（合并连续同类型 ActionEvent、按
+  `token_counter.py::estimate_messages_tokens()` 估算阈值）尚未实现——当前
+  `build_timeline_text()` 是无截断的基础版本，超长 session 可能在总结阶段
+  遇到 token 预算问题，需要时再补。
+- 6 节"自定义/插件 step 类型"的"该工具属于插件 XXX"提示尚未实现（design
+  doc 里已标注优先级较低，留到基础功能跑通之后再补）。
+- `workflow_snippets`/`defaults` 的自动衔接（6 节前两条）目前只在生成结果
+  文案里做了"建议手动 save_snippet"的提示，未实现"自动折叠进顶层
+  defaults"这一步。
 
 > 建议实施顺序：先做 `session_summarizer.py` + 总结 prompt（可以先用 CLI
 > 命令 `/workflow sessions` + 一个临时脚本验证总结质量，不急着接语义确认

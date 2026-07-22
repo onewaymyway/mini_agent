@@ -26,6 +26,18 @@ triggers: workflow, 工作流, 流水线, pipeline, 创建workflow, workflow.yam
 `WorkflowStore.load(name)` 优先找文件夹模式，找不到再退回单文件模式，
 两者可以在 `.agent/workflows/` 下共存，不冲突。
 
+## 另一条生成路径：从已完成的 session 反向生成
+
+本 skill 覆盖"用户用自然语言描述一个流程，帮他从零写 YAML"这条路径。如果
+用户想要的是"把之前某次 session 里实际做成的一件事沉淀成 workflow"（比如
+"把刚才那次修 bug 的过程整理成一个 workflow"），不要在这里手写 YAML——
+这是 `summarize_session_for_workflow` → `build_workflow_from_summary` 两个
+Agent 工具（或 CLI `/workflow from-session <session_id>`）的场景，设计见
+`next_doc/session_to_workflow_design.md`，使用说明见
+`docs/workflow-guide.md`"从历史 Session 生成 Workflow"一节。区分方式：
+用户给的是"一段流程描述"→ 本 skill；用户指的是"之前发生过的一次具体任务"
+→ 那两个工具。
+
 **默认按文件夹模式创建**：即使当前只有 2-3 步，文件夹模式也不吃亏
 （`agents/`/`skills/` 目录为空即可，不强制使用），而且用户后续加步骤、
 加私有资源时不需要再迁移。只有用户明确说"就要单文件"、"简单点不要建

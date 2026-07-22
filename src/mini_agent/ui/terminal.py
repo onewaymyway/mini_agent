@@ -3147,7 +3147,8 @@ _COMMANDS: list[tuple[str, str, list]] = [
     ("/workflow",     "Generate/run/monitor multi-step agent workflows", [
         "list", "show", "run", "runs", "status", "resume",
         "pause", "cancel", "approve", "reject", "input",
-        "templates", "from-template", "delete",
+        "templates", "from-template", "delete", "to-dir",
+        "sessions", "from-session",
     ]),
     ("/memory",      "Generate/refresh session memory now",          []),
     ("/profile",     "Refresh user profile now",                     []),

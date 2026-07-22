@@ -25,6 +25,11 @@ CLI 里操作，不需要绕一圈让主 Agent 去调用工具）：
   /workflow delete <name>                 — 删除工作流定义
   /workflow to-dir <name>                 — 将单文件工作流升级为文件夹模式
                                              （生成 agents/skills/prompts 子目录）
+  /workflow sessions                      — [session_to_workflow_design.md P8]
+                                             列出最近的历史 session，帮助定位 session_id
+  /workflow from-session <session_id>     — [P8] 从指定 session 生成 workflow：
+                                             总结→展示确认→构建→展示确认→保存，
+                                             全程在 CLI 里以连续的确认提示呈现
 """
 
 from __future__ import annotations
@@ -59,7 +64,9 @@ def handle_workflow_cmd(args: list[str], agent) -> None:
             "  /workflow from-template <template_name> <new_name>\n"
             "                                          基于内置模板创建工作流\n"
             "  /workflow delete <name>                 删除工作流定义\n"
-            "  /workflow to-dir <name>                 升级为文件夹模式（agents/skills/prompts）"
+            "  /workflow to-dir <name>                 升级为文件夹模式（agents/skills/prompts）\n"
+            "  /workflow sessions                      列出最近的历史 session\n"
+            "  /workflow from-session <session_id>     从指定 session 生成 workflow（总结→确认→构建→确认→保存）"
         )
         return
 
@@ -97,6 +104,10 @@ def handle_workflow_cmd(args: list[str], agent) -> None:
         _handle_delete(cfg, rest)
     elif sub == "to-dir":
         _handle_to_dir(cfg, rest)
+    elif sub == "sessions":
+        _handle_sessions(cfg, rest)
+    elif sub == "from-session":
+        _handle_from_session(cfg, rest)
     else:
         R.print_error(f"未知子命令：/workflow {sub}（输入 /workflow 查看用法）")
 
@@ -412,4 +423,124 @@ def _handle_to_dir(cfg, rest: list[str]) -> None:
         f"   可在同目录下的 agents/、skills/、prompts/ 中放置私有资源，\n"
         f"   step 里用 prompt_file（相对路径）引用 prompts/ 下的模板文件，\n"
         f"   role/skill_name 会优先匹配本地 agents/、skills/ 目录。"
+    )
+
+
+# ── session → workflow 转换（session_to_workflow_design.md P8）──────────────
+
+def _handle_sessions(cfg, rest: list[str]) -> None:
+    """/workflow sessions — 等价于 workflow/tools.py 的 list_recent_sessions 工具。"""
+    from mini_agent.session import SessionManager
+
+    limit = 10
+    if rest:
+        try:
+            limit = int(rest[0])
+        except ValueError:
+            R.print_error("用法：/workflow sessions [limit]（limit 需为整数）")
+            return
+
+    mgr = SessionManager(project_root=cfg.project_root)
+    metas = mgr.list_sessions(limit=limit)
+    if not metas:
+        R.print_info("📭 没有找到任何历史 session。")
+        return
+
+    R.print_info(f"📋 最近 {len(metas)} 个 session：")
+    for meta in metas:
+        first_input = ""
+        try:
+            sess = mgr.load(meta.id)
+            if sess is not None:
+                for m in sess.history:
+                    if m.get("_type") == "user_input" and isinstance(m.get("content"), str):
+                        first_input = m["content"][:60]
+                        break
+        except Exception:
+            pass
+        suffix = f"：{first_input}" if first_input else ""
+        R.print_info(f"  - {meta.id}（{meta.age_str}，{meta.turns} 轮）{suffix}")
+
+
+def _handle_from_session(cfg, rest: list[str]) -> None:
+    """
+    /workflow from-session <session_id>
+
+    CLI 路径下没有"主 Agent 编排多个工具调用"这一层，直接顺序调用
+    "总结→展示确认（y/n/修改意见）→构建→展示确认→保存"，用同步阻塞的方式
+    做完整个流程（session_to_workflow_design.md 5.2 节）。复用
+    workflow/session_summarizer.py 和 workflow/generator.py 里的纯函数实现，
+    不经过 workflow/tools.py 的 @tool 缓存机制（同一次命令内一路传递
+    TaskSummary，不需要跨调用缓存）。
+    """
+    if not rest:
+        R.print_error("用法：/workflow from-session <session_id>")
+        return
+    session_id = rest[0]
+
+    from mini_agent.session import SessionManager
+    from mini_agent.workflow.session_summarizer import summarize_session_for_workflow
+    from mini_agent.workflow.generator import WorkflowGenerator
+
+    mgr = SessionManager(project_root=cfg.project_root)
+    sess = mgr.load(session_id)
+    if sess is None:
+        R.print_error(f"找不到 session {session_id!r}，可先用 /workflow sessions 确认 id")
+        return
+
+    R.print_info(f"[Workflow] 正在总结 session {sess.id} ...")
+    try:
+        summary = summarize_session_for_workflow(sess.history, cfg)
+    except ValueError as e:
+        R.print_error(f"总结失败：{e}")
+        return
+
+    R.print_info(summary.to_markdown())
+    try:
+        confirm = input("\n以上理解正确吗？直接回车确认，或输入需要调整的意见（输入 q 取消）：").strip()
+    except (EOFError, KeyboardInterrupt):
+        R.print_warning("已取消")
+        return
+    if confirm.lower() == "q":
+        R.print_warning("已取消")
+        return
+    adjustments = confirm  # 空字符串 = 无调整意见，原样传给②阶段
+
+    R.print_info("[Workflow] 正在构建 workflow YAML ...")
+    generator = WorkflowGenerator(cfg)
+    yaml_str = generator.generate_from_summary(summary, adjustments)
+    try:
+        wf = generator.parse_yaml(yaml_str)
+    except ValueError as e:
+        R.print_error(f"生成的工作流定义有误：{e}\n\n原始 YAML：\n{yaml_str}")
+        return
+
+    R.print_info(generator.preview(wf))
+    R.print_info(f"\n### 生成的 YAML 定义\n\n{yaml_str}")
+    if summary.repeated_pattern:
+        R.print_info(
+            "\n💡 原 session 里有阶段组合重复出现，"
+            "如果满意可以考虑把重复的那部分存成可复用 step 片段（save_snippet）。"
+        )
+
+    try:
+        save_confirm = input("\n保存这个工作流吗？(y/N)：").strip().lower()
+    except (EOFError, KeyboardInterrupt):
+        R.print_warning("已取消保存")
+        return
+    if save_confirm != "y":
+        R.print_warning("未保存")
+        return
+
+    from mini_agent.workflow.store import WorkflowStore
+    store = WorkflowStore(Path(cfg.project_root))
+    try:
+        path = store.save(wf, cfg=cfg)
+    except ValueError as e:
+        R.print_error(f"保存失败：{e}")
+        return
+    R.print_info(
+        f"✅ 工作流 **{wf.name}** 已保存到 `{path}`\n"
+        f"步骤：{' → '.join(s.id for s in wf.steps)}\n"
+        f"运行方式：/workflow run {wf.name}"
     )

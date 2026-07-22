@@ -183,3 +183,37 @@ def _parse_timeline_summary(text: str) -> dict:
     return data
 
 
+def _parse_task_summary(text: str) -> dict:
+    """
+    解析 session_to_workflow 第①阶段（TaskSummary）反思 LLM 调用返回的 JSON
+    对象（session_to_workflow_design.md 第 3 节）。
+
+    与 _parse_timeline_summary 的容错策略一致（剥离 ```json 围栏、解析失败时
+    静默降级返回空 dict）。目标结构是单个 dict，字段校验/默认值填充交给
+    调用方（workflow/session_summarizer.py 的 TaskSummary.from_dict()），
+    这里只负责"尽力解析出一个 dict，解析不出来就返回空 dict"。
+    """
+    if not text or not text.strip():
+        return {}
+    cleaned = text.strip()
+    if cleaned.startswith("```"):
+        lines = cleaned.splitlines()
+        if lines and lines[0].startswith("```"):
+            lines = lines[1:]
+        if lines and lines[-1].startswith("```"):
+            lines = lines[:-1]
+        cleaned = "\n".join(lines).strip()
+
+    import json as _json
+    try:
+        data = _json.loads(cleaned)
+    except Exception as _mini_agent_exc:
+        from mini_agent.errors import log_exception
+        log_exception(_mini_agent_exc, where='mini_agent.agent._helpers._parse_task_summary')
+        return {}
+
+    if not isinstance(data, dict):
+        return {}
+    return data
+
+

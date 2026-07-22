@@ -28,6 +28,11 @@ workflow/tools.py — 工作流工具注册
   [workflow机制改进计划（P7）新增]
   preview_workflow      dry-run 预览执行计划（并发分批/prompt占位符/condition求值），不实际执行
 
+  [session_to_workflow_design.md（P8）新增，把已完成的 session 沉淀成 workflow]
+  list_recent_sessions          列出最近的历史 session，帮用户定位 session_id
+  summarize_session_for_workflow 第①阶段：总结指定 session 成 TaskSummary，供用户确认
+  build_workflow_from_summary    第②阶段：TaskSummary（+用户调整意见）→ workflow YAML 预览
+
   以上工具"真正做事"的核心逻辑已抽取到 workflow/api_helpers.py 的纯函数中，
   本模块只负责把返回的结构化结果包装成给 LLM 看的 Markdown 字符串；
   api/routes.py 的 REST 端点调用同一批纯函数，包装成 JSON 给看板前端用，
@@ -45,6 +50,16 @@ from typing import Optional, TYPE_CHECKING
 
 if TYPE_CHECKING:
     from mini_agent.config import AppConfig
+    from mini_agent.workflow.session_summarizer import TaskSummary
+
+
+# [session_to_workflow_design.md 5.1] ①总结阶段产出的 TaskSummary 按
+# session_id 缓存在内存里，供②构建阶段（build_workflow_from_summary）直接
+# 复用而不用重新总结一次——两个工具调用之间用户会有一轮确认/调整对话，
+# 中间不应该丢失总结结果。进程重启会丢失缓存，属于可接受的降级（用户
+# 重新调用 summarize_session_for_workflow 即可，不是数据丢失，只是多一次
+# LLM 调用）。
+_task_summary_cache: dict[str, "TaskSummary"] = {}
 
 
 def register_workflow_tools(cfg: "AppConfig") -> None:
@@ -113,6 +128,123 @@ def register_workflow_tools(cfg: "AppConfig") -> None:
             )
         except ValueError as e:
             return f"❌ 保存失败：{e}"
+
+    # ── session → workflow 转换（session_to_workflow_design.md）──────────────
+
+    @tool(name="list_recent_sessions", group="workflow",
+          description="列出最近的历史 session（id、起止时间、首条用户输入摘要），"
+                      "用户记不清具体 session_id 时用这个工具帮用户定位，"
+                      "定位到之后再调用 summarize_session_for_workflow。")
+    def list_recent_sessions(limit: int = 10) -> str:
+        """
+        limit: 列出最近 N 个 session，默认 10
+        """
+        from mini_agent.session import SessionManager
+
+        mgr = SessionManager(project_root=cfg.project_root)
+        metas = mgr.list_sessions(limit=limit)
+        if not metas:
+            return "📭 没有找到任何历史 session。"
+
+        lines = [f"📋 最近 {len(metas)} 个 session："]
+        for meta in metas:
+            first_input = ""
+            try:
+                sess = mgr.load(meta.id)
+                if sess is not None:
+                    for m in sess.history:
+                        if m.get("_type") == "user_input" and isinstance(m.get("content"), str):
+                            first_input = m["content"][:60]
+                            break
+            except Exception:
+                pass
+            lines.append(
+                f"- `{meta.id}`（{meta.age_str}，{meta.turns} 轮）"
+                + (f"：{first_input}" if first_input else "")
+            )
+        return "\n".join(lines)
+
+    @tool(name="summarize_session_for_workflow", group="workflow",
+          description="session→workflow 转换第①阶段：读取指定 session 的历史，"
+                      "起一个临时 Agent 总结出这次任务的目标/阶段/参数候选，"
+                      "返回给用户确认。session_id 不确定时先调用 "
+                      "list_recent_sessions；对当前正在运行的这个 session 自己"
+                      "生成 workflow 时，直接传当前 session 的 id 即可。用户"
+                      "确认总结无误（或提出调整意见）后，调用 "
+                      "build_workflow_from_summary 进入第②阶段。")
+    def summarize_session_for_workflow(session_id: str) -> str:
+        """
+        session_id: 要总结的 session 的完整 id 或前缀
+        """
+        from mini_agent.session import SessionManager
+        from mini_agent.workflow.session_summarizer import summarize_session_for_workflow as _summarize
+
+        mgr = SessionManager(project_root=cfg.project_root)
+        sess = mgr.load(session_id)
+        if sess is None:
+            return f"❌ 找不到 session `{session_id}`。可先调用 list_recent_sessions 确认 id。"
+
+        try:
+            summary = _summarize(sess.history, cfg)
+        except ValueError as e:
+            return f"❌ 总结失败：{e}"
+
+        _task_summary_cache[sess.id] = summary
+        return (
+            f"{summary.to_markdown()}\n\n"
+            f"---\n（内部记录：session_id=`{sess.id}`，确认后请调用 "
+            f"`build_workflow_from_summary(session_id=\"{sess.id}\")`）"
+        )
+
+    @tool(name="build_workflow_from_summary", group="workflow",
+          description="session→workflow 转换第②阶段：读回上一步"
+                      "summarize_session_for_workflow 生成的 TaskSummary，"
+                      "结合用户的调整意见生成 workflow YAML 预览。"
+                      "必须先调用 summarize_session_for_workflow 并得到用户"
+                      "确认后才能调用这个工具。生成结果满意后，像 "
+                      "generate_workflow 一样调用 save_workflow 保存。")
+    def build_workflow_from_summary(session_id: str, adjustments: str = "") -> str:
+        """
+        session_id: 与 summarize_session_for_workflow 调用时相同的 session_id
+        adjustments: 用户对①阶段总结提出的调整意见，如"修复阶段不要做成质检门"
+        """
+        from mini_agent.session import SessionManager
+        from mini_agent.workflow.generator import WorkflowGenerator
+
+        # session_id 可能是前缀，先解析成完整 id 再查缓存
+        mgr = SessionManager(project_root=cfg.project_root)
+        sess = mgr.load(session_id)
+        full_id = sess.id if sess is not None else session_id
+
+        summary = _task_summary_cache.get(full_id) or _task_summary_cache.get(session_id)
+        if summary is None:
+            return (
+                f"❌ 没有找到 session `{session_id}` 的总结结果，"
+                f"请先调用 summarize_session_for_workflow(session_id=\"{session_id}\")。"
+            )
+
+        generator = WorkflowGenerator(cfg)
+        yaml_str = generator.generate_from_summary(summary, adjustments)
+
+        try:
+            wf = generator.parse_yaml(yaml_str)
+            preview = generator.preview(wf)
+            extra_note = ""
+            if summary.repeated_pattern:
+                extra_note = (
+                    "\n\n💡 原 session 里有阶段组合重复出现，"
+                    "如果满意可以考虑把重复的那部分存成可复用 step 片段"
+                    "（save_snippet）。"
+                )
+            return (
+                f"{preview}\n\n"
+                f"---\n### 生成的 YAML 定义\n\n```yaml\n{yaml_str}\n```"
+                f"{extra_note}\n\n"
+                f"如果满意，请调用 `save_workflow` 工具保存；"
+                f"如需修改，请告诉我需要调整的地方。"
+            )
+        except ValueError as e:
+            return f"生成的工作流定义有误：{e}\n\n原始 YAML：\n```yaml\n{yaml_str}\n```"
 
     # ── 执行工作流 ──────────────────────────────────────────────────────────
 
