@@ -15,7 +15,9 @@
 
 1. 已完成 workflow 模块安装（`src/mini_agent/workflow/` 目录存在）
 2. `pyyaml` 已安装：`pip install pyyaml --break-system-packages`
-3. 示例工作流存在：`.agent/workflows/code_review.yaml`
+3. 示例工作流存在：`.agent/workflows/code_review.yaml`（单文件模式）、
+   `.agent/workflows/doc_change_review/`（文件夹模式，含私有
+   `agents/`/`skills/`/`prompts/`）
 4. 启动 agent：
    ```bash
    cd <project_root>
@@ -586,7 +588,185 @@ print(gen.preview(wf))
 
 ---
 
-## 验证 Checklist
+## 文件夹模式 Workflow 测试（doc_change_review）
+
+> 对应 `next_doc/workflow_directory_mode_design.md`，验证"文件夹模式"
+> workflow（`.agent/workflows/<name>/workflow.yaml` + 私有
+> `agents/`/`skills/`/`prompts/`）的解析、资源合并与执行。示例工作流：
+> `.agent/workflows/doc_change_review/`（文档变更审查流水线，四个 step
+> 分别覆盖 `agent`/`skill_agent`/`role_agent`/`agent`+`condition`）。
+
+前置条件：额外确认 `.agent/workflows/doc_change_review/` 目录存在，
+包含 `workflow.yaml`、`agents/reviewer.md`、`skills/changelog-diff/SKILL.md`、
+`prompts/{collect,review,report}.md`。
+
+### 单元测试五：文件夹模式加载与校验
+
+```bash
+PYTHONPATH=src python3 -c "
+from pathlib import Path
+from mini_agent.workflow.store import WorkflowStore
+
+store = WorkflowStore(project_root=Path('.'))
+wf = store.load('doc_change_review')
+
+# 1. source_dir 指向文件夹，而不是 None（单文件模式才是 None）
+assert wf.source_dir is not None
+assert Path(str(wf.source_dir)).name == 'doc_change_review'
+print(f'✅ source_dir 指向文件夹：{wf.source_dir}')
+
+# 2. 四个 step 都被正确解析
+ids = [s.id for s in wf.steps]
+assert ids == ['collect', 'diff', 'review', 'report'], ids
+print(f'✅ 四个 step 顺序正确：{ids}')
+
+# 3. type / role / skill_name 各自到位
+by_id = {s.id: s for s in wf.steps}
+assert by_id['collect'].effective_type == 'agent'
+assert by_id['diff'].effective_type == 'skill_agent' and by_id['diff'].skill_name == 'changelog-diff'
+assert by_id['review'].effective_type == 'role_agent' and by_id['review'].role == 'reviewer'
+assert by_id['report'].effective_type == 'agent'
+print('✅ 四个 step 的 type/role/skill_name 均正确')
+
+# 4. prompt_file 在加载阶段被读出内容填充进 prompt
+assert by_id['collect'].prompt_file == 'prompts/collect.md'
+assert by_id['collect'].prompt.strip(), 'prompt_file 内容应该已经填充进 prompt'
+assert '{old_path}' in by_id['collect'].prompt
+print('✅ prompt_file 内容已正确读取填充')
+
+# 5. validate() 无错误
+errors = wf.validate()
+assert not errors, f'期望无错误，得到：{errors}'
+print('✅ validate 通过，无校验错误')
+"
+```
+
+**期望输出**：5 个 ✅
+
+---
+
+### 单元测试六：本地资源合并（WorkflowResourceBundle）
+
+```bash
+PYTHONPATH=src python3 -c "
+from pathlib import Path
+from mini_agent.workflow.store import WorkflowStore
+from mini_agent.workflow.resource_bundle import build_resource_bundle
+
+store = WorkflowStore(project_root=Path('.'))
+wf = store.load('doc_change_review')
+
+class FakeCfg:
+    project_root = '.'
+    skills_dir = None
+
+bundle = build_resource_bundle(FakeCfg(), wf)
+assert bundle is not None, '文件夹模式应该能构造出 bundle'
+print('✅ 文件夹模式成功构造 WorkflowResourceBundle')
+
+# 1. 本地 agent profile 'reviewer' 被发现，且与全局 agents 合并在同一个 loader 里
+assert 'reviewer' in bundle.agent_loader.available
+print(f'✅ agent_loader 发现本地 reviewer，可用列表：{bundle.agent_loader.available}')
+
+# 2. 本地 skill 'changelog-diff' 被发现
+assert 'changelog-diff' in bundle.skill_loader.available
+print(f'✅ skill_loader 发现本地 changelog-diff，可用列表：{bundle.skill_loader.available}')
+
+# 3. 单文件模式（source_dir=None）应该返回 None，不构造 bundle
+from mini_agent.workflow.schema import WorkflowDef, WorkflowStep
+flat_wf = WorkflowDef(name='flat', steps=[WorkflowStep(id='a', name='A', prompt='x')])
+assert flat_wf.source_dir is None
+assert build_resource_bundle(FakeCfg(), flat_wf) is None
+print('✅ 单文件模式（source_dir=None）不构造 bundle，返回 None')
+"
+```
+
+**期望输出**：3 个 ✅
+
+---
+
+### 场景测试八：运行 doc_change_review 文件夹模式工作流
+
+**测试步骤**：
+在 agent 对话中输入（把 `<old>`/`<new>` 换成任意两个可读的本地文本文件路径，
+没有现成文件也可以先用 `write_file` 临时造两份内容有差异的文本）：
+```
+运行 doc_change_review 工作流，old_path 是 <old>，new_path 是 <new>
+```
+
+**期望行为**：
+- agent 调用 `run_workflow("doc_change_review", {"old_path": "...", "new_path": "..."})`
+- 控制台按拓扑顺序执行 4 个 step：`collect → diff → review → report`
+- `collect` 步骤由主 Agent 执行（读取 `prompts/collect.md` 展开后的 prompt）
+- `diff` 步骤日志中能看到只强制挂载了 `changelog-diff` skill 的执行痕迹
+  （不依赖关键词触发判断）
+- `review` 步骤按 `agents/reviewer.md`（本工作流私有 profile，不是全局
+  `.agent/agents/` 目录下的同名文件，如果两处都存在同名 profile）执行
+- 最终 `report` 步骤汇总前面三步结果，输出"## 文档变更审查报告"
+- 全程不需要重启 agent、不需要额外配置
+
+**辅助验证（CLI）**：
+```
+/workflow show doc_change_review
+```
+应展示完整 YAML，`diff` 步骤可见 `type: skill_agent` + `skill_name: changelog-diff`，
+`review` 步骤可见 `type: role_agent` + `role: reviewer`。
+
+---
+
+### 场景测试九：`/workflow to-dir` 单文件 → 文件夹模式转换
+
+**目的**：验证已有单文件工作流可以一键升级为文件夹模式，且转换后行为不变。
+
+**测试步骤**：
+```
+/workflow to-dir code_review
+```
+
+**期望行为**：
+- 生成 `.agent/workflows/code_review/workflow.yaml`（原 4 个 step 原样迁移）
+- 自动创建空的 `.agent/workflows/code_review/agents/`、`skills/`、`prompts/`
+- 原来的单文件 `.agent/workflows/code_review.yaml` 被删除
+- `/workflow show code_review` 结果与转换前一致（字段无损）
+- `/workflow run code_review ...` 仍可正常执行，行为与转换前完全一致
+
+**代码层验证**（可选，用临时目录避免污染仓库真实文件）：
+```bash
+PYTHONPATH=src python3 -c "
+import tempfile
+from pathlib import Path
+from mini_agent.workflow.store import WorkflowStore
+
+with tempfile.TemporaryDirectory() as tmp:
+    tmp = Path(tmp)
+    (tmp / '.agent' / 'workflows').mkdir(parents=True)
+    store = WorkflowStore(project_root=tmp)
+
+    import shutil
+    shutil.copy('.agent/workflows/code_review.yaml', tmp / '.agent' / 'workflows' / 'code_review.yaml')
+
+    new_path = store.to_dir('code_review')
+    new_dir = new_path.parent
+    assert new_path.name == 'workflow.yaml' and new_path.exists()
+    assert (new_dir / 'agents').is_dir()
+    assert (new_dir / 'skills').is_dir()
+    assert (new_dir / 'prompts').is_dir()
+    assert not (tmp / '.agent' / 'workflows' / 'code_review.yaml').exists(), '原单文件应被删除'
+    print('✅ to-dir 迁移完成：workflow.yaml + agents/skills/prompts 空目录')
+
+    wf2 = store.load('code_review')
+    assert wf2.source_dir is not None
+    assert len(wf2.steps) == 4
+    assert wf2.validate() == []
+    print('✅ 迁移后重新加载，字段完整、校验通过')
+"
+```
+
+**期望输出**：2 个 ✅
+
+---
+
+
 
 | 测试项 | 验证方式 | 通过标志 |
 |--------|----------|----------|
@@ -607,3 +787,9 @@ print(gen.preview(wf))
 | save + run 链路 | 场景五 | 保存后立即可执行 |
 | 手动 YAML 无重启生效 | 场景六 | 直接可用 |
 | 缺参数不崩溃 | 场景七 | 无 Python 异常 |
+| 文件夹模式加载（source_dir/type/role/skill_name） | 单元测试五 | 5 个断言通过 |
+| prompt_file 内容读取填充 | 单元测试五 | prompt 非空且含占位符 |
+| 本地 agent/skill 资源合并（WorkflowResourceBundle） | 单元测试六 | 3 个断言通过 |
+| 单文件模式不构造 bundle | 单元测试六 | `build_resource_bundle` 返回 `None` |
+| doc_change_review 端到端执行 | 场景八 | 4 个 step 按序完成，报告正常生成 |
+| `/workflow to-dir` 迁移 | 场景九 | 迁移后目录结构、字段、校验均正确 |
