@@ -5,6 +5,13 @@
 > 方向都写到可以直接动手的细节程度。等某个方向被选中要做时，再单独为它
 > 写一份 `xxx_design.md`（沿用 `session_to_workflow_design.md` 的写法）。
 >
+> **进度更新**：§6 中"现在就能做"的四项——1a（执行历史汇总统计）、
+> 3（condition 暴露 inputs + validate 静态一致性检查）、1b（生成后自动
+> dry-run 预览）、2（save_workflow 的 git 集成提示 + `/workflow history`/
+> `/workflow diff`）——已按建议顺序实施完成，详见
+> `next_doc/workflow_system_p9_implementation_record.md`。§4（主动感知与
+> 建议）、§5（权限与信任模型）按下文结论继续搁置，未启动。
+>
 > 编号延续：`workflow_mechanism_improvement_plan.md`（P1-P7）→
 > `session_to_workflow_design.md`（P8）→ 本文档讨论的是 **P9 候选池**，
 > 不是单一一个 P9，因为下面几个方向互相独立，可以任选其一先做，不要求
@@ -274,3 +281,9 @@ P8 已经上线一段时间、积累了足够多"手动重复"的真实样本才
 即可参照 `session_to_workflow_design.md` 的写法单独展开一份可实施的
 设计文档（数据结构、承载函数、工具/CLI 改动点、检查清单），不需要
 等其它方向一起排期。
+
+> **更新**：1a/1b/2/3 已全部实施完成，实现细节与验证记录见
+> `workflow_system_p9_implementation_record.md`，未再单独展开
+> `xxx_design.md`——四项改动都足够小、且互相独立，直接照本文档 §1-3
+> 的分析实现，没有引入本文档未讨论过的新设计决策。下一步是观察一段
+> 真实使用效果后再评估是否启动 §4（主动感知与建议）。

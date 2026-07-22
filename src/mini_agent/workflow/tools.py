@@ -2,7 +2,9 @@
 workflow/tools.py — 工作流工具注册
 
 注册到主 Agent 工具注册表，让主 Agent 可以调用：
-  generate_workflow   根据描述生成工作流定义
+  generate_workflow   根据描述生成工作流定义（[P9-1b] 生成结果自动附带一次
+                      dry-run 预览：并发分批/condition 求值，保存前就能发现
+                      "以为会并发其实会串行"这类问题）
   save_workflow       保存工作流（生成后或用户手动编辑后调用）
   run_workflow        执行已保存的工作流（支持 background 后台执行）
   list_workflows      列举所有工作流
@@ -13,6 +15,11 @@ workflow/tools.py — 工作流工具注册
   resume_workflow_run     从断点续跑一次未完成/已暂停的执行
   list_workflow_runs      列举历史/当前的工作流执行记录
   get_workflow_run_status 查看某次执行的详细进度
+
+  [workflow_system_next_directions.md P9-1a 新增]
+  get_workflow_stats      汇总某个工作流的历史执行统计（成功率/各步骤平均
+                          耗时评分重试率/condition 命中率），纯粹对已落盘
+                          的 WorkflowSession 数据做聚合，不改动执行逻辑
   pause_workflow_run      暂停一次正在后台执行的工作流
   cancel_workflow_run     取消一次工作流执行
   approve_workflow_step   人工审批门放行
@@ -68,6 +75,33 @@ def register_workflow_tools(cfg: "AppConfig") -> None:
 
     store_path = cfg.project_root
 
+    # ── 生成结果附带一次 dry-run 预览（P9-1b）───────────────────────────────
+
+    def _format_dry_run_preview(wf, inputs: dict) -> str:
+        """
+        [P9-1b workflow_system_next_directions.md §1.2b] 生成完 YAML 后，
+        自动跑一次 preview_workflow_def（P7 preview_workflow 的能力，走并发
+        分批/占位符替换/condition 求值但不真正执行 Agent/工具），让用户在
+        保存前就能看到"这个 workflow 大概会怎么分批执行、condition 大概会
+        怎么判"，而不是只看步骤列表脑内模拟。dry-run 本身失败（比如
+        依赖图有环）不应该阻塞展示 YAML，调用方需要包一层 try/except。
+        """
+        from mini_agent.workflow import api_helpers
+
+        preview = api_helpers.preview_workflow_def(cfg, wf, inputs)
+        lines = ["### Dry-run 预览（不实际执行）", ""]
+        lines.append("**并发分批**：")
+        for i, batch in enumerate(preview["batches"], start=1):
+            names = "、".join(f"{s['id']}（{s['type']}）" for s in batch)
+            tag = "并发" if len(batch) > 1 else "单步"
+            lines.append(f"  批次 {i}（{tag}）：{names}")
+        if preview["conditions"]:
+            lines.append("")
+            lines.append("**condition 求值**：")
+            for step_id, desc in preview["conditions"].items():
+                lines.append(f"  - {step_id}: {desc}")
+        return "\n".join(lines)
+
     # ── 生成工作流 ──────────────────────────────────────────────────────────
 
     @tool(name="generate_workflow", group="workflow",
@@ -91,8 +125,20 @@ def register_workflow_tools(cfg: "AppConfig") -> None:
         try:
             wf = generator.parse_yaml(yaml_str)
             preview = generator.preview(wf)
+
+            dry_run_section = ""
+            try:
+                parsed_inputs = json.loads(example_input) if example_input else {}
+                if not isinstance(parsed_inputs, dict):
+                    parsed_inputs = {}
+                dry_run_section = "\n\n" + _format_dry_run_preview(wf, parsed_inputs)
+            except Exception as e:
+                # dry-run 只是锦上添花，失败不影响主流程（YAML 已经生成）
+                from mini_agent.errors import log_exception
+                log_exception(e, where="mini_agent.workflow.tools.generate_workflow.dry_run")
+
             return (
-                f"{preview}\n\n"
+                f"{preview}{dry_run_section}\n\n"
                 f"---\n### 生成的 YAML 定义\n\n```yaml\n{yaml_str}\n```\n\n"
                 f"如果满意，请调用 `save_workflow` 工具保存；"
                 f"如需修改，请告诉我需要调整的地方。"
@@ -121,10 +167,13 @@ def register_workflow_tools(cfg: "AppConfig") -> None:
 
         try:
             path = store.save(wf, cfg=cfg)
+            from mini_agent.workflow.git_integration import save_hint
+            hint = save_hint(Path(cfg.project_root), path)
             return (
                 f"✅ 工作流 **{wf.name}** 已保存到 `{path}`\n"
                 f"步骤：{' → '.join(s.id for s in wf.steps)}\n"
                 f"运行方式：调用 `run_workflow` 工具，传入 name=\"{wf.name}\""
+                + (f"\n\n{hint}" if hint else "")
             )
         except ValueError as e:
             return f"❌ 保存失败：{e}"
@@ -236,8 +285,21 @@ def register_workflow_tools(cfg: "AppConfig") -> None:
                     "如果满意可以考虑把重复的那部分存成可复用 step 片段"
                     "（save_snippet）。"
                 )
+
+            dry_run_section = ""
+            try:
+                parsed_inputs = {
+                    p.name: p.example_value
+                    for p in (summary.candidate_parameters or [])
+                    if p.name
+                }
+                dry_run_section = "\n\n" + _format_dry_run_preview(wf, parsed_inputs)
+            except Exception as e:
+                from mini_agent.errors import log_exception
+                log_exception(e, where="mini_agent.workflow.tools.build_workflow_from_summary.dry_run")
+
             return (
-                f"{preview}\n\n"
+                f"{preview}{dry_run_section}\n\n"
                 f"---\n### 生成的 YAML 定义\n\n```yaml\n{yaml_str}\n```"
                 f"{extra_note}\n\n"
                 f"如果满意，请调用 `save_workflow` 工具保存；"
@@ -370,6 +432,43 @@ def register_workflow_tools(cfg: "AppConfig") -> None:
             return f"📭 没有找到工作流 {name!r} 的执行记录。" if name else "📭 当前没有任何工作流执行记录。"
         lines = [f"- {r['summary_line']}" for r in runs]
         return f"📋 共 {len(lines)} 条执行记录：\n\n" + "\n".join(lines)
+
+    @tool(name="get_workflow_stats", group="workflow",
+          description="汇总某个工作流的历史执行统计（成功率、各步骤平均耗时/评分/重试率、"
+                       "condition 命中率），用于判断这个工作流长期跑下来靠不靠谱、哪个步骤该调了。")
+    def get_workflow_stats(name: str) -> str:
+        """
+        [P9-1a workflow_system_next_directions.md §1.2a]
+        name: 工作流名称
+        """
+        from mini_agent.workflow import api_helpers
+
+        stats = api_helpers.get_workflow_stats(cfg, name)
+        if stats["total_runs"] == 0:
+            return f"📭 工作流 {name!r} 还没有任何执行记录，暂无统计数据。"
+
+        lines = [
+            f"📊 工作流 {name!r} 统计（共 {stats['total_runs']} 次执行，"
+            f"成功率 {stats['success_rate']:.0%}）",
+            "",
+            "步骤统计：",
+        ]
+        for step_id, s in stats["step_stats"].items():
+            score_part = f"，平均分 {s['avg_score']}" if s["avg_score"] is not None else ""
+            retry_part = f"，平均重试 {s['avg_retries_used']}" if s["avg_retries_used"] else ""
+            lines.append(
+                f"  - {step_id}: 出现 {s['total']} 次，成功 {s['done']} 次"
+                f"（失败率 {s['fail_rate']:.0%}），平均耗时 {s['avg_duration']}s"
+                f"{score_part}{retry_part}"
+            )
+
+        if stats["condition_stats"]:
+            lines.append("")
+            lines.append("condition 命中率（该步骤未被跳过的比例）：")
+            for step_id, c in stats["condition_stats"].items():
+                lines.append(f"  - {step_id}: {c['true_rate']:.0%}（共 {c['total']} 次）")
+
+        return "\n".join(lines)
 
     @tool(name="get_workflow_run_status", group="workflow",
           description="查看某次工作流执行的详细进度（每个步骤的状态、是否有步骤在等待人工审批等）。")

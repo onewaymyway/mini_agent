@@ -77,6 +77,7 @@ api/routes.py — FastAPI 路由定义
     GET    /v1/workflows                     列出已保存的工作流
     GET    /v1/workflows/{name}               查看 YAML 定义
     POST   /v1/workflows/{name}/preview       dry-run 预览执行计划（不实际执行）
+    GET    /v1/workflows/{name}/stats         [P9-1a] 汇总历史执行统计（成功率/各步骤耗时评分重试率/condition命中率）
     POST   /v1/workflows/{name}/run           启动一次执行（前台/后台，语义同 run_workflow 工具）
     GET    /v1/workflow_runs                  列出所有执行记录（?name= 可按工作流名过滤）
     GET    /v1/workflow_runs/{id}             单次执行详情
@@ -2181,6 +2182,19 @@ async def preview_workflow_route(name: str, request: Request):
         return api_helpers.preview_workflow(cfg, name, inputs)
     except api_helpers.WorkflowApiError as e:
         raise _workflow_api_error_to_http(e)
+
+
+@router.get("/workflows/{name}/stats")
+async def get_workflow_stats_route(name: str, request: Request):
+    """
+    GET /v1/workflows/{name}/stats — 汇总历史执行统计（P9-1a
+    workflow_system_next_directions.md §1.2a）：成功率、各步骤平均耗时/
+    评分/重试率、condition 命中率。纯读取聚合，不涉及执行。
+    """
+    cfg = _workflow_cfg(request)
+    _require_owner(request)
+    from mini_agent.workflow import api_helpers
+    return api_helpers.get_workflow_stats(cfg, name)
 
 
 @router.post("/workflows/{name}/run")

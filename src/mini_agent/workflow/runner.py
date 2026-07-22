@@ -471,7 +471,7 @@ class WorkflowRunner:
                 )
                 return
 
-            if step.condition and not self._eval_condition(step.condition, step_results):
+            if step.condition and not self._eval_condition(step.condition, step_results, inputs):
                 R.print_info(f"[Workflow] 步骤 {step.id} 条件不满足，跳过：{step.condition!r}")
                 step_results[step.id] = StepResult(
                     step_id=step.id,
@@ -750,10 +750,19 @@ class WorkflowRunner:
         self,
         condition: str,
         step_results: dict[str, StepResult],
+        inputs: Optional[dict] = None,
     ) -> bool:
         """
         执行条件表达式，如 "evaluate.score >= 6"。
         构建一个安全的局部变量命名空间，只暴露步骤结果的属性。
+
+        [P9-3 workflow_system_next_directions.md §3.2] 额外暴露一个 `inputs`
+        命名空间对象，对应 run_workflow(inputs=...) 传入的外部动态参数，
+        使得 condition 既能写"看某个 step 结果"（如 `check.passed`），也能
+        写"看外部输入"（如 `inputs.env == 'prod'`），或两者组合（如
+        `inputs.env == 'prod' and check.passed`）。单独用一个 `inputs.` 前缀
+        而不是把 inputs 的 key 直接摊平进命名空间，是为了避免 inputs 里的
+        key 与 step id 同名时互相覆盖。
         """
         # 构建命名空间：step_id → SimpleNamespace(output=..., score=...)
         import types
@@ -765,6 +774,14 @@ class WorkflowRunner:
                 status=sr.status.value,
                 passed=sr.status == StepStatus.DONE,
             )
+        try:
+            ns["inputs"] = types.SimpleNamespace(**(inputs or {}))
+        except TypeError:
+            # inputs 里存在非法 Python 标识符 key（如 "a-b"）时退化为空
+            # SimpleNamespace，不影响其它 step 引用的求值，只是 inputs.*
+            # 会 AttributeError（跟"引用了不存在的 step"是同一种失败方式，
+            # 交给下面统一的 except Exception 兜底处理）。
+            ns["inputs"] = types.SimpleNamespace()
         try:
             return bool(eval(condition, {"__builtins__": {}}, ns))  # noqa: S307
         except Exception as e:

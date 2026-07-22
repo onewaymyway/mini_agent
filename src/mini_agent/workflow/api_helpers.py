@@ -232,6 +232,141 @@ def list_workflow_runs(cfg: "AppConfig", name: Optional[str] = None) -> list[dic
     return out
 
 
+def get_workflow_stats(cfg: "AppConfig", name: str) -> dict:
+    """
+    [P9-1a workflow_system_next_directions.md §1.2a] 对某个 workflow 的历史
+    执行记录做汇总统计视图。纯粹是对 list_workflow_runs() 已经落盘的
+    WorkflowSession 数据做一层聚合，不涉及执行逻辑改动，也不产生新的落盘
+    数据（每次调用都是即时重新计算）。
+
+    返回结构：
+      {
+        "workflow_name": str,
+        "total_runs": int,
+        "success_rate": float,        # DONE 状态的执行次数占比
+        "step_stats": {
+          step_id: {
+            "total": int,             # 该 step 在多少次执行里出现过结果
+            "done": int,
+            "fail_rate": float,       # 1 - done/total（含 FAILED/GATE_FAILED/
+                                       # TIMEOUT/CANCELLED/REJECTED/SKIPPED 等）
+            "avg_duration": float,    # 秒
+            "avg_score": float | None,  # 0-100，只有 evaluator 类角色产生过
+                                         # 分数时才非 None
+            "avg_retries_used": float,
+          },
+          ...
+        },
+        "condition_stats": {
+          step_id: {                 # 只包含定义了 condition 的 step
+            "total": int,
+            "true_rate": float,      # 该 step 实际被执行（非 SKIPPED）的比例，
+                                      # 用来近似 condition 判 True 的比例——
+                                      # 注意 SKIPPED 也可能来自"依赖失败"而非
+                                      # "condition 为 False"，这里不做区分，
+                                      # 只是给用户一个"这个分支基本没走过/
+                                      # 走的很频繁"的粗粒度信号。
+          },
+          ...
+        },
+      }
+
+    找不到该 workflow 的任何执行记录时 total_runs=0，其余聚合字段为空 dict，
+    不抛异常（"从没跑过"是正常状态，不是错误）。
+    """
+    from mini_agent.storage.paths import AgentPaths
+    from mini_agent.workflow.session import WorkflowSession, WorkflowRunStatus
+    from mini_agent.workflow.schema import StepStatus
+    from mini_agent.workflow.store import WorkflowStore
+
+    paths = AgentPaths(project_root=cfg.project_root)
+    sessions = []
+    for wf_session_id in sorted(paths.list_workflow_session_ids()):
+        s = WorkflowSession.load(paths, wf_session_id)
+        if s is None or s.workflow_name != name:
+            continue
+        sessions.append(s)
+
+    total_runs = len(sessions)
+    if total_runs == 0:
+        return {
+            "workflow_name": name,
+            "total_runs": 0,
+            "success_rate": 0.0,
+            "step_stats": {},
+            "condition_stats": {},
+        }
+
+    success_runs = sum(1 for s in sessions if s.status == WorkflowRunStatus.DONE)
+
+    # 只有定义了 condition 的 step 才计入 condition_stats（读取当前工作流
+    # 定义；如果工作流已被删除/改名导致读不到，退化为不输出 condition_stats，
+    # 不影响 step_stats 的计算）。
+    condition_step_ids: set[str] = set()
+    try:
+        wf = WorkflowStore(Path(cfg.project_root)).load(name)
+        if wf is not None:
+            condition_step_ids = {s.id for s in wf.steps if s.condition}
+    except Exception:
+        pass
+
+    step_agg: dict[str, dict] = {}
+    cond_agg: dict[str, dict] = {}
+
+    for s in sessions:
+        for step_id, sr in s.step_results.items():
+            agg = step_agg.setdefault(step_id, {
+                "total": 0, "done": 0, "duration_sum": 0.0,
+                "score_sum": 0.0, "score_count": 0, "retries_sum": 0,
+            })
+            agg["total"] += 1
+            if sr.status == StepStatus.DONE:
+                agg["done"] += 1
+            agg["duration_sum"] += sr.duration_seconds or 0.0
+            if sr.score is not None:
+                agg["score_sum"] += sr.score
+                agg["score_count"] += 1
+            agg["retries_sum"] += sr.retries_used or 0
+
+            if step_id in condition_step_ids:
+                cagg = cond_agg.setdefault(step_id, {"total": 0, "executed": 0})
+                cagg["total"] += 1
+                if sr.status != StepStatus.SKIPPED:
+                    cagg["executed"] += 1
+
+    step_stats: dict[str, dict] = {}
+    for step_id, agg in step_agg.items():
+        step_stats[step_id] = {
+            "total": agg["total"],
+            "done": agg["done"],
+            "fail_rate": round(1 - agg["done"] / agg["total"], 4) if agg["total"] else 0.0,
+            "avg_duration": round(agg["duration_sum"] / agg["total"], 3) if agg["total"] else 0.0,
+            # StepResult.score 内部按 0-1 存储（见 runner._eval_condition /
+            # _resolve_prompt 里 int(score*100) 的换算），这里统一换算成
+            # 0-100 展示，跟其它地方看到的评分口径一致。
+            "avg_score": (
+                round(agg["score_sum"] / agg["score_count"] * 100, 2)
+                if agg["score_count"] else None
+            ),
+            "avg_retries_used": round(agg["retries_sum"] / agg["total"], 3) if agg["total"] else 0.0,
+        }
+
+    condition_stats: dict[str, dict] = {}
+    for step_id, cagg in cond_agg.items():
+        condition_stats[step_id] = {
+            "total": cagg["total"],
+            "true_rate": round(cagg["executed"] / cagg["total"], 4) if cagg["total"] else 0.0,
+        }
+
+    return {
+        "workflow_name": name,
+        "total_runs": total_runs,
+        "success_rate": round(success_runs / total_runs, 4) if total_runs else 0.0,
+        "step_stats": step_stats,
+        "condition_stats": condition_stats,
+    }
+
+
 def get_workflow_run_detail(cfg: "AppConfig", workflow_session_id: str) -> dict:
     """对应 get_workflow_run_status 工具，附加 output_dir。
     找不到抛 WorkflowApiError(code='not_found')。"""
@@ -358,21 +493,40 @@ _PARAM_PLACEHOLDER_RE = re.compile(r"\{([^}.]+)\}")
 
 def preview_workflow(cfg: "AppConfig", name: str, inputs: Optional[dict] = None) -> dict:
     """
-    纯计算预览：不调用任何 Agent/工具。
-      - batches: 按并发批次分层的 step 列表（每项含 id/name/type/role）
-      - resolved_prompts: 能用 inputs 静态替换的 prompt 预览
-        （`{step_id.output}` 这类运行时占位符原样保留，标注 runtime）
-      - conditions: 每个 step 的 condition 表达式，能静态求值的给出结果，
-        涉及 `{step_id.score}` 等运行期依赖的标注"运行时决定"
-    找不到工作流抛 WorkflowApiError(code='not_found')。
+    纯计算预览：不调用任何 Agent/工具。找不到工作流抛
+    WorkflowApiError(code='not_found')。字段含义见 preview_workflow_def()。
     """
     from mini_agent.workflow.store import WorkflowStore
-    from mini_agent.workflow.runner import WorkflowRunner
 
     store = WorkflowStore(Path(cfg.project_root))
     wf = store.load(name)
     if wf is None:
         raise WorkflowApiError("not_found", f"找不到工作流 {name!r}")
+    return preview_workflow_def(cfg, wf, inputs)
+
+
+def preview_workflow_def(cfg: "AppConfig", wf: "WorkflowDef", inputs: Optional[dict] = None) -> dict:
+    """
+    [P9-1b workflow_system_next_directions.md §1.2b] 从 preview_workflow()
+    拆分出的、直接接受内存中 WorkflowDef 对象的版本——原来的实现强制先
+    store.load(name) 按名字读盘，导致"刚生成、还没保存"的 workflow 无法
+    预览；generate_workflow / build_workflow_from_summary 想在生成结果里
+    自动附带一次 dry-run 预览时，只能在这里操作对象本身。
+
+    返回：
+      - batches: 按并发批次分层的 step 列表（每项含 id/name/type/role）
+      - resolved_prompts: 能用 inputs 静态替换的 prompt 预览
+        （`{step_id.output}` 这类运行时占位符原样保留，标注 runtime）
+      - conditions: 每个 step 的 condition 表达式：
+          - 只引用 inputs（或不引用任何 step/inputs，如纯字面量表达式）的，
+            给出静态求值结果
+          - 引用了任何 step 结果（如 `analyze.passed`）的，标注"运行时决定"
+        [P9-3] 这里判断"是否只引用 inputs"复用 schema.py 的
+        condition_referenced_names()，跟 validate() 的静态一致性检查
+        共用同一套 ast 解析逻辑，不重复判断标准。
+    """
+    from mini_agent.workflow.runner import WorkflowRunner
+    from mini_agent.workflow.schema import condition_referenced_names
 
     parsed_inputs = dict(inputs or {})
     runner = WorkflowRunner(cfg)
@@ -412,14 +566,19 @@ def preview_workflow(cfg: "AppConfig", name: str, inputs: Optional[dict] = None)
         cond = getattr(s, "condition", None)
         if not cond:
             continue
-        if "." in cond or "{" in cond:
-            # 涉及运行时输出/评分依赖，交给 runner 在真正执行时求值
+        referenced = condition_referenced_names(cond)
+        if referenced - {"inputs"}:
+            # 引用了至少一个 step 结果，涉及运行时输出/评分依赖，交给
+            # runner 在真正执行时求值。
             conditions[s.id] = f"{cond}  （运行时决定，无法预览）"
             continue
         try:
-            # 仅对纯 inputs 相关、不含依赖引用的表达式做只读求值，
-            # 沙箱环境只暴露 inputs，避免 eval 到任意名字。
-            value = eval(cond, {"__builtins__": {}}, dict(parsed_inputs))  # noqa: S307
+            # 只引用 inputs（或不引用任何名字）的表达式可以静态求值：
+            # 用跟 runner._eval_condition 一致的 `inputs.xxx` 命名空间
+            # （而不是把 inputs 摊平进顶层命名空间），保持两处求值口径一致。
+            import types
+            ns = {"inputs": types.SimpleNamespace(**parsed_inputs)}
+            value = eval(cond, {"__builtins__": {}}, ns)  # noqa: S307
             conditions[s.id] = f"{cond}  → {value!r}"
         except Exception:
             conditions[s.id] = f"{cond}  （无法静态求值，运行时决定）"

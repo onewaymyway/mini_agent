@@ -45,6 +45,28 @@ from typing import Any, Optional
 STEP_TYPES = ("agent", "role_agent", "sub_workflow", "tool_call", "human_input", "script", "skill_agent")
 
 
+def condition_referenced_names(condition: str) -> set[str]:
+    """
+    [P9-3 workflow_system_next_directions.md §3.2] 解析 condition 表达式，
+    静态（不 eval）抽取表达式里所有形如 `xxx.yyy` 属性访问的顶层名字 `xxx`
+    （如 "analyze.passed and inputs.env == 'prod'" → {"analyze", "inputs"}）。
+    供 WorkflowDef.validate() 的一致性检查、以及 api_helpers.preview_workflow()
+    判断"这个 condition 是否只依赖 inputs（可以静态求值）"共用，避免两处
+    各写一套 ast 解析逻辑。表达式语法错误时返回空集合（语法错误本身由
+    调用方各自处理，不在这里报告）。
+    """
+    import ast
+    try:
+        tree = ast.parse(condition, mode="eval")
+    except SyntaxError:
+        return set()
+    names: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Attribute) and isinstance(node.value, ast.Name):
+            names.add(node.value.id)
+    return names
+
+
 class StepStatus(str, Enum):
     PENDING      = "pending"
     RUNNING      = "running"
@@ -311,6 +333,57 @@ class WorkflowDef:
             for dep in step.depends_on:
                 if dep not in seen_ids:
                     errors.append(f"步骤 {step.id!r} 依赖不存在的步骤 {dep!r}")
+
+        # [P9-3 workflow_system_next_directions.md §3.2] condition 静态一致性
+        # 检查：只做语法级别（ast.parse）的名字引用检查，不真的 eval —— 用
+        # ast.walk 抽取表达式里所有形如 `xxx.yyy` 的属性访问，把 `xxx`
+        # 当作"引用的 step_id"，检查它是否存在、以及是否在该 step 的
+        # depends_on（直接或传递）里。这样一个写错 step_id、或者引用了
+        # 存在但没有声明依赖的 step 的 condition，能在 save_workflow 阶段
+        # 就被拦下来，而不是等真正跑到那一步、被 runner 的 except Exception
+        # 吞掉、只表现为"这步被跳过了"。
+        # `inputs.xxx` 是运行时始终可见的外部参数命名空间（见
+        # runner.py::_eval_condition），不受 depends_on 约束，跳过检查。
+        import ast
+
+        step_deps_map = {s.id: set(s.depends_on) for s in self.steps}
+
+        def _transitive_deps(step_id: str, _visited: Optional[set] = None) -> set:
+            _visited = _visited if _visited is not None else set()
+            if step_id in _visited:
+                return set()
+            _visited.add(step_id)
+            result = set(step_deps_map.get(step_id, ()))
+            for d in list(result):
+                result |= _transitive_deps(d, _visited)
+            return result
+
+        for step in self.steps:
+            if not step.condition:
+                continue
+            try:
+                ast.parse(step.condition, mode="eval")
+            except SyntaxError as e:
+                errors.append(f"步骤 {step.id!r} 的 condition 表达式语法错误：{e}")
+                continue
+
+            ancestors = _transitive_deps(step.id)
+            referenced = condition_referenced_names(step.condition)
+
+            for ref in sorted(referenced):
+                if ref == "inputs":
+                    continue
+                if ref not in seen_ids:
+                    errors.append(
+                        f"步骤 {step.id!r} 的 condition 引用了不存在的步骤 {ref!r}"
+                        f"（{step.condition!r}）"
+                    )
+                elif ref not in ancestors:
+                    errors.append(
+                        f"步骤 {step.id!r} 的 condition 引用了步骤 {ref!r}，"
+                        f"但未在 depends_on 中声明依赖（直接或传递），"
+                        f"运行时该步骤结果可能还不存在（{step.condition!r}）"
+                    )
 
         # [P6] role 引用校验（可选，需要调用方传入 role_checker）
         if role_checker is not None:

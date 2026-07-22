@@ -30,6 +30,14 @@ CLI 里操作，不需要绕一圈让主 Agent 去调用工具）：
   /workflow from-session <session_id>     — [P8] 从指定 session 生成 workflow：
                                              总结→展示确认→构建→展示确认→保存，
                                              全程在 CLI 里以连续的确认提示呈现
+  /workflow stats <name>                  — [P9-1a] 汇总历史执行统计（成功率/
+                                             各步骤平均耗时评分重试率/condition命中率）
+  /workflow history <name>                — [P9-2] 查看该 workflow 定义文件的
+                                             git 提交历史（直接复用 git log，
+                                             不重新发明版本历史机制）
+  /workflow diff <name>                   — [P9-2] 查看该 workflow 定义相对
+                                             上次 commit 的改动（结构化 step
+                                             级别摘要 + 原始 git diff）
 """
 
 from __future__ import annotations
@@ -66,7 +74,10 @@ def handle_workflow_cmd(args: list[str], agent) -> None:
             "  /workflow delete <name>                 删除工作流定义\n"
             "  /workflow to-dir <name>                 升级为文件夹模式（agents/skills/prompts）\n"
             "  /workflow sessions                      列出最近的历史 session\n"
-            "  /workflow from-session <session_id>     从指定 session 生成 workflow（总结→确认→构建→确认→保存）"
+            "  /workflow from-session <session_id>     从指定 session 生成 workflow（总结→确认→构建→确认→保存）\n"
+            "  /workflow stats <name>                  汇总历史执行统计（成功率/步骤耗时评分重试率/condition命中率）\n"
+            "  /workflow history <name>                查看该 workflow 定义文件的 git 提交历史\n"
+            "  /workflow diff <name>                   查看该 workflow 定义相对上次 commit 的改动"
         )
         return
 
@@ -108,6 +119,12 @@ def handle_workflow_cmd(args: list[str], agent) -> None:
         _handle_sessions(cfg, rest)
     elif sub == "from-session":
         _handle_from_session(cfg, rest)
+    elif sub == "stats":
+        _handle_stats(cfg, rest)
+    elif sub == "history":
+        _handle_history(cfg, rest)
+    elif sub == "diff":
+        _handle_diff(cfg, rest)
     else:
         R.print_error(f"未知子命令：/workflow {sub}（输入 /workflow 查看用法）")
 
@@ -544,3 +561,61 @@ def _handle_from_session(cfg, rest: list[str]) -> None:
         f"步骤：{' → '.join(s.id for s in wf.steps)}\n"
         f"运行方式：/workflow run {wf.name}"
     )
+
+
+# ── 历史执行统计 / git 集成（P9-1a / P9-2）──────────────────────────────────
+
+def _handle_stats(cfg, rest: list[str]) -> None:
+    """/workflow stats <name> — 等价于 get_workflow_stats 工具。"""
+    if not rest:
+        R.print_error("用法：/workflow stats <name>")
+        return
+    from mini_agent.workflow import api_helpers
+
+    stats = api_helpers.get_workflow_stats(cfg, rest[0])
+    if stats["total_runs"] == 0:
+        R.print_info(f"📭 工作流 {rest[0]!r} 还没有任何执行记录，暂无统计数据。")
+        return
+
+    R.print_info(
+        f"📊 工作流 {rest[0]!r} 统计（共 {stats['total_runs']} 次执行，"
+        f"成功率 {stats['success_rate']:.0%}）"
+    )
+    for step_id, s in stats["step_stats"].items():
+        score_part = f"，平均分 {s['avg_score']}" if s["avg_score"] is not None else ""
+        retry_part = f"，平均重试 {s['avg_retries_used']}" if s["avg_retries_used"] else ""
+        R.print_info(
+            f"  - {step_id}: 出现 {s['total']} 次，成功 {s['done']} 次"
+            f"（失败率 {s['fail_rate']:.0%}），平均耗时 {s['avg_duration']}s"
+            f"{score_part}{retry_part}"
+        )
+    if stats["condition_stats"]:
+        R.print_info("condition 命中率（该步骤未被跳过的比例）：")
+        for step_id, c in stats["condition_stats"].items():
+            R.print_info(f"  - {step_id}: {c['true_rate']:.0%}（共 {c['total']} 次）")
+
+
+def _handle_history(cfg, rest: list[str]) -> None:
+    """
+    /workflow history <name> — [P9-2] 查看该 workflow 定义文件的 git 提交
+    历史。直接复用 `git log --oneline`，不重新发明版本历史机制（见
+    next_doc/workflow_system_next_directions.md §2）。
+    """
+    if not rest:
+        R.print_error("用法：/workflow history <name>")
+        return
+    from mini_agent.workflow.git_integration import git_log_for_workflow
+    R.print_info(git_log_for_workflow(Path(cfg.project_root), rest[0]))
+
+
+def _handle_diff(cfg, rest: list[str]) -> None:
+    """
+    /workflow diff <name> — [P9-2] 查看该 workflow 定义相对上次 commit 的
+    改动：先给一段"step 级别"结构化摘要（哪个字段从什么改成了什么），
+    再附上原始 `git diff` 全文。
+    """
+    if not rest:
+        R.print_error("用法：/workflow diff <name>")
+        return
+    from mini_agent.workflow.git_integration import git_diff_for_workflow
+    R.print_info(git_diff_for_workflow(Path(cfg.project_root), rest[0]))
