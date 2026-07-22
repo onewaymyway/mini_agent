@@ -33,6 +33,7 @@ runner 里，不下沉到每个 Executor，避免重复。
 from __future__ import annotations
 
 import subprocess
+import sys
 import time
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -240,14 +241,21 @@ class ScriptStepExecutor(StepExecutor):
             raise ValueError(f"步骤 {step.id!r} 是 script 类型但未指定 script 命令")
 
         timeout = step.timeout or float(getattr(wf_cfg, "script_step_timeout_seconds", 60.0))
-        proc = subprocess.run(
-            step.script,
-            shell=True,
-            cwd=str(runner._cfg.project_root),
-            capture_output=True,
-            text=True,
-            timeout=timeout,
-        )
+        _is_windows = sys.platform == "win32"
+        _popen_kwargs = {
+            "shell": True,
+            "cwd": str(runner._cfg.project_root),
+            "capture_output": True,
+            "text": True,
+            "timeout": timeout,
+        }
+        if _is_windows:
+            # Windows: use CREATE_NEW_PROCESS_GROUP for proper process tree termination
+            _popen_kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
+        else:
+            # Unix: use start_new_session for proper process group handling
+            _popen_kwargs["start_new_session"] = True
+        proc = subprocess.run(step.script, **_popen_kwargs)
         if proc.returncode != 0:
             raise RuntimeError(
                 f"脚本执行失败（returncode={proc.returncode}）：\n"

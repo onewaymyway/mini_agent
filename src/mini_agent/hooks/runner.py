@@ -79,14 +79,19 @@ def run_hook(spec: HookSpec, payload: dict[str, Any]) -> HookResult:
     payload_bytes = json.dumps(payload, ensure_ascii=False).encode("utf-8")
 
     try:
-        proc = subprocess.run(
-            _split_command(spec.command) if isinstance(spec.command, str) else spec.command,
-            input=payload_bytes,
-            capture_output=True,
-            text=False,                          # 二进制模式，不依赖系统默认编码
-            timeout=spec.timeout,
-            cwd=str(spec.cwd) if spec.cwd else None,
-        )
+        _popen_kwargs = {
+            "args": _split_command(spec.command) if isinstance(spec.command, str) else spec.command,
+            "input": payload_bytes,
+            "capture_output": True,
+            "text": False,                          # 二进制模式，不依赖系统默认编码
+            "timeout": spec.timeout,
+            "cwd": str(spec.cwd) if spec.cwd else None,
+        }
+        if _IS_WINDOWS:
+            _popen_kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
+        else:
+            _popen_kwargs["start_new_session"] = True
+        proc = subprocess.run(**_popen_kwargs)
     except subprocess.TimeoutExpired:
         return HookResult(decision="allow", error=f"hook timed out after {spec.timeout}s: {spec.command}")
     except Exception as e:

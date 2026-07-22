@@ -230,10 +230,17 @@ def _try_run_ruff(root: Path, py_changes: dict) -> Optional[ValidationResult]:
             for path, content in py_changes.items():
                 tmp_file = tmp_dir / Path(path).name
                 tmp_file.write_text(content, encoding="utf-8")
-            proc = subprocess.run(
-                ["ruff", "check", str(tmp_dir)],
-                capture_output=True, text=True, timeout=30,
-            )
+            _popen_kwargs = {
+                "args": ["ruff", "check", str(tmp_dir)],
+                "capture_output": True,
+                "text": True,
+                "timeout": 30,
+            }
+            if sys.platform == "win32":
+                _popen_kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
+            else:
+                _popen_kwargs["start_new_session"] = True
+            proc = subprocess.run(**_popen_kwargs)
         if proc.returncode != 0:
             return ValidationResult.failure(f"T2 lint 失败（ruff）：\n{proc.stdout or proc.stderr}")
         return ValidationResult.success()
@@ -261,11 +268,18 @@ def validate_t2_existing_tests(root: Path, changes: ChangeSet) -> ValidationResu
         return ValidationResult.success()
 
     try:
-        proc = subprocess.run(
-            [sys.executable, "-m", "pytest", "tests", "-q", "--no-header"],
-            cwd=str(root),
-            capture_output=True, text=True, timeout=600,
-        )
+        _popen_kwargs = {
+            "args": [sys.executable, "-m", "pytest", "tests", "-q", "--no-header"],
+            "cwd": str(root),
+            "capture_output": True,
+            "text": True,
+            "timeout": 600,
+        }
+        if sys.platform == "win32":
+            _popen_kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
+        else:
+            _popen_kwargs["start_new_session"] = True
+        proc = subprocess.run(**_popen_kwargs)
     except FileNotFoundError:
         return ValidationResult.success()  # pytest 不可用，视为不适用，不阻塞流水线
     except subprocess.TimeoutExpired:

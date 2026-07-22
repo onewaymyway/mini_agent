@@ -176,13 +176,18 @@ class StateRepo:
     def _run_git(self, args: list[str], check: bool = True) -> subprocess.CompletedProcess:
         """统一的 git 子进程调用，cwd 固定为 self.root。"""
         try:
-            proc = subprocess.run(
-                ["git", *args],
-                cwd=str(self.root),
-                capture_output=True,
-                text=True,
-                timeout=60,
-            )
+            _popen_kwargs = {
+                "args": ["git", *args],
+                "cwd": str(self.root),
+                "capture_output": True,
+                "text": True,
+                "timeout": 60,
+            }
+            if sys.platform == "win32":
+                _popen_kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
+            else:
+                _popen_kwargs["start_new_session"] = True
+            proc = subprocess.run(**_popen_kwargs)
         except FileNotFoundError as e:
             raise StateRepoError(f"git executable not found: {e}") from e
         except subprocess.TimeoutExpired as e:

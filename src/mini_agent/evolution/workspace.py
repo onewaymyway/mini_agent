@@ -197,10 +197,18 @@ class EvolutionWorkspace:
             venv.EnvBuilder(with_pip=True, clear=True).create(str(venv_dir))
             # 安装 worktree 自身（editable），保证子进程能 `import mini_agent`
             try:
-                subprocess.run(
-                    [str(py_path), "-m", "pip", "install", "-e", ".", "--break-system-packages", "-q"],
-                    cwd=str(self.path), capture_output=True, text=True, timeout=300,
-                )
+                _popen_kwargs = {
+                    "args": [str(py_path), "-m", "pip", "install", "-e", ".", "--break-system-packages", "-q"],
+                    "cwd": str(self.path),
+                    "capture_output": True,
+                    "text": True,
+                    "timeout": 300,
+                }
+                if sys.platform == "win32":
+                    _popen_kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
+                else:
+                    _popen_kwargs["start_new_session"] = True
+                subprocess.run(**_popen_kwargs)
             except Exception as _mini_agent_exc:
                 from mini_agent.errors import log_exception
                 log_exception(_mini_agent_exc, where='mini_agent.evolution.workspace.EvolutionWorkspace.ensure_venv')
@@ -245,11 +253,18 @@ class EvolutionWorkspace:
 
         start = time.time()
         try:
-            proc = subprocess.run(
-                [python_exe, "-c", probe_script],
-                cwd=str(self.path),
-                capture_output=True, text=True, timeout=timeout,
-            )
+            _popen_kwargs = {
+                "args": [python_exe, "-c", probe_script],
+                "cwd": str(self.path),
+                "capture_output": True,
+                "text": True,
+                "timeout": timeout,
+            }
+            if sys.platform == "win32":
+                _popen_kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
+            else:
+                _popen_kwargs["start_new_session"] = True
+            proc = subprocess.run(**_popen_kwargs)
         except subprocess.TimeoutExpired as e:
             return SmokeBootResult(
                 ok=False, duration_seconds=time.time() - start,

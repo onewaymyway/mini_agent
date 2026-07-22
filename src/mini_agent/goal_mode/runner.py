@@ -477,16 +477,21 @@ class GoalRunner:
 
         R.print_info(f"[GoalRunner] 自动执行验证命令：{command}")
         try:
-            result = subprocess.run(
-                command,
-                shell=True,
-                cwd=str(self._cfg.project_root) if getattr(self._cfg, "project_root", None) else None,
-                capture_output=True,
-                timeout=timeout,
-                text=True,
-                encoding="utf-8",
-                errors="replace",
-            )
+            _is_windows = sys.platform == "win32"
+            _popen_kwargs = {
+                "shell": True,
+                "cwd": str(self._cfg.project_root) if getattr(self._cfg, "project_root", None) else None,
+                "capture_output": True,
+                "timeout": timeout,
+                "text": True,
+                "encoding": "utf-8",
+                "errors": "replace",
+            }
+            if _is_windows:
+                _popen_kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
+            else:
+                _popen_kwargs["start_new_session"] = True
+            result = subprocess.run(command, **_popen_kwargs)
             return {
                 "command": command,
                 "returncode": result.returncode,
