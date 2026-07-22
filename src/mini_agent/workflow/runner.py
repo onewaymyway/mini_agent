@@ -1026,7 +1026,11 @@ class WorkflowRunner:
             agent_session_root = paths.workflow_step_agent_dir(
                 wf_session.workflow_session_id, f"step_{step.id}"
             )
-            step_cfg.session_dir = str(agent_session_root)
+            # [BUGFIX] AppConfig.session_dir 是只读 property（代理
+            # self.session.dir），没有 setter，直接赋值会抛
+            # AttributeError: property 'session_dir' of 'AppConfig' object
+            # has no setter。真正可写的字段是 step_cfg.session.dir。
+            step_cfg.session.dir = agent_session_root
 
         guard = PermissionGuard(
             auto_approve=True,
