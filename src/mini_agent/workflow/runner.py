@@ -49,6 +49,7 @@ from __future__ import annotations
 import re
 import threading
 import time
+import traceback as _traceback
 import uuid
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
@@ -883,6 +884,51 @@ class WorkflowRunner:
                     duration_seconds=time.monotonic() - t_start,
                 )
 
+    def _build_error_context(
+        self,
+        step: WorkflowStep,
+        resolved_prompt: Optional[str] = None,
+        extra: Optional[dict] = None,
+    ) -> dict:
+        """
+        [问题定位改进] 出错时快照 step/workflow 的关键上下文，与 error/traceback
+        一起写进 StepResult.context，方便事后翻 session.json 就能定位"哪个
+        workflow、哪个 step、什么类型、什么配置、prompt 大致长什么样"，不用
+        再去反查代码或重新复现。只放排查有用、体积可控的信息：
+          - resolved_prompt 只截断保留前 500 字符（避免超长 prompt 把
+            session.json 撑得难以阅读，output/traceback 已经够长了）
+          - 不收集 api_key 等敏感配置
+        """
+        wf_session = getattr(self, "_current_wf_session", None)
+        prompt_preview = None
+        if resolved_prompt:
+            prompt_preview = resolved_prompt[:500]
+            if len(resolved_prompt) > 500:
+                prompt_preview += "...(截断)"
+
+        ctx: dict = {
+            "workflow_name": getattr(wf_session, "workflow_name", None),
+            "workflow_session_id": getattr(wf_session, "workflow_session_id", None),
+            "step_id": step.id,
+            "step_name": step.name,
+            "step_type": step.effective_type,
+            "role": step.role,
+            "skill_name": step.skill_name,
+            "workflow_name_ref": step.workflow_name,   # sub_workflow 专用，避免与顶层 workflow_name 重名混淆
+            "tool_name": step.tool_name,
+            "model": step.model,
+            "depends_on": list(step.depends_on),
+            "allow_parallel": step.allow_parallel,
+            "timeout": step.timeout,
+            "retry_on_error": step.retry_on_error,
+            "retry_on_gate_fail": step.retry_on_gate_fail,
+            "prompt_file": step.prompt_file,
+            "prompt_preview": prompt_preview,
+        }
+        if extra:
+            ctx.update(extra)
+        return ctx
+
     def _execute_step(
         self,
         step: WorkflowStep,
@@ -942,6 +988,9 @@ class WorkflowRunner:
                 step_id=step.id,
                 status=StepStatus.FAILED,
                 error=str(e),
+                error_type=type(e).__name__,
+                traceback=_traceback.format_exc(),
+                context=self._build_error_context(step, resolved_prompt),
                 duration_seconds=time.monotonic() - t_start,
             )
 

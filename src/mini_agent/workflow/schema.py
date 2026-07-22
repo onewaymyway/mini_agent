@@ -302,6 +302,11 @@ class StepResult:
     error: Optional[str] = None
     duration_seconds: float = 0.0
     retries_used: int = 0             # retry_on_error 实际消耗的重试次数
+    # ── 出错诊断信息（原来只有 error=str(e)，排查时定位不到具体是哪一行、
+    # 什么类型的异常、当时这个 step 处于什么配置/输入下）──────────────────
+    error_type: Optional[str] = None    # 异常类名，如 "AttributeError"
+    traceback: Optional[str] = None     # traceback.format_exc() 全文
+    context: dict = field(default_factory=dict)  # 出错时的 step/workflow 上下文快照，见 runner.py _build_error_context
 
     def to_dict(self) -> dict:
         return {
@@ -312,6 +317,9 @@ class StepResult:
             "error": self.error,
             "duration_seconds": self.duration_seconds,
             "retries_used": self.retries_used,
+            "error_type": self.error_type,
+            "traceback": self.traceback,
+            "context": self.context,
         }
 
     @classmethod
@@ -324,4 +332,7 @@ class StepResult:
             error=data.get("error"),
             duration_seconds=float(data.get("duration_seconds", 0.0)),
             retries_used=int(data.get("retries_used", 0)),
+            error_type=data.get("error_type"),
+            traceback=data.get("traceback"),
+            context=data.get("context") if isinstance(data.get("context"), dict) else {},
         )
