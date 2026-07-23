@@ -27,30 +27,7 @@
 
 ## Gotchas & Common Pitfalls
 
-| Area | Gotcha | Workaround |
-|------|--------|------------|
-| **Windows paths** | `read_file` fails on raw backslash paths | Use `bash("type file")` or `bash("cat file")` with forward slashes |
-| **LLMHelper** | Forgetting to use it for side-calls | `grep -rn "LLMConfig.from_app_config" src/` — only 2 allowed hits |
-| **Skill activation** | Skills not auto-loaded without trigger words | Call `skill_activate` explicitly or use `skill_resource_load` for sub-resources |
-| **Compact triggers** | Multiple triggers fire, only highest priority wins | Check `compact_event.trigger_reason` in raw_history for audit |
-| **Wiki dual-write** | `wiki_paths` was added to `LibraryIndex` but never passed from `memory_factory` | Fixed via `MemoryConfig.wiki_enabled=True` (now default) |
-| **AffordanceMap** | Only works in multi-user daemon mode | Single-user CLI doesn't build it — known gap |
-| **Cognitive anchor** | Ctrl-C in daemon connected REPL doesn't save anchor | Not yet hooked — known gap |
-| **update_work_thread** | Requires Agent session context (project_root provider) | Can't call from standalone script — must run inside Agent session |
-| **knowledge.md** | Missing baseline file blocks `update_knowledge` tool | Create baseline `knowledge.md` first (this file!) |
-| **Protected paths** | Editing `agent/` or `evolution/` forces T3 review | Use `/evolution` commands for skill proposals, not direct edits |
-| **RPM limiter** | Default 0 = unlimited, easy to hit provider limits | Set `--rpm 30` or config `rpm_limit` for production |
-| **Token threshold compact** | Hard constraint, ignores cooldown | `TokenThresholdTrigger` always fires when context > threshold |
-| **Decision confidence** | Fixed 0.5 — don't treat as high-confidence knowledge | Use `recall_related_decisions()` before proposing changes |
-| **Goal mode** | Fine-grained executor not implemented | Use coarse-grained; each step = full turn |
-| **Cron jobs** | `enabled` state from `DigestAdvisorConfig` at first inject | Check `cron_jobs.json` for current state |
-| **Persona allowed_tools** | Empty = unrestricted, not "no tools" | Explicitly list tools to restrict |
-| **Hook blocking** | Only `UserPromptSubmit`, `PreToolUse`, `PreCompact` can block | Other hooks are notification-only |
-| **Memory aging** | Only affects lessons, not other entry types | Non-lesson entries use static scoring |
-| **Entity dedup** | `find_similar_page` uses rule scoring + optional LLM for borderline | Embedding path requires explicit `embed_call` arg |
-| **Compact chunked** | On `LLMContextWindowError`, falls back to string summary per chunk | Chunk boundary = turn boundary, max 50% context per chunk |
-
----
+23 common gotchas documented: Windows paths (use bash with forward slashes), LLMHelper side-call enforcement (grep for LLMConfig.from_app_config), skill activation requires explicit trigger or skill_activate, compact triggers highest priority wins, wiki dual-write fixed via wiki_enabled=True, AffordanceMap daemon-only, cognitive anchor not hooked in daemon REPL, update_work_thread requires Agent session context, knowledge.md baseline required for update_knowledge, protected paths force T3 review, RPM limiter default 0=unlimited, token threshold compact ignores cooldown, decision confidence fixed 0.5, goal mode fine-grained executor not implemented, cron jobs enabled state from DigestAdvisorConfig, persona allowed_tools empty=unrestricted, hook blocking only UserPromptSubmit/PreToolUse/PreCompact, memory aging only affects lessons, entity dedup uses rule scoring + optional LLM, compact chunked falls back to string summary per chunk.
 
 ## Conventions & Standards
 
