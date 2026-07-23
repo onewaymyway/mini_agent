@@ -39,34 +39,7 @@ File organization: skills in .claude/skills/, custom agents in .agent/agents/, p
 
 ## Key Files Quick Reference
 
-| Purpose | Path |
-|---------|------|
-| Agent entry | `src/mini_agent/agent/core.py` |
-| LLM side-calls | `src/mini_agent/llm/service.py` (`LLMHelper`)
-| Client pool | `src/mini_agent/llm/client_pool.py`
-| History manager | `src/mini_agent/history_manager.py`
-| Compact triggers | `src/mini_agent/history/triggers.py`
-| Memory factory | `src/mini_agent/perception/memory_factory.py`
-| Workdir knowledge | `src/mini_agent/perception/workdir_knowledge.py`
-| Global knowledge | `src/mini_agent/perception/global_knowledge.py`
-| Wiki indexer | `src/mini_agent/wiki/indexer.py`
-| Wiki search | `src/mini_agent/wiki/search.py`
-| StateRepo | `src/mini_agent/evolution/state_repo.py`
-| AutonomousLoop | `src/mini_agent/evolution/autonomous_loop.py`
-| Goal runner | `src/mini_agent/goal_mode/runner.py`
-| Proprioception | `src/mini_agent/perception/proprioception.py`
-| AffordanceMap | `src/mini_agent/perception/affordance_analyzer.py`
-| SelfMaintenance | `src/mini_agent/evolution/self_maintenance.py`
-| Workflow runner | `src/mini_agent/workflow/runner.py`
-| Daemon | `src/mini_agent/cli/daemon.py`
-| Session pool | `src/mini_agent/api/session_pool.py`
-| Protected paths | `scripts/protected_paths.py`
-| Config loader | `src/mini_agent/config/loader.py`
-
----
-
-*Last updated: 2026-07-23 (Session ec36ed2e maintenance)*
-*This file is the baseline for `update_knowledge` tool — new sections appended, existing sections replaced by heading match.*
+24 key files mapped to purpose: Agent entry (core.py), LLM side-calls (service.py LLMHelper), Client pool (client_pool.py), History manager (history_manager.py), Compact triggers (triggers.py), Memory factory (memory_factory.py), Workdir knowledge (workdir_knowledge.py), Global knowledge (global_knowledge.py), Wiki indexer (indexer.py), Wiki search (search.py), StateRepo (state_repo.py), AutonomousLoop (autonomous_loop.py), Goal runner (runner.py), Proprioception (proprioception.py), AffordanceMap (affordance_analyzer.py), SelfMaintenance (self_maintenance.py), Workflow runner (runner.py), Daemon (daemon.py), Session pool (session_pool.py), Protected paths (protected_paths.py), Config loader (loader.py).
 
 ## Test Section
 
