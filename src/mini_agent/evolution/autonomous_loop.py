@@ -187,6 +187,19 @@ class AutonomousLoop:
         self._tick_passive()
         self._ensure_goal_objectives()
 
+        # ObjectiveExecutor：先回收卡死的 step（并发槽位卡死修复，见
+        # ObjectiveExecutor.reap_stale_steps() 说明）。必须放在资源仲裁的
+        # early-return 之前：否则一旦某次 tick 恰好赶上预算耗尽/用户在场
+        # 等门控触发提前 return，卡死的 step 就会一直没人清理——回收动作
+        # 不该依赖"当前是否允许发起新的自主任务"这个跟它无关的门控。
+        if self._objective_executor is not None:
+            try:
+                self._objective_executor.reap_stale_steps()
+            except Exception as _mini_agent_exc:
+                from mini_agent.errors import log_exception
+                log_exception(_mini_agent_exc, where='mini_agent.evolution.autonomous_loop')
+                pass
+
         # 检查资源仲裁
         try:
             from mini_agent.evolution.resource_arbiter import ResourceArbiter

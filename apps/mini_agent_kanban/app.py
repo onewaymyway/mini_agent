@@ -20,6 +20,7 @@ import time
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
+from typing import Optional
 
 import streamlit as st
 import streamlit.components.v1 as components
@@ -1630,11 +1631,55 @@ def _render_pinned_sessions_panel(client: AgentClient) -> None:
 # ═══════════════════════════════════════════════════════════════════════
 # Tab 3: 看板（Goals / Objectives / Cron）
 # ═══════════════════════════════════════════════════════════════════════
-def _render_goal_card(client: AgentClient, n: dict, status_key: str, indent: bool = False, note: str = "") -> None:
+_EXEC_STEP_ICONS = {"done": "✅", "running": "▶️", "failed": "✗", "pending": "・"}
+
+
+def _render_objective_execution_detail(execution: dict) -> None:
+    """[看板改进] 渲染单个 Objective 的真实执行计划/进度：ObjectiveExecutor
+    拆出的每一步、每一步的状态、结果摘要。之前看板只显示 GoalBacklog 里
+    手填的 progress_notes（跟真实执行进度是两套数据，容易脱节/看不出
+    "到底做到哪一步了"），这里改成直接读 ObjectiveExecutor 的权威状态。"""
+    ex_status = execution.get("status", "unknown")
+    steps = execution.get("steps") or []
+    done, total = 0, len(steps)
+    for s in steps:
+        if s.get("status") == "done":
+            done += 1
+    status_label = {
+        "running": "🏃 执行中", "paused": "⏸️ 已暂停",
+        "completed": "✅ 已完成", "failed": "✗ 执行失败", "pending": "⏳ 待启动",
+    }.get(ex_status, ex_status)
+    lines = [f'<div class="meta">{status_label}　步骤 {done}/{total}</div>']
+    if execution.get("progress_notes"):
+        lines.append(f'<div class="meta" style="color:#c77;">{_esc_html(execution["progress_notes"])}</div>')
+    for s in steps:
+        icon = _EXEC_STEP_ICONS.get(s.get("status"), "・")
+        desc = _esc_html(str(s.get("description", ""))[:100])
+        extra = ""
+        if s.get("status") == "running":
+            extra = " ← 当前步骤"
+        elif s.get("status") == "failed" and s.get("error_msg"):
+            extra = f'　<span style="color:#c77;">{_esc_html(str(s["error_msg"])[:80])}</span>'
+        lines.append(f'<div class="meta" style="padding-left:6px;">{icon} {desc}{extra}</div>')
+    st.markdown(
+        f'<div style="background:#f7f7f7;border-radius:6px;padding:6px 8px;margin:4px 0;">'
+        + "".join(lines) + "</div>",
+        unsafe_allow_html=True,
+    )
+
+
+def _render_goal_card(
+    client: AgentClient, n: dict, status_key: str, indent: bool = False, note: str = "",
+    execution: Optional[dict] = None,
+) -> None:
     """渲染单张 Goal/Objective 卡片 + 状态切换下拉框。
     从 render_kanban_tab 里抽出来，供"按层级嵌套展示"复用，行为
     （状态切换后调 client.update_goal 并 rerun）跟改造前完全一致，
-    只是现在可能带缩进（Objective 挂在其 parent Goal 卡片下面时）。"""
+    只是现在可能带缩进（Objective 挂在其 parent Goal 卡片下面时）。
+
+    execution — 该 Objective 对应的 ObjectiveExecutor 执行记录（若有，
+    来自 /v1/autonomous/status 里的 objective_executions，按 objective_id
+    匹配），非 None 时额外渲染真实的分步计划/进度。"""
     level_tag = "🎯目标" if n.get("level") == "objective" else "🌱心愿"
     wrapper_style = "margin-left:18px;border-left:2px solid #ddd;padding-left:8px;" if indent else ""
     note_html = f'<div class="meta" style="color:#c77;">{_esc_html(note)}</div>' if note else ""
@@ -1662,6 +1707,8 @@ def _render_goal_card(client: AgentClient, n: dict, status_key: str, indent: boo
   {note_html}
 </div>
 """, unsafe_allow_html=True)
+    if execution is not None:
+        _render_objective_execution_detail(execution)
     new_status = st.selectbox(
         "状态", [s for s, _ in GOAL_STATUS_COLUMNS],
         index=[s for s, _ in GOAL_STATUS_COLUMNS].index(status_key),
@@ -1697,6 +1744,20 @@ def render_kanban_tab(client: AgentClient):
         # 用于给"父 Goal 在别的状态列"的 Objective 显示父标题
         title_by_id = {n.get("id"): n.get("title", "") for n in all_nodes}
 
+        # [看板改进] 按 objective_id 索引 ObjectiveExecutor 的真实执行记录，
+        # 供下面每张 Objective 卡片渲染分步计划/进度（见
+        # _render_objective_execution_detail）。同一个 objective_id 理论上
+        # 同时只有一个 running/paused execution，取最新一条即可。
+        autostat_for_cards = client.autonomous_status() or {}
+        exec_by_objective_id: dict = {}
+        for _ex in autostat_for_cards.get("objective_executions", []):
+            _oid = _ex.get("objective_id")
+            if not _oid:
+                continue
+            _prev = exec_by_objective_id.get(_oid)
+            if _prev is None or _ex.get("started_at", 0) >= _prev.get("started_at", 0):
+                exec_by_objective_id[_oid] = _ex
+
         cols = st.columns(len(GOAL_STATUS_COLUMNS))
         for col, (status_key, status_label) in zip(cols, GOAL_STATUS_COLUMNS):
             with col:
@@ -1717,7 +1778,10 @@ def render_kanban_tab(client: AgentClient):
                     _render_goal_card(client, g, status_key)
                     children = [o for o in obj_nodes if o.get("parent_id") == g.get("id")]
                     for o in children:
-                        _render_goal_card(client, o, status_key, indent=True)
+                        _render_goal_card(
+                            client, o, status_key, indent=True,
+                            execution=exec_by_objective_id.get(o.get("id")),
+                        )
                         rendered_obj_ids.add(o.get("id"))
 
                 leftover = [o for o in obj_nodes if o.get("id") not in rendered_obj_ids]
@@ -1727,7 +1791,10 @@ def render_kanban_tab(client: AgentClient):
                     for o in leftover:
                         parent_title = title_by_id.get(o.get("parent_id"), "") if o.get("parent_id") else ""
                         note = f"父目标：{parent_title}" if parent_title else "（无父目标）"
-                        _render_goal_card(client, o, status_key, indent=True, note=note)
+                        _render_goal_card(
+                            client, o, status_key, indent=True, note=note,
+                            execution=exec_by_objective_id.get(o.get("id")),
+                        )
 
                 st.markdown("</div>", unsafe_allow_html=True)
 

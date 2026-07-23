@@ -368,6 +368,71 @@ class ObjectiveExecutor:
         self._notify_progress(ex)
         self.save()
 
+    def reap_stale_steps(self, timeout_seconds: Optional[float] = None) -> list[str]:
+        """
+        [并发槽位卡死修复] 扫描所有 status=="running" 的 Objective，若其
+        当前 step 处于 "running" 且已超过 timeout_seconds 仍未收到
+        on_turn_done()/on_turn_failed() 回调，视为该 turn 已经死掉（进程
+        重启导致 turn 丢失、工具调用挂起、回调路径异常吞掉等），按跟
+        on_turn_failed() 一致的重试/终止逻辑处理。
+
+        根因：此前 DEFAULT_STEP_TIMEOUT_SECONDS 定义了但从未被使用——
+        running_count()/can_start_new() 只看 status 字段，一个 turn 一旦
+        没能触发回调，对应 Objective 会永久占用并发槽位，新 Objective 永远
+        排不上。AutonomousLoop 应在每次 tick（推进 Objective 之前）调用
+        本方法做存活性回收；这样即使是进程重启后 load() 从磁盘恢复的
+        "running" 状态，只要 started_at 已经过期，下一次 tick 也会被清理，
+        不需要额外做 turn 存活性探测。
+
+        返回本次被回收（重试或终止）的 execution_id 列表。
+        """
+        timeout = timeout_seconds if timeout_seconds is not None else DEFAULT_STEP_TIMEOUT_SECONDS
+        reaped: list[str] = []
+        now = time.time()
+        for ex in list(self._executions.values()):
+            if ex.status != "running":
+                continue
+            step = ex.current_step
+            if not step or step.status != "running":
+                continue
+            if step.started_at <= 0 or (now - step.started_at) < timeout:
+                continue
+
+            # 超时：先清掉旧索引，避免万一迟到的回调命中已经被回收的 step
+            if step.turn_id:
+                self._turn_to_exec.pop(step.turn_id, None)
+
+            timeout_msg = f"步骤超时（超过 {timeout:.0f}s 未收到执行结果，判定为已卡死/丢失）"
+
+            if step.retry_count < MAX_STEP_RETRIES:
+                step.retry_count += 1
+                step.status = "pending"
+                step.turn_id = None
+                step.error_msg = timeout_msg
+                submitted = self._submit_step(ex, ex.current_step_idx)
+                if not submitted:
+                    step.status = "failed"
+                    step.finished_at = now
+                    ex.status = "failed"
+                    ex.finished_at = now
+                    ex.progress_notes = f"步骤 {ex.current_step_idx+1} {timeout_msg}，重试提交也失败"
+                    self._on_objective_failed(ex)
+            else:
+                step.status = "failed"
+                step.finished_at = now
+                step.error_msg = f"{timeout_msg}（已重试 {step.retry_count} 次）"
+                ex.status = "failed"
+                ex.finished_at = now
+                ex.progress_notes = f"步骤 {ex.current_step_idx+1} {step.error_msg}"
+                self._on_objective_failed(ex)
+
+            reaped.append(ex.execution_id)
+            self._notify_progress(ex)
+
+        if reaped:
+            self.save()
+        return reaped
+
     def pause_all(self) -> None:
         """暂停所有运行中的 Objective（用户优先仲裁）。"""
         for ex in self._executions.values():
@@ -412,6 +477,23 @@ class ObjectiveExecutor:
                 "progress": f"{done}/{total}",
                 "current_step": ex.current_step.description[:80] if ex.current_step else "",
                 "started_at": ex.started_at,
+                "finished_at": ex.finished_at,
+                "progress_notes": ex.progress_notes,
+                # [看板改进] 完整计划 + 逐步状态，供看板展示"这个 Objective
+                # 具体拆成了哪几步、哪些做完了、哪些还没做"，而不只是一个
+                # 笼统的 done/total 比例。之前这里没有暴露，看板只能显示
+                # GoalBacklog 里手填的 progress_notes（跟真实执行进度脱节）。
+                "steps": [
+                    {
+                        "step_index": s.step_index,
+                        "description": s.description,
+                        "status": s.status,
+                        "result_summary": s.result_summary,
+                        "error_msg": s.error_msg,
+                        "retry_count": s.retry_count,
+                    }
+                    for s in ex.steps
+                ],
             })
         return result
 
