@@ -1957,9 +1957,30 @@ async def list_goals(request: Request):
         # 交给需要"只关心 active"的调用方（如 AutonomousLoop）自己去调用
         # active_goals()/active_objectives()，这里改为返回全量节点。
         all_nodes = backlog.all_nodes()
+        objectives = [n.to_dict() for n in all_nodes if n.is_objective]
+
+        # [P1 新增] Objective 通过 work_thread_ref 关联 work_index.json 里的
+        # WorkThread，那边的 cumulative_progress/next_suggested 才是"实际做到
+        # 哪一步了"的动态记录（progress_notes 需要 agent 手动回写，经常是空的
+        # 或者滞后）。看板卡片之前只显示 progress_notes，看起来永远没进展。
+        # 这里把关联 WorkThread 的这两个字段一并带出来，看板不用再单独发
+        # 一次请求、也不需要新增一个 work_threads 接口。
+        try:
+            from mini_agent.perception.workdir_knowledge import load_work_index
+            threads_by_id = {t.id: t for t in load_work_index(paths)}
+            for obj in objectives:
+                ref = obj.get("work_thread_ref")
+                thread = threads_by_id.get(ref) if ref else None
+                if thread is not None:
+                    obj["work_thread_progress"] = thread.cumulative_progress
+                    obj["work_thread_next_suggested"] = thread.next_suggested
+        except Exception as _mini_agent_exc:
+            from mini_agent.errors import log_exception
+            log_exception(_mini_agent_exc, where='mini_agent.api.routes.list_goals.work_thread_enrich')
+
         return {
             "goals":      [n.to_dict() for n in all_nodes if n.is_goal],
-            "objectives": [n.to_dict() for n in all_nodes if n.is_objective],
+            "objectives": objectives,
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))

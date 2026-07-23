@@ -16,7 +16,6 @@ Mini-Agent 看板 (Kanban Dashboard)
     streamlit run apps/mini_agent_kanban/app.py
 """
 import html
-import time
 from datetime import datetime
 from pathlib import Path
 
@@ -302,6 +301,26 @@ def apply_deep_link_query_params():
         st.session_state.artifacts_session_filter = session_id
 
 
+def update_query_params(**kv) -> None:
+    """[P1 改造] 统一的 URL query params 写入入口——以后任何地方要改
+    query_params，只准调这个函数，不要在别处直接 `st.query_params[...] = x`。
+
+    背景（踩过的坑）：之前"绑定会话"按钮在 `st.query_params[...] = x`
+    之后又手动调了一次 `st.rerun()`，而 Streamlit（>=1.30）修改
+    query_params 本身就会自动触发一次重跑，两次重跑在同一次交互里抢跑，
+    表现为地址栏 URL 瞬间跳到新值又立刻被回滚成旧值。规则很简单：
+    **写 query_params 之后不要再手动 st.rerun()**，这个函数把这条规则
+    锁死在一个地方，不用每个调用点都记着别犯这个错。
+
+    传值为空字符串/None/False 表示删除该 key（用于"解绑"这类场景）。
+    """
+    for k, v in kv.items():
+        if v:
+            st.query_params[k] = v
+        elif k in st.query_params:
+            del st.query_params[k]
+
+
 def get_active_session_id() -> str:
     """当前看板页面（浏览器标签页）绑定的 session_id。
 
@@ -318,10 +337,27 @@ def get_active_session_id() -> str:
 def set_active_session_id(session_id: str) -> None:
     """把这个标签页绑定到指定 session（写入 URL，不写 session_state，理由同上）。
     传空字符串 / None 表示解绑，退回全局默认 session。"""
-    if session_id:
-        st.query_params["session_id"] = session_id
-    elif "session_id" in st.query_params:
-        del st.query_params["session_id"]
+    update_query_params(session_id=session_id)
+
+
+def get_pinned_session_ids() -> list[str]:
+    """[P1 新增] "同页多会话并排查看"用到的固定会话列表，同样放 URL
+    （`?pinned=sid1,sid2`），理由和 session_id 一致：要"这个标签页
+    并排看哪几个 session"能通过分享链接复现、且多个标签页互不干扰。
+    """
+    raw = st.query_params.get("pinned", "") or ""
+    return [s for s in raw.split(",") if s]
+
+
+def toggle_pinned_session(session_id: str) -> None:
+    """把某个 session 加入/移出"并排对比"列表（已在列表里则移除，否则加入）。"""
+    pinned = get_pinned_session_ids()
+    if session_id in pinned:
+        pinned = [s for s in pinned if s != session_id]
+    else:
+        pinned = pinned + [session_id]
+    update_query_params(pinned=",".join(pinned) if pinned else None)
+
 
 
 def get_client() -> AgentClient:
@@ -440,8 +476,10 @@ def render_login_gate(cli_args) -> bool:
             tracker.record_success(username, client_id)
             st.session_state.authenticated = True
             st.session_state.username = username
-            st.query_params["auth"] = make_token(username, secret)
-            st.rerun()
+            # [P1 一致性修复] 同"绑定会话"按钮踩过的坑：query_params 写入
+            # 后不再手动 st.rerun()，交给它自带的自动重跑生效，避免两次
+            # 重跑竞态导致 URL 里的 auth token 闪现又消失。
+            update_query_params(auth=make_token(username, secret))
         else:
             tracker.record_failure(username, client_id)
             left = max(tracker.max_attempts - _current_fail_count(tracker, username, client_id), 0)
@@ -493,8 +531,9 @@ def render_sidebar():
         st.rerun()
 
     st.session_state["auto_refresh"] = st.sidebar.checkbox(
-        "⏱️ 自动刷新（每 3 秒）", value=st.session_state.get("auto_refresh", True),
-        help="Agent 运行中（running/等待审批）时建议开启，聊天与事件为轮询式获取，不开自动刷新需要手动点刷新才能看到最新状态",
+        "⏱️ 自动刷新（状态条/事件流每 2~3 秒）", value=st.session_state.get("auto_refresh", True),
+        help="控制顶部状态条和事件流两块的局部自动刷新（P0 改造后已不再阻塞整页，"
+             "关闭时这两块只在你手动点刷新/切换 tab 时更新）。",
     )
 
     st.sidebar.caption("提示：daemon 模式启动后默认监听 http://127.0.0.1:8765/v1")
@@ -529,6 +568,25 @@ def render_sidebar():
 # 顶部状态条
 # ═══════════════════════════════════════════════════════════════════════
 def render_topbar(client: AgentClient, session_id: str = ""):
+    """[P0 改造] 原来这块状态条完全靠 main() 末尾的
+    `if auto_refresh: time.sleep(3); st.rerun()` 来刷新——那是"整页阻塞
+    3 秒再重跑一次"，意味着这 3 秒里全页面（包括其它 tab、正在填的表单）
+    都被冻结，而且不管用户当前在不在看这个状态条，都要陪着一起等。
+    改成 st.fragment(run_every=...)：只有这个函数自己按周期重跑，
+    页面其它部分（对话输入框、其它 tab 里的表单）不受影响，且状态数字
+    的刷新周期跟"整页刷新周期"解耦，可以刷得更快而不拖慢全页。"""
+    if not st.session_state.get("auto_refresh", True):
+        _render_topbar_body(client, session_id)
+        return
+    _render_topbar_fragment(client, session_id)
+
+
+@st.fragment(run_every="3s")
+def _render_topbar_fragment(client: AgentClient, session_id: str = ""):
+    _render_topbar_body(client, session_id)
+
+
+def _render_topbar_body(client: AgentClient, session_id: str = ""):
     status = client.status(session_id=session_id) or {}
     if "_error" in status:
         st.warning(f"状态获取失败：{status['_error']}")
@@ -1106,17 +1164,43 @@ def render_chat_tab(client: AgentClient, session_id: str = ""):
 
     with col_events:
         st.markdown("#### 📡 事件流")
-        ev = client.events(since_id=0, limit=100, session_id=session_id) or {}
-        events = ev.get("events", [])
-        box = st.container(height=480)
-        with box:
-            for e in events[-100:]:
-                ts = e.get("ts")
-                t_str = datetime.fromtimestamp(ts).strftime("%H:%M:%S") if ts else ""
-                etype = e.get("type", "info")
-                text = _event_text(e)
-                if text:
-                    st.caption(f"`{t_str}` **{etype}** — {text}")
+        _render_events_panel(client, session_id)
+
+
+def _render_events_panel(client: AgentClient, session_id: str = ""):
+    """[P0 改造] 原来事件流的刷新完全依赖 main() 末尾的全局 3 秒阻塞轮询，
+    切到别的 tab 也会跟着一起被 3 秒 sleep 拖住。拆成独立函数 + fragment
+    局部刷新后，事件流可以用比全页更短、更贴近"实时"的周期刷新（这里用
+    2 秒），且不影响用户在对话框里正在输入的内容（fragment 外的部分不
+    会被这个刷新打断）。
+
+    注意：这仍然是轮询，不是真推送——真正的推送（订阅 /v1/stream 的
+    EventSource）留给 P2 阶段，见改进方案文档第 1.1 节。这一步的收益是
+    "去掉整页阻塞 + 刷新周期从 3s 降到 2s 且可独立配置"，不是"消除轮询"。
+    """
+    if st.session_state.get("auto_refresh", True):
+        _render_events_panel_fragment(client, session_id)
+    else:
+        _render_events_panel_body(client, session_id)
+
+
+@st.fragment(run_every="2s")
+def _render_events_panel_fragment(client: AgentClient, session_id: str = ""):
+    _render_events_panel_body(client, session_id)
+
+
+def _render_events_panel_body(client: AgentClient, session_id: str = ""):
+    ev = client.events(since_id=0, limit=100, session_id=session_id) or {}
+    events = ev.get("events", [])
+    box = st.container(height=480)
+    with box:
+        for e in events[-100:]:
+            ts = e.get("ts")
+            t_str = datetime.fromtimestamp(ts).strftime("%H:%M:%S") if ts else ""
+            etype = e.get("type", "info")
+            text = _event_text(e)
+            if text:
+                st.caption(f"`{t_str}` **{etype}** — {text}")
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -1161,9 +1245,10 @@ def render_sessions_tab(client: AgentClient):
         sid = s.get("id", "")
         current_mark = " 🟢当前" if s.get("is_current") else ""
         bound_mark = " 📌本页面" if sid == get_active_session_id() else ""
-        with st.expander(f"🗂️ {sid}{current_mark}{bound_mark}　·　轮次 {s.get('turns', '?')}　·　{s.get('age', s.get('updated_at',''))}"):
+        pinned_mark = " 📎已固定" if sid in get_pinned_session_ids() else ""
+        with st.expander(f"🗂️ {sid}{current_mark}{bound_mark}{pinned_mark}　·　轮次 {s.get('turns', '?')}　·　{s.get('age', s.get('updated_at',''))}"):
             st.json(s, expanded=False)
-            cc1, cc2, cc3 = st.columns(3)
+            cc1, cc2, cc3, cc4 = st.columns(4)
             if cc1.button("▶️ 恢复此会话（全局）", key=f"resume_{sid}",
                            help="改变服务端全局默认 session，影响所有没有单独绑定 session 的客户端"):
                 res = client.resume_session(sid)
@@ -1177,14 +1262,114 @@ def render_sessions_tab(client: AgentClient):
                 # 重跑对地址栏的 URL 更新，表现为"URL 瞬间跳到新值又变回
                 # 旧值"。去掉这行多余的 rerun 即可让 URL 正常停留在新值上。
                 set_active_session_id(sid)
-            if cc3.button("🗑️ 删除", key=f"del_{sid}"):
+            if cc3.button("📎 加入/移出并排对比", key=f"pin_{sid}",
+                           help="加入下方的并排对比区，可以同时看多个 session 的状态和最近事件，不用来回切换标签页"):
+                toggle_pinned_session(sid)
+            if cc4.button("🗑️ 删除", key=f"del_{sid}"):
                 client.delete_session(sid)
                 st.rerun()
+
+    _render_pinned_sessions_panel_entry(client)
+
+
+def _render_pinned_sessions_panel_entry(client: AgentClient) -> None:
+    pinned = get_pinned_session_ids()
+    if not pinned:
+        return
+    if st.session_state.get("auto_refresh", True):
+        _render_pinned_sessions_panel_fragment(client)
+    else:
+        _render_pinned_sessions_panel(client)
+
+
+@st.fragment(run_every="3s")
+def _render_pinned_sessions_panel_fragment(client: AgentClient) -> None:
+    _render_pinned_sessions_panel(client)
+
+
+def _render_pinned_sessions_panel(client: AgentClient) -> None:
+    """[P1 新增] "同页多会话并排查看"——之前只能靠"一个标签页绑定一个
+    session、要同时盯 N 个 session 就开 N 个浏览器标签"来实现多会话查看，
+    来回切换标签页体验不好。这里在会话列表下方加一个并排区域，把
+    `?pinned=` 里固定的几个 session 的状态 + 最近事件在同一屏里各占一列
+    展示，不用离开这个页面就能同时看好几个 session 在干什么。
+    """
+    pinned = get_pinned_session_ids()
+    if not pinned:
+        return
+    st.markdown("---")
+    st.markdown(f"#### 📎 并排对比（{len(pinned)} 个会话）")
+    cols = st.columns(len(pinned))
+    for col, sid in zip(cols, pinned):
+        with col:
+            st.markdown(f"**🗂️ `{sid}`**")
+            if st.button("✖️ 取消固定", key=f"unpin_{sid}"):
+                # 同样遵守"query_params 写入后不手动 rerun"的规范
+                toggle_pinned_session(sid)
+            status = client.status(session_id=sid) or {}
+            if "_error" in status:
+                st.warning(status["_error"])
+                continue
+            state = status.get("state", "unknown")
+            icon, label = STATE_LABELS.get(state, STATE_LABELS["unknown"])
+            st.caption(f"{icon} {label}　·　动作: {status.get('activity') or '—'}")
+            ev = client.events(since_id=0, limit=30, session_id=sid) or {}
+            events = ev.get("events", [])
+            box = st.container(height=260)
+            with box:
+                for e in events[-30:]:
+                    ts = e.get("ts")
+                    t_str = datetime.fromtimestamp(ts).strftime("%H:%M:%S") if ts else ""
+                    text = _event_text(e)
+                    if text:
+                        st.caption(f"`{t_str}` {text}")
 
 
 # ═══════════════════════════════════════════════════════════════════════
 # Tab 3: 看板（Goals / Objectives / Cron）
 # ═══════════════════════════════════════════════════════════════════════
+def _render_goal_card(client: AgentClient, n: dict, status_key: str, indent: bool = False, note: str = "") -> None:
+    """渲染单张 Goal/Objective 卡片 + 状态切换下拉框。
+    从 render_kanban_tab 里抽出来，供"按层级嵌套展示"复用，行为
+    （状态切换后调 client.update_goal 并 rerun）跟改造前完全一致，
+    只是现在可能带缩进（Objective 挂在其 parent Goal 卡片下面时）。"""
+    level_tag = "🎯目标" if n.get("level") == "objective" else "🌱心愿"
+    wrapper_style = "margin-left:18px;border-left:2px solid #ddd;padding-left:8px;" if indent else ""
+    note_html = f'<div class="meta" style="color:#c77;">{_esc_html(note)}</div>' if note else ""
+
+    # [P1 新增] 优先展示关联 WorkThread 的 cumulative_progress——这是
+    # agent 实际推进过程中动态更新的记录，比需要手动回写的 progress_notes
+    # 更贴近"现在做到哪一步了"。两者都没有时不展示这一行，避免卡片里
+    # 出现"进展：（空）"这种没意义的占位。
+    progress_text = n.get("work_thread_progress") or n.get("progress_notes") or ""
+    progress_html = (
+        f'<div class="meta">📈 进展：{_esc_html(progress_text)}</div>' if progress_text else ""
+    )
+    next_suggested = n.get("work_thread_next_suggested") or ""
+    next_html = (
+        f'<div class="meta" style="color:#888;">👉 建议下一步：{_esc_html(next_suggested)}</div>'
+        if next_suggested else ""
+    )
+
+    st.markdown(f"""
+<div class="kanban-card" style="{wrapper_style}">
+  <div class="title">{level_tag} {_esc_html(n.get('title','(无标题)'))}</div>
+  <div class="meta">来源:{n.get('source','')}　优先级:{n.get('priority',0)}</div>
+  {progress_html}
+  {next_html}
+  {note_html}
+</div>
+""", unsafe_allow_html=True)
+    new_status = st.selectbox(
+        "状态", [s for s, _ in GOAL_STATUS_COLUMNS],
+        index=[s for s, _ in GOAL_STATUS_COLUMNS].index(status_key),
+        key=f"goalstatus_{n.get('id')}", label_visibility="collapsed",
+    )
+    if new_status != status_key:
+        client.update_goal(n.get("id"), status=new_status)
+        st.rerun()
+
+
 def render_kanban_tab(client: AgentClient):
     st.markdown("#### 📌 目标看板 (Goal Backlog)")
 
@@ -1207,28 +1392,41 @@ def render_kanban_tab(client: AgentClient):
         goals = goals_data.get("goals", [])
         objectives = goals_data.get("objectives", [])
         all_nodes = goals + objectives
+        # 用于给"父 Goal 在别的状态列"的 Objective 显示父标题
+        title_by_id = {n.get("id"): n.get("title", "") for n in all_nodes}
 
         cols = st.columns(len(GOAL_STATUS_COLUMNS))
         for col, (status_key, status_label) in zip(cols, GOAL_STATUS_COLUMNS):
             with col:
                 st.markdown(f'<div class="kanban-col"><h4>{status_label}</h4>', unsafe_allow_html=True)
                 bucket = [n for n in all_nodes if n.get("status") == status_key]
-                for n in bucket:
-                    level_tag = "🎯目标" if n.get("level") == "objective" else "🌱心愿"
-                    st.markdown(f"""
-<div class="kanban-card">
-  <div class="title">{level_tag} {n.get('title','(无标题)')}</div>
-  <div class="meta">来源:{n.get('source','')}　优先级:{n.get('priority',0)}</div>
-</div>
-""", unsafe_allow_html=True)
-                    new_status = st.selectbox(
-                        "状态", [s for s, _ in GOAL_STATUS_COLUMNS],
-                        index=[s for s, _ in GOAL_STATUS_COLUMNS].index(status_key),
-                        key=f"goalstatus_{n.get('id')}", label_visibility="collapsed",
-                    )
-                    if new_status != status_key:
-                        client.update_goal(n.get("id"), status=new_status)
-                        st.rerun()
+                # [P1 改造] 之前 Goal/Objective 拍平成一个列表按 status 平铺，
+                # goals.json 里本来存在的父子关系（parent_id/children_ids）
+                # 在看板上完全看不出来。这里改成：先列该列里的 Goal，紧跟着
+                # 缩进列出它在本列里的子 Objective；至于父 Goal 当前处于
+                # 别的状态列的 Objective（比如 Goal 还在"进行中"、其中一个
+                # Objective 已经"完成"），不会凭空消失——单独放在本列末尾，
+                # 并标注父 Goal 标题，避免用户以为数据丢了。
+                goal_nodes = [n for n in bucket if n.get("level") != "objective"]
+                obj_nodes = [n for n in bucket if n.get("level") == "objective"]
+                rendered_obj_ids = set()
+
+                for g in goal_nodes:
+                    _render_goal_card(client, g, status_key)
+                    children = [o for o in obj_nodes if o.get("parent_id") == g.get("id")]
+                    for o in children:
+                        _render_goal_card(client, o, status_key, indent=True)
+                        rendered_obj_ids.add(o.get("id"))
+
+                leftover = [o for o in obj_nodes if o.get("id") not in rendered_obj_ids]
+                if leftover:
+                    if goal_nodes:
+                        st.caption("↓ 以下 Objective 的父 Goal 在其它状态列")
+                    for o in leftover:
+                        parent_title = title_by_id.get(o.get("parent_id"), "") if o.get("parent_id") else ""
+                        note = f"父目标：{parent_title}" if parent_title else "（无父目标）"
+                        _render_goal_card(client, o, status_key, indent=True, note=note)
+
                 st.markdown("</div>", unsafe_allow_html=True)
 
     st.markdown("---")
@@ -1459,11 +1657,30 @@ def _render_workflow_step_card(client: AgentClient, run_id: str, step_id: str, s
 
 
 def _render_workflow_run_detail(client: AgentClient, run_id: str):
+    """[P0 改造] 原来跑到 status=="running" 就 `time.sleep(2); st.rerun()`，
+    同样是整页阻塞。这里只在"确实在运行"时才挂一个局部 fragment 自动刷新
+    （跑完就不再挂，避免和 P0 计划里提到的"空转耗资源"问题相反地反而
+    一直占着一个刷新中的 fragment）。"""
     detail = client.workflow_run_detail(run_id)
     if detail and "_error" in detail:
         st.error(f"执行详情获取失败：{detail['_error']}")
         return
+    if detail.get("status") == "running":
+        _render_workflow_run_detail_fragment(client, run_id)
+    else:
+        _render_workflow_run_detail_body(client, run_id, detail)
 
+
+@st.fragment(run_every="2s")
+def _render_workflow_run_detail_fragment(client: AgentClient, run_id: str):
+    detail = client.workflow_run_detail(run_id)
+    if detail and "_error" in detail:
+        st.error(f"执行详情获取失败：{detail['_error']}")
+        return
+    _render_workflow_run_detail_body(client, run_id, detail)
+
+
+def _render_workflow_run_detail_body(client: AgentClient, run_id: str, detail: dict):
     status = detail.get("status", "unknown")
     st.markdown(f"##### 🔄 {detail.get('workflow_name', run_id)}　`{run_id}`")
     st.caption(f"状态：{WORKFLOW_RUN_STATUS_LABELS.get(status, status)}")
@@ -1491,12 +1708,6 @@ def _render_workflow_run_detail(client: AgentClient, run_id: str):
 
     if detail.get("output_dir"):
         st.caption(f"📁 输出目录：`{detail['output_dir']}`")
-
-    # 只在运行中才轮询，跑完自动停止，避免空转耗资源
-    # （Streamlit 不擅长长连接，用定长轮询代替 SSE）
-    if status == "running":
-        time.sleep(2)
-        st.rerun()
 
 
 def render_workflow_tab(client: AgentClient):
@@ -1709,9 +1920,8 @@ def main():
             if st.button("🚪 退出登录"):
                 st.session_state.authenticated = False
                 st.session_state.pop("username", None)
-                if "auth" in st.query_params:
-                    del st.query_params["auth"]
-                st.rerun()
+                # [P1 一致性修复] 同上，写 query_params 后不再手动 st.rerun()。
+                update_query_params(auth=None)
             st.divider()
 
     client = render_sidebar()
@@ -1740,9 +1950,12 @@ def main():
     with tabs[7]:
         render_diagnostics_tab(client)
 
-    if st.session_state.get("auto_refresh"):
-        time.sleep(3)
-        st.rerun()
+    # [P0 改造] 原来这里是 `if auto_refresh: time.sleep(3); st.rerun()`——
+    # 整页阻塞 3 秒再重跑，期间所有 tab、所有正在填的表单都被冻结。
+    # 现在"状态条"（render_topbar）和"事件流"（_render_events_panel）
+    # 已经各自用 st.fragment(run_every=...) 做局部刷新，不再需要这个
+    # 全局阻塞轮询兜底。auto_refresh 这个开关现在的语义变成"是否启用这
+    # 两个 fragment 的自动刷新"，在各自函数内部读取，这里不用再处理。
 
 
 if __name__ == "__main__":
