@@ -174,6 +174,11 @@ class InteractionResponse(BaseModel):
 class HistoryResponse(BaseModel):
     messages: list[dict]
     count:    int
+    # [看板分页改进] total/has_more 用于支持"加载更早消息"分页——
+    # total 是该 session 历史消息总条数，has_more 表示本次返回的这页
+    # 之前是否还有更早的消息。旧调用方不读这两个字段完全不受影响。
+    total:    int  = 0
+    has_more: bool = False
 
 class EventsResponse(BaseModel):
     events: list[dict]
@@ -265,6 +270,9 @@ class SessionsListResponse(BaseModel):
     sessions:           list[SessionInfo]
     current_session_id: Optional[str] = None
     count:              int = 0
+    # [看板分页改进] total 是 offset/limit 分页之前的 session 总数，
+    # 供前端计算总页数；count 语义不变，继续表示"本页实际返回了几条"。
+    total:              int = 0
 
 class SessionDetailResponse(BaseModel):
     id:            str

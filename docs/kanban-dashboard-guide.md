@@ -154,11 +154,11 @@ Objective 背后的调度机制；`docs/decision-profile-guide.md` 了解决策�
 | `status(session_id=)` | `GET /v1/status` | Agent 运行状态（含 `model`/`session_dir`/`activity`/`activity_detail`） |
 | `diagnostics()` | `GET /v1/diagnostics` | 诊断信息 |
 | `chat(session_id=)` / `interrupt(session_id=)` | `POST /v1/chat`、`/v1/interrupt` | 发消息 / 中断 |
-| `history(session_id=)` / `clear_history(session_id=)` | `/v1/history` | 对话历史读取与清空 |
+| `history(session_id=, limit=100, before_seq=)` / `clear_history(session_id=)` | `/v1/history` | 对话历史读取（默认只取最新一页，`before_seq` 翻页取更早的）与清空 |
 | `events(session_id=)` | `GET /v1/events` | 拉取事件流 |
 | `turns(session_id=)` | `GET /v1/turns` | Turn 列表 |
 | `pending_permissions(session_id=)` / `respond_permission()` | `/v1/permissions/*` | 权限审批 |
-| `sessions()` / `session_detail()` / `resume_session()` / `new_session()` / `delete_session()` | `/v1/sessions*` | 会话管理 |
+| `sessions(limit=50, offset=0)` / `session_detail()` / `resume_session()` / `new_session()` / `delete_session()` | `/v1/sessions*` | 会话管理（`offset` 配合 `limit` 做分页） |
 | `users()` | `/v1/users` | 多用户列表（多用户模式） |
 | `self_status()` / `autonomous_status()` | `/self/status`、`/self/autonomous` | 自省与自主循环状态 |
 | `goals()` / `add_goal()` / `update_goal()` | `/v1/goals*` | Goal 看板 |
@@ -185,6 +185,26 @@ Objective 背后的调度机制；`docs/decision-profile-guide.md` 了解决策�
 3. **远程排障**：结合诊断 Tab 的 `/diagnostics` 原始信息定位问题，无需 SSH 到服务器
    直接看日志文件。
 
+## 大数据量下的分页显示
+
+对话历史、事件流、session 列表三类数据在量特别大时都做了分页/增量处理，
+避免"全量拉取再前端截断"带来的性能问题（设计与动机详见
+`next_doc/看板大数据量分页显示改进计划.md`）：
+
+- **对话历史**：`_render_chat_messages_body` 默认只拉最新一页
+  （`limit=100`），历史更长时对话框顶部会出现"⬆️ 加载更早消息"按钮，
+  点击后按 100 条为增量继续往前加载；后端 `GET /v1/history` 对应新增了
+  `limit`/`before_seq` 分页参数，响应里新增 `total`/`has_more` 字段。
+- **事件流**：右侧事件面板和"并排对比"面板都改为用 `since_id` 做增量拉取
+  （`_fetch_events_incremental`），本地在 `st.session_state` 里维护一份
+  滚动窗口缓存（默认最近 300/100 条），不再每次 2-3 秒的自动刷新都重新
+  拉一遍"最近 N 条"、重复渲染已经看过的部分。清空历史、切换全局当前
+  session 时会同步重置这份本地缓存。
+- **Session 列表**：`render_sessions_tab` 改为标准 `offset`/`limit` 分页
+  （每页 50 条），底部有"上一页 / 下一页"翻页控件和"第 X / Y 页"页码提示；
+  后端 `GET /v1/sessions` 新增 `offset` 参数，`SessionManager` 新增
+  `list_sessions_page()` 方法返回分页前的总数。
+
 ## 后续可扩展方向（未实现）
 
 - SSE 真流式渲染（当前对话为轮询式刷新，简单可靠但非逐 token 流式）
@@ -194,6 +214,8 @@ Objective 背后的调度机制；`docs/decision-profile-guide.md` 了解决策�
 - Ensemble 多候选结果对比展示
 - 进化流水线（Skill 提案 / git worktree diff）可视化
 - 权限历史与安全网风险等级（T0-T3）统计图表
+- 历史分页目前按消息条数切页，长会话下按"轮次"分页（配合 `/v1/turns`）会
+  更符合用户心智模型，留待后续验证
 
 ## 相关文件
 
@@ -205,7 +227,8 @@ Objective 背后的调度机制；`docs/decision-profile-guide.md` 了解决策�
 - `docs/web-demo-guide.md` — 姊妹应用（纯聊天 Web Demo）
 - `docs/multi-user-guide.md`、`docs/autonomous_daemon_design.md`、
   `docs/goal-mode-guide.md`、`docs/embodied-agent-guide.md` — 看板中各功能区背后的机制
+- `next_doc/看板大数据量分页显示改进计划.md` — 本次分页改造的设计文档
 
 ---
 
-*最后更新：2026-07-23*
+*最后更新：2026-07-24*

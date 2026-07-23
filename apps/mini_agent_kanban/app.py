@@ -1150,6 +1150,8 @@ def render_chat_tab(client: AgentClient, session_id: str = ""):
 
         if st.button("🗑️ 清空历史"):
             client.clear_history(session_id=session_id)
+            _reset_events_cache(session_id)
+            st.session_state.pop(_chat_load_limit_key(session_id), None)
             st.rerun()
 
         # 工具活动/权限审批放在对话内容之外、页面最下方，不打断消息阅读体验
@@ -1204,13 +1206,34 @@ def _render_chat_messages_fragment(client: AgentClient, session_id: str = "") ->
     return _render_chat_messages_body(client, session_id)
 
 
+def _chat_load_limit_key(session_id: str) -> str:
+    return f"chat_load_limit_{session_id or 'default'}"
+
+
 def _render_chat_messages_body(client: AgentClient, session_id: str = "") -> str:
-    hist = client.history(session_id=session_id) or {}
+    # [看板分页改进] 默认只拉最新一页（100 条），不再一次性拉取整个 session
+    # 的全量历史再截断——长会话下能显著减少每次 2s 轮询的传输/反序列化
+    # 开销。用户点"加载更早消息"时才把 limit 加大重新拉一次。
+    load_limit = st.session_state.get(_chat_load_limit_key(session_id), 100)
+    hist = client.history(session_id=session_id, limit=load_limit) or {}
     entries = hist.get("messages", [])
+    has_more = hist.get("has_more", False)
+    total = hist.get("total", 0)
+
+    if has_more:
+        def _load_more(_key=_chat_load_limit_key(session_id), _cur=load_limit):
+            st.session_state[_key] = _cur + 100
+
+        st.button(
+            f"⬆️ 加载更早消息（已加载 {len(entries)} / {total} 条）",
+            key=f"load_more_history_{session_id or 'default'}",
+            on_click=_load_more,
+            use_container_width=True,
+        )
 
     last_rendered_user_msg = ""
     if isinstance(entries, list):
-        for e in entries[-60:]:
+        for e in entries:
             role = e.get("role", "")
             etype = e.get("_type", "")  # 见 history/entry.py::HType
             content = e.get("content", "")
@@ -1308,9 +1331,42 @@ def _render_events_panel_fragment(client: AgentClient, session_id: str = ""):
     _render_events_panel_body(client, session_id)
 
 
+def _fetch_events_incremental(client: AgentClient, session_id: str, cache_cap: int = 300) -> list:
+    """[看板分页改进] 用 since_id 做增量拉取，累加到 session_state 里的本地
+    缓存，而不是像之前那样每次 fragment 触发（2-3 秒一次）都从
+    since_id=0 重新拉一遍"最近 N 条"——量大时那样等于反复拉取、反复渲染
+    同一批已经看过的事件。
+
+    本地缓存超过 cache_cap 条时从头部裁掉，语义上仍然是"保留最近 N 条"，
+    只是不用每次都把这 N 条从头传输一遍。
+    """
+    cache_key = f"events_cache_{session_id or 'default'}"
+    last_id_key = f"events_last_id_{session_id or 'default'}"
+    cache: list = st.session_state.get(cache_key, [])
+    last_id: int = st.session_state.get(last_id_key, 0)
+
+    ev = client.events(since_id=last_id, limit=2000, session_id=session_id) or {}
+    if "_error" in ev:
+        return cache
+    new_events = ev.get("events", [])
+    if new_events:
+        cache = cache + new_events
+        if len(cache) > cache_cap:
+            cache = cache[-cache_cap:]
+        st.session_state[cache_key] = cache
+        st.session_state[last_id_key] = max(last_id, ev.get("max_id", last_id))
+    return cache
+
+
+def _reset_events_cache(session_id: str = "") -> None:
+    """切换 session / 清空历史时调用，避免把上一个 session 的事件残留在
+    下一个 session 的本地缓存里。"""
+    st.session_state.pop(f"events_cache_{session_id or 'default'}", None)
+    st.session_state.pop(f"events_last_id_{session_id or 'default'}", None)
+
+
 def _render_events_panel_body(client: AgentClient, session_id: str = ""):
-    ev = client.events(since_id=0, limit=100, session_id=session_id) or {}
-    events = ev.get("events", [])
+    events = _fetch_events_incremental(client, session_id)
     box = st.container(height=480)
     with box:
         for e in events[-100:]:
@@ -1401,12 +1457,24 @@ def render_sessions_tab(client: AgentClient):
                 st.error((res or {}).get("_error", "创建失败"))
                 st.rerun()
 
-    data = client.sessions(limit=50) or {}
+    # [看板分页改进] session 数量特别多时（>50）之前只能看到最新的 50 个，
+    # 更早的完全不可见。这里加标准的 offset 分页，页码存在 session_state
+    # 里，翻页只重新拉当前这一页，不再一次性拉 200 条塞满页面。
+    page_size = 50
+    page = st.session_state.get("sessions_page", 0)
+    data = client.sessions(limit=page_size, offset=page * page_size) or {}
     if "_error" in data:
         st.info(f"会话列表不可用：{data['_error']}（可能未开启 session 持久化）")
         return
 
     sessions = data.get("sessions", [])
+    total = data.get("total", len(sessions))
+    total_pages = max(1, (total + page_size - 1) // page_size)
+    # 如果因为删除等操作导致当前页码超出范围（比如删完最后一页的会话），
+    # 退回最后一页而不是直接显示"暂无会话记录"的空白页。
+    if page > 0 and not sessions and page >= total_pages:
+        st.session_state["sessions_page"] = max(0, total_pages - 1)
+        st.rerun()
     if not sessions:
         st.info("暂无会话记录")
         return
@@ -1422,6 +1490,8 @@ def render_sessions_tab(client: AgentClient):
             if cc1.button("▶️ 恢复此会话（全局）", key=f"resume_{sid}",
                            help="改变服务端全局默认 session，影响所有没有单独绑定 session 的客户端"):
                 res = client.resume_session(sid)
+                _reset_events_cache("")
+                st.session_state.pop(_chat_load_limit_key(""), None)
                 st.success("已切换") if res and "_error" not in res else st.error(res.get("_error", "失败"))
                 st.rerun()
             if cc2.button("📌 本页面绑定到此会话", key=f"bind_{sid}",
@@ -1438,6 +1508,19 @@ def render_sessions_tab(client: AgentClient):
             if cc4.button("🗑️ 删除", key=f"del_{sid}"):
                 client.delete_session(sid)
                 st.rerun()
+
+    pc1, pc2, pc3 = st.columns([1, 2, 1])
+    if pc1.button("⬅️ 上一页", disabled=(page <= 0), use_container_width=True):
+        st.session_state["sessions_page"] = page - 1
+        st.rerun()
+    pc2.markdown(
+        f"<div style='text-align:center'>第 {page + 1} / {total_pages} 页　"
+        f"（共 {total} 个会话）</div>",
+        unsafe_allow_html=True,
+    )
+    if pc3.button("下一页 ➡️", disabled=(page >= total_pages - 1), use_container_width=True):
+        st.session_state["sessions_page"] = page + 1
+        st.rerun()
 
     _render_pinned_sessions_panel_entry(client)
 
@@ -1483,8 +1566,7 @@ def _render_pinned_sessions_panel(client: AgentClient) -> None:
             state = status.get("state", "unknown")
             icon, label = STATE_LABELS.get(state, STATE_LABELS["unknown"])
             st.caption(f"{icon} {label}　·　动作: {status.get('activity') or '—'}")
-            ev = client.events(since_id=0, limit=30, session_id=sid) or {}
-            events = ev.get("events", [])
+            events = _fetch_events_incremental(client, sid, cache_cap=100)
             box = st.container(height=260)
             with box:
                 for e in events[-30:]:

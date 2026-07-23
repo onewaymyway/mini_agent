@@ -80,7 +80,7 @@ curl -H "Authorization: Bearer your-secret-token" http://127.0.0.1:8765/v1/healt
 |------|------|------|
 | `/v1/chat` | POST | 发送消息，返回 `turn_id` |
 | `/v1/interrupt` | POST | 中断当前执行 |
-| `/v1/history` | GET | 获取对话历史 |
+| `/v1/history` | GET | 获取对话历史（`limit`/`before_seq` 分页，响应含 `total`/`has_more`） |
 | `/v1/history` | DELETE | 清空对话历史 |
 
 ### 流式输出

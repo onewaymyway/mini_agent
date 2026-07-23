@@ -653,18 +653,34 @@ async def interrupt(request: Request):
 
 
 @router.get("/history", response_model=HistoryResponse)
-async def get_history(request: Request):
+async def get_history(
+    request: Request,
+    limit: int = Query(default=100, le=1000),
+    before_seq: Optional[int] = Query(
+        default=None,
+        description="[看板分页改进] 分页游标：不传表示取最新的一页；"
+        "传了表示取下标小于该值的、最近的 limit 条（用于\"加载更早\"）。"
+        "这里的 seq 就是 agent.history 里的下标，历史本来就是内存里的一份"
+        "有序 list（history_manager.py 的 history 属性），不需要额外存储。",
+    ),
+):
     bridge = _bridge(request)
-    msgs   = []
+    all_msgs: list[dict] = []
     if bridge.agent:
         try:
-            msgs = [m.model_dump() if hasattr(m, "model_dump") else dict(m)
-                    for m in bridge.agent.history]
+            all_msgs = [m.model_dump() if hasattr(m, "model_dump") else dict(m)
+                        for m in bridge.agent.history]
         except Exception as _mini_agent_exc:
             from mini_agent.errors import log_exception
             log_exception(_mini_agent_exc, where='mini_agent.api.routes.get_history')
-            msgs = []
-    return HistoryResponse(messages=msgs, count=len(msgs))
+            all_msgs = []
+
+    total = len(all_msgs)
+    end = total if before_seq is None else max(0, min(before_seq, total))
+    start = max(0, end - limit)
+    msgs = all_msgs[start:end]
+    has_more = start > 0
+    return HistoryResponse(messages=msgs, count=len(msgs), total=total, has_more=has_more)
 
 
 @router.delete("/history")
@@ -985,6 +1001,7 @@ def _user_session_manager(request: Request):
 async def list_sessions(
     request: Request,
     limit: int = Query(default=50, le=200),
+    offset: int = Query(default=0, description="[看板分页改进] 分页偏移量，配合 limit 做标准分页"),
     session_id: Optional[str] = Query(
         default=None,
         description="单 token 多客户端场景下，传入本连接自己当前的 session_id，"
@@ -1006,7 +1023,7 @@ async def list_sessions(
             if entries:
                 current_id = max(entries, key=lambda e: e.last_active).session_id
 
-        metas = user_mgr.list_sessions(limit=limit)
+        metas, total = user_mgr.list_sessions_page(limit=limit, offset=offset)
         infos = [
             SessionInfo(
                 id=m.id, title=m.title or "(untitled)",
@@ -1020,8 +1037,10 @@ async def list_sessions(
             for m in metas
         ]
         # 当前活跃 session 如果还没 save_session() 落盘（刚创建、还没说过话），
-        # 不会出现在 list_sessions() 结果里——从内存里的 SessionEntry 插一条。
-        if current_id and not any(i.id == current_id for i in infos) and pool is not None:
+        # 不会出现在 list_sessions_page() 结果里——从内存里的 SessionEntry 插
+        # 一条。[看板分页改进] 只在第一页（offset=0）插入，避免翻页到后面
+        # 每一页都多出一条重复的"当前会话"。
+        if offset == 0 and current_id and not any(i.id == current_id for i in infos) and pool is not None:
             entry = pool.get(current_id)
             if entry is not None and entry.agent is not None and entry.agent.session_meta:
                 meta = entry.agent.session_meta
@@ -1033,7 +1052,8 @@ async def list_sessions(
                     output_tokens=meta.output_tokens, tool_calls=meta.tool_calls,
                     summary=meta.summary, age="刚刚", is_current=True,
                 ))
-        return SessionsListResponse(sessions=infos, current_session_id=current_id, count=len(infos))
+                total += 1
+        return SessionsListResponse(sessions=infos, current_session_id=current_id, count=len(infos), total=total)
 
     # ── 单用户模式（单 token） ────────────────────────────────────────────────
     # 传了 session_id 的话，_bridge() 会按它路由到 SessionAgentPool 里这个
@@ -1043,7 +1063,7 @@ async def list_sessions(
     agent, mgr = _session_manager_or_404(_bridge(request, session_id=session_id))
     current_id = agent.session_id
 
-    metas = mgr.list_sessions(limit=limit)
+    metas, total = mgr.list_sessions_page(limit=limit, offset=offset)
     infos = [
         SessionInfo(
             id=m.id, title=m.title or "(untitled)",
@@ -1058,9 +1078,10 @@ async def list_sessions(
     ]
 
     # 当前 session 可能尚未 save_session() 落盘（例如刚启动 / 刚 new_session），
-    # 此时不会出现在 list_sessions() 结果里 —— 把内存中的"当前会话"插到列表最前面，
-    # 确保 Web 端始终能看到并默认选中它。
-    if current_id and not any(i.id == current_id for i in infos):
+    # 此时不会出现在 list_sessions_page() 结果里 —— 把内存中的"当前会话"插到
+    # 列表最前面，确保 Web 端始终能看到并默认选中它。[看板分页改进] 同上，
+    # 只在第一页插入。
+    if offset == 0 and current_id and not any(i.id == current_id for i in infos):
         meta = agent.session_meta
         if meta is not None:
             infos.insert(0, SessionInfo(
@@ -1072,8 +1093,9 @@ async def list_sessions(
                 summary=meta.summary, age="刚刚",
                 is_current=True,
             ))
+            total += 1
 
-    return SessionsListResponse(sessions=infos, current_session_id=current_id, count=len(infos))
+    return SessionsListResponse(sessions=infos, current_session_id=current_id, count=len(infos), total=total)
 
 
 @router.get("/sessions/{session_id}", response_model=SessionDetailResponse)

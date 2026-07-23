@@ -92,8 +92,14 @@ class AgentClient:
         params = {"session_id": session_id} if session_id else None
         return self._post("/interrupt", params=params)
 
-    def history(self, session_id: str = None):
-        params = {"session_id": session_id} if session_id else None
+    def history(self, session_id: str = None, limit: int = 100, before_seq: int = None):
+        # [看板分页改进] 默认只拉最新一页（limit 条），不再全量拉取整个
+        # session 的历史；before_seq 用于"加载更早"翻页，见后端 /history。
+        params = {"limit": limit}
+        if session_id:
+            params["session_id"] = session_id
+        if before_seq is not None:
+            params["before_seq"] = before_seq
         return self._get("/history", params=params)
 
     def clear_history(self, session_id: str = None):
@@ -191,8 +197,9 @@ class AgentClient:
         return self._post(f"/interactions/{req_id}", body)
 
     # ── 会话管理 ──────────────────────────────────────────────────────
-    def sessions(self, limit: int = 50):
-        return self._get("/sessions", params={"limit": limit})
+    def sessions(self, limit: int = 50, offset: int = 0):
+        # [看板分页改进] offset 配合 limit 做标准分页，默认 0 与旧行为一致。
+        return self._get("/sessions", params={"limit": limit, "offset": offset})
 
     def session_detail(self, session_id: str):
         return self._get(f"/sessions/{session_id}")

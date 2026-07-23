@@ -290,11 +290,10 @@ class SessionManager:
 
     # ── 列举 ──────────────────────────────────────────────────────────────────
 
-    def list_sessions(self, limit: int = 50) -> list[SessionMeta]:
-        """
-        列出所有 Session 的元数据（按最后修改时间倒序）。
-        新格式（目录）和旧格式（文件）同时支持。
-        """
+    def _list_session_entries(self) -> list[tuple[float, Path, str]]:
+        """收集所有 session 条目（mtime, path, fmt），按最后修改时间倒序。
+        从 list_sessions() 里抽出来，供 list_sessions() 和
+        list_sessions_page() 共用，避免重复扫描目录的逻辑漂移。"""
         entries: list[tuple[float, Path, str]] = []  # (mtime, path, fmt)
 
         # 新格式：目录
@@ -309,8 +308,9 @@ class SessionManager:
             entries.append((p.stat().st_mtime, p, "file"))
 
         entries.sort(key=lambda x: -x[0])
-        entries = entries[:limit]
+        return entries
 
+    def _read_metas(self, entries: list[tuple[float, Path, str]]) -> list[SessionMeta]:
         metas: list[SessionMeta] = []
         for _, path, fmt in entries:
             try:
@@ -322,6 +322,23 @@ class SessionManager:
                 log_exception(_mini_agent_exc, where='mini_agent.session')
                 pass
         return metas
+
+    def list_sessions(self, limit: int = 50) -> list[SessionMeta]:
+        """
+        列出所有 Session 的元数据（按最后修改时间倒序）。
+        新格式（目录）和旧格式（文件）同时支持。
+        """
+        entries = self._list_session_entries()[:limit]
+        return self._read_metas(entries)
+
+    def list_sessions_page(self, limit: int = 50, offset: int = 0) -> tuple[list[SessionMeta], int]:
+        """[看板分页改进] 支持 offset 的分页版本，额外返回分页前的总数，
+        供前端计算总页数。不改动 list_sessions() 本身，避免影响 CLI/daemon
+        等其它调用方。"""
+        all_entries = self._list_session_entries()
+        total = len(all_entries)
+        page_entries = all_entries[offset:offset + limit]
+        return self._read_metas(page_entries), total
 
     def search(self, query: str, limit: int = 20) -> list[SessionMeta]:
         """在所有 session 的 title + summary 中做关键词搜索。"""
