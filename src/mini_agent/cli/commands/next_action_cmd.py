@@ -56,7 +56,10 @@ def handle_next_action_cmd(args: list[str], agent=None) -> None:
     if args and args[0] == "refresh":
         cfg = getattr(agent, "cfg", None) if agent else None
         digest_advisor_cfg = getattr(cfg, "digest_advisor", None) if cfg is not None else None
-        llm_helper = getattr(agent, "_llm_helper", None) if agent else None
+        # [BUGFIX] 同 cli/commands/profile_cmd.py 的问题：Agent 上是公开属性
+        # llm_helper，不是 _llm_helper，之前一直取到 None，导致 /next refresh
+        # 静默退化成纯规则排序，从未真正用上 LLM 排序。
+        llm_helper = getattr(agent, "llm_helper", None) if agent else None
         data = generate_next_actions(paths, cfg=digest_advisor_cfg, llm_helper=llm_helper)
         if data is None:
             R.print_info("没有发现值得提醒的停滞目标或注意力错配，跳过本次生成。")

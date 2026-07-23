@@ -44,7 +44,12 @@ def handle_profile_cmd(args: list[str], agent=None) -> None:
     if args and args[0] == "update":
         from mini_agent.evolution.decision_profile_builder import generate_decision_profile
 
-        llm_helper = getattr(agent, "_llm_helper", None) if agent else None
+        # [BUGFIX] Agent 上暴露的是公开属性 llm_helper（agent/llm_control.py
+        # 的 LLMControlMixin.llm_helper 属性），从来没有过 _llm_helper 这个
+        # 私有属性——之前这里一直读错名字，导致 getattr() 恒返回 None，
+        # /decision_profile update 无论 agent 实际有没有可用的 LLM 都会打印
+        # "当前 agent 未提供 llm_helper，跳过"，这个功能等于被永久禁用。
+        llm_helper = getattr(agent, "llm_helper", None) if agent else None
         if llm_helper is None:
             R.print_warning(
                 "决策画像归纳需要 LLM 辅助，当前 agent 未提供 llm_helper，跳过。"
