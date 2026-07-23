@@ -272,6 +272,23 @@ class NvidiaProvider(ProviderMixin, LLMClient):
                     return LLMPermanentError(f"NVIDIA NIM forbidden (403): {msg}")
                 if status == 400:
                     return LLMProviderError(f"NVIDIA NIM bad request (400): {msg}")
+                if status == 410:
+                    # 410 Gone 在 HTTP 语义里就是"这个资源已经永久性不存在"，
+                    # 不是限流/超时那种"重试一下就好"的临时故障——NVIDIA NIM
+                    # 的免费模型目录变动非常频繁，模型经常没提前太久通知就被
+                    # 下架/替换掉。之前这里落进下面 status==410 走的是通用的
+                    # "NVIDIA NIM HTTP {status}: {msg}" 分支，用户只看到一句
+                    # 生僻的 HTTP 状态码文案，很容易误以为是网络抖动去重试，
+                    # 而不是去检查模型是不是被下架了。这里给一个更直白的提示，
+                    # 并且跟 401/403 一样归为 LLMPermanentError（不重试，直接
+                    # 交给上层触发 fallback 切换到别的 provider/model）。
+                    model_name = getattr(self.config, "model", None) or "(未知模型)"
+                    return LLMPermanentError(
+                        f"NVIDIA NIM 模型已下架 (410 Gone)：模型 '{model_name}' 在 "
+                        f"NVIDIA NIM 目录里已经找不到了（可能已被弃用/移除/改名）。"
+                        f"请到 https://build.nvidia.com 确认当前可用的模型 id，"
+                        f"并更新配置里的 model 字段。原始错误：{msg}"
+                    )
                 return LLMProviderError(f"NVIDIA NIM HTTP {status}: {msg}")
         except ImportError:
             pass
