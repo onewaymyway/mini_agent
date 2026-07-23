@@ -133,6 +133,17 @@ STATE_LABELS = {
     "unknown": ("⚪", "未知"),
 }
 
+# agent 更细粒度的"正在干什么"（见 bridge.py::AgentBridge._phase / 后端
+# /status 的 activity 字段）。顶栏（render_topbar）和"对话"tab 顶部的
+# 会话信息条（_render_chat_session_info）共用同一份映射，避免出现两处
+# 文案不一致。
+_ACTIVITY_LABELS = {
+    "waiting_input": "💤 空闲",
+    "waiting_permission": "🛑 等权限确认",
+    "calling_model": "🧠 调用模型中",
+    "calling_tool": "🔧 调用工具中",
+}
+
 GOAL_STATUS_COLUMNS = [
     ("active", "🔵 进行中"),
     ("paused", "⏸️ 暂停"),
@@ -174,6 +185,14 @@ def inject_css():
 }
 .topbar .item {display:flex; align-items:center; gap:6px; color:#ccc;}
 .topbar .label {color:#888; font-size:11px; text-transform:uppercase; letter-spacing:.5px;}
+
+.chat-session-info {
+    display:flex; gap:16px; flex-wrap:wrap; align-items:center;
+    background:#181a24; border:1px solid #2a2d3a; border-radius:8px;
+    padding:6px 12px; margin-bottom:6px; font-size:12.5px;
+}
+.chat-session-info .item {display:flex; align-items:center; gap:5px; color:#ddd;}
+.chat-session-info .label {color:#888; font-size:11px; text-transform:uppercase; letter-spacing:.5px;}
 
 .kanban-col {
     background:#14161f; border:1px solid #262838; border-radius:10px;
@@ -619,15 +638,8 @@ def _render_topbar_body(client: AgentClient, session_id: str = ""):
     next_tick_str = f"{next_tick:.0f}s" if isinstance(next_tick, (int, float)) else "—"
 
     # 更细粒度的"agent 正在干什么"（见 bridge.py::AgentBridge._phase / 后端
-    # /status 的 activity 字段），之前只在"对话"tab 里能看到，现在提到
-    # 顶栏常驻展示——切到其它 tab（目标看板/工作流）时也能一眼看到 agent
-    # 现在忙不忙、忙什么，不用切回对话 tab 才知道。
-    _ACTIVITY_LABELS = {
-        "waiting_input": "💤 空闲",
-        "waiting_permission": "🛑 等权限确认",
-        "calling_model": "🧠 调用模型中",
-        "calling_tool": "🔧 调用工具中",
-    }
+    # /status 的 activity 字段），这份映射本身在模块级定义（_ACTIVITY_LABELS），
+    # 顶栏和"对话"tab 里的会话信息条都复用同一份，避免出现两份不一致的文案。
     activity = status.get("activity")
     activity_label = _ACTIVITY_LABELS.get(activity, activity or "—")
     if activity == "calling_tool" and status.get("activity_detail"):
@@ -1039,6 +1051,38 @@ def _stream_turn_into_placeholder(client: AgentClient, turn_id: str, container, 
     return finished, paused_for_permission
 
 
+def _render_chat_session_info(status: dict) -> None:
+    """[UI 改进] "对话"tab 顶部的会话信息条。
+
+    之前这里只留了一句注释"这些信息已经在顶栏常驻展示，不重复渲染"——
+    但顶栏是"全局"的一条横幅，字段多、字号小，容易被忽略；用户明确
+    希望在对话区域本身就能一眼看到"现在用的什么模型、agent 是空闲/
+    调用工具/等模型结果、session 目录在哪"，不用去找页面最上面那条不
+    起眼的状态条。这里复用调用方已经拿到的 status（不额外发请求），
+    只挑用户关心的这几项，做成对话区域自己的小信息条。
+    """
+    if "_error" in status:
+        st.warning(f"会话状态获取失败：{status['_error']}")
+        return
+
+    activity = status.get("activity")
+    activity_label = _ACTIVITY_LABELS.get(activity, activity or "—")
+    if activity == "calling_tool" and status.get("activity_detail"):
+        activity_label = f"🔧 {status['activity_detail']}"
+    model_label = status.get("model") or "—"
+    sid_label = status.get("session_id") or "—"
+    session_dir = status.get("session_dir") or "—"
+
+    st.markdown(f"""
+<div class="chat-session-info">
+  <span class="item"><span class="label">模型</span> {_esc_html(model_label)}</span>
+  <span class="item"><span class="label">状态</span> {activity_label}</span>
+  <span class="item"><span class="label">Session</span> {_esc_html(sid_label)}</span>
+</div>
+""", unsafe_allow_html=True)
+    st.caption(f"📁 {session_dir}")
+
+
 def render_chat_tab(client: AgentClient, session_id: str = ""):
     col_chat, col_events = st.columns([2, 1])
 
@@ -1046,8 +1090,7 @@ def render_chat_tab(client: AgentClient, session_id: str = ""):
         st.markdown("#### 💬 对话")
         cur_status = client.status(session_id=session_id) or {}
         running_turn_id = cur_status.get("turn_id") if cur_status.get("state") == "running" else None
-        # 模型 / session / session 目录 / 当前动作这些信息已经在顶栏常驻展示
-        # （见 render_topbar），这里不重复渲染，避免同一屏出现两份。
+        _render_chat_session_info(cur_status)
 
         if running_turn_id:
             st.caption("⏳ Agent 正在处理中…（下方将实时流式显示输出）")
