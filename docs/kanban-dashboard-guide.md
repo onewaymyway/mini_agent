@@ -45,6 +45,11 @@ streamlit run app.py
 - 当前 Turn
 - 自主等级（Autonomous Loop 的当前 tier）
 - 距下次 Tick 的时间、Tick 计数、订阅者数量
+- **排队中**（新增）：`InputQueue.depth`（即 `StatusResponse.queue_depth`，之前后端一直有
+  这个字段，看板此前从未展示过）——用户消息、cron 触发、自主任务提交都走同一条
+  InputQueue，agent 正忙时后面的请求只能排队等待；非零时点击展开可看到具体排队列表
+  （发起方 `user`/`cron`/`autonomous`、已等待秒数、输入内容预览，数据来自 `/v1/turns`
+  里 `state=="queued"` 的条目）
 - 待审批权限请求数 / 待回答交互请求数——点击展开后可逐条处理
 - session 存储目录（`<project_root>/.agent/sessions/<session_id>/`），单独一行展示
 

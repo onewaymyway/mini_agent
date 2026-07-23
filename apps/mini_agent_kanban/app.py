@@ -16,6 +16,7 @@ Mini-Agent 看板 (Kanban Dashboard)
     streamlit run apps/mini_agent_kanban/app.py
 """
 import html
+import time
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -606,6 +607,44 @@ def _render_topbar_fragment(client: AgentClient, session_id: str = ""):
     _render_topbar_body(client, session_id)
 
 
+_INITIATOR_LABEL = {
+    "user": "🙋 用户",
+    "cron": "⏰ Cron",
+    "scheduled": "⏰ Cron",
+    "autonomous": "🤖 自主任务",
+}
+
+
+def _render_queue_panel(client: AgentClient, session_id: str = "") -> None:
+    """[看板新增] 展示 InputQueue 里排队等待处理的请求（`/v1/turns` 里
+    state=="queued" 的条目）——用户消息、cron 触发、自主任务提交的都走
+    同一条 InputQueue，agent 正忙（running）时后面的请求只能排队，之前
+    看板完全没有地方能看到"现在积压了几个、都是什么"。
+    """
+    turns_data = client.turns(session_id=session_id) or {}
+    if "_error" in turns_data:
+        st.warning(f"排队信息获取失败：{turns_data['_error']}")
+        return
+    all_turns = turns_data.get("turns", [])
+    queued = [t for t in all_turns if t.get("state") == "queued"]
+    if not queued:
+        st.caption("当前没有排队中的请求")
+        return
+    now = time.time()
+    # list_turns() 内部按插入顺序（dict 保序）、routes.py 又整体 reversed()
+    # 返回，这里重新按 started_at 升序排，第一条就是"下一个会被处理的"。
+    queued.sort(key=lambda t: t.get("started_at") or 0)
+    for i, t in enumerate(queued):
+        waited = now - (t.get("started_at") or now)
+        initiator_label = _INITIATOR_LABEL.get(t.get("initiator", "user"), t.get("initiator", "—"))
+        input_preview = (t.get("input") or "")[:120]
+        st.caption(
+            f"#{i + 1}　{initiator_label}　·　已等待 {waited:.0f}s　·　"
+            f"`{t.get('turn_id', '')[:8]}`"
+        )
+        st.text(input_preview + ("…" if len(t.get("input") or "") > 120 else ""))
+
+
 def _render_topbar_body(client: AgentClient, session_id: str = ""):
     status = client.status(session_id=session_id) or {}
     if "_error" in status:
@@ -646,6 +685,12 @@ def _render_topbar_body(client: AgentClient, session_id: str = ""):
         activity_label = f"🔧 {status['activity_detail']}"
     model_label = status.get("model") or "—"
     sid_label = status.get("session_id") or "—"
+    # [看板新增] queue_depth 后端 StatusResponse 里一直有这个字段
+    # （bridge.py::InputQueue.depth），但之前看板从没读过——用户发消息 /
+    # cron 触发 / 自主任务提交时，如果 agent 正忙（running），这些请求会
+    # 排在 InputQueue 里等 AgentRunner 依次 dequeue，之前完全看不出来
+    # "现在还有几个请求在排队等着"。
+    queue_depth = status.get("queue_depth", 0)
 
     st.markdown(f"""
 <div class="topbar">
@@ -658,12 +703,17 @@ def _render_topbar_body(client: AgentClient, session_id: str = ""):
   <div class="item"><span class="label">距下次Tick</span> {next_tick_str}</div>
   <div class="item"><span class="label">Tick计数</span> {tick_count}</div>
   <div class="item"><span class="label">订阅者</span> {subscribers}</div>
+  <div class="item"><span class="label">排队中</span> {'🟡 ' + str(queue_depth) if queue_depth else '0'}</div>
   <div class="item"><span class="label">待审批</span> {'🔴 ' + str(pending_n) if pending_n else '0'}</div>
   <div class="item"><span class="label">待回答</span> {'🔴 ' + str(pending_ix_n) if pending_ix_n else '0'}</div>
 </div>
 """, unsafe_allow_html=True)
     if status.get("session_dir"):
         st.caption(f"📁 session 目录: `{status['session_dir']}`")
+
+    if queue_depth:
+        with st.expander(f"🕓 有 {queue_depth} 个请求在排队等待处理", expanded=False):
+            _render_queue_panel(client, session_id)
 
     if pending_n:
         with st.expander(f"⚠️ 有 {pending_n} 个待审批权限请求，点击处理", expanded=True):
