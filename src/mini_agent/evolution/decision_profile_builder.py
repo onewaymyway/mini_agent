@@ -111,7 +111,12 @@ def _llm_summarize_patterns(pages: list, llm_helper, min_evidence_count: int = M
         "（引用的决策页 id 列表，必须真实来自输入数据）。"
         "只返回 JSON 数组，不要其他文字：\n" + json.dumps(entries, ensure_ascii=False)
     )
-    raw = llm_helper.complete(prompt)
+    # [BUGFIX] LLMHelper（llm/service.py）只有 .ask()/.chat() 两个方法，
+    # 从来没有 .complete()——之前这里一直会在这里抛 AttributeError，
+    # /decision_profile update 修好 llm_helper 传参之后立刻在这一步炸掉。
+    # .ask(prompt) 语义就是"单轮 user 消息、只要最终文本"，等价于原来
+    # 想要的 .complete()。
+    raw = llm_helper.ask(prompt)
     try:
         parsed = json.loads(_extract_json_array(raw))
     except Exception:

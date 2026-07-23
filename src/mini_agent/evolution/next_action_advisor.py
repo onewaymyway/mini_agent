@@ -244,7 +244,10 @@ def _llm_rank(candidates: list[Candidate], llm_helper) -> list[Candidate]:
         + json.dumps(payload, ensure_ascii=False)
     )
     try:
-        raw = llm_helper.complete(prompt)
+        # [BUGFIX] 同 decision_profile_builder.py 的问题：LLMHelper 没有
+        # .complete()，只有 .ask()/.chat()。这里原本被 except Exception
+        # 兜住静默退化成规则排序，所以不会崩，但也从来没真正用上 LLM 排序。
+        raw = llm_helper.ask(prompt)
         parsed = json.loads(_extract_json_array(raw))
         by_id = {c.ref_id: c for c in candidates}
         ranked = []
