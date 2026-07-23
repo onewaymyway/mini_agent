@@ -296,6 +296,19 @@ def load_config(
     _mem_path_str = file_cfg.get("memory_store_path", "")
     _mem_path = Path(_mem_path_str) if _mem_path_str else None
 
+    # per_turn_retrieval_enabled 支持两种写法：
+    #   1) 扁平键 "memory_per_turn_retrieval_enabled"（与本文件里其余
+    #      memory_* 键的既有约定一致，CLI/环境变量扩展时也走这条）
+    #   2) 嵌套写法 {"memory": {"per_turn_retrieval_enabled": false}}（更符合
+    #      直觉、且与 MemoryConfig 字段名直接对应，这里额外兼容，避免用户
+    #      按字段名嵌套写却被静默忽略）
+    # 注意：本文件其余 library_index_enabled/library_shelf_search_enabled/
+    # library_wiki_search_primary 等字段目前都还没有接入 file_cfg，只能通过
+    # 代码里直接构造 MemoryConfig(...) 设置，如果也需要从 agent_config.json
+    # 配置，需要照这里的模式各自补一条。
+    _mem_dict = file_cfg.get("memory") if isinstance(file_cfg.get("memory"), dict) else {}
+    _per_turn_retrieval_default = bool(_mem_dict.get("per_turn_retrieval_enabled", True))
+
     memory_cfg = MemoryConfig(
         enabled=_fb("memory_enabled", memory_enabled),
         backend=_f("memory_backend", None) or "local",
@@ -308,6 +321,9 @@ def load_config(
         lesson_rules_enabled=_fb("lesson_rules_enabled", None, True),
         lesson_fail_threshold=_fn("lesson_fail_threshold", None, 3),
         correction_detection_enabled=_fb("correction_detection_enabled", None, True),
+        per_turn_retrieval_enabled=_fb(
+            "memory_per_turn_retrieval_enabled", None, _per_turn_retrieval_default
+        ),
     )
 
     compress_cfg = CompressConfig(

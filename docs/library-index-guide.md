@@ -162,6 +162,17 @@ per_turn_retrieval_enabled: bool = True    # 每轮自动检索总闸：关闭�
 这两个开关此时不再生效，因为检索入口本身被跳过了）。这是当前唯一能完全
 关闭"每轮自动检索"这一行为、同时保留记忆写入与其他功能的开关。
 
+**在 `agent_config.json` 里配置**：`library_index_enabled` 等其余 memory 子开关
+目前还没有接入配置文件加载（只能在代码里直接构造 `MemoryConfig(...)`），但
+`per_turn_retrieval_enabled` 已接入 `config/loader.py`，支持两种写法（等价）：
+
+```json
+{ "memory_per_turn_retrieval_enabled": false }
+```
+```json
+{ "memory": { "per_turn_retrieval_enabled": false } }
+```
+
 ## 六、新增的落盘文件（均可重建，非 StateRepo 管辖）
 
 在 `.agent/`（project scope）和 `~/.agent/`（global scope）下各自独立一套：
