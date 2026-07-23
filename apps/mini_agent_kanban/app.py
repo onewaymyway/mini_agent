@@ -177,7 +177,7 @@ def inject_css():
 
 .kanban-col {
     background:#14161f; border:1px solid #262838; border-radius:10px;
-    padding:10px; min-height:120px;
+    padding:8px 10px; min-height:40px;
 }
 .kanban-col h4 {margin:0 0 8px 0; font-size:13px; color:#bbb;}
 .kanban-card {
