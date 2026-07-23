@@ -31,34 +31,7 @@
 
 ## Conventions & Standards
 
-### File Organization
-- **Skills**: `.claude/skills/<name>/SKILL.md` + optional `references/<sub>.md` (lazy-loaded via `skill_resource_load`)
-- **Custom agents**: `.agent/agents/<name>.md` (project) or `~/.agent/agents/<name>.md` (global)
-- **Personas**: `.agent/personas/<name>.md` or `~/.agent/personas/<name>.md`
-- **Workflows**: `.agent/workflows/<name>/workflow.yaml` (+ private agents/skills/prompts)
-- **Reminders**: `src/mini_agent/prompts/reminders/*.md` (system) + `--reminders-dir` (user)
-- **Wiki pages**: `.agent/wiki/{entities,decisions,experiences,processes,topics}/*.md`
-- **Tests**: `tests/test_<module>.py` mirroring `src/mini_agent/` structure
-- **Test cases**: `test_cases/inputs/*.txt` + `test_cases/*.md` for integration scenarios
-
-### Configuration Priority
-**CLI args > config file > defaults**. Previously config file won; fixed.
-
-### Tool Registration
-All tools via `@tool()` decorator in `src/mini_agent/tools/builtin.py` or new files under `tools/`. Return `str`.
-
-### Prompt Management
-All LLM prompts saved as `.md` files under `src/mini_agent/prompts/`, loaded via `PromptManager`.
-
-### Documentation
-Every major module has a guide in `docs/*.md` (see CLAUDE.md "文档索引" section).
-
-### Git Hygiene
-- `providers.json` (API keys) auto-gitignored
-- Self-evolution changes go through `StateRepo.apply()` → dedicated `evolve/<date>-<type>-<name>` branch → human review → merge
-- Protected paths (`scripts/protected_paths.py`) block direct commits
-
----
+File organization: skills in .claude/skills/, custom agents in .agent/agents/, personas in .agent/personas/, workflows in .agent/workflows/, reminders in src/mini_agent/prompts/reminders/, wiki pages in .agent/wiki/{entities,decisions,experiences,processes,topics}/, tests mirror src/ structure. Configuration priority: CLI args > config file > defaults. Tool registration via @tool() decorator in tools/builtin.py or new files under tools/. Prompt management: all LLM prompts as .md files under src/mini_agent/prompts/ loaded via PromptManager. Documentation: every major module has guide in docs/*.md. Git hygiene: providers.json auto-gitignored, self-evolution via StateRepo.apply() -> evolve/<date>-<type>-<name> branch -> human review -> merge, protected paths block direct commits.
 
 ## Open Questions & Future Work
 
