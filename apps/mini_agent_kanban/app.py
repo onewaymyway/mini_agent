@@ -1132,6 +1132,29 @@ def render_kanban_tab(client: AgentClient):
 
     st.markdown("---")
     st.markdown("#### ⏰ Cron Jobs")
+
+    with st.expander("➕ 新建 Cron Job"):
+        with st.form("new_cron_job"):
+            cj_name = st.text_input("名称", key="cj_name")
+            cj_schedule = st.text_input(
+                "调度 (interval:<秒数> 或 cron:<表达式>)",
+                placeholder="例如 interval:3600 或 cron:0 9 * * *",
+                key="cj_schedule",
+            )
+            cj_task = st.text_area("任务内容 (task_template)", height=80, key="cj_task")
+            cj_desc = st.text_area("描述（可选）", height=60, key="cj_desc")
+            cj_submitted = st.form_submit_button("创建")
+        if cj_submitted:
+            if not (cj_name.strip() and cj_schedule.strip() and cj_task.strip()):
+                st.error("名称、调度、任务内容均为必填")
+            else:
+                res = client.add_cron_job(
+                    cj_name.strip(), cj_schedule.strip(), cj_task.strip(), cj_desc.strip()
+                )
+                if res and "_error" in res:
+                    st.error(res["_error"])
+                st.rerun()
+
     cron = client.cron_jobs() or {}
     jobs = cron.get("jobs", [])
     if cron.get("note"):
