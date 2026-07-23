@@ -869,6 +869,22 @@ def render_chat_tab(client: AgentClient):
         st.markdown("#### 💬 对话")
         cur_status = client.status() or {}
         running_turn_id = cur_status.get("turn_id") if cur_status.get("state") == "running" else None
+
+        # 当前 session 信息条：模型 / session_id / session 存储目录，方便直接
+        # 确认"现在用的哪个模型、数据存在哪"，不用切去终端翻配置。
+        _model = cur_status.get("model")
+        _sid = cur_status.get("session_id")
+        _sdir = cur_status.get("session_dir")
+        info_bits = []
+        if _model:
+            info_bits.append(f"🧠 模型: `{_model}`")
+        if _sid:
+            info_bits.append(f"🆔 session: `{_sid}`")
+        if info_bits:
+            st.caption(" ｜ ".join(info_bits))
+        if _sdir:
+            st.caption(f"📁 目录: `{_sdir}`")
+
         if running_turn_id:
             st.caption("⏳ Agent 正在处理中…（下方将实时流式显示输出）")
         hist = client.history() or {}

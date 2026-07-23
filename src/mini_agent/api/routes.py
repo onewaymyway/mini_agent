@@ -304,6 +304,43 @@ async def get_status(
         log_exception(_mini_agent_exc, where='mini_agent.api.routes')
         pass
 
+    # 当前实际使用的模型名（复用 /models 端点同样的 snapshot() 取法：
+    # LLMClientPool 支持故障转移/切换模型，所以要读 active 的那条 entry，
+    # 不能直接读配置文件里的第一条，否则切换模型/故障转移后看板会显示错）。
+    current_model: Optional[str] = None
+    try:
+        pool = getattr(bridge.agent, "_client_pool", None) if bridge.agent else None
+        if pool is not None:
+            for entry in pool.snapshot()["entries"]:
+                _, _, _m = entry["label"].partition("/")
+                if entry.get("active") and _m:
+                    current_model = _m
+                    break
+    except Exception as _mini_agent_exc:
+        from mini_agent.errors import log_exception
+        log_exception(_mini_agent_exc, where='mini_agent.api.routes')
+        pass
+
+    resolved_session_id = getattr(
+        request.state, "resolved_session_id",
+        getattr(bridge.agent, "session_id", None) if bridge.agent else None,
+    )
+
+    # session 存储目录：<project_root>/.agent/sessions/<session_id>/
+    session_dir: Optional[str] = None
+    project_root_str: Optional[str] = None
+    try:
+        proj_root = getattr(bridge.agent.cfg, "project_root", None) if bridge.agent else None
+        if proj_root is not None:
+            project_root_str = str(proj_root)
+            if resolved_session_id:
+                from mini_agent.storage.paths import AgentPaths
+                session_dir = str(AgentPaths(proj_root).sessions_dir / resolved_session_id)
+    except Exception as _mini_agent_exc:
+        from mini_agent.errors import log_exception
+        log_exception(_mini_agent_exc, where='mini_agent.api.routes')
+        pass
+
     return StatusResponse(
         state       = state["state"],
         turn_id     = state["turn_id"],
@@ -317,10 +354,10 @@ async def get_status(
         # session 才会设置 request.state.resolved_session_id（单用户模式下
         # 完全不会设置这个属性，回退到 bridge.agent.session_id，对应改造前
         # 这里原本缺失但本该有的行为）。
-        session_id = getattr(
-            request.state, "resolved_session_id",
-            getattr(bridge.agent, "session_id", None) if bridge.agent else None,
-        ),
+        session_id = resolved_session_id,
+        model = current_model,
+        session_dir = session_dir,
+        project_root = project_root_str,
     )
 
 

@@ -134,6 +134,13 @@ class StatusResponse(BaseModel):
     # 声明过——也就是说"●active"标记在 session 选择菜单里从未真正生效过
     # （永远拿到空字符串，永远不会匹配任何 session）。这里补上，顺带修了这个老 bug。
     session_id: Optional[str] = None
+    # 看板"当前 session 信息"面板：当前实际使用的模型名 + 该 session 的
+    # 存储目录（<project_root>/.agent/sessions/<session_id>/），
+    # 方便用户在看板对话里直接确认"现在用的是哪个模型/数据存在哪"，
+    # 不用切去终端翻配置或 `/model` 命令。
+    model: Optional[str] = None
+    session_dir: Optional[str] = None
+    project_root: Optional[str] = None
 
 class PermissionRequest(BaseModel):
     approve:      bool
