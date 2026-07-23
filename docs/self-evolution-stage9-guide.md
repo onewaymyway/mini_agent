@@ -144,10 +144,40 @@ GoalNode:
 | 档位 | `autonomy_level` | 行为 |
 |------|-----------------|------|
 | **passive** | `"passive"` | 只运行 CronScheduler.tick()，**不读 GoalBacklog** |
-| **maintenance** | `"maintenance"` | passive + ObjectiveExecutor 推进活跃 Objective，可启动新 Objective |
+| **maintenance** | `"maintenance"` | passive + 给缺 Objective 的 Goal 自动补 Objective（3.3 节）+ ObjectiveExecutor 推进活跃 Objective，可启动新 Objective |
 | **autonomous** | `"autonomous"` | maintenance + SoftGoalDeriver.derive() 主动 derive 新 Goal |
 
 边界的物理体现：`_tick_passive()` 方法体内不引用 `self._goal_backlog` 任何方法；`_tick_maintenance()` 才调用 `goal_backlog.active_objectives()`。
+
+> 注意区分两件事：`maintenance` **不会**凭空产生新 Goal（新意图），但**会**把已有的、已被批准的 Goal 拆成 Objective——这不是"派生新目标"，只是把一句话意图操作化为可执行单元，所以没有越过 maintenance/autonomous 的边界。真正"要不要做这件事"的决策权仍然只在 `autonomous` 档位的 SoftGoalDeriver 手里。
+
+### 3.3 Goal → Objective 自动拆解
+
+`has_actionable_work()` / `active_objectives()` 只认 `level="objective"` 的节点——单纯建一个 Goal（不管是看板"➕ 新建目标"表单、CLI `/goals add`，还是 `SoftGoalDeriver` 派生出来的 agent_derived Goal），本身**不会**被执行，agent 也不会主动去做，必须先有一个挂在它下面的 active Objective。
+
+`maintenance` 档位每次 tick，`_tick_maintenance()` 开头会先调用 `_ensure_goal_objectives()`：
+
+```
+_ensure_goal_objectives()
+ ├─ goal_backlog.goals_missing_objective()      ← 只读，找出没有 active Objective 子节点的 active Goal
+ ├─ 对每个 Goal：
+ │    ├─ goal_decompose_fn(goal) → LLM 拆成 1~N 个 Objective 标题（锁外调用，可能较慢）
+ │    └─ 拆解失败 / 未注入 / 返回空 → 降级为 1 个与 Goal 同名的 Objective（保底可执行）
+ └─ goal_backlog.add_objectives_for_goal(goal_id, titles)   ← 锁内写入，纯数据操作、毫秒级
+```
+
+`goals_missing_objective()` 特意设计成**不加锁**的只读查询：真正耗时的 LLM 拆解在锁外做，只有最后落盘那一步（`add_objectives_for_goal`）才短暂持有 `GoalBacklog` 的跨进程文件锁，避免因为一次 LLM 请求把其它进程（别的 CLI session、API 请求）对 `goals.json` 的读写卡住。
+
+每创建一个 Objective 会写一条 `activity_digest`（`type: objective_auto_created`），`/digest` 和看板"🧠 自我状态"里可见，不是静默行为。
+
+**相关配置**（`self_config.json` 的 `autonomy` 段）：
+
+| 字段 | 默认值 | 说明 |
+|------|--------|------|
+| `auto_objective_from_goal_enabled` | `true` | 总开关，关闭后 Goal 只能靠手动 `/goals obj add` 或看板手动拆解按钮补 Objective |
+| `auto_objective_max_per_goal` | `3` | 单个 Goal 一次最多自动拆出几个 Objective（LLM 拆解结果会被截断到这个数；降级镜像不受此限，恒为 1 个） |
+
+关掉总开关后，`goals_missing_objective()` 的判断逻辑不变，只是 `_ensure_goal_objectives()` 直接 return，Goal 会一直停留在"待拆解"状态，需要人工介入。
 
 ### 4.2 tick 流程（maintenance 档位）
 
@@ -156,6 +186,7 @@ tick()
  ├─ _tick_passive()
  │   └─ CronScheduler.tick()         ← 检查所有 job 是否到期并触发
  └─ _tick_maintenance()
+     ├─ _ensure_goal_objectives()               ← 给缺 Objective 的 Goal 自动补 Objective（3.3 节）
      ├─ ResourceArbiter.can_run_autonomous()   ← 预算 + 路径冲突 + 本体感知门控
      ├─ ObjectiveExecutor.resume()             ← 恢复因资源仲裁暂停的 Objective
      └─ 若有空闲槽位：
@@ -459,7 +490,8 @@ frustration_threshold`（默认 0.5）时，本次 tick 跳过自主任务提交
 
 ```jsonl
 {"at": 1720000000.0, "type": "cron_run", "job_id": "sys:consolidation", "summary": "..."}
-{"at": 1720003600.0, "type": "objective_started", "objective_id": "obj_xxx", "title": "..."}
+{"at": 1720003600.0, "type": "objective_auto_created", "goal_id": "goal_abc", "objective_id": "obj_xxx", "title": "...", "summary": "自动为目标「...」创建执行子目标：..."}
+{"at": 1720003700.0, "type": "objective_started", "objective_id": "obj_xxx", "title": "..."}
 {"at": 1720007200.0, "type": "objective_completed", "execution_id": "exec_yyy", "steps": 4}
 {"at": 1720010800.0, "type": "soft_goal_created", "goal_id": "goal_zzz", "title": "..."}
 ```

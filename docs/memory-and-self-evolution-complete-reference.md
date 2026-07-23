@@ -389,7 +389,10 @@ session"）：当前版本只记录，实际"等待 N 个 session"逻辑由晋�
 ### 6.2 AutonomousLoop：三档位自治（`evolution/autonomous_loop.py`）
 按 `autonomy_level` 分三档，tick 间隔逐级变长：
 1. **被动执行**：只响应用户显式指令
-2. **maintenance**：定期维护（清理、健康检查等）
+2. **maintenance**：定期维护（清理、健康检查等）+ 自动给缺 Objective 的
+   Goal 补 Objective（`_ensure_goal_objectives()`，可配置开关/上限，见
+   [Stage 9 指南 3.3 节](self-evolution-stage9-guide.md#33-goal--objective-自动拆解)）
+   + ObjectiveExecutor 推进活跃 Objective
 3. **autonomous**：maintenance + 软目标推导（`_tick_autonomous()` 调用
    `SoftGoalDeriver`）
 

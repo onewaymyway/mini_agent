@@ -456,6 +456,7 @@ daemon 进程（常驻）
 | 档位 | `passive`（默认） | `maintenance` | `autonomous` |
 |------|-----------------|--------------|-------------|
 | 巩固循环 时间门控 | ✅ | ✅ | ✅ |
+| 自动给 Goal 补 Objective（`auto_objective_from_goal_enabled`） | ❌ | ✅ | ✅ |
 | 从 GoalBacklog 提交 Task | ❌ | ✅ | ✅ |
 | 软目标 derive | ❌ | ❌ | ✅（第十二节） |
 

@@ -59,7 +59,7 @@ urgency 用于同 priority 档位内的排序（lesson 的 urgency 正比于触�
 
 ### CronScheduler 降级兼容
 
-若 `CronScheduler` 注入失败（如 paths 不可用），`_tick_passive()` 回退到直接调用 `should_run_consolidation()`，保持向后兼容。`ObjectiveExecutor` 未注入时，`_tick_maintenance()` 回退到旧的单次 Task 提交逻辑。
+若 `CronScheduler` 注入失败（如 paths 不可用），`_tick_passive()` 回退到直接调用 `should_run_consolidation()`，保持向后兼容。`ObjectiveExecutor` 未注入时，`_tick_maintenance()` 回退到旧的单次 Task 提交逻辑。`goal_decompose_fn` 未注入或 LLM 调用失败时，`_ensure_goal_objectives()` 降级为给 Goal 建 1 个同名 Objective，保证 `maintenance` 档位在没有可用 LLM 的情况下也不会让 Goal 卡死在"无法执行"状态（详见 [Stage 9 指南 3.3 节](self-evolution-stage9-guide.md#33-goal--objective-自动拆解)）。
 
 ---
 
