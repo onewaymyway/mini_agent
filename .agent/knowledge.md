@@ -43,7 +43,7 @@ File organization: skills in .claude/skills/, custom agents in .agent/agents/, p
 
 ## Test Section
 
-Test content
+REMOVE
 
 ## Test2
 
