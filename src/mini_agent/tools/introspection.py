@@ -903,7 +903,15 @@ def _build_status(agent, policy: IntrospectionPolicy) -> dict:
         "mcp":          _s(lambda: cfg.mcp.enabled),
         "reminder":     _s(lambda: getattr(cfg, "reminder", None) and getattr(cfg.reminder, "enabled", False)),
         "profile":      _s(lambda: cfg.profile.enabled if hasattr(cfg, "profile") else "N/A"),
-        "web_search":   _s(lambda: cfg.web_search.enabled if hasattr(cfg, "web_search") else "N/A"),
+        # [BUGFIX] WebSearchConfig（config/models.py）从来就没有 enabled 字段
+        # （provider/api_key/max_results/timeout 四个），之前这里假设它有，
+        # hasattr(cfg, "web_search") 只检查了 cfg 上有没有 web_search 这个
+        # 子配置对象本身（几乎总是 True，因为它有默认值），真正访问
+        # .enabled 时必然 AttributeError。web_search 工具实际的启用与否
+        # 是看它有没有被注册进 ToolRegistry（builtin.py 里 name="web_search"），
+        # 跟其它 subsystems 字段一样，用"是否存在于 registry"作为 enabled 的
+        # 判定依据。
+        "web_search":   _s(lambda: "web_search" in agent.registry.names),
     }
     rp = agent._retry_policy
     sections["retry_policy"] = {
