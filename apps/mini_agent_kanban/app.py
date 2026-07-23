@@ -16,6 +16,7 @@ Mini-Agent 看板 (Kanban Dashboard)
     streamlit run apps/mini_agent_kanban/app.py
 """
 import html
+from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 
@@ -670,95 +671,137 @@ _INTERACTION_KIND_LABEL = {
 }
 
 
-def render_interactions(client: AgentClient, pending_list):
+@dataclass
+class PendingInteraction:
+    """[P1 重构] 统一的"待回答交互请求"数据模型。
+
+    之前 render_interactions 是直接在渲染循环里按 req["kind"] 一条条
+    if/elif 判断、每个分支自己从 req["data"] 里挖字段、自己拼 HTML——
+    渲染逻辑和"这个 kind 该怎么取数据"混在一起，以后每新增一种 kind
+    就要在渲染函数里再插一个分支，函数只会越写越长。
+
+    现在拆成两步：
+      1. _build_pending_interaction()：只负责"从原始 req 里取出数据"，
+         归一成这个 dataclass（body 展示什么、要哪种输入控件 mode、
+         choices 模式下的选项列表）。新增一种 kind 只需要在这一个
+         函数里加一段"怎么从 data 里取值"，不用碰渲染代码。
+      2. _render_pending_interaction()：只负责"按 mode 渲染控件"，
+         渲染逻辑与"kind 具体是什么"完全解耦——mode 的取值远少于
+         kind（未来新增的 kind 大概率能复用已有的四种 mode 之一）。
     """
-    渲染并处理通用交互式请求（ask_user 系列工具 / /goal 协商 / 任意 slash
-    命令内部的 prompt_user()）。与 render_permissions 对称，但按 kind
-    渲染不同的输入控件：
-      - goal_negotiation / ask_user / repl_prompt：展示提示内容 + 一个
-        文本框（对 goal_negotiation 额外给 "/confirm"、"/cancel" 快捷
-        按钮，和命令行里输入 /confirm、/cancel 效果一致）
-      - ask_user_confirm：是/否两个按钮
-      - ask_user_choice：按 data 里的 options/choices 列表逐个渲染按钮
+    req_id: str
+    kind: str
+    label: str
+    body: str
+    mode: str                          # "confirm_freeform" | "yes_no" | "choices" | "freeform"
+    options: list = field(default_factory=list)
+
+
+def _build_pending_interaction(req: dict) -> PendingInteraction:
+    """把后端返回的原始交互请求，归一成 PendingInteraction。"""
+    req_id = req.get("req_id")
+    kind = req.get("kind", "")
+    data = req.get("data", {}) or {}
+    label = _INTERACTION_KIND_LABEL.get(kind, f"🙋 {kind or '未知交互'}")
+
+    if kind == "goal_negotiation":
+        # data["summary"] 就是 GoalSpec.render_summary_for_user() 的原文——
+        # 里面包含目标文本、验收标准列表、验证方式等，与命令行里
+        # R.console.print(spec.render_summary_for_user()) 展示的完全一致。
+        return PendingInteraction(
+            req_id, kind, label, body=str(data.get("summary", "")), mode="confirm_freeform",
+        )
+
+    if kind == "ask_user_confirm":
+        return PendingInteraction(
+            req_id, kind, label,
+            body=str(data.get("question", data.get("prompt_text", ""))),
+            mode="yes_no",
+        )
+
+    if kind == "ask_user_choice":
+        return PendingInteraction(
+            req_id, kind, label,
+            body=str(data.get("question", "")),
+            mode="choices",
+            options=list(data.get("options") or data.get("choices") or []),
+        )
+
+    # ask_user / repl_prompt / 其它未预见的 kind：统一退化成
+    # "展示提示文字 + 一个自由文本框"，保证至少能回答，不会因为遇到
+    # 没特殊适配的 kind 就彻底没法操作。
+    return PendingInteraction(
+        req_id, kind, label,
+        body=str(data.get("question", data.get("prompt_text", data.get("hint", "")))),
+        mode="freeform",
+    )
+
+
+def _render_pending_interaction(client: AgentClient, item: PendingInteraction) -> None:
+    """按 mode 渲染交互控件——只关心 mode，不关心具体 kind 是什么。"""
+    req_id = item.req_id
+    st.markdown(f"**{item.label}**")
+
+    if item.body:
+        st.markdown(
+            f'<div class="permission-card"><pre style="white-space:pre-wrap;'
+            f'font-size:12px;margin:0;">{_esc_html(item.body)}</pre></div>'
+            if item.mode == "confirm_freeform" else
+            f'<div class="permission-card">{_esc_html(item.body)}</div>',
+            unsafe_allow_html=True,
+        )
+
+    if item.mode == "confirm_freeform":
+        gc1, gc2 = st.columns(2)
+        if gc1.button("✅ /confirm 确认并开始执行", key=f"ix_confirm_{req_id}"):
+            client.respond_interaction(req_id, answer="/confirm")
+            st.rerun()
+        if gc2.button("❌ /cancel 放弃本次目标", key=f"ix_cancel_{req_id}"):
+            client.respond_interaction(req_id, answer="/cancel")
+            st.rerun()
+        with st.form(f"ix_form_{req_id}", clear_on_submit=True):
+            revise_text = st.text_input(
+                "或输入修改意见（会据此重新生成下一版验收标准草案）",
+                key=f"ix_input_{req_id}",
+            )
+            if st.form_submit_button("提交修改意见"):
+                if revise_text.strip():
+                    client.respond_interaction(req_id, answer=revise_text.strip())
+                    st.rerun()
+
+    elif item.mode == "yes_no":
+        cc1, cc2 = st.columns(2)
+        if cc1.button("✅ 是", key=f"ix_yes_{req_id}"):
+            client.respond_interaction(req_id, confirmed=True)
+            st.rerun()
+        if cc2.button("❌ 否", key=f"ix_no_{req_id}"):
+            client.respond_interaction(req_id, confirmed=False)
+            st.rerun()
+
+    elif item.mode == "choices":
+        for idx, opt in enumerate(item.options):
+            if st.button(f"{idx + 1}. {opt}", key=f"ix_opt_{req_id}_{idx}"):
+                client.respond_interaction(req_id, choice_index=idx)
+                st.rerun()
+
+    else:  # freeform
+        with st.form(f"ix_form_{req_id}", clear_on_submit=True):
+            free_text = st.text_input("回复", key=f"ix_free_{req_id}")
+            if st.form_submit_button("发送"):
+                client.respond_interaction(req_id, answer=free_text)
+                st.rerun()
+
+    st.divider()
+
+
+def render_interactions(client: AgentClient, pending_list):
+    """渲染并处理通用交互式请求（ask_user 系列工具 / /goal 协商 / 任意 slash
+    命令内部的 prompt_user()）。数据组装（_build_pending_interaction）和
+    渲染（_render_pending_interaction）已分离，见 PendingInteraction 的说明。
     """
     for req in pending_list:
-        req_id = req.get("req_id")
-        kind = req.get("kind", "")
-        data = req.get("data", {}) or {}
-        label = _INTERACTION_KIND_LABEL.get(kind, f"🙋 {kind or '未知交互'}")
-
-        st.markdown(f"**{label}**")
-
-        if kind == "goal_negotiation":
-            # data["summary"] 就是 GoalSpec.render_summary_for_user() 的原文——
-            # 里面包含目标文本、验收标准列表、验证方式等，与命令行里
-            # R.console.print(spec.render_summary_for_user()) 展示的完全一致。
-            summary = str(data.get("summary", ""))
-            st.markdown(
-                f'<div class="permission-card"><pre style="white-space:pre-wrap;'
-                f'font-size:12px;margin:0;">{_esc_html(summary)}</pre></div>',
-                unsafe_allow_html=True,
-            )
-            gc1, gc2 = st.columns(2)
-            if gc1.button("✅ /confirm 确认并开始执行", key=f"ix_confirm_{req_id}"):
-                client.respond_interaction(req_id, answer="/confirm")
-                st.rerun()
-            if gc2.button("❌ /cancel 放弃本次目标", key=f"ix_cancel_{req_id}"):
-                client.respond_interaction(req_id, answer="/cancel")
-                st.rerun()
-            with st.form(f"ix_form_{req_id}", clear_on_submit=True):
-                revise_text = st.text_input(
-                    "或输入修改意见（会据此重新生成下一版验收标准草案）",
-                    key=f"ix_input_{req_id}",
-                )
-                if st.form_submit_button("提交修改意见"):
-                    if revise_text.strip():
-                        client.respond_interaction(req_id, answer=revise_text.strip())
-                        st.rerun()
-
-        elif kind == "ask_user_confirm":
-            question = str(data.get("question", data.get("prompt_text", "")))
-            st.markdown(
-                f'<div class="permission-card">{_esc_html(question)}</div>',
-                unsafe_allow_html=True,
-            )
-            cc1, cc2 = st.columns(2)
-            if cc1.button("✅ 是", key=f"ix_yes_{req_id}"):
-                client.respond_interaction(req_id, confirmed=True)
-                st.rerun()
-            if cc2.button("❌ 否", key=f"ix_no_{req_id}"):
-                client.respond_interaction(req_id, confirmed=False)
-                st.rerun()
-
-        elif kind == "ask_user_choice":
-            question = str(data.get("question", ""))
-            options = data.get("options") or data.get("choices") or []
-            st.markdown(
-                f'<div class="permission-card">{_esc_html(question)}</div>',
-                unsafe_allow_html=True,
-            )
-            for idx, opt in enumerate(options):
-                if st.button(f"{idx + 1}. {opt}", key=f"ix_opt_{req_id}_{idx}"):
-                    client.respond_interaction(req_id, choice_index=idx)
-                    st.rerun()
-
-        else:
-            # ask_user / repl_prompt / 其它未预见的 kind：统一退化成
-            # "展示提示文字 + 一个自由文本框"，保证至少能回答，不会因为
-            # 遇到没特殊适配的 kind 就彻底没法操作。
-            prompt_text = str(data.get("question", data.get("prompt_text", data.get("hint", ""))))
-            if prompt_text:
-                st.markdown(
-                    f'<div class="permission-card">{_esc_html(prompt_text)}</div>',
-                    unsafe_allow_html=True,
-                )
-            with st.form(f"ix_form_{req_id}", clear_on_submit=True):
-                free_text = st.text_input("回复", key=f"ix_free_{req_id}")
-                if st.form_submit_button("发送"):
-                    client.respond_interaction(req_id, answer=free_text)
-                    st.rerun()
-
-        st.divider()
+        item = _build_pending_interaction(req)
+        _render_pending_interaction(client, item)
 
 
 def render_permissions(client: AgentClient, pending_list):
