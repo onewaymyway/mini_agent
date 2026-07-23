@@ -667,21 +667,47 @@ def _main_inner() -> None:
                         )
                         if line in ("exit", "quit", ":q"):
                             break
-                        turn_id = _client.send_message(line, session_id=agent.session_id)
-                        if not turn_id:
-                            _term.print("[red][daemon] 消息提交失败[/red]")
+                        # [FIX] 之前 send_message/stream_output 的异常和
+                        # "用户主动退出输入循环"共用同一个外层
+                        # except Exception -> finally: stop_event.set()，
+                        # 导致单次请求（比如一次 HTTP 调用失败、或
+                        # stream_output 内部报错）就会被静默吞掉
+                        # （只写进 error.jsonl，终端上什么提示都没有），
+                        # 然后连带把整个 daemon 关停——表现出来就是
+                        # "daemon 进程在命令行输入之后就结束了"。
+                        # 这里把单轮请求的异常收窄到本轮范围内处理：
+                        # 打印出来、continue 到下一次输入，不再殃及
+                        # 整个 daemon 进程。
+                        try:
+                            turn_id = _client.send_message(line, session_id=agent.session_id)
+                            if not turn_id:
+                                _term.print("[red][daemon] 消息提交失败[/red]")
+                                continue
+                            # 静默等待这一轮结束——内容已经由本地
+                            # output hook 原样打印过，这里不传任何回调，
+                            # 单纯阻塞到 turn_done 以便知道何时可以再次
+                            # 提示输入。
+                            _client.stream_output(turn_id)
+                        except Exception as _mini_agent_exc:
+                            from mini_agent.errors import log_exception
+                            log_exception(_mini_agent_exc, where='mini_agent.cli.app.attach_console.turn')
+                            _term.print(
+                                f"[red][daemon] 本次请求出错，daemon 继续运行: {_mini_agent_exc}[/red]"
+                            )
                             continue
-                        # 静默等待这一轮结束——内容已经由本地
-                        # output hook 原样打印过，这里不传任何回调，
-                        # 单纯阻塞到 turn_done 以便知道何时可以再次
-                        # 提示输入。
-                        _client.stream_output(turn_id)
                 except Exception as _mini_agent_exc:
+                    # 只有输入循环自身彻底失控（比如 _term 初始化/
+                    # prompt_user 底层异常）才会走到这里——这种情况下
+                    # 才有理由认为"这个终端"已经无法继续承担 daemon
+                    # 前台角色，需要关停。
                     from mini_agent.errors import log_exception
-                    log_exception(_mini_agent_exc, where='mini_agent.cli.app')
+                    log_exception(_mini_agent_exc, where='mini_agent.cli.app.attach_console.loop')
                 finally:
-                    # 用户退出了输入循环，等价于要求关停整个 daemon——
-                    # 前台进程本来就是"这个终端就是 daemon"的模型。
+                    # 用户主动退出了输入循环（exit/quit/EOF/Ctrl-C），
+                    # 或者输入循环自身崩溃——这两种情况才等价于要求
+                    # 关停整个 daemon（前台进程本来就是"这个终端就是
+                    # daemon"的模型）。单轮请求异常已经在上面被吞掉、
+                    # continue 掉，不会走到这里。
                     stop_event.set()
             else:
                 # 持续等待，直到收到停止信号（SIGTERM/SIGINT）
