@@ -760,13 +760,55 @@ def cmd_daemon_start(
         foreground_cmd = base_cmd + ["--daemon-attach-console"]
         print(f"[daemon] Starting in foreground on port {http_port}...")
         print(f"[daemon] Press Ctrl-C to stop.")
-        try:
-            os.execv(python_exec, foreground_cmd)
-        except Exception as e:
-            from mini_agent.errors import log_exception
-            log_exception(e, where='mini_agent.cli.daemon.cmd_daemon_start')
-            print(f"[daemon] Failed to exec: {e}", file=sys.stderr)
-            return 1
+
+        # [FIX] os.execv 在 Windows 上不是真正的"进程镜像替换"——CPython
+        # 用 _spawnv(P_OVERLAY) 模拟，实际效果是：另起一个新进程，然后让
+        # 当前 `python main.py ...` 这个进程自己退出。PowerShell/cmd 只会
+        # 等待它直接启动的那个进程（也就是这个即将退出的父进程）结束，
+        # 一旦父进程退出，PowerShell 立刻拿回提示符和键盘输入焦点——但
+        # 真正的 daemon 子进程其实还挂在同一个控制台上继续跑（它没有
+        # 崩溃：HTTP 服务正常、PID 文件正常、`daemon start` 会提示"已在
+        # 运行"）。结果是两个进程同时 attach 在同一个 console 上抢键盘
+        # 输入，PowerShell 先抢到，用户敲的内容被当成 shell 命令解析，
+        # daemon 侧的 input()/prompt_user() 完全收不到输入——表现出来
+        # 就是"daemon 进程在命令行输入之后就结束了"，其实进程根本没结束，
+        # 只是丢失了控制台输入的归属权。
+        #
+        # 解决办法：Windows 下不追求"进程替换"的效果，而是让子进程原样
+        # 继承当前控制台（不加 DETACHED_PROCESS/CREATE_NEW_CONSOLE 等
+        # 分离标志），父进程同步 wait() 阻塞在这里，直到子进程真正退出
+        # 后再用相同 exit code 退出自己——这样 PowerShell 会一直等到
+        # daemon 子进程结束才拿回控制台，中途不会有"抢输入"的问题。
+        # POSIX 下 os.execv 是真正可靠的进程替换，继续用原来的写法。
+        if sys.platform == "win32":
+            try:
+                proc = subprocess.Popen(foreground_cmd)
+                try:
+                    returncode = proc.wait()
+                except KeyboardInterrupt:
+                    # Ctrl-C：转发给子进程（子进程自己的 SIGINT handler
+                    # 会走优雅关停），这里继续等待其真正退出，不要提前
+                    # 返回，否则又会重蹈"父进程先退出、控制台被抢"的覆辙。
+                    try:
+                        proc.send_signal(signal.CTRL_C_EVENT)  # type: ignore[attr-defined]
+                    except Exception as _mini_agent_exc:
+                        from mini_agent.errors import log_exception
+                        log_exception(_mini_agent_exc, where='mini_agent.cli.daemon.cmd_daemon_start')
+                    returncode = proc.wait()
+                return returncode or 0
+            except Exception as e:
+                from mini_agent.errors import log_exception
+                log_exception(e, where='mini_agent.cli.daemon.cmd_daemon_start')
+                print(f"[daemon] Failed to start foreground daemon: {e}", file=sys.stderr)
+                return 1
+        else:
+            try:
+                os.execv(python_exec, foreground_cmd)
+            except Exception as e:
+                from mini_agent.errors import log_exception
+                log_exception(e, where='mini_agent.cli.daemon.cmd_daemon_start')
+                print(f"[daemon] Failed to exec: {e}", file=sys.stderr)
+                return 1
     else:
         # 后台进程
         print(f"[daemon] Starting in background on port {http_port}...")
