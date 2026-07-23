@@ -398,6 +398,21 @@ class WorkdirKnowledgeConfig:
     # context 注入：open_threads 中 priority=high 的条目最多注入几条，避免占用过多 context
     open_threads_inject_limit: int = 5
 
+    # ── work_index.json 主动提醒（更主动地促成 update_work_thread 被调用）───
+    # 此前 update_work_thread 完全依赖模型自主判断是否调用，没有任何主动
+    # 提示，实践中很容易长期是空文件。加一层轻量启发式："这次 session 看起来
+    # 干了不少活，但既没有关联到已有 WorkThread、也没有主动记录"，就在
+    # *下一次* session 开始时提醒模型考虑补记——而不是在 SessionEnd hook 里
+    # 直接自动创建 WorkThread（会退化成启发式误判也能自由发明工作线，
+    # 违背 relate_session_to_work_thread() 原有的保守取舍）。
+    proactive_reminder_enabled: bool = True
+    # 触发提醒的最小 session 时长（分钟）——用来过滤掉"随手问一句"这类不需要
+    # 跨 session 追踪的短交互，避免提醒噪音
+    reminder_min_duration_minutes: float = 15.0
+    # 触发提醒的最小真实用户轮次数（同上，双重阈值任一满足即可触发，
+    # 因为有的长任务时间不长但轮次很多，有的相反）
+    reminder_min_turns: int = 6
+
 
 @dataclass
 class ObservabilityConfig:

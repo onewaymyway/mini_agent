@@ -377,6 +377,7 @@ class ReflectionMixin:
                 pass
 
         # ── 4.3：关联到 active WorkThread（轻量启发式，不新建 WorkThread）───
+        related_thread = None
         try:
             relation_days = getattr(
                 self.cfg.workdir_knowledge, "work_thread_relation_days", 7.0
@@ -387,9 +388,40 @@ class ReflectionMixin:
                  if is_turn_boundary(m) and isinstance(m.get("content"), str)),
                 "",
             )
-            wk.relate_session_to_work_thread(
+            related_thread = wk.relate_session_to_work_thread(
                 paths, session_id, first_user_turn, relation_days=relation_days,
             )
+        except Exception as _mini_agent_exc:
+            from mini_agent.errors import log_exception
+            log_exception(_mini_agent_exc, where='mini_agent.agent')
+            pass
+
+        # ── [主动提醒] 本次 session 看起来干了不少活，但既没有关联到已有
+        #    WorkThread、也没有主动调用过 update_work_thread ────────────────
+        # 不在这里直接自动创建 WorkThread（那会退化成"启发式也能自由发明
+        # 工作线"，违背 relate_session_to_work_thread() 的保守取舍）；而是
+        # 写一条待提醒记录，下次 session 开始时由 context_builder 读出并
+        # 提示模型自己判断要不要补记——决策权仍然在模型，只是多了一次主动
+        # 的"提醒"，不再完全指望模型自己想起来。
+        try:
+            wk_cfg = self.cfg.workdir_knowledge
+            if getattr(wk_cfg, "proactive_reminder_enabled", True) and related_thread is None:
+                from mini_agent.history.entry import is_turn_boundary as _is_turn_boundary
+                from mini_agent.history.entry import history_contains_tool_call
+                turn_count = sum(1 for m in self._history if _is_turn_boundary(m))
+                reminder_duration_min = self._session_duration_minutes()
+                min_duration = getattr(wk_cfg, "reminder_min_duration_minutes", 15.0)
+                min_turns = getattr(wk_cfg, "reminder_min_turns", 6)
+                substantial = (reminder_duration_min >= min_duration) or (turn_count >= min_turns)
+                already_logged = history_contains_tool_call(self._history, "update_work_thread")
+                if substantial and not already_logged:
+                    wk.write_work_thread_reminder(
+                        paths,
+                        session_id=session_id,
+                        first_user_turn=first_user_turn,
+                        duration_minutes=reminder_duration_min,
+                        turn_count=turn_count,
+                    )
         except Exception as _mini_agent_exc:
             from mini_agent.errors import log_exception
             log_exception(_mini_agent_exc, where='mini_agent.agent')

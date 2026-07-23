@@ -557,6 +557,54 @@ def relate_session_to_work_thread(
     return best
 
 
+def write_work_thread_reminder(
+    paths: AgentPaths,
+    *,
+    session_id: str,
+    first_user_turn: str,
+    duration_minutes: float,
+    turn_count: int,
+) -> None:
+    """SessionEnd 时记录一条"本次 session 看起来值得追踪但未被记录"的待提醒。
+
+    只保留最近一条（覆盖写），不追加历史——这是一次性便签，不是审计日志。
+    读取侧见 pop_work_thread_reminder()：读到后立即清空，确保只提醒一次。
+    """
+    data = {
+        "session_id": session_id,
+        "first_user_turn": (first_user_turn or "")[:300],
+        "duration_minutes": round(duration_minutes, 1),
+        "turn_count": turn_count,
+        "created_at": time.time(),
+    }
+    _atomic_write_json(paths.workdir_work_thread_reminder, data)
+
+
+def pop_work_thread_reminder(paths: AgentPaths) -> Optional[dict]:
+    """读取并清空待提醒记录（读一次即消费，避免每个 turn 反复打扰模型）。
+
+    不存在时返回 None；读取/删除过程中任何异常都吞掉返回 None——这是一条
+    锦上添花的提醒，不应该因为磁盘偶发问题影响 context 组装的其余部分。
+    """
+    path = paths.workdir_work_thread_reminder
+    if not path.is_file():
+        return None
+    try:
+        import json as _json
+        data = _json.loads(path.read_text(encoding="utf-8"))
+    except Exception as _mini_agent_exc:
+        from mini_agent.errors import log_exception
+        log_exception(_mini_agent_exc, where='mini_agent.perception.workdir_knowledge.pop_work_thread_reminder')
+        data = None
+    try:
+        path.unlink()
+    except Exception as _mini_agent_exc:
+        from mini_agent.errors import log_exception
+        log_exception(_mini_agent_exc, where='mini_agent.perception.workdir_knowledge.pop_work_thread_reminder')
+        pass
+    return data if isinstance(data, dict) else None
+
+
 # ════════════════════════════════════════════════════════════════════════════
 # 4.4 open_threads.json — 跨 session 待处理线索池
 # ════════════════════════════════════════════════════════════════════════════

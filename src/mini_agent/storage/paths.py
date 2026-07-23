@@ -25,6 +25,7 @@ storage/paths.py — 统一路径管理
     paths.workdir_timeline        # .agent/timeline.jsonl
     paths.workdir_work_index      # .agent/work_index.json
     paths.workdir_open_threads    # .agent/open_threads.json
+    paths.workdir_work_thread_reminder  # .agent/work_thread_reminder.json（主动提醒暂存）
     paths.workdir_knowledge_md    # .agent/knowledge.md
     paths.workdir_knowledge_index # .agent/knowledge_index.json
 
@@ -522,6 +523,19 @@ class AgentPaths:
     def workdir_open_threads(self) -> Path:
         """<project_root>/.agent/open_threads.json — 跨 session 待处理线索池（4.4）"""
         return self.workdir_dir / "open_threads.json"
+
+    @property
+    def workdir_work_thread_reminder(self) -> Path:
+        """<project_root>/.agent/work_thread_reminder.json — work_index.json 主动提醒暂存。
+
+        SessionEnd 时若启发式判断"本次 session 干了不少活，但既没关联到已有
+        WorkThread、也没主动调用过 update_work_thread"，就把一条待提醒记录
+        写在这里；下一次 session 开始时 context_builder 读到后注入一条提醒
+        并立即清空该文件（提醒只出现一次，不会每个 turn 反复打扰）。
+        只保留最近一条待提醒记录，不追加历史（这只是一个"便签"，不是审计
+        日志——多个未追踪 session 连续发生时，只提醒最近一次即可）。
+        """
+        return self.workdir_dir / "work_thread_reminder.json"
 
     @property
     def workdir_knowledge_md(self) -> Path:

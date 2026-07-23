@@ -140,6 +140,26 @@ def is_turn_boundary(msg: dict) -> bool:
     return is_real_user_input(msg)
 
 
+def history_contains_tool_call(history: list[dict], tool_name: str) -> bool:
+    """判断 history 中是否存在对某个工具的调用（assistant 消息里的 tool_use block）。
+
+    用于 SessionEnd 阶段的轻量启发式判断（如 work_index.json 主动提醒：
+    "本次 session 是否已经主动调用过 update_work_thread"），避免对已经
+    记录过的 session 重复提醒。只看 content 是 list 且包含
+    {"type": "tool_use", "name": ...} 的 assistant 消息，兼容 content 是
+    纯字符串的旧格式/其他角色消息（直接跳过，不算作调用）。
+    """
+    for msg in history:
+        if msg.get("role") != "assistant":
+            continue
+        content = msg.get("content")
+        if not isinstance(content, list):
+            continue
+        for block in content:
+            if isinstance(block, dict) and block.get("type") == "tool_use" and block.get("name") == tool_name:
+                return True
+    return False
+
 
 # ── 时间戳辅助 ───────────────────────────────────────────────────────────────
 

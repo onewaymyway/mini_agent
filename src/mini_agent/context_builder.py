@@ -409,6 +409,10 @@ class ContextBuilder:
           - project.json 身份信息
           - work_index 里 status=active 的 WorkThread 的 cumulative_progress + next_suggested
           - open_threads 里 priority=high 的条目（限制最多 N 条）
+          - [主动提醒] 上一次 session 若被判定为"值得追踪但未记录"，提醒
+            模型考虑补调 update_work_thread（读一次即清空，见
+            workdir_knowledge.pop_work_thread_reminder()，写入侧见
+            agent/reflection.py 的 SessionEnd 处理）
 
         三部分均为纯本地小文件读取（无 LLM、无网络），开销可忽略，因此不做
         额外的跨 build() 调用缓存——每个 turn 调用一次 build()，多读几次
@@ -483,6 +487,37 @@ class ContextBuilder:
             for item in high_priority:
                 ot_lines.append(f"- [{item.type}] {item.title} (discovered in {item.discovered_in})")
             lines.append("\n".join(ot_lines))
+
+        # [主动提醒] 上一次 session 结束时如果被判定为"干了不少活但没有
+        # 记录到 work_index.json"，这里读一次就清空（不会每个 turn 反复
+        # 提醒）。是否真的调用 update_work_thread 补记，仍由模型自己判断——
+        # 这条提醒只是把"要不要记录"这个决策点主动摆到模型面前，而不是像
+        # 之前那样完全指望模型自己想起来。
+        try:
+            reminder = wk.pop_work_thread_reminder(paths)
+        except Exception as _mini_agent_exc:
+            from mini_agent.errors import log_exception
+            log_exception(_mini_agent_exc, where='mini_agent.context_builder.ContextBuilder._build_workdir_knowledge_block')
+            reminder = None
+        if reminder:
+            snippet = (reminder.get("first_user_turn") or "").strip()
+            if len(snippet) > 120:
+                snippet = snippet[:120] + "…"
+            lines.append(
+                "## Untracked work from previous session\n"
+                f"Your previous session (`{reminder.get('session_id', '')[:8]}`, "
+                f"~{reminder.get('duration_minutes', 0):.0f} min, "
+                f"{reminder.get('turn_count', 0)} turns) did substantial work "
+                f"but wasn't linked to any WorkThread and never called "
+                f"update_work_thread.\n"
+                f"What it started with: {snippet!r}\n"
+                "If that work spans multiple sessions (a feature, refactor, or "
+                "investigation you'll pick back up later), consider calling "
+                "update_work_thread now to retroactively log it — this is the "
+                "only thing that lets a future session resume with the right "
+                "context. If it was actually a one-off, self-contained task, "
+                "no action needed; this reminder won't repeat."
+            )
 
         return "\n\n".join(lines)
 
