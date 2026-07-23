@@ -255,6 +255,17 @@ class GoalBacklog:
         ]
         return sorted(goals, key=lambda n: n.priority, reverse=True)
 
+    def all_nodes(self) -> list[GoalNode]:
+        """返回全部节点（不按 status 过滤），按优先级降序。
+
+        供看板等"需要看到完整 goals.json 内容"的场景使用——
+        active_goals()/active_objectives() 是给 AutonomousLoop 用的，
+        只关心 active 状态；这里是给外部展示用的全量视图，paused /
+        completed / abandoned 节点也要能看到，否则看板会显示不出
+        goals.json 里实际存在的数据（这几种状态的节点永远不出现）。
+        """
+        return sorted(self._nodes.values(), key=lambda n: n.priority, reverse=True)
+
     def get(self, node_id: str) -> Optional[GoalNode]:
         return self._nodes.get(node_id)
 

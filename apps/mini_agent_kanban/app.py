@@ -1135,10 +1135,17 @@ def render_sessions_tab(client: AgentClient):
                 if new_sid:
                     # 顺手把本页面绑定到刚创建的新会话，免得用户创建后还要
                     # 再点一次"本页面绑定到此会话"。
+                    # [BUGFIX] 这里不能再手动 st.rerun()：st.query_params
+                    # 赋值本身就会自动触发一次重跑（Streamlit >=1.30 的
+                    # 行为），紧接着再手动调一次 st.rerun() 等于同一次交互
+                    # 触发两次重跑，两条 ForwardMsg 前后脚到达浏览器，表现
+                    # 就是地址栏 URL 先跳到新值又立刻被回滚成重跑前的旧值。
                     set_active_session_id(new_sid)
+                else:
+                    st.rerun()
             else:
                 st.error((res or {}).get("_error", "创建失败"))
-            st.rerun()
+                st.rerun()
 
     data = client.sessions(limit=50) or {}
     if "_error" in data:
@@ -1164,8 +1171,12 @@ def render_sessions_tab(client: AgentClient):
                 st.rerun()
             if cc2.button("📌 本页面绑定到此会话", key=f"bind_{sid}",
                            help="只影响这个浏览器标签页（写入 URL），不影响其它标签页/客户端"):
+                # [BUGFIX] 不要在 st.query_params 赋值后紧跟手动 st.rerun()。
+                # query_params 赋值本身已经会自动触发重跑，额外再调一次会
+                # 造成同一次交互里连续两次重跑的竞态：第二次重跑打断第一次
+                # 重跑对地址栏的 URL 更新，表现为"URL 瞬间跳到新值又变回
+                # 旧值"。去掉这行多余的 rerun 即可让 URL 正常停留在新值上。
                 set_active_session_id(sid)
-                st.rerun()
             if cc3.button("🗑️ 删除", key=f"del_{sid}"):
                 client.delete_session(sid)
                 st.rerun()

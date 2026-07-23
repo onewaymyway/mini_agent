@@ -1949,9 +1949,17 @@ async def list_goals(request: Request):
             return {"goals": [], "objectives": []}
         paths = AgentPaths(project_root)
         backlog = load_goal_backlog(paths)
+        # [BUGFIX] 之前这里用 active_goals()/active_objectives()，只返回
+        # status=="active" 的节点，导致看板的"暂停/已完成/已放弃"三列永远
+        # 拿不到数据——不管 goals.json 里实际有多少这几种状态的目标，接口
+        # 都会在返回前就把它们过滤掉，看板显示内容因此跟 goals.json 实际
+        # 内容对不上。看板是纯展示/管理场景，需要看到全部状态，过滤应该
+        # 交给需要"只关心 active"的调用方（如 AutonomousLoop）自己去调用
+        # active_goals()/active_objectives()，这里改为返回全量节点。
+        all_nodes = backlog.all_nodes()
         return {
-            "goals":      [n.to_dict() for n in backlog.active_goals()],
-            "objectives": [n.to_dict() for n in backlog.active_objectives()],
+            "goals":      [n.to_dict() for n in all_nodes if n.is_goal],
+            "objectives": [n.to_dict() for n in all_nodes if n.is_objective],
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
