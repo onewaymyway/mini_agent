@@ -141,6 +141,10 @@ class StatusResponse(BaseModel):
     model: Optional[str] = None
     session_dir: Optional[str] = None
     project_root: Optional[str] = None
+    # 更细粒度的"agent 正在干什么"，供看板展示（区别于粗粒度的 state 字段）：
+    # "waiting_input" | "waiting_permission" | "calling_model" | "calling_tool"
+    activity: Optional[str] = None
+    activity_detail: Optional[str] = None  # activity=="calling_tool" 时是工具名
 
 class PermissionRequest(BaseModel):
     approve:      bool

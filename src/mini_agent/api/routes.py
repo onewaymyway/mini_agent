@@ -341,6 +341,21 @@ async def get_status(
         log_exception(_mini_agent_exc, where='mini_agent.api.routes')
         pass
 
+    # 把粗粒度 state（idle/running/waiting_permission）+ 细粒度 phase
+    # （model/tool:<name>，见 bridge.py::AgentBridge._phase）合成一个看板
+    # 直接能用的 activity 字段，不用把 phase 的内部格式泄漏到前端去解析。
+    _phase = state.get("phase")
+    if state["state"] == "idle":
+        activity, activity_detail = "waiting_input", None
+    elif state["state"] == "waiting_permission":
+        activity, activity_detail = "waiting_permission", None
+    elif isinstance(_phase, str) and _phase.startswith("tool:"):
+        activity, activity_detail = "calling_tool", _phase[len("tool:"):]
+    else:
+        # running 但 phase 还没来得及打上标签（刚进入 running 的极短窗口）
+        # 时兜底按"调用模型"展示，比留空/显示内部字符串更友好。
+        activity, activity_detail = "calling_model", None
+
     return StatusResponse(
         state       = state["state"],
         turn_id     = state["turn_id"],
@@ -358,6 +373,8 @@ async def get_status(
         model = current_model,
         session_dir = session_dir,
         project_root = project_root_str,
+        activity = activity,
+        activity_detail = activity_detail,
     )
 
 

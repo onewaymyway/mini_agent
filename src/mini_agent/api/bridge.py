@@ -679,6 +679,11 @@ class AgentBridge:
         self._current_turn: Optional[str] = None
         self._interrupt_flag = threading.Event()
         self._state_lock = threading.Lock()
+        # 更细粒度的"正在做什么"：state=="running" 时到底是在等模型生成
+        # 还是在执行某个工具，之前完全没有区分（看板/CLI 只能显示笼统的
+        # "running"）。取值："model"（正在调用/等待 LLM 响应）或
+        # "tool:<tool_name>"（正在执行某个工具）；state 不是 running 时无意义。
+        self._phase: Optional[str] = None
 
         # 注入后由外部赋值
         self.agent: Any = None   # mini_agent.agent.Agent
@@ -709,11 +714,20 @@ class AgentBridge:
             self._state = state
             if turn_id is not None:
                 self._current_turn = turn_id
+            if state == "idle":
+                # 回到 idle（一轮结束/被中断）时清掉细粒度 phase，避免下一轮
+                # 开始前的短暂窗口里还残留着上一轮"tool:xxx"的旧状态。
+                self._phase = None
+
+    def _set_phase(self, phase: Optional[str]) -> None:
+        with self._state_lock:
+            self._phase = phase
 
     def get_state(self) -> dict:
         with self._state_lock:
             return {
                 "state":    self._state,
+                "phase":    self._phase,
                 "turn_id":  self._current_turn,
                 "queue_depth": self.input_queue.depth,
                 "subscribers": self.broadcaster.subscriber_count,
@@ -739,9 +753,16 @@ class AgentBridge:
         # 按 session 过滤时把这条事件过滤掉。
         if not event.session_id:
             event = event.model_copy(update={"session_id": self._current_session_id()})
+        # TOOL_ERROR 不走 emit_tool_result()（server.py 里是直接调用 emit()
+        # 构造事件推送的），单独在这里补上"工具执行完（出错）→ 控制权
+        # 回到模型"的 phase 更新，否则出错的工具会让 phase 卡在
+        # "tool:xxx" 上，直到下一次 token/tool_call 才会被覆盖掉。
+        if event.type == EventType.TOOL_ERROR:
+            self._set_phase("model")
         return self.broadcaster.push(event)
 
     def emit_token(self, token: str, turn_id: str = "") -> None:
+        self._set_phase("model")
         self.broadcaster.push(AgentEvent(
             type=EventType.TOKEN,
             turn_id=turn_id,
@@ -800,6 +821,7 @@ class AgentBridge:
         ))
 
     def emit_tool_call(self, name: str, inp: dict, turn_id: str = "", verbose: bool = False) -> None:
+        self._set_phase(f"tool:{name}")
         self.broadcaster.push(AgentEvent(
             type=EventType.TOOL_CALL,
             turn_id=turn_id,
@@ -816,6 +838,7 @@ class AgentBridge:
         ))
 
     def emit_tool_result(self, name: str, result: str, turn_id: str = "") -> None:
+        self._set_phase("model")
         self.broadcaster.push(AgentEvent(
             type=EventType.TOOL_RESULT,
             turn_id=turn_id,
@@ -824,6 +847,7 @@ class AgentBridge:
         ))
 
     def emit_turn_start(self, turn_id: str, message: str, user_id: str = "") -> None:
+        self._set_phase("model")
         self.broadcaster.push(AgentEvent(
             type=EventType.TURN_START,
             turn_id=turn_id,

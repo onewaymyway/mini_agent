@@ -885,6 +885,19 @@ def render_chat_tab(client: AgentClient):
         if _sdir:
             st.caption(f"📁 目录: `{_sdir}`")
 
+        _ACTIVITY_LABELS = {
+            "waiting_input": "💤 空闲，等待输入",
+            "waiting_permission": "🛑 等待权限确认",
+            "calling_model": "🧠 正在调用模型…",
+            "calling_tool": "🔧 正在调用工具",
+        }
+        _activity = cur_status.get("activity")
+        if _activity:
+            label = _ACTIVITY_LABELS.get(_activity, _activity)
+            if _activity == "calling_tool" and cur_status.get("activity_detail"):
+                label = f"🔧 正在调用工具: `{cur_status['activity_detail']}`"
+            st.caption(f"状态: {label}")
+
         if running_turn_id:
             st.caption("⏳ Agent 正在处理中…（下方将实时流式显示输出）")
         hist = client.history() or {}
