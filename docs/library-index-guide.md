@@ -148,10 +148,19 @@ report.knowledge_consolidation = library.consolidate(
 library_index_enabled: bool = True         # 总开关：分类树/实体目录/两步检索全部
 library_shelf_search_enabled: bool = True  # 只关闭"两步检索"，保留写入侧的分类/实体挂载
 library_index_user_scoped: bool = False    # 改进7：多用户场景下按 user_id 拆分独立书架（默认关闭，共享归并）
+per_turn_retrieval_enabled: bool = True    # 每轮自动检索总闸：关闭后 refresh_turn_context() 直接跳过
+                                            # wiki_search/shelf_search/merge_search，本轮不产生任何
+                                            # 检索开销、不注入 "## Relevant past experience"；记忆写入、
+                                            # lesson/纠正检测、consolidation 等不受影响
 ```
 
 关闭 `library_index_enabled` 后，`MemoryStore` 的行为与改造前完全一致
 （`library_index=None`，`add()`/`search()` 走原逻辑）。
+
+关闭 `per_turn_retrieval_enabled` 则更彻底：处理用户输入前不再自动检索任何
+记忆/wiki 文档（`library_wiki_search_primary`/`library_shelf_search_enabled`
+这两个开关此时不再生效，因为检索入口本身被跳过了）。这是当前唯一能完全
+关闭"每轮自动检索"这一行为、同时保留记忆写入与其他功能的开关。
 
 ## 六、新增的落盘文件（均可重建，非 StateRepo 管辖）
 

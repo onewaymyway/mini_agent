@@ -120,6 +120,12 @@ class ContextBuilder:
         self._cached_turn_query = query
         self._cached_memory_snippet = ""
 
+        # 每轮自动检索总闸：关闭后本轮完全跳过 wiki_search/shelf_search/
+        # merge_search，不产生任何检索开销，也不注入 "## Relevant past
+        # experience" 片段。默认开，不影响记忆写入等其他功能。
+        if not getattr(self.cfg.memory, "per_turn_retrieval_enabled", True):
+            return
+
         if self.memory and query:
             wiki_used = self._try_inject_wiki_search(query)
             if not wiki_used:

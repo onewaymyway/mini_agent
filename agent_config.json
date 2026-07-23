@@ -4,6 +4,9 @@
   "claude_md_file": "Agent.md",
   "verbose": true,
   "memory_enabled": true,
+  "memory": {
+    "per_turn_retrieval_enabled": false
+  },
   "lesson_rules_enabled": true,
   "lesson_fail_threshold": 3,
   "correction_detection_enabled": true,

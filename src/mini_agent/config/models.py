@@ -132,6 +132,14 @@ class MemoryConfig:
     # 三项转正标准，作为要不要继续保持这条路径开启的参考。
     library_wiki_search_primary: bool = True
 
+    # ── 每轮自动检索总闸（用户可关闭"处理用户输入前自动检索文档/记忆"这一行为）──
+    # 默认开，行为与改动前完全一致。关闭后 refresh_turn_context() 在填充
+    # turn 级缓存前直接返回，本轮不会触发 wiki_search / shelf_search /
+    # merge_search 中的任何一条检索链路（既不注入 "## Relevant past
+    # experience" 片段，也不产生检索开销）；记忆的写入、lesson/纠正检测、
+    # consolidation 等其他功能不受影响，因为它们不经过这个入口。
+    per_turn_retrieval_enabled: bool = True
+
     # ── wiki 式知识库（wiki式知识库重构计划.md，perception/library_index.py
     #    的 wiki_paths 参数）─────────────────────────────────────────────
     wiki_enabled: bool = True  # 过渡期双写总开关；关闭则 LibraryIndex.wiki_paths=None，wiki/ 完全不被触碰

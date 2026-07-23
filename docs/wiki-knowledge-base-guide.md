@@ -186,7 +186,7 @@ query
 
 三项标准同时满足才是 `overall_ready=True`。数据来源：`consolidate()` 每轮自动记一条每日快照（`_index/promotion_log.jsonl`），`/wiki search` 每次顺带记一条 A/B 对比样本（`_index/search_ab_log.jsonl`），两份都是可随时删除重新累积的观测记录，不是知识本身。
 
-**实际切换（应用户明确要求追加执行，详见改进计划 §6.5）**：`context_builder.py::refresh_turn_context()` 现在默认（`MemoryConfig.library_wiki_search_primary = True`）优先尝试 `wiki_search`，只有拿到有依据的结果（`grounded_page_ids` 非空，需要 `llm_call` 走完 LLM 精排）才采用其输出并跳过 `shelf_search`；未命中/无可用 `llm_call`/异常时自动退回原有 `shelf_search → merge_search → 全库 search` 链路，接口行为与切换前完全一致。**这次切换是在没有任何真实 P4 观测数据的情况下执行的**，与"先持续观测达标再切"的原始设计意图不完全一致——生产使用前建议先跑 `/wiki promotion` 确认三项标准是否站得住脚，不放心可以随时把 `library_wiki_search_primary` 设为 `False` 完全退回旧默认路径，不需要改代码。
+**实际切换（应用户明确要求追加执行，详见改进计划 §6.5）**：`context_builder.py::refresh_turn_context()` 现在默认（`MemoryConfig.library_wiki_search_primary = True`）优先尝试 `wiki_search`，只有拿到有依据的结果（`grounded_page_ids` 非空，需要 `llm_call` 走完 LLM 精排）才采用其输出并跳过 `shelf_search`；未命中/无可用 `llm_call`/异常时自动退回原有 `shelf_search → merge_search → 全库 search` 链路，接口行为与切换前完全一致。**这次切换是在没有任何真实 P4 观测数据的情况下执行的**，与"先持续观测达标再切"的原始设计意图不完全一致——生产使用前建议先跑 `/wiki promotion` 确认三项标准是否站得住脚，不放心可以随时把 `library_wiki_search_primary` 设为 `False` 完全退回旧默认路径，不需要改代码。若想完全关闭"处理用户输入前自动检索"这一行为本身（而不只是切换检索路径），把 `MemoryConfig.per_turn_retrieval_enabled` 设为 `False` 即可——`refresh_turn_context()` 会在到达 `wiki_search`/`shelf_search` 之前直接返回，两个开关都不再生效。
 
 ## 九、新增的落盘文件（均可重建或明确标注为持久状态）
 
