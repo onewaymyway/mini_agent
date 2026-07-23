@@ -1249,8 +1249,59 @@ def _render_events_panel_body(client: AgentClient, session_id: str = ""):
 # ═══════════════════════════════════════════════════════════════════════
 # Tab 2: 会话管理
 # ═══════════════════════════════════════════════════════════════════════
+def _render_sessions_change_banner(client: AgentClient) -> None:
+    """[P2 新增] 跨标签页会话变化感知。
+
+    背景：之前"某个标签页新建/删除了 session，其它已打开的看板标签页
+    不会自动感知，得手动刷新"。真正的解法是后端在 new_session/delete_session
+    时广播一个全局 SSE 事件，前端订阅——但那需要浏览器原生 EventSource
+    接入 /v1/stream，这在 Streamlit 里要做一个真正的双向自定义组件
+    （st.components.v1.declare_component + 独立打包的前端），涉及组件
+    协议、构建流程，没有一个跑起来的 Streamlit 实例根本没法验证是否真的
+    工作，风险和收益不成正比，所以这一步没有做（详见文档 P2 第 1 项的
+    说明），留给"是否迁移前端框架"的决策一起评估。
+
+    这里退而求其次，用 Streamlit 已有的能力解决"能感知"这个实际诉求：
+    用一个低频 fragment（5s）轻量拉一次会话 id 列表，跟本标签页第一次
+    看到的"基线"比较，变了就弹一条提示，由用户自己点"刷新"决定什么时候
+    重新渲染整个列表——不做成"定时静默刷新整个列表"，是因为 st.expander
+    的展开状态在 fragment 重跑时未必能保住，静默刷新会在用户正展开看
+    某个 session 详情时把它收起来，体验比"手动刷新"更差。
+    """
+    if st.session_state.get("auto_refresh", True):
+        _render_sessions_change_banner_fragment(client)
+    else:
+        _render_sessions_change_banner_body(client)
+
+
+@st.fragment(run_every="5s")
+def _render_sessions_change_banner_fragment(client: AgentClient) -> None:
+    _render_sessions_change_banner_body(client)
+
+
+def _render_sessions_change_banner_body(client: AgentClient) -> None:
+    data = client.sessions(limit=50) or {}
+    if "_error" in data:
+        return
+    current_ids = tuple(sorted(s.get("id", "") for s in data.get("sessions", [])))
+
+    baseline = st.session_state.get("_sessions_baseline_ids")
+    if baseline is None:
+        # 本标签页第一次看到会话列表，记为基线，不弹提示。
+        st.session_state["_sessions_baseline_ids"] = current_ids
+        return
+
+    if current_ids != baseline:
+        bc1, bc2 = st.columns([5, 1])
+        bc1.warning("🔔 检测到会话列表有变化（可能是其它标签页新建/删除了会话，或后台自动创建了新会话）")
+        if bc2.button("🔄 刷新列表", key="sessions_refresh_banner", use_container_width=True):
+            st.session_state["_sessions_baseline_ids"] = current_ids
+            st.rerun()
+
+
 def render_sessions_tab(client: AgentClient):
     st.markdown("#### 🗂️ 会话管理")
+    _render_sessions_change_banner(client)
 
     c1, c2 = st.columns([1, 3])
     with c1:
