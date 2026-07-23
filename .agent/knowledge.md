@@ -23,7 +23,7 @@
 
 ## Key Architectural Decisions
 
-14 key architectural decisions covering: mixin-based agent composition, LLMHelper unified side-call entry, client pool multi-key rotation, history raw JSONL + selective compression, three memory layers (W2/W3/Wiki), self-evolution safety net with tiered validation, lesson memory four write paths, autonomous loop three tiers, goal mode coarse-grained executor, embodied agent (proprioception/affordance/self-model), wiki three-stage retrieval + lifecycle, decision extraction compact-phase piggyback, workflow directory mode with defaults/includes, multi-user daemon session pool.
+REMOVE
 
 ## Gotchas & Common Pitfalls
 
