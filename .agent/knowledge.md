@@ -35,18 +35,7 @@ File organization: skills in .claude/skills/, custom agents in .agent/agents/, p
 
 ## Open Questions & Future Work
 
-1. **Fine-grained GoalExecutor**: Judge after each tool call, not each turn
-2. **AffordanceMap in single-user CLI**: Currently daemon-only
-3. **Cognitive anchor in daemon REPL**: Ctrl-C not hooked
-4. **Wiki decommission execution**: Read-only plan exists, actual transition needs human
-5. **Positive retrieval feedback loop**: API exists (`record_retrieval_feedback`), no auto-trigger
-6. **Cross-project capability map aggregation**: W3 scope, needs data accumulation
-7. **Skill auto-proposal from exploration**: ExplorationSandbox success → `skill_propose` not yet wired
-8. **Decision confidence calibration**: Fixed 0.5 — could be dynamic based on evidence count
-9. **Persona system in multi-user**: Role/profile interaction needs clarification
-10. **Behavior perception system**: All switches default OFF, mobile collectors template-only
-
----
+10 open questions: 1) Fine-grained GoalExecutor (judge after each tool call), 2) AffordanceMap in single-user CLI (currently daemon-only), 3) Cognitive anchor in daemon REPL (Ctrl-C not hooked), 4) Wiki decommission execution (read-only plan exists, needs human), 5) Positive retrieval feedback loop (API exists, no auto-trigger), 6) Cross-project capability map aggregation (W3 scope, needs data), 7) Skill auto-proposal from exploration (ExplorationSandbox -> skill_propose not wired), 8) Decision confidence calibration (fixed 0.5, could be dynamic), 9) Persona system in multi-user (role/profile interaction needs clarification), 10) Behavior perception system (all switches default OFF, mobile collectors template-only).
 
 ## Key Files Quick Reference
 
