@@ -19,8 +19,6 @@
 
 **Key architectural principle**: Everything is modular and composable. Core agent loop (`src/mini_agent/agent/`) is split into 9 mixins assembled via multiple inheritance. Skills, agents, personas, workflows are all file-based and hot-reloadable.
 
----
-
 ## Key Architectural Decisions
 
 REMOVE
