@@ -1061,6 +1061,24 @@ class HttpServer:
                     log_exception(_mini_agent_exc, where='mini_agent.api.server.HttpServer._build_autonomous_loop._llm_decompose')
                     return []
 
+            def _goal_decompose(goal):
+                """用 agent 当前 LLM provider/model，把一个 Goal 拆解成多个
+                Objective 标题（供 AutonomousLoop._ensure_goal_objectives 用）。
+                复用与 _llm_decompose 相同的降级哲学：拿不到 llm_helper 或
+                调用失败都返回空列表，由调用方决定是否降级为 1:1 镜像。
+                """
+                try:
+                    from mini_agent.perception.goal_backlog import default_goal_to_objectives
+                    helper = getattr(agent, "llm_helper", None)
+                    if helper is None:
+                        return []
+                    max_n = getattr(getattr(cfg, "autonomy", None), "auto_objective_max_per_goal", 3)
+                    return default_goal_to_objectives(helper, goal.title, goal.description, max_n)
+                except Exception as _mini_agent_exc:
+                    from mini_agent.errors import log_exception
+                    log_exception(_mini_agent_exc, where='mini_agent.api.server.HttpServer._build_autonomous_loop._goal_decompose')
+                    return []
+
             bridge_ref = self._bridge
 
             def _on_progress(execution):
@@ -1107,6 +1125,7 @@ class HttpServer:
                 tick_interval_seconds=60.0,
                 cron_scheduler=cron_scheduler,
                 objective_executor=objective_executor,
+                goal_decompose_fn=_goal_decompose,
             )
         except Exception as _mini_agent_exc:
             from mini_agent.errors import log_exception

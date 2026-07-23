@@ -338,6 +338,55 @@ class GoalBacklog:
                 self._nodes[parent_id].children_ids.append(node.id)
         return node
 
+    def goals_missing_objective(self) -> list[GoalNode]:
+        """返回没有任何 active Objective 子节点的 active Goal（按优先级降序）。
+
+        只读查询，不加锁——调用方（AutonomousLoop）通常紧接着要做一次可能
+        较慢的 LLM 拆解，若在锁内做会让持有跨进程文件锁的时间从"毫秒级"
+        变成"LLM 请求耗时"，阻塞同一时间其他进程（别的 CLI session / API
+        请求）对 goals.json 的读写。所以这里只负责"读出需要处理什么"，
+        真正写入用 add_objectives_for_goal()，两者分开、各自最小化持锁/
+        无锁窗口。
+        """
+        self.load()
+        result = [
+            n for n in self._nodes.values()
+            if n.is_active and n.is_goal and not any(
+                (child := self._nodes.get(cid)) is not None and child.is_active and child.is_objective
+                for cid in n.children_ids
+            )
+        ]
+        return sorted(result, key=lambda n: n.priority, reverse=True)
+
+    def add_objectives_for_goal(self, goal_id: str, titles: list[str]) -> list[GoalNode]:
+        """在锁保护下，为指定 Goal 批量创建 Objective 子节点。
+
+        titles 应该是调用方已经在锁外算好的具体标题（无论是 LLM 拆解结果
+        还是降级后的镜像标题）——这个方法本身只做纯粹的数据写入，不做
+        任何耗时操作，保证锁的持有时间可控。
+        """
+        with self._locked():
+            goal = self._nodes.get(goal_id)
+            if not goal or not goal.is_goal:
+                return []
+            created: list[GoalNode] = []
+            for title in titles:
+                node = GoalNode(
+                    id=f"obj_{uuid.uuid4().hex[:8]}",
+                    level="objective",
+                    title=title,
+                    source="agent_derived",
+                    status="active",
+                    created_at=time.time(),
+                    last_touched_at=time.time(),
+                    parent_id=goal_id,
+                    priority=goal.priority,
+                )
+                self._nodes[node.id] = node
+                goal.children_ids.append(node.id)
+                created.append(node)
+        return created
+
     def update_progress(self, node_id: str, notes: str) -> bool:
         """更新节点进展记录。
 
@@ -481,6 +530,51 @@ class GoalBacklog:
 
 # ── 模块级便捷函数 ────────────────────────────────────────────────────────────
 
+def default_goal_to_objectives(
+    llm_helper,
+    title: str,
+    description: str = "",
+    max_n: int = 3,
+) -> list[str]:
+    """LLM 拆解：把一个 Goal 拆成多个可独立执行的 Objective 标题。
+
+    与 GoalBacklog._llm_decompose（Objective → 单个 Task）是同一种"轻量
+    LLM 调用做结构化拆解"模式，但拆解方向不同：这里是 Goal → 多个
+    Objective，每个 Objective 之后还会再被 ObjectiveExecutor 各自拆成
+    3-7 个 Step。
+
+    调用方（AutonomousLoop）负责在拿到返回值之后再决定是否要做 1:1 镜像
+    降级——这个函数本身失败/无输出时只返回空列表，不做任何降级决定。
+
+    llm_helper — 需实现 .ask(prompt, ...) -> str（同 LLMHelper.ask）。
+    """
+    prompt = f"""将以下目标拆解为 1~{max_n} 个可以独立执行、彼此边界清晰的子目标。
+
+目标标题：{title}
+目标描述：{description or '（无）'}
+
+要求：
+1. 每个子目标一行，不要编号、不要多余符号
+2. 子目标要具体到"可以单独作为一项工作去推进"，不要重复目标标题本身
+3. 如果目标本身已经足够具体、拆不出多个子目标，只输出 1 行也可以
+4. 不要输出子目标数量之外的任何说明文字
+
+只输出子目标标题，每行一个。"""
+
+    try:
+        text = llm_helper.ask(prompt)
+    except Exception as _mini_agent_exc:
+        from mini_agent.errors import log_exception
+        log_exception(_mini_agent_exc, where='mini_agent.perception.goal_backlog.default_goal_to_objectives')
+        return []
+
+    if not text:
+        return []
+    lines = [ln.strip(" -•\t") for ln in text.splitlines()]
+    titles = [ln for ln in lines if ln]
+    return titles[:max_n]
+
+
 def load_goal_backlog(paths: AgentPaths) -> GoalBacklog:
     """加载并返回 GoalBacklog（便捷函数）。"""
     gb = GoalBacklog(paths)
@@ -492,4 +586,5 @@ __all__ = [
     "GoalNode",
     "GoalBacklog",
     "load_goal_backlog",
+    "default_goal_to_objectives",
 ]

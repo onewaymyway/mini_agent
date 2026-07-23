@@ -1033,6 +1033,15 @@ class AutonomyConfig:
     behavior_gating_enabled: bool = False
     # 观察窗口内应用切换次数达到该阈值时，视为"用户明显在忙碌切换"。
     behavior_gating_switch_threshold: int = 3
+    # [Goal→Objective 自动拆解] maintenance 档位 tick 时，是否自动给还没有
+    # Objective 子节点的 active Goal 生成 Objective（否则 Goal 会一直躺在
+    # 看板里、has_actionable_work() 永远看不到它，agent 不会主动执行）。
+    # 这不属于"派生新 Goal"（Goal 本身已经是用户/上游批准的意图），只是把
+    # 它操作化为可执行单元，所以放在 maintenance 而不是 autonomous 档位。
+    auto_objective_from_goal_enabled: bool = True
+    # 单个 Goal 最多自动拆出几个 Objective（LLM 拆解失败/不可用时，
+    # 降级为 1 个与 Goal 同名的 Objective，不受此上限影响）。
+    auto_objective_max_per_goal: int = 3
 
 
 @dataclass

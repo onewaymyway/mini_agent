@@ -49,6 +49,7 @@ class AutonomousLoop:
         tick_interval_seconds: float = 60.0,
         cron_scheduler=None,
         objective_executor=None,
+        goal_decompose_fn=None,
     ) -> None:
         self._goal_backlog = goal_backlog
         self._input_queue = input_queue
@@ -61,6 +62,10 @@ class AutonomousLoop:
         # Phase 1 新增：CronScheduler 和 ObjectiveExecutor（可选注入，降级安全）
         self._cron_scheduler = cron_scheduler
         self._objective_executor = objective_executor
+        # Goal→Objective 自动拆解用的 LLM 回调：(GoalNode) -> list[str]。
+        # 未注入时 _ensure_goal_objectives() 直接降级为 1:1 镜像 Objective，
+        # 不影响"有 Objective 才能被执行"这条主链路。
+        self._goal_decompose_fn = goal_decompose_fn
 
     # ── 公共接口 ──────────────────────────────────────────────────────────────
 
@@ -173,9 +178,14 @@ class AutonomousLoop:
     def _tick_maintenance(self) -> None:
         """
         [maintenance 档位] passive 的全部任务 + Objective 持续执行推进。
-        不 derive 新 Goal/Objective（这是与 autonomous 档位的边界）。
+        不 derive 新 Goal（这是与 autonomous 档位的边界——不会凭空产生新
+        意图）。但会给已有的 active Goal 补 Objective 子节点：Goal 本身
+        已经是用户/上游批准过的意图，只是还没被拆成"可执行单元"，
+        has_actionable_work() 只认 level=objective，不补的话 Goal 会一直
+        原地不动、agent 永远不会主动去做。见 _ensure_goal_objectives()。
         """
         self._tick_passive()
+        self._ensure_goal_objectives()
 
         # 检查资源仲裁
         try:
@@ -236,6 +246,60 @@ class AutonomousLoop:
                     "type": "task_submitted",
                     "objective_id": objective_id,
                     "task_desc": task_desc[:200],
+                })
+
+    def _ensure_goal_objectives(self) -> None:
+        """[Goal→Objective 自动拆解] 由配置开关
+        autonomy.auto_objective_from_goal_enabled 控制（默认开）。
+
+        对每个还没有 Objective 子节点的 active Goal：
+          1. 若注入了 self._goal_decompose_fn，先在锁外调用一次 LLM 拆解
+             （可能耗时，绝不能在 GoalBacklog 的跨进程文件锁内做）。
+          2. 拆解失败/未注入/返回空 → 降级为 1 个与 Goal 同名的 Objective，
+             保证"至少可执行"这个下限，不会因为 LLM 不可用就让 Goal 卡死。
+          3. 调用 add_objectives_for_goal() 做实际写入（内部才加锁，
+             且只做纯数据操作，持锁时间是毫秒级）。
+        每创建一个 Objective 记一条 digest，保证行为可追溯、不是静默发生。
+        """
+        autonomy_cfg = getattr(self._cfg, "autonomy", None)
+        if autonomy_cfg is not None and not getattr(autonomy_cfg, "auto_objective_from_goal_enabled", True):
+            return
+        max_per_goal = getattr(autonomy_cfg, "auto_objective_max_per_goal", 3) if autonomy_cfg is not None else 3
+
+        try:
+            goals = self._goal_backlog.goals_missing_objective()
+        except Exception as _mini_agent_exc:
+            from mini_agent.errors import log_exception
+            log_exception(_mini_agent_exc, where='mini_agent.evolution.autonomous_loop.AutonomousLoop._ensure_goal_objectives.read')
+            return
+
+        for goal in goals:
+            titles: list[str] = []
+            if self._goal_decompose_fn is not None:
+                try:
+                    titles = [t for t in (self._goal_decompose_fn(goal) or []) if t and t.strip()]
+                    titles = titles[:max_per_goal]
+                except Exception as _mini_agent_exc:
+                    from mini_agent.errors import log_exception
+                    log_exception(_mini_agent_exc, where='mini_agent.evolution.autonomous_loop.AutonomousLoop._ensure_goal_objectives.decompose')
+                    titles = []
+            if not titles:
+                titles = [goal.title]  # 降级：LLM 未注入/失败时 1:1 镜像，保底可执行
+
+            try:
+                created = self._goal_backlog.add_objectives_for_goal(goal.id, titles)
+            except Exception as _mini_agent_exc:
+                from mini_agent.errors import log_exception
+                log_exception(_mini_agent_exc, where='mini_agent.evolution.autonomous_loop.AutonomousLoop._ensure_goal_objectives.write')
+                continue
+
+            for obj in created:
+                self._record_digest({
+                    "type": "objective_auto_created",
+                    "goal_id": goal.id,
+                    "objective_id": obj.id,
+                    "title": obj.title,
+                    "summary": f"自动为目标「{goal.title}」创建执行子目标：{obj.title}",
                 })
 
     def _tick_autonomous(self) -> None:

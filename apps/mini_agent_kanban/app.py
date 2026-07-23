@@ -1094,8 +1094,6 @@ def render_chat_tab(client: AgentClient, session_id: str = ""):
 
         if running_turn_id:
             st.caption("⏳ Agent 正在处理中…（下方将实时流式显示输出）")
-        hist = client.history(session_id=session_id) or {}
-        entries = hist.get("messages", [])
         # 拉最近事件，把 tool_call / tool_result / tool_error / permission_req 也
         # 渲染进聊天流里，让用户能看到 Agent 实际调用了什么工具、结果是什么。
         ev_data = client.events(since_id=0, limit=100, session_id=session_id) or {}
@@ -1105,82 +1103,16 @@ def render_chat_tab(client: AgentClient, session_id: str = ""):
                                   "permission_req", "permission_done")
         ]
 
+        # [FIX] 对话消息列表（含产出物内联展示）之前是纯内联代码，不在任何
+        # st.fragment 里，只能靠"自己发消息/清空历史/流式结束"这几个触发点
+        # 手动 st.rerun() 刷新——別的客户端往同一个 session 发消息、或产出物
+        # 新增，这边看不到，得点"手动刷新全部"（整页 rerun）才行。事件流因为
+        # 有独立的 2s fragment 就没有这个问题。这里改成和事件流同款做法：
+        # 抽成 _render_chat_messages，按 auto_refresh 开关决定是否用
+        # @st.fragment(run_every="2s") 包裹，做局部自动刷新。
         chat_box = st.container(height=460, border=True)
-        last_rendered_user_msg = ""
         with chat_box:
-            if isinstance(entries, list):
-                for e in entries[-60:]:
-                    role = e.get("role", "")
-                    etype = e.get("_type", "")  # 见 history/entry.py::HType
-                    content = e.get("content", "")
-                    if isinstance(content, list):
-                        # content 可能是多模态 block 列表（tool_use/tool_result/text）
-                        content = "\n".join(
-                            b.get("text", str(b)) if isinstance(b, dict) else str(b)
-                            for b in content
-                        )
-                    # [SYS-HIST-RENDER] role=="user" 不等于"这是真人打的字"——
-                    # tool_result 回注、skill_context、hook_context、file_change、
-                    # format_correction、session_resume、compressed 等系统消息也都
-                    # 挂着 role="user"（只靠 _type 区分），之前不加区分地全部当
-                    # 用户气泡展示，噪音淹没了真实输入，而且这些内容常带
-                    # <tool_result> 这类尖括号文本，直接塞进 unsafe_allow_html
-                    # 的 div 会被当成真 HTML 标签解析，破坏后面的 DOM 结构，
-                    # 导致下一轮的真实用户输入在页面上"看不见"。
-                    is_real_user_input = role in ("user", "human") and etype in ("", "user_input", "user_correction")
-                    is_agent_reply = role in ("assistant", "agent") and etype in ("", "assistant_reply", "compact_summary")
-                    if is_real_user_input:
-                        st.markdown(f'<div class="msg-user">{_esc_html(content)}</div>', unsafe_allow_html=True)
-                        last_rendered_user_msg = content if isinstance(content, str) else str(content)
-                    elif is_agent_reply:
-                        st.markdown(f'<div class="msg-agent">{_esc_html(content)}</div>', unsafe_allow_html=True)
-                    elif role in ("user", "human", "assistant", "agent"):
-                        # 系统内部消息（工具结果回注/skill注入/reminder 等），
-                        # 用和流式阶段一样的 .msg-tool 卡片样式展示，长内容用
-                        # <details> 折叠、点击展开，不再硬截断丢内容。
-                        label = etype or "system"
-                        content_str = content if isinstance(content, str) else str(content)
-                        body = _collapsible_html(f'⚙️ [{label}] ', content_str)
-                        st.markdown(f'<div class="msg-tool">{body}</div>', unsafe_allow_html=True)
-
-            # 产出物内联展示：把当前 session 已登记的产出物（图片/文档等）直接
-            # 嵌在对话流里，不用切去"产出预览" Tab 来回找。按 created_at 倒序
-            # （最新在前），本次渲染相比上次新出现的条目默认展开，其余折叠，
-            # 避免每次刷新都是一整屏都展开的产出物淹没对话内容。
-            cur_session_id = cur_status.get("session_id")
-            if cur_session_id:
-                art_resp = client.list_artifacts(session_id=cur_session_id, limit=20) or {}
-                art_items = art_resp.get("items", []) if "_error" not in art_resp else []
-                if art_items:
-                    seen_key = f"artifacts_seen_count_{cur_session_id}"
-                    prev_seen = st.session_state.get(seen_key, 0)
-                    new_n = max(len(art_items) - prev_seen, 0)
-                    st.markdown(
-                        f'<div style="margin:8px 0 4px;font-size:13px;color:#888;">'
-                        f'📦 本次会话产出物（{len(art_items)} 项{"，" + str(new_n) + " 项为新增" if new_n else ""}）</div>',
-                        unsafe_allow_html=True,
-                    )
-                    for i, item in enumerate(art_items):
-                        mid = item.get("manifest_id")
-                        title = item.get("title", "未命名产出")
-                        types_str = " ".join(ARTIFACT_TYPE_ICON.get(t, "📦") for t in item.get("types", []))
-                        header = (f"{types_str} {title} · {item.get('created_at', '')[:19]} · "
-                                  f"{item.get('file_count', 0)} 个文件")
-                        with st.expander(header, expanded=(i < new_n)):
-                            detail = client.get_artifact(mid, session_id=cur_session_id) or {}
-                            if "_error" in detail:
-                                st.error(detail["_error"])
-                                continue
-                            if detail.get("description"):
-                                st.markdown(f"> {detail['description']}")
-                            for idx, f in enumerate(detail.get("files", [])):
-                                _render_artifact_file(client, mid, cur_session_id, idx, f)
-                                st.divider()
-                    st.session_state[seen_key] = len(art_items)
-
-            # 滚动锚点：每次渲染后用下面注入的 JS 把它滚到可视区域，从而把整个
-            # 固定高度容器滚到底部，实现"自动滚动到最新消息"。
-            st.markdown('<div id="chat-bottom-anchor"></div>', unsafe_allow_html=True)
+            last_rendered_user_msg = _render_chat_messages(client, session_id)
         _inject_scroll_script()
 
         with st.form("chat_form", clear_on_submit=True):
@@ -1251,6 +1183,107 @@ def render_chat_tab(client: AgentClient, session_id: str = ""):
     with col_events:
         st.markdown("#### 📡 事件流")
         _render_events_panel(client, session_id)
+
+
+def _render_chat_messages(client: AgentClient, session_id: str = "") -> str:
+    """[BUGFIX] 见 render_chat_tab 里的说明：对话消息列表原来不在任何
+    st.fragment 里，靠不上局部自动刷新，只能等用户自己触发交互或点
+    "手动刷新全部"。这里改成和事件流（_render_events_panel）一样的模式：
+    用 auto_refresh 开关决定是否套 @st.fragment(run_every="2s")。
+
+    返回 last_rendered_user_msg，供调用方在流式渲染时判断"这条用户消息
+    是不是已经在正式历史里画过了"，避免重复展示（见 _stream_turn_into_placeholder）。
+    """
+    if st.session_state.get("auto_refresh", True):
+        return _render_chat_messages_fragment(client, session_id)
+    return _render_chat_messages_body(client, session_id)
+
+
+@st.fragment(run_every="2s")
+def _render_chat_messages_fragment(client: AgentClient, session_id: str = "") -> str:
+    return _render_chat_messages_body(client, session_id)
+
+
+def _render_chat_messages_body(client: AgentClient, session_id: str = "") -> str:
+    hist = client.history(session_id=session_id) or {}
+    entries = hist.get("messages", [])
+
+    last_rendered_user_msg = ""
+    if isinstance(entries, list):
+        for e in entries[-60:]:
+            role = e.get("role", "")
+            etype = e.get("_type", "")  # 见 history/entry.py::HType
+            content = e.get("content", "")
+            if isinstance(content, list):
+                # content 可能是多模态 block 列表（tool_use/tool_result/text）
+                content = "\n".join(
+                    b.get("text", str(b)) if isinstance(b, dict) else str(b)
+                    for b in content
+                )
+            # [SYS-HIST-RENDER] role=="user" 不等于"这是真人打的字"——
+            # tool_result 回注、skill_context、hook_context、file_change、
+            # format_correction、session_resume、compressed 等系统消息也都
+            # 挂着 role="user"（只靠 _type 区分），之前不加区分地全部当
+            # 用户气泡展示，噪音淹没了真实输入，而且这些内容常带
+            # <tool_result> 这类尖括号文本，直接塞进 unsafe_allow_html
+            # 的 div 会被当成真 HTML 标签解析，破坏后面的 DOM 结构，
+            # 导致下一轮的真实用户输入在页面上"看不见"。
+            is_real_user_input = role in ("user", "human") and etype in ("", "user_input", "user_correction")
+            is_agent_reply = role in ("assistant", "agent") and etype in ("", "assistant_reply", "compact_summary")
+            if is_real_user_input:
+                st.markdown(f'<div class="msg-user">{_esc_html(content)}</div>', unsafe_allow_html=True)
+                last_rendered_user_msg = content if isinstance(content, str) else str(content)
+            elif is_agent_reply:
+                st.markdown(f'<div class="msg-agent">{_esc_html(content)}</div>', unsafe_allow_html=True)
+            elif role in ("user", "human", "assistant", "agent"):
+                # 系统内部消息（工具结果回注/skill注入/reminder 等），
+                # 用和流式阶段一样的 .msg-tool 卡片样式展示，长内容用
+                # <details> 折叠、点击展开，不再硬截断丢内容。
+                label = etype or "system"
+                content_str = content if isinstance(content, str) else str(content)
+                body = _collapsible_html(f'⚙️ [{label}] ', content_str)
+                st.markdown(f'<div class="msg-tool">{body}</div>', unsafe_allow_html=True)
+
+    # 产出物内联展示：把当前 session 已登记的产出物（图片/文档等）直接
+    # 嵌在对话流里，不用切去"产出预览" Tab 来回找。按 created_at 倒序
+    # （最新在前），本次渲染相比上次新出现的条目默认展开，其余折叠，
+    # 避免每次刷新都是一整屏都展开的产出物淹没对话内容。
+    cur_status = client.status(session_id=session_id) or {}
+    cur_session_id = cur_status.get("session_id")
+    if cur_session_id:
+        art_resp = client.list_artifacts(session_id=cur_session_id, limit=20) or {}
+        art_items = art_resp.get("items", []) if "_error" not in art_resp else []
+        if art_items:
+            seen_key = f"artifacts_seen_count_{cur_session_id}"
+            prev_seen = st.session_state.get(seen_key, 0)
+            new_n = max(len(art_items) - prev_seen, 0)
+            st.markdown(
+                f'<div style="margin:8px 0 4px;font-size:13px;color:#888;">'
+                f'📦 本次会话产出物（{len(art_items)} 项{"，" + str(new_n) + " 项为新增" if new_n else ""}）</div>',
+                unsafe_allow_html=True,
+            )
+            for i, item in enumerate(art_items):
+                mid = item.get("manifest_id")
+                title = item.get("title", "未命名产出")
+                types_str = " ".join(ARTIFACT_TYPE_ICON.get(t, "📦") for t in item.get("types", []))
+                header = (f"{types_str} {title} · {item.get('created_at', '')[:19]} · "
+                          f"{item.get('file_count', 0)} 个文件")
+                with st.expander(header, expanded=(i < new_n)):
+                    detail = client.get_artifact(mid, session_id=cur_session_id) or {}
+                    if "_error" in detail:
+                        st.error(detail["_error"])
+                    else:
+                        if detail.get("description"):
+                            st.markdown(f"> {detail['description']}")
+                        for idx, f in enumerate(detail.get("files", [])):
+                            _render_artifact_file(client, mid, cur_session_id, idx, f)
+                            st.divider()
+            st.session_state[seen_key] = len(art_items)
+
+    # 滚动锚点：每次渲染后用下面注入的 JS 把它滚到可视区域，从而把整个
+    # 固定高度容器滚到底部，实现"自动滚动到最新消息"。
+    st.markdown('<div id="chat-bottom-anchor"></div>', unsafe_allow_html=True)
+    return last_rendered_user_msg
 
 
 def _render_events_panel(client: AgentClient, session_id: str = ""):
