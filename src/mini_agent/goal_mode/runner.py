@@ -33,6 +33,7 @@ GoalRunner 只需要兜底处理三种"常规触发器没接住"的情况：
 from __future__ import annotations
 
 import re
+import sys
 import time
 from dataclasses import dataclass, field
 from typing import Optional, TYPE_CHECKING

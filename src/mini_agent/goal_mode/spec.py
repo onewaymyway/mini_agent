@@ -388,7 +388,11 @@ class GoalSpecBuilder:
         if not spec.acceptance_criteria:
             # 兜底：解析失败/模型未返回标准时，用分维度的通用标准兜底，
             # 避免空验收标准导致 Judge 无从判断，也避免直接照抄原文。
-            reason = self.last_error or "LLM 返回内容解析后 acceptance_criteria 字段为空"
+            # getattr 兜底：self.last_error 是 __init__ 里设置的诊断字段，
+            # 若实例是通过 __new__ 构造（跳过 __init__，测试里常见）或来自
+            # 其他不经过 __init__ 的构造路径，直接访问会抛 AttributeError，
+            # 把"兜底展示原因"这个本该是纯展示的分支变成了一次真正的崩溃。
+            reason = getattr(self, "last_error", None) or "LLM 返回内容解析后 acceptance_criteria 字段为空"
             R.print_warning(
                 f"[GoalSpecBuilder] 未能从 LLM 输出中获得有效验收标准，"
                 f"已使用通用兜底标准代替。原因：{reason}\n"
@@ -491,7 +495,9 @@ class GoalSpecBuilder:
         )
         if goal_text and not spec.acceptance_criteria:
             # 归纳出了目标但没有标准（模型漏填）——用通用兜底，避免空验收标准。
-            reason = self.last_error or "LLM 返回内容解析后 acceptance_criteria 字段为空"
+            # getattr 兜底：理由同上（build_initial 分支）——self.last_error
+            # 可能因为实例未走 __init__ 而不存在。
+            reason = getattr(self, "last_error", None) or "LLM 返回内容解析后 acceptance_criteria 字段为空"
             R.print_warning(
                 f"[GoalSpecBuilder] from-history 未能获得有效验收标准，"
                 f"已使用通用兜底标准代替。原因：{reason}\n"
