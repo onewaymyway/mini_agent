@@ -187,6 +187,72 @@ class ResourceArbiter:
             log_exception(_mini_agent_exc, where='mini_agent.evolution.resource_arbiter.ResourceArbiter._check_exploration_budget')
             return True
 
+    def diagnose(self) -> dict:
+        """[看板诊断改进] 返回四条仲裁规则各自的通过/阻塞状态和具体数值，
+        供 `/v1/autonomous/status` 透出给看板展示——用户反馈"目标看板里加了
+        目标，也拆出了 Objective，但看不到 agent 去执行，也不知道为什么"，
+        can_run_autonomous() 只返回一个布尔值，任何一条规则挡住都表现为
+        "什么都没发生"，无法定位是哪一条、具体数值是多少。这里把
+        can_run_autonomous() 内部四条规则逐条跑一遍，每条附带
+        `passed`/`reason`/关键数值，不影响 can_run_autonomous() 本身的
+        行为（各 _check_* 方法本身没有副作用，可以安全重复调用）。
+        """
+        budget_ok = self._check_budget()
+        frustration_ok = self._check_frustration()
+        presence_ok = self._check_user_presence()
+
+        budget_detail: dict = {}
+        try:
+            from mini_agent.perception.global_knowledge import load_self_profile
+            profile = load_self_profile(self._paths)
+            if profile:
+                rb = profile.resource_budget
+                budget_detail = {"used_today": rb.used_today, "daily_token_budget": rb.daily_token_budget}
+        except Exception as _mini_agent_exc:
+            from mini_agent.errors import log_exception
+            log_exception(_mini_agent_exc, where='mini_agent.evolution.resource_arbiter.ResourceArbiter.diagnose.budget')
+
+        frustration_detail: dict = {}
+        try:
+            snapshot_path = self._paths.proprioception_snapshot
+            if snapshot_path.exists():
+                data = json.loads(snapshot_path.read_text(encoding="utf-8"))
+                threshold = getattr(
+                    getattr(self._cfg, "proprioception", None), "frustration_threshold", 0.5,
+                )
+                frustration_detail = {
+                    "frustration": data.get("frustration", 0.0),
+                    "threshold": threshold,
+                    "snapshot_age_s": round(time.time() - float(data.get("updated_at", 0)), 1),
+                }
+        except Exception as _mini_agent_exc:
+            from mini_agent.errors import log_exception
+            log_exception(_mini_agent_exc, where='mini_agent.evolution.resource_arbiter.ResourceArbiter.diagnose.frustration')
+
+        rules = [
+            {
+                "rule": "budget", "label": "每日 token 预算",
+                "passed": budget_ok,
+                "reason": "预算已耗尽（used_today >= daily_token_budget）" if not budget_ok else "预算充足",
+                **budget_detail,
+            },
+            {
+                "rule": "frustration", "label": "本体感知（挫败感）",
+                "passed": frustration_ok,
+                "reason": "近期挫败感超过阈值，暂停自主任务" if not frustration_ok else "正常",
+                **frustration_detail,
+            },
+            {
+                "rule": "user_presence", "label": "用户在场（行为门控）",
+                "passed": presence_ok,
+                "reason": "检测到用户正在活跃切换应用，让路给用户" if not presence_ok else "未启用或用户不活跃",
+            },
+        ]
+        return {
+            "can_run_autonomous": budget_ok and frustration_ok and presence_ok,
+            "rules": rules,
+        }
+
     def _recent_user_touched_paths(
         self,
         window_minutes: float = _RESOURCE_LOCK_WINDOW_MINUTES,

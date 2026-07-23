@@ -543,10 +543,14 @@ curl -H "Authorization: Bearer <token>" \
 
 | 字段 | 说明 |
 |------|------|
-| `autonomy_level` | 当前档位 |
+| `autonomy_level` | 当前档位（配置值，见下方 `loop_active` 说明） |
 | `next_tick_in` | 距下次 `AutonomousLoop.tick()` 还有多少秒 |
 | `cron_jobs` | 所有 cron job 状态列表 |
 | `objective_executions` | 活跃 Objective 执行进度列表（完成超过 1h 的自动移除） |
+| `loop_active`（新增） | AutonomousLoop 是否真的挂在当前 daemon 上在 tick。`autonomy_level` 只是 `self_profile.json` 里的配置值，跟"tick 有没有真的在跑"是两回事——没启动 daemon、或启动时没注入 AutonomousLoop，这里恒为 `false`，Objective 永远不会被自动执行，排查"目标/Objective 加了但 agent 不执行"时第一个该看这个字段 |
+| `has_actionable_work`（新增） | GoalBacklog 里是否存在 `status=active` 的 Objective（Goal 本身不算） |
+| `objective_slots`（新增） | `{running, max}`，ObjectiveExecutor 并发槽位占用情况，槽位占满时新 Objective 只能排队 |
+| `gating`（新增） | `ResourceArbiter.diagnose()` 的结果：`{can_run_autonomous, rules: [{rule, label, passed, reason, ...}]}`，逐条列出每日 token 预算、本体感知挫败感、用户在场行为门控三条规则的通过情况和具体数值 |
 
 ### /v1/self/status — Self（主自我）状态总览（daemon 多用户架构 Phase 4，owner only）
 

@@ -1725,8 +1725,54 @@ def render_kanban_tab(client: AgentClient):
             st.rerun()
 
     st.markdown("---")
-    st.markdown("#### 🎯 Objective 执行进度")
+    st.markdown("#### 🩺 为什么没有执行？（自主调度诊断）")
     autostat = client.autonomous_status() or {}
+    if "_error" in autostat:
+        st.warning(f"诊断信息获取失败：{autostat['_error']}")
+    else:
+        loop_active = autostat.get("loop_active", False)
+        if not loop_active:
+            st.error(
+                "🔴 AutonomousLoop 未挂载在当前 daemon 上（`loop_active=False`）——"
+                "无论 autonomy_level 配的是 maintenance 还是 autonomous，"
+                "**tick 根本没有在跑**，Objective 永远不会被自动执行。"
+                "需要确认 daemon 是以正确的模式启动的（挂载了 Self/AutonomousLoop），"
+                "而不是只有一个普通的单 session Agent 在跑。"
+            )
+        else:
+            has_work = autostat.get("has_actionable_work", False)
+            next_tick = autostat.get("next_tick_in")
+            slots = autostat.get("objective_slots") or {}
+            dc1, dc2, dc3 = st.columns(3)
+            dc1.metric("自主等级", autostat.get("autonomy_level", "—"))
+            dc2.metric("距下次 Tick", f"{next_tick:.0f}s" if isinstance(next_tick, (int, float)) else "—")
+            dc3.metric("可执行 Objective", "有" if has_work else "无")
+            if not has_work:
+                st.info(
+                    "GoalBacklog 里没有 status=active 的 Objective——Goal 本身不算，"
+                    "得先拆出 Objective 子节点才会被调度（`maintenance` 档位会在每次 "
+                    "tick 时自动补拆，等下一次 tick 即可；如果一直没有，检查 Goal "
+                    "是不是已经是 active 状态）。"
+                )
+            if slots:
+                running, max_slots = slots.get("running", 0), slots.get("max", "?")
+                st.caption(f"🎫 Objective 并发槽位：{running} / {max_slots}"
+                           + ("（已占满，新 Objective 要等有槽位空出来才会启动）" if running and running >= (max_slots or 0) else ""))
+
+            gating = autostat.get("gating")
+            if gating:
+                if gating.get("can_run_autonomous"):
+                    st.success("✅ 资源仲裁（ResourceArbiter）三条规则均通过，理论上下次 tick 就会启动 Objective")
+                else:
+                    st.warning("⛔ 资源仲裁未通过，以下规则挡住了本次自主任务提交：")
+                for rule in gating.get("rules", []):
+                    icon = "✅" if rule.get("passed") else "⛔"
+                    extra = {k: v for k, v in rule.items() if k not in ("rule", "label", "passed", "reason")}
+                    extra_str = f"（{extra}）" if extra else ""
+                    st.caption(f"{icon} **{rule.get('label')}**：{rule.get('reason')}{extra_str}")
+
+    st.markdown("---")
+    st.markdown("#### 🎯 Objective 执行进度")
     execs = autostat.get("objective_executions", [])
     if not execs:
         st.caption("当前没有正在执行的 Objective")

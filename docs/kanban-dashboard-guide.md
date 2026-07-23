@@ -93,6 +93,12 @@ Web Demo 的事件流面板类似，但集成在同一多 Tab 界面中。
 - 按状态列出 Goal（如 `pending` / `active` / `done`），支持新建目标（标题、描述、优先级、
   来源）。
 - Cron Job 列表、新增、编辑，以及"立即执行一次"按钮。
+- **🩺 自主调度诊断**（`/v1/autonomous/status` 新增字段）：直接回答"为什么加了目标/
+  Objective，却没看到 agent 执行"——依次展示 `loop_active`（AutonomousLoop 是否真的
+  挂在当前 daemon 上在 tick，最常见的"看起来配了 maintenance 却完全不执行"就是这里
+  为 False：只是 autonomy_level 配置值，不代表 tick 真的在跑）、`has_actionable_work`
+  （GoalBacklog 里有没有 status=active 的 Objective）、Objective 并发槽位占用、以及
+  `ResourceArbiter.diagnose()` 逐条列出的预算/挫败感/用户在场三条门控规则通过情况。
 - Objective 执行进度展示。
 - **🗞️ 每日融合日报 / 💡 主动推荐 / 🧭 决策画像**（`主动推荐与数字分身机制设计方案.md`）：
   三张并排只读卡片，分别展示 `sys:daily_digest`（行为+目标进展融合日报）、
@@ -101,19 +107,6 @@ Web Demo 的事件流面板类似，但集成在同一多 Tab 界面中。
   最新产出。卡片本身不触发生成，避免刷新看板页面时意外产生额外 LLM 调用；
   要立即刷新内容，仍需在 CLI 侧执行 `/digest daily`、`/next refresh`、
   `/decision_profile update`，或用 Cron Job 列表的"立即执行一次"按钮触发对应 job。
-
-> **⚠️ "新建目标"创建的是 Goal，不会被自动执行**：这里的表单只调用
-> `add_goal`，建出来的是 `level="goal"` 节点——它只是一句意图，Agent 的
-> `has_actionable_work()` 判断只认 `level="objective"`，Goal 本身不会
-> 被 tick 到。`autonomy_level` 处于 `maintenance` 或 `autonomous` 档位时，
-> 会在下一次 tick（默认 60s 一次）由 `_ensure_goal_objectives()` 自动给
-> 缺 Objective 的 Goal 补上（可能拆成多个，取决于
-> `autonomy.auto_objective_max_per_goal` 配置；LLM 不可用时退化为 1 个
-> 同名 Objective 兜底）。若 `autonomy.auto_objective_from_goal_enabled`
-> 被关掉，或者档位还停在 `passive`，则 Goal 会一直停在看板里不动，需要
-> 手动用 CLI `/goals obj add "<子目标标题>" --goal <goal_id>` 补一个
-> Objective。看板目前还没有对应的手动"拆解为 Objective"按钮。详见
-> [Stage 9 指南 3.3 节](self-evolution-stage9-guide.md#33-goal--objective-自动拆解)。
 
 详见 `docs/autonomous_daemon_design.md`、`docs/goal-mode-guide.md` 了解 Goal/Cron/
 Objective 背后的调度机制；`docs/decision-profile-guide.md` 了解决策画像的归纳与

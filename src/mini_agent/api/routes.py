@@ -1890,6 +1890,18 @@ async def get_autonomous_status(request: Request):
       - cron_jobs：各 job 的下次触发时间
       - objective_executions：活跃 Objective 的执行进度
       - next_tick_in：距下次 AutonomousLoop.tick() 还有多少秒
+      - loop_active：[看板诊断改进] AutonomousLoop 是否真的挂在 daemon 上在跑。
+        autonomy_level 读的是 self_profile.json 里的配置值，跟"tick 有没有
+        真的在跑"是两件事——没启动 daemon、或 daemon 启动时没注入
+        AutonomousLoop，autonomy_level 配置值可以是 maintenance/autonomous，
+        但这里恒为 False，Objective 永远不会被执行。这是排查"为什么加了
+        目标 agent 却不去做"的第一个该看的字段。
+      - has_actionable_work：[看板诊断改进] GoalBacklog 里是否存在
+        status=active 的 Objective（Goal 本身不算，得先拆出 Objective）。
+      - objective_slots：[看板诊断改进] ObjectiveExecutor 并发槽位
+        {running, max}——槽位占满时新 Objective 只能排队等待。
+      - gating：[看板诊断改进] ResourceArbiter.diagnose()，逐条列出预算/
+        挫败感/用户在场三条门控规则的通过情况和具体数值。
     """
     http_server = getattr(request.app.state, "http_server", None)
     if http_server is None:
@@ -1901,13 +1913,40 @@ async def get_autonomous_status(request: Request):
         "next_tick_in": None,
         "cron_jobs": [],
         "objective_executions": [],
+        "loop_active": False,
+        "has_actionable_work": False,
+        "objective_slots": None,
+        "gating": None,
     }
 
     al = http_server.autonomous_loop
+    result["loop_active"] = al is not None
     if al is not None:
         try:
             result["autonomy_level"] = al._get_autonomy_level()
             result["next_tick_in"] = round(max(0.0, al._last_tick_at + al._tick_interval - time.time()), 1)
+        except Exception as _mini_agent_exc:
+            from mini_agent.errors import log_exception
+            log_exception(_mini_agent_exc, where='mini_agent.api.routes')
+            pass
+
+        # GoalBacklog：是否存在可执行的 Objective
+        gb = getattr(al, "_goal_backlog", None)
+        if gb is not None:
+            try:
+                result["has_actionable_work"] = gb.has_actionable_work()
+            except Exception as _mini_agent_exc:
+                from mini_agent.errors import log_exception
+                log_exception(_mini_agent_exc, where='mini_agent.api.routes')
+                pass
+
+        # ResourceArbiter 门控诊断
+        try:
+            from mini_agent.evolution.resource_arbiter import ResourceArbiter
+            paths = getattr(al, "_paths", None)
+            cfg = getattr(al, "_cfg", None)
+            if paths is not None and cfg is not None:
+                result["gating"] = ResourceArbiter(paths, cfg).diagnose()
         except Exception as _mini_agent_exc:
             from mini_agent.errors import log_exception
             log_exception(_mini_agent_exc, where='mini_agent.api.routes')
@@ -1944,6 +1983,11 @@ async def get_autonomous_status(request: Request):
         if oe is not None:
             try:
                 result["objective_executions"] = oe.get_status_summary()
+                from mini_agent.evolution.objective_executor import MAX_CONCURRENT_OBJECTIVES
+                result["objective_slots"] = {
+                    "running": oe.running_count(),
+                    "max": MAX_CONCURRENT_OBJECTIVES,
+                }
             except Exception as _mini_agent_exc:
                 from mini_agent.errors import log_exception
                 log_exception(_mini_agent_exc, where='mini_agent.api.routes')
