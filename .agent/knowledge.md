@@ -47,4 +47,4 @@ REMOVE
 
 ## Test2
 
-Test content 2
+REMOVE
