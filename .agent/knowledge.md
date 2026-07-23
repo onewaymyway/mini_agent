@@ -324,3 +324,7 @@ Every major module has a guide in `docs/*.md` (see CLAUDE.md "文档索引" sect
 ## Test Section
 
 Test content
+
+## Test2
+
+Test content 2
