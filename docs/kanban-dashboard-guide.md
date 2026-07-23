@@ -38,10 +38,35 @@ streamlit run app.py
 顶部常驻展示：
 
 - 运行状态（idle / running / waiting_permission / error）
+- **动作**：更细粒度的"agent 正在干什么"——空闲 / 等权限确认 / 调用模型中 /
+  调用工具中（带工具名），比笼统的 running 更具体
+- **模型**：当前实际在用的模型名（故障转移/手动切换模型后会跟着更新）
+- **Session**：当前绑定的 session_id
 - 当前 Turn
 - 自主等级（Autonomous Loop 的当前 tier）
 - 距下次 Tick 的时间、Tick 计数、订阅者数量
-- 待审批权限请求数——点击展开后可逐条允许/拒绝
+- 待审批权限请求数 / 待回答交互请求数——点击展开后可逐条处理
+- session 存储目录（`<project_root>/.agent/sessions/<session_id>/`），单独一行展示
+
+## 多会话并行（每个看板页面绑定不同 session）
+
+侧边栏"🗂️ 本页面对话 session"下拉框决定**这个浏览器标签页**跟哪个 session 对话：
+
+- 选择某个已有 session，或在"🗂️ 会话管理"Tab 里对某条 session 点
+  "📌 本页面绑定到此会话"，都会把 session_id 写入当前页面的 URL
+  （`?session_id=xxx`），只影响这一个标签页。
+- 用不同的 `?session_id=` 打开多个浏览器标签页/窗口，即可同时和多个 session
+  对话，互不干扰——顶栏、对话历史、事件流、发送/中断都只作用于各自绑定的
+  session。
+- "🗂️ 会话管理"Tab 里的"▶️ 恢复此会话（全局）"按钮是旧行为：它改的是服务端
+  全局默认 session，会影响所有**没有**单独绑定 session_id 的客户端（比如
+  CLI）。日常在看板里切换对话，建议用"📌 本页面绑定到此会话"，只影响自己
+  这个标签页，不会打扰其他正在用看板/CLI 的人。
+- 不选任何 session（下拉框留在"(全局默认)"）时行为和旧版本完全一致，请求不带
+  session_id，退回服务端全局共享的 bridge。
+- 复制当前浏览器地址栏 URL（带着 `session_id=xxx`）发给别人，对方打开后会
+  自动绑定到同一个 session——也是"产出预览"Tab 深链接机制的同一个查询参数，
+  两者共享同一个 `session_id`，打开一条链接两处效果一起生效。
 
 ## 功能 Tab 一览
 
@@ -113,13 +138,13 @@ Objective 背后的调度机制；`docs/decision-profile-guide.md` 了解决策�
 | 方法 | 对应端点 | 用途 |
 |---|---|---|
 | `health()` | `GET /health` | 健康检查 |
-| `status()` | `GET /v1/status` | Agent 运行状态 |
+| `status(session_id=)` | `GET /v1/status` | Agent 运行状态（含 `model`/`session_dir`/`activity`/`activity_detail`） |
 | `diagnostics()` | `GET /v1/diagnostics` | 诊断信息 |
-| `chat()` / `interrupt()` | `POST /v1/chat`、`/v1/interrupt` | 发消息 / 中断 |
-| `history()` / `clear_history()` | `/v1/history` | 对话历史读取与清空 |
-| `events()` | `GET /v1/events` | 拉取事件流 |
-| `turns()` | `GET /v1/turns` | Turn 列表 |
-| `pending_permissions()` / `respond_permission()` | `/v1/permissions/*` | 权限审批 |
+| `chat(session_id=)` / `interrupt(session_id=)` | `POST /v1/chat`、`/v1/interrupt` | 发消息 / 中断 |
+| `history(session_id=)` / `clear_history(session_id=)` | `/v1/history` | 对话历史读取与清空 |
+| `events(session_id=)` | `GET /v1/events` | 拉取事件流 |
+| `turns(session_id=)` | `GET /v1/turns` | Turn 列表 |
+| `pending_permissions(session_id=)` / `respond_permission()` | `/v1/permissions/*` | 权限审批 |
 | `sessions()` / `session_detail()` / `resume_session()` / `new_session()` / `delete_session()` | `/v1/sessions*` | 会话管理 |
 | `users()` | `/v1/users` | 多用户列表（多用户模式） |
 | `self_status()` / `autonomous_status()` | `/self/status`、`/self/autonomous` | 自省与自主循环状态 |
@@ -130,6 +155,13 @@ Objective 背后的调度机制；`docs/decision-profile-guide.md` 了解决策�
 | `daily_digest()` | `GET /v1/digest/daily` | 每日融合日报（只读，不触发生成） |
 | `next_actions()` | `GET /v1/next_actions` | 主动推荐候选（只读，不触发重新计算） |
 | `decision_profile()` | `GET /v1/decision_profile` | 决策画像 Markdown + 结构化模式列表（只读） |
+
+上表标了 `session_id=` 的方法都新增了可选的 `session_id` 参数（默认 `None`，
+不传时行为与旧版本完全一致）：传了就会作为 `?session_id=` 查询参数附加到请求上，
+后端 `_bridge()` 在单 token 模式下会优先用它解析出对应 session 的
+`AgentBridge`，从而实现"看板页面按 session 隔离"（见上面"多会话并行"一节）。
+`chat()` 例外——它的 `session_id` 是放进 POST body（对应
+`ChatRequest.session_id` 字段），不是查询参数。
 
 ## 使用场景
 
@@ -143,13 +175,16 @@ Objective 背后的调度机制；`docs/decision-profile-guide.md` 了解决策�
 ## 后续可扩展方向（未实现）
 
 - SSE 真流式渲染（当前对话为轮询式刷新，简单可靠但非逐 token 流式）
+- 页面内多路并行对话（当前"多会话"是"一个页面绑一个 session，开多个页面
+  并行"；同一个页面内同时铺开多个对话面板还未做，需要把 `render_chat_tab`
+  拆成可重复实例化的组件）
 - Ensemble 多候选结果对比展示
 - 进化流水线（Skill 提案 / git worktree diff）可视化
 - 权限历史与安全网风险等级（T0-T3）统计图表
 
 ## 相关文件
 
-- `apps/mini_agent_kanban/app.py` — 看板主程序（7 个 Tab）
+- `apps/mini_agent_kanban/app.py` — 看板主程序（8 个 Tab）
 - `apps/mini_agent_kanban/client.py` — `AgentClient` HTTP 封装
 - `apps/mini_agent_kanban/README.md` — 应用自带的简要说明
 - `docs/http-api-guide.md` — HTTP API 完整参考
@@ -160,4 +195,4 @@ Objective 背后的调度机制；`docs/decision-profile-guide.md` 了解决策�
 
 ---
 
-*最后更新：2026-07-06*
+*最后更新：2026-07-23*

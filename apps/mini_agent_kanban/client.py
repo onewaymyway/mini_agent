@@ -25,9 +25,10 @@ class AgentClient:
         except Exception as e:
             return {"_error": str(e)}
 
-    def _post(self, path, json_body=None, timeout=15):
+    def _post(self, path, json_body=None, params=None, timeout=15):
         try:
-            r = requests.post(self._url(path), headers=self.headers, json=json_body, timeout=timeout)
+            r = requests.post(self._url(path), headers=self.headers, json=json_body,
+                               params=params, timeout=timeout)
             if r.status_code == 200:
                 return r.json()
             return {"_error": f"HTTP {r.status_code}: {r.text[:200]}"}
@@ -52,9 +53,9 @@ class AgentClient:
         except Exception as e:
             return {"_error": str(e)}
 
-    def _delete(self, path, timeout=8):
+    def _delete(self, path, params=None, timeout=8):
         try:
-            r = requests.delete(self._url(path), headers=self.headers, timeout=timeout)
+            r = requests.delete(self._url(path), headers=self.headers, params=params, timeout=timeout)
             if r.status_code == 200:
                 return r.json()
             return {"_error": f"HTTP {r.status_code}: {r.text[:200]}"}
@@ -68,30 +69,46 @@ class AgentClient:
         except Exception:
             return False
 
-    def status(self):
-        return self._get("/status")
+    def status(self, session_id: str = None):
+        # session_id 透传给后端 _bridge()——单 token 模式下它会优先用这个
+        # 参数（而不是"全局共享 bridge"）解析出该 session 专属的
+        # AgentBridge，这样同一个 daemon 上不同看板页面/标签页各自带着
+        # 不同 session_id 时，看到的 status（state/model/activity等）
+        # 才会是各自 session 的，不会互相干扰。不传（None）保持旧行为。
+        params = {"session_id": session_id} if session_id else None
+        return self._get("/status", params=params)
 
     def diagnostics(self):
         return self._get("/diagnostics")
 
     # ── 对话 ──────────────────────────────────────────────────────────
-    def chat(self, message: str):
-        return self._post("/chat", {"message": message})
+    def chat(self, message: str, session_id: str = None):
+        body = {"message": message}
+        if session_id:
+            body["session_id"] = session_id
+        return self._post("/chat", body)
 
-    def interrupt(self):
-        return self._post("/interrupt")
+    def interrupt(self, session_id: str = None):
+        params = {"session_id": session_id} if session_id else None
+        return self._post("/interrupt", params=params)
 
-    def history(self):
-        return self._get("/history")
+    def history(self, session_id: str = None):
+        params = {"session_id": session_id} if session_id else None
+        return self._get("/history", params=params)
 
-    def clear_history(self):
-        return self._delete("/history")
+    def clear_history(self, session_id: str = None):
+        params = {"session_id": session_id} if session_id else None
+        return self._delete("/history", params=params)
 
-    def events(self, since_id=0, limit=200):
-        return self._get("/events", params={"since_id": since_id, "limit": limit})
+    def events(self, since_id=0, limit=200, session_id: str = None):
+        params = {"since_id": since_id, "limit": limit}
+        if session_id:
+            params["session_id"] = session_id
+        return self._get("/events", params=params)
 
-    def turns(self):
-        return self._get("/turns")
+    def turns(self, session_id: str = None):
+        params = {"session_id": session_id} if session_id else None
+        return self._get("/turns", params=params)
 
     # ── 流式对话（SSE）────────────────────────────────────────────────
     def stream_turn(self, turn_id: str, replay: bool = True, timeout: int = 300):
@@ -151,8 +168,9 @@ class AgentClient:
             yield {"event": "_error", "data": {"message": str(e)}}
 
     # ── 权限 ──────────────────────────────────────────────────────────
-    def pending_permissions(self):
-        return self._get("/permissions/pending")
+    def pending_permissions(self, session_id: str = None):
+        params = {"session_id": session_id} if session_id else None
+        return self._get("/permissions/pending", params=params)
 
     def respond_permission(self, req_id: str, approve: bool, mode: str = "once"):
         return self._post(f"/permissions/{req_id}", {"approve": approve, "mode": mode})
@@ -161,8 +179,9 @@ class AgentClient:
     # [BUGFIX] 之前看板前端完全没有对接这一套（只对接了权限审批），
     # 导致 /goal 协商这类"通用交互"请求——despite 后端已经正确通过
     # INTERACTION_REQ 广播出来——在看板里彻底不可见、也无法回答。
-    def pending_interactions(self):
-        return self._get("/interactions/pending")
+    def pending_interactions(self, session_id: str = None):
+        params = {"session_id": session_id} if session_id else None
+        return self._get("/interactions/pending", params=params)
 
     def respond_interaction(self, req_id: str, answer: str = None,
                              confirmed: bool = None, choice_index: int = None):

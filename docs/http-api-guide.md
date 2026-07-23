@@ -458,14 +458,20 @@ curl -H "Authorization: Bearer <token>" http://127.0.0.1:8765/v1/diagnostics
 
 ```json
 {
-  "state": "idle",
-  "turn_id": null,
+  "state": "running",
+  "turn_id": "t_abc123",
   "stats": {...},
   "queue_depth": 0,
   "subscribers": 1,
   "autonomy_level": "maintenance",
   "last_autonomous_tick_at": 1720000000.0,
-  "tick_count": 42
+  "tick_count": 42,
+  "session_id": "abc123",
+  "model": "claude-sonnet-4-6",
+  "session_dir": "/path/to/project/.agent/sessions/abc123",
+  "project_root": "/path/to/project",
+  "activity": "calling_tool",
+  "activity_detail": "bash_tool"
 }
 ```
 
@@ -475,6 +481,25 @@ curl -H "Authorization: Bearer <token>" http://127.0.0.1:8765/v1/diagnostics
 | `autonomy_level` | 当前档位（`passive`/`maintenance`/`autonomous`） |
 | `last_autonomous_tick_at` | 上次 autonomous tick 的 Unix 时间戳 |
 | `tick_count` | daemon 启动以来的总 tick 次数 |
+| `session_id` | 这次请求实际解析到的 session（见下方"按 session 查询状态"） |
+| `model` | 当前实际使用的模型名（LLMClientPool 故障转移/`/model` 切换后会跟着更新，不是配置文件里固定的第一条） |
+| `session_dir` | 该 session 的存储目录，`<project_root>/.agent/sessions/<session_id>/` |
+| `project_root` | 项目根目录 |
+| `activity` | 更细粒度的"正在做什么"：`waiting_input`（空闲）/ `waiting_permission`（等权限确认）/ `calling_model`（调用模型中）/ `calling_tool`（调用工具中）——比 `state` 里笼统的 `running` 更具体 |
+| `activity_detail` | `activity=="calling_tool"` 时是工具名，其余情况为 `null` |
+
+#### 按 session 查询状态 / 按 session 隔离请求
+
+`GET /v1/status`、`GET /v1/history`、`GET /v1/events`、`GET /v1/turns`、
+`GET /v1/permissions/pending`、`GET /v1/interactions/pending`、
+`POST /v1/interrupt`、`DELETE /v1/history` 都支持 `?session_id=xxx` 查询参数；
+`POST /v1/chat` 通过请求体 `{"session_id": "xxx"}` 传（对应 `ChatRequest.session_id`）。
+
+单 token（非多用户）模式下：带了 `session_id` 的请求会被路由到该 session
+专属的 `AgentBridge`（各自独立的 state / model / history / 事件流）；不带
+`session_id` 的请求退回旧行为——操作服务端全局共享的默认 bridge。这是
+`apps/mini_agent_kanban` 看板实现"多个页面各自绑定不同 session、同时并行
+对话"的基础，详见 `docs/kanban-dashboard-guide.md` "多会话并行"一节。
 
 ### /v1/autonomous/status — 自主执行状态
 

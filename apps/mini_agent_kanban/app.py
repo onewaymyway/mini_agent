@@ -283,6 +283,14 @@ def apply_deep_link_query_params():
         ?manifest_id=xxx            打开该 manifest 详情
         ?session_id=xxx             产出预览 tab 按该 session 过滤
         ?session_id=xxx&tab=artifacts   同上，并提示应打开产出预览 tab
+
+    ?session_id= 现在身兼两职（有意如此，不是冲突）：
+      1) 沿用原语义，预填"产出预览"tab 的 session 过滤框；
+      2) 新增语义（见 get_active_session_id()）——决定"这个浏览器标签页
+         绑定到哪个 session 对话"。两者语义天然一致（都是"这个 URL 指向
+         哪个 session"），同一个 query param 打开时两处效果一起生效，
+         分享一条深链接既能定位产出，也能直接把对方带到同一个对话里，
+         不用额外发第二个参数。
     只在参数存在时写入 session_state，交由渲染函数消费；不清空未出现的参数，
     避免用户手动改 URL 时把其它 state 冲掉。"""
     qp = st.query_params
@@ -292,6 +300,28 @@ def apply_deep_link_query_params():
         st.session_state.artifacts_open_id = manifest_id
     if session_id:
         st.session_state.artifacts_session_filter = session_id
+
+
+def get_active_session_id() -> str:
+    """当前看板页面（浏览器标签页）绑定的 session_id。
+
+    有意不放进 st.session_state：st.session_state 是"这次浏览器连接"的
+    状态，而 URL query params 才是真正每个标签页/每次打开各自独立的东西
+    ——"开多个看板页面各自对应不同 session、互不干扰"这个需求，必须靠
+    URL 里的 session_id 来实现，放 session_state 起不到隔离作用。
+    返回空字符串表示"未绑定，使用后端全局默认 session"，向后兼容旧行为
+    （旧版本看板 / 没显式选过 session 的用户完全无感知）。
+    """
+    return st.query_params.get("session_id", "") or ""
+
+
+def set_active_session_id(session_id: str) -> None:
+    """把这个标签页绑定到指定 session（写入 URL，不写 session_state，理由同上）。
+    传空字符串 / None 表示解绑，退回全局默认 session。"""
+    if session_id:
+        st.query_params["session_id"] = session_id
+    elif "session_id" in st.query_params:
+        del st.query_params["session_id"]
 
 
 def get_client() -> AgentClient:
@@ -468,14 +498,38 @@ def render_sidebar():
     )
 
     st.sidebar.caption("提示：daemon 模式启动后默认监听 http://127.0.0.1:8765/v1")
+
+    # ── 本页面绑定的 session（多会话并行的基础）──────────────────────────
+    # 选一个 session 绑定到"这个浏览器标签页"（写进 URL，见
+    # get_active_session_id()）。同一个 daemon 下，用不同 session_id 打开
+    # 多个看板页面 / 标签页，即可同时对话多个不重叠的 session；这里的
+    # 下拉框和 URL 是双向的：改 URL 也会反映到这个下拉框上。
+    st.sidebar.markdown("### 🗂️ 本页面对话 session")
+    sessions_data = client.sessions(limit=50) or {}
+    sess_options = ["(全局默认)"]
+    if "_error" not in sessions_data:
+        sess_options += [s.get("id", "") for s in sessions_data.get("sessions", []) if s.get("id")]
+    cur_sid = get_active_session_id()
+    idx = sess_options.index(cur_sid) if cur_sid in sess_options else 0
+    choice = st.sidebar.selectbox(
+        "绑定到 session", sess_options, index=idx, key="session_switcher_select",
+        help="决定这个标签页跟哪个 session 对话。不同标签页可以各选不同的 "
+             "session，实现同时进行多个互不干扰的对话；选「(全局默认)」保持旧行为。",
+    )
+    if choice != (cur_sid or "(全局默认)"):
+        set_active_session_id("" if choice == "(全局默认)" else choice)
+        st.rerun()
+    if cur_sid:
+        st.sidebar.caption(f"🔗 分享此对话：把当前浏览器地址栏的链接（含 `session_id={cur_sid}`）发给别人")
+
     return client
 
 
 # ═══════════════════════════════════════════════════════════════════════
 # 顶部状态条
 # ═══════════════════════════════════════════════════════════════════════
-def render_topbar(client: AgentClient):
-    status = client.status() or {}
+def render_topbar(client: AgentClient, session_id: str = ""):
+    status = client.status(session_id=session_id) or {}
     if "_error" in status:
         st.warning(f"状态获取失败：{status['_error']}")
         return
@@ -486,7 +540,7 @@ def render_topbar(client: AgentClient):
     tick_count = status.get("tick_count", 0)
     subscribers = status.get("subscribers", 0)
 
-    pending = client.pending_permissions() or {}
+    pending = client.pending_permissions(session_id=session_id) or {}
     pending_list = pending.get("permissions", [])
     pending_n = len(pending_list) if isinstance(pending_list, list) else 0
 
@@ -497,7 +551,7 @@ def render_topbar(client: AgentClient):
     # 标准"这个提示，也没有任何地方可以回复 /confirm、/cancel 或修改
     # 意见——命令行那边能看到是因为它走了 term.interruptible_prompt()
     # 本地这一路，但看板这边从来没对接过。
-    pending_ix = client.pending_interactions() or {}
+    pending_ix = client.pending_interactions(session_id=session_id) or {}
     pending_ix_list = pending_ix.get("interactions", [])
     pending_ix_n = len(pending_ix_list) if isinstance(pending_ix_list, list) else 0
 
@@ -505,9 +559,29 @@ def render_topbar(client: AgentClient):
     next_tick = autostat.get("next_tick_in")
     next_tick_str = f"{next_tick:.0f}s" if isinstance(next_tick, (int, float)) else "—"
 
+    # 更细粒度的"agent 正在干什么"（见 bridge.py::AgentBridge._phase / 后端
+    # /status 的 activity 字段），之前只在"对话"tab 里能看到，现在提到
+    # 顶栏常驻展示——切到其它 tab（目标看板/工作流）时也能一眼看到 agent
+    # 现在忙不忙、忙什么，不用切回对话 tab 才知道。
+    _ACTIVITY_LABELS = {
+        "waiting_input": "💤 空闲",
+        "waiting_permission": "🛑 等权限确认",
+        "calling_model": "🧠 调用模型中",
+        "calling_tool": "🔧 调用工具中",
+    }
+    activity = status.get("activity")
+    activity_label = _ACTIVITY_LABELS.get(activity, activity or "—")
+    if activity == "calling_tool" and status.get("activity_detail"):
+        activity_label = f"🔧 {status['activity_detail']}"
+    model_label = status.get("model") or "—"
+    sid_label = status.get("session_id") or "—"
+
     st.markdown(f"""
 <div class="topbar">
   <div class="item"><span class="label">状态</span> {icon} {label}</div>
+  <div class="item"><span class="label">动作</span> {activity_label}</div>
+  <div class="item"><span class="label">模型</span> {model_label}</div>
+  <div class="item"><span class="label">Session</span> {sid_label}</div>
   <div class="item"><span class="label">Turn</span> {status.get('turn_id') or '—'}</div>
   <div class="item"><span class="label">自主等级</span> {autonomy}</div>
   <div class="item"><span class="label">距下次Tick</span> {next_tick_str}</div>
@@ -517,6 +591,8 @@ def render_topbar(client: AgentClient):
   <div class="item"><span class="label">待回答</span> {'🔴 ' + str(pending_ix_n) if pending_ix_n else '0'}</div>
 </div>
 """, unsafe_allow_html=True)
+    if status.get("session_dir"):
+        st.caption(f"📁 session 目录: `{status['session_dir']}`")
 
     if pending_n:
         with st.expander(f"⚠️ 有 {pending_n} 个待审批权限请求，点击处理", expanded=True):
@@ -862,49 +938,23 @@ def _stream_turn_into_placeholder(client: AgentClient, turn_id: str, container, 
     return finished, paused_for_permission
 
 
-def render_chat_tab(client: AgentClient):
+def render_chat_tab(client: AgentClient, session_id: str = ""):
     col_chat, col_events = st.columns([2, 1])
 
     with col_chat:
         st.markdown("#### 💬 对话")
-        cur_status = client.status() or {}
+        cur_status = client.status(session_id=session_id) or {}
         running_turn_id = cur_status.get("turn_id") if cur_status.get("state") == "running" else None
-
-        # 当前 session 信息条：模型 / session_id / session 存储目录，方便直接
-        # 确认"现在用的哪个模型、数据存在哪"，不用切去终端翻配置。
-        _model = cur_status.get("model")
-        _sid = cur_status.get("session_id")
-        _sdir = cur_status.get("session_dir")
-        info_bits = []
-        if _model:
-            info_bits.append(f"🧠 模型: `{_model}`")
-        if _sid:
-            info_bits.append(f"🆔 session: `{_sid}`")
-        if info_bits:
-            st.caption(" ｜ ".join(info_bits))
-        if _sdir:
-            st.caption(f"📁 目录: `{_sdir}`")
-
-        _ACTIVITY_LABELS = {
-            "waiting_input": "💤 空闲，等待输入",
-            "waiting_permission": "🛑 等待权限确认",
-            "calling_model": "🧠 正在调用模型…",
-            "calling_tool": "🔧 正在调用工具",
-        }
-        _activity = cur_status.get("activity")
-        if _activity:
-            label = _ACTIVITY_LABELS.get(_activity, _activity)
-            if _activity == "calling_tool" and cur_status.get("activity_detail"):
-                label = f"🔧 正在调用工具: `{cur_status['activity_detail']}`"
-            st.caption(f"状态: {label}")
+        # 模型 / session / session 目录 / 当前动作这些信息已经在顶栏常驻展示
+        # （见 render_topbar），这里不重复渲染，避免同一屏出现两份。
 
         if running_turn_id:
             st.caption("⏳ Agent 正在处理中…（下方将实时流式显示输出）")
-        hist = client.history() or {}
+        hist = client.history(session_id=session_id) or {}
         entries = hist.get("messages", [])
         # 拉最近事件，把 tool_call / tool_result / tool_error / permission_req 也
         # 渲染进聊天流里，让用户能看到 Agent 实际调用了什么工具、结果是什么。
-        ev_data = client.events(since_id=0, limit=100) or {}
+        ev_data = client.events(since_id=0, limit=100, session_id=session_id) or {}
         tool_events = [
             e for e in ev_data.get("events", [])
             if e.get("type") in ("tool_call", "tool_result", "tool_error",
@@ -998,14 +1048,14 @@ def render_chat_tab(client: AgentClient):
 
         new_turn_id = None
         if send and msg.strip():
-            res = client.chat(msg.strip())
+            res = client.chat(msg.strip(), session_id=session_id)
             if res and "_error" in res:
                 st.error(res["_error"])
             else:
                 new_turn_id = res.get("turn_id")
             st.rerun()  # 立即刷新一次，先把用户刚发的消息显示出来
         if interrupt:
-            client.interrupt()
+            client.interrupt(session_id=session_id)
             st.rerun()
 
         # 实时流式输出：优先处理"刚发出的这一轮"，否则接管"页面加载/刷新时
@@ -1023,7 +1073,7 @@ def render_chat_tab(client: AgentClient):
                 st.rerun()
 
         if st.button("🗑️ 清空历史"):
-            client.clear_history()
+            client.clear_history(session_id=session_id)
             st.rerun()
 
         # 工具活动/权限审批放在对话内容之外、页面最下方，不打断消息阅读体验
@@ -1056,7 +1106,7 @@ def render_chat_tab(client: AgentClient):
 
     with col_events:
         st.markdown("#### 📡 事件流")
-        ev = client.events(since_id=0, limit=100) or {}
+        ev = client.events(since_id=0, limit=100, session_id=session_id) or {}
         events = ev.get("events", [])
         box = st.container(height=480)
         with box:
@@ -1081,6 +1131,11 @@ def render_sessions_tab(client: AgentClient):
             res = client.new_session()
             if res and "_error" not in res:
                 st.success("已创建新会话")
+                new_sid = res.get("session_id")
+                if new_sid:
+                    # 顺手把本页面绑定到刚创建的新会话，免得用户创建后还要
+                    # 再点一次"本页面绑定到此会话"。
+                    set_active_session_id(new_sid)
             else:
                 st.error((res or {}).get("_error", "创建失败"))
             st.rerun()
@@ -1098,14 +1153,20 @@ def render_sessions_tab(client: AgentClient):
     for s in sessions:
         sid = s.get("id", "")
         current_mark = " 🟢当前" if s.get("is_current") else ""
-        with st.expander(f"🗂️ {sid}{current_mark}　·　轮次 {s.get('turns', '?')}　·　{s.get('age', s.get('updated_at',''))}"):
+        bound_mark = " 📌本页面" if sid == get_active_session_id() else ""
+        with st.expander(f"🗂️ {sid}{current_mark}{bound_mark}　·　轮次 {s.get('turns', '?')}　·　{s.get('age', s.get('updated_at',''))}"):
             st.json(s, expanded=False)
-            cc1, cc2 = st.columns(2)
-            if cc1.button("▶️ 恢复此会话", key=f"resume_{sid}"):
+            cc1, cc2, cc3 = st.columns(3)
+            if cc1.button("▶️ 恢复此会话（全局）", key=f"resume_{sid}",
+                           help="改变服务端全局默认 session，影响所有没有单独绑定 session 的客户端"):
                 res = client.resume_session(sid)
                 st.success("已切换") if res and "_error" not in res else st.error(res.get("_error", "失败"))
                 st.rerun()
-            if cc2.button("🗑️ 删除", key=f"del_{sid}"):
+            if cc2.button("📌 本页面绑定到此会话", key=f"bind_{sid}",
+                           help="只影响这个浏览器标签页（写入 URL），不影响其它标签页/客户端"):
+                set_active_session_id(sid)
+                st.rerun()
+            if cc3.button("🗑️ 删除", key=f"del_{sid}"):
                 client.delete_session(sid)
                 st.rerun()
 
@@ -1648,11 +1709,11 @@ def main():
         st.info("请先在左侧确认 API Base URL / Token，并确保 mini-agent daemon 已启动。")
         return
 
-    render_topbar(client)
+    render_topbar(client, get_active_session_id())
 
     tabs = st.tabs(["💬 对话", "🗂️ 会话管理", "📌 目标看板", "🔄 工作流", "📁 产出物", "🖼️ 产出预览", "🧠 自我状态", "🔧 诊断"])
     with tabs[0]:
-        render_chat_tab(client)
+        render_chat_tab(client, get_active_session_id())
     with tabs[1]:
         render_sessions_tab(client)
     with tabs[2]:
