@@ -375,16 +375,41 @@ class WorkflowRunner:
                         f"[Workflow] 并发执行本层 {len(parallel_steps)} 个步骤"
                         f"（worker={max_workers}）：{[s.id for s in parallel_steps]}"
                     )
-                    with ThreadPoolExecutor(max_workers=max_workers) as pool:
-                        futures = {
-                            pool.submit(self._run_one_step, step, step_results, inputs, results_lock): step
-                            for step in parallel_steps
-                        }
-                        for future in as_completed(futures):
-                            # _run_one_step 内部已经把结果写进 step_results 并吞掉了异常
-                            # （转成 FAILED StepResult），这里不需要再处理返回值/异常；
-                            # 用 as_completed 只是为了等待本层全部完成再进入下一层。
-                            future.result()
+                    # [FIX 并发执行期间 Ctrl+C 失效] `ui/raw_key_listener.py` 为了
+                    # 监听方向键/Ctrl+C，会把 tty 显式设成 cbreak 模式并关闭
+                    # ISIG——内核不再对 Ctrl+C 自动发 SIGINT，改由监听线程读到
+                    # 0x03 字节后手动 os.kill(...SIGINT)。这个监听器是给"前台单个
+                    # run_turn()"这种量级设计的单线程场景；workflow 并发批次会
+                    # 同时有 N 个线程各自跑一整轮 run_turn()（含各自可能触发的
+                    # 后台摘要线程），把本来就只有一根监听线程的这套机制置于比
+                    # 设计预期严重得多的并发压力下，一旦监听线程的 select/read
+                    # 被拖慢或状态被打乱，Ctrl+C 就会出现"按了没反应，要按很多次
+                    # 才生效，甚至完全没反应"的现象。
+                    #
+                    # 这里在真正开始并发跑这一批 step 之前，主动 stop() 监听器、
+                    # 把 tty 还原成正常模式（ISIG 重新打开），让 Ctrl+C 走回内核
+                    # 原生的 SIGINT 路径，不再依赖这根监听线程；本批次跑完（无论
+                    # 成功/异常）都通过 finally 把监听器恢复回去，不影响单步骤/
+                    # 串行场景下方向键切换焦点等功能。
+                    from mini_agent.ui.raw_key_listener import get_listener as _get_key_listener
+                    _key_listener = _get_key_listener()
+                    _listener_was_active = _key_listener.active
+                    if _listener_was_active:
+                        _key_listener.stop()
+                    try:
+                        with ThreadPoolExecutor(max_workers=max_workers) as pool:
+                            futures = {
+                                pool.submit(self._run_one_step, step, step_results, inputs, results_lock): step
+                                for step in parallel_steps
+                            }
+                            for future in as_completed(futures):
+                                # _run_one_step 内部已经把结果写进 step_results 并吞掉了异常
+                                # （转成 FAILED StepResult），这里不需要再处理返回值/异常；
+                                # 用 as_completed 只是为了等待本层全部完成再进入下一层。
+                                future.result()
+                    finally:
+                        if _listener_was_active:
+                            _key_listener.start()
                     self._persist_progress(paths, wf_session, step_results)
 
             wf_session.current_batch_index = batch_index + 1

@@ -104,7 +104,17 @@ def _effective_output_bridge(fallback_bridge: "AgentBridge") -> "AgentBridge":
 # 这里加一把可重入锁，让 output hook 里"真正往本地物理终端写"的那一小段
 # 临界区互斥——只序列化本地终端的落笔顺序，不影响 agent 本身的并发执行
 # （工具调用、LLM 请求等仍然完全并发，只有"打印这一下"是互斥的）。
-_local_term_write_lock = threading.RLock()
+#
+# [FIX 并发终端写入] 这把锁现在直接复用 `mini_agent.ui.renderer.term_write_lock`
+# （而不是这里新建一把独立的 RLock），原因：`agent/_helpers.py::_term_write_lock_ctx()`
+# 之前靠"`mini_agent.api.server` 是否已被 import"来判断是否处于 daemon 模式，
+# 只有 daemon 模式才返回这把锁；本地单进程 CLI 下永远拿不到锁，导致 workflow
+# 并发批次（ThreadPoolExecutor 同时跑多个 Agent.run_turn()）在本地 CLI 下
+# 复现和 daemon 多 session 一样的显示错位/卡死问题。现在两边统一共用
+# renderer 里那把"进程级、始终存在"的锁，daemon 和本地 CLI 都不需要再判断
+# "是否 daemon"。变量名保留 `_local_term_write_lock` 是为了不改动本文件里
+# 其余几十处 `with _local_term_write_lock:` 的调用点。
+from mini_agent.ui.renderer import term_write_lock as _local_term_write_lock
 
 
 def _print_to_term(markup: str) -> None:

@@ -11,12 +11,35 @@ from __future__ import annotations
 
 import json
 import sys
+import threading
 from typing import Optional
 
 from rich.syntax import Syntax
 from rich.text import Text
 
 from .terminal import term, Terminal
+
+# [FIX 并发终端写入] 进程级、始终存在的终端写锁。
+#
+# 背景：之前只有 `mini_agent.api.server` 里定义了一把 `_local_term_write_lock`，
+# `agent/_helpers.py::_term_write_lock_ctx()` 靠"该模块是否已被 import"来判断
+# 是否处于 daemon 模式，只有 daemon 模式下才返回这把锁，非 daemon（本地单进程
+# CLI）下永远返回 None，相当于完全不加锁。
+#
+# 这在"本地单进程也会有多线程并发写终端"的场景下（典型如 workflow 并发批次：
+# `workflow/runner.py` 用 ThreadPoolExecutor 同时跑多个独立 Agent 的
+# `run_turn()`）会复现和 daemon 多 session 完全一样的问题：多个线程各自的
+# print/工具调用日志、以及 run_turn() 结束后才起的"后台生成会话摘要"线程
+# （见 agent/profile.py），互相之间没有任何互斥，直接经由 Terminal 的渲染
+# 队列/状态栏刷新逻辑写同一个物理终端，会出现内容交织错位、状态栏错乱，
+# 严重时在 `_enter_input_mode()`/`_exit_input_mode()` 的竞态窗口附近卡死。
+#
+# 现在把锁挪到这里（渲染适配层，daemon/非daemon都会 import 到），
+# `agent/_helpers.py::_term_write_lock_ctx()` 与 `api/server.py` 都改为
+# 复用同一个对象，daemon 和本地 CLI 走的是完全相同的一把锁——不再需要
+# "是否 daemon"这个判断。用 RLock 是因为存在锁内再次加锁的调用路径
+# （比如已经持锁的 run_turn 内部又调用了 _locked_print_info）。
+term_write_lock = threading.RLock()
 
 # 向后兼容：其他模块直接 import R.console 后调用 .print()
 # 提供一个轻量的 _ConsoleProxy 代理到 terminal

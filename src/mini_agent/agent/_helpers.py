@@ -46,40 +46,42 @@ def _term_write_lock_ctx():
     直接调用 R.print_info()/R.print_warning() —— 这两个函数一路往下最终是
     `term.print(...)`，会不经任何互斥直接把消息投进 Terminal 的渲染队列。
 
-    根因：daemon 模式下，`server.py` 用 `_local_term_write_lock` 把"某个
-    session 的一整轮 run_turn()"当成本地终端写入的临界区，序列化了不同
-    session 之间的输出——但这把锁只在 server.py 里、包住 run_turn() 调用
-    本身。`_generate_and_save_summary()` 是 run_turn() **返回之后**才起的
-    后台线程（save_session() 触发），跑在这把锁的保护范围之外：它的
-    print_info("正在后台生成会话摘要...")/print_info("会话摘要记忆已生成")
-    等调用完全可能在另一个 session 正在流式输出的**中途**插进终端渲染
-    队列——多个消息在同一个物理终端上按到达顺序打印，于是这条"背景摘要"
-    的整行文本会被插在另一个 session 尚未收尾的流式内容中间，表现为：
+    根因：某个 session/线程的"一整轮 run_turn()"应当被当成本地终端写入的
+    临界区，序列化不同 session/线程之间的输出——但 `_generate_and_save_summary()`
+    是 run_turn() **返回之后**才起的后台线程（save_session() 触发），如果
+    没有一把大家都认的锁，它的 print_info("正在后台生成会话摘要...")/
+    print_info("会话摘要记忆已生成") 等调用完全可能在另一路正在流式输出的
+    **中途**插进终端渲染队列——多个消息在同一个物理终端上按到达顺序打印，
+    于是这条"背景摘要"的整行文本会被插在别处尚未收尾的流式内容中间，
+    表现为：
       - 内容从中间某处断开、开头几个字"丢失"（其实是被这条插入的打印行
         实际拆断了视觉连续性，配合 stream 的行内 filter/续写逻辑，看起来
         像是内容被吃掉）；
       - print_assistant_prefix() 打印的 "agent_name ❯ " 前缀所在的那一行
         被无关打印行打断，后续 token 另起一行，看起来"没有 agent 名字"。
 
-    修复：让这些背景线程的打印也去抢同一把 `_local_term_write_lock`——
-    锁在被某个 session 的 run_turn() 持有期间，这里的 print 调用会阻塞
-    等待，直到那一整轮输出收尾之后才真正打印，不会再插入到别的 session
-    正在进行中的流式内容内部。
+    修复：让这些背景线程的打印也去抢同一把锁——锁在被某一路持有期间，
+    这里的 print 调用会阻塞等待，直到那一整轮输出收尾之后才真正打印，
+    不会再插入到别的地方正在进行中的流式内容内部。
 
-    非 daemon 场景（比如单进程本地 CLI）下 `mini_agent.api.server` 模块
-    根本不会被 import，这里保持"锁不存在就不加锁"的静默降级，行为和之前
-    完全一致，不引入任何新依赖。
+    [FIX 并发终端写入] 这把锁曾经只在 `mini_agent.api.server`（daemon）
+    模块被 import 时才存在，非 daemon（本地单进程 CLI）下这里永远返回
+    None，等于完全不加锁——但本地 CLI 下同样存在多线程并发写终端的场景
+    （典型如 workflow 并发批次：`workflow/runner.py` 用 ThreadPoolExecutor
+    同时跑多个独立 Agent 的 run_turn()），因此复现了和 daemon 多 session
+    完全一样的显示错位/卡死问题。现在统一使用
+    `mini_agent.ui.renderer.term_write_lock`——这是一个模块级别永远存在
+    的 RLock，daemon 和本地 CLI 都会走到同一把锁上，不再需要"是否
+    daemon"这个判断。`api/server.py` 里的 `_local_term_write_lock` 现在
+    也直接是这同一个对象（import 自 renderer），所以两边天然保持一致。
     """
     try:
-        import sys as _sys
-        _server_mod = _sys.modules.get("mini_agent.api.server")
-        if _server_mod is not None:
-            return _server_mod._local_term_write_lock
+        from mini_agent.ui.renderer import term_write_lock as _lock
+        return _lock
     except Exception as _mini_agent_exc:
         from mini_agent.errors import log_exception
         log_exception(_mini_agent_exc, where='mini_agent.agent._helpers._term_write_lock_ctx')
-        pass
-    return None
+        return None
 
 
 class _NullCtx:
