@@ -15,9 +15,9 @@
 > `GET /v1/evolution/proposals`/`GET .../diff`/`POST .../merge`（REST）+
 > 看板"🧬 进化提案"tab（列表 + risk 徽标 + diff 展开 + 一键合并/强制合并
 > 二次确认），见第八轮实施记录）。
-> 未完成：详见实施记录文档"未完成/待续"一节（当前主要是历史遗留的
-> Track E 边界情况与既有测试签名不匹配问题，不再有 Track A~K 里完全
-> 没有 UI/API 落地的功能性缺口）。
+> 未完成：详见实施记录文档"未完成/待续"一节（均为边界情况或已调研后
+> 搁置的可选优化，不再有功能性缺口）。第九轮已修复历次记录中遗留的
+> 唯一一项既有测试代码缺陷，当前全部测试文件为全绿（152 项通过）。
 > 关联代码：`apps/mini_agent_kanban/`、`src/mini_agent/evolution/`、`src/mini_agent/perception/goal_backlog.py`
 > 前置修复：本方案假设 [并发槽位卡死修复] 已落地（`ObjectiveExecutor.reap_stale_steps()`），
 > 否则 Track B/C 的状态同步会把"假卡死"也当成正常状态展示，掩盖问题。

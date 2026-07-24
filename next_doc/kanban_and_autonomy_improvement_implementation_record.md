@@ -869,6 +869,84 @@ PYTHONPATH=src python3 -m pytest tests/test_evolution_proposal_routes_track_i_r8
 TestArtifactsFromToolCalls` 下 4 项，调用了当前 `on_turn_done()` 签名
 不存在的 `history_segment` 参数），本轮同样未去动它。
 
+## 第九轮已完成 Track（本次续做）
+
+### 既有测试代码缺陷修复（第四轮发现，历次标注为"未完成/待续"，本轮修复）
+
+`tests/test_objective_executor_kanban_tracks_r2.py::TestArtifactsFromToolCalls`
+下的 5 个用例（`test_extracts_paths_from_write_and_patch_tools`、
+`test_tool_calls_take_priority_over_text_marker`、
+`test_falls_back_to_text_marker_when_no_tool_calls_found`、
+`test_empty_or_missing_history_segment_does_not_crash`、
+`test_deduplicates_repeated_paths`）此前调用
+`oe.on_turn_done(turn_id, text, history_segment=history_segment)`，其中
+4 个因为 `history_segment` 参数报 `TypeError` 失败（第 5 个凑巧没传这个
+关键字参数，一直是通过的）。
+
+**根因排查结论**：不是功能缺失，是测试代码写在了第三轮 Track G 深化版
+真正落地**之前**（或者说，写的时候设想的 API 和最终实现的 API 不一样），
+一直没有跟着同步更新：
+
+- 测试假设的 API：`on_turn_done()` 直接接收一个 `history_segment` 参数，
+  由调用方把这一步的原始 history 记录传进去。
+- 第三轮实际落地的 API（见本文档"第三轮"一节，`objective_executor.py`
+  + `api/routes.py`）：`ObjectiveExecutor` 构造函数注入
+  `artifacts_from_tools_fn(submitted_message) -> list[str]` 回调，回调
+  内部自己负责"根据 `step.submitted_message` 去定位历史记录、再从中
+  提取 write_file/patch_file 类工具的路径参数"这一整套逻辑（真实实现
+  是 `api/routes.py` 的 `_locate_step_history_entries()` +
+  `_extract_tool_write_paths()`，已经由
+  `tests/test_objective_executor_kanban_tracks_r3.py::
+  TestExtractToolWritePaths`/`TestLocateStepHistoryEntries` 单独覆盖）。
+  `on_turn_done()` 本身从未有过、也不需要 `history_segment` 参数——它
+  只需要 `turn_id`/`result_summary`，产出物提取所需的上下文
+  （`submitted_message`）在 step 对象上已经有了，不需要调用方额外传。
+
+**修复方式**：不是删掉/跳过这几个用例，而是按实际实现的 API 重写，
+保留原测试意图（工具调用提取优先于正则、无工具调用时回退正则、
+同路径去重、未提供回调时不崩溃且保持向后兼容）：
+
+- 新增类内 helper `_extract_write_paths_from_segment()`：与
+  `api/routes.py::_extract_tool_write_paths()` 同样的判断口径（写入类
+  工具名单 + 路径参数提取 + 按出现顺序去重）的简化版，只在本测试文件
+  内部使用，不依赖真实的 agent 历史存储——完整版的解析细节已经由 r3
+  的 `TestExtractToolWritePaths` 单独覆盖，这里不重复测。
+- 新增类内 helper `_make_tools_fn(by_submitted_message)`：构造一个符合
+  真实 `artifacts_from_tools_fn(submitted_message) -> list[str]` 签名
+  的测试替身，按 `submitted_message` 查表返回预先准备好的解析结果。
+- 每个用例改为：先 `start()` 拿到 `step.submitted_message`，再用它
+  构造 `history_segment` → `tools_fn`，通过
+  `oe._artifacts_from_tools_fn = tools_fn` 补挂（真实场景下这个回调是
+  构造函数参数，测试里因为需要先拿到 `submitted_message` 才能构造
+  对应的假数据，所以在拿到之后再挂载到同一个内部属性上——这与构造时
+  注入在效果上完全等价，`_extract_tool_artifacts()` 读取的就是这个
+  属性），然后调用 `oe.on_turn_done(turn_id, result_summary)`（不再
+  传任何 `history_segment` 关键字参数）。
+- 两个测试文件（r2/r3）职责边界因此更清晰：r3 测
+  `_extract_tool_write_paths()`/`_locate_step_history_entries()` 本身
+  从原始 history 记录里解析工具调用的正确性；r2 这里测
+  `ObjectiveExecutor.on_turn_done()` 如何使用 `artifacts_from_tools_fn`
+  回调的返回结果（优先级/回退/去重/不崩溃），不重复第三轮已经测过的
+  解析实现细节。
+
+**验证**：`tests/test_objective_executor_kanban_tracks_r2.py` 修复前
+14 项通过 + 4 项失败，修复后 **18 项全部通过**；连同第一至八轮全部
+既有测试文件（`test_objective_executor_kanban_tracks.py`、
+`_r2.py`（修复后）、`_r3.py`、`test_goal_backlog.py`、
+`test_objective_outcome_tracker.py`、
+`test_objective_executor_adaptive_concurrency.py`、
+`test_resource_arbiter_gating_track_j.py`、
+`test_evolution_proposal_risk_track_i.py`、
+`test_evolution_proposal_routes_track_i_r8.py`、`test_state_repo.py`、
+`test_evolve_cli.py`）合计 **152 项全部通过，0 项失败**——这是自第一轮
+落地以来第一次没有任何已知失败用例。
+
+运行方式：
+
+```bash
+PYTHONPATH=src python3 -m pytest tests/test_objective_executor_kanban_tracks_r2.py -q
+```
+
 ## 未完成 / 待续（供下一轮参考）
 
 按方案原文的路线图，以下项目**仍未开始或未完全完成**，需要后续排期：
@@ -877,23 +955,19 @@ TestArtifactsFromToolCalls` 下 4 项，调用了当前 `on_turn_done()` 签名
   （compact）后无法定位到某个 step 的 trace / 产出物；多 session 场景下
   Objective 执行如果不再统一走单一主 bridge，trace/产出物提取接口都
   需要能定位到正确的 session/agent。
-- **既有测试代码缺陷**（第四轮发现，非本轮引入，历次均未修复）：`tests/
-  test_objective_executor_kanban_tracks_r2.py::TestArtifactsFromToolCalls`
-  下 4 个用例调用了 `on_turn_done(..., history_segment=...)`，当前签名
-  没有这个参数，需要下一轮排查是功能确实缺失还是测试需要更新。
 - **Track J 的"模型档位切换"半成品**（第六轮调研后明确搁置）：如果未来
   `LLMClientPool` 演进出"按 initiator/场景选择模型档位"的能力，可以
   回来把 `degraded` 态接上"自主任务用更便宜的模型"这一优化，目前
   `AutonomousLoop`/`ObjectiveExecutor` 侧已经有 `gating_state()`/
   `set_gating_degraded()` 这两个现成的信号源可以直接复用，不需要再动
   资源仲裁本身的逻辑。
-- **Track I 看板 diff 视图的进一步增强**（本轮未做，非阻塞项）：当前
+- **Track I 看板 diff 视图的进一步增强**（第八轮未做，非阻塞项）：当前
   diff 展示是纯 `st.code` 的 unified diff 文本，如果后续觉得不够直观，
   可以考虑接入更结构化的 diff 渲染，但这是体验优化，不影响"能不能
   一键合并"这个核心能力已经可用的事实。
 
-至此，方案原文路线图里 Track A~K 全部有了可用的落地版本，且此前记录
-中"唯一还完全没有 UI 落地的功能性缺口"（Track I 看板可视化）已在本轮
-补齐——Track A~K 不再有功能性缺口，剩余"未完成/待续"项均为边界情况、
-既有测试缺陷、或已明确调研后搁置的可选优化，可按团队带宽排期，不再
-存在紧迫的排期建议。
+至此，方案原文路线图里 Track A~K 全部有了可用的落地版本且看板侧不再
+有功能性缺口（第八轮补齐），本轮同时清空了历次记录里遗留的唯一一项
+"既有测试代码缺陷"——全部测试文件目前均为全绿，没有已知失败用例。
+剩余"未完成/待续"项均为边界情况或已明确调研后搁置的可选优化，可按
+团队带宽排期，不再存在紧迫的排期建议。

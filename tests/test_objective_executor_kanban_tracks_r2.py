@@ -269,7 +269,25 @@ class TestArtifactsParsing:
 
 class TestArtifactsFromToolCalls:
     """[Track G 深化] 优先从 write_file/patch_file 等工具调用记录里精确
-    提取路径，而不是依赖模型自觉输出 `[ARTIFACTS] ...` 标记。"""
+    提取路径，而不是依赖模型自觉输出 `[ARTIFACTS] ...` 标记。
+
+    [第八轮修复既有测试缺陷] 本类此前调用
+    `oe.on_turn_done(turn_id, text, history_segment=history_segment)`，
+    但 `ObjectiveExecutor.on_turn_done()` 从未有过 `history_segment`
+    这个参数——第三轮实际落地的 Track G 深化版走的是另一条路径：
+    构造函数注入 `artifacts_from_tools_fn(submitted_message) -> list[str]`
+    回调（见 `_extract_tool_artifacts()`），由回调自己负责"根据
+    submitted_message 去定位历史记录、从中提取 write_file/patch_file 类
+    工具的路径参数"这一整套逻辑（真实实现在 `api/routes.py` 的
+    `_locate_step_history_entries()` + `_extract_tool_write_paths()`，
+    已经由 `tests/test_objective_executor_kanban_tracks_r3.py` 单独覆盖）。
+    这里的测试因此改写成：用一个模拟"按 submitted_message 从记录里提取
+    工具调用路径"的 `artifacts_from_tools_fn`，在 `ObjectiveExecutor`
+    这一层验证行为（优先级/回退/去重/不崩溃），不重复第三轮已经测过的
+    "如何从原始 history 记录里解析工具调用"这部分实现细节——两个测试
+    文件的职责边界因此是：r3 测 `_extract_tool_write_paths()` 本身的
+    解析正确性，这里测 `ObjectiveExecutor` 如何使用回调结果。
+    """
 
     @staticmethod
     def _assistant_entry_with_tool_calls(calls: list[tuple]) -> dict:
@@ -280,15 +298,52 @@ class TestArtifactsFromToolCalls:
             content.append({"type": "tool_use", "name": name, "input": {"path": path}})
         return {"_type": "assistant_reply", "content": content}
 
+    @staticmethod
+    def _extract_write_paths_from_segment(history_segment: list[dict]) -> list[str]:
+        """简化版"从一段 history 记录里提取 write_file/patch_file 类工具
+        路径参数"，与 `api/routes.py::_extract_tool_write_paths()` 的判断
+        口径一致（只收集写入类工具、按出现顺序去重），供本文件的
+        `artifacts_from_tools_fn` 测试替身使用——完整版的解析细节由
+        `tests/test_objective_executor_kanban_tracks_r3.py::
+        TestExtractToolWritePaths` 覆盖，这里不重复。"""
+        write_tools = {"write_file", "create_file", "patch_file", "patch_file_simple"}
+        seen: set = set()
+        paths: list[str] = []
+        for entry in history_segment:
+            if entry.get("_type") != "assistant_reply":
+                continue
+            for block in entry.get("content") or []:
+                if block.get("type") != "tool_use" or block.get("name") not in write_tools:
+                    continue
+                path = (block.get("input") or {}).get("path")
+                if path and path not in seen:
+                    seen.add(path)
+                    paths.append(path)
+        return paths
+
+    def _make_tools_fn(self, by_submitted_message: dict):
+        """构造一个符合真实 `artifacts_from_tools_fn(submitted_message) ->
+        list[str]` 签名的回调：按 `step.submitted_message` 查表返回预先
+        准备好的 history_segment 解析结果——模拟真实实现里
+        "根据 submitted_message 定位历史记录、再从中提取工具调用路径"
+        这两步，但不依赖真实的 agent 历史存储。"""
+        def _fn(submitted_message):
+            segment = by_submitted_message.get(submitted_message)
+            if segment is None:
+                return []
+            return self._extract_write_paths_from_segment(segment)
+        return _fn
+
     def test_extracts_paths_from_write_and_patch_tools(self, tmp_path):
-        oe = _make_executor(tmp_path)  # 不提供 artifacts_parse_fn，纯测工具调用路径
+        oe = _make_executor(tmp_path)
         obj = _FakeGoalNode("obj_12")
         exec_id = oe.start(obj)
         ex = oe.get_execution(exec_id)
+        submitted_message = ex.steps[0].submitted_message
         turn_id = ex.current_step.turn_id
 
         history_segment = [
-            {"_type": "user_input", "content": ex.steps[0].submitted_message},
+            {"_type": "user_input", "content": submitted_message},
             self._assistant_entry_with_tool_calls([
                 ("write_file", "src/a.py"),
                 ("patch_file", "src/b.py"),
@@ -296,7 +351,13 @@ class TestArtifactsFromToolCalls:
             ]),
             {"_type": "tool_result", "content": "ok"},
         ]
-        oe.on_turn_done(turn_id, "完成了第一步。", history_segment=history_segment)
+        # 真实实现里 artifacts_from_tools_fn 是构造函数参数（此时还不知道
+        # submitted_message），这里用同样的注入点（内部属性）在拿到
+        # submitted_message 之后再补挂——测的是 ObjectiveExecutor 如何
+        # 使用回调结果，不是回调本身该在哪个时机被注入。
+        oe._artifacts_from_tools_fn = self._make_tools_fn({submitted_message: history_segment})
+
+        oe.on_turn_done(turn_id, "完成了第一步。")
 
         assert ex.steps[0].artifacts == ["src/a.py", "src/b.py"]
 
@@ -305,37 +366,38 @@ class TestArtifactsFromToolCalls:
         def _regex_fn(text):
             return ["从文本解析出来的.py"]
 
+        history_segment = [
+            self._assistant_entry_with_tool_calls([("create_file", "src/real.py")]),
+        ]
+
         oe = _make_executor(tmp_path, artifacts_parse_fn=_regex_fn)
         obj = _FakeGoalNode("obj_13")
         exec_id = oe.start(obj)
         ex = oe.get_execution(exec_id)
+        submitted_message = ex.steps[0].submitted_message
+        tools_fn = self._make_tools_fn({submitted_message: history_segment})
+        oe._artifacts_from_tools_fn = tools_fn  # 补挂回调（构造时还不知道 submitted_message）
         turn_id = ex.current_step.turn_id
 
-        history_segment = [
-            self._assistant_entry_with_tool_calls([("create_file", "src/real.py")]),
-        ]
-        oe.on_turn_done(
-            turn_id, "完成了第一步。[ARTIFACTS] 从文本解析出来的.py",
-            history_segment=history_segment,
-        )
+        oe.on_turn_done(turn_id, "完成了第一步。[ARTIFACTS] 从文本解析出来的.py")
         assert ex.steps[0].artifacts == ["src/real.py"]
 
     def test_falls_back_to_text_marker_when_no_tool_calls_found(self, tmp_path):
         def _regex_fn(text):
             return ["文本兜底.py"] if "[ARTIFACTS]" in text else []
 
+        # history_segment 里没有任何写入类工具调用
+        history_segment = [self._assistant_entry_with_tool_calls([("read_file", "src/x.py")])]
+
         oe = _make_executor(tmp_path, artifacts_parse_fn=_regex_fn)
         obj = _FakeGoalNode("obj_14")
         exec_id = oe.start(obj)
         ex = oe.get_execution(exec_id)
+        submitted_message = ex.steps[0].submitted_message
+        oe._artifacts_from_tools_fn = self._make_tools_fn({submitted_message: history_segment})
         turn_id = ex.current_step.turn_id
 
-        # history_segment 里没有任何写入类工具调用
-        history_segment = [self._assistant_entry_with_tool_calls([("read_file", "src/x.py")])]
-        oe.on_turn_done(
-            turn_id, "完成了第一步。[ARTIFACTS] 文本兜底.py",
-            history_segment=history_segment,
-        )
+        oe.on_turn_done(turn_id, "完成了第一步。[ARTIFACTS] 文本兜底.py")
         assert ex.steps[0].artifacts == ["文本兜底.py"]
 
     def test_empty_or_missing_history_segment_does_not_crash(self, tmp_path):
@@ -345,24 +407,27 @@ class TestArtifactsFromToolCalls:
         ex = oe.get_execution(exec_id)
         turn_id = ex.current_step.turn_id
 
-        # 不传 history_segment（默认 None）—— 行为应与改造前一致
+        # 不提供 artifacts_from_tools_fn（默认 None）—— 行为应与改造前一致
         oe.on_turn_done(turn_id, "完成了第一步。")
         assert ex.steps[0].artifacts == []
 
     def test_deduplicates_repeated_paths(self, tmp_path):
-        oe = _make_executor(tmp_path)
-        obj = _FakeGoalNode("obj_16")
-        exec_id = oe.start(obj)
-        ex = oe.get_execution(exec_id)
-        turn_id = ex.current_step.turn_id
-
         history_segment = [
             self._assistant_entry_with_tool_calls([
                 ("write_file", "src/dup.py"),
                 ("patch_file", "src/dup.py"),  # 同一个文件先写后改，不应重复出现
             ]),
         ]
-        oe.on_turn_done(turn_id, "完成了第一步。", history_segment=history_segment)
+
+        oe = _make_executor(tmp_path)
+        obj = _FakeGoalNode("obj_16")
+        exec_id = oe.start(obj)
+        ex = oe.get_execution(exec_id)
+        submitted_message = ex.steps[0].submitted_message
+        oe._artifacts_from_tools_fn = self._make_tools_fn({submitted_message: history_segment})
+        turn_id = ex.current_step.turn_id
+
+        oe.on_turn_done(turn_id, "完成了第一步。")
         assert ex.steps[0].artifacts == ["src/dup.py"]
 
 
