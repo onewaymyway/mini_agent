@@ -451,6 +451,113 @@ class StateRepo:
         flag = "-D" if force else "-d"
         self._run_git(["branch", flag, name])
 
+    def commits_on_branch(self, branch: str, base: str = "HEAD") -> list["CommitInfo"]:
+        """
+        [看板与自主性改进方案 Track I] 返回 `branch` 相对 `base` 独有的 commit
+        （即 `git log base..branch`），用于风险分级：一个进化提案分支通常是
+        `EvolutionWorkspace`/`skill_propose` 在隔离 worktree 里 apply() 出来
+        的若干个 commit，需要逐条读出 tier/改动文件才能判断整体风险等级。
+
+        实现复用与 `log()` 相同的两步策略（先取 commit 元信息，再逐条查
+        `_files_in_commit()`），原因同 `log()` 的 docstring：文件列表与
+        author/date/subject/body 混在一次查询里不能无歧义地切分。
+        """
+        unit_sep = "\x1f"
+        rec_sep = "\x1e"
+        fmt = unit_sep.join(["%H", "%an", "%ad", "%s", "%b"])
+        proc = self._run_git(
+            ["log", f"{base}..{branch}", f"--pretty=format:{fmt}{rec_sep}", "--date=iso-strict"],
+            check=False,
+        )
+        if proc.returncode != 0:
+            return []
+        commits: list[CommitInfo] = []
+        for record in proc.stdout.split(rec_sep):
+            record = record.strip("\n")
+            if not record.strip():
+                continue
+            parts = record.split(unit_sep, 4)
+            if len(parts) < 5:
+                continue
+            h, author, date, subject, body = parts
+            commits.append(CommitInfo(
+                commit=h, author=author, date=date, subject=subject,
+                body=body.strip("\n"), files=self._files_in_commit(h),
+            ))
+        return commits
+
+    def merge_branch(
+        self,
+        branch: str,
+        into: Optional[str] = None,
+        delete_after: bool = True,
+        message: Optional[str] = None,
+    ) -> str:
+        """
+        [看板与自主性改进方案 Track I] 把一个进化提案分支合并进主分支——这是
+        方案里"低风险变更允许一键合并"的底层动作，本方法本身**不做风险
+        判断**（风险分级由 `evolution/proposal_risk.py::classify_proposal_risk()`
+        独立负责，调用方应先判断风险等级再决定要不要调用本方法，或是否需要
+        `force` 走全人工审核路径——本方法对任何分支一视同仁，不内置任何
+        "只有低风险才能合并"的限制，那是调用方/API 层的职责，不是 git 操作
+        本身该关心的事）。
+
+        Args:
+            branch: 待合并的分支名（例如 `evolve/2026-07-20-skill-foo`）。
+            into: 合并目标分支，默认使用当前分支（通常就是 main/master）。
+                  提供该参数前会先 `git checkout` 到该分支，避免调用方
+                  误合并到错误的分支上。
+            delete_after: 合并成功后是否删除源分支（默认 True——提案分支的
+                  使命是"被合并或被拒绝"，合并之后没有继续保留的价值，
+                  拒绝走 `delete_branch()` 单独处理，不经过本方法）。
+            message: 自定义 merge commit message，默认
+                  `"Merge evolve proposal: <branch>"`。
+
+        Returns:
+            合并后 `into` 分支 HEAD 的 commit hash。
+
+        Raises:
+            StateRepoError: 分支不存在、`into` 分支不存在、或合并产生冲突
+                  （冲突时自动 `git merge --abort`，不留下半途而废的合并
+                  状态，仓库回到调用前的干净状态）。
+        """
+        existing = set(self.list_branches())
+        if branch not in existing:
+            raise StateRepoError(f"branch {branch!r} does not exist, cannot merge")
+
+        if into is not None:
+            if into not in existing and into != self.current_branch():
+                raise StateRepoError(f"target branch {into!r} does not exist")
+            self._run_git(["checkout", into])
+
+        merge_message = message or f"Merge evolve proposal: {branch}"
+        proc = self._run_git(
+            ["merge", "--no-ff", "-m", merge_message, branch], check=False,
+        )
+        if proc.returncode != 0:
+            # 合并冲突或其他失败：中止合并，恢复到调用前的干净状态，不留下
+            # 半途而废的冲突标记文件——一键合并的失败模式应该是"什么都
+            # 没发生，报错让人工介入"，而不是"仓库进入了一个奇怪的中间态"。
+            self._run_git(["merge", "--abort"], check=False)
+            raise StateRepoError(
+                f"merge of branch {branch!r} failed (conflict or other git error): "
+                f"{proc.stderr.strip()}"
+            )
+
+        commit_hash = self._run_git(["rev-parse", "HEAD"]).stdout.strip()
+
+        if delete_after:
+            try:
+                self.delete_branch(branch, force=True)
+            except StateRepoError as _mini_agent_exc:
+                # 分支删除失败不应该让整个合并操作报错——合并本身已经成功
+                # （commit_hash 已经产生），删分支只是收尾清理，失败了大不了
+                # 留着这个分支，不影响已经合并的事实。
+                from mini_agent.errors import log_exception
+                log_exception(_mini_agent_exc, where='mini_agent.evolution.state_repo.StateRepo.merge_branch')
+
+        return commit_hash
+
     # ── 辅助 ──────────────────────────────────────────────────────────────────
 
     def _normalize_path(self, path: Union[str, Path]) -> Path:

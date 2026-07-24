@@ -9,6 +9,17 @@ cli/commands/evolution.py — /evolution slash 命令处理（Stage 2.4）
 /evolution revert <commit>    — StateRepo.revert()，按设计文档 4.3 节生成 revert commit，
                                   并自动写入一条 source="revert_record" 的 lesson
 
+[看板与自主性改进方案 Track I] 新增：
+/evolution proposals          — 列出所有 evolve/* 提案分支，逐条给出风险分级
+                                  （low/high，见 evolution/proposal_risk.py）
+/evolution merge <branch> [--force]
+                               — 一键合并提案分支：risk=low 时直接合并；
+                                 risk=high 时默认拒绝，需要显式加 --force
+                                 才会合并（对应方案原文"中/高风险维持现状
+                                 全人工审核"——--force 仍然是"人工"这一步，
+                                 只是跳过了本命令内置的风险门槛，不代表
+                                 跳过了人工判断本身）。
+
 本命令组操作的 StateRepo 固定指向 `agent.cfg.project_root`——"自我修改"针对的
 就是 agent 自己运行所在的项目仓库，不支持指定别的仓库路径（避免被误用为
 通用 git 客户端，这不是本命令的定位）。
@@ -52,10 +63,15 @@ def handle_evolution_cmd(args: list[str], agent=None) -> None:
         _handle_outcomes(rest, agent)
     elif sub in ("lessons-to-reminders", "lessons2reminders"):
         _handle_lessons_to_reminders(agent)
+    elif sub == "proposals":
+        _handle_proposals(repo)
+    elif sub == "merge":
+        _handle_merge(repo, rest)
     else:
         R.print_error(
             "Usage: /evolution [log [N] | show <commit> | diff <commit> | "
-            "revert <commit> | outcomes [--worsened] | lessons-to-reminders]"
+            "revert <commit> | outcomes [--worsened] | lessons-to-reminders | "
+            "proposals | merge <branch> [--force]]"
         )
 
 
@@ -139,6 +155,94 @@ def _handle_diff(repo, rest: list[str]) -> None:
                       "(invalid commit, or it is the repository's first commit).")
         return
     R.print_diff(diff_text)
+
+
+# ── /evolution proposals & merge（看板与自主性改进方案 Track I）────────────────
+
+def _handle_proposals(repo) -> None:
+    """[Track I] 列出所有 evolve/* 提案分支，逐条给出风险分级。
+
+    分支列表来源：`repo.list_branches(prefix="evolve/")`——`skill_propose`
+    工具（tools/evolution.py）和 `EvolutionWorkspace` 都固定用
+    `evolve/<date>-...` 命名分支，这是仓库里已经在用的约定，不需要新增
+    任何"提案登记表"之类的额外存储。
+    """
+    from mini_agent.evolution.proposal_risk import classify_proposal_risk
+
+    branches = repo.list_branches(prefix="evolve/")
+    if not branches:
+        R.print_info("No pending evolve proposal branches.")
+        return
+
+    from rich.table import Table
+    from rich import box as rbox
+
+    t = Table(box=rbox.SIMPLE, show_header=True, header_style="bold dim")
+    t.add_column("Branch", style="cyan", min_width=20)
+    t.add_column("Risk", min_width=6)
+    t.add_column("Max Tier", min_width=8)
+    t.add_column("Commits", min_width=7)
+    t.add_column("Reason", min_width=20, max_width=60)
+
+    for branch in branches:
+        result = classify_proposal_risk(repo, branch)
+        risk_style = "green" if result.risk == "low" else "yellow"
+        t.add_row(
+            branch,
+            f"[{risk_style}]{result.risk}[/{risk_style}]",
+            result.max_tier or "-",
+            str(result.commit_count),
+            "; ".join(result.reasons),
+        )
+
+    R.console.print("\n[bold]Evolve Proposal Branches[/bold]  "
+                     "[dim](/evolution merge <branch> to merge; low risk merges "
+                     "directly, high risk needs --force)[/dim]")
+    R.console.print(t)
+    R.console.print()
+
+
+def _handle_merge(repo, rest: list[str]) -> None:
+    """[Track I] 一键合并提案分支：risk=low 时直接合并；risk=high 时需要
+    显式 `--force` 才会合并（"一键"指的是低风险场景下不需要逐行审 diff，
+    不代表高风险场景下这个命令会绕过人工判断——它只是把"要不要合并"这个
+    决定权交还给调用者，通过要求显式 `--force` 确保这是一次有意识的操作，
+    而不是意外点了一下）。
+    """
+    from mini_agent.evolution.state_repo import StateRepoError
+    from mini_agent.evolution.proposal_risk import classify_proposal_risk
+
+    force = "--force" in rest
+    positional = [a for a in rest if a != "--force"]
+    if not positional:
+        R.print_error("Usage: /evolution merge <branch> [--force]")
+        return
+    branch = positional[0]
+
+    if branch not in repo.list_branches():
+        R.print_error(f"Branch not found: {branch} (try /evolution proposals to list pending branches)")
+        return
+
+    result = classify_proposal_risk(repo, branch)
+    if result.risk != "low" and not force:
+        R.print_error(
+            f"Branch {branch!r} is risk={result.risk!r} ({'; '.join(result.reasons)}). "
+            "Refusing to merge without manual review. Re-run with --force to override "
+            "(this still requires an explicit human decision, it just skips this "
+            "command's built-in risk gate)."
+        )
+        return
+
+    try:
+        commit_hash = repo.merge_branch(branch)
+    except StateRepoError as e:
+        R.print_error(f"Merge failed: {e}")
+        return
+
+    R.print_success(
+        f"Merged {branch!r} into {repo.current_branch()!r} "
+        f"(commit {commit_hash[:8]}, risk was {result.risk!r})."
+    )
 
 
 # ── /evolution revert ────────────────────────────────────────────────────────

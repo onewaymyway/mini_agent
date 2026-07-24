@@ -96,6 +96,10 @@ def build_parser() -> argparse.ArgumentParser:
               /evolution show <commit>    Show one commit's full info + diff
               /evolution diff <commit>    Show diff for one commit
               /evolution revert <commit>  Revert a self-evolution commit (records a lesson)
+              /evolution proposals        List evolve/* proposal branches with risk grading
+              /evolution merge <branch> [--force]
+                                          One-click merge a proposal branch (low risk only
+                                          unless --force)
               /evolve review [--global] [--tier T1|T2]   Scan lessons, spawn evolution-agent on qualifying groups
               /evolve list [--global] [--tier T1|T2]     Preview qualifying lesson groups without spawning
               /evolve consolidate [--dry-run]              Run background consolidation (prune/promote/knowledge consolidation) [alias: phase-g]

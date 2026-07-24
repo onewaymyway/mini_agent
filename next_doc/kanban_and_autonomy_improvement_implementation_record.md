@@ -670,9 +670,126 @@ test_objective_executor_kanban_tracks_r2.py::TestArtifactsFromToolCalls`
 `ObjectiveExecutor.on_turn_done()` 签名里确实没有这个参数，本轮同样
 未去动它）。
 
+## 第七轮已完成 Track（本次续做）
+
+### Track I（P2）：进化提案分级自治 —— 已上线（风险分级 + 一键合并；看板 diff 视图 tab 未做）
+
+按第六轮"未完成/待续"里的建议，本轮按缩小后的范围实现 Track I：先做
+"风险分级字段 + 一键合并"这一半，看板新增"进化提案"tab（含 diff 可视化）
+拆成独立后续子项，不在本轮做。
+
+**改动内容**：
+
+- 新增 `evolution/proposal_risk.py`：
+  - `classify_proposal_risk(repo, branch, base=None, eval_result_path=None)
+    -> ProposalRisk`：对一个 `evolve/*` 提案分支做风险分级，返回
+    `risk`（`"low"`/`"high"`）、`reasons`（判定依据，逐条列出，不隐藏
+    判断逻辑）、`max_tier`、`changed_paths`、`commit_count`、
+    `eval_regression`（`None` 表示无 eval 数据可判断）。
+  - 判定规则，按顺序短路：
+    1. 分支相对 `base` 没有独有 commit → 直接 `"high"`（保守：状态不对
+       就该让人工确认，不该出现"一键合并"按钮）。
+    2. commit 里出现过 `[T2]`/`[T3]`（从 commit subject 里正则解析
+       `_build_commit_message()` 写入的 `[T{tier}]` 前缀）→ `"high"`
+       （涉及核心逻辑改动/命中受保护路径）。
+    3. 改动路径必须**全部**匹配"低风险路径模式"（`.md`/`.txt` 后缀、
+       `next_doc/`/`docs/`/`.agent/lessons`/`.claude/skills/` 前缀、
+       `CLAUDE.md`/`Agent.md`/`README.md` 精确文件名）——任何一个文件
+       不匹配就整体判 `"high"`（保守：不允许"大部分是文档就放行"）。
+    4. 若提供了 `eval_result_path` 且文件存在：解析
+       `eval_runner.py::EvalReport.to_dict()` 的 `summary` 字段，
+       `with_skill` 相对 `without_skill` 的 `tool_failure_rate` 升高或
+       `scenarios_ok` 减少即判定为回归 → `"high"`；无法解析/文件不存在
+       → `eval_regression=None`，不阻塞 `"low"` 判定。
+    5. 以上都通过 → `"low"`。
+  - **与方案原文的差异说明**："T0~T3 全绿"这句话核实后不需要在本模块
+    重新校验：`StateRepo.apply()` 本身就是"校验失败则不落盘、不
+    commit"，提案分支上能看到 commit 就意味着这些 commit 在 apply()
+    时已经通过了各自 tier 的校验器，本模块只需要读出 tier 本身是否
+    "足够低"（≤T1），不需要重新跑一遍校验逻辑。
+  - "只改文档/注释"里的"注释"没有做语义级识别（需要按语言解析语法，
+    成本远超本 Track 收益），改为纯路径模式匹配，如实记录为已知局限：
+    一个只改了代码文件里注释的 commit，如果那个文件本身不匹配低风险
+    路径模式，仍然会被判 `"high"`——这是保守而非精确的判断，与方案
+    原文"低风险"定义的意图一致（宁可把一些实际无害的改动误判为需要
+    人工审核，也不允许把有风险的改动误判为可以一键合并）。
+- `evolution/state_repo.py::StateRepo` 新增两个方法：
+  - `commits_on_branch(branch, base="HEAD") -> list[CommitInfo]`：
+    `git log base..branch` 的结构化封装，供 `classify_proposal_risk()`
+    读取分支独有的 commit 列表；实现复用与既有 `log()` 相同的"两步
+    查询"策略（先取 commit 元信息，再逐条查 `_files_in_commit()`），
+    原因同 `log()` 的 docstring 说明（文件列表与其余字段无法在一次
+    查询里无歧义地切分）。
+  - `merge_branch(branch, into=None, delete_after=True, message=None)
+    -> str`：一键合并的底层动作，`git merge --no-ff`；本方法**不做
+    风险判断**（风险分级由 `classify_proposal_risk()` 独立负责，
+    "先分级、再决定要不要调用合并"是调用方的职责，不是 git 操作本身
+    该关心的事）；合并冲突时自动 `git merge --abort`，仓库回到调用前
+    的干净状态再抛 `StateRepoError`，不留下半途而废的合并中间态；
+    默认合并成功后删除源分支（`delete_after=True`，提案分支的使命是
+    "被合并或被拒绝"，合并后没有继续保留的价值；删除失败不影响已经
+    成功的合并本身，只是静默记录异常）。
+- `cli/commands/evolution.py` 新增两个子命令（复用既有 `/evolution`
+  命令组的组织方式，不新增命令前缀）：
+  - `/evolution proposals`：列出所有 `evolve/*` 分支（`git branch` 里
+    已经在用的命名约定，`skill_propose` 工具和 `EvolutionWorkspace`
+    固定这么命名，不需要新增"提案登记表"存储），逐条给出风险分级、
+    tier、commit 数、判定依据。
+  - `/evolution merge <branch> [--force]`：`risk="low"` 时直接调用
+    `merge_branch()`；`risk="high"` 时默认拒绝并打印判定依据，需要
+    显式加 `--force` 才会合并——`--force` 本身仍然是一次人工决定，
+    只是跳过了本命令内置的风险门槛，不代表跳过了"人工审核"这件事
+    本身（方案原文"中/高风险维持现状全人工审核"的落地方式：全人工
+    审核不等于"这个命令永远拒绝"，而是"这个命令不会替你做这个判断，
+    你需要自己明确要求"）。
+  - `cli/parser.py` 的帮助文本同步补充这两个子命令的说明。
+
+**未做的部分（与第六轮实施记录里"建议下一轮优先做 Track I"的范围收窄
+一致，如实记录）**：
+- 看板新增"进化提案"tab（用 diff 视图替代命令行）——本轮只做了 CLI
+  入口（`/evolution proposals`/`/evolution merge`），Streamlit 侧没有
+  改动。方案原文里"diff 视图可以先用简单的 `st.code` 展示 unified
+  diff"这部分工作量独立、且不影响"能不能一键合并"这个核心能力是否
+  可用，因此拆分到后续单独做。
+- 没有新增 REST API 端点（`/v1/evolution/proposals` 之类）——CLI 已经
+  能完整覆盖"查看分级 + 一键合并"的操作闭环，且看板 diff 视图本身还
+  没做，提前加 REST 端点会造成"接口存在但没有消费方"的状态；等看板
+  侧的"进化提案"tab 排期时再一并加对应的 REST 端点，实现上可以直接
+  复用 `classify_proposal_risk()`/`merge_branch()`，不需要额外设计。
+
+## 测试（第七轮新增）
+
+新增 `tests/test_evolution_proposal_risk_track_i.py`，覆盖：
+
+- `TestStateRepoCommitsOnBranch`：正确返回分支相对 base 的独有 commit；
+  没有独有 commit 时返回空列表。
+- `TestStateRepoMergeBranch`：合并成功且默认删除源分支；
+  `delete_after=False` 时保留源分支；目标分支不存在的合并请求报错；
+  合并冲突时自动 abort、仓库恢复干净状态（`git status --porcelain`
+  为空）并抛出 `StateRepoError`。
+- `TestClassifyProposalRisk`：纯文档改动（T1）判 `"low"`；改动代码文件
+  判 `"high"`；T2 tier 即使路径像文档也判 `"high"`；无独有 commit 判
+  `"high"`；eval 结果显示回归判 `"high"`；eval 结果显示无回归时不影响
+  `"low"` 判定；eval 数据缺失（文件不存在）不阻塞 `"low"` 判定。
+
+运行方式：
+
+```bash
+PYTHONPATH=src python3 -m pytest tests/test_evolution_proposal_risk_track_i.py -q
+```
+
+本轮验证：13 项全部通过；同时补齐本地环境缺失的 `anthropic` SDK 后，
+重新跑了既有 `tests/test_state_repo.py`（39 项）、`tests/
+test_evolve_cli.py`（3 项）、`tests/test_skill_propose.py`（37 项，其中
+1 项此前因 SDK 缺失被环境问题掩盖），以及第一至六轮全部既有测试文件，
+合计连同本轮在内 194 项用例，确认无新增回归——唯一保留的已知问题仍是
+此前几轮已如实记录、与本轮改动无关的 4 个既有失败用例
+（`tests/test_objective_executor_kanban_tracks_r2.py::
+TestArtifactsFromToolCalls` 的 `history_segment` 签名不匹配问题）。
+
 ## 未完成 / 待续（供下一轮参考）
 
-按方案原文的路线图，以下项目**仍未开始**，需要后续排期：
+按方案原文的路线图，以下项目**仍未开始或未完全完成**，需要后续排期：
 
 - **Track E 边界情况**（历次未涉及，维持第二轮状态）：历史被压缩
   （compact）后无法定位到某个 step 的 trace / 产出物；多 session 场景下
@@ -682,18 +799,22 @@ test_objective_executor_kanban_tracks_r2.py::TestArtifactsFromToolCalls`
   test_objective_executor_kanban_tracks_r2.py::TestArtifactsFromToolCalls`
   下 4 个用例调用了 `on_turn_done(..., history_segment=...)`，当前签名
   没有这个参数，需要下一轮排查是功能确实缺失还是测试需要更新。
-- **Track I**（P2）：进化提案分级自治——尚未开始。工作量中大（风险分级
-  字段 + 看板新增"进化提案" tab + diff 视图），收益不如前面几项直接，
-  方案原文本身也建议放在最后做。这是路线图里目前唯一还未开工的 Track。
-- **Track J 的"模型档位切换"半成品**（本轮调研后明确搁置）：如果未来
+- **Track I 的看板可视化半成品**（本轮明确拆分出的后续子项）：看板新增
+  "进化提案"tab，展示 `classify_proposal_risk()` 的分级结果 + unified
+  diff（`StateRepo.diff()` 已有现成方法可以复用）+ 一键合并按钮（低风险
+  直接展示按钮，高风险展示"需要人工审核"提示 + 一个需要二次确认的
+  强制合并入口）；配套需要新增 REST 端点（`GET /v1/evolution/proposals`、
+  `POST /v1/evolution/proposals/{branch}/merge`），可以直接复用本轮的
+  `classify_proposal_risk()`/`merge_branch()`，不需要重新设计核心逻辑。
+- **Track J 的"模型档位切换"半成品**（第六轮调研后明确搁置）：如果未来
   `LLMClientPool` 演进出"按 initiator/场景选择模型档位"的能力，可以
   回来把 `degraded` 态接上"自主任务用更便宜的模型"这一优化，目前
   `AutonomousLoop`/`ObjectiveExecutor` 侧已经有 `gating_state()`/
   `set_gating_degraded()` 这两个现成的信号源可以直接复用，不需要再动
   资源仲裁本身的逻辑。
 
-建议下一轮优先做 **Track I**（进化提案分级自治）：这是路线图里最后一个
-未开工的 P2 项目，方案原文已经给出风险分级的判定依据（T0~T3 验证 +
-eval_runner 对比结果全绿 → 低风险 → 允许一键合并按钮），实现上可以先做
-"风险分级字段 + 一键合并按钮"这一半（不依赖看板 diff 视图），把"看板
-新增 diff 视图 tab"拆成独立的后续子项，控制单轮工作量。
+至此，方案原文路线图里 Track A~K 全部至少有了可用的落地版本（部分留有
+如实记录的简化/收窄，见各自小节的"与方案原文的差异说明"）。建议下一轮
+按团队带宽在上面三项"待续"里选择：**Track I 的看板可视化**收益最直接
+（能让"一键合并"真正在看板主入口可用，而不需要跳回命令行），是目前
+唯一还完全没有 UI 落地的功能性缺口，建议优先排期。
