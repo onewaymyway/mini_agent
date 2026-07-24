@@ -1072,6 +1072,23 @@ class AutonomyConfig:
     adaptive_concurrency_slow_duration_seconds: float = 1800.0
     # 参与统计的"最近 N 个已结束 Objective"窗口大小。
     adaptive_concurrency_window: int = 10
+    # [看板与自主性改进方案 Track J] 资源门控降级执行：ResourceArbiter 的
+    # frustration/user_presence 两条规则从二元 block/allow 改成三态
+    # full/degraded/blocked。默认开启——degraded 态本身就是"比原来更宽松"
+    # 的中间态（原来这两条规则一旦触发就整体停摆，现在改成先降级，只有
+    # 更严重的情况才会真正 blocked），默认开启不会让行为比改造前更激进，
+    # 只会在原本"整体停摆"的场景里让 agent 至少还能低并发地继续跑。
+    resource_gating_degraded_enabled: bool = True
+    # degraded 态下，effective_max_concurrent() 的临时天花板（与 Track K
+    # 的 adaptive_concurrency_min 复用同一套"降档不降到 0"哲学，但这里是
+    # 资源门控触发的降级，语义上比自适应并发的"最近跑得不顺"更紧急，所以
+    # 单独给一个字段，不与 adaptive_concurrency_min 强绑定）。
+    resource_gating_degraded_max_concurrent: int = 1
+    # frustration 达到该阈值时才真正整体 blocked（复用
+    # proprioception.frustration_threshold 作为 full→degraded 的分界线，
+    # 这里额外定义一个更高的 blocked 分界线，只有挫败感严重到这个程度才会
+    # 真正整体停摆）。
+    frustration_blocked_threshold: float = 0.85
 
 
 @dataclass

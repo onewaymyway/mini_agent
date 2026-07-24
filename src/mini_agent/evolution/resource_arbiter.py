@@ -49,23 +49,62 @@ class ResourceArbiter:
     def can_run_autonomous(self) -> bool:
         """
         综合判断是否可以提交自主任务。
-        四条规则均通过才返回 True。
+        向后兼容接口：等价于 gating_state()["state"] != "blocked"。
+
+        [看板与自主性改进方案 Track J] 在引入三态门控之前，规则 4/5 任一
+        触发都会让本方法返回 False（对应 AutonomousLoop 里的 pause_all()
+        整体停摆）。现在规则 4/5 的"触发"只表示 degraded（收敛，不停摆），
+        只有规则 3（预算硬限制）或 frustration 达到更高的 blocked 阈值时
+        才会真正返回 False。这是本 Track 的核心行为变化，如实记录在这里
+        而不是悄悄改：调用方如果只关心"能不能跑"，语义变得更宽松了；如果
+        关心"是否应该降级"，需要改用 gating_state()。
         """
-        # 规则 3：预算硬限制
+        return self.gating_state()["state"] != "blocked"
+
+    def gating_state(self) -> dict:
+        """
+        [看板与自主性改进方案 Track J] 三态门控入口，取代
+        can_run_autonomous() 内部原来的二元判断。
+
+        返回 {"state": "full"|"degraded"|"blocked", "reason": str}：
+        - "blocked"：预算耗尽，或 frustration 达到 frustration_blocked_threshold
+          （比原来的 degraded 阈值更严重）——整体停摆，调用方应 pause_all()。
+        - "degraded"：frustration 达到（但未超过 blocked 阈值）proprioception
+          .frustration_threshold，或用户明显活跃切换——不停摆，但调用方应把
+          并发上限临时收紧（见 ObjectiveExecutor.effective_max_concurrent()
+          的 external_degraded 参数）。
+        - "full"：三条规则都正常，无需收敛。
+
+        `resource_gating_degraded_enabled=False` 时退化为改造前的二元行为
+        （degraded 视同 blocked），保证配置未升级的用户行为不变。
+        """
+        # 规则 3：预算硬限制——保持二元，不属于本 Track 的三态化范围
+        # （方案原文明确写的是"第4/5条规则"，预算是硬限制，不应该有中间态：
+        # 预算耗尽就是耗尽，没有"打个折继续花"这种语义）。
         if not self._check_budget():
-            return False
+            return {"state": "blocked", "reason": "预算已耗尽（used_today >= daily_token_budget）"}
 
-        # 规则 4：本体感知信号（B1 → Stage 9 信号桥接）——一个正在反复受挫的
-        # Agent 不应该同时还在后台跑高置信度要求的自主探索。
-        if not self._check_frustration():
-            return False
+        gating_cfg = getattr(self._cfg, "autonomy", None)
+        degraded_enabled = bool(getattr(gating_cfg, "resource_gating_degraded_enabled", True))
 
-        # 规则 5：[方案二新增] 用户在场信号（BehaviorContext → Stage 9 信号
-        # 桥接）——用户当前明显活跃切换时，收敛自主任务，避免抢资源/写冲突。
-        if not self._check_user_presence():
-            return False
+        frustration_level, frustration_reason = self._check_frustration_tri()
+        presence_level, presence_reason = self._check_user_presence_tri()
 
-        return True
+        if not degraded_enabled:
+            # 退化路径：degraded 视同 blocked，与改造前行为完全一致。
+            if frustration_level != "full":
+                return {"state": "blocked", "reason": frustration_reason}
+            if presence_level != "full":
+                return {"state": "blocked", "reason": presence_reason}
+            return {"state": "full", "reason": "正常"}
+
+        if frustration_level == "blocked":
+            return {"state": "blocked", "reason": frustration_reason}
+        if frustration_level == "degraded":
+            return {"state": "degraded", "reason": frustration_reason}
+        if presence_level == "degraded":
+            return {"state": "degraded", "reason": presence_reason}
+        return {"state": "full", "reason": "正常"}
 
     def can_run_exploration(self) -> bool:
         """判断探索预算是否还有余量。"""
@@ -167,6 +206,69 @@ class ResourceArbiter:
             log_exception(_mini_agent_exc, where='mini_agent.evolution.resource_arbiter.ResourceArbiter._check_user_presence')
             return True  # 读取失败保守放行
 
+    def _check_frustration_tri(self) -> tuple[str, str]:
+        """
+        [Track J] 规则 4 的三态版本，逻辑与 _check_frustration() 共享同一份
+        快照读取，只是把"过阈值就返回 False"拆成两级阈值：
+        - frustration < frustration_threshold          → "full"
+        - frustration_threshold <= frustration < blocked_threshold → "degraded"
+        - frustration >= frustration_blocked_threshold  → "blocked"
+        快照不存在/过期/读取失败时统一返回 "full"（不阻塞/不降级），与
+        _check_frustration() 的既有"读取失败不阻塞"风格一致。
+        """
+        try:
+            snapshot_path = self._paths.proprioception_snapshot
+            if not snapshot_path.exists():
+                return "full", "无本体感知快照"
+            data = json.loads(snapshot_path.read_text(encoding="utf-8"))
+            updated_at = float(data.get("updated_at", 0))
+            if time.time() - updated_at > _FRUSTRATION_SNAPSHOT_STALE_MINUTES * 60:
+                return "full", "本体感知快照已过期"
+            degraded_threshold = getattr(
+                getattr(self._cfg, "proprioception", None),
+                "frustration_threshold",
+                0.5,
+            )
+            blocked_threshold = getattr(
+                getattr(self._cfg, "autonomy", None),
+                "frustration_blocked_threshold",
+                0.85,
+            )
+            frustration = float(data.get("frustration", 0.0))
+            if frustration >= blocked_threshold:
+                return "blocked", f"挫败感 {frustration:.2f} 达到硬停摆阈值 {blocked_threshold:.2f}"
+            if frustration >= degraded_threshold:
+                return "degraded", f"挫败感 {frustration:.2f} 达到降级阈值 {degraded_threshold:.2f}"
+            return "full", "正常"
+        except Exception as _mini_agent_exc:
+            from mini_agent.errors import log_exception
+            log_exception(_mini_agent_exc, where='mini_agent.evolution.resource_arbiter.ResourceArbiter._check_frustration_tri')
+            return "full", "读取异常，不阻塞"
+
+    def _check_user_presence_tri(self) -> tuple[str, str]:
+        """
+        [Track J] 规则 5 的三态版本：只有 full/degraded 两级，没有 blocked
+        （见 config/models.py::AutonomyConfig.resource_gating_degraded_max_concurrent
+        字段注释里的说明：用户活跃切换不是"危险"信号，只需要让路，不需要
+        整体停摆）。双开关哲学与 _check_user_presence() 保持一致。
+        """
+        gating_cfg = getattr(self._cfg, "autonomy", None)
+        if not gating_cfg or not getattr(gating_cfg, "behavior_gating_enabled", False):
+            return "full", "未启用行为门控"
+        try:
+            from mini_agent.perception.affordance_analyzer import load_behavior_context
+            ctx = load_behavior_context(self._cfg, window_minutes=5)
+            if ctx is None:
+                return "full", "行为信号缺失，不阻断"
+            threshold = getattr(gating_cfg, "behavior_gating_switch_threshold", 3)
+            if ctx.is_actively_engaged and ctx.context_switch_count >= threshold:
+                return "degraded", "检测到用户正在活跃切换应用，收敛并发（让路）"
+            return "full", "未启用或用户不活跃"
+        except Exception as _mini_agent_exc:
+            from mini_agent.errors import log_exception
+            log_exception(_mini_agent_exc, where='mini_agent.evolution.resource_arbiter.ResourceArbiter._check_user_presence_tri')
+            return "full", "读取异常，保守放行"
+
     def _check_exploration_budget(self) -> bool:
         """探索预算：used_today_exploration < exploration_budget（daily_budget * ratio）。"""
         try:
@@ -248,9 +350,14 @@ class ResourceArbiter:
                 "reason": "检测到用户正在活跃切换应用，让路给用户" if not presence_ok else "未启用或用户不活跃",
             },
         ]
+        state = self.gating_state()
         return {
             "can_run_autonomous": budget_ok and frustration_ok and presence_ok,
             "rules": rules,
+            # [Track J] 三态门控结果，供看板区分"整体停摆"和"降级运行"，
+            # 不再是只有 can_run_autonomous 这一个布尔值。
+            "gating_state": state["state"],
+            "gating_reason": state["reason"],
         }
 
     def _recent_user_touched_paths(

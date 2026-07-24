@@ -5,8 +5,11 @@
 > Track F（完整）、Track E、Track G（完整版：工具调用提取为主，`[ARTIFACTS]`
 > 标记正则解析为退化兜底）、Track H（主题定义采用"标题归一化"，见第四轮
 > 实施记录）、Track K（自适应信号采用"失败率 + 平均耗时"，非原文设想的
-> token 消耗，见第五轮实施记录）。
-> 未完成：Track I/J，详见实施记录文档"未完成/待续"一节。
+> token 消耗，见第五轮实施记录）、Track J（资源门控三态化：frustration/
+> user_presence 从二元 block/allow 改成 full/degraded/blocked，degraded 态
+> 收紧并发上限而非整体停摆；"用更便宜的模型跑自主任务"调研后确认
+> `LLMClientPool` 当前不支持按场景切换模型档位，未实现，见第六轮实施记录）。
+> 未完成：Track I，详见实施记录文档"未完成/待续"一节。
 > 关联代码：`apps/mini_agent_kanban/`、`src/mini_agent/evolution/`、`src/mini_agent/perception/goal_backlog.py`
 > 前置修复：本方案假设 [并发槽位卡死修复] 已落地（`ObjectiveExecutor.reap_stale_steps()`），
 > 否则 Track B/C 的状态同步会把"假卡死"也当成正常状态展示，掩盖问题。
@@ -330,6 +333,13 @@ P2（后续迭代，自治程度提升）
    记录时的兜底（`artifacts_parse_fn`）。见实施记录"第三轮"一节。
 3. Track J 依赖 `LLMClientPool` 是否已支持"按 initiator/场景选择模型档位"，需要先读
    `config/models.py` 确认，标注为该 Track 的前置调研任务。
+   ——**已调研，结论：不支持**。`LLMClientPool`（`llm/client_pool.py`）是一套
+   "故障转移链 + 多 Key 轮转"调度器，`entries`/`fallback_on` 解决的是同一个
+   语义请求在多个 provider 配置间失败重试的问题，不含任何"按任务类型/发起方
+   选择不同模型档位（比如自主任务用更便宜的模型）"的接口或字段。因此
+   Track J 的"资源门控三态化"部分已实现（见第六轮实施记录），"用更便宜的
+   模型跑自主任务"这一半保持未实现状态，留作独立后续项，不在本轮强行实现
+   （避免改造 `LLMClientPool` 的核心职责，超出本 Track 范围）。
 4. ~~Track H 的"主题"关联字段目前 `GoalNode`/`activity_digest` 记录里的粒度是否够用~~
    ——已解决：三路信号各自的 ID（capability_id/WorkThread.id/LessonGroup.key）在
    `commit_goals()` 写入 `GoalBacklog` 时并不会保留，`GoalNode` 也没有预留主题字段；

@@ -550,6 +550,126 @@ PYTHONPATH=src python3 -m pytest tests/test_objective_executor_adaptive_concurre
 `history_segment` 参数），本轮同样未去动它，维持"如实记录、不顺手
 掩盖"的一贯做法。
 
+## 第六轮已完成 Track（本次续做）
+
+### Track J（P2）：资源门控降级执行 —— 已上线（三态化部分；模型档位切换部分调研后确认不做）
+
+按第五轮"未完成/待续"里的建议，本轮实现 Track J。开工前先做了前置调研：
+
+**前置调研结论**：读取 `llm/client_pool.py::LLMClientPool` 后确认，它是一套
+"故障转移链（`entries`/`fallback_on`）+ 多 Key 轮转"调度器，解决的是同一个
+语义请求在多个 provider 配置之间失败重试的问题，**不含**"按 initiator/
+场景选择不同模型档位"的接口或字段。因此本轮只实现方案原文 Track J 的
+"资源门控三态化"部分（`ResourceArbiter` 第4/5条规则从 block/allow 改成
+full/degraded/blocked），"用更便宜的模型跑自主任务"部分保持未实现，
+如实记录为独立后续项，不在本轮强行超出 `LLMClientPool` 的核心职责去改造它。
+
+**改动内容**：
+
+- `config/models.py::AutonomyConfig` 新增 4 个字段（均有默认值，不影响
+  未升级配置文件的用户）：
+  - `resource_gating_degraded_enabled: bool = True`——默认开启，理由与
+    Track K 一致：degraded 态本身是"比原来更宽松"的中间态（原来这两条
+    规则一旦触发就是 `can_run_autonomous()` 返回 False、
+    `AutonomousLoop` 直接 `pause_all()` 整体停摆；现在改成先降级，只有
+    更严重的情况才会真正 blocked），默认开启不会让行为比改造前更激进。
+  - `resource_gating_degraded_max_concurrent: int = 1`——degraded 态下
+    `ObjectiveExecutor.effective_max_concurrent()` 的临时天花板。
+  - `frustration_blocked_threshold: float = 0.85`——frustration 三态里
+    "degraded → blocked"的分界线（沿用既有的
+    `proprioception.frustration_threshold` 作为"full → degraded"的
+    分界线，语义上是"轻微挫败降级，严重挫败才真正停摆"）。
+  - 说明：`user_presence` 规则本轮设计为只有 full/degraded 两级、没有
+    blocked 上限——用户活跃切换应用不是"危险"信号（不像挫败感那样可能
+    意味着 agent 在做错误的事），只需要让路，不需要整体停摆。这一点在
+    字段注释里写明，不需要额外的阈值字段。
+- `evolution/resource_arbiter.py::ResourceArbiter` 新增：
+  - `gating_state() -> dict`：新的三态门控入口，返回
+    `{"state": "full"|"degraded"|"blocked", "reason": str}`。规则 3
+    （预算硬限制）保持二元不变（方案原文明确写"第4/5条规则"，预算耗尽
+    没有"打折继续花"的中间态语义）；规则 4/5 改用新增的
+    `_check_frustration_tri()`/`_check_user_presence_tri()`（保留原有
+    `_check_frustration()`/`_check_user_presence()` 两个二元方法不变，
+    供 `diagnose()` 里逐条展示用，不删除避免破坏兼容）。
+    `resource_gating_degraded_enabled=False` 时整体退化为
+    "degraded 视同 blocked"，与改造前行为完全一致。
+  - `can_run_autonomous()` 改为 `gating_state()["state"] != "blocked"`
+    的薄封装，保留原方法名和返回类型（`bool`），但语义变宽松了——这是
+    本 Track 的核心行为变化，在 docstring 里如实写明：调用方如果只关心
+    "能不能跑"，行为变得更宽松（原来 degraded 场景会返回 False，现在
+    返回 True）；如果关心"是否应该降级"，需要改用 `gating_state()`。
+  - `diagnose()` 补充 `gating_state`/`gating_reason` 两个字段，供看板
+    区分"整体停摆"和"降级运行"，不再只有 `can_run_autonomous` 一个
+    布尔值可看。
+- `evolution/objective_executor.py::ObjectiveExecutor` 新增：
+  - `self._gating_degraded: bool = False`（纯内存标志位，不持久化，
+    只反映"此刻"的资源状况）。
+  - `set_gating_degraded(degraded: bool) -> None`：由 `AutonomousLoop`
+    每次 tick 调用。
+  - `effective_max_concurrent()` 新增判断：`_gating_degraded=True` 且
+    配置未关闭本机制时，天花板先收紧到
+    `resource_gating_degraded_max_concurrent`，再让 Track K 的自适应
+    逻辑在这个更低的天花板基础上继续计算——两个"只降不升"的机制取更
+    严格者，不会因为叠加导致比单独任一机制更宽松。
+- `evolution/autonomous_loop.py::AutonomousLoop._tick_maintenance()`：
+  原来 `if not arbiter.can_run_autonomous(): pause_all(); return`
+  改为读取 `arbiter.gating_state()["state"]`：
+  - `"blocked"` → 行为与改造前完全一致（`pause_all()` + `return`）。
+  - `"degraded"` → **不** `pause_all()`、**不** `return`，只调用
+    `self._objective_executor.set_gating_degraded(True)`，随后照常执行
+    `resume()` 和"从 GoalBacklog 启动新 Objective"的既有逻辑（此时
+    `can_start_new()` 会因为并发上限被收紧而更早返回 False，从而实现
+    "低并发继续跑"而不是"整体停摆"）。
+  - `"full"` → 调用 `set_gating_degraded(False)`（如果上一轮是
+    degraded，本轮会自动恢复，不需要额外的恢复逻辑）。
+- `api/routes.py` 侧不需要改动：`/v1/autonomous/status` 的 `gating`
+  字段本来就直接透出 `ResourceArbiter.diagnose()` 的返回值，`diagnose()`
+  改动后新字段自动透出；`objective_slots.max` 本来就是实时调用
+  `effective_max_concurrent()` 得到的，degraded 生效时会自动反映更低的值，
+  不需要额外接线。
+
+**与方案原文的差异说明**：原文 Track J 设计里"`degraded` 态下…允许
+`Agent` 侧后续接入'用更便宜的模型跑自主任务'（这一步依赖 `LLMClientPool`
+是否支持按 initiator 选择不同模型档位）"——已调研确认当前不支持，见
+本节开头的调研结论，本轮不实现这一半。
+
+## 测试（第六轮新增）
+
+新增 `tests/test_resource_arbiter_gating_track_j.py`，覆盖：
+
+- `TestResourceArbiterGatingState`：无快照时 `"full"`；frustration 低于
+  阈值 `"full"`；frustration 在 `[frustration_threshold,
+  frustration_blocked_threshold)` 区间 `"degraded"`（且
+  `can_run_autonomous()` 此时返回 `True`——验证核心行为变化）；frustration
+  达到 `frustration_blocked_threshold` 判 `"blocked"`；user_presence 触发
+  时判 `"degraded"`（不会是 `"blocked"`）；
+  `resource_gating_degraded_enabled=False` 时 degraded 退化为 blocked；
+  `gating_state()` 结构包含 `reason` 字段。
+- `TestObjectiveExecutorGatingDegraded`：`set_gating_degraded(True)` 收紧
+  并发上限、`set_gating_degraded(False)` 恢复；degraded 与 Track K 自适应
+  同时触发时取更严格者；配置关闭时 `set_gating_degraded(True)` 不生效；
+  默认（未调用）不降级。
+
+运行方式：
+
+```bash
+PYTHONPATH=src python3 -m pytest tests/test_resource_arbiter_gating_track_j.py -q
+```
+
+本轮验证：11 项全部通过；同时补齐本地环境缺失的 `pytest`/`pydantic`/
+`rich`/`python-multipart`/`uvicorn`/`fastapi` 依赖后，重新跑了第一至五轮
+全部既有测试文件（`test_objective_executor_kanban_tracks.py`、`_r2.py`、
+`_r3.py`、`test_goal_backlog.py`、`test_outcome_tracker.py`、
+`test_objective_outcome_tracker.py`、
+`test_objective_executor_adaptive_concurrency.py`，合计连同本轮
+在内 143 项用例），确认无新增回归——唯一失败的仍是此前几轮已如实记录、
+与本轮改动无关的 4 个既有失败用例（`tests/
+test_objective_executor_kanban_tracks_r2.py::TestArtifactsFromToolCalls`
+下 4 项，调用 `on_turn_done(..., history_segment=...)` 时报
+`TypeError: unexpected keyword argument 'history_segment'`——当前
+`ObjectiveExecutor.on_turn_done()` 签名里确实没有这个参数，本轮同样
+未去动它）。
+
 ## 未完成 / 待续（供下一轮参考）
 
 按方案原文的路线图，以下项目**仍未开始**，需要后续排期：
@@ -558,21 +678,22 @@ PYTHONPATH=src python3 -m pytest tests/test_objective_executor_adaptive_concurre
   （compact）后无法定位到某个 step 的 trace / 产出物；多 session 场景下
   Objective 执行如果不再统一走单一主 bridge，trace/产出物提取接口都
   需要能定位到正确的 session/agent。
-- **既有测试代码缺陷**（第四轮发现，非本轮引入，本轮未修复）：`tests/
+- **既有测试代码缺陷**（第四轮发现，非本轮引入，历次均未修复）：`tests/
   test_objective_executor_kanban_tracks_r2.py::TestArtifactsFromToolCalls`
   下 4 个用例调用了 `on_turn_done(..., history_segment=...)`，当前签名
   没有这个参数，需要下一轮排查是功能确实缺失还是测试需要更新。
-- **Track I / J**（P2）：进化提案分级自治、资源门控降级执行——均未开始。
-  Track J 依赖 `LLMClientPool` 是否支持按场景切换模型档位，仍需先读
-  `config/models.py`/`LLMClientPool` 相关代码确认这一前置调研项；
-  Track I 建议放在最后做（工作量中大，收益不如前面几项直接，方案原文
-  本身也是这么建议的）。
+- **Track I**（P2）：进化提案分级自治——尚未开始。工作量中大（风险分级
+  字段 + 看板新增"进化提案" tab + diff 视图），收益不如前面几项直接，
+  方案原文本身也建议放在最后做。这是路线图里目前唯一还未开工的 Track。
+- **Track J 的"模型档位切换"半成品**（本轮调研后明确搁置）：如果未来
+  `LLMClientPool` 演进出"按 initiator/场景选择模型档位"的能力，可以
+  回来把 `degraded` 态接上"自主任务用更便宜的模型"这一优化，目前
+  `AutonomousLoop`/`ObjectiveExecutor` 侧已经有 `gating_state()`/
+  `set_gating_degraded()` 这两个现成的信号源可以直接复用，不需要再动
+  资源仲裁本身的逻辑。
 
-建议下一轮优先做 **Track J**（资源门控降级执行）：`ResourceArbiter` 目前
-是二元 block/allow，改成三态（full/degraded/blocked）后可以和本轮的
-Track K 自适应并发形成组合拳——`degraded` 态下把 `effective_max_concurrent()`
-的天花板临时收紧到 1，两个机制复用同一套"降档不降到 0"的哲学，实现
-成本上有直接的复用空间；但开工前需要先确认前置调研项（模型池是否支持
-按 initiator/场景切换模型档位），如果这项调研发现工作量超预期，可以
-先只做"并发降到 1"这一半（不依赖模型池调研），把"用更便宜的模型跑
-自主任务"拆成独立的后续项。
+建议下一轮优先做 **Track I**（进化提案分级自治）：这是路线图里最后一个
+未开工的 P2 项目，方案原文已经给出风险分级的判定依据（T0~T3 验证 +
+eval_runner 对比结果全绿 → 低风险 → 允许一键合并按钮），实现上可以先做
+"风险分级字段 + 一键合并按钮"这一半（不依赖看板 diff 视图），把"看板
+新增 diff 视图 tab"拆成独立的后续子项，控制单轮工作量。

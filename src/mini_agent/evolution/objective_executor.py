@@ -284,6 +284,11 @@ class ObjectiveExecutor:
         self._artifacts_parse_fn = artifacts_parse_fn
         self._artifacts_from_tools_fn = artifacts_from_tools_fn
         self._cfg = cfg
+        # [Track J] 资源门控降级标志——由 AutonomousLoop 每次 tick 根据
+        # ResourceArbiter.gating_state() 的结果调用 set_gating_degraded()
+        # 设置，不持久化（只反映"此刻"的资源状况，下次 tick 会重新计算），
+        # 默认 False（不降级），保证未接入 Track J 的调用方行为不变。
+        self._gating_degraded: bool = False
         self._executions: dict[str, ObjectiveExecution] = {}  # execution_id → ex
         self._turn_to_exec: dict[str, tuple[str, int]] = {}   # turn_id → (execution_id, step_idx)
         self._exec_path = paths.workdir_dir / "objective_executions.json"
@@ -380,6 +385,19 @@ class ObjectiveExecutor:
         if autonomy_cfg is not None:
             configured_cap = getattr(autonomy_cfg, "max_concurrent_objectives_cap", MAX_CONCURRENT_OBJECTIVES)
             cap = min(MAX_CONCURRENT_OBJECTIVES, configured_cap)
+
+        # [Track J] 资源门控降级：优先级高于 Track K 的自适应逻辑（两者都是
+        # "只降不升"，取更严格的那一个即可）——ResourceArbiter 判定为
+        # degraded 时，天花板先被收紧到 resource_gating_degraded_max_concurrent，
+        # 再让 Track K 的自适应逻辑在这个更低的天花板基础上继续计算（如果
+        # 自适应逻辑算出来的值更低，以更低者为准；不会因为叠加了 Track J
+        # 就让并发数变得比单独任一机制更宽松）。
+        if self._gating_degraded and autonomy_cfg is not None and getattr(
+            autonomy_cfg, "resource_gating_degraded_enabled", True
+        ):
+            degraded_cap = getattr(autonomy_cfg, "resource_gating_degraded_max_concurrent", 1)
+            cap = min(cap, degraded_cap)
+
         if autonomy_cfg is None or not getattr(autonomy_cfg, "adaptive_concurrency_enabled", False):
             return cap
 
@@ -416,6 +434,13 @@ class ObjectiveExecutor:
             from mini_agent.errors import log_exception
             log_exception(_mini_agent_exc, where='mini_agent.evolution.objective_executor.ObjectiveExecutor.effective_max_concurrent')
             return cap
+
+    def set_gating_degraded(self, degraded: bool) -> None:
+        """[Track J] 由 AutonomousLoop 每次 tick 调用，反映
+        ResourceArbiter.gating_state() 的最新结果是否为 "degraded"。
+        不做任何 I/O，纯内存标志位，下一次 effective_max_concurrent() 调用
+        即生效。"""
+        self._gating_degraded = bool(degraded)
 
     def can_start_new(self) -> bool:
         return self.running_count() < self.effective_max_concurrent()

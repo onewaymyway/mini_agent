@@ -211,15 +211,24 @@ class AutonomousLoop:
                 log_exception(_mini_agent_exc, where='mini_agent.evolution.autonomous_loop')
                 pass
 
-        # 检查资源仲裁
+        # 检查资源仲裁 [Track J：三态门控，取代原来的二元 can_run_autonomous()]
         try:
             from mini_agent.evolution.resource_arbiter import ResourceArbiter
             arbiter = ResourceArbiter(self._paths, self._cfg)
-            if not arbiter.can_run_autonomous():
-                # 资源不足：暂停所有 Objective 执行
+            state = arbiter.gating_state()["state"]
+            if state == "blocked":
+                # 预算耗尽 / frustration 达到硬停摆阈值：暂停所有 Objective 执行，
+                # 与改造前的 can_run_autonomous()==False 行为完全一致。
                 if self._objective_executor is not None:
                     self._objective_executor.pause_all()
                 return
+            if self._objective_executor is not None:
+                # degraded：不 pause_all，只是把并发上限临时收紧（见
+                # ObjectiveExecutor.effective_max_concurrent() 里的
+                # resource_gating_degraded_max_concurrent）；full：恢复不降级。
+                # 每次 tick 都重新设置，天然随资源状况变化自动升降档，不需要
+                # 额外的"恢复"逻辑。
+                self._objective_executor.set_gating_degraded(state == "degraded")
         except Exception as _mini_agent_exc:
             from mini_agent.errors import log_exception
             log_exception(_mini_agent_exc, where='mini_agent.evolution.autonomous_loop.AutonomousLoop._tick_maintenance')
