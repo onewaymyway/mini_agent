@@ -199,6 +199,17 @@ class AutonomousLoop:
                 from mini_agent.errors import log_exception
                 log_exception(_mini_agent_exc, where='mini_agent.evolution.autonomous_loop')
                 pass
+            # [看板与自主性改进方案 Track C] 尝试重新提交因路径冲突被
+            # blocked 的 step——占用方可能已在上一轮完成/失败/取消，
+            # 释放了路径。放在 reap_stale_steps() 之后、资源仲裁 early-return
+            # 之前，理由与上面一致：这是"清理/推进已存在的排队状态"，不是
+            # "发起新的自主任务"，不该被门控挡住。
+            try:
+                self._objective_executor.retry_blocked_steps()
+            except Exception as _mini_agent_exc:
+                from mini_agent.errors import log_exception
+                log_exception(_mini_agent_exc, where='mini_agent.evolution.autonomous_loop')
+                pass
 
         # 检查资源仲裁
         try:

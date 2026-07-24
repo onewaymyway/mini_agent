@@ -236,6 +236,19 @@ class AgentClient:
     def update_goal(self, goal_id: str, **fields):
         return self._patch(f"/goals/{goal_id}", fields)
 
+    # ── 看板：Objective 执行操作（Track D）+ 全局待办中心（Track A）───
+    def cancel_objective(self, execution_id: str):
+        return self._post(f"/objectives/{execution_id}/cancel")
+
+    def retry_objective(self, execution_id: str):
+        return self._post(f"/objectives/{execution_id}/retry")
+
+    def inject_objective_guidance(self, execution_id: str, message: str):
+        return self._post(f"/objectives/{execution_id}/guidance", {"message": message})
+
+    def inbox(self):
+        return self._get("/inbox")
+
     def cron_jobs(self):
         return self._get("/cron/jobs")
 

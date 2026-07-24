@@ -150,6 +150,8 @@ GOAL_STATUS_COLUMNS = [
     ("active", "🔵 进行中"),
     ("paused", "⏸️ 暂停"),
     ("completed", "✅ 已完成"),
+    ("failed", "✗ 执行失败"),
+    ("cancelled", "🚫 已终止"),
     ("abandoned", "🗑️ 已放弃"),
 ]
 
@@ -723,6 +725,49 @@ def _render_topbar_body(client: AgentClient, session_id: str = ""):
     if pending_ix_n:
         with st.expander(f"💬 有 {pending_ix_n} 个待回答的交互请求，点击处理", expanded=True):
             render_interactions(client, pending_ix_list)
+
+    _render_global_inbox(client, session_id)
+
+
+def _render_global_inbox(client: AgentClient, current_session_id: str = "") -> None:
+    """[看板与自主性改进方案 Track A] 全局待办通知中心：跨所有 session 聚合
+    pending 权限/交互请求 + 执行失败的 Objective，解决"后台自主任务卡在
+    权限审批上，但用户停留在别的 tab/session 完全看不到"的问题（P1）。
+
+    与上面 pending_n/pending_ix_n（只查当前 session）不同，这里调用
+    /v1/inbox，跨 SessionAgentPool 里所有活跃 session 扫描——即使用户停留
+    在"目标看板" tab、当前 session 里根本没有待办，只要*任意*一个 session
+    有待办，这里也能看到。
+    """
+    inbox = client.inbox() or {}
+    if "_error" in inbox:
+        # 静默失败：inbox 是增强能力，不应影响其它顶栏内容的展示
+        return
+    items = inbox.get("items", [])
+    if not items:
+        return
+
+    n = len(items)
+    with st.expander(f"📥 全局待办中心：共有 {n} 条跨会话待办（点击展开）", expanded=False):
+        icon_by_type = {
+            "permission": "🛑",
+            "interaction": "💬",
+            "objective_failed": "✗",
+        }
+        for it in items:
+            icon = icon_by_type.get(it.get("type"), "•")
+            sid = it.get("session_id")
+            same_session = sid and sid == current_session_id
+            cols = st.columns([5, 1]) if sid else [st.container()]
+            with cols[0]:
+                where = f"（会话 `{sid}`）" if sid else "（Objective 执行）"
+                st.caption(f"{icon} {it.get('summary', '')} {where}")
+            if sid and not same_session:
+                with cols[1]:
+                    if st.button("跳转", key=f"inbox_jump_{it.get('type')}_{it.get('req_id') or it.get('execution_id')}"):
+                        # 遵守"query_params 写入后不手动 rerun"的规范：
+                        # update_query_params 内部已经会触发一次重跑。
+                        update_query_params(session_id=sid)
 
 
 _INTERACTION_KIND_LABEL = {
@@ -1634,12 +1679,17 @@ def _render_pinned_sessions_panel(client: AgentClient) -> None:
 _EXEC_STEP_ICONS = {"done": "✅", "running": "▶️", "failed": "✗", "pending": "・"}
 
 
-def _render_objective_execution_detail(execution: dict) -> None:
+def _render_objective_execution_detail(client: AgentClient, execution: dict) -> None:
     """[看板改进] 渲染单个 Objective 的真实执行计划/进度：ObjectiveExecutor
     拆出的每一步、每一步的状态、结果摘要。之前看板只显示 GoalBacklog 里
     手填的 progress_notes（跟真实执行进度是两套数据，容易脱节/看不出
-    "到底做到哪一步了"），这里改成直接读 ObjectiveExecutor 的权威状态。"""
+    "到底做到哪一步了"），这里改成直接读 ObjectiveExecutor 的权威状态。
+
+    [Track D 新增] 底部追加"终止 / 重试当前步 / 插话"三个操作按钮，只在
+    对应状态下显示——不是任何时候都能操作（比如已完成的 Objective 没有
+    "终止"的意义）。"""
     ex_status = execution.get("status", "unknown")
+    exec_id = execution.get("execution_id", "")
     steps = execution.get("steps") or []
     done, total = 0, len(steps)
     for s in steps:
@@ -1648,16 +1698,19 @@ def _render_objective_execution_detail(execution: dict) -> None:
     status_label = {
         "running": "🏃 执行中", "paused": "⏸️ 已暂停",
         "completed": "✅ 已完成", "failed": "✗ 执行失败", "pending": "⏳ 待启动",
+        "cancelled": "🚫 已终止",
     }.get(ex_status, ex_status)
     lines = [f'<div class="meta">{status_label}　步骤 {done}/{total}</div>']
     if execution.get("progress_notes"):
         lines.append(f'<div class="meta" style="color:#c77;">{_esc_html(execution["progress_notes"])}</div>')
     for s in steps:
-        icon = _EXEC_STEP_ICONS.get(s.get("status"), "・")
+        icon = _EXEC_STEP_ICONS.get(s.get("status"), "・" if s.get("status") != "blocked" else "⏳")
         desc = _esc_html(str(s.get("description", ""))[:100])
         extra = ""
         if s.get("status") == "running":
             extra = " ← 当前步骤"
+        elif s.get("status") == "blocked":
+            extra = '　<span style="color:#b80;">与其他 Objective 路径冲突，排队中</span>'
         elif s.get("status") == "failed" and s.get("error_msg"):
             extra = f'　<span style="color:#c77;">{_esc_html(str(s["error_msg"])[:80])}</span>'
         lines.append(f'<div class="meta" style="padding-left:6px;">{icon} {desc}{extra}</div>')
@@ -1666,6 +1719,32 @@ def _render_objective_execution_detail(execution: dict) -> None:
         + "".join(lines) + "</div>",
         unsafe_allow_html=True,
     )
+
+    if not exec_id or ex_status in ("completed", "cancelled"):
+        return
+    b1, b2, b3 = st.columns(3)
+    if ex_status in ("running", "paused", "failed", "pending"):
+        if b1.button("🛑 终止", key=f"obj_cancel_{exec_id}"):
+            res = client.cancel_objective(exec_id)
+            if res and "_error" in res:
+                st.error(res["_error"])
+            st.rerun()
+    if ex_status in ("running", "failed"):
+        if b2.button("🔁 重试当前步", key=f"obj_retry_{exec_id}"):
+            res = client.retry_objective(exec_id)
+            if res and "_error" in res:
+                st.error(res["_error"])
+            st.rerun()
+    with b3.popover("💬 插话"):
+        guidance = st.text_area("补充说明（下次提交当前步骤时会附带这段话）",
+                                 key=f"obj_guidance_text_{exec_id}", height=80)
+        if st.button("发送", key=f"obj_guidance_send_{exec_id}"):
+            if guidance.strip():
+                res = client.inject_objective_guidance(exec_id, guidance.strip())
+                if res and "_error" in res:
+                    st.error(res["_error"])
+                else:
+                    st.success("已记录，将在下次提交该步骤时附带这段说明")
 
 
 def _render_goal_card(
@@ -1708,7 +1787,7 @@ def _render_goal_card(
 </div>
 """, unsafe_allow_html=True)
     if execution is not None:
-        _render_objective_execution_detail(execution)
+        _render_objective_execution_detail(client, execution)
     new_status = st.selectbox(
         "状态", [s for s, _ in GOAL_STATUS_COLUMNS],
         index=[s for s, _ in GOAL_STATUS_COLUMNS].index(status_key),

@@ -1099,12 +1099,30 @@ class HttpServer:
                     log_exception(_mini_agent_exc, where='mini_agent.api.server')
                     pass
 
+            def _declare_paths(step_description: str):
+                """[看板与自主性改进方案 Track C] 用轻量 LLM 调用猜测本步骤
+                可能涉及的文件/目录路径，宁可保守多列。调用失败/关不到
+                llm_helper 时返回空列表，由 ObjectiveExecutor 退化为哨兵路径
+                （保守串行化），不影响正常推进。"""
+                try:
+                    from mini_agent.evolution.objective_executor import _default_declare_paths
+                    helper = getattr(agent, "llm_helper", None)
+                    if helper is None:
+                        return []
+                    return _default_declare_paths(helper, step_description)
+                except Exception as _mini_agent_exc:
+                    from mini_agent.errors import log_exception
+                    log_exception(_mini_agent_exc, where='mini_agent.api.server.HttpServer._build_autonomous_loop._declare_paths')
+                    return []
+
             from mini_agent.evolution.objective_executor import ObjectiveExecutor
             objective_executor = ObjectiveExecutor(
                 paths=paths,
                 submit_fn=_obj_submit,
                 llm_decompose_fn=_llm_decompose,
                 on_progress_fn=_on_progress,
+                declare_paths_fn=_declare_paths,
+                goal_backlog=goal_backlog,
             )
             objective_executor.load()
 

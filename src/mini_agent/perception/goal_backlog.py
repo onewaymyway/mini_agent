@@ -59,7 +59,16 @@ class GoalNode:
     level: str                      # "goal" | "objective"
     title: str
     source: str                     # "user" | "agent_derived"
-    status: str                     # "active" | "paused" | "completed" | "abandoned"
+    # "active" | "paused" | "completed" | "abandoned" | "failed" | "cancelled"
+    # [看板与自主性改进方案 Track B] 新增 "failed"/"cancelled" 两个取值：
+    # - "failed"：由 ObjectiveExecutor 在其对应 execution 判定失败后单向回写，
+    #   代表"事实上执行失败了"，区别于用户主动放弃的 "abandoned"。
+    # - "cancelled"：用户在看板上主动终止一个仍在运行的 Objective 时使用
+    #   （见 objective_executor.cancel()），区别于"从未开始就放弃"的 "abandoned"。
+    # 两个新值不影响任何既有读取方——所有既有代码都是把 status 当不透明字符串
+    # 比较/展示，没有做枚举校验，看板侧的展示映射见 apps/mini_agent_kanban/app.py
+    # 的 GOAL_STATUS_COLUMNS。
+    status: str
     created_at: float = 0.0
     last_touched_at: float = 0.0
     progress_notes: str = ""

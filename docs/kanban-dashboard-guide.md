@@ -50,7 +50,13 @@ streamlit run app.py
   InputQueue，agent 正忙时后面的请求只能排队等待；非零时点击展开可看到具体排队列表
   （发起方 `user`/`cron`/`autonomous`、已等待秒数、输入内容预览，数据来自 `/v1/turns`
   里 `state=="queued"` 的条目）
-- 待审批权限请求数 / 待回答交互请求数——点击展开后可逐条处理
+- 待审批权限请求数 / 待回答交互请求数——点击展开后可逐条处理（这两项只统计**当前页面
+  绑定的这一个 session**）
+- **📥 全局待办中心**（`/v1/inbox`，看板与自主性改进方案 Track A）：跨**所有**活跃
+  session 聚合待办——不仅包含权限/交互请求，还包含执行失败的 Objective。解决"后台
+  自主任务在别的 session 里卡在权限审批上，但用户停留在当前页面完全看不到"的问题。
+  非空时以可展开列表展示，每条待办若关联某个 session，可点击"跳转"按钮直接把当前
+  页面切换绑定到那个 session。
 - session 存储目录（`<project_root>/.agent/sessions/<session_id>/`），单独一行展示
 
 ## 多会话并行（每个看板页面绑定不同 session）
@@ -104,7 +110,22 @@ Web Demo 的事件流面板类似，但集成在同一多 Tab 界面中。
   为 False：只是 autonomy_level 配置值，不代表 tick 真的在跑）、`has_actionable_work`
   （GoalBacklog 里有没有 status=active 的 Objective）、Objective 并发槽位占用、以及
   `ResourceArbiter.diagnose()` 逐条列出的预算/挫败感/用户在场三条门控规则通过情况。
-- Objective 执行进度展示。
+- Objective 执行进度展示：每张 Objective 卡片下方直接展示 ObjectiveExecutor 拆出的
+  分步计划与真实状态（而不是需要手动回写的 `progress_notes`）。
+  - **状态单向同步**（Track B）：Objective 执行完成/失败/被终止后，看板列会自动挪到
+    对应列（新增"✗ 执行失败"" 🚫 已终止"两列），不需要用户手动切换状态；反过来，
+    用户在看板上点"🛑 终止"会驱动后台 execution 真正停止、释放并发槽位，不会出现
+    "卡片显示已放弃，但后台还在跑"的脱节。
+  - **路径互斥（退化版，Track C）**：两个 Objective 的当前 step 若被判定为会碰到
+    同一批文件/目录，后提交的一方会显示"与其他 Objective 路径冲突，排队中"，而不是
+    并行执行导致互相覆盖；占用方完成/失败/终止后自动重新提交，不需要人工干预。
+  - **终止 / 重试 / 插话**（Track D）：每张有执行记录的 Objective 卡片下方提供三个
+    按钮——"🛑 终止"（立即停止并释放槽位）、"🔁 重试当前步"（不等超时，随时手动
+    触发重新提交）、"💬 插话"（记录一句补充说明，下次提交当前 step 时会附带在
+    prompt 里）。
+  - **失败重试携带原因**（Track F）：自动重试（超时/工具报错触发）时，下一次提交给
+    agent 的 prompt 会附带上一次失败的具体原因，并提示"不要重复同样的做法"，而不是
+    原样重发同一句任务描述。
 - **🗞️ 每日融合日报 / 💡 主动推荐 / 🧭 决策画像**（`主动推荐与数字分身机制设计方案.md`）：
   三张并排只读卡片，分别展示 `sys:daily_digest`（行为+目标进展融合日报）、
   `sys:next_action_digest`（停滞目标/注意力错配排序推荐）、
@@ -160,6 +181,8 @@ Objective 背后的调度机制；`docs/decision-profile-guide.md` 了解决策�
 | `users()` | `/v1/users` | 多用户列表（多用户模式） |
 | `self_status()` / `autonomous_status()` | `/self/status`、`/self/autonomous` | 自省与自主循环状态 |
 | `goals()` / `add_goal()` / `update_goal()` | `/v1/goals*` | Goal 看板 |
+| `cancel_objective()` / `retry_objective()` / `inject_objective_guidance()` | `/v1/objectives/{execution_id}/*` | Objective 执行操作：终止 / 手动重试当前步 / 插话（Track D） |
+| `inbox()` | `GET /v1/inbox` | 全局待办中心：跨 session 聚合权限/交互请求 + 失败 Objective（Track A） |
 | `cron_jobs()` / `add_cron_job()` / `update_cron_job()` / `run_cron_job_now()` | `/v1/cron*` | Cron Job 管理 |
 | `fs_list()` / `fs_read()` / `fs_download_url()` | `/v1/fs/*` | 产出物浏览与下载 |
 | `list_artifacts()` / `get_artifact()` / `artifact_file_url()` | `/v1/artifacts*` | 产出物 Manifest 列表、详情、文件预览/下载 |

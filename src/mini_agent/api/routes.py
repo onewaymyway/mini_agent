@@ -58,6 +58,10 @@ api/routes.py — FastAPI 路由定义
     GET    /v1/goals                 GoalBacklog 完整视图（active goals + objectives）
     POST   /v1/goals                 新增 Goal
     PATCH  /v1/goals/{goal_id}       更新 Goal 状态/进度/优先级
+    POST   /v1/objectives/{execution_id}/cancel    终止一个正在运行的 Objective 执行
+    POST   /v1/objectives/{execution_id}/retry     手动重试当前 step（不等超时）
+    POST   /v1/objectives/{execution_id}/guidance  插一句补充说明，供下次提交时使用
+    GET    /v1/inbox                 全局待办中心：跨 session 聚合权限/交互请求 + 失败 Objective
     GET    /v1/cron/jobs             CronScheduler job 列表
     POST   /v1/cron/jobs             添加 cron job
     PUT    /v1/cron/jobs/{id}        修改 job（enable/disable/schedule）
@@ -2144,6 +2148,163 @@ async def update_goal(goal_id: str, request: Request):
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+
+# ── Objective 执行操作（看板与自主性改进方案 Track D）────────────────────────
+# 给 ObjectiveExecutor 已有的状态机加几个转换入口：终止 / 手动重试当前步 /
+# 插一句话补充上下文。都是"事实来源仍是 ObjectiveExecutor"的操作——不直接
+# 改 GoalNode.status，由 ObjectiveExecutor 内部的 _sync_goal_status()
+# （Track B）单向回写。
+
+def _objective_executor_or_404(request: Request):
+    http_server = getattr(request.app.state, "http_server", None)
+    if http_server is None:
+        raise HTTPException(status_code=503, detail="HttpServer not available")
+    _require_owner(request)
+    al = http_server.autonomous_loop
+    oe = getattr(al, "_objective_executor", None) if al is not None else None
+    if oe is None:
+        oe = getattr(http_server.bridge, "_objective_executor", None)
+    if oe is None:
+        raise HTTPException(status_code=503, detail="ObjectiveExecutor not available")
+    return oe
+
+
+@router.post("/objectives/{execution_id}/cancel")
+async def cancel_objective(request: Request, execution_id: str):
+    """POST /v1/objectives/{execution_id}/cancel — 终止一个正在运行的 Objective
+    执行：立即释放并发槽位，不再重试；对应 GoalNode.status 会同步变为
+    "cancelled"（见 ObjectiveExecutor._on_objective_cancelled）。"""
+    oe = _objective_executor_or_404(request)
+    ok = oe.cancel(execution_id)
+    if not ok:
+        raise HTTPException(
+            status_code=404,
+            detail=f"execution {execution_id!r} not found or already finished",
+        )
+    return {"ok": True}
+
+
+@router.post("/objectives/{execution_id}/retry")
+async def retry_objective_step(request: Request, execution_id: str):
+    """POST /v1/objectives/{execution_id}/retry — 手动触发当前 step 重新
+    提交，不检查是否超时，随时可调用（区别于 reap_stale_steps() 的自动
+    超时重试）。"""
+    oe = _objective_executor_or_404(request)
+    ok = oe.retry_current_step(execution_id)
+    if not ok:
+        raise HTTPException(
+            status_code=404,
+            detail=f"execution {execution_id!r} not found or has no retryable current step",
+        )
+    return {"ok": True}
+
+
+@router.post("/objectives/{execution_id}/guidance")
+async def inject_objective_guidance(request: Request, execution_id: str):
+    """POST /v1/objectives/{execution_id}/guidance
+    Body: { "message": str }
+    把用户的一句话作为补充上下文塞进下一次提交当前 step 的 prompt。若希望
+    立即生效（而不是等当前 step 跑完/超时后才用上），需要配合调用
+    /retry 让当前 step 重新提交。"""
+    oe = _objective_executor_or_404(request)
+    body = await request.json()
+    message = (body.get("message") or "").strip()
+    if not message:
+        raise HTTPException(status_code=400, detail="message is required")
+    ok = oe.inject_guidance(execution_id, message)
+    if not ok:
+        raise HTTPException(
+            status_code=404,
+            detail=f"execution {execution_id!r} not found or has no current step",
+        )
+    return {"ok": True}
+
+
+# ── 全局待办通知中心（看板与自主性改进方案 Track A）──────────────────────────
+
+@router.get("/inbox")
+async def get_inbox(request: Request):
+    """GET /v1/inbox — 跨所有 session 聚合"待办列表"：
+      - pending 权限审批请求（不再局限于"当前最近活跃 session"，而是
+        遍历 SessionAgentPool 里所有活跃 session；单用户模式下只有一个
+        bridge，等价于原有 /v1/permissions/pending）
+      - pending 通用交互请求（同上）
+      - 执行失败的 Objective（ObjectiveExecutor.status == "failed"）
+
+    每项统一返回 {type, session_id, objective_id?, summary, created_at,
+    req_id?, execution_id?}，供看板顶栏渲染待办徽标/下拉列表，点击后
+    跳转到对应 session 并定位到该请求。
+    """
+    http_server = getattr(request.app.state, "http_server", None)
+    if http_server is None:
+        raise HTTPException(status_code=503, detail="HttpServer not available")
+    _require_owner(request)
+
+    items: list[dict] = []
+
+    # ── 权限 / 交互请求：遍历所有活跃 session 的 bridge ──────────────────
+    pool = _session_pool(request)
+    if pool is not None:
+        bridges = [(e.session_id, e.bridge) for e in pool.list_entries() if e.bridge is not None]
+    else:
+        bridges = [(getattr(http_server.bridge, "session_id", None), http_server.bridge)]
+
+    seen_bridge_ids = set()
+    for sid, bridge in bridges:
+        if bridge is None or id(bridge) in seen_bridge_ids:
+            continue
+        seen_bridge_ids.add(id(bridge))
+        try:
+            for p in bridge.permission_gate.list_pending():
+                items.append({
+                    "type": "permission",
+                    "session_id": sid,
+                    "req_id": p.get("req_id") or p.get("id"),
+                    "summary": p.get("summary") or p.get("tool_name") or "待审批的权限请求",
+                    "created_at": p.get("created_at"),
+                })
+        except Exception as _mini_agent_exc:
+            from mini_agent.errors import log_exception
+            log_exception(_mini_agent_exc, where='mini_agent.api.routes.get_inbox.permissions')
+        try:
+            for it in bridge.interaction_gate.list_pending():
+                data = it.get("data") or {}
+                summary = data.get("prompt") or data.get("question") or f"待回答的交互请求（{it.get('kind', '?')}）"
+                items.append({
+                    "type": "interaction",
+                    "session_id": sid,
+                    "req_id": it.get("req_id"),
+                    "summary": summary,
+                    "created_at": it.get("created_at"),
+                })
+        except Exception as _mini_agent_exc:
+            from mini_agent.errors import log_exception
+            log_exception(_mini_agent_exc, where='mini_agent.api.routes.get_inbox.interactions')
+
+    # ── 失败/卡住的 Objective ────────────────────────────────────────────
+    al = http_server.autonomous_loop
+    oe = getattr(al, "_objective_executor", None) if al is not None else None
+    if oe is None:
+        oe = getattr(http_server.bridge, "_objective_executor", None)
+    if oe is not None:
+        try:
+            for ex in oe.get_status_summary():
+                if ex.get("status") == "failed":
+                    items.append({
+                        "type": "objective_failed",
+                        "session_id": None,
+                        "objective_id": ex.get("objective_id"),
+                        "execution_id": ex.get("execution_id"),
+                        "summary": f"「{ex.get('title')}」执行失败：{ex.get('progress_notes') or '未知原因'}",
+                        "created_at": ex.get("finished_at"),
+                    })
+        except Exception as _mini_agent_exc:
+            from mini_agent.errors import log_exception
+            log_exception(_mini_agent_exc, where='mini_agent.api.routes.get_inbox.objectives')
+
+    items.sort(key=lambda it: it.get("created_at") or 0, reverse=True)
+    return {"items": items, "count": len(items)}
 
 
 # ── Cron Jobs REST API ────────────────────────────────────────────────────────
