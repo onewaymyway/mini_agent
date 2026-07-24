@@ -65,6 +65,10 @@ api/routes.py — FastAPI 路由定义
                                      查看某个 step 实际执行过程（完整 tool_call/
                                      tool_result 序列），而非截断摘要
     GET    /v1/inbox                 全局待办中心：跨 session 聚合权限/交互请求 + 失败 Objective
+    GET    /v1/evolution/proposals   [Track I] 列出 evolve/* 提案分支及风险分级
+    POST   /v1/evolution/proposals/{branch}/merge
+                                     [Track I] 一键合并提案分支（Body 可选 {"force": bool}，
+                                     risk=low 时 force 可省略；risk=high 时必须显式 force=true）
     GET    /v1/cron/jobs             CronScheduler job 列表
     POST   /v1/cron/jobs             添加 cron job
     PUT    /v1/cron/jobs/{id}        修改 job（enable/disable/schedule）
@@ -2439,6 +2443,119 @@ async def get_objective_step_trace(request: Request, execution_id: str, step_ind
         "status": step.status,
         "entries": entries,
         "note": "",
+    }
+
+
+# ── 进化提案分级自治（看板与自主性改进方案 Track I）──────────────────────────
+# 第七轮实施记录里"未完成/待续"的看板可视化半成品：给 CLI 已有的
+# `/evolution proposals` / `/evolution merge` 补上等价的 REST 端点，直接复用
+# `classify_proposal_risk()` / `StateRepo.merge_branch()`，不重新设计核心逻辑
+# （与 cli/commands/evolution.py::_handle_proposals()/_handle_merge() 的判断
+# 逻辑保持一致，只是把 rich 表格输出换成 JSON）。
+
+def _evolution_state_repo(request: Request):
+    """定位当前 agent 项目所在仓库的 StateRepo，供进化提案端点复用。
+
+    与 `/evolution` slash 命令一致：固定指向 `agent.cfg.project_root`，
+    不支持指定别的仓库路径（不是通用 git 客户端）。
+    """
+    from mini_agent.evolution.state_repo import StateRepo, StateRepoError
+
+    http_server = getattr(request.app.state, "http_server", None)
+    if http_server is None:
+        raise HTTPException(status_code=503, detail="HttpServer not available")
+    _require_owner(request)
+
+    self_agent = getattr(http_server.bridge, "agent", None)
+    project_root = getattr(self_agent.cfg, "project_root", None) if self_agent else None
+    if not project_root:
+        raise HTTPException(status_code=503, detail="project_root not configured")
+    try:
+        return StateRepo(project_root)
+    except StateRepoError as e:
+        raise HTTPException(status_code=503, detail=f"Failed to open StateRepo: {e}")
+
+
+@router.get("/evolution/proposals")
+async def list_evolution_proposals(request: Request):
+    """GET /v1/evolution/proposals — 列出所有 `evolve/*` 提案分支及风险分级。
+
+    逐条返回 `classify_proposal_risk()` 的结果（`ProposalRisk.to_dict()`），
+    与 `/evolution proposals` 命令行输出的判断逻辑完全一致，供看板"进化
+    提案" tab 渲染列表 + risk 徽标，决定是否展示"一键合并"按钮。
+    """
+    from mini_agent.evolution.proposal_risk import classify_proposal_risk
+
+    repo = _evolution_state_repo(request)
+    branches = repo.list_branches(prefix="evolve/")
+    items = [classify_proposal_risk(repo, branch).to_dict() for branch in branches]
+    return {"items": items, "count": len(items)}
+
+
+@router.get("/evolution/proposals/{branch:path}/diff")
+async def get_evolution_proposal_diff(request: Request, branch: str):
+    """GET /v1/evolution/proposals/{branch}/diff — 该提案分支相对基准分支的
+    unified diff 全文（`StateRepo.diff()` 已有现成方法，这里只是接线），
+    供看板"进化提案" tab 展开查看改动内容，不需要跳回命令行。
+    `branch` 用 `:path` 转换器是因为提案分支名固定带 `/`
+    （例如 `evolve/2026-07-20-skill-foo`），普通路径参数会在第一个 `/`
+    处截断。
+    """
+    repo = _evolution_state_repo(request)
+    if branch not in repo.list_branches():
+        raise HTTPException(status_code=404, detail=f"branch {branch!r} not found")
+    base = repo.current_branch() or "HEAD"
+    diff_text = repo.diff(base, branch)
+    return {"branch": branch, "base": base, "diff": diff_text}
+
+
+@router.post("/evolution/proposals/{branch:path}/merge")
+async def merge_evolution_proposal(request: Request, branch: str):
+    """POST /v1/evolution/proposals/{branch}/merge — 一键合并提案分支。
+
+    Body（可选）: `{"force": bool}`。行为与 `/evolution merge <branch>
+    [--force]` 完全一致：risk=low 时直接合并；risk=high 时默认拒绝并在
+    错误信息里给出判定依据，需要显式传 `force: true` 才会合并——`force`
+    本身仍然是一次人工决定（看板侧应该用一个需要二次确认的入口去调用
+    这个参数，而不是让它成为默认行为），不代表跳过了"人工审核"这件事
+    本身。
+    """
+    from mini_agent.evolution.state_repo import StateRepoError
+    from mini_agent.evolution.proposal_risk import classify_proposal_risk
+
+    repo = _evolution_state_repo(request)
+    if branch not in repo.list_branches():
+        raise HTTPException(status_code=404, detail=f"branch {branch!r} not found")
+
+    body = {}
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    force = bool(body.get("force", False))
+
+    result = classify_proposal_risk(repo, branch)
+    if result.risk != "low" and not force:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "message": f"branch {branch!r} is risk={result.risk!r}, "
+                            "refusing to merge without explicit force=true",
+                "risk": result.to_dict(),
+            },
+        )
+
+    try:
+        commit_hash = repo.merge_branch(branch)
+    except StateRepoError as e:
+        raise HTTPException(status_code=409, detail=f"Merge failed: {e}")
+
+    return {
+        "ok": True,
+        "branch": branch,
+        "merged_into": repo.current_branch(),
+        "commit": commit_hash,
+        "risk": result.risk,
     }
 
 

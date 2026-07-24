@@ -254,6 +254,19 @@ class AgentClient:
     def inbox(self):
         return self._get("/inbox")
 
+    # ── 看板：进化提案分级自治（Track I）────────────────────────────
+    def evolution_proposals(self):
+        """[Track I] 列出所有 evolve/* 提案分支及风险分级。"""
+        return self._get("/evolution/proposals")
+
+    def evolution_proposal_diff(self, branch: str):
+        """[Track I] 某个提案分支相对基准分支的 unified diff 全文。"""
+        return self._get(f"/evolution/proposals/{branch}/diff")
+
+    def merge_evolution_proposal(self, branch: str, force: bool = False):
+        """[Track I] 一键合并提案分支；risk=high 时需要显式传 force=True。"""
+        return self._post(f"/evolution/proposals/{branch}/merge", {"force": force}, timeout=30)
+
     def cron_jobs(self):
         return self._get("/cron/jobs")
 

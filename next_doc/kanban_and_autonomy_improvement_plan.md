@@ -9,12 +9,15 @@
 > user_presence 从二元 block/allow 改成 full/degraded/blocked，degraded 态
 > 收紧并发上限而非整体停摆；"用更便宜的模型跑自主任务"调研后确认
 > `LLMClientPool` 当前不支持按场景切换模型档位，未实现，见第六轮实施记录）、
-> Track I（风险分级 + 一键合并已上线：`evolution/proposal_risk.py` +
-> `StateRepo.merge_branch()` + `/evolution proposals`/`/evolution merge`；
-> 看板"进化提案"tab + diff 可视化视图未做，仍需通过 CLI 使用，见第七轮
-> 实施记录）。
-> 未完成：看板侧的进化提案可视化界面（Track I 的 diff 视图部分），
-> 详见实施记录文档"未完成/待续"一节。
+> Track I（风险分级 + 一键合并已上线，且看板可视化已补齐：
+> `evolution/proposal_risk.py` + `StateRepo.merge_branch()` +
+> `/evolution proposals`/`/evolution merge`（CLI，第七轮）+
+> `GET /v1/evolution/proposals`/`GET .../diff`/`POST .../merge`（REST）+
+> 看板"🧬 进化提案"tab（列表 + risk 徽标 + diff 展开 + 一键合并/强制合并
+> 二次确认），见第八轮实施记录）。
+> 未完成：详见实施记录文档"未完成/待续"一节（当前主要是历史遗留的
+> Track E 边界情况与既有测试签名不匹配问题，不再有 Track A~K 里完全
+> 没有 UI/API 落地的功能性缺口）。
 > 关联代码：`apps/mini_agent_kanban/`、`src/mini_agent/evolution/`、`src/mini_agent/perception/goal_backlog.py`
 > 前置修复：本方案假设 [并发槽位卡死修复] 已落地（`ObjectiveExecutor.reap_stale_steps()`），
 > 否则 Track B/C 的状态同步会把"假卡死"也当成正常状态展示，掩盖问题。

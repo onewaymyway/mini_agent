@@ -2422,6 +2422,95 @@ def render_self_tab(client: AgentClient):
 
 
 # ═══════════════════════════════════════════════════════════════════════
+# Tab: 进化提案（看板与自主性改进方案 Track I —— 第八轮补齐的看板可视化）
+# ═══════════════════════════════════════════════════════════════════════
+_PROPOSAL_RISK_LABEL = {"low": "🟢 低风险", "high": "🟡 需人工审核"}
+
+
+def render_evolution_proposals_tab(client: AgentClient):
+    """[Track I] 展示所有 evolve/* 提案分支的风险分级 + diff + 一键合并按钮。
+
+    对应第七轮实施记录"未完成/待续"里标注的看板可视化半成品：CLI 侧
+    （`/evolution proposals`/`/evolution merge`）已经能完整覆盖"查看分级 +
+    一键合并"，这里只是给同一套后端能力（`classify_proposal_risk()`/
+    `StateRepo.merge_branch()`，经由本轮新增的 `/v1/evolution/proposals*`
+    REST 端点）接上看板 UI，判断逻辑不重新实现。
+    """
+    st.markdown("#### 🧬 进化提案")
+    st.caption(
+        "列出所有待处理的 evolve/* 提案分支。低风险（只改文档/lesson 规则，"
+        "tier ≤ T1，且无 eval 回归）可以一键合并；中/高风险维持人工审核，"
+        "需要展开查看判定依据并二次确认后才能强制合并。"
+    )
+
+    if st.button("🔄 刷新提案列表", key="evo_proposals_refresh"):
+        st.rerun()
+
+    resp = client.evolution_proposals()
+    if resp and "_error" in resp:
+        st.error(f"获取提案列表失败：{resp['_error']}")
+        return
+    items = (resp or {}).get("items") or []
+    if not items:
+        st.info("当前没有待处理的进化提案分支。")
+        return
+
+    for item in items:
+        branch = item.get("branch", "")
+        risk = item.get("risk", "high")
+        risk_label = _PROPOSAL_RISK_LABEL.get(risk, risk)
+        with st.container(border=True):
+            top1, top2, top3 = st.columns([3, 1, 1])
+            top1.markdown(f"**{branch}**")
+            top2.markdown(risk_label)
+            top3.caption(f"tier {item.get('max_tier') or '-'} · {item.get('commit_count', 0)} commits")
+
+            reasons = item.get("reasons") or []
+            if reasons:
+                st.caption("判定依据：" + "；".join(reasons))
+
+            changed_paths = item.get("changed_paths") or []
+            if changed_paths:
+                preview = ", ".join(changed_paths[:8])
+                more = f" 等共 {len(changed_paths)} 个文件" if len(changed_paths) > 8 else ""
+                st.caption(f"改动文件：{preview}{more}")
+
+            with st.expander("📄 查看 diff"):
+                diff_resp = client.evolution_proposal_diff(branch)
+                if diff_resp and "_error" in diff_resp:
+                    st.caption(f"获取 diff 失败：{diff_resp['_error']}")
+                else:
+                    diff_text = (diff_resp or {}).get("diff") or ""
+                    if diff_text:
+                        st.code(diff_text[:20000], language="diff")
+                        if len(diff_text) > 20000:
+                            st.caption("diff 内容过长，已截断展示前 20000 字符。")
+                    else:
+                        st.caption("（无 diff 内容）")
+
+            if risk == "low":
+                if st.button("✅ 一键合并", key=f"evo_merge_low_{branch}"):
+                    res = client.merge_evolution_proposal(branch, force=False)
+                    if res and "_error" in res:
+                        st.error(f"合并失败：{res['_error']}")
+                    else:
+                        st.success(f"已合并 {branch} → {res.get('merged_into', '')}（commit {str(res.get('commit',''))[:8]}）")
+                        st.rerun()
+            else:
+                st.warning("⚠️ 该提案需要人工审核，不建议直接合并。确认已阅读上方判定依据和 diff 后，"
+                           "可以勾选下方确认框并强制合并。")
+                confirm_key = f"evo_force_confirm_{branch}"
+                confirmed = st.checkbox("我已人工审核过这份提案的 diff，确认要强制合并", key=confirm_key)
+                if st.button("⚠️ 强制合并", key=f"evo_merge_force_{branch}", disabled=not confirmed):
+                    res = client.merge_evolution_proposal(branch, force=True)
+                    if res and "_error" in res:
+                        st.error(f"合并失败：{res['_error']}")
+                    else:
+                        st.success(f"已强制合并 {branch} → {res.get('merged_into', '')}（commit {str(res.get('commit',''))[:8]}）")
+                        st.rerun()
+
+
+# ═══════════════════════════════════════════════════════════════════════
 # Tab 6: 诊断
 # ═══════════════════════════════════════════════════════════════════════
 def render_diagnostics_tab(client: AgentClient):
@@ -2459,7 +2548,8 @@ def main():
 
     render_topbar(client, get_active_session_id())
 
-    tabs = st.tabs(["💬 对话", "🗂️ 会话管理", "📌 目标看板", "🔄 工作流", "📁 产出物", "🖼️ 产出预览", "🧠 自我状态", "🔧 诊断"])
+    tabs = st.tabs(["💬 对话", "🗂️ 会话管理", "📌 目标看板", "🔄 工作流", "📁 产出物", "🖼️ 产出预览",
+                    "🧠 自我状态", "🧬 进化提案", "🔧 诊断"])
     with tabs[0]:
         render_chat_tab(client, get_active_session_id())
     with tabs[1]:
@@ -2475,6 +2565,8 @@ def main():
     with tabs[6]:
         render_self_tab(client)
     with tabs[7]:
+        render_evolution_proposals_tab(client)
+    with tabs[8]:
         render_diagnostics_tab(client)
 
     # [P0 改造] 原来这里是 `if auto_refresh: time.sleep(3); st.rerun()`——

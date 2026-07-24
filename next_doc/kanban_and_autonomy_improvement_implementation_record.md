@@ -787,6 +787,88 @@ test_evolve_cli.py`（3 项）、`tests/test_skill_propose.py`（37 项，其中
 （`tests/test_objective_executor_kanban_tracks_r2.py::
 TestArtifactsFromToolCalls` 的 `history_segment` 签名不匹配问题）。
 
+## 第八轮已完成 Track（本次续做）
+
+### Track I（P2）：进化提案分级自治 —— 看板可视化半成品补齐（完整版落地）
+
+按第七轮"未完成/待续"里明确标注的优先级，本轮把 Track I 剩下的看板
+可视化部分做完：REST 端点 + 看板"🧬 进化提案"tab，判断逻辑完全复用
+第七轮已经落地的 `evolution/proposal_risk.py::classify_proposal_risk()`
+/ `evolution/state_repo.py::StateRepo.merge_branch()`，不重新设计。
+
+**改动内容**：
+
+- `api/routes.py` 新增：
+  - `_evolution_state_repo(request)`：定位当前 agent 项目的 `StateRepo`
+    （固定读 `http_server.bridge.agent.cfg.project_root`），与
+    `cli/commands/evolution.py::handle_evolution_cmd()` 的定位方式一致。
+  - `GET /v1/evolution/proposals`：`repo.list_branches(prefix="evolve/")`
+    逐条跑 `classify_proposal_risk()`，返回 `{items, count}`，
+    `items[i]` 就是 `ProposalRisk.to_dict()`。
+  - `GET /v1/evolution/proposals/{branch:path}/diff`：调用已有的
+    `StateRepo.diff(base, branch)`，返回 unified diff 全文；`branch`
+    路由参数用 `:path` 转换器，因为提案分支名固定带 `/`
+    （`evolve/2026-...`），普通路径参数在第一个 `/` 处会被截断。
+  - `POST /v1/evolution/proposals/{branch:path}/merge`：Body 可选
+    `{"force": bool}`，行为与 `/evolution merge <branch> [--force]`
+    完全对齐——`risk="low"` 时忽略/不需要 `force` 直接合并；
+    `risk != "low"` 且 `force` 不为 `true` 时返回 409（body 里带上
+    完整 `ProposalRisk.to_dict()` 供前端展示判定依据）；分支不存在
+    返回 404；`merge_branch()` 抛出的 `StateRepoError`（合并冲突等）
+    转换成 409，不是 500。
+  - 路由文档头部新增对应端点说明。
+- `apps/mini_agent_kanban/client.py` 新增 `evolution_proposals()` /
+  `evolution_proposal_diff(branch)` /
+  `merge_evolution_proposal(branch, force=False)`，与已有 Track D 方法
+  保持同样的"失败返回带 `_error` 字段的 dict，不抛异常"约定。
+- `apps/mini_agent_kanban/app.py` 新增 `render_evolution_proposals_tab()`
+  并接入 `main()` 的 `st.tabs(...)`（新增第 8 个 tab"🧬 进化提案"）：
+  - 每个提案分支渲染为一张卡片：分支名 + risk 徽标（🟢 低风险 /
+    🟡 需人工审核）+ tier/commit 数 + 判定依据（逐条如实展示）+
+    改动文件预览。
+  - "📄 查看 diff" expander：点开才请求 `/diff` 端点，避免列表接口
+    把所有分支的 diff 一次性拉下来。
+  - `risk="low"`：直接展示"✅ 一键合并"按钮。
+  - `risk!="low"`：警告文案 + 一个"我已人工审核过…"的 checkbox +
+    默认 `disabled` 的"⚠️ 强制合并"按钮（勾选后才能点）——方案原文
+    要求的"需要二次确认的强制合并入口"。
+  - 顶部提供"🔄 刷新提案列表"按钮。
+
+**与方案原文/第七轮记录的差异说明**：无实质差异——这是第七轮已明确
+拆分出来的后续子项，判断逻辑完全复用第七轮的
+`classify_proposal_risk()`/`merge_branch()`，本轮只是"接线"。
+
+## 测试（第八轮新增）
+
+新增 `tests/test_evolution_proposal_routes_track_i_r8.py`，用一个只挂载
+`mini_agent.api.routes.router`、`app.state.http_server` 为轻量
+duck-typed 对象的最小 FastAPI app（`fastapi.testclient.TestClient`）
+覆盖新增的三个端点，不拉起完整 daemon：
+
+- `TestListEvolutionProposals`：无 `evolve/*` 分支时返回空列表；同时
+  存在低风险/高风险分支时能正确分别判定，`reasons`/`changed_paths`
+  字段正确透出。
+- `TestEvolutionProposalDiff`：返回的 diff 文本包含实际改动内容；
+  未知分支返回 404。
+- `TestMergeEvolutionProposal`：低风险分支不传 `force` 直接合并成功
+  （200，且合并后分支被删除）；高风险分支不传 `force` 返回 409 且
+  分支未被合并/删除；高风险分支传 `force: true` 合并成功；未知分支
+  合并请求返回 404。
+
+运行方式：
+
+```bash
+PYTHONPATH=src python3 -m pytest tests/test_evolution_proposal_routes_track_i_r8.py -q
+```
+
+本轮验证：8 项全部通过；同时补齐本地环境缺失的 `pytest`/`fastapi`/
+`python-multipart`/`rich`/`pydantic`/`uvicorn`/`anthropic` 依赖后，
+重新跑了第一至七轮全部既有测试文件，连同本轮新增文件合计 148 项通过、
+4 项失败——失败的仍是此前几轮已如实记录、与本轮改动无关的既有问题
+（`tests/test_objective_executor_kanban_tracks_r2.py::
+TestArtifactsFromToolCalls` 下 4 项，调用了当前 `on_turn_done()` 签名
+不存在的 `history_segment` 参数），本轮同样未去动它。
+
 ## 未完成 / 待续（供下一轮参考）
 
 按方案原文的路线图，以下项目**仍未开始或未完全完成**，需要后续排期：
@@ -799,22 +881,19 @@ TestArtifactsFromToolCalls` 的 `history_segment` 签名不匹配问题）。
   test_objective_executor_kanban_tracks_r2.py::TestArtifactsFromToolCalls`
   下 4 个用例调用了 `on_turn_done(..., history_segment=...)`，当前签名
   没有这个参数，需要下一轮排查是功能确实缺失还是测试需要更新。
-- **Track I 的看板可视化半成品**（本轮明确拆分出的后续子项）：看板新增
-  "进化提案"tab，展示 `classify_proposal_risk()` 的分级结果 + unified
-  diff（`StateRepo.diff()` 已有现成方法可以复用）+ 一键合并按钮（低风险
-  直接展示按钮，高风险展示"需要人工审核"提示 + 一个需要二次确认的
-  强制合并入口）；配套需要新增 REST 端点（`GET /v1/evolution/proposals`、
-  `POST /v1/evolution/proposals/{branch}/merge`），可以直接复用本轮的
-  `classify_proposal_risk()`/`merge_branch()`，不需要重新设计核心逻辑。
 - **Track J 的"模型档位切换"半成品**（第六轮调研后明确搁置）：如果未来
   `LLMClientPool` 演进出"按 initiator/场景选择模型档位"的能力，可以
   回来把 `degraded` 态接上"自主任务用更便宜的模型"这一优化，目前
   `AutonomousLoop`/`ObjectiveExecutor` 侧已经有 `gating_state()`/
   `set_gating_degraded()` 这两个现成的信号源可以直接复用，不需要再动
   资源仲裁本身的逻辑。
+- **Track I 看板 diff 视图的进一步增强**（本轮未做，非阻塞项）：当前
+  diff 展示是纯 `st.code` 的 unified diff 文本，如果后续觉得不够直观，
+  可以考虑接入更结构化的 diff 渲染，但这是体验优化，不影响"能不能
+  一键合并"这个核心能力已经可用的事实。
 
-至此，方案原文路线图里 Track A~K 全部至少有了可用的落地版本（部分留有
-如实记录的简化/收窄，见各自小节的"与方案原文的差异说明"）。建议下一轮
-按团队带宽在上面三项"待续"里选择：**Track I 的看板可视化**收益最直接
-（能让"一键合并"真正在看板主入口可用，而不需要跳回命令行），是目前
-唯一还完全没有 UI 落地的功能性缺口，建议优先排期。
+至此，方案原文路线图里 Track A~K 全部有了可用的落地版本，且此前记录
+中"唯一还完全没有 UI 落地的功能性缺口"（Track I 看板可视化）已在本轮
+补齐——Track A~K 不再有功能性缺口，剩余"未完成/待续"项均为边界情况、
+既有测试缺陷、或已明确调研后搁置的可选优化，可按团队带宽排期，不再
+存在紧迫的排期建议。
