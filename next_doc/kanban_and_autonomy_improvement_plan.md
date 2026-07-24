@@ -2,8 +2,8 @@
 
 > 状态：部分落地 · 见 `next_doc/kanban_and_autonomy_improvement_implementation_record.md`
 > 已完成：Track C（退化版）、Track A、Track D、Track B（含反向同步，完整版）、
-> Track F（完整）、Track E、Track G（完整：工具调用记录精确提取为主，
-> `[ARTIFACTS]` 文本标记为退化兜底）。
+> Track F（完整）、Track E、Track G（完整版：工具调用提取为主，`[ARTIFACTS]`
+> 标记正则解析为退化兜底）。
 > 未完成：Track H/I/J/K，详见实施记录文档"未完成/待续"一节。
 > 关联代码：`apps/mini_agent_kanban/`、`src/mini_agent/evolution/`、`src/mini_agent/perception/goal_backlog.py`
 > 前置修复：本方案假设 [并发槽位卡死修复] 已落地（`ObjectiveExecutor.reap_stale_steps()`），
@@ -314,9 +314,10 @@ P2（后续迭代，自治程度提升）
 1. `GoalNode.status` 是否要真的新增 `"failed"`/`"cancelled"` 两个值，还是复用 `"abandoned"`
    并加一个额外的 `fail_reason` 字段来区分——涉及看板 `GOAL_STATUS_COLUMNS` 是否要加列，
    建议 Track B 开工前先定。
-2. Track G 依赖 agent 在回复里主动声明 `[ARTIFACTS] ...` 标记，需要确认现有 system prompt/
-   工具描述里怎么引导模型稳定产出这个格式，或者退化成从 `tool_call` 记录里自动提取
-   `write_file`/`patch_file` 类工具的路径参数（更可靠，建议优先走这条路而不是指望模型自觉）。
+2. ~~Track G 依赖 agent 在回复里主动声明 `[ARTIFACTS] ...` 标记~~ ——已解决：
+   改为优先从 `write_file`/`patch_file` 等工具调用记录里自动提取路径参数
+   （`artifacts_from_tools_fn`），`[ARTIFACTS]` 正则解析降级为拿不到工具调用
+   记录时的兜底（`artifacts_parse_fn`）。见实施记录"第三轮"一节。
 3. Track J 依赖 `LLMClientPool` 是否已支持"按 initiator/场景选择模型档位"，需要先读
    `config/models.py` 确认，标注为该 Track 的前置调研任务。
 4. Track H 的"主题"关联字段目前 `GoalNode`/`activity_digest` 记录里的粒度是否够用，

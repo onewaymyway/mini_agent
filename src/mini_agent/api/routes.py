@@ -2282,6 +2282,83 @@ def _format_history_entry_for_trace(entry: dict) -> Optional[dict]:
     return None
 
 
+def _locate_step_history_entries(hist_mgr, submitted_message: str) -> Optional[list[dict]]:
+    """[Track E 提取为公用函数，供 Track G 深化复用] 在 agent 的 active
+    history 里定位 `submitted_message` 对应的那一段原始记录（未格式化），
+    即从匹配到的 `user_input` 条目开始，到下一条 `user_input`（或历史
+    末尾）为止的所有条目。逻辑与 get_objective_step_trace() 里原来内联
+    的匹配代码完全一致，这里只是抽出来供 Track G 的"从 tool_call 里提取
+    产出物路径"复用，避免维护两份几乎一样的匹配代码。
+
+    返回 None 表示没有找到匹配（历史里没有这条记录，或被压缩/归档）。
+    """
+    history = hist_mgr.history  # 含 _type 的浅拷贝列表
+    start_idx = None
+    for i, entry in enumerate(history):
+        if entry.get("_type") == "user_input" and entry.get("content") == submitted_message:
+            start_idx = i
+    # 取最后一次匹配，见 get_objective_step_trace() 里的同一段注释：
+    # submitted_message 每次重新提交都会被覆盖为最新内容，重试多次时只有
+    # 最新一次会命中，"最后一次匹配"正好对应最新这次尝试。
+    if start_idx is None:
+        return None
+
+    end_idx = len(history)
+    for j in range(start_idx + 1, len(history)):
+        if history[j].get("_type") == "user_input":
+            end_idx = j
+            break
+    return history[start_idx:end_idx]
+
+
+# [看板与自主性改进方案 Track G 深化] 这些工具的 tool_input 里有明确的
+# `path` 字段指向被写入/修改的文件本身——与
+# perception/artifact_detector.py 里 `_PATH_ARG_TOOLS` 保持同一份工具名单
+# （那边是为了"产出物预览看板"侦测图片/文档类文件，这里是为了"跨步骤传递
+# 产出路径"，目的不同所以不复用同一个常量，但工具名单没有理由不一致——
+# 如果以后新增/改名了写文件类工具，两处都要同步维护）。
+_ARTIFACT_TOOL_PATH_KEYS = ("path", "file_path", "target_file", "filepath")
+_ARTIFACT_WRITE_TOOL_NAMES = frozenset({
+    "write_file", "create_file", "patch_file", "patch_file_simple",
+})
+
+
+def _extract_tool_write_paths(raw_entries: list[dict]) -> list[str]:
+    """[Track G 深化] 从一段原始 history 条目（`_locate_step_history_entries`
+    的返回值）里扫描 assistant_reply 中的 tool_use 块，提取写文件类工具
+    调用的路径参数。
+
+    这是方案原文"待细化项 2"里标注的更可靠做法——不依赖模型在回复文本里
+    自觉声明 `[ARTIFACTS] ...` 标记，而是直接从工具调用的结构化入参里拿
+    真实路径，只要模型确实调用了写文件工具就一定能拿到，不存在"模型忘了
+    按格式声明"的情况。
+
+    按出现顺序去重返回；扫描不到任何写文件类工具调用时返回空列表（调用方
+    据此决定是否退化到 `[ARTIFACTS]` 正则解析）。
+    """
+    paths: list[str] = []
+    for entry in raw_entries:
+        if entry.get("_type") != "assistant_reply":
+            continue
+        content = entry.get("content")
+        if not isinstance(content, list):
+            continue
+        for block in content:
+            if not isinstance(block, dict) or block.get("type") != "tool_use":
+                continue
+            if block.get("name") not in _ARTIFACT_WRITE_TOOL_NAMES:
+                continue
+            tool_input = block.get("input")
+            if not isinstance(tool_input, dict):
+                continue
+            for key in _ARTIFACT_TOOL_PATH_KEYS:
+                p = tool_input.get(key)
+                if p:
+                    paths.append(str(p))
+                    break
+    return list(dict.fromkeys(paths))  # 去重且保序
+
+
 @router.get("/objectives/{execution_id}/steps/{step_index}/trace")
 async def get_objective_step_trace(request: Request, execution_id: str, step_index: int):
     """GET /v1/objectives/{execution_id}/steps/{step_index}/trace
@@ -2335,25 +2412,12 @@ async def get_objective_step_trace(request: Request, execution_id: str, step_ind
     if hist_mgr is None:
         return _empty("当前无法访问 agent 会话历史，暂不支持查看执行细节。")
 
-    history = hist_mgr.history  # 含 _type 的浅拷贝列表
-    start_idx = None
-    for i, entry in enumerate(history):
-        if entry.get("_type") == "user_input" and entry.get("content") == step.submitted_message:
-            start_idx = i
-    # 从后往前找最后一次匹配（若该 step 被重试过多次，只有最新一次提交的
-    # 文本会命中——submitted_message 每次重新提交都会被覆盖为最新内容，
-    # 所以“最后一次匹配”正好对应最新这一次尝试，这也是看板通常最关心的）
-    if start_idx is None:
+    raw_entries = _locate_step_history_entries(hist_mgr, step.submitted_message)
+    if raw_entries is None:
         return _empty("在当前会话历史里没有找到这一步对应的记录（可能已被压缩/归档），暂不支持查看执行细节。")
 
-    end_idx = len(history)
-    for j in range(start_idx + 1, len(history)):
-        if history[j].get("_type") == "user_input":
-            end_idx = j
-            break
-
     entries = []
-    for entry in history[start_idx:end_idx]:
+    for entry in raw_entries:
         formatted = _format_history_entry_for_trace(entry)
         if formatted is not None:
             entries.append(formatted)

@@ -455,24 +455,6 @@ class AgentRunner(threading.Thread):
                 # 这样 /v1/status 才能返回 waiting_permission，web 端才能显示权限面板
                 _inject_permission_state_hook(bridge, bridge.agent)
 
-                # [看板与自主性改进方案 Track G 深化] 若这一轮是 ObjectiveExecutor
-                # 提交的自主步骤，先记下 run_turn() 前的 active history 长度——
-                # 跑完之后 `history[_hist_len_before:]` 就是这一轮真正新增的
-                # 全部条目（含 tool_use/tool_result），不需要像 Track E 那样靠
-                # 匹配 submitted_message 文本反查（这里直接知道边界，更精确、
-                # 也不受"历史被截断/压缩"影响——只要这一轮还没结束就不会被压缩）。
-                # 传给 on_turn_done()，用于从 write_file/patch_file 等工具调用
-                # 记录里自动提取本步骤真正写过的文件路径，替代/优先于原来纯
-                # 正则解析 `[ARTIFACTS]` 标记的退化方案。
-                _hist_len_before = None
-                if getattr(bridge, "_objective_executor", None) is not None and cmd.initiator in ("autonomous", "cron"):
-                    try:
-                        _hist_len_before = len(bridge.agent._hist.history)
-                    except Exception as _mini_agent_exc:
-                        from mini_agent.errors import log_exception
-                        log_exception(_mini_agent_exc, where='mini_agent.api.server.AgentRunner._main_loop')
-                        _hist_len_before = None
-
                 # ── slash 命令：本地执行，不当聊天内容发给 agent ─────────
                 # 所有客户端（daemon connected CLI、web 面板等）统一通过
                 # /v1/chat 提交消息，这里是唯一的、真正驱动 agent 的地方——
@@ -567,15 +549,7 @@ class AgentRunner(threading.Thread):
                         # 从 result 的首句提取摘要（不超过 200 字）
                         _summary = (result or "").strip()
                         _summary = _summary.split("\n")[0][:200]
-                        _history_segment = None
-                        if _hist_len_before is not None:
-                            try:
-                                _history_segment = bridge.agent._hist.history[_hist_len_before:]
-                            except Exception as _mini_agent_exc:
-                                from mini_agent.errors import log_exception
-                                log_exception(_mini_agent_exc, where='mini_agent.api.server')
-                                _history_segment = None
-                        _obj_exec.on_turn_done(turn_id, _summary, history_segment=_history_segment)
+                        _obj_exec.on_turn_done(turn_id, _summary)
                     except Exception as _mini_agent_exc:
                         from mini_agent.errors import log_exception
                         log_exception(_mini_agent_exc, where='mini_agent.api.server')
@@ -1181,6 +1155,35 @@ class HttpServer:
                     log_exception(_mini_agent_exc, where='mini_agent.api.server.HttpServer._build_autonomous_loop._parse_artifacts')
                     return []
 
+            def _extract_artifacts_from_tools(submitted_message: str):
+                """[看板与自主性改进方案 Track G 深化] 从这一步实际调用过
+                的写文件类工具（write_file/create_file/patch_file/
+                patch_file_simple）记录里直接提取真实路径参数，优先于
+                `_parse_artifacts()` 的正则解析。复用 Track E 已有的历史
+                定位逻辑（api/routes.py::_locate_step_history_entries），
+                避免维护两份几乎一样的"按 submitted_message 定位这一步
+                在 active history 里的记录范围"代码。
+
+                拿不到 agent 会话历史（agent 未就绪、_hist 不存在）、或
+                定位不到这一步对应的记录（已被压缩/归档）时返回空列表，
+                由 ObjectiveExecutor 退化到正则解析——不抛异常。"""
+                try:
+                    from mini_agent.api.routes import (
+                        _locate_step_history_entries,
+                        _extract_tool_write_paths,
+                    )
+                    hist_mgr = getattr(agent, "_hist", None)
+                    if hist_mgr is None:
+                        return []
+                    raw_entries = _locate_step_history_entries(hist_mgr, submitted_message)
+                    if raw_entries is None:
+                        return []
+                    return _extract_tool_write_paths(raw_entries)
+                except Exception as _mini_agent_exc:
+                    from mini_agent.errors import log_exception
+                    log_exception(_mini_agent_exc, where='mini_agent.api.server.HttpServer._build_autonomous_loop._extract_artifacts_from_tools')
+                    return []
+
             from mini_agent.evolution.objective_executor import ObjectiveExecutor
             objective_executor = ObjectiveExecutor(
                 paths=paths,
@@ -1191,6 +1194,7 @@ class HttpServer:
                 goal_backlog=goal_backlog,
                 llm_redecompose_fn=_llm_redecompose,
                 artifacts_parse_fn=_parse_artifacts,
+                artifacts_from_tools_fn=_extract_artifacts_from_tools,
             )
             objective_executor.load()
 
