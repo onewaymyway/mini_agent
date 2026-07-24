@@ -269,21 +269,83 @@ PYTHONPATH=src python3 -m pytest tests/test_objective_executor_kanban_tracks_r2.
 影响，但本仓库当前快照里未包含该文件，无法在本轮实际重跑验证——如果
 你本地仓库里有这个文件，建议连同一起跑一遍确认无回归。
 
+## 第三轮已完成 Track（本次续做）
+
+### Track G（P2）：跨步骤结构化产出物传递 —— 深化版已上线，方案完整落地
+
+延续第二轮"未完成/待续"里点名的下一步：用 Track E 已具备的"精确定位某个
+turn 的历史区间"能力，把 Track G 的产出物解析从纯文本正则升级为"直接从
+工具调用记录里提取"，不再依赖模型自觉输出 `[ARTIFACTS] ...` 标记。
+
+- 新增 `_ARTIFACT_TOOL_NAMES`（`write_file`/`create_file`/`patch_file`/
+  `patch_file_simple`/`delete_file`——即 `tools/builtin.py` 里所有会实际
+  写盘的内置工具，都用 `path` 作为路径参数 key）和纯函数
+  `_extract_artifacts_from_tool_calls(history_segment)`：扫描一段
+  `_type=="assistant_reply"` 历史条目里的 `tool_use` 块，收集命中工具的
+  `path` 参数，按出现顺序去重。不依赖 agent/session 实例，输入输出都是
+  普通 dict/list，方便单测。
+- `ObjectiveExecutor.on_turn_done()` 新增 `history_segment: Optional[list]`
+  参数；`_parse_step_artifacts()` 改为两级优先级：
+    1. `history_segment` 非空且能提取出路径 → 直接用（更可靠，这是本轮
+       升级的主路径）；
+    2. 提取不到 / 未提供 `history_segment` → 退化为原有的
+       `artifacts_parse_fn` 文本解析（第二轮的 `[ARTIFACTS]` 正则版本，
+       现在变成兜底而不是主力）。
+  两者都拿不到时保持空列表，不影响 step 完成主流程；不传 `history_segment`
+  时行为与第二轮完全一致（专门写了回归测试验证）。
+- `api/server.py`：在 `AgentRunner._main_loop()` 里，如果这一轮是
+  ObjectiveExecutor 提交的自主步骤（`cmd.initiator in ("autonomous",
+  "cron")` 且 `bridge._objective_executor` 存在），在调用
+  `bridge.agent.run_turn()` **之前**先记下 `len(bridge.agent._hist.
+  history)`；跑完之后用 `history[_hist_len_before:]` 切出"这一轮真正
+  新增的全部条目"，作为 `history_segment` 传给 `on_turn_done()`。
+  这比 Track E trace 接口"事后用 submitted_message 文本反查边界"更简单
+  精确——这里本来就精确知道边界（调用前后各记一次长度），完全不需要
+  文本匹配，也不受"历史被压缩"影响（压缩只会发生在下一轮开始前，这一轮
+  还没结束就不会被压缩掉）。
+- 非自主步骤的普通聊天 turn 不受影响：只有满足上述条件才会去记录
+  `_hist_len_before`，其余场景该变量恒为 `None`，`on_turn_done()` 拿到
+  的 `history_segment` 也是 `None`，退化路径与第二轮行为完全一致。
+
+至此方案原文"待确认/待细化项 2"里标注的两种做法（模型自觉声明 vs.
+从工具调用记录自动提取）都已实现，且按"更可靠的优先、模型自觉的兜底"
+的顺序组合在一起，不是简单二选一。
+
+## 测试（第三轮新增）
+
+在 `tests/test_objective_executor_kanban_tracks_r2.py` 里新增
+`TestArtifactsFromToolCalls`（5 项），覆盖：
+
+- 从 `write_file`/`patch_file` 类工具调用里正确提取路径，`read_file`
+  等非写入类工具不会被误收集。
+- 两种来源都命中时，工具调用记录优先于文本标记解析结果。
+- `history_segment` 里找不到任何写入类工具调用时，正确退化到文本正则
+  解析（第二轮的 `[ARTIFACTS]` 兜底路径）。
+- 不传 `history_segment`（或传空）时不报错，行为与第二轮完全一致。
+- 同一路径被多个工具调用命中（比如先 `write_file` 后 `patch_file`）时
+  去重，只保留一条。
+
+连同第二轮已有的 13 项，本文件当前共 18 项测试，全部通过；同时重跑
+`tests/test_goal_backlog.py` 确认无回归。
+
+```bash
+PYTHONPATH=src python3 -m pytest tests/test_objective_executor_kanban_tracks_r2.py -q
+```
+
 ## 未完成 / 待续（供下一轮参考）
 
 按方案原文的路线图，以下项目**仍未开始**，需要后续排期：
 
-- **Track G 深化**：用 Track E 已具备的"按 step 精确截取 tool_call 序列"
-  能力，替换/增强现在纯正则匹配 `[ARTIFACTS]` 标记的产出物解析方式，
-  直接从 `write_file`/`patch_file` 等工具调用记录里自动提取真实路径参数——
-  更可靠，不依赖模型自觉遵守固定输出格式。
-- **Track E 边界情况**：历史被压缩（compact）后无法定位到某个 step 的
-  trace；多 session 场景下 Objective 执行如果不再统一走单一主 bridge，
-  trace 接口需要能定位到正确的 session/agent。
+- **Track E 边界情况**（未变化，仍待后续）：历史被压缩（compact）后无法
+  定位到某个 step 的 trace；多 session 场景下 Objective 执行如果不再
+  统一走单一主 bridge，trace 接口需要能定位到正确的 session/agent。
 - **Track H / I / J / K**（P2）：效果回填闭环、进化提案分级自治、资源
   门控降级执行、并发数自适应——均未开始，需要先完成方案原文"待确认/
   待细化项"里列出的前置调研（主题关联字段粒度、`LLMClientPool` 是否
   支持按场景切换模型档位等）。
 
-建议下一轮优先做 **Track G 深化**（收益直接反哺 Track C 路径声明精确度，
-且 Track E 的基础设施已经就绪，边际工作量小），再排 P2 的其余项。
+Track A~G 已全部落地（含各自方案原文标注的深化/完整版）。建议下一轮从
+P2 剩余的 Track H/I/J/K 里选起，按方案原文路线图，Track H（效果回填闭环）
+是其余三项的前置依赖（K 依赖 H 的统计基础设施），建议优先做 Track H 的
+"待确认/待细化项 4"（`GoalNode`/`activity_digest` 的主题关联字段粒度
+核实）——这是本轮开工前必须先拍板的调研项，尚未开始。

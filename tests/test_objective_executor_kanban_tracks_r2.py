@@ -267,5 +267,104 @@ class TestArtifactsParsing:
         assert ex.steps[0].artifacts == []  # 向后兼容：不提供回调不解析
 
 
+class TestArtifactsFromToolCalls:
+    """[Track G 深化] 优先从 write_file/patch_file 等工具调用记录里精确
+    提取路径，而不是依赖模型自觉输出 `[ARTIFACTS] ...` 标记。"""
+
+    @staticmethod
+    def _assistant_entry_with_tool_calls(calls: list[tuple]) -> dict:
+        """构造一条 _type=="assistant_reply" 的 history 条目，content 里
+        混杂 text 块和若干 tool_use 块（每项 (tool_name, path)）。"""
+        content = [{"type": "text", "text": "正在处理..."}]
+        for name, path in calls:
+            content.append({"type": "tool_use", "name": name, "input": {"path": path}})
+        return {"_type": "assistant_reply", "content": content}
+
+    def test_extracts_paths_from_write_and_patch_tools(self, tmp_path):
+        oe = _make_executor(tmp_path)  # 不提供 artifacts_parse_fn，纯测工具调用路径
+        obj = _FakeGoalNode("obj_12")
+        exec_id = oe.start(obj)
+        ex = oe.get_execution(exec_id)
+        turn_id = ex.current_step.turn_id
+
+        history_segment = [
+            {"_type": "user_input", "content": ex.steps[0].submitted_message},
+            self._assistant_entry_with_tool_calls([
+                ("write_file", "src/a.py"),
+                ("patch_file", "src/b.py"),
+                ("read_file", "src/c.py"),  # 非写入类工具，不应该被收集
+            ]),
+            {"_type": "tool_result", "content": "ok"},
+        ]
+        oe.on_turn_done(turn_id, "完成了第一步。", history_segment=history_segment)
+
+        assert ex.steps[0].artifacts == ["src/a.py", "src/b.py"]
+
+    def test_tool_calls_take_priority_over_text_marker(self, tmp_path):
+        """两种来源都命中时，工具调用记录优先——因为它更可靠。"""
+        def _regex_fn(text):
+            return ["从文本解析出来的.py"]
+
+        oe = _make_executor(tmp_path, artifacts_parse_fn=_regex_fn)
+        obj = _FakeGoalNode("obj_13")
+        exec_id = oe.start(obj)
+        ex = oe.get_execution(exec_id)
+        turn_id = ex.current_step.turn_id
+
+        history_segment = [
+            self._assistant_entry_with_tool_calls([("create_file", "src/real.py")]),
+        ]
+        oe.on_turn_done(
+            turn_id, "完成了第一步。[ARTIFACTS] 从文本解析出来的.py",
+            history_segment=history_segment,
+        )
+        assert ex.steps[0].artifacts == ["src/real.py"]
+
+    def test_falls_back_to_text_marker_when_no_tool_calls_found(self, tmp_path):
+        def _regex_fn(text):
+            return ["文本兜底.py"] if "[ARTIFACTS]" in text else []
+
+        oe = _make_executor(tmp_path, artifacts_parse_fn=_regex_fn)
+        obj = _FakeGoalNode("obj_14")
+        exec_id = oe.start(obj)
+        ex = oe.get_execution(exec_id)
+        turn_id = ex.current_step.turn_id
+
+        # history_segment 里没有任何写入类工具调用
+        history_segment = [self._assistant_entry_with_tool_calls([("read_file", "src/x.py")])]
+        oe.on_turn_done(
+            turn_id, "完成了第一步。[ARTIFACTS] 文本兜底.py",
+            history_segment=history_segment,
+        )
+        assert ex.steps[0].artifacts == ["文本兜底.py"]
+
+    def test_empty_or_missing_history_segment_does_not_crash(self, tmp_path):
+        oe = _make_executor(tmp_path)
+        obj = _FakeGoalNode("obj_15")
+        exec_id = oe.start(obj)
+        ex = oe.get_execution(exec_id)
+        turn_id = ex.current_step.turn_id
+
+        # 不传 history_segment（默认 None）—— 行为应与改造前一致
+        oe.on_turn_done(turn_id, "完成了第一步。")
+        assert ex.steps[0].artifacts == []
+
+    def test_deduplicates_repeated_paths(self, tmp_path):
+        oe = _make_executor(tmp_path)
+        obj = _FakeGoalNode("obj_16")
+        exec_id = oe.start(obj)
+        ex = oe.get_execution(exec_id)
+        turn_id = ex.current_step.turn_id
+
+        history_segment = [
+            self._assistant_entry_with_tool_calls([
+                ("write_file", "src/dup.py"),
+                ("patch_file", "src/dup.py"),  # 同一个文件先写后改，不应重复出现
+            ]),
+        ]
+        oe.on_turn_done(turn_id, "完成了第一步。", history_segment=history_segment)
+        assert ex.steps[0].artifacts == ["src/dup.py"]
+
+
 if __name__ == "__main__":
     sys.exit(pytest.main([__file__, "-v"]))

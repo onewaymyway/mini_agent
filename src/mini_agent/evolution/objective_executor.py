@@ -49,6 +49,52 @@ DEFAULT_STEP_TIMEOUT_SECONDS = 600  # 10 分钟，超时算失败
 # 拆解不出可靠的路径信息时，宁可牺牲并行度也不允许两个 Objective 同时写文件。
 _UNKNOWN_PATH_SENTINEL = "__unknown__"
 
+# [Track G 深化] 会实际写盘的内置工具名集合，及其路径参数的 key（均为
+# "path"，见 tools/builtin.py 里 write_file/create_file/patch_file/
+# patch_file_simple/delete_file 的 schema）。用于从某个 step 对应的
+# tool_use 记录里精确提取真正写过的文件路径——比让模型在回复文本里自觉
+# 声明 `[ARTIFACTS] ...` 标记可靠得多，不依赖模型输出格式，也不会漏掉
+# 模型完成操作后忘记声明的情况。
+_ARTIFACT_TOOL_NAMES = frozenset({
+    "write_file", "create_file", "patch_file", "patch_file_simple", "delete_file",
+})
+
+
+def _extract_artifacts_from_tool_calls(history_segment: Optional[list]) -> list[str]:
+    """[Track G 深化] 从一段 active history 条目（`_type=="assistant_reply"`，
+    `content` 为混合块列表）里扫描 `tool_use` 块，收集 `_ARTIFACT_TOOL_NAMES`
+    命中的工具调用的 `path` 参数。
+
+    纯函数，不依赖 agent/session 实例——调用方（server.py）在 run_turn()
+    前后各记一次 history 长度，把这一轮真正新增的条目切片传进来即可，
+    不需要像 Track E 的 trace 接口那样反过来用文本匹配去定位边界（这里
+    本来就精确知道边界，因为是"刚发生的这一轮"）。
+
+    输入为 None/空、或没有任何命中时返回空列表——调用方据此退化为
+    `artifacts_parse_fn` 那套基于文本的解析（见 ObjectiveExecutor.
+    _parse_step_artifacts）。
+    """
+    if not history_segment:
+        return []
+    paths: list[str] = []
+    seen: set = set()
+    for entry in history_segment:
+        if not isinstance(entry, dict) or entry.get("_type") != "assistant_reply":
+            continue
+        content = entry.get("content")
+        if not isinstance(content, list):
+            continue
+        for block in content:
+            if not isinstance(block, dict) or block.get("type") != "tool_use":
+                continue
+            if block.get("name") not in _ARTIFACT_TOOL_NAMES:
+                continue
+            path = (block.get("input") or {}).get("path")
+            if path and path not in seen:
+                seen.add(path)
+                paths.append(str(path))
+    return paths
+
 
 # ── 数据结构 ──────────────────────────────────────────────────────────────────
 
@@ -383,11 +429,18 @@ class ObjectiveExecutor:
         self.save()
         return exec_id if submitted else None
 
-    def on_turn_done(self, turn_id: str, result_summary: str = "") -> Optional[str]:
+    def on_turn_done(self, turn_id: str, result_summary: str = "", history_segment: Optional[list] = None) -> Optional[str]:
         """
         AgentRunner 完成一个 turn 后回调。
         找到对应的 step，标记为 done，然后推进到下一步。
         返回推进到的 execution_id（若有）。
+
+        history_segment — [Track G 深化] 调用方（server.py）在这一轮
+        run_turn() 前后各记一次 active history 长度、传进来的"这一轮
+        真正新增的条目"切片。提供时优先用它从 write_file/patch_file 等
+        工具调用记录里精确提取本步骤产出的文件路径；不提供或提取不到
+        任何路径时，退化为 artifacts_parse_fn 那套基于回复文本的解析
+        （见 _parse_step_artifacts）。不传时行为与改造前完全一致。
         """
         mapping = self._turn_to_exec.get(turn_id)
         if not mapping:
@@ -409,7 +462,7 @@ class ObjectiveExecutor:
             # 用截断前的 result_summary 参数解析，避免 [ARTIFACTS] 标记
             # 恰好落在被截断掉的尾部——解析失败/未提供回调时静默保持空列表，
             # 不影响主流程。
-            step.artifacts = self._parse_step_artifacts(result_summary)
+            step.artifacts = self._parse_step_artifacts(result_summary, history_segment)
 
         del self._turn_to_exec[turn_id]
         self._release_step_paths(exec_id)
@@ -766,10 +819,22 @@ class ObjectiveExecutor:
         ex.progress_notes = f"步骤 {step_idx+1} 多次失败后已重新分解剩余步骤（原因：{failure_reason[:80]}）"
         return self._submit_step(ex, step_idx)
 
-    def _parse_step_artifacts(self, result_summary: str) -> list[str]:
-        """[Track G] 从 agent 的 step 回复原文里解析产出物路径。
-        未提供 artifacts_parse_fn 或调用异常/返回空时静默退化为空列表，
-        不影响 step 完成这一主流程。"""
+    def _parse_step_artifacts(self, result_summary: str, history_segment: Optional[list] = None) -> list[str]:
+        """[Track G / Track G 深化] 解析本步骤实际产出/修改的文件路径。
+
+        优先级：
+          1. 若提供了 history_segment，从其中的 write_file/patch_file 等
+             工具调用记录里精确提取 `path` 参数（`_extract_artifacts_from_
+             tool_calls()`）——不依赖模型输出格式，更可靠。
+          2. 上一步为空（没提供 history_segment、或提取不到任何路径）时，
+             退化为 artifacts_parse_fn 那套基于回复文本 `[ARTIFACTS] ...`
+             标记的解析（Track G 第一版，见 _default_parse_artifacts）。
+          3. 两者都拿不到 / 都未提供回调时，返回空列表——不影响 step
+             完成这一主流程。
+        """
+        from_tools = _extract_artifacts_from_tool_calls(history_segment)
+        if from_tools:
+            return from_tools
         if not result_summary or self._artifacts_parse_fn is None:
             return []
         try:
@@ -1166,4 +1231,5 @@ __all__ = [
     "_default_declare_paths",
     "_default_llm_redecompose",
     "_default_parse_artifacts",
+    "_extract_artifacts_from_tool_calls",
 ]

@@ -2,8 +2,8 @@
 
 > 状态：部分落地 · 见 `next_doc/kanban_and_autonomy_improvement_implementation_record.md`
 > 已完成：Track C（退化版）、Track A、Track D、Track B（含反向同步，完整版）、
-> Track F（完整）、Track E、Track G（部分：`[ARTIFACTS]` 标记解析，未做
-> tool_call 记录自动提取的更可靠版本）。
+> Track F（完整）、Track E、Track G（完整：工具调用记录精确提取为主，
+> `[ARTIFACTS]` 文本标记为退化兜底）。
 > 未完成：Track H/I/J/K，详见实施记录文档"未完成/待续"一节。
 > 关联代码：`apps/mini_agent_kanban/`、`src/mini_agent/evolution/`、`src/mini_agent/perception/goal_backlog.py`
 > 前置修复：本方案假设 [并发槽位卡死修复] 已落地（`ObjectiveExecutor.reap_stale_steps()`），
