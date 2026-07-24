@@ -61,6 +61,9 @@ api/routes.py — FastAPI 路由定义
     POST   /v1/objectives/{execution_id}/cancel    终止一个正在运行的 Objective 执行
     POST   /v1/objectives/{execution_id}/retry     手动重试当前 step（不等超时）
     POST   /v1/objectives/{execution_id}/guidance  插一句补充说明，供下次提交时使用
+    GET    /v1/objectives/{execution_id}/steps/{step_index}/trace
+                                     查看某个 step 实际执行过程（完整 tool_call/
+                                     tool_result 序列），而非截断摘要
     GET    /v1/inbox                 全局待办中心：跨 session 聚合权限/交互请求 + 失败 Objective
     GET    /v1/cron/jobs             CronScheduler job 列表
     POST   /v1/cron/jobs             添加 cron job
@@ -2132,6 +2135,28 @@ async def update_goal(goal_id: str, request: Request):
         if updated is None:
             raise HTTPException(status_code=404, detail=f"Goal '{goal_id}' not found")
 
+        # [看板与自主性改进方案 Track B 完整版] 反向同步：用户在看板上手动
+        # 把 GoalNode 状态改成非"运行中"（active）时，若对应 objective 还有
+        # 一个 running/pending 的 execution 在跑，driv 它 cancel()——不能让
+        # 看板显示"已放弃/已暂停"但后台 execution 还在继续消耗并发槽位。
+        # 正向同步（execution 完成/失败/取消时回写 GoalNode.status）由
+        # ObjectiveExecutor._sync_goal_status() 负责，这里只处理反方向，
+        # 两个方向都只在各自触发点单向写入，不会互相覆盖。
+        new_status = body.get("status")
+        if new_status and new_status != "active":
+            try:
+                oe = getattr(http_server.bridge, "_objective_executor", None)
+                al = getattr(http_server, "autonomous_loop", None)
+                if oe is None and al is not None:
+                    oe = getattr(al, "_objective_executor", None)
+                if oe is not None:
+                    running_exec_id = oe.find_running_execution_by_objective(goal_id)
+                    if running_exec_id:
+                        oe.cancel(running_exec_id, sync_goal_status=False)
+            except Exception as _mini_agent_exc:
+                from mini_agent.errors import log_exception
+                log_exception(_mini_agent_exc, where='mini_agent.api.routes.update_goal')
+
         # reject 时通知 SoftGoalDeriver 记录拒绝历史（用改前的 node 快照判断 source，
         # 避免并发场景下拿到的是别的进程刚写入、字段含义不同的数据）
         if body.get("status") == "abandoned" and node.source == "agent_derived":
@@ -2219,6 +2244,128 @@ async def inject_objective_guidance(request: Request, execution_id: str):
             detail=f"execution {execution_id!r} not found or has no current step",
         )
     return {"ok": True}
+
+
+# ── 执行细节可钻取（看板与自主性改进方案 Track E）────────────────────────────
+
+def _format_history_entry_for_trace(entry: dict) -> Optional[dict]:
+    """把一条 active history 条目（含 _type）转成 trace 展示用的精简结构。
+    只保留跟"这一步到底干了什么"相关的类型；压缩/摘要/提醒类内部记录
+    不是"这一步做了什么"的一部分，过滤掉以免干扰阅读。"""
+    etype = entry.get("_type")
+    if etype not in ("user_input", "assistant_reply", "tool_result"):
+        return None
+    content = entry.get("content")
+    if etype == "assistant_reply" and isinstance(content, list):
+        # assistant 回复可能是 [{"type":"text",...}, {"type":"tool_use",...}, ...] 混合块
+        parts = []
+        for block in content:
+            if not isinstance(block, dict):
+                continue
+            btype = block.get("type")
+            if btype == "text":
+                parts.append({"kind": "text", "text": str(block.get("text", ""))[:2000]})
+            elif btype == "tool_use":
+                parts.append({
+                    "kind": "tool_call",
+                    "tool_name": block.get("name", ""),
+                    "tool_input": block.get("input", {}),
+                })
+        return {"type": "assistant_reply", "parts": parts}
+    if etype == "tool_result":
+        # render_tool_results() 拼装出的内容，结构随 provider 略有差异，
+        # 这里不深究内部格式，直接把整体内容转成文本摘要展示。
+        text = content if isinstance(content, str) else json.dumps(content, ensure_ascii=False)[:4000]
+        return {"type": "tool_result", "text": str(text)[:4000]}
+    if etype == "user_input":
+        return {"type": "user_input", "text": str(content)[:2000]}
+    return None
+
+
+@router.get("/objectives/{execution_id}/steps/{step_index}/trace")
+async def get_objective_step_trace(request: Request, execution_id: str, step_index: int):
+    """GET /v1/objectives/{execution_id}/steps/{step_index}/trace
+
+    [看板与自主性改进方案 Track E] 返回某个 step 实际执行过程中的完整
+    tool_call/tool_result 序列，而不只是 result_summary 截断到的 200~500
+    字摘要。
+
+    实现方式：Objective 的每个 step 都是提交到主 agent 会话（与普通聊天
+    共用同一个 bridge/history）里的一次 run_turn()；`ExecutionStep.
+    submitted_message` 保存了当次提交时拼装的完整 prompt 文本（见
+    ObjectiveExecutor._submit_step），这段文本在 agent 的 active history
+    里对应且仅对应一条 `_type=="user_input"` 记录（拼装内容包含 Objective
+    标题 + 步骤序号，实际不会与其他消息重复）。据此在历史里做精确匹配，
+    定位到该 step 对应的这条 user_input，再截取到下一条 user_input（或
+    历史末尾）之间的所有条目，即为这一步实际发生的完整过程。
+
+    局限（据实说明，不掩盖）：
+    - 若该 step 因为压缩（compact）被从 active history 里移除，这里会
+      找不到匹配，返回 `entries: []` 并给出提示——不去扫描 raw_history.
+      jsonl 兜底，因为 raw history 可能非常长，逐行反查匹配的成本对一次
+      看板点击来说不划算；这属于已知限制，不在本轮修复范围。
+    - 只针对"当前仍能访问到 agent 实例"的场景（单用户模式下的主 bridge，
+      或多用户模式下能定位到的 session）；找不到 agent/history 时同样
+      退化为空列表 + 提示，而不是报错。
+    """
+    oe = _objective_executor_or_404(request)
+    ex = oe.get_execution(execution_id)
+    if ex is None:
+        raise HTTPException(status_code=404, detail=f"execution {execution_id!r} not found")
+    if not (0 <= step_index < len(ex.steps)):
+        raise HTTPException(status_code=404, detail=f"step_index {step_index} out of range")
+    step = ex.steps[step_index]
+
+    def _empty(note: str) -> dict:
+        return {
+            "execution_id": execution_id,
+            "step_index": step_index,
+            "description": step.description,
+            "status": step.status,
+            "entries": [],
+            "note": note,
+        }
+
+    if not step.submitted_message:
+        return _empty("这一步还未提交过（或数据里没有保存提交文本），暂无可展示的执行过程。")
+
+    http_server = getattr(request.app.state, "http_server", None)
+    agent = getattr(http_server.bridge, "agent", None) if http_server is not None else None
+    hist_mgr = getattr(agent, "_hist", None) if agent is not None else None
+    if hist_mgr is None:
+        return _empty("当前无法访问 agent 会话历史，暂不支持查看执行细节。")
+
+    history = hist_mgr.history  # 含 _type 的浅拷贝列表
+    start_idx = None
+    for i, entry in enumerate(history):
+        if entry.get("_type") == "user_input" and entry.get("content") == step.submitted_message:
+            start_idx = i
+    # 从后往前找最后一次匹配（若该 step 被重试过多次，只有最新一次提交的
+    # 文本会命中——submitted_message 每次重新提交都会被覆盖为最新内容，
+    # 所以“最后一次匹配”正好对应最新这一次尝试，这也是看板通常最关心的）
+    if start_idx is None:
+        return _empty("在当前会话历史里没有找到这一步对应的记录（可能已被压缩/归档），暂不支持查看执行细节。")
+
+    end_idx = len(history)
+    for j in range(start_idx + 1, len(history)):
+        if history[j].get("_type") == "user_input":
+            end_idx = j
+            break
+
+    entries = []
+    for entry in history[start_idx:end_idx]:
+        formatted = _format_history_entry_for_trace(entry)
+        if formatted is not None:
+            entries.append(formatted)
+
+    return {
+        "execution_id": execution_id,
+        "step_index": step_index,
+        "description": step.description,
+        "status": step.status,
+        "entries": entries,
+        "note": "",
+    }
 
 
 # ── 全局待办通知中心（看板与自主性改进方案 Track A）──────────────────────────

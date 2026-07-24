@@ -1,8 +1,10 @@
 # 看板主界面化 + 自主执行/自主进化 改进方案
 
 > 状态：部分落地 · 见 `next_doc/kanban_and_autonomy_improvement_implementation_record.md`
-> 已完成：Track C（退化版）、Track A、Track D、Track B（单向部分）、Track F（第一部分）。
-> 未完成：Track B 反向同步、Track E/G/H/I/J/K，详见实施记录文档"未完成/待续"一节。
+> 已完成：Track C（退化版）、Track A、Track D、Track B（含反向同步，完整版）、
+> Track F（完整）、Track E、Track G（部分：`[ARTIFACTS]` 标记解析，未做
+> tool_call 记录自动提取的更可靠版本）。
+> 未完成：Track H/I/J/K，详见实施记录文档"未完成/待续"一节。
 > 关联代码：`apps/mini_agent_kanban/`、`src/mini_agent/evolution/`、`src/mini_agent/perception/goal_backlog.py`
 > 前置修复：本方案假设 [并发槽位卡死修复] 已落地（`ObjectiveExecutor.reap_stale_steps()`），
 > 否则 Track B/C 的状态同步会把"假卡死"也当成正常状态展示，掩盖问题。

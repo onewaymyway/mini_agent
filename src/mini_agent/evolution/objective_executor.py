@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import json
 import os
+import re as _re
 import tempfile
 import time
 import uuid
@@ -76,6 +77,14 @@ class ExecutionStep:
     # [Track D] 用户通过 inject_guidance() 追加的补充上下文，将在下一次
     # 提交该 step 时拼进 prompt；提交后清空，避免重复注入。
     pending_guidance: str = ""
+    # [Track E] 本步骤最近一次实际提交给 agent 的完整 prompt 文本（含
+    # 前序步骤上下文/重试原因/用户插话等拼装后的内容）。用途：看板"查看
+    # 详情"功能需要从 agent 的会话历史里精确定位这一步对应的
+    # user_input 消息、进而截取它到下一条 user_input 之间的完整
+    # tool_call/tool_result 序列——单纯用 description 做匹配容易和其他
+    # 步骤/重试混淆，拼装后的完整文本才是真正写进历史的那一条，能做
+    # 精确匹配。每次重新提交（含重试）都会覆盖为最新一次的文本。
+    submitted_message: str = ""
 
     def to_dict(self) -> dict:
         return {
@@ -92,6 +101,7 @@ class ExecutionStep:
             "paths": self.paths,
             "artifacts": self.artifacts,
             "pending_guidance": self.pending_guidance,
+            "submitted_message": self.submitted_message,
         }
 
     @staticmethod
@@ -110,6 +120,7 @@ class ExecutionStep:
             paths=list(d.get("paths", []) or []),
             artifacts=list(d.get("artifacts", []) or []),
             pending_guidance=d.get("pending_guidance", ""),
+            submitted_message=d.get("submitted_message", ""),
         )
 
 
@@ -127,6 +138,10 @@ class ObjectiveExecution:
     started_at: float = 0.0
     finished_at: float = 0.0
     progress_notes: str = ""
+    # [Track F 第二部分] 是否已经为这个 execution 尝试过一次"重新分解剩余
+    # 步骤"。每个 execution 只允许尝试一次，避免"分解出的新步骤仍然失败 →
+    # 又重新分解"无限循环，最终变成一种更隐蔽的资源浪费方式。
+    redecompose_attempted: bool = False
 
     @property
     def current_step(self) -> Optional[ExecutionStep]:
@@ -156,6 +171,7 @@ class ObjectiveExecution:
             "started_at": self.started_at,
             "finished_at": self.finished_at,
             "progress_notes": self.progress_notes,
+            "redecompose_attempted": self.redecompose_attempted,
         }
 
     @staticmethod
@@ -169,6 +185,7 @@ class ObjectiveExecution:
             started_at=d.get("started_at", 0.0),
             finished_at=d.get("finished_at", 0.0),
             progress_notes=d.get("progress_notes", ""),
+            redecompose_attempted=bool(d.get("redecompose_attempted", False)),
         )
         ex.steps = [ExecutionStep.from_dict(s) for s in d.get("steps", [])]
         return ex
@@ -197,6 +214,8 @@ class ObjectiveExecutor:
         on_progress_fn: Optional[Callable] = None,
         declare_paths_fn: Optional[Callable[[str], list]] = None,
         goal_backlog: Optional["GoalBacklog"] = None,
+        llm_redecompose_fn: Optional[Callable] = None,
+        artifacts_parse_fn: Optional[Callable[[str], list]] = None,
     ) -> None:
         """
         submit_fn         — 提交 Task：(message, initiator, meta) -> turn_id | None
@@ -210,6 +229,21 @@ class ObjectiveExecutor:
                              同步回写对应 GoalNode.status（completed/failed/
                              cancelled），不提供则只更新 execution 自身状态
                              （向后兼容旧调用方）。
+        llm_redecompose_fn — [Track F 第二部分] 某个 step 耗尽重试次数后，
+                             先尝试"重新分解剩余步骤"而不是直接判 Objective
+                             failed：(objective_title, completed_summaries,
+                             remaining_descs, failure_reason) -> list[str]
+                             新的步骤描述列表（替换从当前失败点开始的剩余
+                             步骤）。未提供、调用异常、或返回空列表/单一元素
+                             （无法拆出比原来更细的步骤，重新分解没有意义）
+                             时，退化为原有行为——直接判 Objective failed。
+                             每个 execution 只允许尝试一次（见
+                             ObjectiveExecution.redecompose_attempted）。
+        artifacts_parse_fn — [Track G] 从 agent 的 step 回复文本里解析出
+                             本步骤实际产出/修改的文件路径：
+                             (result_summary) -> list[str]。未提供时
+                             ExecutionStep.artifacts 保持为空列表（向后
+                             兼容，不影响现有行为）。
         """
         self._paths = paths
         self._submit_fn = submit_fn
@@ -217,6 +251,8 @@ class ObjectiveExecutor:
         self._on_progress_fn = on_progress_fn
         self._declare_paths_fn = declare_paths_fn
         self._goal_backlog = goal_backlog
+        self._llm_redecompose_fn = llm_redecompose_fn
+        self._artifacts_parse_fn = artifacts_parse_fn
         self._executions: dict[str, ObjectiveExecution] = {}  # execution_id → ex
         self._turn_to_exec: dict[str, tuple[str, int]] = {}   # turn_id → (execution_id, step_idx)
         self._exec_path = paths.workdir_dir / "objective_executions.json"
@@ -285,6 +321,22 @@ class ObjectiveExecutor:
     def can_start_new(self) -> bool:
         return self.running_count() < MAX_CONCURRENT_OBJECTIVES
 
+    def get_execution(self, execution_id: str) -> Optional[ObjectiveExecution]:
+        """[Track E] 只读查询：按 execution_id 返回执行记录，供看板"查看详情"
+        接口定位到具体的 step 与其 submitted_message。不存在时返回 None。"""
+        return self._executions.get(execution_id)
+
+    def find_running_execution_by_objective(self, objective_id: str) -> Optional[str]:
+        """[Track B 完整版] 只读查询：返回该 objective_id 当前"仍在推进中"
+        （running/pending，即 GoalNode 视角下应算作"运行中"）的 execution_id；
+        没有则返回 None。供反向同步使用：用户在看板上把 GoalNode.status 手动
+        改成非"运行中"时，据此找到对应 execution 并调用 cancel()——不直接
+        在这里 cancel，保持"谁触发查询就由谁决定下一步动作"的职责分离。"""
+        for ex in self._executions.values():
+            if ex.objective_id == objective_id and ex.status in ("running", "pending"):
+                return ex.execution_id
+        return None
+
     def start(self, objective: "GoalNode") -> Optional[str]:
         """
         为 Objective 创建执行计划并提交第一步。
@@ -352,6 +404,12 @@ class ObjectiveExecutor:
             step.status = "done"
             step.finished_at = time.time()
             step.result_summary = result_summary[:500] if result_summary else ""
+            # [Track G] 从 agent 的完整回复（result_summary 截断前的原文）
+            # 里解析本步骤实际产出/修改的文件路径，供后续步骤明确引用。
+            # 用截断前的 result_summary 参数解析，避免 [ARTIFACTS] 标记
+            # 恰好落在被截断掉的尾部——解析失败/未提供回调时静默保持空列表，
+            # 不影响主流程。
+            step.artifacts = self._parse_step_artifacts(result_summary)
 
         del self._turn_to_exec[turn_id]
         self._release_step_paths(exec_id)
@@ -410,11 +468,18 @@ class ObjectiveExecutor:
                 del self._turn_to_exec[turn_id]
                 self._submit_step(ex, step_idx)
             else:
-                # 超过重试次数
+                # 超过重试次数：先尝试一次"重新分解剩余步骤"（Track F 第二
+                # 部分），不是直接判失败——系统性走不通的步骤描述，换一种
+                # 拆法有时候能绕过去；仅在这一次也失败/不适用时才真正判
+                # Objective failed。
                 step.status = "failed"
                 step.error_msg = error[:200]
                 step.finished_at = time.time()
                 del self._turn_to_exec[turn_id]
+                if self._attempt_redecompose(ex, step_idx, error[:200]):
+                    self._notify_progress(ex)
+                    self.save()
+                    return
                 ex.status = "failed"
                 ex.finished_at = time.time()
                 ex.progress_notes = f"步骤 {step_idx+1} 执行失败：{error[:100]}"
@@ -477,6 +542,10 @@ class ObjectiveExecutor:
                 step.status = "failed"
                 step.finished_at = now
                 step.error_msg = f"{timeout_msg}（已重试 {step.retry_count} 次）"
+                if self._attempt_redecompose(ex, ex.current_step_idx, step.error_msg):
+                    reaped.append(ex.execution_id)
+                    self._notify_progress(ex)
+                    continue
                 ex.status = "failed"
                 ex.finished_at = now
                 ex.progress_notes = f"步骤 {ex.current_step_idx+1} {step.error_msg}"
@@ -520,9 +589,17 @@ class ObjectiveExecutor:
 
     # ── 看板可操作能力（Track D） ─────────────────────────────────────────────
 
-    def cancel(self, execution_id: str) -> bool:
+    def cancel(self, execution_id: str, sync_goal_status: bool = True) -> bool:
         """用户主动终止一个 execution：释放并发槽位和路径占用，不再重试/推进。
-        与 "failed" 区分——这是决策，不是执行判定失败。"""
+        与 "failed" 区分——这是决策，不是执行判定失败。
+
+        sync_goal_status — 是否把对应 GoalNode.status 回写为 "cancelled"。
+        默认 True（看板"🛑 终止"按钮走这条路径，此时 GoalNode.status 还
+        没被显式改过，需要 cancel() 顺带同步）。[Track B 完整版] 反向
+        同步路径（用户在看板上直接把 GoalNode.status 手动改成别的值，
+        比如 "abandoned"）调用时应传 False——那种场景下 GoalNode.status
+        已经是用户显式选择的值，cancel() 不应该再把它覆盖回
+        "cancelled"，只需要真正停止对应 execution。"""
         ex = self._executions.get(execution_id)
         if ex is None or ex.status in ("completed", "failed", "cancelled"):
             return False
@@ -533,7 +610,7 @@ class ObjectiveExecutor:
         ex.status = "cancelled"
         ex.finished_at = time.time()
         ex.progress_notes = "用户手动终止"
-        self._on_objective_cancelled(ex)
+        self._on_objective_cancelled(ex, sync_goal_status=sync_goal_status)
         self._notify_progress(ex)
         self.save()
         return True
@@ -628,6 +705,81 @@ class ObjectiveExecutor:
         # 降级：单步执行
         return [objective.title]
 
+    def _attempt_redecompose(self, ex: ObjectiveExecution, step_idx: int, failure_reason: str) -> bool:
+        """[Track F 第二部分] 某个 step 耗尽重试次数后，先尝试"重新分解
+        剩余步骤"再判定 Objective failed——系统性走不通的拆法，换一种
+        分法有时能绕过去，而不是把偶发失败和方法性错误一视同仁地直接
+        放弃整个 Objective。
+
+        成功条件（同时满足才真正替换）：
+          1. 本 execution 之前没有尝试过（redecompose_attempted 为 False，
+             每个 execution 只允许尝试一次，避免"新步骤又失败 → 又分解"
+             的隐性资源浪费循环）；
+          2. 提供了 llm_redecompose_fn 且调用不抛异常；
+          3. 返回的新步骤描述列表非空——只有 1 步且和原描述雷同（换汤不
+             换药）没有意义，但这里不做语义判断，交给调用方（LLM）尽量
+             给出确实不同的分法，本方法只做"非空"这一基本校验。
+
+        成功时：用新步骤替换 ex.steps[step_idx:]（保留 step_idx 之前已
+        完成的步骤和其 result_summary/artifacts 不变），重置 ex.status
+        为 running，提交新的第一步；返回 True。
+
+        任何一步不满足/提交失败，原样返回 False——调用方（on_turn_failed/
+        reap_stale_steps）据此走回原有的"判定 Objective failed"逻辑，
+        不改变现有行为。
+        """
+        if ex.redecompose_attempted or self._llm_redecompose_fn is None:
+            return False
+        ex.redecompose_attempted = True  # 无论本次是否成功，只允许尝试一次
+
+        completed_summaries = [
+            s.result_summary for s in ex.steps[:step_idx] if s.result_summary
+        ]
+        remaining_descs = [s.description for s in ex.steps[step_idx:]]
+        try:
+            new_descs = self._llm_redecompose_fn(
+                ex.objective_title, completed_summaries, remaining_descs, failure_reason,
+            )
+        except Exception as _mini_agent_exc:
+            from mini_agent.errors import log_exception
+            log_exception(_mini_agent_exc, where='mini_agent.evolution.objective_executor._attempt_redecompose')
+            return False
+
+        if not new_descs or not isinstance(new_descs, list):
+            return False
+        new_descs = [str(d) for d in new_descs if str(d).strip()][:MAX_STEPS_PER_OBJECTIVE]
+        if not new_descs:
+            return False
+
+        kept = ex.steps[:step_idx]
+        new_steps = [
+            ExecutionStep(
+                step_id=f"{ex.execution_id}_r{step_idx}_{i}",
+                step_index=step_idx + i,
+                description=desc,
+            )
+            for i, desc in enumerate(new_descs)
+        ]
+        ex.steps = kept + new_steps
+        ex.current_step_idx = step_idx
+        ex.status = "running"
+        ex.progress_notes = f"步骤 {step_idx+1} 多次失败后已重新分解剩余步骤（原因：{failure_reason[:80]}）"
+        return self._submit_step(ex, step_idx)
+
+    def _parse_step_artifacts(self, result_summary: str) -> list[str]:
+        """[Track G] 从 agent 的 step 回复原文里解析产出物路径。
+        未提供 artifacts_parse_fn 或调用异常/返回空时静默退化为空列表，
+        不影响 step 完成这一主流程。"""
+        if not result_summary or self._artifacts_parse_fn is None:
+            return []
+        try:
+            found = self._artifacts_parse_fn(result_summary) or []
+            return [str(p) for p in found if str(p).strip()]
+        except Exception as _mini_agent_exc:
+            from mini_agent.errors import log_exception
+            log_exception(_mini_agent_exc, where='mini_agent.evolution.objective_executor._parse_step_artifacts')
+            return []
+
     def _declare_step_paths(self, ex: ObjectiveExecution, step: ExecutionStep) -> set:
         """[Track C] 确保 step.paths 已声明（缓存到 step 上，避免重复调用 LLM）。
         返回规范化后的路径集合；拆解不出信息时退化为哨兵路径。"""
@@ -704,8 +856,19 @@ class ObjectiveExecutor:
                     for i in range(step_idx)
                     if ex.steps[i].result_summary
                 ]
+                # [Track G] 汇总前序步骤已声明的产出物路径，让后续步骤能
+                # 明确引用具体路径，而不是"上一步生成的那个文件"这种模糊
+                # 指代——没有任何步骤声明过 artifacts 时这段为空，不额外
+                # 打印占位内容。
+                prev_artifacts = [
+                    p for i in range(step_idx) for p in ex.steps[i].artifacts
+                ]
                 if prev_summaries:
                     progress_ctx = "\n\n[前序步骤结果]\n" + "\n".join(prev_summaries)
+                if prev_artifacts:
+                    progress_ctx += "\n\n[前序步骤产出文件]\n" + "\n".join(
+                        f"- {p}" for p in dict.fromkeys(prev_artifacts)  # 去重且保序
+                    )
 
             guidance_ctx = f"\n\n[用户补充说明]\n{step.pending_guidance}" if step.pending_guidance else ""
             retry_ctx = ""
@@ -720,6 +883,7 @@ class ObjectiveExecutor:
                 f"步骤 {step_idx+1}/{len(ex.steps)}: {step.description}"
                 f"{progress_ctx}{guidance_ctx}{retry_ctx}"
             )
+            step.submitted_message = message
             turn_id = self._submit_fn(
                 message,
                 "autonomous",
@@ -802,9 +966,14 @@ class ObjectiveExecutor:
             log_exception(_mini_agent_exc, where='mini_agent.evolution.objective_executor')
             pass
 
-    def _on_objective_cancelled(self, ex: ObjectiveExecution) -> None:
-        """[Track D] Objective 被用户主动终止后的收尾动作。"""
-        self._sync_goal_status(ex.objective_id, "cancelled")
+    def _on_objective_cancelled(self, ex: ObjectiveExecution, sync_goal_status: bool = True) -> None:
+        """[Track D] Objective 被用户主动终止后的收尾动作。
+
+        sync_goal_status — 见 cancel() 的同名参数说明：反向同步路径
+        （GoalNode.status 已经被用户显式改过）传 False，跳过回写，
+        避免覆盖用户刚设置的值。digest 记录不受影响，始终执行。"""
+        if sync_goal_status:
+            self._sync_goal_status(ex.objective_id, "cancelled")
         try:
             from mini_agent.evolution.resource_arbiter import append_activity_digest
             append_activity_digest(self._paths, {
@@ -909,6 +1078,84 @@ def _default_declare_paths(llm_helper, step_description: str) -> list[str]:
         return []
 
 
+def _default_llm_redecompose(
+    llm_helper, objective_title: str, completed_summaries: list, remaining_descs: list, failure_reason: str,
+) -> list[str]:
+    """[Track F 第二部分] 轻量 LLM 调用：某个 step 耗尽重试次数后，把"已完成
+    步骤的结果 + 原计划里还没做的步骤 + 这次失败的原因"喂给模型，让它给出
+    一份新的剩余步骤拆解，而不是简单原样重试同一句描述。
+
+    返回字符串列表（新的剩余步骤描述）；解析不出结构化内容、或模型判断
+    "原计划本身没问题、不需要重新拆"时返回空列表——调用方
+    （ObjectiveExecutor._attempt_redecompose）据此退化为原有的"判定
+    Objective failed"逻辑。
+    """
+    completed_ctx = (
+        "\n".join(f"- {s}" for s in completed_summaries) if completed_summaries else "（尚无已完成步骤）"
+    )
+    remaining_ctx = "\n".join(f"- {d}" for d in remaining_descs)
+    prompt = f"""一个多步骤任务的其中一步反复失败，需要重新规划剩余步骤。
+
+目标：{objective_title}
+
+已完成步骤的结果：
+{completed_ctx}
+
+原计划中剩余（含反复失败的这一步）的步骤：
+{remaining_ctx}
+
+失败原因：{failure_reason}
+
+请判断原来的拆法是否有问题（比如步骤本身不可行、依赖了不存在的前提、
+粒度不合适等），给出一份新的剩余步骤拆解（3-6 步），尽量避开导致失败的
+做法。
+
+要求：
+1. 只输出新的步骤列表，每行一步，用数字编号，不要其他内容
+2. 如果反复思考后认为原计划没有问题（失败是偶发的，不是方法问题），
+   只输出一行：无需重新分解
+"""
+    try:
+        result = llm_helper.ask(prompt)
+        if not result or "无需重新分解" in result:
+            return []
+        steps = []
+        for line in result.strip().splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            if line[0].isdigit() and len(line) > 2 and line[1] in ".、）)":
+                line = line[2:].strip()
+            elif line[:2].isdigit() and len(line) > 3 and line[2] in ".、":
+                line = line[3:].strip()
+            if line:
+                steps.append(line)
+        return steps[:MAX_STEPS_PER_OBJECTIVE]
+    except Exception as _mini_agent_exc:
+        from mini_agent.errors import log_exception
+        log_exception(_mini_agent_exc, where='mini_agent.evolution.objective_executor._default_llm_redecompose')
+        return []
+
+
+def _default_parse_artifacts(result_summary: str) -> list[str]:
+    """[Track G] 从 step 回复原文里解析 `[ARTIFACTS] path1, path2` 标记。
+
+    这是方案原文"待确认/待细化项 2"里标注为退化方案的做法——更可靠的方式
+    是直接从 tool_call 记录里自动提取 write_file/patch_file 类工具的路径
+    参数，不依赖模型自觉遵守固定格式；那种做法需要能访问该 step 对应的
+    完整 tool_call 序列（见 Track E 的 trace 接口），本函数作为轻量、
+    不依赖额外数据源的默认实现，解析不出内容时返回空列表，不影响主流程。
+    """
+    if not result_summary:
+        return []
+    m = _re.search(r"\[ARTIFACTS\]\s*(.+)", result_summary)
+    if not m:
+        return []
+    raw = m.group(1).splitlines()[0]
+    paths = [p.strip() for p in raw.split(",")]
+    return [p for p in paths if p]
+
+
 __all__ = [
     "ExecutionStep",
     "ObjectiveExecution",
@@ -917,4 +1164,6 @@ __all__ = [
     "MAX_STEP_RETRIES",
     "_default_llm_decompose",
     "_default_declare_paths",
+    "_default_llm_redecompose",
+    "_default_parse_artifacts",
 ]

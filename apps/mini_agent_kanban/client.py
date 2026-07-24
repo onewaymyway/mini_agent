@@ -246,6 +246,11 @@ class AgentClient:
     def inject_objective_guidance(self, execution_id: str, message: str):
         return self._post(f"/objectives/{execution_id}/guidance", {"message": message})
 
+    def objective_step_trace(self, execution_id: str, step_index: int):
+        """[Track E] 查看某个 step 实际执行过程的完整 tool_call/tool_result
+        序列，供看板"查看详情"展开使用。"""
+        return self._get(f"/objectives/{execution_id}/steps/{step_index}/trace")
+
     def inbox(self):
         return self._get("/inbox")
 

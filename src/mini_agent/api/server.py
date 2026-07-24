@@ -1125,6 +1125,36 @@ class HttpServer:
                     log_exception(_mini_agent_exc, where='mini_agent.api.server.HttpServer._build_autonomous_loop._declare_paths')
                     return []
 
+            def _llm_redecompose(objective_title, completed_summaries, remaining_descs, failure_reason):
+                """[看板与自主性改进方案 Track F 第二部分] 某个 step 耗尽重试
+                次数后，先尝试重新分解剩余步骤，而不是直接判 Objective
+                failed。调用失败/拿不到 llm_helper 时返回空列表，
+                ObjectiveExecutor 据此退化为原有的直接判失败逻辑。"""
+                try:
+                    from mini_agent.evolution.objective_executor import _default_llm_redecompose
+                    helper = getattr(agent, "llm_helper", None)
+                    if helper is None:
+                        return []
+                    return _default_llm_redecompose(
+                        helper, objective_title, completed_summaries, remaining_descs, failure_reason,
+                    )
+                except Exception as _mini_agent_exc:
+                    from mini_agent.errors import log_exception
+                    log_exception(_mini_agent_exc, where='mini_agent.api.server.HttpServer._build_autonomous_loop._llm_redecompose')
+                    return []
+
+            def _parse_artifacts(result_summary: str):
+                """[看板与自主性改进方案 Track G] 从 step 回复原文里解析
+                `[ARTIFACTS] ...` 标记，供后续步骤明确引用产出物路径。
+                不依赖 llm_helper，纯文本解析，失败时静默返回空列表。"""
+                try:
+                    from mini_agent.evolution.objective_executor import _default_parse_artifacts
+                    return _default_parse_artifacts(result_summary)
+                except Exception as _mini_agent_exc:
+                    from mini_agent.errors import log_exception
+                    log_exception(_mini_agent_exc, where='mini_agent.api.server.HttpServer._build_autonomous_loop._parse_artifacts')
+                    return []
+
             from mini_agent.evolution.objective_executor import ObjectiveExecutor
             objective_executor = ObjectiveExecutor(
                 paths=paths,
@@ -1133,6 +1163,8 @@ class HttpServer:
                 on_progress_fn=_on_progress,
                 declare_paths_fn=_declare_paths,
                 goal_backlog=goal_backlog,
+                llm_redecompose_fn=_llm_redecompose,
+                artifacts_parse_fn=_parse_artifacts,
             )
             objective_executor.load()
 

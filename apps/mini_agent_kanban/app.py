@@ -1720,6 +1720,39 @@ def _render_objective_execution_detail(client: AgentClient, execution: dict) -> 
         unsafe_allow_html=True,
     )
 
+    # [Track E 执行细节可钻取] 每个已经跑过（done/failed）的 step 提供一个
+    # "查看详情"入口，展开后展示完整的 tool_call/tool_result 序列，而不
+    # 只是卡片正文里那行截断到 100 字的描述/摘要——排查"这一步到底干了
+    # 什么"时才需要展开，默认收起不占地方。
+    for s in steps:
+        if s.get("status") not in ("done", "failed"):
+            continue
+        step_idx = s.get("step_index")
+        with st.expander(f"🔍 查看详情 · 步骤 {step_idx + 1 if isinstance(step_idx, int) else '?'}"):
+            trace = client.objective_step_trace(exec_id, step_idx) if exec_id and isinstance(step_idx, int) else None
+            if not trace or "_error" in (trace or {}):
+                st.caption((trace or {}).get("_error", "暂时无法获取执行细节。"))
+                continue
+            entries = trace.get("entries") or []
+            if not entries:
+                st.caption(trace.get("note") or "没有可展示的执行细节。")
+                continue
+            for entry in entries:
+                etype = entry.get("type")
+                if etype == "user_input":
+                    st.markdown(f"**📝 提交内容**\n\n{entry.get('text', '')}")
+                elif etype == "assistant_reply":
+                    for part in entry.get("parts") or []:
+                        if part.get("kind") == "text" and part.get("text"):
+                            st.markdown(part["text"])
+                        elif part.get("kind") == "tool_call":
+                            st.markdown(f"**🔧 调用工具：`{part.get('tool_name', '')}`**")
+                            st.json(part.get("tool_input") or {})
+                elif etype == "tool_result":
+                    with st.container():
+                        st.markdown("**↩️ 工具结果**")
+                        st.code(entry.get("text", ""), language=None)
+
     if not exec_id or ex_status in ("completed", "cancelled"):
         return
     b1, b2, b3 = st.columns(3)
