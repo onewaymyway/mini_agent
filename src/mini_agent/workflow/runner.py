@@ -218,6 +218,17 @@ class WorkflowRunner:
 
         wf_output_dir = paths.ensure_workflow_session_output_dir(wf_session_id)
 
+        # [workflow_directory_mode_design.md 阶段3] 把本次执行的默认输出目录
+        # 注入到 inputs 中（作为 output_dir 字段），使得所有 step 的 prompt
+        # 都可以用 {output_dir} 占位符引用它。这样用户调用 run_workflow 时
+        # 不需要手动指定输出路径，runner 会自动把每个 step 的产出文件保存到
+        # .agent/workflow_sessions/<wf_session_id>/output/ 目录下。
+        # 如果用户已经在 inputs 中显式提供了 output_dir，则尊重用户的选择。
+        if inputs is None:
+            inputs = {}
+        if "output_dir" not in inputs:
+            inputs["output_dir"] = str(wf_output_dir)
+
         step_results: dict[str, StepResult] = dict(wf_session.step_results)
         wf_session.step_results = step_results
         wf_session.save(paths)
