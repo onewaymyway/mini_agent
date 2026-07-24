@@ -449,33 +449,130 @@ test_objective_executor_kanban_tracks_r2.py::TestArtifactsFromToolCalls`
 里的情况一致），补齐后 `tests/test_objective_executor_kanban_tracks_r3.py`
 才能正常导入 `mini_agent.api.routes`。
 
+## 第五轮已完成 Track（本次续做）
+
+### Track K（P2）：并发数自适应 —— 已上线（信号来源与方案原文不同，已如实调整）
+
+按第四轮"未完成/待续"里的建议，本轮实现方案原文 Track K，但**信号来源
+与方案原文设想不同**——核实后发现原文假设的两个数据源在当前代码库里
+都不存在：
+
+- `self_profile.json` 里没有 `resource_budget` 字段（读了
+  `perception/self_model.py`/`storage/paths.py` 确认，唯一相关的是
+  `proprioception.py` 的 `energy_budget_ratio`，但那是单个 session 内的
+  剩余 turn 预算比例，不是跨天的资源预算，语义不匹配）。
+- `ExecutionStep`/`ObjectiveExecution` 都没有任何 token 消耗字段，只有
+  `started_at`/`finished_at`，没有"`avg_objective_cost`"可供滚动计算。
+
+没有为了凑这两个数据源去新增一整套 token 计量/预算配置体系（超出本
+Track 范围，且会牵扯到 `LLMClientPool` 等更底层模块），而是改用已经
+存在、且同样能反映"最近执行得顺不顺利"的信号：
+
+- 新增配置 `config/models.py::AutonomyConfig`（8 个新字段，均有默认值，
+  不影响未升级配置文件的用户）：
+  - `adaptive_concurrency_enabled: bool = True`——默认开启，因为这是一个
+    只降不升的机制（生效并发数不会超过配置/常量给出的天花板），默认
+    开启不会让行为比改造前更激进。
+  - `max_concurrent_objectives_cap: int = 2`——方案原文提到的安全阀，
+    默认值与改造前硬编码的 `MAX_CONCURRENT_OBJECTIVES` 一致。
+  - `adaptive_concurrency_min: int = 1`——降档的下限，不会把并发降到 0
+    （降到 0 属于 Track J 资源门控的范畴，不是本 Track 该做的事）。
+  - `adaptive_concurrency_min_samples: int = 3`——参与失败率判定所需的
+    最小样本数。
+  - `adaptive_concurrency_failure_rate_threshold: float = 0.5`——最近
+    N 个已结束 Objective 里失败占比达到此阈值 → 降一档。
+  - `adaptive_concurrency_slow_duration_seconds: float = 1800.0`——最近
+    已完成 Objective 的平均耗时（`finished_at - started_at`）达到此阈值
+    → 再降一档（可与失败率信号叠加）。
+  - `adaptive_concurrency_window: int = 10`——参与统计的"最近 N 个已结束
+    Objective"窗口大小。
+- `ObjectiveExecutor.__init__` 新增可选参数 `cfg`（`AppConfig` 引用）。
+  新增 `effective_max_concurrent()`：
+  - 天花板 = `min(MAX_CONCURRENT_OBJECTIVES, cfg.autonomy.
+    max_concurrent_objectives_cap)`——模块级常量永远是绝对上限，配置项
+    只能收紧不能突破（`test_configured_cap_cannot_exceed_static_constant`
+    验证了这一点）。
+  - 未提供 `cfg`，或 `adaptive_concurrency_enabled=False` 时，直接返回
+    天花板，等价于改造前的行为。
+  - 否则统计最近 `adaptive_concurrency_window` 个 `status in
+    ("completed","failed")` 的 execution：样本数不足时不调整；失败率
+    达标降一档；平均耗时达标再降一档；最终结果夹在
+    `[adaptive_concurrency_min, 天花板]` 之间。
+  - 任何异常静默降级为返回天花板值（不下调），不影响
+    `can_start_new()` 主流程。
+  - `can_start_new()` 改为 `running_count() < effective_max_concurrent()`
+    （原来是与模块常量比较）。
+- `api/server.py::_build_autonomous_loop()` 构造 `ObjectiveExecutor` 时
+  新增 `cfg=cfg`（该方法本来就持有 `cfg = getattr(agent, "cfg", None)`，
+  只是此前没有转发给 `ObjectiveExecutor`）。
+- `api/routes.py` 里 `/v1/autonomous/status` 聚合逻辑的 `objective_slots`
+  字段：`max` 改为展示 `oe.effective_max_concurrent()` 计算出的生效值
+  （查询异常时退化为展示静态常量），并新增 `static_cap` 字段保留原来
+  的静态常量值，供看板/调用方需要时区分"当前生效上限"与"绝对硬上限"。
+
+**已知局限**（据实记录）：
+- 失败率/平均耗时统计目前是**全局**的（不区分主题/来源），与 Track H
+  按主题精细统计不同——方案原文本身也没有要求按主题拆分并发上限（并发
+  数是整个 `ObjectiveExecutor` 级别的资源约束，不是"某个主题该不该跑"
+  的问题，因此选择全局统计是合理的，但如果未来想做"某类主题专门限流"，
+  需要另外扩展，不能直接复用这里的存储）。
+- 用"平均耗时"代理"token 消耗"是本轮的关键假设：两者通常正相关（跑得
+  越久往往意味着调用次数越多），但不完全等价（比如一个 step 卡在等待
+  外部慢速工具返回，耗时长但 token 消耗未必高）。如果后续给 `AgentRunner`
+  加上了真实的 token 计量并回传到 `ExecutionStep`，应该优先切换回更准确
+  的 token 统计，耗时目前是"没有更好数据时的最佳近似"。
+
+## 测试（第五轮新增）
+
+新增 `tests/test_objective_executor_adaptive_concurrency.py`，覆盖：
+
+- 未提供 `cfg` 时恒返回 `MAX_CONCURRENT_OBJECTIVES`（改造前行为）。
+- 提供 `cfg` 但关闭自适应时，恒返回配置的 cap，不受历史记录影响。
+- 样本数不足（<3）时不下调。
+- 最近失败率达标 → 下调一档；最近平均耗时达标 → 再下调一档，两者可
+  叠加。
+- 无论叠加多少档，结果不会低于 `adaptive_concurrency_min`。
+- 配置的 cap 大于模块级常量时，天花板仍以模块级常量为准（安全阀不能被
+  配置突破）。
+- `can_start_new()` 正确使用 `effective_max_concurrent()`（用一个
+  `running` 状态的 execution 占满生效上限后返回 `False`）。
+
+运行方式：
+
+```bash
+PYTHONPATH=src python3 -m pytest tests/test_objective_executor_adaptive_concurrency.py -q
+```
+
+本轮验证：8 项全部通过；同时跑过第一至四轮全部既有测试文件（合计新增
+本轮在内共 123 项用例），确认无回归——除了此前几轮已如实记录、与本轮
+改动无关的 4 个既有失败用例（`tests/test_objective_executor_kanban_tracks_r2.py
+::TestArtifactsFromToolCalls` 调用了当前 `on_turn_done()` 签名不存在的
+`history_segment` 参数），本轮同样未去动它，维持"如实记录、不顺手
+掩盖"的一贯做法。
+
 ## 未完成 / 待续（供下一轮参考）
 
 按方案原文的路线图，以下项目**仍未开始**，需要后续排期：
 
-- **Track E 边界情况**（本轮未涉及，维持第二轮状态）：历史被压缩
-  （compact）后无法定位到某个 step 的 trace / 产出物（Track G 深化版
-  同样依赖 `_locate_step_history_entries`，因此继承了同样的边界限制——
-  压缩后的 step 会退化到正则解析 `[ARTIFACTS]`，正则也解析不出时
-  `artifacts` 为空，不会报错，但也拿不到产出物）；多 session 场景下
+- **Track E 边界情况**（历次未涉及，维持第二轮状态）：历史被压缩
+  （compact）后无法定位到某个 step 的 trace / 产出物；多 session 场景下
   Objective 执行如果不再统一走单一主 bridge，trace/产出物提取接口都
   需要能定位到正确的 session/agent。
-- **既有测试代码缺陷**（本轮发现，非本轮引入）：`tests/
+- **既有测试代码缺陷**（第四轮发现，非本轮引入，本轮未修复）：`tests/
   test_objective_executor_kanban_tracks_r2.py::TestArtifactsFromToolCalls`
-  下 4 个用例调用了 `ObjectiveExecutor.on_turn_done(..., history_segment=
-  ...)`，但当前 `on_turn_done()` 签名没有这个参数，运行即报
-  `TypeError`。看起来是该测试是针对某个未落地/被回退的中间设计写的，
-  需要下一轮排查是核对 `on_turn_done()` 是否本该支持这个参数（功能
-  确实缺失），还是测试本身需要更新为当前签名。
-- **Track I / J / K**（P2）：进化提案分级自治、资源门控降级执行、并发数
-  自适应——均未开始。Track K 依赖 Track H 已完成的统计基础设施（本轮的
-  `objective_outcome_tracker.py` 记录的是"主题失败率"，Track K 需要的是
-  "平均 token 消耗"，两者数据结构不同，需要另外扩展，不能直接复用现有
-  存储）；Track J 依赖 `LLMClientPool` 是否支持按场景切换模型档位，仍需
-  先读 `config/models.py` 确认；Track I 建议放在最后做。
+  下 4 个用例调用了 `on_turn_done(..., history_segment=...)`，当前签名
+  没有这个参数，需要下一轮排查是功能确实缺失还是测试需要更新。
+- **Track I / J**（P2）：进化提案分级自治、资源门控降级执行——均未开始。
+  Track J 依赖 `LLMClientPool` 是否支持按场景切换模型档位，仍需先读
+  `config/models.py`/`LLMClientPool` 相关代码确认这一前置调研项；
+  Track I 建议放在最后做（工作量中大，收益不如前面几项直接，方案原文
+  本身也是这么建议的）。
 
-建议下一轮优先做 **Track K**（并发数自适应）：收益是让并发上限不再是
-写死的 2，且方案原文明确建议"排在 Track H 之后"，本轮的
-`objective_outcome_tracker.py` 已经为"按主题统计历史结果"提供了落地
-范例，可以参考同样的滚动窗口 + 静默降级模式扩展出"按 execution 统计
-token 消耗"的另一份存储。
+建议下一轮优先做 **Track J**（资源门控降级执行）：`ResourceArbiter` 目前
+是二元 block/allow，改成三态（full/degraded/blocked）后可以和本轮的
+Track K 自适应并发形成组合拳——`degraded` 态下把 `effective_max_concurrent()`
+的天花板临时收紧到 1，两个机制复用同一套"降档不降到 0"的哲学，实现
+成本上有直接的复用空间；但开工前需要先确认前置调研项（模型池是否支持
+按 initiator/场景切换模型档位），如果这项调研发现工作量超预期，可以
+先只做"并发降到 1"这一半（不依赖模型池调研），把"用更便宜的模型跑
+自主任务"拆成独立的后续项。

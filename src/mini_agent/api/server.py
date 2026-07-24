@@ -1195,6 +1195,7 @@ class HttpServer:
                 llm_redecompose_fn=_llm_redecompose,
                 artifacts_parse_fn=_parse_artifacts,
                 artifacts_from_tools_fn=_extract_artifacts_from_tools,
+                cfg=cfg,
             )
             objective_executor.load()
 

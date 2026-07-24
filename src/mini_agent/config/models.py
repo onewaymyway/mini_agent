@@ -1042,6 +1042,36 @@ class AutonomyConfig:
     # 单个 Goal 最多自动拆出几个 Objective（LLM 拆解失败/不可用时，
     # 降级为 1 个与 Goal 同名的 Objective，不受此上限影响）。
     auto_objective_max_per_goal: int = 3
+    # [看板与自主性改进方案 Track K] 并发数自适应：默认开启，因为这是一个
+    # 只降不升的机制——`max_concurrent_objectives_cap` 仍是配置得到的
+    # 硬上限（等价于改造前写死的 MAX_CONCURRENT_OBJECTIVES=2），自适应
+    # 逻辑只会在"最近失败率高"/"最近平均耗时长"时把实际生效的并发数往下
+    # 调，不会让并发数超过这个上限，因此默认开启不会让行为变得比"改造前"
+    # 更激进，只会更保守。
+    adaptive_concurrency_enabled: bool = True
+    # 并发数硬上限（安全阀）：无论自适应逻辑如何计算，生效并发数不会超过
+    # 这个值，也不会超过模块级常量 MAX_CONCURRENT_OBJECTIVES（两者取更小
+    # 的一个）。默认与改造前的硬编码值保持一致。
+    max_concurrent_objectives_cap: int = 2
+    # 生效并发数的下限（安全阀的另一端）：无论历史多差，自适应逻辑都不会
+    # 把并发数降到 0（那等价于自主执行被整体停摆，属于 Track J 的资源
+    # 门控范畴，不是本 Track 该做的事）。
+    adaptive_concurrency_min: int = 1
+    # 判定"最近失败率高"所需的最小样本数（最近已结束的 Objective 数量，
+    # 不区分主题，全局统计）——样本太少不下结论，避免偶发的一两次失败
+    # 就把并发数砍掉。
+    adaptive_concurrency_min_samples: int = 3
+    # 最近 N 个已结束 Objective 里，失败占比达到/超过该阈值时，并发数下调
+    # 一档（一次只降 1，不会一步砍到底）。
+    adaptive_concurrency_failure_rate_threshold: float = 0.5
+    # 最近已完成（不含失败）Objective 的平均耗时（秒）达到/超过该阈值时，
+    # 并发数额外下调一档——耗时长说明单个 Objective 本身消耗的资源/时间
+    # 已经不小，并发跑多个的意义下降，且更容易互相挤占资源。两个信号
+    # （失败率、平均耗时）分别判定、分别下调，可以叠加，但受
+    # adaptive_concurrency_min 兜底。默认 1800 秒（30 分钟）。
+    adaptive_concurrency_slow_duration_seconds: float = 1800.0
+    # 参与统计的"最近 N 个已结束 Objective"窗口大小。
+    adaptive_concurrency_window: int = 10
 
 
 @dataclass

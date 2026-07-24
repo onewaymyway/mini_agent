@@ -1991,9 +1991,19 @@ async def get_autonomous_status(request: Request):
             try:
                 result["objective_executions"] = oe.get_status_summary()
                 from mini_agent.evolution.objective_executor import MAX_CONCURRENT_OBJECTIVES
+                # [Track K] 优先展示自适应计算后的生效上限；ObjectiveExecutor
+                # 未提供 effective_max_concurrent()（理论上不会，防御性
+                # 兼容）或计算异常时，退化为展示改造前的静态常量。
+                try:
+                    effective_max = oe.effective_max_concurrent()
+                except Exception as _mini_agent_exc:
+                    from mini_agent.errors import log_exception
+                    log_exception(_mini_agent_exc, where='mini_agent.api.routes')
+                    effective_max = MAX_CONCURRENT_OBJECTIVES
                 result["objective_slots"] = {
                     "running": oe.running_count(),
-                    "max": MAX_CONCURRENT_OBJECTIVES,
+                    "max": effective_max,
+                    "static_cap": MAX_CONCURRENT_OBJECTIVES,
                 }
             except Exception as _mini_agent_exc:
                 from mini_agent.errors import log_exception

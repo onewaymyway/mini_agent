@@ -4,8 +4,9 @@
 > 已完成：Track C（退化版）、Track A、Track D、Track B（含反向同步，完整版）、
 > Track F（完整）、Track E、Track G（完整版：工具调用提取为主，`[ARTIFACTS]`
 > 标记正则解析为退化兜底）、Track H（主题定义采用"标题归一化"，见第四轮
-> 实施记录）。
-> 未完成：Track I/J/K，详见实施记录文档"未完成/待续"一节。
+> 实施记录）、Track K（自适应信号采用"失败率 + 平均耗时"，非原文设想的
+> token 消耗，见第五轮实施记录）。
+> 未完成：Track I/J，详见实施记录文档"未完成/待续"一节。
 > 关联代码：`apps/mini_agent_kanban/`、`src/mini_agent/evolution/`、`src/mini_agent/perception/goal_backlog.py`
 > 前置修复：本方案假设 [并发槽位卡死修复] 已落地（`ObjectiveExecutor.reap_stale_steps()`），
 > 否则 Track B/C 的状态同步会把"假卡死"也当成正常状态展示，掩盖问题。
@@ -279,6 +280,14 @@
 `resource_budget` 派生：`min(2, floor((budget - used_today) / avg_objective_cost))`，
 `avg_objective_cost` 可以从 `outcome_tracker`/历史 execution 的 token 消耗统计里滚动计算。
 不设上限硬编码为 2，而是设一个配置项 `max_concurrent_objectives_cap`（默认 2）作为安全阀。
+
+> **落地说明**（见实施记录"第五轮"一节）：`self_profile.json` 实际并没有
+> `resource_budget` 字段，`ExecutionStep`/`ObjectiveExecution` 也没有任何 token
+> 消耗统计（只有 `started_at`/`finished_at`）——原文这两个数据来源在当前代码库里
+> 都不存在。改为用已经存在的信号：最近一批已结束 Objective 的**失败率**（复用
+> Track H 建立的"按结果判定"思路，但这里不分主题、是全局统计）和**平均耗时**
+> （`finished_at - started_at`，作为"token 消耗"的代理指标）驱动降档，效果同样是
+> "资源/表现不好时收紧并发"，但输入信号换成了实际可得的数据。
 
 **工作量**：小中，依赖 Track H 已经在做的历史统计基础设施，建议排在 Track H 之后。
 

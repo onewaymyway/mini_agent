@@ -227,6 +227,7 @@ class ObjectiveExecutor:
         llm_redecompose_fn: Optional[Callable] = None,
         artifacts_parse_fn: Optional[Callable[[str], list]] = None,
         artifacts_from_tools_fn: Optional[Callable[[str], list]] = None,
+        cfg: Optional["AppConfig"] = None,
     ) -> None:
         """
         submit_fn         — 提交 Task：(message, initiator, meta) -> turn_id | None
@@ -267,6 +268,11 @@ class ObjectiveExecutor:
                              步骤）时，退化为 artifacts_parse_fn 的正则解析
                              结果；两者都拿不到时 ExecutionStep.artifacts
                              保持空列表（向后兼容，不影响现有行为）。
+        cfg                — [Track K] 提供后，`can_start_new()` 改为参考
+                             `cfg.autonomy` 里的并发数自适应配置动态计算
+                             生效并发上限；不提供、或 `cfg.autonomy` 不存在
+                             /关闭自适应时，退化为改造前的行为——恒定使用
+                             模块级常量 MAX_CONCURRENT_OBJECTIVES（=2）。
         """
         self._paths = paths
         self._submit_fn = submit_fn
@@ -277,6 +283,7 @@ class ObjectiveExecutor:
         self._llm_redecompose_fn = llm_redecompose_fn
         self._artifacts_parse_fn = artifacts_parse_fn
         self._artifacts_from_tools_fn = artifacts_from_tools_fn
+        self._cfg = cfg
         self._executions: dict[str, ObjectiveExecution] = {}  # execution_id → ex
         self._turn_to_exec: dict[str, tuple[str, int]] = {}   # turn_id → (execution_id, step_idx)
         self._exec_path = paths.workdir_dir / "objective_executions.json"
@@ -342,8 +349,76 @@ class ObjectiveExecutor:
             for ex in self._executions.values()
         )
 
+    def effective_max_concurrent(self) -> int:
+        """[Track K] 计算当前生效的并发上限。
+
+        规则（只降不升，安全阀在两端）：
+          - 起点是 `min(MAX_CONCURRENT_OBJECTIVES, cfg.autonomy.
+            max_concurrent_objectives_cap)`——模块级常量永远是绝对天花板，
+            配置项只能进一步收紧，不能突破它。
+          - 未提供 `cfg`，或 `cfg.autonomy.adaptive_concurrency_enabled`
+            为 False 时，直接返回上面这个天花板，等价于改造前"写死用
+            MAX_CONCURRENT_OBJECTIVES"的行为（前提是也没配置更低的
+            cap——这是默认配置下的实际效果）。
+          - 否则读取最近 `adaptive_concurrency_window` 个已结束
+            （completed/failed）execution：
+              - 样本数 < `adaptive_concurrency_min_samples` → 不参与判定，
+                信号不足时不瞎调。
+              - 失败率 ≥ `adaptive_concurrency_failure_rate_threshold` →
+                下调一档。
+              - 已完成（不含失败）execution 的平均耗时 ≥
+                `adaptive_concurrency_slow_duration_seconds` → 再下调
+                一档（可与上面失败率信号叠加）。
+          - 最终结果不低于 `adaptive_concurrency_min`。
+
+        失败静默降级：任何异常都退化为返回天花板值（不下调），保持"没有
+        这个 Track"时的原始行为，不会因为统计逻辑本身出错而让并发数被
+        错误地砍掉。
+        """
+        autonomy_cfg = getattr(self._cfg, "autonomy", None) if self._cfg is not None else None
+        cap = MAX_CONCURRENT_OBJECTIVES
+        if autonomy_cfg is not None:
+            configured_cap = getattr(autonomy_cfg, "max_concurrent_objectives_cap", MAX_CONCURRENT_OBJECTIVES)
+            cap = min(MAX_CONCURRENT_OBJECTIVES, configured_cap)
+        if autonomy_cfg is None or not getattr(autonomy_cfg, "adaptive_concurrency_enabled", False):
+            return cap
+
+        try:
+            floor = getattr(autonomy_cfg, "adaptive_concurrency_min", 1)
+            min_samples = getattr(autonomy_cfg, "adaptive_concurrency_min_samples", 3)
+            failure_threshold = getattr(autonomy_cfg, "adaptive_concurrency_failure_rate_threshold", 0.5)
+            slow_seconds = getattr(autonomy_cfg, "adaptive_concurrency_slow_duration_seconds", 1800.0)
+            window = getattr(autonomy_cfg, "adaptive_concurrency_window", 10)
+
+            finished = [
+                ex for ex in self._executions.values()
+                if ex.status in ("completed", "failed") and ex.finished_at
+            ]
+            finished.sort(key=lambda ex: ex.finished_at, reverse=True)
+            recent = finished[:window]
+
+            effective = cap
+            if len(recent) >= min_samples:
+                failed_count = sum(1 for ex in recent if ex.status == "failed")
+                if failed_count / len(recent) >= failure_threshold:
+                    effective -= 1
+
+                completed_durations = [
+                    ex.finished_at - ex.started_at
+                    for ex in recent
+                    if ex.status == "completed" and ex.started_at
+                ]
+                if completed_durations and (sum(completed_durations) / len(completed_durations)) >= slow_seconds:
+                    effective -= 1
+
+            return max(floor, min(cap, effective))
+        except Exception as _mini_agent_exc:
+            from mini_agent.errors import log_exception
+            log_exception(_mini_agent_exc, where='mini_agent.evolution.objective_executor.ObjectiveExecutor.effective_max_concurrent')
+            return cap
+
     def can_start_new(self) -> bool:
-        return self.running_count() < MAX_CONCURRENT_OBJECTIVES
+        return self.running_count() < self.effective_max_concurrent()
 
     def get_execution(self, execution_id: str) -> Optional[ObjectiveExecution]:
         """[Track E] 只读查询：按 execution_id 返回执行记录，供看板"查看详情"
