@@ -26,6 +26,7 @@ import streamlit as st
 import streamlit.components.v1 as components
 
 from client import AgentClient
+from diff_view import parse_unified_diff, summarize_files
 
 
 def _esc_html(text) -> str:
@@ -2481,12 +2482,28 @@ def render_evolution_proposals_tab(client: AgentClient):
                     st.caption(f"获取 diff 失败：{diff_resp['_error']}")
                 else:
                     diff_text = (diff_resp or {}).get("diff") or ""
-                    if diff_text:
-                        st.code(diff_text[:20000], language="diff")
-                        if len(diff_text) > 20000:
-                            st.caption("diff 内容过长，已截断展示前 20000 字符。")
-                    else:
+                    if not diff_text:
                         st.caption("（无 diff 内容）")
+                    else:
+                        files = parse_unified_diff(diff_text)
+                        summary = summarize_files(files)
+                        if summary:
+                            st.caption(f"摘要：{summary}")
+                        if len(files) == 1 and not files[0].path:
+                            # 未能按文件切分（比如不认识的 diff 格式），退回整体展示，
+                            # 与升级前的行为完全一致，不改变可用性。
+                            st.code(diff_text[:20000], language="diff")
+                            if len(diff_text) > 20000:
+                                st.caption("diff 内容过长，已截断展示前 20000 字符。")
+                        else:
+                            for fd in files:
+                                with st.expander(f"📝 {fd.summary}", expanded=(len(files) == 1)):
+                                    if fd.is_binary:
+                                        st.caption("二进制文件，无法显示逐行差异。")
+                                    else:
+                                        st.code(fd.body[:20000], language="diff")
+                                        if len(fd.body) > 20000:
+                                            st.caption("该文件 diff 过长，已截断展示前 20000 字符。")
 
             if risk == "low":
                 if st.button("✅ 一键合并", key=f"evo_merge_low_{branch}"):

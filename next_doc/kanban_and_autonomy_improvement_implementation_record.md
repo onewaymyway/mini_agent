@@ -947,6 +947,53 @@ TestArtifactsFromToolCalls` 下 4 项，调用了当前 `on_turn_done()` 签名
 PYTHONPATH=src python3 -m pytest tests/test_objective_executor_kanban_tracks_r2.py -q
 ```
 
+## 第十轮已完成 Track（本次续做）
+
+### Track I（P2）：进化提案分级自治 —— 看板 diff 视图增强（第九轮"未完成/待续"标注项，已补齐）
+
+按第九轮"未完成/待续"里明确标注的可选增强项，本轮把"进化提案"tab 的 diff
+展示从一整块 `st.code(diff_text, language="diff")` 升级为按文件分组：
+
+- 新增 `apps/mini_agent_kanban/diff_view.py`：纯文本解析模块，不依赖
+  Streamlit/网络请求，方便单独单元测试。
+  - `parse_unified_diff(diff_text) -> list[FileDiff]`：以 `diff --git a/... b/...`
+    作为文件边界切分，每个 `FileDiff` 记录 `path`（含 rename 时的
+    `old → new` 展示形式）、`additions`/`deletions`（按行首 `+`/`-`，排除
+    `+++`/`---` 头部行统计）、`change_type`（`modified`/`added`/`deleted`/
+    `renamed`，分别由 `--- /dev/null`、`+++ /dev/null`、`rename from/to`
+    行判定）、`is_binary`（由 `Binary files ... differ` 行判定）。
+  - 解析失败或识别不出 `diff --git` 边界时（比如非 git 格式的纯文本 diff），
+    不抛异常，整体退化为一个 `path=""` 的"未分类"条目，保证调用方总有
+    内容可展示——对应地，`app.py` 侧遇到这种情况会退回升级前"整体展示"的
+    行为，不改变可用性下限。
+  - `summarize_files(files) -> str`：生成一行摘要，例如
+    `"3 个文件改动 · +42 / -7"`。
+- `apps/mini_agent_kanban/app.py::render_evolution_proposals_tab()` 的
+  "📄 查看 diff" expander 内部：先展示 `summarize_files()` 的摘要行，再按
+  文件各自套一层 `st.expander(f"📝 {fd.summary}")`（只有一个文件时默认
+  展开，多个文件时默认折叠，避免一次性刷太长），二进制文件只提示"无法
+  显示逐行差异"而不是塞一堆乱码进 `st.code`。
+- 判断逻辑本身（风险分级、一键合并、强制合并二次确认）完全不变，本轮
+  只动 diff 的展示形式，属于纯体验优化。
+
+**验收标准**：
+1. 单文件改动的提案：diff 展示与升级前效果一致（依然是一段可读的
+   unified diff），额外多一行摘要。
+2. 多文件改动的提案：能看到"N 个文件改动 · +x / -y"的摘要，且可以单独
+   展开/折叠某一个文件的 diff，不用在一整块文本里翻找。
+3. 遇到不认识的 diff 格式：不报错，退回整体展示。
+
+**测试**：新增 `tests/test_kanban_diff_view.py`（9 个用例，覆盖空输入、
+多文件解析、新增/删除/重命名/二进制文件识别、未识别格式兜底、摘要行
+生成），全部通过：
+
+```bash
+python3 -m pytest tests/test_kanban_diff_view.py -q
+# 9 passed
+```
+
+**工作量**：小。纯前端展示层增强，不涉及后端/状态机改动，风险低。
+
 ## 未完成 / 待续（供下一轮参考）
 
 按方案原文的路线图，以下项目**仍未开始或未完全完成**，需要后续排期：
@@ -961,13 +1008,14 @@ PYTHONPATH=src python3 -m pytest tests/test_objective_executor_kanban_tracks_r2.
   `AutonomousLoop`/`ObjectiveExecutor` 侧已经有 `gating_state()`/
   `set_gating_degraded()` 这两个现成的信号源可以直接复用，不需要再动
   资源仲裁本身的逻辑。
-- **Track I 看板 diff 视图的进一步增强**（第八轮未做，非阻塞项）：当前
-  diff 展示是纯 `st.code` 的 unified diff 文本，如果后续觉得不够直观，
-  可以考虑接入更结构化的 diff 渲染，但这是体验优化，不影响"能不能
-  一键合并"这个核心能力已经可用的事实。
+- ~~**Track I 看板 diff 视图的进一步增强**~~ ——已解决：第十轮已把 diff
+  展示改造为按文件分组 + 增删行摘要（`apps/mini_agent_kanban/diff_view.py`），
+  见"第十轮已完成 Track"一节。
 
 至此，方案原文路线图里 Track A~K 全部有了可用的落地版本且看板侧不再
-有功能性缺口（第八轮补齐），本轮同时清空了历次记录里遗留的唯一一项
-"既有测试代码缺陷"——全部测试文件目前均为全绿，没有已知失败用例。
-剩余"未完成/待续"项均为边界情况或已明确调研后搁置的可选优化，可按
-团队带宽排期，不再存在紧迫的排期建议。
+有功能性缺口（第八轮补齐），第九轮清空了历次记录里遗留的唯一一项
+"既有测试代码缺陷"，第十轮补齐了 Track I 剩下的体验优化项（diff 按文件
+分组展示）。全部测试文件目前均为全绿，没有已知失败用例。剩余
+"未完成/待续"项（Track E 边界情况、Track J 模型档位切换半成品）均为
+边界情况或已明确调研后搁置的可选优化，可按团队带宽排期，不再存在
+紧迫的排期建议。

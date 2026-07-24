@@ -14,10 +14,13 @@
 > `/evolution proposals`/`/evolution merge`（CLI，第七轮）+
 > `GET /v1/evolution/proposals`/`GET .../diff`/`POST .../merge`（REST）+
 > 看板"🧬 进化提案"tab（列表 + risk 徽标 + diff 展开 + 一键合并/强制合并
-> 二次确认），见第八轮实施记录）。
+> 二次确认），见第八轮实施记录）、Track I 看板 diff 视图增强（第十轮：
+> `apps/mini_agent_kanban/diff_view.py` 把 diff 按文件分组展示 + 增删行
+> 摘要，纯体验优化，判断逻辑不变）。
 > 未完成：详见实施记录文档"未完成/待续"一节（均为边界情况或已调研后
 > 搁置的可选优化，不再有功能性缺口）。第九轮已修复历次记录中遗留的
-> 唯一一项既有测试代码缺陷，当前全部测试文件为全绿（152 项通过）。
+> 唯一一项既有测试代码缺陷，当前全部测试文件为全绿（152 项通过，另加
+> 第十轮新增 9 项 diff 解析测试）。
 > 关联代码：`apps/mini_agent_kanban/`、`src/mini_agent/evolution/`、`src/mini_agent/perception/goal_backlog.py`
 > 前置修复：本方案假设 [并发槽位卡死修复] 已落地（`ObjectiveExecutor.reap_stale_steps()`），
 > 否则 Track B/C 的状态同步会把"假卡死"也当成正常状态展示，掩盖问题。
