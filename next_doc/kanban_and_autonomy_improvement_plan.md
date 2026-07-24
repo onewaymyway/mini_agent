@@ -3,8 +3,9 @@
 > 状态：部分落地 · 见 `next_doc/kanban_and_autonomy_improvement_implementation_record.md`
 > 已完成：Track C（退化版）、Track A、Track D、Track B（含反向同步，完整版）、
 > Track F（完整）、Track E、Track G（完整版：工具调用提取为主，`[ARTIFACTS]`
-> 标记正则解析为退化兜底）。
-> 未完成：Track H/I/J/K，详见实施记录文档"未完成/待续"一节。
+> 标记正则解析为退化兜底）、Track H（主题定义采用"标题归一化"，见第四轮
+> 实施记录）。
+> 未完成：Track I/J/K，详见实施记录文档"未完成/待续"一节。
 > 关联代码：`apps/mini_agent_kanban/`、`src/mini_agent/evolution/`、`src/mini_agent/perception/goal_backlog.py`
 > 前置修复：本方案假设 [并发槽位卡死修复] 已落地（`ObjectiveExecutor.reap_stale_steps()`），
 > 否则 Track B/C 的状态同步会把"假卡死"也当成正常状态展示，掩盖问题。
@@ -320,6 +321,12 @@ P2（后续迭代，自治程度提升）
    记录时的兜底（`artifacts_parse_fn`）。见实施记录"第三轮"一节。
 3. Track J 依赖 `LLMClientPool` 是否已支持"按 initiator/场景选择模型档位"，需要先读
    `config/models.py` 确认，标注为该 Track 的前置调研任务。
-4. Track H 的"主题"关联字段目前 `GoalNode`/`activity_digest` 记录里的粒度是否够用，
-   需要先读一遍 `soft_goal_deriver.py` 完整的 derive 三路来源（capability_map/work_index/
-   lesson_review）分别用什么 ID 标识"同一主题"，确认能否统一映射。
+4. ~~Track H 的"主题"关联字段目前 `GoalNode`/`activity_digest` 记录里的粒度是否够用~~
+   ——已解决：三路信号各自的 ID（capability_id/WorkThread.id/LessonGroup.key）在
+   `commit_goals()` 写入 `GoalBacklog` 时并不会保留，`GoalNode` 也没有预留主题字段；
+   与其改 schema，改为复用 `soft_goal_deriver._DeriveCandidate.dedupe_key()` 本来就在用的
+   "标题归一化"作为主题标识（这本来就是代码库里"是否同一个候选"的事实标准）。
+   实现见 `evolution/objective_outcome_tracker.py::normalize_title_key()`，
+   `soft_goal_deriver.py` 的 `dedupe_key()` 现在直接调用它，保证两处主题 key 计算方式
+   一致。已知局限：Objective 标题若被后续拆解/重命名改写过会导致主题匹配失效
+   （退化为"当作新主题"，不会误判），详见实施记录"第四轮"一节。

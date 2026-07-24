@@ -973,9 +973,23 @@ class ObjectiveExecutor:
             from mini_agent.errors import log_exception
             log_exception(_mini_agent_exc, where='mini_agent.evolution.objective_executor._sync_goal_status')
 
+    def _record_theme_outcome(self, ex: ObjectiveExecution, outcome: str) -> None:
+        """[Track H] 把这个 Objective 的完成/失败结果按"标题归一化主题"
+        计入历史，供 SoftGoalDeriver.derive_candidates() 判断"这类主题是否
+        反复失败"。cancelled 不算数（见 objective_outcome_tracker 模块头部
+        说明），因此只有 completed/failed 两处调用点。失败静默降级，不影响
+        Objective 收尾主流程。"""
+        try:
+            from mini_agent.evolution.objective_outcome_tracker import record_outcome
+            record_outcome(self._paths, ex.objective_title, outcome)
+        except Exception as _mini_agent_exc:
+            from mini_agent.errors import log_exception
+            log_exception(_mini_agent_exc, where='mini_agent.evolution.objective_executor._record_theme_outcome')
+
     def _on_objective_completed(self, ex: ObjectiveExecution) -> None:
         """Objective 全部步骤完成后的收尾动作。"""
         self._sync_goal_status(ex.objective_id, "completed")
+        self._record_theme_outcome(ex, "completed")
         try:
             from mini_agent.evolution.resource_arbiter import append_activity_digest
             append_activity_digest(self._paths, {
@@ -994,6 +1008,7 @@ class ObjectiveExecutor:
     def _on_objective_failed(self, ex: ObjectiveExecution) -> None:
         """Objective 执行失败后的收尾动作。"""
         self._sync_goal_status(ex.objective_id, "failed")
+        self._record_theme_outcome(ex, "failed")
         try:
             from mini_agent.evolution.resource_arbiter import append_activity_digest
             append_activity_digest(self._paths, {

@@ -21,7 +21,6 @@ evolution/soft_goal_deriver.py — 软目标 derive（autonomous 档位专属）
 from __future__ import annotations
 
 import json
-import re
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -59,10 +58,15 @@ class _DeriveCandidate:
     novelty: float = 0.0  # [方案三/好奇心评分] 信息增益评分，默认0（旧三路信号不产出，行为不变）
 
     def dedupe_key(self) -> str:
-        """归一化 title 用于去重。"""
-        s = self.title.lower().strip()
-        s = re.sub(r"[^\w\s]", " ", s)
-        return " ".join(sorted(s.split()))
+        """归一化 title 用于去重。
+
+        [Track H] 与 evolution/objective_outcome_tracker.py 里
+        `normalize_title_key()` 保持完全一致的实现——那里说明了为什么
+        "标题归一化"被选作跨三路信号的"同一主题"标识，本方法直接委托
+        给它，避免两处各自维护一份正则容易漂移。
+        """
+        from mini_agent.evolution.objective_outcome_tracker import normalize_title_key
+        return normalize_title_key(self.title)
 
 
 # ── SoftGoalDeriver ───────────────────────────────────────────────────────────
@@ -205,6 +209,15 @@ class SoftGoalDeriver:
             for c in all_candidates:
                 if self._domain_token_overlap(c.title, negative_domains) > 0:
                     c.urgency *= 0.15
+
+        # [看板与自主性改进方案 Track H] 效果回填闭环到目标推导优先级：
+        # 同一主题（标题归一化后一致）过去 Objective 执行失败率过高时，
+        # 直接跳过（避免反复产出"做不到"的目标）或降权（失败率没到跳过
+        # 阈值，但也不该排到前面）。与 negative_domains（skill_propose
+        # commit 效果回填、关键词重叠判定）是两条独立信号：这里判定的是
+        # Objective 本身的完成/失败历史，且是"主题精确匹配"而非关键词
+        # 重叠，可信度更高，因此允许在样本充分时直接跳过而不只是降权。
+        all_candidates = self._apply_objective_outcome_gating(all_candidates)
 
         seen: set[str] = set()
         cap: list[_DeriveCandidate] = []
@@ -654,6 +667,47 @@ class SoftGoalDeriver:
         enabled = getattr(affordance_cfg, "risk_gating_enabled", True)
         factor = getattr(affordance_cfg, "risk_downweight_factor", 0.4)
         return enabled, factor
+
+    def _apply_objective_outcome_gating(
+        self, candidates: "list[_DeriveCandidate]"
+    ) -> "list[_DeriveCandidate]":
+        """[Track H] 逐个候选查询 evolution/objective_outcome_tracker 里
+        对应主题的历史 Objective 完成/失败记录：
+          - "skip"：样本数达标（≥ MIN_SAMPLES_FOR_JUDGEMENT）且失败率
+            ≥ SKIP_FAILURE_RATIO——直接从候选列表剔除，本轮不会 derive
+            出这个主题的新 Goal。
+          - "downweight"：失败率没到跳过阈值但仍偏高——乘以
+            DOWNWEIGHT_FACTOR，让它在排序里自然靠后，不直接剔除（万一
+            这次判断信号不准，用户仍能在候选列表靠后位置看到它）。
+          - "ok"：样本不足或失败率不高，不做任何调整。
+
+        失败静默降级：查询单个候选异常时，视为该候选 "ok"（不跳过、不
+        降权），不影响其余候选的处理，也不影响 derive_candidates() 主
+        流程——这是"没有这个 Track"时的原始行为，不会因为本 Track 的
+        实现问题而让 derive() 整体失效。
+        """
+        try:
+            from mini_agent.evolution.objective_outcome_tracker import judge_theme
+        except Exception as _mini_agent_exc:
+            from mini_agent.errors import log_exception
+            log_exception(_mini_agent_exc, where='mini_agent.evolution.soft_goal_deriver.SoftGoalDeriver._apply_objective_outcome_gating')
+            return candidates
+
+        survivors: list[_DeriveCandidate] = []
+        for c in candidates:
+            try:
+                verdict = judge_theme(self._paths, c.title)
+            except Exception as _mini_agent_exc:
+                from mini_agent.errors import log_exception
+                log_exception(_mini_agent_exc, where='mini_agent.evolution.soft_goal_deriver.SoftGoalDeriver._apply_objective_outcome_gating')
+                verdict = "ok"
+            if verdict == "skip":
+                continue
+            if verdict == "downweight":
+                from mini_agent.evolution.objective_outcome_tracker import DOWNWEIGHT_FACTOR
+                c.urgency *= DOWNWEIGHT_FACTOR
+            survivors.append(c)
+        return survivors
 
     def _recent_negative_outcome_domains(self) -> list[str]:
         """[方案四新增] 通过 AgentSelfModel.recent_negative_outcome_domains()

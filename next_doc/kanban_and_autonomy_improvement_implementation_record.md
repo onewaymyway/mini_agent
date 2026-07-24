@@ -349,6 +349,106 @@ PYTHONPATH=src python3 -m pytest tests/test_objective_executor_kanban_tracks_r3.
 不全）——如果你在自己的环境里跑测试遇到同样的 `ModuleNotFoundError`，
 先 `pip install -r requirements.txt` 补齐即可，与本轮代码改动无关。
 
+## 第四轮已完成 Track（本次续做）
+
+### Track H（P2）：效果回填闭环到目标推导优先级 —— 已上线
+
+按第三轮"未完成/待续"里建议的优先级，本轮实现方案原文 Track H：
+
+- **主题标识方式确定**（方案原文"待确认/待细化项 4"）：`soft_goal_deriver.py`
+  三路信号各自的 ID（capability_id / WorkThread.id / LessonGroup.key）在
+  `commit_goals()` 写入 `GoalBacklog` 时并不会保留——只写了 `title` /
+  `description` / `source_tag`，`GoalNode` 本身也没有预留主题字段。没有
+  改 `GoalNode` schema（涉及看板展示、序列化兼容，超出本 Track 范围），
+  而是复用 `_DeriveCandidate.dedupe_key()` 本来就在用的"标题归一化"作为
+  跨三路信号的"同一主题"标识——这个函数本来就是代码库里"是否已经
+  derive 过同一个东西"的事实标准（`existing_titles`/`rejected_keys` 两处
+  去重都依赖它），语义上完全对得上。
+- 新增 `src/mini_agent/evolution/objective_outcome_tracker.py`：
+  - `normalize_title_key(title)`：与 `_DeriveCandidate.dedupe_key()` 完全
+    一致的归一化规则（小写、去标点、按空格切分排序重连），集中实现一份，
+    避免两处正则各自维护容易漂移。
+  - `record_outcome(paths, title, outcome)`：`outcome` 只接受
+    `"completed"`/`"failed"`，按 `normalize_title_key(title)` 分桶写入
+    `<workdir>/objective_theme_outcomes.json`，每个主题桶滚动保留最近
+    `MAX_HISTORY_PER_THEME`（10）条，避免无限增长。`"cancelled"`（用户
+    主动终止）不计入统计——不代表这个主题"做不到"。
+  - `theme_failure_stats(paths, title)` → `(总样本数, 失败样本数) | None`；
+    `judge_theme(paths, title)` → `"skip" | "downweight" | "ok"`：样本数
+    `< MIN_SAMPLES_FOR_JUDGEMENT`（3）时恒为 `"ok"`（样本太少不下结论）；
+    失败率 `≥ SKIP_FAILURE_RATIO`（0.66）→ `"skip"`；失败率
+    `≥ DOWNWEIGHT_FAILURE_RATIO`（0.34）→ `"downweight"`（乘以
+    `DOWNWEIGHT_FACTOR`=0.25）；其余 `"ok"`。所有查询/写入异常均静默
+    降级（不阻断调用方主流程）。
+  - `soft_goal_deriver.py` 的 `_DeriveCandidate.dedupe_key()` 改为直接调用
+    `normalize_title_key()`，不再自行维护一份重复的正则逻辑（`re` 导入
+    随之从该文件移除，因为不再有其他地方直接使用）。
+- `ObjectiveExecutor` 新增 `_record_theme_outcome(ex, outcome)`，在
+  `_on_objective_completed()`（记 `"completed"`）和 `_on_objective_failed()`
+  （记 `"failed"`）两处收尾回调各调用一次，紧跟在已有的
+  `_sync_goal_status()`（Track B）之后。`_on_objective_cancelled()`
+  **不**调用（用户主动终止不计入"这个主题做不到"的判断）。
+- `SoftGoalDeriver` 新增 `_apply_objective_outcome_gating(candidates)`：
+  在 `derive_candidates()` 里，紧跟在既有的"负面回填域降权"（方案四，
+  基于 `outcome_tracker.get_revert_candidates()` 关键词重叠判定）代码块
+  之后调用，作用于三路信号合并后的全部候选：
+  - `judge_theme()` 返回 `"skip"` → 直接从候选列表剔除，本轮不会再
+    derive 出这个主题。
+  - 返回 `"downweight"` → `urgency *= DOWNWEIGHT_FACTOR`，让它在排序里
+    自然靠后，不直接剔除。
+  - 返回 `"ok"`（含查询异常兜底）→ 不做任何调整，与改造前完全一致。
+  这与"负面回填域降权"是两条独立信号（后者判定的是 skill_propose
+  commit 效果、且是关键词重叠的模糊匹配；本 Track 判定的是 Objective
+  本身的完成/失败历史、且是主题精确匹配），因此本 Track 允许在样本充分
+  时直接跳过而不只是降权，可信度更高。
+
+**与方案原文的差异说明**：方案原文 Track H 设计里提到"需要 `ObjectiveExecutor`
+… 按 `objective.source`（`agent_derived` 的来源主题标签）关联"——实际
+核实后 `GoalNode` 并没有这样一个"来源主题标签"字段（`source` 字段的取值
+只是 `"user"`/`"agent_derived"` 两种，标识的是"谁创建的"而不是"关于什么
+主题"），因此改为"标题归一化"这一在现有代码库里已经验证过语义正确的
+方案，效果等价（同一个 derive 出来的 Goal，标题在整个生命周期里不会变），
+成本更低（不需要动 `GoalNode` schema）。
+
+## 测试（第四轮新增）
+
+新增 `tests/test_objective_outcome_tracker.py`，覆盖：
+
+- `TestNormalizeAndStats`：`normalize_title_key()` 大小写/词序无关；无历史
+  记录返回 `None`/`"ok"`；样本不足（<3）恒为 `"ok"`；失败率 ≥0.66 判
+  `"skip"`；失败率在 [0.34, 0.66) 判 `"downweight"`；失败率 <0.34 判
+  `"ok"`；`"cancelled"` 不计入统计；滚动窗口正确限制在
+  `MAX_HISTORY_PER_THEME` 条以内。
+- `TestObjectiveExecutorRecordsOutcome`：Objective 正常完成/耗尽重试判
+  failed 后，对应主题的历史记录里出现相应的 `completed`/`failed`；
+  `cancel()` 不会写入任何记录。
+- `TestSoftGoalDeriverGating`：历史失败率高的主题候选被整个剔除；中等
+  失败率的候选被降权但保留；不相关主题/无历史记录的候选完全不受影响。
+
+运行方式：
+
+```bash
+PYTHONPATH=src python3 -m pytest tests/test_objective_outcome_tracker.py -q
+```
+
+本轮验证：15 项全部通过；同时跑过第一、二、三轮全部既有测试文件
+（`tests/test_objective_executor_kanban_tracks.py` 10 项、
+`tests/test_objective_executor_kanban_tracks_r2.py`、
+`tests/test_objective_executor_kanban_tracks_r3.py` 9 项、
+`tests/test_goal_backlog.py`、`tests/test_outcome_tracker.py`），确认
+无回归——除了 4 个与本轮改动完全无关的既有失败用例（`tests/
+test_objective_executor_kanban_tracks_r2.py::TestArtifactsFromToolCalls`
+下 4 项，调用 `on_turn_done(..., history_segment=...)` 时报
+`TypeError: unexpected keyword argument 'history_segment'`——当前
+`ObjectiveExecutor.on_turn_done()` 签名里确实没有这个参数，这是测试
+代码与实现签名不匹配的既有问题，本轮未改动 `on_turn_done()` 签名，
+如实记录，不在本轮修复范围内）。
+
+补充说明（环境相关，不是代码问题）：本轮验证环境同样缺少
+`python-multipart`/`rich`/`pydantic`/`uvicorn` 若干依赖（与第三轮记录
+里的情况一致），补齐后 `tests/test_objective_executor_kanban_tracks_r3.py`
+才能正常导入 `mini_agent.api.routes`。
+
 ## 未完成 / 待续（供下一轮参考）
 
 按方案原文的路线图，以下项目**仍未开始**，需要后续排期：
@@ -360,14 +460,22 @@ PYTHONPATH=src python3 -m pytest tests/test_objective_executor_kanban_tracks_r3.
   `artifacts` 为空，不会报错，但也拿不到产出物）；多 session 场景下
   Objective 执行如果不再统一走单一主 bridge，trace/产出物提取接口都
   需要能定位到正确的 session/agent。
-- **Track H / I / J / K**（P2）：效果回填闭环、进化提案分级自治、资源
-  门控降级执行、并发数自适应——均未开始，需要先完成方案原文"待确认/
-  待细化项"里列出的前置调研（主题关联字段粒度、`LLMClientPool` 是否
-  支持按场景切换模型档位等）。
+- **既有测试代码缺陷**（本轮发现，非本轮引入）：`tests/
+  test_objective_executor_kanban_tracks_r2.py::TestArtifactsFromToolCalls`
+  下 4 个用例调用了 `ObjectiveExecutor.on_turn_done(..., history_segment=
+  ...)`，但当前 `on_turn_done()` 签名没有这个参数，运行即报
+  `TypeError`。看起来是该测试是针对某个未落地/被回退的中间设计写的，
+  需要下一轮排查是核对 `on_turn_done()` 是否本该支持这个参数（功能
+  确实缺失），还是测试本身需要更新为当前签名。
+- **Track I / J / K**（P2）：进化提案分级自治、资源门控降级执行、并发数
+  自适应——均未开始。Track K 依赖 Track H 已完成的统计基础设施（本轮的
+  `objective_outcome_tracker.py` 记录的是"主题失败率"，Track K 需要的是
+  "平均 token 消耗"，两者数据结构不同，需要另外扩展，不能直接复用现有
+  存储）；Track J 依赖 `LLMClientPool` 是否支持按场景切换模型档位，仍需
+  先读 `config/models.py` 确认；Track I 建议放在最后做。
 
-建议下一轮优先做 **Track H**（效果回填闭环到目标推导优先级）：收益是
-让自主目标推导不再反复产出"历史失败率高"的同类目标，且第一轮已完成
-的 `_on_objective_completed`/`_on_objective_failed` 回调点可以直接复用
-来喂 `outcome_tracker`；需要先读一遍 `soft_goal_deriver.py` 的三路
-derive 来源（capability_map/work_index/lesson_review）分别用什么 ID
-标识"同一主题"，确认能否统一映射（方案原文"待确认/待细化项 4"）。
+建议下一轮优先做 **Track K**（并发数自适应）：收益是让并发上限不再是
+写死的 2，且方案原文明确建议"排在 Track H 之后"，本轮的
+`objective_outcome_tracker.py` 已经为"按主题统计历史结果"提供了落地
+范例，可以参考同样的滚动窗口 + 静默降级模式扩展出"按 execution 统计
+token 消耗"的另一份存储。
