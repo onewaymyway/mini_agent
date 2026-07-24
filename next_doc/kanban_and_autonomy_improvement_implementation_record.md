@@ -994,14 +994,82 @@ python3 -m pytest tests/test_kanban_diff_view.py -q
 
 **工作量**：小。纯前端展示层增强，不涉及后端/状态机改动，风险低。
 
+## 第十一轮已完成 Track（本次续做）
+
+### Track E（P1）：执行细节可钻取 —— compact 边界情况修复（第九轮"未完成/待续"标注项，已补齐）
+
+按第九轮"未完成/待续"里标注的边界情况——"历史被压缩（compact）后无法
+定位到某个 step 的 trace / 产出物"，本轮实现了兜底查询：
+
+- `src/mini_agent/api/routes.py`：
+  - `_locate_step_history_entries(hist_mgr, submitted_message)` 保留原
+    签名不变（向后兼容），内部改为委托给新抽出的通用函数
+    `_locate_entries_in_list(history: list[dict], submitted_message)`——
+    后者不绑定 `hist_mgr.history`，可以直接传入任意条目列表。
+  - `get_objective_step_trace()`：先按原逻辑在 active history
+    （`hist_mgr.history`）里查找；找不到时（`raw_entries is None`，此前
+    这里直接返回空列表 + 提示），改为退化查询
+    `hist_mgr.raw_history.entries`——raw history 只追加、永不被 compact
+    压缩（见 `history/raw_history.py` 模块说明），能找回 compact 之前的
+    完整记录。命中的话响应里新增 `from_raw_history: true` 标记；raw
+    history 里也找不到（比如这一步从未真正提交过），才真正退化为空
+    列表 + 提示（提示文案同步更新，注明"原始日志里也未找到"）。
+  - 响应新增字段 `from_raw_history: bool`（`_empty()` 兜底分支固定为
+    `False`），供看板据此提示用户"这是从压缩前的历史记录里找回的"。
+- `apps/mini_agent_kanban/app.py::_render_objective_execution_detail()`：
+  展开某个 step 的详情时，若 `trace.get("from_raw_history")` 为真，在
+  entries 之前追加一行提示"ℹ️ 该步骤记录已被压缩，以下内容从压缩前的
+  原始日志里找回。"，让用户明确知道这不是"当前活跃对话"里的内容（时间
+  上可能较早），而不是让用户误以为记录丢失。
+
+**局限（据实说明，未在本轮解决，留给下一轮）**：
+- 多 session 场景下如果 Objective 执行不再统一走单一主 bridge（当前
+  实现假设的前提是"只有一个主 agent/bridge"），trace 提取需要先定位到
+  正确的 session/agent，这部分本轮未动，仍然是已知限制。
+- raw_history 本身如果因为外部原因被清理/文件不存在（极端情况），仍然
+  退化为空列表 + 提示，不会报错，但也确实找不回数据——这是"事实上已经
+  没有这份记录了"，不是可以再优化的边界，不再单独处理。
+
+**验收标准**：
+1. 构造一个 step，其对应记录已经不在 active history 里（模拟 compact
+   之后的状态），但仍在 raw_history 里：调用 trace 端点能正常返回
+   entries，且 `from_raw_history` 为 `true`。
+2. 未发生 compact 的正常场景：行为与升级前完全一致，`from_raw_history`
+   为 `false`，不走额外的 raw_history 扫描（性能不受影响）。
+3. active history 和 raw_history 都找不到匹配：返回空列表 + 提示，不
+   抛异常。
+
+**测试**：新增 `tests/test_objective_executor_kanban_tracks_r4.py`
+（6 个用例，覆盖 `_locate_entries_in_list()` 与 `_locate_step_history_
+entries()` 行为一致性、未命中返回 None、以及"何时该走 raw_history 兜底"
+这条判定逻辑的三种场景：命中 active/兜底命中 raw/两边都不命中），全部
+通过：
+
+```bash
+PYTHONPATH=src python3 -m pytest tests/test_objective_executor_kanban_tracks_r4.py -q
+# 6 passed
+```
+
+连同本轮涉及改动的既有测试文件（`test_objective_executor_kanban_tracks.py`
+`_r2.py`/`_r3.py`）一并重跑，共 **43 项全部通过**，无回归。
+
+**工作量**：小。核心是把已有的原始历史存储（raw_history，本来就为
+"事后审计/断点重放"设计）接到 trace 端点上多查一次，不涉及新的数据
+结构或状态机改动。
+
 ## 未完成 / 待续（供下一轮参考）
 
 按方案原文的路线图，以下项目**仍未开始或未完全完成**，需要后续排期：
 
-- **Track E 边界情况**（历次未涉及，维持第二轮状态）：历史被压缩
-  （compact）后无法定位到某个 step 的 trace / 产出物；多 session 场景下
-  Objective 执行如果不再统一走单一主 bridge，trace/产出物提取接口都
-  需要能定位到正确的 session/agent。
+- **Track E 边界情况**：
+  - ~~历史被压缩（compact）后无法定位到某个 step 的 trace / 产出物~~
+    ——已解决：第十一轮补上了 raw_history 兜底查询，见"第十一轮已完成
+    Track"一节。
+  - 多 session 场景下，若 Objective 执行不再统一走单一主 bridge，
+    trace/产出物提取接口需要能定位到正确的 session/agent——**仍未
+    解决**，留待下一轮（当前实现假设"只有一个主 agent/bridge"，这个
+    前提本身是否需要打破取决于多用户 daemon 架构的演进节奏，不是
+    Track E 单独能决定的）。
 - **Track J 的"模型档位切换"半成品**（第六轮调研后明确搁置）：如果未来
   `LLMClientPool` 演进出"按 initiator/场景选择模型档位"的能力，可以
   回来把 `degraded` 态接上"自主任务用更便宜的模型"这一优化，目前
@@ -1015,7 +1083,8 @@ python3 -m pytest tests/test_kanban_diff_view.py -q
 至此，方案原文路线图里 Track A~K 全部有了可用的落地版本且看板侧不再
 有功能性缺口（第八轮补齐），第九轮清空了历次记录里遗留的唯一一项
 "既有测试代码缺陷"，第十轮补齐了 Track I 剩下的体验优化项（diff 按文件
-分组展示）。全部测试文件目前均为全绿，没有已知失败用例。剩余
-"未完成/待续"项（Track E 边界情况、Track J 模型档位切换半成品）均为
-边界情况或已明确调研后搁置的可选优化，可按团队带宽排期，不再存在
-紧迫的排期建议。
+分组展示），第十一轮修复了 Track E 边界情况里"compact 后找不到 trace"
+的问题（改为兜底查 raw_history）。全部测试文件目前均为全绿，没有已知
+失败用例。剩余"未完成/待续"项（Track E 的多 session 定位、Track J
+模型档位切换半成品）均为边界情况或已明确调研后搁置的可选优化，可按
+团队带宽排期，不再存在紧迫的排期建议。

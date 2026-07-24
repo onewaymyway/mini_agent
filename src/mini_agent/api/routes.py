@@ -2304,9 +2304,20 @@ def _locate_step_history_entries(hist_mgr, submitted_message: str) -> Optional[l
     的匹配代码完全一致，这里只是抽出来供 Track G 的"从 tool_call 里提取
     产出物路径"复用，避免维护两份几乎一样的匹配代码。
 
-    返回 None 表示没有找到匹配（历史里没有这条记录，或被压缩/归档）。
+    返回 None 表示没有找到匹配（历史里没有这条记录，或被压缩/归档——
+    压缩场景下调用方可以改用 `_locate_entries_in_list(hist_mgr.raw_history.
+    entries, submitted_message)` 兜底，见 `get_objective_step_trace()` 第
+    十一轮的改动）。
     """
-    history = hist_mgr.history  # 含 _type 的浅拷贝列表
+    return _locate_entries_in_list(hist_mgr.history, submitted_message)
+
+
+def _locate_entries_in_list(history: list[dict], submitted_message: str) -> Optional[list[dict]]:
+    """[Track E 第十一轮 · compact 边界情况修复] `_locate_step_history_entries`
+    的通用版本：不绑定 `hist_mgr.history`，可直接传入任意条目列表（active
+    history 或 `hist_mgr.raw_history.entries`），供 compact 之后从 raw
+    history 里兜底查找同一个 step 时复用同一份匹配逻辑，不重复实现。
+    """
     start_idx = None
     for i, entry in enumerate(history):
         if entry.get("_type") == "user_input" and entry.get("content") == submitted_message:
@@ -2391,13 +2402,21 @@ async def get_objective_step_trace(request: Request, execution_id: str, step_ind
     历史末尾）之间的所有条目，即为这一步实际发生的完整过程。
 
     局限（据实说明，不掩盖）：
-    - 若该 step 因为压缩（compact）被从 active history 里移除，这里会
-      找不到匹配，返回 `entries: []` 并给出提示——不去扫描 raw_history.
-      jsonl 兜底，因为 raw history 可能非常长，逐行反查匹配的成本对一次
-      看板点击来说不划算；这属于已知限制，不在本轮修复范围。
+    - [第十一轮已修复] 若该 step 因为压缩（compact）被从 active history
+      里移除，此前会直接返回 `entries: []`；现在改为在 active history
+      找不到匹配时，退化查询 `hist_mgr.raw_history`（raw history 只追加
+      不压缩，`.agent/sessions/<id>/raw_history.jsonl` 完整保留了压缩前
+      的全部记录），能定位到的话正常返回 entries，并在响应里加一个
+      `from_raw_history: true` 标记，供看板提示"这是从压缩前的历史记录里
+      找回的"。raw history 里也找不到（比如 step 从未真正提交过，或者
+      是极旧的 session 且 raw_history.jsonl 文件本身已被外部清理）时，
+      才真正退化为空列表 + 提示。
     - 只针对"当前仍能访问到 agent 实例"的场景（单用户模式下的主 bridge，
       或多用户模式下能定位到的 session）；找不到 agent/history 时同样
-      退化为空列表 + 提示，而不是报错。
+      退化为空列表 + 提示，而不是报错。多 session 场景下如果 Objective
+      执行不再统一走单一主 bridge（即当前实现假设的前提），trace 提取
+      需要能先定位到正确的 session/agent 再复用这里的逻辑——这部分维持
+      现状未做，标注在实施记录"未完成/待续"里。
     """
     oe = _objective_executor_or_404(request)
     ex = oe.get_execution(execution_id)
@@ -2415,6 +2434,7 @@ async def get_objective_step_trace(request: Request, execution_id: str, step_ind
             "status": step.status,
             "entries": [],
             "note": note,
+            "from_raw_history": False,
         }
 
     if not step.submitted_message:
@@ -2427,8 +2447,21 @@ async def get_objective_step_trace(request: Request, execution_id: str, step_ind
         return _empty("当前无法访问 agent 会话历史，暂不支持查看执行细节。")
 
     raw_entries = _locate_step_history_entries(hist_mgr, step.submitted_message)
+    from_raw_history = False
     if raw_entries is None:
-        return _empty("在当前会话历史里没有找到这一步对应的记录（可能已被压缩/归档），暂不支持查看执行细节。")
+        # [第十一轮] active history 里没找到，大概率是已被 compact 压缩掉了——
+        # 退化查询 raw_history（只追加、永不压缩），仍按同一份匹配逻辑找
+        # 最后一次命中。raw_history 本身规模可能很大，但只在"active history
+        # 未命中"这一少见路径才会触发全量扫描，日常一次看板点击不受影响。
+        try:
+            raw_history_entries = hist_mgr.raw_history.entries
+        except Exception:
+            raw_history_entries = []
+        raw_entries = _locate_entries_in_list(raw_history_entries, step.submitted_message)
+        if raw_entries is not None:
+            from_raw_history = True
+    if raw_entries is None:
+        return _empty("在当前会话历史里没有找到这一步对应的记录（可能已被压缩/归档，且原始日志里也未找到），暂不支持查看执行细节。")
 
     entries = []
     for entry in raw_entries:
@@ -2442,7 +2475,8 @@ async def get_objective_step_trace(request: Request, execution_id: str, step_ind
         "description": step.description,
         "status": step.status,
         "entries": entries,
-        "note": "",
+        "note": "（从压缩前的历史记录里找回，事件时间可能较早）" if from_raw_history else "",
+        "from_raw_history": from_raw_history,
     }
 
 

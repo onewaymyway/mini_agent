@@ -1734,6 +1734,8 @@ def _render_objective_execution_detail(client: AgentClient, execution: dict) -> 
             if not trace or "_error" in (trace or {}):
                 st.caption((trace or {}).get("_error", "暂时无法获取执行细节。"))
                 continue
+            if trace.get("from_raw_history"):
+                st.caption("ℹ️ 该步骤记录已被压缩，以下内容从压缩前的原始日志里找回。")
             entries = trace.get("entries") or []
             if not entries:
                 st.caption(trace.get("note") or "没有可展示的执行细节。")
