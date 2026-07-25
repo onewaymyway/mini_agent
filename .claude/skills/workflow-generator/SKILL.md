@@ -40,6 +40,15 @@ Agent 工具（或 CLI `/workflow from-session <session_id>`）的场景，设�
 `workflow.session_to_workflow_enabled` 开关控制（默认开启），关闭后这两个
 工具和对应 CLI 子命令会返回"功能已关闭"提示。
 
+## 再另一条边界：测试、调试、修改已有 workflow
+
+本 skill 只覆盖"从零生成/保存一个新 workflow"。如果用户是针对**已经存在**
+的 workflow 说"跑一下试试"、"这步失败了帮我看看"、"改一下这个 step 的
+prompt/timeout"、"这个改动会不会影响后面的 step，先测一下"，这些是
+**workflow-debugger** skill 的场景（沙箱单步测试 `test_workflow_step`、
+断点续跑 `resume_workflow_run`、单步修改 `patch_workflow_step`、执行统计
+`get_workflow_stats` 等），不要在这里手工排查或重新走一遍生成流程。
+
 **默认按文件夹模式创建**：即使当前只有 2-3 步，文件夹模式也不吃亏
 （`agents/`/`skills/` 目录为空即可，不强制使用），而且用户后续加步骤、
 加私有资源时不需要再迁移。只有用户明确说"就要单文件"、"简单点不要建
@@ -105,6 +114,7 @@ Agent 工具（或 CLI `/workflow from-session <session_id>`）的场景，设�
 | `timeout` | 否 | 该 step 超时（秒）；不写时三层继承，硬编码兜底为不限制 |
 | `retry_on_gate_fail` | 否 | evaluator 质检门不达标时重跑前序步骤的最大次数，仅对 `role_type: evaluator` 的角色有意义。**不参与 `defaults` 继承**，缺省就是 `0`，与其它几个"三层继承"字段是两套独立机制 |
 | `retry_on_error` | 否 | 普通异常（超时/工具报错）重试次数；不写时三层继承，硬编码兜底 `0` |
+| `escalate_after_n_same_failures` | 否 | 同一 step 在 `retry_on_error` 重试循环里连续（中间没成功）出现同一个 `error_type` 达到这个次数时，看护线程提前判定"大概率不是瞬时故障"，直接标记 `needs_fix`、跳过剩余重试预算；不写时三层继承（`defaults` → 全局默认 `2`），是与 `max_turns` 等同类的"三层继承"字段之一，`resume_workflow_run(step_overrides=...)` 也支持临时覆盖它，见新增的 workflow-debugger skill |
 | `require_approval` | 否 | 是否需要人工审批门放行，需配合 `run_workflow(background=True)` |
 | `workflow_name` | `sub_workflow` 专用 | 引用的另一个已保存工作流名称，不能引用自身 |
 | `tool_name` / `tool_args` | `tool_call` 专用 | 直接调用某个已注册工具，不启动整个 Agent |
@@ -112,8 +122,9 @@ Agent 工具（或 CLI `/workflow from-session <session_id>`）的场景，设�
 | `input_key` | `human_input` 专用 | 若启动 `run_workflow(inputs={...})` 时能通过该 key 找到值，直接使用、不阻塞等待；`mode: autonomous` 的 workflow 里 `human_input` 步骤**必须**设置这个字段，否则保存时校验失败。见下方"全自动执行模式"一节 |
 | `script` | `script` 专用 | 要执行的 shell 命令，受 `cfg.workflow.script_step_enabled` 开关保护，默认关闭 |
 
-> **写法提示**：`max_turns`/`model`/`timeout`/`retry_on_error`/`allow_parallel`
-> 这 5 个字段现在语义是"不写=继承"而不是"不写=固定默认值"——生成 workflow
+> **写法提示**：`max_turns`/`model`/`timeout`/`retry_on_error`/`allow_parallel`/
+> `escalate_after_n_same_failures` 这 6 个字段现在语义是"不写=继承"而不是
+> "不写=固定默认值"——生成 workflow
 > 时，如果多个 step 都要用同一个非默认值（比如整个流水线都想用
 > `model: gpt-4.1-mini`、`max_turns: 6`），**优先写进顶层 `defaults`**，
 > 不要在每个 step 里重复写一遍；只有某个 step 需要跟其它 step 不一样时才
@@ -260,7 +271,8 @@ steps:
 - `{step_id.output}`：引用某个前序 step 的输出文本。
 - `{step_id.score}`：引用某个前序 step（通常是 `role_type: evaluator` 的评估 step）产出的分数。
 - `validate()` 会静态扫描这两类占位符，`{step_id.xxx}` 引用了不存在的 step id、或 `.xxx` 不是 `output`/`score` 时会报错——**写完 prompt 后要检查占位符拼写**。
-- 引用某个 step 的输出/分数，建议同时在 `depends_on` 里声明该 step（不是强制，但能让拓扑顺序、并发分层符合预期；`validate()` 不会校验"引用了但没声明依赖"这种弱一致性问题，运行时靠 `depends_on` 保证该 step 已经跑完）。
+- 引用某个 step 的输出/分数，建议同时在 `depends_on` 里声明该 step（`condition` 字段这一点是强制校验的，见下条；`prompt` 里的占位符只是弱校验，`validate()` 不会校验"引用了但没声明依赖"这种弱一致性问题，运行时靠 `depends_on` 保证该 step 已经跑完）。
+- `condition` 表达式里除了 `{step_id 对应的裸名}.output`/`.score`/`.passed` 这类属性访问外，还有一个始终可见、不受 `depends_on` 约束的命名空间 `inputs.xxx`，指向 `run_workflow(inputs={...})` 传入的外部参数，如 `"inputs.env == 'prod'"`；`validate()` 的静态一致性检查会跳过 `inputs.*` 引用，只对引用了其它 step 却没声明 `depends_on`（直接或传递）的情况报错，生成含 `condition` 的 step 时留意这一区别。
 
 ## 创建流程（生成 workflow 时遵循）
 
@@ -341,13 +353,13 @@ steps:
     - 已有单文件工作流想升级为文件夹模式，用 `/workflow to-dir <name>`
       （自动建 `agents/`/`skills`/`prompts` 空目录，原 YAML 移入
       `workflow.yaml`）
-    - 如果运行后某个 step 失败（状态 `failed`/`needs_fix`），不需要重新
-      生成整份 workflow：先 `get_workflow_run_status(workflow_session_id,
-      verbose=true)` 看具体错误，需要改定义时用 `patch_workflow_step`
-      只改出问题的那个 step，再用
-      `resume_workflow_run(workflow_session_id, force_rerun_from=<step_id>)`
-      只重跑这一步及下游——这是这个 skill 生成 workflow 之后、用户反馈
-      "跑失败了"时应该走的修复路径，不是重新走一遍本 skill 的生成流程
+    - 生成/保存完之后，如果用户想先验证某个 step 的 prompt 措辞是否合适、
+      或者运行后某个 step 失败（状态 `failed`/`needs_fix`）需要排查、
+      修改后要不要重跑等——不属于本 skill 覆盖的范围，也不需要重新走一遍
+      本 skill 的生成流程，改用 **workflow-debugger** skill
+      （`test_workflow_step` 沙箱测试单步、`get_workflow_run_status`/
+      `get_workflow_stats` 排查、`patch_workflow_step` 改定义、
+      `resume_workflow_run` 续跑）
 
 ## 常见坑
 
