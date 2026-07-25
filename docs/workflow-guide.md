@@ -5,6 +5,198 @@ mini_agent 内置了一套轻量的工作流引擎，支持将多步 AI 任务�
 
 ---
 
+## 系统架构与设计理念
+
+### 设计理念
+
+工作流系统从 P1 一路演进到 P10（详见文末各节标注的编号），贯穿始终的几条
+原则：
+
+1. **纯函数核心 + 薄适配层，三个入口共享同一套状态机**。
+   `workflow/api_helpers.py` 是唯一"真正做事"的地方（加载定义、校验、调用
+   `WorkflowRunner`、读写 `WorkflowSession`）；Agent 工具
+   （`workflow/tools.py`）、REST API（`api/routes.py`）、CLI
+   （`cli/commands/workflow_cmd.py`）都只是把这批纯函数的返回值包装成
+   各自需要的格式（Markdown 给 LLM / JSON 给前端 / 文本给终端），不重复
+   实现任何一条状态转换逻辑。好处是：Streamlit 看板里点"暂停"、CLI 里敲
+   `/workflow pause`、Agent 对话里说"暂停一下"，走到的是**同一行代码**，
+   不会出现三处行为不一致的情况。
+2. **渐进式增量演进，每一轮都保持向后兼容**。新字段一律给合理默认值，
+   旧 YAML 不用改就能继续跑（如 `type` 未显式设置时按 `role` 是否非空
+   自动推断；`defaults`/`escalate_after_n_same_failures` 等新字段缺省时
+   落到硬编码兜底）。只有 `mode: autonomous` 这种"用户主动声明要更严格
+   的保证"的场景才会在保存时收紧校验。
+3. **断点续跑优先于从头重来**。`WorkflowSession` 把每个 step 的结果增量
+   落盘，进程崩溃、主动暂停、甚至只是改了一个 step 的定义，都可以用
+   `resume_workflow_run` 从断点继续，已经成功、消耗过 token 的步骤不会
+   重来。
+4. **沙箱/dry-run 先行，落盘操作谨慎**。改一个 step 前可以先
+   `test_workflow_step` 单独验证（不落盘、不接入正式 DAG）；生成/保存前
+   可以先 `preview_workflow` 看并发分批和 condition 求值结果；一次性调试
+   参数用 `resume_workflow_run(step_overrides=...)`，不必污染正式定义。
+5. **高风险操作默认收紧，需要显式打开**。`script` 类型默认关闭
+   （`script_step_enabled=false`）；`tool_call` 默认需要人工审批门放行；
+   `sub_workflow` 有递归深度保护；这些都是"宁可默认更保守，需要时显式
+   打开"的一致取向。
+
+### 分层架构
+
+```mermaid
+graph TD
+    subgraph DEF["定义 / 存储层"]
+        Schema["schema.py<br/>WorkflowDef / WorkflowStep / StepResult<br/>StepStatus 枚举 + validate()"]
+        Store["store.py<br/>WorkflowStore：单文件/文件夹模式读写<br/>list_snippets/save_snippet"]
+        Generator["generator.py<br/>WorkflowGenerator：LLM 生成 + dry-run 预览"]
+    end
+
+    subgraph EXEC["执行引擎层"]
+        Runner["runner.py<br/>WorkflowRunner：拓扑排序/并发分批<br/>占位符替换/condition 求值/质检门/重试"]
+        Executors["executors.py<br/>StepExecutor 家族：<br/>agent/role_agent/skill_agent/sub_workflow/<br/>tool_call/human_input/script + 插件自定义类型"]
+        Watchdog["watchdog.py<br/>WorkflowWatchdog：心跳超时/资源护栏<br/>token 累计/连续同类失败提前升级"]
+        Session["session.py<br/>WorkflowSession：运行时状态增量落盘"]
+        ResBundle["resource_bundle.py<br/>文件夹模式本地 agent/skill 资源合并"]
+    end
+
+    subgraph API["对外接口层（共享同一套纯函数）"]
+        ApiHelpers["api_helpers.py<br/>唯一的核心纯函数层"]
+        Tools["tools.py<br/>23 个 Agent 工具"]
+        Routes["api/routes.py<br/>15 个 REST 端点（/v1/workflows...）"]
+        CLI["cli/commands/workflow_cmd.py<br/>/workflow 子命令"]
+    end
+
+    Kanban["Streamlit 看板<br/>🔄 工作流 Tab"]
+    Agent["主 Agent 对话"]
+    Plugins["myplugins/*.py<br/>register_step_executor() 注册自定义类型"]
+
+    Generator --> Store
+    Store --> Runner
+    Runner --> Executors
+    Runner --> Watchdog
+    Runner --> Session
+    Executors --> ResBundle
+    Plugins -.注册.-> Executors
+
+    ApiHelpers --> Store
+    ApiHelpers --> Generator
+    ApiHelpers --> Runner
+    ApiHelpers --> Session
+
+    Tools --> ApiHelpers
+    Routes --> ApiHelpers
+    CLI --> ApiHelpers
+
+    Agent --> Tools
+    Kanban -- HTTP --> Routes
+```
+
+**各层职责一句话**：
+- `schema.py`：数据结构与静态校验，不含任何执行逻辑。
+- `store.py`：YAML ↔ `WorkflowDef` 的序列化，单文件/文件夹两种模式、
+  片段（`workflow_snippets`）的读写。
+- `generator.py`：调用 LLM 把自然语言描述转成 YAML，并在生成后自动跑一次
+  `preview_workflow_def` 做 dry-run 校验。
+- `runner.py`：真正的执行调度中枢——拓扑排序出执行批次、每批内按
+  `allow_parallel` 分发并发/串行、处理质检门重试与普通异常重试、把每个
+  step 的执行委托给对应的 `StepExecutor`。
+- `executors.py`：每种 `type` 对应一个 `StepExecutor` 子类，`execute()`
+  只关心"怎么跑完这一个 step 拿到输出文本"，不关心整体调度。
+- `watchdog.py`：独立线程，只做监控与信号上报（超时/护栏/连续失败），不
+  直接改变执行流程，通过 `runner` 读取上报结果后自行决定怎么处理。
+- `session.py`：`WorkflowSession` 是运行时状态的持久化载体，`runner`
+  执行到关键节点就调用其 `save()`，断点恢复靠重新 `load()` 这份状态。
+- `api_helpers.py`：把"加载定义 → 校验/组装参数 → 调用 runner/session →
+  格式化返回"这条链路封装成一批纯函数，是 Agent 工具、REST 路由、CLI
+  三个入口唯一共享的实现。
+
+### 核心执行流程（一次 `run_workflow` 调用）
+
+```mermaid
+flowchart TD
+    A["run_workflow(name, inputs, background?, force_serial?)"] --> B["WorkflowStore.load(name)<br/>解析 YAML / 文件夹模式，展开 include 片段"]
+    B --> C["WorkflowDef.validate()<br/>id重复/依赖缺失/类型专属字段/占位符引用/角色引用"]
+    C -->|校验失败| C1["直接报错返回，不创建 WorkflowSession"]
+    C -->|校验通过| D["创建 WorkflowSession + 落盘 workflow_def.yaml 快照"]
+    D --> E["_topological_sort：按 depends_on 分层"]
+    E --> F["逐层执行批次"]
+    F --> G{"本层多个 step？<br/>allow_parallel && !force_serial && parallel_enabled"}
+    G -->|是| H["线程池并发执行（max_parallel）"]
+    G -->|否| I["逐个串行执行"]
+    H --> J["_resolve_prompt：替换 {param}/{step.output}/{step.score}"]
+    I --> J
+    J --> K["_eval_condition：condition 不满足则 SKIPPED"]
+    K --> L["按 effective_type 分发给对应 StepExecutor.execute()"]
+    L --> M{"执行结果"}
+    M -->|role=evaluator 且评分不达标| N["GATE_FAILED<br/>retry_on_gate_fail>0？回退重跑依赖 step，带上评估反馈"]
+    M -->|异常，error_type 结构性| O["直接判 NEEDS_FIX，跳过 retry_on_error"]
+    M -->|异常，非结构性| P["retry_on_error 重试；watchdog 连续同类失败<br/>达阈值提前短路为 NEEDS_FIX"]
+    M -->|require_approval=true| Q["AWAITING_APPROVAL，等待 approve/reject<br/>（自动切后台执行）"]
+    M -->|成功| R["DONE，写入 StepResult"]
+    N --> F
+    P --> F
+    Q --> F
+    R --> S{"还有下一批？"}
+    S -->|是| F
+    S -->|否| T["汇总 WorkflowRunResult<br/>WorkflowSession.status → done/partial/failed/cancelled"]
+    T --> U["返回执行摘要（前台）或<br/>后台线程收尾，工具立即返回 workflow_session_id"]
+```
+
+全程被 `watchdog.py` 的独立线程并行监控：心跳超时、累计时长/token 超限
+会主动请求取消；每个 step 的连续同类失败会被计数，达到
+`escalate_after_n_same_failures` 阈值时提前把状态改判为 `NEEDS_FIX`（见
+下文"看护趋势感知"一节）。
+
+### 状态机
+
+**单个 step 的 `StepStatus`**（`schema.py`，11 种，2 种终态附加语义见下方
+"步骤执行状态"一节的完整表格）：
+
+```mermaid
+stateDiagram-v2
+    [*] --> PENDING
+    PENDING --> RUNNING
+    RUNNING --> DONE
+    RUNNING --> SKIPPED: condition 不满足
+    RUNNING --> FAILED: 异常且非结构性
+    RUNNING --> NEEDS_FIX: 异常为结构性错误，或连续同类失败达阈值
+    RUNNING --> GATE_FAILED: evaluator 评分不达标
+    RUNNING --> TIMEOUT: 看护线程判定心跳超时
+    RUNNING --> AWAITING_APPROVAL: require_approval=true
+    AWAITING_APPROVAL --> RUNNING: approve_workflow_step
+    AWAITING_APPROVAL --> REJECTED: reject_workflow_step
+    RUNNING --> CANCELLED: 收到取消信号
+    GATE_FAILED --> RUNNING: retry_on_gate_fail 剩余次数>0，重跑依赖 step
+    FAILED --> RUNNING: retry_on_error 剩余次数>0
+    DONE --> [*]
+    SKIPPED --> [*]
+    FAILED --> [*]
+    NEEDS_FIX --> [*]
+    GATE_FAILED --> [*]
+    TIMEOUT --> [*]
+    REJECTED --> [*]
+    CANCELLED --> [*]
+```
+
+**一次执行整体的 `WorkflowRunStatus`**（`session.py`，7 种）：
+
+```mermaid
+stateDiagram-v2
+    [*] --> running
+    running --> awaiting_approval: 遇到 require_approval step
+    awaiting_approval --> running: 审批通过
+    running --> paused: pause_workflow_run
+    paused --> running: resume_workflow_run
+    running --> done: 所有 step 成功/被跳过
+    running --> partial: 部分 step 未完成即结束
+    running --> failed: 存在 FAILED/NEEDS_FIX 且无法继续
+    running --> cancelled: cancel_workflow_run
+    done --> [*]
+    partial --> [*]
+    failed --> [*]
+    cancelled --> [*]
+```
+
+---
+
 ## 核心概念
 
 ```
@@ -92,6 +284,8 @@ steps:
     retry_on_gate_fail: 0  # 质检不达标时重跑次数（0 = 不重跑，不参与 defaults 继承）
     retry_on_error: null   # 普通异常重试次数（硬编码兜底 0）
     allow_parallel: null   # 是否允许与同层步骤并发执行（硬编码兜底 true）
+    escalate_after_n_same_failures: null  # [P10] 连续同类失败提前判 NEEDS_FIX
+                            #      的阈值（硬编码兜底 2），见下文"看护趋势感知"一节
 ```
 
 ### Prompt 占位符
@@ -123,17 +317,29 @@ condition: "evaluate.score >= 60 and analyze.passed"  # 多条件组合
 
 ## 步骤执行状态
 
-| 状态 | 值 | 含义 |
-|------|-----|------|
-| `DONE` | `done` | 成功完成 |
-| `SKIPPED` | `skipped` | `condition` 不满足，跳过 |
-| `FAILED` | `failed` | 执行抛出异常 |
-| `GATE_FAILED` | `gate_failed` | evaluator 角色评分未达 `pass_threshold` |
-| `PENDING` | `pending` | 因依赖步骤失败未能执行 |
+`StepStatus`（`schema.py`）共 11 种，覆盖从 P1 基础状态到 P2-P10 各阶段
+新增的看护/审批/结构化错误语义：
 
-`GATE_FAILED` 与 `FAILED` 的区别：
-- `FAILED`：系统级错误（网络超时、代码异常等），无法继续
-- `GATE_FAILED`：内容质量不达标，可以通过 `retry_on_gate_fail` 触发重跑
+| 状态 | 值 | 含义 | 引入阶段 |
+|------|-----|------|---|
+| `PENDING` | `pending` | 尚未开始，或因依赖步骤失败未能执行 | P1 |
+| `RUNNING` | `running` | 正在执行 | P1 |
+| `DONE` | `done` | 成功完成 | P1 |
+| `SKIPPED` | `skipped` | `condition` 不满足，跳过 | P1 |
+| `FAILED` | `failed` | 执行抛出异常（瞬时性问题，如网络超时），可用 `retry_on_error` 重试 | P1 |
+| `GATE_FAILED` | `gate_failed` | evaluator 角色评分未达 `pass_threshold`，可用 `retry_on_gate_fail` 重跑 | P1 |
+| `TIMEOUT` | `timeout` | 看护线程判定心跳超过 `timeout` 未更新，强制标记并继续推进 | P2 |
+| `CANCELLED` | `cancelled` | 收到 `cancel_workflow_run` 信号后未开始/被中止 | P3 |
+| `AWAITING_APPROVAL` | `awaiting_approval` | `require_approval=true`，等待 `approve_workflow_step`/`reject_workflow_step` | P4 |
+| `REJECTED` | `rejected` | 人工审批门被拒绝 | P4 |
+| `NEEDS_FIX` | `needs_fix` | 结构性/配置性错误（prompt 占位符写错、`tool_name` 未注册等），或连续同类失败达阈值（P10），重试无意义，需要先 `patch_workflow_step` | 改进方案§4.3 / P10 |
+
+`GATE_FAILED`/`FAILED`/`NEEDS_FIX` 三者的区别：
+- `FAILED`：系统级瞬时错误，重试大概率有用
+- `GATE_FAILED`：内容质量不达标，不是异常，走质检门重跑逻辑
+- `NEEDS_FIX`：重试无意义的结构性错误，或者虽然异常类型看起来像瞬时故障，
+  但已经连续多次在同一个 step 上失败，大概率也是定义本身有问题，需要人工
+  介入修改
 
 ---
 
@@ -160,8 +366,42 @@ condition: "evaluate.score >= 60 and analyze.passed"  # 多条件组合
 
 ## 内置工具（主 Agent 可直接调用）
 
-工作流系统向主 Agent 注册了 17 个工具（P1 基础 6 个 + P2-P4 看护机制 7 个 +
-P5/P6 新增 3 个 + 改进方案新增 `patch_workflow_step` 1 个）：
+工作流系统目前向主 Agent 注册了 **23 个**工具（`workflow/tools.py` 的
+`register_workflow_tools()`）。下面先给出完整清单速查表，再展开每个工具
+的详细参数说明——多数工具的行为已经在文末对应的专题章节里详细展开
+（表格最后一列给出章节指引）：
+
+| 工具 | 一句话 | 引入阶段 | 详见章节 |
+|---|---|---|---|
+| `generate_workflow` | 自然语言 → 生成 YAML 预览 | P1 | 本节 |
+| `save_workflow` | 保存 YAML 字符串为工作流文件 | P1 | 本节 |
+| `patch_workflow_step` | 只改一个 step 的部分字段，不重贴整份 YAML | 改进方案§4.2 | 本节 / 出错定位一节 |
+| `test_workflow_step` | 单 step 沙箱测试：mock 上游数据、不落盘 | P10§1 | P10 一节 |
+| `run_workflow` | 执行已保存的工作流 | P1（+P2/P3/改进§1/§2） | 本节 |
+| `list_workflows` | 列举所有工作流 | P1 | 本节 |
+| `show_workflow` | 查看工作流 YAML 定义 | P1 | 本节 |
+| `delete_workflow` | 删除工作流定义 | P1 | 本节 |
+| `preview_workflow` | dry-run 预览执行计划，不实际执行 | P7 | 本节 |
+| `resume_workflow_run` | 从断点续跑；支持一次性 `step_overrides` | P2（+P10§2/改进§4） | Workflow Session 一节 / P10 一节 |
+| `list_workflow_runs` | 列举历史/当前执行记录 | P2 | Workflow Session 一节 |
+| `get_workflow_run_status` | 查看某次执行详细进度（`verbose`/`wait`） | P2（+改进§4） | 出错定位一节 |
+| `get_workflow_stats` | 汇总某工作流历史执行统计（成功率/耗时/重试率） | P9-1a | 本节 |
+| `pause_workflow_run` | 暂停一次后台执行 | P3 | 后台执行一节 |
+| `cancel_workflow_run` | 取消一次执行 | P3 | 后台执行一节 |
+| `approve_workflow_step` | 人工审批门放行 | P4 | 人工审批门一节 |
+| `reject_workflow_step` | 人工审批门拒绝 | P4 | 人工审批门一节 |
+| `provide_workflow_step_input` | 向等待 human_input 的 step 送入文本 | P5 | Step 类型化一节 |
+| `list_workflow_templates` | 列举内置工作流模板 | P6 | 内置模板库一节 |
+| `create_workflow_from_template` | 基于内置模板创建并保存新工作流 | P6 | 内置模板库一节 |
+| `list_recent_sessions` | 列出最近历史 session，帮助定位 session_id | P8 | session_to_workflow 一节 |
+| `summarize_session_for_workflow` | 第①阶段：session → TaskSummary | P8 | session_to_workflow 一节 |
+| `build_workflow_from_summary` | 第②阶段：TaskSummary → workflow YAML 预览 | P8 | session_to_workflow 一节 |
+
+> 另有一个 `override_step_output`（改一个已落盘 step 的输出内容）只在
+> REST API（`POST /v1/workflow_runs/{run_id}/steps/{step_id}/override`）
+> 里暴露，**不是** Agent 工具——它是给 Streamlit 看板"人工改一下这一步的
+> 输出内容再继续跑"这个交互场景用的，Agent 对话侧目前没有直接暴露这个
+> 能力（避免 Agent 随意篡改历史执行记录）。
 
 ### `generate_workflow`
 
@@ -260,6 +500,38 @@ P5/P6 新增 3 个 + 改进方案新增 `patch_workflow_step` 1 个）：
 
 示例：
   create_workflow_from_template("code_review", "my_pr_review")
+```
+
+### `preview_workflow`（P7）
+
+dry-run 预览工作流的执行计划，**不实际运行**、不产生任何 `WorkflowSession`：
+展示并发分批结果、每个 step 占位符替换后的 prompt 预览（运行时才能确定的
+`{step_id.output}` 占位符原样保留）、`condition` 表达式的静态求值情况。
+`generate_workflow`/`build_workflow_from_summary` 生成 YAML 后会自动调用
+一次同等逻辑的预览（受 `workflow.dry_run_preview_on_generate` 控制）。
+
+```
+参数：
+  name (str)     工作流名称
+  inputs (str)   JSON 字符串，与 run_workflow 的 inputs 含义一致（可省略）
+
+示例：
+  preview_workflow("nightly_report", '{"env": "prod"}')
+```
+
+### `get_workflow_stats`（P9-1a）
+
+汇总某个工作流的历史执行统计：总执行次数、成功率、每个 step 的出现次数/
+成功率/平均耗时/平均评分/平均重试次数、`condition` 命中率（该步骤未被
+跳过的比例）。纯粹对已落盘的 `WorkflowSession` 历史数据做聚合，不改动
+任何执行逻辑，用于判断"这个工作流长期跑下来靠不靠谱、哪个步骤该调了"。
+
+```
+参数：
+  name (str)   工作流名称
+
+示例：
+  get_workflow_stats("code_review")
 ```
 
 ---
@@ -900,8 +1172,9 @@ steps:
 | `role_agent` | 指定角色 Agent 执行（`role` 非空时的旧默认行为） | `role` |
 | `sub_workflow` | 把另一个已保存的工作流当作一个 step 执行 | `workflow_name` |
 | `tool_call` | 直接调用一个已注册工具，不启动整个 Agent 会话 | `tool_name`, `tool_args` |
-| `human_input` | 阻塞等待人工通过 `provide_workflow_step_input` 送入文本 | `input_prompt` |
+| `human_input` | 阻塞等待人工通过 `provide_workflow_step_input` 送入文本 | `input_prompt`, `input_key` |
 | `script` | 执行一段 shell 命令 | `script` |
+| `skill_agent` | 独立主 Agent 实例执行，且强制预加载指定 skill（不走关键词触发判断） | `skill_name` |
 
 ```yaml
 - id: notify
@@ -948,10 +1221,12 @@ Agent 侧对应的工具是 `provide_workflow_step_input(workflow_session_id, in
 ## workflow 级默认配置（`defaults`，P7-③1）
 
 `WorkflowDef` 顶层可以加一个 `defaults` 字段，为 `model` / `timeout` /
-`max_turns` / `retry_on_error` / `allow_parallel` 这 5 个 step 级字段提供
-统一默认值。查找顺序是**三层**："step 显式写的值 → `defaults` 里的值 →
-运行时硬编码兜底"（`max_turns` 兜底 10，`retry_on_error` 兜底 0，
-`allow_parallel` 兜底 `true`，`model`/`timeout` 兜底不限制/走全局配置）：
+`max_turns` / `retry_on_error` / `allow_parallel` / `escalate_after_n_same_failures`
+（P10 新增，见"看护趋势感知"一节）这 6 个 step 级字段提供统一默认值。
+查找顺序是**三层**："step 显式写的值 → `defaults` 里的值 → 运行时硬编码
+兜底"（`max_turns` 兜底 10，`retry_on_error` 兜底 0，`allow_parallel`
+兜底 `true`，`escalate_after_n_same_failures` 兜底 2，`model`/`timeout`
+兜底不限制/走全局配置）：
 
 ```yaml
 name: data_pipeline
