@@ -1,6 +1,6 @@
 ---
 name: workflow-generator
-description: 帮助用户创建符合 mini_agent 最新版规范的 workflow（.agent/workflows/<name>/workflow.yaml，可携带私有 agents/skills/prompts；支持顶层 defaults 默认配置继承、可复用 step 片段 include、max_total_tokens 用量护栏、插件自定义 step 类型）。当用户说"帮我创建一个workflow"、"做一个工作流"、"写一个xxx流水线"、"把这个workflow转成文件夹模式"时使用。
+description: 帮助用户创建符合 mini_agent 最新版规范的 workflow（.agent/workflows/<name>/workflow.yaml，可携带私有 agents/skills/prompts；支持顶层 defaults 默认配置继承、可复用 step 片段 include、max_total_tokens 用量护栏、mode: autonomous 全自动执行模式、插件自定义 step 类型）。当用户说"帮我创建一个workflow"、"做一个工作流"、"写一个xxx流水线"、"把这个workflow转成文件夹模式"、"做一个全自动/挂后台跑的workflow"时使用。
 triggers: workflow, 工作流, 流水线, pipeline, 创建workflow, workflow.yaml, 文件夹模式workflow
 ---
 
@@ -83,6 +83,7 @@ Agent 工具（或 CLI `/workflow from-session <session_id>`）的场景，设�
 | `max_total_duration` | 否 | 整体超时（秒），缺省走全局配置 |
 | `max_total_tokens` | 否 | 整体 token 用量护栏，超过则看护线程主动取消该次执行，缺省走全局配置（只统计 `agent`/`skill_agent` 类型 step） |
 | `defaults` | 否 | 一个 dict，给 `model`/`timeout`/`max_turns`/`retry_on_error`/`allow_parallel` 这 5 个 step 字段提供统一默认值，减少重复。见下方"善用 `defaults`" |
+| `mode` | 否 | `interactive`（默认）或 `autonomous`。**用户明确表示这个 workflow 要"全自动跑完、中途不能等人"时必须设为 `autonomous`**，见下方"全自动执行模式"一节；保存时会校验，混入阻塞点会直接报错，不是等运行时才发现卡住 |
 
 单个 step 的字段：
 
@@ -108,6 +109,7 @@ Agent 工具（或 CLI `/workflow from-session <session_id>`）的场景，设�
 | `workflow_name` | `sub_workflow` 专用 | 引用的另一个已保存工作流名称，不能引用自身 |
 | `tool_name` / `tool_args` | `tool_call` 专用 | 直接调用某个已注册工具，不启动整个 Agent |
 | `input_prompt` | `human_input` 专用 | 展示给人类的提示语，缺省用 `prompt` 本身 |
+| `input_key` | `human_input` 专用 | 若启动 `run_workflow(inputs={...})` 时能通过该 key 找到值，直接使用、不阻塞等待；`mode: autonomous` 的 workflow 里 `human_input` 步骤**必须**设置这个字段，否则保存时校验失败。见下方"全自动执行模式"一节 |
 | `script` | `script` 专用 | 要执行的 shell 命令，受 `cfg.workflow.script_step_enabled` 开关保护，默认关闭 |
 
 > **写法提示**：`max_turns`/`model`/`timeout`/`retry_on_error`/`allow_parallel`
@@ -174,6 +176,53 @@ steps:
 字段——**不要把每个 step 都显式写一遍相同的值**，那样起不到"改一处生效
 全局"的作用，也让 YAML 更啰嗦。
 
+## 全自动执行模式（`mode: autonomous`）
+
+用户如果表达了"这个 workflow 要全程自动跑完，中途不能停下来等人""所有
+参数在一开始就给全，别问我""要挂后台跑，没人盯着"这类诉求，生成时要做
+两件事，缺一不可：
+
+1. **顶层写 `mode: autonomous`**：这不是可选的装饰，而是一道保存期的
+   保险——设了之后，如果 `steps` 里混入了会真正阻塞等待人工的写法
+   （没有 `input_key` 的 `human_input`、或 `require_approval: true`），
+   `save_workflow`/`patch_workflow_step` 会直接校验失败并报出具体是
+   哪个 step 的问题，而不是等运行到后台才因为没人应答而卡到超时。
+2. **每个 `human_input` step 必须配 `input_key`**：这个 key 对应运行时
+   `run_workflow(inputs={...})` 里的某个字段名，命中就直接取值使用，不
+   进入阻塞等待。也就是说，`autonomous` 模式下 `human_input` 的语义从
+   "临场问人"变成了"从启动参数里取一个命名字段"——写 `prompt`/
+   `input_prompt` 时仍然要写清楚这个字段该填什么，因为它同时也是运行时
+   报错提示（`require_all_inputs_upfront=true` 时缺参数会报出这个提示）
+   和给人类阅读者的说明。
+
+```yaml
+name: nightly_release_check
+mode: autonomous
+steps:
+  - id: intake
+    type: human_input
+    input_key: release_tag       # 必须写，否则保存时报错
+    input_prompt: "本次要检查的 release tag，如 v1.4.0"
+    prompt: "release_tag"        # 同样会展示给人看，写法不强制但建议和 input_prompt 呼应
+
+  - id: run_checks
+    type: agent
+    depends_on: [intake]
+    prompt: |
+      对 release {intake.output} 跑一遍发布前检查清单，输出结果。
+```
+
+**不要**在 `mode: autonomous` 的 workflow 里写 `require_approval: true`
+——这个字段没有类似 `input_key` 的"预置值"逃生舱，只要开着就一定会阻塞
+等待人工审批，跟"全自动"的诉求直接矛盾，保存时会被拒绝。如果流程里确实
+需要一个人工把关的节点，说明用户描述的其实不是"全自动"场景，应该回去
+跟用户确认清楚，而不是硬塞一个 `autonomous` 顶层字段掩盖矛盾。
+
+如果用户没有明确表达"全自动/挂后台/别问我"这类诉求，**不要**主动加
+`mode: autonomous`——默认的 `interactive` 已经能覆盖"有 human_input/
+审批门、但允许运行时临场交互"的场景，强行改成 `autonomous` 反而会让
+原本合理的 `human_input`/`require_approval` 写法在保存时报错。
+
 ## 善用可复用 step 片段（`include`）
 
 如果这次要生成的 workflow 里有一段 step 组合（比如"打分 → 生成报告"这类
@@ -224,6 +273,11 @@ steps:
      （`human_input`/`require_approval`）、是否有质检门（`role_type: evaluator`
      + `condition: "xxx.score >= N"`）
    - 运行时需要哪些外部输入参数（如文件路径），会被哪些 step 的 prompt 引用
+   - **这个流程是否要全自动跑完、中途不能停下来等人**（比如挂后台批处理、
+     定时任务），是的话顶层要写 `mode: autonomous`，且所有 `human_input`
+     step 都要配 `input_key`（对应到"运行时需要哪些外部输入参数"里问到的
+     那些参数名），不能再用 `require_approval: true`，见下方"全自动执行
+     模式"一节
    - 是否有明显重复、可能被其它 workflow 复用的 step 组合（考虑
      `include`）；多个 step 是否会共用同一个非默认的
      `model`/`max_turns`/`timeout`/`retry_on_error`/`allow_parallel`
@@ -261,6 +315,9 @@ steps:
      插件自定义类型的话，该类型专属的必填字段（看插件的
      `validate_step()`）也要填
    - `sub_workflow` 没有引用自身
+   - `mode: autonomous` 的 workflow：每个 `human_input` step 都配了
+     `input_key`，且没有任何 step 写 `require_approval: true`（这两点
+     `validate()` 会校验，但生成时自己先过一遍能提前发现问题）
    - prompt 里的 `{step_id.output}`/`{step_id.score}` 占位符拼写正确、
      引用的 step 确实存在（`include` 片段展开后新增的 `前缀__原id`
      形式的 id 也要留意，不要在片段外直接用未加前缀的原始 id 引用）
@@ -276,9 +333,21 @@ steps:
 10. **提示用户如何验证/运行**：
     - `/workflow show <name>` 查看解析结果
     - `/workflow run <name> '{"参数名": "值"}'` 运行（有需要外部输入的话）
+    - `mode: autonomous` 的 workflow，建议提示用户可以用
+      `run_workflow(name, inputs='{...}', require_all_inputs_upfront=true)`
+      启动——所有 `input_key` 对应的值都要在 `inputs` 里给全，缺了会在
+      启动前直接报错列出缺哪些字段，而不是跑到一半才卡住；需要这次运行
+      强制不并发时可以加 `force_serial=true`
     - 已有单文件工作流想升级为文件夹模式，用 `/workflow to-dir <name>`
       （自动建 `agents/`/`skills`/`prompts` 空目录，原 YAML 移入
       `workflow.yaml`）
+    - 如果运行后某个 step 失败（状态 `failed`/`needs_fix`），不需要重新
+      生成整份 workflow：先 `get_workflow_run_status(workflow_session_id,
+      verbose=true)` 看具体错误，需要改定义时用 `patch_workflow_step`
+      只改出问题的那个 step，再用
+      `resume_workflow_run(workflow_session_id, force_rerun_from=<step_id>)`
+      只重跑这一步及下游——这是这个 skill 生成 workflow 之后、用户反馈
+      "跑失败了"时应该走的修复路径，不是重新走一遍本 skill 的生成流程
 
 ## 常见坑
 
@@ -307,6 +376,13 @@ steps:
   挂载，不管 prompt 里有没有命中该 skill 的 `triggers` 关键词都会生效；如果
   只是希望"主 Agent 在需要时自动触发某个 skill"，用普通 `type: agent` step
   就够了，不需要 `skill_agent`。
+- **`mode: autonomous` 不是"随手加的保险栓"**：只有用户明确表达了全自动/
+  挂后台诉求时才加；加了之后忘记给 `human_input` 配 `input_key`，或者
+  留了个 `require_approval: true`，`save_workflow` 会直接拒绝保存——这是
+  故意设计成"保存期报错"而不是"运行期才发现"，生成时按上面的自检清单过
+  一遍就能避免。反过来，不需要全自动时也不要为了"看起来更完善"顺手加
+  `mode: autonomous`，那样会让原本合理的 `human_input`/`require_approval`
+  写法保存不了。
 - 不确定字段语义时，直接看 `.agent/workflows/doc_change_review/` 这个完整
   可跑的例子，或者读 `src/mini_agent/workflow/schema.py` 顶部的 docstring
   和 `docs/workflow-guide.md`"文件夹模式 Workflow"一节。
@@ -318,6 +394,45 @@ steps:
 （调用本地 `changelog-diff` skill）、`role_agent`（调用本地 `reviewer`
 agent）、以及最后再用 `agent` 汇总生成报告并带 `condition`。生成新
 workflow 时，结构上可以直接照这个例子的骨架改。
+
+## 示例：全自动 workflow（`mode: autonomous`，供对比）
+
+如果用户明确要求"要挂后台跑、中途别停下来问我"：
+
+```yaml
+# .agent/workflows/nightly_release_check/workflow.yaml
+name: nightly_release_check
+description: 全自动的发布前检查：给定 release tag，跑完检查清单并生成报告
+version: "1.0"
+mode: autonomous
+steps:
+  - id: intake
+    name: 接收参数
+    type: human_input
+    input_key: release_tag
+    input_prompt: "本次要检查的 release tag，如 v1.4.0"
+    prompt: "release_tag"
+
+  - id: run_checks
+    name: 执行检查清单
+    type: agent
+    depends_on: [intake]
+    prompt: |
+      对 release {intake.output} 跑一遍发布前检查清单（依赖版本、
+      变更日志、回归测试结果），逐项给出通过/不通过的结论。
+
+  - id: report
+    name: 生成报告
+    type: agent
+    depends_on: [run_checks]
+    prompt: |
+      基于以下检查结果，生成一份简明的发布检查报告：
+      {run_checks.output}
+```
+
+启动方式：`run_workflow("nightly_release_check", '{"release_tag": "v1.4.0"}',
+background=true, require_all_inputs_upfront=true)`——`intake` 这个
+`human_input` step 会直接从 `inputs.release_tag` 取值，不会阻塞等待。
 
 ## 示例：最小两步骤 workflow（单文件模式，供对比）
 
