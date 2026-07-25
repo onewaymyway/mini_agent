@@ -1,8 +1,22 @@
 """
-cli/commands/workflow_cmd.py — /workflow slash 命令处理
+cli/commands/workflow_cmd.py — workflow 子命令处理
 
-子命令（与 workflow/tools.py 里暴露给 Agent 的工具一一对应，供用户直接在
-CLI 里操作，不需要绕一圈让主 Agent 去调用工具）：
+两种触发方式，共用同一套子命令分发（见 handle_workflow_cmd / run_workflow_cli
+/ _dispatch）：
+  1. 交互 REPL 内的 `/workflow ...` 斜杠命令（cli/repl.py 调用
+     handle_workflow_cmd(args, agent)，从已构造好的 agent 取 cfg）。
+  2. 独立命令行 `mini-agent workflow ...`（cli/app.py 的 main() 最前面按
+     sys.argv[1] == "workflow" 短路，调用 run_workflow_cli(argv,
+     project_root)，只 load_config() 不构造 Agent，不需要先进入交互模式，
+     适合 cron/systemd/CI 里直接触发一次已保存的 workflow）。两种方式下
+     `run`/`resume --background` 的实现不同：REPL 里进程本来就会长期存活，
+     用 daemon 线程即可；独立 CLI 一次性命令跑完就退出，daemon 线程会被
+     一起杀掉，因此改成 spawn 一个真正独立的 OS 子进程（见
+     _spawn_detached_run），父进程退出后子进程仍会跑完。
+
+子命令列表（与 workflow/tools.py 里暴露给 Agent 的工具一一对应，供用户直接
+操作，不需要绕一圈让主 Agent 去调用工具；下面用 `/workflow` 前缀举例，
+独立 CLI 场景把前缀换成 `mini-agent workflow` 即可，子命令名和参数不变）：
   /workflow list                          — 列举所有已保存的工作流
   /workflow show <name>                   — 查看工作流 YAML 定义
   /workflow run <name> [inputs_json] [--background]
@@ -29,7 +43,10 @@ CLI 里操作，不需要绕一圈让主 Agent 去调用工具）：
                                              列出最近的历史 session，帮助定位 session_id
   /workflow from-session <session_id>     — [P8] 从指定 session 生成 workflow：
                                              总结→展示确认→构建→展示确认→保存，
-                                             全程在 CLI 里以连续的确认提示呈现
+                                             全程以连续的确认提示呈现（会读取
+                                             stdin 交互确认，独立 CLI 场景下需要
+                                             在能交互输入的终端里跑，不适合完全
+                                             无人值守的 cron/systemd 场景）
   /workflow stats <name>                  — [P9-1a] 汇总历史执行统计（成功率/
                                              各步骤平均耗时评分重试率/condition命中率）
   /workflow history <name>                — [P9-2] 查看该 workflow 定义文件的
@@ -38,6 +55,9 @@ CLI 里操作，不需要绕一圈让主 Agent 去调用工具）：
   /workflow diff <name>                   — [P9-2] 查看该 workflow 定义相对
                                              上次 commit 的改动（结构化 step
                                              级别摘要 + 原始 git diff）
+
+独立 CLI 独有参数：`--project`/`-p <path>` 指定项目根目录（默认当前目录），
+解析方式与 daemon/user/self 子命令一致，见 cli/app.py::_extract_project_root。
 """
 
 from __future__ import annotations
@@ -50,53 +70,130 @@ import mini_agent.ui.renderer as R
 
 
 def handle_workflow_cmd(args: list[str], agent) -> None:
+    """REPL 内 `/workflow ...` 斜杠命令入口，从已经构造好的 agent 取 cfg。"""
+    _dispatch(args, agent.cfg)
+
+
+def run_workflow_cli(argv: list[str], project_root: Path) -> int:
+    """
+    `mini-agent workflow ...` 独立命令行入口（不进入交互 REPL、不构造
+    Agent）。与 `/workflow ...` 共用下面同一套 `_dispatch`/`_handle_*`
+    实现——这些函数本来就只依赖 `cfg`，从未真正用到 `agent` 的其它能力
+    （工具调用、对话历史等），所以这里只需要单独 `load_config()` 一次，
+    不需要经过 `daemon`/`user`/`self` 那种"转发给已运行进程"的 HTTP 方式，
+    也不需要像交互模式一样装配 SkillLoader/PermissionGuard/Agent。
+
+    典型用途：cron/systemd timer、CI 流水线、shell 脚本里直接跑一个已保存
+    的 workflow，不需要为此启动一整个交互式 Agent 会话。例如：
+
+        mini-agent workflow run nightly_release_check \\
+            '{"release_tag": "v1.4.0"}' --background --project /path/to/repo
+
+    与 cli/app.py 里 `daemon`/`user`/`self`/`eval` 子命令的短路方式一致：
+    在 main() 最前面按 `sys.argv[1] == "workflow"` 整体拦截，不进入
+    build_parser() 的主 argparse 流程（该流程的位置参数 `prompt` 与子命令
+    模式互斥，见 eval_cmd.py 顶部注释里的同一条说明）。
+
+    返回进程退出码：找不到子命令/参数错误时返回 1，正常执行（包括
+    `run`/`resume` 在前台同步跑完但工作流本身状态是 failed/partial）返回 0
+    ——"命令本身有没有跑起来"和"工作流执行结果好不好"是两回事，后者请用
+    `mini-agent workflow status <id>` 或退出后检查落盘的 session 记录，不
+    通过进程退出码表达，与 `/workflow run` 在 REPL 里的语义保持一致。
+    """
+    from mini_agent.config import load_config
+
+    if not argv:
+        _print_usage()
+        _flush_terminal()
+        return 1
+
+    cfg = load_config(project_root=project_root)
+    try:
+        _dispatch(argv, cfg, standalone=True)
+    except SystemExit:
+        raise
+    except Exception as e:
+        from mini_agent.errors import log_exception
+        log_exception(e, where="mini_agent.cli.commands.workflow_cmd.run_workflow_cli")
+        R.print_error(f"执行失败：{e}")
+        return 1
+    finally:
+        _flush_terminal()
+    return 0
+
+
+def _flush_terminal() -> None:
+    """[独立 CLI 一次性命令] R.print_info/print_error 底层是 terminal.term，
+    状态栏刷新/补打印跑在后台线程、按低频定时器/队列异步落盘到 stdout（见
+    ui/terminal.py Terminal.stop() 的注释）。REPL 场景下进程本来就长期存活，
+    这层异步不是问题；独立 CLI 命令跑完立刻返回、解释器随即退出，不显式
+    stop() 的话，最后一批消息可能还没来得及被后台线程画到 stdout 上，输出
+    就"丢了"（不是真丢，只是没赶上打印）。与 repl.py/daemon.py 退出前调用
+    _term.stop() 是同一个原因，见那两处。"""
+    from mini_agent.ui.terminal import term as _term
+    try:
+        _term.stop()
+    except Exception:
+        pass
+
+
+def _print_usage() -> None:
+    R.print_error(
+        "用法（REPL 内用 /workflow ...；命令行直接用 mini-agent workflow ...）：\n"
+        "  workflow list                         列举所有已保存的工作流\n"
+        "  workflow show <name>                  查看工作流 YAML 定义\n"
+        "  workflow run <name> [inputs_json] [--background]\n"
+        "                                         执行工作流\n"
+        "  workflow runs [name]                  列举执行记录\n"
+        "  workflow status <workflow_session_id>  查看某次执行的详细进度\n"
+        "  workflow resume <workflow_session_id> [--background]\n"
+        "                                         从断点续跑\n"
+        "  workflow pause <workflow_session_id>   暂停一次后台执行\n"
+        "  workflow cancel <workflow_session_id>  取消一次执行\n"
+        "  workflow approve <workflow_session_id> 批准当前等待审批的步骤\n"
+        "  workflow reject <workflow_session_id> [reason]\n"
+        "                                         拒绝当前等待审批的步骤\n"
+        "  workflow input <workflow_session_id> <text>\n"
+        "                                         向等待人工输入的步骤送入文本\n"
+        "  workflow templates                     列举内置工作流模板\n"
+        "  workflow from-template <template_name> <new_name>\n"
+        "                                         基于内置模板创建工作流\n"
+        "  workflow delete <name>                 删除工作流定义\n"
+        "  workflow to-dir <name>                 升级为文件夹模式（agents/skills/prompts）\n"
+        "  workflow sessions                      列出最近的历史 session\n"
+        "  workflow from-session <session_id>     从指定 session 生成 workflow（总结→确认→构建→确认→保存）\n"
+        "  workflow stats <name>                  汇总历史执行统计（成功率/步骤耗时评分重试率/condition命中率）\n"
+        "  workflow history <name>                查看该 workflow 定义文件的 git 提交历史\n"
+        "  workflow diff <name>                   查看该 workflow 定义相对上次 commit 的改动\n"
+        "命令行独有参数：--project/-p <path> 指定项目根目录（默认当前目录）"
+    )
+
+
+def _dispatch(args: list[str], cfg, standalone: bool = False) -> None:
+    """真正的子命令分发，供 REPL（`/workflow ...`）和独立 CLI
+    （`mini-agent workflow ...`）共用；两者的差异只在 cfg 的来源，以及
+    `run`/`resume` 的 `--background` 到底是"进程内 daemon 线程"还是
+    "spawn 一个独立 OS 子进程"（见 _handle_run/_handle_resume 里的
+    standalone 分支和 _spawn_detached_run）。"""
     if not args:
-        R.print_error(
-            "用法：\n"
-            "  /workflow list                         列举所有已保存的工作流\n"
-            "  /workflow show <name>                  查看工作流 YAML 定义\n"
-            "  /workflow run <name> [inputs_json] [--background]\n"
-            "                                          执行工作流\n"
-            "  /workflow runs [name]                  列举执行记录\n"
-            "  /workflow status <workflow_session_id>  查看某次执行的详细进度\n"
-            "  /workflow resume <workflow_session_id> [--background]\n"
-            "                                          从断点续跑\n"
-            "  /workflow pause <workflow_session_id>   暂停一次后台执行\n"
-            "  /workflow cancel <workflow_session_id>  取消一次执行\n"
-            "  /workflow approve <workflow_session_id> 批准当前等待审批的步骤\n"
-            "  /workflow reject <workflow_session_id> [reason]\n"
-            "                                          拒绝当前等待审批的步骤\n"
-            "  /workflow input <workflow_session_id> <text>\n"
-            "                                          向等待人工输入的步骤送入文本\n"
-            "  /workflow templates                     列举内置工作流模板\n"
-            "  /workflow from-template <template_name> <new_name>\n"
-            "                                          基于内置模板创建工作流\n"
-            "  /workflow delete <name>                 删除工作流定义\n"
-            "  /workflow to-dir <name>                 升级为文件夹模式（agents/skills/prompts）\n"
-            "  /workflow sessions                      列出最近的历史 session\n"
-            "  /workflow from-session <session_id>     从指定 session 生成 workflow（总结→确认→构建→确认→保存）\n"
-            "  /workflow stats <name>                  汇总历史执行统计（成功率/步骤耗时评分重试率/condition命中率）\n"
-            "  /workflow history <name>                查看该 workflow 定义文件的 git 提交历史\n"
-            "  /workflow diff <name>                   查看该 workflow 定义相对上次 commit 的改动"
-        )
+        _print_usage()
         return
 
     sub = args[0].lower()
     rest = args[1:]
-    cfg = agent.cfg
 
     if sub == "list":
         _handle_list(cfg)
     elif sub == "show":
         _handle_show(cfg, rest)
     elif sub == "run":
-        _handle_run(cfg, rest)
+        _handle_run(cfg, rest, standalone=standalone)
     elif sub == "runs":
         _handle_runs(cfg, rest)
     elif sub == "status":
         _handle_status(cfg, rest)
     elif sub == "resume":
-        _handle_resume(cfg, rest)
+        _handle_resume(cfg, rest, standalone=standalone)
     elif sub == "pause":
         _handle_pause(rest)
     elif sub == "cancel":
@@ -126,7 +223,7 @@ def handle_workflow_cmd(args: list[str], agent) -> None:
     elif sub == "diff":
         _handle_diff(cfg, rest)
     else:
-        R.print_error(f"未知子命令：/workflow {sub}（输入 /workflow 查看用法）")
+        R.print_error(f"未知子命令：{sub}（输入 workflow 查看用法）")
 
 
 def _handle_list(cfg) -> None:
@@ -154,10 +251,64 @@ def _handle_show(cfg, rest: list[str]) -> None:
     R.print_info(yaml_str)
 
 
-def _handle_run(cfg, rest: list[str]) -> None:
+def _spawn_detached_run(cfg, base_argv: list[str], wf_session_id: str) -> Path:
+    """
+    [独立 CLI 后台执行] 以 `python -m mini_agent` 重新拉起自己一个子进程，
+    带上隐藏参数 `--__detached-session-id <id>` 让子进程直接前台同步执行
+    （见 _handle_run 里对应分支），子进程的标准输出/错误重定向到落盘的
+    日志文件，且不继承父进程的进程组（`start_new_session=True`，POSIX 下
+    等价于 `setsid`）——父进程（乃至触发它的 shell/cron/systemd）退出后，
+    子进程仍会独立跑完，这是它与 REPL 内 daemon 线程方案的本质区别。
+
+    base_argv: 不含 'workflow' 本身的子命令 argv，如
+               ["run", "<name>", "<inputs_json>"] 或
+               ["resume", "<workflow_session_id>"]。
+    返回子进程 stdout/stderr 重定向到的日志文件路径，供提示用户。
+    """
+    import subprocess
+    import sys as _sys
+    from mini_agent.storage.paths import AgentPaths
+
+    paths = AgentPaths(project_root=cfg.project_root)
+    session_dir = paths.workflow_session_dir(wf_session_id)
+    session_dir.mkdir(parents=True, exist_ok=True)
+    log_path = session_dir / "cli_detached.log"
+
+    argv = [
+        _sys.executable, "-m", "mini_agent",
+        "workflow", *base_argv,
+        "--__detached-session-id", wf_session_id,
+        "--project", str(cfg.project_root),
+    ]
+    with open(log_path, "ab") as log_f:
+        kwargs = {}
+        if hasattr(__import__("os"), "setsid"):
+            kwargs["start_new_session"] = True  # POSIX：脱离父进程组，父进程退出不影响子进程
+        subprocess.Popen(
+            argv,
+            stdout=log_f, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL,
+            cwd=str(cfg.project_root),
+            **kwargs,
+        )
+    return log_path
+
+
+def _handle_run(cfg, rest: list[str], standalone: bool = False) -> None:
     if not rest:
-        R.print_error("用法：/workflow run <name> [inputs_json] [--background]")
+        R.print_error("用法：workflow run <name> [inputs_json] [--background]")
         return
+
+    # [独立 CLI 后台执行] 隐藏内部参数：detached 子进程重新以 `mini-agent
+    # workflow run ...` 调用自己时，用这个参数带回父进程预先分配好的
+    # workflow_session_id，并强制走"前台同步执行"这条分支——detach 只需要
+    # 发生一次，子进程不应该再继续 fork 一层。见 _spawn_detached_run()。
+    detached_session_id = None
+    if "--__detached-session-id" in rest:
+        idx = rest.index("--__detached-session-id")
+        if idx + 1 < len(rest):
+            detached_session_id = rest[idx + 1]
+        rest = rest[:idx] + rest[idx + 2:]
+
     name = rest[0]
     background = "--background" in rest
     positional = [a for a in rest[1:] if a != "--background"]
@@ -179,11 +330,18 @@ def _handle_run(cfg, rest: list[str]) -> None:
 
     from mini_agent.workflow.runner import step_requires_approval
     has_approval_step = any(step_requires_approval(s, getattr(cfg, "workflow", None)) for s in wf.steps)
-    if has_approval_step and not background:
+    if has_approval_step and not background and detached_session_id is None:
         R.print_warning("该工作流包含需要人工审批的步骤，已自动切换为 --background 执行")
         background = True
 
     runner = WorkflowRunner(cfg)
+
+    # detached 子进程：直接前台同步跑，用父进程分配好的 session id，
+    # 不再 fork、不再关心 background 标志本身。
+    if detached_session_id is not None:
+        runner.run(wf, parsed_inputs, workflow_session_id=detached_session_id)
+        return
+
     if not background:
         R.print_info(f"[Workflow] 开始执行 {name} ...")
         result = runner.run(wf, parsed_inputs)
@@ -192,6 +350,21 @@ def _handle_run(cfg, rest: list[str]) -> None:
 
     import uuid
     wf_session_id = f"wfs_{uuid.uuid4().hex[:12]}"
+
+    if standalone:
+        # [独立 CLI] 这里不能用 daemon 线程：`mini-agent workflow run ...`
+        # 一次性命令打印完提示就准备退出进程，daemon 线程会随进程一起被杀
+        # 掉，工作流根本不会真的跑完。改成 spawn 一个完全独立的 OS 子进程
+        # （不继承父进程的生命周期），父进程立即返回，子进程即使父进程/
+        # 触发它的 shell 已经退出（比如 cron/systemd 场景）也会继续跑到底。
+        log_path = _spawn_detached_run(cfg, ["run", name, inputs_json], wf_session_id)
+        R.print_info(
+            f"🚀 工作流 **{name}** 已在独立后台进程中开始执行\n"
+            f"workflow_session_id：{wf_session_id}\n"
+            f"用 `mini-agent workflow status {wf_session_id} --project {cfg.project_root}` 查看进度\n"
+            f"该进程的标准输出/错误重定向到：{log_path}"
+        )
+        return
 
     def _bg_run():
         try:
@@ -251,10 +424,17 @@ def _handle_status(cfg, rest: list[str]) -> None:
         R.print_info(f"  - {step_id}: {sr.status.value} ({sr.duration_seconds:.1f}s)")
 
 
-def _handle_resume(cfg, rest: list[str]) -> None:
+def _handle_resume(cfg, rest: list[str], standalone: bool = False) -> None:
     if not rest:
-        R.print_error("用法：/workflow resume <workflow_session_id> [--background]")
+        R.print_error("用法：workflow resume <workflow_session_id> [--background]")
         return
+
+    # 见 _handle_run 里同名参数的说明：detached 子进程用它强制走前台同步分支。
+    detached = "--__detached-session-id" in rest
+    if detached:
+        idx = rest.index("--__detached-session-id")
+        rest = rest[:idx] + rest[idx + 2:]
+
     wf_session_id = rest[0]
     background = "--background" in rest
 
@@ -280,9 +460,23 @@ def _handle_resume(cfg, rest: list[str]) -> None:
         return
 
     runner = WorkflowRunner(cfg)
+
+    if detached:
+        runner.run(wf, wf_session.inputs, workflow_session_id=wf_session_id)
+        return
+
     if not background:
         result = runner.run(wf, wf_session.inputs, workflow_session_id=wf_session_id)
         R.print_info(result.to_summary())
+        return
+
+    if standalone:
+        log_path = _spawn_detached_run(cfg, ["resume", wf_session_id], wf_session_id)
+        R.print_info(
+            f"🚀 已在独立后台进程中续跑 workflow_session_id={wf_session_id}\n"
+            f"用 `mini-agent workflow status {wf_session_id} --project {cfg.project_root}` 查看进度\n"
+            f"该进程的标准输出/错误重定向到：{log_path}"
+        )
         return
 
     def _bg_resume():

@@ -168,7 +168,52 @@ get_workflow_stats(name="<workflow>")
 这一步"的信号——但具体怎么改还是要结合 `get_workflow_run_status(verbose=
 true)` 里的具体错误原因，不要只凭统计数字瞎猜。
 
-## 与 workflow-generator 的分工
+## 命令行直接跑（不进 Agent 对话）
+
+以上所有工具在 Agent 对话之外还有一条等价路径：`mini-agent workflow ...`
+独立命令行（`src/mini_agent/cli/commands/workflow_cmd.py::run_workflow_cli`，
+在 `cli/app.py` 里与 `daemon`/`user`/`self`/`eval` 一样按 `sys.argv[1]`
+短路，不进入交互 REPL、不构造 Agent，只 `load_config()`）。子命令名和参数
+与 REPL 里的 `/workflow ...` 完全一致，前缀换一下即可：
+
+```
+mini-agent workflow run <name> ['{"key":"value"}'] [--background] [--project <path>]
+mini-agent workflow status <workflow_session_id> [--project <path>]
+mini-agent workflow resume <workflow_session_id> [--background] [--project <path>]
+mini-agent workflow stats <name> [--project <path>]
+```
+
+用户想要"脚本里/cron/systemd 里直接跑一个已保存的 workflow，不想为此启动
+一整个交互式 Agent 会话"时，这是该走的路径，不是让用户手写 Python 调
+`WorkflowRunner`，也不是建议他们进 REPL 敲 `/workflow run`。
+
+- 不传 `--project`/`-p` 时默认用当前工作目录作为项目根，找不到 workflow
+  时排查的第一件事是确认 `cwd`/`--project` 对不对。
+- **`--background` 在独立 CLI 下的语义和 REPL 里不一样**：REPL 里
+  `--background` 是"这个长期存活的进程内起一个后台线程"；独立 CLI 一次性
+  命令跑完就退出，同样起线程的话线程会被一起杀掉、工作流根本跑不完——
+  所以这里改成 spawn 一个完全独立的 OS 子进程（`start_new_session=True`，
+  不继承父进程的进程组），父进程立刻返回打印 `workflow_session_id` 和
+  一个日志文件路径（子进程 stdout/stderr 重定向到
+  `<workflow_sessions目录>/<id>/cli_detached.log`），即使触发它的 shell/
+  cron 已经退出，子进程也会独立跑完。**用户要的是"挂后台，进程退出后还在
+  跑"时，一定要提醒用户加 `--background`**，不加的话是前台同步阻塞执行，
+  命令不会提前返回。
+- 后续查进度/续跑/审批，全部继续用同一套工具（`get_workflow_run_status`/
+  `patch_workflow_step`/`resume_workflow_run` 等，走 Agent 对话）或对应的
+  `mini-agent workflow status|resume|...` 命令行子命令都可以，两条路径共享
+  同一份落盘的 `WorkflowSession` 状态，互相看得到彼此的执行记录，不是两套
+  隔离的东西。
+- `mode: autonomous` 的 workflow 天生适合配这条路径：所有参数在启动时
+  通过 `inputs_json` 一次性给全，配合 `--background` 挂到独立子进程里跑，
+  适合直接写进 crontab/systemd timer，不需要人在旁边盯着交互式会话。
+  **注意**：目前 CLI 子命令的 `run` 只暴露了 `inputs_json`/`--background`
+  两个参数，`run_workflow` 工具里的 `require_all_inputs_upfront`/
+  `force_serial` 这两个开关暂时没有对应的 CLI flag——想用这两个开关，还是
+  要走 Agent 对话调工具，或者先确认这次真的需要它们再考虑要不要给 CLI
+  补上（工具层参数不会自动透传到命令行）。
+
+
 
 - 从自然语言描述**从零生成**一个新 workflow → workflow-generator skill。
 - 已有 workflow 想**测试某一步**、**排查一次失败**、**改某个字段**、

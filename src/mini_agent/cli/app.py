@@ -101,6 +101,18 @@ def main() -> int:
         project_root, rest = _extract_project_root(sys.argv[2:])
         return run_self_cli(rest, project_root)
 
+    # ── workflow 子命令短路：`mini-agent workflow ...` 独立命令行入口 ────────
+    # 与 daemon/user/self 短路方式一致：不进入 build_parser() 主流程、不
+    # 需要先起一整个交互式 Agent（只需要 load_config()）。之前只能在交互
+    # REPL 里用 `/workflow run <name>` 触发，脚本/cron/systemd 场景下要求
+    # 用户先进入交互模式很别扭；现在两条路径共用同一套
+    # cli/commands/workflow_cmd.py 实现，见该文件顶部 run_workflow_cli()
+    # 的说明。
+    if len(sys.argv) > 1 and sys.argv[1] == "workflow":
+        from mini_agent.cli.commands.workflow_cmd import run_workflow_cli
+        project_root, rest = _extract_project_root(sys.argv[2:])
+        return run_workflow_cli(rest, project_root)
+
     # ── 全局异常捕获：确保任何启动错误都能显示 ────────────────────────────────
     try:
         _main_inner()

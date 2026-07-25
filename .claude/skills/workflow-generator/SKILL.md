@@ -345,6 +345,14 @@ steps:
 10. **提示用户如何验证/运行**：
     - `/workflow show <name>` 查看解析结果
     - `/workflow run <name> '{"参数名": "值"}'` 运行（有需要外部输入的话）
+    - 不想进交互 REPL、只想在 shell/cron/systemd 里直接跑，把前缀换成
+      `mini-agent workflow ...` 即可（子命令名和参数一致），如
+      `mini-agent workflow run <name> '{"参数名":"值"}' --background
+      --project <path>`；`--background` 在这条路径下会 spawn 一个独立 OS
+      子进程，父进程立刻返回、子进程即使触发它的 shell 已退出也会跑完——
+      这条路径本身的排查/调试属于 workflow-debugger skill，这里只需要知道
+      它存在、什么时候该推荐给用户（用户说"写个脚本/加个定时任务跑这个
+      workflow"时）
     - `mode: autonomous` 的 workflow，建议提示用户可以用
       `run_workflow(name, inputs='{...}', require_all_inputs_upfront=true)`
       启动——所有 `input_key` 对应的值都要在 `inputs` 里给全，缺了会在
