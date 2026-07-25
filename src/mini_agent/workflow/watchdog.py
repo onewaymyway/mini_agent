@@ -58,6 +58,14 @@ class WorkflowWatchdog:
         self._total_tokens = 0
         self._token_lock = threading.Lock()
 
+        # [workflow_mechanism_improvement_plan_p10.md §3] per-step 连续失败
+        # 追踪（同 error_type 计数），由 runner._execute_step_with_error_retry
+        # 在每次 attempt 失败时回填（report_attempt_failure）。复用同一把
+        # 心跳节拍所在线程模型，不新增轮询频率——这是纯计数状态，不需要
+        # watchdog 主循环参与，达阈值时由 runner 侧直接短路重试循环。
+        self._consecutive_failures: dict[str, tuple[str, int]] = {}
+        self._failure_lock = threading.Lock()
+
         self._stop_event = threading.Event()
         self._thread: Optional[threading.Thread] = None
 
@@ -96,6 +104,38 @@ class WorkflowWatchdog:
     def total_tokens(self) -> int:
         with self._token_lock:
             return self._total_tokens
+
+    # ── 连续同类失败追踪（由 runner 在每次 attempt 失败时调用）──────────────
+
+    def report_attempt_failure(self, step_id: str, error_type: str, threshold: int = 2) -> bool:
+        """
+        [workflow_mechanism_improvement_plan_p10.md §3] 记录一次 step 执行
+        尝试失败。若与上一次记录的 error_type 相同，连续计数 +1；否则重新
+        从 1 开始计数（"连续"要求中间没有出现过不同类型的失败）。
+
+        返回 True 表示已达到 threshold（默认 2），调用方（runner）应据此
+        提前把该 step 判定为 NEEDS_FIX、跳过剩余的 retry_on_error 预算，
+        不必等重试次数耗尽——这类信号本身就在证伪"重试大概率会不一样"的
+        前提。跨线程安全（并发批次下多个 step 各自独立计数，同一 step_id
+        理论上不会跨线程并发调用，但仍加锁保证原子性）。
+        """
+        with self._failure_lock:
+            prev_type, prev_count = self._consecutive_failures.get(step_id, (None, 0))
+            count = prev_count + 1 if prev_type == error_type else 1
+            self._consecutive_failures[step_id] = (error_type, count)
+            escalate = count >= max(1, threshold)
+        if escalate:
+            self._log_event("consecutive_failure_escalated", {
+                "step_id": step_id, "error_type": error_type,
+                "count": count, "threshold": threshold,
+            })
+        return escalate
+
+    def reset_step_failures(self, step_id: str) -> None:
+        """该 step 成功或最终结束后清空连续失败计数，避免影响同一次运行中
+        （gate-retry 场景）后续对该 step 的重新计数。"""
+        with self._failure_lock:
+            self._consecutive_failures.pop(step_id, None)
 
     # ── 生命周期 ────────────────────────────────────────────────────────────
 

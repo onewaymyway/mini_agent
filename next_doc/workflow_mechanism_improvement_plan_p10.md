@@ -1,6 +1,7 @@
 # Workflow 机制改进方案 P10：调试闭环细化 + 看护趋势感知
 
-> 状态：**可实施设计文档**。编号延续
+> 状态：**已实现**（三项全部完成并通过回归测试；第四项仍仅作记录，未实施）。
+> 编号延续
 > `workflow_mechanism_improvement_plan.md`（P1-P7）→
 > `session_to_workflow_design.md`（P8）→
 > `workflow_system_next_directions.md` / `workflow_mechanism_improvement_proposal.md`（P9，已实现：
@@ -8,6 +9,13 @@
 > `force_rerun_from`、`NEEDS_FIX`、`get_workflow_run_status(verbose=/wait=)`、
 > `system_events` 完成通知）。本文档是 P9 之后的**下一轮**，聚焦三个
 > P9 尚未覆盖的真空点，按收益/成本排序，**只做前三项，第四项仅作记录，暂不实施**。
+>
+> 实现记录：§1 `test_workflow_step`、§2
+> `resume_workflow_run(step_overrides=...)`、§3 watchdog 连续同类失败提前
+> 升级均已按本文档设计落地，改动文件与设计一致（见各节"改动文件"表），
+> 新增单元测试 `tests/test_workflow_p10.py`（14 用例，覆盖 §1.4/§2.4/§3.5
+> 验收点），与既有 `tests/test_workflow_*.py`（98 用例）合计 112 用例全部
+> 通过，0 回归。§4 按原计划保持"仅记录，不实施"。
 
 ## 0. 范围与不做什么
 
@@ -26,7 +34,7 @@
 
 ---
 
-## 1. `test_workflow_step`：单 step 沙箱测试
+## 1. `test_workflow_step`：单 step 沙箱测试 ✅ 已实现
 
 ### 1.1 现状与缺口
 
@@ -86,7 +94,7 @@ def test_workflow_step(
 
 | 文件 | 改动 |
 |---|---|
-| `executors.py` | 抽出 `build_condition_namespace(mock_step_results)` 辅助函数，供 `_eval_condition()` 和新工具共用（去重复，不是新写一份逻辑） |
+| `executors.py` | 新增 `build_mock_step_results(mock_step_results)` 辅助函数：把 JSON mock 数据转换成真实 `StepResult` 对象，直接复用 `_resolve_prompt()`/`_eval_condition()` 现有的 `dict[str, StepResult]` 入参形态，不需要为沙箱测试单独写一套命名空间构造逻辑（比设计稿的 `build_condition_namespace` 更省一层转换） |
 | `tools.py` | 新增 `test_workflow_step` 工具 |
 | `docs/workflow-guide.md` | 补充"改一个 step 后如何先验证再正式重跑"一节，明确 `test_workflow_step`（临时验证）与 `resume_workflow_run(force_rerun_from=...)`（正式重跑、写入历史）的边界 |
 | `prompts/reminders/workflow_run_failed.md` | 在既有"patch → force_rerun_from"提示后追加一句"如果不确定改动是否正确，可先用 `test_workflow_step` 验证" |
@@ -99,9 +107,15 @@ def test_workflow_step(
   提示跳过，不阻塞。
 - 全量回归 `tests/test_workflow_*.py`，与基线 diff 一致。
 
+**实现结果**：`tests/test_workflow_p10.py::TestWorkflowStepSandbox` 覆盖上述
+场景（另加"mock 数据缺失时报错提示"用例），mock 掉真实 LLM 调用后验证
+prompt 占位符替换正确、`workflow_sessions/` 目录执行前后无变化；全量
+`tests/test_workflow_*.py`（98 用例）+ 新增用例（14 用例）合计 112 用例
+通过，0 回归。
+
 ---
 
-## 2. `resume_workflow_run(step_overrides=...)`：一次性覆盖 vs 永久 patch
+## 2. `resume_workflow_run(step_overrides=...)`：一次性覆盖 vs 永久 patch ✅ 已实现
 
 ### 2.1 现状与缺口
 
@@ -155,9 +169,14 @@ def resume_workflow_run(
 - 单元测试：传入非法字段（`prompt`）应直接报错拒绝，不静默忽略。
 - 全量回归。
 
+**实现结果**：`tests/test_workflow_p10.py::TestResumeStepOverrides` 覆盖
+"合法字段不污染持久化 YAML"（比对 `export_yaml` 前后一致）、"非法字段
+（`prompt`）拒绝"、"引用不存在的 step_id 拒绝"三个场景；`WorkflowSession`
+新增 `last_step_overrides` 字段落盘验证通过。全量回归见 §1.4。
+
 ---
 
-## 3. Watchdog：连续同类失败提前升级 `NEEDS_FIX`
+## 3. Watchdog：连续同类失败提前升级 `NEEDS_FIX` ✅ 已实现
 
 ### 3.1 现状与缺口
 
@@ -210,8 +229,8 @@ watchdog 而不是重试循环本体，是延续同一个职责边界：**执行
 | 文件 | 改动 |
 |---|---|
 | `schema.py` | `WorkflowStep` 新增可选字段 `escalate_after_n_same_failures: Optional[int] = None`（None 表示用全局默认值 2） |
-| `watchdog.py` | 新增 `_consecutive_failures` 追踪 + `report_attempt_failure()` 方法 + 达阈值时置位可读取的升级标记 |
-| `runner.py` | `_execute_step_with_error_retry` 每次失败尝试后调用 `watchdog.report_attempt_failure()`；重试前检查升级标记，命中则短路进入 `NEEDS_FIX` 分支 |
+| `watchdog.py` | 新增 `_consecutive_failures` 追踪 + `report_attempt_failure(step_id, error_type, threshold)` 方法（直接返回是否达阈值，调用方无需再轮询单独的标记位）+ `reset_step_failures()` 用于 step 结束后清空计数 |
+| `runner.py` | `_execute_step_with_error_retry` 每次失败尝试后调用 `watchdog.report_attempt_failure()`；返回 `True` 时短路进入 `NEEDS_FIX` 分支并写入包含触发依据的 `error` 文案，跳过剩余 `retry_on_error` 预算 |
 
 ### 3.5 验收
 
@@ -223,9 +242,17 @@ watchdog 而不是重试循环本体，是延续同一个职责边界：**执行
 - 单元测试：`escalate_after_n_same_failures` 字段自定义阈值生效。
 - 全量回归。
 
+**实现结果**：`tests/test_workflow_p10.py::TestWatchdogEscalation`（纯
+watchdog 层：达阈值升级、不同 error_type 打断计数、自定义阈值、
+`reset_step_failures` 清空计数）+ `TestRunnerEscalationIntegration`（集成
+`_execute_step_with_error_retry`：验证阈值=2 时第 2 次失败后不再发起第 3
+次 `_execute_step_bounded` 调用、直接判 `NEEDS_FIX` 且 `error` 文案含
+"连续"字样；以及无 watchdog 场景下按原逻辑正常走满 `retry_on_error` 预算，
+不因缺少上报对象而报错）。全量回归见 §1.4。
+
 ---
 
-## 4. 暂不实施（仅记录）：step 组片段复用 / 自定义 step 类型脚手架
+## 4. 暂不实施（仅记录）：step 组片段复用 / 自定义 step 类型脚手架 ⏸ 保持暂缓
 
 上一轮讨论中提到的两个扩展性方向——YAML 片段库（`fragments/` + `use_fragment`）
 和自定义 step 类型脚手架（`workflow-step-generator` skill）——本文档**不纳入本轮
@@ -244,7 +271,7 @@ watchdog 而不是重试循环本体，是延续同一个职责边界：**执行
 
 ---
 
-## 5. 实施顺序与依赖关系
+## 5. 实施顺序与依赖关系 ✅ 已完成
 
 ```
 1. test_workflow_step          — 独立，无依赖，优先实施
@@ -256,10 +283,16 @@ watchdog 而不是重试循环本体，是延续同一个职责边界：**执行
 三项互相独立，可以任意顺序或并行实施，不要求全部做完才发布；每项都应各自跑一遍
 `tests/test_workflow_*.py` 全量回归并与基线 diff，确认 0 新增失败后再合入下一项。
 
+**实施结果**：三项均已完成，实际按 1→2→3 顺序落地，每项完成后均跑过
+`tests/test_workflow_*.py` 全量回归（98 用例基线不变）；三项全部完成后新增
+`tests/test_workflow_p10.py`（14 用例）覆盖各自的验收点，合计 112 用例
+全部通过，0 回归。
+
 ## 6. 汇总表
 
-| 方向 | 关键改动点 | 解决的问题 |
-|---|---|---|
-| 单 step 沙箱测试 | `tools.py`(`test_workflow_step`) + `executors.py`(命名空间构造抽取复用) | patch 之后要不要真跑一次正式 run 才能验证，成本重、污染历史 |
-| 一次性执行覆盖 | `api_helpers.py`(`resume_workflow_run(step_overrides=...)`) + 白名单校验 | 临时调试参数被迫写成永久 patch，容易忘记改回去污染定义 |
-| 看护趋势感知 | `watchdog.py`(连续失败计数) + `runner.py`(短路重试) | 连续同类失败仍按瞬时故障走满重试预算，浪费时间和 token |
+| 方向 | 关键改动点 | 解决的问题 | 状态 |
+|---|---|---|---|
+| 单 step 沙箱测试 | `tools.py`(`test_workflow_step`) + `executors.py`(`build_mock_step_results` 复用) | patch 之后要不要真跑一次正式 run 才能验证，成本重、污染历史 | ✅ 已实现 |
+| 一次性执行覆盖 | `api_helpers.py`(`resume_workflow_run(step_overrides=...)`) + 白名单校验 | 临时调试参数被迫写成永久 patch，容易忘记改回去污染定义 | ✅ 已实现 |
+| 看护趋势感知 | `watchdog.py`(连续失败计数) + `runner.py`(短路重试) | 连续同类失败仍按瞬时故障走满重试预算，浪费时间和 token | ✅ 已实现 |
+| step 组片段复用 / 自定义 step 类型脚手架 | （见 §4，仅记录未设计） | 收益依赖真实使用样本，样本量不足 | ⏸ 暂不实施 |

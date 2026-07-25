@@ -36,12 +36,51 @@ import subprocess
 import sys
 import time
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import Optional, TYPE_CHECKING
 
-from .schema import WorkflowStep
+from .schema import WorkflowStep, StepResult, StepStatus
 
 if TYPE_CHECKING:
     from .runner import WorkflowRunner
+
+
+def build_mock_step_results(mock_step_results: "Optional[dict]") -> "dict[str, StepResult]":
+    """
+    [workflow_mechanism_improvement_plan_p10.md §1] 把 test_workflow_step
+    工具接收到的 mock 上游数据（JSON 反序列化后的
+    `{step_id: {"output": "...", "score": ..., "passed": ...}}`）转换成真实
+    的 `StepResult` 对象，供 `WorkflowRunner._resolve_prompt()` /
+    `WorkflowRunner._eval_condition()` 直接复用——两者本来就接受
+    `dict[str, StepResult]`，不需要为沙箱测试单独写一套命名空间构造逻辑，
+    只要把 mock 数据"伪装"成真实 StepResult 即可完全复用现有的占位符替换
+    和 condition 求值代码路径。
+
+    字段含义：
+      output  — 该 step 的模拟输出文本（{step_id.output} 占位符会替换成这个）
+      score   — 0~1 的浮点评分（{step_id.score} 占位符输出 int(score*100)）
+      passed  — 是否视为"成功"，决定 status 是 DONE 还是 FAILED
+                （condition 里 `xxx.passed` 会读到这个值）
+      status  — 显式指定状态字符串（如 "gate_failed"），优先级高于 passed
+    """
+    result: dict[str, StepResult] = {}
+    for step_id, raw in (mock_step_results or {}).items():
+        if not isinstance(raw, dict):
+            continue
+        status_str = raw.get("status")
+        if status_str:
+            try:
+                status = StepStatus(status_str)
+            except ValueError:
+                status = StepStatus.DONE
+        else:
+            status = StepStatus.DONE if raw.get("passed", True) else StepStatus.FAILED
+        result[step_id] = StepResult(
+            step_id=step_id,
+            status=status,
+            output=str(raw.get("output", "")),
+            score=raw.get("score"),
+        )
+    return result
 
 
 class StepExecutor:

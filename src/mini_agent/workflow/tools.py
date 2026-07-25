@@ -242,6 +242,81 @@ def register_workflow_tools(cfg: "AppConfig") -> None:
             f"force_rerun_from=\"{step_id}\")` 只重跑这一步及下游。"
         )
 
+    # ── 单 step 沙箱测试（workflow_mechanism_improvement_plan_p10.md §1）──────
+
+    @tool(name="test_workflow_step", group="workflow",
+          description="沙箱测试：只执行某个已保存 workflow 里的一个 step，用手工提供的 mock 上游数据"
+                      "代替真实依赖，不落盘进 workflow_runs 历史、不影响任何正式 run。用于验证 "
+                      "patch_workflow_step 改动是否符合预期，而不必接入完整 DAG 重跑一次；"
+                      "human_input/require_approval 类型的 step 不支持沙箱测试，会直接提示跳过。")
+    def test_workflow_step(
+        name: str,
+        step_id: str,
+        mock_step_results: Optional[str] = None,
+        mock_inputs: Optional[str] = None,
+        timeout_override: Optional[float] = None,
+    ) -> str:
+        """
+        name: 工作流名称
+        step_id: 要沙箱测试的 step 的 id
+        mock_step_results: JSON 字符串，模拟该 step 依赖的上游 step 结果，
+                    形如 '{"analyze": {"output": "分析结果...", "score": 0.9,
+                    "passed": true}}'，用于替换 prompt 里的
+                    {step_id.output}/{step_id.score} 占位符。不传则视为空
+                    （prompt 里引用了未提供的上游 step 时会报错，提示需要
+                    补充哪些 mock 数据）。
+        mock_inputs: JSON 字符串，模拟 run_workflow(inputs=...) 会传入的外部
+                    参数，形如 '{"code": "def foo(): pass"}'，用于替换
+                    prompt 里的 {variable} 占位符。
+        timeout_override: 本次沙箱测试专用的超时秒数，只影响这一次调用，
+                    不写回 step 定义。
+
+        本工具仍然会真实调用 LLM/工具/脚本——沙箱化的只是"不接入 DAG、
+        不落盘"，不是"不真正执行"，否则无法验证 prompt 措辞是否真的合适。
+        """
+        from mini_agent.workflow import api_helpers
+
+        try:
+            parsed_mock_srs = json.loads(mock_step_results) if mock_step_results and mock_step_results.strip() else {}
+        except json.JSONDecodeError as e:
+            return f"❌ mock_step_results 参数不是合法 JSON：{e}"
+        try:
+            parsed_mock_inputs = json.loads(mock_inputs) if mock_inputs and mock_inputs.strip() else {}
+        except json.JSONDecodeError as e:
+            return f"❌ mock_inputs 参数不是合法 JSON：{e}"
+
+        try:
+            result = api_helpers.test_workflow_step(
+                cfg, name, step_id,
+                mock_step_results=parsed_mock_srs,
+                mock_inputs=parsed_mock_inputs,
+                timeout_override=timeout_override,
+            )
+        except api_helpers.WorkflowApiError as e:
+            return f"❌ {e.message}"
+
+        if result.get("skipped"):
+            return f"⏭️ 跳过沙箱测试：{result['reason']}"
+
+        status = result["status"]
+        icon = {"done": "✅", "failed": "❌", "gate_failed": "🔄", "timeout": "⏱️"}.get(status, "❓")
+        lines = [
+            f"### 🧪 沙箱测试结果：`{name}` / `{step_id}`",
+            f"{icon} 状态：{status}（{result['duration_seconds']:.1f}s）",
+        ]
+        if result.get("score") is not None:
+            lines.append(f"评分：{int(result['score'] * 100)}/100")
+        if result.get("output"):
+            lines.append("\n**输出：**\n" + result["output"])
+        if result.get("error"):
+            lines.append(f"\n⚠️ {result.get('error_type') or 'Error'}: {result['error']}")
+        lines.append(f"\n（解析后的 prompt 预览：{result.get('resolved_prompt_preview', '')}）")
+        lines.append(
+            "\n⚠️ 本次结果未落盘、未接入正式 workflow_runs 历史，仅供验证参考。"
+            "确认无误后如需正式重跑，请用 resume_workflow_run(force_rerun_from=...)。"
+        )
+        return "\n".join(lines)
+
     # ── session → workflow 转换（session_to_workflow_design.md）──────────────
 
     @tool(name="list_recent_sessions", group="workflow",
@@ -485,11 +560,14 @@ def register_workflow_tools(cfg: "AppConfig") -> None:
     # ── 断点续跑（P2）────────────────────────────────────────────────────────
 
     @tool(name="resume_workflow_run", group="workflow",
-          description="从断点续跑一次已暂停/未完整完成的工作流执行，跳过已完成的步骤只重跑剩余部分。")
+          description="从断点续跑一次已暂停/未完整完成的工作流执行，跳过已完成的步骤只重跑剩余部分。"
+                      "可选 step_overrides 参数支持只对本次续跑生效的一次性执行参数覆盖（如临时调大 timeout），"
+                      "不污染工作流定义，适合调试用；改逻辑类字段仍需用 patch_workflow_step。")
     def resume_workflow_run(
         workflow_session_id: str,
         background: Optional[bool] = None,
         force_rerun_from: Optional[str] = None,
+        step_overrides: Optional[str] = None,
     ) -> str:
         """
         workflow_session_id: 之前一次 run_workflow 返回的执行 ID
@@ -502,19 +580,40 @@ def register_workflow_tools(cfg: "AppConfig") -> None:
                     force_rerun_from=该step_id 只重跑这一步及下游，前面已经
                     成功、消耗过 token 的步骤不用重来。不传时行为不变（只从
                     断点续跑未完成部分）。
+        step_overrides: [workflow_mechanism_improvement_plan_p10.md §2] JSON
+                    字符串，形如 '{"step_id": {"timeout": 120}}'，只对本次
+                    resume 执行生效的一次性覆盖，不写回工作流定义（下次
+                    run_workflow/resume_workflow_run 不会带上这次的覆盖）。
+                    只允许覆盖执行参数类字段：timeout/retry_on_error/
+                    allow_parallel/model/escalate_after_n_same_failures；
+                    不允许覆盖 prompt/condition/tool_name 等会改变 step
+                    语义的字段——那类改动请用 patch_workflow_step（会持久化、
+                    留痕）。适合"只想临时放宽一下（比如把 timeout 调大看看
+                    是不是单纯超时问题）"这类不想污染正式定义的调试场景。
         """
         from mini_agent.workflow import api_helpers
 
+        parsed_overrides = None
+        if step_overrides and step_overrides.strip():
+            try:
+                parsed_overrides = json.loads(step_overrides)
+            except json.JSONDecodeError as e:
+                return f"❌ step_overrides 参数不是合法 JSON：{e}"
+            if not isinstance(parsed_overrides, dict):
+                return "❌ step_overrides 必须是一个 JSON 对象（{step_id: {字段: 值}}）"
+
         try:
             outcome = api_helpers.resume_workflow_run(
-                cfg, workflow_session_id, background, force_rerun_from=force_rerun_from,
+                cfg, workflow_session_id, background,
+                force_rerun_from=force_rerun_from, step_overrides=parsed_overrides,
             )
         except api_helpers.WorkflowApiError as e:
             return f"❌ {e.message}"
 
+        override_hint = f"（本次使用了一次性覆盖：{parsed_overrides}，不影响工作流定义本身）" if parsed_overrides else ""
         if outcome["mode"] == "sync":
-            return outcome["result"].to_summary()
-        return f"🚀 已在后台续跑 workflow_session_id=`{workflow_session_id}`"
+            return outcome["result"].to_summary() + (f"\n\n{override_hint}" if override_hint else "")
+        return f"🚀 已在后台续跑 workflow_session_id=`{workflow_session_id}`{override_hint}"
 
     # ── 执行记录查询（P2/P3）──────────────────────────────────────────────────
 
@@ -632,6 +731,11 @@ def register_workflow_tools(cfg: "AppConfig") -> None:
             )
         if s.pending_approval_step:
             lines.append(f"- ⏳ 等待人工审批的步骤：`{s.pending_approval_step}`")
+        if getattr(s, "last_step_overrides", None):
+            # [workflow_mechanism_improvement_plan_p10.md §2] 标注本次执行
+            # 使用过一次性 step_overrides，避免误以为这是工作流定义本身
+            # 的行为——覆盖只影响这一次 resume，没有写回持久化定义。
+            lines.append(f"- ⚠️ 本次执行使用了临时覆盖：{s.last_step_overrides}，未写入 workflow 定义")
         if s.error:
             lines.append(f"- 错误：{s.error}")
         lines.append(f"- 📁 默认输出目录：`{paths.workflow_session_output_dir(workflow_session_id)}`")

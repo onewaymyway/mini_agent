@@ -60,6 +60,13 @@ class WorkflowSession:
     })
     pending_approval_step: Optional[str] = None
     error: Optional[str] = None
+    # [workflow_mechanism_improvement_plan_p10.md §2] 记录最近一次
+    # resume_workflow_run(step_overrides=...) 使用过的一次性覆盖内容，
+    # 形如 {"step_id": {"timeout": 120}}。只影响本次 resume 执行、不写回
+    # WorkflowStore 持久化的定义——这里落盘只是为了 get_workflow_run_status
+    # 能提示"这次结果里有临时覆盖，不是定义本身的行为"，避免误读。
+    # 空 dict 表示这次（或迄今为止）没有使用过 step_overrides。
+    last_step_overrides: dict = field(default_factory=dict)
 
     # ── 序列化 ──────────────────────────────────────────────────────────────
 
@@ -76,6 +83,7 @@ class WorkflowSession:
             "control_flags": self.control_flags,
             "pending_approval_step": self.pending_approval_step,
             "error": self.error,
+            "last_step_overrides": self.last_step_overrides,
         }
 
     @classmethod
@@ -99,6 +107,7 @@ class WorkflowSession:
             }),
             pending_approval_step=data.get("pending_approval_step"),
             error=data.get("error"),
+            last_step_overrides=dict(data.get("last_step_overrides") or {}),
         )
 
     # ── 落盘 / 加载 ────────────────────────────────────────────────────────

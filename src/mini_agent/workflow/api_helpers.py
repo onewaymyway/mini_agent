@@ -159,6 +159,7 @@ def resume_workflow_run(
     workflow_session_id: str,
     background: Optional[bool] = None,
     force_rerun_from: Optional[str] = None,
+    step_overrides: Optional[dict] = None,
 ) -> dict:
     """
     对应 resume_workflow_run 工具的核心逻辑。
@@ -167,13 +168,25 @@ def resume_workflow_run(
     之后（不含自身）的所有下游 step 视为未完成重新执行；force_rerun_from
     自身的 output 沿用当前落盘值（通常是刚被 override_step_output 改过的）。
 
+    step_overrides：[workflow_mechanism_improvement_plan_p10.md §2] 形如
+    {"step_id": {"timeout": 120}} 的一次性执行参数覆盖，只影响本次 resume
+    执行，不写回 WorkflowStore 持久化的定义——在加载 WorkflowDef 之后、
+    真正执行之前，对内存中的这份 WorkflowDef 副本做字段覆盖。字段名必须
+    在 RUNTIME_OVERRIDABLE_FIELDS 白名单内（timeout/retry_on_error/
+    allow_parallel/model/escalate_after_n_same_failures），命中白名单外
+    字段（如 prompt/condition/tool_name）直接拒绝并报错，不静默忽略——
+    这类改动本质上是"改逻辑"，应该走 patch_workflow_step 留痕。
+
     返回同 start_workflow_run。找不到执行记录/定义快照抛
-    WorkflowApiError(code='not_found' / 'bad_snapshot')。
+    WorkflowApiError(code='not_found' / 'bad_snapshot')；step_overrides
+    引用了不存在的 step_id 或非法字段抛 WorkflowApiError(code='bad_override')。
     """
+    import dataclasses
     from mini_agent.storage.paths import AgentPaths
     from mini_agent.workflow.session import WorkflowSession
     from mini_agent.workflow.runner import WorkflowRunner
     from mini_agent.workflow.generator import WorkflowGenerator
+    from mini_agent.workflow.schema import RUNTIME_OVERRIDABLE_FIELDS
 
     paths = AgentPaths(project_root=cfg.project_root)
     wf_session = WorkflowSession.load(paths, workflow_session_id)
@@ -192,6 +205,38 @@ def resume_workflow_run(
 
     if force_rerun_from:
         _mark_downstream_for_rerun(wf, wf_session, force_rerun_from)
+        wf_session.save(paths)
+
+    if step_overrides:
+        step_by_id = {s.id: s for s in wf.steps}
+        for step_id, fields_ in step_overrides.items():
+            if step_id not in step_by_id:
+                raise WorkflowApiError("bad_override", f"step_overrides 引用了不存在的 step_id：{step_id!r}")
+            if not isinstance(fields_, dict):
+                raise WorkflowApiError("bad_override", f"step_overrides[{step_id!r}] 必须是一个字段字典")
+            illegal = [k for k in fields_ if k not in RUNTIME_OVERRIDABLE_FIELDS]
+            if illegal:
+                raise WorkflowApiError(
+                    "bad_override",
+                    f"step_overrides[{step_id!r}] 包含不允许一次性覆盖的字段：{illegal}"
+                    f"（只允许 {sorted(RUNTIME_OVERRIDABLE_FIELDS)}；改逻辑类字段请用 patch_workflow_step）",
+                )
+        # [内存态覆盖] 只替换 wf.steps 里被引用到的 WorkflowStep 对象，用
+        # dataclasses.replace() 生成新对象，不 mutate 原对象、不调用
+        # WorkflowStore.save()，确保持久化的 YAML/目录定义完全不受影响。
+        new_steps = []
+        for s in wf.steps:
+            if s.id in step_overrides:
+                new_steps.append(dataclasses.replace(s, **step_overrides[s.id]))
+            else:
+                new_steps.append(s)
+        wf.steps = new_steps
+        wf_session.last_step_overrides = dict(step_overrides)
+        wf_session.save(paths)
+    elif wf_session.last_step_overrides:
+        # 这次 resume 没有传 step_overrides，清空上一次遗留的标注，避免
+        # get_workflow_run_status 展示"过期"的覆盖信息。
+        wf_session.last_step_overrides = {}
         wf_session.save(paths)
 
     run_in_background = background
@@ -240,6 +285,95 @@ def _mark_downstream_for_rerun(wf, wf_session, force_rerun_from: str) -> None:
 
     for step_id in downstream:
         wf_session.step_results.pop(step_id, None)
+
+
+# ── 单 step 沙箱测试（workflow_mechanism_improvement_plan_p10.md §1）──────
+
+def test_workflow_step(
+    cfg: "AppConfig",
+    name: str,
+    step_id: str,
+    mock_step_results: Optional[dict] = None,
+    mock_inputs: Optional[dict] = None,
+    timeout_override: Optional[float] = None,
+) -> dict:
+    """
+    对应 test_workflow_step 工具的核心逻辑：只执行某个已保存 workflow 里的
+    一个 step，用手工提供的 mock 上游数据代替真实依赖，不落盘进
+    workflow_runs 历史、不创建 WorkflowSession、不启动 watchdog、不触发
+    hooks/system_events——用完即弃，用于验证 patch_workflow_step 改动是否
+    符合预期，而不必接入完整 DAG 重跑一次。
+
+    与 resume_workflow_run(force_rerun_from=...) 的本质区别：那是接入真实
+    DAG 的一次正式执行，会落盘、计入统计、影响下游 step；这里只是拿目标
+    step 的定义单独跑一次，跑完直接把结果返回，不留下任何痕迹。
+
+    返回 dict：{"skipped": bool, "reason": str}（human_input/require_approval
+    类型跳过时）或 StepResult.to_dict()（正常执行完毕，无论成功与否）。
+
+    找不到工作流/step_id 抛 WorkflowApiError(code='not_found' / 'bad_step')。
+    """
+    import dataclasses
+    from mini_agent.workflow.store import WorkflowStore
+    from mini_agent.workflow.runner import WorkflowRunner, step_requires_approval
+    from mini_agent.workflow.executors import build_mock_step_results
+
+    store = WorkflowStore(Path(cfg.project_root))
+    wf = store.load(name)
+    if wf is None:
+        raise WorkflowApiError("not_found", f"找不到工作流 {name!r}")
+
+    target = next((s for s in wf.steps if s.id == step_id), None)
+    if target is None:
+        raise WorkflowApiError("bad_step", f"工作流 {name!r} 中不存在 step_id={step_id!r}")
+
+    wf_cfg = getattr(cfg, "workflow", None)
+    if target.effective_type == "human_input" or step_requires_approval(target, wf_cfg):
+        return {
+            "skipped": True,
+            "reason": (
+                f"该类型不支持沙箱测试（type={target.effective_type!r}"
+                f"{'，require_approval=True' if step_requires_approval(target, wf_cfg) else ''}），"
+                "这类 step 本身没有'输出对不对'的验证意义，请用 "
+                "resume_workflow_run(force_rerun_from=...) 实际验证"
+            ),
+        }
+
+    # timeout_override 只作用于本次沙箱执行，用 dataclasses.replace() 生成
+    # 一份临时 step 对象，不 mutate 原定义、不写回持久化。
+    if timeout_override is not None:
+        target = dataclasses.replace(target, timeout=timeout_override)
+
+    mock_srs = build_mock_step_results(mock_step_results)
+    inputs = dict(mock_inputs or {})
+
+    runner = WorkflowRunner(cfg)
+    # 供 _resolve_prompt/_eval_condition 之外的执行路径（sub_workflow 递归
+    # 深度保护、skill_agent 本地资源包查找等）读取——这些 getattr 都有 None
+    # 兜底，不设置也不会报错，设置了则行为与正式执行完全一致。
+    runner._current_wf = wf
+    runner._current_wf_steps = wf.steps
+    runner._current_inputs = inputs
+    try:
+        from mini_agent.workflow.resource_bundle import build_resource_bundle
+        runner._current_resource_bundle = build_resource_bundle(cfg, wf)
+    except Exception:
+        runner._current_resource_bundle = None
+
+    try:
+        resolved_prompt = runner._resolve_prompt(target.prompt, mock_srs, inputs)
+    except KeyError as e:
+        raise WorkflowApiError(
+            "bad_mock_data",
+            f"prompt 占位符解析失败：{e}（请检查 mock_step_results/mock_inputs 是否覆盖了 "
+            f"prompt 里引用到的所有 {{step_id.output}}/{{variable}}）",
+        )
+
+    sr = runner._execute_step(target, resolved_prompt, mock_srs)
+    d = sr.to_dict()
+    d["skipped"] = False
+    d["resolved_prompt_preview"] = resolved_prompt[:500] + ("...(截断)" if len(resolved_prompt) > 500 else "")
+    return d
 
 
 # ── 执行记录查询 ──────────────────────────────────────────────────────────

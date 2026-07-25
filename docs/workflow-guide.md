@@ -783,6 +783,112 @@ resume_workflow_run(
 
 ---
 
+## 调试闭环细化 + 看护趋势感知（`workflow_mechanism_improvement_plan_p10.md`）
+
+P9 之后的下一轮改进，聚焦"改一个 step 后如何低成本先验证"、"临时调试参数
+如何不污染正式定义"、"连续同类失败该不该继续傻等重试"三个真空点。
+
+### `test_workflow_step`：改完先验证，不必接入正式 DAG 重跑
+
+`patch_workflow_step` + `force_rerun_from` 是"改定义 → 正式重跑"，会落盘进
+`workflow_runs/`、计入统计、下游 step 也会跟着继续跑。对"我刚改了这个
+step 的 prompt，想先确认措辞对不对"这种高频微调场景，成本偏重。
+
+`test_workflow_step` 提供一个更轻的验证方式：只执行某个已保存 workflow
+里的一个 step，用手工给的 mock 上游数据代替真实依赖，**不落盘进
+`workflow_runs` 历史、不创建 `WorkflowSession`、不启动 watchdog、不触发
+hooks/system_events**——跑完直接把结果返回，用完即弃：
+
+```
+test_workflow_step(
+  name="nightly_report",
+  step_id="analyze",
+  mock_step_results='{"fetch": {"output": "原始数据...", "passed": true}}',
+  mock_inputs='{"lang": "zh"}'
+)
+```
+
+要点：
+
+- **仍然是真实执行**：会真的调用 LLM / 真的跑 `tool_call` / `script`，
+  因为验证"prompt 措辞对不对"必须是真实调用才有意义。沙箱化的只是
+  "不接入 DAG、不落盘"，不是"不真正执行"。
+- `mock_step_results` 里每个 step 的字段：`output`（模拟输出文本，填充
+  `{step_id.output}` 占位符）、`score`（0~1 浮点，填充 `{step_id.score}`
+  占位符）、`passed`（决定内部状态是 done 还是 failed，影响 condition
+  求值）；未提供 mock 数据但 prompt 引用了对应 `{step_id.output}` 时会
+  直接报错，提示需要补哪个 step 的 mock 数据。
+- `timeout_override` 只影响这一次沙箱调用，不写回 step 定义。
+- `type=human_input` 或 `require_approval=true` 的 step **不支持**沙箱
+  测试（这类 step 本身没有"输出对不对"的验证意义），会直接提示跳过，
+  建议改用 `resume_workflow_run(force_rerun_from=...)` 实际验证。
+- `script` 类型 step 的沙箱执行仍然走与正式执行相同的权限检查
+  （`cfg.workflow.script_step_enabled` 开关），不因为是"测试"就放宽。
+
+与 `force_rerun_from` 的边界：`test_workflow_step` 是**临时验证**，跑完
+即弃、无痕迹；`resume_workflow_run(force_rerun_from=...)` 是**正式重跑**，
+会写入 `workflow_runs` 历史、真正推进该次执行的进度。改完 step 后，先用
+`test_workflow_step` 验证措辞/逻辑没问题，再用 `force_rerun_from` 正式
+续跑，是推荐的调试顺序。
+
+### `resume_workflow_run(step_overrides=...)`：一次性覆盖 vs 永久 patch
+
+`patch_workflow_step` 改的是 workflow **定义本体**，会影响这次和以后所有
+执行。调试时经常只想"这次续跑临时放宽一下（比如把某个 step 的 timeout
+临时调大，看看是不是单纯超时问题）"，用 `patch_workflow_step` 做这件事
+等于把一次性尝试永久写进了正式定义，还得记得测完改回去。
+
+```
+resume_workflow_run(
+  workflow_session_id="wfs_xxx",
+  step_overrides='{"analyze": {"timeout": 120}}'
+)
+```
+
+- `step_overrides` **只影响本次 resume 执行**，不写回 `WorkflowStore`
+  持久化的 YAML/目录定义——下一次 `run_workflow`/`resume_workflow_run`
+  不会带上这次的覆盖。
+- 只允许覆盖"执行参数类"字段：`timeout` / `retry_on_error` /
+  `allow_parallel` / `model` / `escalate_after_n_same_failures`。
+  **不允许**覆盖会改变 step 语义的字段（`prompt`/`condition`/
+  `tool_name` 等）——这类改动本质上是"改逻辑"，必须走
+  `patch_workflow_step` 留痕；传入白名单外的字段会直接报错拒绝，不会
+  静默忽略。
+- `get_workflow_run_status` 若查到某次 run 使用过 `step_overrides`，会
+  额外标注一行 `⚠️ 本次执行使用了临时覆盖：{...}，未写入 workflow 定义`，
+  避免误以为这是定义本身的行为。
+
+### Watchdog：连续同类失败提前升级 `NEEDS_FIX`
+
+P9 已经能识别"第一次失败就能从异常类型判断出是结构性问题"（`KeyError`/
+`FileNotFoundError`/工具未注册等直接跳过 `retry_on_error` 判 `needs_fix`）。
+但还有一类失败**异常类型本身像瞬时故障**（比如 `TimeoutError`/
+`APIError`），如果连续 N 次重试都在**同一个 step、同一种 error_type** 上
+失败，大概率也不是"运气不好"，而是这一步的 prompt/参数本身有问题。
+
+现在看护线程（`watchdog.py`）会追踪每个 step 的连续同类失败次数：默认
+连续 **2 次**同一个 `error_type` 就提前判定 `NEEDS_FIX`，跳过剩余的
+`retry_on_error` 预算，不必等预算耗尽：
+
+```yaml
+steps:
+  - id: call_api
+    prompt: "..."
+    retry_on_error: 5
+    escalate_after_n_same_failures: 3   # 可选，覆盖默认阈值 2
+```
+
+- `escalate_after_n_same_failures` 未设置时，继承 `defaults` 里的同名配置，
+  再没有则用全局默认值 `2`，完全向后兼容旧 YAML。
+- 提前终止时的错误信息会写明触发依据："连续 N 次同类失败
+  （error_type=...），已提前判定为需要修改定义，跳过剩余 M 次重试预算"，
+  可通过 `get_workflow_run_status(verbose=true)` 查看。
+- 若中途出现了不同 `error_type` 的失败，连续计数会重新从 1 开始——只有
+  "连续、同类"才会触发提前升级，正常的"这次超时、那次别的错误"仍按原有
+  逻辑走满重试预算。
+
+---
+
 ## Step 类型化（P5）
 
 `WorkflowStep.type` 显式声明该步骤"怎么被执行"，未设置时按旧语义自动推断

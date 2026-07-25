@@ -67,6 +67,21 @@ def condition_referenced_names(condition: str) -> set[str]:
     return names
 
 
+# [workflow_mechanism_improvement_plan_p10.md §2] resume_workflow_run(
+# step_overrides=...) 允许临时覆盖的字段白名单：仅限"执行参数类"字段，
+# 不允许覆盖会改变 step 语义的字段（prompt/condition/tool_name 等）——
+# 那类改动本质上是"改逻辑"，应该走 patch_workflow_step 留痕，不应该以
+# "临时覆盖"的名义绕过定义变更。命中白名单之外的字段名时，调用方应直接
+# 拒绝并报错，而不是静默忽略。
+RUNTIME_OVERRIDABLE_FIELDS = frozenset({
+    "timeout",
+    "retry_on_error",
+    "allow_parallel",
+    "model",
+    "escalate_after_n_same_failures",
+})
+
+
 class StepStatus(str, Enum):
     PENDING      = "pending"
     RUNNING      = "running"
@@ -120,6 +135,13 @@ class WorkflowStep:
     # 需要配合 run_workflow(background=True) 使用：前台同步执行时没有其他
     # 线程能在阻塞期间调用 approve_workflow_step，审批会一直等到超时。
     require_approval: bool = False
+    # [workflow_mechanism_improvement_plan_p10.md §3] 连续同类失败提前升级
+    # NEEDS_FIX 的阈值：同一个 step 在 retry_on_error 重试循环里连续（中间
+    # 没有成功）出现同一个 error_type 达到这个次数时，watchdog 会判定"大概率
+    # 不是瞬时故障"，提前把该 step 标记 NEEDS_FIX、跳过剩余重试预算。
+    # None=继承 wf.defaults["escalate_after_n_same_failures"]，再没有则用
+    # 全局默认值 2（见 runner.py::_effective_step_field 三层查找）。
+    escalate_after_n_same_failures: Optional[int] = None
 
     # ── [workflow机制改进计划.md P5] Step 类型化 ────────────────────────────
     # type 为 None 时按旧语义推断（见 effective_type）；显式设置后由
@@ -222,6 +244,8 @@ class WorkflowDef:
                 allow_parallel=bool(s["allow_parallel"]) if s.get("allow_parallel") is not None else None,
                 retry_on_error=int(s["retry_on_error"]) if s.get("retry_on_error") is not None else None,
                 require_approval=bool(s.get("require_approval", False)),
+                escalate_after_n_same_failures=int(s["escalate_after_n_same_failures"])
+                    if s.get("escalate_after_n_same_failures") is not None else None,
                 type=s.get("type"),
                 workflow_name=s.get("workflow_name"),
                 tool_name=s.get("tool_name"),
@@ -273,6 +297,8 @@ class WorkflowDef:
                     **({"allow_parallel": s.allow_parallel} if s.allow_parallel is not None else {}),
                     **({"retry_on_error": s.retry_on_error} if s.retry_on_error is not None else {}),
                     **({"require_approval": s.require_approval} if s.require_approval else {}),
+                    **({"escalate_after_n_same_failures": s.escalate_after_n_same_failures}
+                       if s.escalate_after_n_same_failures is not None else {}),
                     **({"type": s.type} if s.type else {}),
                     **({"workflow_name": s.workflow_name} if s.workflow_name else {}),
                     **({"tool_name": s.tool_name} if s.tool_name else {}),

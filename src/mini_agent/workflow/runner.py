@@ -999,6 +999,9 @@ class WorkflowRunner:
         backoff = float(getattr(wf_cfg, "retry_on_error_backoff_seconds", 5.0))
         max_retry = max(0, self._effective_step_field(step, "retry_on_error", 0))
 
+        watchdog = getattr(self, "_current_watchdog", None)
+        escalate_threshold = max(1, int(self._effective_step_field(step, "escalate_after_n_same_failures", 2)))
+
         sr = self._execute_step_bounded(step, resolved_prompt, step_results)
         retries_used = 0
         while sr.status == StepStatus.FAILED and retries_used < max_retry:
@@ -1010,6 +1013,24 @@ class WorkflowRunner:
             if sr.error_type in _STRUCTURAL_ERROR_TYPES:
                 sr.status = StepStatus.NEEDS_FIX
                 break
+            # [workflow_mechanism_improvement_plan_p10.md §3] 看护趋势感知：
+            # 把这次失败上报给 watchdog，若同一 step 连续（中间没有成功）
+            # 达到 escalate_threshold 次同一 error_type，视为"大概率不是瞬时
+            # 故障"，提前判定 NEEDS_FIX，不再跑满 retry_on_error 预算。
+            if watchdog is not None and sr.error_type:
+                if watchdog.report_attempt_failure(step.id, sr.error_type, threshold=escalate_threshold):
+                    remaining = max_retry - retries_used
+                    sr.status = StepStatus.NEEDS_FIX
+                    sr.error = (
+                        f"连续 {escalate_threshold} 次同类失败（error_type={sr.error_type}），"
+                        f"已提前判定为需要修改定义，跳过剩余 {remaining} 次重试预算。"
+                        f"原始错误：{sr.error}"
+                    )
+                    R.print_warning(
+                        f"[Workflow] 🛠️ 步骤 {step.id} 连续 {escalate_threshold} 次同类失败"
+                        f"（{sr.error_type}），提前判定 NEEDS_FIX，跳过剩余重试"
+                    )
+                    break
             retries_used += 1
             wait_s = backoff * retries_used
             R.print_warning(
@@ -1019,6 +1040,8 @@ class WorkflowRunner:
             time.sleep(wait_s)
             sr = self._execute_step_bounded(step, resolved_prompt, step_results)
         sr.retries_used = retries_used
+        if watchdog is not None:
+            watchdog.reset_step_failures(step.id)
         return sr
 
     def _execute_step_bounded(
