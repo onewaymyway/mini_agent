@@ -79,6 +79,14 @@ class StepStatus(str, Enum):
     CANCELLED          = "cancelled"            # 收到 cancel 信号后未开始/被中止
     AWAITING_APPROVAL  = "awaiting_approval"    # 等待人工审批门放行
     REJECTED           = "rejected"             # 人工审批被拒绝
+    # ── [改进方案 §4.3] 结构性/配置性错误 ────────────────────────────────
+    # 与 FAILED 的区别：FAILED 里混杂了"重试可能有用"（网络超时等瞬时故障）
+    # 和"重试必然无用"（prompt 占位符写错、tool_name 未注册等定义错误）两类
+    # 情况；NEEDS_FIX 专指后者——runner 识别到 error_type 属于结构性异常时
+    # 直接跳过 retry_on_error 重试，标记为 NEEDS_FIX，提示主 Agent 应先用
+    # patch_workflow_step 修改工作流定义，再用 resume_workflow_run(force_
+    # rerun_from=...) 续跑，而不是简单地重跑。
+    NEEDS_FIX          = "needs_fix"
 
 
 @dataclass
@@ -124,6 +132,11 @@ class WorkflowStep:
     tool_args: dict = field(default_factory=dict)
     # human_input 专用：展示给人类的提示语（为空则用 prompt 本身）
     input_prompt: Optional[str] = None
+    # [改进方案 §1] human_input 专用：若启动 run_workflow 时传入的 inputs
+    # 字典里已经能通过该 key 找到值，直接用它填充，不进入阻塞等待。用于
+    # 让同一份 human_input step 既能交互式跑（人工临场输入），也能被"所有
+    # 参数在最初一次性传完"的全自动调用方式复用。
+    input_key: Optional[str] = None
     # [P7-③2 workflow_mechanism_improvement_plan.md] 可复用 step 片段：
     # 引用 .agent/workflow_snippets/<include>.yaml 里的一段 steps 列表。
     # 纯加载期展开（见 store.py::expand_includes），展开后这个字段本身
@@ -175,6 +188,11 @@ class WorkflowDef:
     # 没写则用运行时硬编码兜底（见 WorkflowStep 各字段注释）。完全向后
     # 兼容：没写 defaults 的旧 YAML 行为不变。
     defaults: dict = field(default_factory=dict)
+    # [改进方案 §1] mode="autonomous" 时，validate() 会把 human_input（无
+    # input_key 兜底）/require_approval 类 step 判为校验错误，在保存期就
+    # 拦住"全自动 workflow 里意外混入阻塞点"，而不是等运行到后台执行才
+    # 因为没人应答而卡到超时。默认 "interactive" 保持向后兼容。
+    mode: str = "interactive"
     # ── [workflow_directory_mode_design.md 阶段1] 目录化 Workflow 扩展 ─────
     # 文件夹模式下指向 workflow 所在目录（<workflows_dir>/<name>/），
     # 单文件模式下为 None。纯运行时字段，不参与 to_dict 序列化，由
@@ -209,6 +227,7 @@ class WorkflowDef:
                 tool_name=s.get("tool_name"),
                 tool_args=dict(s.get("tool_args") or {}),
                 input_prompt=s.get("input_prompt"),
+                input_key=s.get("input_key"),
                 script=s.get("script"),
                 prompt_file=s.get("prompt_file"),
                 skill_name=s.get("skill_name"),
@@ -222,6 +241,7 @@ class WorkflowDef:
             max_total_duration=float(data["max_total_duration"]) if data.get("max_total_duration") else None,
             max_total_tokens=int(data["max_total_tokens"]) if data.get("max_total_tokens") else None,
             defaults=dict(data.get("defaults") or {}),
+            mode=str(data.get("mode", "interactive")),
         )
 
     def to_dict(self) -> dict:
@@ -233,6 +253,7 @@ class WorkflowDef:
             **({"max_total_duration": self.max_total_duration} if self.max_total_duration else {}),
             **({"max_total_tokens": self.max_total_tokens} if self.max_total_tokens else {}),
             **({"defaults": self.defaults} if self.defaults else {}),
+            **({"mode": self.mode} if self.mode and self.mode != "interactive" else {}),
             "steps": [
                 {
                     "id": s.id,
@@ -257,6 +278,7 @@ class WorkflowDef:
                     **({"tool_name": s.tool_name} if s.tool_name else {}),
                     **({"tool_args": s.tool_args} if s.tool_args else {}),
                     **({"input_prompt": s.input_prompt} if s.input_prompt else {}),
+                    **({"input_key": s.input_key} if s.input_key else {}),
                     **({"script": s.script} if s.script else {}),
                     **({"skill_name": s.skill_name} if s.skill_name else {}),
                     **({"include": s.include} if s.include else {}),
@@ -331,6 +353,22 @@ class WorkflowDef:
                 errors.append(f"步骤 {step.id!r} 是 script 类型但未指定 script 命令")
             if etype == "skill_agent" and not step.skill_name:
                 errors.append(f"步骤 {step.id!r} 是 skill_agent 类型但未指定 skill_name")
+
+            # [改进方案 §1] mode="autonomous" 时，在保存期拦截阻塞型 step：
+            # human_input 且没有 input_key 兜底 → 运行时会真的阻塞等人工输入；
+            # require_approval=True → 运行时会真的阻塞等人工审批。
+            # 这两种在"全自动、所有输入已在最初给全"的场景下都属于设计错误。
+            if self.mode == "autonomous":
+                if etype == "human_input" and not step.input_key:
+                    errors.append(
+                        f"步骤 {step.id!r} 是 human_input 类型但未设置 input_key，"
+                        f"在 mode=autonomous 的工作流中会导致运行时阻塞等待人工输入"
+                    )
+                if step.require_approval:
+                    errors.append(
+                        f"步骤 {step.id!r} 设置了 require_approval=True，"
+                        f"在 mode=autonomous 的工作流中会导致运行时阻塞等待人工审批"
+                    )
 
         # 检查依赖是否存在
         for step in self.steps:

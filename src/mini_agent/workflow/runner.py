@@ -60,6 +60,20 @@ from .session import WorkflowSession, WorkflowRunStatus
 from . import registry as wf_registry
 from .watchdog import WorkflowWatchdog
 
+# [改进方案 §4.3] 结构性/配置性异常类型名单：命中这些类型的 FAILED 会被
+# _execute_step_with_error_retry 直接改判 NEEDS_FIX、跳过 retry_on_error
+# 重试——这类错误的共同点是"重跑多少次结果都一样"，需要先修改 workflow
+# 定义（prompt/tool_name/prompt_file 等）而不是简单等待重试。按 error_type
+# 字符串（异常类名）匹配，不 import 具体异常类，避免与各种 Executor 的
+# 异常来源产生耦合。
+_STRUCTURAL_ERROR_TYPES = frozenset({
+    "KeyError",            # prompt 占位符引用了不存在的 step/字段
+    "FileNotFoundError",   # prompt_file / script 引用的文件不存在
+    "ToolNotFoundError",   # tool_call 指定的 tool_name 未注册
+    "ModuleNotFoundError", # skill_agent 等引用的模块/skill 不存在
+    "AttributeError",      # 代码路径里访问了不存在的属性（多为配置错误）
+})
+
 if TYPE_CHECKING:
     from mini_agent.config import AppConfig
 
@@ -107,9 +121,11 @@ class WorkflowRunResult:
         lines.append(f"状态：{self.status}  耗时：{self.total_duration:.1f}s")
         lines.append("")
         for sr in self.step_results:
-            icon = {"done": "✅", "skipped": "⏭️", "failed": "❌", "pending": "⏳", "gate_failed": "🔄"}.get(
-                sr.status.value, "❓"
-            )
+            icon = {
+                "done": "✅", "skipped": "⏭️", "failed": "❌", "pending": "⏳",
+                "gate_failed": "🔄", "timeout": "⏱️", "cancelled": "🛑",
+                "rejected": "🚫", "needs_fix": "🛠️",
+            }.get(sr.status.value, "❓")
             score_str = f"  评分：{int(sr.score * 100)}/100" if sr.score is not None else ""
             lines.append(f"{icon} **{sr.step_id}**{score_str}  ({sr.duration_seconds:.1f}s)")
             if sr.status == StepStatus.DONE and sr.output:
@@ -117,8 +133,14 @@ class WorkflowRunResult:
                 if len(sr.output) > 200:
                     preview += "..."
                 lines.append(f"   {preview}")
-            elif sr.status == StepStatus.FAILED and sr.error:
-                lines.append(f"   错误：{sr.error}")
+            # [改进方案 §4.1] 原来只在 status==FAILED 时打印错误，GATE_FAILED/
+            # TIMEOUT/CANCELLED/REJECTED/NEEDS_FIX 都没有错误信息，主 Agent
+            # 无法据此决定下一步动作；这里统一为所有带 error 的非成功状态打印。
+            elif sr.status != StepStatus.DONE and sr.error:
+                extra = f"（{sr.error_type}）" if sr.error_type else ""
+                hint = "  → 这是定义/配置问题，重跑无效，请先 patch_workflow_step 修改后再 force_rerun_from 续跑" \
+                    if sr.status == StepStatus.NEEDS_FIX else ""
+                lines.append(f"   错误{extra}：{sr.error}{hint}")
         if self.final_output:
             lines.append("")
             lines.append("---")
@@ -171,12 +193,19 @@ class WorkflowRunner:
         wf: WorkflowDef,
         inputs: Optional[dict] = None,
         workflow_session_id: Optional[str] = None,
+        force_serial: Optional[bool] = None,
     ) -> WorkflowRunResult:
         """
         执行一个工作流。
 
         inputs: 外部传入的动态参数，如 {"code": "...", "lang": "python"}
                 会替换步骤 prompt 中的 {code} / {lang} 占位符
+        force_serial: [改进方案 §2] 本次运行级别的串行开关，True 时忽略
+                每个 step 的 allow_parallel 设置和拓扑分层结果，把所有 step
+                当作各自独立的批次严格依次执行。不修改 workflow 定义本身，
+                适合调试/临时资源受限场景。None 时读取
+                cfg.workflow.parallel_execution_enabled（默认 True）作为
+                全局兜底。
         workflow_session_id: 若指定且对应的 session.json 已存在，则视为
                 resume——跳过已 DONE 的 step，只重跑未完成部分；否则视为
                 新建一次执行（新建时若传入的 id 尚不存在也会用它作为新
@@ -251,6 +280,9 @@ class WorkflowRunner:
         self._current_wf = wf
         self._current_wf_session = wf_session
         self._current_paths = paths
+        # [改进方案 §1] 供 HumanInputStepExecutor 读取 input_key 对应的值，
+        # 命中时直接使用、不进入阻塞等待。
+        self._current_inputs = inputs
 
         # [workflow_directory_mode_design.md 阶段3] 文件夹模式 workflow
         # （wf.source_dir 不为 None）构造一次本地 agent/skill 资源包，供
@@ -299,6 +331,31 @@ class WorkflowRunner:
                 "total_duration": time.monotonic() - t_start,
             })
             wf_registry.unregister(wf_session_id)
+            # [改进方案 §3 方案2] 事件驱动完成通知：workflow 进入终态时主动向
+            # system_events 总线发一条 instant 事件，替代"主 Agent 自己反复
+            # 调用 get_workflow_run_status 猜要不要再查一次"的轮询模式。已有
+            # 消费者（如 evolution/soft_goal_deriver.py）本来就会在自己的
+            # 调度节拍里 poll_since() 这条总线；后续可以在主循环里加一个
+            # 同样的 poll_since() 消费者，把命中的事件转成对话里的提醒，
+            # 目前先把事件发布这一半打通（发布失败不影响主流程，见
+            # system_events.publish() 的容错说明）。
+            try:
+                from mini_agent.perception import system_events as _se
+                _se.publish(
+                    paths,
+                    source=f"workflow:{wf_session_id}",
+                    event_type=f"workflow.{status}",
+                    tier="instant",
+                    payload={
+                        "workflow_name": wf.name,
+                        "workflow_session_id": wf_session_id,
+                        "status": status,
+                        "error": error,
+                        "total_duration": round(time.monotonic() - t_start, 1),
+                    },
+                )
+            except Exception:
+                pass
             return WorkflowRunResult(
                 workflow_name=wf.name,
                 status=status,
@@ -316,6 +373,15 @@ class WorkflowRunner:
             batches = self._compute_parallel_batches(wf)
         except ValueError as e:
             return _finish("failed", error=str(e))
+
+        # [改进方案 §2] 串行开关：per-run 参数优先，未传时读全局配置兜底。
+        # 把每个 step 拆成独立批次即可让下游"批次内并发"逻辑退化为逐个执行，
+        # 不需要改动 wf 定义本身、也不影响已经算好的拓扑顺序。
+        effective_force_serial = force_serial
+        if effective_force_serial is None:
+            effective_force_serial = not bool(getattr(wf_cfg, "parallel_enabled", True))
+        if effective_force_serial:
+            batches = [[step] for batch in batches for step in batch]
 
         # step_results 在并发批次内会被多个线程同时读写（gate-retry 重跑依赖步骤时
         # 会写回 step_results[dep_id]），用一把锁保护写操作，避免极端情况下的竞态。
@@ -423,7 +489,11 @@ class WorkflowRunner:
         all_results = list(step_results.values())
 
         # 判断整体状态
-        if any(sr.status == StepStatus.FAILED for sr in all_results):
+        # [改进方案 §4.3 修复] NEEDS_FIX 是本次新增的"结构性错误"状态，语义上
+        # 和 FAILED 一样属于"这个 step 没有正常完成"，必须一并计入整体状态
+        # 判断，否则含 needs_fix 步骤的 workflow 会被误判为 "done"。
+        _failure_like = (StepStatus.FAILED, StepStatus.NEEDS_FIX)
+        if any(sr.status in _failure_like for sr in all_results):
             status = "partial" if any(sr.status == StepStatus.DONE for sr in all_results) else "failed"
         else:
             status = "done"
@@ -932,6 +1002,14 @@ class WorkflowRunner:
         sr = self._execute_step_bounded(step, resolved_prompt, step_results)
         retries_used = 0
         while sr.status == StepStatus.FAILED and retries_used < max_retry:
+            # [改进方案 §4.3] 结构性/配置性错误（prompt 占位符写错、tool_name
+            # 未注册、prompt_file 路径不存在等）无论重试多少次结果都一样，
+            # 白白消耗 retry_on_error 的次数和时间；命中这类错误类型时直接
+            # 跳出重试循环，把状态改判为 NEEDS_FIX，提示这是"需要先修改工作流
+            # 定义"而不是"再等等就好了"，避免与瞬时故障（网络超时等）混为一谈。
+            if sr.error_type in _STRUCTURAL_ERROR_TYPES:
+                sr.status = StepStatus.NEEDS_FIX
+                break
             retries_used += 1
             wait_s = backoff * retries_used
             R.print_warning(

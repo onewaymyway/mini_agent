@@ -181,6 +181,67 @@ def register_workflow_tools(cfg: "AppConfig") -> None:
         except ValueError as e:
             return f"❌ 保存失败：{e}"
 
+    # ── 单步编辑（改进方案 §4.2）────────────────────────────────────────────
+
+    @tool(name="patch_workflow_step", group="workflow",
+          description="只修改已保存工作流里指定 step 的部分字段（如 prompt/timeout/model/tool_name 等），"
+                      "不用重贴整份 YAML。常用于：某次执行失败 → 用 get_workflow_run_status(verbose=True) "
+                      "看到具体错误 → patch_workflow_step 修正该 step 的定义 → "
+                      "resume_workflow_run(force_rerun_from=该step_id) 只重跑这一步及下游。")
+    def patch_workflow_step(name: str, step_id: str, patch: str) -> str:
+        """
+        name: 工作流名称
+        step_id: 要修改的 step 的 id
+        patch: JSON 字符串，只包含要修改的字段，如
+               '{"prompt": "新的 prompt", "timeout": 120}'
+               支持的字段与 WorkflowStep 的字段同名（prompt/model/timeout/
+               retry_on_error/retry_on_gate_fail/allow_parallel/require_approval/
+               tool_name/tool_args/workflow_name/script/skill_name/input_key/
+               input_prompt/condition/depends_on 等），未出现在 patch 中的字段
+               保持不变。
+        """
+        import json as _json
+        from mini_agent.workflow.store import WorkflowStore
+
+        store = WorkflowStore(Path(store_path))
+        wf = store.load(name)
+        if wf is None:
+            return f"❌ 找不到工作流 {name!r}"
+
+        try:
+            patch_dict = _json.loads(patch) if patch.strip() else {}
+        except json.JSONDecodeError as e:
+            return f"❌ patch 参数不是合法 JSON：{e}"
+
+        target = next((s for s in wf.steps if s.id == step_id), None)
+        if target is None:
+            return f"❌ 工作流 {name!r} 中不存在 step_id={step_id!r}"
+
+        unknown_fields = [k for k in patch_dict if not hasattr(target, k)]
+        if unknown_fields:
+            return f"❌ patch 中包含未知字段：{unknown_fields}"
+
+        changed = []
+        for k, v in patch_dict.items():
+            setattr(target, k, v)
+            changed.append(k)
+
+        errors = wf.validate()
+        if errors:
+            return "❌ 修改后的工作流定义校验失败，未保存：\n" + "\n".join(f"- {e}" for e in errors)
+
+        try:
+            path = store.save(wf, cfg=cfg)
+        except ValueError as e:
+            return f"❌ 保存失败：{e}"
+
+        return (
+            f"✅ 工作流 **{name}** 的步骤 `{step_id}` 已更新字段：{changed}\n"
+            f"已保存到 `{path}`\n"
+            f"若之前有失败的执行，可用 `resume_workflow_run(workflow_session_id=..., "
+            f"force_rerun_from=\"{step_id}\")` 只重跑这一步及下游。"
+        )
+
     # ── session → workflow 转换（session_to_workflow_design.md）──────────────
 
     @tool(name="list_recent_sessions", group="workflow",
@@ -329,6 +390,8 @@ def register_workflow_tools(cfg: "AppConfig") -> None:
         name: str,
         inputs: str = "{}",
         background: Optional[bool] = None,
+        force_serial: Optional[bool] = None,
+        require_all_inputs_upfront: bool = False,
     ) -> str:
         """
         name: 工作流名称（与 YAML 文件名对应）
@@ -336,6 +399,14 @@ def register_workflow_tools(cfg: "AppConfig") -> None:
         background: 是否后台执行。不传时使用 agent_config.json 里
                     workflow.background_execution_default 的配置（默认 False，
                     即前台同步执行、直接返回完整结果摘要）。
+        force_serial: [改进方案 §2] True 时本次运行强制所有 step 串行执行，
+                    忽略每个 step 的 allow_parallel 设置，不修改工作流定义本身。
+                    适合调试、或这次的外部资源经不起并发时临时使用。
+        require_all_inputs_upfront: [改进方案 §1] True 时，启动前一次性检查
+                    所有 human_input 步骤是否都能从 inputs 中通过 input_key
+                    解析到值，缺失则直接报错列出缺哪些字段，不会跑到一半
+                    才发现要等人工输入。适合"全自动、所有参数已在最初给全"
+                    的调用场景。
         """
         from mini_agent.workflow import api_helpers
 
@@ -345,7 +416,11 @@ def register_workflow_tools(cfg: "AppConfig") -> None:
             return f"❌ inputs 参数不是合法 JSON：{e}"
 
         try:
-            outcome = api_helpers.start_workflow_run(cfg, name, parsed_inputs, background)
+            outcome = api_helpers.start_workflow_run(
+                cfg, name, parsed_inputs, background,
+                force_serial=force_serial,
+                require_all_inputs_upfront=require_all_inputs_upfront,
+            )
         except api_helpers.WorkflowApiError as e:
             return f"❌ {e.message}"
 
@@ -411,15 +486,29 @@ def register_workflow_tools(cfg: "AppConfig") -> None:
 
     @tool(name="resume_workflow_run", group="workflow",
           description="从断点续跑一次已暂停/未完整完成的工作流执行，跳过已完成的步骤只重跑剩余部分。")
-    def resume_workflow_run(workflow_session_id: str, background: Optional[bool] = None) -> str:
+    def resume_workflow_run(
+        workflow_session_id: str,
+        background: Optional[bool] = None,
+        force_rerun_from: Optional[str] = None,
+    ) -> str:
         """
         workflow_session_id: 之前一次 run_workflow 返回的执行 ID
         background: 是否后台续跑，含义同 run_workflow 的 background 参数
+        force_rerun_from: [改进方案 §4.2] 传入某个 step_id 时，该 step 及其
+                    所有下游 step 会被视为未完成，重新执行；force_rerun_from
+                    自身沿用当前已落盘的 output（通常是刚被 patch_workflow_step
+                    /override_step_output 改过之后的）。典型用法：某 step 失败
+                    → 用 patch_workflow_step 修正该 step 的定义 → 用
+                    force_rerun_from=该step_id 只重跑这一步及下游，前面已经
+                    成功、消耗过 token 的步骤不用重来。不传时行为不变（只从
+                    断点续跑未完成部分）。
         """
         from mini_agent.workflow import api_helpers
 
         try:
-            outcome = api_helpers.resume_workflow_run(cfg, workflow_session_id, background)
+            outcome = api_helpers.resume_workflow_run(
+                cfg, workflow_session_id, background, force_rerun_from=force_rerun_from,
+            )
         except api_helpers.WorkflowApiError as e:
             return f"❌ {e.message}"
 
@@ -481,15 +570,54 @@ def register_workflow_tools(cfg: "AppConfig") -> None:
         return "\n".join(lines)
 
     @tool(name="get_workflow_run_status", group="workflow",
-          description="查看某次工作流执行的详细进度（每个步骤的状态、是否有步骤在等待人工审批等）。")
-    def get_workflow_run_status(workflow_session_id: str) -> str:
+          description="查看某次工作流执行的详细进度（每个步骤的状态、错误信息、是否有步骤在等待人工审批等）。"
+                      "wait=True 时会在本次工具调用内部阻塞轮询直到执行结束或超时，"
+                      "用于看护后台执行而不必反复调用本工具。")
+    def get_workflow_run_status(
+        workflow_session_id: str,
+        verbose: bool = False,
+        wait: bool = False,
+        timeout: float = 300.0,
+        poll_interval: float = 3.0,
+    ) -> str:
+        """
+        workflow_session_id: run_workflow/resume_workflow_run 返回的执行 ID
+        verbose: [改进方案 §4.1] True 时额外输出每个失败/超时/被拒绝步骤的
+                    traceback 与 context（prompt 预览、step 配置），用于深入
+                    诊断；默认 False 保持简洁、控制 token 成本。
+        wait: [改进方案 §3] True 时本次调用会在内部用普通 Python 循环轮询，
+                    直到该次执行进入终态（done/failed/partial/cancelled/
+                    awaiting_approval 等）或超过 timeout 才返回。这样看护一个
+                    后台 workflow 只需一次工具调用/一轮 token，而不是主 Agent
+                    自己反复"查一次、决定要不要再查"，每次都是一整轮 LLM 推理。
+        timeout: wait=True 时的最长等待秒数，默认 300s。
+        poll_interval: wait=True 时内部轮询间隔秒数，默认 3s。
+        """
+        import time as _time
         from mini_agent.storage.paths import AgentPaths
-        from mini_agent.workflow.session import WorkflowSession
+        from mini_agent.workflow.session import WorkflowSession, WorkflowRunStatus
+        from mini_agent.workflow.schema import StepStatus
 
         paths = AgentPaths(project_root=cfg.project_root)
+
         s = WorkflowSession.load(paths, workflow_session_id)
         if s is None:
             return f"❌ 找不到执行记录 {workflow_session_id!r}"
+
+        _terminal = {
+            WorkflowRunStatus.DONE, WorkflowRunStatus.FAILED,
+            WorkflowRunStatus.PARTIAL, WorkflowRunStatus.CANCELLED,
+        }
+        waited = 0.0
+        timed_out = False
+        if wait:
+            while s.status not in _terminal and s.pending_approval_step is None:
+                if waited >= timeout:
+                    timed_out = True
+                    break
+                _time.sleep(poll_interval)
+                waited += poll_interval
+                s = WorkflowSession.load(paths, workflow_session_id) or s
 
         lines = [
             f"### 工作流执行 `{workflow_session_id}`",
@@ -497,16 +625,37 @@ def register_workflow_tools(cfg: "AppConfig") -> None:
             f"- 状态：{s.status.value}",
             f"- 当前批次：{s.current_batch_index}",
         ]
+        if wait:
+            lines.append(
+                f"- ⏱️ wait=True，等待了 {waited:.0f}s"
+                + ("（已超时，执行可能仍在进行中，可稍后再查）" if timed_out else "（已到达终态/审批点）")
+            )
         if s.pending_approval_step:
             lines.append(f"- ⏳ 等待人工审批的步骤：`{s.pending_approval_step}`")
         if s.error:
             lines.append(f"- 错误：{s.error}")
         lines.append(f"- 📁 默认输出目录：`{paths.workflow_session_output_dir(workflow_session_id)}`")
         lines.append("\n**各步骤状态：**")
+
+        _error_statuses = (
+            StepStatus.FAILED, StepStatus.TIMEOUT, StepStatus.GATE_FAILED,
+            StepStatus.REJECTED, StepStatus.NEEDS_FIX,
+        )
         for step_id, sr in s.step_results.items():
             score_str = f" 评分={sr.score}" if sr.score is not None else ""
             retry_str = f" 重试={sr.retries_used}" if sr.retries_used else ""
             lines.append(f"- {step_id}: {sr.status.value}（{sr.duration_seconds:.1f}s{score_str}{retry_str}）")
+            # [改进方案 §4.1] 之前这里完全没有读取 sr.error，失败步骤查不到
+            # 任何原因，只能去翻原始 session 文件；这里把已经落盘的
+            # error/error_type 输出出来。
+            if sr.status in _error_statuses and sr.error:
+                hint = "（这是定义/配置问题，重跑无效，请先用 patch_workflow_step 修改后再 force_rerun_from 续跑）" if sr.status == StepStatus.NEEDS_FIX else ""
+                lines.append(f"  ⚠️ {sr.error_type or 'Error'}: {sr.error}{hint}")
+                if verbose:
+                    if sr.traceback:
+                        lines.append(f"  ```\n{sr.traceback}\n  ```")
+                    if sr.context:
+                        lines.append(f"  上下文：{sr.context}")
         return "\n".join(lines)
 
     # ── 执行控制：暂停/取消（P3）──────────────────────────────────────────────

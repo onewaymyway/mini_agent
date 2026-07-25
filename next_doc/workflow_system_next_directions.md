@@ -18,6 +18,18 @@
 > 三个 CLI 子命令已补进 Tab 补全列表（此前遗漏）；详见
 > `next_doc/p8_p9_config_toggle_and_cli_hint_record.md`。
 >
+> **第三次更新（用户驱动的独立改进批次，编号不占用 P9）**：
+> `WorkflowDef.mode=autonomous`（保存期拦截阻塞型 step）、
+> `human_input.input_key`（全自动场景下的预置输入）、
+> `run_workflow(force_serial=...)`/`resume_workflow_run(force_rerun_from=...)`、
+> `get_workflow_run_status(verbose=/wait=)`、新增 `patch_workflow_step`
+> 工具、`StepStatus.NEEDS_FIX`（区分"重试有用"与"重试必然无用"的失败）
+> 均已实施并通过全量回归测试（与基线逐条 diff 一致，0 新增失败），详见
+> `workflow_mechanism_improvement_proposal.md`。**曾尝试**在下文 §4.2
+> 提到的同一条 `system_events` 管道上加一个"workflow 失败自动推送到
+> 对话"的消费者，验证时发现依赖 `project_root` 目录干净性、存在跨会话
+> 事件污染风险，已回退，详见 §4.2 末尾补充说明。
+>
 > 编号延续：`workflow_mechanism_improvement_plan.md`（P1-P7）→
 > `session_to_workflow_design.md`（P8）→ 本文档讨论的是 **P9 候选池**，
 > 不是单一一个 P9，因为下面几个方向互相独立，可以任选其一先做，不要求
@@ -207,6 +219,21 @@ threshold 从 60 降到 50"）——这需要判断"改了之后会不会更好"
   `perception/system_events.py` 的事件总线机制，跟现有
   `proprioception.uncertainty_sustained` 之类的信号走同一条管道，不是
   直接打断用户），用户确认后才真正调用 P8 的两阶段流程。
+
+> **踩坑记录（补充于"改进方案 §3"实施期间）**：曾在 `turn_loop.py` 每轮
+> 用户消息进入时接一个 `system_events.poll_since()` 消费者（用于把
+> workflow 失败事件转成对话提醒，跟本节想做的"跨 session 模式建议"是
+> 同一条管道、同一种接入方式），全量测试验证时发现会引入回归——多个
+> 测试共享同一个 `project_root` 时，消费者会读到其他无关来源写入同一个
+> `system_events.jsonl` 的事件。生产环境里 `project_root` 通常是独立的
+> 项目目录，问题会小很多，但**如果真要接入这条管道，应该先加上按
+> `source` 前缀或具体 ID 白名单过滤**（只消费"这次任务/这个
+> workflow_session_id 自己产生的事件"），而不是像 `proprioception` 现在
+> 这样直接消费总线上的全部同 tier 事件——本节要做的"跨 session 模式
+> 检测"本身就需要读别的 session 产生的事件，无法用"只看自己"这个过滤
+> 条件规避，需要另外设计隔离机制（比如显式的 session 白名单，或者只信任
+> 来自 `evolution/` 子系统自己产出的、已经做过归属校验的事件，不要直接
+> 消费原始 `proprioception`/`workflow` 事件）。
 
 ### 4.3 为什么优先级放后
 

@@ -63,6 +63,8 @@ def start_workflow_run(
     name: str,
     inputs: Optional[dict] = None,
     background: Optional[bool] = None,
+    force_serial: Optional[bool] = None,
+    require_all_inputs_upfront: bool = False,
 ) -> dict:
     """
     对应 run_workflow 工具的核心逻辑。
@@ -85,6 +87,25 @@ def start_workflow_run(
 
     parsed_inputs = dict(inputs or {})
 
+    # [改进方案 §1] require_all_inputs_upfront=True 时，启动前一次性扫描
+    # 所有 human_input step：既没有 input_key、也没能从 parsed_inputs 里
+    # 解析到对应值的，直接判为启动失败并把缺失字段列清楚，把"运行到一半
+    # 才发现缺参数"提前到"启动前一次性检查"。
+    if require_all_inputs_upfront:
+        missing = []
+        for s in wf.steps:
+            if s.effective_type != "human_input":
+                continue
+            key = s.input_key
+            if not key or key not in parsed_inputs:
+                missing.append(f"{s.id}（input_key={key!r}）")
+        if missing:
+            raise WorkflowApiError(
+                "missing_inputs",
+                f"require_all_inputs_upfront=True，但以下 human_input 步骤缺少可解析的输入："
+                f"{', '.join(missing)}；请在 inputs 中补全对应 input_key 的值",
+            )
+
     run_in_background = background
     if run_in_background is None:
         run_in_background = bool(getattr(getattr(cfg, "workflow", None), "background_execution_default", False))
@@ -95,10 +116,20 @@ def start_workflow_run(
     if has_approval_step and not run_in_background:
         run_in_background = True  # 强制后台，否则审批门必然超时判拒绝
 
+    # [改进方案 §1] 同理：存在没有 input_key 兜底的 human_input 步骤时，
+    # 前台同步执行没有其他线程能调用 provide_workflow_step_input，也应
+    # 强制转后台，否则必然阻塞到 human_input_wait_timeout_seconds 超时。
+    has_blocking_human_input = any(
+        s.effective_type == "human_input" and not (s.input_key and s.input_key in parsed_inputs)
+        for s in wf.steps
+    )
+    if has_blocking_human_input and not run_in_background:
+        run_in_background = True
+
     runner = WorkflowRunner(cfg)
 
     if not run_in_background:
-        result = runner.run(wf, parsed_inputs)
+        result = runner.run(wf, parsed_inputs, force_serial=force_serial)
         return {"mode": "sync", "result": result}
 
     from mini_agent.storage.paths import AgentPaths
@@ -107,7 +138,7 @@ def start_workflow_run(
 
     def _bg_run():
         try:
-            runner.run(wf, parsed_inputs, workflow_session_id=wf_session_id)
+            runner.run(wf, parsed_inputs, workflow_session_id=wf_session_id, force_serial=force_serial)
         except Exception as e:
             from mini_agent.errors import log_exception
             log_exception(e, where="mini_agent.workflow.api_helpers.start_workflow_run._bg_run")

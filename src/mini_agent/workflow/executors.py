@@ -183,6 +183,19 @@ class HumanInputStepExecutor(StepExecutor):
 
         prompt_to_show = step.input_prompt or prompt
 
+        # [改进方案 §1] input_key 命中 run_workflow(inputs=...) 里的值时，
+        # 直接使用，不进入阻塞等待——用于让全自动 workflow 复用同一份
+        # human_input step 定义，所有输入在启动时一次性给全。
+        if step.input_key:
+            current_inputs = getattr(runner, "_current_inputs", None) or {}
+            if step.input_key in current_inputs:
+                value = str(current_inputs[step.input_key])
+                if wf_session is not None and paths is not None:
+                    wf_session.append_event(paths, "human_input_prefilled", {
+                        "step_id": step.id, "input_key": step.input_key,
+                    })
+                return value
+
         if control is None:
             # 没有 registry 上下文（如单测直接调用 _execute_step），无法真的
             # 等待外部输入，直接把展示文本原样返回，避免破坏现有测试假设。

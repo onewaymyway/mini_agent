@@ -56,6 +56,11 @@ max_total_duration: null   # 该工作流的总时长护栏（秒），覆盖全
 max_total_tokens: null     # [P7-②1] 该工作流的总 token 用量护栏，覆盖全局配置
 defaults: {}               # [P7-③1] model/timeout/max_turns/retry_on_error/
                             #          allow_parallel 的统一默认值，见下文专门章节
+mode: interactive          # [改进方案 §1] interactive（默认）| autonomous。
+                            # autonomous 时，validate()/save_workflow 会拒绝
+                            # 保存包含阻塞点（没有 input_key 的 human_input、
+                            # require_approval=true）的工作流，见下文
+                            # "全自动执行模式"一节。
 
 steps:
   - id: step_id            # 步骤唯一标识，英文小写下划线
@@ -71,6 +76,9 @@ steps:
     tool_name: null        # [P5] type=tool_call 时必填：要调用的工具名称
     tool_args: {}          # [P5] type=tool_call 时的工具入参（为空则用 prompt 作为唯一实参）
     input_prompt: null     # [P5] type=human_input 时展示给人类的提示语（为空则用 prompt）
+    input_key: null        # [改进方案 §1] type=human_input 时，若启动时的 inputs
+                            #      里能通过该 key 找到值，直接使用、不阻塞等待，
+                            #      见下文"全自动执行模式"一节
     script: null           # [P5] type=script 时必填：要执行的 shell 命令
     require_approval: false # 是否要求人工审批门放行
     depends_on: []         # 依赖的步骤 id 列表，控制执行顺序
@@ -152,8 +160,8 @@ condition: "evaluate.score >= 60 and analyze.passed"  # 多条件组合
 
 ## 内置工具（主 Agent 可直接调用）
 
-工作流系统向主 Agent 注册了 16 个工具（P1 基础 6 个 + P2-P4 看护机制 7 个 +
-P5/P6 新增 3 个）：
+工作流系统向主 Agent 注册了 17 个工具（P1 基础 6 个 + P2-P4 看护机制 7 个 +
+P5/P6 新增 3 个 + 改进方案新增 `patch_workflow_step` 1 个）：
 
 ### `generate_workflow`
 
@@ -186,12 +194,21 @@ P5/P6 新增 3 个）：
 
 ```
 参数：
-  name (str)       工作流名称
-  inputs (str)     JSON 字符串，步骤 prompt 中的动态参数
+  name (str)                        工作流名称
+  inputs (str)                      JSON 字符串，步骤 prompt 中的动态参数
+  background (bool|null)            是否后台执行，见"后台执行、暂停、取消"一节
+  force_serial (bool|null)          [改进方案 §2] True 时本次运行强制所有 step
+                                     串行执行，忽略各 step 的 allow_parallel，
+                                     不修改工作流定义本身
+  require_all_inputs_upfront (bool) [改进方案 §1] True 时启动前一次性检查所有
+                                     human_input 步骤是否都能从 inputs 中通过
+                                     input_key 解析到值，缺失则直接报错列出
+                                     缺哪些字段，见"全自动执行模式"一节
 
 示例：
   run_workflow("code_review", '{"code": "def foo(): pass"}')
   run_workflow("article_writer", '{"topic": "大模型应用架构"}')
+  run_workflow("nightly_batch", '{"env": "prod"}', force_serial=true)
 ```
 
 ### `list_workflows`
@@ -205,6 +222,18 @@ P5/P6 新增 3 个）：
 ### `delete_workflow`
 
 删除指定工作流文件。
+
+### `patch_workflow_step`（改进方案 §4.2）
+
+只修改已保存工作流里指定 step 的部分字段，不用重贴整份 YAML，详见上文
+"出错定位、编辑与重跑"一节。
+
+```
+参数：
+  name (str)      工作流名称
+  step_id (str)   要修改的 step 的 id
+  patch (str)     JSON 字符串，只包含要修改的字段，如 '{"prompt": "...", "timeout": 120}'
+```
 
 ### `provide_workflow_step_input`（P5）
 
@@ -649,6 +678,111 @@ run_workflow("article_writer", {
 
 ---
 
+## 全自动执行模式（`mode: autonomous`，改进方案 §1）
+
+默认 `mode: interactive`，行为与之前完全一致。当一个 workflow 被设计为
+"全程自动执行、所有参数在启动时就已给全，中途不应该等任何人工输入"时，
+把 `mode` 设为 `autonomous`：
+
+```yaml
+name: nightly_report
+mode: autonomous
+steps:
+  - id: ask_scope
+    type: human_input
+    input_key: report_scope   # 必须设置，否则 save_workflow 时校验失败
+    prompt: "请说明本次报告范围"
+```
+
+`autonomous` 模式下，`save_workflow`/`patch_workflow_step` 保存前的校验会
+拒绝以下两种"会导致运行时阻塞"的写法：
+
+- `type: human_input` 但没有设置 `input_key`（无法判断值从哪里来）；
+- `require_approval: true`（需要人工审批放行）。
+
+`human_input` 步骤设置了 `input_key` 后，行为变为：启动 `run_workflow` 时若
+`inputs` 里能通过该 key 找到对应值，直接使用、不进入阻塞等待；同一份
+`human_input` 定义因此既能在 `mode: interactive` 下交互式使用（人工临场
+输入），也能在全自动调用里被复用（所有参数最初一次性传完）。
+
+配合 `run_workflow(..., require_all_inputs_upfront=true)` 使用时，启动前会
+一次性扫描所有 `human_input` 步骤，缺少可解析输入直接报错列出缺哪些字段，
+不会等跑到一半才发现卡住。
+
+---
+
+## 强制串行执行（`force_serial`，改进方案 §2）
+
+`allow_parallel` 之前只能在单个 step 上设置。如果想让**整个 workflow 这次
+运行**都串行（不改动 workflow 定义本身），有两种粒度：
+
+- **单次运行**：`run_workflow(name, ..., force_serial=true)`，本次调用忽略
+  所有 step 的 `allow_parallel`，把拓扑分层结果拍平成逐个执行；
+  `resume_workflow_run(..., force_serial=true)` 同理。
+- **全局**：`agent_config.json` 里的 `workflow.parallel_enabled=false`，
+  对所有 workflow 生效，适合"这台机器资源紧张/纯排障模式"这类整体性诉求。
+
+`force_serial` 不传时，实际是否串行取决于全局 `workflow.parallel_enabled`
+（默认 `true`，即默认允许并行，具体每个 step 是否并发仍受该 step 自己的
+`allow_parallel` 与拓扑分层约束）。
+
+---
+
+## 出错定位、编辑与重跑（`patch_workflow_step` / `force_rerun_from`，改进方案 §4）
+
+### 查看错误详情
+
+`get_workflow_run_status` 现在会输出每个失败/超时/被拒绝/需要修复的步骤的
+`error`/`error_type`；传 `verbose=true` 额外输出 `traceback` 与出错时的
+`context`（prompt 预览、step 配置）：
+
+```
+get_workflow_run_status(workflow_session_id="wfs_xxx", verbose=true)
+```
+
+`wait=true` 时本次调用会在**内部**轮询，直到该次执行到达终态或超过
+`timeout`（默认 300s）才返回——用于看护一个后台 workflow 时只需一次
+工具调用，不需要自己反复"查一次、决定要不要再查"：
+
+```
+get_workflow_run_status(workflow_session_id="wfs_xxx", wait=true, timeout=600)
+```
+
+### 区分"能不能重试"
+
+失败步骤的状态里，`gate_failed`/`failed`（含 `retries_used`）通常是瞬时性
+问题，直接续跑即可；`needs_fix` 状态专指结构性/配置性错误（prompt 占位符
+写错、`tool_name` 未注册、`prompt_file` 路径不存在等）——这类错误重试多少
+次结果都一样，`runner` 检测到后会跳过 `retry_on_error` 直接判 `needs_fix`，
+提示需要先修改 workflow 定义。
+
+### 只改一个 step、只重跑一段
+
+```
+patch_workflow_step(
+  name="nightly_report",
+  step_id="analyze",
+  patch='{"prompt": "修正后的 prompt", "timeout": 120}'
+)
+
+resume_workflow_run(
+  workflow_session_id="wfs_xxx",
+  force_rerun_from="analyze"
+)
+```
+
+`patch_workflow_step` 只修改指定字段（未出现在 `patch` 中的字段保持不变），
+保存前会跑一次 `WorkflowDef.validate()`，校验不通过则不落盘。
+`resume_workflow_run(force_rerun_from=<step_id>)` 会让该 step 及其所有下游
+重新执行，`step_id` 之前已经成功、消耗过 token 的步骤不会重来；
+`force_rerun_from` 自身的输入沿用 `patch_workflow_step` 改过之后的新定义。
+
+若不确定该改哪里，工具输出命中失败状态时会自动附带一条提醒，按
+"`get_workflow_run_status(verbose=true)` → `patch_workflow_step` →
+`resume_workflow_run(force_rerun_from=...)`" 的顺序处理即可。
+
+---
+
 ## Step 类型化（P5）
 
 `WorkflowStep.type` 显式声明该步骤"怎么被执行"，未设置时按旧语义自动推断
@@ -1049,7 +1183,7 @@ Workflow 执行时会触发以下 Hook 事件（复用项目现有的 `mini_agen
 
 | 配置项 | 默认值 | 说明 |
 |---|---|---|
-| `parallel_enabled` | `true` | 是否允许同层步骤并发执行 |
+| `parallel_enabled` | `true` | 是否允许同层步骤并发执行；单次运行可用 `run_workflow(..., force_serial=true)` 临时覆盖为全部串行，不用改这里的全局值（见"强制串行执行"一节） |
 | `max_parallel` | `4` | 同层并发的最大 worker 数 |
 | `watchdog_enabled` | `true` | 是否启用看护线程（心跳超时检测+资源护栏） |
 | `heartbeat_check_interval_seconds` | `5.0` | 看护线程轮询间隔（秒） |
