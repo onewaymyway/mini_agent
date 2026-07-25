@@ -8,6 +8,9 @@
 - 质检门：evaluator 角色绑定、评分提取、GATE_FAILED 状态、retry 重跑
 - LLM 自动生成工作流（WorkflowGenerator）
 - 6 个内置工具在主 Agent 对话中的完整使用流程
+- [P10] 单 step 沙箱测试（`test_workflow_step`）、一次性执行覆盖
+  （`resume_workflow_run(step_overrides=...)`）、watchdog 连续同类失败
+  提前升级 `NEEDS_FIX`
 
 ---
 
@@ -766,6 +769,249 @@ with tempfile.TemporaryDirectory() as tmp:
 
 ---
 
+## P10 测试：调试闭环细化 + 看护趋势感知
+
+> 对应 `next_doc/workflow_mechanism_improvement_plan_p10.md`（状态：已实现），
+> 验证三项新能力：单 step 沙箱测试（`test_workflow_step`）、一次性执行覆盖
+> （`resume_workflow_run(step_overrides=...)`）、watchdog 连续同类失败提前
+> 升级 `NEEDS_FIX`。完整自动化用例见 `tests/test_workflow_p10.py`（14 个
+> 用例），可直接运行：
+> ```bash
+> PYTHONPATH=src python3 -m pytest tests/test_workflow_p10.py -v
+> ```
+> 下面是等价的手工可读版本，便于不跑 pytest 时人工核对行为。
+
+### 单元测试七：`test_workflow_step` 单 step 沙箱测试
+
+```bash
+PYTHONPATH=src python3 -c "
+import tempfile
+from pathlib import Path
+from unittest.mock import patch
+from mini_agent.workflow.schema import WorkflowDef, WorkflowStep
+from mini_agent.workflow.runner import WorkflowRunner
+from mini_agent.workflow.store import WorkflowStore
+from mini_agent.workflow import api_helpers
+from mini_agent.storage.paths import AgentPaths
+
+class FakeWfCfg:
+    tool_call_step_auto_approve=True
+    human_input_wait_timeout_seconds=2.0
+    approval_poll_interval_seconds=0.05
+    approval_wait_timeout_seconds=1.0
+    validate_placeholders_on_save=True
+    validate_role_refs_on_save=True
+    script_step_enabled=False
+    max_sub_workflow_depth=3
+    git_hint_enabled=False
+
+class FakeCfg:
+    def __init__(self, root):
+        self.project_root=root; self.verbose=False; self.sandbox=False
+        self.model='t'; self.llm_provider='anthropic'; self.llm_base_url=None; self.api_key='t'
+        self.workflow=FakeWfCfg()
+
+with tempfile.TemporaryDirectory() as tmp:
+    cfg = FakeCfg(tmp)
+    store = WorkflowStore(Path(tmp))
+
+    # 1. 普通 agent 类型 step：mock 掉真实 LLM 调用，验证不落盘 + 占位符替换正确
+    wf = WorkflowDef(name='wf_sandbox', steps=[
+        WorkflowStep(id='fetch', name='fetch', prompt='fetch data'),
+        WorkflowStep(id='analyze', name='analyze', prompt='analyze: {fetch.output}，语言 {lang}', depends_on=['fetch']),
+    ])
+    store.save(wf, cfg=cfg)
+
+    paths = AgentPaths(project_root=tmp)
+    sessions_dir = paths.workflow_sessions_dir
+    before = list(sessions_dir.glob('**/*')) if sessions_dir.exists() else []
+
+    with patch.object(WorkflowRunner, '_execute_with_main_agent', return_value='ok') as mock_exec:
+        result = api_helpers.test_workflow_step(
+            cfg, 'wf_sandbox', 'analyze',
+            mock_step_results={'fetch': {'output': 'MOCK_DATA', 'passed': True}},
+            mock_inputs={'lang': 'zh'},
+        )
+    assert result['skipped'] is False
+    assert result['status'] == 'done'
+    called_prompt = mock_exec.call_args[0][1]
+    assert 'MOCK_DATA' in called_prompt and 'zh' in called_prompt
+    after = list(sessions_dir.glob('**/*')) if sessions_dir.exists() else []
+    assert before == after, '沙箱测试不应产生任何 workflow_sessions 落盘文件'
+    print('✅ agent 类型 step 沙箱执行：不落盘、mock 数据正确替换占位符')
+
+    # 2. human_input 类型 step：应直接提示跳过，不阻塞
+    wf2 = WorkflowDef(name='wf_human', steps=[
+        WorkflowStep(id='ask', name='ask', prompt='请输入', type='human_input'),
+    ])
+    store.save(wf2, cfg=cfg)
+    result2 = api_helpers.test_workflow_step(cfg, 'wf_human', 'ask')
+    assert result2['skipped'] is True
+    assert 'resume_workflow_run' in result2['reason']
+    print('✅ human_input 类型 step 沙箱测试按预期跳过，不阻塞')
+
+    # 3. require_approval 类型 step：同样跳过
+    wf3 = WorkflowDef(name='wf_approval', steps=[
+        WorkflowStep(id='deploy', name='deploy', prompt='部署', require_approval=True),
+    ])
+    store.save(wf3, cfg=cfg)
+    result3 = api_helpers.test_workflow_step(cfg, 'wf_approval', 'deploy')
+    assert result3['skipped'] is True
+    print('✅ require_approval 类型 step 沙箱测试按预期跳过')
+
+    # 4. 缺少 mock 数据时报错提示清晰
+    wf4 = WorkflowDef(name='wf_missing', steps=[
+        WorkflowStep(id='a', name='a', prompt='do a'),
+        WorkflowStep(id='b', name='b', prompt='use {a.output}', depends_on=['a']),
+    ])
+    store.save(wf4, cfg=cfg)
+    try:
+        api_helpers.test_workflow_step(cfg, 'wf_missing', 'b')
+        raise AssertionError('应抛出 WorkflowApiError')
+    except api_helpers.WorkflowApiError as e:
+        assert e.code == 'bad_mock_data'
+        print(f'✅ 缺少 mock 数据时报错清晰：{e.message[:40]}...')
+"
+```
+
+**期望输出**：4 个 ✅
+
+---
+
+### 单元测试八：`resume_workflow_run(step_overrides=...)` 一次性执行覆盖
+
+```bash
+PYTHONPATH=src python3 -c "
+import tempfile
+from pathlib import Path
+from unittest.mock import patch
+from mini_agent.workflow.schema import WorkflowDef, WorkflowStep
+from mini_agent.workflow.runner import WorkflowRunner
+from mini_agent.workflow.store import WorkflowStore
+from mini_agent.workflow.session import WorkflowSession
+from mini_agent.workflow import api_helpers
+from mini_agent.storage.paths import AgentPaths
+
+class FakeWfCfg:
+    parallel_enabled=True; max_parallel=4; hooks_enabled=False
+    watchdog_enabled=False; retry_on_error_backoff_seconds=0.0
+    background_execution_default=False; git_hint_enabled=False
+    validate_placeholders_on_save=True; validate_role_refs_on_save=True
+
+class FakeCfg:
+    def __init__(self, root):
+        self.project_root=root; self.verbose=False; self.sandbox=False
+        self.model='t'; self.llm_provider='anthropic'; self.llm_base_url=None; self.api_key='t'
+        self.workflow=FakeWfCfg()
+
+with tempfile.TemporaryDirectory() as tmp:
+    cfg = FakeCfg(tmp)
+    store = WorkflowStore(Path(tmp))
+    wf = WorkflowDef(name='wf_override', steps=[WorkflowStep(id='solo', name='solo', prompt='do it', timeout=30)])
+    store.save(wf, cfg=cfg)
+
+    with patch.object(WorkflowRunner, '_execute_with_main_agent', return_value='done'):
+        wf_session_id = WorkflowRunner(cfg).run(wf, inputs={}).workflow_session_id
+
+    before_yaml = store.export_yaml('wf_override')
+
+    # 1. 合法字段（timeout）覆盖：不写回持久化 YAML
+    with patch.object(WorkflowRunner, '_execute_with_main_agent', return_value='done again'):
+        outcome = api_helpers.resume_workflow_run(cfg, wf_session_id, step_overrides={'solo': {'timeout': 999}})
+    assert outcome['mode'] == 'sync'
+    after_yaml = store.export_yaml('wf_override')
+    assert before_yaml == after_yaml, 'step_overrides 不应写回持久化的 workflow 定义'
+
+    paths = AgentPaths(project_root=tmp)
+    s = WorkflowSession.load(paths, wf_session_id)
+    assert s.last_step_overrides == {'solo': {'timeout': 999}}
+    print('✅ 合法字段覆盖：持久化 YAML 不变，session 记录了本次覆盖用于展示')
+
+    # 2. 非法字段（prompt）直接拒绝
+    try:
+        api_helpers.resume_workflow_run(cfg, wf_session_id, step_overrides={'solo': {'prompt': '改逻辑，不允许'}})
+        raise AssertionError('应抛出 WorkflowApiError')
+    except api_helpers.WorkflowApiError as e:
+        assert e.code == 'bad_override'
+        print(f'✅ 非法字段（prompt）被拒绝：{e.message[:50]}...')
+
+    # 3. 引用不存在的 step_id 同样拒绝
+    try:
+        api_helpers.resume_workflow_run(cfg, wf_session_id, step_overrides={'no_such_step': {'timeout': 10}})
+        raise AssertionError('应抛出 WorkflowApiError')
+    except api_helpers.WorkflowApiError as e:
+        assert e.code == 'bad_override'
+        print('✅ 引用不存在的 step_id 被拒绝')
+"
+```
+
+**期望输出**：3 个 ✅
+
+---
+
+### 单元测试九：Watchdog 连续同类失败提前升级 `NEEDS_FIX`
+
+```bash
+PYTHONPATH=src python3 -c "
+import tempfile
+from unittest.mock import patch
+from mini_agent.workflow.schema import WorkflowDef, WorkflowStep, StepResult, StepStatus
+from mini_agent.workflow.runner import WorkflowRunner
+from mini_agent.workflow.watchdog import WorkflowWatchdog
+from mini_agent.workflow import registry as wf_registry
+from mini_agent.storage.paths import AgentPaths
+
+# 1. watchdog 层：连续同 error_type 达阈值才升级，不同类型打断计数
+paths = AgentPaths(project_root=tempfile.mkdtemp())
+control = wf_registry.register('wfs_p10_demo')
+wd = WorkflowWatchdog(paths=paths, workflow_session_id='wfs_p10_demo', control=control)
+assert wd.report_attempt_failure('s1', 'TimeoutError', threshold=2) is False
+assert wd.report_attempt_failure('s1', 'TimeoutError', threshold=2) is True
+print('✅ 连续 2 次同一 error_type 后触发升级')
+
+wd2 = WorkflowWatchdog(paths=paths, workflow_session_id='wfs_p10_demo2', control=wf_registry.register('wfs_p10_demo2'))
+assert wd2.report_attempt_failure('s1', 'TimeoutError', threshold=2) is False
+assert wd2.report_attempt_failure('s1', 'ValueError', threshold=2) is False  # 类型不同，计数被打断
+assert wd2.report_attempt_failure('s1', 'TimeoutError', threshold=2) is False  # 重新从 1 计数
+print('✅ error_type 不同时不触发提前升级（计数被打断重新开始）')
+
+# 2. 集成 runner._execute_step_with_error_retry：阈值=2 时第 2 次失败即短路进入 NEEDS_FIX
+class FakeWfCfg:
+    retry_on_error_backoff_seconds=0.0
+
+class FakeCfg:
+    project_root='/tmp'; verbose=False; sandbox=False
+    model='t'; llm_provider='anthropic'; llm_base_url=None; api_key='t'
+    workflow=FakeWfCfg()
+
+step = WorkflowStep(id='flaky', name='flaky', prompt='p', retry_on_error=5, escalate_after_n_same_failures=2)
+runner = WorkflowRunner(FakeCfg())
+runner._current_wf = WorkflowDef(name='wf', steps=[step])
+runner._current_watchdog = WorkflowWatchdog(
+    paths=AgentPaths(project_root=tempfile.mkdtemp()),
+    workflow_session_id='wfs_int',
+    control=wf_registry.register('wfs_int'),
+)
+
+call_count = {'n': 0}
+def _fake_bounded(step_, resolved_prompt, step_results):
+    call_count['n'] += 1
+    return StepResult(step_id=step_.id, status=StepStatus.FAILED, error='boom', error_type='TimeoutError')
+
+with patch.object(WorkflowRunner, '_execute_step_bounded', side_effect=_fake_bounded):
+    sr = runner._execute_step_with_error_retry(step, 'prompt', {})
+
+assert sr.status == StepStatus.NEEDS_FIX
+assert call_count['n'] == 2, f'阈值=2 时应只调用 2 次，实际 {call_count[\"n\"]} 次（未跑满 retry_on_error=5）'
+assert '连续' in sr.error
+print(f'✅ 连续 2 次同类失败后提前判 NEEDS_FIX，跳过剩余重试预算（{sr.error[:40]}...）')
+"
+```
+
+**期望输出**：3 个 ✅
+
+---
+
 
 
 | 测试项 | 验证方式 | 通过标志 |
@@ -793,3 +1039,9 @@ with tempfile.TemporaryDirectory() as tmp:
 | 单文件模式不构造 bundle | 单元测试六 | `build_resource_bundle` 返回 `None` |
 | doc_change_review 端到端执行 | 场景八 | 4 个 step 按序完成，报告正常生成 |
 | `/workflow to-dir` 迁移 | 场景九 | 迁移后目录结构、字段、校验均正确 |
+| `test_workflow_step` 沙箱测试（不落盘 + mock 占位符替换） | P10 单元测试七 | 4 个断言通过 |
+| `test_workflow_step` 对 human_input/require_approval 跳过 | P10 单元测试七 | 按预期提示跳过，不阻塞 |
+| `resume_workflow_run(step_overrides=...)` 一次性覆盖不污染定义 | P10 单元测试八 | 持久化 YAML 前后一致 |
+| `step_overrides` 非法字段/未知 step_id 被拒绝 | P10 单元测试八 | 抛出 `bad_override`，不静默忽略 |
+| watchdog 连续同类失败提前升级 `NEEDS_FIX` | P10 单元测试九 | 阈值命中即短路，跳过剩余重试预算 |
+| watchdog 不同 error_type 打断连续计数 | P10 单元测试九 | 计数重新从 1 开始，不误触发升级 |
