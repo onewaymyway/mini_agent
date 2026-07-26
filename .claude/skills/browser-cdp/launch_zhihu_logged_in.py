@@ -57,6 +57,29 @@ def find_chrome():
     return None
 
 
+def _remove_stale_singleton_locks(user_data_dir: Path) -> None:
+    """
+    [next_doc/browser_cdp_stability_fixes.md #1（修正版）] 真正的根因：Chrome
+    异常退出（被 taskkill/进程被杀/崩溃）后会在 user-data-dir 下留下
+    SingletonLock/SingletonSocket/SingletonCookie 这几个锁文件。下次用同一个
+    user-data-dir 启动时，如果这些锁文件还在，Chrome 会认为"已经有另一个
+    实例在用这个 profile"，进而**不会真正加载这个 profile 的 cookies/session**
+    ——不是目录/文件被删除，是 profile 没被正常使用，表现出来就是"登录态
+    在重启后丢了"。
+
+    browser_launch.py::spawn_browser() 里一直有这一步（_remove_singleton_locks），
+    但这个独立的 launch_zhihu_logged_in.py 脚本之前没有，是本次修复遗漏的
+    真正原因。只删除这三个锁文件，不动 cookies/sessions 等真实登录数据。
+    """
+    for name in ("SingletonLock", "SingletonSocket", "SingletonCookie"):
+        p = user_data_dir / name
+        try:
+            if p.exists() or p.is_symlink():
+                p.unlink()
+        except Exception:
+            pass
+
+
 def check_zhihu_logged_in(port: int) -> bool:
     """检查知乎是否已登录"""
     try:
@@ -178,6 +201,11 @@ def main():
         else:
             print(f"[warn] 知乎未登录，请在浏览器中登录")
     else:
+        # [next_doc/browser_cdp_stability_fixes.md #1] 只在真的要拉起新进程
+        # 时清理锁文件——如果端口已经通了（port_in_use 分支），说明浏览器
+        # 本来就在正常运行，不需要也不应该动锁文件。
+        _remove_stale_singleton_locks(USER_DATA_DIR)
+
         # 构建启动命令
         cmd = [
             browser_path,

@@ -52,14 +52,23 @@
 - `search_zhihu`/`enrich_questions` 两步保留为 `skill_agent`（真实浏览器交互需要临场应变），
   `analyze_doc`/`filter_questions` 用 `python_step`（纯结构化数据产出，走批量/可靠路径）。
 
-### E. browser-cdp 稳定性修复
-- **根因定位**：`--dedicated` 的 profile 目录默认在项目内 `temp/cdp_brower_data/`，多数
-  工程约定里 `temp/` 会被定期清空，导致登录态被误删。修复为 `~/.cdp_skill/profiles/`（与
-  `registry.json` 同级的稳定位置）。
-- 新增 profile 目录下的锁文件 `.mini_agent_lock.json`（port/pid/启动时间），`registry.json`
-  查不到条目时作为第二条线索兜底探测，避免 registry 状态丢失导致误判"无可用实例"而重复创建。
+### E. browser-cdp 稳定性修复（含一次自我纠错）
+- **第一版判断有误**：最初把登录态丢失归因于"专用实例 profile 目录在项目内 `temp/` 下
+  容易被清理脚本清空"，把默认目录改到了 `~/.cdp_skill/profiles/`。经进一步排查（对比
+  `launch_zhihu_logged_in.py`/`zhihu_search_with_login.py`/`browser_launch.py` 三处不同
+  的浏览器启动路径），这个判断不成立，已改回项目本地目录 `temp_cdp/cdp_brower_data/`。
+- **真正根因**：`launch_zhihu_logged_in.py`（一个独立的知乎登录浏览器启动脚本，固定端口
+  9336）拉起新 Chrome 进程前没有清理 `SingletonLock`/`SingletonSocket`/`SingletonCookie`
+  这几个单实例锁文件——这几个文件在 Chrome 异常退出（被强制杀进程/崩溃）后会残留，导致
+  下次启动时 Chrome 认为"另一个实例正在用这个 profile"，从而不会正常加载 cookies/session，
+  表现为"重启后登录状态丢了"（profile 目录和数据其实都完好，只是没被正确加载）。
+  `browser_launch.py::spawn_browser()` 本来就有这一步清理逻辑，只是这个独立脚本没有跟上。
+  修复：给 `launch_zhihu_logged_in.py` 补上同样的 `_remove_stale_singleton_locks()`。
+- 另外新增 profile 目录下的锁文件 `.mini_agent_lock.json`（port/pid/启动时间），作为
+  `registry.json` 之外的第二条识别线索，`registry.json` 状态丢失时也能正确探测复用已有
+  实例，不会误判"无可用实例"而重复创建。
 - `SKILL.md` 补充醒目提示：同一任务内所有浏览器调用必须固定同一个 `--name`。
-- 详见 `next_doc/browser_cdp_stability_fixes.md`。
+- 详见 `next_doc/browser_cdp_stability_fixes.md`（含第一版判断错误的更正说明）。
 
 ## 测试
 

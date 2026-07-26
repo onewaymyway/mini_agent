@@ -76,15 +76,15 @@ MAC_CHROME_CANDIDATES = [
 DEFAULT_DEDICATED_PORT = 9333
 SKILL_HOME = os.path.join(os.path.expanduser("~"), ".cdp_skill")
 REGISTRY_PATH = os.path.join(SKILL_HOME, "registry.json")
-# [next_doc/browser_cdp_stability_fixes.md #1] 专用实例的 profile 目录必须放在
-# 稳定、不会被外部流程清理的位置。历史实现放在项目内 "temp/cdp_brower_data"
-# 下——"temp/" 这个名字在几乎所有工程约定里都意味着"可随时清空的临时目录"，
-# workflow/CI/构建脚本经常会在每次运行前 rm -rf temp/，这会直接删掉专用浏览器
-# 实例的整个 profile（含登录 cookies/session），表现为"每次新建的浏览器都不
-# 记得之前的登录状态"——这不是 Chrome 或 CDP 连接的问题，是 profile 目录选址
-# 选错了地方。改到 SKILL_HOME（~/.cdp_skill/profiles/），与 registry.json
-# 放在同一个"本技能专属、不属于任何项目 temp 目录"的稳定位置下。
-DEFAULT_PROFILE_ROOT = os.path.join(SKILL_HOME, "profiles")
+# [next_doc/browser_cdp_stability_fixes.md #1（修正版）] 之前一度怀疑"目录在
+# temp/ 下会被外部清理脚本清空"是登录态丢失的根因，把它挪到了 ~/.cdp_skill/
+# 下；经过更仔细的排查，这不是根因（真正原因见下面 launch_zhihu_logged_in.py
+# 里的 stale SingletonLock 说明），已经改回项目本地目录。用
+# "temp_cdp/" 而不是原来的 "temp/cdp_brower_data"，是为了在措辞上跟"逐次可
+# 丢弃的临时文件"区分开（即便这次判断目录本身不是根因，"temp/"这个名字仍然
+# 容易被不知情的清理脚本当成常规临时目录处理，用更具体的名字降低误伤概率），
+# 但不再假设"目录被清空"是登录态丢失的实际原因。
+DEFAULT_PROFILE_ROOT = os.path.join("temp_cdp", "cdp_brower_data")
 
 
 def find_chrome_binary() -> str | None:

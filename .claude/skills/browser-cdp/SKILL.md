@@ -141,8 +141,12 @@ python browser_nav.py --port 9333 --tab <id> --goto "https://example.com"
 都要用**同一个固定的实例名**（比如做知乎相关任务统一用 `--name zhihu_session`），不要每次
 调用都用默认值或临时想一个名字——用不同名字等于每次都是全新登录态。第一次用某个 `--name`
 跑的时候如果页面显示未登录，提示用户在这个专用窗口里手动登录一次即可，之后同名字复用会
-保留登录态（profile 目录固定存放在 `~/.cdp_skill/profiles/<name>/`，不在任何项目的 `temp/`
-目录下，不会被项目自身的清理脚本意外清空）。
+保留登录态（profile 目录固定存放在 `temp_cdp/cdp_brower_data/<name>/`）。
+
+如果同名字复用后登录态仍然看起来"丢了"，大概率不是目录/文件被删，而是上次浏览器非正常退出
+（被强制杀进程/崩溃）后残留的 Chrome 单实例锁文件（`SingletonLock` 等）阻止了这次启动正确
+加载该 profile；`browser_launch.py` 每次启动新进程前都会自动清理这些锁文件，遇到这种情况
+不需要手动处理，直接重新 `--dedicated --name <同一个名字>` 即可。
 
 需要连接用户已登录的真实浏览器窗口（共享登录态），或无 GUI 服务器环境用 headless，
 加载 `browser-launch-scenarios` 子资源查看完整步骤。
