@@ -416,7 +416,7 @@ def main():
     parser.add_argument("--max-detail", type=int, default=5, help="最多抓取详情的专栏文章数 (默认: 5)")
     parser.add_argument("--output-dir", default=str(ZHIHU_OUTPUT_DIR), help="输出目录")
     parser.add_argument("--port", type=int, default=9333, help="CDP调试端口 (默认: 9333)")
-    parser.add_argument("--name", default="zhihu_search", help="浏览器实例名称")
+    parser.add_argument("--name", default="zhihu_session", help="浏览器实例名称（默认 zhihu_session，与其他知乎脚本/登录态共用，避免误开新实例）")
     parser.add_argument("--headless", action="store_true", help="无头模式")
     parser.add_argument("--wait-timeout", type=int, default=20, help="页面等待超时秒数")
     parser.add_argument("--max-chars", type=int, default=5000, help="内容最大字符数")

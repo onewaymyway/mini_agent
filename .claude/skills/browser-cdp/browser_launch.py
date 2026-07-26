@@ -385,6 +385,31 @@ def cmd_dedicated(args: argparse.Namespace) -> None:
         _save_registry(reg)
         return
 
+    # [治本] 按 name 没查到活着的实例，但调用方显式传了 --port，且那个端口上
+    # 已经有一个能连上的调试浏览器（可能是别的 name/别的脚本/用户手动开的，
+    # 也可能就是同一个实例只是这次调用用了不同的 --name）——这种情况下不能
+    # 直接无视它去新开一个，那样只会把"名字对不上"的问题伪装成"看起来正常
+    # 启动了"，实际上开出第二个没有登录态的浏览器。只要端口是活的，就应当
+    # 直接复用那个端口，并把当前这个 name 也指向它，而不是新建。
+    # 注意：只在"显式传入 --port"时生效（args.port is not None），避免在
+    # 用户根本没指定端口、只是走默认自动探测空闲端口的场景里被误判为"复用"。
+    if args.port is not None and is_debug_port_alive(args.host, args.port):
+        info = version_info(args.host, args.port)
+        print(
+            f"[ok] 端口 {args.port} 上已有可连接的调试浏览器 ({info.get('Browser')})，"
+            f"直接复用（name='{args.name}' 在 registry 里未匹配到同一端口的记录，"
+            f"已按显式指定的 --port 复用并回填 registry，不再新建实例）"
+        )
+        reg[args.name] = {
+            "port": args.port,
+            "pid": (existing or {}).get("pid") if existing and existing.get("port") == args.port else None,
+            "profile_dir": (existing or {}).get("profile_dir", args.user_data_dir or os.path.join(DEFAULT_PROFILE_ROOT, args.name)),
+            "headless": args.headless,
+            "binary": args.binary,
+        }
+        _save_registry(reg)
+        return
+
     # 同名实例存在但端口已经不通了：说明是本技能自己之前启动、后来挂掉/崩溃的孤儿进程。
     # 只处理 registry 里记录的、由本技能启动的 pid，绝不碰任何其他 Chrome 进程。
     if existing:
