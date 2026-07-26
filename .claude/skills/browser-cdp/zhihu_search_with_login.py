@@ -195,6 +195,7 @@ def main():
     parser.add_argument("--port", type=int, default=DEFAULT_PORT, help=f"调试端口（默认 {DEFAULT_PORT}）")
     parser.add_argument("--max-results", type=int, default=8, help="每个关键词最大结果数")
     parser.add_argument("--output", default="zhihu_real_questions.json", help="输出文件")
+    parser.add_argument("--keywords-file", help="包含自定义关键词的 JSON 文件路径（数组格式）")
     
     args = parser.parse_args()
     
@@ -220,12 +221,23 @@ def main():
     
     all_results = []
     
-    if args.batch:
-        # 批量搜索
+    # 确定要搜索的关键词列表
+    search_queries = []
+    if args.keywords_file:
+        # 从文件读取自定义关键词
+        with open(args.keywords_file, 'r', encoding='utf-8') as f:
+            custom_keywords = json.load(f)
+        for i, kw in enumerate(custom_keywords):
+            search_queries.append((kw, f"doc_kw_{i}", f"文档关键词: {kw}"))
+        print(f"\n使用自定义关键词文件: {args.keywords_file} (共 {len(custom_keywords)} 个关键词)")
+    elif args.batch:
+        # 使用硬编码的 SEARCH_QUERIES
+        search_queries = SEARCH_QUERIES
         print(f"\n开始批量搜索 {len(SEARCH_QUERIES)} 个关键词...\n")
-        
-        for i, (query, content_id, content_title) in enumerate(SEARCH_QUERIES, 1):
-            print(f"[{i}/{len(SEARCH_QUERIES)}] ", end="")
+    
+    if search_queries:
+        for i, (query, content_id, content_title) in enumerate(search_queries, 1):
+            print(f"[{i}/{len(search_queries)}] ", end="")
             
             questions = search_zhihu(query, port=args.port, max_results=args.max_results)
             
