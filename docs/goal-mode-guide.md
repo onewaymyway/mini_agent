@@ -598,6 +598,20 @@ Agent 的 memory（`agent._memory`），复用既有的 lesson memory 基础设�
 > 会自动带纠正提示重试一次；`/goal <文本>` 的修订对话（`_looks_like_verbatim_echo`
 > 同样应用于 `revise`）里，也会过滤掉直接照抄你反馈原句的"新标准"。如果生成
 > 仍然不够具体，直接用修改意见让它继续调整即可。
+>
+> **实现机制（2026-07 起）**：GoalSpecBuilder 不再构造一个"受限 Agent"去跑这
+> 件事，而是直接通过 `LLMHelper.ask()` 发起一次裸的单轮 chat completion——
+> 不注册任何工具、不连接任何 MCP server，模型能做的唯一事情就是把 JSON 写
+> 出来。这是修复一个实际踩到的问题：受限 Agent 即使工具注册表为空，仍然会
+> 按主循环方式连接已配置的 MCP server，模型看到自己身处通用 Agent 环境里，
+> 会习惯性地先尝试 `skill_list`/`bash` 摸底，但这些工具根本不在空注册表里，
+> 每轮都以 `Unknown tool` 报错收场，在有限轮次内说不出一句 JSON，只能退到
+> 通用兜底标准（终端表现为 `[GoalSpecBuilder] LLM 调用失败，将使用兜底验收
+> 标准`）。改为直连 LLM 后不存在"轮次预算"和"工具幻觉"这两个失败面。
+> 调用的 model/provider 仍然遵循 `spec_builder_model`/`spec_builder_provider`
+> > 主 Agent 当前模型这个优先级；从活跃 Agent 发起时会直接复用该 Agent 的
+> `LLMHelper`（天然跟随 `/model`、`/provider` 实时切换），拿不到活跃 Agent 时
+> （如独立工具函数）才现建一条单链 client。
 
 ### 1.5 从当前对话历史自动生成目标
 
@@ -784,11 +798,14 @@ Goal 执行结果： done
 
 GoalJudge 的输出通过两层机制确保不会被误认成主 Agent 在说话：
 
-1. **专属显示名**：GoalJudge / GoalSpecBuilder 内部都是独立的 `Agent` 实例，
-   各自设置了专属的 `cfg.agent_name`（`🎯 GoalJudge` / `📋 GoalSpecBuilder`），
-   而不是沿用主 Agent 的 `cfg.agent_name`。这样它们各自调用模型时，终端里
-   打印的前缀（`print_assistant_prefix`）就是 `🎯 GoalJudge ❯ ...`，一眼能
-   看出这是评估者/协商助手在说话，不会和主 Agent 的输出混在一起。
+1. **专属显示名**：GoalJudge 内部是独立的 `Agent` 实例，设置了专属的
+   `cfg.agent_name`（`🎯 GoalJudge`），而不是沿用主 Agent 的 `cfg.agent_name`。
+   这样它调用模型时，终端里打印的前缀（`print_assistant_prefix`）就是
+   `🎯 GoalJudge ❯ ...`，一眼能看出这是评估者在说话，不会和主 Agent 的输出
+   混在一起。
+   （注意：`GoalSpecBuilder` 不在此列——见下文「验收标准生成质量保障」，
+   它从 2026-07 起改为直接调用 `LLMHelper.ask()`，不再构造 Agent 实例，
+   自然也没有 `agent_name` 这个概念。）
 2. **结构化展示块**：GoalRunner 每轮结束后额外打印一份 `format_feedback()`
    格式化过的核查结果，带 `[🎯 目标核查 · goal_judge]` 标题——展示/注入
    主 Agent 历史时用的是解析出的干净 `feedback` 字段内容，不是原始 JSON
