@@ -26,6 +26,7 @@ workflow/py_step_runner.py — python_step 子进程侧入口
 from __future__ import annotations
 
 import json
+import os
 import runpy
 import sys
 import traceback
@@ -51,7 +52,7 @@ def _build_llm_helper(app_cfg_dict: dict):
         debug_llm=app_cfg_dict.get("debug_llm", False),
         debug_llm_console=app_cfg_dict.get("debug_llm_console", False),
     )
-    cfg.api_key = app_cfg_dict.get("api_key")
+    cfg.api_key = os.environ.get("MINI_AGENT_STEP_API_KEY") or app_cfg_dict.get("api_key")
     return LLMHelper.from_config(cfg)
 
 
@@ -68,7 +69,7 @@ def _make_run_agent_turn(app_cfg_dict: dict):
             model=app_cfg_dict.get("model"),
             llm_provider=app_cfg_dict.get("llm_provider"),
             llm_base_url=app_cfg_dict.get("llm_base_url"),
-            api_key=app_cfg_dict.get("api_key"),
+            api_key=os.environ.get("MINI_AGENT_STEP_API_KEY") or app_cfg_dict.get("api_key"),
             debug_llm=app_cfg_dict.get("debug_llm", False),
             debug_llm_console=app_cfg_dict.get("debug_llm_console", False),
             max_turns=max_turns,

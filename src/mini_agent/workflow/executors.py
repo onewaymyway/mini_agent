@@ -33,6 +33,7 @@ runner 里，不下沉到每个 Executor，避免重复。
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import sys
 import tempfile
@@ -310,6 +311,13 @@ class ScriptStepExecutor(StepExecutor):
             # Unix: use start_new_session for proper process group handling
             _popen_kwargs["start_new_session"] = True
         proc = subprocess.run(step.script, **_popen_kwargs)
+        # [P11 §6] 无论成功/失败都把 stdout/stderr 挂到 runner 实例属性上，
+        # 供 _execute_step 合并进 StepResult.debug_log——之前只有失败时
+        # 才能在异常消息里看到，成功时直接丢弃。
+        runner._last_subprocess_debug = {
+            "subprocess_stdout": proc.stdout,
+            "subprocess_stderr": proc.stderr,
+        }
         if proc.returncode != 0:
             raise RuntimeError(
                 f"脚本执行失败（returncode={proc.returncode}）：\n"
@@ -358,7 +366,18 @@ class PythonStepExecutor(StepExecutor):
         # 的 step_results 赋给 self._current_step_results，供这里读取——
         # python_step 是唯一需要拿到"全部上游结果字典"的 executor（其它
         # 类型都是走 prompt 占位符替换，不需要原始 dict）。
+        #
+        # [P11 §4] 默认按 step.depends_on 过滤：脚本只能读到显式声明过依赖
+        # 的上游 step 结果，不能"偷看"未声明依赖的 step——依赖关系应该在
+        # workflow 定义里可见，不应该靠脚本内容里读字典绕过，这也是拓扑
+        # 分批"同层并发安全"假设成立的前提之一。受
+        # cfg.workflow.python_step_inputs_filtered_by_depends_on 开关控制，
+        # 默认开启；关闭后回退到旧版本"传全部已跑完 step"的行为，供还没来得
+        # 及给旧脚本补全 depends_on 声明的用户过渡期临时兼容。
         upstream = getattr(runner, "_current_step_results", None) or {}
+        filter_by_deps = bool(getattr(wf_cfg, "python_step_inputs_filtered_by_depends_on", True))
+        if filter_by_deps:
+            upstream = {sid: r for sid, r in upstream.items() if sid in set(step.depends_on)}
         inputs_payload = {
             sid: {"status": getattr(r.status, "value", str(r.status)), "output": r.output, "score": r.score}
             for sid, r in upstream.items()
@@ -381,7 +400,11 @@ class PythonStepExecutor(StepExecutor):
                 "model": runner._effective_step_field(step, "model", None) or runner._cfg.model,
                 "llm_provider": runner._cfg.llm_provider,
                 "llm_base_url": runner._cfg.llm_base_url,
-                "api_key": runner._cfg.api_key,
+                # [P11 §5] api_key 不再写进这里——落盘的 request.json 明文
+                # 保存密钥即使目录会自动清理，仍有窗口期被同机进程/崩溃
+                # 转储读到的风险。改为通过环境变量 MINI_AGENT_STEP_API_KEY
+                # 传给子进程（见下方 subprocess.run 的 env 参数），
+                # py_step_runner.py 优先读该环境变量。
                 "debug_llm": getattr(runner._cfg, "debug_llm", False),
                 "debug_llm_console": getattr(runner._cfg, "debug_llm_console", False),
                 "skills_dir": str(getattr(runner._cfg, "skills_dir", "") or "") or None,
@@ -393,11 +416,16 @@ class PythonStepExecutor(StepExecutor):
             req_path.write_text(json.dumps(request, ensure_ascii=False), encoding="utf-8")
 
             _is_windows = sys.platform == "win32"
+            # [P11 §5] api_key 通过环境变量传递，不落盘进 request.json。
+            _child_env = dict(os.environ)
+            if runner._cfg.api_key:
+                _child_env["MINI_AGENT_STEP_API_KEY"] = runner._cfg.api_key
             _popen_kwargs: dict = {
                 "cwd": str(runner._cfg.project_root),
                 "capture_output": True,
                 "text": True,
                 "timeout": timeout,
+                "env": _child_env,
             }
             if _is_windows:
                 _popen_kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
@@ -408,6 +436,14 @@ class PythonStepExecutor(StepExecutor):
                 [sys.executable, "-m", "mini_agent.workflow.py_step_runner", str(req_path)],
                 **_popen_kwargs,
             )
+
+            # [P11 §6] 无论成功/失败都把 stdout/stderr 挂到 runner 实例属性上，
+            # 供 _execute_step 合并进 StepResult.debug_log（成功时之前会
+            # 被直接丢弃，脚本里的 print() 调试信息只有失败才看得到）。
+            runner._last_subprocess_debug = {
+                "subprocess_stdout": proc.stdout,
+                "subprocess_stderr": proc.stderr,
+            }
 
             last_line = ""
             for line in (proc.stdout or "").splitlines():

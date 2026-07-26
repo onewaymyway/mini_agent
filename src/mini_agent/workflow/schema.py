@@ -332,7 +332,14 @@ class WorkflowDef:
             ],
         }
 
-    def validate(self, *, check_placeholders: bool = True, check_condition: bool = True, role_checker=None) -> list[str]:
+    def validate(
+        self,
+        *,
+        check_placeholders: bool = True,
+        check_condition: bool = True,
+        check_placeholder_depends_on: bool = True,
+        role_checker=None,
+    ) -> list[str]:
         """校验工作流定义，返回错误列表（空列表=合法）。
 
         [workflow机制改进计划.md P6] 保存前引用完整性校验：
@@ -458,23 +465,27 @@ class WorkflowDef:
             except SyntaxError as e:
                 errors.append(f"步骤 {step.id!r} 的 condition 表达式语法错误：{e}")
 
+        # [P11 §1] `_transitive_deps` 由 check_condition/check_placeholders
+        # 两个分支共用（原来只在 check_condition 分支里定义），提到外层避免
+        # 重复实现——两处都需要"引用的 step 是否在该 step 的 depends_on
+        # （直接或传递）范围内"这同一层判断。
+        step_deps_map = {s.id: set(s.depends_on) for s in self.steps}
+
+        def _transitive_deps(step_id: str, _visited: Optional[set] = None) -> set:
+            _visited = _visited if _visited is not None else set()
+            if step_id in _visited:
+                return set()
+            _visited.add(step_id)
+            result = set(step_deps_map.get(step_id, ()))
+            for d in list(result):
+                result |= _transitive_deps(d, _visited)
+            return result
+
         # [P9-3] 引用一致性检查（引用的 step 是否存在/是否在 depends_on 范围
         # 内）单独受 check_condition 开关控制（对应
         # cfg.workflow.condition_static_check_enabled）；语法检查本身始终
         # 执行，不受此开关影响——语法错误无论如何都不该被放过。
         if check_condition:
-            step_deps_map = {s.id: set(s.depends_on) for s in self.steps}
-
-            def _transitive_deps(step_id: str, _visited: Optional[set] = None) -> set:
-                _visited = _visited if _visited is not None else set()
-                if step_id in _visited:
-                    return set()
-                _visited.add(step_id)
-                result = set(step_deps_map.get(step_id, ()))
-                for d in list(result):
-                    result |= _transitive_deps(d, _visited)
-                return result
-
             for step in self.steps:
                 if not step.condition:
                     continue
@@ -507,7 +518,8 @@ class WorkflowDef:
                 if step.role and not role_checker(step.role):
                     errors.append(f"步骤 {step.id!r} 引用了不存在的角色 Agent profile：{step.role!r}")
 
-        # [P6] Prompt 占位符引用完整性校验：{step_id.output}/{step_id.score}
+        # [P6][P11 §1/§3] Prompt 占位符引用完整性校验：
+        # {step_id.output}/{step_id.score}/{step_id.output_file}
         if check_placeholders:
             import re
             for step in self.steps:
@@ -521,11 +533,29 @@ class WorkflowDef:
                             f"步骤 {step.id!r} 的 prompt 引用了不存在的步骤 {ref_id!r}"
                             f"（占位符 {{{key}}}）"
                         )
-                    elif ref_field not in ("output", "score"):
+                        continue
+                    if ref_field not in ("output", "score", "output_file"):
                         errors.append(
                             f"步骤 {step.id!r} 的 prompt 占位符 {{{key}}} 引用了未知字段 "
-                            f"{ref_field!r}（只支持 .output / .score）"
+                            f"{ref_field!r}（只支持 .output / .score / .output_file）"
                         )
+                        continue
+                    # [P11 §1] 存在但引用字段合法时，额外检查是否在 depends_on
+                    # （直接或传递）范围内——与上面 condition 的一致性检查是
+                    # 同一层判断，只是校验对象从 condition 表达式换成了 prompt
+                    # 占位符。这类问题此前只在运行期因为该 step 尚未执行、
+                    # step_results 里还没有对应 key 才会以 KeyError 暴露，
+                    # 现在提前到 save_workflow 阶段拦下来。受
+                    # cfg.workflow.placeholder_depends_on_check_enabled 开关
+                    # 控制，默认开启；关闭后仍保留上面"引用是否存在"的检查。
+                    if check_placeholder_depends_on:
+                        ancestors = _transitive_deps(step.id)
+                        if ref_id not in ancestors:
+                            errors.append(
+                                f"步骤 {step.id!r} 的 prompt 占位符 {{{key}}} 引用了步骤 "
+                                f"{ref_id!r}，但未在 depends_on 中声明依赖（直接或传递），"
+                                f"运行时该步骤结果可能还不存在（会在执行期抛出 KeyError）"
+                            )
 
         # [next_doc/workflow_python_step_and_zhihu_publish_plan.md §A1]
         # 保持 validate() 原有签名/返回值不变（仍只返回 errors，向后兼容
@@ -550,6 +580,18 @@ class StepResult:
     error_type: Optional[str] = None    # 异常类名，如 "AttributeError"
     traceback: Optional[str] = None     # traceback.format_exc() 全文
     context: dict = field(default_factory=dict)  # 出错时的 step/workflow 上下文快照，见 runner.py _build_error_context
+    # [P11 §6 workflow_input_passing_and_debug_logging_improvement_plan.md]
+    # 调试专用运行日志，受 cfg.workflow.debug_log_enabled 开关控制（默认
+    # 关闭，避免长期运行的 workflow session 目录体积膨胀）。开启后由
+    # runner 在每个 step 执行完（无论成功失败）统一填充，典型字段：
+    #   resolved_prompt          — _resolve_prompt 替换占位符后的最终文本
+    #   unresolved_placeholders  — inputs 里没找到对应值、被原样保留的占位符
+    #   upstream_step_ids_used   — 实际引用到的上游 step_id（可与 depends_on diff）
+    #   started_at / finished_at — ISO8601 时间戳
+    #   thread_id / batch_index  — 并发批次执行位置，用于核对是否真的并发
+    #   subprocess_stdout/stderr — python_step/script 子进程输出（成功时也保留）
+    # 长文本字段按 cfg.workflow.debug_log_max_chars 截断，不无限增长。
+    debug_log: dict = field(default_factory=dict)
 
     def to_dict(self) -> dict:
         return {
@@ -563,6 +605,7 @@ class StepResult:
             "error_type": self.error_type,
             "traceback": self.traceback,
             "context": self.context,
+            "debug_log": self.debug_log,
         }
 
     @classmethod
@@ -578,4 +621,5 @@ class StepResult:
             error_type=data.get("error_type"),
             traceback=data.get("traceback"),
             context=data.get("context") if isinstance(data.get("context"), dict) else {},
+            debug_log=data.get("debug_log") if isinstance(data.get("debug_log"), dict) else {},
         )

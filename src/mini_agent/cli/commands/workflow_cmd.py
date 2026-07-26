@@ -55,6 +55,13 @@ cli/commands/workflow_cmd.py — workflow 子命令处理
   /workflow diff <name>                   — [P9-2] 查看该 workflow 定义相对
                                              上次 commit 的改动（结构化 step
                                              级别摘要 + 原始 git diff）
+  /workflow debug <workflow_session_id> <step_id>
+                                           — [P11 §6.3] 打印某个 step 的完整
+                                             调试日志（resolved_prompt/
+                                             未解析占位符/实际引用的上游 step/
+                                             并发线程批次/子进程 stdout-stderr），
+                                             需要该次执行开启了
+                                             cfg.workflow.debug_log_enabled
 
 独立 CLI 独有参数：`--project`/`-p <path>` 指定项目根目录（默认当前目录），
 解析方式与 daemon/user/self 子命令一致，见 cli/app.py::_extract_project_root。
@@ -165,6 +172,8 @@ def _print_usage() -> None:
         "  workflow stats <name>                  汇总历史执行统计（成功率/步骤耗时评分重试率/condition命中率）\n"
         "  workflow history <name>                查看该 workflow 定义文件的 git 提交历史\n"
         "  workflow diff <name>                   查看该 workflow 定义相对上次 commit 的改动\n"
+        "  workflow debug <workflow_session_id> <step_id>\n"
+        "                                         打印某个 step 的完整调试日志（需开启 debug_log_enabled）\n"
         "命令行独有参数：--project/-p <path> 指定项目根目录（默认当前目录）"
     )
 
@@ -222,6 +231,8 @@ def _dispatch(args: list[str], cfg, standalone: bool = False) -> None:
         _handle_history(cfg, rest)
     elif sub == "diff":
         _handle_diff(cfg, rest)
+    elif sub == "debug":
+        _handle_debug(cfg, rest)
     else:
         R.print_error(f"未知子命令：{sub}（输入 workflow 查看用法）")
 
@@ -422,6 +433,40 @@ def _handle_status(cfg, rest: list[str]) -> None:
         R.print_info(f"  错误：{s.error}")
     for step_id, sr in s.step_results.items():
         R.print_info(f"  - {step_id}: {sr.status.value} ({sr.duration_seconds:.1f}s)")
+
+
+def _handle_debug(cfg, rest: list[str]) -> None:
+    """[P11 §6.3] /workflow debug <workflow_session_id> <step_id>
+    打印某个 step 的完整 debug_log（不受 get_workflow_run_status(verbose=True)
+    的展示长度限制），需要该次执行是在 cfg.workflow.debug_log_enabled=True
+    下跑的，否则 debug_log 为空。"""
+    if len(rest) < 2:
+        R.print_error("用法：/workflow debug <workflow_session_id> <step_id>")
+        return
+    from mini_agent.storage.paths import AgentPaths
+    from mini_agent.workflow.session import WorkflowSession
+
+    paths = AgentPaths(project_root=cfg.project_root)
+    s = WorkflowSession.load(paths, rest[0])
+    if s is None:
+        R.print_error(f"找不到执行记录 {rest[0]!r}")
+        return
+    sr = s.step_results.get(rest[1])
+    if sr is None:
+        R.print_error(f"该次执行里找不到步骤 {rest[1]!r}")
+        return
+    if not sr.debug_log:
+        R.print_warning(
+            f"步骤 {rest[1]!r} 没有 debug_log（该次执行未开启 "
+            f"cfg.workflow.debug_log_enabled，或该 step 类型不产生调试信息）"
+        )
+        return
+    R.print_info(f"步骤 {rest[1]!r} 的调试日志：")
+    for key, value in sr.debug_log.items():
+        if isinstance(value, str) and "\n" in value:
+            R.print_info(f"  {key}:\n    " + value.replace("\n", "\n    "))
+        else:
+            R.print_info(f"  {key}: {value}")
 
 
 def _handle_resume(cfg, rest: list[str], standalone: bool = False) -> None:

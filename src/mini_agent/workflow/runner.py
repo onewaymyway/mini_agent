@@ -279,6 +279,7 @@ class WorkflowRunner:
         # [P7-③1] 供 _effective_step_field() 读取 wf.defaults 做继承合并
         self._current_wf = wf
         self._current_wf_session = wf_session
+        self._step_output_file_paths = {}  # [P11 §3] 每次 run() 重置，避免跨次串路径
         self._current_paths = paths
         # [改进方案 §1] 供 HumanInputStepExecutor 读取 input_key 对应的值，
         # 命中时直接使用、不进入阻塞等待。
@@ -419,7 +420,7 @@ class WorkflowRunner:
             serial_steps = [s for s in pending_in_batch if not self._effective_step_field(s, "allow_parallel", True)]
 
             for step in serial_steps:
-                self._run_one_step(step, step_results, inputs, results_lock)
+                self._run_one_step(step, step_results, inputs, results_lock, batch_index=batch_index)
                 self._persist_progress(paths, wf_session, step_results)
 
             if parallel_steps:
@@ -430,7 +431,7 @@ class WorkflowRunner:
                 )
                 if not use_concurrency:
                     for step in parallel_steps:
-                        self._run_one_step(step, step_results, inputs, results_lock)
+                        self._run_one_step(step, step_results, inputs, results_lock, batch_index=batch_index)
                         self._persist_progress(paths, wf_session, step_results)
                 else:
                     max_workers = min(
@@ -465,7 +466,10 @@ class WorkflowRunner:
                     try:
                         with ThreadPoolExecutor(max_workers=max_workers) as pool:
                             futures = {
-                                pool.submit(self._run_one_step, step, step_results, inputs, results_lock): step
+                                pool.submit(
+                                    self._run_one_step, step, step_results, inputs, results_lock,
+                                    batch_index=batch_index,
+                                ): step
                                 for step in parallel_steps
                             }
                             for future in as_completed(futures):
@@ -590,6 +594,11 @@ class WorkflowRunner:
             fpath = (out_dir / step.output_file).resolve()
             fpath.relative_to(out_dir.resolve())  # 路径穿越保护
             fpath.write_text(output, encoding="utf-8")
+            # [P11 §3] 记录落盘绝对路径，供 {step_id.output_file} 占位符
+            # 在下游 step 的 prompt 里引用。
+            if not hasattr(self, "_step_output_file_paths"):
+                self._step_output_file_paths = {}
+            self._step_output_file_paths[step.id] = str(fpath)
         except Exception as e:
             from mini_agent.errors import log_exception
             log_exception(e, where='mini_agent.workflow.runner.WorkflowRunner._write_step_output_file')
@@ -622,6 +631,7 @@ class WorkflowRunner:
         step_results: dict[str, StepResult],
         inputs: dict,
         results_lock: "threading.Lock",
+        batch_index: Optional[int] = None,
     ) -> None:
         """
         执行单个步骤的完整流程（依赖检查 → 条件判断 → prompt 解析 → 执行 →
@@ -632,8 +642,17 @@ class WorkflowRunner:
         且 gate-retry 重跑前序步骤时会再次写 step_results[dep_id]，没有锁的话
         理论上存在竞态（dict 本身线程安全，但"先读 status 判断依赖是否完成，
         再写自己的结果"这个复合操作不是原子的）。
+
+        [P11 §6] batch_index 是该 step 所属的拓扑分批序号，只用于调试日志
+        （debug_log.batch_index），不参与执行逻辑本身，默认 None 兼容旧的
+        直接调用方式（如单测）。
         """
         import mini_agent.ui.renderer as R
+        import datetime as _dt
+
+        wf_cfg = getattr(self._cfg, "workflow", None)
+        debug_log_enabled = bool(getattr(wf_cfg, "debug_log_enabled", False))
+        _step_started_at = _dt.datetime.now(_dt.timezone.utc).isoformat()
 
         with results_lock:
             R.print_info(f"[Workflow] 步骤：{step.id}（{step.name}）")
@@ -659,6 +678,10 @@ class WorkflowRunner:
                 )
                 return
 
+            _unresolved_placeholders, _upstream_step_ids_used = (
+                self._scan_prompt_placeholders(step.prompt, step_results, inputs)
+                if debug_log_enabled else ([], [])
+            )
             try:
                 resolved_prompt = self._resolve_prompt(step.prompt, step_results, inputs)
             except KeyError as e:
@@ -702,6 +725,30 @@ class WorkflowRunner:
         finally:
             if watchdog is not None:
                 watchdog.register_step_end(step.id)
+
+        if debug_log_enabled:
+            import threading as _threading
+            max_chars = int(getattr(wf_cfg, "debug_log_max_chars", 4000))
+
+            def _truncate(text: Optional[str]) -> Optional[str]:
+                if not text or len(text) <= max_chars:
+                    return text
+                return text[:max_chars] + f"...(truncated, {len(text) - max_chars} more chars)"
+
+            sr.debug_log = {
+                **sr.debug_log,
+                "resolved_prompt": _truncate(resolved_prompt),
+                "unresolved_placeholders": _unresolved_placeholders,
+                "upstream_step_ids_used": _upstream_step_ids_used,
+                "started_at": _step_started_at,
+                "finished_at": _dt.datetime.now(_dt.timezone.utc).isoformat(),
+                "thread_id": _threading.get_ident(),
+                "batch_index": batch_index,
+            }
+            if sr.debug_log.get("subprocess_stdout"):
+                sr.debug_log["subprocess_stdout"] = _truncate(sr.debug_log["subprocess_stdout"])
+            if sr.debug_log.get("subprocess_stderr"):
+                sr.debug_log["subprocess_stderr"] = _truncate(sr.debug_log["subprocess_stderr"])
 
         with results_lock:
             step_results[step.id] = sr
@@ -898,9 +945,12 @@ class WorkflowRunner:
     ) -> str:
         """
         替换 prompt 中的占位符：
-          {step_id.output}  → 该步骤的输出文本
-          {step_id.score}   → 该步骤的评分（0-100 整数字符串）
-          {variable}        → inputs 中的对应值
+          {step_id.output}       → 该步骤的输出文本
+          {step_id.score}        → 该步骤的评分（0-100 整数字符串）
+          {step_id.output_file}  → 该步骤输出落盘文件的绝对路径（[P11 §3]，
+                                    仅当该 step 设置了 output_file 且已落盘时
+                                    有值；否则抛 KeyError，与其它字段一致）
+          {variable}              → inputs 中的对应值
         """
         def replacer(m: re.Match) -> str:
             key = m.group(1)
@@ -914,6 +964,11 @@ class WorkflowRunner:
                     return sr.output
                 elif field == "score":
                     return str(int(sr.score * 100)) if sr.score is not None else "N/A"
+                elif field == "output_file":
+                    path = (getattr(self, "_step_output_file_paths", None) or {}).get(step_id)
+                    if not path:
+                        raise KeyError(key)
+                    return str(path)
                 else:
                     raise KeyError(key)
             # 外部 inputs
@@ -923,6 +978,38 @@ class WorkflowRunner:
             return m.group(0)
 
         return re.sub(r'\{([^}]+)\}', replacer, prompt_template)
+
+    def _scan_prompt_placeholders(
+        self,
+        prompt_template: str,
+        step_results: dict[str, StepResult],
+        inputs: dict,
+    ) -> tuple[list[str], list[str]]:
+        """
+        [P11 §2a/§6] 静态扫描 prompt 模板里的占位符，不做替换，只分类：
+          - unresolved: `{variable}` 形式（不含 `.`）、且在 inputs 里找不到
+            对应 key 的占位符——这些会被 _resolve_prompt 原样保留在最终
+            prompt 里发出去，之前完全没有任何信号，dry-run（preview_workflow）
+            和真实执行的 debug_log 共用这个函数来暴露它们。
+          - upstream_step_ids: `{step_id.output}` / `{step_id.score}` /
+            `{step_id.output_file}` 形式实际引用到的 step_id 列表（去重，
+            保持出现顺序），供 debug_log.upstream_step_ids_used 与
+            depends_on 做 diff。
+        """
+        unresolved: list[str] = []
+        upstream_step_ids: list[str] = []
+        seen_upstream: set[str] = set()
+        for m in re.finditer(r'\{([^}]+)\}', prompt_template or ""):
+            key = m.group(1)
+            if "." in key:
+                step_id = key.split(".", 1)[0]
+                if step_id in step_results and step_id not in seen_upstream:
+                    seen_upstream.add(step_id)
+                    upstream_step_ids.append(step_id)
+                continue
+            if key not in inputs and key not in unresolved:
+                unresolved.append(key)
+        return unresolved, upstream_step_ids
 
     # ── 条件判断 ────────────────────────────────────────────────────────────
 
@@ -1223,8 +1310,13 @@ class WorkflowRunner:
             # 替换后的文本），通过实例属性传递，避免改动 StepExecutor.execute()
             # 的公共签名（其余 6 种内置类型都不需要这个）。
             self._current_step_results = step_results
+            # [P11 §6] python_step/script 类型的 executor 会把子进程
+            # stdout/stderr 写进这个实例属性（成功/失败都写，之前只有失败
+            # 时才会被拼进异常消息里），供下面统一合并进 StepResult.debug_log。
+            self._last_subprocess_debug = None
             executor = _executors.get_executor(step.effective_type)
             output = executor.execute(self, step, resolved_prompt)
+            _subproc_debug = getattr(self, "_last_subprocess_debug", None) or {}
 
             # [next_doc/workflow_python_step_and_zhihu_publish_plan.md §A3]
             # 通用输出落盘契约：step.output_file 有值时，把该 step 的输出
@@ -1255,6 +1347,7 @@ class WorkflowRunner:
                     score=score,
                     error=f"质检评分不达标：{int(score*100)}/100（阈值 {int(gate_threshold*100)}/100）",
                     duration_seconds=time.monotonic() - t_start,
+                    debug_log=dict(_subproc_debug),
                 )
 
             return StepResult(
@@ -1263,6 +1356,7 @@ class WorkflowRunner:
                 output=output,
                 score=score,
                 duration_seconds=time.monotonic() - t_start,
+                debug_log=dict(_subproc_debug),
             )
         except Exception as e:
             from mini_agent.errors import log_exception
@@ -1275,6 +1369,7 @@ class WorkflowRunner:
                 traceback=_traceback.format_exc(),
                 context=self._build_error_context(step, resolved_prompt),
                 duration_seconds=time.monotonic() - t_start,
+                debug_log=dict(getattr(self, "_last_subprocess_debug", None) or {}),
             )
 
     def _extract_step_score(self, step: WorkflowStep, output: str) -> "Optional[float]":

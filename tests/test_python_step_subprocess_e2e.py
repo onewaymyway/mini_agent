@@ -101,6 +101,9 @@ class TestPythonStepSubprocessE2E(unittest.TestCase):
             script_path=str(script_path),
             params={"name": "otz"},
             output_file="final.json",
+            # [P11 §4] python_step 的 ctx.inputs 默认只暴露 depends_on 里
+            # 声明过的上游 step 结果，必须显式声明才能读到 prev_step。
+            depends_on=["prev_step"],
         )
         upstream_results = {
             "prev_step": StepResult(step_id="prev_step", status=StepStatus.DONE, output="PREV_OUTPUT"),

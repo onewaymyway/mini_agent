@@ -749,6 +749,11 @@ def load_config(
         ),
         validate_placeholders_on_save=bool(_wf.get("validate_placeholders_on_save", True)),
         validate_role_refs_on_save=bool(_wf.get("validate_role_refs_on_save", True)),
+        # ── P11（workflow_input_passing_and_debug_logging_improvement_plan.md）──
+        placeholder_depends_on_check_enabled=bool(_wf.get("placeholder_depends_on_check_enabled", True)),
+        python_step_inputs_filtered_by_depends_on=bool(_wf.get("python_step_inputs_filtered_by_depends_on", True)),
+        debug_log_enabled=bool(_wf.get("debug_log_enabled", False)),
+        debug_log_max_chars=int(_wf.get("debug_log_max_chars", 4000)),
     )
 
     # ── 日报融合 / 主动推荐 / 决策画像配置组装（主动推荐与数字分身机制设计方案）──

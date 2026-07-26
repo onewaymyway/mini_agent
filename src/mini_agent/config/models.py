@@ -973,6 +973,25 @@ class WorkflowConfig:
     # 关闭后 save_workflow 的返回文本里不再出现这段提示，
     # /workflow history、/workflow diff 命令本身不受此开关影响（仍可直接用）。
 
+    # ── P11（workflow_input_passing_and_debug_logging_improvement_plan.md）──
+    # 保存前校验：prompt 中 {step_id.output}/{step_id.score}/{step_id.output_file}
+    # 占位符引用的 step_id 是否在 depends_on（直接或传递）范围内。默认开启；
+    # 关闭后仍会做"引用的 step 是否存在"这一层原有检查，只跳过依赖范围检查，
+    # 行为等价于 P11 之前的版本。
+    placeholder_depends_on_check_enabled: bool = True
+    # python_step 类型 step 传给子进程的 ctx.inputs 是否按 step.depends_on
+    # 过滤（默认开启=只暴露声明过依赖的上游 step 结果）。关闭后回退到 P11
+    # 之前"传全部已跑完 step"的行为，供升级过渡期临时兼容旧脚本使用。
+    python_step_inputs_filtered_by_depends_on: bool = True
+    # 是否在运行时记录调试日志（StepResult.debug_log：替换后的最终 prompt、
+    # 未解析占位符、实际引用到的上游 step_id、并发线程/批次信息、
+    # python_step/script 子进程的 stdout/stderr）。默认关闭，避免长期运行、
+    # 高频调用的 workflow 把 session 目录撑爆；只有显式开启才产生额外体积。
+    debug_log_enabled: bool = False
+    # debug_log 里 resolved_prompt/subprocess_stdout/subprocess_stderr 等
+    # 长文本字段的截断上限（字符数），超出部分截断并标注省略了多少字符。
+    debug_log_max_chars: int = 4000
+
 
 @dataclass
 class ProprioceptionConfig:

@@ -715,16 +715,27 @@ def preview_workflow_def(cfg: "AppConfig", wf: "WorkflowDef", inputs: Optional[d
     ]
 
     resolved_prompts: dict[str, str] = {}
+    # [P11 §2a] 收集"prompt 里引用了 inputs 变量、但当前 inputs 没给对应
+    # 值"的占位符——这些会被 _resolve_prompt 原样保留在最终发出去的 prompt
+    # 里，之前完全没有信号，只能等运行完自己读输出发现。dry-run 阶段暴露
+    # 出来，让用户在保存/运行前就能看到"这次调用如果不补 inputs.xxx，
+    # prompt 里会带着大括号原样发出去"。
+    unresolved_placeholders: dict[str, list[str]] = {}
     for s in wf.steps:
         prompt = s.prompt or ""
+        _missing: list[str] = []
 
         def _sub(m: re.Match) -> str:
             key = m.group(1)
             if key in parsed_inputs:
                 return str(parsed_inputs[key])
+            if key not in _missing:
+                _missing.append(key)
             return m.group(0)  # 保留原样，标注为运行时占位符（含 '.' 的已被正则排除）
 
         resolved_prompts[s.id] = _PARAM_PLACEHOLDER_RE.sub(_sub, prompt)
+        if _missing:
+            unresolved_placeholders[s.id] = _missing
 
     conditions: dict[str, str] = {}
     for s in wf.steps:
@@ -753,4 +764,5 @@ def preview_workflow_def(cfg: "AppConfig", wf: "WorkflowDef", inputs: Optional[d
         "batches": batch_view,
         "resolved_prompts": resolved_prompts,
         "conditions": conditions,
+        "unresolved_placeholders": unresolved_placeholders,
     }

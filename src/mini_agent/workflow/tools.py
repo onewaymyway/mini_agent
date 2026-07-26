@@ -100,6 +100,11 @@ def register_workflow_tools(cfg: "AppConfig") -> None:
             lines.append("**condition 求值**：")
             for step_id, desc in preview["conditions"].items():
                 lines.append(f"  - {step_id}: {desc}")
+        if preview.get("unresolved_placeholders"):
+            lines.append("")
+            lines.append("**⚠️ 未解析的占位符**（example_input 没有对应值，会原样保留在 prompt 里）：")
+            for step_id, vars_ in preview["unresolved_placeholders"].items():
+                lines.append(f"  - {step_id}: {', '.join('{' + v + '}' for v in vars_)}")
         return "\n".join(lines)
 
     # ── 生成工作流 ──────────────────────────────────────────────────────────
@@ -760,6 +765,18 @@ def register_workflow_tools(cfg: "AppConfig") -> None:
                         lines.append(f"  ```\n{sr.traceback}\n  ```")
                     if sr.context:
                         lines.append(f"  上下文：{sr.context}")
+            # [P11 §6.3] verbose 模式下，无论成功失败都展示 debug_log 摘要
+            # （完整内容用 CLI `/workflow debug <run_id> <step_id>` 查看，
+            # 这里只给最关键的几项，避免把 resolved_prompt 全文摊进
+            # status 输出、拖垮 token 成本）。
+            if verbose and sr.debug_log:
+                dl = sr.debug_log
+                if dl.get("unresolved_placeholders"):
+                    lines.append(f"  ⚠️ 未解析占位符：{dl['unresolved_placeholders']}")
+                if dl.get("upstream_step_ids_used") is not None:
+                    lines.append(f"  实际引用的上游 step：{dl['upstream_step_ids_used']}")
+                if dl.get("subprocess_stderr"):
+                    lines.append(f"  子进程 stderr：{dl['subprocess_stderr'][:300]}")
         return "\n".join(lines)
 
     # ── 执行控制：暂停/取消（P3）──────────────────────────────────────────────
@@ -898,4 +915,11 @@ def register_workflow_tools(cfg: "AppConfig") -> None:
             lines.append("**Condition 表达式：**")
             for step_id, cond in preview["conditions"].items():
                 lines.append(f"- `{step_id}`：{cond}")
+        if preview.get("unresolved_placeholders"):
+            lines.append("")
+            lines.append(
+                "**⚠️ 未解析的占位符**（当前 inputs 没有对应值，运行时会原样保留在 prompt 里发出去）："
+            )
+            for step_id, vars_ in preview["unresolved_placeholders"].items():
+                lines.append(f"- `{step_id}`：{', '.join('{' + v + '}' for v in vars_)}")
         return "\n".join(lines)
