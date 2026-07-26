@@ -30,23 +30,17 @@
 
 ## 输出要求
 
-把所有关键词搜到的问题去重合并（同一个问题 URL 只保留一条），整理成如下 JSON 结构直接返回：
+把所有关键词搜到的问题去重合并（同一个问题 URL 只保留一条），整理成一个 JSON 对象直接返回，
+顶层字段：
 
-```json
-{{
-  "questions": [
-    {{
-      "id": "q1",
-      "title": "问题标题",
-      "url": "https://www.zhihu.com/question/xxxxxxx",
-      "snippet": "搜索结果页展示的简要说明",
-      "matched_keywords": ["命中的关键词1", "命中的关键词2"],
-      "search_page_meta": {{"注意": "把搜索页上能看到的其它字段原样放进来"}}
-    }}
-  ],
-  "total_keywords_searched": 0,
-  "total_unique_questions": 0
-}}
-```
+- `questions`：数组，每个元素是一个问题对象，包含字段：
+  - `id`：字符串，用 q1/q2/q3... 顺序编号即可，供后续步骤引用
+  - `title`：字符串，问题标题
+  - `url`：字符串，问题详情页的完整 URL（如 https://www.zhihu.com/question/xxxxxxx）
+  - `snippet`：字符串，搜索结果页展示的简要说明/摘要文字（没有则填空字符串）
+  - `matched_keywords`：字符串数组，命中的关键词列表
+  - `search_page_meta`：对象，把搜索页上能看到的其它元信息（比如已有回答数、关注数）原样放进来，没有就是空对象
+- `total_keywords_searched`：整数，本次实际搜索的关键词总数
+- `total_unique_questions`：整数，去重后的问题总数
 
-`id` 字段用 q1/q2/q3... 顺序编号即可，供后续步骤引用。只输出这个 JSON，不要输出多余说明文字。
+只输出这一个 JSON 对象本身，不要输出多余说明文字或 markdown 代码块标记（不要用 ```json 包裹）。

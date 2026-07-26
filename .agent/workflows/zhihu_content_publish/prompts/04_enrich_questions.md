@@ -19,29 +19,21 @@
 
 ## 输出要求
 
-在每个问题原有字段的基础上，把上面抓到的信息合并进去，整理成如下 JSON 结构直接返回：
+在每个问题原有字段的基础上，把上面抓到的信息合并进去，整理成一个 JSON 对象直接返回，
+顶层字段：
 
-```json
-{{
-  "questions": [
-    {{
-      "id": "q1",
-      "title": "...",
-      "url": "...",
-      "answer_count": 0,
-      "follower_count": 0,
-      "view_count": 0,
-      "description": "问题的完整描述",
-      "created_or_active_time": "...",
-      "top_answer": {{
-        "author": "...",
-        "upvote_count": 0,
-        "content": "排名最前面的回答内容"
-      }}
-    }}
-  ],
-  "total_enriched": 0
-}}
-```
+- `questions`：数组，每个元素是一个问题对象（在原有 `id`/`title`/`url` 等字段基础上补充）：
+  - `id`、`title`、`url`：沿用上一步的原值
+  - `answer_count`：整数，回答数量
+  - `follower_count`：整数，关注者数量
+  - `view_count`：整数，浏览次数（页面没展示则填 `null`）
+  - `description`：字符串，问题的完整描述/补充说明（没有则填 `null`）
+  - `created_or_active_time`：字符串，问题创建时间/最近活跃时间（页面没展示则填 `null`）
+  - `top_answer`：对象，排名最前面（默认排序下第一个）的回答，包含：
+    - `author`：字符串，回答作者
+    - `upvote_count`：整数，该回答的点赞数
+    - `content`：字符串，该回答的完整内容
+- `total_enriched`：整数，本次成功补全信息的问题总数
 
-只输出这个 JSON，不要输出多余说明文字。如果某个字段页面上确实抓不到，用 null，不要编造。
+只输出这一个 JSON 对象本身，不要输出多余说明文字或 markdown 代码块标记（不要用 ```json 包裹）。
+如果某个字段页面上确实抓不到，用 `null`，不要编造。

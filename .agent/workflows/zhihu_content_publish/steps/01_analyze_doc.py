@@ -6,6 +6,11 @@ steps/01_analyze_doc.py — python_step：分析本地文档，产出摘要/主�
 入口约定：run(ctx: PyStepContext) -> dict，返回值会被 runner 写到
 output_file（doc_analysis.json），下游 step 通过 {analyze_doc.output} 占位符
 或 ctx.input_json("analyze_doc") 读取。
+
+[修复记录] doc_path 通过上游 `intake`（type: human_input, input_key:
+doc_path）step 传入，而不是 step.params——python_step 的 params 字段是纯
+字面量透传，workflow.yaml 里写 `params: {doc_path: "{doc_path}"}` 不会做
+占位符替换，脚本会拿到字面量字符串 "{doc_path}" 而不是真实路径。
 """
 from __future__ import annotations
 
@@ -13,11 +18,13 @@ from pathlib import Path
 
 
 def run(ctx) -> dict:
-    doc_path = ctx.params.get("doc_path")
+    doc_path = ctx.input_output("intake", "").strip()
     if not doc_path:
         raise ValueError(
             "缺少 doc_path 参数：运行本 workflow 时需要传 "
-            'run_workflow(inputs={"doc_path": "<本地文档绝对路径>"})'
+            'run_workflow(inputs={"doc_path": "<本地文档绝对路径>"})，'
+            "该值由上游 intake（human_input, input_key=doc_path）step 接收后"
+            "透传给本步骤"
         )
 
     p = Path(doc_path)

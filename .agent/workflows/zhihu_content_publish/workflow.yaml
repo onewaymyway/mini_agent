@@ -13,6 +13,17 @@
 #   - 需要挂载 browser-cdp skill（.claude/skills/browser-cdp/），并已按
 #     next_doc/browser_cdp_stability_fixes.md 固定好 --name 专用实例
 #   - 运行参数：run_workflow(inputs={"doc_path": "<本地文档绝对路径>"})
+#
+# [修复记录] python_step 的 `step.params` 字段是纯字面量透传（executors.py::
+# PythonStepExecutor.execute 直接 `step.params or {}` 序列化给子进程），不会
+# 像 prompt 一样做 {doc_path} 占位符替换——原先 analyze_doc 写
+# `params: {doc_path: "{doc_path}"}` 是无效写法，脚本实际收到的是字面量字符串
+# "{doc_path}"，每次运行都会在 Path(...).exists() 处报 FileNotFoundError。
+# 改法：新增一个 `intake`（type: human_input, input_key: doc_path）step 接收
+# run_workflow(inputs={"doc_path": ...}) 传入的值（命中 input_key 时直接取值、
+# 不阻塞等待），analyze_doc 通过 depends_on + ctx.input_output("intake") 读取，
+# 这是当前版本 python_step 获取 workflow 级 inputs 参数的标准方式（做法与
+# docs/workflow-guide.md"全自动执行模式"一节里 intake→run_checks 的例子一致）。
 
 name: zhihu_content_publish
 description: 分析本地文档内容，去知乎搜索适合作为答案的问题，批量LLM筛选后补全详情
@@ -23,11 +34,16 @@ defaults:
   retry_on_error: 1
 
 steps:
+  - id: intake
+    type: human_input
+    input_key: doc_path            # 命中 run_workflow(inputs={"doc_path": ...}) 时直接取值，不阻塞
+    input_prompt: "本次要分析并发布到知乎的本地文档绝对路径"
+    prompt: "doc_path"
+
   - id: analyze_doc
     type: python_step
     script_path: steps/01_analyze_doc.py
-    params:
-      doc_path: "{doc_path}"   # 来自 run_workflow(inputs={"doc_path": ...})
+    depends_on: [intake]
     output_file: doc_analysis.json
     timeout: 180
     retry_on_error: 1
