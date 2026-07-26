@@ -138,7 +138,7 @@ run_turn() 内部：
 避免嵌套判定。
 
 > **实现细节 / 已修复的坑：** TurnJudge 自身、以及 GoalJudge / EvaluatorAgent /
-> CoachAgent / 自定义角色 Agent / GoalSpecBuilder 这些"内部 Agent"都是通过
+> CoachAgent / 自定义角色 Agent 这些"内部 Agent"都是通过
 > `load_config()` 重新从同一份 `agent_config.json` 加载配置构建的——如果不做
 > 特殊处理，它们的 cfg 里 `turn_judge.enabled` 也会是 `True`，导致这些内部
 > Agent 在跑自己的 `run_turn()` 时又对自己触发一次 TurnJudge 核查，引发无限
@@ -146,6 +146,9 @@ run_turn() 内部：
 > 交还真人）。所有这些内部 Agent 构造点都已经显式禁用了 `cfg.turn_judge` 并
 > 标记 `is_subagent=True` 双重兜底，用户无需关心这个细节，但如果你在扩展
 > 框架时新增了类似的"内部临时 Agent"，请照此模式处理。
+> （`GoalSpecBuilder` 曾经也在这个名单里，2026-07 起改为直接调用
+> `LLMHelper.ask()`，压根不再构造 Agent 实例，自然也就不存在
+> "递归触发 TurnJudge"这个问题了，见 [Goal 模式指南](goal-mode-guide.md#goaljudge目标达成判定)。）
 
 > **判官接线统一（阶段六）现状：** GoalJudge 和 TurnJudge 都已改为经由
 > [`RoleAgentDispatcher`](role-agents-guide.md#内建判官如何接入-dispatcher goal_review--turn_end_review)

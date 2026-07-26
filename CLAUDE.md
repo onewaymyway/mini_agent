@@ -399,7 +399,7 @@ mini-agent user token u_a1b2c3d4                       # 重新生成 token
 ### Goal 模式
 
 - 设定一个目标，Agent 自动多轮尝试直至达成或触发安全阀，位于 `src/mini_agent/goal_mode/`
-- `GoalSpecBuilder`：自然语言目标 → 结构化验收标准，支持多轮对话式修订+版本 diff，确认前不占用主 Agent 上下文；system prompt 禁止照抄用户原话、要求具体化/分维度拆解，代码层面对照抄结果自动带纠正提示重试一次（`_looks_like_verbatim_echo`）
+- `GoalSpecBuilder`：自然语言目标 → 结构化验收标准，支持多轮对话式修订+版本 diff，确认前不占用主 Agent 上下文；system prompt 禁止照抄用户原话、要求具体化/分维度拆解，代码层面对照抄结果自动带纠正提示重试一次（`_looks_like_verbatim_echo`）；2026-07 起改为直接调用 `LLMHelper.ask()`（不再构造受限 Agent 走工具循环，避免了 MCP 连接+工具幻觉导致轮次耗尽产不出 JSON 的问题），可注入调用方已有的 `llm_helper` 复用其 `LLMClientPool`
 - `GoalJudge`（`role_agents/goal_judge.py`）：对照验收标准逐条核查，输出 `GOAL_STATUS: DONE/CONTINUE/NEED_COMPACT`；不经过 `RoleAgentDispatcher`，由 `GoalRunner` 直接调用；`judge_tools_enabled` 开关控制是否挂只读工具自己验证
 - `GoalRunner`：外层驱动循环（跨多次 `run_turn`，与 Role Agent 的单次 `run_turn` 内修订循环不同）；粗粒度 `CoarseStepExecutor` 每步跑一次完整 `run_turn`，`GoalStepExecutor` 接口为未来细粒度版本预留
 - 安全阀：`max_rounds`、`max_total_compacts`、连续雷同反馈检测（`difflib.SequenceMatcher`）提前终止
