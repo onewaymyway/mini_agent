@@ -151,6 +151,21 @@ python browser_nav.py --port 9333 --tab <id> --goto "https://example.com"
 需要连接用户已登录的真实浏览器窗口（共享登录态），或无 GUI 服务器环境用 headless，
 加载 `browser-launch-scenarios` 子资源查看完整步骤。
 
+**先检测再启动**：`--ensure` 模式在请求的端口不通时，不会直接判定"没有可用浏览器"，会先
+扫一遍系统进程找有没有其它已经在跑的、带调试端口的 chrome/edge（不限于本技能自己启动的，
+包括用户手动开的、或者之前会话遗留的），找到就直接复用并提示应该用哪个端口，而不是又启动
+一个新的。想单独看一下当前系统里有哪些调试浏览器在跑，用：
+
+```bash
+python browser_launch.py --list-running
+```
+
+`--dedicated` 模式对"是否已有可用实例"的判断范围是"指定 `--name` 对应的那一个专用实例"
+（先查 registry.json，查不到再查 profile 目录下的锁文件兜底），不会去匹配系统里任意其它
+无关的调试浏览器——这是有意为之：`--dedicated` 的语义是"这个固定名字对应固定的 profile"，
+如果为了"复用一个已有浏览器"而误连到一个 profile/登录态完全不相关的实例，反而会造成更隐蔽
+的问题。
+
 ## 典型工作流速览
 
 ```bash

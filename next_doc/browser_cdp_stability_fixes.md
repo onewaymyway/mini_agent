@@ -82,6 +82,35 @@ name 对应不同 profile 目录，本来就是两个完全独立的浏览器，
 - 专用实例 profile 目录的存放位置（`temp_cdp/cdp_brower_data/`）不是登录态丢失的根因，
   见文档开头的更正说明。
 
+## 问题 3（用户后续反馈追加）：应该有"先检测是否已启动，启动了就不再新建"的通用机制
+
+在问题 1/2 修好之后，用户进一步指出：`--ensure`/`--dedicated` 原有的检测都局限在"本技能自己
+知道的范围"——`--ensure` 只看固定端口（默认 9222）通不通，`--dedicated` 只看 registry/锁文件
+里记录过的实例。如果调试浏览器是用户手动开的、是之前某次会话遗留的、或者根本不是本技能启动
+的，只要端口/名字对不上，就会被误判成"没有可用实例"，从而不必要地又启动一个新的。
+
+**修复**：新增 `find_running_debug_chrome_ports()`——扫描系统进程列表（Linux/mac 用
+`ps -eo command`，Windows 用 `wmic process ... get CommandLine`），找出所有携带
+`--remote-debugging-port=NNNN` 参数的 chrome/chromium/edge 进程，提取端口号后逐个用
+`is_debug_port_alive()` 做真实探测确认。
+
+- `cmd_ensure()`：请求的端口不通时，先用这个扫描兜底，找到任何一个真实存活的调试浏览器就
+  直接复用（打印出实际应该用的端口），不再执行"报错退出"或"新建一个"。
+- 新增 `--list-running` 诊断命令：单独列出当前系统里检测到的所有调试浏览器（端口+存活状态
+  +浏览器版本信息），方便人工排查。
+- `--dedicated` **有意不接入**这个系统级扫描：它的语义是"固定 `--name` 对应固定 profile"，
+  如果为了"复用一个已有浏览器"而把一个跟目标 profile/登录态完全无关的浏览器实例安到某个
+  `--name` 上，会制造出更隐蔽的问题（比如以为是 `zhihu_session` 但其实连到的是另一个跟知乎
+  毫不相关的浏览器）。`--dedicated` 的"识别已有实例"仍然只信任 registry.json 和自己写的
+  `.mini_agent_lock.json`。
+
+改动文件：`.claude/skills/browser-cdp/browser_launch.py`（新增
+`find_running_debug_chrome_ports()`/`_extract_debug_ports_from_cmdlines()`/
+`cmd_list_running()`，`cmd_ensure()` 里接入，新增 `--list-running` CLI 参数）。
+
+单测：`tests/test_browser_cdp_detect_running.py`（纯字符串解析逻辑
+`_extract_debug_ports_from_cmdlines()` 的 5 个用例 + 1 个"真实扫描不抛异常"的冒烟测试）。
+
 ## 验收方式
 
 1. 用 `python launch_zhihu_logged_in.py` 启动浏览器并登录一次知乎。
@@ -93,3 +122,6 @@ name 对应不同 profile 目录，本来就是两个完全独立的浏览器，
    `kill -9` 强制结束 → 删除/清空 `~/.cdp_skill/registry.json` 里对应条目（模拟 registry
    状态丢失，保留 profile 目录）→ 重新 `--dedicated --name zhihu_session`，验证能通过
    `.mini_agent_lock.json` 正确探测复用，而不是新建一个。
+5. 手动用 `chrome --remote-debugging-port=9400`（一个跟本技能默认端口都不同的、"外部"启动
+   的调试浏览器）开一个窗口，然后跑 `python browser_launch.py --ensure`（默认请求 9222，
+   探测不到），验证会自动扫描到 9400 并直接复用，而不是报错或新建。

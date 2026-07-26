@@ -1059,4 +1059,6 @@ print(f'✅ 连续 2 次同类失败后提前判 NEEDS_FIX，跳过剩余重试�
 | 知乎 workflow `03_filter.py`：32 条候选按 `BATCH_SIZE=15` 分 3 批调用（不是 32 次） | tests/test_zhihu_workflow_steps.py | LLM 调用次数断言 |
 | 知乎 workflow `03_filter.py`：批内漏判过多时触发子批重试，最终不遗漏 | tests/test_zhihu_workflow_steps.py | 全部候选正确判定 |
 | 知乎 workflow `03_filter.py`：候选为空时不调用 LLM | tests/test_zhihu_workflow_steps.py | LLM 调用次数为 0 |
+| browser-cdp `_extract_debug_ports_from_cmdlines`：单端口/多端口去重排序/无关行忽略/空输入/异常输入不崩 | tests/test_browser_cdp_detect_running.py | 5 个子场景全部通过 |
+| browser-cdp `find_running_debug_chrome_ports` 真实扫描不抛异常 | tests/test_browser_cdp_detect_running.py | 冒烟测试 |
 

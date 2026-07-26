@@ -35,6 +35,7 @@ import argparse
 import json
 import os
 import platform
+import re
 import shutil
 import signal
 import subprocess
@@ -158,6 +159,74 @@ def _write_profile_lock(profile_dir: str, port: int, pid: int) -> None:
             json.dump({"port": port, "pid": pid, "started_at": time.time()}, f)
     except Exception:
         pass
+
+
+_DEBUG_PORT_ARG_RE = re.compile(r"--remote-debugging-port=(\d+)")
+
+
+def _extract_debug_ports_from_cmdlines(cmdlines: list[str]) -> list[int]:
+    """
+    [next_doc/browser_cdp_stability_fixes.md #3] 纯字符串解析逻辑单独抽出来，
+    方便不依赖真实系统进程列表就能单测（真正调用系统命令的部分在
+    find_running_debug_chrome_ports() 里，两者分开是为了让核心逻辑可测）。
+
+    从一批进程命令行文本里提取所有 --remote-debugging-port=NNNN 声明的端口号，
+    去重后按数字升序返回。命令行参数只代表"进程启动时声明了这个端口"，不代表
+    端口现在真的能连上（进程可能还没就绪，或者参数被内部忽略）——调用方必须
+    再用 is_debug_port_alive() 做一次真实探测确认，这个函数只负责"找线索"。
+    """
+    ports: set[int] = set()
+    for line in cmdlines:
+        m = _DEBUG_PORT_ARG_RE.search(line)
+        if m:
+            try:
+                ports.add(int(m.group(1)))
+            except ValueError:
+                pass
+    return sorted(ports)
+
+
+def find_running_debug_chrome_ports() -> list[int]:
+    """
+    [next_doc/browser_cdp_stability_fixes.md #3] 扫描当前系统里所有携带
+    --remote-debugging-port=NNNN 参数的 chrome/chromium/edge 进程，返回声明的
+    端口号列表（未验证是否真的探测得通，调用方自己再用 is_debug_port_alive()
+    确认）。
+
+    这是"先检测当前调试浏览器是不是已经启动"里唯一真正跨"任何来源"的检测
+    手段——registry.json/锁文件（见 cmd_dedicated 里的 _read_profile_lock）
+    只能识别"本技能自己启动过、且记录还在"的实例；如果调试浏览器是用户手动
+    开的、或者是别的工具/上一次会话启动的（registry 从未记录过，或者记录已经
+    被清掉），只有直接扫系统进程列表才能发现它，避免明明已经有一个能用的调试
+    浏览器在跑，却因为"本技能不知道它的存在"而又启动一个新的。
+
+    跨平台实现，不引入额外依赖（不用 psutil），扫描失败（命令不存在/权限不足/
+    超时）时返回空列表，调用方应该按"没扫到"处理，不阻断原有流程。
+    """
+    system = platform.system()
+    cmdlines: list[str] = []
+    try:
+        if system == "Windows":
+            out = subprocess.run(
+                [
+                    "wmic", "process", "where",
+                    "name='chrome.exe' or name='msedge.exe'",
+                    "get", "CommandLine",
+                ],
+                capture_output=True, text=True, timeout=5,
+            ).stdout
+            cmdlines = out.splitlines()
+        else:
+            out = subprocess.run(
+                ["ps", "-eo", "command"], capture_output=True, text=True, timeout=5,
+            ).stdout
+            cmdlines = [
+                line for line in out.splitlines()
+                if "chrome" in line.lower() or "chromium" in line.lower() or "msedge" in line.lower()
+            ]
+    except Exception:
+        return []
+    return _extract_debug_ports_from_cmdlines(cmdlines)
 
 
 def spawn_browser(
@@ -439,9 +508,29 @@ def cmd_ensure(args: argparse.Namespace) -> None:
         print(f"[ok] 已连接到调试端口 {args.host}:{args.port} -> {info.get('Browser')}")
         return
 
+    # [next_doc/browser_cdp_stability_fixes.md #3] 请求的端口不通，不代表
+    # "没有调试浏览器在跑"——可能是用户手动开的、或者上一次会话/别的工具起的，
+    # 用了跟这次不一样的端口。在判定"要新建一个"之前，先扫一遍系统进程找出
+    # 所有声明了 --remote-debugging-port 的 chrome/edge 进程，真实探测确认后
+    # 直接复用，避免"明明已经有能用的调试浏览器，还是又开了一个新的"。
+    found_ports = [
+        p for p in find_running_debug_chrome_ports()
+        if p != args.port and is_debug_port_alive(args.host, p)
+    ]
+    if found_ports:
+        chosen = found_ports[0]
+        info = version_info(args.host, chosen)
+        extra = f"（另有 {len(found_ports) - 1} 个也在跑：{found_ports[1:]}）" if len(found_ports) > 1 else ""
+        print(
+            f"[ok] 请求的端口 {args.port} 不可用，但扫描到系统里已有调试浏览器在跑 -> "
+            f"{args.host}:{chosen} ({info.get('Browser')}){extra}，直接复用，不新建。\n"
+            f"     后续调用请显式加 --port {chosen}。"
+        )
+        return
+
     if not args.spawn:
         die(
-            "调试端口不可用。\n"
+            "调试端口不可用，且未扫描到系统里有其它调试浏览器在跑。\n"
             "  方式一（推荐，可与用户共享同一浏览器窗口）：\n"
             "    Windows 下完全关闭 Chrome 后，用以下命令重新打开：\n"
             r'    "C:\Program Files\Google\Chrome\Application\chrome.exe" --remote-debugging-port=9222'
@@ -473,6 +562,18 @@ def cmd_ensure(args: argparse.Namespace) -> None:
         f"-> {args.host}:{args.port} ({info.get('Browser')})\n"
         f"     user_data_dir={args.user_data_dir or os.path.join(DEFAULT_PROFILE_ROOT, 'spawn')}"
     )
+
+
+def cmd_list_running(args: argparse.Namespace) -> None:
+    ports = find_running_debug_chrome_ports()
+    out = []
+    for p in ports:
+        alive = is_debug_port_alive(args.host, p)
+        entry = {"port": p, "alive": alive}
+        if alive:
+            entry["info"] = version_info(args.host, p)
+        out.append(entry)
+    print_json(out)
 
 
 def cmd_list(args: argparse.Namespace) -> None:
@@ -512,6 +613,10 @@ def main():
     parser.add_argument("--name", default="default", help="专用实例名称，可同时维护多个（如 work/scraper）")
     parser.add_argument("--list-dedicated", action="store_true", help="列出已注册的专用实例")
     parser.add_argument("--stop-dedicated", metavar="NAME", default=None, help="停止并移除指定名称的专用实例")
+    parser.add_argument(
+        "--list-running", action="store_true",
+        help="扫描系统进程，列出所有已经在跑的、带调试端口的 chrome/edge 实例（不限于本技能自己启动的）",
+    )
 
     parser.add_argument("--headless", action="store_true", help="无 GUI 环境/纯抓取场景使用")
     parser.add_argument("--binary", default=None, help="浏览器可执行文件路径，不给则自动探测")
@@ -543,6 +648,9 @@ def main():
         return
     if args.stop_dedicated:
         cmd_stop_dedicated(args)
+        return
+    if args.list_running:
+        cmd_list_running(args)
         return
 
     # --list/--new/--close/--activate 若未显式给 --port，默认走 attach 场景的 9222

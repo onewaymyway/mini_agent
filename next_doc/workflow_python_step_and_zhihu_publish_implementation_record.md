@@ -67,6 +67,14 @@
 - 另外新增 profile 目录下的锁文件 `.mini_agent_lock.json`（port/pid/启动时间），作为
   `registry.json` 之外的第二条识别线索，`registry.json` 状态丢失时也能正确探测复用已有
   实例，不会误判"无可用实例"而重复创建。
+- **用户后续追加反馈**：应该有"先检测调试浏览器是不是已经启动，启动了就不要再新建"的通用
+  机制，而不是只在"本技能自己记录过的范围"（registry/锁文件）里找。新增
+  `find_running_debug_chrome_ports()`：跨平台扫描系统进程列表（`ps -eo command` /
+  `wmic process ... get CommandLine`），找出所有带 `--remote-debugging-port=NNNN` 参数的
+  chrome/edge 进程，逐个真实探测确认后返回。`cmd_ensure()` 接入：请求端口不通时先用这个
+  兜底扫描，找到任何真实存活的调试浏览器就直接复用，不再直接报错或盲目新建；新增
+  `--list-running` 诊断命令单独查看检测结果。`--dedicated` 有意不接入这个系统级扫描（会
+  混淆不同 profile/登录态的身份边界），仍然只信任 registry.json + 自己的锁文件。
 - `SKILL.md` 补充醒目提示：同一任务内所有浏览器调用必须固定同一个 `--name`。
 - 详见 `next_doc/browser_cdp_stability_fixes.md`（含第一版判断错误的更正说明）。
 
