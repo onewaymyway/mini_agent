@@ -148,6 +148,7 @@
     "session_to_workflow_enabled": true,
     "condition_static_check_enabled": true,
     "dry_run_preview_on_generate": true,
-    "git_hint_enabled": true
+    "git_hint_enabled": true,
+    "python_step_enabled":true
   }
 }
