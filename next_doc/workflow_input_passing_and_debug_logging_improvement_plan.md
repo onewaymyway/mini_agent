@@ -1,7 +1,6 @@
 # Workflow 输入传递机制 + 调试日志改进方案（P11）
 
-> 状态：**已实现**（§1/§2a/§3/§4/§5/§6.2/§6.3 全部完成并通过回归测试；
-> §6.4 按原计划保持"仅记录，不实施"，留待 §1/§4 静态信号积累后再评估）。
+> 状态：**已实现**（§1/§2a/§3/§4/§5/§6.2/§6.3/§6.4 全部完成并通过回归测试）。
 > 编号延续 `workflow_mechanism_improvement_plan.md`（P1-P7）→
 > `session_to_workflow_design.md`（P8）→
 > `workflow_system_next_directions.md` / `workflow_mechanism_improvement_proposal.md`（P9）→
@@ -33,13 +32,22 @@
 >   合并进 `StepResult.debug_log`；`get_workflow_run_status(verbose=True)`
 >   展示 debug_log 摘要；新增 CLI 子命令 `/workflow debug <run_id> <step_id>`
 >   查看完整 debug_log。
-> - 新增单元测试 `tests/test_workflow_p11.py`（10 用例，覆盖 §1/§3/§4/§6
->   验收点），并修正 `tests/test_python_step_subprocess_e2e.py` 中一处因
+> - §6.4：`WorkflowWatchdog.report_dependency_mismatch()` 记录"实际引用
+>   的上游 step 与 depends_on 声明不一致"事件（落盘到 watchdog 日志，与
+>   P10 的 `consecutive_failure_escalated` 用同一套 `_log_event` 机制）；
+>   `runner.py::_run_one_step` 在 debug_log 开启时对 prompt 占位符与
+>   python_step 两个来源的引用做 diff，写入
+>   `debug_log["undeclared_dependency_usage"]` 并调用 watchdog 上报；
+>   只做记录，不改变当前 step 的执行结果，是否升级为 NEEDS_FIX 留给
+>   用户/分析工具基于这条记录自行判断。正常情况下此路径已被 §1/§4 的
+>   静态校验拦在保存阶段之前，只有显式关闭
+>   `placeholder_depends_on_check_enabled`/
+>   `python_step_inputs_filtered_by_depends_on` 才会在运行期触发。
+> - 新增单元测试 `tests/test_workflow_p11.py`（13 用例，覆盖 §1/§3/§4/§6/
+>   §6.4 验收点），并修正 `tests/test_python_step_subprocess_e2e.py` 中一处因
 >   §4 行为变更（python_step 输入默认按 depends_on 过滤）而需要补充
 >   `depends_on` 声明的既有用例。与既有 `tests/test_workflow_*.py`（含
->   `test_python_step*.py`，138 用例）合计 148 用例全部通过，0 回归。
-> - §6.4（debug_log 与 NEEDS_FIX/watchdog 打通）按原计划保持"仅记录，
->   不实施"，依赖本轮 §1/§4 的静态/运行时信号先积累实际使用数据。
+>   `test_python_step*.py`，138 用例）合计 151 用例全部通过，0 回归。
 
 ---
 

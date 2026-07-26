@@ -376,8 +376,14 @@ class PythonStepExecutor(StepExecutor):
         # 及给旧脚本补全 depends_on 声明的用户过渡期临时兼容。
         upstream = getattr(runner, "_current_step_results", None) or {}
         filter_by_deps = bool(getattr(wf_cfg, "python_step_inputs_filtered_by_depends_on", True))
+        _undeclared_py_deps: list[str] = []
         if filter_by_deps:
             upstream = {sid: r for sid, r in upstream.items() if sid in set(step.depends_on)}
+        else:
+            # [P11 §6.4] 关闭过滤开关后，脚本能读到的全部上游结果里，
+            # 未在 depends_on 声明过的那部分记下来，供 runner 侧 diff 后
+            # 上报 watchdog（不改变本次执行行为，只做记录）。
+            _undeclared_py_deps = sorted(set(upstream.keys()) - set(step.depends_on))
         inputs_payload = {
             sid: {"status": getattr(r.status, "value", str(r.status)), "output": r.output, "score": r.score}
             for sid, r in upstream.items()
@@ -444,6 +450,8 @@ class PythonStepExecutor(StepExecutor):
                 "subprocess_stdout": proc.stdout,
                 "subprocess_stderr": proc.stderr,
             }
+            if _undeclared_py_deps:
+                runner._last_subprocess_debug["undeclared_dependency_usage"] = _undeclared_py_deps
 
             last_line = ""
             for line in (proc.stdout or "").splitlines():

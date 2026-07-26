@@ -773,6 +773,8 @@ def register_workflow_tools(cfg: "AppConfig") -> None:
                 dl = sr.debug_log
                 if dl.get("unresolved_placeholders"):
                     lines.append(f"  ⚠️ 未解析占位符：{dl['unresolved_placeholders']}")
+                if dl.get("undeclared_dependency_usage"):
+                    lines.append(f"  ⚠️ 引用了未在 depends_on 声明的上游 step：{dl['undeclared_dependency_usage']}")
                 if dl.get("upstream_step_ids_used") is not None:
                     lines.append(f"  实际引用的上游 step：{dl['upstream_step_ids_used']}")
                 if dl.get("subprocess_stderr"):

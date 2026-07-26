@@ -131,6 +131,28 @@ class WorkflowWatchdog:
             })
         return escalate
 
+    # ── [P11 §6.4] 依赖声明与实际引用不一致 ──────────────────────────────────
+
+    def report_dependency_mismatch(self, step_id: str, undeclared_ids: list[str]) -> None:
+        """
+        [workflow_input_passing_and_debug_logging_improvement_plan.md §6.4]
+        某个 step 实际引用到的上游 step_id（从占位符/python_step ctx.inputs
+        解析得到，见 runner.py::_scan_prompt_placeholders）里，出现了未在
+        该 step 的 depends_on 中声明的 id。正常情况下这条路径已经被
+        WorkflowDef.validate() 的静态检查（§1/§4）拦在保存阶段之前，只有
+        用户显式关闭了 placeholder_depends_on_check_enabled /
+        python_step_inputs_filtered_by_depends_on 才可能在运行期出现。
+
+        这里只做记录（写进 watchdog 事件日志，供
+        get_workflow_run_status(verbose=True) 或后续分析工具查阅），不改变
+        当前 step 的执行结果/重试逻辑——是否要因此升级为 NEEDS_FIX，留给
+        用户或更上层的分析工具基于这条记录自行判断，watchdog 本身不代为
+        决定"这次不一致算不算致命"。
+        """
+        self._log_event("dependency_declaration_mismatch", {
+            "step_id": step_id, "undeclared_ids": undeclared_ids,
+        })
+
     def reset_step_failures(self, step_id: str) -> None:
         """该 step 成功或最终结束后清空连续失败计数，避免影响同一次运行中
         （gate-retry 场景）后续对该 step 的重新计数。"""

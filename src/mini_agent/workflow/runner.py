@@ -750,6 +750,22 @@ class WorkflowRunner:
             if sr.debug_log.get("subprocess_stderr"):
                 sr.debug_log["subprocess_stderr"] = _truncate(sr.debug_log["subprocess_stderr"])
 
+            # [P11 §6.4] 实际引用到的上游 step 与 depends_on 声明做一次
+            # diff——正常情况下这条路径已经被 validate() 的静态检查拦在
+            # 保存阶段之前（见 §1/§4），只有用户显式关闭相关开关才可能在
+            # 运行期出现。只记录，不改变本次执行结果。两个来源合并去重：
+            # prompt 占位符扫描（agent/role_agent 类型）+ python_step
+            # executor 在关闭过滤开关时报告的未声明依赖读取。
+            _undeclared = sorted(
+                set(_upstream_step_ids_used) - set(step.depends_on)
+                | set(sr.debug_log.get("undeclared_dependency_usage") or ())
+            )
+            if _undeclared:
+                sr.debug_log["undeclared_dependency_usage"] = _undeclared
+                _wd = getattr(self, "_current_watchdog", None)
+                if _wd is not None:
+                    _wd.report_dependency_mismatch(step.id, _undeclared)
+
         with results_lock:
             step_results[step.id] = sr
             status_icon = {"done": "✅", "skipped": "⏭️", "failed": "❌", "gate_failed": "🔄"}.get(

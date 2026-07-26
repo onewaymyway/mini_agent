@@ -11,6 +11,8 @@ tests/test_workflow_p11.py —
   §6 StepResult.debug_log：debug_log_enabled=True 时，run() 跑完后
      resolved_prompt / unresolved_placeholders / upstream_step_ids_used /
      batch_index 等字段被正确填充；默认关闭时不产生任何 debug_log。
+  §6.4 依赖声明与实际引用不一致时，记录进 debug_log.undeclared_dependency_usage
+     并上报 WorkflowWatchdog.report_dependency_mismatch。
 """
 
 from __future__ import annotations
@@ -229,6 +231,78 @@ class TestDebugLog(unittest.TestCase):
 
         sr = {r.step_id: r for r in result.step_results}["b"]
         self.assertEqual(sr.debug_log.get("upstream_step_ids_used"), ["a"])
+
+    def test_undeclared_dependency_usage_is_flagged_and_reported_to_watchdog(self):
+        """§6.4：placeholder_depends_on_check_enabled=False 时，validate() 放行
+        了未声明依赖的占位符引用，但运行期 debug_log 应该把这个 diff 记下来，
+        并上报给 watchdog（不改变本次执行结果本身）。"""
+        wf = WorkflowDef(name="wf", steps=[
+            _step("a"),
+            _step("b", prompt="use {a.output}"),  # 故意不声明 depends_on=["a"]
+        ])
+
+        def fake_execute(step, resolved_prompt, step_results):
+            return StepResult(step_id=step.id, status=StepStatus.DONE, output=f"out-{step.id}")
+
+        cfg = _FakeCfg(workflow=_FakeWorkflowConfig(
+            debug_log_enabled=True,
+            placeholder_depends_on_check_enabled=False,
+        ))
+        runner = WorkflowRunner(cfg)
+        reported = []
+        with patch.object(WorkflowRunner, "_execute_step", side_effect=fake_execute), \
+             patch(
+                 "mini_agent.workflow.watchdog.WorkflowWatchdog.report_dependency_mismatch",
+                 side_effect=lambda step_id, ids: reported.append((step_id, ids)),
+             ):
+            result = runner.run(wf)
+
+        sr = {r.step_id: r for r in result.step_results}["b"]
+        self.assertEqual(sr.debug_log.get("undeclared_dependency_usage"), ["a"])
+        self.assertEqual(result.status, "done")  # 只记录，不影响执行结果
+        self.assertIn(("b", ["a"]), reported)
+
+
+class TestDependencyMismatchDetection(unittest.TestCase):
+    """§6.4：debug_log 与 watchdog 打通——upstream_step_ids_used 与
+    depends_on 不一致时，记录进 debug_log 并上报 watchdog。"""
+
+    def test_undeclared_prompt_reference_recorded_when_check_disabled(self):
+        # 关闭 §1 静态校验开关，构造一个"存在但未声明依赖"的 prompt 引用，
+        # 让它能存活到运行期（正常情况下这条路径已被 validate() 拦下）。
+        wf = WorkflowDef(name="wf", steps=[
+            _step("a"),
+            _step("b", prompt="use {a.output}"),  # 未声明 depends_on=["a"]
+        ])
+        self.assertEqual(wf.validate(check_placeholder_depends_on=False), [])
+
+        def fake_execute(step, resolved_prompt, step_results):
+            return StepResult(step_id=step.id, status=StepStatus.DONE, output=f"out-{step.id}")
+
+        cfg = _FakeCfg(workflow=_FakeWorkflowConfig(debug_log_enabled=True))
+        runner = WorkflowRunner(cfg)
+        with patch.object(WorkflowRunner, "_execute_step", side_effect=fake_execute):
+            result = runner.run(wf)
+
+        sr = {r.step_id: r for r in result.step_results}["b"]
+        self.assertEqual(sr.debug_log.get("undeclared_dependency_usage"), ["a"])
+
+    def test_declared_dependency_has_no_mismatch(self):
+        wf = WorkflowDef(name="wf", steps=[
+            _step("a"),
+            _step("b", depends_on=["a"], prompt="use {a.output}"),
+        ])
+
+        def fake_execute(step, resolved_prompt, step_results):
+            return StepResult(step_id=step.id, status=StepStatus.DONE, output=f"out-{step.id}")
+
+        cfg = _FakeCfg(workflow=_FakeWorkflowConfig(debug_log_enabled=True))
+        runner = WorkflowRunner(cfg)
+        with patch.object(WorkflowRunner, "_execute_step", side_effect=fake_execute):
+            result = runner.run(wf)
+
+        sr = {r.step_id: r for r in result.step_results}["b"]
+        self.assertNotIn("undeclared_dependency_usage", sr.debug_log)
 
 
 if __name__ == "__main__":

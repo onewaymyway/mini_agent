@@ -80,9 +80,14 @@ class WorkflowStore:
         check_placeholders = bool(getattr(wf_cfg, "validate_placeholders_on_save", True))
         check_roles = bool(getattr(wf_cfg, "validate_role_refs_on_save", True))
         check_condition = bool(getattr(wf_cfg, "condition_static_check_enabled", True))
+        # [P11 §1] prompt 占位符的 depends_on 范围检查，独立开关（复用同一套
+        # _transitive_deps 逻辑，但可以单独关闭，供还没来得及补全旧 workflow
+        # depends_on 声明的用户过渡期临时跳过）。
+        check_placeholder_depends_on = bool(getattr(wf_cfg, "placeholder_depends_on_check_enabled", True))
         errors = wf.validate(
             check_placeholders=check_placeholders,
             check_condition=check_condition,
+            check_placeholder_depends_on=check_placeholder_depends_on,
             role_checker=(role_checker if (check_roles and role_checker is not None) else None),
         )
         if errors:
