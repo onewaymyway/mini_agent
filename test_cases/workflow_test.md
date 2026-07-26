@@ -1045,3 +1045,18 @@ print(f'✅ 连续 2 次同类失败后提前判 NEEDS_FIX，跳过剩余重试�
 | `step_overrides` 非法字段/未知 step_id 被拒绝 | P10 单元测试八 | 抛出 `bad_override`，不静默忽略 |
 | watchdog 连续同类失败提前升级 `NEEDS_FIX` | P10 单元测试九 | 阈值命中即短路，跳过剩余重试预算 |
 | watchdog 不同 error_type 打断连续计数 | P10 单元测试九 | 计数重新从 1 开始，不误触发升级 |
+| `script_path`/`params`/`output_file` 字段序列化/反序列化 | tests/test_python_step.py | 往返一致 |
+| `python_step` validate 必填 `script_path` | tests/test_python_step.py | 缺失时返回对应 error |
+| `python_step` 不要求 `prompt` 非空 | tests/test_python_step.py | 不产生 "prompt 为空" error |
+| 内联 prompt 超阈值行数触发 warning | tests/test_python_step.py | `last_validate_warnings` 含建议 |
+| `python_step_enabled=False` 时拦截执行 | tests/test_python_step.py | 抛出 `PermissionError` |
+| `python_step` 缺 `script_path` 时拦截执行 | tests/test_python_step.py | 抛出 `ValueError` |
+| `PyStepLLM.ask_json` 解析/去除代码块/解析失败重试/超限报错 | tests/test_python_step.py | 4 个子场景全部通过 |
+| `python_step` 子进程端到端：脚本收到 params + 上游输出，`write_output` 落盘，`output_file` 写回 session output 目录 | tests/test_python_step_subprocess_e2e.py | 真实拉起子进程，非 mock |
+| `python_step` 子进程异常正确转成 `RuntimeError`（含 traceback） | tests/test_python_step_subprocess_e2e.py | 异常信息包含原始错误文本 |
+| `SkillAgentStepExecutor` 委托 `runner._spawn_minimal_agent` 后行为不变（未知 skill 报错 / 本地 bundle skill 正常执行） | tests/test_workflow_directory_mode.py（回归） | 2 个用例均通过 |
+| 知乎 workflow `01_analyze_doc.py`：缺参数/文件不存在报错、正常路径返回 summary/topic/keywords | tests/test_zhihu_workflow_steps.py | 3 个子场景全部通过 |
+| 知乎 workflow `03_filter.py`：32 条候选按 `BATCH_SIZE=15` 分 3 批调用（不是 32 次） | tests/test_zhihu_workflow_steps.py | LLM 调用次数断言 |
+| 知乎 workflow `03_filter.py`：批内漏判过多时触发子批重试，最终不遗漏 | tests/test_zhihu_workflow_steps.py | 全部候选正确判定 |
+| 知乎 workflow `03_filter.py`：候选为空时不调用 LLM | tests/test_zhihu_workflow_steps.py | LLM 调用次数为 0 |
+

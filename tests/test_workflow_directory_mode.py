@@ -407,16 +407,28 @@ class TestSkillAgentStepExecutor(unittest.TestCase):
             wf_executors.SkillAgentStepExecutor().execute(self._mock_runner(), step, "hi")
 
     def test_unknown_skill_without_bundle_or_global_dir_raises(self):
+        # [next_doc/workflow_python_step_and_zhihu_publish_plan.md §B3]
+        # "未知 skill" 的校验逻辑已下沉到 agent_spawn.build_minimal_agent()
+        # （SkillAgentStepExecutor 现在只委托给 runner._spawn_minimal_agent，
+        # 不再自己做 skill 查找），这里改成让 runner._spawn_minimal_agent 走
+        # 真实实现（不 mock 掉），验证异常仍然会被抛出到调用方。
+        from mini_agent.workflow.runner import WorkflowRunner
         step = _step("s1", type="skill_agent", skill_name="does_not_exist")
+        runner = self._mock_runner()
+        runner._spawn_minimal_agent = WorkflowRunner._spawn_minimal_agent.__get__(runner, WorkflowRunner)
+        runner._effective_step_field = lambda step, name, default: default
         with self.assertRaises(ValueError):
-            wf_executors.SkillAgentStepExecutor().execute(self._mock_runner(), step, "hi")
+            wf_executors.SkillAgentStepExecutor().execute(runner, step, "hi")
 
     @patch("mini_agent.config.load_config")
     @patch("mini_agent.agent.Agent")
     def test_uses_local_skill_from_bundle(self, mock_agent_cls, mock_load_config):
+        from mini_agent.workflow.runner import WorkflowRunner
         _write_skill(self.source_dir / "skills" / "pdf-diff" / "SKILL.md", "pdf-diff", "LOCAL SKILL")
         bundle = WorkflowResourceBundle(self.cfg, self.source_dir)
         runner = self._mock_runner(bundle=bundle)
+        runner._spawn_minimal_agent = WorkflowRunner._spawn_minimal_agent.__get__(runner, WorkflowRunner)
+        runner._effective_step_field = lambda step, name, default: default
         mock_load_config.return_value = MagicMock()
         mock_agent_cls.return_value.run_turn.return_value = "SKILL OUT"
 

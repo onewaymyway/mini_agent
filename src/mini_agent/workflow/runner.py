@@ -522,6 +522,80 @@ class WorkflowRunner:
                 return dv
         return hardcoded_default
 
+    def _spawn_minimal_agent(
+        self,
+        step: WorkflowStep,
+        *,
+        skill_name: Optional[str] = None,
+        model: Optional[str] = None,
+        max_turns: int = 10,
+        timeout: Optional[float] = None,
+    ) -> Any:
+        """
+        [next_doc/workflow_python_step_and_zhihu_publish_plan.md §B3] 临时
+        起一个自动批准、非流式的最小 Agent 执行一次 prompt，可选强制激活
+        一个 skill。构造逻辑在 agent_spawn.build_minimal_agent()（不依赖
+        runner 实例，python_step 子进程侧也复用同一份实现），这里只负责
+        把 runner 当前持有的 resource_bundle/cfg 解析成该函数需要的参数。
+
+        供 SkillAgentStepExecutor 和 python_step 的 ctx.run_agent_turn()
+        共用，避免"构造最小 Agent"这段逻辑写两份、容易改一处漏一处。
+        """
+        from .agent_spawn import build_minimal_agent
+        from pathlib import Path as _Path
+
+        skill_loader = None
+        if skill_name:
+            bundle = getattr(self, "_current_resource_bundle", None)
+            skill = bundle.get_skill(skill_name) if bundle else None
+            skill_loader = bundle.skill_loader if (bundle and skill is not None) else None
+
+        global_skills_dir = getattr(self._cfg, "skills_dir", None)
+        return build_minimal_agent(
+            project_root=self._cfg.project_root,
+            verbose=self._cfg.verbose,
+            sandbox=self._cfg.sandbox,
+            model=model or self._effective_step_field(step, "model", None) or self._cfg.model,
+            llm_provider=self._cfg.llm_provider,
+            llm_base_url=self._cfg.llm_base_url,
+            api_key=self._cfg.api_key,
+            debug_llm=getattr(self._cfg, "debug_llm", False),
+            debug_llm_console=getattr(self._cfg, "debug_llm_console", False),
+            max_turns=max_turns,
+            timeout=timeout,
+            skill_name=skill_name,
+            skill_loader=skill_loader,
+            global_skills_dir=_Path(global_skills_dir) if global_skills_dir else None,
+        )
+
+    def _write_step_output_file(self, step: WorkflowStep, output: str) -> None:
+        """
+        [next_doc/workflow_python_step_and_zhihu_publish_plan.md §A3] 若
+        step.output_file 有值，把该 step 的输出文本写到当前 workflow
+        session 的 output/ 目录下（固定文件名 + 固定目录，由 runner 统一
+        保证，不依赖每个 step 的 prompt/脚本自己拼路径）。
+
+        写入失败（磁盘满/文件名非法等）只打印警告，不影响该 step 本身的
+        执行结果——落盘是"锦上添花"的产物存档，不应该反过来让一个已经
+        成功产出内容的 step 被判定为失败。
+        """
+        if not step.output_file:
+            return
+        wf_session = getattr(self, "_current_wf_session", None)
+        paths = getattr(self, "_current_paths", None)
+        if wf_session is None or paths is None:
+            return
+        try:
+            out_dir = paths.ensure_workflow_session_output_dir(wf_session.workflow_session_id)
+            fpath = (out_dir / step.output_file).resolve()
+            fpath.relative_to(out_dir.resolve())  # 路径穿越保护
+            fpath.write_text(output, encoding="utf-8")
+        except Exception as e:
+            from mini_agent.errors import log_exception
+            log_exception(e, where='mini_agent.workflow.runner.WorkflowRunner._write_step_output_file')
+            import mini_agent.ui.renderer as R
+            R.print_warning(f"[Workflow] 步骤 {step.id!r} 的 output_file 落盘失败：{e}")
+
     def _persist_progress(
         self,
         paths: "AgentPaths",
@@ -1144,8 +1218,20 @@ class WorkflowRunner:
 
         try:
             from . import executors as _executors
+            # [next_doc/workflow_python_step_and_zhihu_publish_plan.md §B4]
+            # python_step 需要拿到"全部上游 StepResult 字典"（不止占位符
+            # 替换后的文本），通过实例属性传递，避免改动 StepExecutor.execute()
+            # 的公共签名（其余 6 种内置类型都不需要这个）。
+            self._current_step_results = step_results
             executor = _executors.get_executor(step.effective_type)
             output = executor.execute(self, step, resolved_prompt)
+
+            # [next_doc/workflow_python_step_and_zhihu_publish_plan.md §A3]
+            # 通用输出落盘契约：step.output_file 有值时，把该 step 的输出
+            # 统一写到 session 的 output/ 目录下，不依赖 agent/脚本自己拼
+            # 路径——不管这个 step 是哪种 executor 产生的输出，落盘这一步
+            # 由 runner 收口，保证"固定文件名 + 固定目录"这条约定总是生效。
+            self._write_step_output_file(step, output)
 
             # 提取评分（只要 role 对应的 profile 是 evaluator 类型就提取；
             # sub_workflow/tool_call/human_input/script 均无 role，天然跳过）

@@ -170,6 +170,7 @@ class WorkflowStore:
             if path.name == "workflow.yaml" and path.parent != self._dir:
                 wf.source_dir = path.parent
             self._resolve_prompt_files(wf, path)
+            self._resolve_script_paths(wf, path)
             return wf
         except Exception as e:
             from mini_agent.errors import log_exception
@@ -202,6 +203,37 @@ class WorkflowStore:
                     f"[WorkflowStore] 步骤 {step.id!r} 的 prompt_file 读取失败："
                     f"{step.prompt_file!r}（{e}）"
                 )
+
+    @staticmethod
+    def _resolve_script_paths(wf: WorkflowDef, entry_path: Path) -> None:
+        """
+        [next_doc/workflow_python_step_and_zhihu_publish_plan.md §A2] 把
+        python_step 的 step.script_path 规范化为绝对路径（不读取内容——
+        脚本是在独立子进程里用 runpy 执行的，不需要像 prompt_file 那样
+        提前读入文本）。相对路径基准目录与 _resolve_prompt_files 一致。
+
+        安全限制：解析后的绝对路径必须落在 base_dir 内，防止 workflow
+        YAML（可能来自分享/LLM 生成）用 "../../" 之类路径穿越到项目外
+        的任意脚本，把 workflow 变成任意代码执行入口。校验失败时清空
+        script_path 并打印警告，交由 validate()/PythonStepExecutor 在
+        执行前再次报错拦截，不静默忽略。
+        """
+        base_dir = (wf.source_dir if wf.source_dir is not None else entry_path.parent).resolve()
+        for step in wf.steps:
+            if not step.script_path:
+                continue
+            fpath = (base_dir / step.script_path).resolve()
+            try:
+                fpath.relative_to(base_dir)
+            except ValueError:
+                import mini_agent.ui.renderer as R
+                R.print_warning(
+                    f"[WorkflowStore] 步骤 {step.id!r} 的 script_path 越出了 workflow "
+                    f"目录范围，已忽略：{step.script_path!r}"
+                )
+                step.script_path = None
+                continue
+            step.script_path = str(fpath)
 
     # ── 可复用 step 片段（workflow_mechanism_improvement_plan.md P7-③2）──────
     #

@@ -936,6 +936,11 @@ class WorkflowConfig:
     max_sub_workflow_depth: int = 3            # sub_workflow 类型 step 允许的最大嵌套深度（防止 A→B→A 循环递归）
     script_step_enabled: bool = False          # 是否允许 script 类型 step 执行 shell 命令（默认关闭，避免任意 YAML 变成命令执行入口）
     script_step_timeout_seconds: float = 60.0  # script 类型 step 的默认超时（被 step.timeout 覆盖）
+    # [next_doc/workflow_python_step_and_zhihu_publish_plan.md §B4] python_step
+    # 类型开关，语义与 script_step_enabled 一致：默认关闭，避免分享出去的
+    # workflow YAML（可能来自他人/LLM 生成）变成任意 Python 代码执行入口。
+    python_step_enabled: bool = False
+    python_step_timeout_seconds: float = 120.0  # python_step 类型的默认超时（被 step.timeout 覆盖）
     tool_call_step_auto_approve: bool = False  # tool_call 类型 step 默认是否跳过人工审批门（默认 False：除非显式 require_approval=false，否则仍会走审批）
     human_input_wait_timeout_seconds: Optional[float] = 1800.0  # human_input 类型 step 等待人工输入的超时（None=无限等待），超时后该 step 标记为 FAILED
 

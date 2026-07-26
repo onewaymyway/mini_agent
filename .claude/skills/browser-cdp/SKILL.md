@@ -136,6 +136,14 @@ python browser_nav.py --port 9333 --tab <id> --goto "https://example.com"
 常用管理：`python browser_launch.py --list-dedicated`（查看已建实例）、
 `python browser_launch.py --stop-dedicated work`（用完关闭）。
 
+**⚠️ 登录状态要跨多次调用保留，`--name` 必须每次固定不变**：`--dedicated` 的登录态持久化
+依赖同一个 `--name` 对应同一个 profile 目录。同一个任务/workflow 内所有涉及浏览器的步骤
+都要用**同一个固定的实例名**（比如做知乎相关任务统一用 `--name zhihu_session`），不要每次
+调用都用默认值或临时想一个名字——用不同名字等于每次都是全新登录态。第一次用某个 `--name`
+跑的时候如果页面显示未登录，提示用户在这个专用窗口里手动登录一次即可，之后同名字复用会
+保留登录态（profile 目录固定存放在 `~/.cdp_skill/profiles/<name>/`，不在任何项目的 `temp/`
+目录下，不会被项目自身的清理脚本意外清空）。
+
 需要连接用户已登录的真实浏览器窗口（共享登录态），或无 GUI 服务器环境用 headless，
 加载 `browser-launch-scenarios` 子资源查看完整步骤。
 

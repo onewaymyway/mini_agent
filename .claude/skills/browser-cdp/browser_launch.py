@@ -76,9 +76,15 @@ MAC_CHROME_CANDIDATES = [
 DEFAULT_DEDICATED_PORT = 9333
 SKILL_HOME = os.path.join(os.path.expanduser("~"), ".cdp_skill")
 REGISTRY_PATH = os.path.join(SKILL_HOME, "registry.json")
-# 浏览器数据目录默认放在当前工作目录下的 temp/cdp_brower_data，而不是用户 home，
-# 方便随项目一起清理、也不会污染用户真实 Chrome profile
-DEFAULT_PROFILE_ROOT = os.path.join("temp", "cdp_brower_data")
+# [next_doc/browser_cdp_stability_fixes.md #1] 专用实例的 profile 目录必须放在
+# 稳定、不会被外部流程清理的位置。历史实现放在项目内 "temp/cdp_brower_data"
+# 下——"temp/" 这个名字在几乎所有工程约定里都意味着"可随时清空的临时目录"，
+# workflow/CI/构建脚本经常会在每次运行前 rm -rf temp/，这会直接删掉专用浏览器
+# 实例的整个 profile（含登录 cookies/session），表现为"每次新建的浏览器都不
+# 记得之前的登录状态"——这不是 Chrome 或 CDP 连接的问题，是 profile 目录选址
+# 选错了地方。改到 SKILL_HOME（~/.cdp_skill/profiles/），与 registry.json
+# 放在同一个"本技能专属、不属于任何项目 temp 目录"的稳定位置下。
+DEFAULT_PROFILE_ROOT = os.path.join(SKILL_HOME, "profiles")
 
 
 def find_chrome_binary() -> str | None:
@@ -121,6 +127,37 @@ def _remove_singleton_locks(profile_dir: str) -> None:
                 os.remove(p)
         except Exception:
             pass
+
+
+def _profile_lock_path(profile_dir: str) -> str:
+    return os.path.join(profile_dir, ".mini_agent_lock.json")
+
+
+def _read_profile_lock(profile_dir: str) -> dict | None:
+    """[next_doc/browser_cdp_stability_fixes.md #2] registry.json 之外的
+    第二条线索：profile_dir 下的锁文件记录了上次成功启动时的 port/pid/
+    启动时间。registry 条目丢失（比如被误删/重置）但浏览器进程和 profile
+    还在时，靠这个文件也能找回端口号去做真实探测，而不是直接判定"没有
+    可用实例"就新建一个（新建会因为 profile 目录被同一个 Chrome 占用而
+    启动失败，或者启动到另一个端口，制造出两个互不相关的实例）。"""
+    p = _profile_lock_path(profile_dir)
+    try:
+        with open(p, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        if "port" in data:
+            return data
+    except Exception:
+        pass
+    return None
+
+
+def _write_profile_lock(profile_dir: str, port: int, pid: int) -> None:
+    try:
+        os.makedirs(profile_dir, exist_ok=True)
+        with open(_profile_lock_path(profile_dir), "w", encoding="utf-8") as f:
+            json.dump({"port": port, "pid": pid, "started_at": time.time()}, f)
+    except Exception:
+        pass
 
 
 def spawn_browser(
@@ -258,12 +295,25 @@ def cmd_dedicated(args: argparse.Namespace) -> None:
     reg = _load_registry()
     existing = reg.get(args.name)
 
+    # [next_doc/browser_cdp_stability_fixes.md #2] registry.json 是本技能
+    # 唯一的进程内状态来源，但它本身没有并发保护——多个 workflow/step 并行
+    # 调用 --dedicated 时可能相互踩踏读写，也可能 registry.json 因为某些
+    # 原因被清空/重置（比如另一个进程调用 --stop-dedicated 之后 registry
+    # 条目被删了，但 profile_dir 和浏览器进程其实还在跑）。所以真实性判断
+    # 一律以"真实探测端口是否活着"为准，registry 只是用来找"应该去探测
+    # 哪个端口"的线索，不是判断本身；profile_dir 下的 lock 文件是
+    # registry 之外的第二条线索，registry 丢失时兜底用它找回端口号。
+    if not existing:
+        existing = _read_profile_lock(args.user_data_dir or os.path.join(DEFAULT_PROFILE_ROOT, args.name))
+
     if existing and is_debug_port_alive(args.host, existing["port"]):
         info = version_info(args.host, existing["port"])
         print(
             f"[ok] 专用实例 '{args.name}' 已在运行 -> {args.host}:{existing['port']} "
             f"({info.get('Browser')})，直接复用（如需重开请先 --stop-dedicated {args.name}）"
         )
+        reg[args.name] = existing  # 用 lock 文件恢复的信息回填 registry，下次不用再兜底
+        _save_registry(reg)
         return
 
     # 同名实例存在但端口已经不通了：说明是本技能自己之前启动、后来挂掉/崩溃的孤儿进程。
@@ -314,6 +364,7 @@ def cmd_dedicated(args: argparse.Namespace) -> None:
         "binary": binary,
     }
     _save_registry(reg)
+    _write_profile_lock(profile_dir, port, proc.pid)
 
     tabs = list_tabs(args.host, port)
     tab_id = tabs[0]["id"] if tabs else None

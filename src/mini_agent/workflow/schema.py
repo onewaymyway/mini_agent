@@ -42,7 +42,7 @@ from typing import Any, Optional
 # "主 Agent / 角色 Agent" 二选一显式化为一个枚举，同时新增三种类型。
 # 未显式设置 type 时（旧版 YAML），由 WorkflowStep.effective_type 按
 # "role 是否为空"自动推断为 "agent"/"role_agent"，保证向后兼容。
-STEP_TYPES = ("agent", "role_agent", "sub_workflow", "tool_call", "human_input", "script", "skill_agent")
+STEP_TYPES = ("agent", "role_agent", "sub_workflow", "tool_call", "human_input", "script", "skill_agent", "python_step")
 
 
 def condition_referenced_names(condition: str) -> set[str]:
@@ -178,6 +178,19 @@ class WorkflowStep:
     # skill_agent 专用：要强制加载执行的 skill 名称（不走关键词触发判断）
     skill_name: Optional[str] = None
 
+    # ── [next_doc/workflow_python_step_and_zhihu_publish_plan.md §A/§B] ────
+    # python_step 专用：脚本文件路径（相对 workflow 所在目录解析，规则与
+    # prompt_file 一致）。脚本需暴露 `def run(ctx: PyStepContext) -> str|dict`
+    # 入口函数，由 PythonStepExecutor 在独立子进程里通过 runpy 加载执行。
+    script_path: Optional[str] = None
+    # 透传给 python_step 脚本的自定义参数（workflow.yaml 里直接写字面量），
+    # 脚本内通过 ctx.params 读取，例如 {"doc_path": "..."}。
+    params: dict = field(default_factory=dict)
+    # [next_doc/workflow_python_step_and_zhihu_publish_plan.md §A3] 通用
+    # 输出落盘契约：step 执行完成后，runner 统一把 StepResult.output 写一份
+    # 到 session.output_dir / output_file，不依赖 agent/脚本自己拼路径。
+    output_file: Optional[str] = None
+
     @property
     def effective_type(self) -> str:
         """未显式设置 type 时，按旧语义推断：role 非空 → role_agent，否则 → agent。"""
@@ -256,6 +269,9 @@ class WorkflowDef:
                 prompt_file=s.get("prompt_file"),
                 skill_name=s.get("skill_name"),
                 include=s.get("include"),
+                script_path=s.get("script_path"),
+                params=dict(s.get("params") or {}),
+                output_file=s.get("output_file"),
             ))
         return cls(
             name=str(data.get("name", "unnamed")),
@@ -308,6 +324,9 @@ class WorkflowDef:
                     **({"script": s.script} if s.script else {}),
                     **({"skill_name": s.skill_name} if s.skill_name else {}),
                     **({"include": s.include} if s.include else {}),
+                    **({"script_path": s.script_path} if s.script_path else {}),
+                    **({"params": s.params} if s.params else {}),
+                    **({"output_file": s.output_file} if s.output_file else {}),
                 }
                 for s in self.steps
             ],
@@ -332,6 +351,7 @@ class WorkflowDef:
             condition 的 ast 语法检查（该检查在开关判断之前，不受此参数影响）。
         """
         errors: list[str] = []
+        warnings: list[str] = []
         seen_ids: set[str] = set()
 
         for step in self.steps:
@@ -345,8 +365,22 @@ class WorkflowDef:
             # [阶段1] prompt_file 指定了外部文件时，允许内嵌 prompt 为空
             # （加载阶段会用文件内容填充 step.prompt；validate() 常在保存
             # 前调用，此时若尚未经过加载流程 prompt 可能还是空的，不应误报）。
-            if not step.prompt.strip() and not step.prompt_file and not step.include and step.effective_type != "human_input":
+            if (
+                not step.prompt.strip()
+                and not step.prompt_file
+                and not step.include
+                and step.effective_type not in ("human_input", "python_step")
+            ):
                 errors.append(f"步骤 {step.id!r} 的 prompt 为空")
+
+            # [next_doc/workflow_python_step_and_zhihu_publish_plan.md §A1]
+            # 规范建议：内联 prompt 超过阈值行数时提示改用 prompt_file，
+            # 走 warning 而非 error，不阻断保存/运行（向后兼容旧 workflow）。
+            if step.prompt and not step.prompt_file and step.prompt.count("\n") > 4:
+                warnings.append(
+                    f"步骤 {step.id!r} 的内联 prompt 超过 5 行，建议改用 prompt_file 把 "
+                    f"prompt 拆到独立文件（见 next_doc/workflow_authoring_guide.md）"
+                )
 
             # [P5] 类型专属必填字段校验
             # [P7-④1] STEP_TYPES 只是内置类型；插件通过 register_step_executor()
@@ -379,6 +413,8 @@ class WorkflowDef:
                 errors.append(f"步骤 {step.id!r} 是 script 类型但未指定 script 命令")
             if etype == "skill_agent" and not step.skill_name:
                 errors.append(f"步骤 {step.id!r} 是 skill_agent 类型但未指定 skill_name")
+            if etype == "python_step" and not step.script_path:
+                errors.append(f"步骤 {step.id!r} 是 python_step 类型但未指定 script_path")
 
             # [改进方案 §1] mode="autonomous" 时，在保存期拦截阻塞型 step：
             # human_input 且没有 input_key 兜底 → 运行时会真的阻塞等人工输入；
@@ -491,6 +527,11 @@ class WorkflowDef:
                             f"{ref_field!r}（只支持 .output / .score）"
                         )
 
+        # [next_doc/workflow_python_step_and_zhihu_publish_plan.md §A1]
+        # 保持 validate() 原有签名/返回值不变（仍只返回 errors，向后兼容
+        # generator.py/store.py/tools.py 现有调用点），warning 级建议通过
+        # 实例属性暴露，CLI/工具函数按需读取展示，不参与 errors 判定。
+        self.last_validate_warnings = warnings
         return errors
 
 

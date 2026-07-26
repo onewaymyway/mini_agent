@@ -32,8 +32,10 @@ runner 里，不下沉到每个 Executor，避免重复。
 
 from __future__ import annotations
 
+import json
 import subprocess
 import sys
+import tempfile
 import time
 from pathlib import Path
 from typing import Optional, TYPE_CHECKING
@@ -316,6 +318,117 @@ class ScriptStepExecutor(StepExecutor):
         return proc.stdout
 
 
+class PythonStepExecutor(StepExecutor):
+    """type=python_step（[计划 §B4]）：在独立子进程里执行 step.script_path
+    指定的 Python 脚本（约定入口函数 `run(ctx) -> str | dict`），脚本内可
+    通过 ctx.llm.ask()/ask_json() 调用 LLM（转发到 LLMHelper，与主 Agent
+    同一套 provider/重试/fallback 机制），也可通过 ctx.run_agent_turn()
+    临时起一个最小 Agent 处理需要判断力的子任务（与 skill_agent 类型共用
+    agent_spawn.build_minimal_agent 构造逻辑）。
+
+    默认被 cfg.workflow.python_step_enabled=False 关闭，语义与
+    script_step_enabled 一致——防止分享出去的 workflow YAML 变成任意
+    Python 代码执行入口。
+    """
+
+    def execute(self, runner: "WorkflowRunner", step: WorkflowStep, prompt: str) -> str:
+        wf_cfg = getattr(runner._cfg, "workflow", None)
+        if not bool(getattr(wf_cfg, "python_step_enabled", False)):
+            raise PermissionError(
+                "python_step 类型 step 已被禁用（cfg.workflow.python_step_enabled=False）。"
+                "如需启用，请在 agent_config.json 的 workflow 节里设置 "
+                "\"python_step_enabled\": true 后重试。"
+            )
+        if not step.script_path:
+            raise ValueError(f"步骤 {step.id!r} 是 python_step 类型但未指定 script_path")
+
+        timeout = step.timeout or float(getattr(wf_cfg, "python_step_timeout_seconds", 120.0))
+
+        wf_session = getattr(runner, "_current_wf_session", None)
+        paths = getattr(runner, "_current_paths", None)
+        if wf_session is not None and paths is not None:
+            session_dir = paths.workflow_session_dir(wf_session.workflow_session_id)
+            output_dir = paths.ensure_workflow_session_output_dir(wf_session.workflow_session_id)
+        else:
+            session_dir = Path(runner._cfg.project_root)
+            output_dir = session_dir
+
+        # 上游 step 结果按占位符协议序列化传给子进程（只传纯数据，不传对象）。
+        # [B4] runner._execute_step() 在派发 executor.execute() 之前会把当前
+        # 的 step_results 赋给 self._current_step_results，供这里读取——
+        # python_step 是唯一需要拿到"全部上游结果字典"的 executor（其它
+        # 类型都是走 prompt 占位符替换，不需要原始 dict）。
+        upstream = getattr(runner, "_current_step_results", None) or {}
+        inputs_payload = {
+            sid: {"status": getattr(r.status, "value", str(r.status)), "output": r.output, "score": r.score}
+            for sid, r in upstream.items()
+        }
+
+        wf = getattr(runner, "_current_wf", None)
+        workflow_dir = str(wf.source_dir) if wf is not None and getattr(wf, "source_dir", None) else None
+
+        request = {
+            "step_id": step.id,
+            "session_dir": str(session_dir),
+            "output_dir": str(output_dir),
+            "inputs": inputs_payload,
+            "params": step.params or {},
+            "script_path": step.script_path,
+            "workflow_dir": workflow_dir,
+            "app_cfg": {
+                "project_root": str(runner._cfg.project_root),
+                "sandbox": runner._cfg.sandbox,
+                "model": runner._effective_step_field(step, "model", None) or runner._cfg.model,
+                "llm_provider": runner._cfg.llm_provider,
+                "llm_base_url": runner._cfg.llm_base_url,
+                "api_key": runner._cfg.api_key,
+                "debug_llm": getattr(runner._cfg, "debug_llm", False),
+                "debug_llm_console": getattr(runner._cfg, "debug_llm_console", False),
+                "skills_dir": str(getattr(runner._cfg, "skills_dir", "") or "") or None,
+            },
+        }
+
+        with tempfile.TemporaryDirectory(prefix="mini_agent_python_step_") as tmp_dir:
+            req_path = Path(tmp_dir) / "request.json"
+            req_path.write_text(json.dumps(request, ensure_ascii=False), encoding="utf-8")
+
+            _is_windows = sys.platform == "win32"
+            _popen_kwargs: dict = {
+                "cwd": str(runner._cfg.project_root),
+                "capture_output": True,
+                "text": True,
+                "timeout": timeout,
+            }
+            if _is_windows:
+                _popen_kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
+            else:
+                _popen_kwargs["start_new_session"] = True
+
+            proc = subprocess.run(
+                [sys.executable, "-m", "mini_agent.workflow.py_step_runner", str(req_path)],
+                **_popen_kwargs,
+            )
+
+            last_line = ""
+            for line in (proc.stdout or "").splitlines():
+                line = line.strip()
+                if line:
+                    last_line = line
+            try:
+                result = json.loads(last_line) if last_line else {}
+            except json.JSONDecodeError:
+                result = {}
+
+            if proc.returncode != 0 or not result.get("ok"):
+                raise RuntimeError(
+                    f"python_step 执行失败（returncode={proc.returncode}）：\n"
+                    f"error: {result.get('error')}\n"
+                    f"traceback: {result.get('traceback')}\n"
+                    f"stdout: {proc.stdout}\nstderr: {proc.stderr}"
+                )
+            return result.get("output", "")
+
+
 class SkillAgentStepExecutor(StepExecutor):
     """type=skill_agent（workflow_directory_mode_design.md 阶段3）：
     临时启动一个只强制挂载 step.skill_name 指定的 skill 的最小 Agent 执行
@@ -325,60 +438,19 @@ class SkillAgentStepExecutor(StepExecutor):
     """
 
     def execute(self, runner: "WorkflowRunner", step: WorkflowStep, prompt: str) -> str:
-        from mini_agent.config import load_config
-        from mini_agent.agent import Agent
-        from mini_agent.permissions import PermissionGuard
-        from mini_agent.tools import get_default_registry
-        from mini_agent.skills import SkillLoader
-
         if not step.skill_name:
             raise ValueError(f"步骤 {step.id!r} 是 skill_agent 类型但未指定 skill_name")
 
-        bundle = getattr(runner, "_current_resource_bundle", None)
-        skill = bundle.get_skill(step.skill_name) if bundle else None
-        skill_loader = bundle.skill_loader if (bundle and skill is not None) else None
-
-        if skill_loader is None:
-            # 本地资源包里没有，退回全局 skills_dir 重新构造一个 loader。
-            global_skills_dir = getattr(runner._cfg, "skills_dir", None)
-            if not global_skills_dir:
-                raise ValueError(
-                    f"步骤 {step.id!r} 引用的 skill 不存在：{step.skill_name!r}"
-                    "（未配置 skills_dir，也没有 workflow 本地 skills/ 目录）"
-                )
-            skill_loader = SkillLoader([Path(global_skills_dir)])
-            if skill_loader._all.get(step.skill_name) is None:
-                raise ValueError(f"步骤 {step.id!r} 引用的 skill 不存在：{step.skill_name!r}")
-
-        step_cfg = load_config(
-            project_root=runner._cfg.project_root,
-            verbose=runner._cfg.verbose,
-            sandbox=runner._cfg.sandbox,
-            auto_approve=True,
-            model=runner._effective_step_field(step, "model", None) or runner._cfg.model,
-            llm_provider=runner._cfg.llm_provider,
-            llm_base_url=runner._cfg.llm_base_url,
-            debug_llm=getattr(runner._cfg, "debug_llm", False),
-            debug_llm_console=getattr(runner._cfg, "debug_llm_console", False),
+        # [next_doc/workflow_python_step_and_zhihu_publish_plan.md §B3]
+        # "构造最小 Agent" 的逻辑已抽到 runner._spawn_minimal_agent()
+        # （内部转发到 agent_spawn.build_minimal_agent），与 python_step 的
+        # ctx.run_agent_turn() 共用同一份实现，这里不再重复写一遍。
+        agent = runner._spawn_minimal_agent(
+            step,
+            skill_name=step.skill_name,
+            max_turns=runner._effective_step_field(step, "max_turns", 10),
+            timeout=runner._effective_step_field(step, "timeout", None),
         )
-        step_cfg.api_key = runner._cfg.api_key
-        step_cfg.max_turns = runner._effective_step_field(step, "max_turns", 10)
-        step_cfg.stream = False
-        eff_timeout = runner._effective_step_field(step, "timeout", None)
-        if eff_timeout:
-            step_cfg.request_timeout = eff_timeout
-
-        guard = PermissionGuard(
-            auto_approve=True,
-            sandbox=runner._cfg.sandbox,
-            project_root=runner._cfg.project_root,
-        )
-        agent = Agent(cfg=step_cfg, guard=guard, registry=get_default_registry(), skill_loader=skill_loader)
-        # 强制激活指定 skill，不依赖关键词触发。
-        try:
-            skill_loader.activate(step.skill_name)
-        except Exception:
-            pass
         return agent.run_turn(prompt)
 
 
@@ -394,6 +466,7 @@ _EXECUTORS: dict[str, StepExecutor] = {
     "human_input": HumanInputStepExecutor(),
     "script": ScriptStepExecutor(),
     "skill_agent": SkillAgentStepExecutor(),
+    "python_step": PythonStepExecutor(),
 }
 
 

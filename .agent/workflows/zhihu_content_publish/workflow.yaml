@@ -1,0 +1,59 @@
+# zhihu_content_publish — 分析文档 → 知乎搜索候选问题 → 批量LLM筛选 → 补全详情
+#
+# 遵循 next_doc/workflow_authoring_guide.md 的规范：
+#   - prompt 一律外置到 prompts/*.md（本文件不写超过 3 行的内联 prompt）
+#   - python_step 的脚本代码外置到 steps/*.py
+#   - 每个 step 都声明 output_file，产出统一落在本次 workflow session 的
+#     output/ 目录下（.agent/workflow_sessions/<wfs_id>/output/），不需要
+#     用户或脚本自己拼路径
+#
+# 运行前置条件：
+#   - agent_config.json 的 workflow 节需要设置 "python_step_enabled": true
+#     （python_step 默认关闭，见 next_doc/workflow_python_step_and_zhihu_publish_plan.md §B4）
+#   - 需要挂载 browser-cdp skill（.claude/skills/browser-cdp/），并已按
+#     next_doc/browser_cdp_stability_fixes.md 固定好 --name 专用实例
+#   - 运行参数：run_workflow(inputs={"doc_path": "<本地文档绝对路径>"})
+
+name: zhihu_content_publish
+description: 分析本地文档内容，去知乎搜索适合作为答案的问题，批量LLM筛选后补全详情
+version: "1.0"
+mode: interactive
+
+defaults:
+  retry_on_error: 1
+
+steps:
+  - id: analyze_doc
+    type: python_step
+    script_path: steps/01_analyze_doc.py
+    params:
+      doc_path: "{doc_path}"   # 来自 run_workflow(inputs={"doc_path": ...})
+    output_file: doc_analysis.json
+    timeout: 180
+    retry_on_error: 1
+
+  - id: search_zhihu
+    type: skill_agent
+    skill_name: browser-cdp
+    prompt_file: prompts/02_search_zhihu.md
+    depends_on: [analyze_doc]
+    output_file: search_results.json
+    max_turns: 25
+    timeout: 900
+
+  - id: filter_questions
+    type: python_step
+    script_path: steps/03_filter.py
+    depends_on: [analyze_doc, search_zhihu]
+    output_file: filtered_questions.json
+    timeout: 600
+    retry_on_error: 1
+
+  - id: enrich_questions
+    type: skill_agent
+    skill_name: browser-cdp
+    prompt_file: prompts/04_enrich_questions.md
+    depends_on: [filter_questions]
+    output_file: final_result.json
+    max_turns: 35
+    timeout: 1500

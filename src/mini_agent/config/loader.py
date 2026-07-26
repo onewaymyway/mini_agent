@@ -740,6 +740,8 @@ def load_config(
         max_sub_workflow_depth=int(_wf.get("max_sub_workflow_depth", 3)),
         script_step_enabled=bool(_wf.get("script_step_enabled", False)),
         script_step_timeout_seconds=float(_wf.get("script_step_timeout_seconds", 60.0)),
+        python_step_enabled=bool(_wf.get("python_step_enabled", False)),
+        python_step_timeout_seconds=float(_wf.get("python_step_timeout_seconds", 120.0)),
         tool_call_step_auto_approve=bool(_wf.get("tool_call_step_auto_approve", False)),
         human_input_wait_timeout_seconds=(
             1800.0 if "human_input_wait_timeout_seconds" not in _wf
