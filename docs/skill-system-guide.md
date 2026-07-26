@@ -31,6 +31,59 @@ first"）：在从零探索一个任务（读代码、搜索、试错）之前�
 `SkillActivationTool` 中），而是写死在 system prompt 里的行为约束，目的是减少模型
 "绕过已有 Skill 直接读代码摸索" 的情况，提升一致性并降低 token 消耗。
 
+`agent_core.md` 里除了这条规则的文字陈述，还紧跟着一组正反例（✅ 正确 / ❌ 错误的
+对话片段），用来对比"先 `skill_list` 再 `skill_activate`"与"`skill_list` 之后转头
+用 `bash`/`read_file` 直接读 `SKILL.md`"两种走向——只写规则对长对话里的一致性帮助
+有限，配合具体范例效果更稳定。
+
+### 2.1 三类实际观察到的不稳定表现与对应修复（2026-07 新增）
+
+在实践中，仅靠上面这条 system prompt 规则会出现三类典型的不稳定行为，下面逐一说明
+现在是怎么修的、修复代码在哪：
+
+**（a）该激活而没激活，模型自己直接探索。**
+过去完全依赖模型自己在一大段 Available Skills 目录里判断"要不要激活"，这是纯软约束，
+长对话里容易被忽略。现在改为在 `SkillLoader` 之上加一层确定性匹配：`run_turn()`
+（`agent/turn_loop.py`）每轮用户消息入队后，调用
+`agent/reminders_correction.py` 里的 `_inject_reminders_for_skill_candidates()`，
+它内部调用 `SkillLoader.find_inactive_candidates(query)`——复用
+`auto_activate()` 同一套 `trigger_words`/`activation_conditions`/资源级
+triggers 匹配逻辑，但**只匹配、不激活**，也不受 `_auto_activate_blocked` 屏蔽
+影响。命中则合成一条 reminder，点名具体的候选 skill 名字和描述，要求模型先
+`skill_list`/`skill_activate` 确认再动手。
+
+这与关键词自动激活（`keyword_activation_enabled`，见第 3.3 节）是两回事：
+自动激活是直接帮模型把 skill 塞进 active 列表，模型可能都没意识到；这里只是把
+"建议你现在检查一下 X"这句话摆到模型面前，激活与否仍由模型自己决定——因此该机制
+**独立于** `keyword_activation_enabled` 开关，由单独的
+`SkillConfig.candidate_reminder_enabled`（默认 `true`）控制。
+
+**（b）不通过 `skill_activate`，而是直接读取 `SKILL.md` 文件内容。**
+根因是 `SkillLoader.get_catalog()`（即 `skill_list` 工具的返回值）过去无论 skill
+是否激活都会带上 `location`（skill 所在目录）字段，模型拿到路径后很容易图省事直接
+`read_file`/`bash` 去 cat 文件，绕开 `skill_activate`。现在 `get_catalog()` 只对
+**已激活**的 skill 返回 `location`（已激活 skill 的正文里常有相对路径引用，需要
+这个目录才能拼出绝对路径，属于合法需求）；**未激活**的 skill 不再返回路径，改为
+一句 `note`，把"怎么看正文"重新引导回 `skill_activate`。同时 `skill_list` /
+`skill_activate` 两个工具的 description（`tools/skill_manager.py`）里也明确写明
+"即使你已经知道或能猜到路径，也不允许直接读取文件"。
+
+**（c）已激活，但仍去读文件，而不是用 context 里已经注入的内容。**
+这通常不是模型故意不守规矩，而是它不确定 context 里的内容是否完整——尤其是开启
+`skill_chunking_enabled` 时，注入的只是按 query 相关性挑出的最多 3 个章节，模型
+合理怀疑"是不是还有没看到的部分"，于是转去读原文件核对。现在 `build_context()`
+为每个已激活 skill 的注入内容新增一段边界声明：明确说明这段内容是"完整正文"还是
+"节选章节"，并明确禁止再用 `read_file`/`view`/`grep`/`bash` 重新读取该 skill 目录
+下的文件（磁盘上的文件可能因章节筛选、历史压缩等原因与当前展示版本不一致），同时
+给出正规的替代路径——内容不够时应在回复里说明还缺什么，或调用
+`skill_resource_list`/`skill_resource_load` 获取已登记的子资源。
+`prompts/system/active_skills.md` 模板里也追加了同样的声明，作为全局层面的强调。
+
+三处修复都停留在 system prompt / 工具 schema / 确定性匹配代码层面，没有引入运行时
+文件系统拦截（例如 hook 级别的路径黑名单）——如果未来发现这三条仍不够稳定，可以
+在 `hooks/runner.py` 里加一个 pre-tool-use hook，拦截对 `skills_dirs` 路径的直接
+文件读取作为兜底，但目前的判断是先看 prompt 层面的效果。
+
 ## 3. Skill 文件格式与发现
 
 ### 2.1 支持的目录布局
@@ -246,6 +299,15 @@ Agent 初始化时，如果传入了 `skill_loader`，会注册以下技能管�
 
 这些工具让模型可以先查看目录，再按任务阶段加载或卸载相关 skill（或 skill 下的子资源）。
 
+> **`skill_list` 返回字段说明（2026-07 变更）**：`SkillLoader.get_catalog()` 现在
+> 只对**已激活**的 skill 返回 `location`（skill 所在目录，用于解析正文里的相对
+> 路径）；**未激活**的 skill 不再返回 `location`，改为返回一句 `note`，引导模型
+> 调用 `skill_activate`。这是第 2.1 节「问题1」修复的一部分——目的是不给模型一个
+> 可以绕开 `skill_activate` 直接读文件的现成路径。若有代码依赖 `get_catalog()` 里
+> 未激活 skill 的 `location` 字段，需要相应调整（目前项目内所有消费方——
+> `context_builder.py`、`cli/commands/skills.py` 等——都只用 `name`/`description`/
+> `active`，不受影响）。
+
 ### 3.3 关键词辅助激活
 
 每轮 `run_turn()` 开始时，若关键词激活功能已启用，`SkillLoader.auto_activate(user_message)` 会根据 `trigger_words` 对用户输入做启发式匹配。匹配成功的技能会自动加入 active 列表，并在终端打印已加载提示。
@@ -284,7 +346,17 @@ cfg.skill.keyword_activation_enabled = False  # 关闭
 > "模型/用户/自动垃圾回收刚判断不需要，下一句用户消息里的同一批关键词又把它
 > 立刻拉回来"这种抖动；显式重新 `activate()` 会清除该 skill 的屏蔽状态。
 
+> **与「候选 skill 提醒」（2.1 节「问题0」修复）的区别**：本节说的关键词自动
+> 激活默认关闭，命中后**直接把 skill 加入 active 列表**，模型可能都没意识到
+> 发生了什么；2.1 节新增的 `_inject_reminders_for_skill_candidates()` /
+> `SkillLoader.find_inactive_candidates()` 默认**开启**（受
+> `SkillConfig.candidate_reminder_enabled` 控制），但只是**匹配、不激活**——
+> 命中后注入一条点名具体 skill 的 reminder，是否激活仍由模型自己决定。两套
+> 机制可以同时开启，互不冲突：前者省一次工具调用但可能误激活无关 skill，后者
+> 更保守但多一轮"模型自己确认"的过程。
+
 ### 3.4 `exclude()`：彻底排除（2026-06 新增，Stage 3.2）
+
 
 `SkillLoader.exclude(name)` 与 `deactivate(name)` 的区别是把 skill 从
 `_all` 中**整体删除**，而不只是从 `_active` 列表移除——意味着排除后既不能
@@ -415,6 +487,18 @@ The following skills are currently active and provide additional instructions:
 ```
 
 如果未激活任何技能，则不会注入 active skills 块。
+
+> **内容边界声明（2026-07 新增，「问题2」修复）**：每个 `## Skill: <name>` 块的
+> 正文前面，`build_context()` 现在还会插入一段边界声明，明确两件事：
+> 1. 这段内容是"完整正文"还是（chunking 模式下）"与本轮问题最相关的节选章节"；
+> 2. 明确禁止再用 `read_file`/`view`/`grep`/`bash` 重新读取该 skill 目录下的
+>    文件，并给出正规的替代路径——内容不够时应在回复里说明还缺什么，或调用
+>    `skill_resource_list`/`skill_resource_load` 获取已登记的子资源。
+>
+> 动机：开启 chunking 时模型只能看到部分章节，容易怀疑 context 内容不完整，
+> 转而自己去读磁盘上的 `SKILL.md` 核对——但磁盘文件可能因章节筛选、历史压缩
+> 等原因与当前展示版本不一致。`prompts/system/active_skills.md` 模板里也追加
+> 了同样的声明，作为全局层面的强调（不止针对单个 skill）。
 
 ### 4.2 Skill chunking
 
@@ -600,13 +684,17 @@ loader.auto_activate_blocked   # -> ['docx', ...]
 
 | 文件 | 说明 |
 |------|------|
-| `src/mini_agent/skills/__init__.py` | `Skill`、`SkillResource`、`SkillLoader`、发现、解析、激活/卸载、`auto_unload_idle()` 自动卸载 GC、`_auto_activate_blocked` 屏蔽集合、上下文构建、渐进式资源加载、压缩上下文入口 |
+| `src/mini_agent/skills/__init__.py` | `Skill`、`SkillResource`、`SkillLoader`、发现、解析、激活/卸载、`auto_unload_idle()` 自动卸载 GC、`_auto_activate_blocked` 屏蔽集合、`find_inactive_candidates()`（2026-07 新增，问题0 候选匹配）、`get_catalog()`（2026-07 变更，问题1 未激活不返回路径）、上下文构建（含问题2 边界声明）、渐进式资源加载、压缩上下文入口 |
 | `src/mini_agent/agent/compaction.py` | `compact_with_skills()`、`_auto_unload_idle_skills()`、`_build_skill_compact_block()`：压缩流程、自动卸载接入点、skill 重附 |
+| `src/mini_agent/agent/reminders_correction.py` | `_inject_reminders_for_user_intent()`、`_inject_reminders_for_skill_candidates()`（2026-07 新增，问题0 修复：基于 `find_inactive_candidates()` 生成候选激活提醒） |
+| `src/mini_agent/agent/turn_loop.py` | `run_turn()`：关键词自动激活接入点、`_inject_reminders_for_skill_candidates()` 调用点（2026-07 新增） |
 | `src/mini_agent/skills/usage_detector.py` | 显式声明和指纹匹配的双轨使用检测 |
 | `src/mini_agent/skills/tracker.py` | LRU 使用追踪与压缩重附预算实现（skill 级与资源级共用） |
-| `src/mini_agent/tools/skill_manager.py` | `skill_list`、`skill_activate`、`skill_deactivate`、`compact_history`、`skill_stats`、`skill_resource_list`、`skill_resource_load`、`skill_resource_unload` 工具注册 |
-| `src/mini_agent/prompts/system/active_skills.md` | active skill 注入到 system prompt 的模板 |
-| `src/mini_agent/agent.py` | 自动激活（skill 级 + 资源级）、system prompt 拼装、回复后记录使用、压缩重附 |
+| `src/mini_agent/tools/skill_manager.py` | `skill_list`、`skill_activate`、`skill_deactivate`、`compact_history`、`skill_stats`、`skill_resource_list`、`skill_resource_load`、`skill_resource_unload` 工具注册；`skill_list`/`skill_activate` description 已补充禁止绕过读文件的说明（2026-07，问题1） |
+| `src/mini_agent/config/models.py` | `SkillConfig`：`candidate_reminder_enabled`（2026-07 新增，问题0 开关） |
+| `src/mini_agent/prompts/system/active_skills.md` | active skill 注入到 system prompt 的模板；已补充内容边界声明段落（2026-07，问题2） |
+| `src/mini_agent/prompts/system/agent_core.md` | Agent 核心行为准则；「先查 Skill 再探索」规则旁已补充禁止直接读 `SKILL.md` 的说明与正反例（2026-07，问题0/问题1） |
+| `src/mini_agent/agent/core.py` | `Agent.__init__`：skill 工具注册、`set_active_skills_provider` 等装配逻辑（注：文档历史版本里写的 `src/mini_agent/agent.py` 已拆分为 `agent/` 包下的多个 mixin 文件，如 `core.py`/`turn_loop.py`/`compaction.py`/`reminders_correction.py` 等，此处一并更正） |
 | `src/mini_agent/cli/repl.py` | `/skills` 与 `/skill ...` CLI 命令实现 |
 | `src/mini_agent/tools/evolution.py` | `skill_propose` 工具：lesson → SKILL.md 提案（2026-06 新增，Stage 3.1） |
 | `src/mini_agent/evolution/eval_runner.py` | `mini-agent eval` 调用 `SkillLoader.exclude()` 做严格对比（2026-06 新增，Stage 3.2） |
@@ -638,7 +726,15 @@ loader.auto_activate_blocked   # -> ['docx', ...]
 
 ---
 
-> 最后更新：2026-07（修正第 3 节「Skill 文件格式与发现」：明确 `rglob` 为任意深度
+> 最后更新：2026-07（新增第 2.1 节「三类实际观察到的不稳定表现与对应修复」：
+> (a) `SkillLoader.find_inactive_candidates()` + `_inject_reminders_for_skill_candidates()`
+> 生成候选 skill 激活提醒（问题0：该激活而没激活）；(b) `get_catalog()` 不再对
+> 未激活 skill 返回磁盘路径，`skill_list`/`skill_activate` 工具 description 补充
+> 禁止绕过说明，`agent_core.md` 补充正反例（问题1：绕开 `skill_activate` 直接读
+> `SKILL.md`）；(c) `build_context()` 与 `active_skills.md` 补充内容边界声明
+> （问题2：已激活仍去读文件而非用 context 内容）；同步更新第 3.2/3.3/4.1 节与
+> 第 9 节关键代码索引，并更正历史遗留的 `agent.py` 单文件描述为现在的 `agent/`
+> 包拆分结构；此前更新：修正第 3 节「Skill 文件格式与发现」：明确 `rglob` 为任意深度
 > 递归发现、补充 `skills_dirs` 优先级解析（项目级 `.claude/skills` 与全局级
 > `~/.agent/skills` 互斥候选）、补全 `requires`/`conflicts_with`/`activation_conditions`
 > 等 Stage 7 字段及其对 `activate()` 的实际影响、`triggers`/`trigger_words` 字段名
