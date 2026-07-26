@@ -495,7 +495,12 @@ class SkillAgentStepExecutor(StepExecutor):
             max_turns=runner._effective_step_field(step, "max_turns", 10),
             timeout=runner._effective_step_field(step, "timeout", None),
         )
-        return agent.run_turn(prompt)
+        output = agent.run_turn(prompt)
+        # Strip skill_used tags that may be appended by the skill system
+        # These tags are for tracking skill usage but break JSON parsing in downstream steps
+        import re
+        output = re.sub(r'<skill_used>[^<]*</skill_used>', '', output).strip()
+        return output
 
 
 # ── 分发表 ────────────────────────────────────────────────────────────────────
