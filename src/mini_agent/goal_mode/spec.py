@@ -270,79 +270,98 @@ class GoalSpecBuilder:
     """
 
     def __init__(self, cfg: "AppConfig", parent_session_id: Optional[str] = None,
-                 parent_session_dir=None) -> None:
+                 parent_session_dir=None, llm_helper=None) -> None:
         self._cfg = cfg
-        # 生成该 GoalSpec 草案时所属的主 session id（若有），用于让
-        # spawn_judge_agent 把这个一次性 builder 内部 Agent 的 session
-        # 嵌套到主 session 目录下，而不是散落在 sessions_dir 根目录。
+        # [REMOVED: agent 机制] parent_session_id / parent_session_dir 曾经是给
+        # spawn_judge_agent 用的"把子 Agent session 挂到主 session 目录下"的
+        # 参数。GoalSpecBuilder 不再构造任何子 Agent（见 _run_builder 的重构
+        # 说明），这两个参数已经没有实际作用；仍然保留在签名里只是为了不
+        # 破坏现有调用方（goal_mode_cmd.py / runner.py 里已经在传），避免
+        # 一次性改动过多调用点。
         self._parent_session_id = parent_session_id
-        # [BUGFIX 子 agent session 嵌套] 主 Agent 当前 session 的真实落盘目录
-        # （Agent._current_session_dir()）。优先于 parent_session_id 使用——
-        # 详见 judge_factory.spawn_judge_agent 的同名参数说明。
         self._parent_session_dir = parent_session_dir
+        # 复用调用方（通常是主 Agent）已经持有的 LLMHelper，天然跟随
+        # /model、/provider 的实时切换；调用方拿不到活跃 Agent 实例时
+        # （如独立工具函数、无 agent 的后台任务）传 None，_run_builder 会
+        # 用 LLMHelper.from_config(cfg) 兜底现建一条单链 client。
+        self._llm_helper = llm_helper
         # 上一次 _run_builder 调用的诊断信息，供 build_initial/build_from_history
         # 在命中 _fallback_criteria 时打印具体原因，而不是让用户只看到一份
         # "看起来像拼出来的"验收标准却不知道为什么。
         self.last_error: Optional[str] = None
 
     def _run_builder(self, prompt: str) -> str:
-        """调用一次性内部 Agent 生成/修订 GoalSpec 草案。
+        """直接调用大模型生成/修订 GoalSpec 草案（不经过 Agent/工具循环）。
 
-        [REFACTOR] 之前这里是手写的一份构造 Agent 的样板代码（load_config 三层
-        model/provider 解析 + try/except 静默兜底），是独立维护的一份旧代码，
-        和 role_agents/judge_factory.py 里 GoalJudge/Evaluator/Coach 等其他内部
-        Agent 的调用方式几乎一模一样，但存在两个实质性问题：
-          1. 失败时直接拼一段假 JSON 字符串返回、吞掉异常，上层完全看不到报错，
-             只会表现为"验收标准很通用"（命中 _fallback_criteria），排查起来
-             无从下手——这正是"看起来像字符串拼接"问题的根源：不是设计上用
-             拼接生成，而是真正的 LLM 调用失败被静默吞掉，退到了拼接兜底。
-          2. 和其他判官类内部 Agent 的构造方式不一致，一些已经在 judge_factory
-             里修过的 bug（llm_fallback_chain 清空、TurnJudge 防递归等）需要
-             两处分别维护，容易漏改。
-        现在改为复用 judge_factory.spawn_judge_agent / run_judge_turn（GoalJudge
-        已经在用的同一套），行为对齐、失败会被显式记录到 self.last_error 并打印。
+        [REFACTOR 2] 之前这里复用 judge_factory.spawn_judge_agent 构造一个
+        "tools_enabled=False、max_turns=2 的受限 Agent"来跑这一轮。实测暴露
+        出一个新的、比"llm_fallback_chain 未清空"更根本的问题：
+
+          即使 tools_enabled=False（注册表为空），Agent 构造流程仍然会按
+          正常主循环的方式连接已配置的 MCP server（如用户环境里的
+          `time_server`），并且系统提示词模板本身没有为"这是一个不该有
+          任何工具"的场景做裁剪。模型看到自己是在一个通用 Agent 里，会
+          按惯常做法先尝试 `skill_list`/`bash` 摸底环境，但这些工具压根
+          不在（空）注册表里，于是每一轮都以 `Unknown tool` 报错收场，在
+          `max_turns=2` 的预算内根本没有机会把 JSON 草案说出口——表现为
+          "GoalSpecBuilder 未产出任何文本输出"，退回通用兜底标准。
+
+        生成验收标准这件事本质上是"单轮、无工具、只要一段文本"的任务，
+        不需要多轮工具调用/环境探索，Agent 循环带来的只有额外的失败面
+        （MCP 连接、工具幻觉、轮次预算）而没有额外的能力。因此改为直接
+        通过 LLMHelper.ask() 发起一次裸的 chat completion：不注册任何
+        工具 schema、不连接任何 MCP server、没有"允许几轮"的概念，模型
+        唯一能做的事就是把 JSON 写出来。
+
+        model/provider 解析：仍然复用 role_agents/model_resolution.py 的
+        三层优先级（GoalModeConfig.spec_builder_model/provider > 主模型），
+        通过 LLMHelper.ask 的 override_model/override_provider 一次性指定，
+        等价于原来 spawn_judge_agent 里"清空 llm_fallback_chain、只用单条
+        client"的效果，不需要为此再构造一个 AppConfig/Agent。
         """
-        from mini_agent.role_agents.judge_factory import spawn_judge_agent, run_judge_turn
+        from mini_agent.llm.service import LLMHelper
+        from mini_agent.role_agents.model_resolution import resolve_role_model
         from types import SimpleNamespace
 
         gm = getattr(self._cfg, "goal_mode", None)
         # GoalModeConfig 用的是 spec_builder_model/spec_builder_provider 字段
         # （不是 judge_model/judge_provider），这里包一层轻量适配对象，复用
-        # spawn_judge_agent 期望的 role_cfg_block.judge_model/.judge_provider 接口，
-        # 避免另写一份三层模型优先级解析逻辑。
+        # resolve_role_model 期望的 role_cfg_block.judge_model/.judge_provider
+        # 接口，避免另写一份三层模型优先级解析逻辑。
         role_cfg_block = SimpleNamespace(
             judge_model=getattr(gm, "spec_builder_model", None),
             judge_provider=getattr(gm, "spec_builder_provider", None),
         )
+        model, provider = resolve_role_model(None, role_cfg_block, self._cfg)
 
-        builder_agent = spawn_judge_agent(
-            profile=None,
-            base_cfg=self._cfg,
-            role_cfg_block=role_cfg_block,
-            display_name="📋 GoalSpecBuilder",
-            system_prompt=pm.render("system/goal_spec_builder"),
-            max_turns=2,
-            tools_enabled=False,
-            parent_session_id=self._parent_session_id,
-            parent_session_dir=self._parent_session_dir,
-        )
+        helper = self._llm_helper or LLMHelper.from_config(self._cfg)
+        system_prompt = pm.render("system/goal_spec_builder")
 
-        result = run_judge_turn(
-            builder_agent, prompt,
-            failure_role_label="GoalSpecBuilder",
-            profile_name="goal_spec_builder",
-        )
+        try:
+            text = helper.ask(
+                prompt,
+                system=system_prompt,
+                max_retries=2,
+                override_model=model,
+                override_provider=provider,
+            )
+        except Exception as e:
+            from mini_agent.errors import log_exception
+            log_exception(e, where='mini_agent.goal_mode.spec.GoalSpecBuilder._run_builder')
+            self.last_error = str(e)
+            R.print_warning(f"[GoalSpecBuilder] LLM 调用失败，将使用兜底验收标准。原因：{self.last_error}")
+            return (
+                '{"goal_text": "", "acceptance_criteria": [], '
+                '"verification_method": "manual_review", "verification_command": "", '
+                f'"_error": {json.dumps(self.last_error)}}}'
+            )
 
-        if result.ok and result.raw_output and result.raw_output.strip():
+        if text and text.strip():
             self.last_error = None
-            return result.raw_output
+            return text
 
-        if result.ok:
-            # LLM 调用没抛异常，但没产出任何文本（比如在 max_turns 内没收敛）。
-            self.last_error = "GoalSpecBuilder 未产出任何文本输出（可能在允许轮次内未收敛）"
-        else:
-            self.last_error = result.error or "未知错误"
-
+        # LLM 调用没抛异常，但没产出任何文本（比如被安全过滤器拦截返回空）。
+        self.last_error = "GoalSpecBuilder 未产出任何文本输出"
         R.print_warning(f"[GoalSpecBuilder] LLM 调用失败，将使用兜底验收标准。原因：{self.last_error}")
         return (
             '{"goal_text": "", "acceptance_criteria": [], '

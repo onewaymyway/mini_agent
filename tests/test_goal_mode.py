@@ -457,21 +457,38 @@ def test_goal_judge_uses_distinct_agent_name(monkeypatch, tmp_path):
     assert "GoalJudge" in captured["cfg"].agent_name
 
 
-def test_goal_spec_builder_uses_distinct_agent_name(monkeypatch, tmp_path):
-    """GoalSpecBuilder 同理，也要用专属 agent_name。"""
+def test_goal_spec_builder_calls_llm_directly_not_via_agent(monkeypatch, tmp_path):
+    """[REFACTOR 2] GoalSpecBuilder 不应再构造任何 Agent（无 MCP 连接/工具循环/
+    轮次预算），而是直接通过 LLMHelper 发起一次单轮 chat completion。
+
+    这个测试取代了旧版 test_goal_spec_builder_uses_distinct_agent_name——旧测试
+    断言的是"内部 Agent 用了专属 agent_name"，这个概念随着 Agent 机制被整体
+    移除已经不再适用。新测试改为断言：
+      1. mini_agent.agent.Agent 完全没有被实例化（monkeypatch 成一个会立刻
+         报错的假类，只要被调用测试就会失败）；
+      2. GoalSpecBuilder 实际调用的是 LLMHelper.ask()，且传入了正确解析出的
+         model/provider（覆盖生效，等价于旧版"清空 fallback chain、专属模型"
+         的效果）。
+    """
     import mini_agent.agent as agent_mod
     from mini_agent.config.loader import load_config
+    from mini_agent.llm.service import LLMHelper
+
+    def _agent_should_not_be_constructed(*args, **kwargs):
+        raise AssertionError("GoalSpecBuilder 不应该构造 Agent 实例")
+
+    monkeypatch.setattr(agent_mod, "Agent", _agent_should_not_be_constructed)
 
     captured = {}
 
-    class FakeInnerAgent:
-        def __init__(self, cfg, guard, registry, **kwargs):
-            captured["cfg"] = cfg
+    def fake_ask(self, prompt, *, system="", max_retries=3, retry_policy=None,
+                 override_model=None, override_provider=None, override_temperature=None):
+        captured["system"] = system
+        captured["override_model"] = override_model
+        captured["override_provider"] = override_provider
+        return '{"goal_text": "g", "acceptance_criteria": ["c"]}'
 
-        def run_turn(self, prompt):
-            return '{"goal_text": "g", "acceptance_criteria": ["c"]}'
-
-    monkeypatch.setattr(agent_mod, "Agent", FakeInnerAgent)
+    monkeypatch.setattr(LLMHelper, "ask", fake_ask)
 
     base_cfg = load_config(
         project_root=tmp_path, verbose=False, sandbox=True,
@@ -480,10 +497,40 @@ def test_goal_spec_builder_uses_distinct_agent_name(monkeypatch, tmp_path):
     base_cfg.api_key = "sk-fake"
 
     builder = GoalSpecBuilder(base_cfg)
-    builder.build_initial("do the thing")
+    spec = builder.build_initial("do the thing")
 
-    assert captured["cfg"].agent_name != base_cfg.agent_name
-    assert "GoalSpecBuilder" in captured["cfg"].agent_name
+    assert spec.goal_text == "g"
+    assert spec.acceptance_criteria == ["c"]
+    assert captured["override_model"] == "claude-sonnet-4-6"
+    assert "system" in captured and captured["system"]
+
+
+def test_goal_spec_builder_reuses_injected_llm_helper(tmp_path):
+    """显式注入 llm_helper 时应直接复用它（而不是各处自建一条新的 client_pool），
+    这样从活跃 Agent 调用时天然跟随 /model、/provider 的实时切换。"""
+    from mini_agent.config.loader import load_config
+
+    class _FakeHelper:
+        def __init__(self):
+            self.calls = []
+
+        def ask(self, prompt, *, system="", max_retries=3, retry_policy=None,
+                override_model=None, override_provider=None, override_temperature=None):
+            self.calls.append(prompt)
+            return '{"goal_text": "g2", "acceptance_criteria": ["c2"]}'
+
+    base_cfg = load_config(
+        project_root=tmp_path, verbose=False, sandbox=True,
+        auto_approve=True, model="claude-sonnet-4-6",
+    )
+    base_cfg.api_key = "sk-fake"
+
+    fake_helper = _FakeHelper()
+    builder = GoalSpecBuilder(base_cfg, llm_helper=fake_helper)
+    spec = builder.build_initial("do another thing")
+
+    assert spec.goal_text == "g2"
+    assert len(fake_helper.calls) == 1
 
 
 def test_scan_goal_states_reports_non_running_records(tmp_path):

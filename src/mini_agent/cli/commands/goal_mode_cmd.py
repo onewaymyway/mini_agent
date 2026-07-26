@@ -80,6 +80,7 @@ def _handle_new_goal(goal_text: str, agent) -> None:
         agent.cfg,
         parent_session_id=getattr(agent, "session_id", None),
         parent_session_dir=agent._current_session_dir() if hasattr(agent, "_current_session_dir") else None,
+        llm_helper=getattr(agent, "llm_helper", None),
     )
     R.print_info("[Goal 模式] 正在根据你的描述生成验收标准草案…")
     try:
@@ -119,6 +120,7 @@ def _handle_from_history(agent) -> None:
         agent.cfg,
         parent_session_id=getattr(agent, "session_id", None),
         parent_session_dir=agent._current_session_dir() if hasattr(agent, "_current_session_dir") else None,
+        llm_helper=getattr(agent, "llm_helper", None),
     )
     R.print_info("[Goal 模式] 正在根据当前 session 历史归纳目标…")
     try:
@@ -385,7 +387,7 @@ def _handle_revise(args: list[str], agent) -> None:
 
     spec = GoalSpec.from_dict(state.goal_spec)
     spec.confirmed = False  # 重新进入协商，须重新走一遍 /confirm
-    builder = GoalSpecBuilder(agent.cfg, parent_session_id=sid)
+    builder = GoalSpecBuilder(agent.cfg, parent_session_id=sid, llm_helper=getattr(agent, "llm_helper", None))
 
     if state.replan_proposal:
         proposal_text = render_replan_proposal(state.replan_proposal)

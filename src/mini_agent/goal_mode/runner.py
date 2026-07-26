@@ -879,7 +879,7 @@ class GoalRunner:
         try:
             from .spec import GoalSpecBuilder
             feedback_text = render_replan_proposal(proposal)
-            builder = GoalSpecBuilder(self._cfg)
+            builder = GoalSpecBuilder(self._cfg, llm_helper=getattr(self._agent, "llm_helper", None))
             new_spec = builder.revise(self._spec, feedback_text)
         except Exception as e:
             from mini_agent.errors import log_exception
