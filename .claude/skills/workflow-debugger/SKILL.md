@@ -1,7 +1,7 @@
 ---
 name: workflow-debugger
 description: 测试、调试、修改已存在的 mini_agent workflow（`.agent/workflows/<name>/`）——沙箱跑单个 step、查一次执行失败在哪、只改坏掉的那个 step、从断点续跑、看长期执行统计。当用户说"这个workflow跑失败了"、"帮我测一下这个step"、"这一步为什么一直失败"、"改一下xxx workflow的这个字段"、"从哪步继续跑"、"这个workflow靠谱吗/成功率怎么样"时使用。**不**用于从零生成新 workflow，那是 workflow-generator skill 的场景。
-triggers: workflow调试, workflow失败, workflow测试, 重跑, 断点续跑, patch_workflow_step, resume_workflow_run, test_workflow_step, needs_fix
+triggers: workflow调试, workflow失败, workflow测试, 重跑, 断点续跑, patch_workflow_step, resume_workflow_run, test_workflow_step, needs_fix, debug_log, python_step, workflow debug
 ---
 
 # Workflow Debugger（测试 / 调试 / 修改已有 workflow）
@@ -23,7 +23,8 @@ triggers: workflow调试, workflow失败, workflow测试, 重跑, 断点续跑, 
 | "确认要正式修 workflow 定义里的某个字段" | `patch_workflow_step`（只改一个 step 的字段，会校验、会持久化） | 让用户手工改 YAML 文件、或重新贴一份完整 YAML |
 | "改完了，接着跑" | `resume_workflow_run(force_rerun_from=<step_id>)`（只重跑这步及下游，前面成功的不重来） | 重新 `run_workflow` 从头跑一遍 |
 | "只是临时想放宽一下 timeout 试试是不是单纯超时问题，不想动定义" | `resume_workflow_run(step_overrides={...})`（一次性覆盖，不写回定义） | `patch_workflow_step`（那是永久改动） |
-| "跑之前想看看这次大概会怎么分批/condition 会不会命中" | `preview_workflow(name, inputs)`（dry-run，不真的执行） | 直接跑一遍看结果 |
+| "跑之前想看看这次大概会怎么分批/condition 会不会命中/参数是不是传全了" | `preview_workflow(name, inputs)`（dry-run，不真的执行，会给出 `unresolved_placeholders` 清单，见下文） | 直接跑一遍看结果 |
+| "这一步到底实际收到了什么 prompt/子进程打印了什么/是不是真并发跑的" | 开启 `debug_log_enabled` 后看 `get_workflow_run_status(verbose=true)` 摘要，或 `/workflow debug <run_id> <step_id>` 看完整 `debug_log`（见下文"运行时调试日志"） | 凭 `inputs`+上游输出在脑子里重算一遍占位符替换 |
 | "正在跑，想先停一下 / 不想跑了" | `pause_workflow_run` / `cancel_workflow_run` | 干等或杀进程 |
 | "有个 human_input/审批门卡着" | `provide_workflow_step_input` / `approve_workflow_step` / `reject_workflow_step` | 让用户去改 workflow 定义绕过它 |
 
@@ -167,6 +168,72 @@ get_workflow_stats(name="<workflow>")
 平均重试次数明显偏高，是"该考虑给它调 `timeout`/`retry_on_error`/拆分
 这一步"的信号——但具体怎么改还是要结合 `get_workflow_run_status(verbose=
 true)` 里的具体错误原因，不要只凭统计数字瞎猜。
+
+## 运行时调试日志：`debug_log` 与 `/workflow debug`（P11 §6）
+
+`failed`/`needs_fix` 之外，还有一类排查诉求是"这一步**执行成功**了，但结果
+不对/看着奇怪，想知道它到底实际收到了什么"——`StepResult` 默认只在出错时
+留痕上下文，正常执行完的 step 不会保留替换占位符后的最终 prompt。
+
+**开启方式**：`agent_config.json` 里 `{"workflow": {"debug_log_enabled":
+true}}`（默认关闭，避免长期运行的 workflow session 目录体积膨胀）。开启后
+每个 step 执行完（无论成功失败）都会在 `StepResult.debug_log` 里记录：
+
+- `resolved_prompt`：`_resolve_prompt` 替换占位符后的**最终文本**（仅
+  prompt 驱动的 step 类型有值），事后复盘"为什么这一步给出了奇怪的回答"
+  不再需要人工重算占位符替换。
+- `unresolved_placeholders`：这次执行里"形如 `{xxx}`、在 `inputs` 里没找到
+  对应 key"的占位符列表——即使 `_resolve_prompt` 本身会静默保留原样不报错，
+  这里也能看到确实发生过。
+- `upstream_step_ids_used`：实际引用/读取到的上游 step_id，可以直接跟
+  `depends_on` 声明 diff，判断是不是"用到了没声明的依赖"。
+- `started_at`/`finished_at`/`thread_id`/`batch_index`：并发排查"这两个
+  step 是不是真的并发跑了/是不是被串行化了"的直接证据，不用再靠肉眼估算
+  `duration_seconds` 时间戳是否重叠。
+- `subprocess_stdout`/`subprocess_stderr`：仅 `python_step`/`script` 类型，
+  **成功时也会保留**（此前只有失败时才会把子进程输出塞进错误消息里），脚本
+  里用 `print()` 打的调试信息现在不需要失败才能看到。
+
+**查看方式**：
+
+1. `get_workflow_run_status(workflow_session_id, verbose=true)` 会展示
+   `debug_log` 的关键字段摘要（按 `debug_log_max_chars`，默认 4000 字符
+   截断）。
+2. 想看某一步**完整**的 `debug_log`（不受 verbose 摘要长度限制），用
+   `/workflow debug <workflow_session_id> <step_id>` CLI 子命令（REPL 内
+   或 `mini-agent workflow debug ...` 独立命令行都可以）。
+
+**排查 `python_step` 脚本问题时特别有用**：升级到 P11 之后，`python_step`
+的 `ctx.inputs` 默认按 `depends_on` 过滤（不再是全部已跑完的 step），如果
+脚本报"读不到预期的上游数据"，先看 `debug_log.upstream_step_ids_used` 和
+该 step 的 `depends_on` 是否一致——大概率是脚本引用了一个没写进
+`depends_on` 的 step_id，应该先 `patch_workflow_step` 把它加进
+`depends_on`，而不是关掉 `python_step_inputs_filtered_by_depends_on` 开关
+绕过（那是给排查用的临时回退，不建议作为正式修复手段）。
+
+**与 `undeclared_dependency_usage` 的关系**：保存阶段的静态校验（占位符
+`depends_on` 一致性检查、`python_step` 输入过滤）已经把大部分"用了未声明
+依赖"的问题拦在运行之前；只有显式关闭对应开关时，运行期才会在
+`debug_log["undeclared_dependency_usage"]` 里留下兜底记录（同时上报给
+watchdog），这条记录只做记录、不改变该 step 的执行结果。
+
+---
+
+## 沙箱测试 / 续跑时如何验证 `python_step`
+
+`test_workflow_step` 对 `python_step` 同样适用（会真实拉起子进程执行脚本，
+不是假执行），但要注意：
+
+- `mock_step_results` 需要覆盖脚本 `depends_on` 里声明的所有上游 step，
+  key 要和 `depends_on` 列表完全对应——沙箱测试同样遵循"`ctx.inputs` 按
+  `depends_on` 过滤"这条 P11 规则，mock 数据里多给的 key 不会被脚本看到。
+- 脚本如果调用了 `ctx.llm`，沙箱测试会真实触发 LLM 调用（子进程独立建一条
+  `LLMHelper`，不跟随主 Agent 当前 `/model` 状态），产生真实 token 消耗，
+  这点和 `agent` 类型 step 的沙箱测试是一致的代价。
+- 脚本内 `print()` 输出想在沙箱测试时也能看到，需要先开启
+  `debug_log_enabled`，否则子进程 stdout/stderr 默认不落进沙箱测试的返回
+  结果里（沙箱测试本身不写入 `workflow_runs` 历史，但仍然复用同一套
+  `debug_log` 填充逻辑）。
 
 ## 命令行直接跑（不进 Agent 对话）
 

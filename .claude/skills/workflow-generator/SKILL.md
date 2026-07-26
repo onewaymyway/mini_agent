@@ -103,7 +103,7 @@ prompt/timeout"、"这个改动会不会影响后面的 step，先测一下"，�
 | `type` | 建议显式写 | 见下方"Step 类型"表；不写时按 `role` 是否为空自动推断为 `agent`/`role_agent`（向后兼容旧写法，新建议一律显式写 `type`）。也可以是插件通过 `register_step_executor()` 注册的自定义类型（不在下表里，见"自定义/插件 Step 类型"一节） |
 | `include` | 与 `prompt` 二选一 | 引用 `.agent/workflow_snippets/<n>.yaml` 里的一段可复用 step，见下方"善用可复用 step 片段（`include`）"。填了这个之后该 step 条目本身只需要 `id`（作为命名空间前缀）+ `depends_on`（挂接点），`prompt`/`type` 等字段不需要填、填了也会被忽略 |
 | `prompt` | 二选一 | 内嵌 prompt 文本，支持 `{参数名}`、`{其他step_id.output}`、`{其他step_id.score}` 占位符 |
-| `prompt_file` | 二选一 | 相对 workflow 所在目录的相对路径，如 `prompts/analyze.md`；与 `prompt` 都填时 `prompt_file` 优先；**文件夹模式下优先用这个而不是内嵌 `prompt`**，尤其是 prompt 超过几行的时候 |
+| `prompt_file` | 二选一 | 相对 workflow 所在目录的相对路径，如 `prompts/analyze.md`；与 `prompt` 都填时 `prompt_file` 优先；**文件夹模式下一律优先用这个而不是内嵌 `prompt`**——内联 `prompt` 超过 5 行时 `validate()` 会给出 warning（不阻断保存，但生成新 workflow 时应主动避免） |
 | `role` | `role_agent` 专用 | 角色 agent 名，优先匹配本工作流 `agents/<role>.md`，没有则退回全局 `.agent/agents/` |
 | `skill_name` | `skill_agent` 专用 | skill 名，优先匹配本工作流 `skills/<skill_name>/SKILL.md`，没有则退回全局 skills 目录 |
 | `depends_on` | 否 | 依赖的 step id 列表，决定拓扑执行顺序；同一"层"（无相互依赖）的 step 默认并发执行 |
@@ -121,6 +121,9 @@ prompt/timeout"、"这个改动会不会影响后面的 step，先测一下"，�
 | `input_prompt` | `human_input` 专用 | 展示给人类的提示语，缺省用 `prompt` 本身 |
 | `input_key` | `human_input` 专用 | 若启动 `run_workflow(inputs={...})` 时能通过该 key 找到值，直接使用、不阻塞等待；`mode: autonomous` 的 workflow 里 `human_input` 步骤**必须**设置这个字段，否则保存时校验失败。见下方"全自动执行模式"一节 |
 | `script` | `script` 专用 | 要执行的 shell 命令，受 `cfg.workflow.script_step_enabled` 开关保护，默认关闭 |
+| `script_path` | `python_step` 专用 | 相对 workflow 目录的脚本路径（如 `steps/03_filter.py`），受 `cfg.workflow.python_step_enabled` 开关保护，默认关闭；脚本须暴露 `def run(ctx: PyStepContext) -> str\|dict` |
+| `params` | 否，`python_step` 常用 | 透传给 `python_step` 脚本的自定义参数字面量（dict），脚本内通过 `ctx.params` 读取 |
+| `output_file` | 否，通用于所有 type | 该 step 执行完成后，输出统一落盘到当前 workflow session 的 `output/<output_file>`，不管是哪种 type 产生的输出；下游 step 可用 `{该step.output_file}` 占位符引用落盘文件的绝对路径 |
 
 > **写法提示**：`max_turns`/`model`/`timeout`/`retry_on_error`/`allow_parallel`/
 > `escalate_after_n_same_failures` 这 6 个字段现在语义是"不写=继承"而不是
@@ -141,10 +144,11 @@ prompt/timeout"、"这个改动会不会影响后面的 step，先测一下"，�
 | `tool_call` | 直接调用某个已注册工具，不启动 Agent，适合纯确定性操作 |
 | `human_input` | 暂停等待人工输入，配合 `/workflow input` |
 | `script` | 执行 shell 命令（默认关闭，需要显式开启配置项） |
+| `python_step` | 在独立子进程里跑一段外置 `.py` 脚本（`script_path`），不启动 Agent，适合"给定输入产出结构化 JSON"这类确定性数据加工（默认关闭，需要显式开启 `python_step_enabled`）。真正需要临场应变（如浏览器交互）的步骤仍应使用 `agent`/`skill_agent`，见下方"`python_step`：脚本外置与批量处理"一节 |
 
 ### 自定义/插件 Step 类型
 
-以上是内置的 7 种类型。项目还可能通过 `myplugins/*.py` 里的
+以上是内置的 8 种类型。项目还可能通过 `myplugins/*.py` 里的
 `register_step_executor()` 注册了自定义类型（比如示例插件
 `myplugins/example_http_step.py` 注册的 `type: http`）。生成 workflow
 前，如果不确定项目里有没有这类插件、支持哪些自定义类型，可以查一下：
@@ -158,6 +162,59 @@ print(get_registered_types())   # 内置 7 种 + 插件注册的自定义类型
 不确定该类型需要哪些专属字段时，去看对应插件源码里的
 `StepExecutor.validate_step()` 实现，或直接问用户。不要凭空编造一个不存在
 的 `type`——`WorkflowDef.validate()` 会在保存时因"type 非法"直接报错。
+
+## `python_step`：脚本外置与批量处理
+
+完整规范见 `next_doc/workflow_authoring_guide.md`，参考实现见
+`.agent/workflows/zhihu_content_publish/`（4 个 step、4 个 prompt 文件、
+2 个 `python_step` 脚本）。生成含 `python_step` 的 workflow 时遵循：
+
+1. **脚本代码一律外置到 `steps/*.py`**，`workflow.yaml` 只写
+   `script_path: steps/xx.py`，不要把脚本内容内嵌进 YAML。
+2. **脚本入口函数签名固定**：`def run(ctx: PyStepContext) -> str | dict:`。
+   `ctx` 提供 `ctx.llm.ask()`/`ctx.llm.ask_json()`（LLM 调用）、
+   `ctx.run_agent_turn()`（临时起最小 Agent 处理需要判断力的子任务）、
+   `ctx.params`（`workflow.yaml` 里该 step 的 `params` 字面量）、
+   `ctx.inputs`/`ctx.input_output()`/`ctx.input_json()`（读上游 step 结果，
+   **默认只包含该 step `depends_on` 里声明过的上游**，需要读取某个历史
+   step 必须先把它加进 `depends_on`）、`ctx.load_prompt_file()`（读
+   `prompts/*.md`）、`ctx.write_output()`（往 output_dir 落盘中间产物）。
+3. **默认关闭**：生成含 `python_step` 的 workflow 后，要提示用户在
+   `agent_config.json` 里显式开启 `{"workflow": {"python_step_enabled":
+   true}}`，否则运行时会被直接拦截。
+4. **多条候选数据的判断类场景走批量而不是逐条**：比如"从 N 条候选里筛选
+   符合要求的"，脚本内部分批调用 `ctx.llm.ask_json()`（配合独立的
+   `prompts/xx_batch.md` 模板，要求模型逐条给出 `id`+判断+理由的 JSON
+   数组），而不是对每条数据单独起一次 LLM 调用——省 token、省延迟。批量
+   调用返回的判断数量明显少于批次数量（漏判）时，应该拆成更小的子批重试
+   而不是直接丢弃，可参考
+   `.agent/workflows/zhihu_content_publish/steps/03_filter.py` 的
+   `BATCH_SIZE`/`MISS_RATIO_THRESHOLD`/`MIN_SUB_BATCH` 写法。
+5. **`search_zhihu`/`enrich_questions` 这类真实浏览器交互步骤仍用
+   `skill_agent`**，不要为了"统一用 python_step"而把需要临场应变的步骤也
+   硬写成脚本——页面结构会变、要应对弹窗/滚动加载，脚本硬编码的稳定性
+   反而更差。
+
+`output_file` 契约对 `python_step` 同样适用（且是通用契约，不限于这一种
+type）：声明了 `output_file` 之后，脚本 `return` 的内容会被 runner 自动
+落盘到 session `output/` 目录，脚本本身不需要自己拼路径写文件；下游 step
+可以用 `{该step.output_file}` 占位符拿到落盘文件的绝对路径，提示
+`agent`/`role_agent` 类型的 step 直接读文件而不是把整段 JSON 塞进 prompt。
+
+```yaml
+- id: analyze_doc
+  type: python_step
+  script_path: steps/01_analyze_doc.py
+  output_file: doc_analysis.json
+  timeout: 120
+
+- id: filter_questions
+  type: python_step
+  script_path: steps/03_filter.py
+  depends_on: [analyze_doc, search_zhihu]   # ctx.inputs 只会包含这两个 step
+  output_file: filtered_questions.json
+  timeout: 300
+```
 
 ## 善用 `defaults`（多个 step 共享同一非默认配置时）
 
@@ -270,8 +327,9 @@ steps:
 - `{参数名}`：运行时由调用方通过 `run_workflow(inputs={...})` 传入（如 `{old_path}`），无法静态校验，运行到该 step 且未提供对应 input 时会替换为空字符串。
 - `{step_id.output}`：引用某个前序 step 的输出文本。
 - `{step_id.score}`：引用某个前序 step（通常是 `role_type: evaluator` 的评估 step）产出的分数。
-- `validate()` 会静态扫描这两类占位符，`{step_id.xxx}` 引用了不存在的 step id、或 `.xxx` 不是 `output`/`score` 时会报错——**写完 prompt 后要检查占位符拼写**。
-- 引用某个 step 的输出/分数，建议同时在 `depends_on` 里声明该 step（`condition` 字段这一点是强制校验的，见下条；`prompt` 里的占位符只是弱校验，`validate()` 不会校验"引用了但没声明依赖"这种弱一致性问题，运行时靠 `depends_on` 保证该 step 已经跑完）。
+- `{step_id.output_file}`：引用某个前序 step `output_file` 落盘文件的**绝对路径字符串**（不是内容），适合上游产出较大 JSON、下游只需要提示 Agent 去读文件的场景。
+- `validate()` 会静态扫描这三类占位符，`{step_id.xxx}` 引用了不存在的 step id、或 `.xxx` 不是 `output`/`score`/`output_file` 时会报错——**写完 prompt 后要检查占位符拼写**。
+- **引用某个 step 的输出/分数/落盘文件必须同时在 `depends_on` 里声明该 step**——这一点现在是强制校验（不再是弱一致性检查）：`validate()` 会检查占位符引用的 step_id 是否在当前 step 的 `depends_on`（直接或传递）范围内，写漏会直接报 error，而不是等到运行期才因为该 step 还没跑完而报错。生成 workflow 后务必用 `wf.validate()` 确认没有这类报错。
 - `condition` 表达式里除了 `{step_id 对应的裸名}.output`/`.score`/`.passed` 这类属性访问外，还有一个始终可见、不受 `depends_on` 约束的命名空间 `inputs.xxx`，指向 `run_workflow(inputs={...})` 传入的外部参数，如 `"inputs.env == 'prod'"`；`validate()` 的静态一致性检查会跳过 `inputs.*` 引用，只对引用了其它 step 却没声明 `depends_on`（直接或传递）的情况报错，生成含 `condition` 的 step 时留意这一区别。
 
 ## 创建流程（生成 workflow 时遵循）
@@ -323,9 +381,12 @@ steps:
    - `prompt_file` 指向的文件路径确实存在（相对 workflow 目录）
    - `include` 引用的片段名在 `.agent/workflow_snippets/` 下确实存在
    - `type` 专属字段都填了（`sub_workflow`→`workflow_name`、`tool_call`→
-     `tool_name`、`script`→`script`、`skill_agent`→`skill_name`）；用了
-     插件自定义类型的话，该类型专属的必填字段（看插件的
-     `validate_step()`）也要填
+     `tool_name`、`script`→`script`、`skill_agent`→`skill_name`、
+     `python_step`→`script_path`）；用了插件自定义类型的话，该类型专属的
+     必填字段（看插件的 `validate_step()`）也要填
+   - `python_step` 的 `script_path` 指向的文件确实存在（相对 workflow
+     目录），且脚本内暴露了 `def run(ctx) -> str|dict` 入口函数；用了
+     `python_step` 的话记得提示用户显式开启 `python_step_enabled`
    - `sub_workflow` 没有引用自身
    - `mode: autonomous` 的 workflow：每个 `human_input` step 都配了
      `input_key`，且没有任何 step 写 `require_approval: true`（这两点

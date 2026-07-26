@@ -288,6 +288,20 @@ steps:
     allow_parallel: null   # 是否允许与同层步骤并发执行（硬编码兜底 true）
     escalate_after_n_same_failures: null  # [P10] 连续同类失败提前判 NEEDS_FIX
                             #      的阈值（硬编码兜底 2），见下文"看护趋势感知"一节
+    prompt_file: null      # [目录模式] 相对 workflow 目录的 prompt 文件路径，
+                            #      与 prompt 二选一，都填时 prompt_file 优先，
+                            #      占位符语法与内联 prompt 完全相同
+    skill_name: null       # [P5] type=skill_agent 时必填：强制加载的 skill 名称
+    script_path: null      # [P11 workflow_python_step_and_zhihu_publish_plan.md]
+                            #      type=python_step 时必填：脚本文件相对路径
+                            #      （规则同 prompt_file），脚本暴露
+                            #      `def run(ctx: PyStepContext) -> str|dict`
+    params: {}              # [P11] 透传给 python_step 脚本的自定义参数字面量，
+                            #      脚本内通过 ctx.params 读取
+    output_file: null       # [P11 §A3] 通用输出落盘契约：不论哪种 type，step
+                            #      跑完后 runner 统一把输出写到
+                            #      session output_dir/output_file，见下文
+                            #      "output_file 输出落盘契约"一节
 ```
 
 ### Prompt 占位符
@@ -297,6 +311,11 @@ steps:
 | `{param_name}` | 运行时从 `inputs` 注入的动态参数 | `{code}`, `{topic}` |
 | `{step_id.output}` | 指定步骤的完整输出文本 | `{analyze.output}` |
 | `{step_id.score}` | 指定步骤的评分（0-100 整数字符串）| `{evaluate.score}` |
+| `{step_id.output_file}`（P11 §3） | 指定步骤 `output_file` 落盘文件的**绝对路径字符串**（不是内容），供 `agent`/`role_agent` 等类型的 step 提示"请读取该文件" | `{analyze_doc.output_file}` |
+
+`{variable}` 形式的占位符在 `inputs` 里找不到对应 key 时，仍按既有兜底行为原样保留大括号文本、不报错（避免误伤 prompt 模板里本来就有的花括号）；但从 P11 开始，运行时若发生这种"未解析占位符替换"，会被记进 `debug_log.unresolved_placeholders`（见下文"运行时调试日志"一节），保存前也可以用 `preview_workflow` 提前看到同样的清单。
+
+`{step_id.field}` 形式的占位符（`output`/`score`/`output_file`）从 P11 开始，`validate()` 会额外检查该 `step_id` 是否在当前 step 的 `depends_on`（直接或传递）范围内，写漏 `depends_on` 会直接报 **error**（而不是运行到一半才因为该 step 还没跑完而报 `KeyError`）——这是本轮改进里少数几个"从运行期报错提前到保存期报错"的一致性校验，建议改动后立刻用 `save_workflow`/`validate()` 确认没有新增报错。
 
 ### condition 表达式
 
@@ -508,9 +527,12 @@ condition: "evaluate.score >= 60 and analyze.passed"  # 多条件组合
 
 dry-run 预览工作流的执行计划，**不实际运行**、不产生任何 `WorkflowSession`：
 展示并发分批结果、每个 step 占位符替换后的 prompt 预览（运行时才能确定的
-`{step_id.output}` 占位符原样保留）、`condition` 表达式的静态求值情况。
-`generate_workflow`/`build_workflow_from_summary` 生成 YAML 后会自动调用
-一次同等逻辑的预览（受 `workflow.dry_run_preview_on_generate` 控制）。
+`{step_id.output}` 占位符原样保留）、`condition` 表达式的静态求值情况，以及
+（P11 §2a）汇总的 `unresolved_placeholders: {step_id: [var, ...]}`——形如
+`{xxx}`、不含 `.`、且在给定 `inputs` 里找不到对应 key 的占位符清单，用于在
+保存/运行前提前发现"外部参数没传全，prompt 里会原样带着大括号发出去"这类
+高频错误。`generate_workflow`/`build_workflow_from_summary` 生成 YAML 后会
+自动调用一次同等逻辑的预览（受 `workflow.dry_run_preview_on_generate` 控制）。
 
 ```
 参数：
@@ -1177,6 +1199,7 @@ steps:
 | `human_input` | 阻塞等待人工通过 `provide_workflow_step_input` 送入文本 | `input_prompt`, `input_key` |
 | `script` | 执行一段 shell 命令 | `script` |
 | `skill_agent` | 独立主 Agent 实例执行，且强制预加载指定 skill（不走关键词触发判断） | `skill_name` |
+| `python_step`（P11） | 在**独立子进程**里跑一段外置的 Python 脚本，不启动 Agent，适合"给定输入产出结构化 JSON"这类确定性数据加工，见下文"`python_step`：脚本化 step"一节 | `script_path`, `params` |
 
 ```yaml
 - id: notify
@@ -1209,6 +1232,9 @@ steps:
   LLM 生成或他人分享，默认不允许执行任意 shell 命令，需要显式打开开关。
 - `human_input` 等待有超时保护（`human_input_wait_timeout_seconds`，默认
   1800 秒），超时后该步骤标记为 `FAILED`。
+- `python_step` **默认关闭**（`python_step_enabled: false`，语义与
+  `script_step_enabled` 一致），防止分享出去的 workflow YAML 变成任意 Python
+  代码执行入口，需要在 `agent_config.json` 里显式开启。
 
 在 CLI 里对正在等待人工输入的执行送入文本：
 
@@ -1217,6 +1243,208 @@ steps:
 ```
 
 Agent 侧对应的工具是 `provide_workflow_step_input(workflow_session_id, input_text)`。
+
+---
+
+## 编写规范：prompt / 脚本外置（`next_doc/workflow_authoring_guide.md`）
+
+从 P11 起，**建议**（非强制阻断，向后兼容旧 workflow）遵循以下写法，尤其是新建的
+文件夹模式 workflow：
+
+1. **prompt 一律外置到 `prompts/*.md`**：`workflow.yaml` 的 `steps[].prompt`
+   不写超过 3 行的内联文本。内联 `prompt` 超过阈值（5 行）时，
+   `WorkflowDef.validate()` 会给出一条 **warning**（记录在
+   `wf.last_validate_warnings`，不阻断保存/运行），建议改用：
+
+   ```yaml
+   - id: analyze_doc
+     type: agent
+     prompt_file: prompts/01_analyze_doc.md   # 相对 workflow 目录解析
+   ```
+
+   `prompt_file` 支持和内联 `prompt` 完全相同的占位符语法，加载阶段先读文件
+   内容再走占位符替换，两者语义等价，只是来源不同。
+
+2. **`python_step` 的脚本代码外置到 `steps/*.py`**，`workflow.yaml` 只写
+   `script_path`（见下文"`python_step`：脚本化 step"一节）。
+
+3. **每个 step 声明 `output_file`**，产出统一由 runner 落盘到当前 workflow
+   session 的 `output/` 目录（`.agent/workflow_sessions/<wfs_id>/output/
+   <output_file>`），不管这个 step 是哪种 executor 类型产生的输出，都不需要
+   agent prompt 或脚本自己拼路径（见下文"`output_file` 输出落盘契约"一节）。
+
+标准目录结构（目录化 workflow）：
+
+```
+<workflow_name>/
+├── workflow.yaml          # 骨架：id/type/depends_on/prompt_file/script_path/output_file 等
+├── prompts/
+│   └── *.md                # 每个 agent/skill_agent step 的 prompt
+├── steps/
+│   └── *.py                 # 每个 python_step 的脚本代码
+├── agents/                  # 已有：本地角色 profile（如果用到）
+└── skills/                  # 已有：本地 skill（如果用到）
+```
+
+**安全边界**：`prompt_file`/`script_path` 的相对路径解析严格限制在 workflow
+目录内（`store.py::_resolve_prompt_files()`/`_resolve_script_paths()` 都会做
+路径穿越校验，越界的会被忽略并打印警告）。
+
+`.agent/workflows/zhihu_content_publish/` 是按本规范落地的完整参考实现（4 个
+step、4 个 prompt 文件、2 个 python_step 脚本），可以直接参考其目录结构和
+`workflow.yaml` 写法。
+
+---
+
+## `python_step`：脚本化 step（P11）
+
+### 何时用 `python_step` 而不是 `agent`/`skill_agent`
+
+`python_step` 适合"给定确定性输入、产出结构化 JSON"的加工步骤——不需要
+"随机应变"的判断力（比如批量过滤候选数据、解析/重排上游 JSON）。真正需要
+临场应对（比如页面结构会变的浏览器交互）的步骤，仍然应该用 `skill_agent`/
+`agent`，脚本硬编码反而稳定性更差。
+
+### 脚本入口约定
+
+脚本文件（`script_path` 指向）必须暴露：
+
+```python
+def run(ctx: PyStepContext) -> str | dict:
+    ...
+```
+
+`ctx`（`src/mini_agent/workflow/py_context.py::PyStepContext`）提供的接口：
+
+| 接口 | 说明 |
+|---|---|
+| `ctx.llm.ask(prompt, *, system="", max_retries=3, override_model=None, override_provider=None)` | 转发到 `LLMHelper` 的单次问答调用 |
+| `ctx.llm.ask_json(prompt, *, system="", schema_hint="", max_retries=3)` | 约定返回 JSON，内部用 `json_repair` 宽松解析 + 解析失败重试 |
+| `ctx.run_agent_turn(prompt, *, skill_name=None, max_turns=6)` | 临时起一个最小 Agent，处理需要判断力的子任务（与 `skill_agent` 执行器共用同一段构造逻辑，`runner.py::_spawn_minimal_agent`） |
+| `ctx.params` | `workflow.yaml` 里 step 级 `params` 透传的自定义参数 |
+| `ctx.inputs[step_id]` / `ctx.input_output(step_id)` / `ctx.input_json(step_id)` | 读取上游 step 的 `StepResult`/纯文本输出/JSON 解析结果 |
+| `ctx.load_prompt_file(path)` | 读取 `prompts/*.md`，供脚本内自己拼 prompt 用 |
+| `ctx.write_output(...)` | 往 session `output_dir` 落盘中间产物 |
+
+### 执行方式与安全边界
+
+- **子进程隔离**：`runner` 起 `subprocess.Popen([sys.executable, "-m",
+  "mini_agent.workflow.py_step_runner", ...])`，`runpy.run_path(script_path)`
+  加载脚本执行 `run(ctx)`，超时/进程组管理对齐 `script` 类型 step（Windows
+  `CREATE_NEW_PROCESS_GROUP`/Unix `start_new_session`），watchdog 能杀掉整个
+  子进程树。
+- **默认关闭**：`cfg.workflow.python_step_enabled` 默认 `false`（语义与
+  `script_step_enabled` 一致），需要在 `agent_config.json` 里显式开启：
+
+  ```json
+  {"workflow": {"python_step_enabled": true}}
+  ```
+
+- **LLM 调用**：子进程内 `ctx.llm` **不**共享主进程 `Agent` 的
+  `LLMClientPool` 运行时状态（不跟随主 Agent 运行期 `/model` 切换），而是
+  独立构造一条 `LLMHelper`（P11 简化版实现，惰性构造——脚本不调用
+  `ctx.llm` 时完全不会尝试建 provider 连接）。
+- **敏感信息传递**：`api_key` 不写入子进程临时目录下的 `request.json`
+  明文文件，改为通过环境变量 `MINI_AGENT_STEP_API_KEY` 传给子进程，落盘
+  文件里不再包含该字段。
+- **输入按 `depends_on` 过滤**（行为变更，见下文 P11 §4）：`ctx.inputs`
+  默认只包含该 step `depends_on` 里声明过的上游 step 结果，不是全部已跑完
+  的 step——脚本要读取某个未声明依赖的历史 step，必须先把它加进
+  `depends_on`，不能靠"偷看"完整字典绕过。可用
+  `cfg.workflow.python_step_inputs_filtered_by_depends_on=false` 回退旧行为
+  （不建议，仅用于临时排查）。
+
+### 批量处理建议
+
+多条候选数据的判断类场景（比如"从 30 条候选问题里筛选符合要求的"），建议
+脚本内部做**分批 + 结构化 JSON 输出**（`ctx.llm.ask_json`），而不是逐条调用
+——一次批量调用能省掉重复的 system prompt 开销，也减少请求数。`ask_json`
+返回的判断数量明显少于批次数量时（漏判），建议拆成更小的子批重试而不是
+直接丢弃，参考 `.agent/workflows/zhihu_content_publish/steps/03_filter.py`
+的实现（`BATCH_SIZE`/`MISS_RATIO_THRESHOLD`/`MIN_SUB_BATCH` 三个可调常量）。
+
+---
+
+## `output_file` 输出落盘契约（P11 §A3）
+
+任意类型的 step 都可以声明 `output_file`，该 step 执行完成后，runner 统一把
+`StepResult.output` 写一份到当前 workflow session 的
+`.agent/workflow_sessions/<wfs_id>/output/<output_file>`，不依赖 agent prompt
+或脚本自己拼路径：
+
+```yaml
+- id: analyze_doc
+  type: python_step
+  script_path: steps/01_analyze_doc.py
+  output_file: doc_analysis.json
+```
+
+下游 step 引用该文件有两种方式：
+
+- 直接读 `.output`（文本内容，`agent`/`role_agent` 通过占位符
+  `{analyze_doc.output}`，`python_step` 通过 `ctx.input_output("analyze_doc")`/
+  `ctx.input_json("analyze_doc")`）。
+- 引用落盘文件的**绝对路径**（占位符 `{analyze_doc.output_file}`），适合
+  "上游产出的 JSON 较大、下游只需要提示 Agent 去读文件"的场景，避免把整段
+  JSON 塞进 prompt 浪费 token。
+
+---
+
+## 运行时调试日志：`StepResult.debug_log`（P11 §6）
+
+### 是什么、解决什么问题
+
+`StepResult` 原本只在**出错**时才快照 `context`（prompt/step 配置），正常
+执行完成的 step 完全没有留痕它实际收到的最终 prompt——事后想复盘"为什么
+这一步给出了奇怪的回答"，只能凭 `inputs` + 各上游输出在脑子里重新做一遍
+占位符替换。P11 新增可选字段 `debug_log`，由 runner 在每个 step 执行完
+（无论成功失败）统一填充：
+
+```json
+{
+  "resolved_prompt": "...",            // _resolve_prompt 替换后的最终文本
+                                        // （仅 prompt 驱动的 step 类型有值）
+  "unresolved_placeholders": [],        // inputs 里没找到对应 key 的占位符列表
+  "upstream_step_ids_used": [],         // 实际引用到的上游 step_id，可与
+                                        // depends_on 声明直接 diff
+  "started_at": "2026-07-26T10:00:00Z",
+  "finished_at": "2026-07-26T10:00:03Z",
+  "thread_id": 140234,                 // 并发批次里实际执行的线程标识
+  "batch_index": 2,                    // 属于第几个拓扑分批
+  "subprocess_stdout": "...",          // 仅 python_step/script，成功时也保留
+  "subprocess_stderr": "...",
+  "undeclared_dependency_usage": {...} // 实际引用的上游与 depends_on 声明
+                                        // 不一致时的记录（见下文）
+}
+```
+
+`resolved_prompt`/`subprocess_stdout`/`subprocess_stderr` 都按
+`cfg.workflow.debug_log_max_chars`（默认 4000 字符）截断保护，超出部分标注
+`"...(truncated, N more chars)"`。
+
+### 开关与查看方式
+
+- **默认关闭**（`cfg.workflow.debug_log_enabled=false`），避免长期运行的
+  workflow session 目录体积膨胀；开启后作为 `StepResult` 的一个字段自然
+  跟着 `session.json` 落盘，不需要额外存储格式。
+- `get_workflow_run_status(name, run_id, verbose=true)` 会展示 `debug_log`
+  的关键字段摘要（`resolved_prompt` 摘要、`unresolved_placeholders`、
+  `upstream_step_ids_used` 是否与 `depends_on` 一致）。
+- CLI 新增子命令 `/workflow debug <workflow_session_id> <step_id>`，直接
+  打印某个 step 的**完整** `debug_log`（不受 verbose 展示长度限制），是
+  "调试时明确要看某一步细节"的专用入口。
+
+### 与结构性问题识别打通
+
+`upstream_step_ids_used` 与 `depends_on` 声明不一致时（实际引用/读取到了
+未声明依赖的上游 step），`debug_log_enabled` 开启的情况下 runner 会写入
+`debug_log["undeclared_dependency_usage"]`，同时调用
+`WatchdogReporter.report_dependency_mismatch()` 上报（与 P10"连续同类失败
+提前升级"共用同一套 `_log_event` 机制）。这一路径只做记录、不改变当前
+step 的执行结果——保存阶段的静态校验（占位符 `depends_on` 一致性检查、
+`python_step` 输入按 `depends_on` 过滤）已经把大部分这类问题拦在运行之前，
+只有显式关闭 `placeholder_depends_on_check_enabled`/
+`python_step_inputs_filtered_by_depends_on` 才会在运行期触发这条兜底记录。
 
 ---
 
@@ -1560,7 +1788,13 @@ Workflow 执行时会触发以下 Hook 事件（复用项目现有的 `mini_agen
   "session_to_workflow_enabled": true,
   "condition_static_check_enabled": true,
   "dry_run_preview_on_generate": true,
-  "git_hint_enabled": true
+  "git_hint_enabled": true,
+  "python_step_enabled": false,
+  "python_step_timeout_seconds": 120.0,
+  "placeholder_depends_on_check_enabled": true,
+  "python_step_inputs_filtered_by_depends_on": true,
+  "debug_log_enabled": false,
+  "debug_log_max_chars": 4000
 }
 ```
 
@@ -1588,6 +1822,12 @@ Workflow 执行时会触发以下 Hook 事件（复用项目现有的 `mini_agen
 | `condition_static_check_enabled`（P9-3） | `true` | 保存工作流时是否额外做一轮 condition 表达式的静态一致性检查（引用的 step 是否存在/是否在 depends_on 声明范围内）。关闭后仍会做基本的 ast 语法检查 |
 | `dry_run_preview_on_generate`（P9-1b） | `true` | `generate_workflow`/`build_workflow_from_summary` 生成 YAML 后是否自动追加一次 dry-run 预览（并发分批 + condition 求值） |
 | `git_hint_enabled`（P9-2） | `true` | `save_workflow` 保存成功后，若项目是 git 仓库，是否追加一句"建议 git commit"的提示（只提示，不自动 commit） |
+| `python_step_enabled`（P11） | `false` | 是否允许 `python_step` 类型 step 在子进程里执行外置 `.py` 脚本，默认关闭，语义同 `script_step_enabled` |
+| `python_step_timeout_seconds`（P11） | `120.0` | `python_step` 类型的默认超时（秒），可被 `step.timeout` 覆盖 |
+| `placeholder_depends_on_check_enabled`（P11 §1） | `true` | 保存工作流时是否额外检查 prompt/条件里 `{step_id.field}` 占位符引用的 step 是否在 `depends_on`（直接或传递）范围内，不在则报 error |
+| `python_step_inputs_filtered_by_depends_on`（P11 §4） | `true` | `python_step` 脚本的 `ctx.inputs` 是否按 `depends_on` 过滤，仅传递声明过依赖的上游 step 结果；关闭则回退为传递全部已跑完的 step（不建议，仅用于临时排查） |
+| `debug_log_enabled`（P11 §6） | `false` | 是否在每个 step 执行完后填充 `StepResult.debug_log`（resolved_prompt/unresolved_placeholders/时间戳/subprocess 输出等），默认关闭避免 session 目录体积膨胀 |
+| `debug_log_max_chars`（P11 §6） | `4000` | `debug_log` 里 `resolved_prompt`/`subprocess_stdout`/`subprocess_stderr` 等长文本字段的截断长度上限 |
 
 ---
 
@@ -1703,6 +1943,9 @@ workflow history <name>                     查看该 workflow 定义文件的
 workflow diff <name>                        查看该 workflow 定义相对上次
                                             commit 的改动：结构化 step 级别
                                             摘要 + 原始 git diff（P9-2）
+workflow debug <workflow_session_id> <step_id>
+                                            打印某个 step 的完整 debug_log
+                                            （需 debug_log_enabled=true，P11 §6）
 
 # 独立命令行独有参数
 --project/-p <path>                        指定项目根目录（默认当前工作目录）
