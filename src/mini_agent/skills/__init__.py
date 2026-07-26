@@ -300,6 +300,35 @@ class SkillLoader:
                 newly.append(name)
         return newly
 
+    def find_inactive_candidates(self, query: str) -> list["Skill"]:
+        """
+        [SYS-SKILL-CANDIDATE-REMINDER / 问题0 修复] 只匹配、不激活。
+
+        与 auto_activate() 共享同一套 trigger_words / activation_conditions /
+        resource-triggers 匹配逻辑，但完全不改变 `_active` 状态，也不受
+        `_auto_activate_blocked` 屏蔽影响（屏蔽只应该影响"自动帮你激活"，
+        不应该影响"提醒你去看看这个 skill"）。
+
+        用途：即使关键词自动激活（`keyword_activation_enabled`）关闭，也能在
+        每轮用户消息进入时算出"看起来匹配但还没激活"的 skill 列表，供上层生成
+        一条 reminder，把"该不该激活"的判断从模型的自由裁量收敛成一次确定性
+        正则匹配 + 明确提示，而不是指望模型自己在一大段 skill 目录里发现它。
+        """
+        q = (query or "").lower()
+        candidates: list["Skill"] = []
+        for name, skill in self._all.items():
+            if name in self._active:
+                continue
+            hit = skill.matches_query(query)
+            if not hit:
+                hit = any(
+                    r.triggers and any(t in q for t in r.triggers)
+                    for r in skill.resources
+                )
+            if hit:
+                candidates.append(skill)
+        return candidates
+
     # ── [渐进式加载] 子资源管理 ──────────────────────────────────────────────────
     #
     # 两条通道并存，互不冲突：
@@ -488,11 +517,43 @@ class SkillLoader:
             # 去当前工作目录下找一个根本不存在的文件。这里把 skill 目录路径
             # 显式注入进去，让 agent 有能力自己算出正确的绝对路径。
             skill_dir = skill.location.parent
+            # [SYS-SKILL-BOUNDARY-NOTE / 问题2 修复] 显式声明"下面这段内容的
+            # 完整性边界"以及"如果不够用该走哪条路"，而不是只说路径怎么拼。
+            # 目的：模型有时会怀疑 context 里的 skill 内容不完整（尤其是开启
+            # chunking 只注入部分章节时），于是转而用 read_file/bash/grep 直接
+            # 读取磁盘上的 SKILL.md ——这既浪费 token，也可能读到与本轮注入
+            # 版本不一致的内容（例如已被压缩重附裁剪过）。这里把边界和替代
+            # 路径说清楚，让模型有"正规下一步"可用，不必自己去翻文件系统。
+            _is_chunked = bool(query) and _content != skill.content
+            if _is_chunked:
+                _completeness_note = (
+                    f"下面是 `{skill.name}` 正文中与本轮问题最相关的节选章节"
+                    f"（共选取最多 3 段，并非全文）。"
+                )
+            else:
+                _completeness_note = f"下面是 `{skill.name}` 的完整正文，已经是你应当依据的最终版本。"
+            _no_reread_note = (
+                "**请直接依据下面已经注入的内容执行任务，不要再用 read_file / view / "
+                "grep / bash 等工具重新读取该 skill 所在目录下的 SKILL.md 或其他文件**"
+                "——磁盘上的文件不一定与这里展示的版本一致（可能经过章节筛选或历史压缩），"
+                "重新读取既浪费 token，也可能造成信息不一致。"
+                + (
+                    " 如果下面的节选没有覆盖你需要的部分，请在回复中说明还需要哪方面的"
+                    "内容，而不是自行去读原始文件；如该 skill 有可加载子资源，也可以调用 "
+                    "`skill_resource_list` / `skill_resource_load` 按需获取，同样不需要"
+                    "直接读文件。"
+                    if _is_chunked or skill.resources else
+                    " 如该 skill 有可加载子资源，可以调用 `skill_resource_list` / "
+                    "`skill_resource_load` 按需获取更多细节，同样不需要直接读文件。"
+                    if skill.resources else ""
+                )
+            )
             _path_note = (
                 f"**Skill 所在目录**：`{skill_dir}`\n"
                 f"以上内容中出现的相对路径（脚本、模板、参考资料等）均相对于这个目录解析，"
                 f"不是相对于当前工作目录或项目根目录。引用时请自行拼接为绝对路径，"
-                f"例如 `{skill_dir}/xxx`。"
+                f"例如 `{skill_dir}/xxx`。\n\n"
+                f"{_completeness_note} {_no_reread_note}"
             )
             _resource_block = self._render_resource_block(skill)
             parts.append(f"{_header}\n\n{_path_note}\n\n{_content}{_resource_block}")
@@ -632,19 +693,38 @@ class SkillLoader:
     def get_catalog(self) -> list[dict]:
         """
         返回所有可用技能的目录（供注入 system prompt 或工具结果使用）。
-        每条记录包含 name / description / active / location 字段，不含全文内容。
-        location 是 skill 所在目录（不是 SKILL.md 文件本身），方便 agent 在
-        还没激活、只看到目录列表时就能定位到该 skill 下的其它文件。
+        每条记录包含 name / description / active 字段，不含全文内容。
+
+        [SYS-SKILL-NO-PATH-LEAK / 问题1 修复] 之前这里对所有 skill（无论是否
+        激活）都返回 `location`（skill 所在目录），初衷是方便 agent 提前定位
+        同目录下的其它文件；但实际效果是给了模型一个"绕开 skill_activate、
+        直接用 read_file/bash 去 cat SKILL.md"的现成路径——模型一旦拿到路径，
+        很容易图省事直接读文件，而不是走 skill_activate 走完整的加载/追踪
+        流程。
+
+        现在只对**已激活**的 skill 返回 `location`（这是合法需求：已激活 skill
+        的正文里常有相对路径引用，需要这个目录才能拼出绝对路径，`build_context`
+        里也是这么用的）。未激活的 skill 不返回路径，而是返回一句提示，把
+        "怎么才能看到更多信息"这件事重新引导回 `skill_activate`。
         """
-        return [
-            {
+        result = []
+        for name, skill in sorted(self._all.items()):
+            is_active = name in self._active
+            entry = {
                 "name":        name,
                 "description": skill.description,
-                "active":      name in self._active,
-                "location":    str(skill.location.parent),
+                "active":      is_active,
             }
-            for name, skill in sorted(self._all.items())
-        ]
+            if is_active:
+                entry["location"] = str(skill.location.parent)
+            else:
+                entry["note"] = (
+                    "此 skill 尚未激活，暂不提供其磁盘路径。"
+                    "如需查看正文或使用其指导，请调用 skill_activate 激活，"
+                    "不要尝试直接用 read_file/bash/grep 猜测路径读取。"
+                )
+            result.append(entry)
+        return result
 
     def get_active_catalog(self) -> list[dict]:
         """仅返回当前激活的技能目录（用于 system prompt 中的简洁描述）。"""

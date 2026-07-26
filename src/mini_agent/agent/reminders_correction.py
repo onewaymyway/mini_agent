@@ -28,6 +28,7 @@ from mini_agent.context_builder import ContextBuilder
 from mini_agent.tool_executor import ToolExecutor
 from mini_agent.history_manager import HistoryManager
 from mini_agent.reminders import ReminderManager
+from mini_agent.reminders.loader import Reminder, TRIGGER_USER_INTENT
 
 from mini_agent.agent._helpers import (
     _term_write_lock_ctx, _NullCtx, _locked_print_info, _locked_print_warning,
@@ -87,6 +88,69 @@ class RemindersCorrectionMixin:
             return
         for r in self._reminder_mgr.check_user_intent(user_message):
             self._inject_reminder(r)
+
+    def _inject_reminders_for_skill_candidates(self, user_message: str) -> None:
+        """
+        [SYS-SKILL-CANDIDATE-REMINDER / 问题0 修复]
+
+        与 `_inject_reminders_for_user_intent` 挂载时机相同，但服务的是一个更
+        具体的问题：过去只靠 `agent_core.md` 里的一段文字规则要求模型"先检查
+        skill 再探索"，这是软约束，长对话里很容易被忽略，尤其是模型可能根本
+        不会主动去逐条比对一长串 Available Skills 目录。
+
+        这里改成确定性代码先做一次匹配：只要有"看起来匹配当前用户消息，但还
+        没有被激活"的 skill（复用 `SkillLoader.find_inactive_candidates`，与
+        `auto_activate()` 同一套 trigger_words/activation_conditions 逻辑，
+        但不实际激活、不受关键词自动激活开关限制），就注入一条明确指向具体
+        skill 名字的 reminder，把"该不该激活"从模型的自由裁量收敛为可验证的
+        提示，而不是指望模型自己发现。
+
+        与关键词自动激活（`keyword_activation_enabled`）的区别：
+          - 自动激活：直接帮模型把 skill 加进 active 列表，模型可能都没意识到；
+          - 本机制：不改变任何状态，只是把"建议你现在检查/激活 X"这句话明确
+            摆到模型面前，最终是否激活、是否采用仍由模型自己调用
+            skill_list/skill_activate 决定——避免关键词误判导致的无关 skill
+            被强行拉起。
+        """
+        if not getattr(self, "skill_loader", None):
+            return
+        if not getattr(self.cfg.skill, "candidate_reminder_enabled", True):
+            return
+        if not isinstance(user_message, str) or not user_message.strip():
+            return
+
+        try:
+            candidates = self.skill_loader.find_inactive_candidates(user_message)
+        except Exception as _e:
+            from mini_agent.errors import log_exception
+            log_exception(_e, where="mini_agent.agent.reminders_correction._inject_reminders_for_skill_candidates")
+            return
+
+        if not candidates:
+            return
+
+        # 最多提示 3 个，避免一次命中过多 skill 时把 reminder 写成一堵墙
+        candidates = candidates[:3]
+        lines = "\n".join(f"- `{c.name}`：{c.description}" for c in candidates)
+        content = (
+            "检测到以下技能可能与本轮请求相关，但尚未激活：\n\n"
+            f"{lines}\n\n"
+            "在从零探索（读代码、搜索、试错）之前，请先调用 `skill_list` 确认，"
+            "如确实匹配，调用 `skill_activate` 加载后按其指导执行；如判断均不适用，"
+            "也请说明原因再继续，不要跳过这一步直接自行摸索。"
+        )
+        # 用一个稳定、可去重的合成 name（含候选名单摘要），保证同一轮内
+        # 同一批候选只提示一次；不同候选组合仍会各自提示一次。
+        synth_name = "skill_candidate:" + ",".join(c.name for c in candidates)
+        reminder = Reminder(
+            name=synth_name,
+            trigger_event=TRIGGER_USER_INTENT,
+            inject_as="user",
+            priority=70,
+            enabled=True,
+            content=content,
+        )
+        self._inject_reminder(reminder)
 
     def _maybe_recall_decisions_for_user_message(self, user_message: str) -> None:
         """[决策/取舍知识提炼计划 5.4 节，路径 B] 每轮用户消息进入时的启发式门控。

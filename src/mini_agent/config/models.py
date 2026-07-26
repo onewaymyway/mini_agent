@@ -372,6 +372,12 @@ class SkillConfig:
     # 注入内容），不影响已产生的历史记录，风险低。
     auto_unload_enabled: bool = True
     auto_unload_idle_seconds: int = 1800   # 超过 30 分钟未被实际调用即视为闲置
+    # [SYS-SKILL-CANDIDATE-REMINDER] 问题0 修复：即使关键词自动激活关闭，也在每轮
+    # 用户消息进入时检查是否有"看起来匹配但尚未激活"的 skill，命中则注入一条
+    # reminder 提示模型先 skill_list/skill_activate 再动手，而不是让模型自己在一大段
+    # system prompt 目录里判断。默认开启，成本很低（只是一次关键词匹配 + 可能的一条
+    # 提示消息），可通过此开关关闭。
+    candidate_reminder_enabled: bool = True
 
 
 @dataclass

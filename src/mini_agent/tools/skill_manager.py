@@ -71,7 +71,12 @@ def register_skill_tools(registry: ToolRegistry, skill_loader: "SkillLoader") ->
         description=(
             "List all available skills with their name, description, and activation status. "
             "Use this to discover what skills exist and which are currently active "
-            "before calling skill_activate or skill_deactivate."
+            "before calling skill_activate or skill_deactivate. "
+            "Inactive skills do NOT include a file path in the result on purpose — "
+            "do not try to guess, construct, or otherwise obtain the skill's file path "
+            "yourself (e.g. by grepping the filesystem) in order to read SKILL.md directly. "
+            "skill_activate is the only correct way to load a skill's content; reading the "
+            "file directly bypasses usage tracking and may show stale or partial content."
         ),
         input_schema={
             "type": "object",
@@ -128,7 +133,12 @@ def register_skill_tools(registry: ToolRegistry, skill_loader: "SkillLoader") ->
             "how to write PDFs, coding conventions, etc.). "
             "Only activate skills that are relevant to the current task — "
             "unnecessary active skills waste context window space. "
-            "Call skill_list first if you need to see available skill names."
+            "Call skill_list first if you need to see available skill names. "
+            "This is the ONLY correct way to load a skill's content — never use "
+            "read_file/view/bash/grep to read a SKILL.md file directly, even if you "
+            "happen to know or can guess its path. Bypassing this tool skips usage "
+            "tracking and may show content that is stale relative to what's actually "
+            "in context."
         ),
         input_schema={
             "type": "object",

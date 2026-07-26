@@ -100,6 +100,12 @@ class TurnLoopMixin:
             # [SYS-REMINDER] 用户意图触发：在用户消息入队后，检查是否需要注入 reminder
             self._inject_reminders_for_user_intent(user_message)
 
+            # [SYS-SKILL-CANDIDATE-REMINDER / 问题0 修复] 独立于关键词自动激活
+            # 开关：只要有"看起来匹配但尚未激活"的 skill，就注入一条明确点名的
+            # reminder，提示模型先 skill_list/skill_activate 再动手，而不是让
+            # 模型自己在一大段 system prompt 目录里判断要不要激活。
+            self._inject_reminders_for_skill_candidates(user_message)
+
             # [决策/取舍知识提炼计划 5.4 节，路径 B] 启发式门控命中时自动召回
             # 相关历史决策，注入方式与上面的 reminder 完全一致（一次性、同轮去重）。
             self._maybe_recall_decisions_for_user_message(user_message)
