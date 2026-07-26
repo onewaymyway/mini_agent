@@ -16,11 +16,13 @@ mini_agent 内置了一套轻量的工作流引擎，支持将多步 AI 任务�
    `workflow/api_helpers.py` 是唯一"真正做事"的地方（加载定义、校验、调用
    `WorkflowRunner`、读写 `WorkflowSession`）；Agent 工具
    （`workflow/tools.py`）、REST API（`api/routes.py`）、CLI
-   （`cli/commands/workflow_cmd.py`）都只是把这批纯函数的返回值包装成
+   （`cli/commands/workflow_cmd.py`，2026-07 起同时覆盖交互 REPL 的
+   `/workflow ...` 斜杠命令和独立命令行 `mini-agent workflow ...` 两种入口，
+   详见文末「CLI 命令」一节）都只是把这批纯函数的返回值包装成
    各自需要的格式（Markdown 给 LLM / JSON 给前端 / 文本给终端），不重复
    实现任何一条状态转换逻辑。好处是：Streamlit 看板里点"暂停"、CLI 里敲
-   `/workflow pause`、Agent 对话里说"暂停一下"，走到的是**同一行代码**，
-   不会出现三处行为不一致的情况。
+   `/workflow pause` 或 `mini-agent workflow pause`、Agent 对话里说"暂停一下"，
+   走到的是**同一行代码**，不会出现三处（或四处）行为不一致的情况。
 2. **渐进式增量演进，每一轮都保持向后兼容**。新字段一律给合理默认值，
    旧 YAML 不用改就能继续跑（如 `type` 未显式设置时按 `role` 是否非空
    自动推断；`defaults`/`escalate_after_n_same_failures` 等新字段缺省时
@@ -1589,48 +1591,132 @@ Workflow 执行时会触发以下 Hook 事件（复用项目现有的 `mini_agen
 
 ---
 
-## CLI 命令：`/workflow`
+## CLI 命令：`/workflow`（REPL）与 `mini-agent workflow`（独立命令行，2026-07 新增）
 
-除了让主 Agent 调用工具，也可以在 CLI 里直接输入 `/workflow` 系列命令
-（支持 Tab 补全）：
+Workflow 子命令目前有两种触发方式，**共用同一套子命令实现**
+（`cli/commands/workflow_cmd.py::_dispatch`），子命令名和参数完全一致，唯一区别
+是前缀和背后取 `cfg` 的方式：
 
-```
-/workflow list                              列举所有已保存的工作流
-/workflow show <name>                       查看工作流 YAML 定义
-/workflow run <name> [inputs_json] [--background]
-                                             执行工作流
-/workflow runs [name]                       列举执行记录（可按工作流名过滤）
-/workflow status <workflow_session_id>      查看某次执行的详细进度
-/workflow resume <workflow_session_id> [--background]
-                                             从断点续跑
-/workflow pause <workflow_session_id>       暂停一次后台执行
-/workflow cancel <workflow_session_id>      取消一次执行
-/workflow approve <workflow_session_id>     批准当前等待审批的步骤
-/workflow reject <workflow_session_id> [reason]
-                                             拒绝当前等待审批的步骤
-/workflow input <workflow_session_id> <text>
-                                             向等待人工输入的步骤送入文本（P5）
-/workflow templates                         列举内置工作流模板（P6）
-/workflow from-template <template_name> <new_name>
-                                             基于内置模板创建工作流（P6）
-/workflow delete <name>                     删除工作流定义
-/workflow to-dir <name>                     将单文件工作流升级为文件夹模式
-                                             （生成 agents/skills/prompts 子目录）
-/workflow sessions                          列出最近的历史 session（P8）
-/workflow from-session <session_id>         从指定 session 生成 workflow，
-                                             总结→确认→构建→确认→保存（P8）
-/workflow stats <name>                       汇总历史执行统计：成功率/各步骤
-                                             平均耗时评分重试率/condition命中率（P9-1a）
-/workflow history <name>                     查看该 workflow 定义文件的
-                                             git 提交历史（P9-2，需项目是 git 仓库）
-/workflow diff <name>                        查看该 workflow 定义相对上次
-                                             commit 的改动：结构化 step 级别
-                                             摘要 + 原始 git diff（P9-2）
+| 方式 | 前缀 | 使用场景 |
+|------|------|----------|
+| 交互 REPL 内的斜杠命令 | `/workflow ...` | 已经在交互式 Agent 会话里，临时看看/跑一下某个 workflow |
+| 独立命令行（`mini-agent workflow ...`） | `mini-agent workflow ...` | cron/systemd timer、CI 流水线、shell 脚本等**不需要**、也不方便先起一整个交互式 Agent 会话的场景 |
+
+在独立命令行这条路径新增之前，即使只是想跑一次已经保存好的 workflow，也必须先
+进入交互 REPL 再输入 `/workflow run <name>`，这对自动化场景（定时任务、CI）很
+不方便。现在 `mini-agent workflow ...` 在 `cli/app.py::main()` 最前面按
+`sys.argv[1] == "workflow"` 短路拦截（与已有的 `daemon`/`user`/`self` 子命令
+短路方式一致），只调用一次 `load_config()`，**不构造 Agent、不装配
+SkillLoader/PermissionGuard/ToolRegistry**，跑完直接退出——这是它比"起一个完整
+交互会话再敲命令"更轻量的地方。
+
+```bash
+# 列举已保存的 workflow
+mini-agent workflow list
+
+# 执行一个 workflow，带输入参数，后台执行
+mini-agent workflow run nightly_release_check \
+  '{"release_tag": "v1.4.0"}' --background
+
+# 指定项目根目录（不在项目目录下执行时）
+mini-agent workflow run nightly_release_check '{}' --project /path/to/repo
+
+# 查看某次执行的进度 / 从断点续跑
+mini-agent workflow status <workflow_session_id>
+mini-agent workflow resume <workflow_session_id> --background
 ```
 
-以上全部子命令均已加入 CLI 的 Tab 补全列表。
+子命令列表与 `/workflow` 一致（见下方“子命令一览”），这里不重复列两遍。
+
+### 独立命令行的几个关键差异点
+
+1. **`--project`/`-p <path>` 参数（独立 CLI 独有）**：指定项目根目录，默认当前
+   工作目录。解析逻辑复用 `cli/app.py::_extract_project_root`，与 `daemon`/
+   `user`/`self` 子命令一致——扫描出 `--project`/`-p` 的值后会把这两个 token
+   从转发给 `_dispatch` 的 argv 里去掉，不会残留导致后续参数错位。
+
+2. **`--background` 的实现方式不同**：REPL 里进程本来就会长期存活，`run`/
+   `resume --background` 直接起一个 daemon 线程即可；独立 CLI 是"跑一次就退出"
+   的一次性命令，daemon 线程会随父进程一起被杀掉，因此改为用
+   `python -m mini_agent` **重新拉起一个真正独立的 OS 子进程**
+   （`_spawn_detached_run`，POSIX 下用 `start_new_session=True`，等价于
+   `setsid`），子进程的标准输出/错误重定向到落盘日志文件。父进程（乃至触发它的
+   shell/cron/systemd）退出后，子进程仍会独立跑完。命令返回时会打印日志文件
+   路径，可用 `mini-agent workflow status <workflow_session_id>` 或直接看日志
+   文件确认进度。
+
+3. **退出码语义**：命令行找不到子命令、参数错误等"命令本身没跑起来"的情况返回
+   退出码 `1`；正常执行完（哪怕是前台同步执行，且 workflow 本身的最终状态是
+   `failed`/`partial`）返回 `0`——"命令有没有跑起来"和"workflow 执行结果好不好"
+   是两回事，后者请用 `mini-agent workflow status <id>` 查询，或检查落盘的
+   `session.json`，不要用进程退出码判断，这一点与 REPL 里 `/workflow run` 的
+   语义保持一致，写 cron/CI 脚本时不要凭退出码做成功/失败判断。
+
+4. **`from-session` 不适合完全无人值守的场景**：该子命令的交互流程是
+   "总结→展示确认→构建→展示确认→保存"，会读取 stdin 做交互确认。独立命令行下
+   同样支持这个子命令，但只适合在能交互输入的终端里跑，不适合 cron/systemd 这类
+   完全无人值守的调度场景。
+
+5. **`pause`/`cancel`/`approve`/`reject`/`input` 仍然是进程内状态**：这几个
+   子命令依赖 `workflow/registry.py` 里的进程内控制状态，无论走 REPL 还是独立
+   CLI，都只在**触发 `run --background`/`resume --background` 的那个（子）进程
+   存活期间**有效。独立 CLI 场景下，由于后台执行已经 spawn 成独立子进程，主进程
+   （敲 `run --background` 的那次调用）跑完就退出了，之后如果要 `pause`/
+   `cancel` 一次正在跑的后台执行，需要注意这是对**子进程**的控制，具体行为与
+   已知限制见本节末尾。
+
+### 子命令一览
+
+除了让主 Agent 调用工具，也可以直接输入 `/workflow`（REPL）或
+`mini-agent workflow`（独立命令行）系列命令（REPL 内支持 Tab 补全）：
+
+```
+workflow list                              列举所有已保存的工作流
+workflow show <name>                       查看工作流 YAML 定义
+workflow run <name> [inputs_json] [--background]
+                                            执行工作流
+workflow runs [name]                       列举执行记录（可按工作流名过滤）
+workflow status <workflow_session_id>      查看某次执行的详细进度
+workflow resume <workflow_session_id> [--background]
+                                            从断点续跑
+workflow pause <workflow_session_id>       暂停一次后台执行
+workflow cancel <workflow_session_id>      取消一次执行
+workflow approve <workflow_session_id>     批准当前等待审批的步骤
+workflow reject <workflow_session_id> [reason]
+                                            拒绝当前等待审批的步骤
+workflow input <workflow_session_id> <text>
+                                            向等待人工输入的步骤送入文本（P5）
+workflow templates                         列举内置工作流模板（P6）
+workflow from-template <template_name> <new_name>
+                                            基于内置模板创建工作流（P6）
+workflow delete <name>                     删除工作流定义
+workflow to-dir <name>                     将单文件工作流升级为文件夹模式
+                                            （生成 agents/skills/prompts 子目录）
+workflow sessions                          列出最近的历史 session（P8）
+workflow from-session <session_id>         从指定 session 生成 workflow，
+                                            总结→确认→构建→确认→保存（P8，
+                                            需要交互终端，见上面第 4 点）
+workflow stats <name>                       汇总历史执行统计：成功率/各步骤
+                                            平均耗时评分重试率/condition命中率（P9-1a）
+workflow history <name>                     查看该 workflow 定义文件的
+                                            git 提交历史（P9-2，需项目是 git 仓库）
+workflow diff <name>                        查看该 workflow 定义相对上次
+                                            commit 的改动：结构化 step 级别
+                                            摘要 + 原始 git diff（P9-2）
+
+# 独立命令行独有参数
+--project/-p <path>                        指定项目根目录（默认当前工作目录）
+```
+
+以上全部子命令均已加入 REPL 的 Tab 补全列表；独立命令行下不带任何子命令直接跑
+`mini-agent workflow` 会打印同样内容的用法说明并以退出码 `1` 结束。
 
 **已知限制**：`pause`/`cancel`/`approve`/`reject`/`input` 依赖进程内的控制状态
 （`workflow/registry.py`），只在**同一个进程**里对正在跑的后台执行有效；
 若 CLI 进程重启，只能依赖磁盘上 `session.json` 的最终状态，配合
-`resume_workflow_run` 重新接续执行。
+`resume_workflow_run` 重新接续执行。独立命令行场景下，后台执行已经是独立
+spawn 出来的子进程（见上面第 2 点），触发 `run --background` 的那次父进程调用
+本身跑完即退出，不持有子进程的进程内控制状态，因此对同一次后台执行发起
+`pause`/`cancel` 等控制类子命令时，需要确认自己是在能访问到该控制状态的同一
+进程环境里调用（例如同一个长期运行的 daemon 服务进程），否则同样只能依赖磁盘
+状态 + `resume` 重新接续。
