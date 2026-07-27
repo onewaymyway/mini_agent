@@ -11,6 +11,7 @@
     # 终端 2: 执行搜索
     python zhihu_search_with_login.py "关键词"
     python zhihu_search_with_login.py --batch  # 批量搜索所有 Agent 方向
+    python zhihu_search_with_login.py --keywords-file "关键词文件"
 """
 
 import sys

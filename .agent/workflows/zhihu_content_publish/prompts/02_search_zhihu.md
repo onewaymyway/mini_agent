@@ -36,14 +36,15 @@
 
 ```bash
 cd .claude/skills/browser-cdp
-python zhihu_search_with_login.py "<关键词>" --port 9336 --max-results 30
+python zhihu_search_with_login.py --keywords-file "关键词文件" --port 9336 --max-results 30
 ```
-
-或者批量搜索所有关键词：
-
-```bash
-cd .claude/skills/browser-cdp
-python zhihu_search_with_login.py --batch --port 9336 --max-results 30
+关键词文件的格式为包含自定义关键词的 JSON 文件路径（数组格式）
+```json
+[
+   "关键词1",
+   "关键词2",
+   ...
+]
 ```
 
 ## 输出要求
