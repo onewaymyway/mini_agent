@@ -364,6 +364,27 @@ class AgentClient:
     def fs_download_url(self, path):
         return self._url(f"/fs/download?path={requests.utils.quote(path)}")
 
+    def fs_mkdir(self, path):
+        return self._post("/fs/mkdir", json_body={"path": path})
+
+    def fs_upload(self, path: str, file_bytes: bytes, filename: str = "upload"):
+        """上传文件到 project_root 内的 path（相对路径）。用于工作流运行面板里
+        "从本地上传文件"场景——通过 /fs/upload 把用户浏览器本地文件传到 Agent
+        所在机器的项目目录下，返回后即可拿到一个可用于 run_workflow(inputs=...)
+        的绝对路径。不复用 _post，因为这里是 multipart/form-data 而不是 JSON。"""
+        try:
+            r = requests.post(
+                self._url("/fs/upload"),
+                headers={k: v for k, v in self.headers.items() if k.lower() != "content-type"},
+                params={"path": path},
+                files={"file": (filename, file_bytes)},
+                timeout=30,
+            )
+            r.raise_for_status()
+            return r.json()
+        except Exception as e:
+            return {"_error": str(e)}
+
     # ── 产出物 Artifacts（产出物看板）────────────────────────────────
     def list_artifacts(self, session_id: str = None, limit: int = 50, offset: int = 0):
         params = {"limit": limit, "offset": offset}
