@@ -364,8 +364,20 @@ class ToolExecutor:
                             log_exception(_mini_agent_exc, where='mini_agent.tool_executor')
                             pass
                     except Exception as e:
-                        result_str = f"[tool error: {e}]"
-                        R.print_tool_error(tc.name, str(e))
+                        # [SYS-DEBUG] 工具调用异常：完整堆栈落盘到全局错误日志
+                        # （~/.agent/logs/error.jsonl），避免之前只有一行
+                        # "error: xxx" 完全看不出出错位置的问题。
+                        import traceback as _traceback
+                        from mini_agent.errors import log_exception
+                        _tb_str = _traceback.format_exc()
+                        log_exception(
+                            e, where=f"mini_agent.tool_executor.call:{tc.name}",
+                            extra={"tool_input": tool_input},
+                        )
+                        result_str = f"[tool error: {e}\n{_tb_str}]"
+                        
+                        R.print_tool_error(tc.name, f"{e}\n{_tb_str}")
+  
                         if self.cfg.tool_stats_enabled:
                             self.stats.record_tool_call(tc.name, False, 0)
 
