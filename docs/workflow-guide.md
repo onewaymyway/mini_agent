@@ -9,7 +9,7 @@ mini_agent 内置了一套轻量的工作流引擎，支持将多步 AI 任务�
 
 ### 设计理念
 
-工作流系统从 P1 一路演进到 P10（详见文末各节标注的编号），贯穿始终的几条
+工作流系统从 P1 一路演进到 P15（详见文末各节标注的编号），贯穿始终的几条
 原则：
 
 1. **纯函数核心 + 薄适配层，三个入口共享同一套状态机**。
@@ -53,7 +53,7 @@ graph TD
 
     subgraph EXEC["执行引擎层"]
         Runner["runner.py<br/>WorkflowRunner：拓扑排序/并发分批<br/>占位符替换/condition 求值/质检门/重试"]
-        Executors["executors.py<br/>StepExecutor 家族：<br/>agent/role_agent/skill_agent/sub_workflow/<br/>tool_call/human_input/script + 插件自定义类型"]
+        Executors["executors.py<br/>StepExecutor 家族：<br/>agent/role_agent/skill_agent/sub_workflow/<br/>tool_call/human_input/script/python_step/<br/>foreach/wait/merge + 插件自定义类型"]
         Watchdog["watchdog.py<br/>WorkflowWatchdog：心跳超时/资源护栏<br/>token 累计/连续同类失败提前升级"]
         Session["session.py<br/>WorkflowSession：运行时状态增量落盘"]
         ResBundle["resource_bundle.py<br/>文件夹模式本地 agent/skill 资源合并"]
@@ -157,7 +157,8 @@ stateDiagram-v2
     [*] --> PENDING
     PENDING --> RUNNING
     RUNNING --> DONE
-    RUNNING --> SKIPPED: condition 不满足
+    RUNNING --> SKIPPED: condition 求值为 False
+    RUNNING --> NEEDS_FIX: condition 求值抛异常（P12，与"求值为False"区分）
     RUNNING --> FAILED: 异常且非结构性
     RUNNING --> NEEDS_FIX: 异常为结构性错误，或连续同类失败达阈值
     RUNNING --> GATE_FAILED: evaluator 评分不达标
@@ -265,10 +266,15 @@ steps:
     role: null             # 执行角色：null（主 Agent）或角色 profile name
     type: null             # [P5] 显式类型：null=按role自动推断 / agent / role_agent /
                            #      sub_workflow / tool_call / human_input / script /
-                           #      skill_agent，或插件注册的自定义类型（见 P7-④1/④2）
+                           #      skill_agent / python_step / foreach / wait / merge，
+                           #      或插件注册的自定义类型（见 P7-④1/④2）
     workflow_name: null    # [P5] type=sub_workflow 时必填：引用的工作流名称
     tool_name: null        # [P5] type=tool_call 时必填：要调用的工具名称
-    tool_args: {}          # [P5] type=tool_call 时的工具入参（为空则用 prompt 作为唯一实参）
+    tool_args: {}          # [P5，P12 起支持占位符] type=tool_call 时的工具入参
+                            #      （为空则用 prompt 作为唯一实参）。值里的字符串
+                            #      （含嵌套 dict/list 内的字符串叶子节点）支持
+                            #      `{step_id.output}` 等占位符，见下文
+                            #      "Prompt 占位符"一节
     input_prompt: null     # [P5] type=human_input 时展示给人类的提示语（为空则用 prompt）
     input_key: null        # [改进方案 §1] type=human_input 时，若启动时的 inputs
                             #      里能通过该 key 找到值，直接使用、不阻塞等待，
@@ -302,6 +308,32 @@ steps:
                             #      跑完后 runner 统一把输出写到
                             #      session output_dir/output_file，见下文
                             #      "output_file 输出落盘契约"一节
+    result_file: null       # [skill_agent 结果文件契约，P15 起 script 类型
+                            #      通用] 期望执行方主动产出的结构化结果文件名，
+                            #      见下文"结构化结果契约"一节
+    result_file_required_keys: []  # 校验 result_file 顶层必须包含的字段列表
+
+    # ── [P13 Phase 1] type=foreach 专用 ──────────────────────────────────
+    items: null             # 要遍历的列表：字面量列表，或单个占位符字符串
+                            #      （如 "{search.result_file:questions}"，
+                            #      解析为原始 Python list）
+    foreach_step: {}        # 内层每个元素要执行的 step 定义子集（必须包含
+                            #      type），内层 prompt 支持 {item}/{item_index}
+    foreach_max_concurrency: 1     # 内层并发度，默认 1（串行）
+    foreach_stop_on_error: false   # 单元素失败：false=记入聚合结果继续，
+                            #      true=第一个失败即整体抛异常
+
+    # ── [P13 Phase 2] type=wait 专用 ─────────────────────────────────────
+    wait_seconds: null       # 要等待的秒数，可被 pause/cancel 信号打断
+
+    # ── [P14 Phase 1] type=merge 专用 ────────────────────────────────────
+    merge_sources: []        # 要汇聚的上游 step id 列表（顺序即聚合顺序）
+    merge_strategy: concat_text   # concat_text（默认，拼接 output 文本）/
+                            #      json_array（组成 JSON 数组）/
+                            #      json_merge（按顺序 dict.update）
+    merge_separator: "\n\n"  # concat_text 策略下的拼接分隔符
+    merge_use_result_file: false  # true 时 json_array/json_merge 从各来源的
+                            #      result_file 读取；false 时读 output 文本
 ```
 
 ### Prompt 占位符
@@ -312,10 +344,25 @@ steps:
 | `{step_id.output}` | 指定步骤的完整输出文本 | `{analyze.output}` |
 | `{step_id.score}` | 指定步骤的评分（0-100 整数字符串）| `{evaluate.score}` |
 | `{step_id.output_file}`（P11 §3） | 指定步骤 `output_file` 落盘文件的**绝对路径字符串**（不是内容），供 `agent`/`role_agent` 等类型的 step 提示"请读取该文件" | `{analyze_doc.output_file}` |
+| `{step_id.result_file}` | 指定步骤 `result_file` 落盘文件的**绝对路径字符串**（不是内容） | `{search_zhihu.result_file}` |
+| `{step_id.result_file:a.b[0].c}`（P12 Phase 3） | 直接从 `result_file` 指向的 JSON 文件里取出某个字段值（支持属性访问 + 数字下标的链式路径，不是完整 JSONPath），取到后 `str()` 转成文本插入 prompt；路径取不到值或文件不是合法 JSON 时，占位符原样保留、不抛异常中断 step | `{search.result_file:questions[0].title}` |
+
+`tool_call` 类型的 `tool_args`（P12 Phase 2 起）同样支持上述全部占位符语法——值是字符串时直接替换，值是嵌套 `dict`/`list` 时会递归替换其中的字符串叶子节点，纯字面量值（不含 `{...}`）不受影响、完全向后兼容：
+
+```yaml
+- id: notify_with_summary
+  type: tool_call
+  tool_name: send_slack_message
+  depends_on: [summarize]
+  tool_args:
+    channel: "#eng"
+    text: "本次摘要：{summarize.output}"          # 字符串占位符
+    metadata: {source_step: "summarize"}          # 字面量，不受影响
+```
 
 `{variable}` 形式的占位符在 `inputs` 里找不到对应 key 时，仍按既有兜底行为原样保留大括号文本、不报错（避免误伤 prompt 模板里本来就有的花括号）；但从 P11 开始，运行时若发生这种"未解析占位符替换"，会被记进 `debug_log.unresolved_placeholders`（见下文"运行时调试日志"一节），保存前也可以用 `preview_workflow` 提前看到同样的清单。
 
-`{step_id.field}` 形式的占位符（`output`/`score`/`output_file`）从 P11 开始，`validate()` 会额外检查该 `step_id` 是否在当前 step 的 `depends_on`（直接或传递）范围内，写漏 `depends_on` 会直接报 **error**（而不是运行到一半才因为该 step 还没跑完而报 `KeyError`）——这是本轮改进里少数几个"从运行期报错提前到保存期报错"的一致性校验，建议改动后立刻用 `save_workflow`/`validate()` 确认没有新增报错。
+`{step_id.field}` 形式的占位符（`output`/`score`/`output_file`/`result_file`/`result_file:path`）从 P11 起（P12 扩展到 `tool_args` 和 `result_file:path`），`validate()` 会额外检查该 `step_id` 是否在当前 step 的 `depends_on`（直接或传递）范围内，写漏 `depends_on` 会直接报 **error**（而不是运行到一半才因为该 step 还没跑完而报 `KeyError`）——这是本轮改进里少数几个"从运行期报错提前到保存期报错"的一致性校验，建议改动后立刻用 `save_workflow`/`validate()` 确认没有新增报错。`result_file:path` 部分只做**语法级**校验（路径写法是否合法），不读文件、不校验字段是否真的存在。
 
 ### condition 表达式
 
@@ -333,6 +380,16 @@ condition: "evaluate.score >= 60"          # 评分达标才执行
 condition: "analyze.passed"                # 分析步骤成功才执行
 condition: "evaluate.score >= 60 and analyze.passed"  # 多条件组合
 ```
+
+**求值异常 vs 求值为 False（P12）**：`condition` 表达式本身写对、只是求值
+结果是 `False`（比如分数确实没达标）时，该 step 按既有语义标记为
+`SKIPPED`。但如果表达式**求值过程本身抛出异常**（比如引用了一个此刻
+`output` 类型不对导致 `AttributeError`、或者引用了一个还没跑完的 step
+导致 `KeyError`），说明表达式写错了、不是"业务上不满足"，会被标记为
+`NEEDS_FIX`（而不是 `SKIPPED`），`error`/`error_type` 字段会写清楚原始异常
+信息，不会被 `retry_on_error` 误判成"重试可能有用"而反复空转。写
+condition 时如果不确定某个字段这时候是否已经就绪，可以先用
+`preview_workflow`/`test_workflow_step` 提前验证。
 
 ---
 
@@ -353,7 +410,7 @@ condition: "evaluate.score >= 60 and analyze.passed"  # 多条件组合
 | `CANCELLED` | `cancelled` | 收到 `cancel_workflow_run` 信号后未开始/被中止 | P3 |
 | `AWAITING_APPROVAL` | `awaiting_approval` | `require_approval=true`，等待 `approve_workflow_step`/`reject_workflow_step` | P4 |
 | `REJECTED` | `rejected` | 人工审批门被拒绝 | P4 |
-| `NEEDS_FIX` | `needs_fix` | 结构性/配置性错误（prompt 占位符写错、`tool_name` 未注册等），或连续同类失败达阈值（P10），重试无意义，需要先 `patch_workflow_step` | 改进方案§4.3 / P10 |
+| `NEEDS_FIX` | `needs_fix` | 结构性/配置性错误（prompt 占位符写错、`tool_name` 未注册、condition 求值抛异常等），或连续同类失败达阈值（P10），重试无意义，需要先 `patch_workflow_step` | 改进方案§4.3 / P10 / P12 |
 
 `GATE_FAILED`/`FAILED`/`NEEDS_FIX` 三者的区别：
 - `FAILED`：系统级瞬时错误，重试大概率有用
@@ -1229,6 +1286,30 @@ steps:
   "连续、同类"才会触发提前升级，正常的"这次超时、那次别的错误"仍按原有
   逻辑走满重试预算。
 
+### workflow 级熔断（P14）
+
+上面的 `escalate_after_n_same_failures` 只统计**同一个 step 内部**的连续
+同类失败，无法捕捉"整个 workflow 是不是在系统性地失败"（比如某个外部
+API 挂了，导致 5 个不同 step 都在各自重试）。`WorkflowConfig` 新增
+`circuit_breaker_distinct_step_threshold`（默认 `null`=不启用，行为与
+改造前完全一致）：
+
+```json
+{"workflow": {"circuit_breaker_distinct_step_threshold": 3}}
+```
+
+- watchdog 全程累计"同一个 `error_type` 曾经导致失败过的**不同 step_id**
+  集合"（本次运行全程累计，不做滑动窗口），集合大小达到阈值时触发熔断：
+  标记 `circuit_breaker_tripped=True`、记录原因写入 `watchdog.jsonl`、
+  调用与 `max_total_duration`/`max_total_tokens` 超限时**同一套**
+  `control.request_cancel()` 信号，运行中/待执行的 step 会在下一次批次
+  边界照既有逻辑被取消，不需要额外的处理路径。
+- 与"同一个 step 内部连续失败"的区别：即使每个 step 都只失败了一次（没有
+  触发各自的 `escalate_after_n_same_failures`），只要**不同 step** 因为
+  **同一个 `error_type`** 失败的数量达到阈值，也会被判定为系统性问题提前
+  熔断，不必等每个 step 各自耗尽重试预算。
+- 触发原因可通过 `get_workflow_run_status(verbose=true)` 查看。
+
 ---
 
 ## Step 类型化（P5）
@@ -1241,11 +1322,19 @@ steps:
 | `agent`（默认） | 独立主 Agent 实例执行 | — |
 | `role_agent` | 指定角色 Agent 执行（`role` 非空时的旧默认行为） | `role` |
 | `sub_workflow` | 把另一个已保存的工作流当作一个 step 执行 | `workflow_name` |
-| `tool_call` | 直接调用一个已注册工具，不启动整个 Agent 会话 | `tool_name`, `tool_args` |
+| `tool_call` | 直接调用一个已注册工具，不启动整个 Agent 会话 | `tool_name`, `tool_args`（P12 起支持占位符） |
 | `human_input` | 阻塞等待人工通过 `provide_workflow_step_input` 送入文本 | `input_prompt`, `input_key` |
-| `script` | 执行一段 shell 命令 | `script` |
+| `script` | 执行一段 shell 命令（P15 起可选 `result_file` 结构化模式，见下方结构化结果契约一节） | `script`（可选 `result_file`/`result_file_required_keys`） |
 | `skill_agent` | 独立主 Agent 实例执行，且强制预加载指定 skill（不走关键词触发判断） | `skill_name`（可选 `result_file`/`result_file_required_keys` 声明结构化结果契约，见下方专节） |
 | `python_step`（P11） | 在**独立子进程**里跑一段外置的 Python 脚本，不启动 Agent，适合"给定输入产出结构化 JSON"这类确定性数据加工，见下文"`python_step`：脚本化 step"一节 | `script_path`, `params` |
+| `foreach`（P13） | 对一个列表的每个元素执行同一份内层 step 定义（可控并发度），结果聚合成 JSON 数组，见下文"批处理与汇聚"一节 | `items`, `foreach_step`, `foreach_max_concurrency`, `foreach_stop_on_error` |
+| `wait`（P13） | 等待指定秒数，可被 `pause`/`cancel` 信号打断（不同于 `python_step` 里 `time.sleep` 会被子进程超时机制误伤） | `wait_seconds` |
+| `merge`（P14） | 把多个上游 step 的结果按策略汇聚成一个（拼接文本 / JSON 数组 / JSON 合并），把"手写拼接"升级成一等公民 step | `merge_sources`, `merge_strategy`, `merge_separator`, `merge_use_result_file` |
+
+> **内置类型现共 11 种**（`agent`/`role_agent`/`sub_workflow`/`tool_call`/
+> `human_input`/`script`/`skill_agent`/`python_step`/`foreach`/`wait`/
+> `merge`），插件还可以在此基础上注册自定义类型（见下文"自定义 Step
+> 类型：插件化扩展"一节）。
 
 > **选型优先级**：能用 `python_step` 解决的步骤（含需要调用一次
 > `ctx.llm`/`ctx.llm.ask_json` 做判断的场景）应优先用 `python_step`；
@@ -1287,6 +1376,11 @@ steps:
 - `python_step` **默认关闭**（`python_step_enabled: false`，语义与
   `script_step_enabled` 一致），防止分享出去的 workflow YAML 变成任意 Python
   代码执行入口，需要在 `agent_config.json` 里显式开启。
+- `foreach` **不允许嵌套**（`foreach_step.type` 不能是 `foreach`），
+  `validate()` 保存期直接拒绝，避免批处理资源控制/调试复杂度失控。
+- `merge_sources` 里的每个 step id 复用与 prompt 占位符相同的
+  "是否存在/是否在 `depends_on` 范围内"校验，写漏 `depends_on` 同样会在
+  保存期报 error。
 
 在 CLI 里对正在等待人工输入的执行送入文本：
 
@@ -1445,6 +1539,110 @@ def run(ctx: PyStepContext) -> str | dict:
 返回的判断数量明显少于批次数量时（漏判），建议拆成更小的子批重试而不是
 直接丢弃，参考 `.agent/workflows/zhihu_content_publish/steps/03_filter.py`
 的实现（`BATCH_SIZE`/`MISS_RATIO_THRESHOLD`/`MIN_SUB_BATCH` 三个可调常量）。
+
+---
+
+## 批处理与汇聚：`foreach` / `wait` / `merge`（P13/P14）
+
+三种新增 step 类型都以纯 `StepExecutor` 插件形式落地，**不改动**
+`runner.py` 的拓扑调度/并发分批核心逻辑——从外部调度层的视角看，它们跟
+其它类型没有区别：输入一份 `resolved_prompt`（或直接读 `items`/
+`merge_sources`），输出一段文本，`output_file`/评分提取/`NEEDS_FIX`/
+`GATE_FAILED` 判定完全复用现有机制。
+
+### `foreach`：对列表逐元素批处理
+
+解决"先搜出一批候选、再逐个 enrich"这类场景——之前只能在 `python_step`
+脚本里手写循环调用 `ctx.run_agent_turn()`，YAML 完全看不出"这里其实是
+批处理"；现在可以让编排层显式声明：
+
+```yaml
+- id: enrich_each_question
+  type: foreach
+  depends_on: [search_zhihu]
+  items: "{search_zhihu.result_file:questions}"   # 引用上游 result_file 里的字段，解析为原始 list
+  foreach_max_concurrency: 3                        # 内层并发度，默认 1（串行）
+  foreach_stop_on_error: false                      # 默认单元素失败不影响其它元素
+  foreach_step:
+    type: skill_agent
+    skill_name: browser-cdp
+    prompt: "打开问题详情页并提取正文：{item}（第 {item_index} 条）"
+    max_turns: 15
+```
+
+- **`items`**：要遍历的列表，可以是 YAML 字面量列表，也可以是**单个**
+  占位符字符串（如上例），此时取占位符解析出的**原始 Python 对象**（不是
+  文本），复用 `{step_id.result_file:path}` 的解析逻辑；`items` 为空或
+  解析结果不是 `list` 时，保存期直接报错。
+- **`foreach_step`**：内层要对每个元素执行的 step 定义子集（`type`/
+  `prompt`/`tool_name`/`tool_args`/`skill_name`/`script`/`script_path`/
+  `params`/`role` 等），必须指定 `type`，**不能是 `foreach`**（禁止嵌套，
+  `validate()` 直接拒绝）。内层 prompt 里可以用两个专属占位符：
+  - `{item}`：当前元素（`dict`/`list` 会被 `json.dumps` 成文本，标量直接
+    `str()`）
+  - `{item_index}`：从 0 开始的序号
+
+  内层没有"上游 step 结果"的概念，只有 `item`/`item_index`，这是一套跟
+  外层 `_resolve_prompt` 独立的替换逻辑。
+- **`foreach_max_concurrency`**：默认 `1`（串行，最保守），显式调大才会用
+  线程池并发执行多个元素；与外层 `allow_parallel` 是两个独立的并发维度，
+  不共享同一个线程池，避免互相干扰调试。
+- **`foreach_stop_on_error`**：默认 `false`——某个元素执行失败不影响其它
+  元素，失败元素在聚合结果里记成 `{"item_index": i, "error": "..."}`，
+  整个 `foreach` step 仍然 `DONE`；设为 `true` 时第一个元素失败即整体抛
+  异常，交给外层现有的 `retry_on_error`/`NEEDS_FIX` 机制处理。
+- 输出：按原始下标顺序聚合成一段 **JSON 数组文本**，下游可以直接
+  `{enrich_each_question.output}` 或用 `python_step` 的
+  `ctx.input_json("enrich_each_question")` 消费。
+
+### `wait`：可中断的等待
+
+以前只能在 `python_step` 里 `time.sleep`，会跟子进程超时/watchdog 硬超时
+的语义打架。`wait` 类型独立处理等待期间的控制信号：
+
+```yaml
+- id: rate_limit_pause
+  type: wait
+  wait_seconds: 30
+```
+
+- 内部拆成 0.5 秒一片循环 `sleep`，每片之间检查 `pause`/`cancel` 控制
+  信号——收到 `cancel_workflow_run` 时提前退出并报告，收到
+  `pause_workflow_run` 时阻塞在原地直到 `resume`，与其它 step 类型遇到
+  暂停/取消时的响应方式完全一致，不是被子进程超时机制"误杀"。
+- `wait_seconds` 必须是正数，`validate()` 会校验。
+
+### `merge`：把多分支/多并发结果汇聚成一等公民 step
+
+以前多分支/多并发结果汇总只能靠某个 step 的 prompt 里手写
+`{a.output}{b.output}{c.output}` 拼接，或靠 `python_step` 脚本读多个
+`result_file`；现在 `merge` 把这个"汇聚节点"变成 workflow 图里看得见、
+调得动的一等公民：
+
+```yaml
+- id: final_report
+  type: merge
+  depends_on: [summary_a, summary_b, enrich_each_question]
+  merge_sources: [summary_a, summary_b, enrich_each_question]  # 顺序即聚合顺序
+  merge_strategy: concat_text     # concat_text（默认）/ json_array / json_merge
+  merge_separator: "\n\n---\n\n"  # concat_text 用的分隔符
+  merge_use_result_file: false    # true 时 json_array/json_merge 从 result_file 读取
+```
+
+`merge_strategy` 三种取值：
+
+| 策略 | 行为 |
+|---|---|
+| `concat_text`（默认） | 按 `merge_sources` 顺序拼接各来源 `output` 文本，用 `merge_separator` 分隔——向后兼容"手写拼接"最常见的用法 |
+| `json_array` | 各来源的值组成一个 JSON 数组（`merge_use_result_file=true` 时读 `result_file`，否则 `json.loads(output)`，解析失败则原始文本作为字符串元素） |
+| `json_merge` | 各来源须为 JSON object，按 `merge_sources` 顺序 `dict.update`，后者覆盖前者同名 key（来源解析出非 dict 时直接报错） |
+
+- `merge_sources` 必须非空、无重复；每个 id 复用 prompt 占位符已有的
+  "引用是否存在/是否在 `depends_on` 范围内"校验逻辑——写漏 `depends_on`
+  同样会在 `save_workflow` 阶段报 error。
+- `foreach` 产出一份 JSON 数组后，常见的下一步就是跟另一个 step 的结果
+  用 `merge`（`json_array`/`json_merge`）合并成最终输出，两者是天然的
+  上下游组合。
 
 ---
 
@@ -1621,9 +1819,9 @@ steps:
 
 ## 自定义 Step 类型：插件化扩展（P7-④1/④2）
 
-内置的 7 种 step 类型（`agent`/`role_agent`/`sub_workflow`/`tool_call`/
-`human_input`/`script`/`skill_agent`）之外，可以通过插件注册新的 step
-类型，不需要改动本包源码。
+内置的 11 种 step 类型（`agent`/`role_agent`/`sub_workflow`/`tool_call`/
+`human_input`/`script`/`skill_agent`/`python_step`/`foreach`/`wait`/
+`merge`）之外，可以通过插件注册新的 step 类型，不需要改动本包源码。
 
 **1. 实现一个 `StepExecutor`**：
 
@@ -1641,7 +1839,7 @@ class HttpStepExecutor(StepExecutor):
 
     def validate_step(self, step) -> list[str]:
         # 可选：自定义类型专属的必填字段校验，返回错误文案列表（空=合法）。
-        # 内置 7 种类型的必填字段校验写死在 schema.py 里，不走这个钩子；
+        # 内置 11 种类型的必填字段校验写死在 schema.py 里，不走这个钩子；
         # 只有通过 register_step_executor() 注册的自定义类型才会调用这里。
         errors = []
         if not (step.tool_args or {}).get("url"):
@@ -1676,7 +1874,7 @@ def register(cfg):
 **已知边界**：
 - 单个插件加载失败（import 报错）或 `register(cfg)` 调用失败，只会打印
   一条警告并跳过，不影响其余插件与主程序启动。
-- `register_step_executor()` 覆盖内置 7 种类型的实现会打印警告但仍然
+- `register_step_executor()` 覆盖内置 11 种类型的实现会打印警告但仍然
   允许（便于测试环境替换实现），生产场景不建议这么做。
 - 自定义类型没有 `retry_on_gate_fail` 之外的内置安全默认值（不像
   `script`/`tool_call` 那样有专门的开关保护），插件作者需要自行评估
@@ -1764,7 +1962,7 @@ steps:
     prompt: "对比这两份 PDF 的差异：{a_path} vs {b_path}"
   ```
 
-### `skill_agent`（及声明了 `result_file` 的 `agent`/`role_agent`）的结构化结果契约
+### `result_file` 结构化结果契约：`skill_agent` / `script`（及声明了 `result_file` 的 `agent`/`role_agent`）
 
 `skill_agent` 这类步骤本质是"临时起一个完整 Agent 自主跑若干轮工具调用"，
 它的对话输出是非结构化文本，直接靠 `{step_id.output}` 占位符或
@@ -1812,6 +2010,39 @@ steps:
   内通过 `spawn_named_agent` 能看到本地 `agents/` 里定义的 sub-agent，
   技能触发 / `skill_activate` 工具也能看到本地 `skills/` 里定义的 skill，
   不需要额外配置。
+
+#### `script` 的 structured 模式（P15）
+
+`result_file`/`result_file_required_keys` 不是 `skill_agent` 专属——`script`
+类型也可以声明它们，用**环境变量**而不是 prompt 文字告知目标路径：
+
+```yaml
+- id: count_lines
+  type: script
+  script: |
+    python3 -c "
+    import os, json
+    total = sum(1 for _ in open('data.csv'))
+    json.dump({'total': total}, open(os.environ['WORKFLOW_RESULT_FILE_PATH'], 'w'))
+    "
+  result_file: count_result.json
+  result_file_required_keys: [total]
+```
+
+- 声明了 `result_file` 时，`ScriptStepExecutor` 会先算出目标绝对路径，
+  通过环境变量 `WORKFLOW_RESULT_FILE_PATH` 传给子进程，脚本内自行读取
+  该环境变量、把结构化结果写成合法 JSON 落到这个路径。
+- 子进程 `returncode == 0`（脚本自身判定的"成功"）之后，还会额外校验
+  `result_file`——**校验不通过时，即使 `returncode == 0` 也判定整个 step
+  失败**，抛异常交给外层既有的 `retry_on_error`/`NEEDS_FIX` 机制处理。
+- 与 `skill_agent` 的区别：`script` 是一次性子进程，没有可 `resume` 的
+  会话上下文，所以校验失败**不会**像 `skill_agent` 那样原地补写重试，
+  只能整个重跑该 step（配 `retry_on_error` 使用）。
+- **未声明 `result_file` 时行为完全不变**（`stdout` 即结果），向后兼容
+  所有既有 `script` step，不强制迁移。
+- 与 `skill_agent`/`foreach`/`merge` 一样，下游 `python_step` 用
+  `ctx.input_output(step_id)`/`ctx.input_json(step_id)` 消费时不需要关心
+  上游到底是哪种类型产出的 `result_file`，用法完全统一。
 
 ### 边界与限制
 
@@ -1920,7 +2151,8 @@ Workflow 执行时会触发以下 Hook 事件（复用项目现有的 `mini_agen
   "placeholder_depends_on_check_enabled": true,
   "python_step_inputs_filtered_by_depends_on": true,
   "debug_log_enabled": false,
-  "debug_log_max_chars": 4000
+  "debug_log_max_chars": 4000,
+  "circuit_breaker_distinct_step_threshold": null
 }
 ```
 
@@ -1954,6 +2186,7 @@ Workflow 执行时会触发以下 Hook 事件（复用项目现有的 `mini_agen
 | `python_step_inputs_filtered_by_depends_on`（P11 §4） | `true` | `python_step` 脚本的 `ctx.inputs` 是否按 `depends_on` 过滤，仅传递声明过依赖的上游 step 结果；关闭则回退为传递全部已跑完的 step（不建议，仅用于临时排查） |
 | `debug_log_enabled`（P11 §6） | `false` | 是否在每个 step 执行完后填充 `StepResult.debug_log`（resolved_prompt/unresolved_placeholders/时间戳/subprocess 输出等），默认关闭避免 session 目录体积膨胀 |
 | `debug_log_max_chars`（P11 §6） | `4000` | `debug_log` 里 `resolved_prompt`/`subprocess_stdout`/`subprocess_stderr` 等长文本字段的截断长度上限 |
+| `circuit_breaker_distinct_step_threshold`（P14） | `null` | workflow 级熔断阈值：同一个 `error_type` 导致失败的**不同 step_id** 数量达到该值时提前整体 `request_cancel()`，`null`=不启用，见上文"workflow 级熔断"一节 |
 
 ---
 
