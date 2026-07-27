@@ -82,6 +82,20 @@ def _make_run_agent_turn(app_cfg_dict: dict):
 
 
 def main() -> int:
+    # [编码健壮性] 子进程默认继承宿主机 locale 作为 stdout/stderr 编码
+    # （Windows 上常是 GBK）。父进程虽然已经通过 PYTHONIOENCODING=utf-8
+    # 环境变量要求子进程用 UTF-8（见 executors.py::PythonStepExecutor），
+    # 这里再显式 reconfigure 一遍作为双保险——万一某些环境变量没有正确
+    # 传递到解释器启动阶段（比如被更外层的 launcher/venv 包装吞掉），
+    # 这行代码能兜底同样的效果。脚本里的 print() 调试信息、以及下面的
+    # 结果包 print()，都会因此不再受宿主机代码页限制，不会因为文本里
+    # 出现 emoji/生僻字就把整个 step 判定为失败。
+    for _stream in (sys.stdout, sys.stderr):
+        try:
+            _stream.reconfigure(encoding="utf-8", errors="replace")
+        except (AttributeError, ValueError):
+            pass  # 极老 Python 版本 / 非标准 stdout 对象没有 reconfigure，忽略
+
     if len(sys.argv) < 2:
         print(json.dumps({"ok": False, "error": "缺少 request_json_path 参数"}))
         return 1

@@ -302,6 +302,14 @@ class ScriptStepExecutor(StepExecutor):
             "cwd": str(runner._cfg.project_root),
             "capture_output": True,
             "text": True,
+            # [编码健壮性] 不用 subprocess 默认的"按宿主机 locale 解码"
+            # （Windows 上常是 GBK），命令输出里只要出现 emoji/生僻字就会在
+            # 解码阶段直接抛 UnicodeDecodeError，把一个本来跑成功的命令
+            # 判定为失败。显式固定 UTF-8 + errors="replace"：正常 UTF-8
+            # 输出精确解码，非 UTF-8 的极端情况也只是把个别字符替换成
+            # U+FFFD，不会让整个 step 因为编码问题而中断。
+            "encoding": "utf-8",
+            "errors": "replace",
             "timeout": timeout,
         }
         if _is_windows:
@@ -431,10 +439,28 @@ class PythonStepExecutor(StepExecutor):
             _child_env = dict(os.environ)
             if runner._cfg.api_key:
                 _child_env["MINI_AGENT_STEP_API_KEY"] = runner._cfg.api_key
+            # [编码健壮性] 子进程（py_step_runner.py）用 print(json.dumps(...))
+            # 把结果传回来——这是父子进程之间唯一的通信通道。子进程自己的
+            # stdout 编码默认由宿主机 locale 决定（Windows 上常是 GBK），
+            # 脚本产出的数据（比如爬到的知乎问题标题）只要带 emoji 这类
+            # GBK 编不了的字符，子进程会在自己的 print() 那一行直接崩溃
+            # （returncode!=0），把整个 step 判定为失败——这不是父进程解码
+            # 阶段的问题，是子进程写出阶段就先炸了，所以必须从子进程的
+            # 环境变量入手，强制它用 UTF-8 写 stdout/stderr。
+            # py_step_runner.py 里也加了 sys.stdout.reconfigure(utf-8) 兜底，
+            # 这里的环境变量是双保险，覆盖"reconfigure 因为某些环境不可用"
+            # 的边缘情况。
+            _child_env["PYTHONIOENCODING"] = "utf-8"
             _popen_kwargs: dict = {
                 "cwd": str(runner._cfg.project_root),
                 "capture_output": True,
                 "text": True,
+                # 父进程这边同样显式固定 UTF-8 解码（+ errors="replace" 兜底
+                # 极端情况），不依赖宿主机 locale——子进程现在保证写 UTF-8，
+                # 父进程也必须按 UTF-8 读，两边不匹配的话父进程解码这步会
+                # 换一种方式崩溃。
+                "encoding": "utf-8",
+                "errors": "replace",
                 "timeout": timeout,
                 "env": _child_env,
             }
