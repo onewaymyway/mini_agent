@@ -217,6 +217,7 @@ class TurnLoopMixin:
         # 与 loop_count 分开计数：纠错重试不应挤占 max_turns 预算，
         # 但仍需独立上限防止模型持续输出坏格式导致死循环。
         format_correction_retries = 0
+        _hard_loop_count = 0
 
         _max_turns_policy = getattr(self.cfg, "max_turns_on_limit", "stop")
         _max_turns_hard_limit = getattr(self.cfg, "max_turns_hard_limit", self.cfg.max_turns)
