@@ -93,6 +93,60 @@ triggers: workflow调试, workflow失败, workflow测试, 重跑, 断点续跑, 
    `force_rerun_from`，否则如果该 step 之前状态不是"未完成"可能不会被
    重新纳入执行计划。
 
+## `skill_agent` 步骤失败或"文件已生成但迟迟不结束"：先看 `result_file` 契约
+
+`skill_agent`（声明了 `result_file`）是当前 workflow 里最容易出现"看起来卡住"
+或"重试多次仍失败"的 step 类型，排查前先确认这一点，再决定怎么改：
+
+1. **先看 `result_file` 是否声明、`result_file_required_keys` 是否列全**：
+   `show_workflow(name)` 里没有 `result_file` 字段的 `skill_agent` step，
+   意味着下游只能靠对话原文解析——如果失败信息看起来像"下游 JSON 解析出
+   错"而不是这个 step 本身报错，很可能是漏配了 `result_file`，应该先给
+   `patch_workflow_step` 补上，而不是一味调大 `retry_on_error`。
+2. **`verbose=true` 里如果错误信息形如"resume×3 + 重开×3 次尝试后仍未产出
+   合法的 result_file"**：说明 `result_file` 契约本身校验失败了 3+3=6 次，
+   通常是 prompt 指令不够明确（模型没意识到必须写文件）或
+   `result_file_required_keys` 列的字段模型理解有偏差。先用
+   `test_workflow_step` 单独跑这一步，观察它对话里到底有没有尝试写文件、
+   写的字段跟要求的是否对得上，再决定改 prompt 还是改
+   `result_file_required_keys`。
+3. **"result_file 已经生成但这一步迟迟不结束"不是 bug，是预期行为**：
+   `result_file` 只在 agent 这一轮**自然结束**后才会被校验——如果 agent
+   写完文件后还在继续浏览/反复自我确认，step 就会一直等到它自己收尾或
+   撞到 `max_turns`/`timeout`。这种情况改法是在 prompt 里补一句"写完文件
+   并自检通过后立即收尾，不要再做任何其它操作"，或者适当调低 `max_turns`
+   逼它更早收敛，而不是去调 `timeout`（调大 `timeout` 只会让"卡住的感觉"
+   变得更久，治标不治本）。
+4. **`ctx.input_json(step_id)`/`ctx.input_output(step_id)` 优先读
+   `result_file`**：如果下游 `python_step` 报"字段缺失"一类的错，先确认
+   上游 `result_file` 那次校验到底有没有通过（`get_workflow_run_status`
+   里能看到该 step 的 `status`），通过了才会读文件，没通过会退回读对话
+   原文——这两种数据源的字段完整性可能完全不同，排查时不要想当然。
+
+## 用 `events.jsonl` 排查"卡在哪一步"/耗时异常
+
+`.agent/workflow_sessions/<id>/events.jsonl` 里每个 step 正常应该有一对
+`step_start`（开始执行前）+ `step_end`（执行完毕，带 `duration_seconds`/
+`status`/`retries_used`）。怀疑某次执行"卡住了"但还没到能看
+`get_workflow_run_status` 终态的地步时，直接读这个文件比反复轮询状态更
+直接：
+
+```bash
+cat .agent/workflow_sessions/<id>/events.jsonl | python3 -c \
+  "import json,sys; [print(json.loads(l)['event'], json.loads(l).get('step_id'), json.loads(l).get('status','')) for l in sys.stdin]"
+```
+
+- 只有 `step_start` 没有对应 `step_end` 的 step，就是当前正卡着的那一步——
+  再结合它的 `type` 判断：`skill_agent`/`agent` 大概率是还在跑多轮工具
+  调用（参考上一节），`python_step` 卡住通常是脚本本身死循环/外部调用
+  没超时，可以直接去看 `script_path` 对应脚本有没有网络调用忘了设
+  timeout。
+- 如果同一个 `step_id` 出现了多组 `step_start`/`step_end`，说明这一步被
+  重跑过（`retry_on_error` 内部重试，或多次 `resume_workflow_run`），按
+  时间顺序看最后一组的 `status` 才是最终结果，前面几组只是历史记录。
+- 只有 `step_end` 没有 `step_start` 的记录，是旧版本（`step_start` 事件是
+  后补的）留下的历史 session，不代表当前这次执行有问题。
+
 ## 只是想临时调参数、不想动定义（`step_overrides`）
 
 `resume_workflow_run` 的 `step_overrides` 参数用于"这次先试试放宽点限制，
@@ -148,6 +202,14 @@ resume_workflow_run(
   `wf.validate()` 未必会报错——这种"类型不匹配但字段合法"的情况不会被
   自动拦下来，改完最好用 `show_workflow`/`test_workflow_step` 确认真的
   生效了预期的效果。
+- **文件夹模式 workflow 报 `workflow_dir 未设置`**：如果是在 `resume_workflow_run`
+  之后才出现（首次 `run_workflow` 没问题），说明 resume 走的是
+  `workflow_def.yaml` 快照重新解析，而不是重新 `WorkflowStore.load(name)`；
+  当前实现已经会在 resume 时按 workflow 名字重新定位一次原始目录、补齐
+  `source_dir`/展开 `prompt_file`/`script_path`。如果你在自己的插件或二次
+  开发里绕过了 `resume_workflow_run`、自己拼装 `WorkflowDef` 去调
+  `WorkflowRunner.run()`，要记得这一步不能省，否则 `python_step` 里
+  `ctx.load_prompt_file()` 会直接报错。
 - **改动前后都可以 `preview_workflow`**：不确定这次改动会不会影响并发
   分批、condition 求值结果，`patch_workflow_step` 保存成功后可以再
   `preview_workflow(name, inputs)` 看一眼 dry-run 结果，比直接跑一遍正式

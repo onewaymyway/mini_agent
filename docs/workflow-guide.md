@@ -890,7 +890,7 @@ run_workflow("article_writer", {
 .agent/workflow_sessions/<workflow_session_id>/
   ├── session.json          # 执行状态：status/当前批次/control_flags/待审批step
   ├── workflow_def.yaml     # 执行时使用的工作流定义快照（防止运行中途原文件被改）
-  ├── events.jsonl          # 结构化事件流（workflow_start/step_end/paused/...）
+  ├── events.jsonl          # 结构化事件流（workflow_start/step_start/step_end/paused/...）
   ├── watchdog.jsonl        # 看护线程的心跳超时/资源护栏告警记录
   └── step_<step_id>/       # 该 step 对应 Agent 的完整数据
       └── <session_id>/     # history / meta / traces / temp / output / artifacts
@@ -900,8 +900,33 @@ run_workflow("article_writer", {
 （后台模式下直接在返回文本里）；`list_workflow_runs` / `get_workflow_run_status`
 可以查询任意一次执行的实时进度。
 
+**`events.jsonl` 事件类型**：每行一条 JSON，字段固定含 `ts`（unix 时间戳）/
+`event`/`workflow_session_id`，其余字段按事件类型而定：
+
+| `event` | 触发时机 | 额外字段 |
+|---|---|---|
+| `workflow_start` | `run()` 开始（含 resume） | `workflow_name`、`resumed`（是否是续跑） |
+| `step_start` | 一个 step 通过依赖检查/condition/审批门，真正开始执行前 | `step_id`、`step_name`、`type`、`batch_index` |
+| `step_end` | 一个 step 执行完毕（含失败/gate_failed） | `step_id`、`status`、`duration_seconds`、`retries_used` |
+| `approval_requested` / `approved` / `rejected` | 人工审批门 | `step_id` |
+| `paused` / `cancelled` | 主动暂停/取消 | `at_batch` |
+| `workflow_end` | 整个工作流结束 | `status`、`error` |
+
+按 `step_id` 把同一个 step 的 `step_start`/`step_end` 配对，可以算出真实墙钟
+耗时（跟 `step_end.duration_seconds` 对照，能发现"排队等锁"之类的额外开销）；
+只有 `step_end` 而没有对应 `step_start` 通常意味着该 step 是从旧版本落盘的
+`events.jsonl`（`step_start` 是后补的事件，之前版本的 session 里不会有）。
+
 **断点恢复**：进程崩溃或主动暂停后，用 `resume_workflow_run(workflow_session_id)`
-即可从已完成的批次之后继续跑，不会重跑已经 `done` 的步骤。
+即可从已完成的批次之后继续跑，不会重跑已经 `done` 的步骤。**resume 时会用
+`workflow_def.yaml` 快照重新解析 `WorkflowDef`**（不是重新走一次
+`WorkflowStore.load(name)`），因此对**文件夹模式**的 workflow，resume 路径
+需要额外按 workflow 名字重新定位一次原始目录，把 `source_dir`（继而
+`workflow_dir`）以及 `prompt_file`/`script_path` 展开重新解析一遍——这一步
+如果遗漏，`python_step` 里调用 `ctx.load_prompt_file()` 会报
+`workflow_dir 未设置`。这是历史上出现过的一个真实 bug，当前实现已修复；
+自己给 `resume_workflow_run` 相关逻辑做二次开发/插件化时，注意保持这个
+"重新解析相对路径资源"的步骤不要丢。
 
 ---
 
@@ -1198,7 +1223,7 @@ steps:
 | `tool_call` | 直接调用一个已注册工具，不启动整个 Agent 会话 | `tool_name`, `tool_args` |
 | `human_input` | 阻塞等待人工通过 `provide_workflow_step_input` 送入文本 | `input_prompt`, `input_key` |
 | `script` | 执行一段 shell 命令 | `script` |
-| `skill_agent` | 独立主 Agent 实例执行，且强制预加载指定 skill（不走关键词触发判断） | `skill_name` |
+| `skill_agent` | 独立主 Agent 实例执行，且强制预加载指定 skill（不走关键词触发判断） | `skill_name`（可选 `result_file`/`result_file_required_keys` 声明结构化结果契约，见下方专节） |
 | `python_step`（P11） | 在**独立子进程**里跑一段外置的 Python 脚本，不启动 Agent，适合"给定输入产出结构化 JSON"这类确定性数据加工，见下文"`python_step`：脚本化 step"一节 | `script_path`, `params` |
 
 ```yaml
@@ -1680,6 +1705,49 @@ steps:
     skill_name: pdf-diff
     prompt: "对比这两份 PDF 的差异：{a_path} vs {b_path}"
   ```
+
+### `skill_agent`（及声明了 `result_file` 的 `agent`/`role_agent`）的结构化结果契约
+
+`skill_agent` 这类步骤本质是"临时起一个完整 Agent 自主跑若干轮工具调用"，
+它的对话输出是非结构化文本，直接靠 `{step_id.output}` 占位符或
+`ctx.input_output()` 给下游 `python_step` 用并不可靠（模型经常在 JSON 前后
+夹杂解释文字）。需要下游按结构化数据消费时，给该 step 声明：
+
+```yaml
+- id: search_zhihu
+  type: skill_agent
+  skill_name: browser-cdp
+  prompt_file: prompts/02_search_zhihu.md
+  output_file: search_results.json        # 仍保留：对话原文存档，供人工排查
+  result_file: search_results_data.json   # 真正被下游消费的结构化产物
+  result_file_required_keys: [questions]  # 校验：JSON 必须包含这些顶层字段
+  max_turns: 25
+  timeout: 900
+```
+
+- **`result_file`**：一个文件名（相对本次 workflow session 的 `output/` 目录）。
+  声明后，runner 会在 prompt 末尾自动追加一段指令，明确告诉 agent"最终结果
+  必须用文件写入工具写到这个绝对路径，不是靠对话回复交付"，并在 agent 这
+  一轮结束后校验该文件是否存在、是否是合法 JSON。
+- **`result_file_required_keys`**：校验文件内容必须包含的顶层字段列表，
+  缺失任一字段都算校验失败。
+- **失败重试预算**：校验失败不会立刻判定 step 失败，而是：
+  1. 先原地 `resume` 同一个 agent（沿用其上下文/浏览器状态）最多 3 次，
+     直接点名"你没写文件"；
+  2. resume 仍救不回来，整个重开一个全新 agent 从头再来，最多 3 次；
+  3. 两轮预算都耗尽仍未产出合法结果文件，才判该 step 失败，交给
+     `retry_on_error` 机制重跑整个 step。
+- **`ctx.input_json(step_id)` / `ctx.input_output(step_id)` 会优先读
+  `result_file`**：下游 `python_step` 里这两个便捷方法，如果上游 step 声明
+  了 `result_file` 且校验通过，会优先读文件内容而不是对话原文，因此凡是
+  `skill_agent` 的产出要喂给下游 `python_step` 做结构化处理，都应该配一个
+  `result_file`，不要指望从 `output` 文本里解析。
+- **别忘了在 prompt 里也提醒 agent"写完文件后立即收尾"**：`result_file`
+  校验只在 agent 这一轮**自然结束后**才执行，如果 agent 写完文件后继续做
+  额外的浏览、反复自我确认，即使结果早就写好了，step 也要等它自己主动
+  结束这一轮才会往下走——已知会明显拖慢整体执行时间。生成 prompt 时建议
+  显式加一句"确认文件写入且内容合法后立即用一句话收尾，不要再进行任何
+  与写文件无关的操作"。
 
 - **主 Agent（`type: agent`）执行的 step**：执行期间会自动带上该工作流的
   本地 `skill_loader` 和 `agent_profile_loader`，因此主 Agent 在该 step

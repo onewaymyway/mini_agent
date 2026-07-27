@@ -146,6 +146,42 @@ prompt/timeout"、"这个改动会不会影响后面的 step，先测一下"，�
 | `script` | 执行 shell 命令（默认关闭，需要显式开启配置项） |
 | `python_step` | 在独立子进程里跑一段外置 `.py` 脚本（`script_path`），不启动 Agent，适合"给定输入产出结构化 JSON"这类确定性数据加工（默认关闭，需要显式开启 `python_step_enabled`）。真正需要临场应变（如浏览器交互）的步骤仍应使用 `agent`/`skill_agent`，见下方"`python_step`：脚本外置与批量处理"一节 |
 
+### `skill_agent`（或需要结构化产出的 `agent`/`role_agent`）：务必配 `result_file`
+
+`skill_agent` 的产出是一段自由文本对话，如果下游是 `python_step`（或任何
+需要拿到合法 JSON 的场景），**不要**指望靠 `{step_id.output}` 占位符或
+`ctx.input_output()` 解析对话原文——模型经常在 JSON 前后夹杂解释文字，
+解析很脆弱。生成这类 step 时按下面的写法：
+
+```yaml
+- id: search_zhihu
+  type: skill_agent
+  skill_name: browser-cdp
+  prompt_file: prompts/02_search_zhihu.md
+  output_file: search_results.json        # 对话原文存档，供人工排查
+  result_file: search_results_data.json   # 下游真正消费的结构化产物
+  result_file_required_keys: [questions]  # 必须包含的顶层字段
+  max_turns: 25
+  timeout: 900
+```
+
+- 声明了 `result_file` 后，runner 会自动在 prompt 末尾追加"必须用文件写入
+  工具把结果写到这个绝对路径"的指令并在结束后校验；校验失败会自动
+  resume/重开 agent 补救（最多 3+3 次），不需要自己在 prompt 里手写这段
+  指令、也不需要在 `python_step` 脚本里自己兜底解析脏 JSON。
+- 下游 `python_step` 通过 `ctx.input_json("search_zhihu")` /
+  `ctx.input_output("search_zhihu")` 取值时，只要上游声明了 `result_file`
+  且校验通过，会**优先读文件**而不是对话原文——这也是为什么
+  `result_file_required_keys` 要如实列出下游脚本真正会用到的顶层字段，
+  避免"文件写了但少了个字段，下游脚本才发现"这种情况。
+- **一定要在 prompt 里额外加一句"写完文件并自检通过后立即收尾，不要再做
+  其它操作"**：`result_file` 只在这一轮 agent 自然结束后才会被校验，agent
+  如果写完文件还继续浏览/反复确认，即使结果早就产出了，这一步也要等它
+  自己收尾才会往下走，实测会明显拖慢整体执行时间。不写这句提示是目前
+  生成的 workflow 里最容易漏掉、也最容易导致"文件已经生成但迟迟不结束"
+  的一个点。
+
+
 ### 自定义/插件 Step 类型
 
 以上是内置的 8 种类型。项目还可能通过 `myplugins/*.py` 里的
@@ -464,6 +500,11 @@ steps:
   一遍就能避免。反过来，不需要全自动时也不要为了"看起来更完善"顺手加
   `mode: autonomous`，那样会让原本合理的 `human_input`/`require_approval`
   写法保存不了。
+- **`skill_agent` 的产出要喂给下游 `python_step` 时忘了配 `result_file`**：
+  没有 `result_file` 时下游只能拿到对话原文，靠正则/脆弱解析拿 JSON 迟早
+  会炸；只要下游需要结构化数据，就应该配 `result_file` +
+  `result_file_required_keys`，见上面"`skill_agent`：务必配 `result_file`"
+  一节。
 - 不确定字段语义时，直接看 `.agent/workflows/doc_change_review/` 这个完整
   可跑的例子，或者读 `src/mini_agent/workflow/schema.py` 顶部的 docstring
   和 `docs/workflow-guide.md`"文件夹模式 Workflow"一节。
