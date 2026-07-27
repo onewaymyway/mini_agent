@@ -50,6 +50,7 @@ from .models import (
     DEFAULT_MODEL,
     DEFAULT_AGENT_NAME,
     DEFAULT_MAX_TOKENS,
+    DEFAULT_MAX_TURNS,
 )
 from .prompt_builder import _read_claude_md, _resolve_prompts_dir, _resolve_skills_dir
 
@@ -798,6 +799,10 @@ def load_config(
         llm_base_url=_llm_base_url,
         use_system_tool_call=_use_sys_tc,
         max_llm_calls=_max_llm_calls,
+        max_turns=_fn("max_turns", None, DEFAULT_MAX_TURNS),
+        # [SYS-MAX-TURNS-POLICY] "stop" | "continue" | "compact_continue"
+        max_turns_on_limit=(_f("max_turns_on_limit", None) or "stop"),
+        max_turns_hard_limit=_fn("max_turns_hard_limit", None, DEFAULT_MAX_TURNS * 5),
         agent_name=_agent_name,
         system_message_format=_sys_msg_fmt,
         notepad_enabled=_fb("notepad_enabled", None, True),

@@ -21,6 +21,9 @@
   "artifact_auto_detect_enabled": false,
   "max_llm_calls": 4,
   "llm_retry_delay": 30,
+  "max_turns": 50,
+  "max_turns_on_limit": "compact_continue",
+  "max_turns_hard_limit": 250,
   "show_reasoning": false,
   "tool_trim": {
     "enabled": true

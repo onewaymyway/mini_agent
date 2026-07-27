@@ -218,8 +218,31 @@ class TurnLoopMixin:
         # 但仍需独立上限防止模型持续输出坏格式导致死循环。
         format_correction_retries = 0
 
-        while loop_count < self.cfg.max_turns:
+        _max_turns_policy = getattr(self.cfg, "max_turns_on_limit", "stop")
+        _max_turns_hard_limit = getattr(self.cfg, "max_turns_hard_limit", self.cfg.max_turns)
+        _turns_budget = self.cfg.max_turns
+
+        while True:
+            if loop_count >= _turns_budget:
+                if _max_turns_policy in ("continue", "compact_continue") and loop_count < _max_turns_hard_limit:
+                    if _max_turns_policy == "compact_continue":
+                        R.print_warning(f"[max-turns] hit {_turns_budget}, policy=compact_continue, compacting then continuing.")
+                        try:
+                            self._cached_system = None
+                            self.compact_with_skills()
+                            self._cached_system = None
+                        except Exception as _mini_agent_exc:
+                            from mini_agent.errors import log_exception
+                            log_exception(_mini_agent_exc, where='mini_agent.agent.turn_loop.TurnLoopMixin._agentic_loop')
+                            R.print_warning(f"[max-turns] auto-compact failed: {_mini_agent_exc}")
+                    else:
+                        R.print_warning(f"[max-turns] hit {_turns_budget}, policy=continue, auto-continuing (hard limit {_max_turns_hard_limit}).")
+                    self._hist.append_user("继续")
+                    _turns_budget = min(_turns_budget + self.cfg.max_turns, _max_turns_hard_limit)
+                else:
+                    break
             loop_count += 1
+            _hard_loop_count += 1
 
             # [SYS-HOT-RELOAD] 检查 skills / agent profiles 是否有文件变化
             if self._hot_reloader.has_watches:
@@ -535,9 +558,9 @@ class TurnLoopMixin:
             # [SYS-ROLE-AGENT] tool_use 触发：CoachAgent 等在特定工具调用后给出建议
             self._trigger_role_agents_tool_use(response.tool_calls, result_strs)
 
-        self._last_turn_hit_max_turns = loop_count >= self.cfg.max_turns
+        self._last_turn_hit_max_turns = loop_count >= _turns_budget
         if self._last_turn_hit_max_turns:
-            R.print_warning(f"Reached max turns ({self.cfg.max_turns}).")
+            R.print_warning(f"Reached max turns ({loop_count}).")
 
         # [SYS-TOKEN] 本轮（turn）结束，重新估算一次并只打印这一次。
         # 注意：不能直接复用循环内保存的 _last_token_breakdown ——

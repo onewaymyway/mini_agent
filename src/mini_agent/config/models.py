@@ -1283,6 +1283,16 @@ class AppConfig:
     model: str = DEFAULT_MODEL
     max_tokens: int = DEFAULT_MAX_TOKENS
     max_turns: int = DEFAULT_MAX_TURNS
+    # [SYS-MAX-TURNS-POLICY] 单次 run_turn 内 agentic loop 达到 max_turns 时的处理策略：
+    #   "stop"             —— 原有行为，达到上限直接停下等待真人输入（默认）
+    #   "continue"         —— 自动注入一条模拟的"继续"消息，不压缩，直接继续跑，
+    #                          预算按 max_turns 的增量往上加，直到 max_turns_hard_limit
+    #   "compact_continue" —— 先执行一次历史压缩（等价于 /compact），再注入"继续"消息并延长预算
+    max_turns_on_limit: str = "stop"
+    # 无论 max_turns_on_limit 取何值，loop_count 增长到这个硬上限后一律停止，
+    # 防止 continue/compact_continue 策略下模型陷入死循环导致无限跑下去。
+    max_turns_hard_limit: int = DEFAULT_MAX_TURNS * 5
+
     project_root: Path = field(default_factory=Path.cwd)
     skills_dir: Optional[Path] = None
     prompts_dir: Optional[Path] = None
