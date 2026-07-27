@@ -40,6 +40,10 @@ resources:
     path: references/zhihu-column-search.md
     description: 知乎专栏文章批量搜索与抓取脚本（zhihu_column_search.py），通过百度 site:zhihu.com 搜索专栏文章并抓取详情
     triggers: 知乎专栏, zhihu column, zhihu_column_search.py
+  - id: zhihu-publish-answer
+    path: references/zhihu-publish-answer.md
+    description: 知乎问题回答发布自动化脚本，通过已登录的浏览器实例在知乎问题下撰写并发布回答。
+    triggers: 知乎发布, 知乎写回答, zhihu publish answer, 发布知乎回答, 知乎问答发布
   - id: arxiv-search
     path: references/arxiv-search.md
     description: arXiv 论文搜索自动化脚本（arxiv_search.py），按关键词搜索最新论文列表和获取详情
