@@ -755,6 +755,11 @@ def load_config(
         python_step_inputs_filtered_by_depends_on=bool(_wf.get("python_step_inputs_filtered_by_depends_on", True)),
         debug_log_enabled=bool(_wf.get("debug_log_enabled", False)),
         debug_log_max_chars=int(_wf.get("debug_log_max_chars", 4000)),
+        # ── P14（workflow_mechanism_improvement_plan_p14.md）──
+        circuit_breaker_distinct_step_threshold=(
+            int(_wf["circuit_breaker_distinct_step_threshold"])
+            if _wf.get("circuit_breaker_distinct_step_threshold") else None
+        ),
     )
 
     # ── 日报融合 / 主动推荐 / 决策画像配置组装（主动推荐与数字分身机制设计方案）──

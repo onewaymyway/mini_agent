@@ -326,6 +326,9 @@ class WorkflowRunner:
                 poll_interval=float(getattr(wf_cfg, "heartbeat_check_interval_seconds", 5.0)),
                 max_total_duration=max_total_duration,
                 max_total_tokens=max_total_tokens,
+                circuit_breaker_distinct_step_threshold=getattr(
+                    wf_cfg, "circuit_breaker_distinct_step_threshold", None
+                ),
             )
             watchdog.start()
         self._current_watchdog = watchdog
@@ -1417,6 +1420,11 @@ class WorkflowRunner:
         escalate_threshold = max(1, int(self._effective_step_field(step, "escalate_after_n_same_failures", 2)))
 
         sr = self._execute_step_bounded(step, resolved_prompt, step_results)
+        # [workflow_mechanism_improvement_plan_p14.md Phase 2] 跨 step 熔断：
+        # 每一次 FAILED（不管是否会重试）都上报一次，覆盖 max_retry=0 的
+        # 单次失败场景（下面循环体内的上报只在"确实要重试"时才会执行到）。
+        if watchdog is not None and sr.status == StepStatus.FAILED and sr.error_type:
+            watchdog.report_workflow_level_failure(step.id, sr.error_type)
         retries_used = 0
         while sr.status == StepStatus.FAILED and retries_used < max_retry:
             # [改进方案 §4.3] 结构性/配置性错误（prompt 占位符写错、tool_name
@@ -1453,6 +1461,8 @@ class WorkflowRunner:
             )
             time.sleep(wait_s)
             sr = self._execute_step_bounded(step, resolved_prompt, step_results)
+            if watchdog is not None and sr.status == StepStatus.FAILED and sr.error_type:
+                watchdog.report_workflow_level_failure(step.id, sr.error_type)
         sr.retries_used = retries_used
         if watchdog is not None:
             watchdog.reset_step_failures(step.id)

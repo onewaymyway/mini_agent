@@ -819,6 +819,65 @@ class WaitStepExecutor(StepExecutor):
         return f"等待 {total} 秒完成"
 
 
+class MergeStepExecutor(StepExecutor):
+    """
+    type=merge：把 step.merge_sources 列出的多个上游 step 的结果按
+    step.merge_strategy 聚合成一段文本，作为本 step 的 output。见
+    workflow_mechanism_improvement_plan_p14.md Phase 1。
+
+    定位：把"多分支/多并发结果汇总"从"靠 prompt 手写拼接
+    {a.output}{b.output}"升级成一等公民 step——尤其是 foreach 产出一份
+    JSON 数组后，往往还需要跟另一个 step 的结果合并，这类"结构化汇聚"
+    用字符串拼接表达不了，需要专门的聚合语义。
+    """
+
+    def execute(self, runner: "WorkflowRunner", step: WorkflowStep, prompt: str) -> str:
+        step_results = getattr(runner, "_current_step_results", None) or {}
+        strategy = step.merge_strategy or "concat_text"
+        values = []
+        for src_id in step.merge_sources:
+            sr = step_results.get(src_id)
+            if sr is None:
+                raise ValueError(
+                    f"merge 步骤 {step.id!r} 引用的来源步骤 {src_id!r} 尚未执行/不存在"
+                )
+            if strategy == "concat_text":
+                values.append(sr.output)
+                continue
+            # json_array / json_merge：优先 result_file，其次尝试解析 output
+            if step.merge_use_result_file:
+                path = (getattr(runner, "_step_result_file_paths", None) or {}).get(src_id)
+                if not path:
+                    raise ValueError(
+                        f"merge 步骤 {step.id!r} 要求从 result_file 读取，但来源步骤 "
+                        f"{src_id!r} 没有 result_file"
+                    )
+                with open(path, "r", encoding="utf-8") as f:
+                    values.append(json.load(f))
+            else:
+                try:
+                    values.append(json.loads(sr.output))
+                except (ValueError, TypeError):
+                    values.append(sr.output)  # 不是合法 JSON：json_array 按原始文本放入元素
+
+        if strategy == "concat_text":
+            return step.merge_separator.join(values)
+        elif strategy == "json_array":
+            return json.dumps(values, ensure_ascii=False)
+        elif strategy == "json_merge":
+            merged: dict = {}
+            for src_id, v in zip(step.merge_sources, values):
+                if not isinstance(v, dict):
+                    raise ValueError(
+                        f"merge 步骤 {step.id!r} 的 json_merge 策略要求每个来源都是 JSON "
+                        f"object，但 {src_id!r} 不是（实际类型：{type(v).__name__}）"
+                    )
+                merged.update(v)
+            return json.dumps(merged, ensure_ascii=False)
+        else:
+            raise ValueError(f"merge 步骤 {step.id!r} 的 merge_strategy 非法：{strategy!r}")
+
+
 # ── 分发表 ────────────────────────────────────────────────────────────────────
 # runner._dispatch_step() 按 step.effective_type 查表；新增类型只需在这里
 # 加一行注册，不需要改动 runner 的核心循环。
@@ -834,6 +893,7 @@ _EXECUTORS: dict[str, StepExecutor] = {
     "python_step": PythonStepExecutor(),
     "foreach": ForeachStepExecutor(),
     "wait": WaitStepExecutor(),
+    "merge": MergeStepExecutor(),
 }
 
 

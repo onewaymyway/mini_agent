@@ -920,6 +920,14 @@ class WorkflowConfig:
     # token（input+output）护栏，None=不限制，可被 WorkflowDef.max_total_tokens
     # 覆盖。只统计 agent/skill_agent 类型 step（见 runner.py 的回填点说明）。
     max_total_tokens: Optional[int] = None
+    # [workflow_mechanism_improvement_plan_p14.md Phase 2] 跨 step 熔断：
+    # 一定时间窗口内（本次运行全程，不做滑动窗口），若同一个 error_type
+    # 累计在 N 个**不同** step 上各自失败过至少一次（不要求同一个 step
+    # 连续失败——那是 escalate_after_n_same_failures 管的），视为"大概率
+    # 是系统性问题（如某个外部依赖挂了），不是单个 step 的偶发故障"，主动
+    # 请求 cancel，避免每个 step 各自把 retry_on_error 预算耗尽。
+    # None（默认）=不启用，行为与改造前完全一致。
+    circuit_breaker_distinct_step_threshold: Optional[int] = None
 
     # ── 人工审批门（P4）────────────────────────────────────────────────────
     approval_poll_interval_seconds: float = 3.0          # 审批门等待时的轮询间隔

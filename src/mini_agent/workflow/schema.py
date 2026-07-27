@@ -42,7 +42,7 @@ from typing import Any, Optional
 # "主 Agent / 角色 Agent" 二选一显式化为一个枚举，同时新增三种类型。
 # 未显式设置 type 时（旧版 YAML），由 WorkflowStep.effective_type 按
 # "role 是否为空"自动推断为 "agent"/"role_agent"，保证向后兼容。
-STEP_TYPES = ("agent", "role_agent", "sub_workflow", "tool_call", "human_input", "script", "skill_agent", "python_step", "foreach", "wait")
+STEP_TYPES = ("agent", "role_agent", "sub_workflow", "tool_call", "human_input", "script", "skill_agent", "python_step", "foreach", "wait", "merge")
 
 
 class ConditionEvalError(RuntimeError):
@@ -239,6 +239,21 @@ class WorkflowStep:
     # 等待的秒数；执行期间会周期性检查 pause/cancel 控制信号，不是死等。
     wait_seconds: Optional[float] = None
 
+    # [workflow_mechanism_improvement_plan_p14.md Phase 1] merge 专用：
+    # 要汇聚的上游 step id 列表（顺序即聚合顺序）。
+    merge_sources: list[str] = field(default_factory=list)
+    # 聚合策略："concat_text"（拼接各来源 output 文本，默认）/
+    # "json_array"（各来源值组成 JSON 数组）/ "json_merge"（各来源须为
+    # dict，按顺序 update 合并成一个 dict，后者覆盖前者同名 key）。
+    merge_strategy: str = "concat_text"
+    # concat_text 策略下用于拼接的分隔符。
+    merge_separator: str = "\n\n"
+    # True 时 json_array/json_merge 从各来源的 result_file 读取 JSON；
+    # False（默认）时尝试 json.loads(来源.output)，解析失败则按原始文本
+    # 处理（json_array 直接放入字符串元素；json_merge 会报错，因为非 dict
+    # 无法 update）。concat_text 策略下不受此字段影响，总是用 output 文本。
+    merge_use_result_file: bool = False
+
     @property
     def effective_type(self) -> str:
         """未显式设置 type 时，按旧语义推断：role 非空 → role_agent，否则 → agent。"""
@@ -429,7 +444,7 @@ class WorkflowDef:
                 not step.prompt.strip()
                 and not step.prompt_file
                 and not step.include
-                and step.effective_type not in ("human_input", "python_step", "foreach", "wait")
+                and step.effective_type not in ("human_input", "python_step", "foreach", "wait", "merge")
             ):
                 errors.append(f"步骤 {step.id!r} 的 prompt 为空")
 
@@ -463,18 +478,26 @@ class WorkflowDef:
                     errors.extend(get_executor(etype).validate_step(step) or [])
                 except Exception as _e:
                     errors.append(f"步骤 {step.id!r} 的自定义类型 {etype!r} 校验失败：{_e}")
-            if etype == "sub_workflow" and not step.workflow_name:
-                errors.append(f"步骤 {step.id!r} 是 sub_workflow 类型但未指定 workflow_name")
+            # [workflow_mechanism_improvement_plan_p14.md Phase 3]
+            # 内置类型里"缺了某个标量字段就报错"这种最简单的一类必填
+            # 校验，统一收进一张表，减少之前逐个 if 手写、格式还不完全
+            # 一致的重复代码（sub_workflow 的自引用递归检查需要
+            # self.name 上下文，不属于这一类，仍单独判断；foreach/wait/
+            # merge 的校验涉及多字段联动，也不适合塞进这张单字段表，
+            # 见各自类型下面的判断块）。
+            _SIMPLE_REQUIRED_FIELD = {
+                "sub_workflow": ("workflow_name", "未指定 workflow_name"),
+                "tool_call": ("tool_name", "未指定 tool_name"),
+                "script": ("script", "未指定 script 命令"),
+                "skill_agent": ("skill_name", "未指定 skill_name"),
+                "python_step": ("script_path", "未指定 script_path"),
+            }
+            if etype in _SIMPLE_REQUIRED_FIELD:
+                field_name, msg = _SIMPLE_REQUIRED_FIELD[etype]
+                if not getattr(step, field_name, None):
+                    errors.append(f"步骤 {step.id!r} 是 {etype} 类型但{msg}")
             if etype == "sub_workflow" and step.workflow_name == self.name:
                 errors.append(f"步骤 {step.id!r} 引用了当前工作流自身（{self.name!r}），会导致无限递归")
-            if etype == "tool_call" and not step.tool_name:
-                errors.append(f"步骤 {step.id!r} 是 tool_call 类型但未指定 tool_name")
-            if etype == "script" and not step.script:
-                errors.append(f"步骤 {step.id!r} 是 script 类型但未指定 script 命令")
-            if etype == "skill_agent" and not step.skill_name:
-                errors.append(f"步骤 {step.id!r} 是 skill_agent 类型但未指定 skill_name")
-            if etype == "python_step" and not step.script_path:
-                errors.append(f"步骤 {step.id!r} 是 python_step 类型但未指定 script_path")
             if etype == "foreach":
                 # [workflow_mechanism_improvement_plan_p13.md Phase 1]
                 if step.items is None or (isinstance(step.items, list) and not step.items) or (
@@ -510,6 +533,17 @@ class WorkflowDef:
                 # [workflow_mechanism_improvement_plan_p13.md Phase 2]
                 if step.wait_seconds is None or step.wait_seconds <= 0:
                     errors.append(f"步骤 {step.id!r} 是 wait 类型但未指定合法的 wait_seconds（须为正数）")
+            if etype == "merge":
+                # [workflow_mechanism_improvement_plan_p14.md Phase 1]
+                if not step.merge_sources:
+                    errors.append(f"步骤 {step.id!r} 是 merge 类型但未指定 merge_sources（或为空）")
+                elif len(step.merge_sources) != len(set(step.merge_sources)):
+                    errors.append(f"步骤 {step.id!r} 的 merge_sources 有重复的 step id")
+                if step.merge_strategy not in ("concat_text", "json_array", "json_merge"):
+                    errors.append(
+                        f"步骤 {step.id!r} 的 merge_strategy 非法：{step.merge_strategy!r}"
+                        f"（可选：concat_text / json_array / json_merge）"
+                    )
 
             # [改进方案 §1] mode="autonomous" 时，在保存期拦截阻塞型 step：
             # human_input 且没有 input_key 兜底 → 运行时会真的阻塞等人工输入；
@@ -692,6 +726,25 @@ class WorkflowDef:
                 _check_text(step, step.prompt or "", "prompt")
                 for text in _walk_tool_args(step.tool_args or {}):
                     _check_text(step, text, "tool_args")
+
+        # [workflow_mechanism_improvement_plan_p14.md Phase 1] merge_sources
+        # 引用一致性检查：与 condition/prompt 占位符是同一层判断（引用的
+        # step 是否存在/是否在 depends_on 范围内），只是校验对象换成了
+        # merge_sources 这个字面量 id 列表字段，不涉及占位符文本解析。
+        for step in self.steps:
+            if step.effective_type != "merge" or not step.merge_sources:
+                continue
+            ancestors = _transitive_deps(step.id)
+            for src_id in step.merge_sources:
+                if src_id not in seen_ids:
+                    errors.append(
+                        f"步骤 {step.id!r} 的 merge_sources 引用了不存在的步骤 {src_id!r}"
+                    )
+                elif check_placeholder_depends_on and src_id not in ancestors:
+                    errors.append(
+                        f"步骤 {step.id!r} 的 merge_sources 引用了步骤 {src_id!r}，"
+                        f"但未在 depends_on 中声明依赖（直接或传递）"
+                    )
 
         # [next_doc/workflow_python_step_and_zhihu_publish_plan.md §A1]
         # 保持 validate() 原有签名/返回值不变（仍只返回 errors，向后兼容

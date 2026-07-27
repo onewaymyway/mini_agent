@@ -39,6 +39,7 @@ class WorkflowWatchdog:
         poll_interval: float = 5.0,
         max_total_duration: Optional[float] = None,
         max_total_tokens: Optional[int] = None,
+        circuit_breaker_distinct_step_threshold: Optional[int] = None,
     ) -> None:
         self._paths = paths
         self._wf_id = workflow_session_id
@@ -65,6 +66,18 @@ class WorkflowWatchdog:
         # watchdog 主循环参与，达阈值时由 runner 侧直接短路重试循环。
         self._consecutive_failures: dict[str, tuple[str, int]] = {}
         self._failure_lock = threading.Lock()
+
+        # [workflow_mechanism_improvement_plan_p14.md Phase 2] 跨 step 熔断：
+        # error_type -> 曾经因该 error_type 失败过至少一次的 step_id 集合
+        # （本次运行全程累计，不做滑动窗口/不做失败后清零——即便某个 step
+        # 后来重试成功了，它"确实失败过一次"这个事实仍然计入，因为熔断
+        # 关心的是"这类问题在系统里出现的广度"，不是"当前还有多少 step
+        # 处于失败状态"）。复用 _failure_lock，同一把锁保护两类计数，避免
+        # 引入新的锁顺序风险。
+        self._circuit_breaker_threshold = circuit_breaker_distinct_step_threshold
+        self._error_type_step_ids: dict[str, set[str]] = {}
+        self._circuit_breaker_tripped = False
+        self._circuit_breaker_reason: Optional[str] = None
 
         self._stop_event = threading.Event()
         self._thread: Optional[threading.Thread] = None
@@ -130,6 +143,56 @@ class WorkflowWatchdog:
                 "count": count, "threshold": threshold,
             })
         return escalate
+
+    # ── [workflow_mechanism_improvement_plan_p14.md Phase 2] 跨 step 熔断 ────
+
+    @property
+    def circuit_breaker_tripped(self) -> bool:
+        with self._failure_lock:
+            return self._circuit_breaker_tripped
+
+    @property
+    def circuit_breaker_reason(self) -> Optional[str]:
+        with self._failure_lock:
+            return self._circuit_breaker_reason
+
+    def report_workflow_level_failure(self, step_id: str, error_type: str) -> bool:
+        """
+        记录一次"某个 step 因 error_type 失败"，用于跨 step 的系统性故障
+        识别。若启用了 circuit_breaker_distinct_step_threshold 且累计因
+        同一 error_type 失败过的**不同** step 数达到阈值，主动
+        request_cancel() 并把详情记进 watchdog.jsonl，返回 True（本次调用
+        触发了熔断）；未启用/未达阈值/已经触发过，返回 False。
+
+        与 report_attempt_failure（同一 step 连续同类失败）是两套独立
+        判断——那个管"这个 step 重试大概率没用"，这个管"这类错误在系统里
+        出现的广度已经超出单个 step 的偶发范围"。
+        """
+        if not self._circuit_breaker_threshold:
+            return False
+        with self._failure_lock:
+            if self._circuit_breaker_tripped:
+                return False
+            ids = self._error_type_step_ids.setdefault(error_type, set())
+            ids.add(step_id)
+            distinct_count = len(ids)
+            tripped = distinct_count >= max(1, self._circuit_breaker_threshold)
+            if tripped:
+                self._circuit_breaker_tripped = True
+                self._circuit_breaker_reason = (
+                    f"error_type={error_type!r} 已在 {distinct_count} 个不同步骤"
+                    f"（{sorted(ids)}）上失败，达到熔断阈值 "
+                    f"{self._circuit_breaker_threshold}，判定为系统性问题"
+                )
+        if tripped:
+            if not self._control.cancel_requested.is_set():
+                self._control.request_cancel()
+            self._log_event("circuit_breaker_tripped", {
+                "error_type": error_type,
+                "distinct_step_ids": sorted(ids),
+                "threshold": self._circuit_breaker_threshold,
+            })
+        return tripped
 
     # ── [P11 §6.4] 依赖声明与实际引用不一致 ──────────────────────────────────
 
