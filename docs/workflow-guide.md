@@ -638,6 +638,13 @@ Agent 调用 save_workflow(yaml_content=...)
   自己决定用什么工具），只有确定性很强的阶段才会生成 `tool_call`/`script`
   类型；生成结果里 `tool_name` 若不在已注册工具表里，会被自动降级为
   `type: agent`（prompt 约束是第一道防线，生成后校验降级是兜底）。
+- **`python_step` 优先改写**：如果某个阶段从历史 session 看是纯确定性加工
+  （解析/过滤/重排数据，或只是调用一次模型拿判断结果），即使原 session
+  里当时是靠主 Agent 临场执行的，生成 workflow 时也应该改写成
+  `type: python_step`（配合 `ctx.llm.ask_json`），而不是照抄原样生成
+  `type: agent`；只有阶段本身确实需要临场应变（工具选择、页面结构等运行时
+  才能确定）才保留 `agent`，见"`python_step`：脚本化 step"一节的优先级
+  规则。
 - 如果原 session 里某几个阶段的组合重复出现（比如对多个文件重复执行了
   同一套"打分→报告"），生成结果末尾会提示"这段可以存成可复用 step 片段"
   （见下文 `workflow_snippets`），需要用户确认后手动调用 `save_snippet`。
@@ -1226,6 +1233,12 @@ steps:
 | `skill_agent` | 独立主 Agent 实例执行，且强制预加载指定 skill（不走关键词触发判断） | `skill_name`（可选 `result_file`/`result_file_required_keys` 声明结构化结果契约，见下方专节） |
 | `python_step`（P11） | 在**独立子进程**里跑一段外置的 Python 脚本，不启动 Agent，适合"给定输入产出结构化 JSON"这类确定性数据加工，见下文"`python_step`：脚本化 step"一节 | `script_path`, `params` |
 
+> **选型优先级**：能用 `python_step` 解决的步骤（含需要调用一次
+> `ctx.llm`/`ctx.llm.ask_json` 做判断的场景）应优先用 `python_step`；
+> `agent`/`role_agent` 是确定性执行方式都无法覆盖时的兜底方案，不是默认
+> 选项。详见下文"`python_step`：脚本化 step"一节里的"优先级规则：
+> `python_step` 优先，`agent` 是兜底"。
+
 ```yaml
 - id: notify
   type: tool_call
@@ -1322,6 +1335,37 @@ step、4 个 prompt 文件、2 个 python_step 脚本），可以直接参考其
 ---
 
 ## `python_step`：脚本化 step（P11）
+
+### 优先级规则：`python_step` 优先，`agent` 是兜底
+
+**编写/生成/修改 workflow 时的强制性排序规则**：一个步骤的功能如果能用
+`python_step`（配合 `ctx.llm`/`ctx.llm.ask_json` 调用模型做判断性子任务）
+解决，就**应该优先用 `python_step`**，而不是直接写成 `agent`/`role_agent`/
+`skill_agent`。`agent` 系列（不带 `skill_name` 强制约束、允许模型自主决定
+调用哪些工具、自主决定要跑多少轮）是**其它方案都无法覆盖时才用的兜底
+方案**，不是默认选项。
+
+判断顺序建议：
+
+1. 这一步是纯确定性加工（解析/过滤/重排/校验上游 JSON，或调用一次
+   `ctx.llm.ask`/`ctx.llm.ask_json` 就能拿到结构化判断结果）→ `python_step`。
+   即使需要模型参与判断（比如"从 30 条里筛选符合要求的"），只要能把"要
+   模型做什么判断"讲清楚成一次或几次 `ask_json` 调用，也应该写成
+   `python_step`，而不是因为"要用到 LLM"就直接升级成 `agent`——
+   `ctx.llm`/`ctx.llm.ask_json` 本身就是 `python_step` 里调用模型的正规
+   方式，不是只有 `agent`/`skill_agent` 才能碰模型。
+2. 这一步需要模型在**明确边界内**多轮调用某个特定工具/技能完成一个有限
+   任务（比如按固定套路调用一个 skill）→ 优先 `skill_agent`（强制挂载单
+   一 skill，行为边界比 `agent` 更可控），而不是无约束的 `agent`。
+3. 只有当步骤确实需要**临场应变**——页面结构、外部状态、可用工具在运行
+   时才能确定，需要模型自主探索/试错/决定下一步动作（比如浏览器交互、
+   开放式调研、无法提前枚举的多轮工具调用）——才使用 `agent`/`role_agent`。
+   这是**其它方案（`python_step`/`tool_call`/`skill_agent`）都无法解决时
+   的兜底方案**，不应该是生成 workflow 时的默认选择。
+
+反过来也要注意：不要为了"图省事、不想开 `python_step_enabled` 开关"而把
+本该用 `python_step` 的确定性加工步骤硬写成 `agent`——那样既浪费 token/轮次
+预算，稳定性也更差（模型可能不按预期格式产出，还要靠下游脆弱解析兜底）。
 
 ### 何时用 `python_step` 而不是 `agent`/`skill_agent`
 

@@ -146,6 +146,27 @@ prompt/timeout"、"这个改动会不会影响后面的 step，先测一下"，�
 | `script` | 执行 shell 命令（默认关闭，需要显式开启配置项） |
 | `python_step` | 在独立子进程里跑一段外置 `.py` 脚本（`script_path`），不启动 Agent，适合"给定输入产出结构化 JSON"这类确定性数据加工（默认关闭，需要显式开启 `python_step_enabled`）。真正需要临场应变（如浏览器交互）的步骤仍应使用 `agent`/`skill_agent`，见下方"`python_step`：脚本外置与批量处理"一节 |
 
+### 选型强制规则：`python_step` 优先，`agent` 是兜底方案
+
+**每生成一个 step 前都要先过一遍这个判断，不是可选的风格偏好**：
+
+1. 这一步的功能能不能用 `python_step` + `ctx.llm`/`ctx.llm.ask_json` 解决
+   （确定性加工、或"给模型一段明确输入、要求它给出结构化判断"这类单次/
+   分批调用）？**能的话必须用 `python_step`**，即使这一步涉及"要不要收
+   录这条数据""打几分"这类看起来需要判断力的任务——只要能把判断要求写清楚
+   成一次 `ask_json` 调用，就不需要升级成 `agent`。
+2. 不能的话，这一步是否可以约束在"强制挂载单一 skill、按固定套路多轮
+   调用"的范围内？可以的话用 `skill_agent`，不要用无约束的 `agent`。
+3. 只有步骤确实需要临场应变（工具选择、页面结构、下一步动作都要运行时
+   才能确定，比如真实浏览器交互、开放式调研）时，才生成 `type: agent`/
+   `role_agent`——**`agent` 是前两种方案都覆盖不了时才用的兜底选项**，
+   不是"不确定用什么类型就先写 agent"的默认落点。
+
+生成 workflow 时如果发现自己因为"图省事、不想让用户额外去开
+`python_step_enabled` 开关"而把一个本该是 `python_step` 的确定性加工步骤
+写成了 `agent`，这是错误的取舍——应该按规则生成 `python_step`，并在结果里
+提示用户开启开关，而不是为了"少一步配置"牺牲步骤的确定性和稳定性。
+
 ### `skill_agent`（或需要结构化产出的 `agent`/`role_agent`）：务必配 `result_file`
 
 `skill_agent` 的产出是一段自由文本对话，如果下游是 `python_step`（或任何
@@ -372,9 +393,13 @@ steps:
 
 1. **确认需求**，向用户澄清（不确定就问，不要瞎猜）：
    - 这个流水线要完成什么目标，分成几个逻辑阶段
-   - 每个阶段该由谁执行：主 Agent（`agent`）？固定角色（`role_agent`，是否要
-     用工作流私有 agent）？某个特定技能（`skill_agent`，是否要用工作流私有
-     skill）？纯工具调用（`tool_call`）？还是某个插件注册的自定义类型？
+   - 每个阶段该由谁执行：按"选型强制规则"（见上文）先判断能不能用
+     `python_step`（配合 `ctx.llm`/`ctx.llm.ask_json`）解决；不能的话再看
+     能不能约束成 `skill_agent`（固定挂载某个技能，是否要用工作流私有
+     skill）；纯确定性操作用 `tool_call`；只有确实需要临场应变（工具选择/
+     页面结构等运行时才能确定）才落到 `agent`（是否要用工作流私有 agent，
+     即 `role_agent`）——`agent`/`role_agent` 是兜底选项，不是默认答案；
+     还可能是某个插件注册的自定义类型
    - 阶段之间的依赖关系（`depends_on`）、是否有需要人工确认的关卡
      （`human_input`/`require_approval`）、是否有质检门（`role_type: evaluator`
      + `condition: "xxx.score >= N"`）
@@ -410,6 +435,9 @@ steps:
    拓扑结构；多个 step 共享的非默认配置提到顶层 `defaults`，明确要复用的
    step 组合用 `include` 引用。
 9. **自检**（写完后必须做，不要跳过）：
+   - **逐个检查 `agent`/`role_agent` 类型的 step**：能不能改写成
+     `python_step`（配合 `ctx.llm.ask_json`）或收紧成 `skill_agent`？改不了
+     的话明确这是"需要临场应变"（见"选型强制规则"），不是图省事的默认写法
    - 每个 `id` 唯一、`depends_on` 引用的 id 都存在（`include` 条目的 `id`
      算作其它 step 引用它的入口 id，不需要等于片段内部任何一个 id）
    - `prompt`/`prompt_file`/`include` 三选一至少有一个非空（`human_input`
@@ -468,6 +496,12 @@ steps:
 
 ## 常见坑
 
+- **默认写 `type: agent` 是最常见的错误取舍**：只要一个阶段的描述看起来是
+  "解析/过滤/打分/重排结构化数据"，先假设它应该是 `python_step`，而不是
+  因为不确定就顺手落到 `agent`；生成完之后回头检查一遍 `steps` 里的
+  `agent`/`role_agent`，每一个都应该能说清楚"为什么这一步不能用
+  `python_step`/`skill_agent`"（见上文"选型强制规则"），说不清楚就是生成
+  错了，应该改写。
 - **`prompt_file` 路径是相对 workflow 目录的相对路径**（如 `prompts/analyze.md`），
   不是相对项目根目录，也不要写成绝对路径。
 - **`prompt` 和 `prompt_file` 都填时 `prompt_file` 优先**——文件夹模式下如果

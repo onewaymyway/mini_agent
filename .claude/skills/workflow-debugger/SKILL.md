@@ -27,6 +27,7 @@ triggers: workflow调试, workflow失败, workflow测试, 重跑, 断点续跑, 
 | "这一步到底实际收到了什么 prompt/子进程打印了什么/是不是真并发跑的" | 开启 `debug_log_enabled` 后看 `get_workflow_run_status(verbose=true)` 摘要，或 `/workflow debug <run_id> <step_id>` 看完整 `debug_log`（见下文"运行时调试日志"） | 凭 `inputs`+上游输出在脑子里重算一遍占位符替换 |
 | "正在跑，想先停一下 / 不想跑了" | `pause_workflow_run` / `cancel_workflow_run` | 干等或杀进程 |
 | "有个 human_input/审批门卡着" | `provide_workflow_step_input` / `approve_workflow_step` / `reject_workflow_step` | 让用户去改 workflow 定义绕过它 |
+| "这个 `agent`/`skill_agent` step 老是不稳定/产出格式不对/偶尔跑偏" | 先判断这一步是不是本该是 `python_step`（见下文"用选型规则诊断不稳定的 agent 类型 step"），是的话 `patch_workflow_step` 把 `type` 改成 `python_step` 并配 `script_path` | 一味调大 `retry_on_error`/`max_turns` 掩盖问题 |
 
 ## 排查一次失败执行的标准流程
 
@@ -92,6 +93,54 @@ triggers: workflow调试, workflow失败, workflow测试, 重跑, 断点续跑, 
    跑未完成的部分"，语义不同，改完定义后要修某一步通常需要显式传
    `force_rerun_from`，否则如果该 step 之前状态不是"未完成"可能不会被
    重新纳入执行计划。
+
+## 用选型规则诊断不稳定的 `agent`/`skill_agent` step：能不能改成 `python_step`
+
+workflow-generator skill 里的强制排序是：能用 `python_step`（配合
+`ctx.llm`/`ctx.llm.ask_json`）解决的步骤应该优先用 `python_step`，
+`agent`/`role_agent` 是其它方案都覆盖不了时才用的兜底方案（`skill_agent`
+介于两者之间）。调试时凡是遇到下面这几类症状，第一反应不应该是调大
+`retry_on_error`/`max_turns`/`timeout`，而应该先判断这一步是不是当初生成
+时选型选错了、本该是 `python_step`：
+
+- **产出格式不稳定**：这一步要的是结构化结果（下游 `python_step` 消费的
+  JSON），但 `agent`/`skill_agent` 没配 `result_file`，靠对话原文解析，
+  时好时坏——如果这一步本身是"给定输入、按固定规则产出判断"（没有真正的
+  临场应变需求），正确修法不是补 `result_file`，而是直接改成
+  `python_step` + `ctx.llm.ask_json`，从根上消除"模型要不要按格式说话"这个
+  不确定性。
+- **同一类失败反复出现、被 `escalate_after_n_same_failures` 升级成
+  `needs_fix`**：先用 `get_workflow_run_status(verbose=true)` 看错误内容，
+  如果是"模型输出解析失败"“漏判/多判”这类而不是外部依赖报错，大概率是
+  选型问题而不是 prompt 措辞问题。
+- **`get_workflow_stats(name)` 里某个 `agent`/`skill_agent` step 的平均
+  重试次数/失败率明显偏高，且它的职责描述读起来像"过滤/打分/重排/解析"**：
+  这是选型错误的强信号。
+
+**诊断步骤**：
+
+1. `show_workflow(name)` 看这一步当前的 `prompt`/`prompt_file`，判断它是不是
+   纯粹在要求模型"读取一段结构化输入、按规则给出结构化判断"——如果 prompt
+   里完全没有要求模型自主决定调用哪些工具/自主探索下一步该干嘛，这是可以
+   转成 `python_step` 的强信号。
+2. 确认转换后仍能满足需求：`python_step` 脚本里用 `ctx.llm.ask_json()`
+   把原来 prompt 的判断要求原样喂给模型，`ctx.inputs`/`ctx.input_json()`
+   替代原来的 `{step_id.output}` 占位符读取上游数据。
+3. 写好 `steps/<step_id>.py`（暴露 `def run(ctx) -> str|dict`），用
+   `test_workflow_step` 沙箱验证新脚本产出是否符合下游预期（沙箱同样会
+   真实拉起子进程、真实调用 LLM，见下文"沙箱测试 `python_step`"一节）。
+4. 验证通过后 `patch_workflow_step(name, step_id, patch='{"type": '
+   '"python_step", "script_path": "steps/xx.py"}')`——同时清掉这一步不再
+   需要的 `agent` 专属字段（比如 `skill_name`/`max_turns`），`patch` 只需要
+   传变化的字段，多余的旧字段留着通常不影响校验，但会造成阅读混淆，建议
+   一并清理。
+5. 提醒用户确认 `agent_config.json` 里 `python_step_enabled` 已开启，否则
+   转换后这一步会被直接拦截，反而制造新的失败。
+
+**什么时候不该转换**：如果这一步的失败原因明确是"需要临场应变"（比如
+浏览器页面结构变了、需要根据中间结果动态决定下一步调用哪个工具），说明
+选型本身没错，应该按原有的 `skill_agent`/`result_file` 排查路径处理（见
+下一节），硬转成 `python_step` 只会让这类步骤更脆弱。
 
 ## `skill_agent` 步骤失败或"文件已生成但迟迟不结束"：先看 `result_file` 契约
 
@@ -175,6 +224,10 @@ resume_workflow_run(
 
 ## 常见坑
 
+- **调大 `retry_on_error`/`max_turns` 不是万能修法**：如果失败原因是"这一步
+  本该是 `python_step` 却生成成了 `agent`/`skill_agent`"，调重试次数只会
+  多花 token、不会提升成功率，见上文"用选型规则诊断不稳定的 agent 类型
+  step"，先判断选型对不对，再决定要不要调参数。
 - **`needs_fix` 状态重跑没有用**：这是设计上的"保存期/运行期区分"——
   结构性错误（占位符写错、`tool_name` 不存在等）无论重试多少次结果都一样，
   runner 会直接跳过 `retry_on_error` 预算改判 `needs_fix`。看到这个状态
