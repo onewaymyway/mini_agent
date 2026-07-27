@@ -292,6 +292,13 @@ class ScriptStepExecutor(StepExecutor):
     来自 LLM 生成或他人分享，把"执行任意 shell 命令"设为默认开启会引入
     明显的供应链风险；需要显式在 agent_config.json 里打开开关才能使用。
     超时优先取 step.timeout，否则取 cfg.workflow.script_step_timeout_seconds。
+
+    [workflow_mechanism_improvement_plan_p15.md] structured 模式：声明了
+    step.result_file 时，通过环境变量 WORKFLOW_RESULT_FILE_PATH 把目标
+    绝对路径告知子进程，脚本自行把结构化结果写成合法 JSON 落到该路径；
+    执行完成后复用 skill_agent 同款 runner._validate_result_file() 校验，
+    校验不通过即使 returncode==0 也判定整个 step 失败。未声明 result_file
+    时行为完全不变（stdout 即结果），向后兼容所有既有 script step。
     """
 
     def execute(self, runner: "WorkflowRunner", step: WorkflowStep, prompt: str) -> str:
@@ -328,6 +335,14 @@ class ScriptStepExecutor(StepExecutor):
         else:
             # Unix: use start_new_session for proper process group handling
             _popen_kwargs["start_new_session"] = True
+
+        # [P15] structured 模式：声明了 result_file 时，把目标绝对路径通过
+        # 环境变量注入子进程（script 是裸 shell 命令，没有 python_step 那样
+        # 的 stdin JSON 协议，环境变量是最轻量、不需要改调用约定的通道）。
+        result_path = runner.resolve_result_file_path(step) if step.result_file else None
+        if result_path is not None:
+            _popen_kwargs["env"] = {**os.environ, "WORKFLOW_RESULT_FILE_PATH": str(result_path)}
+
         proc = subprocess.run(step.script, **_popen_kwargs)
         # [P11 §6] 无论成功/失败都把 stdout/stderr 挂到 runner 实例属性上，
         # 供 _execute_step 合并进 StepResult.debug_log——之前只有失败时
@@ -341,6 +356,21 @@ class ScriptStepExecutor(StepExecutor):
                 f"脚本执行失败（returncode={proc.returncode}）：\n"
                 f"stdout: {proc.stdout}\nstderr: {proc.stderr}"
             )
+
+        # [P15] structured 模式校验：returncode==0 只说明脚本自身判定的
+        # "成功"，声明了 result_file 时还需要文件真的存在且是合法 JSON
+        # （含可选的 result_file_required_keys 顶层字段检查），否则即使
+        # returncode==0 也判定整个 step 失败，交给外层既有 retry_on_error/
+        # NEEDS_FIX 机制处理（script 是一次性子进程，没有可 resume 的会话
+        # 上下文，重跑整个 step 是唯一合理的重试形态，不做 skill_agent 那种
+        # "resume 同一个 agent 补写文件"的重试）。
+        if step.result_file:
+            ok, reason = runner._validate_result_file(step)
+            if not ok:
+                raise RuntimeError(
+                    f"步骤 {step.id!r}（script）声明了 result_file 但校验未通过："
+                    f"{reason}\nstdout: {proc.stdout}\nstderr: {proc.stderr}"
+                )
         return proc.stdout
 
 

@@ -210,13 +210,18 @@ class WorkflowStep:
     # 输出落盘契约：step 执行完成后，runner 统一把 StepResult.output 写一份
     # 到 session.output_dir / output_file，不依赖 agent/脚本自己拼路径。
     output_file: Optional[str] = None
-    # [skill_agent 结果文件契约] skill_agent 专用：期望该步骤内部的子 agent
-    # 主动用文件工具写出的结构化结果文件名（相对本次 workflow session 的
-    # output/ 目录）。与 output_file 的区别：output_file 是 runner 事后把
-    # agent 最后一轮的对话原文转录落盘（不保证是合法 JSON）；result_file
-    # 则要求 agent 在执行过程中亲手创建这个文件，runner 会在 agent 跑完后
-    # 校验文件是否存在、内容是否为合法 JSON，校验失败会触发 resume 重试
-    # （见 executors.py::SkillAgentStepExecutor）。
+    # [skill_agent 结果文件契约；workflow_mechanism_improvement_plan_p15.md
+    # 起 script 类型通用] 期望该步骤主动产出的结构化结果文件名（相对本次
+    # workflow session 的 output/ 目录）。与 output_file 的区别：
+    # output_file 是 runner 事后把执行产物原文转录落盘（不保证是合法
+    # JSON）；result_file 则要求执行方在过程中亲手创建这个文件，runner 会
+    # 在执行完成后校验文件是否存在、内容是否为合法 JSON。不同 step 类型
+    # 让执行方知道目标路径的方式不同：skill_agent 是在 prompt 里注入路径
+    # 文字给子 agent 看（校验失败会触发 resume 重试，见
+    # executors.py::SkillAgentStepExecutor）；script 是通过环境变量
+    # WORKFLOW_RESULT_FILE_PATH 注入给子进程（校验失败直接判定整个 step
+    # 失败，交给外层 retry_on_error 重跑，见
+    # executors.py::ScriptStepExecutor）。
     result_file: Optional[str] = None
     # result_file 校验时可选要求的顶层必填字段列表（比如 ["questions"]），
     # 避免"文件存在且是合法JSON，但结构文不对题"被误判为成功。
