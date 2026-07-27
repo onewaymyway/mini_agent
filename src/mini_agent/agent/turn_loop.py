@@ -232,6 +232,11 @@ class TurnLoopMixin:
                             self._cached_system = None
                             self.compact_with_skills()
                             self._cached_system = None
+                            # [SYS-HARD-LOOP] compact 成功后重置硬循环计数：
+                            # compact 释放了上下文空间，相当于给了一次"重新计数"的
+                            # 机会，避免 compact 之后仍然背着 compact 之前积累的
+                            # _hard_loop_count 走向熔断。
+                            _hard_loop_count = 0
                         except Exception as _mini_agent_exc:
                             from mini_agent.errors import log_exception
                             log_exception(_mini_agent_exc, where='mini_agent.agent.turn_loop.TurnLoopMixin._agentic_loop')
@@ -456,6 +461,9 @@ class TurnLoopMixin:
                         # compact 完成后重置 cached_system，强制用新历史重建 system prompt
                         self._cached_system = None
                         _auto_compact_done = True
+                        # [SYS-HARD-LOOP] 与 max-turns 触发的 compact 一致：
+                        # token 超限触发的自动压缩同样应该重置硬循环计数。
+                        _hard_loop_count = 0
                         # 继续内层 while，用压缩后的历史重新调用 LLM
                     except Exception as _compact_exc:
                         R.print_error(f"[auto-compact] 压缩失败: {_compact_exc}")
