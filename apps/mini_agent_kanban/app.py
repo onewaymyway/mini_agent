@@ -162,7 +162,10 @@ WORKFLOW_STEP_COLUMNS = [
     ("⚪ 未开始", ("pending",)),
     ("🟠 进行中", ("running",)),
     ("✅ 已完成", ("done", "skipped")),
-    ("🔴 需要关注", ("gate_failed", "failed")),
+    # needs_fix：workflow_mechanism_improvement_proposal.md §4.3 新增状态，
+    # 表示"结构性/配置错误，重试无效"，与瞬时失败（failed/gate_failed）
+    # 一起归入"需要关注"列，卡片上会额外提示"这是定义问题，请先修改"。
+    ("🔴 需要关注", ("gate_failed", "failed", "needs_fix")),
     ("🟣 等待审批", ("awaiting_approval",)),
 ]
 
@@ -2124,8 +2127,23 @@ def _render_workflow_run_panel(client: AgentClient):
     else:
         st.caption("该工作流没有需要用户填写的 {param} 占位符。")
 
+    if "mode: autonomous" in yaml_text:
+        st.caption("🤖 该工作流声明为 `autonomous` 模式：不含需要人工介入的步骤，可放心全自动跑完。")
+
     with st.expander("查看 YAML 定义"):
         st.code(yaml_text, language="yaml")
+
+    with st.expander("⚙️ 运行选项（可控性护栏）"):
+        oc1, oc2 = st.columns(2)
+        force_serial = oc1.checkbox(
+            "强制全部串行", key=f"wf_force_serial_{selected}",
+            help="忽略并行分批，本次运行退化为单线程顺序执行，适合调试/临时资源受限场景，不改 YAML。",
+        )
+        require_all_inputs_upfront = oc2.checkbox(
+            "要求输入一次性给全（拒绝中途阻塞）", key=f"wf_require_all_inputs_{selected}",
+            help="开启后，凡是 human_input 步骤没有对应 input_key/未能从上面参数解析到值，"
+                 "启动前直接报错，不会等到运行中途才卡住。",
+        )
 
     c1, c2 = st.columns([1, 1])
     if c1.button("🔍 预览执行计划", key="wf_preview_btn"):
@@ -2136,7 +2154,11 @@ def _render_workflow_run_panel(client: AgentClient):
             st.json(preview, expanded=True)
 
     if c2.button("🚀 运行", key="wf_run_btn", type="primary"):
-        res = client.run_workflow(selected, inputs, background=True)
+        res = client.run_workflow(
+            selected, inputs, background=True,
+            force_serial=force_serial or None,
+            require_all_inputs_upfront=require_all_inputs_upfront,
+        )
         if res and "_error" in res:
             st.error(res["_error"])
         else:
@@ -2151,6 +2173,8 @@ def _render_workflow_step_card(client: AgentClient, run_id: str, step_id: str, s
     meta = f"{duration:.1f}s"
     if score is not None:
         meta += f"　评分 {score}"
+    if status == "needs_fix":
+        meta += "　⚠️ 定义问题，重跑无效"
     st.markdown(f"""
 <div class="kanban-card">
   <div class="title">{step_id}</div>
@@ -2163,8 +2187,47 @@ def _render_workflow_step_card(client: AgentClient, run_id: str, step_id: str, s
         if len(output) > 200:
             preview_text += "..."
         st.caption(preview_text)
-    if status == "failed" and sr.get("error"):
-        st.caption(f"❌ {sr['error']}")
+    # [workflow_mechanism_improvement_proposal.md §4.1] 出错信息不再只在 failed
+    # 时展示——gate_failed/needs_fix 同样需要错误原因才能决定下一步动作。
+    if status in ("failed", "gate_failed", "needs_fix") and sr.get("error"):
+        error_type = sr.get("error_type")
+        prefix = f"{error_type}: " if error_type else ""
+        st.caption(f"❌ {prefix}{sr['error']}")
+
+    # [§4.2] 结构性错误（needs_fix）或普通失败，都可以直接在卡片上改 step 定义，
+    # 不用回到主 Agent 对话里贴 patch_workflow_step 的 JSON。
+    if status in ("failed", "needs_fix", "gate_failed"):
+        workflow_name = st.session_state.get("wf_selected_name") or ""
+        with st.expander("🛠️ 修改此步骤定义并续跑"):
+            wf_name_input = st.text_input(
+                "所属工作流名称", value=workflow_name, key=f"wf_patch_wfname_{run_id}_{step_id}",
+                help="需要与该 run 对应的工作流名称一致，才能改到正确的定义文件。",
+            )
+            new_prompt = st.text_area(
+                "新的 prompt（留空则不改）", key=f"wf_patch_prompt_{run_id}_{step_id}", height=100,
+            )
+            new_timeout = st.number_input(
+                "新的 timeout 秒数（0=不改）", min_value=0, value=0, step=10,
+                key=f"wf_patch_timeout_{run_id}_{step_id}",
+            )
+            if st.button("保存修改并从此步骤续跑", key=f"wf_patch_btn_{run_id}_{step_id}"):
+                patch = {}
+                if new_prompt.strip():
+                    patch["prompt"] = new_prompt
+                if new_timeout:
+                    patch["timeout"] = int(new_timeout)
+                if not patch:
+                    st.warning("没有填写任何要修改的字段。")
+                elif not wf_name_input:
+                    st.warning("请先填写工作流名称。")
+                else:
+                    res = client.patch_workflow_step(wf_name_input, step_id, patch)
+                    if res and "_error" in res:
+                        st.error(res["_error"])
+                    else:
+                        client.resume_workflow_run(run_id, background=True, force_rerun_from=step_id)
+                        st.success("已保存修改，正在从此步骤续跑…")
+                        st.rerun()
 
     if status == "awaiting_approval":
         reason_key = f"wf_reject_reason_{run_id}_{step_id}"

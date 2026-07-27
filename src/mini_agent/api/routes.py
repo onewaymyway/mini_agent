@@ -2849,6 +2849,27 @@ async def get_workflow_yaml_route(name: str, request: Request):
     return {"name": name, "yaml": yaml_str}
 
 
+@router.post("/workflows/{name}/steps/{step_id}/patch")
+async def patch_workflow_step_route(name: str, step_id: str, request: Request):
+    """
+    POST /v1/workflows/{name}/steps/{step_id}/patch — 单步编辑（改进方案 §4.2）。
+    Body: {"patch": {"prompt": "...", "timeout": 120, ...}}
+    只修改已保存工作流定义里某个 step 的部分字段，不用重贴整份 YAML；
+    改动落盘到工作流本体，后续所有执行都受益。配合
+    `resume_workflow_run(force_rerun_from=step_id)` 使用可以只重跑这一步及下游。
+    """
+    cfg = _workflow_cfg(request)
+    _require_owner(request)
+    from mini_agent.workflow import api_helpers
+    body = await request.json() if await request.body() else {}
+    patch_dict = body.get("patch") or {}
+    try:
+        outcome = api_helpers.patch_workflow_step(cfg, name, step_id, patch_dict)
+    except api_helpers.WorkflowApiError as e:
+        raise _workflow_api_error_to_http(e)
+    return {"patched": True, "step_id": step_id, **outcome}
+
+
 @router.post("/workflows/{name}/preview")
 async def preview_workflow_route(name: str, request: Request):
     """
@@ -2893,9 +2914,15 @@ async def run_workflow_route(name: str, request: Request):
     body = await request.json() if await request.body() else {}
     inputs = body.get("inputs") or {}
     background = body.get("background")
+    force_serial = body.get("force_serial")
+    require_all_inputs_upfront = bool(body.get("require_all_inputs_upfront") or False)
 
     try:
-        outcome = api_helpers.start_workflow_run(cfg, name, inputs, background)
+        outcome = api_helpers.start_workflow_run(
+            cfg, name, inputs, background,
+            force_serial=force_serial,
+            require_all_inputs_upfront=require_all_inputs_upfront,
+        )
     except api_helpers.WorkflowApiError as e:
         raise _workflow_api_error_to_http(e)
 

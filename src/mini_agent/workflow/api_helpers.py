@@ -48,6 +48,47 @@ def list_workflows(cfg: "AppConfig") -> list[dict]:
     return load_store(cfg).list_all()
 
 
+def patch_workflow_step(cfg: "AppConfig", name: str, step_id: str, patch_dict: dict) -> dict:
+    """[workflow_mechanism_improvement_proposal.md §4.2] 单步编辑的纯函数版本。
+
+    与 `tools.py::patch_workflow_step` 是同一段逻辑的"提取复用"（本函数落地后
+    tools.py 改为调用本函数），供 REST 层（看板"✏️ 修改此步骤定义"入口）
+    复用，不重新实现一遍字段校验/保存逻辑。
+
+    返回 {"changed": [...], "path": str}；失败时抛 WorkflowApiError。
+    """
+    from mini_agent.workflow.store import WorkflowStore
+
+    store = WorkflowStore(Path(cfg.project_root))
+    wf = store.load(name)
+    if wf is None:
+        raise WorkflowApiError("not_found", f"找不到工作流 {name!r}")
+
+    target = next((s for s in wf.steps if s.id == step_id), None)
+    if target is None:
+        raise WorkflowApiError("not_found", f"工作流 {name!r} 中不存在 step_id={step_id!r}")
+
+    unknown_fields = [k for k in patch_dict if not hasattr(target, k)]
+    if unknown_fields:
+        raise WorkflowApiError("invalid_patch", f"patch 中包含未知字段：{unknown_fields}")
+
+    changed = []
+    for k, v in patch_dict.items():
+        setattr(target, k, v)
+        changed.append(k)
+
+    errors = wf.validate()
+    if errors:
+        raise WorkflowApiError("validation_failed", "修改后的工作流定义校验失败，未保存：\n" + "\n".join(f"- {e}" for e in errors))
+
+    try:
+        path = store.save(wf, cfg=cfg)
+    except ValueError as e:
+        raise WorkflowApiError("save_failed", f"保存失败：{e}")
+
+    return {"changed": changed, "path": str(path)}
+
+
 def get_workflow_yaml(cfg: "AppConfig", name: str) -> str:
     """对应 show_workflow 工具。找不到抛 WorkflowApiError(code='not_found')。"""
     yaml_str = load_store(cfg).export_yaml(name)

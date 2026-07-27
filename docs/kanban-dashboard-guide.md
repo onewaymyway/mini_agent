@@ -86,6 +86,7 @@ streamlit run app.py
 | 💬 对话 | 聊天、历史消息、事件流、发送/中断 |
 | 🗂️ 会话管理 | 会话列表、新建 / 恢复 / 删除会话 |
 | 📌 目标看板 | Goal / Objective 看板（按状态分列）、新建目标、Cron Job 管理与手动触发、Objective 执行进度 |
+| 🔄 工作流 | Workflow 运行面板、看板视图（按 Step 状态分列）、暂停/取消/续跑/审批、出错定位与单步修改重跑、历史执行列表 |
 | 📁 产出物 | 浏览 `.agent/` 等目录下产出文件，预览与下载 |
 | 🖼️ 产出预览 | 按任务/session 登记的产出物 manifest 语义化展示（图片内联、文档下载），支持深链接直达 |
 | 🧠 自我状态 | 具身智能自省信息（自主循环摘要、活跃目标数、最近活动、多用户会话池 SessionPool 概况） |
@@ -138,6 +139,34 @@ Web Demo 的事件流面板类似，但集成在同一多 Tab 界面中。
 Objective 背后的调度机制；`docs/decision-profile-guide.md` 了解决策画像的归纳与
 矛盾处理逻辑。
 
+### 🔄 工作流 Tab
+
+对接 `src/mini_agent/workflow/`（`workflow_mechanism_improvement_plan.md` P7 +
+`workflow_mechanism_improvement_proposal.md` 最新一轮改进）的完整控制面：
+
+- **运行面板**：下拉选择已保存工作流，自动扫描 YAML 里的 `{param}` 占位符生成
+  输入表单；若 YAML 声明 `mode: autonomous`（全自动、不含需要人工介入的
+  step），面板会有提示。「🔍 预览执行计划」做零成本 dry-run（并发分批 +
+  占位符替换展示，不实际调用任何 Agent）；「⚙️ 运行选项」里可以打开
+  **强制全部串行**（本次运行忽略并行分批，调试用，不改 YAML）和
+  **要求输入一次性给全**（`require_all_inputs_upfront`，开启后凡是
+  `human_input` 步骤没有对应输入，启动前直接报错，不会等运行中途才卡住）。
+- **看板视图**：`StepStatus` 归并为 5 栏——未开始 / 进行中 / 已完成 /
+  需要关注（`gate_failed` / `failed` / `needs_fix`）/ 等待审批。每张卡片展示
+  耗时、评分（有的话）、输出预览；`needs_fix`（结构性/配置错误，重试无效）
+  的卡片会额外标注"重跑无效"。
+  - 出错的卡片（`failed` / `gate_failed` / `needs_fix`）会展示具体错误原因
+    （`error_type` + `error`），并提供**「🛠️ 修改此步骤定义并续跑」**——直接
+    在看板上改 `prompt`/`timeout` 等字段并保存（对应 `patch_workflow_step`），
+    保存后自动从该 step 触发续跑（`force_rerun_from`），不用回到对话里手写
+    JSON patch。
+  - `awaiting_approval` 卡片提供「✅ 批准」/「❌ 拒绝」按钮。
+  - `done` 卡片可展开「✏️ 编辑此步骤输出并续跑」——人工改写某一步的产出，
+    下游 step 按新结果重新执行。
+  - 顶部工具条：⏸️ 暂停 / 🛑 取消 / ▶️ 续跑；运行中每 2 秒局部刷新
+    （`st.fragment`），跑完自动停止刷新。
+- **历史执行列表**：折叠区展示所有历史执行记录，点击可切换到上方详情视图。
+
 ### 🖼️ 产出预览 Tab
 
 与 📁 产出物 Tab（按目录遍历文件系统）不同，本 Tab 消费的是**产出物 Manifest**——
@@ -184,6 +213,13 @@ Objective 背后的调度机制；`docs/decision-profile-guide.md` 了解决策�
 | `cancel_objective()` / `retry_objective()` / `inject_objective_guidance()` | `/v1/objectives/{execution_id}/*` | Objective 执行操作：终止 / 手动重试当前步 / 插话（Track D） |
 | `inbox()` | `GET /v1/inbox` | 全局待办中心：跨 session 聚合权限/交互请求 + 失败 Objective（Track A） |
 | `cron_jobs()` / `add_cron_job()` / `update_cron_job()` / `run_cron_job_now()` | `/v1/cron*` | Cron Job 管理 |
+| `workflows()` / `workflow_yaml()` / `preview_workflow()` | `GET /v1/workflows*`、`POST .../preview` | 工作流列表 / YAML 定义 / dry-run 预览 |
+| `run_workflow(force_serial=, require_all_inputs_upfront=)` | `POST /v1/workflows/{name}/run` | 启动执行，支持强制串行 / 要求输入一次性给全两个护栏开关 |
+| `patch_workflow_step()` | `POST /v1/workflows/{name}/steps/{step_id}/patch` | 单步编辑工作流定义（不用重贴整份 YAML），落盘后对后续所有执行生效 |
+| `workflow_runs()` / `workflow_run_detail()` / `workflow_run_events()` | `GET /v1/workflow_runs*` | 执行记录列表 / 单次详情 / 事件增量拉取 |
+| `pause_workflow_run()` / `cancel_workflow_run()` / `resume_workflow_run(force_rerun_from=)` | `POST /v1/workflow_runs/{id}/{pause\|cancel\|resume}` | 暂停 / 取消 / 续跑（`force_rerun_from` 配合单步编辑做定点重跑） |
+| `approve_workflow_step()` / `reject_workflow_step()` / `provide_workflow_input()` | `POST /v1/workflow_runs/{id}/{approve\|reject\|input}` | 审批门 / 人工输入 |
+| `override_workflow_step_output()` | `POST /v1/workflow_runs/{id}/steps/{step_id}/override` | 人工改写已完成 step 的输出 |
 | `fs_list()` / `fs_read()` / `fs_download_url()` | `/v1/fs/*` | 产出物浏览与下载 |
 | `list_artifacts()` / `get_artifact()` / `artifact_file_url()` | `/v1/artifacts*` | 产出物 Manifest 列表、详情、文件预览/下载 |
 | `daily_digest()` | `GET /v1/digest/daily` | 每日融合日报（只读，不触发生成） |

@@ -206,43 +206,21 @@ def register_workflow_tools(cfg: "AppConfig") -> None:
                保持不变。
         """
         import json as _json
-        from mini_agent.workflow.store import WorkflowStore
-
-        store = WorkflowStore(Path(store_path))
-        wf = store.load(name)
-        if wf is None:
-            return f"❌ 找不到工作流 {name!r}"
+        from mini_agent.workflow import api_helpers
 
         try:
             patch_dict = _json.loads(patch) if patch.strip() else {}
         except json.JSONDecodeError as e:
             return f"❌ patch 参数不是合法 JSON：{e}"
 
-        target = next((s for s in wf.steps if s.id == step_id), None)
-        if target is None:
-            return f"❌ 工作流 {name!r} 中不存在 step_id={step_id!r}"
-
-        unknown_fields = [k for k in patch_dict if not hasattr(target, k)]
-        if unknown_fields:
-            return f"❌ patch 中包含未知字段：{unknown_fields}"
-
-        changed = []
-        for k, v in patch_dict.items():
-            setattr(target, k, v)
-            changed.append(k)
-
-        errors = wf.validate()
-        if errors:
-            return "❌ 修改后的工作流定义校验失败，未保存：\n" + "\n".join(f"- {e}" for e in errors)
-
         try:
-            path = store.save(wf, cfg=cfg)
-        except ValueError as e:
-            return f"❌ 保存失败：{e}"
+            outcome = api_helpers.patch_workflow_step(cfg, name, step_id, patch_dict)
+        except api_helpers.WorkflowApiError as e:
+            return f"❌ {e.message}"
 
         return (
-            f"✅ 工作流 **{name}** 的步骤 `{step_id}` 已更新字段：{changed}\n"
-            f"已保存到 `{path}`\n"
+            f"✅ 工作流 **{name}** 的步骤 `{step_id}` 已更新字段：{outcome['changed']}\n"
+            f"已保存到 `{outcome['path']}`\n"
             f"若之前有失败的执行，可用 `resume_workflow_run(workflow_session_id=..., "
             f"force_rerun_from=\"{step_id}\")` 只重跑这一步及下游。"
         )

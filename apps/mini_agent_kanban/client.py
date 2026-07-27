@@ -292,10 +292,19 @@ class AgentClient:
     def preview_workflow(self, name: str, inputs: dict = None):
         return self._post(f"/workflows/{name}/preview", {"inputs": inputs or {}})
 
-    def run_workflow(self, name: str, inputs: dict = None, background: bool = True):
-        return self._post(f"/workflows/{name}/run", {
-            "inputs": inputs or {}, "background": background,
-        })
+    def run_workflow(self, name: str, inputs: dict = None, background: bool = True,
+                      force_serial: bool = None, require_all_inputs_upfront: bool = False):
+        body = {"inputs": inputs or {}, "background": background}
+        if force_serial is not None:
+            body["force_serial"] = force_serial
+        if require_all_inputs_upfront:
+            body["require_all_inputs_upfront"] = True
+        return self._post(f"/workflows/{name}/run", body)
+
+    def patch_workflow_step(self, name: str, step_id: str, patch: dict):
+        """[workflow_mechanism_improvement_proposal.md §4.2] 单步编辑：只改某个
+        step 的部分字段（prompt/timeout/model/...），不用重贴整份 YAML。"""
+        return self._post(f"/workflows/{name}/steps/{step_id}/patch", {"patch": patch or {}})
 
     def workflow_runs(self, name: str = None):
         params = {"name": name} if name else None
