@@ -100,6 +100,7 @@ resources:
 | `baidu-search` / `bing-search` | 对应搜索引擎自动化脚本完整文档 |
 | `zhihu-search` / `zhihu-hot` | 知乎内容搜索 / 热榜抓取脚本完整文档 |
 | `zhihu-column-search` | 知乎专栏文章批量搜索与抓取脚本完整文档 |
+| `zhihu-publish-answer` | 知乎问题回答发布自动化脚本，通过已登录的浏览器实例在知乎问题下撰写并发布回答 |
 | `arxiv-search` / `arxiv-multi-search` | arXiv 单关键词 / 多关键词批量搜索脚本完整文档 |
 | `wechat-search` | 微信公众号文章搜索自动化脚本完整文档 |
 
