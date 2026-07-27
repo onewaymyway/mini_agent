@@ -465,12 +465,26 @@ condition: "evaluate.score >= 60 and analyze.passed"  # 多条件组合
                                      human_input 步骤是否都能从 inputs 中通过
                                      input_key 解析到值，缺失则直接报错列出
                                      缺哪些字段，见"全自动执行模式"一节
+  output_export_dir (str|null)      [output_export 功能] 可选的外部导出目录
+                                     （绝对路径）。不设置则不做任何额外操作；
+                                     设置时，工作流到达终态（成功/失败/部分
+                                     完成，`paused` 不算终态）后会把本次执行
+                                     `output/` 目录下的所有文件复制到这个目录，
+                                     不用再手动 cp。目标目录不存在会自动创建；
+                                     复制失败只记 `output_exported` 事件里的
+                                     `error` 字段并打印警告，不会让 workflow
+                                     本身的执行状态被判定为异常。
 
 示例：
   run_workflow("code_review", '{"code": "def foo(): pass"}')
   run_workflow("article_writer", '{"topic": "大模型应用架构"}')
   run_workflow("nightly_batch", '{"env": "prod"}', force_serial=true)
+  run_workflow("report_gen", '{"topic": "x"}', output_export_dir="/data/exports/report_gen")
 ```
+
+后台执行时，`run_workflow` 的返回文本会提示本次执行的默认输出目录
+（产出文件应写入这里，而不是主 Agent 自己的 session output 目录），若设置
+了 `output_export_dir` 还会额外提示"完成后会自动复制到 ...”。
 
 ### `list_workflows`
 

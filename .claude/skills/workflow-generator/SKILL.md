@@ -1,7 +1,7 @@
 ---
 name: workflow-generator
 description: 帮助用户创建符合 mini_agent 最新版规范的 workflow（.agent/workflows/<name>/workflow.yaml，可携带私有 agents/skills/prompts；支持顶层 defaults 默认配置继承、可复用 step 片段 include、max_total_tokens 用量护栏、mode: autonomous 全自动执行模式、插件自定义 step 类型）。当用户说"帮我创建一个workflow"、"做一个工作流"、"写一个xxx流水线"、"把这个workflow转成文件夹模式"、"做一个全自动/挂后台跑的workflow"时使用。
-triggers: workflow, 工作流, 流水线, pipeline, 创建workflow, workflow.yaml, 文件夹模式workflow
+triggers: workflow, 工作流, 流水线, pipeline, 创建workflow, workflow.yaml, 文件夹模式workflow, 工作流模板, list_workflow_templates, create_workflow_from_template, preview_workflow, output_export_dir
 ---
 
 # Workflow Generator（文件夹模式）
@@ -25,6 +25,16 @@ triggers: workflow, 工作流, 流水线, pipeline, 创建workflow, workflow.yam
 
 `WorkflowStore.load(name)` 优先找文件夹模式，找不到再退回单文件模式，
 两者可以在 `.agent/workflows/` 下共存，不冲突。
+
+## 动手写之前先看看有没有现成模板
+
+除了从零写 YAML，还可以用 `list_workflow_templates()` 看内置模板
+（`code_review`/`research_report`/`multi_perspective_debate` 等，定义在
+`src/mini_agent/workflow/templates/*.yaml`），需求和某个模板高度相似时用
+`create_workflow_from_template(template_name, new_name)` 直接复制一份、
+换个名字保存，比手写更稳（模板本身已经过校验），后续再用
+`patch_workflow_step`（workflow-debugger skill）微调具体字段。只有需求和
+现有模板差异明显、或用户要求"自己设计流程"时才走下面的手写流程。
 
 ## 另一条生成路径：从已完成的 session 反向生成
 
@@ -469,7 +479,15 @@ steps:
      ```
 10. **提示用户如何验证/运行**：
     - `/workflow show <name>` 查看解析结果
+    - 正式运行前建议先 `preview_workflow(name, inputs)` 做一次 dry-run：
+      不会真的执行，但会给出并发分批结果、prompt 占位符替换预览、
+      `condition` 静态求值情况和 `unresolved_placeholders` 清单——比直接跑
+      一遍正式执行更省成本，尤其适合刚写完、还不确定 `inputs` 是否传全时
     - `/workflow run <name> '{"参数名": "值"}'` 运行（有需要外部输入的话）
+    - 用户要求"跑完的产出文件放到指定目录"时，用
+      `run_workflow(name, inputs, output_export_dir="<绝对路径>")`：跑到
+      终态后会自动把本次 `output/` 目录下的文件复制过去，不用手动 cp
+      （复制失败不影响 workflow 本身的执行结果，只在返回信息里提示）
     - 不想进交互 REPL、只想在 shell/cron/systemd 里直接跑，把前缀换成
       `mini-agent workflow ...` 即可（子命令名和参数一致），如
       `mini-agent workflow run <name> '{"参数名":"值"}' --background

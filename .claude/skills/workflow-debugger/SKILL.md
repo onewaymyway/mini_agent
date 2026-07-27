@@ -1,7 +1,7 @@
 ---
 name: workflow-debugger
 description: 测试、调试、修改已存在的 mini_agent workflow（`.agent/workflows/<name>/`）——沙箱跑单个 step、查一次执行失败在哪、只改坏掉的那个 step、从断点续跑、看长期执行统计。当用户说"这个workflow跑失败了"、"帮我测一下这个step"、"这一步为什么一直失败"、"改一下xxx workflow的这个字段"、"从哪步继续跑"、"这个workflow靠谱吗/成功率怎么样"时使用。**不**用于从零生成新 workflow，那是 workflow-generator skill 的场景。
-triggers: workflow调试, workflow失败, workflow测试, 重跑, 断点续跑, patch_workflow_step, resume_workflow_run, test_workflow_step, needs_fix, debug_log, python_step, workflow debug
+triggers: workflow调试, workflow失败, workflow测试, 重跑, 断点续跑, patch_workflow_step, resume_workflow_run, test_workflow_step, needs_fix, debug_log, python_step, workflow debug, output_export_dir, preview_workflow
 ---
 
 # Workflow Debugger（测试 / 调试 / 修改已有 workflow）
@@ -26,6 +26,7 @@ triggers: workflow调试, workflow失败, workflow测试, 重跑, 断点续跑, 
 | "跑之前想看看这次大概会怎么分批/condition 会不会命中/参数是不是传全了" | `preview_workflow(name, inputs)`（dry-run，不真的执行，会给出 `unresolved_placeholders` 清单，见下文） | 直接跑一遍看结果 |
 | "这一步到底实际收到了什么 prompt/子进程打印了什么/是不是真并发跑的" | 开启 `debug_log_enabled` 后看 `get_workflow_run_status(verbose=true)` 摘要，或 `/workflow debug <run_id> <step_id>` 看完整 `debug_log`（见下文"运行时调试日志"） | 凭 `inputs`+上游输出在脑子里重算一遍占位符替换 |
 | "正在跑，想先停一下 / 不想跑了" | `pause_workflow_run` / `cancel_workflow_run` | 干等或杀进程 |
+| "设了 `output_export_dir` 但目标目录里没看到文件/文件不全" | 看 `events.jsonl` 里的 `output_exported` 事件（含 `copied_files`/`error`），或 `get_workflow_run_status(verbose=true)`；先确认产出文件当初写进了本次 workflow 的 `output/` 目录而不是别处 | 怀疑是导出功能本身坏了就去改 runner 代码——复制失败不影响 workflow 执行状态，多数情况是产出文件路径写错了 |
 | "有个 human_input/审批门卡着" | `provide_workflow_step_input` / `approve_workflow_step` / `reject_workflow_step` | 让用户去改 workflow 定义绕过它 |
 | "这个 `agent`/`skill_agent` step 老是不稳定/产出格式不对/偶尔跑偏" | 先判断这一步是不是本该是 `python_step`（见下文"用选型规则诊断不稳定的 agent 类型 step"），是的话 `patch_workflow_step` 把 `type` 改成 `python_step` 并配 `script_path` | 一味调大 `retry_on_error`/`max_turns` 掩盖问题 |
 
@@ -267,6 +268,13 @@ resume_workflow_run(
   分批、condition 求值结果，`patch_workflow_step` 保存成功后可以再
   `preview_workflow(name, inputs)` 看一眼 dry-run 结果，比直接跑一遍正式
   执行更省成本。
+
+- **`output_export_dir` 复制失败不算 workflow 失败**：跑到终态（`paused`
+  不算终态）后才会尝试复制，复制本身出错（权限/磁盘/路径不存在等）只会在
+  `events.jsonl` 的 `output_exported` 事件里带 `error` 字段、并打印一行
+  警告，`status` 仍然按 workflow 本身的执行结果判定——排查"文件没导出"时
+  第一步永远是先看 `output_exported` 事件的 `error` 字段，而不是去怀疑
+  workflow 本身跑失败了。
 
 ## 长期健康度：`get_workflow_stats`
 
