@@ -25,3 +25,4 @@ src/mini_agent.egg-info/
 .claude/skills/browser-cdp/zhihu_results/
 temp_data/
 .claude/skills/browser-cdp/temp_cdp/
+.agent/workflows/zhihu_content_publish_v2/

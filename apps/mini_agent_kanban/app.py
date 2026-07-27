@@ -2087,14 +2087,42 @@ import re as _wf_re
 
 
 def _wf_extract_input_params(yaml_text: str) -> list:
-    """从工作流 YAML 里扫描 `{xxx}` 占位符，只取不含 '.' 的 {param} 形式
-    （那些才是需要用户在运行前填的 inputs，`{step_id.output}` 这类运行时
-    占位符会被排除）。思路与 schema.py::validate() 里 check_placeholders
-    一致。"""
+    """扫描工作流 YAML，找出运行前需要用户填写的参数名。两个来源都要覆盖：
+
+    1. `{param}` 占位符（不含 '.' 的形式，`{step_id.output}` 这类运行时占位符
+       排除）——旧写法，prompt 里直接插值。思路与 schema.py::validate() 里
+       check_placeholders 一致，但这里拿到的是整份原始 YAML 文本（含注释、
+       python_step 的 params 示例代码），必须先做两处收窄，否则会把注释里的
+       示例（如 `# run_workflow(inputs={"doc_path": "..."}）`）或嵌套花括号
+       （如注释里的 `{doc_path: "{doc_path}"}`）也误判成参数：
+       a. 先去掉所有整行注释（`#` 开头，含前导空白）；
+       b. 占位符名字限定为合法标识符字符，避免 `[^}]+` 这种"贪到下一个 `}`
+          为止"的写法被注释里的嵌套花括号切出半截、含引号/冒号的假参数。
+    2. `type: human_input` + `input_key: xxx` ——workflow_mechanism_improvement_
+       proposal.md §1 之后的推荐写法：不在 prompt 里写 `{param}`，而是声明
+       一个 intake 型 human_input 步骤，`input_key` 命中 `run_workflow(inputs=)`
+       里的同名 key 时直接取值、不阻塞等待。这种写法下 YAML 里可能完全不出现
+       `{param}` 字面量，只扫第 1 类会漏掉参数（比如 zhihu_content_publish
+       这类新版示例 workflow）。
+    """
+    cleaned_lines = []
+    for line in yaml_text.splitlines():
+        if line.strip().startswith("#"):
+            continue
+        # 剥离行内尾部注释（`  # ...`）——要求 '#' 前有至少一个空白，避免误伤
+        # 值本身含 '#' 的情况（这批 workflow YAML 里没有这种用法，足够安全）。
+        line = _wf_re.sub(r"\s+#.*$", "", line)
+        cleaned_lines.append(line)
+    cleaned_text = "\n".join(cleaned_lines)
+
     keys = []
-    for m in _wf_re.finditer(r"\{([^}]+)\}", yaml_text):
+    for m in _wf_re.finditer(r"\{([a-zA-Z_][a-zA-Z0-9_]*(?:\.[a-zA-Z_][a-zA-Z0-9_]*)*)\}", cleaned_text):
         key = m.group(1)
         if "." not in key and key not in keys:
+            keys.append(key)
+    for m in _wf_re.finditer(r"^\s*input_key:\s*[\"']?([a-zA-Z_][a-zA-Z0-9_]*)[\"']?\s*$", cleaned_text, _wf_re.MULTILINE):
+        key = m.group(1)
+        if key not in keys:
             keys.append(key)
     return keys
 
