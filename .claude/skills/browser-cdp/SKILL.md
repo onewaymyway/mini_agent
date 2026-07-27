@@ -80,6 +80,7 @@ resources:
 | `baidu_search.py` / `bing_search.py` | 搜索引擎自动化，见下方对应子资源 |
 | `zhihu_search.py` / `zhihu_hot.py` | 知乎内容/热榜抓取，见下方对应子资源 |
 | `zhihu_column_search.py` | 知乎专栏文章批量搜索与抓取，见下方对应子资源 |
+| `zhihu_publish_answer.py` | 知乎问题回答发布自动化脚本，通过已登录的浏览器实例在知乎问题下撰写并发布回答 |
 | `arxiv_search.py` / `arxiv_multi_search.py` | arXiv 论文搜索，见下方对应子资源 |
 | `wechat_search.py` | 微信公众号文章搜索（搜狗微信），见下方对应子资源 |
 
