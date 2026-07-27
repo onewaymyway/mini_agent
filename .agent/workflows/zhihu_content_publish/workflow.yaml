@@ -69,12 +69,20 @@ steps:
     retry_on_error: 1
 
   - id: enrich_questions
-    type: skill_agent
-    skill_name: browser-cdp
-    prompt_file: prompts/04_enrich_questions.md
+    # [改进] 原来是 skill_agent（每个问题一整轮 browser-cdp 多轮对话），几十个
+    # 问题下来非常慢。现在改成 python_step：开网页 / 抓文本这类纯操作用 Python
+    # 直接调 CDP 完成，只有"从抓到的文本里挑出具体字段"这一步才调用一次 LLM。
+    # 详见 steps/05_enrich_questions.py 顶部注释。返回值直接写入 output_file，
+    # 不再需要 skill_agent 的 result_file 校验契约。
+    #
+    # 断点续抓：脚本每处理完一个问题就落一次 enrich_progress.json 进度文件，
+    # 重跑本 step（比如部分问题因网络抖动失败）会自动跳过已成功的问题，只
+    # 补抓剩下的部分。
+    type: python_step
+    script_path: steps/05_enrich_questions.py
     depends_on: [filter_questions]
-    output_file: final_result.json           # 对话原文存档
-    result_file: final_result_data.json      # 结构化最终产物，agent 亲手写文件 + runner 校验
-    result_file_required_keys: [questions]
-    max_turns: 35
-    timeout: 1500
+    output_file: final_result.json
+    params:
+      cdp_port: 9336                # 对应 launch_zhihu_logged_in.py 起的已登录实例
+    timeout: 1800
+    retry_on_error: 1

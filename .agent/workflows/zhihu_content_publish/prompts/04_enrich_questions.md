@@ -1,3 +1,7 @@
+> [已弃用] enrich_questions 已改为 type: python_step（steps/05_enrich_questions.py +
+> prompts/04_enrich_single_question.md），不再使用本文件描述的 skill_agent 多轮对话
+> 方式，原因是逐个问题走完整 agent 对话太慢。本文件仅保留作历史记录/回退参考。
+
 # 补全问题详情 Prompt（skill_agent，挂载 browser-cdp skill）
 
 你现在要使用 browser-cdp skill（沿用固定专用实例 ，复用登录态），逐个打开
