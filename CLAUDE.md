@@ -65,11 +65,11 @@ pip install -r requirements.txt
 
 # 配置 API Key linux
 export ANTHROPIC_API_KEY=sk-...
-export NVIDIA_API_KEY=sk-...
+export AGNES_API_KEY=agnes-xxx            # ask_image 使用 Agnes 视觉模型
 
 # 配置 API Key win
 $env:ANTHROPIC_API_KEY=sk-...
-$env:NVIDIA_API_KEY=sk-...
+$env:AGNES_API_KEY="agnes-xxx"             # ask_image 使用 Agnes 视觉模型
 
 # 交互式模式
 python -m mini_agent

@@ -141,9 +141,9 @@ cp providers.json.example providers.json
 图片相关 Skill 独立于 LLM Provider，需要通过环境变量配置对应的 API Key：
 
 ```bash
-# ask_image skill — 使用 NVIDIA 视觉模型
-export NVIDIA_API_KEY=nvapi-xxx          # Linux / macOS
-$env:NVIDIA_API_KEY="nvapi-xxx"           # Windows PowerShell
+# ask_image skill — 使用 Agnes 视觉模型
+export AGNES_API_KEY=agnes-xxx            # Linux / macOS
+$env:AGNES_API_KEY="agnes-xxx"             # Windows PowerShell
 
 # gen_image_with_text skill — 使用 Agnes 图片生成服务
 export AGNES_API_KEY=agnes-xxx            # Linux / macOS
