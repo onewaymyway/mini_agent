@@ -14,3 +14,6 @@ print(result)
 运行 doc_change_review 工作流，old_path 是 test_result\add_sum_v0.py，new_path 是 test_result\add_sum_v1.py
 
 
+执行 zhihu_content_publish这个workflow
+使用的输入参数如下：
+使用的文档 为：temp_data\Agent的终极形态_从AI助手到个人数字代理.md
