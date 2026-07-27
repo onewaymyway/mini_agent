@@ -34,6 +34,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -662,6 +663,162 @@ class SkillAgentStepExecutor(StepExecutor):
         )
 
 
+class ForeachStepExecutor(StepExecutor):
+    """
+    type=foreach：对 step.items 逐元素执行 step.foreach_step 定义的内层
+    step，聚合每个元素的执行结果为一段 JSON 数组文本（作为本 step 的
+    output）。见 workflow_mechanism_improvement_plan_p13.md Phase 1。
+
+    设计上完全不改动 runner.py 的拓扑调度/批次计算——从外部调度层视角，
+    foreach 就是普通一个 step，"取列表 → 逐元素执行 → 聚合"全部封装在这
+    个 execute() 内部，跟 SubWorkflowStepExecutor 把整个子工作流跑完再
+    返回一段文本是同一个思路。
+    """
+
+    def execute(self, runner: "WorkflowRunner", step: WorkflowStep, prompt: str) -> str:
+        items = self._resolve_items(runner, step)
+        if not isinstance(items, list):
+            raise ValueError(
+                f"foreach 步骤 {step.id!r} 的 items 解析结果不是 list"
+                f"（实际是 {type(items).__name__}）"
+            )
+
+        inner_def = dict(step.foreach_step or {})
+        inner_type = inner_def.get("type")
+        if not inner_type:
+            raise ValueError(f"foreach 步骤 {step.id!r} 的 foreach_step 缺少 type 字段")
+
+        from dataclasses import fields as _dc_fields
+        valid_field_names = {f.name for f in _dc_fields(WorkflowStep)}
+        # id/name/prompt/depends_on 由这里逐元素生成，不采用 foreach_step 里可能带的同名字段
+        base_kwargs = {
+            k: v for k, v in inner_def.items()
+            if k in valid_field_names and k not in ("id", "name", "prompt", "depends_on")
+        }
+        raw_prompt_template = inner_def.get("prompt", "") or ""
+        stop_on_error = bool(step.foreach_stop_on_error)
+
+        def _run_one(idx: int, item: Any) -> dict:
+            # {item}/{item_index} 是内层 prompt 专属占位符，跟外层
+            # _resolve_prompt 的 {step_id.field} 语法是两套独立替换——内层
+            # 没有"上游 step 结果"的概念，只有当前元素本身。
+            item_text = (
+                json.dumps(item, ensure_ascii=False)
+                if isinstance(item, (dict, list)) else str(item)
+            )
+            inner_prompt = raw_prompt_template.replace("{item_index}", str(idx)).replace("{item}", item_text)
+            inner_step = WorkflowStep(
+                id=f"{step.id}__item{idx}",
+                name=f"{step.name}[{idx}]",
+                prompt=inner_prompt,
+                depends_on=[],
+                **base_kwargs,
+            )
+            try:
+                inner_executor = get_executor(inner_step.effective_type)
+                output = inner_executor.execute(runner, inner_step, inner_prompt)
+                return {"item_index": idx, "output": output}
+            except Exception as e:
+                if stop_on_error:
+                    raise
+                return {"item_index": idx, "error": f"{type(e).__name__}: {e}"}
+
+        concurrency = max(1, step.foreach_max_concurrency or 1)
+        results: list = [None] * len(items)
+        if concurrency == 1 or len(items) <= 1:
+            for i, it in enumerate(items):
+                results[i] = _run_one(i, it)
+        else:
+            import concurrent.futures
+            with concurrent.futures.ThreadPoolExecutor(max_workers=concurrency) as pool:
+                futs = {pool.submit(_run_one, i, it): i for i, it in enumerate(items)}
+                for fut in concurrent.futures.as_completed(futs):
+                    i = futs[fut]
+                    results[i] = fut.result()  # stop_on_error=True 时这里会把异常重新抛出
+
+        return json.dumps(results, ensure_ascii=False)
+
+    @staticmethod
+    def _resolve_items(runner: "WorkflowRunner", step: WorkflowStep) -> Any:
+        """
+        items 支持两种写法：字面量列表（YAML 里直接写 `items: [...]`），
+        或者单个占位符字符串（整个字符串就是一个 `{...}`，不支持"占位符
+        混在其它文本里"——那样解析结果只能是字符串，不是列表）。占位符
+        目前支持 `{step_id.output}`（要求 output 是合法 JSON 数组文本）、
+        `{step_id.result_file}`/`{step_id.result_file:path}`（复用 Phase 3
+        的 _resolve_json_path，读取结果文件后可选按路径取子字段）。
+        """
+        items = step.items
+        if isinstance(items, list):
+            return items
+        if isinstance(items, str):
+            m = re.fullmatch(r'\{([^}]+)\}', items.strip())
+            if not m:
+                raise ValueError(
+                    f"foreach 步骤 {step.id!r} 的 items 字符串不是单个占位符：{items!r}"
+                )
+            key = m.group(1)
+            if "." not in key:
+                raise ValueError(f"foreach 步骤 {step.id!r} 的 items 占位符格式不合法：{key!r}")
+            ref_id, field_ = key.split(".", 1)
+            step_results = getattr(runner, "_current_step_results", None) or {}
+            sr = step_results.get(ref_id)
+            if sr is None:
+                raise ValueError(
+                    f"foreach 步骤 {step.id!r} 的 items 引用了不存在/尚未执行的步骤 {ref_id!r}"
+                )
+            if field_ == "result_file" or field_.startswith("result_file:"):
+                path = (getattr(runner, "_step_result_file_paths", None) or {}).get(ref_id)
+                if not path:
+                    raise ValueError(f"步骤 {ref_id!r} 没有 result_file，无法用于 foreach items")
+                with open(path, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                if field_ == "result_file":
+                    return data
+                json_path = field_.split(":", 1)[1]
+                return runner._resolve_json_path(data, json_path)
+            if field_ == "output":
+                try:
+                    return json.loads(sr.output)
+                except (ValueError, TypeError) as e:
+                    raise ValueError(
+                        f"步骤 {ref_id!r} 的 output 不是合法 JSON，无法用于 foreach items：{e}"
+                    ) from e
+            raise ValueError(f"foreach 步骤 {step.id!r} 的 items 占位符字段 {field_!r} 不支持")
+        raise ValueError(f"foreach 步骤 {step.id!r} 的 items 类型不支持：{type(items).__name__}")
+
+
+class WaitStepExecutor(StepExecutor):
+    """
+    type=wait：等待 step.wait_seconds 秒。不是简单 time.sleep 死等——拆成
+    小片循环 sleep，每片之间检查现有的 pause/cancel 控制信号
+    （runner._current_control，与 _await_step_approval 用的是同一套
+    ControlState），收到 cancel 提前退出并报错，收到 pause 阻塞在原地直到
+    resume。见 workflow_mechanism_improvement_plan_p13.md Phase 2。
+    """
+
+    POLL_INTERVAL = 0.5
+
+    def execute(self, runner: "WorkflowRunner", step: WorkflowStep, prompt: str) -> str:
+        total = float(step.wait_seconds or 0)
+        if total <= 0:
+            raise ValueError(f"wait 步骤 {step.id!r} 的 wait_seconds 必须为正数")
+        control = getattr(runner, "_current_control", None)
+        waited = 0.0
+        while waited < total:
+            if control is not None:
+                if control.cancel_requested.is_set():
+                    raise RuntimeError(f"wait 步骤 {step.id!r} 等待期间收到取消请求，提前退出")
+                while control.pause_requested.is_set():
+                    time.sleep(self.POLL_INTERVAL)
+                    if control.cancel_requested.is_set():
+                        raise RuntimeError(f"wait 步骤 {step.id!r} 等待期间收到取消请求，提前退出")
+            step_sleep = min(self.POLL_INTERVAL, total - waited)
+            time.sleep(step_sleep)
+            waited += step_sleep
+        return f"等待 {total} 秒完成"
+
+
 # ── 分发表 ────────────────────────────────────────────────────────────────────
 # runner._dispatch_step() 按 step.effective_type 查表；新增类型只需在这里
 # 加一行注册，不需要改动 runner 的核心循环。
@@ -675,6 +832,8 @@ _EXECUTORS: dict[str, StepExecutor] = {
     "script": ScriptStepExecutor(),
     "skill_agent": SkillAgentStepExecutor(),
     "python_step": PythonStepExecutor(),
+    "foreach": ForeachStepExecutor(),
+    "wait": WaitStepExecutor(),
 }
 
 

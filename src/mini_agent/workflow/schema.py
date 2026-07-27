@@ -42,7 +42,7 @@ from typing import Any, Optional
 # "主 Agent / 角色 Agent" 二选一显式化为一个枚举，同时新增三种类型。
 # 未显式设置 type 时（旧版 YAML），由 WorkflowStep.effective_type 按
 # "role 是否为空"自动推断为 "agent"/"role_agent"，保证向后兼容。
-STEP_TYPES = ("agent", "role_agent", "sub_workflow", "tool_call", "human_input", "script", "skill_agent", "python_step")
+STEP_TYPES = ("agent", "role_agent", "sub_workflow", "tool_call", "human_input", "script", "skill_agent", "python_step", "foreach", "wait")
 
 
 class ConditionEvalError(RuntimeError):
@@ -221,6 +221,23 @@ class WorkflowStep:
     # result_file 校验时可选要求的顶层必填字段列表（比如 ["questions"]），
     # 避免"文件存在且是合法JSON，但结构文不对题"被误判为成功。
     result_file_required_keys: list[str] = field(default_factory=list)
+
+    # [workflow_mechanism_improvement_plan_p13.md Phase 1] foreach 专用：
+    # 要遍历的列表（字面量列表，或单个占位符字符串，如
+    # "{search.result_file:questions}"，解析为原始 Python list）。
+    items: Any = None
+    # 内层每个元素要执行的 step 定义子集（必须包含 "type"），内层 prompt
+    # 支持 {item}/{item_index} 两个专属占位符。
+    foreach_step: dict = field(default_factory=dict)
+    # 内层并发度，默认 1（串行）；与外层 allow_parallel 是两个独立维度。
+    foreach_max_concurrency: int = 1
+    # 单个元素失败时：False（默认）=记入聚合结果继续跑其它元素；
+    # True=第一个失败即整体抛异常，交给外层 retry_on_error/NEEDS_FIX。
+    foreach_stop_on_error: bool = False
+
+    # [workflow_mechanism_improvement_plan_p13.md Phase 2] wait 专用：
+    # 等待的秒数；执行期间会周期性检查 pause/cancel 控制信号，不是死等。
+    wait_seconds: Optional[float] = None
 
     @property
     def effective_type(self) -> str:
@@ -412,7 +429,7 @@ class WorkflowDef:
                 not step.prompt.strip()
                 and not step.prompt_file
                 and not step.include
-                and step.effective_type not in ("human_input", "python_step")
+                and step.effective_type not in ("human_input", "python_step", "foreach", "wait")
             ):
                 errors.append(f"步骤 {step.id!r} 的 prompt 为空")
 
@@ -458,6 +475,41 @@ class WorkflowDef:
                 errors.append(f"步骤 {step.id!r} 是 skill_agent 类型但未指定 skill_name")
             if etype == "python_step" and not step.script_path:
                 errors.append(f"步骤 {step.id!r} 是 python_step 类型但未指定 script_path")
+            if etype == "foreach":
+                # [workflow_mechanism_improvement_plan_p13.md Phase 1]
+                if step.items is None or (isinstance(step.items, list) and not step.items) or (
+                    isinstance(step.items, str) and not step.items.strip()
+                ):
+                    errors.append(f"步骤 {step.id!r} 是 foreach 类型但未指定 items（或为空）")
+                if not step.foreach_step or not step.foreach_step.get("type"):
+                    errors.append(
+                        f"步骤 {step.id!r} 是 foreach 类型但未指定 foreach_step，"
+                        f"或 foreach_step 缺少 type 字段"
+                    )
+                else:
+                    inner_type = step.foreach_step.get("type")
+                    if inner_type == "foreach":
+                        errors.append(
+                            f"步骤 {step.id!r} 的 foreach_step.type 不能是 foreach"
+                            f"（不支持嵌套批处理）"
+                        )
+                    else:
+                        try:
+                            from .executors import get_registered_types
+                            inner_valid_types = get_registered_types()
+                        except Exception:
+                            inner_valid_types = STEP_TYPES
+                        if inner_type not in inner_valid_types:
+                            errors.append(
+                                f"步骤 {step.id!r} 的 foreach_step.type 非法：{inner_type!r}"
+                                f"（可选：{inner_valid_types}）"
+                            )
+                if step.foreach_max_concurrency is not None and step.foreach_max_concurrency < 1:
+                    errors.append(f"步骤 {step.id!r} 的 foreach_max_concurrency 必须 >= 1")
+            if etype == "wait":
+                # [workflow_mechanism_improvement_plan_p13.md Phase 2]
+                if step.wait_seconds is None or step.wait_seconds <= 0:
+                    errors.append(f"步骤 {step.id!r} 是 wait 类型但未指定合法的 wait_seconds（须为正数）")
 
             # [改进方案 §1] mode="autonomous" 时，在保存期拦截阻塞型 step：
             # human_input 且没有 input_key 兜底 → 运行时会真的阻塞等人工输入；
