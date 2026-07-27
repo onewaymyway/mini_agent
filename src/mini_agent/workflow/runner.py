@@ -280,6 +280,7 @@ class WorkflowRunner:
         self._current_wf = wf
         self._current_wf_session = wf_session
         self._step_output_file_paths = {}  # [P11 §3] 每次 run() 重置，避免跨次串路径
+        self._step_result_file_paths = {}  # [skill_agent 结果文件契约] 同上，存放 result_file 绝对路径
         self._current_paths = paths
         # [改进方案 §1] 供 HumanInputStepExecutor 读取 input_key 对应的值，
         # 命中时直接使用、不进入阻塞等待。
@@ -604,6 +605,63 @@ class WorkflowRunner:
             log_exception(e, where='mini_agent.workflow.runner.WorkflowRunner._write_step_output_file')
             import mini_agent.ui.renderer as R
             R.print_warning(f"[Workflow] 步骤 {step.id!r} 的 output_file 落盘失败：{e}")
+
+    def resolve_result_file_path(self, step: WorkflowStep) -> Optional["_Path"]:
+        """
+        [skill_agent 结果文件契约] 计算 step.result_file 对应的绝对路径
+        （本次 workflow session 的 output/ 目录下），不做存在性检查。
+        供 SkillAgentStepExecutor 校验产物、以及 prompt 里注入"请把结果写
+        到这个路径"时使用。step.result_file 为空或当前不在 run() 上下文
+        内（_current_wf_session/_current_paths 未设置）时返回 None。
+        """
+        from pathlib import Path as _Path
+
+        if not step.result_file:
+            return None
+        wf_session = getattr(self, "_current_wf_session", None)
+        paths = getattr(self, "_current_paths", None)
+        if wf_session is None or paths is None:
+            return None
+        out_dir = paths.ensure_workflow_session_output_dir(wf_session.workflow_session_id)
+        fpath = (out_dir / step.result_file).resolve()
+        fpath.relative_to(out_dir.resolve())  # 路径穿越保护，与 output_file 一致
+        return fpath
+
+    def _validate_result_file(self, step: WorkflowStep) -> tuple[bool, str]:
+        """
+        校验 step.result_file 是否已由 skill_agent 正确落盘：
+          - 文件必须存在
+          - 内容必须是合法 JSON（用 json_repair 兜个底，容忍 markdown 围栏/
+            尾随逗号这类小瑕疵，但不容忍"整段不是 JSON"）
+          - 若声明了 result_file_required_keys，顶层必须包含这些 key
+        返回 (是否通过, 失败原因文本)；通过时把落盘路径记入
+        self._step_result_file_paths，供 {step_id.result_file} 占位符使用。
+        """
+        fpath = self.resolve_result_file_path(step)
+        if fpath is None:
+            return False, f"未能解析 result_file 路径（result_file={step.result_file!r}）"
+        if not fpath.exists():
+            return False, f"期望的结果文件不存在：{fpath}"
+        try:
+            import json_repair
+            text = fpath.read_text(encoding="utf-8")
+            cleaned = text.strip()
+            if cleaned.startswith("```"):
+                cleaned = cleaned.strip("`")
+                if cleaned.lower().startswith("json"):
+                    cleaned = cleaned[4:]
+            data = json_repair.loads(cleaned)
+        except Exception as e:  # noqa: BLE001
+            return False, f"结果文件不是合法 JSON（{fpath}）：{e}"
+        if not isinstance(data, dict):
+            return False, f"结果文件顶层不是 JSON object，而是 {type(data).__name__}（{fpath}）"
+        missing = [k for k in (step.result_file_required_keys or []) if k not in data]
+        if missing:
+            return False, f"结果文件缺少必需字段 {missing}（{fpath}）"
+        if not hasattr(self, "_step_result_file_paths"):
+            self._step_result_file_paths = {}
+        self._step_result_file_paths[step.id] = str(fpath)
+        return True, ""
 
     def _persist_progress(
         self,
@@ -982,6 +1040,11 @@ class WorkflowRunner:
                     return str(int(sr.score * 100)) if sr.score is not None else "N/A"
                 elif field == "output_file":
                     path = (getattr(self, "_step_output_file_paths", None) or {}).get(step_id)
+                    if not path:
+                        raise KeyError(key)
+                    return str(path)
+                elif field == "result_file":
+                    path = (getattr(self, "_step_result_file_paths", None) or {}).get(step_id)
                     if not path:
                         raise KeyError(key)
                     return str(path)
@@ -1373,6 +1436,7 @@ class WorkflowRunner:
                 score=score,
                 duration_seconds=time.monotonic() - t_start,
                 debug_log=dict(_subproc_debug),
+                result_file=(getattr(self, "_step_result_file_paths", None) or {}).get(step.id),
             )
         except Exception as e:
             from mini_agent.errors import log_exception

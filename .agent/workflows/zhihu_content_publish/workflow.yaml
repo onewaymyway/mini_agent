@@ -53,7 +53,10 @@ steps:
     skill_name: browser-cdp
     prompt_file: prompts/02_search_zhihu.md
     depends_on: [analyze_doc]
-    output_file: search_results.json
+    output_file: search_results.json      # 仍保留：runner 事后转录的对话原文存档，供人工排查
+    result_file: search_results_data.json # [skill_agent 结果文件契约] 真正被下游消费的结构化产物，
+                                           # 由 agent 亲手用文件工具写入，runner 校验通过才算该步骤成功
+    result_file_required_keys: [questions]
     max_turns: 25
     timeout: 900
 
@@ -70,6 +73,8 @@ steps:
     skill_name: browser-cdp
     prompt_file: prompts/04_enrich_questions.md
     depends_on: [filter_questions]
-    output_file: final_result.json
+    output_file: final_result.json           # 对话原文存档
+    result_file: final_result_data.json      # 结构化最终产物，agent 亲手写文件 + runner 校验
+    result_file_required_keys: [questions]
     max_turns: 35
     timeout: 1500

@@ -50,6 +50,19 @@ class _FakeCtx:
     def input_json(self, step_id, default=None):
         return self._inputs_json.get(step_id, default)
 
+    def input_output(self, step_id, default=""):
+        # 01_analyze_doc.py 现在通过 ctx.input_output("intake") 读取
+        # doc_path（intake 是 human_input 类型 step，产出纯文本）。这个
+        # 单测 fixture 之前没跟上这处改动，直接补上：优先用 inputs 里显式
+        # 注入的文本，退回 params["doc_path"]（测试构造 _FakeCtx 时传的
+        # 就是这个），与真实 intake step 的产出语义等价。
+        if step_id in self._inputs_json:
+            v = self._inputs_json.get(step_id, default)
+            return v if isinstance(v, str) else default
+        if step_id == "intake":
+            return self.params.get("doc_path", default)
+        return default
+
     def load_prompt_file(self, relative_path):
         return (self.workflow_dir / relative_path).read_text(encoding="utf-8")
 

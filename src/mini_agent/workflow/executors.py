@@ -385,7 +385,12 @@ class PythonStepExecutor(StepExecutor):
             # 上报 watchdog（不改变本次执行行为，只做记录）。
             _undeclared_py_deps = sorted(set(upstream.keys()) - set(step.depends_on))
         inputs_payload = {
-            sid: {"status": getattr(r.status, "value", str(r.status)), "output": r.output, "score": r.score}
+            sid: {
+                "status": getattr(r.status, "value", str(r.status)),
+                "output": r.output,
+                "score": r.score,
+                "result_file": getattr(r, "result_file", None),
+            }
             for sid, r in upstream.items()
         }
 
@@ -481,26 +486,85 @@ class SkillAgentStepExecutor(StepExecutor):
     （文件夹模式 workflow 的 skills/ 目录），再全局 skills_dir。
     """
 
+    # [skill_agent 结果文件契约] result_file 校验失败后的重试预算：先原地
+    # resume 同一个 agent（省 token，且能带着上下文直接被点名"你没写文件"）
+    # 最多 RESUME_RETRIES 次；如果 resume 也救不回来，再整个重开一个全新
+    # agent（大概率是 resume 那次已经把上下文搅乱了）最多 RESTART_RETRIES
+    # 次；两轮预算都耗尽仍未产出合法结果文件，判定该 step 失败，交给
+    # runner 现有的 retry_on_error 机制处理（重跑整个 step）。
+    RESUME_RETRIES = 3
+    RESTART_RETRIES = 3
+
+    @staticmethod
+    def _strip_skill_tags(text: str) -> str:
+        import re
+        return re.sub(r'<skill_used>[^<]*</skill_used>', '', text).strip()
+
     def execute(self, runner: "WorkflowRunner", step: WorkflowStep, prompt: str) -> str:
         if not step.skill_name:
             raise ValueError(f"步骤 {step.id!r} 是 skill_agent 类型但未指定 skill_name")
+
+        max_turns = runner._effective_step_field(step, "max_turns", 10)
+        timeout = runner._effective_step_field(step, "timeout", None)
+
+        # 没有声明 result_file 的 skill_agent step：保持旧行为（对话输出即
+        # 结果），不引入任何新约束，向后兼容现有 workflow。
+        if not step.result_file:
+            agent = runner._spawn_minimal_agent(
+                step, skill_name=step.skill_name, max_turns=max_turns, timeout=timeout,
+            )
+            return self._strip_skill_tags(agent.run_turn(prompt))
 
         # [next_doc/workflow_python_step_and_zhihu_publish_plan.md §B3]
         # "构造最小 Agent" 的逻辑已抽到 runner._spawn_minimal_agent()
         # （内部转发到 agent_spawn.build_minimal_agent），与 python_step 的
         # ctx.run_agent_turn() 共用同一份实现，这里不再重复写一遍。
-        agent = runner._spawn_minimal_agent(
-            step,
-            skill_name=step.skill_name,
-            max_turns=runner._effective_step_field(step, "max_turns", 10),
-            timeout=runner._effective_step_field(step, "timeout", None),
+        result_path = runner.resolve_result_file_path(step)
+        file_instruction = (
+            f"\n\n【重要】任务的最终结果不是靠这段对话回复来交付的，你必须使用"
+            f"文件写入工具，把最终的结构化结果以合法 JSON 格式写入这个绝对路径："
+            f"{result_path}\n"
+            f"写完之后请自行确认该文件已经存在且内容是合法 JSON，再结束本轮任务。"
         )
-        output = agent.run_turn(prompt)
-        # Strip skill_used tags that may be appended by the skill system
-        # These tags are for tracking skill usage but break JSON parsing in downstream steps
-        import re
-        output = re.sub(r'<skill_used>[^<]*</skill_used>', '', output).strip()
-        return output
+
+        agent = runner._spawn_minimal_agent(
+            step, skill_name=step.skill_name, max_turns=max_turns, timeout=timeout,
+        )
+        output = self._strip_skill_tags(agent.run_turn(prompt + file_instruction))
+        ok, reason = runner._validate_result_file(step)
+        if ok:
+            return output
+
+        # 第一轮：resume 同一个 agent（沿用其上下文/浏览器状态），直接点名
+        # 让它补写文件。
+        for attempt in range(1, self.RESUME_RETRIES + 1):
+            resume_prompt = (
+                f"你刚才没有把结果正确写入 {result_path}（校验失败原因："
+                f"{reason}）。请立即使用文件写入工具，将完整的结构化结果以"
+                f"合法 JSON 格式写入这个绝对路径：{result_path}\n"
+                f"不要只在对话里回复内容，必须实际创建/覆盖这个文件。"
+            )
+            output = self._strip_skill_tags(agent.run_turn(resume_prompt))
+            ok, reason = runner._validate_result_file(step)
+            if ok:
+                return output
+
+        # 第二轮：resume 没救回来，大概率上下文已经跑偏，整个重开一个全新
+        # agent 从头再来。
+        for attempt in range(1, self.RESTART_RETRIES + 1):
+            agent = runner._spawn_minimal_agent(
+                step, skill_name=step.skill_name, max_turns=max_turns, timeout=timeout,
+            )
+            output = self._strip_skill_tags(agent.run_turn(prompt + file_instruction))
+            ok, reason = runner._validate_result_file(step)
+            if ok:
+                return output
+
+        raise RuntimeError(
+            f"步骤 {step.id!r}（skill_agent）在 resume×{self.RESUME_RETRIES} + "
+            f"重开×{self.RESTART_RETRIES} 次尝试后仍未产出合法的 result_file "
+            f"（{result_path}）：{reason}"
+        )
 
 
 # ── 分发表 ────────────────────────────────────────────────────────────────────

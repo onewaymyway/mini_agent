@@ -144,17 +144,42 @@ class PyStepContext:
     extra: dict = field(default_factory=dict)
 
     def input_output(self, step_id: str, default: str = "") -> str:
-        """便捷方法：取某个上游 step 的纯文本输出。"""
+        """便捷方法：取某个上游 step 的纯文本输出。
+        若该 step 声明了 result_file 且已通过校验落盘（见
+        runner.py::WorkflowRunner._validate_result_file），优先读文件内容；
+        没有 result_file 时退回旧行为——读 step 的对话原文输出。"""
         r = self.inputs.get(step_id)
-        return getattr(r, "output", default) if r is not None else default
+        if r is None:
+            return default
+        result_file = getattr(r, "result_file", None)
+        if result_file:
+            try:
+                return Path(result_file).read_text(encoding="utf-8")
+            except OSError:
+                pass  # 文件读取失败时退回 output 文本，不让上游更可靠反而拖累下游
+        return getattr(r, "output", default)
 
     def input_json(self, step_id: str, default: Any = None) -> Any:
-        """便捷方法：取某个上游 step 的输出并按 JSON 解析（该 step 通常也
-        是用 ask_json 或 output_file 落盘的结构化数据）。"""
+        """便捷方法：取某个上游 step 的输出并按 JSON 解析。优先读
+        result_file（skill_agent 主动写的结果文件，已经过校验，可信度更
+        高）；没有的话退回解析 output 文本——这条旧路径本身不保证是纯净
+        JSON（skill_agent 的对话输出常见"前面一段解释文字 + JSON"这种
+        格式），所以这里用 json_repair 兜底，能容忍 markdown 代码块围栏、
+        前后多余文字等常见瑕疵，而不是直接 json.loads 遇到非 JSON 字符就炸。"""
         text = self.input_output(step_id, "")
         if not text:
             return default
-        return json.loads(text)
+        try:
+            return json.loads(text)
+        except json.JSONDecodeError:
+            pass
+        import json_repair
+        cleaned = text.strip()
+        if cleaned.startswith("```"):
+            cleaned = cleaned.strip("`")
+            if cleaned.lower().startswith("json"):
+                cleaned = cleaned[4:]
+        return json_repair.loads(cleaned)
 
     def load_prompt_file(self, relative_path: str) -> str:
         """读取 workflow 目录下的 prompt 模板文件（相对 workflow_dir），

@@ -190,6 +190,17 @@ class WorkflowStep:
     # 输出落盘契约：step 执行完成后，runner 统一把 StepResult.output 写一份
     # 到 session.output_dir / output_file，不依赖 agent/脚本自己拼路径。
     output_file: Optional[str] = None
+    # [skill_agent 结果文件契约] skill_agent 专用：期望该步骤内部的子 agent
+    # 主动用文件工具写出的结构化结果文件名（相对本次 workflow session 的
+    # output/ 目录）。与 output_file 的区别：output_file 是 runner 事后把
+    # agent 最后一轮的对话原文转录落盘（不保证是合法 JSON）；result_file
+    # 则要求 agent 在执行过程中亲手创建这个文件，runner 会在 agent 跑完后
+    # 校验文件是否存在、内容是否为合法 JSON，校验失败会触发 resume 重试
+    # （见 executors.py::SkillAgentStepExecutor）。
+    result_file: Optional[str] = None
+    # result_file 校验时可选要求的顶层必填字段列表（比如 ["questions"]），
+    # 避免"文件存在且是合法JSON，但结构文不对题"被误判为成功。
+    result_file_required_keys: list[str] = field(default_factory=list)
 
     @property
     def effective_type(self) -> str:
@@ -272,6 +283,8 @@ class WorkflowDef:
                 script_path=s.get("script_path"),
                 params=dict(s.get("params") or {}),
                 output_file=s.get("output_file"),
+                result_file=s.get("result_file"),
+                result_file_required_keys=list(s.get("result_file_required_keys", []) or []),
             ))
         return cls(
             name=str(data.get("name", "unnamed")),
@@ -327,6 +340,9 @@ class WorkflowDef:
                     **({"script_path": s.script_path} if s.script_path else {}),
                     **({"params": s.params} if s.params else {}),
                     **({"output_file": s.output_file} if s.output_file else {}),
+                    **({"result_file": s.result_file} if s.result_file else {}),
+                    **({"result_file_required_keys": s.result_file_required_keys}
+                       if s.result_file_required_keys else {}),
                 }
                 for s in self.steps
             ],
@@ -534,10 +550,10 @@ class WorkflowDef:
                             f"（占位符 {{{key}}}）"
                         )
                         continue
-                    if ref_field not in ("output", "score", "output_file"):
+                    if ref_field not in ("output", "score", "output_file", "result_file"):
                         errors.append(
                             f"步骤 {step.id!r} 的 prompt 占位符 {{{key}}} 引用了未知字段 "
-                            f"{ref_field!r}（只支持 .output / .score / .output_file）"
+                            f"{ref_field!r}（只支持 .output / .score / .output_file / .result_file）"
                         )
                         continue
                     # [P11 §1] 存在但引用字段合法时，额外检查是否在 depends_on
@@ -575,6 +591,10 @@ class StepResult:
     error: Optional[str] = None
     duration_seconds: float = 0.0
     retries_used: int = 0             # retry_on_error 实际消耗的重试次数
+    # [skill_agent 结果文件契约] 该 step 若声明了 result_file 且已通过校验，
+    # 这里存落盘的绝对路径；下游 python_step 的 ctx.input_json() 优先从
+    # 这个文件读取，而不是解析 output 里的对话原文。
+    result_file: Optional[str] = None
     # ── 出错诊断信息（原来只有 error=str(e)，排查时定位不到具体是哪一行、
     # 什么类型的异常、当时这个 step 处于什么配置/输入下）──────────────────
     error_type: Optional[str] = None    # 异常类名，如 "AttributeError"
@@ -602,6 +622,7 @@ class StepResult:
             "error": self.error,
             "duration_seconds": self.duration_seconds,
             "retries_used": self.retries_used,
+            "result_file": self.result_file,
             "error_type": self.error_type,
             "traceback": self.traceback,
             "context": self.context,
@@ -618,6 +639,7 @@ class StepResult:
             error=data.get("error"),
             duration_seconds=float(data.get("duration_seconds", 0.0)),
             retries_used=int(data.get("retries_used", 0)),
+            result_file=data.get("result_file"),
             error_type=data.get("error_type"),
             traceback=data.get("traceback"),
             context=data.get("context") if isinstance(data.get("context"), dict) else {},

@@ -99,6 +99,7 @@ def main() -> int:
             status=StepStatus(raw.get("status", "done")),
             output=raw.get("output", ""),
             score=raw.get("score"),
+            result_file=raw.get("result_file"),
         )
 
     ctx = PyStepContext(

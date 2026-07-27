@@ -48,7 +48,9 @@ python zhihu_search_with_login.py --batch --port 9336 --max-results 10
 
 ## 输出要求
 
-把所有关键词搜到的问题去重合并（同一个问题 URL 只保留一条），整理成一个 JSON 对象直接返回，顶层字段：
+把所有关键词搜到的问题去重合并（同一个问题 URL 只保留一条），整理成一个 JSON 对象。
+**注意：这个 JSON 对象不是靠对话回复交付的，本轮任务结束前系统会额外告诉你一个绝对路径，
+你必须用文件写入工具把这个 JSON 对象实际写入那个文件。** 顶层字段：
 
 - `questions`：数组，每个元素是一个问题对象，包含字段：
   - `id`：字符串，用 q1/q2/q3... 顺序编号即可，供后续步骤引用
@@ -60,4 +62,5 @@ python zhihu_search_with_login.py --batch --port 9336 --max-results 10
 - `total_keywords_searched`：整数，本次实际搜索的关键词总数
 - `total_unique_questions`：整数，去重后的问题总数
 
-**只输出这一个 JSON 对象本身，不要输出多余说明文字或 markdown 代码块标记（不要用 ```json 包裹）。**
+**把这个 JSON 对象写入系统告诉你的文件路径（不要用 markdown 代码块标记包裹文件内容），
+不需要在对话里重复输出这段 JSON。**
