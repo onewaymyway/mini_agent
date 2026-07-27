@@ -776,6 +776,22 @@ class WorkflowRunner:
             "step_id": step.id, "step_name": step.name, "type": step.effective_type,
         })
 
+        # [bugfix] 之前只在 step 结束时写 step_end 事件，events.jsonl 里完全
+        # 没有 step_start，无法从事件流里看出一个 step 何时真正开始执行（比如
+        # 跟 step_end 的 duration_seconds 对不上、也没法在 step 还在跑的时候
+        # 从事件流判断"当前卡在哪一步"）。这里补上对称的 step_start 事件，
+        # 字段跟下面 step_end 保持对应（多一个 batch_index，方便跟 debug_log
+        # 的 batch_index 对齐）。
+        wf_session = getattr(self, "_current_wf_session", None)
+        paths = getattr(self, "_current_paths", None)
+        if wf_session is not None and paths is not None:
+            wf_session.append_event(paths, "step_start", {
+                "step_id": step.id,
+                "step_name": step.name,
+                "type": step.effective_type,
+                "batch_index": batch_index,
+            })
+
         # 实际执行（LLM 调用等耗时操作）故意放在锁外：并发批次的核心收益就是
         # 让多个步骤的 LLM 调用真正同时在跑，锁只保护 step_results 的读写。
         try:
