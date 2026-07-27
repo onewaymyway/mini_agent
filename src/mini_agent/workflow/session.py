@@ -67,6 +67,14 @@ class WorkflowSession:
     # 能提示"这次结果里有临时覆盖，不是定义本身的行为"，避免误读。
     # 空 dict 表示这次（或迄今为止）没有使用过 step_overrides。
     last_step_overrides: dict = field(default_factory=dict)
+    # [output_export 功能] 用户在启动执行时可选传入的外部导出目录：
+    # workflow 到达终态（done/failed/partial/cancelled）时，把本次执行
+    # `.agent/workflow_sessions/<id>/output/` 目录下的所有文件复制到这里。
+    # 不设置（None/空字符串）则跳过复制这一步，行为与新增前完全一致。
+    # 落盘在 session 里而不是只作为 run() 的临时参数，是为了 resume 场景
+    # （pause→resume、force_rerun_from 续跑）依然记得要复制到哪、不需要
+    # 调用方每次都重新传一遍。
+    output_export_dir: Optional[str] = None
 
     # ── 序列化 ──────────────────────────────────────────────────────────────
 
@@ -84,6 +92,7 @@ class WorkflowSession:
             "pending_approval_step": self.pending_approval_step,
             "error": self.error,
             "last_step_overrides": self.last_step_overrides,
+            "output_export_dir": self.output_export_dir,
         }
 
     @classmethod
@@ -108,6 +117,7 @@ class WorkflowSession:
             pending_approval_step=data.get("pending_approval_step"),
             error=data.get("error"),
             last_step_overrides=dict(data.get("last_step_overrides") or {}),
+            output_export_dir=data.get("output_export_dir"),
         )
 
     # ── 落盘 / 加载 ────────────────────────────────────────────────────────
@@ -160,3 +170,40 @@ class WorkflowSession:
             f"[{self.workflow_session_id}] {self.workflow_name} "
             f"status={self.status.value} steps={done}/{total or '?'}"
         )
+
+    def export_output_files(self, paths: "AgentPaths") -> Optional[dict]:
+        """把本次执行 `output/` 目录下的所有文件复制到 `self.output_export_dir`。
+
+        未设置 `output_export_dir` 时直接返回 None（不做任何事，也不报错）。
+        目标目录不存在会自动创建；复制失败（权限/磁盘等问题）不抛异常、
+        不影响 workflow 本身已经产出的结果——只在返回值里带上 error 供
+        调用方决定是否展示给用户，因为"导出产物"是锦上添花的收尾动作，
+        不应该让一次已经跑完的 workflow 因为这一步失败而被判定为异常。
+        """
+        if not self.output_export_dir:
+            return None
+
+        import shutil
+
+        src_dir = paths.workflow_session_output_dir(self.workflow_session_id)
+        dest_dir = Path(self.output_export_dir)
+        result = {"dest_dir": str(dest_dir), "copied_files": [], "error": None}
+
+        try:
+            if not src_dir.exists():
+                return result  # 没有产出文件，视为"复制了 0 个"，不算错误
+            dest_dir.mkdir(parents=True, exist_ok=True)
+            for item in sorted(src_dir.rglob("*")):
+                if item.is_dir():
+                    continue
+                rel = item.relative_to(src_dir)
+                target = dest_dir / rel
+                target.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(item, target)
+                result["copied_files"].append(str(rel))
+        except Exception as e:
+            from mini_agent.errors import log_exception
+            log_exception(e, where="mini_agent.workflow.session.WorkflowSession.export_output_files")
+            result["error"] = str(e)
+
+        return result

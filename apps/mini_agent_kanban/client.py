@@ -293,12 +293,15 @@ class AgentClient:
         return self._post(f"/workflows/{name}/preview", {"inputs": inputs or {}})
 
     def run_workflow(self, name: str, inputs: dict = None, background: bool = True,
-                      force_serial: bool = None, require_all_inputs_upfront: bool = False):
+                      force_serial: bool = None, require_all_inputs_upfront: bool = False,
+                      output_export_dir: str = None):
         body = {"inputs": inputs or {}, "background": background}
         if force_serial is not None:
             body["force_serial"] = force_serial
         if require_all_inputs_upfront:
             body["require_all_inputs_upfront"] = True
+        if output_export_dir:
+            body["output_export_dir"] = output_export_dir
         return self._post(f"/workflows/{name}/run", body)
 
     def patch_workflow_step(self, name: str, step_id: str, patch: dict):

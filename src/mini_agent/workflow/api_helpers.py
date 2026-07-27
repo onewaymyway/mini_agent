@@ -106,9 +106,14 @@ def start_workflow_run(
     background: Optional[bool] = None,
     force_serial: Optional[bool] = None,
     require_all_inputs_upfront: bool = False,
+    output_export_dir: Optional[str] = None,
 ) -> dict:
     """
     对应 run_workflow 工具的核心逻辑。
+
+    output_export_dir: 可选的外部导出目录。不设置则不做任何复制；设置时，
+        workflow 到达终态后会把 output/ 目录下的所有文件复制过去（见
+        `WorkflowSession.export_output_files`）。
 
     返回 dict：
       {"mode": "sync", "result": WorkflowRunResult}                  # 前台同步执行完毕
@@ -170,7 +175,7 @@ def start_workflow_run(
     runner = WorkflowRunner(cfg)
 
     if not run_in_background:
-        result = runner.run(wf, parsed_inputs, force_serial=force_serial)
+        result = runner.run(wf, parsed_inputs, force_serial=force_serial, output_export_dir=output_export_dir)
         return {"mode": "sync", "result": result}
 
     from mini_agent.storage.paths import AgentPaths
@@ -179,7 +184,8 @@ def start_workflow_run(
 
     def _bg_run():
         try:
-            runner.run(wf, parsed_inputs, workflow_session_id=wf_session_id, force_serial=force_serial)
+            runner.run(wf, parsed_inputs, workflow_session_id=wf_session_id,
+                       force_serial=force_serial, output_export_dir=output_export_dir)
         except Exception as e:
             from mini_agent.errors import log_exception
             log_exception(e, where="mini_agent.workflow.api_helpers.start_workflow_run._bg_run")

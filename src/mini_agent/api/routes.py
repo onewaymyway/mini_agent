@@ -2916,12 +2916,14 @@ async def run_workflow_route(name: str, request: Request):
     background = body.get("background")
     force_serial = body.get("force_serial")
     require_all_inputs_upfront = bool(body.get("require_all_inputs_upfront") or False)
+    output_export_dir = body.get("output_export_dir") or None
 
     try:
         outcome = api_helpers.start_workflow_run(
             cfg, name, inputs, background,
             force_serial=force_serial,
             require_all_inputs_upfront=require_all_inputs_upfront,
+            output_export_dir=output_export_dir,
         )
     except api_helpers.WorkflowApiError as e:
         raise _workflow_api_error_to_http(e)
@@ -2935,6 +2937,7 @@ async def run_workflow_route(name: str, request: Request):
             "total_duration": result.total_duration,
             "final_output": result.final_output,
             "output_dir": result.output_dir,
+            "output_export_result": result.output_export_result,
             "step_results": [sr.to_dict() for sr in result.step_results],
         }
     return {
@@ -2942,6 +2945,7 @@ async def run_workflow_route(name: str, request: Request):
         "workflow_session_id": outcome["workflow_session_id"],
         "output_dir": outcome["output_dir"],
         "has_approval_step": outcome["has_approval_step"],
+        "output_export_dir": output_export_dir,
     }
 
 

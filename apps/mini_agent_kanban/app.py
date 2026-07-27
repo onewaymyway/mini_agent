@@ -2172,6 +2172,13 @@ def _render_workflow_run_panel(client: AgentClient):
             help="开启后，凡是 human_input 步骤没有对应 input_key/未能从上面参数解析到值，"
                  "启动前直接报错，不会等到运行中途才卡住。",
         )
+        output_export_dir = st.text_input(
+            "完成后复制产出到此目录（可选，留空则不复制）", key=f"wf_output_export_dir_{selected}",
+            help="工作流跑到终态（成功/失败/部分完成都算）后，会把本次执行"
+                 " output/ 目录下的所有文件复制到这里；留空则跳过这一步，"
+                 "行为与不填完全一致。",
+            placeholder="例如 /home/user/Downloads/zhihu_output",
+        ).strip()
 
     c1, c2 = st.columns([1, 1])
     if c1.button("🔍 预览执行计划", key="wf_preview_btn"):
@@ -2186,6 +2193,7 @@ def _render_workflow_run_panel(client: AgentClient):
             selected, inputs, background=True,
             force_serial=force_serial or None,
             require_all_inputs_upfront=require_all_inputs_upfront,
+            output_export_dir=output_export_dir or None,
         )
         if res and "_error" in res:
             st.error(res["_error"])
@@ -2328,7 +2336,12 @@ def _render_workflow_run_detail_body(client: AgentClient, run_id: str, detail: d
             st.markdown("</div>", unsafe_allow_html=True)
 
     if detail.get("output_dir"):
-        st.caption(f"📁 输出目录：`{detail['output_dir']}`")
+        st.caption(f"📁 本次执行输出目录：`{detail['output_dir']}`")
+    if detail.get("output_export_dir"):
+        if status in ("done", "failed", "partial", "cancelled"):
+            st.caption(f"📤 已（尝试）复制到外部目录：`{detail['output_export_dir']}`（详情见下方历史事件）")
+        else:
+            st.caption(f"📤 完成后将复制产出到：`{detail['output_export_dir']}`")
 
 
 def render_workflow_tab(client: AgentClient):

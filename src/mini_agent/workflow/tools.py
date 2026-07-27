@@ -450,6 +450,7 @@ def register_workflow_tools(cfg: "AppConfig") -> None:
         background: Optional[bool] = None,
         force_serial: Optional[bool] = None,
         require_all_inputs_upfront: bool = False,
+        output_export_dir: Optional[str] = None,
     ) -> str:
         """
         name: 工作流名称（与 YAML 文件名对应）
@@ -465,6 +466,11 @@ def register_workflow_tools(cfg: "AppConfig") -> None:
                     解析到值，缺失则直接报错列出缺哪些字段，不会跑到一半
                     才发现要等人工输入。适合"全自动、所有参数已在最初给全"
                     的调用场景。
+        output_export_dir: 可选的外部导出目录（绝对路径）。不设置则不做任何
+                    额外操作；设置时，工作流跑完（无论成功/失败/部分完成）
+                    会把本次执行 output/ 目录下的所有文件复制到这个目录。
+                    适合"工作流产出需要落到用户指定的固定位置"的场景，不用
+                    再手动 cp 一遍。
         """
         from mini_agent.workflow import api_helpers
 
@@ -478,6 +484,7 @@ def register_workflow_tools(cfg: "AppConfig") -> None:
                 cfg, name, parsed_inputs, background,
                 force_serial=force_serial,
                 require_all_inputs_upfront=require_all_inputs_upfront,
+                output_export_dir=output_export_dir,
             )
         except api_helpers.WorkflowApiError as e:
             return f"❌ {e.message}"
@@ -495,6 +502,7 @@ def register_workflow_tools(cfg: "AppConfig") -> None:
             f"`pause_workflow_run` / `cancel_workflow_run` 控制执行"
             + ("，此工作流包含需要人工审批的步骤，跑到该步骤时会等待 `approve_workflow_step` / `reject_workflow_step`。" if has_approval_step else "")
             + f"\n📁 本次工作流的默认输出目录：`{wf_output_dir}`（用户未指定路径时，产出文件请写入这里，不要写入你自己的 session output 目录）"
+            + (f"\n📤 完成后会自动把输出目录下的文件复制到：`{output_export_dir}`" if output_export_dir else "")
         )
 
     # ── 列举工作流 ──────────────────────────────────────────────────────────

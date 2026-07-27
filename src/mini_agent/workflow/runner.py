@@ -106,6 +106,9 @@ class WorkflowRunResult:
     # 用户未指定输出路径时，任何"要保存为文件"的产出都应写到这里，而不是
     # 触发本次工作流的主 Agent 自己的 session output 目录。
     output_dir: str = ""
+    # [output_export 功能] 若用户指定了外部导出目录，这里记录目标目录与
+    # 复制结果（copied_files/error），未指定时保持 None。
+    output_export_result: Optional[dict] = None
 
     @property
     def final_output(self) -> str:
@@ -153,6 +156,14 @@ class WorkflowRunResult:
                 f"若需要把以上内容保存为文件，且用户没有另外指定路径，请写入此目录，"
                 f"不要写入你自己（主 Agent）的 session output 目录。"
             )
+        if self.output_export_result:
+            lines.append("")
+            er = self.output_export_result
+            if er.get("error"):
+                lines.append(f"⚠️ 导出到外部目录失败：`{er['dest_dir']}` — {er['error']}")
+            else:
+                n = len(er.get("copied_files") or [])
+                lines.append(f"📤 已将 {n} 个产出文件复制到外部目录：`{er['dest_dir']}`")
         return "\n".join(lines)
 
 
@@ -194,6 +205,7 @@ class WorkflowRunner:
         inputs: Optional[dict] = None,
         workflow_session_id: Optional[str] = None,
         force_serial: Optional[bool] = None,
+        output_export_dir: Optional[str] = None,
     ) -> WorkflowRunResult:
         """
         执行一个工作流。
@@ -206,6 +218,12 @@ class WorkflowRunner:
                 适合调试/临时资源受限场景。None 时读取
                 cfg.workflow.parallel_execution_enabled（默认 True）作为
                 全局兜底。
+        output_export_dir: [output_export 功能] 可选的外部导出目录。不设置
+                时行为不变（不做任何复制）；设置时，workflow 到达终态
+                （done/failed/partial/cancelled，paused 除外——那只是"暂停"，
+                还没真正结束）后，把本次执行 `output/` 目录下的所有文件
+                复制过去。只在新建执行（非 resume）时生效，resume 场景
+                沿用 session 里已经记录的导出目录，不需要重复传入。
         workflow_session_id: 若指定且对应的 session.json 已存在，则视为
                 resume——跳过已 DONE 的 step，只重跑未完成部分；否则视为
                 新建一次执行（新建时若传入的 id 尚不存在也会用它作为新
@@ -231,6 +249,7 @@ class WorkflowRunner:
                 workflow_session_id=wf_session_id,
                 workflow_name=wf.name,
                 inputs=inputs,
+                output_export_dir=(output_export_dir or None),
             )
             paths.ensure_workflow_session_dir(wf_session_id)
             # 保存本次执行使用的工作流定义快照，防止运行中途原 YAML 被改动
@@ -358,6 +377,27 @@ class WorkflowRunner:
                 )
             except Exception:
                 pass
+
+            # [output_export 功能] 到达真正的终态（paused 不算——那只是暂停，
+            # 之后 resume 还会再跑）时，若用户指定了导出目录，把本次执行
+            # output/ 下的文件复制过去。复制失败只记事件、不影响返回结果，
+            # 避免"导出这一步出错"反过来污染 workflow 本身的执行状态。
+            if status != "paused":
+                export_result = wf_session.export_output_files(paths)
+                if export_result is not None:
+                    wf_session.append_event(paths, "output_exported", export_result)
+                    if export_result.get("error"):
+                        R.print_warning(
+                            f"[Workflow] 输出目录导出失败：{export_result['error']}"
+                        )
+                    else:
+                        R.print_info(
+                            f"[Workflow] 已导出 {len(export_result['copied_files'])} 个文件到 "
+                            f"{export_result['dest_dir']}"
+                        )
+            else:
+                export_result = None
+
             return WorkflowRunResult(
                 workflow_name=wf.name,
                 status=status,
@@ -366,6 +406,7 @@ class WorkflowRunner:
                 error=error,
                 workflow_session_id=wf_session_id,
                 output_dir=str(wf_output_dir),
+                output_export_result=export_result,
             )
 
         # [具身改进 B3] 拓扑分层：同一层内互不依赖的步骤可以并发执行。
