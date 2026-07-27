@@ -191,7 +191,8 @@ class ToolRegistry:
         td = self._tools.get(name)
         if not td:
             raise ValueError(f"Unknown tool: {name!r} (namespace={self.namespace!r})")
-        return td.fn(**tool_input)
+        coerced = _coerce_tool_input(td.fn, tool_input)
+        return td.fn(**coerced)
 
     # ── Anthropic API format ───────────────────────────────────────────────────
 
@@ -323,3 +324,60 @@ def _annotation_to_json(ann: Any, name: str) -> tuple[str, str]:
             return _annotation_to_json(inner[0], name)
     t = _PY_TO_JSON.get(ann, "string")
     return t, name.replace("_", " ")
+
+
+# ── Input coercion ───────────────────────────────────────────────────────────
+# [通用健壮性] 工具调用方（LLM 的 tool_use JSON / 部分 MCP 客户端）有时会把
+# bool/number 参数序列化成字符串（比如 "true"/"300" 而不是原生 true/300）。
+# ToolRegistry.call() 之前是 `td.fn(**tool_input)` 直接透传，Python 不会做
+# 隐式类型转换，一旦工具函数体内把这类参数当数字/布尔用（比如
+# get_workflow_run_status 里 `waited >= timeout` 那种数值比较），就会在执行
+# 期间才炸出 TypeError，而且报错信息完全看不出是"入参类型不对"。
+# 这里在真正调用 fn 之前，按函数签名的类型注解（不是按 JSON Schema 字符串，
+# 注解更精确、能正确处理 Optional）尝试把字符串值转换成声明的类型，转换
+# 失败就原样保留交给函数自己报错——不吞异常、不影响本来就传对类型的调用。
+def _unwrap_optional_ann(ann: Any) -> Any:
+    if _is_optional(ann):
+        inner = [a for a in getattr(ann, "__args__", ()) if a is not type(None)]
+        if inner:
+            return inner[0]
+    return ann
+
+
+def _coerce_value(value: Any, ann: Any) -> Any:
+    ann = _unwrap_optional_ann(ann)
+    if ann is inspect.Parameter.empty or not isinstance(value, str):
+        return value
+    try:
+        if ann is bool:
+            low = value.strip().lower()
+            if low in ("true", "1", "yes", "y", "on"):
+                return True
+            if low in ("false", "0", "no", "n", "off"):
+                return False
+            return value  # 不认识的字符串，原样交给函数报错
+        if ann is int:
+            return int(value.strip())
+        if ann is float:
+            return float(value.strip())
+        if ann in (list, dict):
+            parsed = json.loads(value)
+            return parsed if isinstance(parsed, ann) else value
+    except (ValueError, TypeError, json.JSONDecodeError):
+        return value  # 转换失败，原样保留——让函数自己按原始值报错，不静默吞掉问题
+    return value
+
+
+def _coerce_tool_input(fn: Callable, tool_input: dict) -> dict:
+    """按 fn 的类型注解，把 tool_input 里值类型对不上的字符串参数尝试转换
+    成声明的类型（bool/int/float/list/dict）。不认识的参数名、没有类型
+    注解的参数、转换失败的值都原样透传，不改变原有行为。"""
+    try:
+        sig = inspect.signature(fn)
+    except (TypeError, ValueError):
+        return tool_input
+    coerced = dict(tool_input)
+    for param_name, param in sig.parameters.items():
+        if param_name in coerced and param.annotation is not inspect.Parameter.empty:
+            coerced[param_name] = _coerce_value(coerced[param_name], param.annotation)
+    return coerced
