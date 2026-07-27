@@ -1,7 +1,16 @@
 # 补全问题详情 Prompt（skill_agent，挂载 browser-cdp skill）
 
-你现在要使用 browser-cdp skill（沿用固定专用实例 `zhihu_session`，复用登录态），逐个打开
+你现在要使用 browser-cdp skill（沿用固定专用实例 ，复用登录态），逐个打开
 上一步筛选出来的知乎问题详情页，补全信息。
+
+## 关键修复：使用已登录的知乎浏览器实例
+
+**必须使用以下固定配置**：
+- 调试端口：`9336`
+- 用户数据目录：`.claude/skills/browser-cdp/temp_data/zhihu_logged_in_profile`
+- 这对应 `launch_zhihu_logged_in.py` 启动的已登录浏览器实例
+
+**不要**使用 `--name=zhihu_session` 或其他配置，那个实例没有知乎登录态。
 
 ## 待补全的问题列表
 
