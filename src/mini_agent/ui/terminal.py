@@ -1504,6 +1504,19 @@ class Terminal:
                     self._q.task_done()
                     break
                 self._handle(msg)
+            except Exception as e:
+                # [健壮性] 这是渲染队列唯一的消费线程，一旦 _handle() 抛出未
+                # 捕获异常（比如 Windows 旧版控制台/GBK 代码页遇到 emoji 之类
+                # 无法编码的字符，rich 在 legacy_windows_render 里直接抛
+                # UnicodeEncodeError），线程的 run() 会整体退出且不会自动
+                # 重启——表现为：这条消息之后，整个进程剩余生命周期里所有
+                # 终端输出（状态栏、后续 print/stream）全部静默消失，只能
+                # 在 stderr 里看到一条不起眼的线程异常 traceback，很容易被
+                # 误判成"卡住了/没反应"。单条消息渲染失败不应该有这么大的
+                # 爆炸半径——记录异常、丢弃这一条消息，渲染循环继续处理
+                # 队列里后续的消息。
+                from mini_agent.errors import log_exception
+                log_exception(e, where='mini_agent.ui.terminal.Terminal._render_loop')
             finally:
                 if msg.kind != "_stop":
                     self._q.task_done()
