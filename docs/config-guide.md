@@ -651,7 +651,38 @@ recall_history_mode: str = "keyword"   # "keyword"（已实现）| "embedding"�
 **始终**注册在全局 registry 中（与 `notepad_enabled` 一致的取舍），关闭时调用
 直接返回错误提示，不做任何检索。详见 [Compact 设计文档](compact-design.md#p2-b-raw-history-按需找回工具)。
 
-### BehaviorConfig（用户行为感知系统，独立配置文件）
+### `max_turns_on_limit` / `max_turns_hard_limit`（AppConfig 直接字段）
+
+```python
+max_turns: int = 50              # 单次 run_turn 内，模型-工具循环的常规轮次预算
+max_turns_on_limit: str = "stop" # "stop" | "continue" | "compact_continue"
+max_turns_hard_limit: int = 250  # 250 = 50 * 5，continue/compact_continue 策略下的硬性总轮次上限
+```
+
+`agent_config.json` 中配置：
+
+```json
+{
+  "max_turns": 50,
+  "max_turns_on_limit": "compact_continue",
+  "max_turns_hard_limit": 250
+}
+```
+
+撞到 `max_turns` 轮次预算时（终端会打印 `Reached max turns (N).` 警告），
+`max_turns_on_limit` 决定接下来怎么做：
+
+| 取值 | 行为 |
+| --- | --- |
+| `"stop"`（默认，原有行为不变） | 直接结束本轮 `run_turn`，把控制权交还用户/调用方 |
+| `"continue"` | 不压缩历史，直接把预算续上（`_turns_budget` 追加一个 `max_turns`）并注入一条模拟的"继续"消息，agent 不中断地往下跑；历史会持续增长，务必配合 token 阈值触发器（见 [Compact 设计文档](compact-design.md)）一起用，否则容易把 context 撑爆 |
+| `"compact_continue"` | 先调用 `compact_with_skills()` 强制压缩一次历史（不等 token/轮次触发器命中），压缩成功后再注入"继续"消息续跑，行为与 `[AUTO-COMPACT-CONTINUE]` 的自动续接一致 |
+
+无论选哪种非 `"stop"` 策略，续跑的总轮次都受 `max_turns_hard_limit` 兜底
+（默认 `max_turns * 5`），达到硬顶后仍会退回 `"stop"` 的行为，避免长时间
+自动化任务失控地无限循环下去。`daemon`/自主任务场景建议用
+`"compact_continue"`；交互式 CLI 场景保持默认 `"stop"` 即可，让用户自己
+决定是否要继续。
 
 > 这是唯一**不属于** `AppConfig` 加载流程的配置块——单独落盘在
 > `<project_root>/behavior_config.json`，跟 `agent_config.json` 放在

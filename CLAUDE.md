@@ -129,7 +129,7 @@ mini-agent user token u_a1b2c3d4                       # 重新生成 token
   - `reflection.py` — 会话结束反思流水线（lesson/timeline/workdir 知识/巩固/可观测性）
   - `profile.py` — 用户画像读取/刷新/摘要生成
   - `llm_control.py` — LLM 客户端与 Provider/模型切换
-  - `turn_loop.py` — 对话主循环（`run_turn`/`_agentic_loop` 等）
+  - `turn_loop.py` — 对话主循环（`run_turn`/`_agentic_loop` 等）；撞到 `cfg.max_turns` 硬顶时的行为由 `cfg.max_turns_on_limit`（`"stop"` 默认 / `"continue"` / `"compact_continue"`）+ `cfg.max_turns_hard_limit`（续跑总轮次兜底，默认 `max_turns * 5`）控制，详见 [配置系统指南](docs/config-guide.md#max_turns_on_limit--max_turns_hard_limitappconfig-直接字段)
   - `role_judge.py` — 角色 Agent 联动与轮次质量判定
   - `reminders_correction.py` — 情境提醒注入与人类反馈纠正检测
   - `compaction.py` — 历史压缩（skill compact/分块压缩/自动触发）
