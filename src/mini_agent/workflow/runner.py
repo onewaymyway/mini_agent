@@ -55,7 +55,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from typing import Any, Optional, TYPE_CHECKING
 
-from .schema import WorkflowDef, WorkflowStep, StepResult, StepStatus
+from .schema import WorkflowDef, WorkflowStep, StepResult, StepStatus, ConditionEvalError
 from .session import WorkflowSession, WorkflowRunStatus
 from . import registry as wf_registry
 from .watchdog import WorkflowWatchdog
@@ -786,13 +786,34 @@ class WorkflowRunner:
                 )
                 return
 
-            if step.condition and not self._eval_condition(step.condition, step_results, inputs):
-                R.print_info(f"[Workflow] 步骤 {step.id} 条件不满足，跳过：{step.condition!r}")
-                step_results[step.id] = StepResult(
-                    step_id=step.id,
-                    status=StepStatus.SKIPPED,
-                )
-                return
+            if step.condition:
+                try:
+                    condition_ok = self._eval_condition(step.condition, step_results, inputs)
+                except ConditionEvalError as e:
+                    # [workflow_mechanism_improvement_plan_p12.md Phase 1]
+                    # 求值本身出异常（引用了不存在的字段/类型不匹配等），
+                    # 这是"表达式写错了"，不是"条件不满足"——标记
+                    # NEEDS_FIX 而不是 SKIPPED，提示应先用
+                    # patch_workflow_step 修正 condition 再续跑，避免被
+                    # retry_on_error 误判成"重试可能有用"而反复空转。
+                    R.print_warning(
+                        f"[Workflow] 步骤 {step.id} 的 condition 求值异常，"
+                        f"标记为 NEEDS_FIX：{e}"
+                    )
+                    step_results[step.id] = StepResult(
+                        step_id=step.id,
+                        status=StepStatus.NEEDS_FIX,
+                        error=str(e),
+                        error_type=type(e.original_exception).__name__,
+                    )
+                    return
+                if not condition_ok:
+                    R.print_info(f"[Workflow] 步骤 {step.id} 条件不满足，跳过：{step.condition!r}")
+                    step_results[step.id] = StepResult(
+                        step_id=step.id,
+                        status=StepStatus.SKIPPED,
+                    )
+                    return
 
             _unresolved_placeholders, _upstream_step_ids_used = (
                 self._scan_prompt_placeholders(step.prompt, step_results, inputs)
@@ -1205,11 +1226,16 @@ class WorkflowRunner:
         try:
             return bool(eval(condition, {"__builtins__": {}}, ns))  # noqa: S307
         except Exception as e:
+            # [workflow_mechanism_improvement_plan_p12.md Phase 1] 不再把
+            # 求值异常吞掉降级成 False（那样会和"表达式正常求值为 False"
+            # 混淆成同一种 SKIPPED 结果）。这里只负责记录诊断日志，真正的
+            # 异常包装/上抛交给下面的 ConditionEvalError，由调用方
+            # （_run_one_step）决定如何映射到 StepStatus（应为 NEEDS_FIX）。
             from mini_agent.errors import log_exception
             log_exception(e, where='mini_agent.workflow.runner.WorkflowRunner._eval_condition')
             import mini_agent.ui.renderer as R
-            R.print_warning(f"[Workflow] 条件表达式执行失败 {condition!r}: {e}，默认跳过步骤")
-            return False
+            R.print_warning(f"[Workflow] 条件表达式执行失败 {condition!r}: {e}")
+            raise ConditionEvalError(condition, e) from e
 
     # ── 步骤执行 ────────────────────────────────────────────────────────────
 

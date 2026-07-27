@@ -45,6 +45,26 @@ from typing import Any, Optional
 STEP_TYPES = ("agent", "role_agent", "sub_workflow", "tool_call", "human_input", "script", "skill_agent", "python_step")
 
 
+class ConditionEvalError(RuntimeError):
+    """
+    [workflow_mechanism_improvement_plan_p12.md Phase 1] condition 表达式
+    在运行期求值时抛出的异常（区别于"表达式语法/引用都对，只是求值结果
+    为 False"的正常情况）。runner._eval_condition 捕获到求值异常后包装成
+    这个类型重新抛出，调用方（runner._run_one_step）据此把该 step 标记为
+    StepStatus.NEEDS_FIX 而不是 StepStatus.SKIPPED —— 前者提示"表达式本身
+    可能写错了，需要人工用 patch_workflow_step 修正"，后者是"业务上确实
+    不满足条件，属于正常跳过"，两者不应该混在一起。
+    """
+
+    def __init__(self, condition: str, original_exception: Exception):
+        self.condition = condition
+        self.original_exception = original_exception
+        super().__init__(
+            f"condition {condition!r} 求值失败："
+            f"{type(original_exception).__name__}: {original_exception}"
+        )
+
+
 def condition_referenced_names(condition: str) -> set[str]:
     """
     [P9-3 workflow_system_next_directions.md §3.2] 解析 condition 表达式，
