@@ -203,6 +203,23 @@ def resume_workflow_run(
     except ValueError as e:
         raise WorkflowApiError("bad_snapshot", f"定义快照解析失败：{e}")
 
+    # [bugfix] wf.source_dir 是纯运行时字段，不参与 to_dict()/快照序列化，
+    # generator.parse_yaml() 重建出来的 WorkflowDef 因此丢失了目录模式
+    # workflow 的 source_dir，导致 python_step 的 ctx.workflow_dir 为 None、
+    # load_prompt_file() 报"workflow_dir 未设置"；同理 prompt_file/
+    # script_path 在快照里也只存了相对路径本身（没存展开后的正文），
+    # 需要重新按 store 加载时同一套逻辑解析一遍。这里按工作流名字重新定位
+    # 一次原始入口文件（目录模式 or 单文件模式），复用 WorkflowStore 的
+    # 静态解析方法，行为与 WorkflowStore._load_path() 保持一致。
+    from mini_agent.workflow.store import WorkflowStore
+    _store = WorkflowStore(Path(cfg.project_root))
+    _entry_path = _store._resolve_path(wf.name)
+    if _entry_path is not None:
+        if _entry_path.name == "workflow.yaml" and _entry_path.parent != _store._dir:
+            wf.source_dir = _entry_path.parent
+        _store._resolve_prompt_files(wf, _entry_path)
+        _store._resolve_script_paths(wf, _entry_path)
+
     if force_rerun_from:
         _mark_downstream_for_rerun(wf, wf_session, force_rerun_from)
         wf_session.save(paths)
