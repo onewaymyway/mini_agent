@@ -556,6 +556,22 @@ class WorkflowRunner:
             skill_loader = bundle.skill_loader if (bundle and skill is not None) else None
 
         global_skills_dir = getattr(self._cfg, "skills_dir", None)
+
+        # [数据聚合修复] 与 _execute_with_main_agent / _execute_with_role_agent
+        # 同样的落盘约定：把该 step 对应的临时最小 Agent 数据也归档到
+        # workflow_sessions/<wf_session_id>/step_<step.id>/ 下，而不是散落进
+        # 全局 .agent/sessions/——这里之前一直漏传 session_dir，是
+        # skill_agent（以及 python_step 的 ctx.run_agent_turn()）产出的
+        # session 数据没有跟着 workflow 数据聚合到一起的原因。
+        session_dir = None
+        wf_session = getattr(self, "_current_wf_session", None)
+        if wf_session is not None:
+            from mini_agent.storage.paths import AgentPaths as _AP
+            paths = getattr(self, "_current_paths", None) or _AP(project_root=self._cfg.project_root)
+            session_dir = paths.workflow_step_agent_dir(
+                wf_session.workflow_session_id, f"step_{step.id}"
+            )
+
         return build_minimal_agent(
             project_root=self._cfg.project_root,
             verbose=self._cfg.verbose,
@@ -571,6 +587,7 @@ class WorkflowRunner:
             skill_name=skill_name,
             skill_loader=skill_loader,
             global_skills_dir=_Path(global_skills_dir) if global_skills_dir else None,
+            session_dir=session_dir,
         )
 
     def _write_step_output_file(self, step: WorkflowStep, output: str) -> None:
@@ -1409,9 +1426,13 @@ class WorkflowRunner:
             # stdout/stderr 写进这个实例属性（成功/失败都写，之前只有失败
             # 时才会被拼进异常消息里），供下面统一合并进 StepResult.debug_log。
             self._last_subprocess_debug = None
+            # [workflow 数据聚合修复] 每个 step 开始前重置，避免上一个 step
+            # 记录的 agent session 串到这一个 step 的结果里。
+            self._last_step_agent_sessions = []
             executor = _executors.get_executor(step.effective_type)
             output = executor.execute(self, step, resolved_prompt)
             _subproc_debug = getattr(self, "_last_subprocess_debug", None) or {}
+            _agent_sessions = list(getattr(self, "_last_step_agent_sessions", None) or [])
 
             # [next_doc/workflow_python_step_and_zhihu_publish_plan.md §A3]
             # 通用输出落盘契约：step.output_file 有值时，把该 step 的输出
@@ -1443,6 +1464,7 @@ class WorkflowRunner:
                     error=f"质检评分不达标：{int(score*100)}/100（阈值 {int(gate_threshold*100)}/100）",
                     duration_seconds=time.monotonic() - t_start,
                     debug_log=dict(_subproc_debug),
+                    agent_sessions=_agent_sessions,
                 )
 
             return StepResult(
@@ -1453,6 +1475,7 @@ class WorkflowRunner:
                 duration_seconds=time.monotonic() - t_start,
                 debug_log=dict(_subproc_debug),
                 result_file=(getattr(self, "_step_result_file_paths", None) or {}).get(step.id),
+                agent_sessions=_agent_sessions,
             )
         except Exception as e:
             from mini_agent.errors import log_exception
@@ -1466,6 +1489,7 @@ class WorkflowRunner:
                 context=self._build_error_context(step, resolved_prompt),
                 duration_seconds=time.monotonic() - t_start,
                 debug_log=dict(getattr(self, "_last_subprocess_debug", None) or {}),
+                agent_sessions=list(getattr(self, "_last_step_agent_sessions", None) or []),
             )
 
     def _extract_step_score(self, step: WorkflowStep, output: str) -> "Optional[float]":
@@ -1577,7 +1601,34 @@ class WorkflowRunner:
         )
         output = agent.run_turn(prompt)
         self._report_step_tokens(step, agent)
+        self._record_step_agent_session(agent)
         return output
+
+    def _record_step_agent_session(self, agent: Any) -> None:
+        """[workflow 数据聚合修复] 把一个刚跑完的独立 Agent 实例对应的
+        session_id / session 目录记进 self._last_step_agent_sessions（由
+        _execute_step 在每个 step 执行前重置、执行后合并进 StepResult.
+        agent_sessions），供 session.json 追溯"这个 step 的 agent 数据在
+        哪"。跟 _report_step_tokens 同样是"事后从 agent 实例上读一点信息
+        挂到 runner 实例属性上"的模式，不改 StepExecutor.execute() 的公共
+        签名。读取失败（比如 agent 没有 _session/_session_mgr，测试里的
+        mock 对象）只跳过，不影响 step 本身的执行结果。"""
+        try:
+            from pathlib import Path as _Path
+            sess = getattr(agent, "_session", None)
+            mgr = getattr(agent, "_session_mgr", None)
+            if sess is None or mgr is None:
+                return
+            entry = {
+                "session_id": sess.id,
+                "session_dir": str(_Path(mgr.session_dir) / sess.id),
+            }
+            if getattr(self, "_last_step_agent_sessions", None) is None:
+                self._last_step_agent_sessions = []
+            self._last_step_agent_sessions.append(entry)
+        except Exception as e:
+            from mini_agent.errors import log_exception
+            log_exception(e, where="mini_agent.workflow.runner.WorkflowRunner._record_step_agent_session")
 
     def _report_step_tokens(self, step: WorkflowStep, agent: Any) -> None:
         """

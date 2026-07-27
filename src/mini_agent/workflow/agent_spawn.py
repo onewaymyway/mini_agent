@@ -32,6 +32,7 @@ def build_minimal_agent(
     skill_name: Optional[str] = None,
     skill_loader: Optional[Any] = None,
     global_skills_dir: Optional[Any] = None,
+    session_dir: Optional[Any] = None,
 ) -> Any:
     """构造一个自动批准（auto_approve=True）、非流式输出的最小 Agent 实例，
     可选强制激活一个 skill（不走关键词触发判断）。返回值是 Agent 实例，
@@ -41,6 +42,18 @@ def build_minimal_agent(
     没有则退回 global_skills_dir 现建一个 SkillLoader。两者都没有且
     指定了 skill_name 时抛 ValueError（与原 SkillAgentStepExecutor 行为
     一致）。
+
+    session_dir 不传时（默认）沿用 SessionManager 的默认行为，落到全局
+    `.agent/sessions/`——这是历史遗留：这个"临时最小 Agent"以前只用来跑
+    一次性 prompt，没考虑过数据归档。[数据聚合修复] 现在 skill_agent /
+    python_step 的 ctx.run_agent_turn() 都是 workflow 的一个 step，产出的
+    session 数据（history/traces/output 等）理应跟这次 workflow 执行绑在
+    一起，而不是散落进跟其它任意会话混在一起的全局目录、事后很难对应回
+    是哪次 workflow 跑出来的。调用方（runner._spawn_minimal_agent /
+    py_step_runner._make_run_agent_turn）传入
+    `.agent/workflow_sessions/<wf_session_id>/step_<step_id>/` 之类的路径，
+    这里透传给 step_cfg.session.dir 即可，SessionManager 会在其下再建一层
+    随机 session_id 子目录（与 workflow_step_agent_dir 的约定一致）。
     """
     from mini_agent.config import load_config
     from mini_agent.agent import Agent
@@ -74,6 +87,11 @@ def build_minimal_agent(
     step_cfg.stream = False
     if timeout:
         step_cfg.request_timeout = timeout
+    if session_dir:
+        # AppConfig.session_dir 是只读 property（代理 self.session.dir），
+        # 没有 setter；真正可写的字段是 step_cfg.session.dir（与
+        # runner.py::_execute_with_main_agent 的写法一致）。
+        step_cfg.session.dir = session_dir
 
     guard = PermissionGuard(auto_approve=True, sandbox=sandbox, project_root=project_root)
     agent = Agent(cfg=step_cfg, guard=guard, registry=get_default_registry(), skill_loader=skill_loader)

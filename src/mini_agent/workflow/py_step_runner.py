@@ -56,9 +56,16 @@ def _build_llm_helper(app_cfg_dict: dict):
     return LLMHelper.from_config(cfg)
 
 
-def _make_run_agent_turn(app_cfg_dict: dict):
+def _make_run_agent_turn(app_cfg_dict: dict, session_dir=None):
     """构造 ctx.run_agent_turn 可调用对象：转发到 agent_spawn.build_minimal_agent
-    （与 runner.py::WorkflowRunner._spawn_minimal_agent 共用同一份构造逻辑）。"""
+    （与 runner.py::WorkflowRunner._spawn_minimal_agent 共用同一份构造逻辑）。
+
+    [数据聚合修复] session_dir 由调用方（main() 里）传入，指向
+    workflow_sessions/<wf_session_id>/step_<step_id>_agent_turn/——python_step
+    脚本内每调用一次 ctx.run_agent_turn() 都会新起一个最小 Agent，
+    SessionManager 会在这个目录下再各自建一层随机 session_id 子目录，
+    多次调用互不覆盖，同时都归档在这次 workflow 执行的数据目录里，
+    不再散落进全局 .agent/sessions/。"""
     from .agent_spawn import build_minimal_agent
 
     def _run_agent_turn(prompt: str, *, skill_name=None, max_turns: int = 6) -> str:
@@ -75,6 +82,7 @@ def _make_run_agent_turn(app_cfg_dict: dict):
             max_turns=max_turns,
             skill_name=skill_name,
             global_skills_dir=Path(app_cfg_dict["skills_dir"]) if app_cfg_dict.get("skills_dir") else None,
+            session_dir=session_dir,
         )
         return agent.run_turn(prompt)
 
@@ -116,6 +124,12 @@ def main() -> int:
             result_file=raw.get("result_file"),
         )
 
+    # [数据聚合修复] session_dir 就是 workflow_sessions/<wf_session_id>/
+    # （见 executors.py::PythonStepExecutor.execute 里的 session_dir 构造），
+    # 每个 step 一个子目录，避免同一 workflow 里多个 python_step 调用
+    # run_agent_turn() 时互相覆盖彼此的 agent session 数据。
+    run_agent_turn_session_dir = Path(request["session_dir"]) / f"step_{request['step_id']}_agent_turn"
+
     ctx = PyStepContext(
         step_id=request["step_id"],
         session_dir=Path(request["session_dir"]),
@@ -123,7 +137,7 @@ def main() -> int:
         inputs=inputs,
         params=request.get("params") or {},
         llm=PyStepLLM(helper_factory=lambda: _build_llm_helper(request["app_cfg"])),
-        run_agent_turn=_make_run_agent_turn(request["app_cfg"]),
+        run_agent_turn=_make_run_agent_turn(request["app_cfg"], session_dir=run_agent_turn_session_dir),
         workflow_dir=Path(request["workflow_dir"]) if request.get("workflow_dir") else None,
     )
 

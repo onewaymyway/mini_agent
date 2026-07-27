@@ -612,6 +612,15 @@ class StepResult:
     #   subprocess_stdout/stderr — python_step/script 子进程输出（成功时也保留）
     # 长文本字段按 cfg.workflow.debug_log_max_chars 截断，不无限增长。
     debug_log: dict = field(default_factory=dict)
+    # [workflow 数据聚合修复] 该 step 若涉及独立 Agent 实例（type: agent /
+    # skill_agent，以及 python_step 里调用过的 ctx.run_agent_turn()），
+    # 记录每一次实际创建出来的 agent session（skill_agent 的
+    # resume/restart 重试可能对应多个）。每项形如
+    # {"session_id": "...", "session_dir": ".../workflow_sessions/<wf_id>/step_<id>/<session_id>"}，
+    # 供 session.json 里直接查到"这个 step 的 agent 数据到底落在哪"，
+    # 不用去猜目录名。没有涉及独立 Agent 的 step 类型（tool_call/
+    # human_input/script/sub_workflow 等）该字段为空列表。
+    agent_sessions: list = field(default_factory=list)
 
     def to_dict(self) -> dict:
         return {
@@ -627,6 +636,7 @@ class StepResult:
             "traceback": self.traceback,
             "context": self.context,
             "debug_log": self.debug_log,
+            "agent_sessions": self.agent_sessions,
         }
 
     @classmethod
@@ -644,4 +654,5 @@ class StepResult:
             traceback=data.get("traceback"),
             context=data.get("context") if isinstance(data.get("context"), dict) else {},
             debug_log=data.get("debug_log") if isinstance(data.get("debug_log"), dict) else {},
+            agent_sessions=data.get("agent_sessions") if isinstance(data.get("agent_sessions"), list) else [],
         )

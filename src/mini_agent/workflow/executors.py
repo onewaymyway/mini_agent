@@ -451,17 +451,33 @@ class PythonStepExecutor(StepExecutor):
             # 这里的环境变量是双保险，覆盖"reconfigure 因为某些环境不可用"
             # 的边缘情况。
             _child_env["PYTHONIOENCODING"] = "utf-8"
+            # [Ctrl+C 修复] 原来这里用 subprocess.run(..., timeout=timeout)，
+            # 其底层在 Windows 上是一次性 WaitForSingleObject(timeout_ms)——
+            # 一旦某个 python_step 的 timeout 设得比较长（比如
+            # enrich_questions 现在的 1800s），这一整段时间里主进程都卡在
+            # 这一次 C 级阻塞调用上：即使用户按 Ctrl+C、监听线程/内核也把
+            # SIGINT 递给了主进程，CPython 也要等这次阻塞调用返回才会检查
+            # 到 pending 信号、抛出 KeyboardInterrupt——实际表现就是"按了
+            # Ctrl+C 没反应，得等这个 step 跑完/超时才退出"。
+            #
+            # 改法：用 Popen 起子进程后，改成短间隔（POLL_INTERVAL）轮询
+            # proc.wait()，每次阻塞最多 POLL_INTERVAL 秒就返回一次 Python
+            # 字节码执行层，KeyboardInterrupt 能在两次轮询之间被正常抛出；
+            # stdout/stderr 改成重定向到临时文件而不是 PIPE，避免轮询期间
+            # 不去 communicate() 导致管道缓冲区写满、子进程反过来卡死的
+            # 经典死锁。捕获到 KeyboardInterrupt 时主动杀掉子进程（Windows
+            # 下用 taskkill /T 连子进程树一起杀，因为 CREATE_NEW_PROCESS_GROUP
+            # 只是让子进程不再被同一个 Ctrl+C 信号直接杀掉，不代表它会跟着
+            # 父进程一起退出），再把 KeyboardInterrupt 重新抛出去，让上层
+            # （runner 主循环 / CLI）走正常的中断处理路径。
+            POLL_INTERVAL = 0.3
+            stdout_path = Path(tmp_dir) / "stdout.log"
+            stderr_path = Path(tmp_dir) / "stderr.log"
+
             _popen_kwargs: dict = {
                 "cwd": str(runner._cfg.project_root),
-                "capture_output": True,
-                "text": True,
-                # 父进程这边同样显式固定 UTF-8 解码（+ errors="replace" 兜底
-                # 极端情况），不依赖宿主机 locale——子进程现在保证写 UTF-8，
-                # 父进程也必须按 UTF-8 读，两边不匹配的话父进程解码这步会
-                # 换一种方式崩溃。
-                "encoding": "utf-8",
-                "errors": "replace",
-                "timeout": timeout,
+                "stdout": open(stdout_path, "w", encoding="utf-8", errors="replace"),
+                "stderr": open(stderr_path, "w", encoding="utf-8", errors="replace"),
                 "env": _child_env,
             }
             if _is_windows:
@@ -469,23 +485,63 @@ class PythonStepExecutor(StepExecutor):
             else:
                 _popen_kwargs["start_new_session"] = True
 
-            proc = subprocess.run(
+            proc = subprocess.Popen(
                 [sys.executable, "-m", "mini_agent.workflow.py_step_runner", str(req_path)],
                 **_popen_kwargs,
             )
+
+            def _kill_proc_tree(p: "subprocess.Popen") -> None:
+                try:
+                    if _is_windows:
+                        subprocess.run(
+                            ["taskkill", "/F", "/T", "/PID", str(p.pid)],
+                            capture_output=True, timeout=10,
+                        )
+                    else:
+                        import signal as _signal
+                        os.killpg(os.getpgid(p.pid), _signal.SIGKILL)
+                except Exception:
+                    pass  # 子进程可能已经自己退出了，杀失败不影响后续处理
+                try:
+                    p.wait(timeout=5)
+                except Exception:
+                    pass
+
+            start_ts = time.monotonic()
+            returncode = None
+            try:
+                while True:
+                    try:
+                        returncode = proc.wait(timeout=POLL_INTERVAL)
+                        break
+                    except subprocess.TimeoutExpired:
+                        if timeout and (time.monotonic() - start_ts) > timeout:
+                            _kill_proc_tree(proc)
+                            raise subprocess.TimeoutExpired(
+                                cmd="mini_agent.workflow.py_step_runner", timeout=timeout,
+                            )
+            except KeyboardInterrupt:
+                _kill_proc_tree(proc)
+                raise
+            finally:
+                _popen_kwargs["stdout"].close()
+                _popen_kwargs["stderr"].close()
+
+            stdout_text = stdout_path.read_text(encoding="utf-8", errors="replace")
+            stderr_text = stderr_path.read_text(encoding="utf-8", errors="replace")
 
             # [P11 §6] 无论成功/失败都把 stdout/stderr 挂到 runner 实例属性上，
             # 供 _execute_step 合并进 StepResult.debug_log（成功时之前会
             # 被直接丢弃，脚本里的 print() 调试信息只有失败才看得到）。
             runner._last_subprocess_debug = {
-                "subprocess_stdout": proc.stdout,
-                "subprocess_stderr": proc.stderr,
+                "subprocess_stdout": stdout_text,
+                "subprocess_stderr": stderr_text,
             }
             if _undeclared_py_deps:
                 runner._last_subprocess_debug["undeclared_dependency_usage"] = _undeclared_py_deps
 
             last_line = ""
-            for line in (proc.stdout or "").splitlines():
+            for line in stdout_text.splitlines():
                 line = line.strip()
                 if line:
                     last_line = line
@@ -494,12 +550,12 @@ class PythonStepExecutor(StepExecutor):
             except json.JSONDecodeError:
                 result = {}
 
-            if proc.returncode != 0 or not result.get("ok"):
+            if returncode != 0 or not result.get("ok"):
                 raise RuntimeError(
-                    f"python_step 执行失败（returncode={proc.returncode}）：\n"
+                    f"python_step 执行失败（returncode={returncode}）：\n"
                     f"error: {result.get('error')}\n"
                     f"traceback: {result.get('traceback')}\n"
-                    f"stdout: {proc.stdout}\nstderr: {proc.stderr}"
+                    f"stdout: {stdout_text}\nstderr: {stderr_text}"
                 )
             return result.get("output", "")
 
@@ -539,7 +595,9 @@ class SkillAgentStepExecutor(StepExecutor):
             agent = runner._spawn_minimal_agent(
                 step, skill_name=step.skill_name, max_turns=max_turns, timeout=timeout,
             )
-            return self._strip_skill_tags(agent.run_turn(prompt))
+            output = self._strip_skill_tags(agent.run_turn(prompt))
+            runner._record_step_agent_session(agent)
+            return output
 
         # [next_doc/workflow_python_step_and_zhihu_publish_plan.md §B3]
         # "构造最小 Agent" 的逻辑已抽到 runner._spawn_minimal_agent()
@@ -556,6 +614,7 @@ class SkillAgentStepExecutor(StepExecutor):
         agent = runner._spawn_minimal_agent(
             step, skill_name=step.skill_name, max_turns=max_turns, timeout=timeout,
         )
+        runner._record_step_agent_session(agent)
         output = self._strip_skill_tags(agent.run_turn(prompt + file_instruction))
         ok, reason = runner._validate_result_file(step)
         if ok:
@@ -581,6 +640,7 @@ class SkillAgentStepExecutor(StepExecutor):
             agent = runner._spawn_minimal_agent(
                 step, skill_name=step.skill_name, max_turns=max_turns, timeout=timeout,
             )
+            runner._record_step_agent_session(agent)
             output = self._strip_skill_tags(agent.run_turn(prompt + file_instruction))
             ok, reason = runner._validate_result_file(step)
             if ok:
