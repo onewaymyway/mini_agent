@@ -530,7 +530,7 @@ class SkillAgentStepExecutor(StepExecutor):
         if not step.skill_name:
             raise ValueError(f"步骤 {step.id!r} 是 skill_agent 类型但未指定 skill_name")
 
-        max_turns = runner._effective_step_field(step, "max_turns", 10)
+        max_turns = runner._effective_step_field(step, "max_turns", 50)
         timeout = runner._effective_step_field(step, "timeout", None)
 
         # 没有声明 result_file 的 skill_agent step：保持旧行为（对话输出即
