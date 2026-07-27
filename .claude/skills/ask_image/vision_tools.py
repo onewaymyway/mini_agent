@@ -11,9 +11,9 @@ from typing import Generator
 import requests
 
 
-class NvidiaVisionClient:
+class AgnesVisionClient:
     """
-    NVIDIA Multimodal Client
+    Agnes Multimodal Client
 
     支持：
         - 单图
@@ -25,11 +25,11 @@ class NvidiaVisionClient:
         - 图片分析
     """
 
-    ENDPOINT = "https://integrate.api.nvidia.com/v1/chat/completions"
+    ENDPOINT = "https://apihub.agnes-ai.com/v1/chat/completions"
 
     def __init__(
         self,
-        model: str = "qwen/qwen3.5-122b-a10b",
+        model: str = "agnes-2.5-flash",
         timeout: int = 300,
         max_retries: int = 10,
         retry_delay: float = 5.0,
@@ -39,11 +39,11 @@ class NvidiaVisionClient:
         self.max_retries = max_retries
         self.retry_delay = retry_delay
 
-        self.api_key = os.getenv("NVIDIA_API_KEY")
+        self.api_key = os.getenv("AGNES_API_KEY")
 
         if not self.api_key:
             raise ValueError(
-                "Environment variable NVIDIA_API_KEY not found"
+                "Environment variable AGNES_API_KEY not found"
             )
 
     @staticmethod

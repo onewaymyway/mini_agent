@@ -5,7 +5,7 @@ triggers: 图片信息提取，读图，ask_image,图片,图
 ---
 # ask_image - 图片问答 Skill
 
-基于 `vision_tools.py` 实现的图片问答功能。
+基于 `vision_tools.py` 实现的图片问答功能，使用 Agnes AI 的视觉接口。
 
 ## 用法
 

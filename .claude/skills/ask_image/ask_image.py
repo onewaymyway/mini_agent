@@ -37,21 +37,21 @@ def main():
         print(f"错误：图片文件不存在：{image_path}")
         sys.exit(1)
 
-    # 检查 NVIDIA_API_KEY
-    if not os.getenv("NVIDIA_API_KEY"):
-        print("错误：缺少 NVIDIA_API_KEY 环境变量")
-        print("请运行：export NVIDIA_API_KEY=your_api_key")
+    # 检查 AGNES_API_KEY
+    if not os.getenv("AGNES_API_KEY"):
+        print("错误：缺少 AGNES_API_KEY 环境变量")
+        print("请运行：export AGNES_API_KEY=your_api_key")
         sys.exit(1)
 
 
     try:
-        from vision_tools import NvidiaVisionClient
+        from vision_tools import AgnesVisionClient
     except ImportError:
         print("错误：找不到 vision_tools.py，请确保它在当前工作目录")
         sys.exit(1)
 
     # 创建客户端并发起请求
-    client = NvidiaVisionClient()
+    client = AgnesVisionClient()
 
     print(f"\n[图片] {image_path}")
     print(f"[问题] {prompt}")
