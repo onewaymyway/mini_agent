@@ -25,6 +25,14 @@
 # 这是当前版本 python_step 获取 workflow 级 inputs 参数的标准方式（做法与
 # docs/workflow-guide.md"全自动执行模式"一节里 intake→run_checks 的例子一致）。
 
+# [数据传递优化] analyze_doc 除了在 doc_analysis.json 里返回 search_keywords
+# 数组本身，还额外用 ctx.write_output() 落一份 search_keywords.json（纯 JSON
+# 数组，符合 zhihu_search_with_login.py --keywords-file 的输入格式），并把
+# 这份文件的绝对路径放进返回值的 keywords_file 字段。search_zhihu 步骤的
+# prompt 直接引用 {analyze_doc.output} 里的 keywords_file 路径传给
+# --keywords-file，不需要 agent 在对话轮里自己从 search_keywords 现算一份
+# 关键词文件——少一次没必要的"临场造文件"操作，也避免抄错/漏抄关键词。
+
 name: zhihu_content_publish
 description: 分析本地文档内容，去知乎搜索适合作为答案的问题，批量LLM筛选后补全详情
 version: "1.0"

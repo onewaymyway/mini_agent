@@ -2,50 +2,50 @@
 
 你现在要使用 browser-cdp skill 真实操作浏览器，在知乎（www.zhihu.com）上搜索问题。
 
-## 关键修复：使用已登录的知乎浏览器实例
+## 关键词文件
 
-**必须使用以下固定配置**：
-- 调试端口：`9336`
-- 用户数据目录：`.claude/skills/browser-cdp/temp_data/zhihu_logged_in_profile`
-- 这对应 `launch_zhihu_logged_in.py` 启动的已登录浏览器实例
-
-**不要**使用 `--name=zhihu_session` 或其他配置，那个实例没有知乎登录态。
-
-## 关键词
-
-以下是本次要检索的关键词/短语列表（来自文档分析结果）：
+以下是文档分析步骤（analyze_doc）的完整产出：
 
 {analyze_doc.output}
 
-请取出其中的 `search_keywords` 字段，逐个在知乎搜索框中搜索。
+其中 `keywords_file` 字段是一个**已经生成好**的绝对路径，指向一份纯 JSON
+数组格式的关键词文件（内容就是 `search_keywords` 那份列表，格式已经符合
+`zhihu_search_with_login.py --keywords-file` 的要求）。**直接使用这个路径**，
+不需要你自己再从 `search_keywords` 字段现算一遍、手工写一份关键词文件——
+那一步已经由上游步骤做完了。
 
 ## 搜索要求
 
-对每个关键词：
-1. 在知乎搜索框输入关键词并搜索，筛选到"问题"这个内容类型（如果知乎搜索页支持按类型筛选）。
-2. 尽可能多地翻页/下滑加载更多结果，抓取搜索结果列表里出现的每一个问题，不要只看第一屏。
-3. 对每个问题，抓取搜索结果页上能看到的所有相关信息，至少包括：
+1. 直接调用下方"执行方式"里的命令，把 `keywords_file` 的路径原样传给
+   `--keywords-file` 参数。
+2. 命令跑完后，从其输出/落盘结果里获取每个关键词搜到的问题列表——具体是
+   直接读脚本的返回内容，还是脚本自己已经落了一份结果文件，以脚本实际
+   行为为准；如果搜索结果不完整或某些关键词没搜到，可以针对性地再手工
+   在知乎搜索框里补搜，不要求全程只能靠这一条命令。
+
+## 执行方式
+
+请直接调用 browser-cdp skill 的脚本来执行搜索：
+
+```bash
+cd .claude/skills/browser-cdp
+python zhihu_search_with_login.py --keywords-file "<analyze_doc.output 里的 keywords_file 绝对路径>" --port 9336 --max-results 30
+```
+
+**关键修复：使用已登录的知乎浏览器实例**：
+
+- 调试端口：`9336`
+- 用户数据目录：`.claude/skills/browser-cdp/temp_data/zhihu_logged_in_profile`
+- 这对应 `launch_zhihu_logged_in.py` 启动的已登录浏览器实例
+- **不要**使用 `--name=zhihu_session` 或其他配置，那个实例没有知乎登录态。
+
+对脚本没能覆盖到的信息（比如某个问题在搜索结果页上还展示了额外的元信息，
+但脚本抓取逻辑没覆盖），可以用浏览器工具手工补充抓取，至少确保每个问题都
+包含：
    - 问题标题
    - 问题详情页的完整 URL
    - 搜索结果里展示的简要说明/摘要文字（如果有）
    - 搜索结果里展示的其它元信息（比如已有回答数、关注数——如果搜索页本身就展示了的话）
-
-## 执行方式
-
-请直接调用 browser-cdp skill 的脚本来执行搜索。推荐使用以下方式：
-
-```bash
-cd .claude/skills/browser-cdp
-python zhihu_search_with_login.py --keywords-file "关键词文件" --port 9336 --max-results 30
-```
-关键词文件的格式为包含自定义关键词的 JSON 文件路径（数组格式）
-```json
-[
-   "关键词1",
-   "关键词2",
-   ...
-]
-```
 
 ## 输出要求
 

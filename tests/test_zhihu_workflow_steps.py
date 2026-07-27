@@ -104,6 +104,12 @@ class TestAnalyzeDocStep(unittest.TestCase):
         self.assertEqual(result["topic"], "Python asyncio")
         self.assertEqual(len(result["search_keywords"]), 2)
         self.assertEqual(result["source_doc_path"], str(Path(doc_path).resolve()))
+        # [优化] search_keywords 额外落一份独立文件，供 search_zhihu 步骤
+        # 直接传给 --keywords-file，不需要 agent 自己现算一份。
+        self.assertIn("keywords_file", result)
+        kw_path = Path(result["keywords_file"])
+        self.assertTrue(kw_path.exists())
+        self.assertEqual(json.loads(kw_path.read_text(encoding="utf-8")), result["search_keywords"])
 
 
 class TestFilterStep(unittest.TestCase):
