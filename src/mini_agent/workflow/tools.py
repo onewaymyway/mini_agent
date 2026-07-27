@@ -443,7 +443,9 @@ def register_workflow_tools(cfg: "AppConfig") -> None:
           description="执行已保存的工作流。按步骤顺序运行，支持条件分支和角色 Agent。"
                       "background=True 时立即返回 workflow_session_id，在后台线程继续执行，"
                       "配合 get_workflow_run_status/pause_workflow_run/cancel_workflow_run 等工具监控与控制；"
-                      "含 require_approval 步骤的工作流必须用 background=True 运行，否则审批会一直等到超时。")
+                      "含 require_approval 步骤的工作流必须用 background=True 运行，否则审批会一直等到超时。"
+                      "output_export_dir: 可选的外部导出目录（绝对路径）。不设置则不做任何额外操作；设置时，工作流跑完（无论成功/失败/部分完成）会把本次执行 output/ 目录下的所有文件复制到这个目录。"
+                      )
     def run_workflow(
         name: str,
         inputs: str = "{}",
