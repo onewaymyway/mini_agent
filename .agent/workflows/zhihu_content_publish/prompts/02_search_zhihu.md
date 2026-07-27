@@ -36,14 +36,14 @@
 
 ```bash
 cd .claude/skills/browser-cdp
-python zhihu_search_with_login.py "<关键词>" --port 9336 --max-results 10
+python zhihu_search_with_login.py "<关键词>" --port 9336 --max-results 30
 ```
 
 或者批量搜索所有关键词：
 
 ```bash
 cd .claude/skills/browser-cdp
-python zhihu_search_with_login.py --batch --port 9336 --max-results 10
+python zhihu_search_with_login.py --batch --port 9336 --max-results 30
 ```
 
 ## 输出要求

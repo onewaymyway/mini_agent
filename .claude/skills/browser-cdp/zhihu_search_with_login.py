@@ -48,139 +48,217 @@ SEARCH_QUERIES = [
 ]
 
 
-def search_zhihu(query: str, port: int = DEFAULT_PORT, max_results: int = 8) -> list:
-    """使用已登录的浏览器搜索知乎
-    
+def _ws_send(ws, msg_id: int, method: str, params: dict) -> None:
+    ws.send(json.dumps({"id": msg_id, "method": method, "params": params}))
+
+
+def _ws_wait_result(ws, msg_id: int, tries: int = 20, interval: float = 0.5):
+    """阻塞等待某个 msg_id 对应的响应，跳过其它 CDP 事件消息"""
+    for _ in range(tries):
+        raw = ws.recv()
+        data = json.loads(raw)
+        if data.get('id') == msg_id:
+            return data
+        time.sleep(interval)
+    return None
+
+
+_EXTRACT_JS = """
+(() => {
+    const allLinks = document.querySelectorAll('a');
+    const result = [];
+
+    for (let link of allLinks) {
+        const href = link.href;
+        const text = link.textContent.trim();
+
+        if (href.includes('zhihu.com/question/') &&
+            text.length > 5 &&
+            text.length < 150 &&
+            !text.includes('登录') &&
+            !text.includes('注册') &&
+            !text.includes('关注')) {
+            result.push({
+                text: text.substring(0, 100),
+                href: href
+            });
+        }
+    }
+
+    const seen = new Set();
+    const unique = [];
+    for (let item of result) {
+        if (!seen.has(item.href)) {
+            seen.add(item.href);
+            unique.push(item);
+        }
+    }
+
+    return JSON.stringify({
+        items: unique,
+        scrollY: window.scrollY,
+        scrollHeight: document.body.scrollHeight
+    });
+})()
+"""
+
+_SCROLL_JS = """
+(() => {
+    window.scrollTo(0, document.body.scrollHeight);
+    return document.body.scrollHeight;
+})()
+"""
+
+
+def _eval_js(ws, eval_id: int, js_code: str):
+    """执行一段 JS 并返回 Runtime.evaluate 的字符串结果（value），失败返回 None"""
+    _ws_send(ws, eval_id, "Runtime.evaluate", {
+        "expression": js_code,
+        "awaitPromise": True,
+    })
+    data = _ws_wait_result(ws, eval_id)
+    if data and 'result' in data and 'result' in data['result']:
+        return data['result']['result'].get('value')
+    return None
+
+
+def search_zhihu(
+    query: str,
+    port: int = DEFAULT_PORT,
+    min_results: int = 30,
+    max_results: int = 60,
+    max_scrolls: int = 12,
+    scroll_pause: float = 1.5,
+) -> list:
+    """使用已登录的浏览器搜索知乎，必要时向下滚动加载更多结果
+
+    默认的知乎搜索结果页只会渲染首屏那一小批问题，很多场景下达不到
+    "至少要拿到 N 条候选" 的要求。这里的策略是：
+
+    1. 先加载搜索页、提取一次首屏结果；
+    2. 如果已提取到的去重结果数 < ``min_results``，且还没到 ``max_scrolls``
+       次滚动上限，就滚动到页面底部、等待新内容加载，再提取一次；
+    3. 每次滚动后跟上一次提取结果比较——如果去重后的问题总数没有增加
+       （说明知乎没有再返回新内容，滚不出更多结果了），提前停止，不再
+       浪费滚动次数；
+    4. 达到 ``min_results``、达到 ``max_scrolls`` 上限、或连续滚动没有新
+       增结果，三者任一满足即停止，最终最多保留 ``max_results`` 条。
+
     Args:
         query: 搜索关键词
         port: CDP 调试端口
-        max_results: 最大结果数
-        
+        min_results: 至少要拿到的结果数（默认 30），不满足会持续滚动加载
+        max_results: 最终保留的结果数上限，避免无限增长
+        max_scrolls: 最多滚动次数，防止死循环/过度请求触发风控
+        scroll_pause: 每次滚动后等待新内容加载的秒数
+
     Returns:
-        搜索结果列表
+        搜索结果列表（按去重后出现顺序），每项 {"text": ..., "href": ...}
     """
     import urllib.parse
     import urllib.request
     encoded_query = urllib.parse.quote(query)
     search_url = f"https://www.zhihu.com/search?type=question&q={encoded_query}"
-    
+
     print(f"\n  搜索：{query}")
     print(f"  URL: {search_url}")
-    
+    print(f"  目标：至少 {min_results} 条，最多 {max_results} 条，最多滚动 {max_scrolls} 次")
+
     try:
         # 获取 tab 列表
         with urllib.request.urlopen(f'http://127.0.0.1:{port}/json/list', timeout=3) as resp:
             tabs = json.loads(resp.read().decode())
-        
+
         # 找到第一个知乎 tab
         zhihu_tab = None
         for tab in tabs:
             if 'zhihu.com' in (tab.get('url') or ''):
                 zhihu_tab = tab
                 break
-        
+
         if not zhihu_tab:
             print(f"  ✗ 未找到知乎 tab")
             return []
-        
+
         ws_url = zhihu_tab.get('webSocketDebuggerUrl')
         if not ws_url:
             print(f"  ✗ 未找到 WebSocket 地址")
             return []
-        
+
         # 使用 websocket 直接连接（需要设置 Origin 头）
         import websocket
-        import time
-        
+
         origin = f"http://127.0.0.1:{port}"
         ws = websocket.create_connection(ws_url, origin=origin)
-        
+
+        msg_id = 0
+
+        def next_id() -> int:
+            nonlocal msg_id
+            msg_id += 1
+            return msg_id
+
         # 发送 Page.navigate 命令
-        navigate_id = 1
-        ws.send(json.dumps({
-            "id": navigate_id,
-            "method": "Page.navigate",
-            "params": {"url": search_url}
-        }))
-        
-        # 等待导航完成
-        for _ in range(20):
-            result = ws.recv()
-            data = json.loads(result)
-            if data.get('id') == navigate_id:
+        navigate_id = next_id()
+        _ws_send(ws, navigate_id, "Page.navigate", {"url": search_url})
+        _ws_wait_result(ws, navigate_id)
+
+        time.sleep(3)  # 等待首屏内容加载
+
+        # 去重容器：href -> item，保持首次出现的顺序
+        collected: dict = {}
+
+        def merge_items(raw_value: str) -> int:
+            """解析一次提取结果，合并进 collected，返回本次新增的条数"""
+            if not raw_value:
+                return 0
+            try:
+                payload = json.loads(raw_value)
+            except (TypeError, ValueError):
+                return 0
+            items = payload.get("items", []) if isinstance(payload, dict) else []
+            before = len(collected)
+            for item in items:
+                href = item.get("href")
+                if href and href not in collected:
+                    collected[href] = item
+            return len(collected) - before
+
+        # 首屏提取
+        raw_value = _eval_js(ws, next_id(), _EXTRACT_JS)
+        new_count = merge_items(raw_value)
+        print(f"  · 首屏提取到 {len(collected)} 个问题（新增 {new_count}）")
+
+        # 不满足 min_results 就持续向下滚动加载
+        scroll_round = 0
+        while len(collected) < min_results and scroll_round < max_scrolls:
+            scroll_round += 1
+
+            _eval_js(ws, next_id(), _SCROLL_JS)
+            time.sleep(scroll_pause)
+
+            raw_value = _eval_js(ws, next_id(), _EXTRACT_JS)
+            new_count = merge_items(raw_value)
+            print(f"  · 第 {scroll_round} 次滚动后共 {len(collected)} 个问题（新增 {new_count}）")
+
+            if new_count == 0:
+                # 滚动没有带来新问题：要么到底了，要么知乎没有更多结果可加载
+                print(f"  · 滚动未产生新结果，提前停止（共滚动 {scroll_round} 次）")
                 break
-            time.sleep(0.5)
-        
-        time.sleep(3)  # 等待内容加载
-        
-        # 执行 JS 提取问题
-        eval_id = 2
-        js_code = """
-        (() => {
-            const allLinks = document.querySelectorAll('a');
-            const result = [];
-            
-            for (let link of allLinks) {
-                const href = link.href;
-                const text = link.textContent.trim();
-                
-                if (href.includes('zhihu.com/question/') && 
-                    text.length > 5 && 
-                    text.length < 150 &&
-                    !text.includes('登录') &&
-                    !text.includes('注册') &&
-                    !text.includes('关注')) {
-                    result.push({
-                        text: text.substring(0, 100),
-                        href: href
-                    });
-                }
-            }
-            
-            const seen = new Set();
-            const unique = [];
-            for (let item of result) {
-                if (!seen.has(item.href)) {
-                    seen.add(item.href);
-                    unique.push(item);
-                }
-            }
-            
-            return JSON.stringify(unique.slice(0, 15));
-        })()
-        """
-        
-        ws.send(json.dumps({
-            "id": eval_id,
-            "method": "Runtime.evaluate",
-            "params": {
-                "expression": js_code,
-                "awaitPromise": True
-            }
-        }))
-        
-        # 等待结果
-        result_json = None
-        for _ in range(20):
-            result = ws.recv()
-            data = json.loads(result)
-            if data.get('id') == eval_id:
-                result_json = data
-                break
-            time.sleep(0.5)
-        
+
         ws.close()
-        
-        if result_json and 'result' in result_json and 'result' in result_json['result']:
-            result_str = result_json['result']['result'].get('value', '')
-            if result_str:
-                questions = json.loads(result_str)
-                print(f"  ✓ 找到 {len(questions)} 个问题")
-                return questions
-        
-        print("  ✗ 未找到问题")
-        return []
-        
+
+        if not collected:
+            print("  ✗ 未找到问题")
+            return []
+
+        questions = list(collected.values())[:max_results]
+        if len(questions) < min_results:
+            print(f"  ! 已达到滚动上限/无更多结果，仅拿到 {len(questions)} 条（少于目标 {min_results} 条）")
+        else:
+            print(f"  ✓ 找到 {len(questions)} 个问题")
+        return questions
+
     except Exception as e:
         print(f"  ✗ 搜索失败：{e}")
         import traceback
@@ -193,7 +271,10 @@ def main():
     parser.add_argument("query", nargs="?", help="搜索关键词")
     parser.add_argument("--batch", action="store_true", help="批量搜索所有 Agent 方向")
     parser.add_argument("--port", type=int, default=DEFAULT_PORT, help=f"调试端口（默认 {DEFAULT_PORT}）")
-    parser.add_argument("--max-results", type=int, default=8, help="每个关键词最大结果数")
+    parser.add_argument("--min-results", type=int, default=30, help="每个关键词至少要拿到的结果数，不满足会自动向下滚动加载（默认 30）")
+    parser.add_argument("--max-results", type=int, default=60, help="每个关键词最终保留的结果数上限（默认 60）")
+    parser.add_argument("--max-scrolls", type=int, default=12, help="每个关键词最多滚动加载的次数，防止死循环/过度触发风控（默认 12）")
+    parser.add_argument("--scroll-pause", type=float, default=3, help="每次滚动后等待新内容加载的秒数（默认 3）")
     parser.add_argument("--output", default="zhihu_real_questions.json", help="输出文件")
     parser.add_argument("--keywords-file", help="包含自定义关键词的 JSON 文件路径（数组格式）")
     
@@ -239,7 +320,14 @@ def main():
         for i, (query, content_id, content_title) in enumerate(search_queries, 1):
             print(f"[{i}/{len(search_queries)}] ", end="")
             
-            questions = search_zhihu(query, port=args.port, max_results=args.max_results)
+            questions = search_zhihu(
+                query,
+                port=args.port,
+                min_results=args.min_results,
+                max_results=args.max_results,
+                max_scrolls=args.max_scrolls,
+                scroll_pause=args.scroll_pause,
+            )
             
             for q in questions:
                 all_results.append({
@@ -256,7 +344,14 @@ def main():
         
     elif args.query:
         # 单次搜索
-        questions = search_zhihu(args.query, port=args.port, max_results=args.max_results)
+        questions = search_zhihu(
+            args.query,
+            port=args.port,
+            min_results=args.min_results,
+            max_results=args.max_results,
+            max_scrolls=args.max_scrolls,
+            scroll_pause=args.scroll_pause,
+        )
         
         for q in questions:
             all_results.append({
