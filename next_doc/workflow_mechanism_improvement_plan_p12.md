@@ -124,6 +124,34 @@
 **验收标准**：新增用例通过，且不影响任何未使用 `tool_args` 占位符的
 既有 `tool_call` 用例（回归测试全量跑一遍）。
 
+> **已实施**（本次改动）：
+> - `runner.py` 新增 `_resolve_value()`：字符串委托给 `_resolve_prompt`，
+>   dict/list 递归处理，其它类型原样返回。
+> - `executors.py::ToolCallStepExecutor.execute()`：`tool_args` 非空时，
+>   取 `runner._current_step_results`/`runner._current_inputs`（`_execute_step`
+>   在分发到 executor 前已设置好，与 `python_step` 拿全量上游结果用的是
+>   同一个实例属性），对整个 `tool_args` 跑一遍 `_resolve_value()` 后再
+>   调用 `registry.call()`。`tool_args` 为空、走"prompt 整体当第一个参数"
+>   的旧路径不受影响。
+> - `schema.py::WorkflowDef.validate()`：把原来只扫描 `step.prompt` 的
+>   占位符一致性检查逻辑抽成局部函数 `_check_text()`，新增
+>   `_walk_tool_args()` 递归收集 `tool_args` 里的字符串叶子节点，两者
+>   共用同一套"引用的 step 是否存在/字段是否合法/是否在 depends_on 范围
+>   内"检查规则，报错文案通过 `source` 区分是 `prompt` 还是 `tool_args`。
+> - 新增测试（`tests/test_workflow_p12.py`）：`tool_args` 占位符被正确
+>   替换后再调用工具、无占位符的字面量值不受影响、`validate()` 对
+>   `tool_args` 里引用不存在 step / 缺少 depends_on 声明的情况能报错、
+>   引用合法时不报错。
+> - 测试结果：新增 6 条用例全部通过；连同 Phase 1 一并计入，8 个 workflow
+>   测试文件合计 141 条全部通过（此前观察到一次 `test_workflow_p11.py`
+>   里一条并发相关用例的偶发 flaky 失败，与本次改动无关——单独重跑及连续
+>   3 轮全量重跑均稳定通过，确认是既有的并发时序 flaky，不是本次改动
+>   引入的回归）。
+> - 涉及文件：`src/mini_agent/workflow/runner.py`、
+>   `src/mini_agent/workflow/executors.py`、
+>   `src/mini_agent/workflow/schema.py`（新增）
+>   `tests/test_workflow_p12.py`。
+
 ## Phase 3 — `result_file` 占位符支持字段访问
 
 **改动范围**：`runner.py`（`_resolve_prompt` 里 `.result_file` 分支）、
@@ -157,6 +185,69 @@
 
 **验收标准**：新增用例通过，且不影响任何仅使用 `{step_id.result_file}`
 （不带 `:` 后缀）的既有用例。
+
+> **已实施**（本次改动）：
+> - `runner.py` 新增 `_resolve_json_path()`（静态方法）：把
+>   `a.b[0].c` 形式的路径按 `.` 分段，每段用正则拆出"属性名"和若干
+>   `[数字下标]`，逐层 `dict.get`/`list[idx]` 取值，取不到时抛
+>   `KeyError`（不吞异常，由调用方决定怎么降级）。
+> - `_resolve_prompt` 的 `result_file` 分支：`field == "result_file"`
+>   时行为不变（返回路径本身）；`field` 形如 `"result_file:<path>"` 时，
+>   读取该 step 的结果文件（JSON），调用 `_resolve_json_path()` 取值后
+>   `str()` 转成文本插入 prompt；文件不存在/不是合法 JSON/路径取不到值
+>   （`KeyError`/`ValueError`/`OSError`/`TypeError`）时，不抛异常中断
+>   整个 step，直接把原始占位符文本原样保留（`return m.group(0)`），
+>   与"inputs 里找不到对应 key"的既有容错风格一致。
+> - `schema.py::WorkflowDef.validate()`：占位符字段名校验放宽为"若
+>   `ref_field` 以 `result_file:` 开头，拆出 `json_path` 部分单独做
+>   语法级正则校验（`^[A-Za-z_]\w*(\[\d+\])*(\.[A-Za-z_]\w*(\[\d+\])*)*$`），
+>   只挡明显写错的路径语法（如 `..bad[[`），不读文件、不校验字段是否
+>   真的存在——与文档里"这是语法检查不是语义检查"的定位一致。
+> - 新增测试（`tests/test_workflow_p12.py`）：从结果文件里正确取出嵌套
+>   字段（含数组下标）、不带 `:` 后缀时仍返回文件路径（向后兼容）、
+>   路径取不到值时占位符原样保留不抛异常、结果文件本身不是合法 JSON 时
+>   同样原样保留、`validate()` 对合法/非法路径语法的判定、路径引用未在
+>   `depends_on` 声明的 step 时报错。
+> - 测试结果：新增 8 条用例全部通过；`tests/test_workflow_p12.py` 三个
+>   Phase 合计 18 条全部通过；连同既有 8 个 workflow 测试文件，全量
+>   149 条测试连续 3 轮重跑全部通过，0 失败（含之前观察到的那条偶发
+>   flaky 用例，本轮 3 次重跑均未再触发）。
+> - 涉及文件：`src/mini_agent/workflow/runner.py`、
+>   `src/mini_agent/workflow/schema.py`（新增）
+>   `tests/test_workflow_p12.py`。
+
+---
+
+## 总结（P12 三个 Phase 全部完成）
+
+三项改动都已实施、测试通过、不影响任何既有 YAML/既有用例的行为：
+
+| Phase | 改动 | 状态 |
+|---|---|---|
+| 1 | condition 求值异常 → `StepStatus.NEEDS_FIX`（区别于"求值为 False"的 `SKIPPED`） | 已完成 |
+| 2 | `tool_call.tool_args` 支持 `{step_id.output}` 等占位符，`validate()` 同步校验 | 已完成 |
+| 3 | `{step_id.result_file:a.b[0].c}` 从结果文件里直接取字段值 | 已完成 |
+
+三项改动最终共同修改了 `schema.py`/`runner.py`/`executors.py` 三个文件，
+新增 `tests/test_workflow_p12.py`（18 条用例），全量 workflow 相关测试
+（含新增）合计 149 条，连续 3 轮重跑稳定全部通过。
+
+**后续候选（P13，本轮不展开）**：
+- `foreach`/`map` 批处理 step 类型——对列表逐元素执行同一 step 定义、
+  可控并发度、结果聚合成列表，是走查中价值最高但范围/风险也最大的
+  一项，涉及 `_compute_parallel_batches` 并发调度核心逻辑，需要单独
+  设计文档。
+- `merge`/`aggregate` 汇聚类型——把"多分支/多并发结果汇总"从"靠 prompt
+  手写拼接"升级成一等公民 step。
+- `wait`/`delay` 类型——独立于子进程超时机制之外的、可被 cancel 打断的
+  等待语义。
+- workflow 级熔断——一定窗口内多个不同 step 因同一 `error_type` 失败时
+  提前整体标记需要人工介入，而不是让每个 step 各自耗尽重试预算。
+- 内置 7 种类型的 `validate()` 校验路径与插件类型的 `validate_step()`
+  钩子统一，减少"两条不同校验路径"造成的以后混淆。
+
+这些方向已经足够独立、成体系，建议观察本轮三个改动的实际使用效果一段
+时间后，再从中选择优先级最高的一项单独立项设计。
 
 ## 实施与交付方式
 

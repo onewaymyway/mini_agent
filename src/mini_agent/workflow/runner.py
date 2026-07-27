@@ -1106,6 +1106,37 @@ class WorkflowRunner:
 
     # ── Prompt 占位符替换 ────────────────────────────────────────────────────
 
+    @staticmethod
+    def _resolve_json_path(data: Any, path: str) -> Any:
+        """
+        [workflow_mechanism_improvement_plan_p12.md Phase 3] 极简 JSON 路径
+        取值：只支持 `a.b.c`/`a.b[0].c` 这种"属性访问 + 数字下标"的链式路径，
+        不引入完整 JSONPath 语法（与 condition 表达式"沿用现有沙箱 eval、
+        不重新发明 DSL"的既有取舍原则一致）。任何一层取不到值都抛
+        KeyError，由调用方决定如何降级（这里不吞异常，交给 _resolve_prompt
+        的 replacer 统一处理"取不到就保留原始占位符文本"）。
+        """
+        node = data
+        for segment in path.split("."):
+            if not segment:
+                continue
+            m = re.match(r'^([^\[\]]*)((?:\[\d+\])*)$', segment)
+            if not m:
+                raise KeyError(path)
+            name, brackets = m.group(1), m.group(2)
+            if name:
+                if isinstance(node, dict) and name in node:
+                    node = node[name]
+                else:
+                    raise KeyError(path)
+            for idx_str in re.findall(r'\[(\d+)\]', brackets):
+                idx = int(idx_str)
+                if isinstance(node, list) and 0 <= idx < len(node):
+                    node = node[idx]
+                else:
+                    raise KeyError(path)
+        return node
+
     def _resolve_prompt(
         self,
         prompt_template: str,
@@ -1119,6 +1150,17 @@ class WorkflowRunner:
           {step_id.output_file}  → 该步骤输出落盘文件的绝对路径（[P11 §3]，
                                     仅当该 step 设置了 output_file 且已落盘时
                                     有值；否则抛 KeyError，与其它字段一致）
+          {step_id.result_file}  → 该步骤结果文件的绝对路径
+          {step_id.result_file:a.b[0].c}
+                                  → [workflow_mechanism_improvement_plan_p12.md
+                                    Phase 3] 读取该结果文件（JSON），按极简
+                                    路径语法取出某个字段值（只支持属性访问 +
+                                    数字下标）。文件不存在/不是合法 JSON/
+                                    路径取不到值时，不抛异常中断整个 step，
+                                    保留原始占位符文本不替换（与"inputs 里
+                                    找不到对应 key"的容错风格一致），交给
+                                    debug_log.unresolved_placeholders 之类的
+                                    既有信号或下游 Agent 自己发现"没填上"。
           {variable}              → inputs 中的对应值
         """
         def replacer(m: re.Match) -> str:
@@ -1138,11 +1180,22 @@ class WorkflowRunner:
                     if not path:
                         raise KeyError(key)
                     return str(path)
-                elif field == "result_file":
+                elif field == "result_file" or field.startswith("result_file:"):
                     path = (getattr(self, "_step_result_file_paths", None) or {}).get(step_id)
                     if not path:
                         raise KeyError(key)
-                    return str(path)
+                    if field == "result_file":
+                        return str(path)
+                    json_path = field.split(":", 1)[1]
+                    try:
+                        import json as _json
+                        with open(path, "r", encoding="utf-8") as f:
+                            data = _json.load(f)
+                        value = self._resolve_json_path(data, json_path)
+                    except (KeyError, ValueError, OSError, TypeError):
+                        # 取不到值：保留原始占位符文本，不中断整个 step
+                        return m.group(0)
+                    return str(value)
                 else:
                     raise KeyError(key)
             # 外部 inputs
@@ -1152,6 +1205,27 @@ class WorkflowRunner:
             return m.group(0)
 
         return re.sub(r'\{([^}]+)\}', replacer, prompt_template)
+
+    def _resolve_value(self, value: Any, step_results: dict[str, StepResult], inputs: dict) -> Any:
+        """
+        [workflow_mechanism_improvement_plan_p12.md Phase 2] 把
+        `_resolve_prompt` 的占位符替换能力从"只能用于一整段 prompt 字符串"
+        扩展到"能用于任意嵌套的 dict/list 结构里的字符串叶子节点"，不重新
+        实现占位符语法——字符串节点直接委托给 `_resolve_prompt`；dict/list
+        递归处理各自的值；其它类型（int/float/bool/None 等）原样返回。
+
+        典型用途：`tool_call` step 的 `tool_args` 是一个 dict，可能长这样
+        `{"query": "{search.output}", "limit": 5}`，对它跑一遍
+        `_resolve_value` 后，"query" 的值被替换成真实文本，"limit" 保持
+        `5` 不变（非字符串，直接原样返回）。
+        """
+        if isinstance(value, str):
+            return self._resolve_prompt(value, step_results, inputs)
+        if isinstance(value, dict):
+            return {k: self._resolve_value(v, step_results, inputs) for k, v in value.items()}
+        if isinstance(value, list):
+            return [self._resolve_value(v, step_results, inputs) for v in value]
+        return value
 
     def _scan_prompt_placeholders(
         self,

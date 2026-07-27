@@ -554,26 +554,53 @@ class WorkflowDef:
                 if step.role and not role_checker(step.role):
                     errors.append(f"步骤 {step.id!r} 引用了不存在的角色 Agent profile：{step.role!r}")
 
-        # [P6][P11 §1/§3] Prompt 占位符引用完整性校验：
-        # {step_id.output}/{step_id.score}/{step_id.output_file}
+        # [P6][P11 §1/§3][workflow_mechanism_improvement_plan_p12.md Phase 2]
+        # Prompt / tool_args 占位符引用完整性校验：
+        # {step_id.output}/{step_id.score}/{step_id.output_file}/{step_id.result_file}
         if check_placeholders:
             import re
-            for step in self.steps:
-                for m in re.finditer(r'\{([^}]+)\}', step.prompt or ""):
+
+            def _check_text(step: "WorkflowStep", text: str, source: str) -> None:
+                """
+                对一段文本（prompt 或 tool_args 里的某个字符串值）做占位符
+                一致性检查，source 用于报错文案区分来源（"prompt"/
+                "tool_args"），检查规则两者完全一致，不重复实现两套。
+                """
+                for m in re.finditer(r'\{([^}]+)\}', text or ""):
                     key = m.group(1)
                     if "." not in key:
                         continue  # {param} 形式，属于运行时 inputs，无法静态校验
                     ref_id, ref_field = key.split(".", 1)
                     if ref_id not in seen_ids:
                         errors.append(
-                            f"步骤 {step.id!r} 的 prompt 引用了不存在的步骤 {ref_id!r}"
+                            f"步骤 {step.id!r} 的 {source} 引用了不存在的步骤 {ref_id!r}"
                             f"（占位符 {{{key}}}）"
                         )
                         continue
-                    if ref_field not in ("output", "score", "output_file", "result_file"):
+                    # [workflow_mechanism_improvement_plan_p12.md Phase 3]
+                    # result_file 支持 `result_file:a.b[0].c` 形式的字段路径
+                    # 后缀，这里只做语法级检查（路径 token 是否合法），不
+                    # 读文件、不知道字段是否真的存在——这是"语法检查"不是
+                    # "语义检查"，跟 condition 的静态检查同一个定位。
+                    base_field = ref_field
+                    json_path = None
+                    if ref_field.startswith("result_file:"):
+                        base_field, json_path = "result_file", ref_field.split(":", 1)[1]
+                    if base_field not in ("output", "score", "output_file", "result_file"):
                         errors.append(
-                            f"步骤 {step.id!r} 的 prompt 占位符 {{{key}}} 引用了未知字段 "
-                            f"{ref_field!r}（只支持 .output / .score / .output_file / .result_file）"
+                            f"步骤 {step.id!r} 的 {source} 占位符 {{{key}}} 引用了未知字段 "
+                            f"{ref_field!r}（只支持 .output / .score / .output_file / "
+                            f".result_file / .result_file:<path>）"
+                        )
+                        continue
+                    if json_path is not None and not re.match(
+                        r'^[A-Za-z_][A-Za-z0-9_]*(\[\d+\])*(\.[A-Za-z_][A-Za-z0-9_]*(\[\d+\])*)*$',
+                        json_path,
+                    ):
+                        errors.append(
+                            f"步骤 {step.id!r} 的 {source} 占位符 {{{key}}} 里的 result_file "
+                            f"字段路径 {json_path!r} 语法不合法（只支持 a.b[0].c 这种"
+                            f"属性访问 + 数字下标的链式路径）"
                         )
                         continue
                     # [P11 §1] 存在但引用字段合法时，额外检查是否在 depends_on
@@ -588,10 +615,31 @@ class WorkflowDef:
                         ancestors = _transitive_deps(step.id)
                         if ref_id not in ancestors:
                             errors.append(
-                                f"步骤 {step.id!r} 的 prompt 占位符 {{{key}}} 引用了步骤 "
+                                f"步骤 {step.id!r} 的 {source} 占位符 {{{key}}} 引用了步骤 "
                                 f"{ref_id!r}，但未在 depends_on 中声明依赖（直接或传递），"
                                 f"运行时该步骤结果可能还不存在（会在执行期抛出 KeyError）"
                             )
+
+            def _walk_tool_args(value: Any) -> "list[str]":
+                """递归收集 tool_args 结构里所有字符串叶子节点，供占位符扫描。"""
+                if isinstance(value, str):
+                    return [value]
+                if isinstance(value, dict):
+                    out: list[str] = []
+                    for v in value.values():
+                        out.extend(_walk_tool_args(v))
+                    return out
+                if isinstance(value, list):
+                    out = []
+                    for v in value:
+                        out.extend(_walk_tool_args(v))
+                    return out
+                return []
+
+            for step in self.steps:
+                _check_text(step, step.prompt or "", "prompt")
+                for text in _walk_tool_args(step.tool_args or {}):
+                    _check_text(step, text, "tool_args")
 
         # [next_doc/workflow_python_step_and_zhihu_publish_plan.md §A1]
         # 保持 validate() 原有签名/返回值不变（仍只返回 errors，向后兼容

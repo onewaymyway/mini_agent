@@ -198,6 +198,15 @@ class ToolCallStepExecutor(StepExecutor):
                     tool_input = {params[0]: prompt}
             except (TypeError, ValueError):
                 tool_input = {}
+        else:
+            # [workflow_mechanism_improvement_plan_p12.md Phase 2] tool_args
+            # 里的字符串值支持 {step_id.output} 等占位符，复用
+            # _resolve_prompt 的替换逻辑（通过 _resolve_value 递归到嵌套
+            # dict/list 的字符串叶子节点）。没有占位符的字面量值（原有
+            # 用法）经过 _resolve_prompt 处理后原样返回，完全向后兼容。
+            step_results = getattr(runner, "_current_step_results", None) or {}
+            inputs = getattr(runner, "_current_inputs", None) or {}
+            tool_input = runner._resolve_value(tool_input, step_results, inputs)
 
         result = registry.call(step.tool_name, tool_input)
         return result if isinstance(result, str) else str(result)
