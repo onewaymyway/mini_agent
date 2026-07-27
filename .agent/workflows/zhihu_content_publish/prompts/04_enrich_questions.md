@@ -1,6 +1,9 @@
-> [已弃用] enrich_questions 已改为 type: python_step（steps/05_enrich_questions.py +
-> prompts/04_enrich_single_question.md），不再使用本文件描述的 skill_agent 多轮对话
-> 方式，原因是逐个问题走完整 agent 对话太慢。本文件仅保留作历史记录/回退参考。
+> [已弃用] enrich_questions 已改为 type: python_step。当前版本（v2，
+> steps/05_enrich_questions.py）优先用 DOM 选择器 + 正则直接从页面结构解析
+> 全部字段，只有解析不到的字段才用一次 LLM 调用兜底（prompts/
+> 04_enrich_missing_fields.md）。更早的 v1（每题固定调一次 LLM 从整页文本
+> 里提取全部字段，prompts/04_enrich_single_question.md）和本文件描述的
+> skill_agent 多轮对话方式都不再使用，均仅保留作历史记录/回退参考。
 
 # 补全问题详情 Prompt（skill_agent，挂载 browser-cdp skill）
 

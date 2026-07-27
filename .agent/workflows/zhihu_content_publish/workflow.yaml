@@ -69,9 +69,14 @@ steps:
     retry_on_error: 1
 
   - id: enrich_questions
-    # [改进] 原来是 skill_agent（每个问题一整轮 browser-cdp 多轮对话），几十个
-    # 问题下来非常慢。现在改成 python_step：开网页 / 抓文本这类纯操作用 Python
-    # 直接调 CDP 完成，只有"从抓到的文本里挑出具体字段"这一步才调用一次 LLM。
+    # [改进 v1] 原来是 skill_agent（每个问题一整轮 browser-cdp 多轮对话），几十个
+    # 问题下来非常慢。改成 python_step：开网页/抓文本这类纯操作用 Python 直接调
+    # CDP 完成，"从抓到的文本里挑出具体字段"这一步调用 LLM。
+    # [改进 v2] 这些字段其实大多能直接从知乎问题详情页的固定 DOM 结构里解析出来
+    # （回答数/关注数/被浏览数/最高赞回答的作者-点赞数-正文，都是明确的选择器），
+    # 不需要每题都调一次 LLM"猜"。于是进一步改成：先用 JS 选择器 + 正则精确解析，
+    # 只有个别选择器解析不到的字段（目前主要是 created_or_active_time，没有稳定
+    # 选择器）才针对那几个缺失字段单独调一次 LLM 兜底，而不是每题固定问全部字段。
     # 详见 steps/05_enrich_questions.py 顶部注释。返回值直接写入 output_file，
     # 不再需要 skill_agent 的 result_file 校验契约。
     #
