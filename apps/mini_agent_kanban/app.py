@@ -2138,20 +2138,19 @@ def _wf_project_root(client: AgentClient) -> str:
         return ""
 
 
-def _render_fs_picker(client: AgentClient, state_key: str, *, mode: str = "dir",
+def _render_fs_picker(client: AgentClient, state_key: str, *,
                        allow_upload: bool = False) -> Optional[str]:
-    """输入/输出文件夹选择器（workflow 运行面板专用）。
-
-    mode="dir"：浏览 project_root 内的目录树，点"选择此目录"返回绝对路径；
-    mode="file"：浏览目录树，点某个文件返回它的绝对路径；allow_upload=True
-    时额外提供一个文件上传控件，把用户浏览器本地文件传到当前浏览目录下
-    （通过 /fs/upload），上传完直接可选。
+    """输入文件选择器（workflow 运行面板专用）：浏览 project_root 内的目录树，
+    点某个文件返回它的绝对路径；allow_upload=True 时额外提供一个文件上传
+    控件，把用户浏览器本地文件传到当前浏览目录下（通过 /fs/upload），上传完
+    直接可选。
 
     注意：/fs/* 系列接口本身 jail 在 project_root 内（fs_helper.py::
-    FsHelper._safe_path），浏览范围也就限定在 project_root 之内——这满足
-    "工作流输入文件从项目目录里选"的场景，但 output_export_dir 这类"导出到
-    项目外任意目录"的需求，选择器选不到项目外的路径，仍需要保留手动输入
-    框作为兜底（调用方在外面自己叠加一个 text_input）。
+    FsHelper._safe_path），只能选到项目目录内的文件。
+
+    [output_export_dir 改动] 输出目录的选择曾经也接到过这个组件（dir 模式 +
+    新建子目录），实际用下来逐级点击浏览比直接打一行绝对路径更麻烦，已改回
+    普通 st.text_input（见 _render_workflow_run_panel），不再提供目录浏览器。
 
     返回值：本次调用里用户新选中的绝对路径（None 表示本次没有新选择，
     调用方应保留之前已选的值，不要覆盖成 None）。
@@ -2187,27 +2186,9 @@ def _render_fs_picker(client: AgentClient, state_key: str, *, mode: str = "dir",
             if c2.button("进入", key=f"{state_key}_fs_open_{rel_path}"):
                 st.session_state[browse_key] = rel_path
                 st.rerun()
-        elif mode == "file":
+        else:
             if c2.button("选它", key=f"{state_key}_fs_pick_{rel_path}"):
                 picked = f"{root.rstrip('/')}/{rel_path}" if root else rel_path
-
-    if mode == "dir":
-        cur = st.session_state[browse_key]
-        cur_abs = root.rstrip("/") if cur in (".", "") else f"{root.rstrip('/')}/{cur}"
-        pc1, pc2 = st.columns([3, 1])
-        new_dir_name = pc1.text_input("新建子目录（可选）", key=f"{state_key}_fs_mkdir_name",
-                                       label_visibility="collapsed",
-                                       placeholder="新建子目录名（留空则不建）")
-        if pc2.button("📁+ 新建", key=f"{state_key}_fs_mkdir_btn") and new_dir_name.strip():
-            new_rel = new_dir_name.strip() if cur in (".", "") else f"{cur}/{new_dir_name.strip()}"
-            res = client.fs_mkdir(new_rel) or {}
-            if "_error" in res:
-                st.error(f"创建目录失败：{res['_error']}")
-            else:
-                st.session_state[browse_key] = new_rel
-                st.rerun()
-        if st.button(f"✅ 选择当前目录 `{cur_abs}`", key=f"{state_key}_fs_pick_cur"):
-            picked = cur_abs
 
     if allow_upload:
         up = st.file_uploader("或从本地上传文件到当前目录", key=f"{state_key}_fs_upload")
@@ -2257,7 +2238,7 @@ def _render_workflow_run_panel(client: AgentClient):
                 if any(kw in p.lower() for kw in ("path", "file", "dir", "目录", "文件")):
                     with st.expander(f"📂 从项目内选择 {p}"):
                         picked = _render_fs_picker(
-                            client, input_key, mode="file", allow_upload=True,
+                            client, input_key, allow_upload=True,
                         )
                         if picked:
                             st.session_state[input_key] = picked
@@ -2282,27 +2263,13 @@ def _render_workflow_run_panel(client: AgentClient):
             help="开启后，凡是 human_input 步骤没有对应 input_key/未能从上面参数解析到值，"
                  "启动前直接报错，不会等到运行中途才卡住。",
         )
-        output_export_dir_key = f"wf_output_export_dir_{selected}"
         output_export_dir = st.text_input(
-            "完成后复制产出到此目录（可选，留空则不复制）", key=output_export_dir_key,
+            "完成后复制产出到此目录（可选，留空则不复制）", key=f"wf_output_export_dir_{selected}",
             help="工作流跑到终态（成功/失败/部分完成都算）后，会把本次执行"
                  " output/ 目录下的所有文件复制到这里；留空则跳过这一步，"
                  "行为与不填完全一致。",
             placeholder="例如 /home/user/Downloads/zhihu_output",
         ).strip()
-
-    # [输出文件夹支持] Streamlit 不支持嵌套 expander，所以这个目录浏览器
-    # 放在"运行选项"expander 外面，作为独立的一个 expander，通过共享同一个
-    # session_state key（output_export_dir_key）与上面的文本框联动。
-    with st.expander("📂 从项目内选择/新建输出目录"):
-        st.caption(
-            "这里只能浏览/新建 project_root 内的目录；如果目标目录在"
-            "项目之外（比如挂载的其它磁盘位置），继续用上面的文本框手动填绝对路径。"
-        )
-        picked_dir = _render_fs_picker(client, output_export_dir_key, mode="dir")
-        if picked_dir:
-            st.session_state[output_export_dir_key] = picked_dir
-            st.rerun()
 
     c1, c2 = st.columns([1, 1])
     if c1.button("🔍 预览执行计划", key="wf_preview_btn"):
