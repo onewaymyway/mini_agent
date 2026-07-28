@@ -16,6 +16,7 @@ Mini-Agent 看板 (Kanban Dashboard)
     streamlit run apps/mini_agent_kanban/app.py
 """
 import html
+import json
 import time
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -155,6 +156,33 @@ GOAL_STATUS_COLUMNS = [
     ("cancelled", "🚫 已终止"),
     ("abandoned", "🗑️ 已放弃"),
 ]
+
+# ── 看板本地偏好持久化 ────────────────────────────────────────────────────────
+# [新增] 目标看板"只看某几种状态"这类纯 UI 偏好，用户希望"下次打开还记得
+# 上次选的"——这跟 URL query params 那套"每个标签页/每次打开各自独立"的
+# 深链接语义（见 get_active_session_id 等函数的说明）刚好相反：这里要的是
+# "不管从哪个 URL、哪次打开，都用同一份偏好"，所以不适合走 query_params，
+# 改成一个跟 app.py 同目录的本地小 JSON 文件，读写都做好异常兜底（文件不
+# 存在/损坏/无写权限时静默退化为"这次先用默认值，不阻断使用"）。
+_KANBAN_PREFS_PATH = Path(__file__).resolve().parent / ".kanban_prefs.json"
+
+
+def _load_kanban_prefs() -> dict:
+    try:
+        return json.loads(_KANBAN_PREFS_PATH.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+
+
+def _save_kanban_pref(key: str, value) -> None:
+    prefs = _load_kanban_prefs()
+    prefs[key] = value
+    try:
+        _KANBAN_PREFS_PATH.write_text(
+            json.dumps(prefs, ensure_ascii=False, indent=2), encoding="utf-8",
+        )
+    except Exception:
+        pass
 
 # workflow机制改进计划（P7）二、2.2：StepStatus 归并为 5 栏展示。
 # 每项：(展示列标题, 归入这一列的 StepResult.status 取值集合)
@@ -1960,45 +1988,79 @@ def render_kanban_tab(client: AgentClient):
             if _prev is None or _ex.get("started_at", 0) >= _prev.get("started_at", 0):
                 exec_by_objective_id[_oid] = _ex
 
-        cols = st.columns(len(GOAL_STATUS_COLUMNS))
-        for col, (status_key, status_label) in zip(cols, GOAL_STATUS_COLUMNS):
-            with col:
-                st.markdown(f'<div class="kanban-col"><h4>{status_label}</h4>', unsafe_allow_html=True)
-                bucket = [n for n in all_nodes if n.get("status") == status_key]
-                # [P1 改造] 之前 Goal/Objective 拍平成一个列表按 status 平铺，
-                # goals.json 里本来存在的父子关系（parent_id/children_ids）
-                # 在看板上完全看不出来。这里改成：先列该列里的 Goal，紧跟着
-                # 缩进列出它在本列里的子 Objective；至于父 Goal 当前处于
-                # 别的状态列的 Objective（比如 Goal 还在"进行中"、其中一个
-                # Objective 已经"完成"），不会凭空消失——单独放在本列末尾，
-                # 并标注父 Goal 标题，避免用户以为数据丢了。
-                goal_nodes = [n for n in bucket if n.get("level") != "objective"]
-                obj_nodes = [n for n in bucket if n.get("level") == "objective"]
-                rendered_obj_ids = set()
+        # [新增] 状态筛选：默认显示全部状态；用户的选择记到本地 prefs 文件里，
+        # 下次打开（不管是不是同一个浏览器标签页/URL）都按上次选的显示——
+        # 见 _load_kanban_prefs()/_save_kanban_pref() 的说明，这是有意跟
+        # session_id/pinned 那套 query_params 深链接机制分开的一套持久化。
+        all_status_keys = [s for s, _ in GOAL_STATUS_COLUMNS]
+        label_by_key = dict(GOAL_STATUS_COLUMNS)
+        key_by_label = {label: s for s, label in GOAL_STATUS_COLUMNS}
 
-                for g in goal_nodes:
-                    _render_goal_card(client, g, status_key)
-                    children = [o for o in obj_nodes if o.get("parent_id") == g.get("id")]
-                    for o in children:
-                        _render_goal_card(
-                            client, o, status_key, indent=True,
-                            execution=exec_by_objective_id.get(o.get("id")),
-                        )
-                        rendered_obj_ids.add(o.get("id"))
+        if "goal_status_filter" not in st.session_state:
+            saved = _load_kanban_prefs().get("goal_status_filter")
+            if isinstance(saved, list) and saved and all(s in all_status_keys for s in saved):
+                st.session_state["goal_status_filter"] = saved
+            else:
+                st.session_state["goal_status_filter"] = list(all_status_keys)
 
-                leftover = [o for o in obj_nodes if o.get("id") not in rendered_obj_ids]
-                if leftover:
-                    if goal_nodes:
-                        st.caption("↓ 以下 Objective 的父 Goal 在其它状态列")
-                    for o in leftover:
-                        parent_title = title_by_id.get(o.get("parent_id"), "") if o.get("parent_id") else ""
-                        note = f"父目标：{parent_title}" if parent_title else "（无父目标）"
-                        _render_goal_card(
-                            client, o, status_key, indent=True, note=note,
-                            execution=exec_by_objective_id.get(o.get("id")),
-                        )
+        selected_labels = st.multiselect(
+            "🔍 只显示以下状态",
+            options=[label for _, label in GOAL_STATUS_COLUMNS],
+            default=[label_by_key[k] for k in st.session_state["goal_status_filter"] if k in label_by_key],
+            key="goal_status_filter_widget",
+        )
+        selected_keys = [key_by_label[label] for label in selected_labels]
+        if selected_keys != st.session_state["goal_status_filter"]:
+            st.session_state["goal_status_filter"] = selected_keys
+            _save_kanban_pref("goal_status_filter", selected_keys)
 
-                st.markdown("</div>", unsafe_allow_html=True)
+        visible_columns = [
+            (status_key, status_label) for status_key, status_label in GOAL_STATUS_COLUMNS
+            if status_key in selected_keys
+        ]
+
+        if not visible_columns:
+            st.info("没有选中任何状态——请在上面的筛选框里至少勾选一个要显示的状态。")
+        else:
+            cols = st.columns(len(visible_columns))
+            for col, (status_key, status_label) in zip(cols, visible_columns):
+                with col:
+                    st.markdown(f'<div class="kanban-col"><h4>{status_label}</h4>', unsafe_allow_html=True)
+                    bucket = [n for n in all_nodes if n.get("status") == status_key]
+                    # [P1 改造] 之前 Goal/Objective 拍平成一个列表按 status 平铺，
+                    # goals.json 里本来存在的父子关系（parent_id/children_ids）
+                    # 在看板上完全看不出来。这里改成：先列该列里的 Goal，紧跟着
+                    # 缩进列出它在本列里的子 Objective；至于父 Goal 当前处于
+                    # 别的状态列的 Objective（比如 Goal 还在"进行中"、其中一个
+                    # Objective 已经"完成"），不会凭空消失——单独放在本列末尾，
+                    # 并标注父 Goal 标题，避免用户以为数据丢了。
+                    goal_nodes = [n for n in bucket if n.get("level") != "objective"]
+                    obj_nodes = [n for n in bucket if n.get("level") == "objective"]
+                    rendered_obj_ids = set()
+
+                    for g in goal_nodes:
+                        _render_goal_card(client, g, status_key)
+                        children = [o for o in obj_nodes if o.get("parent_id") == g.get("id")]
+                        for o in children:
+                            _render_goal_card(
+                                client, o, status_key, indent=True,
+                                execution=exec_by_objective_id.get(o.get("id")),
+                            )
+                            rendered_obj_ids.add(o.get("id"))
+
+                    leftover = [o for o in obj_nodes if o.get("id") not in rendered_obj_ids]
+                    if leftover:
+                        if goal_nodes:
+                            st.caption("↓ 以下 Objective 的父 Goal 在其它状态列")
+                        for o in leftover:
+                            parent_title = title_by_id.get(o.get("parent_id"), "") if o.get("parent_id") else ""
+                            note = f"父目标：{parent_title}" if parent_title else "（无父目标）"
+                            _render_goal_card(
+                                client, o, status_key, indent=True, note=note,
+                                execution=exec_by_objective_id.get(o.get("id")),
+                            )
+
+                    st.markdown("</div>", unsafe_allow_html=True)
 
     st.markdown("---")
     st.markdown("#### ⏰ Cron Jobs")
