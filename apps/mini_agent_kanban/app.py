@@ -652,6 +652,52 @@ def _render_queue_panel(client: AgentClient, session_id: str = "") -> None:
         st.text(input_preview + ("…" if len(t.get("input") or "") > 120 else ""))
 
 
+def _render_daemon_current_tasks(client: AgentClient, autostat: dict) -> None:
+    """[看板新增] 顶栏只展示当前 session 的 activity（calling_tool/calling_model
+    等），完全反映不出 daemon 后台（AutonomousLoop）此刻实际在跑哪个 Objective、
+    进行到第几步，也看不出有没有 workflow 正在后台运行——这些都是跟"当前
+    session"无关、但同样是"daemon 正在干什么"的一部分。这里额外聚合展示：
+      1. 正在执行中的 Objective（来自 /autonomous/status 的 objective_executions，
+         status == running），显示标题 + 当前步骤 + 进度；
+      2. 正在运行中的 workflow（来自 /workflow_runs，status == running）。
+    两者都没有时不渲染任何内容，避免空面板占地方。
+    """
+    running_objs = [
+        ex for ex in (autostat.get("objective_executions") or [])
+        if ex.get("status") == "running"
+    ]
+
+    running_wfs = []
+    wf_runs = client.workflow_runs() or {}
+    if "_error" not in wf_runs:
+        running_wfs = [
+            r for r in (wf_runs.get("runs") or [])
+            if r.get("status") == "running"
+        ]
+
+    if not running_objs and not running_wfs:
+        return
+
+    lines = []
+    for ex in running_objs:
+        title = ex.get("title") or ex.get("objective_id", "")
+        step = ex.get("current_step") or ""
+        progress = ex.get("progress") or ""
+        detail = f"　·　{step}" if step else ""
+        lines.append(f"🎯 **{title}**　({progress}){detail}")
+    for r in running_wfs:
+        wf_name = r.get("workflow_name") or r.get("name") or ""
+        rid = r.get("workflow_session_id", "")
+        label = r.get("summary_line") or ""
+        detail = f"　·　{label}" if label else ""
+        lines.append(f"🔄 **{wf_name}**　`{rid}`{detail}")
+
+    n = len(running_objs) + len(running_wfs)
+    with st.expander(f"⚙️ daemon 正在执行 {n} 项任务（点击查看）", expanded=True):
+        for line in lines:
+            st.markdown(line)
+
+
 def _render_topbar_body(client: AgentClient, session_id: str = ""):
     status = client.status(session_id=session_id) or {}
     if "_error" in status:
@@ -717,6 +763,8 @@ def _render_topbar_body(client: AgentClient, session_id: str = ""):
 """, unsafe_allow_html=True)
     if status.get("session_dir"):
         st.caption(f"📁 session 目录: `{status['session_dir']}`")
+
+    _render_daemon_current_tasks(client, autostat)
 
     if queue_depth:
         with st.expander(f"🕓 有 {queue_depth} 个请求在排队等待处理", expanded=False):
