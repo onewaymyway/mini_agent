@@ -315,7 +315,6 @@ class ScriptStepExecutor(StepExecutor):
         timeout = step.timeout or float(getattr(wf_cfg, "script_step_timeout_seconds", 60.0))
         _is_windows = sys.platform == "win32"
         _popen_kwargs = {
-            "shell": True,
             "cwd": str(runner._cfg.project_root),
             "capture_output": True,
             "text": True,
@@ -329,10 +328,39 @@ class ScriptStepExecutor(StepExecutor):
             "errors": "replace",
             "timeout": timeout,
         }
+
+        # [Windows cmd.exe 多行脚本 bug 修复] step.script 是按 POSIX shell
+        # 语法编写的多行文本（YAML `|` block，常见形态如跨行的
+        # `python -c "\n...\n"`）。在 Windows 上如果沿用
+        # `shell=True` + 原始多行字符串，Python 会把它整段交给
+        # `cmd.exe /c`，而 cmd.exe 并不支持"引号内跨行"的参数语法——命令会
+        # 被静默截断/忽略，子进程秒退、returncode==0、stdout/stderr 全空，
+        # 但脚本实际上什么都没执行（表现为声明的 result_file 从未被写入，
+        # 报错却看不出任何 stdout/stderr 线索，非常难排查）。
+        # 修复：Windows 上优先找 bash.exe（Git for Windows / WSL 通常都有），
+        # 用 `bash -c <script>` 以列表参数方式执行——bash 原生支持多行
+        # 引号参数，且绕开了 cmd.exe 的解析，语义上也与 Unix 侧
+        # （shell=True 下的 /bin/sh）更一致。找不到 bash 时才回退到原来的
+        # cmd.exe 方式，并保留原有行为（不阻断没有 bash 环境的用户），
+        # 但这种情况下多行 shell 脚本本身就不可靠，建议用户改用单行命令
+        # 或安装 Git for Windows。
+        _bash_path = None
         if _is_windows:
+            import shutil as _shutil
+            _bash_path = _shutil.which("bash")
+
+        if _is_windows and _bash_path:
+            _cmd = [_bash_path, "-c", step.script]
+            _popen_kwargs["shell"] = False
+            _popen_kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
+        elif _is_windows:
+            _cmd = step.script
+            _popen_kwargs["shell"] = True
             # Windows: use CREATE_NEW_PROCESS_GROUP for proper process tree termination
             _popen_kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
         else:
+            _cmd = step.script
+            _popen_kwargs["shell"] = True
             # Unix: use start_new_session for proper process group handling
             _popen_kwargs["start_new_session"] = True
 
@@ -343,7 +371,7 @@ class ScriptStepExecutor(StepExecutor):
         if result_path is not None:
             _popen_kwargs["env"] = {**os.environ, "WORKFLOW_RESULT_FILE_PATH": str(result_path)}
 
-        proc = subprocess.run(step.script, **_popen_kwargs)
+        proc = subprocess.run(_cmd, **_popen_kwargs)
         # [P11 §6] 无论成功/失败都把 stdout/stderr 挂到 runner 实例属性上，
         # 供 _execute_step 合并进 StepResult.debug_log——之前只有失败时
         # 才能在异常消息里看到，成功时直接丢弃。
@@ -367,9 +395,19 @@ class ScriptStepExecutor(StepExecutor):
         if step.result_file:
             ok, reason = runner._validate_result_file(step)
             if not ok:
+                _hint = ""
+                if _is_windows and not _bash_path and not proc.stdout and not proc.stderr:
+                    _hint = (
+                        "\n提示：Windows 上未找到 bash.exe，多行 script 是通过 "
+                        "cmd.exe 执行的——如果 script 是多行内容（例如跨行的 "
+                        "`python -c \"...\"`），cmd.exe 可能静默不执行任何内容 "
+                        "就返回（表现正是这里看到的 stdout/stderr 全空但 "
+                        "returncode==0）。建议安装 Git for Windows（提供 "
+                        "bash.exe）或把 script 改写成单行命令。"
+                    )
                 raise RuntimeError(
                     f"步骤 {step.id!r}（script）声明了 result_file 但校验未通过："
-                    f"{reason}\nstdout: {proc.stdout}\nstderr: {proc.stderr}"
+                    f"{reason}\nstdout: {proc.stdout}\nstderr: {proc.stderr}{_hint}"
                 )
         return proc.stdout
 
