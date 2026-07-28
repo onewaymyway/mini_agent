@@ -1,0 +1,137 @@
+name: mechanism_validation_demo
+description: >-
+  验证 workflow 机制改进 P12-P15 全部新特性的端到端 demo：script 的
+  result_file structured 模式（P15）、foreach 批处理（P13）、wait
+  可中断等待（P13）、merge 的三种汇聚策略（P14）、tool_call 占位符入参
+  （P12 Phase2）、{step_id.result_file:path} 字段级占位符（P12 Phase3）、
+  以及 condition 表达式的正常求值路径。运行前请确认已开启
+  agent_config.json 里的 script_step_enabled / python_step_enabled，
+  见本目录 README.md。
+version: "1.0"
+
+steps:
+  # ── 1. script + result_file structured 模式（P15） ──────────────────
+  - id: generate_words
+    name: 生成候选词列表（script，result_file）
+    type: script
+    prompt: "生成一份固定的候选词列表，写入 result_file（本 step 不使用 prompt，仅用于满足字段要求）"
+    script: |
+      python3 -c "
+      import json, os
+      words = ['alpha', 'beta', 'gamma', 'delta']
+      print('generate_words: producing %d words' % len(words))
+      with open(os.environ['WORKFLOW_RESULT_FILE_PATH'], 'w', encoding='utf-8') as f:
+          json.dump({'words': words}, f, ensure_ascii=False)
+      "
+    result_file: words_data.json
+    result_file_required_keys: [words]
+    timeout: 30
+
+  # ── 2. 另一个独立的 script + result_file，供后面 merge 演示用 ────────
+  - id: compute_stats
+    name: 生成一份独立统计信息（script，result_file）
+    type: script
+    prompt: "生成一份独立的统计信息，写入 result_file（本 step 不使用 prompt，仅用于满足字段要求）"
+    script: |
+      python3 -c "
+      import json, os, datetime
+      data = {
+          'generated_by': 'compute_stats',
+          'timestamp': datetime.datetime.utcnow().isoformat(),
+      }
+      with open(os.environ['WORKFLOW_RESULT_FILE_PATH'], 'w', encoding='utf-8') as f:
+          json.dump(data, f, ensure_ascii=False)
+      print('compute_stats: wrote result file')
+      "
+    result_file: stats_data.json
+    result_file_required_keys: [generated_by, timestamp]
+    timeout: 30
+
+  # ── 3. wait：可被 pause/cancel 打断的等待（P13） ─────────────────────
+  - id: pause_before_batch
+    name: 批处理前的限速等待
+    type: wait
+    depends_on: [generate_words]
+    wait_seconds: 2
+
+  # ── 4. foreach：对 generate_words 产出的列表逐元素批处理（P13） ──────
+  - id: enrich_each_word
+    name: 逐词批量处理
+    type: foreach
+    depends_on: [generate_words, pause_before_batch]
+    items: "{generate_words.result_file:words}"   # P12 result_file 字段访问，解析为原始 list
+    foreach_max_concurrency: 2                      # 内层并发度，默认 1（这里显式调大验证并发路径）
+    foreach_stop_on_error: false                    # 单个元素失败不影响其它元素
+    foreach_step:
+      type: agent
+      max_turns: 4
+      prompt: |
+        给定单词 "{item}"（这是列表里第 {item_index} 个，从 0 开始）。
+        只输出一个 JSON object（不要有任何多余文字/解释/代码块围栏），
+        包含三个字段：word（原词）、upper（转成大写）、length（字符长度）。
+
+  # ── 5. python_step：消费 foreach 的聚合结果 + generate_words 的 result_file ──
+  - id: summarize_report
+    name: 汇总批处理结果
+    type: python_step
+    depends_on: [enrich_each_word, generate_words]
+    script_path: steps/summarize.py
+    output_file: summary.json
+    timeout: 60
+
+  # ── 6. merge：json_merge 策略，两个 script 来源的 result_file 合并成一个 object（P14） ──
+  - id: merge_words_and_stats
+    name: 合并词表与统计信息（json_merge）
+    type: merge
+    depends_on: [generate_words, compute_stats]
+    merge_sources: [generate_words, compute_stats]
+    merge_strategy: json_merge
+    merge_use_result_file: true
+
+  # ── 7. merge：json_array 策略，同样两个来源组成数组（P14） ───────────
+  - id: merge_array_demo
+    name: 把两份 result_file 组成 JSON 数组（json_array）
+    type: merge
+    depends_on: [generate_words, compute_stats]
+    merge_sources: [generate_words, compute_stats]
+    merge_strategy: json_array
+    merge_use_result_file: true
+
+  # ── 8. tool_call：tool_args 支持占位符（P12 Phase2），并复用
+  #      {step_id.result_file:path} 字段访问（P12 Phase3） ──────────────
+  - id: notify_tool_call
+    name: 用 tool_call 直接写一份通知文件
+    type: tool_call
+    prompt: "写一份通知文件（本 step 使用 tool_args，不使用 prompt 本身，仅用于满足字段要求）"
+    depends_on: [generate_words, summarize_report]
+    tool_name: write_file
+    tool_args:
+      path: mechanism_validation_notify.txt
+      content: >-
+        校验流程已完成。词表第一个词是「{generate_words.result_file:words[0]}」，
+        汇总文件落盘于：{summarize_report.output_file}
+      metadata:
+        source_step: summarize_report
+
+  # ── 9. merge：concat_text（默认策略），把前面几步的文本结果拼起来（P14） ──
+  - id: merge_final_report
+    name: 拼接最终报告
+    type: merge
+    depends_on: [summarize_report, notify_tool_call, merge_words_and_stats]
+    merge_sources: [summarize_report, notify_tool_call, merge_words_and_stats]
+    merge_strategy: concat_text
+    merge_separator: "\n---\n"
+
+  # ── 10. condition 正常求值路径（P12）：表达式写对，只是走 True 分支 ──
+  - id: optional_conclusion
+    name: 生成一句话结论（条件成立才执行）
+    type: agent
+    depends_on: [merge_final_report, generate_words]
+    condition: "merge_final_report.output != ''"
+    prompt: |
+      根据以下汇总内容，用中文写一句不超过 50 字的结论：
+
+      {merge_final_report.output}
+
+      补充参考（result_file 字段级占位符）：本次词表第一个词是
+      "{generate_words.result_file:words[0]}"。

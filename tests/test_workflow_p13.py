@@ -259,5 +259,107 @@ class TestWaitValidation(unittest.TestCase):
         self.assertEqual(errors, [])
 
 
+class TestForeachWaitMergeYamlRoundTrip(unittest.TestCase):
+    """
+    回归测试：WorkflowDef.from_dict()/to_dict() 必须正确读写 P13/P14 新增的
+    foreach/wait/merge 专属字段。这几个字段最初在实现 ForeachStepExecutor/
+    WaitStepExecutor/MergeStepExecutor 时被加进了 WorkflowStep dataclass，
+    但 from_dict()/to_dict() 里的显式字段列表当时没有同步更新——单测里直接
+    用 WorkflowStep(...) 构造对象不会触发这条路径，只有真实从 YAML 文件
+    加载（WorkflowStore.load() → WorkflowDef.from_dict()）才会暴露：字段
+    会被静默丢弃、全部回退成 dataclass 默认值，导致 validate() 误报"未指定
+    items/foreach_step/wait_seconds/merge_sources"。
+    """
+
+    def test_from_dict_reads_foreach_fields(self):
+        data = {
+            "name": "wf",
+            "steps": [{
+                "id": "batch", "type": "foreach", "prompt": "",
+                "depends_on": ["src"],
+                "items": "{src.result_file:questions}",
+                "foreach_step": {"type": "agent", "prompt": "{item}"},
+                "foreach_max_concurrency": 3,
+                "foreach_stop_on_error": True,
+            }],
+        }
+        wf = WorkflowDef.from_dict(data)
+        step = wf.steps[0]
+        self.assertEqual(step.items, "{src.result_file:questions}")
+        self.assertEqual(step.foreach_step, {"type": "agent", "prompt": "{item}"})
+        self.assertEqual(step.foreach_max_concurrency, 3)
+        self.assertTrue(step.foreach_stop_on_error)
+
+    def test_from_dict_reads_wait_seconds(self):
+        data = {"name": "wf", "steps": [{"id": "p", "type": "wait", "prompt": "", "wait_seconds": 12.5}]}
+        wf = WorkflowDef.from_dict(data)
+        self.assertEqual(wf.steps[0].wait_seconds, 12.5)
+
+    def test_from_dict_reads_merge_fields(self):
+        data = {
+            "name": "wf",
+            "steps": [{
+                "id": "m", "type": "merge", "prompt": "",
+                "depends_on": ["a", "b"],
+                "merge_sources": ["a", "b"],
+                "merge_strategy": "json_merge",
+                "merge_separator": "||",
+                "merge_use_result_file": True,
+            }],
+        }
+        wf = WorkflowDef.from_dict(data)
+        step = wf.steps[0]
+        self.assertEqual(step.merge_sources, ["a", "b"])
+        self.assertEqual(step.merge_strategy, "json_merge")
+        self.assertEqual(step.merge_separator, "||")
+        self.assertTrue(step.merge_use_result_file)
+
+    def test_to_dict_from_dict_round_trip(self):
+        original = WorkflowDef(
+            name="wf",
+            steps=[
+                _step("batch", type="foreach", prompt="", depends_on=["src"],
+                      items="{src.result_file:questions}",
+                      foreach_step={"type": "agent", "prompt": "{item}"},
+                      foreach_max_concurrency=2, foreach_stop_on_error=True),
+                _step("pause", type="wait", prompt="", wait_seconds=3.0),
+                _step("m", type="merge", prompt="", depends_on=["batch"],
+                      merge_sources=["batch"], merge_strategy="json_array",
+                      merge_use_result_file=True),
+            ],
+        )
+        restored = WorkflowDef.from_dict(original.to_dict())
+        for orig_step, restored_step in zip(original.steps, restored.steps):
+            self.assertEqual(orig_step.items, restored_step.items)
+            self.assertEqual(orig_step.foreach_step, restored_step.foreach_step)
+            self.assertEqual(orig_step.foreach_max_concurrency, restored_step.foreach_max_concurrency)
+            self.assertEqual(orig_step.foreach_stop_on_error, restored_step.foreach_stop_on_error)
+            self.assertEqual(orig_step.wait_seconds, restored_step.wait_seconds)
+            self.assertEqual(orig_step.merge_sources, restored_step.merge_sources)
+            self.assertEqual(orig_step.merge_strategy, restored_step.merge_strategy)
+            self.assertEqual(orig_step.merge_use_result_file, restored_step.merge_use_result_file)
+
+    def test_validate_passes_after_yaml_round_trip(self):
+        """端到端确认：模拟 YAML dict（而不是直接构造 WorkflowStep）加载后，
+        validate() 不应该因为字段被静默丢弃而误报缺字段。"""
+        data = {
+            "name": "wf",
+            "steps": [
+                {"id": "src", "type": "script", "prompt": "x", "script": "echo hi",
+                 "result_file": "r.json"},
+                {"id": "batch", "type": "foreach", "prompt": "", "depends_on": ["src"],
+                 "items": "{src.result_file:questions}",
+                 "foreach_step": {"type": "agent", "prompt": "{item}"}},
+                {"id": "p", "type": "wait", "prompt": "", "wait_seconds": 1,
+                 "depends_on": ["batch"]},
+                {"id": "m", "type": "merge", "prompt": "", "depends_on": ["batch"],
+                 "merge_sources": ["batch"]},
+            ],
+        }
+        wf = WorkflowDef.from_dict(data)
+        errors = wf.validate()
+        self.assertEqual(errors, [])
+
+
 if __name__ == "__main__":
     unittest.main()

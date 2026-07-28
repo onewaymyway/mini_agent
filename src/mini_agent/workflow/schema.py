@@ -342,6 +342,15 @@ class WorkflowDef:
                 output_file=s.get("output_file"),
                 result_file=s.get("result_file"),
                 result_file_required_keys=list(s.get("result_file_required_keys", []) or []),
+                items=s.get("items"),
+                foreach_step=dict(s.get("foreach_step") or {}),
+                foreach_max_concurrency=int(s.get("foreach_max_concurrency", 1) or 1),
+                foreach_stop_on_error=bool(s.get("foreach_stop_on_error", False)),
+                wait_seconds=float(s["wait_seconds"]) if s.get("wait_seconds") is not None else None,
+                merge_sources=list(s.get("merge_sources", []) or []),
+                merge_strategy=str(s.get("merge_strategy", "concat_text") or "concat_text"),
+                merge_separator=str(s.get("merge_separator", "\n\n")) if s.get("merge_separator") is not None else "\n\n",
+                merge_use_result_file=bool(s.get("merge_use_result_file", False)),
             ))
         return cls(
             name=str(data.get("name", "unnamed")),
@@ -400,6 +409,20 @@ class WorkflowDef:
                     **({"result_file": s.result_file} if s.result_file else {}),
                     **({"result_file_required_keys": s.result_file_required_keys}
                        if s.result_file_required_keys else {}),
+                    **({"items": s.items} if s.items is not None else {}),
+                    **({"foreach_step": s.foreach_step} if s.foreach_step else {}),
+                    **({"foreach_max_concurrency": s.foreach_max_concurrency}
+                       if s.foreach_max_concurrency != 1 else {}),
+                    **({"foreach_stop_on_error": s.foreach_stop_on_error}
+                       if s.foreach_stop_on_error else {}),
+                    **({"wait_seconds": s.wait_seconds} if s.wait_seconds is not None else {}),
+                    **({"merge_sources": s.merge_sources} if s.merge_sources else {}),
+                    **({"merge_strategy": s.merge_strategy}
+                       if s.merge_strategy and s.merge_strategy != "concat_text" else {}),
+                    **({"merge_separator": s.merge_separator}
+                       if s.merge_separator and s.merge_separator != "\n\n" else {}),
+                    **({"merge_use_result_file": s.merge_use_result_file}
+                       if s.merge_use_result_file else {}),
                 }
                 for s in self.steps
             ],
