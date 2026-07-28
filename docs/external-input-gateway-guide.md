@@ -7,7 +7,106 @@
 内置 `watch` 来源、`goal_candidate`/`enqueue_turn` 真正执行并接入
 `autonomous_loop.tick()`、看板"🔌 外部输入"面板）。§7 路线图已无待办阶段。
 
-## 1. 核心概念
+## 0. 设计目标
+
+外部输入网关要解决的不是"做一个监控系统"，而是"给 mini_agent 建一层
+通用的外部输入接收机制"——RSS/网页监控只是第一个接入的来源，之后接
+webhook、邮件、日历提醒等都复用同一套机制，不用每接一种新来源就重新
+发明一遍"落地 → 判断要不要处理 → 通知/提交"的逻辑。
+
+**背景问题**：在这个网关出现之前，mini_agent 里能产生一次 Agent 输入
+的入口（用户消息、`cron_scheduler` 定时任务、`autonomous_loop` 的
+tick）几乎都是"触发 = 立刻提交一次 Agent 任务"，没有"事件产生"与
+"是否值得让 Agent 处理"的中间层。如果高频轮询外部世界的信号（比如
+RSS 更新、价格变化）直接挂在这些入口上，会退化成"每次轮询都是一次
+LLM 调用"，成本不可控。
+
+**四条设计目标**：
+
+1. **统一抽象**：任何"外部世界发生的、可能与用户/Agent 相关的事件"
+   都通过同一套 `ExternalInputSource` 接口接入，新增一种来源不用碰
+   调度、去重、路由这些通用逻辑。
+2. **复用现有事件总线**：不新造一套持久化/消费机制，直接在
+   `system_events.py`（`perception/system_events.py`）之上扩展一个
+   `external.*` 事件命名空间，复用它已经做好的"文件优先、tier 分级、
+   游标消费"语义。
+3. **分层路由、按需消耗 LLM**：外部事件产生 ≠ 立刻触发 Agent 推理。
+   高频、低成本的是"产生事件"这一层；是否要"通知用户"或"提交给 Agent
+   处理"是可配置的路由策略，默认最省钱的路径完全不过 LLM。
+4. **watch 只是其中一种 source**：RSS/JSON API/网页 diff 抓取和关键词/
+   阈值匹配这类领域逻辑整体下沉为 `ExternalInputSource` 的一个具体实
+   现（`watch`），网关层不重复实现这些判断。
+
+## 1. 系统架构
+
+```
+┌──────────────────────────────────────────────────────────────────────┐
+│                        外部世界 / 各类信号源                             │
+│  实时监控(watch: RSS/JSON API/网页diff)  Webhook 回调  邮件/IM 消息      │
+│  日历/提醒事件  IoT/传感器  第三方 MCP 服务的主动推送  ……（可持续扩展）   │
+└───────────────────────────────┬──────────────────────────────────────┘
+                                 │ 每种来源实现 ExternalInputSource 接口
+                                 ▼
+┌──────────────────────────────────────────────────────────────────────┐
+│                    External Input Gateway（网关核心）                   │
+│  ┌────────────┐   ┌───────────────┐   ┌─────────────────────────┐    │
+│  │  Registry   │──▶│ GatewayPoller │──▶│ 归一化 ExternalInputEvent │   │
+│  │(来源注册表) │   │ (独立轮询线程) │   │  + 来源自带的前置过滤/去重  │    │
+│  └────────────┘   └───────────────┘   └───────────┬─────────────┘    │
+│                                                     ▼                  │
+│                                    system_events.publish()             │
+│                              event_type = "external.<source>.<signal>" │
+│                                    tier = instant|tick|cron             │
+└───────────────────────────────┬──────────────────────────────────────┘
+                                 │ 复用现成的 poll_since() 游标消费模型
+                                 ▼
+┌──────────────────────────────────────────────────────────────────────┐
+│                     IngestionPolicy（路由决策）                        │
+│   按事件类型/来源匹配路由规则，三种落点，成本从低到高：                    │
+│     1) notify_only     → 写入 Inbox（/v1/inbox 的 external_alert 类型） │
+│     2) goal_candidate  → 写入 GoalBacklog 候选（对接 soft_goal_deriver  │
+│                          同款模式，用户/自主循环再决定是否升级为任务）    │
+│     3) enqueue_turn    → InputQueue.enqueue(initiator="external", ...) │
+│                          真正触发一次 Agent 推理（默认关闭，需显式开启） │
+└───────────────────────────────┬──────────────────────────────────────┘
+                                 │ autonomous_loop.tick()::_tick_passive()
+                                 │ 里的一个消费点，跟其它子系统共用同一节拍
+                                 ▼
+              GoalBacklog / InputQueue / alerts.jsonl（既有子系统）
+                                 │
+                                 ▼
+                看板"🔌 外部输入"页签（只读展示，供人工核对路由是否符合预期）
+```
+
+关键设计取舍：**"产生事件"和"消耗 LLM"之间永远隔着一层可配置的路由
+策略**，轮询频率再高也只累积到 `events.jsonl` 里，不会自动放大成 LLM
+调用次数；`goal_candidate`/`enqueue_turn` 落地后也不重复造轮子，而是
+直接调用 `GoalBacklog.add_goal()`/`InputQueue.enqueue()`，进入既有的
+Goal→Objective 拆分、`ResourceArbiter` 门控等消费链路。
+
+## 2. 核心组件
+
+| 组件 | 文件 | 职责 |
+|---|---|---|
+| `ExternalInputSource` / `ExternalInputEvent` | `external_input/source.py` | 来源扩展点的抽象接口 + 标准化事件表示；`register_source()`/`get_source_class()` 构成一个轻量注册表 |
+| `WatchInputSource` | `external_input/builtin/watch.py` | 第一个内置来源实现：`rss`/`json_api`/`html_diff` 三种 fetcher + 关键词/字段变化/阈值匹配规则 |
+| `GatewayPoller` | `external_input/poller.py` | 每个 source 一条独立轮询线程，按 `interval_seconds` 节拍调用 `poll()`，处理连续失败退避/熔断，把产生的事件发布到 `system_events` |
+| `IngestionPolicy`（`load_policies`/`decide_action`/`run_ingestion_policy_once`） | `external_input/policy.py` | 加载 `policies.yaml`，按"首个匹配规则生效"决定事件落点；三种落点的真正执行也在这里 |
+| 消费点接入 | `evolution/autonomous_loop.py::_tick_passive()` | 每个 tick 调用一次 `run_ingestion_policy_once()`，不新增独立调度循环，也不受 autonomy 档位限制（notify_only 默认档不该被挡住） |
+| 看板面板 | `apps/mini_agent_kanban/app.py::render_external_input_tab()` | 只读展示 source 健康度、路由规则、待处理告警、最近事件流水 |
+| REST 端点 | `api/routes.py` | `/v1/external_input/{sources,policies,events}` 供看板/脚本查询；`/v1/inbox`、`/v1/inbox/external_alerts/{id}/ack` 复用既有告警聚合机制 |
+
+## 3. 数据与状态落盘
+
+网关引入的落盘文件都在 `.agent/external_input/` 下（具体字段见 §5
+"配置"）：`sources.yaml`/`policies.yaml` 手写配置，`state/<id>.json`/
+`alerts.jsonl` 自动生成、不需要手工维护。事件本身不单独开文件，而是
+写进已有的 `.agent/system_events.jsonl`（全局事件总线）——`event_type`
+以 `external.` 开头的记录都是本网关产生的，这也是它能直接复用
+`poll_since()` 游标消费模型、不用新造一套持久化机制的原因（详见 §4
+核心概念）。
+
+## 4. 核心概念
 
 - **ExternalInputSource**：一种外部信号来源的实现（比如 `watch`）。
 - **ExternalInputEvent**：来源产生的一次标准化事件，落到
@@ -22,17 +121,12 @@
   消费，不需要手动调用 `run_ingestion_policy_once()`——只要 Agent daemon
   在跑（任意 autonomy 档位），`sources.yaml`/`policies.yaml` 就会持续生效。
 
-## 2. 配置
+## 5. 配置
 
-```
-.agent/external_input/
-  sources.yaml     # 来源配置
-  policies.yaml     # 路由规则
-  state/<id>.json   # 每个来源的增量状态（自动生成，不需要手写）
-  alerts.jsonl       # notify_only 落点的持久化记录（自动生成）
-```
+需要手写的只有 `sources.yaml`（配来源）和 `policies.yaml`（配路由规则），
+两者都放在 `.agent/external_input/` 下（完整目录结构见 §3）。
 
-### 2.1 `sources.yaml`
+### 5.1 `sources.yaml`
 
 ```yaml
 sources:
@@ -75,12 +169,12 @@ sources:
 | 字段 | 说明 |
 |---|---|
 | `id` | 来源实例的唯一标识，同时也是 state 文件名 |
-| `type` | 实现类型，目前内置只有 `watch`（自定义来源见 §4） |
+| `type` | 实现类型，目前内置只有 `watch`（自定义来源见 §7） |
 | `enabled` | `false` 时 `GatewayPoller` 不会为它起轮询线程 |
 | `interval_seconds` | 轮询间隔，默认 300 秒，非法值会回退成默认值 |
 | `params` | 传给 `poll(params, state)` 的来源自定义配置 |
 
-### 2.2 `policies.yaml`
+### 5.2 `policies.yaml`
 
 ```yaml
 - match:
@@ -105,7 +199,7 @@ sources:
 
 未显式配置路由的事件类型，默认按 `notify_only` 处理。
 
-## 3. watch 来源（内置，P4）
+## 6. watch 来源（内置）
 
 `WatchInputSource`（`src/mini_agent/external_input/builtin/watch.py`）提供
 三种 `fetcher`：
@@ -133,7 +227,7 @@ sources:
 持续命中不会每轮都重复告警；等数值回到阈值范围外再重新跌入/超出时，
 会重新触发一次。
 
-## 4. 自定义来源
+## 7. 自定义来源
 
 新增一种来源不需要碰网关代码，只需要实现接口并注册：
 
@@ -153,7 +247,7 @@ class MySource(ExternalInputSource):
 或者由调用方自行 import），`sources.yaml` 里配置 `type: my_source` 即可
 被识别。
 
-## 5. 查看告警与事件
+## 8. 查看告警与事件
 
 - `GET /v1/inbox` 会聚合未处理的 `external_alert`（来自 `notify_only` 落点）。
 - `POST /v1/inbox/external_alerts/{alert_id}/ack` 标记一条告警已处理。
@@ -171,7 +265,7 @@ class MySource(ExternalInputSource):
   - `GET /v1/external_input/events?limit=50` — 最近的 `external.*`
     事件流水（只读尾读，不会推进任何消费者的游标，`limit` 上限 200）。
 
-## 6. 已知限制
+## 9. 已知限制
 
 - `watch` 是唯一内置来源；webhook/邮件/日历等来源尚未实现，需要时可以
   参考 `builtin/watch.py` 的写法新增一个 `ExternalInputSource` 子类。
