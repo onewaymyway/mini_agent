@@ -1,7 +1,7 @@
 ---
 name: workflow-debugger
-description: 测试、调试、修改已存在的 mini_agent workflow（`.agent/workflows/<name>/`）——沙箱跑单个 step、查一次执行失败在哪、只改坏掉的那个 step、从断点续跑、看长期执行统计。当用户说"这个workflow跑失败了"、"帮我测一下这个step"、"这一步为什么一直失败"、"改一下xxx workflow的这个字段"、"从哪步继续跑"、"这个workflow靠谱吗/成功率怎么样"时使用。**不**用于从零生成新 workflow，那是 workflow-generator skill 的场景。
-triggers: workflow调试, workflow失败, workflow测试, 重跑, 断点续跑, patch_workflow_step, resume_workflow_run, test_workflow_step, needs_fix, debug_log, python_step, workflow debug, output_export_dir, preview_workflow
+description: 测试、调试、修改已存在的 mini_agent workflow（`.agent/workflows/<name>/`）——沙箱跑单个 step、查一次执行失败在哪、只改坏掉的那个 step、从断点续跑、看长期执行统计，包括 foreach/wait/merge 批处理与汇聚 step、workflow 级熔断、tool_call/result_file 占位符相关问题的排查。当用户说"这个workflow跑失败了"、"帮我测一下这个step"、"这一步为什么一直失败"、"改一下xxx workflow的这个字段"、"从哪步继续跑"、"这个workflow靠谱吗/成功率怎么样"、"foreach里某个元素失败了"、"整个workflow好像熔断了"时使用。**不**用于从零生成新 workflow，那是 workflow-generator skill 的场景。
+triggers: workflow调试, workflow失败, workflow测试, 重跑, 断点续跑, patch_workflow_step, resume_workflow_run, test_workflow_step, needs_fix, debug_log, python_step, workflow debug, output_export_dir, preview_workflow, foreach, merge, wait, circuit_breaker, 熔断, tool_args, result_file
 ---
 
 # Workflow Debugger（测试 / 调试 / 修改已有 workflow）
@@ -28,6 +28,10 @@ triggers: workflow调试, workflow失败, workflow测试, 重跑, 断点续跑, 
 | "正在跑，想先停一下 / 不想跑了" | `pause_workflow_run` / `cancel_workflow_run` | 干等或杀进程 |
 | "设了 `output_export_dir` 但目标目录里没看到文件/文件不全" | 看 `events.jsonl` 里的 `output_exported` 事件（含 `copied_files`/`error`），或 `get_workflow_run_status(verbose=true)`；先确认产出文件当初写进了本次 workflow 的 `output/` 目录而不是别处 | 怀疑是导出功能本身坏了就去改 runner 代码——复制失败不影响 workflow 执行状态，多数情况是产出文件路径写错了 |
 | "有个 human_input/审批门卡着" | `provide_workflow_step_input` / `approve_workflow_step` / `reject_workflow_step` | 让用户去改 workflow 定义绕过它 |
+| "`foreach` 里某个/某几个元素失败了，整体状态却是 done" | 这是 `foreach_stop_on_error=false`（默认）的预期行为，看聚合结果 JSON 里对应 `item_index` 的 `{"error": "..."}` | 以为整体 `done` 就代表所有元素都成功 |
+| "`condition` 这一步判成了 `needs_fix` 而不是 `skipped`" | 先确认是不是表达式本身写错（引用不存在的 step / 字段类型不对），`patch_workflow_step` 改表达式，而不是当成"业务上不满足"去调整上游逻辑 | 把 `needs_fix` 误当成"分数没达标"去改上游 |
+| "整个 workflow 好像被提前取消了，好几个不同 step 都报同一种错" | 看 `get_workflow_run_status(verbose=true)` 有没有 `circuit_breaker_tripped`/熔断原因，见下文"workflow 级熔断"一节 | 逐个 step 分别排查、以为是巧合 |
+| "`script` 声明了 `result_file` 但一直报失败，`returncode` 明明是 0" | 检查脚本是否真的把 JSON 写到了 `$WORKFLOW_RESULT_FILE_PATH`，`script` 的 structured 模式下 `returncode==0` 不等于整体成功，见下文"`script` 的 `result_file` structured 模式"一节 | 只看 `returncode` 就断定是 runner 的 bug |
 | "这个 `agent`/`skill_agent` step 老是不稳定/产出格式不对/偶尔跑偏" | 先判断这一步是不是本该是 `python_step`（见下文"用选型规则诊断不稳定的 agent 类型 step"），是的话 `patch_workflow_step` 把 `type` 改成 `python_step` 并配 `script_path` | 一味调大 `retry_on_error`/`max_turns` 掩盖问题 |
 
 ## 排查一次失败执行的标准流程
@@ -49,7 +53,10 @@ triggers: workflow调试, workflow失败, workflow测试, 重跑, 断点续跑, 
    - `needs_fix`：runner 已经判定这是**结构性/配置性错误**（prompt 占位符
      写错不存在的 step、`tool_name` 没注册、`prompt_file` 路径不存在，
      或者同一 step 连续多次同类失败被 `escalate_after_n_same_failures`
-     提前拦下），**重跑没有用**，`get_workflow_run_status` 的输出会显式
+     提前拦下，**或者（P12）`condition` 表达式求值本身抛异常**——引用了
+     不存在的 step、或此刻字段类型不对导致 `AttributeError`/`TypeError`，
+     这跟"表达式写对了、只是求值结果确实是 `False`"的 `skipped` 是两回事，
+     不要混淆），**重跑没有用**，`get_workflow_run_status` 的输出会显式
      提示"这是定义/配置问题，重跑无效"。这种必须先 `patch_workflow_step`
      改定义，不要在没改动的情况下反复 `resume_workflow_run`。
 4. **定位到具体字段该怎么改**：结合 `verbose=true` 里的错误信息和
@@ -173,6 +180,106 @@ workflow-generator skill 里的强制排序是：能用 `python_step`（配合
    里能看到该 step 的 `status`），通过了才会读文件，没通过会退回读对话
    原文——这两种数据源的字段完整性可能完全不同，排查时不要想当然。
 
+## 排查 `foreach` / `wait` / `merge`（P13/P14）
+
+这三种类型都是纯 `StepExecutor` 插件，不改变外层拓扑调度语义，排查思路
+跟其它 step 类型一致（`get_workflow_run_status(verbose=true)`/
+`test_workflow_step` 都适用），但各有一个需要单独注意的点：
+
+- **`foreach`**：
+  - 整体状态是 `done` 不代表每个元素都成功——`foreach_stop_on_error`
+    默认 `false`，失败元素会以 `{"item_index": i, "error": "..."}` 的形式
+    记入聚合结果的 JSON 数组，需要看聚合结果本身才能知道哪些元素失败了、
+    为什么失败。如果用户希望"只要有一个元素失败就应该整体失败"，检查
+    `show_workflow` 里这一步的 `foreach_stop_on_error` 是不是漏设成
+    `true`，而不是去改内层 `foreach_step` 的重试参数。
+  - `test_workflow_step` 对 `foreach` 同样适用，但沙箱测的是**整个**
+    `foreach` step（会真实对 `items` 里所有元素跑一遍内层逻辑），想单独
+    验证"某一个元素的处理逻辑对不对"，更好的办法是把 `foreach_step` 里的
+    定义单独抽出来构造一个临时的普通 step（同样的 `type`/`prompt` 等
+    字段，把 `{item}`/`{item_index}` 换成具体值）走一次
+    `test_workflow_step`，而不是直接对整个 `foreach` 跑沙箱、每次都要等
+    全部元素跑完。
+  - `items` 解析失败（不是合法 list）或引用的占位符解析不出值，会在
+    执行期报错，先用 `show_workflow` 确认 `items` 引用的上游 step 是否
+    真的产出了预期的列表（尤其是 `{step.result_file:field}` 这种写法，
+    先确认该字段在 `result_file` JSON 里确实存在）。
+  - `foreach_max_concurrency` 调大后如果发现结果乱序或互相干扰，注意这
+    是独立于外层 `allow_parallel` 的并发维度，排查并发问题时两者要分开看，
+    不要混在一起分析。
+- **`wait`**：如果一个 `wait` step 看起来"卡住不动"，先确认这是不是预期
+  行为（`wait_seconds` 设置过大），需要提前结束用
+  `cancel_workflow_run`/`pause_workflow_run`，`wait` 会在 0.5 秒粒度内
+  响应这些控制信号，不需要等到 `wait_seconds` 跑完；如果响应明显滞后，
+  说明控制信号没有正确传递，检查这次执行是不是走了绕过 `runner._current_
+  control` 的自定义调用路径（比如自己拼装 `WorkflowRunner` 没走标准
+  `run_workflow`/`resume_workflow_run`）。
+- **`merge`**：
+  - `merge_strategy: json_merge` 报错"非 dict"，说明 `merge_sources`
+    里某个来源的 `output`（或 `result_file`，取决于 `merge_use_result_file`）
+    解析出来不是 JSON object——先用 `get_workflow_run_status(verbose=true)`
+    看具体是哪个来源，再决定是改那个上游 step 的产出格式，还是把
+    `merge_strategy` 换成更宽松的 `json_array`。
+  - `merge_strategy: json_array` 且某个来源解析失败时会**退化为原始文本
+    元素**而不是报错，如果发现数组里混入了不该有的原始文本，说明某个
+    上游来源的输出不是合法 JSON，检查是不是 `merge_use_result_file`
+    设置和该来源是否声明了 `result_file` 不匹配。
+  - `merge_sources` 引用的 id 没有出现在 `depends_on` 里会在
+    `patch_workflow_step`/`save_workflow` 阶段直接报错，不会等到运行期
+    才发现，遇到这类报错直接照提示把缺的 id 加进 `depends_on`。
+
+## workflow 级熔断（P14）：`circuit_breaker_distinct_step_threshold`
+
+如果好几个**不同** step 在同一次运行里因为**同一个 `error_type`**（比如
+某个外部 API 挂了）先后失败，且 `agent_config.json` 里配置了
+`{"workflow": {"circuit_breaker_distinct_step_threshold": N}}`，达到阈值
+后 watchdog 会主动 `request_cancel()` 提前结束整次运行，而不是让每个
+step 各自耗尽 `retry_on_error` 预算再各自报错——这跟"同一个 step 内部连续
+失败"的 `escalate_after_n_same_failures` 是两回事，即使每个 step 都只失败
+了一次（没有触发各自的 `escalate_after_n_same_failures`），也可能因为熔断
+被提前取消。
+
+排查方式：
+1. `get_workflow_run_status(workflow_session_id, verbose=true)` 看有没有
+   `circuit_breaker_tripped=true` 和熔断原因（记录了触发的 `error_type`
+   以及哪些 step 因此被判定为系统性问题）。
+2. 看到熔断触发时，**不要**逐个 step 分别调大 `retry_on_error`/`timeout`
+   去掩盖——先定位这个共同的 `error_type` 到底是什么外部依赖出的问题
+   （网络、某个第三方 API、某个共享资源），修好那个根因，或者在确认这次
+   确实是巧合、不是系统性故障时，用 `resume_workflow_run` 正常续跑。
+3. 如果发现熔断阈值设得太敏感（正常的偶发失败也会触发），提示用户去调整
+   `agent_config.json` 里的 `circuit_breaker_distinct_step_threshold`
+   （调大阈值，或设为 `null` 关闭），这是全局配置，不是某个 workflow 的
+   `patch_workflow_step` 能改的字段。
+4. 触发熔断后已经在跑/待跑的 step 会在下一次批次边界被取消，`resume_
+   workflow_run` 续跑前建议先确认根因是否已经解决，否则大概率会再次触发
+   熔断。
+
+## `script` 的 `result_file` structured 模式排查（P15）
+
+`script` 类型声明了 `result_file` 后，即使子进程 `returncode == 0`
+（脚本自己判定的"成功"），runner 仍会额外校验 `result_file` 是否存在、
+是否合法 JSON、是否包含 `result_file_required_keys` 列出的字段——校验
+不通过时整个 step 会被判定失败，即使脚本本身跑得很"顺利"。排查时：
+
+1. 先确认脚本是否真的把结构化结果写到了 `$WORKFLOW_RESULT_FILE_PATH`
+   这个环境变量指向的路径——这是 `script` 唯一被告知目标路径的方式（不像
+   `skill_agent` 是在 prompt 文字里提示），脚本如果没有读这个环境变量、
+   还是按老路径写文件或者只 `print` 到 stdout，`result_file` 校验必然
+   失败。
+2. `get_workflow_run_status(verbose=true)` 的报错信息里会附带脚本的
+   `stdout`/`stderr`，先看这两个字段确认脚本执行本身是否符合预期，再判断
+   是"脚本逻辑错"还是"忘了写 `result_file`"。
+3. **与 `skill_agent` 的关键区别**：`script` 是一次性子进程，没有可
+   `resume` 的会话上下文，校验失败**不会**像 `skill_agent` 那样原地
+   `resume` 补写文件重试，只能靠 `retry_on_error` 整个重跑该 step——如果
+   脚本逻辑本身没问题、只是偶发写文件失败，调大 `retry_on_error` 是合理
+   的；如果是脚本逻辑本身没有实现写文件这一步，重试多少次都没用，需要
+   `patch_workflow_step` 改 `script` 内容。
+4. 未声明 `result_file` 的既有 `script` step 行为完全不受影响（`stdout`
+   即结果），如果排查的是一个没有 `result_file` 字段的 `script` step，
+   本节内容不适用，回到常规的"看 stdout/stderr"排查路径。
+
 ## 用 `events.jsonl` 排查"卡在哪一步"/耗时异常
 
 `.agent/workflow_sessions/<id>/events.jsonl` 里每个 step 正常应该有一对
@@ -268,6 +375,26 @@ resume_workflow_run(
   分批、condition 求值结果，`patch_workflow_step` 保存成功后可以再
   `preview_workflow(name, inputs)` 看一眼 dry-run 结果，比直接跑一遍正式
   执行更省成本。
+- **`tool_call` 的 `tool_args` 里占位符没生效**：先确认引用的 step 是否
+  在 `depends_on` 里声明过（P12 起 `tool_args` 占位符和 prompt 占位符走
+  同一套 `depends_on` 校验），字面量值（不含 `{...}`）本身不会被替换，
+  这是设计如此、不是 bug。
+- **`{step_id.result_file:a.b[0].c}` 占位符原样保留、没被替换**：这是
+  容错设计，不是报错——路径取不到值、或结果文件不是合法 JSON 时占位符会
+  原样保留而不是抛异常中断整个 step。排查时先确认 `result_file` 那次
+  校验是否真的通过（没通过就不会有文件可读），再确认路径写法（`a.b[0].c`
+  这种"属性 + 数字下标"链式路径，不支持完整 JSONPath 语法）是否跟 JSON
+  实际结构对得上。
+- **`foreach` 整体 `done` 但用户反馈"有几条数据处理错了"**：不是 bug，是
+  `foreach_stop_on_error=false` 的默认行为，去看聚合结果 JSON 数组里对应
+  `item_index` 的 `error` 字段，不要先怀疑 runner 出问题。
+- **workflow 熔断触发后逐个 step 加 `retry_on_error`**：熔断是跨 step 的
+  系统性信号（同一 `error_type` 导致多个不同 step 失败），根因通常是某个
+  共享的外部依赖，逐个调大重试次数解决不了问题，反而会让下次熔断触发得
+  更慢、浪费更多 token 才发现同样的根因。
+- **`script` 声明了 `result_file` 却还在只看 `returncode`**：structured
+  模式下 `returncode == 0` 不等于整体成功，`result_file` 校验失败会让
+  runner 判定整个 step 失败，即使 stdout 看起来一切正常。
 
 - **`output_export_dir` 复制失败不算 workflow 失败**：跑到终态（`paused`
   不算终态）后才会尝试复制，复制本身出错（权限/磁盘/路径不存在等）只会在
