@@ -2292,6 +2292,52 @@ def _render_workflow_run_panel(client: AgentClient):
             st.session_state.wf_active_run_id = res.get("workflow_session_id")
             st.rerun()
 
+    _render_workflow_stats_panel(client, selected)
+
+
+def _render_workflow_stats_panel(client: AgentClient, selected: str):
+    """[P9-1a workflow_system_next_directions.md §1.2a] 历史执行统计视图：
+    对已跑过的次数做即时聚合展示，帮助判断"这个工作流稳不稳、哪个 step
+    最容易卡"，纯只读，不产生新的落盘数据。"""
+    with st.expander("📊 历史执行统计", expanded=False):
+        stats = client.workflow_stats(selected) or {}
+        if "_error" in stats:
+            st.warning(f"统计数据获取失败：{stats['_error']}")
+            return
+
+        total_runs = stats.get("total_runs", 0)
+        if not total_runs:
+            st.caption("该工作流暂无历史执行记录，跑过之后这里会显示成功率与各步骤耗时/评分统计。")
+            return
+
+        m1, m2 = st.columns(2)
+        m1.metric("累计执行次数", total_runs)
+        m2.metric("成功率", f"{stats.get('success_rate', 0.0) * 100:.1f}%")
+
+        step_stats = stats.get("step_stats", {})
+        if step_stats:
+            st.caption("各步骤表现：")
+            rows = []
+            for step_id, s in step_stats.items():
+                rows.append({
+                    "步骤": step_id,
+                    "出现次数": s.get("total", 0),
+                    "完成率": f"{(1 - s.get('fail_rate', 0.0)) * 100:.1f}%",
+                    "平均耗时(s)": s.get("avg_duration", 0.0),
+                    "平均评分": s.get("avg_score") if s.get("avg_score") is not None else "-",
+                    "平均重试次数": s.get("avg_retries_used", 0.0),
+                })
+            st.dataframe(rows, use_container_width=True, hide_index=True)
+
+        condition_stats = stats.get("condition_stats", {})
+        if condition_stats:
+            st.caption("条件分支（condition）实际执行比例：")
+            rows = [
+                {"步骤": step_id, "实际执行比例": f"{c.get('true_rate', 0.0) * 100:.1f}%", "样本数": c.get("total", 0)}
+                for step_id, c in condition_stats.items()
+            ]
+            st.dataframe(rows, use_container_width=True, hide_index=True)
+
 
 def _render_workflow_step_card(client: AgentClient, run_id: str, step_id: str, sr: dict):
     status = sr.get("status", "pending")

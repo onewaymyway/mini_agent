@@ -289,6 +289,13 @@ class AgentClient:
     def workflow_yaml(self, name: str):
         return self._get(f"/workflows/{name}")
 
+    def workflow_stats(self, name: str):
+        """[P9-1a workflow_system_next_directions.md §1.2a] 某工作流历史执行
+        的汇总统计：总运行次数、成功率、各 step 的完成率/平均耗时/平均评分/
+        平均重试次数，以及带 condition 的 step 的实际执行比例。"""
+        return self._get(f"/workflows/{name}/stats")
+
+
     def preview_workflow(self, name: str, inputs: dict = None):
         return self._post(f"/workflows/{name}/preview", {"inputs": inputs or {}})
 
