@@ -925,6 +925,21 @@ def _build_pending_interaction(req: dict) -> PendingInteraction:
     )
 
 
+def _respond_interaction_or_warn(client: AgentClient, req_id: str, **kwargs) -> None:
+    """[BUGFIX] 之前所有按钮点击后直接 client.respond_interaction(...) + st.rerun()，
+    完全没检查返回值。AgentClient 的约定是"失败不抛异常，返回带 _error 字段的 dict"
+    （见 client.py::_post），所以只要后端 404/403/超时，这里之前是彻底静默的——
+    页面刷新了、卡片却因为后端根本没消费这个 req_id 而继续留在 pending 列表里，
+    表现为"点了发送好像没反应，只有 daemon 命令行那边回复才会消失"。
+    现在检查 _error，失败时用 st.error 展示原因并保留卡片，不再盲目 rerun。
+    """
+    result = client.respond_interaction(req_id, **kwargs)
+    if isinstance(result, dict) and result.get("_error"):
+        st.error(f"回复失败（req_id={req_id}）：{result['_error']}")
+        return
+    st.rerun()
+
+
 def _render_pending_interaction(client: AgentClient, item: PendingInteraction) -> None:
     """按 mode 渲染交互控件——只关心 mode，不关心具体 kind 是什么。"""
     req_id = item.req_id
@@ -942,11 +957,9 @@ def _render_pending_interaction(client: AgentClient, item: PendingInteraction) -
     if item.mode == "confirm_freeform":
         gc1, gc2 = st.columns(2)
         if gc1.button("✅ /confirm 确认并开始执行", key=f"ix_confirm_{req_id}"):
-            client.respond_interaction(req_id, answer="/confirm")
-            st.rerun()
+            _respond_interaction_or_warn(client, req_id, answer="/confirm")
         if gc2.button("❌ /cancel 放弃本次目标", key=f"ix_cancel_{req_id}"):
-            client.respond_interaction(req_id, answer="/cancel")
-            st.rerun()
+            _respond_interaction_or_warn(client, req_id, answer="/cancel")
         with st.form(f"ix_form_{req_id}", clear_on_submit=True):
             revise_text = st.text_input(
                 "或输入修改意见（会据此重新生成下一版验收标准草案）",
@@ -954,30 +967,25 @@ def _render_pending_interaction(client: AgentClient, item: PendingInteraction) -
             )
             if st.form_submit_button("提交修改意见"):
                 if revise_text.strip():
-                    client.respond_interaction(req_id, answer=revise_text.strip())
-                    st.rerun()
+                    _respond_interaction_or_warn(client, req_id, answer=revise_text.strip())
 
     elif item.mode == "yes_no":
         cc1, cc2 = st.columns(2)
         if cc1.button("✅ 是", key=f"ix_yes_{req_id}"):
-            client.respond_interaction(req_id, confirmed=True)
-            st.rerun()
+            _respond_interaction_or_warn(client, req_id, confirmed=True)
         if cc2.button("❌ 否", key=f"ix_no_{req_id}"):
-            client.respond_interaction(req_id, confirmed=False)
-            st.rerun()
+            _respond_interaction_or_warn(client, req_id, confirmed=False)
 
     elif item.mode == "choices":
         for idx, opt in enumerate(item.options):
             if st.button(f"{idx + 1}. {opt}", key=f"ix_opt_{req_id}_{idx}"):
-                client.respond_interaction(req_id, choice_index=idx)
-                st.rerun()
+                _respond_interaction_or_warn(client, req_id, choice_index=idx)
 
     else:  # freeform
         with st.form(f"ix_form_{req_id}", clear_on_submit=True):
             free_text = st.text_input("回复", key=f"ix_free_{req_id}")
             if st.form_submit_button("发送"):
-                client.respond_interaction(req_id, answer=free_text)
-                st.rerun()
+                _respond_interaction_or_warn(client, req_id, answer=free_text)
 
     st.divider()
 
