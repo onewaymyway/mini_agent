@@ -8,8 +8,12 @@
   5. acknowledge_alert：标记后不再出现在 list_pending_alerts
   6. run_ingestion_policy_once：端到端跑通 gateway.publish_event → policy 路由
      → alerts.jsonl，游标正确推进（第二次调用不重复处理）
-  7. goal_candidate / enqueue_turn 命中时不写 alert，只计入 skipped 计数
-     （P5 才真正落地，这里验证"识别但不误当 notify_only 处理"）
+  7. goal_candidate / enqueue_turn 命中时、未传 goal_backlog/input_queue：
+     不写 alert，只计入 skipped 计数（向后兼容 P3 阶段调用方式）
+  8. [P5] goal_candidate 命中且传入 goal_backlog：真正写入 GoalBacklog，
+     source=external_input，needs_review 标签；同标题去重不重复写入
+  9. [P5] enqueue_turn 命中且传入 input_queue：真正调用
+     InputQueue.enqueue(initiator=...)，task_template 占位符渲染正确
 """
 
 from __future__ import annotations
@@ -29,7 +33,20 @@ from mini_agent.external_input.policy import (
     run_ingestion_policy_once,
 )
 from mini_agent.external_input.source import ExternalInputEvent
+from mini_agent.perception.goal_backlog import GoalBacklog
 from mini_agent.storage.paths import AgentPaths
+
+
+class _StubInputQueue:
+    """InputQueue 的最小 duck-typed 替身，只记录 enqueue() 的调用参数，
+    不涉及真正的线程/队列语义（policy.py 只用得到 enqueue()）。"""
+
+    def __init__(self):
+        self.calls: list[dict] = []
+
+    def enqueue(self, message, turn_id=None, initiator="user", meta=None):
+        self.calls.append({"message": message, "initiator": initiator, "meta": meta or {}})
+        return f"turn_{len(self.calls)}"
 
 
 def _make_event(source_type="watch", signal="new_item", fields=None, event_id="e1"):
@@ -190,6 +207,85 @@ class TestNotifyOnlyAlerts(unittest.TestCase):
         self.assertEqual(summary.enqueue_turn_skipped, 1)
         self.assertEqual(summary.notify_only, 0)
         self.assertEqual(list_pending_alerts(self.paths), [])
+
+    def test_goal_candidate_writes_goal_backlog_when_provided(self):
+        policies_path = self.paths.external_input_policies_config
+        policies_path.parent.mkdir(parents=True, exist_ok=True)
+        policies_path.write_text(
+            "- match: {signal: hot_signal}\n  action: goal_candidate\n",
+            encoding="utf-8",
+        )
+        publish_event(self.paths, _make_event(event_id="g3", signal="hot_signal"))
+
+        backlog = GoalBacklog(self.paths)
+        summary = run_ingestion_policy_once(self.paths, consumer_name="c5", goal_backlog=backlog)
+        self.assertEqual(summary.goal_candidate, 1)
+        self.assertEqual(summary.goal_candidate_skipped, 0)
+
+        backlog.load()
+        goals = [g for g in backlog.active_goals() if g.source == "external_input"]
+        self.assertEqual(len(goals), 1)
+        self.assertIn("needs_review", goals[0].tags)
+        self.assertEqual(goals[0].title, "标题")
+
+    def test_goal_candidate_dedupes_same_title(self):
+        policies_path = self.paths.external_input_policies_config
+        policies_path.parent.mkdir(parents=True, exist_ok=True)
+        policies_path.write_text(
+            "- match: {signal: hot_signal}\n  action: goal_candidate\n",
+            encoding="utf-8",
+        )
+        backlog = GoalBacklog(self.paths)
+        backlog.add_goal(title="标题", source="external_input")
+
+        publish_event(self.paths, _make_event(event_id="g4", signal="hot_signal"))
+        summary = run_ingestion_policy_once(self.paths, consumer_name="c6", goal_backlog=backlog)
+        self.assertEqual(summary.goal_candidate, 0)
+        self.assertEqual(summary.goal_candidate_deduped, 1)
+
+        backlog.load()
+        goals = [g for g in backlog.active_goals() if g.source == "external_input"]
+        self.assertEqual(len(goals), 1)  # 没有重复写入
+
+    def test_enqueue_turn_calls_input_queue_when_provided(self):
+        policies_path = self.paths.external_input_policies_config
+        policies_path.parent.mkdir(parents=True, exist_ok=True)
+        policies_path.write_text(
+            "- match: {signal: urgent_signal}\n"
+            "  action: enqueue_turn\n"
+            "  enqueue:\n"
+            "    initiator: external\n"
+            "    task_template: \"紧急：{title} - {detail}\"\n",
+            encoding="utf-8",
+        )
+        publish_event(
+            self.paths,
+            ExternalInputEvent(
+                id="g5", source_id="src1", source_type="webhook", signal="urgent_signal",
+                title="服务器告警", detail="磁盘使用率 95%",
+            ),
+        )
+        iq = _StubInputQueue()
+        summary = run_ingestion_policy_once(self.paths, consumer_name="c7", input_queue=iq)
+        self.assertEqual(summary.enqueue_turn, 1)
+        self.assertEqual(summary.enqueue_turn_skipped, 0)
+        self.assertEqual(len(iq.calls), 1)
+        self.assertEqual(iq.calls[0]["message"], "紧急：服务器告警 - 磁盘使用率 95%")
+        self.assertEqual(iq.calls[0]["initiator"], "external")
+        self.assertEqual(iq.calls[0]["meta"]["event_id"], "g5")
+
+    def test_enqueue_turn_default_template_without_config(self):
+        policies_path = self.paths.external_input_policies_config
+        policies_path.parent.mkdir(parents=True, exist_ok=True)
+        policies_path.write_text(
+            "- match: {signal: urgent_signal}\n  action: enqueue_turn\n",
+            encoding="utf-8",
+        )
+        publish_event(self.paths, _make_event(event_id="g6", signal="urgent_signal"))
+        iq = _StubInputQueue()
+        run_ingestion_policy_once(self.paths, consumer_name="c8", input_queue=iq)
+        self.assertIn("标题", iq.calls[0]["message"])
+        self.assertEqual(iq.calls[0]["initiator"], "external")
 
 
 if __name__ == "__main__":

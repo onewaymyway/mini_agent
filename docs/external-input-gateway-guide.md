@@ -3,9 +3,9 @@
 > 设计文档：`next_doc/external_input_gateway_design.md`（含分阶段实现状态）。
 > 本文档只写"怎么用"，架构取舍和设计动机见设计文档。
 
-当前进度：P1–P4 已完成（事件抽象、独立轮询调度、路由与告警落点、
-内置 `watch` 来源）。P5（`goal_candidate`/`enqueue_turn` 真正执行）、
-P6（看板面板）尚未开始。
+当前进度：P1–P5 已完成（事件抽象、独立轮询调度、路由与告警落点、
+内置 `watch` 来源、`goal_candidate`/`enqueue_turn` 真正执行并接入
+`autonomous_loop.tick()`）。P6（看板面板）尚未开始。
 
 ## 1. 核心概念
 
@@ -13,9 +13,14 @@ P6（看板面板）尚未开始。
 - **ExternalInputEvent**：来源产生的一次标准化事件，落到
   `system_events.jsonl` 的 `external.<source_type>.<signal>` 命名空间。
 - **IngestionPolicy**：决定一个事件该"只通知"（`notify_only`）、
-  "生成目标候选"（`goal_candidate`，P5 待落地）还是"直接触发 Agent 处理"
-  （`enqueue_turn`，P5 待落地）。默认（未匹配任何规则）是 `notify_only`——
-  网关永远不会因为轮询频率高就意外放大成大量 LLM 调用。
+  "生成目标候选"（`goal_candidate`，写入 `GoalBacklog`）还是"直接触发
+  Agent 处理"（`enqueue_turn`，直接提交 `InputQueue`）。默认（未匹配任何
+  规则）是 `notify_only`——网关永远不会因为轮询频率高就意外放大成大量
+  LLM 调用；`goal_candidate`/`enqueue_turn` 都需要在 `policies.yaml` 里
+  显式配置命中规则才会触发。
+- 三个落点已经在 `autonomous_loop.tick()`（`_tick_passive()` 阶段）自动
+  消费，不需要手动调用 `run_ingestion_policy_once()`——只要 Agent daemon
+  在跑（任意 autonomy 档位），`sources.yaml`/`policies.yaml` 就会持续生效。
 
 ## 2. 配置
 

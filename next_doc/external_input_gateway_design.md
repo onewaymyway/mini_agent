@@ -256,7 +256,7 @@ system_events.publish(
 | P2 | `GatewayPoller` 独立调度线程 + 退避熔断 + `sources.yaml` 加载 |
 | P3 | `IngestionPolicy` 路由（`notify_only` 优先实现，跑通 → `/v1/inbox`） |
 | P4 ✅ | 迁移上一轮 watch 设计为 `builtin/watch.py`（第一个 source 实现），验证端到端闭环 |
-| P5 | `goal_candidate` 落点（对接 `soft_goal_deriver` 同款模式）+ `enqueue_turn` 落点（默认关闭，显式开启） |
+| P5 ✅ | `goal_candidate` 落点（对接 `soft_goal_deriver` 同款模式）+ `enqueue_turn` 落点（默认关闭，显式开启） |
 | P6 | 看板"🔌 外部输入"面板 |
 
 ---
@@ -375,6 +375,24 @@ system_events.publish(
 - **首次轮询不误报**：`json_api` 的 `field_change` 模式用 `"last_value" in state` 判断是否有历史值，而不是"上次值是否是 `None`"——如果远端字段本来就是 `null`，第一次轮询也不应该被当成"从 `None` 变成 `null`"报出来；`html_diff` 同理用 `state.get("digest") is None` 判断首次。
 - **失败即向上抛出**：三个 `_poll_*` 方法遇到抓取/解析失败都不吞异常，统一包装成 `WatchFetchError` 抛出，交给 `GatewayPoller`（P2）已经实现的连续失败计数、退避、熔断、健康事件发布处理，本文件不重复实现任何重试/退避逻辑。
 
-### P5–P6 — 待开发
+### P5 — 已完成 ✅
 
-尚未开始，按 §7 路线图顺序推进：`goal_candidate`/`enqueue_turn` 落点（对接 `soft_goal_deriver` 同款模式）+ 接入 `autonomous_loop.tick()`（P5）→ 看板"🔌 外部输入"面板（P6）。
+**范围**：`goal_candidate`/`enqueue_turn` 落点真正落地（对接 `soft_goal_deriver` 同款模式）+ 接入 `autonomous_loop.tick()`。
+
+**变更文件**：
+
+| 文件 | 变更 |
+|---|---|
+| `src/mini_agent/external_input/policy.py` | 新增 `_goal_candidate()`：写入 `GoalBacklog.add_goal(source="external_input", tags=["needs_review","external_input"])`，用 `objective_outcome_tracker.normalize_title_key()` 归一化标题做去重；新增 `_enqueue_turn()`：渲染 `rule.enqueue.task_template`（`{title}`/`{detail}` 占位符，缺省有内置默认模板）后调用 `InputQueue.enqueue(initiator=...)`；`run_ingestion_policy_once()` 新增 `goal_backlog`/`input_queue` 两个可选参数，不传时保持 P3 阶段"可见地跳过"行为（向后兼容）；`PolicyRunSummary` 新增 `goal_candidate`/`goal_candidate_deduped`/`enqueue_turn` 三个计数字段 |
+| `src/mini_agent/evolution/autonomous_loop.py` | `_tick_passive()` 尾部新增一段 `run_ingestion_policy_once(self._paths, goal_backlog=self._goal_backlog, input_queue=self._input_queue)` 调用（try/except 包裹，`ImportError` 时静默跳过，不影响没有安装可选依赖时的现有行为） |
+| `src/mini_agent/external_input/__init__.py` | 导出 `PolicyRunSummary`/`EXTERNAL_GOAL_SOURCE`；包文档字符串 P5 范围移入"已完成" |
+| `tests/test_external_input_policy.py` | 新增 4 个用例：`goal_candidate` 真正写入 GoalBacklog 且带 `needs_review` 标签、同标题去重不重复写入、`enqueue_turn` 真正调用 `InputQueue.enqueue` 且 `task_template` 占位符渲染正确、缺省模板兜底 |
+
+**关键实现说明**：
+
+- **为什么挂在 `_tick_passive()` 而不是 `_tick_autonomous()`**：`soft_goal_deriver` 只在 autonomous 档位 derive，是因为"凭空生成新意图"本身需要更高的信任档位；但 `notify_only`（IngestionPolicy 三个落点里成本最低、默认档）不应该被 autonomy_level 挡住——外部世界发生的事件不该因为用户把档位调到 passive 就完全看不见。真正会消耗资源的两个落点各自已经有节流：`enqueue_turn` 默认关闭、需要在 `policies.yaml` 显式配置命中规则才会触发；`goal_candidate` 写入的 Goal 只在 maintenance/autonomous 档位才会被 `_ensure_goal_objectives()`/`ObjectiveExecutor` 进一步拆解执行，passive 档位下顶多是"记了一个候选"，不产生 LLM 调用。这与 `_tick_passive()` 里已有的 `attention_mismatch_push` 走的是同一条"复用 InputQueue、不受档位限制"的先例。
+- **`goal_candidate` 去重复用 `objective_outcome_tracker.normalize_title_key()`**：与 `soft_goal_deriver._DeriveCandidate.dedupe_key()` 底层调用的是同一个函数，保证"同一主题"的判定口径在 agent 自己 derive 的候选和外部输入候选之间完全一致，不会出现"两套归一化规则各自维护、逐渐漂移"的问题。去重范围限定在当前 `active_goals()`，不做全历史比对——已经完成/放弃的同名 Goal 允许再次被外部信号重新提起（跟 `soft_goal_deriver.record_rejected()` 的 30 天 TTL 语义不同，这里没有引入类似的"外部输入专属拒绝列表"，属于 YAGNI：真正需要时可以在 P6 看板加"忽略此来源"操作再补）。
+- **`goal_candidate`/`enqueue_turn` 各自的失败隔离**：`_goal_candidate()`/`_enqueue_turn()` 内部异常都在 `run_ingestion_policy_once()` 里被单独 catch，不会因为某一条事件路由失败（比如 `GoalBacklog` 磁盘写入失败）连带影响同一批次里其他事件的处理；`enqueue_turn` 失败时退回计入 `enqueue_turn_skipped`，不会把失败误记成成功。
+- **`task_template` 的容错**：`str.format()` 遇到模板里写了 `{title}`/`{detail}` 之外的占位符会抛 `KeyError`，被 `_enqueue_turn()` 捕获后退化为内置默认拼接，不会因为用户在 `policies.yaml` 里写错一个占位符名字就导致整条外部信号被吞掉。
+- **向后兼容边界**：`run_ingestion_policy_once(paths)`（不传新参数）的行为与 P3 阶段完全一致——这也是为什么 P3 阶段遗留的
+  `test_goal_candidate_and_enqueue_turn_do_not_create_alerts` 用例不用改就能继续通过。

@@ -175,6 +175,29 @@ class AutonomousLoop:
             log_exception(_mini_agent_exc, where='mini_agent.evolution.autonomous_loop._tick_passive.attention_mismatch_push')
             pass
 
+        # ── External Input Gateway：IngestionPolicy 消费点（外部输入网关设计
+        # 方案 §3.4/P5）── 放在 _tick_passive() 而不是 _tick_autonomous()：
+        # notify_only（默认档、成本最低）不应该被 autonomy_level 挡住——外部
+        # 世界产生的事件不该因为用户把档位调到 passive 就完全看不见。真正
+        # 昂贵的 enqueue_turn 落点默认关闭，需要用户在 policies.yaml 里显式
+        # 配置才会触发，天然就有节流；goal_candidate 写入的 Goal 也会在
+        # maintenance/autonomous 档位才被 _ensure_goal_objectives()/
+        # ObjectiveExecutor 进一步推进，passive 档位下顶多是"记了一个候选"，
+        # 不会消耗 LLM。
+        try:
+            from mini_agent.external_input.policy import run_ingestion_policy_once
+            run_ingestion_policy_once(
+                self._paths,
+                goal_backlog=self._goal_backlog,
+                input_queue=self._input_queue,
+            )
+        except ImportError:
+            pass
+        except Exception as _mini_agent_exc:
+            from mini_agent.errors import log_exception
+            log_exception(_mini_agent_exc, where='mini_agent.evolution.autonomous_loop._tick_passive.external_input_policy')
+            pass
+
     def _tick_maintenance(self) -> None:
         """
         [maintenance 档位] passive 的全部任务 + Objective 持续执行推进。
