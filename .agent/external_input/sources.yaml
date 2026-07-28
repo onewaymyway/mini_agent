@@ -1,0 +1,37 @@
+# .agent/external_input/sources.yaml
+#
+# External Input Gateway 的来源配置。加载逻辑见
+# src/mini_agent/external_input/config.py::load_sources_config()。
+#
+# 本文件由 GatewayPoller 在 daemon 启动时自动读取（api/server.py 构造
+# HttpServer 时会 new 一个 GatewayPoller(paths) 并 start()），不需要手动
+# 触发轮询——只要 Agent daemon 在跑，这里配置的 source 就会持续生效。
+#
+# 完整字段说明与更多示例见 docs/external-input-gateway-guide.md §5.1、
+# §7（天气来源专项说明）。
+
+sources:
+  # 北京天气监控（内置 weather 来源，见
+  # src/mini_agent/external_input/builtin/weather.py）。
+  # 经纬度取的是北京市中心（天安门附近）坐标，数据来自 Open-Meteo 免费
+  # 预报 API，不需要申请 key。
+  - id: beijing_weather
+    type: weather
+    enabled: true
+    interval_seconds: 1800   # 天气预报更新不频繁，半小时轮询一次足够
+    channel: weather          # 可省略——type: weather 默认就落在 weather 频道，
+                               # 这里显式写出来只是方便一眼看清分类
+    params:
+      latitude: 39.9042
+      longitude: 116.4074
+      # 未来 12 小时内任意一小时降雨概率 >= 60% 就发一条 rain_alert
+      rain_probability_threshold: 60
+      # 未来 12 小时内最高气温 >= 35°C 就发一条 high_temperature（高温提醒）
+      temperature_high_threshold: 35
+      # 未来 12 小时内最低气温 <= -10°C 就发一条 low_temperature（低温提醒，
+      # 北京冬季常见气温区间，按需调整）
+      temperature_low_threshold: -10
+      lookahead_hours: 12
+      # 每天第一次轮询额外发一条 daily_forecast 摘要事件（今日高低温 +
+      # 最大降雨概率），配合 notify_only 落点可以当"每日天气简报"用
+      daily_summary: true
