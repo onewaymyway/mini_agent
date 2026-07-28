@@ -123,8 +123,14 @@ _LEGACY_FENCE_RE = _re.compile(r"```tool_call\b", _re.IGNORECASE)
 # 案例5 专用正则：开标签（含别名）后紧跟一个裸标识符独占一行，而不是 JSON。
 # 标准/合法格式里标签后第一行必然是 JSON 的 "{" 起始，不会匹配这个以字母/
 # 下划线开头的标识符正则，因此不会跟合法格式冲突。
+#
+# 案例7（新增）：裸标识符后面还多出一个尾随的 ">"，例如
+#   <tool_call>bash>\n{...}\n</tool_use>
+# 疑似模型把 Markdown 风格的 "工具名>" 记号和 XML 标签语法搞混了。名字和
+# 换行之间加了一个可选的 ">"（`>?`），不影响对纯裸标识符（无尾随 ">"）
+# 场景的原有匹配。
 _BARE_NAME_AFTER_TAG_RE = _re.compile(
-    r"<tool_(?:use|call|invoke)\b[^>]*>[ \t]*\n?[ \t]*([A-Za-z_][A-Za-z0-9_.]*)[ \t]*\n",
+    r"<tool_(?:use|call|invoke)\b[^>]*>[ \t]*\n?[ \t]*([A-Za-z_][A-Za-z0-9_.]*)>?[ \t]*\n",
     _re.IGNORECASE,
 )
 
