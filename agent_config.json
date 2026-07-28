@@ -142,7 +142,7 @@
     "background_execution_default": false,
     "hooks_enabled": true,
     "max_sub_workflow_depth": 3,
-    "script_step_enabled": false,
+    "script_step_enabled": true,
     "script_step_timeout_seconds": 60.0,
     "tool_call_step_auto_approve": false,
     "human_input_wait_timeout_seconds": 1800.0,

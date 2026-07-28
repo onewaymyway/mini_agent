@@ -22,3 +22,5 @@ print(result)
 使用的输入参数如下：
 使用的文档 为：temp_data\Agent的终极形态_从AI助手到个人数字代理.md
 输出目录未：temp_data/Agent的终极形态_从AI助手到个人数字代理_output
+
+执行 mechanism_validation_demo这个workflow
