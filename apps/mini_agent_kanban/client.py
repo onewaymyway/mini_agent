@@ -254,6 +254,23 @@ class AgentClient:
     def inbox(self):
         return self._get("/inbox")
 
+    # ── 看板：外部输入网关（External Input Gateway，P6）─────────────────
+    def external_input_sources(self):
+        """已配置 source 列表 + 运行时健康度（GatewayPoller.get_all_health()）。"""
+        return self._get("/external_input/sources")
+
+    def external_input_policies(self):
+        """policies.yaml 里的路由规则（只读，按文件顺序，即匹配优先级）。"""
+        return self._get("/external_input/policies")
+
+    def external_input_events(self, limit: int = 50):
+        """最近的 external.* 事件流水（不消费游标，仅供人工核对）。"""
+        return self._get("/external_input/events", params={"limit": limit})
+
+    def ack_external_alert(self, alert_id: str):
+        """标记一条 notify_only 告警已处理（不再出现在 /v1/inbox 里）。"""
+        return self._post(f"/inbox/external_alerts/{alert_id}/ack")
+
     # ── 看板：进化提案分级自治（Track I）────────────────────────────
     def evolution_proposals(self):
         """[Track I] 列出所有 evolve/* 提案分支及风险分级。"""

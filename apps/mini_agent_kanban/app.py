@@ -2944,6 +2944,131 @@ def render_diagnostics_tab(client: AgentClient):
 
 
 # ═══════════════════════════════════════════════════════════════════════
+# Tab: 🔌 外部输入（External Input Gateway，P6）
+# ═══════════════════════════════════════════════════════════════════════
+def render_external_input_tab(client: AgentClient):
+    """[外部输入网关设计方案 §6/P6] 展示已注册 source 列表/健康度、
+    policies.yaml 路由规则、最近的 external.* 事件流水，以及待处理的
+    notify_only 告警——四块内容分别对应设计文档 §6 列出的看板改动点。
+    全部是只读展示 + 告警 ack 操作，不提供在线编辑 sources.yaml/
+    policies.yaml 的表单（见 routes.py 里对应端点的说明：YAML 本身就是
+    配置文件，改配置直接编辑文件更直接，这里不重新发明一套"配置管理 UI"）。
+    """
+    st.markdown("#### 🔌 外部输入网关 (External Input Gateway)")
+    st.caption(
+        "监控外部世界（RSS/JSON API/网页变化等）产生的信号，按 policies.yaml "
+        "路由到「只通知」「生成目标候选」或「直接触发 Agent 处理」三档，默认最省钱、"
+        "不会意外放大成大量 LLM 调用。详见 next_doc/external_input_gateway_design.md。"
+    )
+
+    if st.button("🔄 刷新", key="ei_refresh"):
+        st.rerun()
+
+    # ── 1. 已注册 source 列表（类型/状态/上次轮询时间/健康度）────────────
+    st.markdown("##### 📡 已注册来源")
+    src_resp = client.external_input_sources()
+    if src_resp and "_error" in src_resp:
+        st.error(f"获取来源列表失败：{src_resp['_error']}")
+    else:
+        src_resp = src_resp or {}
+        if not src_resp.get("poller_available", True):
+            st.warning(
+                "GatewayPoller 当前不可用（可能不是 daemon 模式，或构造失败）——"
+                "下方只展示 sources.yaml 里的静态配置，健康度字段全部为空。"
+            )
+        sources = src_resp.get("sources") or []
+        if not sources:
+            st.info("暂无已配置的外部输入来源。编辑 `.agent/external_input/sources.yaml` 添加。")
+        for src in sources:
+            with st.container(border=True):
+                c1, c2, c3, c4 = st.columns([2, 1, 1, 2])
+                c1.markdown(f"**{src['id']}**　`{src['type']}`")
+                c2.markdown("✅ 启用" if src.get("enabled") else "⏸️ 已禁用")
+                running = src.get("is_running")
+                if running is None:
+                    c3.caption("运行状态未知")
+                else:
+                    c3.markdown("🟢 运行中" if running else "⚪ 未运行")
+                if src.get("circuit_open"):
+                    c4.markdown(f"🔴 熔断（连续失败 {src.get('consecutive_failures', 0)} 次）")
+                elif src.get("consecutive_failures"):
+                    c4.markdown(f"🟡 近期有失败（{src.get('consecutive_failures')} 次）")
+                else:
+                    c4.markdown("🟢 健康")
+                last_poll = src.get("last_poll_ts")
+                if last_poll:
+                    ago = max(0, time.time() - last_poll)
+                    st.caption(f"上次轮询：{time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(last_poll))}（{ago:.0f} 秒前）· 间隔 {src.get('interval_seconds')} 秒")
+                else:
+                    st.caption(f"尚无轮询记录 · 间隔 {src.get('interval_seconds')} 秒")
+                if src.get("last_error"):
+                    st.caption(f"最近错误：{src['last_error']}")
+
+    st.divider()
+
+    # ── 2. policies.yaml 路由规则可视化（只读）───────────────────────────
+    st.markdown("##### 🧭 路由规则 (policies.yaml)")
+    st.caption("按顺序匹配，命中第一条规则即生效；都不匹配则默认 `notify_only`。")
+    pol_resp = client.external_input_policies()
+    if pol_resp and "_error" in pol_resp:
+        st.error(f"获取路由规则失败：{pol_resp['_error']}")
+    else:
+        rules = (pol_resp or {}).get("rules") or []
+        if not rules:
+            st.info("暂无自定义路由规则，所有事件均按默认 `notify_only` 处理。")
+        else:
+            _ACTION_LABEL = {
+                "notify_only": "📥 notify_only（只通知）",
+                "goal_candidate": "🎯 goal_candidate（生成目标候选）",
+                "enqueue_turn": "⚡ enqueue_turn（直接触发 Agent）",
+            }
+            for i, rule in enumerate(rules):
+                match_desc = ", ".join(f"{k}={v}" for k, v in (rule.get("match") or {}).items()) or "（匹配所有事件）"
+                st.markdown(f"{i + 1}. **{match_desc}** → {_ACTION_LABEL.get(rule.get('action'), rule.get('action'))}")
+                if rule.get("enqueue"):
+                    st.caption(f"　enqueue 参数：{rule['enqueue']}")
+
+    st.divider()
+
+    # ── 3. 待处理的 notify_only 告警（复用 /v1/inbox 聚合，带 ack 按钮）───
+    st.markdown("##### 🔔 待处理告警")
+    inbox = client.inbox() or {}
+    if "_error" in inbox:
+        st.caption("获取待办中心失败，暂不展示告警列表。")
+    else:
+        alerts = [it for it in (inbox.get("items") or []) if it.get("type") == "external_alert"]
+        if not alerts:
+            st.info("当前没有待处理的外部输入告警。")
+        for alert in alerts:
+            cols = st.columns([5, 1])
+            cols[0].caption(f"🌐 {alert.get('summary', '')}")
+            if cols[1].button("已读", key=f"ei_ack_{alert.get('alert_id')}"):
+                res = client.ack_external_alert(alert["alert_id"])
+                if res and "_error" in res:
+                    st.error(f"标记失败：{res['_error']}")
+                else:
+                    st.rerun()
+
+    st.divider()
+
+    # ── 4. 最近事件流水（供人工核对路由是否符合预期）─────────────────────
+    st.markdown("##### 📜 最近事件流水")
+    events = (client.external_input_events(limit=50) or {}).get("events") or []
+    if not events:
+        st.caption("暂无 external.* 事件记录。")
+    else:
+        for evt in events:
+            payload = evt.get("payload") or {}
+            ts = evt.get("ts")
+            ts_str = time.strftime("%m-%d %H:%M:%S", time.localtime(ts)) if ts else "-"
+            st.caption(
+                f"`{ts_str}` **{evt.get('event_type', '')}** "
+                f"（来源 `{evt.get('source', '')}`，tier={evt.get('tier', '-')}）"
+                f"：{payload.get('title', '')}"
+            )
+
+
+# ═══════════════════════════════════════════════════════════════════════
 # 主流程
 # ═══════════════════════════════════════════════════════════════════════
 def main():
@@ -2973,7 +3098,7 @@ def main():
     render_topbar(client, get_active_session_id())
 
     tabs = st.tabs(["💬 对话", "🗂️ 会话管理", "📌 目标看板", "🔄 工作流", "📁 产出物", "🖼️ 产出预览",
-                    "🧠 自我状态", "🧬 进化提案", "🔧 诊断"])
+                    "🧠 自我状态", "🧬 进化提案", "🔌 外部输入", "🔧 诊断"])
     with tabs[0]:
         render_chat_tab(client, get_active_session_id())
     with tabs[1]:
@@ -2991,6 +3116,8 @@ def main():
     with tabs[7]:
         render_evolution_proposals_tab(client)
     with tabs[8]:
+        render_external_input_tab(client)
+    with tabs[9]:
         render_diagnostics_tab(client)
 
     # [P0 改造] 原来这里是 `if auto_refresh: time.sleep(3); st.rerun()`——

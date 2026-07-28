@@ -1220,6 +1220,25 @@ class HttpServer:
                 agent._cron_scheduler = cron_scheduler
                 agent._objective_executor = objective_executor
 
+            # ── External Input Gateway：GatewayPoller（P6 前置修复）───────
+            # P1–P5 只做完了"网关本身"（source/policy/watch），但在此之前
+            # 从未有任何调用方真正构造并 start() 过 GatewayPoller——
+            # sources.yaml 配了 source 也不会真的跑起来轮询。这里补上，
+            # 与 CronScheduler 同一处生命周期挂载：daemon 启动时构造+start，
+            # HttpServer.stop() 时 stop()（见下方改动）。挂到 bridge 而不是
+            # 单独存成员变量，是为了复用 routes.py 已有的
+            # "getattr(http_server.bridge, '_xxx', None)" 取值风格（对齐
+            # `_cron_scheduler` 的做法），P6 的 REST 端点据此实现健康度查询。
+            try:
+                from mini_agent.external_input.poller import GatewayPoller
+                gateway_poller = GatewayPoller(paths)
+                gateway_poller.start()
+                self._bridge._external_input_poller = gateway_poller
+            except Exception as _mini_agent_exc:
+                from mini_agent.errors import log_exception
+                log_exception(_mini_agent_exc, where='mini_agent.api.server.HttpServer._build_autonomous_loop.gateway_poller')
+                self._bridge._external_input_poller = None
+
             return AutonomousLoop(
                 goal_backlog=goal_backlog,
                 input_queue=self._bridge.input_queue,
@@ -1327,6 +1346,17 @@ class HttpServer:
     def stop(self) -> None:
         """优雅关闭。"""
         self._runner.stop()
+        # External Input Gateway：停止 GatewayPoller 的各来源轮询线程，
+        # 与下面 uvicorn/session_pool 的关闭顺序一致，避免 daemon 退出时
+        # 残留非 daemon 线程（虽然 poller 内部线程本身也是 daemon=True，
+        # 显式 stop() 更干净，且能让"连续失败退避"等状态及时落盘）。
+        gateway_poller = getattr(self._bridge, "_external_input_poller", None)
+        if gateway_poller is not None:
+            try:
+                gateway_poller.stop()
+            except Exception as _mini_agent_exc:
+                from mini_agent.errors import log_exception
+                log_exception(_mini_agent_exc, where='mini_agent.api.server.HttpServer.stop.gateway_poller')
         # daemon 多用户架构 Phase 3：保存并停止所有活跃的 SessionAgent，
         # 不要让用户的对话历史因为 daemon 关闭而丢失未落盘的内容。
         if self._session_pool is not None:

@@ -3,9 +3,9 @@
 > 设计文档：`next_doc/external_input_gateway_design.md`（含分阶段实现状态）。
 > 本文档只写"怎么用"，架构取舍和设计动机见设计文档。
 
-当前进度：P1–P5 已完成（事件抽象、独立轮询调度、路由与告警落点、
+当前进度：P1–P6 全部完成（事件抽象、独立轮询调度、路由与告警落点、
 内置 `watch` 来源、`goal_candidate`/`enqueue_turn` 真正执行并接入
-`autonomous_loop.tick()`）。P6（看板面板）尚未开始。
+`autonomous_loop.tick()`、看板"🔌 外部输入"面板）。§7 路线图已无待办阶段。
 
 ## 1. 核心概念
 
@@ -92,12 +92,12 @@ sources:
     source_type: watch
     signal: new_item
     fields.priority: high
-  action: goal_candidate   # P5 落地前会被识别但跳过（见 §3）
+  action: goal_candidate   # 写入 GoalBacklog，source=external_input，打 needs_review 标签
 
 - match:
     source_type: watch
     signal: page_changed
-  action: enqueue_turn      # P5 落地前会被识别但跳过（见 §3）
+  action: enqueue_turn      # 直接提交 InputQueue，成本最高，请谨慎配置匹配条件
   enqueue:
     initiator: external
     task_template: "监控页面发生变化：{title}\n{detail}"
@@ -159,11 +159,21 @@ class MySource(ExternalInputSource):
 - `POST /v1/inbox/external_alerts/{alert_id}/ack` 标记一条告警已处理。
 - 原始事件历史在 `.agent/system_events.jsonl` 里，`event_type` 以
   `external.` 开头的都是外部输入网关产生的。
+- 看板（`apps/mini_agent_kanban`）的"🔌 外部输入"页签把上面这些信息
+  可视化展示，同时新增三个只读 REST 端点供页面调用（也可以直接
+  `curl` 查看，均需要 owner 权限）：
+  - `GET /v1/external_input/sources` — 已配置 source 的类型/启用状态/
+    运行状态/健康度（连续失败次数、是否熔断、上次轮询时间）；如果当前
+    进程没有在跑 `GatewayPoller`（比如非 daemon 模式），健康相关字段
+    全部是 `null`，响应里的 `poller_available: false` 会说明这一点。
+  - `GET /v1/external_input/policies` — `policies.yaml` 里的规则，按
+    文件顺序返回（即匹配优先级，第一条命中的生效）。
+  - `GET /v1/external_input/events?limit=50` — 最近的 `external.*`
+    事件流水（只读尾读，不会推进任何消费者的游标，`limit` 上限 200）。
 
-## 6. 已知限制（P5/P6 之前）
+## 6. 已知限制
 
-- `goal_candidate`/`enqueue_turn` 目前只是"被识别但跳过"（游标照常推进，
-  不会重复处理，也不会被静默降级成 `notify_only`），真正执行留到 P5。
-- 没有看板可视化面板（P6），目前只能通过 `/v1/inbox`、
-  `run_ingestion_policy_once()` 或直接读 `alerts.jsonl`/`events.jsonl` 查看。
-- `watch` 是唯一内置来源；webhook/邮件/日历等来源尚未实现。
+- `watch` 是唯一内置来源；webhook/邮件/日历等来源尚未实现，需要时可以
+  参考 `builtin/watch.py` 的写法新增一个 `ExternalInputSource` 子类。
+- 看板面板和三个 REST 端点都是只读展示，`sources.yaml`/`policies.yaml`
+  仍然只能通过直接编辑配置文件来修改（没有在线编辑表单）。

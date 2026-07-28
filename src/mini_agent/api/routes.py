@@ -68,6 +68,9 @@ api/routes.py — FastAPI 路由定义
                                      外部输入网关 notify_only 告警（type: external_alert）
     POST   /v1/inbox/external_alerts/{alert_id}/ack
                                      标记一条外部输入告警为已处理（不再出现在 /v1/inbox 里）
+    GET    /v1/external_input/sources   已配置 source 列表 + 运行时健康度（看板"🔌 外部输入"面板，P6）
+    GET    /v1/external_input/policies  policies.yaml 路由规则（只读）
+    GET    /v1/external_input/events    最近 external.* 事件流水（不消费游标，仅供人工核对）
     GET    /v1/evolution/proposals   [Track I] 列出 evolve/* 提案分支及风险分级
     POST   /v1/evolution/proposals/{branch}/merge
                                      [Track I] 一键合并提案分支（Body 可选 {"force": bool}，
@@ -2723,6 +2726,148 @@ async def ack_external_alert(request: Request, alert_id: str):
     if not ok:
         raise HTTPException(status_code=404, detail=f"External alert {alert_id!r} not found or already acknowledged")
     return {"ok": True}
+
+
+# ── 外部输入网关 REST API（看板"🔌 外部输入"面板，P6）────────────────────────
+#
+#   GET  /v1/external_input/sources    已配置的 source 列表 + 运行时健康度
+#   GET  /v1/external_input/policies   policies.yaml 里的路由规则（只读）
+#   GET  /v1/external_input/events     最近的 external.* 事件流水（不消费游标）
+#
+# 三个都是只读端点（owner-only，与其它诊断类端点一致），对齐设计文档 §6：
+# "供人工核对路由是否符合预期"，不提供在线编辑 sources.yaml/policies.yaml
+# 的写端点——YAML 本身就是配置文件，改配置直接编辑文件 + 重启/reload 即可，
+# 这里不重新发明一套"配置管理 API"。
+
+def _project_root_or_503(http_server) -> Path:
+    proj_root = getattr(http_server.bridge.agent.cfg, "project_root", None) if http_server.bridge.agent else None
+    if proj_root is None:
+        raise HTTPException(status_code=503, detail="project_root not available")
+    return proj_root
+
+
+@router.get("/external_input/sources")
+async def list_external_input_sources(request: Request):
+    """GET /v1/external_input/sources — 已配置 source 的类型/状态/上次轮询
+    时间/健康度。健康度数据来自 daemon 内正在跑的 GatewayPoller 实例
+    （`HttpServer._build_autonomous_loop` 里构造并 start()）；非 daemon
+    模式或该实例构造失败时，退化为只读 sources.yaml 配置本身（健康字段
+    全部为 null），不因为轮询线程不可用就让整个端点报错。"""
+    http_server = getattr(request.app.state, "http_server", None)
+    if http_server is None:
+        raise HTTPException(status_code=503, detail="HttpServer not available")
+    _require_owner(request)
+    proj_root = _project_root_or_503(http_server)
+
+    from mini_agent.storage.paths import AgentPaths
+    from mini_agent.external_input.config import load_sources_config
+    paths = AgentPaths(proj_root)
+
+    try:
+        configs = load_sources_config(paths)
+    except Exception as _mini_agent_exc:
+        from mini_agent.errors import log_exception
+        log_exception(_mini_agent_exc, where='mini_agent.api.routes.list_external_input_sources')
+        configs = []
+
+    poller = getattr(http_server.bridge, "_external_input_poller", None)
+    health_by_id = poller.get_all_health() if poller is not None else {}
+
+    sources = []
+    for cfg in configs:
+        health = health_by_id.get(cfg.id, {})
+        sources.append({
+            "id": cfg.id,
+            "type": cfg.type,
+            "enabled": cfg.enabled,
+            "interval_seconds": cfg.interval_seconds,
+            "is_running": poller.is_running(cfg.id) if poller is not None else None,
+            "last_poll_ts": health.get("last_poll_ts"),
+            "consecutive_failures": health.get("consecutive_failures", 0),
+            "circuit_open": health.get("circuit_open", False),
+            "last_error": health.get("last_error"),
+        })
+    return {
+        "sources": sources,
+        "poller_available": poller is not None,
+    }
+
+
+@router.get("/external_input/policies")
+async def list_external_input_policies(request: Request):
+    """GET /v1/external_input/policies — policies.yaml 里的路由规则列表
+    （只读，按文件里的顺序返回，与 `decide_action()` "首个匹配规则生效"
+    的语义一致，方便使用者在看板上确认规则优先级）。"""
+    http_server = getattr(request.app.state, "http_server", None)
+    if http_server is None:
+        raise HTTPException(status_code=503, detail="HttpServer not available")
+    _require_owner(request)
+    proj_root = _project_root_or_503(http_server)
+
+    from mini_agent.storage.paths import AgentPaths
+    from mini_agent.external_input.policy import PoliciesConfigError, load_policies
+    paths = AgentPaths(proj_root)
+
+    try:
+        rules = load_policies(paths)
+    except PoliciesConfigError as exc:
+        return {"rules": [], "_error": str(exc)}
+
+    return {
+        "rules": [
+            {"match": r.match, "action": r.action, "enqueue": r.enqueue}
+            for r in rules
+        ]
+    }
+
+
+@router.get("/external_input/events")
+async def list_external_input_events(request: Request, limit: int = 50):
+    """GET /v1/external_input/events?limit=50 — 最近的 external.* 事件流水。
+
+    直接尾读 `system_events.jsonl` 并按 `event_type` 前缀过滤，**不**走
+    `poll_since()`/消费游标——这是给人看的"最近发生了什么"展示，不是一个
+    消费者，不该跟 `soft_goal_deriver`/`external_input_policy` 等真实消费
+    者抢游标或互相干扰。`limit` 上限 200，避免看板一次性请求把整份
+    events.jsonl（可能包含大量非 external.* 事件）读回来。
+    """
+    http_server = getattr(request.app.state, "http_server", None)
+    if http_server is None:
+        raise HTTPException(status_code=503, detail="HttpServer not available")
+    _require_owner(request)
+    proj_root = _project_root_or_503(http_server)
+    limit = max(1, min(limit, 200))
+
+    from mini_agent.storage.paths import AgentPaths
+    paths = AgentPaths(proj_root)
+    p = paths.system_events
+    events: list[dict] = []
+    if p.exists():
+        try:
+            import json as _json
+            lines = p.read_text(encoding="utf-8").splitlines()
+            # 从文件尾部往前扫，找够 limit 条 external.* 就停，避免大文件
+            # 全量反序列化——跟 external_input/policy.py::list_pending_alerts()
+            # 里"体量不大就全量扫描"的取舍不同，这里 events.jsonl 体量可能
+            # 很大（承载了所有子系统的事件，不只是外部输入），值得做这个
+            # 优化。
+            for line in reversed(lines):
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    d = _json.loads(line)
+                except Exception:
+                    continue
+                if not str(d.get("event_type", "")).startswith("external."):
+                    continue
+                events.append(d)
+                if len(events) >= limit:
+                    break
+        except Exception as _mini_agent_exc:
+            from mini_agent.errors import log_exception
+            log_exception(_mini_agent_exc, where='mini_agent.api.routes.list_external_input_events')
+    return {"events": events}
 
 
 # ── Cron Jobs REST API ────────────────────────────────────────────────────────

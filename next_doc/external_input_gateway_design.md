@@ -257,7 +257,7 @@ system_events.publish(
 | P3 | `IngestionPolicy` 路由（`notify_only` 优先实现，跑通 → `/v1/inbox`） |
 | P4 ✅ | 迁移上一轮 watch 设计为 `builtin/watch.py`（第一个 source 实现），验证端到端闭环 |
 | P5 ✅ | `goal_candidate` 落点（对接 `soft_goal_deriver` 同款模式）+ `enqueue_turn` 落点（默认关闭，显式开启） |
-| P6 | 看板"🔌 外部输入"面板 |
+| P6 ✅ | 看板"🔌 外部输入"面板 |
 
 ---
 
@@ -396,3 +396,30 @@ system_events.publish(
 - **`task_template` 的容错**：`str.format()` 遇到模板里写了 `{title}`/`{detail}` 之外的占位符会抛 `KeyError`，被 `_enqueue_turn()` 捕获后退化为内置默认拼接，不会因为用户在 `policies.yaml` 里写错一个占位符名字就导致整条外部信号被吞掉。
 - **向后兼容边界**：`run_ingestion_policy_once(paths)`（不传新参数）的行为与 P3 阶段完全一致——这也是为什么 P3 阶段遗留的
   `test_goal_candidate_and_enqueue_turn_do_not_create_alerts` 用例不用改就能继续通过。
+
+### P6 — 已完成 ✅
+
+**范围**：看板"🔌 外部输入"面板（对应 §6 罗列的四块内容：source 列表/健康度、policies.yaml 路由规则、待处理 notify_only 告警、最近事件流水）。
+
+**前置修复（P6 开工前发现的缺口）**：`GatewayPoller`（P2 产出）在 P2–P5 期间从未被任何非测试代码构造/`start()` 过——`sources.yaml` 配了 source 也不会真的跑起来轮询，看板要展示的"健康度"根本无从谈起。这个缺口在 P6 里一并补上：
+
+| 文件 | 变更 |
+|---|---|
+| `src/mini_agent/api/server.py` | `HttpServer._build_autonomous_loop()` 新增构造+`start()` 一个 `GatewayPoller` 实例，挂到 `self._bridge._external_input_poller`（与 `_cron_scheduler` 同一处、同一挂载风格）；`HttpServer.stop()` 新增对应的 `gateway_poller.stop()` 优雅关闭 |
+
+**变更文件（P6 本体）**：
+
+| 文件 | 变更 |
+|---|---|
+| `src/mini_agent/api/routes.py` | 新增三个只读 GET 端点：`/v1/external_input/sources`（已配置 source + 运行时健康度，`poller_available=false` 时优雅降级为只读静态配置）、`/v1/external_input/policies`（policies.yaml 规则，按文件顺序即匹配优先级）、`/v1/external_input/events`（`system_events.jsonl` 里 `external.*` 前缀事件的只读尾读，不消费游标，跟真实消费者互不干扰）；更新文件头路由索引注释 |
+| `apps/mini_agent_kanban/client.py` | 新增 `external_input_sources()`/`external_input_policies()`/`external_input_events()`/`ack_external_alert()` 四个客户端方法 |
+| `apps/mini_agent_kanban/app.py` | 新增 `render_external_input_tab()`：source 卡片（类型/启用状态/运行状态/熔断与失败计数/上次轮询时间）、路由规则可读化展示、待处理告警列表 + "已读" ack 按钮（复用已有的 `/v1/inbox` 聚合 + `/v1/inbox/external_alerts/{id}/ack`）、最近事件流水；接入 `main()` 的 tab 列表（新增"🔌 外部输入"页签） |
+| `tests/test_external_input_routes_p6.py` | 新增 10 个用例，覆盖三个新端点：无配置时返回空列表、poller 不可用时静态降级、poller 可用时健康度正确透出、规则按文件顺序返回、单条规则 action 非法时静默跳过（非 fatal error，无 `_error` 字段）、顶层结构错误时才有 `_error` 字段、事件按 `external.*` 前缀过滤且新的排在前面、`limit` 参数生效且有上限保护 |
+
+**关键实现说明**：
+
+- **只读端点，不做"配置管理 API"**：`sources.yaml`/`policies.yaml` 都是纯文本配置文件，改配置直接编辑文件最直接；三个新端点全部是只读展示，不提供在线编辑/热加载的写端点，避免重新发明一套配置管理 UI（YAGNI，真正需要在线编辑时可以单独立项）。
+- **poller 不可用时的降级路径**：`/v1/external_input/sources` 在 `bridge._external_input_poller is None`（非 daemon 模式，或构造阶段异常被吞掉）时，退化为只读 `load_sources_config()` 的静态结果，健康相关字段一律为 `null`，并在响应里带上 `poller_available: false`——看板据此展示一条警告而不是让整个页面报错，遵循项目里"配置/运行时状态分离，任一层不可用不拖垮另一层"的一贯风格。
+- **事件流水端点的性能取舍**：`/v1/external_input/events` 从文件尾部往前逐行扫描、凑够 `limit` 条 `external.*` 事件就提前停止，而不是像 `list_pending_alerts()` 那样整份反序列化——因为 `system_events.jsonl` 承载了全部子系统的事件（不只是外部输入），体量可能远大于 `alerts.jsonl`，"体量不大就全量扫描"的取舍在这里不成立。`limit` 硬上限 200，防止看板一次请求传入超大值时读放大。
+- **告警 ack 复用已有端点，未新增**：`POST /v1/inbox/external_alerts/{alert_id}/ack` 在 P3 阶段（`/v1/inbox` 聚合）就已经实现，P6 只是让看板客户端第一次真正调用它（此前没有任何调用方），因此本轮没有改动这个端点本身的实现。
+- **§7 路线图至此全部完成**：P1–P6 均已交付，外部输入网关端到端闭环——从 source 轮询产生事件，到 policy 路由到三种落点，到 `autonomous_loop.tick()` 自动消费，到看板可视化人工核对——不再有"配置了但没人跑"或"跑了但看不见"的断点。后续如果有新需求（比如更多内置 source 类型、看板里的"忽略此来源"操作、`enqueue_turn` 频率限制），应作为独立的新一轮迭代规划，而不是往本设计文档继续叠加。
