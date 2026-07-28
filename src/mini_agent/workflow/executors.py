@@ -352,29 +352,33 @@ class ScriptStepExecutor(StepExecutor):
             # Unix: use start_new_session for proper process group handling
             _popen_kwargs["start_new_session"] = True
 
-        # [Windows cmd.exe 多行脚本 bug 修复] step.script 常是按 POSIX shell
-        # 语法编写的多行文本（YAML `|` block，典型形态是跨行的
-        # `python -c "\n...\n"`）。执行方式沿用内置 bash 工具同款的
-        # `shell=True` + 命令字符串（不额外去找 bash.exe——之前那版靠猜
-        # bash.exe 位置的方案会在很多机器上先命中 WSL 自带的
-        # System32\bash.exe，跑进一个完全独立、不共享 Windows 文件系统的
-        # Linux 子系统里，比原来的问题更难排查）。
+        # [Windows 多行脚本修复] step.script 常是按 POSIX shell 语法编写的
+        # 多行文本（YAML `|` block，典型形态是跨行的 `python -c "\n...\n"`）。
+        # 上一版以为把内容落到一个 .bat 文件里执行能让 cmd.exe 正确处理跨行
+        # 引号——实测是错的：cmd.exe 无论是从命令行参数还是从 .bat 文件里
+        # 读取，都是按行独立解析/回显每一条命令的，遇到没在同一行闭合的
+        # 引号不会"续到下一行"，而是把后续每一行都当成一条新命令去找可执行
+        # 文件，全部报 "不是内部或外部命令"。cmd.exe 家族根本不支持
+        # 跨行引号这种语法，不存在能让它工作的写法。
         #
-        # 真正的坑在于：把一个含有原始换行符的多行字符串整个塞进
-        # `cmd.exe /c <整段字符串>` 时，cmd.exe 无法像读取一个 .bat 文件
-        # 那样跨行维持引号的"未闭合"状态，命令会被静默截断/丢弃——但
-        # cmd.exe 逐行读取一个批处理文件执行时，引号跨行是能正确处理的
-        # （这也是 CI 系统在 Windows 上跑多行 run 脚本时的标准做法：写临时
-        # 文件再执行，而不是直接吞一整段多行字符串）。所以这里只在脚本
-        # 确实是多行时，才落一个临时脚本文件、改成执行"这个文件"；单行
-        # script 完全不变，走原来的路径。
+        # 真正支持"引号可以跨多行"语法的是 PowerShell（Windows 自带，从
+        # Windows 7/Server 2008 R2 起默认安装 powershell.exe，不需要额外
+        # 安装任何东西）：把脚本内容原样落到一个 .ps1 文件，
+        # `powershell -File` 执行，PowerShell 的词法分析器在解析这个文件时
+        # 能正确识别"这个双引号字符串还没结束"并继续读下一行，直到遇到闭合
+        # 引号为止，把整个 `python -c "..."` 当一个参数完整传给子进程——
+        # 这正是 step.script 里那种跨行 python -c 写法所需要的语义。单行
+        # script 完全不受影响，仍走原来的直接执行路径。
         _tmp_script_path: Optional[str] = None
         _cmd = step.script
         if _is_windows and "\n" in step.script.strip("\n"):
-            _fd, _tmp_script_path = tempfile.mkstemp(suffix=".bat")
+            _fd, _tmp_script_path = tempfile.mkstemp(suffix=".ps1")
             with os.fdopen(_fd, "w", encoding="utf-8") as _f:
                 _f.write(step.script)
-            _cmd = f'"{_tmp_script_path}"'
+            _cmd = (
+                f'powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass '
+                f'-File "{_tmp_script_path}"'
+            )
         elif (not _is_windows) and "\n" in step.script.strip("\n"):
             _fd, _tmp_script_path = tempfile.mkstemp(suffix=".sh")
             with os.fdopen(_fd, "w", encoding="utf-8") as _f:
