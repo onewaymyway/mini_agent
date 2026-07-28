@@ -2950,9 +2950,13 @@ def render_external_input_tab(client: AgentClient):
     """[外部输入网关设计方案 §6/P6] 展示已注册 source 列表/健康度、
     policies.yaml 路由规则、最近的 external.* 事件流水，以及待处理的
     notify_only 告警——四块内容分别对应设计文档 §6 列出的看板改动点。
-    全部是只读展示 + 告警 ack 操作，不提供在线编辑 sources.yaml/
-    policies.yaml 的表单（见 routes.py 里对应端点的说明：YAML 本身就是
-    配置文件，改配置直接编辑文件更直接，这里不重新发明一套"配置管理 UI"）。
+    仍不提供在线编辑 sources.yaml/policies.yaml 内容本身的表单（YAML 还是
+    直接编辑文件更直接），但额外提供一个"重新加载配置"按钮：改完文件后
+    点一下即可让新配置生效而不需要重启 daemon——生效前会先对新增/改动的
+    source 做一次可用性检测，检测不过就拒绝生效并提示错误，检测通过才
+    切换配置并提示"已生效"。这个按钮的即时反馈和下方"待处理告警"/
+    "最近事件流水"两块是同一次操作的两种呈现（GatewayPoller.reload() 会
+    同时发布一条事件），互为补充，不冲突。
     """
     st.markdown("#### 🔌 外部输入网关 (External Input Gateway)")
     st.caption(
@@ -2961,8 +2965,36 @@ def render_external_input_tab(client: AgentClient):
         "不会意外放大成大量 LLM 调用。详见 next_doc/external_input_gateway_design.md。"
     )
 
-    if st.button("🔄 刷新", key="ei_refresh"):
+    col_refresh, col_reload = st.columns([1, 1])
+    if col_refresh.button("🔄 刷新", key="ei_refresh"):
         st.rerun()
+    if col_reload.button(
+        "🔁 重新加载配置（sources.yaml）",
+        key="ei_reload_sources",
+        help="修改 .agent/external_input/sources.yaml 后点这里即可生效，不需要重启 daemon；"
+             "会先对新增/改动的来源做一次可用性检测，检测不通过则保留原配置不生效。",
+    ):
+        with st.spinner("正在校验并加载新配置…"):
+            reload_res = client.reload_external_input_sources()
+        if reload_res and "_error" in reload_res:
+            st.error(f"重新加载失败：{reload_res['_error']}")
+        elif reload_res and reload_res.get("ok"):
+            st.success(
+                f"✅ 新配置已生效：新增 {len(reload_res.get('added') or [])} 个、"
+                f"更新 {len(reload_res.get('updated') or [])} 个、"
+                f"移除 {len(reload_res.get('removed') or [])} 个。"
+            )
+            if reload_res.get("added"):
+                st.caption(f"新增：{', '.join(reload_res['added'])}")
+            if reload_res.get("updated"):
+                st.caption(f"更新：{', '.join(reload_res['updated'])}")
+            if reload_res.get("removed"):
+                st.caption(f"移除：{', '.join(reload_res['removed'])}")
+            st.rerun()
+        else:
+            st.error("⛔ 新配置校验未通过，已保留原配置继续运行：")
+            for err in (reload_res or {}).get("errors") or []:
+                st.caption(f"　`{err.get('id')}`（{err.get('type')}）：{err.get('error')}")
 
     # ── 1. 已注册 source 列表（类型/状态/上次轮询时间/健康度）────────────
     st.markdown("##### 📡 已注册来源")

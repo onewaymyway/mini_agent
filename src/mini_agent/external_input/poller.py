@@ -17,10 +17,15 @@ from __future__ import annotations
 import json
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import TYPE_CHECKING, Callable, Optional
 
-from mini_agent.external_input.config import SourceConfig, load_sources_config
+from mini_agent.external_input.config import (
+    SourceConfig,
+    SourcesConfigError,
+    load_sources_config,
+)
 from mini_agent.external_input.gateway import publish_events
 from mini_agent.external_input.source import get_source_class
 
@@ -44,6 +49,73 @@ def _ensure_builtin_sources_registered() -> None:
         import mini_agent.external_input.builtin.weather  # noqa: F401
     except Exception:
         pass
+
+def _validate_source_config(cfg: SourceConfig) -> Optional[str]:
+    """单条 source 配置的可用性检测，供 GatewayPoller.reload() 在真正切换配置前调用。
+
+    校验分两层：
+      1. `type` 是否已注册（get_source_class() 查得到）——纯配置错误，
+         无论 enabled 与否都要查，避免"先禁用一条错的以后忘了会一直是错的"。
+      2. 若 `enabled=true`：额外实例化 source 并用一份空 state 试跑一次
+         `poll()`——这是真正的"可用性检测"（RSS/JSON API 是否能连通、
+         解析是否成功等），不是只看配置字段形状。试跑结果（事件/state）
+         直接丢弃，不落盘、不发布事件，副作用等价于一次正常轮询里的
+         只读抓取，不会产生重复通知。
+      `enabled=false` 的条目只查类型，不做网络试跑——不打算启用的来源
+      没必要为了"通过校验"额外消耗一次网络请求/耗时。
+
+    返回 None 表示校验通过，否则返回可读的错误信息字符串。
+    """
+    try:
+        source_cls = get_source_class(cfg.type)
+    except KeyError as exc:
+        return str(exc)
+
+    if not cfg.enabled:
+        return None
+
+    try:
+        source = source_cls()
+        source.poll(dict(cfg.params), {})
+    except Exception as exc:  # noqa: BLE001 - 校验阶段需要兜住任意来源异常
+        return f"{type(exc).__name__}: {exc}"
+    return None
+
+
+def validate_source_configs(
+    configs: list[SourceConfig], *, max_workers: int = 8
+) -> list[dict]:
+    """并发校验一批 source 配置，返回每条的 {"id","type","ok","error"}。
+
+    并发是因为可用性检测里 enabled=true 的条目会真的发一次网络请求
+    （最长可能到 `_DEFAULT_TIMEOUT` 秒），配置里源数量增多后串行校验会让
+    一次 reload 的等待时间线性增长——热重载应该是"感觉不到明显停顿"的
+    操作，不值得为了实现简单牺牲这一点。
+    """
+    _ensure_builtin_sources_registered()
+    if not configs:
+        return []
+    results: list[dict] = [{} for _ in configs]
+    with ThreadPoolExecutor(max_workers=max(1, max_workers)) as pool:
+        futures = {
+            pool.submit(_validate_source_config, cfg): i
+            for i, cfg in enumerate(configs)
+        }
+        for future in futures:
+            idx = futures[future]
+            cfg = configs[idx]
+            try:
+                error = future.result()
+            except Exception as exc:  # noqa: BLE001 - 理论上不会走到这里
+                error = f"{type(exc).__name__}: {exc}"
+            results[idx] = {
+                "id": cfg.id,
+                "type": cfg.type,
+                "ok": error is None,
+                "error": error,
+            }
+    return results
+
 
 # 连续失败达到这个次数就判定为"疑似失效"，发布健康告警事件。
 _DEFAULT_FAILURE_THRESHOLD = 5
@@ -175,6 +247,153 @@ class GatewayPoller:
     def is_running(self, source_id: str) -> bool:
         t = self._threads.get(source_id)
         return t is not None and t.is_alive()
+
+    def _stop_source(self, source_id: str, timeout: float = 5.0) -> None:
+        """停掉单个 source 的轮询线程（reload() 用来下线"被删除/被改动"的
+        source），不影响其它 source 线程——这是 stop() 的"精细粒度"版本。"""
+        stop_event = self._stop_events.pop(source_id, None)
+        if stop_event is not None:
+            stop_event.set()
+        t = self._threads.pop(source_id, None)
+        if t is not None:
+            t.join(timeout=timeout)
+
+    @staticmethod
+    def _config_body(cfg: SourceConfig) -> tuple:
+        """除 id 外用于判断"配置是否发生变化"的字段元组。"""
+        return (cfg.type, cfg.enabled, cfg.interval_seconds, cfg.params, cfg.channel)
+
+    def reload(self, new_configs: Optional[list[SourceConfig]] = None) -> dict:
+        """热重载 sources.yaml，不需要重启 daemon。
+
+        流程（对应需求："先做可用性检测，没问题再生效，两种结果都要在看板
+        提示"）：
+          1. 没传 `new_configs` 就从磁盘重新读 sources.yaml；YAML 本身解析
+             失败（语法错误/顶层结构不对）直接判定失败，不做后续 diff。
+          2. 和当前正在跑的配置逐条 diff，只对"新增"和"被修改"的条目做
+             可用性检测（`validate_source_configs()`）——没变化的条目在
+             跑，本身的健康状态已经能反映是否可用，重复探测没有意义。
+          3. 只要有一条校验不通过，整体拒绝这次 reload：不触碰任何正在
+             跑的线程/配置，发布一条 `config_reload_failed` 事件（默认
+             路由 notify_only，会出现在看板"待处理告警"和"最近事件流水"）。
+          4. 全部通过：按 diff 结果停掉"被删除/被修改"的线程、切换成新
+             configs、`start()` 补起"新增/被修改"的线程（未变化的线程
+             完全不受影响，运行中的抓取状态/去重游标不丢失），再发布一条
+             `config_reload_ok` 事件。
+
+        返回一个可直接序列化成 JSON 的 dict，供 REST 端点/看板直接展示。
+        """
+        if new_configs is None:
+            try:
+                new_configs = load_sources_config(self._paths)
+            except SourcesConfigError as exc:
+                errors = [{"id": "_yaml", "type": "-", "ok": False, "error": str(exc)}]
+                self._publish_reload_event(ok=False, errors=errors)
+                return {"ok": False, "errors": errors}
+
+        old_by_id = {cfg.id: cfg for cfg in self._configs}
+        new_by_id = {cfg.id: cfg for cfg in new_configs}
+
+        removed_ids = [sid for sid in old_by_id if sid not in new_by_id]
+        added_ids = [sid for sid in new_by_id if sid not in old_by_id]
+        changed_ids = [
+            sid
+            for sid in new_by_id
+            if sid in old_by_id
+            and self._config_body(old_by_id[sid]) != self._config_body(new_by_id[sid])
+        ]
+        unchanged_ids = [
+            sid for sid in new_by_id if sid not in added_ids and sid not in changed_ids
+        ]
+
+        to_validate = [new_by_id[sid] for sid in added_ids + changed_ids]
+        validation = validate_source_configs(to_validate) if to_validate else []
+        errors = [v for v in validation if not v["ok"]]
+        if errors:
+            self._publish_reload_event(ok=False, errors=errors)
+            return {"ok": False, "errors": errors}
+
+        # 校验全部通过，正式切换：先停掉需要重启/下线的线程，再切换配置、
+        # 补起需要新起的线程。
+        for sid in removed_ids + changed_ids:
+            self._stop_source(sid)
+
+        self._configs = new_configs
+        with self._health_lock:
+            for sid in list(self._health.keys()):
+                if sid not in new_by_id:
+                    del self._health[sid]
+            for sid in new_by_id:
+                self._health.setdefault(sid, SourceHealth())
+
+        self.start()  # start() 只会为尚未存活的线程起线程，不影响 unchanged
+
+        result = {
+            "ok": True,
+            "added": added_ids,
+            "removed": removed_ids,
+            "updated": changed_ids,
+            "unchanged": unchanged_ids,
+        }
+        self._publish_reload_event(
+            ok=True, added=added_ids, removed=removed_ids, updated=changed_ids
+        )
+        return result
+
+    def _publish_reload_event(
+        self,
+        *,
+        ok: bool,
+        errors: Optional[list[dict]] = None,
+        added: Optional[list[str]] = None,
+        removed: Optional[list[str]] = None,
+        updated: Optional[list[str]] = None,
+    ) -> None:
+        """把本次 reload 的结果（成功或失败）发布成一条 external.* 事件。
+
+        source_type 用 "gateway"（跟具体某个 source 的 "watch"/"weather"
+        区分开），不配置任何 policies.yaml 规则的情况下会走默认的
+        notify_only 落点——正好符合"错误/生效都要能在看板看到"的要求，
+        复用现有的 `/v1/inbox` 告警列表和"最近事件流水"面板，不需要额外
+        造一套通知通道。"""
+        from mini_agent.external_input.source import ExternalInputEvent
+
+        ts = time.time()
+        if not ok:
+            errors = errors or []
+            detail_lines = [
+                f"{e.get('id')}（{e.get('type')}）：{e.get('error')}" for e in errors
+            ]
+            evt = ExternalInputEvent(
+                id=f"gateway_config_invalid:{int(ts * 1000)}",
+                source_id="gateway",
+                source_type="gateway",
+                signal="config_reload_failed",
+                title=f"外部输入配置校验未通过（{len(errors)} 项），已保留原配置继续运行",
+                detail="\n".join(detail_lines),
+                fields={"errors": errors},
+                suggested_tier="cron",
+                channel="gateway_config",
+            )
+        else:
+            added = added or []
+            removed = removed or []
+            updated = updated or []
+            evt = ExternalInputEvent(
+                id=f"gateway_config_reloaded:{int(ts * 1000)}",
+                source_id="gateway",
+                source_type="gateway",
+                signal="config_reload_ok",
+                title=(
+                    f"外部输入配置已生效：新增 {len(added)}、更新 {len(updated)}、"
+                    f"移除 {len(removed)}"
+                ),
+                detail=f"新增: {added}\n更新: {updated}\n移除: {removed}",
+                fields={"added": added, "removed": removed, "updated": updated},
+                suggested_tier="cron",
+                channel="gateway_config",
+            )
+        publish_events(self._paths, [evt])
 
     # ── 健康状态查询 ──────────────────────────────────────────────────────
 

@@ -271,6 +271,14 @@ class AgentClient:
         """标记一条 notify_only 告警已处理（不再出现在 /v1/inbox 里）。"""
         return self._post(f"/inbox/external_alerts/{alert_id}/ack")
 
+    def reload_external_input_sources(self):
+        """热重载 sources.yaml：不重启 daemon 即可生效。先对新增/改动的
+        source 做一次可用性检测，全部通过才真正切换配置；任意一条没通过
+        就整体拒绝，旧配置继续运行。成功/失败都会各返回一份结构化结果，
+        同时也各自发布一条事件（会出现在下方"待处理告警"/"最近事件流水"）。
+        超时给宽一点——里面可能真的会为新增的 source 发起一次网络请求。"""
+        return self._post("/external_input/sources/reload", timeout=30)
+
     # ── 看板：进化提案分级自治（Track I）────────────────────────────
     def evolution_proposals(self):
         """[Track I] 列出所有 evolve/* 提案分支及风险分级。"""

@@ -2730,14 +2730,16 @@ async def ack_external_alert(request: Request, alert_id: str):
 
 # ── 外部输入网关 REST API（看板"🔌 外部输入"面板，P6）────────────────────────
 #
-#   GET  /v1/external_input/sources    已配置的 source 列表 + 运行时健康度
-#   GET  /v1/external_input/policies   policies.yaml 里的路由规则（只读）
-#   GET  /v1/external_input/events     最近的 external.* 事件流水（不消费游标）
+#   GET  /v1/external_input/sources         已配置的 source 列表 + 运行时健康度
+#   POST /v1/external_input/sources/reload  热重载 sources.yaml（先校验再生效）
+#   GET  /v1/external_input/policies        policies.yaml 里的路由规则（只读）
+#   GET  /v1/external_input/events          最近的 external.* 事件流水（不消费游标）
 #
-# 三个都是只读端点（owner-only，与其它诊断类端点一致），对齐设计文档 §6：
-# "供人工核对路由是否符合预期"，不提供在线编辑 sources.yaml/policies.yaml
-# 的写端点——YAML 本身就是配置文件，改配置直接编辑文件 + 重启/reload 即可，
-# 这里不重新发明一套"配置管理 API"。
+# 均为 owner-only 端点，对齐设计文档 §6："供人工核对路由是否符合预期"。
+# 不提供在线编辑 sources.yaml/policies.yaml 内容本身的写端点——YAML 还是
+# 直接编辑文件；但"改完文件后不需要重启 daemon 就能生效"这件事本身足够
+# 高频、且需要"先校验再生效"的保护逻辑，值得单独开一个 reload 端点，
+# 而不是让使用者每次改配置都去重启 daemon。
 
 def _project_root_or_503(http_server) -> Path:
     proj_root = getattr(http_server.bridge.agent.cfg, "project_root", None) if http_server.bridge.agent else None
@@ -2791,6 +2793,39 @@ async def list_external_input_sources(request: Request):
         "sources": sources,
         "poller_available": poller is not None,
     }
+
+
+@router.post("/external_input/sources/reload")
+async def reload_external_input_sources(request: Request):
+    """POST /v1/external_input/sources/reload — 热重载 sources.yaml，
+    不需要重启 daemon。
+
+    先对新配置里"新增/被修改"的条目做一次可用性检测（类型是否注册 + 真实
+    试跑一次 poll()），全部通过才真正切换配置、重启受影响 source 的
+    轮询线程；只要有一条没通过，整体拒绝，旧配置继续照常运行。
+    成功或失败都会各发布一条 `external.gateway.*` 事件（默认 notify_only
+    落点），因此看板"待处理告警"/"最近事件流水"也会看到同一条提示；
+    这里额外把结构化结果原样返回，方便前端在按下按钮后立刻展示，不用
+    等下一次事件流水刷新。"""
+    http_server = getattr(request.app.state, "http_server", None)
+    if http_server is None:
+        raise HTTPException(status_code=503, detail="HttpServer not available")
+    _require_owner(request)
+
+    poller = getattr(http_server.bridge, "_external_input_poller", None)
+    if poller is None:
+        raise HTTPException(
+            status_code=503,
+            detail="GatewayPoller 当前不可用（非 daemon 模式，或启动时构造失败）",
+        )
+
+    try:
+        result = poller.reload()
+    except Exception as _mini_agent_exc:
+        from mini_agent.errors import log_exception
+        log_exception(_mini_agent_exc, where='mini_agent.api.routes.reload_external_input_sources')
+        raise HTTPException(status_code=500, detail=str(_mini_agent_exc))
+    return result
 
 
 @router.get("/external_input/policies")

@@ -35,3 +35,44 @@ sources:
       # 每天第一次轮询额外发一条 daily_forecast 摘要事件（今日高低温 +
       # 最大降雨概率），配合 notify_only 落点可以当"每日天气简报"用
       daily_summary: true
+
+  # -------------------------------------------------------------------
+  # RSS 源监控（内置 watch 来源，fetcher: rss，见
+  # src/mini_agent/external_input/builtin/watch.py）。每个源独立轮询，
+  # 首次拉取只记录 seen_ids、不产生事件，此后有新条目才发 new_item。
+
+  - id: arxiv_cs_ai
+    type: watch
+    enabled: true
+    interval_seconds: 1800   # arXiv 每日更新，半小时轮询一次足够
+    params:
+      source_id: arxiv_cs_ai
+      fetcher: rss
+      url: "https://rss.arxiv.org/rss/cs.AI"
+
+  - id: hn_frontpage
+    type: watch
+    enabled: true
+    interval_seconds: 300    # Hacker News 首页更新较快
+    params:
+      source_id: hn_frontpage
+      fetcher: rss
+      url: "https://hnrss.org/frontpage"
+
+  - id: sspai_feed
+    type: watch
+    enabled: true
+    interval_seconds: 900
+    params:
+      source_id: sspai_feed
+      fetcher: rss
+      url: "https://sspai.com/feed"
+
+  - id: ithome_feed
+    type: watch
+    enabled: true
+    interval_seconds: 600    # IT之家更新频繁
+    params:
+      source_id: ithome_feed
+      fetcher: rss
+      url: "https://www.ithome.com/rss/"
