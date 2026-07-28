@@ -29,8 +29,19 @@ P5（本阶段新增）范围：
     在同一处调用，不受 autonomy_level 限制（notify_only 默认档兜底，
     高成本的 enqueue_turn 仍需在 policies.yaml 显式配置才会触发）
 
-尚未实现（后续阶段，见设计文档 §7 路线图）：
-  - 看板"🔌 外部输入"面板（P6）
+P6（本阶段新增）范围：
+  - 看板"🔌 外部输入"面板
+
+P7（本阶段新增）范围：
+  - source.py/config.py  `channel` 分类字段（ExternalInputEvent.channel /
+    SourceConfig.channel），事件在被 daemon（IngestionPolicy）处理之前
+    先按频道归类，缺省即 source_type
+  - policy.py    `channel` 新增为 PolicyRule 匹配维度；
+    `group_events_by_channel()` + `run_ingestion_policy_once()` 按频道
+    分组处理，`PolicyRunSummary.by_channel` 统计每个频道处理了多少条
+  - builtin/weather.py  WeatherInputSource：第二个内置 source 实现，
+    基于 Open-Meteo 免费预报 API 监控天气（降雨概率/极端温度阈值），
+    channel 默认 "weather"
 """
 
 from mini_agent.external_input.config import SourceConfig, load_sources_config
@@ -46,6 +57,7 @@ from mini_agent.external_input.policy import (
     PolicyRunSummary,
     acknowledge_alert,
     decide_action,
+    group_events_by_channel,
     list_pending_alerts,
     load_policies,
     run_ingestion_policy_once,
@@ -77,5 +89,6 @@ __all__ = [
     "list_pending_alerts",
     "acknowledge_alert",
     "run_ingestion_policy_once",
+    "group_events_by_channel",
     "EXTERNAL_GOAL_SOURCE",
 ]

@@ -36,6 +36,10 @@ class SourceConfig:
     enabled: bool = True
     interval_seconds: int = DEFAULT_INTERVAL_SECONDS
     params: dict = field(default_factory=dict)
+    channel: str = ""
+    """该 source 归属的分类频道（P7）。sources.yaml 里可选填 `channel:`；
+    留空时 GatewayPoller 在发布事件前会回填成 `type`（即默认"一种来源
+    类型 = 一个频道"），不强制使用者必须显式配置才能用上按频道分类。"""
 
     @staticmethod
     def from_dict(d: dict) -> "SourceConfig":
@@ -52,12 +56,14 @@ class SourceConfig:
             interval = DEFAULT_INTERVAL_SECONDS
         if interval <= 0:
             interval = DEFAULT_INTERVAL_SECONDS
+        channel = str(d.get("channel", "") or "").strip()
         return SourceConfig(
             id=source_id,
             type=source_type,
             enabled=bool(d.get("enabled", True)),
             interval_seconds=interval,
             params=dict(d.get("params") or {}),
+            channel=channel or source_type,
         )
 
 

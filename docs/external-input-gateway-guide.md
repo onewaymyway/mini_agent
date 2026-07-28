@@ -3,9 +3,10 @@
 > 设计文档：`next_doc/external_input_gateway_design.md`（含分阶段实现状态）。
 > 本文档只写"怎么用"，架构取舍和设计动机见设计文档。
 
-当前进度：P1–P6 全部完成（事件抽象、独立轮询调度、路由与告警落点、
-内置 `watch` 来源、`goal_candidate`/`enqueue_turn` 真正执行并接入
-`autonomous_loop.tick()`、看板"🔌 外部输入"面板）。§7 路线图已无待办阶段。
+当前进度：P1–P7 全部完成（事件抽象、独立轮询调度、路由与告警落点、
+内置 `watch`/`weather` 两个来源、`goal_candidate`/`enqueue_turn` 真正执行
+并接入 `autonomous_loop.tick()`、看板"🔌 外部输入"面板、事件按 `channel`
+分类供 daemon 分类处理）。§7 路线图已无待办阶段。
 
 ## 0. 设计目标
 
@@ -89,8 +90,9 @@ Goal→Objective 拆分、`ResourceArbiter` 门控等消费链路。
 | 组件 | 文件 | 职责 |
 |---|---|---|
 | `ExternalInputSource` / `ExternalInputEvent` | `external_input/source.py` | 来源扩展点的抽象接口 + 标准化事件表示；`register_source()`/`get_source_class()` 构成一个轻量注册表 |
-| `WatchInputSource` | `external_input/builtin/watch.py` | 第一个内置来源实现：`rss`/`json_api`/`html_diff` 三种 fetcher + 关键词/字段变化/阈值匹配规则 |
-| `GatewayPoller` | `external_input/poller.py` | 每个 source 一条独立轮询线程，按 `interval_seconds` 节拍调用 `poll()`，处理连续失败退避/熔断，把产生的事件发布到 `system_events` |
+| `WatchInputSource` | `external_input/builtin/watch.py` | 内置来源实现之一：`rss`/`json_api`/`html_diff` 三种 fetcher + 关键词/字段变化/阈值匹配规则 |
+| `WeatherInputSource` | `external_input/builtin/weather.py` | 内置来源实现之二：基于 Open-Meteo 免费预报 API 监控降雨概率/极端气温阈值，`channel` 默认 `weather` |
+| `GatewayPoller` | `external_input/poller.py` | 每个 source 一条独立轮询线程，按 `interval_seconds` 节拍调用 `poll()`，处理连续失败退避/熔断，用 `SourceConfig.channel` 给事件回填分类，再发布到 `system_events` |
 | `IngestionPolicy`（`load_policies`/`decide_action`/`run_ingestion_policy_once`） | `external_input/policy.py` | 加载 `policies.yaml`，按"首个匹配规则生效"决定事件落点；三种落点的真正执行也在这里 |
 | 消费点接入 | `evolution/autonomous_loop.py::_tick_passive()` | 每个 tick 调用一次 `run_ingestion_policy_once()`，不新增独立调度循环，也不受 autonomy 档位限制（notify_only 默认档不该被挡住） |
 | 看板面板 | `apps/mini_agent_kanban/app.py::render_external_input_tab()` | 只读展示 source 健康度、路由规则、待处理告警、最近事件流水 |
@@ -120,6 +122,13 @@ Goal→Objective 拆分、`ResourceArbiter` 门控等消费链路。
 - 三个落点已经在 `autonomous_loop.tick()`（`_tick_passive()` 阶段）自动
   消费，不需要手动调用 `run_ingestion_policy_once()`——只要 Agent daemon
   在跑（任意 autonomy 档位），`sources.yaml`/`policies.yaml` 就会持续生效。
+- **channel（分类频道）**：daemon 处理一批事件之前，先按 `channel` 把
+  它们分好类——每个 source 在 `sources.yaml` 里可以配一个 `channel`
+  字段，缺省时自动等于 `type`（比如所有 `type: weather` 的 source 默认
+  都在 `weather` 频道，不用手动配置）。`policies.yaml` 里可以直接按
+  `channel` 写路由规则，`run_ingestion_policy_once()` 内部也会先按频道
+  分组再处理，方便 daemon／看板／诊断按类别观察"这一批外部输入里，
+  天气类处理了几条、资讯类处理了几条"。详见 §5.3、§10。
 
 ## 5. 配置
 
@@ -162,6 +171,20 @@ sources:
       fetcher: html_diff
       url: "https://example.com/product/123"
       keywords: ["现货", "补货"]
+
+  - id: home_weather
+    type: weather
+    enabled: true
+    interval_seconds: 1800   # 天气预报不需要高频轮询，半小时一次足够
+    channel: weather          # 可省略，type: weather 默认就落在 weather 频道
+    params:
+      latitude: 39.9042
+      longitude: 116.4074
+      rain_probability_threshold: 60
+      temperature_high_threshold: 35
+      temperature_low_threshold: 0
+      lookahead_hours: 12
+      daily_summary: true
 ```
 
 字段说明：
@@ -169,9 +192,10 @@ sources:
 | 字段 | 说明 |
 |---|---|
 | `id` | 来源实例的唯一标识，同时也是 state 文件名 |
-| `type` | 实现类型，目前内置只有 `watch`（自定义来源见 §7） |
+| `type` | 实现类型，目前内置有 `watch`/`weather`（自定义来源见 §7） |
 | `enabled` | `false` 时 `GatewayPoller` 不会为它起轮询线程 |
 | `interval_seconds` | 轮询间隔，默认 300 秒，非法值会回退成默认值 |
+| `channel` | 该来源产生的事件归属的分类频道，供 `policies.yaml`/daemon 按类别处理（见 §5.3）；缺省等于 `type` |
 | `params` | 传给 `poll(params, state)` 的来源自定义配置 |
 
 ### 5.2 `policies.yaml`
@@ -198,6 +222,25 @@ sources:
 ```
 
 未显式配置路由的事件类型，默认按 `notify_only` 处理。
+
+### 5.3 按 `channel` 路由（P7）
+
+除了 `source_type`/`signal`/`fields.<key>`，`match` 还支持 `channel`
+维度，可以不区分具体 source，直接按频道整体配置路由：
+
+```yaml
+- match:
+    channel: weather
+  action: notify_only   # 天气类事件统一走通知，不生成 Goal/不触发 Agent
+
+- match:
+    channel: weather
+    signal: high_temperature
+  action: goal_candidate   # 极端高温单独升级成候选 Goal（比如提醒检查作物/设备）
+```
+
+规则匹配顺序不变（第一条命中的生效），`channel` 只是多了一种可以用来
+写更"粗粒度"规则的匹配条件，不需要跟 `source_type`/`signal` 一起写。
 
 ## 6. watch 来源（内置）
 
@@ -227,7 +270,30 @@ sources:
 持续命中不会每轮都重复告警；等数值回到阈值范围外再重新跌入/超出时，
 会重新触发一次。
 
-## 7. 自定义来源
+## 7. weather 来源（内置，P7）
+
+`WeatherInputSource`（`src/mini_agent/external_input/builtin/weather.py`）
+监控某个经纬度的天气预报，数据来自 [Open-Meteo](https://open-meteo.com)
+（免费、不需要 API key）。可配置参数（都放在 `params` 下）：
+
+| 参数 | 说明 |
+|---|---|
+| `latitude` / `longitude` | 必填，监控地点的经纬度 |
+| `rain_probability_threshold` | 可选，默认 60；未来 `lookahead_hours` 内命中该降雨概率（%）即发 `rain_alert` |
+| `temperature_high_threshold` | 可选；命中即发 `high_temperature` |
+| `temperature_low_threshold` | 可选；命中即发 `low_temperature` |
+| `lookahead_hours` | 可选，默认 12；预报向前看多少小时 |
+| `daily_summary` | 可选，默认 false；为 true 时每天第一次轮询额外发一条 `daily_forecast` 摘要事件 |
+
+跟 `watch` 的 `threshold` 模式一样，阈值告警只在"未命中 -> 命中"的边沿
+触发一次，持续命中不会每轮重复告警；数值先回落到阈值外、再次命中时才
+会再触发一次。`channel` 默认落在 `weather`（除非在 `sources.yaml` 里
+显式覆盖），配合 §5.3 的例子可以把所有天气类事件统一路由。
+
+由于天气预报本身更新不频繁，建议 `interval_seconds` 设置成 30 分钟以上
+（示例见 §5.1），没有必要跟资讯类 source 一样高频轮询。
+
+## 8. 自定义来源
 
 新增一种来源不需要碰网关代码，只需要实现接口并注册：
 
@@ -247,7 +313,7 @@ class MySource(ExternalInputSource):
 或者由调用方自行 import），`sources.yaml` 里配置 `type: my_source` 即可
 被识别。
 
-## 8. 查看告警与事件
+## 9. 查看告警与事件
 
 - `GET /v1/inbox` 会聚合未处理的 `external_alert`（来自 `notify_only` 落点）。
 - `POST /v1/inbox/external_alerts/{alert_id}/ack` 标记一条告警已处理。
@@ -265,9 +331,14 @@ class MySource(ExternalInputSource):
   - `GET /v1/external_input/events?limit=50` — 最近的 `external.*`
     事件流水（只读尾读，不会推进任何消费者的游标，`limit` 上限 200）。
 
-## 9. 已知限制
+## 10. 已知限制
 
-- `watch` 是唯一内置来源；webhook/邮件/日历等来源尚未实现，需要时可以
-  参考 `builtin/watch.py` 的写法新增一个 `ExternalInputSource` 子类。
+- `watch`/`weather` 是目前仅有的两个内置来源；webhook/邮件/日历等来源
+  尚未实现，需要时可以参考 `builtin/watch.py` 或 `builtin/weather.py`
+  的写法新增一个 `ExternalInputSource` 子类。
 - 看板面板和三个 REST 端点都是只读展示，`sources.yaml`/`policies.yaml`
   仍然只能通过直接编辑配置文件来修改（没有在线编辑表单）。
+- `channel` 目前只在 `policies.yaml` 路由匹配和 `run_ingestion_policy_once()`
+  的 `by_channel` 统计里生效；`GET /v1/external_input/events` 尚不支持
+  按 `channel` 过滤（只能拿到最近事件流水再自行按 `payload.channel`
+  筛选），看板页面也还没有"按频道筛选"的 UI，这些留给后续有需要时再补。

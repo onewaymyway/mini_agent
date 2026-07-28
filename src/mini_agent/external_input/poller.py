@@ -40,6 +40,10 @@ def _ensure_builtin_sources_registered() -> None:
         import mini_agent.external_input.builtin.watch  # noqa: F401
     except Exception:
         pass
+    try:
+        import mini_agent.external_input.builtin.weather  # noqa: F401
+    except Exception:
+        pass
 
 # 连续失败达到这个次数就判定为"疑似失效"，发布健康告警事件。
 _DEFAULT_FAILURE_THRESHOLD = 5
@@ -211,6 +215,14 @@ class GatewayPoller:
                 events, new_state = source.poll(cfg.params, state)
                 state = new_state if new_state is not None else state
                 _save_state(self._paths, cfg.id, state)
+                # P7：来源没有显式设置 channel 时，用该 source 在
+                # sources.yaml 里配置的 channel 回填（config.py 里已经
+                # 保证 cfg.channel 非空，缺省即 cfg.type）——daemon 消费
+                # 侧（policy.py）按 channel 分组处理时不需要关心某个
+                # source 是否"忘记"设置 channel。
+                for evt in events:
+                    if not evt.channel:
+                        evt.channel = cfg.channel
                 published = publish_events(self._paths, events)
 
                 with self._health_lock:
@@ -261,5 +273,6 @@ class GatewayPoller:
             detail=last_error,
             fields={"consecutive_failures": consecutive_failures},
             suggested_tier="cron",
+            channel=cfg.channel or "health",
         )
         publish_events(self._paths, [evt])

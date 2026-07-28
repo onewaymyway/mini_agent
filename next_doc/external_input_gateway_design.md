@@ -208,6 +208,32 @@ system_events.publish(
 
 `IngestionPolicy` 的消费方式对齐现有风格：作为 `autonomous_loop.tick()` 里新增的一个 `poll_since(consumer_name="external_input_policy", event_types=["external.*"])` 消费点，跟 `soft_goal_deriver` 挂在同一个节拍上，不新增额外的调度循环。
 
+### 3.5 `channel`：daemon 处理前的分类（P7 新增）
+
+**动机**：P1–P6 跑通之后，网关的落地闭环已经是"source 产生事件 → daemon（`autonomous_loop.tick()`）统一消费 → policy 路由"，但所有 `external.*` 事件在被 daemon 处理之前是完全同质的一批——`IngestionPolicy` 逐条按 `source_type`/`signal`/`fields.*` 匹配规则，没有一个"这条事件大致属于哪一类信息"的显式分类维度。随着 source 种类增多（watch 抓取的资讯、天气预报、未来可能的 webhook/日历……），daemon 端"按类型处理"的诉求会越来越明显：例如看板想按类别筛选事件流水、诊断脚本想只看"天气类"事件处理了多少条、未来某个频道可能需要频道级的节流或不同的默认落点。
+
+**做法**：给 `ExternalInputEvent` 新增一个 `channel: str` 字段，作为"daemon 处理前"的分类标签：
+
+- Source 自己可以在 `poll()` 里显式设置 `channel`（比如把同一个 source 的不同信号分进不同频道）；
+- 更常见的做法是完全不管它——`sources.yaml` 里每个 source 配置可以带一个 `channel` 字段，缺省时直接回退成 `type`（一种 source 类型默认就是一个频道，不强制要求使用者理解这个概念才能用）；
+- `GatewayPoller` 在发布事件前统一回填：`event.channel` 为空时，用该 source 的 `cfg.channel` 补上（`poller.py::_run_source_loop`）。
+
+这依然是"复用现有事件总线，不新造一套持久化/消费机制"的延续（对齐设计目标 2）：`channel` 只是 `ExternalInputEvent.to_payload()` 里的一个新字段，随事件一起进 `events.jsonl`，不引入额外的存储文件或消费游标。
+
+**daemon 侧怎么用**：
+
+1. `PolicyRule.matches()` 新增 `channel` 作为第四种匹配维度（跟 `source_type`/`signal`/`fields.<key>` 并列），`policies.yaml` 可以直接按频道配路由规则，不需要针对每个 `source_type`/`signal` 组合重复写。
+2. `run_ingestion_policy_once()`（daemon 在 `autonomous_loop.tick()` 里调用的消费入口）内部先用新增的 `group_events_by_channel()` 把这一批事件按频道分组，再按频道、组内按原顺序逐条 `decide_action()` 路由——路由结果本身不变（依然是逐事件独立判断），但处理顺序和统计口径显式按频道组织，为将来"频道级特殊处理"（节流、频道级默认落点、频道级熔断）预留了改动点，不需要再回头改 `decide_action()`/三个落点函数的调用方式。
+3. `PolicyRunSummary` 新增 `by_channel: dict[str, int]`，记录这一轮每个频道处理了多少条事件，供看板/诊断观察 daemon 的处理分布。
+
+**边界**：`channel` 是分类标签，不是路由动作本身——一个事件的最终落点仍然由 `policies.yaml` 里第一条匹配的规则决定（`channel` 只是可选的匹配条件之一）。没有配置任何按 `channel` 匹配的规则时，行为与 P1–P6 完全一致（默认 `notify_only`），这是刻意保持的向后兼容边界。
+
+### 3.6 天气监控示例来源（P7 新增）
+
+为了让"新增一种外部输入来源"这件事有一个可以直接跑起来的参照，新增 `builtin/weather.py`：基于 [Open-Meteo](https://open-meteo.com)（免费、无需 API key）的小时级预报，监控某个经纬度未来 N 小时内的降雨概率与极端气温阈值，命中时产生 `signal="rain_alert"` / `"high_temperature"` / `"low_temperature"` 事件；可选开启每日一条的 `signal="daily_forecast"` 摘要事件。`channel` 默认落在 `"weather"`。
+
+实现上延续 `watch.py` 已经定型的分工方式：抓取失败统一包装成 `WeatherFetchError` 向上抛给 `GatewayPoller` 走既有的退避熔断；阈值告警只在"未命中 → 命中"的边沿触发一次（跟 `watch.py` 的 `threshold` 模式同一语义），持续命中不会每轮重复告警。
+
 ---
 
 ## 4. 数据与存储
@@ -258,6 +284,7 @@ system_events.publish(
 | P4 ✅ | 迁移上一轮 watch 设计为 `builtin/watch.py`（第一个 source 实现），验证端到端闭环 |
 | P5 ✅ | `goal_candidate` 落点（对接 `soft_goal_deriver` 同款模式）+ `enqueue_turn` 落点（默认关闭，显式开启） |
 | P6 ✅ | 看板"🔌 外部输入"面板 |
+| P7 ✅ | `channel` 分类字段（daemon 处理前先分频道）+ `policies.yaml` 按频道路由 + 天气监控示例 source（`builtin/weather.py`） |
 
 ---
 
@@ -422,4 +449,36 @@ system_events.publish(
 - **poller 不可用时的降级路径**：`/v1/external_input/sources` 在 `bridge._external_input_poller is None`（非 daemon 模式，或构造阶段异常被吞掉）时，退化为只读 `load_sources_config()` 的静态结果，健康相关字段一律为 `null`，并在响应里带上 `poller_available: false`——看板据此展示一条警告而不是让整个页面报错，遵循项目里"配置/运行时状态分离，任一层不可用不拖垮另一层"的一贯风格。
 - **事件流水端点的性能取舍**：`/v1/external_input/events` 从文件尾部往前逐行扫描、凑够 `limit` 条 `external.*` 事件就提前停止，而不是像 `list_pending_alerts()` 那样整份反序列化——因为 `system_events.jsonl` 承载了全部子系统的事件（不只是外部输入），体量可能远大于 `alerts.jsonl`，"体量不大就全量扫描"的取舍在这里不成立。`limit` 硬上限 200，防止看板一次请求传入超大值时读放大。
 - **告警 ack 复用已有端点，未新增**：`POST /v1/inbox/external_alerts/{alert_id}/ack` 在 P3 阶段（`/v1/inbox` 聚合）就已经实现，P6 只是让看板客户端第一次真正调用它（此前没有任何调用方），因此本轮没有改动这个端点本身的实现。
-- **§7 路线图至此全部完成**：P1–P6 均已交付，外部输入网关端到端闭环——从 source 轮询产生事件，到 policy 路由到三种落点，到 `autonomous_loop.tick()` 自动消费，到看板可视化人工核对——不再有"配置了但没人跑"或"跑了但看不见"的断点。后续如果有新需求（比如更多内置 source 类型、看板里的"忽略此来源"操作、`enqueue_turn` 频率限制），应作为独立的新一轮迭代规划，而不是往本设计文档继续叠加。
+- **§7 路线图 P1–P6 完成**：从 source 轮询产生事件，到 policy 路由到三种落点，到 `autonomous_loop.tick()` 自动消费，到看板可视化人工核对——不再有"配置了但没人跑"或"跑了但看不见"的断点。P7 在这个闭环之上补充"daemon 处理前先分类"的能力，见下节。
+
+### P7 — 已完成 ✅
+
+**范围**：`channel` 分类字段（`ExternalInputEvent.channel` / `SourceConfig.channel`）+ `policies.yaml` 按 `channel` 路由 + `PolicyRunSummary.by_channel` 统计 + 天气监控示例 source（`builtin/weather.py`）。设计动机与取舍见 §3.5/§3.6。
+
+**新增文件**：
+
+| 文件 | 内容 |
+|---|---|
+| `src/mini_agent/external_input/builtin/weather.py` | `WeatherInputSource`：基于 Open-Meteo 免费预报 API（无需 key）监控降雨概率/极端气温阈值，`rain_probability_threshold`/`temperature_high_threshold`/`temperature_low_threshold` 均为可选，命中即发 `rain_alert`/`high_temperature`/`low_temperature`（边沿触发，持续命中不重复）；可选 `daily_summary` 每日一条 `daily_forecast` 摘要；`WeatherFetchError` 统一包装抓取失败，交给 `GatewayPoller` 既有退避熔断处理，不重复实现重试 |
+| `tests/test_external_input_channel_p7.py` | 9 个用例：`SourceConfig.channel` 缺省回退/显式配置、`GatewayPoller` 用 `cfg.channel` 回填事件 channel、`PolicyRule.matches` 的 `channel` 匹配维度、`group_events_by_channel` 分组保序与未设置频道归入 `"default"`、`run_ingestion_policy_once` 的 `by_channel` 统计、天气 source 降雨告警边沿触发/每日摘要一天一次/缺经纬度报错 |
+
+**变更文件**：
+
+| 文件 | 变更 |
+|---|---|
+| `src/mini_agent/external_input/source.py` | `ExternalInputEvent` 新增 `channel: str = ""` 字段，`to_payload()`/`from_payload()` 同步读写，缺省为空串（由网关回填，不在这里替调用方猜测默认值） |
+| `src/mini_agent/external_input/config.py` | `SourceConfig` 新增 `channel: str` 字段；`from_dict()` 解析 `sources.yaml` 里的 `channel:`，缺省回退成 `type` |
+| `src/mini_agent/external_input/poller.py` | `_run_source_loop()` 在 `publish_events()` 之前，把 `event.channel` 为空的事件统一回填成 `cfg.channel`；`_publish_unhealthy_event()` 的健康事件同样打上来源的 `channel`（缺省 `"health"`）；`_ensure_builtin_sources_registered()` 新增尝试 import `builtin.weather`（失败即忽略，跟 `watch` 同样的"尽力而为"策略） |
+| `src/mini_agent/external_input/policy.py` | `PolicyRule.matches()` 新增 `channel` 匹配维度；新增 `group_events_by_channel()`；`run_ingestion_policy_once()` 改为先分组再按频道处理；`PolicyRunSummary` 新增 `by_channel: dict` 字段 |
+| `src/mini_agent/external_input/builtin/__init__.py` | 新增 import + 重导出 `weather.py` 的公开 API（`WeatherInputSource`/`WeatherFetchError`） |
+| `src/mini_agent/external_input/__init__.py` | 导出 `group_events_by_channel`；包文档字符串新增 P7 范围说明 |
+| `docs/external-input-gateway-guide.md` | 新增"频道分类"一节 + 天气 source 的 `sources.yaml` 配置示例 |
+
+**关键实现说明**：
+
+- **`channel` 是分类标签，不是新的路由通道**：三种落点（`notify_only`/`goal_candidate`/`enqueue_turn`）的实现完全没有改动，`channel` 只是 `PolicyRule.matches()` 多出的一个可选匹配维度，以及 `run_ingestion_policy_once()` 内部的分组统计维度——这是刻意的克制：设计目标 3（"分层路由、按需消耗 LLM"）已经由三种落点覆盖，`channel` 解决的是另一个问题（"daemon 按什么类别去处理/展示这些信息"），两者正交，不应该混在一起变成"频道决定动作"这种新的隐式规则。
+- **为什么在 `SourceConfig` 而不是只在 `ExternalInputEvent` 上加字段**：如果只在事件上加 `channel`，每个 source 实现（尤其是像 `watch.py` 这种一次可能产生多种 `signal` 的 source）都要自己决定并硬编码 channel 值；把默认值下放到 `sources.yaml` 配置层，绝大多数用户完全不需要碰这个概念——不写 `channel:` 字段时效果等同于"按 source 类型自动分类"，跟没有这个功能之前的行为在观感上是一致的，只是多了一个可选的精细化分类入口。
+- **`group_events_by_channel()` 不改变路由结果，只改变处理顺序和统计**：分组本身是`dict` 保序（Python 3.7+ 字典保持插入顺序），组内事件严格保持它们在原始事件列表里的相对顺序；这保证了改成"按频道处理"之后，单个频道内部的事件处理顺序、以及每个事件各自的路由结果，跟 P1–P6 阶段逐条处理完全一致，唯一变化的是"不同频道之间"的事件现在会先按频道聚成组再处理——这个改动不影响任何既有测试（P1–P6 阶段的测试大多只用一个 channel/一个事件，或不关心处理顺序）。
+- **天气 source 复用 `watch.py` 的抓取/阈值判断分工，不重复发明**：`WeatherFetchError`、"边沿触发一次、状态回落后再次触发"的阈值语义、"failed → 向上抛出交给 GatewayPoller 处理"的容错策略，均直接照搬 `watch.py` 里已经定型的模式，本文件不重新实现一遍退避/去重逻辑。
+- **不引入新依赖**：复用项目已声明的 `requests`；Open-Meteo 返回结构简单的 JSON，不需要专门的 SDK。选择 Open-Meteo 而非需要注册 key 的天气 API，是为了让这个"示例来源"本身开箱即用，不需要用户先去申请密钥才能看到网关端到端跑起来的效果。
+- **§7 路线图至此全部完成（P1–P7）**：如果后续要继续演进（比如频道级的节流/默认落点、看板里按频道筛选事件流水、更多内置 source），应作为独立的新一轮迭代规划，而不是继续在本设计文档里叠加。

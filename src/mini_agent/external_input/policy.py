@@ -111,6 +111,9 @@ class PolicyRule:
             elif key == "signal":
                 if event.signal != expected:
                     return False
+            elif key == "channel":
+                if event.channel != expected:
+                    return False
             elif key.startswith("fields."):
                 field_name = key[len("fields."):]
                 if event.fields.get(field_name) != expected:
@@ -352,6 +355,31 @@ class PolicyRunSummary:
     goal_candidate_deduped: int = 0
     enqueue_turn: int = 0
     enqueue_turn_skipped: int = 0
+    by_channel: dict = field(default_factory=dict)
+    """按 channel 统计的已处理事件数（P7），供看板/诊断观察"daemon 这一轮
+    分别处理了哪些频道、各处理了多少条"，不影响路由结果本身——路由决策
+    仍然是逐事件按 policies.yaml 规则匹配，channel 只是分组统计维度，
+    并可作为 match 条件之一（见 PolicyRule.matches）。"""
+
+
+def group_events_by_channel(
+    events: list[ExternalInputEvent],
+) -> "dict[str, list[ExternalInputEvent]]":
+    """把一批事件按 channel 分组，组内保持原有到达顺序（P7）。
+
+    用途见 next_doc 设计文档 §3.5："daemon 进程处理之前先分频道"——本函数
+    不做任何路由决策，只是把 run_ingestion_policy_once() 拿到的事件流
+    重新组织成"频道 -> 事件列表"，供该函数按频道顺序、成组地喂给
+    decide_action()/落点函数，也方便看板或诊断脚本单独查看某个频道的
+    待处理事件，而不用先跑一遍路由。未设置 channel（理论上不会发生，
+    因为 poller.py 会用 cfg.channel 回填）的事件归入 `"default"` 频道，
+    保证分组结果里不会出现空字符串 key。
+    """
+    grouped: dict[str, list[ExternalInputEvent]] = {}
+    for event in events:
+        key = event.channel or "default"
+        grouped.setdefault(key, []).append(event)
+    return grouped
 
 
 def run_ingestion_policy_once(
@@ -384,35 +412,43 @@ def run_ingestion_policy_once(
         return summary
 
     events = poll_external_events(paths, consumer_name=consumer_name)
-    for event in events:
-        summary.processed += 1
-        rule = decide_action(event, rules)
-        if rule.action == "notify_only":
-            _notify_only(paths, event)
-            summary.notify_only += 1
-        elif rule.action == "goal_candidate":
-            if goal_backlog is None:
-                summary.goal_candidate_skipped += 1
-                continue
-            try:
-                created = _goal_candidate(paths, event, goal_backlog)
-            except Exception as exc:
-                from mini_agent.errors import log_exception
-                log_exception(exc, where="mini_agent.external_input.policy.run_ingestion_policy_once.goal_candidate")
-                created = False
-            if created:
-                summary.goal_candidate += 1
-            else:
-                summary.goal_candidate_deduped += 1
-        elif rule.action == "enqueue_turn":
-            if input_queue is None:
-                summary.enqueue_turn_skipped += 1
-                continue
-            try:
-                _enqueue_turn(paths, event, rule, input_queue)
-                summary.enqueue_turn += 1
-            except Exception as exc:
-                from mini_agent.errors import log_exception
-                log_exception(exc, where="mini_agent.external_input.policy.run_ingestion_policy_once.enqueue_turn")
-                summary.enqueue_turn_skipped += 1
+    # P7：先按 channel 分组，再逐频道、组内按原顺序处理。分组本身不改变
+    # 路由结果（每个事件依旧独立 decide_action()），只是让"daemon 按频道
+    # 处理"这件事在代码结构上显式可见，也顺带给出 by_channel 统计——
+    # 未来如果某个频道需要频道级的特殊处理（比如权重、频道级熔断），
+    # 改动点集中在这个循环里，不需要动 decide_action()/落点函数。
+    grouped = group_events_by_channel(events)
+    for channel, channel_events in grouped.items():
+        for event in channel_events:
+            summary.processed += 1
+            summary.by_channel[channel] = summary.by_channel.get(channel, 0) + 1
+            rule = decide_action(event, rules)
+            if rule.action == "notify_only":
+                _notify_only(paths, event)
+                summary.notify_only += 1
+            elif rule.action == "goal_candidate":
+                if goal_backlog is None:
+                    summary.goal_candidate_skipped += 1
+                    continue
+                try:
+                    created = _goal_candidate(paths, event, goal_backlog)
+                except Exception as exc:
+                    from mini_agent.errors import log_exception
+                    log_exception(exc, where="mini_agent.external_input.policy.run_ingestion_policy_once.goal_candidate")
+                    created = False
+                if created:
+                    summary.goal_candidate += 1
+                else:
+                    summary.goal_candidate_deduped += 1
+            elif rule.action == "enqueue_turn":
+                if input_queue is None:
+                    summary.enqueue_turn_skipped += 1
+                    continue
+                try:
+                    _enqueue_turn(paths, event, rule, input_queue)
+                    summary.enqueue_turn += 1
+                except Exception as exc:
+                    from mini_agent.errors import log_exception
+                    log_exception(exc, where="mini_agent.external_input.policy.run_ingestion_policy_once.enqueue_turn")
+                    summary.enqueue_turn_skipped += 1
     return summary

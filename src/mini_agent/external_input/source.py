@@ -53,6 +53,15 @@ class ExternalInputEvent:
     fields: dict = field(default_factory=dict)
     occurred_at: float = field(default_factory=time.time)
     suggested_tier: str = "tick"
+    channel: str = ""
+    """事件所属的分类频道（P7，见 next_doc 设计文档 §3.5）。
+
+    来源可以在 poll() 里显式设置这个字段（比如天气 source 直接给
+    channel="weather"）；留空时网关（poller.py）会在发布前回填成该
+    source 在 sources.yaml 里配置的 `channel`（缺省时再退化为
+    `source_type`）。daemon 消费事件（policy.py）时可以按 channel
+    做分组处理，而不必逐个事件单独判断该走哪条路径。
+    """
 
     def __post_init__(self) -> None:
         if self.suggested_tier not in VALID_SUGGESTED_TIERS:
@@ -78,6 +87,7 @@ class ExternalInputEvent:
             "url": self.url,
             "fields": self.fields,
             "occurred_at": self.occurred_at,
+            "channel": self.channel,
         }
 
     @staticmethod
@@ -97,6 +107,7 @@ class ExternalInputEvent:
             # tier 校验在这里不适用（这是回填历史数据，可能是任何合法 tier），
             # 直接读 payload 里没有的话给个安全默认值。
             suggested_tier=payload.get("suggested_tier", "tick"),
+            channel=payload.get("channel", "") or "",
         )
 
 
