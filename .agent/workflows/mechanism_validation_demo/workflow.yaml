@@ -16,7 +16,7 @@ steps:
     type: script
     prompt: "生成一份固定的候选词列表，写入 result_file（本 step 不使用 prompt，仅用于满足字段要求）"
     script: |
-      python3 -c "
+      python -c "
       import json, os
       words = ['alpha', 'beta', 'gamma', 'delta']
       print('generate_words: producing %d words' % len(words))
@@ -33,7 +33,7 @@ steps:
     type: script
     prompt: "生成一份独立的统计信息，写入 result_file（本 step 不使用 prompt，仅用于满足字段要求）"
     script: |
-      python3 -c "
+      python -c "
       import json, os, datetime
       data = {
           'generated_by': 'compute_stats',
