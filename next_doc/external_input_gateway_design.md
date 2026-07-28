@@ -255,7 +255,7 @@ system_events.publish(
 | P1 | `ExternalInputSource` 抽象 + registry + `ExternalInputEvent`；先接入 `system_events.publish()` 的 `external.*` 命名空间 |
 | P2 | `GatewayPoller` 独立调度线程 + 退避熔断 + `sources.yaml` 加载 |
 | P3 | `IngestionPolicy` 路由（`notify_only` 优先实现，跑通 → `/v1/inbox`） |
-| P4 | 迁移上一轮 watch 设计为 `builtin/watch.py`（第一个 source 实现），验证端到端闭环 |
+| P4 ✅ | 迁移上一轮 watch 设计为 `builtin/watch.py`（第一个 source 实现），验证端到端闭环 |
 | P5 | `goal_candidate` 落点（对接 `soft_goal_deriver` 同款模式）+ `enqueue_turn` 落点（默认关闭，显式开启） |
 | P6 | 看板"🔌 外部输入"面板 |
 
@@ -347,6 +347,34 @@ system_events.publish(
 - `alerts.jsonl` 走"小文件、低频写、`acknowledge_alert()` 整体重写"的模式（象设计文档里没有明确要求持久化游标，选择用 `acknowledged` 字段而不是消费游标，这样"标记已处理"是显式动作而不是"被看板刷新过一次就自动消失"，跟 `/v1/inbox` 里 permission/interaction 需要显式 respond 才消失的语义一致）。
 - `goal_candidate`/`enqueue_turn` 命中时**不会**被静默处理成 `notify_only`，也不会丢事件——游标照常推进（事件已经被消费），只是计入 `PolicyRunSummary.goal_candidate_skipped`/`enqueue_turn_skipped`，等 P5 实现后同一批事件不会重复处理；这是有意的取舍：配置了还没实现的 action，应该"可见地什么都不做"，而不是被悄悄降级成另一种行为。
 
-### P4–P6 — 待开发
+### P4 — 已完成 ✅
 
-尚未开始，按 §7 路线图顺序推进：迁移 `watch` 为内置 source（P4）→ `goal_candidate`/`enqueue_turn` 落点 + 接入 `autonomous_loop.tick()`（P5）→ 看板"🔌 外部输入"面板（P6）。
+**范围**：迁移上一轮 watch 设计为 `builtin/watch.py`（第一个 `ExternalInputSource` 实现），验证端到端闭环。
+
+**新增文件**：
+
+| 文件 | 内容 |
+|---|---|
+| `src/mini_agent/external_input/builtin/watch.py` | `WatchInputSource`：三种 fetcher（`rss`/`json_api`/`html_diff`，纯标准库 + `requests`，不引入 `feedparser` 等新依赖）；`RuleEngine`（`find_new_items`/`keyword_hits`/`threshold_hit` 三个无状态静态方法，对应设计里"新增/字段变化/关键词/阈值匹配"四种规则的前三种，字段变化本身用值比较即可，不需要单独的规则方法）；`WatchFetchError`（抓取失败统一异常，直接向上抛给 `GatewayPoller` 走既有退避熔断，不在本文件重试） |
+| `docs/external-input-gateway-guide.md` | 面向使用者的配置指南：`sources.yaml`/`policies.yaml` 示例、watch 三种 fetcher 参数说明、自定义来源写法、告警查看方式、已知限制 |
+| `tests/test_external_input_watch.py` | 21 个用例：rss 新条目检测/关键词过滤/`seen_ids` 累积与封顶、json_api 的 `field_changed`/`threshold`（含"命中一次不重复、退出后再次命中会再触发"）、html_diff 摘要变化检测与关键词过滤、首次轮询不误报、未知 fetcher 报错、`get_by_path` 边界情况、registry 注册验证 |
+
+**变更文件**：
+
+| 文件 | 变更 |
+|---|---|
+| `src/mini_agent/external_input/builtin/__init__.py` | 从"P4 占位包"改为实际 import 并重导出 `watch.py` 的公开 API |
+| `src/mini_agent/external_input/poller.py` | 新增 `_ensure_builtin_sources_registered()`，在 `GatewayPoller.__init__` 里尽力而为地 `import mini_agent.external_input.builtin.watch`（失败则忽略），这样只要配置了 `type: watch` 就不需要业务代码手动 import 一次才能注册成功 |
+| `src/mini_agent/external_input/__init__.py` | 更新包顶部文档字符串，P4 范围移入"已完成"，路线图剩余项收窄为 P5/P6 |
+
+**关键实现说明**：
+
+- **不引入新依赖**：RSS/Atom 用标准库 `xml.etree.ElementTree` 解析（没有用 `feedparser`），HTML 转纯文本用简单的正则去标签（没有引入 `beautifulsoup4`）；HTTP 请求复用项目已声明的 `requests` 依赖。这是刻意的取舍——§3.2 只要求"命中规则的条目转成 `ExternalInputEvent`"，没有要求功能对等于成熟的 feed/HTML 解析库，优先保持依赖面不变。
+- **`source_id` 的传递方式**：`GatewayPoller._run_source_loop()`（P2 已实现）调用的是 `source.poll(cfg.params, state)`，不会额外传入 `cfg.id`。为了不改动 P2 已经定稿的调用签名，`WatchInputSource` 要求使用者在 `sources.yaml` 的 `params.source_id` 里重复写一遍与顶层 `id` 相同的值（文档已在 `docs/external-input-gateway-guide.md` §3 里显式提示这个"必须保持一致"的约束）。缺失时不会报错，只是 `system_events` 里的 `source` 标签退化成 `external:`（空），不影响事件本身的产生和路由。
+- **`json_api` 的 threshold 模式**：命中阈值只在"未命中 → 命中"的边沿发一次事件（`state["threshold_hit"]` 记录当前是否命中），持续命中不会每轮重复告警；数值先回到阈值范围外、再重新跌入/超出时才会再次触发——这是为了让阈值告警的语义对齐"事情发生了变化"而不是"每次轮询都在命中"，避免 `notify_only` 落点的 `alerts.jsonl` 被同一个持续状态刷屏。
+- **首次轮询不误报**：`json_api` 的 `field_change` 模式用 `"last_value" in state` 判断是否有历史值，而不是"上次值是否是 `None`"——如果远端字段本来就是 `null`，第一次轮询也不应该被当成"从 `None` 变成 `null`"报出来；`html_diff` 同理用 `state.get("digest") is None` 判断首次。
+- **失败即向上抛出**：三个 `_poll_*` 方法遇到抓取/解析失败都不吞异常，统一包装成 `WatchFetchError` 抛出，交给 `GatewayPoller`（P2）已经实现的连续失败计数、退避、熔断、健康事件发布处理，本文件不重复实现任何重试/退避逻辑。
+
+### P5–P6 — 待开发
+
+尚未开始，按 §7 路线图顺序推进：`goal_candidate`/`enqueue_turn` 落点（对接 `soft_goal_deriver` 同款模式）+ 接入 `autonomous_loop.tick()`（P5）→ 看板"🔌 外部输入"面板（P6）。

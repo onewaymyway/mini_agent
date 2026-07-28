@@ -27,6 +27,20 @@ from mini_agent.external_input.source import get_source_class
 if TYPE_CHECKING:
     from mini_agent.storage.paths import AgentPaths
 
+
+def _ensure_builtin_sources_registered() -> None:
+    """确保内置 source（当前只有 watch，P4）已完成 @register_source 注册。
+
+    内置 source 模块本身不在 poller.py 里硬编码 import（避免网关本体
+    依赖某个具体来源的第三方库，比如 watch 依赖 requests）——这里用
+    try/except 做"尽力而为"的自动注册：import 失败（比如环境缺
+    requests）只影响这一个 source_type 不可用，不影响网关和其它已注册
+    source 的正常工作。"""
+    try:
+        import mini_agent.external_input.builtin.watch  # noqa: F401
+    except Exception:
+        pass
+
 # 连续失败达到这个次数就判定为"疑似失效"，发布健康告警事件。
 _DEFAULT_FAILURE_THRESHOLD = 5
 
@@ -109,6 +123,7 @@ class GatewayPoller:
         failure_threshold: int = _DEFAULT_FAILURE_THRESHOLD,
         max_backoff_seconds: float = _MAX_BACKOFF_SECONDS,
     ) -> None:
+        _ensure_builtin_sources_registered()
         self._paths = paths
         self._configs = configs if configs is not None else load_sources_config(paths)
         self._failure_threshold = failure_threshold

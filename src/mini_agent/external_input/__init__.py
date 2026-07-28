@@ -15,9 +15,14 @@ P3（本阶段新增）范围：
   - policy.py    IngestionPolicy 路由（policies.yaml 加载 + 匹配 + notify_only 落地）
   - /v1/inbox 新增 external_alert 聚合（api/routes.py，见该文件改动）
 
+P4（本阶段新增）范围：
+  - builtin/watch.py  WatchInputSource（rss/json_api/html_diff 三种 fetcher
+    + RuleEngine 新增/字段变化/关键词/阈值匹配），ExternalInputSource 的
+    第一个内置实现；GatewayPoller 构造时自动尝试 import 完成注册
+
 尚未实现（后续阶段，见设计文档 §7 路线图）：
-  - goal_candidate / enqueue_turn 落点的真正执行（P5，当前会被识别但跳过）
-  - builtin/watch.py  WatchInputSource（P4）
+  - goal_candidate / enqueue_turn 落点的真正执行 + 接入 autonomous_loop.tick()（P5）
+  - 看板"🔌 外部输入"面板（P6）
 """
 
 from mini_agent.external_input.config import SourceConfig, load_sources_config
