@@ -299,6 +299,29 @@ system_events.publish(
 - 网关级去重（`gateway._RecentIdCache`）明确定位为"进程内兜底"，不是权威去重——按设计文档 §3.1/§3.3 的分工，语义去重是来源自己在 `state` 里维护游标的职责；重启后网关侧缓存清空是预期行为，不影响正确性（重复事件顶多被 `system_events.jsonl` 记录到两次，不会导致漏读）。
 - `ExternalInputSource.poll()` 目前只有 docstring 层面的约束（"不要调 LLM""不要用实例属性存跨轮询状态"），没有运行时强制检查——这类约束依赖 code review 而非代码强制，与项目里其它"硬约束"（如 `system_events.py` 头部注释里的三条）的落地方式一致。
 
-### P2–P6 — 待开发
+### P2 — 已完成 ✅
 
-尚未开始，按 §7 路线图顺序推进：`GatewayPoller` 独立调度线程 + `sources.yaml` 加载（P2）→ `IngestionPolicy` 路由，先跑通 `notify_only`（P3）→ 迁移 `watch` 为内置 source（P4）→ `goal_candidate`/`enqueue_turn` 落点（P5）→ 看板面板（P6）。
+**范围**：`GatewayPoller` 独立轮询调度线程 + 退避熔断 + `sources.yaml` 加载。
+
+**新增文件**：
+
+| 文件 | 内容 |
+|---|---|
+| `src/mini_agent/external_input/config.py` | `SourceConfig` 数据类 + `load_sources_config()`（解析 `sources.yaml`，容错策略见下）+ `get_source_config()` 按 id 查找 |
+| `src/mini_agent/external_input/poller.py` | `GatewayPoller`：每个 `enabled=true` 的 source 一条后台线程，按各自 `interval_seconds` 循环调用 `poll()`；`SourceHealth` 运行时健康视图（`get_health()`/`get_all_health()`）；连续失败退避（翻倍封顶 15 分钟）+ 熔断（达到 `failure_threshold` 后 `circuit_open=True` 并发布 `external.<type>.source_unhealthy` 健康事件，`tier=cron`）；state 落盘在 `external_input/state/<source_id>.json` |
+| `tests/test_external_input_config.py` | 7 个用例：加载/默认值填充/结构校验/单条容错/interval 非法回退/按 id 查找 |
+| `tests/test_external_input_poller.py` | 7 个用例：基本轮询发布、state 跨轮询传递与落盘、未注册 source type 的快速失败、熔断触发与恢复、disabled source 不起线程、`stop()` 正确终止线程 |
+
+**变更文件**：`src/mini_agent/external_input/__init__.py` — 导出 `SourceConfig`/`load_sources_config`/`GatewayPoller`。
+
+**关键实现说明**：
+
+- 调度模型延续项目"轮询 + 状态文件"哲学（§8 风险与边界）：每个线程在两次 `poll()` 之间用 `stop_event.wait(backoff)` 睡眠，`stop()` 只是设置 stop 标志再 `join()`，不强杀线程——与 `workflow/watchdog.py` 里"Python 线程无法被安全强杀"的已知限制一致，正在执行中的 `poll()` 调用会跑完这一轮才退出。
+- 熔断阈值判定使用"恰好等于阈值那一次"触发健康事件（而不是"每次超过阈值都发"），避免同一个持续故障的 source 每隔一个轮询间隔就刷一条健康事件到 `events.jsonl`；`consecutive_failures` 之后仍会继续增长、`circuit_open` 保持 `True`，直到某次 `poll()` 成功才整体清零复位。
+- `sources.yaml` 缺失或 PyYAML 未安装都返回空列表而非报错（网关此时"没有任何 source"是合法状态）；只有顶层结构明显不对（不是 `{sources: [...]}` 形状）才抛 `SourcesConfigError`，单条记录缺 `id`/`type` 只跳过那一条，不拖累其余已经配好的 source。
+- `GatewayPoller` 构造时若不传 `configs`，会调用 `load_sources_config()` 自动加载；测试和未来"看板临时试跑一个 source"场景可以直接传 `configs` 跳过文件加载。
+- 未注册的 `source_type`（配置了网关不认识的类型）被视为配置错误而非运行时故障：线程记录健康状态（`circuit_open=True`）后立即退出，不会对一个必然失败的类型查找做无意义的无限重试。
+
+### P3–P6 — 待开发
+
+尚未开始，按 §7 路线图顺序推进：`IngestionPolicy` 路由，先跑通 `notify_only`（P3）→ 迁移 `watch` 为内置 source（P4）→ `goal_candidate`/`enqueue_turn` 落点（P5）→ 看板面板（P6）。

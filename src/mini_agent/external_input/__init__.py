@@ -7,18 +7,23 @@ P1（本阶段）范围：
   - source.py    ExternalInputEvent / ExternalInputSource / registry
   - gateway.py   把 ExternalInputEvent 接入 system_events.publish()
 
+P2（本阶段新增）范围：
+  - config.py    sources.yaml 加载（SourceConfig / load_sources_config）
+  - poller.py    GatewayPoller 独立轮询调度线程 + 退避熔断 + 健康事件
+
 尚未实现（后续阶段，见设计文档 §7 路线图）：
-  - poller.py    GatewayPoller 独立轮询调度 + 退避熔断（P2）
   - policy.py    IngestionPolicy 路由决策（P3）
-  - config.py    sources.yaml / policies.yaml 加载（P2/P3）
+  - policies.yaml 加载（P3，跟 IngestionPolicy 一起做）
   - builtin/watch.py  WatchInputSource（P4）
 """
 
+from mini_agent.external_input.config import SourceConfig, load_sources_config
 from mini_agent.external_input.gateway import (
     poll_external_events,
     publish_event,
     publish_events,
 )
+from mini_agent.external_input.poller import GatewayPoller
 from mini_agent.external_input.source import (
     ExternalInputEvent,
     ExternalInputSource,
@@ -36,4 +41,7 @@ __all__ = [
     "publish_event",
     "publish_events",
     "poll_external_events",
+    "SourceConfig",
+    "load_sources_config",
+    "GatewayPoller",
 ]
