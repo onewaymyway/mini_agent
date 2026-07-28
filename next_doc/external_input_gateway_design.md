@@ -266,3 +266,39 @@ system_events.publish(
 - **不做"真正的推送/中断"**：延续项目一贯的"轮询 + 状态文件"哲学（见 `system_events.py` 的三条硬约束），所谓"实时"是"下一次已有节拍里顺带查一下"，不引入新的并发/中断复杂度。
 - **默认路径永远最省钱**：任何新增 source、任何未显式配置路由规则的事件类型，默认落点是 `notify_only`，不会意外地把高频轮询放大成高频 LLM 调用。
 - **门控复用而非绕过**：凡是可能导致 Agent 真正执行动作的路径（`goal_candidate`/`enqueue_turn`），都走现有的 GoalBacklog/ResourceArbiter/InputQueue，不在网关层单独造一套"要不要执行"的判断逻辑，避免出现两套门控互相打架。
+
+---
+
+## 9. 实现状态
+
+跟踪 §7 路线图各阶段的完成情况，每完成一个阶段更新本节。
+
+### P1 — 已完成 ✅
+
+**范围**：`ExternalInputSource` 抽象 + registry + `ExternalInputEvent`；接入 `system_events.publish()` 的 `external.*` 命名空间。
+
+**新增文件**：
+
+| 文件 | 内容 |
+|---|---|
+| `src/mini_agent/external_input/__init__.py` | 包入口，导出 P1 公开 API |
+| `src/mini_agent/external_input/source.py` | `ExternalInputEvent`（含 `event_type()`/`to_payload()`/`from_payload()`）、`ExternalInputSource` 抽象基类、`register_source`/`get_source_class`/`registered_source_types` registry |
+| `src/mini_agent/external_input/gateway.py` | `publish_event()`/`publish_events()`：把 `ExternalInputEvent` 归一化发布到 `system_events`，带进程内兜底去重（`_RecentIdCache`）；`poll_external_events()`：按 `external.` 前缀过滤消费，封装 `SystemEvent.payload` → `ExternalInputEvent` 的还原 |
+| `src/mini_agent/external_input/builtin/__init__.py` | 内置 source 实现的占位包，P4 阶段填充 `watch.py` |
+| `tests/test_external_input_source.py` | 12 个用例：`ExternalInputEvent` 校验与序列化往返、registry 注册/查找/报错、`publish_event`/`publish_events`/`poll_external_events` 与 `system_events` 的接入正确性、去重、游标推进 |
+
+**变更文件**：
+
+| 文件 | 变更 |
+|---|---|
+| `src/mini_agent/storage/paths.py` | 新增 `AgentPaths.external_input_dir` / `external_input_sources_config` / `external_input_policies_config` / `external_input_state_dir` / `external_input_alerts` 五个 `@property`，对应 §4 存储布局；不改动任何已有属性 |
+
+**关键实现说明**：
+
+- `poll_since()`（`system_events.py`）本身只做 `event_type` 精确匹配，不支持 §3.3 里写的 `event_types=["external.*"]` 这种 glob 语法。为了不改动 `system_events.py`（设计目标 2 明确要求"不新造一套持久化/消费机制"），`poll_external_events()` 改为拿到该 consumer 游标之后的**全部**事件后，在网关侧按 `event_type.startswith("external.")` 过滤，`event_types` 参数仍支持传入完整事件名做精确子集过滤。P3 的 `IngestionPolicy` 会直接复用这个封装，而不是自己再实现一遍过滤逻辑。
+- 网关级去重（`gateway._RecentIdCache`）明确定位为"进程内兜底"，不是权威去重——按设计文档 §3.1/§3.3 的分工，语义去重是来源自己在 `state` 里维护游标的职责；重启后网关侧缓存清空是预期行为，不影响正确性（重复事件顶多被 `system_events.jsonl` 记录到两次，不会导致漏读）。
+- `ExternalInputSource.poll()` 目前只有 docstring 层面的约束（"不要调 LLM""不要用实例属性存跨轮询状态"），没有运行时强制检查——这类约束依赖 code review 而非代码强制，与项目里其它"硬约束"（如 `system_events.py` 头部注释里的三条）的落地方式一致。
+
+### P2–P6 — 待开发
+
+尚未开始，按 §7 路线图顺序推进：`GatewayPoller` 独立调度线程 + `sources.yaml` 加载（P2）→ `IngestionPolicy` 路由，先跑通 `notify_only`（P3）→ 迁移 `watch` 为内置 source（P4）→ `goal_candidate`/`enqueue_turn` 落点（P5）→ 看板面板（P6）。

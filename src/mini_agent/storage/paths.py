@@ -636,6 +636,37 @@ class AgentPaths:
         return self.workdir_dir / "event_cursors"
 
     @property
+    def external_input_dir(self) -> Path:
+        """<project_root>/.agent/external_input/ — External Input Gateway 的配置与
+        私有状态根目录（见 next_doc/external_input_gateway_design.md §4）。事件本身
+        不落在这里，仍然复用 system_events.jsonl；这里只放网关自己的配置/游标/告警。"""
+        return self.workdir_dir / "external_input"
+
+    @property
+    def external_input_sources_config(self) -> Path:
+        """<project_root>/.agent/external_input/sources.yaml — 已注册 source 的配置
+        （id/type/params/interval_seconds/enabled），P2 的 GatewayPoller 读取。"""
+        return self.external_input_dir / "sources.yaml"
+
+    @property
+    def external_input_policies_config(self) -> Path:
+        """<project_root>/.agent/external_input/policies.yaml — IngestionPolicy 路由
+        规则，P3 的路由决策读取。"""
+        return self.external_input_dir / "policies.yaml"
+
+    @property
+    def external_input_state_dir(self) -> Path:
+        """<project_root>/.agent/external_input/state/ — 每个 source 的增量状态
+        ({source_id}.json：去重游标/ETag 等），来源私有，网关负责落盘保存。"""
+        return self.external_input_dir / "state"
+
+    @property
+    def external_input_alerts(self) -> Path:
+        """<project_root>/.agent/external_input/alerts.jsonl — notify_only 落点的
+        持久化记录，供 /v1/inbox 与看板"全局待办中心"查询（P3 起用）。"""
+        return self.external_input_dir / "alerts.jsonl"
+
+    @property
     def sessions_dir(self) -> Path:
         """<project_root>/.agent/sessions/ — 所有 session 的根目录"""
         return self.workdir_dir / "sessions"
