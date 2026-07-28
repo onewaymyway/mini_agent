@@ -322,6 +322,31 @@ system_events.publish(
 - `GatewayPoller` 构造时若不传 `configs`，会调用 `load_sources_config()` 自动加载；测试和未来"看板临时试跑一个 source"场景可以直接传 `configs` 跳过文件加载。
 - 未注册的 `source_type`（配置了网关不认识的类型）被视为配置错误而非运行时故障：线程记录健康状态（`circuit_open=True`）后立即退出，不会对一个必然失败的类型查找做无意义的无限重试。
 
-### P3–P6 — 待开发
+### P3 — 已完成 ✅
 
-尚未开始，按 §7 路线图顺序推进：`IngestionPolicy` 路由，先跑通 `notify_only`（P3）→ 迁移 `watch` 为内置 source（P4）→ `goal_candidate`/`enqueue_turn` 落点（P5）→ 看板面板（P6）。
+**范围**：`IngestionPolicy` 路由（`notify_only` 优先实现，跑通 → `/v1/inbox`）。
+
+**新增文件**：
+
+| 文件 | 内容 |
+|---|---|
+| `src/mini_agent/external_input/policy.py` | `PolicyRule`（`match`/`action`/`enqueue`，`matches()` 支持 `source_type`/`signal`/`fields.<key>` 三种匹配维度）+ `load_policies()`（解析 `policies.yaml`）+ `decide_action()`（首个匹配规则生效，都不匹配回退 `notify_only`）+ `notify_only` 落地（`_notify_only()` 写 `alerts.jsonl`）+ `list_pending_alerts()`/`acknowledge_alert()` + `run_ingestion_policy_once()`（消费 `external.*` 事件并路由的主入口，`goal_candidate`/`enqueue_turn` 被识别但暂不执行，计入 `skipped` 计数，P5 落地） |
+| `tests/test_external_input_policy.py` | 16 个用例：匹配维度、首个匹配优先级、默认兜底、`policies.yaml` 加载容错、`notify_only` 写入/ack/游标推进、`goal_candidate`/`enqueue_turn` 不误当 `notify_only` 处理 |
+
+**变更文件**：
+
+| 文件 | 变更 |
+|---|---|
+| `src/mini_agent/api/routes.py` | `GET /v1/inbox` 新增聚合 `external_alert` 类型（读取未 `acknowledged` 的 alert）；新增 `POST /v1/inbox/external_alerts/{alert_id}/ack` 端点用于标记已处理；同步更新文件头的路由索引注释 |
+| `src/mini_agent/external_input/__init__.py` | 导出 `policy.py` 的公开 API |
+
+**关键实现说明**：
+
+- `PolicyRule.matches()` 对未识别的匹配维度（既不是 `source_type`/`signal`，也不是 `fields.` 前缀）判定为"不匹配"而不是忽略该条件，避免规则实际生效范围比配置者书写时预期的更宽松。
+- `run_ingestion_policy_once()` 就是 §3.4 末尾描述的"挂在 `autonomous_loop.tick()` 里的消费点"的实现本体，但**本阶段没有改动 `autonomous_loop.py`**——先把路由逻辑本身做完、测试跑通，接入 `tick()` 只是外部再加一行调用，放在 P4/P5 跟 `goal_candidate`/`enqueue_turn` 的真正落地一起做，避免在 `goal_candidate`/`enqueue_turn` 还没有实际行为之前就改动核心调度循环。当前可以通过诊断脚本或测试直接调用 `run_ingestion_policy_once(paths)` 驱动。
+- `alerts.jsonl` 走"小文件、低频写、`acknowledge_alert()` 整体重写"的模式（象设计文档里没有明确要求持久化游标，选择用 `acknowledged` 字段而不是消费游标，这样"标记已处理"是显式动作而不是"被看板刷新过一次就自动消失"，跟 `/v1/inbox` 里 permission/interaction 需要显式 respond 才消失的语义一致）。
+- `goal_candidate`/`enqueue_turn` 命中时**不会**被静默处理成 `notify_only`，也不会丢事件——游标照常推进（事件已经被消费），只是计入 `PolicyRunSummary.goal_candidate_skipped`/`enqueue_turn_skipped`，等 P5 实现后同一批事件不会重复处理；这是有意的取舍：配置了还没实现的 action，应该"可见地什么都不做"，而不是被悄悄降级成另一种行为。
+
+### P4–P6 — 待开发
+
+尚未开始，按 §7 路线图顺序推进：迁移 `watch` 为内置 source（P4）→ `goal_candidate`/`enqueue_turn` 落点 + 接入 `autonomous_loop.tick()`（P5）→ 看板"🔌 外部输入"面板（P6）。

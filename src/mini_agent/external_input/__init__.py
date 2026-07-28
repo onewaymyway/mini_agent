@@ -11,9 +11,12 @@ P2（本阶段新增）范围：
   - config.py    sources.yaml 加载（SourceConfig / load_sources_config）
   - poller.py    GatewayPoller 独立轮询调度线程 + 退避熔断 + 健康事件
 
+P3（本阶段新增）范围：
+  - policy.py    IngestionPolicy 路由（policies.yaml 加载 + 匹配 + notify_only 落地）
+  - /v1/inbox 新增 external_alert 聚合（api/routes.py，见该文件改动）
+
 尚未实现（后续阶段，见设计文档 §7 路线图）：
-  - policy.py    IngestionPolicy 路由决策（P3）
-  - policies.yaml 加载（P3，跟 IngestionPolicy 一起做）
+  - goal_candidate / enqueue_turn 落点的真正执行（P5，当前会被识别但跳过）
   - builtin/watch.py  WatchInputSource（P4）
 """
 
@@ -24,6 +27,14 @@ from mini_agent.external_input.gateway import (
     publish_events,
 )
 from mini_agent.external_input.poller import GatewayPoller
+from mini_agent.external_input.policy import (
+    PolicyRule,
+    acknowledge_alert,
+    decide_action,
+    list_pending_alerts,
+    load_policies,
+    run_ingestion_policy_once,
+)
 from mini_agent.external_input.source import (
     ExternalInputEvent,
     ExternalInputSource,
@@ -44,4 +55,10 @@ __all__ = [
     "SourceConfig",
     "load_sources_config",
     "GatewayPoller",
+    "PolicyRule",
+    "load_policies",
+    "decide_action",
+    "list_pending_alerts",
+    "acknowledge_alert",
+    "run_ingestion_policy_once",
 ]

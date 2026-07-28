@@ -147,9 +147,18 @@ class TestGatewayPoller(unittest.TestCase):
         health = poller.get_health("s4")
         self.assertEqual(health["consecutive_failures"], 3)
 
-        # 应该发布了一条 source_unhealthy 事件
-        events = poll_external_events(self.paths, consumer_name="test_cb")
-        unhealthy = [e for e in events if e.signal == "source_unhealthy"]
+        # 应该发布了一条 source_unhealthy 事件（用 _wait_until 而不是一次性
+        # 断言：health.circuit_open=True 和事件真正落盘之间隔着一次函数调用，
+        # 在线程调度繁忙时二者不是严格同时可见的）。
+        unhealthy = []
+
+        def _check_unhealthy():
+            nonlocal unhealthy
+            events = poll_external_events(self.paths, consumer_name="test_cb", advance_cursor=False)
+            unhealthy = [e for e in events if e.signal == "source_unhealthy"]
+            return len(unhealthy) >= 1
+
+        self.assertTrue(_wait_until(_check_unhealthy, timeout=5.0))
         self.assertEqual(len(unhealthy), 1)
         self.assertEqual(unhealthy[0].source_id, "s4")
 

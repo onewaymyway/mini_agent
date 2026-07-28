@@ -64,7 +64,10 @@ api/routes.py — FastAPI 路由定义
     GET    /v1/objectives/{execution_id}/steps/{step_index}/trace
                                      查看某个 step 实际执行过程（完整 tool_call/
                                      tool_result 序列），而非截断摘要
-    GET    /v1/inbox                 全局待办中心：跨 session 聚合权限/交互请求 + 失败 Objective
+    GET    /v1/inbox                 全局待办中心：跨 session 聚合权限/交互请求 + 失败 Objective +
+                                     外部输入网关 notify_only 告警（type: external_alert）
+    POST   /v1/inbox/external_alerts/{alert_id}/ack
+                                     标记一条外部输入告警为已处理（不再出现在 /v1/inbox 里）
     GET    /v1/evolution/proposals   [Track I] 列出 evolve/* 提案分支及风险分级
     POST   /v1/evolution/proposals/{branch}/merge
                                      [Track I] 一键合并提案分支（Body 可选 {"force": bool}，
@@ -2676,8 +2679,50 @@ async def get_inbox(request: Request):
             from mini_agent.errors import log_exception
             log_exception(_mini_agent_exc, where='mini_agent.api.routes.get_inbox.objectives')
 
+    # ── 外部输入网关的 notify_only 告警（external_alert）─────────────────
+    # 见 next_doc/external_input_gateway_design.md §3.4/§6：IngestionPolicy
+    # 的 notify_only 落点写入 alerts.jsonl，这里聚合展示未 acknowledged 的部分。
+    try:
+        proj_root = getattr(http_server.bridge.agent.cfg, "project_root", None) if http_server.bridge.agent else None
+        if proj_root is not None:
+            from mini_agent.external_input.policy import list_pending_alerts
+            from mini_agent.storage.paths import AgentPaths
+            ei_paths = AgentPaths(proj_root)
+            for alert in list_pending_alerts(ei_paths):
+                items.append({
+                    "type": "external_alert",
+                    "session_id": None,
+                    "alert_id": alert.get("alert_id"),
+                    "summary": alert.get("title") or f"外部输入告警（{alert.get('source_type')}）",
+                    "created_at": alert.get("created_at"),
+                })
+    except Exception as _mini_agent_exc:
+        from mini_agent.errors import log_exception
+        log_exception(_mini_agent_exc, where='mini_agent.api.routes.get_inbox.external_alerts')
+
     items.sort(key=lambda it: it.get("created_at") or 0, reverse=True)
     return {"items": items, "count": len(items)}
+
+
+@router.post("/inbox/external_alerts/{alert_id}/ack")
+async def ack_external_alert(request: Request, alert_id: str):
+    """POST /v1/inbox/external_alerts/{alert_id}/ack — 标记一条外部输入
+    notify_only 告警为已处理，之后不再出现在 /v1/inbox 聚合结果里。"""
+    http_server = getattr(request.app.state, "http_server", None)
+    if http_server is None:
+        raise HTTPException(status_code=503, detail="HttpServer not available")
+    _require_owner(request)
+
+    proj_root = getattr(http_server.bridge.agent.cfg, "project_root", None) if http_server.bridge.agent else None
+    if proj_root is None:
+        raise HTTPException(status_code=503, detail="project_root not available")
+
+    from mini_agent.external_input.policy import acknowledge_alert
+    from mini_agent.storage.paths import AgentPaths
+    ok = acknowledge_alert(AgentPaths(proj_root), alert_id)
+    if not ok:
+        raise HTTPException(status_code=404, detail=f"External alert {alert_id!r} not found or already acknowledged")
+    return {"ok": True}
 
 
 # ── Cron Jobs REST API ────────────────────────────────────────────────────────
