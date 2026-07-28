@@ -954,8 +954,43 @@ class AgentBridge:
 
 _bridge_instance: Optional[AgentBridge] = None
 
+# [BUGFIX] 看板"待回答交互"回复后 404 "not found or already handled" 排查记录：
+#
+# 之前 get_bridge()/init_bridge() 是一对纯模块级全局单例：无论是主/Self 会话
+# 还是 SessionAgentPool 为每个 session 各自新建的会话，session_pool.py::
+# _create_entry() 都会调用 init_bridge() ——这会直接**重新赋值**这个模块级
+# 全局变量，把它从"主会话的 bridge"换成"刚创建的这个 session 的 bridge"。
+#
+# 而 interaction.py::_get_http_gate() 里 ask_user / ask_user_confirm /
+# ask_user_choice / /goal 协商这些交互请求，是通过 get_bridge() 拿"当前应该
+# 用哪个 bridge 登记这次交互"——这个函数完全不知道"当前是哪个 session/
+# 哪条线程在问问题"，只会返回"最后一次全局被覆盖成什么就是什么"。
+#
+# 于是只要在交互请求发出之后、被回答之前，任何一次 SessionAgentPool.
+# get_or_create() 建了新 session（自主循环的 cron/goal 后台任务、另一个客户端
+# resume/new 了别的 session、甚至同一个 session 因为 runner 崩溃被重建）——
+# 都会把这个全局单例换成别的 bridge 对象。看板轮询 /interactions/pending
+# 时走的是 SessionAgentPool 按 session_id 精确路由到的那个 entry.bridge
+# （对象引用一直没变，所以问题看起来"還在"、能显示出来）；但点击回复时
+# POST /interactions/{req_id} 内部用 pool.find_by_interaction_req() 去所有
+# **当前 pool 里还活着的** entry 逐个找这个 req_id ——如果登记时命中的其实
+# 是一个后来已经被替换/不再属于任何 entry 的"孤儿" bridge，或者干脆命中的
+# 是另一个 session 的 bridge，就会哪个 entry 里都找不到，返回 404。
+#
+# 修复思路：把"当前线程应该用哪个 bridge"从"一个全局变量"改成
+# "threading.local()"——每条 AgentRunner 线程（无论是主 Self 会话还是
+# SessionAgentPool 里任意一个 session 的独立线程）在 run() 一开始就把
+# *自己这条线程* 绑定的 bridge 存进 thread-local；get_bridge() 优先读
+# thread-local，读不到（没有专门绑定过的线程，例如最早的默认单 Agent
+# 场景）才退回原来的全局单例。这样不同线程各自看到"自己那个 session 的
+# bridge"，互不干扰，session_pool 建多少个新 session 都不会影响其它线程。
+_thread_local = threading.local()
+
 
 def get_bridge() -> AgentBridge:
+    thread_bridge = getattr(_thread_local, "bridge", None)
+    if thread_bridge is not None:
+        return thread_bridge
     global _bridge_instance
     if _bridge_instance is None:
         _bridge_instance = AgentBridge()
@@ -966,3 +1001,15 @@ def init_bridge(ring_maxlen: int = 2000) -> AgentBridge:
     global _bridge_instance
     _bridge_instance = AgentBridge(ring_maxlen=ring_maxlen)
     return _bridge_instance
+
+
+def set_thread_bridge(bridge: Optional[AgentBridge]) -> None:
+    """把"当前线程应该使用的 bridge"绑定到 threading.local()。
+
+    每条 AgentRunner 线程应该在真正开始跑 run_turn() 循环之前调用一次
+    （见 api/server.py::AgentRunner.run()），确保这条线程上任何调用
+    get_bridge() 的代码（尤其是 interaction.py 的 ask_user 系列交互）
+    拿到的都是"这条线程自己这个 session"的 bridge，不受其它线程/其它
+    session 创建新 bridge 的影响。
+    """
+    _thread_local.bridge = bridge

@@ -299,6 +299,18 @@ class AgentRunner(threading.Thread):
     def run(self) -> None:
         bridge = self._bridge
 
+        # [BUGFIX] 见 api/bridge.py::get_bridge()/set_thread_bridge() 处的
+        # 完整说明：ask_user 系列交互工具通过 get_bridge() 取"当前应该用
+        # 哪个 bridge 登记这次交互"，之前这是个纯全局单例，会被任意其它
+        # session 的创建悄悄顶替，导致看板回复时 404。现在每条 AgentRunner
+        # 线程（无论是主 Self 会话还是 SessionAgentPool 里任意一个 session）
+        # 一开始就把"自己这个 session 的 bridge"绑定到当前线程的
+        # threading.local()，这样这条线程上（包括它调用到的所有工具函数）
+        # get_bridge() 永远拿到的是自己这个 session 的 bridge，不受其它
+        # 线程/其它 session 的影响。
+        from mini_agent.api.bridge import set_thread_bridge
+        set_thread_bridge(bridge)
+
         # daemon 多用户架构 Phase 3：见 __init__ 里的详细说明——agent_factory
         # 非 None 时，必须在这里（这条线程自己）构造 Agent，不能让调用方在
         # 它自己的线程上提前构造好再传进来。

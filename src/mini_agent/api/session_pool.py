@@ -587,14 +587,24 @@ class SessionAgentPool:
         user_ctx:   "UserContext",
         session_id: str,
     ) -> SessionEntry:
-        from mini_agent.api.bridge import init_bridge
+        from mini_agent.api.bridge import AgentBridge
         from mini_agent.api.server import AgentRunner
 
         session_cfg = self._build_session_cfg(user_ctx)
         agent_factory = self._make_agent_factory(user_ctx, session_id, session_cfg)
 
         # ── 独立 Bridge（独立 RingBuffer + InputQueue + SSE 流）────────────
-        bridge = init_bridge(ring_maxlen=500)
+        # [BUGFIX] 之前这里调用 init_bridge()，会顺手把 bridge.py 里那个
+        # 进程级全局单例 _bridge_instance 也换成这个新 session 的 bridge，
+        # 导致任何"当前正在等待用户回答"的 ask_user/ask_user_confirm 交互
+        # （通过 interaction.py::get_bridge() 取"当前 bridge"来登记）会被
+        # 后来创建的任意 session 悄悄劫走，答复时报 404 "not found or
+        # already handled"（详见 bridge.py::get_bridge() 处的完整说明）。
+        # 现在直接构造 AgentBridge，不触碰那个全局单例；这条 session 自己的
+        # 线程会在 AgentRunner.run() 里通过 set_thread_bridge() 把这个 bridge
+        # 绑定到"这条线程"的 thread-local，同样能保证线程内 get_bridge()
+        # 拿到正确的 bridge，但不会影响其它线程。
+        bridge = AgentBridge(ring_maxlen=500)
         # 注意：此刻 bridge.agent 还是 None——AgentRunner.run() 会在它自己的
         # 线程里调用 agent_factory() 之后才赋值（见 api/server.py AgentRunner.run）。
 
