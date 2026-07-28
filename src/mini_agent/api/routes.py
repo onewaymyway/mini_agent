@@ -95,6 +95,7 @@ api/routes.py — FastAPI 路由定义
     GET    /v1/workflow_runs/{id}/events      events.jsonl 增量拉取（?since_line=N）
     POST   /v1/workflow_runs/{id}/pause       请求暂停
     POST   /v1/workflow_runs/{id}/cancel      请求取消
+    POST   /v1/workflow_runs/{id}/mark_interrupted 清理孤儿运行（daemon 重启后遗留的假"running"）
     POST   /v1/workflow_runs/{id}/resume      断点续跑（Body 可选 force_rerun_from 做单步编辑续跑）
     POST   /v1/workflow_runs/{id}/approve     批准当前等待审批的 step
     POST   /v1/workflow_runs/{id}/reject      拒绝当前等待审批的 step（Body: {"reason": str}）
@@ -3005,6 +3006,23 @@ async def cancel_workflow_run_route(run_id: str, request: Request):
     except api_helpers.WorkflowApiError as e:
         raise _workflow_api_error_to_http(e)
     return {"cancelled": True, "workflow_session_id": run_id}
+
+
+@router.post("/workflow_runs/{run_id}/mark_interrupted")
+async def mark_workflow_run_interrupted_route(run_id: str, request: Request):
+    """
+    POST /v1/workflow_runs/{run_id}/mark_interrupted — 孤儿运行修复：把一条
+    daemon 重启/崩溃后遗留的、磁盘状态仍是 running/paused/awaiting_approval
+    但进程内已无活跃控制的执行记录，直接改判为 cancelled。仅在确实是孤儿
+    记录时才允许操作，见 api_helpers.mark_workflow_run_interrupted。
+    """
+    cfg = _workflow_cfg(request)
+    _require_owner(request)
+    from mini_agent.workflow import api_helpers
+    try:
+        return api_helpers.mark_workflow_run_interrupted(cfg, run_id)
+    except api_helpers.WorkflowApiError as e:
+        raise _workflow_api_error_to_http(e)
 
 
 @router.post("/workflow_runs/{run_id}/resume")

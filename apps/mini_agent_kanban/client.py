@@ -332,6 +332,13 @@ class AgentClient:
     def cancel_workflow_run(self, run_id: str):
         return self._post(f"/workflow_runs/{run_id}/cancel")
 
+    def mark_workflow_run_interrupted(self, run_id: str):
+        """[孤儿运行修复] 清理一条 daemon 重启后遗留的假"running"记录——
+        对应 is_stale=True 的执行：进程内已无活跃控制，暂停/取消都会因为
+        registry 里找不到控制状态而报错，只能走这个绕开 registry、直接
+        改写落盘状态的清理动作。"""
+        return self._post(f"/workflow_runs/{run_id}/mark_interrupted")
+
     def resume_workflow_run(self, run_id: str, background: bool = True, force_rerun_from: str = None):
         body = {"background": background}
         if force_rerun_from:

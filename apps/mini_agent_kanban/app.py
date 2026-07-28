@@ -660,7 +660,14 @@ def _render_daemon_current_tasks(client: AgentClient, autostat: dict) -> None:
       1. 正在执行中的 Objective（来自 /autonomous/status 的 objective_executions，
          status == running），显示标题 + 当前步骤 + 进度；
       2. 正在运行中的 workflow（来自 /workflow_runs，status == running）。
-    两者都没有时不渲染任何内容，避免空面板占地方。
+
+    [孤儿运行修复] /workflow_runs 里 status=="running" 只代表"上次落盘时是
+    这个状态"——如果 daemon 在那之后崩溃/重启过，没有任何东西会把它改回
+    终态，会一直显示"运行中"，但实际上早就没有线程在处理了。后端现在会
+    额外算出 is_stale 字段（进行中状态 + 进程内 registry 找不到活跃控制 =
+    孤儿记录），这里按 is_stale 拆成两组：真正在跑的正常展示；疑似孤儿的
+    单独标出并给一个"标记为已中断"的清理入口，点掉之后就不会再被算作
+    "正在运行"。
     """
     running_objs = [
         ex for ex in (autostat.get("objective_executions") or [])
@@ -668,14 +675,15 @@ def _render_daemon_current_tasks(client: AgentClient, autostat: dict) -> None:
     ]
 
     running_wfs = []
+    stale_wfs = []
     wf_runs = client.workflow_runs() or {}
     if "_error" not in wf_runs:
-        running_wfs = [
-            r for r in (wf_runs.get("runs") or [])
-            if r.get("status") == "running"
-        ]
+        for r in (wf_runs.get("runs") or []):
+            if r.get("status") != "running":
+                continue
+            (stale_wfs if r.get("is_stale") else running_wfs).append(r)
 
-    if not running_objs and not running_wfs:
+    if not running_objs and not running_wfs and not stale_wfs:
         return
 
     lines = []
@@ -693,9 +701,29 @@ def _render_daemon_current_tasks(client: AgentClient, autostat: dict) -> None:
         lines.append(f"🔄 **{wf_name}**　`{rid}`{detail}")
 
     n = len(running_objs) + len(running_wfs)
-    with st.expander(f"⚙️ daemon 正在执行 {n} 项任务（点击查看）", expanded=True):
-        for line in lines:
-            st.markdown(line)
+    if n:
+        with st.expander(f"⚙️ daemon 正在执行 {n} 项任务（点击查看）", expanded=True):
+            for line in lines:
+                st.markdown(line)
+
+    if stale_wfs:
+        with st.expander(
+            f"⚠️ 发现 {len(stale_wfs)} 条疑似失效的 workflow 运行记录（不计入上方"
+            "\"正在执行\"，daemon 重启/崩溃后遗留，实际早已不再运行）",
+            expanded=False,
+        ):
+            for r in stale_wfs:
+                rid = r.get("workflow_session_id", "")
+                wf_name = r.get("workflow_name") or r.get("name") or ""
+                c1, c2 = st.columns([5, 1])
+                c1.markdown(f"🔄 **{wf_name}**　`{rid}`　{r.get('summary_line', '')}")
+                if c2.button("🧹 标记为已中断", key=f"wf_mark_interrupted_{rid}"):
+                    res = client.mark_workflow_run_interrupted(rid)
+                    if res and "_error" in res:
+                        st.error(res["_error"])
+                    else:
+                        st.success("已标记为已中断（cancelled）。")
+                        st.rerun()
 
 
 def _render_topbar_body(client: AgentClient, session_id: str = ""):
@@ -2496,19 +2524,35 @@ def _render_workflow_run_detail_fragment(client: AgentClient, run_id: str):
 
 def _render_workflow_run_detail_body(client: AgentClient, run_id: str, detail: dict):
     status = detail.get("status", "unknown")
+    is_stale = detail.get("is_stale", False)
     st.markdown(f"##### 🔄 {detail.get('workflow_name', run_id)}　`{run_id}`")
-    st.caption(f"状态：{WORKFLOW_RUN_STATUS_LABELS.get(status, status)}")
+    if is_stale:
+        st.warning(
+            "⚠️ 状态显示为「运行中」，但进程内已经没有活跃控制——大概率是 daemon "
+            "在这次执行完成前重启/崩溃了，实际早就没有线程在处理。暂停/取消按钮"
+            "对这种孤儿记录会报错（因为它们依赖的进程内控制状态已经不存在），"
+            "可以点下面「标记为已中断」直接清理。"
+        )
+        if st.button("🧹 标记为已中断", key=f"wf_mark_interrupted_detail_{run_id}"):
+            res = client.mark_workflow_run_interrupted(run_id)
+            if res and "_error" in res:
+                st.error(res["_error"])
+            else:
+                st.success("已标记为已中断（cancelled）。")
+                st.rerun()
+    else:
+        st.caption(f"状态：{WORKFLOW_RUN_STATUS_LABELS.get(status, status)}")
 
-    tc1, tc2, tc3 = st.columns(3)
-    if tc1.button("⏸️ 暂停", key=f"wf_pause_{run_id}"):
-        client.pause_workflow_run(run_id)
-        st.rerun()
-    if tc2.button("🛑 取消", key=f"wf_cancel_{run_id}"):
-        client.cancel_workflow_run(run_id)
-        st.rerun()
-    if tc3.button("▶️ 续跑", key=f"wf_resume_{run_id}"):
-        client.resume_workflow_run(run_id, background=True)
-        st.rerun()
+        tc1, tc2, tc3 = st.columns(3)
+        if tc1.button("⏸️ 暂停", key=f"wf_pause_{run_id}"):
+            client.pause_workflow_run(run_id)
+            st.rerun()
+        if tc2.button("🛑 取消", key=f"wf_cancel_{run_id}"):
+            client.cancel_workflow_run(run_id)
+            st.rerun()
+        if tc3.button("▶️ 续跑", key=f"wf_resume_{run_id}"):
+            client.resume_workflow_run(run_id, background=True)
+            st.rerun()
 
     step_results = detail.get("step_results", {})
     cols = st.columns(len(WORKFLOW_STEP_COLUMNS))
@@ -2551,6 +2595,8 @@ def render_workflow_tab(client: AgentClient):
             for r in sorted(runs, key=lambda x: x.get("started_at", 0), reverse=True):
                 rid = r.get("workflow_session_id")
                 label = r.get("summary_line", rid)
+                if r.get("is_stale"):
+                    label = f"⚠️ {label}（疑似孤儿记录，daemon 重启后遗留）"
                 rc1, rc2 = st.columns([5, 1])
                 rc1.markdown(f"`{rid}`　{label}")
                 if rc2.button("查看", key=f"wf_open_{rid}"):

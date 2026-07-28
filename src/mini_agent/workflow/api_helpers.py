@@ -443,10 +443,24 @@ def test_workflow_step(
 # ── 执行记录查询 ──────────────────────────────────────────────────────────
 
 def list_workflow_runs(cfg: "AppConfig", name: Optional[str] = None) -> list[dict]:
-    """对应 list_workflow_runs 工具，返回每次执行的 to_dict() + summary_line()。"""
-    from mini_agent.storage.paths import AgentPaths
-    from mini_agent.workflow.session import WorkflowSession
+    """对应 list_workflow_runs 工具，返回每次执行的 to_dict() + summary_line()。
 
+    [孤儿运行修复] session.json 里落盘的 RUNNING/PAUSED/AWAITING_APPROVAL
+    只代表"上次写盘时是这个状态"，如果 daemon 进程在那之后崩溃/重启，
+    没有任何东西会把它改回终态——registry.py 里的进程内控制表
+    （pause/cancel 等信号真正生效的地方）在重启后是空的，磁盘状态却会
+    一直显示"运行中"，看板据此判断"当前有 workflow 在跑"就会显示假信息。
+    这里额外计算一个 is_stale 字段：状态处于"进行中"三态之一、但
+    registry 里找不到对应的活跃控制时，标记为 True，交给调用方（看板）
+    决定如何展示/提示清理，不改动磁盘上的原始状态。
+    """
+    from mini_agent.storage.paths import AgentPaths
+    from mini_agent.workflow.session import WorkflowSession, WorkflowRunStatus
+    from mini_agent.workflow import registry as wf_registry
+
+    in_flight = {
+        WorkflowRunStatus.RUNNING, WorkflowRunStatus.PAUSED, WorkflowRunStatus.AWAITING_APPROVAL,
+    }
     paths = AgentPaths(project_root=cfg.project_root)
     out = []
     for wf_session_id in sorted(paths.list_workflow_session_ids()):
@@ -457,6 +471,7 @@ def list_workflow_runs(cfg: "AppConfig", name: Optional[str] = None) -> list[dic
             continue
         d = s.to_dict()
         d["summary_line"] = s.summary_line()
+        d["is_stale"] = s.status in in_flight and wf_registry.get(wf_session_id) is None
         out.append(d)
     return out
 
@@ -600,7 +615,8 @@ def get_workflow_run_detail(cfg: "AppConfig", workflow_session_id: str) -> dict:
     """对应 get_workflow_run_status 工具，附加 output_dir。
     找不到抛 WorkflowApiError(code='not_found')。"""
     from mini_agent.storage.paths import AgentPaths
-    from mini_agent.workflow.session import WorkflowSession
+    from mini_agent.workflow.session import WorkflowSession, WorkflowRunStatus
+    from mini_agent.workflow import registry as wf_registry
 
     paths = AgentPaths(project_root=cfg.project_root)
     s = WorkflowSession.load(paths, workflow_session_id)
@@ -609,6 +625,10 @@ def get_workflow_run_detail(cfg: "AppConfig", workflow_session_id: str) -> dict:
     d = s.to_dict()
     d["summary_line"] = s.summary_line()
     d["output_dir"] = str(paths.workflow_session_output_dir(workflow_session_id))
+    in_flight = {
+        WorkflowRunStatus.RUNNING, WorkflowRunStatus.PAUSED, WorkflowRunStatus.AWAITING_APPROVAL,
+    }
+    d["is_stale"] = s.status in in_flight and wf_registry.get(workflow_session_id) is None
     return d
 
 
@@ -665,6 +685,47 @@ def pause_workflow_run(cfg: "AppConfig", workflow_session_id: str) -> None:
 
 def cancel_workflow_run(cfg: "AppConfig", workflow_session_id: str) -> None:
     _get_control_or_raise(workflow_session_id).request_cancel()
+
+
+def mark_workflow_run_interrupted(cfg: "AppConfig", workflow_session_id: str) -> dict:
+    """[孤儿运行修复] 把一条"看起来还在跑，但进程内已经没有活跃控制"的
+    执行记录直接改判为 CANCELLED 并落盘。
+
+    与 cancel_workflow_run 不同：cancel_workflow_run 依赖
+    registry.get() 找到进程内的 ControlState 才能发信号，daemon 重启后
+    这个内存态是空的，会直接抛 not_active——用户此时既不能续跑（其实
+    也没意义，早就没有线程在处理了），也没有任何办法把这条记录标记完结，
+    只能眼睁睁看着它一直显示"运行中"。这里绕开 registry，直接读盘改状态，
+    仅在确认状态确实处于"进行中三态"且 registry 里没有对应控制时才允许
+    操作，避免误伤真正还在跑的执行。
+    """
+    from mini_agent.storage.paths import AgentPaths
+    from mini_agent.workflow.session import WorkflowSession, WorkflowRunStatus
+    from mini_agent.workflow import registry as wf_registry
+
+    paths = AgentPaths(project_root=cfg.project_root)
+    s = WorkflowSession.load(paths, workflow_session_id)
+    if s is None:
+        raise WorkflowApiError("not_found", f"找不到执行记录 {workflow_session_id!r}")
+
+    in_flight = {
+        WorkflowRunStatus.RUNNING, WorkflowRunStatus.PAUSED, WorkflowRunStatus.AWAITING_APPROVAL,
+    }
+    if s.status not in in_flight:
+        raise WorkflowApiError(
+            "not_in_flight", f"执行 {workflow_session_id!r} 当前状态为 {s.status.value}，不是进行中，无需标记中断",
+        )
+    if wf_registry.get(workflow_session_id) is not None:
+        raise WorkflowApiError(
+            "still_active", f"执行 {workflow_session_id!r} 在进程内仍有活跃控制，不是孤儿记录，请用暂停/取消",
+        )
+
+    s.status = WorkflowRunStatus.CANCELLED
+    s.updated_at = time.time()
+    s.save(paths)
+    d = s.to_dict()
+    d["summary_line"] = s.summary_line()
+    return d
 
 
 def approve_workflow_step(cfg: "AppConfig", workflow_session_id: str) -> str:
