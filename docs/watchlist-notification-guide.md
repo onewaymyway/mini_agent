@@ -3,10 +3,9 @@
 - **设计文档**：`next_doc/watchlist_notification_goal_design.md`
 - **前置依赖**：`docs/external-input-gateway-guide.md`（External Input
   Gateway 本体，本功能是它的扩展，不重复实现事件采集/路由）
-- **当前实施进度**：P1（通知系统骨架）、P2（关注对象匹配）、P3（分级汇报）、
-  P4（Goal 相关性候选生成，规则层）、P5（LLM 相关性判定 + Goal 主动拉起）、
-  P6（Prompt 精确注入）已完成；P7-P8（看板展示、剩余测试补齐）待实施，
-  见设计文档 §6 状态表。
+- **当前实施进度**：P1-P7 已全部实施完成（通知系统骨架、关注对象匹配、
+  分级汇报、Goal 相关性候选生成+LLM 判定、Prompt 精确注入、看板展示）；
+  P8（测试）已随各阶段同步补齐，共 215 项相关测试全部通过。
 
 ---
 
@@ -176,17 +175,41 @@ Goal"的入口：
 
 普通对话、其它 Goal/Objective 的分解 prompt 都看不到这份数据。
 
-## 7. 尚未实现的部分
+## 7. 看板展示（P7）
 
-以下能力在设计文档里已经设计好，但代码还未实施（见设计文档 §6 状态表）：
+打开 mini_agent_kanban，顶部新增一个 **"🔔 关注与通知"** tab，紧跟在
+"🔌 外部输入"之后，全部只读展示（配置本身仍然只能直接编辑 yaml 文件，
+看板不提供在线编辑表单）：
 
-- **看板可视化**（关注对象列表、tier 配置只读展示、Goal 详情页"相关
-  外部信息"面板、通知发送记录）——P7。
-- **P7 对应的看板测试**——P8 剩余部分。
+- **👀 关注对象**：`watchlist.yaml` 里的全部条目（含 `enabled: false`
+  的），每条展示关键词、汇报 tier、去重窗口、通知渠道。
+- **📊 分级汇报**：`report_tiers.yaml` 里的全部 tier，附带对应
+  `sys:watchlist_report_<id>` cron job 的运行时状态（是否启用、下次
+  触发时间）和连续空转计数（§9.2 #7 的高频 tier 节流）。
+- **📮 通知发送记录**：`NotificationDispatcher` 每次 `dispatch()` 的
+  发送结果（最近 50 条，倒序），每条显示各渠道成功/失败
+  （✅/❌）——用于诊断"为什么我没收到邮件通知"这类问题。这份记录
+  跟 kanban 渠道自己落地的 `alerts.jsonl`（"待处理告警"面板）是两回事：
+  后者只有 kanban 渠道成功才会有一条，前者记录的是**每个渠道各自的
+  发送结果**，包括失败的邮件。
+
+此外，**目标看板**（📌 目标看板 tab）里每张 Goal 卡片，只要
+`external_context` 非空，就会出现一个 **"🔗 相关外部信息（N 条）"**
+折叠面板，展开可以看到 GoalRelevanceEngine Stage② 挂上去的外部事件摘要
+（时间戳 + 标题 + 摘要）。没有外部上下文的 Goal 不显示这个面板。
+
+## 8. 相关只读 API 端点
+
+| 端点 | 作用 |
+|---|---|
+| `GET /v1/notification/watchlist` | 关注对象列表（含 disabled） |
+| `GET /v1/notification/report_tiers` | tier 配置 + cron job 运行时状态 + 空转计数 |
+| `GET /v1/notification/dispatch_log?limit=50` | 最近 N 条通知发送记录（倒序） |
+| `GET /v1/goals` | GoalBacklog 完整视图（每个节点已含 `external_context`/`last_external_advance_at`） |
 
 ---
 
-## 8. 相关文件一览
+## 9. 相关文件一览
 
 | 文件 | 作用 |
 |---|---|
@@ -201,6 +224,11 @@ Goal"的入口：
 | `src/mini_agent/notification/config.py` | 通知渠道配置加载（`${ENV:...}` 占位符解析）+ `goal_advance_cooldown_seconds` |
 | `src/mini_agent/notification/channels/kanban.py` | kanban 渠道实现 |
 | `src/mini_agent/notification/channels/email.py` | 邮件渠道实现 |
+| `src/mini_agent/api/routes.py` | `/v1/notification/{watchlist,report_tiers,dispatch_log}` 只读端点（P7） |
+| `src/mini_agent/storage/paths.py` | `notification_dispatch_log` 等路径属性 |
+| `apps/mini_agent_kanban/client.py` | `notification_watchlist/report_tiers/dispatch_log()` 客户端方法（P7） |
+| `apps/mini_agent_kanban/app.py` | "🔔 关注与通知" tab + Goal 卡片"🔗相关外部信息"面板（P7） |
 | `.agent/external_input/watchlist.yaml` | 用户关注对象配置（需自行创建） |
 | `.agent/notification/report_tiers.yaml` | 分级汇报 tier 配置（复制 `.example` 后使用） |
 | `.agent/notification/config.yaml` | 通知渠道配置（含密钥、`goal_advance_cooldown_seconds`，已 gitignore） |
+| `.agent/notification/dispatch_log.jsonl` | 通知发送记录（运行时生成，P7 新增） |

@@ -1937,6 +1937,21 @@ def _render_goal_card(
   {note_html}
 </div>
 """, unsafe_allow_html=True)
+
+    # [P7 新增，见 watchlist_notification_goal_design.md §6 P7] GoalRelevanceEngine
+    # Stage② 判定 relevant=true 时会把外部信息摘要挂到 external_context 上
+    # （只读展示，不提供在这里手动清空的按钮——生命周期跟随 Goal 本身，见 §8 开放项 3）。
+    external_context = n.get("external_context") or []
+    if external_context:
+        with st.expander(f"🔗 相关外部信息（{len(external_context)} 条）"):
+            for item in reversed(external_context):
+                occurred_at = item.get("occurred_at")
+                ts_str = (
+                    time.strftime("%m-%d %H:%M", time.localtime(occurred_at))
+                    if occurred_at else "-"
+                )
+                st.caption(f"`{ts_str}` **{item.get('title', '')}**：{item.get('snippet', '')}")
+
     if execution is not None:
         _render_objective_execution_detail(client, execution)
     new_status = st.selectbox(
@@ -3267,6 +3282,103 @@ def render_external_input_tab(client: AgentClient):
 
 
 # ═══════════════════════════════════════════════════════════════════════
+# Tab: 🔔 关注与通知（Watchlist & Notification，P7）
+# ═══════════════════════════════════════════════════════════════════════
+def render_notification_tab(client: AgentClient):
+    """[watchlist_notification_goal_design.md §6/P7] 展示关注对象列表、
+    分级汇报 tier 配置（含 cron job 运行时状态）、通知发送记录三块内容，
+    全部只读——跟 render_external_input_tab 一样，配置本身还是靠直接编辑
+    `.agent/external_input/watchlist.yaml`/`.agent/notification/report_tiers.yaml`，
+    这里不提供在线编辑表单。
+    """
+    st.markdown("#### 🔔 关注与通知 (Watchlist & Notification)")
+    st.caption(
+        "关注对象命中后按用户配置的频率（tier）打包汇报，而不是一有动静就打扰；"
+        "外部信息若与正在推进的某个 Goal 相关，会自动挂到该 Goal 的「相关外部信息」上，"
+        "必要时还会主动把 Goal 拉回执行队列（详见 next_doc/watchlist_notification_goal_design.md）。"
+    )
+
+    if st.button("🔄 刷新", key="notif_refresh"):
+        st.rerun()
+
+    # ── 1. 关注对象列表（watchlist.yaml，只读）───────────────────────────
+    st.markdown("##### 👀 关注对象 (watchlist.yaml)")
+    wl_resp = client.notification_watchlist()
+    if wl_resp and "_error" in wl_resp:
+        st.error(f"获取关注对象列表失败：{wl_resp['_error']}")
+    else:
+        items = (wl_resp or {}).get("items") or []
+        if not items:
+            st.info(
+                "暂无关注对象配置。编辑 `.agent/external_input/watchlist.yaml` 添加"
+                "（每条至少包含 `id`/`keywords`/`report_tier`）。"
+            )
+        for item in items:
+            with st.container(border=True):
+                c1, c2, c3 = st.columns([2, 2, 1])
+                c1.markdown(f"**{item['id']}**　`{item.get('match_type', 'keyword')}`")
+                c2.caption("关键词：" + "、".join(item.get("keywords") or []))
+                c3.markdown("✅ 启用" if item.get("enabled", True) else "⏸️ 已禁用")
+                st.caption(
+                    f"汇报 tier：`{item.get('report_tier', '-')}` · "
+                    f"去重窗口：{item.get('dedup_window_seconds', '-')} 秒"
+                    + (f" · 通知渠道：{', '.join(item['notify_channels'])}" if item.get("notify_channels") else "")
+                )
+
+    st.divider()
+
+    # ── 2. 分级汇报 tier 配置（report_tiers.yaml + cron job 运行时状态）───
+    st.markdown("##### 📊 分级汇报 (report_tiers.yaml)")
+    tiers_resp = client.notification_report_tiers()
+    if tiers_resp and "_error" in tiers_resp:
+        st.error(f"获取分级汇报配置失败：{tiers_resp['_error']}")
+    else:
+        tiers = (tiers_resp or {}).get("tiers") or []
+        if not tiers:
+            st.info(
+                "暂无分级汇报配置。复制 `.agent/notification/report_tiers.yaml.example` "
+                "为 `report_tiers.yaml` 后按需修改。"
+            )
+        for tier in tiers:
+            with st.container(border=True):
+                c1, c2, c3 = st.columns([2, 2, 2])
+                c1.markdown(f"**{tier['id']}**　`{tier.get('schedule', '-')}`")
+                if tier.get("job_enabled") is None:
+                    c2.caption("job 运行时状态未知（cron scheduler 不可用）")
+                else:
+                    c2.markdown("✅ job 启用" if tier["job_enabled"] else "⏸️ job 已禁用")
+                if tier.get("next_run_str"):
+                    c3.caption(f"下次触发：{tier['next_run_str']}")
+                st.caption(
+                    f"通知渠道：{', '.join(tier.get('notify_channels') or [])} · "
+                    f"连续空转次数：{tier.get('idle_streak', 0)}"
+                )
+
+    st.divider()
+
+    # ── 3. 通知发送记录（NotificationDispatcher，只读，最近 50 条）───────
+    st.markdown("##### 📮 通知发送记录")
+    log_resp = client.notification_dispatch_log(limit=50)
+    if log_resp and "_error" in log_resp:
+        st.error(f"获取通知发送记录失败：{log_resp['_error']}")
+    else:
+        entries = (log_resp or {}).get("entries") or []
+        if not entries:
+            st.caption("暂无通知发送记录。")
+        for entry in entries:
+            ts = entry.get("created_at")
+            ts_str = time.strftime("%m-%d %H:%M:%S", time.localtime(ts)) if ts else "-"
+            results = entry.get("results") or {}
+            status_str = "、".join(
+                f"{ch}{'✅' if ok else '❌'}" for ch, ok in results.items()
+            )
+            st.caption(
+                f"`{ts_str}` **{entry.get('title', '')}**"
+                f"（来源 `{entry.get('source', '')}`）　{status_str}"
+            )
+
+
+# ═══════════════════════════════════════════════════════════════════════
 # 主流程
 # ═══════════════════════════════════════════════════════════════════════
 def main():
@@ -3296,7 +3408,7 @@ def main():
     render_topbar(client, get_active_session_id())
 
     tabs = st.tabs(["💬 对话", "🗂️ 会话管理", "📌 目标看板", "🔄 工作流", "📁 产出物", "🖼️ 产出预览",
-                    "🧠 自我状态", "🧬 进化提案", "⏰ Cron 任务", "🔌 外部输入", "🔧 诊断"])
+                    "🧠 自我状态", "🧬 进化提案", "⏰ Cron 任务", "🔌 外部输入", "🔔 关注与通知", "🔧 诊断"])
     with tabs[0]:
         render_chat_tab(client, get_active_session_id())
     with tabs[1]:
@@ -3318,6 +3430,8 @@ def main():
     with tabs[9]:
         render_external_input_tab(client)
     with tabs[10]:
+        render_notification_tab(client)
+    with tabs[11]:
         render_diagnostics_tab(client)
 
     # [P0 改造] 原来这里是 `if auto_refresh: time.sleep(3); st.rerun()`——

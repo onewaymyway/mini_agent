@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import json
 import time
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
@@ -93,4 +94,36 @@ class NotificationDispatcher:
                 log_exception(exc, where=f"mini_agent.notification.dispatcher.dispatch[{name}]")
                 ok = False
             results[name] = ok
+        self._append_dispatch_log(message, results)
         return results
+
+    # [P7 新增] 通知发送记录，供看板只读展示（见
+    # next_doc/watchlist_notification_goal_design.md §6 P7）。
+    _MAX_LOG_LINES = 500
+
+    def _append_dispatch_log(self, message: NotificationMessage, results: dict) -> None:
+        """追加一条"这次 dispatch 各渠道发送结果"的记录到
+        `paths.notification_dispatch_log`。纯诊断用途，写入失败不影响
+        `dispatch()` 本身的返回值——通知该发的已经发了，记不记录这件事
+        本身不应该反过来影响发送结果。超过 `_MAX_LOG_LINES` 时做一次
+        整体截断（只保留最近 N 条），避免这份文件无限增长。"""
+        try:
+            p = self._paths.notification_dispatch_log
+            p.parent.mkdir(parents=True, exist_ok=True)
+            record = {
+                "title": message.title,
+                "source": message.source,
+                "created_at": message.created_at,
+                "logged_at": time.time(),
+                "results": results,
+            }
+            lines: list[str] = []
+            if p.exists():
+                lines = p.read_text(encoding="utf-8").splitlines()
+            lines.append(json.dumps(record, ensure_ascii=False))
+            if len(lines) > self._MAX_LOG_LINES:
+                lines = lines[-self._MAX_LOG_LINES:]
+            p.write_text("\n".join(lines) + "\n", encoding="utf-8")
+        except Exception as exc:
+            from mini_agent.errors import log_exception
+            log_exception(exc, where="mini_agent.notification.dispatcher._append_dispatch_log")

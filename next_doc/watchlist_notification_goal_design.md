@@ -1,8 +1,8 @@
 # 外部输入网关扩展设计方案：关注对象 · 分级汇报 · 通知系统 · Goal 关联执行
 
-- **版本**: v1.6（P1-P6 已实施；P5 实施前复查修复了 P3 遗留的
+- **版本**: v1.7（P1-P7 全部已实施；P5 实施前复查修复了 P3 遗留的
   `CronScheduler.ensure_job`/`register_local_handler` 方法缺失问题，
-  详见 §12.1；§9 评审改进点持续在对应实施阶段吸收，见 §6 状态列）
+  详见 §12.1；§9 评审改进点已在对应实施阶段全部吸收，见 §6 状态列）
 - **背景**: 在已有的 External Input Gateway（`src/mini_agent/external_input/`）基础上，
   新增"用户关注对象识别"、"按任意粒度分级汇报"、"可扩展通知渠道"、
   "外部信号驱动 Goal 执行" 四块能力。
@@ -415,8 +415,10 @@ class NotificationDispatcher:
 | **P4** | `GoalRelevanceEngine` Stage①（候选生成，规则层，接入 `tick()`） | 新增 `src/mini_agent/external_input/goal_relevance.py`；修改 `evolution/autonomous_loop.py`（`_tick_maintenance()` 里新增一个消费点，跟 `run_ingestion_policy_once` 同级）；修改 `storage/paths.py`（新增 `external_input_goal_relevance_candidates` 路径）；新增 `tests/test_goal_relevance_candidate.py` | ✅ 已实施（吸收 §9.1 #2 候选去重跳过、§9.2 #5 候选队列总量止损上限） |
 | **P5** | `GoalRelevanceEngine` Stage②（LLM 批量判定 + `attach_external_context`/`try_advance_goal`） | 修改 `perception/goal_backlog.py`（新增字段+方法）；修改 `src/mini_agent/external_input/goal_relevance.py`；新增 `sys:goal_relevance_judge` cron job；修改 `api/server.py`（提供 llm_helper 给判定函数，风格对齐 `_llm_decompose` 的现有接线方式） | ✅ 已实施（吸收 §9.4 #11 prompt 注入加固；顺带修复了 P3 遗留的 `CronScheduler.ensure_job`/`register_local_handler` 方法缺失问题，见 §12） |
 | **P6** | Prompt 精确注入（decompose/redecompose） | 修改 `evolution/objective_executor.py::_default_llm_decompose/_default_llm_redecompose`；修改 `api/server.py::_llm_redecompose` 闭包透传 `external_context` | ✅ 已实施（见 §13） |
-| **P7** | 看板展示（关注对象列表、tier 配置只读展示、Goal 详情页"🔗相关外部信息"、通知发送记录） | 修改 `apps/mini_agent_kanban/{app.py,client.py}`；新增/修改 `api/routes.py` 只读端点 | ⏳ 待实施 |
-| **P8** | 测试补齐（对齐现有 `tests/test_external_input_*.py` 风格，每个新模块独立测试文件） | 新增 `tests/test_watchlist_matcher.py`、`test_report_tiers.py`、`test_goal_relevance_candidate.py`、`test_goal_relevance_judge.py`、`test_notification_dispatcher.py`、`test_cron_scheduler_local_handler.py`、`test_external_context_prompt_injection.py` | 🔶 P1-P6 对应测试已补齐；P7 看板测试待 P7 实施后再补 |
+| **P7** | 看板展示（关注对象列表、tier 配置只读展示、Goal 详情页"🔗相关外部信息"、通知发送记录） | 修改 `apps/mini_agent_kanban/{app.py,client.py}`；新增 `api/routes.py::/v1/notification/{watchlist,report_tiers,dispatch_log}` 只读端点；新增 `notification/dispatcher.py::_append_dispatch_log`；新增 `storage/paths.py::notification_dispatch_log` | ✅ 已实施（见 §14） |
+| **P8** | 测试补齐（对齐现有 `tests/test_external_input_*.py` 风格，每个新模块独立测试文件） | 新增 `tests/test_watchlist_matcher.py`、`test_report_tiers.py`、`test_goal_relevance_candidate.py`、`test_goal_relevance_judge.py`、`test_notification_dispatcher.py`、`test_cron_scheduler_local_handler.py`、`test_external_context_prompt_injection.py`、`test_notification_routes_p7.py` | ✅ 已实施（P1-P7 对应测试全部补齐，215 项通过） |
+
+P1-P7 全部实施完成。
 
 P1-P3 之间、P4-P6 之间基本互相独立，可以分开小步提交验证；P7/P8 依赖前面
 阶段跑通后再补。
@@ -835,7 +837,78 @@ P6 直接相关的条目已经在 P4/P5 阶段处理完毕）。
 （用一个父 Goal 下两个 Objective、各自 attach 不同外部信息的场景验证
 不会串)；`goal_backlog=None` 时优雅退化为空列表。
 
+## 14. P7 实施记录（补充说明，不改动 §1-§9 原文）
+
+### 14.1 三个只读 REST 端点
+
+新增到 `api/routes.py`（均为 `GET`，无副作用，跟 §6 P7 的"看板展示"范围
+保持一致，不提供写接口/配置编辑表单）：
+
+- `GET /v1/notification/watchlist` — 直接调用既有的
+  `watchlist.load_watchlist_config()`，用 `dataclasses.asdict()` 序列化
+  `WatchlistItem` 列表返回；`watchlist.yaml` 不存在时返回空列表（不是
+  错误，是全新项目的正常初始状态）。
+- `GET /v1/notification/report_tiers` — 调用既有的
+  `report_tiers.load_report_tiers_config()`，并逐条附加对应
+  `sys:watchlist_report_<id>` cron job 的运行时信息（`job_enabled`/
+  `next_run_str`，取不到 `CronScheduler` 时都退化为 `None`，不影响 tier
+  配置本身的展示）以及 `tier_state.json` 里的 `idle_streak`（§9.2 #7 的
+  空转计数）。
+- `GET /v1/notification/dispatch_log?limit=50` — 读取新增的
+  `notification/dispatch_log.jsonl`（见 14.2），倒序返回最近 N 条。
+
+### 14.2 通知发送记录持久化（新增能力，原设计文档未细化到这一层）
+
+§6 P7 只写了"通知发送记录"这个展示需求，但复查 `NotificationDispatcher.
+dispatch()` 时发现它当时只是内存里返回一个 `{channel: bool}` 的结果字典，
+调用方（`report_tiers.py`/`goal_relevance.py`）拿到就地丢弃，没有任何地方
+持久化"这次到底发没发成功"——如果不补这一步，P7 的"通知发送记录"面板
+根本没有数据可展示。为此新增：
+
+- `storage/paths.py::notification_dispatch_log` →
+  `.agent/notification/dispatch_log.jsonl`。
+- `NotificationDispatcher._append_dispatch_log()`：每次 `dispatch()`
+  结束后追加一条 `{title, source, created_at, logged_at, results}` 记录；
+  写入失败只 `log_exception`、不影响 `dispatch()` 本身的返回值（通知该
+  发的已经发了，记不记录这件事不应该反过来影响发送结果）；超过 500 行
+  做一次整体截断（只保留最近 500 条），避免无限增长。
+- 跟 `external_input_alerts`（kanban 渠道自己落地的 alerts.jsonl，走
+  `/v1/inbox`"待处理告警"面板）是两回事：`dispatch_log.jsonl` 记录的是
+  **每个渠道各自的发送结果**（包括失败的邮件等），用于诊断"为什么我
+  没收到邮件通知"这类问题，不需要精确对账，纯诊断用途。
+
+### 14.3 看板前端改动
+
+- `apps/mini_agent_kanban/client.py` 新增
+  `notification_watchlist()`/`notification_report_tiers()`/
+  `notification_dispatch_log(limit=50)` 三个方法，风格完全对齐既有的
+  `external_input_sources()`/`external_input_policies()`。
+- `apps/mini_agent_kanban/app.py` 新增 `render_notification_tab()`，
+  跟 `render_external_input_tab()` 是姊妹函数，展示关注对象列表、分级
+  汇报 tier 配置+运行时状态、通知发送记录三块内容；新增顶层 tab
+  "🔔 关注与通知"，紧跟在"🔌 外部输入"之后。
+- Goal 详情卡片（`_render_goal_card()`）新增"🔗 相关外部信息（N 条）"
+  折叠面板，读取 `/v1/goals` 返回的 `external_context` 字段（这个字段
+  在 P5 阶段 `GoalNode.to_dict()` 就已经开始序列化，`/v1/goals` 接口
+  本身不需要改动，只是前端之前没有消费这个字段）；没有外部上下文的
+  Goal 不显示这个折叠面板，避免每张卡片都多出一段空内容。
+
+### 14.4 测试覆盖
+
+新增 `tests/test_notification_routes_p7.py`，风格对齐
+`tests/test_external_input_routes_p6.py`（挂载 router 到最小 FastAPI
+app，把 `app.state.http_server` 设成 duck-typed 替身，不拉起完整
+HttpServer）。覆盖：三个端点在配置文件缺失时都返回空列表而非报错；
+`watchlist`/`report_tiers` 正确解析 yaml 并附带 job 运行时信息；
+`report_tiers` 在拿不到 `CronScheduler` 时优雅退化；`dispatch_log`
+路由返回的记录倒序排列、`limit` 参数生效。
+
+至此 P1-P7 全部实施完成，共 215 项相关测试全部通过（含本文档 §10-§14
+提到的全部新增/修改文件）。
+
 ---
 
-（P7/P8 剩余部分——看板展示、P7 对应测试——留待下一阶段实施，届时继续
-在本文档追加对应的实施记录小节，不改动本节及之前各节内容。）
+（如需继续演进——比如把看板的只读展示升级为可以直接在界面上编辑
+`watchlist.yaml`/`report_tiers.yaml`，或者给 `dispatch_log.jsonl` 加一个
+按渠道筛选的查询参数——建议另开一轮设计评审，不在本文档基础上直接改，
+保持这份文档作为 P1-P7 阶段性交付记录的完整性。）

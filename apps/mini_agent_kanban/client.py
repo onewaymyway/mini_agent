@@ -279,6 +279,20 @@ class AgentClient:
         超时给宽一点——里面可能真的会为新增的 source 发起一次网络请求。"""
         return self._post("/external_input/sources/reload", timeout=30)
 
+    # ── 看板：关注对象/分级汇报/通知发送记录（Watchlist & Notification，P7）──
+    def notification_watchlist(self):
+        """watchlist.yaml 里配置的全部关注对象条目（含 enabled=false 的）。"""
+        return self._get("/notification/watchlist")
+
+    def notification_report_tiers(self):
+        """report_tiers.yaml 里配置的全部 tier，附带对应 cron job 的运行时
+        状态（下次触发时间/是否 enabled）及空转计数。"""
+        return self._get("/notification/report_tiers")
+
+    def notification_dispatch_log(self, limit: int = 50):
+        """NotificationDispatcher 最近的发送记录（倒序，最新的在前面）。"""
+        return self._get("/notification/dispatch_log", params={"limit": limit})
+
     # ── 看板：进化提案分级自治（Track I）────────────────────────────
     def evolution_proposals(self):
         """[Track I] 列出所有 evolve/* 提案分支及风险分级。"""

@@ -71,6 +71,10 @@ api/routes.py — FastAPI 路由定义
     GET    /v1/external_input/sources   已配置 source 列表 + 运行时健康度（看板"🔌 外部输入"面板，P6）
     GET    /v1/external_input/policies  policies.yaml 路由规则（只读）
     GET    /v1/external_input/events    最近 external.* 事件流水（不消费游标，仅供人工核对）
+    GET    /v1/notification/watchlist     watchlist.yaml 关注对象列表（只读，P7）
+    GET    /v1/notification/report_tiers  report_tiers.yaml + job 运行时状态（只读，P7）
+    GET    /v1/notification/dispatch_log?limit=50
+                                     NotificationDispatcher 最近发送记录（只读，P7）
     GET    /v1/evolution/proposals   [Track I] 列出 evolve/* 提案分支及风险分级
     POST   /v1/evolution/proposals/{branch}/merge
                                      [Track I] 一键合并提案分支（Body 可选 {"force": bool}，
@@ -3702,6 +3706,92 @@ def _get_paths_for_request(request: Request) -> "AgentPaths":
     if not project_root:
         raise HTTPException(status_code=503, detail="project_root not configured")
     return AgentPaths(project_root)
+
+
+# ── P7：看板只读展示端点 ──────────────────────────────────────────────────────
+# 设计背景见 next_doc/watchlist_notification_goal_design.md §6 P7。三个端点
+# 全部是只读、无副作用（GET only），配置文件本身仍然只能靠用户手改 yaml——
+# 这里不提供写接口，跟设计文档"看板展示"这条范围保持一致，不引入配置
+# 编辑器。
+
+@router.get("/notification/watchlist")
+async def get_notification_watchlist(request: Request):
+    """GET /v1/notification/watchlist — 只读返回 watchlist.yaml 里配置的
+    全部关注对象条目（含 enabled=false 的，方便看板区分"已配置但暂停"和
+    "从未配置过"两种情况）。watchlist.yaml 不存在时返回空列表，不是错误——
+    这是全新项目的正常初始状态。"""
+    _require_owner(request)
+    paths = _get_paths_for_request(request)
+    try:
+        from dataclasses import asdict
+        from mini_agent.external_input.watchlist import load_watchlist_config
+        items = load_watchlist_config(paths)
+        return {"items": [asdict(item) for item in items]}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/notification/report_tiers")
+async def get_notification_report_tiers(request: Request):
+    """GET /v1/notification/report_tiers — 只读返回 report_tiers.yaml 里
+    配置的全部 tier，附带每个 tier 对应 cron job 的运行时信息（下次触发
+    时间/是否 enabled），以及 tier_state.json 里的空转计数（§9.2 #7）。
+    cron_scheduler 拿不到（比如 daemon 尚未完全启动）时 job 相关字段
+    退化为 None，不影响 tier 配置本身的展示。"""
+    _require_owner(request)
+    paths = _get_paths_for_request(request)
+    try:
+        from dataclasses import asdict
+        from mini_agent.external_input.report_tiers import load_report_tiers_config, _load_tier_state
+        tiers = load_report_tiers_config(paths)
+        tier_state = _load_tier_state(paths)
+
+        http_server = getattr(request.app.state, "http_server", None)
+        cron_scheduler = _get_cron_scheduler(http_server) if http_server is not None else None
+        jobs_by_id = {}
+        if cron_scheduler is not None:
+            jobs_by_id = {j.id: j for j in cron_scheduler.list_jobs()}
+
+        result = []
+        for tier in tiers:
+            entry = asdict(tier)
+            job = jobs_by_id.get(tier.job_id)
+            entry["job_id"] = tier.job_id
+            entry["job_enabled"] = job.enabled if job else None
+            entry["next_run_str"] = job.next_run_str() if job else None
+            entry["idle_streak"] = (tier_state.get(tier.id) or {}).get("idle_streak", 0)
+            result.append(entry)
+        return {"tiers": result}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/notification/dispatch_log")
+async def get_notification_dispatch_log(request: Request, limit: int = Query(50, ge=1, le=500)):
+    """GET /v1/notification/dispatch_log?limit=50 — 只读返回最近 N 条
+    NotificationDispatcher 的发送记录（`dispatch_log.jsonl`，见
+    `notification/dispatcher.py::_append_dispatch_log`），倒序（最新的在
+    前面）。文件不存在/为空时返回空列表。"""
+    _require_owner(request)
+    paths = _get_paths_for_request(request)
+    try:
+        p = paths.notification_dispatch_log
+        if not p.exists():
+            return {"entries": []}
+        lines = p.read_text(encoding="utf-8").splitlines()
+        entries = []
+        for line in lines[-limit:]:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                entries.append(json.loads(line))
+            except Exception:
+                continue
+        entries.reverse()
+        return {"entries": entries}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @router.get("/digest/pending_startup")

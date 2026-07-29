@@ -719,6 +719,19 @@ class AgentPaths:
         return self.notification_dir / "tier_state.json"
 
     @property
+    def notification_dispatch_log(self) -> Path:
+        """<project_root>/.agent/notification/dispatch_log.jsonl — 每次
+        NotificationDispatcher.dispatch() 的发送结果记录（P7 新增，见
+        next_doc/watchlist_notification_goal_design.md §6 P7），供看板
+        "通知发送记录"面板只读展示。跟 external_input_alerts 是两回事：
+        alerts.jsonl 只有 kanban 渠道落地成功才会有一条；这份文件记录的是
+        **每个渠道各自的发送结果**（包括失败的邮件等），用于诊断"为什么
+        我没收到邮件通知"这类问题。只追加、有上限截断（见
+        `notification/dispatcher.py::_append_dispatch_log`），不是需要
+        精确对账的审计日志。"""
+        return self.notification_dir / "dispatch_log.jsonl"
+
+    @property
     def sessions_dir(self) -> Path:
         """<project_root>/.agent/sessions/ — 所有 session 的根目录"""
         return self.workdir_dir / "sessions"
