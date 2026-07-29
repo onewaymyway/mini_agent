@@ -1357,20 +1357,36 @@ async def list_pending_permissions(request: Request):
 async def respond_permission(request: Request, req_id: str, body: PermissionRequest):
     # 同 stream_turn() 的修复理由：req_id 可能不属于"该用户最近活跃的 session"，
     # 必须先用 pool.find_by_permission_req() 真正定位归属。
+    #
+    # [BUGFIX] Self（主自我）会话根本不在 session_pool 里管理（见
+    # session_pool.py 模块开头说明），它的审批请求永远登记在
+    # app.state.bridge 上。之前这里在 pool 不为 None 时，find 不到就直接
+    # 404，完全没有 fallback 到 app.state.bridge 去找——导致 Self 会话、
+    # 或任何走"单 token / 无 session_id"路径登记的请求，看板等 HTTP 客户端
+    # 能在 /permissions/pending 里看到（那边走 _bridge() 有 fallback），
+    # 但一提交回复就 404 "not found or already handled"。
     pool = _session_pool(request)
+    entry = None
     if pool is not None:
         entry = pool.find_by_permission_req(req_id)
-        if entry is None:
-            raise HTTPException(
-                status_code=404,
-                detail=f"Permission request {req_id!r} not found or already handled",
-            )
+    if entry is not None:
         user_ctx = getattr(request.state, "user_ctx", None)
         if user_ctx is not None and not user_ctx.is_owner and entry.user_id != user_ctx.user_id:
             raise HTTPException(status_code=403, detail="This permission request does not belong to you")
         bridge = entry.bridge
     else:
-        bridge = _bridge(request)
+        # pool 里没找到：fallback 到默认全局 bridge（Self 会话 / 单 token
+        # 无 session_id 场景），而不是直接判定 404。
+        default_bridge = getattr(request.app.state, "bridge", None)
+        if default_bridge is not None and req_id in default_bridge.permission_gate._pending:
+            bridge = default_bridge
+        elif pool is not None:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Permission request {req_id!r} not found or already handled",
+            )
+        else:
+            bridge = _bridge(request)
 
     gate = bridge.permission_gate
 
@@ -1405,20 +1421,30 @@ async def list_pending_interactions(request: Request):
 
 @router.post("/interactions/{req_id}", response_model=InteractionResponse)
 async def respond_interaction(request: Request, req_id: str, body: InteractionRequestBody):
+    # [BUGFIX] 见 respond_permission() 同一根因：Self（主自我）会话不在
+    # session_pool 里管理，它登记的交互请求只存在于 app.state.bridge 上。
+    # 之前 pool 不为 None 时 find 不到就直接 404，漏掉了这个 fallback，
+    # 是看板"回复后 404 not found or already handled"的根因。
     pool = _session_pool(request)
+    entry = None
     if pool is not None:
         entry = pool.find_by_interaction_req(req_id)
-        if entry is None:
-            raise HTTPException(
-                status_code=404,
-                detail=f"Interaction request {req_id!r} not found or already handled",
-            )
+    if entry is not None:
         user_ctx = getattr(request.state, "user_ctx", None)
         if user_ctx is not None and not user_ctx.is_owner and entry.user_id != user_ctx.user_id:
             raise HTTPException(status_code=403, detail="This interaction request does not belong to you")
         bridge = entry.bridge
     else:
-        bridge = _bridge(request)
+        default_bridge = getattr(request.app.state, "bridge", None)
+        if default_bridge is not None and req_id in default_bridge.interaction_gate._pending:
+            bridge = default_bridge
+        elif pool is not None:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Interaction request {req_id!r} not found or already handled",
+            )
+        else:
+            bridge = _bridge(request)
 
     gate = bridge.interaction_gate
 
