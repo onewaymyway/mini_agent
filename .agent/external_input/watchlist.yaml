@@ -1,0 +1,64 @@
+# .agent/external_input/watchlist.yaml — 关注对象的实际配置
+#
+# 设计背景见 next_doc/watchlist_notification_goal_design.md §3.1。
+# 加载逻辑见 src/mini_agent/external_input/watchlist.py::load_watchlist_config()。
+#
+# 重要：这份文件不存在时 load_watchlist_config() 直接返回空列表——没有
+# 任何关注项，WatchlistMatcher 每次 tick 会正常运行但永远不会有命中，
+# pending_hits.jsonl 不会有新记录，report_tiers 也就没有内容可汇报。
+#
+# 下面的关注项直接复用 external_input/sources.yaml 里给 4 个 RSS 来源
+# 打的 channel: agent_watch（这些来源本身已经用 params.keywords 做过一次
+# 标题前置过滤，进来的 new_item 事件已经是 agent 相关内容）。这里再配
+# 一层 WatchlistMatcher 关键词匹配，是为了：
+#   1) 复用同一套关键词做"标题+详情"双重比对（source 的 keywords 只查
+#      标题，watchlist 的 keywords 还会比对 detail 字段）；
+#   2) 拿到 report_tier 分级汇报的能力——WatchlistMatcher 命中后写入
+#      pending_hits.jsonl，按 report_tier 定期打包成一条通知，而不是
+#      每条 new_item 事件都单独提醒一次（那是 notify_only 落点已经在做
+#      的事，watchlist 是"在此之上再做一层降噪+定期汇总"）。
+# 两者是独立的消费者，各自订阅 external.* 事件、各自持有独立游标，互不
+# 影响（详见 watchlist.py 模块 docstring）。
+
+watchlist:
+  # 高优先级：多智能体/Agent 框架相关的关键突破或发布，值得较高频地看到，
+  # 用 minute_30 档（需要 .agent/notification/report_tiers.yaml 里存在
+  # 同名 tier，当前已配置）。
+  - id: agent_breakthrough
+    keywords:
+      - "agent"
+      - "agentic"
+      - "multi-agent"
+      - "autonomous agent"
+      - "llm agent"
+      - "智能体"
+      - "AI Agent"
+      - "自主代理"
+    match_type: keyword
+    report_tier: minute_30
+    notify_channels: []          # 留空则用 minute_30 tier 的默认渠道（kanban）
+    scope:
+      source_channels: ["agent_watch"]   # 只在 agent_watch 频道的事件里匹配
+    dedup_window_seconds: 86400          # 同一话题 24 小时内只计入一次
+    enabled: true
+
+  # 次优先级：跟 Agent 框架/生态相关但不算突破性的资讯，降级到每日汇总，
+  # 避免高频打扰。
+  - id: agent_ecosystem_daily
+    keywords:
+      - "agent framework"
+      - "agent 生态"
+      - "AI 助手"
+      - "copilot"
+    match_type: keyword
+    report_tier: daily
+    scope:
+      source_channels: ["agent_watch"]
+    enabled: true
+
+  # 示例：暂停关注的话题不用删除，改 enabled: false 即可。
+  # /v1/notification/watchlist 只读端点/看板"👀 关注对象"面板仍会展示。
+  - id: paused_topic_example
+    keywords: ["暂停关注的话题占位示例"]
+    report_tier: daily
+    enabled: false

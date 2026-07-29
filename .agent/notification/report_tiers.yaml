@@ -1,0 +1,39 @@
+# .agent/notification/report_tiers.yaml — 分级汇报 tier 的实际配置
+#
+# 设计背景见 next_doc/watchlist_notification_goal_design.md §3.2。
+# 加载逻辑见 src/mini_agent/external_input/report_tiers.py::load_report_tiers_config()。
+#
+# 重要：这份文件不存在时 load_report_tiers_config() 直接返回空列表——
+# 代码里的 DEFAULT_TIERS 只是"文件不存在时的兜底样例常量"，不会自动生效
+# / 自动落盘，daemon 也不会因为读到空列表就临时借用 DEFAULT_TIERS。也就
+# 是说，没有这份实际文件，watchlist.yaml 里任何 report_tier 字段引用的
+# tier id 都找不到对应的 cron job，WatchlistMatcher 命中的话题永远不会
+# 被真正"汇报"出来（详见 §5.4 数据流向图）。
+#
+# 内容沿用设计文档 §3.2 的四档默认样例（跟 report_tiers.yaml.example
+# 完全一致），daemon 启动时会按这里的配置自动补注册
+# sys:watchlist_report_<id> cron job（缺失才补、不重复，改配置不需要
+# 手动删 job）。
+
+tiers:
+  # 高频档：用于"值得立刻看到"的关注对象，比如竞品发布这类时效性强的信号。
+  - id: minute_1
+    schedule: "interval:60"
+    notify_channels: [kanban]
+
+  - id: minute_30
+    schedule: "interval:1800"
+    notify_channels: [kanban]
+
+  - id: hourly
+    schedule: "interval:3600"
+    notify_channels: [kanban]
+
+  # 每天 22:00 汇总一次，适合不紧急的行业关键词类关注对象。
+  # notify_channels 里的 email 渠道默认是关闭的（见
+  # .agent/notification/config.yaml 或其 .example），没配置 SMTP 时这里
+  # 写 email 只是"允许"该渠道，实际会不会发信由 NotificationDispatcher
+  # 按 channels.email.enabled 判断，不会因为这里写了就报错。
+  - id: daily
+    schedule: "cron:0 22 * * *"
+    notify_channels: [kanban, email]
