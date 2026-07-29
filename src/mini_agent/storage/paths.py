@@ -655,6 +655,20 @@ class AgentPaths:
         return self.external_input_dir / "policies.yaml"
 
     @property
+    def external_input_watchlist_config(self) -> Path:
+        """<project_root>/.agent/external_input/watchlist.yaml — 用户关注对象配置
+        （关键词/汇报 tier），见
+        next_doc/watchlist_notification_goal_design.md §3.1，WatchlistMatcher（P2）读取。"""
+        return self.external_input_dir / "watchlist.yaml"
+
+    @property
+    def external_input_pending_hits(self) -> Path:
+        """<project_root>/.agent/external_input/pending_hits.jsonl — 关注对象命中后
+        待各 tier 汇报消费的队列，见 §3.4，WatchlistMatcher 写入、
+        report_tiers（P3）消费。"""
+        return self.external_input_dir / "pending_hits.jsonl"
+
+    @property
     def external_input_state_dir(self) -> Path:
         """<project_root>/.agent/external_input/state/ — 每个 source 的增量状态
         ({source_id}.json：去重游标/ETag 等），来源私有，网关负责落盘保存。"""
@@ -665,6 +679,21 @@ class AgentPaths:
         """<project_root>/.agent/external_input/alerts.jsonl — notify_only 落点的
         持久化记录，供 /v1/inbox 与看板"全局待办中心"查询（P3 起用）。"""
         return self.external_input_dir / "alerts.jsonl"
+
+    @property
+    def notification_dir(self) -> Path:
+        """<project_root>/.agent/notification/ — 通知系统（渠道配置、分级汇报
+        tier 配置）的根目录，见 next_doc/watchlist_notification_goal_design.md
+        §3.2/§3.3。跟 external_input_dir 分开存放，因为通知渠道不是
+        External Input Gateway 专属——以后网关之外的模块也可能复用
+        NotificationDispatcher（比如目标完成提醒）。"""
+        return self.workdir_dir / "notification"
+
+    @property
+    def notification_config(self) -> Path:
+        """<project_root>/.agent/notification/config.yaml — 通知渠道配置
+        （kanban/email 等），见 §3.3。"""
+        return self.notification_dir / "config.yaml"
 
     @property
     def sessions_dir(self) -> Path:

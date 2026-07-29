@@ -198,6 +198,20 @@ class AutonomousLoop:
             log_exception(_mini_agent_exc, where='mini_agent.evolution.autonomous_loop._tick_passive.external_input_policy')
             pass
 
+        # ── WatchlistMatcher 消费点（关注对象·分级汇报·通知系统扩展设计
+        # §4.1/P2）── 跟上面的 IngestionPolicy 完全独立、各自持有独立游标，
+        # 不是"先路由再匹配关注词"的串联关系（见该文档 §2 的关键设计取舍）。
+        # 纯规则、零 LLM 成本，同样不该被 autonomy_level 挡住。
+        try:
+            from mini_agent.external_input.watchlist import run_watchlist_matcher_once
+            run_watchlist_matcher_once(self._paths)
+        except ImportError:
+            pass
+        except Exception as _mini_agent_exc:
+            from mini_agent.errors import log_exception
+            log_exception(_mini_agent_exc, where='mini_agent.evolution.autonomous_loop._tick_passive.watchlist_matcher')
+            pass
+
     def _tick_maintenance(self) -> None:
         """
         [maintenance 档位] passive 的全部任务 + Objective 持续执行推进。
