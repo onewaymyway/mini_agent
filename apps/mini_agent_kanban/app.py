@@ -2080,12 +2080,17 @@ def render_kanban_tab(client: AgentClient):
             if not (cj_name.strip() and cj_schedule.strip() and cj_task.strip()):
                 st.error("名称、调度、任务内容均为必填")
             else:
-                res = client.add_cron_job(
-                    cj_name.strip(), cj_schedule.strip(), cj_task.strip(), cj_desc.strip()
-                )
-                if res and "_error" in res:
-                    st.error(res["_error"])
-                st.rerun()
+                from mini_agent.evolution.cron_scheduler import validate_schedule
+                schedule_error = validate_schedule(cj_schedule.strip())
+                if schedule_error:
+                    st.error(f"调度格式不合法：{schedule_error}")
+                else:
+                    res = client.add_cron_job(
+                        cj_name.strip(), cj_schedule.strip(), cj_task.strip(), cj_desc.strip()
+                    )
+                    if res and "_error" in res:
+                        st.error(res["_error"])
+                    st.rerun()
 
     cron = client.cron_jobs() or {}
     jobs = cron.get("jobs", [])
@@ -3082,12 +3087,17 @@ def render_cron_jobs_tab(client: AgentClient):
             if not new_name.strip() or not new_template.strip():
                 st.warning("名称和任务描述不能为空。")
             else:
-                res = client.add_cron_job(new_name, new_schedule, new_template, new_desc)
-                if res and "_error" in res:
-                    st.error(f"创建失败：{res['_error']}")
+                from mini_agent.evolution.cron_scheduler import validate_schedule
+                schedule_error = validate_schedule(new_schedule)
+                if schedule_error:
+                    st.warning(f"schedule 格式不合法：{schedule_error}")
                 else:
-                    st.success("已创建。")
-                    st.rerun()
+                    res = client.add_cron_job(new_name, new_schedule, new_template, new_desc)
+                    if res and "_error" in res:
+                        st.error(f"创建失败：{res['_error']}")
+                    else:
+                        st.success("已创建。")
+                        st.rerun()
 
 
 # ═══════════════════════════════════════════════════════════════════════

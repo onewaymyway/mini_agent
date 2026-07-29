@@ -28,6 +28,7 @@ from __future__ import annotations
 import json
 import math
 import os
+import re
 import tempfile
 import time
 import uuid
@@ -297,6 +298,48 @@ def _next_cron(expr: str, after: Optional[float] = None) -> float:
         start += 60
 
     return time.time() + 365 * 86400
+
+
+_CRON_FIELD_RE = re.compile(r"^(\*|\d+)(/\d+)?(-\d+)?(,(\*|\d+)(/\d+)?(-\d+)?)*$")
+
+
+def validate_schedule(schedule: str) -> Optional[str]:
+    """校验 schedule 字符串的格式合法性，不合法时返回错误提示（字符串），
+    合法时返回 None。
+
+    只做格式层面的校验（不校验语义上的取值范围，比如 `cron:99 * * * *`
+    这种"分钟字段写了 99"这里不拦，`_cron_field_match()` 运行时会自然
+    匹配不到、退化成\"这个字段永远不命中\"，不会崩溃，只是这个 job 实际上
+    跑不起来——留给用户在看板上观察 next_run_at 是否合理）。
+
+    用于看板\"新建 cron job\"表单在提交前做前置校验，避免用户输入
+    `interval:abc` 这类明显错误的格式后，后端只能默认退化成\"1 小时后\"
+    而用户毫无察觉。CronScheduler.compute_next_run() 本身对不合法输入仍然
+    保留静默退化的兜底行为（向后兼容，不因为校验函数的存在就改变运行时
+    容错策略）。
+    """
+    schedule = (schedule or "").strip()
+    if not schedule:
+        return "schedule 不能为空"
+    if schedule.startswith("interval:"):
+        raw = schedule[len("interval:"):].strip()
+        try:
+            sec = float(raw)
+        except ValueError:
+            return "interval 格式应为 interval:<秒数>，例如 interval:3600"
+        if sec <= 0:
+            return "interval 的秒数必须大于 0"
+        return None
+    if schedule.startswith("cron:"):
+        expr = schedule[len("cron:"):].strip()
+        parts = expr.split()
+        if len(parts) != 5:
+            return "cron 表达式需要 5 个字段（分 时 日 月 周），例如 cron:0 22 * * *"
+        for field in parts:
+            if not _CRON_FIELD_RE.match(field):
+                return f"cron 字段格式不合法：{field!r}（支持 * / */n / n / n,m / n-m）"
+        return None
+    return "schedule 必须以 interval: 或 cron: 开头"
 
 
 def compute_next_run(schedule: str, last_run_at: float = 0.0) -> float:
@@ -662,5 +705,6 @@ __all__ = [
     "CronJob",
     "CronScheduler",
     "compute_next_run",
+    "validate_schedule",
     "load_cron_scheduler",
 ]

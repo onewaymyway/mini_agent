@@ -53,8 +53,16 @@ class CronJobConfig:
     stuck_max_recoveries: int = 2
 
     @staticmethod
-    def from_dict(d: dict) -> "CronJobConfig":
-        base = CronJobConfig()
+    def from_dict(d: dict, default: Optional["CronJobConfig"] = None) -> "CronJobConfig":
+        """从 config.json 的原始 dict 构造。
+
+        default —— 字段缺省时的回退来源。不传则回退到硬编码的
+        CronJobConfig() 默认值（旧行为）；传入时（通常是根据全局
+        AppConfig.cron 构造的实例）用于实现"config.json 里没写的字段，
+        跟随全局配置实时生效"，而不需要对已存在的 job 做一次性迁移——
+        每次 read_config() 都会重新按这个规则合并。
+        """
+        base = CronJobConfig() if default is None else CronJobConfig(**asdict(default))
         for k in ("timeout_seconds", "max_steps", "stuck_similarity_threshold",
                   "stuck_consecutive_limit", "stuck_max_recoveries"):
             if k in d:
@@ -161,12 +169,16 @@ class CronJobWorkspace:
         except OSError:
             return ""
 
-    def read_config(self) -> CronJobConfig:
+    def read_config(self, default: Optional[CronJobConfig] = None) -> CronJobConfig:
+        """读取 config.json；default 缺省时的合并来源见 CronJobConfig.from_dict()。
+
+        JSON 文件本身缺失/损坏时也回退到 default（不传则用硬编码默认值）。
+        """
         try:
             d = json.loads(self.config_path.read_text(encoding="utf-8"))
-            return CronJobConfig.from_dict(d)
+            return CronJobConfig.from_dict(d, default=default)
         except (OSError, json.JSONDecodeError):
-            return CronJobConfig()
+            return default or CronJobConfig()
 
     def read_state(self) -> CronJobState:
         try:

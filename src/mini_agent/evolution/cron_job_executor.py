@@ -79,13 +79,16 @@ class CronJobExecutor:
         传入 "继续" 这类简短续步指令（具体由调用方与其 sub-agent 实现
         约定，本函数只负责调度节奏，不关心 prompt 怎么拼）。
 
-        default_config — 透传给 CronJobWorkspace.ensure()，仅在该 job
-        的 config.json 首次创建时生效（见 ensure() 的说明），通常由调用方
-        根据全局 AppConfig.cron 构造。
+        default_config — 通常由调用方根据全局 AppConfig.cron 构造，有两处
+        作用：1) 透传给 CronJobWorkspace.ensure()，仅在该 job 的
+        config.json 首次创建时决定写入的初始内容；2) 同时也作为
+        ws.read_config() 的合并回退来源——job 自己 config.json 里没写的
+        字段，每次读取都会跟随这里传入的全局配置值，不需要为"改一次全局
+        配置、让所有已存在的 job 立即生效"额外写迁移脚本。
         """
         ws = CronJobWorkspace(self._paths, job.id)
         ws.ensure(default_task_template=job.task_template, default_config=default_config)
-        cfg = ws.read_config()
+        cfg = ws.read_config(default=default_config)
         state = ws.read_state()
 
         # 上次异常退出、state 还停在 running 的僵尸状态：记一次失败但不

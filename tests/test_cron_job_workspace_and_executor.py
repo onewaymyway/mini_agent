@@ -17,6 +17,7 @@ CHANGES 文档里"已知遗留"的说明）。
 
 from __future__ import annotations
 
+import json
 import time
 
 import pytest
@@ -29,6 +30,7 @@ from mini_agent.evolution.cron_job_workspace import (
     STATUS_RUNNING,
     STATUS_NEEDS_REVIEW,
     STATUS_TIMED_OUT,
+    DEFAULT_TIMEOUT_SECONDS,
     list_all_workspaces,
 )
 from mini_agent.evolution.cron_job_executor import (
@@ -105,6 +107,41 @@ class TestCronJobWorkspace:
         ws.ensure(default_config=CronJobConfig(timeout_seconds=111, max_steps=1))
         config2 = ws.read_config()
         assert config2.timeout_seconds == 999
+
+    def test_read_config_falls_back_to_default_for_missing_fields(self, tmp_path):
+        """config.json 里没写的字段，read_config(default=...) 应跟随全局配置
+        实时生效，不需要针对已存在的 job 做迁移。"""
+        paths = _FakePaths(tmp_path)
+        ws = CronJobWorkspace(paths, "user:abc123")
+        ws.dir.mkdir(parents=True, exist_ok=True)
+        # 手写一份只包含 max_steps 的残缺 config.json，模拟"旧版本 job 目录"
+        ws.config_path.write_text(json.dumps({"max_steps": 7}), encoding="utf-8")
+
+        global_default = CronJobConfig(timeout_seconds=1234, max_steps=999)
+        config = ws.read_config(default=global_default)
+
+        # max_steps 是 config.json 里显式写的，不受 default 影响
+        assert config.max_steps == 7
+        # timeout_seconds 是缺省字段，应该跟随传入的全局 default
+        assert config.timeout_seconds == 1234
+
+    def test_read_config_without_default_uses_hardcoded_default(self, tmp_path):
+        paths = _FakePaths(tmp_path)
+        ws = CronJobWorkspace(paths, "user:abc123")
+        ws.dir.mkdir(parents=True, exist_ok=True)
+        ws.config_path.write_text(json.dumps({"max_steps": 7}), encoding="utf-8")
+
+        config = ws.read_config()
+        assert config.max_steps == 7
+        assert config.timeout_seconds == DEFAULT_TIMEOUT_SECONDS
+
+    def test_read_config_missing_file_falls_back_to_default(self, tmp_path):
+        paths = _FakePaths(tmp_path)
+        ws = CronJobWorkspace(paths, "user:abc123")
+        global_default = CronJobConfig(timeout_seconds=42, max_steps=3)
+        config = ws.read_config(default=global_default)
+        assert config.timeout_seconds == 42
+        assert config.max_steps == 3
 
     def test_write_and_read_state_roundtrip(self, tmp_path):
         paths = _FakePaths(tmp_path)

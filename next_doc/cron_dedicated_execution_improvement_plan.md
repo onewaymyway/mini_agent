@@ -1,10 +1,12 @@
 # Cron 任务专属执行机制改进方案
 
-> 状态：已落地（第一、二轮）· 见
+> 状态：已落地（第一、二、三轮）· 见
 > `next_doc/cron_dedicated_execution_implementation_record.md`
 > 已完成：独立后台线程执行通道、超时/步数双重兜底、StuckDetector 卡死检测、
 > 跨次触发进度恢复、每 job 专属文件夹、REST API + 看板 "⏰ Cron 任务" tab、
-> `CronConfig` 正式配置字段、单元测试（23 项）。
+> `CronConfig` 正式配置字段、单元测试（23 项）、`config.json` 缺省字段
+> 实时回退全局配置、看板新建 job 的 schedule 格式前置校验、单元测试
+> （新增 19 项，累计 42 项）。
 > 关联代码：`src/mini_agent/evolution/cron_job_{workspace,executor,runner,
 > agent_bridge}.py`、`src/mini_agent/evolution/cron_scheduler.py`、
 > `src/mini_agent/api/{server,bridge,models,routes}.py`、
@@ -151,10 +153,13 @@ POST  /v1/cron/jobs/{id}/reset       needs_human_review → idle
 ### 2.5 全局默认配置
 
 新增 `config/models.py::CronConfig`，`agent_config.json` 里可选配置
-`"cron": {...}` 块覆盖（见实施记录文档的示例），只影响：
+`"cron": {...}` 块覆盖（见实施记录文档的示例），影响：
 - `CronJobRunner` 的并发上限
 - 新建 job **首次生成** `config.json` 时写入的默认超时/步数
-  （已存在的 `config.json` 不受影响）
+- 已存在的 job：`config.json` 里没写的字段每次读取都会回退到这里的全局
+  值（`CronJobWorkspace.read_config(default=...)` 做的是"缺省字段合并"，
+  不是"整份覆盖或整份不覆盖"）——改一次全局配置，所有 job 下次触发时
+  立即生效，不需要额外的批量迁移脚本
 - cron 专用 Agent 的内层 `max_turns` 预算
 
 ## 3. Track 划分（供实施记录引用）
@@ -171,6 +176,8 @@ POST  /v1/cron/jobs/{id}/reset       needs_human_review → idle
 | H | SSE 事件推送（`CRON_JOB_FINISHED`） | 已完成 |
 | I | `CronConfig` 正式配置字段 + `agent_config.json` 覆盖 | 已完成 |
 | J | 单元测试 | 已完成（23 项，见实施记录） |
+| K | `config.json` 缺省字段实时回退全局 `CronConfig`（不止首次创建生效） | 已完成 |
+| L | 看板"新建 cron job"表单 schedule 格式前置校验 | 已完成 |
 
 ## 4. 风险与已知局限
 

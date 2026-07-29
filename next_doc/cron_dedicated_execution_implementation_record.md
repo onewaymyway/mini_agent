@@ -1,8 +1,9 @@
 # Cron 任务专属执行机制 实施记录
 
 > 对应方案：`next_doc/cron_dedicated_execution_improvement_plan.md`
-> 当前状态：Track A-J 全部完成（两轮提交），核心执行链路、REST API、看板
-> tab、正式配置字段、单元测试均已落地并通过验证。
+> 当前状态：Track A-L 全部完成（三轮提交），核心执行链路、REST API、看板
+> tab、正式配置字段、`config.json` 缺省字段实时合并、schedule 格式前置
+> 校验、单元测试均已落地并通过验证。
 
 ## 第一轮：核心执行链路 + REST/看板集成
 
@@ -109,6 +110,45 @@
   `skills/__init__.py` 里 `_auto_activate_blocked` 属性名不一致的**既有
   bug**，与本次改动无关（未触碰该文件），不是回归
 
+## 第三轮：config.json 缺省字段实时回退 + 看板 schedule 格式前置校验
+
+对应第二轮遗留的"剩余工作 #2"和"剩余工作 #4"（原始条目见本节末尾的历史
+记录）。
+
+### 修改文件
+
+| 文件 | 改动 |
+|---|---|
+| `src/mini_agent/evolution/cron_job_workspace.py` | `CronJobConfig.from_dict()` 新增 `default` 参数：字段缺省时回退到传入的 `default`（不传则回退硬编码默认值，向后兼容）；`CronJobWorkspace.read_config()` 新增同名 `default` 参数并透传，JSON 文件缺失/损坏时也回退到 `default` |
+| `src/mini_agent/evolution/cron_job_executor.py` | `run_job()` 里 `ws.read_config()` 改为 `ws.read_config(default=default_config)`——`default_config`（调用方根据全局 `AppConfig.cron` 构造）现在既用于 `ensure()` 首次创建，也用于每次读取时的缺省字段合并 |
+| `apps/mini_agent_kanban/app.py` | 两处"新建 cron job"表单（`render_cron_jobs_tab` 和目标看板顶部的精简版）提交前调用新增的 `validate_schedule()` 做格式校验，不合法直接在表单内提示，不再发起后端请求 |
+
+### 新增文件
+
+| 文件 | 作用 |
+|---|---|
+| `tests/test_cron_schedule_validation.py` | `validate_schedule()` 的 19 项单元测试：`interval:`/`cron:` 各自的合法/非法格式、空字符串、未知前缀、首尾空白容错 |
+
+### 新增函数
+
+`src/mini_agent/evolution/cron_scheduler.py::validate_schedule(schedule: str) -> Optional[str]`：
+纯格式校验（不校验取值范围是否有意义，比如 `cron:99 * * * *` 这种"字段
+永远不命中"的情况不拦截，运行时会自然退化成"这个 job 实际跑不起来"，
+留给用户在看板上观察 `next_run_at`）。合法返回 `None`，非法返回中文
+错误提示字符串。`CronScheduler.compute_next_run()` 本身对不合法输入
+仍保留原有的静默退化兜底（`interval:abc` → 默认 3600 秒；`cron:` 字段数
+不对 → 1 小时后），不因为校验函数的存在而改变运行时容错策略——两者
+分工："提交前"用 `validate_schedule()` 拦截明显错误，"运行时"继续用
+原有兜底保证不崩溃。
+
+### 验证
+
+- `python3 -m py_compile` 全量 `src/mini_agent` + `apps/mini_agent_kanban/app.py` 通过
+- `pytest tests/test_cron_job_workspace_and_executor.py tests/test_cron_schedule_validation.py` — 42/42 通过（原 23 项 + `read_config` 缺省合并新增 3 项 + `validate_schedule` 新增 19 项）
+- 手动核对：`CronJobConfig(**asdict(default))` 构造新实例避免修改调用方传入的
+  `default` 对象；`read_config()` 不传 `default` 时的返回值与改动前完全一致
+  （回归安全）
+
 ## 剩余工作 / 后续可选项
 
 以下均为可选的进一步优化，不影响当前功能闭环：
@@ -119,11 +159,8 @@
    `state.json` 里加一个自由格式的 `checkpoint_data: dict` 字段，由任务
    自己的 prompt 约定写入/读取格式，本轮的 `CronJobState` 数据类预留了
    扩展空间（加字段即可，向后兼容）。
-2. **`config.json` 热更新到已存在的 job**：目前 `CronConfig`（全局）只影响
-   **首次创建**某个 job 时写入的 `config.json`，已存在的不受影响。如果
-   需要"改一次全局配置，让所有 job 立即生效"，需要额外做一次批量迁移
-   脚本或者改成"缺省字段回退全局值"的合并读取逻辑（当前是"整份覆盖或
-   整份不覆盖"）。
+2. ~~**`config.json` 热更新到已存在的 job**~~ — 第三轮已解决，见上方
+   「config.json 缺省字段实时回退」。
 3. **`CronJobRunner`/`cron_agent_bridge` 的集成测试**：当前单元测试覆盖
    了 `cron_job_workspace`/`cron_job_executor` 两个不依赖真实 LLM 的纯
    Python 模块；`cron_agent_bridge.build_cron_agent()`（依赖真实 Agent/
@@ -131,8 +168,5 @@
    目前只做过人工冒烟验证，建议后续用 mock LLM client 补一版集成测试，
    或者先用 `interval:60` 这类短周期 job 在真实 daemon 里跑一轮观察
    `.agent/cron_jobs/<id>/state.json` 和 `runs/*.jsonl` 是否符合预期。
-4. **看板"新建 cron job"表单的 schedule 格式校验**：目前 `render_cron_jobs_tab`
-   里新建表单对 `schedule` 字段（`interval:<秒>` / `cron:<表达式>`）只做了
-   非空校验，没有做格式合法性的前端校验，格式错误目前依赖后端
-   `CronScheduler`/`add_cron_job` 返回错误信息展示给用户，体验上可以更
-   前置一些（非阻塞性优化）。
+4. ~~**看板"新建 cron job"表单的 schedule 格式校验**~~ — 第三轮已解决，
+   见上方「看板 schedule 格式前置校验」。
