@@ -1,9 +1,9 @@
 # Cron 任务专属执行机制 实施记录
 
 > 对应方案：`next_doc/cron_dedicated_execution_improvement_plan.md`
-> 当前状态：Track A-L 全部完成（三轮提交），核心执行链路、REST API、看板
+> 当前状态：Track A-M 全部完成（四轮提交），核心执行链路、REST API、看板
 > tab、正式配置字段、`config.json` 缺省字段实时合并、schedule 格式前置
-> 校验、单元测试均已落地并通过验证。
+> 校验、`cron_agent_bridge`/`CronJobRunner` 集成测试均已落地并通过验证。
 
 ## 第一轮：核心执行链路 + REST/看板集成
 
@@ -149,6 +149,48 @@
   `default` 对象；`read_config()` 不传 `default` 时的返回值与改动前完全一致
   （回归安全）
 
+## 第四轮：cron_agent_bridge / CronJobRunner 集成测试
+
+对应第二轮遗留的「剩余工作 #3」。之前 `cron_job_workspace`/
+`cron_job_executor` 已有 26 项纯 Python 单元测试，但 `cron_agent_bridge.
+build_cron_agent()`（依赖真实 Agent/LLM client 构造）和 `cron_job_runner.
+CronJobRunner`（依赖真实线程调度）只做过人工冒烟验证。本轮补齐：
+
+### 新增文件
+
+| 文件 | 作用 |
+|---|---|
+| `tests/test_cron_agent_bridge.py` | `make_submit_step_fn()` 的 9 项单元测试：用最小假 Agent（只实现 `run_turn()` / `_last_turn_hit_max_turns`）隔离测试 `[CRON_DONE]`/`[CRON_CONTINUE]` 标记解析优先级、`_last_turn_hit_max_turns` 兜底判断、`run_turn()` 抛异常时的降级、prompt 逐步透传。不覆盖 `build_cron_agent()` 本身（仍然依赖真实 `load_config`/`create_client`，留给真实 daemon 冒烟验证，风险主要在配置装配而非本模块的判定逻辑） |
+| `tests/test_cron_job_runner.py` | `CronJobRunner` 的 7 项集成测试：`monkeypatch` 掉 `cron_agent_bridge.build_cron_agent`/`make_submit_step_fn` 和 `cron_job_executor.CronJobExecutor`（换成不依赖真实 LLM 的假实现），只验证 `CronJobRunner` 自己负责的调度语义——见下方清单 |
+
+### 单元测试清单
+
+**`tests/test_cron_agent_bridge.py`（9 项）**
+- `test_cron_done_marker_marks_done` / `test_cron_continue_marker_marks_not_done` / `test_cron_done_takes_priority_when_both_markers_present`
+- `test_no_marker_and_natural_end_marks_done` / `test_no_marker_and_hit_budget_marks_not_done` / `test_missing_hit_max_turns_attribute_defaults_to_done`
+- `test_run_turn_exception_returns_error_result_not_raise` / `test_empty_response_text_handled_gracefully`
+- `test_prompt_text_forwarded_verbatim_to_run_turn`
+
+**`tests/test_cron_job_runner.py`（7 项）**
+- `test_submit_returns_true_and_runs_in_background` — `submit()` 立即返回，真正执行在后台线程
+- `test_duplicate_submit_while_running_is_rejected` — 同一 job 还在跑时二次 `submit()` 被拒绝，执行结束后可以再次提交
+- `test_concurrency_limit_is_respected` — 5 个 job、`max_concurrent=2`，观察到的并发峰值不超过上限，且确实达到了上限（不是"因为太快而没测出来"）
+- `test_on_finished_callback_invoked_with_outcome` — 回调收到正确的 `job_id`/`RunOutcome`
+- `test_on_finished_exception_does_not_crash_thread` — 回调自身抛异常不会导致 `_running_job_ids` 卡住不释放
+- `test_build_cron_agent_exception_marks_needs_human_review` — `build_cron_agent()` 构造阶段抛异常时，`CronJobWorkspace` 状态被兜底标记为 `needs_human_review` 并记录 `last_error`
+- `test_global_cron_config_forwarded_as_default_config` — `base_cfg.cron` 的 `default_timeout_seconds`/`default_max_steps` 正确转换成 `CronJobConfig` 并透传给 `executor.run_job()`
+
+两个新文件都通过 `pytest`（各自 fixture 里用 `monkeypatch.setattr` 替换掉
+`cron_agent_bridge`/`cron_job_executor` 模块级的函数/类）隔离掉真实 LLM
+调用和网络依赖，纯粹测 `CronJobRunner`/`make_submit_step_fn` 自己的逻辑
+（线程管理、并发信号量、去重、异常兜底、标记解析优先级）。
+
+### 验证
+
+- `python3 -m py_compile` 全量 `src/mini_agent` + 两个新测试文件通过
+- `pytest tests/test_cron_job_workspace_and_executor.py tests/test_cron_schedule_validation.py tests/test_cron_agent_bridge.py tests/test_cron_job_runner.py` — 58/58 通过
+- `test_cron_job_runner.py` 单独重复运行 3 次确认无 flaky（线程/信号量相关测试容易因为时序问题偶发失败，用 `threading.Event`/轮询等待替代固定 `sleep` 时长来减少这个风险）
+
 ## 剩余工作 / 后续可选项
 
 以下均为可选的进一步优化，不影响当前功能闭环：
@@ -158,15 +200,15 @@
    （比如"已处理到第 N 条记录"这种需要精确恢复点的场景），可以在
    `state.json` 里加一个自由格式的 `checkpoint_data: dict` 字段，由任务
    自己的 prompt 约定写入/读取格式，本轮的 `CronJobState` 数据类预留了
-   扩展空间（加字段即可，向后兼容）。
-2. ~~**`config.json` 热更新到已存在的 job**~~ — 第三轮已解决，见上方
-   「config.json 缺省字段实时回退」。
-3. **`CronJobRunner`/`cron_agent_bridge` 的集成测试**：当前单元测试覆盖
-   了 `cron_job_workspace`/`cron_job_executor` 两个不依赖真实 LLM 的纯
-   Python 模块；`cron_agent_bridge.build_cron_agent()`（依赖真实 Agent/
-   LLM client 构造）和 `cron_job_runner.CronJobRunner`（依赖真实线程调度）
-   目前只做过人工冒烟验证，建议后续用 mock LLM client 补一版集成测试，
-   或者先用 `interval:60` 这类短周期 job 在真实 daemon 里跑一轮观察
-   `.agent/cron_jobs/<id>/state.json` 和 `runs/*.jsonl` 是否符合预期。
+   扩展空间（加字段即可，向后兼容）。这是唯一仍未落地的条目，且属于
+   "按需再做"性质——目前没有实际 cron 任务场景要求精确恢复点。
+2. ~~**`config.json` 热更新到已存在的 job**~~ — 第三轮已解决，见「config.json
+   缺省字段实时回退」。
+3. ~~**`CronJobRunner`/`cron_agent_bridge` 的集成测试**~~ — 第四轮已解决，
+   见上方「cron_agent_bridge / CronJobRunner 集成测试」。仍未覆盖的是
+   `build_cron_agent()` 本身（真实 `load_config`/`create_client` 装配），
+   如果后续想要更强的信心，可以在真实项目目录下跑一个 `interval:60`
+   的短周期 job，观察 `.agent/cron_jobs/<id>/state.json` 和
+   `runs/*.jsonl` 是否符合预期（这一步无法脱离真实 LLM/网络环境）。
 4. ~~**看板"新建 cron job"表单的 schedule 格式校验**~~ — 第三轮已解决，
-   见上方「看板 schedule 格式前置校验」。
+   见「看板 schedule 格式前置校验」。
