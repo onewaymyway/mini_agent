@@ -279,6 +279,27 @@ def inject_css():
     background: #2D1B00; border: 1px solid #FF7043; border-radius: 10px;
     padding: 12px; margin: 8px 0;
 }
+
+/* 顶部 tab 切换栏（st.tabs）在窗口不够宽时默认是横向滚动、超出部分被
+   遮住看不见（不是真的换行）。这里强制 tab-list 换行展示，宽度不够时
+   自动变成多行，不再需要横向滚动才能看到剩下的 tab；同时隐藏原本用来
+   横向滚动的左右箭头按钮（换行之后不再需要）。选择器同时覆盖
+   data-baseweb 和 data-testid 两种属性，兼容不同 streamlit 版本的
+   DOM 结构差异。 */
+div[data-testid="stTabs"] [data-baseweb="tab-list"],
+div[data-testid="stTabs"] div[role="tablist"] {
+    flex-wrap: wrap !important;
+    overflow-x: visible !important;
+    row-gap: 4px;
+}
+div[data-testid="stTabs"] button[data-baseweb="tab"],
+div[data-testid="stTabs"] button[role="tab"] {
+    white-space: nowrap;
+    flex: 0 0 auto;
+}
+div[data-testid="stTabs"] button[data-testid="stTabsScrollButton"] {
+    display: none !important;
+}
 </style>
 """, unsafe_allow_html=True)
 
