@@ -1,0 +1,17 @@
+# .agent/notification/report_tiers.yaml — 分级汇报 tier 配置样例（P3）
+# 设计背景见 next_doc/watchlist_notification_goal_design.md §3.2。
+# 复制为 report_tiers.yaml 并按需增删 tier 即可生效（daemon 重启后自动
+# 补注册对应的 sys:watchlist_report_<id> cron job，缺失才补、不重复）。
+tiers:
+  - id: minute_1
+    schedule: "interval:60"
+    notify_channels: [kanban]
+  - id: minute_30
+    schedule: "interval:1800"
+    notify_channels: [kanban]
+  - id: hourly
+    schedule: "interval:3600"
+    notify_channels: [kanban]
+  - id: daily
+    schedule: "cron:0 22 * * *"
+    notify_channels: [kanban, email]

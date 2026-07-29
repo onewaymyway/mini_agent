@@ -1,6 +1,6 @@
 # 外部输入网关扩展设计方案：关注对象 · 分级汇报 · 通知系统 · Goal 关联执行
 
-- **版本**: v1.2（P1/P2 已实施；§9 评审改进点持续在对应实施阶段吸收，见 §6 状态列）
+- **版本**: v1.3（P1/P2/P3 已实施；§9 评审改进点持续在对应实施阶段吸收，见 §6 状态列）
 - **背景**: 在已有的 External Input Gateway（`src/mini_agent/external_input/`）基础上，
   新增"用户关注对象识别"、"按任意粒度分级汇报"、"可扩展通知渠道"、
   "外部信号驱动 Goal 执行" 四块能力。
@@ -409,7 +409,7 @@ class NotificationDispatcher:
 |---|---|---|---|
 | **P1** | `NotificationDispatcher` 骨架 + kanban/email 两个渠道 | 新增 `src/mini_agent/notification/{__init__,dispatcher,config,channels/__init__,channels/kanban,channels/email}.py`；新增 `.agent/notification/config.yaml` 样例；新增 `tests/test_notification_dispatcher.py` | ✅ 已实施（吸收 §9.3 #8 kanban 隐式兜底、§9.3 #10 source 字段、§9.4 #12 gitignore） |
 | **P2** | `watchlist.yaml` 加载 + `WatchlistMatcher`（纯规则匹配 + 去重 + 写 pending_hits） | 新增 `src/mini_agent/external_input/watchlist.py`、`src/mini_agent/external_input/filelock.py`；新增 `.agent/external_input/watchlist.yaml` 样例；`storage/paths.py` 新增路径属性；`evolution/autonomous_loop.py::_tick_passive()` 接入消费点；新增 `tests/test_watchlist_matcher.py` | ✅ 已实施（吸收 §9.1 #1 pending_hits 加锁、§9.2 #6 去重窗口可配置） |
-| **P3** | `report_tiers.yaml` 加载 + 动态注册 `sys:watchlist_report_<id>` cron job + 消费 pending_hits 生成摘要并 dispatch | 新增 `src/mini_agent/external_input/report_tiers.py`；修改 `evolution/cron_scheduler.py`（支持"按配置动态追加内置 job"）；新增 `.agent/notification/report_tiers.yaml` | ⏳ 待实施 |
+| **P3** | `report_tiers.yaml` 加载 + 动态注册 `sys:watchlist_report_<id>` cron job + 消费 pending_hits 生成摘要并 dispatch | 新增 `src/mini_agent/external_input/report_tiers.py`；修改 `evolution/cron_scheduler.py`（新增 `register_local_handler`/`ensure_job`，支持"零 LLM 成本"的本地回调 job，区别于原有走 `submit_fn`→`InputQueue`→LLM turn 的 job）；修改 `storage/paths.py`（新增 `notification_report_tiers_config`/`notification_tier_state` 路径）；修改 `api/server.py::_build_autonomous_loop`（daemon 启动时调用 `ensure_report_tier_jobs`）；新增 `.agent/notification/report_tiers.yaml.example`；新增 `tests/test_report_tiers.py` | ✅ 已实施（吸收 §9.1 #1 pending_hits 加锁复用、§9.3 #9 单组摘要条数上限、§9.2 #7 高频 tier 空转节流、§8 开放项 2 缺失才补注册） |
 | **P4** | `GoalRelevanceEngine` Stage①（候选生成，规则层，接入 `tick()`） | 新增 `src/mini_agent/external_input/goal_relevance.py`；修改 `evolution/autonomous_loop.py`（`_tick_maintenance()` 里新增一个消费点，跟 `run_ingestion_policy_once` 同级） | ⏳ 待实施 |
 | **P5** | `GoalRelevanceEngine` Stage②（LLM 批量判定 + `attach_external_context`/`try_advance_goal`） | 修改 `perception/goal_backlog.py`（新增字段+方法）；修改 `src/mini_agent/external_input/goal_relevance.py`；新增 `sys:goal_relevance_judge` cron job；修改 `api/server.py`（提供 llm_helper 给判定函数，风格对齐 `_llm_decompose` 的现有接线方式） | ⏳ 待实施 |
 | **P6** | Prompt 精确注入（decompose/redecompose） | 修改 `evolution/objective_executor.py::_default_llm_decompose/_default_llm_redecompose` | ⏳ 待实施 |
@@ -589,3 +589,54 @@ P1-P8 顺序。
 （本文档 §1-§8 为设计确认稿，§9 为实施前评审补充；后续若采纳其中的改进点，
 在对应实施阶段的提交里同步更新此文档相应小节的状态即可，不需要再单独维护
 一份评审清单。）
+
+---
+
+## 10. P3 实施记录（补充说明，不改动 §1-§9 原文）
+
+### 10.1 CronScheduler 需要一条新的"本地回调"执行路径
+
+§6 P3 原表述"复用 CronScheduler 现有的 job 模型"在实施时发现需要补一个
+细节：现有 `CronScheduler._fire()` 只有一条路径——调用 `submit_fn` 把
+`task_template` 提交进 `InputQueue`，最终变成一次 LLM turn。这条路径
+天然不是"零 LLM 成本"的，直接拿来跑 `sys:watchlist_report_<tier>` 会
+违背 §7 "唯一引入 LLM 调用的环节是 GoalRelevanceEngine Stage②" 这条
+成本边界。
+
+实施方案：给 `CronScheduler` 新增 `register_local_handler(job_id, fn)` +
+`ensure_job(...)`：
+- `register_local_handler` 注册的回调在 `_fire()` 里**优先于** `submit_fn`
+  被调用，命中则直接在本进程内执行、不经过 `InputQueue`，因此不产生
+  LLM 调用；
+- `ensure_job` 是 `add_job`（用户手动加 job，`user:` 前缀）之外的另一条
+  注册路径，专门给"配置文件驱动、缺失才补"的内置 job 用（`sys:` 前缀，
+  语义上跟 `_BUILTIN_JOBS` 首次注入的处理方式一致，但触发时机是
+  daemon 启动时按 `report_tiers.yaml` 动态算出来的，不是写死在
+  `_BUILTIN_JOBS` 常量里）。
+
+这套机制跟 §6 P3 原定的"复用 CronScheduler 现有的 job 模型"没有冲突——
+job 的存储结构（`CronJob`/`cron_jobs.json`）、治理规则（`sys:` 前缀不可
+删除只可 disable）、`/cron status` 等既有查询命令完全复用，只是新增了
+一种"触发后不产生 LLM turn"的执行方式，为以后其它"确定性、不需要 LLM
+参与"的内置 job（不仅限于本次的分级汇报）提供了通用能力。
+
+### 10.2 §9 改进点吸收情况（P3 范围内）
+
+- **§9.1 #1**（`pending_hits.jsonl` 并发写竞态）：`consume_tier_once()`
+  的"读整个文件→改→整体重写"和 `WatchlistMatcher` 的追加写共享同一把
+  `ExclusiveFileLock`（P2 已引入的 `filelock.py`），未额外新造锁。
+- **§9.2 #7**（高频 tier 空转节流）：已实现，连续 5 次空转后退化到
+  5 分钟才真正读一次文件，`tier_state.json` 记录每个 tier 的连续空转
+  计数，一旦有新命中立即清零恢复原频率。
+- **§9.3 #9**（单次摘要条数上限）：`_build_summary_markdown()` 里
+  `MAX_ITEMS_PER_GROUP=20`，超出部分显示"及其余 N 条"。
+- **§8 开放项 2**（tier 新增后 job 如何补注册）：`ensure_report_tier_jobs()`
+  在 daemon 启动时按 `report_tiers.yaml` 逐个检查，缺失才补、已存在不
+  覆盖用户手动改过的 schedule/enabled。
+- 未在 P3 范围内处理、留给后续阶段：§9.1 #2/#3（候选队列/`external_context`
+  的锁复用，属于 P5）、§9.2 #4/#5（冷却限流取舍说明、候选队列止损上限，
+  属于 P4/P5）、§9.2 #6（去重窗口，已在 P2 处理，见 P2 状态列）、
+  §9.3 #8/#10（kanban 隐式兜底、source 字段区分，已在 P1 处理）、
+  §9.4（安全边界，属于 P1/P4/P5）、§9.5（可观测性/dry-run，属于
+  P3/P5/P7，本次只完成了 P3 部分的空转节流，尚未加运行时计数器，留待
+  与 P5/P7 一起做，避免只做一半的指标体系）。

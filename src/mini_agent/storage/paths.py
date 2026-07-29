@@ -696,6 +696,21 @@ class AgentPaths:
         return self.notification_dir / "config.yaml"
 
     @property
+    def notification_report_tiers_config(self) -> Path:
+        """<project_root>/.agent/notification/report_tiers.yaml — 分级汇报 tier
+        配置（P3 新增），见 next_doc/watchlist_notification_goal_design.md
+        §3.2。daemon 启动时按这份配置动态补注册
+        sys:watchlist_report_<tier_id> cron job。"""
+        return self.notification_dir / "report_tiers.yaml"
+
+    @property
+    def notification_tier_state(self) -> Path:
+        """<project_root>/.agent/notification/tier_state.json — 每个 tier 的
+        运行时状态（连续空转计数，用于 §9.2 #7 高频 tier 空转节流），
+        P3 新增，纯运维态数据，不属于用户配置。"""
+        return self.notification_dir / "tier_state.json"
+
+    @property
     def sessions_dir(self) -> Path:
         """<project_root>/.agent/sessions/ — 所有 session 的根目录"""
         return self.workdir_dir / "sessions"

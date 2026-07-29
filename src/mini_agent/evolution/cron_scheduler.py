@@ -357,6 +357,52 @@ class CronScheduler:
         self._digest_advisor_cfg = digest_advisor_cfg
         self._jobs: dict[str, CronJob] = {}
         self._jobs_path = paths.workdir_dir / "cron_jobs.json"
+        # P3 新增：本地回调 handler（job_id -> Callable[[CronJob], bool]）。
+        # 跟 submit_fn（提交到 InputQueue，走一次 LLM turn）不是一回事——
+        # 有些内置 job（比如 sys:watchlist_report_<tier>）本质是"纯 Python
+        # 读文件/发通知"，不应该产生任何 LLM 调用（见
+        # next_doc/watchlist_notification_goal_design.md §7"零 LLM 成本"）。
+        # _fire() 优先查本地 handler，命中则直接调用、不走 submit_fn。
+        self._local_handlers: dict[str, Callable[["CronJob"], bool]] = {}
+
+    def register_local_handler(self, job_id: str, handler: Callable[["CronJob"], bool]) -> None:
+        """注册一个纯本地回调，触发到期时直接调用 handler(job) -> bool，
+        不经过 submit_fn/InputQueue，因此不产生 LLM 调用。用于 P3
+        report_tiers 这类"读文件→发通知"的确定性任务。"""
+        self._local_handlers[job_id] = handler
+
+    def ensure_job(
+        self,
+        job_id: str,
+        name: str,
+        schedule: str,
+        description: str = "",
+        tags: Optional[list[str]] = None,
+    ) -> CronJob:
+        """确保某个 sys: job 存在（缺失才补，已存在不重复/不覆盖用户改过的
+        schedule/enabled），用于 report_tiers.yaml 变更后动态补注册
+        sys:watchlist_report_<tier_id>（见 §6 P3、§8 开放项 2：
+        "自动补注册、缺失才补，已存在不重复"）。已存在时只在 schedule
+        发生变化（用户在 report_tiers.yaml 里改了 tier 的 schedule）且该
+        job 从未被用户手动 disable 过的情况下才更新 schedule，避免覆盖
+        用户通过 /cron 做的手动调整。"""
+        existing = self._jobs.get(job_id)
+        if existing is None:
+            job = CronJob(
+                id=job_id,
+                name=name,
+                schedule=schedule,
+                task_template="",
+                description=description,
+                tags=tags or ["notification"],
+                enabled=True,
+                initiator="cron",
+                next_run_at=compute_next_run(schedule, 0.0),
+            )
+            self._jobs[job_id] = job
+            self.save()
+            return job
+        return existing
 
     # ── 持久化 ────────────────────────────────────────────────────────────────
 
@@ -478,7 +524,16 @@ class CronScheduler:
         return triggered
 
     def _fire(self, job: CronJob) -> bool:
-        """触发一个 Job：调用 submit_fn 提交到 InputQueue。"""
+        """触发一个 Job：本地 handler 优先（零 LLM 成本），否则走 submit_fn
+        提交到 InputQueue（产生一次 LLM turn）。"""
+        handler = self._local_handlers.get(job.id)
+        if handler is not None:
+            try:
+                return bool(handler(job))
+            except Exception as _mini_agent_exc:
+                from mini_agent.errors import log_exception
+                log_exception(_mini_agent_exc, where='mini_agent.evolution.cron_scheduler.CronScheduler._fire.local_handler')
+                return False
         if self._submit_fn is None:
             return False
         try:

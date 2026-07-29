@@ -1056,6 +1056,17 @@ class HttpServer:
                 digest_advisor_cfg=getattr(cfg, "digest_advisor", None),
             )
 
+            # P3：按 .agent/notification/report_tiers.yaml 动态补注册
+            # sys:watchlist_report_<tier_id> job + 本地回调 handler（零 LLM
+            # 成本），见 next_doc/watchlist_notification_goal_design.md §6 P3。
+            # report_tiers.yaml 不存在或为空时 tiers 为空列表，不影响其余功能。
+            try:
+                from mini_agent.external_input.report_tiers import ensure_report_tier_jobs
+                ensure_report_tier_jobs(paths, cron_scheduler)
+            except Exception as _mini_agent_exc:
+                from mini_agent.errors import log_exception
+                log_exception(_mini_agent_exc, where='mini_agent.api.server.HttpServer._build_autonomous_loop.ensure_report_tier_jobs')
+
             # ── ObjectiveExecutor ────────────────────────────────────────────
             def _obj_submit(message: str, initiator: str, meta: dict):
                 """提交自主步骤到 InputQueue，返回 turn_id。"""
