@@ -1,0 +1,29 @@
+# .agent/external_input/watchlist.yaml — 关注对象配置样例（P2）
+# 设计背景见 next_doc/watchlist_notification_goal_design.md §3.1。
+# 复制为 watchlist.yaml 并按需增删条目即可生效（WatchlistMatcher 独立
+# consumer，跟 IngestionPolicy 一样挂在 AutonomousLoop.tick() 的
+# maintenance 档位，不需要重启 daemon —— 下次 tick 就会读取新配置）。
+
+watchlist:
+  - id: competitor_launch
+    keywords: ["某竞品发布", "CompetitorA release"]   # 大小写不敏感子串匹配，标题+详情一起比对
+    match_type: keyword          # 目前只支持 keyword，regex 占位未实现
+    report_tier: minute_1        # 必须引用 report_tiers.yaml 里已存在的 tier id
+    notify_channels: []          # 留空则用该 tier 的默认渠道
+    scope:
+      source_channels: []        # 限定只在这些 source channel 里生效；空=不限
+    dedup_window_seconds: 86400  # 可选，覆盖默认的 24 小时去重窗口
+    enabled: true
+
+  - id: industry_keyword
+    keywords: ["行业关键词A", "行业关键词B"]
+    report_tier: daily           # 不那么紧急的关注，走每日汇报即可
+    enabled: true
+
+  # 暂时不想看的关注项，不需要删除，改 enabled: false 即可，
+  # /v1/notification/watchlist 只读端点/看板"👀 关注对象"面板都会展示，
+  # 不会因为 disabled 就完全消失看不到。
+  - id: paused_topic
+    keywords: ["暂停关注的话题"]
+    report_tier: daily
+    enabled: false

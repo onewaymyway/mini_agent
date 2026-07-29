@@ -29,6 +29,9 @@ External Input Gateway 已经能把外部世界的事件（RSS/网页 diff/天�
 
 ## 2. 配置关注对象：`.agent/external_input/watchlist.yaml`
 
+复制 `.agent/external_input/watchlist.yaml.example` 为 `watchlist.yaml`
+并按需增删：
+
 ```yaml
 watchlist:
   - id: competitor_launch
@@ -80,6 +83,9 @@ tiers:
   `sys:` 前缀的 job 不可删除，只能 `/cron disable <job_id>`。
 
 ## 4. 配置通知渠道：`.agent/notification/config.yaml`
+
+复制 `.agent/notification/config.yaml.example` 为 `config.yaml` 并按需
+修改（该文件已加入 `.gitignore`，不存在时全部使用代码内置默认值）：
 
 ```yaml
 default_channels: [kanban]
@@ -228,7 +234,9 @@ Goal"的入口：
 | `src/mini_agent/storage/paths.py` | `notification_dispatch_log` 等路径属性 |
 | `apps/mini_agent_kanban/client.py` | `notification_watchlist/report_tiers/dispatch_log()` 客户端方法（P7） |
 | `apps/mini_agent_kanban/app.py` | "🔔 关注与通知" tab + Goal 卡片"🔗相关外部信息"面板（P7） |
-| `.agent/external_input/watchlist.yaml` | 用户关注对象配置（需自行创建） |
+| `.agent/external_input/watchlist.yaml` | 用户关注对象配置（复制 `.example` 后使用） |
+| `.agent/external_input/watchlist.yaml.example` | 关注对象配置样例（本轮新增，此前 P2 只在文档里给示例、没有落地文件） |
 | `.agent/notification/report_tiers.yaml` | 分级汇报 tier 配置（复制 `.example` 后使用） |
 | `.agent/notification/config.yaml` | 通知渠道配置（含密钥、`goal_advance_cooldown_seconds`，已 gitignore） |
-| `.agent/notification/dispatch_log.jsonl` | 通知发送记录（运行时生成，P7 新增） |
+| `.agent/notification/config.yaml.example` | 通知渠道配置样例（本轮新增，同上，含 P5 新增的 `goal_advance_cooldown_seconds` 说明） |
+| `.agent/notification/dispatch_log.jsonl` | 通知发送记录（运行时生成，P7 新增，本轮补充 gitignore） |

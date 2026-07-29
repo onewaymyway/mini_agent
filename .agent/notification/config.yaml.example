@@ -1,0 +1,29 @@
+# .agent/notification/config.yaml — 通知渠道配置样例（P1，goal_advance_cooldown_seconds 为 P5 新增）
+# 设计背景见 next_doc/watchlist_notification_goal_design.md §3.3/§4.4。
+# 复制为 config.yaml 后按需修改；该文件已加入 .gitignore（可能含密钥），
+# 不存在时全部使用代码内置默认值（default_channels=[kanban]，
+# goal_advance_cooldown_seconds=21600）。
+
+default_channels: [kanban]
+
+channels:
+  kanban:
+    enabled: true            # 恒真兜底渠道，这一行写不写都一样，不可关闭
+  email:
+    enabled: false
+    smtp_host: "smtp.example.com"
+    smtp_port: 465
+    use_ssl: true
+    # 密钥类字段支持 ${ENV:VAR_NAME} 占位符，运行时从环境变量读取，
+    # 不要把真实密码直接写在这个文件里（即便已经 gitignore）。
+    username: "${ENV:MINI_AGENT_SMTP_USER}"
+    password: "${ENV:MINI_AGENT_SMTP_PASSWORD}"
+    from_addr: "mini-agent@example.com"
+    to_addrs: ["you@example.com"]
+
+# [P5 新增] GoalRelevanceEngine::try_advance_goal 的冷却期（秒）。同一个
+# Goal 被"主动拉起"之后，这段时间内即便又出现新的相关外部信息，也只会
+# 挂到 external_context 上、不会重复触发 set_status(active)/enqueue_turn。
+# 默认 21600 秒 = 6 小时，是"宁可漏判也不过度打扰"取舍下的默认值，不是
+# 精确计算出来的，可按实际使用体验调整（见设计文档 §9.2 #4）。
+goal_advance_cooldown_seconds: 21600

@@ -1,6 +1,8 @@
 # 外部输入网关扩展设计方案：关注对象 · 分级汇报 · 通知系统 · Goal 关联执行
 
-- **版本**: v1.7（P1-P7 全部已实施；P5 实施前复查修复了 P3 遗留的
+- **版本**: v1.8（P1-P7 全部已实施；补齐 `watchlist.yaml.example`/
+  `config.yaml.example` 两个配置样例文件及对应 `.gitignore` 条目，详见
+  §15；P5 实施前复查修复了 P3 遗留的
   `CronScheduler.ensure_job`/`register_local_handler` 方法缺失问题，
   详见 §12.1；§9 评审改进点已在对应实施阶段全部吸收，见 §6 状态列）
 - **背景**: 在已有的 External Input Gateway（`src/mini_agent/external_input/`）基础上，
@@ -912,3 +914,31 @@ HttpServer）。覆盖：三个端点在配置文件缺失时都返回空列表�
 `watchlist.yaml`/`report_tiers.yaml`，或者给 `dispatch_log.jsonl` 加一个
 按渠道筛选的查询参数——建议另开一轮设计评审，不在本文档基础上直接改，
 保持这份文档作为 P1-P7 阶段性交付记录的完整性。）
+
+## 15. 配置样例补齐（P1-P7 全部实施完成后的收尾复查）
+
+实施完 P7 后做了一次收尾复查（对照 §3 数据模型和 §6 实施表逐项核对
+"文档里写了 yaml 该长什么样，仓库里有没有对应的可复制样例文件"），
+发现两处不一致：
+
+- `watchlist.yaml`（P2）：设计文档 §3.1 和使用指南 §2 都给了完整的
+  yaml 示例，但仓库里一直没有对应的 `watchlist.yaml.example` 文件——
+  跟 `report_tiers.yaml.example`（P3 一开始就有）比，这是遗漏，用户
+  只能照着文档手打或从 markdown 里复制代码块。
+- `config.yaml`（P1，`goal_advance_cooldown_seconds` P5 追加）：同样只有
+  文档里的示例，没有落地的 `config.yaml.example`。
+
+均已补齐：新增 `.agent/external_input/watchlist.yaml.example`、
+`.agent/notification/config.yaml.example`，内容跟使用指南 §2/§4 的示例
+保持一致（`config.yaml.example` 额外带上 P5 新增的
+`goal_advance_cooldown_seconds` 及其取舍说明的注释）；使用指南 §2/§4
+改为"复制 `.example` 为正式文件"的表述，跟 §3 对 `report_tiers.yaml`
+的表述方式统一。
+
+同时补充 `.gitignore`：`notification_dispatch_log`（P7 新增的运行时
+文件，之前遗漏未忽略）、以及 `external_input` 下三个运行时 jsonl
+（`pending_hits.jsonl`/`alerts.jsonl`/`goal_relevance_candidates.jsonl`）
+和 `state/` 目录——这几个都是纯运行时生成的数据，此前一直没有被忽略，
+只是因为本地测试环境里还没生成过所以没暴露出来；确认这几个路径目前
+在仓库里都不存在实际文件，添加 `.gitignore` 条目不会意外"取消跟踪"
+任何已提交内容。
