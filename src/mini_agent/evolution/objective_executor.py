@@ -861,10 +861,35 @@ class ObjectiveExecutor:
             s.result_summary for s in ex.steps[:step_idx] if s.result_summary
         ]
         remaining_descs = [s.description for s in ex.steps[step_idx:]]
+        # [watchlist_notification_goal_design.md §4.5，P6 新增] 只读取
+        # *这一个* objective 自己的 external_context，传给 redecompose_fn；
+        # 拿不到 goal_backlog 或找不到节点时退化为空列表，不影响原有行为。
+        external_context: list = []
+        if self._goal_backlog is not None:
+            try:
+                node = self._goal_backlog.get(ex.objective_id)
+                if node is not None:
+                    external_context = list(node.external_context or [])
+            except Exception as _mini_agent_exc:
+                from mini_agent.errors import log_exception
+                log_exception(_mini_agent_exc, where='mini_agent.evolution.objective_executor._attempt_redecompose.external_context')
         try:
             new_descs = self._llm_redecompose_fn(
                 ex.objective_title, completed_summaries, remaining_descs, failure_reason,
+                external_context=external_context,
             )
+        except TypeError:
+            # 向后兼容：调用方注入的 llm_redecompose_fn 若还是旧签名
+            # （不接受 external_context 关键字参数），退化为不传这个参数，
+            # 不影响未升级的自定义实现。
+            try:
+                new_descs = self._llm_redecompose_fn(
+                    ex.objective_title, completed_summaries, remaining_descs, failure_reason,
+                )
+            except Exception as _mini_agent_exc:
+                from mini_agent.errors import log_exception
+                log_exception(_mini_agent_exc, where='mini_agent.evolution.objective_executor._attempt_redecompose')
+                return False
         except Exception as _mini_agent_exc:
             from mini_agent.errors import log_exception
             log_exception(_mini_agent_exc, where='mini_agent.evolution.objective_executor._attempt_redecompose')
@@ -1147,6 +1172,47 @@ class ObjectiveExecutor:
 
 # ── 便捷函数 ──────────────────────────────────────────────────────────────────
 
+def _format_external_context_items(items: Optional[list], max_items: int = 5) -> str:
+    """[watchlist_notification_goal_design.md §4.5，P6 新增] 把一份
+    external_context 记录列表（每项 dict：title/snippet/occurred_at...）
+    格式化成一段可以拼进 prompt 的文本块，前后各带一个换行，方便直接嵌入
+    多行 f-string 中间而不破坏排版；没有记录时返回空字符串（不额外插入
+    空标题）。是 `_format_external_context`（读取 GoalNode）和
+    `_default_llm_redecompose`（直接传入记录列表）共享的底层实现。
+    """
+    items = list(items or [])
+    if not items:
+        return ""
+    recent = items[-max_items:]
+    lines = [f"相关外部信息（最近 {len(recent)} 条）："]
+    for item in recent:
+        occurred_at = item.get("occurred_at")
+        try:
+            ts = time.strftime("%Y-%m-%d %H:%M", time.localtime(float(occurred_at))) if occurred_at else ""
+        except (TypeError, ValueError, OverflowError):
+            ts = ""
+        title = item.get("title", "")
+        snippet = item.get("snippet", "")
+        prefix = f"[{ts}] " if ts else ""
+        lines.append(f"- {prefix}{title}：{snippet}")
+    return "\n" + "\n".join(lines) + "\n"
+
+
+def _format_external_context(node: "GoalNode", max_items: int = 5) -> str:
+    """[watchlist_notification_goal_design.md §4.5，P6 新增]
+
+    把 `node.external_context`（GoalRelevanceEngine Stage② 附加的外部信息，
+    见 goal_backlog.py::GoalNode.external_context）格式化成一段可以直接
+    拼进 prompt 的文本，只取**这一个** node 自己的记录（objective 层级没有
+    自己的 external_context 时，退化为空字符串，不会去读父 Goal 或其它
+    Objective 的数据——精确注入是本次设计的核心约束，见 §4.5："只在处理
+    这个 Goal 的任务里注入"）。
+
+    没有外部上下文时返回空字符串（不额外插入空标题，保持 prompt 干净）。
+    """
+    return _format_external_context_items(getattr(node, "external_context", None), max_items=max_items)
+
+
 def _default_llm_decompose(llm_helper, objective: "GoalNode") -> list[str]:
     """
     轻量 LLM 调用：将 Objective 拆解为步骤列表。
@@ -1160,12 +1226,17 @@ def _default_llm_decompose(llm_helper, objective: "GoalNode") -> list[str]:
     的真实签名是 (messages, system, tools)，不接受 max_tokens，会直接
     抛 TypeError，被下面的 except 吞掉，导致这个函数一直静默返回 []。
     改用 LLMHelper.ask() 后签名统一、自带重试，且不会再犯这个错误。
+
+    [watchlist_notification_goal_design.md §4.5，P6 新增] 若该 objective
+    自己的 `external_context` 非空，会紧跟"当前进展"之后追加进 prompt——
+    只取这一个 objective 自己的记录，不会把其它 Goal/Objective 的上下文
+    混进来（见 `_format_external_context`）。
     """
     prompt = f"""将以下目标拆解为 3-6 个具体的执行步骤，每步可在单次 Task 中完成。
 
 目标：{objective.title}
 当前进展：{objective.progress_notes or '无'}
-
+{_format_external_context(objective)}
 要求：
 1. 步骤之间有明确的先后依赖关系
 2. 每步有明确的完成标准
@@ -1237,6 +1308,7 @@ def _default_declare_paths(llm_helper, step_description: str) -> list[str]:
 
 def _default_llm_redecompose(
     llm_helper, objective_title: str, completed_summaries: list, remaining_descs: list, failure_reason: str,
+    external_context: Optional[list] = None,
 ) -> list[str]:
     """[Track F 第二部分] 轻量 LLM 调用：某个 step 耗尽重试次数后，把"已完成
     步骤的结果 + 原计划里还没做的步骤 + 这次失败的原因"喂给模型，让它给出
@@ -1246,18 +1318,25 @@ def _default_llm_redecompose(
     "原计划本身没问题、不需要重新拆"时返回空列表——调用方
     （ObjectiveExecutor._attempt_redecompose）据此退化为原有的"判定
     Objective failed"逻辑。
+
+    external_context — [watchlist_notification_goal_design.md §4.5，
+    P6 新增] 该 objective 自己的 external_context 记录列表（每项
+    {"title","snippet","occurred_at",...}），追加进"已完成步骤的结果"
+    之后（紧跟既有的注入位置，见 §4.5 第2点）。为 None/空列表时不追加
+    任何内容，prompt 与升级前完全一致。
     """
     completed_ctx = (
         "\n".join(f"- {s}" for s in completed_summaries) if completed_summaries else "（尚无已完成步骤）"
     )
     remaining_ctx = "\n".join(f"- {d}" for d in remaining_descs)
+    external_ctx_block = _format_external_context_items(external_context)
     prompt = f"""一个多步骤任务的其中一步反复失败，需要重新规划剩余步骤。
 
 目标：{objective_title}
 
 已完成步骤的结果：
 {completed_ctx}
-
+{external_ctx_block}
 原计划中剩余（含反复失败的这一步）的步骤：
 {remaining_ctx}
 

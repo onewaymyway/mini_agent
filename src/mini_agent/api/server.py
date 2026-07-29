@@ -1107,6 +1107,30 @@ class HttpServer:
                 from mini_agent.errors import log_exception
                 log_exception(_mini_agent_exc, where='mini_agent.api.server.HttpServer._build_autonomous_loop.ensure_report_tier_jobs')
 
+            # P5：按 next_doc/watchlist_notification_goal_design.md §6 P5 补
+            # 注册 sys:goal_relevance_judge job（LLM 批量判定候选相关性，
+            # 唯一引入 LLM 调用的环节，见 §7）。llm_helper 惰性获取，daemon
+            # 启动时 agent 可能还没就绪也不影响注册本身。
+            try:
+                from mini_agent.external_input.goal_relevance import ensure_goal_relevance_judge_job
+
+                def _goal_relevance_llm_helper():
+                    return getattr(agent, "llm_helper", None)
+
+                def _goal_relevance_enqueue(message: str, meta: dict):
+                    return self._bridge.input_queue.enqueue(
+                        message=message, initiator="cron", meta=meta,
+                    )
+
+                ensure_goal_relevance_judge_job(
+                    paths, cron_scheduler,
+                    llm_helper_provider=_goal_relevance_llm_helper,
+                    enqueue_fn=_goal_relevance_enqueue,
+                )
+            except Exception as _mini_agent_exc:
+                from mini_agent.errors import log_exception
+                log_exception(_mini_agent_exc, where='mini_agent.api.server.HttpServer._build_autonomous_loop.ensure_goal_relevance_judge_job')
+
             # ── ObjectiveExecutor ────────────────────────────────────────────
             def _obj_submit(message: str, initiator: str, meta: dict):
                 """提交自主步骤到 InputQueue，返回 turn_id。"""
@@ -1188,11 +1212,16 @@ class HttpServer:
                     log_exception(_mini_agent_exc, where='mini_agent.api.server.HttpServer._build_autonomous_loop._declare_paths')
                     return []
 
-            def _llm_redecompose(objective_title, completed_summaries, remaining_descs, failure_reason):
+            def _llm_redecompose(objective_title, completed_summaries, remaining_descs, failure_reason, external_context=None):
                 """[看板与自主性改进方案 Track F 第二部分] 某个 step 耗尽重试
                 次数后，先尝试重新分解剩余步骤，而不是直接判 Objective
                 failed。调用失败/拿不到 llm_helper 时返回空列表，
-                ObjectiveExecutor 据此退化为原有的直接判失败逻辑。"""
+                ObjectiveExecutor 据此退化为原有的直接判失败逻辑。
+
+                external_context — [watchlist_notification_goal_design.md
+                §4.5，P6 新增] 由 ObjectiveExecutor._attempt_redecompose 传入
+                的该 objective 自己的外部上下文记录，原样透传给
+                _default_llm_redecompose。"""
                 try:
                     from mini_agent.evolution.objective_executor import _default_llm_redecompose
                     helper = getattr(agent, "llm_helper", None)
@@ -1200,6 +1229,7 @@ class HttpServer:
                         return []
                     return _default_llm_redecompose(
                         helper, objective_title, completed_summaries, remaining_descs, failure_reason,
+                        external_context=external_context,
                     )
                 except Exception as _mini_agent_exc:
                     from mini_agent.errors import log_exception

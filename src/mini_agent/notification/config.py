@@ -39,10 +39,18 @@ def _resolve_env(value):
     return value
 
 
+# §4.4 / §7：advance_goal 的默认冷却时长（秒）——6 小时。是"宁可漏判也不
+# 过度打扰"取舍下的一个可调默认值，不是精确计算出来的（见
+# watchlist_notification_goal_design.md §9.2 #4 的说明）。
+DEFAULT_GOAL_ADVANCE_COOLDOWN_SECONDS = 21600
+
+
 @dataclass
 class NotificationConfig:
     default_channels: list[str] = field(default_factory=lambda: ["kanban"])
     channels: dict = field(default_factory=dict)  # channel_name -> cfg dict（已解析 ${ENV:...}）
+    # P5 新增：GoalRelevanceEngine `try_advance_goal` 的冷却期配置，见 §4.4。
+    goal_advance_cooldown_seconds: float = DEFAULT_GOAL_ADVANCE_COOLDOWN_SECONDS
 
     def channel_config(self, name: str) -> dict:
         return self.channels.get(name, {})
@@ -87,4 +95,13 @@ def load_notification_config(paths: "AgentPaths") -> NotificationConfig:
         str(name): _resolve_env_recursive(cfg or {})
         for name, cfg in channels_raw.items()
     }
-    return NotificationConfig(default_channels=[str(c) for c in default_channels], channels=channels)
+    cooldown = raw.get("goal_advance_cooldown_seconds", DEFAULT_GOAL_ADVANCE_COOLDOWN_SECONDS)
+    try:
+        cooldown = float(cooldown)
+    except (TypeError, ValueError):
+        cooldown = DEFAULT_GOAL_ADVANCE_COOLDOWN_SECONDS
+    return NotificationConfig(
+        default_channels=[str(c) for c in default_channels],
+        channels=channels,
+        goal_advance_cooldown_seconds=cooldown,
+    )

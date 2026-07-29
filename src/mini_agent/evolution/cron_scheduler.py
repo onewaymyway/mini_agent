@@ -412,6 +412,13 @@ class CronScheduler:
         self._job_runner = job_runner
         self._jobs: dict[str, CronJob] = {}
         self._jobs_path = paths.workdir_dir / "cron_jobs.json"
+        # [watchlist_notification_goal_design.md §10.1] 本地回调 handler
+        # 注册表：job_id -> Callable[[CronJob], bool]。`_fire()` 会优先
+        # 检查这里，命中则在本进程内直接执行、不经过 InputQueue/job_runner，
+        # 因此不产生 LLM 调用。用于"确定性、不需要 LLM 参与"的内置 job
+        # （比如 sys:watchlist_report_<tier>），不影响既有 submit_fn/job_runner
+        # 两条路径的行为。
+        self._local_handlers: dict[str, Callable[["CronJob"], bool]] = {}
 
     # ── 持久化 ────────────────────────────────────────────────────────────────
 
@@ -546,6 +553,15 @@ class CronScheduler:
         job_runner 未注入时回退到旧的 submit_fn 路径（消息进 InputQueue，
         由 AgentRunner 主线程当作一次普通 turn 处理）。
         """
+        local_handler = self._local_handlers.get(job.id)
+        if local_handler is not None:
+            try:
+                return local_handler(job)
+            except Exception as _mini_agent_exc:
+                from mini_agent.errors import log_exception
+                log_exception(_mini_agent_exc, where='mini_agent.evolution.cron_scheduler.CronScheduler._fire.local_handler')
+                return False
+
         if self._job_runner is not None:
             try:
                 return self._job_runner.submit(job)
@@ -589,6 +605,48 @@ class CronScheduler:
             tags=tags or ["user"],
             enabled=enabled,
             initiator="cron",
+            next_run_at=compute_next_run(schedule, 0.0),
+        )
+        self._jobs[job_id] = job
+        self.save()
+        return job
+
+    def register_local_handler(self, job_id: str, handler: Callable[["CronJob"], bool]) -> None:
+        """注册一个"零 LLM 成本"的本地回调，供 `_fire()` 优先使用（见
+        watchlist_notification_goal_design.md §10.1）。可重复调用覆盖同一
+        job_id 的 handler（daemon 每次启动都会重新注册一遍，属预期行为）。
+        """
+        self._local_handlers[job_id] = handler
+
+    def ensure_job(
+        self,
+        job_id: str,
+        name: str,
+        schedule: str,
+        description: str = "",
+        tags: Optional[list[str]] = None,
+        task_template: str = "",
+        initiator: str = "cron",
+    ) -> CronJob:
+        """"缺失才补"注册路径（区别于 `add_job` 的"用户手动加 job"）：
+        job_id 已存在时直接返回现有 job（不覆盖用户可能已经手动改过的
+        schedule/enabled），不存在时创建一个新的、默认 enabled=True 的
+        job 并落盘。专门给"配置文件驱动的内置 job"用，比如
+        `sys:watchlist_report_<tier_id>`——job 本身的存储结构/治理规则
+        （sys: 前缀不可删除只可 disable）与既有内置 job 完全一致。
+        """
+        existing = self._jobs.get(job_id)
+        if existing is not None:
+            return existing
+        job = CronJob(
+            id=job_id,
+            name=name,
+            schedule=schedule,
+            task_template=task_template,
+            description=description,
+            tags=tags or [],
+            enabled=True,
+            initiator=initiator,
             next_run_at=compute_next_run(schedule, 0.0),
         )
         self._jobs[job_id] = job

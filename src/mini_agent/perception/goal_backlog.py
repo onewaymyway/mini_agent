@@ -88,6 +88,19 @@ class GoalNode:
     # 目标节点。见 docs/system-events-bus-guide.md 第7节。
     description: str = ""
 
+    # [watchlist_notification_goal_design.md §3.5，P5 新增]
+    # GoalRelevanceEngine Stage② 判定 relevant=true 时追加的外部信息摘要，
+    # 只保留最近 max_keep 条（见 attach_external_context()）。跟
+    # progress_notes（"做到哪一步了"）语义不同，这里纯粹是"外部世界发生的
+    # 跟这个 Goal 相关的事"，只在处理这个 Goal 自己的任务时被读取（§4.5），
+    # 不做全局注入。每项: {"event_id","title","snippet","occurred_at","source_id"}。
+    external_context: list = field(default_factory=list)
+
+    # [watchlist_notification_goal_design.md §3.5，P5 新增]
+    # 上一次因外部信号被"主动拉起"(advance_goal) 的时间戳，用于 §4.4 的
+    # 冷却限流判断。跟 progress_notes 不是一回事。
+    last_external_advance_at: float = 0.0
+
     def to_dict(self) -> dict:
         return {
             "id": self.id,
@@ -104,6 +117,8 @@ class GoalNode:
             "priority": self.priority,
             "tags": self.tags,
             "description": self.description,
+            "external_context": self.external_context,
+            "last_external_advance_at": self.last_external_advance_at,
         }
 
     @staticmethod
@@ -123,6 +138,8 @@ class GoalNode:
             priority=d.get("priority", 0),
             tags=d.get("tags", []),
             description=d.get("description", ""),
+            external_context=d.get("external_context", []),
+            last_external_advance_at=d.get("last_external_advance_at", 0.0),
         )
 
     @property
@@ -136,6 +153,23 @@ class GoalNode:
     @property
     def is_active(self) -> bool:
         return self.status == "active"
+
+
+@dataclass
+class AdvanceDecision:
+    """`try_advance_goal()` 的返回值（P5，§3.5/§4.4）。
+
+    action 取值：
+      - "not_found"     — goal_id 不存在，未做任何修改。
+      - "cooldown_skip" — 仍在冷却期内，未执行拉起动作（remaining_seconds
+                          给出还剩多少秒）。
+      - "reactivated"   — Goal 原本非 active，已被 set_status(active)。
+      - "enqueue_turn"  — Goal 本来就是 active，调用方需要自己去
+                          enqueue_turn（本方法不直接依赖 InputQueue）。
+    """
+    action: str
+    goal_id: str
+    remaining_seconds: float = 0.0
 
 
 # ── GoalBacklog 主类 ──────────────────────────────────────────────────────────
@@ -444,6 +478,70 @@ class GoalBacklog:
             node.last_touched_at = time.time()
         return self._nodes.get(node_id)
 
+    # ── P5：外部信号驱动 Goal 执行 ────────────────────────────────────────────
+    # 设计背景见 next_doc/watchlist_notification_goal_design.md §3.5/§4.4。
+
+    def attach_external_context(self, goal_id: str, item: dict, max_keep: int = 20) -> bool:
+        """把一条外部事件摘要 append 进 GoalNode.external_context，只保留
+        最近 max_keep 条（超出部分从队首丢弃）。不改变 Goal 的
+        status/priority，纯粹是"信息至少要能被看到"这一步（§4.4），
+        由 GoalRelevanceEngine Stage② 在 relevant=true 时无条件调用。
+
+        走 `_locked()` 临界区（与 set_status/update_progress 同一把锁），
+        避免跟看板手动编辑 Goal 的写入路径产生丢失更新（§9.1 #3）。
+        """
+        with self._locked():
+            node = self._nodes.get(goal_id)
+            if not node:
+                return False
+            node.external_context.append(item)
+            if len(node.external_context) > max_keep:
+                node.external_context = node.external_context[-max_keep:]
+            node.last_touched_at = time.time()
+        return True
+
+    def try_advance_goal(self, goal_id: str, cooldown_seconds: float) -> "AdvanceDecision":
+        """在冷却期检查通过后"拉起"一个 Goal（§4.4）：
+        - status != active（如 paused）→ set_status(active) + progress_notes
+          追加一笔"因外部信号被自动重新激活"的记录；
+        - status == active → 不在这里调用 enqueue_turn（那是
+          GoalRelevanceEngine 的职责，需要 InputQueue 依赖，本方法只负责
+          纯 GoalBacklog 内部状态判断/变更），只返回 action="enqueue_turn"
+          让调用方自己去 enqueue。
+
+        无论是否真的执行了"拉起"，只要不在冷却期内，都会更新
+        `last_external_advance_at = now`（见 §4.4：\"执行了拉起动作之后
+        更新时间戳\"——`enqueue_turn` 分支视为\"提交动作\"本身已经算一次
+        拉起，不等 agent 执行完才算数）。
+
+        冷却期内直接返回 action="cooldown_skip"，不做任何写入。
+        """
+        with self._locked():
+            node = self._nodes.get(goal_id)
+            if not node:
+                return AdvanceDecision(action="not_found", goal_id=goal_id)
+
+            now = time.time()
+            if now - node.last_external_advance_at < cooldown_seconds:
+                return AdvanceDecision(
+                    action="cooldown_skip",
+                    goal_id=goal_id,
+                    remaining_seconds=cooldown_seconds - (now - node.last_external_advance_at),
+                )
+
+            node.last_external_advance_at = now
+            if node.status != "active":
+                node.status = "active"
+                note = f"[{time.strftime('%Y-%m-%d %H:%M', time.localtime(now))}] 因外部信号被自动重新激活"
+                node.progress_notes = (
+                    f"{node.progress_notes}\n{note}" if node.progress_notes else note
+                )
+                node.last_touched_at = now
+                return AdvanceDecision(action="reactivated", goal_id=goal_id)
+
+            node.last_touched_at = now
+            return AdvanceDecision(action="enqueue_turn", goal_id=goal_id)
+
     # ── 从 WorkThread 拆解下一个 Task ─────────────────────────────────────────
 
     def next_task_description(
@@ -594,6 +692,7 @@ def load_goal_backlog(paths: AgentPaths) -> GoalBacklog:
 __all__ = [
     "GoalNode",
     "GoalBacklog",
+    "AdvanceDecision",
     "load_goal_backlog",
     "default_goal_to_objectives",
 ]
