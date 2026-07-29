@@ -140,7 +140,7 @@ class TestNotificationDispatchLogRoute(unittest.TestCase):
             client = _make_app(Path(tmp))
             resp = client.get("/v1/notification/dispatch_log")
             self.assertEqual(resp.status_code, 200)
-            self.assertEqual(resp.json(), {"entries": []})
+            self.assertEqual(resp.json(), {"entries": [], "has_more": False})
 
     def test_dispatch_writes_log_and_route_returns_it_newest_first(self):
         with tempfile.TemporaryDirectory() as tmp:

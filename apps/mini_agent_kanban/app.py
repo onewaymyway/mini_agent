@@ -1944,7 +1944,9 @@ def _render_goal_card(
     external_context = n.get("external_context") or []
     if external_context:
         with st.expander(f"🔗 相关外部信息（{len(external_context)} 条）"):
-            for item in reversed(external_context):
+            reversed_context = list(reversed(external_context))
+            page_key = f"goal_extctx_page_{n.get('id')}"
+            for item in _client_side_page(reversed_context, 5, page_key):
                 occurred_at = item.get("occurred_at")
                 ts_str = (
                     time.strftime("%m-%d %H:%M", time.localtime(occurred_at))
@@ -3125,6 +3127,48 @@ def render_diagnostics_tab(client: AgentClient):
 
 
 # ═══════════════════════════════════════════════════════════════════════
+# 分页辅助（外部数据分页显示改进计划，next_doc/external_input_pagination_plan.md）
+# ═══════════════════════════════════════════════════════════════════════
+def _client_side_page(items: list, page_size: int, state_key: str) -> list:
+    """给已经全量拿到的小型列表加统一的客户端"上一页/下一页"分页——纯
+    本地切片，不发起新请求，不改变接口返回的顺序/内容语义（比如路由
+    规则的匹配优先级顺序）。用于 sources/policies/watchlist/tiers 这类
+    配置驱动、体量通常不大但仍可能增长的列表；天然增长、无上限的数据
+    （事件流水/发送记录/告警）用下面的 `_load_more_control()`，两者分页
+    方式不同的原因见设计文档。"""
+    total = len(items)
+    page_count = max(1, (total + page_size - 1) // page_size)
+    page = max(0, min(st.session_state.get(state_key, 0), page_count - 1))
+    st.session_state[state_key] = page
+    if total > page_size:
+        c1, c2, c3 = st.columns([1, 2, 1])
+        if c1.button("⬅️ 上一页", key=f"{state_key}_prev", disabled=page <= 0):
+            st.session_state[state_key] = page - 1
+            st.rerun()
+        c2.caption(f"第 {page + 1} / {page_count} 页 · 共 {total} 条")
+        if c3.button("下一页 ➡️", key=f"{state_key}_next", disabled=page >= page_count - 1):
+            st.session_state[state_key] = page + 1
+            st.rerun()
+    start = page * page_size
+    return items[start:start + page_size]
+
+
+def _load_more_control(state_key: str, default_limit: int, step: int, has_more: bool) -> None:
+    """天然增长、无上限数据（事件流水/发送记录/待处理告警）的"⬇️ 加载
+    更多"控件：点击后把 `session_state[state_key]`（当前请求 limit）
+    增加 `step`，并 `st.rerun()`——数据源本身是"按时间倒序取最近 N 条"，
+    重新整页请求比维护增量缓存更简单可靠。调用方负责在拿到 `has_more`
+    后调用本函数渲染按钮；`state_key` 对应的 limit 由调用方在请求前用
+    `st.session_state.get(state_key, default_limit)` 读取。"""
+    if has_more:
+        if st.button("⬇️ 加载更多", key=f"{state_key}_more"):
+            st.session_state[state_key] = st.session_state.get(state_key, default_limit) + step
+            st.rerun()
+    elif st.session_state.get(state_key, default_limit) > default_limit:
+        st.caption("已加载全部记录。")
+
+
+# ═══════════════════════════════════════════════════════════════════════
 # Tab: 🔌 外部输入（External Input Gateway，P6）
 # ═══════════════════════════════════════════════════════════════════════
 def render_external_input_tab(client: AgentClient):
@@ -3192,7 +3236,7 @@ def render_external_input_tab(client: AgentClient):
         sources = src_resp.get("sources") or []
         if not sources:
             st.info("暂无已配置的外部输入来源。编辑 `.agent/external_input/sources.yaml` 添加。")
-        for src in sources:
+        for src in _client_side_page(sources, 10, "ei_sources_page"):
             with st.container(border=True):
                 c1, c2, c3, c4 = st.columns([2, 1, 1, 2])
                 c1.markdown(f"**{src['id']}**　`{src['type']}`")
@@ -3235,7 +3279,10 @@ def render_external_input_tab(client: AgentClient):
                 "goal_candidate": "🎯 goal_candidate（生成目标候选）",
                 "enqueue_turn": "⚡ enqueue_turn（直接触发 Agent）",
             }
-            for i, rule in enumerate(rules):
+            # 分页只影响本页展示的起始编号，序号仍按 rules 里的真实下标
+            # （即匹配优先级）计算，不会因为翻页而错乱。
+            indexed_rules = list(enumerate(rules))
+            for i, rule in _client_side_page(indexed_rules, 10, "ei_policies_page"):
                 match_desc = ", ".join(f"{k}={v}" for k, v in (rule.get("match") or {}).items()) or "（匹配所有事件）"
                 st.markdown(f"{i + 1}. **{match_desc}** → {_ACTION_LABEL.get(rule.get('action'), rule.get('action'))}")
                 if rule.get("enqueue"):
@@ -3243,15 +3290,18 @@ def render_external_input_tab(client: AgentClient):
 
     st.divider()
 
-    # ── 3. 待处理的 notify_only 告警（复用 /v1/inbox 聚合，带 ack 按钮）───
+    # ── 3. 待处理的 notify_only 告警（专用分页端点，带 ack 按钮）────────
     st.markdown("##### 🔔 待处理告警")
-    inbox = client.inbox() or {}
-    if "_error" in inbox:
-        st.caption("获取待办中心失败，暂不展示告警列表。")
+    alerts_limit = st.session_state.get("ei_alerts_limit", 20)
+    alerts_resp = client.external_input_alerts(limit=alerts_limit) or {}
+    if "_error" in alerts_resp:
+        st.caption("获取待处理告警失败，暂不展示告警列表。")
     else:
-        alerts = [it for it in (inbox.get("items") or []) if it.get("type") == "external_alert"]
+        alerts = alerts_resp.get("alerts") or []
         if not alerts:
             st.info("当前没有待处理的外部输入告警。")
+        else:
+            st.caption(f"共 {alerts_resp.get('total', len(alerts))} 条未处理，当前展示 {len(alerts)} 条。")
         # [BUGFIX] 根因是 alerts.jsonl 里可能出现 alert_id 完全相同的
         # 多条记录（policy.py::_notify_only 已经修复不再新增重复写入，
         # 但历史遗留数据/极端情况下仍可能存在），单纯用 alert_id 当
@@ -3268,12 +3318,15 @@ def render_external_input_tab(client: AgentClient):
                     st.error(f"标记失败：{res['_error']}")
                 else:
                     st.rerun()
+        _load_more_control("ei_alerts_limit", 20, 20, bool(alerts_resp.get("has_more")))
 
     st.divider()
 
     # ── 4. 最近事件流水（供人工核对路由是否符合预期）─────────────────────
     st.markdown("##### 📜 最近事件流水")
-    events = (client.external_input_events(limit=50) or {}).get("events") or []
+    events_limit = st.session_state.get("ei_events_limit", 50)
+    events_resp = client.external_input_events(limit=events_limit) or {}
+    events = events_resp.get("events") or []
     if not events:
         st.caption("暂无 external.* 事件记录。")
     else:
@@ -3286,6 +3339,7 @@ def render_external_input_tab(client: AgentClient):
                 f"（来源 `{evt.get('source', '')}`，tier={evt.get('tier', '-')}）"
                 f"：{payload.get('title', '')}"
             )
+        _load_more_control("ei_events_limit", 50, 50, bool(events_resp.get("has_more")))
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -3320,7 +3374,7 @@ def render_notification_tab(client: AgentClient):
                 "暂无关注对象配置。编辑 `.agent/external_input/watchlist.yaml` 添加"
                 "（每条至少包含 `id`/`keywords`/`report_tier`）。"
             )
-        for item in items:
+        for item in _client_side_page(items, 10, "notif_watchlist_page"):
             with st.container(border=True):
                 c1, c2, c3 = st.columns([2, 2, 1])
                 c1.markdown(f"**{item['id']}**　`{item.get('match_type', 'keyword')}`")
@@ -3346,7 +3400,7 @@ def render_notification_tab(client: AgentClient):
                 "暂无分级汇报配置。复制 `.agent/notification/report_tiers.yaml.example` "
                 "为 `report_tiers.yaml` 后按需修改。"
             )
-        for tier in tiers:
+        for tier in _client_side_page(tiers, 10, "notif_tiers_page"):
             with st.container(border=True):
                 c1, c2, c3 = st.columns([2, 2, 2])
                 c1.markdown(f"**{tier['id']}**　`{tier.get('schedule', '-')}`")
@@ -3363,13 +3417,15 @@ def render_notification_tab(client: AgentClient):
 
     st.divider()
 
-    # ── 3. 通知发送记录（NotificationDispatcher，只读，最近 50 条）───────
+    # ── 3. 通知发送记录（NotificationDispatcher，只读，分页展示）────────
     st.markdown("##### 📮 通知发送记录")
-    log_resp = client.notification_dispatch_log(limit=50)
+    dispatch_limit = st.session_state.get("notif_dispatch_limit", 50)
+    log_resp = client.notification_dispatch_log(limit=dispatch_limit)
     if log_resp and "_error" in log_resp:
         st.error(f"获取通知发送记录失败：{log_resp['_error']}")
     else:
-        entries = (log_resp or {}).get("entries") or []
+        log_resp = log_resp or {}
+        entries = log_resp.get("entries") or []
         if not entries:
             st.caption("暂无通知发送记录。")
         for entry in entries:
@@ -3383,6 +3439,7 @@ def render_notification_tab(client: AgentClient):
                 f"`{ts_str}` **{entry.get('title', '')}**"
                 f"（来源 `{entry.get('source', '')}`）　{status_str}"
             )
+        _load_more_control("notif_dispatch_limit", 50, 50, bool(log_resp.get("has_more")))
 
 
 # ═══════════════════════════════════════════════════════════════════════

@@ -5,7 +5,9 @@
   Gateway 本体，本功能是它的扩展，不重复实现事件采集/路由）
 - **当前实施进度**：P1-P7 已全部实施完成（通知系统骨架、关注对象匹配、
   分级汇报、Goal 相关性候选生成+LLM 判定、Prompt 精确注入、看板展示）；
-  P8（测试）已随各阶段同步补齐，共 215 项相关测试全部通过。
+  P8（测试）已随各阶段同步补齐。看板"🔔 关注与通知"tab 的全部列表
+  （关注对象/分级汇报 tier/通知发送记录）以及 Goal 卡片"🔗 相关外部
+  信息"面板已加分页展示，见 §7/§8。
 
 ---
 
@@ -188,29 +190,33 @@ Goal"的入口：
 看板不提供在线编辑表单）：
 
 - **👀 关注对象**：`watchlist.yaml` 里的全部条目（含 `enabled: false`
-  的），每条展示关键词、汇报 tier、去重窗口、通知渠道。
+  的），每条展示关键词、汇报 tier、去重窗口、通知渠道。接口全量返回，
+  看板前端做"上一页/下一页"分页展示（每页 10 条）。
 - **📊 分级汇报**：`report_tiers.yaml` 里的全部 tier，附带对应
   `sys:watchlist_report_<id>` cron job 的运行时状态（是否启用、下次
-  触发时间）和连续空转计数（§9.2 #7 的高频 tier 节流）。
+  触发时间）和连续空转计数（§9.2 #7 的高频 tier 节流）。同上，前端
+  分页展示（每页 10 条）。
 - **📮 通知发送记录**：`NotificationDispatcher` 每次 `dispatch()` 的
-  发送结果（最近 50 条，倒序），每条显示各渠道成功/失败
+  发送结果（默认最近 50 条，倒序），每条显示各渠道成功/失败
   （✅/❌）——用于诊断"为什么我没收到邮件通知"这类问题。这份记录
   跟 kanban 渠道自己落地的 `alerts.jsonl`（"待处理告警"面板）是两回事：
   后者只有 kanban 渠道成功才会有一条，前者记录的是**每个渠道各自的
-  发送结果**，包括失败的邮件。
+  发送结果**，包括失败的邮件。记录多时点"⬇️ 加载更多"按需拉取更早的
+  发送记录，不会一次性全部渲染。
 
 此外，**目标看板**（📌 目标看板 tab）里每张 Goal 卡片，只要
 `external_context` 非空，就会出现一个 **"🔗 相关外部信息（N 条）"**
 折叠面板，展开可以看到 GoalRelevanceEngine Stage② 挂上去的外部事件摘要
-（时间戳 + 标题 + 摘要）。没有外部上下文的 Goal 不显示这个面板。
+（时间戳 + 标题 + 摘要），服务端最多保留 20 条，前端每页 5 条分页展示。
+没有外部上下文的 Goal 不显示这个面板。
 
 ## 8. 相关只读 API 端点
 
 | 端点 | 作用 |
 |---|---|
-| `GET /v1/notification/watchlist` | 关注对象列表（含 disabled） |
-| `GET /v1/notification/report_tiers` | tier 配置 + cron job 运行时状态 + 空转计数 |
-| `GET /v1/notification/dispatch_log?limit=50` | 最近 N 条通知发送记录（倒序） |
+| `GET /v1/notification/watchlist` | 关注对象列表（含 disabled），全量返回，看板前端分页展示 |
+| `GET /v1/notification/report_tiers` | tier 配置 + cron job 运行时状态 + 空转计数，全量返回，看板前端分页展示 |
+| `GET /v1/notification/dispatch_log?limit=50` | 最近 N 条通知发送记录（倒序），响应含 `has_more`，供看板"加载更多"分页 |
 | `GET /v1/goals` | GoalBacklog 完整视图（每个节点已含 `external_context`/`last_external_advance_at`） |
 
 ---

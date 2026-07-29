@@ -6,7 +6,8 @@
 当前进度：P1–P7 全部完成（事件抽象、独立轮询调度、路由与告警落点、
 内置 `watch`/`weather` 两个来源、`goal_candidate`/`enqueue_turn` 真正执行
 并接入 `autonomous_loop.tick()`、看板"🔌 外部输入"面板、事件按 `channel`
-分类供 daemon 分类处理）。§7 路线图已无待办阶段。
+分类供 daemon 分类处理）。§7 路线图已无待办阶段。看板"🔌 外部输入"面板
+的全部列表（来源/路由规则/待处理告警/事件流水）已加分页展示，见 §9.1。
 
 ## 0. 设计目标
 
@@ -320,23 +321,33 @@ class MySource(ExternalInputSource):
 - 原始事件历史在 `.agent/system_events.jsonl` 里，`event_type` 以
   `external.` 开头的都是外部输入网关产生的。
 - 看板（`apps/mini_agent_kanban`）的"🔌 外部输入"页签把上面这些信息
-  可视化展示，同时新增三个只读 REST 端点供页面调用（也可以直接
+  可视化展示，同时新增四个只读 REST 端点供页面调用（也可以直接
   `curl` 查看，均需要 owner 权限）：
   - `GET /v1/external_input/sources` — 已配置 source 的类型/启用状态/
     运行状态/健康度（连续失败次数、是否熔断、上次轮询时间）；如果当前
     进程没有在跑 `GatewayPoller`（比如非 daemon 模式），健康相关字段
     全部是 `null`，响应里的 `poller_available: false` 会说明这一点。
+    数量多时看板用纯前端"上一页/下一页"分页展示（每页 10 条），接口
+    本身仍然全量返回。
   - `GET /v1/external_input/policies` — `policies.yaml` 里的规则，按
-    文件顺序返回（即匹配优先级，第一条命中的生效）。
-  - `GET /v1/external_input/events?limit=50` — 最近的 `external.*`
-    事件流水（只读尾读，不会推进任何消费者的游标，`limit` 上限 200）。
+    文件顺序返回（即匹配优先级，第一条命中的生效）。同上，接口全量
+    返回，看板前端分页展示（每页 10 条），页面显示的序号是规则在
+    文件里的真实下标，不受翻页影响。
+  - `GET /v1/external_input/events?limit=50&offset=0` — 最近的
+    `external.*` 事件流水（只读尾读，不会推进任何消费者的游标，`limit`
+    上限 200）。`offset` 配合看板"⬇️ 加载更多"按钮分页；响应里的
+    `has_more` 表示是否还有更早的事件未返回。
+  - `GET /v1/external_input/alerts?limit=20&offset=0` — 分页返回未处理
+    的 `notify_only` 告警（`alerts.jsonl`），响应含 `total`/`has_more`。
+    看板"待处理告警"面板用这个端点而不是 `/v1/inbox`（`/v1/inbox` 同时
+    服务顶栏待办徽标等其它场景，聚合结果本身不分页）。
 
 ## 10. 已知限制
 
 - `watch`/`weather` 是目前仅有的两个内置来源；webhook/邮件/日历等来源
   尚未实现，需要时可以参考 `builtin/watch.py` 或 `builtin/weather.py`
   的写法新增一个 `ExternalInputSource` 子类。
-- 看板面板和三个 REST 端点都是只读展示，`sources.yaml`/`policies.yaml`
+- 看板面板和四个 REST 端点都是只读展示，`sources.yaml`/`policies.yaml`
   仍然只能通过直接编辑配置文件来修改（没有在线编辑表单）。
 - `channel` 目前只在 `policies.yaml` 路由匹配和 `run_ingestion_policy_once()`
   的 `by_channel` 统计里生效；`GET /v1/external_input/events` 尚不支持

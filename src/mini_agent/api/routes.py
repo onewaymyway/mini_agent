@@ -70,7 +70,8 @@ api/routes.py — FastAPI 路由定义
                                      标记一条外部输入告警为已处理（不再出现在 /v1/inbox 里）
     GET    /v1/external_input/sources   已配置 source 列表 + 运行时健康度（看板"🔌 外部输入"面板，P6）
     GET    /v1/external_input/policies  policies.yaml 路由规则（只读）
-    GET    /v1/external_input/events    最近 external.* 事件流水（不消费游标，仅供人工核对）
+    GET    /v1/external_input/events    最近 external.* 事件流水（不消费游标，仅供人工核对；支持 limit/offset 分页）
+    GET    /v1/external_input/alerts    待处理 notify_only 告警（分页，供看板"待处理告警"面板用）
     GET    /v1/notification/watchlist     watchlist.yaml 关注对象列表（只读，P7）
     GET    /v1/notification/report_tiers  report_tiers.yaml + job 运行时状态（只读，P7）
     GET    /v1/notification/dispatch_log?limit=50
@@ -2892,14 +2893,19 @@ async def list_external_input_policies(request: Request):
 
 
 @router.get("/external_input/events")
-async def list_external_input_events(request: Request, limit: int = 50):
-    """GET /v1/external_input/events?limit=50 — 最近的 external.* 事件流水。
+async def list_external_input_events(request: Request, limit: int = 50, offset: int = 0):
+    """GET /v1/external_input/events?limit=50&offset=0 — 最近的 external.*
+    事件流水，倒序（最新的在前面）。
 
     直接尾读 `system_events.jsonl` 并按 `event_type` 前缀过滤，**不**走
     `poll_since()`/消费游标——这是给人看的"最近发生了什么"展示，不是一个
     消费者，不该跟 `soft_goal_deriver`/`external_input_policy` 等真实消费
     者抢游标或互相干扰。`limit` 上限 200，避免看板一次性请求把整份
     events.jsonl（可能包含大量非 external.* 事件）读回来。
+
+    `offset`（配合看板"⬇️ 加载更多"分页）：跳过排序后最靠前的 `offset`
+    条 external.* 事件，再取 `limit` 条；`offset=0` 时行为与改动前完全
+    一致。响应新增 `has_more`：还有没有扫描到但未返回的更早事件。
     """
     http_server = getattr(request.app.state, "http_server", None)
     if http_server is None:
@@ -2907,20 +2913,24 @@ async def list_external_input_events(request: Request, limit: int = 50):
     _require_owner(request)
     proj_root = _project_root_or_503(http_server)
     limit = max(1, min(limit, 200))
+    offset = max(0, offset)
 
     from mini_agent.storage.paths import AgentPaths
     paths = AgentPaths(proj_root)
     p = paths.system_events
     events: list[dict] = []
+    has_more = False
     if p.exists():
         try:
             import json as _json
             lines = p.read_text(encoding="utf-8").splitlines()
-            # 从文件尾部往前扫，找够 limit 条 external.* 就停，避免大文件
-            # 全量反序列化——跟 external_input/policy.py::list_pending_alerts()
-            # 里"体量不大就全量扫描"的取舍不同，这里 events.jsonl 体量可能
-            # 很大（承载了所有子系统的事件，不只是外部输入），值得做这个
-            # 优化。
+            # 从文件尾部往前扫，跳过前 offset 条、再收够 limit 条 external.*
+            # 就停，避免大文件全量反序列化——跟
+            # external_input/policy.py::list_pending_alerts() 里"体量不大就
+            # 全量扫描"的取舍不同，这里 events.jsonl 体量可能很大（承载了
+            # 所有子系统的事件，不只是外部输入），值得做这个优化。多扫一条
+            # 用来判断 has_more，不计入返回结果。
+            skipped = 0
             for line in reversed(lines):
                 line = line.strip()
                 if not line:
@@ -2931,13 +2941,44 @@ async def list_external_input_events(request: Request, limit: int = 50):
                     continue
                 if not str(d.get("event_type", "")).startswith("external."):
                     continue
-                events.append(d)
+                if skipped < offset:
+                    skipped += 1
+                    continue
                 if len(events) >= limit:
+                    has_more = True
                     break
+                events.append(d)
         except Exception as _mini_agent_exc:
             from mini_agent.errors import log_exception
             log_exception(_mini_agent_exc, where='mini_agent.api.routes.list_external_input_events')
-    return {"events": events}
+    return {"events": events, "has_more": has_more}
+
+
+@router.get("/external_input/alerts")
+async def list_external_input_alerts_paginated(request: Request, limit: int = 20, offset: int = 0):
+    """GET /v1/external_input/alerts?limit=20&offset=0 — 分页返回未处理的
+    notify_only 告警（`alerts.jsonl`），倒序（最新的在前面）。
+
+    专用于看板"🔌 外部输入"tab 的"待处理告警"面板分页展示——跟 /v1/inbox
+    是两回事：/v1/inbox 聚合了权限/交互/失败 Objective/外部告警等多种
+    待办类型给顶栏徽标用，不适合在那里加分页语义；这里只服务这一个面板，
+    独立分页不影响 /v1/inbox 现有调用方。
+    """
+    http_server = getattr(request.app.state, "http_server", None)
+    if http_server is None:
+        raise HTTPException(status_code=503, detail="HttpServer not available")
+    _require_owner(request)
+    proj_root = _project_root_or_503(http_server)
+    limit = max(1, min(limit, 200))
+    offset = max(0, offset)
+
+    from mini_agent.storage.paths import AgentPaths
+    from mini_agent.external_input.policy import count_pending_alerts, list_pending_alerts
+    paths = AgentPaths(proj_root)
+
+    alerts = list_pending_alerts(paths, limit=limit, offset=offset)
+    total = count_pending_alerts(paths)
+    return {"alerts": alerts, "total": total, "has_more": offset + len(alerts) < total}
 
 
 # ── Cron Jobs REST API ────────────────────────────────────────────────────────
@@ -3771,25 +3812,24 @@ async def get_notification_dispatch_log(request: Request, limit: int = Query(50,
     """GET /v1/notification/dispatch_log?limit=50 — 只读返回最近 N 条
     NotificationDispatcher 的发送记录（`dispatch_log.jsonl`，见
     `notification/dispatcher.py::_append_dispatch_log`），倒序（最新的在
-    前面）。文件不存在/为空时返回空列表。"""
+    前面）。文件不存在/为空时返回空列表。响应新增 `has_more`：文件里是否
+    还有比这 `limit` 条更早的记录（供看板"⬇️ 加载更多"分页按钮判断是否
+    还要展示）。"""
     _require_owner(request)
     paths = _get_paths_for_request(request)
     try:
         p = paths.notification_dispatch_log
         if not p.exists():
-            return {"entries": []}
-        lines = p.read_text(encoding="utf-8").splitlines()
+            return {"entries": [], "has_more": False}
+        raw_lines = [ln for ln in p.read_text(encoding="utf-8").splitlines() if ln.strip()]
         entries = []
-        for line in lines[-limit:]:
-            line = line.strip()
-            if not line:
-                continue
+        for line in raw_lines[-limit:]:
             try:
                 entries.append(json.loads(line))
             except Exception:
                 continue
         entries.reverse()
-        return {"entries": entries}
+        return {"entries": entries, "has_more": len(raw_lines) > limit}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 

@@ -263,9 +263,14 @@ class AgentClient:
         """policies.yaml 里的路由规则（只读，按文件顺序，即匹配优先级）。"""
         return self._get("/external_input/policies")
 
-    def external_input_events(self, limit: int = 50):
-        """最近的 external.* 事件流水（不消费游标，仅供人工核对）。"""
-        return self._get("/external_input/events", params={"limit": limit})
+    def external_input_events(self, limit: int = 50, offset: int = 0):
+        """最近的 external.* 事件流水（不消费游标，仅供人工核对）。支持
+        `offset` 分页，配合看板"⬇️ 加载更多"按钮。"""
+        return self._get("/external_input/events", params={"limit": limit, "offset": offset})
+
+    def external_input_alerts(self, limit: int = 20, offset: int = 0):
+        """分页返回未处理的 notify_only 告警，供"待处理告警"面板用。"""
+        return self._get("/external_input/alerts", params={"limit": limit, "offset": offset})
 
     def ack_external_alert(self, alert_id: str):
         """标记一条 notify_only 告警已处理（不再出现在 /v1/inbox 里）。"""

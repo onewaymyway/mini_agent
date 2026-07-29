@@ -244,12 +244,10 @@ def _notify_only(paths: "AgentPaths", event: ExternalInputEvent) -> None:
     _append_alert(paths, alert)
 
 
-def list_pending_alerts(paths: "AgentPaths", limit: Optional[int] = None) -> list[dict]:
-    """读取 alerts.jsonl 中尚未 acknowledged 的记录，供 /v1/inbox 聚合展示。
-    alerts.jsonl 预期体量不大（notify_only 是三个落点里成本最低、但也是
-    "只有真正配了规则的事件类型才会走到"的一档，不是每次轮询都写），
-    全量扫描可以接受；量级增长后可以像 events.jsonl 一样加滚动归档，
-    当前不做这个优化（YAGNI）。"""
+def _load_pending_alerts_sorted(paths: "AgentPaths") -> list[dict]:
+    """内部辅助：读取 alerts.jsonl 里全部尚未 acknowledged 的记录，按
+    `created_at` 倒序排好。`list_pending_alerts()`/`count_pending_alerts()`
+    共用这一份扫描逻辑，避免分页加了之后两处各自维护一套读取代码。"""
     p = paths.external_input_alerts
     if not p.exists():
         return []
@@ -268,12 +266,35 @@ def list_pending_alerts(paths: "AgentPaths", limit: Optional[int] = None) -> lis
                     result.append(d)
     except Exception as exc:
         from mini_agent.errors import log_exception
-        log_exception(exc, where="mini_agent.external_input.policy.list_pending_alerts")
+        log_exception(exc, where="mini_agent.external_input.policy._load_pending_alerts_sorted")
         return []
     result.sort(key=lambda d: d.get("created_at") or 0, reverse=True)
+    return result
+
+
+def list_pending_alerts(
+    paths: "AgentPaths", limit: Optional[int] = None, offset: int = 0,
+) -> list[dict]:
+    """读取 alerts.jsonl 中尚未 acknowledged 的记录，供 /v1/inbox 聚合展示、
+    以及 /v1/external_input/alerts 分页端点使用。alerts.jsonl 预期体量不大
+    （notify_only 是三个落点里成本最低、但也是"只有真正配了规则的事件
+    类型才会走到"的一档，不是每次轮询都写），全量扫描可以接受；量级增长
+    后可以像 events.jsonl 一样加滚动归档，当前不做这个优化（YAGNI）。
+
+    `offset`（配合分页看板面板的"加载更多"）：跳过排序后最靠前的
+    `offset` 条，再取 `limit` 条——`offset=0` 时行为与改动前完全一致。
+    """
+    result = _load_pending_alerts_sorted(paths)
+    if offset:
+        result = result[offset:]
     if limit is not None:
         result = result[:limit]
     return result
+
+
+def count_pending_alerts(paths: "AgentPaths") -> int:
+    """未 acknowledged 的告警总数，供分页端点算 `has_more`/`total` 用。"""
+    return len(_load_pending_alerts_sorted(paths))
 
 
 def acknowledge_alert(paths: "AgentPaths", alert_id: str) -> bool:
