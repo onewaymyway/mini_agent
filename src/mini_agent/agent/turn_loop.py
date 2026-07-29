@@ -553,6 +553,22 @@ class TurnLoopMixin:
                 tool_results, result_strs = self._execute_tools(response)
             self._hist.append_tool_results(response.tool_calls, result_strs)
 
+            # [SYS-SYSCACHE-INVALIDATE 修复] skill_activate/deactivate 等工具会
+            # 修改 skill_loader.active 或子资源加载状态，这些状态正是下次
+            # build_system_prompt() 要读取的输入。但 _cached_system 是 turn 级
+            # 缓存（见 _build_system()），只在 turn 开始/结束、hot-reload、
+            # compact 时失效——工具执行完之后并不会自动失效。如果本轮工具调用
+            # 里包含这些会改变 system prompt 内容的工具，必须在这里让缓存失效，
+            # 否则本 turn 内后续的 _call_llm() 仍会拿到激活/卸载之前的旧
+            # system prompt，导致 agent 明明看到工具返回"activated"却读不到
+            # 对应的 skill 正文（一次性的"以为激活了但没生效"的假象）。
+            _SYSTEM_INVALIDATING_TOOLS = {
+                "skill_activate", "skill_deactivate",
+                "skill_resource_load", "skill_resource_unload",
+            }
+            if any(tc.name in _SYSTEM_INVALIDATING_TOOLS for tc in response.tool_calls):
+                self._cached_system = None
+
             # [具身改进 B1] 更新本体感知状态：记录最近工具名（供下一轮 risk_perception
             # 估算）+ 按每个工具结果是否出错累积/衰减 frustration。
             if self._proprioception is not None:
