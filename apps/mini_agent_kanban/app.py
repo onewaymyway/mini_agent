@@ -3311,7 +3311,8 @@ def render_external_input_tab(client: AgentClient):
         # 偶发的重复就让整个看板炸掉。
         for idx, alert in enumerate(alerts):
             cols = st.columns([5, 1])
-            cols[0].caption(f"🌐 {alert.get('summary', '')}")
+            alert_summary = alert.get("title") or f"外部输入告警（{alert.get('source_type', '')}）"
+            cols[0].caption(f"🌐 {alert_summary}")
             if cols[1].button("已读", key=f"ei_ack_{idx}_{alert.get('alert_id')}"):
                 res = client.ack_external_alert(alert["alert_id"])
                 if res and "_error" in res:
