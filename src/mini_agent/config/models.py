@@ -1130,6 +1130,33 @@ class AutonomyConfig:
 
 
 @dataclass
+class CronConfig:
+    """[daemon cron 任务专属执行机制] 见 evolution/cron_job_{workspace,
+    executor,runner,agent_bridge}.py。控制 cron job 后台线程执行的全局
+    默认限制；单个 job 可以在自己的 `.agent/cron_jobs/<id>/config.json`
+    里覆盖 timeout_seconds/max_steps（那是"每个 job 的"，这里是"全局的"，
+    两者不冲突：job 级 config.json 缺省时才回退到这里的默认值）。
+    """
+
+    # 同时并发执行的 cron job 数量上限（CronJobRunner 内部信号量）。
+    # 超出上限的 job 到期后会在后台线程里排队等待，不会丢失触发，只是
+    # 延后开始——见 cron_job_runner.py::CronJobRunner.submit() 的说明。
+    max_concurrent_jobs: int = 2
+
+    # 单个 job 若自己的 config.json 里没写 timeout_seconds/max_steps，
+    # 回退到这两个全局默认值（与 cron_job_workspace.py 里的
+    # DEFAULT_TIMEOUT_SECONDS/DEFAULT_MAX_STEPS 保持一致，这里允许整机
+    # 级别统一调整而不用逐个 job 改文件）。
+    default_timeout_seconds: int = 20 * 60
+    default_max_steps: int = 60
+
+    # cron 任务专用 Agent 单次 run_turn() 内部的 max_turns 预算（对应
+    # cron_agent_bridge.py::CRON_INNER_MAX_TURNS_DEFAULT），做"内层限步数、
+    # 外层限墙钟时间"双重兜底的内层那一道。
+    inner_max_turns: int = 15
+
+
+@dataclass
 class DigestAdvisorConfig:
     """[主动推荐与数字分身机制设计方案] 日报融合 / 主动推荐 / 决策画像
     三层功能的总开关与阈值配置。三者运行节奏依次变慢（日级 → 小时级候选
@@ -1382,6 +1409,7 @@ class AppConfig:
     affordance: AffordanceConfig = field(default_factory=AffordanceConfig)
     autonomy: AutonomyConfig = field(default_factory=AutonomyConfig)
     digest_advisor: DigestAdvisorConfig = field(default_factory=DigestAdvisorConfig)
+    cron: CronConfig = field(default_factory=CronConfig)
     workflow:   WorkflowConfig   = field(default_factory=WorkflowConfig)
     format_correction: FormatCorrectionConfig = field(default_factory=FormatCorrectionConfig)
     role_agent: RoleAgentConfig  = field(default_factory=RoleAgentConfig)

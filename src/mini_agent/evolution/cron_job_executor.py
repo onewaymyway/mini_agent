@@ -36,7 +36,7 @@ from typing import Callable, Optional, TYPE_CHECKING
 
 from mini_agent.role_agents.stuck_detector import StuckDetector, StuckSignal
 from mini_agent.evolution.cron_job_workspace import (
-    CronJobWorkspace, CronJobState,
+    CronJobWorkspace, CronJobState, CronJobConfig,
     STATUS_IDLE, STATUS_RUNNING, STATUS_NEEDS_REVIEW, STATUS_TIMED_OUT,
 )
 
@@ -71,15 +71,20 @@ class CronJobExecutor:
         self,
         job: "CronJob",
         submit_step_fn: Callable[[str], StepResult],
+        default_config: Optional[CronJobConfig] = None,
     ) -> RunOutcome:
         """
         执行一次 job。submit_step_fn(prompt_text) -> StepResult：
         第一次调用传入渲染好的完整 prompt（含上次进度），之后每次调用
         传入 "继续" 这类简短续步指令（具体由调用方与其 sub-agent 实现
         约定，本函数只负责调度节奏，不关心 prompt 怎么拼）。
+
+        default_config — 透传给 CronJobWorkspace.ensure()，仅在该 job
+        的 config.json 首次创建时生效（见 ensure() 的说明），通常由调用方
+        根据全局 AppConfig.cron 构造。
         """
         ws = CronJobWorkspace(self._paths, job.id)
-        ws.ensure(default_task_template=job.task_template)
+        ws.ensure(default_task_template=job.task_template, default_config=default_config)
         cfg = ws.read_config()
         state = ws.read_state()
 

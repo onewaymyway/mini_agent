@@ -1059,14 +1059,14 @@ class HttpServer:
             # Agent 的工具（cron_agent_bridge.build_cron_agent() 不传
             # allowed_tools，回退到全局默认 registry）。
             #
-            # max_concurrent 读取 cfg.cron.max_concurrent_jobs（未配置该字段
-            # 时默认为 2），控制同时并发执行的 cron job 数量上限，避免大量
-            # job 同时到期时把 LLM 并发请求数/CPU 打满；超出上限的 job 会在
-            # CronJobRunner 内部排队等待，不会丢失触发。
+            # max_concurrent 读取 cfg.cron.max_concurrent_jobs（config/models.py::
+            # CronConfig，正式配置字段，默认值 2），控制同时并发执行的 cron
+            # job 数量上限，避免大量 job 同时到期时把 LLM 并发请求数/CPU
+            # 打满；超出上限的 job 会在 CronJobRunner 内部排队等待，不会
+            # 丢失触发。
             from mini_agent.evolution.cron_job_runner import CronJobRunner
 
-            _cron_cfg = getattr(cfg, "cron", None)
-            _cron_max_concurrent = getattr(_cron_cfg, "max_concurrent_jobs", 2) if _cron_cfg is not None else 2
+            _cron_max_concurrent = cfg.cron.max_concurrent_jobs
 
             def _on_cron_finished(job_id: str, outcome) -> None:
                 """cron job 后台线程执行完毕后的回调：写一条 digest 记录，

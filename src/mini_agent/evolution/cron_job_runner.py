@@ -110,11 +110,23 @@ class CronJobRunner:
                 build_cron_agent, make_submit_step_fn,
             )
             from mini_agent.evolution.cron_job_executor import CronJobExecutor
+            from mini_agent.evolution.cron_job_workspace import CronJobConfig
 
             agent = build_cron_agent(self._base_cfg, job)
             step_fn = make_submit_step_fn(agent)
             executor = CronJobExecutor(self._paths)
-            outcome = executor.run_job(job, submit_step_fn=step_fn)
+
+            # 根据全局 AppConfig.cron 构造"该 job 若是首次运行"时应写入的
+            # config.json 默认值；job 若已经有自己的 config.json（用户手动
+            # 编辑过，或非首次运行），这个默认值不会生效——见
+            # CronJobWorkspace.ensure() 的说明。
+            cron_cfg = getattr(self._base_cfg, "cron", None)
+            default_config = CronJobConfig(
+                timeout_seconds=getattr(cron_cfg, "default_timeout_seconds", 20 * 60),
+                max_steps=getattr(cron_cfg, "default_max_steps", 60),
+            ) if cron_cfg is not None else None
+
+            outcome = executor.run_job(job, submit_step_fn=step_fn, default_config=default_config)
 
             if self._on_finished is not None:
                 try:

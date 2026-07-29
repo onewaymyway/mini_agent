@@ -134,15 +134,22 @@ class CronJobWorkspace:
 
     # ── 初始化 / 幂等 ensure ──────────────────────────────────────────────
 
-    def ensure(self, default_task_template: str = "") -> None:
-        """确保文件夹和默认文件存在；已存在的文件不覆盖（用户可能已编辑过）。"""
+    def ensure(self, default_task_template: str = "", default_config: Optional[CronJobConfig] = None) -> None:
+        """确保文件夹和默认文件存在；已存在的文件不覆盖（用户可能已编辑过）。
+
+        default_config — 新建 config.json 时使用的默认值来源，通常由调用方
+        传入根据 AppConfig.cron（全局配置，见 config/models.py::CronConfig）
+        构造的 CronJobConfig；不传时退回 CronJobConfig() 的硬编码默认值。
+        只影响**首次创建**该 job 文件夹时写入的 config.json 内容，job 自己
+        已经存在的 config.json 不会被这里覆盖。
+        """
         self.dir.mkdir(parents=True, exist_ok=True)
         self.runs_dir.mkdir(parents=True, exist_ok=True)
         if not self.prompt_path.exists():
             content = default_task_template or "{{task_description}}\n\n{{progress}}\n"
             self.prompt_path.write_text(content, encoding="utf-8")
         if not self.config_path.exists():
-            _atomic_write_json(self.config_path, CronJobConfig().to_dict())
+            _atomic_write_json(self.config_path, (default_config or CronJobConfig()).to_dict())
         if not self.state_path.exists():
             _atomic_write_json(self.state_path, CronJobState().to_dict())
 

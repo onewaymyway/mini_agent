@@ -45,7 +45,7 @@ CRON_INNER_MAX_TURNS_DEFAULT = 15
 def build_cron_agent(
     base_cfg: AppConfig,
     job: "CronJob",
-    inner_max_turns: int = CRON_INNER_MAX_TURNS_DEFAULT,
+    inner_max_turns: Optional[int] = None,
 ) -> Agent:
     """
     为一次 cron job 执行构建一个全新的、全量继承主 Agent 工具集的 Agent 实例。
@@ -55,7 +55,14 @@ def build_cron_agent(
     progress_summary 文本实现，而不是靠保留 Agent 对象或 session 历史——
     这样可以避免 cron 任务的历史无限增长，也避免和用户会话的 session
     存储混在一起。
+
+    inner_max_turns — 不传时回退到 base_cfg.cron.inner_max_turns（全局
+    配置，config/models.py::CronConfig，默认 15），可以整机统一调整，
+    不用逐处改代码常量。
     """
+    if inner_max_turns is None:
+        inner_max_turns = getattr(getattr(base_cfg, "cron", None), "inner_max_turns", CRON_INNER_MAX_TURNS_DEFAULT)
+
     cfg = load_config(
         project_root=base_cfg.project_root,
         verbose=False,

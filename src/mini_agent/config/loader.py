@@ -47,6 +47,7 @@ from .models import (
     WorkdirKnowledgeConfig,
     GlobalKnowledgeConfig,
     DigestAdvisorConfig,
+    CronConfig,
     DEFAULT_MODEL,
     DEFAULT_AGENT_NAME,
     DEFAULT_MAX_TOKENS,
@@ -785,6 +786,15 @@ def load_config(
         decision_profile_min_evidence_count=int(_da.get("decision_profile_min_evidence_count", 3)),
     )
 
+    # ── daemon cron 任务专属执行机制配置（见 config/models.py::CronConfig）──
+    _cron = file_cfg.get("cron") if isinstance(file_cfg.get("cron"), dict) else {}
+    cron_cfg = CronConfig(
+        max_concurrent_jobs=int(_cron.get("max_concurrent_jobs", 2)),
+        default_timeout_seconds=int(_cron.get("default_timeout_seconds", 20 * 60)),
+        default_max_steps=int(_cron.get("default_max_steps", 60)),
+        inner_max_turns=int(_cron.get("inner_max_turns", 15)),
+    )
+
     return AppConfig(
         api_key=api_key,
         model=_model,
@@ -845,6 +855,7 @@ def load_config(
         global_knowledge=global_knowledge_cfg,
         privacy=privacy_cfg,
         digest_advisor=digest_advisor_cfg,
+        cron=cron_cfg,
         llm_fallback_chain=_llm_fallback_chain,
         llm_fallback_on=_llm_fallback_on,
     )
