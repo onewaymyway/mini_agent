@@ -1,0 +1,56 @@
+# .agent/external_input/policies.yaml
+#
+# External Input Gateway 的路由规则配置。加载逻辑见
+# src/mini_agent/external_input/policy.py::load_policies()，规则按文件
+# 顺序匹配，"第一条命中的规则生效"，未命中任何规则的事件默认走
+# notify_only（最省钱的路径，不会意外放大成 LLM 调用）。
+#
+# 本文件配合 sources.yaml 里的改动一起生效：4 个 RSS 来源
+# （arxiv_cs_ai / hn_frontpage / sspai_feed / ithome_feed）都已经打上
+# channel: agent_watch，并在 params.keywords 里做了"标题命中 agent 相关
+# 关键词才产生事件"的前置过滤——也就是说，能走到这里、channel 是
+# agent_watch 的 new_item 事件，本身已经是关于 AI Agent 的内容，不需要
+# 在 policy 层再判断一次（policy.match 本身也只支持
+# source_type/signal/channel/fields.<key>，不支持按标题模糊匹配）。
+#
+# 完整字段说明见 docs/external-input-gateway-guide.md §5.2、§5.3。
+
+# 1) agent 相关资讯/论文：来源侧已用 keywords 过滤过标题，这里直接
+#    升级成 GoalBacklog 候选，打 needs_review 标签，交给用户/autonomous
+#    loop 决定要不要进一步展开处理（比如读论文摘要、追踪某个 Agent
+#    项目动态）。不用 enqueue_turn 是因为候选还没人工确认，不应该
+#    自动消耗一次 LLM 推理。
+- match:
+    channel: agent_watch
+    signal: new_item
+  action: goal_candidate
+
+# 2) 天气类事件统一走通知，不生成 Goal / 不触发 Agent（跟天气来源本身
+#    的默认路由预期一致，这里显式写出来方便一眼看清，即使不写也会走
+#    下面的兜底 notify_only）。
+- match:
+    channel: weather
+  action: notify_only
+
+# 3) 兜底规则：其余未匹配到上面两条的事件（比如 watch 来源以后新增
+#    fetcher 类型、或者 agent_watch 之外产生的 threshold/page_changed
+#    信号）一律 notify_only，只写 alerts.jsonl，不升级成 Goal，更不会
+#    触发 Agent 推理。跟"未配置 policies.yaml 时的默认行为"完全一致，
+#    这里显式写出来是为了让路由意图在文件里自解释，而不是依赖隐式默认值。
+- match: {}
+  action: notify_only
+
+# enqueue_turn（直接提交 InputQueue、真正触发一次 Agent 推理）暂不配置：
+# 当前 4 个 RSS 来源的 new_item 事件颗粒度是"一条资讯/一篇论文"，直接
+# enqueue_turn 会导致关键词命中越多、LLM 调用越多，风险不可控。如果后续
+# 需要对某个特别重要的信号（比如带 fields.priority: high 的事件）自动
+# 触发处理，可以在规则 1 之前插入一条更精确的 match，示例：
+#
+# - match:
+#     channel: agent_watch
+#     signal: new_item
+#     fields.priority: high
+#   action: enqueue_turn
+#   enqueue:
+#     initiator: external
+#     task_template: "关注到一条重要的 Agent 相关资讯：{title}\n{detail}"

@@ -40,39 +40,57 @@ sources:
   # RSS 源监控（内置 watch 来源，fetcher: rss，见
   # src/mini_agent/external_input/builtin/watch.py）。每个源独立轮询，
   # 首次拉取只记录 seen_ids、不产生事件，此后有新条目才发 new_item。
+  #
+  # 下面 4 个 RSS 源统一打上 channel: agent_watch，并配了 keywords 做
+  # 标题前置过滤——只有标题命中关键词才会产生 new_item 事件，也就是说
+  # 到达 system_events.jsonl 的事件本身已经是"跟 AI Agent 相关"的内容。
+  # policies.yaml 里对 channel: agent_watch 配的路由规则因此可以直接把
+  # 这些事件当作已筛选过的信号处理（见 policies.yaml 说明），不需要在
+  # policy 层再做一次内容判断（policy 的 match 本身也不支持按标题做
+  # 模糊匹配，只能匹配 source_type/signal/channel/fields.<key>）。
 
   - id: arxiv_cs_ai
     type: watch
     enabled: true
     interval_seconds: 1800   # arXiv 每日更新，半小时轮询一次足够
+    channel: agent_watch
     params:
       source_id: arxiv_cs_ai
       fetcher: rss
       url: "https://rss.arxiv.org/rss/cs.AI"
+      # arXiv 标题多为英文，覆盖常见的 agent 相关表述
+      keywords: ["agent", "agentic", "multi-agent", "autonomous agent", "llm agent"]
 
   - id: hn_frontpage
     type: watch
     enabled: true
     interval_seconds: 300    # Hacker News 首页更新较快
+    channel: agent_watch
     params:
       source_id: hn_frontpage
       fetcher: rss
       url: "https://hnrss.org/frontpage"
+      keywords: ["agent", "ai agent", "autonomous agent", "agentic"]
 
   - id: sspai_feed
     type: watch
     enabled: true
     interval_seconds: 900
+    channel: agent_watch
     params:
       source_id: sspai_feed
       fetcher: rss
       url: "https://sspai.com/feed"
+      # 中文资讯站，标题多为中文，关键词同时保留英文以防原文引用
+      keywords: ["智能体", "AI Agent", "自主代理", "agent"]
 
   - id: ithome_feed
     type: watch
     enabled: true
     interval_seconds: 600    # IT之家更新频繁
+    channel: agent_watch
     params:
       source_id: ithome_feed
       fetcher: rss
       url: "https://www.ithome.com/rss/"
+      keywords: ["智能体", "AI Agent", "自主代理", "agent"]

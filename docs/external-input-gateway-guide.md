@@ -86,6 +86,10 @@ LLM 调用"，成本不可控。
 直接调用 `GoalBacklog.add_goal()`/`InputQueue.enqueue()`，进入既有的
 Goal→Objective 拆分、`ResourceArbiter` 门控等消费链路。
 
+> 上面是通用架构图（抽象层面，不代表当前项目里 `sources.yaml`/
+> `policies.yaml` 实际配了什么、事件实际会流向哪个落点）。当前项目里
+> 实际生效（或尚未生效）的具体路由，见 §11"当前实际数据流向"。
+
 ## 2. 核心组件
 
 | 组件 | 文件 | 职责 |
@@ -353,3 +357,104 @@ class MySource(ExternalInputSource):
   的 `by_channel` 统计里生效；`GET /v1/external_input/events` 尚不支持
   按 `channel` 过滤（只能拿到最近事件流水再自行按 `payload.channel`
   筛选），看板页面也还没有"按频道筛选"的 UI，这些留给后续有需要时再补。
+
+## 11. 当前实际数据流向
+
+§1 的架构图是通用抽象图，本节画的是**当前项目里 `sources.yaml` +
+`policies.yaml` 实际生效的具体路由**，随这两个配置文件变化会过期，
+改配置时请同步更新本节。
+
+### 11.1 前提开关：GatewayPoller 是否真的在跑
+
+`GatewayPoller` 在 `api/server.py::HttpServer._build_autonomous_loop()`
+里无条件构造并 `start()`，不受 autonomy 档位限制；但 `HttpServer` 本身
+只有在 HTTP API 服务开启时才会被构造（`HttpConfig.enabled` 默认
+`false`）：
+
+```
+agent_config.json 里 http_enabled: true   （或启动加 --http）
+              │
+              ▼ 是
+    HttpServer 被构造 → GatewayPoller(paths).start()
+              │                    │
+              │                    ▼
+              │        sources.yaml 里 enabled: true 的每个 source
+              │        各起一条独立轮询线程，按 interval_seconds 轮询
+              ▼
+      否 → HttpServer 不存在 → GatewayPoller 从未被构造
+            → sources.yaml 配了也不会跑，events.jsonl 不会有新记录
+```
+
+### 11.2 实际配置下的路由分支
+
+当前 `.agent/external_input/sources.yaml` 有 5 个 source：
+`beijing_weather`（channel: `weather`）+ 4 个 RSS（`arxiv_cs_ai` /
+`hn_frontpage` / `sspai_feed` / `ithome_feed`，统一打了
+`channel: agent_watch`，并在 `params.keywords` 里做了标题前置过滤——
+只有标题命中 agent 相关关键词才会产生事件）。配合当前
+`.agent/external_input/policies.yaml`，实际流向如下：
+
+```
+                        sources.yaml（5 个 source，均 enabled: true）
+                                        │
+        ┌───────────────────────────────┼───────────────────────────────┐
+        ▼                               ▼                               ▼
+ beijing_weather                 arxiv_cs_ai / hn_frontpage        （其余未来新增的
+ type: weather                   sspai_feed / ithome_feed           source，走兜底）
+ channel: weather                 type: watch, channel: agent_watch
+        │                        keywords 已过滤（标题命中才发事件）
+        ▼                               ▼
+ signal: rain_alert /            signal: new_item
+ high_temperature /                     │
+ low_temperature /                      │
+ daily_forecast                         │
+        │                               │
+        ▼                               ▼
+ system_events.jsonl（event_type = "external.weather.*" / "external.watch.new_item"）
+        │                               │
+        └───────────────┬───────────────┘
+                         ▼
+     autonomous_loop.tick() → _tick_passive() → run_ingestion_policy_once()
+                （按 policies.yaml 第一条命中规则路由，逐 channel 分组处理）
+                         │
+        ┌────────────────┼────────────────────────────────┐
+        ▼                ▼                                ▼
+  match: channel:   match: channel:                  match: {}（兜底，
+  weather           agent_watch, signal: new_item     未命中前两条的事件）
+  → notify_only     → goal_candidate                  → notify_only
+        │                │                                │
+        ▼                ▼                                ▼
+ alerts.jsonl      GoalBacklog.add_goal(              alerts.jsonl
+ （待确认告警）      source="external_input",          （待确认告警）
+        │            tags=["needs_review"])
+        │                │
+        │                ▼
+        │        进入既有 Goal→Objective 拆分、
+        │        ResourceArbiter 门控、
+        │        GoalBacklog.has_actionable_work()
+        │        消费链路（是否真正执行仍由这些
+        │        既有机制判断，不会自动越权执行）
+        ▼                                                  ▼
+ GET /v1/inbox 聚合展示                              GET /v1/inbox 聚合展示
+ POST .../ack 标记已读                                POST .../ack 标记已读
+        │                                                  │
+        └───────────────────┬──────────────────────────────┘
+                             ▼
+              看板"🔌 外部输入"页签（只读，人工核对路由是否符合预期）
+```
+
+**当前配置里没有任何 `enqueue_turn` 规则**（成本最高、需要显式配置的
+落点），也就是说无论天气还是 RSS 事件，都不会自动触发一次 Agent 推理；
+`agent_watch` 频道的事件会进入 `GoalBacklog`，但仍打了 `needs_review`
+标签，最终要不要拆解执行由 Goal→Objective 既有链路和
+`ResourceArbiter` 门控决定，网关本身不越权。
+
+### 11.3 目前仍未生效的前提
+
+即使上面两份配置文件已经就位，只要满足以下任一条件，这套流程仍然是
+静止的，`system_events.jsonl` 不会新增 `external.*` 记录：
+
+- `agent_config.json` 未设置 `http_enabled: true` 且启动时未加 `--http`
+  （§11.1 的前提开关未打开）；
+- 项目目录下没有以 daemon/长驻方式运行 Agent 进程（`GatewayPoller`
+  和 `autonomous_loop.tick()` 都需要进程持续存活才能轮询/消费）。
