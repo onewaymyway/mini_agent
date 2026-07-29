@@ -55,6 +55,36 @@ watchlist:
   一样挂在 `AutonomousLoop.tick()` 的 maintenance 档位，各自独立游标，
   互不影响），命中后写入 `.agent/external_input/pending_hits.jsonl`。
 
+### 2.1 当前实际配置（`watchlist.yaml` 已落地，非 `.example`）
+
+`.agent/external_input/watchlist.yaml` 目前配了 3 条关注项，跟
+`external_input/sources.yaml` 里给 4 个 RSS 源打的 `channel: agent_watch`
+是同一套 agent 相关信号，两层过滤叠加使用：
+
+| id | keywords | report_tier | scope.source_channels | enabled |
+|---|---|---|---|---|
+| `agent_breakthrough` | agent / agentic / multi-agent / autonomous agent / llm agent / 智能体 / AI Agent / 自主代理 | `minute_30` | `["agent_watch"]` | `true` |
+| `agent_ecosystem_daily` | agent framework / agent 生态 / AI 助手 / copilot | `daily` | `["agent_watch"]` | `true` |
+| `paused_topic_example` | 暂停关注的话题占位示例 | `daily` | （未限定） | `false`（占位，展示"暂停不删除"的用法） |
+
+设计取舍：
+
+- `agent_breakthrough` 用较高频的 `minute_30` 档，是因为它的关键词更
+  聚焦"框架/模型层面的 agent 突破"，值得较快看到；`agent_ecosystem_daily`
+  关键词更泛（比如 `copilot`），容易命中较多噪音，所以降到 `daily` 档
+  统一汇总，避免高频打扰。
+- 两条都用 `scope.source_channels: ["agent_watch"]` 限定只在
+  `sources.yaml` 已经打了 `channel: agent_watch` 的 4 个 RSS 来源产生的
+  事件里匹配——`beijing_weather`（`channel: weather`）不会被这两条
+  关注项处理，即使天气告警标题恰好包含某个关键词也不会误命中（`scope`
+  按事件的 `channel` 而不是关键词内容做隔离）。
+- `WatchlistMatcher` 的关键词比对独立于 `IngestionPolicy`
+  的 `notify_only`/`goal_candidate` 路由——同一条 `agent_watch` 事件会
+  **同时**：① 按 `policies.yaml` 走 `goal_candidate` 落地到
+  `GoalBacklog`；② 被 `WatchlistMatcher` 关键词命中后写入
+  `pending_hits.jsonl`，等对应 tier 的 cron job 触发时打包汇报。两条
+  链路互不影响、互不替代（详见 §10 完整流向图）。
+
 ## 3. 配置分级汇报：`.agent/notification/report_tiers.yaml`
 
 复制 `.agent/notification/report_tiers.yaml.example` 为
@@ -84,6 +114,23 @@ tiers:
 - 用 `/cron status` 可以看到这些 job 跟其它内置 job 一起排队等待触发；
   `sys:` 前缀的 job 不可删除，只能 `/cron disable <job_id>`。
 
+### 3.1 当前实际配置（`report_tiers.yaml` 已落地，非 `.example`）
+
+`.agent/notification/report_tiers.yaml` 直接采用了设计文档 §3.2 的
+四档默认样例，内容跟 `.example` 一致：
+
+| tier id | schedule | notify_channels | 用途 |
+|---|---|---|---|
+| `minute_1` | `interval:60` | `[kanban]` | 预留最高频档（当前没有 watchlist 项引用它） |
+| `minute_30` | `interval:1800` | `[kanban]` | `agent_breakthrough` 关注项在用 |
+| `hourly` | `interval:3600` | `[kanban]` | 预留（当前没有 watchlist 项引用它） |
+| `daily` | `cron:0 22 * * *` | `[kanban, email]` | `agent_ecosystem_daily`/`paused_topic_example` 在用 |
+
+注意：`notify_channels` 里写了 `email` 不代表真的会发邮件——`daily`
+tier 只是"允许"该渠道，实际发不发信取决于
+`.agent/notification/config.yaml` 里 `channels.email.enabled` 的值
+（当前项目没有落地这份文件，等价于全局只有 `kanban` 渠道可用，见 §4）。
+
 ## 4. 配置通知渠道：`.agent/notification/config.yaml`
 
 复制 `.agent/notification/config.yaml.example` 为 `config.yaml` 并按需
@@ -112,6 +159,19 @@ channels:
   （SMTP 连不上之类），至少能在看板的"待处理告警"面板看到这条通知本身，
   不会因为唯一渠道失败而彻底消失。
 - 邮件发送失败不重试、不阻塞其它渠道，失败会记 `log_exception`。
+
+### 4.1 当前实际状态：这份文件没有落地，而且不需要
+
+跟 `watchlist.yaml`/`report_tiers.yaml` 不同，`load_notification_config()`
+在文件缺失时返回的不是空列表，而是一个"只有 kanban 兜底渠道"的合法
+`NotificationConfig` 默认对象（`default_channels=[kanban]`，
+`goal_advance_cooldown_seconds=21600`）——所以当前项目**没有**创建
+`.agent/notification/config.yaml`，也是刻意为之：没有邮件账号可配的
+情况下，创建一份 `channels.email.enabled: false` 的文件跟"文件不存在"
+效果完全一样，不创建反而少一份需要维护、且天然适合 gitignore 排除的
+文件。只有在需要真正打开 email 渠道、或者要调整
+`goal_advance_cooldown_seconds` 默认值时，才需要复制 `.example` 为
+`config.yaml` 并手动配置。
 
 ## 5. 通知落地位置
 
@@ -221,7 +281,77 @@ Goal"的入口：
 
 ---
 
-## 9. 相关文件一览
+## 9. 当前实际生效链路（具体配置版）
+
+前面几节讲的是通用机制，本节画的是**当前项目里 `sources.yaml` +
+`watchlist.yaml` + `report_tiers.yaml`（+ 缺失的 `config.yaml`）叠加在
+一起，一条 agent 相关 RSS 新条目具体会怎么流转**。这张图会随三份
+yaml 的实际内容变化而过期，改配置时请同步更新。
+
+前提开关（跟 `docs/external-input-gateway-guide.md` §11.1 一致）：
+`agent_config.json` 里 `http_enabled: true`（或启动加 `--http`），
+`HttpServer` 才会被构造，`GatewayPoller` 才会真正起轮询线程；否则
+下面整条链路都不会跑。
+
+```
+sources.yaml: hn_frontpage（channel: agent_watch, keywords 含 "agent"）
+        │  标题命中关键词 → 产生 new_item 事件
+        ▼
+system_events.jsonl（event_type = "external.watch.new_item"，channel=agent_watch）
+        │
+        ├──────────────────────────────┬───────────────────────────────┐
+        ▼                               ▼                               │
+IngestionPolicy                  WatchlistMatcher                        │
+（run_ingestion_policy_once）     （独立游标，独立于上面的路由）           │
+        │                               │                               │
+match: channel=agent_watch,      逐条比对 watchlist.yaml 已启用项：       │
+signal=new_item → goal_candidate  - agent_breakthrough（含 "agent"）命中  │
+        │                          - scope.source_channels=[agent_watch] │
+        ▼                          命中，标题+详情去重后写入：            │
+GoalBacklog.add_goal(                    ▼                               │
+  source="external_input",       pending_hits.jsonl                     │
+  tags=["needs_review"])         （tier=minute_30，24h 去重窗口）         │
+        │                               │                               │
+        ▼                               ▼                               │
+进入既有 Goal→Objective 拆分、    等 sys:watchlist_report_minute_30       │
+ResourceArbiter 门控（是否真正    这个 cron job（interval:1800）触发：     │
+执行仍由既有机制判断）              读 pending_hits.jsonl → 按             │
+                                  watchlist_id 分组生成摘要（每组最多     │
+                                  20 条）→ NotificationDispatcher.dispatch│
+                                        │                                │
+                                        ▼                                │
+                          notify_channels 解析：watchlist 项留空 →       │
+                          用 minute_30 tier 的默认渠道 [kanban]           │
+                          （config.yaml 未落地，全局也只有 kanban 可用，  │
+                          email 渠道即使 tier 里写了也不会真正发信）      │
+                                        │                                │
+                                        ▼                                │
+                          alerts.jsonl（source="watchlist_report"）      │
+                          + dispatch_log.jsonl（记一条发送结果）          │
+                                        │                                │
+        ┌───────────────────────────────┴────────────────────────────┘
+        ▼
+看板"🔌 外部输入"（原始事件/告警）+ "🔔 关注与通知"（关注命中/汇报记录）
+两个 tab 分别展示，GET /v1/inbox 会把两类 alerts.jsonl 记录一起聚合
+```
+
+几个容易误解的点，专门在这里说明一下：
+
+- **`goal_candidate` 和 `WatchlistMatcher` 命中是两条完全独立的链路**，
+  同一条 RSS 新条目会同时触发这两条路径，互不替代——`policies.yaml`
+  决定"要不要生成 Goal 候选"，`watchlist.yaml` 决定"要不要定期汇报给
+  人看"，两者可以同时生效、也可以只开一个。
+- **`agent_ecosystem_daily`/`paused_topic_example` 引用的是 `daily`
+  tier**，只在每天 22:00 触发一次；`paused_topic_example` 本身
+  `enabled: false`，不会参与匹配，纯粹是"暂停不删除"的占位展示。
+- **`beijing_weather` 产生的事件不会走上面这条 watchlist 链路**——两条
+  watchlist 项都用 `scope.source_channels: ["agent_watch"]` 限定了范围，
+  天气事件的 `channel` 是 `weather`，天然被排除在外；天气事件仍然会走
+  `IngestionPolicy` 的 `channel: weather → notify_only` 规则，落到同一份
+  `alerts.jsonl`，但 `source` 字段是网关自身的 `notify_only` 标记，不是
+  `watchlist_report`，看板/`/v1/inbox` 上可以按这个字段区分开。
+
+## 10. 相关文件一览
 
 | 文件 | 作用 |
 |---|---|
@@ -240,9 +370,10 @@ Goal"的入口：
 | `src/mini_agent/storage/paths.py` | `notification_dispatch_log` 等路径属性 |
 | `apps/mini_agent_kanban/client.py` | `notification_watchlist/report_tiers/dispatch_log()` 客户端方法（P7） |
 | `apps/mini_agent_kanban/app.py` | "🔔 关注与通知" tab + Goal 卡片"🔗相关外部信息"面板（P7） |
-| `.agent/external_input/watchlist.yaml` | 用户关注对象配置（复制 `.example` 后使用） |
-| `.agent/external_input/watchlist.yaml.example` | 关注对象配置样例（本轮新增，此前 P2 只在文档里给示例、没有落地文件） |
-| `.agent/notification/report_tiers.yaml` | 分级汇报 tier 配置（复制 `.example` 后使用） |
-| `.agent/notification/config.yaml` | 通知渠道配置（含密钥、`goal_advance_cooldown_seconds`，已 gitignore） |
-| `.agent/notification/config.yaml.example` | 通知渠道配置样例（本轮新增，同上，含 P5 新增的 `goal_advance_cooldown_seconds` 说明） |
-| `.agent/notification/dispatch_log.jsonl` | 通知发送记录（运行时生成，P7 新增，本轮补充 gitignore） |
+| `.agent/external_input/watchlist.yaml` | 用户关注对象**实际配置**（已落地，非 `.example`，当前 3 条见 §2.1） |
+| `.agent/external_input/watchlist.yaml.example` | 关注对象配置模板/字段说明参考，复制改名即为实际配置 |
+| `.agent/notification/report_tiers.yaml` | 分级汇报 tier **实际配置**（已落地，非 `.example`，当前 4 档见 §3.1） |
+| `.agent/notification/report_tiers.yaml.example` | tier 配置模板/字段说明参考 |
+| `.agent/notification/config.yaml` | 通知渠道配置（含密钥、`goal_advance_cooldown_seconds`，已 gitignore）——**当前项目未落地**，缺失时等价于"只有 kanban 渠道"，见 §4.1 |
+| `.agent/notification/config.yaml.example` | 通知渠道配置模板，含 P5 新增的 `goal_advance_cooldown_seconds` 说明；需要开 email 渠道时复制改名 |
+| `.agent/notification/dispatch_log.jsonl` | 通知发送记录（运行时生成，尚未产生过记录，见 §9 前提开关说明） |
