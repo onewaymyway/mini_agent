@@ -222,6 +222,23 @@ class AutonomousLoop:
         原地不动、agent 永远不会主动去做。见 _ensure_goal_objectives()。
         """
         self._tick_passive()
+
+        # ── GoalRelevanceEngine Stage①（候选生成，规则层，P4）── 必须放在
+        # _tick_maintenance() 而不是 _tick_passive()：本方法体内需要读取
+        # `goal_backlog.active_goals()`，而 _tick_passive() 按既有边界
+        # （见本文件顶部注释）不引用 GoalBacklog 任何方法。纯规则匹配，
+        # 零 LLM 成本，不受下面资源仲裁门控影响——跟 IngestionPolicy/
+        # WatchlistMatcher 一样，"记一条候选"本身不消耗任何预算。
+        try:
+            from mini_agent.external_input.goal_relevance import run_goal_relevance_candidate_once
+            run_goal_relevance_candidate_once(self._paths, goal_backlog=self._goal_backlog)
+        except ImportError:
+            pass
+        except Exception as _mini_agent_exc:
+            from mini_agent.errors import log_exception
+            log_exception(_mini_agent_exc, where='mini_agent.evolution.autonomous_loop._tick_maintenance.goal_relevance_candidate')
+            pass
+
         self._ensure_goal_objectives()
 
         # ObjectiveExecutor：先回收卡死的 step（并发槽位卡死修复，见

@@ -1,6 +1,6 @@
 # 外部输入网关扩展设计方案：关注对象 · 分级汇报 · 通知系统 · Goal 关联执行
 
-- **版本**: v1.3（P1/P2/P3 已实施；§9 评审改进点持续在对应实施阶段吸收，见 §6 状态列）
+- **版本**: v1.4（P1/P2/P3/P4 已实施；§9 评审改进点持续在对应实施阶段吸收，见 §6 状态列）
 - **背景**: 在已有的 External Input Gateway（`src/mini_agent/external_input/`）基础上，
   新增"用户关注对象识别"、"按任意粒度分级汇报"、"可扩展通知渠道"、
   "外部信号驱动 Goal 执行" 四块能力。
@@ -410,7 +410,7 @@ class NotificationDispatcher:
 | **P1** | `NotificationDispatcher` 骨架 + kanban/email 两个渠道 | 新增 `src/mini_agent/notification/{__init__,dispatcher,config,channels/__init__,channels/kanban,channels/email}.py`；新增 `.agent/notification/config.yaml` 样例；新增 `tests/test_notification_dispatcher.py` | ✅ 已实施（吸收 §9.3 #8 kanban 隐式兜底、§9.3 #10 source 字段、§9.4 #12 gitignore） |
 | **P2** | `watchlist.yaml` 加载 + `WatchlistMatcher`（纯规则匹配 + 去重 + 写 pending_hits） | 新增 `src/mini_agent/external_input/watchlist.py`、`src/mini_agent/external_input/filelock.py`；新增 `.agent/external_input/watchlist.yaml` 样例；`storage/paths.py` 新增路径属性；`evolution/autonomous_loop.py::_tick_passive()` 接入消费点；新增 `tests/test_watchlist_matcher.py` | ✅ 已实施（吸收 §9.1 #1 pending_hits 加锁、§9.2 #6 去重窗口可配置） |
 | **P3** | `report_tiers.yaml` 加载 + 动态注册 `sys:watchlist_report_<id>` cron job + 消费 pending_hits 生成摘要并 dispatch | 新增 `src/mini_agent/external_input/report_tiers.py`；修改 `evolution/cron_scheduler.py`（新增 `register_local_handler`/`ensure_job`，支持"零 LLM 成本"的本地回调 job，区别于原有走 `submit_fn`→`InputQueue`→LLM turn 的 job）；修改 `storage/paths.py`（新增 `notification_report_tiers_config`/`notification_tier_state` 路径）；修改 `api/server.py::_build_autonomous_loop`（daemon 启动时调用 `ensure_report_tier_jobs`）；新增 `.agent/notification/report_tiers.yaml.example`；新增 `tests/test_report_tiers.py` | ✅ 已实施（吸收 §9.1 #1 pending_hits 加锁复用、§9.3 #9 单组摘要条数上限、§9.2 #7 高频 tier 空转节流、§8 开放项 2 缺失才补注册） |
-| **P4** | `GoalRelevanceEngine` Stage①（候选生成，规则层，接入 `tick()`） | 新增 `src/mini_agent/external_input/goal_relevance.py`；修改 `evolution/autonomous_loop.py`（`_tick_maintenance()` 里新增一个消费点，跟 `run_ingestion_policy_once` 同级） | ⏳ 待实施 |
+| **P4** | `GoalRelevanceEngine` Stage①（候选生成，规则层，接入 `tick()`） | 新增 `src/mini_agent/external_input/goal_relevance.py`；修改 `evolution/autonomous_loop.py`（`_tick_maintenance()` 里新增一个消费点，跟 `run_ingestion_policy_once` 同级）；修改 `storage/paths.py`（新增 `external_input_goal_relevance_candidates` 路径）；新增 `tests/test_goal_relevance_candidate.py` | ✅ 已实施（吸收 §9.1 #2 候选去重跳过、§9.2 #5 候选队列总量止损上限） |
 | **P5** | `GoalRelevanceEngine` Stage②（LLM 批量判定 + `attach_external_context`/`try_advance_goal`） | 修改 `perception/goal_backlog.py`（新增字段+方法）；修改 `src/mini_agent/external_input/goal_relevance.py`；新增 `sys:goal_relevance_judge` cron job；修改 `api/server.py`（提供 llm_helper 给判定函数，风格对齐 `_llm_decompose` 的现有接线方式） | ⏳ 待实施 |
 | **P6** | Prompt 精确注入（decompose/redecompose） | 修改 `evolution/objective_executor.py::_default_llm_decompose/_default_llm_redecompose` | ⏳ 待实施 |
 | **P7** | 看板展示（关注对象列表、tier 配置只读展示、Goal 详情页"🔗相关外部信息"、通知发送记录） | 修改 `apps/mini_agent_kanban/{app.py,client.py}`；新增/修改 `api/routes.py` 只读端点 | ⏳ 待实施 |
@@ -640,3 +640,39 @@ job 的存储结构（`CronJob`/`cron_jobs.json`）、治理规则（`sys:` 前�
   §9.4（安全边界，属于 P1/P4/P5）、§9.5（可观测性/dry-run，属于
   P3/P5/P7，本次只完成了 P3 部分的空转节流，尚未加运行时计数器，留待
   与 P5/P7 一起做，避免只做一半的指标体系）。
+
+## 11. P4 实施记录（补充说明，不改动 §1-§9 原文）
+
+### 11.1 Stage① 必须放在 `_tick_maintenance()`，不是"跟 IngestionPolicy
+放在一起"的字面意思
+
+§6 P4 原表述"跟 `run_ingestion_policy_once` 同级"容易被理解成"塞进
+`_tick_passive()` 里紧挨着 `run_ingestion_policy_once`/`run_watchlist_matcher_once`
+那几行"。但 `autonomous_loop.py` 顶部有一条明确的架构边界注释：
+`_tick_passive()` 方法体内不引用 `GoalBacklog` 任何方法（`has_actionable_work()`
+等只在 `_tick_maintenance()`/`_tick_autonomous()` 里调用）。Stage① 需要读
+`goal_backlog.active_goals()`，因此实际落地时放在了 `_tick_maintenance()`
+的最前面（`self._tick_passive()` 之后、`_ensure_goal_objectives()` 之前）——
+仍然满足"零 LLM 成本、不受资源仲裁门控影响、每次 maintenance tick 都跑"
+这几条设计要求，只是物理位置服从了既有的档位边界，而不是严格意义上
+"跟 IngestionPolicy 挂在同一行代码附近"。
+
+### 11.2 §9 改进点吸收情况（P4 范围内）
+
+- **§9.1 #2**（候选去重）：`run_goal_relevance_candidate_once()` 写入前
+  检查 `(event_id, goal_id)` 对应的候选 id 是否已存在于
+  `goal_relevance_candidates.jsonl`（不管 `judged` 是 true 还是 false），
+  已存在则跳过，避免游标重放时重复写入同一组合。
+- **§9.2 #5**（候选队列止损上限）：`MAX_CANDIDATES_TOTAL=500`，候选队列
+  总量达到上限后，本轮新命中的候选直接丢弃并计数
+  （`candidates_discarded_over_cap`），不会无限堆积。
+- 重合度算法（§8 开放项 1）：本次先给了一个具体实现——对事件（标题+详情）
+  和 Goal（标题+描述）分别做"小写+去标点+按空格切分+过滤单字符"的粗糙
+  分词，取交集大小 / 两者中较小集合的大小（不是 Jaccard，理由见
+  `goal_relevance.py::_overlap_score` 注释：Goal 标题通常比事件详情短
+  很多，用交集/并集会把重合度算得过低）。默认阈值 `0.12`，跟 §8 开放项 1
+  的"先给宽松默认值"要求一致，仍然只是一个起点，不是精确调出来的值。
+- 未在 P4 范围内处理、留给后续阶段：§9.1 #3（`external_context` 的锁
+  复用，属于 P5）、§9.2 #4（冷却限流取舍说明，属于 P5）、§9.4 #11
+  （LLM prompt 注入的间接注入防护，属于 P5）、§9.5（可观测性/dry-run，
+  属于 P5/P7）。

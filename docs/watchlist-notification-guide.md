@@ -3,8 +3,9 @@
 - **设计文档**：`next_doc/watchlist_notification_goal_design.md`
 - **前置依赖**：`docs/external-input-gateway-guide.md`（External Input
   Gateway 本体，本功能是它的扩展，不重复实现事件采集/路由）
-- **当前实施进度**：P1（通知系统骨架）、P2（关注对象匹配）、P3（分级汇报）
-  已完成；P4-P8（Goal 关联执行、看板展示、测试补齐）待实施，见设计文档
+- **当前实施进度**：P1（通知系统骨架）、P2（关注对象匹配）、P3（分级汇报）、
+  P4（Goal 相关性候选生成，规则层）已完成；P5-P8（LLM 相关性判定、Goal
+  主动拉起、Prompt 精确注入、看板展示、测试补齐）待实施，见设计文档
   §6 状态表。
 
 ---
@@ -112,12 +113,33 @@ channels:
 - **email 渠道**：标准 SMTP 发送，标题=汇报标题，正文=Markdown 摘要
   （按 watchlist_id 分组列出命中标题+链接）。
 
-## 6. 尚未实现的部分
+## 6. Goal 相关性候选生成（P4，内部机制，尚无用户可见配置）
+
+这一部分是"外部信息如果确实与用户当前正在推进的某个 Goal 相关"这条
+能力的第一步，目前只有**规则层的候选生成**落地，还没有 LLM 判定和
+Goal 主动拉起（见下面第 7 节"尚未实现的部分"）：
+
+- 每次 maintenance 档位的 tick，都会拿这一批新到的外部事件，跟当前
+  所有 `status=active` 的 Goal（不含 Objective）逐一计算一个廉价的
+  token 重合度分数，超过一个很低的默认阈值就写进
+  `.agent/external_input/goal_relevance_candidates.jsonl`，标记
+  `judged: false`。
+- 这一步**零 LLM 成本**、纯规则匹配，宁可多算一些"看起来沾边"的候选，
+  也不会在这一层就把真正相关的事件筛掉——真正判断"是否相关"、"是否
+  值得推进"是下一步（P5）LLM 的工作。
+- 候选队列有总量上限（500 条），写满后新候选会被丢弃并计数，不会
+  无限增长这个文件。
+- 目前这份候选队列还没有被任何地方消费——P5 实施后才会有定时任务读取
+  并调用 LLM 批量判定。
+
+## 7. 尚未实现的部分
 
 以下能力在设计文档里已经设计好，但代码还未实施（见设计文档 §6 状态表）：
 
-- **Goal 关联执行**（`GoalRelevanceEngine`、`context_only`/`advance_goal`、
-  Prompt 精确注入）——P4/P5/P6。
+- **GoalRelevanceEngine Stage②**（LLM 批量判定相关性/是否值得推进）——P5。
+- **Goal 关联执行**（`context_only`/`advance_goal`，`GoalNode` 新增字段与
+  方法）——P5。
+- **Prompt 精确注入**（只在处理这个 Goal 的任务里注入外部上下文）——P6。
 - **看板可视化**（关注对象列表、tier 配置只读展示、Goal 详情页"相关
   外部信息"面板、通知发送记录）——P7。
 - **补齐测试**（`test_goal_relevance_engine.py` 等）——P8。
@@ -130,6 +152,7 @@ channels:
 |---|---|
 | `src/mini_agent/external_input/watchlist.py` | 关注对象配置加载 + 匹配 + 去重 + 写 pending_hits |
 | `src/mini_agent/external_input/report_tiers.py` | tier 配置加载 + 消费 pending_hits + 生成摘要 + dispatch |
+| `src/mini_agent/external_input/goal_relevance.py` | GoalRelevanceEngine Stage①（候选生成，规则层） |
 | `src/mini_agent/external_input/filelock.py` | 跨平台文件独占锁（pending_hits 并发读写保护） |
 | `src/mini_agent/notification/dispatcher.py` | `NotificationDispatcher`/`NotificationChannel` 骨架 |
 | `src/mini_agent/notification/config.py` | 通知渠道配置加载（`${ENV:...}` 占位符解析） |

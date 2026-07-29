@@ -669,6 +669,14 @@ class AgentPaths:
         return self.external_input_dir / "pending_hits.jsonl"
 
     @property
+    def external_input_goal_relevance_candidates(self) -> Path:
+        """<project_root>/.agent/external_input/goal_relevance_candidates.jsonl —
+        GoalRelevanceEngine Stage①（规则层）写入的候选队列，Stage②（LLM
+        批量判定）消费，见 next_doc/watchlist_notification_goal_design.md
+        §3.6/§4.2（P4/P5）。"""
+        return self.external_input_dir / "goal_relevance_candidates.jsonl"
+
+    @property
     def external_input_state_dir(self) -> Path:
         """<project_root>/.agent/external_input/state/ — 每个 source 的增量状态
         ({source_id}.json：去重游标/ETag 等），来源私有，网关负责落盘保存。"""
