@@ -300,6 +300,24 @@ div[data-testid="stTabs"] button[role="tab"] {
 div[data-testid="stTabs"] button[data-testid="stTabsScrollButton"] {
     display: none !important;
 }
+/* streamlit 原生的"选中态"是一根绝对定位、靠 transform: translateX +
+   宽度动画滑到当前 tab 下方的高亮条，这套定位算法假设所有 tab 在同一行
+   里——换行成多行后，这根条要么停在第一行的某个位置不动，要么整条跨
+   到别的行，看着就是"选中状态跟当前点的 tab 对不上"。这里直接隐藏这根
+   滑动高亮条，改成给每个 tab 按钮自己按 aria-selected 状态加下划线/
+   高亮底色，选中状态永远跟着按钮本身走，不受换行影响。 */
+div[data-testid="stTabs"] [data-baseweb="tab-highlight"] {
+    display: none !important;
+}
+div[data-testid="stTabs"] button[data-baseweb="tab"][aria-selected="true"],
+div[data-testid="stTabs"] button[role="tab"][aria-selected="true"] {
+    color: #ff4b4b;
+    border-bottom: 2.5px solid #ff4b4b;
+}
+div[data-testid="stTabs"] button[data-baseweb="tab"][aria-selected="false"],
+div[data-testid="stTabs"] button[role="tab"][aria-selected="false"] {
+    border-bottom: 2.5px solid transparent;
+}
 </style>
 """, unsafe_allow_html=True)
 
