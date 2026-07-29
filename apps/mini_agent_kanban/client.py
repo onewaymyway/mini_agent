@@ -307,6 +307,27 @@ class AgentClient:
     def run_cron_job_now(self, job_id: str):
         return self._post(f"/cron/jobs/{job_id}/run")
 
+    def cron_job_workspace(self, job_id: str):
+        """cron 任务专属执行状态：state（status/progress_summary/last_error 等）
+        + config（超时/最大步数）+ 最近执行 run_id 列表。"""
+        return self._get(f"/cron/jobs/{job_id}/workspace")
+
+    def cron_job_prompt(self, job_id: str):
+        """读取用户可编辑的 prompt.md 原文。"""
+        return self._get(f"/cron/jobs/{job_id}/prompt")
+
+    def update_cron_job_prompt(self, job_id: str, prompt: str):
+        """修改 prompt.md，下次该 job 触发时立即生效。"""
+        return self._put(f"/cron/jobs/{job_id}/prompt", {"prompt": prompt})
+
+    def cron_job_run_events(self, job_id: str, run_id: str):
+        """某次执行的完整逐步事件流（诊断/回放用）。"""
+        return self._get(f"/cron/jobs/{job_id}/runs/{run_id}")
+
+    def reset_cron_job(self, job_id: str):
+        """把处于 needs_human_review 状态的 job 人工确认后重置为 idle。"""
+        return self._post(f"/cron/jobs/{job_id}/reset")
+
     # ── 看板：Workflow（workflow机制改进计划（P7）一、1.3）─────────────
     def workflows(self):
         return self._get("/workflows")

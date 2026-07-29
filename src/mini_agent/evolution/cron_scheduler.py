@@ -37,6 +37,7 @@ from typing import Callable, Optional, TYPE_CHECKING
 
 if TYPE_CHECKING:
     from mini_agent.storage.paths import AgentPaths
+    from mini_agent.evolution.cron_job_runner import CronJobRunner
 
 
 # ── CronJob 数据结构 ──────────────────────────────────────────────────────────
@@ -339,11 +340,15 @@ class CronScheduler:
         paths: "AgentPaths",
         submit_fn: Optional[Callable[[str, str, dict], bool]] = None,
         digest_advisor_cfg: Optional["DigestAdvisorConfig"] = None,
+        job_runner: Optional["CronJobRunner"] = None,
     ) -> None:
         """
         paths       — AgentPaths，用于定位 cron_jobs.json
-        submit_fn   — 触发 job 时的提交回调：submit_fn(message, initiator, meta) -> bool
-                      通常注入 InputQueue.enqueue 的包装
+        submit_fn   — [旧路径，向后兼容] 触发 job 时的提交回调：
+                      submit_fn(message, initiator, meta) -> bool，
+                      通常注入 InputQueue.enqueue 的包装。job_runner 未注入时
+                      走这条老路（消息排队给主 Agent，与用户消息共用同一条
+                      InputQueue/AgentRunner 主线程）。
         digest_advisor_cfg — 日报/推荐/画像三层功能的配置（config/models.py::
                       DigestAdvisorConfig）。只在 sys:daily_digest /
                       sys:next_action_digest / sys:decision_profile_update
@@ -351,58 +356,19 @@ class CronScheduler:
                       不影响用户后续通过 /cron enable|disable 做的手动修改
                       （见 load() 里"已存在的不覆盖"注释）。为 None 时使用
                       _BUILTIN_JOBS 里写死的默认值，保持向后兼容。
+        job_runner  — [新路径] evolution.cron_job_runner.CronJobRunner 实例。
+                      注入后，_fire() 会优先走这条独立执行通道：cron job 在
+                      专属后台线程里跑（不占用 AgentRunner 主线程），带超时/
+                      步数上限/卡死检测/跨次进度恢复（见
+                      cron_job_executor.py / cron_job_workspace.py）。
+                      为 None 时完全保持旧行为，不影响未升级的部署。
         """
         self._paths = paths
         self._submit_fn = submit_fn
         self._digest_advisor_cfg = digest_advisor_cfg
+        self._job_runner = job_runner
         self._jobs: dict[str, CronJob] = {}
         self._jobs_path = paths.workdir_dir / "cron_jobs.json"
-        # P3 新增：本地回调 handler（job_id -> Callable[[CronJob], bool]）。
-        # 跟 submit_fn（提交到 InputQueue，走一次 LLM turn）不是一回事——
-        # 有些内置 job（比如 sys:watchlist_report_<tier>）本质是"纯 Python
-        # 读文件/发通知"，不应该产生任何 LLM 调用（见
-        # next_doc/watchlist_notification_goal_design.md §7"零 LLM 成本"）。
-        # _fire() 优先查本地 handler，命中则直接调用、不走 submit_fn。
-        self._local_handlers: dict[str, Callable[["CronJob"], bool]] = {}
-
-    def register_local_handler(self, job_id: str, handler: Callable[["CronJob"], bool]) -> None:
-        """注册一个纯本地回调，触发到期时直接调用 handler(job) -> bool，
-        不经过 submit_fn/InputQueue，因此不产生 LLM 调用。用于 P3
-        report_tiers 这类"读文件→发通知"的确定性任务。"""
-        self._local_handlers[job_id] = handler
-
-    def ensure_job(
-        self,
-        job_id: str,
-        name: str,
-        schedule: str,
-        description: str = "",
-        tags: Optional[list[str]] = None,
-    ) -> CronJob:
-        """确保某个 sys: job 存在（缺失才补，已存在不重复/不覆盖用户改过的
-        schedule/enabled），用于 report_tiers.yaml 变更后动态补注册
-        sys:watchlist_report_<tier_id>（见 §6 P3、§8 开放项 2：
-        "自动补注册、缺失才补，已存在不重复"）。已存在时只在 schedule
-        发生变化（用户在 report_tiers.yaml 里改了 tier 的 schedule）且该
-        job 从未被用户手动 disable 过的情况下才更新 schedule，避免覆盖
-        用户通过 /cron 做的手动调整。"""
-        existing = self._jobs.get(job_id)
-        if existing is None:
-            job = CronJob(
-                id=job_id,
-                name=name,
-                schedule=schedule,
-                task_template="",
-                description=description,
-                tags=tags or ["notification"],
-                enabled=True,
-                initiator="cron",
-                next_run_at=compute_next_run(schedule, 0.0),
-            )
-            self._jobs[job_id] = job
-            self.save()
-            return job
-        return existing
 
     # ── 持久化 ────────────────────────────────────────────────────────────────
 
@@ -524,16 +490,27 @@ class CronScheduler:
         return triggered
 
     def _fire(self, job: CronJob) -> bool:
-        """触发一个 Job：本地 handler 优先（零 LLM 成本），否则走 submit_fn
-        提交到 InputQueue（产生一次 LLM turn）。"""
-        handler = self._local_handlers.get(job.id)
-        if handler is not None:
+        """
+        触发一个 Job。
+
+        job_runner 已注入时优先走独立执行通道（见 __init__ 里的说明）；
+        job_runner.submit() 内部若发现该 job 已有一次执行在跑（避免同一个
+        job 被并发触发两次）会返回 False——这种情况下 tick() 不应该更新
+        last_run_at/next_run_at（视为"这次没真正触发成功"，下次 tick 会
+        再次尝试，等上一次跑完自然空出来），行为与旧 submit_fn 返回 False
+        时完全一致。
+
+        job_runner 未注入时回退到旧的 submit_fn 路径（消息进 InputQueue，
+        由 AgentRunner 主线程当作一次普通 turn 处理）。
+        """
+        if self._job_runner is not None:
             try:
-                return bool(handler(job))
+                return self._job_runner.submit(job)
             except Exception as _mini_agent_exc:
                 from mini_agent.errors import log_exception
-                log_exception(_mini_agent_exc, where='mini_agent.evolution.cron_scheduler.CronScheduler._fire.local_handler')
+                log_exception(_mini_agent_exc, where='mini_agent.evolution.cron_scheduler.CronScheduler._fire.job_runner')
                 return False
+
         if self._submit_fn is None:
             return False
         try:
@@ -628,6 +605,13 @@ class CronScheduler:
 
     # ── 查询 ──────────────────────────────────────────────────────────────────
 
+    def is_job_running(self, job_id: str) -> bool:
+        """job_runner 未注入（旧路径）时始终返回 False——旧路径的执行状态
+        并入普通 turn，没有独立的"是否在跑"概念可查。"""
+        if self._job_runner is None:
+            return False
+        return self._job_runner.is_running(job_id)
+
     def get(self, job_id: str) -> Optional[CronJob]:
         return self._jobs.get(job_id)
 
@@ -662,10 +646,14 @@ def load_cron_scheduler(
     paths: "AgentPaths",
     submit_fn: Optional[Callable] = None,
     digest_advisor_cfg: Optional["DigestAdvisorConfig"] = None,
+    job_runner: Optional["CronJobRunner"] = None,
 ) -> CronScheduler:
     """加载并返回 CronScheduler（便捷函数）。digest_advisor_cfg 透传给
-    CronScheduler，用于内置日报/推荐/画像三个 job 首次注入时的默认 enabled。"""
-    cs = CronScheduler(paths, submit_fn=submit_fn, digest_advisor_cfg=digest_advisor_cfg)
+    CronScheduler，用于内置日报/推荐/画像三个 job 首次注入时的默认 enabled。
+    job_runner 透传，注入后 cron job 执行会走独立后台线程通道（见
+    CronScheduler.__init__ / _fire() 的说明），为 None 时保持旧行为。"""
+    cs = CronScheduler(paths, submit_fn=submit_fn, digest_advisor_cfg=digest_advisor_cfg,
+                        job_runner=job_runner)
     cs.load()
     return cs
 

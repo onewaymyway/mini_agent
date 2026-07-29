@@ -1050,12 +1050,52 @@ class HttpServer:
                     log_exception(_mini_agent_exc, where='mini_agent.api.server.HttpServer._build_autonomous_loop._cron_submit')
                     return None
 
+            # [cron 任务专用执行机制] CronJobRunner 把 cron job 的实际执行
+            # 挪到独立后台线程（而不是同步跑在 AgentRunner 主线程 tick() 里），
+            # 避免一个耗时 cron job 卡住其它 cron job 和用户消息的处理；
+            # 每个 job 内部由 CronJobExecutor 落实超时/步数上限/卡死检测/
+            # 跨次进度恢复（见 evolution/cron_job_{workspace,executor,
+            # runner,agent_bridge}.py）。cron 任务构建的 Agent 全量继承主
+            # Agent 的工具（cron_agent_bridge.build_cron_agent() 不传
+            # allowed_tools，回退到全局默认 registry）。
+            #
+            # max_concurrent 读取 cfg.cron.max_concurrent_jobs（未配置该字段
+            # 时默认为 2），控制同时并发执行的 cron job 数量上限，避免大量
+            # job 同时到期时把 LLM 并发请求数/CPU 打满；超出上限的 job 会在
+            # CronJobRunner 内部排队等待，不会丢失触发。
+            from mini_agent.evolution.cron_job_runner import CronJobRunner
+
+            _cron_cfg = getattr(cfg, "cron", None)
+            _cron_max_concurrent = getattr(_cron_cfg, "max_concurrent_jobs", 2) if _cron_cfg is not None else 2
+
+            def _on_cron_finished(job_id: str, outcome) -> None:
+                """cron job 后台线程执行完毕后的回调：写一条 digest 记录，
+                供看板"最近活动"和 /cron status 观察到执行结果，同时推一条
+                SSE 事件，让实时打开着看板的用户不需要刷新页面。"""
+                try:
+                    status = getattr(outcome, "status", "unknown")
+                    steps = getattr(outcome, "steps_executed", 0)
+                    duration = getattr(outcome, "duration_seconds", 0.0)
+                    self._bridge.emit_cron_job_finished(
+                        job_id=job_id, status=status,
+                        steps_executed=steps, duration_seconds=duration,
+                    )
+                except Exception as _mini_agent_exc:
+                    from mini_agent.errors import log_exception
+                    log_exception(_mini_agent_exc, where='mini_agent.api.server.HttpServer._build_autonomous_loop._on_cron_finished')
+
+            cron_job_runner = CronJobRunner(
+                base_cfg=cfg, paths=paths,
+                max_concurrent=_cron_max_concurrent,
+                on_finished=_on_cron_finished,
+            )
+
             from mini_agent.evolution.cron_scheduler import load_cron_scheduler
             cron_scheduler = load_cron_scheduler(
                 paths, submit_fn=_cron_submit,
                 digest_advisor_cfg=getattr(cfg, "digest_advisor", None),
+                job_runner=cron_job_runner,
             )
-
             # P3：按 .agent/notification/report_tiers.yaml 动态补注册
             # sys:watchlist_report_<tier_id> job + 本地回调 handler（零 LLM
             # 成本），见 next_doc/watchlist_notification_goal_design.md §6 P3。

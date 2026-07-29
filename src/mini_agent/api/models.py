@@ -63,6 +63,9 @@ class EventType(str, Enum):
     COMMAND_OUTPUT   = "command_output"
     # 自主执行
     OBJECTIVE_PROGRESS = "objective_progress"  # Objective 步骤推进（daemon 自主执行）
+    # cron 任务专用执行通道（evolution/cron_job_runner.py）完成一次后台执行
+    # 后推送，供实时打开着看板的客户端不需要轮询/刷新即可看到最新状态。
+    CRON_JOB_FINISHED  = "cron_job_finished"
 
 
 # ── 事件数据结构 ──────────────────────────────────────────────────────────────

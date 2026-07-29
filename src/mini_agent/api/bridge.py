@@ -926,6 +926,25 @@ class AgentBridge:
             data={"session_id": session_id, "title": title},
         ))
 
+    def emit_cron_job_finished(
+        self,
+        job_id: str,
+        status: str,
+        steps_executed: int,
+        duration_seconds: float,
+    ) -> None:
+        """推送 cron 任务后台执行完成事件（CronJobRunner 执行完一次后回调）。"""
+        self.broadcaster.push(AgentEvent(
+            type=EventType.CRON_JOB_FINISHED,
+            session_id=self._current_session_id(),
+            data={
+                "job_id": job_id,
+                "status": status,
+                "steps_executed": steps_executed,
+                "duration_seconds": duration_seconds,
+            },
+        ))
+
     def emit_objective_progress(
         self,
         execution_id: str,

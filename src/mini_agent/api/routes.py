@@ -79,6 +79,11 @@ api/routes.py — FastAPI 路由定义
     POST   /v1/cron/jobs             添加 cron job
     PUT    /v1/cron/jobs/{id}        修改 job（enable/disable/schedule）
     POST   /v1/cron/jobs/{id}/run    立即运行一次
+    GET    /v1/cron/jobs/{id}/workspace       专属执行状态（state/config/最近执行列表）
+    GET    /v1/cron/jobs/{id}/prompt          读取用户可编辑的 prompt.md
+    PUT    /v1/cron/jobs/{id}/prompt          修改 prompt.md
+    GET    /v1/cron/jobs/{id}/runs/{run_id}   某次执行的完整事件流
+    POST   /v1/cron/jobs/{id}/reset           把 needs_human_review 状态重置为 idle
   用户行为感知（默认关闭，见 perception/behavior/）
     GET    /v1/perception/status    总开关/采集器状态
     POST   /v1/perception/toggle    打开/关闭总开关或某个采集器（owner only）
@@ -3044,6 +3049,155 @@ async def run_cron_job_now(job_id: str, request: Request):
             raise HTTPException(status_code=404, detail=f"Job '{job_id}' not found")
         raise HTTPException(status_code=500, detail="Job trigger failed")
     return {"triggered": True, "job_id": job_id}
+
+
+# ── Cron Job Workspace REST API（专属执行机制：进度/日志/prompt/卡死恢复）───
+#
+#   GET   /v1/cron/jobs/{id}/workspace        state + config + 最近执行列表
+#   GET   /v1/cron/jobs/{id}/prompt           读取用户可编辑的 prompt.md
+#   PUT   /v1/cron/jobs/{id}/prompt           修改 prompt.md
+#   GET   /v1/cron/jobs/{id}/runs/{run_id}    某次执行的完整事件流
+#   POST  /v1/cron/jobs/{id}/reset            把卡死(needs_human_review)的
+#                                              job 重置回 idle，清空 progress
+
+def _get_cron_scheduler(http_server):
+    """统一获取 CronScheduler，与 list_cron_jobs() 保持一致的兜底顺序：
+    优先 bridge._cron_scheduler，其次 autonomous_loop._cron_scheduler。"""
+    cs = getattr(http_server.bridge, "_cron_scheduler", None)
+    if cs is None:
+        al = http_server.autonomous_loop
+        cs = getattr(al, "_cron_scheduler", None) if al else None
+    return cs
+
+
+def _get_cron_paths(request: Request):
+    """取 AgentPaths，用于定位 .agent/cron_jobs/。复用现有 self_agent.cfg.project_root
+    获取方式（见本文件其它 self_profile/goal_backlog 相关端点）。"""
+    from mini_agent.storage.paths import AgentPaths
+    http_server = getattr(request.app.state, "http_server", None)
+    if http_server is None:
+        raise HTTPException(status_code=503, detail="HttpServer not available")
+    self_agent = getattr(http_server.bridge, "agent", None)
+    project_root = getattr(getattr(self_agent, "cfg", None), "project_root", None)
+    if project_root is None:
+        raise HTTPException(status_code=503, detail="project_root not available")
+    return http_server, AgentPaths(project_root)
+
+
+@router.get("/cron/jobs/{job_id}/workspace")
+async def get_cron_job_workspace(job_id: str, request: Request):
+    """GET /v1/cron/jobs/{job_id}/workspace — 该 job 的 state/config/最近执行列表。
+    看板"Cron Jobs" tab 的主要数据源，job_id 传原始 id（如 "sys:consolidation"
+    或 "user:ab12cd34"），CronJobWorkspace 内部会处理成文件系统安全的目录名。"""
+    _require_owner(request)
+    http_server, paths = _get_cron_paths(request)
+
+    cs = _get_cron_scheduler(http_server)
+    job = cs.get(job_id) if cs is not None else None
+    if job is None:
+        raise HTTPException(status_code=404, detail=f"Job '{job_id}' not found")
+
+    from mini_agent.evolution.cron_job_workspace import CronJobWorkspace
+    ws = CronJobWorkspace(paths, job_id)
+    ws.ensure(default_task_template=job.task_template)
+    state = ws.read_state()
+    config = ws.read_config()
+    is_running = cs.is_job_running(job_id) if cs is not None else False
+
+    return {
+        "job_id": job_id,
+        "state": state.to_dict(),
+        "config": config.to_dict(),
+        "is_running": is_running,
+        "recent_runs": ws.recent_runs(limit=10),
+    }
+
+
+@router.get("/cron/jobs/{job_id}/prompt")
+async def get_cron_job_prompt(job_id: str, request: Request):
+    """GET /v1/cron/jobs/{job_id}/prompt — 读取用户可编辑的 prompt.md 原文。"""
+    _require_owner(request)
+    http_server, paths = _get_cron_paths(request)
+
+    cs = _get_cron_scheduler(http_server)
+    job = cs.get(job_id) if cs is not None else None
+    if job is None:
+        raise HTTPException(status_code=404, detail=f"Job '{job_id}' not found")
+
+    from mini_agent.evolution.cron_job_workspace import CronJobWorkspace
+    ws = CronJobWorkspace(paths, job_id)
+    ws.ensure(default_task_template=job.task_template)
+    return {"job_id": job_id, "prompt": ws.read_prompt()}
+
+
+@router.put("/cron/jobs/{job_id}/prompt")
+async def update_cron_job_prompt(job_id: str, request: Request):
+    """
+    PUT /v1/cron/jobs/{job_id}/prompt
+    Body: { "prompt": str }
+    覆盖写入 prompt.md，下次该 job 触发时立即生效（无需重启 daemon）。
+    """
+    _require_owner(request)
+    http_server, paths = _get_cron_paths(request)
+
+    cs = _get_cron_scheduler(http_server)
+    job = cs.get(job_id) if cs is not None else None
+    if job is None:
+        raise HTTPException(status_code=404, detail=f"Job '{job_id}' not found")
+
+    body = await request.json()
+    prompt = body.get("prompt", "")
+    if not isinstance(prompt, str) or not prompt.strip():
+        raise HTTPException(status_code=400, detail="prompt must be a non-empty string")
+
+    from mini_agent.evolution.cron_job_workspace import CronJobWorkspace
+    ws = CronJobWorkspace(paths, job_id)
+    ws.ensure(default_task_template=job.task_template)
+    try:
+        ws.prompt_path.write_text(prompt, encoding="utf-8")
+    except OSError as e:
+        raise HTTPException(status_code=500, detail=str(e))
+    return {"job_id": job_id, "prompt": prompt}
+
+
+@router.get("/cron/jobs/{job_id}/runs/{run_id}")
+async def get_cron_job_run_events(job_id: str, run_id: str, request: Request):
+    """GET /v1/cron/jobs/{job_id}/runs/{run_id} — 某次执行的完整逐步事件流，
+    供看板"回放"某次 cron 执行的诊断视图（每步输出摘要/是否触发卡死恢复/
+    超时/异常等）。"""
+    _require_owner(request)
+    http_server, paths = _get_cron_paths(request)
+
+    from mini_agent.evolution.cron_job_workspace import CronJobWorkspace
+    ws = CronJobWorkspace(paths, job_id)
+    events = ws.read_run_events(run_id)
+    return {"job_id": job_id, "run_id": run_id, "events": events}
+
+
+@router.post("/cron/jobs/{job_id}/reset")
+async def reset_cron_job_workspace(job_id: str, request: Request):
+    """
+    POST /v1/cron/jobs/{job_id}/reset
+    把处于 needs_human_review（卡死判定 GIVE_UP / 单步异常）状态的 job
+    人工介入确认后重置为 idle，同时清空 progress_summary（放弃续接，
+    下次触发从头开始）。正在执行中（is_job_running）的 job 拒绝重置，
+    避免和后台线程写 state.json 产生竞争。
+    """
+    _require_owner(request)
+    http_server, paths = _get_cron_paths(request)
+
+    cs = _get_cron_scheduler(http_server)
+    job = cs.get(job_id) if cs is not None else None
+    if job is None:
+        raise HTTPException(status_code=404, detail=f"Job '{job_id}' not found")
+    if cs is not None and cs.is_job_running(job_id):
+        raise HTTPException(status_code=409, detail="Job is currently running, cannot reset")
+
+    from mini_agent.evolution.cron_job_workspace import CronJobWorkspace, CronJobState
+    ws = CronJobWorkspace(paths, job_id)
+    ws.ensure(default_task_template=job.task_template)
+    ws.write_state(CronJobState())
+    return {"job_id": job_id, "state": CronJobState().to_dict()}
 
 
 # ── Workflow REST API（workflow机制改进计划（P7）一）───────────────────────

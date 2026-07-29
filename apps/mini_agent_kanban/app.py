@@ -2935,6 +2935,162 @@ def render_evolution_proposals_tab(client: AgentClient):
 
 
 # ═══════════════════════════════════════════════════════════════════════
+# Tab: ⏰ Cron 任务（专属执行机制：进度/超时/卡死检测/prompt 编辑）
+# ═══════════════════════════════════════════════════════════════════════
+
+_CRON_STATUS_LABEL = {
+    "idle": "⚪ 空闲",
+    "running": "🔵 执行中",
+    "needs_human_review": "🔴 需要人工介入",
+    "timed_out": "🟡 上次超时（已保留进度，下次续接）",
+}
+
+
+def render_cron_jobs_tab(client: AgentClient):
+    """展示每个 cron job 的调度信息（来自 /cron/jobs）+ 专属执行状态
+    （来自 /cron/jobs/{id}/workspace，对应 evolution/cron_job_workspace.py
+    落盘的 state.json/config.json/runs/）。
+
+    needs_human_review 状态的 job 会高亮显示，并提供"重置为 idle"按钮
+    （对应 CronJobExecutor 的 StuckDetector 判定 GIVE_UP 或单步异常后的
+    人工介入路径）。
+    """
+    st.markdown("#### ⏰ Cron 任务")
+    st.caption(
+        "cron job 现在跑在独立后台线程里，不会和其它 cron job 或用户对话"
+        "互相阻塞；单次执行有超时/步数上限兜底，输出连续雷同时会自动判定"
+        "\"卡住\"并停止，需要人工确认后才会继续调度。"
+    )
+
+    if st.button("🔄 刷新", key="cron_jobs_refresh"):
+        st.rerun()
+
+    resp = client.cron_jobs()
+    if resp and "_error" in resp:
+        st.error(f"获取 cron job 列表失败：{resp['_error']}")
+        return
+    jobs = (resp or {}).get("jobs") or []
+    if not jobs:
+        st.info("当前没有 cron job。")
+        return
+
+    for job in jobs:
+        job_id = job.get("id", "")
+        with st.container(border=True):
+            top1, top2, top3 = st.columns([3, 2, 2])
+            top1.markdown(f"**{job.get('name', job_id)}**")
+            top1.caption(job_id)
+            top2.caption(f"schedule: `{job.get('schedule', '')}`")
+            top3.caption(f"下次运行：{job.get('next_run_str', '-')}")
+
+            desc = job.get("description", "")
+            if desc:
+                st.caption(desc)
+
+            ws_resp = client.cron_job_workspace(job_id)
+            if ws_resp and "_error" in ws_resp:
+                st.caption(f"（无法获取执行状态：{ws_resp['_error']}）")
+            else:
+                state = (ws_resp or {}).get("state") or {}
+                config = (ws_resp or {}).get("config") or {}
+                is_running = (ws_resp or {}).get("is_running", False)
+                status = state.get("status", "idle")
+                status_label = _CRON_STATUS_LABEL.get(status, status)
+
+                c1, c2, c3, c4 = st.columns(4)
+                c1.metric("状态", "🔵 执行中" if is_running else status_label)
+                c2.metric("累计运行次数", job.get("run_count", 0))
+                c3.metric("连续失败次数", state.get("consecutive_failures", 0))
+                c4.metric("超时上限", f"{config.get('timeout_seconds', 1200) // 60} 分钟")
+
+                progress = state.get("progress_summary", "")
+                if progress:
+                    with st.expander("📋 上次遗留的进度摘要"):
+                        st.text(progress)
+
+                last_error = state.get("last_error", "")
+                if status == "needs_human_review" and last_error:
+                    st.error(f"上次执行判定异常：{last_error}")
+
+                if status == "needs_human_review" and not is_running:
+                    if st.button("✅ 确认已处理，重置为空闲", key=f"cron_reset_{job_id}"):
+                        res = client.reset_cron_job(job_id)
+                        if res and "_error" in res:
+                            st.error(f"重置失败：{res['_error']}")
+                        else:
+                            st.success("已重置，下次触发将从头开始执行。")
+                            st.rerun()
+
+                recent_runs = (ws_resp or {}).get("recent_runs") or []
+                if recent_runs:
+                    with st.expander(f"🗒️ 最近执行记录（{len(recent_runs)} 条）"):
+                        for run_id in recent_runs:
+                            if st.button(f"查看 {run_id}", key=f"cron_run_{job_id}_{run_id}"):
+                                events_resp = client.cron_job_run_events(job_id, run_id)
+                                if events_resp and "_error" in events_resp:
+                                    st.error(f"获取执行事件失败：{events_resp['_error']}")
+                                else:
+                                    st.json((events_resp or {}).get("events") or [], expanded=False)
+
+                with st.expander("✏️ 编辑任务 Prompt"):
+                    prompt_resp = client.cron_job_prompt(job_id)
+                    if prompt_resp and "_error" in prompt_resp:
+                        st.caption(f"获取 prompt 失败：{prompt_resp['_error']}")
+                    else:
+                        current_prompt = (prompt_resp or {}).get("prompt", "")
+                        new_prompt = st.text_area(
+                            "prompt.md（支持 {{task_description}} / {{progress}} 占位符）",
+                            value=current_prompt, height=160,
+                            key=f"cron_prompt_{job_id}",
+                        )
+                        if st.button("💾 保存 prompt", key=f"cron_prompt_save_{job_id}"):
+                            save_res = client.update_cron_job_prompt(job_id, new_prompt)
+                            if save_res and "_error" in save_res:
+                                st.error(f"保存失败：{save_res['_error']}")
+                            else:
+                                st.success("已保存，下次该 job 触发时生效。")
+
+            btn_col1, btn_col2 = st.columns(2)
+            with btn_col1:
+                if st.button("▶️ 立即运行一次", key=f"cron_run_now_{job_id}"):
+                    res = client.run_cron_job_now(job_id)
+                    if res and "_error" in res:
+                        st.error(f"触发失败：{res['_error']}")
+                    else:
+                        st.success("已触发，稍后可在上方状态区看到执行进度。")
+                        st.rerun()
+            with btn_col2:
+                enabled = job.get("enabled", True)
+                toggle_label = "⏸️ 禁用" if enabled else "▶️ 启用"
+                if st.button(toggle_label, key=f"cron_toggle_{job_id}"):
+                    res = client.update_cron_job(job_id, enabled=not enabled)
+                    if res and "_error" in res:
+                        st.error(f"操作失败：{res['_error']}")
+                    else:
+                        st.rerun()
+
+    st.divider()
+    with st.expander("➕ 新建 cron job"):
+        new_name = st.text_input("名称", key="cron_new_name")
+        new_schedule = st.text_input(
+            "schedule（interval:<秒> 或 cron:<分 时 日 月 周>）",
+            value="interval:3600", key="cron_new_schedule",
+        )
+        new_template = st.text_area("任务描述（task_template）", key="cron_new_template")
+        new_desc = st.text_input("说明（可选）", key="cron_new_desc")
+        if st.button("创建", key="cron_new_submit"):
+            if not new_name.strip() or not new_template.strip():
+                st.warning("名称和任务描述不能为空。")
+            else:
+                res = client.add_cron_job(new_name, new_schedule, new_template, new_desc)
+                if res and "_error" in res:
+                    st.error(f"创建失败：{res['_error']}")
+                else:
+                    st.success("已创建。")
+                    st.rerun()
+
+
+# ═══════════════════════════════════════════════════════════════════════
 # Tab 6: 诊断
 # ═══════════════════════════════════════════════════════════════════════
 def render_diagnostics_tab(client: AgentClient):
@@ -3130,7 +3286,7 @@ def main():
     render_topbar(client, get_active_session_id())
 
     tabs = st.tabs(["💬 对话", "🗂️ 会话管理", "📌 目标看板", "🔄 工作流", "📁 产出物", "🖼️ 产出预览",
-                    "🧠 自我状态", "🧬 进化提案", "🔌 外部输入", "🔧 诊断"])
+                    "🧠 自我状态", "🧬 进化提案", "⏰ Cron 任务", "🔌 外部输入", "🔧 诊断"])
     with tabs[0]:
         render_chat_tab(client, get_active_session_id())
     with tabs[1]:
@@ -3148,8 +3304,10 @@ def main():
     with tabs[7]:
         render_evolution_proposals_tab(client)
     with tabs[8]:
-        render_external_input_tab(client)
+        render_cron_jobs_tab(client)
     with tabs[9]:
+        render_external_input_tab(client)
+    with tabs[10]:
         render_diagnostics_tab(client)
 
     # [P0 改造] 原来这里是 `if auto_refresh: time.sleep(3); st.rerun()`——
