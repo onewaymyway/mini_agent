@@ -657,6 +657,11 @@ Body: { "schedule": "interval:7200" }
 POST /v1/cron/jobs/{job_id}/run
 ```
 
+> job 到期后的**执行细节**（专属文件夹、进度续接、超时/卡死检测、
+> `workspace`/`prompt`/`runs`/`reset` 另外 5 个端点）见
+> [Cron 任务专属执行机制指南](cron-dedicated-execution-guide.md#8-rest-api)，
+> 这里只是 job 本身的增删改查。
+
 `GET /v1/cron/jobs` 响应示例：
 
 ```json

@@ -905,6 +905,7 @@ python -m pytest tests/ -q
 - [Wiki 式知识库指南](docs/wiki-knowledge-base-guide.md) — 图书馆式索引的平行实现（已切换为默认优先检索路径），md 页面存储 + 显式关系图 + 双写镜像 + 三段式检索（规则粗筛→多跳图扩展→LLM精排）+ 专题页自动生成与再巩固 + 统一知识生命周期状态机 + 索引复用/信度分层/实体摘要反哺抽取/抽取与compact解耦（O1-O4、E1-E3 提取层与组织层改进计划）
 - [Stage 9 自主运行时指南](docs/self-evolution-stage9-guide.md) — **新增**：常驻守护进程 / Goal Backlog / 三档位 AutonomousLoop / 资源仲裁 / `mini-agent daemon` 命令
 - [守护进程多客户端架构指南](docs/daemon-multi-client-guide.md) — **新增**：`DaemonClient`/`SessionAgentPool`/`AgentBridge`（RingBuffer/OutputBroadcaster/InputQueue/PermissionGate）三层架构、多端接入同一会话的消息生命周期、`run_connected_repl` 已连接模式渲染与斜杠命令转发，含当前已知问题排查记录
+- [Cron 任务专属执行机制指南](docs/cron-dedicated-execution-guide.md) — **新增**：cron job 到期后的独立后台线程执行通道（不阻塞用户消息）、超时/步数/StuckDetector 卡死检测三重兜底、跨次触发的 progress_summary 续接、每 job 专属文件夹（prompt.md/config.json/state.json/runs/*.jsonl）、`CronConfig` 全局默认+缺省字段实时回退、5 个 REST 端点、看板 "⏰ Cron 任务" tab
 - [每日融合日报指南](docs/daily-digest-guide.md) — **新增**：行为分布+目标进展+git提交融合为一份日报（`/digest daily`），`sys:daily_digest` cron job，启动打印摘要
 - [主动推荐排序指南](docs/next-action-advisor-guide.md) — **新增**：停滞目标/注意力错配规则层排序（`/next`），可选 LLM 排序层、决策画像加权、持续超时 daemon 主动推送，均可配置开关
 - [决策画像指南](docs/decision-profile-guide.md) — **新增**：从历史技术决策归纳可追溯的用户价值取向模式（`/decision_profile`），矛盾证据不覆盖只记录，默认关闭 cron job
