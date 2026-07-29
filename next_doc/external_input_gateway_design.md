@@ -374,6 +374,27 @@ system_events.publish(
 - `alerts.jsonl` 走"小文件、低频写、`acknowledge_alert()` 整体重写"的模式（象设计文档里没有明确要求持久化游标，选择用 `acknowledged` 字段而不是消费游标，这样"标记已处理"是显式动作而不是"被看板刷新过一次就自动消失"，跟 `/v1/inbox` 里 permission/interaction 需要显式 respond 才消失的语义一致）。
 - `goal_candidate`/`enqueue_turn` 命中时**不会**被静默处理成 `notify_only`，也不会丢事件——游标照常推进（事件已经被消费），只是计入 `PolicyRunSummary.goal_candidate_skipped`/`enqueue_turn_skipped`，等 P5 实现后同一批事件不会重复处理；这是有意的取舍：配置了还没实现的 action，应该"可见地什么都不做"，而不是被悄悄降级成另一种行为。
 
+**[BUGFIX，实际使用中发现]** `_notify_only()` 最初没有基于 `alert_id`
+（`f"alert:{source_id}:{event_id}"`）做任何去重，只是单纯追加写入
+`alerts.jsonl`。§2/P1 里已经写明网关级去重（`gateway._RecentIdCache`）
+只是"进程内兜底，不是权威去重"，"重复事件顶多被 `system_events.jsonl`
+记录到两次"——也就是说下游消费者本来就应该能容忍同一个 `event_id`
+被重复投递（比如某个 source 自身的增量状态被重置、或网关重启后缓存清空），
+但 `_notify_only()` 当时没有兑现这个"能容忍重复"的隐含约定，导致真实
+使用中出现了 `alerts.jsonl` 里 `alert_id` 完全相同的多条记录——看板
+拿 `alert_id` 当 Streamlit 组件 key 使用，直接触发
+`StreamlitDuplicateElementKey` 崩溃、整个看板页面渲染不出来。
+
+修复：新增 `_load_existing_alert_ids()`，`_notify_only()` 写入前先检查
+`alert_id` 是否已经在 `alerts.jsonl` 里出现过（不论是否已 `acknowledged`），
+出现过就直接跳过，不重复追加——从根源上保证同一个 `alert_id` 在文件里
+只会存在一条记录。同时在
+`apps/mini_agent_kanban/app.py::render_external_input_tab()` 加了一层
+防御：渲染"已读"按钮的 `key` 额外拼上循环下标，即便未来出现其它未预料
+到的重复场景，也只会是显示上偶发重复，不会再让整个页面崩溃。新增
+`tests/test_external_input_policy.py::test_same_event_id_republished_does_not_duplicate_alert`/
+`test_duplicate_not_reintroduced_after_acknowledge` 两个回归用例锁定。
+
 ### P4 — 已完成 ✅
 
 **范围**：迁移上一轮 watch 设计为 `builtin/watch.py`（第一个 `ExternalInputSource` 实现），验证端到端闭环。

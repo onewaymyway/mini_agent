@@ -190,6 +190,38 @@ class TestNotifyOnlyAlerts(unittest.TestCase):
         self.assertEqual(second.processed, 0)
         self.assertEqual(len(list_pending_alerts(self.paths)), 1)
 
+    def test_same_event_id_republished_does_not_duplicate_alert(self):
+        """[BUGFIX] 复现并锁定修复：source 自身状态异常时可能对同一个
+        event_id 重新 publish_event（这里直接模拟"网关层面又发布了一次
+        携带同一个 event.id 的事件"，不依赖具体是哪个 source 出的问题），
+        之前 `_notify_only()` 没有基于 alert_id 去重，会往 alerts.jsonl
+        写入两条 alert_id 完全相同的记录——看板拿 alert_id 当 st.button
+        的 key 用，直接触发 StreamlitDuplicateElementKey 崩溃。"""
+        publish_event(self.paths, _make_event(event_id="dup1"))
+        run_ingestion_policy_once(self.paths, consumer_name="cA")
+        # 换一个新 consumer_name，模拟"游标层面认为这是全新事件"的场景——
+        # 即便如此，_notify_only 也应该按 alert_id 去重，不会再追加一条。
+        publish_event(self.paths, _make_event(event_id="dup1"))
+        run_ingestion_policy_once(self.paths, consumer_name="cB")
+
+        pending = list_pending_alerts(self.paths)
+        self.assertEqual(len(pending), 1)
+        alert_ids = [p["alert_id"] for p in pending]
+        self.assertEqual(len(alert_ids), len(set(alert_ids)))
+
+    def test_duplicate_not_reintroduced_after_acknowledge(self):
+        """[BUGFIX] 同一个 alert_id 已经出现过（哪怕已经被 ack 掉），
+        再次收到相同事件也不应该重新写入一条新的未确认记录。"""
+        publish_event(self.paths, _make_event(event_id="dup2"))
+        run_ingestion_policy_once(self.paths, consumer_name="cC")
+        alert_id = list_pending_alerts(self.paths)[0]["alert_id"]
+        acknowledge_alert(self.paths, alert_id)
+        self.assertEqual(list_pending_alerts(self.paths), [])
+
+        publish_event(self.paths, _make_event(event_id="dup2"))
+        run_ingestion_policy_once(self.paths, consumer_name="cD")
+        self.assertEqual(list_pending_alerts(self.paths), [])
+
     def test_goal_candidate_and_enqueue_turn_do_not_create_alerts(self):
         policies_path = self.paths.external_input_policies_config
         policies_path.parent.mkdir(parents=True, exist_ok=True)

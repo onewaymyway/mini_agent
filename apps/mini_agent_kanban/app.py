@@ -3252,10 +3252,17 @@ def render_external_input_tab(client: AgentClient):
         alerts = [it for it in (inbox.get("items") or []) if it.get("type") == "external_alert"]
         if not alerts:
             st.info("当前没有待处理的外部输入告警。")
-        for alert in alerts:
+        # [BUGFIX] 根因是 alerts.jsonl 里可能出现 alert_id 完全相同的
+        # 多条记录（policy.py::_notify_only 已经修复不再新增重复写入，
+        # 但历史遗留数据/极端情况下仍可能存在），单纯用 alert_id 当
+        # st.button 的 key 会在这种情况下触发
+        # StreamlitDuplicateElementKey 崩溃、导致整个页面渲染不出来。
+        # 这里额外拼上循环下标兜底，保证 key 一定唯一，不因为数据层面
+        # 偶发的重复就让整个看板炸掉。
+        for idx, alert in enumerate(alerts):
             cols = st.columns([5, 1])
             cols[0].caption(f"🌐 {alert.get('summary', '')}")
-            if cols[1].button("已读", key=f"ei_ack_{alert.get('alert_id')}"):
+            if cols[1].button("已读", key=f"ei_ack_{idx}_{alert.get('alert_id')}"):
                 res = client.ack_external_alert(alert["alert_id"])
                 if res and "_error" in res:
                     st.error(f"标记失败：{res['_error']}")

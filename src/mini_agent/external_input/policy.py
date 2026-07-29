@@ -168,6 +168,41 @@ def decide_action(event: ExternalInputEvent, rules: list[PolicyRule]) -> PolicyR
 
 # ── notify_only 落点：写入 alerts.jsonl ─────────────────────────────────
 
+def _load_existing_alert_ids(p) -> set:
+    """[BUGFIX] 读取 alerts.jsonl 中已经出现过的 alert_id 集合，供
+    `_notify_only()` 去重用。alert_id 是 `f"alert:{source_id}:{event_id}"`
+    的确定性拼接，理论上同一个外部事件不应该被写入两次——但如果 source
+    自身的增量游标/去重状态出现问题（比如某个 RSS 源的条目一直留在
+    feed 里、而对应 source 的增量状态又被重置），`poll()` 可能会对
+    同一个 event_id 反复产生 `ExternalInputEvent`，进而反复调用
+    `_notify_only()`。之前这里没有任何去重，会导致 alerts.jsonl 里
+    出现 alert_id 完全相同的多条记录——看板侧按 alert_id 当 Streamlit
+    组件 key 使用，直接触发 `StreamlitDuplicateElementKey` 崩溃。
+    这里在写入前做一次"曾经出现过就不再写"的去重，从根源上避免这个问题；
+    跟 `list_pending_alerts()` 一样，全量扫描一次小文件可以接受
+    （YAGNI，量级增长后再考虑索引/滚动归档）。"""
+    if not p.exists():
+        return set()
+    ids: set = set()
+    try:
+        with open(p, "r", encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    d = json.loads(line)
+                except Exception:
+                    continue
+                alert_id = d.get("alert_id")
+                if alert_id:
+                    ids.add(alert_id)
+    except Exception as exc:
+        from mini_agent.errors import log_exception
+        log_exception(exc, where="mini_agent.external_input.policy._load_existing_alert_ids")
+    return ids
+
+
 def _append_alert(paths: "AgentPaths", alert: dict) -> None:
     p = paths.external_input_alerts
     p.parent.mkdir(parents=True, exist_ok=True)
@@ -182,9 +217,18 @@ def _append_alert(paths: "AgentPaths", alert: dict) -> None:
 def _notify_only(paths: "AgentPaths", event: ExternalInputEvent) -> None:
     """把命中 notify_only 的事件落成一条 alert 记录（§3.4 落点 1）。
     `acknowledged` 字段供 /v1/inbox 的 ack 接口标记"已读/已处理"，未确认
-    的记录才会出现在看板待办中心。"""
+    的记录才会出现在看板待办中心。
+
+    [BUGFIX] 同一个 alert_id（`source_id` + `event_id` 确定性拼接）曾经
+    写入过就直接跳过，不重复追加——见 `_load_existing_alert_ids()` 的
+    说明。已经 acknowledged 的旧记录也算"曾经写入过"，不会因为用户点了
+    "已读"之后同一事件又重新出现一遍。"""
+    alert_id = f"alert:{event.source_id}:{event.id}"
+    p = paths.external_input_alerts
+    if alert_id in _load_existing_alert_ids(p):
+        return
     alert = {
-        "alert_id": f"alert:{event.source_id}:{event.id}",
+        "alert_id": alert_id,
         "event_id": event.id,
         "source_id": event.source_id,
         "source_type": event.source_type,
