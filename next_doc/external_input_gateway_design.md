@@ -503,3 +503,54 @@ system_events.publish(
 - **天气 source 复用 `watch.py` 的抓取/阈值判断分工，不重复发明**：`WeatherFetchError`、"边沿触发一次、状态回落后再次触发"的阈值语义、"failed → 向上抛出交给 GatewayPoller 处理"的容错策略，均直接照搬 `watch.py` 里已经定型的模式，本文件不重新实现一遍退避/去重逻辑。
 - **不引入新依赖**：复用项目已声明的 `requests`；Open-Meteo 返回结构简单的 JSON，不需要专门的 SDK。选择 Open-Meteo 而非需要注册 key 的天气 API，是为了让这个"示例来源"本身开箱即用，不需要用户先去申请密钥才能看到网关端到端跑起来的效果。
 - **§7 路线图至此全部完成（P1–P7）**：如果后续要继续演进（比如频道级的节流/默认落点、看板里按频道筛选事件流水、更多内置 source），应作为独立的新一轮迭代规划，而不是继续在本设计文档里叠加。
+
+### P8 — 已完成 ✅（架构修正：移除 `goal_candidate` 落点）
+
+**背景**：`goal_relevance.py`（见 `next_doc/watchlist_notification_goal_design.md`）
+上线后，项目里出现了两条同时处理"外部输入与 Goal 关系"的链路：
+
+1. 本文档 P5 引入的 `goal_candidate` 落点——命中即调用
+   `GoalBacklog.add_goal()`，凭空创建一个新 Goal（打 `needs_review`
+   标签，未经验证）。
+2. `GoalRelevanceEngine`——独立订阅同一批 `external.*` 事件，对
+   `active_goals()` 做规则粗筛 + LLM 判定，命中后调用
+   `attach_external_context()`/`try_advance_goal()`，只把外部信号关联到
+   *已存在*的 Goal/Objective 上，从不创建新节点。
+
+两条链路职责重叠且语义冲突：同一条外部事件可能一边被 `goal_relevance`
+挂到已有 Goal 上，一边又被 `goal_candidate` 凭空建了个新 Goal，且后者
+创建的 Goal 完全没有经过相关性判定，质量不可控。结论：**外部输入不应该
+被直接当成 Goal 或拆解成 Objective，只能关联到相关的已有 Goal/
+Objective，让它知道"有这个输入、可以用"**——这正是 `GoalRelevanceEngine`
+已经在做的事，`IngestionPolicy` 不应该重复实现一遍。
+
+**变更文件**：
+
+| 文件 | 变更 |
+|---|---|
+| `src/mini_agent/external_input/policy.py` | 移除 `_goal_candidate()`、`EXTERNAL_GOAL_SOURCE`；`VALID_ACTIONS` 收窄为 `{notify_only, enqueue_turn}`；`PolicyRunSummary` 去掉 `goal_candidate`/`goal_candidate_skipped`/`goal_candidate_deduped` 三个字段；`run_ingestion_policy_once()` 不再接受 `goal_backlog` 参数 |
+| `src/mini_agent/external_input/__init__.py` | 不再导出 `EXTERNAL_GOAL_SOURCE`；包文档字符串新增 P8 范围说明 |
+| `src/mini_agent/evolution/autonomous_loop.py` | `_tick_passive()` 调用 `run_ingestion_policy_once()` 时不再传 `goal_backlog` |
+| `.agent/external_input/policies.yaml` | 原先 `action: goal_candidate` 的规则改为 `notify_only` |
+| `apps/mini_agent_kanban/app.py` | 路由规则展示的 `_ACTION_LABEL` 去掉 `goal_candidate` 条目 |
+| `tests/test_external_input_policy.py` | 移除 `goal_candidate` 落地相关的 3 个用例，新增"`goal_candidate` 不是合法 action"、"历史配置里残留该 action 会被 `load_policies()` 按非法规则跳过而不是整份报错"两个用例 |
+| `tests/test_external_input_routes_p6.py` | 示例配置里的 `goal_candidate` 改为 `notify_only` |
+| `scripts/cleanup_external_goal_candidates.py`（新增） | 一次性清理脚本：删除 `goals.json` 里历史由 `goal_candidate` 创建的 Goal（`source == "external_input"`）及其子 Objective，写入前自动备份原文件 |
+
+**关键实现说明**：
+
+- **不是"新增关联机制"，而是"移除重复/错误的创建机制"**：关联机制
+  （`attach_external_context()`/`try_advance_goal()`）在 `goal_relevance.py`
+  里已经存在且独立运行，本次变更只是把 `IngestionPolicy` 里那条会创建
+  新 Goal 的错误路径去掉，没有新增代码路径。
+- **历史配置容错，不做迁移强校验**：`policies.yaml` 里残留
+  `action: goal_candidate` 的规则，走 `load_policies()` 既有的"单条规则
+  非法即跳过"策略，不会导致整份配置加载失败，也不会被误当成任何一个
+  现有合法 action 处理——这与新增/废弃一个 action 时项目里其它地方的
+  容错哲学一致（配置格式错误应该显式可见地"什么都不做"，而不是被悄悄
+  降级成另一种行为）。
+- **存量数据用独立脚本清理，不在 `policy.py`/`autonomous_loop.py` 里
+  自动触发**：删除已经创建的 Goal 属于一次性、有风险（需要人工确认/
+  备份）的操作，不适合埋进日常自动运行的 tick 循环里静默执行，因此做成
+  显式调用的运维脚本（`scripts/cleanup_external_goal_candidates.py`），
+  默认交互确认 + 自动备份，`--dry-run` 可先预览再决定是否真正执行。

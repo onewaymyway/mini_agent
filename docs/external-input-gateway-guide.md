@@ -3,11 +3,18 @@
 > 设计文档：`next_doc/external_input_gateway_design.md`（含分阶段实现状态）。
 > 本文档只写"怎么用"，架构取舍和设计动机见设计文档。
 
-当前进度：P1–P7 全部完成（事件抽象、独立轮询调度、路由与告警落点、
-内置 `watch`/`weather` 两个来源、`goal_candidate`/`enqueue_turn` 真正执行
-并接入 `autonomous_loop.tick()`、看板"🔌 外部输入"面板、事件按 `channel`
+当前进度：P1–P8 全部完成（事件抽象、独立轮询调度、路由与告警落点、
+内置 `watch`/`weather` 两个来源、`enqueue_turn` 真正执行并接入
+`autonomous_loop.tick()`、看板"🔌 外部输入"面板、事件按 `channel`
 分类供 daemon 分类处理）。§7 路线图已无待办阶段。看板"🔌 外部输入"面板
 的全部列表（来源/路由规则/待处理告警/事件流水）已加分页展示，见 §9.1。
+
+> **P8 变更**：`IngestionPolicy` 的 `goal_candidate` 落点已移除——外部
+> 输入不会再被直接写成一个新 Goal。外部信息如果确实与某个**已有**
+> Goal/Objective 相关，由 `GoalRelevanceEngine`（见
+> `docs/watchlist-notification-guide.md`）独立判定后关联/推进，不走本
+> 文档描述的 `policies.yaml` 路由。`policies.yaml` 里现在只有
+> `notify_only`/`enqueue_turn` 两个合法 `action`。
 
 ## 0. 设计目标
 
@@ -64,17 +71,15 @@ LLM 调用"，成本不可控。
                                  ▼
 ┌──────────────────────────────────────────────────────────────────────┐
 │                     IngestionPolicy（路由决策）                        │
-│   按事件类型/来源匹配路由规则，三种落点，成本从低到高：                    │
+│   按事件类型/来源匹配路由规则，两种落点，成本从低到高：                    │
 │     1) notify_only     → 写入 Inbox（/v1/inbox 的 external_alert 类型） │
-│     2) goal_candidate  → 写入 GoalBacklog 候选（对接 soft_goal_deriver  │
-│                          同款模式，用户/自主循环再决定是否升级为任务）    │
-│     3) enqueue_turn    → InputQueue.enqueue(initiator="external", ...) │
+│     2) enqueue_turn    → InputQueue.enqueue(initiator="external", ...) │
 │                          真正触发一次 Agent 推理（默认关闭，需显式开启） │
 └───────────────────────────────┬──────────────────────────────────────┘
                                  │ autonomous_loop.tick()::_tick_passive()
                                  │ 里的一个消费点，跟其它子系统共用同一节拍
                                  ▼
-              GoalBacklog / InputQueue / alerts.jsonl（既有子系统）
+                   InputQueue / alerts.jsonl（既有子系统）
                                  │
                                  ▼
                 看板"🔌 外部输入"页签（只读展示，供人工核对路由是否符合预期）
@@ -82,9 +87,10 @@ LLM 调用"，成本不可控。
 
 关键设计取舍：**"产生事件"和"消耗 LLM"之间永远隔着一层可配置的路由
 策略**，轮询频率再高也只累积到 `events.jsonl` 里，不会自动放大成 LLM
-调用次数；`goal_candidate`/`enqueue_turn` 落地后也不重复造轮子，而是
-直接调用 `GoalBacklog.add_goal()`/`InputQueue.enqueue()`，进入既有的
-Goal→Objective 拆分、`ResourceArbiter` 门控等消费链路。
+调用次数；`enqueue_turn` 落地后也不重复造轮子，而是直接调用
+`InputQueue.enqueue()`，进入既有的 `ResourceArbiter` 门控等消费链路。
+**外部输入与 Goal/Objective 的关联不在这条链路里**——见下方"P8 变更"
+说明，那部分完全由 `GoalRelevanceEngine` 独立处理。
 
 > 上面是通用架构图（抽象层面，不代表当前项目里 `sources.yaml`/
 > `policies.yaml` 实际配了什么、事件实际会流向哪个落点）。当前项目里
@@ -118,13 +124,14 @@ Goal→Objective 拆分、`ResourceArbiter` 门控等消费链路。
 - **ExternalInputSource**：一种外部信号来源的实现（比如 `watch`）。
 - **ExternalInputEvent**：来源产生的一次标准化事件，落到
   `system_events.jsonl` 的 `external.<source_type>.<signal>` 命名空间。
-- **IngestionPolicy**：决定一个事件该"只通知"（`notify_only`）、
-  "生成目标候选"（`goal_candidate`，写入 `GoalBacklog`）还是"直接触发
-  Agent 处理"（`enqueue_turn`，直接提交 `InputQueue`）。默认（未匹配任何
-  规则）是 `notify_only`——网关永远不会因为轮询频率高就意外放大成大量
-  LLM 调用；`goal_candidate`/`enqueue_turn` 都需要在 `policies.yaml` 里
-  显式配置命中规则才会触发。
-- 三个落点已经在 `autonomous_loop.tick()`（`_tick_passive()` 阶段）自动
+- **IngestionPolicy**：决定一个事件该"只通知"（`notify_only`）还是
+  "直接触发 Agent 处理"（`enqueue_turn`，直接提交 `InputQueue`）。默认
+  （未匹配任何规则）是 `notify_only`——网关永远不会因为轮询频率高就
+  意外放大成大量 LLM 调用；`enqueue_turn` 需要在 `policies.yaml` 里
+  显式配置命中规则才会触发。外部输入如果与某个已有 Goal/Objective
+  相关，不经过这里的路由，而是由 `GoalRelevanceEngine`（见
+  `docs/watchlist-notification-guide.md`）独立判定后关联/推进。
+- 两个落点已经在 `autonomous_loop.tick()`（`_tick_passive()` 阶段）自动
   消费，不需要手动调用 `run_ingestion_policy_once()`——只要 Agent daemon
   在跑（任意 autonomy 档位），`sources.yaml`/`policies.yaml` 就会持续生效。
 - **channel（分类频道）**：daemon 处理一批事件之前，先按 `channel` 把
@@ -215,7 +222,7 @@ sources:
     source_type: watch
     signal: new_item
     fields.priority: high
-  action: goal_candidate   # 写入 GoalBacklog，source=external_input，打 needs_review 标签
+  action: enqueue_turn      # 高优先级新条目直接提交给 Agent 判断，成本较高，注意匹配条件要收紧
 
 - match:
     source_type: watch
@@ -241,7 +248,9 @@ sources:
 - match:
     channel: weather
     signal: high_temperature
-  action: goal_candidate   # 极端高温单独升级成候选 Goal（比如提醒检查作物/设备）
+  action: enqueue_turn   # 极端高温单独直接触发一次 Agent 判断（比如提醒检查作物/设备）；
+                          # 如果只是想让"已有的相关 Goal 知道这条天气信息"，不需要在这里配置
+                          # 任何规则——GoalRelevanceEngine 会独立判定并自动关联/推进
 ```
 
 规则匹配顺序不变（第一条命中的生效），`channel` 只是多了一种可以用来
@@ -413,41 +422,34 @@ agent_config.json 里 http_enabled: true   （或启动加 --http）
  system_events.jsonl（event_type = "external.weather.*" / "external.watch.new_item"）
         │                               │
         └───────────────┬───────────────┘
-                         ▼
-     autonomous_loop.tick() → _tick_passive() → run_ingestion_policy_once()
-                （按 policies.yaml 第一条命中规则路由，逐 channel 分组处理）
                          │
-        ┌────────────────┼────────────────────────────────┐
-        ▼                ▼                                ▼
-  match: channel:   match: channel:                  match: {}（兜底，
-  weather           agent_watch, signal: new_item     未命中前两条的事件）
-  → notify_only     → goal_candidate                  → notify_only
-        │                │                                │
-        ▼                ▼                                ▼
- alerts.jsonl      GoalBacklog.add_goal(              alerts.jsonl
- （待确认告警）      source="external_input",          （待确认告警）
-        │            tags=["needs_review"])
-        │                │
-        │                ▼
-        │        进入既有 Goal→Objective 拆分、
-        │        ResourceArbiter 门控、
-        │        GoalBacklog.has_actionable_work()
-        │        消费链路（是否真正执行仍由这些
-        │        既有机制判断，不会自动越权执行）
+        ┌────────────────┴────────────────────────────────┐
         ▼                                                  ▼
- GET /v1/inbox 聚合展示                              GET /v1/inbox 聚合展示
- POST .../ack 标记已读                                POST .../ack 标记已读
-        │                                                  │
-        └───────────────────┬──────────────────────────────┘
-                             ▼
-              看板"🔌 外部输入"页签（只读，人工核对路由是否符合预期）
+ autonomous_loop.tick()                          （goal_relevance.py 的 cron 任务，
+ → _tick_passive()                                独立于 autonomous_loop.tick()，
+ → run_ingestion_policy_once()                    见 §4/`docs/watchlist-notification-guide.md`）
+（按 policies.yaml 第一条命中规则路由，                → Stage①规则粗筛 active_goals()
+  逐 channel 分组处理；当前两条规则都是                  → Stage②LLM 判定确有相关的 Goal
+  notify_only，兜底也是 notify_only）                   → attach_external_context()/
+        │                                              try_advance_goal()（只挂载/推进
+        ▼                                              已有 Goal，从不创建新 Goal）
+ alerts.jsonl（待确认告警）
+        │
+        ▼
+ GET /v1/inbox 聚合展示
+ POST .../ack 标记已读
+        │
+        ▼
+ 看板"🔌 外部输入"页签（只读，人工核对路由是否符合预期）
 ```
 
 **当前配置里没有任何 `enqueue_turn` 规则**（成本最高、需要显式配置的
 落点），也就是说无论天气还是 RSS 事件，都不会自动触发一次 Agent 推理；
-`agent_watch` 频道的事件会进入 `GoalBacklog`，但仍打了 `needs_review`
-标签，最终要不要拆解执行由 Goal→Objective 既有链路和
-`ResourceArbiter` 门控决定，网关本身不越权。
+两条路由规则命中后都只是写进 `alerts.jsonl` 供人工核对。**外部输入与
+Goal/Objective 的关联完全不经过 `policies.yaml`**——如果某条事件的内容
+确实与某个已有 Goal 相关，由独立运行的 `GoalRelevanceEngine` 判定后
+关联/推进，`IngestionPolicy` 不再有任何"生成候选 Goal"的落点（P8 已
+移除，见 `next_doc/external_input_gateway_design.md` §P8）。
 
 ### 11.3 目前仍未生效的前提
 

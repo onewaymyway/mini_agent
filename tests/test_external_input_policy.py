@@ -1,4 +1,4 @@
-"""tests/test_external_input_policy.py — IngestionPolicy 路由（P3）测试
+"""tests/test_external_input_policy.py — IngestionPolicy 路由（P3 + P8）测试
 
 覆盖：
   1. PolicyRule.matches：source_type/signal/fields.* 匹配维度，未识别维度判不匹配
@@ -8,12 +8,13 @@
   5. acknowledge_alert：标记后不再出现在 list_pending_alerts
   6. run_ingestion_policy_once：端到端跑通 gateway.publish_event → policy 路由
      → alerts.jsonl，游标正确推进（第二次调用不重复处理）
-  7. goal_candidate / enqueue_turn 命中时、未传 goal_backlog/input_queue：
-     不写 alert，只计入 skipped 计数（向后兼容 P3 阶段调用方式）
-  8. [P5] goal_candidate 命中且传入 goal_backlog：真正写入 GoalBacklog，
-     source=external_input，needs_review 标签；同标题去重不重复写入
-  9. [P5] enqueue_turn 命中且传入 input_queue：真正调用
+  7. enqueue_turn 命中时、未传 input_queue：不写 alert，只计入 skipped 计数
+     （向后兼容 P3 阶段调用方式）
+  8. [P5] enqueue_turn 命中且传入 input_queue：真正调用
      InputQueue.enqueue(initiator=...)，task_template 占位符渲染正确
+  9. [P8] goal_candidate 已被移除：VALID_ACTIONS 不再包含它，配置里写
+     `action: goal_candidate` 的规则在 load_policies() 里按"非法 action
+     跳过该条"处理，不会导致外部输入被凭空建成新 Goal
 """
 
 from __future__ import annotations
@@ -24,6 +25,7 @@ from pathlib import Path
 
 from mini_agent.external_input.gateway import publish_event
 from mini_agent.external_input.policy import (
+    VALID_ACTIONS,
     PoliciesConfigError,
     PolicyRule,
     acknowledge_alert,
@@ -33,7 +35,6 @@ from mini_agent.external_input.policy import (
     run_ingestion_policy_once,
 )
 from mini_agent.external_input.source import ExternalInputEvent
-from mini_agent.perception.goal_backlog import GoalBacklog
 from mini_agent.storage.paths import AgentPaths
 
 
@@ -64,7 +65,7 @@ class TestPolicyRuleMatching(unittest.TestCase):
         self.assertFalse(rule.matches(_make_event(source_type="webhook", signal="price_drop")))
 
     def test_matches_fields_prefix(self):
-        rule = PolicyRule(match={"fields.priority": "high"}, action="goal_candidate")
+        rule = PolicyRule(match={"fields.priority": "high"}, action="enqueue_turn")
         self.assertTrue(rule.matches(_make_event(fields={"priority": "high"})))
         self.assertFalse(rule.matches(_make_event(fields={"priority": "low"})))
         self.assertFalse(rule.matches(_make_event(fields={})))
@@ -82,12 +83,12 @@ class TestDecideAction(unittest.TestCase):
     def test_first_matching_rule_wins(self):
         rules = [
             PolicyRule(match={"source_type": "watch", "signal": "price_drop"}, action="notify_only"),
-            PolicyRule(match={"source_type": "watch"}, action="goal_candidate"),
+            PolicyRule(match={"source_type": "watch"}, action="enqueue_turn"),
         ]
         decided = decide_action(_make_event(signal="price_drop"), rules)
         self.assertEqual(decided.action, "notify_only")
         decided2 = decide_action(_make_event(signal="other_signal"), rules)
-        self.assertEqual(decided2.action, "goal_candidate")
+        self.assertEqual(decided2.action, "enqueue_turn")
 
     def test_no_match_falls_back_to_default(self):
         rules = [PolicyRule(match={"source_type": "webhook"}, action="enqueue_turn")]
@@ -222,62 +223,43 @@ class TestNotifyOnlyAlerts(unittest.TestCase):
         run_ingestion_policy_once(self.paths, consumer_name="cD")
         self.assertEqual(list_pending_alerts(self.paths), [])
 
-    def test_goal_candidate_and_enqueue_turn_do_not_create_alerts(self):
+    def test_enqueue_turn_does_not_create_alerts_when_skipped(self):
         policies_path = self.paths.external_input_policies_config
         policies_path.parent.mkdir(parents=True, exist_ok=True)
         policies_path.write_text(
-            "- match: {signal: hot_signal}\n  action: goal_candidate\n"
             "- match: {signal: urgent_signal}\n  action: enqueue_turn\n",
             encoding="utf-8",
         )
-        publish_event(self.paths, _make_event(event_id="g1", signal="hot_signal"))
         publish_event(self.paths, _make_event(event_id="g2", signal="urgent_signal"))
 
         summary = run_ingestion_policy_once(self.paths, consumer_name="c4")
-        self.assertEqual(summary.processed, 2)
-        self.assertEqual(summary.goal_candidate_skipped, 1)
+        self.assertEqual(summary.processed, 1)
         self.assertEqual(summary.enqueue_turn_skipped, 1)
         self.assertEqual(summary.notify_only, 0)
         self.assertEqual(list_pending_alerts(self.paths), [])
 
-    def test_goal_candidate_writes_goal_backlog_when_provided(self):
+    def test_goal_candidate_is_not_a_valid_action(self):
+        """[P8] goal_candidate 落点已移除：外部输入与 Goal/Objective 的关联
+        只能通过 goal_relevance.py::GoalRelevanceEngine 对已有 Goal 做
+        attach/advance，IngestionPolicy 不应该再凭空创建新 Goal。"""
+        self.assertNotIn("goal_candidate", VALID_ACTIONS)
+        with self.assertRaises(ValueError):
+            PolicyRule.from_dict({"match": {}, "action": "goal_candidate"})
+
+    def test_legacy_goal_candidate_rule_in_yaml_is_skipped_not_fatal(self):
+        """历史 policies.yaml 里残留 `action: goal_candidate` 的规则：
+        按 load_policies() 既有的"单条规则非法即跳过"容错策略处理，不会
+        导致整份配置报错，也不会被当成合法 action 命中。"""
         policies_path = self.paths.external_input_policies_config
         policies_path.parent.mkdir(parents=True, exist_ok=True)
         policies_path.write_text(
-            "- match: {signal: hot_signal}\n  action: goal_candidate\n",
+            "- match: {signal: hot_signal}\n  action: goal_candidate\n"
+            "- match: {}\n  action: notify_only\n",
             encoding="utf-8",
         )
-        publish_event(self.paths, _make_event(event_id="g3", signal="hot_signal"))
-
-        backlog = GoalBacklog(self.paths)
-        summary = run_ingestion_policy_once(self.paths, consumer_name="c5", goal_backlog=backlog)
-        self.assertEqual(summary.goal_candidate, 1)
-        self.assertEqual(summary.goal_candidate_skipped, 0)
-
-        backlog.load()
-        goals = [g for g in backlog.active_goals() if g.source == "external_input"]
-        self.assertEqual(len(goals), 1)
-        self.assertIn("needs_review", goals[0].tags)
-        self.assertEqual(goals[0].title, "标题")
-
-    def test_goal_candidate_dedupes_same_title(self):
-        policies_path = self.paths.external_input_policies_config
-        policies_path.parent.mkdir(parents=True, exist_ok=True)
-        policies_path.write_text(
-            "- match: {signal: hot_signal}\n  action: goal_candidate\n",
-            encoding="utf-8",
-        )
-        backlog = GoalBacklog(self.paths)
-        backlog.add_goal(title="标题", source="external_input")
-
-        publish_event(self.paths, _make_event(event_id="g4", signal="hot_signal"))
-        summary = run_ingestion_policy_once(self.paths, consumer_name="c6", goal_backlog=backlog)
-        self.assertEqual(summary.goal_candidate, 0)
-        self.assertEqual(summary.goal_candidate_deduped, 1)
-
-        backlog.load()
-        goals = [g for g in backlog.active_goals() if g.source == "external_input"]
-        self.assertEqual(len(goals), 1)  # 没有重复写入
+        rules = load_policies(self.paths)
+        self.assertEqual(len(rules), 1)
+        self.assertEqual(rules[0].action, "notify_only")
 
     def test_enqueue_turn_calls_input_queue_when_provided(self):
         policies_path = self.paths.external_input_policies_config

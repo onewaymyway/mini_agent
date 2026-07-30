@@ -176,19 +176,18 @@ class AutonomousLoop:
             pass
 
         # ── External Input Gateway：IngestionPolicy 消费点（外部输入网关设计
-        # 方案 §3.4/P5）── 放在 _tick_passive() 而不是 _tick_autonomous()：
-        # notify_only（默认档、成本最低）不应该被 autonomy_level 挡住——外部
-        # 世界产生的事件不该因为用户把档位调到 passive 就完全看不见。真正
-        # 昂贵的 enqueue_turn 落点默认关闭，需要用户在 policies.yaml 里显式
-        # 配置才会触发，天然就有节流；goal_candidate 写入的 Goal 也会在
-        # maintenance/autonomous 档位才被 _ensure_goal_objectives()/
-        # ObjectiveExecutor 进一步推进，passive 档位下顶多是"记了一个候选"，
-        # 不会消耗 LLM。
+        # 方案 §3.4/P5，P8 收窄为两档）── 放在 _tick_passive() 而不是
+        # _tick_autonomous()：notify_only（默认档、成本最低）不应该被
+        # autonomy_level 挡住——外部世界产生的事件不该因为用户把档位调到
+        # passive 就完全看不见。真正昂贵的 enqueue_turn 落点默认关闭，需要
+        # 用户在 policies.yaml 里显式配置才会触发，天然就有节流。P8 起
+        # `IngestionPolicy` 不再直接写 GoalBacklog——外部输入与已有 Goal/
+        # Objective 的关联完全交给下面 GoalRelevanceEngine Stage① 那段
+        # 独立处理，两条链路不再重叠。
         try:
             from mini_agent.external_input.policy import run_ingestion_policy_once
             run_ingestion_policy_once(
                 self._paths,
-                goal_backlog=self._goal_backlog,
                 input_queue=self._input_queue,
             )
         except ImportError:

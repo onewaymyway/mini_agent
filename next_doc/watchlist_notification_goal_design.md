@@ -1,10 +1,17 @@
 # 外部输入网关扩展设计方案：关注对象 · 分级汇报 · 通知系统 · Goal 关联执行
 
-- **版本**: v1.8（P1-P7 全部已实施；补齐 `watchlist.yaml.example`/
+- **版本**: v1.9（P1-P7 全部已实施；补齐 `watchlist.yaml.example`/
   `config.yaml.example` 两个配置样例文件及对应 `.gitignore` 条目，详见
   §15；P5 实施前复查修复了 P3 遗留的
   `CronScheduler.ensure_job`/`register_local_handler` 方法缺失问题，
-  详见 §12.1；§9 评审改进点已在对应实施阶段全部吸收，见 §6 状态列）
+  详见 §12.1；§9 评审改进点已在对应实施阶段全部吸收，见 §6 状态列。
+  **v1.9 变更**：`external_input_gateway_design.md` P8 已移除
+  `IngestionPolicy` 的 `goal_candidate` 落点——下文（§2/§4 等处）出现的
+  "notify_only/goal_candidate/enqueue_turn"应理解为
+  "notify_only/enqueue_turn"，本文档描述的 `GoalRelevanceEngine`
+  （`context_only`/`advance_goal` 两种结果，只关联/推进已有 Goal，
+  从不创建新 Goal）是本项目里"外部输入与 Goal 关联"**唯一**保留的路径，
+  且与本轮修正的方向完全一致，无需改动）
 - **背景**: 在已有的 External Input Gateway（`src/mini_agent/external_input/`）基础上，
   新增"用户关注对象识别"、"按任意粒度分级汇报"、"可扩展通知渠道"、
   "外部信号驱动 Goal 执行" 四块能力。

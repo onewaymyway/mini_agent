@@ -147,7 +147,7 @@ class TestListExternalInputPolicies(unittest.TestCase):
         p = self.paths.external_input_policies_config
         p.parent.mkdir(parents=True, exist_ok=True)
         p.write_text(
-            "- match: {signal: hot_signal}\n  action: goal_candidate\n"
+            "- match: {signal: hot_signal}\n  action: notify_only\n"
             "- match: {signal: urgent_signal}\n"
             "  action: enqueue_turn\n"
             "  enqueue:\n    initiator: external\n",
@@ -157,7 +157,7 @@ class TestListExternalInputPolicies(unittest.TestCase):
         resp = client.get("/v1/external_input/policies")
         rules = resp.json()["rules"]
         self.assertEqual(len(rules), 2)
-        self.assertEqual(rules[0]["action"], "goal_candidate")
+        self.assertEqual(rules[0]["action"], "notify_only")
         self.assertEqual(rules[1]["action"], "enqueue_turn")
         self.assertEqual(rules[1]["enqueue"]["initiator"], "external")
 

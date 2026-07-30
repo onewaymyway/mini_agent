@@ -1,33 +1,37 @@
-"""external_input/policy.py — IngestionPolicy 路由决策（P3 + P5）
+"""external_input/policy.py — IngestionPolicy 路由决策（P3 + P5 + P8）
 
 设计背景见 next_doc/external_input_gateway_design.md §3.4。
 
 P3 范围：加载 policies.yaml、按事件类型/来源匹配路由规则、落地
 `notify_only`（写入 alerts.jsonl，供 /v1/inbox 展示）。
 
-P5 范围：`goal_candidate` / `enqueue_turn` 两种落点按 §3.4/§5 明确要求
-"复用现有 GoalBacklog/ResourceArbiter/InputQueue"落地——网关本身不另造
-一套"要不要执行"的判断逻辑：
+P5 范围（`enqueue_turn` 落点）：直接调用
+`InputQueue.enqueue(message, initiator="external", meta={...})`，
+这是成本最高、默认关闭（需要在 `policies.yaml` 显式配置）的落点，
+语义与 `CronScheduler`/`next_action_advisor` 提交任务完全一致，
+提交后的任务像普通一轮对话一样正常消耗 LLM、正常受
+`ResourceArbiter`/预算等既有门控约束。
 
-  - `goal_candidate`：直接调用 `GoalBacklog.add_goal()`，source 打
-    `"external_input"`，并像 `soft_goal_deriver.commit_goals()` 处理
-    workthread/lesson 类候选一样打上 `needs_review` 标签——外部信号
-    同样没有经过 ExplorationSandbox 验证，不应该假装已经验证过。写入
-    后的 Goal 自然进入既有的 Goal→Objective 拆分、`ResourceArbiter`
-    门控、`GoalBacklog.has_actionable_work()` 消费链路，本模块不重复
-    实现这些。
-  - `enqueue_turn`：直接调用
-    `InputQueue.enqueue(message, initiator="external", meta={...})`，
-    这是成本最高、默认关闭（需要在 `policies.yaml` 显式配置）的落点，
-    语义与 `CronScheduler`/`next_action_advisor` 提交任务完全一致，
-    提交后的任务像普通一轮对话一样正常消耗 LLM、正常受
-    `ResourceArbiter`/预算等既有门控约束。
+调用方在没有 InputQueue 时（比如测试或诊断脚本单独调用
+`run_ingestion_policy_once(paths)`）：不传 `input_queue` 参数，命中
+`enqueue_turn` 的事件依旧记一条"跳过"计数、游标照常推进，不会静默丢
+事件也不会误当成 notify_only 处理掉——这是刻意保留的行为，见 P3 阶段
+实现说明。
 
-调用方在没有 GoalBacklog/InputQueue 时（比如测试或诊断脚本单独调用
-`run_ingestion_policy_once(paths)`）：不传 `goal_backlog`/`input_queue`
-参数，命中 `goal_candidate`/`enqueue_turn` 的事件依旧记一条"跳过"计数、
-游标照常推进，不会静默丢事件也不会误当成 notify_only 处理掉——这是
-刻意保留的行为，见 P3 阶段实现说明。
+P8（本次变更）：**移除 `goal_candidate` 落点**。之前的实现会直接调用
+`GoalBacklog.add_goal()`，把外部输入凭空变成一个新 Goal——这与
+`goal_relevance.py`（`GoalRelevanceEngine`）职责重叠且语义冲突：
+`GoalRelevanceEngine` 已经独立订阅同一批 `external.*` 事件、对
+`active_goals()` 做规则粗筛 + LLM 判定，命中后只调用
+`attach_external_context()`/`try_advance_goal()`——只把外部信号关联/
+挂载到*已存在*的 Goal 或 Objective 上，让它"知道有这个输入、可以用"，
+从不凭空创建新 Goal。两条路径同时跑，会出现"同一条外部事件，一边被
+挂到已有 Goal 上，一边又被凭空建了个新 Goal"的冲突结果，且
+`goal_candidate` 创建的 Goal 未经 `ExplorationSandbox`/相关性判定验证，
+质量不可控。结论：外部输入与 Goal/Objective 的关联**只能通过
+`GoalRelevanceEngine` 这一条路径**，`IngestionPolicy` 收窄回
+`notify_only`/`enqueue_turn` 两档。历史由 `goal_candidate` 创建的 Goal
+节点，用 `scripts/cleanup_external_goal_candidates.py` 一次性清理。
 """
 
 from __future__ import annotations
@@ -43,13 +47,7 @@ from mini_agent.external_input.source import ExternalInputEvent
 
 if TYPE_CHECKING:
     from mini_agent.storage.paths import AgentPaths
-    from mini_agent.perception.goal_backlog import GoalBacklog
     from mini_agent.api.bridge import InputQueue
-
-# goal_candidate 落点的 GoalBacklog.add_goal(source=...) 取值，与
-# soft_goal_deriver 的 "agent_derived" 区分开，方便看板/诊断区分
-# "agent 自己 derive 的" 和 "外部信号触发的"。
-EXTERNAL_GOAL_SOURCE = "external_input"
 
 try:
     import yaml as _yaml  # type: ignore
@@ -61,12 +59,11 @@ except ImportError:
 # 不会因为漏配规则就意外把高频轮询放大成高频 LLM 调用。
 DEFAULT_ACTION = "notify_only"
 
-VALID_ACTIONS = frozenset({"notify_only", "goal_candidate", "enqueue_turn"})
-
-# P5 完成后三种 action 均已落地；`goal_candidate`/`enqueue_turn` 若调用方
-# 未提供 goal_backlog/input_queue，仍走"可见地跳过"路径（见模块 docstring），
-# 不属于"未实现"，因此本常量目前只用于历史参照，不再驱动分支逻辑。
-_IMPLEMENTED_ACTIONS = frozenset({"notify_only", "goal_candidate", "enqueue_turn"})
+# P8：goal_candidate 已移除，只剩两档。历史 policies.yaml 里如果还配着
+# `action: goal_candidate` 的规则，会在 PolicyRule.from_dict() 校验时被
+# 判定为非法 action（对齐 load_policies() 既有的"单条规则非法即跳过"
+# 容错策略，不会导致整份配置报错）。
+VALID_ACTIONS = frozenset({"notify_only", "enqueue_turn"})
 
 # poll_external_events() 用的固定 consumer 名，跟 soft_goal_deriver 等
 # 其它 system_events 消费者一样各自持有独立游标。
@@ -326,48 +323,6 @@ def acknowledge_alert(paths: "AgentPaths", alert_id: str) -> bool:
     return found
 
 
-# ── goal_candidate 落点：写入 GoalBacklog（P5） ──────────────────────────
-
-def _goal_candidate(paths: "AgentPaths", event: ExternalInputEvent, goal_backlog: "GoalBacklog") -> bool:
-    """把命中 goal_candidate 的事件写成一个 GoalBacklog 候选（§3.4 落点 2）。
-
-    对齐 `soft_goal_deriver.commit_goals()` 处理 workthread/lesson 类候选
-    的方式：source 打 `EXTERNAL_GOAL_SOURCE`，打 `needs_review` 标签
-    （外部信号同样没有经过 ExplorationSandbox 验证）。
-
-    去重：用 `objective_outcome_tracker.normalize_title_key()` 归一化
-    `event.title` 后，与当前 active Goal 的归一化标题比对，命中则跳过——
-    避免同一个外部信号（比如某个 source 连续几次轮询都命中同一条新闻）
-    反复堆出重复 Goal。返回是否真正写入了新 Goal。
-    """
-    try:
-        from mini_agent.evolution.objective_outcome_tracker import normalize_title_key
-    except Exception as exc:
-        from mini_agent.errors import log_exception
-        log_exception(exc, where="mini_agent.external_input.policy._goal_candidate.normalize_title_key")
-        normalize_title_key = lambda s: s.strip().lower()  # noqa: E731
-
-    key = normalize_title_key(event.title)
-    try:
-        existing_keys = {normalize_title_key(g.title) for g in goal_backlog.active_goals()}
-    except Exception as exc:
-        from mini_agent.errors import log_exception
-        log_exception(exc, where="mini_agent.external_input.policy._goal_candidate.active_goals")
-        existing_keys = set()
-    if key in existing_keys:
-        return False
-
-    description = event.detail or f"外部输入触发（{event.source_type}/{event.signal}）：{event.title}"
-    goal_backlog.add_goal(
-        title=event.title,
-        description=description,
-        source=EXTERNAL_GOAL_SOURCE,
-        priority=20,
-        tags=["needs_review", "external_input"],
-    )
-    return True
-
-
 # ── enqueue_turn 落点：直接提交 InputQueue（P5） ─────────────────────────
 
 _DEFAULT_ENQUEUE_TEMPLATE = "收到外部输入：{title}\n{detail}\n请判断是否需要处理。"
@@ -415,9 +370,6 @@ def _enqueue_turn(
 class PolicyRunSummary:
     processed: int = 0
     notify_only: int = 0
-    goal_candidate: int = 0
-    goal_candidate_skipped: int = 0
-    goal_candidate_deduped: int = 0
     enqueue_turn: int = 0
     enqueue_turn_skipped: int = 0
     by_channel: dict = field(default_factory=dict)
@@ -451,7 +403,6 @@ def run_ingestion_policy_once(
     paths: "AgentPaths",
     *,
     consumer_name: str = POLICY_CONSUMER_NAME,
-    goal_backlog: "Optional[GoalBacklog]" = None,
     input_queue: "Optional[InputQueue]" = None,
 ) -> PolicyRunSummary:
     """消费一批自上次游标之后的 external.* 事件，按 policies.yaml 路由。
@@ -461,12 +412,15 @@ def run_ingestion_policy_once(
     新增额外的调度循环"——本函数就是那个消费点的实现，调用方负责决定
     什么时候调它，本函数不自带调度。
 
-    `goal_backlog`/`input_queue` 是 P5 新增的可选参数：
-      - 都不传（P3 阶段的调用方式，测试/诊断脚本仍适用）：命中
-        `goal_candidate`/`enqueue_turn` 的事件只计入 `*_skipped`，游标
-        照常推进，不静默丢事件也不误当 notify_only 处理。
-      - 传了对应参数：真正落地写 GoalBacklog / 提交 InputQueue（见
-        `_goal_candidate()`/`_enqueue_turn()`）。
+    `input_queue` 是 P5 新增的可选参数：
+      - 不传（P3 阶段的调用方式，测试/诊断脚本仍适用）：命中
+        `enqueue_turn` 的事件只计入 `enqueue_turn_skipped`，游标照常
+        推进，不静默丢事件也不误当 notify_only 处理。
+      - 传了：真正落地提交 InputQueue（见 `_enqueue_turn()`）。
+
+    P8：不再接受 `goal_backlog` 参数——外部输入与 Goal/Objective 的关联
+    完全交给 `goal_relevance.py::GoalRelevanceEngine` 独立处理（见模块
+    docstring），本函数只负责 notify_only/enqueue_turn 两档。
     """
     summary = PolicyRunSummary()
     try:
@@ -491,20 +445,6 @@ def run_ingestion_policy_once(
             if rule.action == "notify_only":
                 _notify_only(paths, event)
                 summary.notify_only += 1
-            elif rule.action == "goal_candidate":
-                if goal_backlog is None:
-                    summary.goal_candidate_skipped += 1
-                    continue
-                try:
-                    created = _goal_candidate(paths, event, goal_backlog)
-                except Exception as exc:
-                    from mini_agent.errors import log_exception
-                    log_exception(exc, where="mini_agent.external_input.policy.run_ingestion_policy_once.goal_candidate")
-                    created = False
-                if created:
-                    summary.goal_candidate += 1
-                else:
-                    summary.goal_candidate_deduped += 1
             elif rule.action == "enqueue_turn":
                 if input_queue is None:
                     summary.enqueue_turn_skipped += 1

@@ -15,15 +15,16 @@
 #
 # 完整字段说明见 docs/external-input-gateway-guide.md §5.2、§5.3。
 
-# 1) agent 相关资讯/论文：来源侧已用 keywords 过滤过标题，这里直接
-#    升级成 GoalBacklog 候选，打 needs_review 标签，交给用户/autonomous
-#    loop 决定要不要进一步展开处理（比如读论文摘要、追踪某个 Agent
-#    项目动态）。不用 enqueue_turn 是因为候选还没人工确认，不应该
-#    自动消耗一次 LLM 推理。
+# 1) agent 相关资讯/论文：来源侧已用 keywords 过滤过标题。P8 起
+#    IngestionPolicy 不再直接把外部输入升级成新 Goal（`goal_candidate`
+#    落点已移除，见 policy.py 模块 docstring）——这类事件走 notify_only
+#    进收件箱，如果内容确实跟某个已有 Goal/Objective 相关，会由
+#    goal_relevance.py::GoalRelevanceEngine 独立判定后关联/挂载到那个
+#    已有 Goal 上（不会凭空新建）。
 - match:
     channel: agent_watch
     signal: new_item
-  action: goal_candidate
+  action: notify_only
 
 # 2) 天气类事件统一走通知，不生成 Goal / 不触发 Agent（跟天气来源本身
 #    的默认路由预期一致，这里显式写出来方便一眼看清，即使不写也会走

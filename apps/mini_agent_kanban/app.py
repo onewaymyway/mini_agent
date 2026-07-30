@@ -3315,7 +3315,6 @@ def render_external_input_tab(client: AgentClient):
         else:
             _ACTION_LABEL = {
                 "notify_only": "📥 notify_only（只通知）",
-                "goal_candidate": "🎯 goal_candidate（生成目标候选）",
                 "enqueue_turn": "⚡ enqueue_turn（直接触发 Agent）",
             }
             # 分页只影响本页展示的起始编号，序号仍按 rules 里的真实下标

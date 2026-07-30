@@ -79,11 +79,14 @@ watchlist:
   关注项处理，即使天气告警标题恰好包含某个关键词也不会误命中（`scope`
   按事件的 `channel` 而不是关键词内容做隔离）。
 - `WatchlistMatcher` 的关键词比对独立于 `IngestionPolicy`
-  的 `notify_only`/`goal_candidate` 路由——同一条 `agent_watch` 事件会
-  **同时**：① 按 `policies.yaml` 走 `goal_candidate` 落地到
-  `GoalBacklog`；② 被 `WatchlistMatcher` 关键词命中后写入
-  `pending_hits.jsonl`，等对应 tier 的 cron job 触发时打包汇报。两条
-  链路互不影响、互不替代（详见 §10 完整流向图）。
+  的 `notify_only`/`enqueue_turn` 路由——同一条 `agent_watch` 事件会
+  **同时**：① 按 `policies.yaml` 走 `notify_only` 落地到
+  `alerts.jsonl`；② 被 `WatchlistMatcher` 关键词命中后写入
+  `pending_hits.jsonl`，等对应 tier 的 cron job 触发时打包汇报；
+  ③ 被独立运行的 `GoalRelevanceEngine` 判定是否与某个已有 Goal 相关，
+  相关则关联/推进那个已有 Goal（不创建新 Goal，`IngestionPolicy` 已在
+  P8 移除了会创建 Goal 的 `goal_candidate` 落点）。三条链路互不影响、
+  互不替代（详见 §10 完整流向图）。
 
 ## 3. 配置分级汇报：`.agent/notification/report_tiers.yaml`
 
@@ -299,48 +302,56 @@ sources.yaml: hn_frontpage（channel: agent_watch, keywords 含 "agent"）
         ▼
 system_events.jsonl（event_type = "external.watch.new_item"，channel=agent_watch）
         │
-        ├──────────────────────────────┬───────────────────────────────┐
-        ▼                               ▼                               │
-IngestionPolicy                  WatchlistMatcher                        │
-（run_ingestion_policy_once）     （独立游标，独立于上面的路由）           │
-        │                               │                               │
-match: channel=agent_watch,      逐条比对 watchlist.yaml 已启用项：       │
-signal=new_item → goal_candidate  - agent_breakthrough（含 "agent"）命中  │
-        │                          - scope.source_channels=[agent_watch] │
-        ▼                          命中，标题+详情去重后写入：            │
-GoalBacklog.add_goal(                    ▼                               │
-  source="external_input",       pending_hits.jsonl                     │
-  tags=["needs_review"])         （tier=minute_30，24h 去重窗口）         │
-        │                               │                               │
-        ▼                               ▼                               │
-进入既有 Goal→Objective 拆分、    等 sys:watchlist_report_minute_30       │
-ResourceArbiter 门控（是否真正    这个 cron job（interval:1800）触发：     │
-执行仍由既有机制判断）              读 pending_hits.jsonl → 按             │
-                                  watchlist_id 分组生成摘要（每组最多     │
-                                  20 条）→ NotificationDispatcher.dispatch│
-                                        │                                │
-                                        ▼                                │
-                          notify_channels 解析：watchlist 项留空 →       │
-                          用 minute_30 tier 的默认渠道 [kanban]           │
-                          （config.yaml 未落地，全局也只有 kanban 可用，  │
-                          email 渠道即使 tier 里写了也不会真正发信）      │
-                                        │                                │
-                                        ▼                                │
-                          alerts.jsonl（source="watchlist_report"）      │
-                          + dispatch_log.jsonl（记一条发送结果）          │
-                                        │                                │
-        ┌───────────────────────────────┴────────────────────────────┘
+        ├──────────────────────┬───────────────────────────────┬─────────────────┐
+        ▼                       ▼                               ▼                 │
+IngestionPolicy          WatchlistMatcher                GoalRelevanceEngine       │
+（run_ingestion_policy_once） （独立游标，独立于左右两侧）  （独立 cron 任务，独立游标）│
+        │                       │                               │                 │
+match: channel=agent_watch,   逐条比对 watchlist.yaml 已启用项：  Stage①规则粗筛           │
+signal=new_item → notify_only  - agent_breakthrough（含 "agent"） active_goals()；命中     │
+        │                     命中                               再走 Stage②LLM判定      │
+        ▼                    - scope.source_channels=[agent_watch]  是否真正相关          │
+alerts.jsonl                 命中，标题+详情去重后写入：            │                 │
+（source="notify_only"）            ▼                         相关 → attach_          │
+        │                pending_hits.jsonl                  external_context()/    │
+        │                （tier=minute_30，24h 去重窗口）      try_advance_goal()      │
+        │                       │                          （只挂载/推进已有          │
+        │                       ▼                           Goal，从不创建新 Goal）    │
+        │              等 sys:watchlist_report_minute_30              │             │
+        │              这个 cron job（interval:1800）触发：             │             │
+        │                读 pending_hits.jsonl → 按                    │             │
+        │              watchlist_id 分组生成摘要（每组最多                │             │
+        │              20 条）→ NotificationDispatcher.dispatch          │             │
+        │                       │                                     │             │
+        │                       ▼                                     │             │
+        │           notify_channels 解析：watchlist 项留空 →            │             │
+        │           用 minute_30 tier 的默认渠道 [kanban]                │             │
+        │           （config.yaml 未落地，全局也只有 kanban 可用，       │             │
+        │           email 渠道即使 tier 里写了也不会真正发信）            │             │
+        │                       │                                     │             │
+        │                       ▼                                     │             │
+        │           alerts.jsonl（source="watchlist_report"）           │             │
+        │           + dispatch_log.jsonl（记一条发送结果）                │             │
+        │                       │                                     │             │
+        └───────────────────────┴─────────────────────────────────────┘             │
         ▼
 看板"🔌 外部输入"（原始事件/告警）+ "🔔 关注与通知"（关注命中/汇报记录）
-两个 tab 分别展示，GET /v1/inbox 会把两类 alerts.jsonl 记录一起聚合
+两个 tab 分别展示，GET /v1/inbox 会把两类 alerts.jsonl 记录一起聚合；
+GoalRelevanceEngine 的关联结果体现在对应 Goal 的 external_context 字段，
+在看板"🎯 目标"页签查看该 Goal 详情时可见，不出现在 /v1/inbox 里。
 ```
 
 几个容易误解的点，专门在这里说明一下：
 
-- **`goal_candidate` 和 `WatchlistMatcher` 命中是两条完全独立的链路**，
-  同一条 RSS 新条目会同时触发这两条路径，互不替代——`policies.yaml`
-  决定"要不要生成 Goal 候选"，`watchlist.yaml` 决定"要不要定期汇报给
-  人看"，两者可以同时生效、也可以只开一个。
+- **`IngestionPolicy`（notify_only/enqueue_turn）、`WatchlistMatcher`、
+  `GoalRelevanceEngine` 是三条完全独立的链路**，同一条 RSS 新条目会
+  同时触发这三条路径，互不替代——`policies.yaml` 决定"要不要写进
+  Inbox / 要不要直接触发一次 Agent 推理"，`watchlist.yaml` 决定"要不要
+  定期汇报给人看"，`GoalRelevanceEngine` 决定"是否该关联到某个已有
+  Goal 让它执行时用得上"。三者可以同时生效，也可以只开其中一部分。
+  `IngestionPolicy` 里**不存在**"生成 Goal 候选"这个选项——外部输入
+  从不会被直接变成一个新 Goal（P8 变更，见
+  `next_doc/external_input_gateway_design.md` §P8）。
 - **`agent_ecosystem_daily`/`paused_topic_example` 引用的是 `daily`
   tier**，只在每天 22:00 触发一次；`paused_topic_example` 本身
   `enabled: false`，不会参与匹配，纯粹是"暂停不删除"的占位展示。
