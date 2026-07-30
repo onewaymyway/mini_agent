@@ -719,6 +719,15 @@ class AgentPaths:
         return self.notification_dir / "tier_state.json"
 
     @property
+    def notification_reports(self) -> Path:
+        """<project_root>/.agent/notification/reports.jsonl — watchlist_report
+        分级汇报的落地记录（与网关 notify_only 的 external_input_alerts.jsonl
+        彻底分开存储）。KanbanChannel 写入、看板"关注与通知"tab 的"📋 待处理
+        汇报"面板读取/ack，走独立的 /v1/notifications/* 端点，不再混进
+        /v1/inbox 全局待办中心，也不再跟外部输入网关共用同一份文件。"""
+        return self.notification_dir / "reports.jsonl"
+
+    @property
     def notification_dispatch_log(self) -> Path:
         """<project_root>/.agent/notification/dispatch_log.jsonl — 每次
         NotificationDispatcher.dispatch() 的发送结果记录（P7 新增，见

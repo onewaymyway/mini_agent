@@ -2718,26 +2718,13 @@ async def get_inbox(request: Request):
             from mini_agent.errors import log_exception
             log_exception(_mini_agent_exc, where='mini_agent.api.routes.get_inbox.objectives')
 
-    # ── 外部输入网关的 notify_only 告警（external_alert）─────────────────
-    # 见 next_doc/external_input_gateway_design.md §3.4/§6：IngestionPolicy
-    # 的 notify_only 落点写入 alerts.jsonl，这里聚合展示未 acknowledged 的部分。
-    try:
-        proj_root = getattr(http_server.bridge.agent.cfg, "project_root", None) if http_server.bridge.agent else None
-        if proj_root is not None:
-            from mini_agent.external_input.policy import list_pending_alerts
-            from mini_agent.storage.paths import AgentPaths
-            ei_paths = AgentPaths(proj_root)
-            for alert in list_pending_alerts(ei_paths):
-                items.append({
-                    "type": "external_alert",
-                    "session_id": None,
-                    "alert_id": alert.get("alert_id"),
-                    "summary": alert.get("title") or f"外部输入告警（{alert.get('source_type')}）",
-                    "created_at": alert.get("created_at"),
-                })
-    except Exception as _mini_agent_exc:
-        from mini_agent.errors import log_exception
-        log_exception(_mini_agent_exc, where='mini_agent.api.routes.get_inbox.external_alerts')
+    # [汇报独立存储 变更] 外部输入网关的 notify_only 告警不再聚合进全局待办中心。
+    # 理由：这类告警已经有专门的展示入口——看板"外部输入网关"tab 的
+    # "🔔 待处理告警"面板（/v1/external_input/alerts）——混进
+    # "跨会话待办"会让语义完全不同的两件事（"需要你审批/回答才能继续
+    # 执行"vs"外部世界发生了一件事，仅供知悉"）显示在同一个列表里。
+    # watchlist_report 分级汇报同理，也已经拆到独立的
+    # /v1/notifications/pending，见 notification/reports_store.py。
 
     items.sort(key=lambda it: it.get("created_at") or 0, reverse=True)
     return {"items": items, "count": len(items)}
@@ -2761,6 +2748,62 @@ async def ack_external_alert(request: Request, alert_id: str):
     ok = acknowledge_alert(AgentPaths(proj_root), alert_id)
     if not ok:
         raise HTTPException(status_code=404, detail=f"External alert {alert_id!r} not found or already acknowledged")
+    return {"ok": True}
+
+
+# ── watchlist_report 分级汇报专用端点（P8，独立于外部输入网关告警）────────
+#
+#   GET  /v1/notifications/pending           待处理汇报（分页，含完整 detail 正文）
+#   POST /v1/notifications/pending/{id}/ack  标记一条汇报为已读
+#
+# 存储在独立的 notification/reports.jsonl，跟 external_input/alerts.jsonl
+# 彻底分开，也不再出现在 /v1/inbox 全局待办中心里，见
+# notification/reports_store.py 模块 docstring。
+
+@router.get("/notifications/pending")
+async def get_pending_reports(request: Request, limit: int = 20, offset: int = 0):
+    """GET /v1/notifications/pending?limit=20&offset=0 — 分页返回未读的
+    watchlist_report 汇报，每条都带完整 `detail`（汇报正文，含命中明细），
+    供看板"关注与通知"tab 的"📋 待处理汇报"面板展开显示。"""
+    http_server = getattr(request.app.state, "http_server", None)
+    if http_server is None:
+        raise HTTPException(status_code=503, detail="HttpServer not available")
+    _require_owner(request)
+
+    proj_root = getattr(http_server.bridge.agent.cfg, "project_root", None) if http_server.bridge.agent else None
+    if proj_root is None:
+        raise HTTPException(status_code=503, detail="project_root not available")
+
+    from mini_agent.notification.reports_store import list_pending_reports, count_pending_reports
+    from mini_agent.storage.paths import AgentPaths
+    paths = AgentPaths(proj_root)
+    total = count_pending_reports(paths)
+    reports = list_pending_reports(paths, limit=limit, offset=offset)
+    return {
+        "reports": reports,
+        "total": total,
+        "has_more": offset + len(reports) < total,
+    }
+
+
+@router.post("/notifications/pending/{report_id}/ack")
+async def ack_pending_report(request: Request, report_id: str):
+    """POST /v1/notifications/pending/{report_id}/ack — 标记一条
+    watchlist_report 汇报为已读。"""
+    http_server = getattr(request.app.state, "http_server", None)
+    if http_server is None:
+        raise HTTPException(status_code=503, detail="HttpServer not available")
+    _require_owner(request)
+
+    proj_root = getattr(http_server.bridge.agent.cfg, "project_root", None) if http_server.bridge.agent else None
+    if proj_root is None:
+        raise HTTPException(status_code=503, detail="project_root not available")
+
+    from mini_agent.notification.reports_store import acknowledge_report
+    from mini_agent.storage.paths import AgentPaths
+    ok = acknowledge_report(AgentPaths(proj_root), report_id)
+    if not ok:
+        raise HTTPException(status_code=404, detail=f"Report {report_id!r} not found or already acknowledged")
     return {"ok": True}
 
 

@@ -949,3 +949,29 @@ HttpServer）。覆盖：三个端点在配置文件缺失时都返回空列表�
 只是因为本地测试环境里还没生成过所以没暴露出来；确认这几个路径目前
 在仓库里都不存在实际文件，添加 `.gitignore` 条目不会意外"取消跟踪"
 任何已提交内容。
+
+---
+
+## 变更记录：watchlist_report 汇报拆分为独立存储
+
+本文档 §7 P7 原方案（`KanbanChannel` 复用 `alerts.jsonl` + `/v1/inbox`）
+在实际使用中暴露出两个问题：① 汇报的完整正文（命中明细）没有专门的
+展示入口，只藏在共享记录的 `detail` 字段里，看板"待处理告警"/"全局
+待办中心"两处渲染都只展示了 `title`；② watchlist_report 汇报和网关
+notify_only 告警对用户来说语义完全不同（"周期性汇总清单" vs "需要
+判断的外部告警"），混在同一份文件、同一个列表里展示，用户分不清楚。
+
+改造后：
+
+- `KanbanChannel` 不再写 `alerts.jsonl`，改写独立的
+  `.agent/notification/reports.jsonl`（`notification/reports_store.py`
+  新增，跟 `external_input/policy.py` 的 alerts 读写逻辑同构但物理
+  隔离）。
+- `/v1/inbox` 不再聚合 watchlist_report 汇报，只保留网关自身的
+  `external_alert`/权限/交互/失败 Objective 四类。
+- 新增 `GET /v1/notifications/pending` / `POST /v1/notifications/pending/{id}/ack`
+  专用端点，看板"关注与通知"tab 新增"📋 待处理汇报"面板，用折叠面板
+  展开完整 `detail` 正文（此前完全没有 UI 入口能看到这部分内容）。
+
+详见 `docs/watchlist-notification-guide.md` §5/§7/§8/§9/§10（已同步
+更新为最新方案）。

@@ -5,9 +5,11 @@
   Gateway 本体，本功能是它的扩展，不重复实现事件采集/路由）
 - **当前实施进度**：P1-P7 已全部实施完成（通知系统骨架、关注对象匹配、
   分级汇报、Goal 相关性候选生成+LLM 判定、Prompt 精确注入、看板展示）；
-  P8（测试）已随各阶段同步补齐。看板"🔔 关注与通知"tab 的全部列表
-  （关注对象/分级汇报 tier/通知发送记录）以及 Goal 卡片"🔗 相关外部
-  信息"面板已加分页展示，见 §7/§8。
+  P8（测试）已随各阶段同步补齐。汇报独立存储：watchlist_report 汇报改为独立存储
+  （`reports.jsonl`）+ 独立展示面板（"📋 待处理汇报"），不再复用外部
+  输入网关的 `alerts.jsonl`/`/v1/inbox`，见 §5/§7/§8/§9/§10。看板
+  "🔔 关注与通知"tab 的全部列表（关注对象/分级汇报 tier/待处理汇报/
+  通知发送记录）以及 Goal 卡片"🔗 相关外部信息"面板已加分页展示，见 §7/§8。
 
 ---
 
@@ -159,8 +161,8 @@ channels:
   `config.yaml` 本身已经加进 `.gitignore`，不会被误提交。
 - **kanban 是恒真兜底渠道**：不管某个 tier/watchlist 项配置了什么
   `notify_channels`，实际发送时都会隐式带上 kanban——即便邮件发送失败
-  （SMTP 连不上之类），至少能在看板的"待处理告警"面板看到这条通知本身，
-  不会因为唯一渠道失败而彻底消失。
+  （SMTP 连不上之类），至少能在看板的"📋 待处理汇报"面板看到这条通知
+  本身，不会因为唯一渠道失败而彻底消失。
 - 邮件发送失败不重试、不阻塞其它渠道，失败会记 `log_exception`。
 
 ### 4.1 当前实际状态：这份文件没有落地，而且不需要
@@ -178,10 +180,15 @@ channels:
 
 ## 5. 通知落地位置
 
-- **kanban 渠道**：复用现有 `alerts.jsonl` + `/v1/inbox` 机制，跟
-  External Input Gateway 原有的 `notify_only` 告警落在同一个文件，但
-  记录里带 `source="watchlist_report"` 字段，看板侧可以按这个字段区分
-  "关注命中/分级汇报"和网关路由规则触发的告警。
+- **kanban 渠道**：[汇报独立存储 变更] 不再复用 External Input Gateway 的
+  `alerts.jsonl` / `/v1/inbox`，而是写入独立的
+  `.agent/notification/reports.jsonl`，通过专用的
+  `GET /v1/notifications/pending` / `POST /v1/notifications/pending/{id}/ack`
+  端点读取/标记已读，在看板"关注与通知"tab 的"📋 待处理汇报"面板展开
+  显示（含完整 Markdown 正文）。不再出现在"全局待办中心"或网关的
+  "🔔 待处理告警"面板里——这两类东西对用户语义不同（"需要你处理的
+  外部告警" vs "周期性打包的关注汇总"），存储和展示都彻底分开，
+  互不干扰、也不需要靠 `source` 字段在共享文件里做区分。
 - **email 渠道**：标准 SMTP 发送，标题=汇报标题，正文=Markdown 摘要
   （按 watchlist_id 分组列出命中标题+链接）。
 
@@ -259,13 +266,20 @@ Goal"的入口：
   `sys:watchlist_report_<id>` cron job 的运行时状态（是否启用、下次
   触发时间）和连续空转计数（§9.2 #7 的高频 tier 节流）。同上，前端
   分页展示（每页 10 条）。
+- **📋 待处理汇报**：[汇报独立存储 新增] 未读的 watchlist_report 汇报列表，来自
+  独立的 `.agent/notification/reports.jsonl`（通过
+  `GET /v1/notifications/pending` 读取），每条用折叠面板展开显示
+  **完整 Markdown 正文**（按 watchlist_id 分组的命中标题+链接明细），
+  附"标记已读"按钮。跟网关"🔔 待处理告警"面板（外部输入网关 tab）
+  **存储和展示都彻底分开**——前者是"你关注的对象按周期打包的汇总
+  清单"，后者才是"需要你判断的外部告警"。
 - **📮 通知发送记录**：`NotificationDispatcher` 每次 `dispatch()` 的
   发送结果（默认最近 50 条，倒序），每条显示各渠道成功/失败
   （✅/❌）——用于诊断"为什么我没收到邮件通知"这类问题。这份记录
-  跟 kanban 渠道自己落地的 `alerts.jsonl`（"待处理告警"面板）是两回事：
-  后者只有 kanban 渠道成功才会有一条，前者记录的是**每个渠道各自的
-  发送结果**，包括失败的邮件。记录多时点"⬇️ 加载更多"按需拉取更早的
-  发送记录，不会一次性全部渲染。
+  跟"📋 待处理汇报"面板背后的 `reports.jsonl` 是两回事：后者只有
+  kanban 渠道成功才会有一条、且带完整正文，前者记录的是**每个渠道
+  各自的发送结果**（含标题但不含正文），包括失败的邮件。记录多时点
+  "⬇️ 加载更多"按需拉取更早的发送记录，不会一次性全部渲染。
 
 此外，**目标看板**（📌 目标看板 tab）里每张 Goal 卡片，只要
 `external_context` 非空，就会出现一个 **"🔗 相关外部信息（N 条）"**
@@ -280,6 +294,8 @@ Goal"的入口：
 | `GET /v1/notification/watchlist` | 关注对象列表（含 disabled），全量返回，看板前端分页展示 |
 | `GET /v1/notification/report_tiers` | tier 配置 + cron job 运行时状态 + 空转计数，全量返回，看板前端分页展示 |
 | `GET /v1/notification/dispatch_log?limit=50` | 最近 N 条通知发送记录（倒序），响应含 `has_more`，供看板"加载更多"分页 |
+| `GET /v1/notifications/pending?limit=20&offset=0` | [汇报独立存储 新增] 未读的 watchlist_report 汇报（分页，含完整 `detail` 正文），供"📋 待处理汇报"面板用 |
+| `POST /v1/notifications/pending/{report_id}/ack` | [汇报独立存储 新增] 标记一条汇报为已读 |
 | `GET /v1/goals` | GoalBacklog 完整视图（每个节点已含 `external_context`/`last_external_advance_at`） |
 
 ---
@@ -330,15 +346,17 @@ alerts.jsonl                 命中，标题+详情去重后写入：           
         │           email 渠道即使 tier 里写了也不会真正发信）            │             │
         │                       │                                     │             │
         │                       ▼                                     │             │
-        │           alerts.jsonl（source="watchlist_report"）           │             │
-        │           + dispatch_log.jsonl（记一条发送结果）                │             │
+        │           reports.jsonl（[汇报独立存储] 独立文件，不再是 alerts.jsonl）   │             │
+        │           + dispatch_log.jsonl（记一条发送结果，不含正文）      │             │
         │                       │                                     │             │
         └───────────────────────┴─────────────────────────────────────┘             │
         ▼
-看板"🔌 外部输入"（原始事件/告警）+ "🔔 关注与通知"（关注命中/汇报记录）
-两个 tab 分别展示，GET /v1/inbox 会把两类 alerts.jsonl 记录一起聚合；
-GoalRelevanceEngine 的关联结果体现在对应 Goal 的 external_context 字段，
-在看板"🎯 目标"页签查看该 Goal 详情时可见，不出现在 /v1/inbox 里。
+看板"🔌 外部输入"（原始事件/告警，读 alerts.jsonl）+
+"🔔 关注与通知"（关注命中/汇报记录，[汇报独立存储] 读独立的 reports.jsonl）
+两个 tab 分别展示，[汇报独立存储 变更] GET /v1/inbox 不再聚合 watchlist_report
+汇报，只聚合网关自身的 notify_only 告警；GoalRelevanceEngine 的关联
+结果体现在对应 Goal 的 external_context 字段，在看板"🎯 目标"页签查看
+该 Goal 详情时可见，同样不出现在 /v1/inbox 里。
 ```
 
 几个容易误解的点，专门在这里说明一下：
@@ -358,9 +376,11 @@ GoalRelevanceEngine 的关联结果体现在对应 Goal 的 external_context 字
 - **`beijing_weather` 产生的事件不会走上面这条 watchlist 链路**——两条
   watchlist 项都用 `scope.source_channels: ["agent_watch"]` 限定了范围，
   天气事件的 `channel` 是 `weather`，天然被排除在外；天气事件仍然会走
-  `IngestionPolicy` 的 `channel: weather → notify_only` 规则，落到同一份
-  `alerts.jsonl`，但 `source` 字段是网关自身的 `notify_only` 标记，不是
-  `watchlist_report`，看板/`/v1/inbox` 上可以按这个字段区分开。
+  `IngestionPolicy` 的 `channel: weather → notify_only` 规则，落到网关
+  自己的 `alerts.jsonl`，展示在"🔔 待处理告警"面板——[汇报独立存储 变更后] 不再
+  需要靠 `source` 字段在共享文件里区分，因为 watchlist_report 汇报
+  已经落在完全独立的 `reports.jsonl`，展示在"📋 待处理汇报"面板，
+  物理上就不会跟网关告警混在一起。
 
 ## 10. 相关文件一览
 
@@ -375,16 +395,18 @@ GoalRelevanceEngine 的关联结果体现在对应 Goal 的 external_context 字
 | `src/mini_agent/evolution/objective_executor.py` | `_format_external_context(_items)`、decompose/redecompose 的精确 prompt 注入 |
 | `src/mini_agent/notification/dispatcher.py` | `NotificationDispatcher`/`NotificationChannel` 骨架 |
 | `src/mini_agent/notification/config.py` | 通知渠道配置加载（`${ENV:...}` 占位符解析）+ `goal_advance_cooldown_seconds` |
-| `src/mini_agent/notification/channels/kanban.py` | kanban 渠道实现 |
+| `src/mini_agent/notification/reports_store.py` | [汇报独立存储 新增] `reports.jsonl` 独立存储：`list_pending_reports`/`count_pending_reports`/`acknowledge_report`，跟 `external_input/policy.py` 的 alerts 存储逻辑同构但完全独立 |
+| `src/mini_agent/notification/channels/kanban.py` | kanban 渠道实现，[汇报独立存储 变更] 写入 `notification_reports` 而非 `external_input_alerts` |
 | `src/mini_agent/notification/channels/email.py` | 邮件渠道实现 |
-| `src/mini_agent/api/routes.py` | `/v1/notification/{watchlist,report_tiers,dispatch_log}` 只读端点（P7） |
-| `src/mini_agent/storage/paths.py` | `notification_dispatch_log` 等路径属性 |
-| `apps/mini_agent_kanban/client.py` | `notification_watchlist/report_tiers/dispatch_log()` 客户端方法（P7） |
-| `apps/mini_agent_kanban/app.py` | "🔔 关注与通知" tab + Goal 卡片"🔗相关外部信息"面板（P7） |
+| `src/mini_agent/api/routes.py` | `/v1/notification/{watchlist,report_tiers,dispatch_log}` 只读端点（P7）；[汇报独立存储 新增] `/v1/notifications/pending`（GET/ack）；[汇报独立存储 变更] `/v1/inbox` 不再聚合 watchlist_report 汇报 |
+| `src/mini_agent/storage/paths.py` | `notification_dispatch_log` 等路径属性；[汇报独立存储 新增] `notification_reports` |
+| `apps/mini_agent_kanban/client.py` | `notification_watchlist/report_tiers/dispatch_log()` 客户端方法（P7）；[汇报独立存储 新增] `notification_pending_reports()`/`ack_notification_report()` |
+| `apps/mini_agent_kanban/app.py` | "🔔 关注与通知" tab + Goal 卡片"🔗相关外部信息"面板（P7）；[汇报独立存储 新增] "📋 待处理汇报"面板 |
 | `.agent/external_input/watchlist.yaml` | 用户关注对象**实际配置**（已落地，非 `.example`，当前 3 条见 §2.1） |
 | `.agent/external_input/watchlist.yaml.example` | 关注对象配置模板/字段说明参考，复制改名即为实际配置 |
 | `.agent/notification/report_tiers.yaml` | 分级汇报 tier **实际配置**（已落地，非 `.example`，当前 4 档见 §3.1） |
 | `.agent/notification/report_tiers.yaml.example` | tier 配置模板/字段说明参考 |
 | `.agent/notification/config.yaml` | 通知渠道配置（含密钥、`goal_advance_cooldown_seconds`，已 gitignore）——**当前项目未落地**，缺失时等价于"只有 kanban 渠道"，见 §4.1 |
 | `.agent/notification/config.yaml.example` | 通知渠道配置模板，含 P5 新增的 `goal_advance_cooldown_seconds` 说明；需要开 email 渠道时复制改名 |
+| `.agent/notification/reports.jsonl` | [汇报独立存储 新增] watchlist_report 汇报独立落地文件（含完整 detail 正文），跟网关 `.agent/external_input/alerts.jsonl` 彻底分开 |
 | `.agent/notification/dispatch_log.jsonl` | 通知发送记录（运行时生成，尚未产生过记录，见 §9 前提开关说明） |

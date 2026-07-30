@@ -276,6 +276,16 @@ class AgentClient:
         """标记一条 notify_only 告警已处理（不再出现在 /v1/inbox 里）。"""
         return self._post(f"/inbox/external_alerts/{alert_id}/ack")
 
+    def notification_pending_reports(self, limit: int = 20, offset: int = 0):
+        """分页返回未读的 watchlist_report 分级汇报（含完整 detail 正文），
+        供"关注与通知"tab 的"📋 待处理汇报"面板用。跟 external_input_alerts
+        是两个完全独立的存储/端点，见 notification/reports_store.py。"""
+        return self._get("/notifications/pending", params={"limit": limit, "offset": offset})
+
+    def ack_notification_report(self, report_id: str):
+        """标记一条 watchlist_report 汇报为已读。"""
+        return self._post(f"/notifications/pending/{report_id}/ack")
+
     def reload_external_input_sources(self):
         """热重载 sources.yaml：不重启 daemon 即可生效。先对新增/改动的
         source 做一次可用性检测，全部通过才真正切换配置；任意一条没通过

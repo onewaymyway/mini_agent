@@ -3456,7 +3456,37 @@ def render_notification_tab(client: AgentClient):
 
     st.divider()
 
-    # ── 3. 通知发送记录（NotificationDispatcher，只读，分页展示）────────
+    # ── 3. 待处理汇报（汇报独立存储 新增：独立存储 + 专用端点，含完整正文）─────────
+    # 跟"🔔 待处理告警"（外部输入网关 notify_only）是两个完全独立的东西：
+    # 这里是"你关注的对象按周期打包汇总了一份清单"，不是需要你处理的
+    # 告警。存储在独立的 reports.jsonl，也不再出现在 /v1/inbox 全局
+    # 待办中心里。
+    st.markdown("##### 📋 待处理汇报")
+    reports_limit = st.session_state.get("notif_reports_limit", 20)
+    reports_resp = client.notification_pending_reports(limit=reports_limit) or {}
+    if "_error" in reports_resp:
+        st.caption("获取待处理汇报失败，暂不展示。")
+    else:
+        reports = reports_resp.get("reports") or []
+        if not reports:
+            st.info("当前没有未读的关注对象汇报。")
+        else:
+            st.caption(f"共 {reports_resp.get('total', len(reports))} 条未读，当前展示 {len(reports)} 条。")
+        for idx, rep in enumerate(reports):
+            rid = rep.get("report_id")
+            with st.expander(f"📋 {rep.get('title', '(无标题)')}", expanded=False):
+                st.markdown(rep.get("detail") or "（无正文）")
+                if st.button("标记已读", key=f"notif_report_ack_{idx}_{rid}"):
+                    res = client.ack_notification_report(rid)
+                    if res and "_error" in res:
+                        st.error(f"标记失败：{res['_error']}")
+                    else:
+                        st.rerun()
+        _load_more_control("notif_reports_limit", 20, 20, bool(reports_resp.get("has_more")))
+
+    st.divider()
+
+    # ── 4. 通知发送记录（NotificationDispatcher，只读，分页展示）────────
     st.markdown("##### 📮 通知发送记录")
     dispatch_limit = st.session_state.get("notif_dispatch_limit", 50)
     log_resp = client.notification_dispatch_log(limit=dispatch_limit)
