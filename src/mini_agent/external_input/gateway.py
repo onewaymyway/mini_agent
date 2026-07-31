@@ -10,6 +10,9 @@ poll_since() 的游标消费模型直接复用（§3.3）。
 
 from __future__ import annotations
 
+import json
+import os
+import time
 from typing import TYPE_CHECKING, Iterable
 
 from mini_agent.external_input.source import ExternalInputEvent
@@ -24,15 +27,30 @@ if TYPE_CHECKING:
 # 见 source.py 里 ExternalInputSource.poll() 的约束 3。
 _DEDUP_WINDOW = 500
 
+# §1 轻量快照持久化的节流参数：不是每次 add() 都落盘，累计满
+# _SAVE_EVERY_N 次新增，或者距上次保存超过 _SAVE_INTERVAL_SECONDS 秒，
+# 才真正写一次文件——去重缓存的写入频率本来就该远低于事件产生频率
+# （见 next_doc/external_input_reliability_observability_archive_plan.md
+# §1.2）。
+_SAVE_EVERY_N = 20
+_SAVE_INTERVAL_SECONDS = 30.0
+
 
 class _RecentIdCache:
     """极简的 FIFO 去重缓存，只在单个 GatewayPoller 进程生命周期内有效。
     跨进程/重启后的去重完全依赖来源自己在 state 里维护的游标，本缓存
-    只是同一进程内"防止手滑重复发布"的最后一道保险。"""
+    只是同一进程内"防止手滑重复发布"的最后一道保险。
+
+    §1 新增：可选的轻量快照持久化——重启后不再是从零开始，但仍然不追求
+    强一致（异常崩溃时最多丢 `_SAVE_INTERVAL_SECONDS` 秒内的新增记录，
+    这是刻意的取舍，见改造方案 §1.2/§1.3）。
+    """
 
     def __init__(self, maxlen: int = _DEDUP_WINDOW) -> None:
         self._maxlen = maxlen
         self._seen: dict[str, None] = {}
+        self._dirty_count = 0
+        self._last_saved_at = time.time()
 
     def seen(self, key: str) -> bool:
         return key in self._seen
@@ -43,9 +61,89 @@ class _RecentIdCache:
             # dict 保持插入顺序，popitem(last=False) 等价的写法：
             oldest = next(iter(self._seen))
             del self._seen[oldest]
+        self._dirty_count += 1
+
+    # ── §1 轻量快照持久化 ────────────────────────────────────────────────
+
+    def to_list(self) -> list[str]:
+        """按插入顺序导出当前缓存的全部 key。"""
+        return list(self._seen.keys())
+
+    def from_list(self, keys: list[str]) -> None:
+        """按给定顺序整体还原缓存内容（覆盖当前内容），只保留最近
+        `self._maxlen` 个（超出部分视为更早写入，直接丢弃）。"""
+        self._seen = {}
+        for key in keys[-self._maxlen:]:
+            self._seen[key] = None
+
+    def load(self, paths: "AgentPaths") -> None:
+        """从磁盘快照恢复缓存内容。文件不存在或解析失败都按"空缓存"处理，
+        不抛异常——对齐项目"状态文件损坏当无历史状态处理"的一贯风格
+        （见 poller.py::_load_state）。"""
+        p = paths.external_input_gateway_dedup_cache
+        if not p.exists():
+            return
+        try:
+            data = json.loads(p.read_text(encoding="utf-8"))
+            keys = data.get("keys") if isinstance(data, dict) else None
+            if isinstance(keys, list):
+                self.from_list([str(k) for k in keys])
+        except Exception:
+            # 文件损坏：当作没有历史状态，让缓存从空开始重新积累。
+            pass
+
+    def save(self, paths: "AgentPaths") -> None:
+        """强制落盘一次（不节流），用"写临时文件 + os.replace 原子替换"，
+        不加跨进程锁——这个缓存允许偶尔丢一次写，当前架构里也只有一个
+        poller 进程会写它。"""
+        p = paths.external_input_gateway_dedup_cache
+        try:
+            p.parent.mkdir(parents=True, exist_ok=True)
+            tmp = p.with_suffix(p.suffix + f".tmp{os.getpid()}")
+            tmp.write_text(
+                json.dumps({"keys": self.to_list()}, ensure_ascii=False),
+                encoding="utf-8",
+            )
+            os.replace(tmp, p)
+            self._dirty_count = 0
+            self._last_saved_at = time.time()
+        except Exception:
+            # 落盘失败不应该影响正常发布流程——下一次 maybe_save()/强制
+            # save() 还会再试。
+            pass
+
+    def maybe_save(self, paths: "AgentPaths") -> None:
+        """节流写：累计达到 `_SAVE_EVERY_N` 次新增，或距上次保存超过
+        `_SAVE_INTERVAL_SECONDS` 秒，才真正落盘一次。"""
+        if self._dirty_count == 0:
+            return
+        now = time.time()
+        if (
+            self._dirty_count >= _SAVE_EVERY_N
+            or now - self._last_saved_at >= _SAVE_INTERVAL_SECONDS
+        ):
+            self.save(paths)
 
 
 _dedup_cache = _RecentIdCache()
+_dedup_cache_loaded_for: set[int] = set()
+
+
+def ensure_dedup_cache_loaded(paths: "AgentPaths") -> None:
+    """懒加载一次去重缓存快照，供 `GatewayPoller.__init__` 调用。用
+    `id(paths)` 做一次性标记，避免同一 AgentPaths 实例反复触发磁盘读取
+    （多个 source 线程共享同一个全局缓存实例）。"""
+    key = id(paths)
+    if key in _dedup_cache_loaded_for:
+        return
+    _dedup_cache_loaded_for.add(key)
+    _dedup_cache.load(paths)
+
+
+def flush_dedup_cache(paths: "AgentPaths") -> None:
+    """强制保存一次去重缓存（不节流），供 `GatewayPoller.stop()` 在正常
+    关闭路径下调用，尽量让缓存落盘是最新的。"""
+    _dedup_cache.save(paths)
 
 
 def publish_event(paths: "AgentPaths", event: ExternalInputEvent) -> bool:
@@ -67,6 +165,7 @@ def publish_event(paths: "AgentPaths", event: ExternalInputEvent) -> bool:
         payload=event.to_payload(),
     )
     _dedup_cache.add(dedup_key)
+    _dedup_cache.maybe_save(paths)
     return True
 
 

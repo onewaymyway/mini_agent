@@ -3024,6 +3024,148 @@ async def list_external_input_alerts_paginated(request: Request, limit: int = 20
     return {"alerts": alerts, "total": total, "has_more": offset + len(alerts) < total}
 
 
+# ── 外部输入网关可观测性（成功率/延迟趋势，见改造方案 §3）────────────────────
+
+@router.get("/external_input/health_history")
+async def get_external_input_health_history(
+    request: Request, source_id: Optional[str] = None, since_days: int = 7,
+):
+    """GET /v1/external_input/health_history?source_id=&since_days=7 —
+    返回 `poll_history.summarize_poll_history()` 的聚合结果：`source_id`
+    留空则返回全部 source 各自的聚合，传入则只返回该 source 的聚合
+    （total_polls/success_rate/avg_duration_ms/p50/p95/按天时间序列）。
+    纯只读聚合查询，不消费游标、不改变任何状态，可以被高频调用（看板
+    刷新）而没有副作用。"""
+    http_server = getattr(request.app.state, "http_server", None)
+    if http_server is None:
+        raise HTTPException(status_code=503, detail="HttpServer not available")
+    _require_owner(request)
+    proj_root = _project_root_or_503(http_server)
+    since_days = max(1, min(since_days, 90))
+
+    from mini_agent.storage.paths import AgentPaths
+    from mini_agent.external_input.poll_history import summarize_poll_history
+    paths = AgentPaths(proj_root)
+
+    try:
+        result = summarize_poll_history(paths, source_id=source_id, since_days=since_days)
+    except Exception as _mini_agent_exc:
+        from mini_agent.errors import log_exception
+        log_exception(_mini_agent_exc, where='mini_agent.api.routes.get_external_input_health_history')
+        raise HTTPException(status_code=500, detail=str(_mini_agent_exc))
+    return result
+
+
+# ── 长期归档 / 回顾式查询（§4）────────────────────────────────────────────
+
+@router.get("/archive/query")
+async def query_archive_records(
+    request: Request,
+    category: str,
+    since: str,
+    until: str,
+    keyword: Optional[str] = None,
+    limit: int = 50,
+    offset: int = 0,
+):
+    """GET /v1/archive/query?category=external_input&since=2026-06&until=2026-06&keyword=agent&limit=50&offset=0
+
+    `category`：external_input / notification（对应归档子目录）；
+    `since`/`until`：自然月粒度（"YYYY-MM"）；`keyword`：对 title/detail
+    做简单子串匹配（不区分大小写）。归档数据只读，本端点不提供任何写操作。
+    """
+    http_server = getattr(request.app.state, "http_server", None)
+    if http_server is None:
+        raise HTTPException(status_code=503, detail="HttpServer not available")
+    _require_owner(request)
+    proj_root = _project_root_or_503(http_server)
+    limit = max(1, min(limit, 200))
+    offset = max(0, offset)
+
+    from mini_agent.storage.paths import AgentPaths
+    from mini_agent.archive.gc import query_archive
+    paths = AgentPaths(proj_root)
+
+    try:
+        result = query_archive(
+            paths, category=category, since=since, until=until,
+            keyword=keyword, limit=limit, offset=offset,
+        )
+    except Exception as _mini_agent_exc:
+        from mini_agent.errors import log_exception
+        log_exception(_mini_agent_exc, where='mini_agent.api.routes.query_archive_records')
+        raise HTTPException(status_code=500, detail=str(_mini_agent_exc))
+    return result
+
+
+# ── "新颖重要事件"受控出口（独立通道，不进 /v1/inbox，见改造方案 §2）──────
+
+@router.get("/external_input/novelty_candidates")
+async def list_novelty_candidates(request: Request, limit: int = 20, offset: int = 0):
+    """GET /v1/external_input/novelty_candidates?limit=20&offset=0 —
+    分页返回待确认的新颖信号候选（status=pending）。明确不聚合进
+    /v1/inbox——这是独立通道，语义是"系统主动发现的、可能值得开一个新
+    方向的建议"，跟"待办中心"/"待处理告警"/"待处理汇报"三个既有面板
+    都不是一回事。"""
+    http_server = getattr(request.app.state, "http_server", None)
+    if http_server is None:
+        raise HTTPException(status_code=503, detail="HttpServer not available")
+    _require_owner(request)
+    proj_root = _project_root_or_503(http_server)
+    limit = max(1, min(limit, 200))
+    offset = max(0, offset)
+
+    from mini_agent.storage.paths import AgentPaths
+    from mini_agent.external_input.novelty_judge import (
+        count_pending_novelty_candidates, list_pending_novelty_candidates,
+    )
+    paths = AgentPaths(proj_root)
+    total = count_pending_novelty_candidates(paths)
+    candidates = list_pending_novelty_candidates(paths, limit=limit, offset=offset)
+    return {"candidates": candidates, "total": total, "has_more": offset + len(candidates) < total}
+
+
+@router.post("/external_input/novelty_candidates/{candidate_id}/confirm")
+async def confirm_novelty_candidate_endpoint(request: Request, candidate_id: str):
+    """POST /v1/external_input/novelty_candidates/{id}/confirm — 确认：
+    创建一个新 Goal，标记 status=confirmed。这是唯一允许创建新 Goal 的
+    入口，且只能由用户手动点击触发，不存在任何自动确认路径。"""
+    http_server = getattr(request.app.state, "http_server", None)
+    if http_server is None:
+        raise HTTPException(status_code=503, detail="HttpServer not available")
+    _require_owner(request)
+    proj_root = _project_root_or_503(http_server)
+
+    from mini_agent.storage.paths import AgentPaths
+    from mini_agent.external_input.novelty_judge import confirm_novelty_candidate
+    paths = AgentPaths(proj_root)
+
+    node = confirm_novelty_candidate(paths, candidate_id)
+    if node is None:
+        raise HTTPException(status_code=404, detail=f"Novelty candidate {candidate_id!r} not found or already processed")
+    return {"ok": True, "goal_id": node.id, "goal_title": node.title}
+
+
+@router.post("/external_input/novelty_candidates/{candidate_id}/dismiss")
+async def dismiss_novelty_candidate_endpoint(request: Request, candidate_id: str):
+    """POST /v1/external_input/novelty_candidates/{id}/dismiss — 忽略：
+    标记 status=dismissed，不创建 Goal，纯粹是"我看过了，不需要"。"""
+    http_server = getattr(request.app.state, "http_server", None)
+    if http_server is None:
+        raise HTTPException(status_code=503, detail="HttpServer not available")
+    _require_owner(request)
+    proj_root = _project_root_or_503(http_server)
+
+    from mini_agent.storage.paths import AgentPaths
+    from mini_agent.external_input.novelty_judge import dismiss_novelty_candidate
+    paths = AgentPaths(proj_root)
+
+    ok = dismiss_novelty_candidate(paths, candidate_id)
+    if not ok:
+        raise HTTPException(status_code=404, detail=f"Novelty candidate {candidate_id!r} not found or already processed")
+    return {"ok": True}
+
+
 # ── Cron Jobs REST API ────────────────────────────────────────────────────────
 
 @router.get("/cron/jobs")

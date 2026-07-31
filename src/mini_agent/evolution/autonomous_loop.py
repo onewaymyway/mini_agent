@@ -211,6 +211,19 @@ class AutonomousLoop:
             log_exception(_mini_agent_exc, where='mini_agent.evolution.autonomous_loop._tick_passive.watchlist_matcher')
             pass
 
+        # ── NoveltyJudge Stage①（候选生成，规则粗筛，§2）── 跟上面两个
+        # 消费点一样各自独立游标，不看 GoalBacklog（跟 GoalRelevanceEngine
+        # 判定对象完全不同），纯规则、零 LLM 成本，不受 autonomy_level 挡住。
+        try:
+            from mini_agent.external_input.novelty_judge import run_novelty_candidate_once
+            run_novelty_candidate_once(self._paths)
+        except ImportError:
+            pass
+        except Exception as _mini_agent_exc:
+            from mini_agent.errors import log_exception
+            log_exception(_mini_agent_exc, where='mini_agent.evolution.autonomous_loop._tick_passive.novelty_judge_candidate')
+            pass
+
     def _tick_maintenance(self) -> None:
         """
         [maintenance 档位] passive 的全部任务 + Objective 持续执行推进。

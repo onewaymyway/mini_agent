@@ -164,6 +164,7 @@ class SourceHealth:
         self.last_error: Optional[str] = None
         self.last_event_count = 0
         self.circuit_open = False
+        self.last_duration_ms: Optional[float] = None
 
     def to_dict(self) -> dict:
         return {
@@ -173,6 +174,7 @@ class SourceHealth:
             "last_error": self.last_error,
             "last_event_count": self.last_event_count,
             "circuit_open": self.circuit_open,
+            "last_duration_ms": self.last_duration_ms,
         }
 
 
@@ -200,6 +202,9 @@ class GatewayPoller:
         max_backoff_seconds: float = _MAX_BACKOFF_SECONDS,
     ) -> None:
         _ensure_builtin_sources_registered()
+        from mini_agent.external_input.gateway import ensure_dedup_cache_loaded
+        ensure_dedup_cache_loaded(paths)
+
         self._paths = paths
         self._configs = configs if configs is not None else load_sources_config(paths)
         self._failure_threshold = failure_threshold
@@ -243,6 +248,15 @@ class GatewayPoller:
             stop_event.set()
         for t in self._threads.values():
             t.join(timeout=timeout)
+
+        # §1：正常关闭路径下强制落盘一次去重缓存快照（不节流），尽量
+        # 让缓存是最新的；异常退出（比如被杀进程）则依赖节流窗口内的
+        # 最近一次快照，允许有限的数据丢失窗口。
+        try:
+            from mini_agent.external_input.gateway import flush_dedup_cache
+            flush_dedup_cache(self._paths)
+        except Exception:
+            pass
 
     def is_running(self, source_id: str) -> bool:
         t = self._threads.get(source_id)
@@ -430,8 +444,10 @@ class GatewayPoller:
             with self._health_lock:
                 health.last_poll_ts = time.time()
 
+            poll_started_at = time.monotonic()
             try:
                 events, new_state = source.poll(cfg.params, state)
+                duration_ms = (time.monotonic() - poll_started_at) * 1000.0
                 state = new_state if new_state is not None else state
                 _save_state(self._paths, cfg.id, state)
                 # P7：来源没有显式设置 channel 时，用该 source 在
@@ -450,21 +466,28 @@ class GatewayPoller:
                     health.last_success_ts = time.time()
                     health.last_event_count = published
                     health.last_error = None
+                    health.last_duration_ms = duration_ms
                 backoff = float(cfg.interval_seconds)  # 恢复正常节奏
 
+                self._record_poll_history(cfg.id, ok=True, duration_ms=duration_ms, event_count=published)
+
             except Exception as exc:
+                duration_ms = (time.monotonic() - poll_started_at) * 1000.0
                 from mini_agent.errors import log_exception
                 log_exception(exc, where=f"mini_agent.external_input.poller:{cfg.id}")
 
                 with self._health_lock:
                     health.consecutive_failures += 1
                     health.last_error = str(exc)
+                    health.last_duration_ms = duration_ms
                     failures = health.consecutive_failures
                     just_tripped = (
                         failures == self._failure_threshold and not health.circuit_open
                     )
                     if failures >= self._failure_threshold:
                         health.circuit_open = True
+
+                self._record_poll_history(cfg.id, ok=False, duration_ms=duration_ms, error=str(exc))
 
                 if just_tripped:
                     self._publish_unhealthy_event(cfg, failures, str(exc))
@@ -474,6 +497,19 @@ class GatewayPoller:
                 backoff = min(backoff * 2, self._max_backoff_seconds)
 
             stop_event.wait(backoff)
+
+    def _record_poll_history(
+        self, source_id: str, *, ok: bool, duration_ms: float,
+        event_count: int = 0, error: Optional[str] = None,
+    ) -> None:
+        """§3：把本次轮询结果追加一条到 poll_history.jsonl，供
+        `poll_history.summarize_poll_history()` 做趋势聚合。写入失败不
+        影响轮询主流程（该函数内部已自行兜住异常）。"""
+        from mini_agent.external_input.poll_history import append_poll_record
+        append_poll_record(
+            self._paths, source_id=source_id, ok=ok,
+            duration_ms=duration_ms, event_count=event_count, error=error,
+        )
 
     def _publish_unhealthy_event(
         self, cfg: SourceConfig, consecutive_failures: int, last_error: str

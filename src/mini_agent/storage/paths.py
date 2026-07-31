@@ -683,6 +683,34 @@ class AgentPaths:
         return self.external_input_dir / "state"
 
     @property
+    def external_input_gateway_dedup_cache(self) -> Path:
+        """<project_root>/.agent/external_input/state/gateway_dedup_cache.json —
+        `gateway.py::_RecentIdCache` 的轻量快照持久化（见
+        next_doc/external_input_reliability_observability_archive_plan.md
+        §1）。跟各 source 的 state 文件同级：这份缓存只是"同一进程内防止
+        手滑重复发布"的最后一道保险，权威去重仍然是各 source 自己的游标，
+        不追求强一致，节流写、允许在异常崩溃时丢最多几十秒的数据。"""
+        return self.external_input_state_dir / "gateway_dedup_cache.json"
+
+    @property
+    def external_input_poll_history(self) -> Path:
+        """<project_root>/.agent/external_input/state/poll_history.jsonl —
+        每次 GatewayPoller 调用 source.poll() 后追加一条精简记录
+        （ok/duration_ms/event_count/error），供
+        `external_input/poll_history.py::summarize_poll_history()` 做
+        成功率/延迟趋势聚合查询（见改造方案 §3）。只追加、有滚动上限，
+        跟 dispatch_log.jsonl 的处理方式一致。"""
+        return self.external_input_state_dir / "poll_history.jsonl"
+
+    @property
+    def external_input_novelty_candidates_raw(self) -> Path:
+        """<project_root>/.agent/external_input/novelty_candidates_raw.jsonl —
+        NoveltyJudge Stage①（规则粗筛）写入的候选队列，Stage②（LLM 批量
+        重要性判定）消费，见改造方案 §2.3/§2.4。跟
+        goal_relevance_candidates.jsonl 是完全独立的队列/游标/文件。"""
+        return self.external_input_dir / "novelty_candidates_raw.jsonl"
+
+    @property
     def external_input_alerts(self) -> Path:
         """<project_root>/.agent/external_input/alerts.jsonl — notify_only 落点的
         持久化记录，供 /v1/inbox 与看板"全局待办中心"查询（P3 起用）。"""
@@ -728,6 +756,18 @@ class AgentPaths:
         return self.notification_dir / "reports.jsonl"
 
     @property
+    def notification_novelty_candidates(self) -> Path:
+        """<project_root>/.agent/notification/novelty_candidates.jsonl —
+        NoveltyJudge Stage②（LLM 批量重要性判定）产出的、`importance=="high"`
+        的候选，等待人工确认（见改造方案
+        next_doc/external_input_reliability_observability_archive_plan.md
+        §2.5）。确认（confirm）才会调用 GoalBacklog.add_goal() 创建新
+        Goal，是唯一允许创建新 Goal 的入口；忽略（dismiss）只标记状态，
+        不做任何执行动作。跟 reports.jsonl/dispatch_log.jsonl 一样独立
+        存放，不跟任何既有队列共用。"""
+        return self.notification_dir / "novelty_candidates.jsonl"
+
+    @property
     def notification_dispatch_log(self) -> Path:
         """<project_root>/.agent/notification/dispatch_log.jsonl — 每次
         NotificationDispatcher.dispatch() 的发送结果记录（P7 新增，见
@@ -739,6 +779,23 @@ class AgentPaths:
         `notification/dispatcher.py::_append_dispatch_log`），不是需要
         精确对账的审计日志。"""
         return self.notification_dir / "dispatch_log.jsonl"
+
+    # ── 长期归档（archive.gc，改造方案 §4）─────────────────────────────────
+    # 热文件里"已处理超过 retention_hours"的记录按自然月迁出到这里，只追加、
+    # 视为只读；跟 sessions_dir 平级，不挂在任何具体模块目录下面，因为
+    # archive 是一个横切多个模块的通用能力。
+
+    @property
+    def archive_dir(self) -> Path:
+        """<project_root>/.agent/archive/ — 长期归档根目录，按
+        `<subdir>/<file_stem>-YYYY-MM.jsonl` 分片存放（见
+        `mini_agent/archive/gc.py`）。"""
+        return self.workdir_dir / "archive"
+
+    def archive_file(self, subdir: str, file_stem: str, year_month: str) -> Path:
+        """<project_root>/.agent/archive/<subdir>/<file_stem>-<year_month>.jsonl
+        `year_month` 形如 "2026-06"。"""
+        return self.archive_dir / subdir / f"{file_stem}-{year_month}.jsonl"
 
     @property
     def sessions_dir(self) -> Path:

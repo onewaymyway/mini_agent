@@ -3361,6 +3361,84 @@ def render_external_input_tab(client: AgentClient):
 
     st.divider()
 
+    # ── 3.4 新颖信号候选（独立通道，需人工确认，见改造方案 §2）───────────
+    novelty_resp = client.novelty_candidates(limit=20) or {}
+    novelty_total = novelty_resp.get("total", 0) if "_error" not in novelty_resp else 0
+    with st.expander(f"🌟 新颖信号候选（{novelty_total} 条待确认）", expanded=novelty_total > 0):
+        if "_error" in novelty_resp:
+            st.caption("获取新颖信号候选失败。")
+        else:
+            candidates = novelty_resp.get("candidates") or []
+            if not candidates:
+                st.info("当前没有待确认的新颖信号候选。")
+            for idx, cand in enumerate(candidates):
+                with st.expander(cand.get("suggested_title") or cand.get("title", "（无标题）")):
+                    st.caption(f"原始标题：{cand.get('title', '')}")
+                    if cand.get("detail"):
+                        st.caption(f"详情：{cand['detail']}")
+                    if cand.get("url"):
+                        st.caption(f"链接：{cand['url']}")
+                    if cand.get("reason"):
+                        st.caption(f"重要性判断理由：{cand['reason']}")
+                    bcol1, bcol2 = st.columns(2)
+                    if bcol1.button("✅ 创建目标", key=f"novelty_confirm_{idx}_{cand.get('candidate_id')}"):
+                        res = client.confirm_novelty_candidate(cand["candidate_id"])
+                        if res and "_error" in res:
+                            st.error(f"创建失败：{res['_error']}")
+                        else:
+                            st.success(f"已创建目标：{res.get('goal_title', '')}")
+                            st.rerun()
+                    if bcol2.button("✖️ 忽略", key=f"novelty_dismiss_{idx}_{cand.get('candidate_id')}"):
+                        res = client.dismiss_novelty_candidate(cand["candidate_id"])
+                        if res and "_error" in res:
+                            st.error(f"忽略失败：{res['_error']}")
+                        else:
+                            st.rerun()
+
+    st.divider()
+
+    # ── 3.5 来源健康趋势（成功率/延迟，见改造方案 §3）────────────────────
+    st.markdown("##### 📈 来源健康趋势")
+    since_days = st.selectbox(
+        "时间窗口", [7, 14, 30], index=0, key="ei_health_history_since_days",
+        format_func=lambda d: f"最近 {d} 天",
+    )
+    health_resp = client.external_input_health_history(since_days=since_days) or {}
+    if "_error" in health_resp:
+        st.caption("获取来源健康趋势失败。")
+    else:
+        by_source = health_resp.get("sources") or {}
+        if not by_source:
+            st.info("暂无轮询历史记录，稍后再来看看。")
+        for sid, stat in by_source.items():
+            sr = stat.get("success_rate")
+            with st.expander(
+                f"{sid} · 成功率 {f'{sr * 100:.1f}%' if sr is not None else '-'} · "
+                f"平均延迟 {stat.get('avg_duration_ms') or '-'} ms",
+            ):
+                c1, c2, c3 = st.columns(3)
+                c1.metric("总轮询次数", stat.get("total_polls", 0))
+                c2.metric("成功率", f"{sr * 100:.1f}%" if sr is not None else "-")
+                c3.metric("P95 延迟(ms)", stat.get("p95_duration_ms") or "-")
+                timeline = stat.get("timeline") or []
+                if timeline:
+                    try:
+                        import pandas as pd
+                        df = pd.DataFrame(timeline).set_index("date")
+                        st.line_chart(df[["success_rate", "avg_duration_ms"]])
+                    except Exception:
+                        for row in timeline:
+                            sr_val = row.get("success_rate")
+                            sr_str = f"{sr_val * 100:.1f}%" if sr_val is not None else "-"
+                            st.caption(
+                                f"{row['date']}：成功率 {sr_str}，"
+                                f"平均延迟 {row.get('avg_duration_ms') or '-'} ms"
+                            )
+                else:
+                    st.caption("暂无按天分桶数据。")
+
+    st.divider()
+
     # ── 4. 最近事件流水（供人工核对路由是否符合预期）─────────────────────
     st.markdown("##### 📜 最近事件流水")
     events_limit = st.session_state.get("ei_events_limit", 50)
@@ -3379,6 +3457,33 @@ def render_external_input_tab(client: AgentClient):
                 f"：{payload.get('title', '')}"
             )
         _load_more_control("ei_events_limit", 50, 50, bool(events_resp.get("has_more")))
+
+    st.divider()
+
+    # ── 5. 归档查询（回顾式查询，见改造方案 §4）───────────────────────────
+    st.markdown("##### 🗄️ 归档查询")
+    st.caption("归档数据只读，仅供查询，不支持任何操作按钮。")
+    ac1, ac2, ac3, ac4 = st.columns([1, 1, 1, 2])
+    category = ac1.selectbox("类别", ["external_input", "notification"], key="ei_archive_category")
+    since = ac2.text_input("起始月份（YYYY-MM）", key="ei_archive_since")
+    until = ac3.text_input("截止月份（YYYY-MM）", key="ei_archive_until")
+    keyword = ac4.text_input("关键词（可选）", key="ei_archive_keyword")
+    if st.button("🔍 查询归档", key="ei_archive_query_btn"):
+        if not since or not until:
+            st.warning("请填写起止月份（格式 YYYY-MM）。")
+        else:
+            resp = client.archive_query(category, since, until, keyword=keyword) or {}
+            if "_error" in resp:
+                st.error(f"查询失败：{resp['_error']}")
+            else:
+                records = resp.get("records") or []
+                st.caption(f"共 {resp.get('total', len(records))} 条命中。")
+                if not records:
+                    st.info("没有查到符合条件的归档记录。")
+                for rec in records:
+                    ts = rec.get("created_at") or rec.get("matched_at") or rec.get("occurred_at")
+                    ts_str = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(ts)) if ts else "-"
+                    st.caption(f"`{ts_str}` **{rec.get('title', '')}**（来源 `{rec.get('source', rec.get('source_id', ''))}`）")
 
 
 # ═══════════════════════════════════════════════════════════════════════

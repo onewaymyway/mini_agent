@@ -286,6 +286,33 @@ class AgentClient:
         """标记一条 watchlist_report 汇报为已读。"""
         return self._post(f"/notifications/pending/{report_id}/ack")
 
+    def novelty_candidates(self, limit: int = 20, offset: int = 0):
+        """§2 新颖信号候选：分页返回待确认候选（status=pending）。"""
+        return self._get("/external_input/novelty_candidates", params={"limit": limit, "offset": offset})
+
+    def confirm_novelty_candidate(self, candidate_id: str):
+        """确认：创建一个新 Goal，标记候选为 confirmed。"""
+        return self._post(f"/external_input/novelty_candidates/{candidate_id}/confirm")
+
+    def dismiss_novelty_candidate(self, candidate_id: str):
+        """忽略：标记候选为 dismissed，不创建 Goal。"""
+        return self._post(f"/external_input/novelty_candidates/{candidate_id}/dismiss")
+
+    def archive_query(self, category: str, since: str, until: str, keyword: str = "", limit: int = 50, offset: int = 0):
+        """§4 长期归档回顾式查询。`since`/`until` 为 "YYYY-MM" 自然月粒度。"""
+        params = {"category": category, "since": since, "until": until, "limit": limit, "offset": offset}
+        if keyword:
+            params["keyword"] = keyword
+        return self._get("/archive/query", params=params)
+
+    def external_input_health_history(self, source_id: str = "", since_days: int = 7):
+        """§3 可观测性：成功率/延迟趋势聚合。`source_id` 留空返回全部
+        source 各自的聚合。"""
+        params = {"since_days": since_days}
+        if source_id:
+            params["source_id"] = source_id
+        return self._get("/external_input/health_history", params=params)
+
     def reload_external_input_sources(self):
         """热重载 sources.yaml：不重启 daemon 即可生效。先对新增/改动的
         source 做一次可用性检测，全部通过才真正切换配置；任意一条没通过

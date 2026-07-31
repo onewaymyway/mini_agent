@@ -9,6 +9,17 @@
 分类供 daemon 分类处理）。§7 路线图已无待办阶段。看板"🔌 外部输入"面板
 的全部列表（来源/路由规则/待处理告警/事件流水）已加分页展示，见 §9.1。
 
+> **可靠性/可观测性/归档增强**（见
+> `next_doc/external_input_reliability_observability_archive_plan.md` +
+> `next_doc/external_input_reliability_observability_archive_implementation_record.md`）：
+> 网关兜底去重缓存支持重启后恢复（不再是从零开始，见 §3）；新增成功率/
+> 延迟趋势聚合（`GET /v1/external_input/health_history`，见 §9.1）；
+> 新增已处理超期记录的月度归档 + 回顾式查询（`GET /v1/archive/query`，
+> 见 §9.1）；新增独立于 `GoalRelevanceEngine` 的"新颖重要事件"人工确认
+> 通道（`NoveltyJudge`，详见 `docs/watchlist-notification-guide.md`
+> §6.4，因为它跟 `GoalRelevanceEngine` 是同一份文档管辖的"事件→是否值得
+> 关注"这条判定链路的姊妹能力）。
+
 > **P8 变更**：`IngestionPolicy` 的 `goal_candidate` 落点已移除——外部
 > 输入不会再被直接写成一个新 Goal。外部信息如果确实与某个**已有**
 > Goal/Objective 相关，由 `GoalRelevanceEngine`（见
@@ -103,11 +114,13 @@ LLM 调用"，成本不可控。
 | `ExternalInputSource` / `ExternalInputEvent` | `external_input/source.py` | 来源扩展点的抽象接口 + 标准化事件表示；`register_source()`/`get_source_class()` 构成一个轻量注册表 |
 | `WatchInputSource` | `external_input/builtin/watch.py` | 内置来源实现之一：`rss`/`json_api`/`html_diff` 三种 fetcher + 关键词/字段变化/阈值匹配规则 |
 | `WeatherInputSource` | `external_input/builtin/weather.py` | 内置来源实现之二：基于 Open-Meteo 免费预报 API 监控降雨概率/极端气温阈值，`channel` 默认 `weather` |
-| `GatewayPoller` | `external_input/poller.py` | 每个 source 一条独立轮询线程，按 `interval_seconds` 节拍调用 `poll()`，处理连续失败退避/熔断，用 `SourceConfig.channel` 给事件回填分类，再发布到 `system_events` |
+| `GatewayPoller` | `external_input/poller.py` | 每个 source 一条独立轮询线程，按 `interval_seconds` 节拍调用 `poll()`，处理连续失败退避/熔断，用 `SourceConfig.channel` 给事件回填分类，再发布到 `system_events`；每次轮询的耗时/成败也会记一条到 `poll_history.jsonl`（见 §3/§9.1） |
+| `_RecentIdCache`（网关兜底去重） | `external_input/gateway.py` | 进程内 FIFO 去重缓存，重启后从 `gateway_dedup_cache.json` 快照恢复，节流写、不追求强一致（见 §3） |
+| `external_input/poll_history.py` | `external_input/poll_history.py` | 追加轮询结果记录 + 成功率/延迟趋势聚合（`summarize_poll_history()`），供 `GET /v1/external_input/health_history` 使用 |
 | `IngestionPolicy`（`load_policies`/`decide_action`/`run_ingestion_policy_once`） | `external_input/policy.py` | 加载 `policies.yaml`，按"首个匹配规则生效"决定事件落点；三种落点的真正执行也在这里 |
 | 消费点接入 | `evolution/autonomous_loop.py::_tick_passive()` | 每个 tick 调用一次 `run_ingestion_policy_once()`，不新增独立调度循环，也不受 autonomy 档位限制（notify_only 默认档不该被挡住） |
-| 看板面板 | `apps/mini_agent_kanban/app.py::render_external_input_tab()` | 只读展示 source 健康度、路由规则、待处理告警、最近事件流水 |
-| REST 端点 | `api/routes.py` | `/v1/external_input/{sources,policies,events}` 供看板/脚本查询；`/v1/inbox`、`/v1/inbox/external_alerts/{id}/ack` 复用既有告警聚合机制 |
+| 看板面板 | `apps/mini_agent_kanban/app.py::render_external_input_tab()` | 只读展示 source 健康度、路由规则、待处理告警、新颖信号候选、来源健康趋势、事件流水、归档查询 |
+| REST 端点 | `api/routes.py` | `/v1/external_input/{sources,policies,events,alerts,health_history,novelty_candidates}`、`/v1/archive/query` 供看板/脚本查询；`/v1/inbox`、`/v1/inbox/external_alerts/{id}/ack` 复用既有告警聚合机制 |
 
 ## 3. 数据与状态落盘
 
@@ -118,6 +131,25 @@ LLM 调用"，成本不可控。
 以 `external.` 开头的记录都是本网关产生的，这也是它能直接复用
 `poll_since()` 游标消费模型、不用新造一套持久化机制的原因（详见 §4
 核心概念）。
+
+新增（可靠性/可观测性/归档增强）：
+
+- `.agent/external_input/state/gateway_dedup_cache.json` — `_RecentIdCache`
+  的轻量快照，daemon 正常关闭时强制落盘一次，运行中每累计 20 次新增或
+  每 30 秒节流写一次；不是权威去重（权威去重仍是各 source 自己的
+  state 游标），文件损坏/丢失时按空缓存处理，不影响正常轮询。
+- `.agent/external_input/state/poll_history.jsonl` — 每次轮询结果
+  （成败/耗时/事件数）追加一条，滚动上限 5000 行，供
+  `GET /v1/external_input/health_history` 做成功率/延迟趋势聚合。
+- `.agent/external_input/novelty_candidates_raw.jsonl` — `NoveltyJudge`
+  Stage①（规则粗筛）写入的原始候选队列，Stage②消费，详见
+  `docs/watchlist-notification-guide.md` §6.4。
+- `.agent/archive/external_input/<file_stem>-YYYY-MM.jsonl` — 已处理
+  超过 `retention_hours`（默认 24 小时）的 `alerts.jsonl`/
+  `pending_hits.jsonl`/`goal_relevance_candidates.jsonl` 记录按自然月
+  迁出到这里，只追加、视为只读，热文件只保留仍需展示/处理的记录。
+  每天凌晨 3 点由 `sys:archive_gc` cron job 自动执行（零 LLM 成本），
+  查询走 `GET /v1/archive/query`，详见 §9.1。
 
 ## 4. 核心概念
 
@@ -354,18 +386,45 @@ class MySource(ExternalInputSource):
     的 `notify_only` 告警（`alerts.jsonl`），响应含 `total`/`has_more`。
     看板"待处理告警"面板用这个端点而不是 `/v1/inbox`（`/v1/inbox` 同时
     服务顶栏待办徽标等其它场景，聚合结果本身不分页）。
+  - `GET /v1/external_input/health_history?source_id=&since_days=7` —
+    成功率/延迟趋势聚合（`total_polls`/`success_rate`/`avg_duration_ms`/
+    `p50_duration_ms`/`p95_duration_ms`/按天分桶的 `timeline`）。
+    `source_id` 留空返回全部 source 各自的聚合。纯只读聚合查询，不消费
+    任何游标，看板"📈 来源健康趋势"面板高频刷新调用也没有副作用。
+  - `GET /v1/archive/query?category=external_input&since=YYYY-MM&until=YYYY-MM&keyword=&limit=50&offset=0` —
+    回顾式查询已归档的历史记录（`category` 还可以是 `notification`，
+    对应 `docs/watchlist-notification-guide.md` 里的汇报归档）。
+    `since`/`until` 为自然月粒度，`keyword` 对 `title`/`detail` 做简单
+    子串匹配，不区分大小写。归档数据只读，本端点不提供任何写操作。
+    看板"🗄️ 归档查询"面板用这个端点。
+  - `GET /v1/external_input/novelty_candidates?limit=20&offset=0`、
+    `POST /v1/external_input/novelty_candidates/{id}/confirm`、
+    `POST /v1/external_input/novelty_candidates/{id}/dismiss` — 新颖
+    重要事件的人工确认通道，详见
+    `docs/watchlist-notification-guide.md` §6.4（判定逻辑跟
+    `GoalRelevanceEngine` 是同一份文档管辖的姊妹能力）。
 
 ## 10. 已知限制
 
 - `watch`/`weather` 是目前仅有的两个内置来源；webhook/邮件/日历等来源
   尚未实现，需要时可以参考 `builtin/watch.py` 或 `builtin/weather.py`
   的写法新增一个 `ExternalInputSource` 子类。
-- 看板面板和四个 REST 端点都是只读展示，`sources.yaml`/`policies.yaml`
-  仍然只能通过直接编辑配置文件来修改（没有在线编辑表单）。
+- 看板面板和 REST 端点大多是只读展示，`sources.yaml`/`policies.yaml`
+  仍然只能通过直接编辑配置文件来修改（没有在线编辑表单）；
+  `novelty_candidates` 的确认/忽略是唯一支持写操作的看板交互。
 - `channel` 目前只在 `policies.yaml` 路由匹配和 `run_ingestion_policy_once()`
   的 `by_channel` 统计里生效；`GET /v1/external_input/events` 尚不支持
   按 `channel` 过滤（只能拿到最近事件流水再自行按 `payload.channel`
   筛选），看板页面也还没有"按频道筛选"的 UI，这些留给后续有需要时再补。
+- `_RecentIdCache` 的快照持久化不追求强一致，异常崩溃（非正常 `stop()`
+  路径）时最多丢约 30 秒内的新增去重记录——这是刻意取舍，真正的去重
+  权威来源是各 source 自己的 state 游标，见 §3。
+- `GET /v1/archive/query` 的 `keyword` 是简单子串匹配，不是全文检索；
+  归档量级变大后如果查询变慢，需要换成更高效的索引方式（当前预期量级
+  不大，暂不做）。
+- `NoveltyJudge` Stage① 的 `exclude_channels`（`.agent/notification/
+  novelty_judge.yaml`）目前只支持精确匹配 channel 名，不支持通配符/
+  正则。
 
 ## 11. 当前实际数据流向
 
@@ -450,6 +509,16 @@ Goal/Objective 的关联完全不经过 `policies.yaml`**——如果某条事�
 确实与某个已有 Goal 相关，由独立运行的 `GoalRelevanceEngine` 判定后
 关联/推进，`IngestionPolicy` 不再有任何"生成候选 Goal"的落点（P8 已
 移除，见 `next_doc/external_input_gateway_design.md` §P8）。
+
+`system_events.jsonl` 里的 `external.*` 事件还有第三条独立消费链路：
+`NoveltyJudge`（`_tick_passive()` 里 Stage①规则粗筛，独立 cron job
+`sys:novelty_importance_judge` 里 Stage②LLM 判定），跟上面的
+`GoalRelevanceEngine` 判定对象完全不同——`GoalRelevanceEngine` 问的是
+"这条事件是否跟**已有** Goal 相关"，`NoveltyJudge` 问的是"这条事件本身
+是否足够重要/新颖，值得单独追踪（不看是否跟已有 Goal 相关）"，命中后
+写入 `.agent/notification/novelty_candidates.jsonl` 等待用户在看板上
+手动"✅ 创建目标"或"✖️ 忽略"，是**唯一**允许创建新 Goal 的入口。
+详见 `docs/watchlist-notification-guide.md` §6.4。
 
 ### 11.3 目前仍未生效的前提
 

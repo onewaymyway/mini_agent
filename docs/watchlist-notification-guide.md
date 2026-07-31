@@ -253,6 +253,57 @@ Goal"的入口：
 
 普通对话、其它 Goal/Objective 的分解 prompt 都看不到这份数据。
 
+### 6.4 完全新颖的重要事件：`NoveltyJudge`（独立第三条判定链路）
+
+`GoalRelevanceEngine`（本节 §6.1-6.3）解决的是"外部事件是否跟**已有**
+Goal 相关"，前提是已经有 Goal 存在。但"完全新颖、跟任何现有 Goal 都不
+相关，但本身足够重要值得单独追踪"的事件目前无处可去——P8 移除了
+`IngestionPolicy` 的 `goal_candidate` 落点后，网关不会再自动创建
+Goal。`NoveltyJudge`（`external_input/novelty_judge.py`）补的就是这一
+块空白，跟 `GoalRelevanceEngine` 平级、判定对象完全不同，两者对照：
+
+| 模块 | 输入 | 判定问题 | 命中后动作 |
+|---|---|---|---|
+| `GoalRelevanceEngine` | 事件 × 现有 Goal | 是否与已有 Goal 相关 | 挂载/推进已有 Goal（§6） |
+| `NoveltyJudge` | 事件（不看 Goal） | 是否足够重要/新颖，值得单独追踪 | 写入候选队列，等人工确认（本节） |
+
+**Stage①（候选生成，规则粗筛，零 LLM 成本）**：接在
+`autonomous_loop.py::_tick_passive()` 里，跟 `IngestionPolicy`/
+`WatchlistMatcher` 同级、各自独立游标（`consumer_name="novelty_judge"`）
+消费全部 `external.*` 事件。默认对所有事件都放行，只用
+`.agent/notification/novelty_judge.yaml` 里的 `exclude_channels`
+排除明显噪音 channel（比如 `weather`）；候选写入
+`.agent/external_input/novelty_candidates_raw.jsonl`，按
+`candidate_id`（`novelty:<source_id>:<event.id>`）去重，总量上限
+500 条。
+
+**Stage②（LLM 批量重要性判定）**：独立的 `sys:novelty_importance_judge`
+cron job（默认 `interval:600`，10 分钟一次），daemon 启动时自动补
+注册，跟 `sys:goal_relevance_judge` 同构（候选为空/拿不到 `llm_helper`
+时直接跳过，不产生 LLM 调用）。判定问题明确区分于 `GoalRelevanceEngine`
+——"这条外部信息本身是否足够重要/新颖，值得作为一个独立方向单独追踪
+（不考虑是否跟当前已有目标相关）"，同样对外部内容做分隔符包裹防
+prompt 注入。**只有 `importance == "high"` 才写入**
+`.agent/notification/novelty_candidates.jsonl` 等待人工确认；
+`medium`/`low` 直接丢弃，不落任何持久化记录（归档层会记录经过判定的
+原始候选，不需要在这里单独留痕）。
+
+**人工确认/忽略**（看板"🌟 新颖信号候选"面板，`GET
+/v1/external_input/novelty_candidates` 展示）：
+
+- **✅ 创建目标**（`POST .../confirm`）：调用
+  `GoalBacklog.add_goal()` 创建一个新 Goal（标题默认取
+  `suggested_title`），并把原始事件的标题/链接挂到新 Goal 的
+  `external_context` 上作为初始上下文，标记候选 `status=confirmed`。
+  **这是唯一允许创建新 Goal 的入口**，且只能由用户手动点击触发，不存在
+  任何自动确认路径。
+- **✖️ 忽略**（`POST .../dismiss`）：只标记 `status=dismissed`，不做
+  任何执行动作。
+
+明确不聚合进 `/v1/inbox`——这是独立通道，语义是"系统主动发现的、可能
+值得开一个新方向的建议"，跟"待办中心"/网关"待处理告警"/"待处理汇报"
+三个既有面板都不是一回事。
+
 ## 7. 看板展示（P7）
 
 打开 mini_agent_kanban，顶部新增一个 **"🔔 关注与通知"** tab，紧跟在
@@ -297,6 +348,10 @@ Goal"的入口：
 | `GET /v1/notifications/pending?limit=20&offset=0` | [汇报独立存储 新增] 未读的 watchlist_report 汇报（分页，含完整 `detail` 正文），供"📋 待处理汇报"面板用 |
 | `POST /v1/notifications/pending/{report_id}/ack` | [汇报独立存储 新增] 标记一条汇报为已读 |
 | `GET /v1/goals` | GoalBacklog 完整视图（每个节点已含 `external_context`/`last_external_advance_at`） |
+| `GET /v1/external_input/novelty_candidates?limit=20&offset=0` | `NoveltyJudge` 待确认候选（§6.4），分页返回 `status=pending` |
+| `POST /v1/external_input/novelty_candidates/{id}/confirm` | 确认候选：创建新 Goal（唯一允许创建新 Goal 的入口） |
+| `POST /v1/external_input/novelty_candidates/{id}/dismiss` | 忽略候选：标记已处理，不创建 Goal |
+| `GET /v1/archive/query?category=notification&since=&until=&keyword=` | 已归档 `reports.jsonl` 记录的回顾式查询，详见 `docs/external-input-gateway-guide.md` §9.1 |
 
 ---
 
@@ -389,6 +444,8 @@ alerts.jsonl                 命中，标题+详情去重后写入：           
 | `src/mini_agent/external_input/watchlist.py` | 关注对象配置加载 + 匹配 + 去重 + 写 pending_hits |
 | `src/mini_agent/external_input/report_tiers.py` | tier 配置加载 + 消费 pending_hits + 生成摘要 + dispatch |
 | `src/mini_agent/external_input/goal_relevance.py` | GoalRelevanceEngine Stage①（候选生成）+ Stage②（LLM 批量判定）+ `ensure_goal_relevance_judge_job` |
+| `src/mini_agent/external_input/novelty_judge.py` | `NoveltyJudge`（§6.4）Stage①（候选生成）+ Stage②（LLM 批量重要性判定）+ `ensure_novelty_importance_judge_job`；`confirm_novelty_candidate`/`dismiss_novelty_candidate` |
+| `src/mini_agent/archive/gc.py` | 长期归档 / 回顾式查询：`run_archive_gc_once`/`run_archive_gc_all`/`query_archive`/`ensure_archive_gc_job`（`sys:archive_gc`，每天凌晨 3 点） |
 | `src/mini_agent/external_input/filelock.py` | 跨平台文件独占锁（pending_hits/candidates 并发读写保护） |
 | `src/mini_agent/perception/goal_backlog.py` | `GoalNode.external_context`/`last_external_advance_at`、`attach_external_context`/`try_advance_goal` |
 | `src/mini_agent/evolution/cron_scheduler.py` | `register_local_handler`/`ensure_job`（零 LLM 成本/受控 LLM 成本的本地回调 job 执行路径） |
@@ -410,3 +467,7 @@ alerts.jsonl                 命中，标题+详情去重后写入：           
 | `.agent/notification/config.yaml.example` | 通知渠道配置模板，含 P5 新增的 `goal_advance_cooldown_seconds` 说明；需要开 email 渠道时复制改名 |
 | `.agent/notification/reports.jsonl` | [汇报独立存储 新增] watchlist_report 汇报独立落地文件（含完整 detail 正文），跟网关 `.agent/external_input/alerts.jsonl` 彻底分开 |
 | `.agent/notification/dispatch_log.jsonl` | 通知发送记录（运行时生成，尚未产生过记录，见 §9 前提开关说明） |
+| `.agent/external_input/novelty_candidates_raw.jsonl` | `NoveltyJudge` Stage①产出的原始候选队列（`judged: false/true`），Stage②消费 |
+| `.agent/notification/novelty_candidates.jsonl` | `NoveltyJudge` Stage②产出、`importance=="high"` 的候选，等待人工在看板"🌟 新颖信号候选"面板确认/忽略 |
+| `.agent/notification/novelty_judge.yaml` | `NoveltyJudge` Stage①的 `exclude_channels` 配置（可选，不存在时不排除任何 channel） |
+| `.agent/archive/notification/reports-YYYY-MM.jsonl` | 已读超过 24 小时的 `reports.jsonl` 记录按自然月归档到这里，`GET /v1/archive/query?category=notification` 查询 |

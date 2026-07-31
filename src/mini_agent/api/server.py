@@ -1131,6 +1131,35 @@ class HttpServer:
                 from mini_agent.errors import log_exception
                 log_exception(_mini_agent_exc, where='mini_agent.api.server.HttpServer._build_autonomous_loop.ensure_goal_relevance_judge_job')
 
+            # §4：daemon 启动时补注册 sys:archive_gc（每天凌晨 3 点，零 LLM
+            # 成本），把已处理超过 retention_hours 的记录从热文件迁出到
+            # .agent/archive/，见
+            # next_doc/external_input_reliability_observability_archive_plan.md §4。
+            try:
+                from mini_agent.archive.gc import ensure_archive_gc_job
+                ensure_archive_gc_job(paths, cron_scheduler)
+            except Exception as _mini_agent_exc:
+                from mini_agent.errors import log_exception
+                log_exception(_mini_agent_exc, where='mini_agent.api.server.HttpServer._build_autonomous_loop.ensure_archive_gc_job')
+
+            # §2：daemon 启动时补注册 sys:novelty_importance_judge（LLM
+            # 批量重要性判定，唯一引入 LLM 调用的环节），llm_helper 惰性
+            # 获取，见
+            # next_doc/external_input_reliability_observability_archive_plan.md §2。
+            try:
+                from mini_agent.external_input.novelty_judge import ensure_novelty_importance_judge_job
+
+                def _novelty_judge_llm_helper():
+                    return getattr(agent, "llm_helper", None)
+
+                ensure_novelty_importance_judge_job(
+                    paths, cron_scheduler,
+                    llm_helper_provider=_novelty_judge_llm_helper,
+                )
+            except Exception as _mini_agent_exc:
+                from mini_agent.errors import log_exception
+                log_exception(_mini_agent_exc, where='mini_agent.api.server.HttpServer._build_autonomous_loop.ensure_novelty_importance_judge_job')
+
             # ── ObjectiveExecutor ────────────────────────────────────────────
             def _obj_submit(message: str, initiator: str, meta: dict):
                 """提交自主步骤到 InputQueue，返回 turn_id。"""
