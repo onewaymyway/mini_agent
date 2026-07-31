@@ -1160,6 +1160,25 @@ class HttpServer:
                 from mini_agent.errors import log_exception
                 log_exception(_mini_agent_exc, where='mini_agent.api.server.HttpServer._build_autonomous_loop.ensure_novelty_importance_judge_job')
 
+            # 外部数据知识化与自我改进闭环计划 P1：daemon 启动时补注册
+            # sys:external_knowledge_extractor（消费 agent_watch 频道 RSS
+            # 事件，批量抽取 entity/fact 沉淀进 wiki，唯一引入 LLM 调用的
+            # 环节），llm_helper 惰性获取，见
+            # next_doc/external_knowledge_wiki_and_self_improvement_plan.md §3 P1。
+            try:
+                from mini_agent.external_input.knowledge_extractor import ensure_external_knowledge_extractor_job
+
+                def _knowledge_extractor_llm_helper():
+                    return getattr(agent, "llm_helper", None)
+
+                ensure_external_knowledge_extractor_job(
+                    paths, cron_scheduler,
+                    llm_helper_provider=_knowledge_extractor_llm_helper,
+                )
+            except Exception as _mini_agent_exc:
+                from mini_agent.errors import log_exception
+                log_exception(_mini_agent_exc, where='mini_agent.api.server.HttpServer._build_autonomous_loop.ensure_external_knowledge_extractor_job')
+
             # ── ObjectiveExecutor ────────────────────────────────────────────
             def _obj_submit(message: str, initiator: str, meta: dict):
                 """提交自主步骤到 InputQueue，返回 turn_id。"""

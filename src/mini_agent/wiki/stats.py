@@ -10,7 +10,10 @@ source_kind 取值约定（各写入模块负责在 extra_frontmatter 里打上�
     correction                    —— perception/library_index.py 因人类纠正触发的镜像
     entity_mirror                 —— perception/library_index.py 常规实体镜像（on_new_entry）
     decision                      —— wiki/decision_writer.py
-    world_model                   —— wiki/world_writer.py（wiki 改进计划 P1）
+    world_model                   —— wiki/world_writer.py（wiki 改进计划 P1，对话来源）
+    external_watch                —— external_input/knowledge_extractor.py（外部数据知识化计划 P1，
+                                      agent_watch 频道 RSS 事件抽取）
+    external_search               —— 外部数据知识化计划 P3（sys:tech_radar_search，尚未实现，预留值）
     experience_success            —— wiki/experience_writer.py，自我进化 verdict=improved 触发（P2）
     experience_session_reflection —— wiki/experience_writer.py，session 结束且全程无纠正触发（P2）
     (缺失/其它)                    —— 历史遗留页面，写入时尚未打上该字段

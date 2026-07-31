@@ -1,6 +1,8 @@
 # 外部数据知识化与自我改进闭环 改进计划
 
-- **版本**: v1.0（草案）
+- **版本**: v1.1（P1 已实现，P2-P5 待实施）
+- **变更记录**:
+  - v1.1：P1（外部事件 → wiki 抽取管道）已实现，见该节内的"实现记录"标注。
 - **背景任务**: 对现有外部数据输入/处理/使用机制（External Input Gateway、web_search 工具、wiki 知识库）做一次现状梳理，识别"外部世界信息未被沉淀为可复用知识"的断层，规划补齐路径
 - **关联文档**:
   - `docs/external-input-gateway-guide.md`（外部输入网关，含 §11 当前实际数据流向）
@@ -46,7 +48,18 @@
 
 ## 3. 分阶段实施计划
 
-### P1 —— 外部事件 → wiki 抽取管道（优先级最高，补最大的断层）
+### P1 —— 外部事件 → wiki 抽取管道（优先级最高，补最大的断层）✅ 已实现
+
+> 实现记录（本次改动）：新增 `src/mini_agent/external_input/knowledge_extractor.py`
+> （`run_external_knowledge_extraction_once()` + `ensure_external_knowledge_extractor_job()`），
+> 在 `api/server.py` daemon 启动流程里注册 `sys:external_knowledge_extractor`
+> job（首次创建即 `disable()`，符合 §4"默认先 disabled 接入"）。
+> `wiki/world_writer.py::queue_entities()`/`queue_facts()`/`consolidate_pending()`
+> 新增 `source_kind` 参数（默认沿用原来的 `"world_model"`），本模块调用时传
+> `EXTERNAL_WATCH_SOURCE_KIND="external_watch"`。测试见
+> `tests/test_external_input_knowledge_extractor.py`。详见
+> `docs/wiki-knowledge-base-guide.md` §十二、
+> `docs/external-input-gateway-guide.md` §11.2。
 
 新增 cron job `sys:external_knowledge_extractor`，建议 `interval:21600`（6 小时一次，与 `sys:consolidation` 错峰）：
 

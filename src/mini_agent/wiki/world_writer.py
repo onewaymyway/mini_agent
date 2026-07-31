@@ -41,6 +41,13 @@ except ImportError:  # pragma: no cover - 允许独立单测本模块
 
 LLMCall = Callable[[str], str]
 SOURCE_KIND = "world_model"
+# 外部数据知识化改进计划 P1/P3：external_input/knowledge_extractor.py 消费
+# agent_watch 频道事件产出的候选统一打这个 source_kind，与对话来源的
+# "world_model" 区分开，供 wiki/stats.py 统计外部世界知识占比。
+EXTERNAL_WATCH_SOURCE_KIND = "external_watch"
+# P3（主动检索反哺 wiki）预留：sys:tech_radar_search 落盘时使用，本次改动
+# 暂未实现该 job，仅预留常量避免后续引入时再次改动 world_writer.py。
+EXTERNAL_SEARCH_SOURCE_KIND = "external_search"
 _FALLBACK_PAGE_PREFIX = "session-facts-"
 # wiki 提取层与组织层改进计划 E3 §3.4：reused_existing_id 命中后的最低校验
 # 分数，低于此分数视为模型误判，忽略并退回规则判重流程（阈值取自计划原文
@@ -82,8 +89,16 @@ def queue_entities(
     candidates: list["EntityCandidate"],
     *,
     source_entries: Optional[list[str]] = None,
+    source_kind: str = SOURCE_KIND,
 ) -> None:
-    """compact 阶段调用：把实体候选原样 append 到 pending JSONL 队列。"""
+    """compact 阶段调用：把实体候选原样 append 到 pending JSONL 队列。
+
+    source_kind 默认沿用对话来源的 "world_model"；外部知识改进计划 P1 起，
+    `external_input/knowledge_extractor.py` 等非对话来源的调用方会显式传
+    "external_watch"/"external_search"，供 consolidate_pending() 落盘时
+    原样打进 frontmatter（供 wiki/stats.py 统计各来源占比），不影响判重/
+    合并逻辑本身。
+    """
     if not candidates:
         return
     source_entries = source_entries or []
@@ -97,6 +112,7 @@ def queue_entities(
                 "kind": "entity",
                 "candidate": candidate.to_dict(),
                 "source_entries": source_entries,
+                "source_kind": source_kind,
                 "queued_at": time.time(),
             }
             f.write(json.dumps(row, ensure_ascii=False) + "\n")
@@ -107,8 +123,12 @@ def queue_facts(
     candidates: list["FactCandidate"],
     *,
     source_entries: Optional[list[str]] = None,
+    source_kind: str = SOURCE_KIND,
 ) -> None:
-    """compact 阶段调用：把事实候选原样 append 到 pending JSONL 队列。"""
+    """compact 阶段调用：把事实候选原样 append 到 pending JSONL 队列。
+
+    source_kind 语义同 queue_entities()。
+    """
     if not candidates:
         return
     source_entries = source_entries or []
@@ -122,6 +142,7 @@ def queue_facts(
                 "kind": "fact",
                 "candidate": candidate.to_dict(),
                 "source_entries": source_entries,
+                "source_kind": source_kind,
                 "queued_at": time.time(),
             }
             f.write(json.dumps(row, ensure_ascii=False) + "\n")
@@ -191,6 +212,7 @@ def _write_or_merge_entity(
     source_entries: list[str],
     existing_pages: list[WikiPage],
     llm_call: Optional[LLMCall],
+    source_kind: str = SOURCE_KIND,
 ) -> WorldWriteAction:
     from mini_agent.wiki.dedup import find_similar_page, score_similarity
 
@@ -240,7 +262,7 @@ def _write_or_merge_entity(
         status="active",
         confidence=0.5,
         source_entries=source_entries,
-        extra_frontmatter={"source_kind": SOURCE_KIND},
+        extra_frontmatter={"source_kind": source_kind},
         overwrite=True,
     )
     new_page = parse_page(paths.wiki_entities_dir / f"{page_id}.md")
@@ -275,6 +297,7 @@ def _merge_fact(
     candidate: "FactCandidate",
     *,
     existing_pages: list[WikiPage],
+    source_kind: str = SOURCE_KIND,
 ) -> WorldWriteAction:
     target_page: Optional[WikiPage] = None
     if candidate.related_entities:
@@ -315,7 +338,7 @@ def _merge_fact(
             tags=["session-facts"],
             status="active",
             confidence=0.4,
-            extra_frontmatter={"source_kind": SOURCE_KIND},
+            extra_frontmatter={"source_kind": source_kind},
             overwrite=False,
         )
         existing_pages.append(parse_page(fallback_path))
@@ -348,11 +371,13 @@ def consolidate_pending(
             if not candidate.is_meaningful:
                 continue
             source_entries = row.get("source_entries") or []
+            row_source_kind = str(row.get("source_kind") or SOURCE_KIND)
             action = _write_or_merge_entity(
                 paths, candidate,
                 source_entries=source_entries,
                 existing_pages=existing_pages,
                 llm_call=llm_call,
+                source_kind=row_source_kind,
             )
             report.actions.append(action)
         except Exception as _mini_agent_exc:
@@ -365,7 +390,12 @@ def consolidate_pending(
             candidate = FactCandidate.from_dict(row["candidate"])
             if not candidate.is_meaningful:
                 continue
-            action = _merge_fact(paths, candidate, existing_pages=existing_pages)
+            row_source_kind = str(row.get("source_kind") or SOURCE_KIND)
+            action = _merge_fact(
+                paths, candidate,
+                existing_pages=existing_pages,
+                source_kind=row_source_kind,
+            )
             report.actions.append(action)
         except Exception as _mini_agent_exc:
             from mini_agent.errors import log_exception
@@ -383,4 +413,6 @@ __all__ = [
     "queue_facts",
     "consolidate_pending",
     "SOURCE_KIND",
+    "EXTERNAL_WATCH_SOURCE_KIND",
+    "EXTERNAL_SEARCH_SOURCE_KIND",
 ]

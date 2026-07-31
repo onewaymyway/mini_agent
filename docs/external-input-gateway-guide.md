@@ -520,6 +520,18 @@ Goal/Objective 的关联完全不经过 `policies.yaml`**——如果某条事�
 手动"✅ 创建目标"或"✖️ 忽略"，是**唯一**允许创建新 Goal 的入口。
 详见 `docs/watchlist-notification-guide.md` §6.4。
 
+`external.watch.new_item` 事件（仅 `channel == agent_watch` 的部分）
+还有第四条独立消费链路，是外部数据知识化改进计划 P1 新增的：
+`external_input/knowledge_extractor.py`，独立 cron job
+`sys:external_knowledge_extractor`（`interval:21600`，默认 **disabled**，
+需要在 Cron Jobs 看板手动启用）。跟上面三条链路都不同——它不判断"是否
+相关/重要"，而是直接对命中的事件批量做一次轻量摘要抽取，把标题/摘要
+背后的内容提炼成 `entity`/`fact` 候选，喂给 `wiki/world_writer.py` 的
+既有 pending 队列（`source_kind="external_watch"`），由巩固循环统一
+判重落盘进 wiki——目的是让"被人工点掉的通知"背后的信息不会彻底消失。
+详见 `docs/wiki-knowledge-base-guide.md` §十二、
+`next_doc/external_knowledge_wiki_and_self_improvement_plan.md` P1。
+
 ### 11.3 目前仍未生效的前提
 
 即使上面两份配置文件已经就位，只要满足以下任一条件，这套流程仍然是

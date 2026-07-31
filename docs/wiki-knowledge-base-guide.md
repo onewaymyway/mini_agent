@@ -73,7 +73,7 @@ validated_by: [grounded_hit]                    # O4：触发确认的来源类�
 | `topics.py` | 四 + P3 | 专题页生成：tag 聚类 + 强链接密度（规则）与不依赖 embedding 的 LLM 直接聚类两条路径并存，候选池合并去重后 LLM 综合聚合 |
 | `promotion.py` | P4 | wiki 转正为主索引的三项标准量化：每日快照、检索 A/B 对比日志、连续达标判断（只观测，不切换） |
 | `decision_writer.py` | 决策提炼 | 决策候选落盘：命中已有决策页则更新/推翻，命中不到才新建 |
-| `world_writer.py` | P1 + O4 | 世界模型候选（entities[]/facts[]）批量落盘，fact 以正文内锚点注释（`#fact-N`）实现独立状态标记 |
+| `world_writer.py` | P1 + O4 + 外部知识化P1 | 世界模型候选（entities[]/facts[]）批量落盘，fact 以正文内锚点注释（`#fact-N`）实现独立状态标记；`queue_entities()`/`queue_facts()` 支持 `source_kind` 参数，供对话来源（`world_model`，默认值）之外的调用方（如 `external_input/knowledge_extractor.py`）标注来源 |
 | `entity_digest.py` | E3 | 生成极简实体索引摘要，反向注入抽取 prompt，让模型识别实体时能复用已有 id |
 | `index_reader.py` | O1 | 读取 `indexer.py` 生成的派生索引供 `search.py`/`dedup.py` 复用，避免全量 `parse_page` 扫描 |
 | `lifecycle.py` | O4 | 统一知识生命周期状态机：`mark_page_state()`/`touch_validated()`/`stale_candidate_scan()` |
@@ -476,7 +476,42 @@ O4 未覆盖的部分（详见实施记录 §5）：`stale_candidate_scan()` 尚
 - 旧的 `classification.py`/`entity_index.py`/`catalog.py` 在过渡期并存，新知识双写，待新检索效果验证稳定后逐步下线旧路径——**这一步本次有意保持未完成**：三段式检索刚刚落地，还没有经过任何实际使用周期的 A/B 验证，现在下线旧路径会让"先不替换，AB 对比"失去意义。
 - 后续工作方向：实际跑一段时间积累 A/B 数据、根据真实 tag 分布调优专题页生成阈值、评估是否需要支持"更新既有专题页"而不只是生成新的。
 
+## 十二、外部世界知识接入（外部数据知识化计划 P1，本轮新增）
+
+背景：`external_input/` 的 4 个 RSS 源（`channel=agent_watch`）此前只有一条
+"命中关键词 → `alerts.jsonl` → 人工点掉即彻底消失"的消费链路，标题背后的
+内容从未沉淀进 wiki。P1 补上"看到了"到"记住了"这一步，且**不新建存储/
+组织体系**——只是给 `world_writer.py` 增加了一个新的候选来源。
+
+- **新模块** `external_input/knowledge_extractor.py`：新增 cron job
+  `sys:external_knowledge_extractor`（`interval:21600`，6 小时一次，与
+  `sys:consolidation` 错峰），复用
+  `perception/system_events.py::poll_since()` 的游标机制（独立
+  `consumer_name="external_knowledge_extractor"`），只处理
+  `channel == "agent_watch"` 的 `external.watch.new_item` 事件。
+- **抽取**：批量（默认 15 条/批）调用 `LLMHelper.ask()`
+  做轻量摘要抽取，产出 schema 与对话侧 `history/world_extraction.py` 完全
+  一致的 `entities[]`/`facts[]`，直接复用 `EntityCandidate`/`FactCandidate`
+  两个数据结构解析，不新建候选类型。单条解析失败只计数、不阻塞同批其它
+  事件。
+- **落盘**：调用 `wiki/world_writer.py::queue_entities()`/`queue_facts()`
+  时显式传 `source_kind="external_watch"`
+  （`world_writer.EXTERNAL_WATCH_SOURCE_KIND`），区别于对话来源的默认值
+  `world_model`；真正的判重/新建/合并仍然统一走巩固循环的
+  `consolidate_pending()`，不分叉出第二套落盘逻辑。`wiki/stats.py` 的
+  `by_source_kind` 统计因此可以直接看到"外部世界知识占比"，无需额外埋点。
+- **默认关闭**：daemon 启动时在 `api/server.py` 里补注册该 job（`ensure_job`
+  + 首次创建时立即 `disable()`），与改进计划 §4 的"新增 job 先以 disabled
+  状态接入，人工评估几天后再手动开启"一致，需要到 Cron Jobs 看板手动启用。
+- **尚未实现**（计划里的后续阶段，见
+  `next_doc/external_knowledge_wiki_and_self_improvement_plan.md`）：
+  P2 专题页优先聚合、P3 `sys:tech_radar_search` 主动检索反哺 wiki（预留了
+  `EXTERNAL_SEARCH_SOURCE_KIND="external_search"` 常量但暂无消费者写入）、
+  P4 外部知识接入自我改进候选生成。
+
 ## 相关文档
+
+- 项目根目录 `next_doc/external_knowledge_wiki_and_self_improvement_plan.md` — 外部数据知识化与自我改进闭环 P1-P5 的完整设计动机与实现记录（本节对应 P1）
 
 - [图书馆式知识索引指南](library-index-guide.md) — 旧的分类树/实体索引/两步检索系统，仍是当前的主索引
 - [巩固循环 后台循环指南（Stage 8）](self-evolution-consolidation-guide.md) — `consolidate()` 挂载的完整巡检流程
