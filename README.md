@@ -5,6 +5,10 @@
 [![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
+## 项目理念
+
+mini_agent 不追求让 AI 拥有自己的目标，而是持续提高对用户的建模精度、任务自主执行程度、以及自我诊断与改进能力，让用户需要显式交代的比例持续下降——这是唯一可操作的"进化"衡量标准。个人数字代理不是终极目标（能力持续增强的超级 AI 系统）的过渡产物，而是这个能力增强过程获得可验证目标函数和反馈信号的唯一可靠来源；至于"系统自主生成目标"，明确排除在近期和中期规划之外。完整的理念阐述与当前长期规划的优先级方向，详见 [mini_agent 核心理念与长期规划](docs/mini_agent_核心理念与长期规划.md)。
+
 ## 特性
 
 | 特性 | 说明 |
@@ -869,6 +873,7 @@ python -m pytest tests/ -q
 
 ## 文档
 
+- [mini_agent 核心理念与长期规划](docs/mini_agent_核心理念与长期规划.md) — **必读**：终极目标与个人代理场景的关系、"自我进化"的正确定义、长期规划应遵循的理念、接下来的重点方向
 - [系统概览](docs/system-overview.md) — 整体架构和设计思路
 - [记忆管理指南](docs/memory-management-guide.md) — **更新**：长期记忆系统，含 Lesson Memory（规则触发/SessionEnd 反思/人类反馈纠正检测）
 - [用户画像系统指南](docs/user-profile-guide.md) — **新增**：基于长期记忆自动生成用户画像，注入 system prompt 实现个性化
