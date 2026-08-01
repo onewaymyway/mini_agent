@@ -50,6 +50,8 @@ from .models import (
     GlobalKnowledgeConfig,
     DigestAdvisorConfig,
     CronConfig,
+    AutonomyConfig,
+    ObservabilityConfig,
     DEFAULT_MODEL,
     DEFAULT_AGENT_NAME,
     DEFAULT_MAX_TOKENS,
@@ -819,6 +821,48 @@ def load_config(
         inner_max_turns=int(_cron.get("inner_max_turns", 15)),
     )
 
+    # ── [看板配置管理改进方案 kanban_config_management_plan.md 附带修复]
+    # AutonomyConfig / ObservabilityConfig 此前从未接入 file_cfg 读取——
+    # AppConfig(...) 构造调用里一直没有传 autonomy=/observability=，
+    # 导致这两个子配置块无论 agent_config.json 里写了什么，实际生效的
+    # 永远是 dataclass 定义里的默认值（包括
+    # goal_execution_fairness_improvement_plan.md P1-P4 新增的所有
+    # autonomy.* 字段）。这里补齐，做法与其它"嵌套字典、字段名直接对应"
+    # 的配置块（tech_radar/goal_mode/proprioception 等）完全一致：用
+    # dataclasses.fields() 通用遍历，凡是 file_cfg["autonomy"]/
+    # ["observability"] 里出现的同名字段就覆盖默认值，类型按字段自身的
+    # 默认值类型转换（bool/int/float/str 直接转换，其余类型原样透传）。
+    def _load_block_from_dict(block: dict, cls):
+        import dataclasses as _dc
+        kwargs = {}
+        for f in _dc.fields(cls):
+            if f.name not in block:
+                continue
+            raw_v = block[f.name]
+            default_v = f.default if f.default is not _dc.MISSING else None
+            try:
+                if isinstance(default_v, bool):
+                    kwargs[f.name] = bool(raw_v)
+                elif isinstance(default_v, int) and not isinstance(default_v, bool):
+                    kwargs[f.name] = int(raw_v)
+                elif isinstance(default_v, float):
+                    kwargs[f.name] = float(raw_v)
+                elif isinstance(default_v, str):
+                    kwargs[f.name] = str(raw_v)
+                else:
+                    kwargs[f.name] = raw_v
+            except (TypeError, ValueError):
+                # 类型转换失败（脏配置）——忽略该字段，退回默认值，不让
+                # 一个写错的字段拖垮整个 AppConfig 的加载。
+                continue
+        return cls(**kwargs)
+
+    _autonomy_dict = file_cfg.get("autonomy") if isinstance(file_cfg.get("autonomy"), dict) else {}
+    autonomy_cfg = _load_block_from_dict(_autonomy_dict, AutonomyConfig)
+
+    _observability_dict = file_cfg.get("observability") if isinstance(file_cfg.get("observability"), dict) else {}
+    observability_cfg = _load_block_from_dict(_observability_dict, ObservabilityConfig)
+
     return AppConfig(
         api_key=api_key,
         model=_model,
@@ -882,6 +926,8 @@ def load_config(
         privacy=privacy_cfg,
         digest_advisor=digest_advisor_cfg,
         cron=cron_cfg,
+        autonomy=autonomy_cfg,
+        observability=observability_cfg,
         llm_fallback_chain=_llm_fallback_chain,
         llm_fallback_on=_llm_fallback_on,
     )

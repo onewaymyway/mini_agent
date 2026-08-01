@@ -63,6 +63,10 @@ api/routes.py — FastAPI 路由定义
     GET    /v1/self/goal_fairness    [goal_execution_fairness_improvement_plan.md
                                        P5] 各 active Goal 的调度公平性快照
                                        （last_scheduled_at/aging_boost/effective_priority）
+    GET    /v1/self/config           [kanban_config_management_plan.md] 分类
+                                       字段目录状态（agent_config.json）
+    PATCH  /v1/self/config           [kanban_config_management_plan.md] 批量
+                                       更新 agent_config.json 里的若干字段
     POST   /v1/objectives/{execution_id}/cancel    终止一个正在运行的 Objective 执行
     POST   /v1/objectives/{execution_id}/retry     手动重试当前 step（不等超时）
     POST   /v1/objectives/{execution_id}/guidance  插一句补充说明，供下次提交时使用
@@ -1928,6 +1932,117 @@ async def get_self_goal_fairness(request: Request):
         log_exception(_mini_agent_exc, where='mini_agent.api.routes.get_self_goal_fairness')
 
     return result
+
+
+@router.get("/self/config")
+async def get_self_config(request: Request):
+    """GET /v1/self/config — [kanban_config_management_plan.md] 只读返回
+    agent_config.json 的分类字段目录状态（每个字段：分类归属、当前生效值、
+    默认值、是否被显式配置过、是否敏感），供看板"⚙️ 配置"tab 展示。纯读取，
+    不修改任何文件。
+
+    返回结构：
+    {
+      "config_path": str,       # agent_config.json 的绝对路径
+      "categories": [
+        {"id": str, "label": str, "icon": str,
+         "fields": [{"json_key", "label", "type", "value", "default",
+                     "customized", "sensitive"}, ...]},
+        ...
+      ]
+    }
+    """
+    http_server = getattr(request.app.state, "http_server", None)
+    if http_server is None:
+        raise HTTPException(status_code=503, detail="HttpServer not available")
+    _require_owner(request)
+
+    from mini_agent.config import config_catalog as _cc
+    from mini_agent.config.loader import _load_config_file
+
+    self_agent = http_server.bridge.agent
+    cfg = getattr(self_agent, "cfg", None) if self_agent else None
+    project_root = getattr(cfg, "project_root", None) if cfg is not None else None
+    if cfg is None or project_root is None:
+        raise HTTPException(status_code=503, detail="config not available")
+
+    config_path = project_root / "agent_config.json"
+    raw_file_cfg = _load_config_file(config_path) if config_path.exists() else {}
+    categories = _cc.build_status(cfg, raw_file_cfg)
+    return {"config_path": str(config_path), "categories": categories}
+
+
+@router.patch("/self/config")
+async def patch_self_config(request: Request):
+    """PATCH /v1/self/config — [kanban_config_management_plan.md] 批量更新
+    agent_config.json 里的若干字段。
+
+    Body: {"updates": [{"json_key": str, "value": Any}, ...]}
+
+    只接受配置字段目录（config_catalog.KNOWN_FIELDS）里已收录、且非敏感的
+    json_key；出现任何一条不认识/敏感的 key，整批全部拒绝、不写入文件（要么
+    全部生效要么都不生效，不产生"部分生效"的中间状态）。写入用临时文件 +
+    os.replace 原子替换，避免写到一半被打断导致 agent_config.json 损坏。
+
+    注意：多数配置项需要重启 agent 进程才会生效（AppConfig 目前是进程启动
+    时一次性加载，本接口不做热加载），响应里通过 "restart_required": true
+    固定提示，具体判断交给前端提示文案。
+    """
+    http_server = getattr(request.app.state, "http_server", None)
+    if http_server is None:
+        raise HTTPException(status_code=503, detail="HttpServer not available")
+    _require_owner(request)
+
+    body = await request.json()
+    updates = body.get("updates") or []
+    if not isinstance(updates, list) or not updates:
+        raise HTTPException(status_code=400, detail="updates 不能为空")
+
+    from mini_agent.config import config_catalog as _cc
+    from mini_agent.config.loader import _load_config_file
+
+    self_agent = http_server.bridge.agent
+    cfg = getattr(self_agent, "cfg", None) if self_agent else None
+    project_root = getattr(cfg, "project_root", None) if cfg is not None else None
+    if cfg is None or project_root is None:
+        raise HTTPException(status_code=503, detail="config not available")
+
+    config_path = project_root / "agent_config.json"
+    raw_file_cfg = _load_config_file(config_path) if config_path.exists() else {}
+
+    try:
+        new_raw = _cc.apply_updates(raw_file_cfg, updates)
+    except _cc.ConfigUpdateError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+    try:
+        import json as _json
+        tmp_path = config_path.with_suffix(".json.tmp")
+        tmp_path.write_text(_json.dumps(new_raw, ensure_ascii=False, indent=2), encoding="utf-8")
+        import os as _os
+        _os.replace(tmp_path, config_path)
+    except Exception as _mini_agent_exc:
+        from mini_agent.errors import log_exception
+        log_exception(_mini_agent_exc, where='mini_agent.api.routes.patch_self_config')
+        raise HTTPException(status_code=500, detail=f"写入配置文件失败：{_mini_agent_exc}")
+
+    categories = _cc.build_status(cfg, new_raw)
+    # build_status() 的 "value" 字段读的是当前进程里正在跑的 cfg（内存态），
+    # PATCH 只改了磁盘文件、没有做热加载，两者这时候是不一致的——直接展示
+    # 内存态旧值会让人以为"写了但没生效"。这里用本次提交的值覆盖一下这些
+    # 字段的展示值（只影响响应展示，不影响实际生效时机，生效仍然要等重启，
+    # 见 restart_required 提示）。
+    submitted = {u["json_key"]: u.get("value") for u in updates if "json_key" in u}
+    for cat in categories:
+        for field_row in cat["fields"]:
+            if field_row["json_key"] in submitted and not field_row["sensitive"]:
+                field_row["value"] = submitted[field_row["json_key"]]
+
+    return {
+        "config_path": str(config_path),
+        "categories": categories,
+        "restart_required": True,
+    }
 
 
 @router.get("/self/status")

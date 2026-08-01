@@ -10,6 +10,7 @@ Mini-Agent 看板 (Kanban Dashboard)
   - Tab4.5 🖼️ 产出预览：按任务/session 登记的产出物 manifest 语义化展示
                   （图片内联预览、文档下载，支持 ?manifest_id=/?session_id= 深链接）
   - Tab5 🧠 自我状态：具身智能自省信息、SessionPool 概况
+  - Tab5.5 ⚙️ 配置：分类展示/编辑 agent_config.json（kanban_config_management_plan.md）
   - Tab6 🔧 诊断：/diagnostics 原始信息，方便调试
 
 运行方式：
@@ -3358,6 +3359,136 @@ def render_cron_jobs_tab(client: AgentClient):
 
 
 # ═══════════════════════════════════════════════════════════════════════
+# Tab: ⚙️ 配置管理（kanban_config_management_plan.md）
+# ═══════════════════════════════════════════════════════════════════════
+def _render_config_field_widget(field: dict, widget_key: str):
+    """按字段类型渲染对应的编辑控件，返回 (新值, 是否被改动)。
+
+    敏感字段（sensitive=True）只展示是否已配置，不提供编辑控件——修改
+    需要用户手工编辑 agent_config.json，见 config_catalog.py 模块头部说明。
+    """
+    json_key = field["json_key"]
+    label = field.get("label") or json_key
+    value = field.get("value")
+    ftype = field.get("type")
+
+    if field.get("sensitive"):
+        st.text_input(
+            f"{label}（`{json_key}`）", value="已配置 ✓" if value else "未配置",
+            disabled=True, key=widget_key,
+        )
+        return value, False
+
+    if ftype == "bool":
+        new_v = st.checkbox(f"{label}（`{json_key}`）", value=bool(value), key=widget_key)
+    elif ftype == "int":
+        new_v = st.number_input(
+            f"{label}（`{json_key}`）", value=int(value or 0), step=1, format="%d", key=widget_key,
+        )
+        new_v = int(new_v)
+    elif ftype == "float":
+        new_v = st.number_input(
+            f"{label}（`{json_key}`）", value=float(value or 0.0), key=widget_key,
+        )
+    else:  # str / other，一律按文本框处理，None 显示为空字符串
+        new_v = st.text_input(f"{label}（`{json_key}`）", value="" if value is None else str(value), key=widget_key)
+
+    changed = new_v != value
+    return new_v, changed
+
+
+def _render_config_category(client: AgentClient, cat: dict, filter_kw: str):
+    fields = cat["fields"]
+    if filter_kw:
+        kw = filter_kw.strip().lower()
+        fields = [
+            f for f in fields
+            if kw in f["json_key"].lower() or kw in (f.get("label") or "").lower()
+        ]
+        if not fields:
+            return
+    n_customized = sum(1 for f in cat["fields"] if f["customized"])
+    badge = f"（{n_customized} 项已自定义）" if n_customized else ""
+    with st.expander(f"{cat['icon']} {cat['label']} {badge}", expanded=bool(filter_kw or n_customized)):
+        with st.form(key=f"cfgform_{cat['id']}"):
+            pending = {}
+            for f in fields:
+                widget_key = f"cfgfield_{cat['id']}_{f['json_key']}"
+                new_v, changed = _render_config_field_widget(f, widget_key)
+                if changed and not f.get("sensitive"):
+                    pending[f["json_key"]] = new_v
+            submitted = st.form_submit_button(f"💾 保存「{cat['label']}」的改动")
+            if submitted:
+                if not pending:
+                    st.info("没有检测到改动。")
+                else:
+                    updates = [{"json_key": k, "value": v} for k, v in pending.items()]
+                    resp = client.config_update(updates)
+                    if resp and "_error" in resp:
+                        st.error(f"保存失败：{resp['_error']}")
+                    else:
+                        st.success(f"已保存 {len(pending)} 项改动，重启 agent 进程后生效。")
+                        st.session_state.pop("_config_status_cache", None)
+                        st.rerun()
+
+
+def render_config_tab(client: AgentClient):
+    """[kanban_config_management_plan.md] 读取并分类展示/编辑
+    agent_config.json——把此前只能靠翻文档/翻源码才知道"有哪些配置项、
+    分别控制什么功能、当前是否被自定义过"的信息，统一到看板里。
+
+    机制说明（详见设计文档）：
+      - 字段目录来自 config_catalog.py，按功能域分类，每类一个可折叠区块。
+      - 每个字段展示"当前生效值 / 默认值 / 是否已自定义"，一眼看出哪些功能
+        被改过默认行为。
+      - 编辑仅覆盖 bool/int/float/str 这类可以用单值控件安全表达的字段；
+        list/dict 类复杂字段（mcp_servers、隐私 secrets 等）不在此提供编辑，
+        仍需直接编辑 JSON 文件（原因见设计文档"设计边界"）。
+      - 保存按分类分别提交（每类一个 st.form + 独立保存按钮），只提交本类
+        里实际改动过的字段，避免"改了一个开关却把其它没碰过的字段也重新
+        提交一遍"的误操作风险。
+      - 所有修改都需要重启 agent 进程才会生效（AppConfig 目前是进程启动时
+        一次性加载，没有热重载机制）——每次保存成功后都会提示这一点。
+    """
+    st.markdown("#### ⚙️ 配置管理")
+    st.caption(
+        "读取并分类展示 agent_config.json 的配置项状态，支持直接在看板里修改。"
+        "🔶 标记的分类表示其中有字段已偏离默认值。修改保存后需要**重启 agent "
+        "进程**才会生效。"
+    )
+
+    col1, col2 = st.columns([3, 1])
+    with col1:
+        filter_kw = st.text_input(
+            "🔍 按字段名/说明筛选（留空显示全部分类）", key="config_filter_kw",
+        )
+    with col2:
+        if st.button("🔄 刷新", key="config_refresh"):
+            st.session_state.pop("_config_status_cache", None)
+            st.rerun()
+
+    if "_config_status_cache" not in st.session_state:
+        st.session_state["_config_status_cache"] = client.config_status()
+    resp = st.session_state["_config_status_cache"] or {}
+
+    if "_error" in resp:
+        st.warning(f"获取失败：{resp['_error']}")
+        return
+
+    st.caption(f"配置文件：`{resp.get('config_path', '')}`")
+
+    categories = resp.get("categories") or []
+    total_customized = sum(
+        1 for c in categories for f in c["fields"] if f["customized"]
+    )
+    st.caption(f"共 {len(categories)} 个分类 · {sum(len(c['fields']) for c in categories)} 个可见字段 · "
+               f"{total_customized} 项已偏离默认值")
+
+    for cat in categories:
+        _render_config_category(client, cat, filter_kw)
+
+
+# ═══════════════════════════════════════════════════════════════════════
 # Tab 6: 诊断
 # ═══════════════════════════════════════════════════════════════════════
 def render_diagnostics_tab(client: AgentClient):
@@ -3948,7 +4079,8 @@ def main():
     render_topbar(client, get_active_session_id())
 
     tabs = st.tabs(["💬 对话", "🗂️ 会话管理", "📌 目标看板", "🔄 工作流", "📁 产出物", "🖼️ 产出预览",
-                    "🧠 自我状态", "🧬 进化提案", "⏰ Cron 任务", "🔌 外部输入", "🔔 关注与通知", "🔧 诊断"])
+                    "🧠 自我状态", "🧬 进化提案", "⏰ Cron 任务", "🔌 外部输入", "🔔 关注与通知",
+                    "⚙️ 配置", "🔧 诊断"])
     with tabs[0]:
         render_chat_tab(client, get_active_session_id())
     with tabs[1]:
@@ -3972,6 +4104,8 @@ def main():
     with tabs[10]:
         render_notification_tab(client)
     with tabs[11]:
+        render_config_tab(client)
+    with tabs[12]:
         render_diagnostics_tab(client)
 
     # [P0 改造] 原来这里是 `if auto_refresh: time.sleep(3); st.rerun()`——

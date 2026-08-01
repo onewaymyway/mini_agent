@@ -6,6 +6,15 @@
 
 所有配置项均位于 `AutonomyConfig`（即配置文件里的 `autonomy` 段）。
 
+> **重要更正（kanban_config_management_plan.md 配套修复）**：本文档下面
+> 描述的所有 `autonomy.*` 配置项，在此之前实际上**从未真正生效过**——
+> `config/loader.py` 的 `load_config()` 一直没有把 `agent_config.json` 里
+> 的 `autonomy` 段接入 `AppConfig` 构造，无论文件里写了什么，实际生效的
+> 永远是 `AutonomyConfig` 类定义里的硬编码默认值。这个 bug 已在
+> kanban_config_management_plan.md 里一并修复，现在 `autonomy` 段可以
+> 正常从 `agent_config.json` 读取。如果你在此修复之前尝试配置过下面任何
+> 一项但发现"改了没用"，不是配置写法有问题，是这个已修复的 bug。
+
 ## P1：同 Goal 并发上限
 
 ```yaml

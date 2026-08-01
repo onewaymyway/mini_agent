@@ -236,6 +236,16 @@ class AgentClient:
         供"⚖️ 执行公平性"看板区块展示。"""
         return self._get("/self/goal_fairness")
 
+    def config_status(self):
+        """[kanban_config_management_plan.md] 拉取 agent_config.json 的分类
+        字段目录状态，供"⚙️ 配置"tab 展示。"""
+        return self._get("/self/config")
+
+    def config_update(self, updates: list):
+        """[kanban_config_management_plan.md] 批量更新 agent_config.json。
+        updates: [{"json_key": str, "value": Any}, ...]"""
+        return self._patch("/self/config", {"updates": updates})
+
     def goals(self):
         return self._get("/goals")
 
