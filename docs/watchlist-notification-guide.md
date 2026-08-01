@@ -316,6 +316,16 @@ prompt 注入。**只有 `importance == "high"` 才写入**
 值得开一个新方向的建议"，跟"待办中心"/网关"待处理告警"/"待处理汇报"
 三个既有面板都不是一回事。
 
+**候选队列过期巡检**（外部知识反馈闭环计划 P1，`sys:candidate_queue_triage`，
+`interval:86400`，每天一次，零 LLM 成本，默认 enabled）：此前 `pending`
+状态的候选没有任何时间维度的过期机制，会无限期占着人工审核视野。
+`evolution/candidate_queue_triage.py` 把超过 30 天仍是 `pending` 的记录
+状态改写为 `"expired"`（区别于用户主动点击的 `"dismissed"`），不删除
+记录、不影响 `confirmed`/`dismissed` 状态的记录，看板"🌟 新颖信号候选"
+面板可按需过滤展示。详见
+`next_doc/external_knowledge_feedback_loop_improvement_plan.md` P1、
+`docs/wiki-knowledge-base-guide.md` §十三·1。
+
 ## 7. 看板展示（P7）
 
 打开 mini_agent_kanban，顶部新增一个 **"🔔 关注与通知"** tab，紧跟在
@@ -457,6 +467,7 @@ alerts.jsonl                 命中，标题+详情去重后写入：           
 | `src/mini_agent/external_input/report_tiers.py` | tier 配置加载 + 消费 pending_hits + 生成摘要 + dispatch |
 | `src/mini_agent/external_input/goal_relevance.py` | GoalRelevanceEngine Stage①（候选生成）+ Stage②（LLM 批量判定）+ `ensure_goal_relevance_judge_job` |
 | `src/mini_agent/external_input/novelty_judge.py` | `NoveltyJudge`（§6.4）Stage①（候选生成）+ Stage②（LLM 批量重要性判定）+ `ensure_novelty_importance_judge_job`；`confirm_novelty_candidate`/`dismiss_novelty_candidate` |
+| `src/mini_agent/evolution/candidate_queue_triage.py` | [外部知识反馈闭环 P1 新增] `novelty_candidates.jsonl` 中超龄 `pending` 候选过期巡检：`run_candidate_queue_triage_once`/`ensure_candidate_queue_triage_job`（`sys:candidate_queue_triage`，每天一次） |
 | `src/mini_agent/archive/gc.py` | 长期归档 / 回顾式查询：`run_archive_gc_once`/`run_archive_gc_all`/`query_archive`/`ensure_archive_gc_job`（`sys:archive_gc`，每天凌晨 3 点） |
 | `src/mini_agent/external_input/filelock.py` | 跨平台文件独占锁（pending_hits/candidates 并发读写保护） |
 | `src/mini_agent/perception/goal_backlog.py` | `GoalNode.external_context`/`last_external_advance_at`、`attach_external_context`/`try_advance_goal` |

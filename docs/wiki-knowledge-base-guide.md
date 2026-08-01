@@ -602,9 +602,72 @@ P1-P3 已经把"外部世界正在发生什么"沉淀进了 wiki，但 `soft_goa
 - **默认关闭**：与 P1/P3 一致，daemon 启动时首次创建该 job 即调用
   `disable()`，需要到 Cron Jobs 看板手动启用。
 
+## 十三、外部知识反馈闭环补充（外部知识反馈闭环计划 P1/P2/P5，本轮新增）
+
+上一节 §十二 打通的是"外部事件/检索 → wiki 沉淀 → 自我改进候选"的
+生产链路；本节三项补的是"只生产、不巡检/不回看"的空隙——不新增数据源，
+在既有链路上补一层巡检-统计-回看。
+
+### 十三·1、人工候选队列过期巡检（P1）
+
+`NoveltyJudge` Stage②产出、等待人工在看板"🌟 新颖信号候选"面板确认/
+忽略的 `.agent/notification/novelty_candidates.jsonl`，此前没有任何时间
+维度的过期机制——`pending` 状态的候选会无限期挂着。`evolution/
+candidate_queue_triage.py` 新增 cron job `sys:candidate_queue_triage`
+（`interval:86400`，每天一次，零 LLM 成本，默认 enabled），把超过 30 天
+（`STALE_PENDING_TTL_SECONDS`）仍是 `pending` 的记录状态改写为
+`"expired"`（不是 `"dismissed"`——保留"人工主动忽略"与"系统因超时自动
+降级"两种语义的区分），不删除记录、不影响 `confirmed`/`dismissed` 状态
+的记录。详见 `docs/watchlist-notification-guide.md` §6.4、
+`next_doc/external_knowledge_feedback_loop_improvement_plan.md` P1。
+
+### 十三·2、wiki 页面利用率审计（P2，统计层）
+
+wiki 页面写入后此前没有机制追踪其是否真的被检索/引用过，`gap_scan`
+只判断"内容薄不薄"，不判断"有没有被用上"。`wiki/search.py::
+wiki_shelf_search()` 的两处返回点新增轻量埋点（无命中不记录、失败静默
+吞掉，不影响检索主流程），追加写入 `AgentPaths.wiki_usage_log_path`
+（`.agent/wiki/usage_log.jsonl`）。`evolution/wiki_utility_audit.py`
+新增 cron job `sys:wiki_utility_audit`（`interval:604800`，每周一次，
+零 LLM 成本，默认 enabled），把最近 30 天的埋点聚合为每页
+`hit_count`/`grounded_count`/`last_used_at`，落盘
+`.agent/wiki/usage_stats.json`（`load_wiki_usage_stats()` 只读加载），
+同一次运行顺带修剪超过 90 天的日志记录。**本次只做统计层**，不改
+`gap_scanner.py`/`decommission.py` 的判断逻辑——先让统计跑一段时间、
+看到真实的利用率分布形态后再决定去留权重怎么定。详见
+`next_doc/external_knowledge_feedback_loop_improvement_plan.md` P2。
+
+### 十三·3、月度战略回顾（P5）
+
+`daily_digest`（天）、§十二·4 `external_trend_capability_link`（周）
+之外，此前没有更高层的、跨越数周的综合回看。`evolution/
+monthly_trend_retrospective.py` 新增 cron job
+`sys:monthly_trend_retrospective`（`cron:0 0 1 * *`，每月 1 日一次，
+零 LLM 成本，默认 enabled——纯规则聚合已有状态文件，不需要人工前置
+配置），每月汇总三路信号：
+
+1. **候选采纳情况**：过去 4 周 `external_trend_capability_link`
+   （§十二·4）产出的候选中，有多少条对应的能力域已经被采纳成 Goal
+   （跟 `GoalBacklog` 现存目标标题匹配）。
+2. **wiki 专题页增长**：复用 `wiki/stats.py::compute_stats()` 的
+   `by_source_kind` 快照，与上一轮运行保存的快照做差值，看各类外部
+   知识页面这个周期内各新增了多少。
+3. **能力变化趋势**：复用 `evolution/consolidation.py::
+   load_capability_map()`，与上一轮保存的 `domain -> confidence`
+   快照做差值，列出变化幅度最大的 Top 10 能力域。
+
+产出只有一份人类可读文档
+（`.agent/wiki/monthly_trend_retrospective/<YYYY-MM>.md`），不产出结构化
+候选、不接入任何下游自动消费链路，供 `decision_profile_update`/
+`soft_goal_deriver` 人工参考，不自动创建 Goal、不自动修改代码。首次
+运行（无上一轮快照可比）时增长/变化会把全量值当作"从无到有"展示，
+属于预期行为。详见
+`next_doc/external_knowledge_feedback_loop_improvement_plan.md` P5。
+
 ## 相关文档
 
 - 项目根目录 `next_doc/external_knowledge_wiki_and_self_improvement_plan.md` — 外部数据知识化与自我改进闭环 P1-P5 的完整设计动机与实现记录（本节对应 P1）
+- 项目根目录 `next_doc/external_knowledge_feedback_loop_improvement_plan.md` — 外部知识反馈闭环 P1-P5 的完整设计动机与实现记录（本文档 §十三 对应 P1/P2/P5，P3 见 `docs/watchlist-notification-guide.md` §6.1，P4 见 `docs/external-input-gateway-guide.md` §11.2）
 
 - [图书馆式知识索引指南](library-index-guide.md) — 旧的分类树/实体索引/两步检索系统，仍是当前的主索引
 - [巩固循环 后台循环指南（Stage 8）](self-evolution-consolidation-guide.md) — `consolidate()` 挂载的完整巡检流程
@@ -620,3 +683,5 @@ P1-P3 已经把"外部世界正在发生什么"沉淀进了 wiki，但 `soft_goa
 *首次编写：2026-07（wiki 式知识库阶段一~四：md 页面存储 + 双写镜像 + 三段式检索 + 专题页生成 + `/wiki` 命令）*
 *更新：2026-07（提取层与组织层改进计划 O1-O4、E1-E3 全部完成：索引复用与信度分层、实体摘要反哺抽取、抽取与 compact 解耦、抽取任务拆分、多跳图扩展、topic 再巩固、统一知识生命周期状态机）*
 *更新：2026-07（下一阶段改进：退轨评估 `wiki/decommission.py`、专题页退场标注、`consolidate()` 分步超时熔断、`entity_density` 独立触发信号、`/wiki gap-scan`/`fallback-cleanup` 新命令、daemon 新增 2 个内置 cron job；并补上此前遗漏的 `/wiki` 命令行 Tab 补全提示）*
+*更新：2026-08（外部知识反馈闭环计划 P1/P2/P5：候选队列过期巡检 `sys:candidate_queue_triage`、wiki 利用率审计 `sys:wiki_utility_audit`（统计层）、月度战略回顾 `sys:monthly_trend_retrospective`，见新增 §十三）*
+

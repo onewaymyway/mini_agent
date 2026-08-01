@@ -626,6 +626,22 @@ Agent 主动去外部世界找信号"，两者互补、互不依赖。详见
 做什么"是独立的一路信号，不与"自身已知弱点匹配"混在一起）。详见
 `next_doc/external_knowledge_feedback_loop_improvement_plan.md` P4。
 
+外部知识反馈闭环计划 P5 新增了 `evolution/monthly_trend_retrospective.py`，
+独立 cron job `sys:monthly_trend_retrospective`（`cron:0 0 1 * *`，每月
+1 日一次，默认 **enabled**——纯规则聚合已有状态文件与 `wiki/stats.py`
+统计，零 LLM 成本，不像 P4 依赖人工配置种子，不启用也没有意义）。它不
+消费 `system_events.jsonl` 的任何事件，也不新增任何外部知识 wiki 页面，
+是本节四条外部知识获取链路（P1 被动订阅 / P3 主动检索 / P4 生态定位
+扫描 + `NoveltyJudge`/`GoalRelevanceEngine` 两条判定链路）之上的一层
+汇总视角：每月汇总过去 4 周 `external_trend_capability_link`（P4，见
+`docs/wiki-knowledge-base-guide.md` §十二·4）候选的采纳情况、wiki 各
+`source_kind` 页面数环比增长、`capability_map` 能力置信度环比变化，写成
+一份月度回顾文档（`.agent/wiki/monthly_trend_retrospective/<YYYY-MM>.md`），
+只供人工/`decision_profile_update`/`soft_goal_deriver` 参考，不自动创建
+Goal、不自动修改代码。详见
+`next_doc/external_knowledge_feedback_loop_improvement_plan.md` P5、
+`docs/wiki-knowledge-base-guide.md` §十三·3。
+
 ### 11.3 目前仍未生效的前提
 
 即使上面两份配置文件已经就位，只要满足以下任一条件，这套流程仍然是
