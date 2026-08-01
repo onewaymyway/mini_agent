@@ -1280,6 +1280,21 @@ class HttpServer:
                 from mini_agent.errors import log_exception
                 log_exception(_mini_agent_exc, where='mini_agent.api.server.HttpServer._build_autonomous_loop.ensure_wiki_utility_audit_job')
 
+            # 自诊断闭环深化计划 P1：daemon 启动时补注册
+            # sys:improvement_backlog_merge（汇总 self_maintenance/
+            # gap_scanner/decommission/self_model 四路信号为排序过的改进
+            # 候选清单，零 LLM 成本，本地回调），见
+            # next_doc/self_diagnosis_feedback_loop_deepening_plan.md §2 P1。
+            try:
+                from mini_agent.evolution.improvement_backlog_merge import (
+                    ensure_improvement_backlog_merge_job,
+                )
+
+                ensure_improvement_backlog_merge_job(paths, cron_scheduler)
+            except Exception as _mini_agent_exc:
+                from mini_agent.errors import log_exception
+                log_exception(_mini_agent_exc, where='mini_agent.api.server.HttpServer._build_autonomous_loop.ensure_improvement_backlog_merge_job')
+
             # 外部知识反馈闭环计划 P3：daemon 启动时补注册
             # sys:relevance_threshold_calibration（回看 Stage②已判定候选的
             # relevant 比例，对 GoalRelevanceEngine Stage①阈值做小步长自动

@@ -314,6 +314,15 @@ class AgentPaths:
         return self.workdir_dir / "next_actions.json"
 
     @property
+    def improvement_backlog_path(self) -> Path:
+        """<project_root>/.agent/improvement_backlog.json — 改进信号聚合器
+        （自诊断闭环深化 P1，next_doc/self_diagnosis_feedback_loop_deepening_plan.md）
+        汇总 self_maintenance/gap_scanner/decommission/self_model 四路信号后
+        产出的排序候选清单快照，由 evolution/improvement_backlog_merge.py 写入，
+        只读消费。"""
+        return self.workdir_dir / "improvement_backlog.json"
+
+    @property
     def user_value_profile_path(self) -> Path:
         """<project_root>/.agent/wiki/user_value_profile.md — 决策画像（归纳后的用户价值模式）"""
         return self.wiki_dir / "user_value_profile.md"
