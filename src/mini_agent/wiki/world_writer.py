@@ -49,6 +49,11 @@ EXTERNAL_WATCH_SOURCE_KIND = "external_watch"
 # sys:tech_radar_search 定期检索结果时使用，与 EXTERNAL_WATCH_SOURCE_KIND
 # 区分（被动订阅 vs 主动检索），供 wiki/stats.py 分别统计。
 EXTERNAL_SEARCH_SOURCE_KIND = "external_search"
+# 外部知识反馈闭环计划 P4：external_input/ecosystem_positioning_scan.py 消费
+# sys:ecosystem_positioning_scan 定期检索"同类 agent 框架/相关开源项目"结果时
+# 使用，与 EXTERNAL_SEARCH_SOURCE_KIND（种子来源是"自身能力弱点"）区分开——
+# 两者都是"主动检索"，但种子来源与关注视角不同，分开统计避免混淆。
+EXTERNAL_ECOSYSTEM_SOURCE_KIND = "external_ecosystem"
 _FALLBACK_PAGE_PREFIX = "session-facts-"
 # wiki 提取层与组织层改进计划 E3 §3.4：reused_existing_id 命中后的最低校验
 # 分数，低于此分数视为模型误判，忽略并退回规则判重流程（阈值取自计划原文
@@ -416,4 +421,5 @@ __all__ = [
     "SOURCE_KIND",
     "EXTERNAL_WATCH_SOURCE_KIND",
     "EXTERNAL_SEARCH_SOURCE_KIND",
+    "EXTERNAL_ECOSYSTEM_SOURCE_KIND",
 ]

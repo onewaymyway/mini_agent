@@ -612,6 +612,20 @@ Agent 主动去外部世界找信号"，两者互补、互不依赖。详见
 `docs/wiki-knowledge-base-guide.md` §十二·3、
 `next_doc/external_knowledge_wiki_and_self_improvement_plan.md` P3。
 
+外部知识反馈闭环计划 P4 新增了一条与 `tech_radar_search.py` 结构几乎完全
+一致、但视角相反的链路：`external_input/ecosystem_positioning_scan.py`，
+独立 cron job `sys:ecosystem_positioning_scan`（`interval:604800`，每周
+一次，默认 **disabled**，需要在 `agent_config.json` 里配置
+`ecosystem_positioning.seeds`——同类 agent 框架/相关开源项目名称列表——
+之后才有意义启用）。`tech_radar_search` 的种子是"自身能力弱点"，本链路
+的种子换成"同类生态项目"，定位是"看别人在解决什么我还没意识到是问题的
+问题"，检索结果同样批量抽取成 `entity`/`fact` 候选喂给
+`wiki/world_writer.py`，但打 `source_kind="external_ecosystem"`（与 P1
+的 `"external_watch"`、P3 的 `"external_search"` 都区分开，且**不**被
+`evolution/external_trend_capability_link.py` 消费——刻意保持"看别人在
+做什么"是独立的一路信号，不与"自身已知弱点匹配"混在一起）。详见
+`next_doc/external_knowledge_feedback_loop_improvement_plan.md` P4。
+
 ### 11.3 目前仍未生效的前提
 
 即使上面两份配置文件已经就位，只要满足以下任一条件，这套流程仍然是

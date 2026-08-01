@@ -1224,6 +1224,34 @@ class HttpServer:
                 from mini_agent.errors import log_exception
                 log_exception(_mini_agent_exc, where='mini_agent.api.server.HttpServer._build_autonomous_loop.ensure_external_trend_capability_link_job')
 
+            # 外部知识反馈闭环计划 P4：daemon 启动时补注册
+            # sys:ecosystem_positioning_scan（复用 tech_radar_search.py 的
+            # 检索→LLM抽取→落盘wiki管道，但种子换成人工配置的"同类 agent
+            # 框架/相关开源项目"列表，产出打 source_kind=external_ecosystem，
+            # 与 external_trend_capability_link 的候选分开落点，定位为"看
+            # 别人在解决什么我还没意识到是问题的问题"），llm_helper 惰性
+            # 获取，见
+            # next_doc/external_knowledge_feedback_loop_improvement_plan.md §3 P4。
+            try:
+                from mini_agent.external_input.ecosystem_positioning_scan import (
+                    ensure_ecosystem_positioning_scan_job,
+                )
+
+                def _ecosystem_positioning_llm_helper():
+                    return getattr(agent, "llm_helper", None)
+
+                _ecosystem_positioning_cfg = getattr(cfg, "ecosystem_positioning", None)
+                ensure_ecosystem_positioning_scan_job(
+                    paths, cron_scheduler,
+                    llm_helper_provider=_ecosystem_positioning_llm_helper,
+                    seeds=getattr(_ecosystem_positioning_cfg, "seeds", None),
+                    weekly_seed_limit=getattr(_ecosystem_positioning_cfg, "weekly_seed_limit", 5),
+                    max_search_results=getattr(_ecosystem_positioning_cfg, "max_search_results", 5),
+                )
+            except Exception as _mini_agent_exc:
+                from mini_agent.errors import log_exception
+                log_exception(_mini_agent_exc, where='mini_agent.api.server.HttpServer._build_autonomous_loop.ensure_ecosystem_positioning_scan_job')
+
             # 外部知识反馈闭环计划 P1：daemon 启动时补注册
             # sys:candidate_queue_triage（把 novelty_candidates.jsonl 中长期
             # 无人处理的 pending 候选标记为 expired，零 LLM 成本，本地回调），

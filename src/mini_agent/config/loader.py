@@ -33,6 +33,7 @@ from .models import (
     HttpConfig,
     WebSearchConfig,
     TechRadarConfig,
+    EcosystemPositioningConfig,
     RetryConfig,
     EnsembleConfig,
     RoleAgentConfig,
@@ -556,6 +557,19 @@ def load_config(
         max_search_results=int(_tr.get("max_search_results") or 5),
     )
 
+    # 外部知识反馈闭环计划 P4：ecosystem_positioning.seeds 是"同类 agent
+    # 框架/相关开源项目"的人工配置种子列表，跟 tech_radar.keywords 同款
+    # 解析风格，默认空列表（job 本身默认 disabled，见
+    # EcosystemPositioningConfig 类注释）。
+    _ep = file_cfg.get("ecosystem_positioning") if isinstance(file_cfg.get("ecosystem_positioning"), dict) else {}
+    _ep_seeds = _ep.get("seeds")
+    ecosystem_positioning_cfg = EcosystemPositioningConfig(
+        enabled=bool(_ep.get("enabled", False)),
+        seeds=list(_ep_seeds) if isinstance(_ep_seeds, list) else [],
+        weekly_seed_limit=int(_ep.get("weekly_seed_limit") or 5),
+        max_search_results=int(_ep.get("max_search_results") or 5),
+    )
+
     _rm = file_cfg.get("reminder") if isinstance(file_cfg.get("reminder"), dict) else {}
     _reminder_enabled_val = reminder_enabled if reminder_enabled is not None else _rm.get("enabled", True)
     _reminders_dir_val: Optional[Path] = None
@@ -853,6 +867,7 @@ def load_config(
         mcp=mcp_cfg,
         web_search=web_search_cfg,
         tech_radar=tech_radar_cfg,
+        ecosystem_positioning=ecosystem_positioning_cfg,
         reminder=reminder_cfg,
         proprioception=proprioception_cfg,
         affordance=affordance_cfg,

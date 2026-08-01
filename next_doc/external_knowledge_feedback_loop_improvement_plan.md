@@ -1,10 +1,13 @@
 # 外部知识反馈闭环 改进计划
 
-- **版本**: v1.2
+- **版本**: v1.3
 - **变更记录**:
   - v1.0：初版，规划 P1-P5；P1（`sys:candidate_queue_triage`）已实现，见该节内的"实现记录"标注。
   - v1.1：P2（`sys:wiki_utility_audit`，统计层）已实现，见该节内的"实现记录"标注。
   - v1.2：P3（`sys:relevance_threshold_calibration`）已实现，见该节内的"实现记录"标注。
+  - v1.3：P4（`sys:ecosystem_positioning_scan`）已实现，"同类项目"种子列表
+    维护方式选择"人工配置"（`ecosystem_positioning.seeds`），见该节内的
+    "实现记录"标注。
 - **背景任务**: 在 `external_knowledge_wiki_and_self_improvement_plan.md`（P1-P5 均已实现）打通的
   "外部事件/检索 → wiki 沉淀 → 自我改进候选"链路基础上，针对现状复盘发现的几处"只生产、
   不巡检/不校准/不回看"的空隙做补齐，不新增数据源，聚焦在现有链路上补一层
@@ -146,16 +149,49 @@
   （因新增 `relevant`/`advance_worthy` 持久化字段而回归运行）做了确认，
   全部通过。
 
-### P4 —— `sys:ecosystem_positioning_scan`（生态定位扫描）📋 已设计，未实现
+### P4 —— `sys:ecosystem_positioning_scan`（生态定位扫描）✅ 已实现
 
-- 目标：复用 `tech_radar_search.py` 已有的"检索 → LLM 抽取 → 落盘 wiki"管道，但种子来源
-  从"自身能力弱点"换成"同类 agent 框架/相关开源项目近期变化"，产出的候选与
-  `external_trend_capability_link` 的候选分开落点（不同 `source_kind`/候选文件），
-  定位为"看别人在解决什么我还没意识到是问题的问题"，作为对 P4（原计划）"只补已知短板"
-  这一视野局限的补充。
-- 推荐节奏：`interval:604800`。
-- 依赖：需要先确定一份"同类项目"种子列表的维护方式（人工配置 vs 自动发现），本次先只做
-  设计，留待与用户确认种子列表来源后再实现。
+> 实现记录：新增 `src/mini_agent/external_input/ecosystem_positioning_scan.py`
+> （`run_ecosystem_positioning_scan_once()` +
+> `ensure_ecosystem_positioning_scan_job()`），在 `api/server.py` daemon
+> 启动流程里注册 `sys:ecosystem_positioning_scan` job（`interval:604800`，
+> 零额外检索通道成本，本地回调 handler，跟
+> `tech_radar_search.py::ensure_tech_radar_search_job` 同构）。
+
+- **种子列表维护方式（原设计的前置依赖）**：本次选择"人工配置"这一支路——
+  新增 `config/models.py::EcosystemPositioningConfig`（`ecosystem_positioning.
+  seeds`，`agent_config.json` 里配置同类 agent 框架/开源项目名称列表），
+  与 `TechRadarConfig.keywords` 同款取舍（初期先简单实现，不追求自动发现）。
+  种子列表默认为空，job 首次创建时默认 `disabled`（不同于
+  `tech_radar_search`——后者种子池天然有 `gap_scanner` 缺口兜底，本模块
+  完全依赖人工配置，避免"注册了但什么都不做"的困惑），需要用户显式配置
+  `seeds` 并启用该 job 后才会真正运行。
+- **管道复用**：完全复用 `tech_radar_search.py` 的"检索 → LLM 抽取 → 落盘
+  wiki"管道（种子轮转、`web_search` 调用、批量 LLM 抽取 prompt/解析、
+  `wiki/world_writer.py::queue_entities()`/`queue_facts()` 落盘），独立
+  实现而非导入私有函数（两个可独立演化的模块不产生隐式耦合，跟
+  `tech_radar_search.py`/`knowledge_extractor.py` 的既有关系一致）。
+- **候选分开落点**：新增 `wiki/world_writer.py::EXTERNAL_ECOSYSTEM_SOURCE_KIND`
+  （`"external_ecosystem"`），与 `tech_radar_search.py` 的
+  `EXTERNAL_SEARCH_SOURCE_KIND`（`"external_search"`）区分——
+  `evolution/external_trend_capability_link.py::EXTERNAL_KNOWLEDGE_SOURCE_KINDS`
+  只包含 `("external_watch", "external_search")`，不含本模块产出的页面，
+  保持"看别人在做什么"是独立一路信号，不被直接拿去跟"自身已知弱点"强行
+  匹配（符合原设计"产出的候选与 external_trend_capability_link 的候选
+  分开落点（不同 source_kind/候选文件）"的要求）。
+- 独立的种子轮转游标：`AgentPaths.external_input_ecosystem_positioning_state`
+  （`.agent/external_input/state/ecosystem_positioning_scan_state.json`），
+  与 `external_input_tech_radar_state` 同构但完全独立，不共享游标。
+- 测试：新增 `tests/test_ecosystem_positioning_scan.py`（9 用例，全部
+  通过），覆盖无 llm_helper/空种子跳过、种子轮转与回绕、entities/facts
+  正确落盘并打 `source_kind="external_ecosystem"`、单种子检索失败不阻塞
+  其它种子、全部检索失败/LLM 调用失败不推进游标、单条解析失败不阻塞其余
+  条目、job 默认以 disabled 状态注册；对
+  `tests/test_external_input_tech_radar_search.py`/
+  `tests/test_entity_digest.py`/`tests/test_wiki_lifecycle.py`/
+  `tests/test_external_input_knowledge_extractor.py`
+  （因新增 source_kind 常量与 world_writer 用法回归运行）做了确认，
+  全部通过。
 
 ### P5 —— `sys:monthly_trend_retrospective`（月度战略回顾）📋 已设计，未实现
 
@@ -170,7 +206,8 @@
 
 - v1.1 实施了 P1、P2（P2 只做统计层，不改 gap_scan/decommission 判断逻辑）。
 - v1.2 实施了 P3（阈值自校准，含 warmup/最小样本量门槛与人工回滚逃生通道）。
-- P4-P5 仍留档设计、明确标注未实现及各自的关键前置缺口/风险（P4 依赖"同类项目"
-  种子列表来源需先与用户确认；P5 依赖 P1-P4 跑出一段时间数据后再实现），不打
-  "实现了但是半成品"的擦边球——这与项目里 P12/P13 阶段"部分内容显式延后"的
-  一贯做法一致。
+- v1.3 实施了 P4（生态定位扫描；"同类项目"种子列表选择"人工配置"支路，
+  job 默认 disabled，需用户配置种子后启用）。
+- P5 仍留档设计，明确标注未实现及关键前置缺口（依赖 P1-P4 跑出一段时间
+  数据后再实现），不打"实现了但是半成品"的擦边球——这与项目里 P12/P13
+  阶段"部分内容显式延后"的一贯做法一致。

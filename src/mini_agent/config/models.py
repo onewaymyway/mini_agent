@@ -551,6 +551,26 @@ class TechRadarConfig:
 
 
 @dataclass
+class EcosystemPositioningConfig:
+    """[外部知识反馈闭环计划 P4] `sys:ecosystem_positioning_scan` 生态定位
+    扫描配置。
+
+    见 next_doc/external_knowledge_feedback_loop_improvement_plan.md §3 P4：
+    复用 `tech_radar_search.py` 的"检索 → LLM 抽取 → 落盘 wiki"管道，但种子
+    来源换成"同类 agent 框架/相关开源项目"，定位为"看别人在解决什么我还没
+    意识到是问题的问题"。`seeds` 需要人工维护（暂不追求自动发现同类项目
+    列表，与 `TechRadarConfig.keywords` 同样的"初期先简单实现"取舍）——
+    默认空列表时本 job 直接跳过、不产生任何调用，需要用户在
+    `agent_config.json` 里显式配置感兴趣的同类项目/框架名称后才会真正工作，
+    因此默认以 `enabled=False` 状态注册（见 `ensure_ecosystem_positioning_scan_job`）。
+    """
+    enabled: bool = False
+    seeds: list = field(default_factory=list)   # list[str]，同类项目/框架名称
+    weekly_seed_limit: int = 5
+    max_search_results: int = 5
+
+
+@dataclass
 class RetryConfig:
     """LLM 调用重试配置。
 
@@ -1422,6 +1442,7 @@ class AppConfig:
     mcp:        MCPConfig        = field(default_factory=MCPConfig)
     web_search: WebSearchConfig  = field(default_factory=WebSearchConfig)
     tech_radar: TechRadarConfig  = field(default_factory=TechRadarConfig)
+    ecosystem_positioning: EcosystemPositioningConfig = field(default_factory=EcosystemPositioningConfig)
     reminder:   ReminderConfig   = field(default_factory=ReminderConfig)
     proprioception: ProprioceptionConfig = field(default_factory=ProprioceptionConfig)
     affordance: AffordanceConfig = field(default_factory=AffordanceConfig)

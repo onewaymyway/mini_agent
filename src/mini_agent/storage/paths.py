@@ -762,6 +762,15 @@ class AgentPaths:
         return self.external_input_state_dir / "tech_radar_search_state.json"
 
     @property
+    def external_input_ecosystem_positioning_state(self) -> Path:
+        """<project_root>/.agent/external_input/state/ecosystem_positioning_scan_state.json —
+        `sys:ecosystem_positioning_scan`（外部知识反馈闭环计划 P4）的种子
+        轮转游标，跟 `external_input_tech_radar_state` 同构但独立文件——
+        两个模块各自的种子池/轮转节奏完全独立，不共享游标，见
+        next_doc/external_knowledge_feedback_loop_improvement_plan.md §3 P4。"""
+        return self.external_input_state_dir / "ecosystem_positioning_scan_state.json"
+
+    @property
     def notification_dir(self) -> Path:
         """<project_root>/.agent/notification/ — 通知系统（渠道配置、分级汇报
         tier 配置）的根目录，见 next_doc/watchlist_notification_goal_design.md
