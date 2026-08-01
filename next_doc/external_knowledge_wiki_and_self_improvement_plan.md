@@ -1,8 +1,9 @@
 # 外部数据知识化与自我改进闭环 改进计划
 
-- **版本**: v1.1（P1 已实现，P2-P5 待实施）
+- **版本**: v1.2（P1、P2 已实现，P3-P5 待实施）
 - **变更记录**:
   - v1.1：P1（外部事件 → wiki 抽取管道）已实现，见该节内的"实现记录"标注。
+  - v1.2：P2（技术专题页优先聚合）已实现，见该节内的"实现记录"标注。
 - **背景任务**: 对现有外部数据输入/处理/使用机制（External Input Gateway、web_search 工具、wiki 知识库）做一次现状梳理，识别"外部世界信息未被沉淀为可复用知识"的断层，规划补齐路径
 - **关联文档**:
   - `docs/external-input-gateway-guide.md`（外部输入网关，含 §11 当前实际数据流向）
@@ -71,7 +72,20 @@
 
 **验收标准**：运行若干天后，`wiki/entities/` 或对应专题页里能看到明确标注 `source_kind: external_watch` 的条目，且与 `alerts.jsonl` 里对应的通知能对上（人工核对 1:1 抽样即可）。
 
-### P2 —— 技术专题页优先聚合（低成本，紧接 P1）
+### P2 —— 技术专题页优先聚合（低成本，紧接 P1）✅ 已实现
+
+> 实现记录（本次改动）：`wiki/topics.py` 新增 `build_topic_digest()`/
+> `build_topic_digest_section()`。`knowledge_extractor.py` 每次 run 扫描
+> 一次现有专题页，注入抽取 prompt 并新增可选输出字段 `topic_id`；命中时
+> 调用 `wiki/writer.py::append_section()` 直接追加进专题页（跳过
+> entity 判重/新建流程），未命中原样走 P1 兜底逻辑。测试见
+> `tests/test_wiki_topic_digest.py`（digest 生成）与
+> `tests/test_external_input_knowledge_extractor.py`（topic_id 命中/未命中
+> 两种路径）。详见 `docs/wiki-knowledge-base-guide.md` §十二·2。
+>
+> 专题页种子（"为关注领域预先建好专题页"）本身不是代码改动——复用
+> `generate_topic_page()`/`consolidate_topics()` 或人工创建即可，本轮
+> 未新增种子配置文件/CLI 命令。
 
 P1 产出的候选如果每条都各自建一个零散 entity 页，几个月后会积累大量碎片页面。建议：
 

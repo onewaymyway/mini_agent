@@ -116,6 +116,58 @@ class TestKnowledgeExtractor(unittest.TestCase):
         self.assertEqual(summary.parse_failed_count, 1)
         self.assertEqual(summary.entities_queued, 1)
 
+    def _write_topic_page(self, page_id: str, label: str = "AI Agent 架构动态"):
+        from mini_agent.wiki.writer import write_page
+        write_page(
+            self.paths,
+            page_id=page_id,
+            page_type="topic",
+            body="## 概述\n\n关于 AI agent 架构动态的专题页。\n",
+            tags=["ai-agent"],
+            confidence=0.5,
+            extra_frontmatter={"topic_label": label, "source_tag": "ai-agent"},
+        )
+
+    def test_topic_digest_injected_and_topic_id_hit_appends_to_topic_page(self):
+        self._write_topic_page("topic-ai-agent")
+        self._publish("topic-e1", "New agent framework released")
+        response = json.dumps({
+            "items": [
+                {"index": 1, "topic_id": "topic-ai-agent", "entities": [], "facts": []},
+            ]
+        })
+        helper = _FakeLLMHelper(response)
+        summary = run_external_knowledge_extraction_once(self.paths, llm_helper=helper)
+
+        # 命中专题页时不应该再产生独立的 entity/fact 候选
+        self.assertEqual(summary.topic_appended, 1)
+        self.assertEqual(summary.entities_queued, 0)
+        self.assertEqual(summary.facts_queued, 0)
+        pending = self.paths.world_candidates_pending_path
+        self.assertFalse(pending.exists())
+
+        topic_path = self.paths.wiki_type_dir("topic") / "topic-ai-agent.md"
+        body = topic_path.read_text(encoding="utf-8")
+        self.assertIn("外部资讯", body)
+        self.assertIn("New agent framework released", body)
+
+    def test_unmatched_topic_id_falls_back_to_entity_queue(self):
+        self._write_topic_page("topic-ai-agent-2")
+        self._publish("topic-e2", "Some unrelated paper")
+        # 模型给了一个不存在的 topic_id（幻觉/专题页已被删除），应忽略并
+        # 退回 entity 兜底逻辑，而不是报错中断。
+        response = json.dumps({
+            "items": [
+                {"index": 1, "topic_id": "topic-does-not-exist", "entities": [
+                    {"name": "Baz", "entity_type": "concept", "description": "desc"},
+                ], "facts": []},
+            ]
+        })
+        helper = _FakeLLMHelper(response)
+        summary = run_external_knowledge_extraction_once(self.paths, llm_helper=helper)
+        self.assertEqual(summary.topic_appended, 0)
+        self.assertEqual(summary.entities_queued, 1)
+
 
 if __name__ == "__main__":
     unittest.main()

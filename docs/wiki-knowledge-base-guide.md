@@ -70,7 +70,7 @@ validated_by: [grounded_hit]                    # O4：触发确认的来源类�
 | `migration.py` | 二 | `migrate_entity_store()` 一次性导出 + `mirror_entity()` 双写共用函数 |
 | `dedup.py` | 二 | 页面相似度判断：默认规则+LLM，embedding 作为可选路径 |
 | `search.py` | 三 | 三段式检索：规则粗筛 → 图扩展 → LLM 精排 |
-| `topics.py` | 四 + P3 | 专题页生成：tag 聚类 + 强链接密度（规则）与不依赖 embedding 的 LLM 直接聚类两条路径并存，候选池合并去重后 LLM 综合聚合 |
+| `topics.py` | 四 + P3 + 外部知识化P2 | 专题页生成：tag 聚类 + 强链接密度（规则）与不依赖 embedding 的 LLM 直接聚类两条路径并存，候选池合并去重后 LLM 综合聚合；新增 `build_topic_digest()`/`build_topic_digest_section()` 生成极简专题页索引，供外部知识抽取 prompt 注入使用 |
 | `promotion.py` | P4 | wiki 转正为主索引的三项标准量化：每日快照、检索 A/B 对比日志、连续达标判断（只观测，不切换） |
 | `decision_writer.py` | 决策提炼 | 决策候选落盘：命中已有决策页则更新/推翻，命中不到才新建 |
 | `world_writer.py` | P1 + O4 + 外部知识化P1 | 世界模型候选（entities[]/facts[]）批量落盘，fact 以正文内锚点注释（`#fact-N`）实现独立状态标记；`queue_entities()`/`queue_facts()` 支持 `source_kind` 参数，供对话来源（`world_model`，默认值）之外的调用方（如 `external_input/knowledge_extractor.py`）标注来源 |
@@ -505,9 +505,39 @@ O4 未覆盖的部分（详见实施记录 §5）：`stale_candidate_scan()` 尚
   状态接入，人工评估几天后再手动开启"一致，需要到 Cron Jobs 看板手动启用。
 - **尚未实现**（计划里的后续阶段，见
   `next_doc/external_knowledge_wiki_and_self_improvement_plan.md`）：
-  P2 专题页优先聚合、P3 `sys:tech_radar_search` 主动检索反哺 wiki（预留了
+  P3 `sys:tech_radar_search` 主动检索反哺 wiki（预留了
   `EXTERNAL_SEARCH_SOURCE_KIND="external_search"` 常量但暂无消费者写入）、
   P4 外部知识接入自我改进候选生成。
+
+### 十二·2、技术专题页优先聚合（外部数据知识化计划 P2，本轮新增）
+
+P1 长期运行会把每条命中事件都提炼成独立 entity 页面，几个月后积累大量
+碎片页面。P2 不新增机制，只是让 P1 的抽取 prompt "先看一眼有没有现成的
+专题页可以合并"：
+
+- **专题页种子**：关注领域预先在 wiki 里建好的 `topics/*.md` 页面，直接
+  复用 `wiki/topics.py` 现成的生成能力（`generate_topic_page()`/
+  `consolidate_topics()`）或手工创建，不是本次改动新增的机制。
+- **新函数** `wiki/topics.py::build_topic_digest()`/
+  `build_topic_digest_section()`：与 `wiki/entity_digest.py::build_entity_digest()`
+  同构，只产出 `专题页 id（label）：一句话摘要` 的极简索引（默认最多 30
+  条，按 `updated` 倒序），没有任何专题页时返回空字符串。
+- **抽取 prompt 注入**：`knowledge_extractor.py` 每次 run 只扫描一次现有
+  专题页，把该索引注入 prompt，并在输出 schema 里新增可选字段
+  `topic_id`——模型判断某条资讯明显属于某个已有专题时填这个字段。
+- **命中专题**：直接对该专题页 `wiki/writer.py::append_section()` 追加一段
+  "外部资讯"记录（标题+摘要+来源链接），**不经过** `world_writer.py` 的
+  entity 判重/新建流程，避免同一条信息既进了专题页又单独建了一个 entity
+  页面。`topic_id` 在当前专题页集合里找不到匹配（模型幻觉/专题页已删除）
+  时静默忽略，退回下面的兜底逻辑。
+- **未命中兜底**：没有 `topic_id` 或匹配不到的候选，原样走 P1 既有的
+  `queue_entities`/`queue_facts` 流程，不额外新增第二套落盘机制。
+- **验收方式**：`wiki/stats.py` 现有的 `by_source_kind` 统计已经能看出
+  `external_watch` 类页面的绝对数量增长趋势是否放缓；`external_watch`
+  条目里"归入已有专题页 vs 独立新建 entity"的比例目前需要人工核对
+  `topics/*.md` 的"外部资讯" section 与 `entities/` 下 `source_kind:
+  external_watch` 页面数量，未新增自动化指标（与计划原文"人工审查即可"
+  一致）。
 
 ## 相关文档
 

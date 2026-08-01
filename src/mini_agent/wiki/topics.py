@@ -73,6 +73,77 @@ class TopicCandidate:
     label: str = ""
 
 
+def _first_body_sentence(body: str, max_chars: int = 60) -> str:
+    text = (body or "").strip()
+    for heading in ("## 概述", "## overview"):
+        idx = text.lower().find(heading.lower())
+        if idx != -1:
+            text = text[idx + len(heading):].strip()
+            break
+    for sep in ("。", "\n"):
+        pos = text.find(sep)
+        if pos != -1:
+            text = text[:pos]
+            break
+    return text.strip()[:max_chars]
+
+
+def build_topic_digest(paths: AgentPaths, *, max_topics: int = 30) -> str:
+    """外部数据知识化改进计划 P2：生成一份极简专题页索引文本，供
+    `external_input/knowledge_extractor.py` 的抽取 prompt 注入使用——引导
+    模型优先判断"这条新闻应该追加进哪个已有专题页"，而不是无脑新建碎片化
+    entity 页面（P1 上线后长期跑会积累大量零散 entity 页面）。
+
+    做法与 `wiki/entity_digest.py::build_entity_digest()` 同构（只产出
+    id + 一句话摘要，不返回原始正文，控制 prompt token 开销），只是扫描
+    对象换成 `type == "topic"` 的页面。没有任何专题页、或读取失败时返回
+    空字符串——调用方据此不注入专题页索引段落，模型退回"全部当新实体"的
+    P1 原有行为，不阻断抽取主流程（与 entity_digest 同样的失败兜底策略）。
+    """
+    try:
+        pages: list[WikiPage] = []
+        for md_path in discover_pages(paths):
+            try:
+                page = parse_page(md_path)
+            except Exception as _mini_agent_exc:
+                from mini_agent.errors import log_exception
+                log_exception(_mini_agent_exc, where='mini_agent.wiki.topics.build_topic_digest')
+                continue
+            if page.type == "topic":
+                pages.append(page)
+    except Exception as _mini_agent_exc:
+        from mini_agent.errors import log_exception
+        log_exception(_mini_agent_exc, where='mini_agent.wiki.topics.build_topic_digest')
+        return ""
+    if not pages:
+        return ""
+
+    pages.sort(key=lambda p: p.raw_frontmatter.get("updated") or "", reverse=True)
+    lines: list[str] = []
+    for page in pages[: max(0, max_topics)]:
+        label = page.raw_frontmatter.get("topic_label") or (page.tags[0] if page.tags else "")
+        desc = _first_body_sentence(page.body)
+        label_part = f"（{label}）" if label else ""
+        if desc:
+            lines.append(f"- {page.id}{label_part}：{desc}")
+        else:
+            lines.append(f"- {page.id}{label_part}")
+    return "\n".join(lines)
+
+
+def build_topic_digest_section(paths: AgentPaths, *, max_topics: int = 30) -> str:
+    """`build_topic_digest()` 的 prompt-ready 包装：带上说明性表头。没有
+    已知专题页时返回空字符串，等同于完全不注入这一段。"""
+    digest = build_topic_digest(paths, max_topics=max_topics)
+    if not digest:
+        return ""
+    return (
+        "\nExisting topic pages (if this item clearly belongs to one of the "
+        "topics below, reference its id via `topic_id` instead of creating a "
+        "standalone entity):\n" + digest
+    )
+
+
 def _existing_topic_source_tags(pages: list[WikiPage]) -> set[str]:
     """已经生成过专题页的 tag 集合，来自既有 topics/*.md 的 source_tag 字段。"""
     tags: set[str] = set()
