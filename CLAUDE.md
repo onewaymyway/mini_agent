@@ -62,6 +62,7 @@
 - 核心代码放在 `src/mini_agent/` 目录下，使用包导入方式
 - 所有与 LLM 的交互通过 `llm.LLMClient` 接口，切换 provider 只需修改配置
 - **主对话循环之外**的 LLM 调用（judge / ensemble / 目标拆解 / 摘要重写 / 路由判定等旁路场景）一律通过 `LLMHelper`（`agent.llm_helper` 或 `LLMHelper.from_config(cfg)`），**禁止**再手写 `LLMConfig.from_app_config(cfg)` + `create_client()` 的重复组合；详见"LLMHelper：旁路 LLM 调用统一入口"章节与 [LLMHelper 使用指南](docs/llm-helper-guide.md)
+- **新增 `agent_config.json` 配置字段一律走 `config/param_registry.py` 的统一 nested block 注册机制**（多数情况下只需要在 `config/models.py` 里加一个 dataclass 字段，不需要碰 `loader.py`）；确需 CLI 覆盖的全新参数用同文件的 `ParamSpec` 机制；**禁止**在 `config/loader.py` 里新写手动的 `XxxConfig(field=int(_x.get(...)), ...)` 构造代码或新的 `_f`/`_fb`/`_fn` 调用点。决策树、示例代码见 [参数系统指南](docs/param-system-guide.md)
 - 所有系统或者模块都应该在/docs 目录下有对应的设计与功能说明
 - 未来规划相关的文档放在/next_doc 目录下
 - 关键功能都应该在/tests 下有对应的单元测试
@@ -150,7 +151,7 @@ mini-agent user token u_a1b2c3d4                       # 重新生成 token
 - `context_builder.py` — System prompt 构建（skill/memory/project 注入）
 - `tool_executor.py` — 工具执行（权限检查 + 调用 + 截断 + 缓存）
 - `history_manager.py` — 历史管理（追加 + 压缩 + 快照恢复）
-- `config/` — 配置管理包：`models.py`（14 个配置 dataclass + AppConfig）/ `loader.py`（`load_config` 及 providers.json 加载、llm_fallback_chain、退避策略参数）/ `prompt_builder.py`（`build_system_prompt`）；`__init__.py` 重导出，对外 import 路径不变
+- `config/` — 配置管理包：`models.py`（14 个配置 dataclass + AppConfig）/ `loader.py`（`load_config` 及 providers.json 加载、llm_fallback_chain、退避策略参数）/ `param_registry.py`（统一参数注册与解析机制：nested block 通用加载 `NESTED_CONFIG_BLOCKS`/`load_all_nested_blocks()` + flat CLI 参数 `ParamSpec`，新增配置字段的标准入口，见 [参数系统指南](docs/param-system-guide.md)）/ `config_catalog.py`（看板配置 UI 字段目录，与 `param_registry.py` 做一致性校验）/ `prompt_builder.py`（`build_system_prompt`）；`__init__.py` 重导出，对外 import 路径不变
 - `permissions.py` — 工具调用的权限守卫
 - `interaction.py` — 通用交互式提问的双路适配层（详见上方项目结构小节）
 - `session.py` — 会话管理

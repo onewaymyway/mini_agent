@@ -58,6 +58,7 @@ from .models import (
     DEFAULT_MAX_TURNS,
 )
 from .prompt_builder import _read_claude_md, _resolve_prompts_dir, _resolve_skills_dir
+from .param_registry import NESTED_CONFIG_BLOCKS, load_all_nested_blocks
 
 
 # ════════════════════════════════════════════════════════════════════════════════
@@ -550,27 +551,14 @@ def load_config(
         timeout=float(_ws.get("timeout") or os.environ.get("WEB_SEARCH_TIMEOUT", 10.0)),
     )
 
-    _tr = file_cfg.get("tech_radar") if isinstance(file_cfg.get("tech_radar"), dict) else {}
-    _tr_keywords = _tr.get("keywords")
-    tech_radar_cfg = TechRadarConfig(
-        enabled=bool(_tr.get("enabled", True)),
-        keywords=list(_tr_keywords) if isinstance(_tr_keywords, list) else [],
-        daily_seed_limit=int(_tr.get("daily_seed_limit") or 5),
-        max_search_results=int(_tr.get("max_search_results") or 5),
-    )
-
-    # 外部知识反馈闭环计划 P4：ecosystem_positioning.seeds 是"同类 agent
-    # 框架/相关开源项目"的人工配置种子列表，跟 tech_radar.keywords 同款
-    # 解析风格，默认空列表（job 本身默认 disabled，见
-    # EcosystemPositioningConfig 类注释）。
-    _ep = file_cfg.get("ecosystem_positioning") if isinstance(file_cfg.get("ecosystem_positioning"), dict) else {}
-    _ep_seeds = _ep.get("seeds")
-    ecosystem_positioning_cfg = EcosystemPositioningConfig(
-        enabled=bool(_ep.get("enabled", False)),
-        seeds=list(_ep_seeds) if isinstance(_ep_seeds, list) else [],
-        weekly_seed_limit=int(_ep.get("weekly_seed_limit") or 5),
-        max_search_results=int(_ep.get("max_search_results") or 5),
-    )
+    # [统一参数机制] 以下这批"字段名与 dataclass 一一对应、无 CLI 覆盖"的
+    # 嵌套 block，统一通过 param_registry.NESTED_CONFIG_BLOCKS 通用加载，
+    # 不再逐个手写 `XxxConfig(field=int(_x.get(...)), ...)`——新增字段只
+    # 需要改 models.py 里的 dataclass 定义，这里不需要再改。见
+    # docs/param-system-guide.md。
+    _nested_blocks = load_all_nested_blocks(file_cfg, NESTED_CONFIG_BLOCKS)
+    tech_radar_cfg = _nested_blocks["tech_radar"]
+    ecosystem_positioning_cfg = _nested_blocks["ecosystem_positioning"]
 
     _rm = file_cfg.get("reminder") if isinstance(file_cfg.get("reminder"), dict) else {}
     _reminder_enabled_val = reminder_enabled if reminder_enabled is not None else _rm.get("enabled", True)
@@ -652,47 +640,10 @@ def load_config(
     # ── GoalMode 配置组装 ────────────────────────────────────────────────────
     # [SYS-GOAL-MODE] 目前只支持从配置文件的 goal_mode: {...} 块读取，暂不接 CLI 参数
     # （/goal 命令本身的运行时参数走命令行 slash 参数，不走这里）。
-    _gm = file_cfg.get("goal_mode") if isinstance(file_cfg.get("goal_mode"), dict) else {}
-    goal_mode_cfg = GoalModeConfig(
-        enabled=bool(_gm.get("enabled", False)),
-        spec_builder_model=_gm.get("spec_builder_model"),
-        spec_builder_provider=_gm.get("spec_builder_provider"),
-        judge_model=_gm.get("judge_model"),
-        judge_provider=_gm.get("judge_provider"),
-        judge_tools_enabled=bool(_gm.get("judge_tools_enabled", False)),
-        judge_allowed_tools=list(_gm.get("judge_allowed_tools", ["bash", "read_file", "grep", "glob"])),
-        judge_allowed_tool_groups=list(_gm.get("judge_allowed_tool_groups", [])),
-        judge_yes_mode=bool(_gm.get("judge_yes_mode", False)),
-        max_rounds=int(_gm.get("max_rounds", 20)),
-        max_total_compacts=int(_gm.get("max_total_compacts", 10)),
-        consecutive_same_feedback_limit=int(_gm.get("consecutive_same_feedback_limit", 3)),
-        same_feedback_similarity_threshold=float(_gm.get("same_feedback_similarity_threshold", 0.9)),
-        # [BUGFIX] 之前这里漏读了 max_stuck_recoveries：不管配置文件里
-        # goal_mode.max_stuck_recoveries 写了什么，实际生效的永远是
-        # GoalModeConfig 类定义里的默认值，配置项形同虚设。默认值同时
-        # 从 1 改成 3——"卡住"(连续反馈高度雷同/没有新进展) 后不再只给
-        # 一次 compact 机会，而是连续压缩重试最多 3 次，直到 3 次之后
-        # 仍然没有新进展才真正终止。
-        max_stuck_recoveries=int(_gm.get("max_stuck_recoveries", 3)),
-        judge_show_prompt=bool(_gm.get("judge_show_prompt", False)),
-        persist_state=bool(_gm.get("persist_state", True)),
-        auto_resume_prompt=bool(_gm.get("auto_resume_prompt", True)),
-    )
-
-    # ── TurnJudge 配置组装 ───────────────────────────────────────────────────
-    # [SYS-TURN-JUDGE] 目前只支持从配置文件的 turn_judge: {...} 块读取。
-    _tj = file_cfg.get("turn_judge") if isinstance(file_cfg.get("turn_judge"), dict) else {}
-    turn_judge_cfg = TurnJudgeConfig(
-        enabled=bool(_tj.get("enabled", False)),
-        judge_model=_tj.get("judge_model"),
-        judge_provider=_tj.get("judge_provider"),
-        max_auto_rounds=int(_tj.get("max_auto_rounds", 3)),
-        judge_show_prompt=bool(_tj.get("judge_show_prompt", False)),
-        history_window=int(_tj.get("history_window", 6)),
-        consecutive_same_output_limit=int(_tj.get("consecutive_same_output_limit", 3)),
-        same_output_similarity_threshold=float(_tj.get("same_output_similarity_threshold", 0.9)),
-        max_stuck_recoveries=int(_tj.get("max_stuck_recoveries", 3)),
-    )
+    # [统一参数机制] goal_mode / turn_judge 同样字段名一一对应，走通用加载
+    # （见上方 tech_radar 处的说明）。
+    goal_mode_cfg = _nested_blocks["goal_mode"]
+    turn_judge_cfg = _nested_blocks["turn_judge"]
 
     # ── EnvInfo 配置组装 ────────────────────────────────────────────────────
     _ei = file_cfg.get("env_info") if isinstance(file_cfg.get("env_info"), dict) else {}
@@ -713,39 +664,12 @@ def load_config(
         include_username=_ei_include_username,
     )
 
-    # ── Workdir 知识层配置组装（W2，对应设计文档 8.2 节）─────────────────────
-    _wk = file_cfg.get("workdir_knowledge") if isinstance(file_cfg.get("workdir_knowledge"), dict) else {}
-    workdir_knowledge_cfg = WorkdirKnowledgeConfig(
-        enabled=bool(_wk.get("enabled", True)),
-        work_thread_relation_days=float(_wk.get("work_thread_relation_days", 7.0)),
-        open_threads_inject_limit=int(_wk.get("open_threads_inject_limit", 5)),
-    )
-
-    # ── Global 知识层配置组装（W3，对应设计文档 8.3 节）──────────────────────
-    _gk = file_cfg.get("global_knowledge") if isinstance(file_cfg.get("global_knowledge"), dict) else {}
-    global_knowledge_cfg = GlobalKnowledgeConfig(
-        enabled=bool(_gk.get("enabled", True)),
-        dormant_after_days=float(_gk.get("dormant_after_days", 30.0)),
-        activity_log_inject_limit=int(_gk.get("activity_log_inject_limit", 5)),
-    )
-
-    # ── [具身改进 B1] 本体感知模块配置组装 ──────────────────────────────────
-    _pp = file_cfg.get("proprioception") if isinstance(file_cfg.get("proprioception"), dict) else {}
-    proprioception_cfg = ProprioceptionConfig(
-        enabled=bool(_pp.get("enabled", True)),
-        frustration_threshold=float(_pp.get("frustration_threshold", 0.5)),
-        consecutive_failure_threshold=int(_pp.get("consecutive_failure_threshold", 3)),
-        trace_enabled=bool(_pp.get("trace_enabled", True)),
-        verbose=bool(_pp.get("verbose", False)),
-    )
-
-    # [具身改进 B4] 余裕感知层配置组装
-    _af = file_cfg.get("affordance") if isinstance(file_cfg.get("affordance"), dict) else {}
-    affordance_cfg = AffordanceConfig(
-        enabled=bool(_af.get("enabled", True)),
-        use_capability_map=bool(_af.get("use_capability_map", True)),
-        verbose=bool(_af.get("verbose", False)),
-    )
+    # [统一参数机制] workdir_knowledge / global_knowledge / proprioception /
+    # affordance 同样走通用加载（见上方 tech_radar 处的说明）。
+    workdir_knowledge_cfg = _nested_blocks["workdir_knowledge"]
+    global_knowledge_cfg = _nested_blocks["global_knowledge"]
+    proprioception_cfg = _nested_blocks["proprioception"]
+    affordance_cfg = _nested_blocks["affordance"]
 
     # [具身改进 B3][workflow机制改进计划.md] Workflow 执行/看护配置组装
     _wf = file_cfg.get("workflow") if isinstance(file_cfg.get("workflow"), dict) else {}
@@ -789,79 +713,17 @@ def load_config(
         ),
     )
 
-    # ── 日报融合 / 主动推荐 / 决策画像配置组装（主动推荐与数字分身机制设计方案）──
-    _da = file_cfg.get("digest_advisor") if isinstance(file_cfg.get("digest_advisor"), dict) else {}
-    digest_advisor_cfg = DigestAdvisorConfig(
-        daily_digest_enabled=bool(_da.get("daily_digest_enabled", True)),
-        daily_digest_startup_print_enabled=bool(_da.get("daily_digest_startup_print_enabled", True)),
-        next_action_enabled=bool(_da.get("next_action_enabled", True)),
-        next_action_startup_print_enabled=bool(_da.get("next_action_startup_print_enabled", True)),
-        next_action_rank_with_llm=bool(_da.get("next_action_rank_with_llm", False)),
-        next_action_stale_days=float(_da.get("next_action_stale_days", 7.0)),
-        next_action_stale_priority_floor=int(_da.get("next_action_stale_priority_floor", 1)),
-        next_action_attention_window_hours=float(_da.get("next_action_attention_window_hours", 6.0)),
-        next_action_attention_mismatch_ratio=float(_da.get("next_action_attention_mismatch_ratio", 0.5)),
-        next_action_profile_weighting_enabled=bool(_da.get("next_action_profile_weighting_enabled", False)),
-        next_action_profile_weighting_min_confidence=float(
-            _da.get("next_action_profile_weighting_min_confidence", 0.5)
-        ),
-        next_action_push_enabled=bool(_da.get("next_action_push_enabled", False)),
-        next_action_push_threshold_hours=float(_da.get("next_action_push_threshold_hours", 2.0)),
-        next_action_push_max_per_session=int(_da.get("next_action_push_max_per_session", 1)),
-        decision_profile_enabled=bool(_da.get("decision_profile_enabled", False)),
-        decision_profile_min_evidence_count=int(_da.get("decision_profile_min_evidence_count", 3)),
-    )
-
-    # ── daemon cron 任务专属执行机制配置（见 config/models.py::CronConfig）──
-    _cron = file_cfg.get("cron") if isinstance(file_cfg.get("cron"), dict) else {}
-    cron_cfg = CronConfig(
-        max_concurrent_jobs=int(_cron.get("max_concurrent_jobs", 2)),
-        default_timeout_seconds=int(_cron.get("default_timeout_seconds", 20 * 60)),
-        default_max_steps=int(_cron.get("default_max_steps", 60)),
-        inner_max_turns=int(_cron.get("inner_max_turns", 15)),
-    )
-
-    # ── [看板配置管理改进方案 kanban_config_management_plan.md 附带修复]
-    # AutonomyConfig / ObservabilityConfig 此前从未接入 file_cfg 读取——
-    # AppConfig(...) 构造调用里一直没有传 autonomy=/observability=，
-    # 导致这两个子配置块无论 agent_config.json 里写了什么，实际生效的
-    # 永远是 dataclass 定义里的默认值（包括
-    # goal_execution_fairness_improvement_plan.md P1-P4 新增的所有
-    # autonomy.* 字段）。这里补齐，做法与其它"嵌套字典、字段名直接对应"
-    # 的配置块（tech_radar/goal_mode/proprioception 等）完全一致：用
-    # dataclasses.fields() 通用遍历，凡是 file_cfg["autonomy"]/
-    # ["observability"] 里出现的同名字段就覆盖默认值，类型按字段自身的
-    # 默认值类型转换（bool/int/float/str 直接转换，其余类型原样透传）。
-    def _load_block_from_dict(block: dict, cls):
-        import dataclasses as _dc
-        kwargs = {}
-        for f in _dc.fields(cls):
-            if f.name not in block:
-                continue
-            raw_v = block[f.name]
-            default_v = f.default if f.default is not _dc.MISSING else None
-            try:
-                if isinstance(default_v, bool):
-                    kwargs[f.name] = bool(raw_v)
-                elif isinstance(default_v, int) and not isinstance(default_v, bool):
-                    kwargs[f.name] = int(raw_v)
-                elif isinstance(default_v, float):
-                    kwargs[f.name] = float(raw_v)
-                elif isinstance(default_v, str):
-                    kwargs[f.name] = str(raw_v)
-                else:
-                    kwargs[f.name] = raw_v
-            except (TypeError, ValueError):
-                # 类型转换失败（脏配置）——忽略该字段，退回默认值，不让
-                # 一个写错的字段拖垮整个 AppConfig 的加载。
-                continue
-        return cls(**kwargs)
-
-    _autonomy_dict = file_cfg.get("autonomy") if isinstance(file_cfg.get("autonomy"), dict) else {}
-    autonomy_cfg = _load_block_from_dict(_autonomy_dict, AutonomyConfig)
-
-    _observability_dict = file_cfg.get("observability") if isinstance(file_cfg.get("observability"), dict) else {}
-    observability_cfg = _load_block_from_dict(_observability_dict, ObservabilityConfig)
+    # [统一参数机制] digest_advisor / cron / autonomy（含
+    # fairness_time_slicing_enabled 等 P1-P4 字段）/ observability 同样走
+    # 通用加载（见上方 tech_radar 处的说明）。以前 autonomy/observability
+    # 两个 block 曾长期"写了当没写"（AppConfig(...) 构造从未传
+    # autonomy=/observability=），本次统一改造后由 load_all_nested_blocks
+    # 一次性正确加载全部 12 个嵌套 block，不会再出现这类"某个 block 漏接"
+    # 的问题——所有 block 的加载路径完全一致，是同一段通用代码。
+    digest_advisor_cfg = _nested_blocks["digest_advisor"]
+    cron_cfg = _nested_blocks["cron"]
+    autonomy_cfg = _nested_blocks["autonomy"]
+    observability_cfg = _nested_blocks["observability"]
 
     return AppConfig(
         api_key=api_key,

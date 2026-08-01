@@ -761,9 +761,17 @@ class AutonomyConfig:
 
 ## 6. 添加新功能配置
 
-新增功能只需三步，无需修改 `AppConfig` 主体：
+> **2026-08 起的新规范**：新增配置字段/配置块统一走
+> `config/param_registry.py` 里的注册表驱动机制，不再逐个手写
+> `config/loader.py` 里的 `XxxConfig(field=int(_x.get(...)), ...)`
+> 构造代码。完整规范、决策树（"我该走 nested block 还是 flat CLI
+> 参数？"）、常见坑，见 **[参数系统指南](param-system-guide.md)**——
+> 本节只给一个最短路径示例。
 
-**步骤一**：在 `config/models.py` 中新建子配置类
+**绝大多数新参数**（只需要能在 `agent_config.json` 里配置，不需要
+`--xxx` 命令行覆盖）走"嵌套 block"机制，两步搞定：
+
+**步骤一**：在 `config/models.py` 中新建（或复用已有）子配置类
 
 ```python
 @dataclass
@@ -773,35 +781,43 @@ class MyFeatureConfig:
     param_b: str = "default"
 ```
 
-**步骤二**：在同一文件的 `AppConfig` 中加入子块引用
+**步骤二**：在 `AppConfig` 中加入子块引用，并在
+`config/param_registry.py::_build_nested_blocks()` 里注册一行
 
 ```python
+# models.py
 @dataclass
 class AppConfig:
     ...
     my_feature: MyFeatureConfig = field(default_factory=MyFeatureConfig)
+
+# param_registry.py::_build_nested_blocks()
+NestedBlockSpec("my_feature", _m.MyFeatureConfig),
 ```
 
-**步骤三**：在 `config/loader.py` 的 `load_config()` 中从 JSON/CLI 组装
+到此为止——**不需要再碰 `loader.py`**。`agent_config.json` 里
+`"my_feature": {"param_a": 20}` 会被 `load_all_nested_blocks()` 通用地
+读出来并做类型转换，`config_catalog.py`（看板配置 UI）也会自动展示
+新字段。给已有 block（如 `autonomy`/`tech_radar`）加新字段更简单：
+只需要步骤一（加 dataclass 字段），连步骤二都不用做。
 
-```python
-my_feature_cfg = MyFeatureConfig(
-    enabled=_fb("my_feature_enabled", None),
-    param_a=_fn("my_feature_param_a", None, 10),
-)
-```
-
-新增的子配置类如需被 `config/__init__.py` 重导出（供外部 `from mini_agent.config import MyFeatureConfig` 使用），记得同时把类名加入 `__init__.py` 的 import 列表和 `__all__`。
+只有当新参数确实需要 `--xxx` 命令行覆盖时，才走
+[参数系统指南](param-system-guide.md) 里的 `ParamSpec` 机制；新增的子
+配置类如需被 `config/__init__.py` 重导出（供外部 `from mini_agent.config
+import MyFeatureConfig` 使用），记得同时把类名加入 `__init__.py` 的
+import 列表和 `__all__`。
 
 ---
 
 ## 7. 相关文档
 
+- [参数系统指南](param-system-guide.md) — **新增任何配置参数前必读**：nested block vs flat CLI 参数的统一注册与解析机制
 - [代码结构说明](code-structure-guide.md) — `config/` 包的文件拆分与职责边界
 - [MCP 集成指南](mcp-guide.md) — MCP 外部工具服务的架构、配置与扩展方式
 - [系统设计概述](system-overview.md) — 整体架构与各子系统关系
 - [记忆管理指南](memory-management-guide.md) — `MemoryConfig` 新增字段的完整使用场景（Lesson Memory）
 - [四项优先改进指南](four-priority-improvements-guide.md) — `MemoryConfig`（embedding/consolidation）与 `AutonomyConfig` 新字段的完整使用场景
+- [Goal 执行公平性调度配置](goal-execution-fairness-config.md) — `AutonomyConfig` 的 `fairness_*` 字段（P1-P5）完整说明
 - [多结果合并取优指南](ensemble-best-of-n-guide.md) — `EnsembleConfig` 的完整使用场景与架构说明
 - [Goal 模式指南](goal-mode-guide.md) — `GoalModeConfig` 的完整使用场景与架构说明
 - [轮次守门员指南](turn-judge-guide.md) — `TurnJudgeConfig` 的完整使用场景与架构说明
@@ -809,4 +825,4 @@ my_feature_cfg = MyFeatureConfig(
 
 ---
 
-*最后更新：2026-06（`MemoryConfig` 新增 `lesson_rules_enabled`/`lesson_fail_threshold`/`correction_detection_enabled`，对应 self_evolution_implementation_plan.md Stage 1）*
+*最后更新：2026-08（引入 `config/param_registry.py` 统一嵌套 block 加载机制，`config/loader.py` 里 10 个嵌套配置块改为通用加载，详见 [参数系统指南](param-system-guide.md)）*

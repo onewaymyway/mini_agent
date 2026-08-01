@@ -288,6 +288,28 @@ _NESTED_BLOCKS = [
     ("observability", "可观测性", "📊", "observability", _models.ObservabilityConfig, {}),
 ]
 
+# ── 与 param_registry.NESTED_CONFIG_BLOCKS 的一致性校验 ────────────────────
+# 本文件的 _NESTED_BLOCKS 比 param_registry.NESTED_CONFIG_BLOCKS 多带了
+# label/icon/敏感字段映射（纯 UI 展示用），职责不同不能直接合并成一份，
+# 但两边 (attr_name, dataclass 类) 这一核心对应关系必须一致——否则看板
+# 展示的字段和 loader.py 实际加载的字段就会对不上。这里在模块加载期做一次
+# 断言：本文件收录的、且同时也在 param_registry 通用注册表里的 block，
+# dataclass 类必须完全一致。新增/修改 nested block 时如果两边配置类型
+# 对不上，import 这个模块就会立刻报错，而不是留到运行时才发现看板显示的
+# 是旧字段。
+from . import param_registry as _param_registry  # noqa: E402
+
+_registry_by_attr = {s.attr_name: s.dataclass_type for s in _param_registry.NESTED_CONFIG_BLOCKS}
+for _cat_id, _label, _icon, _attr_name, _cls, _sensitive_map in _NESTED_BLOCKS:
+    _expected_cls = _registry_by_attr.get(_attr_name)
+    if _expected_cls is not None and _expected_cls is not _cls:
+        raise AssertionError(
+            f"config_catalog._NESTED_BLOCKS['{_attr_name}'] 用的是 {_cls!r}，"
+            f"与 param_registry.NESTED_CONFIG_BLOCKS 里注册的 {_expected_cls!r} 不一致——"
+            "两处对同一个 block 的 dataclass 类型必须保持同步。"
+        )
+del _registry_by_attr
+
 # 简单类型才纳入通用编辑目录；list/dict 类型的字段（如 keywords/seeds/
 # judge_allowed_tools）只读展示，不生成可编辑 FieldSpec——通用单值控件不
 # 适合编辑列表，见模块头部说明。

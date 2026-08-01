@@ -832,6 +832,16 @@ triggers: keyword1, keyword2
 }
 ```
 
+### 新增配置参数的统一规范
+
+`agent_config.json` 里绝大多数配置项（如上面的 `compress`/自主性调度
+`autonomy` 等 block）都通过统一的"嵌套 block 通用加载机制"读取——加一
+个新配置字段，通常只需要在 `src/mini_agent/config/models.py` 里给对应
+的 dataclass 加一个字段，不需要改配置解析代码。完整规范、决策树（该走
+配置文件 block 还是 CLI 参数）、示例代码见
+**[参数系统指南](docs/param-system-guide.md)**；配置系统整体架构见
+[配置系统指南](docs/config-guide.md)。
+
 ### Providers 配置
 
 LLM Provider 的 API Key 和 Fallback Chain 配置详见上方 [配置 API Key → LLM Provider API Key](#llm-provider-api-key推荐providersjson) 章节。

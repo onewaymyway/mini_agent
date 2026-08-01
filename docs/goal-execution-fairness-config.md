@@ -6,14 +6,15 @@
 
 所有配置项均位于 `AutonomyConfig`（即配置文件里的 `autonomy` 段）。
 
-> **重要更正（kanban_config_management_plan.md 配套修复）**：本文档下面
-> 描述的所有 `autonomy.*` 配置项，在此之前实际上**从未真正生效过**——
-> `config/loader.py` 的 `load_config()` 一直没有把 `agent_config.json` 里
-> 的 `autonomy` 段接入 `AppConfig` 构造，无论文件里写了什么，实际生效的
-> 永远是 `AutonomyConfig` 类定义里的硬编码默认值。这个 bug 已在
-> kanban_config_management_plan.md 里一并修复，现在 `autonomy` 段可以
-> 正常从 `agent_config.json` 读取。如果你在此修复之前尝试配置过下面任何
-> 一项但发现"改了没用"，不是配置写法有问题，是这个已修复的 bug。
+> **配置加载机制**：`autonomy.*` 段现在通过统一的嵌套 block 加载机制
+> （`config/param_registry.py::NESTED_CONFIG_BLOCKS` + `load_all_nested_blocks()`）
+> 从 `agent_config.json` 读取，与 `tech_radar`/`goal_mode`/`cron` 等其它
+> 嵌套配置块用同一套通用代码，不再是单独手写的特例。历史上（改造前）
+> 这里曾经出现过"改了配置没生效"的 bug（`autonomy`/`observability` 两个
+> block 一度没有真正接入 `file_cfg`），现已通过这次统一化重构从根本上
+> 修复——同样的 bug 不会再单独出现在某一个 block 上，因为所有嵌套 block
+> 现在共享同一条加载路径。新增 `autonomy.*` 字段的方法、以及整个参数
+> 加载机制的设计说明，见 `docs/param-system-guide.md`。
 
 ## P1：同 Goal 并发上限
 
