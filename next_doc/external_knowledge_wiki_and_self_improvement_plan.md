@@ -1,11 +1,12 @@
 # 外部数据知识化与自我改进闭环 改进计划
 
-- **版本**: v1.4（P1-P4 已实现，P5 待实施/可选）
+- **版本**: v1.5（P1-P5 已实现）
 - **变更记录**:
   - v1.1：P1（外部事件 → wiki 抽取管道）已实现，见该节内的"实现记录"标注。
   - v1.2：P2（技术专题页优先聚合）已实现，见该节内的"实现记录"标注。
   - v1.3：P3（主动检索反哺 wiki，`sys:tech_radar_search`）已实现，见该节内的"实现记录"标注。
   - v1.4：P4（外部知识接入自我改进候选生成，`sys:external_trend_capability_link`）已实现，见该节内的"实现记录"标注。
+  - v1.5：P5（`arxiv_api`/`github_release` 两种来源类型）已实现，见该节内的"实现记录"标注。
 - **背景任务**: 对现有外部数据输入/处理/使用机制（External Input Gateway、web_search 工具、wiki 知识库）做一次现状梳理，识别"外部世界信息未被沉淀为可复用知识"的断层，规划补齐路径
 - **关联文档**:
   - `docs/external-input-gateway-guide.md`（外部输入网关，含 §11 当前实际数据流向）
@@ -172,7 +173,22 @@ P1 产出的候选如果每条都各自建一个零散 entity 页，几个月后
 
 **验收标准**：每周能看到一份结构化的"外部技术趋势 × 自身能力薄弱点"候选草稿，且候选有明确的、可追溯到具体 wiki 条目和 capability_map 条目的依据（不是凭感觉生成的建议）。
 
-### P5（可选，视 P1-P4 实际效果决定是否投入）—— 更贴合场景的来源类型
+### P5（可选，视 P1-P4 实际效果决定是否投入）—— 更贴合场景的来源类型 ✅ 已实现
+
+> 实现记录（本次改动）：新增 `src/mini_agent/external_input/builtin/arxiv_api.py`
+> （`ArxivApiInputSource`，`@register_source("arxiv_api")`）与
+> `src/mini_agent/external_input/builtin/github_release.py`
+> （`GithubReleaseInputSource`，`@register_source("github_release")`），
+> 均严格遵循 `ExternalInputSource` 扩展点，不改动网关核心代码
+> （`poller.py`/`policy.py`）。`poller.py::_ensure_builtin_sources_registered()`
+> 补充两个 try/except 自动 import，`builtin/__init__.py` 补充导出。
+> 两者产生的事件都建议配 `channel: agent_watch`，直接复用 P1
+> `knowledge_extractor.py` 已有的抽取管道，不需要改动下游任何消费链路——
+> 纯粹是"来源"层面的信息密度提升（结构化 title+abstract /
+> tag+release note，替代信息量有限的 RSS 标题）。测试见
+> `tests/test_external_input_arxiv_api.py`、
+> `tests/test_external_input_github_release.py`。详见
+> `docs/external-input-gateway-guide.md` §7b。
 
 现有 `watch`（RSS/json_api/html_diff）在"追踪技术动态"场景下信息密度有限。可视需要新增：
 
@@ -181,7 +197,9 @@ P1 产出的候选如果每条都各自建一个零散 entity 页，几个月后
 
 两者都严格遵循 `ExternalInputSource` 扩展点（`@register_source`），不改动网关核心代码，实现方式参考 `builtin/watch.py`/`builtin/weather.py`。
 
-**本阶段暂不安排具体实施时间**——先看 P1-P4 运行数周后，"来源信息密度不够"是否真的成为瓶颈，避免在验证消费价值之前又扩大采集。
+**本阶段已实现两种来源类型**（`arxiv_api`/`github_release`），均默认不在
+`sources.yaml` 里配置任何实例——是否启用、启用哪些 repo/分类，交给用户
+按需在配置里手动添加，不代表"实现完成"等于"默认接入"。
 
 ---
 

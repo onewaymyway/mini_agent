@@ -114,6 +114,8 @@ LLM 调用"，成本不可控。
 | `ExternalInputSource` / `ExternalInputEvent` | `external_input/source.py` | 来源扩展点的抽象接口 + 标准化事件表示；`register_source()`/`get_source_class()` 构成一个轻量注册表 |
 | `WatchInputSource` | `external_input/builtin/watch.py` | 内置来源实现之一：`rss`/`json_api`/`html_diff` 三种 fetcher + 关键词/字段变化/阈值匹配规则 |
 | `WeatherInputSource` | `external_input/builtin/weather.py` | 内置来源实现之二：基于 Open-Meteo 免费预报 API 监控降雨概率/极端气温阈值，`channel` 默认 `weather` |
+| `ArxivApiInputSource`（外部数据知识化计划 P5，可选） | `external_input/builtin/arxiv_api.py` | 直接调用 arXiv 官方 API 拿结构化 title/abstract/authors（比 `watch` 的 rss fetcher 信息密度更高），产生 `signal="new_paper"` 事件，`channel` 建议配 `agent_watch` 以复用 P1 抽取管道 |
+| `GithubReleaseInputSource`（外部数据知识化计划 P5，可选） | `external_input/builtin/github_release.py` | 对接 GitHub Releases API 追踪关注 repo 的 Release/Tag 更新，产生 `signal="new_release"` 事件，同样建议 `channel: agent_watch` |
 | `GatewayPoller` | `external_input/poller.py` | 每个 source 一条独立轮询线程，按 `interval_seconds` 节拍调用 `poll()`，处理连续失败退避/熔断，用 `SourceConfig.channel` 给事件回填分类，再发布到 `system_events`；每次轮询的耗时/成败也会记一条到 `poll_history.jsonl`（见 §3/§9.1） |
 | `_RecentIdCache`（网关兜底去重） | `external_input/gateway.py` | 进程内 FIFO 去重缓存，重启后从 `gateway_dedup_cache.json` 快照恢复，节流写、不追求强一致（见 §3） |
 | `external_input/poll_history.py` | `external_input/poll_history.py` | 追加轮询结果记录 + 成功率/延迟趋势聚合（`summarize_poll_history()`），供 `GET /v1/external_input/health_history` 使用 |
@@ -338,6 +340,69 @@ sources:
 
 由于天气预报本身更新不频繁，建议 `interval_seconds` 设置成 30 分钟以上
 （示例见 §5.1），没有必要跟资讯类 source 一样高频轮询。
+
+## 7b. arxiv_api / github_release 来源（内置，外部数据知识化计划 P5，可选）
+
+设计动机见 `next_doc/external_knowledge_wiki_and_self_improvement_plan.md`
+§3 P5：`watch` 的 `rss`/`json_api`/`html_diff` 三种通用 fetcher 在"追踪
+技术动态"场景下信息密度有限（例如 RSS 往往只有标题没有摘要）。这两个
+来源直接对接结构化的官方 API，产生的事件走同一套
+`channel: agent_watch` → `external_input/knowledge_extractor.py`（P1）
+抽取管道，不需要改动下游任何消费链路，只是"来源"层面更贴合场景。
+
+**`arxiv_api`**（`external_input/builtin/arxiv_api.py`）：追踪某个 arXiv
+分类下的新论文，调用 arXiv 官方 API 拿结构化 title/abstract/authors。
+
+| 参数 | 说明 |
+|---|---|
+| `category` | 必填，如 `cs.AI` |
+| `keywords` | 可选，list[str]；标题命中任一关键词才发事件（跟 `watch` 的 rss fetcher 语义一致），不配置则不做标题过滤 |
+| `max_results` | 可选，默认 20；单次拉取条数上限（按提交时间倒序） |
+
+产生 `signal="new_paper"` 事件，`detail` 是论文摘要（截断至 500 字），
+`fields` 里带 `authors`/`published`。去重用 `state["seen_ids"]`（论文
+arXiv id），跟 `watch` 的 rss fetcher 同款"只保留最近若干条"策略。
+
+**`github_release`**（`external_input/builtin/github_release.py`）：追踪
+关注 repo 的 Release/Tag 更新，调用 GitHub Releases API。
+
+| 参数 | 说明 |
+|---|---|
+| `repo` | 必填，`owner/name` 形式 |
+| `include_prerelease` | 可选，默认 false；是否把 prerelease 也计入 |
+| `max_results` | 可选，默认 10 |
+| `github_token` | 可选；配置后加到请求头提高 GitHub API 速率限额 |
+
+产生 `signal="new_release"` 事件，`detail` 是 release note（截断至 500
+字），`fields` 里带 `tag_name`/`published_at`/`prerelease`。去重用
+`state["seen_tags"]`。
+
+示例 `sources.yaml` 片段：
+
+```yaml
+sources:
+  - id: arxiv_cs_ai_api
+    type: arxiv_api
+    interval_seconds: 21600
+    channel: agent_watch
+    params:
+      category: cs.AI
+      keywords: ["agent", "reasoning"]
+      max_results: 20
+
+  - id: mini_agent_upstream_release
+    type: github_release
+    interval_seconds: 21600
+    channel: agent_watch
+    params:
+      repo: anthropics/anthropic-sdk-python
+      include_prerelease: false
+```
+
+两者都是"锦上添花"的可选来源——P1-P4 打通的消费能力本身不依赖它们，
+只在观察到"来源信息密度不够"确实成为瓶颈时再启用（见改进计划 §3 P5
+"暂不安排具体实施时间"的取舍说明；本次改动已把实现补齐，供需要时随时
+在 `sources.yaml` 里开启，不代表默认建议立刻接入）。
 
 ## 8. 自定义来源
 

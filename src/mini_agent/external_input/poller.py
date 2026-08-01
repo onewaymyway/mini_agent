@@ -49,6 +49,14 @@ def _ensure_builtin_sources_registered() -> None:
         import mini_agent.external_input.builtin.weather  # noqa: F401
     except Exception:
         pass
+    try:
+        import mini_agent.external_input.builtin.arxiv_api  # noqa: F401
+    except Exception:
+        pass
+    try:
+        import mini_agent.external_input.builtin.github_release  # noqa: F401
+    except Exception:
+        pass
 
 def _validate_source_config(cfg: SourceConfig) -> Optional[str]:
     """单条 source 配置的可用性检测，供 GatewayPoller.reload() 在真正切换配置前调用。
