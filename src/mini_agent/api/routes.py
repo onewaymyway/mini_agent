@@ -80,6 +80,10 @@ api/routes.py — FastAPI 路由定义
     POST   /v1/evolution/proposals/{branch}/merge
                                      [Track I] 一键合并提案分支（Body 可选 {"force": bool}，
                                      risk=low 时 force 可省略；risk=high 时必须显式 force=true）
+    GET    /v1/evolution/feedback_loop_summary
+                                     [外部知识反馈闭环 P1-P5] 一次性汇总候选队列过期巡检/
+                                     wiki 利用率/阈值自校准/外部趋势候选/生态定位扫描/
+                                     月度战略回顾五个模块的当前状态（只读）
     GET    /v1/cron/jobs             CronScheduler job 列表
     POST   /v1/cron/jobs             添加 cron job
     PUT    /v1/cron/jobs/{id}        修改 job（enable/disable/schedule）
@@ -3123,6 +3127,131 @@ async def list_novelty_candidates(request: Request, limit: int = 20, offset: int
     total = count_pending_novelty_candidates(paths)
     candidates = list_pending_novelty_candidates(paths, limit=limit, offset=offset)
     return {"candidates": candidates, "total": total, "has_more": offset + len(candidates) < total}
+
+
+# ── 外部知识反馈闭环计划 P1-P5 只读汇总（供看板一次性拉取展示）──────────
+
+@router.get("/evolution/feedback_loop_summary")
+async def get_feedback_loop_summary(request: Request):
+    """GET /v1/evolution/feedback_loop_summary — 只读汇总
+    next_doc/external_knowledge_feedback_loop_improvement_plan.md
+    P1-P5 五个模块各自的当前状态，供看板一次性拉取展示，不需要看板前端
+    分别拼五个请求。任何一路读取失败都单独 try/except 隔离，不影响其余
+    四路（跟这些模块自身"单点失败不阻塞其余"的既有风格一致）。"""
+    http_server = getattr(request.app.state, "http_server", None)
+    if http_server is None:
+        raise HTTPException(status_code=503, detail="HttpServer not available")
+    _require_owner(request)
+    proj_root = _project_root_or_503(http_server)
+
+    from mini_agent.storage.paths import AgentPaths
+    paths = AgentPaths(proj_root)
+
+    result: dict = {}
+
+    # P1：候选队列过期巡检——novelty_candidates.jsonl 里各状态计数
+    try:
+        import json as _json
+        p1 = {"pending": 0, "expired": 0, "confirmed": 0, "dismissed": 0}
+        log_path = paths.notification_novelty_candidates
+        if log_path.exists():
+            for line in log_path.read_text(encoding="utf-8").splitlines():
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    rec = _json.loads(line)
+                except Exception:
+                    continue
+                status = rec.get("status", "pending")
+                p1[status] = p1.get(status, 0) + 1
+        result["candidate_queue_triage"] = p1
+    except Exception as _mini_agent_exc:
+        from mini_agent.errors import log_exception
+        log_exception(_mini_agent_exc, where='mini_agent.api.routes.get_feedback_loop_summary.p1')
+        result["candidate_queue_triage"] = {"_error": str(_mini_agent_exc)}
+
+    # P2：wiki 利用率审计——最近一次落盘的 usage_stats.json
+    try:
+        from mini_agent.evolution.wiki_utility_audit import load_wiki_usage_stats
+        stats = load_wiki_usage_stats(paths)
+        top_used = sorted(
+            stats.items(), key=lambda kv: -kv[1].get("hit_count", 0)
+        )[:10]
+        result["wiki_utility_audit"] = {
+            "total_pages_with_stats": len(stats),
+            "top_used": [{"page_id": pid, **s} for pid, s in top_used],
+        }
+    except Exception as _mini_agent_exc:
+        from mini_agent.errors import log_exception
+        log_exception(_mini_agent_exc, where='mini_agent.api.routes.get_feedback_loop_summary.p2')
+        result["wiki_utility_audit"] = {"_error": str(_mini_agent_exc)}
+
+    # P3：阈值自校准——当前生效阈值 + 最近调整历史
+    try:
+        from mini_agent.evolution.relevance_threshold_calibration import load_calibration_state
+        cal = load_calibration_state(paths)
+        result["relevance_threshold_calibration"] = {
+            "current_threshold": cal.current_threshold,
+            "created_at": cal.created_at,
+            "last_calibrated_at": cal.last_calibrated_at,
+            "history": (cal.history or [])[-5:],
+        }
+    except Exception as _mini_agent_exc:
+        from mini_agent.errors import log_exception
+        log_exception(_mini_agent_exc, where='mini_agent.api.routes.get_feedback_loop_summary.p3')
+        result["relevance_threshold_calibration"] = {"_error": str(_mini_agent_exc)}
+
+    # P4a：外部趋势 x 能力薄弱点候选
+    try:
+        from mini_agent.evolution.external_trend_capability_link import load_external_trend_candidates
+        candidates = load_external_trend_candidates(paths)
+        result["external_trend_capability_link"] = {
+            "candidate_count": len(candidates),
+            "candidates": [c.to_dict() for c in candidates[:10]],
+        }
+    except Exception as _mini_agent_exc:
+        from mini_agent.errors import log_exception
+        log_exception(_mini_agent_exc, where='mini_agent.api.routes.get_feedback_loop_summary.p4a')
+        result["external_trend_capability_link"] = {"_error": str(_mini_agent_exc)}
+
+    # P4b：生态定位扫描——种子轮转游标 + 已落盘的 external_ecosystem 页面数
+    try:
+        import json as _json
+        state_path = paths.external_input_ecosystem_positioning_state
+        rotation = {}
+        if state_path.exists():
+            rotation = _json.loads(state_path.read_text(encoding="utf-8"))
+        from mini_agent.wiki.stats import compute_stats
+        wiki_stats = compute_stats(paths)
+        result["ecosystem_positioning_scan"] = {
+            "rotation_offset": rotation.get("offset", 0),
+            "last_run_at": rotation.get("last_run_at"),
+            "ecosystem_pages_count": wiki_stats.by_source_kind.get("external_ecosystem", 0),
+        }
+    except Exception as _mini_agent_exc:
+        from mini_agent.errors import log_exception
+        log_exception(_mini_agent_exc, where='mini_agent.api.routes.get_feedback_loop_summary.p4b')
+        result["ecosystem_positioning_scan"] = {"_error": str(_mini_agent_exc)}
+
+    # P5：月度战略回顾——最新一期文档内容 + 已产出的月份列表
+    try:
+        d = paths.monthly_trend_retrospective_dir
+        months = sorted(p.stem for p in d.glob("*.md")) if d.exists() else []
+        latest_content = ""
+        if months:
+            latest_content = paths.monthly_trend_retrospective_path(months[-1]).read_text(encoding="utf-8")
+        result["monthly_trend_retrospective"] = {
+            "months": months,
+            "latest_month": months[-1] if months else None,
+            "latest_content": latest_content,
+        }
+    except Exception as _mini_agent_exc:
+        from mini_agent.errors import log_exception
+        log_exception(_mini_agent_exc, where='mini_agent.api.routes.get_feedback_loop_summary.p5')
+        result["monthly_trend_retrospective"] = {"_error": str(_mini_agent_exc)}
+
+    return result
 
 
 @router.post("/external_input/novelty_candidates/{candidate_id}/confirm")

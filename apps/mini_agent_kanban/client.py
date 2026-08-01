@@ -348,6 +348,12 @@ class AgentClient:
         """[Track I] 一键合并提案分支；risk=high 时需要显式传 force=True。"""
         return self._post(f"/evolution/proposals/{branch}/merge", {"force": force}, timeout=30)
 
+    def feedback_loop_summary(self):
+        """[外部知识反馈闭环 P1-P5] 一次性汇总五个模块（候选队列过期巡检/
+        wiki 利用率/阈值自校准/外部趋势候选/生态定位扫描/月度战略回顾）
+        的当前状态，供看板展示。"""
+        return self._get("/evolution/feedback_loop_summary")
+
     def cron_jobs(self):
         return self._get("/cron/jobs")
 

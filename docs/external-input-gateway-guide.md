@@ -468,6 +468,13 @@ class MySource(ExternalInputSource):
     重要事件的人工确认通道，详见
     `docs/watchlist-notification-guide.md` §6.4（判定逻辑跟
     `GoalRelevanceEngine` 是同一份文档管辖的姊妹能力）。
+  - `GET /v1/evolution/feedback_loop_summary` — 外部知识反馈闭环计划
+    P1-P5 五个模块（候选队列过期巡检/wiki 利用率/阈值自校准/外部趋势×
+    能力薄弱点候选/生态定位扫描/月度战略回顾）的一次性只读汇总，供看板
+    "🔌 外部输入"页签新增的"🧠 外部知识反馈闭环（P1-P5）"折叠面板组
+    调用，避免前端为五个模块各自拼一个请求。任一模块读取失败只影响该
+    模块自己的展示（返回该字段的 `_error`），不影响其余四个。详见
+    `next_doc/external_knowledge_feedback_loop_improvement_plan.md`。
 
 ## 10. 已知限制
 

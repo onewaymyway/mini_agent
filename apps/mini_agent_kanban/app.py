@@ -3397,6 +3397,107 @@ def render_external_input_tab(client: AgentClient):
 
     st.divider()
 
+    # ── 3.6 外部知识反馈闭环（P1-P5，只读汇总面板）───────────────────────
+    st.markdown("##### 🧠 外部知识反馈闭环（P1-P5）")
+    st.caption(
+        "候选队列过期巡检 / wiki 利用率 / 阈值自校准 / 外部趋势×能力薄弱点候选 / "
+        "生态定位扫描 / 月度战略回顾——均为对已有链路的巡检-统计-回看补充，"
+        "全部只读展示，详见 next_doc/external_knowledge_feedback_loop_improvement_plan.md。"
+    )
+    fb_resp = client.feedback_loop_summary() or {}
+    if "_error" in fb_resp:
+        st.caption(f"获取汇总失败：{fb_resp['_error']}")
+    else:
+        p1 = fb_resp.get("candidate_queue_triage") or {}
+        p2 = fb_resp.get("wiki_utility_audit") or {}
+        p3 = fb_resp.get("relevance_threshold_calibration") or {}
+        p4a = fb_resp.get("external_trend_capability_link") or {}
+        p4b = fb_resp.get("ecosystem_positioning_scan") or {}
+        p5 = fb_resp.get("monthly_trend_retrospective") or {}
+
+        with st.expander("🗂️ 候选队列过期巡检（P1）"):
+            if "_error" in p1:
+                st.caption(f"获取失败：{p1['_error']}")
+            else:
+                c1, c2, c3, c4 = st.columns(4)
+                c1.metric("待确认", p1.get("pending", 0))
+                c2.metric("已过期", p1.get("expired", 0))
+                c3.metric("已确认", p1.get("confirmed", 0))
+                c4.metric("已忽略", p1.get("dismissed", 0))
+                st.caption("超过 30 天仍未处理的候选会被自动标记为「已过期」，不会一直占着上面的「🌟 新颖信号候选」审核视野。")
+
+        with st.expander("📖 wiki 利用率（P2）"):
+            if "_error" in p2:
+                st.caption(f"获取失败：{p2['_error']}")
+            else:
+                st.caption(f"近 30 天有检索命中统计的页面共 {p2.get('total_pages_with_stats', 0)} 个。")
+                top_used = p2.get("top_used") or []
+                if not top_used:
+                    st.info("暂无利用率统计（cron job 尚未跑过，或最近没有检索命中）。")
+                for row in top_used:
+                    st.caption(
+                        f"`{row.get('page_id', '')}` · 命中 {row.get('hit_count', 0)} 次 · "
+                        f"精排依据 {row.get('grounded_count', 0)} 次"
+                    )
+
+        with st.expander("🎚️ 阈值自校准（P3）"):
+            if "_error" in p3:
+                st.caption(f"获取失败：{p3['_error']}")
+            else:
+                st.metric("当前生效阈值", f"{p3.get('current_threshold', 0):.3f}")
+                history = p3.get("history") or []
+                if history:
+                    st.caption("最近调整记录：")
+                    for h in reversed(history):
+                        ts = h.get("at")
+                        ts_str = time.strftime("%Y-%m-%d", time.localtime(ts)) if ts else "-"
+                        st.caption(
+                            f"`{ts_str}` {h.get('old_threshold', '-')} → "
+                            f"{h.get('new_threshold', '-')}（{h.get('reason', '')}）"
+                        )
+                else:
+                    st.caption("尚未发生过自动调整（可能还在 28 天 warmup 期内，或样本量不足）。")
+
+        with st.expander(f"🔗 外部趋势×能力薄弱点候选（P4，{p4a.get('candidate_count', 0)} 条）"):
+            if "_error" in p4a:
+                st.caption(f"获取失败：{p4a['_error']}")
+            else:
+                for c in p4a.get("candidates") or []:
+                    st.markdown(f"**{c.get('capability_domain', '')}**")
+                    st.caption(f"依据 wiki 页面：{', '.join(c.get('wiki_page_ids') or [])}")
+                    st.caption(c.get("rationale", ""))
+                if not p4a.get("candidates"):
+                    st.info("当前没有候选（草稿供人工审核，不会自动创建 Goal）。")
+
+        with st.expander("🧭 生态定位扫描（P4）"):
+            if "_error" in p4b:
+                st.caption(f"获取失败：{p4b['_error']}")
+            else:
+                c1, c2 = st.columns(2)
+                c1.metric("已沉淀 external_ecosystem 页面数", p4b.get("ecosystem_pages_count", 0))
+                last_run = p4b.get("last_run_at")
+                c2.caption(
+                    "上次运行：" + (time.strftime("%Y-%m-%d %H:%M", time.localtime(last_run)) if last_run else "尚未运行")
+                )
+                st.caption(
+                    "默认禁用，需要在 `agent_config.json` 里配置 `ecosystem_positioning.seeds`"
+                    "（同类 agent 框架/开源项目名称列表）后到「⏰ Cron 任务」页签启用 "
+                    "`sys:ecosystem_positioning_scan`。"
+                )
+
+        with st.expander(f"📅 月度战略回顾（P5{'，最新：' + p5.get('latest_month', '') if p5.get('latest_month') else ''}）"):
+            if "_error" in p5:
+                st.caption(f"获取失败：{p5['_error']}")
+            elif not p5.get("latest_content"):
+                st.info("尚未产出月度回顾文档（每月 1 日由 `sys:monthly_trend_retrospective` 自动生成）。")
+            else:
+                st.markdown(p5["latest_content"])
+                other_months = [m for m in (p5.get("months") or []) if m != p5.get("latest_month")]
+                if other_months:
+                    st.caption(f"历史归档（{len(other_months)} 期）：{', '.join(sorted(other_months, reverse=True))}")
+
+    st.divider()
+
     # ── 3.5 来源健康趋势（成功率/延迟，见改造方案 §3）────────────────────
     st.markdown("##### 📈 来源健康趋势")
     since_days = st.selectbox(

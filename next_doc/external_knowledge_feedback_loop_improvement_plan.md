@@ -1,6 +1,6 @@
 # 外部知识反馈闭环 改进计划
 
-- **版本**: v1.4
+- **版本**: v1.5
 - **变更记录**:
   - v1.0：初版，规划 P1-P5；P1（`sys:candidate_queue_triage`）已实现，见该节内的"实现记录"标注。
   - v1.1：P2（`sys:wiki_utility_audit`，统计层）已实现，见该节内的"实现记录"标注。
@@ -10,6 +10,10 @@
     "实现记录"标注。
   - v1.4：P5（`sys:monthly_trend_retrospective`）已实现，见该节内的
     "实现记录"标注。P1-P5 全部实施完毕，本计划正文规划的五处空隙已补齐。
+  - v1.5：看板集成——新增只读汇总端点 `GET /v1/evolution/
+    feedback_loop_summary`，看板"🔌 外部输入"页签新增"🧠 外部知识反馈
+    闭环（P1-P5）"折叠面板组，把 P1-P5 五个模块的运行状态可视化，见
+    §5。
 - **背景任务**: 在 `external_knowledge_wiki_and_self_improvement_plan.md`（P1-P5 均已实现）打通的
   "外部事件/检索 → wiki 沉淀 → 自我改进候选"链路基础上，针对现状复盘发现的几处"只生产、
   不巡检/不校准/不回看"的空隙做补齐，不新增数据源，聚焦在现有链路上补一层
@@ -252,3 +256,39 @@
 - 至此 P1-P5 全部实施完毕，§1 复盘的五处空隙（候选队列不过期、沉淀内容
   利用率不可见、阈值不校准、改进视野被已知弱点锁死、缺月度战略回看）
   均已补上对应机制。
+
+## 5. 看板集成（v1.5 新增）
+
+P1-P5 五个 cron job 本身通过 `ensure_job`/`register_local_handler` 注册
+后，已经能在看板既有的"⏰ Cron 任务"页签里被通用地看到（调度信息、
+启用/禁用切换、立即运行一次、执行历史）——**这部分不需要任何新代码**，
+是 `CronScheduler`/`CronJobExecutor` 通用机制天然覆盖的。
+
+本次补的是 P1-P5 各自**产出内容**的可视化（Cron 任务页签只展示"这个
+job 跑没跑、跑得顺不顺"，不展示"跑出来的东西是什么"）：
+
+- **新增只读端点** `GET /v1/evolution/feedback_loop_summary`
+  （`src/mini_agent/api/routes.py`）：一次性聚合五个模块的当前状态，
+  任一模块读取失败只影响自己（对应字段返回 `_error`），不阻塞其余
+  四个——跟 P1-P5 各模块自身"单点失败不影响其余"的一贯风格一致。
+- **看板新增面板组**：`apps/mini_agent_kanban/app.py::
+  render_external_input_tab()` 里"🔌 外部输入"页签新增"🧠 外部知识
+  反馈闭环（P1-P5）"折叠面板组，六个子面板：
+  1. 🗂️ 候选队列过期巡检（P1）：pending/expired/confirmed/dismissed
+     四态计数。
+  2. 📖 wiki 利用率（P2）：有统计的页面数 + 命中次数 Top 10。
+  3. 🎚️ 阈值自校准（P3）：当前生效阈值 + 最近 5 条调整记录。
+  4. 🔗 外部趋势×能力薄弱点候选（P4a）：候选数 + 前 10 条详情（能力域/
+     依据 wiki 页面/理由）。
+  5. 🧭 生态定位扫描（P4b）：已沉淀 `external_ecosystem` 页面数 + 上次
+     运行时间 + 启用引导提示。
+  6. 📅 月度战略回顾（P5）：最新一期文档全文渲染 + 历史期数列表。
+- **仍然全部只读**：跟 P1-P5 本身"不自动创建 Goal、不自动改代码"的
+  定位一致，看板侧不新增任何写操作按钮——需要人工介入的动作（如启用
+  `sys:ecosystem_positioning_scan`、重置阈值）仍然通过既有的"⏰ Cron
+  任务"页签（启用/禁用）或直接调用
+  `relevance_threshold_calibration.reset_relevance_threshold()` 完成，
+  不重复造轮子。
+- **测试**：新增 `tests/test_feedback_loop_summary_route.py`（3 用例，
+  全部通过），覆盖空项目返回零值不报错、候选队列状态计数正确、月度
+  回顾最新一期内容正确读取。
