@@ -1,9 +1,10 @@
 # 外部知识反馈闭环 改进计划
 
-- **版本**: v1.1
+- **版本**: v1.2
 - **变更记录**:
   - v1.0：初版，规划 P1-P5；P1（`sys:candidate_queue_triage`）已实现，见该节内的"实现记录"标注。
   - v1.1：P2（`sys:wiki_utility_audit`，统计层）已实现，见该节内的"实现记录"标注。
+  - v1.2：P3（`sys:relevance_threshold_calibration`）已实现，见该节内的"实现记录"标注。
 - **背景任务**: 在 `external_knowledge_wiki_and_self_improvement_plan.md`（P1-P5 均已实现）打通的
   "外部事件/检索 → wiki 沉淀 → 自我改进候选"链路基础上，针对现状复盘发现的几处"只生产、
   不巡检/不校准/不回看"的空隙做补齐，不新增数据源，聚焦在现有链路上补一层
@@ -93,15 +94,57 @@
 - 接入点：`api/server.py::HttpServer._build_autonomous_loop()`，`try/except`
   隔离失败，模式与 P1 完全一致。
 
-### P3 —— `sys:relevance_threshold_calibration`（阈值自校准）📋 已设计，未实现
+### P3 —— `sys:relevance_threshold_calibration`（阈值自校准）✅ 已实现
 
-- 目标：回看 `GoalRelevanceEngine` Stage①→Stage②的通过率与 Stage②最终判定分布，对
-  `DEFAULT_PREFILTER_THRESHOLD` 一类硬编码阈值做小步长、有上下限的自动微调，并记录每次
-  调整的前后值和依据。
-- 推荐节奏：`interval:604800`。
-- 关键风险：调整策略本身需要先有足够样本量（建议至少积累 4 周判定数据后才允许首次调整），
-  且需要一个"人工一键回滚到默认阈值"的逃生通道，避免校准逻辑本身跑偏后无法挽回；本次先
-  只做设计留档，避免仓促上线一个会自我漂移的参数。
+> 实现记录：新增 `src/mini_agent/evolution/relevance_threshold_calibration.py`
+> （`run_relevance_threshold_calibration_once()` + `load_calibrated_threshold()` +
+> `reset_relevance_threshold()` + `ensure_relevance_threshold_calibration_job()`），
+> 在 `api/server.py` daemon 启动流程里注册 `sys:relevance_threshold_calibration`
+> job（`interval:604800`，零 LLM 成本，默认 enabled，本地回调 handler，跟
+> `candidate_queue_triage.py`/`wiki_utility_audit.py` 同构）。落盘状态文件
+> `.agent/external_input/relevance_threshold_state.json`（`AgentPaths.
+> external_input_relevance_threshold_state`）。
+
+- 前置补丁：`goal_relevance.py::run_goal_relevance_judge_once()` 此前只把
+  Stage②的 `relevant`/`advance_worthy` 判定结果用于当次的 `attach_external_context`/
+  `try_advance_goal` 副作用，判定完就丢，候选文件里查不到——本次补上，把这两个
+  字段一并持久化回 `goal_relevance_candidates.jsonl` 对应记录（解析失败时保持
+  缺省不写，不当成 `False` 参与后续统计，避免"解析失败"被误记为"判定不相关"）。
+- 校准信号：只用 Stage②已判定候选的 `relevant_rate`（不单独统计 Stage①→Stage②
+  的通过率——两者高度相关，且 Stage①本身没有"被拒绝的事件"落盘记录，无法回溯
+  统计分母）。
+  - `relevant_rate < 0.15`（`LOW_HEALTHY_RATE`）：Stage①筛得太松，调高阈值收紧
+    （`+0.01`，即 `ADJUSTMENT_STEP`）。
+  - `relevant_rate > 0.5`（`HIGH_HEALTHY_RATE`）：Stage①可能偏紧、有漏判风险，
+    调低阈值放松（`-0.01`）。
+  - 落在 `[0.15, 0.5]` 区间内：不调整。
+  - 阈值调整全程 clamp 在 `[THRESHOLD_MIN=0.05, THRESHOLD_MAX=0.4]` 内。
+- 风险应对（对应 §3 P3 原设计的两条关键风险）：
+  1. **样本量与 warmup 门槛**：校准状态首次创建（`created_at`）后必须满
+     `MIN_WARMUP_SECONDS`（28 天）才允许首次调整，且每次参与统计的样本数
+     （新增的、已判定且成功解析出 `relevant` 字段的候选数）不低于
+     `MIN_SAMPLE_SIZE`（20）；样本不足/仍在 warmup 期直接跳过调整，但读取
+     游标（`last_reviewed_created_at`）依然前移，避免同一批候选被下一次
+     运行重复计入、造成样本量"虚高"的假象。
+  2. **人工一键回滚逃生通道**：`reset_relevance_threshold()`，把当前阈值
+     重置回 `DEFAULT_PREFILTER_THRESHOLD`、清空调整历史，但保留一条
+     `reason="manual_reset"` 的审计记录（不是连痕迹都不留），同时把
+     `created_at` 重置为 now——等价于重新开始一轮 warmup 计时，避免重置后
+     立刻又基于重置前的旧样本触发新一轮自动调整。
+- 接入点：`evolution/autonomous_loop.py::_tick_maintenance()` 里 Stage①调用处
+  （`run_goal_relevance_candidate_once()`）现在改为读取
+  `load_calibrated_threshold()` 的当前生效值，而不是硬编码的
+  `DEFAULT_PREFILTER_THRESHOLD`（文件不存在时内部退回默认值，零额外读盘
+  成本）；`api/server.py::HttpServer._build_autonomous_loop()`，`try/except`
+  隔离失败，模式与 P1/P2 完全一致。
+- 测试：新增 `tests/test_relevance_threshold_calibration.py`（10 用例，全部
+  通过），覆盖状态文件不存在返回默认值、样本不足/warmup 期跳过调整但游标
+  前移、低/高 relevant_rate 触发调整方向、健康区间不调整、阈值上下限 clamp、
+  未判定/解析失败候选不计入样本、`reset_relevance_threshold()` 回滚、
+  `ensure_relevance_threshold_calibration_job()` 注册与本地回调触发；对
+  `tests/test_goal_relevance_candidate.py`/`tests/test_goal_relevance_judge.py`
+  （因新增 `relevant`/`advance_worthy` 持久化字段而回归运行）做了确认，
+  全部通过。
 
 ### P4 —— `sys:ecosystem_positioning_scan`（生态定位扫描）📋 已设计，未实现
 
@@ -125,6 +168,9 @@
 
 ## 4. 本次实施范围小结
 
-本次（v1.1）实施了 P1、P2（P2 只做统计层，不改 gap_scan/decommission 判断逻辑），
-P3-P5 留档设计、明确标注未实现及各自的关键前置缺口/风险，不打"实现了但是半成品"的
-擦边球——这与项目里 P12/P13 阶段"部分内容显式延后"的一贯做法一致。
+- v1.1 实施了 P1、P2（P2 只做统计层，不改 gap_scan/decommission 判断逻辑）。
+- v1.2 实施了 P3（阈值自校准，含 warmup/最小样本量门槛与人工回滚逃生通道）。
+- P4-P5 仍留档设计、明确标注未实现及各自的关键前置缺口/风险（P4 依赖"同类项目"
+  种子列表来源需先与用户确认；P5 依赖 P1-P4 跑出一段时间数据后再实现），不打
+  "实现了但是半成品"的擦边球——这与项目里 P12/P13 阶段"部分内容显式延后"的
+  一贯做法一致。

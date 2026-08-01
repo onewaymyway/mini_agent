@@ -367,6 +367,15 @@ def run_goal_relevance_judge_once(
             record = by_id.get(cand["id"])
             if record is not None:
                 record["judged"] = True
+                # P3（relevance_threshold_calibration）需要回看 Stage②
+                # 最终判定分布来校准 Stage①阈值，此前这两个字段只存在于
+                # `item`（LLM 解析结果）里的临时值，判定完就丢了、候选
+                # 文件里查不到。解析失败时 `item` 为 None，两个字段保持
+                # 缺省（不写入），calibration 侧按"跳过"处理，不当成
+                # False（避免把"解析失败"误记成"判定为不相关"）。
+                if item is not None:
+                    record["relevant"] = bool(item.get("relevant"))
+                    record["advance_worthy"] = bool(item.get("advance_worthy"))
             judged_results.append((cand, item))
 
         _rewrite_candidates(paths, all_records)

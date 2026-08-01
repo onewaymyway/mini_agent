@@ -243,7 +243,13 @@ class AutonomousLoop:
         # WatchlistMatcher 一样，"记一条候选"本身不消耗任何预算。
         try:
             from mini_agent.external_input.goal_relevance import run_goal_relevance_candidate_once
-            run_goal_relevance_candidate_once(self._paths, goal_backlog=self._goal_backlog)
+            # P3（relevance_threshold_calibration）：阈值不再是写死的
+            # DEFAULT_PREFILTER_THRESHOLD，改成读取校准状态里的当前生效值
+            # （文件不存在时 load_calibrated_threshold 内部会退回默认值，
+            # 不落盘、零额外成本）。
+            from mini_agent.evolution.relevance_threshold_calibration import load_calibrated_threshold
+            threshold = load_calibrated_threshold(self._paths)
+            run_goal_relevance_candidate_once(self._paths, goal_backlog=self._goal_backlog, threshold=threshold)
         except ImportError:
             pass
         except Exception as _mini_agent_exc:

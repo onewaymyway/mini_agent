@@ -703,6 +703,15 @@ class AgentPaths:
         return self.external_input_dir / "goal_relevance_candidates.jsonl"
 
     @property
+    def external_input_relevance_threshold_state(self) -> Path:
+        """<project_root>/.agent/external_input/relevance_threshold_state.json —
+        `evolution/relevance_threshold_calibration.py`（P3）持久化的当前
+        校准阈值/调整历史，见
+        next_doc/external_knowledge_feedback_loop_improvement_plan.md §3 P3。
+        跟 goal_relevance_candidates.jsonl 同目录但独立文件，不共享锁。"""
+        return self.external_input_dir / "relevance_threshold_state.json"
+
+    @property
     def external_input_state_dir(self) -> Path:
         """<project_root>/.agent/external_input/state/ — 每个 source 的增量状态
         ({source_id}.json：去重游标/ETag 等），来源私有，网关负责落盘保存。"""

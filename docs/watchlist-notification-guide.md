@@ -203,13 +203,25 @@ Prompt 精确注入），全程**不需要用户配置任何 Goal↔关键词的
 
 - 每次 maintenance 档位的 tick，都会拿这一批新到的外部事件，跟当前
   所有 `status=active` 的 Goal（不含 Objective）逐一计算一个廉价的
-  token 重合度分数，超过一个很低的默认阈值（`0.12`）就写进
-  `.agent/external_input/goal_relevance_candidates.jsonl`，标记
-  `judged: false`。
+  token 重合度分数，超过一个默认较低的阈值（初始值 `0.12`，见下方
+  "阈值自校准"）就写进 `.agent/external_input/goal_relevance_candidates.jsonl`，
+  标记 `judged: false`。
 - 这一步**零 LLM 成本**、纯规则匹配，宁可多算一些"看起来沾边"的候选，
   也不会在这一层就把真正相关的事件筛掉。
 - 候选队列有总量上限（500 条），写满后新候选会被丢弃并计数，不会
   无限增长这个文件；同一 (event_id, goal_id) 组合不会重复写入。
+
+**阈值自校准**（`sys:relevance_threshold_calibration`，默认每 7 天跑一次，
+零 LLM 成本）：不再是一成不变的 `0.12`，系统会周期性回看 Stage②已经判定
+过的候选里"最终被判为相关"的比例——比例明显偏低（低于 15%）说明筛得太松，
+自动小步调高阈值收紧；比例明显偏高（高于 50%）说明可能筛得偏紧、有漏判
+风险，自动小步调低阈值放松；落在中间区间不调整。首次调整需要等积累满
+28 天数据、且单次参与统计的样本不少于 20 条才会触发，避免样本不足时乱调；
+当前生效阈值与每次调整记录存放在
+`.agent/external_input/relevance_threshold_state.json`。如果发现自动校准
+的结果不理想，可以调用
+`mini_agent.evolution.relevance_threshold_calibration.reset_relevance_threshold()`
+一键重置回默认阈值 `0.12`。
 
 ### 6.2 Stage②：LLM 批量判定
 
@@ -468,6 +480,7 @@ alerts.jsonl                 命中，标题+详情去重后写入：           
 | `.agent/notification/reports.jsonl` | [汇报独立存储 新增] watchlist_report 汇报独立落地文件（含完整 detail 正文），跟网关 `.agent/external_input/alerts.jsonl` 彻底分开 |
 | `.agent/notification/dispatch_log.jsonl` | 通知发送记录（运行时生成，尚未产生过记录，见 §9 前提开关说明） |
 | `.agent/external_input/novelty_candidates_raw.jsonl` | `NoveltyJudge` Stage①产出的原始候选队列（`judged: false/true`），Stage②消费 |
+| `.agent/external_input/relevance_threshold_state.json` | `sys:relevance_threshold_calibration` 持久化的当前生效阈值与调整历史 |
 | `.agent/notification/novelty_candidates.jsonl` | `NoveltyJudge` Stage②产出、`importance=="high"` 的候选，等待人工在看板"🌟 新颖信号候选"面板确认/忽略 |
 | `.agent/notification/novelty_judge.yaml` | `NoveltyJudge` Stage①的 `exclude_channels` 配置（可选，不存在时不排除任何 channel） |
 | `.agent/archive/notification/reports-YYYY-MM.jsonl` | 已读超过 24 小时的 `reports.jsonl` 记录按自然月归档到这里，`GET /v1/archive/query?category=notification` 查询 |

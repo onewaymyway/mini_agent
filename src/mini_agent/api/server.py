@@ -1252,6 +1252,21 @@ class HttpServer:
                 from mini_agent.errors import log_exception
                 log_exception(_mini_agent_exc, where='mini_agent.api.server.HttpServer._build_autonomous_loop.ensure_wiki_utility_audit_job')
 
+            # 外部知识反馈闭环计划 P3：daemon 启动时补注册
+            # sys:relevance_threshold_calibration（回看 Stage②已判定候选的
+            # relevant 比例，对 GoalRelevanceEngine Stage①阈值做小步长自动
+            # 微调，零 LLM 成本，本地回调），见
+            # next_doc/external_knowledge_feedback_loop_improvement_plan.md §3 P3。
+            try:
+                from mini_agent.evolution.relevance_threshold_calibration import (
+                    ensure_relevance_threshold_calibration_job,
+                )
+
+                ensure_relevance_threshold_calibration_job(paths, cron_scheduler)
+            except Exception as _mini_agent_exc:
+                from mini_agent.errors import log_exception
+                log_exception(_mini_agent_exc, where='mini_agent.api.server.HttpServer._build_autonomous_loop.ensure_relevance_threshold_calibration_job')
+
             # ── ObjectiveExecutor ────────────────────────────────────────────
             def _obj_submit(message: str, initiator: str, meta: dict):
                 """提交自主步骤到 InputQueue，返回 turn_id。"""
