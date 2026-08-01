@@ -239,6 +239,19 @@ cron:<分 时 日 月 周>   5 字段 cron，如 cron:0 */6 * * *（每 6 小时
 | `sys:self_eval` | 24h | 能力自评（capability_map 置信度更新） |
 | `sys:goal_review` | 12h | Goal 清理（标记已完成/无进展的目标） |
 | `sys:digest_trim` | 7d | 日志修剪（删除 30 天前的 digest 记录） |
+| `sys:self_maintain` | 24h | 自维护健康检查（具身改进 C4） |
+| `sys:daily_digest` | 每天 22:00 | 每日融合日报 |
+| `sys:next_action_digest` | 3h | 主动推荐排序 |
+| `sys:decision_profile_update` | 7d（默认关闭） | 决策画像归纳 |
+
+除以上 `cron_scheduler.py::_BUILTIN_JOBS` 里固定注册的 9 个之外，daemon 启动
+流程（`api/server.py::_build_autonomous_loop()`）里还有十余个模块各自用
+`ensure_*_job()`（缺失才补注册，不影响用户已手动调整的 schedule/enabled）
+按需补挂的 job——外部输入闭环、自诊断闭环深化、外部知识反馈闭环等计划都
+在这里挂自己的 job。**全部 job 的完整清单（含每个 job 的目的、触发频率、
+是否含 LLM 调用、默认启用状态、关联设计文档）见
+[定时任务完整参考](cron-jobs-reference.md)**，本节只保留最早的 5 个
+作为示例，不再逐一同步更新。
 
 系统 job 可 `disable`、可 `set-schedule`，**不可 `remove`**。
 

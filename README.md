@@ -909,6 +909,7 @@ python -m pytest tests/ -q
 - [图书馆式知识索引指南](docs/library-index-guide.md) — **新增**：分类树自动生长/合并 + 实体目录（冲突检测/去噪合并）+ 两步检索 + 检索反馈 + 人类纠正→标记过时闭环 + 时间线查询，`/evolve timeline` 命令
 - [Wiki 式知识库指南](docs/wiki-knowledge-base-guide.md) — 图书馆式索引的平行实现（已切换为默认优先检索路径），md 页面存储 + 显式关系图 + 双写镜像 + 三段式检索（规则粗筛→多跳图扩展→LLM精排）+ 专题页自动生成与再巩固 + 统一知识生命周期状态机 + 索引复用/信度分层/实体摘要反哺抽取/抽取与compact解耦（O1-O4、E1-E3 提取层与组织层改进计划）
 - [Stage 9 自主运行时指南](docs/self-evolution-stage9-guide.md) — **新增**：常驻守护进程 / Goal Backlog / 三档位 AutonomousLoop / 资源仲裁 / `mini-agent daemon` 命令
+- [定时任务完整参考](docs/cron-jobs-reference.md) — **新增**：汇总全部 `sys:` 内置 cron job（固定内置 9 个 + 各计划按需补注册的十余个），含每个 job 的目的、触发频率、是否含 LLM 调用、默认启用状态及关联设计文档
 - [守护进程多客户端架构指南](docs/daemon-multi-client-guide.md) — **新增**：`DaemonClient`/`SessionAgentPool`/`AgentBridge`（RingBuffer/OutputBroadcaster/InputQueue/PermissionGate）三层架构、多端接入同一会话的消息生命周期、`run_connected_repl` 已连接模式渲染与斜杠命令转发，含当前已知问题排查记录
 - [Cron 任务专属执行机制指南](docs/cron-dedicated-execution-guide.md) — **新增**：cron job 到期后的独立后台线程执行通道（不阻塞用户消息）、超时/步数/StuckDetector 卡死检测三重兜底、跨次触发的 progress_summary 续接、每 job 专属文件夹（prompt.md/config.json/state.json/runs/*.jsonl）、`CronConfig` 全局默认+缺省字段实时回退、5 个 REST 端点、看板 "⏰ Cron 任务" tab
 - [每日融合日报指南](docs/daily-digest-guide.md) — **新增**：行为分布+目标进展+git提交融合为一份日报（`/digest daily`），`sys:daily_digest` cron job，启动打印摘要

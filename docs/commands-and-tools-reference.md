@@ -441,7 +441,7 @@ mini-agent --retry-backoff linear --retry-backoff-step 60 --retry-backoff-max 30
 
 ### 定时任务（`src/mini_agent/cli/commands/cron.py`）
 
-> **Stage 9 Phase 2** daemon 模式下的周期性任务调度。详见 [Stage 9 自主运行时指南](self-evolution-stage9-guide.md#5-定时任务-cronscheduler)
+> **Stage 9 Phase 2** daemon 模式下的周期性任务调度。详见 [Stage 9 自主运行时指南](self-evolution-stage9-guide.md#5-定时任务evolutioncron_schedulerpy)
 
 仅在 `daemon` 模式下可用（`CronScheduler` 由 `HttpServer._build_autonomous_loop()` 初始化）。非 daemon 模式下调用会给出友好提示。
 
@@ -473,9 +473,16 @@ cron:<分 时 日 月 周>   标准 cron 5 字段，如 cron:0 */6 * * *（每 6
 | `sys:self_eval` | 每 24 小时 | 能力自评：回顾工具使用，更新 capability_map 置信度 |
 | `sys:goal_review` | 每 12 小时 | 目标清理：标记已完成/长期无进展的 Goal/Objective |
 | `sys:digest_trim` | 每 7 天 | 日志修剪：删除 30 天前的 `activity_digest.jsonl` 记录 |
+| `sys:self_maintain` | 每 24 小时 | 自维护健康检查：扫描失效工具/过时 skill/矛盾经验/低有效性 skill，生成修复建议 |
 | `sys:daily_digest` | 每天 22:00 | 融合日报：合并行为分布+目标进展+git提交，默认开启（`digest_advisor.daily_digest_enabled`） |
 | `sys:next_action_digest` | 每 3 小时 | 主动推荐：停滞目标/注意力错配排序，候选为空则跳过，默认开启（`digest_advisor.next_action_enabled`） |
 | `sys:decision_profile_update` | 每 7 天 | 决策画像归纳，**默认关闭**（`digest_advisor.decision_profile_enabled`），建议积累数周数据后手动开启 |
+
+除上表 9 个固定内置 job 外，daemon 启动时还会按需补注册十余个 `sys:` job
+（外部输入闭环、自诊断闭环深化、外部知识反馈闭环等计划各自的巡检/聚合/
+回看任务），同样遵循"缺失才补、不可 remove"的规则。**每个 job 的目的、
+触发频率、是否含 LLM 调用、默认启用状态、关联设计文档的完整清单见
+[定时任务完整参考](cron-jobs-reference.md)**。
 
 系统 job 可以 `disable`，但不可 `remove`；可以用 `set-schedule` 调整触发频率。
 
