@@ -354,6 +354,35 @@ class ObjectiveExecutor:
             for ex in self._executions.values()
         )
 
+    def _goal_id_of_objective(self, objective_id: str) -> Optional[str]:
+        """[goal_execution_fairness_improvement_plan.md P1] 反查 objective_id
+        所属的 Goal id（GoalNode.parent_id）。拿不到 goal_backlog 或找不到
+        节点/父节点时返回 objective_id 自身——把它当成"自己就是一个独立
+        分组"，不影响 max_concurrent_objectives_per_goal 以外的任何行为。
+        """
+        if self._goal_backlog is None:
+            return objective_id
+        try:
+            node = self._goal_backlog.get(objective_id)
+        except Exception:
+            return objective_id
+        if node is None or not node.parent_id:
+            return objective_id
+        return node.parent_id
+
+    def running_count_for_goal(self, goal_id: str) -> int:
+        """[goal_execution_fairness_improvement_plan.md P1] 统计当前
+        status == "running" 且所属 Goal 为 goal_id 的 execution 数量，供
+        AutonomousLoop._tick_maintenance() 做"同一 Goal 同时最多占用 N 个
+        槽位"的判断。"""
+        count = 0
+        for ex in self._executions.values():
+            if ex.status != "running":
+                continue
+            if self._goal_id_of_objective(ex.objective_id) == goal_id:
+                count += 1
+        return count
+
     def effective_max_concurrent(self) -> int:
         """[Track K] 计算当前生效的并发上限。
 

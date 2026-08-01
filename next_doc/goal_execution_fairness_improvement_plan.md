@@ -1,8 +1,24 @@
 # Goal 执行公平性调度 改进计划
 
-- **版本**: v1.0
+- **版本**: v1.1
 - **变更记录**:
   - v1.0：初版，规划 P1-P4（外加 P5 可视化/配置化），均未实现。
+  - v1.1：**P1/P2/P3 已实现**（P4 按计划留待观察数据后再决定，P5 仅完成
+    配置文档说明，看板可视化留待后续）：
+    - P1：`ObjectiveExecutor.running_count_for_goal()` +
+      `AutonomousLoop._tick_maintenance()` 内的按 Goal 分组并发上限检查；
+      新增配置 `autonomy.max_concurrent_objectives_per_goal`（默认 1）。
+    - P2：`GoalBacklog.active_objectives_fair_ranked()` + `mark_scheduled()`
+      + `GoalNode.last_scheduled_at` 字段；新增配置
+      `autonomy.goal_scheduling_strategy`（默认 `"fair_round_robin"`，
+      可设为 `"priority"` 回退旧行为）。
+    - P3：`goal_backlog.compute_aging_boost()`，接入
+      `active_objectives_fair_ranked()` 的组内排序 key；新增配置
+      `autonomy.fairness_aging_boost_per_day`（默认 1.0/天）、
+      `autonomy.fairness_aging_boost_max_days`（默认 14.0 天）。
+    - 新增测试：`tests/test_goal_execution_fairness.py`（10 个用例，覆盖
+      本文档 P1-P3 各自的验收标准）。
+    - 配置说明新增文档：`docs/goal-execution-fairness-config.md`。
 - **背景**：Goal 是长期任务，理想情况下应该"雨露均沾"，让所有 active Goal 都能持续
   获得推进；但代码复核发现，当前 `AutonomousLoop`/`ObjectiveExecutor`/`GoalBacklog`
   的调度模型是"贪心 + 静态优先级 + 一次启动跑到底"，天然容易导致同一个（或同一批）
@@ -72,7 +88,7 @@
 
 ## 2. 分阶段实施计划
 
-### P1 —— Goal 粒度并发上限（改动最小，见效最直接）
+### P1 —— Goal 粒度并发上限（改动最小，见效最直接）✅ 已实现（v1.1）
 
 - **目标**：新增规则"同一 Goal 同时最多占用 N 个执行槽位"（默认 N=1），从根源上
   杜绝"一个 Goal 自己吃满所有并发槽位"这种最极端的情况。
@@ -96,7 +112,7 @@
   2. `max_concurrent_objectives_per_goal` 设为 0 时，行为与改造前完全一致（回归测试）。
 - **工作量**：小。只是在已有循环里加一次计数检查，不涉及新的持久化字段或状态机改动。
 
-### P2 —— 调度从"纯优先级排序"改为"公平轮询"
+### P2 —— 调度从"纯优先级排序"改为"公平轮询" ✅ 已实现（v1.1）
 
 - **目标**：让 Objective 的挑选顺序不再只看静态 `priority`，而是优先照顾"最近一段
   时间没获得过执行机会"的 Goal，从根本上解决"总在执行同一批 Goal"的问题。
@@ -134,7 +150,7 @@
   `update_fields()`/落盘机制，不需要新的存储基础设施）和一个新的排序函数，需要
   仔细测试"排序自我修正"这条性质（不能引入需要额外状态维护的补偿逻辑）。
 
-### P3 —— 优先级老化（防饥饿兜底）
+### P3 —— 优先级老化（防饥饿兜底） ✅ 已实现（v1.1）
 
 - **目标**：P2 的公平轮询已经能防止"总在执行同一个 Goal"，但如果某个 Goal 因为
   `max_concurrent_objectives_per_goal` 限制、或者它的 Objective 一直因为路径冲突
@@ -163,7 +179,7 @@
      `last_touched_at` 已更新，`days_since_touched` 归零）。
 - **工作量**：小。是在 P2 排序函数基础上新增一个计算维度，不涉及新的持久化字段。
 
-### P4（较大改动，建议观察 P1-P3 效果后再决定是否需要）—— 执行时间片化
+### P4（较大改动，建议观察 P1-P3 效果后再决定是否需要）—— 执行时间片化 ⏸ 未实现（按计划留待观察数据）
 
 - **目标**：P1-P3 解决的是"槽位空出来的那一刻该分配给谁"，但如果单个 Objective 的
   步骤本身很长（例如被拆成 10 步、每步跑 20 分钟），槽位可能几个小时才空一次，
@@ -186,7 +202,7 @@
 - **工作量**：大。涉及执行状态机的新增分支和"断点续跑"的正确性验证，建议单独排期，
   不与 P1-P3 一起上线。
 
-### P5 —— 看板可视化 + 配置文档
+### P5 —— 看板可视化 + 配置文档 🟡 部分实现（v1.1 仅完成配置文档，看板可视化留待后续）
 
 - **目标**：把"哪些 Goal 最近获得了执行机会、哪些被冷落"变得肉眼可见，而不是只能
   靠翻 `objective_executions.json`/`activity_digest.jsonl` 猜。

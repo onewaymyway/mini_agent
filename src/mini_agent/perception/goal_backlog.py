@@ -101,6 +101,15 @@ class GoalNode:
     # 冷却限流判断。跟 progress_notes 不是一回事。
     last_external_advance_at: float = 0.0
 
+    # [goal_execution_fairness_improvement_plan.md P2 新增]
+    # 上一次这个 Goal（或其 Objective）被调度器实际分配到执行槽位
+    # （ObjectiveExecutor.start() 成功）的时间戳。与 last_touched_at
+    # （"内容/进度有更新"）语义不同——纯粹用于 active_objectives_fair_ranked()
+    # 的排序，不代表这个 Goal 有任何实质进展。只由 mark_scheduled() 写入，
+    # 不走 update_fields()（避免顺带把 last_touched_at 也刷新，破坏 P3
+    # 老化加成"只随实质进展归零"的语义）。
+    last_scheduled_at: float = 0.0
+
     def to_dict(self) -> dict:
         return {
             "id": self.id,
@@ -119,6 +128,7 @@ class GoalNode:
             "description": self.description,
             "external_context": self.external_context,
             "last_external_advance_at": self.last_external_advance_at,
+            "last_scheduled_at": self.last_scheduled_at,
         }
 
     @staticmethod
@@ -140,6 +150,7 @@ class GoalNode:
             description=d.get("description", ""),
             external_context=d.get("external_context", []),
             last_external_advance_at=d.get("last_external_advance_at", 0.0),
+            last_scheduled_at=d.get("last_scheduled_at", 0.0),
         )
 
     @property
@@ -153,6 +164,36 @@ class GoalNode:
     @property
     def is_active(self) -> bool:
         return self.status == "active"
+
+
+def compute_aging_boost(
+    node: "GoalNode",
+    now: float,
+    *,
+    stale_days: float = 7.0,
+    boost_per_day: float = 1.0,
+    max_boost_days: float = 14.0,
+) -> float:
+    """[goal_execution_fairness_improvement_plan.md P3] 计算某个节点在调度侧
+    应该额外获得的"老化加成"，只影响排序用的 effective_priority，从不写回
+    node.priority 本身。
+
+    判定标准与 next_action_advisor.py::_find_stale_active_goals() 复用同一套
+    "days_since_touched >= stale_days 视为停滞"的口径（该模块保留自己独立的
+    STALE_DAYS/STALE_PRIORITY_FLOOR 常量用于晨报展示，两边不合并成同一段
+    代码路径，但含义一致，便于对照）。
+
+    未停滞（或没有任何 last_touched_at/created_at 时间戳）返回 0；停滞后每
+    多停滞一天加成 +boost_per_day，累计不超过 max_boost_days 天对应的量。
+    """
+    last_touched = node.last_touched_at or node.created_at
+    if not last_touched:
+        return 0.0
+    days_since = (now - last_touched) / 86400
+    if days_since < stale_days:
+        return 0.0
+    over_days = min(days_since - stale_days, max_boost_days)
+    return over_days * boost_per_day
 
 
 @dataclass
@@ -289,6 +330,105 @@ class GoalBacklog:
             if n.is_active and n.is_objective
         ]
         return sorted(objs, key=lambda n: n.priority, reverse=True)
+
+    def active_objectives_fair_ranked(
+        self,
+        *,
+        stale_days: float = 7.0,
+        aging_boost_per_day: float = 1.0,
+        aging_boost_max_days: float = 14.0,
+        now: Optional[float] = None,
+    ) -> list[GoalNode]:
+        """[goal_execution_fairness_improvement_plan.md P2/P3]
+        返回所有 active objective，"公平轮询"排序，而不是纯 priority 排序。
+
+        与 active_objectives() 并存、互不影响：旧方法/priority 策略下的
+        调用方行为完全不变。
+
+        排序规则：
+          1. 按 parent_id（所属 Goal）分组，组内按
+             effective_priority = priority + aging_boost 降序，取组内
+             第一名作为该 Goal 本轮的"代表候选"；
+          2. 结果列表按 Goal 分组，组间以该 Goal 代表候选所属 GoalNode 的
+             last_scheduled_at 升序排列（从未被调度过记为 0，排最前）；
+             同一时间桶内按代表候选的 effective_priority 降序；
+          3. 每组的非代表候选（同一 Goal 下排名靠后的其它 Objective）依次
+             追加在所有代表候选之后，组间顺序、组内顺序规则同上——保证
+             调用方"挑不到代表候选时继续往下挑"依然能拿到本 Goal 的其它
+             Objective，不会把它们直接丢弃。
+
+        排序本身是自我修正的：一个 Goal 本轮被选中执行后，
+        last_scheduled_at 更新，下一轮自然排到后面；未被选中的 Goal
+        last_scheduled_at 不变，下一轮自然排到更前面。不需要额外的
+        补偿计数器。
+        """
+        objs = [
+            n for n in self._nodes.values()
+            if n.is_active and n.is_objective
+        ]
+        if not objs:
+            return []
+        now = time.time() if now is None else now
+
+        # 所属 Goal：优先用 objective 自己的 parent_id 对应的 GoalNode；
+        # 找不到（数据异常/孤儿 objective）时退化为把它自己当成独立的一组，
+        # 避免整体报错。
+        def _owner(node: GoalNode) -> GoalNode:
+            parent = self._nodes.get(node.parent_id) if node.parent_id else None
+            return parent if parent is not None else node
+
+        def _effective_priority(node: GoalNode) -> float:
+            return node.priority + compute_aging_boost(
+                node, now,
+                stale_days=stale_days,
+                boost_per_day=aging_boost_per_day,
+                max_boost_days=aging_boost_max_days,
+            )
+
+        groups: dict[str, list[GoalNode]] = {}
+        owners: dict[str, GoalNode] = {}
+        for n in objs:
+            owner = _owner(n)
+            groups.setdefault(owner.id, []).append(n)
+            owners[owner.id] = owner
+
+        ranked_groups: list[tuple[GoalNode, list[GoalNode]]] = []
+        for owner_id, members in groups.items():
+            members_sorted = sorted(members, key=_effective_priority, reverse=True)
+            ranked_groups.append((owners[owner_id], members_sorted))
+
+        ranked_groups.sort(
+            key=lambda pair: (pair[0].last_scheduled_at or 0.0, -_effective_priority(pair[0]))
+        )
+
+        result: list[GoalNode] = []
+        for _owner_node, members_sorted in ranked_groups:
+            result.append(members_sorted[0])
+        for _owner_node, members_sorted in ranked_groups:
+            result.extend(members_sorted[1:])
+        return result
+
+    def mark_scheduled(self, node_id: str, when: Optional[float] = None) -> bool:
+        """[goal_execution_fairness_improvement_plan.md P2] 记录 node_id
+        所属 Goal 刚被分配到一次执行槽位（ObjectiveExecutor.start() 成功
+        后调用）。只写 last_scheduled_at，不touch last_touched_at/其它
+        字段——语义上"被调度"不等于"有实质进展"，P3 的老化加成只应该在
+        真正有进展（last_touched_at 更新）时才归零。
+
+        node_id 可以是 Objective 自己的 id，也可以是它的父 Goal id；两种
+        情况都直接更新传入 id 对应节点的 last_scheduled_at（调用方通常传
+        Objective id，排序时读的是该 Objective 通过 parent_id 找到的
+        GoalNode，若上层还想单独标记 Goal 自身可以再调用一次）。
+        """
+        with self._locked():
+            node = self._nodes.get(node_id)
+            if not node:
+                return False
+            node.last_scheduled_at = time.time() if when is None else when
+            parent = self._nodes.get(node.parent_id) if node.parent_id else None
+            if parent is not None:
+                parent.last_scheduled_at = node.last_scheduled_at
+        return True
 
     def active_goals(self) -> list[GoalNode]:
         """返回所有 active goal，按优先级降序。"""

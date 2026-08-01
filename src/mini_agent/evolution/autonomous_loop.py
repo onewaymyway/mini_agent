@@ -321,14 +321,45 @@ class AutonomousLoop:
             and self._objective_executor.can_start_new()
             and self._goal_backlog.has_actionable_work()
         ):
-            objectives = self._goal_backlog.active_objectives()
+            autonomy_cfg = getattr(self._cfg, "autonomy", None) if self._cfg is not None else None
+            strategy = getattr(autonomy_cfg, "goal_scheduling_strategy", "fair_round_robin") \
+                if autonomy_cfg is not None else "fair_round_robin"
+            if strategy == "priority":
+                objectives = self._goal_backlog.active_objectives()
+            else:
+                stale_days = getattr(self._cfg, "next_action_stale_days", 7.0) if self._cfg is not None else 7.0
+                boost_per_day = getattr(autonomy_cfg, "fairness_aging_boost_per_day", 1.0) \
+                    if autonomy_cfg is not None else 1.0
+                boost_max_days = getattr(autonomy_cfg, "fairness_aging_boost_max_days", 14.0) \
+                    if autonomy_cfg is not None else 14.0
+                objectives = self._goal_backlog.active_objectives_fair_ranked(
+                    stale_days=stale_days,
+                    aging_boost_per_day=boost_per_day,
+                    aging_boost_max_days=boost_max_days,
+                )
+
+            per_goal_cap = getattr(autonomy_cfg, "max_concurrent_objectives_per_goal", 1) \
+                if autonomy_cfg is not None else 1
+
             for obj in objectives:
                 if self._objective_executor.is_running(obj.id):
                     continue
                 if not self._objective_executor.can_start_new():
                     break
+                # [P1] 同一 Goal 并发上限：达到上限则跳过本候选，继续看排序
+                # 里的下一个（而不是 break），避免一个 Goal 顶到上限就让本轮
+                # 调度提前结束，其它 Goal 的候选仍有机会被挑中。
+                if per_goal_cap and per_goal_cap > 0:
+                    goal_id = self._objective_executor._goal_id_of_objective(obj.id)
+                    if self._objective_executor.running_count_for_goal(goal_id) >= per_goal_cap:
+                        continue
                 exec_id = self._objective_executor.start(obj)
                 if exec_id:
+                    try:
+                        self._goal_backlog.mark_scheduled(obj.id)
+                    except Exception as _mini_agent_exc:
+                        from mini_agent.errors import log_exception
+                        log_exception(_mini_agent_exc, where='mini_agent.evolution.autonomous_loop.AutonomousLoop._tick_maintenance.mark_scheduled')
                     self._record_digest({
                         "type": "objective_started",
                         "objective_id": obj.id,

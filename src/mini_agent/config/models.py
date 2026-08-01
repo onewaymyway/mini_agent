@@ -1164,6 +1164,26 @@ class AutonomyConfig:
     # 这里额外定义一个更高的 blocked 分界线，只有挫败感严重到这个程度才会
     # 真正整体停摆）。
     frustration_blocked_threshold: float = 0.85
+    # [goal_execution_fairness_improvement_plan.md P1] 同一个 Goal 同时最多能
+    # 占用几个并发执行槽位（按 execution.status == "running" 且所属 Goal
+    # 相同统计）。默认 1：从根源上避免一个 Goal 自己吃满所有并发槽位，让
+    # 其余 Goal 长期挤不进来。设为 0 或负数视为不限制（等价于关闭本项，
+    # 完全回退到改造前的行为）。
+    max_concurrent_objectives_per_goal: int = 1
+    # [goal_execution_fairness_improvement_plan.md P2] Objective 挑选顺序的
+    # 调度策略：
+    #   - "fair_round_robin"（新默认）：按 Goal 分组，组间按
+    #     last_scheduled_at 升序（最久未被调度的优先）+ priority（含 P3
+    #     老化加成）降序作为次级键；
+    #   - "priority"：改造前的纯静态 priority 降序排序（供灰度回退）。
+    goal_scheduling_strategy: str = "fair_round_robin"
+    # [goal_execution_fairness_improvement_plan.md P3] 停滞 Goal 的老化加成：
+    # 复用 next_action_stale_days 判定"是否已停滞"，停滞天数每超过阈值 1
+    # 天，调度侧使用的 effective_priority 就临时 +
+    # fairness_aging_boost_per_day（不改写 node.priority 本身），加成累计
+    # 上限为 fairness_aging_boost_max_days 天对应的量，避免无限增长。
+    fairness_aging_boost_per_day: float = 1.0
+    fairness_aging_boost_max_days: float = 14.0
 
 
 @dataclass
