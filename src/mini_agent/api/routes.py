@@ -57,7 +57,9 @@ api/routes.py — FastAPI 路由定义
     GET    /v1/autonomous/status     当前 autonomy_level + cron job 状态 + Objective 执行进度
     GET    /v1/goals                 GoalBacklog 完整视图（active goals + objectives）
     POST   /v1/goals                 新增 Goal
-    PATCH  /v1/goals/{goal_id}       更新 Goal 状态/进度/优先级
+    PATCH  /v1/goals/{goal_id}       更新 Goal 状态/进度/优先级/标题/描述
+    GET    /v1/self/diagnosis_feedback  自诊断信号闭环 P1-P4 汇总（改进候选清单/
+                                         建议采纳率回看/能力快照 diff/skill 有效性）
     POST   /v1/objectives/{execution_id}/cancel    终止一个正在运行的 Objective 执行
     POST   /v1/objectives/{execution_id}/retry     手动重试当前 step（不等超时）
     POST   /v1/objectives/{execution_id}/guidance  插一句补充说明，供下次提交时使用
@@ -1772,6 +1774,77 @@ async def rotate_user_token(request: Request, user_id: str):
 
 # ── Self 状态（daemon 多用户架构 Phase 4，owner only）───────────────────────────
 
+@router.get("/self/diagnosis_feedback")
+async def get_self_diagnosis_feedback(request: Request):
+    """GET /v1/self/diagnosis_feedback — 汇总"自诊断信号闭环深化"计划
+    （next_doc/self_diagnosis_feedback_loop_deepening_plan.md）P1-P4 四路输出，
+    供看板一次性拉取展示，避免看板自己解析 activity_digest.jsonl / 各 job 的
+    落盘文件格式。全部只读，不触发任何 job 重新运行。
+
+    返回结构：
+    {
+      "improvement_backlog": {"ran_at": float, "sources_read": [...], "items": [...]},  # P1
+      "suggestion_outcome_review": {...} | None,   # P2，activity_digest 最近一条
+      "self_model_snapshot_diff": {...} | None,    # P3，activity_digest 最近一条
+      "skill_effectiveness": [...],                # P4，最近一条 health_report 里的字段
+    }
+    """
+    http_server = getattr(request.app.state, "http_server", None)
+    if http_server is None:
+        raise HTTPException(status_code=503, detail="HttpServer not available")
+    _require_owner(request)
+
+    result: dict = {
+        "improvement_backlog": None,
+        "suggestion_outcome_review": None,
+        "self_model_snapshot_diff": None,
+        "skill_effectiveness": [],
+    }
+    try:
+        from mini_agent.storage.paths import AgentPaths
+        from mini_agent.evolution.resource_arbiter import read_activity_digest
+
+        self_agent = http_server.bridge.agent
+        project_root = getattr(self_agent.cfg, "project_root", None) if self_agent else None
+        if project_root is None:
+            return result
+        paths = AgentPaths(project_root)
+
+        # P1 — improvement_backlog.json，直接落盘的排序候选清单快照。
+        try:
+            backlog_path = paths.improvement_backlog_path
+            if backlog_path.exists():
+                result["improvement_backlog"] = json.loads(backlog_path.read_text(encoding="utf-8"))
+        except Exception as _mini_agent_exc:
+            from mini_agent.errors import log_exception
+            log_exception(_mini_agent_exc, where='mini_agent.api.routes.get_self_diagnosis_feedback.backlog')
+
+        # P2/P3/P4 都写在 activity_digest.jsonl 里，扫最近 500 条找各自最新一条即可
+        # （这三种记录都是低频 job 产出，不需要按时间窗口过滤，只要最新状态）。
+        try:
+            records = read_activity_digest(paths, since_ts=None)[-500:]
+            for rec in reversed(records):
+                rtype = rec.get("type")
+                if rtype == "suggestion_outcome_review" and result["suggestion_outcome_review"] is None:
+                    result["suggestion_outcome_review"] = rec
+                elif rtype == "self_model_snapshot_diff" and result["self_model_snapshot_diff"] is None:
+                    result["self_model_snapshot_diff"] = rec
+                elif rtype == "health_report" and not result["skill_effectiveness"]:
+                    result["skill_effectiveness"] = rec.get("skill_effectiveness", []) or []
+                if (result["suggestion_outcome_review"] is not None
+                        and result["self_model_snapshot_diff"] is not None
+                        and result["skill_effectiveness"]):
+                    break
+        except Exception as _mini_agent_exc:
+            from mini_agent.errors import log_exception
+            log_exception(_mini_agent_exc, where='mini_agent.api.routes.get_self_diagnosis_feedback.digest')
+    except Exception as _mini_agent_exc:
+        from mini_agent.errors import log_exception
+        log_exception(_mini_agent_exc, where='mini_agent.api.routes.get_self_diagnosis_feedback')
+
+    return result
+
+
 @router.get("/self/status")
 async def get_self_status(request: Request):
     """
@@ -2191,6 +2264,15 @@ async def update_goal(goal_id: str, request: Request):
             fields["progress_notes"] = body["progress_notes"]
         if "priority" in body:
             fields["priority"] = int(body["priority"])
+        # [看板 Goal 编辑功能，配套 self_diagnosis_feedback_loop_deepening_plan.md
+        # 看板改造新增] 允许看板直接改标题/描述，此前只能改 status/priority/
+        # progress_notes，标题写错或描述过时时只能删了重建，丢失历史关联。
+        if "title" in body:
+            new_title = (body["title"] or "").strip()
+            if new_title:
+                fields["title"] = new_title
+        if "description" in body:
+            fields["description"] = body["description"] or ""
 
         updated = backlog.update_fields(goal_id, **fields)
         if updated is None:

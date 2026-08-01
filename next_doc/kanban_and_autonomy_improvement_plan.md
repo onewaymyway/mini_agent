@@ -8,6 +8,10 @@
 > token 消耗，见第五轮实施记录）、Track J（资源门控三态化：frustration/
 > user_presence 从二元 block/allow 改成 full/degraded/blocked，degraded 态
 > 收紧并发上限而非整体停摆；"用更便宜的模型跑自主任务"调研后确认
+> 第十二轮补充：自诊断信号闭环（P1-P4，见
+> `next_doc/self_diagnosis_feedback_loop_deepening_plan.md`）接入看板"🧠
+> 自我状态"tab，并顺带补上 Goal 卡片的标题/描述编辑能力，见实施记录
+> "第十二轮已完成 Track"一节。
 > `LLMClientPool` 当前不支持按场景切换模型档位，未实现，见第六轮实施记录）、
 > Track I（风险分级 + 一键合并已上线，且看板可视化已补齐：
 > `evolution/proposal_risk.py` + `StateRepo.merge_branch()` +

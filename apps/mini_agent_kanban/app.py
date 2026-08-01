@@ -2004,6 +2004,33 @@ def _render_goal_card(
         client.update_goal(n.get("id"), status=new_status)
         st.rerun()
 
+    # [看板 Goal 编辑功能新增] 之前只能改状态，标题写错/描述过时时只能删了
+    # 重建（丢失 external_context/work_thread 等关联历史）。这里补一个折叠的
+    # 编辑表单，直接 PATCH title/description/priority——同一把 update_fields
+    # 锁保护，不会跟 ObjectiveExecutor 的状态同步写入冲突。
+    with st.expander("✏️ 编辑标题/描述/优先级", expanded=False):
+        with st.form(f"edit_goal_{n.get('id')}"):
+            edit_title = st.text_input("标题", value=n.get("title", ""))
+            edit_desc = st.text_area("描述", value=n.get("description", ""), height=80)
+            edit_priority = st.slider("优先级", 0, 100, int(n.get("priority", 50)))
+            save = st.form_submit_button("保存")
+        if save:
+            fields = {}
+            if edit_title.strip() and edit_title.strip() != n.get("title", ""):
+                fields["title"] = edit_title.strip()
+            if edit_desc != n.get("description", ""):
+                fields["description"] = edit_desc
+            if edit_priority != int(n.get("priority", 50)):
+                fields["priority"] = edit_priority
+            if fields:
+                res = client.update_goal(n.get("id"), **fields)
+                if res and "_error" in res:
+                    st.error(res["_error"])
+                else:
+                    st.rerun()
+            else:
+                st.caption("没有改动。")
+
 
 def render_kanban_tab(client: AgentClient):
     st.markdown("#### 📌 目标看板 (Goal Backlog)")
@@ -2888,6 +2915,118 @@ def render_self_tab(client: AgentClient):
         for s in pool.get("sessions", []):
             st.caption(f"👤 {s.get('user_id')} / {s.get('session_id')} — 角色:{s.get('role')} "
                        f"空闲:{s.get('idle_seconds')}s {'🟢' if s.get('is_alive') else '⚪'}")
+
+    st.divider()
+    _render_self_diagnosis_feedback(client)
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# 自诊断信号闭环深化（next_doc/self_diagnosis_feedback_loop_deepening_plan.md
+# P1-P4）看板可视化。四路信号此前只落盘/写进 activity_digest.jsonl，人工
+# 要看只能翻文件或翻晨报文本；这里接上 GET /v1/self/diagnosis_feedback，
+# 一次性展示排序候选清单 + 建议回看结论 + 能力弱点 diff + skill 有效性。
+# 全部只读展示，不提供"一键采纳"之类的执行按钮——遵循计划文档 §3 明确写的
+# 边界："执行与否、采纳与否始终是人工决定"。
+# ═══════════════════════════════════════════════════════════════════════
+_VERDICT_LABEL = {
+    "improved": "✅ 已改善", "worse": "🔴 变差了", "unchanged": "➖ 无明显变化",
+    "no_action_taken": "❔ 未采纳/无人使用", "effective": "✅ 有效",
+    "low_effectiveness": "🔴 低有效性", "inconclusive": "❔ 样本不足",
+}
+
+
+def _render_self_diagnosis_feedback(client: AgentClient):
+    st.markdown("#### 🩺 自诊断信号闭环")
+    st.caption(
+        "self_diagnosis_feedback_loop_deepening_plan.md P1-P4：四路自诊断信号"
+        "（工具/技能/知识缺口/能力弱点）聚合排序 + 历史建议是否真的见效的回看。"
+        "纯只读展示，是否采纳仍由人工决定。"
+    )
+    if st.button("🔄 刷新", key="diag_feedback_refresh"):
+        st.rerun()
+
+    resp = client.self_diagnosis_feedback() or {}
+    if "_error" in resp:
+        st.warning(f"获取失败：{resp['_error']}")
+        return
+
+    # P1 —— 改进信号聚合器：排序后的候选清单
+    with st.expander("📋 改进候选清单（P1 improvement_backlog）", expanded=True):
+        backlog = resp.get("improvement_backlog")
+        items = (backlog or {}).get("items") or []
+        if not items:
+            st.caption("暂无数据（cron job `sys:improvement_backlog_merge` 还未跑过一轮，或暂无候选）。")
+        else:
+            ran_at = backlog.get("ran_at")
+            if ran_at:
+                st.caption(f"最近一次汇总：{time.strftime('%Y-%m-%d %H:%M', time.localtime(ran_at))}")
+            sorted_items = sorted(items, key=lambda x: x.get("score", 0), reverse=True)
+            for it in sorted_items[:10]:
+                st.markdown(
+                    f"**{it.get('subject','')}** · 分数 {it.get('score',0)} · "
+                    f"来源 `{it.get('source','')}`/`{it.get('kind','')}`"
+                )
+                st.caption(it.get("summary", ""))
+
+    # P2 —— 建议采纳率回看
+    with st.expander("🔁 建议采纳率回看（P2 suggestion_outcome_review）"):
+        review = resp.get("suggestion_outcome_review")
+        if not review:
+            st.caption("暂无数据（cron job `sys:suggestion_outcome_review` 每 14 天跑一次）。")
+        else:
+            at = review.get("at")
+            if at:
+                st.caption(f"最近一次回看：{time.strftime('%Y-%m-%d %H:%M', time.localtime(at))}")
+            findings = review.get("findings") or []
+            for f in findings:
+                verdict = f.get("verdict", "")
+                st.markdown(
+                    f"🔧 `{f.get('tool_name','')}` — {_VERDICT_LABEL.get(verdict, verdict)}　"
+                    f"基线失败率 {f.get('baseline_failure_rate', 0):.2f} → "
+                    f"当前 {f.get('current_failure_rate') if f.get('current_failure_rate') is not None else '-'} "
+                    f"（调用 {f.get('current_call_count', 0)} 次）"
+                )
+
+    # P3 —— 能力自画像时间序列快照 diff
+    with st.expander("📈 能力弱点变化趋势（P3 self_model_snapshot_diff）"):
+        diff = resp.get("self_model_snapshot_diff")
+        if not diff:
+            st.caption("暂无数据（cron job `sys:self_model_snapshot` 日频跑一次，且需要至少两次快照才有 diff）。")
+        else:
+            change = diff.get("weak_count_change")
+            old_at = diff.get("old_at")
+            if change is not None:
+                trend = "🔴 变多了" if change > 0 else ("✅ 变少了" if change < 0 else "➖ 持平")
+                base_desc = (
+                    f"（对比 {time.strftime('%Y-%m-%d', time.localtime(old_at))}）" if old_at else "（首次快照，无历史对比）"
+                )
+                st.markdown(f"弱项数量变化：{change:+d} {trend} {base_desc}")
+            old_domains = set(diff.get("weak_domains_old") or [])
+            new_domains = set(diff.get("weak_domains_new") or [])
+            added = sorted(new_domains - old_domains)
+            removed = sorted(old_domains - new_domains)
+            if added:
+                st.caption(f"新增弱项：{', '.join(added)}")
+            if removed:
+                st.caption(f"已改善（不再是弱项）：{', '.join(removed)}")
+            if not added and not removed and diff.get("weak_domains_new"):
+                st.caption(f"当前弱项：{', '.join(sorted(new_domains))}")
+
+    # P4 —— skill 结果有效性审计
+    with st.expander("🧪 Skill 结果有效性审计（P4 skill_effectiveness）"):
+        skill_findings = resp.get("skill_effectiveness") or []
+        if not skill_findings:
+            st.caption("暂无数据（并入 `sys:self_maintain` 健康巡检流程，且激活组/对照组样本量需各 ≥3 才下结论）。")
+        else:
+            for f in skill_findings:
+                verdict = f.get("verdict", "")
+                st.markdown(
+                    f"🧩 `{f.get('skill_name','')}` — {_VERDICT_LABEL.get(verdict, verdict)}　"
+                    f"激活组失败率 {f.get('active_failure_rate', '-')}"
+                    f"（{f.get('active_sessions', 0)} 个 session）vs "
+                    f"对照组 {f.get('baseline_failure_rate', '-')}"
+                    f"（{f.get('baseline_sessions', 0)} 个 session）"
+                )
 
 
 # ═══════════════════════════════════════════════════════════════════════

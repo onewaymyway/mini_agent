@@ -1,6 +1,6 @@
 # 自诊断信号闭环深化 改进计划
 
-- **版本**: v1.4
+- **版本**: v1.5
 - **变更记录**:
   - v1.0：初版，规划 P1-P4，均未实现。
   - v1.1：P1（`sys:improvement_backlog_merge`）已实现，见该节内的"实现记录"标注。
@@ -12,6 +12,11 @@
     interval:86400，各自独立注册，互不依赖。
   - v1.4：P4（skill 结果有效性审计）已实现，见该节内的"实现记录"标注。至此
     P1-P4 全部实现，本计划规划范围内的工作已完成。
+  - v1.5：P1-P4 全部接入看板（`apps/mini_agent_kanban`），见 §5"看板集成"。
+    新增 `GET /v1/self/diagnosis_feedback` 只读聚合端点 + 看板"🧠 自我状态"
+    tab 新增四个折叠展示区块。同批顺带给看板 Goal 卡片补上标题/描述编辑
+    （`PATCH /v1/goals/{goal_id}` 新增 title/description 字段支持），不属于
+    本计划范围但与"看板改造"同一批次一起做，记录在此。
 - **背景任务**: 代码复核确认，当前自诊断/自我感知类基础设施（`perception/self_model.py`
   的 `AgentSelfModel`、`evolution/self_maintenance.py` 的健康巡检、`wiki/gap_scanner.py`
   的知识缺口扫描、`wiki/decommission.py` 的退役评估、`external_knowledge_feedback_loop_
@@ -192,7 +197,38 @@
 - P2/P4 的"有效性回顾"结论仅作为报告呈现，不反馈进任何自动化的策略调整逻辑——这一点留待
   有了足够回顾数据、且经过明确讨论之后再决定是否要做下一步。
 
-## 4. 待讨论问题（留空，实施前需要确认）
+## 4. 看板集成（v1.5 新增）
+
+> 实现记录：P1-P4 落地时都只写文件/写 `activity_digest.jsonl`，没有配套的
+> 展示入口，人工要看只能翻文件或翻晨报文本。本次改造补齐"看得见"这一环，
+> 不改变 P1-P4 任何一路信号本身的计算/存储逻辑。
+>
+> - 新增 `GET /v1/self/diagnosis_feedback`（`src/mini_agent/api/routes.py`），
+>   一次性只读聚合四路信号：P1 直接读 `AgentPaths.improvement_backlog_path`
+>   文件；P2/P3/P4 扫 `activity_digest.jsonl` 最近 500 条，分别取
+>   `type="suggestion_outcome_review"`/`type="self_model_snapshot_diff"`/
+>   `type="health_report"`（取其 `skill_effectiveness` 字段）里最新的一条。
+>   不触发任何 job 重新运行，纯读取已落盘的结果。
+> - 看板侧（`apps/mini_agent_kanban/client.py` 新增 `self_diagnosis_feedback()`，
+>   `apps/mini_agent_kanban/app.py` 新增 `_render_self_diagnosis_feedback()`）
+>   接在"🧠 自我状态"tab 里，四个折叠区块：改进候选清单（按分数排序 Top 10）、
+>   建议采纳率回看（逐条工具 verdict）、能力弱点变化趋势（新增/已改善弱项
+>   对比）、Skill 结果有效性审计（激活组 vs 对照组失败率）。全部纯展示，
+>   不提供"一键采纳"按钮，遵循 §3 边界——是否采纳仍由人工决定。
+> - 新增 `tests/test_self_diagnosis_feedback_routes.py`（7 个用例，覆盖空
+>   状态默认值、P1 文件读取、P2/P3/P4 各自取最新一条而非误取历史记录、
+>   project_root 缺失时的降级），全部通过；对
+>   `tests/test_goal_backlog.py`/`tests/test_evolution_proposal_routes_track_i_r8.py`/
+>   `tests/test_notification_routes_p7.py`/`tests/test_external_input_routes_p6.py`/
+>   `tests/test_improvement_backlog_merge.py`/`tests/test_suggestion_outcome_review.py`/
+>   `tests/test_self_model_snapshot.py`/`tests/test_self_maintenance.py` 做了
+>   回归测试（合计 75 个用例），无破坏。
+> - 顺带补的 Goal 编辑功能（不属于本计划范围，见
+>   `next_doc/kanban_and_autonomy_improvement_plan.md` 对应记录）：
+>   `PATCH /v1/goals/{goal_id}` 新增 `title`/`description` 字段支持，看板
+>   Goal 卡片新增"✏️ 编辑标题/描述/优先级"折叠表单。
+
+## 5. 待讨论问题（留空，实施前需要确认）
 
 1. P1 的排序打分权重（新鲜度 vs 跨信号重复次数 vs 距上次处理时间）具体系数，建议先跑一段
    时间收集实际分布再定，而不是一开始就精调。

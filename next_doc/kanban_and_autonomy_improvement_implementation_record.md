@@ -1057,6 +1057,57 @@ PYTHONPATH=src python3 -m pytest tests/test_objective_executor_kanban_tracks_r4.
 "事后审计/断点重放"设计）接到 trace 端点上多查一次，不涉及新的数据
 结构或状态机改动。
 
+## 第十二轮已完成 Track（自诊断信号闭环看板集成 + Goal 元数据编辑）
+
+本轮不对应方案原文 Track A~K 中的某一项，而是响应
+`next_doc/self_diagnosis_feedback_loop_deepening_plan.md` v1.4 完成后的
+后续需求：P1-P4 四路自诊断信号已经全部实现并落盘/写入
+`activity_digest.jsonl`，但没有配套的看板展示入口。顺带一并做了 Goal
+卡片本身缺失已久的"改标题/描述"能力（此前只能改 status，见 Track D 设计
+里没覆盖到的部分）。
+
+**改动**：
+- 新增 `GET /v1/self/diagnosis_feedback`（`src/mini_agent/api/routes.py`），
+  只读聚合 P1（`improvement_backlog.json`）+ P2/P3/P4（`activity_digest.jsonl`
+  里最新的 `suggestion_outcome_review`/`self_model_snapshot_diff`/
+  `health_report.skill_effectiveness` 记录）。不触发任何 job 重新运行。
+- `apps/mini_agent_kanban/client.py` 新增 `self_diagnosis_feedback()`；
+  `apps/mini_agent_kanban/app.py` 的"🧠 自我状态"tab 新增
+  `_render_self_diagnosis_feedback()`，四个折叠区块对应 P1-P4。
+- `PATCH /v1/goals/{goal_id}` 新增 `title`/`description` 字段支持（原来
+  只接受 `status`/`progress_notes`/`priority`）；`GoalBacklog.update_fields()`
+  本来就是通用 `setattr` 实现，无需改动。空白标题会被忽略（不清空已有
+  标题），空字符串描述允许（描述本来就是可选字段）。
+- 看板 `_render_goal_card()` 新增"✏️ 编辑标题/描述/优先级"折叠表单。
+
+**验收标准**：
+1. `improvement_backlog.json` 存在数据时，看板"改进候选清单"区块按分数
+   降序展示，与文件内容一致。
+2. `activity_digest.jsonl` 里同一 `type` 出现多条记录时，接口只返回最新
+   一条（按文件内先后顺序，取最后一条），不会把历史记录混进来。
+3. 看板编辑 Goal 标题/描述并保存后，`GET /v1/goals` 返回的对应节点
+   `title`/`description` 立即反映改动。
+4. 提交空白标题时，`title` 字段保持不变（不会被清空成空字符串）。
+
+**测试**：新增 `tests/test_self_diagnosis_feedback_routes.py`（7 个用例，
+覆盖空状态默认值、P1 文件读取、P2/P3/P4 各自取最新一条、project_root
+缺失时的降级、title/description PATCH 的三种场景），全部通过：
+
+```bash
+PYTHONPATH=src python3 -m pytest tests/test_self_diagnosis_feedback_routes.py -q
+# 7 passed
+```
+
+连同本轮涉及的既有测试文件（`test_goal_backlog.py`/
+`test_evolution_proposal_routes_track_i_r8.py`/`test_notification_routes_p7.py`/
+`test_external_input_routes_p6.py`/`test_improvement_backlog_merge.py`/
+`test_suggestion_outcome_review.py`/`test_self_model_snapshot.py`/
+`test_self_maintenance.py`）一并重跑，共 **75 项全部通过**，无回归。
+
+**工作量**：小中。核心是"读已有落盘数据 + 拼装展示"，没有新增数据采集
+基础设施，符合 `self_diagnosis_feedback_loop_deepening_plan.md` §0 里
+"不新增数据采集基础设施，只在现有信号上叠加一层聚合与回看"的既定边界。
+
 ## 未完成 / 待续（供下一轮参考）
 
 按方案原文的路线图，以下项目**仍未开始或未完全完成**，需要后续排期：

@@ -224,6 +224,12 @@ class AgentClient:
     def autonomous_status(self):
         return self._get("/autonomous/status")
 
+    def self_diagnosis_feedback(self):
+        """[self_diagnosis_feedback_loop_deepening_plan.md 配套看板改造]
+        P1 改进信号聚合 + P2 建议采纳率回看 + P3 能力快照 diff + P4 skill
+        有效性审计，四路信号一次性拉取。"""
+        return self._get("/self/diagnosis_feedback")
+
     def goals(self):
         return self._get("/goals")
 
