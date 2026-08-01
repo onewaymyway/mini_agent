@@ -1295,6 +1295,22 @@ class HttpServer:
                 from mini_agent.errors import log_exception
                 log_exception(_mini_agent_exc, where='mini_agent.api.server.HttpServer._build_autonomous_loop.ensure_relevance_threshold_calibration_job')
 
+            # 外部知识反馈闭环计划 P5：daemon 启动时补注册
+            # sys:monthly_trend_retrospective（每月汇总 external_trend_
+            # capability_link 候选采纳情况、wiki 专题页增长、capability_map
+            # 能力置信度变化趋势，生成月度回顾文档，零 LLM 成本、纯规则
+            # 聚合、本地回调），见
+            # next_doc/external_knowledge_feedback_loop_improvement_plan.md §3 P5。
+            try:
+                from mini_agent.evolution.monthly_trend_retrospective import (
+                    ensure_monthly_trend_retrospective_job,
+                )
+
+                ensure_monthly_trend_retrospective_job(paths, cron_scheduler)
+            except Exception as _mini_agent_exc:
+                from mini_agent.errors import log_exception
+                log_exception(_mini_agent_exc, where='mini_agent.api.server.HttpServer._build_autonomous_loop.ensure_monthly_trend_retrospective_job')
+
             # ── ObjectiveExecutor ────────────────────────────────────────────
             def _obj_submit(message: str, initiator: str, meta: dict):
                 """提交自主步骤到 InputQueue，返回 turn_id。"""

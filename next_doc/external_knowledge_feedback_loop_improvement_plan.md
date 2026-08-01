@@ -1,6 +1,6 @@
 # 外部知识反馈闭环 改进计划
 
-- **版本**: v1.3
+- **版本**: v1.4
 - **变更记录**:
   - v1.0：初版，规划 P1-P5；P1（`sys:candidate_queue_triage`）已实现，见该节内的"实现记录"标注。
   - v1.1：P2（`sys:wiki_utility_audit`，统计层）已实现，见该节内的"实现记录"标注。
@@ -8,6 +8,8 @@
   - v1.3：P4（`sys:ecosystem_positioning_scan`）已实现，"同类项目"种子列表
     维护方式选择"人工配置"（`ecosystem_positioning.seeds`），见该节内的
     "实现记录"标注。
+  - v1.4：P5（`sys:monthly_trend_retrospective`）已实现，见该节内的
+    "实现记录"标注。P1-P5 全部实施完毕，本计划正文规划的五处空隙已补齐。
 - **背景任务**: 在 `external_knowledge_wiki_and_self_improvement_plan.md`（P1-P5 均已实现）打通的
   "外部事件/检索 → wiki 沉淀 → 自我改进候选"链路基础上，针对现状复盘发现的几处"只生产、
   不巡检/不校准/不回看"的空隙做补齐，不新增数据源，聚焦在现有链路上补一层
@@ -193,14 +195,50 @@
   （因新增 source_kind 常量与 world_writer 用法回归运行）做了确认，
   全部通过。
 
-### P5 —— `sys:monthly_trend_retrospective`（月度战略回顾）📋 已设计，未实现
+### P5 —— `sys:monthly_trend_retrospective`（月度战略回顾）✅ 已实现
+
+> 实现记录：新增 `src/mini_agent/evolution/monthly_trend_retrospective.py`
+> （`run_monthly_trend_retrospective_once()` +
+> `ensure_monthly_trend_retrospective_job()`），在 `api/server.py` daemon
+> 启动流程里注册 `sys:monthly_trend_retrospective` job（`cron:0 0 1 * *`，
+> 每月 1 日一次，零 LLM 成本，默认 enabled，本地回调 handler，跟
+> `candidate_queue_triage.py`/`wiki_utility_audit.py`/
+> `relevance_threshold_calibration.py` 同构）。
 
 - 目标：汇总过去 4 周 `external_trend_capability_link` 候选采纳情况、wiki 专题页增长、
-  `self_eval` 能力变化趋势，生成一份月度回顾文档，供 `decision_profile_update`/
-  `soft_goal_deriver` 参考。
-- 推荐节奏：`cron:0 0 1 * *`（每月 1 日）。
-- 本次先只做设计，待 P1-P4 跑出一段时间数据后再实现，否则回顾文档在早期会因数据量不足
-  而空洞。
+  `self_eval`/`capability_map` 能力变化趋势，生成一份月度回顾文档，供
+  `decision_profile_update`/`soft_goal_deriver` 参考。
+- 三路信号采集：
+  1. **候选采纳情况**：读取 `external_trend_capability_link_state_path` 的
+     `produced_keys`，筛出过去 28 天（`RETROSPECTIVE_WINDOW_SECONDS`）内产出的
+     候选，逐条能力域跟 `GoalBacklog.all_nodes()` 里现存 Goal 标题做匹配（复用
+     `soft_goal_deriver.py::_reverify_candidate_signal()` 里
+     `source_tag == "external_knowledge"` 分支同款的标题拼接规则），判定是否
+     已被采纳为 Goal。
+  2. **wiki 专题页增长**：复用 `wiki/stats.py::compute_stats()` 拿当前
+     `by_source_kind` 快照，与本模块自己状态文件里保存的上一轮快照做差值。
+  3. **能力变化趋势**：复用 `evolution/consolidation.py::load_capability_map()`，
+     与上一轮保存的 `domain -> confidence` 快照做差值，按变化幅度降序只保留
+     Top 10（`MAX_CAPABILITY_HIGHLIGHTS`）。
+- 落点：只产出一份人类可读文档
+  （`AgentPaths.monthly_trend_retrospective_path(month)`，
+  `.agent/wiki/monthly_trend_retrospective/<YYYY-MM>.md`），不产出结构化候选、
+  不接入任何下游自动消费链路，不自动创建 Goal、不自动修改代码——P5 本身就是
+  给人看的回顾终点，跟 P1-P4"产出候选供下游消费"的定位不同。
+- 快照对比机制：不引入专门的时间序列存储，按"运行节奏（每月一次）快照 vs
+  上一轮保存的快照"的方式计算环比增量，跟 `relevance_threshold_calibration.py`
+  的"游标 + 状态快照"风格一致。首次运行（无上一轮快照）时 wiki 增长/能力变化
+  会把全量值当作"从无到有"的增量展示，属于预期行为，不影响可用性。
+- 测试：新增 `tests/test_monthly_trend_retrospective.py`（9 用例，全部通过），
+  覆盖状态文件不存在时采纳统计返回零值、窗口内/外候选正确过滤计数、候选对应
+  Goal 已存在时正确判定采纳、wiki 增长首次运行/环比对比、能力变化趋势首次
+  运行/环比对比及 Top N 截断排序、端到端运行写出月度文档并保存快照、
+  `ensure_monthly_trend_retrospective_job()` 注册与本地回调触发；对
+  `tests/test_external_trend_capability_link.py`/`tests/test_goal_backlog.py`/
+  `tests/test_wiki_utility_audit.py`/`tests/test_ecosystem_positioning_scan.py`/
+  `tests/test_relevance_threshold_calibration.py`/
+  `tests/test_candidate_queue_triage.py`（共 44 用例，因复用同批底层模块回归
+  运行）做了确认，全部通过。
 
 ## 4. 本次实施范围小结
 
@@ -208,6 +246,9 @@
 - v1.2 实施了 P3（阈值自校准，含 warmup/最小样本量门槛与人工回滚逃生通道）。
 - v1.3 实施了 P4（生态定位扫描；"同类项目"种子列表选择"人工配置"支路，
   job 默认 disabled，需用户配置种子后启用）。
-- P5 仍留档设计，明确标注未实现及关键前置缺口（依赖 P1-P4 跑出一段时间
-  数据后再实现），不打"实现了但是半成品"的擦边球——这与项目里 P12/P13
-  阶段"部分内容显式延后"的一贯做法一致。
+- v1.4 实施了 P5（月度战略回顾；三路信号——候选采纳情况/wiki 专题页增长/
+  能力变化趋势——全部复用 P1-P4 已沉淀的状态文件与既有统计模块，零 LLM
+  成本，不引入新的数据源或存储体系）。
+- 至此 P1-P5 全部实施完毕，§1 复盘的五处空隙（候选队列不过期、沉淀内容
+  利用率不可见、阈值不校准、改进视野被已知弱点锁死、缺月度战略回看）
+  均已补上对应机制。

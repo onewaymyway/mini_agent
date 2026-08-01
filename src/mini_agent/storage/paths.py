@@ -771,6 +771,28 @@ class AgentPaths:
         return self.external_input_state_dir / "ecosystem_positioning_scan_state.json"
 
     @property
+    def monthly_trend_retrospective_state_path(self) -> Path:
+        """<project_root>/.agent/monthly_trend_retrospective_state.json —
+        `sys:monthly_trend_retrospective`（外部知识反馈闭环计划 P5）的运行
+        状态：上次运行时间、上一轮的 wiki `by_source_kind` 快照、上一轮的
+        capability_map 置信度快照（domain -> confidence），供下一轮计算
+        环比增量用，不依赖任何专门的历史时间序列存储。"""
+        return self.workdir_dir / "monthly_trend_retrospective_state.json"
+
+    @property
+    def monthly_trend_retrospective_dir(self) -> Path:
+        """<project_root>/.agent/wiki/monthly_trend_retrospective/ —
+        `sys:monthly_trend_retrospective`（外部知识反馈闭环计划 P5）产出的
+        月度回顾文档目录，每月一份（`<YYYY-MM>.md`），人工审核用，供
+        `decision_profile_update`/`soft_goal_deriver` 参考，不自动创建
+        Goal、不自动修改代码。"""
+        return self.wiki_dir / "monthly_trend_retrospective"
+
+    def monthly_trend_retrospective_path(self, month: str) -> Path:
+        """…/wiki/monthly_trend_retrospective/<YYYY-MM>.md"""
+        return self.monthly_trend_retrospective_dir / f"{month}.md"
+
+    @property
     def notification_dir(self) -> Path:
         """<project_root>/.agent/notification/ — 通知系统（渠道配置、分级汇报
         tier 配置）的根目录，见 next_doc/watchlist_notification_goal_design.md
