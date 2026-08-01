@@ -1,10 +1,11 @@
 # 外部数据知识化与自我改进闭环 改进计划
 
-- **版本**: v1.3（P1、P2、P3 已实现，P4-P5 待实施）
+- **版本**: v1.4（P1-P4 已实现，P5 待实施/可选）
 - **变更记录**:
   - v1.1：P1（外部事件 → wiki 抽取管道）已实现，见该节内的"实现记录"标注。
   - v1.2：P2（技术专题页优先聚合）已实现，见该节内的"实现记录"标注。
   - v1.3：P3（主动检索反哺 wiki，`sys:tech_radar_search`）已实现，见该节内的"实现记录"标注。
+  - v1.4：P4（外部知识接入自我改进候选生成，`sys:external_trend_capability_link`）已实现，见该节内的"实现记录"标注。
 - **背景任务**: 对现有外部数据输入/处理/使用机制（External Input Gateway、web_search 工具、wiki 知识库）做一次现状梳理，识别"外部世界信息未被沉淀为可复用知识"的断层，规划补齐路径
 - **关联文档**:
   - `docs/external-input-gateway-guide.md`（外部输入网关，含 §11 当前实际数据流向）
@@ -130,7 +131,37 @@ P1 产出的候选如果每条都各自建一个零散 entity 页，几个月后
 
 **验收标准**：wiki 里能看到 `source_kind: external_search` 的条目，且能追溯到是哪次 `sys:tech_radar_search` 运行、针对哪个种子产生的（落盘时记录触发上下文）。
 
-### P4 —— 外部知识接入自我改进候选生成
+### P4 —— 外部知识接入自我改进候选生成 ✅ 已实现
+
+> 实现记录（本次改动）：新增 `src/mini_agent/evolution/external_trend_capability_link.py`
+> （`run_external_trend_capability_link_once()` +
+> `ensure_external_trend_capability_link_job()`），在 `api/server.py` daemon
+> 启动流程里注册 `sys:external_trend_capability_link` job（首次创建即
+> `disable()`，符合 §4"默认先 disabled 接入"）。数据源两路：
+> `_load_external_knowledge_pages()` 扫描 wiki 全量页面筛出
+> `source_kind` 属于 `external_watch`/`external_search` 的条目（复用
+> `wiki/indexer.py::discover_pages()` + `wiki/parser.py::parse_page()`，
+> 与 `wiki/stats.py::compute_stats()` 同款用法）；
+> `_load_weak_capabilities()` 复用
+> `evolution/consolidation.py::load_capability_map()`，筛出
+> confidence 低或 total_calls 极少的条目（阈值与
+> `soft_goal_deriver.py` 里的 `CONFIDENCE_LOW`/`MIN_CALLS_FOR_KNOWN`
+> 保持数值一致）。用 `LLMHelper` 做一次轻量匹配，产出的候选要求
+> `capability_domain`/`wiki_page_ids` 必须真实存在于输入数据里，否则
+> 事后过滤掉。落点两处：结构化候选写入
+> `AgentPaths.external_trend_capability_link_state_path`（14 天去重
+> 窗口，同一 (能力域, wiki 页面 id 集合) 组合不重复产出），供
+> `evolution/soft_goal_deriver.py::SoftGoalDeriver._from_external_knowledge()`
+> 消费——新增的这一路信号进入既有的 `_DeriveCandidate`/
+> `derive_candidates()`/`commit_goals()` 流程（`source_tag="external_knowledge"`，
+> 在 `commit_goals()` 里被标记 `needs_review`，与 workthread/lesson 两路
+> 一致），不绕开"autonomous 档位下才 derive"的既有规则；人类可读草稿写入
+> `AgentPaths.external_trend_capability_candidates_path`
+> （`.agent/wiki/external_trend_capability_candidates.md`），格式与
+> `evolution/decision_profile_builder.py::_write_profile_md()` 一致，供人工
+> 审核。测试见 `tests/test_external_trend_capability_link.py`。详见
+> `docs/wiki-knowledge-base-guide.md` §十二·4、
+> `docs/memory-and-self-evolution-complete-reference.md`。
 
 新增 cron job `sys:external_trend_capability_link`，建议 `interval:604800`（每周一次，节奏对齐 `sys:decision_profile_update`）：
 
@@ -160,9 +191,9 @@ P1 产出的候选如果每条都各自建一个零散 entity 页，几个月后
 |---|---|---|---|---|
 | `sys:external_knowledge_extractor` ✅ | `interval:21600` | 类似 `sys:consolidation` | 是（批量、轻量摘要） | `wiki/world_writer.py` pending 队列 |
 | `sys:tech_radar_search` ✅ | `interval:86400` | 类似 `sys:self_eval` | 是（web_search + 摘要，有每日上限） | 同上 |
-| `sys:external_trend_capability_link` | `interval:604800` | 类似 `sys:decision_profile_update` | 是（低频、一次性关联） | 改进候选草稿文档（不写 Goal） |
+| `sys:external_trend_capability_link` ✅ | `interval:604800` | 类似 `sys:decision_profile_update` | 是（低频、一次性关联） | 改进候选草稿文档 + `soft_goal_deriver._from_external_knowledge()` 消费的结构化候选（不绕开既有 derive/commit 安全阀） |
 
-三者均以 `sys:` 前缀注册（不可删除只可 disable，与既有内置 job 治理规则一致），默认建议**先以 disabled 状态接入**，人工评估几天后再手动开启，降低新增机制的试错成本。已实现的两个 job（`sys:external_knowledge_extractor`/`sys:tech_radar_search`）在首次创建时均已按此规则调用 `disable()`。
+三者均以 `sys:` 前缀注册（不可删除只可 disable，与既有内置 job 治理规则一致），默认建议**先以 disabled 状态接入**，人工评估几天后再手动开启，降低新增机制的试错成本。已实现的三个 job（`sys:external_knowledge_extractor`/`sys:tech_radar_search`/`sys:external_trend_capability_link`）在首次创建时均已按此规则调用 `disable()`。
 
 ---
 

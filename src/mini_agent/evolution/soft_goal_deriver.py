@@ -199,6 +199,7 @@ class SoftGoalDeriver:
         all_candidates.extend(self._from_work_index())
         all_candidates.extend(self._from_lesson_review())
         all_candidates.extend(self._from_unexplored_capabilities())
+        all_candidates.extend(self._from_external_knowledge())
 
         # [方案四·谨慎推进的单场景验证] 落在"最近效果回填为负面"的域里的
         # 候选做强降权（0.15，比风险域的 0.4 更激进——这不是具身层的经验性
@@ -255,7 +256,7 @@ class SoftGoalDeriver:
             # GoalBacklog——这是第16节提到的"验证不对称"。用 needs_review
             # 标签 + 事件广播补一层轻量一致性复核（不是完整 ExplorationSandbox，
             # 成本低很多），而不是假装它们已经验证过。
-            needs_review = c.source_tag in ("workthread", "lesson")
+            needs_review = c.source_tag in ("workthread", "lesson", "external_knowledge")
             goal = goal_backlog.add_goal(
                 title=c.title,
                 description=c.description,
@@ -409,6 +410,24 @@ class SoftGoalDeriver:
                             return True, ""
                         return False, "对应 LessonGroup 触发次数已回落到阈值以下，问题可能已缓解"
                 return False, "对应 LessonGroup 已不存在（问题可能已被其他修复解决）"
+            except Exception as _mini_agent_exc:
+                from mini_agent.errors import log_exception
+                log_exception(_mini_agent_exc, where='mini_agent.evolution.soft_goal_deriver.SoftGoalDeriver._reverify_candidate_signal')
+                return True, ""
+        elif source_tag == "external_knowledge":
+            # [外部数据知识化计划 P4] 候选来自
+            # external_trend_capability_link 产出的"外部动态 x 能力薄弱点"
+            # 草稿，复核时重新加载该候选源，看对应组合是否仍然存在
+            # （草稿有 14 天去重窗口，过期或被覆盖都视为候选已过时）。
+            try:
+                from mini_agent.evolution.external_trend_capability_link import (
+                    load_external_trend_candidates,
+                )
+
+                for c in load_external_trend_candidates(self._paths):
+                    if f"改善 {c.capability_domain} 的执行可靠性（外部动态参考）" == node.title:
+                        return True, ""
+                return False, "对应的外部趋势×能力薄弱点候选已过期或不再产出"
             except Exception as _mini_agent_exc:
                 from mini_agent.errors import log_exception
                 log_exception(_mini_agent_exc, where='mini_agent.evolution.soft_goal_deriver.SoftGoalDeriver._reverify_candidate_signal')
@@ -779,6 +798,43 @@ class SoftGoalDeriver:
         except Exception as _mini_agent_exc:
             from mini_agent.errors import log_exception
             log_exception(_mini_agent_exc, where='mini_agent.evolution.soft_goal_deriver')
+            pass
+        return candidates
+
+    def _from_external_knowledge(self) -> list[_DeriveCandidate]:
+        """
+        信号 5（外部数据知识化计划 P4 新增）：只读消费
+        `evolution/external_trend_capability_link.py` 周期性产出的
+        "外部技术趋势 x 能力薄弱点"候选草稿——本方法不做任何匹配/LLM
+        调用，匹配逻辑全部在该模块里完成，这里只是把已经产出的结构化
+        候选转换成 `_DeriveCandidate`，复用既有的
+        derive_candidates()/commit_goals() 流程（仍然遵循"autonomous
+        档位下才 derive"的既有规则，且在 commit_goals() 里被标记为
+        needs_review，与 workthread/lesson 两路一致）。
+
+        失败静默降级：任何异常直接返回空列表，不影响其余信号。
+        """
+        candidates = []
+        try:
+            from mini_agent.evolution.external_trend_capability_link import (
+                load_external_trend_candidates,
+            )
+            trend_candidates = load_external_trend_candidates(self._paths)
+            for tc in trend_candidates:
+                candidates.append(_DeriveCandidate(
+                    title=f"改善 {tc.capability_domain} 的执行可靠性（外部动态参考）",
+                    description=(
+                        f"外部知识 wiki 页面 {', '.join(tc.wiki_page_ids)} 显示的技术动态"
+                        f"可能有助于改善 {tc.capability_domain} 这个偏薄弱的能力域。"
+                        f"关联理由：{tc.rationale}"
+                    ),
+                    source_tag="external_knowledge",
+                    priority=25,
+                    urgency=0.5,  # 低于确定性失败信号（capability），供人工优先审核而非抢占
+                ))
+        except Exception as _mini_agent_exc:
+            from mini_agent.errors import log_exception
+            log_exception(_mini_agent_exc, where='mini_agent.evolution.soft_goal_deriver.SoftGoalDeriver._from_external_knowledge')
             pass
         return candidates
 

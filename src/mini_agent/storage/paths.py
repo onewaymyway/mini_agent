@@ -315,7 +315,24 @@ class AgentPaths:
         return self.workdir_dir / "decision_profile_state.json"
 
     @property
+    def external_trend_capability_link_state_path(self) -> Path:
+        """<project_root>/.agent/external_trend_capability_link_state.json —
+        `sys:external_trend_capability_link`（外部知识 wiki 计划 P4）的运行状态
+        （上次扫描时间、已产出候选的去重 key 集合），避免同一批"外部知识 ×
+        能力薄弱点"组合每周重复产出草稿。"""
+        return self.workdir_dir / "external_trend_capability_link_state.json"
+
+    @property
+    def external_trend_capability_candidates_path(self) -> Path:
+        """<project_root>/.agent/wiki/external_trend_capability_candidates.md —
+        `sys:external_trend_capability_link`（外部知识 wiki 计划 P4）产出的
+        "外部技术趋势 × 自身能力薄弱点"候选草稿文档，人工审核用，不自动创建
+        Goal、不自动修改代码。"""
+        return self.wiki_dir / "external_trend_capability_candidates.md"
+
+    @property
     def attention_mismatch_state_path(self) -> Path:
+
         """<project_root>/.agent/attention_mismatch_state.json — 注意力错配信号的
         首次发现时间/推送次数跟踪，供 next_action_advisor 的 daemon 主动推送判断
         "持续超过阈值时长"使用（避免每次扫描都重新计时导致误判）。"""

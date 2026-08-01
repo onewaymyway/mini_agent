@@ -1202,6 +1202,28 @@ class HttpServer:
                 from mini_agent.errors import log_exception
                 log_exception(_mini_agent_exc, where='mini_agent.api.server.HttpServer._build_autonomous_loop.ensure_tech_radar_search_job')
 
+            # 外部数据知识化与自我改进闭环计划 P4：daemon 启动时补注册
+            # sys:external_trend_capability_link（每周一次，把 P1-P3 沉淀的
+            # 外部知识 wiki 页面与 capability_map 薄弱能力域做一次 LLM 轻量
+            # 匹配，产出候选草稿供 soft_goal_deriver 消费，唯一引入 LLM 调用
+            # 的环节），llm_helper 惰性获取，见
+            # next_doc/external_knowledge_wiki_and_self_improvement_plan.md §3 P4。
+            try:
+                from mini_agent.evolution.external_trend_capability_link import (
+                    ensure_external_trend_capability_link_job,
+                )
+
+                def _external_trend_llm_helper():
+                    return getattr(agent, "llm_helper", None)
+
+                ensure_external_trend_capability_link_job(
+                    paths, cron_scheduler,
+                    llm_helper_provider=_external_trend_llm_helper,
+                )
+            except Exception as _mini_agent_exc:
+                from mini_agent.errors import log_exception
+                log_exception(_mini_agent_exc, where='mini_agent.api.server.HttpServer._build_autonomous_loop.ensure_external_trend_capability_link_job')
+
             # ── ObjectiveExecutor ────────────────────────────────────────────
             def _obj_submit(message: str, initiator: str, meta: dict):
                 """提交自主步骤到 InputQueue，返回 turn_id。"""

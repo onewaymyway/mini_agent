@@ -571,6 +571,37 @@ P1/P2 打通的是"被动订阅"（RSS 事件）→ wiki 的消费链路；`web_
 - **默认关闭**：与 P1 一致，daemon 启动时首次创建该 job 即调用
   `disable()`，需要到 Cron Jobs 看板手动启用。
 
+### 十二·4、外部知识接入自我改进候选生成（外部数据知识化计划 P4，本轮新增）
+
+P1-P3 已经把"外部世界正在发生什么"沉淀进了 wiki，但 `soft_goal_deriver.py`
+原有的四路信号采集全部来自系统内部状态，没有一路桥接"这条外部知识是否
+值得作为一个改进方向"。P4 补上这个桥接，且明确"只产出草稿供人工审核"。
+
+- **新模块** `evolution/external_trend_capability_link.py`：新增 cron job
+  `sys:external_trend_capability_link`（`interval:604800`，每周一次，与
+  `sys:decision_profile_update` 对齐）。
+- **数据源**：`source_kind` 属于 `external_watch`/`external_search`
+  的 wiki 页面 + `capability_map` 中 confidence 低或 total_calls 极少
+  的能力条目（阈值与 `soft_goal_deriver.py` 保持一致）。
+- **匹配**：用 LLM 做一次轻量匹配，产出的候选要求 `capability_domain`/
+  `wiki_page_ids` 必须真实来自输入数据，不满足的候选事后过滤，不完全
+  信任 LLM 自称的引用。
+- **去重**：同一 (能力域, wiki 页面 id 集合) 组合 14 天内不重复产出。
+- **落点（两处，均不直接建 Goal / 不自动改代码）**：
+  1. 结构化候选写入状态文件，供
+     `evolution/soft_goal_deriver.py::SoftGoalDeriver._from_external_knowledge()`
+     消费——这一路新信号进入既有的 `_DeriveCandidate`/
+     `derive_candidates()`/`commit_goals()` 流程（`source_tag=
+     "external_knowledge"`，在 `commit_goals()` 里被标记
+     `needs_review`，与 workthread/lesson 两路一致），仍然遵循
+     "autonomous 档位下才 derive、其余档位只记录不生成"的既有规则。
+  2. 人类可读草稿写入 `.agent/wiki/external_trend_capability_candidates.md`
+     （`AgentPaths.external_trend_capability_candidates_path`），格式
+     与 `decision_profile_builder.py::_write_profile_md()` 一致，人工
+     审核后再决定是否实施。
+- **默认关闭**：与 P1/P3 一致，daemon 启动时首次创建该 job 即调用
+  `disable()`，需要到 Cron Jobs 看板手动启用。
+
 ## 相关文档
 
 - 项目根目录 `next_doc/external_knowledge_wiki_and_self_improvement_plan.md` — 外部数据知识化与自我改进闭环 P1-P5 的完整设计动机与实现记录（本节对应 P1）
