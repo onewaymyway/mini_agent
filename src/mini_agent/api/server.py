@@ -1224,6 +1224,20 @@ class HttpServer:
                 from mini_agent.errors import log_exception
                 log_exception(_mini_agent_exc, where='mini_agent.api.server.HttpServer._build_autonomous_loop.ensure_external_trend_capability_link_job')
 
+            # 外部知识反馈闭环计划 P1：daemon 启动时补注册
+            # sys:candidate_queue_triage（把 novelty_candidates.jsonl 中长期
+            # 无人处理的 pending 候选标记为 expired，零 LLM 成本，本地回调），
+            # 见 next_doc/external_knowledge_feedback_loop_improvement_plan.md §3 P1。
+            try:
+                from mini_agent.evolution.candidate_queue_triage import (
+                    ensure_candidate_queue_triage_job,
+                )
+
+                ensure_candidate_queue_triage_job(paths, cron_scheduler)
+            except Exception as _mini_agent_exc:
+                from mini_agent.errors import log_exception
+                log_exception(_mini_agent_exc, where='mini_agent.api.server.HttpServer._build_autonomous_loop.ensure_candidate_queue_triage_job')
+
             # ── ObjectiveExecutor ────────────────────────────────────────────
             def _obj_submit(message: str, initiator: str, meta: dict):
                 """提交自主步骤到 InputQueue，返回 turn_id。"""
