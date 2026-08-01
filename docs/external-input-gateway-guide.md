@@ -532,6 +532,21 @@ Goal/Objective 的关联完全不经过 `policies.yaml`**——如果某条事�
 详见 `docs/wiki-knowledge-base-guide.md` §十二、
 `next_doc/external_knowledge_wiki_and_self_improvement_plan.md` P1。
 
+外部数据知识化改进计划 P3 新增了一条**不依赖 `system_events.jsonl` 事件**
+的独立链路：`external_input/tech_radar_search.py`，独立 cron job
+`sys:tech_radar_search`（`interval:86400`，默认 **disabled**，需要在
+Cron Jobs 看板手动启用）。它不消费 GatewayPoller 产生的任何事件，而是
+主动发起检索——种子来自 `wiki/gap_scanner.py` 的知识缺口扫描结果 +
+`agent_config.json` 里 `tech_radar.keywords` 手工关键词，每天对一批种子
+（默认 5 个，池子更大时按轮转游标滚动）调用既有 `web_search` 工具，检索
+结果同样批量抽取成 `entity`/`fact` 候选喂给 `wiki/world_writer.py`
+（`source_kind="external_search"`，与 P1 的 `"external_watch"` 区分）。
+跟本节其余四条链路的关系：可以理解成"P1-P2/`NoveltyJudge`/
+`GoalRelevanceEngine` 都是被动消费外部世界主动推送过来的信号，P3 是
+Agent 主动去外部世界找信号"，两者互补、互不依赖。详见
+`docs/wiki-knowledge-base-guide.md` §十二·3、
+`next_doc/external_knowledge_wiki_and_self_improvement_plan.md` P3。
+
 ### 11.3 目前仍未生效的前提
 
 即使上面两份配置文件已经就位，只要满足以下任一条件，这套流程仍然是

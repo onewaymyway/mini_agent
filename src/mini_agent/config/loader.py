@@ -32,6 +32,7 @@ from .models import (
     DebugConfig,
     HttpConfig,
     WebSearchConfig,
+    TechRadarConfig,
     RetryConfig,
     EnsembleConfig,
     RoleAgentConfig,
@@ -546,6 +547,15 @@ def load_config(
         timeout=float(_ws.get("timeout") or os.environ.get("WEB_SEARCH_TIMEOUT", 10.0)),
     )
 
+    _tr = file_cfg.get("tech_radar") if isinstance(file_cfg.get("tech_radar"), dict) else {}
+    _tr_keywords = _tr.get("keywords")
+    tech_radar_cfg = TechRadarConfig(
+        enabled=bool(_tr.get("enabled", True)),
+        keywords=list(_tr_keywords) if isinstance(_tr_keywords, list) else [],
+        daily_seed_limit=int(_tr.get("daily_seed_limit") or 5),
+        max_search_results=int(_tr.get("max_search_results") or 5),
+    )
+
     _rm = file_cfg.get("reminder") if isinstance(file_cfg.get("reminder"), dict) else {}
     _reminder_enabled_val = reminder_enabled if reminder_enabled is not None else _rm.get("enabled", True)
     _reminders_dir_val: Optional[Path] = None
@@ -842,6 +852,7 @@ def load_config(
         ensemble=ensemble_cfg,
         mcp=mcp_cfg,
         web_search=web_search_cfg,
+        tech_radar=tech_radar_cfg,
         reminder=reminder_cfg,
         proprioception=proprioception_cfg,
         affordance=affordance_cfg,

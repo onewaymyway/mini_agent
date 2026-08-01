@@ -1,9 +1,10 @@
 # 外部数据知识化与自我改进闭环 改进计划
 
-- **版本**: v1.2（P1、P2 已实现，P3-P5 待实施）
+- **版本**: v1.3（P1、P2、P3 已实现，P4-P5 待实施）
 - **变更记录**:
   - v1.1：P1（外部事件 → wiki 抽取管道）已实现，见该节内的"实现记录"标注。
   - v1.2：P2（技术专题页优先聚合）已实现，见该节内的"实现记录"标注。
+  - v1.3：P3（主动检索反哺 wiki，`sys:tech_radar_search`）已实现，见该节内的"实现记录"标注。
 - **背景任务**: 对现有外部数据输入/处理/使用机制（External Input Gateway、web_search 工具、wiki 知识库）做一次现状梳理，识别"外部世界信息未被沉淀为可复用知识"的断层，规划补齐路径
 - **关联文档**:
   - `docs/external-input-gateway-guide.md`（外部输入网关，含 §11 当前实际数据流向）
@@ -95,7 +96,31 @@ P1 产出的候选如果每条都各自建一个零散 entity 页，几个月后
 
 **验收标准**：`wiki/stats.py` 统计里，`source_kind=external_watch` 的候选归入已有专题页的比例应逐周上升（人工审查即可，不需要新增自动化指标）。
 
-### P3 —— 主动检索反哺 wiki（把 web_search 从消耗品变成可复用投资）
+### P3 —— 主动检索反哺 wiki（把 web_search 从消耗品变成可复用投资）✅ 已实现
+
+> 实现记录（本次改动）：新增 `src/mini_agent/external_input/tech_radar_search.py`
+> （`run_tech_radar_search_once()` + `ensure_tech_radar_search_job()`），
+> 在 `api/server.py` daemon 启动流程里注册 `sys:tech_radar_search` job
+> （首次创建即 `disable()`，符合 §4"默认先 disabled 接入"）。种子采集
+> `_collect_seed_pool()` 依次合并 `wiki/gap_scanner.py::scan_gaps()` 缺口
+> 页面 id 与 `agent_config.json` 里 `tech_radar.keywords` 手工关键词（去重，
+> 前者优先）；新增 `config/models.py::TechRadarConfig`
+>（`enabled`/`keywords`/`daily_seed_limit`/`max_search_results`），
+> `config/loader.py` 解析 `agent_config.json` 里的 `tech_radar` 配置块。
+> 种子池可能大于每日上限，新增独立轮转游标文件
+> `AgentPaths.external_input_tech_radar_state`（不复用事件游标机制，因为
+> 本模块没有消费 `system_events.jsonl`），按顺序滚动处理、循环到末尾自动
+> 回绕，几天内覆盖完整个种子池。检索直接调用既有
+> `tools/builtin.py::web_search()`，抽取产出的 `entities[]`/`facts[]`
+> 复用 P1 的 `EntityCandidate`/`FactCandidate` 与
+> `wiki/world_writer.py::queue_entities()`/`queue_facts()`，落盘时打
+> `source_kind="external_search"`（`world_writer.EXTERNAL_SEARCH_SOURCE_KIND`，
+> 常量在 P1 阶段已预留，本次去掉"预留"注释正式启用）。`source_entries`
+> 里记录 `tech_radar_search:{run_id}:{seed}` 追溯标记 + 检索结果中解析到的
+> 真实 URL（最多 3 条），满足验收标准里的可追溯要求。单个种子检索失败、
+> 单条解析失败均不阻塞其余条目；全部检索失败或 LLM 调用失败时不推进轮转
+> 游标，下次运行重新处理同一批种子。测试见
+> `tests/test_external_input_tech_radar_search.py`。
 
 新增 cron job `sys:tech_radar_search`，建议 `interval:86400`（每天一次，节奏对齐 `sys:self_eval`）：
 
@@ -133,11 +158,11 @@ P1 产出的候选如果每条都各自建一个零散 entity 页，几个月后
 
 | job id | 频率 | 对齐节拍 | 是否消耗 LLM | 落点 |
 |---|---|---|---|---|
-| `sys:external_knowledge_extractor` | `interval:21600` | 类似 `sys:consolidation` | 是（批量、轻量摘要） | `wiki/world_writer.py` pending 队列 |
-| `sys:tech_radar_search` | `interval:86400` | 类似 `sys:self_eval` | 是（web_search + 摘要，有每日上限） | 同上 |
+| `sys:external_knowledge_extractor` ✅ | `interval:21600` | 类似 `sys:consolidation` | 是（批量、轻量摘要） | `wiki/world_writer.py` pending 队列 |
+| `sys:tech_radar_search` ✅ | `interval:86400` | 类似 `sys:self_eval` | 是（web_search + 摘要，有每日上限） | 同上 |
 | `sys:external_trend_capability_link` | `interval:604800` | 类似 `sys:decision_profile_update` | 是（低频、一次性关联） | 改进候选草稿文档（不写 Goal） |
 
-三者均以 `sys:` 前缀注册（不可删除只可 disable，与既有内置 job 治理规则一致），默认建议**先以 disabled 状态接入**，人工评估几天后再手动开启，降低新增机制的试错成本。
+三者均以 `sys:` 前缀注册（不可删除只可 disable，与既有内置 job 治理规则一致），默认建议**先以 disabled 状态接入**，人工评估几天后再手动开启，降低新增机制的试错成本。已实现的两个 job（`sys:external_knowledge_extractor`/`sys:tech_radar_search`）在首次创建时均已按此规则调用 `disable()`。
 
 ---
 

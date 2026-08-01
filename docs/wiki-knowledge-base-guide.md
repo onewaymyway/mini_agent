@@ -505,9 +505,8 @@ O4 未覆盖的部分（详见实施记录 §5）：`stale_candidate_scan()` 尚
   状态接入，人工评估几天后再手动开启"一致，需要到 Cron Jobs 看板手动启用。
 - **尚未实现**（计划里的后续阶段，见
   `next_doc/external_knowledge_wiki_and_self_improvement_plan.md`）：
-  P3 `sys:tech_radar_search` 主动检索反哺 wiki（预留了
-  `EXTERNAL_SEARCH_SOURCE_KIND="external_search"` 常量但暂无消费者写入）、
-  P4 外部知识接入自我改进候选生成。
+  P4 外部知识接入自我改进候选生成、P5 更贴合场景的来源类型。
+  P3 `sys:tech_radar_search` 已实现，见 §十二·3。
 
 ### 十二·2、技术专题页优先聚合（外部数据知识化计划 P2，本轮新增）
 
@@ -538,6 +537,39 @@ P1 长期运行会把每条命中事件都提炼成独立 entity 页面，几个
   `topics/*.md` 的"外部资讯" section 与 `entities/` 下 `source_kind:
   external_watch` 页面数量，未新增自动化指标（与计划原文"人工审查即可"
   一致）。
+
+### 十二·3、主动检索反哺 wiki（外部数据知识化计划 P3，本轮新增）
+
+P1/P2 打通的是"被动订阅"（RSS 事件）→ wiki 的消费链路；`web_search`
+工具此前是纯消耗品——每次调用的检索结果只活在当轮对话里，没有落盘/复用
+机制。P3 把它接进同一套落盘管道，变成可复用的投资。
+
+- **新模块** `external_input/tech_radar_search.py`：新增 cron job
+  `sys:tech_radar_search`（`interval:86400`，每天一次，与 `sys:self_eval`
+  对齐），与事件驱动的 P1 不同，本模块**没有** `system_events.jsonl`
+  游标，用独立状态文件 `AgentPaths.external_input_tech_radar_state`
+  记录种子轮转 offset。
+- **种子来源**：`_collect_seed_pool()` 优先取
+  `wiki/gap_scanner.py::scan_gaps()` 已有的知识缺口页面 id，不足部分追加
+  `agent_config.json` 里 `tech_radar.keywords` 手工配置的关注关键词
+  （去重，前者优先）。
+- **频率控制**：每次运行只处理 `tech_radar.daily_seed_limit`（默认 5）个
+  种子；种子池更大时按轮转游标滚动处理，循环到末尾自动回绕到开头——几天
+  内可以覆盖完整个种子池，而不是每次都只处理最前面那几个。
+- **检索**：直接调用既有 `tools/builtin.py::web_search()`，不新增检索
+  通道；单个种子检索失败只计数、不阻塞其它种子；全部检索失败或 LLM 调用
+  失败时**不推进轮转游标**，下次运行重新处理同一批种子。
+- **抽取与落盘**：复用 P1 的 `EntityCandidate`/`FactCandidate` 与
+  `wiki/world_writer.py::queue_entities()`/`queue_facts()`，落盘时传
+  `source_kind="external_search"`（`world_writer.EXTERNAL_SEARCH_SOURCE_KIND`，
+  区别于 P1 的 `"external_watch"`），供 `wiki/stats.py` 的
+  `by_source_kind` 统计分别看到"被动订阅"与"主动检索"两类外部知识占比。
+- **可追溯性**：每条候选的 `source_entries` 里都带上
+  `tech_radar_search:{run_id}:{种子关键词}` 追溯标记，再附加检索结果中
+  解析到的真实 URL（最多 3 条），满足"能追溯到是哪次运行、针对哪个种子
+  产生"的验收要求。
+- **默认关闭**：与 P1 一致，daemon 启动时首次创建该 job 即调用
+  `disable()`，需要到 Cron Jobs 看板手动启用。
 
 ## 相关文档
 

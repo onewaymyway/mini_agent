@@ -35,6 +35,15 @@
     "max_results": 5,
     "timeout": 10.0
   },
+  "tech_radar": {
+    "enabled": true,
+    "keywords": [
+      "AI Agent 架构",
+      "LLM 长上下文"
+    ],
+    "daily_seed_limit": 5,
+    "max_search_results": 5
+  },
   "mcp_servers": [
     {
       "name": "time_server",

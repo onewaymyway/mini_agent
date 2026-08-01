@@ -45,8 +45,9 @@ SOURCE_KIND = "world_model"
 # agent_watch 频道事件产出的候选统一打这个 source_kind，与对话来源的
 # "world_model" 区分开，供 wiki/stats.py 统计外部世界知识占比。
 EXTERNAL_WATCH_SOURCE_KIND = "external_watch"
-# P3（主动检索反哺 wiki）预留：sys:tech_radar_search 落盘时使用，本次改动
-# 暂未实现该 job，仅预留常量避免后续引入时再次改动 world_writer.py。
+# P3（主动检索反哺 wiki）：external_input/tech_radar_search.py 消费
+# sys:tech_radar_search 定期检索结果时使用，与 EXTERNAL_WATCH_SOURCE_KIND
+# 区分（被动订阅 vs 主动检索），供 wiki/stats.py 分别统计。
 EXTERNAL_SEARCH_SOURCE_KIND = "external_search"
 _FALLBACK_PAGE_PREFIX = "session-facts-"
 # wiki 提取层与组织层改进计划 E3 §3.4：reused_existing_id 命中后的最低校验

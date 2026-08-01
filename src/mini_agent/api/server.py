@@ -1179,6 +1179,29 @@ class HttpServer:
                 from mini_agent.errors import log_exception
                 log_exception(_mini_agent_exc, where='mini_agent.api.server.HttpServer._build_autonomous_loop.ensure_external_knowledge_extractor_job')
 
+            # 外部数据知识化与自我改进闭环计划 P3：daemon 启动时补注册
+            # sys:tech_radar_search（把 gap_scanner 缺口/手工关键词作为种子，
+            # 定期 web_search + 批量 LLM 抽取，反哺 wiki，唯一引入 LLM/网络
+            # 调用的环节），llm_helper 惰性获取，见
+            # next_doc/external_knowledge_wiki_and_self_improvement_plan.md §3 P3。
+            try:
+                from mini_agent.external_input.tech_radar_search import ensure_tech_radar_search_job
+
+                def _tech_radar_llm_helper():
+                    return getattr(agent, "llm_helper", None)
+
+                _tech_radar_cfg = getattr(cfg, "tech_radar", None)
+                ensure_tech_radar_search_job(
+                    paths, cron_scheduler,
+                    llm_helper_provider=_tech_radar_llm_helper,
+                    keywords=getattr(_tech_radar_cfg, "keywords", None),
+                    daily_seed_limit=getattr(_tech_radar_cfg, "daily_seed_limit", 5),
+                    max_search_results=getattr(_tech_radar_cfg, "max_search_results", 5),
+                )
+            except Exception as _mini_agent_exc:
+                from mini_agent.errors import log_exception
+                log_exception(_mini_agent_exc, where='mini_agent.api.server.HttpServer._build_autonomous_loop.ensure_tech_radar_search_job')
+
             # ── ObjectiveExecutor ────────────────────────────────────────────
             def _obj_submit(message: str, initiator: str, meta: dict):
                 """提交自主步骤到 InputQueue，返回 turn_id。"""

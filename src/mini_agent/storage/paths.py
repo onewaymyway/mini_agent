@@ -717,6 +717,16 @@ class AgentPaths:
         return self.external_input_dir / "alerts.jsonl"
 
     @property
+    def external_input_tech_radar_state(self) -> Path:
+        """<project_root>/.agent/external_input/state/tech_radar_search_state.json —
+        `sys:tech_radar_search`（外部知识 wiki 计划 P3）的种子轮转游标
+        （{"offset": int, "last_run_id": str, "last_run_at": float}），
+        跟其它 source 的增量状态同级存放，不是事件游标（没有
+        `perception/system_events.py` 消费者），所以单独一个小状态文件，
+        不复用 `poll_since()` 的游标机制。"""
+        return self.external_input_state_dir / "tech_radar_search_state.json"
+
+    @property
     def notification_dir(self) -> Path:
         """<project_root>/.agent/notification/ — 通知系统（渠道配置、分级汇报
         tier 配置）的根目录，见 next_doc/watchlist_notification_goal_design.md

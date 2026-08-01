@@ -534,6 +534,23 @@ class WebSearchConfig:
 
 
 @dataclass
+class TechRadarConfig:
+    """[外部知识 wiki 计划 P3] `sys:tech_radar_search` 主动检索配置。
+
+    见 next_doc/external_knowledge_wiki_and_self_improvement_plan.md §3 P3：
+    种子来源优先复用 `wiki/gap_scanner.py` 的知识缺口扫描结果，`keywords`
+    是缺口扫描暂未覆盖领域的手工兜底关键词列表（初期先简单实现，不追求
+    自动发现）。`daily_seed_limit` 控制每次运行处理的种子数量上限，避免
+    cron 触发即引发大量 LLM/网络调用；`max_search_results` 透传给
+    `tools/builtin.py::web_search()` 的 `max_results`。
+    """
+    enabled: bool = True
+    keywords: list = field(default_factory=list)   # list[str]，手工配置的关注关键词
+    daily_seed_limit: int = 5
+    max_search_results: int = 5
+
+
+@dataclass
 class RetryConfig:
     """LLM 调用重试配置。
 
@@ -1404,6 +1421,7 @@ class AppConfig:
     retry:      RetryConfig      = field(default_factory=RetryConfig)
     mcp:        MCPConfig        = field(default_factory=MCPConfig)
     web_search: WebSearchConfig  = field(default_factory=WebSearchConfig)
+    tech_radar: TechRadarConfig  = field(default_factory=TechRadarConfig)
     reminder:   ReminderConfig   = field(default_factory=ReminderConfig)
     proprioception: ProprioceptionConfig = field(default_factory=ProprioceptionConfig)
     affordance: AffordanceConfig = field(default_factory=AffordanceConfig)
