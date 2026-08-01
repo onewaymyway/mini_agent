@@ -1310,6 +1310,21 @@ class HttpServer:
                 from mini_agent.errors import log_exception
                 log_exception(_mini_agent_exc, where='mini_agent.api.server.HttpServer._build_autonomous_loop.ensure_suggestion_outcome_review_job')
 
+            # 自诊断闭环深化计划 P3：daemon 启动时补注册
+            # sys:self_model_snapshot（把 capability_snapshot 按时间戳存档，
+            # 与约 7 天前的快照 diff，回看能力弱项清单是否在收敛，零 LLM
+            # 成本，本地回调），见
+            # next_doc/self_diagnosis_feedback_loop_deepening_plan.md §2 P3。
+            try:
+                from mini_agent.evolution.self_model_snapshot import (
+                    ensure_self_model_snapshot_job,
+                )
+
+                ensure_self_model_snapshot_job(paths, cron_scheduler)
+            except Exception as _mini_agent_exc:
+                from mini_agent.errors import log_exception
+                log_exception(_mini_agent_exc, where='mini_agent.api.server.HttpServer._build_autonomous_loop.ensure_self_model_snapshot_job')
+
             # 外部知识反馈闭环计划 P3：daemon 启动时补注册
             # sys:relevance_threshold_calibration（回看 Stage②已判定候选的
             # relevant 比例，对 GoalRelevanceEngine Stage①阈值做小步长自动

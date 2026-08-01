@@ -323,6 +323,13 @@ class AgentPaths:
         return self.workdir_dir / "improvement_backlog.json"
 
     @property
+    def self_model_history_path(self) -> Path:
+        """<project_root>/.agent/self_model_history.jsonl — 能力自画像时间序列
+        快照（自诊断闭环深化 P3），每行一条 {at, capability_snapshot} 记录，
+        由 evolution/self_model_snapshot.py 写入，保留最近 90 天。"""
+        return self.workdir_dir / "self_model_history.jsonl"
+
+    @property
     def user_value_profile_path(self) -> Path:
         """<project_root>/.agent/wiki/user_value_profile.md — 决策画像（归纳后的用户价值模式）"""
         return self.wiki_dir / "user_value_profile.md"

@@ -1,12 +1,15 @@
 # 自诊断信号闭环深化 改进计划
 
-- **版本**: v1.2
+- **版本**: v1.3
 - **变更记录**:
   - v1.0：初版，规划 P1-P4，均未实现。
   - v1.1：P1（`sys:improvement_backlog_merge`）已实现，见该节内的"实现记录"标注。
   - v1.2：P2（`sys:suggestion_outcome_review`）已实现，范围收窄为仅覆盖
     stale_tools（skill/lesson 侧回看因缺少持久化基础设施而延后），见该节内的
     "实现记录"标注。
+  - v1.3：P3（`sys:self_model_snapshot`）已实现，见该节内的"实现记录"标注。
+    待讨论问题 3（P3 与 P1 是否共用触发周期）已确认：两者都采用日频
+    interval:86400，各自独立注册，互不依赖。
 - **背景任务**: 代码复核确认，当前自诊断/自我感知类基础设施（`perception/self_model.py`
   的 `AgentSelfModel`、`evolution/self_maintenance.py` 的健康巡检、`wiki/gap_scanner.py`
   的知识缺口扫描、`wiki/decommission.py` 的退役评估、`external_knowledge_feedback_loop_
@@ -106,7 +109,28 @@
 - **不做**：不据此自动调整任何阈值或策略，纯报告，供人工判断"这类建议是否值得继续产出"。
 - **触发**：低频，注册为 cron `sys:suggestion_outcome_review`（interval: 每 2 周一次）。
 
-### P3 —— 能力自画像时间序列快照
+### P3 —— 能力自画像时间序列快照 ✅ 已实现
+
+> 实现记录：新增 `src/mini_agent/evolution/self_model_snapshot.py`
+> （`run_self_model_snapshot_once()` + `ensure_self_model_snapshot_job()`），
+> 在 `api/server.py` daemon 启动流程里注册 `sys:self_model_snapshot` job
+> （`interval:86400`，与 P1 同频、独立注册不共享状态，零 LLM 成本，本地
+> 回调 handler）。每次运行现算一份 `capability_snapshot`（复用
+> `AgentSelfModelBuilder`，与 P1 `_read_self_model_findings()` 同样的
+> 只读方式），追加写入新增的 `AgentPaths.self_model_history_path`
+> （`.agent/self_model_history.jsonl`，保留 90 天，超期修剪），并与约 7 天前
+> 最接近的历史快照做 diff——`find_snapshot_near()` 只接受不晚于目标时间的
+> 记录，历史不够长时诚实返回 `None`（`diff.old_at=None`），不拿更晚的记录
+> 冒充"N 天前"。diff 结果（弱项清单增减 + 逐领域置信度变化）写入
+> `activity_digest.jsonl` type=`self_model_snapshot_diff`。`load_snapshot_
+> history()`/`diff_snapshots()` 作为公开函数供 `monthly_trend_
+> retrospective.py` 等下游模块后续按需复用，本阶段未主动接入。
+>
+> 新增 `tests/test_self_model_snapshot.py`（5 个用例，覆盖首次运行无历史、
+> 有历史时的 diff 计算、`find_snapshot_near` 的"不晚于"边界、历史修剪、
+> cron job 幂等注册），全部通过；对 `test_improvement_backlog_merge.py`/
+> `test_suggestion_outcome_review.py`/`test_self_model.py` 做了回归测试，
+> 无破坏。
 
 - **目标**：`self_model.py` 的能力弱点快照目前是即时计算、不落盘的读取式接口。新增按周期
   （建议与 P1 同频，日频或周频）写入带时间戳的快照到 `self_model_history.jsonl`，并提供一个
