@@ -1184,6 +1184,19 @@ class AutonomyConfig:
     # 上限为 fairness_aging_boost_max_days 天对应的量，避免无限增长。
     fairness_aging_boost_per_day: float = 1.0
     fairness_aging_boost_max_days: float = 14.0
+    # [goal_execution_fairness_improvement_plan.md P4] 执行时间片化（抢占式
+    # 让出槽位）。默认关闭——这是比 P1-P3 更激进的行为变化（会中途打断一个
+    # 本来能连续跑完的 Objective），先默认关闭，观察 P1-P3 实际效果后按需
+    # 灰度开启，不强制所有部署一起切换。
+    fairness_time_slicing_enabled: bool = False
+    # 单个执行片段（slice）里连续完成的 step 数达到该值后，才检查是否应该
+    # 让出槽位（避免 step 数很少的 Objective 被无意义打断）。
+    fairness_yield_after_steps: int = 3
+    # 或者单个执行片段已运行的时长（秒）达到该值后，也检查是否应该让出
+    # 槽位——两个条件任一满足即可触发检查（检查本身不代表一定让出，还要看
+    # 是否确实有其它 Goal 在排队等待，见 objective_executor.py
+    # `_should_yield_for_fairness()`）。
+    fairness_yield_after_seconds: float = 900.0
 
 
 @dataclass

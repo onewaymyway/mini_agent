@@ -152,6 +152,12 @@ class ObjectiveExecution:
     # 步骤"。每个 execution 只允许尝试一次，避免"分解出的新步骤仍然失败 →
     # 又重新分解"无限循环，最终变成一种更隐蔽的资源浪费方式。
     redecompose_attempted: bool = False
+    # [goal_execution_fairness_improvement_plan.md P4] 当前"执行片段"
+    # （slice）的起点：开始时间戳 + 起始 step 下标。start() 时初始化一次；
+    # 每次从 paused_for_fairness 恢复时（resume_fairness()）重新赋值。
+    # 只用来计算"这一片跑了多久/多少步"，不代表整个 Objective 的起止。
+    fairness_slice_started_at: float = 0.0
+    fairness_slice_start_step: int = 0
 
     @property
     def current_step(self) -> Optional[ExecutionStep]:
@@ -182,6 +188,8 @@ class ObjectiveExecution:
             "finished_at": self.finished_at,
             "progress_notes": self.progress_notes,
             "redecompose_attempted": self.redecompose_attempted,
+            "fairness_slice_started_at": self.fairness_slice_started_at,
+            "fairness_slice_start_step": self.fairness_slice_start_step,
         }
 
     @staticmethod
@@ -196,6 +204,8 @@ class ObjectiveExecution:
             finished_at=d.get("finished_at", 0.0),
             progress_notes=d.get("progress_notes", ""),
             redecompose_attempted=bool(d.get("redecompose_attempted", False)),
+            fairness_slice_started_at=d.get("fairness_slice_started_at", 0.0),
+            fairness_slice_start_step=d.get("fairness_slice_start_step", 0),
         )
         ex.steps = [ExecutionStep.from_dict(s) for s in d.get("steps", [])]
         return ex
@@ -383,6 +393,98 @@ class ObjectiveExecutor:
                 count += 1
         return count
 
+    def _should_yield_for_fairness(self, ex: "ObjectiveExecution", next_step_idx: int) -> bool:
+        """[goal_execution_fairness_improvement_plan.md P4] 判断某个刚完成
+        一步、准备提交下一步的 execution 是否应该改为主动让出槽位。
+
+        条件（全部满足才让出）：
+          1. `autonomy.fairness_time_slicing_enabled` 开启（默认关闭，未
+             开启时本函数恒返回 False，行为与改造前完全一致）；
+          2. 当前时间片已完成的 step 数 >= `fairness_yield_after_steps`，
+             或者当前时间片已运行时长 >= `fairness_yield_after_seconds`；
+          3. 按 P2 的公平排序，确实存在另一个"未在运行"的 Goal 排在自己
+             前面——如果没有其它 Goal 在排队（比如就这一个 active Goal），
+             让出槽位没有任何意义，白白多一次暂停/恢复的开销，所以不让出。
+        """
+        autonomy_cfg = getattr(self._cfg, "autonomy", None) if self._cfg is not None else None
+        if autonomy_cfg is None or not getattr(autonomy_cfg, "fairness_time_slicing_enabled", False):
+            return False
+        if self._goal_backlog is None:
+            return False
+
+        k = getattr(autonomy_cfg, "fairness_yield_after_steps", 3)
+        t = getattr(autonomy_cfg, "fairness_yield_after_seconds", 900.0)
+        steps_done = next_step_idx - ex.fairness_slice_start_step
+        slice_start = ex.fairness_slice_started_at or ex.started_at
+        elapsed = time.time() - slice_start
+        if steps_done < k and elapsed < t:
+            return False
+
+        own_goal_id = self._goal_id_of_objective(ex.objective_id)
+        try:
+            stale_days = getattr(self._cfg, "next_action_stale_days", 7.0) if self._cfg is not None else 7.0
+            boost_per_day = getattr(autonomy_cfg, "fairness_aging_boost_per_day", 1.0)
+            boost_max_days = getattr(autonomy_cfg, "fairness_aging_boost_max_days", 14.0)
+            ranked = self._goal_backlog.active_objectives_fair_ranked(
+                stale_days=stale_days,
+                aging_boost_per_day=boost_per_day,
+                aging_boost_max_days=boost_max_days,
+            )
+        except Exception:
+            return False
+
+        for cand in ranked:
+            if cand.id == ex.objective_id:
+                continue
+            if self.is_running(cand.id):
+                continue
+            cand_goal_id = self._goal_id_of_objective(cand.id)
+            if cand_goal_id != own_goal_id:
+                return True
+        return False
+
+    def fairness_paused_objective_ids(self) -> list[str]:
+        """[P4] 当前处于 paused_for_fairness 状态的 execution 所对应的
+        objective_id 列表，供 AutonomousLoop 判断某个候选是否应该走
+        resume_fairness() 而不是 start()。"""
+        return [
+            ex.objective_id
+            for ex in self._executions.values()
+            if ex.status == "paused_for_fairness"
+        ]
+
+    def resume_fairness(self, objective_id: str) -> bool:
+        """[P4] 恢复一个因公平性让出槽位的 execution：从
+        `current_step_idx`（断点）重新提交，不重新拆解、不丢失已完成的
+        step。开启新的时间片计时。找不到对应的 paused_for_fairness
+        execution 时返回 False（调用方应退化为正常 start() 逻辑）。"""
+        ex = next(
+            (
+                e
+                for e in self._executions.values()
+                if e.objective_id == objective_id and e.status == "paused_for_fairness"
+            ),
+            None,
+        )
+        if ex is None:
+            return False
+
+        ex.status = "running"
+        ex.fairness_slice_started_at = time.time()
+        ex.fairness_slice_start_step = ex.current_step_idx
+
+        step_idx = ex.current_step_idx
+        submitted = self._submit_step(ex, step_idx)
+        step = ex.steps[step_idx] if step_idx < len(ex.steps) else None
+        if not submitted and (step is None or step.status != "blocked"):
+            ex.status = "failed"
+            ex.progress_notes = "从公平性暂停恢复时提交失败"
+            self._on_objective_failed(ex)
+
+        self._notify_progress(ex)
+        self.save()
+        return True
+
     def effective_max_concurrent(self) -> int:
         """[Track K] 计算当前生效的并发上限。
 
@@ -521,6 +623,8 @@ class ObjectiveExecutor:
             status="running",
             started_at=time.time(),
         )
+        ex.fairness_slice_started_at = ex.started_at
+        ex.fairness_slice_start_step = 0
         self._executions[exec_id] = ex
 
         # 提交第一步
@@ -575,6 +679,13 @@ class ObjectiveExecutor:
             ex.finished_at = time.time()
             ex.current_step_idx = len(ex.steps)
             self._on_objective_completed(ex)
+        elif self._should_yield_for_fairness(ex, next_idx):
+            # [goal_execution_fairness_improvement_plan.md P4] 已跑满一个
+            # 时间片，且确实有其它 Goal 在排队等待——主动让出槽位，不提交
+            # 下一步。current_step_idx 停在 next_idx（断点），下次
+            # resume_fairness() 会从这里继续，已完成的 step 不受影响。
+            ex.status = "paused_for_fairness"
+            ex.current_step_idx = next_idx
         else:
             # 提交下一步
             ex.current_step_idx = next_idx

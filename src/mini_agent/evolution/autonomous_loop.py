@@ -341,6 +341,15 @@ class AutonomousLoop:
             per_goal_cap = getattr(autonomy_cfg, "max_concurrent_objectives_per_goal", 1) \
                 if autonomy_cfg is not None else 1
 
+            # [goal_execution_fairness_improvement_plan.md P4] 先取一次当前
+            # 因公平性让出槽位的 objective_id 集合——排序结果里如果命中，走
+            # resume_fairness()（从断点续跑），而不是当成"全新 Objective"
+            # 再走一次 start()（那样会重新拆解、丢失已完成的 step 进度）。
+            try:
+                fairness_paused_ids = set(self._objective_executor.fairness_paused_objective_ids())
+            except Exception:
+                fairness_paused_ids = set()
+
             for obj in objectives:
                 if self._objective_executor.is_running(obj.id):
                     continue
@@ -353,6 +362,23 @@ class AutonomousLoop:
                     goal_id = self._objective_executor._goal_id_of_objective(obj.id)
                     if self._objective_executor.running_count_for_goal(goal_id) >= per_goal_cap:
                         continue
+
+                if obj.id in fairness_paused_ids:
+                    resumed = self._objective_executor.resume_fairness(obj.id)
+                    if resumed:
+                        try:
+                            self._goal_backlog.mark_scheduled(obj.id)
+                        except Exception as _mini_agent_exc:
+                            from mini_agent.errors import log_exception
+                            log_exception(_mini_agent_exc, where='mini_agent.evolution.autonomous_loop.AutonomousLoop._tick_maintenance.mark_scheduled')
+                        self._record_digest({
+                            "type": "objective_resumed_from_fairness_pause",
+                            "objective_id": obj.id,
+                            "title": obj.title,
+                            "summary": f"从公平性暂停恢复执行 Objective：{obj.title}",
+                        })
+                    continue
+
                 exec_id = self._objective_executor.start(obj)
                 if exec_id:
                     try:

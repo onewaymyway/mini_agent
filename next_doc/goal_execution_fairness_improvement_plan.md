@@ -1,6 +1,6 @@
 # Goal 执行公平性调度 改进计划
 
-- **版本**: v1.2
+- **版本**: v1.3
 - **变更记录**:
   - v1.0：初版，规划 P1-P4（外加 P5 可视化/配置化），均未实现。
   - v1.1：P1/P2/P3 已实现（P4 按计划留待观察数据后再决定，P5 仅完成
@@ -33,6 +33,33 @@
     - `apps/mini_agent_kanban/client.py` 新增 `AgentClient.goal_fairness()`。
     - 新增测试：`tests/test_goal_fairness_routes.py`（4 个用例，覆盖端点
       空态/老化加成反映/排序顺序/策略字段）。
+  - v1.3：**P4 执行时间片化已实现**（至此 P1-P5 全部完成）：
+    - `ObjectiveExecution` 新增 `fairness_slice_started_at` /
+      `fairness_slice_start_step` 两个持久化字段，记录当前"执行片段"的
+      起点（`start()` 时初始化，每次 `resume_fairness()` 后重置）。
+    - `ObjectiveExecutor._should_yield_for_fairness()`：跑满
+      `autonomy.fairness_yield_after_steps` 步或 `autonomy.
+      fairness_yield_after_seconds` 秒，且按 P2 公平排序确实存在另一个
+      "未在运行"的 Goal 排在自己前面时才让出，只有一个 active Goal 时不
+      让出（避免无意义的暂停/恢复）。
+    - `on_turn_done()` 接入该检查：满足让出条件时，execution 状态置为
+      新状态 `paused_for_fairness`（区别于 Track J 已有的"资源门控暂停"，
+      那是被动触发；这里是主动让出），断点停在 `current_step_idx`，不计入
+      `running_count()`。
+    - 新增 `ObjectiveExecutor.fairness_paused_objective_ids()` /
+      `resume_fairness()`：后者从断点续跑，不重新拆解 Objective、不丢失
+      已完成 step 的进度。
+    - `AutonomousLoop._tick_maintenance()` 的调度循环：候选命中
+      `fairness_paused_objective_ids()` 时走 `resume_fairness()`，而不是
+      当成全新 Objective 再走一次 `start()`。
+    - 新增配置（`AutonomyConfig`）：`fairness_time_slicing_enabled`
+      （默认 `False`，灰度关闭）、`fairness_yield_after_steps`（默认 3）、
+      `fairness_yield_after_seconds`（默认 900 秒）。
+    - 新增测试：`tests/test_goal_execution_fairness_p4.py`（5 个用例，
+      覆盖默认关闭时行为不变、跑满阈值且有 Goal 排队时让出、只有一个
+      Goal 时不让出、断点续跑正确性、`resume_fairness()` 在非暂停态时
+      返回 `False`）。
+    - 配置文档 `docs/goal-execution-fairness-config.md` 补充 P4 章节。
 - **背景**：Goal 是长期任务，理想情况下应该"雨露均沾"，让所有 active Goal 都能持续
   获得推进；但代码复核发现，当前 `AutonomousLoop`/`ObjectiveExecutor`/`GoalBacklog`
   的调度模型是"贪心 + 静态优先级 + 一次启动跑到底"，天然容易导致同一个（或同一批）
@@ -193,7 +220,7 @@
      `last_touched_at` 已更新，`days_since_touched` 归零）。
 - **工作量**：小。是在 P2 排序函数基础上新增一个计算维度，不涉及新的持久化字段。
 
-### P4（较大改动，建议观察 P1-P3 效果后再决定是否需要）—— 执行时间片化 ⏸ 未实现（按计划留待观察数据）
+### P4（较大改动，建议观察 P1-P3 效果后再决定是否需要）—— 执行时间片化 ✅ 已实现（v1.3）
 
 - **目标**：P1-P3 解决的是"槽位空出来的那一刻该分配给谁"，但如果单个 Objective 的
   步骤本身很长（例如被拆成 10 步、每步跑 20 分钟），槽位可能几个小时才空一次，
@@ -210,11 +237,30 @@
   - K/T 阈值建议做成配置项（如 `autonomy.fairness_yield_after_steps`/
     `autonomy.fairness_yield_after_seconds`），避免步数极少的 Objective 被无意义地
     打断。
-- **不做**：不在本轮直接实现，P4 是否值得做取决于 P1-P3 上线后的实际观察数据——如果
-  多数 Objective 步骤数不多、单步耗时不长，P1-P3 的效果可能已经足够，P4 的额外
-  复杂度（新状态机分支、断点续跑的正确性保证）不一定划算。
+- **实际实现（v1.3，与草案的差异见下）**：
+  - 按草案原样实现了 `paused_for_fairness` 状态、
+    `on_turn_done()` 里的让出检查点、`fairness_yield_after_steps`/
+    `fairness_yield_after_seconds` 两个阈值配置（K=3 步 / T=900 秒）。
+  - 额外新增一个草案未提及的总开关 `autonomy.
+    fairness_time_slicing_enabled`（默认 `False`）——P4 相比 P1-P3 是更
+    激进的行为变化（会主动打断本可以连续跑完的 Objective），按本计划
+    "默认行为变化需要可灰度控制"的设计边界，选择默认关闭、按需开启，而
+    不是像 P1-P3 那样默认直接切换新行为。
+  - `_should_yield_for_fairness()` 增加了一条草案未明确写出、但符合其
+    精神的判断：只有当排序结果里确实存在另一个"未在运行"的 Goal 排在
+    自己前面时才让出；只有一个 active Goal（没有其它 Goal 排队）时，即使
+    跑满阈值也不让出——避免无意义的暂停/恢复开销。
+  - 断点续跑通过新增的 `resume_fairness()` 实现：从 `current_step_idx`
+    重新提交，不重新拆解 Objective、不丢失已完成 step 的进度，并重置该
+    execution 的"执行片段"计时起点（`fairness_slice_started_at`/
+    `fairness_slice_start_step`，新增的持久化字段）。
+  - §4 待讨论问题 1 提到的"当前 step 本身就是长耗时单个 LLM 调用、无法在
+    step 内部抢占"的边界情况仍然存在——P4 的时间片粒度天花板确实是"一个
+    step 的耗时"，这一点在实现后没有变化，也不在本轮改动范围内解决。
 - **工作量**：大。涉及执行状态机的新增分支和"断点续跑"的正确性验证，建议单独排期，
-  不与 P1-P3 一起上线。
+  不与 P1-P3 一起上线。（实际实现中因为复用了已有的排序函数/持久化机制，
+  未涉及新的存储基础设施，工作量比预估略小，但状态机分支和断点续跑仍是本次
+  改动里最复杂的部分。）
 
 ### P5 —— 看板可视化 + 配置文档 ✅ 已实现（v1.2）
 
@@ -243,15 +289,19 @@
 - 不改变用户手动设置的 `priority` 字段的语义和存储值——所有"老化加成"类机制都只
   影响调度侧临时计算出的有效优先级，不会覆盖用户主动做的优先级判断。
 - 不引入任何 LLM 调用，纯规则化调度。
-- P4（时间片抢占）在本计划里只是草案，不在 P1-P3 同批实施，是否推进留待观察数据
-  后再拍板。
+- P4（时间片抢占）已实现（v1.3），但默认关闭（`autonomy.
+  fairness_time_slicing_enabled=False`），需要显式开启才会生效——按需灰度，
+  不强制所有已有部署一起切换到抢占式行为。
 
 ## 4. 待讨论问题（留空，实施前需要确认）
 
-1. P4 的 K（步数阈值）/T（时长阈值）具体取值，以及"断点续跑"时如何处理"当前 step
-   如果本身就是长耗时的单个 LLM 调用而非多步"这种无法在 step 内部抢占的情况——
-   这类边界情况可能意味着 P4 的时间片粒度天花板就是"一个 step 的耗时"，需要先
-   收集 P1-P3 上线后的真实 step 耗时分布再决定 K/T 怎么定，或者要不要做。
+1. ~~P4 的 K（步数阈值）/T（时长阈值）具体取值~~ ——v1.3 已按草案给出默认值
+   （K=3 步、T=900 秒，`autonomy.fairness_yield_after_steps`/
+   `fairness_yield_after_seconds`），先用这组保守默认值上线（默认整体关闭，
+   需显式开启），未来可再根据实际 step 耗时分布调整。"当前 step 本身就是
+   长耗时单个 LLM 调用、无法在 step 内部抢占"这一边界情况仍然存在——P4 的
+   时间片粒度天花板确实就是"一个 step 的耗时"，v1.3 未尝试解决这个更深的
+   问题，留作后续观察。
 2. P1 的 `max_concurrent_objectives_per_goal` 默认值是否应该是 1，还是应该允许
    在总并发数较大（比如未来 `MAX_CONCURRENT_OBJECTIVES` 上调）时按比例放宽——
    本计划先按当前并发上限普遍很小（2，甚至降级到 1）的现状定为固定值 1，待并发

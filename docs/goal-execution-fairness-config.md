@@ -1,8 +1,8 @@
 # Goal 执行公平性调度：配置说明
 
-对应设计文档：`next_doc/goal_execution_fairness_improvement_plan.md`（P1-P3，
-v1.1 已实现）。本文档只说明配置项含义和取值建议，设计动机、证据、验收标准见
-上述设计文档。
+对应设计文档：`next_doc/goal_execution_fairness_improvement_plan.md`（P1-P5
+均已实现，v1.3）。本文档只说明配置项含义和取值建议，设计动机、证据、验收
+标准见上述设计文档。
 
 所有配置项均位于 `AutonomyConfig`（即配置文件里的 `autonomy` 段）。
 
@@ -63,6 +63,33 @@ next_action_stale_days: 7.0            # 已有配置项，P3 直接复用
 - Goal 一旦重新有实质进展（`last_touched_at` 更新，通常伴随一次执行推进），
   `days_since_touched` 归零，加成自动回到 0，不需要手动清零。
 
+## P4：执行时间片化（抢占式让出槽位）
+
+```yaml
+autonomy:
+  fairness_time_slicing_enabled: false     # 默认值：关闭
+  fairness_yield_after_steps: 3            # 默认值
+  fairness_yield_after_seconds: 900.0      # 默认值（15 分钟）
+```
+
+- 默认关闭：这是比 P1-P3 更激进的行为变化（会中途打断一个本来能连续跑完的
+  Objective），先默认关闭，按需灰度开启，不强制所有部署一起切换。
+- 开启后，`ObjectiveExecutor.on_turn_done()` 每完成一步会检查：当前"执行
+  片段"（从 `start()` 或上次 `resume_fairness()` 算起）已完成的 step 数
+  达到 `fairness_yield_after_steps`，**或**已运行时长达到
+  `fairness_yield_after_seconds`，且按 P2 的公平排序确实存在另一个"未在
+  运行"的 Goal 排在自己前面时，才会主动让出槽位（execution 状态置为
+  `paused_for_fairness`，不计入 `running_count()`，`current_step_idx`
+  停在断点）。
+- 只有一个 active Goal（没有其它 Goal 排队）时，即使跑满阈值也不会让出——
+  让出没有实际意义，避免无谓的暂停/恢复开销。
+- 下次轮到该 Goal 时（`AutonomousLoop._tick_maintenance()` 的调度循环
+  识别到候选处于 `paused_for_fairness`），走 `ObjectiveExecutor.
+  resume_fairness()` 从断点续跑——不重新拆解 Objective、不丢失已完成的
+  step 进度，同时重置本次"执行片段"的计时起点。
+- 两个阈值任一满足即触发检查（不要求同时满足）；检查触发不等于一定让出，
+  还要看是否真的有其它 Goal 在排队。
+
 ## 灰度回退
 
 如果新策略导致意外行为，可以按下面方式逐项回退到改造前：
@@ -71,9 +98,10 @@ next_action_stale_days: 7.0            # 已有配置项，P3 直接复用
 autonomy:
   max_concurrent_objectives_per_goal: 0     # 关闭 P1
   goal_scheduling_strategy: "priority"      # 关闭 P2（同时使 P3 失效）
+  fairness_time_slicing_enabled: false      # 关闭 P4（默认值，本来就是关闭）
 ```
 
-两项独立配置，可以只关其中一个（例如保留公平轮询但取消并发上限）。
+各项相互独立，可以只关其中一个（例如保留公平轮询但取消并发上限）。
 
 ## P5：看板可视化
 
@@ -83,7 +111,3 @@ autonomy:
 `GET /v1/self/goal_fairness`，纯展示，不提供手动调整调度顺序的交互——人工
 干预仍通过看板已有的"改 priority/改 status"等通用手段进行。
 
-## 尚未实现的部分
-
-- **P4（执行时间片化）**：设计文档中的草案，暂未实现，是否推进留待观察
-  P1-P3 上线效果后再决定，见设计文档 §4 待讨论问题 1。
