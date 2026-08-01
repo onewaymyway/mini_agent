@@ -34,3 +34,4 @@ temp_data/
 .claude/skills/browser-cdp/temp_cdp/
 .agent/workflows/zhihu_content_publish_v2/
 apps/mini_agent_kanban/.kanban_prefs.json
+.agent/knowledge.md
