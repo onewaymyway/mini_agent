@@ -2919,6 +2919,9 @@ def render_self_tab(client: AgentClient):
     st.divider()
     _render_self_diagnosis_feedback(client)
 
+    st.divider()
+    _render_goal_execution_fairness(client)
+
 
 # ═══════════════════════════════════════════════════════════════════════
 # 自诊断信号闭环深化（next_doc/self_diagnosis_feedback_loop_deepening_plan.md
@@ -3027,6 +3030,65 @@ def _render_self_diagnosis_feedback(client: AgentClient):
                     f"对照组 {f.get('baseline_failure_rate', '-')}"
                     f"（{f.get('baseline_sessions', 0)} 个 session）"
                 )
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# Goal 执行公平性调度（next_doc/goal_execution_fairness_improvement_plan.md
+# P5）看板可视化。P1-P3 的调度决策此前只能靠翻 goals.json/
+# activity_digest.jsonl 猜"哪些 Goal 最近获得了执行机会、哪些被冷落"；这里
+# 接上 GET /v1/self/goal_fairness，按实际调度顺序（last_scheduled_at 升序）
+# 展示每个 active Goal 的 priority/老化加成/effective_priority。纯只读
+# 展示，不提供"手动调整调度顺序"之类的交互——人工干预仍走已有的"改
+# priority/改 status"通用手段（见设计文档 P5 小节"不做"）。
+# ═══════════════════════════════════════════════════════════════════════
+
+def _render_goal_execution_fairness(client: AgentClient):
+    st.markdown("#### ⚖️ 执行公平性")
+    st.caption(
+        "goal_execution_fairness_improvement_plan.md P1-P3：调度不再只看静态 "
+        "priority，而是优先照顾最近一段时间没获得过执行机会的 Goal，并对长期"
+        "停滞的 Goal 临时提升有效优先级。下表按实际调度顺序排列（最久没轮到的"
+        "排最前）。"
+    )
+    if st.button("🔄 刷新", key="goal_fairness_refresh"):
+        st.rerun()
+
+    resp = client.goal_fairness() or {}
+    if "_error" in resp:
+        st.warning(f"获取失败：{resp['_error']}")
+        return
+
+    strategy = resp.get("strategy", "fair_round_robin")
+    strategy_label = "公平轮询（fair_round_robin）" if strategy == "fair_round_robin" else "纯优先级（priority，旧行为）"
+    st.caption(f"当前调度策略：**{strategy_label}**")
+
+    rows = resp.get("goals") or []
+    if not rows:
+        st.caption("暂无 active Goal。")
+        return
+
+    now = time.time()
+
+    def _fmt_ago(ts: float) -> str:
+        if not ts:
+            return "从未被调度"
+        days = (now - ts) / 86400
+        if days < 1:
+            return f"{days * 24:.1f} 小时前"
+        return f"{days:.1f} 天前"
+
+    for r in rows:
+        boost = r.get("aging_boost", 0) or 0
+        boost_note = f"（含老化加成 +{boost:.1f}）" if boost > 0 else ""
+        st.markdown(
+            f"**{r.get('title','')}** · priority {r.get('priority', 0)} → "
+            f"effective {r.get('effective_priority', 0)}{boost_note} · "
+            f"{r.get('objective_count', 0)} 个 active Objective"
+        )
+        st.caption(
+            f"上次调度：{_fmt_ago(r.get('last_scheduled_at', 0))}　"
+            f"上次进展：{_fmt_ago(r.get('last_touched_at', 0))}"
+        )
 
 
 # ═══════════════════════════════════════════════════════════════════════

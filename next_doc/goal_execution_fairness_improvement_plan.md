@@ -1,9 +1,9 @@
 # Goal 执行公平性调度 改进计划
 
-- **版本**: v1.1
+- **版本**: v1.2
 - **变更记录**:
   - v1.0：初版，规划 P1-P4（外加 P5 可视化/配置化），均未实现。
-  - v1.1：**P1/P2/P3 已实现**（P4 按计划留待观察数据后再决定，P5 仅完成
+  - v1.1：P1/P2/P3 已实现（P4 按计划留待观察数据后再决定，P5 仅完成
     配置文档说明，看板可视化留待后续）：
     - P1：`ObjectiveExecutor.running_count_for_goal()` +
       `AutonomousLoop._tick_maintenance()` 内的按 Goal 分组并发上限检查；
@@ -19,6 +19,20 @@
     - 新增测试：`tests/test_goal_execution_fairness.py`（10 个用例，覆盖
       本文档 P1-P3 各自的验收标准）。
     - 配置说明新增文档：`docs/goal-execution-fairness-config.md`。
+  - v1.2：**P5 看板可视化补齐**（P4 仍按计划留空，未实施）：
+    - 新增只读端点 `GET /v1/self/goal_fairness`
+      （`src/mini_agent/api/routes.py`）：返回当前调度策略 + 每个 active
+      Goal 的 priority/老化加成/effective_priority/last_scheduled_at/
+      last_touched_at/objective_count。
+    - 看板"🧠 自我状态"tab 新增"⚖️ 执行公平性"折叠区块
+      （`apps/mini_agent_kanban/app.py::_render_goal_execution_fairness()`），
+      按 `last_scheduled_at` 升序展示（最久没轮到的排最前，与实际调度顺序
+      一致），复用"🩺 自诊断信号闭环"的展示风格，作为独立区块（未与其合并，
+      见 §4 待讨论问题 4 的结论——数据量不大，先独立展示，观察实际使用后
+      再考虑是否合并信息架构）。
+    - `apps/mini_agent_kanban/client.py` 新增 `AgentClient.goal_fairness()`。
+    - 新增测试：`tests/test_goal_fairness_routes.py`（4 个用例，覆盖端点
+      空态/老化加成反映/排序顺序/策略字段）。
 - **背景**：Goal 是长期任务，理想情况下应该"雨露均沾"，让所有 active Goal 都能持续
   获得推进；但代码复核发现，当前 `AutonomousLoop`/`ObjectiveExecutor`/`GoalBacklog`
   的调度模型是"贪心 + 静态优先级 + 一次启动跑到底"，天然容易导致同一个（或同一批）
@@ -202,7 +216,7 @@
 - **工作量**：大。涉及执行状态机的新增分支和"断点续跑"的正确性验证，建议单独排期，
   不与 P1-P3 一起上线。
 
-### P5 —— 看板可视化 + 配置文档 🟡 部分实现（v1.1 仅完成配置文档，看板可视化留待后续）
+### P5 —— 看板可视化 + 配置文档 ✅ 已实现（v1.2）
 
 - **目标**：把"哪些 Goal 最近获得了执行机会、哪些被冷落"变得肉眼可见，而不是只能
   靠翻 `objective_executions.json`/`activity_digest.jsonl` 猜。

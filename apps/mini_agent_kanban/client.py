@@ -230,6 +230,12 @@ class AgentClient:
         有效性审计，四路信号一次性拉取。"""
         return self._get("/self/diagnosis_feedback")
 
+    def goal_fairness(self):
+        """[goal_execution_fairness_improvement_plan.md P5] 各 active Goal
+        的调度公平性快照（last_scheduled_at/aging_boost/effective_priority），
+        供"⚖️ 执行公平性"看板区块展示。"""
+        return self._get("/self/goal_fairness")
+
     def goals(self):
         return self._get("/goals")
 

@@ -60,6 +60,9 @@ api/routes.py — FastAPI 路由定义
     PATCH  /v1/goals/{goal_id}       更新 Goal 状态/进度/优先级/标题/描述
     GET    /v1/self/diagnosis_feedback  自诊断信号闭环 P1-P4 汇总（改进候选清单/
                                          建议采纳率回看/能力快照 diff/skill 有效性）
+    GET    /v1/self/goal_fairness    [goal_execution_fairness_improvement_plan.md
+                                       P5] 各 active Goal 的调度公平性快照
+                                       （last_scheduled_at/aging_boost/effective_priority）
     POST   /v1/objectives/{execution_id}/cancel    终止一个正在运行的 Objective 执行
     POST   /v1/objectives/{execution_id}/retry     手动重试当前 step（不等超时）
     POST   /v1/objectives/{execution_id}/guidance  插一句补充说明，供下次提交时使用
@@ -1841,6 +1844,88 @@ async def get_self_diagnosis_feedback(request: Request):
     except Exception as _mini_agent_exc:
         from mini_agent.errors import log_exception
         log_exception(_mini_agent_exc, where='mini_agent.api.routes.get_self_diagnosis_feedback')
+
+    return result
+
+
+@router.get("/self/goal_fairness")
+async def get_self_goal_fairness(request: Request):
+    """GET /v1/self/goal_fairness — [goal_execution_fairness_improvement_plan.md
+    P5] 只读汇总每个 active Goal 当前的调度公平性状态，供看板"⚖️ 执行公平性"
+    区块展示，避免用户只能靠翻 goals.json/activity_digest.jsonl 猜"哪些 Goal
+    最近获得了执行机会、哪些被冷落"。纯读取，不触发调度、不修改任何状态。
+
+    返回结构：
+    {
+      "strategy": "fair_round_robin" | "priority",   # 当前生效的调度策略
+      "goals": [
+        {
+          "goal_id": str, "title": str, "priority": int,
+          "aging_boost": float, "effective_priority": float,
+          "last_scheduled_at": float,   # 0 表示从未被调度过
+          "last_touched_at": float,
+          "objective_count": int,       # 该 Goal 下 active Objective 数
+        },
+        ...
+      ],  # 按 last_scheduled_at 升序（最久没轮到的排最前，与实际调度顺序一致）
+    }
+    """
+    http_server = getattr(request.app.state, "http_server", None)
+    if http_server is None:
+        raise HTTPException(status_code=503, detail="HttpServer not available")
+    _require_owner(request)
+
+    result: dict = {"strategy": "fair_round_robin", "goals": []}
+    try:
+        from mini_agent.storage.paths import AgentPaths
+        from mini_agent.perception.goal_backlog import GoalBacklog, compute_aging_boost
+
+        self_agent = http_server.bridge.agent
+        cfg = getattr(self_agent, "cfg", None) if self_agent else None
+        project_root = getattr(cfg, "project_root", None) if cfg is not None else None
+        if project_root is None:
+            return result
+        paths = AgentPaths(project_root)
+        backlog = GoalBacklog(paths)
+        backlog.load()
+
+        autonomy_cfg = getattr(cfg, "autonomy", None)
+        strategy = getattr(autonomy_cfg, "goal_scheduling_strategy", "fair_round_robin") \
+            if autonomy_cfg is not None else "fair_round_robin"
+        stale_days = getattr(cfg, "next_action_stale_days", 7.0)
+        boost_per_day = getattr(autonomy_cfg, "fairness_aging_boost_per_day", 1.0) \
+            if autonomy_cfg is not None else 1.0
+        boost_max_days = getattr(autonomy_cfg, "fairness_aging_boost_max_days", 14.0) \
+            if autonomy_cfg is not None else 14.0
+        result["strategy"] = strategy
+
+        now = time.time()
+        objective_counts: dict[str, int] = {}
+        for obj in backlog.active_objectives():
+            if obj.parent_id:
+                objective_counts[obj.parent_id] = objective_counts.get(obj.parent_id, 0) + 1
+
+        rows = []
+        for goal in backlog.active_goals():
+            boost = compute_aging_boost(
+                goal, now, stale_days=stale_days,
+                boost_per_day=boost_per_day, max_boost_days=boost_max_days,
+            )
+            rows.append({
+                "goal_id": goal.id,
+                "title": goal.title,
+                "priority": goal.priority,
+                "aging_boost": round(boost, 2),
+                "effective_priority": round(goal.priority + boost, 2),
+                "last_scheduled_at": goal.last_scheduled_at,
+                "last_touched_at": goal.last_touched_at,
+                "objective_count": objective_counts.get(goal.id, 0),
+            })
+        rows.sort(key=lambda r: r["last_scheduled_at"] or 0.0)
+        result["goals"] = rows
+    except Exception as _mini_agent_exc:
+        from mini_agent.errors import log_exception
+        log_exception(_mini_agent_exc, where='mini_agent.api.routes.get_self_goal_fairness')
 
     return result
 
