@@ -35,7 +35,9 @@ wiki/ 下全部页面执行一次 parse_page 的全量扫描（与改动前行�
 
 from __future__ import annotations
 
+import json
 import math
+import time
 from dataclasses import dataclass, field
 from typing import Callable, Optional
 
@@ -261,6 +263,30 @@ def _resolve_lazy(
     return page
 
 
+def _record_usage(paths: AgentPaths, query: str, result: "WikiSearchResult") -> None:
+    """外部知识反馈闭环计划 P2：追加一条检索命中记录到
+    `AgentPaths.wiki_usage_log_path`，供 `evolution/wiki_utility_audit.py`
+    周期性聚合"近期利用率"。只做单次 append（不读、不改、不加锁——多进程
+    并发追加到同一文件的行级交错在 jsonl 场景下可接受，聚合时按行独立解析，
+    错一行不影响其它行），失败静默吞掉不影响检索主流程本身。"""
+    try:
+        page_ids = [p.id for p in result.pages]
+        if not page_ids:
+            return
+        record = {
+            "ts": time.time(),
+            "query": query[:200],
+            "page_ids": page_ids,
+            "grounded_page_ids": result.grounded_page_ids,
+            "stage_reached": result.stage_reached,
+        }
+        paths.wiki_usage_log_path.parent.mkdir(parents=True, exist_ok=True)
+        with open(paths.wiki_usage_log_path, "a", encoding="utf-8") as f:
+            f.write(json.dumps(record, ensure_ascii=False) + "\n")
+    except Exception:
+        pass
+
+
 def wiki_shelf_search(
     paths: AgentPaths,
     query: str,
@@ -345,11 +371,15 @@ def wiki_shelf_search(
             stage = "graph_deep" if use_deep else "graph"
         else:
             stage = "rule"
-        return WikiSearchResult(pages=candidate_pages[:k], stage_reached=stage)
+        result = WikiSearchResult(pages=candidate_pages[:k], stage_reached=stage)
+        _record_usage(paths, query, result)
+        return result
 
     # 只把"确实是通过图扩展带入、且不是 1.0（一跳兼容权重）"的页面标注
     # 权重信息，一跳模式下不改变 LLM prompt 的既有格式。
     rerank_weights = (
         {pid: w for pid, w in expanded_weights.items() if w < 1.0} if use_deep else {}
     )
-    return _llm_rerank(query, candidate_pages, llm_call, weights=rerank_weights)
+    result = _llm_rerank(query, candidate_pages, llm_call, weights=rerank_weights)
+    _record_usage(paths, query, result)
+    return result

@@ -1238,6 +1238,20 @@ class HttpServer:
                 from mini_agent.errors import log_exception
                 log_exception(_mini_agent_exc, where='mini_agent.api.server.HttpServer._build_autonomous_loop.ensure_candidate_queue_triage_job')
 
+            # 外部知识反馈闭环计划 P2：daemon 启动时补注册
+            # sys:wiki_utility_audit（聚合 wiki/search.py 检索命中埋点为每页
+            # 利用率统计，并修剪日志，零 LLM 成本，本地回调），见
+            # next_doc/external_knowledge_feedback_loop_improvement_plan.md §3 P2。
+            try:
+                from mini_agent.evolution.wiki_utility_audit import (
+                    ensure_wiki_utility_audit_job,
+                )
+
+                ensure_wiki_utility_audit_job(paths, cron_scheduler)
+            except Exception as _mini_agent_exc:
+                from mini_agent.errors import log_exception
+                log_exception(_mini_agent_exc, where='mini_agent.api.server.HttpServer._build_autonomous_loop.ensure_wiki_utility_audit_job')
+
             # ── ObjectiveExecutor ────────────────────────────────────────────
             def _obj_submit(message: str, initiator: str, meta: dict):
                 """提交自主步骤到 InputQueue，返回 turn_id。"""

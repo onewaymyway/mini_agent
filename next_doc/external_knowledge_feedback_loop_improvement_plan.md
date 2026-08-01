@@ -1,8 +1,9 @@
 # 外部知识反馈闭环 改进计划
 
-- **版本**: v1.0
+- **版本**: v1.1
 - **变更记录**:
   - v1.0：初版，规划 P1-P5；P1（`sys:candidate_queue_triage`）已实现，见该节内的"实现记录"标注。
+  - v1.1：P2（`sys:wiki_utility_audit`，统计层）已实现，见该节内的"实现记录"标注。
 - **背景任务**: 在 `external_knowledge_wiki_and_self_improvement_plan.md`（P1-P5 均已实现）打通的
   "外部事件/检索 → wiki 沉淀 → 自我改进候选"链路基础上，针对现状复盘发现的几处"只生产、
   不巡检/不校准/不回看"的空隙做补齐，不新增数据源，聚焦在现有链路上补一层
@@ -63,16 +64,34 @@
 - 接入点：`api/server.py::HttpServer._build_autonomous_loop()` daemon 启动流程，`try/except`
   隔离失败（跟其余 `ensure_*_job` 保持一致，单个 job 注册失败不影响 daemon 启动）。
 
-### P2 —— `sys:wiki_utility_audit`（wiki 页面使用率回溯）📋 已设计，未实现
+### P2 —— `sys:wiki_utility_audit`（wiki 页面使用率回溯）✅ 已实现（统计层）
 
-- 目标：回溯任务执行/对话历史中对 wiki 页面的引用/检索命中，产出每个页面的"近期利用率"
-  指标，反馈给 `gap_scan`/`decommission` 的去留判断，把"内容薄不薄"和"有没有被用上"两个
-  维度都纳入考量。
-- 推荐节奏：`interval:604800`（对齐 `sys:decision_profile_update`）。
-- 关键前置缺口：当前 wiki 检索/引用路径（`wiki/search.py`）没有埋点记录"这次检索/引用命中
-  了哪个 page_id"，需要先补一层轻量埋点（写入 `.agent/wiki/usage_log.jsonl`）才能做统计，
-  工作量比 P1 大一档，且涉及检索热路径的改动，需要更谨慎的性能评估，故本次先只做设计、
-  不实现，留作后续独立阶段。
+> 实现记录：给 `wiki/search.py::wiki_shelf_search()` 的两处返回点补了一层轻量
+> 埋点（`_record_usage()`，无命中不记录、失败静默吞掉，不影响检索主流程），
+> 追加写入新增的 `AgentPaths.wiki_usage_log_path`
+> （`.agent/wiki/usage_log.jsonl`）。新增
+> `src/mini_agent/evolution/wiki_utility_audit.py`
+> （`run_wiki_utility_audit_once()` + `load_wiki_usage_stats()` +
+> `ensure_wiki_utility_audit_job()`），周期性（`interval:604800`）把最近 30
+> 天（`AUDIT_WINDOW_SECONDS`）的埋点聚合为每页 `hit_count`/`grounded_count`/
+> `last_used_at`，落盘 `wiki/usage_stats.json`；同一次运行顺带修剪超过 90 天
+> （`LOG_RETENTION_SECONDS`）的日志记录，风格对齐 `sys:digest_trim`。
+
+- **本次范围只做"统计层"，不改 `gap_scanner.py`/`decommission.py` 的判断逻辑**：
+  `load_wiki_usage_stats()` 已经导出可供下游消费的数据结构，但故意先不接进
+  gap_scan/decommission 的去留判断——先让统计跑一段时间、看到真实的利用率
+  分布形态（比如"多少页面 30 天零命中"的真实占比）后再决定权重怎么定，
+  避免凭空猜一个权重公式。这是"统计"和"策略"两个独立可验证阶段的显式切分，
+  跟计划 §2 设计目标 1（不新建存储体系，先打通消费）保持一致的谨慎节奏。
+- 埋点只在检索**有候选命中**时触发（`result.pages` 非空），零命中/无 wiki
+  目录等早退路径不记录，避免噪音。
+- 测试：新增 `tests/test_wiki_utility_audit.py`（7 用例，全部通过），覆盖
+  埋点写入/不写入、窗口内聚合、窗口外不计入统计但仍保留日志、超保留期日志
+  修剪、`ensure_wiki_utility_audit_job()` 注册与触发；对已有
+  `tests/test_wiki_index_reuse.py`/`test_graph_expand.py`（共 17 用例）做了
+  回归运行，全部通过，确认埋点不改变 `wiki_shelf_search()` 原有返回结果。
+- 接入点：`api/server.py::HttpServer._build_autonomous_loop()`，`try/except`
+  隔离失败，模式与 P1 完全一致。
 
 ### P3 —— `sys:relevance_threshold_calibration`（阈值自校准）📋 已设计，未实现
 
@@ -106,5 +125,6 @@
 
 ## 4. 本次实施范围小结
 
-本次（v1.0）只实施 P1，P2-P5 留档设计、明确标注未实现及各自的关键前置缺口/风险，不打
-"实现了但是半成品"的擦边球——这与项目里 P12/P13 阶段"部分内容显式延后"的一贯做法一致。
+本次（v1.1）实施了 P1、P2（P2 只做统计层，不改 gap_scan/decommission 判断逻辑），
+P3-P5 留档设计、明确标注未实现及各自的关键前置缺口/风险，不打"实现了但是半成品"的
+擦边球——这与项目里 P12/P13 阶段"部分内容显式延后"的一贯做法一致。

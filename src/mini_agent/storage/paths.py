@@ -204,6 +204,15 @@ class AgentPaths:
         """<project_root>/.agent/wiki/decisions/ — 决策型页面"""
         return self.wiki_dir / "decisions"
 
+    @property
+    def wiki_usage_log_path(self) -> Path:
+        """<project_root>/.agent/wiki/usage_log.jsonl — wiki 检索命中埋点
+        （外部知识反馈闭环计划 P2）：`wiki/search.py::wiki_shelf_search()`
+        每次返回结果前追加一条记录（page_id 列表 + stage_reached + 时间戳），
+        供 `evolution/wiki_utility_audit.py` 周期性聚合出"近期利用率"指标。
+        只做追加写，不做读改写，不需要跨调用方的独占锁。"""
+        return self.wiki_dir / "usage_log.jsonl"
+
     # ── 主动推荐 / 日报 / 决策画像（次日议程改进计划）───────────────────────
 
     # ── Workflow Session（workflow机制改进计划.md P1）───────────────────────
