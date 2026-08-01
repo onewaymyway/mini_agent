@@ -1,6 +1,6 @@
 # 自诊断信号闭环深化 改进计划
 
-- **版本**: v1.3
+- **版本**: v1.4
 - **变更记录**:
   - v1.0：初版，规划 P1-P4，均未实现。
   - v1.1：P1（`sys:improvement_backlog_merge`）已实现，见该节内的"实现记录"标注。
@@ -10,6 +10,8 @@
   - v1.3：P3（`sys:self_model_snapshot`）已实现，见该节内的"实现记录"标注。
     待讨论问题 3（P3 与 P1 是否共用触发周期）已确认：两者都采用日频
     interval:86400，各自独立注册，互不依赖。
+  - v1.4：P4（skill 结果有效性审计）已实现，见该节内的"实现记录"标注。至此
+    P1-P4 全部实现，本计划规划范围内的工作已完成。
 - **背景任务**: 代码复核确认，当前自诊断/自我感知类基础设施（`perception/self_model.py`
   的 `AgentSelfModel`、`evolution/self_maintenance.py` 的健康巡检、`wiki/gap_scanner.py`
   的知识缺口扫描、`wiki/decommission.py` 的退役评估、`external_knowledge_feedback_loop_
@@ -140,7 +142,39 @@
   的补充数据源，而不是新建一个独立的回顾入口。
 - **不做**：不引入预测/趋势外推，只做历史快照存档与两两 diff。
 
-### P4 —— skill 结果有效性审计（`wiki_utility_audit` 的姊妹版）
+### P4 —— skill 结果有效性审计（`wiki_utility_audit` 的姊妹版）✅ 已实现
+
+> 实现记录：在 `src/mini_agent/evolution/self_maintenance.py` 内新增
+> `SkillEffectivenessFinding` 数据结构与 `SelfMaintenanceModule.
+> _check_skill_effectiveness()` 方法，接入 `health_check()` 流程，作为
+> `HealthReport` 新增字段 `skill_effectiveness`，与既有 `stale_skills`
+> 新鲜度信号并存于同一份报告，不新建独立 cron job（复用 `sys:self_maintain`
+> 既有触发节奏，符合"不新增采集基础设施"的设计边界）。
+>
+> **数据来源**：`agent/lifecycle.py::save_session()` 早已把
+> `SessionStats.skill_activations`（每个 skill 本次 session 内是否被激活）
+> 和 `SessionStats.tool_stats`（每个工具的 calls/success/fail）持久化进
+> 各 session 的 `meta.json`，本方法只读这些既有字段，不新增埋点。
+>
+> **判定方式**：扫描最近 30 个 session 的 `meta.json`，按"是否激活了该
+> skill"分成激活组/对照组，各自算整体工具调用失败率（`sum(fail)/sum(calls)`，
+> 跨该 session 内所有工具聚合，作为"这个 session 整体顺不顺利"的粗粒度代理
+> 指标，而非只看某一个工具），两组失败率之差 ≥ 0.15 判定
+> `low_effectiveness`（激活时明显更差）或 `effective`（激活时明显更好），
+> 否则 `inconclusive`。两组样本量都需 ≥ 3 才下结论，样本不足时该 skill
+> 不出现在结果里（不强行下结论）。
+>
+> `generate_repair_suggestions()` 为 `low_effectiveness` 追加建议文本；
+> `run_self_maintenance()` 的 `health_report` 摘要新增"低有效性 skill"计数。
+> `improvement_backlog_merge.py::_read_self_maintenance_findings()` 同步
+> 接入——只把 `low_effectiveness` 计入 P1 的排序候选（`effective`/
+> `inconclusive` 是正面或无结论信息，不构成"待处理问题"）。
+>
+> 新增 `tests/test_self_maintenance.py::TestCheckSkillEffectiveness`
+> （6 个用例，覆盖 low_effectiveness 判定、effective 判定、样本量不足时
+> 不下结论、无 skill_loader、无 sessions 目录），全部通过；对
+> `test_improvement_backlog_merge.py`/`test_suggestion_outcome_review.py`/
+> `test_self_model_snapshot.py`/`test_self_model.py` 做了回归测试，无破坏。
 
 - **目标**：现有 `self_maintenance` 对技能的巡检是"多久没用→建议复核"的新鲜度启发式；本项
   补充"用了之后任务是否因此成功率提升"的结果信号，与 P2 类似地做前后对比，而不是替换现有

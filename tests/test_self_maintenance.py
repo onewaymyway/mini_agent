@@ -94,6 +94,94 @@ class TestCheckToolHealth(unittest.TestCase):
         self.assertEqual(findings, [])
 
 
+def _write_session_meta(paths: AgentPaths, session_id: str, *, skill_activations: dict, tool_stats: dict) -> None:
+    session_dir = paths.sessions_dir / session_id
+    session_dir.mkdir(parents=True, exist_ok=True)
+    meta = {"id": session_id, "stats": {
+        "skill_activations": skill_activations,
+        "tool_stats": tool_stats,
+    }}
+    (session_dir / "meta.json").write_text(json.dumps(meta), encoding="utf-8")
+
+
+class TestCheckSkillEffectiveness(unittest.TestCase):
+    """自诊断闭环深化 P4：skill 结果有效性审计。"""
+
+    def setUp(self):
+        self.tmpdir = Path(tempfile.mkdtemp())
+        self.paths = AgentPaths(self.tmpdir)
+
+    def _tool_stats(self, calls: int, fails: int) -> dict:
+        return {"some_tool": {"calls": calls, "success": calls - fails, "fail": fails, "total_len": 0}}
+
+    def test_low_effectiveness_flagged(self):
+        # 激活组（用了 risky_skill）失败率明显更高
+        for i in range(4):
+            _write_session_meta(
+                self.paths, f"active{i}",
+                skill_activations={"risky_skill": {"activations": 1}},
+                tool_stats=self._tool_stats(10, 8),  # 80% 失败
+            )
+        # 对照组（未用 risky_skill）失败率低
+        for i in range(4):
+            _write_session_meta(
+                self.paths, f"base{i}",
+                skill_activations={},
+                tool_stats=self._tool_stats(10, 1),  # 10% 失败
+            )
+        loader = _FakeSkillLoader(active=["risky_skill"], tracker=_FakeTracker({}))
+
+        findings = SelfMaintenanceModule._check_skill_effectiveness(self.paths, loader)
+        self.assertEqual(len(findings), 1)
+        self.assertEqual(findings[0].skill_name, "risky_skill")
+        self.assertEqual(findings[0].verdict, "low_effectiveness")
+        self.assertEqual(findings[0].active_sessions, 4)
+        self.assertEqual(findings[0].baseline_sessions, 4)
+
+    def test_effective_skill_not_flagged_as_low(self):
+        for i in range(4):
+            _write_session_meta(
+                self.paths, f"active{i}",
+                skill_activations={"good_skill": {"activations": 1}},
+                tool_stats=self._tool_stats(10, 0),
+            )
+        for i in range(4):
+            _write_session_meta(
+                self.paths, f"base{i}",
+                skill_activations={},
+                tool_stats=self._tool_stats(10, 6),
+            )
+        loader = _FakeSkillLoader(active=["good_skill"], tracker=_FakeTracker({}))
+
+        findings = SelfMaintenanceModule._check_skill_effectiveness(self.paths, loader)
+        self.assertEqual(len(findings), 1)
+        self.assertEqual(findings[0].verdict, "effective")
+
+    def test_insufficient_samples_skipped(self):
+        # 每组只有 1 个 session，低于 _EFFECTIVENESS_MIN_SESSIONS_PER_GROUP=3
+        _write_session_meta(
+            self.paths, "active0",
+            skill_activations={"rare_skill": {"activations": 1}},
+            tool_stats=self._tool_stats(10, 9),
+        )
+        _write_session_meta(
+            self.paths, "base0",
+            skill_activations={},
+            tool_stats=self._tool_stats(10, 0),
+        )
+        loader = _FakeSkillLoader(active=["rare_skill"], tracker=_FakeTracker({}))
+
+        findings = SelfMaintenanceModule._check_skill_effectiveness(self.paths, loader)
+        self.assertEqual(findings, [])
+
+    def test_no_skill_loader_returns_empty(self):
+        self.assertEqual(SelfMaintenanceModule._check_skill_effectiveness(self.paths, None), [])
+
+    def test_no_sessions_dir_returns_empty(self):
+        loader = _FakeSkillLoader(active=["x"], tracker=_FakeTracker({}))
+        self.assertEqual(SelfMaintenanceModule._check_skill_effectiveness(self.paths, loader), [])
+
+
 class TestCheckSkillFreshness(unittest.TestCase):
     def test_stale_skill_flagged(self):
         old_ts = time.time() - 40 * 86400  # 40 天前

@@ -761,7 +761,7 @@ daemon-connected 两条触发路径共用同一开关。测试：`tests/test_cog
 工具失败了才知道工具可能坏了，skill 内容过时了要等产生错误建议才会被
 发现，记忆库里出现自相矛盾的经验也不会被主动揪出来。
 
-**三项检查**（`SelfMaintenanceModule.health_check()`）：
+**四项检查**（`SelfMaintenanceModule.health_check()`）：
 
 1. **stale_tools**（可能失效的工具）：扫描最近 20 个 session 的
    `traces.jsonl` 里 `phase="tool_call"` 记录，统计每个工具近期失败率——
@@ -774,6 +774,14 @@ daemon-connected 两条触发路径共用同一开关。测试：`tests/test_cog
    正面关键词（成功/应该/建议/可以/有效/推荐）和负面关键词（失败/不行/
    不应该/出错/无效/不要/避免）信号，标记"可能矛盾，建议人工判断保留
    哪条"。这是启发式而非精确判断。
+4. **skill_effectiveness**（skill 结果有效性，`自诊断闭环深化` P4）：与
+   stale_skills 的"多久没用"新鲜度视角不同，回答"用了之后任务是否顺利"——
+   读取各 session `meta.json` 里已持久化的 `skill_activations`/
+   `tool_stats`（`agent/lifecycle.py::save_session()` 写入，不新增埋点），
+   按"是否激活了该 skill"把最近 30 个 session 分成激活组/对照组，比较两组
+   整体工具失败率之差（≥0.15 判定 `low_effectiveness`/`effective`，两组
+   样本量都需 ≥3 才下结论），标记"该 skill 激活后任务失败率明显更高，
+   建议复核内容或使用场景是否合适"。
 
 **只产出建议，不自动修复**——与自我进化侧的效果回填（第二部分第 8 节）
 同一套"保留人类控制权"原则：结果写入 `activity_digest.jsonl`
@@ -785,7 +793,12 @@ daemon-connected 两条触发路径共用同一开关。测试：`tests/test_cog
 - 内置 cron job `sys:self_maintain`（`evolution/cron_scheduler.py`，
   `interval:86400`），daemon 模式下按计划触发
 
-测试：`tests/test_self_maintenance.py`（22 个用例）
+测试：`tests/test_self_maintenance.py`（27 个用例）
+
+**下游消费**：`evolution/improvement_backlog_merge.py`（自诊断闭环深化
+P1）读取最近一条 `health_report`，把其中的 `skill_effectiveness` ==
+`low_effectiveness` 的条目也计入排序候选（`effective`/`inconclusive`
+不构成"待处理问题"，不计入）。
 
 ## 14. ExplorationSandbox：具身智能与自我进化的直接接口
 

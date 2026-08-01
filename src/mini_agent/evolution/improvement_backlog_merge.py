@@ -151,6 +151,22 @@ def _read_self_maintenance_findings(paths: "AgentPaths") -> list[BacklogItem]:
             summary=f"经验组 {f.get('group_key', '')} 存在可能矛盾的建议",
             detected_at=detected_at,
         ))
+    # P4：skill 结果有效性审计——只把 low_effectiveness 计入待处理候选，
+    # effective/inconclusive 是正面或无结论信息，不构成"需要处理的问题"。
+    for f in latest.get("skill_effectiveness", []) or []:
+        if f.get("verdict") != "low_effectiveness":
+            continue
+        items.append(BacklogItem(
+            subject=f"skill:{f.get('skill_name', '')}",
+            source="self_maintenance",
+            kind="low_effectiveness_skill",
+            summary=(
+                f"Skill {f.get('skill_name', '')} 激活时任务失败率 "
+                f"{f.get('active_failure_rate', 0):.0%}，"
+                f"高于未激活时 {f.get('baseline_failure_rate', 0):.0%}"
+            ),
+            detected_at=detected_at,
+        ))
     return items
 
 

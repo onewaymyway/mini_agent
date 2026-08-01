@@ -58,6 +58,11 @@ _SKILL_STALE_DAYS = 30.0             # 超过此天数未使用视为"可能过�
 _POSITIVE_KEYWORDS = ("成功", "应该", "建议", "可以", "有效", "推荐")
 _NEGATIVE_KEYWORDS = ("失败", "不行", "不应该", "出错", "无效", "不要", "避免")
 
+# skill 结果有效性审计参数（自诊断闭环深化 P4）
+_EFFECTIVENESS_RECENT_SESSIONS = 30   # 最多扫描最近多少个 session 的 meta.json
+_EFFECTIVENESS_MIN_SESSIONS_PER_GROUP = 3  # 激活组/对照组样本量都需达到此值才下结论
+_EFFECTIVENESS_RATE_DIFF_THRESHOLD = 0.15  # 失败率差异超过此值才判定为有实质差异
+
 
 # ── 数据结构 ──────────────────────────────────────────────────────────────────
 
@@ -104,15 +109,43 @@ class ConflictingLessonFinding:
 
 
 @dataclass
+class SkillEffectivenessFinding:
+    """skill 结果有效性审计（自诊断闭环深化 P4）：对比"激活了该 skill 的
+    session"与"未激活该 skill 的对照 session"之间整体工具调用失败率的差异，
+    与 stale_skills 的新鲜度启发式并存、互不替代——新鲜度回答"多久没用"，
+    这里回答"用了之后任务是否因此顺利"。"""
+    skill_name: str
+    active_sessions: int
+    baseline_sessions: int
+    active_failure_rate: float
+    baseline_failure_rate: float
+    verdict: str  # "effective" | "low_effectiveness" | "inconclusive"
+
+    def to_dict(self) -> dict:
+        return {
+            "skill_name": self.skill_name,
+            "active_sessions": self.active_sessions,
+            "baseline_sessions": self.baseline_sessions,
+            "active_failure_rate": round(self.active_failure_rate, 3),
+            "baseline_failure_rate": round(self.baseline_failure_rate, 3),
+            "verdict": self.verdict,
+        }
+
+
+@dataclass
 class HealthReport:
     stale_tools: list[StaleToolFinding] = field(default_factory=list)
     stale_skills: list[StaleSkillFinding] = field(default_factory=list)
     conflicting_lessons: list[ConflictingLessonFinding] = field(default_factory=list)
+    skill_effectiveness: list[SkillEffectivenessFinding] = field(default_factory=list)
     ran_at: float = field(default_factory=time.time)
 
     @property
     def has_findings(self) -> bool:
-        return bool(self.stale_tools or self.stale_skills or self.conflicting_lessons)
+        return bool(
+            self.stale_tools or self.stale_skills or self.conflicting_lessons
+            or self.skill_effectiveness
+        )
 
     def to_dict(self) -> dict:
         return {
@@ -120,6 +153,7 @@ class HealthReport:
             "stale_tools": [f.to_dict() for f in self.stale_tools],
             "stale_skills": [f.to_dict() for f in self.stale_skills],
             "conflicting_lessons": [f.to_dict() for f in self.conflicting_lessons],
+            "skill_effectiveness": [f.to_dict() for f in self.skill_effectiveness],
         }
 
 
@@ -154,6 +188,12 @@ class SelfMaintenanceModule:
             from mini_agent.errors import log_exception
             log_exception(_mini_agent_exc, where='mini_agent.evolution.self_maintenance')
             pass
+        try:
+            report.skill_effectiveness = self._check_skill_effectiveness(paths, skill_loader)
+        except Exception as _mini_agent_exc:
+            from mini_agent.errors import log_exception
+            log_exception(_mini_agent_exc, where='mini_agent.evolution.self_maintenance')
+            pass
         return report
 
     def generate_repair_suggestions(self, report: HealthReport) -> list[str]:
@@ -174,6 +214,15 @@ class SelfMaintenanceModule:
                 f"发现可能矛盾的经验（{f.group_key}）："
                 f"「{f.positive_sample}」 vs 「{f.negative_sample}」，建议人工判断保留哪条。"
             )
+        for f in report.skill_effectiveness:
+            if f.verdict == "low_effectiveness":
+                suggestions.append(
+                    f"Skill `{f.skill_name}` 激活时所在 session 的工具失败率"
+                    f"（{f.active_failure_rate:.0%}，{f.active_sessions} 个 session）"
+                    f"明显高于未激活时（{f.baseline_failure_rate:.0%}，"
+                    f"{f.baseline_sessions} 个 session），建议复核该 skill 内容是否有效，"
+                    "或是否被用在了不适合的场景。"
+                )
         return suggestions
 
     # ── stale_tools ───────────────────────────────────────────────────────────
@@ -271,6 +320,98 @@ class SelfMaintenanceModule:
                 findings.append(StaleSkillFinding(skill_name=name, last_used_days_ago=days_ago))
 
         findings.sort(key=lambda f: -f.last_used_days_ago)
+        return findings
+
+    # ── skill_effectiveness（自诊断闭环深化 P4）───────────────────────────────
+
+    @staticmethod
+    def _check_skill_effectiveness(paths, skill_loader) -> list["SkillEffectivenessFinding"]:
+        """复用 SessionStats 已持久化到各 session `meta.json` 的
+        `skill_activations`/`tool_stats`（`agent/lifecycle.py::save_session()`
+        写入，不新增埋点）：把最近若干 session 按"是否激活了该 skill"分成
+        激活组/对照组，比较两组整体工具调用失败率的差异，作为"用了之后
+        任务是否顺利"的结果信号，与 `_check_skill_freshness()` 的新鲜度
+        信号并存、互不替代。"""
+        if skill_loader is None:
+            return []
+        active_skill_names = list(getattr(skill_loader, "active", []) or [])
+        if not active_skill_names:
+            return []
+
+        try:
+            sessions_root = paths.sessions_dir
+        except Exception as _mini_agent_exc:
+            from mini_agent.errors import log_exception
+            log_exception(_mini_agent_exc, where='mini_agent.evolution.self_maintenance.SelfMaintenanceModule._check_skill_effectiveness')
+            return []
+        if not sessions_root.exists():
+            return []
+
+        session_dirs = sorted(
+            [d for d in sessions_root.iterdir() if d.is_dir()],
+            key=lambda d: d.stat().st_mtime,
+            reverse=True,
+        )[:_EFFECTIVENESS_RECENT_SESSIONS]
+
+        # 每个 session 读一次 meta.json，得到 (skill_activations 名单, 整体失败率)
+        sessions_data: list[tuple[set, Optional[float]]] = []
+        for sd in session_dirs:
+            meta_path = sd / "meta.json"
+            if not meta_path.exists():
+                continue
+            try:
+                meta = json.loads(meta_path.read_text(encoding="utf-8"))
+            except Exception:
+                continue
+            stats = meta.get("stats", {}) or {}
+            skill_activations = stats.get("skill_activations", {}) or {}
+            activated = {
+                name for name, rec in skill_activations.items()
+                if (rec or {}).get("activations", 0) > 0
+            }
+            tool_stats = stats.get("tool_stats", {}) or {}
+            calls = sum(int(v.get("calls", 0) or 0) for v in tool_stats.values())
+            fails = sum(int(v.get("fail", 0) or 0) for v in tool_stats.values())
+            failure_rate = (fails / calls) if calls else None
+            sessions_data.append((activated, failure_rate))
+
+        findings: list[SkillEffectivenessFinding] = []
+        for skill_name in active_skill_names:
+            active_rates = [
+                r for activated, r in sessions_data
+                if skill_name in activated and r is not None
+            ]
+            baseline_rates = [
+                r for activated, r in sessions_data
+                if skill_name not in activated and r is not None
+            ]
+            if (len(active_rates) < _EFFECTIVENESS_MIN_SESSIONS_PER_GROUP
+                    or len(baseline_rates) < _EFFECTIVENESS_MIN_SESSIONS_PER_GROUP):
+                continue  # 样本量不足，不下结论（两组都需要够）
+
+            active_rate = sum(active_rates) / len(active_rates)
+            baseline_rate = sum(baseline_rates) / len(baseline_rates)
+            delta = active_rate - baseline_rate
+            if delta >= _EFFECTIVENESS_RATE_DIFF_THRESHOLD:
+                verdict = "low_effectiveness"
+            elif delta <= -_EFFECTIVENESS_RATE_DIFF_THRESHOLD:
+                verdict = "effective"
+            else:
+                verdict = "inconclusive"
+
+            findings.append(SkillEffectivenessFinding(
+                skill_name=skill_name,
+                active_sessions=len(active_rates),
+                baseline_sessions=len(baseline_rates),
+                active_failure_rate=active_rate,
+                baseline_failure_rate=baseline_rate,
+                verdict=verdict,
+            ))
+
+        # 只把有实质结论的排在前面（low_effectiveness 最值得关注），
+        # inconclusive 保留在结果里（供 P1 backlog/回看使用）但不优先展示。
+        _order = {"low_effectiveness": 0, "effective": 1, "inconclusive": 2}
+        findings.sort(key=lambda f: (_order.get(f.verdict, 9), -f.active_failure_rate))
         return findings
 
     # ── conflicting_lessons ───────────────────────────────────────────────────
@@ -394,11 +535,15 @@ def run_self_maintenance(paths, skill_loader=None, memory_backend=None) -> Healt
 
     if report.has_findings:
         suggestions = module.generate_repair_suggestions(report)
+        low_effectiveness_count = sum(
+            1 for f in report.skill_effectiveness if f.verdict == "low_effectiveness"
+        )
         append_digest_record(paths, {
             "type": "health_report",
             "summary": (
                 f"自维护扫描：{len(report.stale_tools)} 个可能失效工具，"
                 f"{len(report.stale_skills)} 个过时 skill，"
+                f"{low_effectiveness_count} 个低有效性 skill，"
                 f"{len(report.conflicting_lessons)} 组可能矛盾的经验"
             ),
             "suggestions": suggestions,
@@ -420,6 +565,7 @@ __all__ = [
     "StaleToolFinding",
     "StaleSkillFinding",
     "ConflictingLessonFinding",
+    "SkillEffectivenessFinding",
     "SelfMaintenanceModule",
     "should_run_self_maintenance",
     "record_self_maintenance_run",
