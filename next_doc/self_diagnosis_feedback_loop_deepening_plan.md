@@ -1,9 +1,12 @@
 # 自诊断信号闭环深化 改进计划
 
-- **版本**: v1.1
+- **版本**: v1.2
 - **变更记录**:
   - v1.0：初版，规划 P1-P4，均未实现。
   - v1.1：P1（`sys:improvement_backlog_merge`）已实现，见该节内的"实现记录"标注。
+  - v1.2：P2（`sys:suggestion_outcome_review`）已实现，范围收窄为仅覆盖
+    stale_tools（skill/lesson 侧回看因缺少持久化基础设施而延后），见该节内的
+    "实现记录"标注。
 - **背景任务**: 代码复核确认，当前自诊断/自我感知类基础设施（`perception/self_model.py`
   的 `AgentSelfModel`、`evolution/self_maintenance.py` 的健康巡检、`wiki/gap_scanner.py`
   的知识缺口扫描、`wiki/decommission.py` 的退役评估、`external_knowledge_feedback_loop_
@@ -68,7 +71,31 @@
 - **触发**：与 `self_maintenance` 同款"时间门控"模式，日频批量，daemon 模式下注册为 cron
   `sys:improvement_backlog_merge`（interval:86400），晨报新增一个"本周最值得关注的 N 项"摘要块。
 
-### P2 —— `sys:suggestion_outcome_review`（建议采纳率回看）
+### P2 —— `sys:suggestion_outcome_review`（建议采纳率回看）✅ 已实现（范围收窄）
+
+> 实现记录：新增 `src/mini_agent/evolution/suggestion_outcome_review.py`
+> （`run_suggestion_outcome_review_once()` + `ensure_suggestion_outcome_review_job()`），
+> 在 `api/server.py` daemon 启动流程里注册 `sys:suggestion_outcome_review` job
+> （`interval:1209600` 即 14 天一次，零 LLM 成本，本地回调 handler）。
+>
+> **范围收窄为仅覆盖 stale_tools**：核实发现 `skills/tracker.py::SkillUsageTracker`
+> 是纯内存对象，生命周期绑定单个 `SkillLoader` 实例，没有跨 session 持久化文件
+> 可供独立 cron job 读取"历史上某个时间点的调用记录"；要做 skill 侧回看需要先
+> 给 tracker 补一层持久化基础设施，这本身是比"回看"更大的改动，超出本阶段范围。
+> `conflicting_lessons` 同理搁置——lesson 是否被"解决"没有像失败率那样的客观
+> 可复算指标，需要人工判断，机器回看意义有限。两者记录为后续候选，见下方
+> §4 待讨论问题 4（新增）。
+>
+> 判定逻辑：回看窗口 14-42 天前的 `health_report` 记录作为基线，重新扫描
+> `traces.jsonl` 得到当前失败率，按失败率变化幅度（阈值 0.15）判定
+> `improved`/`worse`/`unchanged`/`no_action_taken`（当前调用次数为 0 时，
+> 无法判断"修好了"还是"没人用了"，如实标注而非强行归类）。同一条基线不会
+> 被重复回看（`suggestion_outcome_review_state.json` 记录去重状态）。
+>
+> 新增 `tests/test_suggestion_outcome_review.py`（6 个用例，覆盖窗口过滤、
+> no_action_taken、improved、worse、去重、cron job 幂等注册），全部通过；
+> 对 `test_improvement_backlog_merge.py`/`test_self_maintenance.py`/
+> `test_self_model.py` 做了回归测试，无破坏。
 
 - **目标**：回溯 2-4 周前 `self_maintenance`/`decommission` 产出的建议，检查对应的工具调用
   失败率/技能使用情况/wiki 页面状态是否已经改善，产出一份"建议有效性回顾"。
@@ -115,3 +142,7 @@
    `self_maintenance`/`decommission` 现有报告文件里是否已经记录了足够的原始指标值，若没有
    可能需要给这两个模块的报告 schema 补一个字段，这属于本计划实施前的一个小前置调研项。
 3. P3 快照落盘频率与 P1 是否共用同一触发周期，还是各自独立配置——待实施时再定。
+4.（P2 实现后新增）是否值得为 `SkillUsageTracker` 补一层跨 session 持久化，
+   从而把 P2 的回看范围扩展到 skill 侧——这本身是一项独立的基础设施改动，
+   需要先确认有没有除"支持回看"之外的其它用途，再决定是否值得做，不应该
+   只为这一个用途单独引入。
