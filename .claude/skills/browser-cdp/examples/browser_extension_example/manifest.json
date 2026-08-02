@@ -1,0 +1,10 @@
+{
+  "manifest_version": 3,
+  "name": "mini_agent Behavior Reporter (示例)",
+  "version": "0.1.0",
+  "description": "把浏览器页面访问事件（域名+停留时长）上报给本机 mini_agent 行为感知系统。默认关闭，需要在插件弹窗里手动打开并填入 token。",
+  "permissions": ["tabs", "storage"],
+  "host_permissions": ["http://127.0.0.1/*"],
+  "background": { "service_worker": "background.js" },
+  "action": { "default_popup": "popup.html" }
+}

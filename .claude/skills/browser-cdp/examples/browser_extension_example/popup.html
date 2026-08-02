@@ -1,0 +1,25 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <style>
+    body { font-family: sans-serif; width: 260px; padding: 12px; }
+    label { display: block; margin-bottom: 8px; }
+    input[type="text"] { width: 100%; box-sizing: border-box; }
+  </style>
+</head>
+<body>
+  <label>
+    <input type="checkbox" id="enabled" /> 开启上报（默认关闭）
+  </label>
+  <label>
+    Report Token（在 mini_agent 里执行 /behavior token 获取）
+    <input type="text" id="token" placeholder="paste token here" />
+  </label>
+  <button id="save">保存</button>
+  <p style="font-size:11px;color:#888;">
+    只上报当前域名 + 停留时长，不上报完整 URL、页面标题或页面内容。
+  </p>
+  <script src="popup.js"></script>
+</body>
+</html>

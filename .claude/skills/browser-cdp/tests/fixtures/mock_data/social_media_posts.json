@@ -1,0 +1,57 @@
+{
+  "posts": [
+    {
+      "id": "post_001",
+      "author": {
+        "id": "user_123",
+        "name": "John Developer",
+        "username": "johndev",
+        "avatar": "https://example.com/avatars/johndev.jpg",
+        "verified": true
+      },
+      "content": "Just finished building a new browser automation framework! 🚀\n\n#programming #automation #python #browser",
+      "hashtags": ["programming", "automation", "python", "browser"],
+      "mentions": ["@pythonorg", "@github"],
+      "media": [
+        {"type": "image", "url": "https://example.com/posts/post_001_img1.jpg"},
+        {"type": "image", "url": "https://example.com/posts/post_001_img2.jpg"}
+      ],
+      "stats": {
+        "likes": 1250,
+        "comments": 89,
+        "shares": 45,
+        "views": 15600
+      },
+      "created_at": "2024-01-15T10:30:00Z",
+      "url": "https://social.example.com/johndev/post_001"
+    },
+    {
+      "id": "post_002",
+      "author": {
+        "id": "user_456",
+        "name": "Jane Designer",
+        "username": "janedesign",
+        "avatar": "https://example.com/avatars/janedesign.jpg",
+        "verified": false
+      },
+      "content": "New UI design system released! Check out the components.\n\n#design #ui #designsystem #figma",
+      "hashtags": ["design", "ui", "designsystem", "figma"],
+      "mentions": ["@figma"],
+      "media": [
+        {"type": "video", "url": "https://example.com/posts/post_002_video.mp4", "duration": 45}
+      ],
+      "stats": {
+        "likes": 3420,
+        "comments": 234,
+        "shares": 156,
+        "views": 45800
+      },
+      "created_at": "2024-01-14T15:45:00Z",
+      "url": "https://social.example.com/janedesign/post_002"
+    }
+  ],
+  "pagination": {
+    "cursor": "eyJpZCI6InBvc3RfMDAyIn0=",
+    "has_more": true
+  }
+}

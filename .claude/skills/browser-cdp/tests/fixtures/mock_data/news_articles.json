@@ -1,0 +1,52 @@
+{
+  "articles": [
+    {
+      "id": "article_001",
+      "title": "Breakthrough in Quantum Computing Achieved",
+      "url": "https://news.example.com/quantum-breakthrough",
+      "source": "Tech Daily",
+      "author": "Dr. Sarah Chen",
+      "published_at": "2024-01-15T08:00:00Z",
+      "category": "Technology",
+      "tags": ["quantum", "computing", "research", "breakthrough"],
+      "summary": "Scientists have achieved a major milestone in quantum computing, demonstrating quantum supremacy with a 127-qubit processor.",
+      "content": "Full article content here...",
+      "image_url": "https://news.example.com/images/quantum_computing.jpg",
+      "reading_time": 5
+    },
+    {
+      "id": "article_002",
+      "title": "Global Climate Summit Reaches Historic Agreement",
+      "url": "https://news.example.com/climate-summit-agreement",
+      "source": "World News",
+      "author": "Michael Roberts",
+      "published_at": "2024-01-15T06:30:00Z",
+      "category": "Environment",
+      "tags": ["climate", "summit", "agreement", "carbon", "emissions"],
+      "summary": "World leaders agree on ambitious new targets for carbon reduction by 2030.",
+      "content": "Full article content here...",
+      "image_url": "https://news.example.com/images/climate_summit.jpg",
+      "reading_time": 4
+    },
+    {
+      "id": "article_003",
+      "title": "Stock Markets Rally on Positive Economic Data",
+      "url": "https://news.example.com/markets-rally",
+      "source": "Financial Times",
+      "author": "Emma Thompson",
+      "published_at": "2024-01-15T09:15:00Z",
+      "category": "Business",
+      "tags": ["stocks", "economy", "inflation", "fed", "markets"],
+      "summary": "Major indices surge as inflation data comes in lower than expected.",
+      "content": "Full article content here...",
+      "image_url": "https://news.example.com/images/markets_rally.jpg",
+      "reading_time": 3
+    }
+  ],
+  "pagination": {
+    "page": 1,
+    "per_page": 20,
+    "total": 500,
+    "total_pages": 25
+  }
+}

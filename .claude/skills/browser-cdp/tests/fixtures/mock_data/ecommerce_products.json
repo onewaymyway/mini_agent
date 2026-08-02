@@ -1,0 +1,95 @@
+{
+  "products": [
+    {
+      "id": "prod_001",
+      "title": "Wireless Headphones Pro",
+      "price": 199.99,
+      "currency": "USD",
+      "rating": 4.5,
+      "review_count": 245,
+      "image": "https://example.com/images/headphones_pro.jpg",
+      "description": "Premium wireless headphones with active noise cancellation",
+      "specs": {
+        "driver": "40mm dynamic",
+        "battery": "30 hours",
+        "connectivity": "Bluetooth 5.0",
+        "weight": "250g"
+      },
+      "variants": [
+        {"color": "Black", "sku": "WH-PRO-BLK"},
+        {"color": "Silver", "sku": "WH-PRO-SLV"},
+        {"color": "Blue", "sku": "WH-PRO-BLU"}
+      ],
+      "in_stock": true
+    },
+    {
+      "id": "prod_002",
+      "title": "Mechanical Keyboard RGB",
+      "price": 129.99,
+      "currency": "USD",
+      "rating": 4.7,
+      "review_count": 189,
+      "image": "https://example.com/images/keyboard_rgb.jpg",
+      "description": "Hot-swappable mechanical keyboard with per-key RGB",
+      "specs": {
+        "switch": "Gateron Red (hot-swappable)",
+        "layout": "TKL (87 keys)",
+        "backlight": "Per-key RGB",
+        "connection": "USB-C / Bluetooth 5.1 / 2.4GHz"
+      },
+      "variants": [
+        {"color": "Black", "sku": "MK-RGB-BLK"},
+        {"color": "White", "sku": "MK-RGB-WHT"}
+      ],
+      "in_stock": true
+    },
+    {
+      "id": "prod_003",
+      "title": "4K UltraWide Monitor",
+      "price": 699.99,
+      "currency": "USD",
+      "rating": 4.3,
+      "review_count": 67,
+      "image": "https://example.com/images/monitor_4k.jpg",
+      "description": "34-inch curved 4K monitor for productivity and gaming",
+      "specs": {
+        "size": "34 inch",
+        "resolution": "3440 x 1440 (UWQHD)",
+        "refresh_rate": "144Hz",
+        "panel": "IPS",
+        "curvature": "1900R",
+        "ports": "HDMI 2.1 x2, DP 1.4 x2, USB-C x1"
+      },
+      "variants": [
+        {"model": "Standard", "sku": "MON-4K-STD"},
+        {"model": "G-Sync", "sku": "MON-4K-GSY"}
+      ],
+      "in_stock": false
+    }
+  ],
+  "categories": [
+    {"id": "audio", "name": "Audio", "count": 156},
+    {"id": "computing", "name": "Computing", "count": 234},
+    {"id": "displays", "name": "Displays", "count": 89}
+  ],
+  "filters": {
+    "price_ranges": [
+      {"min": 0, "max": 50, "count": 45},
+      {"min": 50, "max": 100, "count": 67},
+      {"min": 100, "max": 200, "count": 89},
+      {"min": 200, "max": 500, "count": 123},
+      {"min": 500, "max": 1000, "count": 45}
+    ],
+    "brands": [
+      {"name": "Sony", "count": 23},
+      {"name": "Logitech", "count": 34},
+      {"name": "Razer", "count": 18},
+      {"name": "Dell", "count": 12}
+    ],
+    "ratings": [
+      {"min": 4.5, "count": 89},
+      {"min": 4.0, "count": 156},
+      {"min": 3.5, "count": 234}
+    ]
+  }
+}
