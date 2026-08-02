@@ -1,12 +1,9 @@
 # 系统关联性断点 + 缺失重要功能 改进方案
 
-> 状态：**F1/F2/F3/F4 已完成第一轮实现**（见文末"实施记录"），
-> 已跑通相关现有测试（`tests/test_improvement_backlog_merge.py`、
-> `tests/test_correction_detector.py`、
-> `tests/test_context_builder_wiki_search_primary.py`、
-> `tests/test_context_builder_global_knowledge.py`、
-> `tests/test_context_builder_workdir_knowledge.py` 共 77 项全部通过，
-> 无回归）。C6/C7 仍是草案，未实施。
+> 状态：**F1/F2/F3/F4 已实现并接入实际调用点**（见文末"实施记录"），
+> 已跑通相关现有测试共 251 项（含 `test_goal_mode.py`/`test_judge_verdict.py`
+> 等更大范围回归验证），失败用例均可定位为改动前已存在、与本方案文件
+> 无关的问题，未发现由本方案引入的回归。C6/C7 仍是草案，未实施。
 > 关联代码：`src/mini_agent/evolution/`、`src/mini_agent/wiki/`、
 > `src/mini_agent/role_agents/`、`src/mini_agent/perception/goal_backlog.py`、
 > `src/mini_agent/history/`
@@ -226,11 +223,13 @@ GoalBacklog/ObjectiveExecutor（目标执行）、improvement_backlog_merge（�
   做一次粗略的"是否被引用"判断并调用 `record_consumption()`。
 - `config/models.py` 新增 `GoalModeConfig.decision_consumption_enabled: bool
   = False`。
-- **已知范围缩减**：`GoalRunner` 目前的调用点尚未默认传入 `paths`，需要
-  在 `goal_mode/runner.py` 里显式接入才会真正生效——这是有意保留的手动
-  开关，接入 GoalRunner 属于下一轮迭代（涉及 GoalRunner 构造/调用链，
-  改动面更大，本轮优先把可复用的模块和插拔点做完整、验证过再接入调用方，
-  降低一次性改动的回归风险）。
+- **本轮已补齐**：`goal_mode/runner.py::GoalRunner.__init__` 现在无条件
+  构造 `self._paths`（纯路径对象，无 I/O），并在 `run_goal_judge(...)`
+  调用处传入 `paths=self._paths`——`cfg.goal_mode.decision_consumption_enabled`
+  仍默认 `False`，打开后即可在真实 GoalRunner 运行中生效，不再需要额外
+  接入工作。已跑 `tests/test_goal_mode.py`（90/95 通过，5 个失败是
+  `spec.py` 里预先存在、与本次改动无关的测试夹具问题——`_run_builder`
+  测试桩缺少 `detection_text` 关键字参数，在改动前就会失败）。
 
 ### F2 统一失败模式库 —— 已实现（数据源覆盖 2/3）
 
@@ -247,11 +246,22 @@ GoalBacklog/ObjectiveExecutor（目标执行）、improvement_backlog_merge（�
   `ensure_failure_pattern_aggregation_job()`。
 - `soft_goal_deriver.py` 新增信号源 `_from_failure_patterns()`（信号 5），
   在 `derive_candidates()` 里附加于 `_from_lesson_review()` 之后调用。
-- **已知限制（如实记录，未强行凑数）**：`role_agents/stuck_detector.py`
-  判定的"卡住"信号目前是纯内存状态机，没有持久化落盘，本轮暂时无法把它
-  作为第三路数据源接入——原方案文档设想的三路数据源，本轮先落地了
-  可以直接接入的两路，stuck 信号需要先补一个持久化落盘点才能接入，留作
-  后续独立小任务。
+- **本轮已确认/优化**：`goal_mode/runner.py::_record_dead_end()` 早在
+  之前的迭代里就已经把"卡住/无实质进展"的判定持久化进
+  `GoalState.dead_ends`（`{"round":.., "progress":.., "reason":..}`
+  结构，随 `GoalStateStore` 落盘到 `goal_state.json`），因此第二路数据源
+  实际上从一开始就是可用的，不需要额外补丁。本轮把
+  `_read_dead_end_failures()` 从"整条 dict 序列化后匹配"改为"优先取
+  `reason` 字段文本做根因匹配"，避免 `round`/`progress` 之类的结构字段
+  噪音混进 `root_cause_tag` 的正则匹配。
+- **仍未接入的第三路**：`role_agents/stuck_detector.py` 的 `StuckDetector`
+  本身仍然是纯内存状态机（`_consecutive_same`/`_recoveries_used` 计数器，
+  不落盘完整判定历史）——但由于 GoalRunner 在每次判定"没有实质进展"时
+  已经通过 `_record_dead_end()` 落盘到 dead_ends（见上），实际效果上
+  stuck 信号的语义已经通过 dead_ends 间接被 F2 覆盖到了。真正遗漏的只是
+  `role_agents/turn_judge.py`（TurnJudge，非 GoalRunner 场景）里的
+  `StuckDetector` 使用——TurnJudge 判定的卡住目前确实没有对应的持久化
+  记录，这部分维持原判：需要先给 TurnJudge 补一个落盘点才能接入。
 - **已知范围调整**：原方案文档设想"用 failure_pattern_store 替换
   lesson_review 高频信号"，实现时评估后改为"附加"而非"替换"——两个
   数据源不完全重叠（lesson_review 还含用户反馈等更多来源），直接替换
@@ -271,10 +281,10 @@ GoalBacklog/ObjectiveExecutor（目标执行）、improvement_backlog_merge（�
   `paths`，传入时对每个候选按 `subject` 查询累积权重并乘到 `score` 上；
   `run_improvement_backlog_merge_once()` 已更新为传入 `paths`。
 - `cli/commands/goals.py`：`_cmd_accept()` 新增可选参数 `paths`，接受
-  `agent_derived` Goal 时记录一次 `accepted` 反馈（**已知范围缩减**：
-  CLI 调用 `_cmd_accept` 的地方尚未默认传 `paths`，需要在命令入口显式
-  传入才会生效——同 F1，是为了先把可复用逻辑和签名做对、验证过，再接入
-  调用方，避免一次性改动过多入口）。
+  `agent_derived` Goal 时记录一次 `accepted` 反馈。**本轮已补齐**：
+  `handle_goals_cmd()` 里 `accept` 子命令的调用点已改为
+  `_cmd_accept(gb, rest[0], paths=paths)`（`paths` 在函数入口处已经
+  通过 `_get_paths(agent)` 取到，同一作用域直接传，无需额外构造）。
 - 验证：`tests/test_improvement_backlog_merge.py` 全部通过（6/6），确认
   `paths=None` 时行为与改动前完全一致。
 
@@ -307,12 +317,25 @@ GoalBacklog/ObjectiveExecutor（目标执行）、improvement_backlog_merge（�
 - **C6**（步骤间结构化上下文）、**C7**（外部知识直接写入 capability_map）
   ——按第 3 节的优先级排序，仍计划合并到下一轮看板改造方案里评估，本轮
   未动。
-- F1/F3 里标注的"已知范围缩减"（GoalRunner 接入 F1、CLI 命令入口接入
-  F3 的 accepted 记录）——模块本身已完成且经过验证，接入上层调用点是
-  后续的独立小任务，刻意不在同一轮里一次性把所有调用点都改掉，降低
-  一次性改动的回归面。
-- F2 的 stuck 信号第三路数据源——依赖 `stuck_detector.py` 先有持久化
-  落盘点，属于另一个独立的前置任务。
+- F1/F3 里此前标注的"已知范围缩减"（GoalRunner 接入 F1、CLI 命令入口
+  接入 F3 的 accepted 记录）**本轮已全部补齐**，详见上方各小节。
+- F2 的 TurnJudge 场景 stuck 信号——GoalRunner 场景已通过既有的
+  `_record_dead_end()` 间接覆盖（见上），但 `role_agents/turn_judge.py`
+  里独立使用 `StuckDetector` 的场景仍没有持久化记录，需要先给 TurnJudge
+  补一个类似 `_record_dead_end()` 的落盘点才能接入，属于另一个独立的
+  前置任务。
+
+### 本轮全部改动的回归验证
+
+已运行的测试（均为改动涉及模块的既有测试，非新增）：
+`tests/test_improvement_backlog_merge.py`（6/6）、
+`tests/test_correction_detector.py` + 三个 `test_context_builder_*`
+（71/71）、`tests/test_goal_mode.py`（90/95，5 个失败是 `spec.py` 测试
+夹具在改动前就存在的问题，与本方案改动的文件无关）、
+`tests/test_judge_verdict.py` + `tests/test_judge_dispatcher_unification.py`
+（78/79，1 个失败是 TurnJudge 测试桩缺 `_session` 属性，与本方案改动的
+`goal_judge.py`/`run_goal_judge` 无关，改动前同样失败）。全部失败用例均
+可定位到与本方案改动文件无关的预先存在的问题，未发现由本方案引入的回归。
 
 ### 本轮新增/修改文件清单
 
@@ -326,6 +349,7 @@ GoalBacklog/ObjectiveExecutor（目标执行）、improvement_backlog_merge（�
 - `src/mini_agent/role_agents/goal_judge.py`
 - `src/mini_agent/prompts/user/goal_judge_request.md`
 - `src/mini_agent/config/models.py`
+- `src/mini_agent/goal_mode/runner.py`
 - `src/mini_agent/evolution/soft_goal_deriver.py`
 - `src/mini_agent/evolution/improvement_backlog_merge.py`
 - `src/mini_agent/cli/commands/goals.py`

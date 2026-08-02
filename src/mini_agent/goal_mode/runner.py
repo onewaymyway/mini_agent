@@ -145,6 +145,13 @@ class GoalRunner:
         self._executor = executor or CoarseStepExecutor()
         self._gm_cfg = cfg.goal_mode
 
+        # [系统关联性断点改进方案 F1] 无条件构造 AgentPaths（纯路径对象，
+        # 不做任何 I/O），供 run_goal_judge() 检索相关历史决策使用；
+        # 与下面 state_store 分支里已有的 AgentPaths 构造互不冲突（两处
+        # 都是同一个 project_root，构造本身没有副作用）。
+        from mini_agent.storage.paths import AgentPaths as _F1AgentPaths
+        self._paths = _F1AgentPaths(project_root=cfg.project_root)
+
         self._state_store = state_store
         if self._state_store is None and self._gm_cfg.persist_state:
             from mini_agent.storage.paths import AgentPaths
@@ -577,6 +584,7 @@ class GoalRunner:
                 prior_checklist_lines=prior_checklist_lines,
                 verification_result=verification_result,
             )
+            # 注：此处只是调试预览（未接入 F1 检索），实际判定见下方 run_goal_judge(paths=...)。
             R.console.print()
             R.console.print("[bold]— GoalJudge 输入 Prompt —[/bold]")
             R.console.print(prompt_preview)
@@ -599,6 +607,7 @@ class GoalRunner:
                 self._agent._current_session_dir()
                 if hasattr(self._agent, "_current_session_dir") else None
             ),
+            paths=self._paths,
         )
 
         status = extract_goal_status(raw) or "CONTINUE"  # 提取失败时保守按 CONTINUE 处理

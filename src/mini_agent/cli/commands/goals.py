@@ -77,7 +77,7 @@ def handle_goals_cmd(args: list[str], agent=None) -> None:
         if not rest:
             R.print_error("Usage: /agent goals accept <id>")
             return
-        _cmd_accept(gb, rest[0])
+        _cmd_accept(gb, rest[0], paths=paths)
 
     elif subcmd == "pause":
         if not rest:

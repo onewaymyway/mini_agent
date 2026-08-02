@@ -178,7 +178,15 @@ def _read_dead_end_failures(paths: "AgentPaths") -> list[tuple[str, str, str, fl
         category = _normalize_category(goal_text)
         mtime = goal_state_path.stat().st_mtime
         for dead_end in gs.get("dead_ends", []) or []:
-            text = dead_end if isinstance(dead_end, str) else json.dumps(dead_end, ensure_ascii=False)
+            if isinstance(dead_end, dict):
+                # [系统关联性断点改进方案 F2 追加] GoalRunner._record_dead_end()
+                # 落盘的实际结构是 {"round":.., "progress":.., "reason":..}
+                # （见 goal_mode/runner.py），优先取 reason 文本本身做根因匹配，
+                # 而不是整条 dict 序列化后再匹配（后者会把 "round": 3 这类
+                # 数字噪音也混进正则匹配，降低 root_cause_tag 的准确度）。
+                text = dead_end.get("reason") or json.dumps(dead_end, ensure_ascii=False)
+            else:
+                text = str(dead_end)
             out.append((category, _root_cause_tag(text), text[:150], mtime))
     return out
 
