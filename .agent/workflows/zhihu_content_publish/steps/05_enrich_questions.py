@@ -260,12 +260,17 @@ def _resolve_skill_dir(ctx) -> Path:
 
 def _import_cdp_client(skill_dir: Path):
     """把 browser-cdp skill 目录加进 sys.path 后 import 它现成的 CDP 客户端，
-    不重复实现一遍 tab 发现 / WebSocket 收发。"""
+    不重复实现一遍 tab 发现 / WebSocket 收发。
+
+    [browser-cdp skill 更新适配] skill 目录结构从 src/core/cdp_client.py 调整为
+    src/core/cdp_client.py（路径不变），但导入方式从 `from core import cdp_client`
+    改为直接 import 所需符号，避免依赖 sys.path 注入的相对导入。
+    """
     skill_dir_str = str(skill_dir)
     if skill_dir_str not in sys.path:
         sys.path.insert(0, skill_dir_str)
     try:
-        import cdp_client  # noqa: F401
+        from src.core.cdp_client import list_tabs, connect_tab, CDPError  # noqa: F401
     except ImportError as e:
         raise ImportError(
             "无法 import browser-cdp skill 的 cdp_client 模块，请确认：\n"
@@ -273,7 +278,14 @@ def _import_cdp_client(skill_dir: Path):
             "`pip install websocket-client requests`；\n"
             f"  2) skill 目录存在：{skill_dir}"
         ) from e
-    return cdp_client
+    # 返回一个命名空间对象，保持下游代码对 cdp_client.list_tabs 等调用的兼容性
+    import types
+    _ns = types.ModuleType("cdp_client")
+    _ns.list_tabs = list_tabs
+    _ns.connect_tab = connect_tab
+    _ns.CDPError = CDPError
+    _ns.DEFAULT_HOST = "127.0.0.1"
+    return _ns
 
 
 def _get_zhihu_session(cdp_client, port: int):
