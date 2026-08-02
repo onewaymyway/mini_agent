@@ -571,6 +571,7 @@ Agent 可以调用以下内置工具：
 | `git-context` | 分析当前工作目录 Git 仓库状态（commit 历史、变更文件、分支、diff） |
 | `python-expert` | Python 编码最佳实践助手 |
 | `reminder-generator` | 从对话提取可复用经验，生成 reminder 文件，详见 [Reminder 系统指南](docs/reminder-system-guide.md) |
+| `browser-cdp` | 通过 Chrome DevTools Protocol (CDP) 控制真实 Chrome/Edge 浏览器：打开网页、抓取内容、截图标注、模拟点击输入、执行 JS，详见 [Skill 系统指南](docs/skill-system-guide.md) |
 
 ## 项目结构
 

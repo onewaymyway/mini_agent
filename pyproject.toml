@@ -28,6 +28,7 @@ mini-agent = "mini_agent.cli.app:main"
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["src"]
+asyncio_mode = "auto"
 
 [build-system]
 requires = ["setuptools>=42"]
