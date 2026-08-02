@@ -1517,6 +1517,17 @@ class HttpServer:
             )
             objective_executor.load()
 
+            # [goal_cron_binding_plan.md Track D] 把 goal_cycle 触发逻辑接进
+            # CronScheduler：必须放在 goal_backlog/cron_scheduler/objective_executor
+            # 三者都已构建完毕之后。失败静默降级为"绑定功能不可用"，不影响
+            # daemon 其余部分启动（跟本文件其它可选子系统的接线风格一致）。
+            try:
+                from mini_agent.evolution.goal_cron_bridge import register_goal_cycle_handler
+                register_goal_cycle_handler(cron_scheduler, goal_backlog, objective_executor)
+            except Exception as _mini_agent_exc:
+                from mini_agent.errors import log_exception
+                log_exception(_mini_agent_exc, where='mini_agent.api.server.HttpServer._build_autonomous_loop.register_goal_cycle_handler')
+
             # 把 ObjectiveExecutor 和 CronScheduler 挂到 bridge，
             # 供 AgentRunner.run() 在 turn 完成后回调
             self._bridge._objective_executor = objective_executor

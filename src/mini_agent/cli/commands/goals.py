@@ -9,6 +9,8 @@ cli/commands/goals.py — /agent goals slash 命令处理（Stage 9 第六节）
   /agent goals done <id>           — 标记完成
   /agent goals abandon <id>        — 标记放弃
   /agent goals progress <id> <txt> — 更新进展记录
+  /agent goals recur <id> <schedule> [task]  — 声明为周期性（见 goal_cron_bridge.py）
+  /agent goals unrecur <id>        — 停止周期性（不删 Goal/cron job）
   /agent goals status              — 显示 AutonomousLoop tick 状态
 """
 
@@ -89,12 +91,26 @@ def handle_goals_cmd(args: list[str], agent=None) -> None:
             return
         _cmd_progress(gb, rest[0], " ".join(rest[1:]))
 
+    elif subcmd == "recur":
+        # [goal_cron_binding_plan.md Track D] /agent goals recur <id> <schedule> [task]
+        if len(rest) < 2:
+            R.print_error("Usage: /agent goals recur <id> <schedule> [task_template]")
+            return
+        _cmd_recur(gb, paths, rest[0], rest[1], " ".join(rest[2:]) if len(rest) > 2 else None)
+
+    elif subcmd == "unrecur":
+        # /agent goals unrecur <id> — 停止周期性（不删 Goal/cron job）
+        if not rest:
+            R.print_error("Usage: /agent goals unrecur <id>")
+            return
+        _cmd_unrecur(gb, paths, rest[0])
+
     elif subcmd == "status":
         _cmd_loop_status(agent, paths)
 
     else:
         R.print_error(f"Unknown subcommand: {subcmd!r}")
-        R.print_info("Available: list, add, obj add, done, abandon, accept, reject, pause, progress, status")
+        R.print_info("Available: list, add, obj add, done, abandon, accept, reject, pause, progress, recur, unrecur, status")
 
 
 # ── 子命令实现 ─────────────────────────────────────────────────────────────────
@@ -320,6 +336,55 @@ def _cmd_loop_status(agent, paths) -> None:
         from mini_agent.errors import log_exception
         log_exception(e, where='mini_agent.cli.commands.goals._cmd_loop_status')
         R.print_warning(f"无法读取 activity_digest.jsonl: {e}")
+
+
+def _cmd_recur(gb, paths, goal_id: str, schedule: str, task_template: Optional[str]) -> None:
+    """[goal_cron_binding_plan.md Track D] 把已有 Goal 声明为周期性。
+    这里新建一个独立的 CronScheduler 实例做纯 CRUD（不传 submit_fn/job_runner，
+    与 daemon 内运行的那个实例是同一份 cron_jobs.json，靠文件落盘同步，
+    不需要跨进程通信）——与 `/agent goals` 系列命令一贯"每次现读现写" 的风格一致。
+    """
+    if not (schedule.startswith("interval:") or schedule.startswith("cron:")):
+        R.print_error(
+            "schedule 格式错误。interval:<秒>（如 interval:86400）或 "
+            "cron:<分 时 日 月 周>（如 cron:0 9 * * 1）"
+        )
+        return
+    try:
+        from mini_agent.evolution.cron_scheduler import load_cron_scheduler
+        from mini_agent.evolution.goal_cron_bridge import make_goal_recurring
+        cs = load_cron_scheduler(paths)
+        job = make_goal_recurring(gb, cs, goal_id, schedule, task_template)
+    except ValueError as e:
+        R.print_error(str(e))
+        return
+    except Exception as e:
+        from mini_agent.errors import log_exception
+        log_exception(e, where='mini_agent.cli.commands.goals._cmd_recur')
+        R.print_error(f"绑定失败：{e}")
+        return
+
+    R.print_success(f"Goal {goal_id} 已声明为周期性，绑定 Job {job.id}，下次触发：{job.next_run_str()}")
+    R.print_info(f"停止周期性：/agent goals unrecur {goal_id}")
+
+
+def _cmd_unrecur(gb, paths, goal_id: str) -> None:
+    """停止周期性推进（不删 Goal/cron job）。"""
+    try:
+        from mini_agent.evolution.cron_scheduler import load_cron_scheduler
+        from mini_agent.evolution.goal_cron_bridge import stop_goal_recurrence
+        cs = load_cron_scheduler(paths)
+        ok = stop_goal_recurrence(gb, cs, goal_id)
+    except Exception as e:
+        from mini_agent.errors import log_exception
+        log_exception(e, where='mini_agent.cli.commands.goals._cmd_unrecur')
+        R.print_error(f"解绑失败：{e}")
+        return
+
+    if ok:
+        R.print_success(f"Goal {goal_id} 已停止周期性推进（绑定的 cron job 已 disable，未删除）")
+    else:
+        R.print_error(f"Goal 不存在或不是有效的 goal 节点：{goal_id}")
 
 
 def _format_ago(seconds: float) -> str:

@@ -8,6 +8,8 @@ cli/commands/cron.py — /cron 命令处理器
   /cron disable <id>            — 禁用 job
   /cron run <id>                — 立即触发一次（不改变 next_run_at）
   /cron add <name> <schedule> <task>  — 添加用户 job
+  /cron add-goal-cycle <goal_id> <schedule> [task]
+                                 — 把已有 Goal 声明为周期性（见 goal_cron_bridge.py）
   /cron remove <id>             — 删除用户 job（sys: 前缀不可删）
   /cron set-schedule <id> <schedule>  — 修改触发时间
 """
@@ -80,6 +82,20 @@ async def handle_cron(args: list[str], ctx: "ReplContext") -> str:
         schedule = rest[1]
         task_template = " ".join(rest[2:])
         return _cmd_add(cs, name, schedule, task_template)
+
+    if sub == "add-goal-cycle":
+        # /cron add-goal-cycle <goal_id> <schedule> [task_template...]
+        if len(rest) < 2:
+            return (
+                "[cron] 用法：/cron add-goal-cycle <goal_id> <schedule> [task_template]\n"
+                "把一个已存在的 Goal 声明为周期性：到期时自动为该 Goal 派生并启动一轮\n"
+                "新的子 Objective。task_template 省略时复用 Goal 的 description/title。\n"
+                "示例：/cron add-goal-cycle goal_1a2b3c4d interval:86400 持续关注最新AI技术进展"
+            )
+        goal_id = rest[0]
+        schedule = rest[1]
+        task_template = " ".join(rest[2:]) if len(rest) > 2 else None
+        return _cmd_add_goal_cycle(ctx, cs, goal_id, schedule, task_template)
 
     return (
         "[cron] 未知子命令。可用子命令：\n"
@@ -186,6 +202,50 @@ def _cmd_add(cs, name: str, schedule: str, task_template: str) -> str:
         f"  触发：{schedule}\n"
         f"  任务：{task_template[:80]}\n"
         f"  下次：{job.next_run_str()}"
+    )
+
+
+def _cmd_add_goal_cycle(ctx, cs, goal_id: str, schedule: str, task_template) -> str:
+    """[goal_cron_binding_plan.md Track D] /cron add-goal-cycle 的实现。
+    需要 GoalBacklog，走 ctx.agent → AgentPaths 这条路径（与 /agent goals 系列
+    命令一致），因为 handle_cron() 拿到的 ctx 只保证有 cron_scheduler。
+    """
+    if not (schedule.startswith("interval:") or schedule.startswith("cron:")):
+        return (
+            f"[cron] ✗ schedule 格式错误。\n"
+            f"  interval 格式：interval:<秒>     例：interval:86400\n"
+            f"  cron 格式：   cron:<分 时 日 月 周>  例：cron:0 9 * * 1"
+        )
+
+    agent = getattr(ctx, "agent", None)
+    paths = None
+    try:
+        cfg = getattr(agent, "cfg", None)
+        project_root = getattr(cfg, "project_root", None) if cfg is not None else None
+        if project_root is not None:
+            from mini_agent.storage.paths import AgentPaths
+            paths = AgentPaths(project_root)
+    except Exception:
+        paths = None
+    if paths is None:
+        return "[cron] ✗ 无法获取项目路径（agent 未就绪）"
+
+    from mini_agent.perception.goal_backlog import load_goal_backlog
+    from mini_agent.evolution.goal_cron_bridge import make_goal_recurring
+
+    gb = load_goal_backlog(paths)
+    try:
+        job = make_goal_recurring(gb, cs, goal_id, schedule, task_template)
+    except ValueError as e:
+        return f"[cron] ✗ {e}"
+
+    return (
+        f"[cron] ✓ Goal {goal_id} 已声明为周期性\n"
+        f"  绑定 Job：{job.id}\n"
+        f"  触发：{schedule}\n"
+        f"  每轮任务：{job.task_template[:80]}\n"
+        f"  下次：{job.next_run_str()}\n"
+        f"  提示：/agent goals unrecur {goal_id} 可停止周期性（不删除 Goal/Job）"
     )
 
 

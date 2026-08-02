@@ -110,6 +110,19 @@ class GoalNode:
     # 老化加成"只随实质进展归零"的语义）。
     last_scheduled_at: float = 0.0
 
+    # [goal_cron_binding_plan.md Track A] 周期性 Goal 支持：
+    # recurring — 是否已绑定一个 run_mode="goal_cycle" 的 CronJob；
+    # recurrence_cron_job_id — 反向指针，指回绑定的 CronJob.id，方便 UI/CLI 跳转，
+    #   也用于 stop_goal_recurrence() 定位要 disable 哪个 job；
+    # cycle_count — 已完成（含失败）的周期数，由 goal_cron_bridge.reap_finished_cycles()
+    #   在检测到本轮子 Objective 进入终态时递增，不代表"成功"次数，只代表"跑过几轮"。
+    recurring: bool = False
+    recurrence_cron_job_id: Optional[str] = None
+    cycle_count: int = 0
+    # 已被 reap_finished_cycles() 计过数的子 Objective id 集合，避免同一个终态子节点
+    # 被重复计数（tick 间隔内多次扫描到同一个 completed 子节点是正常情况）。
+    reaped_cycle_child_ids: list[str] = field(default_factory=list)
+
     def to_dict(self) -> dict:
         return {
             "id": self.id,
@@ -129,6 +142,10 @@ class GoalNode:
             "external_context": self.external_context,
             "last_external_advance_at": self.last_external_advance_at,
             "last_scheduled_at": self.last_scheduled_at,
+            "recurring": self.recurring,
+            "recurrence_cron_job_id": self.recurrence_cron_job_id,
+            "cycle_count": self.cycle_count,
+            "reaped_cycle_child_ids": self.reaped_cycle_child_ids,
         }
 
     @staticmethod
@@ -151,6 +168,10 @@ class GoalNode:
             external_context=d.get("external_context", []),
             last_external_advance_at=d.get("last_external_advance_at", 0.0),
             last_scheduled_at=d.get("last_scheduled_at", 0.0),
+            recurring=d.get("recurring", False),
+            recurrence_cron_job_id=d.get("recurrence_cron_job_id"),
+            cycle_count=d.get("cycle_count", 0),
+            reaped_cycle_child_ids=d.get("reaped_cycle_child_ids", []),
         )
 
     @property
@@ -496,8 +517,15 @@ class GoalBacklog:
         work_thread_ref: Optional[str] = None,
         source: str = "user",
         priority: int = 0,
+        description: str = "",
     ) -> GoalNode:
         """添加 Objective 节点，可关联 WorkThread。
+
+        description — [goal_cron_binding_plan.md Track A 新增] 主要供
+        goal_cron_bridge._fire_goal_cycle() 使用：周期性 Goal 每轮创建的子 Objective
+        需要带上 cron job 的 task_template 作为该轮任务的具体说明，title
+        （"XXX（第 N 轮）"）只是给人看的短标签。其余既有调用方不传时保持空
+        字符串，行为不变。
 
         内部会先重新加载磁盘最新状态再追加，并立即落盘，
         避免与其他进程并发写入互相覆盖。
@@ -514,6 +542,7 @@ class GoalBacklog:
                 parent_id=parent_id,
                 work_thread_ref=work_thread_ref,
                 priority=priority,
+                description=description,
             )
             self._nodes[node.id] = node
             # 更新 parent 的 children_ids（用重新加载后的最新 parent 节点）
@@ -595,6 +624,50 @@ class GoalBacklog:
             if not node:
                 return False
             node.status = status
+            node.last_touched_at = time.time()
+        return True
+
+    # ── [goal_cron_binding_plan.md Track A/C] 周期性 Goal 支持 ─────────────────
+
+    def set_recurrence(
+        self, goal_id: str, recurring: bool, cron_job_id: Optional[str] = None
+    ) -> bool:
+        """写回 Goal 的周期性绑定状态。由 goal_cron_bridge.make_goal_recurring()/
+        stop_goal_recurrence() 调用，不单独暴露给其它调用方——绑定/解绑必须同时
+        改 CronJob 那一侧，业务逻辑收敛在 goal_cron_bridge，这里只做纯字段写入。
+        """
+        with self._locked():
+            node = self._nodes.get(goal_id)
+            if not node or not node.is_goal:
+                return False
+            node.recurring = recurring
+            node.recurrence_cron_job_id = cron_job_id if recurring else None
+            node.last_touched_at = time.time()
+        return True
+
+    def record_cycle_completed(self, goal_id: str, child_id: str, note: str = "") -> bool:
+        """[Track C] 周期性 Goal 的某一轮子 Objective 进入终态后调用一次：
+        cycle_count += 1，并把摘要追加进 progress_notes（不覆盖，保留历史轮次的
+        简短记录，便于用户回看"这个 recurring Goal 每轮都干了什么"）。
+
+        child_id 必须已经记录在 reaped_cycle_child_ids 里才算"计过数"——
+        reap_finished_cycles() 在调用本方法前会先检查这一点，这里再存一次纯粹是
+        防御性的（避免未来有其它调用方跳过检查直接调用本方法导致重复计数）。
+        """
+        with self._locked():
+            node = self._nodes.get(goal_id)
+            if not node or not node.is_goal:
+                return False
+            if child_id in node.reaped_cycle_child_ids:
+                return False
+            node.cycle_count += 1
+            node.reaped_cycle_child_ids.append(child_id)
+            if note:
+                stamp = time.strftime("%Y-%m-%d %H:%M", time.localtime())
+                line = f"[{stamp}] 第 {node.cycle_count} 轮：{note[:80]}"
+                node.progress_notes = (
+                    f"{node.progress_notes}\n{line}" if node.progress_notes else line
+                )
             node.last_touched_at = time.time()
         return True
 

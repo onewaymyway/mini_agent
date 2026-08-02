@@ -259,6 +259,19 @@ class AutonomousLoop:
 
         self._ensure_goal_objectives()
 
+        # [goal_cron_binding_plan.md Track C/D] 回收周期性 Goal 本轮已终态的
+        # 子 Objective：cycle_count += 1 + progress_notes 追加一行摘要。放在
+        # maintenance 档位（而不是 passive）是刻意的——见
+        # goal_cron_bridge._fire_goal_cycle() 里同样的档位边界说明。纯读写
+        # goals.json，失败静默降级，不影响本次 tick 其余步骤。
+        try:
+            from mini_agent.evolution.goal_cron_bridge import reap_finished_cycles
+            reap_finished_cycles(self._goal_backlog)
+        except Exception as _mini_agent_exc:
+            from mini_agent.errors import log_exception
+            log_exception(_mini_agent_exc, where='mini_agent.evolution.autonomous_loop._tick_maintenance.reap_finished_cycles')
+            pass
+
         # ObjectiveExecutor：先回收卡死的 step（并发槽位卡死修复，见
         # ObjectiveExecutor.reap_stale_steps() 说明）。必须放在资源仲裁的
         # early-return 之前：否则一旦某次 tick 恰好赶上预算耗尽/用户在场

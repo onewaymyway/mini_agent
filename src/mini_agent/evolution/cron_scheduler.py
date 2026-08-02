@@ -58,6 +58,14 @@ class CronJob:
     initiator: str = "cron"     # 区别于 "autonomous" / "user"
     description: str = ""       # 人类可读说明
 
+    # [goal_cron_binding_plan.md Track A] Goal ⇄ Cron 绑定：
+    # run_mode="message"（默认，即现状）时 _fire() 走原有的裸消息投递路径；
+    # run_mode="goal_cycle" 时 _fire() 改为调用 CronScheduler.set_goal_cycle_handler()
+    # 注册的回调，为 goal_id 对应的 Goal 派生/推进一轮子 Objective，task_template
+    # 此时的语义变成"这一轮 Objective 的任务描述"，不再直接进 InputQueue。
+    goal_id: Optional[str] = None
+    run_mode: str = "message"
+
     def to_dict(self) -> dict:
         return {
             "id": self.id,
@@ -71,6 +79,8 @@ class CronJob:
             "tags": self.tags,
             "initiator": self.initiator,
             "description": self.description,
+            "goal_id": self.goal_id,
+            "run_mode": self.run_mode,
         }
 
     @staticmethod
@@ -87,6 +97,8 @@ class CronJob:
             tags=d.get("tags", []),
             initiator=d.get("initiator", "cron"),
             description=d.get("description", ""),
+            goal_id=d.get("goal_id"),
+            run_mode=d.get("run_mode", "message"),
         )
 
     @property
@@ -437,6 +449,12 @@ class CronScheduler:
         # （比如 sys:watchlist_report_<tier>），不影响既有 submit_fn/job_runner
         # 两条路径的行为。
         self._local_handlers: dict[str, Callable[["CronJob"], bool]] = {}
+        # [goal_cron_binding_plan.md Track B] 单个通用回调，处理所有
+        # run_mode="goal_cycle" 的 job（不像 _local_handlers 那样按固定 job_id
+        # 逐个注册——goal_cycle job 的 id 是用户动态创建的 user:xxxx，数量不固定，
+        # 用一个按 run_mode 分派的通用回调更合适）。为 None 时 goal_cycle job
+        # 不会被触发（_fire 直接返回 False，等同于"这个功能还没接线"）。
+        self._goal_cycle_fn: Optional[Callable[["CronJob"], bool]] = None
 
     # ── 持久化 ────────────────────────────────────────────────────────────────
 
@@ -557,6 +575,13 @@ class CronScheduler:
 
         return triggered
 
+    def set_goal_cycle_handler(self, handler: Optional[Callable[["CronJob"], bool]]) -> None:
+        """[Track B] 注册/替换 goal_cycle 通用回调。daemon 启动时由
+        goal_cron_bridge.register_goal_cycle_handler() 调用一次；传 None 可以
+        显式关闭该功能（比如测试场景不想牵扯 ObjectiveExecutor）。
+        """
+        self._goal_cycle_fn = handler
+
     def _fire(self, job: CronJob) -> bool:
         """
         触发一个 Job。
@@ -571,6 +596,22 @@ class CronScheduler:
         job_runner 未注入时回退到旧的 submit_fn 路径（消息进 InputQueue，
         由 AgentRunner 主线程当作一次普通 turn 处理）。
         """
+        if job.run_mode == "goal_cycle":
+            # goal_cycle job 永远走这一条独立分支，不参与 local_handler/
+            # job_runner/submit_fn 的既有优先级链——那三条路径都是"把
+            # task_template 当一条完整指令处理"，语义上不适用于"确保某个
+            # Goal 下有一轮 Objective 在推进"这件事。_goal_cycle_fn 未注册时
+            # （比如非 daemon 场景、或功能尚未接线）直接返回 False，等同于
+            # "这次没触发成功"，tick() 不会推进 last_run_at，下次再试。
+            if self._goal_cycle_fn is None:
+                return False
+            try:
+                return self._goal_cycle_fn(job)
+            except Exception as _mini_agent_exc:
+                from mini_agent.errors import log_exception
+                log_exception(_mini_agent_exc, where='mini_agent.evolution.cron_scheduler.CronScheduler._fire.goal_cycle')
+                return False
+
         local_handler = self._local_handlers.get(job.id)
         if local_handler is not None:
             try:
@@ -611,8 +652,15 @@ class CronScheduler:
         description: str = "",
         tags: Optional[list[str]] = None,
         enabled: bool = True,
+        goal_id: Optional[str] = None,
+        run_mode: str = "message",
     ) -> CronJob:
-        """添加用户自定义 Job。"""
+        """添加用户自定义 Job。
+
+        goal_id/run_mode — [goal_cron_binding_plan.md Track A 新增] 供
+        goal_cron_bridge.make_goal_recurring() 创建 run_mode="goal_cycle" 的
+        绑定 job；其余既有调用方不传时保持 run_mode="message"，行为不变。
+        """
         job_id = f"user:{uuid.uuid4().hex[:8]}"
         job = CronJob(
             id=job_id,
@@ -624,6 +672,8 @@ class CronScheduler:
             enabled=enabled,
             initiator="cron",
             next_run_at=compute_next_run(schedule, 0.0),
+            goal_id=goal_id,
+            run_mode=run_mode,
         )
         self._jobs[job_id] = job
         self.save()
