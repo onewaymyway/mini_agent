@@ -105,6 +105,13 @@ class AutonomyConfig:
 不需要改 `loader.py`，不需要改 `config_catalog.py`，不需要改
 `param_registry.py`。
 
+> **显式 null 的语义**：如果字段默认值不是 `None`（比如
+> `WorkflowConfig.approval_wait_timeout_seconds` 默认 `600.0`），但你希望
+> 配置文件里显式写 `"approval_wait_timeout_seconds": null` 来表示"取消
+> 这个限制"，直接写就行——`load_nested_block()` 对"key 存在且值为
+> `null`"统一按 `None` 处理，不受字段默认值类型限制，不需要专门为这个
+> 字段写特殊逻辑。
+
 ### 3.2 新增一个全新的 block
 
 比"加字段"多两步：
@@ -154,18 +161,24 @@ MyFeatureConfig` 直接引用，记得同时把类名加进
 
 ### 3.3 什么样的 block 不适合走这个机制
 
-`param_registry.py` 顶部注释里列了当前的例外清单（`reminder` /
-`format_correction` / `privacy` / `role_agent` / `env_info` /
-`workflow` / `web_search` / `mcp`）——这些 block 的加载逻辑混入了 CLI
-参数覆盖、多来源合并（如 `privacy.secrets` 要合并配置文件值和代码传入
-值）、字段派生（如 `env_info` 的 `provider_kwargs` 是从
-`include_hostname`/`include_username` 派生出来的）等无法用"JSON key
-直接映射到字段"表达的逻辑，继续在 `loader.py` 里保留专属手写代码，这是
-合理的、预期内的例外，不是重构遗留的技术债。给这些 block **加字段**
-时，直接在对应的手写构造代码块里加一行即可；只有当新字段是"纯粹的
-配置文件字段，不涉及 CLI/合并/派生"时，才考虑把整个 block 迁移进
-`NESTED_CONFIG_BLOCKS`（迁移前请确认该 block 目前混入的所有 CLI
-覆盖逻辑都已经不再需要，避免迁移后悄悄丢失 CLI 覆盖能力）。
+只剩 `mcp` 一个真正的例外——`mcp.servers` 是一个由独立 `MCPServerConfig`
+组成的列表（每个 server 一份 dataclass，字段结构在列表内还可以互不相同
+的可选项），不是"顶层 dict 的 key 直接映射到某个 dataclass 字段"这种
+扁平结构，天然不适合本机制，继续在 `loader.py` 里保留专属的列表解析
+代码（找 `mcp_server_list` 那一段）。
+
+`reminder`/`format_correction`/`privacy`/`role_agent` 这 4 个 block 的
+多数字段已经走通用加载，只有 `enabled`/`verbose` 等少数几个支持 CLI 覆
+盖的字段、以及 `privacy.secrets`（配置文件值 + 代码传入值合并去重）、
+`role_agent.allow/block`（逗号分隔字符串解析）、`*.custom_dir`/
+`agents_dir`（`str → Path`）这几个"通用类型转换机制处理不了"的字段，
+仍在 `loader.py` 里用 `apply_overrides()` 做小范围手工覆盖——这是"通用
+加载 + 少量手工覆盖"的两段式组合，不是"完全没接入机制"。`env_info` 的
+`provider_kwargs` 字段由 `include_hostname`/`include_username` 派生，
+通用加载后在 `loader.py` 里单独做一次派生填充。给这些 block **新增字段**
+时：如果新字段不需要 CLI 覆盖/特殊转换，直接改 `models.py` 就完事（和
+3.1 节完全一样）；只有确实需要 CLI 覆盖或特殊转换时，才需要在
+`loader.py` 对应位置的 `apply_overrides(...)` 调用里加一个新的覆盖项。
 
 ---
 
@@ -212,14 +225,44 @@ my_flag_val = resolve_flat_param(file_cfg, args, next(s for s in FLAT_PARAM_SPEC
 
 ---
 
-## 5. CLI 覆盖已并入某个 block 手写逻辑时怎么加字段
+## 5. `apply_overrides()` / `env_fallback`：通用加载之外的"小范围手工覆盖"
 
-如果新字段属于 `reminder`/`privacy`/`role_agent` 这类"有 CLI 覆盖"的
-block（第 3.3 节例外清单），在 `loader.py` 里找到对应的手写构造代码块
-（如 `reminder_cfg = ReminderConfig(...)` 那一段），照着旁边已有字段的
-写法加一行，保持"CLI 参数 > 配置文件 > 默认值"的合并顺序一致即可，不
-需要额外抽象。这类 block 数量少（6 个），手写维护成本可控，强行套用
-通用机制反而会让"到底谁的优先级更高"变得不直观。
+`reminder`/`format_correction`/`privacy`/`role_agent` 这 4 个 block 已经
+走通用加载（第 3 节），但各自有少数几个字段额外支持 CLI 覆盖，或者需要
+通用类型转换机制处理不了的转换（`str → Path`、逗号分隔字符串解析、
+"配置文件值 + 代码传入值合并去重"）。这类字段不再需要手写 `bool()`/
+`int()` 转换，而是用两个辅助函数在通用加载结果之上做小范围覆盖：
+
+**`apply_overrides(instance, **overrides)`**：拿通用加载好的 dataclass
+实例，覆盖其中几个字段，`overrides` 里值为 `None` 的项会被跳过（表示
+"这次没有更高优先级的值，保持通用加载结果不变"）。典型用法（以
+`format_correction` 为例，完整代码见 `loader.py`）：
+
+```python
+format_correction_cfg = apply_overrides(
+    _nested_blocks["format_correction"],
+    enabled=format_correction_enabled,           # CLI 参数，可能是 None
+    max_retries_per_turn=format_correction_max_retries,
+    verbose=format_correction_verbose,
+)
+```
+
+`enabled`/`max_retries_per_turn`/`verbose` 这 3 个字段：CLI 传了就用 CLI
+值，没传（`None`）就保留通用加载已经算好的"配置文件值或默认值"，效果上
+等价于"CLI 参数 > 配置文件 > 默认值"三级优先级，但不需要为每个字段重复
+写一遍 if-else。字段需要"配置文件值 + 代码传入值合并"（如
+`privacy.secrets`）或"字符串转 Path/解析成列表"（如
+`role_agent.agents_dir`/`allow`）时，先手动算出最终值，再传给
+`apply_overrides()`，其余没有特殊逻辑的字段完全不用碰。
+
+**`load_nested_block(block, cls, env_fallback={...})`**：给 `web_search`
+这类"配置文件 > 环境变量 > 默认值"三级回退的 block 用，`env_fallback`
+是 `{字段名: 环境变量名}` 映射，只对列出的字段生效，其它字段行为不变。
+
+给这 5 个 block（含 `env_info`/`workflow`）新增字段时：不需要 CLI 覆盖/
+环境变量回退/特殊转换的字段，直接改 `models.py` 就完事，和第 3.1 节
+完全一样；只有确实需要这些特殊处理时，才去 `loader.py` 里对应的
+`apply_overrides(...)`/`env_fallback={...}` 调用里加一项。
 
 ---
 
@@ -253,4 +296,11 @@ assert cfg.autonomy.my_new_threshold == 0.9
 
 ---
 
-*创建：2026-08，引入 `config/param_registry.py` 统一参数注册与解析机制。*
+*创建：2026-08，引入 `config/param_registry.py` 统一参数注册与解析机制；
+同批完成 `reminder`/`format_correction`/`privacy`/`role_agent`/
+`env_info`/`workflow`/`web_search` 全部迁移，`loader.py` 里手写的嵌套
+block 构造代码只剩 `mcp.servers` 一处。迁移 `workflow` 时顺带发现并修复
+了 `max_total_tokens`/`session_to_workflow_enabled`/
+`condition_static_check_enabled`/`dry_run_preview_on_generate`/
+`git_hint_enabled` 5 个字段此前从未被 `loader.py` 读取的 bug（与
+`autonomy`/`observability` 曾经的问题同源）。*

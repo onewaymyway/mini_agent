@@ -58,7 +58,7 @@ from .models import (
     DEFAULT_MAX_TURNS,
 )
 from .prompt_builder import _read_claude_md, _resolve_prompts_dir, _resolve_skills_dir
-from .param_registry import NESTED_CONFIG_BLOCKS, load_all_nested_blocks
+from .param_registry import NESTED_CONFIG_BLOCKS, load_all_nested_blocks, load_nested_block, apply_overrides
 
 
 # ════════════════════════════════════════════════════════════════════════════════
@@ -543,14 +543,6 @@ def load_config(
         ))
     mcp_cfg = MCPConfig(servers=mcp_server_list)
 
-    _ws = file_cfg.get("web_search") if isinstance(file_cfg.get("web_search"), dict) else {}
-    web_search_cfg = WebSearchConfig(
-        provider=_ws.get("provider") or os.environ.get("WEB_SEARCH_PROVIDER", "duckduckgo"),
-        api_key=_ws.get("api_key") or os.environ.get("WEB_SEARCH_API_KEY", ""),
-        max_results=int(_ws.get("max_results") or os.environ.get("WEB_SEARCH_MAX_RESULTS", 5)),
-        timeout=float(_ws.get("timeout") or os.environ.get("WEB_SEARCH_TIMEOUT", 10.0)),
-    )
-
     # [统一参数机制] 以下这批"字段名与 dataclass 一一对应、无 CLI 覆盖"的
     # 嵌套 block，统一通过 param_registry.NESTED_CONFIG_BLOCKS 通用加载，
     # 不再逐个手写 `XxxConfig(field=int(_x.get(...)), ...)`——新增字段只
@@ -558,80 +550,83 @@ def load_config(
     # docs/param-system-guide.md。
     _nested_blocks = load_all_nested_blocks(file_cfg, NESTED_CONFIG_BLOCKS)
     tech_radar_cfg = _nested_blocks["tech_radar"]
+    # web_search 是"配置文件 > 环境变量 > 默认值"三级回退，用 load_nested_block
+    # 的 env_fallback 参数单独处理（其它 block 都只有"配置文件 > 默认值"两级，
+    # 已经在上面 load_all_nested_blocks 里统一处理过，这里不重复）。
+    web_search_cfg = load_nested_block(
+        file_cfg.get("web_search") if isinstance(file_cfg.get("web_search"), dict) else {},
+        WebSearchConfig,
+        env_fallback={
+            "provider": "WEB_SEARCH_PROVIDER",
+            "api_key": "WEB_SEARCH_API_KEY",
+            "max_results": "WEB_SEARCH_MAX_RESULTS",
+            "timeout": "WEB_SEARCH_TIMEOUT",
+        },
+    )
     ecosystem_positioning_cfg = _nested_blocks["ecosystem_positioning"]
 
+    # [统一参数机制] reminder 里多数字段（tool_error_enabled 等 6 个开关 +
+    # max_per_turn）走通用加载；enabled/custom_dir/verbose 这 3 个字段额外
+    # 支持 CLI 覆盖（custom_dir 还要做 str→Path 转换），通用加载跑完之后
+    # 用 apply_overrides() 按 "CLI 参数 > 配置文件 > 默认值" 的优先级覆盖，
+    # 逻辑与改造前完全一致，只是不再需要为 tool_error_enabled 这些没有
+    # CLI 覆盖的字段手写 bool(...) 转换。
     _rm = file_cfg.get("reminder") if isinstance(file_cfg.get("reminder"), dict) else {}
-    _reminder_enabled_val = reminder_enabled if reminder_enabled is not None else _rm.get("enabled", True)
     _reminders_dir_val: Optional[Path] = None
     if reminders_dir is not None:
         _reminders_dir_val = Path(reminders_dir)
     elif _rm.get("custom_dir"):
         _reminders_dir_val = Path(_rm["custom_dir"])
-    reminder_cfg = ReminderConfig(
-        enabled=bool(_reminder_enabled_val),
+    reminder_cfg = apply_overrides(
+        _nested_blocks["reminder"],
+        enabled=reminder_enabled,
         custom_dir=_reminders_dir_val,
-        tool_error_enabled=bool(_rm.get("tool_error_enabled", True)),
-        post_tool_enabled=bool(_rm.get("post_tool_enabled", True)),
-        user_intent_enabled=bool(_rm.get("user_intent_enabled", True)),
-        pattern_enabled=bool(_rm.get("pattern_enabled", True)),
-        pre_tool_enabled=bool(_rm.get("pre_tool_enabled", True)),
-        format_issue_enabled=bool(_rm.get("format_issue_enabled", True)),
-        max_per_turn=int(_rm.get("max_per_turn", 3)),
-        verbose=bool(reminder_verbose if reminder_verbose is not None else _rm.get("verbose", False)),
+        verbose=reminder_verbose,
     )
 
     # ── 工具调用格式纠错配置组装 ──────────────────────────────────────────────
-    _fc = file_cfg.get("format_correction") if isinstance(file_cfg.get("format_correction"), dict) else {}
-    _fc_enabled_val = format_correction_enabled if format_correction_enabled is not None else _fc.get("enabled", True)
-    format_correction_cfg = FormatCorrectionConfig(
-        enabled=bool(_fc_enabled_val),
-        max_retries_per_turn=int(
-            format_correction_max_retries
-            if format_correction_max_retries is not None
-            else _fc.get("max_retries_per_turn", 2)
-        ),
-        verbose=bool(
-            format_correction_verbose
-            if format_correction_verbose is not None
-            else _fc.get("verbose", False)
-        ),
+    # [统一参数机制] format_correction 只有 enabled/max_retries_per_turn/
+    # verbose 三个字段，且都支持 CLI 覆盖，通用加载 + apply_overrides 即可。
+    format_correction_cfg = apply_overrides(
+        _nested_blocks["format_correction"],
+        enabled=format_correction_enabled,
+        max_retries_per_turn=format_correction_max_retries,
+        verbose=format_correction_verbose,
     )
 
     # ── 隐私保护配置组装 ──────────────────────────────────────────────────────
+    # [统一参数机制] enabled/verbose 走通用 CLI 覆盖；secrets 是"配置文件
+    # 里的 + 代码传入的"合并（去重由 PrivacyGuard 负责），不是简单的
+    # "谁优先级高用谁"，所以单独算好合并结果后一起通过 apply_overrides
+    # 覆盖进去；auto_env_patterns/placeholder_prefix 没有 CLI 覆盖，通用
+    # 加载直接读 file_cfg 里的值即可，不需要在这里重复处理。
     _pv = file_cfg.get("privacy") if isinstance(file_cfg.get("privacy"), dict) else {}
-    _pv_enabled = privacy_enabled if privacy_enabled is not None else _pv.get("enabled", True)
-    # secrets 合并：文件里的 + 代码传入的（去重由 PrivacyGuard 负责）
     _pv_secrets = list(_pv.get("secrets", []))
     if privacy_secrets:
         _pv_secrets = _pv_secrets + [s for s in privacy_secrets if s not in _pv_secrets]
-    # auto_env_patterns：None 表示使用 PrivacyGuard 内置默认，[] 表示禁用自动采集
-    _pv_patterns = _pv.get("auto_env_patterns", None)   # None → 内置默认
-    privacy_cfg = PrivacyConfig(
-        enabled=bool(_pv_enabled),
+    privacy_cfg = apply_overrides(
+        _nested_blocks["privacy"],
+        enabled=privacy_enabled,
         secrets=_pv_secrets,
-        auto_env_patterns=_pv_patterns,
-        placeholder_prefix=_pv.get("placeholder_prefix", "SECRET"),
-        verbose=bool(
-            privacy_verbose if privacy_verbose is not None else _pv.get("verbose", False)
-        ),
+        verbose=privacy_verbose,
     )
 
     # ── RoleAgent 配置组装 ────────────────────────────────────────────────────
+    # [统一参数机制] enabled 走通用 CLI 覆盖；allow/block 需要
+    # `_parse_name_list()` 解析逗号分隔字符串，agents_dir 需要 str→Path，
+    # 都是通用机制处理不了的转换，预先算好最终值后通过 apply_overrides
+    # 覆盖进去。
     _ra = file_cfg.get("role_agent") if isinstance(file_cfg.get("role_agent"), dict) else {}
-    # 总开关：CLI 参数 > 配置文件 > 默认 False（默认不启用）
-    _ra_enabled = role_agent_enabled if role_agent_enabled is not None else _ra.get("enabled", False)
-    # 白名单：CLI 参数（逗号分隔字符串或列表）> 配置文件 > 空列表（全部启用）
     _ra_allow = _parse_name_list(role_agent_allow) if role_agent_allow is not None else _parse_name_list(_ra.get("allow", []))
-    # 黑名单：CLI 参数 > 配置文件 > 空列表（不屏蔽）
     _ra_block = _parse_name_list(role_agent_block) if role_agent_block is not None else _parse_name_list(_ra.get("block", []))
-    # 自定义目录：CLI 参数 > 配置文件 > None（使用默认）
     _ra_dir: Optional[Path] = None
     if role_agent_dir is not None:
         _ra_dir = Path(role_agent_dir).expanduser()
     elif _ra.get("agents_dir"):
         _ra_dir = Path(_ra["agents_dir"]).expanduser()
-    role_agent_cfg = RoleAgentConfig(
-        enabled=bool(_ra_enabled),
+    role_agent_cfg = apply_overrides(
+        _nested_blocks["role_agent"],
+        enabled=role_agent_enabled,
         allow=_ra_allow,
         block=_ra_block,
         agents_dir=_ra_dir,
@@ -646,23 +641,15 @@ def load_config(
     turn_judge_cfg = _nested_blocks["turn_judge"]
 
     # ── EnvInfo 配置组装 ────────────────────────────────────────────────────
-    _ei = file_cfg.get("env_info") if isinstance(file_cfg.get("env_info"), dict) else {}
-    _ei_enabled = bool(_ei.get("enabled", True))
-    _ei_providers = _ei.get("providers", None)
-    _ei_provider_kwargs: dict = _ei.get("provider_kwargs", {})
-    _ei_include_hostname = bool(_ei.get("include_hostname", False))
-    _ei_include_username = bool(_ei.get("include_username", False))
-    if _ei_include_hostname or _ei_include_username:
-        sys_kwargs = _ei_provider_kwargs.setdefault("builtin.system", {})
-        sys_kwargs.setdefault("include_hostname", _ei_include_hostname)
-        sys_kwargs.setdefault("include_username", _ei_include_username)
-    env_info_cfg = EnvInfoConfig(
-        enabled=_ei_enabled,
-        providers=_ei_providers,
-        provider_kwargs=_ei_provider_kwargs,
-        include_hostname=_ei_include_hostname,
-        include_username=_ei_include_username,
-    )
+    # [统一参数机制] enabled/providers/provider_kwargs/include_hostname/
+    # include_username 都通用加载；provider_kwargs 里 "builtin.system" 这
+    # 一项是从 include_hostname/include_username 派生出来的（不是配置文件
+    # 里直接写的字段），通用加载结束后单独做一次派生填充。
+    env_info_cfg = _nested_blocks["env_info"]
+    if env_info_cfg.include_hostname or env_info_cfg.include_username:
+        sys_kwargs = env_info_cfg.provider_kwargs.setdefault("builtin.system", {})
+        sys_kwargs.setdefault("include_hostname", env_info_cfg.include_hostname)
+        sys_kwargs.setdefault("include_username", env_info_cfg.include_username)
 
     # [统一参数机制] workdir_knowledge / global_knowledge / proprioception /
     # affordance 同样走通用加载（见上方 tech_radar 处的说明）。
@@ -672,46 +659,18 @@ def load_config(
     affordance_cfg = _nested_blocks["affordance"]
 
     # [具身改进 B3][workflow机制改进计划.md] Workflow 执行/看护配置组装
-    _wf = file_cfg.get("workflow") if isinstance(file_cfg.get("workflow"), dict) else {}
-    _approval_timeout_raw = _wf.get("approval_wait_timeout_seconds", 600.0)
-    workflow_cfg = WorkflowConfig(
-        parallel_enabled=bool(_wf.get("parallel_enabled", True)),
-        max_parallel=int(_wf.get("max_parallel", 4)),
-        watchdog_enabled=bool(_wf.get("watchdog_enabled", True)),
-        heartbeat_check_interval_seconds=float(_wf.get("heartbeat_check_interval_seconds", 5.0)),
-        max_total_duration_seconds=(
-            float(_wf["max_total_duration_seconds"]) if _wf.get("max_total_duration_seconds") else None
-        ),
-        approval_poll_interval_seconds=float(_wf.get("approval_poll_interval_seconds", 3.0)),
-        approval_wait_timeout_seconds=(
-            float(_approval_timeout_raw) if _approval_timeout_raw is not None else None
-        ),
-        retry_on_error_backoff_seconds=float(_wf.get("retry_on_error_backoff_seconds", 5.0)),
-        background_execution_default=bool(_wf.get("background_execution_default", False)),
-        hooks_enabled=bool(_wf.get("hooks_enabled", True)),
-        max_sub_workflow_depth=int(_wf.get("max_sub_workflow_depth", 3)),
-        script_step_enabled=bool(_wf.get("script_step_enabled", False)),
-        script_step_timeout_seconds=float(_wf.get("script_step_timeout_seconds", 60.0)),
-        python_step_enabled=bool(_wf.get("python_step_enabled", False)),
-        python_step_timeout_seconds=float(_wf.get("python_step_timeout_seconds", 120.0)),
-        tool_call_step_auto_approve=bool(_wf.get("tool_call_step_auto_approve", False)),
-        human_input_wait_timeout_seconds=(
-            1800.0 if "human_input_wait_timeout_seconds" not in _wf
-            else (float(_wf["human_input_wait_timeout_seconds"]) if _wf["human_input_wait_timeout_seconds"] is not None else None)
-        ),
-        validate_placeholders_on_save=bool(_wf.get("validate_placeholders_on_save", True)),
-        validate_role_refs_on_save=bool(_wf.get("validate_role_refs_on_save", True)),
-        # ── P11（workflow_input_passing_and_debug_logging_improvement_plan.md）──
-        placeholder_depends_on_check_enabled=bool(_wf.get("placeholder_depends_on_check_enabled", True)),
-        python_step_inputs_filtered_by_depends_on=bool(_wf.get("python_step_inputs_filtered_by_depends_on", True)),
-        debug_log_enabled=bool(_wf.get("debug_log_enabled", False)),
-        debug_log_max_chars=int(_wf.get("debug_log_max_chars", 4000)),
-        # ── P14（workflow_mechanism_improvement_plan_p14.md）──
-        circuit_breaker_distinct_step_threshold=(
-            int(_wf["circuit_breaker_distinct_step_threshold"])
-            if _wf.get("circuit_breaker_distinct_step_threshold") else None
-        ),
-    )
+    # [统一参数机制] 走通用加载，无 CLI 覆盖。这里额外修复了一个此前存在
+    # 的 bug：手写构造代码里从未给 `max_total_tokens` /
+    # `session_to_workflow_enabled` / `condition_static_check_enabled` /
+    # `dry_run_preview_on_generate` / `git_hint_enabled` 这 5 个字段传值，
+    # 导致它们和曾经的 autonomy/observability 一样，无论 agent_config.json
+    # 里写了什么，实际生效的永远是 dataclass 默认值——通用加载统一处理
+    # 全部字段，不会再有"手写代码漏传某个字段"的问题。
+    # `approval_wait_timeout_seconds`/`human_input_wait_timeout_seconds`
+    # 这两个"默认值非 None，但允许显式 null 覆盖成 None"的字段，由
+    # `load_nested_block()` 的显式 null 规则统一处理，不需要像原来那样
+    # 为每个字段单独写一次"是否在 dict 里 / 是否为 None"的三态判断。
+    workflow_cfg = _nested_blocks["workflow"]
 
     # [统一参数机制] digest_advisor / cron / autonomy（含
     # fairness_time_slicing_enabled 等 P1-P4 字段）/ observability 同样走

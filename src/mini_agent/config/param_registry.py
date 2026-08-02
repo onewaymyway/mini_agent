@@ -82,7 +82,7 @@ class NestedBlockSpec:
     dataclass_type: type
 
 
-def load_nested_block(block: dict, cls: type):
+def load_nested_block(block: dict, cls: type, env_fallback: Optional[dict] = None):
     """通用地把一个 dict block 加载成对应 dataclass 实例。
 
     规则：只处理 `cls` 自身声明的字段；block 里缺失的字段一律回退到
@@ -90,14 +90,35 @@ def load_nested_block(block: dict, cls: type):
     default_factory 字段——如 list——也能正确工作）。类型转换按字段默认值
     的 Python 类型做（bool/int/float/str 走显式转换；list 默认值走
     "非 list 就丢弃回退默认"的保护；其余类型（None 默认、dict、Optional
-    等）原样透传，交给上层自行校验。转换失败的脏字段直接跳过，不让一个
+    等）原样透传，交给上层自行校验）。转换失败的脏字段直接跳过，不让一个
     写错类型的字段拖垮整个 block 的加载。
+
+    显式 null 语义：如果字段在 block 里出现且值为 JSON `null`（Python
+    `None`），无条件按 `None` 处理，不管该字段的 dataclass 默认值是不是
+    `None`——例如 `WorkflowConfig.approval_wait_timeout_seconds` 默认是
+    `600.0`（非 None），但语义上"显式写 null"表示"无限等待"，必须能覆盖
+    成 `None`，而不是因为"默认值是 float，None 转不了 float"就静默丢弃、
+    退回 600.0。这条规则对所有字段统一生效，不需要逐个字段特殊处理。
+
+    env_fallback: 可选的 `{字段名: 环境变量名}` 映射。字段在 block 里缺失
+    或值为空（`None`/`""`）时，尝试从对应环境变量读取（仍按字段默认值的
+    类型转换）；环境变量也没有则回退到 dataclass 默认值。用于
+    `WebSearchConfig` 这类"配置文件 > 环境变量 > 默认值"的字段。
     """
     kwargs: dict[str, Any] = {}
+    env_fallback = env_fallback or {}
     for f in dataclasses.fields(cls):
-        if f.name not in block:
+        in_block = f.name in block
+        raw_v = block.get(f.name)
+        env_name = env_fallback.get(f.name)
+        if in_block and raw_v is None:
+            # 显式 null：无条件覆盖为 None，不做类型转换（见上方说明）
+            kwargs[f.name] = None
             continue
-        raw_v = block[f.name]
+        if (not in_block or raw_v in (None, "")) and env_name and os.environ.get(env_name) is not None:
+            raw_v = os.environ[env_name]
+        elif not in_block:
+            continue
         has_default = f.default is not dataclasses.MISSING
         default_v = f.default if has_default else None
         try:
@@ -120,6 +141,16 @@ def load_nested_block(block: dict, cls: type):
             # 类型转换失败（脏配置）——忽略该字段，退回默认值
             continue
     return cls(**kwargs)
+
+
+def apply_overrides(instance: Any, **overrides: Any) -> Any:
+    """在一个已经通用加载好的 dataclass 实例上，有选择地覆盖少数几个字段
+    ——用于 CLI 参数需要覆盖配置文件值、或者字段需要额外类型转换（如
+    `str` → `Path`）这类通用机制无法自动处理的场景。`overrides` 里值为
+    `None` 的项会被忽略（表示"这次没有更高优先级的值，保持通用加载的
+    结果不变"），只有非 `None` 的项才会真正覆盖。"""
+    real = {k: v for k, v in overrides.items() if v is not None}
+    return dataclasses.replace(instance, **real) if real else instance
 
 
 def load_all_nested_blocks(file_cfg: dict, specs: Optional[list] = None) -> dict:
@@ -155,20 +186,32 @@ def _build_nested_blocks() -> list:
         NestedBlockSpec("cron", _m.CronConfig),
         NestedBlockSpec("autonomy", _m.AutonomyConfig),
         NestedBlockSpec("observability", _m.ObservabilityConfig),
+        NestedBlockSpec("workflow", _m.WorkflowConfig),
+        NestedBlockSpec("reminder", _m.ReminderConfig),
+        NestedBlockSpec("format_correction", _m.FormatCorrectionConfig),
+        NestedBlockSpec("privacy", _m.PrivacyConfig),
+        NestedBlockSpec("role_agent", _m.RoleAgentConfig),
+        NestedBlockSpec("env_info", _m.EnvInfoConfig),
+        NestedBlockSpec("web_search", _m.WebSearchConfig),
     ]
 
 
 # 唯一权威列表：loader.py 与 config_catalog.py 都从这里 import，不再各自
 # 维护重复的 block 清单。
 #
-# 注：以下 block 出于历史原因暂未纳入本通用列表，因为它们的加载逻辑里
-# 混入了 CLI 参数覆盖或字段派生等无法用"字段名直接映射"表达的逻辑，仍在
-# loader.py 里保留专属手写代码（这是合理的、预期内的例外，不是待办）：
-# reminder / format_correction / privacy / role_agent（CLI 覆盖）；
-# env_info（provider_kwargs 派生合并）；workflow（多个字段有
-# "缺失/None/0" 三态语义，不适合通用类型转换）；web_search（环境变量
-# 回退）；mcp（servers 是独立 MCPConfig 解析流程）。新增字段如果落在这些
-# block 里，直接在对应手写代码块里加一行即可，不强制迁移到通用机制。
+# 说明：`reminder`/`format_correction`/`privacy`/`role_agent` 这 4 个
+# block 里，多数字段走本文件的通用加载，但各自有少数几个字段（如
+# `enabled`/`verbose`）额外支持 CLI 覆盖或需要 `str → Path`/合并去重
+# 这类通用机制无法自动处理的转换——这部分仍在 loader.py 里用
+# `apply_overrides()` 显式处理（见 loader.py 对应位置的注释），不是
+# "没接入通用机制"，而是"通用加载 + 小范围手工覆盖"两段式组合。
+# `env_info` 的 `provider_kwargs` 字段由 `include_hostname`/
+# `include_username` 派生，通用加载后在 loader.py 里做一次派生填充。
+#
+# 真正保留独立解析逻辑、未纳入本列表的只剩 `mcp`（`servers` 是一个独立
+# dataclass 组成的列表，不是"字段名直接映射"的扁平 block，天然不适合这
+# 套机制）。新增字段如果落在 `mcp` block 里，直接在 loader.py 里
+# `mcp_server_list` 那段手写代码里加一行即可。
 NESTED_CONFIG_BLOCKS: list = _build_nested_blocks()
 
 
