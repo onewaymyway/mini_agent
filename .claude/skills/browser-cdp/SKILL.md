@@ -1,6 +1,6 @@
 ---
 name: browser-cdp
-description: 通过 Chrome DevTools Protocol (CDP) 控制真实 Chrome/Edge 浏览器：打开网页、抓取网页内容（HTML/纯文本/表单/链接）、截图（含编号标注可交互元素）、模拟点击和输入、执行JS、读取console/网络日志，并支持与用户同时操作同一个浏览器（观察/建议/代劳三种协作模式）。当用户说"帮我打开网页"、"抓取这个网站"、"帮我填一下这个表单"、"看看我浏览器里这个页面"、"截个图分析一下"时使用。
+description: 通过 Chrome DevTools Protocol (CDP) 控制真实 Chrome/Edge 浏览器：打开网页、抓取网页内容（HTML/纯文本/表单/链接）、截图（含编号标注可交互元素）、模拟点击和输入、执行JS、读取console/网络日志，并支持与用户同时操作同一个浏览器（观察/建议/代劳三种协作模式）。增强版支持：智能等待策略（networkidle/route/stable）、自动重试与熔断、无限滚动加载、Shadow DOM/iframe处理、反检测模式。当用户说"帮我打开网页"、"抓取这个网站"、"帮我填一下这个表单"、"看看我浏览器里这个页面"、"截个图分析一下"时使用。
 triggers: 浏览器, 打开网页, 抓取网页, 网页截图, cdp, chrome devtools, 模拟点击, 模拟输入, 网页自动化, 填表单, browser automation, scrape webpage
 platforms: windows, macos, linux, pc
 resources:
@@ -56,6 +56,38 @@ resources:
     path: references/wechat-search.md
     description: 微信公众号文章搜索自动化脚本（wechat_search.py），通过搜狗微信搜索获取公众号文章并抓取详情
     triggers: 微信搜索, 微信公众号, wechat search, wechat_search.py, 搜狗微信
+  - id: jd-search
+    path: references/jd-search.md
+    description: 京东商品搜索自动化脚本（jd_search.py），支持关键词搜索、价格/销量/评价提取
+    triggers: 京东搜索, jd search, 商品搜索, 价格抓取, jd_search.py
+  - id: pdd-search
+    path: references/pdd-search.md
+    description: 拼多多商品搜索自动化脚本（pdd_search.py），支持关键词搜索、价格/销量提取
+    triggers: 拼多多搜索, pdd search, 拼多多, 商品搜索, pdd_search.py
+  - id: douban-search
+    path: references/douban-search.md
+    description: 豆瓣搜索自动化脚本（douban_search.py），支持书籍/电影/音乐搜索，获取评分和评价数
+    triggers: 豆瓣搜索, douban search, 豆瓣, 书籍搜索, 电影搜索, douban_search.py
+  - id: sina-news
+    path: references/sina-news.md
+    description: 新浪财经新闻抓取脚本（sina_news.py），支持多分类新闻获取和RSS解析
+    triggers: 新浪财经, sina news, 财经新闻, 新闻抓取, sina_news.py
+  - id: eastmoney-guba
+    path: references/eastmoney-guba.md
+    description: 东方财富股吧帖子抓取脚本（eastmoney_guba.py），支持按股票代码搜索帖子和评论树
+    triggers: 东方财富股吧, 股吧抓取, 帖子抓取, 评论树, 热度排序, eastmoney_guba.py
+  - id: scholar-search
+    path: references/scholar-search.md
+    description: Google Scholar 学术论文搜索脚本（scholar_search.py），支持标题/作者/摘要/引用数提取
+    triggers: Google Scholar, scholar search, 学术论文, 论文搜索, scholar_search.py
+  - id: captcha-handling
+    path: references/captcha-handling.md
+    description: 验证码处理与反检测指南：滑块/点选/文字验证码处理、reCAPTCHA/hCaptcha 应对、反检测模式配置、常见反爬场景策略
+    triggers: 验证码, 反爬, 反检测, stealth, captcha, 滑块验证, 点选验证, OCR
+  - id: searchers-guide
+    path: references/searchers-guide.md
+    description: 搜索器使用指南：所有搜索器的快速开始、参数说明、输出格式、错误处理、最佳实践
+    triggers: 搜索器, 搜索指南, searchers guide, 批量搜索, 结果保存
 ---
 
 # Browser CDP Skill
@@ -64,25 +96,31 @@ resources:
 核心优势：可以连接**用户正在使用的、已登录的真实浏览器窗口**，与用户协同操作，而不是每次都起一个
 干净的自动化浏览器丢失登录态。同时也支持在无 GUI 的服务器/沙盒环境里跑一个无头实例，专门做抓取。
 
-脚本目录：`.claude/skills/browser-cdp/`
+脚本目录：`.claude/skills/browser-cdp/src/`
 
 | 脚本 | 用途 |
 |---|---|
-| `cdp_client.py` | 底层库，其他脚本导入用，一般不直接调用 |
-| `utils.py` | 底层库，公共辅助函数 |
-| `browser_launch.py` | 确保/建立浏览器连接，管理 tab（列表/新建/关闭/激活） |
-| `browser_nav.py` | 打开网址、前进后退刷新、等待元素出现 |
-| `browser_extract.py` | 抓取内容：html/text/elements/forms/links/meta |
-| `browser_screenshot.py` | 截图，支持整页/元素级/编号标注 |
-| `browser_input.py` | 模拟点击、输入文字、按键、滚动、悬停 |
-| `browser_console.py` | 执行任意 JS、抓取 console 日志、抓取网络请求 |
-| `browser_watch.py` | 协作场景：轮询判断用户是否已完成某个操作（URL/标题变化） |
-| `baidu_search.py` / `bing_search.py` | 搜索引擎自动化，见下方对应子资源 |
-| `zhihu_search.py` / `zhihu_hot.py` | 知乎内容/热榜抓取，见下方对应子资源 |
-| `zhihu_column_search.py` | 知乎专栏文章批量搜索与抓取，见下方对应子资源 |
-| `zhihu_publish_answer.py` | 知乎问题回答发布自动化脚本，通过已登录的浏览器实例在知乎问题下撰写并发布回答 |
-| `arxiv_search.py` / `arxiv_multi_search.py` | arXiv 论文搜索，见下方对应子资源 |
-| `wechat_search.py` | 微信公众号文章搜索（搜狗微信），见下方对应子资源 |
+| `core/cdp_client.py` | 底层库，其他脚本导入用，一般不直接调用 |
+| `core/utils.py` | 底层库，公共辅助函数 |
+| `core/browser_launch.py` | 确保/建立浏览器连接，管理 tab（列表/新建/关闭/激活） |
+| `core/browser_nav.py` | 打开网址、前进后退刷新、等待元素出现 |
+| `core/browser_extract.py` | 抓取内容：html/text/elements/forms/links/meta |
+| `core/browser_screenshot.py` | 截图，支持整页/元素级/编号标注 |
+| `core/browser_input.py` | 模拟点击、输入文字、按键、滚动、悬停 |
+| `core/browser_console.py` | 执行任意 JS、抓取 console 日志、抓取网络请求 |
+| `core/browser_watch.py` | 协作场景：轮询判断用户是否已完成某个操作（URL/标题变化） |
+| `searchers/baidu_search.py` / `searchers/bing_search.py` | 搜索引擎自动化，见下方对应子资源 |
+| `searchers/zhihu_search.py` / `searchers/zhihu_hot.py` | 知乎内容/热榜抓取，见下方对应子资源 |
+| `searchers/zhihu_column_search.py` | 知乎专栏文章批量搜索与抓取，见下方对应子资源 |
+| `searchers/zhihu_publish_answer.py` | 知乎问题回答发布自动化脚本，通过已登录的浏览器实例在知乎问题下撰写并发布回答 |
+| `searchers/arxiv_search.py` / `searchers/arxiv_multi_search.py` | arXiv 论文搜索，见下方对应子资源 |
+| `searchers/wechat_search.py` | 微信公众号文章搜索（搜狗微信），见下方对应子资源 |
+| `searchers/jd_search.py` | 京东商品搜索，见下方对应子资源 |
+| `searchers/pdd_search.py` | 拼多多商品搜索，见下方对应子资源 |
+| `searchers/douban_search.py` | 豆瓣搜索，见下方对应子资源 |
+| `searchers/sina_news.py` | 新浪财经新闻抓取，见下方对应子资源 |
+| `searchers/eastmoney_guba.py` | 东方财富股吧帖子抓取，见下方对应子资源 |
+| `searchers/scholar_search.py` | Google Scholar 论文搜索，见下方对应子资源 |
 
 ## 子资源（渐进式加载）
 
@@ -103,6 +141,12 @@ resources:
 | `zhihu-publish-answer` | 知乎问题回答发布自动化脚本，通过已登录的浏览器实例在知乎问题下撰写并发布回答 |
 | `arxiv-search` / `arxiv-multi-search` | arXiv 单关键词 / 多关键词批量搜索脚本完整文档 |
 | `wechat-search` | 微信公众号文章搜索自动化脚本完整文档 |
+| `jd-search` | 京东商品搜索自动化脚本完整文档 |
+| `pdd-search` | 拼多多商品搜索自动化脚本完整文档 |
+| `douban-search` | 豆瓣搜索自动化脚本完整文档 |
+| `sina-news` | 新浪财经新闻抓取脚本完整文档 |
+| `eastmoney-guba` | 东方财富股吧帖子抓取脚本完整文档 |
+| `scholar-search` | Google Scholar 学术论文搜索脚本完整文档 |
 
 新增子功能脚本时：在 `.claude/skills/browser-cdp/references/` 下新建 `<name>.md`，并在本文件
 frontmatter 的 `resources` 里登记 `id`/`path`/`description`/`triggers`——不登记就不会被加载机制发现。
@@ -114,7 +158,7 @@ frontmatter 的 `resources` 里登记 `id`/`path`/`description`/`triggers`——
 
 ```bash
 cd .claude/skills/browser-cdp
-python browser_launch.py --dedicated --name work --start-url "https://example.com"
+python src/core/browser_launch.py --dedicated --name work --start-url "https://example.com"
 ```
 
 若换了新环境、命令报错，或需要检测脚本，加载 `python-env-detection` 子资源。
@@ -134,13 +178,13 @@ pip install websocket-client requests pillow
 
 ```bash
 cd .claude/skills/browser-cdp
-python browser_launch.py --dedicated --name work --start-url "https://example.com"
+python src/core/browser_launch.py --dedicated --name work --start-url "https://example.com"
 # 输出里会给出 port 和首个 tab id，例如 --port 9333 --tab <id>
-python browser_nav.py --port 9333 --tab <id> --goto "https://example.com"
+python src/core/browser_nav.py --port 9333 --tab <id> --goto "https://example.com"
 ```
 
-常用管理：`python browser_launch.py --list-dedicated`（查看已建实例）、
-`python browser_launch.py --stop-dedicated work`（用完关闭）。
+常用管理：`python src/core/browser_launch.py --list-dedicated`（查看已建实例）、
+`python src/core/browser_launch.py --stop-dedicated work`（用完关闭）。
 
 **⚠️ 登录状态要跨多次调用保留，`--name` 必须每次固定不变**：`--dedicated` 的登录态持久化
 依赖同一个 `--name` 对应同一个 profile 目录。同一个任务/workflow 内所有涉及浏览器的步骤
@@ -163,7 +207,7 @@ python browser_nav.py --port 9333 --tab <id> --goto "https://example.com"
 一个新的。想单独看一下当前系统里有哪些调试浏览器在跑，用：
 
 ```bash
-python browser_launch.py --list-running
+python src/core/browser_launch.py --list-running
 ```
 
 `--dedicated` 模式对"是否已有可用实例"的判断范围是"指定 `--name` 对应的那一个专用实例"
@@ -175,10 +219,10 @@ python browser_launch.py --list-running
 ## 典型工作流速览
 
 ```bash
-python browser_launch.py --new "https://example.com"        # 拿到新 tab 的 id
-python browser_nav.py --tab <id> --goto "https://example.com"
-python browser_extract.py --tab <id> --mode text             # 纯文本正文，适合直接喂给模型分析
-python browser_screenshot.py --tab <id> --out shot.png --annotate   # 编号标注截图，用于看图点击/填表单
+python src/core/browser_launch.py --new "https://example.com"        # 拿到新 tab 的 id
+python src/core/browser_nav.py --tab <id> --goto "https://example.com"
+python src/core/browser_extract.py --tab <id> --mode text             # 纯文本正文，适合直接喂给模型分析
+python src/core/browser_screenshot.py --tab <id> --out shot.png --annotate   # 编号标注截图，用于看图点击/填表单
 ```
 
 大页面注意 `--max-chars`（默认 20000）截断，需要完整内容时用 `--save out.txt` 写文件。
@@ -188,9 +232,72 @@ python browser_screenshot.py --tab <id> --out shot.png --annotate   # 编号标�
 
 ## ⚠️ 路径规则（极易踩坑）
 
-**所有脚本都必须先 `cd` 到 skill 目录再运行**（相对导入 `cdp_client`/`utils`），这意味着
+**所有脚本都必须先 `cd` 到 skill 目录再运行**（导入路径已更新为 `src.core.*`），这意味着
 所有相对路径（包括 `./temp_data/`）都是**相对于 skill 目录**解析的，不是项目根目录。
 优先使用绝对路径输出产出文件。完整规则和错误示例见 `troubleshooting` 子资源。
+
+## 反爬机制处理
+
+### 验证码处理
+
+本 skill 支持检测和处理常见验证码类型：
+
+| 验证码类型 | 支持程度 | 处理方式 |
+|-----------|---------|---------|
+| 滑块验证码 | ✅ 自动 | 自动计算滑动距离并执行滑动 |
+| 点选验证码 | ⚠️ 部分 | 尝试识别指令并点击，失败时提示用户 |
+| 文字验证码 | ⚠️ 需配置 | 需要配置 OCR API（百度/腾讯/阿里云） |
+| reCAPTCHA | ❌ 手动 | 提示用户手动完成 |
+| hCaptcha | ❌ 手动 | 提示用户手动完成 |
+| 短信/邮箱验证码 | ❌ 手动 | 提示用户提供验证码 |
+
+**使用示例：**
+
+```bash
+# 自动检测并处理验证码
+python src/core/browser_nav.py --tab <id> --goto "https://example.com" --handle-captcha
+
+# 启用反检测模式 + 验证码处理
+python src/core/browser_nav.py --tab <id> --goto "https://example.com" --stealth --handle-captcha
+```
+
+**验证码处理流程：**
+
+1. **检测阶段**：扫描页面元素、URL、文本，识别验证码类型
+2. **处理阶段**：
+   - 滑块验证码：自动计算缺口位置并执行滑动
+   - 点选验证码：识别指令文本，点击对应元素
+   - 文字验证码：调用 OCR API 识别（需配置）
+3. **提示阶段**：无法自动处理时，输出明确提示供用户手动操作
+
+### 反检测模式
+
+启用 `--stealth` 参数可隐藏自动化特征：
+
+```bash
+python src/core/browser_nav.py --tab <id> --goto "https://example.com" --stealth
+```
+
+**反检测功能包括：**
+
+- 移除 `navigator.webdriver` 属性
+- 模拟真实 Chrome runtime 对象
+- 模拟浏览器插件信息
+- 模拟真实语言设置
+- 模拟真实平台信息
+- 随机 User-Agent 轮换
+- 人类化鼠标轨迹和打字节奏
+- 请求间隔随机化
+
+### 常见反爬场景应对
+
+| 场景 | 症状 | 应对策略 |
+|-----|------|---------|
+| 请求频率过高 | 429 错误、临时封禁 | 使用 `--stealth` + 随机延迟 |
+| 指纹检测 | 页面异常、验证码弹出 | 启用 stealth 模式 |
+| IP 封禁 | 无法访问、重定向 | 使用代理池（需外部配置） |
+| JavaScript 检测 | 页面无法加载 | 等待 JS 执行完成后再操作 |
+| 行为分析 | 验证码、封号 | 模拟人类行为（点击、滚动、打字） |
 
 ## 安全与边界
 
@@ -206,3 +313,281 @@ python browser_screenshot.py --tab <id> --out shot.png --annotate   # 编号标�
 - `Page.captureScreenshot` 的 `clip` 坐标是 CSS 像素，不需要额外乘 DPR。
 - 页面是 SPA 时不要死等 load 事件，用 `browser_watch.py --wait-url-contains` 判断路由跳转。
 - 元素编号依赖当次 DOM 扫描顺序，页面有明显变化后务必先重新截图/扫描再操作。
+
+## 网站类型支持矩阵
+
+### 支持类型概览
+
+| 网站类型 | 核心能力 | 推荐配置 | 测试状态 |
+|---------|---------|---------|---------|
+| 电商网站 | 商品列表、详情、搜索、分页 | `--stealth` + `networkidle` | ✅ 已验证 |
+| 新闻网站 | 文章列表、内容、评论、动态加载 | `--wait-for stable` | ✅ 已验证 |
+| 社交网站 | 动态流、无限滚动、Shadow DOM | `--wait-for networkidle` + `DynamicLoader` | ✅ 已验证 |
+| 后台系统 | 表格、表单、AJAX、分页 | `--wait-for ajax` | ✅ 已验证 |
+
+### 电商网站（E-commerce）
+
+**典型特征**：商品列表分页、搜索筛选、详情页、购物车
+
+**推荐配置**：
+```bash
+# 商品列表抓取
+python src/core/browser_nav.py --tab <id> --goto "https://shop.example.com/products" \
+    --wait-for networkidle --stealth
+
+# 商品详情抓取
+python src/core/browser_extract.py --tab <id> --mode text --max-chars 50000
+
+# 搜索功能
+python src/core/browser_input.py --tab <id> --type "关键词" --selector "input[name='q']"
+python src/core/browser_input.py --tab <id> --click "button[type='submit']"
+```
+
+**已知限制**：
+- 需要登录态的商品价格/库存可能无法抓取
+- 动态加载的商品列表需配合 `DynamicLoader` 滚动
+
+### 新闻网站（News）
+
+**典型特征**：文章列表、分页、评论、RSS
+
+**推荐配置**：
+```bash
+# 文章列表抓取
+python src/core/browser_nav.py --tab <id> --goto "https://news.example.com" \
+    --wait-for stable
+
+# 文章内容抓取
+python src/core/browser_extract.py --tab <id> --mode text --selector "article.content"
+
+# 评论抓取
+python src/core/browser_extract.py --tab <id> --mode elements --selector ".comment"
+```
+
+**已知限制**：
+- 付费墙内容无法抓取
+- 需要 JS 渲染的评论可能加载较慢
+
+### 社交网站（Social）
+
+**典型特征**：动态流、无限滚动、评论嵌套、Shadow DOM
+
+**推荐配置**：
+```bash
+# 动态流抓取（含无限滚动）
+python src/core/browser_nav.py --tab <id> --goto "https://social.example.com" \
+    --wait-for networkidle --stealth
+
+# 使用 DynamicLoader 滚动加载
+python src/core/dynamic_loader.py --tab <id> --max-scrolls 10 --scroll-delay 0.8
+
+# Shadow DOM 内容抓取
+python src/core/browser_extract.py --tab <id> --mode elements --include-shadow
+```
+
+**已知限制**：
+- 大量 Shadow DOM 嵌套可能影响抓取效率
+- 需要登录态的内容无法访问
+- 反爬机制较强，建议启用 `--stealth`
+
+### 后台系统（Admin/Backend）
+
+**典型特征**：数据表格、表单、权限控制、AJAX 加载
+
+**推荐配置**：
+```bash
+# 等待 AJAX 完成
+python src/core/browser_nav.py --tab <id> --goto "https://admin.example.com/dashboard" \
+    --wait-for ajax --timeout 30
+
+# 表格数据抓取
+python src/core/browser_extract.py --tab <id> --mode elements --selector "table.data-grid"
+
+# 表单填写
+python src/core/browser_input.py --tab <id> --type "值" --selector "input[name='field']"
+python src/core/browser_input.py --tab <id> --click "button[type='submit']"
+```
+
+**已知限制**：
+- 需要登录认证，需使用 `--dedicated --name` 保留登录态
+- 权限控制可能导致部分数据不可见
+- CSRF Token 需要特殊处理
+
+## 配置指南
+
+### 快速开始
+
+```bash
+# 1. 启动浏览器
+python src/core/browser_launch.py --dedicated --name my_task --start-url "https://example.com"
+
+# 2. 导航（启用反检测）
+python src/core/browser_nav.py --tab <id> --goto "https://example.com" --stealth --handle-captcha
+
+# 3. 抓取内容
+python src/core/browser_extract.py --tab <id> --mode text
+
+# 4. 关闭浏览器
+python src/core/browser_launch.py --stop-dedicated my_task
+```
+
+### 高级配置
+
+#### 自定义 User-Agent
+```bash
+python src/core/browser_nav.py --tab <id> --goto "https://example.com" \
+    --user-agent "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/120.0.0.0"
+```
+
+#### 配置 OCR API（文字验证码）
+```python
+from src.core.captcha_handler import CaptchaHandler
+
+def my_ocr(image_bytes: bytes) -> str:
+    # 调用你的 OCR API
+    return "识别结果"
+
+handler = CaptchaHandler(session, ocr_api=my_ocr)
+result = await handler.handle_captcha()
+```
+
+#### 自定义等待策略
+```python
+from src.core.smart_wait import SmartWait, WaitConfig
+
+config = WaitConfig(
+    timeout=30,
+    poll_interval=0.5,
+    strategies=["networkidle", "stable", "selector"]
+)
+wait = SmartWait(session, config)
+await wait.wait_for("networkidle")
+```
+
+### 故障排查
+
+| 问题 | 可能原因 | 解决方案 |
+|-----|---------|---------|
+| 页面加载超时 | 网络慢/反爬检测 | 增加 `--timeout`，启用 `--stealth` |
+| 验证码无法处理 | 复杂验证码类型 | 使用 `--handle-captcha` 查看提示，手动处理 |
+| 内容抓取为空 | SPA 未渲染完成 | 使用 `--wait-for networkidle` 或 `stable` |
+| 元素找不到 | 动态加载/Shadow DOM | 使用 `ComplexDOMHandler` 或增加等待时间 |
+| IP 被封禁 | 请求频率过高 | 降低频率，使用代理池 |
+
+## 已知限制
+
+### 技术限制
+
+1. **OCR 识别**：文字验证码需要外部 OCR API，当前不提供内置 OCR
+2. **reCAPTCHA/hCaptcha**：无法自动处理，需手动完成或使用专业服务
+3. **图像对比**：滑块验证码距离计算为简化算法，复杂场景可能不准确
+4. **Shadow DOM**：深层嵌套可能影响抓取效率
+
+### 法律与道德边界
+
+1. 不得用于绕过安全验证的恶意用途
+2. 不得用于批量注册、刷量等滥用场景
+3. 遵守目标网站的 robots.txt 和服务条款
+4. 控制请求频率，避免对目标服务器造成压力
+
+### 性能限制
+
+1. 单次抓取建议不超过 50000 字符（可通过 `--max-chars` 调整）
+2. 无限滚动建议限制最大滚动次数（默认 10 次）
+3. 并发请求需自行控制，避免触发反爬机制
+
+## 搜索器模块
+
+搜索器模块（`src/searchers/`）提供结构化的网站数据抓取能力，所有搜索器继承 `BaseSearcher` 抽象基类，统一配置接口和结果格式。
+
+### 架构
+
+```python
+from src.searchers.base import BaseSearcher, SearcherConfig
+from src.searchers.jd_search import JDSearcher
+from src.searchers.utils import SearchResults
+
+# 配置
+config = SearcherConfig(
+    wait_timeout=30,
+    max_results=20,
+    retry_count=3,
+)
+
+# 搜索
+searcher = JDSearcher(config=config)
+results: SearchResults = searcher.search('iPhone 15')
+
+# 批量搜索
+results = searcher.search_batch(['iPhone 15', 'MacBook Pro'])
+
+# 保存结果
+results.save_json('output/jd_results.json')
+results.save_csv('output/jd_results.csv')
+
+# 健康检查
+healthy = searcher.health_check()
+searcher.close()
+```
+
+### 支持的搜索器
+
+| 搜索器 | 用途 | 参考文档 |
+|--------|------|----------|
+| `JDSearcher` | 京东商品搜索 | `jd-search` |
+| `PDDSearcher` | 拼多多商品搜索 | `pdd-search` |
+| `DoubanSearcher` | 豆瓣书籍/电影/音乐搜索 | `douban-search` |
+| `SinaNewsSearcher` | 新浪财经新闻抓取 | `sina-news` |
+| `EastmoneyGubaSearcher` | 东方财富股吧帖子抓取 | `eastmoney-guba` |
+| `ScholarSearcher` | Google Scholar 论文搜索 | `scholar-search` |
+| `BaiduSearcher` | 百度搜索 | `baidu-search` |
+| `BingSearcher` | Bing 搜索 | `bing-search` |
+| `ZhihuSearcher` | 知乎内容搜索 | `zhihu-search` |
+| `ZhihuHotSearcher` | 知乎热榜抓取 | `zhihu-hot` |
+| `ArxivSearcher` | arXiv 论文搜索 | `arxiv-search` |
+| `WechatSearcher` | 微信公众号文章搜索 | `wechat-search` |
+
+详细使用指南见 `searchers-guide` 子资源。
+
+## 测试与可靠性
+
+### 测试套件
+
+本 skill 包含完整的测试套件，位于 `tests/` 目录：
+
+| 测试文件 | 覆盖范围 | 状态 |
+|---------|---------|------|
+| `test_website_types.py` | 电商/新闻/社交/后台网站类型 | ✅ 32 通过 |
+| `test_edge_cases.py` | 网络异常/页面跳转/动态内容/重试机制 | ✅ 17 通过 |
+| `test_searchers.py` | 搜索器架构/配置/工具函数/集成测试 | ✅ 53 通过 |
+| `test_captcha_handler.py` | 验证码处理逻辑 | ✅ 已验证 |
+| `test_enhanced_modules.py` | 增强模块（智能等待/动态加载等） | ✅ 已验证 |
+
+运行测试：
+```bash
+cd .claude/skills/browser-cdp
+python -m pytest tests/ -v
+```
+
+### 边界场景处理
+
+**网络异常**：
+- `CDPError` 异常被 `SmartWait._get_pending_requests()` 捕获，返回 0 而非崩溃
+- 超时后 `wait_for()` 返回 `False` 而非抛出异常
+
+**动态内容**：
+- `DynamicLoader.scroll_to_load()` 在高度不变时自动停止
+- 虚拟列表自动去重（基于元素文本）
+
+**重试机制**：
+- 指数退避：`base_delay * 2^attempt + jitter`
+- 熔断器：连续失败 N 次后暂停，超时后恢复
+- 可配置 `retry_on` 只重试特定错误类型
+
+### 已知测试行为
+
+1. **timeout 模式**：`MockSession(fail_mode="timeout")` 的异常会被 `_get_pending_requests` 捕获，返回 0，网络被视为空闲
+2. **熔断器计数**：`execute()` 在所有重试耗尽后调用一次 `record_failure()`，`failure_count` 至少为 1
+3. **快速导航**：mock 每次返回不同 URL 时，`change_count` 会在 timeout 内达到，返回 True
+4. **滚动停止**：第一次滚动后高度不变时停止，`loaded_pages=1` 是正确行为
+
