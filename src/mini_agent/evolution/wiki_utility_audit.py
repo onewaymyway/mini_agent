@@ -33,7 +33,7 @@ from __future__ import annotations
 import json
 import time
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Optional
 
 if TYPE_CHECKING:
     from mini_agent.evolution.cron_scheduler import CronJob, CronScheduler
@@ -72,6 +72,10 @@ class AuditSummary:
     log_lines_kept: int = 0
     pages_with_usage: int = 0
     errors: list[str] = field(default_factory=list)
+    # [系统关联性断点改进方案 F1] 决策消费率统计（None 表示暂无
+    # 检索记录，见 wiki/decision_consumption.py::decision_consumption_rate()
+    # 的说明——不代表 0 命中，只是还没有可统计的数据）。
+    decision_consumption: Optional[dict] = None
 
     @property
     def ok(self) -> bool:
@@ -144,6 +148,19 @@ def run_wiki_utility_audit_once(paths: "AgentPaths") -> AuditSummary:
             "window_seconds": AUDIT_WINDOW_SECONDS,
             "pages": {pid: s.to_dict() for pid, s in stats.items()},
         }
+        # [系统关联性断点改进方案 F1] 顺带把决策消费率并入同一份 usage_stats.json
+        # 输出——不新增独立 job，风格与本模块"统计和策略分两阶段"的既有
+        # 说明一致：这里只做只读聚合展示，不影响上面 page usage 的统计逻辑。
+        try:
+            from mini_agent.wiki.decision_consumption import decision_consumption_rate
+            rate = decision_consumption_rate(paths)
+            summary.decision_consumption = rate
+            if rate is not None:
+                out["decision_consumption"] = rate
+        except Exception as _mini_agent_exc:
+            from mini_agent.errors import log_exception
+            log_exception(_mini_agent_exc, where="mini_agent.evolution.wiki_utility_audit.run_wiki_utility_audit_once.decision_consumption")
+
         _usage_stats_path(paths).write_text(
             json.dumps(out, ensure_ascii=False, indent=2), encoding="utf-8"
         )

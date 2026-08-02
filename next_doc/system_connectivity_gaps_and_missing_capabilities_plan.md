@@ -232,6 +232,16 @@ GoalBacklog/ObjectiveExecutor（目标执行）、improvement_backlog_merge（�
   接入工作。已跑 `tests/test_goal_mode.py`（90/95 通过，5 个失败是
   `spec.py` 里预先存在、与本次改动无关的测试夹具问题——`_run_builder`
   测试桩缺少 `detection_text` 关键字参数，在改动前就会失败）。
+- **本轮已补齐**（原设计承诺但此前未接入）：`evolution/wiki_utility_audit.py`
+  的 `AuditSummary` 新增 `decision_consumption` 字段，`run_wiki_utility_audit_once()`
+  在写 `wiki/usage_stats.json` 时顺带并入 `decision_consumption_rate()`
+  的结果（无记录时为 `None`，字段不写入，行为与改动前一致）。已跑通
+  `tests/test_wiki_utility_audit.py`（7/7）+ 手工端到端验证（造 2 条
+  consumption 记录，`consumption_rate` 正确算出 0.5 并写入
+  `usage_stats.json`）。**已知限制**：若 `wiki_usage_log.jsonl`（wiki 检索
+  日志）不存在，函数会早退，此时即使 `decision_consumption_log.jsonl`
+  有记录也不会被统计进去——这是一个边界情况（先有检索、才可能有判定
+  消费），影响面很小，暂不特殊处理。
 
 ### F2 统一失败模式库 —— 已实现（三路数据源全部接入）
 
@@ -319,12 +329,29 @@ GoalBacklog/ObjectiveExecutor（目标执行）、improvement_backlog_merge（�
 
 ### 尚未实施
 
-- **C6**（步骤间结构化上下文）、**C7**（外部知识直接写入 capability_map）
-  ——按第 3 节的优先级排序，仍计划合并到下一轮看板改造方案里评估，本轮
-  未动。
-- F1/F2/F3 里此前标注的全部"已知范围缩减"/"未接入数据源"（GoalRunner
-  接入 F1、CLI 命令入口接入 F3 的 accepted 记录、TurnJudge stuck 信号
-  持久化）**本轮已全部补齐**，详见上方各小节。F4 本身范围完整，无遗留。
+- **C6**（步骤间结构化上下文传递 wiki 页面引用）——排查后发现主要的
+  "产出物路径"结构化传递（Track G）早就已经做了，C6 剩下的缺口特指
+  "让 Objective 步骤像 F1 给 GoalJudge 那样结构化引用 wiki 决策页"，
+  但代码库里目前没有任何约定让主 Agent 在自由文本输出里用固定格式
+  引用 wiki 页面 id（不像 `[ARTIFACTS] path1, path2` 那样是已有约定）。
+  要做好这件事需要先设计一个新的 agent 输出约定并写进通用 system
+  prompt，这会影响所有任务（不只是 Objective 场景），风险面明显超出
+  本方案其余几项"新增可选模块 + 局部调用点接入"的量级，因此维持原判：
+  留给下一轮看板/prompt 改造方案专门评估，不在本方案里勉强拼一个
+  低置信度的正则提取方案。
+- **C7**（外部知识直接写入 capability_map）——排查后发现
+  `evolution/external_trend_capability_link.py` 已经完整实现了"外部知识
+  × 能力薄弱点"的候选生成与消费链路（`_from_external_knowledge()`），
+  C7 原本设想的缺口只剩"这份关联在 `capability_map` 本身的展示上是否
+  可见"，而 `capability_map` 是 `build_capability_map()` 每次动态计算
+  的结果，不是一份可以简单追加字段的静态文档，要不破坏"不引入第二套
+  统计口径"的既有约束（`load_capability_map()` 注释里明确写了这条），
+  需要改的是计算函数本身或 UI 展示层，同样更适合放进看板改造方案，本轮
+  不动。
+- F1/F2/F3 里此前标注的全部"已知范围缩减"/"未接入数据源"/"设计承诺未
+  兑现"（GoalRunner 接入 F1、CLI 命令入口接入 F3 的 accepted 记录、
+  TurnJudge stuck 信号持久化、`wiki_utility_audit` 并入决策消费率）
+  **本轮已全部补齐**，详见上方各小节。F4 本身范围完整，无遗留。
 
 ### 本轮全部改动的回归验证
 
@@ -352,6 +379,7 @@ GoalBacklog/ObjectiveExecutor（目标执行）、improvement_backlog_merge（�
 - `src/mini_agent/config/models.py`
 - `src/mini_agent/goal_mode/runner.py`
 - `src/mini_agent/agent/role_judge.py`
+- `src/mini_agent/evolution/wiki_utility_audit.py`
 - `src/mini_agent/evolution/soft_goal_deriver.py`
 - `src/mini_agent/evolution/improvement_backlog_merge.py`
 - `src/mini_agent/cli/commands/goals.py`
