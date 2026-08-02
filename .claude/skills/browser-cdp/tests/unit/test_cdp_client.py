@@ -9,7 +9,7 @@ import time
 from unittest.mock import patch, Mock, MagicMock, AsyncMock
 
 # 添加 skill 目录到路径
-SKILL_DIR = Path(__file__).resolve().parent.parent.parent / '.claude' / 'skills' / 'browser-cdp'
+SKILL_DIR = Path(__file__).resolve().parent.parent.parent
 if str(SKILL_DIR) not in sys.path:
     sys.path.insert(0, str(SKILL_DIR))
 

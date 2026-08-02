@@ -18,12 +18,12 @@ from pathlib import Path
 import sys
 
 # 添加 skill 目录到路径
-SKILL_DIR = Path(__file__).resolve().parent.parent.parent / ".claude" / "skills" / "browser-cdp"
+SKILL_DIR = Path(__file__).resolve().parent.parent.parent
 if str(SKILL_DIR) not in sys.path:
     sys.path.insert(0, str(SKILL_DIR))
 
 # 导入基础模板
-from .base_test_template import BaseBrowserTest
+from templates.base_test_template import BaseBrowserTest
 
 
 class TestSearchEngine(BaseBrowserTest):

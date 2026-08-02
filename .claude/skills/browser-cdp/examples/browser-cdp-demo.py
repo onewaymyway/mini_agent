@@ -10,16 +10,16 @@ import sys
 from pathlib import Path
 
 # 添加 skill 目录到路径
-SKILL_DIR = Path(__file__).parent / ".claude" / "skills" / "browser-cdp"
+SKILL_DIR = Path(__file__).parent.parent / "src"
 if str(SKILL_DIR) not in sys.path:
     sys.path.insert(0, str(SKILL_DIR))
 
-from browser_ops import browser_launch
-from browser_ops import browser_nav
-from browser_ops import browser_extract
-from browser_ops import browser_screenshot
-from browser_ops import browser_input
-from browser_ops import browser_console
+from src.core import browser_launch
+from src.core import browser_nav
+from src.core import browser_extract
+from src.core import browser_screenshot
+from src.core import browser_input
+from src.core import browser_console
 
 def main():
     print("=" * 60)

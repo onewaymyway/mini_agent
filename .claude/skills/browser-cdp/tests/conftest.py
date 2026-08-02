@@ -2,7 +2,7 @@ import pytest
 from pathlib import Path
 import sys
 
-SKILL_DIR = Path(__file__).resolve().parent.parent.parent / ".claude" / "skills" / "browser-cdp"
+SKILL_DIR = Path(__file__).resolve().parent.parent.parent
 if str(SKILL_DIR) not in sys.path:
     sys.path.insert(0, str(SKILL_DIR))
 

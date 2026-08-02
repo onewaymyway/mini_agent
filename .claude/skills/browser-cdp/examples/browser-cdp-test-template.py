@@ -14,12 +14,12 @@ from pathlib import Path
 from unittest.mock import patch, Mock
 
 # 添加 skill 目录到路径
-SKILL_DIR = Path(__file__).parent.parent / ".claude" / "skills" / "browser-cdp"
+SKILL_DIR = Path(__file__).parent.parent / "src"
 if str(SKILL_DIR) not in sys.path:
     sys.path.insert(0, str(SKILL_DIR))
 
 # 导入要测试的模块
-from browser_ops import browser_launch  # 或其他模块
+from src.core import browser_launch  # 或其他模块
 
 class TestBrowserLaunch(unittest.TestCase):
     """browser_launch.py 的测试用例模板"""
