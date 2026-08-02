@@ -323,6 +323,33 @@ class HistoryManager:
             log_exception(_mini_agent_exc, where='mini_agent.history_manager.HistoryManager.maybe_trigger_extraction')
             pass
 
+    def is_extraction_caught_up(self) -> bool:
+        """[session 清理功能] 判断抽取游标是否已经追上当前 session 的 raw_history 末尾。
+
+        用于 save_session() 时把结果打到 meta.json（Session.knowledge_extracted），
+        供 evolution/session_cleanup.py 判断"这个 session 删除前是否还需要先补一次
+        离线知识抽取"。功能未开启（extraction_trigger_enabled=False）时无法判断，
+        保守返回 False（session_cleanup 会退化为按 turns 数量的启发式阈值判断）。
+
+        注意：见 session.py::Session.knowledge_extracted 的局限性说明——这是一个
+        进程内单调游标，不是精确的跨 session 证明。
+        """
+        cfg_compress = getattr(self.cfg, "compress", None)
+        if cfg_compress is None or not getattr(cfg_compress, "extraction_trigger_enabled", False):
+            return False
+        try:
+            from pathlib import Path
+            from mini_agent.storage.paths import AgentPaths
+            from mini_agent.history.extraction_trigger import load_extraction_cursor
+
+            paths = AgentPaths(Path(getattr(self.cfg, "project_root", None) or Path.cwd()))
+            last_index = load_extraction_cursor(paths)
+            return last_index >= len(self._raw.entries)
+        except Exception as _mini_agent_exc:
+            from mini_agent.errors import log_exception
+            log_exception(_mini_agent_exc, where='mini_agent.history_manager.HistoryManager.is_extraction_caught_up')
+            return False
+
     def _maybe_trigger_extraction_impl(
         self, cfg_compress, llm_client: Optional["LLMClient"], *, force: bool
     ) -> None:
@@ -374,6 +401,49 @@ class HistoryManager:
 
         self._dispatch_lightweight_extraction(paths, raw_entries, candidate, llm_client)
         save_extraction_cursor(paths, candidate.end_index)
+
+    def dispatch_extraction_for_entries(
+        self,
+        raw_entries: list[dict],
+        llm_client: "LLMClient",
+        *,
+        trigger_reason: str = "offline_cleanup",
+    ) -> bool:
+        """[session 清理功能] 离线抽取入口：对一段任意来源的 raw_entries（比如从磁盘
+        重新读出的、已经不在运行中的旧 session 的 raw_history.jsonl）触发一次和
+        `maybe_trigger_extraction(force=True)` 完全同款的"仅抽取、不压缩"LLM 调用。
+
+        与 `_maybe_trigger_extraction_impl` 的区别只是数据来源：那边读的是当前
+        存活进程里 `self._raw.entries`（增量游标），这里读调用方直接传入的整段
+        entries（一次性全量），不涉及 extraction_cursor 的读写——调用方
+        （evolution/session_cleanup.py）自己负责在成功后调用
+        `SessionManager.mark_knowledge_extracted()` 记录结果，避免污染其它
+        session 的全局游标坐标系。
+
+        返回是否发起了一次实际抽取（成功解析到内容不代表一定有 decision/entity
+        产出，只要 LLM 调用本身走完流程即视为成功；调用方据此决定是否可以安全
+        删除该 session）。
+        """
+        if not raw_entries:
+            return True  # 空历史，无需抽取，视为"已完成"
+        from pathlib import Path
+        from mini_agent.storage.paths import AgentPaths
+        from mini_agent.history.extraction_trigger import ExtractionWindowCandidate
+
+        paths = AgentPaths(Path(getattr(self.cfg, "project_root", None) or Path.cwd()))
+        candidate = ExtractionWindowCandidate(
+            start_index=0,
+            end_index=len(raw_entries),
+            trigger_reason=trigger_reason,
+            signal_score=float(len(raw_entries)),
+        )
+        try:
+            self._dispatch_lightweight_extraction(paths, raw_entries, candidate, llm_client)
+            return True
+        except Exception as _mini_agent_exc:
+            from mini_agent.errors import log_exception
+            log_exception(_mini_agent_exc, where='mini_agent.history_manager.HistoryManager.dispatch_extraction_for_entries')
+            return False
 
     def _dispatch_lightweight_extraction(
         self, paths, raw_entries: list[dict], candidate, llm_client: "LLMClient"

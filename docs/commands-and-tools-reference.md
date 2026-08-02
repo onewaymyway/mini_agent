@@ -236,6 +236,9 @@ mini-agent --retry-backoff linear --retry-backoff-step 60 --retry-backoff-max 30
 | `/session delete <id>` | 删除 session 文件 |
 | `/session dir` | 显示 session 目录路径 |
 | `/session search <q>` | 关键词搜索 session（需 `--session-search`） |
+| `/session pin <id>` | 置顶保护一个 session，`/session cleanup` 时永不删除 |
+| `/session unpin <id>` | 取消置顶保护 |
+| `/session cleanup [--dry-run] [--keep-days N] [--keep-count N] [--extract-first]` | 批量清理长期不用的旧 session：跳过当前 session、`pinned` session、goal 仍在 `running`/`stuck` 的 session，以及最近 `keep-count`（默认 20）个 / 最近 `keep-days`（默认 30）天内的 session；候选删除的 session 若内容太少（`turns < 3`）直接删，若已抽取过知识（`meta.json.knowledge_extracted`）也直接删，否则默认保守跳过——加 `--extract-first` 会先补跑一次离线知识抽取再删除。建议第一次先加 `--dry-run` 看报告。也已注册为每 7 天一次的内置 cron job `sys:session_cleanup`（默认带 `--extract-first`），详见 [evolution/session_cleanup.py](../src/mini_agent/evolution/session_cleanup.py) |
 
 ### 任务管理（`src/mini_agent/cli/commands/tasks.py`）
 

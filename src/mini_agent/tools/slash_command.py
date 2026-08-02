@@ -59,9 +59,27 @@ _DENY_PREFIXES = (
     "platform",     # 平台/tag 过滤策略这种全局开关同理
 )
 
+# [session 清理功能] "session" 整个前缀本来全拒（怕自主任务乱切/乱删当前
+# 会话），但 sys:session_cleanup cron job 需要能跑 `/session cleanup`——
+# 这条子命令只会影响"其它"旧 session（当前 session 已通过 exclude_ids
+# 排除，见 evolution/session_cleanup.py），不切换/不清空当前会话身份，
+# 风险面等同于 /wiki fallback-cleanup 这类已经放行的维护类命令，因此单独
+# 开白名单例外，而不是放开整个 "session" 前缀。resume/new/delete/save
+# 等仍然维持拒绝。
+_SESSION_SUBCOMMAND_ALLOWLIST = ("session cleanup", "session pin", "session unpin")
 
-def _is_denied(name: str) -> bool:
+
+def _is_denied(name: str, full_command: str = "") -> bool:
+    """name 是命令首词（如 "session"）；full_command 是去掉前导 "/" 后的完整
+    命令（如 "session cleanup --dry-run"），用于需要看子命令才能判断的例外
+    （目前只有 "session"，其它前缀首词即可判断，不需要 full_command）。"""
     name = name.lower()
+    if name == "session":
+        full = full_command.lower().strip()
+        return not any(
+            full == allowed or full.startswith(allowed + " ")
+            for allowed in _SESSION_SUBCOMMAND_ALLOWLIST
+        )
     return any(name == p or name.startswith(p + " ") or name.startswith(p) for p in _DENY_PREFIXES)
 
 
@@ -92,7 +110,8 @@ def register_slash_command_tool(registry: "ToolRegistry", agent: "Agent") -> Non
         if not name:
             return json.dumps({"status": "error", "message": "empty command"}, ensure_ascii=False)
 
-        if _is_denied(name):
+        full_command = " ".join(parts)
+        if _is_denied(name, full_command):
             return json.dumps({
                 "status": "denied",
                 "message": (

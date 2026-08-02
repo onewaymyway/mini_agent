@@ -50,6 +50,9 @@ class SessionMeta:
     file_path: str   # 保留字段（兼容旧代码）：目录格式下指向 meta.json
     fmt: str         # "dir" | "json" | "jsonl"
     summary: str = ""
+    knowledge_extracted: bool = False
+    knowledge_extracted_at: str = ""
+    pinned: bool = False
 
     @property
     def age_str(self) -> str:
@@ -87,6 +90,19 @@ class Session:
     summary: str = ""
     summary_at_turns: int = 0  # 上次生成摘要/记忆时的 stats.turns，用于判断是否需要重新生成
     active_persona: Optional[str] = None  # 角色扮演系统：当前激活的 persona name，None=未激活
+    # [session 清理功能] 知识抽取状态：save_session() 每次保存时，用
+    # history_manager.HistoryManager.is_extraction_caught_up() 的结果刷新，
+    # 表示"截至这次保存，抽取游标是否已经追上了当前 session 的 raw_history
+    # 末尾"。evolution/session_cleanup.py 清理旧 session 前用它判断是否需要
+    # 先补一次离线抽取，避免误删还没提炼出知识的内容。
+    # 已知局限：抽取游标是进程内单调计数器，new_session()/load_session()
+    # 切换到一个新/其它 session 后，游标不会归零，因此刚创建的小 session
+    # 可能被"乐观"地标记为 True——这不会导致误删（因为这类会话轮次很少，
+    # 本身也会被 min_turns_for_extraction 判定为"无需抽取"），但不代表这是
+    # 一个精确的跨进程/跨 session 的抽取完整性证明。
+    knowledge_extracted: bool = False
+    knowledge_extracted_at: str = ""     # 打标时间（ISO 字符串），空表示从未打过
+    pinned: bool = False                 # 用户手动置顶保护，session cleanup 永不删除
 
     @property
     def meta(self) -> SessionMeta:
@@ -104,6 +120,9 @@ class Session:
             file_path=self.file_path,
             fmt=self.fmt,
             summary=self.summary,
+            knowledge_extracted=self.knowledge_extracted,
+            knowledge_extracted_at=self.knowledge_extracted_at,
+            pinned=self.pinned,
         )
 
     def to_meta_dict(self) -> dict:
@@ -123,6 +142,12 @@ class Session:
             d["summary_at_turns"] = self.summary_at_turns
         if self.active_persona:
             d["active_persona"] = self.active_persona
+        if self.knowledge_extracted:
+            d["knowledge_extracted"] = self.knowledge_extracted
+        if self.knowledge_extracted_at:
+            d["knowledge_extracted_at"] = self.knowledge_extracted_at
+        if self.pinned:
+            d["pinned"] = self.pinned
         return d
 
     def to_dict(self) -> dict:
@@ -355,6 +380,38 @@ class SessionManager:
         results.sort(key=lambda x: -x[0])
         return [m for _, m in results[:limit]]
 
+    def set_pinned(self, session_id: str, pinned: bool) -> bool:
+        """置顶/取消置顶一个 session（只改 meta.json 的 pinned 字段，不动 history）。
+
+        置顶的 session 在 `/session cleanup` 中永远不会被当作候选删除，
+        用于用户手动保护某次重要对话。
+        """
+        session = self.load(session_id)
+        if session is None:
+            return False
+        session.pinned = pinned
+        meta_path = self.session_dir / session.id / "meta.json"
+        if not meta_path.parent.is_dir():
+            return False
+        _atomic_write_json(meta_path, session.to_meta_dict())
+        return True
+
+    def mark_knowledge_extracted(self, session_id: str, extracted: bool = True) -> bool:
+        """标记某 session 的知识已（离线）抽取完成，只改 meta.json，不动 history。
+
+        由 evolution/session_cleanup.py 在完成一次 --extract-first 离线抽取后调用。
+        """
+        session = self.load(session_id)
+        if session is None:
+            return False
+        session.knowledge_extracted = extracted
+        session.knowledge_extracted_at = _now_iso() if extracted else ""
+        meta_path = self.session_dir / session.id / "meta.json"
+        if not meta_path.parent.is_dir():
+            return False
+        _atomic_write_json(meta_path, session.to_meta_dict())
+        return True
+
     def delete(self, session_id: str) -> bool:
         """删除 Session，返回是否成功。"""
         import shutil
@@ -416,6 +473,9 @@ class SessionManager:
                 summary=meta.get("summary", ""),
                 summary_at_turns=meta.get("summary_at_turns", 0),
                 active_persona=meta.get("active_persona"),
+                knowledge_extracted=meta.get("knowledge_extracted", False),
+                knowledge_extracted_at=meta.get("knowledge_extracted_at", ""),
+                pinned=meta.get("pinned", False),
             )
         except Exception as _mini_agent_exc:
             from mini_agent.errors import log_exception
@@ -444,6 +504,9 @@ class SessionManager:
                     file_path=str(path / "meta.json"),
                     fmt="dir",
                     summary=data.get("summary", ""),
+                    knowledge_extracted=data.get("knowledge_extracted", False),
+                    knowledge_extracted_at=data.get("knowledge_extracted_at", ""),
+                    pinned=data.get("pinned", False),
                 )
             else:
                 # 旧格式文件

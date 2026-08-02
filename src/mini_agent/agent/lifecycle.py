@@ -761,6 +761,17 @@ class SessionLifecycleMixin:
         try:
             # 角色扮演系统：将当前激活角色同步进 session，随 meta.json 持久化
             self._session.active_persona = self.active_persona
+
+            # [session 清理功能] 刷新知识抽取状态，供 /session cleanup 判断
+            # 删除前是否需要先补一次离线抽取（见 session.py::Session.knowledge_extracted）。
+            try:
+                if self._hist is not None and self._hist.is_extraction_caught_up():
+                    from mini_agent.time_utils import now_str as _now_str
+                    self._session.knowledge_extracted = True
+                    self._session.knowledge_extracted_at = _now_str()
+            except Exception as _mini_agent_exc:
+                from mini_agent.errors import log_exception
+                log_exception(_mini_agent_exc, where='mini_agent.agent.lifecycle.SessionLifecycleMixin.save_session.extraction_flag')
             stats = {
                 "turns":            self.stats.turns,
                 "input_tokens":     self.stats.input_tokens,

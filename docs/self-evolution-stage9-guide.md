@@ -239,6 +239,7 @@ cron:<分 时 日 月 周>   5 字段 cron，如 cron:0 */6 * * *（每 6 小时
 | `sys:self_eval` | 24h | 能力自评（capability_map 置信度更新） |
 | `sys:goal_review` | 12h | Goal 清理（标记已完成/无进展的目标） |
 | `sys:digest_trim` | 7d | 日志修剪（删除 30 天前的 digest 记录） |
+| `sys:session_cleanup` | 7d | Session 清理（保留在用/近期，其余先补抽取知识再删除，默认带 `--extract-first`） |
 | `sys:self_maintain` | 24h | 自维护健康检查（具身改进 C4） |
 | `sys:daily_digest` | 每天 22:00 | 每日融合日报 |
 | `sys:next_action_digest` | 3h | 主动推荐排序 |

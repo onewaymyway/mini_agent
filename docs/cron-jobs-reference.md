@@ -43,6 +43,7 @@ LLM 调用"。本文档只做汇总和索引，不重复各 job 背后的详细�
 | `sys:self_eval` | 能力自评 | `interval:86400`（24h） | 零 LLM（规则统计） | 是 | 回顾近 24h 工具使用/任务结果，更新 `capability_map` 置信度 |
 | `sys:goal_review` | 目标清理 | `interval:43200`（12h） | 零 LLM | 是 | 标记已完成 Objective 为 completed，暂停超过 7 天无进展的 Objective |
 | `sys:digest_trim` | 日志修剪 | `interval:604800`（7d） | 零 LLM | 是 | 修剪 `activity_digest.jsonl`，保留最近 30 天 |
+| `sys:session_cleanup` | Session 清理 | `interval:604800`（7d） | 有 LLM（`--extract-first` 对待抽取的候选 session 各触发一次轻量抽取调用） | 是 | 清理长期不用的旧 session：跳过当前/pinned/goal 未结束/最近窗口内的，其余内容太少或已抽取的直接删，未抽取的先补跑一次离线抽取再删；详见 [evolution/session_cleanup.py](../src/mini_agent/evolution/session_cleanup.py) |
 | `sys:self_maintain` | 自维护健康检查 | `interval:86400`（24h） | 零 LLM | 是 | 见 §3.1（本 job 同时是自诊断闭环深化计划的信号源） |
 | `sys:daily_digest` | 每日融合日报 | `cron:0 22 * * *`（每天 22:00） | 零 LLM | 是 | 合并当天行为分布/目标进展/代码提交，生成融合日报 |
 | `sys:next_action_digest` | 主动推荐排序 | `interval:10800`（3h） | 零 LLM | 是 | 对停滞目标/注意力错配候选排序生成推荐，候选为空则跳过 |
@@ -133,7 +134,9 @@ SelfMaintenanceModule.health_check()`）内部做四项检查，结果合并写�
 需要人工确认价值后再手动开启）：
 `sys:ecosystem_positioning_scan` ⏸、`sys:external_knowledge_extractor` ⏸、
 `sys:tech_radar_search` ⏸、`sys:external_trend_capability_link` ⏸、
-`sys:goal_relevance_judge`、`sys:novelty_importance_judge`。
+`sys:goal_relevance_judge`、`sys:novelty_importance_judge`、
+`sys:session_cleanup`（仅对待抽取的候选 session 逐个触发一次轻量抽取，
+非候选/已抽取/无需抽取的 session 不产生 LLM 调用）。
 
 ## 5. 常用操作速查
 

@@ -9,6 +9,10 @@ cli/commands/sessions.py — /session slash 命令处理
 /session delete <id>  — 删除一个 session 文件
 /session dir          — 显示 session 目录
 /session search <q>   — 关键词搜索 session（需 --session-search）
+/session pin <id>     — 置顶保护一个 session，cleanup 时永不删除
+/session unpin <id>   — 取消置顶保护
+/session cleanup [--dry-run] [--keep-days N] [--keep-count N] [--extract-first]
+                       — 批量清理长期不用的旧 session（见 evolution/session_cleanup.py）
 """
 
 from __future__ import annotations
@@ -113,9 +117,82 @@ def handle_session_cmd(args: list[str], agent: Agent) -> None:
             t.add_row(m.id, m.title, summary, m.age_str)
         R.console.print(t)
 
+    elif sub == "pin" and len(args) >= 2:
+        sid = args[1]
+        ok = mgr.set_pinned(sid, True)
+        if ok:
+            R.print_success(f"Pinned session '{sid}' — 不会被 /session cleanup 删除。")
+        else:
+            R.print_error(f"Session '{sid}' not found.")
+
+    elif sub == "unpin" and len(args) >= 2:
+        sid = args[1]
+        ok = mgr.set_pinned(sid, False)
+        if ok:
+            R.print_success(f"Unpinned session '{sid}'.")
+        else:
+            R.print_error(f"Session '{sid}' not found.")
+
+    elif sub == "cleanup":
+        _handle_session_cleanup(args[1:], agent, mgr)
+
     else:
         R.print_error(
             "Usage: /session | /session list [n] | /session save | "
             "/session resume <id> | /session new | /session delete <id> | "
-            "/session dir | /session search <query>"
+            "/session dir | /session search <query> | "
+            "/session pin <id> | /session unpin <id> | "
+            "/session cleanup [--dry-run] [--keep-days N] [--keep-count N] [--extract-first]"
         )
+
+
+def _handle_session_cleanup(rest: list[str], agent: Agent, mgr) -> None:
+    """/session cleanup — 批量清理长期不用的旧 session。
+
+    默认真正执行删除；加 --dry-run 只报告不删除，建议第一次先跑 dry-run 看看
+    会删哪些。--extract-first 会对"候选删除但还没抽取过知识"的 session 先
+    补跑一次离线抽取（消耗一次 LLM 调用/session），成功后再删。
+    """
+    from mini_agent.evolution.session_cleanup import (
+        cleanup_sessions,
+        format_report_lines,
+        DEFAULT_KEEP_RECENT_DAYS,
+        DEFAULT_KEEP_RECENT_COUNT,
+        DEFAULT_MIN_TURNS_FOR_EXTRACTION,
+    )
+
+    dry_run = "--dry-run" in rest
+    extract_first = "--extract-first" in rest
+    keep_days = DEFAULT_KEEP_RECENT_DAYS
+    keep_count = DEFAULT_KEEP_RECENT_COUNT
+    if "--keep-days" in rest:
+        try:
+            keep_days = float(rest[rest.index("--keep-days") + 1])
+        except (ValueError, IndexError):
+            R.print_error("--keep-days 需要一个数字参数")
+            return
+    if "--keep-count" in rest:
+        try:
+            keep_count = int(rest[rest.index("--keep-count") + 1])
+        except (ValueError, IndexError):
+            R.print_error("--keep-count 需要一个整数参数")
+            return
+
+    llm_client = getattr(agent, "_llm", None) if extract_first else None
+    cfg = agent.cfg if extract_first else None
+    exclude_ids = {agent.session_id} if agent.session_id else set()
+
+    report = cleanup_sessions(
+        mgr,
+        getattr(agent.cfg, "project_root", None),
+        exclude_ids=exclude_ids,
+        keep_recent_days=keep_days,
+        keep_recent_count=keep_count,
+        min_turns_for_extraction=DEFAULT_MIN_TURNS_FOR_EXTRACTION,
+        extract_first=extract_first,
+        llm_client=llm_client,
+        cfg=cfg,
+        dry_run=dry_run,
+    )
+    for line in format_report_lines(report):
+        R.console.print(line)

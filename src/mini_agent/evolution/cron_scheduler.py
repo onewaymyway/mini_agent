@@ -15,6 +15,7 @@ evolution/cron_scheduler.py — Daemon 模式定时任务调度器
   sys:self_eval      — 能力自评（capability_map 更新）     interval:86400
   sys:goal_review    — 目标清理（已完成/过期 Goal）         interval:43200
   sys:digest_trim    — activity_digest 日志修剪            interval:604800
+  sys:session_cleanup — Session 清理（保留在用/近期，其余先抽取再删）interval:604800
   sys:self_maintain  — 自维护健康检查（具身改进 C4）         interval:86400
   sys:daily_digest           — 每日融合日报（行为+目标+提交）      cron:0 22 * * *
   sys:next_action_digest     — 主动推荐排序（停滞目标/注意力错配）  interval:10800
@@ -190,6 +191,23 @@ _BUILTIN_JOBS: list[dict] = [
         "description": "修剪 activity_digest.jsonl，保留最近 30 天（每 7 天）",
         "task_template": "[系统维护] 修剪 activity_digest.jsonl：删除 30 天前的记录，压缩历史统计",
         "tags": ["maintenance"],
+        "enabled": True,
+    },
+    {
+        # session 清理功能设计方案：长期运行后 .agent/sessions/ 会越积越多，
+        # 只保留"在用"（当前会话/goal 未结束）或"近期"（keep_recent_days/
+        # keep_recent_count 两道安全网）的 session，其余先确认知识已抽取
+        # （没抽取过的先补跑一次抽取）再删除。与 sys:digest_trim 同属低频
+        # 清理档（7 天一次）。cron 场景下默认带 --extract-first（用户已确认），
+        # 保证被删除前的知识不会凭空丢失；如需更保守，可把这条 job 的
+        # task_template 里的 --extract-first 去掉，或直接 disable 这条
+        # job 改成只手动执行 `/session cleanup --dry-run` 观察。
+        "id": "sys:session_cleanup",
+        "name": "Session 清理",
+        "schedule": "interval:604800",
+        "description": "清理长期不用的旧 session：保留在用/最近的，其余先补抽取知识再删除（每 7 天）",
+        "task_template": "[系统维护] 执行一次 /session cleanup --extract-first",
+        "tags": ["maintenance", "sessions"],
         "enabled": True,
     },
     {
