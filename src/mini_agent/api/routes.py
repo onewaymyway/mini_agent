@@ -69,6 +69,10 @@ api/routes.py — FastAPI 路由定义
                                        更新 agent_config.json 里的若干字段
     POST   /v1/objectives/{execution_id}/cancel    终止一个正在运行的 Objective 执行
     POST   /v1/objectives/{execution_id}/retry     手动重试当前 step（不等超时）
+    POST   /v1/objectives/{execution_id}/steps/{step_index}/reset
+                                      [daemon_autonomous_state_recovery_plan.md]
+                                      手动把某一步打回 pending 重做（含清空
+                                      其之后所有步骤的既有进度）
     POST   /v1/objectives/{execution_id}/guidance  插一句补充说明，供下次提交时使用
     GET    /v1/objectives/{execution_id}/steps/{step_index}/trace
                                      查看某个 step 实际执行过程（完整 tool_call/
@@ -2564,6 +2568,31 @@ async def retry_objective_step(request: Request, execution_id: str):
         raise HTTPException(
             status_code=404,
             detail=f"execution {execution_id!r} not found or has no retryable current step",
+        )
+    return {"ok": True}
+
+
+@router.post("/objectives/{execution_id}/steps/{step_index}/reset")
+async def reset_objective_step(request: Request, execution_id: str, step_index: int):
+    """POST /v1/objectives/{execution_id}/steps/{step_index}/reset
+    Body（可选）: { "reason": str }
+
+    [daemon_autonomous_state_recovery_plan.md 阶段二] 手动把某一步（可以是
+    已经"done"但事后发现结果有问题的步骤）打回 pending 重做：清空该步骤及
+    其之后所有步骤的既有进度（这些进度可能是基于被污染上下文产生的），
+    并在重新提交时明确告诉模型"前序结果已作废"。区别于 /retry ——/retry
+    只能重试"当前仍卡着的" step，/reset 可以回退到任意历史 step。"""
+    oe = _objective_executor_or_404(request)
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    reason = (body.get("reason") or "").strip() if isinstance(body, dict) else ""
+    ok = oe.reset_step(execution_id, step_index, reason)
+    if not ok:
+        raise HTTPException(
+            status_code=404,
+            detail=f"execution {execution_id!r} not found or step_index {step_index} out of range",
         )
     return {"ok": True}
 

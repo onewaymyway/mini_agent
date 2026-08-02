@@ -561,7 +561,14 @@ class AgentRunner(threading.Thread):
                         # 从 result 的首句提取摘要（不超过 200 字）
                         _summary = (result or "").strip()
                         _summary = _summary.split("\n")[0][:200]
-                        _obj_exec.on_turn_done(turn_id, _summary)
+                        # [daemon_autonomous_state_recovery_plan.md 阶段一]
+                        # run_turn() 若判定本轮结果为畸形/半成品（未闭合的
+                        # <tool_use> 残留、命中 max_turns 硬顶等），会在 agent
+                        # 上置位 _last_turn_result_invalid——不能把这段脏摘要
+                        # 当作真实的"步骤结果"喂给 ObjectiveExecutor，否则会被
+                        # 当作事实一路拼进后续步骤的 prompt，污染整条自主任务。
+                        _result_valid = not getattr(bridge.agent, "_last_turn_result_invalid", False)
+                        _obj_exec.on_turn_done(turn_id, _summary, valid=_result_valid)
                     except Exception as _mini_agent_exc:
                         from mini_agent.errors import log_exception
                         log_exception(_mini_agent_exc, where='mini_agent.api.server')

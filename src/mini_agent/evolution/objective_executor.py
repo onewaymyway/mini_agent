@@ -640,11 +640,18 @@ class ObjectiveExecutor:
         self.save()
         return exec_id if submitted else None
 
-    def on_turn_done(self, turn_id: str, result_summary: str = "") -> Optional[str]:
+    def on_turn_done(self, turn_id: str, result_summary: str = "", valid: bool = True) -> Optional[str]:
         """
         AgentRunner 完成一个 turn 后回调。
         找到对应的 step，标记为 done，然后推进到下一步。
         返回推进到的 execution_id（若有）。
+
+        [daemon_autonomous_state_recovery_plan.md 阶段一] valid=False 表示
+        调用方（api/server.py）已经判定这次 run_turn() 的结果是畸形/半成品
+        文本（比如未解析成功的 <tool_use> 协议残留），不能被当作真实的步骤
+        结果——绝不能写入 step.result_summary，否则会被后续 _build_prompt()
+        当作"事实"原样拼进下一步 prompt，把错误状态一路传递下去。这种情况
+        按"本步骤失败，走既有重试/重新分解逻辑"处理，而不是当作完成继续推进。
         """
         mapping = self._turn_to_exec.get(turn_id)
         if not mapping:
@@ -654,6 +661,9 @@ class ObjectiveExecutor:
         ex = self._executions.get(exec_id)
         if not ex:
             return None
+
+        if not valid:
+            return self._handle_invalid_step_result(exec_id, step_idx, turn_id)
 
         # 标记当前 step 完成
         step = ex.steps[step_idx] if step_idx < len(ex.steps) else None
@@ -752,6 +762,118 @@ class ObjectiveExecutor:
 
         self._notify_progress(ex)
         self.save()
+
+    def _handle_invalid_step_result(self, exec_id: str, step_idx: int, turn_id: str) -> Optional[str]:
+        """[daemon_autonomous_state_recovery_plan.md 阶段一] on_turn_done(valid=False)
+        的分流处理。逻辑与 on_turn_failed() 基本一致（复用同一套重试/重新分解
+        机制），差异只在于失败原因固定为"结果健全性校验未通过"，且不清空
+        step.result_summary/artifacts 之外的信息（沿用 on_turn_failed 的字段
+        更新方式）。"""
+        ex = self._executions.get(exec_id)
+        if not ex:
+            return None
+
+        step = ex.steps[step_idx] if step_idx < len(ex.steps) else None
+        reason = "结果健全性校验未通过（本轮输出疑似未解析成功的工具调用残留/半成品文本，已作废重试）"
+        if step:
+            self._release_step_paths(exec_id)
+            if step.retry_count < MAX_STEP_RETRIES:
+                step.retry_count += 1
+                step.status = "pending"
+                step.error_msg = reason
+                self._turn_to_exec.pop(turn_id, None)
+                self._submit_step(ex, step_idx)
+            else:
+                step.status = "failed"
+                step.error_msg = reason
+                step.finished_at = time.time()
+                self._turn_to_exec.pop(turn_id, None)
+                if self._attempt_redecompose(ex, step_idx, reason):
+                    self._notify_progress(ex)
+                    self.save()
+                    return exec_id
+                ex.status = "failed"
+                ex.finished_at = time.time()
+                ex.progress_notes = f"步骤 {step_idx+1} 多次收到无效结果后判定失败：{reason}"
+                self._on_objective_failed(ex)
+        else:
+            self._turn_to_exec.pop(turn_id, None)
+
+        self._notify_progress(ex)
+        self.save()
+        return exec_id
+
+    def reset_step(self, exec_id: str, step_idx: int, reason: str = "") -> bool:
+        """[daemon_autonomous_state_recovery_plan.md 阶段二] 手动/自动重置某个
+        自主任务的某一步。
+
+        用途：当 step 已经"完成"（status=="done"）但事后发现其
+        result_summary 是错误状态（比如脏内容漏过了阶段一的健全性校验、或者
+        人工巡检发现任务跑偏），需要把这一步"打回重做"，并明确告诉模型
+        "之前的结果已经作废，不要继续沿用"，而不是让污染的上下文继续被后续
+        步骤复用。
+
+        与 _handle_invalid_step_result 的区别：后者是"提交回调时自动判定
+        无效"，只能作用于刚提交完的当前 step；reset_step 是显式操作，可以
+        重置任意历史 step（包括已经不是 current_step_idx 的），并会把
+        current_step_idx 拨回该 step、清掉它之后所有 step 的既有进度
+        （这些进度本身可能是基于被污染的上下文产生的，不能保留）。
+
+        返回 True 表示重置成功；exec_id 不存在或 step_idx 越界时返回 False。
+        """
+        ex = self._executions.get(exec_id)
+        if not ex or step_idx < 0 or step_idx >= len(ex.steps):
+            return False
+
+        step = ex.steps[step_idx]
+        note = reason.strip() or "人工/自动触发重置"
+        step.status = "pending"
+        step.result_summary = ""
+        step.artifacts = []
+        step.turn_id = None
+        step.retry_count = 0
+        step.error_msg = f"[reset] {note}"
+        step.finished_at = 0.0
+        # [关键] 在 prompt 里显式声明"前序结果已重置"，避免模型的对话历史里
+        # 仍留着旧的（可能被污染的）步骤结果时继续沿用——重新提交时
+        # _build_prompt() 会拼上这段 reset 说明，而不是让模型误以为
+        # "前序步骤结果"里没提到这件事就等于没发生过。
+        step.pending_guidance = (
+            (step.pending_guidance + "\n" if step.pending_guidance else "")
+            + f"[系统提示] 本步骤已被重置（原因：{note}）。请忽略你此前可能已经"
+            "看到的、关于这一步或后续步骤的旧结果描述，基于当前实际情况重新"
+            "确认并完成本步骤。"
+        )
+
+        # 之后的 step 视为"基于被污染上下文产生的进度"，一并清空，不保留。
+        for later in ex.steps[step_idx + 1:]:
+            later.status = "pending"
+            later.result_summary = ""
+            later.artifacts = []
+            later.turn_id = None
+            later.retry_count = 0
+            later.error_msg = ""
+            later.finished_at = 0.0
+            later.submitted_message = ""
+
+        # 若该 step 当前正挂着一个未完成的 turn 映射，一并清掉，避免野指针。
+        stale_turn_ids = [tid for tid, m in self._turn_to_exec.items() if m == (exec_id, step_idx)]
+        for tid in stale_turn_ids:
+            self._turn_to_exec.pop(tid, None)
+
+        self._release_step_paths(exec_id)
+        ex.current_step_idx = step_idx
+        ex.status = "running"
+        ex.progress_notes = f"步骤 {step_idx+1} 已重置：{note}"
+
+        submitted = self._submit_step(ex, step_idx)
+        if not submitted and step.status != "blocked":
+            ex.status = "failed"
+            ex.progress_notes = f"步骤 {step_idx+1} 重置后重新提交失败"
+
+        self._notify_progress(ex)
+        self.save()
+        return True
 
     def reap_stale_steps(self, timeout_seconds: Optional[float] = None) -> list[str]:
         """

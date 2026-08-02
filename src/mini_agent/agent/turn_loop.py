@@ -210,6 +210,11 @@ class TurnLoopMixin:
         """Keep calling the LLM until it produces a final text response (no tool calls)."""
         final_text = ""
         loop_count = 0
+        # [daemon_autonomous_state_recovery_plan.md 阶段一] 本轮结果健全性标记，
+        # run_turn() 结束前重置；仅在最终返回值被判定为畸形/半成品时置 True，
+        # 供 api/server.py 等自主任务调用方据此决定是否要当作有效结果使用。
+        self._last_turn_result_invalid = False
+        self._last_turn_invalid_reason = ""
         # [具身改进 B1] 本轮（一次 _agentic_loop 调用）内是否已经注入过元认知提示，
         # 避免 frustration 持续超阈值时每个 loop_count 都重复注入刷屏。
         _meta_hint_emitted_this_call = False
@@ -611,6 +616,26 @@ class TurnLoopMixin:
                 f"| system={_final_sys_only:,} skill={_final_skill_tokens:,} "
                 f"history={_final_hist_tokens:,} total={_final_est:,}"
             )
+
+        # [daemon_autonomous_state_recovery_plan.md 阶段一] 最后一道结果健全性
+        # 校验：命中 max_turns 硬顶 / 格式纠错重试用尽等路径时，final_text 可能
+        # 仍是带 <tool_use> 协议残留的畸形/半成品文本。这类文本不应该被当作
+        # "模型给出的最终自然语言回复"返回——尤其自主任务链路
+        # （ObjectiveExecutor.on_turn_done）会把它当作"步骤结果"原样写进后续
+        # prompt，一旦污染就会一直被当作"事实"复用下去。这里用一个明确的哨兵
+        # 文本替换掉脏内容，并置位 _last_turn_result_invalid 供调用方判断。
+        if self.cfg.format_correction.result_sanity_check_enabled:
+            from mini_agent.perception.format_correction_detector import is_valid_final_result
+            if not is_valid_final_result(final_text):
+                self._last_turn_result_invalid = True
+                self._last_turn_invalid_reason = (
+                    "模型输出未能解析为有效的最终回复（可能是格式损坏的工具调用"
+                    "残留，或命中了轮次上限）"
+                )
+                final_text = (
+                    "[系统提示：本轮未获得有效回复，输出内容异常（可能是未闭合的"
+                    "工具调用标签或半成品文本），已作废，不应被当作真实结果使用。]"
+                )
 
         return final_text
 

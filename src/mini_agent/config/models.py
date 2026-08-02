@@ -1361,6 +1361,12 @@ class FormatCorrectionConfig:
     max_retries_per_turn: int = 2
     # 调试：打印命中的格式问题类型 + 注入的纠错提示
     verbose: bool = False
+    # [daemon_autonomous_state_recovery_plan.md 阶段一] run_turn() 返回前的最后
+    # 一道"结果健全性校验"：命中 max_turns 硬顶 / 纠错重试用尽等路径时，避免把
+    # 仍带 <tool_use> 协议残留的畸形文本当作最终结果返回（尤其会污染自主任务
+    # ObjectiveExecutor 的 step.result_summary）。默认开启；关闭时完全回退到
+    # 升级前行为（一键回退）。
+    result_sanity_check_enabled: bool = True
 
 
 @dataclass

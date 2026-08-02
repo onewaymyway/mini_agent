@@ -108,9 +108,20 @@ def handle_goals_cmd(args: list[str], agent=None) -> None:
     elif subcmd == "status":
         _cmd_loop_status(agent, paths)
 
+    elif subcmd == "reset-step":
+        # [daemon_autonomous_state_recovery_plan.md 阶段二]
+        # /agent goals reset-step <exec_id> <step_idx> [reason...]
+        if len(rest) < 2:
+            R.print_error("Usage: /agent goals reset-step <exec_id> <step_idx> [reason]")
+            return
+        _cmd_reset_step(agent, paths, rest[0], rest[1], " ".join(rest[2:]) if len(rest) > 2 else "")
+
     else:
         R.print_error(f"Unknown subcommand: {subcmd!r}")
-        R.print_info("Available: list, add, obj add, done, abandon, accept, reject, pause, progress, recur, unrecur, status")
+        R.print_info(
+            "Available: list, add, obj add, done, abandon, accept, reject, pause, "
+            "progress, recur, unrecur, status, reset-step"
+        )
 
 
 # ── 子命令实现 ─────────────────────────────────────────────────────────────────
@@ -348,6 +359,58 @@ def _cmd_loop_status(agent, paths) -> None:
         from mini_agent.errors import log_exception
         log_exception(e, where='mini_agent.cli.commands.goals._cmd_loop_status')
         R.print_warning(f"无法读取 activity_digest.jsonl: {e}")
+
+
+def _cmd_reset_step(agent, paths, exec_id: str, step_idx_str: str, reason: str) -> None:
+    """[daemon_autonomous_state_recovery_plan.md 阶段二]
+    /agent goals reset-step <exec_id> <step_idx> [reason]
+
+    把某个自主任务执行（exec_id）的第 step_idx 步（0-based）打回 pending 重做，
+    并清空其之后所有步骤的既有进度——用于人工发现某个 objective/cron 任务已经
+    进入错误状态（比如把畸形工具调用输出当成了步骤结果）时手动纠正。
+
+    优先直接调用本进程内的 ObjectiveExecutor；本地没有可用实例时，回退到通过
+    HTTP 连接的 daemon 发起请求。
+    """
+    try:
+        step_idx = int(step_idx_str)
+    except ValueError:
+        R.print_error(f"step_idx 必须是整数，收到: {step_idx_str!r}")
+        return
+
+    oe = getattr(agent, "_objective_executor", None) if agent is not None else None
+    if oe is not None:
+        ok = oe.reset_step(exec_id, step_idx, reason)
+        if ok:
+            R.print_info(f"✅ 已重置 {exec_id} 的步骤 {step_idx+1}（{reason or '未说明原因'}）")
+        else:
+            R.print_error(f"重置失败：execution {exec_id!r} 不存在或 step_idx {step_idx} 越界")
+        return
+
+    # 回退：通过 HTTP 连接的 daemon
+    try:
+        from mini_agent.cli.daemon import _read_daemon_info, DaemonClient
+        info = _read_daemon_info(paths.workdir_dir.parent if hasattr(paths, "workdir_dir") else paths.workdir_dir)
+        if not info:
+            info = _read_daemon_info(paths.workdir_dir)
+    except Exception as _mini_agent_exc:
+        from mini_agent.errors import log_exception
+        log_exception(_mini_agent_exc, where="mini_agent.cli.commands.goals._cmd_reset_step")
+        info = None
+
+    if not info:
+        R.print_error("未找到本地 ObjectiveExecutor，也未连接到 daemon，无法执行重置。")
+        return
+
+    client = DaemonClient(info["http_port"])
+    result = client._post_json(
+        f"/v1/objectives/{exec_id}/steps/{step_idx}/reset",
+        {"reason": reason} if reason else {},
+    )
+    if result and result.get("ok"):
+        R.print_info(f"✅ 已通过 daemon 重置 {exec_id} 的步骤 {step_idx+1}（{reason or '未说明原因'}）")
+    else:
+        R.print_error(f"重置失败：daemon 返回 {result!r}")
 
 
 def _cmd_recur(gb, paths, goal_id: str, schedule: str, task_template: Optional[str]) -> None:

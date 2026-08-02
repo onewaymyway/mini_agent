@@ -512,4 +512,31 @@ def detect_format_issue(text: str) -> Optional[FormatIssue]:
     return None
 
 
-__all__ = ["FormatIssue", "detect_format_issue", "PROMPT_HEADER"]
+# ── [daemon_autonomous_state_recovery_plan.md 阶段一] 最终结果健全性校验 ─────
+#
+# 背景：_agentic_loop() 有两条路径可能把"畸形/半成品"的 response.text 当作
+# 最终结果（final_text）返回给调用方（run_turn() 的返回值）：
+#   1. 格式纠错重试用尽仍未获得合法输出，直接 break；
+#   2. 命中 max_turns 硬顶被迫跳出循环，final_text 停留在"最后一次带工具调用的
+#      response.text"上（文本协议模式下可能就是 <tool_use> 块本身）。
+# 这类脏结果如果被自主任务（ObjectiveExecutor）当作"步骤已完成的真实结果"写入
+# 后续 prompt，会导致自主任务的状态被污染、越跑越歪（对应改进计划里的错误状态
+# 示例）。is_valid_final_result() 在 run_turn() 真正返回前做最后一道校验，
+# 复用 detect_format_issue() 的检测规则，不重新发明解析逻辑。
+def is_valid_final_result(text: str) -> bool:
+    """判断一段"即将作为本轮最终结果返回"的文本是否健全。
+
+    返回 False 表示文本要么为空，要么仍带有未解析成功的工具调用协议痕迹
+    （<tool_use>/<tool_result> 标签未闭合、角色混淆等）——这种文本不应该被
+    当作"模型给出的最终自然语言回复"使用，尤其不应该被自主任务链路当作
+    "步骤结果"继续传递下去。
+
+    刻意保持保守（宁可漏检也不误判）：只要 detect_format_issue() 命中任一
+    已注册规则，就判定为不健全；规则本身的克制原则见模块顶部说明。
+    """
+    if not text or not text.strip():
+        return False
+    return detect_format_issue(text) is None
+
+
+__all__ = ["FormatIssue", "detect_format_issue", "is_valid_final_result", "PROMPT_HEADER"]
