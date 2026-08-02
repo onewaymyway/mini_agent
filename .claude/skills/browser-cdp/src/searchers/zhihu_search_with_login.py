@@ -20,8 +20,8 @@ import json
 import time
 from pathlib import Path
 
-# 添加当前目录到路径
-sys.path.insert(0, str(Path(__file__).parent))
+# 添加 skill 根目录到路径
+sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 from src.core.browser_console import cmd_eval, get_session
 from src.core.browser_nav import cmd_goto as goto_url
@@ -365,16 +365,36 @@ def main():
         sys.exit(0)
     
     # 保存结果
-    output_dir = Path("search_results")
-    output_dir.mkdir(parents=True, exist_ok=True)
+    # 转换为工作流期望的输出格式
+    questions = []
+    seen_urls = set()
+    for i, r in enumerate(all_results, 1):
+        url = r.get("question_url", "")
+        if url and url not in seen_urls:
+            seen_urls.add(url)
+            questions.append({
+                "id": f"q{i}",
+                "title": r.get("question_title", ""),
+                "url": url,
+                "snippet": "",  # 搜索结果页没有摘要，留空
+                "matched_keywords": [r.get("query", "")],
+                "search_page_meta": {}
+            })
     
-    output_file = output_dir / args.output
-    with open(output_file, 'w', encoding='utf-8') as f:
-        json.dump(all_results, f, ensure_ascii=False, indent=2)
+    output_data = {
+        "questions": questions,
+        "total_keywords_searched": len(search_queries) if search_queries else (1 if args.query else 0),
+        "total_unique_questions": len(questions)
+    }
+    
+    output_path = Path(args.output)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    with open(output_path, 'w', encoding='utf-8') as f:
+        json.dump(output_data, f, ensure_ascii=False, indent=2)
     
     print(f"\n" + "="*80)
-    print(f"共抓取 {len(all_results)} 个真实知乎问题")
-    print(f"结果已保存到：{output_file}")
+    print(f"共抓取 {len(all_results)} 个真实知乎问题，去重后 {len(questions)} 个")
+    print(f"结果已保存到：{output_path}")
     print("="*80)
     
     # 打印前 20 个结果
