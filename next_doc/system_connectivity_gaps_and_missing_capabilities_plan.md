@@ -1,9 +1,11 @@
 # 系统关联性断点 + 缺失重要功能 改进方案
 
-> 状态：**F1/F2/F3/F4 已实现并接入实际调用点**（见文末"实施记录"），
-> 已跑通相关现有测试共 251 项（含 `test_goal_mode.py`/`test_judge_verdict.py`
-> 等更大范围回归验证），失败用例均可定位为改动前已存在、与本方案文件
-> 无关的问题，未发现由本方案引入的回归。C6/C7 仍是草案，未实施。
+> 状态：**F1/F2/F3/F4 已实现并接入实际调用点，F2 三路数据源全部落地**
+> （见文末"实施记录"），已跑通相关现有测试共 251+ 项（含
+> `test_goal_mode.py`/`test_judge_verdict.py`/`test_judge_dispatcher_unification.py`
+> 等更大范围回归验证，含新增的 TurnJudge stuck 端到端功能验证），失败
+> 用例均可定位为改动前已存在、与本方案文件无关的问题，未发现由本方案
+> 引入的回归。C6/C7 仍是草案，未实施。
 > 关联代码：`src/mini_agent/evolution/`、`src/mini_agent/wiki/`、
 > `src/mini_agent/role_agents/`、`src/mini_agent/perception/goal_backlog.py`、
 > `src/mini_agent/history/`
@@ -231,7 +233,7 @@ GoalBacklog/ObjectiveExecutor（目标执行）、improvement_backlog_merge（�
   `spec.py` 里预先存在、与本次改动无关的测试夹具问题——`_run_builder`
   测试桩缺少 `detection_text` 关键字参数，在改动前就会失败）。
 
-### F2 统一失败模式库 —— 已实现（数据源覆盖 2/3）
+### F2 统一失败模式库 —— 已实现（三路数据源全部接入）
 
 - 新增 `src/mini_agent/evolution/failure_pattern_store.py`：
   `run_failure_pattern_aggregation_once()` 扫描
@@ -254,14 +256,17 @@ GoalBacklog/ObjectiveExecutor（目标执行）、improvement_backlog_merge（�
   `_read_dead_end_failures()` 从"整条 dict 序列化后匹配"改为"优先取
   `reason` 字段文本做根因匹配"，避免 `round`/`progress` 之类的结构字段
   噪音混进 `root_cause_tag` 的正则匹配。
-- **仍未接入的第三路**：`role_agents/stuck_detector.py` 的 `StuckDetector`
-  本身仍然是纯内存状态机（`_consecutive_same`/`_recoveries_used` 计数器，
-  不落盘完整判定历史）——但由于 GoalRunner 在每次判定"没有实质进展"时
-  已经通过 `_record_dead_end()` 落盘到 dead_ends（见上），实际效果上
-  stuck 信号的语义已经通过 dead_ends 间接被 F2 覆盖到了。真正遗漏的只是
-  `role_agents/turn_judge.py`（TurnJudge，非 GoalRunner 场景）里的
-  `StuckDetector` 使用——TurnJudge 判定的卡住目前确实没有对应的持久化
-  记录，这部分维持原判：需要先给 TurnJudge 补一个落盘点才能接入。
+- **仍未接入的第三路**（**本轮已补齐**）：`agent/role_judge.py::_maybe_run_turn_judge()`
+  判定 TurnJudge 场景的 `StuckSignal.GIVE_UP` 时，现在会调用新增的
+  `failure_pattern_store.record_turn_judge_stuck_event()` 追加一条最小
+  记录到 `.agent/turn_judge_stuck_events.jsonl`（task_hint 取最近一条
+  用户消息，reason 为固定的卡住原因文案），`run_failure_pattern_aggregation_once()`
+  新增 `_read_turn_judge_stuck_events()` 读取并入聚合。至此方案文档
+  第 2 节设想的"三路数据源"已全部落地：ObjectiveExecution 失败、
+  GoalRunner dead_ends（原来就有）、TurnJudge stuck（本轮新增持久化点）。
+  端到端功能验证：手工写入 3 条同类 TurnJudge stuck 事件后，
+  `run_failure_pattern_aggregation_once()` 正确聚合出
+  `occurrence_count=3` 的单个 pattern（未产生 3 条孤立记录）。
 - **已知范围调整**：原方案文档设想"用 failure_pattern_store 替换
   lesson_review 高频信号"，实现时评估后改为"附加"而非"替换"——两个
   数据源不完全重叠（lesson_review 还含用户反馈等更多来源），直接替换
@@ -317,13 +322,9 @@ GoalBacklog/ObjectiveExecutor（目标执行）、improvement_backlog_merge（�
 - **C6**（步骤间结构化上下文）、**C7**（外部知识直接写入 capability_map）
   ——按第 3 节的优先级排序，仍计划合并到下一轮看板改造方案里评估，本轮
   未动。
-- F1/F3 里此前标注的"已知范围缩减"（GoalRunner 接入 F1、CLI 命令入口
-  接入 F3 的 accepted 记录）**本轮已全部补齐**，详见上方各小节。
-- F2 的 TurnJudge 场景 stuck 信号——GoalRunner 场景已通过既有的
-  `_record_dead_end()` 间接覆盖（见上），但 `role_agents/turn_judge.py`
-  里独立使用 `StuckDetector` 的场景仍没有持久化记录，需要先给 TurnJudge
-  补一个类似 `_record_dead_end()` 的落盘点才能接入，属于另一个独立的
-  前置任务。
+- F1/F2/F3 里此前标注的全部"已知范围缩减"/"未接入数据源"（GoalRunner
+  接入 F1、CLI 命令入口接入 F3 的 accepted 记录、TurnJudge stuck 信号
+  持久化）**本轮已全部补齐**，详见上方各小节。F4 本身范围完整，无遗留。
 
 ### 本轮全部改动的回归验证
 
@@ -350,6 +351,7 @@ GoalBacklog/ObjectiveExecutor（目标执行）、improvement_backlog_merge（�
 - `src/mini_agent/prompts/user/goal_judge_request.md`
 - `src/mini_agent/config/models.py`
 - `src/mini_agent/goal_mode/runner.py`
+- `src/mini_agent/agent/role_judge.py`
 - `src/mini_agent/evolution/soft_goal_deriver.py`
 - `src/mini_agent/evolution/improvement_backlog_merge.py`
 - `src/mini_agent/cli/commands/goals.py`

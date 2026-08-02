@@ -106,7 +106,7 @@ SelfMaintenanceModule.health_check()`）内部做四项检查，结果合并写�
 
 | job_id | 名称 | schedule | LLM 成本 | 默认启用 | 目的 |
 |--------|------|----------|---------|---------|------|
-| `sys:failure_pattern_aggregation` | 失败模式聚合（F2） | `interval:86400` | 零 LLM | 是 | 把 `ObjectiveExecution` 步骤失败（`error_msg`）+ Goal `dead_ends` 按任务类别归一化聚合为统一失败模式清单（`failure_pattern_store.json`），供 `soft_goal_deriver` 等消费方查询；当前未覆盖 `stuck_detector` 信号（尚无持久化落盘点） |
+| `sys:failure_pattern_aggregation` | 失败模式聚合（F2） | `interval:86400` | 零 LLM | 是 | 把 `ObjectiveExecution` 步骤失败（`error_msg`）+ Goal `dead_ends` + TurnJudge stuck 事件（`turn_judge_stuck_events.jsonl`）按任务类别归一化聚合为统一失败模式清单（`failure_pattern_store.json`），供 `soft_goal_deriver` 等消费方查询 |
 
 ### 3.4 外部数据知识化与自我改进闭环计划（`next_doc/external_knowledge_wiki_and_self_improvement_plan.md`）
 

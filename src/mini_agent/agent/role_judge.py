@@ -230,6 +230,31 @@ class RoleJudgeMixin:
                     f"{max_stuck} 次压缩重试的恢复额度，疑似卡在同一个问题上，"
                     "强制交还真人用户输入。"
                 )
+                # [系统关联性断点改进方案 F2 追加] 此前 TurnJudge 场景的
+                # stuck 信号没有任何持久化记录（GoalRunner 场景已经通过
+                # _record_dead_end() 落盘），这里补上——只做最小成本的
+                # 追加写入，供 sys:failure_pattern_aggregation 周期性聚合，
+                # 不影响本轮已经在执行的"交还真人"流程，异常不阻断主流程。
+                try:
+                    from mini_agent.evolution.failure_pattern_store import record_turn_judge_stuck_event
+                    from mini_agent.history.entry import HType
+                    task_hint = ""
+                    for msg in reversed(self._history):
+                        if msg.get("_type") == HType.USER_INPUT or (
+                            msg.get("_type") is None and msg.get("role") == "user"
+                        ):
+                            content = msg.get("content", "")
+                            task_hint = content if isinstance(content, str) else ""
+                            break
+                    from mini_agent.storage.paths import AgentPaths as _TJAgentPaths
+                    record_turn_judge_stuck_event(
+                        _TJAgentPaths(self.cfg.project_root),
+                        task_hint=task_hint,
+                        reason=f"连续 {limit} 轮输出高度相似，恢复额度耗尽",
+                    )
+                except Exception as _mini_agent_exc:
+                    from mini_agent.errors import log_exception
+                    log_exception(_mini_agent_exc, where='mini_agent.agent.role_judge.RoleJudgeMixin._maybe_run_turn_judge.record_turn_judge_stuck_event')
                 self._turn_judge_auto_count = 0
                 detector.reset()
                 return

@@ -9,16 +9,20 @@
 本模块只做"读取既有失败记录 → 按 task_category 聚合 → 持久化" 这一件
 事，不改变 dead_ends/ObjectiveExecution 本身的记录逻辑，不引入 LLM。
 
-数据源（当前版本，均为只读扫描）：
+数据源（当前版本，均为只读扫描 + 一处轻量事件追加写入）：
   1. `.agent/objective_executions.json` 里各 execution 的 steps[].error_msg
      （非空即计一次失败），按 `objective_title` 归一化后的 task_category
      分组。
   2. `.agent/sessions/<sid>/goal_state.json` 里的 dead_ends 列表（按
-     goal_text 归一化后的 task_category 分组）。
-
-**尚未接入的信号源（已知限制，如实记录）**：`role_agents/stuck_detector.py`
-判定的 GIVE_UP 信号目前是纯内存状态机，没有持久化落盘，因此本模块暂时
-无法聚合"卡住"这一类失败——待该信号有专门的落盘记录后再补上第三路。
+     goal_text 归一化后的 task_category 分组）——这份数据其实早就由
+     `goal_mode/runner.py::_record_dead_end()` 持久化，本模块只是新增
+     了读取和聚合，不需要额外补丁。
+  3. `.agent/turn_judge_stuck_events.jsonl`——`role_agents`/`agent/role_judge.py`
+     里 TurnJudge 场景判定 `StuckSignal.GIVE_UP` 时追加写入（见
+     `record_turn_judge_stuck_event()`）。这是唯一需要新增持久化点的
+     数据源：`StuckDetector` 本身仍是纯内存状态机，不落盘完整判定历史，
+     这里只在"确实判定为卡住且放弃"时追加一条最小记录，不改变
+     `StuckDetector` 本身的实现。
 
 聚类规则（刻意保守，不引入语义相似度/LLM）：
   - task_category：复用看板改造方案 Track H 的"标题归一化"思路——把
@@ -191,6 +195,62 @@ def _read_dead_end_failures(paths: "AgentPaths") -> list[tuple[str, str, str, fl
     return out
 
 
+def _turn_judge_stuck_log_path(paths: "AgentPaths"):
+    return paths.workdir_dir / "turn_judge_stuck_events.jsonl"
+
+
+def record_turn_judge_stuck_event(paths: "AgentPaths", *, task_hint: str, reason: str) -> None:
+    """[系统关联性断点改进方案 F2 追加] 供 `agent/role_judge.py::_maybe_run_turn_judge`
+    在 TurnJudge 场景判定 StuckSignal.GIVE_UP 时调用——这是此前唯一没有
+    持久化记录的 stuck 信号来源（GoalRunner 场景已经通过既有的
+    `_record_dead_end()` 落盘到 `goal_state.json`，见方案文档"实施记录"）。
+
+    只做最简单的追加写入（jsonl，一行一条），不做去重/聚合——聚合逻辑
+    统一在 `run_failure_pattern_aggregation_once()` 里做，保持"事件记录"
+    和"周期性聚合"两个职责分离，与其余数据源（objective_executions、
+    goal_state dead_ends）的处理方式一致。
+    """
+    try:
+        p = _turn_judge_stuck_log_path(paths)
+        p.parent.mkdir(parents=True, exist_ok=True)
+        with p.open("a", encoding="utf-8") as f:
+            f.write(json.dumps({
+                "ts": time.time(),
+                "task_hint": (task_hint or "")[:200],
+                "reason": (reason or "")[:200],
+            }, ensure_ascii=False) + "\n")
+    except Exception as _mini_agent_exc:
+        from mini_agent.errors import log_exception
+
+        log_exception(_mini_agent_exc, where="mini_agent.evolution.failure_pattern_store.record_turn_judge_stuck_event")
+
+
+def _read_turn_judge_stuck_events(paths: "AgentPaths") -> list[tuple[str, str, str, float]]:
+    """读取 TurnJudge stuck 事件日志，返回格式与其余两路数据源一致的
+    [(task_category, root_cause_tag, example_summary, ts), ...]。"""
+    out: list[tuple[str, str, str, float]] = []
+    p = _turn_judge_stuck_log_path(paths)
+    if not p.exists():
+        return out
+    try:
+        lines = p.read_text(encoding="utf-8").splitlines()
+    except Exception as _mini_agent_exc:
+        from mini_agent.errors import log_exception
+
+        log_exception(_mini_agent_exc, where="mini_agent.evolution.failure_pattern_store._read_turn_judge_stuck_events")
+        return out
+    for line in lines:
+        try:
+            rec = json.loads(line)
+        except Exception:
+            continue
+        category = _normalize_category(rec.get("task_hint", ""))
+        reason = rec.get("reason", "")
+        ts = float(rec.get("ts", 0.0) or 0.0) or time.time()
+        out.append((category, _root_cause_tag(reason), reason[:150], ts))
+    return out
+
+
 def _store_path(paths: "AgentPaths"):
     return getattr(paths, "failure_pattern_store_path", None) or (
         paths.workdir_dir / "failure_pattern_store.json"
@@ -248,6 +308,13 @@ def run_failure_pattern_aggregation_once(paths: "AgentPaths") -> FailurePatternA
         summary.sources_read.append("goal_state_dead_ends")
     except Exception as exc:
         summary.errors.append(f"dead_end_failed: {exc}")
+
+    try:
+        for category, tag, ex_summary, ts in _read_turn_judge_stuck_events(paths):
+            raw.append(("turn_judge_stuck", category, tag, ex_summary, ts))
+        summary.sources_read.append("turn_judge_stuck_events")
+    except Exception as exc:
+        summary.errors.append(f"turn_judge_stuck_failed: {exc}")
 
     existing = {k: FailurePattern.from_dict(v) for k, v in _load_store(paths).items()}
 
@@ -342,4 +409,5 @@ __all__ = [
     "get_patterns_for_category",
     "load_failure_patterns",
     "ensure_failure_pattern_aggregation_job",
+    "record_turn_judge_stuck_event",
 ]
