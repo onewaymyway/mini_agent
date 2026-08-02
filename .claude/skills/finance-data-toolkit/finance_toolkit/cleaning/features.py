@@ -3,7 +3,7 @@ L4 特征工程清洗器
 衍生指标计算：K线形态、技术指标雏形、波动率等
 """
 
-from typing import Any, Dict, List, Optional
+from typing import Dict, List
 from .pipeline import BaseCleaner, CleanLevel, CleanResult
 
 
@@ -28,16 +28,16 @@ class FeatureEngineer(BaseCleaner):
         if not all(k in payload for k in required):
             return
         
-        o, h, l, c = payload['open'], payload['high'], payload['low'], payload['close']
+        o, h, low_price, c = payload['open'], payload['high'], payload['low'], payload['close']
         
         # 实体大小
         body = abs(c - o)
-        total_range = h - l
+        total_range = h - low_price
         
         if total_range > 0:
             payload['body_ratio'] = body / total_range  # 实体占比
             payload['upper_shadow'] = h - max(o, c)    # 上影线
-            payload['lower_shadow'] = min(o, c) - l    # 下影线
+            payload['lower_shadow'] = min(o, c) - low_price    # 下影线
             payload['upper_shadow_ratio'] = payload['upper_shadow'] / total_range
             payload['lower_shadow_ratio'] = payload['lower_shadow'] / total_range
         else:
@@ -72,7 +72,7 @@ class FeatureEngineer(BaseCleaner):
         
         # 振幅
         if 'pre_close' in payload and payload['pre_close']:
-            payload['amplitude'] = (h - l) / payload['pre_close'] * 100
+            payload['amplitude'] = (h - low_price) / payload['pre_close'] * 100
 
 
 class TechnicalFeatureEngineer(BaseCleaner):
@@ -175,10 +175,10 @@ class TechnicalFeatureEngineer(BaseCleaner):
         trs = []
         for i in range(1, len(self.history)):
             h = self.history[i].get('high')
-            l = self.history[i].get('low')
+            low_price = self.history[i].get('low')
             pc = self.history[i-1].get('close')
-            if h is not None and l is not None and pc is not None:
-                tr = max(h - l, abs(h - pc), abs(l - pc))
+            if h is not None and low_price is not None and pc is not None:
+                tr = max(h - low_price, abs(h - pc), abs(low_price - pc))
                 trs.append(tr)
         
         if len(trs) >= 14:
@@ -212,8 +212,8 @@ class VolatilityFeatureEngineer(BaseCleaner):
         # Garman-Klass 波动率
         if all(k in payload for k in ['open', 'high', 'low', 'close']):
             import math
-            o, h, l, c = payload['open'], payload['high'], payload['low'], payload['close']
-            if o and h and l and c:
-                payload['gk_vol'] = 0.5 * math.log(h/l)**2 - (2*math.log(2)-1) * math.log(c/o)**2
+            o, h, low_price, c = payload['open'], payload['high'], payload['low'], payload['close']
+            if o and h and low_price and c:
+                payload['gk_vol'] = 0.5 * math.log(h/low_price)**2 - (2*math.log(2)-1) * math.log(c/o)**2
         
         return CleanResult(data=raw_data, level=self.level, passed=True)

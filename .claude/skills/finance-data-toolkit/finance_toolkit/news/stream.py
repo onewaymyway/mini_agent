@@ -5,12 +5,12 @@
 
 import asyncio
 import logging
-from datetime import datetime, timedelta
-from typing import List, Dict, Optional, Callable, Any
+from datetime import datetime
+from typing import List, Dict, Callable
 from dataclasses import dataclass, field
 from enum import Enum
 
-from .models import FinanceNews, NewsSource, NewsCategory
+from .models import FinanceNews, NewsSource
 from .aggregator import NewsAggregator
 
 logger = logging.getLogger(__name__)

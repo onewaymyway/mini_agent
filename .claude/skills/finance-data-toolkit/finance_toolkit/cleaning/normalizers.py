@@ -3,9 +3,8 @@ L1 结构标准化清洗器
 包括：字段命名规范化、类型强制转换、时间标准化
 """
 
-import re
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional, Union
+from typing import Any, Dict, Optional
 from decimal import Decimal, InvalidOperation
 
 from .pipeline import BaseCleaner, CleanLevel, CleanResult

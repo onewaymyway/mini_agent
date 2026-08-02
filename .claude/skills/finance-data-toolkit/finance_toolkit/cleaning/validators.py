@@ -5,7 +5,7 @@ L3 业务校验器
 
 import re
 from datetime import datetime, timedelta, timezone
-from typing import Any, Dict, List, Optional
+from typing import Dict
 
 from .pipeline import BaseCleaner, CleanLevel, CleanResult
 
@@ -29,9 +29,9 @@ class QuoteValidator(BaseCleaner):
         
         # 2. 高低价包含关系
         if all(payload.get(f) is not None for f in ['open', 'high', 'low', 'close']):
-            o, h, l, c = payload['open'], payload['high'], payload['low'], payload['close']
-            if not (l <= o <= h and l <= c <= h):
-                issues.append(f"高低价包含关系异常: O={o} H={h} L={l} C={c}")
+            o, h, low_price, c = payload['open'], payload['high'], payload['low'], payload['close']
+            if not (low_price <= o <= h and low_price <= c <= h):
+                issues.append(f"高低价包含关系异常: O={o} H={h} L={low_price} C={c}")
         
         # 3. 涨跌幅校验
         if payload.get('pre_close') and payload.get('close'):

@@ -129,7 +129,7 @@ def list_scrapers() -> Dict[str, Dict]:
                 'source_name': instance.source_name,
                 'supported_types': instance.supported_types,
             }
-        except:
+        except Exception:
             result[name] = {'error': 'Failed to instantiate'}
     return result
 

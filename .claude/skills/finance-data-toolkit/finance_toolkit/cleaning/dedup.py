@@ -6,7 +6,7 @@
 import hashlib
 import json
 import time
-from typing import Any, Dict, List, Optional, Set
+from typing import Dict, List, Optional
 from abc import ABC, abstractmethod
 
 
@@ -203,7 +203,6 @@ class IncrementalDeduplicator:
         if not last_state:
             return True  # 首次处理
         
-        data_type = data.get('data_type')
         payload = data.get('payload', {})
         
         # 版本号比较

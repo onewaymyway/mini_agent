@@ -3,7 +3,8 @@ L2 字段映射清洗器
 多数据源字段对齐到统一标准
 """
 
-from typing import Any, Dict, List, Optional
+import re
+from typing import Dict
 
 from .pipeline import BaseCleaner, CleanLevel, CleanResult
 
@@ -275,6 +276,3 @@ class SymbolNormalizer(BaseCleaner):
         
         # 返回原值
         return symbol
-
-
-import re

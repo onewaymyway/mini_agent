@@ -8,7 +8,6 @@
 符合 finance-data-toolkit 统一数据契约
 """
 
-import sys
 import os
 import json
 import argparse
@@ -95,7 +94,7 @@ tr:nth-child(even) { background: #fafafa; }
 <body>
 <div class="container">''')
 
-    html.append(f'<h1>📊 股票综合分析研报</h1>')
+    html.append('<h1>📊 股票综合分析研报</h1>')
     html.append(f'<div class="meta">生成时间: {datetime.now().strftime("%Y-%m-%d %H:%M:%S")} | 股票数量: {len(stocks_data)} | 数据源: 东方财富 + 新浪财经</div>')
 
     # 汇总表
@@ -130,11 +129,11 @@ tr:nth-child(even) { background: #fafafa; }
         try:
             change_str = f'{float(change):+.2f}%' if change != 'N/A' else 'N/A'
             change_class = 'positive' if float(change) > 0 else ('negative' if float(change) < 0 else 'neutral')
-        except:
+        except Exception:
             change_str = str(change)
             change_class = 'neutral'
 
-        html.append(f'<tr>')
+        html.append('<tr>')
         html.append(f'<td>{s["code"]}</td>')
         html.append(f'<td>{name}</td>')
         html.append(f'<td>{price}</td>')
@@ -147,7 +146,7 @@ tr:nth-child(even) { background: #fafafa; }
         html.append(f'<td>{macd_sig}</td>')
         html.append(f'<td>{rsi_sig}</td>')
         html.append(f'<td>{overall}</td>')
-        html.append(f'</tr>')
+        html.append('</tr>')
     html.append('</table>')
 
     # 详细分析
@@ -166,7 +165,7 @@ tr:nth-child(even) { background: #fafafa; }
         try:
             change_class = 'positive' if float(change) > 0 else ('negative' if float(change) < 0 else 'neutral')
             html.append(f'<div class="stock-price {change_class}">¥{price} ({float(change):+.2f}%)</div>')
-        except:
+        except Exception:
             html.append(f'<div class="stock-price">¥{price}</div>')
         html.append('</div>')
 
@@ -247,20 +246,20 @@ tr:nth-child(even) { background: #fafafa; }
 def generate_markdown_report(stocks_data: list, output_path: str):
     """生成 Markdown 综合研报"""
     md = []
-    md.append(f'# 📊 股票综合分析研报')
-    md.append(f'')
+    md.append('# 📊 股票综合分析研报')
+    md.append('')
     md.append(f'**生成时间**: {datetime.now().strftime("%Y-%m-%d %H:%M:%S")}  ')
     md.append(f'**股票数量**: {len(stocks_data)}  ')
-    md.append(f'**数据源**: 东方财富 (基本面) + 新浪财经 (K线/技术指标)')
-    md.append(f'')
-    md.append(f'---')
-    md.append(f'')
+    md.append('**数据源**: 东方财富 (基本面) + 新浪财经 (K线/技术指标)')
+    md.append('')
+    md.append('---')
+    md.append('')
 
     # 汇总表
-    md.append(f'## 📋 股票汇总')
-    md.append(f'')
-    md.append(f'| 代码 | 名称 | 现价 | 涨跌幅 | PE(TTM) | PB | 总市值 | ROE | MA信号 | MACD | RSI | 综合 |')
-    md.append(f'|------|------|------|--------|---------|-----|--------|-----|--------|------|-----|------|')
+    md.append('## 📋 股票汇总')
+    md.append('')
+    md.append('| 代码 | 名称 | 现价 | 涨跌幅 | PE(TTM) | PB | 总市值 | ROE | MA信号 | MACD | RSI | 综合 |')
+    md.append('|------|------|------|--------|---------|-----|--------|-----|--------|------|-----|------|')
     for s in stocks_data:
         basic = s.get('basic', {})
         kline = s.get('kline', {})
@@ -281,11 +280,11 @@ def generate_markdown_report(stocks_data: list, output_path: str):
         roe_val = basic.get("roe", "N/A")
         roe_str = f'{roe_val}%' if roe_val != 'N/A' and '%' not in str(roe_val) else str(roe_val)
         md.append(f'| {s["code"]} | {basic.get("name", s["code"])} | {basic.get("price", "N/A")} | {basic.get("change_pct", "N/A")}% | {basic.get("pe_ttm", "N/A")} | {basic.get("pb", "N/A")} | {basic.get("total_mv", "N/A")} | {roe_str} | {ma_sig} | {macd_sig} | {rsi_sig} | {overall} |')
-    md.append(f'')
+    md.append('')
 
     # 详细分析
-    md.append(f'## 🔍 个股详细分析')
-    md.append(f'')
+    md.append('## 🔍 个股详细分析')
+    md.append('')
     for s in stocks_data:
         basic = s.get('basic', {})
         kline = s.get('kline', {})
@@ -295,15 +294,15 @@ def generate_markdown_report(stocks_data: list, output_path: str):
         change = basic.get('change_pct', 'N/A')
 
         md.append(f'### {name} ({code})')
-        md.append(f'')
+        md.append('')
         md.append(f'**当前价**: ¥{price} ({change}%)')
-        md.append(f'')
+        md.append('')
 
         # 基本面
-        md.append(f'#### 📈 基本面数据')
-        md.append(f'')
-        md.append(f'| 指标 | 数值 |')
-        md.append(f'|------|------|')
+        md.append('#### 📈 基本面数据')
+        md.append('')
+        md.append('| 指标 | 数值 |')
+        md.append('|------|------|')
         for key in ['price', 'change_pct', 'change_amt', 'volume', 'amount', 'turnover',
                     'pe_ttm', 'pb', 'ps', 'pcf', 'total_mv', 'circ_mv',
                     'revenue', 'net_profit', 'roe', 'gross_margin', 'net_margin',
@@ -311,15 +310,15 @@ def generate_markdown_report(stocks_data: list, output_path: str):
             val = basic.get(key, 'N/A')
             if val != 'N/A':
                 md.append(f'| {key} | {val} |')
-        md.append(f'')
+        md.append('')
 
         # 技术面
         if kline:
-            md.append(f'#### 📊 技术面分析')
-            md.append(f'')
+            md.append('#### 📊 技术面分析')
+            md.append('')
             stats = kline.get('price_stats', {})
-            md.append(f'| 指标 | 数值 |')
-            md.append(f'|------|------|')
+            md.append('| 指标 | 数值 |')
+            md.append('|------|------|')
             for key, label in [
                 ('current_price', '当前价'),
                 ('change_1d_pct', '1日涨跌%'),
@@ -337,29 +336,29 @@ def generate_markdown_report(stocks_data: list, output_path: str):
                     if isinstance(val, float):
                         val = f'{val:.2f}'
                     md.append(f'| {label} | {val} |')
-            md.append(f'')
+            md.append('')
 
-            md.append(f'#### 技术指标')
-            md.append(f'')
-            md.append(f'| 指标 | 数值 |')
-            md.append(f'|------|------|')
+            md.append('#### 技术指标')
+            md.append('')
+            md.append('| 指标 | 数值 |')
+            md.append('|------|------|')
             for key, val in kline.get('latest_indicators', {}).items():
                 md.append(f'| {key} | {val} |')
-            md.append(f'')
+            md.append('')
 
-            md.append(f'#### 交易信号')
-            md.append(f'')
+            md.append('#### 交易信号')
+            md.append('')
             signals = kline.get('signals', {})
             for sig, desc in signals.items():
                 md.append(f'- **{desc}**')
-            md.append(f'')
+            md.append('')
 
             dr = kline.get('date_range', {})
             md.append(f'*K线数据范围: {dr.get("start", "N/A")} ~ {dr.get("end", "N/A")} ({kline.get("kline_count", 0)} 条)*')
-            md.append(f'')
+            md.append('')
 
-        md.append(f'---')
-        md.append(f'')
+        md.append('---')
+        md.append('')
 
     with open(output_path, 'w', encoding='utf-8') as f:
         f.write('\n'.join(md))

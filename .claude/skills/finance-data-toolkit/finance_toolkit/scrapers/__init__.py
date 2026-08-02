@@ -26,6 +26,11 @@ try:
 except ImportError:
     SinaScraper = None
 
+try:
+    from .yahoo_scraper import YahooScraper
+except ImportError:
+    YahooScraper = None
+
 __all__ = []
 if AKShareScraper:
     __all__.append('AKShareScraper')
@@ -35,3 +40,5 @@ if EastmoneyScraper:
     __all__.append('EastmoneyScraper')
 if SinaScraper:
     __all__.append('SinaScraper')
+if YahooScraper:
+    __all__.append('YahooScraper')

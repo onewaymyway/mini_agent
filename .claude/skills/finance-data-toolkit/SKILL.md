@@ -56,6 +56,10 @@ resources:
     path: references/troubleshooting.md
     description: 常见错误排查表（反爬应对、IP封禁、签名失效、数据格式变更、浏览器崩溃、内存泄漏、并发控制）
     triggers: 报错, 失败, 反爬, IP封禁, 签名失效, 数据格式变更, 浏览器崩溃, 内存泄漏, 并发控制
+  - id: free-data-sources
+    path: references/free-data-sources.md
+    description: 免登录数据源详解（腾讯财经、网易财经、百度股市通、中金在线、和讯网、凤凰财经、东方财富板块、新浪港股/美股/期货/外汇）
+    triggers: 免登录, 腾讯财经, 网易财经, 百度股市通, 中金在线, 和讯网, 凤凰财经, 港股, 美股, 期货, 外汇, 板块行情
 browse_paths:
   - path: references/full-api-docs/
     description: 完整 API 手册（各数据源详细参数、返回字段字典、错误码表、限流策略），体量大，请用 grep/view 检索具体片段
@@ -182,6 +186,7 @@ BROWSER_POOL_SIZE = 2           # CDP 浏览器实例池大小
 | 生成研报/周报/可视化 | `skill_resource_load finance-data-toolkit report-generation` | 报告输出 |
 | 查找 API 端点/参数/错误码 | `skill_resource_load finance-data-toolkit api-reference` | 接口速查 |
 | 遇到反爬/报错/性能问题 | `skill_resource_load finance-data-toolkit troubleshooting` | 故障排查 |
+| 免登录数据源快速抓取 | `skill_resource_load finance-data-toolkit free-data-sources` | 腾讯/网易/百度/中金/和讯/凤凰/新浪多市场 |
 
 ## Python 包结构
 
@@ -397,11 +402,18 @@ transformers>=4.36  # 可选：深度学习模型
 > 4. `references/example-notebooks/` 下的演示 Notebook
 
 > **迁移记录**：2026-07-15 将 browser-cdp 中的金融相关脚本迁移至 finance_toolkit 包：
-> - fetch_eastmoney_stock.py → finance_toolkit.data_fetching.fetchers
-> - fetch_kline_sina.py → finance_toolkit.data_fetching.fetchers
+> - fetch_eastmoney_stock.py → finance_toolkit.data_fetching.eastmoney_fetcher
+> - fetch_kline_sina.py → finance_toolkit.data_fetching.sina_kline_fetcher
 > - calc_technical_indicators.py → finance_toolkit.technical_analysis.indicators
 > - backtest_framework.py → finance_toolkit.backtesting.backtest_framework
 > - sentiment_analysis.py → finance_toolkit.sentiment.sentiment_analyzer
 > - batch_fetch_stocks.py / batch_fetch_kline.py → finance_toolkit.batch_processing.batch_fetcher
 > - generate_report.py / generate_comprehensive_report.py → finance_toolkit.report_generation.report_generator
 > - 新增统一入口 finance_toolkit/__init__.py 提供 create_scraper, analyze_stock, run_backtest 等便捷函数
+>
+> **目录重构**：2026-08-02 将 browser-cdp skill 迁移至子目录模块化结构：
+> - core/ → cdp_client.py, utils.py
+> - browser_ops/ → browser_launch.py, browser_nav.py, browser_extract.py, browser_screenshot.py, browser_input.py, browser_console.py, browser_watch.py, browser_smart_wait.py, browser_infinite_scroll.py, browser_captcha.py
+> - search_engines/ → baidu_search.py, bing_search.py, zhihu_search.py, zhihu_hot.py, zhihu_column_search.py, zhihu_publish_answer.py, arxiv_search.py, arxiv_multi_search.py, wechat_search.py
+> - references/ → 所有子资源文档
+> - 根目录保留 demo/test 脚本和 SKILL.md

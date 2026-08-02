@@ -5,11 +5,8 @@ AKShare 抓取器实现
 支持: 实时行情、历史K线、财务报表、分红配股、龙虎榜、北向资金等
 """
 
-import asyncio
-import json
 from datetime import datetime
-from typing import List, Dict, Any, Optional, AsyncIterator
-from dataclasses import dataclass
+from typing import List, Optional, AsyncIterator
 
 try:
     import akshare as ak
@@ -57,14 +54,22 @@ class AKShareScraper(BaseScraper):
         # 标准化代码格式: 600000.SH -> 600000
         codes = [s.split('.')[0] for s in symbols]
         
+        # Handle start/end as either datetime or string
+        def to_date_str(dt, default):
+            if dt is None:
+                return default
+            if isinstance(dt, str):
+                return dt
+            return dt.strftime('%Y%m%d')
+        
         if data_type == 'quote':
             async for item in self._fetch_realtime_quote(codes, symbols):
                 yield item
         elif data_type == 'kline':
             period = kwargs.get('period', 'daily')
             adjust = kwargs.get('adjust', 'qfq')
-            start_str = start.strftime('%Y%m%d') if start else '20240101'
-            end_str = end.strftime('%Y%m%d') if end else datetime.now().strftime('%Y%m%d')
+            start_str = to_date_str(start, '20240101')
+            end_str = to_date_str(end, datetime.now().strftime('%Y%m%d'))
             async for item in self._fetch_kline(codes, symbols, period, start_str, end_str, adjust):
                 yield item
         elif data_type == 'financial':

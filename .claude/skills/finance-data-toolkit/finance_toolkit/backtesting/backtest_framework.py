@@ -13,15 +13,13 @@
 """
 
 import sys
-import os
 import json
 import argparse
 import warnings
 from datetime import datetime
 from pathlib import Path
-from typing import List, Dict, Any, Optional, Tuple
+from typing import List, Dict, Tuple
 from dataclasses import dataclass, asdict
-from collections import defaultdict
 
 import numpy as np
 import pandas as pd
@@ -39,7 +37,7 @@ except ImportError:
     HAS_STATSMODELS = False
 
 try:
-    from scipy import stats
+    import scipy.stats  # noqa: F401
     HAS_SCIPY = True
 except ImportError:
     HAS_SCIPY = False
@@ -214,6 +212,8 @@ class MultiFactorModel:
             score = score.set_index(['date', 'symbol'])[0]
             scores.append(score)
         
+        if not scores:
+            return pd.Series(dtype=float, name='ic_weighted_score')
         return pd.concat(scores).rename('ic_weighted_score')
     
     def equal_weight_score(self) -> pd.Series:
@@ -353,7 +353,7 @@ class FactorBacktest:
                 start_price = price_data.loc[start:start, 'close'].iloc[0]
                 end_price = price_data.loc[end:end, 'close'].iloc[-1]
                 rets.append((end_price - start_price) / start_price)
-            except:
+            except Exception:
                 rets.append(0)
         return np.mean(rets) if rets else 0
     
@@ -528,6 +528,9 @@ def calc_technical_factors(kline_df: pd.DataFrame) -> pd.DataFrame:
 
 def calc_forward_returns(kline_df: pd.DataFrame, periods: int = 5) -> pd.Series:
     """计算未来 N 日收益率"""
+    if kline_df.empty:
+        return pd.Series(dtype=float, name='forward_return')
+    
     returns_list = []
     
     for symbol in kline_df.index.get_level_values('symbol').unique():
@@ -542,7 +545,7 @@ def calc_forward_returns(kline_df: pd.DataFrame, periods: int = 5) -> pd.Series:
         returns_list.append(forward_ret)
     
     if not returns_list:
-        return pd.Series(dtype=float)
+        return pd.Series(dtype=float, name='forward_return')
     
     return pd.concat(returns_list).sort_index()
 
@@ -634,13 +637,13 @@ def main():
     
     args = parser.parse_args()
     
-    print(f"=== 因子回测 ===")
-    print(f"股票: {args.symbols}")
-    print(f"数据目录: {args.data_dir}")
-    print(f"前瞻期: {args.periods} 日")
-    print(f"调仓频率: {args.rebalance}")
-    print(f"打分方法: {args.method}")
-    print(f"模式: {'纯多头' if args.long_only else '多空'}")
+    print("=== 因子回测 ===")
+    print("股票: " + args.symbols)
+    print("数据目录: " + args.data_dir)
+    print("前瞻期: " + str(args.periods) + " 日")
+    print("调仓频率: " + args.rebalance)
+    print("打分方法: " + args.method)
+    print("模式: " + ("纯多头" if args.long_only else "多空"))
     print()
     
     # 1. 加载 K 线数据
@@ -695,14 +698,14 @@ def main():
         result = backtest.run_long_short(n_long=args.n_long, n_short=args.n_short, rebalance_freq=args.rebalance)
     
     # 输出结果
-    print(f"\n=== 回测结果 ===")
-    print(f"累计收益率: {result.cumulative_return:.2%}")
-    print(f"年化收益率: {result.annualized_return:.2%}")
-    print(f"年化波动率: {result.annualized_volatility:.2%}")
-    print(f"夏普比率: {result.sharpe_ratio:.4f}")
-    print(f"最大回撤: {result.max_drawdown:.2%}")
-    print(f"胜率: {result.win_rate:.2%}")
-    print(f"总调仓次数: {result.total_trades}")
+    print("\n=== 回测结果 ===")
+    print("累计收益率: " + f"{result.cumulative_return:.2%}")
+    print("年化收益率: " + f"{result.annualized_return:.2%}")
+    print("年化波动率: " + f"{result.annualized_volatility:.2%}")
+    print("夏普比率: " + f"{result.sharpe_ratio:.4f}")
+    print("最大回撤: " + f"{result.max_drawdown:.2%}")
+    print("胜率: " + f"{result.win_rate:.2%}")
+    print("总调仓次数: " + str(result.total_trades))
     
     # 保存结果
     if args.output:

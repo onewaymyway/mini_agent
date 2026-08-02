@@ -41,6 +41,30 @@ from .core import (
     create_scraper,
 )
 
+# 异常和容错模块
+try:
+    from .exceptions import (
+        FinanceError,
+        SourceError,
+        SourceUnavailableError,
+        SourceRateLimitedError,
+        SourceAuthError,
+        DataError,
+        DataNotFoundError,
+        DataQualityError,
+        DataValidationError,
+        CircuitBreakerError,
+        FallbackError,
+        ConfigError,
+    )
+    from .resilience import (
+        CircuitBreaker,
+        FallbackManager,
+        retry_with_backoff,
+    )
+except ImportError:
+    pass
+
 # 导入子模块的公开接口
 try:
     from .data_fetching import (
@@ -180,6 +204,22 @@ try:
 except ImportError:
     pass
 
+try:
+    from .social import (
+        SocialSource,
+        SocialCategory,
+        SocialPost,
+        WeiboHotScraper,
+        XueqiuDiscussionScraper,
+        ThsWencaiScraper,
+        fetch_weibo_hot,
+        fetch_xueqiu_hot,
+        fetch_ths_wencai_hot,
+        fetch_all_social_hot,
+    )
+except ImportError:
+    pass
+
 
 __version__ = '1.0.0'
 
@@ -189,6 +229,23 @@ __all__ = [
     'BaseScraper',
     'register_scraper',
     'create_scraper',
+    
+    # 异常和容错
+    'FinanceError',
+    'SourceError',
+    'SourceUnavailableError',
+    'SourceRateLimitedError',
+    'SourceAuthError',
+    'DataError',
+    'DataNotFoundError',
+    'DataQualityError',
+    'DataValidationError',
+    'CircuitBreakerError',
+    'FallbackError',
+    'ConfigError',
+    'CircuitBreaker',
+    'FallbackManager',
+    'retry_with_backoff',
     
     # 数据获取
     'fetch_realtime_quote',
@@ -295,6 +352,18 @@ __all__ = [
     'generate_markdown_report',
     'generate_json_report',
     'generate_comprehensive_report',
+    
+    # 社交媒体/舆情
+    'SocialSource',
+    'SocialCategory',
+    'SocialPost',
+    'WeiboHotScraper',
+    'XueqiuDiscussionScraper',
+    'ThsWencaiScraper',
+    'fetch_weibo_hot',
+    'fetch_xueqiu_hot',
+    'fetch_ths_wencai_hot',
+    'fetch_all_social_hot',
 ]
 
 
@@ -369,6 +438,3 @@ def run_backtest(
     
     return result.to_dict()
 
-
-# 类型提示
-from typing import List, Dict

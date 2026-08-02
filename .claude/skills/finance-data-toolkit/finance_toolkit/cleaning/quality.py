@@ -3,7 +3,7 @@
 计算质量指标、生成质量报告、告警检测
 """
 
-from typing import Any, Dict, List, Optional
+from typing import Dict, List
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from enum import Enum
@@ -183,7 +183,7 @@ class QualityMetricsCalculator:
             alerts.append(f"一致性过低: {metrics.consistency:.2%} < {thresholds.consistency:.2%}")
         
         if metrics.timeliness < (1 - thresholds.timeliness_hours / 24):
-            alerts.append(f"时效性过低: 平均延迟过大")
+            alerts.append("时效性过低: 平均延迟过大")
         
         if metrics.accuracy < thresholds.accuracy:
             alerts.append(f"准确性过低: {metrics.accuracy:.2%} < {thresholds.accuracy:.2%}")
@@ -218,7 +218,7 @@ class QualityMonitor:
         for callback in self.alert_callbacks:
             try:
                 callback(alerts, metrics)
-            except Exception as e:
+            except Exception:
                 pass  # 忽略回调异常
     
     def add_alert_callback(self, callback: callable):

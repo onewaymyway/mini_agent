@@ -615,4 +615,4 @@ async def incremental_update(scraper: BaseScraper, symbol: str, data_type: str,
 
 > **完整 API 手册**请查阅 `references/full-api-docs/` 目录下的各数据源详细文档
 >
-> **新浪财经 K 线实现参考**：`.claude/skills/browser-cdp/fetch_kline_sina.py` (含技术指标计算 MA/EMA/MACD/RSI/BOLL/KDJ)
+> **新浪财经 K 线实现参考**：`.claude/skills/finance-data-toolkit/finance_toolkit/data_fetching/sina_kline_fetcher.py` (含技术指标计算 MA/EMA/MACD/RSI/BOLL/KDJ)

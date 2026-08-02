@@ -5,7 +5,6 @@
 """
 
 import sys
-import os
 import json
 import time
 import subprocess
@@ -13,6 +12,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import List, Dict, Any, Optional
 from dataclasses import dataclass
+from functools import wraps
 
 # 尝试导入可选依赖
 try:
@@ -22,16 +22,70 @@ except ImportError:
     HAS_AKSHARE = False
 
 try:
-    import tushare as ts
+    import tushare as ts  # noqa: F401
     HAS_TUSHARE = True
 except ImportError:
     HAS_TUSHARE = False
 
 try:
-    import httpx
+    import httpx  # noqa: F401
     HAS_HTTPX = True
 except ImportError:
     HAS_HTTPX = False
+
+# 重试装饰器
+def retry_with_backoff(max_retries: int = 3, base_delay: float = 1.0, max_delay: float = 10.0):
+    """指数退避重试装饰器，专门处理网络异常"""
+    def decorator(func):
+        @wraps(func)
+        def wrapper(*args, **kwargs):
+            last_exception = None
+            for attempt in range(max_retries):
+                try:
+                    return func(*args, **kwargs)
+                except Exception as e:
+                    last_exception = e
+                    # 只对网络相关异常重试
+                    if isinstance(e, (ConnectionError, TimeoutError, OSError, IOError)):
+                        if attempt < max_retries - 1:
+                            delay = min(base_delay * (2 ** attempt), max_delay)
+                            time.sleep(delay)
+                            continue
+                    # 非网络异常或最后一次尝试，直接抛出
+                    raise
+            raise last_exception
+        return wrapper
+    return decorator
+
+
+# 专用于 AKShare 的重试装饰器（捕获更多网络异常类型）
+def retry_akshare(max_retries: int = 3, base_delay: float = 1.0, max_delay: float = 10.0):
+    """AKShare 专用重试装饰器，捕获更多网络异常类型"""
+    def decorator(func):
+        @wraps(func)
+        def wrapper(*args, **kwargs):
+            last_exception = None
+            for attempt in range(max_retries):
+                try:
+                    return func(*args, **kwargs)
+                except Exception as e:
+                    last_exception = e
+                    # 捕获常见网络异常：RemoteDisconnected, ConnectionError, TimeoutError, 等
+                    error_msg = str(e).lower()
+                    is_network_error = any(keyword in error_msg for keyword in [
+                        'remote', 'disconnect', 'connection', 'timeout', 'reset',
+                        'refused', 'unreachable', 'network', 'socket', 'ssl',
+                        'read timed out', 'connect timed out'
+                    ])
+                    if is_network_error or isinstance(e, (ConnectionError, TimeoutError, OSError, IOError)):
+                        if attempt < max_retries - 1:
+                            delay = min(base_delay * (2 ** attempt), max_delay)
+                            time.sleep(delay)
+                            continue
+                    raise
+            raise last_exception
+        return wrapper
+    return decorator
 
 
 @dataclass
@@ -82,6 +136,11 @@ def to_eastmoney_symbol(code: str) -> str:
 
 # ============== 实时行情 ==============
 
+@retry_with_backoff(max_retries=3, base_delay=1.0, max_delay=10.0)
+def _fetch_akshare_realtime():
+    """内部函数：获取 AKShare 全市场实时行情（带重试）"""
+    return ak.stock_zh_a_spot_em()
+
 def fetch_realtime_quote(symbols: List[str], source: str = 'akshare') -> List[FinanceData]:
     """获取实时行情
     
@@ -94,16 +153,7 @@ def fetch_realtime_quote(symbols: List[str], source: str = 'akshare') -> List[Fi
     if source == 'akshare' and HAS_AKSHARE:
         # AKShare 获取全市场行情再筛选
         try:
-            # 添加重试机制
-            max_retries = 3
-            for attempt in range(max_retries):
-                try:
-                    df = ak.stock_zh_a_spot_em()
-                    break
-                except Exception as retry_err:
-                    if attempt == max_retries - 1:
-                        raise retry_err
-                    time.sleep(1 * (attempt + 1))  # 指数退避
+            df = _fetch_akshare_realtime()
             df['symbol'] = df['代码'].apply(lambda x: f'{x}.SH' if x.startswith(('60','68','90')) else f'{x}.SZ')
             
             for sym in symbols:
@@ -168,12 +218,13 @@ def fetch_realtime_quote(symbols: List[str], source: str = 'akshare') -> List[Fi
                     resp = client.get(url, headers=headers, timeout=10)
                     resp.encoding = 'gbk'
                     if resp.status_code == 200:
-                        # 解析返回：var hq_str_sh600000="9.20,9.20,9.19,9.20,9.19,9.18,9.17,10000,20000,..."
+                        # 解析返回：var hq_str_sh600000="名称，今开，昨收，现价，最高，最低，成交量，成交额，日期，时间，..."
+                        # 字段索引：0=名称，1=今开，2=昨收，3=现价，4=最高，5=最低，6=成交量，7=成交额，8=日期，9=时间
                         text = resp.text
                         if '=' in text:
                             data_str = text.split('="')[1].rstrip('"')
                             parts = data_str.split(',')
-                            if len(parts) >= 32:
+                            if len(parts) >= 10:
                                 payload = {
                                     'name': parts[0],
                                     'open': float(parts[1]),
@@ -181,10 +232,8 @@ def fetch_realtime_quote(symbols: List[str], source: str = 'akshare') -> List[Fi
                                     'price': float(parts[3]),
                                     'high': float(parts[4]),
                                     'low': float(parts[5]),
-                                    'volume': int(parts[8]),
-                                    'amount': float(parts[9]),
-                                    'buy1': float(parts[11]) if parts[11] else 0,
-                                    'sell1': float(parts[16]) if parts[16] else 0,
+                                    'volume': int(parts[6]) if parts[6] else 0,
+                                    'amount': float(parts[7]) if parts[7] else 0,
                                 }
                                 results.append(FinanceData(
                                     source='sina',
@@ -201,30 +250,27 @@ def fetch_realtime_quote(symbols: List[str], source: str = 'akshare') -> List[Fi
 
 def _fetch_eastmoney_quote(symbol: str) -> Optional[Dict]:
     """通过 browser-cdp 抓取东方财富实时行情"""
-    script_path = Path(__file__).parent.parent.parent.parent / 'browser-cdp' / 'fetch_eastmoney_stock.py'
-    if not script_path.exists():
-        return None
-    
     try:
-        code = symbol.split('.')[0]
-        result = subprocess.run(
-            [sys.executable, str(script_path), code, '--headless'],
-            capture_output=True, text=True, encoding='utf-8', timeout=120
-        )
-        if result.returncode == 0:
-            # 解析输出中的JSON文件路径
-            for line in result.stdout.split('\n'):
-                if '数据已保存至:' in line:
-                    json_path = line.split('数据已保存至:')[-1].strip()
-                    if Path(json_path).exists():
-                        with open(json_path, 'r', encoding='utf-8') as f:
-                            return json.load(f)
+        from .eastmoney_fetcher import fetch_stock_data
+        finance_data = fetch_stock_data(symbol, headless=True)
+        return finance_data.to_dict()
     except Exception as e:
         print(f"东方财富抓取异常: {e}", file=sys.stderr)
-    return None
+        return None
 
 
 # ============== K线数据 ==============
+
+@retry_with_backoff(max_retries=3, base_delay=1.0, max_delay=10.0)
+def _fetch_akshare_kline(code: str, period: str, start: str, end: str, adjust: str):
+    """内部函数：获取 AKShare K线数据（带重试）"""
+    return ak.stock_zh_a_hist(
+        symbol=code,
+        period=period,
+        start_date=start,
+        end_date=end,
+        adjust=adjust
+    )
 
 def fetch_kline(
     symbol: str,
@@ -251,13 +297,7 @@ def fetch_kline(
     
     if source == 'akshare' and HAS_AKSHARE:
         try:
-            df = ak.stock_zh_a_hist(
-                symbol=code,
-                period=period,
-                start_date=start,
-                end_date=end,
-                adjust=adjust
-            )
+            df = _fetch_akshare_kline(code, period, start, end, adjust)
             df = df.rename(columns={
                 '日期': 'date', '开盘': 'open', '收盘': 'close',
                 '最高': 'high', '最低': 'low', '成交量': 'volume',
@@ -277,8 +317,9 @@ def fetch_kline(
 
 def _fetch_sina_kline(symbol: str, period: str = 'daily', start: str = '20240101', end: str = None) -> List[Dict]:
     """新浪财经 K线 API"""
-    if not HAS_HTTPX:
-        return []
+    # urllib is standard lib, skip HAS_HTTPX check
+    # if not HAS_HTTPX:
+    #     return []
     
     if end is None:
         end = datetime.now().strftime('%Y%m%d')
@@ -304,17 +345,24 @@ def _fetch_sina_kline(symbol: str, period: str = 'daily', start: str = '20240101
         idx = text.find('var=(')
         if idx < 0:
             return []
-        end = text.rfind(');')
-        json_str = text[idx + 5:end]
+        end_idx = text.rfind(');')
+        json_str = text[idx + 5:end_idx]
         data = json.loads(json_str)
         
         if not data:
             return []
         
+        # 日期范围过滤
         result = []
         for row in data:
+            row_date = row['day'][:10]  # 格式："2024-01-01 00:00:00" -> "2024-01-01"
+            row_date_fmt = row_date.replace('-', '')  # 转为 "20240101"
+            
+            if row_date_fmt < start or row_date_fmt > end:
+                continue
+                
             result.append({
-                'date': row['day'],
+                'date': row_date,
                 'open': float(row['open']),
                 'high': float(row['high']),
                 'low': float(row['low']),
@@ -329,6 +377,11 @@ def _fetch_sina_kline(symbol: str, period: str = 'daily', start: str = '20240101
 
 # ============== 财务报表 ==============
 
+@retry_akshare(max_retries=3, base_delay=1.0, max_delay=10.0)
+def _fetch_akshare_financial_report(code: str, report_type: str):
+    """内部函数：获取 AKShare 财务报表（带重试）"""
+    return ak.stock_financial_report_sina(stock=code, symbol=report_type)
+
 def fetch_financial(symbol: str, source: str = 'akshare') -> List[FinanceData]:
     """获取财务报表 (资产负债表、利润表、现金流量表)"""
     results = []
@@ -337,11 +390,11 @@ def fetch_financial(symbol: str, source: str = 'akshare') -> List[FinanceData]:
     if source == 'akshare' and HAS_AKSHARE:
         try:
             # 资产负债表
-            df_bs = ak.stock_financial_report_sina(stock=code, symbol='资产负债表')
+            df_bs = _fetch_akshare_financial_report(code, '资产负债表')
             # 利润表
-            df_is = ak.stock_financial_report_sina(stock=code, symbol='利润表')
+            df_is = _fetch_akshare_financial_report(code, '利润表')
             # 现金流量表
-            df_cf = ak.stock_financial_report_sina(stock=code, symbol='现金流量表')
+            df_cf = _fetch_akshare_financial_report(code, '现金流量表')
             
             for df, report_type in [(df_bs, 'balance_sheet'), (df_is, 'income_statement'), (df_cf, 'cash_flow')]:
                 if not df.empty:
@@ -361,6 +414,11 @@ def fetch_financial(symbol: str, source: str = 'akshare') -> List[FinanceData]:
     return results
 
 
+@retry_akshare(max_retries=3, base_delay=1.0, max_delay=10.0)
+def _fetch_akshare_dividend(code: str):
+    """内部函数：获取 AKShare 分红数据（带重试）"""
+    return ak.stock_fhps_detail_em(symbol=code)
+
 def fetch_dividend(symbol: str, source: str = 'akshare') -> List[FinanceData]:
     """获取分红配股数据"""
     results = []
@@ -368,17 +426,8 @@ def fetch_dividend(symbol: str, source: str = 'akshare') -> List[FinanceData]:
     
     if source == 'akshare' and HAS_AKSHARE:
         try:
-            import pandas as pd
-            # stock_fhps_em 不接受 symbol 参数，改用 stock_fhps_em_table
-            df_all = ak.stock_fhps_em_table()
-            # 过滤出目标股票的数据
-            if '股票代码' in df_all.columns:
-                df = df_all[df_all['股票代码'] == code]
-            elif '代码' in df_all.columns:
-                df = df_all[df_all['代码'] == code]
-            else:
-                df = pd.DataFrame()
-            
+            # 使用 stock_fhps_detail_em 获取单只股票的分红详情
+            df = _fetch_akshare_dividend(code)
             for _, row in df.iterrows():
                 results.append(FinanceData(
                     source='akshare',
@@ -392,6 +441,11 @@ def fetch_dividend(symbol: str, source: str = 'akshare') -> List[FinanceData]:
     
     return results
 
+
+@retry_akshare(max_retries=3, base_delay=1.0, max_delay=10.0)
+def _fetch_akshare_lhb(start_date: str, end_date: str):
+    """内部函数：获取 AKShare 龙虎榜数据（带重试）"""
+    return ak.stock_lhb_detail_em(start_date=start_date, end_date=end_date)
 
 def fetch_lhb(symbol: str = None, start_date: str = None, end_date: str = None, source: str = 'akshare') -> List[FinanceData]:
     """获取龙虎榜数据
@@ -412,7 +466,7 @@ def fetch_lhb(symbol: str = None, start_date: str = None, end_date: str = None, 
             if not start_date:
                 start_date = (datetime.now() - timedelta(days=30)).strftime('%Y%m%d')
             
-            df = ak.stock_lhb_detail_em(start_date=start_date, end_date=end_date)
+            df = _fetch_akshare_lhb(start_date, end_date)
             
             # 如果指定了股票代码，过滤数据
             if symbol:
@@ -441,27 +495,66 @@ def fetch_lhb(symbol: str = None, start_date: str = None, end_date: str = None, 
     return results
 
 
-def fetch_northbound(source: str = 'akshare') -> List[FinanceData]:
-    """获取北向资金数据"""
+@retry_akshare(max_retries=3, base_delay=1.0, max_delay=10.0)
+def _fetch_akshare_northbound():
+    """内部函数：获取 AKShare 北向资金汇总数据（带重试）"""
+    return ak.stock_hsgt_fund_flow_summary_em()
+
+@retry_akshare(max_retries=3, base_delay=1.0, max_delay=10.0)
+def _fetch_akshare_northbound_hist(symbol: str = '沪股通'):
+    """内部函数：获取 AKShare 北向资金历史数据（带重试）"""
+    return ak.stock_hsgt_hist_em(symbol=symbol)
+
+@retry_akshare(max_retries=3, base_delay=1.0, max_delay=10.0)
+def _fetch_akshare_northbound_hold(symbol: str):
+    """内部函数：获取 AKShare 个股北向持仓数据（带重试）"""
+    # 使用 stock_hsgt_individual_em 获取个股北向持仓详情
+    return ak.stock_hsgt_individual_em(symbol=symbol)
+
+def fetch_northbound(symbol: str = None, source: str = 'akshare') -> List[FinanceData]:
+    """获取北向资金数据
+    
+    Args:
+        symbol: 股票代码 (如 '600519.SH') 或板块名称 ('沪股通', '深股通')
+        source: 数据源
+    """
     results = []
     
     if source == 'akshare' and HAS_AKSHARE:
         try:
-            # 使用正确的 API 函数名
-            df = ak.stock_hsgt_fund_flow_summary_em()
-            for _, row in df.iterrows():
-                results.append(FinanceData(
-                    source='akshare',
-                    data_type='northbound',
-                    symbol='NORTHBOUND',
-                    timestamp=datetime.utcnow().isoformat(),
-                    payload=row.to_dict()
-                ))
+            if symbol:
+                # 如果提供了股票代码，获取个股北向持仓
+                code = to_akshare_symbol(symbol)
+                df = _fetch_akshare_northbound_hold(code)
+                for _, row in df.iterrows():
+                    results.append(FinanceData(
+                        source='akshare',
+                        data_type='northbound_hold',
+                        symbol=symbol,
+                        timestamp=datetime.utcnow().isoformat(),
+                        payload=row.to_dict()
+                    ))
+            else:
+                # 获取北向资金汇总数据
+                df = _fetch_akshare_northbound()
+                for _, row in df.iterrows():
+                    results.append(FinanceData(
+                        source='akshare',
+                        data_type='northbound',
+                        symbol='NORTHBOUND',
+                        timestamp=datetime.utcnow().isoformat(),
+                        payload=row.to_dict()
+                    ))
         except Exception as e:
             print(f"北向资金获取失败：{e}", file=sys.stderr)
     
     return results
 
+
+@retry_akshare(max_retries=3, base_delay=1.0, max_delay=10.0)
+def _fetch_akshare_stock_basic():
+    """内部函数：获取 AKShare 股票基础信息（带重试）"""
+    return ak.stock_zh_a_spot_em()
 
 def fetch_stock_basic(source: str = 'akshare') -> List[FinanceData]:
     """获取股票基础信息 (代码、名称、上市日期、行业等)"""
@@ -471,7 +564,7 @@ def fetch_stock_basic(source: str = 'akshare') -> List[FinanceData]:
         try:
             # stock_info_a_code_name 依赖 openpyxl，换用不依赖的接口
             # 使用 stock_zh_a_spot_em 获取基础信息（包含代码和名称）
-            df = ak.stock_zh_a_spot_em()
+            df = _fetch_akshare_stock_basic()
             for _, row in df.iterrows():
                 code = row['代码']
                 std_sym = f'{code}.SH' if code.startswith(('60','68','90')) else f'{code}.SZ'

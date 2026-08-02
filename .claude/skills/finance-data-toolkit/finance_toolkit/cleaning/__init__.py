@@ -82,6 +82,9 @@ __all__ = [
     # 质量监控
     'QualityMetrics',
     'QualityMonitor',
+    'DataQualityReport',
+    'QualityMetricsCalculator',
+    'QualityThreshold',
     # 缺失值处理
     'MissingValueHandler',
     'TimeSeriesMissingHandler',

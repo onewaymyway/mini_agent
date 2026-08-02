@@ -6,17 +6,14 @@
 特点: 免费、无需token、接口稳定、支持分钟级K线、有JSONP格式
 """
 
-import asyncio
 import json
-import re
-import time
 from datetime import datetime
-from typing import List, Dict, Any, Optional, AsyncIterator
+from typing import List, Optional, AsyncIterator
 from urllib.parse import urlencode
 
 import httpx
 
-from ..core import BaseScraper, FinanceData, register_scraper
+from ..core import BaseScraper, FinanceData
 
 
 # 新浪财经常用 API 端点
@@ -311,7 +308,7 @@ class SinaScraper(BaseScraper):
                 stock_code = code[2:]  # 去掉 sh/sz 前缀
                 url = f"{SINA_API['financial']}{stock_code}/displaytype/4.phtml"
                 
-                resp = await self.client.get(url)
+                await self.client.get(url)
                 # 这里需要解析 HTML 表格，简化实现
                 # 实际项目中建议使用 BeautifulSoup 解析
                 
@@ -340,7 +337,7 @@ class SinaScraper(BaseScraper):
                 stock_code = code[2:]
                 url = f"{SINA_API['dividend']}{stock_code}.phtml"
                 
-                resp = await self.client.get(url)
+                await self.client.get(url)
                 
                 yield FinanceData(
                     source='sina',
@@ -360,7 +357,7 @@ class SinaScraper(BaseScraper):
                 stock_code = code[2:]
                 url = f"{SINA_API['shareholder']}{stock_code}.phtml"
                 
-                resp = await self.client.get(url)
+                await self.client.get(url)
                 
                 yield FinanceData(
                     source='sina',
@@ -435,7 +432,7 @@ class SinaScraper(BaseScraper):
                 stock_code = code[2:]
                 url = f"{SINA_API['stock_basic']}{stock_code}.phtml"
                 
-                resp = await self.client.get(url)
+                await self.client.get(url)
                 
                 yield FinanceData(
                     source='sina',

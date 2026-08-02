@@ -1,0 +1,37 @@
+[project]
+name = "finance-toolkit"
+version = "1.0.0"
+description = "金融数据抓取与分析全链路工具箱"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "akshare>=1.12.0",
+    "tushare>=1.2.80",
+    "yfinance>=0.2.40",
+    "pandas>=2.0",
+    "numpy>=1.24",
+    "pydantic>=2.5",
+    "httpx>=0.25",
+    "lxml>=4.9",
+    "beautifulsoup4>=4.12",
+    "curl-cffi>=0.7",
+    "jieba>=0.42",
+    "snownlp>=0.12.3",
+    "matplotlib>=3.7",
+    "plotly>=5.17",
+    "jinja2>=3.1",
+    "arxiv>=2.1",
+    "websockets>=12.0",
+]
+
+[project.optional-dependencies]
+talib = ["talib-binary>=0.4.24"]
+transformers = ["transformers>=4.36"]
+
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["finance_toolkit*"]

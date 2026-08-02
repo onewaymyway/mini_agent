@@ -8,8 +8,8 @@ import json
 import re
 import hashlib
 from abc import ABC, abstractmethod
-from datetime import datetime, timedelta
-from typing import List, Dict, Optional, AsyncIterator, Callable
+from datetime import datetime
+from typing import List, Optional, Callable
 from urllib.parse import urljoin
 
 import httpx
@@ -62,14 +62,31 @@ class BaseNewsScraper(ABC):
     
     def _extract_symbols(self, text: str) -> List[str]:
         """从文本提取股票代码"""
-        patterns = [
-            r'\b([036]\d{5})\b',           # 纯数字 6 位
-            r'\b([SHSZ]\d{6})\b',          # SH/SZ + 6位
-            r'\b(\d{6}\.[SZSH])\b',       # 6位.SZ/SH
+        # 优先匹配带后缀的完整格式（去掉\b 边界，因为中文字符会影响匹配）
+        full_patterns = [
+            r'(\d{6}\.[SZSH]+)',       # 6 位.SZ/SH (如 000001.SZ)
+            r'([SHSZ]\d{6})',          # SH/SZ + 6 位 (如 SH600000)
         ]
+        # 纯数字格式作为备选
+        partial_pattern = r'([036]\d{5})'  # 纯数字 6 位 (如 000001)
+        
         symbols = []
-        for pat in patterns:
+        # 先收集所有完整格式
+        for pat in full_patterns:
             symbols.extend(re.findall(pat, text, re.IGNORECASE))
+        
+        # 收集纯数字格式，但过滤掉已经有完整格式的
+        partial_symbols = re.findall(partial_pattern, text, re.IGNORECASE)
+        for sym in partial_symbols:
+            # 检查这个纯数字是否有对应的完整格式
+            has_full_format = any(
+                sym.upper() in full_sym.upper() or 
+                full_sym.upper().endswith(sym.upper())
+                for full_sym in symbols
+            )
+            if not has_full_format:
+                symbols.append(sym)
+        
         return list(set(symbols))
     
     def _map_category(self, channel: str) -> NewsCategory:
@@ -110,11 +127,17 @@ class SinaNewsScraper(BaseNewsScraper):
         }
         try:
             resp = await self.client.get(self.API_LIST, params=params)
-            # 响应是 JSONP，需提取 JSON
-            json_str = re.search(r'\((.*)\)', resp.text, re.DOTALL)
+            # 响应是 JSONP，需提取 JSON - 使用非贪婪匹配并指定回调函数名
+            # 也支持纯 JSON 格式（用于测试）
+            json_str = re.search(r'jQuery11120\((\{.*?\})\);', resp.text, re.DOTALL)
             if not json_str:
-                return []
-            data = json.loads(json_str.group(1))
+                # 尝试纯 JSON 格式
+                try:
+                    data = json.loads(resp.text)
+                except json.JSONDecodeError:
+                    return []
+            else:
+                data = json.loads(json_str.group(1))
             
             news_list = []
             for item in data.get('result', {}).get('data', []):
@@ -134,10 +157,10 @@ class SinaNewsScraper(BaseNewsScraper):
                         raw=item,
                     )
                     news_list.append(news)
-                except Exception as e:
+                except Exception:
                     continue
             return news_list
-        except Exception as e:
+        except Exception:
             return []
     
     async def get_detail(self, url: str) -> FinanceNews:
@@ -188,7 +211,7 @@ class SinaNewsScraper(BaseNewsScraper):
         """解析新浪时间格式"""
         if not time_str:
             return None
-        # 格式: 2024-01-15 10:30:00 或 01月15日 10:30
+        # 格式: 2024-01-15 10:30:00 或 01月15日 10:30 或 Unix 时间戳
         patterns = [
             r'(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})',
             r'(\d{4}-\d{2}-\d{2} \d{2}:\d{2})',
@@ -203,8 +226,15 @@ class SinaNewsScraper(BaseNewsScraper):
                         year = datetime.now().year
                         dt_str = f"{year}-{dt_str.replace('月', '-').replace('日', '')}:00"
                     return datetime.strptime(dt_str, '%Y-%m-%d %H:%M:%S')
-                except:
+                except Exception:
                     continue
+        # 尝试解析 Unix 时间戳
+        try:
+            ts = int(time_str)
+            if ts > 1000000000:  # 合理的时间戳范围
+                return datetime.fromtimestamp(ts)
+        except Exception:
+            pass
         return None
 
 
@@ -237,8 +267,11 @@ class CLSNewsScraper(BaseNewsScraper):
             resp = await self.client.get(self.API_TELEGRAPH, params=params)
             data = resp.json()
             
+            # 财联社 API 返回格式：{'data': {'items': [...]}}
+            items = data.get('data', {}).get('items', []) if isinstance(data.get('data'), dict) else data.get('data', [])
+            
             news_list = []
-            for item in data.get('data', []):
+            for item in items:
                 news = FinanceNews(
                     news_id=f"cls_{item.get('id', '')}",
                     source=NewsSource.CLS,
@@ -255,13 +288,12 @@ class CLSNewsScraper(BaseNewsScraper):
                 )
                 news_list.append(news)
             return news_list
-        except Exception as e:
+        except Exception:
             return []
     
     async def get_detail(self, url: str) -> FinanceNews:
         """抓取详情页 (电报通常已含全文)"""
         # 财联社电报列表已含完整内容，直接返回
-        telegraph_id = url.split('/')[-1]
         return await self.get_latest_list(page=1, page_size=1)
     
     async def connect_ws(self):
@@ -275,7 +307,7 @@ class CLSNewsScraper(BaseNewsScraper):
             }))
             self._running = True
             asyncio.create_task(self._listen_ws())
-        except Exception as e:
+        except Exception:
             pass
     
     async def _listen_ws(self):
@@ -290,9 +322,9 @@ class CLSNewsScraper(BaseNewsScraper):
                     for cb in self.callbacks:
                         try:
                             await cb(news)
-                        except:
+                        except Exception:
                             pass
-        except:
+        except Exception:
             pass
     
     def _parse_telegraph(self, item: dict) -> FinanceNews:
@@ -349,9 +381,14 @@ class WallstreetcnScraper(BaseNewsScraper):
             data = resp.json()
             
             news_list = []
+            seen_ids = set()
             for item in data.get('data', {}).get('items', []):
+                item_id = item.get('id', '')
+                if item_id in seen_ids:
+                    continue
+                seen_ids.add(item_id)
                 news = FinanceNews(
-                    news_id=f"wscn_{item.get('id', '')}",
+                    news_id=f"wscn_{item_id}",
                     source=NewsSource.WALLSTREETCN,
                     category=self._map_wscn_category(item.get('channel', '')),
                     title=item.get('title', ''),
@@ -361,13 +398,17 @@ class WallstreetcnScraper(BaseNewsScraper):
                     author=item.get('author', {}).get('name', ''),
                     publish_time=datetime.fromtimestamp(item.get('display_time', 0)) if item.get('display_time') else None,
                     symbols=self._extract_symbols(item.get('title', '') + item.get('summary', '')),
-                    keywords=[tag.get('name', '') for tag in item.get('tags', [])],
+                    keywords=[tag.get('name', '') if isinstance(tag, dict) else tag for tag in item.get('tags', [])],
                     raw=item,
                 )
                 news_list.append(news)
             return news_list
-        except Exception as e:
+        except Exception:
             return []
+    
+    async def get_live_feed(self, limit: int = 20) -> List[FinanceNews]:
+        """获取实时快讯流（get_latest_list 的别名）"""
+        return await self.get_latest_list(page=1, page_size=limit)
     
     async def get_detail(self, url: str) -> FinanceNews:
         """抓取详情页"""
@@ -523,7 +564,8 @@ class ArxivScraper(BaseNewsScraper):
         
         search_query = query or ''
         if categories:
-            search_query += ' ' + ' OR '.join(f'cat:{c}' for c in categories)
+            # arxiv library uses 'all:' prefix for category search, not 'cat:'
+            search_query += ' ' + ' OR '.join(f'all:{c}' for c in categories)
         if date_from:
             search_query += f' submittedDate:[{date_from.strftime("%Y%m%d")} TO *]'
         
@@ -557,7 +599,7 @@ class ArxivScraper(BaseNewsScraper):
                         'comment': paper.comment,
                     },
                 ))
-        except Exception as e:
+        except Exception:
             pass
         return papers
     
@@ -638,7 +680,7 @@ class RegulatorScraper(BaseNewsScraper):
                     raw={'source': name, 'html': str(item)[:500]},
                 ))
             return news_list
-        except Exception as e:
+        except Exception:
             return []
     
     def _parse_regulator_time(self, time_str: str) -> Optional[datetime]:
@@ -658,7 +700,7 @@ class RegulatorScraper(BaseNewsScraper):
                     if len(dt_str) == 5:  # MM-DD
                         dt_str = f"{datetime.now().year}-{dt_str}"
                     return datetime.strptime(dt_str, '%Y-%m-%d')
-                except:
+                except Exception:
                     continue
         return None
     

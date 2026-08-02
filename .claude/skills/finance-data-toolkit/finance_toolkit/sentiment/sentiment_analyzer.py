@@ -17,8 +17,6 @@
 符合 finance-data-toolkit 统一数据契约
 """
 
-import sys
-import os
 import re
 import json
 import jieba
@@ -26,7 +24,7 @@ import jieba.posseg as pseg
 import jieba.analyse
 from datetime import datetime
 from pathlib import Path
-from typing import List, Dict, Any, Optional, Tuple
+from typing import List, Dict, Any, Optional
 from dataclasses import dataclass, asdict
 from collections import Counter
 
@@ -110,7 +108,7 @@ NEGATION_WORDS = {
 DEGREE_WORDS = {
     '极其': 2.0, '非常': 1.8, '特别': 1.7, '十分': 1.6, '很': 1.3,
     '比较': 1.2, '较': 1.1, '有点': 0.8, '略微': 0.6, '稍微': 0.5,
-    '相当': 1.5, '十分': 1.6, '极度': 2.0, '超级': 2.0, '特': 1.7,
+    '相当': 1.5, '极度': 2.0, '超级': 2.0, '特': 1.7,
     '蛮': 1.2, '挺': 1.2, '老': 1.1, '死': 1.5,
 }
 

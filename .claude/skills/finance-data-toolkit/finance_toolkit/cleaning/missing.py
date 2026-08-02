@@ -3,7 +3,7 @@
 支持前向填充、线性插值、零值填充、标记 NaN 等策略
 """
 
-from typing import Any, Dict, List, Optional, Union
+from typing import Any, Dict, List, Optional
 from dataclasses import dataclass
 from enum import Enum
 import pandas as pd

@@ -1,15 +1,13 @@
 # -*- coding: utf-8 -*-
 """
 技术指标计算库
-统一了 fetch_kline_sina.py 和 calc_technical_indicators.py 的实现
+统一了 sina_kline_fetcher.py 和 indicators.py 的实现
 支持 pandas/TA-Lib 两种计算模式
 符合 finance-data-toolkit 架构
 """
 
 import pandas as pd
-import numpy as np
 from typing import List, Dict, Any, Optional, Union
-from dataclasses import dataclass
 
 
 # ============== 纯 Python 实现 (无依赖) ==============
@@ -343,7 +341,6 @@ def analyze_kline_data(kline: List[Dict]) -> Dict[str, Any]:
     closes = [k['close'] for k in kline]
     highs = [k['high'] for k in kline]
     lows = [k['low'] for k in kline]
-    volumes = [k['volume'] for k in kline]
 
     # 计算所有指标
     indicators = {
@@ -521,13 +518,20 @@ def generate_signals_talib(df: pd.DataFrame) -> pd.DataFrame:
     signals['TECH_SCORE'] = score
 
     def score_to_signal(s):
-        if s >= 8: return '强烈买入'
-        elif s >= 4: return '买入'
-        elif s >= 1: return '弱买入'
-        elif s >= -1: return '中性'
-        elif s >= -4: return '弱卖出'
-        elif s >= -8: return '卖出'
-        else: return '强烈卖出'
+        if s >= 8:
+            return '强烈买入'
+        elif s >= 4:
+            return '买入'
+        elif s >= 1:
+            return '弱买入'
+        elif s >= -1:
+            return '中性'
+        elif s >= -4:
+            return '弱卖出'
+        elif s >= -8:
+            return '卖出'
+        else:
+            return '强烈卖出'
 
     signals['SIGNAL'] = signals['TECH_SCORE'].apply(score_to_signal)
     return signals

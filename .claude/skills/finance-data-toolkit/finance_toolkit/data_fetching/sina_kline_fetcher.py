@@ -8,13 +8,11 @@
 import sys
 import os
 import json
-import re
 import time
 import argparse
 import urllib.request
 import urllib.error
 from datetime import datetime
-from pathlib import Path
 from typing import List, Dict, Any, Optional
 from dataclasses import dataclass, asdict
 
@@ -69,14 +67,14 @@ def fetch_kline(code: str, scale: str = '240', datalen: int = 1023,
             # 提取 JSONP 数据: var=(...);
             idx = text.find('var=(')
             if idx < 0:
-                raise ValueError(f"Invalid response: no 'var=(' found")
+                raise ValueError("Invalid response: no 'var=(' found")
             end = text.rfind(');')
             if end < 0:
-                raise ValueError(f"Invalid response: no ');' found")
+                raise ValueError("Invalid response: no ');' found")
             json_str = text[idx + 5:end]
             data = json.loads(json_str)
             if not data:
-                raise ValueError(f"Empty data returned")
+                raise ValueError("Empty data returned")
             return data
 
         except (urllib.error.URLError, json.JSONDecodeError, ValueError) as e:
@@ -307,7 +305,7 @@ def analyze_stock(code: str, datalen: int = 1023, scale: str = '240', output_dir
         print(f"  ✓ 时间范围: {raw[0]['day']} ~ {raw[-1]['day']}")
 
     # 2. 数据预处理
-    print(f"[2/4] 数据预处理...")
+    print("[2/4] 数据预处理...")
     kline = []
     for row in raw:
         kline.append({
@@ -321,10 +319,9 @@ def analyze_stock(code: str, datalen: int = 1023, scale: str = '240', output_dir
     closes = [k['close'] for k in kline]
     highs = [k['high'] for k in kline]
     lows = [k['low'] for k in kline]
-    volumes = [k['volume'] for k in kline]
 
     # 3. 计算技术指标
-    print(f"[3/4] 计算技术指标...")
+    print("[3/4] 计算技术指标...")
     indicators = {
         'MA': {
             'MA5': calc_ma(closes, 5),
@@ -344,10 +341,10 @@ def analyze_stock(code: str, datalen: int = 1023, scale: str = '240', output_dir
         'BOLL': calc_boll(closes, 20, 2),
         'KDJ': calc_kdj(highs, lows, closes),
     }
-    print(f"  ✓ MA / EMA / MACD / RSI / BOLL / KDJ 计算完成")
+    print("  ✓ MA / EMA / MACD / RSI / BOLL / KDJ 计算完成")
 
     # 4. 生成信号
-    print(f"[4/4] 生成交易信号...")
+    print("[4/4] 生成交易信号...")
     signals = generate_signals(kline, indicators)
     for sig, desc in signals.items():
         print(f"  • {desc}")

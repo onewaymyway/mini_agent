@@ -14,6 +14,20 @@ from .fetchers import (
     DataFetcher,
     default_fetcher,
 )
+
+# 异步抓取器
+try:
+    from .async_fetchers import (
+        async_fetch_realtime_quote,
+        async_fetch_kline,
+        async_fetch_multiple_stocks,
+        fetch_with_fallback,
+        AsyncHTTPClient,
+        AsyncFinanceData,
+    )
+except ImportError:
+    pass
+
 from .eastmoney_fetcher import fetch_stock_data as fetch_eastmoney_quote
 from .sina_kline_fetcher import analyze_stock as fetch_sina_kline
 from .guba_scraper import (
@@ -32,6 +46,7 @@ from .guba_scraper import (
 )
 
 __all__ = [
+    # 同步函数
     'fetch_realtime_quote',
     'fetch_kline',
     'fetch_financial',
@@ -43,6 +58,16 @@ __all__ = [
     'default_fetcher',
     'fetch_eastmoney_quote',
     'fetch_sina_kline',
+    
+    # 异步函数
+    'async_fetch_realtime_quote',
+    'async_fetch_kline',
+    'async_fetch_multiple_stocks',
+    'fetch_with_fallback',
+    'AsyncHTTPClient',
+    'AsyncFinanceData',
+    
+    # 股吧
     'GubaPost',
     'GubaComment',
     'GubaUserProfile',

@@ -5,9 +5,8 @@ Tushare Pro 抓取器实现
 支持: 实时行情、历史K线、财务报表、分红配股、股本结构、龙虎榜、北向资金、基金/期货/期权等
 """
 
-import asyncio
 from datetime import datetime
-from typing import List, Dict, Any, Optional, AsyncIterator
+from typing import List, Optional, AsyncIterator
 
 try:
     import tushare as ts
@@ -64,14 +63,22 @@ class TushareScraper(BaseScraper):
         # 标准化代码格式: 600000.SH -> 600000.SH (tushare格式一致)
         codes = [s.upper() for s in symbols]
         
+        # Handle start/end as either datetime or string
+        def to_date_str(dt, default):
+            if dt is None:
+                return default
+            if isinstance(dt, str):
+                return dt
+            return dt.strftime('%Y%m%d')
+        
         if data_type == 'quote':
             async for item in self._fetch_realtime_quote(codes):
                 yield item
         elif data_type == 'kline':
             period = kwargs.get('period', 'D')  # D=日线, W=周线, M=月线, 60=60分钟等
             adj = kwargs.get('adj', 'qfq')  # qfq=前复权, hfq=后复权, None=不复权
-            start_str = start.strftime('%Y%m%d') if start else '20240101'
-            end_str = end.strftime('%Y%m%d') if end else datetime.now().strftime('%Y%m%d')
+            start_str = to_date_str(start, '20240101')
+            end_str = to_date_str(end, datetime.now().strftime('%Y%m%d'))
             async for item in self._fetch_kline(codes, period, start_str, end_str, adj):
                 yield item
         elif data_type == 'financial':
@@ -137,7 +144,7 @@ class TushareScraper(BaseScraper):
                     timestamp=datetime.utcnow(),
                     payload=payload
                 )
-        except Exception as e:
+        except Exception:
             # 降级：使用 daily 接口获取最新收盘价
             for code in codes:
                 try:

@@ -299,4 +299,234 @@ cs.css("600000.SH", "open,high,low,close,volume", "2024-01-01", "2024-12-31")
 
 ---
 
+## 11. 腾讯财经（免登录）
+
+### 11.1 实时行情
+```
+GET https://qt.gtimg.cn/q=<code_list>
+```
+- `code_list`: 逗号分隔，格式 `sh600000,sz000001`
+- 返回格式：`v_sh600000="1~浦发银行~600000~10.50~10.45~...";`
+- 字段（按 ~ 分隔）：1=状态 2=名称 3=代码 4=当前价 5=昨收 6=今开 7=成交量 8=外盘 9=内盘 10=买一价 11=买一量 12=卖一价 13=卖一量 14=最高 15=最低 16=价格 17=数量 18=成交额 19=日期 20=时间 21=涨跌幅 22=涨跌额 23=换手率 24=市盈率 25=总市值 26=流通市值
+
+### 11.2 历史 K 线
+```
+GET https://web.ifzq.gtimg.cn/appstock/app/fqkline/get?
+```
+| 参数 | 必填 | 说明 |
+|------|------|------|
+| `_var` | 否 | 回调函数名 |
+| `param` | 是 | `代码,日/周/月,k线起始,结束` 如 `sh600000,day,,,2024-12-31` |
+
+### 11.3 财务数据
+```
+GET https://web.ifzq.gtimg.cn/appstock/app/finance/report/get?type=reportdata&code=<code>
+```
+
+---
+
+## 12. 网易财经（免登录）
+
+### 12.1 实时行情
+```
+GET https://api.money.126.net/data/feed/<code_list>.money
+```
+- `code_list`: 格式 `000001,600000`（无需 sh/sz 前缀）
+- 返回 JSONP，需提取 JSON
+- 字段：name(名称), code(代码), last_close(昨收), open(今开), high(最高), low(最低), price(当前价), volume(成交量), amount(成交额), change(涨跌额), ratio(涨跌幅)
+
+### 12.2 历史 K 线
+```
+GET https://api.money.126.net/data/feed/<code>.money.js
+```
+- 返回 JS 变量，需正则提取
+
+---
+
+## 13. 百度股市通（免登录）
+
+### 13.1 实时行情
+```
+GET https://finance.pae.baidu.com/selfselect/openapi?srcid=5352&query=<code>&type=sh,sz&finClientType=pc
+```
+- 返回 JSON，包含实时行情、K线、财务摘要
+
+### 13.2 实时行情（备用接口）
+```
+GET https://finance.pae.baidu.com/vapi/v1/getquotation?srcid=5352&query=<code_list>&type=sh,sz&finClientType=pc
+```
+
+### 13.3 历史 K 线
+```
+GET https://finance.pae.baidu.com/vapi/v1/getquotation?srcid=5352&query=<code>&type=sh,sz&finClientType=pc&ktype=daily
+```
+
+---
+
+## 14. 中金在线（免登录）
+
+### 14.1 实时行情
+```
+GET https://quote.jrj.com.cn/js/<code>/realtime.js
+```
+- `code`: 格式 `sh600000` 或 `sz000001`
+- 返回 JS 变量，需正则提取
+
+### 14.2 实时行情（批量）
+```
+GET https://quote.jrj.com.cn/js/stock/<code_list>.js
+```
+
+---
+
+## 15. 和讯网（免登录）
+
+### 15.1 实时行情
+```
+GET https://quotes.money.163.com/service/<code_list>.html
+```
+- `code_list`: 格式 `0sh600000,0sz000001`
+- 返回 CSV 格式，需解析
+
+### 15.2 历史 K 线
+```
+GET https://quotes.money.163.com/service/chddata.html
+```
+| 参数 | 必填 | 说明 |
+|------|------|------|
+| `code` | 是 | 如 `0600000` |
+| `start` | 是 | 开始日期 `2024-01-01` |
+| `end` | 是 | 结束日期 `2024-12-31` |
+| `fields` | 否 | `TCLOSE,HIGH,LOW,OPEN,CLOSE` |
+
+---
+
+## 16. 凤凰财经（免登录）
+
+### 16.1 实时行情
+```
+GET https://api.finance.ifeng.com/akdaily/?code=<code>
+```
+- `code`: 格式 `sh600000` 或 `sz000001`
+- 返回 JSON，包含历史 K 线数据
+
+### 16.2 实时行情（批量）
+```
+GET https://api.finance.ifeng.com/akdaily/?code=<code_list>
+```
+
+---
+
+## 17. 东方财富（免登录补充）
+
+### 17.1 板块行情
+```
+GET https://push2.eastmoney.com/api/qt/clist/get
+```
+| 参数 | 必填 | 说明 |
+|------|------|------|
+| `pn` | 否 | 页码 |
+| `pz` | 否 | 每页条数 |
+| `po` | 否 | 排序方向 |
+| `np` | 否 | 是否翻页 |
+| `fltt` | 否 | 复权类型 |
+| `invt` | 否 | 市场类型 `2`=沪深A股 |
+| `fid` | 否 | 排序字段 |
+| `fs` | 是 | 市场代码 `m:0+t:6`(沪A) `m:1+t:8`(深A) |
+| `fields` | 否 | 返回字段 |
+
+### 17.2 概念板块
+```
+GET https://push2.eastmoney.com/api/qt/clist/get?pn=1&pz=20&po=1&np=1&fltt=2&invt=2&fid=f3&fs=m:90+t:2&fields=f1,f2,f3,f4,f12,f13,f14
+```
+
+### 17.3 行业板块
+```
+GET https://push2.eastmoney.com/api/qt/clist/get?pn=1&pz=20&po=1&np=1&fltt=2&invt=2&fid=f3&fs=m:90+t:3&fields=f1,f2,f3,f4,f12,f13,f14
+```
+
+---
+
+## 18. 新浪（免登录补充）
+
+### 18.1 港股行情
+```
+GET https://hq.sinajs.cn/list=hk00700,hk09961
+```
+- 格式：`var hq_str_hk00700="腾讯控股,300.20,...";`
+
+### 18.2 美股行情
+```
+GET https://hq.sinajs.cn/list=gb_aapl,gb_googl
+```
+- 格式：`var hq_str_gb_aapl="Apple Inc,150.00,...";`
+
+### 18.3 指数行情
+```
+GET https://hq.sinajs.cn/list=s_sh000001,s_sz399001,s_sz399006
+```
+- 格式：`var hq_str_s_sh000001="上证指数,3088.36,...";`
+
+---
+
+## 19. 其他免登录数据源
+
+### 19.1 中国基金网（基金数据）
+```
+GET https://fund.eastmoney.com/pingzhongdata/<code>.js
+```
+- 返回 JS 变量，包含基金净值、持仓等信息
+
+### 19.2 期货数据（新浪）
+```
+GET https://hq.sinajs.cn/list=hf_GC,hf_CL,hf_SI
+```
+- 国际期货主力合约
+
+### 19.3 外汇数据（新浪）
+```
+GET https://hq.sinajs.cn/list=hf_USDCNY,hf_EURCNY
+```
+
+---
+
+## 20. 限流与反爬汇总表（更新）
+
+| 数据源 | 限流策略 | 反爬等级 | 推荐方案 |
+|--------|----------|----------|----------|
+| 东方财富 | IP+Cookie 限流，约 60 req/min | 中 | 代理池 + Cookie 池 + 签名逆向 |
+| 同花顺 | Referer 检查 + JS 混淆 | 中高 | CDP 浏览器模式 |
+| 新浪财经 | 无明显限流，高频会封 IP | 低 | 直接 requests + 适当延迟 |
+| 雪球 | 必须登录，Cookie 失效快 | 高 | CDP 登录维持 + 代理轮换 |
+| 财联社 | Token 机制，频率限制 | 中 | Token 缓存 + 定时刷新 |
+| 华尔街见闻 | Bearer Token，严格限流 | 中高 | 登录获取 Token + 代理 |
+| AKShare | 无限流(本地库) | 无 | 直接调用 |
+| Tushare | 积分制，120分/分钟 | 无 | 积分管理 + 缓存 |
+| Wind/Choice | 终端授权，无网络限流 | 无 | 官方 SDK |
+| **腾讯财经** | 无明显限流 | 低 | 直接 requests |
+| **网易财经** | 无明显限流 | 低 | 直接 requests |
+| **百度股市通** | 无明显限流 | 低 | 直接 requests |
+| **中金在线** | 无明显限流 | 低 | 直接 requests |
+| **和讯网** | 无明显限流 | 低 | 直接 requests |
+| **凤凰财经** | 无明显限流 | 低 | 直接 requests |
+
+---
+
+## 21. 常用错误码速查（更新）
+
+| 数据源 | 错误码 | 含义 | 处理 |
+|--------|--------|------|------|
+| 东方财富 | 403 | IP 封禁/签名错误 | 换代理、更新签名算法 |
+| 东方财富 | 返回空数据 | 参数错误/股票代码格式错 | 检查 secid 格式 |
+| 同花顺 | 返回乱码/空 | Referer 缺失/JS 解析失败 | 加 Referer、用 CDP |
+| 雪球 | 401/403 | Cookie 失效/未登录 | 重新登录获取 Cookie |
+| 财联社 | 401 | Token 过期 | 刷新 Token |
+| Tushare | -200 | 积分不足 | 等待积分恢复/升级权限 |
+| AKShare | 各类异常 | 接口变更/网络错误 | 更新库版本、加重试 |
+| **腾讯财经** | 返回空 | 代码格式错误 | 检查 sh/sz 前缀 |
+| **网易财经** | 返回空 | 代码格式错误 | 检查代码格式 |
+| **百度股市通** | 返回空 | 代码不存在 | 检查代码是否正确 |
+
+---
+
 > **完整 API 手册**请查阅 `references/full-api-docs/` 目录下的各数据源详细文档

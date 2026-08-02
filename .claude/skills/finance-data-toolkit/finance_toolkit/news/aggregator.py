@@ -6,8 +6,7 @@ import asyncio
 import hashlib
 import logging
 from datetime import datetime, timedelta
-from typing import List, Dict, Optional, Set
-from collections import defaultdict
+from typing import List, Dict
 
 from .models import FinanceNews, NewsSource, NewsCategory
 from .scrapers import (
@@ -187,6 +186,12 @@ class NewsAggregator:
             if any(sym in news.symbols for sym in symbols):
                 filtered.append(news)
         return filtered
+    
+    async def close(self):
+        """关闭聚合器中所有抓取器"""
+        for scraper in self.scrapers.values():
+            if hasattr(scraper, 'close'):
+                await scraper.close()
     
     async def fetch_hot_topics(self,
         sources: List[NewsSource] = None,

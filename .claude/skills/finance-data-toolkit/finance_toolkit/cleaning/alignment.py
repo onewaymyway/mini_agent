@@ -3,10 +3,9 @@
 多源数据时间对齐、重采样、交易时段过滤
 """
 
-from typing import Any, Dict, List, Optional, Union
+from typing import Dict, List, Optional
 import pandas as pd
-import numpy as np
-from datetime import datetime, time, timedelta
+from datetime import time
 
 
 class TimeAligner:
@@ -353,7 +352,7 @@ class CalendarAligner:
         df = df.reindex(full_range)
         
         # 标记交易日
-        is_trading = full_range.normalize().isin(self.calendar)
+        is_trading_day = full_range.normalize().isin(self.calendar)
         
         # 填充
         if method == 'ffill':

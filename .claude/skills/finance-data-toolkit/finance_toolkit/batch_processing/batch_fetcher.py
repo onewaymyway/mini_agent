@@ -14,7 +14,6 @@ from datetime import datetime
 from pathlib import Path
 from typing import List, Dict, Any, Optional
 from dataclasses import dataclass, asdict
-from concurrent.futures import ThreadPoolExecutor, as_completed
 
 
 @dataclass
@@ -34,7 +33,17 @@ class FinanceData:
 
 def run_browser_script(script_name: str, args: list) -> str:
     """运行 browser-cdp 脚本并返回输出"""
-    script_path = Path(__file__).parent.parent.parent.parent / 'browser-cdp' / script_name
+    # 根据脚本名称映射到新目录结构
+    script_map = {
+        'browser_launch.py': 'browser_ops/browser_launch.py',
+        'browser_nav.py': 'browser_ops/browser_nav.py',
+        'browser_console.py': 'browser_ops/browser_console.py',
+        'browser_extract.py': 'browser_ops/browser_extract.py',
+        'browser_input.py': 'browser_ops/browser_input.py',
+        'browser_screenshot.py': 'browser_ops/browser_screenshot.py',
+    }
+    new_path = script_map.get(script_name, script_name)
+    script_path = Path(__file__).parent.parent.parent.parent / 'browser-cdp' / new_path
     cmd = [sys.executable, str(script_path)] + args
     result = subprocess.run(cmd, capture_output=True, text=True, encoding='utf-8', timeout=120)
     if result.returncode != 0:
@@ -52,7 +61,7 @@ def fetch_single_stock(symbol: str, headless: bool = True, output_dir: Path = No
     
     url = f'https://quote.eastmoney.com/{url_symbol}.html'
     
-    print(f"[1/4] 启动/复用浏览器实例...")
+    print("[1/4] 启动/复用浏览器实例...")
     launch_args = ['--dedicated', '--name', f'stock_{symbol}', '--start-url', url]
     if headless:
         launch_args.append('--headless')
@@ -100,7 +109,7 @@ def fetch_single_stock(symbol: str, headless: bool = True, output_dir: Path = No
     print(f"[2/4] 导航到 {url}...")
     run_browser_script('browser_nav.py', ['--port', port, '--tab', tab_id, '--goto', url])
     
-    print(f"[3/4] 等待页面完全加载并提取内容...")
+    print("[3/4] 等待页面完全加载并提取内容...")
     time.sleep(3)
     
     # 执行JavaScript获取实时行情数据
@@ -139,13 +148,13 @@ def fetch_single_stock(symbol: str, headless: bool = True, output_dir: Path = No
     js_data = {}
     try:
         js_data = json.loads(js_result.strip())
-    except:
+    except Exception:
         pass
     
-    print(f"[3/4] 提取页面内容...")
+    print("[3/4] 提取页面内容...")
     text = run_browser_script('browser_extract.py', ['--port', port, '--tab', tab_id, '--mode', 'text'])
     
-    print(f"[4/4] 解析结构化数据...")
+    print("[4/4] 解析结构化数据...")
     # 这里简化解析，实际应调用 eastmoney_fetcher.parse_eastmoney_stock
     data = {'symbol': symbol, 'source': 'eastmoney', 'timestamp': datetime.now().isoformat()}
     

@@ -10,7 +10,6 @@
 """
 
 import sys
-import os
 import json
 import time
 import hashlib
@@ -18,7 +17,6 @@ import asyncio
 from datetime import datetime, timedelta
 from typing import List, Dict, Any, Optional, AsyncIterator
 from dataclasses import dataclass, asdict
-from pathlib import Path
 
 # 尝试导入可选依赖
 try:
@@ -28,10 +26,17 @@ except ImportError:
     HAS_HTTPX = False
 
 try:
-    import pandas as pd
+    import pandas as pd  # noqa: F401
     HAS_PANDAS = True
 except ImportError:
     HAS_PANDAS = False
+
+# 尝试导入 nest_asyncio 用于支持嵌套事件循环
+try:
+    import nest_asyncio
+    HAS_NEST_ASYNCIO = True
+except ImportError:
+    HAS_NEST_ASYNCIO = False
 
 
 @dataclass
@@ -51,6 +56,7 @@ class GubaPost:
     content: str              # 正文内容（HTML 或纯文本）
     stock_codes: List[str]    # 涉及股票代码列表
     board: str                # 所属板块
+    url: str = ''             # 帖子链接
     sentiment: Optional[float] = None  # 情感得分 [-1, 1]
     keywords: List[str] = None         # 提取关键词
     raw: Optional[Dict] = None         # 原始响应数据
@@ -232,8 +238,8 @@ class GubaCDPScraper:
             # 这里需要 browser-cdp skill 的支持
             # 实际使用时请确保已启动 CDP 浏览器
             try:
-                import websocket
-                import uuid
+                import websocket  # noqa: F401
+                import uuid  # noqa: F401
                 self._browser = {
                     'endpoint': self.cdp_endpoint,
                     'ws': None,
@@ -247,6 +253,7 @@ class GubaCDPScraper:
         """发送 CDP 命令"""
         browser = await self._get_browser()
         if browser['ws'] is None:
+            import websocket
             browser['ws'] = websocket.create_connection(browser['endpoint'])
         
         browser['msg_id'] += 1
@@ -421,11 +428,10 @@ class GubaCDPScraper:
             if isinstance(post_links, list):
                 for href in post_links:
                     if 'news,' in href:
-                        pid = href.split('news,')[-1].replace('.html', '')
                         try:
                             post = await self.get_post_detail(f'https://guba.eastmoney.com{href}')
                             recent_stocks.extend(post.stock_codes)
-                        except:
+                        except Exception:
                             pass
             
             recent_stocks = list(set(recent_stocks))
@@ -491,7 +497,7 @@ class GubaIncrementalSync:
                     if pub_time < cutoff_time:
                         await self.api.close()
                         return new_posts
-                except:
+                except Exception:
                     pass
                 
                 # 去重检查
@@ -581,23 +587,30 @@ async def fetch_guba_user_profile(user_id: str, cdp_endpoint: str = 'http://127.
 # ============== 同步包装器（供同步代码调用） ==============
 
 def _run_async(coro):
-    """安全运行异步协程：检测是否在已有事件循环中"""
+    """安全运行异步协程：检测是否在已有事件循环中，支持 nest_asyncio"""
     try:
         # 检查是否已在事件循环中
         loop = asyncio.get_running_loop()
-        # 已在事件循环中，无法使用 asyncio.run，抛出友好错误
-        raise RuntimeError(
-            "sync_fetch_guba_posts 不能在 async 事件循环内调用。"
-            "请改用 async 版本：await fetch_guba_posts(...)"
-            "或者安装 nest_asyncio 并调用 nest_asyncio.apply() 后再使用同步包装器。"
-        )
+        # 已在事件循环中
+        if HAS_NEST_ASYNCIO:
+            # 使用 nest_asyncio 支持嵌套事件循环
+            nest_asyncio.apply()
+            # 在已有循环中运行，使用 run_until_complete 而不是 asyncio.run
+            return loop.run_until_complete(coro)
+        else:
+            # 未安装 nest_asyncio，抛出友好错误
+            raise RuntimeError(
+                "sync_fetch_guba_posts 不能在 async 事件循环内调用。"
+                "请改用 async 版本：await fetch_guba_posts(...)"
+                "或者安装 nest_asyncio (pip install nest_asyncio) 后再使用同步包装器。"
+            )
     except RuntimeError as e:
         # asyncio.get_running_loop() 在没有事件循环时会抛出 "no running event loop"
         if "no running event loop" in str(e):
             # 没有事件循环，可以安全使用 asyncio.run
             return asyncio.run(coro)
         else:
-            # 其他 RuntimeError（包括已在事件循环中的情况），重新抛出
+            # 其他 RuntimeError，重新抛出
             raise
 
 def sync_fetch_guba_posts(stock_code: str, page: int = 1, page_size: int = 50,
