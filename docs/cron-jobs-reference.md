@@ -25,6 +25,14 @@ LLM 调用"。本文档只做汇总和索引，不重复各 job 背后的详细�
 `disable`，不可以 `remove`**；均可用 `/cron set-schedule` 调整触发频率；
 均持久化在同一份 `<project_root>/.agent/cron_jobs.json` 里。
 
+除了上述两种"谁来创建 job"的分类之外，还有一个正交的维度——`run_mode`
+（默认 `"message"`，触发时把 `task_template` 当一条裸消息塞进 `InputQueue`，
+本文档统计的全部 job 都是这一类）。用户可以通过 `/cron add-goal-cycle` 或
+`/agent goals recur` 创建 `run_mode="goal_cycle"` 的 job，绑定到某个具体
+Goal，到期时驱动 GoalBacklog 派生并启动一轮子 Objective，而不是发一条孤立
+消息，详见 [Goal 与 Cron 绑定指南](goal-cron-binding-guide.md)。这类 job
+是用户按需创建的，不在本文档统计的固定内置/按需补注册 `sys:` job 范围内。
+
 **LLM 成本**列里"零 LLM"表示该 job 的 handler 全程规则计算/文件读写，
 不调用大模型，也不消耗对话 turn；"含 LLM"表示 handler 内部会调用
 `llm_helper` 做一次或多次批量 LLM 请求（成本由 cron 间隔控制，不是

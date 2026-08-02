@@ -46,6 +46,15 @@ tests/test_objective_executor_adaptive_concurrency.py .. 全绿
 ```
 共验证 90+ 项既有 + 新增测试，全部通过。`tests/test_report_tiers.py` 有 2 项与本次改动无关的既有失败（`external_input/alerts.jsonl` 路径缺失，属于该测试自身的 fixture 问题，未触碰 `report_tiers.py`，不在本次改动范围内）。
 
+## 用户文档更新
+
+| 文件 | 改动 |
+|---|---|
+| `docs/goal-cron-binding-guide.md`（新增） | 面向用户的完整使用指南：绑定/解绑操作、三条触发规则、数据结构变化、已知限制 |
+| `docs/self-evolution-stage9-guide.md` | §3.1 补充 `GoalNode` 新字段；§3.2 补充 `recur`/`unrecur` 命令；§5.4/§5.5 补充 `goal_cycle` 说明与命令列表 |
+| `docs/commands-and-tools-reference.md` | Goal Backlog 表格补充 `recur`/`unrecur`；定时任务表格补充 `add-goal-cycle` |
+| `docs/cron-jobs-reference.md` | §1 补充 `run_mode` 维度说明，与固定内置/按需补注册两种既有分类做区分 |
+
 ## 使用示例
 
 对话中提到的场景——"持续关注最新的 Agent 领域和 AI 领域的最新技术，构建相关的技术 wiki，放在 `research/agent_and_ai` 目录下"——现在可以这样落地：

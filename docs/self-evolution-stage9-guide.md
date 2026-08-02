@@ -115,7 +115,13 @@ GoalNode:
   work_thread_ref str?    # 关联的 WorkThread id（复用 work_index.json）
   priority        int     # 数字越大越优先，默认 0；agent_derived 默认 20-30
   tags            list
+  recurring               bool    # 是否已绑定周期性 cron job（见下方链接）
+  recurrence_cron_job_id  str?    # 绑定的 CronJob.id
+  cycle_count             int     # 已完成（含失败）的周期数
 ```
+
+> Goal 可以声明"需要被周期性推进"，绑定后 Cron 到期会自动为其派生并启动新一轮
+> Objective，详见 [Goal 与 Cron 绑定指南](goal-cron-binding-guide.md)。
 
 ### 3.2 CLI 命令
 
@@ -129,6 +135,8 @@ GoalNode:
 /goals reject <id>                       # 拒绝 agent_derived Goal（30 天内不再建议相同主题）
 /goals pause <id>                        # 暂停
 /goals progress <id> "覆盖率已达 80%"   # 更新进展备注
+/goals recur <id> interval:86400 "..."   # 声明为周期性，详见下方链接
+/goals unrecur <id>                      # 停止周期性（不删 Goal/cron job）
 /goals status                            # 显示 AutonomousLoop tick 状态
 /digest                                  # 查看自主活动摘要（最近 24h，分组展示）
 ```
@@ -261,10 +269,14 @@ cron:<分 时 日 月 周>   5 字段 cron，如 cron:0 */6 * * *（每 6 小时
 触发的 job 通过 `submit_fn(message, initiator="cron", meta)` 提交到 `InputQueue`，
 和用户消息走同一条 AgentRunner 线程，保证执行的串行性（cron job 不会抢占正在响应的用户消息）。
 
+> 例外：`run_mode="goal_cycle"` 的 job 不走这条裸消息提交路径，而是驱动 GoalBacklog
+> 为绑定的 Goal 派生并启动一轮子 Objective，详见
+> [Goal 与 Cron 绑定指南](goal-cron-binding-guide.md)。
+
 ### 5.5 CLI 命令
 
 详见 [命令与工具参考](commands-and-tools-reference.md#定时任务)，完整子命令：
-`list [--all]` / `status` / `enable` / `disable` / `run` / `add` / `remove` / `set-schedule`
+`list [--all]` / `status` / `enable` / `disable` / `run` / `add` / `add-goal-cycle` / `remove` / `set-schedule`
 
 ---
 

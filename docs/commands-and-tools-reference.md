@@ -436,6 +436,8 @@ mini-agent --retry-backoff linear --retry-backoff-step 60 --retry-backoff-max 30
 | `/agent goals abandon <id>` | 标记 Goal/Objective 放弃 |
 | `/agent goals pause <id>` | 暂停 Goal/Objective |
 | `/agent goals progress <id> <notes>` | 更新进展备注 |
+| `/agent goals recur <id> <schedule> [task_template]` | 声明为周期性：绑定一个 cron job，到期时自动为该 Goal 派生并启动一轮新 Objective；详见 [Goal 与 Cron 绑定指南](goal-cron-binding-guide.md) |
+| `/agent goals unrecur <id>` | 停止周期性推进（disable 绑定的 cron job，不删除 Goal/job） |
 | `/agent goals status` | 显示 AutonomousLoop tick 状态（档位/上次 tick/tick 次数） |
 | `/digest` | 显示自上次交互以来的自主活动摘要（来自 `activity_digest.jsonl`） |
 | `/agent digest` | 同 `/digest` |
@@ -457,6 +459,7 @@ mini-agent --retry-backoff linear --retry-backoff-step 60 --retry-backoff-max 30
 | `/cron disable <id>` | 禁用 job（`sys:` 前缀的系统 job 可禁用但不可删除） |
 | `/cron run <id>` | 立即触发一次（不修改 `next_run_at`，不影响下次正常触发） |
 | `/cron add <name> <schedule> <task_template>` | 添加用户自定义 job |
+| `/cron add-goal-cycle <goal_id> <schedule> [task_template]` | 把已有 Goal 声明为周期性：到期时自动为该 Goal 派生并启动一轮新 Objective，而不是发一条孤立消息；详见 [Goal 与 Cron 绑定指南](goal-cron-binding-guide.md) |
 | `/cron remove <id>` | 删除用户 job（`sys:` 前缀的系统 job 不可删除） |
 | `/cron set-schedule <id> <schedule>` | 修改触发时间并重新计算 `next_run_at` |
 
