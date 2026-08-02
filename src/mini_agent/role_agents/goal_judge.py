@@ -37,8 +37,14 @@ def build_goal_judge_prompt(
     prior_feedback: str = "",
     prior_checklist_lines: str = "",
     verification_result: Optional[dict] = None,
+    referenced_decisions_block: str = "",
 ) -> str:
     """构建 GoalJudge 的核查 prompt（模板见 prompts/user/goal_judge_request.md）。
+
+    referenced_decisions_block：[系统关联性断点改进方案 F1] 由调用方通过
+    `wiki/decision_consumption.py::find_relevant_decisions()` 检索得到的
+    相关历史决策文本块（`DecisionConsumptionQuery.to_prompt_block()`），
+    空字符串（默认）等价于该功能关闭或未命中，行为与改动前完全一致。
 
     prior_checklist_lines：[改造项三] 上一轮各条验收标准通过情况的文本行
     （由调用方基于 GoalState.criteria_status 拼装），空字符串时不生成
@@ -83,6 +89,9 @@ def build_goal_judge_prompt(
         prior_feedback_block=prior_feedback_block,
         prior_checklist_block=prior_checklist_block,
         verification_result_block=verification_result_block,
+        referenced_decisions_block=(
+            ("\n" + referenced_decisions_block) if referenced_decisions_block else ""
+        ),
     )
 
 
@@ -99,9 +108,18 @@ def run_goal_judge(
     process_integrity_enabled: bool = False,
     parent_session_id: Optional[str] = None,
     parent_session_dir: Optional["Path"] = None,
+    paths: Optional["object"] = None,
 ) -> str:
     """
     运行 GoalJudgeAgent，返回判定文本（含 GOAL_STATUS 行）。
+
+    paths：[系统关联性断点改进方案 F1，可选] 传入 `AgentPaths` 时，且
+    `base_cfg.goal_mode.decision_consumption_enabled` 为 True，会在核查前
+    用 goal_spec.goal_text 检索 wiki 里相关的历史决策，命中则拼进 prompt
+    供判官参考（见 `wiki/decision_consumption.py`）。不传或开关关闭时
+    行为与改动前完全一致——GoalRunner 调用点尚未默认传入 paths，需要在
+    上层显式接入才会生效，这是本阶段有意保留的手动开关，见改进方案文档
+    "实施记录"一节说明。
 
     工具权限由 base_cfg.goal_mode.judge_tools_enabled 控制：
       False（默认）→ 空工具注册表，纯文本判定（与现有 evaluator 行为一致，零风险）
@@ -172,6 +190,19 @@ def run_goal_judge(
         parent_session_dir=parent_session_dir,
     )
 
+    referenced_decisions_block = ""
+    decision_query = None
+    if paths is not None and bool(getattr(goal_cfg_block, "decision_consumption_enabled", False)):
+        try:
+            from mini_agent.wiki.decision_consumption import find_relevant_decisions
+
+            decision_query = find_relevant_decisions(paths, goal_spec.goal_text)
+            referenced_decisions_block = decision_query.to_prompt_block()
+        except Exception as _mini_agent_exc:
+            from mini_agent.errors import log_exception
+
+            log_exception(_mini_agent_exc, where="mini_agent.role_agents.goal_judge.run_goal_judge")
+
     prompt = build_goal_judge_prompt(
         goal_spec=goal_spec,
         agent_output=agent_output,
@@ -179,6 +210,7 @@ def run_goal_judge(
         prior_feedback=prior_feedback,
         prior_checklist_lines=prior_checklist_lines,
         verification_result=verification_result,
+        referenced_decisions_block=referenced_decisions_block,
     )
 
     result = run_judge_turn(
@@ -187,6 +219,19 @@ def run_goal_judge(
     )
 
     if result.ok and result.raw_output and result.raw_output.strip():
+        if decision_query is not None and decision_query.has_hits and paths is not None:
+            try:
+                from mini_agent.wiki.decision_consumption import record_consumption
+
+                referenced = [
+                    d.page_id for d in decision_query.decisions
+                    if d.page_id and d.page_id in result.raw_output
+                ]
+                record_consumption(paths, decision_query, referenced_page_ids=referenced)
+            except Exception as _mini_agent_exc:
+                from mini_agent.errors import log_exception
+
+                log_exception(_mini_agent_exc, where="mini_agent.role_agents.goal_judge.run_goal_judge")
         return result.raw_output
 
     import json as _json

@@ -253,9 +253,14 @@ def _read_self_model_findings(paths: "AgentPaths") -> list[BacklogItem]:
 # ── 打分与去重合并 ────────────────────────────────────────────────────────────
 
 def _merge_and_score(
-    all_items: list[BacklogItem], prev_state: dict,
+    all_items: list[BacklogItem], prev_state: dict, paths: "AgentPaths" = None,
 ) -> list[BacklogItem]:
-    """按 subject 合并多路信号，计算排序分数。"""
+    """按 subject 合并多路信号，计算排序分数。
+
+    paths：[系统关联性断点改进方案 F3，可选] 传入时会对每个候选按
+    `subject` 查询 `suggestion_feedback_ledger` 的历史累积反馈权重
+    （打折/加成），不传时行为与改动前完全一致（权重恒为 1.0）。
+    """
     grouped: dict[str, list[BacklogItem]] = {}
     for item in all_items:
         grouped.setdefault(item.subject, []).append(item)
@@ -283,6 +288,15 @@ def _merge_and_score(
                 stale_bonus = _STALE_BACKLOG_BONUS
 
         rep.score = freshness_score + cross_source_score + stale_bonus
+
+        if paths is not None:
+            try:
+                from mini_agent.evolution.suggestion_feedback_ledger import get_weight
+                rep.score *= get_weight(paths, subject)
+            except Exception as _mini_agent_exc:
+                from mini_agent.errors import log_exception
+                log_exception(_mini_agent_exc, where='mini_agent.evolution.improvement_backlog_merge._merge_and_score')
+
         merged.append(rep)
 
     merged.sort(key=lambda i: -i.score)
@@ -355,7 +369,7 @@ def run_improvement_backlog_merge_once(paths: "AgentPaths") -> BacklogMergeSumma
             summary.errors.append(f"{name}_failed: {exc}")
 
     prev_state = _load_prev_state(paths)
-    merged = _merge_and_score(all_items, prev_state)
+    merged = _merge_and_score(all_items, prev_state, paths=paths)
     summary.items = merged
 
     try:

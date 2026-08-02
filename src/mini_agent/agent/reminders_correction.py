@@ -276,6 +276,23 @@ class RemindersCorrectionMixin:
             from mini_agent.errors import log_exception
             log_exception(_mini_agent_exc, where='mini_agent.agent.mark_stale_from_correction')
 
+        # [系统关联性断点改进方案 F4] 与上面的 library.mark_stale_from_correction
+        # 并行、独立的一条通道：如果本轮 wiki 检索命中过具体页面（尤其是
+        # 决策页），直接把纠正标记回灌到该页面本身（knowledge_state=stale），
+        # 不需要等下一次巩固循环扫描才间接触达。命中不到时静默跳过，不影响
+        # 上面已经完成的记忆条目标记。
+        try:
+            wiki_page_ids = list(getattr(self._ctx_builder, "last_injected_wiki_page_ids", []) or [])
+            if wiki_page_ids:
+                from mini_agent.wiki.correction_writer import route_correction
+                from mini_agent.storage.paths import AgentPaths as _CorrectionPaths
+                paths = _CorrectionPaths(self.cfg.project_root)
+                for page_id in wiki_page_ids:
+                    route_correction(paths, page_id, user_message, source="chat_turn")
+        except Exception as _mini_agent_exc:
+            from mini_agent.errors import log_exception
+            log_exception(_mini_agent_exc, where='mini_agent.agent.reminders_correction.RemindersCorrectionMixin._detect_and_record_correction.route_correction')
+
         # wiki 改进计划 P2：会话级正面经验路径（agent/profile.py::
         # _generate_and_save_summary）需要知道"这个 session 有没有发生过
         # 纠正"，才能判断要不要在 session 结束时补一条正面经验。这里只做

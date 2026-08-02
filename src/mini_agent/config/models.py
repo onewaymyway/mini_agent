@@ -696,6 +696,11 @@ class GoalModeConfig:
     judge_provider: Optional[str] = None
     # 判定 Agent 是否挂载工具（能自己跑命令验证验收标准），默认关闭（最小权限原则）
     judge_tools_enabled: bool = False
+    # [系统关联性断点改进方案 F1] True 时 GoalJudgeAgent 核查前会先检索
+    # wiki 里相关的历史决策页拼进 prompt（需要调用方传入 paths 才生效，
+    # 见 role_agents/goal_judge.py::run_goal_judge）。默认 False，
+    # 行为与改动前完全一致。
+    decision_consumption_enabled: bool = False
     # 仅当 judge_tools_enabled=True 时生效的白名单（工具名 / 工具组名均可）
     judge_allowed_tools: list = field(default_factory=lambda: ["bash", "read_file", "grep", "glob"])
     judge_allowed_tool_groups: list = field(default_factory=list)

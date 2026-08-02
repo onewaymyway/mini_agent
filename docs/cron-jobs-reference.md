@@ -102,6 +102,12 @@ SelfMaintenanceModule.health_check()`）内部做四项检查，结果合并写�
 （P4 skill 结果有效性审计未注册为独立 job，见 §3.1——设计上归并进
 `sys:self_maintain` 本身，理由见该计划文档 P4 小节。）
 
+### 3.3.1 系统关联性断点与缺失能力改进方案（`next_doc/system_connectivity_gaps_and_missing_capabilities_plan.md`）
+
+| job_id | 名称 | schedule | LLM 成本 | 默认启用 | 目的 |
+|--------|------|----------|---------|---------|------|
+| `sys:failure_pattern_aggregation` | 失败模式聚合（F2） | `interval:86400` | 零 LLM | 是 | 把 `ObjectiveExecution` 步骤失败（`error_msg`）+ Goal `dead_ends` 按任务类别归一化聚合为统一失败模式清单（`failure_pattern_store.json`），供 `soft_goal_deriver` 等消费方查询；当前未覆盖 `stuck_detector` 信号（尚无持久化落盘点） |
+
 ### 3.4 外部数据知识化与自我改进闭环计划（`next_doc/external_knowledge_wiki_and_self_improvement_plan.md`）
 
 | job_id | 名称 | schedule | LLM 成本 | 默认启用 | 目的 |

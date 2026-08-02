@@ -13,6 +13,8 @@
 #   {{verification_result_block}} [goal_mode_stuck_compact_plan.md §2.2]
 #                              系统自动执行 verification_command 的客观结果块
 #                              （未设置验证命令/功能关闭时为空字符串）
+#   {{referenced_decisions_block}} [系统关联性断点改进方案 F1]
+#                              相关历史决策检索结果块（无命中/功能关闭时为空字符串）
 
 请核查 AI 助手是否已经达成以下目标。这是第 {{round_no}} 轮核查。
 
@@ -27,5 +29,6 @@
 {{prior_feedback_block}}
 {{prior_checklist_block}}
 {{verification_result_block}}
+{{referenced_decisions_block}}
 
 请严格按照你的核查原则和输出格式进行判定。

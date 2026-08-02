@@ -1295,6 +1295,21 @@ class HttpServer:
                 from mini_agent.errors import log_exception
                 log_exception(_mini_agent_exc, where='mini_agent.api.server.HttpServer._build_autonomous_loop.ensure_improvement_backlog_merge_job')
 
+            # 系统关联性断点改进方案 F2：daemon 启动时补注册
+            # sys:failure_pattern_aggregation（把 ObjectiveExecution 步骤
+            # 失败 + Goal dead_ends 按任务类别聚合为统一失败模式清单，
+            # 零 LLM 成本，本地回调），见
+            # next_doc/system_connectivity_gaps_and_missing_capabilities_plan.md F2。
+            try:
+                from mini_agent.evolution.failure_pattern_store import (
+                    ensure_failure_pattern_aggregation_job,
+                )
+
+                ensure_failure_pattern_aggregation_job(paths, cron_scheduler)
+            except Exception as _mini_agent_exc:
+                from mini_agent.errors import log_exception
+                log_exception(_mini_agent_exc, where='mini_agent.api.server.HttpServer._build_autonomous_loop.ensure_failure_pattern_aggregation_job')
+
             # 自诊断闭环深化计划 P2：daemon 启动时补注册
             # sys:suggestion_outcome_review（回看 2-4 周前 self_maintenance
             # 的工具健康建议，对比当前失败率判断是否改善，零 LLM 成本，

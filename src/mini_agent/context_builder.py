@@ -86,6 +86,12 @@ class ContextBuilder:
         # correction_detector 检测到人类纠正时定位"刚才用到的知识是不是过时了"
         # （agent.py::_detect_and_record_correction 会读取这个列表）。
         self.last_injected_memory_ids: list[str] = []
+        # [系统关联性断点改进方案 F4] 与 last_injected_memory_ids（记忆
+        # entry_id 血缘）并行、但记录的是 wiki 页面 id 本身——用于纠正
+        # 检测命中时，能直接把纠正回灌到具体的 wiki 页面（尤其是决策页），
+        # 而不需要经由 entry_id 反查。只在 wiki 检索路径命中时填充，其余
+        # 情况保持空列表，不影响既有 last_injected_memory_ids 的语义。
+        self.last_injected_wiki_page_ids: list[str] = []
 
         # ── Skill 目录缓存 ───────────────────────────────────────────────────
         # 只在 skill 集合变化时重建，避免每次 build() 重新生成字符串。
@@ -119,6 +125,8 @@ class ContextBuilder:
         """
         self._cached_turn_query = query
         self._cached_memory_snippet = ""
+        # [系统关联性断点改进方案 F4] 每轮重置，避免沿用上一轮命中的页面 id。
+        self.last_injected_wiki_page_ids = []
 
         # 每轮自动检索总闸：关闭后本轮完全跳过 wiki_search/shelf_search/
         # merge_search，不产生任何检索开销，也不注入 "## Relevant past
@@ -212,6 +220,9 @@ class ContextBuilder:
 
         self._cached_memory_snippet = f"\n\n## Relevant knowledge (wiki)\n{snippet_body}"
         self.last_injected_memory_ids = sorted(source_entries)
+        # [系统关联性断点改进方案 F4] 记录本轮实际 grounded 的 wiki 页面 id
+        # 本身（不是 entry_id），供纠正检测直接定位到页面。
+        self.last_injected_wiki_page_ids = list(result.grounded_page_ids)
 
         # A/B 对比样本顺带记一条（wiki 侧命中；shelf 侧留给下一次 /wiki search
         # 手动对比或未来接入自动兜底对比，这里不为了记样本而额外多跑一次

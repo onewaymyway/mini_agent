@@ -158,7 +158,13 @@ class SoftGoalDeriver:
             return set()
 
     def record_rejected(self, goal_title: str) -> None:
-        """用户 reject 一个 Goal 后调用，30 天内不再 derive 相同主题。"""
+        """用户 reject 一个 Goal 后调用，30 天内不再 derive 相同主题。
+
+        [系统关联性断点改进方案 F3] 同时把这次拒绝累加进
+        `suggestion_feedback_ledger`（不过期），供 `derive_candidates()`
+        对"历史上反复被拒绝的同类主题"做长期降权，而不只是 30 天 TTL
+        去重——TTL 到期后如果该主题又被 derive 出来，至少排序上会更靠后。
+        """
         key = _DeriveCandidate(title=goal_title, description="", source_tag="").dedupe_key()
         try:
             data: dict = {}
@@ -172,6 +178,13 @@ class SoftGoalDeriver:
             from mini_agent.errors import log_exception
             log_exception(_mini_agent_exc, where='mini_agent.evolution.soft_goal_deriver')
             pass
+
+        try:
+            from mini_agent.evolution.suggestion_feedback_ledger import record_outcome
+            record_outcome(self._paths, key, "rejected")
+        except Exception as _mini_agent_exc:
+            from mini_agent.errors import log_exception
+            log_exception(_mini_agent_exc, where='mini_agent.evolution.soft_goal_deriver.record_rejected')
 
     # ── 主入口 ────────────────────────────────────────────────────────────────
 
@@ -198,6 +211,7 @@ class SoftGoalDeriver:
         all_candidates.extend(self._from_capability_map())
         all_candidates.extend(self._from_work_index())
         all_candidates.extend(self._from_lesson_review())
+        all_candidates.extend(self._from_failure_patterns())
         all_candidates.extend(self._from_unexplored_capabilities())
         all_candidates.extend(self._from_external_knowledge())
 
@@ -219,6 +233,19 @@ class SoftGoalDeriver:
         # Objective 本身的完成/失败历史，且是"主题精确匹配"而非关键词
         # 重叠，可信度更高，因此允许在样本充分时直接跳过而不只是降权。
         all_candidates = self._apply_objective_outcome_gating(all_candidates)
+
+        # [系统关联性断点改进方案 F3] 历史累积反馈降权/加成：与
+        # negative_domains（关键词重叠）、objective_outcome_gating（主题
+        # 精确匹配失败率）是第三条独立信号——这里针对的是"用户显式
+        # accept/reject 过的 dedupe_key 本身"，不依赖标题关键词或执行
+        # 结果，只做乘法调整，不跳过候选（与其余三个方案同一条准则）。
+        try:
+            from mini_agent.evolution.suggestion_feedback_ledger import get_weight
+            for c in all_candidates:
+                c.urgency *= get_weight(self._paths, c.dedupe_key())
+        except Exception as _mini_agent_exc:
+            from mini_agent.errors import log_exception
+            log_exception(_mini_agent_exc, where='mini_agent.evolution.soft_goal_deriver.derive_candidates')
 
         seen: set[str] = set()
         cap: list[_DeriveCandidate] = []
@@ -879,6 +906,47 @@ class SoftGoalDeriver:
             from mini_agent.errors import log_exception
             log_exception(_mini_agent_exc, where='mini_agent.evolution.soft_goal_deriver')
             pass
+        return candidates
+
+    def _from_failure_patterns(self) -> list[_DeriveCandidate]:
+        """
+        信号 5（[系统关联性断点改进方案 F2] 新增，附加于信号 3 之后，
+        不替换 lesson_review）：`failure_pattern_store` 里聚合出的高频
+        失败模式（跨 ObjectiveExecution 步骤失败 + Goal dead_ends），
+        比 lesson_review 更结构化（有明确的 task_category/root_cause_tag），
+        可以直接作为 Goal 标题的一部分。
+
+        原方案文档设想的是"替换"lesson_review 的高频信号，实现时评估后
+        改为"附加"——lesson_review 和 failure_pattern_store 数据来源不完全
+        重叠（前者含用户反馈/自我反思等更多来源），直接替换有丢失信号的
+        风险，遂改为并存，由 dedupe_key 天然去重同名候选。
+        """
+        candidates = []
+        try:
+            from mini_agent.evolution.failure_pattern_store import load_failure_patterns
+            patterns = load_failure_patterns(self._paths)
+            for pat in patterns:
+                count = int(pat.get("occurrence_count", 0) or 0)
+                if count < 3:
+                    continue
+                category = pat.get("task_category", "unknown")
+                tag = pat.get("root_cause_tag", "other")
+                urgency = count * 0.5
+                candidates.append(_DeriveCandidate(
+                    title=f"系统性解决：{category}（{tag}）反复失败",
+                    description=(
+                        f"failure_pattern_store 聚合出 {count} 次同类失败"
+                        f"（来源：{pat.get('source', '')}，根因标签：{tag}）。"
+                        f"示例：{pat.get('example_summary', '')[:100]}。"
+                        f"建议分析根因并修复相关工具调用或流程。"
+                    ),
+                    source_tag="lesson",
+                    priority=30,
+                    urgency=urgency,
+                ))
+        except Exception as _mini_agent_exc:
+            from mini_agent.errors import log_exception
+            log_exception(_mini_agent_exc, where='mini_agent.evolution.soft_goal_deriver._from_failure_patterns')
         return candidates
 
 

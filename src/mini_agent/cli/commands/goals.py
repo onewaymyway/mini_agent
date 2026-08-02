@@ -229,7 +229,7 @@ def _cmd_set_status(gb, node_id: str, status: str) -> None:
     R.print_success(f"{emoji} {node_id} 状态: {old_status} → {status}")
 
 
-def _cmd_accept(gb, node_id: str) -> None:
+def _cmd_accept(gb, node_id: str, paths=None) -> None:
     """
     接受 agent_derived Goal：激活并提升优先级到用户 Goal 默认值（50）。
     对非 agent_derived Goal 也有效（等同于把 paused Goal 重新激活）。
@@ -249,6 +249,18 @@ def _cmd_accept(gb, node_id: str) -> None:
         R.print_error(f"Not found: {node_id!r}")
         return
     R.print_success(f"✅ 已接受 Goal：{updated.title}")
+
+    # [系统关联性断点改进方案 F3] agent_derived Goal 被接受时记入反馈账本，
+    # 供 soft_goal_deriver 后续对同类高采纳率的方向做小幅加成。
+    if getattr(node, "source", "") == "agent_derived" and paths is not None:
+        try:
+            from mini_agent.evolution.soft_goal_deriver import _DeriveCandidate
+            from mini_agent.evolution.suggestion_feedback_ledger import record_outcome
+            key = _DeriveCandidate(title=node.title, description="", source_tag="").dedupe_key()
+            record_outcome(paths, key, "accepted")
+        except Exception as _mini_agent_exc:
+            from mini_agent.errors import log_exception
+            log_exception(_mini_agent_exc, where='mini_agent.cli.commands.goals._cmd_accept')
     if getattr(updated, "source", "") == "agent_derived":
         R.print_info("提示：使用 /goals obj add <步骤描述> --goal " + node_id + " 为此 Goal 添加 Objective")
 
