@@ -1249,6 +1249,27 @@ class AutonomyConfig:
     # 这里只是防止极端情况下（比如配置改动导致上限突然变大）无限制地
     # 并发构造 Agent 实例耗尽资源。
     objective_isolated_max_workers: int = 4
+    # [daemon_autonomous_state_recovery_plan.md 阶段四 / P2] 看护模式
+    # GuardianRunner：不依赖 GoalSpec/GoalJudge 的轻量监督层，跟踪
+    # `autonomous` Objective 每个 execution 最近几步的结果摘要，识别"原地
+    # 打转"（复用 StuckDetector + ProgressTracker），在多次恢复无效后触发
+    # 既有的"重新分解 / 判失败"路径（`ObjectiveExecutor._attempt_redecompose`），
+    # 不做 DONE/CONTINUE 语义裁定。默认关闭：这是纯增量的观察层，关闭时
+    # ObjectiveExecutor 的行为与升级前完全一致；先在 `autonomous` 任务上
+    # 灰度，观察实际效果后再决定是否默认开启。
+    guardian_mode_enabled: bool = False
+    # 单个 execution 允许跑的最大 step 数（不是"步骤计划里声明的 step
+    # 数"，是"实际提交过多少次 step，含重试"），达到即视为"到点了"，
+    # 触发与"卡住多次恢复无效"相同的收尾路径。防御极端情况：即使每一步都
+    # 被判定为"有细微差别、不算卡住"，也不会无限跑下去。
+    guardian_max_rounds: int = 20
+    # 以下三项透传给内部的 StuckDetector，语义与 goal_mode 的同名字段一致：
+    # 连续 `guardian_stuck_consecutive_limit` 步结果相似度达到
+    # `guardian_stuck_similarity_threshold` 视为"卡住"，最多给
+    # `guardian_max_recoveries` 次恢复机会，额度耗尽后判定 GIVE_UP。
+    guardian_stuck_similarity_threshold: float = 0.92
+    guardian_stuck_consecutive_limit: int = 3
+    guardian_max_recoveries: int = 2
 
 
 @dataclass

@@ -311,5 +311,170 @@ class TestObjectiveIsolatedRunner(unittest.TestCase):
             self.assertIs(executor._submit_fn.__self__, self.runner)
 
 
+
+# ── 阶段四：GuardianRunner（P2 看护模式）────────────────────────────────────
+
+class TestGuardianRunnerUnit(unittest.TestCase):
+    def _guardian(self, **kwargs):
+        from mini_agent.evolution.guardian import GuardianRunner
+        defaults = dict(consecutive_limit=3, max_recoveries=1, max_rounds=10)
+        defaults.update(kwargs)
+        return GuardianRunner(**defaults)
+
+    def test_varied_results_never_trigger(self):
+        from mini_agent.evolution.guardian import StuckSignal
+        guardian = self._guardian()
+        texts = [
+            "已经完成数据库迁移脚本的编写",
+            "修复了登录页面的样式错乱问题",
+            "补充了单元测试覆盖率到 90%",
+            "重构了缓存模块的过期策略",
+            "接入了新的第三方支付网关",
+            "优化了首页加载速度",
+            "清理了废弃的旧接口代码",
+            "完成了国际化多语言支持",
+        ]
+        for i, text in enumerate(texts):
+            signal = guardian.observe_step(i, text)
+            self.assertIs(signal, StuckSignal.NONE)
+
+    def test_repeated_identical_results_trigger_recover_then_give_up(self):
+        from mini_agent.evolution.guardian import StuckSignal
+        guardian = self._guardian(consecutive_limit=3, max_recoveries=1)
+        signals = [guardian.observe_step(i, "一模一样的结果文本") for i in range(6)]
+        self.assertIn(StuckSignal.RECOVER, signals)
+        self.assertIn(StuckSignal.GIVE_UP, signals)
+        # GIVE_UP 之后不应该再有更严重的信号（枚举里没有更严重的，只需确认
+        # GIVE_UP 确实出现过，且出现在 RECOVER 之后）。
+        self.assertLess(signals.index(StuckSignal.RECOVER), signals.index(StuckSignal.GIVE_UP))
+
+    def test_should_terminate_by_rounds(self):
+        guardian = self._guardian(max_rounds=3, consecutive_limit=100)
+        for i in range(2):
+            guardian.observe_step(i, f"结果{i}")
+            self.assertFalse(guardian.should_terminate_by_rounds())
+        guardian.observe_step(2, "结果2")
+        self.assertTrue(guardian.should_terminate_by_rounds())
+
+    def test_max_rounds_zero_means_unlimited(self):
+        guardian = self._guardian(max_rounds=0)
+        for i in range(50):
+            guardian.observe_step(i, f"结果{i}")
+        self.assertFalse(guardian.should_terminate_by_rounds())
+
+    def test_dead_end_dedup_and_render(self):
+        guardian = self._guardian()
+        guardian.record_dead_end(0, "尝试用方法 A 但一直失败")
+        guardian.record_dead_end(1, "尝试用方法 A 但一直失败")  # 近似重复，去重
+        guardian.record_dead_end(2, "换成方法 B 也没用")
+        block = guardian.render_dead_ends_block()
+        self.assertIn("方法 A", block)
+        self.assertIn("方法 B", block)
+        self.assertEqual(block.count("步骤"), 2)
+
+    def test_reset_clears_all_state(self):
+        from mini_agent.evolution.guardian import StuckSignal
+        guardian = self._guardian(consecutive_limit=2, max_recoveries=1)
+        guardian.observe_step(0, "同样的文本")
+        guardian.observe_step(1, "同样的文本")
+        guardian.record_dead_end(0, "某个死路")
+        guardian.reset()
+        self.assertEqual(guardian.round_count, 0)
+        self.assertEqual(guardian.recoveries_used, 0)
+        self.assertEqual(guardian.render_dead_ends_block(), "")
+        self.assertIs(guardian.observe_step(0, "任意文本"), StuckSignal.NONE)
+
+
+class TestGuardianModeObjectiveExecutorIntegration(_ObjectiveExecutorTestBase):
+    """[daemon_autonomous_state_recovery_plan.md 阶段四] guardian_mode_enabled
+    默认 False 时完全不影响 ObjectiveExecutor 行为；开启后能在"连续多步
+    结果高度相似"时触发既有的重新分解/判失败收尾路径。"""
+
+    def _cfg(self, **autonomy_overrides):
+        from mini_agent.config.models import AppConfig
+
+        cfg = AppConfig()
+        for k, v in autonomy_overrides.items():
+            setattr(cfg.autonomy, k, v)
+        return cfg
+
+    def _executor_with_cfg(self, cfg, steps=None, llm_redecompose_fn=None):
+        steps = steps or ["第一步", "第二步", "第三步", "第四步", "第五步"]
+        return ObjectiveExecutor(
+            paths=self.paths,
+            submit_fn=self.submitter,
+            llm_decompose_fn=lambda obj: list(steps),
+            declare_paths_fn=lambda desc: [f"path-for-{desc}"],
+            goal_backlog=self.backlog,
+            llm_redecompose_fn=llm_redecompose_fn,
+            cfg=cfg,
+        )
+
+    def test_guardian_disabled_by_default_no_effect(self):
+        cfg = self._cfg()  # guardian_mode_enabled 默认 False
+        executor = self._executor_with_cfg(cfg)
+        obj = _make_objective(self.backlog, "任务L")
+        exec_id = executor.start(obj)
+        # 连续提交完全相同的结果，不应触发任何 guardian 逻辑（因为关闭）
+        for _ in range(4):
+            turn_id = self.submitter.calls[-1]["turn_id"]
+            executor.on_turn_done(turn_id, "一模一样的结果", valid=True)
+            ex = executor._executions[exec_id]
+            if ex.status in ("completed", "failed"):
+                break
+        ex = executor._executions[exec_id]
+        # 5 步全部完成，没有被 guardian 提前判失败
+        self.assertNotIn("guardian", ex.progress_notes)
+
+    def test_guardian_enabled_triggers_fail_without_redecompose(self):
+        cfg = self._cfg(
+            guardian_mode_enabled=True,
+            guardian_stuck_consecutive_limit=2,
+            guardian_max_recoveries=1,
+            guardian_max_rounds=100,
+        )
+        executor = self._executor_with_cfg(cfg, llm_redecompose_fn=None)
+        obj = _make_objective(self.backlog, "任务M")
+        exec_id = executor.start(obj)
+
+        for _ in range(6):
+            ex = executor._executions[exec_id]
+            if ex.status in ("completed", "failed"):
+                break
+            turn_id = self.submitter.calls[-1]["turn_id"]
+            executor.on_turn_done(turn_id, "完全相同的结果文本", valid=True)
+
+        ex = executor._executions[exec_id]
+        self.assertEqual(ex.status, "failed")
+        self.assertIn("guardian", ex.progress_notes)
+
+    def test_guardian_enabled_falls_back_to_redecompose_when_available(self):
+        cfg = self._cfg(
+            guardian_mode_enabled=True,
+            guardian_stuck_consecutive_limit=2,
+            guardian_max_recoveries=1,
+        )
+
+        def _redecompose(title, completed, remaining, reason, external_context=None):
+            return ["换个思路的新步骤A", "换个思路的新步骤B"]
+
+        executor = self._executor_with_cfg(cfg, llm_redecompose_fn=_redecompose)
+        obj = _make_objective(self.backlog, "任务N")
+        exec_id = executor.start(obj)
+
+        for _ in range(6):
+            ex = executor._executions[exec_id]
+            if ex.status in ("completed", "failed"):
+                break
+            turn_id = self.submitter.calls[-1]["turn_id"]
+            executor.on_turn_done(turn_id, "完全相同的结果文本", valid=True)
+
+        ex = executor._executions[exec_id]
+        # 重新分解成功后 execution 不应停留在 failed（要么继续 running，
+        # 要么后续步骤走完变成 completed），且确实用上了新的步骤描述。
+        self.assertTrue(ex.redecompose_attempted)
+        self.assertTrue(any("换个思路" in s.description for s in ex.steps))
+
+
 if __name__ == "__main__":
     unittest.main()

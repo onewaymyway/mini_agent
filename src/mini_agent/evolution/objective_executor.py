@@ -39,6 +39,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable, Optional, TYPE_CHECKING
 
+from mini_agent.role_agents.stuck_detector import StuckSignal as _GuardianStuckSignal
+
 if TYPE_CHECKING:
     from mini_agent.storage.paths import AgentPaths
     from mini_agent.config.models import AppConfig
@@ -306,6 +308,14 @@ class ObjectiveExecutor:
         # 只在内存里维护（不持久化）——重启后 reap_stale_steps()/正常推进会
         # 重新提交并重新声明，不需要跨进程重启保持这份状态。
         self._active_step_paths: dict[str, set] = {}
+        # [daemon_autonomous_state_recovery_plan.md 阶段四 / P2]
+        # execution_id → GuardianRunner，只在开启 cfg.autonomy.guardian_mode_enabled
+        # 时才会被真正创建/使用（见 _get_guardian()）；不持久化——重启后
+        # 每个仍在跑的 execution 会在下一次 on_turn_done() 时惰性重建一个
+        # 全新的 GuardianRunner，代价是重启瞬间"卡住检测的连续计数"会归零，
+        # 这与其它内存态计数器（如 _active_step_paths）的取舍一致，不影响
+        # 正确性，只是重启后需要重新累积几轮才能再次触发。
+        self._guardians: dict[str, "GuardianRunner"] = {}
 
     # ── 持久化 ────────────────────────────────────────────────────────────────
 
@@ -681,6 +691,45 @@ class ObjectiveExecutor:
 
         del self._turn_to_exec[turn_id]
         self._release_step_paths(exec_id)
+
+        # [daemon_autonomous_state_recovery_plan.md 阶段四 / P2] 看护模式：
+        # 关闭时 _get_guardian() 恒返回 None，下面整段直接跳过，行为与升级
+        # 前完全一致。开启时，把这一步的结果摘要喂给 GuardianRunner——判定
+        # GIVE_UP（多次恢复无效）时复用既有的"先尝试重新分解，不行再判
+        # Objective failed"路径，不新增一套终止逻辑；判定 RECOVER 时，给
+        # 下一步注入一条"换个思路"的 guidance（复用 pending_guidance 字段，
+        # 与 reset_step() 的 guidance 注入方式一致），不终止执行。
+        guardian = self._get_guardian(exec_id)
+        if guardian is not None and step is not None:
+            gsignal = guardian.observe_step(step_idx, step.result_summary)
+            if gsignal is _GuardianStuckSignal.GIVE_UP:
+                guardian.record_dead_end(step_idx, "连续多步结果高度相似，判定原地打转")
+                if self._attempt_redecompose(ex, step_idx, "guardian: 连续多轮无实质进展"):
+                    self._notify_progress(ex)
+                    self.save()
+                    return exec_id
+                ex.status = "failed"
+                ex.finished_at = time.time()
+                ex.progress_notes = "guardian: 连续多轮无实质进展，重新分解不可用/已尝试过"
+                self._on_objective_failed(ex)
+                self._notify_progress(ex)
+                self.save()
+                return exec_id
+            if gsignal is _GuardianStuckSignal.RECOVER and (step_idx + 1) < len(ex.steps):
+                next_step_for_guidance = ex.steps[step_idx + 1]
+                hint = "[guardian 提示] 最近几步结果高度相似，看起来没有实质进展，请换一种思路或方法尝试。"
+                next_step_for_guidance.pending_guidance = (
+                    (next_step_for_guidance.pending_guidance + "\n" + hint).strip()
+                    if next_step_for_guidance.pending_guidance else hint
+                )
+            elif guardian.should_terminate_by_rounds():
+                ex.status = "failed"
+                ex.finished_at = time.time()
+                ex.progress_notes = f"guardian: 已达最大轮次上限（{guardian.round_count}），停止执行"
+                self._on_objective_failed(ex)
+                self._notify_progress(ex)
+                self.save()
+                return exec_id
 
         # 检查是否全部完成
         next_idx = step_idx + 1
@@ -1091,6 +1140,28 @@ class ObjectiveExecutor:
 
         # 降级：单步执行
         return [objective.title]
+
+    def _get_guardian(self, exec_id: str):
+        """[daemon_autonomous_state_recovery_plan.md 阶段四 / P2] 惰性获取（或
+        创建）某个 execution 专属的 GuardianRunner。仅在
+        `cfg.autonomy.guardian_mode_enabled=True` 时才会真正创建；关闭时
+        （默认）恒返回 None，调用方据此完全跳过看护逻辑，行为与升级前一致。
+        """
+        autonomy_cfg = getattr(self._cfg, "autonomy", None) if self._cfg is not None else None
+        if not getattr(autonomy_cfg, "guardian_mode_enabled", False):
+            return None
+        guardian = self._guardians.get(exec_id)
+        if guardian is None:
+            from mini_agent.evolution.guardian import GuardianRunner
+
+            guardian = GuardianRunner(
+                max_rounds=getattr(autonomy_cfg, "guardian_max_rounds", 20),
+                similarity_threshold=getattr(autonomy_cfg, "guardian_stuck_similarity_threshold", 0.92),
+                consecutive_limit=getattr(autonomy_cfg, "guardian_stuck_consecutive_limit", 3),
+                max_recoveries=getattr(autonomy_cfg, "guardian_max_recoveries", 2),
+            )
+            self._guardians[exec_id] = guardian
+        return guardian
 
     def _attempt_redecompose(self, ex: ObjectiveExecution, step_idx: int, failure_reason: str) -> bool:
         """[Track F 第二部分] 某个 step 耗尽重试次数后，先尝试"重新分解

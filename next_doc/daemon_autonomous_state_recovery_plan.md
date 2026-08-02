@@ -84,7 +84,7 @@
 | 阶段一 | P0-A 结果健全性校验 | ✅ 已实现 |
 | 阶段二 | P0-B Step 级重置能力（自动 + 手动命令） | ✅ 已实现 |
 | 阶段三 | P1 自主任务独立上下文 | ✅ 已实现 |
-| 阶段四 | P2 看护模式 GuardianRunner | ⏳ 设计已定，待实现 |
+| 阶段四 | P2 看护模式 GuardianRunner | ✅ 已实现 |
 
 后续每完成一个阶段，在下面"实现记录"追加对应小节，并把上表状态更新为
 "✅ 已实现"。
@@ -215,4 +215,102 @@
 
 ### 阶段四：看护模式 GuardianRunner
 
-（待实现）
+已按设计落地，复用了 `goal_mode` 里已经和"验收判定"解耦的
+`StuckDetector`/`ProgressTracker`（`role_agents/stuck_detector.py`），没有
+重新发明相似度比较/恢复额度计数逻辑：
+
+- 新增 `evolution/guardian.py::GuardianRunner`：
+  - `observe_step(step_idx, result_summary, progress_score=None) ->
+    StuckSignal`：内部用一个专属的 `StuckDetector` 判定"这一步结果是否
+    和最近几步高度相似"；额外提供 `progress_score` 时，同时喂给内部的
+    `ProgressTracker` 识别"平缓但非零"的伪进展趋势，命中时通过
+    `StuckDetector.trigger_recovery()` 复用同一份恢复额度。不做
+    DONE/CONTINUE 语义裁定，只回答"是不是在原地打转"。
+  - `should_terminate_by_rounds()`：客观终止条件之一，达到
+    `max_rounds` 上限即返回 `True`（`max_rounds<=0` 表示不限制）；不代表
+    "失败"，只是"到点了"，具体怎么收尾由调用方决定。
+  - `record_dead_end(step_idx, reason)` / `render_dead_ends_block()`：与
+    `goal_mode/runner.py::_record_dead_end`/`_render_dead_ends_block` 同一套
+    "已验证无效路径"去重（`difflib` 近似度）+ 渲染哲学，但这里不落盘、
+    不拼进 prompt——`ObjectiveExecutor` 目前只在判定 GIVE_UP 时记一条
+    dead-end 作为诊断信息，未来如果需要把它拼进下一次 `_submit_step()`
+    的 prompt，可以直接调用 `render_dead_ends_block()`，本次改动不强行
+    加这一层（YAGNI，见"未来可扩展点"）。
+  - 每个 Objective execution 一个独立实例，互不共享内部状态。
+  - 与 `evolution/cron_job_executor.py` 的关系：cron 任务已经在
+    `run_job()` 内联直接使用 `StuckDetector` 完成了同等效果的卡住检测
+    （`detector = StuckDetector(...)` + `if signal is StuckSignal.GIVE_UP`
+    分支），迁移到 `GuardianRunner` 收益很小、改动面不小，本次不动 cron
+    这一条路径——`GuardianRunner` 主要补给此前完全没有跨 step 卡住检测
+    能力的 `autonomous` Objective 路径。
+- `config/models.py::AutonomyConfig` 新增五个字段：
+  `guardian_mode_enabled: bool = False`（默认关闭，纯增量观察层，关闭时
+  `ObjectiveExecutor` 行为与升级前完全一致）、`guardian_max_rounds: int =
+  20`、`guardian_stuck_similarity_threshold: float = 0.92`、
+  `guardian_stuck_consecutive_limit: int = 3`、`guardian_max_recoveries:
+  int = 2`。
+  与计划文档草稿的差异：草稿写的是 `cfg.daemon.guardian_mode_enabled`，
+  但代码库里不存在 `DaemonConfig` 这个类（同样是设计草稿和代码库实际结构
+  的常见偏差，参见 `api/session_pool.py` 模块 docstring 里记录的类似
+  情况）。改为放进已有的 `AutonomyConfig`，与阶段三的
+  `objective_isolated_context_enabled` 等字段同一命名空间，更符合代码库
+  现有的配置组织方式。
+- `evolution/objective_executor.py`：
+  - `ObjectiveExecutor.__init__` 新增 `self._guardians: dict[str,
+    GuardianRunner]`（execution_id → 实例，不持久化——重启后惰性重建，
+    代价是重启瞬间"卡住检测的连续计数"归零，与其它内存态计数器
+    `_active_step_paths` 的取舍一致）。
+  - 新增 `_get_guardian(exec_id)`：`cfg.autonomy.guardian_mode_enabled`
+    关闭时恒返回 `None`；开启时惰性创建/复用该 execution 专属的
+    `GuardianRunner`，构造参数从 `cfg.autonomy` 对应字段读取。
+  - `on_turn_done()` 成功路径（`valid=True` 且完成当前 step）新增看护
+    观察：`guardian is None` 时（默认）整段跳过；开启时把
+    `step.result_summary` 喂给 `guardian.observe_step()`——
+    - `GIVE_UP`：记一条 dead-end，然后**复用**既有的
+      `_attempt_redecompose()`（先试重新分解，成功则继续；不成功/不可用
+      则判 `ex.status = "failed"`，`progress_notes` 里带上 `"guardian:"`
+      前缀，便于看板/日志区分触发来源），不新增一套终止/收尾逻辑；
+    - `RECOVER`：不终止，给下一个 step 的 `pending_guidance` 追加一条
+      "最近几步结果高度相似，请换一种思路"的提示（复用
+      `_submit_step()` 已有的 `pending_guidance` 拼装逻辑，与
+      `reset_step()` 的 guidance 注入方式一致）；
+    - 都不是时额外检查 `should_terminate_by_rounds()`，达到轮次上限同样
+      走"判 failed，`progress_notes` 说明原因"的收尾（轮次耗尽不再尝试
+      重新分解——重新分解本身也会消耗新的轮次预算，无限重新分解会绕开
+      这道安全阀的本意）。
+- 回退方式：`cfg.autonomy.guardian_mode_enabled=False`（默认值）时，
+  `_get_guardian()` 恒返回 `None`，`on_turn_done()` 里新增的整段看护逻辑
+  完全不执行，行为与升级前完全一致。
+- 新增测试：`tests/test_daemon_autonomous_state_recovery.py`
+  - `TestGuardianRunnerUnit`（6 个用例）：内容各异的结果不触发信号；连续
+    完全相同的结果先触发 `RECOVER` 再触发 `GIVE_UP`；轮次上限判定
+    （含 `max_rounds=0` 表示不限制）；dead-end 去重与渲染；`reset()`
+    清空全部内部状态。
+  - `TestGuardianModeObjectiveExecutorIntegration`（3 个用例）：默认关闭
+    时连续相同结果也不会被提前判失败（回归保护）；开启且未提供
+    `llm_redecompose_fn` 时，连续相同结果最终被判定 `failed` 且
+    `progress_notes` 带 `guardian` 标记；开启且提供了
+    `llm_redecompose_fn` 时，命中 GIVE_UP 后成功走重新分解路径，
+    `ex.redecompose_attempted` 为 `True` 且新步骤描述确实生效。
+- 验证：`python3 -m pytest tests/test_daemon_autonomous_state_recovery.py`
+  25 个用例全部通过；额外跑了
+  `test_objective_executor_adaptive_concurrency.py` /
+  `test_objective_executor_kanban_tracks.py` /
+  `test_objective_executor_kanban_tracks_r2.py`（不依赖 `uvicorn`/
+  `fastapi` 的子集）共 61 个用例全部通过，未发现新增失败；
+  `_r3`/`_r4` 两个文件在这次环境里仍然因为缺 `uvicorn` 依赖在 import 阶段
+  就失败，与阶段一/二记录的情况相同，与本次改动无关。
+
+至此，`daemon_autonomous_state_recovery_plan.md` 规划的四个阶段（P0-A/
+P0-B/P1/P2）全部完成，均带有开关可一键回退到升级前行为。
+
+未来可扩展点（本次改动范围之外，不属于本计划四个阶段，仅记录以供后续
+规划参考）：
+  - `GuardianRunner.render_dead_ends_block()` 目前只在判定 GIVE_UP 时记录，
+    没有拼进 `_submit_step()` 的 prompt——如果后续观察到同一个 execution
+    多次触发 RECOVER 后仍然复发同样的死路，可以考虑把这段渲染结果接入
+    `progress_ctx`，让模型显式看到"已验证无效"的路径列表。
+  - `_guardians` 目前不持久化；如果 daemon 频繁重启导致看护效果打折扣，
+    可以考虑把 `GuardianRunner` 的最小必要状态（`_round`/
+    `recoveries_used`）序列化进 `ObjectiveExecution`，参考
+    `StuckDetector.to_dict()`/`load_counts()` 已经提供的落盘接口。
