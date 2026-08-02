@@ -12,6 +12,17 @@ cli/commands/goal_mode_cmd.py — /goal slash 命令处理
   /goal cancel           — 取消当前 session 记录的 goal 状态（不会中断正在运行的循环，
                             仅用于清理一个已经卡住/不想再恢复的记录）
 
+验收标准生成路径（[SYS-GOAL-MODE-DUAL-PATH]）：
+  `/goal <目标文本>`、`/goal from-history`、`/goal revise` 都支持一个可选的
+  `--mode=llm|agent|auto` 参数，控制本次验收标准草案怎么生成（不传时使用
+  `agent_config.json` 里 `goal_mode.spec_builder_mode` 的配置，默认 "auto"）：
+    --mode=llm    单轮裸 LLM 调用，不读项目文件，速度最快
+    --mode=agent  构造一个只读受限 Agent，先查证项目里实际的 skill/workflow
+                  定义再生成，适合目标本身依赖项目内部信息的场景
+    --mode=auto   规则自动判断走 llm 还是 agent（默认）
+  例：/goal --mode=agent 按 release-checklist workflow 的步骤给这次发布补验收标准
+  详见 docs/goal-mode-guide.md 「验收标准生成路径」一节。
+
 协商子对话内部命令（在 "/goal <文本>" 触发的确认循环里输入）：
   /confirm               — 确认当前版本的验收标准，冻结并开始执行
   /cancel                — 放弃本次协商
@@ -24,6 +35,32 @@ from typing import Optional
 from datetime import datetime
 
 import mini_agent.ui.renderer as R
+
+_VALID_MODES = ("llm", "agent", "auto")
+
+
+def _extract_mode_flag(args: list[str]) -> tuple[list[str], Optional[str]]:
+    """从 args 里摘出 `--mode=llm|agent|auto`（可以出现在任意位置），
+
+    返回 (剩余 args, mode)。剩余 args 保持原有相对顺序，供上层继续按原逻辑
+    解析子命令/目标文本；未识别的合法值会打印警告并当作未传处理，不会让
+    整条命令因为一个拼写错误而失败。
+    """
+    remaining: list[str] = []
+    mode: Optional[str] = None
+    for a in args:
+        if a.startswith("--mode="):
+            value = a.split("=", 1)[1].strip().lower()
+            if value in _VALID_MODES:
+                mode = value
+            else:
+                R.print_warning(
+                    f"[Goal 模式] 未知的 --mode={value!r}，已忽略"
+                    f"（合法值：{', '.join(_VALID_MODES)}）。"
+                )
+            continue
+        remaining.append(a)
+    return remaining, mode
 
 
 def handle_goal_cmd(args: list[str], agent) -> None:
@@ -46,12 +83,31 @@ def handle_goal_cmd(args: list[str], agent) -> None:
         )
         return
 
+    # --mode=llm|agent|auto 可以出现在任意位置，先摘出来，剩余部分再按
+    # 原有逻辑当作子命令/目标文本解析。
+    args, mode = _extract_mode_flag(args)
+    if not args:
+        # 摘掉 --mode= 之后可能变成空（例如用户只输入了 "/goal --mode=agent"
+        # 而忘了跟目标文本），沿用上面同一份用法提示。
+        R.print_error(
+            "用法：\n"
+            "  /goal <目标文本>     开始一个新目标\n"
+            "  /goal from-history   根据当前 session 历史自动归纳目标并开始协商\n"
+            "  /goal resume [sid]  恢复未完成的目标\n"
+            "  /goal revise [sid]  基于已冻结的目标（以及上次终止时的重规划提议，若有）重新协商\n"
+            "  /goal list          列出所有可恢复的目标（可能不止一个）\n"
+            "  /goal status        查看当前 goal 状态\n"
+            "  /goal cancel        清理当前 session 的 goal 状态记录\n"
+            "  （以上除 resume/list/status/cancel 外均支持 --mode=llm|agent|auto）"
+        )
+        return
+
     sub = args[0].lower()
     if sub == "resume":
         _handle_resume(args[1:], agent)
         return
     if sub == "revise":
-        _handle_revise(args[1:], agent)
+        _handle_revise(args[1:], agent, mode=mode)
         return
     if sub == "status":
         _handle_status(agent)
@@ -63,17 +119,17 @@ def handle_goal_cmd(args: list[str], agent) -> None:
         _handle_cancel(agent)
         return
     if sub == "from-history":
-        _handle_from_history(agent)
+        _handle_from_history(agent, mode=mode)
         return
 
     # 否则整句都是目标文本
     goal_text = " ".join(args)
-    _handle_new_goal(goal_text, agent)
+    _handle_new_goal(goal_text, agent, mode=mode)
 
 
 # ── 新目标：验收标准协商 ────────────────────────────────────────────────────
 
-def _handle_new_goal(goal_text: str, agent) -> None:
+def _handle_new_goal(goal_text: str, agent, mode: Optional[str] = None) -> None:
     from mini_agent.goal_mode.spec import GoalSpecBuilder
 
     builder = GoalSpecBuilder(
@@ -81,6 +137,7 @@ def _handle_new_goal(goal_text: str, agent) -> None:
         parent_session_id=getattr(agent, "session_id", None),
         parent_session_dir=agent._current_session_dir() if hasattr(agent, "_current_session_dir") else None,
         llm_helper=getattr(agent, "llm_helper", None),
+        mode=mode,
     )
     R.print_info("[Goal 模式] 正在根据你的描述生成验收标准草案…")
     try:
@@ -99,7 +156,7 @@ def _handle_new_goal(goal_text: str, agent) -> None:
     _run_goal(agent, spec)
 
 
-def _handle_from_history(agent) -> None:
+def _handle_from_history(agent, mode: Optional[str] = None) -> None:
     """`/goal from-history`：根据当前 session 的历史对话自动归纳目标。
 
     复用 GoalSpecBuilder，只是草案来源从"用户这次输入的一句话"换成"从
@@ -121,6 +178,7 @@ def _handle_from_history(agent) -> None:
         parent_session_id=getattr(agent, "session_id", None),
         parent_session_dir=agent._current_session_dir() if hasattr(agent, "_current_session_dir") else None,
         llm_helper=getattr(agent, "llm_helper", None),
+        mode=mode,
     )
     R.print_info("[Goal 模式] 正在根据当前 session 历史归纳目标…")
     try:
@@ -349,7 +407,7 @@ def _handle_resume(args: list[str], agent) -> None:
     R.console.print(result.final_report)
 
 
-def _handle_revise(args: list[str], agent) -> None:
+def _handle_revise(args: list[str], agent, mode: Optional[str] = None) -> None:
     """[goal_mode_stuck_compact_plan.md §5] `/goal revise [sid]`：基于一个
     已经冻结过的 GoalSpec（不要求 status==running——stuck/max_rounds_exhausted
     终止的目标也可以修订）重新走一遍协商子对话，用户 /confirm 之后重新开始
@@ -387,7 +445,9 @@ def _handle_revise(args: list[str], agent) -> None:
 
     spec = GoalSpec.from_dict(state.goal_spec)
     spec.confirmed = False  # 重新进入协商，须重新走一遍 /confirm
-    builder = GoalSpecBuilder(agent.cfg, parent_session_id=sid, llm_helper=getattr(agent, "llm_helper", None))
+    builder = GoalSpecBuilder(
+        agent.cfg, parent_session_id=sid, llm_helper=getattr(agent, "llm_helper", None), mode=mode,
+    )
 
     if state.replan_proposal:
         proposal_text = render_replan_proposal(state.replan_proposal)

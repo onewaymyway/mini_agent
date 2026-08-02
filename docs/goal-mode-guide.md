@@ -98,6 +98,10 @@ Evaluator 仍然在每次 `run_turn` 内部做质量把关，GoalRunner 在更�
 |------|--------|------|
 | `enabled` | `false` | 总开关，关闭时 `/goal` 命令报错提示未启用 |
 | `spec_builder_model` / `spec_builder_provider` | `null` | GoalSpecBuilder 用的模型，`null` = 复用主 `cfg.model` |
+| `spec_builder_mode` | `"auto"` | **[SYS-GOAL-MODE-DUAL-PATH]** 验收标准生成路径：`"llm"` / `"agent"` / `"auto"`，详见下文「验收标准生成路径」一节 |
+| `spec_builder_agent_allowed_tools` | `["skill_list","list_workflows","show_workflow","read_file","list_dir","tree_summary","grep","glob"]` | `spec_builder_mode` 命中 agent 路径时的只读工具白名单 |
+| `spec_builder_agent_allowed_tool_groups` | `[]` | 同上，按工具组授权 |
+| `spec_builder_agent_max_turns` | `6` | agent 路径允许的最大轮次（先探索 skill/workflow 再产出 JSON） |
 | `judge_model` / `judge_provider` | `null` | GoalJudge 用的模型，`null` = 复用主 `cfg.model` |
 | `judge_tools_enabled` | `false` | GoalJudge 是否挂载工具自己验证（见下节），默认关闭（最小权限原则） |
 | `judge_yes_mode` | `false` | 仅当 `judge_tools_enabled=true` 时生效：工具调用是否真实执行（`--yes` 全放行），关闭时仍强制 sandbox 拦截 |
@@ -599,19 +603,61 @@ Agent 的 memory（`agent._memory`），复用既有的 lesson memory 基础设�
 > 同样应用于 `revise`）里，也会过滤掉直接照抄你反馈原句的"新标准"。如果生成
 > 仍然不够具体，直接用修改意见让它继续调整即可。
 >
-> **实现机制（2026-07 起）**：GoalSpecBuilder 不再构造一个"受限 Agent"去跑这
-> 件事，而是直接通过 `LLMHelper.ask()` 发起一次裸的单轮 chat completion——
-> 不注册任何工具、不连接任何 MCP server，模型能做的唯一事情就是把 JSON 写
-> 出来。这是修复一个实际踩到的问题：受限 Agent 即使工具注册表为空，仍然会
-> 按主循环方式连接已配置的 MCP server，模型看到自己身处通用 Agent 环境里，
-> 会习惯性地先尝试 `skill_list`/`bash` 摸底，但这些工具根本不在空注册表里，
-> 每轮都以 `Unknown tool` 报错收场，在有限轮次内说不出一句 JSON，只能退到
-> 通用兜底标准（终端表现为 `[GoalSpecBuilder] LLM 调用失败，将使用兜底验收
-> 标准`）。改为直连 LLM 后不存在"轮次预算"和"工具幻觉"这两个失败面。
+> ### 验收标准生成路径（[SYS-GOAL-MODE-DUAL-PATH]）
+>
+> 目标分两种情况：一种是简单、自解释的目标（"给这个函数加单元测试"），凭
+> LLM 的先验知识就能写出可核查的标准；另一种目标涉及**项目本身的具体信息**
+> （某个 skill 的实际能力、某个 workflow 的具体步骤/产出物），这种情况下不
+> 先读一遍项目里的真实定义，写出来的标准要么空泛、要么是模型编造的路径或
+> 命令。`cfg.goal_mode.spec_builder_mode` 就是用来控制走哪条路的开关，三选一：
+>
+> | 值 | 行为 |
+> |----|------|
+> | `"llm"` | 始终单轮裸 `LLMHelper.ask()` 调用，不挂任何工具、不连 MCP。成本最低，速度最快，适合目标本身足够自解释的场景。 |
+> | `"agent"` | 始终构造一个只读、有限工具的受限 Agent（`judge_factory.spawn_judge_agent`），工具白名单默认是 `skill_list` / `list_workflows` / `show_workflow` / `read_file` / `list_dir` / `tree_summary` / `grep` / `glob`（见 `spec_builder_agent_allowed_tools`）——刻意不给 `bash` 或任何写文件/写 workflow 的工具，builder 只需要"看"，不需要"改"。允许的最大轮次由 `spec_builder_agent_max_turns`（默认 `6`）控制。 |
+> | `"auto"`（默认） | 先用规则判断目标文本是否"看起来"涉及项目内部信息：命中 skill/workflow 相关关键词（中英文），或者目标里提到了项目里已知存在的 skill/workflow 名称（直接扫描 `.claude/skills/` 和 `.agent/workflows/` 目录名，不依赖完整的 SkillLoader/WorkflowStore 初始化），命中就走 `"agent"` 路径；没命中就先走 `"llm"` 路径，若这次裸 LLM 输出的 JSON 里带了 `needs_project_context: true`（模型自己判断"这道题目我答不好，需要先看看项目"），则丢弃这次结果、改用 `"agent"` 路径重新生成一次。规则漏判和模型自报是两道互补的保险，不要求任何一道单独做到 100% 准确。 |
+>
+> 三种模式都由 `goal_mode/spec.py::GoalSpecBuilder._run_builder()` 统一分诊，
+> `build_initial()` / `build_from_history()` / `revise()` 三个入口没有各自
+> 分叉实现。`/goal <目标文本>`、`/goal from-history`、`/goal revise` 都支持
+> 一个可选的命令行参数 `--mode=llm|agent|auto`，临时覆盖当次调用的路径（不
+> 影响配置文件里的默认值）；协商循环内后续的修改意见沿用同一次 `/goal` 命令
+> 里确定的模式，不需要每轮都重新指定。
+>
+> ```text
+> /goal 给 utils.py 里的 parse_date 函数补充单元测试
+>   → 未命中 skill/workflow 关键词 → 走 llm 路径
+>
+> /goal --mode=agent 按 release-checklist workflow 的步骤给这次发布补验收标准
+>   → 显式指定 agent 路径 → 构造只读受限 Agent，先用 show_workflow 查证
+>     release-checklist 的真实步骤，再据此生成标准
+> ```
+>
+> agent 路径的受限 Agent 复用 `judge_factory.spawn_judge_agent`（与 GoalJudge
+> 等其他"判官类"内部 Agent 同一套构造工厂），system prompt 是
+> `prompts/system/goal_spec_builder.md` 加上一段追加说明
+> `prompts/system/goal_spec_builder_agent_addendum.md`（告诉模型"你现在有
+> 只读工具，先查证再产出，不要过度探索，最终仍只输出一个 JSON"）；子 Agent
+> 的 session 会挂到调用方（通常是主 Agent）当前 session 目录下，不会散落在
+> `sessions_dir` 根目录。
+>
+> **与早期方案的区别**：`"llm"` 路径就是 2026-07 起唯一存在过的实现——当时
+> 发现受限 Agent 即使工具注册表为空，仍然会按主循环方式连接已配置的 MCP
+> server，模型看到自己身处通用 Agent 环境里，会习惯性地先尝试 `skill_list`/
+> `bash` 摸底，但这些工具根本不在空注册表里，每轮都以 `Unknown tool` 报错
+> 收场，在有限轮次内说不出一句 JSON，只能退到通用兜底标准（终端表现为
+> `[GoalSpecBuilder] LLM 调用失败，将使用兜底验收标准`），因此当时整体退回
+> 了"单轮纯文本"方案。现在的 `"agent"` 路径吸取了这个教训：**工具白名单是
+> 真实存在、真的注册了的工具**，不是"声称没有工具却仍让模型以为自己在通用
+> Agent 环境里"，因此不会重蹈"每轮 Unknown tool 报错耗尽预算"的覆辙；轮次
+> 预算（`spec_builder_agent_max_turns`）也从当年 `"llm"` 路径的隐含"0 轮工具"
+> 放宽到默认 6 轮，留出"先探索、再产出"的合理开销。
+>
 > 调用的 model/provider 仍然遵循 `spec_builder_model`/`spec_builder_provider`
-> > 主 Agent 当前模型这个优先级；从活跃 Agent 发起时会直接复用该 Agent 的
-> `LLMHelper`（天然跟随 `/model`、`/provider` 实时切换），拿不到活跃 Agent 时
-> （如独立工具函数）才现建一条单链 client。
+> > 主 Agent 当前模型这个优先级；`"llm"` 路径从活跃 Agent 发起时会直接复用
+> 该 Agent 的 `LLMHelper`（天然跟随 `/model`、`/provider` 实时切换），拿不到
+> 活跃 Agent 时（如独立工具函数）才现建一条单链 client；`"agent"` 路径同样
+> 通过 `spawn_judge_agent` 内部的 `resolve_role_model()` 解析同一优先级。
 
 ### 1.5 从当前对话历史自动生成目标
 
@@ -1043,7 +1089,8 @@ class GoalStepExecutor(ABC):
 | `config/models.py::GoalModeConfig` | 配置模型 |
 | `storage/paths.py::session_goal_state()` | `goal_state.json` 路径 |
 | `prompts/system/goal_judge.md` | GoalJudge 的 system prompt |
-| `prompts/system/goal_spec_builder.md` | GoalSpecBuilder 的 system prompt |
+| `prompts/system/goal_spec_builder.md` | GoalSpecBuilder 的 system prompt（两条路径共用的基础方法论） |
+| `prompts/system/goal_spec_builder_agent_addendum.md` | 仅 `"agent"` 路径追加的 system prompt 片段（说明可用的只读工具与使用原则） |
 | `prompts/user/goal_judge_request.md` | GoalJudge 每轮核查的 user 消息模板 |
 | `prompts/user/goal_spec_initial_request.md` | GoalSpecBuilder 首次生成验收标准的 user 消息模板 |
 | `prompts/user/goal_spec_revise_request.md` | GoalSpecBuilder 修订验收标准的 user 消息模板 |

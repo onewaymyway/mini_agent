@@ -88,6 +88,10 @@ def build_parser() -> argparse.ArgumentParser:
               /goal list         List all resumable goal tasks (status==running, may be more than one)
               /goal status       Show current session's goal state (round/compacts/last verdict)
               /goal cancel       Clear current session's goal state record
+              /goal --mode=llm|agent|auto  Optional flag on <text>/from-history/revise: how the
+                                 acceptance-criteria draft is generated — llm (single bare LLM call),
+                                 agent (read-only restricted Agent that inspects skills/workflows first),
+                                 or auto (rule-detect which one to use; default)
               /turnjudge [on|off|status]  Toggle TurnJudge (auto-detect: real end-of-turn vs technical stall)
               /memory            Force-generate/refresh session memory now (bypass interval)
               /profile           Force-refresh user profile now (bypass interval)

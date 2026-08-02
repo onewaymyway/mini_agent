@@ -518,6 +518,13 @@ class GoalModeConfig:
     enabled: bool = False
     spec_builder_model: Optional[str] = None
     spec_builder_provider: Optional[str] = None
+    spec_builder_mode: str = "auto"  # llm | agent | auto
+    spec_builder_agent_allowed_tools: list = field(default_factory=lambda: [
+        "skill_list", "list_workflows", "show_workflow",
+        "read_file", "list_dir", "tree_summary", "grep", "glob",
+    ])
+    spec_builder_agent_allowed_tool_groups: list = field(default_factory=list)
+    spec_builder_agent_max_turns: int = 6
     judge_model: Optional[str] = None
     judge_provider: Optional[str] = None
     judge_tools_enabled: bool = False
@@ -539,6 +546,9 @@ class GoalModeConfig:
 |------|------|
 | `enabled` | 整体开关，关闭时 `/goal` 命令报错提示未启用 |
 | `spec_builder_model` / `spec_builder_provider` | GoalSpecBuilder（验收标准协商）用的模型，`null` = 复用主 `cfg.model` |
+| `spec_builder_mode` | **[SYS-GOAL-MODE-DUAL-PATH]** 验收标准生成路径：`"llm"` 始终单轮裸 LLM 调用（不挂工具）；`"agent"` 始终构造只读受限 Agent（先查证项目里实际的 skill/workflow 定义再生成）；`"auto"`（默认）先用规则判断目标是否涉及项目内部信息，命中则走 agent，未命中则走 llm（llm 输出里若自报 `needs_project_context: true` 会再升级到 agent 重跑一次）。也可以在 `/goal` 命令上用 `--mode=` 临时覆盖，见 [Goal 模式指南](goal-mode-guide.md#验收标准生成路径) |
+| `spec_builder_agent_allowed_tools` / `spec_builder_agent_allowed_tool_groups` | 仅命中 agent 路径时生效的只读工具白名单，默认只包含 `skill_list`/`list_workflows`/`show_workflow`/`read_file`/`list_dir`/`tree_summary`/`grep`/`glob`——刻意不包含 `bash` 或任何写操作 |
+| `spec_builder_agent_max_turns` | agent 路径允许的最大轮次（先探索 skill/workflow 再产出 JSON），默认 `6`，远小于主 Agent 的轮次预算 |
 | `judge_model` / `judge_provider` | GoalJudge 用的模型，`null` = 复用主 `cfg.model` |
 | `judge_tools_enabled` | GoalJudge 是否挂载工具自己验证验收标准，默认关闭（最小权限原则） |
 | `judge_allowed_tools` / `judge_allowed_tool_groups` | `judge_tools_enabled=true` 时的工具白名单 |

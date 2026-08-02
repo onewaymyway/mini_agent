@@ -52,11 +52,22 @@
   - "运行 pytest tests/test_utils.py -v 全部通过，且不影响仓库中其他既有测试"
   - "新增测试的行覆盖率覆盖 parse_date 函数体的所有分支（可用 --cov 校验）"
 
+## 关于"是否需要先看项目内容"
+你当前这次调用**没有**挂载任何工具，只能凭目标文本本身和你的先验知识来写标准。
+如果目标明确依赖项目内部的具体信息才能写出可核查的标准——例如引用了某个
+skill 的具体能力/参数、某个 workflow 的具体步骤/产出物，而你并不确定这些
+细节的真实情况——不要凭空编造一个"听起来合理"的路径、命令或步骤。这种情况下，
+在输出 JSON 里把 `needs_project_context` 设为 `true`，其余字段仍按你现有的
+理解尽量给出（作为兜底），下游会根据这个信号改用能读取项目文件的 Agent 重新
+生成一份更可靠的草案。绝大多数目标不需要这个字段为 true，只在确实拿不准
+项目具体细节时才标记。
+
 ## 输出格式（严格遵守，只输出这一个 JSON 对象，不要有 JSON 之外的文字，不要用
 markdown 代码块包裹）,注意只输出json,而不是创建文件：
 {
   "goal_text": "对目标的清晰复述（可以比用户原话更明确，但仍是目标本身，不是标准）",
   "acceptance_criteria": ["标准1", "标准2", "..."],
   "verification_method": "run_command | file_check | manual_review",
-  "verification_command": "如果 verification_method 是 run_command，给出具体可执行的命令；否则留空字符串"
+  "verification_command": "如果 verification_method 是 run_command，给出具体可执行的命令；否则留空字符串",
+  "needs_project_context": false
 }

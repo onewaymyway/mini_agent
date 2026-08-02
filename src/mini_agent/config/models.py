@@ -663,6 +663,33 @@ class GoalModeConfig:
     # GoalSpecBuilder 用于生成/修订 GoalSpec 的模型（None = 复用主 cfg.model）
     spec_builder_model: Optional[str] = None
     spec_builder_provider: Optional[str] = None
+    # [SYS-GOAL-MODE-DUAL-PATH] 验收标准生成走"纯 LLM"还是"受限只读 Agent"：
+    #   "llm"   — 始终是单轮裸 chat completion（不挂工具），成本最低，适合目标
+    #             本身足够自解释、不依赖项目内部结构（skill/workflow 定义等）的场景。
+    #   "agent" — 始终构造一个只读、有限工具（skill_list / show_workflow /
+    #             list_workflows / read_file / list_dir / tree_summary / grep /
+    #             glob）的受限 Agent 来生成，可以先查证项目里的实际 skill/
+    #             workflow 定义再产出验收标准，避免凭空编造路径或命令。
+    #   "auto"  — 默认值。先用规则（关键词命中 + 已知 skill/workflow 名称匹配）
+    #             判断目标是否涉及项目内部信息；命中则走 "agent"，否则走 "llm"。
+    #             规则未命中时，仍允许 builder 在裸 LLM 输出的 JSON 里通过
+    #             `needs_project_context` 字段自报"我需要读项目才能写好标准"，
+    #             命中后当前这次调用的结果会被丢弃，改用 "agent" 路径重新生成。
+    spec_builder_mode: str = "auto"                    # llm | agent | auto
+    # 仅 "agent"/"auto" 命中 agent 路径时生效：只读工具白名单（工具名）。
+    # 刻意不包含 bash / 任何写文件或写 workflow 的工具——builder 只需要"看"，
+    # 不需要"改"，避免重蹈早期"受限 Agent 工具幻觉/滥用"的覆辙。
+    spec_builder_agent_allowed_tools: list = field(
+        default_factory=lambda: [
+            "skill_list", "list_workflows", "show_workflow",
+            "read_file", "list_dir", "tree_summary", "grep", "glob",
+        ]
+    )
+    spec_builder_agent_allowed_tool_groups: list = field(default_factory=list)
+    # agent 路径允许的最大轮次（先探索 skill/workflow 再产出 JSON，比纯 LLM
+    # 单轮多几轮预算，但仍远小于主 Agent，避免跑飞）。
+    spec_builder_agent_max_turns: int = 6
+
 
     # ── GoalJudge ────────────────────────────────────────────────────────────
     judge_model: Optional[str] = None
