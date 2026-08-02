@@ -10,26 +10,23 @@
 
 其中 `keywords_file` 字段是一个**已经生成好**的绝对路径，指向一份纯 JSON
 数组格式的关键词文件（内容就是 `search_keywords` 那份列表，格式已经符合
-`zhihu_search_with_login.py --keywords-file` 的要求）。**直接使用这个路径**，
-不需要你自己再从 `search_keywords` 字段现算一遍、手工写一份关键词文件——
+适配器脚本的输入要求）。**直接使用这个路径**，不需要你自己再从 `search_keywords` 字段现算一遍、手工写一份关键词文件——
 那一步已经由上游步骤做完了。
 
 ## 搜索要求
 
 1. 直接调用下方"执行方式"里的命令，把 `keywords_file` 的路径原样传给
-   `--keywords-file` 参数。
-2. 命令跑完后，从其输出/落盘结果里获取每个关键词搜到的问题列表——具体是
-   直接读脚本的返回内容，还是脚本自己已经落了一份结果文件，以脚本实际
-   行为为准；如果搜索结果不完整或某些关键词没搜到，可以针对性地再手工
-   在知乎搜索框里补搜，不要求全程只能靠这一条命令。
+   `--keywords-file` 参数，同时指定 `--output` 为系统告诉你的结果文件路径。
+2. 命令跑完后，适配器脚本会自动将结果写入指定的输出文件，格式为工作流下游需要的结构。
+3. 如果搜索结果不完整或某些关键词没搜到，可以针对性地再手工在知乎搜索框里补搜，不要求全程只能靠这一条命令。
 
 ## 执行方式
 
-请直接调用 browser-cdp skill 的脚本来执行搜索：
+请直接调用 browser-cdp skill 的搜索脚本来执行搜索：
 
 ```bash
 cd .claude/skills/browser-cdp
-python src/searchers/zhihu_search_with_login.py --keywords-file "<analyze_doc.output 里的 keywords_file 绝对路径>" --port 9336 --min-results 30 --max-results 60 --max-scrolls 12 --scroll-pause 3
+python src/searchers/zhihu_search_with_login.py --keywords-file "<analyze_doc.output 里的 keywords_file 绝对路径>" --port 9336 --min-results 30 --max-results 60 --max-scrolls 12 --scroll-pause 3 --output "<系统告诉你的结果文件绝对路径>"
 ```
 
 **关键修复：使用已登录的知乎浏览器实例**：
@@ -49,8 +46,8 @@ python src/searchers/zhihu_search_with_login.py --keywords-file "<analyze_doc.ou
 
 ## 输出要求
 
-脚本会输出一个 JSON 数组，每项包含 `content_id`、`content_title`、`query`、
-`question_title`、`question_url` 字段。你需要把它转换成 workflow 下游需要的格式：
+适配器脚本会输出一个 JSON 对象，包含 `questions`、`total_keywords_searched`、`total_unique_questions` 字段。
+你需要确保它写入系统告诉你的文件路径。
 
 **注意：这个 JSON 对象不是靠对话回复交付的，本轮任务结束前系统会额外告诉你一个绝对路径，
 你必须用文件写入工具把这个 JSON 对象实际写入那个文件。** 顶层字段：

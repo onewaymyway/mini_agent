@@ -48,12 +48,20 @@ steps:
     input_prompt: "本次要分析并发布到知乎的本地文档绝对路径"
     prompt: "doc_path"
 
+  - id: validate_input
+    type: python_step
+    script_path: steps/00_validate_input.py
+    depends_on: [intake]
+    output_file: input_validation.json
+    timeout: 30
+    retry_on_error: 0
+
   - id: analyze_doc
     type: python_step
     script_path: steps/01_analyze_doc.py
-    depends_on: [intake]
+    depends_on: [intake, validate_input]
     output_file: doc_analysis.json
-    timeout: 180
+    timeout: 300
     retry_on_error: 1
 
   - id: search_zhihu
