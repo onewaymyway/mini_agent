@@ -1229,6 +1229,26 @@ class AutonomyConfig:
     # 是否确实有其它 Goal 在排队等待，见 objective_executor.py
     # `_should_yield_for_fairness()`）。
     fairness_yield_after_seconds: float = 900.0
+    # [daemon_autonomous_state_recovery_plan.md 阶段三 / P1] 自主任务独立
+    # 上下文：开启后，`autonomous` Objective 的每个 step 不再复用 Self 的
+    # 主 Session/Agent（即不再走共享的 bridge.input_queue），而是像 cron
+    # 任务（见 evolution/cron_agent_bridge.py）一样，每次提交都在专属的
+    # 后台线程里构建一个全新的、独立 Session 的 Agent 实例来执行，执行完
+    # 即丢弃——不会和真人交互共用同一段对话历史，也不会跨 step 累积上下文
+    # （"上一步做到哪了"完全靠 ObjectiveExecutor 自己在 prompt 里拼接的
+    # `[前序步骤结果]`/`[前序步骤产出文件]`结构化摘要传递，不依赖共享的
+    # session 历史）。默认 False：这是比 P0-A/P0-B 更大的行为变化（Self
+    # 不再能在 REPL 里直接看到自主任务执行过程中的中间对话），先默认关闭，
+    # 按需灰度开启，不强制所有部署一起切换。
+    objective_isolated_context_enabled: bool = False
+    # 隔离上下文模式下，单次 step 的 run_turn() 内部预算（max_turns）。
+    objective_isolated_inner_max_turns: int = 15
+    # 隔离上下文模式下，同时允许多少个 step 在独立线程里并发执行 Agent。
+    # 这是一个安全阀，不是主要的并发控制手段——真正决定"同时有几个
+    # Objective 在跑"的仍然是 max_concurrent_objectives_cap 等既有机制，
+    # 这里只是防止极端情况下（比如配置改动导致上限突然变大）无限制地
+    # 并发构造 Agent 实例耗尽资源。
+    objective_isolated_max_workers: int = 4
 
 
 @dataclass

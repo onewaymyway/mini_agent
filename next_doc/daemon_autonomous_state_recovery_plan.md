@@ -83,7 +83,7 @@
 |---|---|---|
 | 阶段一 | P0-A 结果健全性校验 | ✅ 已实现 |
 | 阶段二 | P0-B Step 级重置能力（自动 + 手动命令） | ✅ 已实现 |
-| 阶段三 | P1 自主任务独立上下文 | ⏳ 设计已定，待实现 |
+| 阶段三 | P1 自主任务独立上下文 | ✅ 已实现 |
 | 阶段四 | P2 看护模式 GuardianRunner | ⏳ 设计已定，待实现 |
 
 后续每完成一个阶段，在下面"实现记录"追加对应小节，并把上表状态更新为
@@ -162,7 +162,56 @@
 
 ### 阶段三：自主任务独立上下文
 
-（待实现）
+已按设计落地，复用了 cron 任务已有的"独立 Agent 实例"模式
+（`evolution/cron_agent_bridge.py`），没有重新发明一套：
+
+- 新增 `evolution/objective_agent_bridge.py`：
+  - `build_objective_agent(base_cfg, objective_title, execution_id,
+    inner_max_turns=None) -> Agent`：与 `cron_agent_bridge.build_cron_agent()`
+    结构保持一致（`auto_approve=True`，registry 留空回退到全局默认工具集，
+    独立 `system_extra` 声明"这是无人值守的独立会话，只能依赖本条消息里的
+    结构化上下文，不要假设记得任何未出现在消息中的内容"）。
+  - `ObjectiveIsolatedRunner`：可以直接赋给 `ObjectiveExecutor._submit_fn`
+    的 drop-in 替代——`submit(message, initiator, meta) -> turn_id` 签名
+    与既有的 `_obj_submit` 完全一致。内部用 `ThreadPoolExecutor` 管理并发
+    （`cfg.autonomy.objective_isolated_max_workers`，安全阀，不是主要并发
+    控制手段——真正的并发上限仍由 `max_concurrent_objectives_cap` 等既有
+    机制决定），每个 step 提交后在专属线程里：构建全新 Agent → 跑
+    `run_turn()` → 复用 P0-A 的 `is_valid_final_result()` 做二次确认
+    （`agent._last_turn_result_invalid` 已经在 `run_turn()` 内部判过一次，
+    这里只是防御性兜底）→ 通过 `on_done`/`on_failed` 回调把结果交回
+    `ObjectiveExecutor.on_turn_done()`/`on_turn_failed()`（签名完全一致，
+    直接传方法引用即可，不需要 `ObjectiveExecutor` 关心"这个 turn 是不是
+    隔离上下文跑的"）。执行完毕（无论成功/失败）立即丢弃这个 Agent 实例，
+    不跨 step 复用、不保留对话历史——"上一步做到哪了"完全靠
+    `_submit_step()` 已有的 `[前序步骤结果]`/`[前序步骤产出文件]` 结构化
+    摘要拼接传递。
+  - `shutdown(wait=False)`：daemon 优雅关闭时停止接受新 step，不强行打断
+    正在跑的线程。
+- `config/models.py::AutonomyConfig` 新增三个字段：
+  `objective_isolated_context_enabled: bool = False`（默认关闭，按需灰度）、
+  `objective_isolated_inner_max_turns: int = 15`、
+  `objective_isolated_max_workers: int = 4`。
+- `api/server.py::HttpServer._build_autonomous_loop()`：`objective_executor`
+  构造并 `load()` 完毕后，若开关开启，构造 `ObjectiveIsolatedRunner`（回调
+  直接指向 `objective_executor.on_turn_done`/`on_turn_failed`），把
+  `objective_executor._submit_fn` 换成 `isolated_runner.submit`——必须放在
+  `objective_executor` 构造之后接线，因为回调需要引用这个尚未创建时不存在
+  的对象；不开启时行为与升级前完全一致（一键回退）。
+  `HttpServer.stop()` 里新增对 `_objective_isolated_runner.shutdown(wait=False)`
+  的调用，与 `_session_pool.stop_all()` 同一批优雅关闭逻辑。
+- 回退方式：`cfg.autonomy.objective_isolated_context_enabled=False`
+  （默认值）时，`_submit_fn` 保持原来提交进 Self 共享 `bridge.input_queue`
+  的路径，行为与升级前完全一致。
+- 新增测试：`tests/test_daemon_autonomous_state_recovery.py::TestObjectiveIsolatedRunner`
+  （7 个用例）：成功结果触发 `on_done(valid=True)`；判定无效的结果触发
+  `on_done(valid=False)`（而不是当作真实结果）；`run_turn()` 抛异常触发
+  `on_failed`；构建 Agent 失败触发 `on_failed`；`shutdown()` 后再
+  `submit()` 返回 `None`；`ObjectiveExecutor._submit_fn` 可以被
+  `ObjectiveIsolatedRunner.submit` 直接替换（接线验证）。
+- 验证：`python3 -m pytest tests/test_daemon_autonomous_state_recovery.py`
+  16 个用例全部通过；`test_objective_executor_kanban_tracks_r3/r4.py` 的
+  失败在改动前的环境（缺 `uvicorn` 依赖）里同样存在，与本次改动无关。
 
 ### 阶段四：看护模式 GuardianRunner
 

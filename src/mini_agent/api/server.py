@@ -1539,6 +1539,30 @@ class HttpServer:
             )
             objective_executor.load()
 
+            # [daemon_autonomous_state_recovery_plan.md 阶段三 / P1] 自主任务
+            # 独立上下文：默认关闭，开启后把 ObjectiveExecutor 的 submit_fn
+            # 从"提交进 Self 共享的 bridge.input_queue"换成
+            # ObjectiveIsolatedRunner.submit（每个 step 专属后台线程 + 全新
+            # 独立 Agent 实例，执行完即丢弃，不污染/复用 Self 主 session 的
+            # 对话历史）。必须放在 objective_executor 构造完毕之后接线——
+            # 回调 on_done/on_failed 直接指向 objective_executor 的方法，
+            # 构造 ObjectiveExecutor 本身时还不存在这个引用。
+            self._objective_isolated_runner = None
+            if getattr(cfg.autonomy, "objective_isolated_context_enabled", False):
+                try:
+                    from mini_agent.evolution.objective_agent_bridge import ObjectiveIsolatedRunner
+
+                    self._objective_isolated_runner = ObjectiveIsolatedRunner(
+                        base_cfg=cfg,
+                        on_done=objective_executor.on_turn_done,
+                        on_failed=objective_executor.on_turn_failed,
+                    )
+                    objective_executor._submit_fn = self._objective_isolated_runner.submit
+                except Exception as _mini_agent_exc:
+                    from mini_agent.errors import log_exception
+                    log_exception(_mini_agent_exc, where='mini_agent.api.server.HttpServer._build_autonomous_loop.objective_isolated_runner')
+                    self._objective_isolated_runner = None
+
             # [goal_cron_binding_plan.md Track D] 把 goal_cycle 触发逻辑接进
             # CronScheduler：必须放在 goal_backlog/cron_scheduler/objective_executor
             # 三者都已构建完毕之后。失败静默降级为"绑定功能不可用"，不影响
@@ -1700,6 +1724,14 @@ class HttpServer:
         # 不要让用户的对话历史因为 daemon 关闭而丢失未落盘的内容。
         if self._session_pool is not None:
             self._session_pool.stop_all()
+        # [daemon_autonomous_state_recovery_plan.md 阶段三 / P1]
+        isolated_runner = getattr(self, "_objective_isolated_runner", None)
+        if isolated_runner is not None:
+            try:
+                isolated_runner.shutdown(wait=False)
+            except Exception as _mini_agent_exc:
+                from mini_agent.errors import log_exception
+                log_exception(_mini_agent_exc, where='mini_agent.api.server.HttpServer.stop.isolated_runner')
         if self._uvicorn_server:
             self._uvicorn_server.should_exit = True
         if self._server_thread:

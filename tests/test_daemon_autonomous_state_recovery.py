@@ -194,5 +194,122 @@ class TestResetStep(_ObjectiveExecutorTestBase):
         self.assertFalse(executor.reset_step(exec_id, 5, "越界"))
 
 
+
+# ── 阶段三：ObjectiveIsolatedRunner（P1 自主任务独立上下文）───────────────
+
+class _FakeIsolatedAgent:
+    """代替真实 Agent：不需要 LLM/API key，只模拟 run_turn() 的行为。"""
+
+    def __init__(self, text="步骤已完成", raise_exc=None, hit_invalid=False):
+        self._text = text
+        self._raise_exc = raise_exc
+        self._last_turn_result_invalid = hit_invalid
+
+    def run_turn(self, message):
+        if self._raise_exc is not None:
+            raise self._raise_exc
+        return self._text
+
+
+class TestObjectiveIsolatedRunner(unittest.TestCase):
+    def setUp(self):
+        from mini_agent.evolution.objective_agent_bridge import ObjectiveIsolatedRunner
+        from mini_agent.config.models import AppConfig
+
+        self.done_calls = []
+        self.failed_calls = []
+        self._lock_event = __import__("threading").Event()
+
+        def _on_done(turn_id, summary, valid=True):
+            self.done_calls.append((turn_id, summary, valid))
+            self._lock_event.set()
+
+        def _on_failed(turn_id, error):
+            self.failed_calls.append((turn_id, error))
+            self._lock_event.set()
+
+        self.runner = ObjectiveIsolatedRunner(
+            base_cfg=AppConfig(),
+            on_done=_on_done,
+            on_failed=_on_failed,
+            max_workers=2,
+        )
+
+    def tearDown(self):
+        self.runner.shutdown(wait=True)
+
+    def _submit_with_fake_agent(self, fake_agent, timeout=5.0):
+        import unittest.mock as mock
+        from mini_agent.evolution import objective_agent_bridge
+
+        self._lock_event.clear()
+        with mock.patch.object(
+            objective_agent_bridge, "build_objective_agent", return_value=fake_agent
+        ):
+            turn_id = self.runner.submit(
+                "步骤 1/1: 做点事情", "autonomous",
+                {"execution_id": "exec-1", "objective_id": "obj-1", "step_index": 0},
+            )
+        self.assertIsNotNone(turn_id)
+        self.assertTrue(self._lock_event.wait(timeout=timeout))
+        return turn_id
+
+    def test_successful_step_calls_on_done_with_valid_true(self):
+        turn_id = self._submit_with_fake_agent(_FakeIsolatedAgent(text="搞定了"))
+        self.assertEqual(len(self.done_calls), 1)
+        got_turn_id, summary, valid = self.done_calls[0]
+        self.assertEqual(got_turn_id, turn_id)
+        self.assertEqual(summary, "搞定了")
+        self.assertTrue(valid)
+        self.assertEqual(self.failed_calls, [])
+
+    def test_invalid_result_calls_on_done_with_valid_false(self):
+        self._submit_with_fake_agent(_FakeIsolatedAgent(text="脏结果", hit_invalid=True))
+        self.assertEqual(len(self.done_calls), 1)
+        _, _, valid = self.done_calls[0]
+        self.assertFalse(valid)
+
+    def test_run_turn_exception_calls_on_failed(self):
+        self._submit_with_fake_agent(_FakeIsolatedAgent(raise_exc=RuntimeError("boom")))
+        self.assertEqual(self.done_calls, [])
+        self.assertEqual(len(self.failed_calls), 1)
+        self.assertIn("boom", self.failed_calls[0][1])
+
+    def test_agent_build_failure_calls_on_failed(self):
+        import unittest.mock as mock
+        from mini_agent.evolution import objective_agent_bridge
+
+        self._lock_event.clear()
+        with mock.patch.object(
+            objective_agent_bridge, "build_objective_agent",
+            side_effect=RuntimeError("cannot build"),
+        ):
+            turn_id = self.runner.submit(
+                "步骤 1/1: 做点事情", "autonomous", {"execution_id": "exec-2"},
+            )
+        self.assertIsNotNone(turn_id)
+        self.assertTrue(self._lock_event.wait(timeout=5.0))
+        self.assertEqual(len(self.failed_calls), 1)
+        self.assertIn("cannot build", self.failed_calls[0][1])
+
+    def test_submit_after_shutdown_returns_none(self):
+        self.runner.shutdown(wait=True)
+        turn_id = self.runner.submit("msg", "autonomous", {})
+        self.assertIsNone(turn_id)
+
+    def test_submit_fn_can_be_swapped_into_objective_executor(self):
+        """[接线验证] ObjectiveExecutor._submit_fn 是一个普通可赋值属性，
+        ObjectiveIsolatedRunner.submit 可以直接替换默认的共享提交路径，
+        与 api/server.py 里的接线方式一致。"""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            paths = AgentPaths(Path(tmpdir))
+            backlog = GoalBacklog(paths)
+            executor = ObjectiveExecutor(paths=paths, submit_fn=None, goal_backlog=backlog)
+            self.assertIsNone(executor._submit_fn)
+            executor._submit_fn = self.runner.submit
+            self.assertEqual(executor._submit_fn, self.runner.submit)
+            self.assertIs(executor._submit_fn.__self__, self.runner)
+
+
 if __name__ == "__main__":
     unittest.main()
