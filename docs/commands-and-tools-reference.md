@@ -439,6 +439,7 @@ mini-agent --retry-backoff linear --retry-backoff-step 60 --retry-backoff-max 30
 | `/agent goals recur <id> <schedule> [task_template]` | 声明为周期性：绑定一个 cron job，到期时自动为该 Goal 派生并启动一轮新 Objective；详见 [Goal 与 Cron 绑定指南](goal-cron-binding-guide.md) |
 | `/agent goals unrecur <id>` | 停止周期性推进（disable 绑定的 cron job，不删除 Goal/job） |
 | `/agent goals status` | 显示 AutonomousLoop tick 状态（档位/上次 tick/tick 次数） |
+| `/agent goals reset-step <exec_id> <step_idx> [reason]` | 重置某个自主 Objective execution 的指定 step（清空该 step 及其之后所有 step 的结果/产出，重新提交），用于人工发现某步结果被污染/需要重跑；daemon 模式下非本进程 Agent 会自动回退为 HTTP 请求；详见 [Daemon 自主任务错误状态识别与恢复指南](daemon-autonomous-state-recovery-guide.md) |
 | `/digest` | 显示自上次交互以来的自主活动摘要（来自 `activity_digest.jsonl`） |
 | `/agent digest` | 同 `/digest` |
 | `/digest daily [YYYY-MM-DD]` | 生成/查看**融合日报**（行为分布+目标进展+git提交，与上面的 `/digest` 是两个不同功能，须显式加 `daily` 子命令）；详见 [每日融合日报指南](daily-digest-guide.md) |

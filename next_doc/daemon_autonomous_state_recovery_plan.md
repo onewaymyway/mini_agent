@@ -304,6 +304,16 @@
 至此，`daemon_autonomous_state_recovery_plan.md` 规划的四个阶段（P0-A/
 P0-B/P1/P2）全部完成，均带有开关可一键回退到升级前行为。
 
+### 文档
+
+面向使用者的说明文档已补齐：新增
+[`docs/daemon-autonomous-state-recovery-guide.md`](../docs/daemon-autonomous-state-recovery-guide.md)
+（四个阶段各自的"做什么/怎么开/怎么用"+ 常见问题），并在
+`docs/autonomous_daemon_design.md`（实现状态表）、
+`docs/config-guide.md`（`AutonomyConfig` 章节 + 相关文档列表）、
+`docs/commands-and-tools-reference.md`（补上此前未文档化的
+`/agent goals reset-step` 命令）三处加了交叉引用。
+
 未来可扩展点（本次改动范围之外，不属于本计划四个阶段，仅记录以供后续
 规划参考）：
   - `GuardianRunner.render_dead_ends_block()` 目前只在判定 GIVE_UP 时记录，

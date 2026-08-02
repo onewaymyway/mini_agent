@@ -19,6 +19,13 @@
 | `/cron` CLI 命令 | ✅ 已实现 | `cli/commands/cron.py` |
 | SSE `objective_progress` | ✅ 已实现 | `api/bridge.py` + `api/models.py` |
 | ExplorationSandbox | ✅ 已接入 | `perception/exploration_sandbox.py` + `autonomous_loop.py` |
+| 结果健全性校验（P0-A） | ✅ 已实现 | `perception/format_correction_detector.py` + `agent/turn_loop.py` |
+| Step 级重置能力（P0-B） | ✅ 已实现 | `evolution/objective_executor.py::reset_step()` + `/agent goals reset-step` |
+| 自主任务独立上下文（P1） | ⬜ 默认关闭 | `evolution/objective_agent_bridge.py` |
+| 看护模式 GuardianRunner（P2） | ⬜ 默认关闭 | `evolution/guardian.py` |
+
+> 以上四项的设计动机、配置开关、使用方法见
+> [Daemon 自主任务错误状态识别与恢复指南](daemon-autonomous-state-recovery-guide.md)。
 
 ---
 

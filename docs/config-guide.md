@@ -767,6 +767,12 @@ class AutonomyConfig:
 
 详见 [四项优先改进指南](four-priority-improvements-guide.md#方案三自主探索好奇心评分)。
 
+> `AutonomyConfig` 还承载了另外三组彼此独立的字段（各自可单独开关）：
+> `fairness_*`（[Goal 执行公平性调度配置](goal-execution-fairness-config.md)）、
+> `objective_isolated_context_enabled`/`objective_isolated_*`（自主任务独立
+> 上下文）、`guardian_mode_enabled`/`guardian_*`（看护模式 GuardianRunner）——
+> 后两组详见 [Daemon 自主任务错误状态识别与恢复指南](daemon-autonomous-state-recovery-guide.md)。
+
 ---
 
 ## 6. 添加新功能配置
@@ -828,6 +834,7 @@ import 列表和 `__all__`。
 - [记忆管理指南](memory-management-guide.md) — `MemoryConfig` 新增字段的完整使用场景（Lesson Memory）
 - [四项优先改进指南](four-priority-improvements-guide.md) — `MemoryConfig`（embedding/consolidation）与 `AutonomyConfig` 新字段的完整使用场景
 - [Goal 执行公平性调度配置](goal-execution-fairness-config.md) — `AutonomyConfig` 的 `fairness_*` 字段（P1-P5）完整说明
+- [Daemon 自主任务错误状态识别与恢复指南](daemon-autonomous-state-recovery-guide.md) — `FormatCorrectionConfig.result_sanity_check_enabled` 与 `AutonomyConfig` 的 `objective_isolated_*`/`guardian_*` 字段完整说明
 - [多结果合并取优指南](ensemble-best-of-n-guide.md) — `EnsembleConfig` 的完整使用场景与架构说明
 - [Goal 模式指南](goal-mode-guide.md) — `GoalModeConfig` 的完整使用场景与架构说明
 - [轮次守门员指南](turn-judge-guide.md) — `TurnJudgeConfig` 的完整使用场景与架构说明
