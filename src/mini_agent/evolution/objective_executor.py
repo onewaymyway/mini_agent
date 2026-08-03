@@ -287,15 +287,22 @@ class ObjectiveExecutor:
                              /关闭自适应时，退化为改造前的行为——恒定使用
                              模块级常量 MAX_CONCURRENT_OBJECTIVES（=2）。
         release_worker_fn — [daemon_execution_model_and_scheduler_heartbeat_
-                             improvement_plan.md 阶段一] Objective 到达终止
-                             状态（completed/failed/cancelled）时调用：
-                             (execution_id) -> None。用于通知
-                             ObjectivePersistentRunner 之类的"目标级持久
-                             Worker"立即释放该 execution 独占的线程/Agent
-                             实例。未提供时（默认，向后兼容）不做任何事——
-                             共享队列/隔离 runner 两条既有路径都不需要这个
-                             回调。异常会被吞掉，不影响 Objective 终止流程
-                             本身。
+                             improvement_plan.md 阶段一 / §7.5] 两类时机会
+                             调用：(execution_id) -> None。
+                             1) Objective 到达终止状态
+                                （completed/failed/cancelled）时（阶段一）；
+                             2) reap_stale_steps() 判定当前 step 超时（很
+                                可能对应的 worker 线程还卡死在 run_turn()
+                                里没返回）、准备 resubmit 之前（§7.5）——
+                                避免重试/重新分解提交的新 step 排队排在
+                                同一条卡死线程背后永远排不上。
+                             用于通知 ObjectivePersistentRunner 之类的
+                             "目标级持久 Worker"立即释放该 execution 独占
+                             的线程/Agent 实例（下一次 submit() 会惰性重建
+                             全新的）。未提供时（默认，向后兼容）不做任何
+                             事——共享队列/隔离 runner 两条既有路径都不需要
+                             这个回调。异常会被吞掉，不影响 Objective 终止
+                             流程本身。
         """
         self._paths = paths
         self._submit_fn = submit_fn
@@ -970,6 +977,30 @@ class ObjectiveExecutor:
             if step.turn_id:
                 self._turn_to_exec.pop(step.turn_id, None)
             self._release_step_paths(ex.execution_id)
+
+            # [daemon_execution_model_and_scheduler_heartbeat_improvement_plan.md
+            # §7.5 修复] 与 on_turn_failed()/_handle_invalid_step_result() 的
+            # 重试路径不同：那两处的上一次 run_turn() 已经正常返回（成功或
+            # 抛异常都会返回），对应的 worker 线程本来就空闲了，直接复用
+            # 没有问题。但走到这里意味着上一次 turn 超过 timeout 都没有
+            # 触发任何回调——如果当前接的是 ObjectivePersistentRunner（每个
+            # execution_id 专属 max_workers=1 的线程池），大概率是那条线程
+            # 真的卡死在 run_turn() 里还没返回（网络挂起/死循环等，Python
+            # 线程无法强制杀死）。这种情况下如果不做任何处理就直接
+            # resubmit，下面的重试/重新分解提交的新 step 会被排进*同一个*
+            # 卡死线程背后的队列，永远排不上——对这个 execution 而言等同于
+            # 死锁，且不会被再次超时检测出来（因为新 step 的 turn_id 会
+            # 重新计时，掩盖了"其实还是那条旧线程在占着"这个事实）。
+            # 这里显式调用 _release_worker()（持久 Worker 模式下会丢弃当前
+            # 专属线程池 + Agent 实例，下一次 submit() 会惰性重建全新的；
+            # 那条卡死的旧线程本身仍会作为孤儿线程在后台跑，无法强杀，但
+            # 不再被任何映射引用，不阻塞后续提交）。共享队列/隔离 runner
+            # 路径下 release_worker_fn 为 None，本调用是 no-op，行为不变。
+            # 迟到的孤儿线程如果最终真的跑完了，会尝试回调
+            # on_turn_done/on_turn_failed，但此时 turn_id 已经从
+            # self._turn_to_exec 里被移除（见上面几行），两个方法都会
+            # 因为 mapping 找不到而直接返回，不会误伤新提交的 step。
+            self._release_worker(ex.execution_id)
 
             timeout_msg = f"步骤超时（超过 {timeout:.0f}s 未收到执行结果，判定为已卡死/丢失）"
 

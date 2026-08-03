@@ -1,8 +1,8 @@
 # daemon 执行模型 + 调度心跳解耦 改进方案
 
 > 状态：**阶段一（目标级持久 Worker）、阶段二（调度心跳解耦）均已完成并通过
-> 测试；事后复查发现的 §7.1 锁覆盖缺口、§7.3 会话历史无上限问题均已修复
-> （见对应小节"处理状态"）**
+> 测试；事后复查发现的 §7.1 锁覆盖缺口、§7.3 会话历史无上限问题、§7.5
+> "持久 Worker 卡死后重试排队死锁"问题均已修复（见对应小节"处理状态"）**
 > 背景来源：与用户的一轮架构走查对话（聚焦"daemon 进程如何更好地执行、更合理地
 > 调度、cron、全局 Goal 的执行"），走查了 `autonomous_loop.py` /
 > `objective_executor.py` / `objective_agent_bridge.py` / `resource_arbiter.py` /
@@ -484,3 +484,141 @@ runner 完全一样的效果（每步都是失忆的新 agent）。这不是 bug
 `scheduler_heartbeat_poll_interval_seconds`（默认 5s）vs
 `tick_interval_seconds`（默认 60s）目前也只能先上线观察一段时间的"tick
 延迟分布"，再决定要不要调整默认值。
+
+### 7.5 【需要修复】持久 Worker 卡死后，超时重试会排队排在同一条卡死
+线程背后，等同于该 execution 永久死锁
+
+**背景**：用户明确要求走查"如果其中一个任务异常结束，daemon 也能正常
+执行，不会死锁"这个场景。先复查了"任务抛异常/结果失败"这条路径——
+`ObjectiveIsolatedRunner`/`ObjectivePersistentRunner._run_step()` 已经用
+try/except 包裹了 `build_objective_agent()` 和 `agent.run_turn()`，任何
+异常都会走 `on_failed` 回调，对应的后台线程本身会正常返回、立刻可以被
+复用——**这条路径本来就没有死锁风险，不需要改动**。
+
+**问题**：真正的缺口在"任务真正卡死"这条路径——`run_turn()` 既不返回
+也不抛异常（比如网络请求挂起、模型侧死循环、工具调用阻塞在某个系统调用
+上），线程会无限期停在 `agent.run_turn(message)` 这一行，永远不会执行到
+后面的 `on_done`/`on_failed` 回调。`objective_executor.py` 里早就有的
+`reap_stale_steps()`（存活性回收机制，扫描 `status=="running"` 且已超过
+`DEFAULT_STEP_TIMEOUT_SECONDS`（默认 600 秒）仍未收到回调的 step）会判定
+这个 turn"已死"，走重试或重新分解逻辑，重新调用 `_submit_step()` 把新的
+一次尝试提交给同一个 `submit_fn`。
+
+对共享队列（默认路径）和 `ObjectiveIsolatedRunner`（共享
+`ThreadPoolExecutor(max_workers=N)`，默认 4）而言，这个重试没有问题——
+新提交的任务会被派发到线程池里*任意*一个空闲 worker 上执行，不受那个
+卡死线程的影响（除非全部 N 个 worker 同时卡死，这是一个更极端、概率
+更低的场景，不在本次修复范围内，见下方"不做"）。
+
+但对 `ObjectivePersistentRunner`（阶段一新增，每个 `execution_id` 独占
+一个专属的 `ThreadPoolExecutor(max_workers=1)`）而言，情况完全不同：
+`reap_stale_steps()` 重新提交的新 step，会通过
+`ObjectivePersistentRunner.submit()` 查到**同一个** `execution_id` 对应
+的、**同一个**专属线程池——这个线程池只有一个 worker，而这个 worker
+正卡死在上一次 `run_turn()` 里没有返回。新提交的任务会被排进这个线程池
+内部的等待队列，**永远排不上**（Python 线程无法被强制终止，卡死的
+worker 不会主动让出）。
+
+**后果**：对这一个 execution 而言，这是一个真实的死锁——`reap_stale_steps()`
+的超时重试机制形同虚设：它确实会在下一次 tick 判定"又超时了"（因为新
+提交的 step 同样从未收到回调），但每一轮重试都只是往同一个卡死线程背后
+的队列里再排一个新任务，永远无法真正执行，`retry_count` 会很快耗尽、
+Objective 被判定为 `failed`——**这一点本身不算错**（最终确实会终止，
+不会让 daemon 挂起或让其它 Objective 排不上号，`can_start_new()`/
+`effective_max_concurrent()` 只看 `ObjectiveExecution.status`，不关心底层
+线程死没死），但存在两个更隐蔽的实际代价：
+1. 每一轮 `MAX_STEP_RETRIES`（默认 2）次重试都是徒劳的空转，白白消耗
+   `DEFAULT_STEP_TIMEOUT_SECONDS`（默认 600 秒）× `MAX_STEP_RETRIES` 的
+   时间才能真正判定失败，而不是第一次超时就该做的事；
+2. 更重要的是：那个卡死的专属线程池/Agent 实例，在整个重试过程中**从未
+   被释放**——`release_worker_fn` 目前只在 `_on_objective_completed`/
+   `_on_objective_failed`/`_on_objective_cancelled` 三个终止收尾方法里
+   调用，重试期间 Objective 状态还是 `running`，不会触发释放，卡死的
+   线程池对象会一直挂在 `ObjectivePersistentRunner._executors` 字典里
+   （直到最终判定 failed，或者达到 `idle_ttl_seconds` 兜底清理）。
+
+**修复方向**：
+- `objective_executor.py::reap_stale_steps()` 判定某个 step 超时之后，
+  在走"重试 resubmit"或"重新分解 resubmit"这两条分支*之前*，先调用
+  `self._release_worker(ex.execution_id)`——复用阶段一已经接好的
+  `release_worker_fn` 钩子（此前只在三个终止收尾方法里调用，现在新增
+  第二个调用时机）：持久 Worker 模式下会立即丢弃该 execution 当前的
+  专属线程池 + Agent 实例（`ObjectivePersistentRunner.release()`），
+  下一次 `submit()` 会惰性重建一个全新的、未被卡住的线程池 + Agent；
+  共享队列/隔离 runner 路径下 `release_worker_fn` 为 `None`，这次调用
+  是 no-op，行为完全不变。
+- 卡死的旧线程本身依然会在后台作为孤儿线程运行（Python 无法强制杀死
+  线程），但由于已经从 `_executors`/`_agents` 字典里被移除，不再被任何
+  新的提交引用，不会再阻塞任何后续操作。如果它最终真的执行完了、尝试
+  回调 `on_done`/`on_failed`：这次调用之前已经把 `step.turn_id` 从
+  `self._turn_to_exec` 里清除（`reap_stale_steps()` 本来就有这一步，
+  是"避免迟到回调命中已被回收的 step"的既有保护），`on_turn_done()`/
+  `on_turn_failed()` 会因为 `mapping` 查不到而直接返回 `None`，不会误伤
+  新提交的 step 或产生任何副作用。
+- 终止收尾方法（`_on_objective_failed()` 等）里原有的 `_release_worker()`
+  调用保留不变——如果重试最终耗尽次数、Objective 被判定为 `failed`，
+  会对同一个 `execution_id` 再调用一次 `release()`。这是安全的：
+  `ObjectivePersistentRunner.release()` 面对一个已经不存在的
+  `execution_id`（`dict.pop(..., None)` 拿到 `None`）时是幂等的 no-op，
+  不会重复关闭同一个线程池或抛异常。
+
+**优先级**：高——这是真实存在的正确性/健壮性缺口，虽然不会造成"整个
+daemon 挂起"（其它 Objective/tick 心跳不受影响），但会让持久 Worker 模式
+下"任务卡死"这一具体场景的恢复时间不必要地拉长，且暴露了一处"重试
+机制没有真正生效、只是在原地空转"的隐患，值得在下一次实际用到持久
+Worker 时提前修好，而不是等生产环境里真的撞见了才发现。
+
+**处理状态：已修复。**
+
+- `src/mini_agent/evolution/objective_executor.py`：
+  - `reap_stale_steps()` 在清理旧 `turn_id` 映射/路径占用之后、进入
+    "重试 resubmit" 或 "重新分解 resubmit" 分支之前，新增一行
+    `self._release_worker(ex.execution_id)` 调用，并附详细注释说明
+    为什么只在这里加、为什么不影响 `on_turn_failed()`/
+    `_handle_invalid_step_result()` 里的其它重试路径（那两处上一次
+    `run_turn()` 已经正常返回，worker 本来就是空闲的，不需要、也不应该
+    额外释放——额外释放反而会浪费掉持久 Worker 好不容易积累的会话
+    连续性）。
+  - `ObjectiveExecutor.__init__` 的 `release_worker_fn` 参数文档更新，
+    明确列出现在的两类调用时机（终止收尾 / `reap_stale_steps()` 超时
+    判定后）。
+- 测试：新增 `tests/test_reap_stale_steps_worker_release.py`（5 个
+  用例）：
+  1. 超时后重试分支：`release_worker_fn` 必须在 resubmit 之前被调用，
+     且传入正确的 `execution_id`；旧的卡死 `turn_id` 映射必须已被清理。
+  2. 同一次 `reap_stale_steps()` 调用只释放一次，不会因为内部多次
+     resubmit 尝试而重复调用。
+  3. 未提供 `release_worker_fn`（默认路径）时行为与改造前完全一致，
+     不报错，正常重试——向后兼容回归。
+  4. `release_worker_fn` 内部抛异常时，`reap_stale_steps()` 仍必须
+     继续完成重试提交，不能因为释放失败就让整个存活性回收流程连带
+     失败（这本身也是一种潜在死锁：永远卡在 `running` 状态排不上
+     重试）。
+  5. 重试次数已耗尽、走"重新分解/判定失败"分支时同样会先释放一次
+     worker；耗尽后 `_on_objective_failed()` 终止收尾会再释放一次
+     （同一个 `execution_id` 释放两次），验证这是预期的、幂等安全的
+     行为，不是重复调用的 bug。
+- 回归验证：`test_objective_persistent_runner.py`（6 个）+
+  `test_objective_persistent_worker_auto_compact.py`（5 个）+
+  `test_scheduler_heartbeat.py`（5 个）+
+  `test_autonomous_loop_decommission_hook.py`（3 个）+
+  `test_objective_runner_sched_lock.py`（5 个）+
+  `test_objective_executor_kanban_tracks*.py`（4 个文件）+
+  `test_objective_executor_adaptive_concurrency.py` +
+  `test_execution_model_status_routes.py` +
+  `test_kanban_config_routes.py` +
+  `test_reap_stale_steps_worker_release.py`（新增 5 个），共 92 个测试
+  全部通过，无回归。
+- 文档：`docs/daemon-execution-model-guide.md` 第 2 节新增"任务卡死时
+  的恢复"说明，明确"抛异常"与"真正卡死"两类场景的不同表现和恢复方式。
+- **不做**：不处理"共享队列/隔离 runner 路径下，全部共享 worker 同时
+  卡死"这个更极端的场景——隔离 runner 的 `max_workers` 默认为 4，多个
+  worker 同时永久卡死属于概率极低的复合故障，且即使发生，`reap_stale_steps()`
+  的存活性回收本身依然会正确判定这些 execution 超时失败（只是重试也会
+  排队排不上，与持久 Worker 的表现类似），不会导致其它未占用 worker 的
+  Objective 受影响，风险敞口远小于持久 Worker 场景（后者是"1 个 worker
+  对 1 个 execution"，前者是"N 个 worker 对多个 execution 共享"）；如果
+  未来需要处理，应该是"隔离 runner 也接入一个可选的 discard/replace
+  单个卡死 worker"的机制，改动面更大，留给后续单独评估。不改变
+  `DEFAULT_STEP_TIMEOUT_SECONDS`/`MAX_STEP_RETRIES` 等既有超时/重试
+  参数本身。
