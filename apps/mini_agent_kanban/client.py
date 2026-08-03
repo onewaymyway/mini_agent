@@ -236,6 +236,13 @@ class AgentClient:
         供"⚖️ 执行公平性"看板区块展示。"""
         return self._get("/self/goal_fairness")
 
+    def system_connectivity(self):
+        """[system_connectivity_gaps_and_missing_capabilities_plan.md P1]
+        F1-F4 四路数据一次性拉取：决策消费率、统一失败模式库、建议反馈
+        累积账本、最近的用户纠正事件。供"🧠 自我状态"tab 的"🔗 系统关联性"
+        区块展示。"""
+        return self._get("/self/system_connectivity")
+
     def config_status(self):
         """[kanban_config_management_plan.md] 拉取 agent_config.json 的分类
         字段目录状态，供"⚙️ 配置"tab 展示。"""

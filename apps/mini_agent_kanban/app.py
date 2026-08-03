@@ -2923,6 +2923,9 @@ def render_self_tab(client: AgentClient):
     st.divider()
     _render_goal_execution_fairness(client)
 
+    st.divider()
+    _render_system_connectivity(client)
+
 
 # ═══════════════════════════════════════════════════════════════════════
 # 自诊断信号闭环深化（next_doc/self_diagnosis_feedback_loop_deepening_plan.md
@@ -3090,6 +3093,90 @@ def _render_goal_execution_fairness(client: AgentClient):
             f"上次调度：{_fmt_ago(r.get('last_scheduled_at', 0))}　"
             f"上次进展：{_fmt_ago(r.get('last_touched_at', 0))}"
         )
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# 系统关联性断点 + 缺失重要功能改进方案 P1（next_doc/
+# system_connectivity_gaps_and_missing_capabilities_plan.md）看板可视化。
+# F1-F4 四个模块此前只往各自的 json/jsonl 文件里落盘，人工要看只能手工
+# 翻文件——这恰好是方案文档反复批评别的模块犯的"埋头产生、没人看"的
+# 毛病。这里接上 GET /v1/self/system_connectivity，把四路数据摆出来。
+# 纯只读展示，不提供任何"一键采纳/清空"之类的操作按钮。
+# ═══════════════════════════════════════════════════════════════════════
+
+def _render_system_connectivity(client: AgentClient):
+    st.markdown("#### 🔗 系统关联性（决策消费 / 失败模式 / 建议反馈 / 纠正事件）")
+    st.caption(
+        "system_connectivity_gaps_and_missing_capabilities_plan.md P1：F1-F4 "
+        "四个新模块产出的数据一次性展示，纯只读。"
+    )
+    if st.button("🔄 刷新", key="system_connectivity_refresh"):
+        st.rerun()
+
+    resp = client.system_connectivity() or {}
+    if "_error" in resp:
+        st.warning(f"获取失败：{resp['_error']}")
+        return
+
+    # F1 —— 决策消费率
+    with st.expander("📚 决策消费率（F1 decision_consumption）", expanded=True):
+        dc = resp.get("decision_consumption")
+        if not dc:
+            st.caption("暂无数据（`decision_consumption_enabled` 默认关闭，或尚无检索记录）。")
+        else:
+            c1, c2, c3 = st.columns(3)
+            c1.metric("检索次数", dc.get("total_retrievals", 0))
+            c2.metric("被采纳次数", dc.get("consumed", 0))
+            c3.metric("消费率", f"{dc.get('consumption_rate', 0):.0%}")
+
+    # F2 —— 统一失败模式库
+    with st.expander("🩹 高频失败模式（F2 failure_pattern_store）"):
+        patterns = resp.get("failure_patterns") or []
+        if not patterns:
+            st.caption("暂无数据（cron job `sys:failure_pattern_aggregation` 还未跑过一轮，或暂无失败记录）。")
+        else:
+            for p in patterns[:15]:
+                st.markdown(
+                    f"**{p.get('task_category','')}** · 根因 `{p.get('root_cause_tag','')}` · "
+                    f"来源 `{p.get('source','')}` · 出现 {p.get('occurrence_count', 0)} 次"
+                )
+                st.caption(p.get("example_summary", ""))
+
+    # F3 —— 建议反馈累积权重账本
+    with st.expander("⚖️ 建议采纳/拒绝账本（F3 suggestion_feedback_ledger）"):
+        ledger = resp.get("suggestion_feedback") or {}
+        if not ledger:
+            st.caption("暂无数据（尚无建议被采纳或拒绝过）。")
+        else:
+            rows = sorted(
+                ledger.items(),
+                key=lambda kv: kv[1].get("rejected", 0) + kv[1].get("accepted", 0),
+                reverse=True,
+            )
+            for category, entry in rows[:15]:
+                accepted = entry.get("accepted", 0)
+                rejected = entry.get("rejected", 0)
+                note = ""
+                if rejected >= 3 and accepted == 0:
+                    note = "（🔴 已打折 ×0.7）"
+                elif accepted >= 2:
+                    note = "（✅ 已加成 ×1.15）"
+                st.markdown(f"**{category}** · 采纳 {accepted} / 拒绝 {rejected} {note}")
+
+    # F4 —— 用户纠正事件
+    with st.expander("✏️ 最近的用户纠正事件（F4 correction_writer）"):
+        corrections = resp.get("recent_corrections") or []
+        if not corrections:
+            st.caption("暂无数据（尚未发生过能定位到具体 wiki 页面的用户纠正）。")
+        else:
+            for c in reversed(corrections[-15:]):
+                ts = c.get("ts")
+                ts_label = time.strftime("%Y-%m-%d %H:%M", time.localtime(ts)) if ts else ""
+                mark = "✅ 已标记 stale" if c.get("marked_stale") else "❌ 标记失败"
+                st.caption(
+                    f"`{ts_label}` 页面 `{c.get('page_id','')}` — {mark}　"
+                    f"{c.get('correction_text','')[:80]}"
+                )
 
 
 # ═══════════════════════════════════════════════════════════════════════

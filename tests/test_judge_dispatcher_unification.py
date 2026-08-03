@@ -303,8 +303,17 @@ class _FakeAgentForTurnJudge:
         self._turn_judge_stuck_detector = StuckDetector()
         self._hist = _FakeHistForTurnJudge()
         self._last_turn_hit_max_turns = False
+        # [P4 修复] RoleJudgeMixin._maybe_run_turn_judge 会读取
+        # self._session.id（用于 parent_session_id），最小 fake 宿主此前
+        # 缺这个属性，一旦真的走到 run_turn_judge 调用点就会 AttributeError。
+        # 见 next_doc/system_connectivity_gaps_and_missing_capabilities_plan.md
+        # P4：与本方案任何改动都无关的预先存在的测试夹具缺陷，顺手修掉。
+        self._session = None
         self._bound = RoleJudgeMixin()
         self._bound.__dict__ = self.__dict__  # 共享属性，模拟 mixin 混入
+
+    def _current_session_dir(self):
+        return None
 
     def _maybe_run_turn_judge(self, assistant_output: str) -> None:
         from mini_agent.agent.role_judge import RoleJudgeMixin

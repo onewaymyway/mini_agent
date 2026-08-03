@@ -1,11 +1,13 @@
 # 系统关联性断点 + 缺失重要功能 改进方案
 
 > 状态：**F1/F2/F3/F4 已实现并接入实际调用点，F2 三路数据源全部落地**
-> （见文末"实施记录"），已跑通相关现有测试共 251+ 项（含
+> **本轮补齐 P0（四模块专属单测）+ P1（看板可见性）+ P4（无关测试夹具
+> bug）**（见文末"实施记录"新增小节），已跑通相关现有测试共 251+ 项（含
 > `test_goal_mode.py`/`test_judge_verdict.py`/`test_judge_dispatcher_unification.py`
 > 等更大范围回归验证，含新增的 TurnJudge stuck 端到端功能验证），失败
 > 用例均可定位为改动前已存在、与本方案文件无关的问题，未发现由本方案
-> 引入的回归。C6/C7 仍是草案，未实施。
+> 引入的回归。C6/C7 仍是草案，未实施；P2（决策消费默认值是否打开）留待
+> 观察期后再决定；P3（C6/C7 正式设计）需要单独立项评估。
 > 关联代码：`src/mini_agent/evolution/`、`src/mini_agent/wiki/`、
 > `src/mini_agent/role_agents/`、`src/mini_agent/perception/goal_backlog.py`、
 > `src/mini_agent/history/`
@@ -387,4 +389,148 @@ GoalBacklog/ObjectiveExecutor（目标执行）、improvement_backlog_merge（�
 - `src/mini_agent/context_builder.py`
 - `src/mini_agent/agent/reminders_correction.py`
 - `docs/cron-jobs-reference.md`（新增 `sys:failure_pattern_aggregation` 条目）
+
+## 6. 后续建议的落实情况（本轮）
+
+上一轮实施记录末尾提出的"后续建议，按优先级排序"，本轮的处理情况：
+
+### P0 — 补测试（已完成）
+
+F1/F2/F3/F4 四个模块此前只跑通了周边集成测试，自己没有专属单测。本轮
+新增四份专属单测：
+
+- `tests/test_decision_consumption.py`（9 项）——覆盖 wiki_decisions_dir
+  不存在/query 为空的空结果路径、真实写入 decision 页面后的检索命中与
+  摘要截断、非 decision 页面被粗筛过滤、检索异常不崩溃、消费率统计
+  （含日志文件不存在返回 None、日志行损坏时跳过继续统计）。
+- `tests/test_correction_writer.py`（8 项）——覆盖 page_id 为空/None 的
+  no-op 路径、命中真实页面的标记与日志、页面不存在时 `mark_failed` 但
+  仍"如实记录"、纠正文本超长截断、事件日志损坏行跳过、limit 参数生效。
+- `tests/test_suggestion_feedback_ledger.py`（10 项）——覆盖阈值边界
+  （rejected 达标但 accepted≠0 时不打折）、空类别 no-op、多类别互不
+  干扰、`get_entry` 不做衰减计算。**过程中发现一个真实 bug**：账本文件
+  内容是合法 JSON 但顶层不是 dict（如被意外写成 `[1,2,3]`）时，
+  `_load_ledger()` 会把这个非 dict 值直接返回给调用方，导致
+  `get_weight()`/`get_entry()` 在 `data.get(category, {})` 处抛
+  `AttributeError`，与模块一贯坚持的"失败不阻断主流程"风格相悖。已修复
+  为遇到非 dict 顶层值时退化为空账本，与"文件不存在"同等对待。
+- `tests/test_failure_pattern_store.py`（22 项）——覆盖 `_normalize_category`
+  对纯标点/纯中文标题的处理、`_root_cause_tag` 四类规则+兜底、三路数据
+  源各自的聚合正确性（含 dead_end 字典结构优先取 `reason` 字段而不是
+  整条序列化）、跨轮聚合的 occurrence_count 累加与"未命中不丢弃"、
+  `get_patterns_for_category` 的阈值过滤、数据源隔离性（一路损坏不影响
+  其余两路）。**预防性应用了同一类修复**：`_load_store()` 存在与
+  `suggestion_feedback_ledger._load_ledger()` 完全相同的非 dict 顶层值
+  风险（`data.get("patterns", [])` 会在 data 是 list 时抛异常），本轮
+  一并修复，即使当时还没有实际触发的报告——两个模块是同一位作者、同一
+  轮次写的，同类缺陷同时存在的概率高，值得一起处理而不是等下次踩坑
+  再来一次单独的补丁。
+
+四份单测共 49 项，加上新增的 `tests/test_system_connectivity_routes.py`
+（见下方 P1）10 项，本轮共新增 59 项测试，全部通过。
+
+### P1 — 看板可见性（已完成）
+
+新增只读 API 端点 `GET /v1/self/system_connectivity`
+（`src/mini_agent/api/routes.py`），一次性汇总 F1-F4 四路数据（沿用
+`GET /v1/self/diagnosis_feedback` / `GET /v1/self/goal_fairness` 的既有
+模式：owner-only、纯读取、异常吞掉不阻断、project_root 拿不到时返回
+空默认值）：
+
+```json
+{
+  "decision_consumption": {"total_retrievals": .., "consumed": .., "consumption_rate": ..} | null,
+  "failure_patterns": [{"task_category": .., "root_cause_tag": .., "occurrence_count": ..}, ...],
+  "suggestion_feedback": {"category": {"accepted": .., "rejected": .., "last_outcome_ts": ..}, ...},
+  "recent_corrections": [{"page_id": .., "correction_text": .., "marked_stale": ..}, ...]
+}
+```
+
+配套改动：
+
+- `apps/mini_agent_kanban/client.py`：新增 `AgentClient.system_connectivity()`。
+- `apps/mini_agent_kanban/app.py`：`render_self_tab()` 新增调用
+  `_render_system_connectivity()`，在"🧠 自我状态"tab 里追加"🔗 系统
+  关联性"区块，四个 `st.expander` 分别展示决策消费率指标、高频失败模式
+  列表、建议反馈账本（打折/加成状态直接标注在每行）、最近的用户纠正
+  事件。纯只读展示，不提供任何"一键采纳/清空"按钮，与既有的
+  `_render_self_diagnosis_feedback()`/`_render_goal_execution_fairness()`
+  两个区块保持同样的克制原则。
+- `tests/test_system_connectivity_routes.py`（10 项）：沿用
+  `tests/test_goal_fairness_routes.py` 的最小 FastAPI app 测试模式，覆盖
+  空状态默认值、四路数据各自被正确反映、project_root 缺失时返回默认值
+  而不是报错。
+
+至此，这几轮产生的四份数据（decision_consumption_log.jsonl 消费率、
+failure_pattern_store.json 高频失败模式、suggestion_feedback_ledger.json
+建议账本、correction_events.jsonl 纠正事件）不再是"埋头产生、没人看"的
+状态。
+
+### P2 — 观察期后再决定默认值（维持原判，本轮不动）
+
+`decision_consumption_enabled` 仍保持默认 `False`。本轮新增的 P1 看板
+区块已经把 `wiki_utility_audit` 消费率、GoalJudge 判定质量相关信号摆到
+了人工可见的位置，为后续观察创造了条件，但样本积累仍需要时间，本轮不
+更改默认值，留待下一轮观察数据后再评估。
+
+### P3 — C6/C7 正式设计（维持原判，本轮不动）
+
+C6（agent 输出引用 wiki 页面的通用约定）、C7（capability_map 计算函数
+或 UI 层改造）改动面明显超出本方案"新增可选模块 + 局部调用点接入"的
+量级，本轮未展开，维持"单独立项评估"的原判。
+
+### P4 — 顺手清理无关的预先存在的 bug（已完成）
+
+`tests/test_judge_dispatcher_unification.py::_FakeAgentForTurnJudge` 缺
+`_session` 属性，导致
+`test_maybe_run_turn_judge_still_works_without_role_agent_enabled` 一旦
+真的走到 `RoleJudgeMixin._maybe_run_turn_judge()` 里 `run_turn_judge(...,
+parent_session_id=self._session.id if self._session else None, ...)` 这一行
+就会 `AttributeError`。已给该 fake 宿主补上 `self._session = None` 和
+`_current_session_dir()` 方法（`run_turn_judge` 调用同时依赖这两者），
+该测试文件 14/14 全部通过，与本方案本轮及历次改动的文件均无关，纯粹是
+顺手修掉一个反复撞见的测试夹具缺陷。
+
+### 本轮回归验证
+
+`tests/test_decision_consumption.py`（9/9，新增）、
+`tests/test_correction_writer.py`（8/8，新增）、
+`tests/test_suggestion_feedback_ledger.py`（10/10，新增）、
+`tests/test_failure_pattern_store.py`（22/22，新增）、
+`tests/test_system_connectivity_routes.py`（10/10，新增）、
+`tests/test_judge_dispatcher_unification.py`（14/14，含 P4 修复后回归）、
+`tests/test_improvement_backlog_merge.py`（6/6）、
+`tests/test_wiki_utility_audit.py`（7/7）、
+`tests/test_correction_detector.py`（不受影响，随三个
+`test_context_builder_*` 一并跑通）、
+`tests/test_self_diagnosis_feedback_routes.py` +
+`tests/test_goal_fairness_routes.py`（新端点复用同一 router，确认未
+影响既有两个 self 端点）——以上共 130+ 项全部通过。另跑了
+`tests/test_goal_mode.py`（90/95，5 个失败仍是 `spec.py` 里预先存在、
+与本轮改动文件无关的 `detection_text` 测试夹具问题，本轮未处理，
+不在 P4 清理范围内——P4 只清理了确认反复撞见且改动成本极低的
+`_FakeAgentForTurnJudge` 那一处）。
+
+### 本轮新增/修改文件清单
+
+新增：
+- `tests/test_decision_consumption.py`
+- `tests/test_correction_writer.py`
+- `tests/test_suggestion_feedback_ledger.py`
+- `tests/test_failure_pattern_store.py`
+- `tests/test_system_connectivity_routes.py`
+
+修改：
+- `src/mini_agent/evolution/suggestion_feedback_ledger.py`（修复非 dict
+  顶层 JSON 的崩溃 bug）
+- `src/mini_agent/evolution/failure_pattern_store.py`（预防性应用同一类
+  修复）
+- `src/mini_agent/api/routes.py`（新增 `GET /v1/self/system_connectivity`
+  端点 + 头部端点目录更新）
+- `apps/mini_agent_kanban/client.py`（新增 `system_connectivity()` 方法）
+- `apps/mini_agent_kanban/app.py`（新增 `_render_system_connectivity()`
+  区块并接入 `render_self_tab()`）
+- `tests/test_judge_dispatcher_unification.py`（P4：补齐
+  `_FakeAgentForTurnJudge._session`）
+
 

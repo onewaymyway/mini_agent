@@ -71,7 +71,15 @@ def _load_ledger(paths: "AgentPaths") -> dict[str, dict]:
     if not p.exists():
         return {}
     try:
-        return json.loads(p.read_text(encoding="utf-8"))
+        data = json.loads(p.read_text(encoding="utf-8"))
+        # [P0 补测试发现的边界情况] 账本文件内容是合法 JSON 但顶层不是
+        # dict（如被误写成 list，或磁盘损坏后残留半截结构）时，不能直接
+        # 把非 dict 值返回给调用方——.get(category, {}) 之类的下游调用
+        # 会因此抛 AttributeError。这里统一退化为空账本，与"文件不存在"
+        # 同等对待，保持本模块一贯的"失败不阻断主流程"风格。
+        if not isinstance(data, dict):
+            return {}
+        return data
     except Exception as _mini_agent_exc:
         from mini_agent.errors import log_exception
 

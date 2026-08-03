@@ -63,6 +63,10 @@ api/routes.py — FastAPI 路由定义
     GET    /v1/self/goal_fairness    [goal_execution_fairness_improvement_plan.md
                                        P5] 各 active Goal 的调度公平性快照
                                        （last_scheduled_at/aging_boost/effective_priority）
+    GET    /v1/self/system_connectivity  [system_connectivity_gaps_and_missing_
+                                       capabilities_plan.md P1] F1-F4 四路数据
+                                       汇总（决策消费率/失败模式/建议反馈账本/
+                                       纠正事件）
     GET    /v1/self/config           [kanban_config_management_plan.md] 分类
                                        字段目录状态（agent_config.json）
     PATCH  /v1/self/config           [kanban_config_management_plan.md] 批量
@@ -1938,7 +1942,80 @@ async def get_self_goal_fairness(request: Request):
     return result
 
 
-@router.get("/self/config")
+@router.get("/self/system_connectivity")
+async def get_self_system_connectivity(request: Request):
+    """GET /v1/self/system_connectivity — [system_connectivity_gaps_and_
+    missing_capabilities_plan.md P1] 汇总本方案 F1-F4 四个新模块产出的数据，
+    供看板"🧠 自我状态"tab 一次性展示，避免这些数据继续停留在"埋头产生、
+    没人看"的状态（方案文档 P1 建议原话）。全部只读，不触发任何 job/聚合
+    重新运行。
+
+    返回结构：
+    {
+      "decision_consumption": {...} | None,     # F1，decision_consumption_rate()
+      "failure_patterns": [...],                 # F2，load_failure_patterns()（按频次排序）
+      "suggestion_feedback": {category: {...}},  # F3，all_categories()
+      "recent_corrections": [...],                # F4，recent_correction_events()
+    }
+    """
+    http_server = getattr(request.app.state, "http_server", None)
+    if http_server is None:
+        raise HTTPException(status_code=503, detail="HttpServer not available")
+    _require_owner(request)
+
+    result: dict = {
+        "decision_consumption": None,
+        "failure_patterns": [],
+        "suggestion_feedback": {},
+        "recent_corrections": [],
+    }
+    try:
+        from mini_agent.storage.paths import AgentPaths
+
+        self_agent = http_server.bridge.agent
+        cfg = getattr(self_agent, "cfg", None) if self_agent else None
+        project_root = getattr(cfg, "project_root", None) if cfg is not None else None
+        if project_root is None:
+            return result
+        paths = AgentPaths(project_root)
+
+        try:
+            from mini_agent.wiki.decision_consumption import decision_consumption_rate
+            result["decision_consumption"] = decision_consumption_rate(paths)
+        except Exception as _mini_agent_exc:
+            from mini_agent.errors import log_exception
+            log_exception(_mini_agent_exc, where='mini_agent.api.routes.get_self_system_connectivity.decision_consumption')
+
+        try:
+            from mini_agent.evolution.failure_pattern_store import load_failure_patterns
+            result["failure_patterns"] = load_failure_patterns(paths)
+        except Exception as _mini_agent_exc:
+            from mini_agent.errors import log_exception
+            log_exception(_mini_agent_exc, where='mini_agent.api.routes.get_self_system_connectivity.failure_patterns')
+
+        try:
+            from mini_agent.evolution.suggestion_feedback_ledger import all_categories
+            result["suggestion_feedback"] = {
+                category: entry.to_dict() for category, entry in all_categories(paths).items()
+            }
+        except Exception as _mini_agent_exc:
+            from mini_agent.errors import log_exception
+            log_exception(_mini_agent_exc, where='mini_agent.api.routes.get_self_system_connectivity.suggestion_feedback')
+
+        try:
+            from mini_agent.wiki.correction_writer import recent_correction_events
+            result["recent_corrections"] = recent_correction_events(paths, limit=20)
+        except Exception as _mini_agent_exc:
+            from mini_agent.errors import log_exception
+            log_exception(_mini_agent_exc, where='mini_agent.api.routes.get_self_system_connectivity.recent_corrections')
+    except Exception as _mini_agent_exc:
+        from mini_agent.errors import log_exception
+        log_exception(_mini_agent_exc, where='mini_agent.api.routes.get_self_system_connectivity')
+
+    return result
+
+
+
 async def get_self_config(request: Request):
     """GET /v1/self/config — [kanban_config_management_plan.md] 只读返回
     agent_config.json 的分类字段目录状态（每个字段：分类归属、当前生效值、

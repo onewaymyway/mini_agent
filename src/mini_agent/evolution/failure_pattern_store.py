@@ -263,7 +263,16 @@ def _load_store(paths: "AgentPaths") -> dict[str, dict]:
         return {}
     try:
         data = json.loads(p.read_text(encoding="utf-8"))
-        return {pat.get("pattern_id"): pat for pat in data.get("patterns", []) if pat.get("pattern_id")}
+        # [P0 补测试同类修复] 与 suggestion_feedback_ledger._load_ledger
+        # 相同的边界情况：文件内容是合法 JSON 但顶层不是 dict 时，
+        # data.get(...) 会抛 AttributeError，这里统一退化为空 store。
+        if not isinstance(data, dict):
+            return {}
+        return {
+            pat.get("pattern_id"): pat
+            for pat in data.get("patterns", []) or []
+            if isinstance(pat, dict) and pat.get("pattern_id")
+        }
     except Exception as _mini_agent_exc:
         from mini_agent.errors import log_exception
 
