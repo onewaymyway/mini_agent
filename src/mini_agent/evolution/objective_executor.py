@@ -30,6 +30,7 @@ evolution/objective_executor.py — Objective 持续执行引擎
 from __future__ import annotations
 
 import json
+import logging
 import os
 import re as _re
 import tempfile
@@ -40,6 +41,8 @@ from pathlib import Path
 from typing import Callable, Optional, TYPE_CHECKING
 
 from mini_agent.role_agents.stuck_detector import StuckSignal as _GuardianStuckSignal
+
+log = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     from mini_agent.storage.paths import AgentPaths
@@ -335,6 +338,10 @@ class ObjectiveExecutor:
         # 这与其它内存态计数器（如 _active_step_paths）的取舍一致，不影响
         # 正确性，只是重启后需要重新累积几轮才能再次触发。
         self._guardians: dict[str, "GuardianRunner"] = {}
+        # [daemon_task_hang_recovery_and_watchdog_hardening_plan.md 阶段三]
+        # reap_stale_steps() 每回收一个 step 就 +=1，进程内累计，不持久化
+        # ——只用于观测"卡死回收发生的频率"，暴露给 execution_model_status。
+        self._stale_step_reap_count: int = 0
 
     # ── 持久化 ────────────────────────────────────────────────────────────────
 
@@ -943,6 +950,11 @@ class ObjectiveExecutor:
         self.save()
         return True
 
+    @property
+    def stale_step_reap_count(self) -> int:
+        """[阶段三] 进程内累计的"reap_stale_steps() 强制回收"次数。"""
+        return self._stale_step_reap_count
+
     def reap_stale_steps(self, timeout_seconds: Optional[float] = None) -> list[str]:
         """
         [并发槽位卡死修复] 扫描所有 status=="running" 的 Objective，若其
@@ -972,6 +984,18 @@ class ObjectiveExecutor:
                 continue
             if step.started_at <= 0 or (now - step.started_at) < timeout:
                 continue
+
+            # [阶段三] 计数 + 日志：运维除了事后翻 progress_notes 之外，
+            # 完全无法感知"卡死回收"发生过、发生了多少次、是不是同一个
+            # Objective 反复卡死（这本身可能提示某个工具/某类任务描述有
+            # 系统性问题，值得被看到）。
+            self._stale_step_reap_count += 1
+            log.warning(
+                "ObjectiveExecutor.reap_stale_steps: execution_id=%s objective=%s "
+                "step_idx=%s 超过 %.0fs 未收到执行结果，判定为已卡死/丢失（累计回收 %s 次）",
+                ex.execution_id, ex.objective_title, ex.current_step_idx, timeout,
+                self._stale_step_reap_count,
+            )
 
             # 超时：先清掉旧索引，避免万一迟到的回调命中已经被回收的 step
             if step.turn_id:

@@ -1,7 +1,7 @@
 # daemon 任务卡死回收 + 调度自愈可观测性 硬化方案
 
-> 状态：**规划阶段，尚未实施**（本文档先完整记录问题分析与分阶段方案，
-> 实施记录会在各阶段小节的"处理状态"里逐步更新）。
+> 状态：**三个阶段均已实施完成**（阶段一/二/三，见各阶段小节末尾的
+> "处理状态"）。
 > 背景来源：完成
 > `daemon_execution_model_and_scheduler_heartbeat_improvement_plan.md` §7.5
 > （持久 Worker 卡死后重试排队死锁修复）之后，用户要求"聚焦相关功能，
@@ -16,6 +16,8 @@
 > `src/mini_agent/evolution/scheduler_heartbeat.py`、
 > `src/mini_agent/evolution/autonomous_loop.py`、
 > `src/mini_agent/evolution/objective_executor.py`、
+> `src/mini_agent/evolution/objective_agent_bridge.py`、
+> `src/mini_agent/api/routes.py`、
 > `src/mini_agent/config/models.py`
 
 ## 0. 结论先行：一张表
@@ -191,6 +193,50 @@ stale_job_watchdog_grace_seconds: int = 5 * 60
 - 回归：现有 cron 相关测试（`test_cron_job_runner.py` 等，如果存在）
   全部通过。
 
+### 1.5 处理状态：**已完成**
+
+实施记录：
+
+- `CronJobRunner`（`cron_job_runner.py`）：
+  - `submit()` 改为每次生成唯一 `uuid4().hex` token，随 `job.id` 一起记入
+    `self._tokens`/`self._started_at`；线程体 `_run_job_thread(job, token)`
+    的 `finally` 块收尾前比对自己持有的 token 与当前记录是否一致，一致
+    才清理共享状态 + 释放 semaphore，不一致（说明已被 watchdog 强制回收）
+    则跳过，避免二次释放。
+  - 新增 `reap_stale_jobs(now=None) -> list[str]`：对每个仍在
+    `_running_job_ids` 里的 job，读取其专属 `config.json` 的
+    `timeout_seconds`（读不到则回退 `cfg.cron.default_timeout_seconds`）
+    + `cfg.cron.stale_job_watchdog_grace_seconds` 作为有效阈值，超过
+    `started_at + 有效阈值` 判定为卡死：清空记账、代替永远不会执行到的
+    `finally` 释放一次 semaphore、把 workspace 状态标记为
+    `needs_human_review`。每个 job 独立 try/except，互不影响。
+  - 新增 `reaped_job_count` 只读计数器（进程内累计）。
+- `CronConfig`（`config/models.py`）新增字段
+  `stale_job_watchdog_grace_seconds: int = 5 * 60`。
+- `CronScheduler`（`cron_scheduler.py`）新增 `reap_stale_jobs()`，
+  委托给 `self._job_runner.reap_stale_jobs()`（未注入 job_runner 时返回
+  空列表，与 `is_job_running()` 的旧路径降级方式一致）。
+- `AutonomousLoop._tick_maintenance()`（`autonomous_loop.py`）新增调用
+  `self._cron_scheduler.reap_stale_jobs()`，紧邻既有的
+  `reap_stale_steps()` 调用之前，同样包一层 try/except + `log_exception`，
+  放在资源仲裁 early-return 之前。
+
+新增/扩展测试（全部通过）：
+
+- `tests/test_cron_job_runner.py` 新增 `TestCronJobRunnerReapStaleJobs`：
+  超时后正确回收并可重新 submit、孤儿线程迟到收尾不重复释放 semaphore、
+  未超时不误回收、job 没有自己的 config.json 时正确回退全局默认值、单个
+  job 内部异常不影响其它 job 的回收。
+- `tests/test_cron_scheduler_reap_stale_jobs.py`（新增文件）：
+  `CronScheduler.reap_stale_jobs()` 对 job_runner 的委托行为（未注入时
+  返回空列表；注入时透传返回值）。
+
+回归：`test_cron_job_runner.py`（含新增用例）、
+`test_cron_scheduler_local_handler.py`、`test_cron_agent_bridge.py`、
+`test_cron_job_workspace_and_executor.py`、`test_cron_schedule_validation.py`、
+`test_goal_cron_bridge.py`、`test_autonomous_loop_decommission_hook.py`
+全部通过，未改变任何既有行为默认值。
+
 ---
 
 ## 2. 【🟡 中优先级】`SchedulerHeartbeat` 自身可能假死
@@ -240,6 +286,36 @@ def _maybe_tick(self) -> None:
   `last_tick_finished_at` 依然会被更新（放在 `finally` 里，异常场景下
   也要能看出"心跳还在正常轮转，只是这一次业务失败了"，与"心跳彻底停摆"
   区分开）。
+
+### 2.4 处理状态：**已完成**
+
+实施记录：
+
+- `SchedulerHeartbeat`（`scheduler_heartbeat.py`）新增独立的
+  `self._stats_lock`（不复用与 AgentRunner 共享的业务锁 `self._lock`——
+  心跳线程本身可能正卡在业务锁上，观测字段的读取不应该依赖那把锁是否
+  被占用）保护 `last_tick_started_at`/`last_tick_finished_at`/
+  `last_tick_duration_seconds` 三个字段，均以只读 property 暴露。
+  `_maybe_tick()` 在真正进入 `with self._lock: tick()` 之前记录
+  `started_at`，`finally` 块里无论 `tick()` 正常返回还是抛异常都记录
+  `finished_at`/`duration`。`should_tick()` 返回 False（本轮不需要 tick）
+  时不更新这三个字段，保持"最近一次真正执行过的 tick"这个语义。
+- `execution_model_status`（`api/routes.py`）的 `scheduler_heartbeat`
+  返回体新增同名三个字段，透传自心跳线程对象（未启用心跳时全部为
+  `0.0`，与既有 `alive: False` 的降级风格一致）。
+
+新增测试（全部通过）：
+
+- `tests/test_scheduler_heartbeat.py` 新增
+  `TestSchedulerHeartbeatObservability`：正常 tick 后三个字段被正确更新
+  且 `finished_at >= started_at`；`tick()` 抛异常时 `finished_at` 依然
+  更新；`should_tick()==False` 时字段保持初始值不变。
+- `tests/test_execution_model_status_routes.py` 新增
+  `test_scheduler_heartbeat_last_tick_timestamps_reported` 及默认态零值
+  断言。
+
+回归：`test_scheduler_heartbeat.py`（含新增用例）、
+`test_execution_model_status_routes.py`（含新增用例）全部通过。
 
 ---
 
@@ -294,6 +370,63 @@ if self._objective_executor is not None:
 - `execution_model_status` 响应体新增字段，配套的既有路由测试
   （`test_execution_model_status_routes.py`）扩展断言覆盖新字段存在。
 
+### 3.4 处理状态：**已完成**
+
+实施记录：
+
+- `ObjectiveExecutor`（`objective_executor.py`）新增
+  `self._stale_step_reap_count`（进程内计数器）及同名只读 property
+  `stale_step_reap_count`；`reap_stale_steps()` 每判定一个 step 卡死就
+  `+= 1` 并 `log.warning(...)`（新增模块级 `log = logging.getLogger(__name__)`，
+  未引入额外依赖）。
+- `AutonomyConfig`（`config/models.py`）新增字段
+  `objective_step_stale_timeout_seconds: Optional[int] = None`；
+  `AutonomousLoop._tick_maintenance()` 调用 `reap_stale_steps()` 前读取
+  `cfg.autonomy.objective_step_stale_timeout_seconds`，配置了自定义值
+  （非 `None`）时以 `timeout_seconds=<配置值>` 显式传入，否则不传参数，
+  保持 `ObjectiveExecutor` 自己回退模块级 `DEFAULT_STEP_TIMEOUT_SECONDS`
+  的旧行为（向后兼容）。
+- `ObjectivePersistentRunner`（`objective_agent_bridge.py`）新增
+  `self._discarded_worker_count` 及只读 property
+  `discarded_worker_count`：`release()`/`_evict_idle_locked()` 每实际
+  丢弃一个已存在的专属线程池就 `+= 1`。**已知取舍**：这个计数器统计的
+  是"discard 了多少次"这一广义信号，既包含 reap_stale_steps() 判定卡死
+  时的强制回收，也包含 Objective 正常终止（completed/failed/cancelled）
+  时的常规收尾——`release_worker_fn` 的既有回调签名 `(execution_id) ->
+  None` 不携带"为什么被回收"这个信息，要精确区分两者需要改变这个跨
+  多处调用点的公共接口，收益（更精确的一个数字）小于改动面，故按方案
+  §3.2"顺带做"的定位，选择了这个更简单但仍然有观测价值的实现（长期
+  频率变化仍是需要关注的信号）；`CronJobRunner.reaped_job_count`
+  则不存在这个歧义，是精确的"仅卡死回收"计数。
+- `execution_model_status`（`api/routes.py`）新增 `persistent_worker.
+  discarded_worker_count`、`cron.reaped_job_count`（从
+  `bridge._cron_scheduler._job_runner.reaped_job_count` 读取）、
+  `objective_executor.stale_step_reap_count`（从
+  `bridge._objective_executor.stale_step_reap_count` 读取）三个字段。
+
+新增/扩展测试（全部通过）：
+
+- `tests/test_reap_stale_steps_observability.py`（新增文件）：
+  `stale_step_reap_count` 按回收次数正确递增、跨多次调用累加、未超时
+  不递增；`AutonomousLoop._tick_maintenance()` 在配置了自定义超时值时
+  正确透传给 `reap_stale_steps(timeout_seconds=...)`，未配置（`None`）
+  时不传参数（向后兼容路径）。
+- `tests/test_objective_persistent_runner.py` 新增
+  `test_discarded_worker_count_increments_on_release`：release() 丢弃
+  已存在线程池时计数递增，对不存在/重复的 execution_id 调用不重复计数。
+- `tests/test_execution_model_status_routes.py` 新增
+  `test_persistent_worker_discarded_count_reported`、
+  `test_cron_reaped_job_count_reported`、
+  `test_objective_executor_stale_step_reap_count_reported` 及默认态
+  零值断言。
+
+回归：`test_reap_stale_steps_worker_release.py`（§7.5 既有测试）、
+`test_objective_executor_adaptive_concurrency.py`、
+`test_objective_executor_kanban_tracks{,_r2,_r3,_r4}.py`、
+`test_objective_outcome_tracker.py`、
+`test_objective_persistent_worker_auto_compact.py`、
+`test_objective_runner_sched_lock.py` 全部通过。
+
 ---
 
 ## 4. 优先级与实施顺序
@@ -329,3 +462,13 @@ if self._objective_executor is not None:
   状态的风险），与 §7.5 的结论一致：只能做到"发现 + 不再引用它 + 让后续
   流程绕开它"，孤儿线程本身会作为已知的、有限的资源占用一直运行到进程
   退出或（极小概率下）自己真的返回。
+
+## 6. 总体实施状态
+
+三个阶段（cron 卡死回收 / 心跳自愈可观测性 / reap_stale_steps 可观测性
++ 超时可配置化）均已实施完成，详见各阶段小节末尾的"处理状态"。所有新增
+配置项默认值均保持向后兼容（`stale_job_watchdog_grace_seconds=5*60`、
+`objective_step_stale_timeout_seconds=None`），不改变任何既有行为的
+默认表现；`execution_model_status` 新增的观测字段在对应子系统未启用时
+均返回 `0`/`0.0`，与既有"未启用时全零"的降级风格一致。§5 列出的"明确
+不做的事"范围未变。

@@ -2036,6 +2036,11 @@ async def get_self_execution_model_status(request: Request):
         "active_execution_count": int,
         "active_execution_ids": [str, ...],
         "idle_ttl_seconds": float,
+        "discarded_worker_count": int,   # [阶段三] 累计丢弃过的专属线程池
+                                          # 次数（含正常终止收尾 + 卡死回收，
+                                          # 不特指后者；见该字段来源
+                                          # ObjectivePersistentRunner.
+                                          # discarded_worker_count 的说明）
       },
       "isolated_runner": {"enabled": bool, "max_workers": int},
       "scheduler_heartbeat": {
@@ -2043,6 +2048,21 @@ async def get_self_execution_model_status(request: Request):
         "alive": bool,             # 心跳线程是否仍在运行
         "poll_interval_seconds": float,
         "tick_interval_seconds": float,   # 对照用：AutonomousLoop 自己的 tick 周期
+        "last_tick_started_at": float,    # [阶段二] 0.0 表示尚未发生过
+        "last_tick_finished_at": float,   # [阶段二] 判断心跳假死的关键字段：
+                                           # now - last_tick_finished_at 长期
+                                           # 远大于 tick_interval_seconds，
+                                           # 但 alive 仍为 True，说明心跳线程
+                                           # 卡在某次 tick() 里没有返回。
+        "last_tick_duration_seconds": float,  # [阶段二] 上一次 tick() 耗时
+      },
+      "cron": {
+        "reaped_job_count": int,   # [阶段一/三] CronJobRunner 累计强制
+                                    # 回收过的卡死 job 次数
+      },
+      "objective_executor": {
+        "stale_step_reap_count": int,   # [阶段三] ObjectiveExecutor 累计
+                                          # 强制回收过的卡死 step 次数
       },
     }
     """
@@ -2054,10 +2074,15 @@ async def get_self_execution_model_status(request: Request):
     result: dict = {
         "objective_execution_mode": "shared_queue",
         "persistent_worker": {"enabled": False, "active_execution_count": 0,
-                               "active_execution_ids": [], "idle_ttl_seconds": 0.0},
+                               "active_execution_ids": [], "idle_ttl_seconds": 0.0,
+                               "discarded_worker_count": 0},
         "isolated_runner": {"enabled": False, "max_workers": 0},
         "scheduler_heartbeat": {"enabled": False, "alive": False,
-                                 "poll_interval_seconds": 0.0, "tick_interval_seconds": 0.0},
+                                 "poll_interval_seconds": 0.0, "tick_interval_seconds": 0.0,
+                                 "last_tick_started_at": 0.0, "last_tick_finished_at": 0.0,
+                                 "last_tick_duration_seconds": 0.0},
+        "cron": {"reaped_job_count": 0},
+        "objective_executor": {"stale_step_reap_count": 0},
     }
     try:
         self_agent = http_server.bridge.agent
@@ -2078,6 +2103,7 @@ async def get_self_execution_model_status(request: Request):
                 "idle_ttl_seconds": getattr(
                     autonomy_cfg, "objective_persistent_worker_idle_ttl_seconds", 1800.0
                 ) if autonomy_cfg is not None else 1800.0,
+                "discarded_worker_count": getattr(persistent_runner, "discarded_worker_count", 0),
             }
         elif isolated_runner is not None:
             result["objective_execution_mode"] = "isolated"
@@ -2104,6 +2130,27 @@ async def get_self_execution_model_status(request: Request):
                 autonomy_cfg, "scheduler_heartbeat_poll_interval_seconds", 5.0
             ) if autonomy_cfg is not None else 5.0,
             "tick_interval_seconds": tick_interval_seconds,
+            "last_tick_started_at": getattr(heartbeat, "last_tick_started_at", 0.0) if heartbeat is not None else 0.0,
+            "last_tick_finished_at": getattr(heartbeat, "last_tick_finished_at", 0.0) if heartbeat is not None else 0.0,
+            "last_tick_duration_seconds": getattr(heartbeat, "last_tick_duration_seconds", 0.0) if heartbeat is not None else 0.0,
+        }
+
+        # [阶段一/三] cron watchdog 回收计数——job_runner 未注入（旧路径）
+        # 时 CronScheduler 不存在或没有 reap 相关状态，getattr 链路保持
+        # 0 的默认值。cron_scheduler/objective_executor 挂在 bridge 上
+        # （见 HttpServer._build_autonomous_loop() 接线），不是 http_server
+        # 本身的属性。
+        cron_scheduler = getattr(http_server.bridge, "_cron_scheduler", None)
+        job_runner = getattr(cron_scheduler, "_job_runner", None) if cron_scheduler is not None else None
+        result["cron"] = {
+            "reaped_job_count": getattr(job_runner, "reaped_job_count", 0) if job_runner is not None else 0,
+        }
+
+        # [阶段三] ObjectiveExecutor 卡死 step 回收计数。
+        objective_executor = getattr(http_server.bridge, "_objective_executor", None)
+        result["objective_executor"] = {
+            "stale_step_reap_count": getattr(objective_executor, "stale_step_reap_count", 0)
+            if objective_executor is not None else 0,
         }
     except Exception as _mini_agent_exc:
         from mini_agent.errors import log_exception

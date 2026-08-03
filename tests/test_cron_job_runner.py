@@ -287,3 +287,233 @@ class TestCronJobRunnerDefaultConfigConstruction:
         assert captured["default_config"] is not None
         assert captured["default_config"].timeout_seconds == 777
         assert captured["default_config"].max_steps == 9
+
+
+class _FakeCronConfigWithGrace(_FakeCronConfig):
+    def __init__(self, default_timeout_seconds=1200, default_max_steps=60,
+                 stale_job_watchdog_grace_seconds=300):
+        super().__init__(default_timeout_seconds, default_max_steps)
+        self.stale_job_watchdog_grace_seconds = stale_job_watchdog_grace_seconds
+
+
+class TestCronJobRunnerReapStaleJobs:
+    """覆盖 next_doc/daemon_task_hang_recovery_and_watchdog_hardening_plan.md
+    阶段一：CronJobRunner.reap_stale_jobs() watchdog 回收。"""
+
+    def test_reap_after_timeout_frees_job_for_resubmit(self, tmp_path, monkeypatch):
+        import mini_agent.evolution.cron_job_executor as executor_mod
+
+        started = threading.Event()
+        release = threading.Event()
+
+        class _BlockingExecutor:
+            def __init__(self, paths):
+                pass
+
+            def run_job(self, job, submit_step_fn, default_config=None):
+                started.set()
+                release.wait(timeout=10.0)
+                return RunOutcome(run_id="r1", status="idle", steps_executed=1, duration_seconds=0.01)
+
+        monkeypatch.setattr(executor_mod, "CronJobExecutor", _BlockingExecutor)
+
+        base_cfg = _FakeBaseCfg(cron=_FakeCronConfigWithGrace(
+            default_timeout_seconds=10, stale_job_watchdog_grace_seconds=0,
+        ))
+        paths = _FakePaths(tmp_path)
+        runner = CronJobRunner(base_cfg, paths, max_concurrent=2)
+        job = _make_job(job_id="user:stuck_job")
+
+        assert runner.submit(job) is True
+        assert started.wait(timeout=2.0)
+        assert runner.is_running(job.id) is True
+
+        # 还没超时：不应该被回收
+        reaped = runner.reap_stale_jobs(now=time.time())
+        assert reaped == []
+        assert runner.is_running(job.id) is True
+
+        # 模拟已经过了 有效阈值(10s + grace 0s)
+        future = time.time() + 11
+        reaped = runner.reap_stale_jobs(now=future)
+        assert reaped == [job.id]
+        assert runner.is_running(job.id) is False
+        assert runner.reaped_job_count == 1
+
+        # 回收之后应该可以重新 submit
+        assert runner.submit(job) is True
+
+        ws = CronJobWorkspace(paths, job.id)
+        state = ws.read_state()
+        assert state.status == STATUS_NEEDS_REVIEW
+
+        release.set()
+
+    def test_orphan_thread_finishing_after_reap_does_not_double_release_semaphore(self, tmp_path, monkeypatch):
+        """被 watchdog 回收之后，原来卡住的孤儿线程如果最终真的返回了，
+        不应该再次释放 semaphore（否则会把许可数撑大）。"""
+        import mini_agent.evolution.cron_job_executor as executor_mod
+
+        started = threading.Event()
+        release = threading.Event()
+
+        class _BlockingExecutor:
+            def __init__(self, paths):
+                pass
+
+            def run_job(self, job, submit_step_fn, default_config=None):
+                started.set()
+                release.wait(timeout=10.0)
+                return RunOutcome(run_id="r1", status="idle", steps_executed=1, duration_seconds=0.01)
+
+        monkeypatch.setattr(executor_mod, "CronJobExecutor", _BlockingExecutor)
+
+        base_cfg = _FakeBaseCfg(cron=_FakeCronConfigWithGrace(
+            default_timeout_seconds=10, stale_job_watchdog_grace_seconds=0,
+        ))
+        paths = _FakePaths(tmp_path)
+        runner = CronJobRunner(base_cfg, paths, max_concurrent=1)
+        job = _make_job(job_id="user:orphan_job")
+
+        assert runner.submit(job) is True
+        assert started.wait(timeout=2.0)
+
+        future = time.time() + 11
+        reaped = runner.reap_stale_jobs(now=future)
+        assert reaped == [job.id]
+
+        # 此刻信号量应该已经被 watchdog 释放一次，可以立即 submit 一个新 job
+        # 并让它真正开始执行（如果许可没被正确释放，这里会因为拿不到许可
+        # 而卡住直到测试超时失败）。
+        job2 = _make_job(job_id="user:other_job")
+        assert runner.submit(job2) is True
+
+        # 放行原来那条卡住的孤儿线程，让它"迟到"地跑完
+        release.set()
+        for _ in range(50):
+            if runner.reaped_job_count == 1 and not runner.is_running(job.id):
+                break
+            time.sleep(0.05)
+
+        # running_count 不应该因为孤儿线程收尾而被异常修改（job2 仍在跑，
+        # 因为 release Event 是共享的，job2 的假 executor 也会被放行，
+        # 等它跑完 running_count 归零即可，关键是没有抛异常/没有负数）。
+        for _ in range(50):
+            if runner.running_count == 0:
+                break
+            time.sleep(0.05)
+        assert runner.running_count == 0
+
+    def test_not_yet_timed_out_job_is_not_reaped(self, tmp_path, monkeypatch):
+        import mini_agent.evolution.cron_job_executor as executor_mod
+
+        started = threading.Event()
+        release = threading.Event()
+
+        class _BlockingExecutor:
+            def __init__(self, paths):
+                pass
+
+            def run_job(self, job, submit_step_fn, default_config=None):
+                started.set()
+                release.wait(timeout=5.0)
+                return RunOutcome(run_id="r1", status="idle", steps_executed=1, duration_seconds=0.01)
+
+        monkeypatch.setattr(executor_mod, "CronJobExecutor", _BlockingExecutor)
+
+        base_cfg = _FakeBaseCfg(cron=_FakeCronConfigWithGrace(
+            default_timeout_seconds=1200, stale_job_watchdog_grace_seconds=300,
+        ))
+        runner = CronJobRunner(base_cfg, _FakePaths(tmp_path), max_concurrent=2)
+        job = _make_job(job_id="user:normal_job")
+
+        assert runner.submit(job) is True
+        assert started.wait(timeout=2.0)
+
+        reaped = runner.reap_stale_jobs(now=time.time() + 5)
+        assert reaped == []
+        assert runner.is_running(job.id) is True
+
+        release.set()
+        for _ in range(50):
+            if not runner.is_running(job.id):
+                break
+            time.sleep(0.05)
+
+    def test_falls_back_to_default_timeout_when_job_has_no_own_config(self, tmp_path, monkeypatch):
+        """job 自己的 config.json 不存在时，回退全局 default_timeout_seconds。"""
+        import mini_agent.evolution.cron_job_executor as executor_mod
+
+        started = threading.Event()
+        release = threading.Event()
+
+        class _BlockingExecutor:
+            def __init__(self, paths):
+                pass
+
+            def run_job(self, job, submit_step_fn, default_config=None):
+                started.set()
+                release.wait(timeout=5.0)
+                return RunOutcome(run_id="r1", status="idle", steps_executed=1, duration_seconds=0.01)
+
+        monkeypatch.setattr(executor_mod, "CronJobExecutor", _BlockingExecutor)
+
+        base_cfg = _FakeBaseCfg(cron=_FakeCronConfigWithGrace(
+            default_timeout_seconds=8, stale_job_watchdog_grace_seconds=0,
+        ))
+        runner = CronJobRunner(base_cfg, _FakePaths(tmp_path), max_concurrent=2)
+        job = _make_job(job_id="user:no_config_job")
+
+        assert runner.submit(job) is True
+        assert started.wait(timeout=2.0)
+
+        # 用全局默认阈值（8s + grace 0s）判断
+        assert runner.reap_stale_jobs(now=time.time() + 3) == []
+        reaped = runner.reap_stale_jobs(now=time.time() + 9)
+        assert reaped == [job.id]
+
+        release.set()
+
+    def test_reap_stale_jobs_internal_exception_does_not_block_other_jobs(self, tmp_path, monkeypatch):
+        """一个 job 的回收逻辑抛异常，不应该影响其它 job 的回收。"""
+        import mini_agent.evolution.cron_job_executor as executor_mod
+
+        release = threading.Event()
+
+        class _BlockingExecutor:
+            def __init__(self, paths):
+                pass
+
+            def run_job(self, job, submit_step_fn, default_config=None):
+                release.wait(timeout=5.0)
+                return RunOutcome(run_id="r1", status="idle", steps_executed=1, duration_seconds=0.01)
+
+        monkeypatch.setattr(executor_mod, "CronJobExecutor", _BlockingExecutor)
+
+        base_cfg = _FakeBaseCfg(cron=_FakeCronConfigWithGrace(
+            default_timeout_seconds=5, stale_job_watchdog_grace_seconds=0,
+        ))
+        runner = CronJobRunner(base_cfg, _FakePaths(tmp_path), max_concurrent=3)
+
+        job_bad = _make_job(job_id="user:bad_job")
+        job_good = _make_job(job_id="user:good_job")
+        assert runner.submit(job_bad) is True
+        assert runner.submit(job_good) is True
+        time.sleep(0.2)
+
+        orig_effective = runner._effective_timeout_seconds
+
+        def _boom(job_id):
+            if job_id == "user:bad_job":
+                raise RuntimeError("boom")
+            return orig_effective(job_id)
+
+        monkeypatch.setattr(runner, "_effective_timeout_seconds", _boom)
+
+        reaped = runner.reap_stale_jobs(now=time.time() + 100)
+        assert reaped == ["user:good_job"]
+        assert runner.is_running("user:good_job") is False
+        # bad_job 抛异常，回收逻辑跳过它，它仍然"在跑"（记账未清理）
+        assert runner.is_running("user:bad_job") is True
+
+        release.set()

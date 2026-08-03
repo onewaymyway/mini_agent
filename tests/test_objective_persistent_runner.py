@@ -148,6 +148,35 @@ class TestObjectivePersistentRunnerReuse(unittest.TestCase):
             finally:
                 runner.shutdown(wait=True)
 
+    def test_discarded_worker_count_increments_on_release(self):
+        """[daemon_task_hang_recovery_and_watchdog_hardening_plan.md
+        阶段三·顺带做] release() 实际丢弃一个已存在的专属线程池时，
+        discarded_worker_count 应该 +=1；对不存在的 execution_id 调用
+        release()（比如重复调用）不应该继续递增。"""
+        with patch.object(bridge_mod, "build_objective_agent", side_effect=lambda *a, **kw: _FakeAgent()):
+            runner, done_calls, failed_calls = _make_runner(None)
+            try:
+                self.assertEqual(runner.discarded_worker_count, 0)
+
+                meta = {"execution_id": "exec_discard", "objective_id": "obj"}
+                runner.submit("step 1", "autonomous", meta)
+                deadline = time.time() + 5
+                while len(done_calls) < 1 and time.time() < deadline:
+                    time.sleep(0.01)
+
+                runner.release("exec_discard")
+                self.assertEqual(runner.discarded_worker_count, 1)
+
+                # 对一个已经不存在的 execution_id 再次 release：不应重复计数
+                runner.release("exec_discard")
+                self.assertEqual(runner.discarded_worker_count, 1)
+
+                # 对一个从未提交过的 execution_id release：同样不计数
+                runner.release("never_submitted")
+                self.assertEqual(runner.discarded_worker_count, 1)
+            finally:
+                runner.shutdown(wait=True)
+
     def test_stopped_runner_rejects_new_submits(self):
         with patch.object(bridge_mod, "build_objective_agent", side_effect=lambda *a, **kw: _FakeAgent()):
             runner, done_calls, failed_calls = _make_runner(None)

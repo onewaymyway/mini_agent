@@ -132,5 +132,69 @@ class TestSchedulerHeartbeat(unittest.TestCase):
             hb.join(timeout=2)
 
 
+class TestSchedulerHeartbeatObservability(unittest.TestCase):
+    """[daemon_task_hang_recovery_and_watchdog_hardening_plan.md 阶段二]
+    last_tick_started_at/last_tick_finished_at/last_tick_duration_seconds。"""
+
+    def test_timestamps_updated_after_normal_tick(self):
+        loop = _FakeAutonomousLoop()
+        lock = threading.Lock()
+        hb = SchedulerHeartbeat(loop, lock, interval_seconds=0.05)
+
+        self.assertEqual(hb.last_tick_started_at, 0.0)
+        self.assertEqual(hb.last_tick_finished_at, 0.0)
+
+        hb.start()
+        try:
+            deadline = time.time() + 2
+            while loop.tick_calls < 1 and time.time() < deadline:
+                time.sleep(0.02)
+            self.assertGreaterEqual(loop.tick_calls, 1)
+            self.assertGreater(hb.last_tick_started_at, 0.0)
+            self.assertGreater(hb.last_tick_finished_at, 0.0)
+            self.assertGreaterEqual(hb.last_tick_finished_at, hb.last_tick_started_at)
+            self.assertGreaterEqual(hb.last_tick_duration_seconds, 0.0)
+        finally:
+            hb.stop()
+            hb.join(timeout=2)
+
+    def test_finished_at_updated_even_when_tick_raises(self):
+        """tick() 抛异常时 last_tick_finished_at 依然会被更新——放在
+        finally 里，异常场景下也要能看出"心跳还在正常轮转，只是这一次
+        业务失败了"，与"心跳彻底停摆"区分开。"""
+
+        def _always_raise():
+            raise RuntimeError("boom")
+
+        loop = _FakeAutonomousLoop(tick_side_effect=_always_raise)
+        lock = threading.Lock()
+        hb = SchedulerHeartbeat(loop, lock, interval_seconds=0.05)
+        hb.start()
+        try:
+            deadline = time.time() + 2
+            while loop.tick_calls < 1 and time.time() < deadline:
+                time.sleep(0.02)
+            self.assertGreaterEqual(loop.tick_calls, 1)
+            self.assertGreater(hb.last_tick_started_at, 0.0)
+            self.assertGreater(hb.last_tick_finished_at, 0.0)
+        finally:
+            hb.stop()
+            hb.join(timeout=2)
+
+    def test_timestamps_not_updated_when_should_tick_false(self):
+        loop = _FakeAutonomousLoop(should_tick_values=[False, False, False])
+        lock = threading.Lock()
+        hb = SchedulerHeartbeat(loop, lock, interval_seconds=0.05)
+        hb.start()
+        try:
+            time.sleep(0.3)
+            self.assertEqual(loop.tick_calls, 0)
+            self.assertEqual(hb.last_tick_started_at, 0.0)
+            self.assertEqual(hb.last_tick_finished_at, 0.0)
+        finally:
+            hb.stop()
+            hb.join(timeout=2)
+
+
 if __name__ == "__main__":
     unittest.main()

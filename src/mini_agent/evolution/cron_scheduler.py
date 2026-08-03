@@ -781,6 +781,19 @@ class CronScheduler:
             return False
         return self._job_runner.is_running(job_id)
 
+    def reap_stale_jobs(self) -> list[str]:
+        """[daemon_task_hang_recovery_and_watchdog_hardening_plan.md 阶段一]
+        委托给 job_runner.reap_stale_jobs()：回收卡死超过有效超时阈值的
+        cron job，代替永远不会执行到的 finally 释放并发许可、清空记账，
+        使其可以被下一次到期重新 submit()。job_runner 未注入（旧路径）时
+        始终返回空列表——旧路径的 cron job 直接跑在 AgentRunner 主线程上，
+        没有独立的"卡死回收"概念。由 AutonomousLoop._tick_maintenance()
+        每次 tick 调用，返回值仅供上层日志/计数，不影响本方法本身的
+        幂等性——重复调用是安全的。"""
+        if self._job_runner is None:
+            return []
+        return self._job_runner.reap_stale_jobs()
+
     def get(self, job_id: str) -> Optional[CronJob]:
         return self._jobs.get(job_id)
 

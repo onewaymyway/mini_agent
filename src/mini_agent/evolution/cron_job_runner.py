@@ -18,12 +18,29 @@ evolution/cron_job_runner.py — cron 任务的后台线程调度器
 
   CronScheduler._fire(job) 只需要调用 CronJobRunner.submit(job)，
   该方法立即返回（不阻塞），真正的执行在独立线程里进行。
+
+[daemon_task_hang_recovery_and_watchdog_hardening_plan.md 阶段一]
+  上面的记账（_running_job_ids/semaphore 许可）此前完全依赖线程**正常
+  返回**——如果 executor.run_job() 内部卡死不返回（网络请求挂起/工具调用
+  阻塞在某个系统调用上等情况），job.id 会永久留在 _running_job_ids 里，
+  这个 job 之后所有的定时触发都会被 submit() 静默拒绝；同时对应的
+  semaphore 许可也永久不释放，攒够 max_concurrent_jobs 个卡死 job 后，
+  其它所有 cron job 会永久阻塞在排队上，cron 功能实质性全局瘫痪。
+
+  reap_stale_jobs() 是这个问题的外部存活性回收：用一个每次 submit() 生成
+  的唯一 token 判定"谁是这个 job 当前合法的执行者"，回收判定为卡死的
+  job 时代替永远不会执行到的 finally 释放一次 semaphore、清空记账、把
+  workspace 标记为 needs_human_review；真正卡死的旧线程本身会作为孤儿
+  线程继续在后台跑（Python 无法强制杀死线程），但迟到收尾时会发现自己
+  持有的 token 已经不是当前合法 token，从而跳过重复释放/清理，不会
+  和 watchdog 的回收互相踩踏。
 """
 
 from __future__ import annotations
 
 import threading
 import time
+import uuid
 from typing import Callable, Optional, TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -58,6 +75,15 @@ class CronJobRunner:
         self._lock = threading.Lock()
         self._running_job_ids: set[str] = set()
         self._threads: dict[str, threading.Thread] = {}
+        # [阶段一] job_id -> 当前合法执行者的 token（submit() 时生成）。
+        # reap_stale_jobs() 强制回收时会清空对应条目；线程体收尾前会比对
+        # 自己拿到的 token 与这里当前的值，不相等说明自己已经是"迟到的
+        # 孤儿"，不能再触碰共享状态或重复释放 semaphore。
+        self._tokens: dict[str, str] = {}
+        self._started_at: dict[str, float] = {}
+        # [阶段三·顺带做] 被 reap_stale_jobs() 强制回收过的 job 次数，
+        # 进程内累计，不持久化——只用于观测"卡死回收发生的频率"。
+        self._reaped_job_count: int = 0
 
     # ── 查询 ──────────────────────────────────────────────────────────────
 
@@ -69,6 +95,12 @@ class CronJobRunner:
     def running_count(self) -> int:
         with self._lock:
             return len(self._running_job_ids)
+
+    @property
+    def reaped_job_count(self) -> int:
+        """[阶段三·顺带做] 进程内累计的"被 watchdog 强制回收"次数。"""
+        with self._lock:
+            return self._reaped_job_count
 
     # ── 提交 ──────────────────────────────────────────────────────────────
 
@@ -85,14 +117,17 @@ class CronJobRunner:
         丢失触发记录，只是延后开始，行为上更接近"资源紧张时排队"而不是
         "直接丢弃"。
         """
+        token = uuid.uuid4().hex
         with self._lock:
             if job.id in self._running_job_ids:
                 return False
             self._running_job_ids.add(job.id)
+            self._tokens[job.id] = token
+            self._started_at[job.id] = time.time()
 
         t = threading.Thread(
             target=self._run_job_thread,
-            args=(job,),
+            args=(job, token),
             name=f"cron-job-{job.id}",
             daemon=True,
         )
@@ -101,9 +136,116 @@ class CronJobRunner:
         t.start()
         return True
 
+    # ── 存活性回收（watchdog） ───────────────────────────────────────────────
+
+    def reap_stale_jobs(self, now: Optional[float] = None) -> list[str]:
+        """
+        [daemon_task_hang_recovery_and_watchdog_hardening_plan.md 阶段一]
+        扫描当前 _running_job_ids，对每个 job 计算"有效超时阈值" = 该 job
+        自己 .agent/cron_jobs/<id>/config.json 里的 timeout_seconds（读不到
+        则回退 cfg.cron.default_timeout_seconds）+
+        cfg.cron.stale_job_watchdog_grace_seconds。超过
+        started_at + 有效阈值仍未收到线程正常收尾，判定为卡死：清空该
+        job_id 的全部记账、代替永远不会执行到的 finally 释放一次
+        semaphore、把 workspace 状态标记为 needs_human_review。
+
+        返回本次被回收的 job_id 列表，供上层日志/计数。每个 job 独立
+        try/except，一个 job 的回收逻辑异常不影响其它 job。
+        """
+        now = time.time() if now is None else now
+        with self._lock:
+            snapshot = list(self._running_job_ids)
+
+        reaped: list[str] = []
+        for job_id in snapshot:
+            try:
+                if self._reap_one_if_stale(job_id, now):
+                    reaped.append(job_id)
+            except Exception as _mini_agent_exc:
+                from mini_agent.errors import log_exception
+                log_exception(
+                    _mini_agent_exc,
+                    where="mini_agent.evolution.cron_job_runner.CronJobRunner.reap_stale_jobs",
+                )
+        return reaped
+
+    def _effective_timeout_seconds(self, job_id: str) -> float:
+        """job 自己 config.json 的 timeout_seconds（读不到则回退全局
+        default_timeout_seconds）+ 全局 grace 余量。"""
+        cron_cfg = getattr(self._base_cfg, "cron", None)
+        default_timeout = getattr(cron_cfg, "default_timeout_seconds", 20 * 60) if cron_cfg is not None else 20 * 60
+        grace = getattr(cron_cfg, "stale_job_watchdog_grace_seconds", 5 * 60) if cron_cfg is not None else 5 * 60
+
+        try:
+            from mini_agent.evolution.cron_job_workspace import CronJobWorkspace, CronJobConfig
+            ws = CronJobWorkspace(self._paths, job_id)
+            default = CronJobConfig(timeout_seconds=default_timeout)
+            job_cfg = ws.read_config(default=default)
+            timeout = job_cfg.timeout_seconds
+        except Exception:
+            timeout = default_timeout
+
+        return float(timeout) + float(grace)
+
+    def _reap_one_if_stale(self, job_id: str, now: float) -> bool:
+        with self._lock:
+            if job_id not in self._running_job_ids:
+                return False
+            started_at = self._started_at.get(job_id, 0.0)
+            token = self._tokens.get(job_id)
+
+        if started_at <= 0:
+            return False
+
+        effective_timeout = self._effective_timeout_seconds(job_id)
+        if (now - started_at) < effective_timeout:
+            return False
+
+        with self._lock:
+            # 双重确认：released between 读取快照和这里之间（极小概率的
+            # 竞态，正常收尾恰好在这一瞬间发生）不应该被误回收。
+            if job_id not in self._running_job_ids:
+                return False
+            if self._tokens.get(job_id) != token:
+                return False
+            self._running_job_ids.discard(job_id)
+            self._threads.pop(job_id, None)
+            self._started_at.pop(job_id, None)
+            self._tokens.pop(job_id, None)
+            self._reaped_job_count += 1
+
+        # 代替永远不会执行到的 finally 释放一次 semaphore——线程体收尾时
+        # 会发现自己的 token 已经不是当前合法 token（上面已经 pop 掉），
+        # 从而跳过它自己的 release()，两者互斥，不会重复释放。
+        self._sem.release()
+
+        try:
+            from mini_agent.evolution.cron_job_workspace import (
+                CronJobWorkspace, STATUS_NEEDS_REVIEW,
+            )
+            ws = CronJobWorkspace(self._paths, job_id)
+            ws.ensure()
+            state = ws.read_state()
+            state.status = STATUS_NEEDS_REVIEW
+            state.last_error = (
+                f"cron job 判定为卡死（超过 {effective_timeout:.0f}s 未收到执行结果），"
+                "已被 watchdog 强制回收，可重新触发"
+            )
+            state.last_run_finished_at = now
+            ws.write_state(state)
+        except Exception:
+            pass
+
+        import logging
+        logging.getLogger(__name__).warning(
+            "CronJobRunner.reap_stale_jobs: job_id=%s 判定为卡死（超过 %.0fs），已强制回收",
+            job_id, effective_timeout,
+        )
+        return True
+
     # ── 线程体 ────────────────────────────────────────────────────────────
 
-    def _run_job_thread(self, job: "CronJob") -> None:
+    def _run_job_thread(self, job: "CronJob", token: str) -> None:
         self._sem.acquire()
         try:
             from mini_agent.evolution.cron_agent_bridge import (
@@ -154,10 +296,21 @@ class CronJobRunner:
             except Exception:
                 pass
         finally:
+            # [阶段一] 只有自己仍是这个 job 当前合法的执行者（没有被
+            # reap_stale_jobs() 强制回收过）才清理共享状态、释放 semaphore；
+            # 否则说明自己是一个"迟到的孤儿"——watchdog 已经代为清理并释放
+            # 过一次 semaphore 了，这里绝不能重复释放，也不能 touch 任何
+            # 可能已经属于下一轮重新提交的共享状态。
+            released = False
             with self._lock:
-                self._running_job_ids.discard(job.id)
-                self._threads.pop(job.id, None)
-            self._sem.release()
+                if self._tokens.get(job.id) == token:
+                    self._running_job_ids.discard(job.id)
+                    self._threads.pop(job.id, None)
+                    self._started_at.pop(job.id, None)
+                    self._tokens.pop(job.id, None)
+                    released = True
+            if released:
+                self._sem.release()
 
 
 __all__ = ["CronJobRunner"]

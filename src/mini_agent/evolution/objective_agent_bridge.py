@@ -327,6 +327,14 @@ class ObjectivePersistentRunner:
         self._agents: dict[str, Agent] = {}
         self._last_used_at: dict[str, float] = {}
         self._stopped = False
+        # [daemon_task_hang_recovery_and_watchdog_hardening_plan.md 阶段三·
+        # 顺带做] release()/_evict_idle_locked() 实际丢弃过一个专属线程池
+        # 的次数，进程内累计，不持久化——包含正常终止收尾（Objective
+        # completed/failed/cancelled）和 idle 兜底回收两类，不特指"卡死
+        # 回收"这一种；单独看这个数字不能断定"发生了多少次卡死"，但长期
+        # 运行下的频率变化仍是值得关注的观测信号（详见
+        # execution_model_status 里同一字段的说明）。
+        self._discarded_worker_count: int = 0
 
     def _maybe_sched_lock(self):
         if self._sched_lock is None:
@@ -407,13 +415,23 @@ class ObjectivePersistentRunner:
     def release(self, execution_id: str) -> None:
         """Objective 到达终止状态（completed/failed/cancelled）时调用：立即
         关闭该 execution 的专属线程、丢弃 Agent 实例。用作
-        `ObjectiveExecutor(release_worker_fn=...)` 的回调。"""
+        `ObjectiveExecutor(release_worker_fn=...)` 的回调。同时也是
+        reap_stale_steps() 判定 step 卡死时的回调（见该方法说明）。"""
         with self._lock:
             executor = self._executors.pop(execution_id, None)
             self._agents.pop(execution_id, None)
             self._last_used_at.pop(execution_id, None)
+            if executor is not None:
+                self._discarded_worker_count += 1
         if executor is not None:
             executor.shutdown(wait=False, cancel_futures=True)
+
+    @property
+    def discarded_worker_count(self) -> int:
+        """[阶段三·顺带做] 见 __init__ 里的说明：release()/idle 兜底回收
+        累计丢弃过的专属线程池次数（不特指卡死，含正常终止收尾）。"""
+        with self._lock:
+            return self._discarded_worker_count
 
     def _evict_idle_locked(self, exclude: Optional[str] = None) -> None:
         """调用方已持有 self._lock。清理超过 idle_ttl 未使用的 execution
@@ -430,6 +448,7 @@ class ObjectivePersistentRunner:
             self._agents.pop(eid, None)
             self._last_used_at.pop(eid, None)
             if executor is not None:
+                self._discarded_worker_count += 1
                 executor.shutdown(wait=False, cancel_futures=True)
 
     def _safe_on_done(self, turn_id: str, summary: str, valid: bool) -> None:

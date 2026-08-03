@@ -1312,6 +1312,13 @@ class AutonomyConfig:
     guardian_stuck_similarity_threshold: float = 0.92
     guardian_stuck_consecutive_limit: int = 3
     guardian_max_recoveries: int = 2
+    # [daemon_task_hang_recovery_and_watchdog_hardening_plan.md 阶段三]
+    # ObjectiveExecutor.reap_stale_steps() 判定"当前 step 已卡死"的超时
+    # 阈值（秒）。None（默认）时回退模块级常量
+    # objective_executor.DEFAULT_STEP_TIMEOUT_SECONDS（=600），保持向后
+    # 兼容。有些任务本来就该跑更久（比如涉及大型代码库分析的 step），
+    # 有些则应该更敏感地判定卡死，按项目调整这个值。
+    objective_step_stale_timeout_seconds: Optional[int] = None
 
 
 @dataclass
@@ -1339,6 +1346,15 @@ class CronConfig:
     # cron_agent_bridge.py::CRON_INNER_MAX_TURNS_DEFAULT），做"内层限步数、
     # 外层限墙钟时间"双重兜底的内层那一道。
     inner_max_turns: int = 15
+
+    # [daemon_task_hang_recovery_and_watchdog_hardening_plan.md 阶段一]
+    # 外部存活性回收（CronJobRunner.reap_stale_jobs()）判定"job 已卡死"的
+    # 宽限期：有效超时阈值 = job 自己的 timeout_seconds（或本类的
+    # default_timeout_seconds）+ 这个宽限期。之所以要在 job 自己的超时
+    # 之上再加一段宽限期，是因为 CronJobExecutor.run_job() 内部的墙钟检查
+    # 只在两次 step 之间生效，允许最后一步本身多跑一段时间才被外部判定为
+    # 真正卡死，避免跟"最后一步恰好比较慢但最终会正常返回"的情况混淆。
+    stale_job_watchdog_grace_seconds: int = 5 * 60
 
 
 @dataclass

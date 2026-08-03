@@ -272,6 +272,20 @@ class AutonomousLoop:
             log_exception(_mini_agent_exc, where='mini_agent.evolution.autonomous_loop._tick_maintenance.reap_finished_cycles')
             pass
 
+        # [daemon_task_hang_recovery_and_watchdog_hardening_plan.md 阶段一]
+        # CronJobRunner：回收卡死超过有效超时阈值的 cron job，代替永远
+        # 不会执行到的 finally 释放并发许可，使其可以被下一次到期重新
+        # submit()。与下面 reap_stale_steps() 相邻、同样放在资源仲裁
+        # early-return 之前——回收动作不该依赖"当前是否允许发起新的自主
+        # 任务"这个跟它无关的门控，理由完全一致。
+        if self._cron_scheduler is not None:
+            try:
+                self._cron_scheduler.reap_stale_jobs()
+            except Exception as _mini_agent_exc:
+                from mini_agent.errors import log_exception
+                log_exception(_mini_agent_exc, where='mini_agent.evolution.autonomous_loop._tick_maintenance.reap_stale_jobs')
+                pass
+
         # ObjectiveExecutor：先回收卡死的 step（并发槽位卡死修复，见
         # ObjectiveExecutor.reap_stale_steps() 说明）。必须放在资源仲裁的
         # early-return 之前：否则一旦某次 tick 恰好赶上预算耗尽/用户在场
@@ -279,7 +293,14 @@ class AutonomousLoop:
         # 不该依赖"当前是否允许发起新的自主任务"这个跟它无关的门控。
         if self._objective_executor is not None:
             try:
-                self._objective_executor.reap_stale_steps()
+                timeout_override = None
+                autonomy_cfg = getattr(self._cfg, "autonomy", None)
+                if autonomy_cfg is not None:
+                    timeout_override = getattr(autonomy_cfg, "objective_step_stale_timeout_seconds", None)
+                if timeout_override is not None:
+                    self._objective_executor.reap_stale_steps(timeout_seconds=timeout_override)
+                else:
+                    self._objective_executor.reap_stale_steps()
             except Exception as _mini_agent_exc:
                 from mini_agent.errors import log_exception
                 log_exception(_mini_agent_exc, where='mini_agent.evolution.autonomous_loop')
