@@ -123,6 +123,13 @@ class GoalNode:
     # 被重复计数（tick 间隔内多次扫描到同一个 completed 子节点是正常情况）。
     reaped_cycle_child_ids: list[str] = field(default_factory=list)
 
+    # [goal_cron_visibility_and_intervention_improvement_plan.md Track B]
+    # 用户请求"跳过下一次触发"，但保持 recurring=True 不变——区别于
+    # unrecur（彻底停止周期性）。由 goal_cron_bridge._fire_goal_cycle()
+    # 消费：命中后清零本字段、写一条 progress_notes、本次触发按"未算数"
+    # 处理（下次 tick 正常判断）。
+    skip_next_cycle: bool = False
+
     def to_dict(self) -> dict:
         return {
             "id": self.id,
@@ -146,6 +153,7 @@ class GoalNode:
             "recurrence_cron_job_id": self.recurrence_cron_job_id,
             "cycle_count": self.cycle_count,
             "reaped_cycle_child_ids": self.reaped_cycle_child_ids,
+            "skip_next_cycle": self.skip_next_cycle,
         }
 
     @staticmethod
@@ -172,6 +180,7 @@ class GoalNode:
             recurrence_cron_job_id=d.get("recurrence_cron_job_id"),
             cycle_count=d.get("cycle_count", 0),
             reaped_cycle_child_ids=d.get("reaped_cycle_child_ids", []),
+            skip_next_cycle=d.get("skip_next_cycle", False),
         )
 
     @property
@@ -670,6 +679,77 @@ class GoalBacklog:
                 )
             node.last_touched_at = time.time()
         return True
+
+    def append_progress_note(self, node_id: str, line: str) -> bool:
+        """[goal_cron_visibility_and_intervention_improvement_plan.md Track B]
+        追加一行带时间戳的 progress_notes，不覆盖已有内容。跟
+        record_cycle_completed() 里内联的追加逻辑是同一种格式，抽出来是因为
+        "跳过本轮"这类用户主动干预动作也需要留痕，但不属于"完成一轮"，
+        不应该复用 record_cycle_completed()（那个会推进 cycle_count）。
+        """
+        with self._locked():
+            node = self._nodes.get(node_id)
+            if not node:
+                return False
+            stamp = time.strftime("%Y-%m-%d %H:%M", time.localtime())
+            entry = f"[{stamp}] {line}"
+            node.progress_notes = (
+                f"{node.progress_notes}\n{entry}" if node.progress_notes else entry
+            )
+            node.last_touched_at = time.time()
+        return True
+
+    def archive_finished_cycle_children(self, goal_id: str, keep_recent: int = 20) -> int:
+        """[goal_cron_visibility_and_intervention_improvement_plan.md Track D]
+        周期性 Goal 跑了很多轮之后，`children_ids`/`goals.json` 会无限增长。
+        本方法只处理"已经被 record_cycle_completed() 计过数"的终态子节点
+        （reaped_cycle_child_ids 里的），按 id 出现顺序（即完成顺序，因为
+        reaped_cycle_child_ids 是按 reap 到的先后 append 的）保留最近
+        keep_recent 个，更早的从 _nodes/children_ids 中移除，追加写入
+        sidecar 文件 `<workdir>/goal_cycle_archive.jsonl`（每行一条完整
+        GoalNode.to_dict()，只追加不改写，归档后的节点视为不再变化）。
+
+        返回本次归档的节点数量。不影响 cycle_count/reaped_cycle_child_ids
+        本身的计数语义——只是把节点从"热数据"搬到"冷数据"，历史轮次仍可
+        通过 jsonl 文件回看。
+        """
+        with self._locked():
+            node = self._nodes.get(goal_id)
+            if not node or not node.is_goal or not node.recurring:
+                return 0
+            reaped = node.reaped_cycle_child_ids
+            if len(reaped) <= keep_recent:
+                return 0
+            to_archive_ids = reaped[: len(reaped) - keep_recent]
+            archived_nodes = []
+            for child_id in to_archive_ids:
+                child = self._nodes.get(child_id)
+                if child is None:
+                    continue
+                archived_nodes.append(child.to_dict())
+                del self._nodes[child_id]
+                if child_id in node.children_ids:
+                    node.children_ids.remove(child_id)
+            if not archived_nodes:
+                return 0
+            archive_path = self._paths.workdir_dir / "goal_cycle_archive.jsonl"
+            try:
+                with open(archive_path, "a", encoding="utf-8") as f:
+                    for d in archived_nodes:
+                        f.write(json.dumps(d, ensure_ascii=False) + "\n")
+            except Exception as _mini_agent_exc:
+                from mini_agent.errors import log_exception
+                log_exception(_mini_agent_exc, where='mini_agent.perception.goal_backlog.GoalBacklog.archive_finished_cycle_children')
+                # 写归档文件失败时不删节点——宁可 goals.json 继续膨胀，
+                # 也不能丢数据（archived_nodes 已经从 _nodes 摘除的操作
+                # 发生在写文件之前，这里失败要把节点加回去）。
+                for d in archived_nodes:
+                    self._nodes[d["id"]] = GoalNode.from_dict(d)
+                    if d["id"] not in node.children_ids:
+                        node.children_ids.append(d["id"])
+                return 0
+            node.reaped_cycle_child_ids = reaped[len(reaped) - keep_recent:]
+        return len(archived_nodes)
 
     def update_fields(self, node_id: str, **fields) -> Optional[GoalNode]:
         """在锁保护下批量更新节点的任意字段（如 status/priority/progress_notes）。

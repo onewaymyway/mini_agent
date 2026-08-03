@@ -68,6 +68,9 @@ daemon 处于 maintenance/autonomous 档位时，每天会自动为这个 Goal �
 
 ## 未完成 / 已知限制
 
-- 看板（Streamlit）暂未展示 `recurring`/`cycle_count`/绑定的 cron job（计划文档第五节提到的 UI 部分未实现，纯 CLI 已可用，后续可作为独立小 track 补上）。
+- ~~看板（Streamlit）暂未展示 `recurring`/`cycle_count`/绑定的 cron job~~ ——已在
+  `next_doc/goal_cron_visibility_and_intervention_improvement_plan.md`（Track A/B/C/D）
+  中补上：看板可见性、绑定/解绑/跳过一轮的 UI 入口、失败通知、长期归档，详见该文档与
+  `docs/goal-cron-binding-guide.md`。
 - `reap_finished_cycles()` 是"轮询扫描"而不是事件订阅，最坏情况下有一个 tick 间隔（约 60s）的计数延迟，可接受。
 - 一对一绑定假设未来若需要"多 Goal 共享一个 cron job"，需要重新设计（当前明确排除在本轮范围外）。

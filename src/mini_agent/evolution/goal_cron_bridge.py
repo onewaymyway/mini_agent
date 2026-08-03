@@ -126,6 +126,16 @@ def _fire_goal_cycle(
         # 用户只需要管 Goal 的状态，不需要额外记得去 disable 对应 cron job。
         return False
 
+    if goal.skip_next_cycle:
+        # [goal_cron_visibility_and_intervention_improvement_plan.md Track B]
+        # 用户主动请求跳过这一轮，但保持 recurring=True——跟"Goal 未 active"
+        # "上一轮未完成"两种系统级跳过不同，这是用户的主动决策，需要留痕在
+        # progress_notes 里，方便回看"这一轮为什么没跑"。跳过后清零标记，
+        # 只影响下一次触发这一次，不会一直跳过。
+        goal_backlog.update_fields(goal.id, skip_next_cycle=False)
+        goal_backlog.append_progress_note(goal.id, "本轮由用户手动跳过（跳过后周期性照常继续）")
+        return False
+
     if _goal_has_active_cycle(goal, goal_backlog, objective_executor):
         # 上一轮还没跑完，本轮跳过，不叠加并发。
         return False
@@ -249,7 +259,45 @@ def reap_finished_cycles(goal_backlog: "GoalBacklog") -> int:
             note = child.progress_notes or f"状态：{child.status}"
             if goal_backlog.record_cycle_completed(goal.id, child.id, note=note):
                 reaped += 1
+                if child.status == "failed":
+                    # [goal_cron_visibility_and_intervention_improvement_plan.md
+                    # Track C] 只在失败时推通知——completed/cancelled 不打扰
+                    # 用户，正常跑完的周期性任务不需要每轮都推送。发送失败
+                    # （比如渠道配置有问题）不影响本次计数结果，只是记录到
+                    # dispatcher 自己的日志里。
+                    _notify_cycle_failed(goal_backlog, goal, note)
+        # [Track D] 归档已跑过多轮、已经计过数的旧子节点，避免 goals.json
+        # 随轮数无限增长。只读遍历+命中才写，跟本函数其余部分同一种开销
+        # 可控的设计哲学。
+        try:
+            goal_backlog.archive_finished_cycle_children(goal.id)
+        except Exception as _mini_agent_exc:
+            from mini_agent.errors import log_exception
+            log_exception(_mini_agent_exc, where='mini_agent.evolution.goal_cron_bridge.reap_finished_cycles.archive')
     return reaped
+
+
+def _notify_cycle_failed(goal_backlog: "GoalBacklog", goal: "GoalNode", note: str) -> None:
+    """周期性 Goal 某一轮以 failed 收尾时推一条通知。复用已有的通知网关
+    （notification/dispatcher.py，见 watchlist_notification_goal_design.md），
+    不新增渠道实现；kanban 渠道恒真兜底，用户至少能在看板"全局待办中心"/
+    通知记录里看到。异常整体吞掉——通知是感知增强，不能反过来影响
+    reap_finished_cycles() 的计数主流程。
+    """
+    try:
+        paths = getattr(goal_backlog, "_paths", None)
+        if paths is None:
+            return
+        from mini_agent.notification.dispatcher import NotificationDispatcher, NotificationMessage
+        NotificationDispatcher(paths).dispatch(NotificationMessage(
+            title=f"周期性目标「{goal.title}」第 {goal.cycle_count} 轮执行失败",
+            body=(note or "")[:200],
+            source="goal_cycle",
+            meta={"goal_id": goal.id, "cycle": goal.cycle_count},
+        ))
+    except Exception as _mini_agent_exc:
+        from mini_agent.errors import log_exception
+        log_exception(_mini_agent_exc, where='mini_agent.evolution.goal_cron_bridge._notify_cycle_failed')
 
 
 __all__ = [

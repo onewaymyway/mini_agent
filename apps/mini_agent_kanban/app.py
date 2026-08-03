@@ -1968,10 +1968,29 @@ def _render_goal_card(
         if next_suggested else ""
     )
 
+    # [goal_cron_visibility_and_intervention_improvement_plan.md Track A]
+    # Goal 卡片（非 Objective）展示周期性状态——之前 GoalNode.to_dict() 已经
+    # 带了 recurring/cycle_count 字段，但看板从未渲染过，用户完全看不出一个
+    # Goal 是不是在周期性运转、跑到第几轮。
+    recur_html = ""
+    if n.get("level") != "objective" and n.get("recurring"):
+        pending = "　⏭️ 下一轮将被跳过" if n.get("skip_next_cycle") else ""
+        recur_html = (
+            f'<div class="meta" style="color:#2a7;">🔁 周期性 · 已完成 {n.get("cycle_count", 0)} 轮'
+            f'{pending}</div>'
+        )
+    elif n.get("level") != "objective" and n.get("source") != "agent_derived":
+        recur_html = '<div class="meta" style="color:#999;">未设为周期性</div>'
+    cron_source_html = ""
+    if n.get("level") == "objective" and n.get("source") == "cron":
+        cron_source_html = '<div class="meta" style="color:#2a7;">⏰ 由 cron 周期触发</div>'
+
     st.markdown(f"""
 <div class="kanban-card" style="{wrapper_style}">
   <div class="title">{level_tag} {_esc_html(n.get('title','(无标题)'))}</div>
   <div class="meta">来源:{n.get('source','')}　优先级:{n.get('priority',0)}</div>
+  {recur_html}
+  {cron_source_html}
   {progress_html}
   {next_html}
   {note_html}
@@ -2031,6 +2050,48 @@ def _render_goal_card(
                     st.rerun()
             else:
                 st.caption("没有改动。")
+
+    # [goal_cron_visibility_and_intervention_improvement_plan.md Track A/B]
+    # 周期性绑定/解绑/跳过一轮——之前这三个操作只有 CLI（/agent goals
+    # recur|unrecur、/cron add-goal-cycle）能做，看板没有对应入口。
+    # 只在 Goal 级卡片上展示（Objective 子节点没有自己的周期性绑定）。
+    if n.get("level") != "objective":
+        with st.expander("⏰ 周期性设置", expanded=False):
+            if n.get("recurring"):
+                st.caption(
+                    f"已绑定 cron job `{n.get('recurrence_cron_job_id', '?')}` · "
+                    f"已完成 {n.get('cycle_count', 0)} 轮"
+                )
+                bc1, bc2 = st.columns(2)
+                if bc1.button("⏭️ 跳过下一轮", key=f"skipcycle_{n.get('id')}",
+                               disabled=bool(n.get("skip_next_cycle"))):
+                    res = client.skip_goal_next_cycle(n.get("id"))
+                    if res and "_error" in res:
+                        st.error(res["_error"])
+                    st.rerun()
+                if bc2.button("🛑 取消周期性", key=f"unrecur_{n.get('id')}"):
+                    res = client.unrecur_goal(n.get("id"))
+                    if res and "_error" in res:
+                        st.error(res["_error"])
+                    st.rerun()
+            else:
+                st.caption("这个 Goal 还不是周期性的——绑定后会按 schedule 自动派生并启动新一轮。")
+                with st.form(f"recur_form_{n.get('id')}"):
+                    r_schedule = st.text_input(
+                        "调度 (interval:<秒数> 或 cron:<表达式>)",
+                        placeholder="例如 interval:86400（每天一次）",
+                    )
+                    r_task = st.text_area("每轮任务内容（留空则复用 Goal 描述）", height=60)
+                    r_submit = st.form_submit_button("🔁 设为周期性")
+                if r_submit:
+                    if not r_schedule.strip():
+                        st.error("调度不能为空")
+                    else:
+                        res = client.recur_goal(n.get("id"), r_schedule.strip(), r_task.strip())
+                        if res and "_error" in res:
+                            st.error(res["_error"])
+                        else:
+                            st.rerun()
 
 
 def render_kanban_tab(client: AgentClient):

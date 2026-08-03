@@ -265,6 +265,20 @@ class AgentClient:
     def update_goal(self, goal_id: str, **fields):
         return self._patch(f"/goals/{goal_id}", fields)
 
+    # ── 看板：周期性 Goal 绑定/解绑/跳过（goal_cron_visibility_and_
+    # intervention_improvement_plan.md Track A/B）───────────────────────
+    def recur_goal(self, goal_id: str, schedule: str, task_template: str = ""):
+        body = {"schedule": schedule}
+        if task_template:
+            body["task_template"] = task_template
+        return self._post(f"/goals/{goal_id}/recur", body)
+
+    def unrecur_goal(self, goal_id: str):
+        return self._post(f"/goals/{goal_id}/unrecur")
+
+    def skip_goal_next_cycle(self, goal_id: str):
+        return self._post(f"/goals/{goal_id}/skip_next_cycle")
+
     # ── 看板：Objective 执行操作（Track D）+ 全局待办中心（Track A）───
     def cancel_objective(self, execution_id: str):
         return self._post(f"/objectives/{execution_id}/cancel")

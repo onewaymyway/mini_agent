@@ -2599,6 +2599,82 @@ async def update_goal(goal_id: str, request: Request):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+# ── 周期性 Goal 绑定/解绑/跳过（goal_cron_visibility_and_intervention_
+# improvement_plan.md Track A/B）────────────────────────────────────────────
+# 三个端点都直接复用 evolution/goal_cron_bridge.py 里已有的函数，不重复实现
+# 绑定/触发业务逻辑——REST 层只是把 CLI 已有的 /agent goals recur|unrecur
+# 能力暴露给看板。
+
+def _goal_backlog_and_scheduler(request: Request):
+    http_server = getattr(request.app.state, "http_server", None)
+    if http_server is None:
+        raise HTTPException(status_code=503, detail="HttpServer not available")
+    _require_owner(request)
+    from mini_agent.storage.paths import AgentPaths
+    from mini_agent.perception.goal_backlog import load_goal_backlog
+    self_agent = http_server.bridge.agent
+    project_root = getattr(self_agent.cfg, "project_root", None) if self_agent else None
+    if not project_root:
+        raise HTTPException(status_code=503, detail="project_root not configured")
+    paths = AgentPaths(project_root)
+    backlog = load_goal_backlog(paths)
+    scheduler = _get_cron_scheduler(http_server)
+    return backlog, scheduler
+
+
+@router.post("/goals/{goal_id}/recur")
+async def recur_goal(goal_id: str, request: Request):
+    """POST /v1/goals/{goal_id}/recur — 把一个已有 Goal 声明为周期性。
+    Body: { "schedule": str, "task_template": Optional[str] }
+    等价于 CLI 的 `/agent goals recur <id> <schedule> [task]`。
+    """
+    body = await request.json()
+    schedule = (body.get("schedule") or "").strip()
+    if not schedule:
+        raise HTTPException(status_code=400, detail="schedule is required")
+    backlog, scheduler = _goal_backlog_and_scheduler(request)
+    try:
+        from mini_agent.evolution.goal_cron_bridge import make_goal_recurring
+        job = make_goal_recurring(
+            backlog, scheduler, goal_id, schedule,
+            task_template=body.get("task_template") or None,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    goal = backlog.get(goal_id)
+    return {"goal": goal.to_dict() if goal else None, "cron_job": job.to_dict()}
+
+
+@router.post("/goals/{goal_id}/unrecur")
+async def unrecur_goal(goal_id: str, request: Request):
+    """POST /v1/goals/{goal_id}/unrecur — 停止周期性推进（不删 Goal/cron job）。
+    等价于 CLI 的 `/agent goals unrecur <id>`。
+    """
+    backlog, scheduler = _goal_backlog_and_scheduler(request)
+    from mini_agent.evolution.goal_cron_bridge import stop_goal_recurrence
+    ok = stop_goal_recurrence(backlog, scheduler, goal_id)
+    if not ok:
+        raise HTTPException(status_code=404, detail=f"Goal '{goal_id}' not found or not recurring")
+    goal = backlog.get(goal_id)
+    return {"goal": goal.to_dict() if goal else None}
+
+
+@router.post("/goals/{goal_id}/skip_next_cycle")
+async def skip_goal_next_cycle(goal_id: str, request: Request):
+    """POST /v1/goals/{goal_id}/skip_next_cycle — 跳过下一次周期性触发，
+    但保持 recurring=True 不变（区别于 unrecur）。见
+    next_doc/goal_cron_visibility_and_intervention_improvement_plan.md §3。
+    """
+    backlog, _scheduler = _goal_backlog_and_scheduler(request)
+    goal = backlog.get(goal_id)
+    if goal is None or not goal.is_goal:
+        raise HTTPException(status_code=404, detail=f"Goal '{goal_id}' not found")
+    if not goal.recurring:
+        raise HTTPException(status_code=400, detail="Goal is not recurring")
+    updated = backlog.update_fields(goal_id, skip_next_cycle=True)
+    return {"goal": updated.to_dict() if updated else None}
+
+
 # ── Objective 执行操作（看板与自主性改进方案 Track D）────────────────────────
 # 给 ObjectiveExecutor 已有的状态机加几个转换入口：终止 / 手动重试当前步 /
 # 插一句话补充上下文。都是"事实来源仍是 ObjectiveExecutor"的操作——不直接

@@ -266,5 +266,144 @@ class TestReapFinishedCycles(unittest.TestCase):
             self.assertEqual(gb.get(goal.id).cycle_count, 0)
 
 
+class TestSkipNextCycle(unittest.TestCase):
+    """goal_cron_visibility_and_intervention_improvement_plan.md Track B"""
+
+    def test_fire_skips_once_and_clears_flag(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = _make_paths(tmp)
+            _set_autonomy_maintenance(paths)
+            gb = GoalBacklog(paths)
+            goal = gb.add_goal(title="G")
+            gb.set_recurrence(goal.id, recurring=True, cron_job_id="user:fake")
+            gb.update_fields(goal.id, skip_next_cycle=True)
+            oe = FakeObjectiveExecutor()
+            cs = CronScheduler(paths, submit_fn=None)
+            cs.load()
+            job = cs.add_job(name="j", schedule="interval:60", task_template="t",
+                              goal_id=goal.id, run_mode="goal_cycle")
+
+            fired = bridge._fire_goal_cycle(job, gb, oe)
+
+            self.assertFalse(fired)
+            self.assertEqual(oe.start_calls, [])
+            updated = gb.get(goal.id)
+            self.assertFalse(updated.skip_next_cycle)
+            self.assertIn("跳过", updated.progress_notes)
+
+            # 跳过只生效一次，下一次触发应正常派生新一轮
+            fired_again = bridge._fire_goal_cycle(job, gb, oe)
+            self.assertTrue(fired_again)
+            self.assertEqual(len(oe.start_calls), 1)
+
+
+class TestReapFailureNotification(unittest.TestCase):
+    """goal_cron_visibility_and_intervention_improvement_plan.md Track C"""
+
+    def test_dispatches_notification_on_failed_cycle(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = _make_paths(tmp)
+            gb = GoalBacklog(paths)
+            goal = gb.add_goal(title="G")
+            gb.set_recurrence(goal.id, recurring=True, cron_job_id="user:fake")
+            obj = gb.add_objective(title="第 1 轮", parent_id=goal.id, source="cron")
+            gb.set_status(obj.id, "failed")
+            gb.update_fields(obj.id, progress_notes="出错了")
+
+            calls = []
+
+            class _FakeDispatcher:
+                def __init__(self, _paths):
+                    pass
+
+                def dispatch(self, message, channels=None):
+                    calls.append(message)
+                    return {"kanban": True}
+
+            import mini_agent.notification.dispatcher as dispatcher_mod
+            original = dispatcher_mod.NotificationDispatcher
+            dispatcher_mod.NotificationDispatcher = _FakeDispatcher
+            try:
+                reaped = bridge.reap_finished_cycles(gb)
+            finally:
+                dispatcher_mod.NotificationDispatcher = original
+
+            self.assertEqual(reaped, 1)
+            self.assertEqual(len(calls), 1)
+            self.assertIn("失败", calls[0].title)
+
+    def test_no_notification_on_completed_cycle(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = _make_paths(tmp)
+            gb = GoalBacklog(paths)
+            goal = gb.add_goal(title="G")
+            gb.set_recurrence(goal.id, recurring=True, cron_job_id="user:fake")
+            obj = gb.add_objective(title="第 1 轮", parent_id=goal.id, source="cron")
+            gb.set_status(obj.id, "completed")
+
+            calls = []
+
+            class _FakeDispatcher:
+                def __init__(self, _paths):
+                    pass
+
+                def dispatch(self, message, channels=None):
+                    calls.append(message)
+                    return {}
+
+            import mini_agent.notification.dispatcher as dispatcher_mod
+            original = dispatcher_mod.NotificationDispatcher
+            dispatcher_mod.NotificationDispatcher = _FakeDispatcher
+            try:
+                bridge.reap_finished_cycles(gb)
+            finally:
+                dispatcher_mod.NotificationDispatcher = original
+
+            self.assertEqual(calls, [])
+
+
+class TestArchiveFinishedCycleChildren(unittest.TestCase):
+    """goal_cron_visibility_and_intervention_improvement_plan.md Track D"""
+
+    def test_archives_older_children_beyond_keep_recent(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = _make_paths(tmp)
+            gb = GoalBacklog(paths)
+            goal = gb.add_goal(title="G")
+            gb.set_recurrence(goal.id, recurring=True, cron_job_id="user:fake")
+            for i in range(5):
+                obj = gb.add_objective(title=f"第 {i+1} 轮", parent_id=goal.id, source="cron")
+                gb.set_status(obj.id, "completed")
+                bridge.reap_finished_cycles(gb)  # 逐轮 reap，会带着 archive 一起跑
+
+            archived = gb.archive_finished_cycle_children(goal.id, keep_recent=2)
+
+            self.assertEqual(archived, 3)
+            updated = gb.get(goal.id)
+            self.assertEqual(len(updated.children_ids), 2)
+            self.assertEqual(len(updated.reaped_cycle_child_ids), 2)
+            self.assertEqual(updated.cycle_count, 5)  # 归档不影响已完成轮数计数
+
+            archive_path = paths.workdir_dir / "goal_cycle_archive.jsonl"
+            self.assertTrue(archive_path.exists())
+            lines = archive_path.read_text(encoding="utf-8").strip().splitlines()
+            self.assertEqual(len(lines), 3)
+
+    def test_no_archive_below_threshold(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = _make_paths(tmp)
+            gb = GoalBacklog(paths)
+            goal = gb.add_goal(title="G")
+            gb.set_recurrence(goal.id, recurring=True, cron_job_id="user:fake")
+            obj = gb.add_objective(title="第 1 轮", parent_id=goal.id, source="cron")
+            gb.set_status(obj.id, "completed")
+            bridge.reap_finished_cycles(gb)
+
+            archived = gb.archive_finished_cycle_children(goal.id, keep_recent=20)
+
+            self.assertEqual(archived, 0)
+            self.assertEqual(len(gb.get(goal.id).children_ids), 1)
+
+
 if __name__ == "__main__":
     unittest.main()

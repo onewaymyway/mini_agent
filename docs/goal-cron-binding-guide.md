@@ -57,6 +57,25 @@
 每一轮子 Objective 进入终态（完成/失败/取消）后，`Goal.progress_notes` 会自动追加一行
 形如 `[2026-08-02 10:00] 第 3 轮：<该轮结果摘要前 80 字>` 的记录，方便回看历史轮次。
 
+### 2.4 看板操作（Kanban，见 `goal_cron_visibility_and_intervention_improvement_plan.md`）
+
+以上绑定/解绑操作现在也可以直接在 Kanban 看板"📌 目标看板"Tab 里完成，不用切到 CLI：
+每张 Goal 卡片下方有一个"⏰ 周期性设置"折叠区，未绑定时提供调度输入框 + "设为周期性"
+按钮；已绑定时展示当前 schedule、绑定的 cron job id、已完成轮数，并提供"⏭️ 跳过下一轮"
+和"🛑 取消周期性"两个按钮。卡片标题下也会直接展示 `🔁 周期性 · 已完成 N 轮` 徽标，
+子 Objective 若是本轮由 cron 触发的，会标注"⏰ 由 cron 周期触发"。
+
+### 2.5 跳过某一轮（不停止周期性）
+
+```bash
+curl -X POST .../v1/goals/<goal_id>/skip_next_cycle
+```
+
+或看板"⏭️ 跳过下一轮"按钮。跟 `unrecur`（彻底停止）不同——只是让**下一次**触发被跳过，
+`recurring` 保持 `True`，之后照常按 schedule 继续。跳过会在 `progress_notes` 里留下
+"本轮由用户手动跳过"的记录，跟系统级跳过（Goal 未 active / 上一轮未完成，这两种不写
+progress_notes）区分开。
+
 ## 3. 触发规则（重要，决定了"为什么这次没自动跑"）
 
 一个 `run_mode="goal_cycle"` 的 cron job 到期时，按以下顺序检查，**任一条件不满足就
@@ -99,9 +118,27 @@
 - `reap_finished_cycles()` — 由 `AutonomousLoop._tick_maintenance()` 周期调用，
   回收终态子节点计入 `cycle_count`/`progress_notes`
 
-## 5. 已知限制
+## 5. 长期运行的健康度治理
+
+`goal_cron_visibility_and_intervention_improvement_plan.md` Track D 补上了两处长期运行
+会暴露的问题：
+
+- **子节点归档**：`GoalBacklog.archive_finished_cycle_children(goal_id, keep_recent=20)`
+  由 `reap_finished_cycles()` 每次 reap 后顺带调用——只保留最近 20 轮的子 Objective 节点
+  在 `goals.json`/`children_ids` 里，更早的追加写入 `<agent_dir>/goal_cycle_archive.jsonl`
+  （每行一条完整节点 JSON），避免长期运行（几十上百轮）后 `goals.json` 无限膨胀。归档不
+  影响 `cycle_count`/`progress_notes` 的历史记录，只是把节点本体挪到冷存储。
+- **失败通知**：某一轮子 Objective 以 `failed` 收尾时，`reap_finished_cycles()` 会调用
+  已有的 `notification/dispatcher.py` 推一条通知（kanban 恒真兜底 + 可选邮件渠道），
+  不需要用户主动巡检看板才能发现某个周期性任务连续失败。`completed`/`cancelled` 不触发
+  通知。
+
+## 6. 已知限制
 
 - 一对一绑定：一个 Goal 只能绑定一个 goal_cycle job，暂不支持"多个 job 共享同一个 Goal"。
-- 看板（Streamlit）目前还没有展示 `recurring`/`cycle_count`/绑定 job 的专门 UI，
-  只能通过 CLI（`/agent goals`、`/cron`）操作和查看。
 - `reap_finished_cycles()` 是轮询式回收，最坏情况下有一个 tick 间隔（约 60s）的计数延迟。
+- `progress_notes` 的摘要压缩（超过一定行数后自动压缩早期记录，避免长期运行后信息噪声
+  过多）尚未实现，见 `goal_cron_visibility_and_intervention_improvement_plan.md` §2.2，
+  留作后续独立小 Track。
+- 周期性 Goal 与执行公平性/资源门控机制的联动可视化（比如"这一轮迟迟不触发是因为被
+  排队，而不是 Goal 状态异常"）尚未实现，见同一份文档 §5（Phase 5，记录方向不实现）。

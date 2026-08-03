@@ -104,6 +104,12 @@ Web Demo 的事件流面板类似，但集成在同一多 Tab 界面中。
 
 - 按状态列出 Goal（如 `pending` / `active` / `done`），支持新建目标（标题、描述、优先级、
   来源）。
+- **周期性 Goal 可见性与操作**（`goal_cron_visibility_and_intervention_improvement_plan.md`
+  Track A/B）：Goal 卡片标题下方展示 `🔁 周期性 · 已完成 N 轮` 徽标（未绑定则显示"未设为
+  周期性"）；由 cron 触发的子 Objective 标注"⏰ 由 cron 周期触发"。卡片下方"⏰ 周期性设置"
+  折叠区可直接绑定/解绑（对应 `/agent goals recur|unrecur`）、"⏭️ 跳过下一轮"（保持
+  `recurring=True` 只跳过下一次触发，写入 `progress_notes` 留痕）——此前这三个操作只有
+  CLI 入口，看板完全看不出一个 Goal 是不是在周期性运转。
 - Cron Job 列表、新增、编辑，以及"立即执行一次"按钮。
 - **🩺 自主调度诊断**（`/v1/autonomous/status` 新增字段）：直接回答"为什么加了目标/
   Objective，却没看到 agent 执行"——依次展示 `loop_active`（AutonomousLoop 是否真的
@@ -210,6 +216,7 @@ Objective 背后的调度机制；`docs/decision-profile-guide.md` 了解决策�
 | `users()` | `/v1/users` | 多用户列表（多用户模式） |
 | `self_status()` / `autonomous_status()` | `/self/status`、`/self/autonomous` | 自省与自主循环状态 |
 | `goals()` / `add_goal()` / `update_goal()` | `/v1/goals*` | Goal 看板 |
+| `recur_goal()` / `unrecur_goal()` / `skip_goal_next_cycle()` | `POST /v1/goals/{id}/recur\|unrecur\|skip_next_cycle` | 周期性 Goal 绑定 / 解绑 / 跳过下一轮（Track A/B） |
 | `cancel_objective()` / `retry_objective()` / `inject_objective_guidance()` | `/v1/objectives/{execution_id}/*` | Objective 执行操作：终止 / 手动重试当前步 / 插话（Track D） |
 | `inbox()` | `GET /v1/inbox` | 全局待办中心：跨 session 聚合权限/交互请求 + 失败 Objective（Track A） |
 | `cron_jobs()` / `add_cron_job()` / `update_cron_job()` / `run_cron_job_now()` | `/v1/cron*` | Cron Job 管理 |
