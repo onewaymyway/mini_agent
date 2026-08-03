@@ -1,0 +1,191 @@
+# daemon 执行模型 + 调度心跳解耦 改进方案
+
+> 状态：**规划中，阶段一（目标级持久 Worker）待实施**
+> 背景来源：与用户的一轮架构走查对话（聚焦"daemon 进程如何更好地执行、更合理地
+> 调度、cron、全局 Goal 的执行"），走查了 `autonomous_loop.py` /
+> `objective_executor.py` / `objective_agent_bridge.py` / `resource_arbiter.py` /
+> `api/server.py` / `api/session_pool.py` 实际代码（不是只看设计文档），发现两个
+> 此前所有调度类方案（`goal_execution_fairness_improvement_plan.md` 等）都没有
+> 触及的地基性问题。本方案只聚焦这两个问题，不重复已有方案的内容。
+> 关联代码：`src/mini_agent/evolution/objective_executor.py`、
+> `src/mini_agent/evolution/objective_agent_bridge.py`、
+> `src/mini_agent/evolution/autonomous_loop.py`、`src/mini_agent/api/server.py`、
+> `src/mini_agent/config/models.py`
+
+## 0. 背景：两个被公平调度算法掩盖的地基问题
+
+`goal_execution_fairness_improvement_plan.md` 的 P1-P5 在"该轮到谁"这个问题上
+做得已经很精细（公平轮询、老化加成、抢占式时间片）。但走查实际执行链路后发现，
+这套精细的排序算法，管理的很可能只是一个**假象**：
+
+**问题一：默认路径下"并发"只是排队顺序，不是真并行。**
+`ObjectiveExecutor._submit_step()` 默认把每个 step 提交进
+`bridge.input_queue`——和用户交互对话共享同一个单线程 FIFO 队列
+（`AgentRunner._main_loop` 里 `iq.dequeue()` 是严格串行处理的）。
+`max_concurrent_objectives_per_goal`/公平轮询排序控制的是"允许多少个 Objective
+同时处于'已提交、等结果'的挂起状态"，不是"真的有多少个 Objective 在同时被计算"
+——任意时刻只有一个 turn 在真正执行。
+
+代码库里已经预见到这个问题、给出了一个解法：
+`objective_agent_bridge.py::ObjectiveIsolatedRunner`，用
+`ThreadPoolExecutor`（默认 4 worker）实现真并行。但它默认关闭
+（`autonomy.objective_isolated_context_enabled=False`），而且代价是**每个 step
+都在一个专属后台线程里构建全新 Agent、跑完立刻丢弃**——不复用、不保留任何跨
+step 的会话/工具调用状态，"上一步做到哪了"完全靠纯文本摘要拼接传递。
+
+这是一个不上不下的二选一陷阱：
+- 共享队列路径（默认）：有会话连续性，但没有真并行——公平调度算法在管理一个
+  假象。
+- 隔离 runner 路径（可选）：有真并行，但每个 step 都是"失忆"的一次性 agent，
+  且每次都要重新构建 Agent（工具发现、system prompt 构建等固定开销）。
+
+**问题二：调度心跳耦合在主对话循环里，是协作式调度。**
+`AutonomousLoop.tick()` 靠 `AgentRunner._main_loop` 里
+`iq.dequeue(timeout=0.5)` 超时之后"顺带"检查触发（`server.py` 行 374-376）。
+如果这一刻主循环正卡在处理一个耗时很长的 turn（`bridge.agent.run_turn()` 可能
+跑几十秒到几分钟），tick 会被顺延同样长的时间——公平调度、cron 触发、资源仲裁
+全部一起延迟，且延迟量不可预测（取决于当前在跑的 turn 有多长）。这是典型的
+协作式（cooperative）调度问题：调度决策和被调度的工作抢同一个执行线程。
+
+## 1. 理想状态
+
+- "调度决策"（该不该跑、该轮到谁）和"真正执行"（跑 LLM turn）应该是解耦的
+  两个系统：前者应该有独立、不被阻塞的心跳；后者应该能真并行，且并行单元的
+  粒度应该是"一个 Objective 的完整生命周期"，而不是"一次性的单个 step"——
+  这样多个 Objective 之间能真并行，同一个 Objective 内部的多个 step 又能保留
+  连续的会话/工具状态，不需要在"真并行"和"有上下文"之间二选一。
+- 调度心跳不应该因为某一次长 turn 的执行而被无限期推迟，响应粒度应该只取决于
+  心跳自己的轮询间隔，不取决于当前主循环在忙什么。
+
+## 2. 本方案的两个改动
+
+### 阶段一 —— 目标级持久 Worker（Objective-level Persistent Worker）
+
+**目标**：让"真并行"和"跨 step 上下文连续性"不再互斥。
+
+**设计**：
+- 新增 `ObjectivePersistentRunner`（`evolution/objective_agent_bridge.py`），
+  与现有 `ObjectiveIsolatedRunner` 接口完全一致（可直接替换
+  `ObjectiveExecutor._submit_fn`，不需要改动 `objective_executor.py` 的 step
+  提交/状态机逻辑本身），但内部实现不同：
+  - 每个 `execution_id`（一次 Objective 执行）独占一个**专属单线程**
+    `ThreadPoolExecutor(max_workers=1)`，惰性创建（第一个 step 提交时才建）。
+  - 该 execution 的 Agent 实例在第一个 step 时构建一次，**缓存在
+    `execution_id -> Agent` 的映射里**，同一 execution 后续所有 step 都复用
+    这一个 Agent 实例、在同一条专属线程上执行——这与
+    `build_objective_agent()` docstring 里强调的"Agent 的 thread-local 状态
+    只在构造它的那条线程上安全"这一前提严格对齐：因为该 execution 的所有
+    step 永远只在它自己的专属线程上跑，不会跨线程复用 Agent。
+  - 不同 `execution_id` 之间各自的专属线程互相独立，因此天然并行——某一时刻
+    存在几个活跃 execution，就有几条线程在真正同时执行，不再需要"排队等
+    共享队列轮到自己"。真正的并发数上限仍然由 `ObjectiveExecutor` 既有的
+    `max_concurrent_objectives_cap`/`adaptive_concurrency_*` 机制约束，本类
+    不新增独立的并发上限判断，只负责"某个 execution 该在哪条线程、哪个 Agent
+    实例上跑"。
+  - 释放时机：`ObjectiveExecutor` 新增可选的 `release_worker_fn` 回调，在
+    Objective 到达终止状态（`completed`/`failed`/`cancelled`，对应现有的
+    `_on_objective_completed()`/`_on_objective_failed()`/
+    `_on_objective_cancelled()` 三个既有的集中收尾方法）时调用，立即关闭该
+    execution 的专属线程、丢弃 Agent 实例。三个收尾方法本来就是所有终止路径
+    的唯一出口，这里只加一行调用，不改变既有终止判定逻辑本身。
+  - 兜底：额外做一个 idle TTL 清理（默认 1800 秒未使用则回收），覆盖
+    "daemon 异常重启导致某次终止回调没触发到、专属线程/Agent 变成孤儿"这类
+    边界情况，不依赖 `release_worker_fn` 一定会被调用到。
+- 新增配置 `autonomy.objective_persistent_worker_enabled`（默认 `False`，
+  同项目现有的灰度开关哲学一致）+
+  `autonomy.objective_persistent_worker_idle_ttl_seconds`（默认 `1800.0`）。
+- 与已有的 `objective_isolated_context_enabled` 的关系：两者语义不同
+  （一次性失忆 vs 持久复用），**互斥**，持久 Worker 优先——`server.py` 里
+  先判断 `objective_persistent_worker_enabled`，为 `True` 则不再检查
+  `objective_isolated_context_enabled`。
+- **不做**：不改变 `_submit_step()` 拼接的"前序步骤结果/产出文件"文本摘要
+  机制——即使 Agent 实例本身保留了会话历史，仍然保留这个结构化摘要注入
+  （双重保险，且看板/日志里展示的 `step.result_summary` 仍然需要这份数据），
+  不依赖"模型自己记得"作为唯一信息来源。
+
+**验收标准**：
+1. 构造一个 3-step 的 Objective，开启 `objective_persistent_worker_enabled`：
+   验证同一 execution 的 3 个 step 确实复用同一个 Agent 实例（同一 `id()`），
+   且都在同一条线程上执行。
+2. 构造 2 个并行的 Objective：验证两者的专属线程不同，且不需要互相等待
+   （用可控的 fake `run_turn` 验证两者可以真正同时处于"运行中"状态，而不是
+   一个跑完另一个才开始）。
+3. Objective 到达 `completed`/`failed`/`cancelled` 后，对应的专属线程和 Agent
+   实例应被立即释放（`release()` 被调用，内部映射不再持有引用）。
+4. `objective_persistent_worker_enabled=False`（默认值）时，行为与改造前完全
+   一致（回归测试）。
+
+**工作量**：中。新增一个模块 + `ObjectiveExecutor` 三处收尾方法各加一行回调
+调用，不改变既有状态机分支本身。
+
+### 阶段二 —— 调度心跳独立化（Scheduler Heartbeat Decoupling）
+
+**目标**：让 `AutonomousLoop.tick()` 的触发时机不再受"当前主循环是否正忙于
+处理一个长 turn"影响。
+
+**设计**：
+- 新增 `SchedulerHeartbeat`（`evolution/scheduler_heartbeat.py`）：独立的
+  后台线程，按自己的轮询间隔（默认 5 秒，配置
+  `autonomy.scheduler_heartbeat_poll_interval_seconds`）检查
+  `autonomous_loop.should_tick()`，到期则调用 `autonomous_loop.tick()`。
+- 线程安全边界（这是本阶段设计的核心，不能只是"另起一个线程调用 tick()"
+  就完事）：
+  - `AutonomousLoop.tick()` 内部只做"决策 + 提交"（判断该不该跑、调用
+    `submit_fn` 把 step 交给执行层），不做真正耗时的 LLM 调用本身，因此
+    持锁时间很短。
+  - 真正耗时的 `agent.run_turn()`（无论是用户交互还是自主任务的 step）
+    **不持有这把锁**——锁只在 `AgentRunner._main_loop` 处理完一个 turn、
+    回调 `objective_executor.on_turn_done()`/`on_turn_failed()`（`server.py`
+    现有的两处调用点）那一小段状态更新代码上短暂持有。
+  - 因此 `SchedulerHeartbeat` 线程和 `AgentRunner` 主循环之间只在"状态更新"
+    这个短暂窗口互斥，不会因为一次长 turn 而让心跳整体停摆——这正是本方案
+    要解决的问题。共享的 `threading.Lock` 由 `HttpServer` 构造时创建，同时
+    传给 `AgentRunner`（新增可选参数 `sched_lock`）和 `SchedulerHeartbeat`。
+  - 开启心跳模式后，`AgentRunner._main_loop` 里原有的"dequeue 超时后顺带
+    tick"逻辑必须关闭（新增参数 `heartbeat_owns_tick`），避免同一个
+    `tick_interval` 周期内被两个地方各触发一次。
+- 新增配置 `autonomy.scheduler_heartbeat_enabled`（默认 `False`，与项目现有
+  的灰度开关哲学一致——这是比"公平调度算法本身"更底层的执行模型变化，默认
+  关闭，观察一段时间后再考虑是否默认开启）+
+  `autonomy.scheduler_heartbeat_poll_interval_seconds`（默认 `5.0`）。
+- **不做**：不改变 `AutonomousLoop.tick()`/`_tick_passive()`/
+  `_tick_maintenance()`/`_tick_autonomous()` 内部的档位判断逻辑本身——本阶段
+  只解决"谁来调用 tick()、什么时候调用"，不改变 tick() 内部做什么。
+
+**验收标准**：
+1. 开启心跳模式后，人为让主循环"卡"在一个模拟的长 turn 上（fake
+   `run_turn` sleep 一段较长时间），验证 `SchedulerHeartbeat` 仍然按自己的
+   轮询间隔正常触发 `tick()`，不受主循环阻塞影响。
+2. 验证心跳线程调用 `tick()` 期间，如果主循环恰好要执行
+   `on_turn_done()`/`on_turn_failed()`，两者通过共享锁正确互斥（不会看到
+   `ObjectiveExecutor` 内部字典出现并发写入导致的不一致状态）。
+3. `scheduler_heartbeat_enabled=False`（默认值）时，行为与改造前完全一致——
+   `AgentRunner` 仍然走原来的"dequeue 超时后顺带 tick"路径（回归测试）。
+4. `stop()` 能让心跳线程干净退出，daemon 关闭流程不会因为这条新线程而挂起。
+
+**工作量**：中。新增一个模块 + `AgentRunner`/`HttpServer` 少量接线改动
+（新增可选参数，默认值保持原行为不变）。
+
+## 3. 两个阶段的关系与顺序
+
+两者相对独立，可以分开验证、分开灰度：阶段一解决"并发是否真实"，阶段二解决
+"调度响应是否及时"。按依赖关系和风险大小，建议先做阶段一（新增模块 + 三处
+收尾方法各加一行回调，风险更集中、更容易独立验证），再做阶段二（涉及跨线程
+锁语义，需要在阶段一验证过的执行模型基础上做，避免同时引入两个并发相关的
+新变量）。
+
+## 4. 明确不做的事
+
+- 不改变公平调度算法本身（P1-P5 的排序/老化/时间片逻辑）——本方案只解决
+  "调度决策管理的是不是真实并发"、"调度决策是否被及时触发"这两个更底层的
+  问题，不重新设计排序算法。
+- 不引入跨用户/跨 session 的全局资源仲裁（这是走查对话里提到的第三个更大的
+  缺口，改动面明显更大，需要单独立项）。
+- 不改变 cron 触发机制本身（interval-only，不支持依赖/事件触发）——同样是
+  更大的改动，留给后续单独评估。
+- 两个新配置开关默认都是 `False`，不强制任何已有部署一起切换到新执行模型，
+  遵循项目一贯的"默认行为不变，按需灰度"原则。
+
+## 5. 实施记录
+
+（待补充）
