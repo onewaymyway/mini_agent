@@ -322,4 +322,71 @@ step 的会话/工具调用状态，"上一步做到哪了"完全靠纯文本摘
   运行里同时开启验证过组合效应，建议先分别灰度观察，确认各自稳定后再考虑
   同时开启。
 
+## 7. 事后复查发现的问题（待处理）
 
+实施完两个阶段后回头复查交互场景（尤其是"两个开关同时打开"这个第 6 节
+里标记为"尚未验证"的组合），发现一处需要立刻正视的实现缺口，以及几个
+值得记录的长线方向。
+
+### 7.1 【需要修复】共享锁没有覆盖到持久 Worker 的回调路径（正确性问题）
+
+**问题**：阶段二给 `AgentRunner._main_loop` 里两处
+`on_turn_done()`/`on_turn_failed()` 调用加了 `_maybe_sched_lock()`
+保护，但 `ObjectivePersistentRunner._run_step()`（阶段一新增）是在自己的
+专属线程里**直接**调用 `self._on_done(...)`/`self._on_failed(...)`（也就是
+`objective_executor.on_turn_done`/`on_turn_failed`），完全没有经过这把锁
+——因为构造 `ObjectivePersistentRunner` 时根本没有把 `sched_lock` 传给它
+（`ObjectiveIsolatedRunner` 同样没有）。
+
+**后果**：如果 `objective_persistent_worker_enabled` 和
+`scheduler_heartbeat_enabled` **同时打开**：`SchedulerHeartbeat` 线程持锁
+调用 `tick()` 的同时，某个 Objective 专属线程可能正在不持锁地调用
+`on_turn_done()`，两者同时读写 `ObjectiveExecutor` 内部状态字典
+（`self._executions` 等），锁形同虚设，存在真实的数据竞争。第 6 节里写的
+"两者组合效应尚未验证"这句话掩盖了问题的性质——这不是"没测过"，而是
+**设计上就没接对**：`ObjectivePersistentRunner`/`ObjectiveIsolatedRunner`
+压根不知道这把锁的存在。
+
+**修复方向**：
+- `ObjectivePersistentRunner.__init__`/`ObjectiveIsolatedRunner.__init__`
+  新增可选的 `sched_lock: Optional[threading.Lock] = None` 参数；
+- `_run_step()` 里回调 `on_done`/`on_failed`（即现有的
+  `_safe_on_done()`/`_safe_on_failed()`）时，用
+  `with self._sched_lock:`（为 `None` 时用 `contextlib.nullcontext()`，
+  和 `AgentRunner._maybe_sched_lock()` 同一套模式）包一层；
+- `server.py` 构造 `ObjectivePersistentRunner`/`ObjectiveIsolatedRunner`
+  时，把已经创建好的 `self._sched_lock`（如果心跳模式开启）一并传入。
+- 这个改动应该在"两个开关同时开启"被正式支持/建议之前完成——目前
+  文档里"两者可以同时开启吗"一节的答案需要改成"暂不建议同时开启，
+  存在已知的锁覆盖缺口，见本节"，直到修复完成。
+
+**优先级**：高——这是正确性问题，不是"值得观察的长线方向"，且用户已经
+明确要求先记录下来，待下一轮实施。
+
+### 7.2 持久 Worker 的连续性是进程内存态的，daemon 重启即丢失
+
+`ObjectivePersistentRunner` 缓存的 Agent 实例是纯内存对象。如果 daemon 在
+某个 Objective 执行到一半时重启，恢复执行时会重新构建一个全新 Agent——
+之前积累的"记得自己做过什么"这个优势在重启这一刻就没了，退化回和隔离
+runner 完全一样的效果（每步都是失忆的新 agent）。这不是 bug，是这个
+方案的固有边界：内存态持久化换来的是"进程存活期内"的连续性，不是
+"跨进程重启"的连续性。目前只在设计推理里隐含，没有在
+`docs/daemon-execution-model-guide.md` 里明确写出来，应该补一句说明，
+避免使用者误以为持久 Worker 能扛住 daemon 重启。
+
+### 7.3 持久 Worker 的会话历史没有上限，理论上可能撑爆 context window
+
+隔离 runner 每个 step 都是一次性 agent，会话历史天然归零；持久 Worker
+反过来——一个 step 很多、跑得很久的 Objective，它专属 Agent 的对话历史
+会一直累积。目前没有任何"历史长度超过阈值时做一次内部压缩/摘要"的机制。
+这是用连续性换来的新代价，此前的方案设计里没有预见到，需要单独评估
+（可能的方向：复用主 Agent 已有的 compact/压缩机制，或者给
+`ObjectivePersistentRunner` 加一个"历史 token 数超过阈值时重置 Agent、
+只保留一段结构化摘要重新开始"的降级路径）。
+
+### 7.4 心跳轮询间隔与 tick_interval 的比例仍是拍脑袋定的
+
+与第 6 节里已经记录的"老化权重系数需要真实运行数据校准"是同一类问题，
+`scheduler_heartbeat_poll_interval_seconds`（默认 5s）vs
+`tick_interval_seconds`（默认 60s）目前也只能先上线观察一段时间的"tick
+延迟分布"，再决定要不要调整默认值。
