@@ -2987,6 +2987,9 @@ def render_self_tab(client: AgentClient):
     st.divider()
     _render_system_connectivity(client)
 
+    st.divider()
+    _render_execution_model_status(client)
+
 
 # ═══════════════════════════════════════════════════════════════════════
 # 自诊断信号闭环深化（next_doc/self_diagnosis_feedback_loop_deepening_plan.md
@@ -3238,6 +3241,76 @@ def _render_system_connectivity(client: AgentClient):
                     f"`{ts_label}` 页面 `{c.get('page_id','')}` — {mark}　"
                     f"{c.get('correction_text','')[:80]}"
                 )
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# 执行模型 + 调度心跳（next_doc/daemon_execution_model_and_scheduler_
+# heartbeat_improvement_plan.md）看板可视化。这两个改动都是默认关闭的灰度
+# 开关（objective_persistent_worker_enabled / scheduler_heartbeat_enabled），
+# 此前"开没开、起没起作用"只能靠翻配置文件或 attach 进程猜——这里接上
+# GET /v1/self/execution_model_status，把当前生效的执行模式、持久 Worker
+# 活跃 execution 数、心跳线程存活状态一次性展示出来。纯只读展示，不提供
+# 任何"一键切换开关"之类的操作（切换仍然走 agent_config.json /
+# "⚙️ 配置"tab 的通用改配置手段，重启 daemon 才会生效——这不是运行时可以
+# 热切换的开关，看板上放一个按钮反而会让人误以为点一下就能生效）。
+# ═══════════════════════════════════════════════════════════════════════
+
+def _render_execution_model_status(client: AgentClient):
+    st.markdown("#### ⚙️ 执行模型（目标级持久 Worker / 调度心跳）")
+    st.caption(
+        "daemon_execution_model_and_scheduler_heartbeat_improvement_plan.md："
+        "两个默认关闭的灰度开关，开启需要改 agent_config.json 并重启 daemon，"
+        "这里只做只读状态展示。"
+    )
+    if st.button("🔄 刷新", key="execution_model_status_refresh"):
+        st.rerun()
+
+    resp = client.execution_model_status() or {}
+    if "_error" in resp:
+        st.warning(f"获取失败：{resp['_error']}")
+        return
+
+    mode = resp.get("objective_execution_mode", "shared_queue")
+    mode_label = {
+        "persistent": "🟢 目标级持久 Worker（真并行 + 跨 step 上下文连续）",
+        "isolated": "🟡 隔离 Runner（真并行，但每步失忆）",
+        "shared_queue": "⚪ 共享队列（默认，串行，无独立并发）",
+    }.get(mode, mode)
+    st.markdown(f"**Objective 执行模式**：{mode_label}")
+
+    col1, col2 = st.columns(2)
+    with col1:
+        pw = resp.get("persistent_worker") or {}
+        st.markdown("**目标级持久 Worker**")
+        if pw.get("enabled"):
+            st.metric("活跃 execution 数（真并行线程数）", pw.get("active_execution_count", 0))
+            ids = pw.get("active_execution_ids") or []
+            if ids:
+                st.caption("活跃 execution_id：" + "、".join(ids[:10]))
+            st.caption(f"idle TTL：{pw.get('idle_ttl_seconds', 0):.0f} 秒")
+        else:
+            st.caption("未开启（`objective_persistent_worker_enabled=False`，默认值）。")
+
+        iso = resp.get("isolated_runner") or {}
+        if iso.get("enabled"):
+            st.markdown("**隔离 Runner（旧路径）**")
+            st.caption(f"max_workers：{iso.get('max_workers', 0)}")
+
+    with col2:
+        hb = resp.get("scheduler_heartbeat") or {}
+        st.markdown("**调度心跳独立化**")
+        if hb.get("enabled"):
+            alive = hb.get("alive")
+            st.markdown("🟢 运行中" if alive else "🔴 已启用但线程未存活（异常，建议检查日志）")
+            st.caption(
+                f"轮询间隔 {hb.get('poll_interval_seconds', 0):.1f}s / "
+                f"AutonomousLoop tick 周期 {hb.get('tick_interval_seconds', 0):.1f}s"
+            )
+        else:
+            st.caption(
+                "未开启（`scheduler_heartbeat_enabled=False`，默认值）—— "
+                "AutonomousLoop 仍走原有的\"主循环 dequeue 超时后顺带 tick\"路径。"
+            )
 
 
 # ═══════════════════════════════════════════════════════════════════════

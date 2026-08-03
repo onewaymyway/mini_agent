@@ -243,6 +243,13 @@ class AgentClient:
         区块展示。"""
         return self._get("/self/system_connectivity")
 
+    def execution_model_status(self):
+        """[daemon_execution_model_and_scheduler_heartbeat_improvement_plan.md]
+        目标级持久 Worker + 调度心跳独立化两个开关的当前生效状态，供
+        "⚙️ 执行模型"看板区块展示，避免这两个默认关闭的灰度开关"开没开、
+        起没起作用"只能靠翻配置文件/看进程猜。"""
+        return self._get("/self/execution_model_status")
+
     def config_status(self):
         """[kanban_config_management_plan.md] 拉取 agent_config.json 的分类
         字段目录状态，供"⚙️ 配置"tab 展示。"""

@@ -767,11 +767,15 @@ class AutonomyConfig:
 
 详见 [四项优先改进指南](four-priority-improvements-guide.md#方案三自主探索好奇心评分)。
 
-> `AutonomyConfig` 还承载了另外三组彼此独立的字段（各自可单独开关）：
+> `AutonomyConfig` 还承载了另外四组彼此独立的字段（各自可单独开关）：
 > `fairness_*`（[Goal 执行公平性调度配置](goal-execution-fairness-config.md)）、
 > `objective_isolated_context_enabled`/`objective_isolated_*`（自主任务独立
 > 上下文）、`guardian_mode_enabled`/`guardian_*`（看护模式 GuardianRunner）——
-> 后两组详见 [Daemon 自主任务错误状态识别与恢复指南](daemon-autonomous-state-recovery-guide.md)。
+> 后两组详见 [Daemon 自主任务错误状态识别与恢复指南](daemon-autonomous-state-recovery-guide.md)；
+> `objective_persistent_worker_enabled`/`objective_persistent_worker_*`
+> （目标级持久 Worker）、`scheduler_heartbeat_enabled`/
+> `scheduler_heartbeat_*`（调度心跳独立化）——详见
+> [Daemon 执行模型与调度心跳指南](daemon-execution-model-guide.md)。
 
 ---
 

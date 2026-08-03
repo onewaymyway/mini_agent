@@ -197,6 +197,14 @@ Objective 背后的调度机制；`docs/decision-profile-guide.md` 了解决策�
 `SessionPool` 概况（当前活跃 session 数、每 session 状态）。详见
 `docs/multi-user-guide.md`、`docs/embodied-agent-guide.md`。
 
+同一 Tab 内还包含几个只读观测区块：⚖️ 执行公平性（Goal 调度顺序快照）、
+🔗 系统关联性（决策消费率/失败模式/建议反馈/纠正事件）、以及
+**⚙️ 执行模型**——展示"目标级持久 Worker"与"调度心跳独立化"这两个默认
+关闭的灰度开关（见 [Daemon 执行模型与调度心跳指南](daemon-execution-model-guide.md)）
+当前的生效状态：Objective 执行模式（`shared_queue`/`isolated`/`persistent`）、
+持久 Worker 活跃 execution 数、心跳线程是否存活。全部纯只读展示，开关切换
+仍需改 `agent_config.json` 并重启 daemon。
+
 ## `AgentClient` 封装的 API 端点
 
 `apps/mini_agent_kanban/client.py` 中的 `AgentClient` 封装了看板所需的全部 HTTP 调用，
@@ -232,6 +240,7 @@ Objective 背后的调度机制；`docs/decision-profile-guide.md` 了解决策�
 | `daily_digest()` | `GET /v1/digest/daily` | 每日融合日报（只读，不触发生成） |
 | `next_actions()` | `GET /v1/next_actions` | 主动推荐候选（只读，不触发重新计算） |
 | `decision_profile()` | `GET /v1/decision_profile` | 决策画像 Markdown + 结构化模式列表（只读） |
+| `execution_model_status()` | `GET /v1/self/execution_model_status` | 目标级持久 Worker / 调度心跳独立化两个灰度开关的生效状态（只读） |
 
 上表标了 `session_id=` 的方法都新增了可选的 `session_id` 参数（默认 `None`，
 不传时行为与旧版本完全一致）：传了就会作为 `?session_id=` 查询参数附加到请求上，

@@ -578,6 +578,49 @@ curl -H "Authorization: Bearer <owner_token>" \
 > session/agent）的区别是：`/v1/self/status` 固定看的是 daemon 进程自己的 Self agent，
 > 不受调用者当前 session 影响。
 
+### /v1/self/execution_model_status — 执行模型状态（owner only）
+
+`GET /v1/self/execution_model_status` 只读汇总
+[Daemon 执行模型与调度心跳指南](daemon-execution-model-guide.md) 里"目标级持久
+Worker"（阶段一）和"调度心跳独立化"（阶段二）两个默认关闭的灰度开关当前的
+生效状态，供看板"⚙️ 执行模型"区块展示。不修改任何状态、不触发任何调度。
+
+```bash
+curl -H "Authorization: Bearer <owner_token>" \
+  http://127.0.0.1:8765/v1/self/execution_model_status
+```
+
+响应示例（`objective_persistent_worker_enabled=True` 且
+`scheduler_heartbeat_enabled=True` 时）：
+
+```json
+{
+  "objective_execution_mode": "persistent",
+  "persistent_worker": {
+    "enabled": true,
+    "active_execution_count": 2,
+    "active_execution_ids": ["exec_abc123", "exec_def456"],
+    "idle_ttl_seconds": 1800.0
+  },
+  "isolated_runner": {"enabled": false, "max_workers": 0},
+  "scheduler_heartbeat": {
+    "enabled": true,
+    "alive": true,
+    "poll_interval_seconds": 5.0,
+    "tick_interval_seconds": 60.0
+  }
+}
+```
+
+| 字段 | 说明 |
+|------|------|
+| `objective_execution_mode` | `"persistent"`（目标级持久 Worker，真并行 + 跨 step 上下文连续）/ `"isolated"`（隔离 Runner，真并行但每步失忆）/ `"shared_queue"`（默认，共享单线程队列，无独立并发） |
+| `persistent_worker.active_execution_count` | 当前仍持有专属线程/Agent 实例的 Objective execution 数——就是这一刻真正并行执行的数量 |
+| `scheduler_heartbeat.alive` | 心跳线程是否仍在运行；`enabled=true` 但 `alive=false` 说明线程异常退出，需要检查日志 |
+
+> 两个开关都在 `agent_config.json` 的 `autonomy` 块下配置，修改后需要重启
+> daemon 才会生效，本端点和看板面板都只做状态展示，不提供运行时切换。
+
 ### /v1/goals — Goal Backlog REST API
 
 ```bash

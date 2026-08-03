@@ -67,6 +67,10 @@ api/routes.py — FastAPI 路由定义
                                        capabilities_plan.md P1] F1-F4 四路数据
                                        汇总（决策消费率/失败模式/建议反馈账本/
                                        纠正事件）
+    GET    /v1/self/execution_model_status  [daemon_execution_model_and_
+                                       scheduler_heartbeat_improvement_plan.md]
+                                       目标级持久 Worker / 调度心跳独立化
+                                       两个灰度开关的当前生效状态
     GET    /v1/self/config           [kanban_config_management_plan.md] 分类
                                        字段目录状态（agent_config.json）
     PATCH  /v1/self/config           [kanban_config_management_plan.md] 批量
@@ -2015,7 +2019,101 @@ async def get_self_system_connectivity(request: Request):
     return result
 
 
+@router.get("/self/execution_model_status")
+async def get_self_execution_model_status(request: Request):
+    """GET /v1/self/execution_model_status —
+    [daemon_execution_model_and_scheduler_heartbeat_improvement_plan.md]
+    只读汇总"目标级持久 Worker"（阶段一）和"调度心跳独立化"（阶段二）
+    两个默认关闭的灰度开关当前的生效状态，供看板"⚙️ 执行模型"区块展示，
+    避免这两个开关"开没开、起没起作用"只能靠翻配置文件/看进程猜。纯读取，
+    不修改任何状态、不触发任何调度。
 
+    返回结构：
+    {
+      "objective_execution_mode": "persistent" | "isolated" | "shared_queue",
+      "persistent_worker": {
+        "enabled": bool,
+        "active_execution_count": int,
+        "active_execution_ids": [str, ...],
+        "idle_ttl_seconds": float,
+      },
+      "isolated_runner": {"enabled": bool, "max_workers": int},
+      "scheduler_heartbeat": {
+        "enabled": bool,
+        "alive": bool,             # 心跳线程是否仍在运行
+        "poll_interval_seconds": float,
+        "tick_interval_seconds": float,   # 对照用：AutonomousLoop 自己的 tick 周期
+      },
+    }
+    """
+    http_server = getattr(request.app.state, "http_server", None)
+    if http_server is None:
+        raise HTTPException(status_code=503, detail="HttpServer not available")
+    _require_owner(request)
+
+    result: dict = {
+        "objective_execution_mode": "shared_queue",
+        "persistent_worker": {"enabled": False, "active_execution_count": 0,
+                               "active_execution_ids": [], "idle_ttl_seconds": 0.0},
+        "isolated_runner": {"enabled": False, "max_workers": 0},
+        "scheduler_heartbeat": {"enabled": False, "alive": False,
+                                 "poll_interval_seconds": 0.0, "tick_interval_seconds": 0.0},
+    }
+    try:
+        self_agent = http_server.bridge.agent
+        cfg = getattr(self_agent, "cfg", None) if self_agent else None
+        autonomy_cfg = getattr(cfg, "autonomy", None) if cfg is not None else None
+
+        persistent_runner = getattr(http_server, "_objective_persistent_runner", None)
+        isolated_runner = getattr(http_server, "_objective_isolated_runner", None)
+        heartbeat = getattr(http_server, "_scheduler_heartbeat", None)
+
+        if persistent_runner is not None:
+            result["objective_execution_mode"] = "persistent"
+            active_ids = persistent_runner.active_execution_ids()
+            result["persistent_worker"] = {
+                "enabled": True,
+                "active_execution_count": len(active_ids),
+                "active_execution_ids": active_ids,
+                "idle_ttl_seconds": getattr(
+                    autonomy_cfg, "objective_persistent_worker_idle_ttl_seconds", 1800.0
+                ) if autonomy_cfg is not None else 1800.0,
+            }
+        elif isolated_runner is not None:
+            result["objective_execution_mode"] = "isolated"
+            result["isolated_runner"] = {
+                "enabled": True,
+                "max_workers": getattr(autonomy_cfg, "objective_isolated_max_workers", 4)
+                if autonomy_cfg is not None else 4,
+            }
+
+        autonomous_loop = getattr(http_server, "_autonomous_loop", None)
+        tick_interval_seconds = 60.0
+        if autonomous_loop is not None:
+            try:
+                tick_interval_seconds = autonomous_loop.get_digest_status().get(
+                    "tick_interval_seconds", 60.0
+                )
+            except Exception:
+                pass
+
+        result["scheduler_heartbeat"] = {
+            "enabled": heartbeat is not None,
+            "alive": bool(heartbeat.is_alive()) if heartbeat is not None else False,
+            "poll_interval_seconds": getattr(
+                autonomy_cfg, "scheduler_heartbeat_poll_interval_seconds", 5.0
+            ) if autonomy_cfg is not None else 5.0,
+            "tick_interval_seconds": tick_interval_seconds,
+        }
+    except Exception as _mini_agent_exc:
+        from mini_agent.errors import log_exception
+        log_exception(_mini_agent_exc, where='mini_agent.api.routes.get_self_execution_model_status')
+
+    return result
+
+
+
+@router.get("/self/config")
 async def get_self_config(request: Request):
     """GET /v1/self/config — [kanban_config_management_plan.md] 只读返回
     agent_config.json 的分类字段目录状态（每个字段：分类归属、当前生效值、

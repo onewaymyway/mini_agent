@@ -283,6 +283,31 @@ step 的会话/工具调用状态，"上一步做到哪了"完全靠纯文本摘
   `_sched_lock`/`heartbeat_owns_tick` 均为空/False，`_main_loop()` 与
   `on_turn_done`/`on_turn_failed` 的行为与改造前逐字节一致。
 
+### 看板集成 + 配套文档（已完成）
+
+- `src/mini_agent/api/routes.py`：新增 `GET /v1/self/execution_model_status`
+  只读端点，汇总两个开关的生效状态（`objective_execution_mode`/
+  `persistent_worker`/`isolated_runner`/`scheduler_heartbeat` 四个字段）。
+  顺手发现并修复了一个与本方案无关的既有 bug：`GET /self/config` 路由
+  缺失 `@router.get(...)` 装饰器，从未被真正注册过（对比原始交付物确认
+  是老问题，不是本轮改动引入的）。
+- `apps/mini_agent_kanban/client.py` 新增 `execution_model_status()`。
+- `apps/mini_agent_kanban/app.py` 新增 `_render_execution_model_status()`
+  面板（"⚙️ 执行模型"），接在"🔗 系统关联性"面板之后，纯只读展示，不提供
+  开关切换按钮（开关切换需要改 `agent_config.json` 并重启 daemon）。
+- 测试：新增 `tests/test_execution_model_status_routes.py`（6 个用例）。
+  连带修复的 `/self/config` bug 让 `test_kanban_config_routes.py` 此前
+  失败的 3 个用例也转为通过。本轮相关测试共 22 个全部通过。
+- 文档：
+  - 新建 `docs/daemon-execution-model-guide.md`（面向使用者的完整指南：
+    是什么、怎么开、怎么在看板上观测、怎么回退、两者能否同时开启）。
+  - `docs/http-api-guide.md` 新增 `/v1/self/execution_model_status` 端点
+    说明（含响应示例）。
+  - `docs/kanban-dashboard-guide.md`："🧠 自我状态 Tab"一节补充新面板
+    说明，`AgentClient` API 端点表新增一行。
+  - `docs/config-guide.md` 的"`AutonomyConfig` 还承载了另外几组彼此独立
+    的字段"提示段落，新增第四组指向新文档。
+
 ## 6. 后续可以观察的点（不在本轮范围内）
 
 - 目前 `scheduler_heartbeat_poll_interval_seconds`（默认 5s）与
