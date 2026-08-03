@@ -1,7 +1,8 @@
 # daemon 执行模型 + 调度心跳解耦 改进方案
 
 > 状态：**阶段一（目标级持久 Worker）、阶段二（调度心跳解耦）均已完成并通过
-> 测试；事后复查发现的 §7.1 锁覆盖缺口已修复（见第 7.1 节"处理状态"）**
+> 测试；事后复查发现的 §7.1 锁覆盖缺口、§7.3 会话历史无上限问题均已修复
+> （见对应小节"处理状态"）**
 > 背景来源：与用户的一轮架构走查对话（聚焦"daemon 进程如何更好地执行、更合理地
 > 调度、cron、全局 Goal 的执行"），走查了 `autonomous_loop.py` /
 > `objective_executor.py` / `objective_agent_bridge.py` / `resource_arbiter.py` /
@@ -423,6 +424,59 @@ runner 完全一样的效果（每步都是失忆的新 agent）。这不是 bug
 （可能的方向：复用主 Agent 已有的 compact/压缩机制，或者给
 `ObjectivePersistentRunner` 加一个"历史 token 数超过阈值时重置 Agent、
 只保留一段结构化摘要重新开始"的降级路径）。
+
+**处理状态：已修复。**
+
+调查发现 Agent 本身已经有一套完整的自动 compact 触发框架
+（`history/triggers.py::CompositeTrigger`：token 阈值 / 轮次计数 / 工具
+调用计数 / 冗余检测 / 话题切换），挂在 `turn_loop.py::_agentic_loop()`
+里，每次内部循环迭代都会检查——由于 `ObjectivePersistentRunner` 复用的
+是同一个 Agent 实例，`self._history`/`stats.turns`/`self._compact_triggers`
+都挂在这个实例上，这套机制在多个 step 之间天然是累积生效的。真正的缺口
+不是"没有压缩机制"，而是 `CompressConfig.enabled` 默认 `False`——交互式
+用户会自己感觉到上下文变大并手动 `/compact`，但持久 Worker 无人值守，
+没有人会注意到，如果项目全局没打开 `compress.enabled`，历史会真的一直
+累积到撑爆 context window。采用的是"复用现有机制"这条备选方向，而不是
+"重置 Agent + 纯文本摘要"降级路径（后者是更弱的实现，没有必要）：
+
+- `src/mini_agent/evolution/objective_agent_bridge.py`：
+  `build_objective_agent()` 的 `persistent=True` 分支新增一个兜底——只在
+  `cfg.compress.enabled` 为 `False`（即项目全局没有显式打开压缩）时才
+  介入，强制 `cfg.compress.enabled = True`、
+  `cfg.compress.threshold = <autonomy 配置的兜底阈值>`；项目已经全局
+  配置过压缩（无论开或关）时保持原样，不覆盖用户配置。触发后走的是
+  `cfg.compress.strategy` 默认值 `"compact_with_skills"`——与手动
+  `/compact` 完全同一套实现（LLM 摘要 + skill 重附 + 压缩质量事后自检）。
+- `src/mini_agent/config/models.py`：`AutonomyConfig` 新增
+  `objective_persistent_worker_auto_compact_enabled: bool = True`（默认
+  开启——这是持久 Worker 专属的安全网，只在持久 Worker 本身被打开时才有
+  意义，跟随一起生效）和
+  `objective_persistent_worker_auto_compact_threshold: float = 0.75`
+  （略保守于项目全局 `compress.threshold` 默认值 `0.7`）。
+- 测试：新增 `tests/test_objective_persistent_worker_auto_compact.py`
+  （5 个用例）：项目全局未开启压缩时被强制打开且阈值取兜底值；项目全局
+  已显式开启压缩时原样保留（含自定义阈值）不被覆盖；显式关闭兜底开关时
+  完全不介入；`base_cfg.autonomy` 为 `None` 时回退到默认值不报错；
+  `persistent=False`（隔离 runner）路径完全不受影响。同时修复了
+  `tests/test_objective_persistent_runner.py` 里原有的 fake `_Cfg` 测试
+  夹具（补上 `compress` 属性，此前该夹具没有这个字段，改动后会因
+  `AttributeError` 而失败）。
+- 回归验证：`test_objective_persistent_runner.py`（6 个）+
+  `test_objective_persistent_worker_auto_compact.py`（5 个）+
+  `test_scheduler_heartbeat.py`（5 个）+
+  `test_autonomous_loop_decommission_hook.py`（3 个）+
+  `test_objective_runner_sched_lock.py`（5 个）+
+  `test_objective_executor_kanban_tracks*.py`（4 个文件）+
+  `test_objective_executor_adaptive_concurrency.py` +
+  `test_execution_model_status_routes.py` +
+  `test_kanban_config_routes.py`，共 87 个测试全部通过，无回归。
+- 文档：`docs/daemon-execution-model-guide.md` 第 2 节补充"会话历史增长
+  的兜底"说明，配置表/示例 JSON 新增两个字段，"回退"一节补充"只想关闭
+  自动压缩兜底、保留持久 Worker 本身"的单独回退路径。
+- 不做：不修改 `cfg.compress.strategy`（保持项目/默认值
+  `"compact_with_skills"`）；不改动 `CompositeTrigger`/触发器优先级等
+  既有压缩机制内部逻辑本身，只是让持久 Worker 场景下这套机制默认被
+  打开。
 
 ### 7.4 心跳轮询间隔与 tick_interval 的比例仍是拍脑袋定的
 

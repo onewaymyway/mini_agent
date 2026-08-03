@@ -201,9 +201,14 @@ class TestBuildObjectiveAgentPersistentFlag(unittest.TestCase):
             autonomy = None
 
         def fake_load_config(**kwargs):
+            class _CompressCfg:
+                enabled = False
+                threshold = 0.7
+
             class _Cfg:
                 api_key = "x"
                 system_extra = ""
+                compress = _CompressCfg()
             c = _Cfg()
             captured_cfgs.append(c)
             return c

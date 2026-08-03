@@ -1265,6 +1265,21 @@ class AutonomyConfig:
     # 边界情况导致的线程/Agent 泄漏）。默认 1800 秒（30 分钟）。
     objective_persistent_worker_idle_ttl_seconds: float = 1800.0
     # [daemon_execution_model_and_scheduler_heartbeat_improvement_plan.md
+    # §7.3 修复] 持久 Worker 的 Agent 实例跨 step 复用会话历史，理论上可能
+    # 一直累积到撑爆 context window——交互式用户会自己感觉到并手动
+    # /compact，但持久 Worker 无人值守，没有人会注意到。这是一个兜底
+    # （floor）：只在项目全局没有开启 cfg.compress.enabled 时才介入，强制
+    # 给持久 Worker 的 Agent 打开 token 阈值 compact 触发器（复用现有的
+    # compact_with_skills 实现，不是重新发明一套简易摘要）；项目已经全局
+    # 配置过压缩（无论开或关）时尊重用户配置，不覆盖。默认 True——这是
+    # 持久 Worker 专属的安全网，只在持久 Worker 本身被打开时才有意义，
+    # 所以默认跟随其一起生效。
+    objective_persistent_worker_auto_compact_enabled: bool = True
+    # 上面这个兜底生效时使用的 token 占用率阈值（对应 cfg.compress.threshold）。
+    # 默认 0.75，略保守于项目全局 compress.threshold 的默认值 0.7——持久
+    # Worker 场景下没有人工介入，稍早一点触发更安全。
+    objective_persistent_worker_auto_compact_threshold: float = 0.75
+    # [daemon_execution_model_and_scheduler_heartbeat_improvement_plan.md
     # 阶段二] 调度心跳独立化：开启后，AutonomousLoop.tick() 不再依赖
     # AgentRunner 主循环"dequeue 超时后顺带检查"触发，而是由独立的
     # SchedulerHeartbeat 后台线程按自己的轮询间隔主动触发，不受当前主循环

@@ -94,6 +94,22 @@ def build_objective_agent(
     cfg.max_turns = inner_max_turns
     cfg.stream = False
     if persistent:
+        # [daemon_execution_model_and_scheduler_heartbeat_improvement_plan.md
+        # §7.3 修复] 持久 Worker 的 Agent 实例跨 step 复用会话历史，理论上
+        # 可能一直累积到撑爆 context window——只在项目全局没有开启
+        # cfg.compress.enabled 时才介入（尊重用户已有配置，不覆盖），强制
+        # 打开 token 阈值 compact 触发器，复用现有的 compact_with_skills
+        # 实现（cfg.compress.strategy 默认值），不是重新发明一套简易摘要。
+        _auto_compact_floor = getattr(
+            getattr(base_cfg, "autonomy", None),
+            "objective_persistent_worker_auto_compact_enabled", True,
+        )
+        if _auto_compact_floor and not cfg.compress.enabled:
+            cfg.compress.enabled = True
+            cfg.compress.threshold = getattr(
+                getattr(base_cfg, "autonomy", None),
+                "objective_persistent_worker_auto_compact_threshold", 0.75,
+            )
         cfg.system_extra = (
             (base_cfg.system_extra or "") +
             f"\n\n[自主任务 - 持久化 Worker] 你正在以 daemon 后台自主任务身份"

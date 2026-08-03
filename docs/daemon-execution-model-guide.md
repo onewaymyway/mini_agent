@@ -57,6 +57,15 @@ Objective 的 step 最终都提交进和用户交互对话共用的同一个单�
 > 摘要（前序步骤结果/产出文件）仍然是跨重启也不丢的信息来源，不要只依赖
 > Agent 自己的会话记忆。
 
+> **会话历史增长的兜底**：跨 step 复用会话历史，理论上可能一直累积到撑爆
+> context window——交互式用户会自己感觉到并手动 `/compact`，但持久 Worker
+> 无人值守，没有人会注意到。因此 `build_objective_agent(persistent=True)`
+> 会做一个兜底：只在项目全局没有开启 `compress.enabled` 时才介入（尊重
+> 用户已有配置，不覆盖），强制打开 token 阈值 compact 触发器——复用现有的
+> `compact_with_skills` 实现（LLM 摘要 + skill 重附，与手动 `/compact`
+> 完全一致），不是重新发明一套简易摘要。见下方配置表
+> `objective_persistent_worker_auto_compact_enabled`。
+
 **配置开关**（`AutonomyConfig`，见
 [配置指南](config-guide.md#autonomyconfig好奇心评分--自主探索排序权重)）：
 
@@ -64,7 +73,9 @@ Objective 的 step 最终都提交进和用户交互对话共用的同一个单�
 {
   "autonomy": {
     "objective_persistent_worker_enabled": true,
-    "objective_persistent_worker_idle_ttl_seconds": 1800.0
+    "objective_persistent_worker_idle_ttl_seconds": 1800.0,
+    "objective_persistent_worker_auto_compact_enabled": true,
+    "objective_persistent_worker_auto_compact_threshold": 0.75
   }
 }
 ```
@@ -73,12 +84,17 @@ Objective 的 step 最终都提交进和用户交互对话共用的同一个单�
 |------|------|
 | `objective_persistent_worker_enabled` | 默认 `False`。开启后 Self 同样不能在 REPL 里直接看到自主任务执行过程的中间对话（Agent 实例跑在独立线程上，不广播到主 bridge），这一点与 `objective_isolated_context_enabled` 相同 |
 | `objective_persistent_worker_idle_ttl_seconds` | 某个 execution 的专属线程/Agent 超过这个时长（秒）未收到新 step 提交，视为孤儿并回收。正常情况下应由 Objective 终止时的回调及时释放，这里只是兜底 |
+| `objective_persistent_worker_auto_compact_enabled` | 默认 `True`。项目全局没有开启 `compress.enabled` 时，强制给持久 Worker 的 Agent 打开 token 阈值 compact 触发器；项目已经全局配置过压缩（无论开或关）时不覆盖，尊重用户配置 |
+| `objective_persistent_worker_auto_compact_threshold` | 上面这个兜底生效时使用的 token 占用率阈值，默认 `0.75`（略保守于项目全局 `compress.threshold` 的默认值 `0.7`——无人工介入的场景稍早一点触发更安全） |
 
 **回退**：设 `objective_persistent_worker_enabled=false`（默认值），
 `_submit_fn` 恢复为改造前的路径（共享队列，或如果同时开了
 `objective_isolated_context_enabled` 则退回隔离 runner）。daemon 关闭时
 会调用 `ObjectivePersistentRunner.shutdown(wait=False)`，不强行打断正在
-跑的线程。
+跑的线程。若只想关闭自动压缩兜底、保留持久 Worker 本身，设
+`objective_persistent_worker_auto_compact_enabled=false` 即可（此时如果
+项目全局也没开 `compress.enabled`，持久 Worker 的会话历史将不受限制地
+累积，需要自行评估是否可接受）。
 
 ## 3. 阶段二：调度心跳独立化
 
