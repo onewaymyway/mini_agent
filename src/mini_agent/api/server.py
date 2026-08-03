@@ -13,6 +13,7 @@ FastAPI app：
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import threading
 import time
 import traceback
@@ -240,6 +241,16 @@ class AgentRunner(threading.Thread):
         self_message_bus=None,  # daemon 多用户架构 Phase 4: Optional[SelfMessageBus]，
                                  # 非 None 时这条 AgentRunner 被视为"Self"，会在每次
                                  # idle 周期顺带 drain 并处理 to_id="self" 的消息。
+        sched_lock=None,        # [daemon_execution_model_and_scheduler_heartbeat_
+                                 # improvement_plan.md 阶段二] Optional[threading.Lock]。
+                                 # 开启 SchedulerHeartbeat 时由 HttpServer 传入同一把锁：
+                                 # 本线程在回调 objective_executor.on_turn_done()/
+                                 # on_turn_failed() 那一小段状态更新代码上持有它，与
+                                 # 独立心跳线程持锁调用 autonomous_loop.tick() 互斥。
+                                 # 为 None（默认）时完全不加锁，行为与改造前一致。
+        heartbeat_owns_tick=False,  # [同上] True 时本线程的主循环不再自己触发
+                                 # autonomous_loop.tick()（改由独立的 SchedulerHeartbeat
+                                 # 线程触发），避免同一个 tick_interval 周期内被触发两次。
     ) -> None:
         super().__init__(name="agent-runner", daemon=True)
         self._bridge = bridge
@@ -261,6 +272,10 @@ class AgentRunner(threading.Thread):
         # 可能还没设置好（HttpServer.__init__ 里 AgentRunner 在 agent 赋值之后才构造，
         # 但稳妥起见仍做一次懒加载）。
         self._base_system_extra: Optional[str] = None
+
+        # [daemon_execution_model_and_scheduler_heartbeat_improvement_plan.md 阶段二]
+        self._sched_lock = sched_lock
+        self._heartbeat_owns_tick = bool(heartbeat_owns_tick) and sched_lock is not None
 
         # daemon 多用户架构 Phase 4：Self ↔ SessionAgent 通信。
         self._self_message_bus = self_message_bus
@@ -361,6 +376,15 @@ class AgentRunner(threading.Thread):
                     log_exception(_mini_agent_exc, where='mini_agent.api.server')
                     pass
 
+    def _maybe_sched_lock(self):
+        """[daemon_execution_model_and_scheduler_heartbeat_improvement_plan.md
+        阶段二] sched_lock 为 None（默认，未开启心跳解耦）时返回一个
+        no-op 上下文管理器，行为与改造前完全一致；否则返回真正的锁，与
+        SchedulerHeartbeat 线程互斥。"""
+        if self._sched_lock is None:
+            return contextlib.nullcontext()
+        return self._sched_lock
+
     def _main_loop(self, bridge: AgentBridge, iq) -> None:
 
         while not self._stop_evt.is_set():
@@ -370,7 +394,12 @@ class AgentRunner(threading.Thread):
             cmd = iq.dequeue(timeout=0.5)
             if cmd is None:
                 # Stage 9 §7.2: 没有用户消息时，检查是否应该 tick AutonomousLoop
-                if (self._autonomous_loop is not None
+                # [daemon_execution_model_and_scheduler_heartbeat_improvement_plan.md
+                # 阶段二] heartbeat_owns_tick=True 时，改由独立的
+                # SchedulerHeartbeat 线程触发 tick()，这里不再自己触发，避免
+                # 同一个 tick_interval 周期内被触发两次。
+                if (not self._heartbeat_owns_tick
+                        and self._autonomous_loop is not None
                         and self._autonomous_loop.should_tick()):
                     try:
                         self._autonomous_loop.tick()
@@ -568,7 +597,12 @@ class AgentRunner(threading.Thread):
                         # 当作真实的"步骤结果"喂给 ObjectiveExecutor，否则会被
                         # 当作事实一路拼进后续步骤的 prompt，污染整条自主任务。
                         _result_valid = not getattr(bridge.agent, "_last_turn_result_invalid", False)
-                        _obj_exec.on_turn_done(turn_id, _summary, valid=_result_valid)
+                        # [daemon_execution_model_and_scheduler_heartbeat_
+                        # improvement_plan.md 阶段二] 与 SchedulerHeartbeat
+                        # 线程共享同一把锁——sched_lock 为 None（默认）时
+                        # _maybe_sched_lock() 是 no-op，行为与改造前一致。
+                        with self._maybe_sched_lock():
+                            _obj_exec.on_turn_done(turn_id, _summary, valid=_result_valid)
                     except Exception as _mini_agent_exc:
                         from mini_agent.errors import log_exception
                         log_exception(_mini_agent_exc, where='mini_agent.api.server')
@@ -608,7 +642,8 @@ class AgentRunner(threading.Thread):
                 _obj_exec = getattr(bridge, "_objective_executor", None)
                 if _obj_exec is not None and cmd.initiator in ("autonomous", "cron"):
                     try:
-                        _obj_exec.on_turn_failed(turn_id, str(e))
+                        with self._maybe_sched_lock():
+                            _obj_exec.on_turn_failed(turn_id, str(e))
                     except Exception as _mini_agent_exc:
                         from mini_agent.errors import log_exception
                         log_exception(_mini_agent_exc, where='mini_agent.api.server')
@@ -1012,6 +1047,33 @@ class HttpServer:
         # Stage 9 §7.2: 初始化 AutonomousLoop（在 daemon 进程中挂载到 AgentRunner）
         self._autonomous_loop = self._build_autonomous_loop(agent)
 
+        # [daemon_execution_model_and_scheduler_heartbeat_improvement_plan.md
+        # 阶段二] 调度心跳独立化：默认关闭（scheduler_heartbeat_enabled=False）
+        # 时 self._sched_lock 保持 None、AgentRunner 走改造前的原有行为——
+        # 主循环仍然自己在 dequeue 超时后顺带触发 tick()。
+        self._sched_lock: Optional[threading.Lock] = None
+        self._scheduler_heartbeat = None
+        _heartbeat_enabled = bool(
+            getattr(getattr(agent.cfg, "autonomy", None), "scheduler_heartbeat_enabled", False)
+        )
+        if _heartbeat_enabled and self._autonomous_loop is not None:
+            try:
+                from mini_agent.evolution.scheduler_heartbeat import SchedulerHeartbeat
+
+                self._sched_lock = threading.Lock()
+                self._scheduler_heartbeat = SchedulerHeartbeat(
+                    autonomous_loop=self._autonomous_loop,
+                    lock=self._sched_lock,
+                    interval_seconds=getattr(
+                        agent.cfg.autonomy, "scheduler_heartbeat_poll_interval_seconds", 5.0
+                    ),
+                )
+            except Exception as _mini_agent_exc:
+                from mini_agent.errors import log_exception
+                log_exception(_mini_agent_exc, where='mini_agent.api.server.HttpServer.__init__.scheduler_heartbeat')
+                self._sched_lock = None
+                self._scheduler_heartbeat = None
+
         # AgentRunner（后台驱动 agent.run_turn），注入 AutonomousLoop + RoleProfileManager
         # + SelfMessageBus（Phase 4：这条 AgentRunner 就是"Self"，需要消费
         # SessionAgentPool 发过来的 session_crashed/session_summary 等消息）。
@@ -1020,7 +1082,11 @@ class HttpServer:
             autonomous_loop=self._autonomous_loop,
             role_profile_mgr=self._role_profile_mgr,
             self_message_bus=self._self_message_bus,
+            sched_lock=self._sched_lock,
+            heartbeat_owns_tick=self._scheduler_heartbeat is not None,
         )
+        if self._scheduler_heartbeat is not None:
+            self._scheduler_heartbeat.start()
 
         # uvicorn 服务线程
         self._server_thread: Optional[threading.Thread] = None
@@ -1547,8 +1613,31 @@ class HttpServer:
             # 对话历史）。必须放在 objective_executor 构造完毕之后接线——
             # 回调 on_done/on_failed 直接指向 objective_executor 的方法，
             # 构造 ObjectiveExecutor 本身时还不存在这个引用。
+            # [daemon_execution_model_and_scheduler_heartbeat_improvement_plan.md
+            # 阶段一] 目标级持久 Worker：与下面的 ObjectiveIsolatedRunner 互斥，
+            # 本项优先——两个开关都为 True 时以持久 Worker 为准（先判断这个
+            # 分支，命中则不再检查 objective_isolated_context_enabled）。
+            self._objective_persistent_runner = None
             self._objective_isolated_runner = None
-            if getattr(cfg.autonomy, "objective_isolated_context_enabled", False):
+            if getattr(cfg.autonomy, "objective_persistent_worker_enabled", False):
+                try:
+                    from mini_agent.evolution.objective_agent_bridge import ObjectivePersistentRunner
+
+                    self._objective_persistent_runner = ObjectivePersistentRunner(
+                        base_cfg=cfg,
+                        on_done=objective_executor.on_turn_done,
+                        on_failed=objective_executor.on_turn_failed,
+                        idle_ttl_seconds=getattr(
+                            cfg.autonomy, "objective_persistent_worker_idle_ttl_seconds", 1800.0
+                        ),
+                    )
+                    objective_executor._submit_fn = self._objective_persistent_runner.submit
+                    objective_executor._release_worker_fn = self._objective_persistent_runner.release
+                except Exception as _mini_agent_exc:
+                    from mini_agent.errors import log_exception
+                    log_exception(_mini_agent_exc, where='mini_agent.api.server.HttpServer._build_autonomous_loop.objective_persistent_runner')
+                    self._objective_persistent_runner = None
+            elif getattr(cfg.autonomy, "objective_isolated_context_enabled", False):
                 try:
                     from mini_agent.evolution.objective_agent_bridge import ObjectiveIsolatedRunner
 
@@ -1732,6 +1821,22 @@ class HttpServer:
             except Exception as _mini_agent_exc:
                 from mini_agent.errors import log_exception
                 log_exception(_mini_agent_exc, where='mini_agent.api.server.HttpServer.stop.isolated_runner')
+        # [daemon_execution_model_and_scheduler_heartbeat_improvement_plan.md 阶段二]
+        scheduler_heartbeat = getattr(self, "_scheduler_heartbeat", None)
+        if scheduler_heartbeat is not None:
+            try:
+                scheduler_heartbeat.stop()
+            except Exception as _mini_agent_exc:
+                from mini_agent.errors import log_exception
+                log_exception(_mini_agent_exc, where='mini_agent.api.server.HttpServer.stop.scheduler_heartbeat')
+        # [daemon_execution_model_and_scheduler_heartbeat_improvement_plan.md 阶段一]
+        persistent_runner = getattr(self, "_objective_persistent_runner", None)
+        if persistent_runner is not None:
+            try:
+                persistent_runner.shutdown(wait=False)
+            except Exception as _mini_agent_exc:
+                from mini_agent.errors import log_exception
+                log_exception(_mini_agent_exc, where='mini_agent.api.server.HttpServer.stop.persistent_runner')
         if self._uvicorn_server:
             self._uvicorn_server.should_exit = True
         if self._server_thread:

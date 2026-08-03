@@ -52,13 +52,21 @@ def build_objective_agent(
     objective_title: str,
     execution_id: str,
     inner_max_turns: Optional[int] = None,
+    persistent: bool = False,
 ) -> Agent:
     """
-    为一次 Objective step 执行构建一个全新的、全量继承主 Agent 工具集的独立
+    为一次 Objective 执行构建一个全新的、全量继承主 Agent 工具集的独立
     Agent 实例。不携带真人交互或其它 Objective 的历史，只携带任务描述本身
     （由调用方传入 run_turn() 的 message 参数）。
 
     与 cron_agent_bridge.build_cron_agent() 的结构保持一致，便于对照维护。
+
+    persistent — [daemon_execution_model_and_scheduler_heartbeat_improvement_plan.md
+        阶段一] 由 ObjectivePersistentRunner 调用时传 True：这个 Agent 实例会
+        在同一个 execution 的多个 step 之间被复用（不是跑完一个 step 就丢弃），
+        因此注入的说明文案不同——不再声称"每次都是独立会话、不记得任何未在
+        消息中出现的内容"，而是如实告知"你的会话历史会在本次 Objective 执行
+        期间保留"。仅影响 system_extra 文案，不影响其它任何行为。
     """
     if inner_max_turns is None:
         inner_max_turns = getattr(
@@ -84,16 +92,28 @@ def build_objective_agent(
 
     cfg.max_turns = inner_max_turns
     cfg.stream = False
-    cfg.system_extra = (
-        (base_cfg.system_extra or "") +
-        f"\n\n[自主任务 - 独立上下文] 你正在以 daemon 后台自主任务身份执行"
-        f"「{objective_title}」（execution_id={execution_id}）。这是无人值守"
-        f"执行，本次 turn 使用一个专属的、不携带其它对话历史的独立会话——"
-        f"如果需要了解此前步骤的进展，请以本条消息里附带的"
-        f"「前序步骤结果」/「前序步骤产出文件」为准，不要假设自己记得任何"
-        f"未在本条消息中出现的内容。如果信息不足，做出合理假设并在输出中"
-        f"说明，而不是等待澄清。"
-    )
+    if persistent:
+        cfg.system_extra = (
+            (base_cfg.system_extra or "") +
+            f"\n\n[自主任务 - 持久化 Worker] 你正在以 daemon 后台自主任务身份"
+            f"持续执行「{objective_title}」（execution_id={execution_id}）。"
+            f"这是无人值守执行；与一次性独立会话不同，你的对话历史会在本次"
+            f"Objective 的多个步骤之间保留——你可以记得自己之前做过什么。"
+            f"每条消息仍然会额外附带结构化的「前序步骤结果」/「前序步骤"
+            f"产出文件」摘要，以此为准核对进展，如果信息不足，做出合理假设"
+            f"并在输出中说明，而不是等待澄清。"
+        )
+    else:
+        cfg.system_extra = (
+            (base_cfg.system_extra or "") +
+            f"\n\n[自主任务 - 独立上下文] 你正在以 daemon 后台自主任务身份执行"
+            f"「{objective_title}」（execution_id={execution_id}）。这是无人值守"
+            f"执行，本次 turn 使用一个专属的、不携带其它对话历史的独立会话——"
+            f"如果需要了解此前步骤的进展，请以本条消息里附带的"
+            f"「前序步骤结果」/「前序步骤产出文件」为准，不要假设自己记得任何"
+            f"未在本条消息中出现的内容。如果信息不足，做出合理假设并在输出中"
+            f"说明，而不是等待澄清。"
+        )
 
     llm_cfg = LLMConfig.from_app_config(cfg)
     guard = PermissionGuard(
@@ -222,3 +242,168 @@ class ObjectiveIsolatedRunner:
         with self._lock:
             self._stopped = True
         self._executor.shutdown(wait=wait, cancel_futures=not wait)
+
+
+class ObjectivePersistentRunner:
+    """
+    [daemon_execution_model_and_scheduler_heartbeat_improvement_plan.md 阶段一]
+    "目标级持久 Worker"：与 ObjectiveIsolatedRunner 接口完全一致（可直接替换
+    `ObjectiveExecutor._submit_fn`，不需要改动 objective_executor.py 的 step
+    提交/状态机逻辑本身），但内部实现不同——每个 execution_id 独占一个专属的
+    单线程 ThreadPoolExecutor，第一个 step 提交时惰性构建一个 Agent 实例并
+    缓存，同一 execution 后续所有 step 都复用这一个 Agent 实例、在同一条
+    专属线程上执行。
+
+    这与 build_objective_agent() docstring 里强调的"Agent 的 thread-local
+    状态只在构造它的那条线程上安全"这一前提严格对齐：因为该 execution 的
+    所有 step 永远只在它自己的专属线程上跑，不会跨线程复用 Agent 实例。
+
+    不同 execution_id 之间各自的专属线程互相独立，因此天然并行——某一时刻
+    存在几个活跃 execution，就有几条线程在真正同时执行 run_turn()，不再像
+    共享 bridge.input_queue 的默认提交路径那样排队等一个单线程队列轮到自己。
+    真正的并发数上限仍然由 ObjectiveExecutor 既有的
+    max_concurrent_objectives_cap/adaptive_concurrency_* 机制约束，本类不
+    新增独立的并发上限判断，只负责"某个 execution 该在哪条线程、哪个 Agent
+    实例上跑"。
+    """
+
+    def __init__(
+        self,
+        base_cfg: AppConfig,
+        on_done: Callable[..., Any],
+        on_failed: Callable[[str, str], Any],
+        inner_max_turns: Optional[int] = None,
+        idle_ttl_seconds: float = 1800.0,
+    ) -> None:
+        self._base_cfg = base_cfg
+        self._on_done = on_done
+        self._on_failed = on_failed
+        self._inner_max_turns = inner_max_turns
+        self._idle_ttl = max(1.0, float(idle_ttl_seconds))
+
+        self._lock = threading.Lock()
+        self._executors: dict[str, concurrent.futures.ThreadPoolExecutor] = {}
+        self._agents: dict[str, Agent] = {}
+        self._last_used_at: dict[str, float] = {}
+        self._stopped = False
+
+    def submit(self, message: str, initiator: str, meta: dict) -> Optional[str]:
+        """与 `submit_fn(message, initiator, meta) -> turn_id` 签名一致，
+        可直接赋给 `ObjectiveExecutor._submit_fn`。"""
+        execution_id = meta.get("execution_id") or f"unknown-{uuid.uuid4().hex[:8]}"
+        with self._lock:
+            if self._stopped:
+                return None
+            self._evict_idle_locked(exclude=execution_id)
+            executor = self._executors.get(execution_id)
+            if executor is None:
+                executor = concurrent.futures.ThreadPoolExecutor(
+                    max_workers=1,
+                    thread_name_prefix=f"obj-worker-{execution_id[:12]}",
+                )
+                self._executors[execution_id] = executor
+            self._last_used_at[execution_id] = time.time()
+
+        turn_id = f"obj-persist-{uuid.uuid4().hex[:12]}"
+        try:
+            executor.submit(self._run_step, turn_id, execution_id, message, meta)
+        except RuntimeError:
+            # executor 已 shutdown（该 execution 已被 release()，或 daemon
+            # 正在退出），当作提交失败处理，ObjectiveExecutor 会按现有
+            # "submit 返回 None"的既有路径降级。
+            return None
+        return turn_id
+
+    def _run_step(self, turn_id: str, execution_id: str, message: str, meta: dict) -> None:
+        from mini_agent.perception.format_correction_detector import is_valid_final_result
+
+        objective_title = meta.get("objective_id", "") or "(unknown)"
+
+        agent = self._agents.get(execution_id)
+        if agent is None:
+            try:
+                agent = build_objective_agent(
+                    self._base_cfg, objective_title, execution_id,
+                    inner_max_turns=self._inner_max_turns, persistent=True,
+                )
+            except Exception as exc:
+                log.warning("build_objective_agent(persistent) failed for turn_id=%s: %s", turn_id, exc)
+                self._safe_on_failed(turn_id, f"持久 Worker Agent 构建失败: {exc}")
+                return
+            self._agents[execution_id] = agent
+
+        try:
+            result = agent.run_turn(message)
+        except Exception as exc:
+            log.warning("persistent run_turn failed for turn_id=%s: %s", turn_id, exc)
+            self._safe_on_failed(turn_id, str(exc))
+            return
+
+        summary = (result or "").strip()
+        summary = summary.split("\n")[0][:200]
+        result_valid = not getattr(agent, "_last_turn_result_invalid", False)
+        if not result_valid and not is_valid_final_result(result or ""):
+            result_valid = False
+
+        with self._lock:
+            if execution_id in self._last_used_at:
+                self._last_used_at[execution_id] = time.time()
+
+        self._safe_on_done(turn_id, summary, result_valid)
+
+    def release(self, execution_id: str) -> None:
+        """Objective 到达终止状态（completed/failed/cancelled）时调用：立即
+        关闭该 execution 的专属线程、丢弃 Agent 实例。用作
+        `ObjectiveExecutor(release_worker_fn=...)` 的回调。"""
+        with self._lock:
+            executor = self._executors.pop(execution_id, None)
+            self._agents.pop(execution_id, None)
+            self._last_used_at.pop(execution_id, None)
+        if executor is not None:
+            executor.shutdown(wait=False, cancel_futures=True)
+
+    def _evict_idle_locked(self, exclude: Optional[str] = None) -> None:
+        """调用方已持有 self._lock。清理超过 idle_ttl 未使用的 execution
+        专属线程——release() 是主要的清理路径（由 ObjectiveExecutor 在
+        终止时主动调用），这里是兜底（比如 daemon 异常重启前的孤儿
+        execution，某次终止回调没有触发到），避免线程/Agent 泄漏。"""
+        now = time.time()
+        stale = [
+            eid for eid, ts in self._last_used_at.items()
+            if eid != exclude and (now - ts) >= self._idle_ttl
+        ]
+        for eid in stale:
+            executor = self._executors.pop(eid, None)
+            self._agents.pop(eid, None)
+            self._last_used_at.pop(eid, None)
+            if executor is not None:
+                executor.shutdown(wait=False, cancel_futures=True)
+
+    def _safe_on_done(self, turn_id: str, summary: str, valid: bool) -> None:
+        try:
+            self._on_done(turn_id, summary, valid=valid)
+        except Exception as exc:
+            log.warning("on_done callback failed for turn_id=%s: %s", turn_id, exc)
+
+    def _safe_on_failed(self, turn_id: str, error: str) -> None:
+        try:
+            self._on_failed(turn_id, error)
+        except Exception as exc:
+            log.warning("on_failed callback failed for turn_id=%s: %s", turn_id, exc)
+
+    def active_execution_ids(self) -> list[str]:
+        """仅供测试/可观测性使用：当前仍持有专属线程的 execution_id 列表。"""
+        with self._lock:
+            return list(self._executors.keys())
+
+    def shutdown(self, wait: bool = False) -> None:
+        """daemon 退出时调用：停止接受新 step，不强行打断正在跑的线程
+        （wait=False 时不阻塞退出流程，与 ObjectiveIsolatedRunner 一致）。"""
+        with self._lock:
+            self._stopped = True
+            executors = list(self._executors.values())
+            self._executors.clear()
+            self._agents.clear()
+            self._last_used_at.clear()
+        for executor in executors:
+            executor.shutdown(wait=wait, cancel_futures=not wait)

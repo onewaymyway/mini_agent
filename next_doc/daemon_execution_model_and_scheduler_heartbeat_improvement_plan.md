@@ -1,6 +1,6 @@
 # daemon 执行模型 + 调度心跳解耦 改进方案
 
-> 状态：**规划中，阶段一（目标级持久 Worker）待实施**
+> 状态：**阶段一（目标级持久 Worker）、阶段二（调度心跳解耦）均已完成并通过测试**
 > 背景来源：与用户的一轮架构走查对话（聚焦"daemon 进程如何更好地执行、更合理地
 > 调度、cron、全局 Goal 的执行"），走查了 `autonomous_loop.py` /
 > `objective_executor.py` / `objective_agent_bridge.py` / `resource_arbiter.py` /
@@ -188,4 +188,113 @@ step 的会话/工具调用状态，"上一步做到哪了"完全靠纯文本摘
 
 ## 5. 实施记录
 
-（待补充）
+### 阶段一 —— 目标级持久 Worker（已完成）
+
+- `src/mini_agent/evolution/objective_agent_bridge.py`：
+  - `build_objective_agent()` 新增 `persistent: bool = False` 参数，仅影响
+    注入的 `system_extra` 文案（持久模式如实告知"会话历史会在多个 step 间
+    保留"，非持久模式保持原有"独立会话、不要假设记得任何未在消息中出现
+    的内容"）。
+  - 新增 `ObjectivePersistentRunner` 类：每个 `execution_id` 惰性创建一个
+    专属 `ThreadPoolExecutor(max_workers=1)` + 缓存一个 Agent 实例，跨
+    step 复用；`release(execution_id)` 立即回收；`_evict_idle_locked()`
+    做 idle TTL 兜底清理；`shutdown()` 供 daemon 退出时调用。
+- `src/mini_agent/evolution/objective_executor.py`：
+  - `__init__` 新增可选参数 `release_worker_fn`，默认 `None`（向后兼容）。
+  - 新增 `_release_worker(execution_id)` 辅助方法（吞异常，不影响终止流程
+    本身），并在 `_on_objective_completed`/`_on_objective_failed`/
+    `_on_objective_cancelled` 三个既有的集中收尾方法末尾各加一行调用——
+    没有改动这三个方法内部原有的任何判定逻辑。
+- `src/mini_agent/config/models.py`：`AutonomyConfig` 新增
+  `objective_persistent_worker_enabled: bool = False` 和
+  `objective_persistent_worker_idle_ttl_seconds: float = 1800.0`。
+- `src/mini_agent/api/server.py`：`_build_autonomous_loop()` 里原有的
+  `ObjectiveIsolatedRunner` 接线改成 if/elif 结构——先判断
+  `objective_persistent_worker_enabled`，命中则接入
+  `ObjectivePersistentRunner` 并同时设置 `_submit_fn`/`_release_worker_fn`；
+  否则保留原有的 `objective_isolated_context_enabled` 分支，行为不变。
+  `stop()` 里新增对 `_objective_persistent_runner` 的 `shutdown(wait=False)`
+  调用，与既有的 `isolated_runner` 关停逻辑对称。
+- 测试：新增 `tests/test_objective_persistent_runner.py`（6 个用例，全部
+  通过）：
+  1. 同一 execution 的多个 step 复用同一个 Agent 实例（`_instances_built`
+     恒为 1）。
+  2. 两个不同 execution 真并行（用 sleep 验证总耗时接近单次耗时，远小于
+     两次耗时之和）。
+  3. `release()` 后重新提交同一 execution_id 会重新构建 Agent 实例。
+  4. `shutdown()` 后拒绝新提交（`submit()` 返回 `None`）。
+  5. Agent 构建失败时正确调用 `on_failed` 而不是 `on_done`。
+  6. `persistent=True/False` 只改变 `system_extra` 文案，不影响
+     `registry`/`skill_loader`/`tool_cache`/`is_subagent` 等其它字段。
+- 回归验证：`test_objective_executor_kanban_tracks*.py`（4 个文件）+
+  `test_objective_executor_adaptive_concurrency.py` 全部通过（补装环境缺失
+  的 `python-multipart` 依赖后，共 57 个测试全部通过，无回归）。
+- `objective_persistent_worker_enabled` 默认 `False`，未开启时代码路径与
+  改造前完全一致（`_submit_fn`/`_release_worker_fn` 均保持原状）。
+
+### 阶段二 —— 调度心跳独立化（已完成）
+
+- `src/mini_agent/evolution/scheduler_heartbeat.py`（新增文件）：
+  `SchedulerHeartbeat(threading.Thread)`——按 `interval_seconds`（默认 5s）
+  轮询 `autonomous_loop.should_tick()`，到期则在持有传入的共享
+  `threading.Lock` 情况下调用 `autonomous_loop.tick()`；`tick()`/
+  `should_tick()` 内部异常都被捕获记录，不会导致心跳线程整体退出；
+  `stop()` 通过 `threading.Event.wait()` 实现可立即中断的等待，不用等满
+  一个轮询间隔。
+- `src/mini_agent/api/server.py`：
+  - `AgentRunner.__init__` 新增 `sched_lock=None`、
+    `heartbeat_owns_tick=False` 两个可选参数；新增 `_maybe_sched_lock()`
+    辅助方法（`sched_lock` 为 `None` 时返回 `contextlib.nullcontext()`，
+    行为与改造前完全一致）。
+  - `_main_loop()` 里原有的"dequeue 超时后顺带 tick"逻辑加了
+    `not self._heartbeat_owns_tick` 前置条件——心跳线程接管后主循环不再
+    自己触发。
+  - 两处 `_obj_exec.on_turn_done(...)`/`_obj_exec.on_turn_failed(...)` 调用
+    分别用 `with self._maybe_sched_lock():` 包裹，与心跳线程持锁调用
+    `tick()` 互斥。
+  - `HttpServer.__init__`（多用户 daemon 路径）里：读取
+    `cfg.autonomy.scheduler_heartbeat_enabled`，为 `True` 时创建共享锁 +
+    构造 `SchedulerHeartbeat` 并 `start()`，同时把锁和
+    `heartbeat_owns_tick=True` 传给 `AgentRunner`；为 `False`（默认）时
+    `self._sched_lock` 保持 `None`，`AgentRunner` 走原有行为。
+  - `stop()` 里新增对 `_scheduler_heartbeat.stop()` 的调用（不 `join()`，
+    与既有的 isolated/persistent runner 关停风格一致，非阻塞）。
+  - 新增顶层 `import contextlib`。
+- 测试：新增 `tests/test_scheduler_heartbeat.py`（5 个用例，全部通过）：
+  1. `should_tick()==True` 时按轮询间隔正常触发 `tick()`。
+  2. `should_tick()==False` 时不触发。
+  3. `tick()` 内部抛异常不影响线程存活、下一轮仍正常触发。
+  4. `stop()` 能让线程在远小于轮询间隔的时间内退出（用 `interval=10s` 验证
+     `stop()` 不需要等满这 10 秒）。
+  5. 主循环模拟长时间持锁时，心跳线程会等锁而不是跳过或卡死，锁释放后立刻
+     追上继续 `tick()`——验证的正是本方案要解决的"长 turn 不再无限期推迟
+     调度决策"这件事，只是把"阻塞时长"从"一整个长 turn"缩短成"状态更新
+     那一小段代码的持锁时间"。
+- 回归验证：
+  - `python3 -c "import mini_agent.api.server"` 正常导入，无运行时错误。
+  - `tests/test_autonomous_loop_decommission_hook.py` +
+    `tests/test_objective_persistent_runner.py` +
+    `tests/test_scheduler_heartbeat.py` 共 14 个测试全部通过。
+  - `pytest tests/ --collect-only` 全量收集 2883 个测试用例，仅有的 2 个
+    收集错误是环境缺 `browser_launch` 模块这一预置问题（与浏览器扩展相关
+    脚本，非 pip 包），与本次改动完全无关；本次涉及的模块均无导入级别
+    错误。
+- `scheduler_heartbeat_enabled` 默认 `False`，未开启时 `AgentRunner` 的
+  `_sched_lock`/`heartbeat_owns_tick` 均为空/False，`_main_loop()` 与
+  `on_turn_done`/`on_turn_failed` 的行为与改造前逐字节一致。
+
+## 6. 后续可以观察的点（不在本轮范围内）
+
+- 目前 `scheduler_heartbeat_poll_interval_seconds`（默认 5s）与
+  `tick_interval_seconds`（默认 60s）的比例是拍脑袋定的，建议开启一段时间
+  后观察实际的"tick 延迟分布"，据此调整默认轮询间隔。
+- `ObjectivePersistentRunner` 目前对"同时存在的 execution 数量"没有独立
+  上限（依赖 `ObjectiveExecutor` 既有的并发上限间接约束），如果未来
+  `max_concurrent_objectives_cap` 被调大很多，需要重新评估"专属线程数量
+  是否会过多"这个问题。
+- 两个开关（`objective_persistent_worker_enabled`、
+  `scheduler_heartbeat_enabled`）目前互相独立，尚未在同一次真实 daemon
+  运行里同时开启验证过组合效应，建议先分别灰度观察，确认各自稳定后再考虑
+  同时开启。
+
+

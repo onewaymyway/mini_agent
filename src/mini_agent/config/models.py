@@ -1249,6 +1249,33 @@ class AutonomyConfig:
     # 这里只是防止极端情况下（比如配置改动导致上限突然变大）无限制地
     # 并发构造 Agent 实例耗尽资源。
     objective_isolated_max_workers: int = 4
+    # [daemon_execution_model_and_scheduler_heartbeat_improvement_plan.md
+    # 阶段一] 目标级持久 Worker：开启后，`autonomous` Objective 的 step
+    # 提交走 ObjectivePersistentRunner 而不是 ObjectiveIsolatedRunner——每个
+    # execution_id 独占一条专属单线程，Agent 实例在该 execution 内跨 step
+    # 复用（不像 objective_isolated_context_enabled 那样每步都重建/丢弃），
+    # 因此既有真并行（不同 execution 之间互不阻塞），又保留了单个 Objective
+    # 内部的会话/工具状态连续性。与 objective_isolated_context_enabled
+    # 互斥，本项优先——两者都开启时以本项为准。默认 False：与项目现有的
+    # 灰度开关哲学一致，先按需开启观察效果，不强制所有部署一起切换。
+    objective_persistent_worker_enabled: bool = False
+    # 持久 Worker 的 execution 专属线程/Agent 实例，超过该时长（秒）未收到
+    # 新的 step 提交时，视为孤儿（正常情况下应由 Objective 终止时的
+    # release_worker_fn 回调及时释放，这里只是兜底，防止 daemon 异常重启等
+    # 边界情况导致的线程/Agent 泄漏）。默认 1800 秒（30 分钟）。
+    objective_persistent_worker_idle_ttl_seconds: float = 1800.0
+    # [daemon_execution_model_and_scheduler_heartbeat_improvement_plan.md
+    # 阶段二] 调度心跳独立化：开启后，AutonomousLoop.tick() 不再依赖
+    # AgentRunner 主循环"dequeue 超时后顺带检查"触发，而是由独立的
+    # SchedulerHeartbeat 后台线程按自己的轮询间隔主动触发，不受当前主循环
+    # 是否正忙于处理一个长 turn 影响。默认 False：这是比公平调度算法本身
+    # 更底层的执行模型变化，先默认关闭，按需灰度开启。
+    scheduler_heartbeat_enabled: bool = False
+    # SchedulerHeartbeat 自身的轮询间隔（秒）——只是"多久检查一次是否该
+    # tick"，真正的 tick 频率仍由 AutonomousLoop 的 tick_interval_seconds
+    # 决定，本项应明显小于 tick_interval_seconds 才有意义（默认 5 秒 vs
+    # 默认 tick_interval 60 秒）。
+    scheduler_heartbeat_poll_interval_seconds: float = 5.0
     # [daemon_autonomous_state_recovery_plan.md 阶段四 / P2] 看护模式
     # GuardianRunner：不依赖 GoalSpec/GoalJudge 的轻量监督层，跟踪
     # `autonomous` Objective 每个 execution 最近几步的结果摘要，识别"原地

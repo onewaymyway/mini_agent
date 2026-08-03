@@ -240,6 +240,7 @@ class ObjectiveExecutor:
         artifacts_parse_fn: Optional[Callable[[str], list]] = None,
         artifacts_from_tools_fn: Optional[Callable[[str], list]] = None,
         cfg: Optional["AppConfig"] = None,
+        release_worker_fn: Optional[Callable[[str], None]] = None,
     ) -> None:
         """
         submit_fn         — 提交 Task：(message, initiator, meta) -> turn_id | None
@@ -285,9 +286,20 @@ class ObjectiveExecutor:
                              生效并发上限；不提供、或 `cfg.autonomy` 不存在
                              /关闭自适应时，退化为改造前的行为——恒定使用
                              模块级常量 MAX_CONCURRENT_OBJECTIVES（=2）。
+        release_worker_fn — [daemon_execution_model_and_scheduler_heartbeat_
+                             improvement_plan.md 阶段一] Objective 到达终止
+                             状态（completed/failed/cancelled）时调用：
+                             (execution_id) -> None。用于通知
+                             ObjectivePersistentRunner 之类的"目标级持久
+                             Worker"立即释放该 execution 独占的线程/Agent
+                             实例。未提供时（默认，向后兼容）不做任何事——
+                             共享队列/隔离 runner 两条既有路径都不需要这个
+                             回调。异常会被吞掉，不影响 Objective 终止流程
+                             本身。
         """
         self._paths = paths
         self._submit_fn = submit_fn
+        self._release_worker_fn = release_worker_fn
         self._llm_decompose_fn = llm_decompose_fn
         self._on_progress_fn = on_progress_fn
         self._declare_paths_fn = declare_paths_fn
@@ -1462,6 +1474,7 @@ class ObjectiveExecutor:
             from mini_agent.errors import log_exception
             log_exception(_mini_agent_exc, where='mini_agent.evolution.objective_executor')
             pass
+        self._release_worker(ex.execution_id)
 
     def _on_objective_failed(self, ex: ObjectiveExecution) -> None:
         """Objective 执行失败后的收尾动作。"""
@@ -1480,6 +1493,7 @@ class ObjectiveExecutor:
             from mini_agent.errors import log_exception
             log_exception(_mini_agent_exc, where='mini_agent.evolution.objective_executor')
             pass
+        self._release_worker(ex.execution_id)
 
     def _on_objective_cancelled(self, ex: ObjectiveExecution, sync_goal_status: bool = True) -> None:
         """[Track D] Objective 被用户主动终止后的收尾动作。
@@ -1497,6 +1511,21 @@ class ObjectiveExecutor:
                 "objective_id": ex.objective_id,
                 "title": ex.objective_title,
             })
+        except Exception as _mini_agent_exc:
+            from mini_agent.errors import log_exception
+            log_exception(_mini_agent_exc, where='mini_agent.evolution.objective_executor')
+            pass
+        self._release_worker(ex.execution_id)
+
+    def _release_worker(self, execution_id: str) -> None:
+        """[daemon_execution_model_and_scheduler_heartbeat_improvement_plan.md
+        阶段一] 三个终止收尾方法（_on_objective_completed/_failed/_cancelled）
+        的唯一共同出口，调用注入的 release_worker_fn（未提供时是 no-op）。
+        异常吞掉不影响 Objective 终止流程本身。"""
+        if self._release_worker_fn is None:
+            return
+        try:
+            self._release_worker_fn(execution_id)
         except Exception as _mini_agent_exc:
             from mini_agent.errors import log_exception
             log_exception(_mini_agent_exc, where='mini_agent.evolution.objective_executor')
