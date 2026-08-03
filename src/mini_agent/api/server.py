@@ -1044,23 +1044,36 @@ class HttpServer:
         from mini_agent.tools.user_memory import set_role_profile_manager
         set_role_profile_manager(self._role_profile_mgr)
 
-        # Stage 9 §7.2: 初始化 AutonomousLoop（在 daemon 进程中挂载到 AgentRunner）
-        self._autonomous_loop = self._build_autonomous_loop(agent)
-
         # [daemon_execution_model_and_scheduler_heartbeat_improvement_plan.md
-        # 阶段二] 调度心跳独立化：默认关闭（scheduler_heartbeat_enabled=False）
-        # 时 self._sched_lock 保持 None、AgentRunner 走改造前的原有行为——
-        # 主循环仍然自己在 dequeue 超时后顺带触发 tick()。
+        # §7.1 修复] sched_lock 必须在 _build_autonomous_loop() 之前创建好，
+        # 再传进去——ObjectivePersistentRunner/ObjectiveIsolatedRunner 都是
+        # 在 _build_autonomous_loop() 内部构造的，如果不把锁传给它们，它们
+        # 在专属线程里直接调用 on_turn_done/on_turn_failed 时完全不会经过
+        # 这把锁，与 SchedulerHeartbeat 线程之间就没有互斥（这正是 §7.1
+        # 记录的"设计上没接对"的问题：不是锁本身有 bug，是锁没传到位）。
+        # 默认关闭（scheduler_heartbeat_enabled=False）时 self._sched_lock
+        # 仍然保持 None，AgentRunner/两个 runner 都走改造前的原有行为。
         self._sched_lock: Optional[threading.Lock] = None
-        self._scheduler_heartbeat = None
         _heartbeat_enabled = bool(
             getattr(getattr(agent.cfg, "autonomy", None), "scheduler_heartbeat_enabled", False)
         )
+        if _heartbeat_enabled:
+            self._sched_lock = threading.Lock()
+
+        # Stage 9 §7.2: 初始化 AutonomousLoop（在 daemon 进程中挂载到 AgentRunner）
+        # sched_lock 一并传入，供内部构造的 ObjectivePersistentRunner/
+        # ObjectiveIsolatedRunner 使用（见 §7.1 修复）。
+        self._autonomous_loop = self._build_autonomous_loop(agent, sched_lock=self._sched_lock)
+
+        # [阶段二] 调度心跳独立化：AutonomousLoop 构建完毕后才能拿到实例，
+        # 用上面已经创建好的同一把 self._sched_lock 构造 SchedulerHeartbeat
+        # ——与 ObjectivePersistentRunner/ObjectiveIsolatedRunner 共享同一把
+        # 锁，三者才能真正互斥。
+        self._scheduler_heartbeat = None
         if _heartbeat_enabled and self._autonomous_loop is not None:
             try:
                 from mini_agent.evolution.scheduler_heartbeat import SchedulerHeartbeat
 
-                self._sched_lock = threading.Lock()
                 self._scheduler_heartbeat = SchedulerHeartbeat(
                     autonomous_loop=self._autonomous_loop,
                     lock=self._sched_lock,
@@ -1071,8 +1084,13 @@ class HttpServer:
             except Exception as _mini_agent_exc:
                 from mini_agent.errors import log_exception
                 log_exception(_mini_agent_exc, where='mini_agent.api.server.HttpServer.__init__.scheduler_heartbeat')
-                self._sched_lock = None
                 self._scheduler_heartbeat = None
+        # 注意：即使上面因 AutonomousLoop 不存在/构造失败而没有启动心跳
+        # 线程，self._sched_lock 也不回收——ObjectivePersistentRunner/
+        # ObjectiveIsolatedRunner 在 _build_autonomous_loop() 里已经拿到了
+        # 这同一把锁的引用；此时锁只是不会被心跳线程竞争，多一次无竞争的
+        # 加锁/解锁本身无害，回收成 None 反而会让 runner 与 AgentRunner
+        # 持有不一致的锁状态。
 
         # AgentRunner（后台驱动 agent.run_turn），注入 AutonomousLoop + RoleProfileManager
         # + SelfMessageBus（Phase 4：这条 AgentRunner 就是"Self"，需要消费
@@ -1092,7 +1110,7 @@ class HttpServer:
         self._server_thread: Optional[threading.Thread] = None
         self._uvicorn_server: Optional[uvicorn.Server] = None
 
-    def _build_autonomous_loop(self, agent: Any):
+    def _build_autonomous_loop(self, agent: Any, sched_lock: Optional[threading.Lock] = None):
         """
         Stage 9 §7.2: 构建 AutonomousLoop 实例，同时初始化 CronScheduler 和
         ObjectiveExecutor，注入到 AutonomousLoop 和 AgentRunner。
@@ -1630,6 +1648,7 @@ class HttpServer:
                         idle_ttl_seconds=getattr(
                             cfg.autonomy, "objective_persistent_worker_idle_ttl_seconds", 1800.0
                         ),
+                        sched_lock=sched_lock,
                     )
                     objective_executor._submit_fn = self._objective_persistent_runner.submit
                     objective_executor._release_worker_fn = self._objective_persistent_runner.release
@@ -1645,6 +1664,7 @@ class HttpServer:
                         base_cfg=cfg,
                         on_done=objective_executor.on_turn_done,
                         on_failed=objective_executor.on_turn_failed,
+                        sched_lock=sched_lock,
                     )
                     objective_executor._submit_fn = self._objective_isolated_runner.submit
                 except Exception as _mini_agent_exc:

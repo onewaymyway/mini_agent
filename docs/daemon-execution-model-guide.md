@@ -49,6 +49,14 @@ Objective 的 step 最终都提交进和用户交互对话共用的同一个单�
 与 `objective_isolated_context_enabled` 二选一、互斥，**本项优先**——
 两个开关都打开时，以目标级持久 Worker 为准。
 
+> **边界**：这份"跨 step 记得自己做过什么"的连续性是**纯内存态**的。如果
+> daemon 在某个 Objective 执行到一半时重启，恢复执行时会重新构建一个全新
+> Agent——之前积累的会话历史在重启这一刻就没了，退化回和隔离 runner 完全
+> 一样的效果（每步都是失忆的新 agent）。持久 Worker 换来的是"进程存活期
+> 内"的连续性，不是"跨进程重启"的连续性；`_submit_step()` 拼接的结构化
+> 摘要（前序步骤结果/产出文件）仍然是跨重启也不丢的信息来源，不要只依赖
+> Agent 自己的会话记忆。
+
 **配置开关**（`AutonomyConfig`，见
 [配置指南](config-guide.md#autonomyconfig好奇心评分--自主探索排序权重)）：
 
@@ -128,10 +136,23 @@ Objective 的 step 最终都提交进和用户交互对话共用的同一个单�
 
 ## 5. 两者可以同时开启吗
 
-可以，两者相互独立：目标级持久 Worker 解决"并发是否真实"，调度心跳
-独立化解决"调度决策是否及时触发"。建议先分别灰度观察一段时间，确认各自
-稳定后再考虑同时开启（这个组合目前还没有在真实 daemon 长期运行中验证过，
-见方案文档"后续可以观察的点"一节）。
+可以。两者相互独立：目标级持久 Worker 解决"并发是否真实"，调度心跳
+独立化解决"调度决策是否及时触发"。
+
+> **历史提醒**：事后复查曾发现一处正确性问题（方案文档 §7.1）——
+> `ObjectivePersistentRunner`/`ObjectiveIsolatedRunner` 在专属线程里回调
+> `on_turn_done()`/`on_turn_failed()` 时，最初没有接入 `HttpServer` 构造的
+> 共享调度锁，导致两个开关同时打开时，心跳线程和这两个 runner 的回调线程
+> 可能并发读写 `ObjectiveExecutor` 内部状态字典。这个缺口已经修复：
+> `HttpServer.__init__` 现在会在构建 `AutonomousLoop`（进而构建这两个
+> runner）**之前**先创建好共享锁，并把它一并传给两个 runner 的构造函数；
+> 两个 runner 在 `_run_step()` 里回调 `on_done`/`on_failed` 时会持有这把锁，
+> 与 `SchedulerHeartbeat` 线程持锁调用 `tick()` 互斥。回归测试见
+> `tests/test_objective_runner_sched_lock.py`。
+
+建议仍然先分别灰度观察一段时间，确认各自稳定后再考虑同时开启——这个组合
+目前还没有在真实 daemon 长期运行中验证过（见方案文档"后续可以观察的点"
+一节），但底层的锁覆盖缺口已经不存在了，不再是"同时开启"的阻塞项。
 
 ## 相关文档
 

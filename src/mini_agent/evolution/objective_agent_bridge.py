@@ -27,6 +27,7 @@ Agent 实例；这个模块把同样的模式补给 `autonomous` Objective 的 s
 from __future__ import annotations
 
 import concurrent.futures
+import contextlib
 import logging
 import os
 import threading
@@ -159,11 +160,19 @@ class ObjectiveIsolatedRunner:
         on_failed: Callable[[str, str], Any],
         max_workers: Optional[int] = None,
         inner_max_turns: Optional[int] = None,
+        sched_lock: Optional[threading.Lock] = None,
     ) -> None:
         self._base_cfg = base_cfg
         self._on_done = on_done
         self._on_failed = on_failed
         self._inner_max_turns = inner_max_turns
+        # [daemon_execution_model_and_scheduler_heartbeat_improvement_plan.md
+        # §7.1 修复] 与 AgentRunner._maybe_sched_lock() 同一套模式：
+        # sched_lock 为 None（默认，未开启心跳解耦）时 _maybe_sched_lock()
+        # 返回 no-op 上下文管理器，行为与改造前完全一致；心跳模式开启时，
+        # 这把锁与 SchedulerHeartbeat 线程持锁调用 tick() 互斥，避免本
+        # runner 的回调线程与心跳线程并发读写 ObjectiveExecutor 内部状态。
+        self._sched_lock = sched_lock
         if max_workers is None:
             max_workers = getattr(
                 getattr(base_cfg, "autonomy", None), "objective_isolated_max_workers", 4
@@ -174,6 +183,11 @@ class ObjectiveIsolatedRunner:
         )
         self._lock = threading.Lock()
         self._stopped = False
+
+    def _maybe_sched_lock(self):
+        if self._sched_lock is None:
+            return contextlib.nullcontext()
+        return self._sched_lock
 
     def submit(self, message: str, initiator: str, meta: dict) -> Optional[str]:
         """与 `submit_fn(message, initiator, meta) -> turn_id` 签名一致，
@@ -203,14 +217,16 @@ class ObjectiveIsolatedRunner:
             )
         except Exception as exc:
             log.warning("build_objective_agent failed for turn_id=%s: %s", turn_id, exc)
-            self._safe_on_failed(turn_id, f"独立上下文 Agent 构建失败: {exc}")
+            with self._maybe_sched_lock():
+                self._safe_on_failed(turn_id, f"独立上下文 Agent 构建失败: {exc}")
             return
 
         try:
             result = agent.run_turn(message)
         except Exception as exc:
             log.warning("isolated run_turn failed for turn_id=%s: %s", turn_id, exc)
-            self._safe_on_failed(turn_id, str(exc))
+            with self._maybe_sched_lock():
+                self._safe_on_failed(turn_id, str(exc))
             return
 
         summary = (result or "").strip()
@@ -222,7 +238,11 @@ class ObjectiveIsolatedRunner:
             # 场景时静默漏判）——两者任一判定无效就认为无效。
             result_valid = False
 
-        self._safe_on_done(turn_id, summary, result_valid)
+        # [§7.1 修复] 与 AgentRunner 里两处 on_turn_done/on_turn_failed 调用
+        # 用同一把共享锁互斥，避免与 SchedulerHeartbeat 线程并发读写
+        # ObjectiveExecutor 内部状态字典。
+        with self._maybe_sched_lock():
+            self._safe_on_done(turn_id, summary, result_valid)
 
     def _safe_on_done(self, turn_id: str, summary: str, valid: bool) -> None:
         try:
@@ -274,18 +294,28 @@ class ObjectivePersistentRunner:
         on_failed: Callable[[str, str], Any],
         inner_max_turns: Optional[int] = None,
         idle_ttl_seconds: float = 1800.0,
+        sched_lock: Optional[threading.Lock] = None,
     ) -> None:
         self._base_cfg = base_cfg
         self._on_done = on_done
         self._on_failed = on_failed
         self._inner_max_turns = inner_max_turns
         self._idle_ttl = max(1.0, float(idle_ttl_seconds))
+        # [daemon_execution_model_and_scheduler_heartbeat_improvement_plan.md
+        # §7.1 修复] 同 ObjectiveIsolatedRunner：默认 None，行为不变；心跳
+        # 模式开启时与 SchedulerHeartbeat 线程互斥，见 _maybe_sched_lock()。
+        self._sched_lock = sched_lock
 
         self._lock = threading.Lock()
         self._executors: dict[str, concurrent.futures.ThreadPoolExecutor] = {}
         self._agents: dict[str, Agent] = {}
         self._last_used_at: dict[str, float] = {}
         self._stopped = False
+
+    def _maybe_sched_lock(self):
+        if self._sched_lock is None:
+            return contextlib.nullcontext()
+        return self._sched_lock
 
     def submit(self, message: str, initiator: str, meta: dict) -> Optional[str]:
         """与 `submit_fn(message, initiator, meta) -> turn_id` 签名一致，
@@ -328,7 +358,8 @@ class ObjectivePersistentRunner:
                 )
             except Exception as exc:
                 log.warning("build_objective_agent(persistent) failed for turn_id=%s: %s", turn_id, exc)
-                self._safe_on_failed(turn_id, f"持久 Worker Agent 构建失败: {exc}")
+                with self._maybe_sched_lock():
+                    self._safe_on_failed(turn_id, f"持久 Worker Agent 构建失败: {exc}")
                 return
             self._agents[execution_id] = agent
 
@@ -336,7 +367,8 @@ class ObjectivePersistentRunner:
             result = agent.run_turn(message)
         except Exception as exc:
             log.warning("persistent run_turn failed for turn_id=%s: %s", turn_id, exc)
-            self._safe_on_failed(turn_id, str(exc))
+            with self._maybe_sched_lock():
+                self._safe_on_failed(turn_id, str(exc))
             return
 
         summary = (result or "").strip()
@@ -349,7 +381,12 @@ class ObjectivePersistentRunner:
             if execution_id in self._last_used_at:
                 self._last_used_at[execution_id] = time.time()
 
-        self._safe_on_done(turn_id, summary, result_valid)
+        # [§7.1 修复] 与 AgentRunner 里两处 on_turn_done/on_turn_failed 调用
+        # 用同一把共享锁互斥，避免与 SchedulerHeartbeat 线程并发读写
+        # ObjectiveExecutor 内部状态字典——这是本次修复要解决的核心问题：
+        # 阶段一新增的持久 Worker 回调路径此前完全没有经过这把锁。
+        with self._maybe_sched_lock():
+            self._safe_on_done(turn_id, summary, result_valid)
 
     def release(self, execution_id: str) -> None:
         """Objective 到达终止状态（completed/failed/cancelled）时调用：立即

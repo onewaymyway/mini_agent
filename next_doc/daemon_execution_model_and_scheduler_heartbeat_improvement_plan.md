@@ -1,6 +1,7 @@
 # daemon 执行模型 + 调度心跳解耦 改进方案
 
-> 状态：**阶段一（目标级持久 Worker）、阶段二（调度心跳解耦）均已完成并通过测试**
+> 状态：**阶段一（目标级持久 Worker）、阶段二（调度心跳解耦）均已完成并通过
+> 测试；事后复查发现的 §7.1 锁覆盖缺口已修复（见第 7.1 节"处理状态"）**
 > 背景来源：与用户的一轮架构走查对话（聚焦"daemon 进程如何更好地执行、更合理地
 > 调度、cron、全局 Goal 的执行"），走查了 `autonomous_loop.py` /
 > `objective_executor.py` / `objective_agent_bridge.py` / `resource_arbiter.py` /
@@ -362,6 +363,45 @@ step 的会话/工具调用状态，"上一步做到哪了"完全靠纯文本摘
 
 **优先级**：高——这是正确性问题，不是"值得观察的长线方向"，且用户已经
 明确要求先记录下来，待下一轮实施。
+
+**处理状态：已修复。**
+
+- `src/mini_agent/evolution/objective_agent_bridge.py`：
+  - `ObjectiveIsolatedRunner.__init__`/`ObjectivePersistentRunner.__init__`
+    均新增可选参数 `sched_lock: Optional[threading.Lock] = None`，各自新增
+    `_maybe_sched_lock()` 辅助方法（与 `AgentRunner._maybe_sched_lock()`
+    同一套 `contextlib.nullcontext()` 兜底模式，`sched_lock=None` 时行为与
+    改造前完全一致）。
+  - 两个类的 `_run_step()` 里所有回调 `on_done`/`on_failed`（含"Agent 构建
+    失败""`run_turn()` 抛异常""正常完成"三条路径）都改成
+    `with self._maybe_sched_lock(): self._safe_on_xxx(...)` 包裹。
+- `src/mini_agent/api/server.py`：
+  - `HttpServer.__init__` 里 `self._sched_lock` 的创建时机从"构建
+    `AutonomousLoop` 之后"提前到"构建之前"——只要
+    `scheduler_heartbeat_enabled=True` 就先创建好锁对象（不再依赖
+    `self._autonomous_loop is not None` 这个此前才能满足的条件）。
+  - `_build_autonomous_loop()` 新增可选参数 `sched_lock`，把它原样传给
+    内部构造的 `ObjectivePersistentRunner`/`ObjectiveIsolatedRunner`。
+  - `SchedulerHeartbeat` 的构造挪到 `AutonomousLoop` 构建完毕之后，复用
+    同一个已经创建好的 `self._sched_lock`，不再各自持有不同的锁对象。
+- 测试：新增 `tests/test_objective_runner_sched_lock.py`（5 个用例）：
+  1. 两个 runner 在 `sched_lock=None` 时行为与改造前一致（不报错、不死锁）。
+  2. `ObjectivePersistentRunner` 的 `on_done` 回调会等共享锁释放之后才
+     完成（用一个"先持锁 sleep 再放锁"的场景验证 happens-before 关系，
+     这个用例在修复前会失败——回调会绕开锁提前跑完）。
+  3. Agent 构建失败/`run_turn()` 抛异常两条路径的 `on_failed` 回调也经过
+     同一把锁。
+  4. `ObjectiveIsolatedRunner` 同样验证回调会等共享锁释放。
+  - 回归验证：`test_objective_persistent_runner.py`（6 个）+
+    `test_scheduler_heartbeat.py`（5 个）+
+    `test_autonomous_loop_decommission_hook.py`（3 个）+
+    `test_objective_executor_kanban_tracks*.py`（4 个文件）+
+    `test_objective_executor_adaptive_concurrency.py` +
+    `test_execution_model_status_routes.py` +
+    `test_kanban_config_routes.py`，共 82 个测试全部通过，无回归。
+- 文档：`docs/daemon-execution-model-guide.md` 第 5 节"两者可以同时开启吗"
+  更新为"锁覆盖缺口已修复"的说明；第 2 节补充持久 Worker 连续性是纯内存态
+  （对应 §7.2）、daemon 重启即丢失的边界说明。
 
 ### 7.2 持久 Worker 的连续性是进程内存态的，daemon 重启即丢失
 
