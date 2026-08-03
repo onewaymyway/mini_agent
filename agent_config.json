@@ -88,6 +88,7 @@
     "judge_yes_mode": true,
     "max_rounds": 20,
     "max_total_compacts": 500,
+    "spec_builder_agent_max_turns":30,
     "consecutive_same_feedback_limit": 3,
     "same_feedback_similarity_threshold": 0.9,
     "persist_state": true,
