@@ -166,6 +166,7 @@
   "autonomy": {
     "max_concurrent_objectives_per_goal": 1,
     "goal_scheduling_strategy": "fair_round_robin",
+    "guardian_mode_enabled":true,
     "fairness_aging_boost_per_day": 1.0,
     "fairness_aging_boost_max_days": 14.0,
     "fairness_time_slicing_enabled": false,
