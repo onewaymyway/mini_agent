@@ -58,6 +58,12 @@ async def async_cmd_goto(session, url: str, wait_load: bool, timeout: float, wai
             session.wait_event("Page.loadEventFired", timeout=timeout)
         except CDPError:
             print("[warn] 等待 load 事件超时，页面可能仍在加载或使用了长轮询/SPA 路由")
+            # 降级：尝试 networkidle 等待
+            try:
+                smart_wait = SmartWait(session)
+                await smart_wait.wait_for("networkidle", timeout=timeout)
+            except Exception:
+                pass
     
     # 检测并处理验证码
     if handle_captcha:
@@ -86,12 +92,18 @@ def cmd_goto(session, url: str, wait_load: bool, timeout: float, wait_for: str =
         session.send("Page.navigate", {"url": url})
         if wait_for:
             smart_wait = SmartWait(session)
-            smart_wait.wait_for(wait_for, timeout=timeout)
+            asyncio.run(smart_wait.wait_for(wait_for, timeout=timeout))
         elif wait_load:
             try:
                 session.wait_event("Page.loadEventFired", timeout=timeout)
             except CDPError:
                 print("[warn] 等待 load 事件超时，页面可能仍在加载或使用了长轮询/SPA 路由")
+                # 降级：尝试 networkidle 等待
+                try:
+                    smart_wait = SmartWait(session)
+                    asyncio.run(smart_wait.wait_for("networkidle", timeout=timeout))
+                except Exception:
+                    pass
 
 
 def cmd_wait_selector(session, selector: str, timeout: float):

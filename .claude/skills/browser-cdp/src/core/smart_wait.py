@@ -36,9 +36,9 @@ class SmartWait:
         self.session = session
         self.config = config or WaitConfig()
         self._pending_requests = 0
-        self._last_request_time = 0
-        self._xhr_count = 0
-        self._fetch_count = 0
+        self._active_xhr_fetch = 0
+        self._network_enabled = False
+        self._xhr_callbacks = []
     
     async def wait_for(self, strategy: str, **kwargs) -> bool:
         """
@@ -77,47 +77,78 @@ class SmartWait:
             elapsed = time.time() - start_time
             logger.warning(f"等待策略 {strategy} 超时，耗时 {elapsed:.2f}s")
             return False
+        finally:
+            self._cleanup_network_events()
+    
+    def _on_request_will_be_sent(self, params: dict) -> None:
+        """CDP Network.requestWillBeSent 回调"""
+        self._pending_requests += 1
+        initiator = params.get('request', {}).get('initiator', {})
+        if initiator.get('type') in ('xhr', 'fetch'):
+            self._active_xhr_fetch += 1
+        for cb in self._xhr_callbacks:
+            cb('request', params)
+    
+    def _on_loading_finished(self, params: dict) -> None:
+        """CDP Network.loadingFinished 回调"""
+        self._pending_requests = max(0, self._pending_requests - 1)
+        for cb in self._xhr_callbacks:
+            cb('finish', params)
+    
+    def _on_response_received(self, params: dict) -> None:
+        """CDP Network.responseReceived 回调"""
+        for cb in self._xhr_callbacks:
+            cb('response', params)
+    
+    def _register_network_events(self) -> None:
+        """注册 CDP Network 事件监听"""
+        if self._network_enabled:
+            return
+        self.session.subscribe('Network.requestWillBeSent', self._on_request_will_be_sent)
+        self.session.subscribe('Network.loadingFinished', self._on_loading_finished)
+        self.session.subscribe('Network.responseReceived', self._on_response_received)
+        self.session.send('Network.enable')
+        self._network_enabled = True
+        logger.debug("已注册 CDP Network 事件监听")
+    
+    def _cleanup_network_events(self) -> None:
+        """清理 CDP Network 事件监听"""
+        if not self._network_enabled:
+            return
+        try:
+            self.session.unsubscribe('Network.requestWillBeSent', self._on_request_will_be_sent)
+            self.session.unsubscribe('Network.loadingFinished', self._on_loading_finished)
+            self.session.unsubscribe('Network.responseReceived', self._on_response_received)
+            self.session.send('Network.disable')
+        except Exception as e:
+            logger.debug(f"清理 Network 事件时出错（可忽略）: {e}")
+        finally:
+            self._network_enabled = False
+            self._pending_requests = 0
+            self._active_xhr_fetch = 0
     
     async def _wait_network_idle(self, idle_timeout: float = None) -> bool:
         """
         等待网络空闲：所有请求完成且 idle_timeout 内无新请求
         
         实现原理：
-        1. 监听 Network.requestWillBeSent 增加 pending 计数
-        2. 监听 Network.responseReceived + Network.loadingFinished 减少计数
-        3. 当 pending=0 时启动计时器
-        4. idle_timeout 内无新请求则返回 True
+        1. 启用 CDP Network domain
+        2. 监听 Network.requestWillBeSent 增加 pending 计数
+        3. 监听 Network.loadingFinished 减少计数
+        4. 当 pending=0 时等待 idle_timeout 确认无新请求
         """
         idle_timeout = idle_timeout or self.config.idle_timeout
         
-        # 重置计数器
-        self._pending_requests = 0
-        idle_start = None
+        self._register_network_events()
         
-        # 注册事件监听
-        def on_request(params):
-            self._pending_requests += 1
-            idle_start = None  # 有新请求，重置空闲计时
-        
-        def on_response(params):
-            pass  # 响应接收，等待完成
-        
-        def on_finished(params):
-            self._pending_requests -= 1
-            if self._pending_requests == 0:
-                idle_start = time.time()
-        
-        # 简化实现：使用轮询检查
         deadline = time.time() + self.config.timeout
         while time.time() < deadline:
-            # 检查当前 pending 请求数
-            pending = await self._get_pending_requests()
+            pending = self._pending_requests
             
             if pending == 0:
                 # 等待 idle_timeout 确认无新请求
                 await asyncio.sleep(idle_timeout)
-                pending_after_wait = await self._get_pending_requests()
-                if pending_after_wait == 0:
+                if self._pending_requests == 0:
                     logger.debug("网络空闲检测通过")
                     return True
             else:
@@ -200,24 +231,24 @@ class SmartWait:
         """
         等待 AJAX 请求完成
         
-        通过监听 XHR 和 Fetch 请求实现
+        通过 CDP Network domain 监听 XHR/Fetch 请求实现
         """
         timeout = timeout or self.config.timeout
         
-        # 简化实现：检查是否有活跃的 XHR/Fetch
+        self._register_network_events()
+        
         deadline = time.time() + timeout
         while time.time() < deadline:
-            active_requests = await self._get_active_xhr_fetch()
+            active = await self._get_active_xhr_fetch()
             
-            if active_requests == 0:
+            if active == 0:
                 # 短暂等待确认无新请求
                 await asyncio.sleep(0.5)
-                active_requests = await self._get_active_xhr_fetch()
-                if active_requests == 0:
+                if await self._get_active_xhr_fetch() == 0:
                     logger.debug("AJAX 请求检测通过")
                     return True
             else:
-                logger.debug(f"活跃 AJAX 请求数: {active_requests}")
+                logger.debug(f"活跃 AJAX 请求数: {active}")
             
             await asyncio.sleep(self.config.check_interval)
         
@@ -252,36 +283,17 @@ class SmartWait:
         
         return False
     
-    async def _get_pending_requests(self) -> int:
-        """获取当前 pending 请求数（简化实现）"""
-        # 通过 JavaScript 检查
-        js = """
-        (() => {
-            // 检查 Performance API 的 entries
-            const entries = performance.getEntriesByType('resource');
-            const xhr = performance.getEntriesByType('xhr');
-            return xhr.length;
-        })()
-        """
-        try:
-            result = await self.session.eval_js(js)
-            return result if result else 0
-        except:
-            return 0
+    async def get_pending_requests(self) -> int:
+        """获取当前 pending 请求数（通过 CDP Network 事件）"""
+        self._register_network_events()
+        return self._pending_requests
     
-    async def _get_active_xhr_fetch(self) -> int:
-        """获取活跃的 XHR/Fetch 请求数"""
-        js = """
-        (() => {
-            // 通过 Performance API 统计
-            const xhrEntries = performance.getEntriesByType('resource').filter(
-                e => e.initiatorType === 'xmlhttprequest' || e.initiatorType === 'fetch'
-            );
-            return xhrEntries.length;
-        })()
-        """
-        try:
-            result = await self.session.eval_js(js)
-            return result if result else 0
-        except:
-            return 0
+    async def get_active_xhr_fetch(self) -> int:
+        """获取活跃的 XHR/Fetch 请求数（通过 CDP Network 事件）"""
+        self._register_network_events()
+        return self._active_xhr_fetch
+
+
+# 兼容旧接口（保留 _get_pending_requests 和 _get_active_xhr_fetch 别名）
+SmartWait._get_pending_requests = SmartWait.get_pending_requests
+SmartWait._get_active_xhr_fetch = SmartWait.get_active_xhr_fetch
