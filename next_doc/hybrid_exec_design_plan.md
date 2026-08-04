@@ -389,3 +389,16 @@ Agent 调用本身之外"的编排链路。按新要求改为：
 - `.gitignore` 补充 `examples/_hybrid_exec_demo_workspace/`（此前文档声称
   已忽略但实际条目缺失）。
 - `docs/hybrid-exec-guide.md` §十一 同步重写，去掉规则版替身的描述。
+
+
+## 十三、配套 skill：`hybrid-exec-task-generator`（已完成）
+
+新增 `.claude/skills/hybrid-exec-task-generator/SKILL.md`，供 mini_agent
+自身在交互式对话中帮用户构建/测试/调试/改进符合 hybrid_exec 规范的
+`TaskSpec`：判断需求是否适合做成 hybrid_exec 任务、起草字段、用真实
+`HybridExecutor` 跑一次验证、按 `attempts` 决策轨迹的 `stage` 命名规律
+定位探索/修复/降级具体卡在哪一层、检查/手工干预 `.agent/hybrid_exec/
+scripts/<task_id>/` 落盘的脚本版本、最终决定独立调用还是接入
+`hybrid_step`。风格与既有的 `workflow-generator`/`workflow-debugger`
+skill 一致，边界上也做了区分（普通 workflow step 不用这个 skill）。已
+验证能被项目自带的 `SkillLoader` 正常发现和解析。

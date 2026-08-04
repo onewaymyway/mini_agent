@@ -507,3 +507,17 @@ hybrid_exec_demo.py` 新增场景六（见 §十一），用不发网络请求�
 > 里配置了多条 provider/model，或单个 provider 配置了多个 `api_keys`，
 > 修复后的 `hybrid_exec` 现在能像主 Agent 一样，在同一次 `run()` 内的
 > 多次探索/修复/兜底调用之间正确累积、共享故障转移与轮转状态。
+
+## 十三、配套 skill：交互式构建/调试 TaskSpec
+
+如果是在 mini_agent 交互式对话里（而不是直接写 Python 代码）构建/测试/
+调试/改进一个 hybrid_exec 任务，可以直接让 Agent 使用
+`.claude/skills/hybrid-exec-task-generator/SKILL.md` 这个 skill——覆盖
+"判断需求是否适合做成 hybrid_exec 任务 → 起草 TaskSpec 各字段 → 用真实
+`HybridExecutor` 跑一次验证 → 按 `attempts` 决策轨迹定位问题出在探索/
+修复/降级哪一层 → 检查/手工干预脚本仓库 → 决定独立调用还是接入
+`hybrid_step`"整条流程，以及一份可直接照抄的驱动脚本模板。与
+`workflow-generator`/`workflow-debugger` 两个既有 skill 风格一致、边界
+互补：普通 workflow step（`agent`/`python_step` 等）仍用
+`workflow-generator`，只有明确要用"脚本优先、自动降级"这套 hybrid_exec
+机制时才用这个新 skill。
