@@ -318,13 +318,47 @@ myplugins/hybrid_step.py    # 薄插件文件：注册 hybrid_step，删除即�
 
 - P1-P4 均已完成，全部单元/集成测试通过，且已验证对现有
   workflow/kanban 相关测试无回归。
-- **尚未做真实端到端验证**：目前所有测试都用 fake/mock 组件隔离，
-  还没有接一次真实 LLM/Agent 跑一个真实任务——`LLMExplorer`/
-  `AgentExplorer` 产出的脚本质量、提示词效果如何，都还没有实测数据
-  支撑。正式投入使用前建议先挑一个真实小任务（比如某个抽取/摘要类
-  需求）跑一次端到端。
 - Kanban 面板、`ReexplorePolicy` 都是"能力已具备但默认关闭/低调"的
   状态，不影响任何现有执行路径。
 - MVP 范围内的简化取舍（详见设计文档 §9）：一个 `task_id` 只对应
   仓库里一个 active 版本，不按输入结构指纹再细分分支版本；
   `ReexplorePolicy` 用的是版本全部历史成功率而非滑动窗口。
+- **LLM/Agent 环节真实调用尚未验证**：本沙箱环境没有配置 LLM API
+  Key，`LLMExplorer`/`AgentExplorer` 产出的脚本质量、提示词效果如何，
+  仍缺真实数据支撑。正式投入使用前建议先挑一个真实小任务跑一次端到
+  端（用 `default_executor(project_root, mini_agent_config=cfg)`，
+  `cfg` 是配置好真实 provider/api_key 的 `mini_agent.config.Config`）。
+
+## 十一、端到端可运行演示（`examples/hybrid_exec_demo.py`）
+
+为了验证"除 LLM/Agent 调用本身之外"的整条链路（编排逻辑、脚本仓库
+版本管理、真实子进程执行、run 记录落盘、看板聚合）在真实文件系统/真实
+子进程环境下确实可用，仓库提供了一份可直接运行的演示脚本：
+
+```bash
+cd mini_agent-master
+pip install -e . --break-system-packages   # 如果尚未安装
+python examples/hybrid_exec_demo.py
+```
+
+演示不依赖任何 LLM API Key：用三个"规则版"替身
+（`RuleBasedExplorer`/`RuleBasedRepairer`/`RuleBasedFallback`）实现与
+`Explorer`/`Repairer`/`FallbackExecutor` 完全相同的接口，代替真实 LLM
+调用（内部不发网络请求，用固定规则直接产出脚本/答案）；`HybridExecutor`
+本身、`ScriptRepository`、`ScriptRunner`（真实拉起
+`python -m mini_agent.workflow.py_step_runner` 子进程）、`RunRecorder`、
+`kanban_summary` 全部是真实代码路径，没有被 mock。生产环境把这三个
+替身换成 `LLMExplorer(app_cfg)` 等真实类即可，`HybridExecutor` 侧不需要
+改动任何代码——这正是演示要验证的"可插拔"设计。
+
+演示覆盖 5 个场景，均已实际跑通并通过断言校验：
+
+| 场景 | 验证点 | 结果 |
+|---|---|---|
+| 1. 首次调用，探索新任务 | `RuleBasedExplorer` 产出脚本 → 真实子进程 dry-run 通过 → 转正为 v1 → 真实执行，`output_validator` 通过 | `ok=True tier=script version=1`，`sum=108` 计算正确 |
+| 2. 复用已有脚本 | 同 `task_id` 再次调用直接命中 v1，不再探索 | `ok=True tier=script version=1`，attempts 中无 `explore_*` |
+| 3. 报错后自愈修复 | 人为写入带 bug 的脚本 → 执行报错 → `RuleBasedRepairer` 修复 → dry-run 通过 → 存为 v2 → 真实执行 | `ok=True tier=script version=2`，`reversed` 字段正确 |
+| 4. 修复不了 → 自动退役 → 降级 | 连续 3 次调用均失败且修不好 → `ScriptRepository` 自动 retire → 探索也失败（替身无预置脚本）→ 降级到 `RuleBasedFallback` | 第 2 次调用后仓库状态变为"无 active 版本，已全部退役"；最终 `tier=llm`（Fallback），如实给出兜底结果 |
+| 5. 可观测性 | `.agent/hybrid_exec/runs/<task_id>/summary.json` 落盘统计、`build_kanban_summary()` 聚合出的结构与 `GET /v1/hybrid_exec/summary` 一致 | 三个 task 的 `summary.json` 均正确统计 `total_runs`/`tier_counts`/`last_run_*`；`.agent/hybrid_exec/scripts/` 下真实落盘 `meta.json` + 各版本 `.py` 文件 |
+
+运行结束会打印脚本仓库的真实磁盘布局（`.agent/hybrid_exec/scripts/<task_id>/v*.py` + `meta.json`）与完整的 kanban 汇总 JSON，可直接对照检查。演示工作区落在 `examples/_hybrid_exec_demo_workspace/`（已加入 `.gitignore`，每次运行会先清空重建，可重复运行）。

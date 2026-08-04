@@ -437,6 +437,7 @@ mini-agent user token u_a1b2c3d4                       # 重新生成 token
 - 接入 workflow 新 step 类型 `hybrid_step`：**未修改 workflow 包任何源码**，通过 `workflow/executors.py::register_step_executor()` 公开扩展点 + 薄插件文件 `myplugins/hybrid_step.py` 注册，删除插件文件即禁用（与 `python_step_enabled` 配置开关模式不同）
 - `RunRecorder` 落盘每次 run 决策轨迹到 `.agent/hybrid_exec/runs/<task_id>/`（`summary.json` 滚动聚合），独立调用与 workflow 场景共享同一份统计口径；`ReexplorePolicy` 基于累计成功率的跨 run 主动重探索（默认不启用）
 - 只读端点 `GET /v1/hybrid_exec/summary`（`kanban_summary.py::build_kanban_summary()`）+ 看板 "🧪 混合执行" Tab
+- 可运行端到端演示：`examples/hybrid_exec_demo.py`（`python examples/hybrid_exec_demo.py`），用规则版替身代替无 API Key 场景下的 LLM/Agent 调用，其余组件（编排/仓库/真实子进程执行/落盘/看板聚合）全部走真实代码路径，5 个场景全部验证通过
 - 参见 [脚本/LLM/Agent 混合执行系统指南](docs/hybrid-exec-guide.md)
 
 ### Env Info（环境信息采集）
