@@ -250,6 +250,13 @@ class AgentClient:
         起没起作用"只能靠翻配置文件/看进程猜。"""
         return self._get("/self/execution_model_status")
 
+    def force_reap(self, target: str = "all"):
+        """[kanban_execution_visibility_and_control_plan.md 阶段 B/C]
+        看板"🚨 立即回收"按钮：不必等 watchdog 下一次 tick，立刻对指定
+        链路（"cron" | "objective_step" | "isolated_pool" | "all"）跑一次
+        卡死回收扫描，返回本次实际回收的对象。"""
+        return self._post("/self/execution_model/force_reap", json_body={"target": target})
+
     def config_status(self):
         """[kanban_config_management_plan.md] 拉取 agent_config.json 的分类
         字段目录状态，供"⚙️ 配置"tab 展示。"""

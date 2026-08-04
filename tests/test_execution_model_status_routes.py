@@ -52,7 +52,8 @@ class _FakePersistentRunner:
 
 
 class _FakeIsolatedRunner:
-    pass
+    pool_rebuild_count = 0
+    stale_turn_count = 0
 
 
 class _FakeHeartbeatThread:
@@ -135,6 +136,90 @@ class TestExecutionModelStatusRoute(unittest.TestCase):
         self.assertEqual(body["objective_execution_mode"], "isolated")
         self.assertTrue(body["isolated_runner"]["enabled"])
         self.assertEqual(body["isolated_runner"]["max_workers"], 4)
+        self.assertEqual(body["isolated_runner"]["pool_rebuild_count"], 0)
+        self.assertEqual(body["isolated_runner"]["stale_turn_count"], 0)
+
+    def test_isolated_runner_pool_rebuild_and_stale_counts_reported(self):
+        runner = _FakeIsolatedRunner()
+        runner.pool_rebuild_count = 2
+        runner.stale_turn_count = 5
+        client = _make_client({
+            "_objective_persistent_runner": None,
+            "_objective_isolated_runner": runner,
+            "_scheduler_heartbeat": None,
+            "_autonomous_loop": None,
+        })
+        resp = client.get("/v1/self/execution_model_status")
+        body = resp.json()
+        self.assertEqual(body["isolated_runner"]["pool_rebuild_count"], 2)
+        self.assertEqual(body["isolated_runner"]["stale_turn_count"], 5)
+
+    def test_recent_recoveries_reported_from_shared_log(self):
+        from mini_agent.evolution import recovery_event_log
+
+        recovery_event_log._reset_for_tests()
+        recovery_event_log.record_recovery_event("cron_job", "user:job1", "超时", now=123.0)
+        client = _make_client({
+            "_objective_persistent_runner": None,
+            "_objective_isolated_runner": None,
+            "_scheduler_heartbeat": None,
+            "_autonomous_loop": None,
+        })
+        resp = client.get("/v1/self/execution_model_status")
+        body = resp.json()
+        self.assertEqual(len(body["recent_recoveries"]), 1)
+        self.assertEqual(body["recent_recoveries"][0]["id"], "user:job1")
+        recovery_event_log._reset_for_tests()
+
+    def test_force_reap_delegates_to_all_links(self):
+        class _FakeCronScheduler:
+            def reap_stale_jobs(self):
+                return ["user:cronjob1"]
+
+        class _FakeObjectiveExecutor:
+            def reap_stale_steps(self):
+                return ["exec1"]
+
+        class _FakeIsolatedRunnerForceable:
+            def check_health(self, force=False):
+                assert force is True
+                return {"stale_turn_ids": ["t1"], "rebuilt": True}
+
+        client = _make_client(
+            {
+                "_objective_persistent_runner": None,
+                "_objective_isolated_runner": _FakeIsolatedRunnerForceable(),
+                "_scheduler_heartbeat": None,
+                "_autonomous_loop": None,
+            },
+            bridge_extra={
+                "_cron_scheduler": _FakeCronScheduler(),
+                "_objective_executor": _FakeObjectiveExecutor(),
+            },
+        )
+        resp = client.post("/v1/self/execution_model/force_reap", json={"target": "all"})
+        body = resp.json()
+        self.assertEqual(body["reaped"]["cron_job"], ["user:cronjob1"])
+        self.assertEqual(body["reaped"]["objective_step"], ["exec1"])
+        self.assertEqual(body["reaped"]["isolated_pool"]["rebuilt"], True)
+
+    def test_force_reap_target_filters_links(self):
+        class _FakeCronScheduler:
+            def reap_stale_jobs(self):
+                return ["should_not_be_called"]
+
+        client = _make_client(
+            {
+                "_objective_persistent_runner": None,
+                "_objective_isolated_runner": None,
+                "_scheduler_heartbeat": None,
+                "_autonomous_loop": None,
+            },
+            bridge_extra={"_cron_scheduler": _FakeCronScheduler()},
+        )
+        resp = client.post("/v1/self/execution_model/force_reap", json={"target": "objective_step"})
+        body = resp.json()
+        self.assertEqual(body["reaped"]["cron_job"], [])
 
     def test_persistent_takes_priority_over_isolated_when_both_present(self):
         """两个 runner 理论上不应该同时存在（server.py 用 if/elif 互斥接线），

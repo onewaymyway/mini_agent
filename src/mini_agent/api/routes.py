@@ -2042,7 +2042,11 @@ async def get_self_execution_model_status(request: Request):
                                           # ObjectivePersistentRunner.
                                           # discarded_worker_count 的说明）
       },
-      "isolated_runner": {"enabled": bool, "max_workers": int},
+      "isolated_runner": {
+        "enabled": bool, "max_workers": int,
+        "pool_rebuild_count": int,  # [阶段四] 共享线程池被整体重建的次数
+        "stale_turn_count": int,    # [阶段四] 累计检测到的卡死 turn 数
+      },
       "scheduler_heartbeat": {
         "enabled": bool,
         "alive": bool,             # 心跳线程是否仍在运行
@@ -2064,6 +2068,14 @@ async def get_self_execution_model_status(request: Request):
         "stale_step_reap_count": int,   # [阶段三] ObjectiveExecutor 累计
                                           # 强制回收过的卡死 step 次数
       },
+      "recent_recoveries": [            # [kanban_execution_visibility_and_
+                                          # control_plan.md 阶段 B] 最近发生
+                                          # 过的卡死回收事件（进程内环形
+                                          # 缓冲，最多 50 条，按时间倒序），
+                                          # 不持久化，daemon 重启后清空。
+        {"time": float, "kind": "cron_job" | "objective_step" | "isolated_pool",
+         "id": str, "detail": str},
+      ],
     }
     """
     http_server = getattr(request.app.state, "http_server", None)
@@ -2076,13 +2088,15 @@ async def get_self_execution_model_status(request: Request):
         "persistent_worker": {"enabled": False, "active_execution_count": 0,
                                "active_execution_ids": [], "idle_ttl_seconds": 0.0,
                                "discarded_worker_count": 0},
-        "isolated_runner": {"enabled": False, "max_workers": 0},
+        "isolated_runner": {"enabled": False, "max_workers": 0,
+                            "pool_rebuild_count": 0, "stale_turn_count": 0},
         "scheduler_heartbeat": {"enabled": False, "alive": False,
                                  "poll_interval_seconds": 0.0, "tick_interval_seconds": 0.0,
                                  "last_tick_started_at": 0.0, "last_tick_finished_at": 0.0,
                                  "last_tick_duration_seconds": 0.0},
         "cron": {"reaped_job_count": 0},
         "objective_executor": {"stale_step_reap_count": 0},
+        "recent_recoveries": [],
     }
     try:
         self_agent = http_server.bridge.agent
@@ -2111,6 +2125,8 @@ async def get_self_execution_model_status(request: Request):
                 "enabled": True,
                 "max_workers": getattr(autonomy_cfg, "objective_isolated_max_workers", 4)
                 if autonomy_cfg is not None else 4,
+                "pool_rebuild_count": getattr(isolated_runner, "pool_rebuild_count", 0),
+                "stale_turn_count": getattr(isolated_runner, "stale_turn_count", 0),
             }
 
         autonomous_loop = getattr(http_server, "_autonomous_loop", None)
@@ -2152,9 +2168,85 @@ async def get_self_execution_model_status(request: Request):
             "stale_step_reap_count": getattr(objective_executor, "stale_step_reap_count", 0)
             if objective_executor is not None else 0,
         }
+
+        # [kanban_execution_visibility_and_control_plan.md 阶段 B] 汇总
+        # 最近发生过的卡死回收事件，供看板"📋 执行总览"的"🔴 异常/已回收"
+        # 栏目直接渲染，而不是只有几个孤立的累计数字。
+        try:
+            from mini_agent.evolution.recovery_event_log import recent_recovery_events
+            result["recent_recoveries"] = recent_recovery_events()
+        except Exception:
+            result["recent_recoveries"] = []
     except Exception as _mini_agent_exc:
         from mini_agent.errors import log_exception
         log_exception(_mini_agent_exc, where='mini_agent.api.routes.get_self_execution_model_status')
+
+    return result
+
+
+
+@router.post("/self/execution_model/force_reap")
+async def post_self_execution_model_force_reap(request: Request):
+    """POST /v1/self/execution_model/force_reap —
+    [next_doc/kanban_execution_visibility_and_control_plan.md 阶段 B]
+    看板"🚨 立即回收"按钮：不必等 watchdog 下一次 tick，立刻对指定链路
+    跑一次卡死回收扫描。body 可选 `{"target": "cron" | "objective_step"
+    | "isolated_pool" | "all"}`，默认 "all"。
+
+    注意：这不是"无视阈值强制回收正在正常运行的任务"——cron/
+    objective_step 两条链路仍然按各自配置的超时阈值判定，只是"现在立刻
+    跑一次扫描"而不是等下一次 tick；isolated_pool 是共享池的整体事件，
+    传 force=True 跳过超时判定，直接按当前 in-flight 数量判断是否需要
+    重建，因为它本身就是"看板管理员怀疑池子卡死、想立刻处理"这个语义。
+
+    返回 `{"reaped": {"cron_job": [...], "objective_step": [...],
+    "isolated_pool": {"stale_turn_ids": [...], "rebuilt": bool}}}`
+    （未涉及/未启用的链路对应字段为空列表或 rebuilt=False）。
+    """
+    http_server = getattr(request.app.state, "http_server", None)
+    if http_server is None:
+        raise HTTPException(status_code=503, detail="HttpServer not available")
+    _require_owner(request)
+
+    target = "all"
+    try:
+        body = await request.json()
+        if isinstance(body, dict) and body.get("target"):
+            target = str(body["target"])
+    except Exception:
+        pass  # 允许空 body，按默认 target="all" 处理
+
+    result: dict = {"reaped": {"cron_job": [], "objective_step": [], "isolated_pool": {"stale_turn_ids": [], "rebuilt": False}}}
+    try:
+        if target in ("all", "cron"):
+            cron_scheduler = getattr(http_server.bridge, "_cron_scheduler", None)
+            if cron_scheduler is not None:
+                try:
+                    result["reaped"]["cron_job"] = cron_scheduler.reap_stale_jobs()
+                except Exception as _mini_agent_exc:
+                    from mini_agent.errors import log_exception
+                    log_exception(_mini_agent_exc, where='mini_agent.api.routes.force_reap.cron')
+
+        if target in ("all", "objective_step"):
+            objective_executor = getattr(http_server.bridge, "_objective_executor", None)
+            if objective_executor is not None:
+                try:
+                    result["reaped"]["objective_step"] = objective_executor.reap_stale_steps()
+                except Exception as _mini_agent_exc:
+                    from mini_agent.errors import log_exception
+                    log_exception(_mini_agent_exc, where='mini_agent.api.routes.force_reap.objective_step')
+
+        if target in ("all", "isolated_pool"):
+            isolated_runner = getattr(http_server, "_objective_isolated_runner", None)
+            if isolated_runner is not None:
+                try:
+                    result["reaped"]["isolated_pool"] = isolated_runner.check_health(force=True)
+                except Exception as _mini_agent_exc:
+                    from mini_agent.errors import log_exception
+                    log_exception(_mini_agent_exc, where='mini_agent.api.routes.force_reap.isolated_pool')
+    except Exception as _mini_agent_exc:
+        from mini_agent.errors import log_exception
+        log_exception(_mini_agent_exc, where='mini_agent.api.routes.post_self_execution_model_force_reap')
 
     return result
 
@@ -3924,7 +4016,14 @@ async def list_cron_jobs(request: Request):
     jobs = cs.list_jobs()
     return {
         "jobs": [
-            {**j.to_dict(), "next_run_str": j.next_run_str()}
+            {
+                **j.to_dict(),
+                "next_run_str": j.next_run_str(),
+                # [kanban_execution_visibility_and_control_plan.md 阶段 B]
+                # 区分 "not_running"/"queued"/"running"，看板据此把
+                # "正在执行" 和 "排队等待" 分开展示，不再混为一谈。
+                "execution_phase": cs.execution_phase(j.id),
+            }
             for j in jobs
         ]
     }

@@ -75,6 +75,11 @@ class CronJobRunner:
         self._lock = threading.Lock()
         self._running_job_ids: set[str] = set()
         self._threads: dict[str, threading.Thread] = {}
+        # [next_doc/kanban_execution_visibility_and_control_plan.md
+        # 阶段 B] job_id -> 是否已经真正拿到 semaphore 开始执行（而不是
+        # 还在排队）。用于区分 is_running()==True 时到底是"正在跑"还是
+        # "卡在排队"——此前两者完全无法从外部区分。
+        self._sem_acquired: set[str] = set()
         # [阶段一] job_id -> 当前合法执行者的 token（submit() 时生成）。
         # reap_stale_jobs() 强制回收时会清空对应条目；线程体收尾前会比对
         # 自己拿到的 token 与这里当前的值，不相等说明自己已经是"迟到的
@@ -101,6 +106,18 @@ class CronJobRunner:
         """[阶段三·顺带做] 进程内累计的"被 watchdog 强制回收"次数。"""
         with self._lock:
             return self._reaped_job_count
+
+    def execution_phase(self, job_id: str) -> str:
+        """[阶段 B] 返回 job 当前的执行阶段：
+        "not_running"（没在跑）/ "queued"（已提交但还在排队等 semaphore）
+        / "running"（已经真正开始执行）。看板据此区分"正在执行"和
+        "排队等待"两栏，不再把两者混为一谈。"""
+        with self._lock:
+            if job_id not in self._running_job_ids:
+                return "not_running"
+            if job_id in self._sem_acquired:
+                return "running"
+            return "queued"
 
     # ── 提交 ──────────────────────────────────────────────────────────────
 
@@ -212,6 +229,7 @@ class CronJobRunner:
             self._threads.pop(job_id, None)
             self._started_at.pop(job_id, None)
             self._tokens.pop(job_id, None)
+            self._sem_acquired.discard(job_id)
             self._reaped_job_count += 1
 
         # 代替永远不会执行到的 finally 释放一次 semaphore——线程体收尾时
@@ -241,12 +259,26 @@ class CronJobRunner:
             "CronJobRunner.reap_stale_jobs: job_id=%s 判定为卡死（超过 %.0fs），已强制回收",
             job_id, effective_timeout,
         )
+        try:
+            from mini_agent.evolution.recovery_event_log import record_recovery_event
+            record_recovery_event(
+                "cron_job", job_id,
+                f"超过 {effective_timeout:.0f}s 未收到执行结果，已强制回收",
+                now=now,
+            )
+        except Exception:
+            pass
         return True
 
     # ── 线程体 ────────────────────────────────────────────────────────────
 
     def _run_job_thread(self, job: "CronJob", token: str) -> None:
         self._sem.acquire()
+        with self._lock:
+            # 迟到的孤儿线程（已经被 reap_stale_jobs() 回收过）不应该
+            # 把自己标记为"正在运行"——只有仍持有当前合法 token 才标记。
+            if self._tokens.get(job.id) == token:
+                self._sem_acquired.add(job.id)
         try:
             from mini_agent.evolution.cron_agent_bridge import (
                 build_cron_agent, make_submit_step_fn,
@@ -308,6 +340,7 @@ class CronJobRunner:
                     self._threads.pop(job.id, None)
                     self._started_at.pop(job.id, None)
                     self._tokens.pop(job.id, None)
+                    self._sem_acquired.discard(job.id)
                     released = True
             if released:
                 self._sem.release()

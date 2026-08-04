@@ -38,3 +38,26 @@ def test_reap_stale_jobs_delegates_to_job_runner(tmp_path):
     result = scheduler.reap_stale_jobs()
     assert result == ["user:job1", "user:job2"]
     assert fake_runner.calls == 1
+
+
+class _FakeJobRunnerWithPhase(_FakeJobRunner):
+    def __init__(self, phase="not_running"):
+        super().__init__()
+        self._phase = phase
+        self.phase_calls = []
+
+    def execution_phase(self, job_id):
+        self.phase_calls.append(job_id)
+        return self._phase
+
+
+def test_execution_phase_returns_not_running_without_job_runner(tmp_path):
+    scheduler = CronScheduler(_FakePaths(tmp_path))
+    assert scheduler.execution_phase("user:job1") == "not_running"
+
+
+def test_execution_phase_delegates_to_job_runner(tmp_path):
+    fake_runner = _FakeJobRunnerWithPhase(phase="queued")
+    scheduler = CronScheduler(_FakePaths(tmp_path), job_runner=fake_runner)
+    assert scheduler.execution_phase("user:job1") == "queued"
+    assert fake_runner.phase_calls == ["user:job1"]

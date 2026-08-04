@@ -202,8 +202,21 @@ Objective 背后的调度机制；`docs/decision-profile-guide.md` 了解决策�
 **⚙️ 执行模型**——展示"目标级持久 Worker"与"调度心跳独立化"这两个默认
 关闭的灰度开关（见 [Daemon 执行模型与调度心跳指南](daemon-execution-model-guide.md)）
 当前的生效状态：Objective 执行模式（`shared_queue`/`isolated`/`persistent`）、
-持久 Worker 活跃 execution 数、心跳线程是否存活。全部纯只读展示，开关切换
-仍需改 `agent_config.json` 并重启 daemon。
+持久 Worker 活跃 execution 数、心跳线程是否存活。开关切换仍需改
+`agent_config.json` 并重启 daemon，本区块本身不提供热切换按钮。
+
+`⚙️ 执行模型` 区块顶部另有一个 **📋 执行总览** 面板
+（`next_doc/kanban_execution_visibility_and_control_plan.md`）：
+四栏分别展示 🟢 正在执行 / 🟡 排队等待 / 🔴 异常已回收 / ⚪ 最近完成，
+汇总了 cron job（区分"正在跑"和"卡在排队"）、Objective execution
+（`ObjectiveExecutor.get_status_summary()`）、以及三条卡死回收链路
+（cron/`ObjectiveExecutor.reap_stale_steps()`/`ObjectiveIsolatedRunner.
+check_health()`）最近发生过的具体事件——不再只是几个孤立的累计数字。
+面板顶部有一个"🚨 立即回收卡死任务"按钮，不必等 watchdog 下一次 tick
+就能立刻对三条链路各跑一次回收扫描（`POST /v1/self/execution_model/
+force_reap`）。区块下方还有"🩹 卡死回收累计计数"四个指标（cron/
+Objective step/持久 Worker discard/隔离线程池重建），本次看板会话内
+任一数字增长会标红提示。
 
 ## `AgentClient` 封装的 API 端点
 
@@ -227,7 +240,7 @@ Objective 背后的调度机制；`docs/decision-profile-guide.md` 了解决策�
 | `recur_goal()` / `unrecur_goal()` / `skip_goal_next_cycle()` | `POST /v1/goals/{id}/recur\|unrecur\|skip_next_cycle` | 周期性 Goal 绑定 / 解绑 / 跳过下一轮（Track A/B） |
 | `cancel_objective()` / `retry_objective()` / `inject_objective_guidance()` | `/v1/objectives/{execution_id}/*` | Objective 执行操作：终止 / 手动重试当前步 / 插话（Track D） |
 | `inbox()` | `GET /v1/inbox` | 全局待办中心：跨 session 聚合权限/交互请求 + 失败 Objective（Track A） |
-| `cron_jobs()` / `add_cron_job()` / `update_cron_job()` / `run_cron_job_now()` | `/v1/cron*` | Cron Job 管理 |
+| `cron_jobs()` / `add_cron_job()` / `update_cron_job()` / `run_cron_job_now()` | `/v1/cron*` | Cron Job 管理，每个 job 附带 `execution_phase`（`not_running`/`queued`/`running`） |
 | `workflows()` / `workflow_yaml()` / `preview_workflow()` | `GET /v1/workflows*`、`POST .../preview` | 工作流列表 / YAML 定义 / dry-run 预览 |
 | `run_workflow(force_serial=, require_all_inputs_upfront=)` | `POST /v1/workflows/{name}/run` | 启动执行，支持强制串行 / 要求输入一次性给全两个护栏开关 |
 | `patch_workflow_step()` | `POST /v1/workflows/{name}/steps/{step_id}/patch` | 单步编辑工作流定义（不用重贴整份 YAML），落盘后对后续所有执行生效 |
@@ -240,7 +253,8 @@ Objective 背后的调度机制；`docs/decision-profile-guide.md` 了解决策�
 | `daily_digest()` | `GET /v1/digest/daily` | 每日融合日报（只读，不触发生成） |
 | `next_actions()` | `GET /v1/next_actions` | 主动推荐候选（只读，不触发重新计算） |
 | `decision_profile()` | `GET /v1/decision_profile` | 决策画像 Markdown + 结构化模式列表（只读） |
-| `execution_model_status()` | `GET /v1/self/execution_model_status` | 目标级持久 Worker / 调度心跳独立化两个灰度开关的生效状态（只读） |
+| `execution_model_status()` | `GET /v1/self/execution_model_status` | 目标级持久 Worker / 调度心跳独立化两个灰度开关的生效状态，含 `recent_recoveries` 最近卡死回收事件（只读） |
+| `force_reap(target=)` | `POST /v1/self/execution_model/force_reap` | 立即对指定链路（`cron`/`objective_step`/`isolated_pool`/`all`）跑一次卡死回收扫描 |
 
 上表标了 `session_id=` 的方法都新增了可选的 `session_id` 参数（默认 `None`，
 不传时行为与旧版本完全一致）：传了就会作为 `?session_id=` 查询参数附加到请求上，

@@ -794,6 +794,15 @@ class CronScheduler:
             return []
         return self._job_runner.reap_stale_jobs()
 
+    def execution_phase(self, job_id: str) -> str:
+        """[next_doc/kanban_execution_visibility_and_control_plan.md
+        阶段 B] 委托给 job_runner.execution_phase()：区分 job 当前是
+        "not_running"/"queued"/"running"。job_runner 未注入（旧路径）
+        时始终返回 "not_running"，与 is_job_running() 的降级方式一致。"""
+        if self._job_runner is None:
+            return "not_running"
+        return self._job_runner.execution_phase(job_id)
+
     def get(self, job_id: str) -> Optional[CronJob]:
         return self._jobs.get(job_id)
 

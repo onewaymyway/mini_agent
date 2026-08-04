@@ -517,3 +517,52 @@ class TestCronJobRunnerReapStaleJobs:
         assert runner.is_running("user:bad_job") is True
 
         release.set()
+
+
+class TestCronJobRunnerExecutionPhase:
+    """[next_doc/kanban_execution_visibility_and_control_plan.md 阶段 B]
+    execution_phase() 区分 "not_running"/"queued"/"running"，看板据此
+    把"正在执行"和"排队等待"分开展示。"""
+
+    def test_not_running_before_submit(self, tmp_path, monkeypatch):
+        runner = CronJobRunner(_FakeBaseCfg(), _FakePaths(tmp_path), max_concurrent=1)
+        assert runner.execution_phase("user:never_submitted") == "not_running"
+
+    def test_queued_then_running_then_not_running(self, tmp_path, monkeypatch):
+        import mini_agent.evolution.cron_job_executor as executor_mod
+
+        release = threading.Event()
+        started = threading.Event()
+
+        class _BlockingExecutor:
+            def __init__(self, paths):
+                pass
+
+            def run_job(self, job, submit_step_fn, default_config=None):
+                started.set()
+                release.wait(timeout=5.0)
+                return RunOutcome(run_id="r", status="idle", steps_executed=1, duration_seconds=0.01)
+
+        monkeypatch.setattr(executor_mod, "CronJobExecutor", _BlockingExecutor)
+
+        runner = CronJobRunner(_FakeBaseCfg(), _FakePaths(tmp_path), max_concurrent=1)
+        job_running = _make_job(job_id="user:running_job")
+        job_queued = _make_job(job_id="user:queued_job")
+
+        assert runner.submit(job_running) is True
+        assert started.wait(timeout=2.0), "expected first job to actually start executing"
+        assert runner.execution_phase("user:running_job") == "running"
+
+        assert runner.submit(job_queued) is True
+        time.sleep(0.2)
+        # 第二个 job 已经提交（线程已启动），但卡在 semaphore.acquire()
+        # 排队，还没真正开始执行。
+        assert runner.execution_phase("user:queued_job") == "queued"
+
+        release.set()
+        for _ in range(50):
+            if runner.running_count == 0:
+                break
+            time.sleep(0.05)
+        assert runner.execution_phase("user:running_job") == "not_running"
+        assert runner.execution_phase("user:queued_job") == "not_running"

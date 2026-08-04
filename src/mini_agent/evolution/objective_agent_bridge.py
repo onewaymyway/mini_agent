@@ -193,12 +193,114 @@ class ObjectiveIsolatedRunner:
             max_workers = getattr(
                 getattr(base_cfg, "autonomy", None), "objective_isolated_max_workers", 4
             )
+        self._max_workers = max(1, int(max_workers))
         self._executor = concurrent.futures.ThreadPoolExecutor(
-            max_workers=max(1, int(max_workers)),
+            max_workers=self._max_workers,
             thread_name_prefix="obj-isolated",
         )
         self._lock = threading.Lock()
         self._stopped = False
+        # [daemon_task_hang_recovery_and_watchdog_hardening_plan.md §5 后续
+        # 补做] 共享线程池没有"按 execution 精细回收单个卡死 worker"的能力
+        # （不像 CronJobRunner/ObjectivePersistentRunner 那样自己维护
+        # id -> 状态的记账，可以针对性清零）——ThreadPoolExecutor 不暴露
+        # "强制释放某个 future 占用的槽位"的官方接口。这里改用"整体健康
+        # 检查 + 达到临界条件才整体重建"的更粗粒度方案：
+        #   _inflight: turn_id -> started_at，submit() 时登记，_run_step()
+        #   的 finally 里摘除。check_health() 扫描其中运行超过有效阈值的
+        #   条目，只有当"卡死数 >= max_workers"（池子事实上已经整体瘫痪，
+        #   不再可能接受新提交后及时被执行）才整体丢弃旧池子、换一个全新
+        #   的 ThreadPoolExecutor；卡死数 > 0 但 < max_workers 时只计数，
+        #   不重建（池子还有空闲槽位可以正常工作，重建成本大于收益）。
+        self._inflight: dict[str, float] = {}
+        self._pool_rebuild_count: int = 0
+        self._stale_turn_count: int = 0
+
+    @property
+    def pool_rebuild_count(self) -> int:
+        """进程内累计的整体线程池重建次数（不持久化）。"""
+        with self._lock:
+            return self._pool_rebuild_count
+
+    @property
+    def stale_turn_count(self) -> int:
+        """进程内累计检测到的卡死 turn 数（含未触发整体重建的部分计数，
+        用于观测趋势——即使还没到"整体重建"的临界条件，频繁出现也是
+        需要关注的信号）。"""
+        with self._lock:
+            return self._stale_turn_count
+
+    def _effective_timeout_seconds(self) -> float:
+        autonomy_cfg = getattr(self._base_cfg, "autonomy", None)
+        default_timeout = 600
+        try:
+            from mini_agent.evolution.objective_executor import DEFAULT_STEP_TIMEOUT_SECONDS
+            default_timeout = DEFAULT_STEP_TIMEOUT_SECONDS
+        except Exception:
+            pass
+        timeout_override = getattr(autonomy_cfg, "objective_step_stale_timeout_seconds", None) \
+            if autonomy_cfg is not None else None
+        timeout = timeout_override if timeout_override is not None else default_timeout
+        grace = getattr(
+            autonomy_cfg, "objective_isolated_pool_rebuild_grace_seconds", 5 * 60
+        ) if autonomy_cfg is not None else 5 * 60
+        return float(timeout) + float(grace)
+
+    def check_health(self, now: Optional[float] = None, force: bool = False) -> dict:
+        """[阶段四] 供 AutonomousLoop._tick_maintenance() 周期性调用（也可
+        由看板"立即回收"按钮以 force=True 触发，跳过超时判定，直接按当前
+        in-flight 数量判断是否需要重建）。
+
+        返回 {"stale_turn_ids": [...], "rebuilt": bool}，纯观测 + 必要时
+        自愈，不影响调用方其它逻辑；异常发生时静默吞掉，不向上抛出
+        （与 reap_stale_jobs()/reap_stale_steps() 同一降级风格）。
+        """
+        now = time.time() if now is None else now
+        effective_timeout = self._effective_timeout_seconds()
+        with self._lock:
+            snapshot = dict(self._inflight)
+        stale_ids = [
+            tid for tid, started_at in snapshot.items()
+            if force or (now - started_at) >= effective_timeout
+        ]
+        rebuilt = False
+        if stale_ids:
+            with self._lock:
+                self._stale_turn_count += len(stale_ids)
+                if len(stale_ids) >= self._max_workers or force:
+                    old_executor = self._executor
+                    self._executor = concurrent.futures.ThreadPoolExecutor(
+                        max_workers=self._max_workers,
+                        thread_name_prefix="obj-isolated",
+                    )
+                    # 旧池子里真正卡死的线程本身作为孤儿继续跑（Python
+                    # 无法强制杀死线程），但不再阻塞任何后续提交；
+                    # cancel_futures=True 让还没真正开始执行的排队 future
+                    # 尽快放弃，wait=False 不阻塞本次健康检查调用。
+                    self._pool_rebuild_count += 1
+                    rebuilt = True
+                    for tid in stale_ids:
+                        self._inflight.pop(tid, None)
+            if rebuilt:
+                try:
+                    old_executor.shutdown(wait=False, cancel_futures=True)
+                except Exception:
+                    pass
+                log.warning(
+                    "ObjectiveIsolatedRunner.check_health: 检测到 %d 个卡死 turn"
+                    "（>= max_workers=%d），已整体重建线程池",
+                    len(stale_ids), self._max_workers,
+                )
+                try:
+                    from mini_agent.evolution.recovery_event_log import record_recovery_event
+                    record_recovery_event(
+                        "isolated_pool", "",
+                        f"检测到 {len(stale_ids)} 个卡死 turn，已整体重建共享线程池",
+                        now=now,
+                    )
+                except Exception:
+                    pass
+        return {"stale_turn_ids": stale_ids, "rebuilt": rebuilt}
 
     def _maybe_sched_lock(self):
         if self._sched_lock is None:
@@ -212,15 +314,29 @@ class ObjectiveIsolatedRunner:
             if self._stopped:
                 return None
         turn_id = f"obj-iso-{uuid.uuid4().hex[:12]}"
+        with self._lock:
+            self._inflight[turn_id] = time.time()
         try:
             self._executor.submit(self._run_step, turn_id, message, meta)
         except RuntimeError:
             # executor 已 shutdown（daemon 正在退出），当作提交失败处理，
             # ObjectiveExecutor 会按现有"submit 返回 None"的既有路径降级。
+            with self._lock:
+                self._inflight.pop(turn_id, None)
             return None
         return turn_id
 
     def _run_step(self, turn_id: str, message: str, meta: dict) -> None:
+        try:
+            self._run_step_inner(turn_id, message, meta)
+        finally:
+            # [阶段四] 无论正常完成、异常，还是（迟到的）被 check_health()
+            # 判定为卡死后整体重建了线程池，都要摘除 in-flight 记录——
+            # 如果自己已经被重建清理过（pop 无副作用），这里也不会出错。
+            with self._lock:
+                self._inflight.pop(turn_id, None)
+
+    def _run_step_inner(self, turn_id: str, message: str, meta: dict) -> None:
         from mini_agent.perception.format_correction_detector import is_valid_final_result
 
         objective_title = meta.get("objective_id", "") or "(unknown)"

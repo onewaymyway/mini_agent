@@ -996,6 +996,16 @@ class ObjectiveExecutor:
                 ex.execution_id, ex.objective_title, ex.current_step_idx, timeout,
                 self._stale_step_reap_count,
             )
+            try:
+                from mini_agent.evolution.recovery_event_log import record_recovery_event
+                record_recovery_event(
+                    "objective_step",
+                    f"{ex.execution_id}:{ex.current_step_idx}",
+                    f"超过 {timeout:.0f}s 未收到执行结果，判定为已卡死/丢失",
+                    now=now,
+                )
+            except Exception:
+                pass
 
             # 超时：先清掉旧索引，避免万一迟到的回调命中已经被回收的 step
             if step.turn_id:

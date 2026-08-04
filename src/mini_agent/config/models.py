@@ -1249,6 +1249,16 @@ class AutonomyConfig:
     # 这里只是防止极端情况下（比如配置改动导致上限突然变大）无限制地
     # 并发构造 Agent 实例耗尽资源。
     objective_isolated_max_workers: int = 4
+    # [daemon_task_hang_recovery_and_watchdog_hardening_plan.md §5 后续
+    # 补做 / 阶段四] ObjectiveIsolatedRunner 共享线程池没有"按 execution
+    # 精细回收单个卡死 worker"的能力（不像 cron/持久 Worker），只能做
+    # "整体健康检查 + 达到临界条件（卡死数 >= max_workers）才整体重建"。
+    # 判定"某个 turn 已卡死"的有效阈值 = objective_step_stale_timeout_
+    # seconds（或模块默认 DEFAULT_STEP_TIMEOUT_SECONDS）+ 这个宽限期，
+    # 与阶段一 stale_job_watchdog_grace_seconds 同一思路：避免跟"最后一步
+    # 恰好比较慢但最终会正常返回"的情况混淆。默认 5 分钟，与阶段一保持
+    # 一致的默认值哲学。
+    objective_isolated_pool_rebuild_grace_seconds: int = 5 * 60
     # [daemon_execution_model_and_scheduler_heartbeat_improvement_plan.md
     # 阶段一] 目标级持久 Worker：开启后，`autonomous` Objective 的 step
     # 提交走 ObjectivePersistentRunner 而不是 ObjectiveIsolatedRunner——每个

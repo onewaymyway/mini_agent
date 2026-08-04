@@ -1720,6 +1720,7 @@ class HttpServer:
                 cron_scheduler=cron_scheduler,
                 objective_executor=objective_executor,
                 goal_decompose_fn=_goal_decompose,
+                objective_isolated_runner=self._objective_isolated_runner,
             )
         except Exception as _mini_agent_exc:
             from mini_agent.errors import log_exception

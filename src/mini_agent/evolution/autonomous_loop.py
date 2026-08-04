@@ -50,6 +50,7 @@ class AutonomousLoop:
         cron_scheduler=None,
         objective_executor=None,
         goal_decompose_fn=None,
+        objective_isolated_runner=None,
     ) -> None:
         self._goal_backlog = goal_backlog
         self._input_queue = input_queue
@@ -62,6 +63,11 @@ class AutonomousLoop:
         # Phase 1 新增：CronScheduler 和 ObjectiveExecutor（可选注入，降级安全）
         self._cron_scheduler = cron_scheduler
         self._objective_executor = objective_executor
+        # [daemon_task_hang_recovery_and_watchdog_hardening_plan.md 阶段四]
+        # 仅在 objective_isolated_context_enabled=True 时由调用方注入，
+        # 其余情况保持 None（降级为不检查，与 cron_scheduler/objective_
+        # executor 同一套"可选注入、None 时静默跳过"风格）。
+        self._objective_isolated_runner = objective_isolated_runner
         # Goal→Objective 自动拆解用的 LLM 回调：(GoalNode) -> list[str]。
         # 未注入时 _ensure_goal_objectives() 直接降级为 1:1 镜像 Objective，
         # 不影响"有 Objective 才能被执行"这条主链路。
@@ -305,6 +311,20 @@ class AutonomousLoop:
                 from mini_agent.errors import log_exception
                 log_exception(_mini_agent_exc, where='mini_agent.evolution.autonomous_loop')
                 pass
+            # [daemon_task_hang_recovery_and_watchdog_hardening_plan.md
+            # 阶段四] ObjectiveIsolatedRunner 共享线程池的整体健康检查——
+            # 与上面 cron/step 的 reap 相邻、同样放在资源仲裁 early-return
+            # 之前，理由一致：回收/自愈动作不该依赖跟它无关的门控。仅在
+            # 注入了 isolated runner（即 objective_isolated_context_enabled
+            # =True 且未被持久 Worker 抢占）时才会真正执行。
+            if self._objective_isolated_runner is not None:
+                try:
+                    self._objective_isolated_runner.check_health()
+                except Exception as _mini_agent_exc:
+                    from mini_agent.errors import log_exception
+                    log_exception(_mini_agent_exc, where='mini_agent.evolution.autonomous_loop._tick_maintenance.objective_isolated_runner_check_health')
+                    pass
+
             # [看板与自主性改进方案 Track C] 尝试重新提交因路径冲突被
             # blocked 的 step——占用方可能已在上一轮完成/失败/取消，
             # 释放了路径。放在 reap_stale_steps() 之后、资源仲裁 early-return

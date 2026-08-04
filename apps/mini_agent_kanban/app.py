@@ -3255,6 +3255,103 @@ def _render_system_connectivity(client: AgentClient):
 # 热切换的开关，看板上放一个按钮反而会让人误以为点一下就能生效）。
 # ═══════════════════════════════════════════════════════════════════════
 
+def _render_execution_overview(client: AgentClient, exec_resp: dict):
+    """[kanban_execution_visibility_and_control_plan.md 阶段 C] 统一执行
+    总览：正在执行 / 排队等待 / 异常已回收 / 最近完成 四栏，替代此前"只有
+    孤立的累计数字、看不出具体是哪个任务"的观测盲区。
+
+    exec_resp 是调用方已经拉取好的 execution_model_status() 响应（含新增
+    的 recent_recoveries 字段），这里不重复请求；cron/objective 的明细
+    另外拉取一次。
+    """
+    st.markdown("##### 📋 执行总览")
+
+    if st.button("🚨 立即回收卡死任务", key="force_reap_all",
+                 help="不等 watchdog 下一次 tick，立刻对 cron / Objective step / "
+                      "隔离线程池三条链路各跑一次卡死回收扫描。"):
+        res = client.force_reap("all")
+        if res and "_error" in res:
+            st.error(res["_error"])
+        else:
+            reaped = (res or {}).get("reaped", {})
+            n_cron = len(reaped.get("cron_job") or [])
+            n_step = len(reaped.get("objective_step") or [])
+            n_pool = 1 if (reaped.get("isolated_pool") or {}).get("rebuilt") else 0
+            total = n_cron + n_step + n_pool
+            if total:
+                st.success(f"本次回收了 {total} 个卡死任务（cron {n_cron} / Objective step {n_step} / 隔离池重建 {n_pool}）。")
+            else:
+                st.info("本次扫描没有发现卡死任务。")
+        st.rerun()
+
+    autostat = client.autonomous_status() or {}
+    executions = autostat.get("objective_executions") or []
+    cron_data = client.cron_jobs() or {}
+    cron_jobs = cron_data.get("jobs") or []
+
+    running_items, queued_items, done_items = [], [], []
+    now = time.time()
+    for ex in executions:
+        status = ex.get("status")
+        if status == "running":
+            elapsed = now - (ex.get("started_at") or now)
+            running_items.append(
+                f"🎯 **{ex.get('title', ex.get('objective_id', ''))}** —— "
+                f"{ex.get('current_step') or '（无当前步骤描述）'}"
+                f"　已运行 {elapsed / 60:.1f} 分钟"
+            )
+        elif status in ("completed",):
+            finished = ex.get("finished_at") or 0
+            if finished and (now - finished) < 30 * 60:
+                done_items.append(f"🎯 {ex.get('title', ex.get('objective_id', ''))}")
+
+    for job in cron_jobs:
+        phase = job.get("execution_phase", "not_running")
+        name = job.get("name") or job.get("id", "")
+        if phase == "running":
+            running_items.append(f"⏰ **{name}**（cron，正在执行）")
+        elif phase == "queued":
+            queued_items.append(f"⏰ **{name}**（cron，排队等待并发槽位）")
+
+    recoveries = exec_resp.get("recent_recoveries") or []
+    kind_label = {"cron_job": "⏰ Cron", "objective_step": "🎯 Objective", "isolated_pool": "🧵 隔离线程池"}
+
+    col1, col2, col3, col4 = st.columns(4)
+    with col1:
+        st.markdown("**🟢 正在执行**")
+        if running_items:
+            for it in running_items:
+                st.markdown(f"- {it}")
+        else:
+            st.caption("当前没有正在执行的任务。")
+    with col2:
+        st.markdown("**🟡 排队等待**")
+        if queued_items:
+            for it in queued_items:
+                st.markdown(f"- {it}")
+        else:
+            st.caption("当前没有排队等待的任务。")
+    with col3:
+        st.markdown("**🔴 异常/已回收**")
+        if recoveries:
+            for ev in recoveries[:10]:
+                ts = datetime.fromtimestamp(ev.get("time", 0)).strftime("%H:%M:%S") if ev.get("time") else "?"
+                label = kind_label.get(ev.get("kind"), ev.get("kind", ""))
+                obj_id = f"`{ev['id']}` " if ev.get("id") else ""
+                st.markdown(f"- {ts} {label} {obj_id}—— {ev.get('detail', '')}")
+            if len(recoveries) > 10:
+                st.caption(f"（还有 {len(recoveries) - 10} 条更早的记录未展示）")
+        else:
+            st.caption("最近没有发生过卡死回收。")
+    with col4:
+        st.markdown("**⚪ 最近完成**")
+        if done_items:
+            for it in done_items:
+                st.markdown(f"- {it}")
+        else:
+            st.caption("最近 30 分钟内没有新完成的 Objective。")
+
+
 def _render_execution_model_status(client: AgentClient):
     st.markdown("#### ⚙️ 执行模型（目标级持久 Worker / 调度心跳）")
     st.caption(
@@ -3269,6 +3366,9 @@ def _render_execution_model_status(client: AgentClient):
     if "_error" in resp:
         st.warning(f"获取失败：{resp['_error']}")
         return
+
+    _render_execution_overview(client, resp)
+    st.divider()
 
     mode = resp.get("objective_execution_mode", "shared_queue")
     mode_label = {
@@ -3311,6 +3411,30 @@ def _render_execution_model_status(client: AgentClient):
                 "未开启（`scheduler_heartbeat_enabled=False`，默认值）—— "
                 "AutonomousLoop 仍走原有的\"主循环 dequeue 超时后顺带 tick\"路径。"
             )
+
+    st.divider()
+    st.markdown("**🩹 卡死回收累计计数**")
+    st.caption(
+        "以下四个数字是各条链路自 daemon 启动以来累计的卡死回收次数。"
+        "如果在本次看板会话期间任一数字发生了增长（下方 🔴 标红），说明最近"
+        "确实发生过卡死回收，建议查看上方「📋 执行总览」的「🔴 异常/已回收」栏。"
+    )
+    counters = {
+        "cron 卡死回收次数": (resp.get("cron") or {}).get("reaped_job_count", 0),
+        "Objective step 卡死回收次数": (resp.get("objective_executor") or {}).get("stale_step_reap_count", 0),
+        "持久 Worker discard 次数": (resp.get("persistent_worker") or {}).get("discarded_worker_count", 0),
+        "隔离线程池整体重建次数": (resp.get("isolated_runner") or {}).get("pool_rebuild_count", 0),
+    }
+    baseline = st.session_state.setdefault("_exec_model_counter_baseline", dict(counters))
+    ccols = st.columns(len(counters))
+    for c, (label, value) in zip(ccols, counters.items()):
+        grew = value > baseline.get(label, value)
+        with c:
+            if grew:
+                st.metric(label, value, delta=value - baseline[label], delta_color="inverse")
+                st.caption("🔴 本次会话内新增，建议关注")
+            else:
+                st.metric(label, value)
 
 
 # ═══════════════════════════════════════════════════════════════════════

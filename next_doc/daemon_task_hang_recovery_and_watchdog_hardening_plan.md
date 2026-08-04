@@ -442,17 +442,17 @@ if self._objective_executor is not None:
    同样是"补眼睛 + 补一个配置口子"，不改变任何既有行为默认值，风险
    最低，适合放在最后收尾。
 
-## 5. 明确不做的事
+## 5. 明确不做的事（原判断，已被 §7 更新覆盖第一条）
 
-- 不处理 `ObjectiveIsolatedRunner` 共享线程池的"单 worker discard"
-  （§0 表格 #5）——它的默认 `max_workers=4`，一次卡死只影响 1/4 共享
-  容量，风险敞口远小于 cron 的"2 个许可、一次卡死损失 50%"；且它本身
-  默认关闭（`objective_isolated_context_enabled=False`），真实使用面
-  也小于持久 Worker 和 cron。如果未来需要处理，应该是"隔离 runner 也
-  接一个可选的、面向整个共享池的健康检查（比如统计有多少个 worker
-  连续超过 N 倍 `DEFAULT_STEP_TIMEOUT_SECONDS` 没有产出，超过阈值就
-  整体重建线程池）"，改动面比"按 execution 精细回收"大得多，值得单独
-  立项评估，不在本方案范围内。
+- ~~不处理 `ObjectiveIsolatedRunner` 共享线程池的"单 worker discard"~~
+  ——**已在 §7（阶段四）处理**：项目实际配置里
+  `objective_isolated_context_enabled=true`，原先"默认关闭、真实使用面
+  小"的前提不成立，因此补做了"整体健康检查 + 达到临界条件才整体重建"
+  的方案，见 §7。以下是原始判断，供追溯参考：它的默认
+  `max_workers=4`，一次卡死只影响 1/4 共享容量，风险敞口远小于 cron 的
+  "2 个许可、一次卡死损失 50%"；且它本身默认关闭
+  （`objective_isolated_context_enabled=False`），真实使用面也小于持久
+  Worker 和 cron。
 - 不改变任何现有超时/重试相关参数的默认值（`DEFAULT_STEP_TIMEOUT_SECONDS`、
   `MAX_STEP_RETRIES`、`cron.default_timeout_seconds`、
   `cron.max_concurrent_jobs` 等）——本方案只做"检测 + 回收 + 可观测"，
@@ -463,12 +463,100 @@ if self._objective_executor is not None:
   流程绕开它"，孤儿线程本身会作为已知的、有限的资源占用一直运行到进程
   退出或（极小概率下）自己真的返回。
 
+## 7.【阶段四 · 后续补做】`ObjectiveIsolatedRunner` 共享线程池健康检查
+
+> 触发背景：用户反馈实际项目配置里
+> `objective_isolated_context_enabled=true`（不是默认值 False），
+> §5 原判断"真实使用面小、暂不处理"不再成立，需要补上对称的自愈能力。
+
+### 7.1 与 cron/持久 Worker 的关键差异
+
+`ObjectiveIsolatedRunner` 用共享 `concurrent.futures.ThreadPoolExecutor`
+（默认 `max_workers=4`），不像 `CronJobRunner`/`ObjectivePersistentRunner`
+那样自己维护"id -> 执行状态"的显式记账，因此无法"按 execution 精细
+discard 单个卡死 worker"——`ThreadPoolExecutor` 没有暴露"强制释放某个
+future 占用的槽位"的官方接口。只能做**整体健康检查**：统计当前
+in-flight 的 turn 里有多少个已经运行超过有效超时阈值，达到临界条件
+（卡死数 `>= max_workers`，即池子事实上已经整体瘫痪）才整体丢弃旧池子、
+换一个全新的 `ThreadPoolExecutor`；卡死数 `> 0` 但 `< max_workers` 时
+只计数、不重建（池子还有空闲槽位可以正常工作）。
+
+### 7.2 实现
+
+- `ObjectiveIsolatedRunner`（`objective_agent_bridge.py`）新增：
+  - `self._inflight: dict[turn_id, started_at]`：`submit()` 时登记，
+    `_run_step()` 改造为外层 `_run_step()` + 内层 `_run_step_inner()`，
+    外层 `finally` 里无论正常完成/异常/被重建清理过，都摘除该 turn_id
+    的 in-flight 记录。
+  - `check_health(now=None, force=False) -> dict`：按有效超时阈值
+    （`objective_step_stale_timeout_seconds` 或模块默认
+    `DEFAULT_STEP_TIMEOUT_SECONDS` + 新增的
+    `objective_isolated_pool_rebuild_grace_seconds`）扫描 `_inflight`，
+    卡死数达到 `max_workers`（或 `force=True`，供看板"立即回收"按钮
+    跳过超时判定）时整体重建线程池：`old_executor.shutdown(wait=False,
+    cancel_futures=True)` + 换新池子，旧池子里真正卡死的线程作为孤儿
+    继续跑（Python 无法强制杀死线程，与全文结论一致），但不再占用任何
+    后续提交的槽位。
+  - 新增只读 property `pool_rebuild_count`（整体重建次数）、
+    `stale_turn_count`（累计检测到的卡死 turn 数，含未触发重建的部分，
+    用于观测趋势）。
+- `AutonomyConfig`（`config/models.py`）新增字段
+  `objective_isolated_pool_rebuild_grace_seconds: int = 5 * 60`，与阶段一
+  `stale_job_watchdog_grace_seconds` 同一思路和默认值。
+- `AutonomousLoop`（`autonomous_loop.py`）新增可选注入参数
+  `objective_isolated_runner=None`；`_tick_maintenance()` 新增调用
+  `self._objective_isolated_runner.check_health()`（与 cron/step 的 reap
+  相邻、同样放在资源仲裁 early-return 之前，try/except + log_exception，
+  仅在真的注入了 isolated runner 时才执行，即
+  `objective_isolated_context_enabled=True` 且未被持久 Worker 抢占）。
+- `HttpServer._build_autonomous_loop()`（`api/server.py`）构造
+  `AutonomousLoop` 时透传 `objective_isolated_runner=self._objective_isolated_runner`。
+- `execution_model_status`（`api/routes.py`）的 `isolated_runner` 返回体
+  新增 `pool_rebuild_count`/`stale_turn_count` 两个字段。
+
+### 7.3 已知取舍
+
+这是"整体重建"，不是"精细 discard"，比 cron/持久 Worker 的处理精度低
+一档——由 `ThreadPoolExecutor` 本身的能力边界决定，不是偷懒。真要做到
+跟 cron 一样精细，需要放弃 `ThreadPoolExecutor`、自己用信号量 + 显式
+线程手撸一套（类似 `CronJobRunner`），改动面大得多，性价比不高；触发
+阈值定为"卡死数 `>= max_workers`"（池子整体瘫痪才重建），避免过度敏感
+地重建仍有空闲槽位、正在正常工作的池子。
+
+### 7.4 新增测试
+
+- `tests/test_objective_isolated_runner_health.py`（新增文件）：未超时
+  不误判/不重建；卡死数 `< max_workers` 只计数不重建（`_executor` 对象
+  不变）；卡死数达到 `max_workers` 触发整体重建（`_executor` 对象被
+  替换、`pool_rebuild_count`/`stale_turn_count` 正确递增、卡死 turn_id
+  从 `_inflight` 摘除）；`force=True` 跳过超时判定；重建后仍可正常
+  `submit()`。
+- `tests/test_execution_model_status_routes.py` 扩展：
+  `isolated_runner` 默认态 `pool_rebuild_count=0`/`stale_turn_count=0`；
+  非默认值时正确透传。
+
+回归：`test_objective_persistent_runner.py`、
+`test_execution_model_status_routes.py`、`test_cron_job_runner.py`、
+`test_scheduler_heartbeat.py` 全部通过，未改变任何既有行为默认值
+（`objective_isolated_pool_rebuild_grace_seconds` 默认与阶段一
+`stale_job_watchdog_grace_seconds` 一致的 5 分钟）。
+
+### 7.5 处理状态：**已完成**
+
+---
+
 ## 6. 总体实施状态
 
-三个阶段（cron 卡死回收 / 心跳自愈可观测性 / reap_stale_steps 可观测性
-+ 超时可配置化）均已实施完成，详见各阶段小节末尾的"处理状态"。所有新增
-配置项默认值均保持向后兼容（`stale_job_watchdog_grace_seconds=5*60`、
-`objective_step_stale_timeout_seconds=None`），不改变任何既有行为的
-默认表现；`execution_model_status` 新增的观测字段在对应子系统未启用时
-均返回 `0`/`0.0`，与既有"未启用时全零"的降级风格一致。§5 列出的"明确
-不做的事"范围未变。
+四个阶段（cron 卡死回收 / 心跳自愈可观测性 / reap_stale_steps 可观测性
++ 超时可配置化 / ObjectiveIsolatedRunner 共享池健康检查）均已实施完成，
+详见各阶段小节末尾的"处理状态"。所有新增配置项默认值均保持向后兼容
+（`stale_job_watchdog_grace_seconds=5*60`、
+`objective_step_stale_timeout_seconds=None`、
+`objective_isolated_pool_rebuild_grace_seconds=5*60`），不改变任何既有
+行为的默认表现；`execution_model_status` 新增的观测字段在对应子系统
+未启用时均返回 `0`/`0.0`，与既有"未启用时全零"的降级风格一致。§5 列出
+的"明确不做的事"中第一条已被 §7 更新覆盖（详见 §5 开头说明），其余两条
+（不改变现有超时/重试默认值、不尝试真正强制终止 Python 线程）范围未变。
+
+后续（本次改进的另一条主线）：看板可观测性 + 管控能力增强方案详见
+`next_doc/kanban_execution_visibility_and_control_plan.md`。
