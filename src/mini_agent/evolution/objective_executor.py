@@ -1455,10 +1455,41 @@ class ObjectiveExecutor:
                     f"请根据失败原因调整方法后重试，不要重复同样的做法。"
                 )
 
+            # [goal_cron_feedback_and_output_policy_plan.md 4.4] 拼接从根 Goal
+            # 到当前节点的完整说明链（含父级约束和用户后续追加的意见），双保险：
+            # 即使创建 Objective 时忘了传 description，这里仍能补上。
+            goal_ctx = ""
+            try:
+                effective = self._goal_backlog.effective_context(ex.objective_id)
+                if effective:
+                    goal_ctx = f"\n\n[目标说明]\n{effective}"
+            except Exception as _mini_agent_exc:
+                from mini_agent.errors import log_exception
+                log_exception(
+                    _mini_agent_exc,
+                    where="mini_agent.evolution.objective_executor.ObjectiveExecutor._submit_step.goal_ctx",
+                )
+
+            # [goal_cron_feedback_and_output_policy_plan.md 5.3] 每个 step 提交时
+            # 都追加产出路径规范（不是只加第一步），防止长任务多步执行中间步骤
+            # "忘记"。
+            policy_ctx = ""
+            try:
+                from mini_agent.evolution.output_path_policy import load_policy
+                policy_text = load_policy(self._paths)
+                if policy_text:
+                    policy_ctx = f"\n\n[产出路径规范]\n{policy_text}"
+            except Exception as _mini_agent_exc:
+                from mini_agent.errors import log_exception
+                log_exception(
+                    _mini_agent_exc,
+                    where="mini_agent.evolution.objective_executor.ObjectiveExecutor._submit_step.policy_ctx",
+                )
+
             message = (
                 f"[自主任务 - {ex.objective_title}]\n"
                 f"步骤 {step_idx+1}/{len(ex.steps)}: {step.description}"
-                f"{progress_ctx}{guidance_ctx}{retry_ctx}"
+                f"{goal_ctx}{progress_ctx}{guidance_ctx}{retry_ctx}{policy_ctx}"
             )
             step.submitted_message = message
             turn_id = self._submit_fn(

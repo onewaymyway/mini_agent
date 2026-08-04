@@ -97,9 +97,18 @@ async def handle_cron(args: list[str], ctx: "ReplContext") -> str:
         task_template = " ".join(rest[2:]) if len(rest) > 2 else None
         return _cmd_add_goal_cycle(ctx, cs, goal_id, schedule, task_template)
 
+    if sub == "feedback":
+        # [goal_cron_feedback_and_output_policy_plan.md 3.4]
+        # /cron feedback <id> <text> — 持久化提意见，写入 description/
+        # task_template（及 dedicated 模式的 prompt.md），若该 job 绑定了
+        # Goal（run_mode=goal_cycle）会自动同步到对应 Goal。
+        if len(rest) < 2:
+            return "[cron] 用法：/cron feedback <job_id> <text>"
+        return _cmd_feedback(cs, rest[0], " ".join(rest[1:]))
+
     return (
         "[cron] 未知子命令。可用子命令：\n"
-        "  list [--all]  status  enable  disable  run  add  remove  set-schedule"
+        "  list [--all]  status  enable  disable  run  add  remove  set-schedule  feedback"
     )
 
 
@@ -143,6 +152,16 @@ def _cmd_disable(cs, job_id: str) -> str:
     if cs.disable(job_id):
         return f"[cron] ✓ {job_id} 已禁用"
     return f"[cron] ✗ Job '{job_id}' 不存在"
+
+
+def _cmd_feedback(cs, job_id: str, text: str) -> str:
+    job = cs.get(job_id)
+    if not job:
+        return f"[cron] ✗ Job '{job_id}' 不存在"
+    ok = cs.add_user_feedback(job_id, text)
+    if ok:
+        return f"[cron] ✓ 意见已记录并合入 {job_id}"
+    return f"[cron] ✗ 记录意见失败：{job_id}"
 
 
 def _cmd_run_now(cs, job_id: str) -> str:

@@ -37,6 +37,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
 
+from mini_agent import time_utils
 from mini_agent.storage.paths import AgentPaths
 
 try:
@@ -130,6 +131,13 @@ class GoalNode:
     # 处理（下次 tick 正常判断）。
     skip_next_cycle: bool = False
 
+    # [goal_cron_feedback_and_output_policy_plan.md Track A] 用户对本节点持续
+    # 生效的意见反馈历史。每条：{"text": str, "at": float}。这里只做追加记录，
+    # 供 UI/CLI 回看；真正影响后续执行的是同步追加进 description 的那部分
+    # （见 GoalBacklog.add_user_feedback()），与 inject_guidance()「只影响下一次
+    # 提交的单个 step」的一次性语义不同，本字段代表「以后永久都要考虑」。
+    user_feedback: list[dict] = field(default_factory=list)
+
     def to_dict(self) -> dict:
         return {
             "id": self.id,
@@ -154,6 +162,7 @@ class GoalNode:
             "cycle_count": self.cycle_count,
             "reaped_cycle_child_ids": self.reaped_cycle_child_ids,
             "skip_next_cycle": self.skip_next_cycle,
+            "user_feedback": self.user_feedback,
         }
 
     @staticmethod
@@ -181,6 +190,7 @@ class GoalNode:
             cycle_count=d.get("cycle_count", 0),
             reaped_cycle_child_ids=d.get("reaped_cycle_child_ids", []),
             skip_next_cycle=d.get("skip_next_cycle", False),
+            user_feedback=d.get("user_feedback", []),
         )
 
     @property
@@ -194,6 +204,15 @@ class GoalNode:
     @property
     def is_active(self) -> bool:
         return self.status == "active"
+
+
+def compose_context(parent_desc: str, own_desc: str) -> str:
+    """[goal_cron_feedback_and_output_policy_plan.md 4.2] 拼接父级说明与自身
+    说明，父级在前、自身在后，都保留（不做二选一）。供 goal_cron_bridge 等
+    多处创建子任务时复用。
+    """
+    parts = [p.strip() for p in (parent_desc, own_desc) if p and p.strip()]
+    return "\n\n".join(parts)
 
 
 def compute_aging_boost(
@@ -602,6 +621,10 @@ class GoalBacklog:
                     last_touched_at=time.time(),
                     parent_id=goal_id,
                     priority=goal.priority,
+                    # [goal_cron_feedback_and_output_policy_plan.md P2] 父 Goal 的
+                    # description 里常写着约束条件，子 Objective 之前完全没继承，
+                    # 这里补上；执行侧还有 effective_context() 做双保险。
+                    description=goal.description,
                 )
                 self._nodes[node.id] = node
                 goal.children_ids.append(node.id)
@@ -635,6 +658,63 @@ class GoalBacklog:
             node.status = status
             node.last_touched_at = time.time()
         return True
+
+    def add_user_feedback(self, node_id: str, text: str, *, _sync: bool = True) -> bool:
+        """[goal_cron_feedback_and_output_policy_plan.md Track B] 用户对某个
+        Goal/Objective「提意见」，持久化合入该节点的 description，此后所有
+        基于这个节点派生的执行都会带上——区别于 ObjectiveExecutor.inject_guidance()
+        只对下一次提交的单个 step 生效一次就清空的临时语义。
+
+        _sync=True 时，如果该节点是绑定了 recurring CronJob 的 Goal，会额外把
+        同一条意见同步到 CronScheduler 一侧（见 CronScheduler.add_user_feedback()）；
+        联动调用时对方内部传 _sync=False，跳过继续往外联动这一步，防止两边
+        互相调用形成死循环。
+        """
+        if not text or not text.strip():
+            return False
+        cron_job_id = None
+        with self._locked():
+            node = self._nodes.get(node_id)
+            if not node:
+                return False
+            text = text.strip()
+            node.user_feedback.append({"text": text, "at": time.time()})
+            stamp = f"[用户意见 {time_utils.ts_to_str(time.time())}] {text}"
+            node.description = (
+                f"{node.description}\n\n{stamp}" if node.description else stamp
+            )
+            node.last_touched_at = time.time()
+            if _sync and node.is_goal and node.recurring and node.recurrence_cron_job_id:
+                cron_job_id = node.recurrence_cron_job_id
+        if cron_job_id:
+            try:
+                from mini_agent.evolution.cron_scheduler import CronScheduler
+                scheduler = CronScheduler(self._paths)
+                scheduler.load()
+                scheduler.add_user_feedback(cron_job_id, text, _sync=False)
+            except Exception as _mini_agent_exc:
+                from mini_agent.errors import log_exception
+                log_exception(
+                    _mini_agent_exc,
+                    where="mini_agent.perception.goal_backlog.GoalBacklog.add_user_feedback",
+                )
+        return True
+
+    def effective_context(self, node_id: str) -> str:
+        """[goal_cron_feedback_and_output_policy_plan.md 4.3] 执行侧兜底：向上
+        遍历 parent_id 链，拼出从根 Goal 到当前节点的完整说明链（含用户意见，
+        因为意见已经合入 description）。即使某次创建 Objective 时忘了传
+        description，执行侧仍能通过这个方法补上父级说明。
+        """
+        chain: list[str] = []
+        node = self._nodes.get(node_id)
+        seen: set[str] = set()
+        while node is not None and node.id not in seen:
+            seen.add(node.id)
+            if node.description:
+                chain.append(node.description)
+            node = self._nodes.get(node.parent_id) if node.parent_id else None
+        return "\n\n".join(reversed(chain))
 
     # ── [goal_cron_binding_plan.md Track A/C] 周期性 Goal 支持 ─────────────────
 

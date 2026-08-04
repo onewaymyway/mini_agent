@@ -436,6 +436,7 @@ mini-agent --retry-backoff linear --retry-backoff-step 60 --retry-backoff-max 30
 | `/agent goals abandon <id>` | 标记 Goal/Objective 放弃 |
 | `/agent goals pause <id>` | 暂停 Goal/Objective |
 | `/agent goals progress <id> <notes>` | 更新进展备注 |
+| `/agent goals feedback <id> <text>` | 持久化提意见，永久合入该节点的说明（区别于一次性的 step 补充说明）；详见 [Goal 与 Cron 绑定指南 §7](goal-cron-binding-guide.md#7-用户意见反馈持久化区别于一次性inject_guidance) |
 | `/agent goals recur <id> <schedule> [task_template]` | 声明为周期性：绑定一个 cron job，到期时自动为该 Goal 派生并启动一轮新 Objective；详见 [Goal 与 Cron 绑定指南](goal-cron-binding-guide.md) |
 | `/agent goals unrecur <id>` | 停止周期性推进（disable 绑定的 cron job，不删除 Goal/job） |
 | `/agent goals status` | 显示 AutonomousLoop tick 状态（档位/上次 tick/tick 次数） |
@@ -463,6 +464,7 @@ mini-agent --retry-backoff linear --retry-backoff-step 60 --retry-backoff-max 30
 | `/cron add-goal-cycle <goal_id> <schedule> [task_template]` | 把已有 Goal 声明为周期性：到期时自动为该 Goal 派生并启动一轮新 Objective，而不是发一条孤立消息；详见 [Goal 与 Cron 绑定指南](goal-cron-binding-guide.md) |
 | `/cron remove <id>` | 删除用户 job（`sys:` 前缀的系统 job 不可删除） |
 | `/cron set-schedule <id> <schedule>` | 修改触发时间并重新计算 `next_run_at` |
+| `/cron feedback <id> <text>` | 持久化提意见，合入 `description`/`task_template`（及 dedicated 模式的 `prompt.md`）；若绑定了 Goal 会自动双向同步；详见 [Goal 与 Cron 绑定指南 §7](goal-cron-binding-guide.md#7-用户意见反馈持久化区别于一次性inject_guidance) |
 
 **schedule 格式：**
 

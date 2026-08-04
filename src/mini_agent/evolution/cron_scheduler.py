@@ -73,6 +73,10 @@ class CronJob:
     # 反序列化后行为等同于改造前（原本就是插入顺序，且旧数据没有这个字段）。
     priority: int = 0
 
+    # [goal_cron_feedback_and_output_policy_plan.md Track A] 与 GoalNode.user_feedback
+    # 同结构，用户对本 CronJob 的持续意见反馈历史（追加记录，供 UI/CLI 回看）。
+    user_feedback: list[dict] = field(default_factory=list)
+
     def to_dict(self) -> dict:
         return {
             "id": self.id,
@@ -89,6 +93,7 @@ class CronJob:
             "goal_id": self.goal_id,
             "run_mode": self.run_mode,
             "priority": self.priority,
+            "user_feedback": self.user_feedback,
         }
 
     @staticmethod
@@ -108,6 +113,7 @@ class CronJob:
             goal_id=d.get("goal_id"),
             run_mode=d.get("run_mode", "message"),
             priority=d.get("priority", 0),
+            user_feedback=d.get("user_feedback", []),
         )
 
     @property
@@ -660,8 +666,23 @@ class CronScheduler:
         if self._submit_fn is None:
             return False
         try:
+            message = job.task_template
+            # [goal_cron_feedback_and_output_policy_plan.md 5.3] run_mode="message"
+            # 裸投递路径也统一注入产出路径规范，保持三条执行路径（dedicated cron /
+            # goal_cycle cron / 普通 objective）行为一致。
+            try:
+                from mini_agent.evolution.output_path_policy import load_policy
+                policy_text = load_policy(self._paths)
+                if policy_text:
+                    message = f"{message}\n\n[产出路径规范]\n{policy_text}"
+            except Exception as _mini_agent_exc:
+                from mini_agent.errors import log_exception
+                log_exception(
+                    _mini_agent_exc,
+                    where="mini_agent.evolution.cron_scheduler.CronScheduler._fire.output_policy",
+                )
             return self._submit_fn(
-                job.task_template,
+                message,
                 job.initiator,
                 {"cron_job_id": job.id, "cron_job_name": job.name},
             )
@@ -786,6 +807,60 @@ class CronScheduler:
             return False
         job.enabled = False
         self.save()
+        return True
+
+    def add_user_feedback(self, job_id: str, text: str, *, _sync: bool = True) -> bool:
+        """[goal_cron_feedback_and_output_policy_plan.md Track B] 用户对某个
+        CronJob「提意见」，持久化写入三个地方：
+          1. job.user_feedback —— 历史记录，供 UI/CLI 回看
+          2. job.description   —— 人类可读展示
+          3. job.task_template —— 真正决定 run_mode="message" 裸投递内容、以及
+             _fire_goal_cycle() 兜底内容的字段，只改 description 不影响实际执行
+        若该 job 是 dedicated-execution 模式（存在 prompt.md），同步追加进
+        prompt.md（render_prompt() 读的是它，不是 task_template）。
+
+        _sync=True 时，如果 job.run_mode == "goal_cycle" 且 goal_id 有效，
+        额外把同一条意见同步到绑定的 Goal（GoalBacklog.add_user_feedback()）；
+        联动调用时对方传 _sync=False，防止两边互相调用形成死循环。
+        """
+        if not text or not text.strip():
+            return False
+        text = text.strip()
+        job = self._jobs.get(job_id)
+        if not job:
+            return False
+        from mini_agent.time_utils import ts_to_str
+        job.user_feedback.append({"text": text, "at": time.time()})
+        stamp = f"[用户意见 {ts_to_str(time.time())}] {text}"
+        job.description = f"{job.description}\n\n{stamp}" if job.description else stamp
+        job.task_template = (
+            f"{job.task_template}\n\n{stamp}" if job.task_template else stamp
+        )
+        self.save()
+
+        try:
+            from mini_agent.evolution.cron_job_workspace import CronJobWorkspace
+            workspace = CronJobWorkspace(self._paths, job_id)
+            if workspace.prompt_path.exists():
+                workspace.append_user_feedback(text)
+        except Exception as _mini_agent_exc:
+            from mini_agent.errors import log_exception
+            log_exception(
+                _mini_agent_exc,
+                where="mini_agent.evolution.cron_scheduler.CronScheduler.add_user_feedback",
+            )
+
+        if _sync and job.run_mode == "goal_cycle" and job.goal_id:
+            try:
+                from mini_agent.perception.goal_backlog import GoalBacklog
+                backlog = GoalBacklog(self._paths)
+                backlog.add_user_feedback(job.goal_id, text, _sync=False)
+            except Exception as _mini_agent_exc:
+                from mini_agent.errors import log_exception
+                log_exception(
+                    _mini_agent_exc,
+                    where="mini_agent.evolution.cron_scheduler.CronScheduler.add_user_feedback",
+                )
         return True
 
     def run_now(self, job_id: str) -> bool:

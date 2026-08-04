@@ -141,11 +141,16 @@ def _fire_goal_cycle(
         return False
 
     cycle_no = goal.cycle_count + 1
+    # [goal_cron_feedback_and_output_policy_plan.md P3] 原来是"二选一"
+    # （job.task_template or goal.description），一旦 CronJob 配了
+    # task_template，父 Goal 里的约束（含用户后续追加的意见）就不会出现在
+    # 子任务里。改成拼接：父 Goal 说明在前，本轮具体任务模板在后，都保留。
+    from mini_agent.perception.goal_backlog import compose_context
     objective = goal_backlog.add_objective(
         title=f"{goal.title}（第 {cycle_no} 轮）",
         parent_id=goal.id,
         source="cron",
-        description=job.task_template or goal.description,
+        description=compose_context(goal.description, job.task_template),
     )
 
     exec_id = objective_executor.start(objective)

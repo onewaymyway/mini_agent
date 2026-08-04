@@ -145,5 +145,94 @@ progress_notes）区分开。
 - `progress_notes` 的摘要压缩（超过一定行数后自动压缩早期记录，避免长期运行后信息噪声
   过多）尚未实现，见 `goal_cron_visibility_and_intervention_improvement_plan.md` §2.2，
   留作后续独立小 Track。
-- 周期性 Goal 与执行公平性/资源门控机制的联动可视化（比如"这一轮迟迟不触发是因为被
-  排队，而不是 Goal 状态异常"）尚未实现，见同一份文档 §5（Phase 5，记录方向不实现）。
+## 7. 用户意见反馈（持久化，区别于一次性 inject_guidance）
+
+[`goal_cron_feedback_and_output_policy_plan.md`] 之前唯一的反馈通道
+`ObjectiveExecutor.inject_guidance()` 只影响下一次提交的单个 step，提交后立即清空。
+现在多了一条**持久化**通道：对一个 Goal 或 CronJob 提的意见，会永久合入该节点的
+`description`（CronJob 还会同步写入 `task_template`），此后所有基于这个节点派生的
+执行（新一轮子 Objective、下一次 cron 触发）都会带着这条意见，不需要每次手动重复。
+
+### 用法
+
+CLI：
+```
+/agent goals feedback <goal_id_or_objective_id> <text>
+/cron feedback <job_id> <text>
+```
+
+REST：
+```
+POST /v1/goals/{goal_id}/feedback   Body: {"text": str}
+POST /v1/cron/jobs/{job_id}/feedback   Body: {"text": str}
+```
+
+kanban：Goal 详情卡片、Cron job 卡片各有一个「💬 提意见」折叠面板，可以看历史记录、
+提交新意见。
+
+### 写入位置与联动
+
+- Goal：追加进 `GoalNode.user_feedback`（历史记录）+ 合入 `description`。
+- CronJob：追加进 `CronJob.user_feedback` + 合入 `description` 和 `task_template`
+  （`task_template` 才是真正决定裸投递内容/goal_cycle 兜底内容的字段）；如果该 job
+  是 dedicated-execution 模式（存在 `.agent/cron_jobs/<id>/prompt.md`），同时追加进
+  `prompt.md` 末尾（不解析占位符，不破坏已有模板结构）。
+- **双向同步**：如果 Goal 已绑定周期性 CronJob（`recurring=True`），对 Goal 提的意见
+  会自动同步到绑定的 CronJob，反之亦然（`run_mode="goal_cycle"` 且 `goal_id` 有效时）。
+  两边各自只联动一次，不会来回反弹。
+
+### 子任务如何看到父级说明和意见
+
+`GoalBacklog.add_objectives_for_goal()` 创建子 Objective 时会带上父 Goal 的
+`description`；`goal_cron_bridge._fire_goal_cycle()` 创建周期子 Objective 时会拼接
+父 Goal 说明和本轮 `task_template`（不再是"配了 task_template 就丢父级约束"的
+二选一）。执行侧还有 `GoalBacklog.effective_context(node_id)` 作为双保险：向上遍历
+`parent_id` 链拼出完整说明链，`ObjectiveExecutor._submit_step()` 在每个 step 的
+`message` 里都会带上这段 `[目标说明]`。
+
+本轮不做"意见"的语义理解/冲突检测——新意见和旧意见只做追加，不去重、不判断是否矛盾，
+由 agent 自己在执行时综合判断。
+
+## 8. 产出路径规范（用户可编辑）
+
+[`goal_cron_feedback_and_output_policy_plan.md` 第5节] 新增一份**用户可编辑**的规范
+文件：`.agent/policies/output_path_policy.md`，首次不存在时自动写入内置默认模板：
+
+```markdown
+# 产出路径规范
+
+在没有特殊说明的情况下，执行任务时请遵守：
+
+1. 禁止把产出的代码写入主项目 `src/` 目录。
+2. 禁止把产出的代码写入 `tests/` 目录。
+3. 和 skill 相关的产出，放到对应 skill 的目录下。
+4. 任务本身已经说明了工作目录的，产出放到该工作目录下。
+
+如果任务描述中明确要求修改 `src/`、`tests/` 或指定了其他路径，以任务描述的
+明确说明为准，本规范不覆盖显式指令。
+```
+
+用户后续可以直接编辑这个文件（比如加第 5 条规则），不需要改代码。已存在的文件不会被
+覆盖。对应模块：`evolution/output_path_policy.py`（`ensure_policy_file()` 幂等创建，
+`load_policy()` 读取当前内容）。
+
+### 注入点（三条执行路径统一注入，行为一致）
+
+- `ObjectiveExecutor._submit_step()`：每个 step 提交时都追加 `[产出路径规范]` 段
+  （每步都加，不是只加第一步，避免长任务多步执行中间"忘记"）。
+- dedicated-execution cron（`CronJobWorkspace`）：`DEFAULT_PROMPT_TEMPLATE` 新增
+  `{{output_policy}}` 占位符，`render_prompt()` 渲染时替换为规范全文。已存在的、用户
+  自定义的 `prompt.md` 如果没有这个占位符则不受影响（不强行插入）——想要这段规范就自己
+  在 `prompt.md` 里加上 `{{output_policy}}`。
+- `run_mode="message"` 裸投递路径（`CronScheduler._fire()`）：投递前统一在消息末尾
+  追加同一段规范文本。
+
+**本轮不做强制拦截**——只做 prompt 层面的规则注入，不在 hook 里硬拦截写 `src/` 的工具
+调用，避免误伤"用户确实特殊说明要改 `src/` 下代码"的合法场景。任务描述里的显式指令
+始终优先于这份规范。
+
+## 9. 已知限制（新增）
+
+- 用户意见追加不做去重/冲突检测：同一个节点反复提相互矛盾的意见时，历史全部保留，
+  agent 在执行时自己综合判断，不会自动合并或提示冲突。
+- 产出路径规范只是 prompt 层面的软约束，不做运行时强制校验/拒绝执行。

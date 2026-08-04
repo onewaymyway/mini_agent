@@ -91,6 +91,16 @@ def handle_goals_cmd(args: list[str], agent=None) -> None:
             return
         _cmd_progress(gb, rest[0], " ".join(rest[1:]))
 
+    elif subcmd == "feedback":
+        # [goal_cron_feedback_and_output_policy_plan.md 3.4]
+        # /agent goals feedback <id> <text> — 持久化提意见，此后所有基于这个
+        # Goal/Objective 派生的执行都会带着这条意见，区别于一次性的
+        # inject_guidance()。
+        if len(rest) < 2:
+            R.print_error("Usage: /agent goals feedback <id> <text>")
+            return
+        _cmd_feedback(gb, rest[0], " ".join(rest[1:]))
+
     elif subcmd == "recur":
         # [goal_cron_binding_plan.md Track D] /agent goals recur <id> <schedule> [task]
         if len(rest) < 2:
@@ -120,7 +130,7 @@ def handle_goals_cmd(args: list[str], agent=None) -> None:
         R.print_error(f"Unknown subcommand: {subcmd!r}")
         R.print_info(
             "Available: list, add, obj add, done, abandon, accept, reject, pause, "
-            "progress, recur, unrecur, status, reset-step"
+            "progress, feedback, recur, unrecur, status, reset-step"
         )
 
 
@@ -312,6 +322,22 @@ def _cmd_progress(gb, node_id: str, notes: str) -> None:
         return
     gb.update_progress(node_id, notes)
     R.print_success(f"进展已更新: {node_id}")
+
+
+def _cmd_feedback(gb, node_id: str, text: str) -> None:
+    """[goal_cron_feedback_and_output_policy_plan.md 3.4] 持久化提意见，
+    合入该节点的 description，此后所有基于这个 Goal/Objective 派生的执行
+    都会带着这条意见。若节点是绑定了周期性 CronJob 的 Goal，会自动双向
+    同步到对应 CronJob。"""
+    node = gb.get(node_id)
+    if not node:
+        R.print_error(f"Not found: {node_id!r}")
+        return
+    ok = gb.add_user_feedback(node_id, text)
+    if ok:
+        R.print_success(f"意见已记录并合入说明: {node_id}")
+    else:
+        R.print_error(f"记录意见失败: {node_id}")
 
 
 def _cmd_loop_status(agent, paths) -> None:

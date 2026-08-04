@@ -299,6 +299,10 @@ class AgentClient:
     def skip_goal_next_cycle(self, goal_id: str):
         return self._post(f"/goals/{goal_id}/skip_next_cycle")
 
+    def add_goal_feedback(self, goal_id: str, text: str):
+        """[goal_cron_feedback_and_output_policy_plan.md 3.5/3.6] 持久化提意见。"""
+        return self._post(f"/goals/{goal_id}/feedback", {"text": text})
+
     # ── 看板：Objective 执行操作（Track D）+ 全局待办中心（Track A）───
     def cancel_objective(self, execution_id: str):
         return self._post(f"/objectives/{execution_id}/cancel")
@@ -440,6 +444,10 @@ class AgentClient:
 
     def run_cron_job_now(self, job_id: str):
         return self._post(f"/cron/jobs/{job_id}/run")
+
+    def add_cron_job_feedback(self, job_id: str, text: str):
+        """[goal_cron_feedback_and_output_policy_plan.md 3.5/3.6] 持久化提意见。"""
+        return self._post(f"/cron/jobs/{job_id}/feedback", {"text": text})
 
     def cron_job_workspace(self, job_id: str):
         """cron 任务专属执行状态：state（status/progress_summary/last_error 等）

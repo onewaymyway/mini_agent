@@ -122,6 +122,8 @@ DEFAULT_PROMPT_TEMPLATE = (
     "{{progress}}\n"
     "请从上述进度继续，不要从头重新开始。\n"
     "{{/progress}}\n"
+    "\n"
+    "{{output_policy}}\n"
 )
 
 
@@ -195,9 +197,15 @@ class CronJobWorkspace:
     def render_prompt(self, task_description: str) -> str:
         """把 prompt.md 模板渲染成最终发给 agent 的文本。
 
-        支持两个占位符：
+        支持三个占位符：
           {{task_description}} — cron_jobs.json 里配置的 task_template
           {{progress}}         — 上次执行遗留的 progress_summary（可能为空）
+          {{output_policy}}    — [goal_cron_feedback_and_output_policy_plan.md
+                                  5.3] 产出路径规范全文（见 output_path_policy.py）。
+                                  已存在的、用户自定义的 prompt.md 如果没有这个
+                                  占位符则不受影响（不强行插入）——用户如果想要
+                                  这段规范，自己在 prompt.md 里加上即可，等价于
+                                  用户主动选择不需要。
         以及一个极简的 {{#progress}}...{{/progress}} 条件块：
         progress 为空时整段连同标记一起去掉，避免每次都印出一段空的
         "上次进度"标题。
@@ -218,7 +226,33 @@ class CronJobWorkspace:
 
         template = template.replace("{{task_description}}", task_description)
         template = template.replace("{{progress}}", progress)
+        if "{{output_policy}}" in template:
+            try:
+                from mini_agent.evolution.output_path_policy import load_policy
+                policy_text = load_policy(self._paths)
+            except Exception:
+                policy_text = ""
+            template = template.replace("{{output_policy}}", policy_text)
         return template
+
+    # ── 用户意见反馈 ──────────────────────────────────────────────────────
+
+    def append_user_feedback(self, text: str) -> None:
+        """[goal_cron_feedback_and_output_policy_plan.md 3.2] dedicated-execution
+        模式下 render_prompt() 读的是 prompt.md 模板，不是 task_template，
+        所以 CronScheduler.add_user_feedback() 同步写意见时也要喂到这里。
+        直接在文件末尾追加一段，不做模板占位符解析，避免破坏用户已有的
+        自定义模板结构。
+        """
+        if not text or not text.strip():
+            return
+        from mini_agent.time_utils import ts_to_str
+        self.dir.mkdir(parents=True, exist_ok=True)
+        stamp = f"\n\n[用户意见 {ts_to_str(time.time())}] {text.strip()}\n"
+        if not self.prompt_path.exists():
+            self.prompt_path.write_text(DEFAULT_PROMPT_TEMPLATE, encoding="utf-8")
+        with open(self.prompt_path, "a", encoding="utf-8") as f:
+            f.write(stamp)
 
     # ── 执行记录 ──────────────────────────────────────────────────────────
 

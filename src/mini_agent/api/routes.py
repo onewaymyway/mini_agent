@@ -62,6 +62,7 @@ api/routes.py — FastAPI 路由定义
     GET    /v1/goals                 GoalBacklog 完整视图（active goals + objectives）
     POST   /v1/goals                 新增 Goal
     PATCH  /v1/goals/{goal_id}       更新 Goal 状态/进度/优先级/标题/描述
+    POST   /v1/goals/{goal_id}/feedback  持久化提意见（合入 description，双向同步 cron）
     GET    /v1/self/diagnosis_feedback  自诊断信号闭环 P1-P4 汇总（改进候选清单/
                                          建议采纳率回看/能力快照 diff/skill 有效性）
     GET    /v1/self/goal_fairness    [goal_execution_fairness_improvement_plan.md
@@ -115,6 +116,7 @@ api/routes.py — FastAPI 路由定义
     POST   /v1/cron/jobs             添加 cron job
     PUT    /v1/cron/jobs/{id}        修改 job（enable/disable/schedule）
     POST   /v1/cron/jobs/{id}/run    立即运行一次
+    POST   /v1/cron/jobs/{id}/feedback  持久化提意见（合入 description/task_template/prompt.md）
     GET    /v1/cron/jobs/{id}/workspace       专属执行状态（state/config/最近执行列表）
     GET    /v1/cron/jobs/{id}/prompt          读取用户可编辑的 prompt.md
     PUT    /v1/cron/jobs/{id}/prompt          修改 prompt.md
@@ -2976,6 +2978,30 @@ async def skip_goal_next_cycle(goal_id: str, request: Request):
     return {"goal": updated.to_dict() if updated else None}
 
 
+@router.post("/goals/{goal_id}/feedback")
+async def add_goal_feedback(goal_id: str, request: Request):
+    """POST /v1/goals/{goal_id}/feedback — [goal_cron_feedback_and_output_
+    policy_plan.md 3.5] 持久化提意见，合入该节点的 description，此后所有基于
+    这个 Goal/Objective 派生的执行都会带着这条意见。若该节点是绑定了周期性
+    CronJob 的 Goal，会自动双向同步到对应 CronJob。
+    Body: { "text": str }
+    返回更新后的节点摘要，供前端立即刷新。
+    """
+    body = await request.json()
+    text = (body.get("text") or "").strip()
+    if not text:
+        raise HTTPException(status_code=400, detail="text is required")
+    backlog, _scheduler = _goal_backlog_and_scheduler(request)
+    node = backlog.get(goal_id)
+    if node is None:
+        raise HTTPException(status_code=404, detail=f"Goal '{goal_id}' not found")
+    ok = backlog.add_user_feedback(goal_id, text)
+    if not ok:
+        raise HTTPException(status_code=500, detail="add_user_feedback failed")
+    updated = backlog.get(goal_id)
+    return {"goal": updated.to_dict() if updated else None}
+
+
 # ── Objective 执行操作（看板与自主性改进方案 Track D）────────────────────────
 # 给 ObjectiveExecutor 已有的状态机加几个转换入口：终止 / 手动重试当前步 /
 # 插一句话补充上下文。都是"事实来源仍是 ObjectiveExecutor"的操作——不直接
@@ -4210,6 +4236,37 @@ async def run_cron_job_now(job_id: str, request: Request):
             raise HTTPException(status_code=404, detail=f"Job '{job_id}' not found")
         raise HTTPException(status_code=500, detail="Job trigger failed")
     return {"triggered": True, "job_id": job_id}
+
+
+@router.post("/cron/jobs/{job_id}/feedback")
+async def add_cron_job_feedback(job_id: str, request: Request):
+    """POST /v1/cron/jobs/{job_id}/feedback — [goal_cron_feedback_and_output_
+    policy_plan.md 3.5] 持久化提意见，写入 description/task_template（及
+    dedicated 模式下的 prompt.md）。若该 job 绑定了 Goal（run_mode=goal_cycle），
+    自动双向同步到对应 Goal。
+    Body: { "text": str }
+    """
+    http_server = getattr(request.app.state, "http_server", None)
+    if http_server is None:
+        raise HTTPException(status_code=503, detail="HttpServer not available")
+    _require_owner(request)
+
+    cs = getattr(http_server.bridge, "_cron_scheduler", None)
+    if cs is None:
+        raise HTTPException(status_code=503, detail="CronScheduler not available")
+
+    body = await request.json()
+    text = (body.get("text") or "").strip()
+    if not text:
+        raise HTTPException(status_code=400, detail="text is required")
+    job = cs.get(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail=f"Job '{job_id}' not found")
+    ok = cs.add_user_feedback(job_id, text)
+    if not ok:
+        raise HTTPException(status_code=500, detail="add_user_feedback failed")
+    job = cs.get(job_id)
+    return {"job": {**job.to_dict(), "next_run_str": job.next_run_str()} if job else None}
 
 
 # ── Cron Job Workspace REST API（专属执行机制：进度/日志/prompt/卡死恢复）───

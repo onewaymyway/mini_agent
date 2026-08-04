@@ -2151,6 +2151,32 @@ def _render_goal_card(
                         else:
                             st.rerun()
 
+    # [goal_cron_feedback_and_output_policy_plan.md Track E] 用户对本节点
+    # 提意见——持久化合入 description，此后所有基于这个 Goal/Objective 派生
+    # 的执行都会带着这条意见（区别于 objective_executor 的临时补充说明，
+    # 那个只影响下一次提交的一个 step）。历史意见展开可回看。
+    with st.expander("💬 提意见", expanded=False):
+        user_feedback = n.get("user_feedback") or []
+        if user_feedback:
+            for item in reversed(user_feedback):
+                at = item.get("at")
+                ts_str = time.strftime("%m-%d %H:%M", time.localtime(at)) if at else "-"
+                st.caption(f"`{ts_str}` {item.get('text', '')}")
+        else:
+            st.caption("还没有意见记录。")
+        with st.form(f"goal_feedback_{n.get('id')}", clear_on_submit=True):
+            fb_text = st.text_area("你的意见（会永久合入这个节点的说明，之后每次执行都会带着）", height=60)
+            fb_submit = st.form_submit_button("提交意见")
+        if fb_submit:
+            if not fb_text.strip():
+                st.error("意见内容不能为空")
+            else:
+                res = client.add_goal_feedback(n.get("id"), fb_text.strip())
+                if res and "_error" in res:
+                    st.error(res["_error"])
+                else:
+                    st.rerun()
+
 
 def render_kanban_tab(client: AgentClient):
     st.markdown("#### 📌 目标看板 (Goal Backlog)")
@@ -3728,6 +3754,35 @@ def render_cron_jobs_tab(client: AgentClient):
                                 st.error(f"保存失败：{save_res['_error']}")
                             else:
                                 st.success("已保存，下次该 job 触发时生效。")
+
+            # [goal_cron_feedback_and_output_policy_plan.md Track E] 用户对本
+            # CronJob 提意见——持久化写入 description/task_template（及
+            # dedicated 模式下的 prompt.md）；若绑定了 Goal（run_mode=goal_cycle）
+            # 会自动双向同步。复用 P1-P4 观测面板的卡片样式，保持视觉一致。
+            with st.expander("💬 提意见", expanded=False):
+                job_feedback = job.get("user_feedback") or []
+                if job_feedback:
+                    for item in reversed(job_feedback):
+                        at = item.get("at")
+                        ts_str = time.strftime("%m-%d %H:%M", time.localtime(at)) if at else "-"
+                        st.caption(f"`{ts_str}` {item.get('text', '')}")
+                else:
+                    st.caption("还没有意见记录。")
+                with st.form(f"cron_feedback_{job_id}", clear_on_submit=True):
+                    fb_text = st.text_area(
+                        "你的意见（会永久合入这个 job 的说明，之后每次触发都会带着）",
+                        height=60, key=f"cron_feedback_text_{job_id}",
+                    )
+                    fb_submit = st.form_submit_button("提交意见")
+                if fb_submit:
+                    if not fb_text.strip():
+                        st.error("意见内容不能为空")
+                    else:
+                        res = client.add_cron_job_feedback(job_id, fb_text.strip())
+                        if res and "_error" in res:
+                            st.error(res["_error"])
+                        else:
+                            st.rerun()
 
             btn_col1, btn_col2 = st.columns(2)
             with btn_col1:

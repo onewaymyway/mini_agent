@@ -1,13 +1,15 @@
 # Goal/Cron 用户意见反馈、父级说明继承与产出路径规范改进方案
 
-> 状态：待确认，未开始实施
+> 状态：**已实施完成**（Track A-J 全部落地，详见 `docs/goal-cron-binding-guide.md`
+> 第7-9节；回归测试见 `tests/test_goal_cron_feedback_and_output_policy.py`）
 > 关联代码：`src/mini_agent/perception/goal_backlog.py`、`src/mini_agent/evolution/cron_scheduler.py`、
 > `src/mini_agent/evolution/goal_cron_bridge.py`、`src/mini_agent/evolution/cron_job_workspace.py`、
 > `src/mini_agent/evolution/objective_executor.py`、`src/mini_agent/cli/commands/goals.py`、
 > `src/mini_agent/cli/commands/cron.py`、`src/mini_agent/api/routes.py`、
-> `apps/mini_agent_kanban/app.py`
+> `apps/mini_agent_kanban/app.py`、`apps/mini_agent_kanban/client.py`
 > 新增文件：`src/mini_agent/evolution/output_path_policy.py`、
-> `.agent/policies/output_path_policy.md`（运行时生成，用户可编辑）
+> `.agent/policies/output_path_policy.md`（运行时生成，用户可编辑）、
+> `tests/test_goal_cron_feedback_and_output_policy.py`
 
 ## 0. 目标与非目标
 
