@@ -36,9 +36,19 @@ from src.searchers.douban_search import DoubanSearcher
 
 # 新增：金融
 from src.searchers.eastmoney_guba import EastmoneyGubaSearcher
+from src.searchers.xueqiu_search import XueqiuSearcher
 
 # 新增：学术
 from src.searchers.scholar_search import ScholarSearcher
+
+# 新增：房产
+from src.searchers.lianjia_search import LianjiaSearcher
+
+# 新增：视频
+from src.searchers.youku_search import YoukuSearcher, YoukuConfig
+
+# 新增：新闻（财联社）
+from src.searchers.cls_news import ClsNewsSearcher
 
 __all__ = [
     # 基础类
@@ -67,4 +77,9 @@ __all__ = [
     "DoubanSearcher",
     "EastmoneyGubaSearcher",
     "ScholarSearcher",
+    "XueqiuSearcher",
+    "LianjiaSearcher",
+    "ClsNewsSearcher",
+    "YoukuSearcher",
+    "YoukuConfig",
 ]
