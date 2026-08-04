@@ -57,6 +57,7 @@ mini_agent 不追求让 AI 拥有自己的目标，而是持续提高对用户�
 | 🧭 软目标 Derive | **Stage 9**：autonomous 档位下从三路信号（capability_map 低置信度 / WorkThread 积压 / 高频 Lesson）自动生成 Goal 建议，capability 类先经 ExplorationSandbox 验证再提案 |
 | 🗞️ 日报 / 💡 推荐 / 🧭 决策画像 | 每日融合日报（`/digest daily`，行为+目标+git提交）、主动推荐排序（`/next`，停滞目标/注意力错配）、决策画像归纳（`/decision_profile`，默认关闭）；三者开关与阈值均可通过 `agent_config.json` 的 `digest_advisor` 配置块调整，Kanban 看板有对应可视化卡片 |
 | 🔄 Workflow | 工作流编排机制，支持多步骤自动化任务执行 |
+| 🧪 混合执行（hybrid_exec） | 独立于 workflow 的脚本/LLM/Agent 混合执行系统：探索优先 agent/llm、执行优先脚本、脚本坏了先自愈修复、修不好才降级；脚本仓库版本管理 + 成功率统计 + 自动退役，可独立 `import` 调用，也可作为 `hybrid_step` 接入 workflow |
 | 🌍 Env Info | 环境信息自动采集与注入，内置 OS/Python/时区 Provider，支持自定义扩展 |
 | 💾 History 即时落盘 | RawHistory 采用 JSONL 追加写 + fsync，每次操作立即持久化，防崩溃丢失 |
 | 🎯 Selective 压缩 | 按 _type 差异化权重评分保留，优先保留用户意图和回复，智能截断工具噪音 |
@@ -942,6 +943,7 @@ python -m pytest tests/ -q
 - [Goal 模式指南](docs/goal-mode-guide.md) — **新增**：设定一个目标，Agent 自动多轮尝试直至达成或触发安全阀，`/goal` 命令，验收标准协商、GoalJudge 判定、异常中断恢复
 - [轮次守门员指南（Turn Judge）](docs/turn-judge-guide.md) — **新增**：轮次结束等待用户输入前，自动核查是"真的需要人"还是"技术性卡壳"，后者由系统代替用户反馈继续推进
 - [Workflow 指南](docs/workflow-guide.md) — 工作流编排机制
+- [脚本/LLM/Agent 混合执行系统指南](docs/hybrid-exec-guide.md) — **新增**：独立于 workflow 的 `hybrid_exec` 系统，脚本优先/坏了先自愈/修不好再降级 LLM/Agent，脚本仓库版本管理+成功率统计+自动退役，可独立调用也可作为 `hybrid_step` 接入 workflow（插件文件开关），`GET /v1/hybrid_exec/summary` + 看板 "🧪 混合执行" Tab，`ReexplorePolicy` 跨 run 主动重探索（默认关闭）
 - [Env Info 指南](docs/env-info-guide.md) — 环境信息采集与注入，自定义 Provider 扩展
 - [LLM 故障转移指南](docs/llm-failover-guide.md) — 多配置 fallback chain + 多 API Key 轮转
 - [重试退避指南](docs/retry-backoff-guide.md) — fixed / linear / exponential 退避策略详解
@@ -957,6 +959,8 @@ MIT License
 欢迎提交 Issue 和 Pull Request！
 
 ---
+
+*2026-08-04 脚本/LLM/Agent 混合执行系统（hybrid_exec，P1-P4）*：新增独立顶层包 `src/mini_agent/hybrid_exec/`，把"探索优先 agent/llm、执行优先脚本、脚本坏了先自愈修复、修不好才降级"封装成可复用组件——`TaskSpec`/`ExecutionResult`/`ExecutionTier` 三元组数据结构；`ScriptRepository` 做脚本版本存储+成功率统计+连续失败自动退役；`ScriptRunner` 复用 `py_step_runner.py` 的子进程隔离协议不重造沙箱；`LLMExplorer`/`AgentExplorer` 负责从 0 生成脚本（LLM 优先，dry-run 不过才升级 Agent）；`LLMRepairer`/`AgentRepairer` 负责脚本报错后修复；`FallbackExecutor` 在脚本彻底不可用时兜底给答案（不产出脚本）；`HybridExecutor` 是顶层编排器，`default_executor(project_root)` 一行拿到默认配置实例，可完全脱离 workflow 独立 `import` 调用。P2 补齐 Agent 探索/修复（复用 `agent_spawn.build_minimal_agent`，`agent_fs_write_enabled` 默认关闭走只读沙箱）并接入 workflow 新 step 类型 `hybrid_step`——**未修改 workflow 包任何源码**，通过 `register_step_executor()` 公开扩展点 + 薄插件文件 `myplugins/hybrid_step.py` 注册（删除该文件即禁用，不同于 `python_step_enabled` 配置开关模式）。P3 加上 `RunRecorder` 落盘每次 run 的完整决策轨迹到 `.agent/hybrid_exec/runs/<task_id>/`，独立调用与 workflow 场景共享同一份统计口径。P4 新增只读端点 `GET /v1/hybrid_exec/summary` + 看板 "🧪 混合执行" Tab 展示各 task 的脚本命中率/tier 分布；新增 `ReexplorePolicy` 基于累计成功率的跨 run 主动重探索（默认不启用，opt-in）。54 个单元/集成测试全部通过，且验证过对现有 workflow/kanban 相关测试无回归；仍缺真实 LLM/Agent 端到端验证，详见 [脚本/LLM/Agent 混合执行系统指南](docs/hybrid-exec-guide.md)
 
 *最后更新：2026-07-01* — 具身智能改进 A/B/C 三阶段全部完成（12 项：本体感知/余裕感知/工具透明性/AgentSelfModel/时间加权记忆/认知锚点/自维护模块等），详见 [具身智能改进指南](docs/embodied-agent-guide.md)
 

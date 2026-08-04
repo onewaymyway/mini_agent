@@ -52,6 +52,8 @@
 - `scripts/protected_paths.py` — 受保护路径清单（T3 治理红线，独立于 `src/mini_agent/` 包，自我演化相关安全机制使用）
 - `weixin_bot.py` — 微信端接入入口（与 `main.py` 同级，内嵌 `mini_agent`，每个 openid 独立 Agent 实例，权限审批走微信消息 + `threading.Event` 而非终端阻塞）；`Agent()` 首次构造必须经由 `loop.run_in_executor()` 丢进线程池，不能在 `on_text` 协程里同步调用，否则 `MCPManager.register_all()` 内部的 `run_coroutine_threadsafe(...).result()` 会在事件循环自身线程里死锁（详见 [微信接入指南](docs/weixin-bot-guide.md) 第 3 节）
 - `apps/weixin_plugin/weixin/` — 微信网关 SDK（`bot.py`/`types.py`/`login.py`），供 `weixin_bot.py` 使用
+- `src/mini_agent/hybrid_exec/` — 脚本/LLM/Agent 混合执行系统（独立于 `workflow` 之外的顶层包，2026-08 新增，P1-P4 已完成）：`spec.py`（`TaskSpec`/`ExecutionResult`/`ExecutionTier`）/`repository.py`（`ScriptRepository` 脚本版本+统计+退役）/`runner.py`（`ScriptRunner` 复用 `py_step_runner.py` 协议）/`explorer.py`（`LLMExplorer`/`AgentExplorer`）/`repairer.py`（`LLMRepairer`/`AgentRepairer`）/`fallback.py`（`FallbackExecutor`）/`executor.py`（`HybridExecutor` 顶层编排器 + `default_executor()` 工厂）/`recorder.py`（`RunRecorder` run 记录落盘）/`policy.py`（`ReexplorePolicy` 跨 run 主动重探索）/`kanban_summary.py`（看板只读汇总）/`workflow_integration.py`（`hybrid_step` 接入 workflow，`register_step_executor()` 扩展点）；详见 [脚本/LLM/Agent 混合执行系统指南](docs/hybrid-exec-guide.md)
+- `myplugins/hybrid_step.py` — 薄插件文件：注册 `hybrid_step` workflow 类型，删除即等效禁用
 
 ## 开发规范
 
@@ -426,6 +428,17 @@ mini-agent user token u_a1b2c3d4                       # 重新生成 token
 - 工作流编排机制，支持多步骤自动化任务执行
 - 参见 [Workflow 指南](docs/workflow-guide.md)
 
+### 混合执行系统（hybrid_exec，2026-08 新增）
+
+- 模块位置：`src/mini_agent/hybrid_exec/`（独立于 `workflow` 包之外的顶层包，P1-P4 均已完成）
+- 核心决策逻辑：探索优先 agent/llm（`LLMExplorer` → `AgentExplorer`）、执行优先脚本（`ScriptRunner` 复用 `py_step_runner.py` 协议）、脚本故障时优先修复脚本（`LLMRepairer` → `AgentRepairer`）、修复不了才降级到 `FallbackExecutor`（LLM/Agent 直接给答案，不产脚本）
+- 顶层编排器 `HybridExecutor`，便捷工厂 `default_executor(project_root)`；`TaskSpec`/`ExecutionResult`/`ExecutionTier` 三元组对外接口，可完全脱离 workflow 独立 `import` 调用
+- `ScriptRepository` 管理脚本版本（`.agent/hybrid_exec/scripts/<task_id>/`），含成功率统计 + 连续失败自动退役
+- 接入 workflow 新 step 类型 `hybrid_step`：**未修改 workflow 包任何源码**，通过 `workflow/executors.py::register_step_executor()` 公开扩展点 + 薄插件文件 `myplugins/hybrid_step.py` 注册，删除插件文件即禁用（与 `python_step_enabled` 配置开关模式不同）
+- `RunRecorder` 落盘每次 run 决策轨迹到 `.agent/hybrid_exec/runs/<task_id>/`（`summary.json` 滚动聚合），独立调用与 workflow 场景共享同一份统计口径；`ReexplorePolicy` 基于累计成功率的跨 run 主动重探索（默认不启用）
+- 只读端点 `GET /v1/hybrid_exec/summary`（`kanban_summary.py::build_kanban_summary()`）+ 看板 "🧪 混合执行" Tab
+- 参见 [脚本/LLM/Agent 混合执行系统指南](docs/hybrid-exec-guide.md)
+
 ### Env Info（环境信息采集）
 
 - 模块位置：`src/mini_agent/env_info/`
@@ -745,6 +758,7 @@ mini-agent user token u_a1b2c3d4                       # 重新生成 token
 - [Goal 模式指南](docs/goal-mode-guide.md) — 设定目标后自动多轮尝试直至达成，`/goal` 命令，验收标准协商 / GoalJudge 判定 / 异常中断恢复
 - [轮次守门员指南](docs/turn-judge-guide.md) — 轮次结束等待用户输入前自动核查是否真的需要真人 / 是否应由系统代替用户反馈继续（`turn_judge` 配置块，默认关闭）
 - [用户行为感知系统指南](docs/behavior-perception-guide.md) — 桌面（前台窗口/空闲/浏览器插件+CDP专用浏览器/Git/终端/媒体/应用启停）+ 手机（Tasker/快捷指令/Android伴侣App）行为采集，配置文件 `<project_root>/behavior_config.json`（跟 `agent_config.json` 同级），总开关与全部子开关默认关闭；分析层每日聚合工作与生活画像日报
+- [脚本/LLM/Agent 混合执行系统指南](docs/hybrid-exec-guide.md) — **新增**：独立于 workflow 的 `hybrid_exec` 系统（P1-P4 已完成），探索优先 agent/llm、执行优先脚本、脚本坏了先自愈修复、修不好再降级，脚本仓库版本管理+成功率统计+自动退役，`default_executor()` 独立调用 / `hybrid_step` workflow 接入（插件文件开关）/ `GET /v1/hybrid_exec/summary` + 看板 Tab / `ReexplorePolicy` 跨 run 主动重探索（默认关闭）
 
 ## 当前进展
 
