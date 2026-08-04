@@ -24,6 +24,7 @@ from typing import Optional
 
 from .explorer import AgentExplorer, Explorer, LLMExplorer
 from .fallback import FallbackExecutor
+from .recorder import RunRecorder
 from .repairer import AgentRepairer, LLMRepairer, Repairer
 from .repository import ScriptRepository
 from .runner import RunnerAppConfig, ScriptRunner
@@ -40,6 +41,7 @@ class HybridExecutor:
         llm_repairer: Repairer,
         agent_repairer: Repairer,
         fallback: FallbackExecutor,
+        run_recorder: Optional[RunRecorder] = None,
     ) -> None:
         self.repo = repo
         self.script_runner = script_runner
@@ -48,10 +50,20 @@ class HybridExecutor:
         self.llm_repairer = llm_repairer
         self.agent_repairer = agent_repairer
         self.fallback = fallback
+        self.run_recorder = run_recorder
 
     # -- 对外入口 ----------------------------------------------------------
 
     def run(self, task: TaskSpec) -> ExecutionResult:
+        result = self._run(task)
+        if self.run_recorder is not None:
+            try:
+                self.run_recorder.record(task.task_id, result)
+            except OSError:
+                pass  # run 记录落盘失败不应该影响本次执行结果的返回
+        return result
+
+    def _run(self, task: TaskSpec) -> ExecutionResult:
         start = time.monotonic()
         attempts: "list[AttemptRecord]" = []
 
@@ -295,6 +307,7 @@ def default_executor(project_root, *, mini_agent_config=None, retire_after_conse
         retire_after_consecutive_fail=retire_after_consecutive_fail,
     )
     script_runner = ScriptRunner(app_cfg)
+    run_recorder = RunRecorder(project_root / ".agent" / "hybrid_exec" / "runs")
     return HybridExecutor(
         repo=repo,
         script_runner=script_runner,
@@ -303,4 +316,5 @@ def default_executor(project_root, *, mini_agent_config=None, retire_after_conse
         llm_repairer=LLMRepairer(app_cfg),
         agent_repairer=AgentRepairer(app_cfg),
         fallback=FallbackExecutor(app_cfg),
+        run_recorder=run_recorder,
     )

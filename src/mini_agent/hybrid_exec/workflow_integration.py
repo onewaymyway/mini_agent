@@ -45,6 +45,7 @@ from mini_agent.workflow.schema import WorkflowStep
 from .executor import HybridExecutor
 from .explorer import AgentExplorer, LLMExplorer
 from .fallback import FallbackExecutor
+from .recorder import RunRecorder
 from .repairer import AgentRepairer, LLMRepairer
 from .repository import ScriptRepository
 from .runner import RunnerAppConfig, ScriptRunner
@@ -122,6 +123,9 @@ class HybridStepExecutor(StepExecutor):
         app_cfg = RunnerAppConfig.from_mini_agent_config(runner._cfg)
         repo = ScriptRepository(project_root / ".agent" / "hybrid_exec" / "scripts")
         script_runner = ScriptRunner(app_cfg)
+        # 全局 run 记录目录，跨 workflow/独立调用共享同一份统计口径
+        # （对应 next_doc/hybrid_exec_design_plan.md §6）。
+        run_recorder = RunRecorder(project_root / ".agent" / "hybrid_exec" / "runs")
 
         # 脚本执行的 session/output 目录挂到本次 workflow session 下，
         # 便于事后从 workflow 数据目录里找到这次 hybrid_step 的脚本产物
@@ -155,6 +159,7 @@ class HybridStepExecutor(StepExecutor):
             llm_repairer=LLMRepairer(app_cfg),
             agent_repairer=AgentRepairer(app_cfg),
             fallback=FallbackExecutor(app_cfg),
+            run_recorder=run_recorder,
         )
 
         result = executor.run(task)

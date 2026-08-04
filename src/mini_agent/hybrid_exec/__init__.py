@@ -19,6 +19,7 @@ mini_agent.hybrid_exec — 脚本/LLM/Agent 混合执行系统
 from .executor import HybridExecutor, default_executor
 from .explorer import AgentExplorer, Explorer, LLMExplorer
 from .fallback import FallbackExecutor
+from .recorder import RunRecorder
 from .repairer import AgentRepairer, LLMRepairer, Repairer
 from .repository import ScriptRecord, ScriptRepository
 from .runner import RunnerAppConfig, ScriptRunner
@@ -46,6 +47,7 @@ __all__ = [
     "ScriptRecord",
     "ScriptRunner",
     "RunnerAppConfig",
+    "RunRecorder",
     "TaskSpec",
     "ExecutionTier",
     "ExecutionResult",

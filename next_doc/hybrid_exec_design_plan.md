@@ -263,8 +263,8 @@ result = default_executor(project_root).run(TaskSpec(
 ## 6. 存储与可观测性
 
 - 脚本仓库：`.agent/hybrid_exec/scripts/<task_id>/`（同 §3.3）。
-- 每次 `run()` 的完整决策轨迹（`attempts` + 最终结果）落盘到 `.agent/hybrid_exec/runs/<task_id>/<run_id>.json`，格式参考 `eval_runner.py::EvalReport`，用于事后统计"这个 task 的脚本命中率/平均成本"，也是未来做"跨 run 自动触发重探索"的数据基础。
-- 可选：kanban 增加一个轻量面板展示各 `task_id` 的当前 tier 分布（脚本命中率），复用现有 kanban SSE/面板基础设施（这部分作为二期，不在本次 MVP 范围内）。
+- **（P3 已实现）** 每次 `run()` 的完整决策轨迹（`attempts` + 最终结果）由 `recorder.py::RunRecorder` 落盘到 `.agent/hybrid_exec/runs/<task_id>/<run_id>.json`；同目录下维护一份滚动聚合 `summary.json`（`total_runs`/`success_runs`/`fail_runs`/`tier_counts`/`last_run_*`），供事后统计"这个 task 的脚本命中率/tier 分布"而不必扫描全部 run 文件，也是未来做"跨 run 自动触发重探索"（P4）的数据基础。独立调用（`default_executor()`）与 workflow 场景（`hybrid_step`）共享同一份统计口径。
+- 可选：kanban 增加一个轻量面板展示各 `task_id` 的当前 tier 分布（脚本命中率），复用现有 kanban SSE/面板基础设施（P4 范围，尚未实现）。
 
 ---
 
@@ -289,10 +289,12 @@ result = default_executor(project_root).run(TaskSpec(
 
 ## 8. 分阶段实施计划
 
-- **P1（MVP）**：`spec.py` / `repository.py` / `runner.py`（复用 py_step_runner 协议）/ `explorer.py`（先只做 LLMExplorer，AgentExplorer 留接口）/ `repairer.py`（同理先 LLMRepairer）/ `fallback.py` / `executor.py` 主干流程跑通，单元测试覆盖"脚本成功/脚本失败修复成功/脚本失败修复失败降级"三条主路径。**不接 workflow**，先提供独立 Python API。
-- **P2**：补齐 `AgentExplorer` / `AgentRepairer`，接入 `hybrid_step` workflow 类型。
-- **P3**：`run` 记录落盘（`.agent/hybrid_exec/runs/`）+ 退役策略联调；kanban 面板（可选）。
-- **P4**：跨 run 的自动重探索触发（比如同一脚本近 N 次成功率低于阈值，即使当次未失败也主动重新探索一版做 A/B），这块涉及"什么时候该重新探索而不是继续用能跑但可能过时的脚本"的策略，建议放到有实际使用数据后再设计，避免过早优化。
+- **P1（已完成）**：`spec.py` / `repository.py` / `runner.py`（复用 py_step_runner 协议）/ `explorer.py`（LLMExplorer）/ `repairer.py`（LLMRepairer）/ `fallback.py` / `executor.py` 主干流程跑通，单元测试覆盖"脚本成功/脚本失败修复成功/脚本失败修复失败降级"三条主路径。独立 Python API（`default_executor()`），未接 workflow。
+- **P2（已完成）**：补齐 `AgentExplorer` / `AgentRepairer` / `FallbackExecutor.agent_direct`（`_agent.py`，复用 `agent_spawn.build_minimal_agent`，`agent_fs_write_enabled` 换算成 `sandbox` 参数）；接入 `hybrid_step` workflow 类型——**未修改 workflow 包任何源码**，通过 `register_step_executor()` 公开扩展点注册（`workflow_integration.py` + 薄插件文件 `myplugins/hybrid_step.py`，删除该插件文件即等效禁用）。
+- **P3（已完成）**：`run` 记录落盘 + 统计聚合（`recorder.py::RunRecorder`，`.agent/hybrid_exec/runs/<task_id>/{summary.json, <run_id>.json}`，独立调用与 workflow 场景共享同一份统计口径）；退役策略联调——补充集成测试验证"脚本反复失败触发 `ScriptRepository` 自动退役后，下一次 `run()` 调用透明地重新走探索流程"以及"修复成功会重置连续失败计数、不会被误退役"两条链路。kanban 面板本次仍未做（见下）。
+- **P4（未开始）**：
+  - kanban 面板（展示各 `task_id` 的当前 tier 分布、成功率，复用现有 kanban SSE/面板基础设施）；
+  - 跨 run 的自动重探索触发（比如同一脚本近 N 次成功率低于阈值，即使当次未失败也主动重新探索一版做 A/B）——现在 `RunRecorder` 的 summary 统计已经为这个策略提供了数据基础，但触发时机/策略本身建议放到有实际使用数据后再设计，避免过早优化。
 
 ---
 
