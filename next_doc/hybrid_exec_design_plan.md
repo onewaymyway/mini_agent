@@ -331,3 +331,27 @@ result = default_executor(project_root).run(TaskSpec(
 - `examples/hybrid_exec_demo.py` 新增场景六，用一个不发网络请求的假 `llm` 对象验证 `LLMExplorer(app_cfg, llm=...)` 确实直接复用了传入对象。
 - 相关说明已补充进 `docs/hybrid-exec-guide.md` §1.1、§5。
 - 54 个既有单元/集成测试全部保持通过，未引入回归。
+
+## 12. `examples/hybrid_exec_demo.py`：改用真实 `providers.json`（已完成）
+
+原 P1-P4 阶段的演示脚本用三个"规则版"替身（`RuleBasedExplorer`/
+`RuleBasedRepairer`/`RuleBasedFallback`）模拟 LLM 行为，只验证了"除 LLM/
+Agent 调用本身之外"的编排链路。按新要求改为：
+
+- 不再有任何规则版/模拟替身，`Explorer`/`Repairer`/`FallbackExecutor` 全部
+  用 §11 新增的真实类（经 `default_executor(project_root)`，不传 `llm=`，
+  走独立执行默认路径）。
+- 演示开头新增环境检测：用真实 `load_config()` 判断 `project_root` 下是否
+  有可用的 provider + api_key；不可用则打印"如何配置 `providers.json`"的
+  指引后直接退出，不用假数据把演示硬撑"跑通"。
+- 演示会把项目根目录真实的 `providers.json`（如果存在）复制进独立的
+  `examples/_hybrid_exec_demo_workspace/` 工作区，避免演示产生的
+  `.agent/hybrid_exec/` 数据污染真实项目目录，但用的是同一份真实配置内容。
+- 已在本仓库沙箱环境验证：填入一个格式正确但无效的 api_key 后运行，
+  确实会真实请求到 `api.anthropic.com` 并收到真实的 401 鉴权错误（而不是
+  被任何模拟逻辑拦截、假装成功）——证明改动后的演示走的是真实网络请求
+  路径。真正配置好有效 api_key 后即可端到端验证探索/修复/兜底的真实产出
+  质量。
+- `.gitignore` 补充 `examples/_hybrid_exec_demo_workspace/`（此前文档声称
+  已忽略但实际条目缺失）。
+- `docs/hybrid-exec-guide.md` §十一 同步重写，去掉规则版替身的描述。

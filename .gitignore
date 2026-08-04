@@ -13,7 +13,6 @@ agent_permissions.json
 .agent/logs
 .agent/sessions
 .agent/permissions.json
-examples/_hybrid_exec_demo_workspace/
 .agent/proxy
 .agent/notification/config.yaml
 .agent/notification/tier_state.json
@@ -27,6 +26,8 @@ examples/_hybrid_exec_demo_workspace/
 providers.json
 temp/
 src/mini_agent.egg-info/
+# hybrid_exec 演示脚本产生的工作区（含从 providers.json 复制来的真实配置）
+examples/_hybrid_exec_demo_workspace/
 .claude/skills/browser-cdp/temp_chrome_profile/
 .claude/skills/browser-cdp/temp_data/
 .claude/skills/browser-cdp/search_results/

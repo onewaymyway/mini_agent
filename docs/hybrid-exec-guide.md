@@ -392,43 +392,61 @@ myplugins/hybrid_step.py    # 薄插件文件：注册 hybrid_step，删除即�
 - MVP 范围内的简化取舍（详见设计文档 §9）：一个 `task_id` 只对应
   仓库里一个 active 版本，不按输入结构指纹再细分分支版本；
   `ReexplorePolicy` 用的是版本全部历史成功率而非滑动窗口。
-- **LLM/Agent 环节真实调用尚未验证**：本沙箱环境没有配置 LLM API
-  Key，`LLMExplorer`/`AgentExplorer` 产出的脚本质量、提示词效果如何，
-  仍缺真实数据支撑。正式投入使用前建议先挑一个真实小任务跑一次端到
-  端（用 `default_executor(project_root, mini_agent_config=cfg)`，
-  `cfg` 是配置好真实 provider/api_key 的 `mini_agent.config.Config`）。
+- **LLM/Agent 环节真实调用**：`examples/hybrid_exec_demo.py` 已改为使用
+  真实 `providers.json` + 真实 `LLMExplorer`/`LLMRepairer`/
+  `FallbackExecutor`（不再用规则版替身），本仓库沙箱环境验证过它确实会
+  发起真实的 provider API 请求（网络层/鉴权层报错也会如实透出，不吞掉不
+  伪装）。但探索/修复产出的脚本质量、提示词效果如何随不同 provider/model
+  表现会有差异，正式投入使用前建议用目标 provider/model 实际跑一遍
+  `examples/hybrid_exec_demo.py`（配置好 `providers.json` 后）观察产出。
+  `AgentExplorer`/`AgentRepairer`/`FallbackExecutor.agent_direct` 这几个
+  多轮 Agent 路径本演示未覆盖（成本更高，默认场景把 `allow_tiers` 限制在
+  `(SCRIPT, LLM)`），如需验证可自行调整 `allow_tiers` 加入 `AGENT`。
 
 ## 十一、端到端可运行演示（`examples/hybrid_exec_demo.py`）
 
-为了验证"除 LLM/Agent 调用本身之外"的整条链路（编排逻辑、脚本仓库
-版本管理、真实子进程执行、run 记录落盘、看板聚合）在真实文件系统/真实
-子进程环境下确实可用，仓库提供了一份可直接运行的演示脚本：
+为了验证整条链路（编排逻辑、脚本仓库版本管理、真实子进程执行、run 记录
+落盘、看板聚合，以及 **LLM 探索/修复/兜底本身**）在真实环境下确实可用，
+仓库提供了一份可直接运行的演示脚本。**演示全程使用真实
+`providers.json` 解析出的真实 LLM**（`LLMExplorer`/`LLMRepairer`/
+`FallbackExecutor.llm_direct`），不使用任何规则版/模拟替身——如果没有
+配置好可用的 `providers.json`（或对应环境变量），脚本会在开头明确检测
+出来、打印配置指引后直接退出，不会用假数据硬撑着"跑通"。
 
 ```bash
 cd mini_agent-master
 pip install -e . --break-system-packages   # 如果尚未安装
+cp providers.json.example providers.json   # 若项目根目录还没有
+# 编辑 providers.json，填入至少一个 provider 的真实 api_key
 python examples/hybrid_exec_demo.py
 ```
 
-演示不依赖任何 LLM API Key：用三个"规则版"替身
-（`RuleBasedExplorer`/`RuleBasedRepairer`/`RuleBasedFallback`）实现与
-`Explorer`/`Repairer`/`FallbackExecutor` 完全相同的接口，代替真实 LLM
-调用（内部不发网络请求，用固定规则直接产出脚本/答案）；`HybridExecutor`
-本身、`ScriptRepository`、`ScriptRunner`（真实拉起
-`python -m mini_agent.workflow.py_step_runner` 子进程）、`RunRecorder`、
-`kanban_summary` 全部是真实代码路径，没有被 mock。生产环境把这三个
-替身换成 `LLMExplorer(app_cfg)` 等真实类即可，`HybridExecutor` 侧不需要
-改动任何代码——这正是演示要验证的"可插拔"设计。
+演示会把项目根目录真实的 `providers.json` 复制进独立的演示工作区
+`examples/_hybrid_exec_demo_workspace/`（内容是同一份真实配置，只是隔离
+存放，避免演示产生的 `.agent/hybrid_exec/` 数据污染真实项目目录），然后
+用 `default_executor(DEMO_ROOT)`——不传 `llm=`，走§一.1 描述的"独立执行
+自动加载 `providers.json`"默认路径——组装出真实的 `HybridExecutor`。
+`ScriptRunner`（真实拉起 `python -m mini_agent.workflow.py_step_runner`
+子进程）、`RunRecorder`、`kanban_summary` 同样全部是真实代码路径，没有
+被 mock。
 
-演示覆盖 5 个场景，均已实际跑通并通过断言校验：
+演示覆盖以下场景：
 
-| 场景 | 验证点 | 结果 |
+| 场景 | 验证点 | 说明 |
 |---|---|---|
-| 1. 首次调用，探索新任务 | `RuleBasedExplorer` 产出脚本 → 真实子进程 dry-run 通过 → 转正为 v1 → 真实执行，`output_validator` 通过 | `ok=True tier=script version=1`，`sum=108` 计算正确 |
-| 2. 复用已有脚本 | 同 `task_id` 再次调用直接命中 v1，不再探索 | `ok=True tier=script version=1`，attempts 中无 `explore_*` |
-| 3. 报错后自愈修复 | 人为写入带 bug 的脚本 → 执行报错 → `RuleBasedRepairer` 修复 → dry-run 通过 → 存为 v2 → 真实执行 | `ok=True tier=script version=2`，`reversed` 字段正确 |
-| 4. 修复不了 → 自动退役 → 降级 | 连续 3 次调用均失败且修不好 → `ScriptRepository` 自动 retire → 探索也失败（替身无预置脚本）→ 降级到 `RuleBasedFallback` | 第 2 次调用后仓库状态变为"无 active 版本，已全部退役"；最终 `tier=llm`（Fallback），如实给出兜底结果 |
-| 5. 可观测性 | `.agent/hybrid_exec/runs/<task_id>/summary.json` 落盘统计、`build_kanban_summary()` 聚合出的结构与 `GET /v1/hybrid_exec/summary` 一致 | 三个 task 的 `summary.json` 均正确统计 `total_runs`/`tier_counts`/`last_run_*`；`.agent/hybrid_exec/scripts/` 下真实落盘 `meta.json` + 各版本 `.py` 文件 |
-| 6. llm 来源可插拔 | 用一个不发网络请求的假 `llm` 对象（模拟 `ctx.llm`）传给 `LLMExplorer(app_cfg, llm=...)`，验证探索时直接调用了传入对象的 `ask()`，而不是自己重新走 `load_config()`/读 `providers.json` | `LLMExplorer` 直接复用传入的 `llm`，产出脚本内容来自这个假对象；证明"独立执行自动读 `providers.json`"与"嵌入 workflow 接收传入的 llm"是同一套接口的两种用法 |
+| 0. 环境检测 | `load_config()` 解析 `provider`/`api_key` 是否齐全 | 不可用则打印配置指引后直接退出，其余场景全部跳过，不用假数据顶替 |
+| 1. 首次调用，探索新任务 | 真实 `LLMExplorer` 产出脚本 → 真实子进程 dry-run → 通过则转正为新版本 → 真实执行 | LLM 输出本身有不确定性，脚本按"是否通过 `output_validator`"给出对应提示，不强行断言必然成功 |
+| 2. 复用已有脚本 | 场景一成功后，同 `task_id` 再次调用应直接命中，不再触发探索、不再消耗 LLM 调用 | 仅在场景一产出可用脚本时执行 |
+| 3. 报错后自愈修复 | 人为写入带已知 bug 的脚本 → 执行报错 → 真实 `LLMRepairer` 修复 → dry-run 通过 → 存为新版本 → 真实执行 | 验证"脚本坏了先修脚本"这条路径 |
+| 4. 强制走 Fallback | `allow_tiers=(LLM,)`（不含 SCRIPT/AGENT）→ 真实 `FallbackExecutor.llm_direct` 直接给答案，不产出脚本 | 验证兜底通道 |
+| 5. 可观测性 | `.agent/hybrid_exec/runs/<task_id>/summary.json` 落盘统计、`build_kanban_summary()` 聚合出的结构与 `GET /v1/hybrid_exec/summary` 一致 | 展示脚本仓库真实磁盘布局（脚本内容来自真实 LLM 产出/修复，非编造） |
+
+嵌入 workflow 场景（接收 workflow 传入的 `llm`，而不是重新读
+`providers.json`）不在本脚本演示范围内，示例代码见 §一.1。
 
 运行结束会打印脚本仓库的真实磁盘布局（`.agent/hybrid_exec/scripts/<task_id>/v*.py` + `meta.json`）与完整的 kanban 汇总 JSON，可直接对照检查。演示工作区落在 `examples/_hybrid_exec_demo_workspace/`（已加入 `.gitignore`，每次运行会先清空重建，可重复运行）。
+
+> 网络环境限制：若运行环境有出网白名单，请确认 `providers.json` 里配置
+> 的 provider 对应的 API 域名（如 Anthropic 是 `api.anthropic.com`）在
+> 白名单内，否则真实请求会在网络层被拦截，报错信息会体现在 LLM 调用的
+> 重试日志里。
