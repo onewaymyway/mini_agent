@@ -18,9 +18,14 @@ from .spec import TaskSpec
 
 
 class FallbackExecutor:
-    def __init__(self, app_cfg: RunnerAppConfig, *, agent_max_turns: int = 10) -> None:
+    """llm 参数含义同 `explorer.py::LLMExplorer`：嵌入 workflow 时可传入
+    workflow 已经解析好的 llm 对象直接复用；独立调用不传则自动按
+    `app_cfg.project_root` 加载 `providers.json`。"""
+
+    def __init__(self, app_cfg: RunnerAppConfig, *, agent_max_turns: int = 10, llm: object = None) -> None:
         self.app_cfg = app_cfg
         self.agent_max_turns = agent_max_turns
+        self._llm = llm
 
     def llm_direct(self, task: TaskSpec) -> str:
         """单轮直接向 LLM 要答案，不生成脚本。"""
@@ -31,7 +36,7 @@ class FallbackExecutor:
             f"输入数据（JSON）：\n{json.dumps(task.input_data, ensure_ascii=False, indent=2)}\n\n"
             "请直接给出这个任务的最终结果。"
         )
-        helper = build_llm_helper(self.app_cfg)
+        helper = self._llm if self._llm is not None else build_llm_helper(self.app_cfg)
         return helper.ask(prompt, system="你是一个可靠的助手，直接给出任务结果，不要输出多余的过程说明。")
 
     def agent_direct(self, task: TaskSpec) -> str:

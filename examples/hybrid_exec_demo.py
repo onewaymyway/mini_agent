@@ -49,7 +49,7 @@ from mini_agent.hybrid_exec import (  # noqa: E402
     TaskSpec,
     build_kanban_summary,
 )
-from mini_agent.hybrid_exec.explorer import Explorer  # noqa: E402
+from mini_agent.hybrid_exec.explorer import Explorer, LLMExplorer  # noqa: E402
 from mini_agent.hybrid_exec.repairer import Repairer  # noqa: E402
 from mini_agent.hybrid_exec.runner import RunnerAppConfig, ScriptRunner  # noqa: E402
 
@@ -303,6 +303,46 @@ def main() -> None:
     for p in sorted(scripts_dir.rglob("*")):
         if p.is_file():
             print(f"  {p.relative_to(DEMO_ROOT)}")
+
+    # ======================================================================
+    # 场景六：独立执行自动加载 providers.json vs 嵌入 workflow 接收传入的 llm
+    # ======================================================================
+    _hr("场景六：两种 llm 来源 —— 独立执行自动读 providers.json / 嵌入 workflow 接收传入的 llm 对象")
+    print(
+        "独立执行：LLMExplorer(app_cfg) 不传 llm，真正调用时才会经\n"
+        "  mini_agent.config.load_config() 按 app_cfg.project_root 自动加载\n"
+        "  该项目的 providers.json（与主 Agent、python_step 的 ctx.llm 同一条\n"
+        "  路径），本沙箱没有配置 providers.json/API Key，所以这里只演示接口，\n"
+        "  不发起真实网络请求。"
+    )
+
+    class _FakeWorkflowLLM:
+        """模拟 workflow 传入的 llm 对象（真实场景下是 ctx.llm / 一个已构造好\n        的 LLMHelper 实例）：只要实现 ask(prompt, *, system=...) -> str 即可，\n        鸭子类型，不要求继承任何基类。"""
+
+        def __init__(self):
+            self.calls = []
+
+        def ask(self, prompt: str, *, system: str = "", **kwargs) -> str:
+            self.calls.append(prompt)
+            return "def run(ctx):\n    return {\"from\": \"workflow_llm\"}\n"
+
+    fake_workflow_llm = _FakeWorkflowLLM()
+    app_cfg_demo = RunnerAppConfig(project_root=str(DEMO_ROOT))
+    explorer_with_workflow_llm = LLMExplorer(app_cfg_demo, llm=fake_workflow_llm)
+    produced_code = explorer_with_workflow_llm.explore(
+        TaskSpec(task_id="demo_embedded", description="演示接收 workflow 传入的 llm", input_data={})
+    )
+    assert fake_workflow_llm.calls, "LLMExplorer 应该调用了传入的 llm.ask()，而不是自己重新 build_llm_helper"
+    print(f"嵌入 workflow：LLMExplorer(app_cfg, llm=ctx.llm) 直接复用传入对象，产出脚本：\n  {produced_code.strip()!r}")
+    print(
+        "✅ 验证通过：传了 llm 就直接复用（不再重新 load_config()/读 providers.json）；\n"
+        "   不传则在独立调用时自动按 providers.json 解析——两种模式接口一致，\n"
+        "   default_executor(project_root, llm=ctx.llm) 同样支持。\n"
+        "   hybrid_step 类型也已对齐：会按 workflow 的 step.model 覆盖规则\n"
+        "   （与其它 step 类型同一套 _effective_step_field 三层查找）解析出\n"
+        "   一个 LLMHelper，传给本次 hybrid_step 的 explorer/repairer/fallback\n"
+        "   共用，而不是各自各建一份、也不会绕过 workflow 的模型覆盖设置。"
+    )
 
     _hr("全部场景验证通过 ✅")
     print(

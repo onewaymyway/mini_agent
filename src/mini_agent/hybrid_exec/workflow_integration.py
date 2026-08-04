@@ -121,7 +121,36 @@ class HybridStepExecutor(StepExecutor):
 
         task = _build_task_spec(step, upstream)
 
+        # 接收 workflow 传来的 llm 配置：与其它 step 类型一致，遵循
+        # "step 显式 model → wf.defaults → 全局 cfg.model" 三层查找
+        # （见 runner.py::WorkflowRunner._effective_step_field，
+        # _execute_with_main_agent 里 model 解析用的同一套规则），而不是
+        # 无条件用全局 cfg.model，这样单个 hybrid_step 也能像其它 step 一样
+        # 通过 `model:` 字段覆盖模型。
+        effective_step_field = getattr(runner, "_effective_step_field", None)
+        if callable(effective_step_field):
+            effective_model = effective_step_field(step, "model", None) or runner._cfg.model
+        else:
+            # 测试/精简场景下 runner 可能不是完整的 WorkflowRunner（比如
+            # 只实现了 execute() 依赖的最小接口），退化为直接用 step.model。
+            effective_model = getattr(step, "model", None) or runner._cfg.model
         app_cfg = RunnerAppConfig.from_mini_agent_config(runner._cfg)
+        app_cfg.model = effective_model
+
+        # 用这一份已经按 workflow 规则解析好的 app_cfg 构造一次 LLMHelper，
+        # 传给 llm_explorer/llm_repairer/fallback 复用（避免每次探索/修复/
+        # 兜底调用都各自重新 load_config() 一遍，且三者对同一个 hybrid_step
+        # 执行始终用同一条 provider/模型 决策，与 workflow 本次运行保持一致）。
+        # AgentExplorer/AgentRepairer 仍按 app_cfg 现起临时 Agent（多轮+工具，
+        # 见 executor.py::default_executor 文档说明），不复用这个 llm 对象。
+        from ._llm import build_llm_helper
+
+        try:
+            step_llm = build_llm_helper(app_cfg)
+        except Exception:
+            # LLM 配置有问题（比如 provider 未配置好）不应该在这里直接崩，
+            # 交给 explorer/repairer/fallback 各自在真正调用时报错更清楚。
+            step_llm = None
         repo = ScriptRepository(project_root / ".agent" / "hybrid_exec" / "scripts")
         script_runner = ScriptRunner(app_cfg)
         # 全局 run 记录目录，跨 workflow/独立调用共享同一份统计口径
@@ -163,11 +192,11 @@ class HybridStepExecutor(StepExecutor):
         executor = HybridExecutor(
             repo=repo,
             script_runner=script_runner,
-            llm_explorer=LLMExplorer(app_cfg),
+            llm_explorer=LLMExplorer(app_cfg, llm=step_llm),
             agent_explorer=AgentExplorer(app_cfg),
-            llm_repairer=LLMRepairer(app_cfg),
+            llm_repairer=LLMRepairer(app_cfg, llm=step_llm),
             agent_repairer=AgentRepairer(app_cfg),
-            fallback=FallbackExecutor(app_cfg),
+            fallback=FallbackExecutor(app_cfg, llm=step_llm),
             run_recorder=run_recorder,
             reexplore_policy=reexplore_policy,
         )

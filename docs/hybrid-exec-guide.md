@@ -7,7 +7,9 @@ agent/llm、执行优先脚本、脚本故障时优先修复脚本、修复不�
 决策逻辑封装成可复用的 Python 对象：
 
 - 可以脱离 workflow 被任何代码直接 `import` 调用（daemon 自主决策、CLI
-  工具、其它 workflow 的 `python_step` 内部等）；
+  工具、其它 workflow 的 `python_step` 内部等）——独立执行时自动按项目
+  `providers.json` 解析 LLM（同主 Agent），嵌入 workflow 时可直接传入
+  workflow 已经拿到手的 `llm`（如 `ctx.llm`）复用，见 §1.1；
 - 也可以作为 workflow 的一种新 step 类型 `hybrid_step` 接入，复用
   `python_step` 既有的子进程隔离与 `ctx.llm`/`ctx.run_agent_turn` 基础设施；
 - 脚本产物有版本管理、成功率统计、退役机制，能沉淀成"越用越省钱"的能力库。
@@ -50,6 +52,64 @@ provider/超时等设置（内部转换为 `RunnerAppConfig`）。
 （LLMExplorer → 若失败再 AgentExplorer），探索出的脚本用本次真实
 `input_data` 做一次 dry-run，通过才转正为 active 版本存入仓库；之后同一
 `task_id` 的调用会优先直接跑这个脚本。
+
+### 1.1 LLM 从哪来：独立执行自动加载 `providers.json`，嵌入 workflow 接收传入的 llm
+
+`LLMExplorer`/`LLMRepairer`/`FallbackExecutor` 都支持一个可选的 `llm`
+参数，决定探索/修复/兜底时用哪个 LLM 对象发起请求：
+
+- **独立执行（不传 `llm`）**：真正发起 LLM 调用时，才会经
+  `mini_agent.config.load_config()` 按 `project_root` 自动读取该项目的
+  `providers.json`（与主 Agent、`python_step` 的 `ctx.llm` 是同一条解析
+  路径，优先级同样是 CLI 参数 > `agent_config.json` > `providers.json` >
+  环境变量 > 默认值），**不需要调用方手动传 model/provider/api_key**：
+
+  ```python
+  from mini_agent.hybrid_exec import default_executor, TaskSpec
+
+  executor = default_executor(project_root="/path/to/project")  # 自动读 providers.json
+  result = executor.run(TaskSpec(task_id="...", description="...", input_data={...}))
+  ```
+
+- **嵌入 workflow（比如在 `python_step` 脚本内部把 `hybrid_exec` 当库用）**：
+  把 workflow 已经拿到手的 `ctx.llm`（`PyStepLLM` 实例）或任何一个已构造好
+  的 `LLMHelper` 直接传给 `llm=`，`hybrid_exec` 会原样复用它，不再重新
+  `load_config()`：
+
+  ```python
+  # 在某个 python_step 脚本的 run(ctx) 里：
+  def run(ctx):
+      from mini_agent.hybrid_exec import default_executor, TaskSpec
+
+      executor = default_executor(ctx.project_root, llm=ctx.llm)
+      result = executor.run(TaskSpec(
+          task_id="summarize_v1",
+          description="把输入文本压缩成一句话摘要",
+          input_data={"text": ctx.params.get("text", "")},
+      ))
+      return result.output
+  ```
+
+  只要传入对象实现 `ask(prompt, *, system=...) -> str`（`LLMHelper`/
+  `PyStepLLM` 均满足，鸭子类型判断，不要求继承任何基类），就会被直接复用，
+  从而沿用 workflow 当前这次运行已经解析好的 provider/模型/重试与
+  fallback 策略，避免重复解析配置、也不会绕过 workflow 对本次运行做的
+  provider 覆盖。
+
+  `hybrid_step`（workflow 内置 step 类型，见 §5）已经按这个规则接好：会
+  按 `step.model → wf.defaults.model → 全局 cfg.model` 三层查找（与其它
+  step 类型同一套 `_effective_step_field` 规则）解析出一个 `LLMHelper`，
+  在本次 step 执行内传给 `llm_explorer`/`llm_repairer`/`fallback` 共用，
+  不必手动传参。
+
+  > 说明：这个 `llm` 只影响 `LLMExplorer`/`LLMRepairer`/
+  > `FallbackExecutor.llm_direct` 这几处**单轮**调用。`AgentExplorer`/
+  > `AgentRepairer`/`FallbackExecutor.agent_direct` 需要的是一个可多轮、
+  > 能调用工具的完整 Agent（不是单次问答），因此固定通过
+  > `build_minimal_agent()` 按 `RunnerAppConfig` 现起一个临时 Agent，不受
+  > `llm` 参数影响；如果需要让 Agent 层也对齐 workflow 的模型选择，通过
+  > `mini_agent_config=cfg` 或直接构造 `RunnerAppConfig` 传入相应的
+  > model/llm_provider 字段。
 
 ---
 
@@ -186,6 +246,15 @@ JSON 文本），可用 `{extract_entities.output}` 占位符或下游
 `ctx.input_json()` 消费。step 失败（脚本/LLM/Agent 全部手段耗尽）时会
 抛出 `RuntimeError`，并提示完整决策轨迹落盘位置
 （`hybrid_step_<id>_trace.json`）。
+
+`hybrid_step` 用的 llm 来自 workflow 本次运行，不是每次都重新解析：按
+`step.model → wf.defaults.model → 全局 cfg.model` 三层查找（与其它 step
+类型同一套 `_effective_step_field` 规则，可在这个 step 上单独用
+`model: xxx` 覆盖模型）解析出一份 `RunnerAppConfig`，据此构造一个
+`LLMHelper`，供本次 `hybrid_step` 执行内的 `llm_explorer`/
+`llm_repairer`/`fallback.llm_direct` 共用（见 §1.1）；`AgentExplorer`/
+`AgentRepairer`/`fallback.agent_direct` 仍按同一份 `RunnerAppConfig`
+现起临时 Agent。
 
 ### 5.1 启用方式：插件文件，不是配置开关
 
@@ -360,5 +429,6 @@ python examples/hybrid_exec_demo.py
 | 3. 报错后自愈修复 | 人为写入带 bug 的脚本 → 执行报错 → `RuleBasedRepairer` 修复 → dry-run 通过 → 存为 v2 → 真实执行 | `ok=True tier=script version=2`，`reversed` 字段正确 |
 | 4. 修复不了 → 自动退役 → 降级 | 连续 3 次调用均失败且修不好 → `ScriptRepository` 自动 retire → 探索也失败（替身无预置脚本）→ 降级到 `RuleBasedFallback` | 第 2 次调用后仓库状态变为"无 active 版本，已全部退役"；最终 `tier=llm`（Fallback），如实给出兜底结果 |
 | 5. 可观测性 | `.agent/hybrid_exec/runs/<task_id>/summary.json` 落盘统计、`build_kanban_summary()` 聚合出的结构与 `GET /v1/hybrid_exec/summary` 一致 | 三个 task 的 `summary.json` 均正确统计 `total_runs`/`tier_counts`/`last_run_*`；`.agent/hybrid_exec/scripts/` 下真实落盘 `meta.json` + 各版本 `.py` 文件 |
+| 6. llm 来源可插拔 | 用一个不发网络请求的假 `llm` 对象（模拟 `ctx.llm`）传给 `LLMExplorer(app_cfg, llm=...)`，验证探索时直接调用了传入对象的 `ask()`，而不是自己重新走 `load_config()`/读 `providers.json` | `LLMExplorer` 直接复用传入的 `llm`，产出脚本内容来自这个假对象；证明"独立执行自动读 `providers.json`"与"嵌入 workflow 接收传入的 llm"是同一套接口的两种用法 |
 
 运行结束会打印脚本仓库的真实磁盘布局（`.agent/hybrid_exec/scripts/<task_id>/v*.py` + `meta.json`）与完整的 kanban 汇总 JSON，可直接对照检查。演示工作区落在 `examples/_hybrid_exec_demo_workspace/`（已加入 `.gitignore`，每次运行会先清空重建，可重复运行）。

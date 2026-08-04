@@ -311,12 +311,34 @@ def default_executor(
     project_root,
     *,
     mini_agent_config=None,
+    llm: object = None,
     retire_after_consecutive_fail: int = 3,
     reexplore_policy: Optional[ReexplorePolicy] = None,
 ) -> HybridExecutor:
     """便捷工厂：给定项目根目录（以及可选的已加载好的 mini_agent Config 对象），
     组装出一个默认配置的 HybridExecutor，供独立调用场景直接使用（无需手动拼
     ScriptRepository/ScriptRunner/Explorer/Repairer 等各个组件）。
+
+    两种使用形态（对应 next_doc/hybrid_exec_design_plan.md 的新增要求）：
+      1. **独立执行**：不传 `llm`。`LLMExplorer`/`LLMRepairer`/`FallbackExecutor`
+         内部会在真正需要发起 LLM 调用时才调用 `build_llm_helper(app_cfg)`，
+         经由 `mini_agent.config.load_config()` 自动按 `project_root` 加载该
+         项目的 `providers.json`（与主 Agent、`python_step` 的 `ctx.llm` 走
+         同一条解析路径），无需调用方手动传 model/provider/api_key。
+      2. **嵌入 workflow（如 python_step 脚本内部）**：传入 `llm=ctx.llm`
+         （或任意已构造好的 `LLMHelper` 实例）。只要该对象实现
+         `ask(prompt, *, system=...) -> str`（`LLMHelper`/`PyStepLLM` 均满足，
+         鸭子类型，不要求具体类型），`LLMExplorer`/`LLMRepairer`/
+         `FallbackExecutor` 会直接复用它，不再重新走 `load_config()`——沿用
+         workflow 当前已经解析好的 provider/模型/重试策略，避免重复解析
+         配置、也不会绕过 workflow 对这次运行做的任何 provider 覆盖。
+
+      `AgentExplorer`/`AgentRepairer`/`FallbackExecutor.agent_direct` 需要的
+      是一个可多轮执行、能调用工具的完整 Agent（不是单次问答），因此固定
+      通过 `build_minimal_agent()` 按 `app_cfg` 现起一个临时 Agent，不受
+      `llm` 参数影响；如需让 Agent 层也对齐 workflow 的模型选择，请通过
+      `mini_agent_config`（或直接构造 `RunnerAppConfig`）传入相应的
+      model/llm_provider 等字段。
 
     reexplore_policy 默认不传（即不启用主动重探索，P4 §8 里说明的"跨 run
     自动重探索触发"是 opt-in 的，避免默认行为在没有实际使用数据支撑时就
@@ -336,11 +358,11 @@ def default_executor(
     return HybridExecutor(
         repo=repo,
         script_runner=script_runner,
-        llm_explorer=LLMExplorer(app_cfg),
+        llm_explorer=LLMExplorer(app_cfg, llm=llm),
         agent_explorer=AgentExplorer(app_cfg),
-        llm_repairer=LLMRepairer(app_cfg),
+        llm_repairer=LLMRepairer(app_cfg, llm=llm),
         agent_repairer=AgentRepairer(app_cfg),
-        fallback=FallbackExecutor(app_cfg),
+        fallback=FallbackExecutor(app_cfg, llm=llm),
         run_recorder=run_recorder,
         reexplore_policy=reexplore_policy,
     )

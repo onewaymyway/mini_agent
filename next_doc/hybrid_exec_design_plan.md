@@ -316,3 +316,18 @@ result = default_executor(project_root).run(TaskSpec(
 - P1-P4 全部完成，54 个单元/集成测试全部通过（`tests/test_hybrid_exec.py` / `_p2.py` / `_p3.py` / `_p4.py` / `test_hybrid_exec_summary_route.py`），且逐一验证过对现有 workflow/kanban 相关测试无回归。
 - **仍未做的事**：所有测试都用 fake/mock 组件隔离，还没有接一次真实 LLM/Agent 跑一个真实任务做端到端验证——`LLMExplorer`/`AgentExplorer` 产出的脚本质量、提示词效果如何，都还没有实测数据支撑。建议在正式投入使用前，先挑一个真实小任务（比如某个抽取/摘要类需求）跑一次端到端，确认 prompt 效果和整条链路在真实环境里可用。
 - kanban 面板、`ReexplorePolicy` 目前都是"能力已具备但默认关闭/低调"的状态：kanban Tab 是纯只读展示，不影响任何执行路径；`ReexplorePolicy` 默认 `enabled=False`，不会改变现有脚本的使用行为，需要显式开启。
+
+## 11. LLM 来源：独立执行自动加载 `providers.json` / 嵌入 workflow 接收传入的 llm（已完成）
+
+补充需求：`hybrid_exec` 单独执行时应像主 Agent 一样自动加载 `providers.json`；嵌入 workflow（尤其是被 `python_step` 脚本当库调用）时应能接收 workflow 已经解析好的 `llm` 对象直接复用，而不是每次都重新解析配置。
+
+落地方式：
+
+- `LLMExplorer`/`LLMRepairer`/`FallbackExecutor` 新增可选构造参数 `llm`（鸭子类型，只要求实现 `ask(prompt, *, system=...) -> str`，`LLMHelper`/`PyStepLLM` 均满足）：
+  - 不传（独立调用默认路径）→ 真正发起调用时才 `build_llm_helper(app_cfg)` → `mini_agent.config.load_config()` 按 `project_root` 自动读取 `providers.json`，与主 Agent/`python_step` 的 `ctx.llm` 同一条解析路径。
+  - 传了 → 直接复用，不再重新 `load_config()`。`default_executor(project_root, llm=ctx.llm)` 把这个参数透传给三者，可在 `python_step` 脚本里把 `hybrid_exec` 当库调用、直接把 `ctx.llm` 传进去。
+  - `AgentExplorer`/`AgentRepairer`/`FallbackExecutor.agent_direct` 需要完整 Agent（多轮 + 工具），不受此参数影响，仍按 `RunnerAppConfig` 现起临时 Agent。
+- `workflow_integration.py::HybridStepExecutor.execute`：不再无条件用全局 `cfg.model`，改为按 `step.model → wf.defaults.model → 全局 cfg.model` 三层查找（`runner._effective_step_field`，与其它 step 类型同一套规则）解析出 `effective_model`，据此构造一次 `LLMHelper`，供本次 `hybrid_step` 执行内的 `llm_explorer`/`llm_repairer`/`fallback` 共用（避免三处各自重新解析配置，且都对齐同一次 workflow 运行的模型选择）。
+- `examples/hybrid_exec_demo.py` 新增场景六，用一个不发网络请求的假 `llm` 对象验证 `LLMExplorer(app_cfg, llm=...)` 确实直接复用了传入对象。
+- 相关说明已补充进 `docs/hybrid-exec-guide.md` §1.1、§5。
+- 54 个既有单元/集成测试全部保持通过，未引入回归。

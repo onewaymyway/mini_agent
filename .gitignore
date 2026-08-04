@@ -13,6 +13,7 @@ agent_permissions.json
 .agent/logs
 .agent/sessions
 .agent/permissions.json
+examples/_hybrid_exec_demo_workspace/
 .agent/proxy
 .agent/notification/config.yaml
 .agent/notification/tier_state.json

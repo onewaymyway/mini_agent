@@ -29,10 +29,16 @@ class Repairer(ABC):
 
 
 class LLMRepairer(Repairer):
-    """单轮 LLM 定位并修复局部问题，适合语法错误、边界条件遗漏等。"""
+    """单轮 LLM 定位并修复局部问题，适合语法错误、边界条件遗漏等。
 
-    def __init__(self, app_cfg: RunnerAppConfig) -> None:
+    llm 参数含义同 `explorer.py::LLMExplorer`：嵌入 workflow 时可传入
+    workflow 已经解析好的 llm 对象直接复用；独立调用不传则自动按
+    `app_cfg.project_root` 加载 `providers.json`。
+    """
+
+    def __init__(self, app_cfg: RunnerAppConfig, *, llm: object = None) -> None:
         self.app_cfg = app_cfg
+        self._llm = llm
 
     def repair(self, task: TaskSpec, broken_code: str, outcome: ScriptOutcome) -> str:
         from ._llm import build_llm_helper
@@ -46,7 +52,7 @@ class LLMRepairer(Repairer):
             error_message=outcome.error or "",
             traceback=outcome.traceback or "(无 traceback)",
         )
-        helper = build_llm_helper(self.app_cfg)
+        helper = self._llm if self._llm is not None else build_llm_helper(self.app_cfg)
         text = helper.ask(
             prompt,
             system="你是一名严谨的 Python 工程师，只输出修复后的代码，不输出多余解释。",

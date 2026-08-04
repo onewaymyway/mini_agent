@@ -41,10 +41,21 @@ class Explorer(ABC):
 
 
 class LLMExplorer(Explorer):
-    """单轮 LLM 直接生成脚本草稿，成本低，适合规则清晰、输入结构稳定的任务。"""
+    """单轮 LLM 直接生成脚本草稿，成本低，适合规则清晰、输入结构稳定的任务。
 
-    def __init__(self, app_cfg: RunnerAppConfig) -> None:
+    llm 参数（可选）：调用方已经持有的 LLM 对象（`LLMHelper` 实例，或
+    python_step 传入的 `ctx.llm` / `PyStepLLM`，两者都实现
+    `ask(prompt, *, system=...) -> str` 接口，鸭子类型即可，不要求具体类型）。
+    传了就直接复用，不再重新走 `load_config()`/`providers.json` 解析——这是
+    "嵌入 workflow 时接收 workflow 传来的 llm" 的入口。不传（独立调用场景，
+    见 `default_executor()`）则退回 `build_llm_helper(app_cfg)`，自动按
+    `RunnerAppConfig.project_root` 加载该项目的 `providers.json`，行为与主
+    Agent/python_step 一致。
+    """
+
+    def __init__(self, app_cfg: RunnerAppConfig, *, llm: object = None) -> None:
         self.app_cfg = app_cfg
+        self._llm = llm
 
     def explore(self, task: TaskSpec) -> str:
         from ._llm import build_llm_helper
@@ -54,7 +65,7 @@ class LLMExplorer(Explorer):
             description=task.description,
             input_sample=json.dumps(task.input_data, ensure_ascii=False, indent=2),
         )
-        helper = build_llm_helper(self.app_cfg)
+        helper = self._llm if self._llm is not None else build_llm_helper(self.app_cfg)
         text = helper.ask(
             prompt,
             system="你是一名严谨的 Python 工程师，只输出代码，不输出多余解释。",
