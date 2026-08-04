@@ -349,6 +349,39 @@ def default_executor(
     else:
         app_cfg = RunnerAppConfig(project_root=str(project_root))
 
+    # 与 workflow_integration.py::HybridStepExecutor.execute 对齐：
+    # 若调用方没有传入现成的 `llm`（独立执行的默认路径），这里主动构造
+    # *一个* LLMHelper（内部持有一条真正与主 Agent 同构的 LLMClientPool——
+    # 同样读取 providers.json 的 llm_fallback_chain、同样的多 key 轮转/
+    # cooldown、同样的多 provider 故障转移），提前构造并在本次
+    # HybridExecutor 的整个生命周期内被 llm_explorer/llm_repairer/fallback
+    # 三者共用。
+    #
+    # 这里是此前的实际 bug 所在：若不做这一步、让三者各自持有 llm=None，
+    # 它们会在*每一次* `.ask()` 调用时才各自惰性 `build_llm_helper()`——
+    # 即每次探索/修复/兜底调用都从零新建一条 LLMClientPool，互相之间、
+    # 乃至同一个 Explorer 内部前后两次调用之间都不共享任何 pool 状态
+    # （多 key 轮转位置、失败 key 的 cooldown 记录、fallback_chain 当前
+    # 停留在第几条配置……全部清零重来）。这与真正的 Agent（`agent/core.py`
+    # 只在启动时 `LLMClientPool.from_config(cfg)` 一次、之后整个会话生命
+    # 周期内持续复用同一个 pool）行为不一致，实质上等于没有真正吃到
+    # pool 的轮转/故障转移能力——退化成了每次都用 fallback_chain 第一条
+    # 配置硬调一次。提前构造一次并共享，才是与 Agent 对齐的正确用法。
+    if llm is not None:
+        shared_llm = llm
+    else:
+        from ._llm import build_llm_helper
+
+        try:
+            shared_llm = build_llm_helper(app_cfg)
+        except Exception:
+            # provider 未配置好（比如没有 providers.json）不应该在这里直接
+            # 崩掉整个 default_executor() 构造过程——交给 explorer/repairer/
+            # fallback 在真正发起调用时报出更明确的错误。退回 None 后，
+            # 三者会各自在调用时重试一次 build_llm_helper()（结果通常还是
+            # 报同样的错，但错误信息会指向具体是哪一步失败，便于排查）。
+            shared_llm = None
+
     repo = ScriptRepository(
         project_root / ".agent" / "hybrid_exec" / "scripts",
         retire_after_consecutive_fail=retire_after_consecutive_fail,
@@ -358,11 +391,11 @@ def default_executor(
     return HybridExecutor(
         repo=repo,
         script_runner=script_runner,
-        llm_explorer=LLMExplorer(app_cfg, llm=llm),
+        llm_explorer=LLMExplorer(app_cfg, llm=shared_llm),
         agent_explorer=AgentExplorer(app_cfg),
-        llm_repairer=LLMRepairer(app_cfg, llm=llm),
+        llm_repairer=LLMRepairer(app_cfg, llm=shared_llm),
         agent_repairer=AgentRepairer(app_cfg),
-        fallback=FallbackExecutor(app_cfg, llm=llm),
+        fallback=FallbackExecutor(app_cfg, llm=shared_llm),
         run_recorder=run_recorder,
         reexplore_policy=reexplore_policy,
     )

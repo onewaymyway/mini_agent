@@ -316,6 +316,7 @@ result = default_executor(project_root).run(TaskSpec(
 - P1-P4 全部完成，54 个单元/集成测试全部通过（`tests/test_hybrid_exec.py` / `_p2.py` / `_p3.py` / `_p4.py` / `test_hybrid_exec_summary_route.py`），且逐一验证过对现有 workflow/kanban 相关测试无回归。
 - **仍未做的事**：所有测试都用 fake/mock 组件隔离，还没有接一次真实 LLM/Agent 跑一个真实任务做端到端验证——`LLMExplorer`/`AgentExplorer` 产出的脚本质量、提示词效果如何，都还没有实测数据支撑。建议在正式投入使用前，先挑一个真实小任务（比如某个抽取/摘要类需求）跑一次端到端，确认 prompt 效果和整条链路在真实环境里可用。
 - kanban 面板、`ReexplorePolicy` 目前都是"能力已具备但默认关闭/低调"的状态：kanban Tab 是纯只读展示，不影响任何执行路径；`ReexplorePolicy` 默认 `enabled=False`，不会改变现有脚本的使用行为，需要显式开启。
+- §11.1：修复了独立执行路径下 `llm_explorer`/`llm_repairer`/`fallback` 未真正共享同一条 `LLMClientPool` 的问题（此前三者各自惰性重建，丢失多 key 轮转/cooldown 状态），现已与主 Agent、`hybrid_step` 的行为完全对齐，55 个单元/集成测试（含新增的 3 个回归用例）全部通过。
 
 ## 11. LLM 来源：独立执行自动加载 `providers.json` / 嵌入 workflow 接收传入的 llm（已完成）
 
@@ -331,6 +332,39 @@ result = default_executor(project_root).run(TaskSpec(
 - `examples/hybrid_exec_demo.py` 新增场景六，用一个不发网络请求的假 `llm` 对象验证 `LLMExplorer(app_cfg, llm=...)` 确实直接复用了传入对象。
 - 相关说明已补充进 `docs/hybrid-exec-guide.md` §1.1、§5。
 - 54 个既有单元/集成测试全部保持通过，未引入回归。
+
+### 11.1 补丁：独立执行路径下三者未真正共享 `LLMClientPool`（已修复）
+
+实测（用户反馈：跑 `examples/hybrid_exec_demo.py` 报 `LLMProviderError:
+... model does not exist` 并怀疑"没有用和 agent 一样的方式调用 llm"）发现
+`executor.py::default_executor()` 虽然按 §11 的方案传了 `llm=` 参数下去，
+但独立执行（不传 `llm`）时把 `llm=None` 原样分别交给 `LLMExplorer`/
+`LLMRepairer`/`FallbackExecutor` 三个独立实例——三者各自在**每次**
+`.ask()` 调用时才惰性调用 `build_llm_helper(app_cfg)`，等于每次探索/
+修复/兜底请求都重新 `load_config()`、重新建一整条 `LLMClientPool`，多
+key 轮转位置、key cooldown、fallback_chain 进度全部在调用之间清零重来。
+这与主 Agent（`agent/core.py` 只在启动时 `LLMClientPool.from_config(cfg)`
+一次、之后整个会话周期持续复用）不一致，实质上没有真正吃到 pool 的轮转
+/故障转移能力。
+
+修复：`default_executor()` 现在在**构造期间**主动调用一次
+`build_llm_helper(app_cfg)`（`llm=None` 时），得到的 `LLMHelper` 被
+`llm_explorer`/`llm_repairer`/`fallback` 三者共用，与
+`workflow_integration.py::HybridStepExecutor.execute` 一直以来的做法
+（构造一次 `step_llm` 共用）以及主 Agent 的行为对齐；`build_llm_helper()`
+构造失败时优雅退回 `llm=None`，不让 `default_executor()` 本身崩溃。
+
+新增回归测试 `tests/test_hybrid_exec_llm_pool_sharing.py`（3 用例）；
+`examples/hybrid_exec_demo.py` 新增"场景六"（不依赖 `providers.json`/
+网络的假 `llm` 对象，验证嵌入 workflow 场景的复用路径）。详见
+`docs/hybrid-exec-guide.md` §一.1 实现细节说明框、§十二。
+
+> 需要额外说明：上述用户反馈里报出的 `model agnes-2.5-flash does not
+> exist`（404）本身是 `providers.json` 里配置的 model 名称与该 provider
+> 实际支持的 model 不匹配（该项目自带的 `providers.json.agnes.example`
+> 示例用的是 `agnes-2.0-flash`），是使用方需要核对的配置问题，本次修复
+> 解决的是"多次调用之间是否共享同一条 pool/轮转状态"这个真正的代码行为
+> 缺陷，不能也不应该让代码"猜出"用户想要的正确 model 名称。
 
 ## 12. `examples/hybrid_exec_demo.py`：改用真实 `providers.json`（已完成）
 

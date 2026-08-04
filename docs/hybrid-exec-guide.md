@@ -71,6 +71,21 @@ provider/超时等设置（内部转换为 `RunnerAppConfig`）。
   result = executor.run(TaskSpec(task_id="...", description="...", input_data={...}))
   ```
 
+  > **实现细节（与主 Agent 对齐的关键点）**：`default_executor()` 在**构造
+  > 期间**只调用一次 `build_llm_helper(app_cfg)`，得到的 `LLMHelper`（内部
+  > 持有一条真正的 `LLMClientPool`——完整解析 `providers.json` 的
+  > `llm_fallback_chain`、多 key 轮转、key cooldown、多 provider 故障
+  > 转移，与 `agent/core.py` 启动时 `LLMClientPool.from_config(cfg)` 走的
+  > 是同一份代码）后，会被 `llm_explorer`/`llm_repairer`/`fallback` 三者
+  > **共用**，贯穿这一个 `HybridExecutor` 实例的整个生命周期——而不是三者
+  > 各自持有 `llm=None`、在每次 `.ask()` 时才各自惰性重建一整条全新的
+  > `LLMClientPool`。后者是曾经存在过的问题：那样的话每次探索/修复/兜底
+  > 调用之间不共享任何 pool 状态（多 key 轮转位置、失败 key 的 cooldown
+  > 记录、fallback_chain 当前用到第几条配置全部清零重来），实质上退化成
+  > "每次都用 `fallback_chain` 第一条配置硬调一次"，既没有真正吃到多 key
+  > 轮转的效果，也没有像 Agent 那样在某条配置连续报错时记住并暂时避开它。
+  > 现在的实现在这一点上与主 Agent 完全一致。
+
 - **嵌入 workflow（比如在 `python_step` 脚本内部把 `hybrid_exec` 当库用）**：
   把 workflow 已经拿到手的 `ctx.llm`（`PyStepLLM` 实例）或任何一个已构造好
   的 `LLMHelper` 直接传给 `llm=`，`hybrid_exec` 会原样复用它，不再重新
@@ -440,9 +455,11 @@ python examples/hybrid_exec_demo.py
 | 3. 报错后自愈修复 | 人为写入带已知 bug 的脚本 → 执行报错 → 真实 `LLMRepairer` 修复 → dry-run 通过 → 存为新版本 → 真实执行 | 验证"脚本坏了先修脚本"这条路径 |
 | 4. 强制走 Fallback | `allow_tiers=(LLM,)`（不含 SCRIPT/AGENT）→ 真实 `FallbackExecutor.llm_direct` 直接给答案，不产出脚本 | 验证兜底通道 |
 | 5. 可观测性 | `.agent/hybrid_exec/runs/<task_id>/summary.json` 落盘统计、`build_kanban_summary()` 聚合出的结构与 `GET /v1/hybrid_exec/summary` 一致 | 展示脚本仓库真实磁盘布局（脚本内容来自真实 LLM 产出/修复，非编造） |
+| 6. 嵌入 workflow 场景模拟 | 传入一个不发网络请求的假 `llm` 对象（`_FakeCountingLLM`），验证 `default_executor(project_root, llm=...)` 确实原样复用了传入对象、未重新 `load_config()` | **不依赖 `providers.json`/网络**，无论场景一~五是否因未配置真实 provider 而被跳过，场景六都会运行；对应 python_step 脚本里 `default_executor(ctx.project_root, llm=ctx.llm)` 的用法 |
 
-嵌入 workflow 场景（接收 workflow 传入的 `llm`，而不是重新读
-`providers.json`）不在本脚本演示范围内，示例代码见 §一.1。
+场景六验证的是"嵌入 workflow 传入 llm"这条路径本身能正确复用传入对象；
+关于"独立执行不传 `llm` 时，三者内部如何共享同一条 `LLMClientPool`"的
+说明见 §一.1 的实现细节说明框。
 
 运行结束会打印脚本仓库的真实磁盘布局（`.agent/hybrid_exec/scripts/<task_id>/v*.py` + `meta.json`）与完整的 kanban 汇总 JSON，可直接对照检查。演示工作区落在 `examples/_hybrid_exec_demo_workspace/`（已加入 `.gitignore`，每次运行会先清空重建，可重复运行）。
 
@@ -450,3 +467,43 @@ python examples/hybrid_exec_demo.py
 > 的 provider 对应的 API 域名（如 Anthropic 是 `api.anthropic.com`）在
 > 白名单内，否则真实请求会在网络层被拦截，报错信息会体现在 LLM 调用的
 > 重试日志里。
+
+## 十二、已修复：独立执行路径下 LLM 未真正共享 `LLMClientPool`（P0）
+
+**现象**：运行 `examples/hybrid_exec_demo.py`（独立执行、不传 `llm=`）时，
+探索/修复/兜底报错信息里的 provider/model 与 `providers.json` 里配置的
+内容对不上重试节奏，且每一次调用看起来都像是"从零开始"的一次性请求，
+没有体现出多 key 轮转 / 故障转移的效果。
+
+**根因**：`executor.py::default_executor()` 此前把 `llm=None` 原样分别
+传给 `LLMExplorer`/`LLMRepairer`/`FallbackExecutor` 三个实例；这三者内部
+在 `llm=None` 时，会在**每一次** `.ask()` 调用时才各自惰性调用一次
+`build_llm_helper(app_cfg)`——即每次探索/修复/兜底请求都独立新建一整条
+`LLMClientPool`（重新 `load_config()`、重新解析 `providers.json`、多 key
+轮转位置清零、之前记录的 key cooldown/故障 provider 清零）。这与主 Agent
+的行为不一致：`agent/core.py` 只在 Agent 启动时 `LLMClientPool.from_config
+(cfg)` **一次**，之后整个会话生命周期里持续复用同一个 pool，重试/多 key
+轮转/多 provider fallback 的状态是连续累积的。
+
+**修复**：`default_executor()` 现在在**构造期间**（而不是每次调用时）就
+调用一次 `build_llm_helper(app_cfg)`，得到的 `LLMHelper` 被
+`llm_explorer`/`llm_repairer`/`fallback` 三者共用，行为与
+`workflow_integration.py::HybridStepExecutor.execute`（一直以来就是这么
+做的，见 §五）以及主 Agent 保持一致。`build_llm_helper()` 构造失败（比如
+确实没有配置 `providers.json`）时退回 `llm=None`，不让 `default_executor()`
+本身崩溃，交给三者在真正发起调用时各自报出更明确的错误。
+
+**验证**：新增单元测试 `tests/test_hybrid_exec_llm_pool_sharing.py`（3
+个用例：不传 `llm` 时只构造一次共享对象、传入 `llm` 时完全不触碰
+`build_llm_helper`、构造失败时优雅降级为 `None`）；`examples/
+hybrid_exec_demo.py` 新增场景六（见 §十一），用不发网络请求的假 `llm`
+对象验证复用路径本身工作正常。
+
+> 这个改动**不解决**"`providers.json` 里配置了一个 provider 不支持的
+> model 名称"这类用户侧配置错误（比如把 model 填成了 provider 实际不
+> 存在的名字，上游会直接返回 404 "model does not exist"，这本身是需要
+> 按 provider 文档核对 model 名称的配置问题，不是 `hybrid_exec` 的重试/
+> 轮转逻辑能绕过的）——但如果 `providers.json` 的 `llm_fallback_chain`
+> 里配置了多条 provider/model，或单个 provider 配置了多个 `api_keys`，
+> 修复后的 `hybrid_exec` 现在能像主 Agent 一样，在同一次 `run()` 内的
+> 多次探索/修复/兜底调用之间正确累积、共享故障转移与轮转状态。

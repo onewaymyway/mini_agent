@@ -122,6 +122,78 @@ def result_line(result) -> str:
     )
 
 
+class _FakeCountingLLM:
+    """不发任何网络请求的假 `llm` 对象，只用来证明"嵌入 workflow 时传入
+    `llm=` 会被直接复用，不会重新 `load_config()`/`providers.json`"这条
+    路径确实生效——同时也是 §11 提到的 P0 bug（独立执行路径下
+    `LLMExplorer`/`LLMRepairer`/`FallbackExecutor` 曾经各自在每次 `.ask()`
+    时惰性重建一整条 `LLMClientPool`，白白丢掉多 key 轮转/cooldown 状态）
+    的回归验证：把这同一个对象分别传给 `LLMExplorer`/`LLMRepairer`/
+    `FallbackExecutor` 三者共用时，调用次数应该恰好等于"实际发起的探索/
+    修复/兜底请求次数"，而不会有任何一次意外地绕过它去另建了一条
+    `LLMClientPool`（那样的话这个假对象根本不会被调用到，探索会直接因
+    "没有 providers.json"而报错）。"""
+
+    def __init__(self) -> None:
+        self.calls: "list[str]" = []
+
+    def ask(self, prompt: str, *, system: str = "") -> str:
+        self.calls.append(prompt[:40])
+        # 直接返回一个满足 csv_stats 任务协议的固定脚本，验证链路，不依赖
+        # 任何真实模型的生成质量。
+        return (
+            "def run(ctx):\n"
+            "    numbers = ctx.params.get('numbers', [])\n"
+            "    return {\n"
+            "        'sum': sum(numbers),\n"
+            "        'avg': sum(numbers) / len(numbers) if numbers else 0,\n"
+            "        'max': max(numbers) if numbers else None,\n"
+            "        'min': min(numbers) if numbers else None,\n"
+            "        'count': len(numbers),\n"
+            "    }\n"
+        )
+
+
+def run_scenario_six_embedded_llm_reuse() -> None:
+    """场景六：模拟"嵌入 workflow"场景——用一个不发网络请求的假 `llm`
+    对象，验证 `default_executor(project_root, llm=...)` 确实原样复用了
+    传入对象，既不重新 `load_config()`，也不会绕开它另建一条
+    `LLMClientPool`。全程不依赖 `providers.json`/网络，因此无论场景一~五
+    是否因为没配置真实 provider 而被跳过，本场景都会运行。"""
+    _hr("场景六：嵌入 workflow 场景模拟——传入假 llm 对象，验证被直接复用（不发网络请求）")
+
+    workspace = Path(__file__).resolve().parent / "_hybrid_exec_demo_workspace_scenario6"
+    if workspace.exists():
+        shutil.rmtree(workspace)
+    workspace.mkdir(parents=True)
+
+    fake_llm = _FakeCountingLLM()
+    executor = default_executor(workspace, llm=fake_llm)
+
+    task = TaskSpec(
+        task_id="csv_stats_embedded_demo",
+        description="给定 numbers，计算 sum/avg/max/min/count",
+        input_data={"numbers": [1, 2, 3, 4]},
+        allow_tiers=(ExecutionTier.SCRIPT, ExecutionTier.LLM),
+        output_validator=lambda out: (
+            isinstance(out, dict) and out.get("sum") == 10,
+            f"期望 sum=10，实际 {out.get('sum') if isinstance(out, dict) else out!r}",
+        ),
+    )
+    result = executor.run(task)
+    print(result_line(result))
+    if result.ok and result.tier_used == ExecutionTier.SCRIPT and fake_llm.calls:
+        print(
+            f"✅ 验证通过：传入的假 llm 对象被直接调用了 {len(fake_llm.calls)} 次\n"
+            "   （LLMExplorer 未重新 load_config()/读取 providers.json，全程不发网络请求），\n"
+            "   这正是 python_step 脚本里把 hybrid_exec 当库调用、直接传 ctx.llm 复用的路径。"
+        )
+    else:
+        print(f"⚠️ 未按预期复用假 llm 对象，ok={result.ok} tier={result.tier_used.value} calls={fake_llm.calls}")
+
+    shutil.rmtree(workspace, ignore_errors=True)
+
+
 def main() -> None:
     if DEMO_ROOT.exists():
         shutil.rmtree(DEMO_ROOT)
@@ -135,16 +207,21 @@ def main() -> None:
     print(f"project_root = {DEMO_ROOT}")
     print(f"检测结果：{'✅ 可用' if llm_ok else '❌ 不可用'}（{llm_detail}）")
 
+    # 场景六不依赖真实 providers.json（假 llm 对象、不发网络请求），无论
+    # 场景一~五是否因为没配置真实 provider 而被跳过，都先跑一遍。
+    run_scenario_six_embedded_llm_reuse()
+
     if not llm_ok:
         print(
             "\n未检测到可用的 LLM 配置，本演示不会用任何模拟/规则版数据硬跑，"
-            "以下场景全部跳过。请按下面步骤配置后重新运行：\n"
+            "场景一~五（依赖真实 LLM 调用）全部跳过，仅场景六（假 llm，验证\n"
+            "复用逻辑）已运行。请按下面步骤配置后重新运行完整演示：\n"
             f"  1. cd {REPO_ROOT}\n"
             "  2. cp providers.json.example providers.json\n"
             "  3. 编辑 providers.json，填入至少一个 provider 的真实 api_key\n"
             "  4. python examples/hybrid_exec_demo.py\n"
         )
-        _hr("演示未完成：等待真实 providers.json 配置")
+        _hr("演示部分完成：场景六已验证，等待真实 providers.json 配置以运行场景一~五")
         return
 
     # ======================================================================
