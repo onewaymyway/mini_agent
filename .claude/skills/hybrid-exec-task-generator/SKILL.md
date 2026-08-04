@@ -1,7 +1,7 @@
 ---
 name: hybrid-exec-task-generator
-description: 帮助用户为 hybrid_exec 系统（脚本/LLM/Agent 混合执行，`src/mini_agent/hybrid_exec/`）构建、测试、调试、改进一个符合规范的"混合任务"（`TaskSpec`）——从零写出 `task_id`/`description`/`input_data`/`output_validator`，用真实 `HybridExecutor` 跑一次验证，看 `attempts` 决策轨迹排查探索/修复/降级为什么没按预期走，检查/手工调整 `.agent/hybrid_exec/scripts/<task_id>/` 里落盘的脚本版本，最终决定是留作独立调用还是接入 workflow 的 `hybrid_step`。当用户说"帮我做一个hybrid_exec任务"、"这个任务用脚本/LLM/Agent混合执行"、"给xxx写个TaskSpec"、"这个hybrid task一直探索失败"、"脚本总是被修复失败降级"、"hybrid_step怎么配"时使用。
-triggers: hybrid_exec, TaskSpec, HybridExecutor, default_executor, hybrid_step, 混合执行, 脚本探索, 脚本修复, output_validator, ScriptRepository, force_reexplore, allow_tiers, dry-run, 降级, retire, 退役
+description: 帮助用户为 hybrid_exec 系统（脚本/LLM/Agent 混合执行，`src/mini_agent/hybrid_exec/`）构建、测试、调试、改进一个符合规范的"混合任务"（`TaskSpec`）——从零写出 `task_id`/`description`/`input_data`/`output_validator`，用 `mini-agent hybrid-exec run`（或工具 `run_hybrid_exec_task`/真实 `HybridExecutor`）跑一次验证，看 attempts 决策轨迹排查探索/修复/降级为什么没按预期走，用 `mini-agent hybrid-exec list/show`（或工具 `list_hybrid_exec_tasks`/`show_hybrid_exec_task`）检查/手工调整 `.agent/hybrid_exec/scripts/<task_id>/` 里落盘的脚本版本，最终决定是留作独立调用、命令行触发、Agent 工具调用，还是接入 workflow 的 `hybrid_step`。当用户说"帮我做一个hybrid_exec任务"、"这个任务用脚本/LLM/Agent混合执行"、"给xxx写个TaskSpec"、"这个hybrid task一直探索失败"、"脚本总是被修复失败降级"、"hybrid_step怎么配"、"用命令行跑一下这个hybrid任务"时使用。
+triggers: hybrid_exec, TaskSpec, HybridExecutor, default_executor, hybrid_step, 混合执行, 脚本探索, 脚本修复, output_validator, ScriptRepository, force_reexplore, allow_tiers, dry-run, 降级, retire, 退役, mini-agent hybrid-exec, run_hybrid_exec_task, list_hybrid_exec_tasks, show_hybrid_exec_task
 ---
 
 # hybrid_exec 任务生成器（构建 / 测试 / 调试 / 改进 TaskSpec）
@@ -50,11 +50,46 @@ workflow-generator skill 的场景；hybrid_exec 任务只有明确要用"脚本
 | `force_reexplore` | 调试/迭代 description 时常用，强制忽略仓库里已有脚本重新探索一次 |
 | `agent_fs_write_enabled` | 默认 `False`，只读沙箱；确实需要 Explorer/Repairer 拉起的 Agent 读写项目文件时才显式打开 |
 
-## 第三步：用真实 `HybridExecutor` 跑一次验证（不要凭空猜结果）
+## 第三步：跑一次验证（不要凭空猜结果）
 
-写一个小的一次性驱动脚本（用 `write_file` 落到项目下比如
-`/tmp/hybrid_exec_try_<task_id>.py`，或直接内嵌在 `bash -c 'python - <<EOF ... EOF'`
-里，不必进正式代码库），用 `bash` 工具跑：
+优先用现成的接入方式，而不是每次都手写驱动脚本——这三条路径底层都是同
+一个 `HybridExecutor`，结果和落盘的脚本仓库完全一致，选哪个只取决于
+"Agent 在对话里操作"还是"人在终端里操作"：
+
+**(a) 在当前 Agent 对话里直接调用工具**（最省事，Agent 自己就能做，不用
+落盘任何驱动脚本）：
+
+```
+调用工具 run_hybrid_exec_task(
+    task_id="extract_entities_v1",
+    description="从输入文本中抽取人名/机构名，返回 {\"entities\": [...]}",
+    input_json='{"text": "张三在腾讯工作，李四在阿里巴巴。"}',
+    allow_tiers="script,llm",
+)
+```
+返回文本里直接带 `ok=`/`tier_used=`/`script_version=`/`output=`；`ok=False`
+时还会带上 attempts 决策轨迹的简要串。想先看仓库里有没有这个 task_id、
+现状如何，先调用 `list_hybrid_exec_tasks()` / `show_hybrid_exec_task(task_id)`。
+
+**(b) 用命令行**（人在终端里手动验证，或要写进调试记录方便复现）：
+
+```bash
+mini-agent hybrid-exec run extract_entities_v1 \
+  --field 'text=张三在腾讯工作，李四在阿里巴巴。' \
+  --desc '从输入文本中抽取人名/机构名，返回 {"entities": [...]}' \
+  --allow-tiers script,llm \
+  -v   # 打印完整 attempts 决策轨迹，见第四步
+```
+`input_data` 支持 `--field key=value`（可重复）/`--input-file <path>`/
+位置参数 JSON 字符串/stdin 管道四种传法，Windows PowerShell 下优先用
+`--field` 或 `--input-file`（位置参数里的 JSON 双引号容易被 PowerShell
+转义丢失，报 `unrecognized arguments: xxx}`；见 `docs/hybrid-exec-guide.md`
+§十四）。`mini-agent hybrid-exec list` / `show <task_id>` 对应第五步的仓库
+检查，不用再手动 `read_file` 拼路径。
+
+**(c) 需要自定义 `output_validator` 时，才手写驱动脚本**（(a)/(b) 都不支持
+传自定义校验函数，只能"不抛异常即算成功"；确实需要精确校验产出结构时用
+这条路径，用 `bash` 工具跑）：
 
 ```python
 import sys
@@ -79,18 +114,19 @@ for a in result.attempts:
     print(f"  [{'OK' if a.ok else 'FAIL'}] {a.stage} ({a.tier.value}) {a.reason}")
 ```
 
-跑之前确认 `providers.json` 已配置好（独立执行会像主 Agent 一样自动加载，
-不需要手动传 model/provider/api_key；没配好会在真正发起调用时报错，报错
-信息里能看出是 provider 没配还是 model 名不对）。若这个任务将来要嵌入
-某个 `python_step` 脚本内部调用，改用
+跑之前确认 `providers.json` 已配置好（(a)/(b)/(c) 三条路径都会像主 Agent
+一样自动加载，不需要手动传 model/provider/api_key；没配好会在真正发起
+调用时报错，报错信息里能看出是 provider 没配还是 model 名不对）。若这个
+任务将来要嵌入某个 `python_step` 脚本内部调用，改用
 `default_executor(ctx.project_root, llm=ctx.llm)`——见 `docs/hybrid-exec-guide.md`
-§一.1，此时不需要（也不应该）在驱动脚本里独立测；应直接在目标
+§一.1，此时不需要（也不应该）用 (a)/(b)/(c) 独立测；应直接在目标
 `python_step` 脚本里用 `ctx.llm` 现场验证，复用 workflow 当次已解析好的
 provider/模型。
 
-## 第四步：看 `attempts` 定位问题出在哪一层
+## 第四步：看 attempts 定位问题出在哪一层
 
-`ExecutionResult.attempts` 是完整决策轨迹，`stage` 命名规律：
+`ExecutionResult.attempts`（CLI 用 `-v` 打印，工具 `run_hybrid_exec_task`
+失败时自动带上）是完整决策轨迹，`stage` 命名规律：
 
 | `stage` 前缀 | 含义 | 没通过时该看什么 |
 |---|---|---|
@@ -110,30 +146,44 @@ provider/模型。
 ## 第五步：检查/手工干预脚本仓库（有需要时）
 
 脚本真实落盘在 `.agent/hybrid_exec/scripts/<task_id>/`（`vN.py` +
-`meta.json`），用 `read_file`/`list_dir` 直接查看：
+`meta.json`）。查看用命令行 `mini-agent hybrid-exec list`（列举所有
+task_id 及当前状态）/`show <task_id>`（某个 task_id 的 `meta.json` +
+`vN.py` 源码一起打印），或对话里让 Agent 调用工具
+`list_hybrid_exec_tasks()`/`show_hybrid_exec_task(task_id)`，都不需要手动
+`read_file`/`list_dir` 拼路径了：
 
-- **想看当前 active 的是哪个版本**：读 `meta.json`，字段含
-  `active_version`、每个版本的 `success_count`/`fail_count`/
-  `consecutive_fail`/`status`。
+- **想看当前 active 的是哪个版本**：`show_hybrid_exec_task(task_id)` 或
+  `mini-agent hybrid-exec show <task_id>` 直接给出 `active_version`、每个
+  版本的 `success_count`/`fail_count`/`consecutive_fail`/`status`。
 - **脚本写得不理想，想直接手改**：可以用 `write_file`/`patch_file` 改
   `vN.py` 本身（比如探索出来的脚本能跑但风格不好），改完**必须**用第三步
-  的驱动脚本重新跑一次（走 `script_run`/`script_run_validate` 路径）验证
-  没改坏；不要只改文件就假设它还能用。
+  的方式（(a)/(b)/(c) 任一）重新跑一次（走 `script_run`/
+  `script_run_validate` 路径）验证没改坏；不要只改文件就假设它还能用。
 - **想清空重来**：删掉整个 `<task_id>/` 目录，或调用时传
-  `force_reexplore=True` 更安全（不用手动清目录，且失败了旧脚本还在）。
+  `force_reexplore=True`（CLI 对应 `--force-reexplore`，工具对应同名参数）
+  更安全（不用手动清目录，且失败了旧脚本还在）。
 - **连续失败太多次被自动退役**（`meta.json` 里 `status: retired`）：下次
   `run()` 会自动重新走探索，不需要手动处理；如果想立刻验证退役后的重探索
-  行为，直接再跑一次驱动脚本即可。
+  行为，直接再跑一次第三步的方式即可。
 
 ## 第六步：定下来之后怎么用
 
-两种落地形态，二选一或都要：
+四种落地形态，按场景选，不互斥（同一个 `task_id` 可以同时被多条路径
+调用，共享同一份脚本仓库）：
 
-1. **独立调用**（daemon 自主循环、CLI 工具、其它 workflow 的 `python_step`
-   内部当库调用）：保留第三步的驱动脚本思路，把它整理成正式代码里的一次
+1. **主 Agent 对话里直接用**：确定好的 `task_id`/`description` 直接让主
+   Agent 以后调用 `run_hybrid_exec_task(task_id=..., description=..., input_json=...)`
+   即可，不用每次都重新走这个 skill 的构建流程——仓库里已有 active 脚本
+   时会直接命中。
+2. **命令行触发**（cron/systemd/CI，或人工手动跑一次）：
+   ```bash
+   mini-agent hybrid-exec run extract_entities_v1 --field 'text=...'
+   ```
+3. **独立调用**（daemon 自主循环、其它 workflow 的 `python_step`
+   内部当库调用）：把第三步 (c) 的驱动脚本思路整理成正式代码里的一次
    `default_executor(project_root).run(TaskSpec(...))` 调用；嵌入某个
    `python_step` 脚本内部时改用 `llm=ctx.llm`（见第三步末尾）。
-2. **接入 workflow**（作为某个 workflow 的一个 step）：写成 `hybrid_step`
+4. **接入 workflow**（作为某个 workflow 的一个 step）：写成 `hybrid_step`
    类型（需要 `myplugins/hybrid_step.py` 插件已启用，删除该文件即禁用）：
 
    ```yaml
@@ -141,7 +191,7 @@ provider/模型。
      type: hybrid_step
      depends_on: [fetch_text]
      params:
-       task_id: extract_entities_v1        # 与第二步驱动脚本里用的保持一致，直接复用已探索出的脚本
+       task_id: extract_entities_v1        # 与前面验证时用的保持一致，直接复用已探索出的脚本
        description: "从输入文本中抽取人名/机构名，返回 JSON"
        allow_tiers: [script, llm]
        max_script_repair_attempts: 2
@@ -174,3 +224,9 @@ provider/模型。
   `default_executor()`，也会反复重建。同一批调用应该复用同一个
   `HybridExecutor` 实例（`executor = default_executor(...)` 建一次，
   `executor.run(task)` 多次调用），不要每次都重新 `default_executor()`。
+- **命令行位置参数传 JSON 在 Windows PowerShell 下报
+  `unrecognized arguments: xxx}`**：PowerShell 把含双引号的字符串传给
+  原生 exe 时容易丢失内层引号转义，导致 JSON 被空格拆散。改用
+  `--field key=value`（可重复）或 `--input-file <path>` 即可绕开，不要在
+  这个问题上排查 hybrid_exec 本身的逻辑（详见
+  `docs/hybrid-exec-guide.md` §十四）。
