@@ -105,6 +105,8 @@ api/routes.py — FastAPI 路由定义
                                      [外部知识反馈闭环 P1-P5] 一次性汇总候选队列过期巡检/
                                      wiki 利用率/阈值自校准/外部趋势候选/生态定位扫描/
                                      月度战略回顾五个模块的当前状态（只读）
+    GET    /v1/hybrid_exec/summary   [hybrid_exec P4] 汇总所有 task_id 的脚本仓库状态
+                                     （active 版本/成功率）+ run 统计，供看板展示（只读）
     GET    /v1/cron/jobs             CronScheduler job 列表
     POST   /v1/cron/jobs             添加 cron job
     PUT    /v1/cron/jobs/{id}        修改 job（enable/disable/schedule）
@@ -3953,6 +3955,30 @@ async def get_feedback_loop_summary(request: Request):
         result["monthly_trend_retrospective"] = {"_error": str(_mini_agent_exc)}
 
     return result
+
+
+# ── hybrid_exec（脚本/LLM/Agent 混合执行系统）只读汇总 ────────────────
+# next_doc/hybrid_exec_design_plan.md §6/§8 P4：供看板一次性拉取展示各
+# task_id 当前的脚本仓库状态（active 版本/成功率）+ run 统计汇总，不需要
+# 看板前端分别拼多个请求，也不需要看板知道存储细节。
+
+@router.get("/hybrid_exec/summary")
+async def get_hybrid_exec_summary(request: Request):
+    """GET /v1/hybrid_exec/summary — 只读汇总所有 hybrid_exec task_id
+    的脚本仓库状态 + run 统计，供看板展示。"""
+    http_server = getattr(request.app.state, "http_server", None)
+    if http_server is None:
+        raise HTTPException(status_code=503, detail="HttpServer not available")
+    _require_owner(request)
+    proj_root = _project_root_or_503(http_server)
+
+    try:
+        from mini_agent.hybrid_exec.kanban_summary import build_kanban_summary
+        return build_kanban_summary(proj_root)
+    except Exception as _mini_agent_exc:
+        from mini_agent.errors import log_exception
+        log_exception(_mini_agent_exc, where='mini_agent.api.routes.get_hybrid_exec_summary')
+        return {"tasks": [], "_error": str(_mini_agent_exc)}
 
 
 @router.post("/external_input/novelty_candidates/{candidate_id}/confirm")

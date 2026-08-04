@@ -411,6 +411,11 @@ class AgentClient:
         的当前状态，供看板展示。"""
         return self._get("/evolution/feedback_loop_summary")
 
+    def hybrid_exec_summary(self):
+        """[hybrid_exec P4] 一次性汇总所有 task_id 的脚本仓库状态（active
+        版本/成功率）+ run 统计，供看板展示。"""
+        return self._get("/hybrid_exec/summary")
+
     def cron_jobs(self):
         return self._get("/cron/jobs")
 

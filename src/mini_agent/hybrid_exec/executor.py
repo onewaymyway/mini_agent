@@ -24,6 +24,7 @@ from typing import Optional
 
 from .explorer import AgentExplorer, Explorer, LLMExplorer
 from .fallback import FallbackExecutor
+from .policy import ReexplorePolicy
 from .recorder import RunRecorder
 from .repairer import AgentRepairer, LLMRepairer, Repairer
 from .repository import ScriptRepository
@@ -42,6 +43,7 @@ class HybridExecutor:
         agent_repairer: Repairer,
         fallback: FallbackExecutor,
         run_recorder: Optional[RunRecorder] = None,
+        reexplore_policy: Optional[ReexplorePolicy] = None,
     ) -> None:
         self.repo = repo
         self.script_runner = script_runner
@@ -51,6 +53,7 @@ class HybridExecutor:
         self.agent_repairer = agent_repairer
         self.fallback = fallback
         self.run_recorder = run_recorder
+        self.reexplore_policy = reexplore_policy
 
     # -- 对外入口 ----------------------------------------------------------
 
@@ -68,6 +71,18 @@ class HybridExecutor:
         attempts: "list[AttemptRecord]" = []
 
         active = None if task.force_reexplore else self.repo.get_active_script(task.task_id)
+
+        # [P4] 跨 run 主动重探索：即使这次的 active 脚本还没坏（没到 retire
+        # 阈值），如果它的累计成功率已经不达标，机会主义地先探索一版新的；
+        # 探索失败也不影响——仍然继续走下面的正常流程用现在这个脚本。
+        if active is not None and self.reexplore_policy is not None:
+            should, reason = self.reexplore_policy.should_reexplore(active)
+            attempts.append(AttemptRecord("proactive_reexplore_check", ExecutionTier.SCRIPT, should, reason))
+            if should:
+                explored = self._explore(task, attempts)
+                if explored is not None:
+                    return self._finish(True, explored[1], ExecutionTier.SCRIPT, explored[0], attempts, start)
+                # 主动探索没成功：不影响现有脚本，继续往下用它正常执行。
 
         if active is not None:
             script_path = self.repo.get_script_path(task.task_id, active.version)
@@ -292,10 +307,20 @@ class HybridExecutor:
         )
 
 
-def default_executor(project_root, *, mini_agent_config=None, retire_after_consecutive_fail: int = 3) -> HybridExecutor:
+def default_executor(
+    project_root,
+    *,
+    mini_agent_config=None,
+    retire_after_consecutive_fail: int = 3,
+    reexplore_policy: Optional[ReexplorePolicy] = None,
+) -> HybridExecutor:
     """便捷工厂：给定项目根目录（以及可选的已加载好的 mini_agent Config 对象），
     组装出一个默认配置的 HybridExecutor，供独立调用场景直接使用（无需手动拼
-    ScriptRepository/ScriptRunner/Explorer/Repairer 等各个组件）。"""
+    ScriptRepository/ScriptRunner/Explorer/Repairer 等各个组件）。
+
+    reexplore_policy 默认不传（即不启用主动重探索，P4 §8 里说明的"跨 run
+    自动重探索触发"是 opt-in 的，避免默认行为在没有实际使用数据支撑时就
+    悄悄改变已有脚本的稳定使用）。"""
     project_root = Path(project_root)
     if mini_agent_config is not None:
         app_cfg = RunnerAppConfig.from_mini_agent_config(mini_agent_config)
@@ -317,4 +342,5 @@ def default_executor(project_root, *, mini_agent_config=None, retire_after_conse
         agent_repairer=AgentRepairer(app_cfg),
         fallback=FallbackExecutor(app_cfg),
         run_recorder=run_recorder,
+        reexplore_policy=reexplore_policy,
     )

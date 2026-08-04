@@ -3843,6 +3843,90 @@ def render_diagnostics_tab(client: AgentClient):
 
 
 # ═══════════════════════════════════════════════════════════════════════
+# Tab: 🧪 混合执行（hybrid_exec，next_doc/hybrid_exec_design_plan.md P4）
+# ═══════════════════════════════════════════════════════════════════════
+def render_hybrid_exec_tab(client: AgentClient):
+    """脚本/LLM/Agent 混合执行系统的只读观测面板：按 task_id 展示当前脚本
+    仓库状态（active 版本/创建方式/累计成功率/连续失败次数）+ run 统计
+    （总次数/成功率/各 tier 命中分布/最近一次执行结果）。纯只读，不提供
+    在线编辑——需要强制重新探索/手动退役某个版本时，仍是改 workflow YAML
+    的 params.force_reexplore 或直接操作 `.agent/hybrid_exec/scripts/`
+    目录（详见 next_doc/hybrid_exec_design_plan.md）。"""
+    st.markdown("#### 🧪 混合执行（脚本 / LLM / Agent）")
+    st.caption(
+        "每个 task_id 对应一个可复用的执行任务：优先用脚本执行（成本最低），"
+        "脚本坏了先尝试用 LLM/Agent 自动修复，修不好或还没有脚本时才降级到 "
+        "LLM/Agent 直接给答案。详见 next_doc/hybrid_exec_design_plan.md。"
+    )
+
+    resp = client.hybrid_exec_summary() or {}
+    if "_error" in resp:
+        st.caption(f"获取汇总失败：{resp['_error']}")
+        return
+
+    tasks = resp.get("tasks") or []
+    if not tasks:
+        st.info("暂无 hybrid_exec 执行记录（还没有任何 task_id 跑过，或 `.agent/hybrid_exec/` 目录不存在）。")
+        return
+
+    total_tasks = len(tasks)
+    active_script_count = sum(1 for t in tasks if t.get("active_version") is not None)
+    c1, c2 = st.columns(2)
+    c1.metric("task 总数", total_tasks)
+    c2.metric("当前有可用脚本", active_script_count)
+
+    st.divider()
+
+    STATUS_LABEL = {"active": "✅ 生效中", "none": "⚪ 无脚本（走 LLM/Agent）"}
+    TIER_LABEL = {"script": "脚本", "llm": "LLM", "agent": "Agent"}
+
+    for t in tasks:
+        task_id = t.get("task_id", "?")
+        status = t.get("active_status", "none")
+        with st.expander(f"{STATUS_LABEL.get(status, status)} · `{task_id}`", expanded=False):
+            if "_script_error" in t:
+                st.caption(f"读取脚本仓库失败：{t['_script_error']}")
+            elif t.get("active_version") is not None:
+                sc, fc = t.get("active_success_count", 0), t.get("active_fail_count", 0)
+                total = sc + fc
+                rate_text = f"{sc / total:.0%}" if total else "-"
+                col1, col2, col3, col4 = st.columns(4)
+                col1.metric("当前版本", f"v{t['active_version']}")
+                col2.metric("累计成功率", rate_text, help=f"{sc} 成功 / {fc} 失败")
+                col3.metric("连续失败", t.get("active_consecutive_fail", 0))
+                col4.metric("历史版本数", t.get("version_count", 0))
+                st.caption(f"当前版本由 {t.get('active_created_by', '?')} 产出")
+            else:
+                st.caption(f"暂无生效脚本（历史版本数：{t.get('version_count', 0)}，全部已退役或从未探索成功）")
+
+            if "_run_error" in t:
+                st.caption(f"读取 run 统计失败：{t['_run_error']}")
+                continue
+            run_summary = t.get("run_summary")
+            if not run_summary:
+                st.caption("暂无 run 记录。")
+                continue
+
+            total_runs = run_summary.get("total_runs", 0)
+            success_runs = run_summary.get("success_runs", 0)
+            run_rate_text = f"{success_runs / total_runs:.0%}" if total_runs else "-"
+            rc1, rc2, rc3 = st.columns(3)
+            rc1.metric("总执行次数", total_runs)
+            rc2.metric("执行成功率", run_rate_text)
+            rc3.metric("最近一次", "✅ 成功" if run_summary.get("last_run_ok") else "❌ 失败")
+
+            tier_counts = run_summary.get("tier_counts") or {}
+            if tier_counts:
+                tier_text = " · ".join(
+                    f"{TIER_LABEL.get(k, k)} {v} 次" for k, v in sorted(tier_counts.items())
+                )
+                st.caption(f"命中分布：{tier_text}")
+            last_run_at = run_summary.get("last_run_at")
+            if last_run_at:
+                st.caption(f"最近一次执行时间：{last_run_at}（UTC）")
+
+
+# ═══════════════════════════════════════════════════════════════════════
 # 分页辅助（外部数据分页显示改进计划，next_doc/external_input_pagination_plan.md）
 # ═══════════════════════════════════════════════════════════════════════
 def _client_side_page(items: list, page_size: int, state_key: str) -> list:
@@ -4425,7 +4509,7 @@ def main():
 
     tabs = st.tabs(["💬 对话", "🗂️ 会话管理", "📌 目标看板", "🔄 工作流", "📁 产出物", "🖼️ 产出预览",
                     "🧠 自我状态", "🧬 进化提案", "⏰ Cron 任务", "🔌 外部输入", "🔔 关注与通知",
-                    "⚙️ 配置", "🔧 诊断"])
+                    "⚙️ 配置", "🔧 诊断", "🧪 混合执行"])
     with tabs[0]:
         render_chat_tab(client, get_active_session_id())
     with tabs[1]:
@@ -4452,6 +4536,8 @@ def main():
         render_config_tab(client)
     with tabs[12]:
         render_diagnostics_tab(client)
+    with tabs[13]:
+        render_hybrid_exec_tab(client)
 
     # [P0 改造] 原来这里是 `if auto_refresh: time.sleep(3); st.rerun()`——
     # 整页阻塞 3 秒再重跑，期间所有 tab、所有正在填的表单都被冻结。

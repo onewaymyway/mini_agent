@@ -45,6 +45,7 @@ from mini_agent.workflow.schema import WorkflowStep
 from .executor import HybridExecutor
 from .explorer import AgentExplorer, LLMExplorer
 from .fallback import FallbackExecutor
+from .policy import ReexplorePolicy
 from .recorder import RunRecorder
 from .repairer import AgentRepairer, LLMRepairer
 from .repository import ScriptRepository
@@ -126,6 +127,14 @@ class HybridStepExecutor(StepExecutor):
         # 全局 run 记录目录，跨 workflow/独立调用共享同一份统计口径
         # （对应 next_doc/hybrid_exec_design_plan.md §6）。
         run_recorder = RunRecorder(project_root / ".agent" / "hybrid_exec" / "runs")
+        # [P4] 跨 run 主动重探索策略，默认不启用，需在 step.params 里显式
+        # 打开（reexplore_enabled: true）。
+        params = step.params or {}
+        reexplore_policy = ReexplorePolicy(
+            enabled=bool(params.get("reexplore_enabled", False)),
+            min_samples=int(params.get("reexplore_min_samples", 5)),
+            success_rate_threshold=float(params.get("reexplore_success_rate_threshold", 0.6)),
+        )
 
         # 脚本执行的 session/output 目录挂到本次 workflow session 下，
         # 便于事后从 workflow 数据目录里找到这次 hybrid_step 的脚本产物
@@ -160,6 +169,7 @@ class HybridStepExecutor(StepExecutor):
             agent_repairer=AgentRepairer(app_cfg),
             fallback=FallbackExecutor(app_cfg),
             run_recorder=run_recorder,
+            reexplore_policy=reexplore_policy,
         )
 
         result = executor.run(task)

@@ -291,10 +291,10 @@ result = default_executor(project_root).run(TaskSpec(
 
 - **P1（已完成）**：`spec.py` / `repository.py` / `runner.py`（复用 py_step_runner 协议）/ `explorer.py`（LLMExplorer）/ `repairer.py`（LLMRepairer）/ `fallback.py` / `executor.py` 主干流程跑通，单元测试覆盖"脚本成功/脚本失败修复成功/脚本失败修复失败降级"三条主路径。独立 Python API（`default_executor()`），未接 workflow。
 - **P2（已完成）**：补齐 `AgentExplorer` / `AgentRepairer` / `FallbackExecutor.agent_direct`（`_agent.py`，复用 `agent_spawn.build_minimal_agent`，`agent_fs_write_enabled` 换算成 `sandbox` 参数）；接入 `hybrid_step` workflow 类型——**未修改 workflow 包任何源码**，通过 `register_step_executor()` 公开扩展点注册（`workflow_integration.py` + 薄插件文件 `myplugins/hybrid_step.py`，删除该插件文件即等效禁用）。
-- **P3（已完成）**：`run` 记录落盘 + 统计聚合（`recorder.py::RunRecorder`，`.agent/hybrid_exec/runs/<task_id>/{summary.json, <run_id>.json}`，独立调用与 workflow 场景共享同一份统计口径）；退役策略联调——补充集成测试验证"脚本反复失败触发 `ScriptRepository` 自动退役后，下一次 `run()` 调用透明地重新走探索流程"以及"修复成功会重置连续失败计数、不会被误退役"两条链路。kanban 面板本次仍未做（见下）。
-- **P4（未开始）**：
-  - kanban 面板（展示各 `task_id` 的当前 tier 分布、成功率，复用现有 kanban SSE/面板基础设施）；
-  - 跨 run 的自动重探索触发（比如同一脚本近 N 次成功率低于阈值，即使当次未失败也主动重新探索一版做 A/B）——现在 `RunRecorder` 的 summary 统计已经为这个策略提供了数据基础，但触发时机/策略本身建议放到有实际使用数据后再设计，避免过早优化。
+- **P3（已完成）**：`run` 记录落盘 + 统计聚合（`recorder.py::RunRecorder`，`.agent/hybrid_exec/runs/<task_id>/{summary.json, <run_id>.json}`，独立调用与 workflow 场景共享同一份统计口径）；退役策略联调——补充集成测试验证"脚本反复失败触发 `ScriptRepository` 自动退役后，下一次 `run()` 调用透明地重新走探索流程"以及"修复成功会重置连续失败计数、不会被误退役"两条链路。
+- **P4（已完成）**：
+  - **kanban 面板**：`kanban_summary.py::build_kanban_summary()` 汇总所有 `task_id` 的脚本仓库状态 + run 统计；新增只读端点 `GET /v1/hybrid_exec/summary`（`api/routes.py`）、`AgentClient.hybrid_exec_summary()`（`apps/mini_agent_kanban/client.py`）、新 Tab "🧪 混合执行"（`apps/mini_agent_kanban/app.py::render_hybrid_exec_tab`），展示每个 task 的当前生效版本/累计成功率/连续失败次数/执行次数/tier 命中分布。这是本次唯一触碰 `hybrid_exec` 包之外文件的部分（`api/routes.py`/`apps/mini_agent_kanban/{client,app}.py`），沿用项目里 `feedback_loop_summary` 那一套"只读汇总端点 + 看板 Tab"的既有模式，未改动其它端点/Tab 的行为。
+  - **跨 run 自动重探索触发**：`policy.py::ReexplorePolicy`，基于当前 active 脚本版本的累计成功率（简化实现：用该版本自诞生以来的全部历史，非滑动窗口）判断是否"机会主义地"主动探索一版新脚本——探索成功则直接采用，探索失败不影响，继续使用现有脚本。默认不启用（`enabled=False`），独立调用通过 `default_executor(..., reexplore_policy=...)` 开启，workflow 场景通过 `step.params.reexplore_enabled` 等参数开启。滑动窗口式的"最近 N 次成功率"因为需要更精细的数据结构，留给有实际使用数据后再细化。
 
 ---
 
@@ -308,3 +308,11 @@ result = default_executor(project_root).run(TaskSpec(
 ---
 
 以上方案已确认，进入 P1 实施：落地独立的 `hybrid_exec` 包和单元测试，不改动现有 `workflow` 代码，确认稳定后再做 P2 的 workflow 接入与 Agent 探索/修复。
+
+---
+
+## 10. 当前状态（P1-P4 完成后）
+
+- P1-P4 全部完成，54 个单元/集成测试全部通过（`tests/test_hybrid_exec.py` / `_p2.py` / `_p3.py` / `_p4.py` / `test_hybrid_exec_summary_route.py`），且逐一验证过对现有 workflow/kanban 相关测试无回归。
+- **仍未做的事**：所有测试都用 fake/mock 组件隔离，还没有接一次真实 LLM/Agent 跑一个真实任务做端到端验证——`LLMExplorer`/`AgentExplorer` 产出的脚本质量、提示词效果如何，都还没有实测数据支撑。建议在正式投入使用前，先挑一个真实小任务（比如某个抽取/摘要类需求）跑一次端到端，确认 prompt 效果和整条链路在真实环境里可用。
+- kanban 面板、`ReexplorePolicy` 目前都是"能力已具备但默认关闭/低调"的状态：kanban Tab 是纯只读展示，不影响任何执行路径；`ReexplorePolicy` 默认 `enabled=False`，不会改变现有脚本的使用行为，需要显式开启。

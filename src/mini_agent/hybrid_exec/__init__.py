@@ -19,6 +19,8 @@ mini_agent.hybrid_exec — 脚本/LLM/Agent 混合执行系统
 from .executor import HybridExecutor, default_executor
 from .explorer import AgentExplorer, Explorer, LLMExplorer
 from .fallback import FallbackExecutor
+from .kanban_summary import build_kanban_summary
+from .policy import ReexplorePolicy
 from .recorder import RunRecorder
 from .repairer import AgentRepairer, LLMRepairer, Repairer
 from .repository import ScriptRecord, ScriptRepository
@@ -48,6 +50,8 @@ __all__ = [
     "ScriptRunner",
     "RunnerAppConfig",
     "RunRecorder",
+    "ReexplorePolicy",
+    "build_kanban_summary",
     "TaskSpec",
     "ExecutionTier",
     "ExecutionResult",
