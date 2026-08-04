@@ -1,0 +1,19 @@
+python examples/hybrid_exec_demo.py
+
+# 1) --input-file：最稳妥，任何平台都不受 shell 引号影响
+'{"text": "hello world"}' | Out-File -Encoding utf8 in.json
+mini-agent hybrid-exec run word_count_v1 --input-file in.json
+
+# 2) --field key=value：可重复传，只需最外层一层引号，Windows 下最省心
+mini-agent hybrid-exec run word_count_v1 --field 'text=hello world'
+
+# 3) 管道传 stdin：完全绕开 exe 参数层的引号转义
+'{"text": "hello world"}' | mini-agent hybrid-exec run word_count_v1
+
+# 4) 原来的位置参数写法（Linux/macOS 通常没问题，Windows 建议用上面三种之一）
+mini-agent hybrid-exec run word_count_v1 '{"text": "hello world"}'
+
+
+mini-agent hybrid-exec run word_count_v1 --field "text=hello world"
+
+
