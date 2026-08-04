@@ -127,7 +127,7 @@ def main():
                 const el = document.querySelector({args.click_selector!r});
                 if (!el) return null;
                 const r = el.getBoundingClientRect();
-                return {{x: r.x + r.width/2, y: r.y + r.height/2}};
+                return {{x: r.x + r.width/2 + window.scrollX, y: r.y + r.height/2 + window.scrollY}};
             }})()"""
             pos = session.eval_js(js)
             if not pos:

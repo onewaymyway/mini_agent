@@ -50,6 +50,21 @@ from src.searchers.youku_search import YoukuSearcher, YoukuConfig
 # 新增：新闻（财联社）
 from src.searchers.cls_news import ClsNewsSearcher
 
+# 新增：新闻（澎湃新闻）
+from src.searchers.thp_news import THPNewsSearcher
+
+# 新增：社交（微博）
+from src.searchers.weibo_search import WeiboSearcher
+
+# 新增：招聘（拉勾网）
+from src.searchers.lagou_search import LagouSearcher, LagouConfig
+
+# 新增：天气
+from src.searchers.weather_search import WeatherSearcher
+
+# 新增：教育（MOOC）
+from src.searchers.mooc_search import MoocSearcher
+
 __all__ = [
     # 基础类
     "SearcherConfig",
@@ -82,4 +97,10 @@ __all__ = [
     "ClsNewsSearcher",
     "YoukuSearcher",
     "YoukuConfig",
+    "THPNewsSearcher",
+    "WeiboSearcher",
+    "LagouSearcher",
+    "LagouConfig",
+    "WeatherSearcher",
+    "MoocSearcher",
 ]

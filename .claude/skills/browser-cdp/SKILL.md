@@ -84,10 +84,90 @@ resources:
     path: references/captcha-handling.md
     description: 验证码处理与反检测指南：滑块/点选/文字验证码处理、reCAPTCHA/hCaptcha 应对、反检测模式配置、常见反爬场景策略
     triggers: 验证码, 反爬, 反检测, stealth, captcha, 滑块验证, 点选验证, OCR
+  - id: request-headers
+    path: references/request-headers.md
+    description: 请求头伪装模块（request_headers.py）完整文档：按站点自定义请求头、Sec-Fetch-* 现代浏览器头、预定义站点配置、动态 Referer 生成
+    triggers: 请求头, request headers, Sec-Fetch, Referer, 反爬, 伪装
+  - id: rate-limiter
+    path: references/rate-limiter.md
+    description: 请求速率控制模块（rate_limiter.py）完整文档：令牌桶/漏桶/固定窗口算法、指数退避重试、熔断器模式
+    triggers: 速率控制, rate limit, 令牌桶, 熔断器, 重试, 反爬
+  - id: proxy-pool
+    path: references/proxy-pool.md
+    description: 代理池管理模块（proxy_pool.py）完整文档：HTTP/SOCKS5 代理轮换、健康检查、自动故障转移、按健康度/轮询/随机策略选择
+    triggers: 代理池, proxy pool, 代理轮换, 健康检查, 故障转移, 反爬
+  - id: bilibili-search
+    path: references/bilibili-search.md
+    description: B站视频/UP主搜索自动化脚本（bilibili_search.py），支持关键词搜索、视频信息提取
+    triggers: B站搜索, bilibili search, bilibili_search.py, B站视频搜索
+  - id: boss-zhipin-search
+    path: references/boss-zhipin-search.md
+    description: BOSS直聘职位搜索自动化脚本（boss_zhipin_search.py），支持关键词搜索、职位信息提取
+    triggers: BOSS直聘搜索, boss zhipin search, boss_zhipin_search.py, 职位搜索
+  - id: github-search
+    path: references/github-search.md
+    description: GitHub 代码仓库/Issue/PR/代码/用户搜索自动化脚本（github_search.py），支持多类型搜索和详情抓取
+    triggers: GitHub搜索, github search, github_search.py, 代码仓库, Issue搜索, PR搜索
+  - id: stackoverflow-search
+    path: references/stackoverflow-search.md
+    description: Stack Overflow 技术问题搜索自动化脚本（stackoverflow_search.py），支持问题搜索和答案提取
+    triggers: Stack Overflow搜索, stackoverflow search, stackoverflow_search.py, 技术问题, 问答搜索
+  - id: taobao-search
+    path: references/taobao-search.md
+    description: 淘宝/天猫商品搜索自动化脚本（taobao_search.py），支持商品搜索、价格/销量/评价提取
+    triggers: 淘宝搜索, 天猫搜索, taobao search, tmall search, taobao_search.py, 商品搜索
   - id: searchers-guide
     path: references/searchers-guide.md
     description: 搜索器使用指南：所有搜索器的快速开始、参数说明、输出格式、错误处理、最佳实践
     triggers: 搜索器, 搜索指南, searchers guide, 批量搜索, 结果保存
+  - id: lianjia-search
+    path: references/lianjia-search.md
+    description: 链家房产搜索自动化脚本（lianjia_search.py），支持二手房/租房/小区数据抓取
+    triggers: 链家搜索, lianjia search, lianjia_search.py, 房产搜索, 房源抓取
+  - id: xueqiu-search
+    path: references/xueqiu-search.md
+    description: 雪球金融数据搜索自动化脚本（xueqiu_search.py），支持行情/讨论/组合持仓抓取
+    triggers: 雪球搜索, xueqiu search, xueqiu_search.py, 股票行情, 金融数据
+  - id: cls-news
+    path: references/cls-news.md
+    description: 财联社新闻搜索自动化脚本（cls_news.py），支持电报流/分类新闻/关键词搜索
+    triggers: 财联社搜索, cls news, cls_news.py, 财经新闻, 电报抓取
+  - id: thp-news
+    path: references/thp-news.md
+    description: 澎湃新闻新闻搜索自动化脚本（thp_news.py），支持时政/财经/天下/观察分类搜索
+    triggers: 澎湃新闻, thp news, thp_news.py, 时政新闻, 财经新闻
+  - id: weibo-search
+    path: references/weibo-search.md
+    description: 微博搜索自动化脚本（weibo_search.py），支持热搜榜和关键词搜索
+    triggers: 微博搜索, weibo search, weibo_search.py, 热搜榜, 微博话题
+  - id: lagou-search
+    path: references/lagou-search.md
+    description: 拉勾网招聘搜索自动化脚本（lagou_search.py），支持职位搜索和详情抓取
+    triggers: 拉勾网搜索, lagou search, lagou_search.py, 互联网招聘, 职位搜索
+  - id: youku-search
+    path: references/youku-search.md
+    description: 优酷视频搜索自动化脚本（youku_search.py），支持影视剧/综艺/动漫搜索
+    triggers: 优酷搜索, youku search, youku_search.py, 影视剧搜索, 视频搜索
+  - id: weather-search
+    path: references/weather-search.md
+    description: 中国天气网搜索自动化脚本（weather_search.py），支持城市天气预报查询
+    triggers: 天气搜索, weather search, weather_search.py, 天气预报, 城市天气
+  - id: mooc-search
+    path: references/mooc-search.md
+    description: 中国大学MOOC搜索自动化脚本（mooc_search.py），支持高校课程搜索
+    triggers: MOOC搜索, mooc search, mooc_search.py, 在线课程, 高校课程
+  - id: browser-download
+    path: references/browser-download.md
+    description: 文件下载管理模块（browser_download.py）完整文档：下载事件监听、进度监控、断点续传、下载目录配置
+    triggers: 文件下载, download, 下载管理, 断点续传, 下载进度
+  - id: browser-form
+    path: references/browser-form.md
+    description: 复杂表单自动化模块（browser_form.py）完整文档：多步骤表单、动态表单、文件上传、表单验证、状态保存/恢复
+    triggers: 表单自动化, 表单填写, 文件上传, 多步骤表单, 表单验证, 动态表单
+  - id: browser-tabs
+    path: references/browser-tabs.md
+    description: 多标签页管理模块（browser_tabs.py）完整文档：标签页列表、切换、批量操作、标签页组管理
+    triggers: 标签页管理, 多标签页, 批量操作, 标签页组, 标签页切换
 ---
 
 # Browser CDP Skill
@@ -109,6 +189,13 @@ resources:
 | `core/browser_input.py` | 模拟点击、输入文字、按键、滚动、悬停 |
 | `core/browser_console.py` | 执行任意 JS、抓取 console 日志、抓取网络请求 |
 | `core/browser_watch.py` | 协作场景：轮询判断用户是否已完成某个操作（URL/标题变化） |
+| `core/stealth.py` | 反检测模式：webdriver 移除、指纹模拟、人类化行为 |
+| `core/request_headers.py` | 请求头伪装：Sec-Fetch-*、站点自定义、动态 Referer |
+| `core/rate_limiter.py` | 请求速率控制：令牌桶/漏桶/固定窗口、熔断器 |
+| `core/proxy_pool.py` | 代理池管理：HTTP/SOCKS5 轮换、健康检查、故障转移 |
+| `core/browser_download.py` | 文件下载管理：下载事件监听、进度监控、断点续传、下载目录配置 |
+| `core/browser_form.py` | 复杂表单自动化：多步骤表单、动态表单、文件上传、表单验证、状态保存/恢复 |
+| `core/browser_tabs.py` | 多标签页管理：标签页列表、切换、批量操作、标签页组管理 |
 | `searchers/baidu_search.py` / `searchers/bing_search.py` | 搜索引擎自动化，见下方对应子资源 |
 | `searchers/zhihu_search.py` / `searchers/zhihu_hot.py` | 知乎内容/热榜抓取，见下方对应子资源 |
 | `searchers/zhihu_column_search.py` | 知乎专栏文章批量搜索与抓取，见下方对应子资源 |
@@ -121,6 +208,14 @@ resources:
 | `searchers/sina_news.py` | 新浪财经新闻抓取，见下方对应子资源 |
 | `searchers/eastmoney_guba.py` | 东方财富股吧帖子抓取，见下方对应子资源 |
 | `searchers/scholar_search.py` | Google Scholar 论文搜索，见下方对应子资源 |
+| `searchers/bilibili_search.py` | B站视频/UP主搜索，见下方对应子资源 |
+| `searchers/boss_zhipin_search.py` | BOSS直聘职位搜索，见下方对应子资源 |
+| `searchers/thp_news.py` | 澎湃新闻新闻搜索，见下方对应子资源 |
+| `searchers/weibo_search.py` | 微博热搜/关键词搜索，见下方对应子资源 |
+| `searchers/lagou_search.py` | 拉勾网职位搜索，见下方对应子资源 |
+| `searchers/youku_search.py` | 优酷视频/影视剧搜索，见下方对应子资源 |
+| `searchers/weather_search.py` | 中国天气网天气预报，见下方对应子资源 |
+| `searchers/mooc_search.py` | 中国大学MOOC课程搜索，见下方对应子资源 |
 
 ## 子资源（渐进式加载）
 
@@ -147,6 +242,22 @@ resources:
 | `sina-news` | 新浪财经新闻抓取脚本完整文档 |
 | `eastmoney-guba` | 东方财富股吧帖子抓取脚本完整文档 |
 | `scholar-search` | Google Scholar 学术论文搜索脚本完整文档 |
+| `bilibili-search` | B站视频/UP主搜索自动化脚本完整文档 |
+| `boss-zhipin-search` | BOSS直聘职位搜索自动化脚本完整文档 |
+| `thp-news` | 澎湃新闻新闻搜索自动化脚本完整文档 |
+| `weibo-search` | 微博搜索自动化脚本完整文档 |
+| `lagou-search` | 拉勾网招聘搜索自动化脚本完整文档 |
+| `youku-search` | 优酷视频搜索自动化脚本完整文档 |
+| `weather-search` | 中国天气网天气预报自动化脚本完整文档 |
+| `mooc-search` | 中国大学MOOC课程搜索自动化脚本完整文档 |
+| `captcha-handling` | 验证码处理与反检测指南：滑块/点选/文字验证码处理、reCAPTCHA/hCaptcha 应对、反检测模式配置、常见反爬场景策略 |
+| `request-headers` | 请求头伪装模块完整文档：按站点自定义请求头、Sec-Fetch-* 现代浏览器头、预定义站点配置、动态 Referer 生成 |
+| `rate-limiter` | 请求速率控制模块完整文档：令牌桶/漏桶/固定窗口算法、指数退避重试、熔断器模式 |
+| `proxy-pool` | 代理池管理模块完整文档：HTTP/SOCKS5 代理轮换、健康检查、自动故障转移、按健康度/轮询/随机策略选择 |
+| `searchers-guide` | 搜索器使用指南：所有搜索器的快速开始、参数说明、输出格式、错误处理、最佳实践 |
+| `browser-download` | 文件下载管理模块完整文档：下载事件监听、进度监控、断点续传、下载目录配置 |
+| `browser-form` | 复杂表单自动化模块完整文档：多步骤表单、动态表单、文件上传、表单验证、状态保存/恢复 |
+| `browser-tabs` | 多标签页管理模块完整文档：标签页列表、切换、批量操作、标签页组管理 |
 
 新增子功能脚本时：在 `.claude/skills/browser-cdp/references/` 下新建 `<name>.md`，并在本文件
 frontmatter 的 `resources` 里登记 `id`/`path`/`description`/`triggers`——不登记就不会被加载机制发现。
@@ -293,11 +404,135 @@ python src/core/browser_nav.py --tab <id> --goto "https://example.com" --stealth
 
 | 场景 | 症状 | 应对策略 |
 |-----|------|---------|
-| 请求频率过高 | 429 错误、临时封禁 | 使用 `--stealth` + 随机延迟 |
+| 请求频率过高 | 429 错误、临时封禁 | 使用 `--stealth` + 速率控制 |
 | 指纹检测 | 页面异常、验证码弹出 | 启用 stealth 模式 |
-| IP 封禁 | 无法访问、重定向 | 使用代理池（需外部配置） |
+| IP 封禁 | 无法访问、重定向 | 使用代理池 |
 | JavaScript 检测 | 页面无法加载 | 等待 JS 执行完成后再操作 |
 | 行为分析 | 验证码、封号 | 模拟人类行为（点击、滚动、打字） |
+| 请求头异常 | 403/444 响应 | 使用请求头伪装模块 |
+
+### 请求头伪装
+
+启用 `--stealth` 时自动应用现代浏览器请求头（Sec-Fetch-*、Accept 等），也可通过 `RequestHeaderManager` 按站点自定义：
+
+```python
+from src.core.request_headers import get_header_manager, HeaderConfig
+
+# 获取管理器
+mgr = get_header_manager()
+
+# 为特定站点配置请求头
+mgr.update_config("bilibili", HeaderConfig(
+    custom_headers={"X-Requested-With": "XMLHttpRequest"}
+))
+
+# 获取带 Sec-Fetch-* 的请求头
+headers = mgr.get_headers("https://www.bilibili.com")
+```
+
+预定义站点配置：B站、知乎、京东、淘宝、微博。加载 `request-headers` 子资源查看完整文档。
+
+### 请求速率控制
+
+使用 `RateLimiter` 控制请求频率，支持令牌桶/漏桶/固定窗口三种算法：
+
+```python
+from src.core.rate_limiter import get_rate_limiter, RateLimitAlgorithm
+
+limiter = get_rate_limiter()
+limiter.set_algorithm(RateLimitAlgorithm.TOKEN_BUCKET, rate=2.0, burst=5)
+
+# 执行请求前获取令牌
+if limiter.acquire():
+    await do_request()
+else:
+    await asyncio.sleep(limiter.get_retry_after())
+```
+
+支持指数退避重试和熔断器模式。加载 `rate-limiter` 子资源查看完整文档。
+
+### 代理池管理
+
+使用 `ProxyPool` 管理代理轮换，支持健康检查和自动故障转移：
+
+```python
+from src.core.proxy_pool import get_proxy_pool, ProxyInfo, ProxyType
+
+pool = get_proxy_pool()
+pool.add_proxy(ProxyInfo(host="127.0.0.1", port=8080, proxy_type=ProxyType.HTTP))
+
+# 按健康度选择代理
+proxy = pool.get_proxy_by_health_score()
+```
+
+支持 HTTP/SOCKS5 代理，按健康度/轮询/随机策略选择。加载 `proxy-pool` 子资源查看完整文档。
+
+### 文件下载管理
+
+使用 `browser_download.py` 管理文件下载：
+
+```bash
+# 启动下载监听
+python src/core/browser_download.py --port 9333 --tab <id> --start-listener
+
+# 触发下载
+python src/core/browser_input.py --port 9333 --tab <id> --click-selector "a.download"
+
+# 等待下载完成
+python src/core/browser_download.py --port 9333 --wait --timeout 60
+
+# 查看下载状态
+python src/core/browser_download.py --port 9333 --list
+```
+
+支持断点续传、下载进度监控、自定义下载目录。加载 `browser-download` 子资源查看完整文档。
+
+### 复杂表单自动化
+
+使用 `browser_form.py` 处理复杂表单：
+
+```bash
+# 填写单个字段
+python src/core/browser_form.py --port 9333 --tab <id> --fill-selector "input[name='username']" --text "john"
+
+# 文件上传
+python src/core/browser_form.py --port 9333 --tab <id> --upload-file --fill-selector "input[type='file']" --file "/path/to/file.pdf"
+
+# 批量填写表单
+python src/core/browser_form.py --port 9333 --tab <id> --fill-form form_def.json
+
+# 提交表单
+python src/core/browser_form.py --port 9333 --tab <id> --submit-form --wait-for networkidle
+
+# 保存/恢复表单状态
+python src/core/browser_form.py --port 9333 --tab <id> --save-form --out saved.json
+python src/core/browser_form.py --port 9333 --tab <id> --restore-form --in saved.json
+```
+
+支持多步骤表单、动态表单（AJAX 加载）、表单验证。加载 `browser-form` 子资源查看完整文档。
+
+### 多标签页管理
+
+使用 `browser_tabs.py` 管理多个标签页：
+
+```bash
+# 列出所有标签页
+python src/core/browser_tabs.py --port 9333 --list
+
+# 批量导航
+python src/core/browser_tabs.py --port 9333 --batch-goto "url1,url2,url3"
+
+# 批量截图
+python src/core/browser_tabs.py --port 9333 --batch-screenshot --out-dir ./screenshots
+
+# 批量提取内容
+python src/core/browser_tabs.py --port 9333 --batch-extract --mode text --out-dir ./extracted
+
+# 关闭所有标签页（保留 1 个）
+python src/core/browser_tabs.py --port 9333 --close-all --keep 1
+```
+
+支持标签页组管理、批量操作。加载 `browser-tabs` 子资源查看完整文档。
 
 ## 安全与边界
 
@@ -546,6 +781,11 @@ searcher.close()
 | `ZhihuHotSearcher` | 知乎热榜抓取 | `zhihu-hot` |
 | `ArxivSearcher` | arXiv 论文搜索 | `arxiv-search` |
 | `WechatSearcher` | 微信公众号文章搜索 | `wechat-search` |
+| `BilibiliSearcher` | B站视频/UP主搜索 | `bilibili-search` |
+| `BossZhipinSearcher` | BOSS直聘职位搜索 | `boss-zhipin-search` |
+| `GitHubSearcher` | GitHub 代码仓库/Issue/PR/代码搜索 | `github-search` |
+| `StackOverflowSearcher` | Stack Overflow 技术问题搜索 | `stackoverflow-search` |
+| `TaobaoSearcher` | 淘宝/天猫商品搜索 | `taobao-search` |
 
 详细使用指南见 `searchers-guide` 子资源。
 
@@ -562,12 +802,19 @@ searcher.close()
 | `test_searchers.py` | 搜索器架构/配置/工具函数/集成测试 | ✅ 53 通过 |
 | `test_captcha_handler.py` | 验证码处理逻辑 | ✅ 已验证 |
 | `test_enhanced_modules.py` | 增强模块（智能等待/动态加载等） | ✅ 已验证 |
+| `templates/test_anti_crawl.py` | 反爬机制（stealth/请求头/速率控制/代理池） | ✅ 32 通过 |
+| `templates/test_bilibili_search.py` | B站视频/UP主搜索 | ✅ 23 通过 |
+| `templates/test_boss_zhipin_search.py` | BOSS直聘职位搜索 | ✅ 31 通过 |
+| `templates/test_browser_console_template.py` | 浏览器控制台调试 | ✅ 4 通过 |
+| `templates/test_browser_watch_template.py` | 浏览器协作监控 | ✅ 5 通过 |
 
 运行测试：
 ```bash
 cd .claude/skills/browser-cdp
 python -m pytest tests/ -v
 ```
+
+**注意**：`tests/templates/` 目录下部分测试文件（如 `test_dynamic_content.py`、`test_ecommerce_flow_template.py` 等）引用了不存在的函数，这些是占位符模板，尚未实现。核心测试（`tests/unit/`、`tests/integration/`、`tests/e2e/` 和 `tests/test_*.py`）全部通过（194 passed, 10 skipped）。
 
 ### 边界场景处理
 

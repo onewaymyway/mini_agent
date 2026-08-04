@@ -78,13 +78,19 @@ def dedup_by_title(results: List[Dict], threshold: float = 0.9, dim: int = 64) -
         title = r.get('title', '')
         is_dup = False
         for s in seen:
-            if hamming_distance(
-                compute_simhash(title),
-                compute_simhash(s.get('title', '')),
-                dim=dim
-            ) < dim * (1 - threshold):
-                is_dup = True
-                break
+            # threshold=1.0 时使用精确匹配
+            if threshold >= 1.0:
+                if title == s.get('title', ''):
+                    is_dup = True
+                    break
+            else:
+                if hamming_distance(
+                    compute_simhash(title),
+                    compute_simhash(s.get('title', '')),
+                    dim=dim
+                ) < dim * (1 - threshold):
+                    is_dup = True
+                    break
         if not is_dup:
             unique.append(r)
             seen.append(r)

@@ -23,6 +23,10 @@ if str(SKILL_DIR) not in sys.path:
 
 # 导入基础模板
 from templates.base_test_template import BaseBrowserTest
+import src.core.browser_launch as browser_launch
+import src.core.browser_nav as browser_nav
+import src.core.browser_extract as browser_extract
+import src.core.browser_screenshot as browser_screenshot
 
 
 class TestNewsExtraction(BaseBrowserTest):

@@ -43,6 +43,9 @@ python src/searchers/scholar_search.py "transformer architecture" --max-results 
 | 新浪财经 | `sina_news.py` | 财经新闻 | title, url, summary, published, category |
 | 东方财富股吧 | `eastmoney_guba.py` | 股票帖子、评论 | title, url, content, author, read_count, comment_count |
 | Google Scholar | `scholar_search.py` | 学术论文 | title, url, author, snippet, cited, year |
+| 链家房产 | `lianjia_search.py` | 二手房/租房/小区 | title, url, price, area, district, type, direction, ghost_filtered |
+| 雪球金融 | `xueqiu_search.py` | 行情/讨论/组合 | symbol, name, price, change_pct, volume, discussion, portfolio |
+| 财联社新闻 | `cls_news.py` | 电报/分类新闻 | title, content, publish_time, category, importance, tags, url |
 
 ## 命令行参数
 
@@ -114,6 +117,57 @@ python src/searchers/scholar_search.py "machine learning" \
     --max-results 10 \
     --output-dir ./scholar_results
 ```
+
+### 链家房产搜索器参数
+
+```bash
+# 二手房搜索（默认北京）
+python src/searchers/lianjia_search.py --city bj --type ershoufang --max-results 20
+
+# 租房搜索（指定城区）
+python src/searchers/lianjia_search.py --city sh --type zufang --district 浦东 --max-results 10
+
+# 小区信息搜索
+python src/searchers/lianjia_search.py --city gz --type xiaoqu --xiaoqu "天河北" --output-dir ./results
+```
+
+支持城市：`bj`（北京）、`sh`（上海）、`gz`（广州）、`sz`（深圳）、`cd`（成都）、`wh`（武汉）、`nj`（南京）、`hz`（杭州）、`xa`（西安）、`tl`（太原）
+支持类型：`ershoufang`（二手房）、`zufang`（租房）、`xiaoqu`（小区）
+
+### 雪球金融搜索器参数
+
+```bash
+# 股票行情（需登录态）
+python src/searchers/xueqiu_search.py --symbol 600519 --type quote --max-results 10
+
+# 讨论区搜索
+python src/searchers/xueqiu_search.py --symbol AAPL --type discussion --max-results 20
+
+# 组合持仓查询
+python src/searchers/xueqiu_search.py --portfolio P123456 --type portfolio --output-dir ./results
+```
+
+> ⚠️ 雪球需要登录态，首次使用需手动登录：
+> ```bash
+> python src/core/browser_launch.py --dedicated --name xueqiu_session --start-url "https://xueqiu.com"
+> ```
+
+支持类型：`quote`（行情）、`discussion`（讨论）、`portfolio`（组合持仓）
+
+### 财联社新闻搜索器参数
+
+```bash
+# 电报流（实时新闻）
+python src/searchers/cls_news.py --category telegraph --max-results 50
+
+# 分类新闻
+python src/searchers/cls_news.py --category finance --max-results 20
+
+# 关键词搜索
+python src/searchers/cls_news.py --query "茅台" --max-results 20 --output-dir ./results
+```
+
+支持分类：`telegraph`（电报）、`finance`（财经）、`tech`（科技）、`stock`（股票）、`crypto`（加密货币）、`macro`（宏观）、`world`（国际）
 
 ## Python API 使用
 

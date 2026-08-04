@@ -1,0 +1,111 @@
+[project]
+name = "browser-cdp"
+version = "2.0.0"
+description = "通过 Chrome DevTools Protocol (CDP) 控制真实 Chrome/Edge 浏览器的自动化框架"
+readme = "SKILL.md"
+requires-python = ">=3.10"
+license = {text = "MIT"}
+authors = [
+    {name = "OneWay", email = "contact@oneway.ai"}
+]
+keywords = ["browser", "cdp", "chrome", "automation", "scraping", "web-testing"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+]
+
+dependencies = [
+    "websocket-client>=1.7.0",
+    "requests>=2.31.0",
+    "Pillow>=10.0.0",
+    "beautifulsoup4>=4.12.0",
+    "lxml>=4.9.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0.0",
+    "pytest-asyncio>=0.21.0",
+    "pytest-html>=4.0.0",
+    "ruff>=0.1.0",
+    "mypy>=1.0.0",
+]
+full = [
+    "browser-cdp[dev]",
+    "curl-cffi>=0.7.0",
+    "httpx>=0.25.0",
+]
+
+[project.scripts]
+browser-cdp = "src.core.browser_launch:main"
+browser-nav = "src.core.browser_nav:main"
+browser-extract = "src.core.browser_extract:main"
+browser-screenshot = "src.core.browser_screenshot:main"
+browser-input = "src.core.browser_input:main"
+browser-console = "src.core.browser_console:main"
+browser-watch = "src.core.browser_watch:main"
+
+[project.urls]
+Homepage = "https://github.com/oneway-ai/mini_agent"
+Documentation = "https://github.com/oneway-ai/mini_agent/tree/main/.claude/skills/browser-cdp"
+Repository = "https://github.com/oneway-ai/mini_agent.git"
+Issues = "https://github.com/oneway-ai/mini_agent/issues"
+
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["src*", "src.core*", "src.searchers*", "src.utilities*"]
+
+[tool.setuptools.package-data]
+"src" = ["**/*.py"]
+
+[tool.ruff]
+target-version = "py310"
+line-length = 100
+select = ["E", "F", "W", "I", "N", "UP", "B", "C4"]
+ignore = ["E501", "B008"]
+
+[tool.ruff.isort]
+known-first-party = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]
+addopts = "-v --tb=short"
+markers = [
+    "slow: marks tests as slow (deselect with '-m \"not slow\"')",
+    "integration: marks tests as integration tests",
+    "e2e: marks tests as end-to-end tests",
+    "login: marks tests that require login",
+]
+
+[tool.mypy]
+python_version = "3.10"
+warn_return_any = true
+warn_unused_configs = true
+disallow_untyped_defs = true
+
+[tool.coverage.run]
+source = ["src"]
+omit = ["*/tests/*", "*/__pycache__/*"]
+
+[tool.coverage.report]
+exclude_lines = [
+    "pragma: no cover",
+    "def __repr__",
+    "raise AssertionError",
+    "raise NotImplementedError",
+    "if __name__ == .__main__.:",
+    "if TYPE_CHECKING:",
+    "@abstractmethod",
+]

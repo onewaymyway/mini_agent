@@ -39,7 +39,7 @@ class BaseBrowserTest(unittest.TestCase):
     def setUpClass(cls):
         """类级别设置（可选）"""
         super().setUpClass()
-        cls._setup_logging()
+        cls.logger = cls._setup_logging()
 
     @classmethod
     def tearDownClass(cls):
@@ -51,7 +51,7 @@ class BaseBrowserTest(unittest.TestCase):
         """配置测试日志"""
         import logging
         logging.basicConfig(level=logging.INFO)
-        cls.logger = logging.getLogger(__name__)
+        return logging.getLogger(__name__)
 
     def setUp(self):
         """每个测试前的初始化"""

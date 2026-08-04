@@ -100,6 +100,8 @@ class SearchResults:
     query: str                     # 搜索关键词
     total_results: int = 0         # 总结果数
     results: List[SearchResult] = field(default_factory=list)
+    metadata: Dict[str, Any] = field(default_factory=dict)
+    error: Optional[str] = None
     
     def to_dict(self) -> Dict:
         return {
@@ -107,6 +109,8 @@ class SearchResults:
             "query": self.query,
             "total_results": self.total_results,
             "results": [r.to_dict() for r in self.results],
+            "metadata": self.metadata,
+            "error": self.error,
         }
     
     def to_json(self) -> str:
@@ -122,6 +126,19 @@ class SearchResults:
             total_results=data.get("total_results", 0),
             results=items,
         )
+
+    def deduplicate(self, by: str = "url", threshold: float = 0.9) -> int:
+        """去重，返回移除的数量"""
+        from src.searchers.utils import dedup_results
+        original_count = len(self.results)
+        if original_count <= 1:
+            return 0
+        # 使用原始对象进行去重，保留子类字段
+        dicts = [r.to_dict() for r in self.results]
+        unique_dicts = dedup_results(dicts, by=by, threshold=threshold)
+        # 重建原始对象（保留子类字段）
+        self.results = [type(r)(**d) for r, d in zip(self.results, unique_dicts)]
+        return original_count - len(self.results)
 
 
 class BaseSearcher(ABC):

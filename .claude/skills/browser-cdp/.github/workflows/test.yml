@@ -1,0 +1,537 @@
+name: Browser CDP Tests
+
+on:
+  push:
+    branches: [main, develop]
+    paths:
+      - 'tests/browser-cdp/**'
+      - '.claude/skills/browser-cdp/**'
+  pull_request:
+    branches: [main, develop]
+    paths:
+      - 'tests/browser-cdp/**'
+      - '.claude/skills/browser-cdp/**'
+  schedule:
+    # 每天凌晨 2 点 (UTC) 运行完整测试套件
+    - cron: '0 2 * * *'
+    # 每天下午 2 点 (UTC) 运行冒烟测试
+    - cron: '0 14 * * *'
+  workflow_dispatch:
+    inputs:
+      test_suite:
+        description: 'Test suite to run'
+        required: true
+        default: 'all'
+        type: choice
+        options:
+          - all
+          - unit
+          - integration
+          - e2e
+          - smoke
+      browser:
+        description: 'Browser to test (chrome, edge, both)'
+        required: false
+        default: 'both'
+        type: choice
+        options:
+          - chrome
+          - edge
+          - both
+
+env:
+  PYTHON_VERSION: '3.11'
+
+jobs:
+  # ─── 单元测试（无需浏览器） ───────────────────────────────
+  unit-tests:
+    name: Unit Tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    if: github.event_name != 'schedule' || github.event.schedule == '0 2 * * *'
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: |
+          pip install -q pytest pytest-asyncio pytest-mock pytest-xdist \
+            websocket-client requests pillow pytest-html junit-report
+
+      - name: Run unit tests
+        id: run_tests
+        run: |
+          cd tests/browser-cdp
+          python -m pytest unit/ -v --tb=short -x \
+            --junitxml=test-results/unit-results.xml \
+            --html=test-reports/unit-report.html --self-contained-html \
+            -o addopts=""
+        env:
+          PYTHONPATH: ${{ github.workspace }}/.claude/skills/browser-cdp
+
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-results-unit
+          path: |
+            tests/browser-cdp/test-results/
+            tests/browser-cdp/test-reports/
+          retention-days: 30
+
+  # ─── 集成测试（多浏览器并行矩阵） ──────────────────────────
+  integration-tests:
+    name: Integration Tests (${{ matrix.browser }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    if: github.event_name != 'schedule' || github.event.schedule == '0 2 * * *'
+    strategy:
+      fail-fast: false
+      max-parallel: 2
+      matrix:
+        browser: [chrome, edge]
+        os: [ubuntu-latest]
+        include:
+          - browser: chrome
+            browser-bin: google-chrome-stable
+            browser-setup: browser-actions/setup-chrome@latest
+          - browser: edge
+            browser-bin: microsoft-edge-stable
+            browser-setup: browser-actions/setup-edge@latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: 'pip'
+
+      - name: Install ${{ matrix.browser }}
+        uses: ${{ matrix.browser-setup }}
+        with:
+          channel: stable
+
+      - name: Install dependencies
+        run: |
+          pip install -q pytest pytest-asyncio pytest-mock pytest-xdist \
+            websocket-client requests pillow pytest-html junit-report
+
+      - name: Start ${{ matrix.browser }} with remote debugging
+        run: |
+          ${{ matrix.browser-bin }} \
+            --remote-debugging-port=9222 \
+            --no-sandbox \
+            --disable-dev-shm-usage \
+            --disable-gpu \
+            --headless=new \
+            --user-data-dir=/tmp/${{ matrix.browser }}-profile \
+            about:blank &
+          sleep 5
+          # 验证浏览器已启动
+          curl -s http://localhost:9222/json/version | python -m json.tool
+
+      - name: Run integration tests
+        id: run_tests
+        run: |
+          cd tests/browser-cdp
+          python -m pytest integration/ -v --tb=short -m integration \
+            --junitxml=test-results/integration-${{ matrix.browser }}-results.xml \
+            --html=test-reports/integration-${{ matrix.browser }}-report.html --self-contained-html \
+            -o addopts=""
+        env:
+          PYTHONPATH: ${{ github.workspace }}/.claude/skills/browser-cdp
+          CDP_PORT: 9222
+          BROWSER_TYPE: ${{ matrix.browser }}
+
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-results-integration-${{ matrix.browser }}
+          path: |
+            tests/browser-cdp/test-results/
+            tests/browser-cdp/test-reports/
+          retention-days: 30
+
+  # ─── E2E 测试（多浏览器并行矩阵） ───────────────────────────
+  e2e-tests:
+    name: E2E Tests (${{ matrix.browser }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    if: github.event_name != 'schedule' || github.event.schedule == '0 2 * * *'
+    strategy:
+      fail-fast: false
+      max-parallel: 2
+      matrix:
+        browser: [chrome, edge]
+        os: [ubuntu-latest]
+        include:
+          - browser: chrome
+            browser-bin: google-chrome-stable
+            browser-setup: browser-actions/setup-chrome@latest
+          - browser: edge
+            browser-bin: microsoft-edge-stable
+            browser-setup: browser-actions/setup-edge@latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: 'pip'
+
+      - name: Install ${{ matrix.browser }}
+        uses: ${{ matrix.browser-setup }}
+        with:
+          channel: stable
+
+      - name: Install dependencies
+        run: |
+          pip install -q pytest pytest-asyncio pytest-mock pytest-xdist \
+            websocket-client requests pillow pytest-html junit-report
+
+      - name: Start ${{ matrix.browser }} with remote debugging
+        run: |
+          ${{ matrix.browser-bin }} \
+            --remote-debugging-port=9222 \
+            --no-sandbox \
+            --disable-dev-shm-usage \
+            --disable-gpu \
+            --headless=new \
+            --user-data-dir=/tmp/${{ matrix.browser }}-profile \
+            about:blank &
+          sleep 5
+          curl -s http://localhost:9222/json/version | python -m json.tool
+
+      - name: Run E2E tests
+        id: run_tests
+        run: |
+          cd tests/browser-cdp
+          python -m pytest e2e/ -v --tb=short -m e2e \
+            --junitxml=test-results/e2e-${{ matrix.browser }}-results.xml \
+            --html=test-reports/e2e-${{ matrix.browser }}-report.html --self-contained-html \
+            -o addopts=""
+        env:
+          PYTHONPATH: ${{ github.workspace }}/.claude/skills/browser-cdp
+          CDP_PORT: 9222
+          BROWSER_TYPE: ${{ matrix.browser }}
+
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-results-e2e-${{ matrix.browser }}
+          path: |
+            tests/browser-cdp/test-results/
+            tests/browser-cdp/test-reports/
+          retention-days: 30
+
+  # ─── 冒烟测试（定时调度 - 每天下午 2 点） ───────────────────
+  smoke-tests:
+    name: Smoke Tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    if: github.event_name == 'schedule' && github.event.schedule == '0 14 * * *'
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: 'pip'
+
+      - name: Install Chrome
+        uses: browser-actions/setup-chrome@latest
+        with:
+          chrome-version: stable
+
+      - name: Install dependencies
+        run: |
+          pip install -q pytest pytest-asyncio pytest-mock \
+            websocket-client requests pillow pytest-html
+
+      - name: Start Chrome with remote debugging
+        run: |
+          google-chrome-stable \
+            --remote-debugging-port=9222 \
+            --no-sandbox \
+            --disable-dev-shm-usage \
+            --disable-gpu \
+            --headless=new \
+            --user-data-dir=/tmp/chrome-profile \
+            about:blank &
+          sleep 5
+
+      - name: Run smoke tests (P0 only)
+        run: |
+          cd tests/browser-cdp
+          python -m pytest unit/ integration/ -v --tb=short -x -m "unit or integration" \
+            --junitxml=test-results/smoke-results.xml \
+            --html=test-reports/smoke-report.html --self-contained-html \
+            -o addopts="" -k "P0 or critical or test_launch or test_nav"
+        env:
+          PYTHONPATH: ${{ github.workspace }}/.claude/skills/browser-cdp
+          CDP_PORT: 9222
+
+      - name: Upload smoke test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-results-smoke
+          path: |
+            tests/browser-cdp/test-results/
+            tests/browser-cdp/test-reports/
+          retention-days: 7
+
+  # ─── 代码质量检查 ──────────────────────────────────────────
+  lint-and-type-check:
+    name: Lint & Type Check
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Install linting tools
+        run: |
+          pip install -q ruff mypy
+
+      - name: Run ruff
+        id: ruff
+        run: |
+          ruff check tests/browser-cdp/ .claude/skills/browser-cdp/ --output-format=github
+        continue-on-error: true
+
+      - name: Run mypy
+        id: mypy
+        run: |
+          mypy tests/browser-cdp/ --ignore-missing-imports --no-error-summary
+        continue-on-error: true
+
+      - name: Check lint results
+        run: |
+          if [ "${{ steps.ruff.outcome }}" = "failure" ] || [ "${{ steps.mypy.outcome }}" = "failure" ]; then
+            echo "⚠️ Lint/type check issues found (non-blocking)"
+          else
+            echo "✅ All lint/type checks passed"
+          fi
+
+  # ─── 失败重跑作业 ──────────────────────────────────────────
+  retry-failed-tests:
+    name: Retry Failed Tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    needs: [unit-tests, integration-tests, e2e-tests]
+    if: failure()
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: 'pip'
+
+      - name: Install Chrome
+        uses: browser-actions/setup-chrome@latest
+        with:
+          chrome-version: stable
+
+      - name: Install dependencies
+        run: |
+          pip install -q pytest pytest-asyncio pytest-mock pytest-rerunfailures \
+            websocket-client requests pillow pytest-html
+
+      - name: Download failed test artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: test-results-*
+          merge-multiple: true
+          path: downloaded-results
+
+      - name: Start Chrome with remote debugging
+        run: |
+          google-chrome-stable \
+            --remote-debugging-port=9222 \
+            --no-sandbox \
+            --disable-dev-shm-usage \
+            --disable-gpu \
+            --headless=new \
+            --user-data-dir=/tmp/chrome-retry-profile \
+            about:blank &
+          sleep 5
+
+      - name: Re-run failed tests with retry
+        run: |
+          cd tests/browser-cdp
+          # 重跑所有测试，使用 pytest-rerunfailures 自动重试失败用例
+          python -m pytest unit/ integration/ e2e/ -v --tb=short \
+            --reruns 3 --reruns-delay 5 \
+            --junitxml=test-results/retry-results.xml \
+            --html=test-reports/retry-report.html --self-contained-html \
+            -o addopts="" || true
+        env:
+          PYTHONPATH: ${{ github.workspace }}/.claude/skills/browser-cdp
+          CDP_PORT: 9222
+
+      - name: Upload retry test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-results-retry
+          path: |
+            tests/browser-cdp/test-results/
+            tests/browser-cdp/test-reports/
+          retention-days: 30
+
+  # ─── 生成汇总报告并归档 ────────────────────────────────────
+  generate-report:
+    name: Generate & Archive Test Report
+    runs-on: ubuntu-latest
+    needs: [unit-tests, integration-tests, e2e-tests, smoke-tests, lint-and-type-check]
+    if: always()
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Install dependencies
+        run: |
+          pip install -q junit-report
+
+      - name: Download all test results
+        uses: actions/download-artifact@v4
+        with:
+          pattern: test-results-*
+          merge-multiple: true
+          path: all-test-results
+
+      - name: Generate comprehensive test summary
+        run: |
+          python -c "
+          import xml.etree.ElementTree as ET
+          from pathlib import Path
+          from datetime import datetime
+
+          results_dir = Path('all-test-results')
+          xml_files = list(results_dir.rglob('*.xml'))
+
+          total_tests = 0
+          total_failures = 0
+          total_errors = 0
+          total_skipped = 0
+          total_time = 0.0
+          suites = []
+
+          for xml_file in xml_files:
+              try:
+                  tree = ET.parse(xml_file)
+                  root = tree.getroot()
+                  for suite in root.iter('testsuite'):
+                      tests = int(suite.get('tests', 0))
+                      failures = int(suite.get('failures', 0))
+                      errors = int(suite.get('errors', 0))
+                      skipped = int(suite.get('skipped', 0))
+                      time = float(suite.get('time', 0))
+                      total_tests += tests
+                      total_failures += failures
+                      total_errors += errors
+                      total_skipped += skipped
+                      total_time += time
+                      suites.append({
+                          'name': suite.get('name', 'Unknown'),
+                          'tests': tests,
+                          'failures': failures,
+                          'errors': errors,
+                          'skipped': skipped,
+                          'time': time,
+                      })
+              except Exception as e:
+                  print(f'Warning: Failed to parse {xml_file}: {e}')
+
+          passed = total_tests - total_failures - total_errors - total_skipped
+          pass_rate = (passed / total_tests * 100) if total_tests > 0 else 0
+          status = '✅ PASSED' if total_failures == 0 and total_errors == 0 else '❌ FAILED'
+
+          with open('test-summary.md', 'w') as f:
+              f.write('# Browser CDP Test Summary\n\n')
+              f.write(f'**Generated**: {datetime.now().strftime("%Y-%m-%d %H:%M:%S UTC")}\n')
+              f.write(f'**Status**: {status}\n')
+              f.write(f'**Pass Rate**: {pass_rate:.1f}%\n\n')
+              f.write('## Overview\n\n')
+              f.write(f'| Metric | Value |\n|--------|-------|\n')
+              f.write(f'| Total Tests | {total_tests} |\n')
+              f.write(f'| Passed | {passed} |\n')
+              f.write(f'| Failed | {total_failures} |\n')
+              f.write(f'| Errors | {total_errors} |\n')
+              f.write(f'| Skipped | {total_skipped} |\n')
+              f.write(f'| Total Time | {total_time:.1f}s |\n\n')
+              f.write('## Test Suites\n\n')
+              f.write('| Suite | Tests | Passed | Failed | Errors | Skipped | Time |\n')
+              f.write('|-------|-------|--------|--------|--------|---------|------|\n')
+              for s in suites:
+                  sp = s['tests'] - s['failures'] - s['errors'] - s['skipped']
+                  f.write(f'| {s["name"]} | {s["tests"]} | {sp} | {s["failures"]} | {s["errors"]} | {s["skipped"]} | {s["time"]:.1f}s |\n')
+          "
+
+      - name: Upload test summary
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-summary
+          path: test-summary.md
+          retention-days: 90
+
+      - name: Publish test summary to GitHub Step Summary
+        if: always()
+        run: |
+          cat test-summary.md >> $GITHUB_STEP_SUMMARY
+
+  # ─── 通知（失败时发送） ────────────────────────────────────
+  notify-failure:
+    name: Notify on Failure
+    runs-on: ubuntu-latest
+    needs: [unit-tests, integration-tests, e2e-tests]
+    if: failure() && github.event_name == 'schedule'
+    timeout-minutes: 5
+
+    steps:
+      - name: Create failure notification
+        run: |
+          echo "## ❌ Scheduled Browser CDP Tests Failed" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "The scheduled test run failed. Please check the [workflow run](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}) for details." >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Failed Jobs:" >> $GITHUB_STEP_SUMMARY
+          echo "- Unit Tests: ${{ needs.unit-tests.result }}" >> $GITHUB_STEP_SUMMARY
+          echo "- Integration Tests: ${{ needs.integration-tests.result }}" >> $GITHUB_STEP_SUMMARY
+          echo "- E2E Tests: ${{ needs.e2e-tests.result }}" >> $GITHUB_STEP_SUMMARY

@@ -52,12 +52,54 @@ SCAN_INTERACTIVE_ELEMENTS_JS = r"""
   const SEL = [
     'a[href]', 'button', 'input', 'textarea', 'select',
     '[role="button"]', '[role="link"]', '[role="checkbox"]',
-    '[role="tab"]', '[onclick]', '[contenteditable="true"]'
+    '[role="tab"]', '[role="menuitem"]', '[role="switch"]',
+    '[role="option"]', '[role="combobox"]', '[role="listbox"]',
+    '[onclick]', '[contenteditable="true"]',
+    'details > summary', 'label', 'fieldset', 'optgroup',
+    '[tabindex]:not([tabindex="-1"])',
+    'iframe', 'video', 'audio',
   ].join(',');
   const nodes = Array.from(document.querySelectorAll(SEL));
   const seen = new Set();
   const out = [];
   let idx = 0;
+  // 递归遍历 Shadow DOM
+  function walkShadowRoots(root, container) {
+    const shadow = root.shadowRoot;
+    if (!shadow) return;
+    const shadowNodes = Array.from(shadow.querySelectorAll(SEL));
+    for (const el of shadowNodes) {
+      if (seen.has(el)) continue;
+      seen.add(el);
+      const rect = el.getBoundingClientRect();
+      if (rect.width <= 0 || rect.height <= 0) continue;
+      const style = window.getComputedStyle(el);
+      if (style.visibility === 'hidden' || style.display === 'none') continue;
+      const inViewport = rect.top < window.innerHeight && rect.bottom > 0
+        && rect.left < window.innerWidth && rect.right > 0;
+      const tag = el.tagName.toLowerCase();
+      let text = (el.innerText || el.value || el.placeholder || el.getAttribute('aria-label') || '').trim();
+      if (text.length > 80) text = text.slice(0, 80) + '...';
+      out.push({
+        index: idx,
+        tag: tag,
+        type: el.getAttribute('type') || null,
+        text: text,
+        name: el.getAttribute('name') || null,
+        id: el.id || null,
+        href: el.getAttribute('href') || null,
+        rect: { x: rect.x + window.scrollX, y: rect.y + window.scrollY, width: rect.width, height: rect.height },
+        inViewport: inViewport,
+        disabled: !!el.disabled,
+        inShadowDOM: true,
+      });
+      idx += 1;
+    }
+    // 递归进入嵌套 Shadow DOM
+    for (const el of shadowNodes) {
+      if (el.shadowRoot) walkShadowRoots(el, shadow);
+    }
+  }
   for (const el of nodes) {
     if (seen.has(el)) continue;
     seen.add(el);
@@ -79,11 +121,14 @@ SCAN_INTERACTIVE_ELEMENTS_JS = r"""
       name: el.getAttribute('name') || null,
       id: el.id || null,
       href: el.getAttribute('href') || null,
-      rect: { x: rect.x, y: rect.y, width: rect.width, height: rect.height },
+      rect: { x: rect.x + window.scrollX, y: rect.y + window.scrollY, width: rect.width, height: rect.height },
       inViewport: inViewport,
       disabled: !!el.disabled,
+      inShadowDOM: false,
     });
     idx += 1;
+    // 检查是否有 Shadow DOM
+    if (el.shadowRoot) walkShadowRoots(el);
   }
   return out;
 })()
@@ -107,7 +152,12 @@ def scroll_index_into_view(session: CDPSession, index: int) -> dict | None:
       const SEL = [
         'a[href]', 'button', 'input', 'textarea', 'select',
         '[role="button"]', '[role="link"]', '[role="checkbox"]',
-        '[role="tab"]', '[onclick]', '[contenteditable="true"]'
+        '[role="tab"]', '[role="menuitem"]', '[role="switch"]',
+        '[role="option"]', '[role="combobox"]', '[role="listbox"]',
+        '[onclick]', '[contenteditable="true"]',
+        'details > summary', 'label', 'fieldset', 'optgroup',
+        '[tabindex]:not([tabindex="-1"])',
+        'iframe', 'video', 'audio',
       ].join(',');
       const nodes = Array.from(document.querySelectorAll(SEL));
       const seen = new Set();
@@ -122,7 +172,7 @@ def scroll_index_into_view(session: CDPSession, index: int) -> dict | None:
         if (idx === __INDEX__) {
           el.scrollIntoView({block: 'center', inline: 'center'});
           const r2 = el.getBoundingClientRect();
-          return {x: r2.x, y: r2.y, width: r2.width, height: r2.height};
+          return {x: r2.x + window.scrollX, y: r2.y + window.scrollY, width: r2.width, height: r2.height};
         }
         idx += 1;
       }

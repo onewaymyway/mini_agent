@@ -8,6 +8,7 @@ stealth.py - 反检测模块
 - 模拟真实浏览器指纹
 - 人类行为模拟（鼠标轨迹、打字节奏）
 - 请求间隔随机化
+- 设备指纹模拟（Canvas/WebGL/内存/硬件并发）
 """
 from __future__ import annotations
 
@@ -30,6 +31,7 @@ class StealthConfig:
     enable_language_mock: bool = True
     enable_platform_mock: bool = True
     enable_plugins_mock: bool = True
+    enable_fingerprint_mock: bool = True  # 新增：设备指纹模拟
     humanize_mouse: bool = True
     humanize_typing: bool = True
     random_delay_range: tuple = (0.1, 0.5)  # 随机延迟范围
@@ -82,6 +84,10 @@ class StealthMode:
             # 6. 模拟插件
             if self.config.enable_plugins_mock:
                 await self._mock_plugins()
+            
+            # 7. 模拟设备指纹
+            if self.config.enable_fingerprint_mock:
+                await self._mock_device_fingerprint()
             
             self._applied = True
             logger.info("Stealth 模式应用成功")
@@ -193,6 +199,49 @@ class StealthMode:
         """
         await self.session.eval_js(js)
         logger.debug("已模拟插件信息")
+    
+    async def _mock_device_fingerprint(self):
+        """模拟设备指纹（Canvas/WebGL/内存/硬件并发）"""
+        js = """
+        // Canvas 指纹随机化
+        const originalCanvasToBlob = HTMLCanvasElement.prototype.toBlob;
+        const originalCanvasToDataURL = HTMLCanvasElement.prototype.toDataURL;
+
+        // WebGL 指纹随机化
+        const originalGetParameter = WebGLRenderingContext.prototype.getParameter;
+        WebGLRenderingContext.prototype.getParameter = function(param) {
+            if (param === 37445) return 'Intel Inc.';
+            if (param === 37446) return 'Intel Iris OpenGL Engine';
+            return originalGetParameter.call(this, param);
+        };
+
+        // 设备内存模拟
+        Object.defineProperty(navigator, 'deviceMemory', {
+            get: () => 8
+        });
+
+        // 硬件并发模拟
+        Object.defineProperty(navigator, 'hardwareConcurrency', {
+            get: () => 8
+        });
+
+        // 平台信息
+        Object.defineProperty(navigator, 'platform', {
+            get: () => 'Win32'
+        });
+
+        // 连接类型
+        Object.defineProperty(navigator, 'connection', {
+            get: () => ({
+                effectiveType: '4g',
+                rtt: 50,
+                downlink: 10,
+                saveData: false
+            })
+        });
+        """
+        await self.session.eval_js(js)
+        logger.debug("已模拟设备指纹")
     
     # =========================================================================
     # 人类行为模拟
