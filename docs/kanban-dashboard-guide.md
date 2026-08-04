@@ -90,7 +90,14 @@ streamlit run app.py
 | 📁 产出物 | 浏览 `.agent/` 等目录下产出文件，预览与下载 |
 | 🖼️ 产出预览 | 按任务/session 登记的产出物 manifest 语义化展示（图片内联、文档下载），支持深链接直达 |
 | 🧠 自我状态 | 具身智能自省信息（自主循环摘要、活跃目标数、最近活动、多用户会话池 SessionPool 概况） |
+| 🧬 进化提案 | Skill 提案列表、git worktree diff、批准/拒绝 |
+| ⏰ Cron 任务 | Cron Job 列表（含 priority）、启用/禁用、手动触发、新建 |
+| 🗓️ 全局日程 | cron job 到期时间线 / 周期性 Goal 下次触发 / 仲裁状态变化时间线，三类合并展示（见下方专节） |
+| 🔌 外部输入 | 外部输入网关配置与最近事件 |
+| 🔔 关注与通知 | Watchlist 关注项与通知历史 |
+| ⚙️ 配置 | 运行时配置字段编辑 |
 | 🔧 诊断 | `/diagnostics` 原始信息，便于排障 |
+| 🧪 混合执行 | 混合执行模式相关面板 |
 
 ### 💬 对话 Tab
 
@@ -218,6 +225,32 @@ force_reap`）。区块下方还有"🩹 卡死回收累计计数"四个指标�
 Objective step/持久 Worker discard/隔离线程池重建），本次看板会话内
 任一数字增长会标红提示。
 
+### ⏰ Cron 任务 Tab
+
+Cron Job 列表、启用/禁用、手动触发、新建，`priority` 字段的展示与编辑
+（`update_cron_job(job_id, priority=...)`）。详见
+`docs/cron-jobs-reference.md`、`next_doc/scheduling_unification_and_kanban_
+visibility_improvement_plan.md`（P2）。
+
+### 🗓️ 全局日程 Tab
+
+`next_doc/scheduling_unification_and_kanban_visibility_improvement_plan.md`
+（P5）新增，把此前分散在不同 Tab 的三类时间信息合并成一条时间线，用来
+回答"为什么现在没有任务在跑"这类问题：
+
+- **未来 24 小时内到期的 cron job**（含 `priority`、已运行次数），来自
+  `/v1/autonomous/status` 里的 `cron_jobs` 列表，按 `next_run_in` 排序。
+- **周期性 Goal 下次触发**：展示绑定了 `recurring` 的 Goal 各自的下次
+  触发时间，数据源和"📌 目标看板"Tab 里 Goal 卡片"下次触发"完全一致
+  （都是对应 cron job 的 `next_run_str`），不是第二套计算逻辑。
+- **仲裁状态变化时间线**：`ResourceArbiter` 三态门控
+  （`full`/`degraded`/`blocked`）的历史变化记录，来自新增的
+  `GET /v1/autonomous/gating_history`。只有状态发生变化时才会产生一条
+  记录（例如从 `full` 变成 `degraded` 又恢复到 `full`），不是"每次轮询
+  记一条"的日志流。记录的写入时机挂在 `/v1/autonomous/status` 被轮询上
+  （看板顶栏会周期性调用），因此如果长时间没有任何客户端轮询过这个接口，
+  期间发生的状态变化不会被记录下来。
+
 ## `AgentClient` 封装的 API 端点
 
 `apps/mini_agent_kanban/client.py` 中的 `AgentClient` 封装了看板所需的全部 HTTP 调用，
@@ -236,6 +269,7 @@ Objective step/持久 Worker discard/隔离线程池重建），本次看板会�
 | `sessions(limit=50, offset=0)` / `session_detail()` / `resume_session()` / `new_session()` / `delete_session()` | `/v1/sessions*` | 会话管理（`offset` 配合 `limit` 做分页） |
 | `users()` | `/v1/users` | 多用户列表（多用户模式） |
 | `self_status()` / `autonomous_status()` | `/self/status`、`/self/autonomous` | 自省与自主循环状态 |
+| `gating_history(limit=50)` | `GET /v1/autonomous/gating_history` | 仲裁状态（`full`/`degraded`/`blocked`）变化时间线，供"🗓️ 全局日程"Tab 使用（只读） |
 | `goals()` / `add_goal()` / `update_goal()` | `/v1/goals*` | Goal 看板 |
 | `recur_goal()` / `unrecur_goal()` / `skip_goal_next_cycle()` | `POST /v1/goals/{id}/recur\|unrecur\|skip_next_cycle` | 周期性 Goal 绑定 / 解绑 / 跳过下一轮（Track A/B） |
 | `cancel_objective()` / `retry_objective()` / `inject_objective_guidance()` | `/v1/objectives/{execution_id}/*` | Objective 执行操作：终止 / 手动重试当前步 / 插话（Track D） |
@@ -306,7 +340,7 @@ Objective step/持久 Worker discard/隔离线程池重建），本次看板会�
 
 ## 相关文件
 
-- `apps/mini_agent_kanban/app.py` — 看板主程序（8 个 Tab）
+- `apps/mini_agent_kanban/app.py` — 看板主程序（15 个 Tab）
 - `apps/mini_agent_kanban/client.py` — `AgentClient` HTTP 封装
 - `apps/mini_agent_kanban/README.md` — 应用自带的简要说明
 - `docs/http-api-guide.md` — HTTP API 完整参考
@@ -315,6 +349,9 @@ Objective step/持久 Worker discard/隔离线程池重建），本次看板会�
 - `docs/multi-user-guide.md`、`docs/autonomous_daemon_design.md`、
   `docs/goal-mode-guide.md`、`docs/embodied-agent-guide.md` — 看板中各功能区背后的机制
 - `next_doc/看板大数据量分页显示改进计划.md` — 本次分页改造的设计文档
+- `next_doc/scheduling_unification_and_kanban_visibility_improvement_plan.md`
+  — cron 仲裁接入 / priority 排序 / 仲裁状态可见 / recurring 语义合并 /
+  "🗓️ 全局日程"Tab 的设计与实现记录
 
 ---
 

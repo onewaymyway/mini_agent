@@ -177,3 +177,23 @@ SelfMaintenanceModule.health_check()`）内部做四项检查，结果合并写�
 （在 §2 或 §3 对应小节加一行，并在 §4 速查表补上分类），避免出现"代码里
 已经有十几个 job，但只有各自零散设计文档、没有统一清单"的情况——这正是
 本文档要解决的问题，不应该重新出现。
+
+## 7. 优先级、资源仲裁与全局日程可观测性
+
+`next_doc/scheduling_unification_and_kanban_visibility_improvement_plan.md`
+（P1-P5，已全部完成）在本清单之外补上了三块此前缺失的可观测性/调度能力：
+
+- **P1：cron 执行通道接入 `ResourceArbiter`**——`cron_job_runner.py` 触发 job
+  前会先过一遍每日 token 预算 / 挫败感 / 用户在场行为三条门控规则，被跳过的
+  job 计入 `arbiter_skipped_count`（`/v1/autonomous/status` 可见）。
+- **P2：`CronJob.priority` 字段**——`tick()` 在多个 job 同时到期时按
+  `priority`（数值越大越先拿到执行机会）排序，**不做抢占**（正在跑的 job
+  不会被打断），只影响排队顺序。看板"⏰ Cron 任务"Tab 可查看/编辑。
+- **P5：仲裁状态变化时间线**——`GET /v1/autonomous/gating_history` 记录
+  `ResourceArbiter` 三态门控（`full`/`degraded`/`blocked`）的历史变化，
+  配合 cron job 到期时间、周期性 Goal 下次触发，在看板"🗓️ 全局日程"Tab
+  合并展示，定位"为什么现在没有任务在跑"。
+
+详见 `docs/http-api-guide.md`（`/v1/autonomous/status`、
+`/v1/autonomous/gating_history`）和 `docs/kanban-dashboard-guide.md`
+（"⏰ Cron 任务"、"🗓️ 全局日程"两个 Tab）。

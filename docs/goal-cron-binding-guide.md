@@ -65,6 +65,11 @@
 和"🛑 取消周期性"两个按钮。卡片标题下也会直接展示 `🔁 周期性 · 已完成 N 轮` 徽标，
 子 Objective 若是本轮由 cron 触发的，会标注"⏰ 由 cron 周期触发"。
 
+想一次性看到所有周期性 Goal 的下次触发时间（而不是逐张卡片展开查看），可以切到
+"🗓️ 全局日程"Tab（`scheduling_unification_and_kanban_visibility_improvement_plan.md`
+P5）——它把所有 `recurring` Goal 的下次触发、未来 24 小时内到期的 cron job、以及
+仲裁状态变化时间线合并成一条时间线展示，详见 `docs/kanban-dashboard-guide.md`。
+
 ### 2.5 跳过某一轮（不停止周期性）
 
 ```bash

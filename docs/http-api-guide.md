@@ -552,6 +552,57 @@ curl -H "Authorization: Bearer <token>" \
 | `objective_slots`（新增） | `{running, max}`，ObjectiveExecutor 并发槽位占用情况，槽位占满时新 Objective 只能排队 |
 | `gating`（新增） | `ResourceArbiter.diagnose()` 的结果：`{can_run_autonomous, rules: [{rule, label, passed, reason, ...}]}`，逐条列出每日 token 预算、本体感知挫败感、用户在场行为门控三条规则的通过情况和具体数值 |
 
+调用这个接口时，服务端会顺带记一笔仲裁状态变化（见下方
+`/v1/autonomous/gating_history`），只有这次的 `gating_state` 和上一次记录
+不一样时才会真正写入，不会因为轮询而膨胀成日志流。
+
+### /v1/autonomous/gating_history — 仲裁状态变化时间线（scheduling_unification_and_kanban_visibility_improvement_plan.md P5）
+
+`GET /v1/autonomous/gating_history?limit=50` 返回 `ResourceArbiter` 三态门控
+（`full`/`degraded`/`blocked`）最近的状态变化记录，按时间正序（旧→新）排列。
+只有状态相对上一条发生变化时才会产生一条记录（例如从 `full` 变成
+`degraded` 又恢复到 `full` 算两条，中间反复轮询到同一状态不会重复记录），
+最多保留 200 条。
+
+```bash
+curl -H "Authorization: Bearer <owner_token>" \
+  "http://127.0.0.1:8765/v1/autonomous/gating_history?limit=50"
+```
+
+响应示例：
+
+```json
+{
+  "history": [
+    {
+      "at": 1720000000.0,
+      "at_str": "2026-08-05 10:00:00",
+      "state": "full",
+      "reason": ""
+    },
+    {
+      "at": 1720003600.0,
+      "at_str": "2026-08-05 11:00:00",
+      "state": "degraded",
+      "reason": "本体感知挫败感偏高"
+    }
+  ]
+}
+```
+
+| 字段 | 说明 |
+|------|------|
+| `history` | 状态变化记录数组，按时间正序（旧→新）排列 |
+| `history[].at` | Unix 时间戳（秒） |
+| `history[].at_str` | 人类可读时间字符串 |
+| `history[].state` | 变化后的门控状态：`full`/`degraded`/`blocked` |
+| `history[].reason` | 对应的 `gating_reason`（可能为空字符串） |
+
+数据写入依赖 `/v1/autonomous/status` 被实际调用过（该路由内部顺带触发
+记录），因此如果 daemon 起来后长时间没有任何客户端轮询过
+`/v1/autonomous/status`，期间发生的状态变化不会出现在这里。看板"🗓️ 全局
+日程"Tab 消费此接口，详见 `docs/kanban-dashboard-guide.md`。
+
 ### /v1/self/status — Self（主自我）状态总览（daemon 多用户架构 Phase 4，owner only）
 
 `GET /v1/self/status` 返回 daemon 里"Self"（也就是 `HttpServer` 自己持有的那个固定
