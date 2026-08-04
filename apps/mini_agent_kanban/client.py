@@ -419,11 +419,15 @@ class AgentClient:
     def cron_jobs(self):
         return self._get("/cron/jobs")
 
-    def add_cron_job(self, name: str, schedule: str, task_template: str, description: str = ""):
-        return self._post("/cron/jobs", {
+    def add_cron_job(self, name: str, schedule: str, task_template: str, description: str = "",
+                      priority: int | None = None):
+        body = {
             "name": name, "schedule": schedule,
             "task_template": task_template, "description": description,
-        })
+        }
+        if priority is not None:
+            body["priority"] = priority
+        return self._post("/cron/jobs", body)
 
     def update_cron_job(self, job_id: str, **fields):
         return self._put(f"/cron/jobs/{job_id}", fields)

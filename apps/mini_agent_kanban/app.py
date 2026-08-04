@@ -794,6 +794,25 @@ def _render_daemon_current_tasks(client: AgentClient, autostat: dict) -> None:
                         st.rerun()
 
 
+def _render_gating_detail(client: AgentClient, gating: dict) -> None:
+    """[P3] 展开 ResourceArbiter.diagnose() 的规则详情，外加 cron 通道因
+    仲裁被跳过触发的累计次数（P1 上线后 cron_job_runner 也会受这三条
+    规则约束，之前只有 autonomous/objective 通道受影响，这里一并展示，
+    避免用户只看到"仲裁降级/暂停"却不知道 cron 侧受没受影响）。"""
+    for rule in gating.get("rules", []):
+        passed = rule.get("passed")
+        icon = "✅" if passed else "⛔"
+        label = rule.get("label", rule.get("rule", ""))
+        reason = rule.get("reason", "")
+        st.caption(f"{icon} {label}：{reason}")
+
+    exec_status = client.execution_model_status() or {}
+    if "_error" not in exec_status:
+        skipped = exec_status.get("cron", {}).get("arbiter_skipped_count", 0)
+        if skipped:
+            st.caption(f"⏰ cron 通道累计因本仲裁被跳过触发 {skipped} 次")
+
+
 def _render_topbar_body(client: AgentClient, session_id: str = ""):
     status = client.status(session_id=session_id) or {}
     if "_error" in status:
@@ -825,6 +844,22 @@ def _render_topbar_body(client: AgentClient, session_id: str = ""):
     next_tick = autostat.get("next_tick_in")
     next_tick_str = f"{next_tick:.0f}s" if isinstance(next_tick, (int, float)) else "—"
 
+    # [scheduling_unification_and_kanban_visibility_improvement_plan.md P3]
+    # ResourceArbiter 的三态门控此前只在某个 Goal 的详情诊断里临时查一次
+    # （见 render_kanban_tab 里针对单个 Goal 的诊断展开），用户如果不先
+    # 找到一个具体 Goal，完全没有入口知道"现在自主任务为什么没在跑"。
+    # 这里改成顶栏常驻展示，无论停在哪个 tab 都能看到；数据来自
+    # /v1/autonomous/status 的 "gating" 字段（ResourceArbiter.diagnose()，
+    # 后端已有，未改动）。
+    gating = autostat.get("gating") or {}
+    gating_state = gating.get("gating_state", "full")
+    _GATING_BADGE = {
+        "full": ("🟢", "空闲可执行"),
+        "degraded": ("🟡", "降级运行"),
+        "blocked": ("🔴", "已暂停"),
+    }
+    gating_icon, gating_label = _GATING_BADGE.get(gating_state, ("⚪", "未知"))
+
     # 更细粒度的"agent 正在干什么"（见 bridge.py::AgentBridge._phase / 后端
     # /status 的 activity 字段），这份映射本身在模块级定义（_ACTIVITY_LABELS），
     # 顶栏和"对话"tab 里的会话信息条都复用同一份，避免出现两份不一致的文案。
@@ -849,6 +884,7 @@ def _render_topbar_body(client: AgentClient, session_id: str = ""):
   <div class="item"><span class="label">Session</span> {sid_label}</div>
   <div class="item"><span class="label">Turn</span> {status.get('turn_id') or '—'}</div>
   <div class="item"><span class="label">自主等级</span> {autonomy}</div>
+  <div class="item"><span class="label">仲裁</span> {gating_icon} {gating_label}</div>
   <div class="item"><span class="label">距下次Tick</span> {next_tick_str}</div>
   <div class="item"><span class="label">Tick计数</span> {tick_count}</div>
   <div class="item"><span class="label">订阅者</span> {subscribers}</div>
@@ -861,6 +897,14 @@ def _render_topbar_body(client: AgentClient, session_id: str = ""):
         st.caption(f"📁 session 目录: `{status['session_dir']}`")
 
     _render_daemon_current_tasks(client, autostat)
+
+    if gating_state != "full":
+        with st.expander(
+            f"{gating_icon} 资源仲裁：{gating_label}"
+            + (f"（{gating.get('gating_reason')}）" if gating.get("gating_reason") else ""),
+            expanded=True,
+        ):
+            _render_gating_detail(client, gating)
 
     if queue_depth:
         with st.expander(f"🕓 有 {queue_depth} 个请求在排队等待处理", expanded=False):
@@ -1940,7 +1984,7 @@ def _render_objective_execution_detail(client: AgentClient, execution: dict) -> 
 
 def _render_goal_card(
     client: AgentClient, n: dict, status_key: str, indent: bool = False, note: str = "",
-    execution: Optional[dict] = None,
+    execution: Optional[dict] = None, cron_next_run_by_id: Optional[dict] = None,
 ) -> None:
     """渲染单张 Goal/Objective 卡片 + 状态切换下拉框。
     从 render_kanban_tab 里抽出来，供"按层级嵌套展示"复用，行为
@@ -1975,9 +2019,19 @@ def _render_goal_card(
     recur_html = ""
     if n.get("level") != "objective" and n.get("recurring"):
         pending = "　⏭️ 下一轮将被跳过" if n.get("skip_next_cycle") else ""
+        # [scheduling_unification_and_kanban_visibility_improvement_plan.md
+        # P4] "下次触发时间"只从绑定的 CronJob 读（next_run_str，
+        # cron_scheduler.py 已有此方法），不在 Goal 侧重新计算一遍——
+        # 避免出现两套时间原语各自算出不一致的数字。cron_next_run_by_id
+        # 由调用方（render_kanban_tab）从同一次 autonomous_status() 里
+        # 已经取到的 cron_jobs 列表构建，找不到对应绑定时留空不展示。
+        next_run_html = ""
+        cron_job_id = n.get("recurrence_cron_job_id")
+        if cron_next_run_by_id and cron_job_id in cron_next_run_by_id:
+            next_run_html = f"　·　下次触发：{cron_next_run_by_id[cron_job_id]}"
         recur_html = (
             f'<div class="meta" style="color:#2a7;">🔁 周期性 · 已完成 {n.get("cycle_count", 0)} 轮'
-            f'{pending}</div>'
+            f'{pending}{next_run_html}</div>'
         )
     elif n.get("level") != "objective" and n.get("source") != "agent_derived":
         recur_html = '<div class="meta" style="color:#999;">未设为周期性</div>'
@@ -2058,9 +2112,13 @@ def _render_goal_card(
     if n.get("level") != "objective":
         with st.expander("⏰ 周期性设置", expanded=False):
             if n.get("recurring"):
+                next_run_caption = ""
+                cron_job_id = n.get("recurrence_cron_job_id")
+                if cron_next_run_by_id and cron_job_id in cron_next_run_by_id:
+                    next_run_caption = f" · 下次触发：{cron_next_run_by_id[cron_job_id]}"
                 st.caption(
                     f"已绑定 cron job `{n.get('recurrence_cron_job_id', '?')}` · "
-                    f"已完成 {n.get('cycle_count', 0)} 轮"
+                    f"已完成 {n.get('cycle_count', 0)} 轮{next_run_caption}"
                 )
                 bc1, bc2 = st.columns(2)
                 if bc1.button("⏭️ 跳过下一轮", key=f"skipcycle_{n.get('id')}",
@@ -2133,6 +2191,14 @@ def render_kanban_tab(client: AgentClient):
             if _prev is None or _ex.get("started_at", 0) >= _prev.get("started_at", 0):
                 exec_by_objective_id[_oid] = _ex
 
+        # [P4] 供 recurring Goal 卡片展示"下次触发"，单一数据源见
+        # _render_goal_card 内的说明——同一次 autonomous_status() 调用里
+        # 顺带取，不用再单独请求 /cron/jobs。
+        cron_next_run_by_id = {
+            j.get("id"): j.get("next_run_str", "-")
+            for j in autostat_for_cards.get("cron_jobs", [])
+        }
+
         # [新增] 状态筛选：默认显示全部状态；用户的选择记到本地 prefs 文件里，
         # 下次打开（不管是不是同一个浏览器标签页/URL）都按上次选的显示——
         # 见 _load_kanban_prefs()/_save_kanban_pref() 的说明，这是有意跟
@@ -2184,7 +2250,9 @@ def render_kanban_tab(client: AgentClient):
                     rendered_obj_ids = set()
 
                     for g in goal_nodes:
-                        _render_goal_card(client, g, status_key)
+                        _render_goal_card(
+                            client, g, status_key, cron_next_run_by_id=cron_next_run_by_id,
+                        )
                         children = [o for o in obj_nodes if o.get("parent_id") == g.get("id")]
                         for o in children:
                             _render_goal_card(
@@ -3589,6 +3657,9 @@ def render_cron_jobs_tab(client: AgentClient):
             top1.markdown(f"**{job.get('name', job_id)}**")
             top1.caption(job_id)
             top2.caption(f"schedule: `{job.get('schedule', '')}`")
+            # [P2] 展示排队优先级——同一次 tick 内多个 job 同时到期时，
+            # priority 数值大的先被提交，帮助解释"为什么这个先跑那个后跑"。
+            top2.caption(f"priority: {job.get('priority', 0)}")
             top3.caption(f"下次运行：{job.get('next_run_str', '-')}")
 
             desc = job.get("description", "")
@@ -3677,6 +3748,20 @@ def render_cron_jobs_tab(client: AgentClient):
                     else:
                         st.rerun()
 
+            with st.expander("🔢 调整优先级"):
+                new_priority = st.number_input(
+                    "priority（数值越大，同一次 tick 内到期时越先被触发；不做抢占）",
+                    value=int(job.get("priority", 0)), step=1,
+                    key=f"cron_priority_{job_id}",
+                )
+                if st.button("💾 保存优先级", key=f"cron_priority_save_{job_id}"):
+                    res = client.update_cron_job(job_id, priority=int(new_priority))
+                    if res and "_error" in res:
+                        st.error(f"保存失败：{res['_error']}")
+                    else:
+                        st.success("已保存。")
+                        st.rerun()
+
     st.divider()
     with st.expander("➕ 新建 cron job"):
         new_name = st.text_input("名称", key="cron_new_name")
@@ -3686,6 +3771,10 @@ def render_cron_jobs_tab(client: AgentClient):
         )
         new_template = st.text_area("任务描述（task_template）", key="cron_new_template")
         new_desc = st.text_input("说明（可选）", key="cron_new_desc")
+        new_priority = st.number_input(
+            "priority（默认 0，数值越大同一次 tick 内到期时越先被触发）",
+            value=0, step=1, key="cron_new_priority",
+        )
         if st.button("创建", key="cron_new_submit"):
             if not new_name.strip() or not new_template.strip():
                 st.warning("名称和任务描述不能为空。")
@@ -3695,7 +3784,10 @@ def render_cron_jobs_tab(client: AgentClient):
                 if schedule_error:
                     st.warning(f"schedule 格式不合法：{schedule_error}")
                 else:
-                    res = client.add_cron_job(new_name, new_schedule, new_template, new_desc)
+                    res = client.add_cron_job(
+                        new_name, new_schedule, new_template, new_desc,
+                        priority=int(new_priority),
+                    )
                     if res and "_error" in res:
                         st.error(f"创建失败：{res['_error']}")
                     else:

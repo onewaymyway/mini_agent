@@ -69,8 +69,9 @@ class _FakeHeartbeatThread:
 
 
 class _FakeJobRunner:
-    def __init__(self, reaped_job_count=0):
+    def __init__(self, reaped_job_count=0, arbiter_skipped_count=0):
         self.reaped_job_count = reaped_job_count
+        self.arbiter_skipped_count = arbiter_skipped_count
 
 
 class _FakeCronScheduler:
@@ -311,6 +312,39 @@ class TestExecutionModelStatusRoute(unittest.TestCase):
         resp = client.get("/v1/self/execution_model_status")
         body = resp.json()
         self.assertEqual(body["cron"]["reaped_job_count"], 3)
+
+    def test_cron_arbiter_skipped_count_reported(self):
+        """[P3] cron.arbiter_skipped_count 透传自
+        bridge._cron_scheduler._job_runner.arbiter_skipped_count。"""
+        client = _make_client(
+            {
+                "_objective_persistent_runner": None,
+                "_objective_isolated_runner": None,
+                "_scheduler_heartbeat": None,
+                "_autonomous_loop": None,
+            },
+            bridge_extra={
+                "_cron_scheduler": _FakeCronScheduler(
+                    job_runner=_FakeJobRunner(reaped_job_count=1, arbiter_skipped_count=5)
+                ),
+            },
+        )
+        resp = client.get("/v1/self/execution_model_status")
+        body = resp.json()
+        self.assertEqual(body["cron"]["arbiter_skipped_count"], 5)
+        self.assertEqual(body["cron"]["reaped_job_count"], 1)
+
+    def test_cron_counts_default_to_zero_when_no_job_runner(self):
+        client = _make_client({
+            "_objective_persistent_runner": None,
+            "_objective_isolated_runner": None,
+            "_scheduler_heartbeat": None,
+            "_autonomous_loop": None,
+        })
+        resp = client.get("/v1/self/execution_model_status")
+        body = resp.json()
+        self.assertEqual(body["cron"]["reaped_job_count"], 0)
+        self.assertEqual(body["cron"]["arbiter_skipped_count"], 0)
 
     def test_objective_executor_stale_step_reap_count_reported(self):
         """[阶段三] objective_executor.stale_step_reap_count 透传自

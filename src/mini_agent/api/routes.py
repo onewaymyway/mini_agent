@@ -2065,6 +2065,8 @@ async def get_self_execution_model_status(request: Request):
       "cron": {
         "reaped_job_count": int,   # [阶段一/三] CronJobRunner 累计强制
                                     # 回收过的卡死 job 次数
+        "arbiter_skipped_count": int,   # [P3] 累计因 ResourceArbiter
+                                          # 仲裁未通过被跳过触发的次数
       },
       "objective_executor": {
         "stale_step_reap_count": int,   # [阶段三] ObjectiveExecutor 累计
@@ -2162,6 +2164,10 @@ async def get_self_execution_model_status(request: Request):
         job_runner = getattr(cron_scheduler, "_job_runner", None) if cron_scheduler is not None else None
         result["cron"] = {
             "reaped_job_count": getattr(job_runner, "reaped_job_count", 0) if job_runner is not None else 0,
+            # [scheduling_unification_and_kanban_visibility_improvement_plan.md
+            # P3] 因 ResourceArbiter 仲裁未通过而被跳过本次触发的次数，
+            # 与 reaped_job_count 同属"cron 通道健康度"观测指标。
+            "arbiter_skipped_count": getattr(job_runner, "arbiter_skipped_count", 0) if job_runner is not None else 0,
         }
 
         # [阶段三] ObjectiveExecutor 卡死 step 回收计数。
@@ -2619,6 +2625,9 @@ async def get_autonomous_status(request: Request):
                         "next_run_str": j.next_run_str(),
                         "run_count": j.run_count,
                         "last_run_at": j.last_run_at,
+                        # [P2/P3] 供看板展示排队优先级，帮助解释"同时到期
+                        # 时谁先跑"。
+                        "priority": j.priority,
                     }
                     for j in jobs
                 ]
@@ -4059,7 +4068,8 @@ async def list_cron_jobs(request: Request):
 async def add_cron_job(request: Request):
     """
     POST /v1/cron/jobs
-    Body: { "name": str, "schedule": str, "task_template": str, "description": str }
+    Body: { "name": str, "schedule": str, "task_template": str, "description": str,
+            "priority": int (可选，缺省按 add_job() 的 run_mode 规则决定) }
     """
     http_server = getattr(request.app.state, "http_server", None)
     if http_server is None:
@@ -4078,12 +4088,15 @@ async def add_cron_job(request: Request):
         raise HTTPException(status_code=400, detail="name, schedule, task_template are required")
 
     try:
-        job = cs.add_job(
+        add_kwargs = dict(
             name=name,
             schedule=schedule,
             task_template=task_template,
             description=body.get("description", ""),
         )
+        if "priority" in body:
+            add_kwargs["priority"] = body["priority"]
+        job = cs.add_job(**add_kwargs)
         return {"job": {**job.to_dict(), "next_run_str": job.next_run_str()}}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -4093,7 +4106,7 @@ async def add_cron_job(request: Request):
 async def update_cron_job(job_id: str, request: Request):
     """
     PUT /v1/cron/jobs/{job_id}
-    Body: { "enabled": bool, "schedule": str }
+    Body: { "enabled": bool, "schedule": str, "priority": int }
     """
     http_server = getattr(request.app.state, "http_server", None)
     if http_server is None:
@@ -4113,6 +4126,8 @@ async def update_cron_job(job_id: str, request: Request):
                 cs.disable(job_id)
         if "schedule" in body:
             cs.update_schedule(job_id, body["schedule"])
+        if "priority" in body:
+            cs.update_priority(job_id, body["priority"])
         job = cs.get(job_id)
         if not job:
             raise HTTPException(status_code=404, detail=f"Job '{job_id}' not found")

@@ -89,6 +89,11 @@ class CronJobRunner:
         # [阶段三·顺带做] 被 reap_stale_jobs() 强制回收过的 job 次数，
         # 进程内累计，不持久化——只用于观测"卡死回收发生的频率"。
         self._reaped_job_count: int = 0
+        # [next_doc/scheduling_unification_and_kanban_visibility_improvement_plan.md
+        # P1] 因 ResourceArbiter 仲裁未通过而被跳过本次触发的次数，进程内
+        # 累计，不持久化——只用于观测"cron 通道有多少次因为仲裁被挡"，
+        # 供看板 P3 展示。
+        self._arbiter_skipped_count: int = 0
 
     # ── 查询 ──────────────────────────────────────────────────────────────
 
@@ -106,6 +111,12 @@ class CronJobRunner:
         """[阶段三·顺带做] 进程内累计的"被 watchdog 强制回收"次数。"""
         with self._lock:
             return self._reaped_job_count
+
+    @property
+    def arbiter_skipped_count(self) -> int:
+        """[P1] 进程内累计的"因资源仲裁未通过被跳过"次数。"""
+        with self._lock:
+            return self._arbiter_skipped_count
 
     def execution_phase(self, job_id: str) -> str:
         """[阶段 B] 返回 job 当前的执行阶段：
@@ -134,6 +145,40 @@ class CronJobRunner:
         丢失触发记录，只是延后开始，行为上更接近"资源紧张时排队"而不是
         "直接丢弃"。
         """
+        # [P1：接入 ResourceArbiter] 只对非 "sys:" 系统维护类 job 做仲裁
+        # 检查——sys: job（sys:digest_trim / sys:session_cleanup 等）本身
+        # 低频、轻量、以只读扫描为主，设计上就不应该因为用户在场而永远
+        # 排不上，维持现状不检查。
+        #
+        # 注意：不能用 job.initiator 来区分"用户自定义 job"——读码确认
+        # CronScheduler.add_job()（用户手动创建 job 的唯一入口）把
+        # initiator 硬编码成 "cron"（cron_scheduler.py::add_job），
+        # 这个字段实际语义是"提交到 InputQueue/job_runner 时打的来源
+        # 标签"，不是"谁创建的这条 job"，用它做门控条件会导致本检查
+        # 永远不生效。真正能区分的只有 job_id 前缀（is_system），
+        # goal_cron_bridge 绑定的 run_mode="goal_cycle" job 走的是
+        # CronScheduler._fire() 里的另一条分支（_goal_cycle_fn），根本
+        # 不会到达这里，因此这里只需要判断 is_system 即可覆盖到达
+        # submit() 的所有用户自定义 message 类 job。
+        if not job.is_system:
+            try:
+                from mini_agent.evolution.resource_arbiter import ResourceArbiter
+                arbiter = ResourceArbiter(self._paths, self._base_cfg)
+                state = arbiter.gating_state().get("state")
+            except Exception:
+                # 仲裁模块本身异常：保守放行，不能因为仲裁检查失败导致
+                # 所有用户 cron job 停摆（与 ResourceArbiter 自身各 _check_*
+                # 方法"异常时保守放行"的既有风格保持一致）。
+                state = "full"
+            if state == "blocked":
+                with self._lock:
+                    self._arbiter_skipped_count += 1
+                # 不触发，等同于"这次没触发成功"：不占用 semaphore、不记账，
+                # CronScheduler.tick() 不会推进 last_run_at/next_run_at，
+                # 下次 tick 会再次尝试，行为与"job 已有一次执行在跑"时
+                # 返回 False 的既有语义一致。
+                return False
+
         token = uuid.uuid4().hex
         with self._lock:
             if job.id in self._running_job_ids:

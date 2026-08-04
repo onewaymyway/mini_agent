@@ -66,6 +66,13 @@ class CronJob:
     goal_id: Optional[str] = None
     run_mode: str = "message"
 
+    # [scheduling_unification_and_kanban_visibility_improvement_plan.md P2]
+    # 数值越大优先级越高。同一次 tick() 内多个 job 同时到期时，按此字段
+    # 降序排序后依次触发——只影响"谁先被提交/先拿到 worker 排队位置"，
+    # 不做抢占（正在执行的 job 不会被打断）。缺省 0 保证旧的 cron_jobs.json
+    # 反序列化后行为等同于改造前（原本就是插入顺序，且旧数据没有这个字段）。
+    priority: int = 0
+
     def to_dict(self) -> dict:
         return {
             "id": self.id,
@@ -81,6 +88,7 @@ class CronJob:
             "description": self.description,
             "goal_id": self.goal_id,
             "run_mode": self.run_mode,
+            "priority": self.priority,
         }
 
     @staticmethod
@@ -99,6 +107,7 @@ class CronJob:
             description=d.get("description", ""),
             goal_id=d.get("goal_id"),
             run_mode=d.get("run_mode", "message"),
+            priority=d.get("priority", 0),
         )
 
     @property
@@ -509,6 +518,13 @@ class CronScheduler:
                 override = _cfg_enabled_overrides.get(bid)
                 if override is not None:
                     j.enabled = bool(override)
+                # [P2] 内置系统维护 job 默认给一个中等优先级（5），高于普通
+                # 用户自定义 message 类 job 的默认值 0，低于 goal_cycle job
+                # 的默认值 10（见 add_job()）——同一个 tick 内多个 job 同时
+                # 到期时，goal 驱动的任务优先，其次是系统维护，普通用户
+                # 一次性任务最后。_BUILTIN_JOBS 字典本身不带 priority 字段，
+                # 这里统一补上，不逐条改 _BUILTIN_JOBS 定义。
+                j.priority = 5
                 j.next_run_at = compute_next_run(j.schedule, 0.0)
                 existing[bid] = j
 
@@ -547,6 +563,14 @@ class CronScheduler:
         now = time.time()
         triggered: list[str] = []
 
+        # [P2] 先收集本轮到期的 job，再按 priority 降序排序后依次触发——
+        # 之前是遍历 dict 插入顺序，sys: 内置 job 因为 load() 时先注入
+        # 永远排最前，用户自定义 job 之间的先后也只取决于创建时间，没有
+        # 语义。这里改成两阶段：第一阶段只负责"谁到期了/顺便重算未初始化
+        # 的 next_run_at"，不在遍历中直接触发；第二阶段按优先级排序后
+        # 触发。不做抢占——已经在 _fire() 里排队/执行的 job 不受影响，
+        # 只影响"同一个 tick 内，多个 job 同时到期时先提交谁"。
+        due_jobs: list["CronJob"] = []
         for job in list(self._jobs.values()):
             if not job.enabled:
                 continue
@@ -556,7 +580,11 @@ class CronScheduler:
                 continue
             if now < job.next_run_at:
                 continue
+            due_jobs.append(job)
 
+        due_jobs.sort(key=lambda j: j.priority, reverse=True)
+
+        for job in due_jobs:
             # 到期，触发
             success = self._fire(job)
             if success:
@@ -654,14 +682,23 @@ class CronScheduler:
         enabled: bool = True,
         goal_id: Optional[str] = None,
         run_mode: str = "message",
+        priority: Optional[int] = None,
     ) -> CronJob:
         """添加用户自定义 Job。
 
         goal_id/run_mode — [goal_cron_binding_plan.md Track A 新增] 供
         goal_cron_bridge.make_goal_recurring() 创建 run_mode="goal_cycle" 的
         绑定 job；其余既有调用方不传时保持 run_mode="message"，行为不变。
+
+        priority — [P2 新增] 不传时按 run_mode 给默认值：goal_cycle 默认
+        10（goal 驱动的任务通常是用户主动绑定的持续性目标，优先级应高于
+        内置系统维护 job 的默认 5），普通 message 类一次性/周期任务默认 0
+        （低于系统维护 job，避免大量用户自定义 job 挤占 sys: job 的执行
+        时机）。显式传入时以传入值为准。
         """
         job_id = f"user:{uuid.uuid4().hex[:8]}"
+        if priority is None:
+            priority = 10 if run_mode == "goal_cycle" else 0
         job = CronJob(
             id=job_id,
             name=name,
@@ -674,6 +711,7 @@ class CronScheduler:
             next_run_at=compute_next_run(schedule, 0.0),
             goal_id=goal_id,
             run_mode=run_mode,
+            priority=priority,
         )
         self._jobs[job_id] = job
         self.save()
@@ -769,6 +807,16 @@ class CronScheduler:
             return False
         job.schedule = schedule
         job.next_run_at = compute_next_run(schedule, job.last_run_at)
+        self.save()
+        return True
+
+    def update_priority(self, job_id: str, priority: int) -> bool:
+        """[P2] 更新 job 的 priority（不影响 next_run_at/enabled 等其它字段），
+        供 kanban 的编辑入口和 PUT /cron/jobs/{job_id} 使用。"""
+        job = self._jobs.get(job_id)
+        if not job:
+            return False
+        job.priority = int(priority)
         self.save()
         return True
 
