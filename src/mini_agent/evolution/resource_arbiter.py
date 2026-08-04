@@ -33,6 +33,74 @@ _EXPLORATION_BUDGET_RATIO_DEFAULT = 0.10  # 默认 10%
 _RESOURCE_LOCK_WINDOW_MINUTES = 10        # 检查最近 N 分钟内用户触碰的路径
 _FRUSTRATION_SNAPSHOT_STALE_MINUTES = 10  # proprioception 快照超过此时长视为过期，不阻塞
 
+_GATING_HISTORY_MAX_ENTRIES = 200  # [P5] 仲裁状态时间线最多保留的条数（追加时裁剪）
+
+
+def record_gating_transition(paths: "AgentPaths", state: str, reason: str) -> None:
+    """[调度统一化 + 看板可观测性改进方案 P5] 记录一次 ResourceArbiter 三态门控
+    （full/degraded/blocked）状态变化。
+
+    只在"这次的 state 和历史记录里最后一条不一样"时才追加一行，避免每次
+    `/v1/autonomous/status` 被轮询（kanban 顶栏每几秒刷新一次）都写一行——
+    那样会让 gating_history.jsonl 变成跟轮询频率挂钩的高频日志，失去
+    "状态变化时间线"本身的意义。文件损坏/不存在/写入失败时静默忽略，
+    不能因为记历史这种锦上添花的功能影响主状态查询。
+    """
+    try:
+        history_path = paths.gating_history_path
+        last_state = None
+        if history_path.exists():
+            try:
+                with history_path.open("r", encoding="utf-8") as f:
+                    lines = [ln for ln in f.read().splitlines() if ln.strip()]
+                if lines:
+                    last_state = json.loads(lines[-1]).get("state")
+            except Exception:
+                lines = []
+        else:
+            lines = []
+
+        if last_state == state:
+            return  # 状态未变化，不记录
+
+        now = time.time()
+        entry = {
+            "at": now,
+            "at_str": ts_to_str(now),
+            "state": state,
+            "reason": reason,
+        }
+        lines.append(json.dumps(entry, ensure_ascii=False))
+        if len(lines) > _GATING_HISTORY_MAX_ENTRIES:
+            lines = lines[-_GATING_HISTORY_MAX_ENTRIES:]
+        history_path.parent.mkdir(parents=True, exist_ok=True)
+        history_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    except Exception as _mini_agent_exc:
+        from mini_agent.errors import log_exception
+        log_exception(_mini_agent_exc, where="mini_agent.evolution.resource_arbiter.record_gating_transition")
+
+
+def read_gating_history(paths: "AgentPaths", limit: int = 50) -> list[dict]:
+    """[P5] 读取最近 `limit` 条仲裁状态变化记录，按时间正序返回（旧→新）。
+    供看板"🗓️ 全局日程" tab 的时间线展示。文件不存在/损坏时返回空列表。
+    """
+    try:
+        history_path = paths.gating_history_path
+        if not history_path.exists():
+            return []
+        lines = [ln for ln in history_path.read_text(encoding="utf-8").splitlines() if ln.strip()]
+        entries = []
+        for ln in lines[-limit:]:
+            try:
+                entries.append(json.loads(ln))
+            except Exception:
+                continue
+        return entries
+    except Exception as _mini_agent_exc:
+        from mini_agent.errors import log_exception
+        log_exception(_mini_agent_exc, where="mini_agent.evolution.resource_arbiter.read_gating_history")
+        return []
+
 
 class ResourceArbiter:
     """
@@ -658,4 +726,6 @@ __all__ = [
     "append_activity_digest",
     "read_activity_digest",
     "build_digest_summary",
+    "record_gating_transition",
+    "read_gating_history",
 ]

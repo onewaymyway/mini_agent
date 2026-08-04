@@ -340,6 +340,16 @@ class AgentPaths:
         return self.workdir_dir / "decision_profile_state.json"
 
     @property
+    def gating_history_path(self) -> Path:
+        """<project_root>/.agent/gating_history.jsonl — ResourceArbiter 三态门控
+        （full/degraded/blocked）状态变化流水（调度统一化 + 看板可观测性改进
+        方案 P5），每行一条 {at, at_str, state, reason}，只在状态发生变化
+        （相对上一条记录）时追加，由 evolution/resource_arbiter.py::
+        record_gating_transition() 写入，仅保留最近 N 条（见该函数说明），
+        供看板"🗓️ 全局日程" tab 的仲裁状态时间线展示。"""
+        return self.workdir_dir / "gating_history.jsonl"
+
+    @property
     def external_trend_capability_link_state_path(self) -> Path:
         """<project_root>/.agent/external_trend_capability_link_state.json —
         `sys:external_trend_capability_link`（外部知识 wiki 计划 P4）的运行状态

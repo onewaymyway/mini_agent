@@ -314,7 +314,7 @@ cron 侧（P1 修完后 cron 也会被 arbiter 挡），则完全没有入口能
 
 ---
 
-## P5（低优先级，可选）：kanban 新增"全局日程" tab
+## P5（低优先级，可选）：kanban 新增"全局日程" tab 【已完成】
 
 在 P2（优先级字段）和 P3（仲裁状态可见）落地之后，可以再加一个独立 tab，
 把以下三类信息按时间顺序合并展示在一条时间线里：
@@ -322,12 +322,66 @@ cron 侧（P1 修完后 cron 也会被 arbiter 挡），则完全没有入口能
 - 有 recurring goal 绑定的下一次触发（复用 P4 的单一数据源）
 - 最近一次仲裁状态变化的时间点（何时从 full 变成 degraded/blocked，何时恢复）
 
-这一项依赖前面几项先完成，且是纯展示层工作，不涉及后端调度逻辑改动，
-优先级最低，本轮可以不实现，只记录设计方向。
+这一项依赖前面几项先完成，且是纯展示层工作，不涉及后端调度逻辑改动。
+
+### 实现说明
+
+前两类信息（cron job 到期时间、recurring goal 下次触发）在 P2/P3/P4 落地后
+已经能从 `/v1/autonomous/status` 里拿到，属于纯展示层，直接复用即可。
+第三类"仲裁状态变化时间线"此前完全没有持久化——`ResourceArbiter.diagnose()`
+每次都是即时计算，没有任何地方记录"历史上什么时候变化过"，因此新增了一个
+很薄的记录层：
+
+1. `AgentPaths.gating_history_path`（`<project_root>/.agent/gating_history.jsonl`）
+   ——新增路径属性，和其他 `.agent/*.json(l)` 一样走同一套 workdir 目录。
+2. `resource_arbiter.py::record_gating_transition(paths, state, reason)`
+   ——只在这次的 `gating_state` 和历史文件里最后一条不一样时才追加一行，
+   避免把"每次轮询"都记成一条历史（顶栏每几秒轮询一次 `/autonomous/status`，
+   如果不去重，时间线会变成"轮询日志"而不是"状态变化时间线"）。文件不存在/
+   损坏/写入失败时静默忽略，不能因为这个锦上添花的功能影响主状态查询。
+   同时限制最多保留 200 条，防止无限增长。
+3. `resource_arbiter.py::read_gating_history(paths, limit=50)` ——读取最近
+   `limit` 条，按时间正序（旧→新）返回，损坏的行会被跳过而不是抛异常。
+4. 复用现成的 `GET /v1/autonomous/status` 路由：该路由本来就会调用一次
+   `ResourceArbiter.diagnose()`，在拿到结果后顺手调用一次
+   `record_gating_transition()`，不新增独立的轮询/后台任务。
+5. 新增 `GET /v1/autonomous/gating_history?limit=50` 路由，供看板读取历史。
+6. `apps/mini_agent_kanban/client.py` 新增 `gating_history(limit=50)` 方法。
+7. `apps/mini_agent_kanban/app.py` 新增 `render_global_schedule_tab()`，
+   对应新 tab "🗓️ 全局日程"：
+   - 顶部展示当前仲裁状态（和顶栏同款徽标语义）；
+   - 区块 1：未来 24 小时内到期的 cron job（按 `next_run_in` 排序，展示
+     `priority`/`run_count`）；
+   - 区块 2：绑定了 `recurring` 的 Goal，展示下次触发时间（数据源和
+     P4 的 Goal 卡片完全一致，都是 `cron_jobs` 列表里对应 job 的
+     `next_run_str`，没有引入第二套计算逻辑）；
+   - 区块 3：仲裁状态变化时间线，从新读取的 `gating_history` 渲染，最新的
+     排最上面。
+   新 tab 插在"⏰ Cron 任务"和"🔌 外部输入"之间。
+
+### 已知取舍
+- 状态变化的记录时机绑定在 `/autonomous/status` 被轮询上，如果看板/daemon
+  长时间没有任何客户端轮询这个接口，状态变化不会被记录下来（因为没有触发
+  `diagnose()` 的调用）。这属于"用现有轮询顺便记一笔"的最小实现，不新增
+  后台常驻任务；如果后续需要"哪怕没人看仪表盘也要记录"，需要在
+  `autonomous_loop` 内部主动调用一次，作为独立的后续优化项。
+
+### 测试
+`tests/test_gating_history.py`（9 个用例）：
+- `record_gating_transition`：首次写入、状态不变不重复记录、多次状态变化
+  按序记录、无历史文件时读取返回空列表、`limit` 截断、历史文件损坏时读取
+  不崩溃且能继续正常写入。
+- `GET /v1/autonomous/gating_history`：空历史返回空列表、记录的状态变化能
+  被正确读取、`autonomous_loop` 不存在时返回空列表而不是报错。
+
+全量回归：`test_cron_scheduler_priority.py` + `test_cron_job_runner_resource_arbiter.py`
++ `test_cron_job_runner.py` + `test_execution_model_status_routes.py` +
+`test_goal_cron_bridge.py` + `test_gating_history.py` 合计 69 个测试全部通过，
+无回归。
 
 ---
 
-## 实施顺序与理由（P1-P4 已按此顺序完成，P5 按原计划本轮不实现）
+## 实施顺序与理由（P1-P5 已全部按此顺序完成）
 
 1. **P1 先做**：这是正确性缺口（预算/用户优先规则被绕过），不是体验问题，
    风险最高，应该最先修。
@@ -338,8 +392,8 @@ cron 侧（P1 修完后 cron 也会被 arbiter 挡），则完全没有入口能
 3. **P3 可以和 P1/P2 并行**：纯展示层，不依赖前两项的具体实现细节，
    但如果 P1/P2 先做完，P3 展示的信息会更完整（能看到"因仲裁跳过"和
    "因优先级排队"两类原因）。
-4. **P4/P5 放最后**：都是锦上添花，且 P4 明确建议本轮只做最小改动、
-   P5 直接建议本轮不实现。
+4. **P4/P5 放最后**：都是锦上添花。P4 只做了最小改动；P5 原计划本轮不
+   实现，后续作为独立任务补上（见下方"实施记录汇总"）。
 
 ## 待确认项（实现前需要先读码确认，不在本次分析范围内做了假设）
 - ~~`cron_job_runner.submit()` 在 semaphore 满时是阻塞还是立即返回 False~~
@@ -348,29 +402,33 @@ cron 侧（P1 修完后 cron 也会被 arbiter 挡），则完全没有入口能
 - ~~`/v1/autonomous/status` 路由当前是否已经透出 `ResourceArbiter.diagnose()`
   的结果~~【已确认，见 P3 完成说明】：早已透出为 `gating` 字段，无需改动。
 
-## 实施记录汇总（P1-P4 全部完成后）
+## 实施记录汇总（P1-P5 全部完成后）
 
 修改的文件：
 - `src/mini_agent/evolution/cron_job_runner.py`（P1：接入 ResourceArbiter）
 - `src/mini_agent/evolution/cron_scheduler.py`（P2：priority 字段/排序/
   `update_priority()`）
+- `src/mini_agent/evolution/resource_arbiter.py`（P5：新增
+  `record_gating_transition()` / `read_gating_history()`）
+- `src/mini_agent/storage/paths.py`（P5：新增 `gating_history_path` 属性）
 - `src/mini_agent/api/routes.py`（P2/P3：`priority` 透出、
-  `arbiter_skipped_count` 透出、`PUT`/`POST /cron/jobs` 支持 `priority`）
+  `arbiter_skipped_count` 透出、`PUT`/`POST /cron/jobs` 支持 `priority`；
+  P5：`/autonomous/status` 顺带记录仲裁状态变化、新增
+  `GET /autonomous/gating_history` 路由）
 - `apps/mini_agent_kanban/app.py`（P3：顶栏仲裁徽标 + 详情展开、cron job
-  卡片 priority 展示/编辑；P4：recurring Goal 卡片"下次触发"展示）
+  卡片 priority 展示/编辑；P4：recurring Goal 卡片"下次触发"展示；
+  P5：新增"🗓️ 全局日程" tab）
 - `apps/mini_agent_kanban/client.py`（P3：`add_cron_job()` 支持可选
-  `priority` 参数）
+  `priority` 参数；P5：新增 `gating_history()` 方法）
 - `tests/test_execution_model_status_routes.py`（P3：新增 2 个用例）
 
 新增的文件：
 - `tests/test_cron_job_runner_resource_arbiter.py`（P1，6 个用例）
 - `tests/test_cron_scheduler_priority.py`（P2，10 个用例）
+- `tests/test_gating_history.py`（P5，9 个用例）
 
 全量回归：`test_cron_*.py`（8 个文件）+ `test_execution_model_status_routes.py`
-+ `test_goal_cron_bridge.py` 合计 119 个测试全部通过，无回归。
++ `test_goal_cron_bridge.py` + `test_gating_history.py` 合计 128 个测试全部
+通过，无回归。
 
-## 尚未实现（P5，按原方案本轮不做）
-
-kanban"全局日程"tab——把 cron job 到期时间、recurring goal 下次触发、
-仲裁状态变化时间线合并展示——依赖 P2/P3 的数据已经就绪，纯展示层工作，
-留作后续独立任务。
+P1-P5 至此全部完成，本方案文档中列出的改进项已无遗留项。

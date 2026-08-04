@@ -3796,6 +3796,113 @@ def render_cron_jobs_tab(client: AgentClient):
 
 
 # ═══════════════════════════════════════════════════════════════════════
+# Tab: 🗓️ 全局日程（scheduling_unification_and_kanban_visibility_
+#          improvement_plan.md P5）
+# ═══════════════════════════════════════════════════════════════════════
+
+_GATING_BADGE_MAP = {
+    "full": ("🟢", "空闲可执行"),
+    "degraded": ("🟡", "降级运行"),
+    "blocked": ("🔴", "已暂停"),
+}
+
+
+def render_global_schedule_tab(client: AgentClient):
+    """[P5] 把三类此前分散在不同 tab 的时间信息合并成一条时间线：
+    - 未来 24 小时内到期的 cron job（含 P2 的 priority）
+    - 有 recurring goal 绑定的下一次触发（复用 P4 的单一数据源：
+      cron_jobs 列表里的 next_run_str，不重复计算）
+    - 最近一次仲裁状态变化的时间点（何时从 full 变成 degraded/blocked，
+      何时恢复，来自 P5 新增的 /v1/autonomous/gating_history）
+
+    依赖 P2（priority 字段）/P3（仲裁状态可见）/P4（recurring 下次触发
+    单一数据源）已经落地的数据，本 tab 本身是纯展示层，不新增调度逻辑。
+    """
+    st.markdown("#### 🗓️ 全局日程")
+    st.caption(
+        "把 cron job 到期时间、周期性 Goal 下次触发、仲裁状态变化时间线"
+        "合并展示，定位\"为什么现在没有任务在跑\"时不用再挨个 tab 翻。"
+    )
+
+    if st.button("🔄 刷新", key="global_schedule_refresh"):
+        st.rerun()
+
+    autostat = client.autonomous_status() or {}
+    if "_error" in autostat:
+        st.error(f"获取自主执行状态失败：{autostat['_error']}")
+        return
+
+    # ── 顶部：仲裁状态一览（复用顶栏同款徽标语义，这里展开常驻显示，不用点开）──
+    gating = autostat.get("gating") or {}
+    gating_state = gating.get("gating_state", "full")
+    gating_icon, gating_label = _GATING_BADGE_MAP.get(gating_state, ("⚪", "未知"))
+    st.markdown(f"**当前仲裁状态：{gating_icon} {gating_label}** — {gating.get('gating_reason', '')}")
+
+    st.divider()
+
+    # ── 区块 1：未来 24 小时内到期的 cron job（含 priority），按到期时间排序 ──
+    st.markdown("##### ⏰ 未来 24 小时内到期的 cron job")
+    cron_jobs = autostat.get("cron_jobs") or []
+    upcoming = [j for j in cron_jobs if j.get("enabled") and (j.get("next_run_in") or 0) <= 24 * 3600]
+    upcoming.sort(key=lambda j: j.get("next_run_in", 0))
+    if not upcoming:
+        st.caption("未来 24 小时内没有到期的 cron job。")
+    else:
+        for j in upcoming:
+            c1, c2, c3, c4 = st.columns([3, 2, 2, 2])
+            c1.markdown(f"**{j.get('name', j.get('id', ''))}**")
+            c1.caption(j.get("id", ""))
+            c2.caption(f"下次：{j.get('next_run_str', '-')}")
+            c3.caption(f"priority: {j.get('priority', 0)}")
+            c4.caption(f"已运行: {j.get('run_count', 0)} 次")
+
+    st.divider()
+
+    # ── 区块 2：绑定了 recurring 的 Goal 下次触发（单一数据源：cron_jobs） ──
+    st.markdown("##### 🔁 周期性 Goal 下次触发")
+    cron_next_run_by_id = {j.get("id"): j.get("next_run_str", "-") for j in cron_jobs}
+    goals_data = client.goals() or {}
+    if "_error" in goals_data:
+        st.caption(f"目标数据获取失败：{goals_data['_error']}")
+    else:
+        recurring_goals = [
+            n for n in (goals_data.get("goals") or [])
+            if n.get("level") != "objective" and n.get("recurring")
+        ]
+        if not recurring_goals:
+            st.caption("当前没有设置周期性触发的 Goal。")
+        else:
+            for n in recurring_goals:
+                cron_job_id = n.get("recurrence_cron_job_id")
+                next_run = cron_next_run_by_id.get(cron_job_id, "-") if cron_job_id else "-（未绑定 cron job）"
+                c1, c2, c3 = st.columns([3, 2, 2])
+                c1.markdown(f"**{n.get('title', n.get('id', ''))}**")
+                c2.caption(f"下次触发：{next_run}")
+                c3.caption(f"已完成 {n.get('cycle_count', 0)} 轮")
+
+    st.divider()
+
+    # ── 区块 3：仲裁状态变化时间线（何时 full → degraded/blocked，何时恢复）──
+    st.markdown("##### 📈 仲裁状态变化时间线")
+    hist_resp = client.gating_history(limit=50)
+    if hist_resp and "_error" in hist_resp:
+        st.caption(f"获取仲裁状态历史失败：{hist_resp['_error']}")
+    else:
+        history = (hist_resp or {}).get("history") or []
+        if not history:
+            st.caption("暂无状态变化记录（仲裁状态自看板启用以来一直保持不变，"
+                       "或 daemon 尚未产生足够的 /autonomous/status 轮询记录）。")
+        else:
+            # 最新的排在最上面，更符合"看最近发生了什么"的阅读习惯。
+            for entry in reversed(history):
+                icon, label = _GATING_BADGE_MAP.get(entry.get("state", "full"), ("⚪", "未知"))
+                st.caption(
+                    f"{entry.get('at_str', '?')} — {icon} {label}"
+                    f"（{entry.get('reason', '')}）"
+                )
+
+
+# ═══════════════════════════════════════════════════════════════════════
 # Tab: ⚙️ 配置管理（kanban_config_management_plan.md）
 # ═══════════════════════════════════════════════════════════════════════
 def _render_config_field_widget(field: dict, widget_key: str):
@@ -4600,8 +4707,8 @@ def main():
     render_topbar(client, get_active_session_id())
 
     tabs = st.tabs(["💬 对话", "🗂️ 会话管理", "📌 目标看板", "🔄 工作流", "📁 产出物", "🖼️ 产出预览",
-                    "🧠 自我状态", "🧬 进化提案", "⏰ Cron 任务", "🔌 外部输入", "🔔 关注与通知",
-                    "⚙️ 配置", "🔧 诊断", "🧪 混合执行"])
+                    "🧠 自我状态", "🧬 进化提案", "⏰ Cron 任务", "🗓️ 全局日程", "🔌 外部输入",
+                    "🔔 关注与通知", "⚙️ 配置", "🔧 诊断", "🧪 混合执行"])
     with tabs[0]:
         render_chat_tab(client, get_active_session_id())
     with tabs[1]:
@@ -4621,14 +4728,16 @@ def main():
     with tabs[8]:
         render_cron_jobs_tab(client)
     with tabs[9]:
-        render_external_input_tab(client)
+        render_global_schedule_tab(client)
     with tabs[10]:
-        render_notification_tab(client)
+        render_external_input_tab(client)
     with tabs[11]:
-        render_config_tab(client)
+        render_notification_tab(client)
     with tabs[12]:
-        render_diagnostics_tab(client)
+        render_config_tab(client)
     with tabs[13]:
+        render_diagnostics_tab(client)
+    with tabs[14]:
         render_hybrid_exec_tab(client)
 
     # [P0 改造] 原来这里是 `if auto_refresh: time.sleep(3); st.rerun()`——

@@ -55,6 +55,10 @@ api/routes.py — FastAPI 路由定义
     GET    /v1/artifacts/{id}/file   下载/预览 manifest 内某个文件（?index=0）
   自主执行状态（daemon 自主运行能力）
     GET    /v1/autonomous/status     当前 autonomy_level + cron job 状态 + Objective 执行进度
+    GET    /v1/autonomous/gating_history  [scheduling_unification_and_kanban_
+                                       visibility_improvement_plan.md P5]
+                                       ResourceArbiter 三态门控状态变化时间线
+                                       （?limit=50）
     GET    /v1/goals                 GoalBacklog 完整视图（active goals + objectives）
     POST   /v1/goals                 新增 Goal
     PATCH  /v1/goals/{goal_id}       更新 Goal 状态/进度/优先级/标题/描述
@@ -2604,6 +2608,21 @@ async def get_autonomous_status(request: Request):
             cfg = getattr(al, "_cfg", None)
             if paths is not None and cfg is not None:
                 result["gating"] = ResourceArbiter(paths, cfg).diagnose()
+                # [P5] 顺带记一笔仲裁状态时间线（只在状态变化时才真正写入，
+                # 见 record_gating_transition 内的去重说明），不新增独立
+                # 轮询，复用这次已经在做的 diagnose() 调用。
+                try:
+                    from mini_agent.evolution.resource_arbiter import record_gating_transition
+                    _gating = result["gating"] or {}
+                    record_gating_transition(
+                        paths,
+                        _gating.get("gating_state", "full"),
+                        _gating.get("gating_reason") or _gating.get("reason") or "",
+                    )
+                except Exception as _mini_agent_exc:
+                    from mini_agent.errors import log_exception
+                    log_exception(_mini_agent_exc, where='mini_agent.api.routes')
+                    pass
         except Exception as _mini_agent_exc:
             from mini_agent.errors import log_exception
             log_exception(_mini_agent_exc, where='mini_agent.api.routes')
@@ -2664,6 +2683,40 @@ async def get_autonomous_status(request: Request):
                 pass
 
     return result
+
+
+@router.get("/autonomous/gating_history")
+async def get_gating_history(request: Request, limit: int = Query(50, ge=1, le=200)):
+    """
+    GET /v1/autonomous/gating_history?limit=50
+
+    [调度统一化 + 看板可观测性改进方案 P5] 返回 ResourceArbiter 三态门控
+    （full/degraded/blocked）最近的状态变化时间线，按时间正序（旧→新）。
+    每条记录只在状态相对上一条发生变化时才会存在（见
+    evolution/resource_arbiter.py::record_gating_transition 的去重说明），
+    不是每次轮询都记一条，避免时间线被刷成"仲裁状态检查日志"。
+
+    供看板"🗓️ 全局日程" tab 展示"何时从 full 变成 degraded/blocked、
+    何时恢复"，配合同一个 tab 里的 cron job 到期时间、recurring goal
+    下次触发一起看，定位"为什么现在没有自主任务在跑"这类问题时不用
+    再去翻日志文件。
+    """
+    http_server = getattr(request.app.state, "http_server", None)
+    if http_server is None:
+        raise HTTPException(status_code=503, detail="HttpServer not available")
+    _require_owner(request)
+
+    try:
+        from mini_agent.evolution.resource_arbiter import read_gating_history
+        al = http_server.autonomous_loop
+        paths = getattr(al, "_paths", None) if al is not None else None
+        if paths is None:
+            return {"history": []}
+        return {"history": read_gating_history(paths, limit=limit)}
+    except Exception as _mini_agent_exc:
+        from mini_agent.errors import log_exception
+        log_exception(_mini_agent_exc, where='mini_agent.api.routes.get_gating_history')
+        return {"history": []}
 
 
 # ── Goals REST API ────────────────────────────────────────────────────────────

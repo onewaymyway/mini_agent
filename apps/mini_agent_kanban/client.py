@@ -224,6 +224,12 @@ class AgentClient:
     def autonomous_status(self):
         return self._get("/autonomous/status")
 
+    def gating_history(self, limit: int = 50):
+        """[scheduling_unification_and_kanban_visibility_improvement_plan.md P5]
+        ResourceArbiter 三态门控（full/degraded/blocked）状态变化时间线，
+        供"🗓️ 全局日程" tab 的仲裁状态时间线区块展示。"""
+        return self._get("/autonomous/gating_history", params={"limit": limit})
+
     def self_diagnosis_feedback(self):
         """[self_diagnosis_feedback_loop_deepening_plan.md 配套看板改造]
         P1 改进信号聚合 + P2 建议采纳率回看 + P3 能力快照 diff + P4 skill
