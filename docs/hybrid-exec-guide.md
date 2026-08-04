@@ -53,6 +53,10 @@ provider/超时等设置（内部转换为 `RunnerAppConfig`）。
 `input_data` 做一次 dry-run，通过才转正为 active 版本存入仓库；之后同一
 `task_id` 的调用会优先直接跑这个脚本。
 
+除了在 Python 代码里 `import` 调用，也可以直接用命令行（见 §十四）或让
+主 Agent 在对话里调用工具函数（见 §十五）触发同一套逻辑，三条路径共享
+同一份 `.agent/hybrid_exec/scripts/<task_id>/` 脚本仓库。
+
 ### 1.1 LLM 从哪来：独立执行自动加载 `providers.json`，嵌入 workflow 接收传入的 llm
 
 `LLMExplorer`/`LLMRepairer`/`FallbackExecutor` 都支持一个可选的 `llm`
@@ -379,6 +383,8 @@ src/mini_agent/hybrid_exec/
 ├── policy.py                        # ReexplorePolicy：跨 run 主动重探索策略
 ├── kanban_summary.py                 # build_kanban_summary()：供看板一次性拉取的只读汇总
 ├── workflow_integration.py           # hybrid_step 接入 workflow（register_step_executor）
+├── cli.py                            # `mini-agent hybrid-exec ...` 独立命令行子命令
+├── tools.py                          # 向主 Agent 暴露 run/list/show_hybrid_exec_task 工具
 ├── _llm.py / _agent.py               # LLM/Agent 具体实现细节
 └── prompts/                          # 探索/修复用的提示词模板
     ├── explore_script.md
@@ -521,3 +527,59 @@ hybrid_exec_demo.py` 新增场景六（见 §十一），用不发网络请求�
 互补：普通 workflow step（`agent`/`python_step` 等）仍用
 `workflow-generator`，只有明确要用"脚本优先、自动降级"这套 hybrid_exec
 机制时才用这个新 skill。
+
+## 十四、命令行直接调用（`mini-agent hybrid-exec ...`）
+
+不写 Python 代码、不进入交互式 REPL，直接在终端触发一次任务，适合
+cron/systemd/CI 或临时手动验证。与 `mini-agent workflow ...` 是同一种
+"独立 CLI 短路"接入方式（`cli/app.py::main()` 里按 `sys.argv[1]` 短路，
+只 `load_config()`，不构造完整交互式 Agent）。
+
+```bash
+# 执行一次任务（task_id 已有 active 脚本时直接命中脚本层，不发起 LLM 调用）
+mini-agent hybrid-exec run word_count_v1 '{"text": "hello world"}'
+
+# 指定项目根目录（默认当前目录）
+mini-agent hybrid-exec run word_count_v1 '{"text": "hi"}' --project /path/to/project
+
+# 打印完整决策轨迹（attempts：探索/修复/降级的每一步）
+mini-agent hybrid-exec run word_count_v1 '{"text": "hi"}' -v
+
+# 限制允许的层级（如禁止升级到 Agent，控制成本/权限）
+mini-agent hybrid-exec run some_task '{}' --allow-tiers script,llm
+
+# 强制忽略已有脚本、重新探索
+mini-agent hybrid-exec run some_task '{}' --force-reexplore
+
+# 列举 .agent/hybrid_exec/scripts/ 下已归档的所有任务及当前状态
+mini-agent hybrid-exec list
+
+# 查看某个任务的仓库元信息（各版本统计）与当前 active 脚本源码
+mini-agent hybrid-exec show word_count_v1
+```
+
+实现见 `src/mini_agent/hybrid_exec/cli.py::run_hybrid_exec_cli()`，`run`
+子命令的参数与 `TaskSpec` 字段一一对应（`--desc` 对应 `description`，不传
+用一句默认占位描述；`--fs-write` 对应 `agent_fs_write_enabled`）。
+
+## 十五、主 Agent 内部工具（`run_hybrid_exec_task` 等）
+
+让主 Agent 在对话中直接调用 hybrid_exec，不需要用户先手写 workflow yaml
+或切到命令行。实现见 `src/mini_agent/hybrid_exec/tools.py::register_hybrid_exec_tools(cfg)`，
+接入方式与 `workflow/tools.py::register_workflow_tools(cfg)` 完全一致（同一
+套 `@tool` 装饰器 + 全局工具注册表），在 `cli/app.py` 里紧跟
+`register_workflow_tools(cfg)` 之后调用，随主 Agent 启动自动注册，无需
+额外配置开关。
+
+暴露三个工具：
+
+| 工具 | 说明 | requires_approval |
+|---|---|---|
+| `run_hybrid_exec_task(task_id, description, input_json, allow_tiers, force_reexplore, agent_fs_write_enabled, max_script_repair_attempts)` | 执行一次任务 | 默认值 `True`（可能升级到会写文件系统的 Agent 层） |
+| `list_hybrid_exec_tasks()` | 列举已归档任务及状态，帮 Agent 决定复用哪个 `task_id` | `False`（只读） |
+| `show_hybrid_exec_task(task_id)` | 查看某任务的仓库元信息与当前脚本源码 | `False`（只读） |
+
+三个工具与 §十四 的命令行、§五 的 `hybrid_step` workflow 类型共享同一份
+`.agent/hybrid_exec/scripts/<task_id>/` 脚本仓库，三条路径可以混用（比如
+先用命令行探索/固化出一个脚本，再让 Agent 在对话里直接复用同一个
+`task_id`）。

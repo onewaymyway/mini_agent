@@ -113,6 +113,16 @@ def main() -> int:
         project_root, rest = _extract_project_root(sys.argv[2:])
         return run_workflow_cli(rest, project_root)
 
+    # ── hybrid-exec 子命令短路：`mini-agent hybrid-exec ...` 独立命令行入口 ──
+    # 与 workflow 短路方式完全一致：不进入 build_parser() 主流程、不需要先
+    # 构造交互式 Agent，只 load_config() 即可，适合脚本/cron/systemd 场景
+    # 直接触发一次 hybrid_exec 任务（已有 active 脚本会优先复用）。
+    # 见 hybrid_exec/cli.py 头部说明。
+    if len(sys.argv) > 1 and sys.argv[1] == "hybrid-exec":
+        from mini_agent.hybrid_exec.cli import run_hybrid_exec_cli
+        project_root, rest = _extract_project_root(sys.argv[2:])
+        return run_hybrid_exec_cli(rest, project_root)
+
     # ── 全局异常捕获：确保任何启动错误都能显示 ────────────────────────────────
     try:
         _main_inner()
@@ -358,6 +368,15 @@ def _main_inner() -> None:
     from mini_agent.workflow.tools import register_workflow_tools
     register_workflow_tools(cfg)
     R.print_info("Workflow tools registered (generate/save/run/list/show/delete_workflow)")
+
+    # ── hybrid_exec 工具（脚本/LLM/Agent 混合执行）───────────────────────────
+    # 放在 workflow 工具之后、myplugins 之前：hybrid_exec 独立于 workflow，
+    # 不依赖 workflow 子系统是否就绪；myplugins 里的 hybrid_step 插件是
+    # workflow 场景下的接入方式，这里注册的是给主 Agent 直接用的工具函数，
+    # 两者互不影响、可以同时存在。
+    from mini_agent.hybrid_exec.tools import register_hybrid_exec_tools
+    register_hybrid_exec_tools(cfg)
+    R.print_info("hybrid_exec tools registered (run/list/show_hybrid_exec_task)")
 
     # ── myplugins/ 插件发现（P7-④2） ─────────────────────────────────────────
     # 放在 register_workflow_tools 之后：插件的 register(cfg) 里若要调用

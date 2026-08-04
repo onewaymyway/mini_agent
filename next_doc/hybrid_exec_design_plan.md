@@ -402,3 +402,37 @@ scripts/<task_id>/` 落盘的脚本版本、最终决定独立调用还是接入
 `hybrid_step`。风格与既有的 `workflow-generator`/`workflow-debugger`
 skill 一致，边界上也做了区分（普通 workflow step 不用这个 skill）。已
 验证能被项目自带的 `SkillLoader` 正常发现和解析。
+
+## 十四、独立命令行子命令 + 主 Agent 内部工具（已完成）
+
+补充需求："task 应该能直接用命令行简单方式启动"、"agent 中应该有内部的工具
+函数可以执行这个 task"。落地方式与 `workflow` 子系统已有的两条接入路径完全
+对齐，不引入新的接入范式：
+
+- **独立 CLI**：新增 `src/mini_agent/hybrid_exec/cli.py::run_hybrid_exec_cli()`，
+  与 `cli/commands/workflow_cmd.py::run_workflow_cli()` 同样的短路写法——在
+  `cli/app.py::main()` 里 `sys.argv[1] == "hybrid-exec"` 时短路，不进入
+  `build_parser()` 主流程、不构造交互式 Agent，只 `load_config()`：
+  ```bash
+  mini-agent hybrid-exec run word_count_v1 '{"text": "hello world"}' [--project <path>]
+  mini-agent hybrid-exec list  [--project <path>]
+  mini-agent hybrid-exec show word_count_v1 [--project <path>]
+  ```
+  `run` 支持 `--desc`/`--allow-tiers`/`--force-reexplore`/`--fs-write`/`-v`
+  （打印完整 attempts 决策轨迹），参数含义与 `TaskSpec` 字段一一对应。已有
+  active 脚本时直接命中脚本层，不发起 LLM 调用（已用 `word_count_v1` 验证）。
+- **主 Agent 内部工具**：新增 `src/mini_agent/hybrid_exec/tools.py::register_hybrid_exec_tools(cfg)`，
+  写法与 `workflow/tools.py::register_workflow_tools(cfg)` 一致（同一套
+  `@tool` 装饰器 + 全局工具注册表），在 `cli/app.py` 里紧跟
+  `register_workflow_tools(cfg)` 之后调用。暴露三个工具：
+  - `run_hybrid_exec_task(task_id, description, input_json, allow_tiers, force_reexplore, agent_fs_write_enabled, max_script_repair_attempts)`
+    —— 主 Agent 对话中可直接调用执行一次任务；`requires_approval` 用默认值
+    （`True`），因为可能升级到会写文件系统的 Agent 层。
+  - `list_hybrid_exec_tasks()` / `show_hybrid_exec_task(task_id)`
+    —— 只读，`requires_approval=False`，帮助 Agent 决定复用哪个 task_id、
+    要不要 `force_reexplore`。
+  三个工具与命令行、`hybrid_step` workflow 类型共享同一个
+  `.agent/hybrid_exec/scripts/<task_id>/` 脚本仓库，互不冲突、可混用。
+- 两条路径都不改动 `hybrid_exec` 包本身的核心逻辑（`executor.py` 等），只是
+  新增 `cli.py`/`tools.py` 两个薄的接入层文件，与 P2 阶段"不修改 workflow
+  包源码、只加插件文件"的思路一致——尽量不侵入既有代码。
