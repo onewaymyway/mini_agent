@@ -436,3 +436,19 @@ skill 一致，边界上也做了区分（普通 workflow step 不用这个 skil
 - 两条路径都不改动 `hybrid_exec` 包本身的核心逻辑（`executor.py` 等），只是
   新增 `cli.py`/`tools.py` 两个薄的接入层文件，与 P2 阶段"不修改 workflow
   包源码、只加插件文件"的思路一致——尽量不侵入既有代码。
+
+### 14.1 补丁：Windows PowerShell 下 `run <task_id> <input_json>` 引号转义丢失（已修复）
+
+实测反馈：Windows PowerShell 下 `mini-agent hybrid-exec run word_count_v1
+'{"text": "hello world"}'` 报 `unrecognized arguments: world}`——PowerShell
+把含双引号的字符串传给原生 exe 时存在广为人知的引号转义丢失问题，内层
+`"` 被吞掉后，JSON 字符串在 Win32 argv 解析层面被空格拆成了多个 token。
+
+修复：`hybrid_exec/cli.py` 新增 `_resolve_input_data()`，`run` 子命令的
+`input_data` 来源改为按优先级取值——`--input-file <path>`（文件读取，任何
+平台都不受 shell 引号影响）> `--field key=value`（可重复，拼成扁平
+dict，只需最外层一层引号）> 位置参数 `input_json`（原有写法，
+Linux/macOS 下通常没问题）> stdin 管道（`'...' | mini-agent hybrid-exec
+run <task_id>`，完全绕开 exe 参数层面的引号转义）> 都不传则 `{}`。
+`input_json` 位置参数解析失败时的报错信息里也补充了改用其它三种方式的
+提示。`docs/hybrid-exec-guide.md` §十四同步补充 Windows 使用指引。

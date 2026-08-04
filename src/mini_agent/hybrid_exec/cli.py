@@ -7,10 +7,15 @@ hybrid_exec/cli.py — `mini-agent hybrid-exec ...` 独立命令行子命令
 交互式 Agent，只 load_config() 即可，适合脚本/cron/systemd 里直接触发。
 
 子命令：
-  mini-agent hybrid-exec run <task_id> [input_json] [--desc TEXT]
+  mini-agent hybrid-exec run <task_id> [input_json] [--input-file PATH]
+                                        [--field key=value ...] [--desc TEXT]
                                         [--allow-tiers script,llm,agent]
                                         [--force-reexplore] [--fs-write]
-      执行一次任务（已有 active 脚本会优先复用，不会重新探索）。
+      执行一次任务（已有 active 脚本会优先复用，不会重新探索）。input_data
+      的来源按优先级 --input-file > --field(可重复) > 位置参数 input_json
+      > stdin 管道，都不传则为 `{}`，详见 _resolve_input_data() 的说明——
+      主要是为了绕开 Windows PowerShell 传递含双引号 JSON 字符串给原生 exe
+      时常见的引号转义丢失问题（症状：`unrecognized arguments: xxx}`）。
   mini-agent hybrid-exec list
       列举 .agent/hybrid_exec/scripts/ 下已归档的所有 task_id 及其当前状态。
   mini-agent hybrid-exec show <task_id>
@@ -25,6 +30,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import sys
 from pathlib import Path
 from typing import Optional
 
@@ -35,16 +41,89 @@ def _load_cfg(project_root: Path):
     return load_config(project_root=project_root)
 
 
+def _resolve_input_data(args: argparse.Namespace) -> "tuple[Optional[dict], Optional[str]]":
+    """按优先级解析本次调用的 input_data，返回 (input_data, error_message)。
+
+    Windows（尤其 PowerShell）在把包含双引号的 JSON 字符串当作单个命令行
+    参数传给原生 exe 时，存在广为人知的引号转义丢失问题（内层 `"` 可能被
+    吞掉），导致 JSON 字符串被空格拆成多个 argv token，argparse 报
+    "unrecognized arguments"。为此提供三条不依赖行内 JSON 引号的替代
+    路径，任选其一即可，优先级：
+      1. --input-file <path>   从文件读 JSON 文本（最稳妥，任何平台都不会
+                                有 shell 转义问题）
+      2. --field key=value     重复传多次，拼成一个扁平 dict，每个 value
+                                只需要最外层一层引号（不含嵌套双引号），
+                                Windows 下最好写
+      3. 位置参数 input_json   直接传 JSON 字符串（Linux/macOS 下最省事，
+                                Windows 下建议改用 1/2，或用管道见下）
+      4. stdin                 不传上述任何一种、且检测到 stdin 有管道输入
+                                时，从 stdin 读取整段 JSON 文本（Windows
+                                PowerShell 下用管道可以完全绕开引号转义：
+                                `'{"text": "hello world"}' | mini-agent
+                                hybrid-exec run word_count_v1`）
+    都不传则视为 `{}`。
+    """
+    if args.input_file:
+        try:
+            text = Path(args.input_file).read_text(encoding="utf-8")
+        except OSError as e:
+            return None, f"--input-file 读取失败：{e}"
+        try:
+            data = json.loads(text)
+        except json.JSONDecodeError as e:
+            return None, f"--input-file 内容不是合法 JSON：{e}"
+        if not isinstance(data, dict):
+            return None, "--input-file 内容解析后必须是一个 JSON object（dict）"
+        return data, None
+
+    if args.field:
+        data: dict = {}
+        for pair in args.field:
+            if "=" not in pair:
+                return None, f"--field 格式错误（应为 key=value）：{pair!r}"
+            key, _, raw_value = pair.partition("=")
+            key = key.strip()
+            try:
+                value = json.loads(raw_value)  # 支持数字/布尔/null/嵌套 JSON
+            except json.JSONDecodeError:
+                value = raw_value  # 解析失败则原样按字符串处理，覆盖最常见的 --field text=hi 场景
+            data[key] = value
+        return data, None
+
+    if args.input_json is not None:
+        try:
+            data = json.loads(args.input_json)
+        except json.JSONDecodeError as e:
+            return None, (
+                f"input_json 不是合法 JSON：{e}\n"
+                "提示：Windows PowerShell 传递含双引号的 JSON 容易被转义丢失导致解析错误，"
+                "建议改用 --input-file <path>、多个 --field key=value，"
+                "或用管道 `'...' | mini-agent hybrid-exec run <task_id>` 传入。"
+            )
+        if not isinstance(data, dict):
+            return None, "input_json 解析后必须是一个 JSON object（dict）"
+        return data, None
+
+    if not sys.stdin.isatty():
+        stdin_text = sys.stdin.read().strip()
+        if stdin_text:
+            try:
+                data = json.loads(stdin_text)
+            except json.JSONDecodeError as e:
+                return None, f"stdin 内容不是合法 JSON：{e}"
+            if not isinstance(data, dict):
+                return None, "stdin 内容解析后必须是一个 JSON object（dict）"
+            return data, None
+
+    return {}, None
+
+
 def _cmd_run(args: argparse.Namespace, project_root: Path) -> None:
     from mini_agent.hybrid_exec import ExecutionTier, TaskSpec, default_executor
 
-    try:
-        input_data = json.loads(args.input_json) if args.input_json else {}
-    except json.JSONDecodeError as e:
-        print(f"[hybrid-exec] input_json 不是合法 JSON：{e}")
-        return
-    if not isinstance(input_data, dict):
-        print("[hybrid-exec] input_json 解析后必须是一个 JSON object（dict）")
+    input_data, err = _resolve_input_data(args)
+    if err:
+        print(f"[hybrid-exec] {err}")
         return
 
     allow_tiers = None
@@ -142,7 +221,14 @@ def _build_parser() -> argparse.ArgumentParser:
 
     p_run = sub.add_parser("run", help="执行一次 hybrid_exec 任务")
     p_run.add_argument("task_id", help="任务标识，对应脚本仓库 key")
-    p_run.add_argument("input_json", nargs="?", default="{}", help="JSON 字符串形式的输入，如 '{\"text\": \"hi\"}'")
+    p_run.add_argument("input_json", nargs="?", default=None,
+                        help="JSON 字符串形式的输入，如 '{\"text\": \"hi\"}'。"
+                             "Windows PowerShell 下容易有引号转义问题，建议改用 "
+                             "--input-file / --field，或用管道传 stdin（见 --help 顶部说明）")
+    p_run.add_argument("--input-file", default=None, help="从文件读取 JSON 输入（object），不受 shell 引号转义影响")
+    p_run.add_argument("--field", action="append", default=None,
+                        help="key=value，可重复传多次拼成一个扁平 dict 输入，"
+                             "如 --field text=\"hello world\"（Windows 下最省心，只需最外层一层引号）")
     p_run.add_argument("--desc", default=None, help="任务描述（探索/修复用的 prompt），不传用默认占位描述")
     p_run.add_argument("--allow-tiers", default=None, help="逗号分隔，如 script,llm,agent（默认三层都允许）")
     p_run.add_argument("--force-reexplore", action="store_true", help="忽略已有脚本，强制重新探索")

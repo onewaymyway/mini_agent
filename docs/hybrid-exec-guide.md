@@ -538,7 +538,27 @@ cron/systemd/CI 或临时手动验证。与 `mini-agent workflow ...` 是同一�
 ```bash
 # 执行一次任务（task_id 已有 active 脚本时直接命中脚本层，不发起 LLM 调用）
 mini-agent hybrid-exec run word_count_v1 '{"text": "hello world"}'
+```
 
+> **Windows / PowerShell 用户注意**：PowerShell 把含双引号的 JSON 字符串
+> 传给原生 exe 时，存在广为人知的引号转义丢失问题，容易出现
+> `unrecognized arguments: xxx}` 这类报错（JSON 被空格拆散了）。遇到时
+> 改用下面三种方式之一，都能完全绕开这个问题：
+> ```powershell
+> # 1) --input-file：最稳妥，任何平台都不受 shell 引号影响
+> '{"text": "hello world"}' | Out-File -Encoding utf8 in.json
+> mini-agent hybrid-exec run word_count_v1 --input-file in.json
+>
+> # 2) --field key=value：可重复传，拼成扁平 dict，只需最外层一层引号
+> mini-agent hybrid-exec run word_count_v1 --field 'text=hello world'
+>
+> # 3) 管道传 stdin：不传位置参数，直接把 JSON 用管道喂给命令
+> '{"text": "hello world"}' | mini-agent hybrid-exec run word_count_v1
+> ```
+> Linux/macOS 下位置参数 `'{"text": "hello world"}'` 通常没有这个问题，
+> 可以直接用最上面那种写法。
+
+```bash
 # 指定项目根目录（默认当前目录）
 mini-agent hybrid-exec run word_count_v1 '{"text": "hi"}' --project /path/to/project
 
@@ -561,6 +581,8 @@ mini-agent hybrid-exec show word_count_v1
 实现见 `src/mini_agent/hybrid_exec/cli.py::run_hybrid_exec_cli()`，`run`
 子命令的参数与 `TaskSpec` 字段一一对应（`--desc` 对应 `description`，不传
 用一句默认占位描述；`--fs-write` 对应 `agent_fs_write_enabled`）。
+`input_data` 的来源按优先级 `--input-file` > `--field`（可重复） > 位置
+参数 `input_json` > stdin 管道，都不传则为 `{}`（`_resolve_input_data()`）。
 
 ## 十五、主 Agent 内部工具（`run_hybrid_exec_task` 等）
 
