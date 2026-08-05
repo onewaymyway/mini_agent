@@ -1959,6 +1959,13 @@ def _render_objective_execution_detail(client: AgentClient, execution: dict) -> 
 
     if not exec_id or ex_status in ("completed", "cancelled"):
         return
+
+    # [daemon_stability_and_ux_improvement_plan.md P1-11] 干预操作的一致
+    # 反馈——终止/重试/暂停/恢复/插话此前"点了按钮，后台生效"缺少明确的即时
+    # 反馈，用户容易因为看不到反馈而重复点击。这里给每个操作补一句
+    # st.toast() 即时确认（跨 st.rerun() 仍会展示，不需要额外的 session_state
+    # 搬运），对已经有服务端过渡态标记的暂停操作（pause_requested）额外保留
+    # 持续显示的 caption，直到状态真正落地。
     if execution.get("pause_requested"):
         st.caption("⏸️ 暂停请求已发送，将在当前步骤完成后生效……")
     b1, b2, b3, b4 = st.columns(4)
@@ -1967,12 +1974,16 @@ def _render_objective_execution_detail(client: AgentClient, execution: dict) -> 
             res = client.cancel_objective(exec_id)
             if res and "_error" in res:
                 st.error(res["_error"])
+            else:
+                st.toast("🛑 终止请求已发送，正在停止该 Objective……", icon="🛑")
             st.rerun()
     if ex_status in ("running", "failed"):
         if b2.button("🔁 重试当前步", key=f"obj_retry_{exec_id}"):
             res = client.retry_objective(exec_id)
             if res and "_error" in res:
                 st.error(res["_error"])
+            else:
+                st.toast("🔁 重试请求已发送，正在重新提交当前步骤……", icon="🔁")
             st.rerun()
     # [daemon_stability_and_ux_improvement_plan.md P1-5] "⏸️ 暂停"/"▶️ 恢复"
     # 与终止/重试/插话并列——暂停是"临时叫停，之后原样恢复"，与"终止"
@@ -1982,12 +1993,16 @@ def _render_objective_execution_detail(client: AgentClient, execution: dict) -> 
             res = client.pause_objective(exec_id)
             if res and "_error" in res:
                 st.error(res["_error"])
+            else:
+                st.toast("⏸️ 暂停请求已发送，将在当前步骤完成后生效……", icon="⏸️")
             st.rerun()
     elif ex_status == "paused_by_user":
         if b4.button("▶️ 恢复", key=f"obj_resume_{exec_id}"):
             res = client.resume_objective(exec_id)
             if res and "_error" in res:
                 st.error(res["_error"])
+            else:
+                st.toast("▶️ 恢复请求已发送，正在从断点继续……", icon="▶️")
             st.rerun()
     with b3.popover("💬 插话"):
         guidance = st.text_area("补充说明（下次提交当前步骤时会附带这段话）",
@@ -1998,7 +2013,8 @@ def _render_objective_execution_detail(client: AgentClient, execution: dict) -> 
                 if res and "_error" in res:
                     st.error(res["_error"])
                 else:
-                    st.success("已记录，将在下次提交该步骤时附带这段说明")
+                    st.success("✏️ 已记录，将在下次提交该步骤时附带这段说明")
+                    st.toast("✏️ 插话已保存，下一步将附带这段说明", icon="✏️")
 
 
 def _render_goal_card(
@@ -3428,6 +3444,49 @@ def _render_execution_overview(client: AgentClient, exec_resp: dict):
 
     recoveries = exec_resp.get("recent_recoveries") or []
     kind_label = {"cron_job": "⏰ Cron", "objective_step": "🎯 Objective", "isolated_pool": "🧵 隔离线程池"}
+
+    # [daemon_stability_and_ux_improvement_plan.md P1-9] 检测"🔴 异常已回收"
+    # 计数环比上一次刷新明显增长时，用归纳性提示直接指出问题范围（例如"都是
+    # 同一个 job_id"），而不是只把数字标红、让用户自己从原始事件列表里翻规律。
+    # 用 session_state 记录"上一次刷新时看到的最新事件时间戳"，本次渲染时
+    # 只统计比它更新的事件为"新增"，避免每次 rerun 都重复提示同一批旧事件。
+    prev_seen_ts = st.session_state.get("_exec_overview_last_seen_recovery_ts", 0.0)
+    new_events = [ev for ev in recoveries if (ev.get("time") or 0) > prev_seen_ts]
+    summary_msg = None
+    if new_events:
+        window_start = now - 10 * 60  # 最近 10 分钟窗口内做归纳
+        recent_window = [ev for ev in new_events if (ev.get("time") or 0) >= window_start] or new_events
+        by_id: dict = {}
+        for ev in recent_window:
+            key = ev.get("id") or f"({kind_label.get(ev.get('kind'), ev.get('kind', ''))}，无 id)"
+            by_id.setdefault(key, []).append(ev)
+        total_new = len(recent_window)
+        if total_new >= 2:
+            top_id, top_events = max(by_id.items(), key=lambda kv: len(kv[1]))
+            if len(top_events) >= 2 and len(top_events) == total_new:
+                # 全部新增事件都集中在同一个 id 上——归纳成一句话直接点名。
+                kind = kind_label.get(top_events[0].get("kind"), top_events[0].get("kind", ""))
+                summary_msg = (
+                    f"⚠️ 过去 {int((now - min(ev.get('time', now) for ev in top_events)) / 60) or 1} "
+                    f"分钟内有 {total_new} 次{kind}卡死回收，都指向同一个 `{top_id}`，建议优先排查它。"
+                )
+            elif len(top_events) >= 2:
+                kind = kind_label.get(top_events[0].get("kind"), top_events[0].get("kind", ""))
+                summary_msg = (
+                    f"⚠️ 过去 {int((now - min(ev.get('time', now) for ev in recent_window)) / 60) or 1} "
+                    f"分钟内新增 {total_new} 次卡死回收，其中 {len(top_events)} 次集中在同一个 "
+                    f"{kind} `{top_id}`，建议优先排查它。"
+                )
+            else:
+                summary_msg = (
+                    f"⚠️ 过去 {int((now - min(ev.get('time', now) for ev in recent_window)) / 60) or 1} "
+                    f"分钟内新增 {total_new} 次卡死回收，分散在不同任务上，可能是系统性问题（例如某个工具/API "
+                    f"全局失效），建议查看下方明细列表。"
+                )
+    if recoveries:
+        st.session_state["_exec_overview_last_seen_recovery_ts"] = max(ev.get("time") or 0 for ev in recoveries)
+    if summary_msg:
+        st.warning(summary_msg)
 
     col1, col2, col3, col4 = st.columns(4)
     with col1:
