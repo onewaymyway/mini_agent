@@ -16,6 +16,10 @@ from src.core.complex_dom import ComplexDOMHandler, DOMScanConfig
 from src.core.stealth import StealthMode, StealthConfig
 from src.core.enhanced_cdp_session import EnhancedCDPSession
 from src.core.captcha_handler import CaptchaHandler, CaptchaType, CaptchaResult, AntiDetection
+from src.core.turnstile_handler import TurnstileHandler, TurnstileResult, detect_and_solve_turnstile
+from src.core.oauth_handler import OAuthHandler, OAuthResult, oauth_login
+from src.core.spa_detector import SPADetector, SPAFramework, SPAInfo, detect_spa, wait_for_spa_route
+from src.core.virtual_list_loader import VirtualListLoader, VirtualListConfig, ListItem, load_virtual_list
 
 __all__ = [
     # 智能等待
@@ -41,6 +45,25 @@ __all__ = [
     "CaptchaType",
     "CaptchaResult",
     "AntiDetection",
+    # Turnstile 验证码
+    "TurnstileHandler",
+    "TurnstileResult",
+    "detect_and_solve_turnstile",
+    # OAuth 登录
+    "OAuthHandler",
+    "OAuthResult",
+    "oauth_login",
+    # SPA 检测
+    "SPADetector",
+    "SPAFramework",
+    "SPAInfo",
+    "detect_spa",
+    "wait_for_spa_route",
+    # 虚拟列表
+    "VirtualListLoader",
+    "VirtualListConfig",
+    "ListItem",
+    "load_virtual_list",
     # 增强会话
     "EnhancedCDPSession",
 ]

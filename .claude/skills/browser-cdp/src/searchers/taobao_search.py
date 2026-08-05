@@ -122,7 +122,7 @@ class TaobaoSearcher(BaseSearcher):
             "--port", str(port),
             "--tab", tab_id,
             "--goto", search_url,
-            "--wait-selector", ".item, .grid-item, [class*="product"]",
+            "--wait-selector", '.item, .grid-item, [class*="product"]',
             "--timeout", str(wait_timeout),
             "--stealth" if stealth else "",
         ])

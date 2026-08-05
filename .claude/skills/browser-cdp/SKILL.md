@@ -96,6 +96,22 @@ resources:
     path: references/proxy-pool.md
     description: 代理池管理模块（proxy_pool.py）完整文档：HTTP/SOCKS5 代理轮换、健康检查、自动故障转移、按健康度/轮询/随机策略选择
     triggers: 代理池, proxy pool, 代理轮换, 健康检查, 故障转移, 反爬
+  - id: target-domain-research
+    path: references/target-domain-research.md
+    description: 目标领域技术调研报告：小红书/携程/大众点评反爬机制对比与适配优先级分析
+    triggers: 小红书反爬, 携程反爬, 大众点评反爬, 适配优先级, 技术调研
+  - id: ctrip-research
+    path: references/ctrip-research.md
+    description: 携程技术特征专项调研：sign 签名机制、Cookie 管理、验证码处理与 browser-cdp 适配评估
+    triggers: 携程搜索, ctrip search, 携程爬虫, sign 签名, 旅游数据抓取
+  - id: dianping-research
+    path: references/dianping-research.md
+    description: 大众点评技术特征专项调研：_token/WEBDFPID/mtgsig 三重验证、动态字体加密与适配策略
+    triggers: 大众点评搜索, dianping search, 大众点评爬虫, _token, 字体加密
+  - id: xiaohongshu-research
+    path: references/xiaohongshu-research.md
+    description: 小红书技术特征专项调研：x-s/x-s-common 签名机制、设备指纹、Cookie 时效与适配策略
+    triggers: 小红书搜索, xiaohongshu search, 小红书爬虫, x-s 签名, 设备指纹
   - id: bilibili-search
     path: references/bilibili-search.md
     description: B站视频/UP主搜索自动化脚本（bilibili_search.py），支持关键词搜索、视频信息提取
@@ -786,8 +802,43 @@ searcher.close()
 | `GitHubSearcher` | GitHub 代码仓库/Issue/PR/代码搜索 | `github-search` |
 | `StackOverflowSearcher` | Stack Overflow 技术问题搜索 | `stackoverflow-search` |
 | `TaobaoSearcher` | 淘宝/天猫商品搜索 | `taobao-search` |
+| `RESTAPISearcher` | 通用 REST API 搜索（GitHub/Twitter/Reddit 等） | `api-search` |
+| `GraphQLSearcher` | GraphQL API 搜索 | `api-search` |
+| `StockSearcher` | 股票行情搜索（东方财富） | `realtime-search` |
+| `CryptoSearcher` | 加密货币搜索（CoinMarketCap） | `realtime-search` |
+| `NewsSearcher` | 实时新闻搜索 | `realtime-search` |
+| `CnkSearcher` | 中国知网论文搜索 | `cnki-search` |
 
 详细使用指南见 `searchers-guide` 子资源。
+
+### 新增模块（v0.9.5）
+
+| 模块 | 用途 | 文件路径 |
+|------|------|----------|
+| `CloudflareBypass` | Cloudflare 反检测绕过 | `src/core/cloudflare_bypass.py` |
+| `RESTAPISearcher` | 通用 REST API 搜索器 | `src/searchers/api_searcher.py` |
+| `GraphQLSearcher` | GraphQL API 搜索器 | `src/searchers/api_searcher.py` |
+| `StockSearcher` | 股票行情实时搜索 | `src/searchers/realtime_searcher.py` |
+| `CryptoSearcher` | 加密货币实时搜索 | `src/searchers/realtime_searcher.py` |
+| `NewsSearcher` | 实时新闻搜索 | `src/searchers/realtime_searcher.py` |
+
+**Cloudflare 绕过特性**：
+- JS 挑战自动检测与绕过
+- 指纹伪装（navigator、webdriver 等）
+- 指数退避重试机制
+- 可配置最大重试次数和超时
+
+**API 搜索器特性**：
+- 支持 REST API 和 GraphQL API
+- 自动处理认证（Bearer Token、API Key）
+- 请求缓存和去重
+- 支持分页和批量请求
+
+**实时数据搜索器特性**：
+- 股票：东方财富实时行情、涨跌幅、成交量
+- 加密货币：CoinMarketCap 数据、价格、市值
+- 新闻：百度新闻搜索、实时热点
+- 内置缓存机制，减少重复请求
 
 ## 测试与可靠性
 
@@ -807,6 +858,7 @@ searcher.close()
 | `templates/test_boss_zhipin_search.py` | BOSS直聘职位搜索 | ✅ 31 通过 |
 | `templates/test_browser_console_template.py` | 浏览器控制台调试 | ✅ 4 通过 |
 | `templates/test_browser_watch_template.py` | 浏览器协作监控 | ✅ 5 通过 |
+| `test_new_modules.py` | 新增模块（Cloudflare/API/实时数据） | ✅ 全部通过 |
 
 运行测试：
 ```bash

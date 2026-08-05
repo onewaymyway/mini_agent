@@ -189,6 +189,27 @@ def truncate_text(text: str, max_len: int = 200) -> str:
     return text[:max_len] + "..."
 
 
+def print_results(results: List[Dict]) -> None:
+    """打印搜索结果（格式化输出）"""
+    if not results:
+        print("未找到结果")
+        return
+    
+    print(f"\n共找到 {len(results)} 条结果：\n")
+    for i, r in enumerate(results, 1):
+        title = r.get('title', 'N/A')
+        url = r.get('url', 'N/A')
+        snippet = r.get('snippet', '')
+        source = r.get('source', 'N/A')
+        
+        print(f"{i}. {title}")
+        print(f"   来源: {source}")
+        print(f"   链接: {url}")
+        if snippet:
+            print(f"   摘要: {snippet[:100]}...")
+        print()
+
+
 # 导出公共接口
 __all__ = [
     "random_delay",
@@ -200,6 +221,7 @@ __all__ = [
     "dedup_by_title",
     "dedup_results",
     "save_results",
+    "print_results",
     "parse_pagination_url",
     "extract_domain",
     "clean_text",

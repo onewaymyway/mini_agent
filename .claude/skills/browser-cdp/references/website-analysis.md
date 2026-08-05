@@ -631,12 +631,29 @@
 - ⏳ 新闻（新浪、财联社）
 - ⏳ 社交（豆瓣）
 - ⏳ 金融（东方财富、雪球）
-- ⏳ 学术（Google Scholar）
-- ⏳ 招聘（BOSS直聘、拉勾）
+- ⏳ 学术（Google Scholar、Semantic Scholar、CNKI）
+- ⏳ 招聘（BOSS直聘、拉勾、智联、猎聘）
 - ⏳ 房产（链家、安居客）
-- ⏳ 旅游（携程、去哪儿）
-- ⏳ 视频（B站）
-- ⏳ 音乐（网易云）
+- ⏳ 旅游（携程、去哪儿、飞猪、马蜂窝）
+- ⏳ 视频（B站、抖音、快手、西瓜视频）
+- ⏳ 音乐（网易云音乐）
+
+### 新增目标网站（步骤3分析完成）
+
+| 领域 | 网站 | 域名 | 难度 | 优先级 | 分析文档 |
+|------|------|------|------|--------|----------|
+| 音乐 | 网易云音乐 | music.163.com | ⭐⭐⭐ | 中 | [music163-search.md](music163-search.md) |
+| 视频 | 抖音 | douyin.com | ⭐⭐⭐⭐⭐ | 低 | [douyin-search.md](douyin-search.md) |
+| 视频 | 快手 | kuaishou.com | ⭐⭐⭐⭐ | 低 | [kuaishou-search.md](kuaishou-search.md) |
+| 视频 | 西瓜视频 | ixigua.com | ⭐⭐⭐ | 低 | [xigua-search.md](xigua-search.md) |
+| 旅游 | 去哪儿 | qunar.com | ⭐⭐⭐ | 中 | [qunar-search.md](qunar-search.md) |
+| 旅游 | 飞猪 | fliggy.com | ⭐⭐⭐ | 低 | [fliggy-search.md](fliggy-search.md) |
+| 旅游 | 马蜂窝 | mafengwo.cn | ⭐⭐ | 中 | [mafengwo-search.md](mafengwo-search.md) |
+| 房产 | 安居客 | anjuke.com | ⭐⭐⭐ | 中 | [anjuke-search.md](anjuke-search.md) |
+| 招聘 | 智联招聘 | zhilian.com | ⭐⭐⭐ | 低 | [zhilian-search.md](zhilian-search.md) |
+| 招聘 | 猎聘 | liepin.com | ⭐⭐⭐ | 低 | [liepin-search.md](liepin-search.md) |
+| 学术 | Semantic Scholar | sematicscholar.org | ⭐⭐ | 中 | [sematic-scholar-search.md](sematic-scholar-search.md) |
+| 学术 | 中国知网 | cnki.net | ⭐⭐⭐⭐ | 低 | [cnki-search.md](cnki-search.md) |
 
 ---
 
