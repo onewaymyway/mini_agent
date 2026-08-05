@@ -178,7 +178,7 @@ cron job 被判定卡死回收，都是同一个 job_id"，帮用户直接定位
 
 ---
 
-## 10. Goal/Objective 干预操作与 Workflow 对齐
+## 10. Goal/Objective 干预操作与 Workflow 对齐 [已实现，见 daemon_stability_and_ux_improvement_implementation_record.md P2-10]
 
 **现状**：Workflow 侧的干预颗粒度明显比 Objective/Goal 更细——除了暂停/取消/
 续跑，还支持"编辑某一步已产生的结果后继续"（`done` 卡片"✏️ 编辑此步骤输出并
@@ -226,7 +226,7 @@ cron job 被判定卡死回收，都是同一个 job_id"，帮用户直接定位
 | P1 | 11. 干预操作一致反馈 | 改动小，直接改善"点了按钮不知道有没有生效"的体验 | ✅ 已实现 |
 | P1 | 9. 执行总览面板归纳提示 | 在已有面板基础上增量增强，成本可控 | ✅ 已实现 |
 | P2 | 1. 统一看护/熔断内核 | 收益明确但改动面较大，涉及三条执行路径重构 | 待实现 |
-| P2 | 10. Objective 编辑产出并续跑 | 与 workflow 对齐，收益明确但涉及结果健全性校验联动 | 待实现 |
+| P2 | 10. Objective 编辑产出并续跑 | 与 workflow 对齐，收益明确但涉及结果健全性校验联动 | ✅ 已实现 |
 | P3 | 2. 持久 Worker 跨重启连续性 | 价值明确但技术方案需要进一步设计（避免摘要无限增长） | 待实现 |
 | P3 | 7. 失败模式事中拦截 | 增量优化，依赖 `failure_pattern_store` 已有数据积累 | 待实现 |
 

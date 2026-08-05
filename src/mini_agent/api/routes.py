@@ -86,6 +86,10 @@ api/routes.py — FastAPI 路由定义
                                       [daemon_autonomous_state_recovery_plan.md]
                                       手动把某一步打回 pending 重做（含清空
                                       其之后所有步骤的既有进度）
+    POST   /v1/objectives/{execution_id}/steps/{step_index}/edit
+                                      [daemon_stability_and_ux_improvement_plan.md
+                                      P2-10] 编辑一个已完成 step 的产出并继续，
+                                      不重新执行该 step（与 /reset 互补）
     POST   /v1/objectives/{execution_id}/guidance  插一句补充说明，供下次提交时使用
     GET    /v1/objectives/{execution_id}/steps/{step_index}/trace
                                      查看某个 step 实际执行过程（完整 tool_call/
@@ -3073,6 +3077,42 @@ async def retry_objective_step(request: Request, execution_id: str):
         raise HTTPException(
             status_code=404,
             detail=f"execution {execution_id!r} not found or has no retryable current step",
+        )
+    return {"ok": True}
+
+
+@router.post("/objectives/{execution_id}/steps/{step_index}/edit")
+async def edit_objective_step(request: Request, execution_id: str, step_index: int):
+    """POST /v1/objectives/{execution_id}/steps/{step_index}/edit
+    Body: { "result_summary"?: str, "artifacts"?: list[str] }
+
+    [daemon_stability_and_ux_improvement_plan.md P2-10] 编辑一个已完成
+    step 的产出并继续，不重新执行该 step 本身——只把用户修正后的结果写回
+    去，后续 step 会读到修正后的版本作为"前序步骤结果"继续执行。与
+    /reset（整步重做）是互补关系：这一步基本做对了、只是描述有点小问题，
+    不需要重跑模型，改一下继续就行。只对 status == "done" 的历史 step
+    生效。"""
+    oe = _objective_executor_or_404(request)
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    if not isinstance(body, dict):
+        body = {}
+    result_summary = body.get("result_summary")
+    artifacts = body.get("artifacts")
+    if result_summary is not None and not isinstance(result_summary, str):
+        raise HTTPException(status_code=400, detail="result_summary must be a string")
+    if artifacts is not None and not isinstance(artifacts, list):
+        raise HTTPException(status_code=400, detail="artifacts must be a list of strings")
+    ok = oe.edit_step_result(execution_id, step_index, result_summary=result_summary, artifacts=artifacts)
+    if not ok:
+        raise HTTPException(
+            status_code=404,
+            detail=(
+                f"execution {execution_id!r} not found, step_index {step_index} out of range, "
+                "step is not in 'done' status, or no changes provided"
+            ),
         )
     return {"ok": True}
 

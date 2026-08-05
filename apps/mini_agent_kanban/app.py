@@ -1930,32 +1930,65 @@ def _render_objective_execution_detail(client: AgentClient, execution: dict) -> 
         if s.get("status") not in ("done", "failed"):
             continue
         step_idx = s.get("step_index")
-        with st.expander(f"🔍 查看详情 · 步骤 {step_idx + 1 if isinstance(step_idx, int) else '?'}"):
+        edited_tag = " ✏️已编辑" if s.get("edited_by_user") else ""
+        with st.expander(f"🔍 查看详情 · 步骤 {step_idx + 1 if isinstance(step_idx, int) else '?'}{edited_tag}"):
             trace = client.objective_step_trace(exec_id, step_idx) if exec_id and isinstance(step_idx, int) else None
             if not trace or "_error" in (trace or {}):
                 st.caption((trace or {}).get("_error", "暂时无法获取执行细节。"))
-                continue
-            if trace.get("from_raw_history"):
-                st.caption("ℹ️ 该步骤记录已被压缩，以下内容从压缩前的原始日志里找回。")
-            entries = trace.get("entries") or []
-            if not entries:
-                st.caption(trace.get("note") or "没有可展示的执行细节。")
-                continue
-            for entry in entries:
-                etype = entry.get("type")
-                if etype == "user_input":
-                    st.markdown(f"**📝 提交内容**\n\n{entry.get('text', '')}")
-                elif etype == "assistant_reply":
-                    for part in entry.get("parts") or []:
-                        if part.get("kind") == "text" and part.get("text"):
-                            st.markdown(part["text"])
-                        elif part.get("kind") == "tool_call":
-                            st.markdown(f"**🔧 调用工具：`{part.get('tool_name', '')}`**")
-                            st.json(part.get("tool_input") or {})
-                elif etype == "tool_result":
-                    with st.container():
-                        st.markdown("**↩️ 工具结果**")
-                        st.code(entry.get("text", ""), language=None)
+            else:
+                if trace.get("from_raw_history"):
+                    st.caption("ℹ️ 该步骤记录已被压缩，以下内容从压缩前的原始日志里找回。")
+                entries = trace.get("entries") or []
+                if not entries:
+                    st.caption(trace.get("note") or "没有可展示的执行细节。")
+                for entry in entries:
+                    etype = entry.get("type")
+                    if etype == "user_input":
+                        st.markdown(f"**📝 提交内容**\n\n{entry.get('text', '')}")
+                    elif etype == "assistant_reply":
+                        for part in entry.get("parts") or []:
+                            if part.get("kind") == "text" and part.get("text"):
+                                st.markdown(part["text"])
+                            elif part.get("kind") == "tool_call":
+                                st.markdown(f"**🔧 调用工具：`{part.get('tool_name', '')}`**")
+                                st.json(part.get("tool_input") or {})
+                    elif etype == "tool_result":
+                        with st.container():
+                            st.markdown("**↩️ 工具结果**")
+                            st.code(entry.get("text", ""), language=None)
+
+            # [daemon_stability_and_ux_improvement_plan.md P2-10] "编辑 step
+            # 产出并继续"——只对已完成（done）的 step 开放，且不重新执行该
+            # step，只是把修正后的 result_summary/artifacts 写回去，后续
+            # step 会读到修正后的版本继续。与上方的 reset-step（若该 UI
+            # 存在）互补：这一步基本做对了、只是描述有小问题时用这个，不需要
+            # 整步重跑模型。
+            if s.get("status") == "done" and exec_id and isinstance(step_idx, int):
+                st.divider()
+                with st.form(key=f"obj_edit_step_{exec_id}_{step_idx}"):
+                    st.caption("✏️ 编辑此步骤的产出（不会重新执行这一步，后续步骤将基于修正后的结果继续）")
+                    new_summary = st.text_area(
+                        "结果摘要", value=s.get("result_summary", ""), height=100,
+                        key=f"obj_edit_summary_{exec_id}_{step_idx}",
+                    )
+                    new_artifacts_text = st.text_input(
+                        "产出文件路径（逗号分隔，留空表示不修改）",
+                        value=", ".join(s.get("artifacts") or []),
+                        key=f"obj_edit_artifacts_{exec_id}_{step_idx}",
+                    )
+                    if st.form_submit_button("💾 保存并用于后续步骤"):
+                        new_artifacts = [p.strip() for p in new_artifacts_text.split(",") if p.strip()] \
+                            if new_artifacts_text.strip() else None
+                        res = client.edit_objective_step(
+                            exec_id, step_idx,
+                            result_summary=new_summary if new_summary != s.get("result_summary", "") else None,
+                            artifacts=new_artifacts,
+                        )
+                        if res and "_error" in res:
+                            st.error(res["_error"])
+                        else:
+                            st.toast("✏️ 已保存，下一步将基于修正后的结果继续", icon="✏️")
+                            st.rerun()
 
     if not exec_id or ex_status in ("completed", "cancelled"):
         return

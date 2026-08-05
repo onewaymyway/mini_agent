@@ -321,6 +321,19 @@ class AgentClient:
     def inject_objective_guidance(self, execution_id: str, message: str):
         return self._post(f"/objectives/{execution_id}/guidance", {"message": message})
 
+    def edit_objective_step(self, execution_id: str, step_index: int, result_summary: str = None,
+                             artifacts: list = None):
+        """[daemon_stability_and_ux_improvement_plan.md P2-10] 编辑一个已
+        完成 step 的产出（result_summary/artifacts）并继续，不重新执行该
+        step 本身。result_summary/artifacts 均为 None 的参数不会被发送，
+        由调用方按需传入其中一个或两个。"""
+        body = {}
+        if result_summary is not None:
+            body["result_summary"] = result_summary
+        if artifacts is not None:
+            body["artifacts"] = artifacts
+        return self._post(f"/objectives/{execution_id}/steps/{step_index}/edit", body)
+
     def objective_step_trace(self, execution_id: str, step_index: int):
         """[Track E] 查看某个 step 实际执行过程的完整 tool_call/tool_result
         序列，供看板"查看详情"展开使用。"""

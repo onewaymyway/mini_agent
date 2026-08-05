@@ -100,6 +100,11 @@ class ExecutionStep:
     # 步骤/重试混淆，拼装后的完整文本才是真正写进历史的那一条，能做
     # 精确匹配。每次重新提交（含重试）都会覆盖为最新一次的文本。
     submitted_message: str = ""
+    # [daemon_stability_and_ux_improvement_plan.md P2-10] 该步骤的
+    # result_summary/artifacts 是否被用户通过 edit_step_result() 手工
+    # 修正过（而非模型原始产出）。仅用于看板展示"✏️ 已编辑"标记，不影响
+    # 执行逻辑。
+    edited_by_user: bool = False
 
     def to_dict(self) -> dict:
         return {
@@ -117,6 +122,7 @@ class ExecutionStep:
             "artifacts": self.artifacts,
             "pending_guidance": self.pending_guidance,
             "submitted_message": self.submitted_message,
+            "edited_by_user": self.edited_by_user,
         }
 
     @staticmethod
@@ -136,6 +142,7 @@ class ExecutionStep:
             artifacts=list(d.get("artifacts", []) or []),
             pending_guidance=d.get("pending_guidance", ""),
             submitted_message=d.get("submitted_message", ""),
+            edited_by_user=bool(d.get("edited_by_user", False)),
         )
 
 
@@ -976,6 +983,52 @@ class ObjectiveExecutor:
         self.save()
         return exec_id
 
+    def edit_step_result(
+        self, exec_id: str, step_idx: int, result_summary: Optional[str] = None,
+        artifacts: Optional[list[str]] = None,
+    ) -> bool:
+        """[daemon_stability_and_ux_improvement_plan.md P2-10] 编辑某个已完成
+        step 的产出并继续，不重新执行该 step 本身。
+
+        与 reset_step() 的区别（互补关系，不是替代）：
+        - reset_step() 用于"这一步做错了需要重做"——把该 step 及其之后所有
+          step 的既有进度全部清空，重新提交给模型跑一遍，成本高（要重新
+          调用一次模型），且重跑结果未必和用户预期一致；
+        - edit_step_result() 用于"这一步做得基本对、只是描述有个小事实
+          错误，不需要重做"——不触碰该 step 的 status/turn_id/retry_count，
+          只是把用户手工修正后的 result_summary/artifacts 写回去，后续
+          step 走 _build_prompt() 时会读到修正后的版本作为"前序步骤结果"，
+          成本远低于整步重跑。
+
+        只允许编辑 status == "done" 的历史 step——still "running"/"pending"
+        的 step 还没有产出可编辑；"failed"/"blocked" 的 step 语义上是
+        "这一步没做完"，应该用 retry/reset 让它先真正跑完，而不是靠用户
+        手写一个假装做完的结果（那样会让后续 step 的上下文基于一个从未
+        真正执行过的编造结果继续，风险和收益不对等）。
+
+        result_summary/artifacts 均为 None 时视为"没有改动"，直接返回
+        False（避免产生一条空的编辑记录）。
+        """
+        ex = self._executions.get(exec_id)
+        if not ex or step_idx < 0 or step_idx >= len(ex.steps):
+            return False
+        step = ex.steps[step_idx]
+        if step.status != "done":
+            return False
+        if result_summary is None and artifacts is None:
+            return False
+
+        if result_summary is not None:
+            step.result_summary = result_summary[:500]
+        if artifacts is not None:
+            step.artifacts = list(artifacts)
+        step.edited_by_user = True
+        ex.progress_notes = f"步骤 {step_idx+1} 的产出已被用户手工修正，后续步骤将基于修正后的结果继续"
+
+        self._notify_progress(ex)
+        self.save()
+        return True
+
     def reset_step(self, exec_id: str, step_idx: int, reason: str = "") -> bool:
         """[daemon_autonomous_state_recovery_plan.md 阶段二] 手动/自动重置某个
         自主任务的某一步。
@@ -1296,6 +1349,10 @@ class ObjectiveExecutor:
                         "retry_count": s.retry_count,
                         "paths": s.paths,
                         "pending_guidance": s.pending_guidance,
+                        # [daemon_stability_and_ux_improvement_plan.md P2-10]
+                        # 供看板标记"✏️ 已编辑"，区分模型原始产出与用户手工
+                        # 修正过的产出。
+                        "edited_by_user": s.edited_by_user,
                     }
                     for s in ex.steps
                 ],

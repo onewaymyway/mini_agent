@@ -486,10 +486,115 @@ job_id 反复出现"，没有归纳性提示，容易错过"其实都是同一�
 
 ---
 
+## P2-10：Goal/Objective 干预操作与 Workflow 对齐 ✅ 已实现
+
+**对应方案第 10 项。**
+
+### 问题回顾
+Workflow 侧已支持"编辑某一步已产生的结果后继续"，Objective 侧此前只有
+`reset_step()`（整步打回 pending 重做，清空该步及之后所有步骤的既有
+进度，需要重新调用一次模型）。当某个 step 的 `result_summary` 基本正确
+只是有个小事实错误时，`reset_step` 成本过高，且重跑结果未必和用户预期
+一致，缺少"直接手工改一下、让后续 step 基于修正后的结果继续"这种更精确
+的控制手段。
+
+### 改动
+1. `src/mini_agent/evolution/objective_executor.py`：
+   - `ExecutionStep` 新增 `edited_by_user: bool = False` 字段（含
+     `to_dict`/`from_dict` 持久化），仅用于看板展示"✏️ 已编辑"标记，
+     不影响执行逻辑。
+   - 新增 `edit_step_result(exec_id, step_idx, result_summary=None,
+     artifacts=None) -> bool`：
+     - 只允许编辑 `status == "done"` 的历史 step——仍在跑或还没跑的
+       step 没有产出可编辑，`failed`/`blocked` 的 step 语义上是"没做完"，
+       应该走 retry/reset 让它先真正跑完，不允许用户手写一个假装做完的
+       结果（避免后续 step 基于一个从未真正执行过的编造结果继续）；
+     - 不触碰该 step 的 `status`/`turn_id`/`retry_count`，只写回
+       `result_summary`（截断到 500 字，与 `on_turn_done` 的截断长度
+       一致）和/或 `artifacts`；
+     - `result_summary`、`artifacts` 都为 `None`（没有传任何改动）时
+       直接返回 `False`，不产生空的编辑记录；
+     - 成功后设置 `edited_by_user = True`，更新 `progress_notes` 提示
+       "步骤 N 的产出已被用户手工修正，后续步骤将基于修正后的结果继续"，
+       调用 `_notify_progress()` + `save()`。
+   - `get_status_summary()` 的 `steps` 列表新增 `edited_by_user` 字段，
+     供看板判断是否显示"已编辑"标记。
+   - **为什么修正后的内容能被后续 step 用上**：`_build_prompt()`
+     组装"前序步骤结果"时直接读 `ex.steps[:step_idx]` 里每个 step 当前
+     的 `result_summary`（见已有实现），`edit_step_result()` 写回的就是
+     这个字段本身，不需要额外接线——这也是为什么这个能力比
+     `reset_step()` 轻量：不产生新的 turn，不用等模型重新跑一遍。
+2. `src/mini_agent/api/routes.py`：新增
+   `POST /v1/objectives/{execution_id}/steps/{step_index}/edit`（Body:
+   `{"result_summary"?: str, "artifacts"?: list[str]}`），做类型校验后
+   调用 `edit_step_result()`，失败时返回 404（execution 不存在/
+   step_index 越界/该 step 不是 done 状态/没有提供任何改动，这几种情况
+   合并成一个 404，与已有 `/reset` 路由的错误处理粒度一致）。
+3. `apps/mini_agent_kanban/client.py`：新增 `edit_objective_step()`
+   封装方法，`result_summary`/`artifacts` 为 `None` 的参数不会被塞进
+   请求体，交由后端区分"没传"与"传了空值"。
+4. `apps/mini_agent_kanban/app.py`：
+   - `_render_objective_execution_detail()` 里"🔍 查看详情"展开面板
+     标题追加"✏️已编辑"标记（`edited_by_user=True` 时）；
+   - 原来"trace 拉取失败/无内容时 `continue` 跳过本 step、不渲染任何
+     后续内容"的写法改成 `if/else`，让编辑表单不依赖 trace 拉取是否
+     成功都能展示（编辑只需要 `result_summary`/`artifacts`，跟 trace
+     日志是两回事）；
+   - 展开面板内、trace 内容下方，`status == "done"` 的 step 追加一个
+     `st.form`：文本框预填当前 `result_summary`，文本输入框预填当前
+     `artifacts`（逗号分隔），提交后调用 `edit_objective_step()`，只有
+     文本真的发生变化时才传 `result_summary`（避免把"用户没改但原样
+     提交"误判成一次改动，虽然后端本身也会正确处理这种情况，这里是双重
+     保险）；成功后走 P1-11 已确立的一致反馈风格（`st.toast()` +
+     `st.rerun()`）。
+
+### 与 reset_step() 的关系（互补，非替代）
+沿用方案原文的定位：`reset_step()` 用于"这一步做错了需要重做"（整步
+重跑，成本高）；`edit_step_result()` 用于"这一步做得基本对、只是描述
+有误，不需要重做，改一下继续就行"（不产生新 turn，成本低）。两者作用
+的目标状态不同——`reset_step` 可以作用于任意历史 step 且会级联清空
+之后所有 step 的进度；`edit_step_result` 只影响被编辑 step 自身的两个
+字段，不影响 `current_step_idx`、不清空任何其它 step。
+
+### 测试
+- 新增 `tests/test_objective_edit_step_result.py`（7 个用例）：
+  - 编辑 `done` step 的 `result_summary`，验证写入成功且
+    `edited_by_user` 置位、`status` 不变；
+  - 只编辑 `artifacts`，验证未传的 `result_summary` 不受影响；
+  - 编辑仍在 `running`（未调用 `on_turn_done`）的 step 返回 `False`；
+  - 不传任何改动（`result_summary`/`artifacts` 均为 `None`）返回
+    `False`；
+  - 未知 `execution_id`、越界 `step_idx` 分别返回 `False`；
+  - 端到端验证修正后的 `result_summary` 确实被下一步的
+    `_submit_step()` 组装进 prompt（同时验证原始（未修正）内容不再
+    出现在 prompt 里）。
+- 回归：`python3 -m pytest tests/ -q -k "objective or reset_step or
+  kanban_tracks or execution_model"`，144 个用例全部通过，未观察到
+  行为回归。
+- 前端改动（`app.py`/`client.py`）同 P1-11/P1-9，用
+  `python3 -m py_compile` 做语法检查；未新增 API 路由层独立测试，延续
+  `/pause`、`/resume`、`/reset` 等既有路由"薄封装、风险面已被单元测试
+  覆盖"的测试策略。
+
+### 文档
+- `next_doc/daemon_stability_and_ux_improvement_plan.md`：第 10 项标题
+  与优先级表格状态列标记为已实现。
+
+---
+
 ## 后续计划
 
-P0/P1 五项（4、8、3、6、5、11、9）全部已实现。按方案原有优先级表继续
-推进，下一项为 P2（1. 统一看护/熔断内核 或 10. Objective 编辑产出并
-续跑，两者均涉及较大改动面，建议下次单独排期）。每完成一项，在本文档
-追加一节记录，并同步更新 `daemon_stability_and_ux_improvement_plan.md`
-的状态列。
+P0/P1/P2-10 六项（4、8、3、6、5、11、9、10）全部已实现。剩余待推进方向：
+
+- **P2-1（统一看护/熔断内核）**：涉及 `workflow/watchdog.py`、
+  `ObjectiveExecutor`、`CronJobExecutor` 三条执行路径的重构，改动面大，
+  建议单独排期，先设计通用组件的接口形状（阈值配置、状态字典结构）再
+  动手，避免中途发现某条路径的语义没法直接套用。
+- **P3-2（持久 Worker 跨重启连续性）**：技术方案需要先确定"摘要落盘的
+  触发时机"与"摘要大小上限"，避免无限增长拖慢重启后第一次提交。
+- **P3-7（失败模式事中拦截）**：依赖 `failure_pattern_store.json` 已有
+  数据积累到一定量级后效果才明显，可以先埋点观察当前数据量是否足够支撑
+  "相似度命中"判断，再决定要不要投入实现。
+
+每完成一项，在本文档追加一节记录，并同步更新
+`daemon_stability_and_ux_improvement_plan.md` 的状态列。
