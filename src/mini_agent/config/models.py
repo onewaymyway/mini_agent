@@ -1338,6 +1338,16 @@ class AutonomyConfig:
     # `"guardian:"` 前缀，便于看板/日志区分于其它失败原因，已在
     # `docs/daemon-execution-model-guide.md` 中说明。
     guardian_mode_enabled: bool = True
+    # [daemon_stability_and_ux_improvement_plan.md 第 1 项 / P2-1] 跨
+    # Objective 广度熔断阈值：同一粗分类 error_type（见
+    # evolution/circuit_breaker_core.py::classify_error_type）累计在多少
+    # 个**不同** execution 上出现失败即判定为系统性问题（例如某个工具/
+    # API 全局失效），不必等每个 Objective 各自试到重试耗尽才发现。
+    # None/0 表示不启用（默认不启用——这是一个新增的观测/告警信号，不
+    # 影响任何现有执行/重试路径，触发后也只做记录+主动告警，不阻断新
+    # Objective 的调度，所以默认关闭是出于"先观察阈值是否合理"的谨慎，
+    # 不是因为有风险）。
+    objective_circuit_breaker_distinct_threshold: Optional[int] = None
     # 单个 execution 允许跑的最大 step 数（不是"步骤计划里声明的 step
     # 数"，是"实际提交过多少次 step，含重试"），达到即视为"到点了"，
     # 触发与"卡住多次恢复无效"相同的收尾路径。防御极端情况：即使每一步都
@@ -1393,6 +1403,13 @@ class CronConfig:
     # 只在两次 step 之间生效，允许最后一步本身多跑一段时间才被外部判定为
     # 真正卡死，避免跟"最后一步恰好比较慢但最终会正常返回"的情况混淆。
     stale_job_watchdog_grace_seconds: int = 5 * 60
+
+    # [daemon_stability_and_ux_improvement_plan.md 第 1 项 / P2-1] 跨
+    # cron job 广度熔断阈值：与 AutonomyConfig.
+    # objective_circuit_breaker_distinct_threshold 语义一致，只是 scope
+    # 换成了 job_id——同一粗分类 error_type 累计在多少个不同 job 上失败
+    # 即判定为系统性问题。None/0 表示不启用（默认不启用，理由同上）。
+    circuit_breaker_distinct_threshold: Optional[int] = None
 
 
 @dataclass

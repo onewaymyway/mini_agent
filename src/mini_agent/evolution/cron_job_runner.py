@@ -94,6 +94,41 @@ class CronJobRunner:
         # 累计，不持久化——只用于观测"cron 通道有多少次因为仲裁被挡"，
         # 供看板 P3 展示。
         self._arbiter_skipped_count: int = 0
+        # [daemon_stability_and_ux_improvement_plan.md 第 1 项 / P2-1]
+        # 跨 cron job 广度熔断：scope_id 用 job_id，与
+        # ObjectiveExecutor/workflow watchdog 共用同一份
+        # `CircuitBreakerCore` 实现。CronJobRunner 是长期持有的单例（不像
+        # CronJobExecutor 是每次触发临时构造），所以熔断状态放在这里，
+        # 每次 `_run_job_thread()` 构造 CronJobExecutor 时把这个共享实例
+        # 传进去。触发后果同 ObjectiveExecutor：只记录 + 主动告警，不阻断
+        # 新 job 的调度。
+        from mini_agent.evolution.circuit_breaker_core import CircuitBreakerCore
+        cron_cfg_for_breaker = getattr(base_cfg, "cron", None)
+        self._circuit_breaker = CircuitBreakerCore(
+            distinct_scope_threshold=getattr(
+                cron_cfg_for_breaker, "circuit_breaker_distinct_threshold", None,
+            ),
+            on_trip=self._on_circuit_breaker_tripped,
+            log_fn=None,
+        )
+
+    def _on_circuit_breaker_tripped(self, error_type: str, distinct_job_ids: list[str]) -> None:
+        """[P2-1] 同一粗分类 error_type 已在多个不同 cron job 上失败，
+        判定为系统性问题，主动告警（不阻断调度）。"""
+        try:
+            from mini_agent.notification.dispatcher import NotificationDispatcher, NotificationMessage
+            NotificationDispatcher(self._paths).dispatch(NotificationMessage(
+                title="检测到跨 cron job 的系统性失败",
+                body=(
+                    f"error_type={error_type!r} 已在 {len(distinct_job_ids)} 个不同 cron job"
+                    f"（{distinct_job_ids}）上失败，可能是某个工具/API 全局失效，建议排查"
+                )[:200],
+                source="cron_circuit_breaker",
+                meta={"error_type": error_type, "distinct_job_ids": distinct_job_ids},
+            ))
+        except Exception as _mini_agent_exc:
+            from mini_agent.errors import log_exception
+            log_exception(_mini_agent_exc, where="mini_agent.evolution.cron_job_runner._on_circuit_breaker_tripped")
 
     # ── 查询 ──────────────────────────────────────────────────────────────
 
@@ -335,6 +370,11 @@ class CronJobRunner:
             agent = build_cron_agent(self._base_cfg, job)
             step_fn = make_submit_step_fn(agent)
             executor = CronJobExecutor(self._paths)
+            # [P2-1] 用属性赋值而不是构造参数传入共享熔断内核——保持
+            # CronJobExecutor(paths) 的构造签名不变，不影响任何已有的
+            # 直接实例化/测试替身写法；executor.py 内部把它当可选属性
+            # 处理（None 时不启用广度熔断，行为与改造前一致）。
+            executor.circuit_breaker = self._circuit_breaker
 
             # 根据全局 AppConfig.cron 构造"该 job 若是首次运行"时应写入的
             # config.json 默认值；job 若已经有自己的 config.json（用户手动

@@ -41,6 +41,7 @@ from pathlib import Path
 from typing import Callable, Optional, TYPE_CHECKING
 
 from mini_agent.role_agents.stuck_detector import StuckSignal as _GuardianStuckSignal
+from mini_agent.evolution.circuit_breaker_core import CircuitBreakerCore, classify_error_type
 
 log = logging.getLogger(__name__)
 
@@ -362,6 +363,53 @@ class ObjectiveExecutor:
         # reap_stale_steps() 每回收一个 step 就 +=1，进程内累计，不持久化
         # ——只用于观测"卡死回收发生的频率"，暴露给 execution_model_status。
         self._stale_step_reap_count: int = 0
+        # [daemon_stability_and_ux_improvement_plan.md 第 1 项 / P2-1]
+        # 跨 Objective 广度熔断：scope_id 用 execution_id，与
+        # workflow/watchdog.py 共用同一份 `CircuitBreakerCore` 实现，只是
+        # 触发后果不同——这里不主动阻断新 Objective 的调度（Objective 的
+        # "重做一次"成本和语义与 workflow step 不同，贸然全局停摆风险更
+        # 大），只做记录 + 主动告警，让用户尽早知道"这类问题已经在多个
+        # 不同目标上出现"，早于每个 Objective 各自试到重试耗尽才发现。
+        # 阈值来自 cfg.autonomy.objective_circuit_breaker_distinct_threshold，
+        # 默认 None（不启用）。
+        autonomy_cfg = getattr(cfg, "autonomy", None)
+        self._circuit_breaker = CircuitBreakerCore(
+            distinct_scope_threshold=getattr(
+                autonomy_cfg, "objective_circuit_breaker_distinct_threshold", None,
+            ),
+            on_trip=self._on_circuit_breaker_tripped,
+            log_fn=self._log_circuit_breaker_event,
+        )
+
+    # ── [P2-1] 跨 Objective 广度熔断：记录与告警 ────────────────────────────
+
+    def _log_circuit_breaker_event(self, event_type: str, data: dict) -> None:
+        try:
+            from mini_agent.evolution.resource_arbiter import append_activity_digest
+            append_activity_digest(self._paths, {"type": f"objective_{event_type}", **data})
+        except Exception as _mini_agent_exc:
+            from mini_agent.errors import log_exception
+            log_exception(_mini_agent_exc, where="mini_agent.evolution.objective_executor._log_circuit_breaker_event")
+
+    def _on_circuit_breaker_tripped(self, error_type: str, distinct_execution_ids: list[str]) -> None:
+        """[P2-1] 同一粗分类 error_type 已在多个不同 Objective execution
+        上失败，判定为系统性问题（例如某个工具/API 全局失效）。只主动
+        告警，不阻断新 Objective 的调度——与 workflow 侧熔断即
+        request_cancel 的语义不同，见类初始化处的说明。"""
+        try:
+            from mini_agent.notification.dispatcher import NotificationDispatcher, NotificationMessage
+            NotificationDispatcher(self._paths).dispatch(NotificationMessage(
+                title="检测到跨目标的系统性失败",
+                body=(
+                    f"error_type={error_type!r} 已在 {len(distinct_execution_ids)} 个不同目标"
+                    f"执行上失败，可能是某个工具/API 全局失效，建议排查"
+                )[:200],
+                source="objective_circuit_breaker",
+                meta={"error_type": error_type, "distinct_execution_ids": distinct_execution_ids},
+            ))
+        except Exception as _mini_agent_exc:
+            from mini_agent.errors import log_exception
+            log_exception(_mini_agent_exc, where="mini_agent.evolution.objective_executor._on_circuit_breaker_tripped")
 
     # ── 持久化 ────────────────────────────────────────────────────────────────
 
@@ -938,6 +986,9 @@ class ObjectiveExecutor:
                 ex.status = "failed"
                 ex.finished_at = time.time()
                 ex.progress_notes = f"步骤 {step_idx+1} 执行失败：{error[:100]}"
+                self._circuit_breaker.report_breadth_failure(
+                    ex.execution_id, classify_error_type(error),
+                )
                 self._on_objective_failed(ex)
 
         self._notify_progress(ex)
@@ -975,6 +1026,9 @@ class ObjectiveExecutor:
                 ex.status = "failed"
                 ex.finished_at = time.time()
                 ex.progress_notes = f"步骤 {step_idx+1} 多次收到无效结果后判定失败：{reason}"
+                self._circuit_breaker.report_breadth_failure(
+                    ex.execution_id, classify_error_type(reason),
+                )
                 self._on_objective_failed(ex)
         else:
             self._turn_to_exec.pop(turn_id, None)
@@ -1202,6 +1256,7 @@ class ObjectiveExecutor:
                     ex.status = "failed"
                     ex.finished_at = now
                     ex.progress_notes = f"步骤 {ex.current_step_idx+1} {timeout_msg}，重试提交也失败"
+                    self._circuit_breaker.report_breadth_failure(ex.execution_id, "timeout")
                     self._on_objective_failed(ex)
             else:
                 step.status = "failed"

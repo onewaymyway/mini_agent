@@ -25,6 +25,8 @@ import time
 from pathlib import Path
 from typing import Optional, TYPE_CHECKING
 
+from mini_agent.evolution.circuit_breaker_core import CircuitBreakerCore
+
 if TYPE_CHECKING:
     from mini_agent.storage.paths import AgentPaths
     from .registry import ControlState
@@ -59,25 +61,23 @@ class WorkflowWatchdog:
         self._total_tokens = 0
         self._token_lock = threading.Lock()
 
-        # [workflow_mechanism_improvement_plan_p10.md §3] per-step 连续失败
-        # 追踪（同 error_type 计数），由 runner._execute_step_with_error_retry
-        # 在每次 attempt 失败时回填（report_attempt_failure）。复用同一把
-        # 心跳节拍所在线程模型，不新增轮询频率——这是纯计数状态，不需要
-        # watchdog 主循环参与，达阈值时由 runner 侧直接短路重试循环。
-        self._consecutive_failures: dict[str, tuple[str, int]] = {}
-        self._failure_lock = threading.Lock()
-
-        # [workflow_mechanism_improvement_plan_p14.md Phase 2] 跨 step 熔断：
-        # error_type -> 曾经因该 error_type 失败过至少一次的 step_id 集合
-        # （本次运行全程累计，不做滑动窗口/不做失败后清零——即便某个 step
-        # 后来重试成功了，它"确实失败过一次"这个事实仍然计入，因为熔断
-        # 关心的是"这类问题在系统里出现的广度"，不是"当前还有多少 step
-        # 处于失败状态"）。复用 _failure_lock，同一把锁保护两类计数，避免
-        # 引入新的锁顺序风险。
+        # [workflow_mechanism_improvement_plan_p10.md §3 / P2-1] per-step
+        # 连续失败追踪（同 error_type 计数，由 runner 每次 attempt 失败时
+        # 回填）与 [workflow_mechanism_improvement_plan_p14.md Phase 2]
+        # 跨 step 熔断（同一 error_type 在多个不同 step 上出现即触发），
+        # 都委托给通用的 `CircuitBreakerCore`（见
+        # daemon_stability_and_ux_improvement_plan.md 第 1 项）——这套判定
+        # 逻辑现在与 ObjectiveExecutor/CronJobRunner 共用同一份实现，watchdog
+        # 这里只是其中一个持有者，外部接口（report_attempt_failure /
+        # report_workflow_level_failure / circuit_breaker_tripped /
+        # circuit_breaker_reason / reset_step_failures）保持不变，行为与
+        # 重构前完全一致。
         self._circuit_breaker_threshold = circuit_breaker_distinct_step_threshold
-        self._error_type_step_ids: dict[str, set[str]] = {}
-        self._circuit_breaker_tripped = False
-        self._circuit_breaker_reason: Optional[str] = None
+        self._breaker = CircuitBreakerCore(
+            distinct_scope_threshold=circuit_breaker_distinct_step_threshold,
+            on_trip=self._on_circuit_breaker_tripped,
+            log_fn=self._log_event,
+        )
 
         self._stop_event = threading.Event()
         self._thread: Optional[threading.Thread] = None
@@ -132,29 +132,17 @@ class WorkflowWatchdog:
         前提。跨线程安全（并发批次下多个 step 各自独立计数，同一 step_id
         理论上不会跨线程并发调用，但仍加锁保证原子性）。
         """
-        with self._failure_lock:
-            prev_type, prev_count = self._consecutive_failures.get(step_id, (None, 0))
-            count = prev_count + 1 if prev_type == error_type else 1
-            self._consecutive_failures[step_id] = (error_type, count)
-            escalate = count >= max(1, threshold)
-        if escalate:
-            self._log_event("consecutive_failure_escalated", {
-                "step_id": step_id, "error_type": error_type,
-                "count": count, "threshold": threshold,
-            })
-        return escalate
+        return self._breaker.report_attempt_failure(step_id, error_type, threshold=threshold)
 
     # ── [workflow_mechanism_improvement_plan_p14.md Phase 2] 跨 step 熔断 ────
 
     @property
     def circuit_breaker_tripped(self) -> bool:
-        with self._failure_lock:
-            return self._circuit_breaker_tripped
+        return self._breaker.tripped
 
     @property
     def circuit_breaker_reason(self) -> Optional[str]:
-        with self._failure_lock:
-            return self._circuit_breaker_reason
+        return self._breaker.trip_reason
 
     def report_workflow_level_failure(self, step_id: str, error_type: str) -> bool:
         """
@@ -166,34 +154,18 @@ class WorkflowWatchdog:
 
         与 report_attempt_failure（同一 step 连续同类失败）是两套独立
         判断——那个管"这个 step 重试大概率没用"，这个管"这类错误在系统里
-        出现的广度已经超出单个 step 的偶发范围"。
+        出现的广度已经超出单个 step 的偶发范围"。判定逻辑委托给
+        `CircuitBreakerCore`（P2-1），这里只负责 workflow 特有的熔断后果
+        （request_cancel + 主动告警），见 `_on_circuit_breaker_tripped`。
         """
-        if not self._circuit_breaker_threshold:
-            return False
-        with self._failure_lock:
-            if self._circuit_breaker_tripped:
-                return False
-            ids = self._error_type_step_ids.setdefault(error_type, set())
-            ids.add(step_id)
-            distinct_count = len(ids)
-            tripped = distinct_count >= max(1, self._circuit_breaker_threshold)
-            if tripped:
-                self._circuit_breaker_tripped = True
-                self._circuit_breaker_reason = (
-                    f"error_type={error_type!r} 已在 {distinct_count} 个不同步骤"
-                    f"（{sorted(ids)}）上失败，达到熔断阈值 "
-                    f"{self._circuit_breaker_threshold}，判定为系统性问题"
-                )
-        if tripped:
-            if not self._control.cancel_requested.is_set():
-                self._control.request_cancel()
-            self._log_event("circuit_breaker_tripped", {
-                "error_type": error_type,
-                "distinct_step_ids": sorted(ids),
-                "threshold": self._circuit_breaker_threshold,
-            })
-            self._notify_circuit_breaker_tripped(error_type, sorted(ids))
-        return tripped
+        return self._breaker.report_breadth_failure(step_id, error_type)
+
+    def _on_circuit_breaker_tripped(self, error_type: str, distinct_step_ids: list[str]) -> None:
+        """`CircuitBreakerCore.on_trip` 回调：workflow 语义下熔断即主动
+        request_cancel + 推送告警（与重构前行为一致）。"""
+        if not self._control.cancel_requested.is_set():
+            self._control.request_cancel()
+        self._notify_circuit_breaker_tripped(error_type, distinct_step_ids)
 
     def _notify_circuit_breaker_tripped(self, error_type: str, distinct_step_ids: list[str]) -> None:
         """[daemon_stability_and_ux_improvement_plan.md P0-8] 熔断触发是
@@ -241,8 +213,7 @@ class WorkflowWatchdog:
     def reset_step_failures(self, step_id: str) -> None:
         """该 step 成功或最终结束后清空连续失败计数，避免影响同一次运行中
         （gate-retry 场景）后续对该 step 的重新计数。"""
-        with self._failure_lock:
-            self._consecutive_failures.pop(step_id, None)
+        self._breaker.reset_scope_failures(step_id)
 
     # ── 生命周期 ────────────────────────────────────────────────────────────
 

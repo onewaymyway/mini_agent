@@ -582,14 +582,151 @@ Workflow 侧已支持"编辑某一步已产生的结果后继续"，Objective �
 
 ---
 
+## P2-1：统一看护/熔断内核 ✅ 已实现
+
+**对应方案第 1 项。**
+
+### 问题回顾
+`workflow/watchdog.py` 已有一套相对成熟的看护能力——"同一 step 连续
+同类失败提前熔断"（`report_attempt_failure`）与"同一 error_type 在多个
+不同 step 上出现即触发的跨 step 系统性故障熔断"（
+`report_workflow_level_failure`）。但这套能力只服务于 Workflow 执行
+路径：`ObjectiveExecutor` 侧完全没有"跨多个不同 Objective 因同一
+error_type 失败"的广度信号，`CronJobExecutor` 侧是另一套独立的
+`StuckDetector` + `reap_stale_jobs`。三条链路各自维护相似但不完全一致
+的阈值和状态字典，同一类 bug 需要在三处分别修一次。
+
+### 改动
+1. 新增 `src/mini_agent/evolution/circuit_breaker_core.py`：
+   - `CircuitBreakerCore`：从 `workflow/watchdog.py` 抽出的通用组件，
+     线程安全，提供两组能力——
+     - `report_attempt_failure(scope_id, error_type, threshold=2)`：
+       单 scope 内连续同类失败追踪，达阈值返回 `True`；
+     - `report_breadth_failure(scope_id, error_type)` /
+       `tripped` / `trip_reason`：跨 scope 广度熔断——同一
+       `error_type` 累计出现在多少个不同 `scope_id` 上达到
+       `distinct_scope_threshold` 即触发（只触发一次），通过构造函数
+       传入的 `on_trip(error_type, distinct_scope_ids)` 回调决定
+       触发后果（workflow 是 `request_cancel`；Objective/cron 现阶段
+       只做记录 + 主动告警，见下）。
+     - `scope_id` 的粒度由调用方决定：workflow 是 step_id，Objective
+       是 execution_id，cron 是 job_id——熔断判定逻辑完全通用，只是
+       "scope"的语义不同。
+   - `classify_error_type(message: str) -> str`：粗粒度错误分类，按
+     关键词把自由文本失败原因归到 `timeout`/`rate_limit`/`auth`/
+     `connection`/`tool_protocol`/`stuck`/`other` 几个稳定 bucket——
+     Objective/cron 侧的失败原因是纯文本（不像 workflow 那样能拿到
+     异常对象类型 `type(e).__name__`），这里不追求精确分类，只追求
+     "同一类问题能落到同一个 bucket 里"，因为熔断判断本身是模糊的
+     系统性信号，不是精确诊断。
+2. `src/mini_agent/workflow/watchdog.py`：内部持有一个
+   `CircuitBreakerCore` 实例，`report_attempt_failure` /
+   `report_workflow_level_failure` / `circuit_breaker_tripped` /
+   `circuit_breaker_reason` / `reset_step_failures` 全部委托给它，
+   熔断触发后的 `request_cancel` + 告警逻辑保留在
+   `_on_circuit_breaker_tripped` 回调里——对外接口和行为与重构前完全
+   一致（回归测试见下），只是内部实现改为复用共享组件，不再自己维护
+   一份 `_consecutive_failures`/`_error_type_step_ids` 字典。
+3. `src/mini_agent/config/models.py`：新增
+   `AutonomyConfig.objective_circuit_breaker_distinct_threshold`（跨
+   Objective 广度熔断阈值）与
+   `CronConfig.circuit_breaker_distinct_threshold`（跨 cron job 广度
+   熔断阈值），均默认 `None`（不启用）——这是新增的观测/告警信号，
+   不影响任何现有执行/重试路径，触发后也只做记录 + 主动告警、不阻断
+   调度，默认关闭是出于"先观察阈值是否合理"的谨慎，不是因为有风险。
+4. `src/mini_agent/evolution/objective_executor.py`：
+   - `ObjectiveExecutor.__init__` 持有一个 `CircuitBreakerCore`
+     实例（`scope_id` = `execution_id`），阈值读
+     `cfg.autonomy.objective_circuit_breaker_distinct_threshold`；
+   - 在三处"Objective 真正判定 failed"的收尾点（`on_turn_failed`
+     重试耗尽分支、`_handle_invalid_step_result` 重试耗尽分支、
+     `reap_stale_steps` 超时且重试提交也失败分支）调用
+     `report_breadth_failure(execution_id, classify_error_type(...))`；
+     `reap_stale_steps` 的超时分支固定传 `"timeout"`（不需要再分类，
+     超时本身就是明确的 error_type）；
+   - `on_trip` 回调 `_on_circuit_breaker_tripped` 复用现有
+     `notification/dispatcher.py`，推一条"检测到跨目标的系统性失败"
+     通知，明确不阻断新 Objective 的调度——与 workflow 侧熔断即
+     `request_cancel` 的语义不同：Objective 的"重做一次"成本和语义与
+     workflow step 不同，贸然让整个自主执行停摆的风险比"某个工具/
+     API 全局失效"这个信号本身更大，所以现阶段只做记录 + 告警，是否
+     要进一步联动"暂停新 Objective 调度"留给用户看到告警后自行决定
+     （或后续单独评估）。
+5. `src/mini_agent/evolution/cron_job_runner.py` /
+   `cron_job_executor.py`：
+   - `CronJobRunner` 是长期持有的单例（不像 `CronJobExecutor` 是每次
+     触发临时构造），所以熔断状态放在 `CronJobRunner.__init__` 里，
+     阈值读 `cron_cfg.circuit_breaker_distinct_threshold`；
+   - `CronJobExecutor.__init__` 新增可选的 `circuit_breaker` 参数
+     （默认 `None`，构造签名保持兼容——已有测试里大量用
+     `class _FakeExecutor: def __init__(self, paths): ...` 这种简化
+     替身直接替换 `CronJobExecutor`，如果把它做成必填构造参数会破坏
+     这些替身）；`CronJobRunner._run_job_thread()` 构造完
+     `CronJobExecutor(self._paths)` 后，用
+     `executor.circuit_breaker = self._circuit_breaker` 属性赋值把
+     共享实例传进去，兼顾"跨多次 run_job() 维持累计状态"与"不改变
+     构造签名"两个约束；
+   - `run_job()` 的 `finally` 块里，`final_status == STATUS_NEEDS_REVIEW`
+     且 `error_text` 非空时，调用
+     `self.circuit_breaker.report_breadth_failure(job.id,
+     classify_error_type(error_text))`（`self.circuit_breaker` 为
+     `None` 时整体跳过，行为与改造前一致）；
+   - `CronJobRunner._on_circuit_breaker_tripped` 同样只做通知，不
+     阻断调度，理由同 Objective：cron 是定时任务，贸然全局停摆影响面
+     比"某个工具/API 全局失效"这个信号本身更大。
+
+### 为什么"三条链路接入同一套判定"而不是三处分别再调一次阈值
+方案原文的收益点是"减少同一类 bug 在三处分别修一次的维护成本"——
+`CircuitBreakerCore` 把"连续失败计数"和"广度去重计数"这两段纯状态
+管理逻辑（谁失败了、失败了几次、失败的 scope 有多少个不同的）完全
+和"失败后要做什么"解耦（通过 `on_trip` 回调），所以三条链路虽然
+"触发后果"完全不同（workflow 直接 cancel；Objective/cron 只告警），
+仍然可以共用同一份判定实现，以后要调整"连续失败"或"广度去重"这两段
+逻辑本身（比如改成滑动窗口），只需要改一处。
+
+### 测试
+- 新增 `tests/test_circuit_breaker_core.py`（覆盖
+  `report_attempt_failure` 连续/中断计数、`report_breadth_failure`
+  跨 scope 触发且只触发一次、`on_trip`/`log_fn` 回调、`reset_trip`、
+  `classify_error_type` 的关键词分类与未命中兜底）；
+- 回归：`python3 -m pytest tests/test_workflow_p10.py
+  tests/test_workflow_p14.py tests/test_objective_edit_step_result.py
+  tests/test_scheduler_heartbeat.py tests/test_cron_job_runner.py -q`，
+  65 个用例全部通过——`workflow/watchdog.py` 重构为委托实现后行为
+  与重构前完全一致；
+- `tests/test_objective_executor_kanban_tracks_r3.py`/`_r4.py` 等
+  ObjectiveExecutor 相关既有用例本地跑时受限于环境缺少
+  `python-multipart`（fastapi 表单依赖，与本次改动无关的既有环境
+  问题）而报错，非本次改动引入的回归，未修复该环境依赖问题（不在
+  本次改动范围内）。
+
+### 局限
+- Objective/cron 侧的广度熔断触发后只做"记录 + 主动告警"，不联动
+  "暂停新任务调度"——这是有意的范围收窄（见上文"为什么不阻断调度"
+  说明），如果后续观察到"光靠告警、用户没有及时看到导致同类问题继续
+  在新 Objective/job 上重复消耗预算"，可以再评估要不要在
+  `_on_circuit_breaker_tripped` 里追加"临时降低并发/暂停 sys:*
+  自动派发"这类更主动的联动动作，但那属于新的设计决策，不在本次改动
+  范围内；
+- `classify_error_type` 是关键词粗分类，不是精确的异常类型识别，
+  存在"同一类问题因为措辞不同被分到不同 bucket"或"不同问题因为措辞
+  相似被分到同一 bucket"的可能——这是有意的取舍（详见模块 docstring），
+  广度熔断本身就是模糊的系统性信号，用于提前预警而不是精确诊断，
+  精度要求不高；如果后续发现分类效果不理想，可以再补充关键词或改用
+  更结构化的错误分类（例如让调用方在能拿到异常对象时传入
+  `type(e).__name__`，退化到关键词分类只在拿不到异常对象时使用）。
+
+### 文档
+- `next_doc/daemon_stability_and_ux_improvement_plan.md`：第 1 项标题
+  与优先级表格状态列标记为已实现。
+
+---
+
 ## 后续计划
 
-P0/P1/P2-10 六项（4、8、3、6、5、11、9、10）全部已实现。剩余待推进方向：
+P0/P1/P2 八项（4、8、3、6、5、11、9、10、1）全部已实现。剩余待推进
+方向：
 
-- **P2-1（统一看护/熔断内核）**：涉及 `workflow/watchdog.py`、
-  `ObjectiveExecutor`、`CronJobExecutor` 三条执行路径的重构，改动面大，
-  建议单独排期，先设计通用组件的接口形状（阈值配置、状态字典结构）再
-  动手，避免中途发现某条路径的语义没法直接套用。
 - **P3-2（持久 Worker 跨重启连续性）**：技术方案需要先确定"摘要落盘的
   触发时机"与"摘要大小上限"，避免无限增长拖慢重启后第一次提交。
 - **P3-7（失败模式事中拦截）**：依赖 `failure_pattern_store.json` 已有
@@ -598,3 +735,4 @@ P0/P1/P2-10 六项（4、8、3、6、5、11、9、10）全部已实现。剩余�
 
 每完成一项，在本文档追加一节记录，并同步更新
 `daemon_stability_and_ux_improvement_plan.md` 的状态列。
+

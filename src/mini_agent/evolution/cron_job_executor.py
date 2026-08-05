@@ -35,6 +35,7 @@ from dataclasses import dataclass
 from typing import Callable, Optional, TYPE_CHECKING
 
 from mini_agent.role_agents.stuck_detector import StuckDetector, StuckSignal
+from mini_agent.evolution.circuit_breaker_core import classify_error_type
 from mini_agent.evolution.cron_job_workspace import (
     CronJobWorkspace, CronJobState, CronJobConfig,
     STATUS_IDLE, STATUS_RUNNING, STATUS_NEEDS_REVIEW, STATUS_TIMED_OUT,
@@ -43,6 +44,7 @@ from mini_agent.evolution.cron_job_workspace import (
 if TYPE_CHECKING:
     from mini_agent.storage.paths import AgentPaths
     from mini_agent.evolution.cron_scheduler import CronJob
+    from mini_agent.evolution.circuit_breaker_core import CircuitBreakerCore
 
 
 @dataclass
@@ -64,8 +66,15 @@ class RunOutcome:
 class CronJobExecutor:
     """cron 任务的专用执行封装，一次 run_job() 对应 cron 的一次触发。"""
 
-    def __init__(self, paths: "AgentPaths"):
+    def __init__(self, paths: "AgentPaths", circuit_breaker: Optional["CircuitBreakerCore"] = None):
         self._paths = paths
+        # [daemon_stability_and_ux_improvement_plan.md 第 1 项 / P2-1]
+        # 可选的共享熔断内核，通常由 CronJobRunner 持有并在构造后通过
+        # `executor.circuit_breaker = ...` 属性赋值传入（跨多次 run_job()
+        # 调用维持累计状态，同时保持这个构造签名与既有测试替身/直接
+        # 实例化写法兼容）；构造参数同样接受，供需要一次性传入的调用方
+        # 使用。未设置时（None）不启用广度熔断，行为与改造前一致。
+        self.circuit_breaker = circuit_breaker
 
     def run_job(
         self,
@@ -188,6 +197,10 @@ class CronJobExecutor:
             state.last_error = error_text
             if final_status in (STATUS_NEEDS_REVIEW,):
                 state.consecutive_failures += 1
+                if self.circuit_breaker is not None and error_text:
+                    self.circuit_breaker.report_breadth_failure(
+                        job.id, classify_error_type(error_text),
+                    )
             else:
                 state.consecutive_failures = 0
             # timed_out / needs_human_review 时保留最后一步输出作为下次续接的
