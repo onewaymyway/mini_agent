@@ -2803,6 +2803,14 @@ async def add_goal(request: Request):
             description=body.get("description", ""),
             source=body.get("source", "user"),
             priority=int(body.get("priority", 50)),
+            # [goal-provenance-guide.md] 这是 HTTP API 调用（看板"新建
+            # Goal"表单是当前唯一的真实调用方），显式标记 "user"——不落到
+            # add_goal() 内部 thread-local 兜底逻辑，因为处理 HTTP 请求的
+            # 线程本来就不是 AgentRunner 的轮次处理线程，兜底本身也会是
+            # "user"，这里写出来只是让语义更自解释。允许调用方通过 body
+            # 显式覆盖（比如未来某个脚本代表 cron 直接调这个 API），默认
+            # 仍然是 "user"。
+            source_initiator=body.get("source_initiator", "user"),
         )
         return {"goal": goal.to_dict()}
     except HTTPException:

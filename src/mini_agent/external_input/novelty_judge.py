@@ -464,7 +464,15 @@ def confirm_novelty_candidate(paths: "AgentPaths", candidate_id: str, goal_backl
 
     title = record.get("suggested_title") or record.get("title") or "未命名新颖信号"
     description = f"{record.get('title', '')}\n{record.get('url') or ''}".strip()
-    node = goal_backlog.add_goal(title, description=description, source="novelty_candidate")
+    # [goal-provenance-guide.md] 这个 Goal 是用户在看板/API 上点击"确认"
+    # 才创建的（confirm_novelty_candidate 的 docstring 也明确"只能由用户
+    # 手动点击触发"），显式标记为 "user"，不依赖 turn_context 的兜底——
+    # 这个函数可能从 HTTP 路由处理线程调用，不在 AgentRunner 的
+    # thread-local 上下文里，兜底也会是 "user"，这里显式写出来只是让
+    # 语义更自解释，不依赖隐式默认值。
+    node = goal_backlog.add_goal(
+        title, description=description, source="novelty_candidate", source_initiator="user",
+    )
 
     try:
         goal_backlog.attach_external_context(

@@ -2179,10 +2179,29 @@ def _render_goal_card(
     if n.get("level") == "objective" and n.get("source") == "cron":
         cron_source_html = '<div class="meta" style="color:#2a7;">⏰ 由 cron 周期触发</div>'
 
+    # [goal-provenance-guide.md] source（谁负责决定创建它：user/
+    # agent_derived/novelty_candidate）之外，再展示 source_initiator
+    # （创建它的那次调用发生在哪个轮次里：user/cron/external/
+    # autonomous_loop）——两者是正交维度，之前看板只展示了前者，用户
+    # 完全看不出"一个 source=user 的 Goal，到底是我自己敲的命令，还是
+    # Agent 在处理一轮 cron 触发的对话时帮我创建的"。只在两者不同、且
+    # source_initiator 不是默认值 "user" 时额外展示一行，避免绝大多数
+    # 正常手动创建的 Goal 卡片上多一行没有信息量的"user"。
+    initiator = n.get("source_initiator", "user")
+    initiator_html = ""
+    if initiator and initiator != "user":
+        _initiator_label = {
+            "cron": "⏰ 由 cron 触发的对话中创建",
+            "external": "📡 由外部输入触发的对话中创建",
+            "autonomous_loop": "🤖 由自主 tick 直接派生",
+        }.get(initiator, f"由 {initiator} 触发的对话中创建")
+        initiator_html = f'<div class="meta" style="color:#b7791f;">{_initiator_label}</div>'
+
     st.markdown(f"""
 <div class="kanban-card" style="{wrapper_style}">
   <div class="title">{level_tag} {_esc_html(n.get('title','(无标题)'))}</div>
   <div class="meta">来源:{n.get('source','')}　优先级:{n.get('priority',0)}</div>
+  {initiator_html}
   {recur_html}
   {cron_source_html}
   {progress_html}

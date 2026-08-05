@@ -466,6 +466,15 @@ class AgentRunner(threading.Thread):
                 from mini_agent.tools.user_memory import set_current_user
                 set_current_user(user_id, role)
 
+                # [goal-provenance-guide.md] 把这一轮 InputQueue 的
+                # initiator（"user"/"cron"/"external"/...）写进
+                # thread-local，供 GoalBacklog.add_goal() 在调用方没有显式
+                # 传 source_initiator 时兜底读取——这样即使 Agent 是在处理
+                # 一轮由 cron/external 触发的对话时创建了新 Goal，也能被
+                # 正确标记来源，而不是一律看起来像用户手动创建。
+                from mini_agent.perception.turn_context import set_current_turn_initiator
+                set_current_turn_initiator(cmd.initiator, turn_id)
+
                 # ── 在终端模拟显示 Web 端发来的用户输入 ──────────────────
                 # 让命令行侧看到 "You (web) ❯ <message>"，与正常 REPL 输入体验一致
                 #
@@ -670,6 +679,12 @@ class AgentRunner(threading.Thread):
                 # 还在为上一个用户服务。
                 from mini_agent.tools.user_memory import clear_current_user
                 clear_current_user()
+
+                # 同理清空这一轮的 initiator——避免这条 AgentRunner 线程
+                # 稍后跑 AutonomousLoop.tick()（不是任何轮次触发）时，
+                # GoalBacklog.add_goal() 的兜底逻辑误读到上一轮残留的值。
+                from mini_agent.perception.turn_context import clear_current_turn_initiator
+                clear_current_turn_initiator()
 
                 # ── run_turn 完成后，提示命令行侧可继续输入 ────────────
                 # [FIX] 同上：attach-console 模式下这条提示没有实际意义

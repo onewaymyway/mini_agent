@@ -138,6 +138,24 @@ class GoalNode:
     # 提交的单个 step」的一次性语义不同，本字段代表「以后永久都要考虑」。
     user_feedback: list[dict] = field(default_factory=list)
 
+    # [goal-provenance-guide.md] 这个 Goal 是在哪一轮对话/触发链路里被
+    # 创建的——跟 `source`（"谁负责决定要建这个 Goal"：user/agent_derived/
+    # novelty_candidate）是两个正交维度，`source_initiator` 记录的是
+    # "创建它的那次 add_goal() 调用，发生在哪个 InputQueue initiator
+    # 触发的轮次里"：
+    #   "user"        — 用户在 CLI/看板/API 手动创建，或没有任何轮次上下文
+    #                    （thread-local 未设置）时的默认兜底
+    #   "cron"        — 在一次由 CronScheduler 提交的轮次（比如
+    #                    goal_relevance_judge 判定 advance_worthy 后提交的
+    #                    那轮对话）里，Agent 自己决定创建的
+    #   "external"    — 在一次由 external_input 网关 enqueue_turn 落点
+    #                    直接提交的轮次里创建的
+    #   "autonomous_loop" — 由 SoftGoalDeriver.commit_goals() 在
+    #                    autonomous 档位 tick 内部直接调用创建（不经过
+    #                    InputQueue，没有"轮次"这个概念，显式标记）
+    # 见 GoalBacklog.add_goal() 的解析逻辑与 perception/turn_context.py。
+    source_initiator: str = "user"
+
     def to_dict(self) -> dict:
         return {
             "id": self.id,
@@ -163,6 +181,7 @@ class GoalNode:
             "reaped_cycle_child_ids": self.reaped_cycle_child_ids,
             "skip_next_cycle": self.skip_next_cycle,
             "user_feedback": self.user_feedback,
+            "source_initiator": self.source_initiator,
         }
 
     @staticmethod
@@ -191,6 +210,10 @@ class GoalNode:
             reaped_cycle_child_ids=d.get("reaped_cycle_child_ids", []),
             skip_next_cycle=d.get("skip_next_cycle", False),
             user_feedback=d.get("user_feedback", []),
+            # 历史数据（本字段新增前写入的 goals.json）没有这个键，兜底
+            # "user"——对旧数据保守估计为用户创建，不会把历史 Goal 误标成
+            # 某种自动触发来源。
+            source_initiator=d.get("source_initiator", "user"),
         )
 
     @property
@@ -513,15 +536,35 @@ class GoalBacklog:
         source: str = "user",
         priority: int = 0,
         tags: Optional[list[str]] = None,
+        source_initiator: Optional[str] = None,
     ) -> GoalNode:
         """
         添加 Goal 节点（通常由用户 /agent goals add 触发）。
         source="user" 时对应用户手动添加；
         source="agent_derived" 时由第十二节 autonomous 档位 tick 内部调用。
 
+        source_initiator —— [goal-provenance-guide.md] 记录"创建它的这次
+        调用发生在哪个 InputQueue 轮次里"，跟 `source` 是正交维度。调用方
+        显式知道自己的触发上下文时（比如 SoftGoalDeriver、NoveltyJudge 的
+        用户确认动作）应该显式传入；不传（None）时读取
+        `perception.turn_context.get_current_turn_initiator()` 的
+        thread-local 兜底值——这个值由 AgentRunner._main_loop() 在处理
+        每一轮 InputQueue 消息之前设置为该轮的 initiator（"user"/"cron"/
+        "external"/...）。这样即使 Agent 是在处理一轮由 cron/external
+        触发的对话时，通过工具/命令间接调用到这里创建了 Goal，即使调用方
+        （比如 cli/commands/goals.py::_cmd_add_goal）自己不知道这轮对话
+        是谁触发的，也能被正确标记，而不是一律退化成看起来像用户手动
+        创建。没有任何轮次上下文时（CLI 独立进程、测试）兜底为 "user"。
+
         内部会先重新加载磁盘最新状态再追加，并立即落盘，
         避免与其他进程并发写入互相覆盖。
         """
+        if source_initiator is None:
+            try:
+                from mini_agent.perception.turn_context import get_current_turn_initiator
+                source_initiator = get_current_turn_initiator()
+            except Exception:
+                source_initiator = "user"
         with self._locked():
             node = GoalNode(
                 id=f"goal_{uuid.uuid4().hex[:8]}",
@@ -534,6 +577,7 @@ class GoalBacklog:
                 priority=priority,
                 tags=tags or [],
                 description=description,
+                source_initiator=source_initiator,
             )
             self._nodes[node.id] = node
         return node

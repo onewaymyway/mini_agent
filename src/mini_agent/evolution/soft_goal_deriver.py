@@ -290,6 +290,12 @@ class SoftGoalDeriver:
                 source="agent_derived",
                 priority=c.priority,
                 tags=["needs_review"] if needs_review else None,
+                # [goal-provenance-guide.md] 不经过 InputQueue/没有"轮次"
+                # 概念，显式标记，不依赖 turn_context 的 thread-local
+                # 兜底（tick() 跑在 AgentRunner 线程上，兜底值理论上应该
+                # 是 "user"——因为很可能是上一轮用户对话残留或从未设置
+                # 过——显式传更准确、更不依赖调用时机）。
+                source_initiator="autonomous_loop",
             )
             new_goals.append(goal)
             if needs_review:

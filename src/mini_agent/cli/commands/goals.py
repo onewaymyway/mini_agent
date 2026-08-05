@@ -196,7 +196,10 @@ def _cmd_add_goal(gb, args: list[str]) -> None:
     title = " ".join(parsed.title)
     tags = [t.strip() for t in parsed.tag.split(",") if t.strip()] if parsed.tag else []
 
-    node = gb.add_goal(title, source="user", priority=parsed.priority, tags=tags)
+    # [goal-provenance-guide.md] 显式标记 —— 这是终端里手敲的 /agent goals
+    # add 命令，无论当前线程是否残留着某轮对话的 turn_context，都应该记
+    # 成用户本人操作，不依赖 thread-local 兜底值。
+    node = gb.add_goal(title, source="user", priority=parsed.priority, tags=tags, source_initiator="user")
     R.print_success(f"Goal 已添加: {node.id} — {node.title}")
 
 
