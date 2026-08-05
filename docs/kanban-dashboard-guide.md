@@ -58,6 +58,22 @@ streamlit run app.py
   非空时以可展开列表展示，每条待办若关联某个 session，可点击"跳转"按钮直接把当前
   页面切换绑定到那个 session。
 - session 存储目录（`<project_root>/.agent/sessions/<session_id>/`），单独一行展示
+- **⚙️ daemon 正在执行 N 项任务**（[daemon_stability_and_ux_improvement_plan.md
+  补充] 顶栏跳转增强）：聚合展示 daemon 后台此刻正在跑的 Objective 执行
+  （`/v1/autonomous/status` 的 `objective_executions`，`status=="running"`）、
+  正在执行的 cron job（`/v1/cron/jobs` 的 `execution_phase=="running"`）、
+  正在运行的 workflow（`/workflow_runs`，`status=="running"`）三类，每条都
+  标出明确来源（🎯 目标(Goal) / ⏰ Cron 定时任务 / 🔄 工作流(Workflow)），
+  避免只看标题猜不出这项任务是谁触发的。每条后面带一个「🔍 查看并控制」
+  按钮，点击后会跳转到对应的 tab（📌 目标看板 / ⏰ Cron 任务 / 🔄 工作流）
+  并高亮/置顶显示这一项，可以在那里直接暂停/终止/编辑等操作，不需要自己
+  去对应 tab 里翻找。`st.tabs()` 本身没有官方 API 支持"程序化切到第 N 个
+  tab"，这里复用聊天区"滚动到底部"同款的 `window.parent.document` + JS
+  注入手法，按 tab 按钮的可见文本做匹配点击，不依赖 tab 顺序/下标。
+  跳转到「📌 目标看板」时如果该 Objective 因为状态筛选被隐藏，会在筛选
+  框之上单独高亮渲染一遍，并提供"❌ 清除定位"退出高亮态；跳转到「⏰ Cron
+  任务」时目标 job 会被排到列表最前面并给出提示；跳转到「🔄 工作流」复用
+  已有的 `wf_active_run_id` 机制直接展开该次运行详情。
 
 ## 多会话并行（每个看板页面绑定不同 session）
 

@@ -535,7 +535,7 @@ Objective，让它知道"有这个输入、可以用"**——这正是 `GoalRele
 | `apps/mini_agent_kanban/app.py` | 路由规则展示的 `_ACTION_LABEL` 去掉 `goal_candidate` 条目 |
 | `tests/test_external_input_policy.py` | 移除 `goal_candidate` 落地相关的 3 个用例，新增"`goal_candidate` 不是合法 action"、"历史配置里残留该 action 会被 `load_policies()` 按非法规则跳过而不是整份报错"两个用例 |
 | `tests/test_external_input_routes_p6.py` | 示例配置里的 `goal_candidate` 改为 `notify_only` |
-| `scripts/cleanup_external_goal_candidates.py`（新增） | 一次性清理脚本：删除 `goals.json` 里历史由 `goal_candidate` 创建的 Goal（`source == "external_input"`）及其子 Objective，写入前自动备份原文件 |
+| `scripts/cleanup_external_goal_candidates.py`（新增；[daemon_stability_and_ux_improvement_plan.md 补充] 后续修复：默认只删除子节点里 source 也是 external_input 的 Objective，source 是 user/agent_derived 的子节点会被保留并提示，`--force` 才连同删除，避免误删用户后续手动添加的内容） | 一次性清理脚本：删除 `goals.json` 里历史由 `goal_candidate` 创建的 Goal（`source == "external_input"`）及其"安全可删"子 Objective，写入前自动备份原文件 |
 
 **关键实现说明**：
 

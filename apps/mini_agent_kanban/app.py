@@ -130,6 +130,40 @@ def _inject_scroll_script():
         components.html(script, height=0)
 
 
+def _inject_tab_switch_script(tab_label: str):
+    """[daemon_stability_and_ux_improvement_plan.md 补充 / 看板顶栏跳转]
+    st.tabs() 没有官方 API 可以\"程序化切换到第 N 个 tab\"——这里复用
+    `_inject_scroll_script()` 同款 `window.parent.document` + JS 注入的
+    做法：Streamlit 的 tabs 在 DOM 里渲染成一组
+    `button[data-baseweb="tab"]`，按钮的可见文本就是传给 `st.tabs([...])`
+    的字符串（含 emoji），直接按"文本包含关系"找到对应按钮并 `.click()`，
+    不依赖固定的 tab 顺序/下标（顺序调整不会悄悄破坏跳转功能）。
+
+    找不到匹配按钮（比如 tab 文案以后改了）时静默不做任何事，不抛异常
+    影响页面其余部分渲染——这是纯粹的体验增强，不是关键路径。
+    """
+    safe_label = json.dumps(tab_label)
+    script = f"""
+    <script>
+    (function() {{
+        const doc = window.parent.document;
+        const target = {safe_label};
+        const btns = doc.querySelectorAll('button[data-baseweb="tab"]');
+        for (const b of btns) {{
+            if (b.textContent && b.textContent.indexOf(target) !== -1) {{
+                b.click();
+                break;
+            }}
+        }}
+    }})();
+    </script>
+    """
+    if hasattr(st, "iframe"):
+        st.iframe(script, height=1)
+    else:
+        components.html(script, height=0)
+
+
 STATE_LABELS = {
     "idle": ("🟢", "空闲"),
     "running": ("🟠", "运行中"),
@@ -367,6 +401,15 @@ def init_state():
         # workflow机制改进计划（P7）二、Streamlit "🔄 工作流" Tab
         "wf_active_run_id": None,
         "wf_history_open_id": None,
+        # [daemon_stability_and_ux_improvement_plan.md 补充 / 看板顶栏跳转]
+        # 顶栏"正在执行"列表点击"🔍 查看并控制"后，记录要跳转定位到的
+        # Goal/Objective id、Cron job id，供对应 tab 渲染时高亮/置顶展示；
+        # "_pending_tab_switch" 记录本次 rerun 后需要用 JS 点击切到哪个
+        # tab（见 `_inject_tab_switch_script()`），消费一次后清空，不是
+        # 持久状态。
+        "kanban_focus_node_id": None,
+        "cron_focus_job_id": None,
+        "_pending_tab_switch": None,
     }
     for k, v in defaults.items():
         if k not in st.session_state:
@@ -742,6 +785,12 @@ def _render_daemon_current_tasks(client: AgentClient, autostat: dict) -> None:
         if ex.get("status") == "running"
     ]
 
+    cron_resp = client.cron_jobs() or {}
+    running_crons = [
+        job for job in (cron_resp.get("jobs") or [])
+        if "_error" not in cron_resp and job.get("execution_phase") == "running"
+    ]
+
     running_wfs = []
     stale_wfs = []
     wf_runs = client.workflow_runs() or {}
@@ -751,28 +800,51 @@ def _render_daemon_current_tasks(client: AgentClient, autostat: dict) -> None:
                 continue
             (stale_wfs if r.get("is_stale") else running_wfs).append(r)
 
-    if not running_objs and not running_wfs and not stale_wfs:
+    if not running_objs and not running_crons and not running_wfs and not stale_wfs:
         return
 
-    lines = []
-    for ex in running_objs:
-        title = ex.get("title") or ex.get("objective_id", "")
-        step = ex.get("current_step") or ""
-        progress = ex.get("progress") or ""
-        detail = f"　·　{step}" if step else ""
-        lines.append(f"🎯 **{title}**　({progress}){detail}")
-    for r in running_wfs:
-        wf_name = r.get("workflow_name") or r.get("name") or ""
-        rid = r.get("workflow_session_id", "")
-        label = r.get("summary_line") or ""
-        detail = f"　·　{label}" if label else ""
-        lines.append(f"🔄 **{wf_name}**　`{rid}`{detail}")
-
-    n = len(running_objs) + len(running_wfs)
+    n = len(running_objs) + len(running_crons) + len(running_wfs)
     if n:
         with st.expander(f"⚙️ daemon 正在执行 {n} 项任务（点击查看）", expanded=True):
-            for line in lines:
-                st.markdown(line)
+            # [daemon_stability_and_ux_improvement_plan.md 补充 / 看板顶栏跳转]
+            # 之前这里只是纯文本 markdown 列表，看不出"这项任务到底是 Goal
+            # 派生的 Objective 执行、还是 cron 定时任务、还是 workflow"，
+            # 更没有办法从这里直接跳转到对应 tab 做暂停/终止等控制——只能
+            # 自己记住标题，再手动切 tab 翻找。这里改成"来源标签 + 一句话
+            # 摘要 + 跳转按钮"的三列布局，点击按钮设置对应的
+            # focus 状态并用 JS 把 tab 切过去，目标 tab 会据此高亮/置顶
+            # 展示这一项，不需要用户自己找。
+            for ex in running_objs:
+                title = ex.get("title") or ex.get("objective_id", "")
+                step = ex.get("current_step") or ""
+                progress = ex.get("progress") or ""
+                detail = f"　·　{step}" if step else ""
+                c1, c2 = st.columns([6, 1])
+                c1.markdown(f"🎯 **来源：目标(Goal)**　{title}　({progress}){detail}")
+                if c2.button("🔍 查看并控制", key=f"jump_obj_{ex.get('execution_id') or ex.get('objective_id')}"):
+                    st.session_state["kanban_focus_node_id"] = ex.get("objective_id")
+                    st.session_state["_pending_tab_switch"] = "📌 目标看板"
+                    st.rerun()
+            for job in running_crons:
+                job_id = job.get("id", "")
+                name = job.get("name") or job_id
+                c1, c2 = st.columns([6, 1])
+                c1.markdown(f"⏰ **来源：Cron 定时任务**　{name}　`{job_id}`")
+                if c2.button("🔍 查看并控制", key=f"jump_cron_{job_id}"):
+                    st.session_state["cron_focus_job_id"] = job_id
+                    st.session_state["_pending_tab_switch"] = "⏰ Cron 任务"
+                    st.rerun()
+            for r in running_wfs:
+                wf_name = r.get("workflow_name") or r.get("name") or ""
+                rid = r.get("workflow_session_id", "")
+                label = r.get("summary_line") or ""
+                detail = f"　·　{label}" if label else ""
+                c1, c2 = st.columns([6, 1])
+                c1.markdown(f"🔄 **来源：工作流(Workflow)**　{wf_name}　`{rid}`{detail}")
+                if c2.button("🔍 查看并控制", key=f"jump_wf_{rid}"):
+                    st.session_state["wf_active_run_id"] = rid
+                    st.session_state["_pending_tab_switch"] = "🔄 工作流"
+                    st.rerun()
 
     if stale_wfs:
         with st.expander(
@@ -2293,6 +2365,32 @@ def render_kanban_tab(client: AgentClient):
             for j in autostat_for_cards.get("cron_jobs", [])
         }
 
+        # [daemon_stability_and_ux_improvement_plan.md 补充 / 看板顶栏跳转]
+        # 从顶栏"正在执行"列表点击"🔍 查看并控制"跳转过来时，
+        # `kanban_focus_node_id` 会被设成对应的 objective_id——这里单独
+        # 找出这个节点，用已有的 `_render_goal_card()` 在筛选/分栏逻辑
+        # 之前先高亮渲染一遍，不管它实际处于哪个状态列（用户可能筛选
+        # 了只看某几个状态，看不见的话跳转就白跳了），并提供"清除定位"
+        # 按钮退出高亮态，回到正常的分栏视图。
+        focus_id = st.session_state.get("kanban_focus_node_id")
+        if focus_id:
+            focus_node = next((n for n in all_nodes if n.get("id") == focus_id), None)
+            with st.container(border=True):
+                fc1, fc2 = st.columns([6, 1])
+                fc1.markdown("🎯 **已定位**（来自顶栏『正在执行』跳转）")
+                if fc2.button("❌ 清除定位", key="kanban_focus_clear"):
+                    st.session_state["kanban_focus_node_id"] = None
+                    st.rerun()
+                if focus_node is None:
+                    st.caption("这个节点已经不存在了（可能已被删除，或不属于当前 session 的目标数据）。")
+                else:
+                    _render_goal_card(
+                        client, focus_node, focus_node.get("status", ""),
+                        execution=exec_by_objective_id.get(focus_node.get("id")),
+                        cron_next_run_by_id=cron_next_run_by_id,
+                    )
+            st.markdown("---")
+
         # [新增] 状态筛选：默认显示全部状态；用户的选择记到本地 prefs 文件里，
         # 下次打开（不管是不是同一个浏览器标签页/URL）都按上次选的显示——
         # 见 _load_kanban_prefs()/_save_kanban_pref() 的说明，这是有意跟
@@ -3787,6 +3885,21 @@ def render_cron_jobs_tab(client: AgentClient):
         st.info("当前没有 cron job。")
         return
 
+    # [daemon_stability_and_ux_improvement_plan.md 补充 / 看板顶栏跳转]
+    # 从顶栏"正在执行"跳转过来时，`cron_focus_job_id` 记录了目标 job_id——
+    # 把它排到列表最前面并给一句提示，而不是让用户在一长串 job 里自己找；
+    # 提供"清除定位"按钮恢复默认（按原始顺序展示全部）。
+    focus_job_id = st.session_state.get("cron_focus_job_id")
+    if focus_job_id:
+        fc1, fc2 = st.columns([6, 1])
+        focus_job = next((j for j in jobs if j.get("id") == focus_job_id), None)
+        focus_name = focus_job.get("name", focus_job_id) if focus_job else focus_job_id
+        fc1.success(f"🎯 已定位到 Cron 任务：**{focus_name}**（来自顶栏『正在执行』跳转，已置顶展示）")
+        if fc2.button("❌ 清除定位", key="cron_focus_clear"):
+            st.session_state["cron_focus_job_id"] = None
+            st.rerun()
+        jobs = sorted(jobs, key=lambda j: 0 if j.get("id") == focus_job_id else 1)
+
     for job in jobs:
         job_id = job.get("id", "")
         with st.container(border=True):
@@ -4875,6 +4988,17 @@ def main():
     tabs = st.tabs(["💬 对话", "🗂️ 会话管理", "📌 目标看板", "🔄 工作流", "📁 产出物", "🖼️ 产出预览",
                     "🧠 自我状态", "🧬 进化提案", "⏰ Cron 任务", "🗓️ 全局日程", "🔌 外部输入",
                     "🔔 关注与通知", "⚙️ 配置", "🔧 诊断", "🧪 混合执行"])
+
+    # [daemon_stability_and_ux_improvement_plan.md 补充 / 看板顶栏跳转]
+    # 顶栏"正在执行"列表的"🔍 查看并控制"按钮点击后，把目标 tab 名记到
+    # `_pending_tab_switch` 并 rerun；tabs 渲染出来之后（DOM 里已经有对应
+    # 的 tab 按钮了）才能真正点击切换，所以要放在 `st.tabs(...)` 之后、
+    # 消费一次就清空（不是持久状态，避免每次 rerun 都重复触发跳转，把
+    # 用户手动点开的其它 tab 又切回去）。
+    pending_tab = st.session_state.pop("_pending_tab_switch", None)
+    if pending_tab:
+        _inject_tab_switch_script(pending_tab)
+
     with tabs[0]:
         render_chat_tab(client, get_active_session_id())
     with tabs[1]:
