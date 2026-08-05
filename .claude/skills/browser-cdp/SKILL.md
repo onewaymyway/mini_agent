@@ -108,6 +108,30 @@ resources:
     path: references/dianping-research.md
     description: 大众点评技术特征专项调研：_token/WEBDFPID/mtgsig 三重验证、动态字体加密与适配策略
     triggers: 大众点评搜索, dianping search, 大众点评爬虫, _token, 字体加密
+  - id: toutiao-search
+    path: references/toutiao-search.md
+    description: 今日头条搜索自动化脚本（toutiao_search.py），支持关键词搜索、热榜抓取、文章详情
+    triggers: 今日头条搜索, toutiao search, toutiao_search.py, 头条新闻, 热榜
+  - id: tencent-video-search
+    path: references/tencent-video-search.md
+    description: 腾讯视频搜索自动化脚本（tencent_video_search.py），支持电影/电视剧/综艺搜索
+    triggers: 腾讯视频搜索, tencent video search, tencent_video_search.py, 影视搜索
+  - id: iqiyi-search
+    path: references/iqiyi-search.md
+    description: 爱奇艺搜索自动化脚本（iqiyi_search.py），支持电影/电视剧/综艺搜索
+    triggers: 爱奇艺搜索, iqiyi search, iqiyi_search.py, 影视搜索
+  - id: maimai-search
+    path: references/maimai-search.md
+    description: 脉脉搜索自动化脚本（maimai_search.py），支持职场话题/公司动态/匿名爆料搜索
+    triggers: 脉脉搜索, maimai search, maimai_search.py, 职场社交, 公司动态
+  - id: amap-poi-search
+    path: references/amap-poi-search.md
+    description: 高德地图 POI 搜索自动化脚本（amap_poi_search.py），支持地点兴趣点搜索
+    triggers: 高德地图搜索, amap search, amap_poi_search.py, POI 搜索, 地点搜索
+  - id: dianping-search
+    path: references/dianping-search.md
+    description: 大众点评搜索自动化脚本（dianping_search.py），支持商户搜索、评价抓取
+    triggers: 大众点评搜索, dianping search, dianping_search.py, 商户搜索, 评价抓取
   - id: xiaohongshu-research
     path: references/xiaohongshu-research.md
     description: 小红书技术特征专项调研：x-s/x-s-common 签名机制、设备指纹、Cookie 时效与适配策略
@@ -232,6 +256,12 @@ resources:
 | `searchers/youku_search.py` | 优酷视频/影视剧搜索，见下方对应子资源 |
 | `searchers/weather_search.py` | 中国天气网天气预报，见下方对应子资源 |
 | `searchers/mooc_search.py` | 中国大学MOOC课程搜索，见下方对应子资源 |
+| `searchers/toutiao_search.py` | 今日头条搜索，见下方对应子资源 |
+| `searchers/tencent_video_search.py` | 腾讯视频搜索，见下方对应子资源 |
+| `searchers/iqiyi_search.py` | 爱奇艺搜索，见下方对应子资源 |
+| `searchers/maimai_search.py` | 脉脉搜索，见下方对应子资源 |
+| `searchers/amap_poi_search.py` | 高德地图 POI 搜索，见下方对应子资源 |
+| `searchers/dianping_search.py` | 大众点评搜索，见下方对应子资源 |
 
 ## 子资源（渐进式加载）
 
@@ -266,6 +296,12 @@ resources:
 | `youku-search` | 优酷视频搜索自动化脚本完整文档 |
 | `weather-search` | 中国天气网天气预报自动化脚本完整文档 |
 | `mooc-search` | 中国大学MOOC课程搜索自动化脚本完整文档 |
+| `toutiao-search` | 今日头条搜索自动化脚本完整文档 |
+| `tencent-video-search` | 腾讯视频搜索自动化脚本完整文档 |
+| `iqiyi-search` | 爱奇艺搜索自动化脚本完整文档 |
+| `maimai-search` | 脉脉搜索自动化脚本完整文档 |
+| `amap-poi-search` | 高德地图 POI 搜索自动化脚本完整文档 |
+| `dianping-search` | 大众点评搜索自动化脚本完整文档 |
 | `captcha-handling` | 验证码处理与反检测指南：滑块/点选/文字验证码处理、reCAPTCHA/hCaptcha 应对、反检测模式配置、常见反爬场景策略 |
 | `request-headers` | 请求头伪装模块完整文档：按站点自定义请求头、Sec-Fetch-* 现代浏览器头、预定义站点配置、动态 Referer 生成 |
 | `rate-limiter` | 请求速率控制模块完整文档：令牌桶/漏桶/固定窗口算法、指数退避重试、熔断器模式 |

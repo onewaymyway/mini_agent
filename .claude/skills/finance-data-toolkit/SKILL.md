@@ -60,6 +60,14 @@ resources:
     path: references/free-data-sources.md
     description: 免登录数据源详解（腾讯财经、网易财经、百度股市通、中金在线、和讯网、凤凰财经、东方财富板块、新浪港股/美股/期货/外汇）
     triggers: 免登录, 腾讯财经, 网易财经, 百度股市通, 中金在线, 和讯网, 凤凰财经, 港股, 美股, 期货, 外汇, 板块行情
+  - id: news-module
+    path: references/news-module.md
+    description: 财经新闻抓取模块（多源聚合、实时监控、情感分析、关键词过滤）
+    triggers: 新闻抓取, 新闻聚合, 实时监控, 财经新闻, news, monitor
+  - id: social-module
+    path: references/social-module.md
+    description: 社交媒体数据抓取（微博热搜、雪球讨论、同花顺问财、舆情监控）
+    triggers: 社交媒体, 微博热搜, 雪球, 舆情监控, social, weibo, sentiment
 browse_paths:
   - path: references/full-api-docs/
     description: 完整 API 手册（各数据源详细参数、返回字段字典、错误码表、限流策略），体量大，请用 grep/view 检索具体片段
@@ -194,15 +202,20 @@ BROWSER_POOL_SIZE = 2           # CDP 浏览器实例池大小
 finance_toolkit/
 ├── __init__.py              # 统一入口，导出所有公开 API
 ├── core.py                  # 核心抽象：FinanceData, BaseScraper, create_scraper
+├── exceptions.py            # 异常定义：FinanceError, SourceError, DataError 等
+├── resilience.py            # 容错机制：CircuitBreaker, FallbackManager, retry_with_backoff
+├── validation.py            # 数据验证：QuoteValidator, FinancialValidator, NewsValidator 等
 ├── scrapers/                # 具体数据源抓取器
 │   ├── __init__.py
 │   ├── akshare_scraper.py   # AKShare 抓取器
 │   ├── tushare_scraper.py   # Tushare 抓取器
 │   ├── eastmoney_scraper.py # 东方财富抓取器
-│   └── sina_scraper.py      # 新浪财经抓取器
+│   ├── sina_scraper.py      # 新浪财经抓取器
+│   └── yahoo_scraper.py     # Yahoo Finance 抓取器
 ├── data_fetching/           # 数据获取高级封装
 │   ├── __init__.py
 │   ├── fetchers.py          # 同步/异步获取函数
+│   ├── async_fetchers.py    # 异步获取函数
 │   ├── eastmoney_fetcher.py # 东方财富实时行情/财务/资金流向
 │   ├── sina_kline_fetcher.py # 新浪 K 线 + 技术指标
 │   └── guba_scraper.py      # 东方财富股吧帖子/评论/用户画像抓取
@@ -221,6 +234,27 @@ finance_toolkit/
 ├── report_generation/       # 研报生成
 │   ├── __init__.py
 │   └── report_generator.py
+├── cleaning/                # 数据清洗标准化
+│   ├── __init__.py
+│   ├── alignment.py         # 时间对齐
+│   ├── dedup.py             # 去重
+│   ├── features.py          # 特征工程
+│   ├── mappers.py           # 字段映射
+│   ├── missing.py           # 缺失值处理
+│   ├── normalizers.py       # 标准化
+│   ├── pipeline.py          # 清洗流水线
+│   ├── quality.py           # 质量监控
+│   └── validators.py        # 数据验证
+├── news/                    # 财经新闻抓取
+│   ├── __init__.py
+│   ├── models.py            # 新闻数据模型
+│   ├── scrapers.py          # 多源新闻抓取器
+│   ├── aggregator.py        # 新闻聚合
+│   └── stream.py            # 实时新闻流
+├── social/                  # 社交媒体数据
+│   ├── __init__.py
+│   ├── models.py            # 社交数据模型
+│   └── scrapers.py          # 社交媒体抓取器
 ```
 
 ## 快速开始示例
