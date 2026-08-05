@@ -31,7 +31,7 @@ Workflow 执行路径。`ObjectiveExecutor` 侧目前主要靠重试耗尽 + 结
 
 ---
 
-## 2. 持久 Worker 的跨重启连续性
+## 2. 持久 Worker 的跨重启连续性 [已实现，见 daemon_stability_and_ux_improvement_implementation_record.md P3-2]
 
 **现状**：目标级持久 Worker（`ObjectivePersistentRunner`）让同一 Objective
 execution 的多个 step 复用同一个 Agent 实例、保留跨 step 会话状态，但这段
@@ -227,7 +227,7 @@ cron job 被判定卡死回收，都是同一个 job_id"，帮用户直接定位
 | P1 | 9. 执行总览面板归纳提示 | 在已有面板基础上增量增强，成本可控 | ✅ 已实现 |
 | P2 | 1. 统一看护/熔断内核 | 收益明确但改动面较大，涉及三条执行路径重构 | ✅ 已实现 |
 | P2 | 10. Objective 编辑产出并续跑 | 与 workflow 对齐，收益明确但涉及结果健全性校验联动 | ✅ 已实现 |
-| P3 | 2. 持久 Worker 跨重启连续性 | 价值明确但技术方案需要进一步设计（避免摘要无限增长） | 待实现 |
+| P3 | 2. 持久 Worker 跨重启连续性 | 价值明确但技术方案需要进一步设计（避免摘要无限增长） | ✅ 已实现 |
 | P3 | 7. 失败模式事中拦截 | 增量优化，依赖 `failure_pattern_store` 已有数据积累 | 待实现 |
 
 ---

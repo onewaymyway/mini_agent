@@ -1649,6 +1649,7 @@ class HttpServer:
                             cfg.autonomy, "objective_persistent_worker_idle_ttl_seconds", 1800.0
                         ),
                         sched_lock=sched_lock,
+                        paths=paths,
                     )
                     objective_executor._submit_fn = self._objective_persistent_runner.submit
                     objective_executor._release_worker_fn = self._objective_persistent_runner.release

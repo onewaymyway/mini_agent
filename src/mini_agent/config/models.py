@@ -1308,6 +1308,20 @@ class AutonomyConfig:
     # 默认 0.75，略保守于项目全局 compress.threshold 的默认值 0.7——持久
     # Worker 场景下没有人工介入，稍早一点触发更安全。
     objective_persistent_worker_auto_compact_threshold: float = 0.75
+    # [daemon_stability_and_ux_improvement_plan.md 第 2 项 / P3-2] 持久
+    # Worker 跨重启连续性：开启后，每个 step 完成时把当前会话状态压缩为
+    # 一份摘要（复用 compact_with_skills，不是另开一套摘要机制）落盘，
+    # daemon 因异常重启等原因需要重建某个 execution 的持久 Worker 时，
+    # 读取这份摘要注入新 Agent 的 system_extra，让它至少"记得自己重启前
+    # 做过什么"，不是完全失忆重新开始（等同于降级成隔离 runner 模式）。
+    # 默认 False——只在 `objective_persistent_worker_enabled` 也开启时才
+    # 有意义；每个 step 完成后多一次 compact_with_skills 调用（有 LLM
+    # 开销），先默认关闭，观察实际收益与开销后再考虑调整默认值。
+    objective_persistent_worker_restart_summary_enabled: bool = False
+    # 上面这份摘要落盘前的最大字符数，超出截断——避免摘要本身随时间无限
+    # 增长、拖慢重启后第一次 step 提交（重建 Agent 时这段文本会整段塞进
+    # system_extra，摘要越长首次请求的 prompt 越大）。
+    objective_persistent_worker_restart_summary_max_chars: int = 4000
     # [daemon_execution_model_and_scheduler_heartbeat_improvement_plan.md
     # 阶段二] 调度心跳独立化：开启后，AutonomousLoop.tick() 不再依赖
     # AgentRunner 主循环"dequeue 超时后顺带检查"触发，而是由独立的

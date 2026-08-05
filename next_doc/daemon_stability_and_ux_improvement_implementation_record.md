@@ -722,13 +722,127 @@ error_type 失败"的广度信号，`CronJobExecutor` 侧是另一套独立的
 
 ---
 
+## P3-2：持久 Worker 跨重启连续性 ✅ 已实现
+
+**对应方案第 2 项。**
+
+### 问题回顾
+`ObjectivePersistentRunner`（[daemon_execution_model_and_scheduler_
+heartbeat_improvement_plan.md 阶段一]）让同一 Objective execution 的
+多个 step 复用同一个 Agent 实例、保留跨 step 会话状态，但这段连续性是
+纯内存态的——daemon 在某个 Objective 执行到一半时重启，恢复执行会
+重新构建一个全新 Agent，之前累积的会话历史当场清零。虽然
+`_build_prompt()` 本身已经会把"前序步骤结果/产出文件"这类结构化摘要
+拼进下一个 step 的消息里（不依赖持久 Worker 也有），但持久 Worker 场景
+下更丰富的会话状态（多轮探索推理、已打开的文件上下文等）在重启后仍然
+完全丢失，退化为"每步都是失忆的新 agent"（等同于隔离 runner 模式）。
+
+### 改动
+1. `src/mini_agent/evolution/objective_agent_bridge.py`：
+   - 新增三个模块级函数
+     `load_worker_restart_summary(paths, execution_id)` /
+     `save_worker_restart_summary(paths, execution_id, summary,
+     max_chars=4000)` /
+     `discard_worker_restart_summary(paths, execution_id)`，把每个
+     execution 的"重启续接摘要"落到独立文件
+     `<workdir>/objective_worker_summaries/<execution_id>.txt`（不混进
+     `objective_executions.json` 主状态文件——这是纯粹的"给下一次重建
+     Agent 用的提示文本"，不需要跟着 ExecutionStep 做结构化持久化/
+     展示，独立文件也让"读取失败/文件损坏"不会连累主状态文件加载）；
+     只保留最新一版（不追加、不留历史版本），落盘前按
+     `max_chars` 截断；
+   - `build_objective_agent()` 新增可选参数 `restart_summary`：仅在
+     `persistent=True` 时有意义，非空时在 `system_extra` 里追加一段
+     "[重启续接摘要]" 说明，明确告知模型这是重启前会话状态的摘要、不是
+     原始记忆，细节以"前序步骤结果"等结构化信息为准（避免模型误以为
+     自己真的"记得"精确细节）；
+   - `ObjectivePersistentRunner.__init__` 新增可选参数
+     `paths`（默认 `None`），供落盘/读取时定位 workdir；
+   - `ObjectivePersistentRunner._restart_summary_enabled()`：同时满足
+     "配置 `cfg.autonomy.objective_persistent_worker_restart_summary_
+     enabled` 开启"和"构造时传入了 `paths`"才生效，任一条件不满足都
+     静默跳过，行为与升级前完全一致；
+   - `_run_step()`：
+     - 首次为某个 execution_id 构建 Agent 时（`self._agents.get(...)
+       is None`），若功能开启，先尝试 `load_worker_restart_summary()`
+       ——真正的第一个 step 时磁盘上不存在文件，返回 `None`，行为不变；
+       daemon 重启后重建时文件存在，读出来作为 `restart_summary` 传入
+       `build_objective_agent()`。用"磁盘上是否存在摘要文件"这一个信号
+       同时区分两种情况，不需要额外的"是否是重启"标志位；
+     - 每次 `run_turn()` 成功后，若功能开启，调用
+       `agent.compact_with_skills(goal_hint=...)` 生成一份摘要并
+       `save_worker_restart_summary()` 落盘——复用现有的
+       `compact_with_skills` 真实压缩这个 Agent 自身的历史（不是另开
+       一套摘要机制），顺带控制了持久 Worker 长期运行下的 context
+       增长（与 `build_objective_agent()` 里已有的 token 阈值自动
+       compact 是同一机制，这里只是多了"落盘"这一步）；压缩/落盘失败
+       只记日志，不影响这个 step 本身已经成功完成的结果上报；
+   - `release()`：execution 到达终止状态时，若功能开启，额外调用
+     `discard_worker_restart_summary()` 清理掉不再需要的摘要文件，
+     避免目录堆积。
+2. `src/mini_agent/config/models.py`：新增
+   `AutonomyConfig.objective_persistent_worker_restart_summary_enabled`
+   （默认 `False`）与
+   `objective_persistent_worker_restart_summary_max_chars`（默认
+   `4000`）。默认关闭的理由：每个 step 完成后多一次
+   `compact_with_skills` 调用带有真实 LLM 开销，这是新增能力，先默认
+   关闭观察实际收益与开销后再考虑调整默认值（与本次改动的其它两项
+   一致的谨慎策略）。
+3. `src/mini_agent/api/server.py`：构造 `ObjectivePersistentRunner`
+   时新增传入 `paths=paths`（`AgentPaths` 实例在该处已经在作用域内，
+   直接透传）。
+
+### 为什么用"磁盘文件是否存在"作为重启信号，而不是显式状态位
+`ObjectivePersistentRunner._agents` 字典本身就是"内存态缓存"，它的
+生命周期天然与进程生命周期一致——只要还在同一个进程里，`_agents.get(
+execution_id)` 命中就说明不需要读摘要（Agent 还活着，会话历史都在）；
+一旦进程重启，`_agents` 从空字典开始，任何 execution 的第一次
+`_run_step()` 调用都会落到"agent is None"分支。这个分支本来就要区分
+"真正的第一个 step"（无摘要文件，`load_worker_restart_summary()` 返回
+`None`）和"重启后重建"（有摘要文件），不需要额外维护一个"是否发生过
+重启"的显式状态，磁盘文件的存在性本身就是这个信号，逻辑更简单、也不
+会因为某处忘记更新状态位而失配。
+
+### 测试
+- 新增 `tests/test_objective_persistent_worker_restart_summary.py`
+  （用 fake Agent，覆盖：默认关闭时完全不落盘/不调用
+  `compact_with_skills`；开启后 step 完成即落盘；模拟重启（清空内存
+  `_agents` 缓存）后重建 Agent 能读到并注入 `restart_summary`；
+  `max_chars` 截断；`release()` 清理文件；未传入 `paths` 时即使配置
+  开启也不生效）；
+- 回归：`python3 -m pytest tests/test_objective_persistent_runner.py
+  tests/test_objective_runner_sched_lock.py
+  tests/test_objective_persistent_worker_restart_summary.py
+  tests/test_circuit_breaker_core.py tests/test_workflow_p10.py
+  tests/test_workflow_p14.py tests/test_objective_edit_step_result.py
+  tests/test_scheduler_heartbeat.py tests/test_cron_job_runner.py -q`，
+  104 个用例全部通过。
+
+### 局限
+- 只在功能开启且传入了 `paths` 时生效，默认关闭——不影响任何现有
+  部署的默认行为；
+- 摘要是"降级"而不是"完全恢复"：重启后 Agent 拿到的是一份压缩摘要，
+  不是逐字还原的原始会话历史，细节层面的连续性（例如某个具体文件里
+  第几行的临时观察）仍然会丢失，只保证"至少记得自己做过什么、还差
+  什么没做"这个粗粒度的连续性，与方案原文的边界说明一致；
+- 每个 step 完成后多一次 `compact_with_skills` 调用，带来额外的 LLM
+  开销和延迟（阻塞该 step 结果上报，因为落盘发生在
+  `_safe_on_done()` 之前）——这是有意的顺序（保证"上报成功"和"摘要已
+  落盘"尽量同步，避免 daemon 恰好在两者之间重启导致摘要缺失这次 step
+  的成果），但也意味着开启这项功能会让每个 step 的端到端耗时增加一次
+  额外 LLM 调用的时间，默认关闭正是为了不让所有用户都承担这个成本。
+
+### 文档
+- `next_doc/daemon_stability_and_ux_improvement_plan.md`：第 2 项标题
+  与优先级表格状态列标记为已实现。
+
+---
+
 ## 后续计划
 
-P0/P1/P2 八项（4、8、3、6、5、11、9、10、1）全部已实现。剩余待推进
+P0/P1/P2 九项（4、8、3、6、5、11、9、10、1）全部已实现。剩余待推进
 方向：
 
-- **P3-2（持久 Worker 跨重启连续性）**：技术方案需要先确定"摘要落盘的
-  触发时机"与"摘要大小上限"，避免无限增长拖慢重启后第一次提交。
 - **P3-7（失败模式事中拦截）**：依赖 `failure_pattern_store.json` 已有
   数据积累到一定量级后效果才明显，可以先埋点观察当前数据量是否足够支撑
   "相似度命中"判断，再决定要不要投入实现。

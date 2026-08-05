@@ -48,12 +48,67 @@ log = logging.getLogger("mini_agent.objective_agent_bridge")
 OBJECTIVE_INNER_MAX_TURNS_DEFAULT = 15
 
 
+# ── [daemon_stability_and_ux_improvement_plan.md 第 2 项 / P3-2] 持久
+# Worker 跨重启连续性：把每个 execution_id 的"重启续接摘要"落盘到一个
+# 独立的小文件里（不混进 objective_executions.json 主状态文件——这份
+# 摘要是纯粹的"给下一次重建 Agent 用的提示文本"，不是需要跟 ExecutionStep
+# 一起做结构化持久化/展示的字段，独立文件也让"读取失败/文件损坏"这种
+# 边缘情况不会连累主状态文件的加载）。──────────────────────────────────
+
+def _worker_summary_path(paths, execution_id: str):
+    d = paths.workdir_dir / "objective_worker_summaries"
+    d.mkdir(parents=True, exist_ok=True)
+    # execution_id 目前都是 uuid4 hex 或类似形式，不含路径分隔符，直接
+    # 用作文件名；防御性起见仍做一次基本清洗，避免意外的路径穿越。
+    safe_id = "".join(c for c in execution_id if c.isalnum() or c in ("-", "_"))[:128]
+    return d / f"{safe_id or 'unknown'}.txt"
+
+
+def load_worker_restart_summary(paths, execution_id: str) -> Optional[str]:
+    """[P3-2] 读取上一次落盘的重启续接摘要；不存在/读取失败返回 None
+    （调用方据此判断"这是重启后的首次重建"还是"这个 execution 从没有
+    落盘过摘要"，两种情况都应该正常继续，不阻塞 step 提交）。"""
+    try:
+        p = _worker_summary_path(paths, execution_id)
+        if not p.exists():
+            return None
+        text = p.read_text(encoding="utf-8").strip()
+        return text or None
+    except Exception:
+        return None
+
+
+def save_worker_restart_summary(paths, execution_id: str, summary: str, max_chars: int = 4000) -> None:
+    """[P3-2] 落盘本次摘要，覆盖上一次的版本（不追加、不保留历史版本）
+    ——只需要"最新一次的摘要"，多版本没有额外价值，还会让文件无限增长。
+    截断到 max_chars，呼应方案边界说明"避免摘要本身随时间无限增长、
+    拖慢重启后的第一次 step 提交"：接入点在 Agent 重建时把这段文本整段
+    塞进 system_extra，摘要越长，重建后第一次请求的 prompt 越大。"""
+    try:
+        p = _worker_summary_path(paths, execution_id)
+        p.write_text((summary or "")[:max_chars], encoding="utf-8")
+    except Exception:
+        pass
+
+
+def discard_worker_restart_summary(paths, execution_id: str) -> None:
+    """[P3-2] execution 到达终止状态（completed/failed/cancelled）时调用，
+    清理掉不再需要的摘要文件——避免 objective_worker_summaries/ 目录里
+    堆积大量已经不会再被读取的历史文件。"""
+    try:
+        p = _worker_summary_path(paths, execution_id)
+        p.unlink(missing_ok=True)
+    except Exception:
+        pass
+
+
 def build_objective_agent(
     base_cfg: AppConfig,
     objective_title: str,
     execution_id: str,
     inner_max_turns: Optional[int] = None,
     persistent: bool = False,
+    restart_summary: Optional[str] = None,
 ) -> Agent:
     """
     为一次 Objective 执行构建一个全新的、全量继承主 Agent 工具集的独立
@@ -68,6 +123,15 @@ def build_objective_agent(
         因此注入的说明文案不同——不再声称"每次都是独立会话、不记得任何未在
         消息中出现的内容"，而是如实告知"你的会话历史会在本次 Objective 执行
         期间保留"。仅影响 system_extra 文案，不影响其它任何行为。
+
+    restart_summary — [daemon_stability_and_ux_improvement_plan.md 第 2 项 /
+        P3-2] 仅在 persistent=True 时有意义：daemon 重启后重建该 execution
+        的持久 Worker 时，如果磁盘上存在上一次 step 完成时落盘的会话状态
+        摘要，由调用方读出后传入这里，作为初始上下文注入 system_extra——
+        让重建的 Agent 至少"记得自己之前做过什么"，不是完全空白开始（但
+        也不追求完全恢复重启前的原始会话历史，见
+        `ObjectivePersistentRunner` 里落盘/读取这份摘要的实现说明）。
+        None（默认）时不注入，行为与升级前完全一致。
     """
     if inner_max_turns is None:
         inner_max_turns = getattr(
@@ -120,6 +184,16 @@ def build_objective_agent(
             f"产出文件」摘要，以此为准核对进展，如果信息不足，做出合理假设"
             f"并在输出中说明，而不是等待澄清。"
         )
+        if restart_summary:
+            # [P3-2] daemon 在这次 Objective 执行到一半时重启过，之前累积
+            # 的会话历史已经清零，这里补一段"重启前摘要"让 Agent 至少知道
+            # 自己重启前做过什么，不是完全失忆——明确告知这是摘要而不是
+            # 原始记忆，避免 Agent 误以为自己真的"记得"细节。
+            cfg.system_extra += (
+                f"\n\n[重启续接摘要] daemon 在本次 Objective 执行期间发生过"
+                f"重启，以下是重启前会话状态的摘要（不是完整原始记忆，细节"
+                f"如有出入以「前序步骤结果」等结构化信息为准）：\n{restart_summary}"
+            )
     else:
         cfg.system_extra = (
             (base_cfg.system_extra or "") +
@@ -429,6 +503,7 @@ class ObjectivePersistentRunner:
         inner_max_turns: Optional[int] = None,
         idle_ttl_seconds: float = 1800.0,
         sched_lock: Optional[threading.Lock] = None,
+        paths: Optional[Any] = None,
     ) -> None:
         self._base_cfg = base_cfg
         self._on_done = on_done
@@ -439,6 +514,12 @@ class ObjectivePersistentRunner:
         # §7.1 修复] 同 ObjectiveIsolatedRunner：默认 None，行为不变；心跳
         # 模式开启时与 SchedulerHeartbeat 线程互斥，见 _maybe_sched_lock()。
         self._sched_lock = sched_lock
+        # [daemon_stability_and_ux_improvement_plan.md 第 2 项 / P3-2]
+        # 持久 Worker 跨重启连续性所需的落盘/读取摘要都要用到 AgentPaths；
+        # 可选参数，默认 None——不传入时（例如既有测试直接构造）本项能力
+        # 整体不生效（`_maybe_restart_summary_enabled()` 里会一并判断），
+        # 行为与升级前完全一致，不强制要求调用方迁移。
+        self._paths = paths
 
         self._lock = threading.Lock()
         self._executors: dict[str, concurrent.futures.ThreadPoolExecutor] = {}
@@ -458,6 +539,17 @@ class ObjectivePersistentRunner:
         if self._sched_lock is None:
             return contextlib.nullcontext()
         return self._sched_lock
+
+    def _restart_summary_enabled(self) -> bool:
+        """[daemon_stability_and_ux_improvement_plan.md 第 2 项 / P3-2]
+        只有同时满足"配置开启"和"构造时传入了 paths"才生效——没传 paths
+        时（旧调用方/部分测试）静默跳过，不报错、不影响其它行为。"""
+        if self._paths is None:
+            return False
+        return bool(getattr(
+            getattr(self._base_cfg, "autonomy", None),
+            "objective_persistent_worker_restart_summary_enabled", False,
+        ))
 
     def submit(self, message: str, initiator: str, meta: dict) -> Optional[str]:
         """与 `submit_fn(message, initiator, meta) -> turn_id` 签名一致，
@@ -493,10 +585,22 @@ class ObjectivePersistentRunner:
 
         agent = self._agents.get(execution_id)
         if agent is None:
+            # [daemon_stability_and_ux_improvement_plan.md 第 2 项 / P3-2]
+            # 这是本次运行内该 execution 第一次构建 Agent——可能是这个
+            # execution 真正的第一个 step，也可能是 daemon 重启后重新
+            # 构建（此前的 Agent 实例连同它的内存态会话历史已经随进程
+            # 一起消失）。两种情况用同一个信号区分：磁盘上是否存在上一次
+            # step 完成时落盘的摘要——真正第一个 step 时不存在，返回
+            # None，行为与升级前完全一致；重启后重建时存在，读出来作为
+            # "重启续接摘要"注入。
+            restart_summary = None
+            if self._restart_summary_enabled():
+                restart_summary = load_worker_restart_summary(self._paths, execution_id)
             try:
                 agent = build_objective_agent(
                     self._base_cfg, objective_title, execution_id,
                     inner_max_turns=self._inner_max_turns, persistent=True,
+                    restart_summary=restart_summary,
                 )
             except Exception as exc:
                 log.warning("build_objective_agent(persistent) failed for turn_id=%s: %s", turn_id, exc)
@@ -523,6 +627,34 @@ class ObjectivePersistentRunner:
             if execution_id in self._last_used_at:
                 self._last_used_at[execution_id] = time.time()
 
+        # [P3-2] 每个 step 完成时把当前会话状态压缩为一份摘要并落盘，供
+        # 下一次（如果 daemon 在下一个 step 之前重启了）重建 Agent 时读取
+        # ——复用现有 compact_with_skills()（真实压缩这个 Agent 自身的
+        # 历史，不是另开一套摘要机制），顺带控制了持久 Worker 长期运行下
+        # 的 context 增长（与 build_objective_agent() 里已有的 token 阈值
+        # 自动 compact 是同一机制，这里只是多了"落盘"这一步）。任何异常
+        # （摘要生成失败/写盘失败）都只记日志，不影响这个 step 本身已经
+        # 成功完成的结果上报。
+        if self._restart_summary_enabled():
+            try:
+                summary_text = agent.compact_with_skills(
+                    goal_hint="这份摘要会在 daemon 重启后用于重建本 Objective 的持久 Worker，"
+                              "请重点保留已完成的具体工作、关键决策和还需要做什么。",
+                )
+                if summary_text:
+                    max_chars = getattr(
+                        getattr(self._base_cfg, "autonomy", None),
+                        "objective_persistent_worker_restart_summary_max_chars", 4000,
+                    )
+                    save_worker_restart_summary(
+                        self._paths, execution_id, summary_text, max_chars=max_chars,
+                    )
+            except Exception as exc:
+                log.warning(
+                    "persistent worker restart-summary compaction failed for execution_id=%s: %s",
+                    execution_id, exc,
+                )
+
         # [§7.1 修复] 与 AgentRunner 里两处 on_turn_done/on_turn_failed 调用
         # 用同一把共享锁互斥，避免与 SchedulerHeartbeat 线程并发读写
         # ObjectiveExecutor 内部状态字典——这是本次修复要解决的核心问题：
@@ -535,6 +667,10 @@ class ObjectivePersistentRunner:
         关闭该 execution 的专属线程、丢弃 Agent 实例。用作
         `ObjectiveExecutor(release_worker_fn=...)` 的回调。同时也是
         reap_stale_steps() 判定 step 卡死时的回调（见该方法说明）。"""
+        if self._restart_summary_enabled():
+            # [P3-2] execution 结束，不会再有"重启后续接"的场景，清理掉
+            # 摘要文件，避免目录里堆积永远不会再被读取的历史文件。
+            discard_worker_restart_summary(self._paths, execution_id)
         with self._lock:
             executor = self._executors.pop(execution_id, None)
             self._agents.pop(execution_id, None)
