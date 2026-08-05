@@ -2610,21 +2610,13 @@ async def get_autonomous_status(request: Request):
             cfg = getattr(al, "_cfg", None)
             if paths is not None and cfg is not None:
                 result["gating"] = ResourceArbiter(paths, cfg).diagnose()
-                # [P5] 顺带记一笔仲裁状态时间线（只在状态变化时才真正写入，
-                # 见 record_gating_transition 内的去重说明），不新增独立
-                # 轮询，复用这次已经在做的 diagnose() 调用。
-                try:
-                    from mini_agent.evolution.resource_arbiter import record_gating_transition
-                    _gating = result["gating"] or {}
-                    record_gating_transition(
-                        paths,
-                        _gating.get("gating_state", "full"),
-                        _gating.get("gating_reason") or _gating.get("reason") or "",
-                    )
-                except Exception as _mini_agent_exc:
-                    from mini_agent.errors import log_exception
-                    log_exception(_mini_agent_exc, where='mini_agent.api.routes')
-                    pass
+                # [daemon 稳定性与用户体验改进方案 P0-4] 时间线记录已经下沉到
+                # ResourceArbiter.gating_state() 内部——状态真正变化的那一刻
+                # 就落盘，不再依赖这个只读接口被轮询到。gating_state() 由
+                # AutonomousLoop 主循环每个 tick 调用，覆盖"没人打开看板"的
+                # 场景。这里不再重复调用 record_gating_transition()，避免同
+                # 一次状态变化被两条路径分别判断一遍（虽然去重逻辑本身是
+                # 幂等的，但语义上记录点应该只有一个）。
         except Exception as _mini_agent_exc:
             from mini_agent.errors import log_exception
             log_exception(_mini_agent_exc, where='mini_agent.api.routes')

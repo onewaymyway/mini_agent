@@ -150,7 +150,9 @@ class ResourceArbiter:
         # （方案原文明确写的是"第4/5条规则"，预算是硬限制，不应该有中间态：
         # 预算耗尽就是耗尽，没有"打个折继续花"这种语义）。
         if not self._check_budget():
-            return {"state": "blocked", "reason": "预算已耗尽（used_today >= daily_token_budget）"}
+            result = {"state": "blocked", "reason": "预算已耗尽（used_today >= daily_token_budget）"}
+            self._record_transition(result["state"], result["reason"])
+            return result
 
         gating_cfg = getattr(self._cfg, "autonomy", None)
         degraded_enabled = bool(getattr(gating_cfg, "resource_gating_degraded_enabled", True))
@@ -161,18 +163,40 @@ class ResourceArbiter:
         if not degraded_enabled:
             # 退化路径：degraded 视同 blocked，与改造前行为完全一致。
             if frustration_level != "full":
-                return {"state": "blocked", "reason": frustration_reason}
-            if presence_level != "full":
-                return {"state": "blocked", "reason": presence_reason}
-            return {"state": "full", "reason": "正常"}
+                result = {"state": "blocked", "reason": frustration_reason}
+            elif presence_level != "full":
+                result = {"state": "blocked", "reason": presence_reason}
+            else:
+                result = {"state": "full", "reason": "正常"}
+            self._record_transition(result["state"], result["reason"])
+            return result
 
         if frustration_level == "blocked":
-            return {"state": "blocked", "reason": frustration_reason}
-        if frustration_level == "degraded":
-            return {"state": "degraded", "reason": frustration_reason}
-        if presence_level == "degraded":
-            return {"state": "degraded", "reason": presence_reason}
-        return {"state": "full", "reason": "正常"}
+            result = {"state": "blocked", "reason": frustration_reason}
+        elif frustration_level == "degraded":
+            result = {"state": "degraded", "reason": frustration_reason}
+        elif presence_level == "degraded":
+            result = {"state": "degraded", "reason": presence_reason}
+        else:
+            result = {"state": "full", "reason": "正常"}
+
+        self._record_transition(result["state"], result["reason"])
+        return result
+
+    def _record_transition(self, state: str, reason: str) -> None:
+        """[daemon 稳定性与用户体验改进方案 P0-4] 在 gating_state() 计算出
+        结果的那一刻主动记录时间线，而不是依赖某个只读接口被外部轮询。
+        gating_state() 本身会被 AutonomousLoop 主循环的每个 tick 调用（见
+        `autonomous_loop.py` 的调度决策点），与是否有看板客户端在轮询无关，
+        因此这里落地即可覆盖"daemon 长时间没有客户端轮询"的可观测性盲区。
+        record_gating_transition() 内部已做"状态未变化则不写入"的去重，
+        这里重复调用是安全的（幂等）。
+        """
+        try:
+            record_gating_transition(self._paths, state, reason)
+        except Exception as _mini_agent_exc:
+            from mini_agent.errors import log_exception
+            log_exception(_mini_agent_exc, where="mini_agent.evolution.resource_arbiter.ResourceArbiter._record_transition")
 
     def can_run_exploration(self) -> bool:
         """判断探索预算是否还有余量。"""
