@@ -293,10 +293,12 @@ class ObjectiveIsolatedRunner:
                 )
                 try:
                     from mini_agent.evolution.recovery_event_log import record_recovery_event
+                    from mini_agent.storage.paths import AgentPaths
                     record_recovery_event(
                         "isolated_pool", "",
                         f"检测到 {len(stale_ids)} 个卡死 turn，已整体重建共享线程池",
                         now=now,
+                        paths=AgentPaths(getattr(self._base_cfg, "project_root", None)),
                     )
                 except Exception:
                     pass

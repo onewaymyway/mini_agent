@@ -192,7 +192,29 @@ class WorkflowWatchdog:
                 "distinct_step_ids": sorted(ids),
                 "threshold": self._circuit_breaker_threshold,
             })
+            self._notify_circuit_breaker_tripped(error_type, sorted(ids))
         return tripped
+
+    def _notify_circuit_breaker_tripped(self, error_type: str, distinct_step_ids: list[str]) -> None:
+        """[daemon_stability_and_ux_improvement_plan.md P0-8] 熔断触发是
+        "系统性问题"信号，值得主动推送，不能只写进 watchdog.jsonl 等用户
+        翻日志才发现。复用 notification/dispatcher.py，异常整体吞掉，不
+        影响熔断本身（request_cancel 已经在上面完成）。
+        """
+        try:
+            from mini_agent.notification.dispatcher import NotificationDispatcher, NotificationMessage
+            NotificationDispatcher(self._paths).dispatch(NotificationMessage(
+                title=f"工作流「{self._wf_id}」触发熔断",
+                body=(
+                    f"error_type={error_type!r} 已在 {len(distinct_step_ids)} 个不同步骤"
+                    f"（{distinct_step_ids}）上失败，判定为系统性问题，已请求取消"
+                )[:200],
+                source="workflow_circuit_breaker",
+                meta={"workflow_session_id": self._wf_id, "error_type": error_type},
+            ))
+        except Exception as _mini_agent_exc:
+            from mini_agent.errors import log_exception
+            log_exception(_mini_agent_exc, where="mini_agent.workflow.watchdog._notify_circuit_breaker_tripped")
 
     # ── [P11 §6.4] 依赖声明与实际引用不一致 ──────────────────────────────────
 

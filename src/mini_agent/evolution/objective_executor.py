@@ -1003,6 +1003,7 @@ class ObjectiveExecutor:
                     f"{ex.execution_id}:{ex.current_step_idx}",
                     f"超过 {timeout:.0f}s 未收到执行结果，判定为已卡死/丢失",
                     now=now,
+                    paths=self._paths,
                 )
             except Exception:
                 pass
@@ -1589,7 +1590,27 @@ class ObjectiveExecutor:
             from mini_agent.errors import log_exception
             log_exception(_mini_agent_exc, where='mini_agent.evolution.objective_executor')
             pass
+        self._notify_objective_failed(ex)
         self._release_worker(ex.execution_id)
+
+    def _notify_objective_failed(self, ex: ObjectiveExecution) -> None:
+        """[daemon_stability_and_ux_improvement_plan.md P0-8] Objective 被
+        Guardian/watchdog（或任何原因）判定失败时主动推一条通知，而不是
+        只落盘 activity_digest/日志、等用户自己打开看板才发现。复用现有
+        `notification/dispatcher.py` 基础设施，kanban 渠道恒真兜底。
+        通知本身是感知增强，发送失败/异常不影响 Objective 收尾主流程。
+        """
+        try:
+            from mini_agent.notification.dispatcher import NotificationDispatcher, NotificationMessage
+            NotificationDispatcher(self._paths).dispatch(NotificationMessage(
+                title=f"目标「{ex.objective_title}」执行失败",
+                body=(ex.progress_notes or "")[:200],
+                source="objective_failed",
+                meta={"execution_id": ex.execution_id, "objective_id": ex.objective_id},
+            ))
+        except Exception as _mini_agent_exc:
+            from mini_agent.errors import log_exception
+            log_exception(_mini_agent_exc, where='mini_agent.evolution.objective_executor._notify_objective_failed')
 
     def _on_objective_cancelled(self, ex: ObjectiveExecution, sync_goal_status: bool = True) -> None:
         """[Track D] Objective 被用户主动终止后的收尾动作。

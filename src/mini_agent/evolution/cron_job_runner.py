@@ -310,6 +310,7 @@ class CronJobRunner:
                 "cron_job", job_id,
                 f"超过 {effective_timeout:.0f}s 未收到执行结果，已强制回收",
                 now=now,
+                paths=self._paths,
             )
         except Exception:
             pass
