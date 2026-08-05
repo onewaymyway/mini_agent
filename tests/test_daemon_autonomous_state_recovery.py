@@ -410,8 +410,11 @@ class TestGuardianModeObjectiveExecutorIntegration(_ObjectiveExecutorTestBase):
             cfg=cfg,
         )
 
-    def test_guardian_disabled_by_default_no_effect(self):
-        cfg = self._cfg()  # guardian_mode_enabled 默认 False
+    def test_guardian_disabled_no_effect(self):
+        # [daemon_stability_and_ux_improvement_plan.md P0-6] guardian_mode_enabled
+        # 默认值已改为 True，这里显式关闭以验证"关闭时无影响"这一分支本身
+        # 仍然成立。
+        cfg = self._cfg(guardian_mode_enabled=False)
         executor = self._executor_with_cfg(cfg)
         obj = _make_objective(self.backlog, "任务L")
         exec_id = executor.start(obj)

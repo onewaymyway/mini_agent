@@ -1237,10 +1237,23 @@ class AutonomyConfig:
     # 即丢弃——不会和真人交互共用同一段对话历史，也不会跨 step 累积上下文
     # （"上一步做到哪了"完全靠 ObjectiveExecutor 自己在 prompt 里拼接的
     # `[前序步骤结果]`/`[前序步骤产出文件]`结构化摘要传递，不依赖共享的
-    # session 历史）。默认 False：这是比 P0-A/P0-B 更大的行为变化（Self
-    # 不再能在 REPL 里直接看到自主任务执行过程中的中间对话），先默认关闭，
-    # 按需灰度开启，不强制所有部署一起切换。
-    objective_isolated_context_enabled: bool = False
+    # session 历史）。
+    # [daemon_stability_and_ux_improvement_plan.md P0-6] 默认改为 True：
+    # 不污染 Self 主 session 对无人值守场景是直接价值（避免自主任务的中间
+    # 对话把交互式 REPL 历史撑大/搅乱），改默认值成本低；新初始化的项目
+    # 默认开启，已有项目的 `agent_config.json` 若显式写过 `false`，尊重
+    # 用户配置不覆盖（同 P0-3 的 loader 行为：只在字段显式出现在配置文件里
+    # 时才覆盖 dataclass 默认值）。开启后 Self 在 REPL/看板中看不到自主
+    # 任务执行过程中的中间对话（只能看到落盘的 `step.result_summary` 等
+    # 结构化状态），这是预期行为，已在 `docs/daemon-execution-model-guide.md`
+    # 中说明。
+    # 实践提示：本项与下方 `objective_persistent_worker_enabled` 互斥、后者
+    # 优先——自 P0-3 起 `objective_persistent_worker_enabled` 已默认
+    # `True`，因此对新初始化的项目而言，路由早已优先走
+    # `ObjectivePersistentRunner`（同样不复用 Self 主 session，只是额外保留
+    # 了跨 step 的会话连续性），本项默认开启主要覆盖"用户显式关闭了持久
+    # Worker、但仍希望自主任务不污染主 session"这一组合场景。
+    objective_isolated_context_enabled: bool = True
     # 隔离上下文模式下，单次 step 的 run_turn() 内部预算（max_turns）。
     objective_isolated_inner_max_turns: int = 15
     # 隔离上下文模式下，同时允许多少个 step 在独立线程里并发执行 Agent。
@@ -1314,10 +1327,17 @@ class AutonomyConfig:
     # `autonomous` Objective 每个 execution 最近几步的结果摘要，识别"原地
     # 打转"（复用 StuckDetector + ProgressTracker），在多次恢复无效后触发
     # 既有的"重新分解 / 判失败"路径（`ObjectiveExecutor._attempt_redecompose`），
-    # 不做 DONE/CONTINUE 语义裁定。默认关闭：这是纯增量的观察层，关闭时
-    # ObjectiveExecutor 的行为与升级前完全一致；先在 `autonomous` 任务上
-    # 灰度，观察实际效果后再决定是否默认开启。
-    guardian_mode_enabled: bool = False
+    # 不做 DONE/CONTINUE 语义裁定。这是纯增量的观察层，关闭时
+    # ObjectiveExecutor 的行为与升级前完全一致。
+    # [daemon_stability_and_ux_improvement_plan.md P0-6] 默认改为 True：
+    # "卡住检测"对无人值守场景直接有价值（不依赖用户读文档才知道要手动
+    # 开启），灰度观察已充分（该层本身只做观察+触发既有的重新分解/判失败
+    # 路径，不引入新的执行分支）；新初始化的项目默认开启，已有项目的
+    # `agent_config.json` 若显式写过 `false`，尊重用户配置不覆盖。开启后
+    # Guardian 判定 `failed` 的 Objective，`progress_notes` 会带
+    # `"guardian:"` 前缀，便于看板/日志区分于其它失败原因，已在
+    # `docs/daemon-execution-model-guide.md` 中说明。
+    guardian_mode_enabled: bool = True
     # 单个 execution 允许跑的最大 step 数（不是"步骤计划里声明的 step
     # 数"，是"实际提交过多少次 step，含重试"），达到即视为"到点了"，
     # 触发与"卡住多次恢复无效"相同的收尾路径。防御极端情况：即使每一步都

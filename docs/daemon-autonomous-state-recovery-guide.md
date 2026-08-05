@@ -11,16 +11,20 @@ daemon 自主任务（`autonomous` Objective 执行 / `cron` 周期任务）偶�
 且升级前没有自动/半自动的重置手段。同时，`autonomous` 任务此前和真人交互
 共用同一个 Agent Session，容易互相污染上下文。
 
-本计划分四个阶段解决这个问题，四项改进相互独立，各自有配置开关，
-**默认配置下行为与升级前完全一致**（除阶段一的结果健全性校验默认开启，
-因为它只是"拦截明显畸形的结果"，不改变正常场景下的行为）。
+本计划分四个阶段解决这个问题，四项改进相互独立，各自有配置开关。
+**默认状态变更记录**（截至
+[daemon_stability_and_ux_improvement_plan.md](../next_doc/daemon_stability_and_ux_improvement_plan.md)
+P0-6）：阶段一的结果健全性校验一直默认开启（只是"拦截明显畸形的结果"，
+不改变正常场景下的行为）；阶段三（自主任务独立上下文）与阶段四
+（GuardianRunner）此前默认关闭，P0-6 起改为新初始化项目默认开启（已有
+项目若在 `agent_config.json` 里显式写过 `false`，尊重用户配置不覆盖）。
 
 | 阶段 | 内容 | 默认状态 |
 |---|---|---|
 | 阶段一 P0-A | 结果健全性校验 | ✅ 默认开启 |
 | 阶段二 P0-B | Step 级重置能力（自动 + 手动） | ✅ 始终可用（手动命令不需要开关） |
-| 阶段三 P1 | 自主任务独立上下文 | ⬜ 默认关闭，需手动开启 |
-| 阶段四 P2 | 看护模式 GuardianRunner | ⬜ 默认关闭，需手动开启 |
+| 阶段三 P1 | 自主任务独立上下文 | ✅ 默认开启（[daemon_stability_and_ux_improvement_plan.md](../next_doc/daemon_stability_and_ux_improvement_plan.md) P0-6 起，原默认关闭） |
+| 阶段四 P2 | 看护模式 GuardianRunner | ✅ 默认开启（同上 P0-6 起，原默认关闭） |
 
 ## 2. 阶段一：结果健全性校验（P0-A）
 
@@ -113,13 +117,14 @@ valid=...)`：`valid=False` 时不会把内容写进 `step.result_summary`，而
 
 | 字段 | 说明 |
 |------|------|
-| `objective_isolated_context_enabled` | 默认 `False`。开启后 Self 不再能在 REPL 里直接看到自主任务执行过程中的中间对话（因为跑在独立的、不广播到主 bridge 的 Agent 实例上），这是比阶段一/二更大的行为变化，建议先在测试环境观察一段时间再对生产 daemon 开启 |
+| `objective_isolated_context_enabled` | 默认 `True`（[daemon_stability_and_ux_improvement_plan.md](../next_doc/daemon_stability_and_ux_improvement_plan.md) P0-6 起，原默认 `False`）。开启后 Self 不再能在 REPL 里直接看到自主任务执行过程中的中间对话（因为跑在独立的、不广播到主 bridge 的 Agent 实例上），这是预期行为。**实际路由提示**：本项与 `objective_persistent_worker_enabled` 互斥、后者优先（见[执行模型指南](daemon-execution-model-guide.md)），该项自 P0-3 起已默认 `True`，因此新初始化项目的实际路由早已优先走持久 Worker；本项默认开启主要覆盖"显式关闭了持久 Worker、仍想要独立上下文"的组合场景 |
 | `objective_isolated_inner_max_turns` | 隔离上下文模式下单次 step 的 `run_turn()` 内部预算（`max_turns`），与 `cron.inner_max_turns` 同一档位 |
 | `objective_isolated_max_workers` | 隔离上下文模式下最多同时有几个 step 在独立线程里跑 Agent。这是安全阀，不是主要并发控制手段——真正的并发上限仍由 `max_concurrent_objectives_cap` 等既有机制决定 |
 
-**回退**：设 `objective_isolated_context_enabled=false`（默认值），
-`_submit_fn` 恢复为提交进 Self 共享 `bridge.input_queue` 的路径，行为与
-升级前完全一致。daemon 关闭时会调用
+**回退**：设 `objective_isolated_context_enabled=false`（原默认值，
+P0-6 起默认改为 `true`），`_submit_fn` 恢复为提交进 Self 共享
+`bridge.input_queue` 的路径（前提是 `objective_persistent_worker_enabled`
+也同时关闭，否则仍会优先走持久 Worker，见上表说明）。daemon 关闭时会调用
 `ObjectiveIsolatedRunner.shutdown(wait=False)` 停止接受新 step，不强行
 打断正在跑的线程。
 
@@ -163,7 +168,7 @@ valid=...)`：`valid=False` 时不会把内容写进 `step.result_summary`，而
 
 | 字段 | 说明 |
 |------|------|
-| `guardian_mode_enabled` | 默认 `False`。纯增量观察层，关闭时 `ObjectiveExecutor` 行为与升级前完全一致 |
+| `guardian_mode_enabled` | 默认 `True`（[daemon_stability_and_ux_improvement_plan.md](../next_doc/daemon_stability_and_ux_improvement_plan.md) P0-6 起，原默认 `False`）。纯增量观察层，关闭时 `ObjectiveExecutor` 行为与升级前完全一致 |
 | `guardian_max_rounds` | 单个 execution 最多允许提交多少个 step（含重试），达到即视为"到点了"，触发失败收尾；`<=0` 表示不限制 |
 | `guardian_stuck_similarity_threshold` | 连续几步结果摘要的文本相似度达到该值视为"疑似卡住"，透传给内部的 `StuckDetector` |
 | `guardian_stuck_consecutive_limit` | 连续多少步都被判"疑似卡住"才真正判定为"卡住" |
@@ -174,8 +179,9 @@ valid=...)`：`valid=False` 时不会把内容写进 `step.result_summary`，而
 的提示，与 `/agent goals reset-step` 注入 guidance 的机制一致（都是复用
 `_submit_step()` 已有的 `pending_guidance` 拼装逻辑）。
 
-**回退**：设 `guardian_mode_enabled=false`（默认值），`on_turn_done()` 里
-新增的看护逻辑整段跳过，行为与升级前完全一致。
+**回退**：设 `guardian_mode_enabled=false`（原默认值，P0-6 起默认改为
+`true`），`on_turn_done()` 里新增的看护逻辑整段跳过，行为与升级前完全
+一致。
 
 ## 6. 常见问题
 

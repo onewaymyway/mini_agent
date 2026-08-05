@@ -205,8 +205,78 @@ circuit breaker tripped、卡死回收链路异常增长这几类执行异常事
 
 ---
 
+## P0-6：Guardian 与结果健全性校验：默认开启 ✅ 已实现
+
+**对应方案第 6 项。**
+
+### 问题回顾
+`objective_isolated_context_enabled`（自主任务独立上下文，避免污染 Self
+主 session）与 `guardian_mode_enabled`（跨 step "原地打转"检测 + 有限
+恢复 + 兜底失败）此前都默认 `False`，需要用户读文档、手动开启才能获得
+这两项对无人值守场景直接有价值的能力。
+
+### 改动
+- `src/mini_agent/config/models.py`：
+  - `AutonomyConfig.objective_isolated_context_enabled` 默认值
+    `False → True`，字段上方补充改动依据、回退方式，以及与
+    `objective_persistent_worker_enabled` 互斥关系的说明。
+  - `AutonomyConfig.guardian_mode_enabled` 默认值 `False → True`，字段
+    上方同样补充说明。
+  - 未改动任何加载逻辑：与 P0-3 相同，config loader 只在字段显式出现在
+    `agent_config.json` 里时才覆盖 dataclass 默认值，因此这个改动天然
+    满足"新初始化项目默认开启；已有项目若显式写过 `false`，尊重用户
+    配置不覆盖"，不需要额外写迁移逻辑。
+- `docs/daemon-autonomous-state-recovery-guide.md`：更新阶段三/阶段四的
+  默认状态表格、字段说明表两处、两处"回退"提示文字（说明当前默认值已
+  变为 `true`，`false` 是"原默认值"），以及开篇"默认配置下行为与升级前
+  完全一致"的表述（不再完全成立，改为如实记录每一项的默认值变更历史）。
+
+### 一个值得记录的发现：与 P0-3 的路由优先级交互
+`api/server.py::_build_autonomous_loop()` 里，`objective_persistent_worker_enabled`
+与 `objective_isolated_context_enabled` 是 `if`/`elif` 互斥关系，前者
+优先。自 P0-3 起 `objective_persistent_worker_enabled` 已默认 `True`，
+这意味着对**新初始化的项目**而言，`objective_isolated_context_enabled`
+默认改为 `True` 之后，实际路由早已优先被 P0-3 的持久 Worker 接管
+（持久 Worker 同样跑在独立线程、不广播到 Self 主 bridge，只是额外保留
+了跨 step 会话连续性）——本项默认开启，实际主要覆盖"用户显式关闭了
+持久 Worker、但仍希望自主任务不污染主 session"这一组合场景，而不是
+新项目的默认路径本身。这个交互关系已经在 `config/models.py` 字段注释
+和 `docs/daemon-autonomous-state-recovery-guide.md` 对应字段说明里
+明确写出，避免用户误以为默认开启后两条路径都在生效。
+
+### 实现过程中发现并修复的一处测试假设
+`tests/test_daemon_autonomous_state_recovery.py::test_guardian_disabled_by_default_no_effect`
+原本依赖 `guardian_mode_enabled` 默认 `False` 来验证"关闭时无影响"这一
+分支。默认值改为 `True` 后该测试会因为 Guardian 提前介入而失败（连续
+提交完全相同结果会被判定为"卡住"）。改为显式传入
+`guardian_mode_enabled=False` 并改名为
+`test_guardian_disabled_no_effect`，测试意图不变（验证"关闭 Guardian
+时行为与升级前一致"这一分支仍然成立），只是不再依赖默认值。
+
+### 测试
+- 修正后的 `tests/test_daemon_autonomous_state_recovery.py` 全部 25 个
+  用例通过。
+- 回归：过滤关键词
+  `objective|guardian|isolated|persistent|execution_model|autonomous`
+  的 158 个用例全部通过；额外跑了一轮覆盖
+  `objective_executor|cron_agent_bridge|objective_agent_bridge|
+  autonomous_loop|workflow_watchdog|execution_model|kanban|
+  resource_arbiter|notification` 的 141 个用例，除
+  `test_notification_dispatcher.py::test_kanban_writes_alert_record`
+  （P0-8 记录里已确认的既有失败，与 kanban 渠道存储路径迁移有关，和
+  本次改动无关）全部通过。
+- 未做方案原文之外的额外验证：本次改动是纯默认值调整，风险面已通过
+  上述回归覆盖，未执行长稳测试（与 P0-3 保持一致的验证深度）。
+
+### 文档
+- `next_doc/daemon_stability_and_ux_improvement_plan.md`：第 6 项标题与
+  优先级表格状态列标记为已实现。
+- `docs/daemon-autonomous-state-recovery-guide.md`：见上方改动说明。
+
+---
+
 ## 后续计划
 
-按方案原有优先级表继续推进，下一项为 P0-6（Guardian+独立上下文 默认
-开启）。每完成一项，在本文档追加一节记录，并同步更新
+按方案原有优先级表继续推进，下一项为 P1-5（Goal 侧补"暂停"）。每完成
+一项，在本文档追加一节记录，并同步更新
 `daemon_stability_and_ux_improvement_plan.md` 的状态列。
