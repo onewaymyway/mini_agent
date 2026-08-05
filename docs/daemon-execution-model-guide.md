@@ -15,15 +15,31 @@ Objective 的 step 最终都提交进和用户交互对话共用的同一个单�
 检查"这种协作式触发方式，如果主循环正忙于处理一次很长的 turn，调度决策
 会被顺延同样长的时间。
 
-本方案是两个独立的执行模型层面的改动，都是默认关闭的灰度开关：
+本方案是两个独立的执行模型层面的改动：
 
 | 阶段 | 内容 | 默认状态 |
 |---|---|---|
-| 阶段一 | 目标级持久 Worker（`ObjectivePersistentRunner`） | ⬜ 默认关闭 |
-| 阶段二 | 调度心跳独立化（`SchedulerHeartbeat`） | ⬜ 默认关闭 |
+| 阶段一 | 目标级持久 Worker（`ObjectivePersistentRunner`） | ✅ 默认开启（见下方"默认值变更"） |
+| 阶段二 | 调度心跳独立化（`SchedulerHeartbeat`） | ✅ 默认开启（见下方"默认值变更"） |
 
-两者相互独立，可以只开其中一个，也可以都开；都关闭时（默认状态）行为与
-升级前完全一致。
+两者相互独立，可以只开其中一个，也可以都开；也都可以显式关闭回退到升级前
+的共享队列 + 主循环顺带触发 tick 的路径（见各自小节的"回退"说明）。
+
+> **默认值变更**（[daemon_stability_and_ux_improvement_plan.md](../next_doc/daemon_stability_and_ux_improvement_plan.md)
+> P0-3）：两者最初都是默认关闭的灰度开关，本次改为新初始化项目默认双开。
+> 已有项目的 `agent_config.json` 若显式写过 `false`，配置加载逻辑只在
+> 字段显式出现在文件里时才覆盖 dataclass 默认值，因此这个改动对未升级
+> 的现有项目是透明的——继续尊重用户已经写下的配置，不会被这次默认值调整
+> 覆盖。**验证依据**：两个开关共享的调度锁并发竞态问题已经修复（回归见
+> `tests/test_objective_runner_sched_lock.py`），单独开启已过验证；本次
+> 落地前跑了一轮扩大范围的回归测试（`test_objective_persistent_runner.py`
+> `test_objective_persistent_worker_auto_compact.py`
+> `test_execution_model_status_routes.py`
+> `test_daemon_autonomous_state_recovery.py` 等，共 180+ 个用例）确认默认
+> 值改变后现有测试全部通过。**如实说明局限**：这轮验证是单元/集成测试
+> 级别的回归覆盖，不是方案原文建议的"24-72 小时多 Goal 并发长稳测试"——
+> 后者需要真实 daemon 长期运行环境，不在本次改动范围内完成，记录为已知
+> 局限，后续如观察到问题可随时用下方的显式 `false` 配置回退。
 
 ## 2. 阶段一：目标级持久 Worker
 
@@ -82,12 +98,12 @@ Objective 的 step 最终都提交进和用户交互对话共用的同一个单�
 
 | 字段 | 说明 |
 |------|------|
-| `objective_persistent_worker_enabled` | 默认 `False`。开启后 Self 同样不能在 REPL 里直接看到自主任务执行过程的中间对话（Agent 实例跑在独立线程上，不广播到主 bridge），这一点与 `objective_isolated_context_enabled` 相同 |
+| `objective_persistent_worker_enabled` | 默认 `True`（P0-3 起，原默认 `False`）。开启后 Self 同样不能在 REPL 里直接看到自主任务执行过程的中间对话（Agent 实例跑在独立线程上，不广播到主 bridge），这一点与 `objective_isolated_context_enabled` 相同 |
 | `objective_persistent_worker_idle_ttl_seconds` | 某个 execution 的专属线程/Agent 超过这个时长（秒）未收到新 step 提交，视为孤儿并回收。正常情况下应由 Objective 终止时的回调及时释放，这里只是兜底 |
 | `objective_persistent_worker_auto_compact_enabled` | 默认 `True`。项目全局没有开启 `compress.enabled` 时，强制给持久 Worker 的 Agent 打开 token 阈值 compact 触发器；项目已经全局配置过压缩（无论开或关）时不覆盖，尊重用户配置 |
 | `objective_persistent_worker_auto_compact_threshold` | 上面这个兜底生效时使用的 token 占用率阈值，默认 `0.75`（略保守于项目全局 `compress.threshold` 的默认值 `0.7`——无人工介入的场景稍早一点触发更安全） |
 
-**回退**：设 `objective_persistent_worker_enabled=false`（默认值），
+**回退**：设 `objective_persistent_worker_enabled=false`（原默认值，P0-3 起默认改为 `true`），
 `_submit_fn` 恢复为改造前的路径（共享队列，或如果同时开了
 `objective_isolated_context_enabled` 则退回隔离 runner）。daemon 关闭时
 会调用 `ObjectivePersistentRunner.shutdown(wait=False)`，不强行打断正在
@@ -140,10 +156,10 @@ Objective 的 step 最终都提交进和用户交互对话共用的同一个单�
 
 | 字段 | 说明 |
 |------|------|
-| `scheduler_heartbeat_enabled` | 默认 `False`。这是比公平调度算法本身更底层的执行模型变化 |
+| `scheduler_heartbeat_enabled` | 默认 `True`（P0-3 起，原默认 `False`）。这是比公平调度算法本身更底层的执行模型变化 |
 | `scheduler_heartbeat_poll_interval_seconds` | 心跳线程自己"多久检查一次是否该 tick"的轮询间隔，应明显小于 `tick_interval_seconds`（`AutonomousLoop` 构造参数，默认 60 秒）才有意义 |
 
-**回退**：设 `scheduler_heartbeat_enabled=false`（默认值），`AgentRunner`
+**回退**：设 `scheduler_heartbeat_enabled=false`（原默认值，P0-3 起默认改为 `true`），`AgentRunner`
 恢复为原有的"dequeue 超时后顺带 tick"路径。daemon 关闭时会调用
 `SchedulerHeartbeat.stop()`（非阻塞，不 `join()`）。
 
@@ -179,9 +195,11 @@ Objective 的 step 最终都提交进和用户交互对话共用的同一个单�
 > 与 `SchedulerHeartbeat` 线程持锁调用 `tick()` 互斥。回归测试见
 > `tests/test_objective_runner_sched_lock.py`。
 
-建议仍然先分别灰度观察一段时间，确认各自稳定后再考虑同时开启——这个组合
-目前还没有在真实 daemon 长期运行中验证过（见方案文档"后续可以观察的点"
-一节），但底层的锁覆盖缺口已经不存在了，不再是"同时开启"的阻塞项。
+两者组合开启（P0-3 起的新默认值）目前的验证依据是单元/集成测试级别的
+回归覆盖，还没有在真实 daemon 24-72 小时、多 Goal 并发的长期运行中验证过
+（见方案文档"后续可以观察的点"一节），但底层的锁覆盖缺口已经不存在了，
+不再是"同时开启"的阻塞项。如果观察到异常，可以用上方各自小节的"回退"
+方式单独或同时关闭。
 
 ## 相关文档
 

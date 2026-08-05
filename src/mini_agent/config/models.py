@@ -1266,9 +1266,15 @@ class AutonomyConfig:
     # 复用（不像 objective_isolated_context_enabled 那样每步都重建/丢弃），
     # 因此既有真并行（不同 execution 之间互不阻塞），又保留了单个 Objective
     # 内部的会话/工具状态连续性。与 objective_isolated_context_enabled
-    # 互斥，本项优先——两者都开启时以本项为准。默认 False：与项目现有的
-    # 灰度开关哲学一致，先按需开启观察效果，不强制所有部署一起切换。
-    objective_persistent_worker_enabled: bool = False
+    # 互斥，本项优先——两者都开启时以本项为准。
+    # [daemon_stability_and_ux_improvement_plan.md P0-3] 默认改为 True：
+    # 底层的共享调度锁并发竞态问题已修复（见
+    # tests/test_objective_runner_sched_lock.py），单独开启已经过验证；
+    # 新初始化的项目默认开启，已有项目的 `agent_config.json` 若显式写过
+    # `false`，尊重用户配置不覆盖（config loader 只在字段显式出现在配置
+    # 文件里时才覆盖 dataclass 默认值，未出现的字段走这里的新默认值，
+    # 因此这个改动对未升级的现有项目是透明的）。
+    objective_persistent_worker_enabled: bool = True
     # 持久 Worker 的 execution 专属线程/Agent 实例，超过该时长（秒）未收到
     # 新的 step 提交时，视为孤儿（正常情况下应由 Objective 终止时的
     # release_worker_fn 回调及时释放，这里只是兜底，防止 daemon 异常重启等
@@ -1293,9 +1299,11 @@ class AutonomyConfig:
     # 阶段二] 调度心跳独立化：开启后，AutonomousLoop.tick() 不再依赖
     # AgentRunner 主循环"dequeue 超时后顺带检查"触发，而是由独立的
     # SchedulerHeartbeat 后台线程按自己的轮询间隔主动触发，不受当前主循环
-    # 是否正忙于处理一个长 turn 影响。默认 False：这是比公平调度算法本身
-    # 更底层的执行模型变化，先默认关闭，按需灰度开启。
-    scheduler_heartbeat_enabled: bool = False
+    # 是否正忙于处理一个长 turn 影响。
+    # [daemon_stability_and_ux_improvement_plan.md P0-3] 默认改为 True，
+    # 理由与回退方式同上方 `objective_persistent_worker_enabled` 的注释——
+    # 两个开关的默认值调整是同一个 Track 一起做的决定。
+    scheduler_heartbeat_enabled: bool = True
     # SchedulerHeartbeat 自身的轮询间隔（秒）——只是"多久检查一次是否该
     # tick"，真正的 tick 频率仍由 AutonomousLoop 的 tick_interval_seconds
     # 决定，本项应明显小于 tick_interval_seconds 才有意义（默认 5 秒 vs

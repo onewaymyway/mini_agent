@@ -144,8 +144,69 @@ circuit breaker tripped、卡死回收链路异常增长这几类执行异常事
 
 ---
 
+## P0-3：调度心跳与持久 Worker 组合默认开启 ✅ 已实现（长稳验证未做）
+
+**对应方案第 3 项。**
+
+### 问题回顾
+`objective_persistent_worker_enabled`（目标级持久 Worker）与
+`scheduler_heartbeat_enabled`（调度心跳独立化）此前都默认 `False`，需要
+用户手动改配置并重启 daemon 才能生效。两者共享调度锁的并发竞态问题已经
+修复（回归见 `tests/test_objective_runner_sched_lock.py`），单独开启已
+过验证。
+
+### 改动
+- `src/mini_agent/config/models.py`：
+  - `AutonomyConfig.objective_persistent_worker_enabled` 默认值
+    `False → True`。
+  - `AutonomyConfig.scheduler_heartbeat_enabled` 默认值 `False → True`。
+  - 两处都在字段上方补充注释说明改动依据和回退方式。
+- 未改动任何加载/读取逻辑：配置加载对 dataclass 字段的处理方式是"文件里
+  显式出现的字段覆盖默认值，未出现的字段沿用 dataclass 默认值"，因此这个
+  改动天然满足方案要求的"新初始化项目默认双开；已有项目若显式写过
+  `false`，尊重用户配置不覆盖"——不需要额外写迁移逻辑。
+- `docs/daemon-execution-model-guide.md`：更新默认状态表格、两处字段说明
+  表格行、两处"回退"提示文字（说明当前默认值已变为 `true`，`false` 是
+  "原默认值"）、"两者可以同时开启吗"一节的验证现状说明。
+
+### 验证与已知局限（如实记录，不夸大）
+- **做了什么**：跑了一轮扩大范围的回归测试确认默认值改变后现有行为不
+  受影响——`tests/test_objective_runner_sched_lock.py`（共享调度锁竞态）、
+  `tests/test_objective_persistent_runner.py`、
+  `tests/test_objective_persistent_worker_auto_compact.py`、
+  `tests/test_execution_model_status_routes.py`、
+  `tests/test_daemon_autonomous_state_recovery.py`、
+  `tests/test_selective_compression.py`、
+  `tests/test_objective_isolated_runner_health.py` 等，以及一次覆盖
+  `objective`/`scheduler`/`heartbeat`/`execution_model`/`autonomous`
+  关键词的过滤回归（179 个用例）全部通过；此外跑了一次全量测试套件确认
+  失败集合（151 个失败/12 个 error）与本次改动无关——都是环境缺失依赖
+  （`json_repair` 已补装、`rich`/`fastapi`/`uvicorn`/`httpx`/
+  `python-multipart` 等）或与本次改动完全不相关的既有失败（如
+  `test_workdir_knowledge_tools.py`、`test_skill_cli.py`），在完全未修改
+  的原始代码上单独运行同样失败，与本次默认值调整无关。
+- **没做什么**：方案原文建议的"24-72 小时、多 Goal 并发、混合正常/异常
+  场景的长稳测试"没有做——这需要真实 daemon 长期运行环境，超出本次改动
+  可执行的范围。这是一个已知局限，如实记录在
+  `docs/daemon-execution-model-guide.md` 里，不假装已经完成过这轮验证。
+  如果后续真实运行中观察到问题，两个开关都保留了独立的 `false` 配置项，
+  可以单独或同时回退。
+
+### 测试
+- 未新增测试文件（这一项本身是默认值调整，没有新增行为分支需要覆盖；
+  已有的 `test_objective_runner_sched_lock.py` 等已经覆盖了"两者组合开启
+  时的并发正确性"这个核心风险点）。
+- 回归结果见上一节。
+
+### 文档
+- `next_doc/daemon_stability_and_ux_improvement_plan.md`：第 3 项标题与
+  优先级表格状态列标记为已实现（并注明长稳验证的局限）。
+- `docs/daemon-execution-model-guide.md`：见上方改动说明。
+
+---
+
 ## 后续计划
 
-按方案原有优先级表继续推进，下一项为 P0-3（调度心跳与持久 Worker 组合：
-默认开启）。每完成一项，在本文档追加一节记录，并同步更新
+按方案原有优先级表继续推进，下一项为 P0-6（Guardian+独立上下文 默认
+开启）。每完成一项，在本文档追加一节记录，并同步更新
 `daemon_stability_and_ux_improvement_plan.md` 的状态列。
