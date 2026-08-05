@@ -127,7 +127,7 @@ Worker 的会话状态压缩为一份摘要（复用现有 `compact_with_skills`
 
 ---
 
-## 7. 失败模式的跨 Goal 学习
+## 7. 失败模式的跨 Goal 学习 [已实现，见 daemon_stability_and_ux_improvement_implementation_record.md P3-7]
 
 **现状**：`sys:failure_pattern_aggregation` 已经把 Objective 步骤失败、Goal
 dead-ends、TurnJudge stuck 事件聚合为统一失败模式清单
@@ -228,7 +228,7 @@ cron job 被判定卡死回收，都是同一个 job_id"，帮用户直接定位
 | P2 | 1. 统一看护/熔断内核 | 收益明确但改动面较大，涉及三条执行路径重构 | ✅ 已实现 |
 | P2 | 10. Objective 编辑产出并续跑 | 与 workflow 对齐，收益明确但涉及结果健全性校验联动 | ✅ 已实现 |
 | P3 | 2. 持久 Worker 跨重启连续性 | 价值明确但技术方案需要进一步设计（避免摘要无限增长） | ✅ 已实现 |
-| P3 | 7. 失败模式事中拦截 | 增量优化，依赖 `failure_pattern_store` 已有数据积累 | 待实现 |
+| P3 | 7. 失败模式事中拦截 | 增量优化，依赖 `failure_pattern_store` 已有数据积累 | ✅ 已实现 |
 
 ---
 

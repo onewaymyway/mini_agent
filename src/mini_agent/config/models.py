@@ -1381,6 +1381,23 @@ class AutonomyConfig:
     # 兼容。有些任务本来就该跑更久（比如涉及大型代码库分析的 step），
     # 有些则应该更敏感地判定卡死，按项目调整这个值。
     objective_step_stale_timeout_seconds: Optional[int] = None
+    # [daemon_stability_and_ux_improvement_plan.md 第 7 项 / P3-7] 失败模式
+    # 事中拦截：step 提交前查询 `failure_pattern_store.json`（由既有的
+    # `sys:failure_pattern_aggregation` 周期任务聚合，本项只新增"查询并注入
+    # 提示"这一步，不改变聚合逻辑本身），若该 step/Objective 标题命中高频
+    # 已知失败模式，在提交给模型的消息里附带"过去在类似任务上曾因 X 原因
+    # 失败，注意规避"的提示。默认 True——只读一次本地 JSON 文件（数据本身
+    # 已经在磁盘上，不新增 LLM 调用/网络请求），成本可忽略；命中率取决于
+    # `failure_pattern_store.json` 的既有数据积累量，数据不足时自然不命中，
+    # 不会产生噪音提示。
+    failure_pattern_interception_enabled: bool = True
+    # 命中阈值：与 `get_patterns_for_category()` 默认值一致，只有历史
+    # occurrence_count 达到该值的失败模式才会被视为"高频"并注入提示，避免
+    # 偶发一两次失败就被当成"已知模式"打扰正常执行。
+    failure_pattern_interception_min_occurrence: int = 3
+    # 单次提示最多附带几条命中的失败模式，避免同一个 task_category 下
+    # 多个 root_cause_tag 都命中时把提示堆得过长。
+    failure_pattern_interception_max_patterns: int = 3
 
 
 @dataclass

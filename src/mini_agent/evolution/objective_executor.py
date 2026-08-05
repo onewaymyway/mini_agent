@@ -1671,6 +1671,39 @@ class ObjectiveExecutor:
                     f"请根据失败原因调整方法后重试，不要重复同样的做法。"
                 )
 
+            # [daemon_stability_and_ux_improvement_plan.md 第 7 项 / P3-7]
+            # 失败模式事中拦截：提交前查一下 failure_pattern_store 里是否有
+            # 高度相似的已知失败模式，命中则提前提示，不必等这次也失败了
+            # 才知道。只读查询、不触发重新聚合，成本可忽略；retry_ctx 已经
+            # 覆盖"这次重试针对的具体失败原因"，这里补的是"跨 Objective 的
+            # 历史经验"，两者不冲突，都会拼进消息里。
+            pattern_ctx = ""
+            try:
+                autonomy_cfg = getattr(self._cfg, "autonomy", None) if self._cfg is not None else None
+                if getattr(autonomy_cfg, "failure_pattern_interception_enabled", True):
+                    from mini_agent.evolution.failure_pattern_store import (
+                        format_pattern_warning,
+                        get_patterns_for_category,
+                    )
+                    min_occurrence = getattr(
+                        autonomy_cfg, "failure_pattern_interception_min_occurrence", 3
+                    )
+                    max_patterns = getattr(
+                        autonomy_cfg, "failure_pattern_interception_max_patterns", 3
+                    )
+                    hits = get_patterns_for_category(
+                        self._paths,
+                        step.description or ex.objective_title,
+                        min_occurrence=min_occurrence,
+                    )
+                    pattern_ctx = format_pattern_warning(hits, max_patterns=max_patterns)
+            except Exception as _mini_agent_exc:
+                from mini_agent.errors import log_exception
+                log_exception(
+                    _mini_agent_exc,
+                    where="mini_agent.evolution.objective_executor.ObjectiveExecutor._submit_step.pattern_ctx",
+                )
+
             # [goal_cron_feedback_and_output_policy_plan.md 4.4] 拼接从根 Goal
             # 到当前节点的完整说明链（含父级约束和用户后续追加的意见），双保险：
             # 即使创建 Objective 时忘了传 description，这里仍能补上。
@@ -1705,7 +1738,7 @@ class ObjectiveExecutor:
             message = (
                 f"[自主任务 - {ex.objective_title}]\n"
                 f"步骤 {step_idx+1}/{len(ex.steps)}: {step.description}"
-                f"{goal_ctx}{progress_ctx}{guidance_ctx}{retry_ctx}{policy_ctx}"
+                f"{goal_ctx}{progress_ctx}{guidance_ctx}{retry_ctx}{pattern_ctx}{policy_ctx}"
             )
             step.submitted_message = message
             turn_id = self._submit_fn(

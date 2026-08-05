@@ -838,14 +838,125 @@ execution_id)` 命中就说明不需要读摘要（Agent 还活着，会话历�
 
 ---
 
+## P3-7：失败模式事中拦截 ✅ 已实现
+
+**对应方案第 7 项。**
+
+### 问题回顾
+`sys:failure_pattern_aggregation`（`evolution/failure_pattern_store.py`）
+已经把 Objective 步骤失败、Goal dead-ends、TurnJudge stuck 事件按
+task_category 聚合为 `failure_pattern_store.json`，并且早就提供了
+`get_patterns_for_category()` 这个只读查询接口——但改动前没有任何调用方
+真正使用它：`soft_goal_deriver` 只在"生成新目标"这个事后分析场景用得上
+聚合结果，`_submit_step()` 提交 step 时完全不查这份数据，"重试携带原因"
+（Track F，见 `test_objective_executor_kanban_tracks.py`）也只解决"同一个
+Objective 内部重试时告诉它上次为什么失败"，命中的是这次执行自己的
+`step.error_msg`，不是跨 Objective 复用的历史失败模式。
+
+### 改动
+1. `src/mini_agent/evolution/failure_pattern_store.py`：
+   - 新增 `format_pattern_warning(patterns, *, max_patterns=3) -> str`——
+     把 `get_patterns_for_category()` 返回的 `FailurePattern` 列表格式化
+     为一段可以直接拼进 step 消息的提示文本；空列表返回空字符串（调用方
+     按"空字符串不拼接"处理，不需要额外判空）；只做格式化和截断，不做
+     二次排序（排序已经在聚合落盘时按 `occurrence_count` 降序完成）。
+2. `src/mini_agent/config/models.py`：`AutonomyConfig` 新增三个字段：
+   - `failure_pattern_interception_enabled: bool = True`——只读一次本地
+     JSON 文件（数据已经在磁盘上，聚合本身由既有的每日 cron job
+     `sys:failure_pattern_aggregation` 完成，本项不新增聚合逻辑），不新增
+     LLM 调用/网络请求，成本可忽略，默认开启；命中率完全取决于
+     `failure_pattern_store.json` 的既有数据积累量，数据不足时自然不
+     命中，不会产生噪音提示（与"后续计划"里原先"先观察数据量再决定要不要
+     实现"的顾虑相比，改为"直接实现、数据不足时行为上等价于关闭"更简单，
+     不需要额外做一次埋点观察再回来实现）；
+   - `failure_pattern_interception_min_occurrence: int = 3`——与
+     `get_patterns_for_category()` 的默认阈值一致，只有历史
+     `occurrence_count` 达到该值才视为"高频"并注入提示，避免偶发一两次
+     失败就被当成"已知模式"打扰正常执行；
+   - `failure_pattern_interception_max_patterns: int = 3`——单次提示最多
+     附带几条命中的失败模式，避免同一个 task_category 下多个
+     `root_cause_tag` 都命中时把提示堆得过长。
+3. `src/mini_agent/evolution/objective_executor.py`：`_submit_step()` 里
+   在拼接 `retry_ctx` 之后、拼接 `policy_ctx` 之前新增 `pattern_ctx`：
+   - 读 `cfg.autonomy.failure_pattern_interception_enabled`（`cfg` 为
+     `None` 或未配置 `autonomy` 时通过 `getattr(..., True)` 兜底为默认
+     开启，不因为没传 `cfg` 而报错或静默跳过——与既有的
+     `objective_persistent_worker_*` 等配置读取方式保持一致的写法）；
+   - 开启时调用 `get_patterns_for_category(self._paths, step.description
+     or ex.objective_title, min_occurrence=...)` 查询命中的高频失败模式，
+     再用 `format_pattern_warning()` 格式化；
+   - 整段包在 `try/except` 里，查询/格式化异常时 `log_exception` 记录并
+     让 `pattern_ctx` 保持空字符串，不影响 step 正常提交（与模块里其余
+     "锦上添花"类上下文——`goal_ctx`/`policy_ctx`——的容错方式一致）；
+   - `message` 拼接顺序调整为
+     `...{retry_ctx}{pattern_ctx}{policy_ctx}`——`retry_ctx` 是"这次重试
+     针对的具体失败原因"（如果有），`pattern_ctx` 是"跨 Objective 的历史
+     经验"，两者不冲突、可以同时出现，`pattern_ctx` 放在 `retry_ctx` 之后
+     是因为前者优先级更高（更具体、更贴近这次尝试），`policy_ctx`
+     （产出路径规范）作为通用规范放最后。
+
+### 为什么直接用 objective_title 兜底而不是要求必须有具体 step 描述
+`get_patterns_for_category()` 的查询 key 是"归一化后的标题文本"，
+`_decompose()` 在 LLM 拆解失败或只拆出单步时会整体降级为
+`[objective.title]`（即 `step.description == objective.title`），这种
+情况下 `step.description or ex.objective_title` 两者取值相同；真正有
+意义的场景是"`step.description` 为空但 `ex.objective_title` 有值"这种
+理论上不应该出现但没有硬性保证的边界（`step.description` 目前的构造
+路径不会为空，这里只是防御性写法，与模块里其余 `or` 兜底风格一致，不
+是本次改动引入的新假设）。
+
+### 测试
+- 新增 `tests/test_failure_pattern_interception.py`：
+  - `format_pattern_warning`：空列表返回空字符串；非空列表正确格式化并
+    截断到 `max_patterns` 条；
+  - `ObjectiveExecutor._submit_step` 集成：命中高频失败模式时 message
+    带上"[已知失败模式提醒]"；`failure_pattern_store.json` 为空（无历史
+    数据）时不附带该段落；`cfg.autonomy.failure_pattern_interception_
+    enabled=False` 时即使命中也不附带；未传入 `cfg`（`cfg=None`）时
+    默认按开启处理且不报错、不影响正常提交。
+- 回归：`python3 -m pytest tests/test_failure_pattern_interception.py
+  tests/test_failure_pattern_store.py
+  tests/test_objective_executor_kanban_tracks.py
+  tests/test_objective_persistent_runner.py
+  tests/test_objective_runner_sched_lock.py
+  tests/test_objective_persistent_worker_restart_summary.py
+  tests/test_circuit_breaker_core.py tests/test_workflow_p10.py
+  tests/test_workflow_p14.py tests/test_objective_edit_step_result.py
+  tests/test_scheduler_heartbeat.py tests/test_cron_job_runner.py -q`，
+  142 个用例全部通过；
+- 本地环境缺少 `pydantic`/`uvicorn` 等依赖导致部分既有 API 相关测试
+  （`tests/test_objective_executor_kanban_tracks_r3.py`/`_r4.py` 里依赖
+  `mini_agent.api.*` 的用例）无法收集，属于既有环境限制（前序 P2-1 记录
+  里已提及同类问题），非本次改动引入的回归，未在本次改动范围内修复。
+
+### 局限
+- 命中判定完全依赖既有的"标题归一化 + 关键词根因分类"聚类规则（见
+  `failure_pattern_store.py` 模块头部说明），本身就是粗粒度的模糊匹配，
+  不是语义相似度——"同一类问题因为 Objective 标题措辞不同而不命中"的
+  情况会发生，这是复用既有聚合规则的自然结果，本次改动不改变聚类规则
+  本身；
+- 提示只在 step 提交前"附带一段文本"，是否真的据此调整方法完全取决于
+  模型是否认真读取并采纳，不是强制约束——与"重试携带原因"（Track F）
+  的性质一致，都是"提示"而不是"拦截"（尽管方案文档标题叫"事中拦截"，
+  实际做的是"提交前提示"，不阻止 step 真正提交执行，命名上的"拦截"
+  指的是"在失败发生前拦截式提醒"而不是"阻止执行"）；
+- 默认开启但没有做"提示是否降低了实际失败率"的量化验证——与方案文档
+  "方法论说明"第 1 条"默认值调整需要验证依据"的要求相比是一个例外：
+  这里的默认开启不是"改变已有行为的默认值"（改造前没有这项能力，无
+  所谓"改变默认值"），而是"新增一项低成本、命中才生效、不命中零影响
+  的能力"，风险模型与"改默认值"不同，因此没有另外补一轮长稳验证。
+
+### 文档
+- `next_doc/daemon_stability_and_ux_improvement_plan.md`：第 7 项标题与
+  优先级表格状态列标记为已实现。
+
+---
+
 ## 后续计划
 
-P0/P1/P2 九项（4、8、3、6、5、11、9、10、1）全部已实现。剩余待推进
-方向：
-
-- **P3-7（失败模式事中拦截）**：依赖 `failure_pattern_store.json` 已有
-  数据积累到一定量级后效果才明显，可以先埋点观察当前数据量是否足够支撑
-  "相似度命中"判断，再决定要不要投入实现。
+方案文档 11 项全部已实现（4、8、3、6、5、11、9、10、1、2、7）。暂无
+新的待推进方向；后续如果发现新的稳定性/体验问题，另开新方案文档，不在
+本文档继续追加。
 
 每完成一项，在本文档追加一节记录，并同步更新
 `daemon_stability_and_ux_improvement_plan.md` 的状态列。

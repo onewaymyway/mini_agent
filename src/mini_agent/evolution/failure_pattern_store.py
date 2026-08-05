@@ -376,6 +376,32 @@ def get_patterns_for_category(paths: "AgentPaths", category_text: str, *, min_oc
     ]
 
 
+def format_pattern_warning(patterns: list["FailurePattern"], *, max_patterns: int = 3) -> str:
+    """[daemon_stability_and_ux_improvement_plan.md 第 7 项 / P3-7]
+    把 `get_patterns_for_category()` 命中的高频失败模式格式化为一段可以
+    直接拼进 step 消息的提示文本；命中列表为空时返回空字符串（调用方按
+    "空字符串不拼接"处理，不需要额外判空）。
+
+    只做格式化，不做二次过滤/排序——排序（按 occurrence_count 降序）已经
+    由 `run_failure_pattern_aggregation_once()` 落盘时完成，这里只截断到
+    `max_patterns` 条，避免同一个 task_category 下多个 root_cause_tag
+    都命中时提示堆得过长。
+    """
+    if not patterns:
+        return ""
+    lines = []
+    for pat in patterns[:max_patterns]:
+        example = (pat.example_summary or "").strip()
+        example_part = f"：{example}" if example else ""
+        lines.append(
+            f"- 曾因「{pat.root_cause_tag}」类原因失败 {pat.occurrence_count} 次{example_part}"
+        )
+    return (
+        "\n\n[已知失败模式提醒]\n过去在类似任务上有以下已知失败模式，请注意规避，"
+        "不要重复同样的做法：\n" + "\n".join(lines)
+    )
+
+
 def load_failure_patterns(paths: "AgentPaths") -> list[dict]:
     """供看板/晨报只读消费：返回当前全部已聚合的失败模式（按频次排序）。"""
     store = _load_store(paths)
@@ -416,6 +442,7 @@ __all__ = [
     "FailurePatternAggregationSummary",
     "run_failure_pattern_aggregation_once",
     "get_patterns_for_category",
+    "format_pattern_warning",
     "load_failure_patterns",
     "ensure_failure_pattern_aggregation_job",
     "record_turn_judge_stuck_event",
