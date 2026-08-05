@@ -4,7 +4,7 @@
 
 1. 禁止把产出的代码写入主项目 `src/` 目录。
 2. 禁止把产出的代码写入 `tests/` 目录。
-3. 和 skill 相关的产出，放到对应 skill 的目录下。
+3. 和 skill 相关的产出，放到对应 skill 的目录下,skill根目录为.claude/skills，具体的skill产出应放到具体skill目录下，即.claude/skills/skill_name。
 4. 任务本身已经说明了工作目录的，产出放到该工作目录下。
 
 如果任务描述中明确要求修改 `src/`、`tests/` 或指定了其他路径，以任务描述的
