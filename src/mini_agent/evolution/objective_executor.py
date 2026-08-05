@@ -146,9 +146,14 @@ class ObjectiveExecution:
     objective_title: str
     steps: list[ExecutionStep] = field(default_factory=list)
     current_step_idx: int = 0
-    # pending | running | paused | completed | failed | cancelled
+    # pending | running | paused | paused_for_fairness | paused_by_user |
+    # completed | failed | cancelled
     # [Track D] "cancelled"：用户在看板上主动终止，区别于 "failed"（系统判定
     # 执行失败）——不再重试、不再推进，但不代表"做错了"。
+    # [daemon_stability_and_ux_improvement_plan.md P1-5] "paused_by_user"：
+    # 用户主动暂停（区别于 "paused"——资源仲裁全局暂停；"paused_for_
+    # fairness"——调度层面自动让出槽位）。当前 step 完成后落定到断点，
+    # 用户确认恢复前不会推进；不重新拆解，不丢失已完成 step 的进度。
     status: str = "pending"
     started_at: float = 0.0
     finished_at: float = 0.0
@@ -163,6 +168,12 @@ class ObjectiveExecution:
     # 只用来计算"这一片跑了多久/多少步"，不代表整个 Objective 的起止。
     fairness_slice_started_at: float = 0.0
     fairness_slice_start_step: int = 0
+    # [daemon_stability_and_ux_improvement_plan.md P1-5] 用户请求的"暂停"，
+    # 区别于 paused_for_fairness（调度层面自动让出槽位）与 paused（资源仲裁
+    # 全局暂停）。当前 step 通常已经在跑（turn_id 已提交），无法立即打断，
+    # 因此先只记一个请求标记，等这一步真正完成（on_turn_done）时再落地为
+    # status="paused_by_user"，不会打断正在执行的这一步。
+    pause_requested: bool = False
 
     @property
     def current_step(self) -> Optional[ExecutionStep]:
@@ -195,6 +206,7 @@ class ObjectiveExecution:
             "redecompose_attempted": self.redecompose_attempted,
             "fairness_slice_started_at": self.fairness_slice_started_at,
             "fairness_slice_start_step": self.fairness_slice_start_step,
+            "pause_requested": self.pause_requested,
         }
 
     @staticmethod
@@ -211,6 +223,7 @@ class ObjectiveExecution:
             redecompose_attempted=bool(d.get("redecompose_attempted", False)),
             fairness_slice_started_at=d.get("fairness_slice_started_at", 0.0),
             fairness_slice_start_step=d.get("fairness_slice_start_step", 0),
+            pause_requested=bool(d.get("pause_requested", False)),
         )
         ex.steps = [ExecutionStep.from_dict(s) for s in d.get("steps", [])]
         return ex
@@ -521,6 +534,80 @@ class ObjectiveExecutor:
         self.save()
         return True
 
+    def user_paused_objective_ids(self) -> list[str]:
+        """[daemon_stability_and_ux_improvement_plan.md P1-5] 当前处于
+        paused_by_user 状态的 execution 所对应的 objective_id 列表，供
+        AutonomousLoop 判断某个候选是否应该跳过（不自动重新 start()/恢复，
+        只能由用户显式调用 resume_user_pause() 恢复）。"""
+        return [
+            ex.objective_id
+            for ex in self._executions.values()
+            if ex.status == "paused_by_user"
+        ]
+
+    def request_pause(self, execution_id: str) -> bool:
+        """[daemon_stability_and_ux_improvement_plan.md P1-5] 用户主动暂停一个
+        Objective execution：与 cancel()（彻底终止）、reset_step()（重做某一
+        步）不同，这是"临时叫停，之后原样恢复"——不释放已完成的 step 进度，
+        `current_step_idx` 会停在断点，用户确认恢复后从断点续跑，不重新
+        拆解 Objective。
+
+        当前 step 通常已经提交在跑（`turn_id` 已存在），无法立即打断，所以
+        分两种情况：
+          - 当前没有正在跑的 step（status 已经是 paused_for_fairness，或
+            当前 step 还没提交），可以立即落定为 paused_by_user；
+          - 当前 step 正在跑，只记一个 pause_requested 标记，等这一步真正
+            完成时（on_turn_done）再落定，不打断正在执行的这一步。
+
+        返回 False 的情况：execution 不存在，或已经处于终止态
+        （completed/failed/cancelled）、已经是 paused_by_user 本身。"""
+        ex = self._executions.get(execution_id)
+        if ex is None or ex.status in ("completed", "failed", "cancelled", "paused_by_user"):
+            return False
+        if ex.status == "paused_for_fairness":
+            # 没有正在跑的 turn，可以立即暂停，不需要等待。
+            ex.status = "paused_by_user"
+            ex.pause_requested = False
+            self._notify_progress(ex)
+            self.save()
+            return True
+        if ex.status not in ("running", "paused"):
+            return False
+        cur = ex.current_step
+        if cur is not None and cur.turn_id:
+            # 当前 step 正在跑，无法立即打断，标记请求，等 on_turn_done 时
+            # 再落定为 paused_by_user（这一步的结果仍然正常写入，不受影响）。
+            ex.pause_requested = True
+            self.save()
+            return True
+        # 没有正在跑的 turn（比如刚被资源仲裁全局 pause 住、还没重新提交），
+        # 可以立即落定。
+        ex.status = "paused_by_user"
+        ex.pause_requested = False
+        self._notify_progress(ex)
+        self.save()
+        return True
+
+    def resume_user_pause(self, execution_id: str) -> bool:
+        """[daemon_stability_and_ux_improvement_plan.md P1-5] 恢复一个被用户
+        主动暂停的 execution：从 `current_step_idx`（断点）重新提交，不
+        重新拆解、不丢失已完成的 step 进度。找不到对应的 paused_by_user
+        execution 时返回 False。"""
+        ex = self._executions.get(execution_id)
+        if ex is None or ex.status != "paused_by_user":
+            return False
+        ex.status = "running"
+        step_idx = ex.current_step_idx
+        submitted = self._submit_step(ex, step_idx)
+        step = ex.steps[step_idx] if step_idx < len(ex.steps) else None
+        if not submitted and (step is None or step.status != "blocked"):
+            ex.status = "failed"
+            ex.progress_notes = "从用户暂停恢复时提交失败"
+            self._on_objective_failed(ex)
+        self._notify_progress(ex)
+        self.save()
+        return True
+
     def effective_max_concurrent(self) -> int:
         """[Track K] 计算当前生效的并发上限。
 
@@ -763,7 +850,18 @@ class ObjectiveExecutor:
             ex.status = "completed"
             ex.finished_at = time.time()
             ex.current_step_idx = len(ex.steps)
+            ex.pause_requested = False
             self._on_objective_completed(ex)
+        elif ex.pause_requested:
+            # [daemon_stability_and_ux_improvement_plan.md P1-5] 用户在这一步
+            # 执行期间请求了暂停：这一步的进度已经正常写入（上面的 step.status
+            # = "done" 不受影响），只是不再提交下一步——落到断点，等用户显式
+            # resume_user_pause() 才继续。优先级高于公平性让出检查：用户的
+            # 主动暂停意图比调度器的自动让出更明确，不应该被 fairness 分支
+            # 抢先命中导致误报成"因公平性暂停"。
+            ex.status = "paused_by_user"
+            ex.current_step_idx = next_idx
+            ex.pause_requested = False
         elif self._should_yield_for_fairness(ex, next_idx):
             # [goal_execution_fairness_improvement_plan.md P4] 已跑满一个
             # 时间片，且确实有其它 Goal 在排队等待——主动让出槽位，不提交
@@ -1179,6 +1277,11 @@ class ObjectiveExecutor:
                 "started_at": ex.started_at,
                 "finished_at": ex.finished_at,
                 "progress_notes": ex.progress_notes,
+                # [daemon_stability_and_ux_improvement_plan.md P1-5] 用户已
+                # 请求暂停但当前 step 仍在跑、还没真正落定为 paused_by_user
+                # 时为 True，供看板显示"暂停请求已发送，将在当前步骤完成后
+                # 生效"这类过渡态提示。
+                "pause_requested": ex.pause_requested,
                 # [看板改进] 完整计划 + 逐步状态，供看板展示"这个 Objective
                 # 具体拆成了哪几步、哪些做完了、哪些还没做"，而不只是一个
                 # 笼统的 done/total 比例。之前这里没有暴露，看板只能显示

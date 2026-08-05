@@ -1896,7 +1896,9 @@ def _render_objective_execution_detail(client: AgentClient, execution: dict) -> 
         if s.get("status") == "done":
             done += 1
     status_label = {
-        "running": "🏃 执行中", "paused": "⏸️ 已暂停",
+        "running": "🏃 执行中", "paused": "⏸️ 已暂停（资源受限）",
+        "paused_for_fairness": "⏸️ 已暂停（公平调度让出）",
+        "paused_by_user": "📌 已暂停（用户）",
         "completed": "✅ 已完成", "failed": "✗ 执行失败", "pending": "⏳ 待启动",
         "cancelled": "🚫 已终止",
     }.get(ex_status, ex_status)
@@ -1957,8 +1959,10 @@ def _render_objective_execution_detail(client: AgentClient, execution: dict) -> 
 
     if not exec_id or ex_status in ("completed", "cancelled"):
         return
-    b1, b2, b3 = st.columns(3)
-    if ex_status in ("running", "paused", "failed", "pending"):
+    if execution.get("pause_requested"):
+        st.caption("⏸️ 暂停请求已发送，将在当前步骤完成后生效……")
+    b1, b2, b3, b4 = st.columns(4)
+    if ex_status in ("running", "paused", "paused_for_fairness", "paused_by_user", "failed", "pending"):
         if b1.button("🛑 终止", key=f"obj_cancel_{exec_id}"):
             res = client.cancel_objective(exec_id)
             if res and "_error" in res:
@@ -1967,6 +1971,21 @@ def _render_objective_execution_detail(client: AgentClient, execution: dict) -> 
     if ex_status in ("running", "failed"):
         if b2.button("🔁 重试当前步", key=f"obj_retry_{exec_id}"):
             res = client.retry_objective(exec_id)
+            if res and "_error" in res:
+                st.error(res["_error"])
+            st.rerun()
+    # [daemon_stability_and_ux_improvement_plan.md P1-5] "⏸️ 暂停"/"▶️ 恢复"
+    # 与终止/重试/插话并列——暂停是"临时叫停，之后原样恢复"，与"终止"
+    # （彻底结束）语义不同，填补此前只有"终止/重来"没有中间态的缺口。
+    if ex_status in ("running", "paused_for_fairness") and not execution.get("pause_requested"):
+        if b4.button("⏸️ 暂停", key=f"obj_pause_{exec_id}"):
+            res = client.pause_objective(exec_id)
+            if res and "_error" in res:
+                st.error(res["_error"])
+            st.rerun()
+    elif ex_status == "paused_by_user":
+        if b4.button("▶️ 恢复", key=f"obj_resume_{exec_id}"):
+            res = client.resume_objective(exec_id)
             if res and "_error" in res:
                 st.error(res["_error"])
             st.rerun()

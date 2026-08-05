@@ -310,6 +310,14 @@ class AgentClient:
     def retry_objective(self, execution_id: str):
         return self._post(f"/objectives/{execution_id}/retry")
 
+    def pause_objective(self, execution_id: str):
+        """[daemon_stability_and_ux_improvement_plan.md P1-5] 用户主动暂停：
+        不释放已完成 step 进度，不重新拆解，等 resume_objective 恢复。"""
+        return self._post(f"/objectives/{execution_id}/pause")
+
+    def resume_objective(self, execution_id: str):
+        return self._post(f"/objectives/{execution_id}/resume")
+
     def inject_objective_guidance(self, execution_id: str, message: str):
         return self._post(f"/objectives/{execution_id}/guidance", {"message": message})
 

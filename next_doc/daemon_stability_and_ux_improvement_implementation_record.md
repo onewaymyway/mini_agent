@@ -275,8 +275,120 @@ circuit breaker tripped、卡死回收链路异常增长这几类执行异常事
 
 ---
 
+## P1-5：Goal 侧引入"暂停"，而非只有"终止/重来" ✅ 已实现
+
+**对应方案第 5 项。**
+
+### 问题回顾
+Workflow 执行已有暂停（⏸️）/取消（🛑）/续跑（▶️）的完整控制面，但
+Goal/Objective 侧此前的干预选项只有终止（彻底结束）、重试当前步、
+插话——没有"暂停后原样恢复"这一档。用户想临时叫停一个长期任务时，只能
+"终止重来"或者"放着不管让它继续跑"，中间态缺失。
+
+`ObjectiveExecutor` 内部此前已经有一个 `status == "paused"`，但那是
+`pause_all()`/`resume()` 服务的资源仲裁全局暂停（`ResourceArbiter` 判定
+预算耗尽时对**所有**运行中 Objective 生效），以及调度层面自动触发的
+`paused_for_fairness`（跑满时间片、有其它 Goal 排队时自动让出槽位）——
+都不是"用户对单个 Objective 主动叫停，之后原样恢复"这个语义。
+
+### 改动
+1. `src/mini_agent/evolution/objective_executor.py`：
+   - `ObjectiveExecution` 新增 `pause_requested: bool = False` 字段（含
+     `to_dict`/`from_dict` 持久化），并更新 `status` 字段上方的枚举注释，
+     补充 `paused_by_user` 与另外两种暂停态的区分说明。
+   - 新增 `request_pause(execution_id) -> bool`：
+     - 当前 step 正在跑（`turn_id` 已存在，通常场景）时，无法立即打断，
+       只记 `pause_requested = True`，等这一步真正完成（`on_turn_done`）
+       时才落定，这一步的结果不受影响、正常写入；
+     - 当前没有正在跑的 turn 时（比如已经是 `paused_for_fairness`，或者
+       刚被资源仲裁全局暂停、还没重新提交下一步），立即落定为
+       `paused_by_user`，不需要等待；
+     - 已经是终止态（`completed`/`failed`/`cancelled`）或已经是
+       `paused_by_user` 本身时返回 `False`，不做任何改动。
+   - 新增 `resume_user_pause(execution_id) -> bool`：只对 `paused_by_user`
+     状态生效，从 `current_step_idx`（断点）重新提交，不重新拆解、不
+     丢失已完成 step 的进度，写法与已有的 `resume_fairness()` 一致。
+   - 新增 `user_paused_objective_ids()`：供调度器识别当前处于
+     `paused_by_user` 状态的 objective_id 集合。
+   - `on_turn_done()`：在"检查是否全部完成"分支之后、公平性让出检查
+     之前新增 `elif ex.pause_requested` 分支——优先级顺序是"完成 >
+     用户暂停请求 > 公平性让出"：即使这一步执行期间用户请求了暂停，如果
+     这一步恰好是最后一步，仍然正常走完成收尾，不会被暂停请求打断成
+     `paused_by_user`（不合理地阻断一个已经做完的 Objective）；用户的
+     暂停请求优先于公平性让出检查，避免被 fairness 分支抢先命中、误报成
+     "因公平性暂停"。
+2. `src/mini_agent/evolution/objective_executor.py::get_status_summary()`：
+   状态摘要新增 `pause_requested` 字段，供看板显示"暂停请求已发送，等待
+   当前步骤完成"这类过渡态提示（暂停请求已发出但还没真正落定时为
+   `True`）。
+3. `src/mini_agent/evolution/autonomous_loop.py`：
+   `_tick_maintenance()` 里新起 Objective 的候选筛选新增
+   `user_paused_ids` 检查——与 `fairness_paused_ids` 不同，这里**不**
+   自动恢复（用户没有明确表示要继续），只是跳过本轮候选，防止调度器把
+   一个用户主动暂停的 Objective 当作"已结束/可以重新 `start()`"，
+   避免产生重复的 execution。
+4. `src/mini_agent/api/routes.py`：新增
+   `POST /v1/objectives/{execution_id}/pause`（调用 `request_pause()`）
+   与 `POST /v1/objectives/{execution_id}/resume`（调用
+   `resume_user_pause()`），写法与已有的 `/cancel`、`/retry`、
+   `/guidance` 路由风格一致，同样走 `_objective_executor_or_404()` 鉴权。
+5. `apps/mini_agent_kanban/client.py`：新增 `pause_objective()`/
+   `resume_objective()` 两个封装方法。
+6. `apps/mini_agent_kanban/app.py`：
+   - `_render_objective_execution_detail()` 的状态文案 map 拆分出
+     `paused_for_fairness`（"⏸️ 已暂停（公平调度让出）"）与
+     `paused_by_user`（"📌 已暂停（用户）"），原来的 `paused` 改注明
+     "（资源受限）"，避免三种暂停在看板上显示成同一个文案让用户误解；
+   - 底部操作按钮从三个（终止/重试/插话）扩到四个，新增"⏸️ 暂停"/
+     "▶️ 恢复"：`running`/`paused_for_fairness` 状态下显示"暂停"按钮，
+     `paused_by_user` 状态下显示"恢复"按钮，与已有的终止/重试/插话按钮
+     并列；
+   - 暂停请求已发出但还没落定（`pause_requested=True`）时，按钮上方
+     显示一行"⏸️ 暂停请求已发送，将在当前步骤完成后生效……"的过渡态
+     提示，避免用户看不到反馈重复点击。
+
+### 与已有资源仲裁全局暂停（`status == "paused"`）的关系
+两者独立、不冲突：`request_pause()` 只检查当前有没有正在跑的 turn，不
+关心 `ex.status` 具体是 `"running"` 还是 `"paused"`（全局暂停也可能仍有
+一个已提交但还没返回结果的 turn）。落定时机统一走 `on_turn_done()` 里
+基于 `turn_id` 的回调路径，与外层 `ex.status` 当时是什么无关——这意味着
+即使一个 Objective 正处于资源仲裁的全局 `"paused"`，用户依然可以对它
+调用 `request_pause()`，等它的当前 turn 真正完成后会落定为
+`paused_by_user`（不会被 `resume()`——只恢复 `status=="paused"` 的既有
+逻辑——自动恢复到 `"running"`），行为符合"用户暂停优先于自动恢复"的
+直觉。
+
+### 测试
+- 新增 `tests/test_objective_user_pause.py`（8 个用例）：
+  - 当前 step 正在跑时请求暂停，延迟到 `on_turn_done` 才落定，这一步
+    结果不受影响；
+  - `resume_user_pause()` 从断点续跑，步骤数不变、已完成 step 保留；
+  - `paused_for_fairness` 状态下请求暂停立即生效；
+  - 终止态（`completed`/`failed`/`cancelled`）及 `paused_by_user` 本身
+    拒绝暂停请求；
+  - `resume_user_pause()` 只对 `paused_by_user` 生效，其它状态（如
+    `running`）返回 `False`；
+  - 暂停请求发出后如果这一步恰好是最后一步且完成，正常走完成收尾，
+    不被打断；
+  - `user_paused_objective_ids()` 正确反映当前状态；
+  - 暂停请求发出后用户改主意直接 `cancel()`，仍然正常生效。
+- 回归：过滤关键词
+  `objective|fairness|autonomous_loop|kanban_tracks|execution_model` 的
+  157 个用例全部通过，未观察到行为回归。
+- 未新增 API 路由层的独立测试：检查发现已有的 `/cancel`、`/retry`、
+  `/guidance` 路由本身也没有独立的路由级测试（只在
+  `ObjectiveExecutor` 层面测试对应方法），本次新增的 `/pause`、
+  `/resume` 路由延续同一模式，路由本身是对已测试方法的薄封装
+  （鉴权 + 参数解析 + 404 处理），风险面已被上面的单元测试覆盖。
+
+### 文档
+- `next_doc/daemon_stability_and_ux_improvement_plan.md`：第 5 项标题与
+  优先级表格状态列标记为已实现。
+
+---
+
 ## 后续计划
 
-按方案原有优先级表继续推进，下一项为 P1-5（Goal 侧补"暂停"）。每完成
-一项，在本文档追加一节记录，并同步更新
+按方案原有优先级表继续推进，下一项为 P1-11（干预操作的一致反馈）。
+每完成一项，在本文档追加一节记录，并同步更新
 `daemon_stability_and_ux_improvement_plan.md` 的状态列。

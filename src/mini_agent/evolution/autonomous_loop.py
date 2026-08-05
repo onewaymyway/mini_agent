@@ -403,9 +403,19 @@ class AutonomousLoop:
                 fairness_paused_ids = set(self._objective_executor.fairness_paused_objective_ids())
             except Exception:
                 fairness_paused_ids = set()
+            # [daemon_stability_and_ux_improvement_plan.md P1-5] 用户主动暂停
+            # 的 execution 不应该被调度器当作"已结束/可以重新 start()"处理——
+            # 与 fairness_paused_ids 不同，这里不自动恢复（用户没有明确表示
+            # 要继续），只是跳过本轮候选，等用户显式调用 resume_user_pause()。
+            try:
+                user_paused_ids = set(self._objective_executor.user_paused_objective_ids())
+            except Exception:
+                user_paused_ids = set()
 
             for obj in objectives:
                 if self._objective_executor.is_running(obj.id):
+                    continue
+                if obj.id in user_paused_ids:
                     continue
                 if not self._objective_executor.can_start_new():
                     break

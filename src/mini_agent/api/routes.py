@@ -3029,6 +3029,39 @@ async def cancel_objective(request: Request, execution_id: str):
     return {"ok": True}
 
 
+@router.post("/objectives/{execution_id}/pause")
+async def pause_objective(request: Request, execution_id: str):
+    """POST /v1/objectives/{execution_id}/pause — [daemon_stability_and_
+    ux_improvement_plan.md P1-5] 用户主动暂停一个正在运行/因公平性暂停的
+    Objective execution：不释放已完成 step 的进度，也不重新拆解，只是
+    不再提交下一步，等用户显式调用 /resume 才继续。如果当前 step 正在
+    执行，暂停会在这一步跑完后才真正生效（不会打断正在跑的 step），
+    这段等待期内 execution 的 status 仍是 "running"。"""
+    oe = _objective_executor_or_404(request)
+    ok = oe.request_pause(execution_id)
+    if not ok:
+        raise HTTPException(
+            status_code=404,
+            detail=f"execution {execution_id!r} not found or not pausable in its current state",
+        )
+    return {"ok": True}
+
+
+@router.post("/objectives/{execution_id}/resume")
+async def resume_objective(request: Request, execution_id: str):
+    """POST /v1/objectives/{execution_id}/resume — 恢复一个被用户主动暂停
+    （paused_by_user）的 Objective execution：从断点（current_step_idx）
+    重新提交，不重新拆解、不丢失已完成 step 的进度。"""
+    oe = _objective_executor_or_404(request)
+    ok = oe.resume_user_pause(execution_id)
+    if not ok:
+        raise HTTPException(
+            status_code=404,
+            detail=f"execution {execution_id!r} not found or not in paused_by_user state",
+        )
+    return {"ok": True}
+
+
 @router.post("/objectives/{execution_id}/retry")
 async def retry_objective_step(request: Request, execution_id: str):
     """POST /v1/objectives/{execution_id}/retry — 手动触发当前 step 重新
