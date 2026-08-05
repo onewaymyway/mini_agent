@@ -1951,7 +1951,7 @@ def _render_pinned_sessions_panel(client: AgentClient) -> None:
 _EXEC_STEP_ICONS = {"done": "✅", "running": "▶️", "failed": "✗", "pending": "・"}
 
 
-def _render_objective_execution_detail(client: AgentClient, execution: dict) -> None:
+def _render_objective_execution_detail(client: AgentClient, execution: dict, key_prefix: str = "") -> None:
     """[看板改进] 渲染单个 Objective 的真实执行计划/进度：ObjectiveExecutor
     拆出的每一步、每一步的状态、结果摘要。之前看板只显示 GoalBacklog 里
     手填的 progress_notes（跟真实执行进度是两套数据，容易脱节/看不出
@@ -2037,16 +2037,16 @@ def _render_objective_execution_detail(client: AgentClient, execution: dict) -> 
             # 整步重跑模型。
             if s.get("status") == "done" and exec_id and isinstance(step_idx, int):
                 st.divider()
-                with st.form(key=f"obj_edit_step_{exec_id}_{step_idx}"):
+                with st.form(key=f"{key_prefix}obj_edit_step_{exec_id}_{step_idx}"):
                     st.caption("✏️ 编辑此步骤的产出（不会重新执行这一步，后续步骤将基于修正后的结果继续）")
                     new_summary = st.text_area(
                         "结果摘要", value=s.get("result_summary", ""), height=100,
-                        key=f"obj_edit_summary_{exec_id}_{step_idx}",
+                        key=f"{key_prefix}obj_edit_summary_{exec_id}_{step_idx}",
                     )
                     new_artifacts_text = st.text_input(
                         "产出文件路径（逗号分隔，留空表示不修改）",
                         value=", ".join(s.get("artifacts") or []),
-                        key=f"obj_edit_artifacts_{exec_id}_{step_idx}",
+                        key=f"{key_prefix}obj_edit_artifacts_{exec_id}_{step_idx}",
                     )
                     if st.form_submit_button("💾 保存并用于后续步骤"):
                         new_artifacts = [p.strip() for p in new_artifacts_text.split(",") if p.strip()] \
@@ -2075,7 +2075,7 @@ def _render_objective_execution_detail(client: AgentClient, execution: dict) -> 
         st.caption("⏸️ 暂停请求已发送，将在当前步骤完成后生效……")
     b1, b2, b3, b4 = st.columns(4)
     if ex_status in ("running", "paused", "paused_for_fairness", "paused_by_user", "failed", "pending"):
-        if b1.button("🛑 终止", key=f"obj_cancel_{exec_id}"):
+        if b1.button("🛑 终止", key=f"{key_prefix}obj_cancel_{exec_id}"):
             res = client.cancel_objective(exec_id)
             if res and "_error" in res:
                 st.error(res["_error"])
@@ -2083,7 +2083,7 @@ def _render_objective_execution_detail(client: AgentClient, execution: dict) -> 
                 st.toast("🛑 终止请求已发送，正在停止该 Objective……", icon="🛑")
             st.rerun()
     if ex_status in ("running", "failed"):
-        if b2.button("🔁 重试当前步", key=f"obj_retry_{exec_id}"):
+        if b2.button("🔁 重试当前步", key=f"{key_prefix}obj_retry_{exec_id}"):
             res = client.retry_objective(exec_id)
             if res and "_error" in res:
                 st.error(res["_error"])
@@ -2094,7 +2094,7 @@ def _render_objective_execution_detail(client: AgentClient, execution: dict) -> 
     # 与终止/重试/插话并列——暂停是"临时叫停，之后原样恢复"，与"终止"
     # （彻底结束）语义不同，填补此前只有"终止/重来"没有中间态的缺口。
     if ex_status in ("running", "paused_for_fairness") and not execution.get("pause_requested"):
-        if b4.button("⏸️ 暂停", key=f"obj_pause_{exec_id}"):
+        if b4.button("⏸️ 暂停", key=f"{key_prefix}obj_pause_{exec_id}"):
             res = client.pause_objective(exec_id)
             if res and "_error" in res:
                 st.error(res["_error"])
@@ -2102,7 +2102,7 @@ def _render_objective_execution_detail(client: AgentClient, execution: dict) -> 
                 st.toast("⏸️ 暂停请求已发送，将在当前步骤完成后生效……", icon="⏸️")
             st.rerun()
     elif ex_status == "paused_by_user":
-        if b4.button("▶️ 恢复", key=f"obj_resume_{exec_id}"):
+        if b4.button("▶️ 恢复", key=f"{key_prefix}obj_resume_{exec_id}"):
             res = client.resume_objective(exec_id)
             if res and "_error" in res:
                 st.error(res["_error"])
@@ -2111,8 +2111,8 @@ def _render_objective_execution_detail(client: AgentClient, execution: dict) -> 
             st.rerun()
     with b3.popover("💬 插话"):
         guidance = st.text_area("补充说明（下次提交当前步骤时会附带这段话）",
-                                 key=f"obj_guidance_text_{exec_id}", height=80)
-        if st.button("发送", key=f"obj_guidance_send_{exec_id}"):
+                                 key=f"{key_prefix}obj_guidance_text_{exec_id}", height=80)
+        if st.button("发送", key=f"{key_prefix}obj_guidance_send_{exec_id}"):
             if guidance.strip():
                 res = client.inject_objective_guidance(exec_id, guidance.strip())
                 if res and "_error" in res:
@@ -2125,6 +2125,7 @@ def _render_objective_execution_detail(client: AgentClient, execution: dict) -> 
 def _render_goal_card(
     client: AgentClient, n: dict, status_key: str, indent: bool = False, note: str = "",
     execution: Optional[dict] = None, cron_next_run_by_id: Optional[dict] = None,
+    key_prefix: str = "",
 ) -> None:
     """渲染单张 Goal/Objective 卡片 + 状态切换下拉框。
     从 render_kanban_tab 里抽出来，供"按层级嵌套展示"复用，行为
@@ -2217,7 +2218,7 @@ def _render_goal_card(
     if external_context:
         with st.expander(f"🔗 相关外部信息（{len(external_context)} 条）"):
             reversed_context = list(reversed(external_context))
-            page_key = f"goal_extctx_page_{n.get('id')}"
+            page_key = f"{key_prefix}goal_extctx_page_{n.get('id')}"
             for item in _client_side_page(reversed_context, 5, page_key):
                 occurred_at = item.get("occurred_at")
                 ts_str = (
@@ -2227,11 +2228,11 @@ def _render_goal_card(
                 st.caption(f"`{ts_str}` **{item.get('title', '')}**：{item.get('snippet', '')}")
 
     if execution is not None:
-        _render_objective_execution_detail(client, execution)
+        _render_objective_execution_detail(client, execution, key_prefix=key_prefix)
     new_status = st.selectbox(
         "状态", [s for s, _ in GOAL_STATUS_COLUMNS],
         index=[s for s, _ in GOAL_STATUS_COLUMNS].index(status_key),
-        key=f"goalstatus_{n.get('id')}", label_visibility="collapsed",
+        key=f"{key_prefix}goalstatus_{n.get('id')}", label_visibility="collapsed",
     )
     if new_status != status_key:
         client.update_goal(n.get("id"), status=new_status)
@@ -2242,7 +2243,7 @@ def _render_goal_card(
     # 编辑表单，直接 PATCH title/description/priority——同一把 update_fields
     # 锁保护，不会跟 ObjectiveExecutor 的状态同步写入冲突。
     with st.expander("✏️ 编辑标题/描述/优先级", expanded=False):
-        with st.form(f"edit_goal_{n.get('id')}"):
+        with st.form(f"{key_prefix}edit_goal_{n.get('id')}"):
             edit_title = st.text_input("标题", value=n.get("title", ""))
             edit_desc = st.text_area("描述", value=n.get("description", ""), height=80)
             edit_priority = st.slider("优先级", 0, 100, int(n.get("priority", 50)))
@@ -2280,20 +2281,20 @@ def _render_goal_card(
                     f"已完成 {n.get('cycle_count', 0)} 轮{next_run_caption}"
                 )
                 bc1, bc2 = st.columns(2)
-                if bc1.button("⏭️ 跳过下一轮", key=f"skipcycle_{n.get('id')}",
+                if bc1.button("⏭️ 跳过下一轮", key=f"{key_prefix}skipcycle_{n.get('id')}",
                                disabled=bool(n.get("skip_next_cycle"))):
                     res = client.skip_goal_next_cycle(n.get("id"))
                     if res and "_error" in res:
                         st.error(res["_error"])
                     st.rerun()
-                if bc2.button("🛑 取消周期性", key=f"unrecur_{n.get('id')}"):
+                if bc2.button("🛑 取消周期性", key=f"{key_prefix}unrecur_{n.get('id')}"):
                     res = client.unrecur_goal(n.get("id"))
                     if res and "_error" in res:
                         st.error(res["_error"])
                     st.rerun()
             else:
                 st.caption("这个 Goal 还不是周期性的——绑定后会按 schedule 自动派生并启动新一轮。")
-                with st.form(f"recur_form_{n.get('id')}"):
+                with st.form(f"{key_prefix}recur_form_{n.get('id')}"):
                     r_schedule = st.text_input(
                         "调度 (interval:<秒数> 或 cron:<表达式>)",
                         placeholder="例如 interval:86400（每天一次）",
@@ -2323,7 +2324,7 @@ def _render_goal_card(
                 st.caption(f"`{ts_str}` {item.get('text', '')}")
         else:
             st.caption("还没有意见记录。")
-        with st.form(f"goal_feedback_{n.get('id')}", clear_on_submit=True):
+        with st.form(f"{key_prefix}goal_feedback_{n.get('id')}", clear_on_submit=True):
             fb_text = st.text_area("你的意见（会永久合入这个节点的说明，之后每次执行都会带着）", height=60)
             fb_submit = st.form_submit_button("提交意见")
         if fb_submit:
@@ -2407,6 +2408,7 @@ def render_kanban_tab(client: AgentClient):
                         client, focus_node, focus_node.get("status", ""),
                         execution=exec_by_objective_id.get(focus_node.get("id")),
                         cron_next_run_by_id=cron_next_run_by_id,
+                        key_prefix="focus_",
                     )
             st.markdown("---")
 
