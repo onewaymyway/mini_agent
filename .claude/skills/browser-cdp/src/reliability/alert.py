@@ -405,8 +405,8 @@ class AlertManager:
         }
         
         for alert in self._alert_history:
-            severity = alert["severity"]
-            rule_id = alert["rule_id"]
+            severity = alert.get("severity", "unknown")
+            rule_id = alert.get("rule_id", "unknown")
             
             stats["by_severity"][severity] = stats["by_severity"].get(severity, 0) + 1
             stats["by_rule"][rule_id] = stats["by_rule"].get(rule_id, 0) + 1

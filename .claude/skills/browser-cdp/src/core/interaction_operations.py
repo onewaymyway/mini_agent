@@ -637,10 +637,10 @@ class InteractionOperations:
         for op in operations:
             op_type = op.get("type")
             if op_type == "click":
-                result = await self.click(op.get("selector"), **{k: v for k, v in op.items() if k != "type"})
+                result = await self.click(op.get("selector"), **{k: v for k, v in op.items() if k not in ("type", "selector")})
                 results.append({"operation": "click", "result": result.to_dict() if hasattr(result, 'to_dict') else result})
             elif op_type == "type":
-                result = await self.type_text(op.get("selector"), op.get("text"), **{k: v for k, v in op.items() if k != "type"})
+                result = await self.type_text(op.get("selector"), op.get("text"), **{k: v for k, v in op.items() if k not in ("type", "selector", "text")})
                 results.append({"operation": "type", "result": result.to_dict() if hasattr(result, 'to_dict') else result})
             elif op_type == "scroll":
                 result = await self.scroll(ScrollDirection[op.get("direction", "DOWN").upper()], op.get("distance", 800))

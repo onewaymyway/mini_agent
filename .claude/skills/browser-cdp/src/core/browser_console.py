@@ -15,13 +15,31 @@ from __future__ import annotations
 import argparse
 
 from src.core.utils import add_connection_args, get_session, print_json
+from src.reliability.middleware import (
+    get_middleware,
+    OperationType,
+    with_error_handling,
+)
 
 
+@with_error_handling("eval", OperationType.EXTRACT, max_retries=3)
 def cmd_eval(session, expr: str):
     value = session.eval_js(expr, await_promise=True)
     print_json({"result": value})
 
 
+# 别名，供测试使用
+def eval(session, expr: str):
+    """执行 JS 表达式（别名）"""
+    return cmd_eval(session, expr)
+
+
+def watch_console(session, duration: float):
+    """监听控制台消息（别名）"""
+    return cmd_watch_console(session, duration)
+
+
+@with_error_handling("watch_console", OperationType.EXTRACT, max_retries=2)
 def cmd_watch_console(session, duration: float):
     session.send("Runtime.enable")
     session.send("Log.enable")
@@ -44,6 +62,7 @@ def cmd_watch_console(session, duration: float):
     print_json(logs)
 
 
+@with_error_handling("watch_network", OperationType.EXTRACT, max_retries=2)
 def cmd_watch_network(session, duration: float):
     session.send("Network.enable")
     events = session.drain_events(method_prefix="Network.", duration=duration)
@@ -66,12 +85,14 @@ def cmd_watch_network(session, duration: float):
     print_json(list(requests.values()))
 
 
+@with_error_handling("get_cookies", OperationType.TAB, max_retries=2)
 def cmd_get_cookies(session):
     """获取当前页面的所有 cookies。"""
     cookies = session.get_all_cookies()
     print_json(cookies)
 
 
+@with_error_handling("set_cookie", OperationType.TAB, max_retries=2)
 def cmd_set_cookie(session, name: str, value: str, domain: str = "", path: str = "/",
                    secure: bool = True, http_only: bool = False, same_site: str = "Lax",
                    expires: float = -1):
@@ -80,12 +101,14 @@ def cmd_set_cookie(session, name: str, value: str, domain: str = "", path: str =
     print_json(result)
 
 
+@with_error_handling("delete_cookie", OperationType.TAB, max_retries=2)
 def cmd_delete_cookie(session, name: str, domain: str = "", path: str = "/"):
     """删除 cookie。"""
     result = session.delete_cookie(name, domain, path)
     print_json(result)
 
 
+@with_error_handling("clear_cookies", OperationType.TAB, max_retries=2)
 def cmd_clear_cookies(session):
     """清除所有 cookies。"""
     result = session.clear_all_cookies()

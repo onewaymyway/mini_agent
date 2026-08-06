@@ -1,0 +1,296 @@
+
+---
+
+## 5. 反检测能力指标（权重 15%）
+
+### 5.1 反爬绕过率（ACBR）
+
+| 属性 | 说明 |
+|------|------|
+| 指标代码 | ACBR |
+| 全称 | Anti-Crawl Bypass Rate |
+| 定义 | 成功绕过反爬机制的比例 |
+| 计算方法 | ACBR = (绕过成功次数 / 总反爬触发次数) × 100% |
+| 目标值 | ≥ 70% |
+| 权重 | 40% |
+| 数据采集 | 反爬触发日志 |
+| 测量方式 | 自动化测试执行 |
+
+**计算公式**:
+```python
+ACBR = (successful_bypasses / total_crawl_triggers) * 100
+```
+
+**评分函数**:
+```python
+def acbr_score(acbr):
+    if acbr >= 85:
+        return 100
+    elif acbr >= 70:
+        return 75 + (acbr - 70) * 1.67
+    elif acbr >= 55:
+        return 60 + (acbr - 55) * 2
+    elif acbr >= 40:
+        return 40 + (acbr - 40) * 1.33
+    else:
+        return acbr * 0.5
+```
+
+### 5.2 验证码通过率（CPR）
+
+| 属性 | 说明 |
+|------|------|
+| 指标代码 | CPR |
+| 全称 | Captcha Pass Rate |
+| 定义 | 验证码识别与处理成功率 |
+| 计算方法 | CPR = (通过验证码次数 / 总验证码次数) × 100% |
+| 目标值 | ≥ 60% |
+| 权重 | 30% |
+| 数据采集 | 验证码处理日志 |
+| 测量方式 | 自动化测试执行 |
+
+**计算公式**:
+```python
+CPR = (passed_captchas / total_captchas) * 100
+```
+
+**评分函数**:
+```python
+def cpr_score(cpr):
+    if cpr >= 75:
+        return 100
+    elif cpr >= 60:
+        return 75 + (cpr - 60) * 1.67
+    elif cpr >= 45:
+        return 60 + (cpr - 45) * 1.33
+    elif cpr >= 30:
+        return 40 + (cpr - 30) * 1.33
+    else:
+        return cpr * 0.5
+```
+
+### 5.3 指纹伪装有效性（FER）
+
+| 属性 | 说明 |
+|------|------|
+| 指标代码 | FER |
+| 全称 | Fingerprint Evasion Rate |
+| 定义 | 浏览器指纹被识别为机器人的比例 |
+| 计算方法 | FER = (1 - 被识别比例) × 100% |
+| 目标值 | ≥ 80% |
+| 权重 | 20% |
+| 数据采集 | 指纹检测日志 |
+| 测量方式 | 自动化测试执行 |
+
+**计算公式**:
+```python
+FER = (1 - identified_as_bot / total_checks) * 100
+```
+
+**评分函数**:
+```python
+def fer_score(fer):
+    if fer >= 90:
+        return 100
+    elif fer >= 80:
+        return 75 + (fer - 80) * 2.5
+    elif fer >= 70:
+        return 60 + (fer - 70) * 1.5
+    elif fer >= 60:
+        return 40 + (fer - 60) * 2
+    else:
+        return fer * 0.5
+```
+
+### 5.4 行为模拟自然度（BN）
+
+| 属性 | 说明 |
+|------|------|
+| 指标代码 | BN |
+| 全称 | Behavior Naturalness |
+| 定义 | 操作行为被判定为人类的比例 |
+| 计算方法 | BN = (人工判定为人类的操作次数 / 总操作次数) × 100% |
+| 目标值 | ≥ 75% |
+| 权重 | 10% |
+| 数据采集 | 行为分析日志 |
+| 测量方式 | 人工/自动判定 |
+
+**计算公式**:
+```python
+BN = (human_like_operations / total_operations) * 100
+```
+
+**评分函数**:
+```python
+def bn_score(bn):
+    if bn >= 85:
+        return 100
+    elif bn >= 75:
+        return 75 + (bn - 75) * 2.5
+    elif bn >= 65:
+        return 60 + (bn - 65) * 1.5
+    elif bn >= 55:
+        return 40 + (bn - 55) * 2
+    else:
+        return bn * 0.5
+```
+
+### 5.5 反检测能力综合得分
+
+```python
+def anti_detection_score(acbr, cpr, fer, bn):
+    return (
+        acbr_score(acbr) * 0.40 +
+        cpr_score(cpr) * 0.30 +
+        fer_score(fer) * 0.20 +
+        bn_score(bn) * 0.10
+    )
+```
+
+---
+
+## 6. 稳定性与恢复能力指标（权重 15%）
+
+### 6.1 重复执行一致性（EC）
+
+| 属性 | 说明 |
+|------|------|
+| 指标代码 | EC |
+| 全称 | Execution Consistency |
+| 定义 | 多次执行结果的一致性 |
+| 计算方法 | EC = (结果一致次数 / 总执行次数) × 100% |
+| 目标值 | ≥ 90% |
+| 权重 | 35% |
+| 数据采集 | 执行结果对比 |
+| 测量方式 | 自动化对比 |
+
+**计算公式**:
+```python
+EC = (consistent_executions / total_executions) * 100
+```
+
+**评分函数**:
+```python
+def ec_score(ec):
+    if ec >= 95:
+        return 100
+    elif ec >= 90:
+        return 75 + (ec - 90) * 5
+    elif ec >= 80:
+        return 60 + (ec - 80) * 1.5
+    elif ec >= 70:
+        return 40 + (ec - 70) * 2
+    else:
+        return ec * 0.5
+```
+
+### 6.2 异常恢复率（ERR）
+
+| 属性 | 说明 |
+|------|------|
+| 指标代码 | ERR |
+| 全称 | Error Recovery Rate |
+| 定义 | 异常后自动恢复的比例 |
+| 计算方法 | ERR = (成功恢复次数 / 总异常次数) × 100% |
+| 目标值 | ≥ 80% |
+| 权重 | 30% |
+| 数据采集 | 异常日志、恢复日志 |
+| 测量方式 | 自动化测试执行 |
+
+**计算公式**:
+```python
+ERR = (successful_recoveries / total_errors) * 100
+```
+
+**评分函数**:
+```python
+def err_score(err):
+    if err >= 90:
+        return 100
+    elif err >= 80:
+        return 75 + (err - 80) * 2.5
+    elif err >= 70:
+        return 60 + (err - 70) * 1.5
+    elif err >= 60:
+        return 40 + (err - 60) * 2
+    else:
+        return err * 0.5
+```
+
+### 6.3 连接稳定性（CS）
+
+| 属性 | 说明 |
+|------|------|
+| 指标代码 | CS |
+| 全称 | Connection Stability |
+| 定义 | CDP 连接保持率 |
+| 计算方法 | CS = (连接保持时间 / 总运行时间) × 100% |
+| 目标值 | ≥ 95% |
+| 权重 | 20% |
+| 数据采集 | CDP 连接日志 |
+| 测量方式 | 自动化测试执行 |
+
+**计算公式**:
+```python
+CS = (connected_time / total_runtime) * 100
+```
+
+**评分函数**:
+```python
+def cs_score(cs):
+    if cs >= 98:
+        return 100
+    elif cs >= 95:
+        return 75 + (cs - 95) * 8.33
+    elif cs >= 90:
+        return 60 + (cs - 90) * 3
+    elif cs >= 85:
+        return 40 + (cs - 85) * 4
+    else:
+        return cs * 0.5
+```
+
+### 6.4 内存稳定性（MS）
+
+| 属性 | 说明 |
+|------|------|
+| 指标代码 | MS |
+| 全称 | Memory Stability |
+| 定义 | 长时间运行的内存泄漏检测 |
+| 计算方法 | MS = (end_memory - start_memory) / runtime_hours |
+| 目标值 | ≤ 5MB/h |
+| 权重 | 15% |
+| 数据采集 | 系统监控 |
+| 测量方式 | 自动化监控 |
+
+**计算公式**:
+```python
+MS = (end_memory_mb - start_memory_mb) / runtime_hours
+```
+
+**评分函数**:
+```python
+def ms_score(ms_mb_per_hour):
+    if ms_mb_per_hour <= 2:
+        return 100
+    elif ms_mb_per_hour <= 5:
+        return 100 - (ms_mb_per_hour - 2) * 8.33
+    elif ms_mb_per_hour <= 10:
+        return 75 - (ms_mb_per_hour - 5) * 5
+    elif ms_mb_per_hour <= 15:
+        return 50 - (ms_mb_per_hour - 10) * 5
+    else:
+        return max(0, 50 - (ms_mb_per_hour - 10) * 5)
+```
+
+### 6.5 稳定性与恢复能力综合得分
+
+```python
+def stability_score(ec, err, cs, ms):
+    return (
+        ec_score(ec) * 0.35 +
+        err_score(err) * 0.30 +
+        cs_score(cs) * 0.20 +
+        ms_score(ms) * 0.15
+    )
+```

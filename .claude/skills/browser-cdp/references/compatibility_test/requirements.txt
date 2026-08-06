@@ -1,0 +1,24 @@
+# 网站兼容性测试框架依赖
+
+# 核心依赖
+asyncio-misc>=1.0.0
+
+# 数据处理
+numpy>=1.24.0
+pandas>=2.0.0
+
+# 报告生成
+markdown>=3.5.0
+
+# 测试框架
+pytest>=7.4.0
+pytest-asyncio>=0.21.0
+
+# 日志
+loguru>=0.7.0
+
+# 配置管理
+pyyaml>=6.0
+
+# 命令行
+click>=8.1.0

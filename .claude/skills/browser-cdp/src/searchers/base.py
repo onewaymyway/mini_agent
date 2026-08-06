@@ -135,6 +135,28 @@ class SearchResults:
     def to_json(self) -> str:
         return json.dumps(self.to_dict(), ensure_ascii=False, indent=2)
     
+    def add(self, result: SearchResult) -> None:
+        """添加单个结果"""
+        self.results.append(result)
+        self.total_results += 1
+    
+    def extend(self, results: List[SearchResult]) -> None:
+        """批量添加结果"""
+        self.results.extend(results)
+        self.total_results += len(results)
+    
+    def __len__(self) -> int:
+        """返回结果数量"""
+        return len(self.results)
+    
+    def __iter__(self):
+        """迭代结果"""
+        return iter(self.results)
+    
+    def __getitem__(self, index):
+        """索引访问"""
+        return self.results[index]
+    
     @classmethod
     def from_json(cls, json_str: str) -> "SearchResults":
         data = json.loads(json_str)
@@ -253,6 +275,95 @@ class BaseSearcher(ABC, SearcherMixin):
             return "\n".join(lines)
         else:
             return self.format_results(results, "json")
+
+    # ========== 分页支持 ==========
+    def paginate(self, query: str, page: int = 1, max_pages: int = 3,
+                 config: Optional[SearcherConfig] = None) -> SearchResults:
+        """
+        分页搜索（子类可重写以实现具体分页逻辑）
+
+        Args:
+            query: 搜索关键词
+            page: 起始页码
+            max_pages: 最大页数
+            config: 搜索配置
+
+        Returns:
+            SearchResults 包含所有页的结果
+        """
+        cfg = config or self.config
+        all_results = []
+        total_pages = max_pages
+
+        for p in range(page, page + max_pages):
+            page_results = self._search_page(query, p, cfg)
+            all_results.extend(page_results)
+            if len(page_results) < cfg.page_size:
+                break
+
+        return SearchResults(
+            source=self.source_name,
+            query=query,
+            total_results=len(all_results),
+            results=all_results,
+            metadata={"pages_scraped": len(all_results) // cfg.page_size + 1},
+        )
+
+    def search_with_pagination(self, query: str, max_pages: int = 3,
+                               config: Optional[SearcherConfig] = None) -> SearchResults:
+        """
+        带分页的搜索（统一入口）
+
+        Args:
+            query: 搜索关键词
+            max_pages: 最大页数
+            config: 搜索配置
+
+        Returns:
+            SearchResults 包含所有页的结果
+        """
+        return self.paginate(query, page=1, max_pages=max_pages, config=config)
+
+    def _search_page(self, query: str, page: int, config: SearcherConfig) -> List[SearchResult]:
+        """
+        搜索单页结果（子类可重写）
+
+        Args:
+            query: 搜索关键词
+            page: 页码
+            config: 搜索配置
+
+        Returns:
+            单页搜索结果列表
+        """
+        # 默认实现：调用 search 方法，忽略分页
+        import asyncio
+        try:
+            loop = asyncio.get_event_loop()
+            if loop.is_running():
+                return []
+            return loop.run_until_complete(self.search(query, config))
+        except RuntimeError:
+            return asyncio.run(self.search(query, config))
+
+    def search_with_pagination(self, query: str, max_pages: int = 3,
+                               config: Optional[SearcherConfig] = None) -> SearchResults:
+        """
+        带分页的搜索（统一入口）
+
+        Args:
+            query: 搜索关键词
+            max_pages: 最大页数
+            config: 搜索配置
+
+        Returns:
+            SearchResults 包含所有页的结果
+        """
+        return self.paginate(query, page=1, max_pages=max_pages, config=config)
+
+    def get_pagination_info(self) -> Dict[str, Any]:
+        """获取当前页面分页信息（占位，子类可重写）"""
+        return {"pagination_type": "unknown", "current_page": 1, "has_next": False}
 
 
 class AsyncBaseSearcher(BaseSearcher):

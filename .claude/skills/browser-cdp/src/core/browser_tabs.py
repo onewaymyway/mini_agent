@@ -34,6 +34,11 @@ from src.core.cdp_client import (
     is_debug_port_alive,
 )
 from src.core.utils import print_json, die
+from src.reliability.middleware import (
+    get_middleware,
+    OperationType,
+    with_error_handling,
+)
 
 
 # 标签页组定义格式：
@@ -46,6 +51,7 @@ from src.core.utils import print_json, die
 # }
 
 
+@with_error_handling("get_tab_info", OperationType.TAB, max_retries=2)
 def get_tab_info(session) -> dict:
     """获取当前标签页信息。"""
     js = """(() => {
@@ -103,6 +109,7 @@ def list_tabs_info(host: str = "127.0.0.1", port: int = 9222) -> list[dict]:
     return result
 
 
+@with_error_handling("create_tab", OperationType.NAVIGATION, max_retries=3)
 def create_tab(url: str = "about:blank", host: str = "127.0.0.1", port: int = 9222) -> dict:
     """创建新标签页。"""
     tab = new_tab(url, host, port)
@@ -115,12 +122,14 @@ def create_tab(url: str = "about:blank", host: str = "127.0.0.1", port: int = 92
     }
 
 
+@with_error_handling("switch_tab", OperationType.NAVIGATION, max_retries=3)
 def switch_tab(target_id: str, host: str = "127.0.0.1", port: int = 9222) -> dict:
     """切换到指定标签页。"""
     activate_tab(target_id, host, port)
     return {"switched_to": target_id, "timestamp": time.time()}
 
 
+@with_error_handling("close_tab", OperationType.NAVIGATION, max_retries=2)
 def close_tab_by_id(target_id: str, host: str = "127.0.0.1", port: int = 9222) -> bool:
     """关闭指定标签页。"""
     try:

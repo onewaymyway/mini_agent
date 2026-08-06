@@ -24,11 +24,11 @@ class ZhuanZhuanSearcher(BaseSearcher):
         
     @property
     def source_name(self) -> str:
-        return "转转"
-    
+        return "zhuanzhuan"
+
     @property
     def supported_types(self) -> list:
-        return ["secondhand", "electronics", "goods"]
+        return ["secondhand", "product_search", "price_compare", "phone_search", "digital_search", "electronics", "goods"]
     
     def search(self, query: str, max_results: int = 20, **kwargs) -> SearchResults:
         """搜索转转"""
@@ -52,6 +52,19 @@ class ZhuanZhuanSearcher(BaseSearcher):
             "source": self.source_name,
             "type": "secondhand"
         }
+
+    def health_check(self) -> dict:
+        """健康检查"""
+        return {
+            "source": self.source_name,
+            "status": "healthy",
+            "supported_types": self.supported_types,
+            "base_url": self.base_url,
+        }
+
+    def close(self):
+        """关闭资源"""
+        pass
 
 
 if __name__ == "__main__":

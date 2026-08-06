@@ -61,6 +61,16 @@ from .middleware import (
     with_error_handling,
     with_error_handling_async,
 )
+from .degradation import (
+    DegradationMode,
+    DegradationConfig,
+    DegradationHandler,
+    get_degradation_handler,
+    reset_degradation_handler,
+    degrade_skip,
+    degrade_error,
+    degrade_fallback,
+)
 
 __all__ = [
     # 错误分类
@@ -132,6 +142,15 @@ __all__ = [
     "reset_middleware",
     "with_error_handling",
     "with_error_handling_async",
+    # 降级策略
+    "DegradationMode",
+    "DegradationConfig",
+    "DegradationHandler",
+    "get_degradation_handler",
+    "reset_degradation_handler",
+    "degrade_skip",
+    "degrade_error",
+    "degrade_fallback",
 ]
 
 __version__ = "1.2.0"

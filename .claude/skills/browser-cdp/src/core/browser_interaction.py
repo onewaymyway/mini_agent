@@ -39,6 +39,21 @@ from typing import Optional, List, Dict, Any, Callable, Tuple
 from src.core.smart_wait import SmartWait, WaitConfig
 from src.core.enhanced_dynamic_loader import EnhancedDynamicLoader, ScrollConfig, ScrollResult
 from src.core.dynamic_page_support import DynamicPageSupport
+from src.reliability.middleware import (
+    get_middleware,
+    OperationType,
+    with_error_handling,
+    with_error_handling_async,
+)
+from src.reliability.error import (
+    ReliabilityError,
+    ErrorCategory,
+    CDPConnectionLostError,
+    NavigationTimeoutError,
+    ElementNotFoundError,
+    is_retryable,
+)
+from src.reliability.retry import RetryConfig, retry_operation_async
 
 logger = logging.getLogger(__name__)
 
@@ -166,6 +181,7 @@ class BrowserInteraction:
     # Infinite Scroll Loading
     # =========================================================================
     
+    @with_error_handling_async("infinite_scroll", OperationType.SCROLL, max_retries=3)
     async def infinite_scroll(
         self,
         item_selector: str = "",
@@ -209,6 +225,7 @@ class BrowserInteraction:
     # Form Submission
     # =========================================================================
     
+    @with_error_handling_async("submit_form", OperationType.INPUT, max_retries=3)
     async def submit_form(
         self,
         form_selector: str,
@@ -307,6 +324,7 @@ class BrowserInteraction:
     # Popup/Modal Handling
     # =========================================================================
     
+    @with_error_handling_async("handle_popup", OperationType.CLICK, max_retries=2)
     async def handle_popup(
         self,
         popup_type: PopupType = None,
@@ -435,6 +453,7 @@ class BrowserInteraction:
     # AJAX Request Monitoring
     # =========================================================================
     
+    @with_error_handling_async("wait_for_ajax", OperationType.WAIT, max_retries=2)
     async def wait_for_ajax(self, timeout: float = 15.0, min_requests: int = 0) -> List[AjaxRequest]:
         """Wait for AJAX requests to complete"""
         logger.info(f"Starting AJAX wait, timeout: {timeout}s")

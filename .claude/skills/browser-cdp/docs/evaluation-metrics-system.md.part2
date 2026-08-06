@@ -1,0 +1,296 @@
+
+---
+
+## 3. 元素定位能力指标（权重 25%）
+
+### 3.1 元素定位成功率（ELR）
+
+| 属性 | 说明 |
+|------|------|
+| 指标代码 | ELR |
+| 全称 | Element Locate Rate |
+| 定义 | 成功定位目标元素的比例 |
+| 计算方法 | ELR = (成功定位次数 / 总定位尝试次数) × 100% |
+| 目标值 | ≥ 90% |
+| 权重 | 35% |
+| 数据采集 | 元素定位日志 |
+| 测量方式 | 自动化测试执行 |
+
+**计算公式**:
+```python
+ELR = (successful_locates / total_locate_attempts) * 100
+```
+
+**评分函数**:
+```python
+def elr_score(elr):
+    if elr >= 95:
+        return 100
+    elif elr >= 90:
+        return 75 + (elr - 90) * 5
+    elif elr >= 80:
+        return 60 + (elr - 80) * 1.5
+    elif elr >= 70:
+        return 40 + (elr - 70) * 2
+    else:
+        return elr * 0.5
+```
+
+### 3.2 交互成功率（ISR）
+
+| 属性 | 说明 |
+|------|------|
+| 指标代码 | ISR |
+| 全称 | Interaction Success Rate |
+| 定义 | 成功执行点击/输入等交互的比例 |
+| 计算方法 | ISR = (成功交互次数 / 总交互尝试次数) × 100% |
+| 目标值 | ≥ 85% |
+| 权重 | 30% |
+| 数据采集 | 交互操作日志 |
+| 测量方式 | 自动化测试执行 |
+
+**计算公式**:
+```python
+ISR = (successful_interactions / total_interaction_attempts) * 100
+```
+
+**评分函数**:
+```python
+def isr_score(isr):
+    if isr >= 90:
+        return 100
+    elif isr >= 85:
+        return 75 + (isr - 85) * 5
+    elif isr >= 75:
+        return 60 + (isr - 75) * 1.5
+    elif isr >= 65:
+        return 40 + (isr - 65) * 2
+    else:
+        return isr * 0.5
+```
+
+### 3.3 动态元素识别率（DER）
+
+| 属性 | 说明 |
+|------|------|
+| 指标代码 | DER |
+| 全称 | Dynamic Element Rate |
+| 定义 | 动态加载元素的识别能力 |
+| 计算方法 | DER = (识别动态元素数 / 总动态元素数) × 100% |
+| 目标值 | ≥ 80% |
+| 权重 | 20% |
+| 数据采集 | 动态元素检测日志 |
+| 测量方式 | 自动化测试执行 |
+
+**计算公式**:
+```python
+DER = (identified_dynamic_elements / total_dynamic_elements) * 100
+```
+
+**评分函数**:
+```python
+def der_score(der):
+    if der >= 90:
+        return 100
+    elif der >= 80:
+        return 75 + (der - 80) * 2.5
+    elif der >= 70:
+        return 60 + (der - 70) * 1.5
+    elif der >= 60:
+        return 40 + (der - 60) * 2
+    else:
+        return der * 0.5
+```
+
+### 3.4 定位策略覆盖率（LSC）
+
+| 属性 | 说明 |
+|------|------|
+| 指标代码 | LSC |
+| 全称 | Locator Strategy Coverage |
+| 定义 | 使用的定位策略种类 |
+| 计算方法 | LSC = (已验证策略数 / 总策略数) × 100% |
+| 目标值 | ≥ 70% |
+| 权重 | 15% |
+| 数据采集 | 策略使用日志 |
+| 测量方式 | 自动化测试执行 |
+
+**计算公式**:
+```python
+LSC = (verified_strategies / total_strategies) * 100
+```
+
+**评分函数**:
+```python
+def lsc_score(lsc):
+    if lsc >= 85:
+        return 100
+    elif lsc >= 70:
+        return 75 + (lsc - 70) * 1.67
+    elif lsc >= 55:
+        return 60 + (lsc - 55) * 1.33
+    elif lsc >= 40:
+        return 40 + (lsc - 40) * 1.33
+    else:
+        return lsc * 0.67
+```
+
+### 3.5 元素定位能力综合得分
+
+```python
+def element_locate_score(elr, isr, der, lsc):
+    return (
+        elr_score(elr) * 0.35 +
+        isr_score(isr) * 0.30 +
+        der_score(der) * 0.20 +
+        lsc_score(lsc) * 0.15
+    )
+```
+
+---
+
+## 4. 数据提取能力指标（权重 20%）
+
+### 4.1 数据提取准确率（EA）
+
+| 属性 | 说明 |
+|------|------|
+| 指标代码 | EA |
+| 全称 | Extraction Accuracy |
+| 定义 | 提取数据与真实值一致的比例 |
+| 计算方法 | EA = (正确提取条数 / 总提取条数) × 100% |
+| 目标值 | ≥ 85% |
+| 权重 | 40% |
+| 数据采集 | 提取结果验证 |
+| 测量方式 | 人工/自动验证 |
+
+**计算公式**:
+```python
+EA = (correct_extractions / total_extractions) * 100
+```
+
+**评分函数**:
+```python
+def ea_score(ea):
+    if ea >= 90:
+        return 100
+    elif ea >= 85:
+        return 75 + (ea - 85) * 5
+    elif ea >= 80:
+        return 60 + (ea - 80) * 3
+    elif ea >= 70:
+        return 40 + (ea - 70) * 2
+    else:
+        return ea * 0.5
+```
+
+### 4.2 字段完整率（FC）
+
+| 属性 | 说明 |
+|------|------|
+| 指标代码 | FC |
+| 全称 | Field Completeness |
+| 定义 | 成功提取的字段数占预期字段数的比例 |
+| 计算方法 | FC = (已提取字段数 / 预期字段数) × 100% |
+| 目标值 | ≥ 80% |
+| 权重 | 30% |
+| 数据采集 | 字段提取日志 |
+| 测量方式 | 自动化验证 |
+
+**计算公式**:
+```python
+FC = (extracted_fields / expected_fields) * 100
+```
+
+**评分函数**:
+```python
+def fc_score(fc):
+    if fc >= 90:
+        return 100
+    elif fc >= 80:
+        return 75 + (fc - 80) * 2.5
+    elif fc >= 70:
+        return 60 + (fc - 70) * 1.5
+    elif fc >= 60:
+        return 40 + (fc - 60) * 2
+    else:
+        return fc * 0.5
+```
+
+### 4.3 数据质量得分（DQS）
+
+| 属性 | 说明 |
+|------|------|
+| 指标代码 | DQS |
+| 全称 | Data Quality Score |
+| 定义 | 提取数据的完整性和准确性综合评分 |
+| 计算方法 | DQS = EA × 0.6 + FC × 0.4 |
+| 目标值 | ≥ 80% |
+| 权重 | 20% |
+| 数据采集 | 提取结果验证 |
+| 测量方式 | 自动计算 |
+
+**计算公式**:
+```python
+DQS = EA * 0.6 + FC * 0.4
+```
+
+**评分函数**:
+```python
+def dqs_score(dqs):
+    if dqs >= 85:
+        return 100
+    elif dqs >= 80:
+        return 75 + (dqs - 80) * 5
+    elif dqs >= 70:
+        return 60 + (dqs - 70) * 1.5
+    elif dqs >= 60:
+        return 40 + (dqs - 60) * 2
+    else:
+        return dqs * 0.5
+```
+
+### 4.4 结构化提取成功率（SER）
+
+| 属性 | 说明 |
+|------|------|
+| 指标代码 | SER |
+| 全称 | Structured Extraction Rate |
+| 定义 | 成功提取结构化数据的比例 |
+| 计算方法 | SER = (成功提取结构化数据次数 / 总尝试次数) × 100% |
+| 目标值 | ≥ 75% |
+| 权重 | 10% |
+| 数据采集 | 结构化数据提取日志 |
+| 测量方式 | 自动化测试执行 |
+
+**计算公式**:
+```python
+SER = (successful_structured / total_structured_attempts) * 100
+```
+
+**评分函数**:
+```python
+def ser_score(ser):
+    if ser >= 85:
+        return 100
+    elif ser >= 75:
+        return 75 + (ser - 75) * 2.5
+    elif ser >= 65:
+        return 60 + (ser - 65) * 1.5
+    elif ser >= 55:
+        return 40 + (ser - 55) * 2
+    else:
+        return ser * 0.5
+```
+
+### 4.5 数据提取能力综合得分
+
+```python
+def extraction_score(ea, fc, dqs, ser):
+    return (
+        ea_score(ea) * 0.40 +
+        fc_score(fc) * 0.30 +
+        dqs_score(dqs) * 0.20 +
+        ser_score(ser) * 0.10
+    )
+```

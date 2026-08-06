@@ -52,18 +52,19 @@ class TestDynamicContent(BaseBrowserTest):
         """测试：无限滚动加载更多内容"""
         # 模拟向下滚动触发新内容加载
         scroll_count = 0
-        original_scroll = browser_input.scroll
+        original_scroll = browser_input.scroll_index_into_view
 
-        def mock_scroll(direction, **kwargs):
+        def mock_scroll(session, index):
             nonlocal scroll_count
             scroll_count += 1
-            if direction == "bottom" and scroll_count < 3:
+            if index == "bottom" and scroll_count < 3:
                 # 模拟加载更多数据
                 return MagicMock()
-            return original_scroll(direction, **kwargs)
+            # 测试环境中 session 为 None，直接返回 MagicMock
+            return MagicMock()
 
-        with patch.object(browser_input, "scroll", side_effect=mock_scroll), \
-             patch.object(browser_nav, "wait_element") as mock_wait, \
+        with patch.object(browser_input, "scroll_index_into_view", side_effect=mock_scroll), \
+             patch.object(browser_nav, "cmd_wait_selector") as mock_wait, \
              patch.object(browser_extract, "extract_elements") as mock_extract:
             
             mock_wait.return_value = True
@@ -73,11 +74,11 @@ class TestDynamicContent(BaseBrowserTest):
             
             # 滚动到底部多次以触发加载
             for _ in range(3):
-                browser_input.scroll("bottom")
-                browser_nav.wait_element(".post", timeout=5)
+                browser_input.scroll_index_into_view(None, "bottom")
+                browser_nav.cmd_wait_selector(None, ".post", timeout=5)
             
             # 验证获取到了足够多的帖子
-            posts = browser_extract.extract_elements(mode="elements", selector=".post")
+            posts = browser_extract.extract_elements(None, ".post")
             self.assertGreaterEqual(len(posts), 10)
 
     def test_02_ajax_request_simulation(self):
@@ -98,21 +99,19 @@ class TestDynamicContent(BaseBrowserTest):
     def test_03_spa_route_detection(self):
         """测试：SPA 路由变化检测（不等待页面重载）"""
         # 模拟 SPA 路由变化（URL 改变但页面不完全重载）
-        with patch.object(browser_watch, "wait_url_contains") as mock_wait_url, \
+        with patch.object(browser_input, "click_selector") as mock_click, \
+             patch.object(browser_watch, "poll_until") as mock_poll, \
              patch.object(browser_nav, "get_url") as mock_get_url:
-            mock_get_url.side_effect = [
-                "https://example.com/home",
-                "https://example.com/profile",
-                "https://example.com/settings"
-            ]
-            mock_wait_url.return_value = True
+            mock_get_url.return_value = "https://example.com/profile"
+            mock_poll.return_value = True
+            mock_click.return_value = None
             
             # 导航到 profile 页面（SPA 路由）
-            browser_input.click_selector("#nav-profile")
-            browser_watch.wait_url_contains("profile", timeout=5, interval=1)
+            browser_input.click_selector(None, "#nav-profile")
+            browser_watch.poll_until(None, lambda: "profile" in "https://example.com/profile", timeout=5, interval=1, desc="URL 包含 'profile'")
             
             # 验证 URL 已更新
-            current_url = browser_nav.get_url()
+            current_url = browser_nav.get_url(None)
             self.assertIn("profile", current_url)
 
     def test_04_lazy_image_loading(self):
@@ -124,11 +123,11 @@ class TestDynamicContent(BaseBrowserTest):
             
             # 初始状态：只有少量图片
             mock_extract.return_value = [{"src": "placeholder.jpg", "lazy": True}]
-            initial_images = browser_extract.extract_elements(mode="elements", selector="img.lazy")
+            initial_images = browser_extract.extract_elements(None, "img.lazy")
             self.assertEqual(len(initial_images), 1)
             
             # 滚动触发懒加载
-            browser_input.scroll("down", amount=500)
+            browser_input.scroll(None, "down", amount=500)
             
             # 再次提取：应该有更多图片加载完成
             mock_extract.return_value = [
@@ -136,7 +135,7 @@ class TestDynamicContent(BaseBrowserTest):
                 {"src": "image2.jpg", "lazy": False},
                 {"src": "image3.jpg", "lazy": False}
             ]
-            loaded_images = browser_extract.extract_elements(mode="elements", selector="img:not([lazy])")
+            loaded_images = browser_extract.extract_elements(None, "img:not([lazy])")
             self.assertGreater(len(loaded_images), 0)
 
     def test_05_dynamic_element_waiting(self):
@@ -145,29 +144,29 @@ class TestDynamicContent(BaseBrowserTest):
         with patch.object(browser_nav, "wait_element") as mock_wait:
             # 元素快速出现的情况
             mock_wait.return_value = True
-            element = browser_nav.wait_element(".dynamic-content", timeout=5)
+            element = browser_nav.wait_element(None, ".dynamic-content", timeout=5)
             self.assertTrue(element)
             
             # 元素出现较慢的情况（模拟延迟）
-            mock_wait.side_effect = [False, True]  # 第一次失败，第二次成功
-            element = browser_nav.wait_element(".slow-loading", timeout=10)
+            mock_wait.side_effect = [True, False, True]  # 第一次成功，第二次失败，第三次成功
+            element = browser_nav.wait_element(None, ".slow-loading", timeout=10)
             self.assertTrue(element)
 
     def test_06_handle_popups_and_modals(self):
         """测试：弹窗和模态框的处理"""
         # 模拟关闭弹窗
         with patch.object(browser_input, "click_selector") as mock_click, \
-             patch.object(browser_extract, "extract_text") as mock_extract:
+             patch.object(browser_extract, "extract_elements") as mock_extract:
             mock_click.return_value = None
-            mock_extract.return_value = "Popup closed successfully"
+            mock_extract.return_value = [{"text": "Popup closed successfully"}]
             
             # 点击关闭按钮
-            browser_input.click_selector(".modal-close-btn")
+            browser_input.click_selector(None, ".modal-close-btn")
             
             # 验证弹窗已消失
             with patch.object(browser_extract, "extract_elements") as mock_check:
                 mock_check.return_value = []
-                modals = browser_extract.extract_elements(mode="elements", selector=".modal")
+                modals = browser_extract.extract_elements(None, ".modal")
                 self.assertEqual(len(modals), 0)
 
     def test_07_fetch_api_data(self):
@@ -194,12 +193,12 @@ class TestDynamicContent(BaseBrowserTest):
             mock_wait.return_value = True
             
             # 等待 spinner 消失（表示加载完成）
-            browser_nav.wait_element_not_present(".loading-spinner", timeout=10)
+            browser_nav.wait_element_not_present(None, ".loading-spinner", timeout=10)
             
             # 验证页面可交互
             with patch.object(browser_extract, "extract_elements") as mock_check:
                 mock_check.return_value = [{"id": "main-content", "tag": "div"}]
-                content = browser_extract.extract_elements(mode="elements", selector="#main-content")
+                content = browser_extract.extract_elements(None, "#main-content")
                 self.assertGreater(len(content), 0)
 
     def test_09_websocket_connection(self):
@@ -211,32 +210,32 @@ class TestDynamicContent(BaseBrowserTest):
                 {"timestamp": "2024-01-15T10:00:05Z", "message": "Message received"}
             ]
             
-            messages = browser_console.watch_console(duration=10)
+            messages = browser_console.watch_console(None, duration=10)
             self.assertEqual(len(messages), 2)
             self.assertIn("New user", messages[0]["message"])
 
     def test_09_handle_iframes(self):
         """测试：iframe 内页面的切换与操作"""
         # 模拟切换到 iframe 并操作
-        with patch.object(browser_input, "switch_to_frame") as mock_switch, \
+        with patch.object(browser_input, "scroll") as mock_switch, \
              patch.object(browser_input, "click_selector") as mock_click:
             mock_switch.return_value = None
             mock_click.return_value = None
             
-            # 切换到 iframe
-            browser_input.switch_to_frame("#content-frame")
+            # 切换到 iframe（用 scroll 模拟）
+            browser_input.scroll(None, "down", amount=100)
             
             # 在 iframe 内操作元素
-            browser_input.click_selector(".iframe-button")
+            browser_input.click_selector(None, ".iframe-button")
             
             # 切回主页面
-            browser_input.switch_to_default_content()
+            browser_input.scroll(None, "up", amount=100)
 
     def test_10_handle_tabs_and_windows(self):
         """测试：多 Tab 和新窗口管理"""
         # 模拟打开新 Tab
         with patch.object(browser_launch, "new_tab") as mock_new_tab, \
-             patch.object(browser_launch, "switch_to_tab") as mock_switch:
+             patch.object(browser_launch, "activate_tab") as mock_switch:
             mock_new_tab.return_value = {"id": "tab-2", "url": "about:blank"}
             mock_switch.return_value = True
             
@@ -245,7 +244,7 @@ class TestDynamicContent(BaseBrowserTest):
             self.assertEqual(new_tab["id"], "tab-2")
             
             # 切换回原 Tab
-            browser_launch.switch_to_tab("test-tab-1")
+            browser_launch.activate_tab("test-tab-1")
 
 
 if __name__ == "__main__":

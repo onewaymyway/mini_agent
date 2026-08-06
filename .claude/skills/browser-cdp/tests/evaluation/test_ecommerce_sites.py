@@ -8,6 +8,7 @@
 - 详情页访问
 - 价格提取
 - 分页浏览
+- 拼团信息提取
 """
 import pytest
 import sys
@@ -48,8 +49,18 @@ class TestTaobao:
         result = runner._run_scenario(scenario, taobao_config, mock_mode=True)
         assert result.success is True
 
+    def test_click_detail(self, runner, taobao_config):
+        scenario = {"id": "TB-04", "name": "详情页访问", "action": "click_detail", "dimension": "元素定位准确率"}
+        result = runner._run_scenario(scenario, taobao_config, mock_mode=True)
+        assert result.success is True
+
     def test_extract_price(self, runner, taobao_config):
         scenario = {"id": "TB-05", "name": "价格提取", "action": "extract_price", "dimension": "抓取成功率"}
+        result = runner._run_scenario(scenario, taobao_config, mock_mode=True)
+        assert result.success is True
+
+    def test_pagination(self, runner, taobao_config):
+        scenario = {"id": "TB-06", "name": "分页浏览", "action": "paginate", "dimension": "稳定性"}
         result = runner._run_scenario(scenario, taobao_config, mock_mode=True)
         assert result.success is True
 
@@ -82,6 +93,21 @@ class TestJD:
         result = runner._run_scenario(scenario, jd_config, mock_mode=True)
         assert result.success is True
 
+    def test_extract_list(self, runner, jd_config):
+        scenario = {"id": "JD-03", "name": "列表提取", "action": "extract_list", "dimension": "抓取成功率"}
+        result = runner._run_scenario(scenario, jd_config, mock_mode=True)
+        assert result.success is True
+
+    def test_click_detail(self, runner, jd_config):
+        scenario = {"id": "JD-04", "name": "详情页访问", "action": "click_detail", "dimension": "元素定位准确率"}
+        result = runner._run_scenario(scenario, jd_config, mock_mode=True)
+        assert result.success is True
+
+    def test_extract_price(self, runner, jd_config):
+        scenario = {"id": "JD-05", "name": "价格提取", "action": "extract_price", "dimension": "抓取成功率"}
+        result = runner._run_scenario(scenario, jd_config, mock_mode=True)
+        assert result.success is True
+
     def test_extract_specs(self, runner, jd_config):
         scenario = {"id": "JD-06", "name": "规格提取", "action": "extract_specs", "dimension": "抓取成功率"}
         result = runner._run_scenario(scenario, jd_config, mock_mode=True)
@@ -94,13 +120,57 @@ class TestJD:
         assert result.overall_score > 0
 
 
+class TestPDD:
+    """拼多多评估测试"""
+
+    @pytest.fixture
+    def runner(self):
+        return EvaluationRunner(config={"delay_between_sites": 0})
+
+    @pytest.fixture
+    def pdd_config(self):
+        configs = get_websites_by_priority("P1")
+        return next((c for c in configs if c.name == "拼多多"), None)
+
+    def test_navigate_homepage(self, runner, pdd_config):
+        scenario = {"id": "PDD-01", "name": "首页访问", "action": "navigate", "dimension": "页面访问成功率"}
+        result = runner._run_scenario(scenario, pdd_config, mock_mode=True)
+        assert result.success is True
+
+    def test_search_products(self, runner, pdd_config):
+        scenario = {"id": "PDD-02", "name": "商品搜索", "action": "search", "dimension": "元素定位准确率"}
+        result = runner._run_scenario(scenario, pdd_config, mock_mode=True)
+        assert result.success is True
+
+    def test_extract_list(self, runner, pdd_config):
+        scenario = {"id": "PDD-03", "name": "列表提取", "action": "extract_list", "dimension": "抓取成功率"}
+        result = runner._run_scenario(scenario, pdd_config, mock_mode=True)
+        assert result.success is True
+
+    def test_click_detail(self, runner, pdd_config):
+        scenario = {"id": "PDD-04", "name": "详情页访问", "action": "click_detail", "dimension": "元素定位准确率"}
+        result = runner._run_scenario(scenario, pdd_config, mock_mode=True)
+        assert result.success is True
+
+    def test_extract_group_price(self, runner, pdd_config):
+        scenario = {"id": "PDD-05", "name": "拼团价格提取", "action": "extract_group_price", "dimension": "抓取成功率"}
+        result = runner._run_scenario(scenario, pdd_config, mock_mode=True)
+        assert result.success is True
+
+    def test_full_evaluation(self, runner, pdd_config):
+        result = runner.run_website(pdd_config, mock_mode=True)
+        assert result.website_name == "拼多多"
+        assert len(result.scenarios) == 5
+        assert result.overall_score > 0
+
+
 class TestEcommerceIntegration:
     """电商平台集成测试"""
 
     def test_all_ecommerce_sites(self):
         configs = get_websites_by_priority("P1")
         ecommerce_sites = [c for c in configs if c.category == "电商平台"]
-        assert len(ecommerce_sites) >= 2
+        assert len(ecommerce_sites) >= 3
 
         runner = EvaluationRunner(config={"delay_between_sites": 0})
         for config in ecommerce_sites:

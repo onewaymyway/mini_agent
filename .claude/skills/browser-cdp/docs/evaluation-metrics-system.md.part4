@@ -1,0 +1,230 @@
+
+---
+
+## 7. 综合评分计算
+
+### 7.1 综合评分公式
+
+```python
+def calculate_overall_score(
+    page_loading_score,
+    element_locate_score,
+    extraction_score,
+    anti_detection_score,
+    stability_score
+):
+    return (
+        page_loading_score * 0.25 +
+        element_locate_score * 0.25 +
+        extraction_score * 0.20 +
+        anti_detection_score * 0.15 +
+        stability_score * 0.15
+    )
+```
+
+### 7.2 等级判定
+
+| 综合得分 | 等级 | 说明 | 建议操作 |
+|----------|------|------|----------|
+| 90-100 | 优秀 (A) | 抓取能力成熟，可稳定生产使用 | 直接部署 |
+| 75-89 | 良好 (B) | 基本可用，个别场景需优化 | 针对性优化 |
+| 60-74 | 合格 (C) | 核心功能可用，需持续改进 | 制定改进计划 |
+| 40-59 | 待改进 (D) | 存在明显短板，需重点优化 | 优先修复关键问题 |
+| < 40 | 不可用 (F) | 当前能力无法支持该网站 | 重新评估可行性 |
+
+```python
+def determine_grade(score):
+    if score >= 90:
+        return "A", "优秀"
+    elif score >= 75:
+        return "B", "良好"
+    elif score >= 60:
+        return "C", "合格"
+    elif score >= 40:
+        return "D", "待改进"
+    else:
+        return "F", "不可用"
+```
+
+### 7.3 通过标准判定
+
+| 优先级 | 综合评分 | 抓取成功率 | 说明 |
+|--------|----------|-----------|------|
+| P0 | ≥ 75 | ≥ 80% | 核心网站，必须达标 |
+| P1 | ≥ 65 | ≥ 70% | 重要网站，基本可用 |
+| P2 | ≥ 55 | ≥ 60% | 扩展网站，核心功能可用 |
+| P3 | ≥ 50 | ≥ 50% | 探索网站，最低可用标准 |
+
+```python
+def check_pass_standard(score, success_rate, priority):
+    standards = {
+        "P0": {"score": 75, "rate": 80},
+        "P1": {"score": 65, "rate": 70},
+        "P2": {"score": 55, "rate": 60},
+        "P3": {"score": 50, "rate": 50}
+    }
+    
+    standard = standards.get(priority, standards["P3"])
+    return score >= standard["score"] and success_rate >= standard["rate"]
+```
+
+---
+
+## 8. 数据采集规范
+
+### 8.1 数据采集方式
+
+| 数据类型 | 采集方式 | 采集频率 | 存储位置 |
+|----------|----------|----------|----------|
+| 页面加载时间 | CDP Performance API | 每次评估 | logs/perf_*.json |
+| 元素定位日志 | 自动化测试框架 | 每次评估 | logs/element_*.json |
+| 数据提取结果 | 提取引擎输出 | 每次评估 | output/data_*.json |
+| 反爬触发日志 | 反检测模块 | 每次评估 | logs/anti_crawl_*.json |
+| 异常恢复日志 | 异常处理模块 | 每次评估 | logs/error_recovery_*.json |
+| 内存使用数据 | 系统监控 | 持续监控 | logs/memory_*.json |
+
+### 8.2 数据采集接口
+
+```python
+class DataCollector:
+    """数据采集器"""
+    
+    def __init__(self):
+        self.performance_collector = PerformanceCollector()
+        self.element_collector = ElementCollector()
+        self.extraction_collector = ExtractionCollector()
+        self.anti_crawl_collector = AntiCrawlCollector()
+        self.stability_collector = StabilityCollector()
+    
+    def collect_page_loading_data(self, website):
+        """采集页面加载数据"""
+        return {
+            "page_access_rate": self._calculate_page_access_rate(website),
+            "first_contentful_paint": self.performance_collector.get_fcp(website),
+            "page_load_time": self.performance_collector.get_plt(website),
+            "timeout_handling_rate": self._calculate_timeout_rate(website)
+        }
+    
+    def collect_element_locate_data(self, website):
+        """采集元素定位数据"""
+        return {
+            "element_locate_rate": self.element_collector.get_locate_rate(website),
+            "interaction_success_rate": self.element_collector.get_interaction_rate(website),
+            "dynamic_element_rate": self.element_collector.get_dynamic_rate(website),
+            "locator_strategy_coverage": self.element_collector.get_strategy_coverage(website)
+        }
+    
+    def collect_extraction_data(self, website):
+        """采集数据提取数据"""
+        return {
+            "extraction_accuracy": self.extraction_collector.get_accuracy(website),
+            "field_completeness": self.extraction_collector.get_completeness(website),
+            "data_quality_score": self.extraction_collector.get_quality_score(website),
+            "structured_extraction_rate": self.extraction_collector.get_structured_rate(website)
+        }
+    
+    def collect_anti_detection_data(self, website):
+        """采集反检测数据"""
+        return {
+            "anti_crawl_bypass_rate": self.anti_crawl_collector.get_bypass_rate(website),
+            "captcha_pass_rate": self.anti_crawl_collector.get_captcha_rate(website),
+            "fingerprint_evasion_rate": self.anti_crawl_collector.get_fingerprint_rate(website),
+            "behavior_naturalness": self.anti_crawl_collector.get_naturalness(website)
+        }
+    
+    def collect_stability_data(self, website):
+        """采集稳定性数据"""
+        return {
+            "execution_consistency": self.stability_collector.get_consistency(website),
+            "error_recovery_rate": self.stability_collector.get_recovery_rate(website),
+            "connection_stability": self.stability_collector.get_connection_stability(website),
+            "memory_stability": self.stability_collector.get_memory_stability(website)
+        }
+```
+
+---
+
+## 9. 指标监控与告警
+
+### 9.1 监控阈值
+
+| 指标 | 警告阈值 | 严重阈值 | 告警方式 |
+|------|----------|----------|----------|
+| 页面访问成功率 | < 90% | < 80% | 邮件+钉钉 |
+| 元素定位成功率 | < 85% | < 75% | 邮件+钉钉 |
+| 数据提取准确率 | < 80% | < 70% | 邮件+钉钉 |
+| 反爬绕过率 | < 60% | < 50% | 邮件+钉钉 |
+| 异常恢复率 | < 70% | < 60% | 邮件+钉钉 |
+| 综合评分 | < 70 | < 60 | 邮件+钉钉 |
+
+### 9.2 告警规则
+
+```yaml
+告警规则:
+  - 名称: 页面访问成功率下降
+    条件: PAR < 90%
+    级别: 警告
+    通知: [email]
+  
+  - 名称: 元素定位成功率严重下降
+    条件: ELR < 75%
+    级别: 严重
+    通知: [email, dingtalk]
+  
+  - 名称: 综合评分低于标准
+    条件: 综合评分 < 优先级标准
+    级别: 严重
+    通知: [email, dingtalk]
+  
+  - 名称: 反爬绕过率过低
+    条件: ACBR < 50%
+    级别: 紧急
+    通知: [email, dingtalk, phone]
+```
+
+### 9.3 趋势分析
+
+| 分析类型 | 分析周期 | 分析方法 | 输出物 |
+|----------|----------|----------|--------|
+| 周趋势 | 7天 | 对比上周同期 | 趋势图表 |
+| 月趋势 | 30天 | 对比上月同期 | 趋势报告 |
+| 网站趋势 | 按需 | 单网站历史对比 | 网站分析报告 |
+
+---
+
+## 10. 指标缩写对照表
+
+| 缩写 | 全称 | 说明 |
+|------|------|------|
+| PAR | Page Access Rate | 页面访问成功率 |
+| FCP | First Contentful Paint | 首屏加载时间 |
+| PLT | Page Load Time | 页面完全加载时间 |
+| THR | Timeout Handling Rate | 超时处理成功率 |
+| ELR | Element Locate Rate | 元素定位成功率 |
+| ISR | Interaction Success Rate | 交互成功率 |
+| DER | Dynamic Element Rate | 动态元素识别率 |
+| LSC | Locator Strategy Coverage | 定位策略覆盖率 |
+| EA | Extraction Accuracy | 数据提取准确率 |
+| FC | Field Completeness | 字段完整率 |
+| DQS | Data Quality Score | 数据质量得分 |
+| SER | Structured Extraction Rate | 结构化提取成功率 |
+| ACBR | Anti-Crawl Bypass Rate | 反爬绕过率 |
+| CPR | Captcha Pass Rate | 验证码通过率 |
+| FER | Fingerprint Evasion Rate | 指纹伪装有效性 |
+| BN | Behavior Naturalness | 行为模拟自然度 |
+| EC | Execution Consistency | 重复执行一致性 |
+| ERR | Error Recovery Rate | 异常恢复率 |
+| CS | Connection Stability | 连接稳定性 |
+| MS | Memory Stability | 内存稳定性 |
+
+---
+
+## 11. 参考文档
+
+- [evaluation-standards-v2.md](./evaluation-standards-v2.md) - 评估标准 v2.0
+- [assessment-metrics-v2.md](../references/assessment-metrics-v2.md) - 评估指标体系 v2.0
+- [evaluation-target.md](../references/evaluation-target.md) - 评估目标说明
+
+---
+
+*本文件为评估指标体系设计文档，请随系统演进持续更新*

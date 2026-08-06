@@ -209,16 +209,17 @@ class ConnectionPoolHealthChecker(ConnectionHealthChecker):
         # 从池中获取或创建新连接
         session = await self.connection_pool.get_session(url)
 
-        # 健康检查
-        health = await self.health_check()
+        # 对 session 做健康检查（而非对 pool 本身）
+        session_checker = ConnectionHealthChecker(session)
+        health = await session_checker.health_check()
         if not health["healthy"]:
             logger.warning(f"Session for {url} unhealthy, attempting reconnect")
-            reconnected = await self.auto_reconnect()
+            reconnected = await session_checker.auto_reconnect()
             if not reconnected:
                 raise CDPConnectionLostError(details={
                     "url": url,
                     "health": health,
-                    "status": self.get_status(),
+                    "status": session_checker.get_status(),
                 })
 
         return session

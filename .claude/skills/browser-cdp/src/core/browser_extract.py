@@ -16,6 +16,11 @@ import argparse
 import json
 
 from src.core.utils import add_connection_args, get_session, print_json, scan_interactive_elements
+from src.reliability.middleware import (
+    get_middleware,
+    OperationType,
+    with_error_handling,
+)
 
 
 TEXT_JS = r"""
@@ -64,6 +69,7 @@ META_JS = r"""
 """
 
 
+@with_error_handling("mode_html", OperationType.EXTRACT, max_retries=2)
 def mode_html(session) -> str:
     root = session.send("DOM.getDocument", {"depth": -1})
     node_id = root["root"]["nodeId"]
@@ -71,24 +77,46 @@ def mode_html(session) -> str:
     return result.get("outerHTML", "")
 
 
+@with_error_handling("mode_text", OperationType.EXTRACT, max_retries=2)
 def mode_text(session) -> str:
     """提取页面纯文本内容"""
     return session.eval_js(TEXT_JS) or ""
 
 
+@with_error_handling("mode_links", OperationType.EXTRACT, max_retries=2)
 def mode_links(session) -> list:
     """提取页面链接"""
     return session.eval_js(LINKS_JS) or []
 
 
+@with_error_handling("mode_forms", OperationType.EXTRACT, max_retries=2)
 def mode_forms(session) -> list:
     """提取页面表单"""
     return session.eval_js(FORMS_JS) or []
 
 
+@with_error_handling("mode_meta", OperationType.EXTRACT, max_retries=2)
 def mode_meta(session) -> dict:
     """提取页面元数据"""
     return session.eval_js(META_JS) or {}
+
+
+@with_error_handling("extract_elements", OperationType.EXTRACT, max_retries=2)
+def extract_elements(session, selector: str) -> list:
+    """提取指定选择器的元素列表"""
+    js = f"""
+    (() => {{
+        const elements = Array.from(document.querySelectorAll({selector!r}));
+        return elements.map((el, i) => ({{
+            index: i,
+            tag: el.tagName.toLowerCase(),
+            text: (el.innerText || el.value || '').trim().slice(0, 100),
+            id: el.id || null,
+            class: el.className || null,
+        }}));
+    }})()
+    """
+    return session.eval_js(js) or []
 
 
 def main():

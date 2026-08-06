@@ -267,6 +267,38 @@ class CDPSession:
             "headers": headers
         })
 
+    def query_selector_all(self, selector: str) -> list:
+        """通过 JS 查询所有匹配元素"""
+        return self.eval_js(f"""
+            () => {{
+                const elements = document.querySelectorAll({selector!r});
+                return Array.from(elements).map(el => {{
+                    const rect = el.getBoundingClientRect();
+                    return {{
+                        tagName: el.tagName,
+                        className: el.className,
+                        id: el.id,
+                        text: el.innerText || el.textContent || '',
+                        href: el.href || null,
+                        rect: rect ? {{x: rect.x, y: rect.y, width: rect.width, height: rect.height}} : null,
+                        attributes: Array.from(el.attributes).reduce((acc, attr) => {{
+                            acc[attr.name] = attr.value;
+                            return acc;
+                        }}, {{}})
+                    }};
+                }});
+            }}
+        """)
+
+    def query_selector(self, selector: str):
+        """通过 JS 查询第一个匹配元素"""
+        elements = self.query_selector_all(selector)
+        return elements[0] if elements else None
+
+    async def eval_js_async(self, expression: str, await_promise: bool = False, timeout: Optional[float] = None) -> Any:
+        """异步版本的 eval_js（兼容异步调用）"""
+        return self.eval_js(expression, await_promise, timeout)
+
 
 def _match_params(params: dict, match: Optional[dict]) -> bool:
     if not match:

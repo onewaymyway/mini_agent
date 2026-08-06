@@ -1,0 +1,202 @@
+# 评估指标体系设计
+
+**版本**: 1.0.0  
+**创建日期**: 2026-08-07  
+**状态**: 正式版  
+**适用范围**: browser-cdp skill 网站操作能力评估指标体系  
+**关联文档**: [evaluation-standards-v2.md](./evaluation-standards-v2.md)、[assessment-metrics-v2.md](../references/assessment-metrics-v2.md)
+
+---
+
+## 1. 指标体系总览
+
+### 1.1 指标层级结构
+
+```
+评估指标体系
+├── 一级指标（5个维度）
+│   ├── 页面加载能力（权重 25%）
+│   │   ├── 页面访问成功率（权重 40%）
+│   │   ├── 首屏加载时间（权重 25%）
+│   │   ├── 页面完全加载时间（权重 20%）
+│   │   └── 超时处理成功率（权重 15%）
+│   ├── 元素定位能力（权重 25%）
+│   │   ├── 元素定位成功率（权重 35%）
+│   │   ├── 交互成功率（权重 30%）
+│   │   ├── 动态元素识别率（权重 20%）
+│   │   └── 定位策略覆盖率（权重 15%）
+│   ├── 数据提取能力（权重 20%）
+│   │   ├── 数据提取准确率（权重 40%）
+│   │   ├── 字段完整率（权重 30%）
+│   │   ├── 数据质量得分（权重 20%）
+│   │   └── 结构化提取成功率（权重 10%）
+│   ├── 反检测能力（权重 15%）
+│   │   ├── 反爬绕过率（权重 40%）
+│   │   ├── 验证码通过率（权重 30%）
+│   │   ├── 指纹伪装有效性（权重 20%）
+│   │   └── 行为模拟自然度（权重 10%）
+│   └── 稳定性与恢复能力（权重 15%）
+│       ├── 重复执行一致性（权重 35%）
+│       ├── 异常恢复率（权重 30%）
+│       ├── 连接稳定性（权重 20%）
+│       └── 内存稳定性（权重 15%）
+└── 二级指标（20个核心指标）
+```
+
+### 1.2 指标汇总表
+
+| 一级指标 | 权重 | 二级指标数 | 核心指标代码 |
+|----------|------|-----------|-------------|
+| 页面加载能力 | 25% | 4 | PAR, FCP, PLT, THR |
+| 元素定位能力 | 25% | 4 | ELR, ISR, DER, LSC |
+| 数据提取能力 | 20% | 4 | EA, FC, DQS, SER |
+| 反检测能力 | 15% | 4 | ACBR, CPR, FER, BN |
+| 稳定性与恢复 | 15% | 4 | EC, ERR, CS, MS |
+
+---
+
+## 2. 页面加载能力指标（权重 25%）
+
+### 2.1 页面访问成功率（PAR）
+
+| 属性 | 说明 |
+|------|------|
+| 指标代码 | PAR |
+| 全称 | Page Access Rate |
+| 定义 | 成功加载目标页面的比例 |
+| 计算方法 | PAR = (成功访问次数 / 总尝试次数) × 100% |
+| 目标值 | ≥ 95% |
+| 权重 | 40% |
+| 数据采集 | CDP Network 事件、HTTP 状态码 |
+| 测量方式 | 自动化测试执行 |
+
+**计算公式**:
+```python
+PAR = (successful_visits / total_attempts) * 100
+```
+
+**评分函数**:
+```python
+def par_score(par):
+    if par >= 95:
+        return 100
+    elif par >= 90:
+        return 75 + (par - 90) * 5
+    elif par >= 80:
+        return 60 + (par - 80) * 1.5
+    elif par >= 70:
+        return 40 + (par - 70) * 2
+    else:
+        return par * 0.5
+```
+
+### 2.2 首屏加载时间（FCP）
+
+| 属性 | 说明 |
+|------|------|
+| 指标代码 | FCP |
+| 全称 | First Contentful Paint |
+| 定义 | 从导航到首屏内容可见的时间 |
+| 计算方法 | FCP = fcp_timestamp - navigation_start_timestamp |
+| 目标值 | ≤ 3s |
+| 权重 | 25% |
+| 数据采集 | CDP Performance 指标 |
+| 测量方式 | CDP Performance API |
+
+**计算公式**:
+```python
+FCP = fcp_timestamp - navigation_start_timestamp
+```
+
+**评分函数**:
+```python
+def fcp_score(fcp_seconds):
+    if fcp_seconds <= 2:
+        return 100
+    elif fcp_seconds <= 3:
+        return 100 - (fcp_seconds - 2) * 25
+    elif fcp_seconds <= 5:
+        return 75 - (fcp_seconds - 3) * 12.5
+    elif fcp_seconds <= 10:
+        return 50 - (fcp_seconds - 5) * 5
+    else:
+        return max(0, 50 - (fcp_seconds - 5) * 10)
+```
+
+### 2.3 页面完全加载时间（PLT）
+
+| 属性 | 说明 |
+|------|------|
+| 指标代码 | PLT |
+| 全称 | Page Load Time |
+| 定义 | 从导航到页面完全渲染的时间 |
+| 计算方法 | PLT = page_stable_timestamp - navigation_start_timestamp |
+| 目标值 | ≤ 10s |
+| 权重 | 20% |
+| 数据采集 | CDP Network idle 事件 |
+| 测量方式 | 自动化测试执行 |
+
+**计算公式**:
+```python
+PLT = page_stable_timestamp - navigation_start_timestamp
+```
+
+**评分函数**:
+```python
+def plt_score(plt_seconds):
+    if plt_seconds <= 5:
+        return 100
+    elif plt_seconds <= 10:
+        return 100 - (plt_seconds - 5) * 5
+    elif plt_seconds <= 15:
+        return 75 - (plt_seconds - 10) * 5
+    elif plt_seconds <= 20:
+        return 50 - (plt_seconds - 15) * 5
+    else:
+        return max(0, 50 - (plt_seconds - 15) * 5)
+```
+
+### 2.4 超时处理成功率（THR）
+
+| 属性 | 说明 |
+|------|------|
+| 指标代码 | THR |
+| 全称 | Timeout Handling Rate |
+| 定义 | 超时后正确处理的概率 |
+| 计算方法 | THR = (成功处理超时次数 / 总超时次数) × 100% |
+| 目标值 | ≥ 90% |
+| 权重 | 15% |
+| 数据采集 | 异常日志、重试记录 |
+| 测量方式 | 自动化测试执行 |
+
+**计算公式**:
+```python
+THR = (handled_timeouts / total_timeouts) * 100
+```
+
+**评分函数**:
+```python
+def thr_score(thr):
+    if thr >= 95:
+        return 100
+    elif thr >= 90:
+        return 75 + (thr - 90) * 5
+    elif thr >= 80:
+        return 60 + (thr - 80) * 1.5
+    elif thr >= 70:
+        return 40 + (thr - 70) * 2
+    else:
+        return thr * 0.5
+```
+
+### 2.5 页面加载能力综合得分
+
+```python
+def page_loading_score(par, fcp, plt, thr):
+    return (
+        par_score(par) * 0.40 +
+        fcp_score(fcp) * 0.25 +
+        plt_score(plt) * 0.20 +
+        thr_score(thr) * 0.15
+    )
+```

@@ -228,6 +228,18 @@ resources:
     path: references/browser-tabs.md
     description: 多标签页管理模块（browser_tabs.py）完整文档：标签页列表、切换、批量操作、标签页组管理
     triggers: 标签页管理, 多标签页, 批量操作, 标签页组, 标签页切换
+  - id: compatibility-test-framework
+    path: references/compatibility_test/README.md
+    description: 网站兼容性测试框架：覆盖电商/新闻/社交/政务四类网站，26 个网站 40+ 测试用例，统一评估指标体系
+    triggers: 兼容性测试, 网站测试, 测试框架, 评估指标, 测试报告
+  - id: website-tech-stack-research
+    path: references/website-tech-stack-research.md
+    description: 网站技术栈差异调研：电商/新闻/社交/政务四类网站技术特征对比分析
+    triggers: 技术栈调研, 网站分类, 技术特征, 反爬机制
+  - id: compatibility-test-framework-design
+    path: references/compatibility-test-framework-design.md
+    description: 兼容性测试框架设计文档：架构设计、数据模型、测试用例设计、评估指标体系
+    triggers: 框架设计, 架构设计, 测试用例, 评估体系
 ---
 
 # Browser CDP Skill
@@ -236,12 +248,16 @@ resources:
 核心优势：可以连接**用户正在使用的、已登录的真实浏览器窗口**，与用户协同操作，而不是每次都起一个
 干净的自动化浏览器丢失登录态。同时也支持在无 GUI 的服务器/沙盒环境里跑一个无头实例，专门做抓取。
 
+**Playwright 集成**：作为 CDP 的补充，提供高层 API 封装，支持反检测、智能等待、复杂交互等高级功能。
+适用于需要更强反检测能力或更简洁 API 的场景。
+
 脚本目录：`.claude/skills/browser-cdp/src/`
 
 | 脚本 | 用途 |
 |---|---|
 | `core/cdp_client.py` | 底层库，其他脚本导入用，一般不直接调用 |
 | `core/utils.py` | 底层库，公共辅助函数 |
+| `core/playwright_session.py` | Playwright 高层封装：反检测、智能等待、复杂交互 |
 | `core/browser_launch.py` | 确保/建立浏览器连接，管理 tab（列表/新建/关闭/激活） |
 | `core/browser_nav.py` | 打开网址、前进后退刷新、等待元素出现 |
 | `core/browser_extract.py` | 抓取内容：html/text/elements/forms/links/meta |

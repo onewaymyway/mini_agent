@@ -368,7 +368,7 @@ class TestEvaluationRunner:
         runner = EvaluationRunner(config=config)
         p0_configs = get_websites_by_priority("P0")
         report = runner.run_batch(p0_configs, mock_mode=True)
-        assert report.total_websites == 13
+        assert report.total_websites == 14
 
 
 class TestRunEvaluationFunction:
@@ -421,8 +421,8 @@ class TestIntegrationWithEvalConfig:
         p1 = get_websites_by_priority("P1")
         p2 = get_websites_by_priority("P2")
         p3 = get_websites_by_priority("P3")
-        assert len(p0) == 13, f"P0 网站数量应为 13，实际 {len(p0)}"
-        assert len(p1) == 5, f"P1 网站数量应为 5，实际 {len(p1)}"
+        assert len(p0) == 14, f"P0 网站数量应为 14，实际 {len(p0)}"
+        assert len(p1) == 9, f"P1 网站数量应为 9，实际 {len(p1)}"
         assert len(p2) == 5, f"P2 网站数量应为 5，实际 {len(p2)}"
         assert len(p3) == 4, f"P3 网站数量应为 4，实际 {len(p3)}"
 

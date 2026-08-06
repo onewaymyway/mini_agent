@@ -271,7 +271,8 @@ def spawn_browser(
             "--hide-scrollbars",
             "--mute-audio",
         ]
-    args.append(start_url)
+    if start_url:
+        args.append(start_url)
     # Windows 下沙盒相关参数一般不需要；Linux 容器里跑 root 常需要 --no-sandbox
     if platform.system() == "Linux" and hasattr(os, "geteuid") and os.geteuid() == 0:
         args.insert(1, "--no-sandbox")

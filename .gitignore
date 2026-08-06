@@ -48,3 +48,7 @@ sing_box/
 work_docs/
 temp_cdp
 .claude/skills/browser-cdp/logs/
+.claude/skills/browser-cdp/data/
+.claude/skills/browser-cdp/test_reports/
+.claude/skills/browser-cdp/test.elements.json
+.claude/skills/browser-cdp/output/

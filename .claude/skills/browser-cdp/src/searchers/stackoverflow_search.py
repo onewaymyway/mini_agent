@@ -32,7 +32,7 @@ from src.searchers.base import SearcherConfig, SearchResult, BaseSearcher
 from src.searchers.utils import (
     random_delay, get_random_ua, save_results, dedup_results, clean_text
 )
-from src.searchers.baidu_search import ensure_browser, run_cmd, PYTHON_CMD, SKILL_DIR
+from src.searchers.browser_utils import ensure_browser, run_cmd, PYTHON_CMD, SKILL_DIR
 
 
 # ========== Stack Overflow 专用配置 ==========

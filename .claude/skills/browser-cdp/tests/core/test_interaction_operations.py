@@ -47,6 +47,18 @@ class MockSession:
     async def query_selector_all(self, selector):
         return []
 
+    def subscribe(self, event: str, callback=None):
+        """模拟事件订阅"""
+        pass
+
+    def unsubscribe(self, event: str, callback=None):
+        """模拟事件取消订阅"""
+        pass
+
+    async def send(self, method: str, params: dict = None):
+        """模拟发送 CDP 命令"""
+        return {}
+
 
 async def test_click_operations():
     """测试点击操作"""

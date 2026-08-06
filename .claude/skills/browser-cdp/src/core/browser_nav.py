@@ -305,6 +305,39 @@ def cmd_wait_selector(session, selector: str, timeout: float):
     die(f"等待元素超时: {selector}")
 
 
+def get_url(session) -> str:
+    """获取当前页面 URL"""
+    return session.eval_js("location.href")
+
+
+def wait_element(session, selector: str, timeout: float = 10.0) -> bool:
+    """等待元素出现（返回 bool，不抛异常）"""
+    deadline = time.time() + timeout
+    js = f"!!document.querySelector({selector!r})"
+    while time.time() < deadline:
+        try:
+            if session.eval_js(js):
+                return True
+        except Exception:
+            pass
+        time.sleep(0.3)
+    return False
+
+
+def wait_element_not_present(session, selector: str, timeout: float = 10.0) -> bool:
+    """等待元素消失（返回 bool，不抛异常）"""
+    deadline = time.time() + timeout
+    js = f"!!document.querySelector({selector!r})"
+    while time.time() < deadline:
+        try:
+            if not session.eval_js(js):
+                return True
+        except Exception:
+            return True
+        time.sleep(0.3)
+    return False
+
+
 def current_state(session) -> dict:
     url = session.eval_js("location.href")
     title = session.eval_js("document.title")

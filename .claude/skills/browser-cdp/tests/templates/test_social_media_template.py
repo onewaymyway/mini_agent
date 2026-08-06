@@ -60,16 +60,16 @@ class TestSocialMedia(BaseBrowserTest):
     def test_02_infinite_scroll_loading(self):
         """测试：模拟无限滚动加载更多内容"""
         # 模拟向下滚动触发新内容加载
-        with patch.object(browser_input, "scroll") as mock_scroll, \
-             patch.object(browser_nav, "wait_element") as mock_wait:
+        with patch.object(browser_input, "scroll_index_into_view") as mock_scroll, \
+             patch.object(browser_nav, "cmd_wait_selector") as mock_wait:
             mock_scroll.return_value = None
             mock_wait.return_value = True
             
             # 滚动到底部
-            browser_input.scroll_index_into_view("bottom")
+            browser_input.scroll_index_into_view(None, "bottom")
             
             # 等待新内容加载完成
-            browser_nav.cmd_wait_selector(".post", timeout=10)
+            browser_nav.cmd_wait_selector(None, ".post", timeout=10)
             
             # 验证新帖子已出现
             with patch.object(browser_extract, "extract_elements") as mock_extract:
@@ -77,7 +77,7 @@ class TestSocialMedia(BaseBrowserTest):
                     {"id": "post-new-1", "text": "New post content..."},
                     {"id": "post-new-2", "text": "Another new post..."}
                 ]
-                posts = browser_extract.mode_html(mode="elements", selector=".post")
+                posts = browser_extract.extract_elements(mode="elements", selector=".post")
                 self.assertGreater(len(posts), 0)
 
     def test_03_post_text_content(self):

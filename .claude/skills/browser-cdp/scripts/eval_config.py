@@ -97,6 +97,24 @@ WEBSITE_CONFIGS: List[WebsiteConfig] = [
         expected_fields=["标题", "发布时间", "作者", "正文", "评论数"]
     ),
     WebsiteConfig(
+        name="财联社",
+        url="https://www.cls.cn",
+        priority="P1",
+        category="新闻资讯",
+        tech_stack="动态页面",
+        difficulty="L1-L2",
+        expected_score=75,
+        search_selector="input[placeholder*='搜索'], .search-input input, #searchInput",
+        scenarios=[
+            {"id": "CLS-01", "name": "首页访问", "action": "navigate", "dimension": "页面访问成功率"},
+            {"id": "CLS-02", "name": "快讯列表提取", "action": "extract_list", "dimension": "抓取成功率"},
+            {"id": "CLS-03", "name": "专题页访问", "action": "click_detail", "dimension": "元素定位准确率"},
+            {"id": "CLS-04", "name": "实时行情提取", "action": "extract_realtime", "dimension": "抓取成功率"},
+            {"id": "CLS-05", "name": "分页浏览", "action": "paginate", "dimension": "稳定性"},
+        ],
+        expected_fields=["标题", "发布时间", "内容摘要", "股票代码", "实时价格"]
+    ),
+    WebsiteConfig(
         name="知乎",
         url="https://www.zhihu.com",
         priority="P0",
@@ -113,6 +131,25 @@ WEBSITE_CONFIGS: List[WebsiteConfig] = [
             {"id": "ZHIHU-06", "name": "登录态检测", "action": "check_login", "dimension": "反检测能力"},
         ],
         expected_fields=["问题标题", "问题描述", "回答内容", "作者", "点赞数", "评论数"]
+    ),
+    WebsiteConfig(
+        name="微博",
+        url="https://weibo.com",
+        priority="P1",
+        category="社交媒体",
+        tech_stack="SPA 应用",
+        difficulty="L2-L3",
+        expected_score=65,
+        search_selector="input[placeholder*='搜索'], .search-input input, #searchInput",
+        scenarios=[
+            {"id": "WB-01", "name": "首页访问", "action": "navigate", "dimension": "页面访问成功率"},
+            {"id": "WB-02", "name": "热搜提取", "action": "extract_list", "dimension": "抓取成功率"},
+            {"id": "WB-03", "name": "搜索查询", "action": "search", "dimension": "元素定位准确率"},
+            {"id": "WB-04", "name": "微博列表提取", "action": "extract_list", "dimension": "抓取成功率"},
+            {"id": "WB-05", "name": "评论提取", "action": "extract_comments", "dimension": "抓取成功率"},
+            {"id": "WB-06", "name": "登录态检测", "action": "check_login", "dimension": "反检测能力"},
+        ],
+        expected_fields=["微博内容", "发布时间", "点赞数", "评论数", "转发数", "作者"]
     ),
     # P1 级 - 扩展覆盖
     WebsiteConfig(
@@ -150,6 +187,24 @@ WEBSITE_CONFIGS: List[WebsiteConfig] = [
             {"id": "JD-06", "name": "规格提取", "action": "extract_specs", "dimension": "抓取成功率"},
         ],
         expected_fields=["商品标题", "价格", "自营标识", "规格参数", "图片URL"]
+    ),
+    WebsiteConfig(
+        name="拼多多",
+        url="https://www.pinduoduo.com",
+        priority="P1",
+        category="电商平台",
+        tech_stack="SPA 应用",
+        difficulty="L2",
+        expected_score=65,
+        search_selector="input[placeholder*='搜索'], .search-input input, #searchInput",
+        scenarios=[
+            {"id": "PDD-01", "name": "首页访问", "action": "navigate", "dimension": "页面访问成功率"},
+            {"id": "PDD-02", "name": "商品搜索", "action": "search", "dimension": "元素定位准确率"},
+            {"id": "PDD-03", "name": "列表提取", "action": "extract_list", "dimension": "抓取成功率"},
+            {"id": "PDD-04", "name": "详情页访问", "action": "click_detail", "dimension": "元素定位准确率"},
+            {"id": "PDD-05", "name": "拼团价格提取", "action": "extract_group_price", "dimension": "抓取成功率"},
+        ],
+        expected_fields=["商品标题", "价格", "拼团价格", "销量", "图片URL"]
     ),
     WebsiteConfig(
         name="Boss直聘",
@@ -383,6 +438,44 @@ WEBSITE_CONFIGS: List[WebsiteConfig] = [
             {"id": "GOV-05", "name": "办事指南提取", "action": "extract_article", "dimension": "抓取成功率"},
         ],
         expected_fields=["事项名称", "办理部门", "办理时限", "申请材料", "办理地点"]
+    ),
+    WebsiteConfig(
+        name="中国政府网",
+        url="https://www.gov.cn",
+        priority="P0",
+        category="政务服务",
+        tech_stack="动态页面",
+        difficulty="L1",
+        expected_score=80,
+        search_selector="input[placeholder*='搜索'], input[name='keyword'], #searchInput",
+        scenarios=[
+            {"id": "GC-01", "name": "首页访问", "action": "navigate", "dimension": "页面访问成功率"},
+            {"id": "GC-02", "name": "政策搜索", "action": "search", "dimension": "元素定位准确率"},
+            {"id": "GC-03", "name": "政策列表提取", "action": "extract_list", "dimension": "抓取成功率"},
+            {"id": "GC-04", "name": "政策详情访问", "action": "click_detail", "dimension": "元素定位准确率"},
+            {"id": "GC-05", "name": "政策正文提取", "action": "extract_article", "dimension": "抓取成功率"},
+            {"id": "GC-06", "name": "PDF下载", "action": "download_pdf", "dimension": "交互成功率"},
+        ],
+        expected_fields=["政策标题", "发布时间", "发文单位", "正文内容", "附件链接"]
+    ),
+    WebsiteConfig(
+        name="中国裁判文书网",
+        url="https://wenshu.court.gov.cn",
+        priority="P1",
+        category="政务服务",
+        tech_stack="动态页面",
+        difficulty="L2",
+        expected_score=70,
+        search_selector="input[placeholder*='搜索'], input[name='keyword'], #searchInput",
+        scenarios=[
+            {"id": "CW-01", "name": "首页访问", "action": "navigate", "dimension": "页面访问成功率"},
+            {"id": "CW-02", "name": "案例搜索", "action": "search", "dimension": "元素定位准确率"},
+            {"id": "CW-03", "name": "案例列表提取", "action": "extract_list", "dimension": "抓取成功率"},
+            {"id": "CW-04", "name": "案例详情访问", "action": "click_detail", "dimension": "元素定位准确率"},
+            {"id": "CW-05", "name": "文书内容提取", "action": "extract_article", "dimension": "抓取成功率"},
+            {"id": "CW-06", "name": "筛选条件测试", "action": "paginate", "dimension": "交互成功率"},
+        ],
+        expected_fields=["案例标题", "案号", "法院名称", "裁判日期", "文书正文", "案由"]
     ),
     WebsiteConfig(
         name="12306铁路购票",

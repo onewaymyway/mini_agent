@@ -31,10 +31,8 @@ from urllib.parse import quote
 
 # 导入 baidu_search 模块复用其函数
 sys.path.insert(0, str(Path(__file__).parent))
-from src.searchers.baidu_search import (
-    ensure_browser, random_delay, get_random_ua,
-    run_cmd, PYTHON_CMD, SKILL_DIR
-)
+from src.searchers.browser_utils import ensure_browser, run_cmd, PYTHON_CMD, SKILL_DIR
+from src.searchers.utils import random_delay, get_random_ua
 
 
 ARXIV_OUTPUT_DIR = SKILL_DIR / "search_results"

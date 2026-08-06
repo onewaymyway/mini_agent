@@ -216,6 +216,19 @@ from src.searchers.zhihu_search_simple import ZhihuSearchSimple
 from src.searchers.api_searcher import RESTAPISearcher, GraphQLSearcher, APISearcherFactory, APIConfig
 from src.searchers.realtime_searcher import StockSearcher, CryptoSearcher, NewsSearcher, RealtimeSearcherFactory, RealtimeDataConfig
 
+# ========== 搜索优化模块 ==========
+from src.searchers.query_builder import QueryBuilder, QueryParams, build_query, expand_query, split_query
+from src.searchers.pagination import (
+    PaginationType,
+    PaginationInfo,
+    PageResult,
+    PaginationDetector,
+    PaginationHandler,
+    detect_pagination,
+    create_pagination_handler,
+)
+from src.searchers.result_parser import ResultParser, ParsedResult, parse_search_results, extract_page_metadata
+
 __all__ = [
     # 基础类
     "SearcherConfig",
@@ -389,4 +402,21 @@ __all__ = [
     "CryptoSearcher",
     "NewsSearcher",
     "RealtimeDataConfig",
+    # 搜索优化模块
+    "QueryBuilder",
+    "QueryParams",
+    "build_query",
+    "expand_query",
+    "split_query",
+    "PaginationType",
+    "PaginationInfo",
+    "PageResult",
+    "PaginationDetector",
+    "PaginationHandler",
+    "detect_pagination",
+    "create_pagination_handler",
+    "ResultParser",
+    "ParsedResult",
+    "parse_search_results",
+    "extract_page_metadata",
 ]

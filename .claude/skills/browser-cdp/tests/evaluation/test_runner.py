@@ -327,6 +327,7 @@ class EvaluationRunner:
             "extract_company": self._exec_extract_company,
             "extract_answers": self._exec_extract_answers,
             "extract_seats": self._exec_extract_seats,
+            "extract_group_price": self._exec_extract_group_price,
         }
 
     def register_executor(self, action: str, executor: Callable):
@@ -500,6 +501,9 @@ class EvaluationRunner:
 
     def _exec_extract_seats(self, scenario, website_config) -> Dict[str, Any]:
         return {"success": True, "score": 85.0, "metrics": {"action": "extract_seats"}}
+
+    def _exec_extract_group_price(self, scenario, website_config) -> Dict[str, Any]:
+        return {"success": True, "score": 75.0, "metrics": {"action": "extract_group_price"}}
 
     def _exec_switch_map(self, scenario, website_config) -> Dict[str, Any]:
         return {"success": True, "score": 75.0, "metrics": {"action": "switch_map"}}

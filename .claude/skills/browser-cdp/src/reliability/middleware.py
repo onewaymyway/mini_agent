@@ -56,6 +56,7 @@ class OperationType(Enum):
     EXTRACT = "extract"
     SCROLL = "scroll"
     TAB = "tab"
+    CDP_COMMAND = "cdp_command"
     UNKNOWN = "unknown"
 
 
@@ -126,133 +127,163 @@ class ErrorMiddleware:
     
     def wrap_sync(
         self,
-        func: Callable,
-        operation: str,
+        func=None,
+        operation: str = None,
         operation_type: OperationType = OperationType.UNKNOWN,
         max_retries: int = None,
     ) -> Callable:
         """
         包装同步函数，添加错误处理
         
-        Usage:
-            @middleware.wrap_sync(my_func, "navigate_to_page", OperationType.NAVIGATION)
+        Usage (decorator with args):
+            @middleware.wrap_sync(operation="navigate_to_page", operation_type=OperationType.NAVIGATION)
             def my_func(url):
                 ...
+        
+        Usage (direct call):
+            wrapped = middleware.wrap_sync(my_func, "navigate_to_page", OperationType.NAVIGATION)
         """
-        max_retries = max_retries or self.default_max_retries
-        config = RetryConfig.for_operation(operation_type.value, max_retries=max_retries)
+        # 支持两种调用方式：
+        # 1. @middleware.wrap_sync(operation="...", ...)  -> func=None
+        # 2. middleware.wrap_sync(func, "...", ...)       -> func is callable
         
-        @functools.wraps(func)
-        def wrapper(*args, **kwargs):
-            context = ErrorContext(
-                operation=operation,
-                operation_type=operation_type,
-                attempt=1,
-                max_attempts=max_retries,
-            )
+        def _wrap(func):
+            _max_retries = max_retries or self.default_max_retries
+            config = RetryConfig.for_operation(operation_type.value, max_retries=_max_retries)
             
-            cb = self.get_circuit_breaker(operation) if self.enable_circuit_breaker else None
-            
-            try:
-                result = retry_operation(
-                    func,
-                    config,
-                    cb,
-                    operation,
-                    *args,
-                    **kwargs,
+            @functools.wraps(func)
+            def wrapper(*args, **kwargs):
+                context = ErrorContext(
+                    operation=operation,
+                    operation_type=operation_type,
+                    attempt=1,
+                    max_attempts=_max_retries,
                 )
-                context.elapsed = time.time() - context.timestamp
-                logger.info(f"操作成功: {context}")
-                return result
-            except ReliabilityError as e:
-                context.error = e
-                context.category = categorize_error(e)
-                context.recoverable = e.recoverable
-                context.elapsed = time.time() - context.timestamp
                 
-                logger.warning(f"操作失败: {context}")
+                cb = self.get_circuit_breaker(operation) if self.enable_circuit_breaker else None
                 
-                # 触发告警（不可恢复错误记录日志）
-                if not e.recoverable:
-                    logger.error(f"不可恢复错误，触发告警: {context}")
-                
-                raise
-            except Exception as e:
-                context.error = e
-                context.category = ErrorCategory.UNKNOWN
-                context.recoverable = False
-                context.elapsed = time.time() - context.timestamp
-                
-                logger.error(f"未知错误: {context}")
-                raise
+                try:
+                    result = retry_operation(
+                        func,
+                        config,
+                        cb,
+                        operation,
+                        *args,
+                        **kwargs,
+                    )
+                    context.elapsed = time.time() - context.timestamp
+                    logger.info(f"操作成功: {context}")
+                    return result
+                except ReliabilityError as e:
+                    context.error = e
+                    context.category = categorize_error(e)
+                    context.recoverable = e.recoverable
+                    context.elapsed = time.time() - context.timestamp
+                    
+                    logger.warning(f"操作失败: {context}")
+                    
+                    # 触发告警（不可恢复错误记录日志）
+                    if not e.recoverable:
+                        logger.error(f"不可恢复错误，触发告警: {context}")
+                    
+                    raise
+                except Exception as e:
+                    context.error = e
+                    context.category = ErrorCategory.UNKNOWN
+                    context.recoverable = False
+                    context.elapsed = time.time() - context.timestamp
+                    
+                    logger.error(f"未知错误: {context}")
+                    raise
+            
+            return wrapper
         
-        return wrapper
+        if func is not None and callable(func):
+            # 直接调用方式：wrap_sync(func, "op", ...)
+            return _wrap(func)
+        else:
+            # 装饰器方式：@wrap_sync(operation="...", ...)
+            return _wrap
     
     def wrap_async(
         self,
-        func: Callable,
-        operation: str,
+        func=None,
+        operation: str = None,
         operation_type: OperationType = OperationType.UNKNOWN,
         max_retries: int = None,
     ) -> Callable:
         """
         包装异步函数，添加错误处理
         
-        Usage:
-            @middleware.wrap_async(my_async_func, "fetch_page", OperationType.EXTRACT)
+        Usage (decorator with args):
+            @middleware.wrap_async(operation="fetch_page", operation_type=OperationType.EXTRACT)
             async def my_async_func(url):
                 ...
+        
+        Usage (direct call):
+            wrapped = middleware.wrap_async(my_async_func, "fetch_page", OperationType.EXTRACT)
         """
-        max_retries = max_retries or self.default_max_retries
-        config = RetryConfig.for_operation(operation_type.value, max_retries=max_retries)
+        # 支持两种调用方式：
+        # 1. @middleware.wrap_async(operation="...", ...)  -> func=None
+        # 2. middleware.wrap_async(func, "...", ...)       -> func is callable
         
-        @functools.wraps(func)
-        async def wrapper(*args, **kwargs):
-            context = ErrorContext(
-                operation=operation,
-                operation_type=operation_type,
-                attempt=1,
-                max_attempts=max_retries,
-            )
+        def _wrap(func):
+            _max_retries = max_retries or self.default_max_retries
+            config = RetryConfig.for_operation(operation_type.value, max_retries=_max_retries)
             
-            cb = self.get_circuit_breaker(operation) if self.enable_circuit_breaker else None
-            
-            try:
-                result = await retry_operation_async(
-                    func,
-                    config,
-                    cb,
-                    operation,
-                    *args,
-                    **kwargs,
+            @functools.wraps(func)
+            async def wrapper(*args, **kwargs):
+                context = ErrorContext(
+                    operation=operation,
+                    operation_type=operation_type,
+                    attempt=1,
+                    max_attempts=_max_retries,
                 )
-                context.elapsed = time.time() - context.timestamp
-                logger.info(f"操作成功: {context}")
-                return result
-            except ReliabilityError as e:
-                context.error = e
-                context.category = categorize_error(e)
-                context.recoverable = e.recoverable
-                context.elapsed = time.time() - context.timestamp
                 
-                logger.warning(f"操作失败: {context}")
+                cb = self.get_circuit_breaker(operation) if self.enable_circuit_breaker else None
                 
-                # 触发告警（不可恢复错误记录日志）
-                if not e.recoverable:
-                    logger.error(f"不可恢复错误，触发告警: {context}")
-                
-                raise
-            except Exception as e:
-                context.error = e
-                context.category = ErrorCategory.UNKNOWN
-                context.recoverable = False
-                context.elapsed = time.time() - context.timestamp
-                
-                logger.error(f"未知错误: {context}")
-                raise
+                try:
+                    result = await retry_operation_async(
+                        func,
+                        config,
+                        cb,
+                        operation,
+                        *args,
+                        **kwargs,
+                    )
+                    context.elapsed = time.time() - context.timestamp
+                    logger.info(f"操作成功: {context}")
+                    return result
+                except ReliabilityError as e:
+                    context.error = e
+                    context.category = categorize_error(e)
+                    context.recoverable = e.recoverable
+                    context.elapsed = time.time() - context.timestamp
+                    
+                    logger.warning(f"操作失败: {context}")
+                    
+                    # 触发告警（不可恢复错误记录日志）
+                    if not e.recoverable:
+                        logger.error(f"不可恢复错误，触发告警: {context}")
+                    
+                    raise
+                except Exception as e:
+                    context.error = e
+                    context.category = ErrorCategory.UNKNOWN
+                    context.recoverable = False
+                    context.elapsed = time.time() - context.timestamp
+                    
+                    logger.error(f"未知错误: {context}")
+                    raise
+            
+            return wrapper
         
-        return wrapper
+        if func is not None and callable(func):
+            # 直接调用方式：wrap_async(func, "op", ...)
+            return _wrap(func)
+        else:
+            # 装饰器方式：@wrap_async(operation="...", ...)
+            return _wrap
     
     def handle_error(self, error: Exception, operation: str, operation_type: OperationType) -> ErrorContext:
         """

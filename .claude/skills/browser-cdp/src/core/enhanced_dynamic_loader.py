@@ -81,69 +81,68 @@ class EnhancedDynamicLoader:
     ) -> ScrollResult:
         """
         智能无限滚动加载
-        
+
         特性：
         - 自动检测滚动容器
         - 根据内容变化调整滚动策略
         - 支持自定义停止条件
-        
+
         Args:
             max_pages: 最大滚动页数
             stop_condition: 停止条件函数 (pages_loaded, items_count) -> bool
             callback: 每页加载后的回调 (pages_loaded, items_count)
-        
+
         Returns:
             ScrollResult: 滚动结果
         """
         max_pages = max_pages or self.config.max_pages
-        
+
         logger.info(f"开始智能滚动加载，最大页数: {max_pages}")
-        
+
         # 1. 检测滚动容器
-        container = await self._detect_scroll_container()
-        
+        container = self._detect_scroll_container()
+
         # 2. 记录初始状态
         initial_height = await self._get_scroll_height(container)
-        initial_items = await self._count_items()
-        
+        initial_items = self._count_items()
+
         logger.debug(f"初始高度: {initial_height}, 初始项数: {initial_items}")
-        
+
         # 3. 执行滚动
         pages_loaded = 0
         current_height = initial_height
         current_items = initial_items
-        
+
         for page in range(max_pages):
             # 滚动
-            scrolled = await self._scroll_page(container)
+            scrolled = self._scroll_page(container)
             if not scrolled:
                 logger.warning("滚动失败")
                 self._scroll_history.append({"page": page, "success": False, "error": "scroll_failed"})
                 break
-            
+
             # 等待内容加载
-            await asyncio.sleep(self.config.scroll_delay)
-            
+            time.sleep(self.config.scroll_delay)
+
             # 检查内容变化
             new_height = await self._get_scroll_height(container)
-            new_items = await self._count_items()
-            
+            new_items = self._count_items()
+
             height_change = new_height - current_height
             items_change = new_items - current_items
-            
+
             logger.debug(f"第 {page + 1} 页: 高度变化 {height_change}px, 项数变化 {items_change}")
-            
+
             # 检查是否还有新内容
             if height_change < self.config.height_threshold and items_change == 0:
                 logger.info(f"检测到内容无变化，停止滚动（第 {page + 1} 页）")
                 break
-            
+
             pages_loaded += 1
             current_height = new_height
             current_items = new_items
-            
-            self._scroll_history.append({
-                "page": page + 1,
+
+            self._scroll_history.append({                "page": page + 1,
                 "success": True,
                 "height_change": height_change,
                 "items_change": items_change,
@@ -168,7 +167,7 @@ class EnhancedDynamicLoader:
         logger.info(f"智能滚动完成: {pages_loaded} 页, {current_items} 项")
         return result
     
-    async def _detect_scroll_container(self) -> str:
+    def _detect_scroll_container(self) -> str:
         """检测滚动容器"""
         # 尝试常见容器选择器
         containers = [
@@ -184,12 +183,12 @@ class EnhancedDynamicLoader:
         
         for selector in containers:
             try:
-                has_scroll = await self.session.eval_js(f"""
-                    () => {{
+                has_scroll = self.session.eval_js(f"""
+                    (function() {{
                         const el = document.querySelector({selector!r});
                         if (!el) return false;
                         return el.scrollHeight > el.clientHeight;
-                    }}
+                    }})()
                 """)
                 if has_scroll:
                     logger.debug(f"检测到滚动容器: {selector}")
@@ -205,52 +204,52 @@ class EnhancedDynamicLoader:
         if selector and selector != "body":
             try:
                 height = await self.session.eval_js(f"""
-                    () => {{
+                    (function() {{
                         const el = document.querySelector({selector!r});
                         return el ? el.scrollHeight : 0;
-                    }}
+                    }})()
                 """)
                 return int(height)
             except Exception:
                 pass
         
-        return await self.session.eval_js("() => document.documentElement.scrollHeight")
+        return int(await self.session.eval_js("(function() { return document.documentElement.scrollHeight; })()"))
     
-    async def _count_items(self) -> int:
+    def _count_items(self) -> int:
         """统计当前可见项数"""
         if not self.config.item_selector:
             return 0
         
         try:
-            count = await self.session.eval_js(f"""
-                () => {{
+            count = self.session.eval_js(f"""
+                (function() {{
                     const items = document.querySelectorAll({self.config.item_selector!r});
                     return items.length;
-                }}
+                }})()
             """)
             return int(count)
         except Exception:
             return 0
     
-    async def _scroll_page(self, container: str = "") -> bool:
+    def _scroll_page(self, container: str = "") -> bool:
         """执行一次滚动"""
         try:
             if container and container != "body":
-                await self.session.eval_js(f"""
-                    () => {{
+                self.session.eval_js(f"""
+                    (function() {{
                         const el = document.querySelector({container!r});
                         if (el) {{
                             el.scrollTop += {self.config.scroll_distance};
                         }} else {{
                             window.scrollBy(0, {self.config.scroll_distance});
                         }}
-                    }}
+                    }})()
                 """)
             else:
-                await self.session.eval_js(f"""
-                    () => {{
+                self.session.eval_js(f"""
+                    (function() {{
                         window.scrollBy(0, {self.config.scroll_distance});
-                    }}
+                    }})()
                 """)
             return True
         except Exception as e:

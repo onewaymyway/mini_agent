@@ -181,11 +181,12 @@ class TestConnectionPoolHealthChecker:
     @pytest.mark.asyncio
     async def test_get_healthy_session_reconnect_failure(self):
         """测试获取会话时重连失败"""
-        # 模拟连接不健康且无 reconnect 方法
-        class NoReconnectClient(MockCDPClient):
-            pass
+        # 模拟连接不健康且 reconnect 也失败
+        class BrokenReconnectClient(MockCDPClient):
+            async def reconnect(self):
+                raise Exception("Reconnect failed")
 
-        unhealthy_pool = MockConnectionPool(NoReconnectClient(fail_count=1))
+        unhealthy_pool = MockConnectionPool(BrokenReconnectClient(fail_count=1))
         checker = ConnectionPoolHealthChecker(unhealthy_pool)
 
         # 重连失败应抛出异常

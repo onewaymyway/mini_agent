@@ -26,7 +26,7 @@ class TestAllPriorities:
     def test_p0_websites(self, runner):
         """P0 级网站评估"""
         configs = get_websites_by_priority("P0")
-        assert len(configs) == 13
+        assert len(configs) == 14
         for config in configs:
             result = runner.run_website(config, mock_mode=True)
             assert result.overall_score >= 75, f"{config.name} P0 级评分应 >= 75"
@@ -35,7 +35,7 @@ class TestAllPriorities:
     def test_p1_websites(self, runner):
         """P1 级网站评估"""
         configs = get_websites_by_priority("P1")
-        assert len(configs) == 5
+        assert len(configs) == 9
         for config in configs:
             result = runner.run_website(config, mock_mode=True)
             assert result.overall_score >= 65, f"{config.name} P1 级评分应 >= 65"
@@ -68,15 +68,15 @@ class TestBatchExecution:
         configs = get_websites_by_priority("P0")
         runner = EvaluationRunner(config={"delay_between_sites": 0})
         report = runner.run_batch(configs, mock_mode=True)
-        assert report.total_websites == 13
-        assert report.total_scenarios == 66  # 13 websites × ~5 scenarios
+        assert report.total_websites == 14
+        assert report.total_scenarios == 72  # 14 websites × ~5 scenarios
         assert report.overall_success_rate == 100.0
 
     def test_batch_all(self):
         """批量执行所有网站"""
         runner = EvaluationRunner(config={"delay_between_sites": 0})
         report = runner.run_batch(WEBSITE_CONFIGS, mock_mode=True)
-        assert report.total_websites == 27
+        assert report.total_websites == 32
         assert report.total_scenarios > 50
         assert report.avg_score > 0
 

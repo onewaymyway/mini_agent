@@ -21,8 +21,14 @@ import time
 
 from src.core.cdp_client import list_tabs, DEFAULT_HOST, DEFAULT_PORT
 from src.core.utils import add_connection_args, get_session, print_json, die
+from src.reliability.middleware import (
+    get_middleware,
+    OperationType,
+    with_error_handling,
+)
 
 
+@with_error_handling("list_state", OperationType.NAVIGATION, max_retries=2)
 def cmd_list_state(host: str, port: int):
     tabs = list_tabs(host, port)
     print_json(
@@ -30,6 +36,7 @@ def cmd_list_state(host: str, port: int):
     )
 
 
+@with_error_handling("poll_until", OperationType.WAIT, max_retries=1)
 def poll_until(session, check_fn, timeout: float, interval: float, desc: str):
     deadline = time.time() + timeout
     while time.time() < deadline:

@@ -28,7 +28,7 @@ from urllib.parse import quote
 sys.path.insert(0, str(Path(__file__).parent.parent))
 from src.searchers.base import SearcherConfig, SearchResult, BaseSearcher
 from src.searchers.utils import random_delay, save_results
-from src.searchers.baidu_search import ensure_browser, run_cmd, PYTHON_CMD, SKILL_DIR
+from src.searchers.browser_utils import ensure_browser, run_cmd, PYTHON_CMD, SKILL_DIR
 
 
 # ========== 体育平台专用配置 ==========

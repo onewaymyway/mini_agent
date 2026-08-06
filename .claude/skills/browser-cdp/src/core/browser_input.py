@@ -185,6 +185,30 @@ def batch_click(session, selectors: List[str], delay: float = 0.5):
     return results
 
 
+def scroll(session, direction: str = "down", amount: float = 500):
+    """滚动页面（兼容旧接口）"""
+    if direction == "bottom":
+        # 滚动到底部
+        session.eval_js("window.scrollTo(0, document.body.scrollHeight)")
+    elif direction == "up":
+        session.eval_js(f"window.scrollBy(0, -{amount})")
+    else:
+        session.eval_js(f"window.scrollBy(0, {amount})")
+
+
+def click_selector(session, selector: str):
+    """点击指定选择器的元素"""
+    js = f"""(() => {{
+        const el = document.querySelector({selector!r});
+        if (!el) return null;
+        const r = el.getBoundingClientRect();
+        return {{x: r.x + r.width/2 + window.scrollX, y: r.y + r.height/2 + window.scrollY}};
+    }})()"""
+    pos = session.eval_js(js)
+    if pos:
+        mouse_click(session, pos["x"], pos["y"])
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     add_connection_args(parser)

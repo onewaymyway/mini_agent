@@ -27,6 +27,11 @@ from typing import Any
 
 from src.core.utils import add_connection_args, get_session, die
 from src.core.smart_wait import SmartWait
+from src.reliability.middleware import (
+    get_middleware,
+    OperationType,
+    with_error_handling,
+)
 
 
 # 表单定义格式示例：
@@ -45,6 +50,7 @@ from src.core.smart_wait import SmartWait
 # }
 
 
+@with_error_handling("fill_field", OperationType.INPUT, max_retries=3)
 def fill_field(session, selector: str, value: Any, field_type: str = None):
     """填写单个表单字段。"""
     js = f"""(() => {{
@@ -158,6 +164,7 @@ def fill_form(session, form_def: dict) -> dict:
     return results
 
 
+@with_error_handling("submit_form", OperationType.INPUT, max_retries=3)
 def submit_form(session, selector: str = None, wait_for: str = None, timeout: float = 30.0) -> dict:
     """提交表单并等待结果。"""
     if selector:
@@ -203,6 +210,7 @@ def submit_form(session, selector: str = None, wait_for: str = None, timeout: fl
     return result
 
 
+@with_error_handling("save_form_state", OperationType.EXTRACT, max_retries=2)
 def save_form_state(session, selector: str = None) -> dict:
     """保存当前表单状态。"""
     if selector:
@@ -243,6 +251,7 @@ def save_form_state(session, selector: str = None) -> dict:
     return session.eval_js(js)
 
 
+@with_error_handling("restore_form_state", OperationType.INPUT, max_retries=3)
 def restore_form_state(session, form_state: dict) -> dict:
     """恢复表单状态。"""
     results = {"fields": [], "errors": []}

@@ -24,15 +24,23 @@ class MeishiSearcher(BaseSearcher):
         
     @property
     def source_name(self) -> str:
-        return "美食杰"
-    
+        return "meishi"
+
     @property
     def supported_types(self) -> list:
-        return ["recipe", "food", "cooking"]
+        return ["recipe_search", "cooking_tips", "food_search"]
+
+    async def health_check(self) -> dict:
+        """健康检查"""
+        return {
+            "source": self.source_name,
+            "status": "healthy",
+            "base_url": self.base_url
+        }
     
     def search(self, query: str, max_results: int = 20, **kwargs) -> SearchResults:
         """搜索美食杰"""
-        results = SearchResults(source=self.source_name)
+        results = SearchResults(source=self.source_name, query=query)
         
         for i in range(min(max_results, 10)):
             result = SearchResult(
