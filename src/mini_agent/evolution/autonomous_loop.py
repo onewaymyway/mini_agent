@@ -136,7 +136,11 @@ class AutonomousLoop:
         # `_trigger_and_record()`（与 `tick()` 共用同一份记账），返回值
         # 语义与 `tick()` 完全一致（触发成功的 job_id 列表），因此下面
         # 的记账/digest 记录逻辑无需区分走的是哪条路径。开关关闭（默认）
-        # 时行为与改造前完全一致。
+        # 时行为与改造前完全一致。**注意**：本方法是 `_tick_maintenance()`/
+        # `_tick_autonomous()` 的第一步（见下方两个方法体开头的
+        # `self._tick_passive()` 调用），因此这个开关对 passive/
+        # maintenance/autonomous 三个档位同时生效，不需要在另外两个
+        # 方法里重复接线。
         if self._cron_scheduler is not None:
             try:
                 _scheduler_cfg = getattr(self._cfg, "scheduler", None)

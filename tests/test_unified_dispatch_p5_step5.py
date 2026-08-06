@@ -213,6 +213,47 @@ class TestAutonomousLoopUnifiedDispatchGate(unittest.TestCase):
             loop._tick_passive()
             self.assertTrue(fake.tick_called)
 
+    def test_maintenance_level_inherits_gate_via_tick_passive_delegation(self):
+        """`_tick_maintenance()`/`_tick_autonomous()` 方法体第一行就是
+        `self._tick_passive()`（见 autonomous_loop.py），因此
+        `scheduler.unified_dispatch_enabled` 灰度开关对 maintenance/
+        autonomous 两个档位同样生效，不需要额外接线——这是本轮补充确认
+        的既有行为（此前实施记录曾误判为"未接入"，已订正，见改进计划
+        v1.9 变更记录）。本用例只验证 maintenance 档位下开关打开时，
+        cron job 确实经由 `dispatch_due_cron_jobs()` 触发一次；
+        `goal_backlog=None` 会导致 `_tick_maintenance()` 后续 Goal 相关
+        步骤抛出异常，但那些步骤在 cron 派发之后才执行，不影响本用例
+        要验证的部分。"""
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = _make_paths(tmp)
+            scheduler = CronScheduler(paths, submit_fn=None)
+            scheduler.load()
+            scheduler.ensure_job(job_id="sys:m", name="m", schedule="interval:3600")
+            scheduler.register_local_handler("sys:m", lambda job: True)
+            import time
+            scheduler.get("sys:m").next_run_at = time.time() - 1
+
+            from mini_agent.evolution.autonomous_loop import AutonomousLoop
+            cfg = SimpleNamespace(
+                scheduler=SimpleNamespace(unified_dispatch_enabled=True),
+                autonomy=SimpleNamespace(level="maintenance"),
+            )
+            loop = AutonomousLoop(
+                goal_backlog=None,
+                input_queue=None,
+                paths=paths,
+                cfg=cfg,
+                cron_scheduler=scheduler,
+            )
+            try:
+                loop._tick_maintenance()
+            except Exception:
+                # 预期：goal_backlog=None 会导致后续 Goal 相关步骤失败，
+                # 与本用例要验证的 cron 派发部分（已经在此之前执行完毕）
+                # 无关。
+                pass
+            self.assertEqual(scheduler.get("sys:m").run_count, 1)
+
 
 if __name__ == "__main__":
     unittest.main()

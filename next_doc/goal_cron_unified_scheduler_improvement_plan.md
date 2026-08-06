@@ -1,14 +1,29 @@
 # Goal / Cron 三条执行通道 统一调度层 改进计划
 
-- **版本**: v1.8
+- **版本**: v1.9
 - **实施记录**: `next_doc/goal_cron_unified_scheduler_implementation_record.md`
   （P0/P1/P2/P3/P4 已完成；P5 第 1-3 步已完成，第 4 步部分完成
   [cron/goal_cycle 两通道 execute() 已实现委托派发；goal 通道 execute()
   未实现]，第 5 步已启动 [cron/goal_cycle 两通道新增
-  `scheduler.unified_dispatch_enabled` 灰度开关，`AutonomousLoop.
-  _tick_passive()` 可选切换到统一入口派发，默认关闭；`_tick_maintenance()`/
-  `_tick_autonomous()` 档位与 Goal 通道派发路径未涉及]）
+  `scheduler.unified_dispatch_enabled` 灰度开关，经 `_tick_passive()`
+  对 passive/maintenance/autonomous 三个档位同时生效，默认关闭；Goal
+  通道派发路径未涉及]）
 - **变更记录**：
+  - v1.9：**订正 v1.8 的一处不准确表述**——v1.8 曾写"`_tick_maintenance()`/
+    `_tick_autonomous()` 两个档位仍直接调用 `cron_scheduler.tick()`，未
+    接入该开关"，复核代码后发现这一表述不准确：`_tick_maintenance()`
+    方法体第一行就是 `self._tick_passive()`，`_tick_autonomous()` 方法
+    体又以 `self._tick_maintenance()` 开头——三个档位在 cron 触发这件事
+    上共用同一个物理调用点（`AutonomousLoop._tick_passive()` 内部那一
+    处 `if self._cron_scheduler is not None:` 分支），`scheduler.
+    unified_dispatch_enabled` 开关打开后对 **passive/maintenance/
+    autonomous 三个档位同时生效**，不存在"仅 passive 档位生效、其余两个
+    档位需要额外接线"这回事。本轮新增测试
+    `test_maintenance_level_inherits_gate_via_tick_passive_delegation`
+    验证该行为，并同步修正了 `autonomous_loop.py` 里 `_tick_passive()`
+    对应代码段的注释、本文档 P5 第 4 步分步迁移路径描述、待讨论问题 6
+    的措辞。**不涉及任何代码行为变化**——纯粹是文档准确性订正，代码
+    本身在 v1.8 就已经是这个行为，只是记录写错了。
   - v1.8：P5 第 5 步（收敛到统一入口）启动并完成一个子集——新增纯函数
     `dispatch_due_cron_jobs()`，合并 cron/goal_cycle 两条通道到期任务后
     按 priority 统一触发，内部完全复用 P5 第 4 步已有的 `execute()` →
@@ -274,8 +289,10 @@ goal_cycle 两通道的 `execute()` 已实现真正委托派发，goal 通道
 ——`AutonomousLoop._tick_passive()` 新增灰度开关
 `scheduler.unified_dispatch_enabled`（默认 `False`），开启后 cron/
 goal_cycle 两通道改由 `unified_task_scheduler.dispatch_due_cron_jobs()`
-统一派发；`_tick_maintenance()`/`_tick_autonomous()` 两个档位及 Goal
-通道派发路径未涉及。详见
+统一派发；由于 `_tick_maintenance()`/`_tick_autonomous()` 方法体都以
+调用 `_tick_passive()`（`_tick_autonomous()` 是间接经 `_tick_maintenance()`）
+开头，这个开关对 **passive/maintenance/autonomous 三个档位同时生效**
+（v1.9 订正，见变更记录）；Goal 通道派发路径未涉及。详见
 `next_doc/goal_cron_unified_scheduler_implementation_record.md`。
 
 - **目标**：三条通道最终都通过一个统一的 `UnifiedTaskScheduler` 提交任务、
@@ -310,19 +327,21 @@ goal_cycle 两通道改由 `unified_task_scheduler.dispatch_due_cron_jobs()`
      层"，后者留给未来视情况评估是否需要。
   4. **接管实际派发**【第 4 步部分完成 + 第 5 步子集完成，见实施记录】：
      三条通道的 `tick()` 触发点最终都收敛成 `UnifiedTaskScheduler.
-     tick()` 一个入口，`AutonomousLoop._tick_passive/_tick_maintenance`
-     里现在分散调用 `cron_scheduler.tick()`/`objective_executor` 相关
-     方法的代码逐步收敛进去。——**第 4 步完成的子集**：`CronScheduler`
-     新增公开入口 `trigger_job_now(job_id)`（与 `tick()` 共用同一份
-     记账逻辑），`CronChannelAdapter`/`GoalCycleChannelAdapter.execute()`
-     已委托它实现真正派发；**第 5 步完成的子集**：新增
+     tick()` 一个入口，`AutonomousLoop` 里现在调用 `cron_scheduler.
+     tick()`/`objective_executor` 相关方法的代码逐步收敛进去。——**第
+     4 步完成的子集**：`CronScheduler` 新增公开入口
+     `trigger_job_now(job_id)`（与 `tick()` 共用同一份记账逻辑），
+     `CronChannelAdapter`/`GoalCycleChannelAdapter.execute()` 已委托它
+     实现真正派发；**第 5 步完成的子集**：新增
      `dispatch_due_cron_jobs()` 合并两条通道到期任务、按 priority 统一
      触发，`AutonomousLoop._tick_passive()` 新增
      `scheduler.unified_dispatch_enabled` 灰度开关（默认关闭）可选切换
-     到这条路径；**尚未完成**：`_tick_maintenance()`/`_tick_autonomous()`
-     两个档位仍直接调用 `cron_scheduler.tick()`，未接入该开关；
-     `ObjectiveChannelAdapter.execute()` 也未实现（Goal 通道派发逻辑
-     深度耦合 `AutonomousLoop` 运行时状态，缺一个安全的公开入口）。
+     到这条路径——因为 `_tick_maintenance()`/`_tick_autonomous()` 都以
+     调用 `_tick_passive()` 开头，三个档位共用同一个物理调用点，开关对
+     三者同时生效（v1.9 订正了 v1.8 "仅 passive 生效"的错误表述）；
+     **尚未完成**：`ObjectiveChannelAdapter.execute()` 未实现（Goal 通道
+     派发逻辑深度耦合 `AutonomousLoop` 运行时状态，缺一个安全的公开
+     入口），Goal 通道不受本轮任何改动影响。
      再移除旧路径，不强求单个版本内完成全部迁移。
 - **验收标准（分步骤各自验收，此处只列总目标）**：
   - 迁移完成后，`gating_state()`、并发分配、优先级排序都只有一份实现，
@@ -366,10 +385,11 @@ goal_cycle 两通道改由 `unified_task_scheduler.dispatch_due_cron_jobs()`
    enabled`/`heartbeat_owns_tick` 这类现有的灰度开关组合，还是要求先把
    这些开关收敛/固化之后再引入新的统一层，避免开关组合爆炸导致的测试
    覆盖盲区。
-6. （P5 第 5 步新增）`scheduler.unified_dispatch_enabled` 何时从"仅
-   `_tick_passive()` 生效、默认关闭"推进到"默认开启"或"接入
-   `_tick_maintenance()`/`_tick_autonomous()`"：建议先观察 `passive`
-   档位下开启该开关一段时间的实际运行数据（尤其是 `dispatch_due_cron_
-   jobs()` 多次 `save()` 带来的 IO 开销、以及排序结果是否与 `tick()`
-   原有触发顺序有可感知差异），再决定是否扩大到其余两个档位，避免在
-   没有真实数据支撑时就贸然扩大改动面。
+6. （P5 第 5 步新增，v1.9 订正）`scheduler.unified_dispatch_enabled`
+   开关对 passive/maintenance/autonomous 三个档位同时生效（见 v1.9
+   变更记录——此前 v1.8 误以为需要分别接入），因此真正待讨论的问题是
+   "何时从默认关闭推进到默认开启"，而不是"何时扩大到其余档位"：建议先
+   观察实际运行数据（尤其是 `dispatch_due_cron_jobs()` 多次 `save()`
+   带来的 IO 开销、以及排序结果是否与 `tick()` 原有触发顺序有可感知
+   差异）积累到一定程度后再评估默认值是否翻转，避免在没有真实数据
+   支撑时就贸然改变默认行为。

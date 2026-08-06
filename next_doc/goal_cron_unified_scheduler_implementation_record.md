@@ -779,21 +779,19 @@ tests/test_resource_arbiter_gating_track_j.py
     换来的正确性保证更重要，因此本轮明确选择不优化，留作已知的、
     可接受的行为差异记录在案。
 
-33. **未涉及 `_tick_maintenance()` 里的 Goal 通道派发路径，`autonomy.
-    level=maintenance/autonomous` 档位下 `_tick_maintenance()`
-    仍然独立调用 `cron_scheduler.tick()`（而非 `_tick_passive()` 里
-    新增的分支）**：复核代码确认 `_tick_maintenance()`/`_tick_
-    autonomous()` 目前的 cron 触发路径与 `_tick_passive()` 是各自
-    独立的调用点（都直接调 `self._cron_scheduler.tick()`），本轮为了
-    把改动面控制在"先验证一条路径"的最小范围，只改了 `_tick_passive()`
-    这一个方法体；`maintenance`/`autonomous` 档位下 cron 到期触发的
-    行为本轮完全不变。这是一个**明确的遗留范围**（不是遗漏）——把
-    同样的分支逻辑复制到 `_tick_maintenance()`/`_tick_autonomous()`
-    技术上很直接，但既然灰度开关本身就是为了"先观察一段时间数据"，
-    没有必要在观察结果出来之前就把改动面扩大到全部三个档位；下一轮
-    如果灰度观察无异常，会一并把这两个档位的调用点也切过去，并同时
-    评估是否值得把这部分"读开关 + 二选一"的样板代码抽成一个共享的
-    私有方法（当前只有一处调用，重复一次之前抽取暂无必要）。
+33. **【已被 v1.9 订正，原表述见下方"订正说明"】未涉及 `_tick_
+    maintenance()` 里的 Goal 通道派发路径，`autonomy.level=maintenance/
+    autonomous` 档位下 `_tick_maintenance()` 仍然独立调用
+    `cron_scheduler.tick()`（而非 `_tick_passive()` 里新增的分支）**：
+    ~~复核代码确认 `_tick_maintenance()`/`_tick_autonomous()` 目前的
+    cron 触发路径与 `_tick_passive()` 是各自独立的调用点（都直接调
+    `self._cron_scheduler.tick()`）~~——**这一判断是错误的**，见下方
+    "P5 第 5 步订正说明"：`_tick_maintenance()` 方法体第一行就是
+    `self._tick_passive()`，`_tick_autonomous()` 又以 `self._tick_
+    maintenance()` 开头，三个档位共用同一个物理调用点，本轮改动在
+    v1.8 落地时就已经对 maintenance/autonomous 两个档位同时生效，不
+    存在"遗留范围"。本条决策原文保留在此仅供追溯排查过程，不代表当前
+    准确状态。
 
 ### 测试结果（P5 第 5 步）
 
@@ -848,3 +846,75 @@ overview_route.py`（P4/P5 第 1-2 步既有端点测试）本轮沙箱环境缺
     不变——本轮的灰度开关范围明确限定在 cron/goal_cycle 两条通道。
 
 其余待确认项（1-13）沿用 P0-P5 第 1-4 步实施记录的既有回应，状态不变。
+
+## P5 第 5 步订正说明（v1.9）
+
+**背景**：P5 第 5 步初版实施记录（决策 33、待确认项 14）声称
+`_tick_maintenance()`/`_tick_autonomous()` 两个档位"仍直接调用
+`cron_scheduler.tick()`，未接入 `scheduler.unified_dispatch_enabled`
+开关"。这一判断在下一轮复核代码时被发现是**错误的**，订正如下。
+
+**订正依据**：`autonomous_loop.py` 里三个档位方法的实际调用关系是
+链式委托，不是三个平行的独立方法：
+
+```
+_tick_autonomous()  → 方法体以 self._tick_maintenance() 开头
+_tick_maintenance() → 方法体以 self._tick_passive() 开头
+_tick_passive()     → 内部唯一的 cron 触发点（含 P5 第 5 步新增的
+                        unified_dispatch_enabled 分支）
+```
+
+也就是说，`_tick_maintenance()`/`_tick_autonomous()` 从来不会自己
+再调用一次 `cron_scheduler.tick()`——它们的 cron 触发能力完全来自
+"先调用 `_tick_passive()`"这一步。P5 第 5 步在 `_tick_passive()` 内部
+新增的开关分支，因此在代码落地的那一刻就已经对 passive/maintenance/
+autonomous 三个档位同时生效，不需要（也不应该）在另外两个方法里重复
+接一份一样的分支逻辑——那样反而会造成"同一个 tick 周期内 cron 被触发
+两次"的新问题。
+
+**新增验证**：`tests/test_unified_dispatch_p5_step5.py` 新增
+`test_maintenance_level_inherits_gate_via_tick_passive_delegation`，
+以真实 `CronScheduler` + `maintenance` 档位 `cfg` 直接调用
+`loop._tick_maintenance()`（`goal_backlog=None`，Goal 相关步骤会抛出
+异常，但发生在 cron 派发之后，不影响本用例断言），验证到期 cron job
+确实被触发一次（`run_count == 1`）。
+
+**订正范围**：
+- `next_doc/goal_cron_unified_scheduler_improvement_plan.md`：升级到
+  v1.9，更新 P5 状态描述、第 4 步分步迁移路径描述、待讨论问题 6 措辞。
+- `next_doc/goal_cron_unified_scheduler_implementation_record.md`（本
+  文件）：决策 33 标注为已订正（原文保留，不删除，便于追溯排查过程）；
+  追加本节说明；下方补充订正后的待确认项回应。
+- `src/mini_agent/evolution/autonomous_loop.py`：`_tick_passive()`
+  对应代码段注释补充一句，明确说明这个开关对三个档位同时生效。
+- **不涉及任何功能代码的行为变化**——`_tick_passive()`/
+  `_tick_maintenance()`/`_tick_autonomous()` 的调用链关系在 P5 第 5 步
+  落地之前就已经是这样，本轮只是订正了实施记录里对这一既有事实的
+  错误描述。
+
+### 测试结果（v1.9 订正）
+
+```
+tests/test_unified_dispatch_p5_step5.py             9 passed （含新增 1 项）
+```
+
+与既有测试联合运行确认无回归（结果同 P5 第 5 步小节，162 → 163 passed，
+新增 1 项）。
+
+### 待确认项回应（订正 14，追加 16）
+
+14.（订正版，原表述见"P5 第 5 步"小节，已在此处更新为准确版本）
+    `AutonomousLoop` 是否切换到经由统一入口派发 cron/goal_cycle job：
+    `scheduler.unified_dispatch_enabled` 开关本身已经对 passive/
+    maintenance/autonomous 三个档位同时生效（见本节订正说明），"何时
+    默认开启"仍是留给后续积累灰度数据后决定的开放问题，但"是否需要
+    额外接入 maintenance/autonomous 档位"这个问题已经不存在——开关一旦
+    打开就是全局生效，没有"分档位逐步接入"这一中间态可选。
+16. 是否需要把 `_tick_passive()` 内"读开关 + 二选一"这段样板代码抽成
+    一个独立的私有方法（比如 `_dispatch_cron_jobs()`）：当前只有一处
+    调用点（`_tick_passive()` 自身），且该方法体本身不长，抽取暂无
+    必要性收益；如果未来 P5 后续步骤需要在其它地方（比如新增的诊断
+    端点里预览"如果现在切换会触发哪些 job"）复用同一段判断逻辑，届时
+    再抽取，避免过早抽象。
+
+其余待确认项（1-13，15）沿用之前各节的既有回应，状态不变。
