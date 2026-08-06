@@ -274,3 +274,108 @@ def install_global_error_logging() -> None:
 def error_log_path() -> Path:
     """暴露给外部（如 `/debug` CLI 命令）查询当前全局错误日志文件的位置。"""
     return _error_log_path()
+
+
+def error_log_stats(
+    *,
+    scope: str = "all",
+    exclude_tool_executor: bool = False,
+    top_n: int = 20,
+) -> dict[str, Any]:
+    """统计全局错误日志（~/.agent/logs/error.jsonl）中的错误类型分布。
+
+    看板"错误日志"标签页的数据来源，逻辑与 evolution/daily_digest.py::
+    _error_log_summary() 对齐（按 exc_type 计数），但支持更灵活的范围/过滤：
+
+    Args:
+        scope: "all" 统计全部记录；"today" 只统计本地时区当天的记录。
+        exclude_tool_executor: 为 True 时，剔除 where 以
+            "mini_agent.tool_executor" 开头的记录——这类记录（工具执行过程
+            中被 `log_exception` 兜底记录的异常）占比往往极高，但多数是
+            工具调用失败等预期内的降级路径，参考价值低，容易淹没其它真正
+            需要关注的错误，因此提供开关单独剔除。
+        top_n: exc_type / where 分布各自返回的最大条目数。
+
+    Returns:
+        {
+          "total": 总记录数（scope 过滤后、exclude 过滤前）,
+          "excluded": 被 exclude_tool_executor 剔除的记录数,
+          "shown": 实际参与统计（剔除后）的记录数,
+          "by_type": [{"name": exc_type, "count": n}, ...]  按 count 降序,
+          "by_where": [{"name": where, "count": n}, ...]    按 count 降序,
+          "scope": scope,
+          "exclude_tool_executor": exclude_tool_executor,
+          "log_path": 日志文件路径字符串,
+          "log_exists": 日志文件是否存在,
+        }
+        解析失败的行会被跳过，不影响其余行的统计。
+    """
+    import datetime as _dt
+    from collections import Counter
+
+    log_path = _error_log_path()
+    result: dict[str, Any] = {
+        "total": 0,
+        "excluded": 0,
+        "shown": 0,
+        "by_type": [],
+        "by_where": [],
+        "scope": scope,
+        "exclude_tool_executor": exclude_tool_executor,
+        "log_path": str(log_path),
+        "log_exists": log_path.exists(),
+    }
+    if not log_path.exists():
+        return result
+
+    today = _dt.date.today().isoformat()
+    by_type: Counter = Counter()
+    by_where: Counter = Counter()
+    total = 0
+    excluded = 0
+
+    try:
+        with log_path.open("r", encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    record = json.loads(line)
+                except Exception:
+                    continue
+
+                if scope == "today":
+                    ts_str = record.get("ts", "")
+                    try:
+                        date = _dt.datetime.fromisoformat(
+                            ts_str.replace("Z", "+00:00")
+                        ).date().isoformat()
+                    except Exception:
+                        continue
+                    if date != today:
+                        continue
+
+                total += 1
+
+                where = record.get("where", "unknown") or "unknown"
+                if exclude_tool_executor and where.startswith("mini_agent.tool_executor"):
+                    excluded += 1
+                    continue
+
+                exc_type = record.get("exc_type") or record.get("level") or "Unknown"
+                by_type[exc_type] += 1
+                by_where[where] += 1
+    except Exception as _mini_agent_exc:
+        log_exception(_mini_agent_exc, where="mini_agent.errors.error_log_stats")
+
+    result["total"] = total
+    result["excluded"] = excluded
+    result["shown"] = total - excluded
+    result["by_type"] = [
+        {"name": name, "count": count} for name, count in by_type.most_common(top_n)
+    ]
+    result["by_where"] = [
+        {"name": name, "count": count} for name, count in by_where.most_common(top_n)
+    ]
+    return result

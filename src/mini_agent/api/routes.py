@@ -2900,6 +2900,30 @@ async def get_self_status(request: Request):
     return result
 
 
+@router.get("/self/error_log_stats")
+async def get_error_log_stats(
+    request: Request,
+    scope: str = Query("all", description="all=全部记录；today=仅当天"),
+    exclude_tool_executor: bool = Query(
+        False, description="是否剔除 where 以 mini_agent.tool_executor 开头的记录"
+    ),
+):
+    """全局错误日志（~/.agent/logs/error.jsonl）的错误类型分布统计。
+
+    供看板"📛 错误日志"标签页使用。日志文件是进程级全局的（不区分
+    project_root/session），所以这里不走 `_bridge(request)`，直接调用
+    `mini_agent.errors.error_log_stats()`，只做登录态校验。
+    """
+    _require_owner(request)
+
+    if scope not in ("all", "today"):
+        raise HTTPException(status_code=400, detail="scope 仅支持 all / today")
+
+    from mini_agent.errors import error_log_stats
+
+    return error_log_stats(scope=scope, exclude_tool_executor=exclude_tool_executor)
+
+
 # ── 产出物 Artifacts ──────────────────────────────────────────────────────────
 # 供「产出物看板」使用：与 /fs/* 不同，这里不是遍历目录，而是消费 Agent/工具
 # 主动登记的 manifest（storage/artifacts.py），语义化地展示"这次任务产出了什么"。

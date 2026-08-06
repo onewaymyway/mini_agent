@@ -4594,6 +4594,88 @@ def render_diagnostics_tab(client: AgentClient):
 
 
 # ═══════════════════════════════════════════════════════════════════════
+# Tab: 📛 错误日志（~/.agent/logs/error.jsonl 错误类型分布统计）
+# ═══════════════════════════════════════════════════════════════════════
+def render_error_log_tab(client: AgentClient):
+    st.markdown("#### 📛 错误日志统计")
+    st.caption("数据来源：`~/.agent/logs/error.jsonl`（全局错误日志，跨 project/session）。")
+
+    col_scope, col_filter = st.columns([1, 1])
+    with col_scope:
+        scope_label = st.radio(
+            "统计范围", ["全部", "仅当天"], horizontal=True, key="error_log_scope"
+        )
+        scope = "today" if scope_label == "仅当天" else "all"
+    with col_filter:
+        exclude_te = st.checkbox(
+            "过滤 mini_agent.tool_executor 相关错误",
+            value=True,
+            key="error_log_exclude_te",
+            help="这类记录多为工具调用失败时的兜底日志，占比往往极高但通常不重要，"
+                 "默认剔除以便看清其它真正需要关注的错误；取消勾选可查看全部。",
+        )
+
+    if st.button("🔄 刷新统计", key="error_log_refresh"):
+        st.rerun()
+
+    stats = client.error_log_stats(scope=scope, exclude_tool_executor=exclude_te) or {}
+    if stats.get("_error"):
+        st.error(f"获取错误日志统计失败：{stats['_error']}")
+        return
+
+    if not stats.get("log_exists"):
+        st.info("错误日志文件尚不存在，说明目前还没有记录到任何异常，一切正常 🎉")
+        return
+
+    total = stats.get("total", 0)
+    excluded = stats.get("excluded", 0)
+    shown = stats.get("shown", 0)
+
+    c1, c2, c3 = st.columns(3)
+    c1.metric("范围内总数", total)
+    c2.metric("已过滤（tool_executor）", excluded)
+    c3.metric("参与统计", shown)
+
+    if shown == 0:
+        if total > 0:
+            st.info("当前范围内的记录全部被 tool_executor 过滤规则剔除，"
+                     "可取消勾选上面的过滤选项查看完整分布。")
+        else:
+            st.info("当前范围内没有错误记录。")
+        return
+
+    by_type = stats.get("by_type") or []
+    by_where = stats.get("by_where") or []
+
+    st.markdown("##### 按异常类型（exc_type）分布")
+    if by_type:
+        try:
+            import pandas as pd
+            df_type = pd.DataFrame(by_type).set_index("name")
+            st.bar_chart(df_type["count"])
+        except Exception:
+            pass
+        st.dataframe(
+            [{"异常类型": r["name"], "次数": r["count"]} for r in by_type],
+            use_container_width=True, hide_index=True,
+        )
+    else:
+        st.caption("暂无数据。")
+
+    st.markdown("##### 按发生位置（where）分布 Top N")
+    if by_where:
+        st.dataframe(
+            [{"位置": r["name"], "次数": r["count"]} for r in by_where],
+            use_container_width=True, hide_index=True,
+        )
+    else:
+        st.caption("暂无数据。")
+
+    with st.expander("原始统计 JSON"):
+        st.json(stats, expanded=False)
+
+
+# ═══════════════════════════════════════════════════════════════════════
 # Tab: 🧪 混合执行（hybrid_exec，next_doc/hybrid_exec_design_plan.md P4）
 # ═══════════════════════════════════════════════════════════════════════
 def render_hybrid_exec_tab(client: AgentClient):
@@ -5260,7 +5342,7 @@ def main():
 
     tabs = st.tabs(["💬 对话", "🗂️ 会话管理", "📌 目标看板", "🔄 工作流", "📁 产出物", "🖼️ 产出预览",
                     "🧠 自我状态", "🧬 进化提案", "⏰ Cron 任务", "🗓️ 全局日程", "🔌 外部输入",
-                    "🔔 关注与通知", "⚙️ 配置", "🔧 诊断", "🧪 混合执行"])
+                    "🔔 关注与通知", "⚙️ 配置", "🔧 诊断", "🧪 混合执行", "📛 错误日志"])
 
     # [daemon_stability_and_ux_improvement_plan.md 补充 / 看板顶栏跳转]
     # 顶栏"正在执行"列表的"🔍 查看并控制"按钮点击后，把目标 tab 名记到
@@ -5302,6 +5384,8 @@ def main():
         render_diagnostics_tab(client)
     with tabs[14]:
         render_hybrid_exec_tab(client)
+    with tabs[15]:
+        render_error_log_tab(client)
 
     # [P0 改造] 原来这里是 `if auto_refresh: time.sleep(3); st.rerun()`——
     # 整页阻塞 3 秒再重跑，期间所有 tab、所有正在填的表单都被冻结。

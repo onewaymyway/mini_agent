@@ -81,6 +81,19 @@ class AgentClient:
     def diagnostics(self):
         return self._get("/diagnostics")
 
+    def error_log_stats(self, scope: str = "all", exclude_tool_executor: bool = False):
+        """全局错误日志（~/.agent/logs/error.jsonl）错误类型分布统计。
+
+        scope: "all" 全部 / "today" 仅当天。
+        exclude_tool_executor: 是否剔除 mini_agent.tool_executor 相关的记录
+        （这类记录数量占绝大多数，多为工具调用失败的预期内降级路径）。
+        """
+        params = {
+            "scope": scope,
+            "exclude_tool_executor": "true" if exclude_tool_executor else "false",
+        }
+        return self._get("/self/error_log_stats", params=params)
+
     # ── 对话 ──────────────────────────────────────────────────────────
     def chat(self, message: str, session_id: str = None):
         body = {"message": message}
