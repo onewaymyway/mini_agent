@@ -179,6 +179,7 @@
   },
   "scheduler":{
     "unified_arbitration_enabled":true,
-    "unified_dispatch_enabled":true
+    "unified_dispatch_enabled":true,
+    "max_total_concurrent_tasks": 2
   }
 }
