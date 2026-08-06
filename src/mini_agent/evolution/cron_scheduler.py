@@ -589,24 +589,16 @@ class CronScheduler:
         due_jobs.sort(key=lambda j: j.priority, reverse=True)
 
         for job in due_jobs:
-            # 到期，触发
-            success = self._fire(job)
-            if success:
-                job.last_run_at = now
-                job.run_count += 1
-                job.next_run_at = compute_next_run(job.schedule, now)
-                if job.consecutive_skip_count:
-                    job.consecutive_skip_count = 0
-                    skip_state_changed = True
+            # 到期，触发。[P5 第 4 步] 单个 job 的"触发 + 记账"逻辑抽成
+            # `_trigger_and_record()`，供 `trigger_job_now()`（统一调度层
+            # execute() 复用）与这里共用同一份实现，避免记账逻辑存在两份
+            # 拷贝、日后改一处忘了改另一处。
+            prev_skip_count = job.consecutive_skip_count
+            triggered_ok = self._trigger_and_record(job, now)
+            if triggered_ok:
                 triggered.append(job.id)
-            else:
-                # [goal_cron_unified_scheduler_improvement_plan.md P2]
-                # 到点但未能成功触发（仲裁 blocked / 已有一次执行在跑 /
-                # semaphore 排队中拒绝等）：记一次连续跳过，跨越告警阈值
-                # 时发一次通知，避免长期"静默重试"导致用户完全无感知。
-                job.consecutive_skip_count += 1
+            if job.consecutive_skip_count != prev_skip_count:
                 skip_state_changed = True
-                self._maybe_alert_consecutive_skip(job)
 
         if triggered or skip_state_changed:
             try:
@@ -617,6 +609,57 @@ class CronScheduler:
                 pass
 
         return triggered
+
+    def _trigger_and_record(self, job: "CronJob", now: float) -> bool:
+        """触发单个 job 并更新其记账字段（`last_run_at`/`run_count`/
+        `next_run_at`/`consecutive_skip_count`），不负责 `save()`——调用方
+        （`tick()`/`trigger_job_now()`）各自决定何时落盘，避免这里重复
+        写文件。返回值与 `_fire()` 含义一致：True 表示确实触发成功。"""
+        success = self._fire(job)
+        if success:
+            job.last_run_at = now
+            job.run_count += 1
+            job.next_run_at = compute_next_run(job.schedule, now)
+            if job.consecutive_skip_count:
+                job.consecutive_skip_count = 0
+        else:
+            # [goal_cron_unified_scheduler_improvement_plan.md P2]
+            # 到点但未能成功触发（仲裁 blocked / 已有一次执行在跑 /
+            # semaphore 排队中拒绝等）：记一次连续跳过，跨越告警阈值
+            # 时发一次通知，避免长期"静默重试"导致用户完全无感知。
+            job.consecutive_skip_count += 1
+            self._maybe_alert_consecutive_skip(job)
+        return success
+
+    def trigger_job_now(self, job_id: str) -> bool:
+        """[goal_cron_unified_scheduler_improvement_plan.md P5 第 4 步]
+        由外部（当前是 `UnifiedTaskScheduler` 的 `CronChannelAdapter`/
+        `GoalCycleChannelAdapter.execute()`）直接触发某个 job 的公开入口，
+        与 `tick()` 内部触发到期 job 走的是**同一份** `_trigger_and_record()`
+        记账逻辑——不会出现"通过这个入口触发了，但 `next_run_at`/
+        `consecutive_skip_count` 没更新，导致下一次 `tick()` 又把它当成
+        到期任务重复触发"这种记账错位。
+
+        与 `tick()` 的区别只在于"谁来决定现在该不该触发"：`tick()` 自己
+        判断到期与否，本方法信任调用方已经做过判断（`SchedulableTask`
+        本身就是从 `poll_due()` 里筛出来的到期任务），不重复检查
+        `next_run_at`，也不要求 job 一定"到期"——调用方如果传一个未到期
+        的 job_id，本方法仍会尝试触发（语义等价于"立即手动触发一次"）。
+
+        `job_id` 不存在时返回 `False`（静默，不抛异常——与本类其它对外
+        接口一贯的失败处理风格一致）。
+        """
+        job = self._jobs.get(job_id)
+        if job is None:
+            return False
+        now = time.time()
+        success = self._trigger_and_record(job, now)
+        try:
+            self.save()
+        except Exception as _mini_agent_exc:
+            from mini_agent.errors import log_exception
+            log_exception(_mini_agent_exc, where='mini_agent.evolution.cron_scheduler.CronScheduler.trigger_job_now')
+        return success
 
     def set_goal_cycle_handler(self, handler: Optional[Callable[["CronJob"], bool]]) -> None:
         """[Track B] 注册/替换 goal_cycle 通用回调。daemon 启动时由

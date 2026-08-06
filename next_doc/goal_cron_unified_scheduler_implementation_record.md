@@ -569,3 +569,144 @@ tests/test_resource_arbiter_gating_track_j.py
 
 其余待确认项（1-9）沿用 P0-P5 第 1-2 步实施记录的既有回应，状态不变。
 
+## P5 第 4 步 —— 接管实际派发（部分完成）
+
+**处理状态：cron/goal_cycle 两通道的 `execute()` 已实现真正委托派发；
+goal 通道未实现；`AutonomousLoop` 尚未切换到经由 `UnifiedTaskScheduler`
+派发。** 对应改进计划 P5 分步迁移路径的第 4 步，本轮是一个明确的**子集**
+完成，不是整步。
+
+### 新增/修改文件（P5 第 4 步）
+
+| 文件 | 改动 |
+|---|---|
+| `src/mini_agent/evolution/cron_scheduler.py` | `tick()` 循环体里"触发单个 job + 记账"（调用 `_fire()`、更新 `last_run_at`/`run_count`/`next_run_at`/`consecutive_skip_count`、失败时告警）抽成新方法 `_trigger_and_record(job, now) -> bool`；`tick()` 改为调用它，行为完全保留（`skip_state_changed` 判定逻辑同步调整为"调用前后 `consecutive_skip_count` 是否变化"，语义与改造前等价）。新增公开方法 `trigger_job_now(job_id: str) -> bool`：查 job、调用同一个 `_trigger_and_record()`、`save()`——供外部（当前是统一调度层的两个 cron 侧适配器）直接触发某个 job，且与 `tick()` 共用同一份记账，不会造成"触发了但记账没更新，下次 tick 又重复触发"的错位 |
+| `src/mini_agent/evolution/unified_task_scheduler.py` | `CronChannelAdapter`/`GoalCycleChannelAdapter.execute()` 从 `raise NotImplementedError` 改为 `return bool(self._cron_scheduler.trigger_job_now(task.task_id))`，`cron_scheduler` 为 `None` 或触发过程异常均返回 `False`（不抛出）；`ObjectiveChannelAdapter.execute()` 保持 `raise NotImplementedError`，文档字符串更新为说明"为什么这次没有实现"（Goal 通道派发逻辑深度耦合 `AutonomousLoop` 运行时状态，缺一个安全的公开入口）；模块头部文档同步更新范围边界说明 |
+| `tests/test_unified_dispatch_p5_step4.py` | 新增：10 项用例，覆盖 `trigger_job_now()` 成功/失败的记账正确性（含"失败后再成功，`consecutive_skip_count` 正确清零"）、未知 `job_id` 返回 `False`、`tick()` 重构前后行为一致性（一次到期触发的记账结果验证）、`CronChannelAdapter`/`GoalCycleChannelAdapter.execute()` 的委托正确性（含 `None` scheduler 场景）、`ObjectiveChannelAdapter.execute()` 仍然 raise |
+| `tests/test_unified_task_scheduler.py` | 原 `test_execute_raises_not_implemented` 改名为 `test_execute_with_none_scheduler_returns_false_not_raises`，断言从"raise"改为"返回 `False`"，反映 cron/goal_cycle 两适配器 `execute()` 的新行为；模块头部文档字符串同步更新 |
+
+### 关键设计决策（P5 第 4 步）
+
+27. **只完成"cron/goal_cycle 两通道的 `execute()`"这一个子集，明确不
+    在本轮切换 `AutonomousLoop` 的实际调用路径**：改进计划原文第 4 步
+    的完整目标是"三条通道的 tick() 触发点最终都收敛成
+    `UnifiedTaskScheduler.tick()` 一个入口"，但 `AutonomousLoop.
+    _tick_passive()`/`_tick_maintenance()` 是 daemon 的核心生产路径，
+    直接切换调用入口意味着：(a) 需要新建/注入一个
+    `UnifiedTaskScheduler` 运行时实例到 `AutonomousLoop`（改变现有构造
+    签名和依赖关系）；(b) 一旦切换出错，影响的是所有到期 cron/
+    goal_cycle job 是否还能正常触发这一核心功能，且本地沙箱环境无法
+    完整跑一次真实 daemon 生命周期来验证。改进计划设计边界第 5 条本身
+    也允许"允许长期与旧路径并存直到确认稳定"——本轮选择先把
+    "execute() 委托本身是否记账正确"这一半独立、可以脱离
+    `AutonomousLoop` 完整验证的部分做完、测试覆盖，是把一个高风险大
+    改动拆成"先证明子部件可靠"与"再决定何时切换调用方"两个独立、可
+    分别评估的阶段，切换调用方本身留给后续（且很可能需要专门的灰度
+    开关和更完整的集成测试环境，不适合在当前验证条件下一次性做完）。
+
+28. **`trigger_job_now()` 与 `tick()` 共用 `_trigger_and_record()`
+    是本轮最关键的安全前提，不是可选的代码整洁性改进**：P5 第 1-2 步
+    实施记录的既有决策 18 已经明确指出过风险——"如果现在就把 execute()
+    接到 CronScheduler 的真实触发逻辑上……绕过三条通道各自现有的去重/
+    并发/公平性检查，造成重复执行"。具体到 cron 通道，风险点是
+    "记账不同步"：如果 `execute()` 只是简单调用一个不更新 `next_run_at`
+    的触发函数，`tick()` 下一次运行时仍会认为这个 job 到期，造成重复
+    触发。本轮通过让 `tick()` 自己也改成调用 `_trigger_and_record()`
+    （而不是给 `trigger_job_now()` 单独拼一份"看起来等价"的记账代码），
+    从根本上排除了两条路径记账不一致的可能——两者物理上就是同一段
+    代码，不存在"改一处忘了改另一处"的维护风险。这是本轮愿意实现
+    cron/goal_cycle 两个 `execute()`（而不是继续保持 P5 第 1-2 步"提前
+    实现是不安全的"结论）的前提条件；`ObjectiveChannelAdapter.execute()`
+    之所以本轮仍不实现，正是因为 Goal 通道没有一个类似的、已经被
+    验证"记账口径与现有触发路径完全一致"的公开入口可以复用（见决策 29）。
+
+29. **`ObjectiveChannelAdapter.execute()` 本轮不实现，且明确不采用
+    "简化版重新实现"这条路径**：读码确认 `AutonomousLoop.
+    _tick_maintenance()` 里 Goal 通道的实际派发（约 90 行代码，见
+    `autonomous_loop.py` 行 384-472）涉及：资源仲裁 pause/resume、
+    fairness_paused_objective_ids/user_paused_objective_ids 两种暂停
+    状态的排除、按 Goal 分组的 per-goal 并发上限检查
+    （`running_count_for_goal`/`max_concurrent_objectives_per_goal`）、
+    公平轮询候选的调度顺序、`mark_scheduled()`/`resume_fairness()` 等
+    多个相互关联的状态更新。这些状态目前只存在于 `AutonomousLoop`
+    实例内部（不是 `ObjectiveExecutor` 自己管理的），没有一个类似
+    `CronScheduler.trigger_job_now()` 那样"给定一个具体 Goal/Objective，
+    保证按现有全部规则正确触发一次"的独立公开方法。要实现
+    `ObjectiveChannelAdapter.execute()`，要么（a）在适配器里重新拼一套
+    简化版判断逻辑——这会导致两份平行的、大概率逐渐漂移的判断逻辑，
+    正是改进计划本身想解决的"三条通道各自实现一套局部判断"问题在
+    Goal 通道内部的翻版；要么（b）先重构 `AutonomousLoop`，把这部分
+    逻辑抽成一个独立的公开方法（类似本轮对 `CronScheduler` 做的
+    `trigger_job_now()`）。(b) 是正确路径，但 `AutonomousLoop` 这部分
+    代码的改动面明显大于本轮对 `CronScheduler` 的改动（`CronScheduler.
+    tick()` 循环体只有～20 行且已经是一个独立方法，`AutonomousLoop`
+    这部分逻辑跨越多个状态字段、与同一 tick 内的其它步骤有隐含的
+    先后依赖），贸然在本轮一并做掉超出了"能在当前验证条件下充分测试"
+    的范围，留给后续单独评估、单独实施。
+
+### 测试结果（P5 第 4 步）
+
+```
+tests/test_unified_dispatch_p5_step4.py              10 passed （新增）
+```
+
+`CronScheduler.tick()` 内部重构（`_trigger_and_record()` 抽取）的行为
+保留性验证——与既有 cron 相关测试文件联合运行，确认无回归：
+
+```
+tests/test_cron_scheduler_local_handler.py
+tests/test_cron_job_runner.py
+tests/test_cron_scheduler_priority.py
+tests/test_goal_cron_feedback_and_output_policy.py
+tests/test_goal_cron_bridge.py
+tests/test_cron_schedule_validation.py
+tests/test_goal_cron_unified_scheduler_p0_p1_p2.py
+tests/test_cron_scheduler_reap_stale_jobs.py
+84 passed, 0 failed
+```
+
+与 P0-P5 第 1-3 步全部既有测试文件联合运行，确认无回归：
+
+```
+tests/test_unified_task_scheduler.py
+tests/test_unified_dispatch_p5_step4.py
+tests/test_unified_arbitration_p5_step3.py
+tests/test_unified_scheduler_preview_route.py
+tests/test_goal_cron_unified_scheduler_p0_p1_p2.py
+tests/test_goal_cron_unified_scheduler_p3.py
+tests/test_scheduling_overview_route.py
+tests/test_scheduler_heartbeat.py
+tests/test_cron_scheduler_local_handler.py
+tests/test_cron_job_runner.py
+tests/test_cron_scheduler_priority.py
+tests/test_goal_cron_feedback_and_output_policy.py
+tests/test_goal_cron_bridge.py
+tests/test_cron_schedule_validation.py
+tests/test_cron_scheduler_reap_stale_jobs.py
+tests/test_objective_executor_adaptive_concurrency.py
+tests/test_resource_arbiter_gating_track_j.py
+163 passed, 0 failed
+```
+
+全量回归本轮仍未完整跑完（本地沙箱执行较慢，`pytest tests/` 单次超出
+执行时间限制被中断），已确认无回归的范围覆盖了本次改动直接涉及/间接
+关联的全部模块；`test_judge_verdict.py`（缺 `json_repair`）、
+`test_session.py`（`_flock` 平台兼容问题）两个既有的收集期报错文件与
+本轮改动无关，结论与 P4/P5 第 3 步实施记录一致。
+
+### 待确认项回应（对照原方案 §4，追加 P5 第 4 步相关项）
+
+12. `AutonomousLoop` 何时切换到经由 `UnifiedTaskScheduler` 派发 cron/
+    goal_cycle job（而不是直接调 `cron_scheduler.tick()`）：本轮未做
+    这个切换，留待后续单独评估——需要先设计一个灰度开关（类似
+    `scheduler.unified_arbitration_enabled` 的思路）+ 更完整的集成
+    验证，不适合与"证明 execute() 委托本身可靠"这一步骤合并。
+13. `ObjectiveChannelAdapter.execute()` 需要的"Goal 通道安全公开入口"
+    该以什么形式抽出（是否需要连带重构 `AutonomousLoop` 现有的暂停/
+    公平性状态管理方式）：本轮未评估具体方案，只确认了"直接在适配器里
+    重新实现一遍简化逻辑"这条路径不可取（见决策 29），具体重构方案
+    留给后续单独设计。
+
+其余待确认项（1-11）沿用 P0-P5 第 1-3 步实施记录的既有回应，状态不变。
+
+

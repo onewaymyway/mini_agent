@@ -1,9 +1,23 @@
 # Goal / Cron 三条执行通道 统一调度层 改进计划
 
-- **版本**: v1.6
+- **版本**: v1.7
 - **实施记录**: `next_doc/goal_cron_unified_scheduler_implementation_record.md`
-  （P0/P1/P2/P3/P4 已完成；P5 第 1-3 步已完成，第 4-5 步未启动）
+  （P0/P1/P2/P3/P4 已完成；P5 第 1-3 步已完成，第 4 步部分完成
+  [cron/goal_cycle 两通道 execute() 已实现委托派发，但仍未接入任何实际
+  tick 入口；goal 通道 execute() 未实现]，第 5 步未启动）
 - **变更记录**：
+  - v1.7：P5 第 4 步（接管实际派发）部分完成——`CronScheduler.tick()`
+    内部"触发单个 job + 记账"逻辑抽成 `_trigger_and_record()`，并新增
+    公开入口 `trigger_job_now(job_id)` 复用同一份记账逻辑（行为保留式
+    重构，既有 cron 相关测试全部通过，无回归）；`CronChannelAdapter`/
+    `GoalCycleChannelAdapter.execute()` 改为真正委托 `trigger_job_now()`，
+    不再 `raise NotImplementedError`。**`execute()` 目前仍未被
+    `UnifiedTaskScheduler` 自身或 `AutonomousLoop` 的任何既有 tick 路径
+    调用**——`CronScheduler.tick()` 依然是唯一的实际触发入口，这是"已经
+    可以安全调用，但还没有人在调用"的中间状态，为将来切换统一入口做
+    准备但本身不改变任何现有运行时行为。`ObjectiveChannelAdapter.
+    execute()` 因 Goal 通道派发逻辑深度耦合 `AutonomousLoop` 运行时状态、
+    缺少类似 `trigger_job_now()` 的安全公开入口，本轮未实现，留待后续。
   - v1.6：P5 第 3 步（接管仲裁裁决）已实现——新增纯函数
     `allocate_weighted_slots()`，`ObjectiveExecutor`/`CronJobRunner` 在
     `scheduler.unified_arbitration_enabled=True`（默认 `False`）时，
@@ -233,12 +247,13 @@
     风格）。
   - 看板能正确渲染，新增测试覆盖端点空态/正常态。
 
-### P5（长期目标）—— 收敛到统一调度层【第 1-3 步已完成，第 4-5 步未启动】
+### P5（长期目标）—— 收敛到统一调度层【第 1-3 步已完成，第 4 步部分完成，第 5 步未启动】
 
-**处理状态：第 1-3 步（定义统一接口 + 三条通道只读适配 + 只读聚合排序
-建议 + 接管仲裁裁决）已完成。** 详见
-`next_doc/goal_cron_unified_scheduler_implementation_record.md`。第 4-5
-步（接管实际派发）仍是未启动的长期目标。
+**处理状态：第 1-3 步已完成；第 4 步"接管实际派发"部分完成**（cron/
+goal_cycle 两通道的 `execute()` 已实现真正委托派发，但尚未接入任何实际
+tick 入口；goal 通道 `execute()` 未实现）。详见
+`next_doc/goal_cron_unified_scheduler_implementation_record.md`。第 5
+步（`AutonomousLoop` 收敛到统一入口）仍是未启动的长期目标。
 
 - **目标**：三条通道最终都通过一个统一的 `UnifiedTaskScheduler` 提交任务、
   领取执行槽位，由它统一做：并发分配、优先级/权重排序、资源仲裁响应、
@@ -270,10 +285,17 @@
      gating_state()` 本身）未改变——仍是"only the degraded concurrency
      split moved into the unified layer"，不是"仲裁的全部决策都收归统一
      层"，后者留给未来视情况评估是否需要。
-  4. **接管实际派发**：三条通道的 `tick()` 触发点最终都收敛成
+  4. **接管实际派发**【部分完成，见实施记录】：三条通道的 `tick()` 触发点最终都收敛成
      `UnifiedTaskScheduler.tick()` 一个入口，`AutonomousLoop._tick_passive/
      _tick_maintenance` 里现在分散调用 `cron_scheduler.tick()`/
-     `objective_executor` 相关方法的代码逐步收敛进去。
+     `objective_executor` 相关方法的代码逐步收敛进去。——**本轮完成的
+     子集**：`CronScheduler` 新增公开入口 `trigger_job_now(job_id)`（与
+     `tick()` 共用同一份记账逻辑），`CronChannelAdapter`/
+     `GoalCycleChannelAdapter.execute()` 已委托它实现真正派发；**尚未
+     完成**：`AutonomousLoop` 仍然直接调用 `cron_scheduler.tick()`，没有
+     切换到经由 `UnifiedTaskScheduler` 派发，`ObjectiveChannelAdapter.
+     execute()` 也未实现（Goal 通道派发逻辑深度耦合 `AutonomousLoop`
+     运行时状态，缺一个类似 `trigger_job_now()` 的安全公开入口）。
   5. 每一步都保留"新旧路径可切换"的配置开关，观察一段时间数据无异常后
      再移除旧路径，不强求单个版本内完成全部迁移。
 - **验收标准（分步骤各自验收，此处只列总目标）**：

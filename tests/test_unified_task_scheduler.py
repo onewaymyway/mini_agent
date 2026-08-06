@@ -7,8 +7,10 @@ tests/test_unified_task_scheduler.py
 - `SchedulableTask`/`TaskChannel` 接口定义本身不产生行为，此处只做基本
   构造/字段校验。
 - `ObjectiveChannelAdapter`/`CronChannelAdapter`/`GoalCycleChannelAdapter`
-  三个只读适配器：`poll_due()` 正确复用既有通道数据、`execute()` 按设计
-  raise NotImplementedError。
+  三个只读适配器：`poll_due()` 正确复用既有通道数据；`execute()` 中
+  `CronChannelAdapter`/`GoalCycleChannelAdapter` 已委托 `trigger_job_now()`
+  真正派发（覆盖测试见 test_unified_dispatch_p5_step4.py），
+  `ObjectiveChannelAdapter.execute()` 仍按设计 raise NotImplementedError。
 - `UnifiedTaskScheduler.poll_all()`/`suggest_order()`：聚合、降级、排序
   行为符合预期，且确认调用全程不修改任何底层通道状态（只读）。
 
@@ -152,11 +154,12 @@ class TestCronChannelAdapters(_Base):
         self.assertEqual(CronChannelAdapter(None).poll_due(), [])
         self.assertEqual(GoalCycleChannelAdapter(None).poll_due(), [])
 
-    def test_execute_raises_not_implemented(self):
-        with self.assertRaises(NotImplementedError):
-            CronChannelAdapter(None).execute(SchedulableTask(source="cron", task_id="x"))
-        with self.assertRaises(NotImplementedError):
-            GoalCycleChannelAdapter(None).execute(SchedulableTask(source="goal_cycle", task_id="x"))
+    def test_execute_with_none_scheduler_returns_false_not_raises(self):
+        # [P5 第 4 步] execute() 已实现真正委托派发，None scheduler 时
+        # 静默返回 False，不再 raise NotImplementedError（那是 P5 第 1-2
+        # 步的旧行为，见 test_unified_dispatch_p5_step4.py 的完整覆盖）。
+        self.assertFalse(CronChannelAdapter(None).execute(SchedulableTask(source="cron", task_id="x")))
+        self.assertFalse(GoalCycleChannelAdapter(None).execute(SchedulableTask(source="goal_cycle", task_id="x")))
 
 
 class TestUnifiedTaskScheduler(_Base):

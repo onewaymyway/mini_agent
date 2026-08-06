@@ -1,9 +1,9 @@
 # -*- coding: utf-8 -*-
 """
-[goal_cron_unified_scheduler_improvement_plan.md P5 · 长期目标 · 第 1-2 步]
+[goal_cron_unified_scheduler_improvement_plan.md P5 · 长期目标 · 第 1-4 步]
 
-本模块是"收敛到统一调度层"这一长期目标的第一块地基，按方案原文的分步迁移
-路径实现前两步：
+本模块是"收敛到统一调度层"这一长期目标的地基，按方案原文的分步迁移
+路径实现：
 
   1. 定义统一接口：`SchedulableTask`（最小字段：source/task_id/priority/
      due_at/resource_estimate）+ `TaskChannel` 协议
@@ -12,22 +12,30 @@
   2. 先适配只读部分：让 Goal（Objective）/普通 cron/goal_cycle 三条通道各自
      实现 `TaskChannel.poll_due()`，`UnifiedTaskScheduler` 先只做"聚合展示 +
      统一排序建议"，不接管真正的执行决策。
+  3. 接管仲裁裁决：新增 `allocate_weighted_slots()` 纯函数，degraded 状态
+     下 goal/cron 两通道的并发上限可选（`scheduler.unified_arbitration_
+     enabled`，默认关闭）改由本函数按权重 + cron 保底统一计算。
+  4. 接管实际派发（部分）：`CronChannelAdapter`/`GoalCycleChannelAdapter`
+     的 `execute()` 已实现真正委托派发（详见下方范围边界）；
+     `ObjectiveChannelAdapter.execute()` 仍未实现，见该类文档字符串。
 
-**明确的范围边界（与方案原文一致）**：
-- 本模块 **不修改** `ObjectiveExecutor`/`CronScheduler`/`CronJobRunner`/
-  `GoalBacklog` 任何一行既有代码，只是在它们之上包一层只读适配器——三条
-  通道各自的"内部"调度逻辑（公平轮询/老化补偿、去重+watchdog 回收）完全
-  不变，本轮只新增一份"从外部只读观察这些通道当前有哪些任务到期"的统一
-  视图。
-- `TaskChannel.execute()` 在本轮 **不会被 `UnifiedTaskScheduler` 调用**
-  （`UnifiedTaskScheduler` 目前只有 `poll_all()`/`suggest_order()` 两个
-  只读方法），三条通道各自现有的触发路径
-  （`AutonomousLoop._tick_maintenance()` 直接调 `ObjectiveExecutor`/
-  `CronScheduler.tick()`）继续独立运作，不受本模块影响、也不会被本模块
-  重复触发。各适配器的 `execute()` 目前直接 `raise NotImplementedError`
-  并在文档字符串里说明原因，等到 P5 第 3 步"接管仲裁裁决"时才需要真正
-  实现，提前实现一个"看起来能跑但从未被真正调用过"的执行路径反而增加
-  测试盲区，不如显式声明"尚未实现"更安全。
+**明确的范围边界**：
+- 本模块 **不修改** `ObjectiveExecutor`/`GoalBacklog` 任何一行既有代码，
+  只是在它们之上包一层只读适配器；`CronScheduler` 在 P5 第 4 步做了一次
+  行为保留的内部重构（把 `tick()` 循环体里"触发单个 job + 记账"的逻辑
+  抽成 `_trigger_and_record()`/`trigger_job_now()`，供本模块的
+  `execute()` 复用），`tick()` 自身的到期判断/排序/触发顺序完全不变。
+- `CronChannelAdapter`/`GoalCycleChannelAdapter.execute()` 在 P5 第 4 步
+  已经是真正的委托派发（内部调用 `CronScheduler.trigger_job_now()`），
+  但**目前仍未被 `UnifiedTaskScheduler` 自身或 `AutonomousLoop` 的任何
+  既有 tick 路径调用**——`CronScheduler.tick()` 依然是当前唯一的实际
+  触发入口，这两个 `execute()` 只是"已经可以安全调用，但还没有人在
+  调用"。是否/何时切换到统一入口是 P5 第 5 步的范围。
+- `ObjectiveChannelAdapter.execute()` 仍 `raise NotImplementedError`——
+  Goal 通道的实际派发逻辑（公平排序/per-Goal 并发上限/pause 状态检查等）
+  深度耦合 `AutonomousLoop` 自身持有的运行时状态，还没有一个类似
+  `CronScheduler.trigger_job_now()` 那样的安全公开入口，见该类文档
+  字符串的详细说明。
 """
 
 from __future__ import annotations
@@ -82,9 +90,17 @@ class TaskChannel(Protocol):
         只是提供一份只读快照供聚合/排序展示。"""
         ...
 
-    def execute(self, task: SchedulableTask) -> None:
-        """[P5 第 3-4 步预留] 由统一调度层直接派发执行。本轮所有实现均
-        raise NotImplementedError——见模块头部'范围边界'说明。"""
+    def execute(self, task: SchedulableTask) -> bool:
+        """[P5 第 4 步] cron/goal_cycle 两个适配器已实现真正委托派发（见
+        `CronChannelAdapter`/`GoalCycleChannelAdapter`），`ObjectiveChannelAdapter`
+        仍 `raise NotImplementedError`——见该类文档字符串说明原因。返回值
+        `True` 表示确实触发成功，`False` 表示"这次没触发成功"（不算错误，
+        是正常的仲裁/去重结果），与三条通道各自既有的"triggered/success"
+        语义一致。`poll_due()` 必须是只读、非阻塞、不做任何 LLM 调用的
+        规则化计算——与改进计划 §设计边界 第 3 条"本计划所有新增判断都是
+        规则化计算……零 LLM 成本"一致；`execute()` 本身允许产生真实副作用
+        （这正是它存在的意义），但内部委托的仍是三条通道各自原有的、已经
+        过测试的触发路径，不引入新的执行逻辑。"""
         ...
 
 
@@ -133,9 +149,18 @@ class ObjectiveChannelAdapter:
 
     def execute(self, task: SchedulableTask) -> None:
         raise NotImplementedError(
-            "ObjectiveChannelAdapter.execute() 在 P5 第 1-2 步尚未实现——"
-            "Goal 通道的实际派发仍由 ObjectiveExecutor/AutonomousLoop 自行"
-            "负责，见 unified_task_scheduler.py 模块头部说明。"
+            "ObjectiveChannelAdapter.execute() 仍未实现——Goal 通道的实际"
+            "派发（AutonomousLoop._tick_maintenance() 里公平排序/per-Goal"
+            "并发上限/paused 状态检查/resume_fairness 等一整套逻辑，见"
+            "autonomous_loop.py 相关代码段）比 cron/goal_cycle 通道复杂"
+            "得多，且深度耦合 AutonomousLoop 自身持有的运行时状态"
+            "（fairness_paused_objective_ids 等），在没有一个安全的公开"
+            "入口（类似 CronScheduler.trigger_job_now() 那样，把'触发 +"
+            "记账'封装成一次调用）之前，贸然实现 execute() 要么重新拼一份"
+            "简化版调度逻辑（引入与 AutonomousLoop 不一致的风险），要么"
+            "需要先重构 AutonomousLoop 抽出对应的公开方法——两者都超出"
+            "本轮范围，留给后续评估。见 unified_task_scheduler.py 模块"
+            "头部说明。"
         )
 
 
@@ -155,12 +180,32 @@ class CronChannelAdapter:
     def poll_due(self) -> list[SchedulableTask]:
         return _poll_cron_jobs(self._cron_scheduler, want_goal_cycle=False)
 
-    def execute(self, task: SchedulableTask) -> None:
-        raise NotImplementedError(
-            "CronChannelAdapter.execute() 在 P5 第 1-2 步尚未实现——普通 "
-            "cron 通道的实际派发仍由 CronScheduler.tick()/CronJobRunner "
-            "自行负责，见 unified_task_scheduler.py 模块头部说明。"
-        )
+    def execute(self, task: SchedulableTask) -> bool:
+        """[P5 第 4 步] 委托给 `CronScheduler.trigger_job_now(job_id)`——
+        与 `CronScheduler.tick()` 内部触发到期 job 走的是同一份记账逻辑
+        （`_trigger_and_record()`），不会出现"这里触发了但 next_run_at/
+        consecutive_skip_count 没更新，导致下次 tick() 重复触发"的记账
+        错位（这正是 P5 第 1-2 步决策 18 里指出的、提前实现 execute() 的
+        风险——本轮通过让 `CronScheduler` 内部共用同一份记账函数解决了
+        这个问题，而不是在适配器这一层重新拼一份记账逻辑）。
+
+        `cron_scheduler` 未注入、或 `task.task_id` 找不到对应 job 时返回
+        `False`（与 `CronScheduler.trigger_job_now()` 本身的失败语义
+        一致），不抛异常。
+
+        **调用方注意**：本方法目前仍未被 `UnifiedTaskScheduler` 自身的
+        任何方法调用（`poll_all()`/`suggest_order()` 仍是纯读取），也
+        未接入 `AutonomousLoop` 的既有 tick 路径——`CronScheduler.tick()`
+        依然是当前唯一的实际触发入口。谁在什么条件下调用本方法（是否/
+        何时切换到统一入口）留给 P5 第 5 步决定，本轮只保证"调用它是
+        安全的、幂等记账正确的"这一前提已经成立。
+        """
+        if self._cron_scheduler is None:
+            return False
+        try:
+            return bool(self._cron_scheduler.trigger_job_now(task.task_id))
+        except Exception:
+            return False
 
 
 class GoalCycleChannelAdapter:
@@ -177,13 +222,19 @@ class GoalCycleChannelAdapter:
     def poll_due(self) -> list[SchedulableTask]:
         return _poll_cron_jobs(self._cron_scheduler, want_goal_cycle=True)
 
-    def execute(self, task: SchedulableTask) -> None:
-        raise NotImplementedError(
-            "GoalCycleChannelAdapter.execute() 在 P5 第 1-2 步尚未实现——"
-            "goal_cycle 通道的实际派发仍借道 CronScheduler._fire_goal_cycle "
-            "→ ObjectiveExecutor 自行负责，见 unified_task_scheduler.py "
-            "模块头部说明。"
-        )
+    def execute(self, task: SchedulableTask) -> bool:
+        """[P5 第 4 步] 与 `CronChannelAdapter.execute()` 完全同构——
+        goal_cycle job 一样是 `CronScheduler` 管理的 `CronJob`，只是
+        `run_mode == "goal_cycle"`，`trigger_job_now()` 内部经
+        `_fire()` 已经按 `run_mode` 正确分流到 `_goal_cycle_fn`（转发进
+        `ObjectiveExecutor`），本方法不需要（也不应该）自己重新判断
+        run_mode，直接委托同一个入口即可。"""
+        if self._cron_scheduler is None:
+            return False
+        try:
+            return bool(self._cron_scheduler.trigger_job_now(task.task_id))
+        except Exception:
+            return False
 
 
 def _poll_cron_jobs(cron_scheduler: Any, *, want_goal_cycle: bool) -> list[SchedulableTask]:
