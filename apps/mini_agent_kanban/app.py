@@ -4045,6 +4045,17 @@ _CRON_STATUS_LABEL = {
     "timed_out": "🟡 上次超时（已保留进度，下次续接）",
 }
 
+# [执行阶段] CronJobRunner.execution_phase() 的三态：not_running/queued/running，
+# 与 state.json 里的 idle/running/needs_human_review/timed_out 是两套独立的
+# 状态机——前者是"这次触发有没有真正开始跑"（进程内瞬时状态，daemon 重启后
+# 归零），后者是"上一次执行结果如何"（持久化在 state.json）。两者分开展示，
+# 避免"明明还在排队却显示状态还是上次的 idle/timed_out"造成的困惑。
+_CRON_PHASE_LABEL = {
+    "not_running": None,           # 不在跑，跟随 status 展示即可，不额外提示
+    "queued": "🟠 排队中（等待并发槽位）",
+    "running": "🔵 正在执行",
+}
+
 
 def render_cron_jobs_tab(client: AgentClient):
     """展示每个 cron job 的调度信息（来自 /cron/jobs）+ 专属执行状态
@@ -4091,19 +4102,37 @@ def render_cron_jobs_tab(client: AgentClient):
 
     for job in jobs:
         job_id = job.get("id", "")
+        is_system_job = bool(job.get("is_system")) or job_id.startswith("sys:")
+        exec_phase = job.get("execution_phase", "not_running")
         with st.container(border=True):
             top1, top2, top3 = st.columns([3, 2, 2])
-            top1.markdown(f"**{job.get('name', job_id)}**")
+            name_label = f"**{job.get('name', job_id)}**"
+            if is_system_job:
+                name_label += "　🛠️ 系统任务"
+            top1.markdown(name_label)
             top1.caption(job_id)
             top2.caption(f"schedule: `{job.get('schedule', '')}`")
             # [P2] 展示排队优先级——同一次 tick 内多个 job 同时到期时，
             # priority 数值大的先被提交，帮助解释"为什么这个先跑那个后跑"。
             top2.caption(f"priority: {job.get('priority', 0)}")
             top3.caption(f"下次运行：{job.get('next_run_str', '-')}")
+            phase_label = _CRON_PHASE_LABEL.get(exec_phase)
+            if phase_label:
+                top3.caption(phase_label)
 
             desc = job.get("description", "")
             if desc:
                 st.caption(desc)
+
+            # [资源仲裁可见性] 连续因仲裁被跳过触发的次数——sys: job 不受
+            # 仲裁约束（见 §3.2），恒为 0，这里只对非 system job 展示，
+            # 避免误导。达到告警阈值时用 🔴 高亮，未达到时用普通 caption，
+            # 具体阈值配置见 GET/PATCH /v1/self/config 的 cron.skip_alert_threshold
+            # （或看板"⚙️ 配置"tab），本处只展示计数本身，不重复读取全局阈值。
+            if not is_system_job:
+                skip_count = job.get("consecutive_skip_count", 0)
+                if skip_count > 0:
+                    st.caption(f"⚖️ 连续因资源仲裁被跳过触发：{skip_count} 次")
 
             ws_resp = client.cron_job_workspace(job_id)
             if ws_resp and "_error" in ws_resp:
@@ -4114,12 +4143,26 @@ def render_cron_jobs_tab(client: AgentClient):
                 is_running = (ws_resp or {}).get("is_running", False)
                 status = state.get("status", "idle")
                 status_label = _CRON_STATUS_LABEL.get(status, status)
+                # execution_phase 更细粒度地区分"排队中"和"真正在跑"；
+                # not_running 时退回 state.json 里的上一次结果状态展示。
+                if exec_phase == "queued":
+                    display_status = "🟠 排队中"
+                elif exec_phase == "running":
+                    display_status = "🔵 执行中"
+                else:
+                    display_status = status_label
 
                 c1, c2, c3, c4 = st.columns(4)
-                c1.metric("状态", "🔵 执行中" if is_running else status_label)
+                c1.metric("状态", display_status)
                 c2.metric("累计运行次数", job.get("run_count", 0))
                 c3.metric("连续失败次数", state.get("consecutive_failures", 0))
                 c4.metric("超时上限", f"{config.get('timeout_seconds', 1200) // 60} 分钟")
+                st.caption(
+                    f"最大步数 max_steps={config.get('max_steps', 60)} · "
+                    f"卡死检测：相似度阈值 {config.get('stuck_similarity_threshold', 0.92)} / "
+                    f"连续 {config.get('stuck_consecutive_limit', 3)} 步触发 / "
+                    f"最多恢复 {config.get('stuck_max_recoveries', 2)} 次后判定 GIVE_UP"
+                )
 
                 progress = state.get("progress_summary", "")
                 if progress:
@@ -4129,6 +4172,16 @@ def render_cron_jobs_tab(client: AgentClient):
                 last_error = state.get("last_error", "")
                 if status == "needs_human_review" and last_error:
                     st.error(f"上次执行判定异常：{last_error}")
+
+                last_started = state.get("last_run_started_at")
+                last_finished = state.get("last_run_finished_at")
+                if last_started:
+                    started_str = time.strftime("%m-%d %H:%M", time.localtime(last_started))
+                    if last_finished and last_finished >= last_started:
+                        dur_min = (last_finished - last_started) / 60.0
+                        st.caption(f"上次执行：{started_str} 起，耗时 {dur_min:.1f} 分钟")
+                    else:
+                        st.caption(f"上次执行：{started_str} 起（尚未结束）")
 
                 if status == "needs_human_review" and not is_running:
                     if st.button("✅ 确认已处理，重置为空闲", key=f"cron_reset_{job_id}"):
@@ -4236,7 +4289,6 @@ def render_cron_jobs_tab(client: AgentClient):
             # 换到目标看板才行，体验割裂。这里补一份与目标看板一致的删除
             # UI（is_system 的 job 不展示删除按钮、只能禁用；非 system job
             # 删除前二次确认，用 confirm_key 这个 session_state 标记控制）。
-            is_system_job = bool(job.get("is_system")) or job_id.startswith("sys:")
             if not is_system_job:
                 st.markdown("###### 🗑️ 删除任务")
                 confirm_key = f"cron_tab_confirm_delete_{job_id}"
