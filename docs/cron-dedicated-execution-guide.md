@@ -207,6 +207,35 @@ build_cron_agent()`），不跨触发复用同一个 Agent/history：
 
 不配置这一块时，所有字段使用上表的硬编码默认值。
 
+### 7.1 跨通道总并发上限（`scheduler.max_total_concurrent_tasks`）
+
+`max_concurrent_jobs`（本节）与 Goal Objective 通道的
+`autonomy.max_concurrent_objectives_cap`（默认 2）是两条**完全独立**的
+并发上限——正常（非 degraded）状态下互不感知，默认配置下系统里最多可能
+同时有 2（Objective）+ 2（cron）= 4 个任务在跑，看板顶栏"daemon 正在
+执行 N 项任务"里 N 超过单条通道上限（比如同时看到 3 个）就是这么来的，
+不是 bug，是"两条通道各自独立限流、彼此不感知对方"这个设计现状的直接
+体现。
+
+如果需要一个真正跨通道的**总**并发天花板，在 `agent_config.json` 里配置
+`scheduler.max_total_concurrent_tasks`（默认 `null`，不生效）：
+
+```json
+{
+  "scheduler": {
+    "max_total_concurrent_tasks": 2
+  }
+}
+```
+
+设置后，`ObjectiveExecutor`/`CronJobRunner` 的 `effective_max_concurrent()`
+都会在各自原有上限（`max_concurrent_objectives_cap`/`max_concurrent_jobs`，
+以及 degraded 状态下更低的收紧值）基础上，再 clamp 到
+`max(0, max_total_concurrent_tasks - 对方通道当前运行数)`——任意时刻
+Objective + cron job 的运行总数不会超过这个值。始终"只降不升"：不配置
+时两条通道继续各走各的独立上限，与改造前完全一致。详见
+`next_doc/goal_execution_scheduling_global_cap_bugfix.md`。
+
 ## 8. REST API
 
 ```

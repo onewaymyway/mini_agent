@@ -1421,6 +1421,26 @@ class SchedulerConfig:
     # 之前完全一致。
     unified_arbitration_enabled: bool = False
 
+    # [goal_execution_scheduling_global_cap_bugfix.md] Goal Objective 通道
+    # （`ObjectiveExecutor.effective_max_concurrent()`，默认 cap=2）与普通
+    # cron 通道（`CronJobRunner.effective_max_concurrent()`，默认
+    # `cron.max_concurrent_jobs=2`）此前是两套完全独立的并发上限，只有在
+    # ResourceArbiter 判定为 degraded、且 `unified_arbitration_enabled=True`
+    # 时才会通过 `allocate_weighted_slots()` 统一裁决——也就是说在正常
+    # （非 degraded）状态下，两条通道各自最多能跑到自己的 cap，加总起来
+    # 系统里可能同时有 2（Objective）+ 2（cron）= 4 个任务在跑，完全不受
+    # 任何"总并行数"控制，看板"正在执行 N 项任务"里 N > 单条通道 cap 的
+    # 现象（比如同时 3 个）就是这么来的。
+    #
+    # 本字段提供一个跨通道的总并发天花板：为 None（默认）时完全不生效，
+    # 两条通道继续各走各的独立 cap，与改造前行为一致；设为一个正整数后，
+    # `ObjectiveExecutor`/`CronJobRunner` 的 `effective_max_concurrent()`
+    # 会在各自原有 cap 的基础上，再clamp到
+    # `max(0, max_total_concurrent_tasks - 对方通道当前运行数)`——始终
+    # "只降不升"，不会让任何一条通道的上限变得比改造前更宽松。任意时刻
+    # 全局同时运行的 Objective + cron job 总数不会超过这个值。
+    max_total_concurrent_tasks: Optional[int] = None
+
     # degraded 状态下，goal 通道与 cron 通道总共可用的并发槽位数（两条
     # 通道共享，按权重 + cron 保底切分）。默认 2，等于改造前两条通道各自
     # 默认 degraded 上限（1 + 1）之和——保证开关刚打开、权重仍是默认 1:1

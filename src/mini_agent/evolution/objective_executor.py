@@ -344,6 +344,14 @@ class ObjectiveExecutor:
         # 设置，不持久化（只反映"此刻"的资源状况，下次 tick 会重新计算），
         # 默认 False（不降级），保证未接入 Track J 的调用方行为不变。
         self._gating_degraded: bool = False
+        # [goal_execution_scheduling_global_cap_bugfix.md] 跨通道总并发
+        # 天花板用：由 server.py 在 CronJobRunner 也构造完毕之后回填一个
+        # 返回"当前有多少个 cron job 正在跑"的回调，供
+        # effective_max_concurrent() 在 `scheduler.max_total_concurrent_
+        # tasks` 生效时读取对方通道的实时运行数。默认 None（未接线，或者
+        # 是不需要感知 cron 通道的部署形态），等价于改造前完全不做跨通道
+        # 感知。
+        self._other_channel_running_fn: Optional[Callable[[], int]] = None
         self._executions: dict[str, ObjectiveExecution] = {}  # execution_id → ex
         self._turn_to_exec: dict[str, tuple[str, int]] = {}   # turn_id → (execution_id, step_idx)
         self._exec_path = paths.workdir_dir / "objective_executions.json"
@@ -720,6 +728,25 @@ class ObjectiveExecutor:
                     )
             cap = min(cap, max(1, int(degraded_cap)))
 
+        # [goal_execution_scheduling_global_cap_bugfix.md] 跨通道总并发
+        # 天花板：与上面 Track J/K 的"只降不升"原则一致，只会进一步收紧
+        # `cap`，不会放宽。`scheduler_cfg.max_total_concurrent_tasks` 为
+        # None（默认）或未接线 `_other_channel_running_fn` 时这段完全
+        # 是 no-op，不改变改造前的行为。
+        scheduler_cfg = getattr(self._cfg, "scheduler", None) if self._cfg is not None else None
+        total_cap = getattr(scheduler_cfg, "max_total_concurrent_tasks", None) if scheduler_cfg is not None else None
+        if total_cap is not None and self._other_channel_running_fn is not None:
+            try:
+                other_running = int(self._other_channel_running_fn())
+                remaining = max(0, int(total_cap) - other_running)
+                cap = min(cap, remaining)
+            except Exception as _mini_agent_exc:
+                from mini_agent.errors import log_exception
+                log_exception(
+                    _mini_agent_exc,
+                    where="mini_agent.evolution.objective_executor.ObjectiveExecutor.effective_max_concurrent.global_cap",
+                )
+
         if autonomy_cfg is None or not getattr(autonomy_cfg, "adaptive_concurrency_enabled", False):
             return cap
 
@@ -763,6 +790,14 @@ class ObjectiveExecutor:
         不做任何 I/O，纯内存标志位，下一次 effective_max_concurrent() 调用
         即生效。"""
         self._gating_degraded = bool(degraded)
+
+    def set_other_channel_running_fn(self, fn: Optional[Callable[[], int]]) -> None:
+        """[goal_execution_scheduling_global_cap_bugfix.md] 由 server.py 在
+        CronJobRunner 构造完毕后调用一次，回填"查询 cron 通道当前运行数"
+        的回调。只在 `scheduler.max_total_concurrent_tasks` 被显式配置时
+        才会被读取，未接线/未配置时 effective_max_concurrent() 行为与
+        改造前完全一致。"""
+        self._other_channel_running_fn = fn
 
     def can_start_new(self) -> bool:
         return self.running_count() < self.effective_max_concurrent()

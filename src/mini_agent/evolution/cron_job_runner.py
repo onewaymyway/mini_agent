@@ -97,6 +97,12 @@ class CronJobRunner:
         self._slot_cond = threading.Condition()
         self._held_slots = 0
         self._gating_degraded = False
+        # [goal_execution_scheduling_global_cap_bugfix.md] 与
+        # ObjectiveExecutor._other_channel_running_fn 对称：由 server.py 在
+        # ObjectiveExecutor 也构造完毕之后回填，返回"当前有多少个 Objective
+        # 正在跑"。默认 None，未接线/`scheduler.max_total_concurrent_tasks`
+        # 未配置时完全不影响现有行为。
+        self._other_channel_running_fn: Optional[Callable[[], int]] = None
         self._on_finished = on_finished
         self._lock = threading.Lock()
         self._running_job_ids: set[str] = set()
@@ -185,50 +191,71 @@ class CronJobRunner:
         `cron.degraded_max_concurrent`（默认 1），否则为构造时传入的
         `max_concurrent`——语义、命名都与
         `ObjectiveExecutor.effective_max_concurrent()` 对齐。异常时保守
-        返回天花板值，不因为读配置失败导致 cron 被误收紧。"""
+        返回天花板值，不因为读配置失败导致 cron 被误收紧。
+
+        [goal_execution_scheduling_global_cap_bugfix.md] 末尾额外叠加一层
+        跨通道总并发天花板（`scheduler.max_total_concurrent_tasks`），与
+        degraded 分支相互独立——不管当前是否 degraded，只要配置了这个
+        字段，返回值都会被 clamp 到
+        `max(0, max_total_concurrent_tasks - Objective 通道当前运行数)`
+        以内；未配置（默认 None）或未接线 `_other_channel_running_fn` 时
+        这段是 no-op，行为与改造前完全一致。"""
         cap = self._max_concurrent
-        if not self._gating_degraded:
-            return cap
-        try:
-            autonomy_cfg = getattr(self._base_cfg, "autonomy", None)
-            if autonomy_cfg is not None and not getattr(
-                autonomy_cfg, "resource_gating_degraded_enabled", True
-            ):
-                return cap
-            cron_cfg = getattr(self._base_cfg, "cron", None)
-            degraded_cap = getattr(cron_cfg, "degraded_max_concurrent", 1) if cron_cfg is not None else 1
+        if self._gating_degraded:
+            try:
+                autonomy_cfg = getattr(self._base_cfg, "autonomy", None)
+                if autonomy_cfg is None or getattr(
+                    autonomy_cfg, "resource_gating_degraded_enabled", True
+                ):
+                    cron_cfg = getattr(self._base_cfg, "cron", None)
+                    degraded_cap = getattr(cron_cfg, "degraded_max_concurrent", 1) if cron_cfg is not None else 1
 
-            # [goal_cron_unified_scheduler_improvement_plan.md P5 第 3 步]
-            # 与 ObjectiveExecutor.effective_max_concurrent() 对称：开启
-            # `scheduler.unified_arbitration_enabled` 时，degraded 上限改由
-            # UnifiedTaskScheduler 按 channel_weights + cron 保底并发数统一
-            # 裁决，两条通道共享同一份 degraded_total_slots。默认关闭/异常
-            # 时都退回上面这行改造前就有的独立裁决，不改变现有行为。
-            scheduler_cfg = getattr(self._base_cfg, "scheduler", None)
-            if scheduler_cfg is not None and getattr(scheduler_cfg, "unified_arbitration_enabled", False):
-                try:
-                    from mini_agent.evolution.unified_task_scheduler import allocate_weighted_slots
-                    reserved_min_cron = getattr(cron_cfg, "reserved_min_concurrent", 1) if cron_cfg is not None else 1
-                    total_slots = getattr(scheduler_cfg, "degraded_total_slots", 2)
-                    weights = getattr(scheduler_cfg, "channel_weights", None) or {}
-                    allocation = allocate_weighted_slots(
-                        total_slots,
-                        {"goal": weights.get("goal", 1.0), "cron": weights.get("cron", 1.0)},
-                        reserved_min={"cron": reserved_min_cron},
-                    )
-                    degraded_cap = allocation.get("cron", degraded_cap)
-                except Exception as _mini_agent_exc:
-                    from mini_agent.errors import log_exception
-                    log_exception(
-                        _mini_agent_exc,
-                        where="mini_agent.evolution.cron_job_runner.CronJobRunner.effective_max_concurrent.unified_arbitration",
-                    )
+                    # [goal_cron_unified_scheduler_improvement_plan.md P5 第 3 步]
+                    # 与 ObjectiveExecutor.effective_max_concurrent() 对称：开启
+                    # `scheduler.unified_arbitration_enabled` 时，degraded 上限改由
+                    # UnifiedTaskScheduler 按 channel_weights + cron 保底并发数统一
+                    # 裁决，两条通道共享同一份 degraded_total_slots。默认关闭/异常
+                    # 时都退回上面这行改造前就有的独立裁决，不改变现有行为。
+                    scheduler_cfg = getattr(self._base_cfg, "scheduler", None)
+                    if scheduler_cfg is not None and getattr(scheduler_cfg, "unified_arbitration_enabled", False):
+                        try:
+                            from mini_agent.evolution.unified_task_scheduler import allocate_weighted_slots
+                            reserved_min_cron = getattr(cron_cfg, "reserved_min_concurrent", 1) if cron_cfg is not None else 1
+                            total_slots = getattr(scheduler_cfg, "degraded_total_slots", 2)
+                            weights = getattr(scheduler_cfg, "channel_weights", None) or {}
+                            allocation = allocate_weighted_slots(
+                                total_slots,
+                                {"goal": weights.get("goal", 1.0), "cron": weights.get("cron", 1.0)},
+                                reserved_min={"cron": reserved_min_cron},
+                            )
+                            degraded_cap = allocation.get("cron", degraded_cap)
+                        except Exception as _mini_agent_exc:
+                            from mini_agent.errors import log_exception
+                            log_exception(
+                                _mini_agent_exc,
+                                where="mini_agent.evolution.cron_job_runner.CronJobRunner.effective_max_concurrent.unified_arbitration",
+                            )
 
-            return max(1, min(cap, int(degraded_cap)))
-        except Exception as _mini_agent_exc:
-            from mini_agent.errors import log_exception
-            log_exception(_mini_agent_exc, where="mini_agent.evolution.cron_job_runner.CronJobRunner.effective_max_concurrent")
-            return cap
+                    cap = max(1, min(cap, int(degraded_cap)))
+            except Exception as _mini_agent_exc:
+                from mini_agent.errors import log_exception
+                log_exception(_mini_agent_exc, where="mini_agent.evolution.cron_job_runner.CronJobRunner.effective_max_concurrent")
+                return self._max_concurrent
+
+        scheduler_cfg = getattr(self._base_cfg, "scheduler", None)
+        total_cap = getattr(scheduler_cfg, "max_total_concurrent_tasks", None) if scheduler_cfg is not None else None
+        if total_cap is not None and self._other_channel_running_fn is not None:
+            try:
+                other_running = int(self._other_channel_running_fn())
+                remaining = max(0, int(total_cap) - other_running)
+                cap = min(cap, remaining)
+            except Exception as _mini_agent_exc:
+                from mini_agent.errors import log_exception
+                log_exception(
+                    _mini_agent_exc,
+                    where="mini_agent.evolution.cron_job_runner.CronJobRunner.effective_max_concurrent.global_cap",
+                )
+        return cap
 
     def set_gating_degraded(self, degraded: bool) -> None:
         """[P0] 由 AutonomousLoop 每次 tick 调用，反映
@@ -240,6 +267,15 @@ class CronJobRunner:
             self._gating_degraded = bool(degraded)
             # 状态变化（尤其是 degraded → full）可能让容量变大，唤醒所有
             # 正在等待槽位的线程重新检查是否能拿到槽位。
+            self._slot_cond.notify_all()
+
+    def set_other_channel_running_fn(self, fn: Optional[Callable[[], int]]) -> None:
+        """[goal_execution_scheduling_global_cap_bugfix.md] 由 server.py 在
+        ObjectiveExecutor 构造完毕后调用一次，回填"查询 Objective 通道
+        当前运行数"的回调。只在 `scheduler.max_total_concurrent_tasks`
+        被显式配置时才会被读取。"""
+        with self._slot_cond:
+            self._other_channel_running_fn = fn
             self._slot_cond.notify_all()
 
     def _acquire_slot(self) -> None:

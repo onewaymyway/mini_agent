@@ -1656,6 +1656,14 @@ class HttpServer:
             )
             objective_executor.load()
 
+            # [goal_execution_scheduling_global_cap_bugfix.md] 双向接线跨
+            # 通道运行数回调，供 `scheduler.max_total_concurrent_tasks`
+            # 生效时使用——必须放在两者都构造完毕之后（互相引用对方实例的
+            # 闭包）。未配置该字段时这两行完全是 no-op（对应的
+            # effective_max_concurrent() 分支不会被触发），不影响现有部署。
+            cron_job_runner.set_other_channel_running_fn(lambda: objective_executor.running_count())
+            objective_executor.set_other_channel_running_fn(lambda: cron_job_runner.running_count)
+
             # [daemon_autonomous_state_recovery_plan.md 阶段三 / P1] 自主任务
             # 独立上下文：默认关闭，开启后把 ObjectiveExecutor 的 submit_fn
             # 从"提交进 Self 共享的 bridge.input_queue"换成
