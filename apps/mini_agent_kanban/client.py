@@ -463,6 +463,12 @@ class AgentClient:
     def update_cron_job(self, job_id: str, **fields):
         return self._put(f"/cron/jobs/{job_id}", fields)
 
+    def delete_cron_job(self, job_id: str):
+        """DELETE /v1/cron/jobs/{job_id} — 彻底删除一个 cron job。
+        系统内置 job（sys: 前缀）后端会拒绝并返回 400，调用方应先在
+        UI 层用 job_id.startswith("sys:") 判断，不给系统 job 展示删除按钮。"""
+        return self._delete(f"/cron/jobs/{job_id}")
+
     def run_cron_job_now(self, job_id: str):
         return self._post(f"/cron/jobs/{job_id}/run")
 

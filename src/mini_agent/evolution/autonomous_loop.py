@@ -19,6 +19,7 @@ tick 分支，与"检查用户消息"分支并列，共享同一个常驻进程�
 
 from __future__ import annotations
 
+import threading
 import time
 from typing import Any, Optional, TYPE_CHECKING
 from mini_agent.time_utils import ts_to_str
@@ -72,6 +73,14 @@ class AutonomousLoop:
         # 未注入时 _ensure_goal_objectives() 直接降级为 1:1 镜像 Objective，
         # 不影响"有 Objective 才能被执行"这条主链路。
         self._goal_decompose_fn = goal_decompose_fn
+
+        # [daemon_execution_model_and_scheduler_heartbeat_improvement_plan.md
+        # 阶段二 违规修复] 探索实验后台线程的忙碌标记，保护 tick() 不被
+        # _run_capability_exploration() 内部的同步等待卡住。独立小锁纯粹
+        # 是为了避免"读的时候线程刚结束但还没来得及标记"这类极端时序
+        # 问题，不是为了应对高并发（同一时刻最多只有一个探索线程在跑）。
+        self._exploration_thread: Optional[threading.Thread] = None
+        self._exploration_state_lock: threading.Lock = threading.Lock()
 
     # ── 公共接口 ──────────────────────────────────────────────────────────────
 
@@ -572,11 +581,28 @@ class AutonomousLoop:
                     ),
                 })
 
-            # capability 类：每次 tick 最多跑 1 个探索实验（消耗较多资源）
-            for candidate in cap_candidates[:1]:
-                self._run_capability_exploration(candidate, deriver)
+            # capability 类：每次 tick 最多起 1 个探索实验。
+            # [daemon_execution_model_and_scheduler_heartbeat_improvement_plan.md
+            # 阶段二 违规修复] _run_capability_exploration() 内部会同步阻塞
+            # 等待探索任务完成（最多 5 分钟，见 _submit_exploration_task）。
+            # 这与本文件顶部/scheduler_heartbeat.py 明确写下的设计原则相
+            # 违背——tick() 只应该做"决策 + 提交"，不能持锁跑真正耗时的
+            # 调用，否则一次探索实验就能把 SchedulerHeartbeat 卡住 5
+            # 分钟，期间 CronScheduler.tick() 完全没有机会被调用，表现为
+            # "到点的 cron job 迟迟不触发"。这里改成后台线程 fire-and-
+            # forget，tick() 立即返回；用一个忙碌标记防止上一个探索还没
+            # 跑完就又起一个新的（避免并发跑多个探索实验抢资源）。
+            started_exploration = False
+            if cap_candidates and not self._exploration_busy():
+                started_exploration = self._start_capability_exploration_bg(cap_candidates[0], deriver)
 
-            if new_goals or cap_candidates:
+            # 记录"本轮已经做过一次 derive 尝试"：无论探索实验是异步起来的
+            # 还是这轮压根没有 capability 候选，只要产出了新 Goal 或者
+            # 确实起了一个探索任务，都算一次有效尝试，语义与改造前
+            # `if new_goals or cap_candidates:` 一致（cap_candidates 非空
+            # 但因为已有一个探索在跑而跳过本轮的情况除外，那种情况下没有
+            # 消耗任何新资源，不应该被计入节流窗口）。
+            if new_goals or started_exploration:
                 deriver._record_derive()
                 self._goal_backlog.save()
 
@@ -586,6 +612,41 @@ class AutonomousLoop:
             from mini_agent.errors import log_exception
             log_exception(_mini_agent_exc, where='mini_agent.evolution.autonomous_loop')
             pass
+
+    def _exploration_busy(self) -> bool:
+        """是否已有一个探索实验线程在跑（未结束）。"""
+        with self._exploration_state_lock:
+            t = self._exploration_thread
+            return t is not None and t.is_alive()
+
+    def _start_capability_exploration_bg(self, candidate, deriver) -> bool:
+        """
+        在后台线程里跑 _run_capability_exploration()，tick() 本身立即
+        返回，不持锁等待。返回 True 表示这次真的起了一个新线程。
+
+        _run_capability_exploration() 内部的所有写操作（commit_goals /
+        _record_digest / skill_propose）本身就是"追加写 jsonl / 更新
+        goals.json 再 save()"这类幂等性较好的操作，与 _tick_maintenance()
+        走的 ObjectiveExecutor 异步执行路径（同样是后台起线程/进程，写
+        完再回调）是同一类并发模型，不需要额外加锁。
+        """
+        def _worker() -> None:
+            try:
+                self._run_capability_exploration(candidate, deriver)
+            except Exception as _mini_agent_exc:
+                from mini_agent.errors import log_exception
+                log_exception(
+                    _mini_agent_exc,
+                    where='mini_agent.evolution.autonomous_loop.AutonomousLoop._start_capability_exploration_bg',
+                )
+
+        t = threading.Thread(
+            target=_worker, name="capability-exploration", daemon=True,
+        )
+        with self._exploration_state_lock:
+            self._exploration_thread = t
+        t.start()
+        return True
 
     def _run_capability_exploration(self, candidate, deriver) -> None:
         """
@@ -675,6 +736,12 @@ class AutonomousLoop:
         """
         提交探索任务到 InputQueue 并同步等待结果（最多 5 分钟）。
         不走 ObjectiveExecutor 的多步逻辑，是一次性轻量任务。
+
+        [daemon_execution_model_and_scheduler_heartbeat_improvement_plan.md
+        阶段二 违规修复] 这个同步等待本身现在跑在
+        _start_capability_exploration_bg() 派生的后台线程里，不再占用
+        SchedulerHeartbeat 持有的 sched_lock，因此不会再卡住 tick()/
+        cron 触发；这里的等待上限保持不变，只是不再是"谁在阻塞"的问题。
         """
         try:
             iq = getattr(self, "_input_queue", None)

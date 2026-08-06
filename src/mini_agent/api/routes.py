@@ -119,6 +119,7 @@ api/routes.py — FastAPI 路由定义
     GET    /v1/cron/jobs             CronScheduler job 列表
     POST   /v1/cron/jobs             添加 cron job
     PUT    /v1/cron/jobs/{id}        修改 job（enable/disable/schedule）
+    DELETE /v1/cron/jobs/{id}        删除 job（sys: 系统内置 job 不可删，只能 disable）
     POST   /v1/cron/jobs/{id}/run    立即运行一次
     POST   /v1/cron/jobs/{id}/feedback  持久化提意见（合入 description/task_template/prompt.md）
     GET    /v1/cron/jobs/{id}/workspace       专属执行状态（state/config/最近执行列表）
@@ -4288,6 +4289,41 @@ async def update_cron_job(job_id: str, request: Request):
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.delete("/cron/jobs/{job_id}")
+async def delete_cron_job(job_id: str, request: Request):
+    """DELETE /v1/cron/jobs/{job_id} — 彻底删除一个 cron job。
+
+    系统内置 job（id 以 "sys:" 开头）不可删除，只能禁用——与
+    CronScheduler.remove_job() 内部的保护逻辑保持一致，这里提前给出
+    更明确的 400 错误信息，而不是让前端只拿到一个笼统的 "删除失败"。
+    """
+    http_server = getattr(request.app.state, "http_server", None)
+    if http_server is None:
+        raise HTTPException(status_code=503, detail="HttpServer not available")
+    _require_owner(request)
+
+    cs = getattr(http_server.bridge, "_cron_scheduler", None)
+    if cs is None:
+        raise HTTPException(status_code=503, detail="CronScheduler not available")
+
+    job = cs.get(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail=f"Job '{job_id}' not found")
+    if getattr(job, "is_system", False):
+        raise HTTPException(
+            status_code=400,
+            detail=f"系统内置 job '{job_id}' 不可删除，只能禁用（PUT /v1/cron/jobs/{job_id} enabled=false）",
+        )
+
+    try:
+        ok = cs.remove_job(job_id)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+    if not ok:
+        raise HTTPException(status_code=500, detail="Job delete failed")
+    return {"deleted": True, "job_id": job_id}
 
 
 @router.post("/cron/jobs/{job_id}/run")

@@ -95,6 +95,9 @@ class CronJob:
             "run_mode": self.run_mode,
             "priority": self.priority,
             "user_feedback": self.user_feedback,
+            # [看板 cron 面板补齐删除功能] 显式下发 is_system，避免前端
+            # 只能靠 id.startswith("sys:") 这种约定猜测，接口更自描述。
+            "is_system": self.is_system,
         }
 
     @staticmethod

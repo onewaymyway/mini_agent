@@ -2525,16 +2525,43 @@ def render_kanban_tab(client: AgentClient):
     if not jobs:
         st.info("暂无定时任务")
     for j in jobs:
-        c1, c2, c3, c4 = st.columns([3, 2, 1, 1])
+        job_id = j.get("id")
+        is_system = bool(j.get("is_system")) or str(job_id).startswith("sys:")
+        c1, c2, c3, c4, c5 = st.columns([3, 2, 1, 1, 1])
         c1.markdown(f"**{j.get('name')}**　`{j.get('schedule')}`")
         c2.caption(f"下次: {j.get('next_run_str','?')}　运行次数: {j.get('run_count',0)}")
-        if c3.button("▶️ 立即运行", key=f"runjob_{j.get('id')}"):
-            client.run_cron_job_now(j.get("id"))
+        if c3.button("▶️ 立即运行", key=f"runjob_{job_id}"):
+            client.run_cron_job_now(job_id)
             st.rerun()
         toggle_label = "⏸️ 禁用" if j.get("enabled") else "▶️ 启用"
-        if c4.button(toggle_label, key=f"togglejob_{j.get('id')}"):
-            client.update_cron_job(j.get("id"), enabled=not j.get("enabled"))
+        if c4.button(toggle_label, key=f"togglejob_{job_id}"):
+            client.update_cron_job(job_id, enabled=not j.get("enabled"))
             st.rerun()
+        # [看板 cron 面板补齐删除功能] 系统内置 job（sys: 前缀）后端拒绝
+        # 删除，只允许禁用——这里不给它展示删除按钮，避免用户点了却收到
+        # 一个后端 400 报错，体验更直接。用户自定义 job 删除前需要二次
+        # 确认（confirm_delete_cron_<id> 这个 session_state 标记控制），
+        # 避免误触直接把 job 删没了。
+        if not is_system:
+            confirm_key = f"confirm_delete_cron_{job_id}"
+            if not st.session_state.get(confirm_key):
+                if c5.button("🗑️ 删除", key=f"deletejob_{job_id}"):
+                    st.session_state[confirm_key] = True
+                    st.rerun()
+            else:
+                if c5.button("⚠️ 确认删除", key=f"deletejob_confirm_{job_id}"):
+                    result = client.delete_cron_job(job_id)
+                    st.session_state.pop(confirm_key, None)
+                    if isinstance(result, dict) and result.get("_error"):
+                        st.error(f"删除失败：{result['_error']}")
+                    else:
+                        st.success(f"已删除 cron job：{j.get('name')}")
+                    st.rerun()
+                if c5.button("取消", key=f"deletejob_cancel_{job_id}"):
+                    st.session_state.pop(confirm_key, None)
+                    st.rerun()
+        else:
+            c5.caption("系统任务")
 
     st.markdown("---")
     st.markdown("#### 🩺 为什么没有执行？（自主调度诊断）")
