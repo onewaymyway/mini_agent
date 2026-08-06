@@ -11,7 +11,9 @@
 - **P3（tick() 执行看门狗）**：已完成。
 - **P4（统一调度可观测面板）**：已完成（后端只读端点 + 看板 UI 展示区块，
   分两轮完成，见下方 P4 小节及"P4 追加（看板 UI）"小节）。
-- **P5（收敛到统一调度层）**：长期目标，本轮未启动，不在本次范围内。
+- **P5（收敛到统一调度层）**：第 1-2 步（定义统一接口 + 三条通道只读
+  适配 + 只读聚合排序建议）本轮已完成；第 3-5 步（接管仲裁裁决/接管实际
+  派发）仍是未启动的长期目标，见下方"P5 第 1-2 步"小节。
 
 ## 新增文件
 
@@ -325,3 +327,114 @@ python3 -m pytest tests/test_scheduling_overview_route.py -q   # 5 passed（后�
 看板前端本身沿用项目一贯做法不做自动化 UI 测试（Streamlit 渲染逻辑无
 既有测试基础设施覆盖，与其它 `_render_*` 区块的验证方式一致，人工过一遍
 `streamlit run apps/mini_agent_kanban/app.py` 确认渲染即可）。
+
+## P5 第 1-2 步 —— 定义统一接口 + 三条通道只读适配 + 只读聚合排序建议
+
+**处理状态：已完成。** 对应改进计划 P5 分步迁移路径的第 1、2 步。**本轮
+不接管任何实际执行决策**——三条通道现有的触发路径
+（`AutonomousLoop._tick_maintenance()` 直接调 `ObjectiveExecutor`/
+`CronScheduler.tick()`）完全不变，新增内容全部是"从外部只读观察"这一层，
+调用多少次都不会改变任何通道的实际运行结果。第 3-5 步（接管仲裁裁决、
+接管实际派发）仍是未启动的长期目标。
+
+### 新增文件（P5 第 1-2 步）
+
+| 文件 | 作用 |
+|---|---|
+| `src/mini_agent/evolution/unified_task_scheduler.py` | 新模块：`SchedulableTask` dataclass（`source`/`task_id`/`title`/`priority`/`due_at`/`resource_estimate`/`extra`）+ `TaskChannel` `Protocol`（`poll_due()`/`execute()`）+ 三个只读适配器 `ObjectiveChannelAdapter`/`CronChannelAdapter`/`GoalCycleChannelAdapter` + 聚合层 `UnifiedTaskScheduler`（`register_channel()`/`poll_all()`/`suggest_order()`）+ 便捷构造函数 `build_default_scheduler()` |
+| `tests/test_unified_task_scheduler.py` | 15 项单测：`SchedulableTask` 默认字段、三个适配器的 `poll_due()` 正确性（含"只读、不修改底层状态"的显式验证）与 `execute()` 均按设计 raise `NotImplementedError`、`UnifiedTaskScheduler.poll_all()` 按通道分组/单通道异常降级为空列表不影响其它通道、`suggest_order()` 按加权优先级降序+`due_at`升序排序、`channel_weights` 生效验证、`build_default_scheduler()` 全依赖为 `None` 时三通道均正常降级 |
+| `tests/test_unified_scheduler_preview_route.py` | 4 项单测：新增只读端点 `GET /v1/self/unified_scheduler_preview` 的空状态、Goal 通道数据正确性、cron/goal_cycle 两通道正确分流、`suggested_order` 跨通道合并且按优先级排序正确（cron job 显式给高 priority 验证确实排到 Goal 前面） |
+
+### 修改文件（P5 第 1-2 步）
+
+| 文件 | 改动 |
+|---|---|
+| `src/mini_agent/api/routes.py` | 新增只读端点 `GET /v1/self/unified_scheduler_preview`：构造 `UnifiedTaskScheduler`（复用与 `scheduling_overview` 端点相同的 `paths`/`goal_backlog`/`cron_scheduler` 解析逻辑，`goal_backlog` 改用既有的 `load_goal_backlog(paths)` 辅助函数，与文件内其它 goal_backlog 相关端点写法一致），返回 `channels`（三条通道各自 `poll_due()` 原始快照）+ `suggested_order`（跨通道合并排序结果）。任一环节失败均走 `log_exception` 静默降级，返回空占位结构，不影响其它字段/不 500。同步在文件头部的路由列表注释里补充了这条新端点的说明 |
+
+### 关键设计决策（P5 第 1-2 步）
+
+18. **`execute()` 本轮统一 `raise NotImplementedError`，不做"看起来能跑但
+    从未被调用"的占位实现**：方案原文 `TaskChannel` 协议要求
+    `execute(task) -> concurrent, non-blocking`，但第 1-2 步的验收标准
+    明确是"不接管真正的执行决策"。如果现在就把 `execute()` 接到
+    `ObjectiveExecutor.start()`/`CronScheduler` 的真实触发逻辑上，即使
+    `UnifiedTaskScheduler` 本身不调用它，也会造成两个问题：一是这段代码
+    路径没有真实调用方，长期处于"未经验证但看起来可用"的状态，属于
+    测试盲区；二是一旦后续有人（哪怕是误用）调用了它，就会绕过三条通道
+    各自现有的去重/并发/公平性检查，造成重复执行。显式 `raise
+    NotImplementedError` 并在异常信息里写清楚原因，是更安全的"占位"
+    方式，等到第 3 步真正需要接管派发时再实现，且实现时会天然获得一次
+    强制的设计复核机会（决定要不要更细粒度的 execute 语义）。
+
+19. **`suggest_order()` 的默认排序键选择"`weight * priority` 降序，
+    `due_at` 升序 tie-break"，不是更复杂的加权综合评分**：cron 的
+    `priority`（`CronJob.priority`，用户可配置整数）与 Goal 的
+    `effective_priority`（`priority + aging_boost`，量纲不同但都是"数值
+    越大越该优先"）在缺乏实际调度数据支撑的情况下，任何"综合评分公式"
+    都是没有依据的猜测。选择最朴素的排序规则（先比 `weight * priority`，
+    平手再比 `due_at`）是为了让"排序建议"本身足够透明、容易解释——这正是
+    第 2 步"先上线观察排序结果是否符合预期"的前提：如果排序逻辑本身
+    复杂到难以解释，观察阶段就失去了意义。`channel_weights` 参数预留了
+    未来调整相对权重的空间，但默认全 1.0，不引入任何隐含偏向。
+
+20. **`ObjectiveChannelAdapter` 复用 `GoalBacklog.active_objectives_
+    fair_ranked()`，没有使用改进计划原文字面提到的"
+    `active_objectives_fair_round_robin`" 方法名**：读码确认
+    `GoalBacklog` 现有的公平轮询方法实际命名为
+    `active_objectives_fair_ranked()`（返回 `list[GoalNode]`，不是
+    `(node, priority)` 元组），改进计划原文的方法名是背景性描述、不是
+    强制要求实现的确切签名。适配器内部用同一份 `compute_aging_boost()`
+    重新计算 `effective_priority` 填进 `SchedulableTask.priority`，排序
+    口径与 `active_objectives_fair_ranked()` 内部使用的完全一致，只是
+    多暴露了这个数值供跨通道比较——这与改进计划 P5 验收标准第 3 条"现有
+    公平轮询/老化补偿逻辑作为 `UnifiedTaskScheduler` 内部候选排序算法
+    保留，不重新发明"的精神一致，只是绑定到了代码里真实存在的方法名。
+
+21. **新增端点与既有 `scheduling_overview`（P4）刻意保持数据源解析逻辑
+    一致，但不合并成一个端点**：两者都需要 `paths`/`cron_scheduler`，
+    P5 端点额外需要 `goal_backlog`（P4 端点不需要，它读的是
+    `ObjectiveExecutor`/`CronScheduler` 的运行时计数，不直接读
+    `GoalBacklog`）。没有把两个端点合并，是因为语义不同：P4 是"聚合
+    计数"（运行/排队/跳过），P5 预览端点是"如果现在要排序，建议是什么"
+    ——后续 P5 第 3 步真正接管调度后，`unified_scheduler_preview` 的
+    `suggested_order` 字段语义会发生实质变化（从"建议"变成"实际生效的
+    分配依据"），而 `scheduling_overview` 的字段语义不会变，混在一个
+    端点里会让未来的版本演进更难解释清楚哪部分是纯观测、哪部分会随 P5
+    推进而改变含义。
+
+### 测试结果（P5 第 1-2 步）
+
+```
+tests/test_unified_task_scheduler.py               15 passed
+tests/test_unified_scheduler_preview_route.py        4 passed
+```
+
+与 P0-P4 既有测试文件联合运行，确认无回归：
+
+```
+tests/test_goal_cron_unified_scheduler_p0_p1_p2.py
+tests/test_goal_cron_unified_scheduler_p3.py
+tests/test_scheduling_overview_route.py
+tests/test_unified_task_scheduler.py
+tests/test_unified_scheduler_preview_route.py
+39 passed, 0 failed
+```
+
+### 待确认项回应（对照原方案 §4，追加 P5 第 1-2 步相关项）
+
+8.（对应原方案 §4 第 4 条）`channel_weights` 是否自适应：本轮
+   `UnifiedTaskScheduler.suggest_order()` 已预留同名参数，默认全 1.0
+   （不自适应，也不偏向任何通道）。该参数目前只影响"排序建议"这一只读
+   预览的展示结果，不产生任何实际调度后果，是否需要自适应机制留到 P5
+   第 3 步真正"接管仲裁裁决"、有实际调度数据积累后再评估，与原方案
+   建议的路径一致。
+9.（对应原方案 §4 第 5 条）`UnifiedTaskScheduler` 是否需要感知
+   `objective_isolated_context_enabled`/`heartbeat_owns_tick` 等现有
+   灰度开关组合：本轮的三个只读适配器都只读取"当前有哪些任务到期/可跑"
+   这类与执行模式无关的数据（`GoalBacklog`/`CronScheduler.list_jobs()`），
+   不涉及 Objective 具体如何执行（持久 Worker/隔离 Runner/共享队列），
+   因此第 1-2 步不需要感知这些开关。第 3 步"接管仲裁裁决"如果需要
+   `objective_slots`/`effective_max_concurrent()` 这类会受执行模式影响
+   的数据，才需要重新评估——留到那时再判断，不在本轮提前引入。
+
+其余待确认项（1-7）沿用 P0-P4 实施记录的既有回应，状态不变。

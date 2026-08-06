@@ -1,9 +1,14 @@
 # Goal / Cron 三条执行通道 统一调度层 改进计划
 
-- **版本**: v1.4
+- **版本**: v1.5
 - **实施记录**: `next_doc/goal_cron_unified_scheduler_implementation_record.md`
-  （P0/P1/P2/P3/P4 已完成；P5 为长期目标，未启动）
+  （P0/P1/P2/P3/P4 已完成；P5 第 1-2 步已完成，第 3-5 步未启动）
 - **变更记录**：
+  - v1.5：P5 第 1-2 步（定义统一接口 + 三条通道只读适配 + 只读聚合排序
+    建议）已实现，新增 `UnifiedTaskScheduler`/`TaskChannel` 及配套只读
+    预览端点 `GET /v1/self/unified_scheduler_preview`。**不接管任何实际
+    执行决策**，三条通道现有触发路径完全不受影响。第 3-5 步（接管仲裁
+    裁决/接管实际派发）仍未启动，详见实施记录。
   - v1.4：P4 补齐看板 UI 展示区块（"🕹️ 统一调度总览"，并入"🧠 自我状态"
     tab），至此 P4 前后端均已完成。详见实施记录。P5 状态不变，仍未实现。
   - v1.3：P4（统一调度可观测面板）已实现（后端只读端点部分；看板 UI
@@ -219,7 +224,12 @@
     风格）。
   - 看板能正确渲染，新增测试覆盖端点空态/正常态。
 
-### P5（长期目标）—— 收敛到统一调度层
+### P5（长期目标）—— 收敛到统一调度层【第 1-2 步已完成，第 3-5 步未启动】
+
+**处理状态：第 1-2 步（定义统一接口 + 三条通道只读适配 + 只读聚合排序
+建议）已完成。** 详见
+`next_doc/goal_cron_unified_scheduler_implementation_record.md`。第 3-5
+步（接管仲裁裁决/接管实际派发）仍是未启动的长期目标。
 
 - **目标**：三条通道最终都通过一个统一的 `UnifiedTaskScheduler` 提交任务、
   领取执行槽位，由它统一做：并发分配、优先级/权重排序、资源仲裁响应、
@@ -232,11 +242,13 @@
      ∈ {goal/cron/goal_cycle}、`task_id`、`priority`、`due_at`（cron 有，
      goal 可以为 None）、`resource_estimate`）+ `TaskChannel` 协议
      （`poll_due() -> list[SchedulableTask]`、
-     `execute(task) -> concurrent, non-blocking`）。
+     `execute(task) -> concurrent, non-blocking`）。【已完成，见实施记录】
   2. **先适配只读部分**：让 `ObjectiveExecutor`/`CronJobRunner` 各自实现
      `TaskChannel.poll_due()`，`UnifiedTaskScheduler` 先只做"聚合展示 +
      统一排序建议"，不接管真正的执行决策（等价于 P4 的数据源升级版，
-     风险为零，可以先上线观察排序结果是否符合预期）。
+     风险为零，可以先上线观察排序结果是否符合预期）。【已完成，见实施
+     记录——新增只读端点 `GET /v1/self/unified_scheduler_preview`
+     供观察排序结果】
   3. **接管仲裁裁决**：`UnifiedTaskScheduler` 内部持有权重配置
      （`scheduler.channel_weights = {goal: x, cron: y, goal_cycle: z}` 或
      "cron 保底并发数"这类更直观的配置），根据 P1 统一记账的预算数据 +
@@ -279,10 +291,13 @@
 3.（已解决，v1.4）P4 的"统一调度总览"信息架构：并入现有"🧠 自我状态"
    tab，作为独立折叠区块（与"🩺 自诊断信号闭环""⚙️ 执行模型"等并列），
    不单独开新 tab——理由见实施记录。
-4. P5 的 `channel_weights` 配置交给用户手工设定，还是像 Goal 公平性那样
-   引入"老化补偿"式的自动调整（比如 cron 连续被挤占越久，自动临时提高
-   其权重）——建议先上线固定权重版本，积累实际调度数据后再评估是否需要
-   自适应机制，避免一开始就引入难以调试的动态反馈系统。
+4. `P5` 第 3 步的 `channel_weights` 配置交给用户手工设定，还是像 Goal 公平性
+   那样引入"老化补偿"式的自动调整（比如 cron 连续被挤占越久，自动临时
+   提高其权重）——建议先上线固定权重版本，积累实际调度数据后再评估是否
+   需要自适应机制，避免一开始就引入难以调试的动态反馈系统。（第 1-2 步
+   已在 `UnifiedTaskScheduler.suggest_order()` 里预留了同名 `channel_weights`
+   参数，但目前只影响"排序建议"这一只读预览，不产生任何实际调度后果，
+   第 3 步真正"接管仲裁裁决"时才需要决定这份配置最终落在哪个配置层级。）
 5. `UnifiedTaskScheduler` 是否需要感知 `objective_isolated_context_
    enabled`/`heartbeat_owns_tick` 这类现有的灰度开关组合，还是要求先把
    这些开关收敛/固化之后再引入新的统一层，避免开关组合爆炸导致的测试

@@ -81,6 +81,11 @@ api/routes.py — FastAPI 路由定义
                                        Goal/普通 cron/goal_cycle 三条执行
                                        通道当前的运行/排队/跳过状态 + 共享
                                        的 ResourceArbiter 仲裁结果
+    GET    /v1/self/unified_scheduler_preview  [goal_cron_unified_scheduler_
+                                       improvement_plan.md P5 第 1-2 步]
+                                       UnifiedTaskScheduler 只读预览：三条
+                                       通道 poll_due() 快照 + 跨通道建议
+                                       执行顺序，不触发任何实际执行
     GET    /v1/self/config           [kanban_config_management_plan.md] 分类
                                        字段目录状态（agent_config.json）
     PATCH  /v1/self/config           [kanban_config_management_plan.md] 批量
@@ -2421,6 +2426,89 @@ async def get_self_scheduling_overview(request: Request):
 
     return result
 
+
+
+@router.get("/self/unified_scheduler_preview")
+async def get_self_unified_scheduler_preview(request: Request):
+    """GET /v1/self/unified_scheduler_preview —
+    [goal_cron_unified_scheduler_improvement_plan.md P5 第 1-2 步]
+    `UnifiedTaskScheduler`（`mini_agent.evolution.unified_task_scheduler`）
+    的只读预览端点：三条通道各自 `poll_due()` 的原始快照 + 一份"建议执行
+    顺序"（`suggest_order()`，默认权重全 1.0，不偏向任何通道）。
+
+    与 `GET /v1/self/scheduling_overview`（P4）的区别：P4 展示的是"运行中/
+    排队中/跳过次数"这类聚合计数，本端点展示的是"如果现在要决定谁先执行，
+    统一调度层会给出什么建议"——是 P5 后续步骤（接管仲裁裁决/实际派发）
+    的预览，**本端点不触发、不影响任何实际执行**，纯读取。
+
+    返回结构：
+    {
+      "channels": {
+        "goal": [{"source","task_id","title","priority","due_at","resource_estimate","extra"}, ...],
+        "cron": [...],
+        "goal_cycle": [...],
+      },
+      "suggested_order": [ 同上字段的任务列表，跨通道合并排序 ],
+    }
+    """
+    http_server = getattr(request.app.state, "http_server", None)
+    if http_server is None:
+        raise HTTPException(status_code=503, detail="HttpServer not available")
+    _require_owner(request)
+
+    result: dict = {"channels": {"goal": [], "cron": [], "goal_cycle": []}, "suggested_order": []}
+
+    al = http_server.autonomous_loop
+    paths = getattr(al, "_paths", None) if al is not None else None
+    if paths is None:
+        try:
+            from mini_agent.storage.paths import AgentPaths
+            self_agent = http_server.bridge.agent
+            _cfg = getattr(self_agent, "cfg", None) if self_agent else None
+            if _cfg is not None and getattr(_cfg, "project_root", None) is not None:
+                paths = AgentPaths(_cfg.project_root)
+        except Exception:
+            pass
+
+    goal_backlog = None
+    if paths is not None:
+        try:
+            from mini_agent.perception.goal_backlog import load_goal_backlog
+            goal_backlog = load_goal_backlog(paths)
+        except Exception as _mini_agent_exc:
+            from mini_agent.errors import log_exception
+            log_exception(_mini_agent_exc, where='mini_agent.api.routes.get_self_unified_scheduler_preview.goal_backlog')
+
+    cron_scheduler = getattr(al, "_cron_scheduler", None) if al is not None else None
+    if cron_scheduler is None:
+        cron_scheduler = getattr(http_server.bridge, "_cron_scheduler", None)
+
+    try:
+        from mini_agent.evolution.unified_task_scheduler import build_default_scheduler
+        scheduler = build_default_scheduler(goal_backlog=goal_backlog, cron_scheduler=cron_scheduler)
+        by_channel = scheduler.poll_all()
+        for name, tasks in by_channel.items():
+            result["channels"][name] = [
+                {
+                    "source": t.source, "task_id": t.task_id, "title": t.title,
+                    "priority": t.priority, "due_at": t.due_at,
+                    "resource_estimate": t.resource_estimate, "extra": t.extra,
+                }
+                for t in tasks
+            ]
+        result["suggested_order"] = [
+            {
+                "source": t.source, "task_id": t.task_id, "title": t.title,
+                "priority": t.priority, "due_at": t.due_at,
+                "resource_estimate": t.resource_estimate, "extra": t.extra,
+            }
+            for t in scheduler.suggest_order()
+        ]
+    except Exception as _mini_agent_exc:
+        from mini_agent.errors import log_exception
+        log_exception(_mini_agent_exc, where='mini_agent.api.routes.get_self_unified_scheduler_preview.scheduler')
+
+    return result
 
 
 @router.post("/self/execution_model/force_reap")
