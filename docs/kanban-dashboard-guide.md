@@ -126,7 +126,9 @@ Web Demo 的事件流面板类似，但集成在同一多 Tab 界面中。
 对接 Stage 9 自主 daemon 的 `GoalBacklog` 与 `CronScheduler`：
 
 - 按状态列出 Goal（如 `pending` / `active` / `done`），支持新建目标（标题、描述、优先级、
-  来源）。
+  来源）。创建成功后用 `st.toast()` 弹出确认提示，表单同时以
+  `clear_on_submit=True` 清空输入（`kanban_goal_creation_feedback_bugfix.md`），
+  避免用户点了创建之后看着输入框里残留的旧内容、不确定是否提交成功。
 - **周期性 Goal 可见性与操作**（`goal_cron_visibility_and_intervention_improvement_plan.md`
   Track A/B）：Goal 卡片标题下方展示 `🔁 周期性 · 已完成 N 轮` 徽标（未绑定则显示"未设为
   周期性"）；由 cron 触发的子 Objective 标注"⏰ 由 cron 周期触发"。卡片下方"⏰ 周期性设置"

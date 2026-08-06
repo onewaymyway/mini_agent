@@ -2342,7 +2342,7 @@ def render_kanban_tab(client: AgentClient):
     st.markdown("#### 📌 目标看板 (Goal Backlog)")
 
     with st.expander("➕ 新建目标"):
-        with st.form("new_goal"):
+        with st.form("new_goal", clear_on_submit=True):
             title = st.text_input("标题")
             desc = st.text_area("描述", height=60)
             priority = st.slider("优先级", 0, 100, 50)
@@ -2350,8 +2350,17 @@ def render_kanban_tab(client: AgentClient):
         if submitted and title.strip():
             res = client.add_goal(title.strip(), desc, priority)
             if res and "_error" in res:
-                st.error(res["_error"])
+                st.error(f"创建失败：{res['_error']}")
+            else:
+                # st.toast() 跨 st.rerun() 仍会展示（见 2071 行附近同类用法的
+                # 说明），不需要额外的 session_state 标记就能在刷新后的页面上
+                # 显示"创建成功"提示；表单本身用 clear_on_submit=True 清空
+                # 标题/描述/优先级，避免用户看到"点了创建，输入框却还留着刚
+                # 才填的内容"，误以为没提交成功。
+                st.toast(f"✅ 目标「{title.strip()}」已创建", icon="✅")
             st.rerun()
+        elif submitted and not title.strip():
+            st.error("标题不能为空")
 
     goals_data = client.goals() or {}
     if "_error" in goals_data:
