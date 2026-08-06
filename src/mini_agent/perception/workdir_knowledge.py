@@ -46,26 +46,11 @@ from mini_agent.time_utils import ts_to_str
 
 # ── 原子写入辅助（JSON / JSONL 追加）─────────────────────────────────────────
 
-def _atomic_write_text(path: Path, text: str) -> None:
-    """原子写入文本文件（tmp + rename），避免读端看到半截内容。"""
-    path.parent.mkdir(parents=True, exist_ok=True)
-    fd, tmp = tempfile.mkstemp(dir=str(path.parent), suffix=".tmp")
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8") as f:
-            f.write(text)
-            f.flush()
-            os.fsync(f.fileno())
-    except Exception:
-        try:
-            os.unlink(tmp)
-        except OSError:
-            pass
-        raise
-    os.replace(tmp, path)
+from mini_agent.utils.atomic_write import atomic_write_json, atomic_write_jsonl, atomic_append_jsonl
 
-
-def _atomic_write_json(path: Path, data: object) -> None:
-    _atomic_write_text(path, json.dumps(data, ensure_ascii=False, indent=2))
+# 保留原有函数名作为别名，避免破坏现有调用
+_atomic_write_json = atomic_write_json
+_atomic_write_text = atomic_write_json  # 兼容旧调用，实际只用 json 版本
 
 
 def _append_jsonl(path: Path, record: dict) -> None:

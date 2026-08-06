@@ -296,18 +296,13 @@ __all__ = [
 #     判定，避免几小时前、可能已经被人工修复的风险判断继续压制新候选。
 #   - 失败静默：写入/读取失败都不应影响调用方主流程。
 
+from mini_agent.utils.atomic_write import atomic_write_json
+
 def _affordance_snapshot_path(paths: "AgentPaths") -> Path:
     return paths.workdir_dir / "affordance_snapshot.json"
 
-
-def _atomic_write_json(path: Path, data: object) -> None:
-    """原子写 JSON（写临时文件后 os.replace），与仓库内其余模块的同名
-    私有工具函数保持同样的实现风格（各模块各自持有一份，不引入跨模块
-    私有函数依赖）。"""
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp_path = path.with_suffix(path.suffix + f".tmp{os.getpid()}")
-    tmp_path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
-    os.replace(tmp_path, path)
+# 保留原有函数名作为别名，避免破坏现有调用
+_atomic_write_json = atomic_write_json
 
 
 def _read_json(path: Path, default: object) -> object:

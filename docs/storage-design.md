@@ -527,6 +527,45 @@ SubAgent 运行过程中每一行输出都追加到此文件，格式为带时�
 
 所有 W2 文件使用**原子替换写入**（`tmp → fsync → rename`），与 `memory.jsonl` 的追加写入模式不同。
 
+---
+
+### 4.5.1 通用原子写入工具：`utils/atomic_write.py`
+
+**位置**：`src/mini_agent/utils/atomic_write.py`
+
+**导出函数**：
+
+| 函数 | 用途 | 关键参数 |
+|------|------|---------|
+| `atomic_write_text(path, text, *, flock=False)` | 原子写入文本文件 | `flock`：是否加文件锁（跨进程安全） |
+| `atomic_write_json(path, data, *, flock=False)` | 原子写入 JSON（自动 `json.dumps` + indent=2） | 同上 |
+| `atomic_write_jsonl(path, records, *, flock=False)` | 原子写入 JSONL（覆盖模式） | 同上 |
+| `atomic_append_jsonl(path, record, *, flock=False)` | 原子追加单行 JSONL | 同上 |
+
+**核心机制**：
+
+1. **临时文件 + fsync + 原子替换**：写入同目录下 `.tmp` 临时文件 → `flush()` + `fsync()` → `os.replace(tmp, target)`（POSIX/Windows 均原子）
+2. **指数退避重试**：Windows 上 `os.replace` 可能因杀毒软件/编辑器/索引服务短暂锁定文件导致 `PermissionError: [WinError 5]`。内置最多 5 次重试，基础延迟 50ms，指数增长（50ms, 100ms, 200ms, 400ms, 800ms）
+3. **可选文件锁**：`flock=True` 时使用 `fcntl.flock`（Unix）或 `msvcrt.locking`（Windows）实现跨进程互斥，`session.py` 的 `SessionManager.save()` 即使用此模式
+4. **自动创建父目录**：`path.parent.mkdir(parents=True, exist_ok=True)`
+
+**使用示例**：
+
+```python
+from mini_agent.utils.atomic_write import atomic_write_json, atomic_append_jsonl
+
+# 覆盖写入 JSON
+atomic_write_json(paths.workdir_project_meta(), {"key": "value"})
+
+# 追加 JSONL（如 timeline.jsonl、activity_log.jsonl）
+atomic_append_jsonl(paths.workdir_timeline(), {"event": "session_end", "at": time.time()})
+
+# 需要跨进程互斥时
+atomic_write_json(path, data, flock=True)
+```
+
+**迁移历史**：原本分散在 `perception/atomic_write.py`、`wiki/indexer.py`、`wiki/promotion.py`、`evolution/cron_scheduler.py` 等 12+ 个模块中各自实现的重试逻辑（约 300+ 行重复代码），已于 2026-08 统一迁移至 `utils/atomic_write.py`。旧模块保留原函数名作为别名（如 `_atomic_write_json = atomic_write_json`）保证向后兼容。
+
 ### 4.6 W3 Global 知识层（Stage 5）
 
 > 详见 [W2/W3 知识层指南](self-evolution-stage4-5-guide.md)

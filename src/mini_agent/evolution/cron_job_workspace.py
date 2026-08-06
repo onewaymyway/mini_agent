@@ -17,12 +17,12 @@ evolution/cron_job_workspace.py — 每个 cron job 的专属文件夹管理
 from __future__ import annotations
 
 import json
-import os
-import tempfile
 import time
 from dataclasses import dataclass, field, asdict
 from pathlib import Path
 from typing import Optional, TYPE_CHECKING
+
+from mini_agent.utils.atomic_write import atomic_write_json
 
 if TYPE_CHECKING:
     from mini_agent.storage.paths import AgentPaths
@@ -97,24 +97,6 @@ class CronJobState:
         return asdict(self)
 
 
-def _atomic_write_json(path: Path, data: dict) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    text = json.dumps(data, ensure_ascii=False, indent=2)
-    fd, tmp = tempfile.mkstemp(dir=str(path.parent), suffix=".tmp")
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8") as f:
-            f.write(text)
-            f.flush()
-            os.fsync(f.fileno())
-    except Exception:
-        try:
-            os.unlink(tmp)
-        except OSError:
-            pass
-        raise
-    os.replace(tmp, path)
-
-
 DEFAULT_PROMPT_TEMPLATE = (
     "{{task_description}}\n\n"
     "{{#progress}}\n"
@@ -159,9 +141,9 @@ class CronJobWorkspace:
             content = default_task_template or "{{task_description}}\n\n{{progress}}\n"
             self.prompt_path.write_text(content, encoding="utf-8")
         if not self.config_path.exists():
-            _atomic_write_json(self.config_path, (default_config or CronJobConfig()).to_dict())
+            atomic_write_json(self.config_path, (default_config or CronJobConfig()).to_dict())
         if not self.state_path.exists():
-            _atomic_write_json(self.state_path, CronJobState().to_dict())
+            atomic_write_json(self.state_path, CronJobState().to_dict())
 
     # ── 读取 ──────────────────────────────────────────────────────────────
 
@@ -192,7 +174,7 @@ class CronJobWorkspace:
     # ── 写入 ──────────────────────────────────────────────────────────────
 
     def write_state(self, state: CronJobState) -> None:
-        _atomic_write_json(self.state_path, state.to_dict())
+        atomic_write_json(self.state_path, state.to_dict())
 
     def render_prompt(self, task_description: str) -> str:
         """把 prompt.md 模板渲染成最终发给 agent 的文本。

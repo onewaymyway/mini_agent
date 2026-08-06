@@ -37,19 +37,10 @@ _MIN_CLUSTER_SIZE = 5        # 未分类候选积累到多少条才可能长出�
 _MAX_CANDIDATES_KEPT = 500   # 候选队列上限，超出淘汰最旧
 
 
-def _atomic_write_json(path: Path, data: object) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    fd, tmp = tempfile.mkstemp(dir=str(path.parent), suffix=".tmp")
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8") as f:
-            f.write(json.dumps(data, ensure_ascii=False, indent=2))
-    except Exception:
-        try:
-            os.unlink(tmp)
-        except OSError:
-            pass
-        raise
-    os.replace(tmp, path)
+from mini_agent.utils.atomic_write import atomic_write_json, atomic_write_jsonl
+
+# 保留原有函数名作为别名，避免破坏现有调用
+_atomic_write_json = atomic_write_json
 
 
 def _read_json(path: Path, default: object) -> object:
@@ -451,16 +442,4 @@ def load_unclassified_candidates(path: Path) -> list[dict]:
 
 def save_unclassified_candidates(path: Path, records: list[dict]) -> None:
     """巩固循环 处理完一批后，用剩余候选整体重写文件（原子写）。"""
-    path.parent.mkdir(parents=True, exist_ok=True)
-    fd, tmp = tempfile.mkstemp(dir=str(path.parent), suffix=".jsonl.tmp")
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8") as f:
-            for rec in records:
-                f.write(json.dumps(rec, ensure_ascii=False) + "\n")
-    except Exception:
-        try:
-            os.unlink(tmp)
-        except OSError:
-            pass
-        raise
-    os.replace(tmp, path)
+    atomic_write_jsonl(path, records)

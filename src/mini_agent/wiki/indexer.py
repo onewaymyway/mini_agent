@@ -24,12 +24,12 @@ import hashlib
 import json
 import os
 import re
-import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
 
 from mini_agent.storage.paths import AgentPaths
+from mini_agent.utils.atomic_write import atomic_write_json
 from mini_agent.wiki.graph import GraphIndex
 from mini_agent.wiki.parser import WikiPage, parse_page
 from mini_agent.wiki.validator import ValidationReport, validate_pages
@@ -42,22 +42,6 @@ _STOPWORDS = {
 }
 _TOKEN_RE = re.compile(r"[A-Za-z0-9_]+|[\u4e00-\u9fff]")
 
-
-def _atomic_write_json(path: Path, data: object) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    fd, tmp = tempfile.mkstemp(dir=str(path.parent), suffix=".tmp")
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8") as f:
-            json.dump(data, f, ensure_ascii=False, indent=2)
-            f.flush()
-            os.fsync(f.fileno())
-    except Exception:
-        try:
-            os.unlink(tmp)
-        except OSError:
-            pass
-        raise
-    os.replace(tmp, path)
 
 
 def _file_hash(path: Path) -> str:

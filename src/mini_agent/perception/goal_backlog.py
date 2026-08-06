@@ -29,8 +29,6 @@ from __future__ import annotations
 
 import contextlib
 import json
-import os
-import tempfile
 import time
 import uuid
 from dataclasses import dataclass, field
@@ -39,6 +37,7 @@ from typing import Optional
 
 from mini_agent import time_utils
 from mini_agent.storage.paths import AgentPaths
+from mini_agent.utils.atomic_write import atomic_write_json
 
 try:
     import fcntl  # POSIX only（Linux / macOS）
@@ -359,28 +358,12 @@ class GoalBacklog:
             self._nodes = {}
 
     def save(self) -> None:
-        """原子写入磁盘。"""
-        self._goals_path.parent.mkdir(parents=True, exist_ok=True)
+        """原子写入磁盘（使用通用工具，含指数退避重试）。"""
         data = {
             "version": self.VERSION,
             "goals": [n.to_dict() for n in self._nodes.values()],
         }
-        text = json.dumps(data, ensure_ascii=False, indent=2)
-        fd, tmp = tempfile.mkstemp(
-            dir=str(self._goals_path.parent), suffix=".tmp"
-        )
-        try:
-            with os.fdopen(fd, "w", encoding="utf-8") as f:
-                f.write(text)
-                f.flush()
-                os.fsync(f.fileno())
-        except Exception:
-            try:
-                os.unlink(tmp)
-            except OSError:
-                pass
-            raise
-        os.replace(tmp, self._goals_path)
+        atomic_write_json(self._goals_path, data)
 
     # ── 查询 ──────────────────────────────────────────────────────────────────
 

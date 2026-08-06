@@ -33,7 +33,6 @@ import json
 import logging
 import os
 import re as _re
-import tempfile
 import time
 import uuid
 from dataclasses import dataclass, field
@@ -42,6 +41,7 @@ from typing import Callable, Optional, TYPE_CHECKING
 
 from mini_agent.role_agents.stuck_detector import StuckSignal as _GuardianStuckSignal
 from mini_agent.evolution.circuit_breaker_core import CircuitBreakerCore, classify_error_type
+from mini_agent.utils.atomic_write import atomic_write_json
 
 log = logging.getLogger(__name__)
 
@@ -432,7 +432,6 @@ class ObjectiveExecutor:
             pass
 
     def save(self) -> None:
-        self._exec_path.parent.mkdir(parents=True, exist_ok=True)
         active = [
             ex for ex in self._executions.values()
             if ex.status not in ("completed", "failed", "cancelled")
@@ -442,20 +441,7 @@ class ObjectiveExecutor:
             "version": self.VERSION,
             "executions": [ex.to_dict() for ex in active],
         }
-        text = json.dumps(data, ensure_ascii=False, indent=2)
-        fd, tmp = tempfile.mkstemp(dir=str(self._exec_path.parent), suffix=".tmp")
-        try:
-            with os.fdopen(fd, "w", encoding="utf-8") as f:
-                f.write(text)
-                f.flush()
-                os.fsync(f.fileno())
-        except Exception:
-            try:
-                os.unlink(tmp)
-            except OSError:
-                pass
-            raise
-        os.replace(tmp, self._exec_path)
+        atomic_write_json(self._exec_path, data)
 
     # ── 主接口 ────────────────────────────────────────────────────────────────
 

@@ -37,6 +37,7 @@ from pathlib import Path
 from typing import Optional
 
 from mini_agent.storage.paths import AgentPaths
+from mini_agent.utils.atomic_write import atomic_append_jsonl
 from mini_agent.wiki.indexer import discover_pages
 from mini_agent.wiki.parser import parse_page
 from mini_agent.wiki.stats import WikiStats, compute_stats
@@ -55,40 +56,6 @@ _AB_MIN_SAMPLES = 20            # A/B 对比样本量低于此值时不下结论
 
 def _today_str(today: Optional[date] = None) -> str:
     return (today or date.today()).isoformat()
-
-
-def _append_jsonl(path: Path, record: dict) -> None:
-    """原子追加一行 jsonl——先读已有内容+新行一起写临时文件再 replace，
-
-    与项目里其它 pending 队列（decision_candidates_pending.jsonl 等）的
-    "追加即原子写"约定一致：单机场景下 append 本身已经是安全的，这里额外
-    走一次 tmp+replace 只是为了在同一目录下与其它落盘路径保持一致的失败
-    语义（写一半崩溃不会破坏已有内容）。
-    """
-    path.parent.mkdir(parents=True, exist_ok=True)
-    existing = ""
-    if path.exists():
-        try:
-            existing = path.read_text(encoding="utf-8")
-        except OSError:
-            existing = ""
-    line = json.dumps(record, ensure_ascii=False)
-    fd, tmp = tempfile.mkstemp(dir=str(path.parent), suffix=".tmp")
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8") as f:
-            f.write(existing)
-            if existing and not existing.endswith("\n"):
-                f.write("\n")
-            f.write(line + "\n")
-            f.flush()
-            os.fsync(f.fileno())
-    except Exception:
-        try:
-            os.unlink(tmp)
-        except OSError:
-            pass
-        raise
-    os.replace(tmp, path)
 
 
 def _read_jsonl(path: Path) -> list[dict]:
@@ -159,7 +126,7 @@ def record_daily_snapshot(
         "validation_errors": len(validation.errors),
     }
     try:
-        _append_jsonl(log_path, record)
+        atomic_append_jsonl(log_path, record)
     except Exception as _mini_agent_exc:
         from mini_agent.errors import log_exception
         log_exception(_mini_agent_exc, where='mini_agent.wiki.promotion.record_daily_snapshot')
@@ -190,7 +157,7 @@ def record_search_comparison(
         "shelf_grounded": bool(shelf_grounded),
     }
     try:
-        _append_jsonl(paths.wiki_search_ab_log_path, record)
+        atomic_append_jsonl(paths.wiki_search_ab_log_path, record)
     except Exception as _mini_agent_exc:
         from mini_agent.errors import log_exception
         log_exception(_mini_agent_exc, where='mini_agent.wiki.promotion.record_search_comparison')

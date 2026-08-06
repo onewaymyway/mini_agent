@@ -611,6 +611,8 @@ mini_agent/
 │       ├── profile.py          # 用户画像模型
 │       ├── errors.py           # 统一异常类型
 │       ├── time_utils.py       # 时间工具
+│       ├── utils/              # 通用工具层
+│       │   └── atomic_write.py # 原子写入工具（指数退避重试、可选文件锁）
 │       │
 │       ├── config/             # 配置管理：models / loader / prompt_builder
 │       ├── cli/                # CLI 基础设施：app / parser / repl / daemon

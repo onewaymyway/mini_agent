@@ -22,13 +22,12 @@ daemon 侧的用法（见 evolution/cron_scheduler.py 的 `sys:consolidation` jo
 from __future__ import annotations
 
 import json
-import os
-import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
 
 from mini_agent.storage.paths import AgentPaths
+from mini_agent.utils.atomic_write import atomic_write_json
 from mini_agent.wiki.promotion import PromotionReadiness, evaluate_promotion_readiness
 
 # 改进计划 1.2.2 节三步下线流程的静态描述——不是可执行代码，是给人看的操作指引。
@@ -149,20 +148,7 @@ def check_and_plan(paths: AgentPaths, *, write_report: bool = True) -> Decommiss
 
 def _write_report(paths: AgentPaths, plan: DecommissionPlan) -> None:
     path = paths.wiki_decommission_report_path
-    path.parent.mkdir(parents=True, exist_ok=True)
-    fd, tmp = tempfile.mkstemp(dir=str(path.parent), suffix=".tmp")
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8") as f:
-            json.dump(plan.to_dict(), f, ensure_ascii=False, indent=2)
-            f.flush()
-            os.fsync(f.fileno())
-        os.replace(tmp, path)
-    finally:
-        if os.path.exists(tmp):
-            try:
-                os.remove(tmp)
-            except OSError:
-                pass
+    atomic_write_json(path, plan.to_dict())
 
 
 def load_last_report(paths: AgentPaths) -> Optional[dict]:

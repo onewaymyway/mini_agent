@@ -586,27 +586,13 @@ class SessionManager:
 
 # ── 辅助函数 ──────────────────────────────────────────────────────────────────
 
+from mini_agent.utils.atomic_write import atomic_write_json
+
 def _now_iso() -> str:
     return datetime.now().strftime("%Y-%m-%dT%H:%M:%S")
 
-
-def _atomic_write_json(path: Path, data: object) -> None:
-    """原子写入 JSON 文件（tmp + rename，保证读端不见到半截 JSON）。"""
-    import tempfile
-    text = json.dumps(data, ensure_ascii=False, indent=2)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    fd, tmp = tempfile.mkstemp(dir=path.parent, suffix=".tmp")
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8") as f:
-            _flock(f)
-            f.write(text)
-            f.flush()
-            os.fsync(f.fileno())
-    except Exception:
-        os.unlink(tmp)
-        raise
-    os.replace(tmp, path)
-
+# 保留原有函数名作为别名，避免破坏现有调用
+_atomic_write_json = lambda path, data: atomic_write_json(path, data, flock=True)
 
 def _serialize_history(history: list[dict]) -> list[dict]:
     """将 history 序列化为可 JSON 化的格式，处理 SDK content block 对象。
@@ -641,28 +627,3 @@ def _serialize_history(history: list[dict]) -> list[dict]:
             entry["_type"] = str(_type)  # HType.__str__ 返回 value（如 "user_input"）
         result.append(entry)
     return result
-
-
-def _flock(f) -> None:
-    """跨平台文件锁（尽力而为）。
-
-    部分文件系统（典型如 Android Termux 的 FUSE/SD 卡挂载路径）不支持
-    flock，调用会抛出 OSError(38)（ENOSYS - Function not implemented），
-    而不是 ImportError（fcntl 模块本身是存在的，只是该文件系统不支持这个
-    系统调用）。这里必须把 OSError 也纳入捕获范围，否则异常会向上传播到
-    _atomic_write_json，导致文件写入整体失败、session 无法持久化——
-    而文件锁定本身只是"尽力而为"，锁不上不应该阻断核心写入逻辑。
-    """
-    try:
-        import fcntl
-        fcntl.flock(f.fileno(), fcntl.LOCK_EX)
-        return
-    except (ImportError, OSError):
-        pass
-    try:
-        import msvcrt
-        msvcrt.locking(f.fileno(), msvcrt.LK_NBLCK, 512)
-    except Exception as _mini_agent_exc:
-        from mini_agent.errors import log_exception
-        log_exception(_mini_agent_exc, where='mini_agent.session')
-        pass

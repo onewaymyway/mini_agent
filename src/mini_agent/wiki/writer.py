@@ -26,22 +26,10 @@ try:
 except ImportError:  # pragma: no cover
     yaml = None  # type: ignore[assignment]
 
+from mini_agent.utils.atomic_write import atomic_write_text
 
-def _atomic_write_text(path: Path, text: str) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    fd, tmp = tempfile.mkstemp(dir=str(path.parent), suffix=".tmp")
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8") as f:
-            f.write(text)
-            f.flush()
-            os.fsync(f.fileno())
-    except Exception:
-        try:
-            os.unlink(tmp)
-        except OSError:
-            pass
-        raise
-    os.replace(tmp, path)
+# 保留原有函数名作为别名，避免破坏现有调用
+_atomic_write_text = atomic_write_text
 
 
 def render_page(

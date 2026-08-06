@@ -29,9 +29,7 @@ parser.py 已经解析好的 WikiPage.strong_links()，不需要额外的实体�
 from __future__ import annotations
 
 import json
-import os
 import re
-import tempfile
 import time
 from collections import defaultdict
 from dataclasses import dataclass, field
@@ -42,8 +40,8 @@ from mini_agent.storage.paths import AgentPaths
 from mini_agent.wiki.indexer import discover_pages
 from mini_agent.wiki.parser import WikiPage, parse_page
 from mini_agent.wiki.writer import render_page, set_status, write_page
-from mini_agent.wiki import writer as _writer_mod
 from mini_agent.wiki.parser import WikiLink
+from mini_agent.utils.atomic_write import atomic_write_text
 
 try:
     from mini_agent.history.decision_extraction import DecisionCandidate
@@ -209,7 +207,7 @@ def _link_back_superseded_by(paths: AgentPaths, old_page: WikiPage, new_page_id:
         source_entries=old_page.source_entries,
         extra_frontmatter=extra,
     )
-    _writer_mod._atomic_write_text(old_page.path, text)  # noqa: SLF001 - writer 内部原子写复用
+    atomic_write_text(old_page.path, text)
 
 
 def process_candidates(
@@ -364,19 +362,7 @@ def _clear_pending_queue(paths: AgentPaths) -> None:
     p = paths.decision_candidates_pending_path
     if not p.exists():
         return
-    tmp = p.with_suffix(".tmp")
-    try:
-        tmp.write_text("", encoding="utf-8")
-        os.replace(tmp, p)
-    except Exception as _mini_agent_exc:
-        from mini_agent.errors import log_exception
-        log_exception(_mini_agent_exc, where='mini_agent.wiki.decision_writer._clear_pending_queue')
-        try:
-            tmp.unlink(missing_ok=True)
-        except Exception as _mini_agent_exc:
-            from mini_agent.errors import log_exception
-            log_exception(_mini_agent_exc, where='mini_agent.wiki.decision_writer._clear_pending_queue')
-            pass
+    atomic_write_text(p, "")
 
 
 def _merge_same_batch_candidates(

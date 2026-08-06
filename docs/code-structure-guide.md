@@ -134,6 +134,31 @@ mcp_servers/
 
 用于存放本地 MCP 服务脚本。Agent 通过 `agent_config.json` 的 `mcp_servers` 配置以子进程方式启动它们。详见 [MCP 集成指南](mcp-guide.md)。
 
+### 2.6 通用工具层：`utils/`
+
+```
+src/mini_agent/utils/
+├── __init__.py
+└── atomic_write.py   # 通用原子写入工具（指数退避重试、可选文件锁）
+```
+
+**`utils/atomic_write.py`** — 统一的原子写入工具，解决 Windows 上 `os.replace` 因文件被短暂锁定导致的 `PermissionError: [WinError 5]` 问题。
+
+| 函数 | 用途 |
+|------|------|
+| `atomic_write_text(path, text, *, flock=False)` | 原子写入文本文件 |
+| `atomic_write_json(path, data, *, flock=False)` | 原子写入 JSON（自动 `json.dumps` + indent=2） |
+| `atomic_write_jsonl(path, records, *, flock=False)` | 原子写入 JSONL（覆盖模式） |
+| `atomic_append_jsonl(path, record, *, flock=False)` | 原子追加单行 JSONL |
+
+**核心特性**：
+- 临时文件 + `fsync()` + `os.replace()` 原子替换
+- 指数退避重试（最多 5 次，基础 50ms）
+- 可选跨进程文件锁（`flock=True`，`session.py` 使用）
+- 自动创建父目录
+
+**迁移历史**：原本分散在 12+ 个模块（`perception/`、`wiki/`、`evolution/` 等）中各自实现的重试逻辑（约 300+ 行重复代码），已于 2026-08 统一迁移至此。
+
 ---
 
 ## 3. Import 约定

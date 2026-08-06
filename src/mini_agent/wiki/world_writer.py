@@ -20,7 +20,6 @@ section；找不到关联实体时，归入当天的兜底页面
 from __future__ import annotations
 
 import json
-import os
 import re
 import time
 from collections import defaultdict
@@ -32,6 +31,7 @@ from mini_agent.storage.paths import AgentPaths
 from mini_agent.wiki.indexer import discover_pages
 from mini_agent.wiki.parser import WikiPage, parse_page
 from mini_agent.wiki.writer import append_section, write_page
+from mini_agent.utils.atomic_write import atomic_write_text
 
 try:
     from mini_agent.history.world_extraction import EntityCandidate, FactCandidate
@@ -182,19 +182,7 @@ def _clear_pending_queue(paths: AgentPaths) -> None:
     p = paths.world_candidates_pending_path
     if not p.exists():
         return
-    tmp = p.with_suffix(".tmp")
-    try:
-        tmp.write_text("", encoding="utf-8")
-        os.replace(tmp, p)
-    except Exception as _mini_agent_exc:
-        from mini_agent.errors import log_exception
-        log_exception(_mini_agent_exc, where='mini_agent.wiki.world_writer._clear_pending_queue')
-        try:
-            tmp.unlink(missing_ok=True)
-        except Exception as _mini_agent_exc:
-            from mini_agent.errors import log_exception
-            log_exception(_mini_agent_exc, where='mini_agent.wiki.world_writer._clear_pending_queue')
-            pass
+    atomic_write_text(p, "")
 
 
 def _load_entity_pages(paths: AgentPaths) -> list[WikiPage]:

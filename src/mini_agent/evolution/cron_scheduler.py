@@ -30,12 +30,13 @@ import json
 import math
 import os
 import re
-import tempfile
 import time
 import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable, Optional, TYPE_CHECKING
+
+from mini_agent.utils.atomic_write import atomic_write_json
 
 if TYPE_CHECKING:
     from mini_agent.storage.paths import AgentPaths
@@ -538,25 +539,11 @@ class CronScheduler:
 
     def save(self) -> None:
         """原子写入 cron_jobs.json。"""
-        self._jobs_path.parent.mkdir(parents=True, exist_ok=True)
         data = {
             "version": self.VERSION,
             "jobs": [j.to_dict() for j in self._jobs.values()],
         }
-        text = json.dumps(data, ensure_ascii=False, indent=2)
-        fd, tmp = tempfile.mkstemp(dir=str(self._jobs_path.parent), suffix=".tmp")
-        try:
-            with os.fdopen(fd, "w", encoding="utf-8") as f:
-                f.write(text)
-                f.flush()
-                os.fsync(f.fileno())
-        except Exception:
-            try:
-                os.unlink(tmp)
-            except OSError:
-                pass
-            raise
-        os.replace(tmp, self._jobs_path)
+        atomic_write_json(self._jobs_path, data)
 
     # ── 主调度入口 ────────────────────────────────────────────────────────────
 
