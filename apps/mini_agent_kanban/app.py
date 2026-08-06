@@ -4199,6 +4199,38 @@ def render_cron_jobs_tab(client: AgentClient):
                         st.success("已保存。")
                         st.rerun()
 
+            # [看板 cron 任务标签页补齐删除功能] 此前只有"目标看板"tab里
+            # 才能删除 cron job，本 tab（Cron 任务）只有运行/启停/改优先级，
+            # 没有删除入口——用户想删一个非 sys: 前缀的自定义 job 必须切
+            # 换到目标看板才行，体验割裂。这里补一份与目标看板一致的删除
+            # UI（is_system 的 job 不展示删除按钮、只能禁用；非 system job
+            # 删除前二次确认，用 confirm_key 这个 session_state 标记控制）。
+            is_system_job = bool(job.get("is_system")) or job_id.startswith("sys:")
+            if not is_system_job:
+                st.markdown("###### 🗑️ 删除任务")
+                confirm_key = f"cron_tab_confirm_delete_{job_id}"
+                if not st.session_state.get(confirm_key):
+                    if st.button("🗑️ 删除", key=f"cron_tab_delete_{job_id}"):
+                        st.session_state[confirm_key] = True
+                        st.rerun()
+                else:
+                    dc1, dc2 = st.columns(2)
+                    with dc1:
+                        if st.button("⚠️ 确认删除", key=f"cron_tab_delete_confirm_{job_id}"):
+                            result = client.delete_cron_job(job_id)
+                            st.session_state.pop(confirm_key, None)
+                            if isinstance(result, dict) and result.get("_error"):
+                                st.error(f"删除失败：{result['_error']}")
+                            else:
+                                st.success(f"已删除 cron job：{job.get('name')}")
+                            st.rerun()
+                    with dc2:
+                        if st.button("取消", key=f"cron_tab_delete_cancel_{job_id}"):
+                            st.session_state.pop(confirm_key, None)
+                            st.rerun()
+            else:
+                st.caption("系统内置任务，不可删除，只能禁用。")
+
     st.divider()
     with st.expander("➕ 新建 cron job"):
         new_name = st.text_input("名称", key="cron_new_name")

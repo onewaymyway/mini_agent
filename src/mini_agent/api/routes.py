@@ -4554,10 +4554,16 @@ async def list_cron_jobs(request: Request):
         raise HTTPException(status_code=503, detail="HttpServer not available")
     _require_owner(request)
 
-    cs = getattr(http_server.bridge, "_cron_scheduler", None)
-    if cs is None:
-        al = http_server.autonomous_loop
-        cs = getattr(al, "_cron_scheduler", None) if al else None
+    # [看板删除 cron 后刷新又出现 bugfix] 与 add/update/delete 三个路由统一
+    # 走 _get_cron_scheduler() 的兜底顺序（bridge._cron_scheduler 优先，
+    # 其次 autonomous_loop._cron_scheduler）——此前这里是本地手写的兜底
+    # 逻辑，add/update/delete 三个路由却各自只取 bridge._cron_scheduler、
+    # 没有这个兜底。当 bridge._cron_scheduler 为 None 而实际调度器挂在
+    # autonomous_loop 上时，GET 能读到 job 列表，但 DELETE 会因为
+    # cs is None 直接 503 失败（或者两者拿到的根本不是同一个调度器实例，
+    # 删除操作作用在错误的实例上）——表现出来就是"看板点删除，刷新后
+    # cron job 又出现了"。统一入口后，四个路由永远读写同一个调度器对象。
+    cs = _get_cron_scheduler(http_server)
     if cs is None:
         return {"jobs": [], "note": "CronScheduler not available (daemon mode required)"}
 
@@ -4589,7 +4595,8 @@ async def add_cron_job(request: Request):
         raise HTTPException(status_code=503, detail="HttpServer not available")
     _require_owner(request)
 
-    cs = getattr(http_server.bridge, "_cron_scheduler", None)
+    # 统一走 _get_cron_scheduler()，理由见 list_cron_jobs() 中的说明。
+    cs = _get_cron_scheduler(http_server)
     if cs is None:
         raise HTTPException(status_code=503, detail="CronScheduler not available")
 
@@ -4626,7 +4633,8 @@ async def update_cron_job(job_id: str, request: Request):
         raise HTTPException(status_code=503, detail="HttpServer not available")
     _require_owner(request)
 
-    cs = getattr(http_server.bridge, "_cron_scheduler", None)
+    # 统一走 _get_cron_scheduler()，理由见 list_cron_jobs() 中的说明。
+    cs = _get_cron_scheduler(http_server)
     if cs is None:
         raise HTTPException(status_code=503, detail="CronScheduler not available")
 
@@ -4664,7 +4672,12 @@ async def delete_cron_job(job_id: str, request: Request):
         raise HTTPException(status_code=503, detail="HttpServer not available")
     _require_owner(request)
 
-    cs = getattr(http_server.bridge, "_cron_scheduler", None)
+    # 统一走 _get_cron_scheduler()，理由见 list_cron_jobs() 中的说明——
+    # 这也是本次 bugfix 的核心：之前这里只取 bridge._cron_scheduler，
+    # 与 GET /cron/jobs 的兜底顺序不一致，导致 bridge._cron_scheduler
+    # 为 None 时删除请求要么 503 失败、要么（若两处解析出不同的调度器
+    # 实例）删除作用在错误实例上，看板刷新后 job 又出现。
+    cs = _get_cron_scheduler(http_server)
     if cs is None:
         raise HTTPException(status_code=503, detail="CronScheduler not available")
 

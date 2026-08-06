@@ -107,7 +107,7 @@ streamlit run app.py
 | 🖼️ 产出预览 | 按任务/session 登记的产出物 manifest 语义化展示（图片内联、文档下载），支持深链接直达 |
 | 🧠 自我状态 | 具身智能自省信息（自主循环摘要、活跃目标数、最近活动、多用户会话池 SessionPool 概况） |
 | 🧬 进化提案 | Skill 提案列表、git worktree diff、批准/拒绝 |
-| ⏰ Cron 任务 | Cron Job 列表（含 priority）、启用/禁用、手动触发、新建 |
+| ⏰ Cron 任务 | Cron Job 列表（含 priority）、启用/禁用、手动触发、新建、删除（非 sys: job） |
 | 🗓️ 全局日程 | cron job 到期时间线 / 周期性 Goal 下次触发 / 仲裁状态变化时间线，三类合并展示（见下方专节） |
 | 🔌 外部输入 | 外部输入网关配置与最近事件 |
 | 🔔 关注与通知 | Watchlist 关注项与通知历史 |
@@ -247,6 +247,12 @@ Cron Job 列表、启用/禁用、手动触发、新建，`priority` 字段的�
 （`update_cron_job(job_id, priority=...)`）。详见
 `docs/cron-jobs-reference.md`、`next_doc/scheduling_unification_and_kanban_
 visibility_improvement_plan.md`（P2）。
+
+**删除**（`kanban_cron_delete_consistency_bugfix.md` 新增）：非 `sys:`
+前缀的自定义 job 现在可以直接在本 Tab 删除，不用再切到"📌 目标看板"
+Tab。流程与目标看板一致：点击"🗑️ 删除"进入二次确认态，"⚠️ 确认删除"
+后才真正调用 `DELETE /v1/cron/jobs/{job_id}`；`sys:` 前缀的内置 job 不
+展示删除按钮，只能通过启用/禁用开关控制。
 
 ### 🗓️ 全局日程 Tab
 

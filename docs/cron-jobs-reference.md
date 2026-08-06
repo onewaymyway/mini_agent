@@ -171,6 +171,25 @@ SelfMaintenanceModule.health_check()`）内部做四项检查，结果合并写�
 完整命令列表见
 [命令与工具参考 · 定时任务](commands-and-tools-reference.md#定时任务srcmini_agentclicommandscronpy)。
 
+### 5.1 删除 job（HTTP API / 看板）
+
+`DELETE /v1/cron/jobs/{job_id}` 彻底删除一个用户自定义 job（`sys:` 前缀
+的内置 job 会被拒绝，返回 400，只能用 `PUT .../enabled=false` 禁用）。
+看板"📌 目标看板"和"⏰ Cron 任务"两个 Tab 都提供删除入口（二次确认后
+才真正调用删除接口），行为完全一致。
+
+`api/routes.py` 里 `GET/POST/PUT/DELETE /cron/jobs...` 四个路由统一通过
+`_get_cron_scheduler(http_server)` 解析当前生效的 `CronScheduler` 实例
+（优先 `bridge._cron_scheduler`，其次 `autonomous_loop._cron_scheduler`）
+——这是 `kanban_cron_delete_consistency_bugfix.md` 修的一个真实 bug：此
+前只有 `GET` 走这套兜底逻辑，`POST/PUT/DELETE` 各自手写了一份只取
+`bridge._cron_scheduler` 的简化版，两者在 `bridge._cron_scheduler` 为
+`None`（调度器实际挂在 `autonomous_loop` 上）的部署形态下会解析出不同
+的对象，导致删除操作要么直接 503 失败，要么作用在一个 `GET` 读不到的
+"影子"实例上——表现为看板点删除、刷新后 job 又"复活"了。新增/修改
+`/cron/jobs` 相关路由时，务必统一走 `_get_cron_scheduler()`，不要再手写
+局部兜底。
+
 ## 6. 维护本文档
 
 新增 `sys:` job 时，请在对应设计计划落地的同一次改动里同步更新本文档
