@@ -101,6 +101,30 @@ class CDPSession:
     def __exit__(self, *exc):
         self.close()
 
+    # -- event subscription --------------------------------------------
+    def subscribe(self, method: str, callback):
+        """注册事件回调"""
+        if not hasattr(self, '_subscribers'):
+            self._subscribers: dict[str, list] = {}
+        if method not in self._subscribers:
+            self._subscribers[method] = []
+        self._subscribers[method].append(callback)
+
+    def unsubscribe(self, method: str, callback):
+        """移除事件回调"""
+        if hasattr(self, '_subscribers') and method in self._subscribers:
+            if callback in self._subscribers[method]:
+                self._subscribers[method].remove(callback)
+
+    def _fire_event(self, method: str, params: dict):
+        """触发事件回调"""
+        if hasattr(self, '_subscribers') and method in self._subscribers:
+            for cb in self._subscribers[method]:
+                try:
+                    cb(params)
+                except Exception as e:
+                    logger.warning(f"事件回调执行失败: {e}")
+
     # -- low level -----------------------------------------------------
     def _next_id(self) -> int:
         return next(self._id_counter)
@@ -135,6 +159,7 @@ class CDPSession:
                     self._pending[data["id"]] = data.get("result", {})
             else:
                 self._events.append(data)
+                self._fire_event(data.get("method", ""), data.get("params", {}))
         raise CDPError(f"等待 CDP 响应超时 (id={msg_id}, timeout={timeout}s)")
 
     def wait_event(self, method: str, timeout: float = 10.0, match: Optional[dict] = None) -> dict:
@@ -235,6 +260,12 @@ class CDPSession:
         if result.get("exceptionDetails"):
             raise CDPError(f"JS 执行异常: {result['exceptionDetails']}")
         return result.get("result", {}).get("value")
+
+    def set_extra_http_headers(self, headers: dict) -> dict:
+        """设置额外的 HTTP 请求头"""
+        return self.send("Network.setExtraHTTPHeaders", {
+            "headers": headers
+        })
 
 
 def _match_params(params: dict, match: Optional[dict]) -> bool:

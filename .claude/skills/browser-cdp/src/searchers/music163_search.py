@@ -23,7 +23,11 @@ class Music163Searcher(BaseSearcher):
     @property
     def source_name(self) -> str:
         return "music163"
-    
+
+    @property
+    def supported_types(self) -> List[str]:
+        return ["song", "artist", "album", "playlist"]
+
     async def search(self, query: str, config: SearcherConfig) -> List[Dict]:
         """搜索音乐"""
         try:
@@ -85,20 +89,20 @@ class Music163Searcher(BaseSearcher):
         """获取歌曲详情"""
         try:
             from browser_cdp import Browser
-            
+
             browser = Browser(port=config.port, stealth=config.stealth)
             await browser.start()
-            
+
             await browser.get(url)
             await asyncio.sleep(3)
-            
+
             js_code = """
             (() => {
                 const title = document.querySelector('h1, .title')?.innerText || '';
                 const artist = document.querySelector('.artist, .s-fc3')?.innerText || '';
                 const album = document.querySelector('.album, .sub')?.innerText || '';
                 const duration = document.querySelector('.dur')?.innerText || '';
-                
+
                 return {
                     title: title,
                     artist: artist,
@@ -108,15 +112,49 @@ class Music163Searcher(BaseSearcher):
                 };
             })()
             """
-            
+
             result = await browser.evaluate(js_code)
             await browser.close()
-            
+
             return result
-            
+
         except Exception as e:
             print(f"获取详情失败: {e}")
             return {}
+
+    async def _smart_wait(self, browser, config: SearcherConfig):
+        """智能等待页面加载"""
+        from src.core.smart_wait import SmartWait
+        wait_handler = SmartWait(browser.session)
+        await wait_handler.wait_for(config.wait_strategy, idle_timeout=config.wait_timeout)
+
+    async def _extract_results(self, browser, query: str) -> List[Dict]:
+        """提取搜索结果"""
+        js_code = """
+        (() => {
+            const results = [];
+            document.querySelectorAll('.fm-item, .item, li[data-type="song"]').forEach(el => {
+                const titleEl = el.querySelector('.name, .f-name');
+                const artistEl = el.querySelector('.s-fc3, .artist');
+                const albumEl = el.querySelector('.sub, .album');
+                const durationEl = el.querySelector('.dur');
+                const linkEl = el.querySelector('a');
+
+                if (titleEl && linkEl) {
+                    results.push({
+                        title: titleEl.innerText.trim(),
+                        artist: artistEl ? artistEl.innerText.trim() : '',
+                        album: albumEl ? albumEl.innerText.trim() : '',
+                        duration: durationEl ? durationEl.innerText.trim() : '',
+                        url: linkEl.href,
+                        source: 'music163'
+                    });
+                }
+            });
+            return results;
+        })()
+        """
+        return await browser.evaluate(js_code)
 
 
 def main():

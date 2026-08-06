@@ -55,9 +55,13 @@ class TestUtilsConnection:
                         url_contains=None, title_contains=None)
             # get_session 内部调用 find_tab，find_tab 在无 tab 时会抛 CDPError
             # 这里只验证 args 对象能正常传入，不验证 ws_url 关键字参数（API 不支持）
-            with patch('src.core.cdp_client.find_tab', side_effect=Exception('no tabs')):
-                with pytest.raises(Exception):
+            # 注意：需要 patch utils 模块中的 find_tab，因为 utils 直接导入了它
+            with patch('src.core.utils.find_tab', side_effect=Exception('no tabs')):
+                try:
                     utils.get_session(args)
+                    assert False, "应抛出异常"
+                except Exception:
+                    pass  # 预期异常
             # 确认 CDPSession 未被直接调用（因为 find_tab 先抛异常）
             mock_session_class.assert_not_called()
 

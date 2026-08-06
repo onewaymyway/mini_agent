@@ -75,20 +75,23 @@ class ProxyPoolConfig:
     """代理池配置"""
     # 健康检查
     health_check_enabled: bool = True
-    health_check_interval: float = 60.0  # 检查间隔（秒）
+    health_check_interval: float = 30.0  # 检查间隔（秒）- 优化：从60s缩短到30s
     health_check_timeout: float = 10.0  # 检查超时（秒）
     health_check_url: str = "https://httpbin.org/ip"  # 检查 URL
-    
+
     # 轮换策略
     rotation_strategy: str = "health_score"  # health_score / random / round_robin
-    min_health_score: float = 0.3  # 最低健康度阈值
-    
+    min_health_score: float = 0.5  # 最低健康度阈值 - 优化：从0.3提高到0.5
+
     # 故障处理
     max_consecutive_failures: int = 3  # 连续失败次数阈值
     recovery_timeout: float = 300.0  # 恢复超时（秒）
-    
+
     # 并发控制
-    max_concurrent: int = 5  # 最大并发连接数
+    max_concurrent: int = 10  # 最大并发连接数 - 优化：从5增加到10
+
+    # 自动启动健康检查
+    auto_start_health_check: bool = True  # 初始化时自动启动健康检查
 
 
 class ProxyPool:
@@ -105,6 +108,11 @@ class ProxyPool:
         self._lock = asyncio.Lock()
         self._health_check_task: Optional[asyncio.Task] = None
         self._session: Optional[aiohttp.ClientSession] = None
+
+        # 优化：初始化时自动启动健康检查
+        if self.config.auto_start_health_check:
+            asyncio.get_event_loop().create_task(self.start_health_check())
+            logger.info("代理池初始化完成，健康检查已自动启动")
     
     def add_proxy(self, proxy: ProxyInfo):
         """添加代理"""
@@ -124,7 +132,48 @@ class ProxyPool:
             )
             self.add_proxy(proxy)
         logger.info(f"添加 {len(proxies)} 个代理")
-    
+
+    async def refresh_proxies(self, subscription_url: str = None) -> Dict[str, Any]:
+        """
+        从订阅源刷新代理列表
+
+        Args:
+            subscription_url: 代理订阅源 URL（可选）
+
+        Returns:
+            代理池统计信息
+        """
+        if subscription_url:
+            try:
+                logger.info(f"从订阅源刷新代理: {subscription_url}")
+                # 这里可以集成实际的代理订阅源获取逻辑
+                # 暂时使用占位实现
+                proxies_data = await self._fetch_proxies_from_url(subscription_url)
+                self.add_proxies(proxies_data)
+                logger.info(f"从订阅源获取 {len(proxies_data)} 个代理")
+            except Exception as e:
+                logger.warning(f"从订阅源刷新代理失败: {e}")
+
+        # 启动健康检查（确保幂等）
+        await self.start_health_check()
+
+        return self.get_stats()
+
+    async def _fetch_proxies_from_url(self, url: str) -> List[Dict[str, Any]]:
+        """
+        从 URL 获取代理列表（占位实现）
+
+        Args:
+            url: 代理订阅源 URL
+
+        Returns:
+            代理列表
+        """
+        # TODO: 集成实际的代理订阅源获取逻辑
+        # 例如： Clash/V2Ray 订阅格式解析
+        logger.debug(f"从 URL 获取代理列表: {url}")
+        return []
+
     def remove_proxy(self, proxy_url: str):
         """移除代理"""
         self._proxies = [p for p in self._proxies if p.url != proxy_url]

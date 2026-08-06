@@ -445,19 +445,82 @@ class CaptchaHandler:
         return ""
     
     async def _handle_recaptcha(self) -> CaptchaResult:
-        """处理 reCAPTCHA"""
+        """处理 reCAPTCHA v2/v3"""
+        try:
+            # 尝试获取 reCAPTCHA token
+            token = await self.session.eval_js("""
+                () => {
+                    if (typeof grecaptcha !== 'undefined') {
+                        const siteKey = document.querySelector('.g-recaptcha')?.getAttribute('data-sitekey');
+                        if (siteKey) {
+                            return grecaptcha.getResponse();
+                        }
+                    }
+                    // reCAPTCHA v3
+                    if (typeof recaptchaV3 !== 'undefined') {
+                        return recaptchaV3;
+                    }
+                    return '';
+                }
+            """)
+            if token and len(str(token)) > 10:
+                return CaptchaResult(
+                    success=True,
+                    captcha_type=CaptchaType.RECAPTCHA,
+                    solution={'token': str(token)},
+                    message="reCAPTCHA token 获取成功"
+                )
+        except Exception as e:
+            logger.debug(f"reCAPTCHA token 获取失败: {e}")
+        
+        # 尝试自动点击 reCAPTCHA 复选框
+        try:
+            checkbox = await self.session.find_element(
+                "iframe[src*='recaptcha']", wait_timeout=3
+            )
+            if checkbox:
+                await self.session.click_element(checkbox, retry=3)
+                return CaptchaResult(
+                    success=True,
+                    captcha_type=CaptchaType.RECAPTCHA,
+                    solution={'method': 'auto_click'},
+                    message="已尝试自动点击 reCAPTCHA"
+                )
+        except Exception as e:
+            logger.debug(f"reCAPTCHA 自动点击失败: {e}")
+        
         return CaptchaResult(
             success=False,
             captcha_type=CaptchaType.RECAPTCHA,
-            message="reCAPTCHA 需要手动处理或使用专业服务"
+            message="reCAPTCHA 需要手动处理或使用第三方服务（2Captcha/9Captcha）"
         )
     
     async def _handle_hcaptcha(self) -> CaptchaResult:
         """处理 hCaptcha"""
+        try:
+            # 尝试获取 hCaptcha token
+            token = await self.session.eval_js("""
+                () => {
+                    if (typeof hcaptcha !== 'undefined') {
+                        return hcaptcha.getResponse();
+                    }
+                    return '';
+                }
+            """)
+            if token and len(str(token)) > 10:
+                return CaptchaResult(
+                    success=True,
+                    captcha_type=CaptchaType.HCAPTCHA,
+                    solution={'token': str(token)},
+                    message="hCaptcha token 获取成功"
+                )
+        except Exception as e:
+            logger.debug(f"hCaptcha token 获取失败: {e}")
+        
         return CaptchaResult(
             success=False,
             captcha_type=CaptchaType.HCAPTCHA,
-            message="hCaptcha 需要手动处理或使用专业服务"
+            message="hCaptcha 需要手动处理或使用第三方服务"
         )
     
     async def _handle_sms(self) -> CaptchaResult:

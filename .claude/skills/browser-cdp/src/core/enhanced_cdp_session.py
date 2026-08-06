@@ -71,7 +71,7 @@ class EnhancedCDPSession(CDPSession):
         
         # 应用 stealth 模式
         if stealth:
-            await self.stealth.apply()
+            self.stealth.apply()
         
         # 执行导航
         async def _navigate():
@@ -228,35 +228,35 @@ class EnhancedCDPSession(CDPSession):
     
     async def enable_stealth(self) -> bool:
         """启用 stealth 模式"""
-        return await self.stealth.apply()
-    
+        return self.stealth.apply()
+
     async def human_like_click(self, x: float, y: float, duration: float = 0.3):
         """模拟人类点击"""
-        await self.stealth.human_like_click(x, y, duration)
-    
+        self.stealth.human_like_click(x, y, duration)
+
     async def human_like_type(self, text: str, min_delay: float = 0.05, max_delay: float = 0.15):
         """模拟人类打字"""
-        await self.stealth.human_like_type(text, min_delay, max_delay)
-    
+        self.stealth.human_like_type(text, min_delay, max_delay)
+
     async def human_like_scroll(self, delta_y: float, duration: float = 0.5):
         """模拟人类滚动"""
-        await self.stealth.human_like_scroll(delta_y, duration)
-    
+        self.stealth.human_like_scroll(delta_y, duration)
+
     async def random_delay(self, min_seconds: float = 0.1, max_seconds: float = 0.5):
         """随机延迟"""
-        await self.stealth.random_delay(min_seconds, max_seconds)
-    
+        self.stealth.random_delay(min_seconds, max_seconds)
+
     async def random_human_delay(self):
         """随机人类化延迟"""
-        await self.stealth.random_human_delay()
-    
+        self.stealth.random_human_delay()
+
     def get_random_user_agent(self) -> str:
         """获取随机用户代理"""
         return self.stealth.get_random_user_agent()
-    
+
     async def set_user_agent(self, user_agent: str = None):
         """设置用户代理"""
-        await self.stealth.set_user_agent(user_agent)
+        self.stealth.set_user_agent(user_agent)
     
     # =========================================================================
     # 便捷方法

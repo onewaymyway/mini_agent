@@ -21,6 +21,14 @@ class SPAFramework(Enum):
     VUE = "vue"
     ANGULAR = "angular"
     SVELTE = "svelte"
+    NEXTJS = "nextjs"
+    NUXT = "nuxt"
+    REMIX = "remix"
+    SVELTEKIT = "sveltekit"
+    SOLID = "solid"
+    QWIK = "qwik"
+    ASTRO = "astro"
+    HYDRATED = "hydrated"  # Stencil/Hydrated components
     UNKNOWN = "unknown"
 
 
@@ -81,6 +89,78 @@ class SPADetector:
             "css": ["svelte"],
             "data_attr": [],
         },
+        SPAFramework.NEXTJS: {
+            "js": [
+                "__NEXT_DATA__",
+                "next",
+                "__NEXT_VERSION__",
+            ],
+            "css": [],
+            "data_attr": ["data-next-font-preload"],
+        },
+        SPAFramework.NUXT: {
+            "js": [
+                "__NUXT__",
+                "nuxt",
+                "__NUXT_PRELOAD__",
+            ],
+            "css": [],
+            "data_attr": [],
+        },
+        SPAFramework.REMIX: {
+            "js": [
+                "__remixRouteModules",
+                "__remixRoot",
+                "remix",
+            ],
+            "css": [],
+            "data_attr": ["data-remix-navigate"],
+        },
+        SPAFramework.SVELTEKIT: {
+            "js": [
+                "__sveltekit",
+                "sveltekit",
+                "__sveltekit_env",
+            ],
+            "css": [],
+            "data_attr": [],
+        },
+        SPAFramework.SOLID: {
+            "js": [
+                "__SOLID_CONTEXT__",
+                "solid-js",
+                "createSignal",
+                "createEffect",
+            ],
+            "css": [],
+            "data_attr": [],
+        },
+        SPAFramework.QWIK: {
+            "js": [
+                "__qwikRoots",
+                "qwik",
+                "__qmanifest__",
+            ],
+            "css": [],
+            "data_attr": ["q-component"],
+        },
+        SPAFramework.ASTRO: {
+            "js": [
+                "__astro",
+                "astro",
+            ],
+            "css": [],
+            "data_attr": ["data-astro"],
+        },
+        SPAFramework.HYDRATED: {
+            "js": [
+                "HybridRoot",
+                "Stencil",
+                "customElements",
+            ],
+            "css": [],
+            "data_attr": ["hybrid-root"],
+        },
     }
     
     # 路由变化检测器
@@ -95,6 +175,38 @@ class SPADetector:
         },
         SPAFramework.ANGULAR: {
             "check_js": "window.angular && window.angular.element(document).injector().get('$route')",
+            "check_url": True,
+        },
+        SPAFramework.NEXTJS: {
+            "check_js": "window.__NEXT_DATA__ || document.querySelector('[data-next-route]')",
+            "check_url": True,
+        },
+        SPAFramework.NUXT: {
+            "check_js": "window.__NUXT__ || document.querySelector('[data-nuxt-route]')",
+            "check_url": True,
+        },
+        SPAFramework.REMIX: {
+            "check_js": "window.__remixRouteModules || document.querySelector('[data-remix-route]')",
+            "check_url": True,
+        },
+        SPAFramework.SVELTEKIT: {
+            "check_js": "window.__sveltekit || document.querySelector('[data-sveltekit-route]')",
+            "check_url": True,
+        },
+        SPAFramework.SOLID: {
+            "check_js": "window.__SOLID_CONTEXT__ || typeof createSignal !== 'undefined'",
+            "check_url": True,
+        },
+        SPAFramework.QWIK: {
+            "check_js": "window.__qwikRoots || document.querySelector('[q-component]')",
+            "check_url": True,
+        },
+        SPAFramework.ASTRO: {
+            "check_js": "window.__astro || document.querySelector('[data-astro]')",
+            "check_url": True,
+        },
+        SPAFramework.HYDRATED: {
+            "check_js": "window.HybridRoot || document.querySelector('[hybrid-root]')",
             "check_url": True,
         },
     }
@@ -177,6 +289,10 @@ class SPADetector:
             SPAFramework.VUE: "Vue.version || 'unknown'",
             SPAFramework.ANGULAR: "angular.version.full || 'unknown'",
             SPAFramework.SVELTE: "svelte.version || 'unknown'",
+            SPAFramework.NEXTJS: "typeof process !== 'undefined' && process.env.NEXT_VERSION || 'unknown'",
+            SPAFramework.NUXT: "window.__NUXT__?.nuxtVersion || 'unknown'",
+            SPAFramework.REMIX: "window.__remixVersion || 'unknown'",
+            SPAFramework.SVELTEKIT: "window.__sveltekit?.version || 'unknown'",
         }
         
         script = version_scripts.get(framework)
@@ -195,6 +311,10 @@ class SPADetector:
             SPAFramework.REACT: "window.__reactRouterVersion || 'unknown'",
             SPAFramework.VUE: "window.__vue_router_version || 'unknown'",
             SPAFramework.ANGULAR: "angular.version.full || 'unknown'",
+            SPAFramework.NEXTJS: "window.__NEXT_DATA__?.buildId || 'unknown'",
+            SPAFramework.NUXT: "window.__NUXT__?.router?.base || 'unknown'",
+            SPAFramework.REMIX: "window.__remixRouteModules ? 'remix' : 'unknown'",
+            SPAFramework.SVELTEKIT: "window.__sveltekit?.version || 'unknown'",
         }
         
         script = router_scripts.get(framework)
@@ -247,7 +367,13 @@ class SPADetector:
             # 检查是否有 loading 状态
             loading = await self.session.query_selector(".loading, .skeleton, [class*='loading']")
             
-            return navigating and not loading
+            # 检查是否有活跃的 AJAX/Fetch 请求
+            active_requests = await self.session.eval_js("() => window.__activeRequests || 0")
+            
+            # 检查是否有未完成的 transition
+            has_transition = await self.session.eval_js("() => document.startViewTransition ? document.startViewTransition({}) : false")
+            
+            return navigating and not loading and active_requests == 0
         except Exception:
             return True
     

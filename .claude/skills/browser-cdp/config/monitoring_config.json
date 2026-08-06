@@ -1,0 +1,125 @@
+{
+  "version": "1.0.0",
+  "description": "监控告警系统配置",
+  "targets": {
+    "monitoring_coverage_rate": {
+      "target": 0.9,
+      "description": "监控覆盖率目标 90%"
+    },
+    "alert_response_time": {
+      "target_seconds": 300,
+      "description": "告警响应时间目标 <5 分钟"
+    }
+  },
+  "thresholds": [
+    {
+      "metric_name": "success_rate",
+      "threshold_type": "lt",
+      "threshold_value": 0.76,
+      "severity": "warning",
+      "description": "成功率低于 76%"
+    },
+    {
+      "metric_name": "success_rate",
+      "threshold_type": "lt",
+      "threshold_value": 0.60,
+      "severity": "error",
+      "description": "成功率低于 60%"
+    },
+    {
+      "metric_name": "success_rate",
+      "threshold_type": "lt",
+      "threshold_value": 0.40,
+      "severity": "critical",
+      "description": "成功率低于 40%"
+    },
+    {
+      "metric_name": "error_rate",
+      "threshold_type": "gt",
+      "threshold_value": 0.24,
+      "severity": "warning",
+      "description": "错误率高于 24%"
+    },
+    {
+      "metric_name": "error_rate",
+      "threshold_type": "gt",
+      "threshold_value": 0.40,
+      "severity": "error",
+      "description": "错误率高于 40%"
+    },
+    {
+      "metric_name": "error_rate",
+      "threshold_type": "gt",
+      "threshold_value": 0.60,
+      "severity": "critical",
+      "description": "错误率高于 60%"
+    },
+    {
+      "metric_name": "retry_failure_rate",
+      "threshold_type": "gt",
+      "threshold_value": 0.30,
+      "severity": "warning",
+      "description": "重试失败率高于 30%"
+    },
+    {
+      "metric_name": "retry_failure_rate",
+      "threshold_type": "gt",
+      "threshold_value": 0.50,
+      "severity": "error",
+      "description": "重试失败率高于 50%"
+    },
+    {
+      "metric_name": "alert_response_time",
+      "threshold_type": "gt",
+      "threshold_value": 180,
+      "severity": "warning",
+      "description": "告警响应时间超过 3 分钟"
+    },
+    {
+      "metric_name": "alert_response_time",
+      "threshold_type": "gt",
+      "threshold_value": 300,
+      "severity": "error",
+      "description": "告警响应时间超过 5 分钟"
+    },
+    {
+      "metric_name": "monitoring_coverage_rate",
+      "threshold_type": "lt",
+      "threshold_value": 0.90,
+      "severity": "warning",
+      "description": "监控覆盖率低于 90%"
+    },
+    {
+      "metric_name": "monitoring_coverage_rate",
+      "threshold_type": "lt",
+      "threshold_value": 0.70,
+      "severity": "error",
+      "description": "监控覆盖率低于 70%"
+    }
+  ],
+  "notifications": {
+    "log": {
+      "enabled": true,
+      "level": "WARNING"
+    },
+    "webhook": {
+      "enabled": false,
+      "url": "",
+      "timeout": 10.0
+    },
+    "email": {
+      "enabled": false,
+      "smtp_server": "",
+      "smtp_port": 587,
+      "sender": "",
+      "password": "",
+      "recipients": []
+    }
+  },
+  "scheduling": {
+    "health_check_interval": 30,
+    "alert_evaluation_interval": 60,
+    "metrics_snapshot_interval": 300,
+    "coverage_check_interval": 600
+  }
+}

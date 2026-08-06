@@ -20,7 +20,9 @@ from src.core.utils import add_connection_args, get_session, print_json, scan_in
 
 TEXT_JS = r"""
 (() => {
-  const clone = document.body.cloneNode(true);
+  const body = document.body || document.documentElement;
+  if (!body) return '';
+  const clone = body.cloneNode(true);
   clone.querySelectorAll('script, style, noscript, template').forEach(e => e.remove());
   let text = clone.innerText || clone.textContent || '';
   text = text.replace(/\n{3,}/g, '\n\n').trim();
@@ -67,6 +69,26 @@ def mode_html(session) -> str:
     node_id = root["root"]["nodeId"]
     result = session.send("DOM.getOuterHTML", {"nodeId": node_id})
     return result.get("outerHTML", "")
+
+
+def mode_text(session) -> str:
+    """提取页面纯文本内容"""
+    return session.eval_js(TEXT_JS) or ""
+
+
+def mode_links(session) -> list:
+    """提取页面链接"""
+    return session.eval_js(LINKS_JS) or []
+
+
+def mode_forms(session) -> list:
+    """提取页面表单"""
+    return session.eval_js(FORMS_JS) or []
+
+
+def mode_meta(session) -> dict:
+    """提取页面元数据"""
+    return session.eval_js(META_JS) or {}
 
 
 def main():

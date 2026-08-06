@@ -1,7 +1,7 @@
 ---
 name: browser-cdp
-description: 通过 Chrome DevTools Protocol (CDP) 控制真实 Chrome/Edge 浏览器：打开网页、抓取网页内容（HTML/纯文本/表单/链接）、截图（含编号标注可交互元素）、模拟点击和输入、执行JS、读取console/网络日志，并支持与用户同时操作同一个浏览器（观察/建议/代劳三种协作模式）。增强版支持：智能等待策略（networkidle/route/stable）、自动重试与熔断、无限滚动加载、Shadow DOM/iframe处理、反检测模式。当用户说"帮我打开网页"、"抓取这个网站"、"帮我填一下这个表单"、"看看我浏览器里这个页面"、"截个图分析一下"时使用。
-triggers: 浏览器, 打开网页, 抓取网页, 网页截图, cdp, chrome devtools, 模拟点击, 模拟输入, 网页自动化, 填表单, browser automation, scrape webpage
+description: 通过 Chrome DevTools Protocol (CDP) 控制真实 Chrome/Edge 浏览器：打开网页、抓取网页内容（HTML/纯文本/表单/链接）、截图（含编号标注可交互元素）、模拟点击和输入、执行JS、读取console/网络日志，并支持与用户同时操作同一个浏览器（观察/建议/代劳三种协作模式）。增强版支持：智能等待策略（networkidle/route/stable）、自动重试与熔断、无限滚动加载、Shadow DOM/iframe处理、反检测模式、动态页面支持（元素等待/滚动懒加载/SPA路由监听）。当用户说"帮我打开网页"、"抓取这个网站"、"帮我填一下这个表单"、"看看我浏览器里这个页面"、"截个图分析一下"时使用。
+triggers: 浏览器, 打开网页, 抓取网页, 网页截图, cdp, chrome devtools, 模拟点击, 模拟输入, 网页自动化, 填表单, browser automation, scrape webpage, 动态页面, 无限滚动, 懒加载, SPA, 路由变化
 platforms: windows, macos, linux, pc
 resources:
   - id: python-env-detection
@@ -132,6 +132,26 @@ resources:
     path: references/dianping-search.md
     description: 大众点评搜索自动化脚本（dianping_search.py），支持商户搜索、评价抓取
     triggers: 大众点评搜索, dianping search, dianping_search.py, 商户搜索, 评价抓取
+  - id: 51job-search
+    path: references/51job-search.md
+    description: 前程无忧职位搜索自动化脚本（51job_search.py），支持关键词搜索、职位信息提取
+    triggers: 前程无忧搜索, 51job search, 51job_search.py, 职位搜索, 招聘
+  - id: meituan-search
+    path: references/meituan-search.md
+    description: 美团商户搜索自动化脚本（meituan_search.py），支持商户搜索、评价抓取
+    triggers: 美团搜索, meituan search, meituan_search.py, 商户搜索, 评价抓取
+  - id: beike-search
+    path: references/beike-search.md
+    description: 贝壳找房房源搜索自动化脚本（beike_search.py），支持二手房/租房搜索
+    triggers: 贝壳搜索, beike search, beike_search.py, 房产搜索, 房源抓取
+  - id: reddit-search
+    path: references/reddit-search.md
+    description: Reddit帖子搜索自动化脚本（reddit_search.py），支持帖子搜索、评论提取
+    triggers: Reddit搜索, reddit search, reddit_search.py, 帖子搜索, 评论
+  - id: amazon-search
+    path: references/amazon-search.md
+    description: 亚马逊商品搜索自动化脚本（amazon_search.py），支持多站点搜索、价格提取
+    triggers: 亚马逊搜索, amazon search, amazon_search.py, 商品搜索, 跨境电商
   - id: xiaohongshu-research
     path: references/xiaohongshu-research.md
     description: 小红书技术特征专项调研：x-s/x-s-common 签名机制、设备指纹、Cookie 时效与适配策略
@@ -236,6 +256,9 @@ resources:
 | `core/browser_download.py` | 文件下载管理：下载事件监听、进度监控、断点续传、下载目录配置 |
 | `core/browser_form.py` | 复杂表单自动化：多步骤表单、动态表单、文件上传、表单验证、状态保存/恢复 |
 | `core/browser_tabs.py` | 多标签页管理：标签页列表、切换、批量操作、标签页组管理 |
+| `core/browser_browse.py` | 浏览器浏览统一入口：整合导航/截图/交互/等待策略，提供组合操作能力 |
+| `core/dom_observer.py` | DOM 变化监听：MutationObserver 实现，检测动态内容加载完成 |
+| `core/enhanced_dynamic_loader.py` | 增强版动态加载器：DOM 监听 + 虚拟列表 + 多策略等待 |
 | `searchers/baidu_search.py` / `searchers/bing_search.py` | 搜索引擎自动化，见下方对应子资源 |
 | `searchers/zhihu_search.py` / `searchers/zhihu_hot.py` | 知乎内容/热榜抓取，见下方对应子资源 |
 | `searchers/zhihu_column_search.py` | 知乎专栏文章批量搜索与抓取，见下方对应子资源 |
@@ -585,6 +608,129 @@ python src/core/browser_tabs.py --port 9333 --close-all --keep 1
 ```
 
 支持标签页组管理、批量操作。加载 `browser-tabs` 子资源查看完整文档。
+
+### 浏览器浏览统一入口
+
+使用 `browser_browse.py` 整合导航、截图、交互、等待策略，提供组合操作能力：
+
+```bash
+# 导航到页面并等待网络空闲
+python src/core/browser_browse.py --tab <id> --goto "https://example.com" --wait-for networkidle
+
+# 截图并标注可交互元素
+python src/core/browser_browse.py --tab <id> --screenshot --out shot.png --annotate
+
+# 整页截图
+python src/core/browser_browse.py --tab <id> --screenshot --out shot.png --full-page
+
+# 点击元素
+python src/core/browser_browse.py --tab <id> --click-index 3
+
+# 输入文本
+python src/core/browser_browse.py --tab <id> --type-index 5 --text "hello world"
+
+# 等待元素出现
+python src/core/browser_browse.py --tab <id> --wait-selector "#result" --timeout 10
+
+# 组合操作：导航 + 截图 + 标注
+python src/core/browser_browse.py --tab <id> --goto "https://example.com" --screenshot --annotate --out shot.png
+
+# 查询页面状态
+python src/core/browser_browse.py --tab <id> --state
+
+# 扫描可交互元素
+python src/core/browser_browse.py --tab <id> --elements
+```
+
+**支持的参数：**
+
+| 参数 | 说明 |
+|------|------|
+| `--goto URL` | 导航到指定 URL |
+| `--back` | 后退 |
+| `--forward` | 前进 |
+| `--reload` | 刷新页面 |
+| `--screenshot --out PATH` | 截图保存到指定路径 |
+| `--full-page` | 整页截图 |
+| `--annotate` | 标注可交互元素编号 |
+| `--element-index N` | 只截取指定编号元素 |
+| `--region NAV|MAIN|SIDEBAR|CONTENT|FOOTER` | 智能区域截图 |
+| `--click-index N` | 点击指定编号元素 |
+| `--click-xy X Y` | 点击坐标 |
+| `--click-selector CSS` | 点击选择器 |
+| `--smart-click TEXT` | 根据文本智能点击 |
+| `--type-index N --text TEXT` | 向元素输入文本 |
+| `--type-selector CSS --text TEXT` | 向选择器输入文本 |
+| `--scroll-to-index N` | 滚动到元素 |
+| `--scroll-by DX DY` | 滚动偏移 |
+| `--scroll-to-top` | 滚动到顶部 |
+| `--scroll-to-bottom` | 滚动到底部 |
+| `--wait-selector CSS` | 等待元素出现 |
+| `--wait-for STRATEGY` | 智能等待策略 |
+| `--state` | 查询页面状态 |
+| `--elements` | 扫描可交互元素 |
+
+### 错误处理与重试机制
+
+`browser_browse.py` 内置了完整的错误处理和自动重试机制：
+
+**错误类型分类：**
+
+| 错误类型 | 说明 | 触发条件 |
+|---------|------|---------|
+| `timeout` | 超时错误 | 等待超时、导航超时 |
+| `connection_lost` | 连接丢失 | CDP 连接断开 |
+| `element_not_found` | 元素未找到 | 选择器匹配失败 |
+| `navigation_failed` | 导航失败 | URL 加载失败 |
+| `screenshot_failed` | 截图失败 | 截图操作异常 |
+| `page_crashed` | 页面崩溃 | Chrome 页面崩溃 |
+| `unknown` | 未知错误 | 其他异常 |
+
+**重试配置：**
+
+```bash
+# 默认重试 3 次，基础延迟 1 秒
+python src/core/browser_browse.py --tab <id> --goto "https://example.com"
+
+# 自定义重试次数和延迟
+python src/core/browser_browse.py --tab <id> --goto "https://example.com" --max-retries 5 --retry-delay 2.0
+```
+
+**重试策略：**
+- 指数退避：`delay = base_delay * 2^(attempt-1)`
+- 最大延迟限制：防止等待时间过长
+- 熔断器：连续失败后暂停，避免雪崩效应
+
+**输出格式：**
+
+成功时输出 JSON：
+```json
+{
+  "success": true,
+  "operation": "screenshot",
+  "elapsed": 1.23,
+  "data": {
+    "screenshot": "shot.png",
+    "element_count": 15
+  }
+}
+```
+
+失败时输出错误信息：
+```json
+{
+  "success": false,
+  "operation": "click",
+  "elapsed": 0.5,
+  "error": {
+    "error_type": "element_not_found",
+    "message": "未找到编号为 5 的元素",
+    "operation": "click",
+    "attempt": 3,
+    "max_attempts": 3
+  }
+}
+```
 
 ## 安全与边界
 
@@ -985,4 +1131,724 @@ python -m pytest tests/ -v
 | 搜索结果重复 | 去重策略未启用 | 启用 `dedup_by_title` 或 `dedup_by_url` 去重 |
 | 批量搜索失败 | 关键词过多 | 分批搜索，每批不超过 10 个关键词 |
 | 结果保存失败 | 路径不存在 | 创建输出目录或使用绝对路径 |
+
+### 新增搜索器（2026-08）
+
+| 搜索器 | 目标网站 | 领域 | 优先级 | 反爬强度 |
+|--------|---------|------|--------|----------|
+| `GovServiceSearcher` | https://www.gjzwfw.gov.cn | 政府服务 | P0 | 弱 |
+| `StatsSearcher` | https://www.stats.gov.cn | 政府统计 | P0 | 弱 |
+| `LegalSearcher` | https://www.12348.gov.cn | 法律服务 | P1 | 弱 |
+| `MedicalSearcher` | https://www.health.gov.cn | 医疗健康 | P1 | 中 |
+| `SportsSearcher` | https://www.sport.gov.cn | 体育资讯 | P2 | 弱 |
+| `FoodSearcher` | https://www.meishi.com | 美食平台 | P2 | 中 |
+
+**使用示例**：
+
+```python
+from src.searchers import StatsSearcher, LegalSearcher, MedicalSearcher
+
+# 统计局数据搜索
+stats = StatsSearcher()
+results = stats.search("GDP 2024")
+
+# 法律条文搜索
+legal = LegalSearcher()
+results = legal.search("民法典")
+
+# 医疗健康搜索
+medical = MedicalSearcher()
+results = medical.search("感冒症状")
+```
+
+**新领域覆盖**：政府服务、法律、医疗健康、体育、美食
+
+**技术特点**：
+- 政府类网站反爬弱，无需 stealth 模式
+- 法律/医疗网站结构规范，提取成功率高
+- 体育/美食网站需处理动态加载内容
+
+## 动态页面支持（v0.9.6）
+
+本 skill 新增动态页面支持模块 `src/core/dynamic_page_support.py`，整合以下核心能力：
+
+### 1. 元素加载等待
+
+```bash
+# 等待元素出现（自适应策略）
+python src/core/browser_browse.py --tab <id> --wait-selector "#result" --timeout 10
+
+# 等待页面完全就绪（网络空闲 + 元素 + 内容稳定）
+python src/core/browser_browse.py --tab <id> --wait-page-ready --wait-page-selector ".content"
+```
+
+Python API：
+```python
+from src.core.dynamic_page_support import DynamicPageSupport
+
+support = DynamicPageSupport(session)
+
+# 等待单个元素
+await support.wait_for_element("#result", timeout=10)
+
+# 等待多个元素
+results = await support.wait_for_elements([".item1", ".item2"], all_required=False)
+
+# 等待页面完全就绪
+await support.wait_for_page_ready(selector=".main-content", timeout=30)
+```
+
+### 2. 滚动触发懒加载
+
+```bash
+# 滚动加载内容（无限滚动）
+python src/core/browser_browse.py --tab <id> --scroll-load --scroll-item-selector ".item" --scroll-max-pages 10
+
+# 等待懒加载图片完成
+python src/core/browser_browse.py --tab <id> --wait-lazy --wait-lazy-selector "img[data-src]"
+```
+
+Python API：
+```python
+from src.core.dynamic_page_support import DynamicPageSupport
+
+support = DynamicPageSupport(session)
+
+# 智能滚动加载
+result = await support.scroll_to_load(
+    item_selector=".product-item",
+    max_pages=10,
+    max_items=100,
+)
+print(f"加载了 {result.pages_loaded} 页，{result.items_found} 项")
+
+# 加载虚拟列表
+items = await support.load_virtual_list(
+    item_selector=".list-item",
+    max_items=200,
+)
+
+# 等待懒加载图片
+loaded = await support.wait_for_lazy_images(
+    selector="img[data-src]",
+    timeout=10,
+)
+print(f"已加载 {loaded} 张图片")
+
+# 滚动并收集内容
+items = await support.scroll_and_collect(
+    item_selector=".post",
+    max_items=100,
+    max_pages=10,
+)
+```
+
+### 3. SPA 路由变化监听
+
+```bash
+# 等待 SPA 路由稳定
+python src/core/browser_browse.py --tab <id> --wait-spa-route --wait-spa-url "/search"
+```
+
+Python API：
+```python
+from src.core.dynamic_page_support import DynamicPageSupport
+
+support = DynamicPageSupport(session)
+
+# 检测 SPA 框架
+spa_info = await support.detect_spa()
+print(f"框架: {spa_info.framework.value}, 版本: {spa_info.version}")
+
+# 等待路由稳定
+await support.wait_for_spa_route(timeout=15, expected_url="/search")
+```
+
+### 4. DOM 变化监听
+
+```python
+from src.core.dynamic_page_support import DynamicPageSupport
+
+support = DynamicPageSupport(session)
+
+# 等待 DOM 稳定
+await support.wait_for_dom_stable(timeout=30)
+
+# 等待内容变化
+await support.wait_for_content_change(selector=".feed", min_changes=5)
+```
+
+### 5. 使用场景示例
+
+#### 场景 1：抓取社交媒体时间线
+
+```bash
+# 导航并等待页面就绪
+python src/core/browser_browse.py --tab <id> --goto "https://social.example.com" --wait-page-ready
+
+# 滚动加载内容
+python src/core/browser_browse.py --tab <id> --scroll-load --scroll-item-selector ".post" --scroll-max-pages 20
+
+# 等待懒加载图片
+python src/core/browser_browse.py --tab <id> --wait-lazy
+```
+
+#### 场景 2：抓取电商商品列表
+
+```bash
+# 导航到商品列表页
+python src/core/browser_browse.py --tab <id> --goto "https://shop.example.com/products" --stealth
+
+# 等待商品列表加载
+python src/core/browser_browse.py --tab <id> --wait-selector ".product-list" --timeout 15
+
+# 滚动加载所有商品
+python src/core/browser_browse.py --tab <id> --scroll-load --scroll-item-selector ".product-item" --scroll-max-pages 10
+```
+
+#### 场景 3：SPA 应用导航
+
+```bash
+# 导航并等待 SPA 路由稳定
+python src/core/browser_browse.py --tab <id> --goto "https://app.example.com" --detect-spa --smart-wait
+
+# 点击导航链接
+python src/core/browser_browse.py --tab <id> --click-index 3
+
+# 等待新路由稳定
+python src/core/browser_browse.py --tab <id> --wait-spa-route --wait-spa-url "/search"
+```
+
+### 6. 配置参数
+
+| 参数 | 默认值 | 说明 |
+|------|--------|------|
+| `timeout` | 10.0s | 等待超时时间 |
+| `max_pages` | 10 | 最大滚动页数 |
+| `max_items` | 100 | 最大收集项数 |
+| `scroll_distance` | 800px | 每次滚动距离 |
+| `scroll_delay` | 0.8s | 滚动间隔 |
+| `stable_count` | 3 | 内容稳定检测次数 |
+| `idle_timeout` | 0.5s | 网络空闲阈值 |
+
+### 7. 最佳实践
+
+1. **先检测页面类型**：使用 `--detect-spa` 检测是否为 SPA，再选择等待策略
+2. **合理设置超时**：动态页面建议 `--timeout 15-30`，避免过早超时
+3. **限制滚动次数**：使用 `--scroll-max-pages` 防止无限滚动导致内存溢出
+4. **组合使用**：`--wait-page-ready` 可一次性完成网络空闲 + 元素 + 内容稳定检测
+5. **去重收集**：`scroll_and_collect` 自动去重，避免重复收集相同内容
+
+### 8. 高级动态场景等待（v0.9.7）
+
+`DynamicPageSupport` 新增 19 个高级动态场景等待方法，覆盖 AJAX、动画、iframe、WebSocket、Shadow DOM、Cookie 弹窗、骨架屏、字体加载、弹窗关闭、视频加载、Canvas 渲染、WebGL、Intersection Observer、Resize 稳定、Service Worker、PWA 安装、JS 错误收敛、性能稳定等场景：
+
+| 方法 | 说明 |
+|------|------|
+| `wait_for_ajax_complete()` | 等待所有 AJAX 请求完成 |
+| `wait_for_animation_complete()` | 等待 CSS 动画结束 |
+| `wait_for_iframe_loaded()` | 等待 iframe 内容加载 |
+| `wait_for_websocket_ready()` | 等待 WebSocket 连接建立 |
+| `wait_for_shadow_dom()` | 等待 Shadow DOM 渲染完成 |
+| `wait_for_cookie_consent()` | 等待 Cookie 同意弹窗关闭 |
+| `wait_for_loading_spinner()` | 等待加载转圈消失 |
+| `wait_for_skeleton_screen()` | 等待骨架屏消失 |
+| `wait_for_font_loaded()` | 等待自定义字体加载 |
+| `wait_for_popup_closed()` | 等待弹窗关闭 |
+| `wait_for_video_loaded()` | 等待视频加载完成 |
+| `wait_for_canvas_rendered()` | 等待 Canvas 渲染完成 |
+| `wait_for_webgl_ready()` | 等待 WebGL 上下文就绪 |
+| `wait_for_intersection()` | 等待元素进入视口 |
+| `wait_for_resize_stable()` | 等待元素尺寸稳定 |
+| `wait_for_service_worker()` | 等待 Service Worker 注册完成 |
+| `wait_for_pwa_install()` | 等待 PWA 安装提示出现 |
+| `wait_for_js_error_settled()` | 等待 JS 错误收敛 |
+| `wait_for_performance_stable()` | 等待页面性能稳定 |
+
+```python
+from src.core.dynamic_page_support import DynamicPageSupport
+
+support = DynamicPageSupport(session)
+
+# 等待 AJAX 完成
+await support.wait_for_ajax_complete(timeout=10)
+
+# 等待 Cookie 弹窗关闭
+await support.wait_for_cookie_consent(timeout=15)
+
+# 等待 iframe 加载
+await support.wait_for_iframe_loaded(selector="iframe.embed", timeout=10)
+
+# 等待元素进入视口
+await support.wait_for_intersection(selector=".main-content", timeout=10)
+```
+
+## 高级交互操作（v0.9.7）
+
+本 skill 新增交互操作模块 `src/core/browser_interaction.py`，在基础点击/输入之上提供 10 个高级交互方法：
+
+### 1. 拖拽操作
+
+```bash
+# 拖拽元素（通过索引）
+python src/core/browser_interaction.py --tab <id> --drag-from-index 1 --drag-to-index 2
+
+# 拖拽元素（通过选择器）
+python src/core/browser_interaction.py --tab <id> --drag-from-selector ".draggable" --drag-to-selector ".drop-zone"
+```
+
+Python API：
+```python
+from src.core.browser_interaction import BrowserInteraction
+
+interaction = BrowserInteraction(session)
+
+# 拖拽
+result = await interaction.drag_and_drop(
+    source_selector=".draggable",
+    target_selector=".drop-zone",
+)
+
+# 拖拽到坐标
+result = await interaction.drag_and_drop_to(
+    source_selector=".draggable",
+    x=500, y=300,
+)
+```
+
+### 2. 悬停点击
+
+```bash
+# 悬停后点击
+python src/core/browser_interaction.py --tab <id> --hover-and-click --hover-selector ".menu-item" --click-selector ".submenu a"
+```
+
+Python API：
+```python
+# 悬停后点击
+result = await interaction.hover_and_click(
+    hover_selector=".menu-item",
+    click_selector=".submenu a",
+)
+```
+
+### 3. 右键点击
+
+```bash
+python src/core/browser_interaction.py --tab <id> --right-click-selector ".context-menu-target"
+```
+
+### 4. 双击
+
+```bash
+python src/core/browser_interaction.py --tab <id> --double-click-selector ".editable"
+```
+
+### 5. 下拉选择
+
+```bash
+python src/core/browser_interaction.py --tab <id> --select-dropdown --selector "select.country" --value "CN"
+```
+
+Python API：
+```python
+# 通过值选择
+result = await interaction.select_dropdown(
+    selector="select.country",
+    value="CN",
+)
+
+# 通过索引选择
+result = await interaction.select_dropdown_by_index(
+    selector="select.country",
+    index=2,
+)
+```
+
+### 6. 文件上传
+
+```bash
+python src/core/browser_interaction.py --tab <id> --upload-file --selector "input[type='file']" --file "/path/to/file.pdf"
+```
+
+### 7. 滚动到元素
+
+```bash
+python src/core/browser_interaction.py --tab <id> --scroll-to-selector ".bottom-content"
+```
+
+### 8. 填写并提交表单
+
+```bash
+python src/core/browser_interaction.py --tab <id> --fill-and-submit \
+    --fields "name=John,email=john@example.com" \
+    --submit-selector "button[type='submit']"
+```
+
+Python API：
+```python
+result = await interaction.fill_and_submit(
+    fields={"name": "John", "email": "john@example.com"},
+    submit_selector="button[type='submit']",
+)
+```
+
+### 9. 带标注截图
+
+```bash
+# 截图并标注指定元素
+python src/core/browser_interaction.py --tab <id> --screenshot-annotated --selector ".highlight-me" --output ./annotated.png
+```
+
+### 10. 执行 JavaScript
+
+```bash
+# 执行 JS 并返回结果
+python src/core/browser_interaction.py --tab <id> --exec-js "document.title"
+
+# 执行带参数的 JS
+python src/core/browser_interaction.py --tab <id> --exec-js "(x, y) => x + y" --args "1,2"
+```
+
+Python API：
+```python
+# 执行 JS
+result = await interaction.execute_javascript("document.title")
+
+# 执行带参数的 JS
+result = await interaction.execute_javascript(
+    "(x, y) => x + y",
+    args=[1, 2],
+)
+```
+
+### 交互操作参数速查
+
+| 参数 | 说明 |
+|------|------|
+| `--drag-from-index N` | 拖拽源元素索引 |
+| `--drag-to-index N` | 拖拽目标元素索引 |
+| `--drag-from-selector CSS` | 拖拽源选择器 |
+| `--drag-to-selector CSS` | 拖拽目标选择器 |
+| `--hover-and-click` | 悬停后点击 |
+| `--hover-selector CSS` | 悬停目标选择器 |
+| `--click-selector CSS` | 点击选择器 |
+| `--right-click-selector CSS` | 右键点击 |
+| `--double-click-selector CSS` | 双击 |
+| `--select-dropdown` | 下拉选择 |
+| `--selector CSS` | 下拉框选择器 |
+| `--value TEXT` | 选择值 |
+| `--upload-file` | 文件上传 |
+| `--file PATH` | 上传文件路径 |
+| `--scroll-to-selector CSS` | 滚动到元素 |
+| `--fill-and-submit` | 填写并提交 |
+| `--fields KEY=VAL,...` | 表单字段 |
+| `--screenshot-annotated` | 带标注截图 |
+| `--exec-js CODE` | 执行 JS |
+| `--args ARGS` | JS 参数（逗号分隔）|
+
+## 数据质量评估机制（v0.9.8）
+
+本 skill 新增数据质量评估机制，支持定期评估、趋势追踪、自动告警和优化建议生成。
+
+### 核心组件
+
+| 组件 | 文件路径 | 用途 |
+|------|---------|------|
+| `DataQualityEvaluator` | `src/evaluators/data_quality_evaluator.py` | 多维度质量评估（6 维度加权评分） |
+| `DataQualityMonitor` | `src/evaluators/data_quality_evaluator.py` | 趋势追踪、告警管理、报告生成 |
+| `DataQualityTracker` | `scripts/data_quality_tracker.py` | 记录质量数据、生成趋势报告、管理告警 |
+| `OptimizationSuggester` | `scripts/optimization_suggester.py` | 根据质量数据自动生成优化建议 |
+| `QualityDashboard` | `scripts/quality_dashboard.py` | 生成 markdown/html/json 格式质量报告 |
+| `QualityScheduler` | `scripts/quality_scheduler.py` | 定时调度评估任务、管理调度配置 |
+| `run_quality_assessment` | `scripts/run_quality_assessment.py` | 一键集成入口，整合所有模块 |
+
+### 快速开始
+
+```bash
+# 一键运行完整评估（推荐）
+python scripts/run_quality_assessment.py --site baidu
+
+# 记录单个站点的质量数据
+python scripts/data_quality_tracker.py --site baidu --record
+
+# 记录所有站点的质量数据
+python scripts/data_quality_tracker.py --all --record
+
+# 查看趋势报告
+python scripts/data_quality_tracker.py --site baidu --report
+
+# 查看告警
+python scripts/data_quality_tracker.py --alerts
+
+# 生成优化建议
+python scripts/optimization_suggester.py --site baidu
+
+# 生成质量报告（markdown/html/json）
+python scripts/quality_dashboard.py --site baidu --format markdown
+
+# 定时调度评估
+python scripts/quality_scheduler.py --run --site baidu
+python scripts/quality_scheduler.py --status
+```
+
+### 评估维度
+
+| 维度 | 权重 | 说明 | 告警阈值 |
+|------|------|------|----------|
+| 抓取成功率 | 30% | 页面访问成功率 | < 70% |
+| 页面加载性能 | 20% | 平均导航时间 | < 60 分 |
+| 元素定位准确率 | 20% | 搜索结果数量 | < 70% |
+| 反检测能力 | 15% | stealth 模式得分 | < 60 分 |
+| 稳定性 | 10% | 场景成功率 | < 70% |
+| 错误恢复能力 | 5% | 错误处理得分 | < 60 分 |
+
+### 质量数据记录
+
+```python
+from scripts.data_quality_tracker import DataQualityTracker
+
+tracker = DataQualityTracker()
+
+# 记录质量数据
+quality_data = {
+    "overall_score": 85.0,
+    "scraping_success": {"score": 90.0},
+    "performance": {"score": 80.0},
+    "element_accuracy": {"score": 85.0},
+    "anti_detection": {"score": 85.0},
+    "stability": {"score": 85.0},
+    "error_recovery": {"score": 80.0},
+}
+tracker.record_quality("baidu", quality_data)
+
+# 获取趋势
+trend = tracker.get_trend("baidu", "overall_score", days=7)
+
+# 获取摘要
+summary = tracker.get_summary("baidu", days=7)
+
+# 查看告警
+alerts = tracker.get_alerts(hours=24)
+```
+
+### 优化建议生成
+
+```python
+from scripts.optimization_suggester import OptimizationSuggester
+from scripts.data_quality_tracker import DataQualityTracker
+
+tracker = DataQualityTracker()
+suggester = OptimizationSuggester(tracker)
+
+# 生成建议
+suggestions = suggester.generate_suggestions("baidu", days=7)
+
+# 生成报告
+report = suggester.generate_report("baidu", days=7)
+print(report)
+```
+
+### 调度器使用
+
+```python
+from scripts.evaluation_scheduler import EvaluationScheduler
+
+scheduler = EvaluationScheduler()
+
+# 运行单个站点评估
+result = scheduler.run_evaluation("baidu", stealth=True)
+
+# 运行所有站点评估
+results = scheduler.run_all(stealth=False)
+
+# 查看状态
+status = scheduler.get_status()
+print(f"上次运行: {status['last_run']}")
+print(f"平均得分: {status['avg_score']:.1f}")
+
+# 设置调度
+scheduler.set_schedule("0 2 * * *", ["baidu", "bing", "zhihu"])
+```
+
+### 数据持久化
+
+质量数据存储在 `.agent/` 目录下：
+
+| 文件 | 内容 |
+|------|------|
+| `.agent/quality_history.json` | 历史质量记录 |
+| `.agent/quality_alerts.json` | 告警记录 |
+| `.agent/scheduler_config.json` | 调度配置 |
+
+### 最佳实践
+
+1. **定期评估**：建议每天运行一次评估，记录质量数据
+2. **趋势监控**：关注 7 天趋势，及时发现性能下降
+3. **告警响应**：收到告警后立即检查，必要时调整策略
+4. **优化迭代**：根据建议调整配置，下次评估验证效果
+5. **批量评估**：使用 `--all` 参数批量评估所有站点
+
+### 与评估框架集成
+
+数据质量追踪器可与现有评估框架集成：
+
+```python
+from scripts.run_evaluation import EvaluationRunner
+from scripts.data_quality_tracker import DataQualityTracker
+
+# 运行评估
+runner = EvaluationRunner(output_dir="./output/evaluations")
+result = runner.run_website(website_config)
+
+# 记录质量数据
+tracker = DataQualityTracker()
+tracker.record_quality(
+    result["name"],
+    result.get("report", {}).get("dimensions", {})
+)
+```
+
+### 新模块：DataQualityEvaluator（v0.9.8）
+
+新增多维度质量评估器，支持 6 个维度加权评分：
+
+```python
+from src.evaluators.data_quality_evaluator import DataQualityEvaluator, DataQualityMonitor
+
+# 创建评估器
+evaluator = DataQualityEvaluator()
+
+# 评估单个站点
+result = evaluator.evaluate(
+    site_name="baidu",
+    scraping_success=90.0,
+    performance=80.0,
+    element_accuracy=85.0,
+    anti_detection=85.0,
+    stability=85.0,
+    error_recovery=80.0,
+)
+print(f"综合得分: {result['overall_score']:.1f}")
+
+# 创建监控器
+monitor = DataQualityMonitor()
+
+# 记录质量数据
+monitor.record_quality("baidu", result)
+
+# 生成报告
+report = monitor.generate_report("baidu", days=7)
+print(report)
+
+# 检查告警
+alerts = monitor.check_alerts("baidu")
+for alert in alerts:
+    print(f"[{alert['level']}] {alert['message']}")
+```
+
+### 新模块：QualityDashboard（v0.9.8）
+
+支持生成 markdown/html/json 三种格式的质量报告：
+
+```bash
+# 生成 markdown 报告
+python scripts/quality_dashboard.py --site baidu --format markdown
+
+# 生成 html 报告（含图表）
+python scripts/quality_dashboard.py --site baidu --format html --output ./report.html
+
+# 生成 json 报告
+python scripts/quality_dashboard.py --site baidu --format json --output ./report.json
+
+# 批量生成所有站点报告
+python scripts/quality_dashboard.py --all --format markdown
+```
+
+### 新模块：QualityScheduler（v0.9.8）
+
+定时调度评估任务：
+
+```bash
+# 立即运行评估
+python scripts/quality_scheduler.py --run --site baidu
+
+# 设置定时调度（每天凌晨 2 点）
+python scripts/quality_scheduler.py --schedule "0 2 * * *" --sites baidu,bing,zhihu
+
+# 查看调度状态
+python scripts/quality_scheduler.py --status
+
+# 停止调度
+python scripts/quality_scheduler.py --stop
+```
+
+### 一键集成脚本（v0.9.8）
+
+`run_quality_assessment.py` 整合所有模块，支持一键运行完整评估流程：
+
+```bash
+# 评估单个站点
+python scripts/run_quality_assessment.py --site baidu
+
+# 评估所有站点
+python scripts/run_quality_assessment.py --all
+
+# 指定输出目录
+python scripts/run_quality_assessment.py --site baidu --output-dir ./reports
+
+# 生成报告并保存
+python scripts/run_quality_assessment.py --site baidu --generate-report --format html
+```
+
+## 新增模块说明（v0.9.9）
+
+### 动态页面支持模块
+
+`src/core/dynamic_page_support.py` 提供完整的动态页面处理能力，包括：
+
+| 功能 | 方法 | 说明 |
+|------|------|------|
+| 元素等待 | `wait_for_element()` | 等待元素出现，支持自适应策略 |
+| 多元素等待 | `wait_for_elements()` | 等待多个元素，支持必需/可选模式 |
+| 滚动加载 | `scroll_to_load()` | 智能滚动加载内容 |
+| 虚拟列表 | `load_virtual_list()` | 加载虚拟列表数据 |
+| SPA检测 | `detect_spa()` | 检测SPA框架（React/Vue/Angular/Next.js/Nuxt/Remix/SvelteKit） |
+| SPA路由等待 | `wait_for_spa_route()` | 等待SPA路由稳定 |
+| 懒加载图片 | `wait_for_lazy_images()` | 等待懒加载图片完成 |
+| DOM稳定 | `wait_for_dom_stable()` | 等待DOM变化稳定 |
+| 页面就绪 | `wait_for_page_ready()` | 组合等待（网络+元素+内容） |
+| 滚动收集 | `scroll_and_collect()` | 滚动并收集去重内容 |
+
+**SPA框架支持**：
+- React、Vue、Angular、Svelte（基础框架）
+- Next.js、Nuxt、Remix、SvelteKit（SSR框架）
+
+### 交互操作模块
+
+`src/core/browser_interaction.py` 提供高级交互操作：
+
+| 功能 | 方法 | 说明 |
+|------|------|------|
+| 拖拽 | `drag_and_drop()` | 拖拽元素到目标 |
+| 悬停点击 | `hover_and_click()` | 悬停后点击 |
+| 右键点击 | `right_click()` | 右键点击元素 |
+| 双击 | `double_click()` | 双击元素 |
+| 下拉选择 | `select_dropdown()` | 选择下拉框选项 |
+| 文件上传 | `upload_file()` | 触发文件上传 |
+| 滚动到元素 | `scroll_to_element()` | 滚动到指定元素 |
+| 填写提交 | `fill_and_submit()` | 填写表单并提交 |
+| 截图标注 | `take_screenshot_with_annotation()` | 截图并标注元素 |
+| 执行JS | `execute_javascript()` | 执行JavaScript代码 |
+
+### 测试覆盖
+
+| 测试文件 | 测试数 | 状态 |
+|---------|--------|------|
+| `test_dynamic_page_support.py` | 36 | ✅ 全部通过 |
+| `test_browser_interaction_new.py` | 13 | ✅ 全部通过 |
+| `test_browser_browse.py` | 46 | ✅ 全部通过 |
+| `test_browser_interaction.py` | 9 | ✅ 全部通过 |
+
+**完整测试套件**：922 passed, 7 failed（7个为预存问题）
 

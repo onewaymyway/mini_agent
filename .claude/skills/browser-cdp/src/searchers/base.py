@@ -3,6 +3,7 @@
 base.py - 搜索器抽象基类
 
 定义统一的搜索器接口，所有搜索器实现此基类。
+集成可靠性保障层：统一重试、错误分类、智能等待。
 """
 
 from abc import ABC, abstractmethod
@@ -11,6 +12,24 @@ from typing import List, Dict, Optional, Any
 from datetime import datetime
 import json
 from pathlib import Path
+
+# 集成可靠性保障层
+from src.reliability import (
+    SearcherConfig as ReliabilitySearcherConfig,
+    SearcherMixin,
+    SearcherErrorProcessor,
+    run_cmd_with_retry,
+    run_cmd_with_retry_sync,
+    is_retryable,
+    categorize_error,
+)
+from src.reliability.error import (
+    ErrorCategory,
+    ReliabilityError,
+    CDPConnectionLostError,
+    ElementNotFoundError,
+    NavigationTimeoutError,
+)
 
 
 @dataclass
@@ -68,9 +87,9 @@ class SearcherConfig:
 @dataclass
 class SearchResult:
     """搜索结果统一格式（单条记录）"""
-    source: str                    # 数据源标识
-    title: str                     # 标题
-    url: str                       # 原始链接
+    source: str = ""               # 数据源标识
+    title: str = ""                # 标题
+    url: str = ""                  # 原始链接
     snippet: str = ""              # 摘要/片段
     published_time: Optional[str] = None
     author: Optional[str] = None
@@ -141,15 +160,34 @@ class SearchResults:
         return original_count - len(self.results)
 
 
-class BaseSearcher(ABC):
-    """搜索器抽象基类"""
+class BaseSearcher(ABC, SearcherMixin):
+    """搜索器抽象基类（集成可靠性保障）"""
     
     def __init__(self, config: Optional[SearcherConfig] = None):
+        # 先初始化可靠性层
+        SearcherMixin.__init__(self)
         self._config = config or SearcherConfig()
+        self._error_processor = SearcherErrorProcessor(self.__class__.__name__)
     
     @property
     def config(self) -> SearcherConfig:
         return self._config
+    
+    @property
+    def error_processor(self) -> SearcherErrorProcessor:
+        return self._error_processor
+    
+    def process_error(self, error: Exception, context: Optional[Dict] = None) -> Dict[str, Any]:
+        """处理错误并记录"""
+        return self._error_processor.process_error(error, context)
+    
+    def should_retry(self, error: Exception) -> bool:
+        """判断是否应该重试"""
+        return is_retryable(error)
+    
+    def get_error_summary(self) -> Dict[str, Any]:
+        """获取错误统计"""
+        return self._error_processor.get_error_summary()
     
     @property
     @abstractmethod

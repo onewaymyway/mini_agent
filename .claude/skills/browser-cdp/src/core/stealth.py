@@ -34,7 +34,30 @@ class StealthConfig:
     enable_fingerprint_mock: bool = True  # 新增：设备指纹模拟
     humanize_mouse: bool = True
     humanize_typing: bool = True
-    random_delay_range: tuple = (0.1, 0.5)  # 随机延迟范围
+    random_delay_range: tuple = (0.5, 2.0)  # 随机延迟范围（增加到人类化水平）
+
+
+class RequestIntervalController:
+    """请求间隔控制器，模拟人类浏览节奏"""
+    
+    def __init__(self, min_interval: float = 1.0, max_interval: float = 3.0):
+        self.min_interval = min_interval
+        self.max_interval = max_interval
+        self.last_request_time = 0
+    
+    async def wait_if_needed(self):
+        """等待必要的时间间隔"""
+        now = time.time()
+        elapsed = now - self.last_request_time
+        
+        if elapsed < self.min_interval:
+            delay = random.uniform(
+                self.min_interval - elapsed,
+                self.max_interval - elapsed
+            )
+            await asyncio.sleep(delay)
+        
+        self.last_request_time = time.time()
 
 
 class StealthMode:
@@ -48,6 +71,7 @@ class StealthMode:
         self.session = session
         self.config = config or StealthConfig()
         self._applied = False
+        self.interval_controller = RequestIntervalController()
     
     async def apply(self) -> bool:
         """
@@ -156,12 +180,18 @@ class StealthMode:
     async def _mock_platform(self):
         """模拟真实平台信息"""
         js = """
-        Object.defineProperty(navigator, 'platform', {
-            get: () => 'Win32'
-        });
-        Object.defineProperty(navigator, 'oscpu', {
-            get: () => 'Windows NT 10.0; Win64; x64'
-        });
+        try {
+            Object.defineProperty(navigator, 'platform', {
+                get: () => 'Win32',
+                configurable: true
+            });
+        } catch(e) {}
+        try {
+            Object.defineProperty(navigator, 'oscpu', {
+                get: () => 'Windows NT 10.0; Win64; x64',
+                configurable: true
+            });
+        } catch(e) {}
         """
         await self.session.eval_js(js)
         logger.debug("已模拟平台信息")
@@ -204,8 +234,14 @@ class StealthMode:
         """模拟设备指纹（Canvas/WebGL/内存/硬件并发）"""
         js = """
         // Canvas 指纹随机化
-        const originalCanvasToBlob = HTMLCanvasElement.prototype.toBlob;
         const originalCanvasToDataURL = HTMLCanvasElement.prototype.toDataURL;
+        HTMLCanvasElement.prototype.toDataURL = function(type, ...args) {
+            if (type === 'image/png') {
+                // 返回随机噪声图像
+                return 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==';
+            }
+            return originalCanvasToDataURL.call(this, type, ...args);
+        };
 
         // WebGL 指纹随机化
         const originalGetParameter = WebGLRenderingContext.prototype.getParameter;
@@ -226,53 +262,71 @@ class StealthMode:
         });
 
         // 平台信息
-        Object.defineProperty(navigator, 'platform', {
-            get: () => 'Win32'
-        });
+        try {
+            Object.defineProperty(navigator, 'platform', {
+                get: () => 'Win32',
+                configurable: true
+            });
+        } catch(e) {}
 
         // 连接类型
-        Object.defineProperty(navigator, 'connection', {
-            get: () => ({
-                effectiveType: '4g',
-                rtt: 50,
-                downlink: 10,
-                saveData: false
-            })
-        });
+        try {
+            Object.defineProperty(navigator, 'connection', {
+                get: () => ({
+                    effectiveType: '4g',
+                    rtt: 50,
+                    downlink: 10,
+                    saveData: false
+                }),
+                configurable: true
+            });
+        } catch(e) {}
+
+        // WebRTC 泄漏防护
+        try {
+            const mockRTCPeerConnection = window.RTCPeerConnection;
+            window.RTCPeerConnection = function(...args) {
+                const pc = new mockRTCPeerConnection(...args);
+                const originalCreateOffer = pc.createOffer;
+                const originalCreateAnswer = pc.createAnswer;
+                pc.createOffer = function(...args) {
+                    return originalCreateOffer.apply(pc, args).then(offer => {
+                        offer.sdp = offer.sdp.replace(/(c=IN IP4 )\d+\.\d+\.\d+\.\d+/g, '$1127.0.0.1');
+                        offer.sdp = offer.sdp.replace(/candidate:(.*?)\s+typ\s+host/g, 'candidate:1 1 UDP 2122252543 127.0.0.1 9 typ host');
+                        return offer;
+                    });
+                };
+                pc.createAnswer = function(...args) {
+                    return originalCreateAnswer.apply(pc, args).then(answer => {
+                        answer.sdp = answer.sdp.replace(/(c=IN IP4 )\d+\.\d+\.\d+\.\d+/g, '$1127.0.0.1');
+                        answer.sdp = answer.sdp.replace(/candidate:(.*?)\s+typ\s+host/g, 'candidate:1 1 UDP 2122252543 127.0.0.1 9 typ host');
+                        return answer;
+                    });
+                };
+                pc.addIceCandidate = function(...args) { return Promise.resolve(); };
+                return pc;
+            };
+            window.RTCPeerConnection.prototype = mockRTCPeerConnection.prototype;
+        } catch(e) {}
         """
         await self.session.eval_js(js)
-        logger.debug("已模拟设备指纹")
+        logger.debug("已模拟设备指纹（含 WebRTC 防护 + Canvas 伪装）")
     
     # =========================================================================
     # 人类行为模拟
     # =========================================================================
     
-    async def human_like_click(
-        self,
-        x: float,
-        y: float,
-        duration: float = 0.3,
-        steps: int = 20
-    ):
-        """
-        模拟人类点击（带随机移动轨迹）
-        
-        Args:
-            x: 目标 X 坐标
-            y: 目标 Y 坐标
-            duration: 移动持续时间（秒）
-            steps: 移动步数
-        """
+    async def human_like_click(self, x: float, y: float, duration: float = 0.3):
+        """模拟人类点击行为"""
         if not self.config.humanize_mouse:
-            # 直接点击
-            await self.session.send("Input.dispatchMouseEvent", {
+            self.session.send("Input.dispatchMouseEvent", {
                 "type": "mousePressed",
                 "x": x,
                 "y": y,
                 "button": "left",
                 "clickCount": 1
             })
-            await self.session.send("Input.dispatchMouseEvent", {
+            self.session.send("Input.dispatchMouseEvent", {
                 "type": "mouseReleased",
                 "x": x,
                 "y": y,
@@ -281,30 +335,23 @@ class StealthMode:
             })
             return
         
-        # 从随机起点开始
-        start_x = x + random.uniform(-50, 50)
-        start_y = y + random.uniform(-50, 50)
-        
-        # 贝塞尔曲线插值
-        for i in range(steps + 1):
+        # 模拟鼠标移动轨迹
+        steps = int(duration * 20)
+        for i in range(steps):
             t = i / steps
-            # 添加随机扰动
-            jitter_x = random.gauss(0, 3) * (1 - abs(2*t - 1))
-            jitter_y = random.gauss(0, 3) * (1 - abs(2*t - 1))
-            
-            current_x = start_x + (x - start_x) * t + jitter_x
-            current_y = start_y + (y - start_y) * t + jitter_y
-            
-            await self.session.send("Input.dispatchMouseEvent", {
+            jitter_x = random.uniform(-2, 2)
+            jitter_y = random.uniform(-2, 2)
+            current_x = x * t + jitter_x
+            current_y = y * t + jitter_y
+            self.session.send("Input.dispatchMouseEvent", {
                 "type": "mouseMoved",
                 "x": current_x,
                 "y": current_y
             })
-            
             await asyncio.sleep(duration / steps)
         
         # 点击
-        await self.session.send("Input.dispatchMouseEvent", {
+        self.session.send("Input.dispatchMouseEvent", {
             "type": "mousePressed",
             "x": x,
             "y": y,
@@ -312,100 +359,65 @@ class StealthMode:
             "clickCount": 1
         })
         await asyncio.sleep(random.uniform(0.05, 0.1))
-        await self.session.send("Input.dispatchMouseEvent", {
+        self.session.send("Input.dispatchMouseEvent", {
             "type": "mouseReleased",
             "x": x,
             "y": y,
             "button": "left",
             "clickCount": 1
         })
-        
-        logger.debug(f"人类化点击: ({x}, {y})")
     
-    async def human_like_type(
-        self,
-        text: str,
-        min_delay: float = 0.05,
-        max_delay: float = 0.15
-    ):
-        """
-        模拟人类打字（随机延迟）
-        
-        Args:
-            text: 要输入的文本
-            min_delay: 最小延迟（秒）
-            max_delay: 最大延迟（秒）
-        """
+    async def human_like_type(self, text: str, delay: float = 0.05):
+        """模拟人类打字行为"""
         if not self.config.humanize_typing:
-            # 直接输入
             for ch in text:
-                await self.session.send("Input.dispatchKeyEvent", {
+                self.session.send("Input.dispatchKeyEvent", {
                     "type": "keyDown",
                     "key": ch,
                     "text": ch
                 })
-                await self.session.send("Input.dispatchKeyEvent", {
+                self.session.send("Input.dispatchKeyEvent", {
                     "type": "char",
                     "text": ch,
                     "unmodifiedText": ch,
                     "key": ch
                 })
-                await self.session.send("Input.dispatchKeyEvent", {
+                self.session.send("Input.dispatchKeyEvent", {
                     "type": "keyUp",
                     "key": ch
                 })
             return
         
         for ch in text:
-            # 随机延迟（模拟人类打字节奏）
-            delay = random.uniform(min_delay, max_delay)
-            
-            # 偶尔添加停顿（模拟思考）
             if random.random() < 0.1:
                 delay *= random.uniform(2, 5)
             
-            await self.session.send("Input.dispatchKeyEvent", {
+            self.session.send("Input.dispatchKeyEvent", {
                 "type": "keyDown",
                 "key": ch,
                 "text": ch
             })
             await asyncio.sleep(delay * 0.7)
-            await self.session.send("Input.dispatchKeyEvent", {
+            self.session.send("Input.dispatchKeyEvent", {
                 "type": "char",
                 "text": ch,
                 "unmodifiedText": ch,
                 "key": ch
             })
             await asyncio.sleep(delay * 0.3)
-            await self.session.send("Input.dispatchKeyEvent", {
+            self.session.send("Input.dispatchKeyEvent", {
                 "type": "keyUp",
                 "key": ch
             })
-        
-        logger.debug(f"人类化输入: {text[:50]}...")
     
-    async def human_like_scroll(
-        self,
-        delta_y: float,
-        duration: float = 0.5,
-        steps: int = 10
-    ):
-        """
-        模拟人类滚动（平滑曲线）
-        
-        Args:
-            delta_y: 滚动距离
-            duration: 滚动持续时间
-            steps: 滚动步数
-        """
-        for i in range(steps + 1):
+    async def human_like_scroll(self, delta_y: int, duration: float = 1.0):
+        """模拟人类滚动行为"""
+        steps = int(duration * 20)
+        for i in range(steps):
             t = i / steps
-            # 缓动函数（ease-in-out）
-            ease_t = 2 * t * t if t < 0.5 else 1 - pow(-2 * t + 2, 2) / 2
+            current_delta = delta_y * ease_out_quad(t)
             
-            current_delta = delta_y * ease_t
-            
-            await self.session.send("Input.dispatchMouseEvent", {
+            self.session.send("Input.dispatchMouseEvent", {
                 "type": "mouseWheel",
                 "x": 400,
                 "y": 300,
@@ -417,19 +429,13 @@ class StealthMode:
         
         logger.debug(f"人类化滚动: {delta_y}px")
     
-    async def random_delay(self, min_seconds: float = None, max_seconds: float = None):
-        """
-        随机延迟（模拟人类思考时间）
-        
-        Args:
-            min_seconds: 最小延迟
-            max_seconds: 最大延迟
-        """
-        min_sec = min_seconds or self.config.random_delay_range[0]
-        max_sec = max_seconds or self.config.random_delay_range[1]
+    async def random_delay(self, min_delay: float = None, max_delay: float = None):
+        """随机延迟（异步非阻塞）"""
+        min_sec = min_delay or self.config.random_delay_range[0]
+        max_sec = max_delay or self.config.random_delay_range[1]
         
         delay = random.uniform(min_sec, max_sec)
-        await asyncio.sleep(delay)
+        await asyncio.sleep(delay)  # ✅ 异步非阻塞
         
         logger.debug(f"随机延迟: {delay:.2f}s")
     
@@ -440,71 +446,55 @@ class StealthMode:
         logger.debug(f"人类化延迟: {delay:.2f}s")
     
     # =========================================================================
-    # 请求间隔控制
+    # 装饰器
     # =========================================================================
     
-    async def throttled_request(
-        self,
-        func,
-        *args,
-        min_delay: float = 0.5,
-        max_delay: float = 2.0,
-        **kwargs
-    ):
-        """
-        带随机间隔的请求执行
-        
-        Args:
-            func: 要执行的异步函数
-            min_delay: 最小间隔
-            max_delay: 最大间隔
-        """
-        # 执行前延迟
-        await self.random_delay(min_delay, max_delay)
-        
-        # 执行请求
-        result = await func(*args, **kwargs)
-        
-        # 执行后延迟
-        await self.random_delay(min_delay, max_delay)
-        
-        return result
+    def humanized_action(self, func):
+        """人类化操作装饰器"""
+        async def async_wrapper(*args, **kwargs):
+            # 执行前延迟
+            await self.random_delay()
+            
+            # 执行请求
+            result = await func(*args, **kwargs)
+            
+            # 执行后延迟
+            await self.random_delay()
+            
+            return result
+        return async_wrapper
     
-    # =========================================================================
-    # 用户代理轮换
-    # =========================================================================
-    
-    USER_AGENTS = [
-        # Chrome Windows
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36",
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/118.0.0.0 Safari/537.36",
-        # Chrome Mac
-        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-        # Firefox
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:121.0) Gecko/20100101 Firefox/121.0",
-        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:121.0) Gecko/20100101 Firefox/121.0",
-        # Safari
-        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.2 Safari/605.1.15",
-    ]
-    
-    def get_random_user_agent(self) -> str:
-        """获取随机用户代理"""
-        return random.choice(self.USER_AGENTS)
-    
-    async def set_user_agent(self, user_agent: str = None):
-        """
-        设置用户代理
-        
-        Args:
-            user_agent: 用户代理字符串（可选，默认随机）
-        """
-        ua = user_agent or self.get_random_user_agent()
-        
+    async def set_user_agent(self, ua: str):
+        """设置 User-Agent（同步 JS 和 HTTP 头）"""
+        # 1. 设置 JS 层面的 userAgent
         js = f"""
         Object.defineProperty(navigator, 'userAgent', {{
             get: () => '{ua}'
         }});
         """
         await self.session.eval_js(js)
+
+        # 2. 同步更新 CDP 请求头
+        await self.session.set_extra_http_headers({
+            'User-Agent': ua
+        })
+
         logger.debug(f"已设置 User-Agent: {ua[:50]}...")
+
+    def get_random_user_agent(self) -> str:
+        """生成随机 User-Agent"""
+        user_agents = [
+            'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36',
+            'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/118.0.0.0 Safari/537.36',
+            'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.2 Safari/605.1.15',
+            'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:121.0) Gecko/20100101 Firefox/121.0',
+            'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36 Edg/120.0.0.0',
+        ]
+        return random.choice(user_agents)
+
+
+def ease_out_quad(t: float) -> float:
+    """缓动函数：二次EaseOut"""
+    return t * (2 - t)

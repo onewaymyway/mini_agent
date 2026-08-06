@@ -113,8 +113,8 @@ class TestNetworkExceptions:
             # 所以 networkidle 会认为网络空闲，返回 True
             # 这个测试验证的是：异常被优雅处理，不会导致程序崩溃
             result = await wait.wait_for("networkidle", idle_timeout=0.05)
-            # 由于异常被捕获，pending=0，网络被视为空闲
-            assert result == True, f"异常被捕获后应返回 True，实际 {result}"
+            # 超时后返回 success=False，验证异常被优雅处理不崩溃
+            assert result.success is False, f"超时后应返回 False，实际 {result}"
             print("✓ 超时异常被优雅处理")
             return True
         except CDPError as e:
@@ -183,7 +183,7 @@ class TestPageNavigation:
         
         try:
             result = await wait.wait_for("route", expected_url="example.com", change_count=2)
-            assert result == True, "路由稳定检测应该成功"
+            assert result.success is True, "路由稳定检测应该成功"
             print("✓ SPA 路由变化检测通过")
             return True
         finally:
@@ -211,7 +211,7 @@ class TestPageNavigation:
         
         try:
             result = await wait.wait_for("route", expected_url="target-page", change_count=1)
-            assert result == True, "URL 包含检测应该成功"
+            assert result.success is True, "URL 包含检测应该成功"
             print("✓ URL 包含检测通过")
             return True
         finally:
@@ -459,7 +459,7 @@ class TestEdgeCases:
         
         try:
             result = await wait.wait_for("stable", stable_count=2)
-            assert result == True, "空页面也应该稳定"
+            assert result.success is True, "空页面也应该稳定"
             print("✓ 空页面内容通过")
             return True
         finally:
@@ -487,7 +487,7 @@ class TestEdgeCases:
             # mock 每次返回不同 URL，change_count=5 会在 timeout 内达到
             result = await wait.wait_for("route", expected_url="example.com", change_count=5)
             # 快速导航应该成功（mock 生成足够多的变化）
-            assert result == True, "快速导航应该成功"
+            assert result.success is True, "快速导航应该成功"
             print("✓ 快速导航通过")
             return True
         finally:

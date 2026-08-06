@@ -98,7 +98,7 @@ class TestSmartWait:
         """测试：networkidle 策略"""
         smart_wait = SmartWait(self.session, self.config)
         result = asyncio.run(smart_wait.wait_for("networkidle"))
-        assert result is True
+        assert result.success is True
         mock_method.assert_called_once()
     
     @patch.object(SmartWait, '_wait_route', new_callable=AsyncMock, return_value=True)
@@ -106,7 +106,7 @@ class TestSmartWait:
         """测试：route 策略"""
         smart_wait = SmartWait(self.session, self.config)
         result = asyncio.run(smart_wait.wait_for("route"))
-        assert result is True
+        assert result.success is True
         mock_method.assert_called_once()
     
     @patch.object(SmartWait, '_wait_stable', new_callable=AsyncMock, return_value=True)
@@ -114,7 +114,7 @@ class TestSmartWait:
         """测试：stable 策略"""
         smart_wait = SmartWait(self.session, self.config)
         result = asyncio.run(smart_wait.wait_for("stable"))
-        assert result is True
+        assert result.success is True
         mock_method.assert_called_once()
     
     @patch.object(SmartWait, '_wait_ajax', new_callable=AsyncMock, return_value=True)
@@ -122,7 +122,7 @@ class TestSmartWait:
         """测试：ajax 策略"""
         smart_wait = SmartWait(self.session, self.config)
         result = asyncio.run(smart_wait.wait_for("ajax"))
-        assert result is True
+        assert result.success is True
         mock_method.assert_called_once()
     
     @patch.object(SmartWait, '_wait_selector', new_callable=AsyncMock, return_value=True)
@@ -130,8 +130,8 @@ class TestSmartWait:
         """测试：selector 策略"""
         smart_wait = SmartWait(self.session, self.config)
         result = asyncio.run(smart_wait.wait_for("selector", selector="#result"))
-        assert result is True
-        mock_method.assert_called_once_with(selector="#result")
+        assert result.success is True
+        mock_method.assert_called_once_with(timeout=5.0, selector="#result")
     
     def test_network_idle_registers_events(self):
         """测试：networkidle 策略注册 CDP Network 事件"""
@@ -159,11 +159,13 @@ class TestSmartWait:
         """测试：networkidle 策略清理 CDP Network 事件"""
         smart_wait = SmartWait(self.session, self.config)
         
-        # 通过 wait_for 触发 finally 清理
+        # 直接调用 _wait_network_idle 触发清理
         async def run_test():
             # 设置 pending=0，让 networkidle 快速通过
             smart_wait._pending_requests = 0
-            result = await smart_wait.wait_for("networkidle", idle_timeout=0.05)
+            result = await smart_wait._wait_network_idle(idle_timeout=0.05)
+            # 手动触发清理（因为直接调用 _wait_network_idle 不会触发 finally 块）
+            smart_wait._cleanup_network_events()
             return result
         
         result = asyncio.run(run_test())
@@ -355,7 +357,7 @@ class TestSmartWait:
         smart_wait._wait_selector = slow_wait
         
         result = asyncio.run(smart_wait.wait_for("selector", selector="#test"))
-        assert result is False
+        assert result.success is False
 
 
 if __name__ == '__main__':

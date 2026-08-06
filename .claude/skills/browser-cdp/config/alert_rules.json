@@ -1,0 +1,102 @@
+{
+  "version": "1.1.0",
+  "description": "Browser-CDP 可靠性告警规则配置",
+  "rules": [
+    {
+      "rule_id": "retry_failure_rate",
+      "name": "重试失败率过高",
+      "condition": "gt",
+      "threshold": 0.3,
+      "severity": "warning",
+      "description": "重试失败率超过 30%，可能表示目标网站不稳定或网络问题",
+      "cooldown_seconds": 600.0,
+      "enabled": true,
+      "notification": ["log", "webhook"]
+    },
+    {
+      "rule_id": "connection_loss_rate",
+      "name": "连接丢失率过高",
+      "condition": "gt",
+      "threshold": 0.2,
+      "severity": "error",
+      "description": "连接丢失率超过 20%，可能表示浏览器不稳定或网络中断",
+      "cooldown_seconds": 300.0,
+      "enabled": true,
+      "notification": ["log", "webhook", "email"]
+    },
+    {
+      "rule_id": "error_count",
+      "name": "错误数量过多",
+      "condition": "gt",
+      "threshold": 50,
+      "severity": "warning",
+      "description": "错误数量超过 50 次，需要检查系统状态",
+      "cooldown_seconds": 300.0,
+      "enabled": true,
+      "notification": ["log"]
+    },
+    {
+      "rule_id": "circuit_breaker_trips",
+      "name": "熔断器频繁触发",
+      "condition": "gt",
+      "threshold": 5,
+      "severity": "error",
+      "description": "熔断器触发次数超过 5 次，目标网站可能不可用",
+      "cooldown_seconds": 600.0,
+      "enabled": true,
+      "notification": ["log", "webhook"]
+    },
+    {
+      "rule_id": "operation_duration",
+      "name": "操作耗时过长",
+      "condition": "gt",
+      "threshold": 300.0,
+      "severity": "warning",
+      "description": "操作平均耗时超过 5 分钟，可能表示页面加载缓慢",
+      "cooldown_seconds": 300.0,
+      "enabled": true,
+      "notification": ["log"]
+    },
+    {
+      "rule_id": "captcha_detected",
+      "name": "检测到验证码",
+      "condition": "gt",
+      "threshold": 3,
+      "severity": "critical",
+      "description": "检测到验证码次数超过 3 次，可能需要人工干预",
+      "cooldown_seconds": 1800.0,
+      "enabled": true,
+      "notification": ["log", "webhook", "email"]
+    },
+    {
+      "rule_id": "anti_bot_detected",
+      "name": "被反爬机制拦截",
+      "condition": "gt",
+      "threshold": 1,
+      "severity": "critical",
+      "description": "被反爬机制拦截，需要更换代理或调整策略",
+      "cooldown_seconds": 3600.0,
+      "enabled": true,
+      "notification": ["log", "webhook", "email"]
+    }
+  ],
+  "notifications": {
+    "log": {
+      "enabled": true,
+      "level": "WARNING"
+    },
+    "webhook": {
+      "enabled": true,
+      "url": "${WEBHOOK_URL}",
+      "timeout": 10.0
+    },
+    "email": {
+      "enabled": false,
+      "smtp_server": "",
+      "smtp_port": 587,
+      "sender": "",
+      "password": "",
+      "recipients": []
+    }
+  }
+}

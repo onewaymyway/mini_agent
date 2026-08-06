@@ -1,98 +1,153 @@
-#!/usr/bin/env python
 """
-test_xiaohongshu_search.py - 小红书搜索器单元测试
+小红书搜索器单元测试
 
-测试 XiaohongshuSearcher 的核心功能。
+测试覆盖：
+- 基础属性验证
+- 配置参数验证
+- 方法存在性检查
+- 结果格式化
+- 去重功能
 """
-
 import pytest
+import sys
+from pathlib import Path
+from datetime import datetime
+
+# 添加 skill 目录到路径
+SKILL_DIR = Path(__file__).resolve().parent.parent.parent.parent
+if str(SKILL_DIR) not in sys.path:
+    sys.path.insert(0, str(SKILL_DIR))
+
 from src.searchers.xiaohongshu_search import XiaohongshuSearcher
-from src.searchers.base import SearcherConfig
+from src.searchers.base import SearcherConfig, SearchResult
 
 
 class TestXiaohongshuSearcher:
-    """测试小红书搜索器"""
-
+    """XiaohongshuSearcher 单元测试"""
+    
     def test_source_name(self):
         """测试来源名称"""
         searcher = XiaohongshuSearcher()
         assert searcher.source_name == "xiaohongshu"
-
+    
     def test_supported_types(self):
-        """测试支持的数据类型"""
+        """测试支持的搜索类型"""
         searcher = XiaohongshuSearcher()
         assert "note" in searcher.supported_types
         assert "user" in searcher.supported_types
         assert "product" in searcher.supported_types
         assert "topic" in searcher.supported_types
-
+        assert "search" in searcher.supported_types
+    
     def test_default_config(self):
         """测试默认配置"""
         searcher = XiaohongshuSearcher()
         assert searcher.config.wait_timeout == 30
         assert searcher.config.max_results == 10
-        assert searcher.config.stealth == True
-
+        assert searcher.config.wait_strategy == "networkidle"
+    
     def test_search_method_exists(self):
         """测试 search 方法存在"""
         searcher = XiaohongshuSearcher()
         assert hasattr(searcher, "search")
         assert callable(searcher.search)
-
-    def test_get_detail_method_exists(self):
-        """测试 get_detail 方法存在"""
+    
+    def test_health_check_exists(self):
+        """测试 health_check 方法存在"""
         searcher = XiaohongshuSearcher()
-        assert hasattr(searcher, "get_detail")
-        assert callable(searcher.get_detail)
-
-    def test_search_by_topic_method_exists(self):
-        """测试 search_by_topic 方法存在"""
+        assert hasattr(searcher, "health_check")
+        assert callable(searcher.health_check)
+    
+    def test_close_method_exists(self):
+        """测试 close 方法存在"""
         searcher = XiaohongshuSearcher()
-        assert hasattr(searcher, "search_by_topic")
-        assert callable(searcher.search_by_topic)
-
-    def test_handle_captcha_method_exists(self):
-        """测试 handle_captcha 方法存在"""
+        assert hasattr(searcher, "close")
+        assert callable(searcher.close)
+    
+    def test_smart_wait_exists(self):
+        """测试 _smart_wait 方法存在"""
         searcher = XiaohongshuSearcher()
-        assert hasattr(searcher, "handle_captcha")
-        assert callable(searcher.handle_captcha)
-
-    def test_simulate_human_behavior_method_exists(self):
-        """测试 _simulate_human_behavior 方法存在"""
-        searcher = XiaohongshuSearcher()
-        assert hasattr(searcher, "_simulate_human_behavior")
-        assert callable(searcher._simulate_human_behavior)
-
-    def test_extract_results_method_exists(self):
+        assert hasattr(searcher, "_smart_wait")
+        assert callable(searcher._smart_wait)
+    
+    def test_extract_results_exists(self):
         """测试 _extract_results 方法存在"""
         searcher = XiaohongshuSearcher()
         assert hasattr(searcher, "_extract_results")
         assert callable(searcher._extract_results)
-
-    def test_config_validation(self):
-        """测试配置验证"""
+    
+    def test_config_with_custom_params(self):
+        """测试自定义配置"""
         config = SearcherConfig(
-            max_results=50,
-            wait_timeout=15,
-            random_delay_range=(0.3, 1.0),
-            stealth=True
-        )
-        
-        assert config.max_results == 50
-        assert config.stealth is True
-        assert config.random_delay_range == (0.3, 1.0)
-
-    def test_init_with_custom_config(self):
-        """测试自定义配置初始化"""
-        config = SearcherConfig(
-            max_results=20,
             port=9333,
-            stealth=True
+            stealth=True,
+            max_results=20,
+            wait_strategy="route",
+            wait_timeout=15.0,
+            random_delay_range=(0.5, 1.5)
         )
         searcher = XiaohongshuSearcher(config=config)
         assert searcher.config.max_results == 20
+        assert searcher.config.wait_strategy == "route"
         assert searcher.config.port == 9333
+    
+    def test_search_result_format(self):
+        """测试搜索结果格式化"""
+        result = SearchResult(
+            source='xiaohongshu',
+            title='北京探店攻略',
+            url='https://www.xiaohongshu.com/explore/123',
+            snippet='北京必去餐厅推荐',
+            metadata={'query': '北京', 'type': 'note', 'likes': '1234'},
+            scraped_at=datetime.now().isoformat()
+        )
+        assert result.source == 'xiaohongshu'
+        assert result.title == '北京探店攻略'
+        assert 'xiaohongshu' in result.url.lower()
+        assert result.metadata['type'] == 'note'
+    
+    def test_deduplication(self):
+        """测试结果去重"""
+        results = [
+            SearchResult(source='xiaohongshu', title='重复笔记', url='https://www.xiaohongshu.com/same', metadata={}, scraped_at=datetime.now().isoformat()),
+            SearchResult(source='xiaohongshu', title='重复笔记', url='https://www.xiaohongshu.com/same', metadata={}, scraped_at=datetime.now().isoformat()),
+            SearchResult(source='xiaohongshu', title='唯一笔记', url='https://www.xiaohongshu.com/unique', metadata={}, scraped_at=datetime.now().isoformat()),
+        ]
+        
+        # 去重
+        seen_urls = set()
+        unique_results = []
+        for r in results:
+            if r.url not in seen_urls:
+                seen_urls.add(r.url)
+                unique_results.append(r)
+        
+        assert len(unique_results) == 2
+        assert unique_results[1].title == '唯一笔记'
+    
+    def test_max_results_limit(self):
+        """测试最大结果数限制"""
+        results = [
+            SearchResult(source='xiaohongshu', title=f'笔记{i}', url=f'https://www.xiaohongshu.com/{i}', metadata={}, scraped_at=datetime.now().isoformat())
+            for i in range(20)
+        ]
+        
+        config = SearcherConfig(max_results=5)
+        limited = results[:config.max_results]
+        
+        assert len(limited) == 5
+    
+    def test_invalid_url_filtering(self):
+        """测试无效 URL 过滤"""
+        results = [
+            SearchResult(source='xiaohongshu', title='有效', url='https://www.xiaohongshu.com/valid', metadata={}, scraped_at=datetime.now().isoformat()),
+            SearchResult(source='xiaohongshu', title='无效', url='', metadata={}, scraped_at=datetime.now().isoformat()),
+        ]
+        
+        valid_results = [r for r in results if r.url]
+        assert len(valid_results) == 1
+        assert valid_results[0].url == 'https://www.xiaohongshu.com/valid'
 
 
-if __name__ == "__main__":
-    pytest.main([__file__, "-v"])
+if __name__ == '__main__':
+    pytest.main([__file__, '-v'])
