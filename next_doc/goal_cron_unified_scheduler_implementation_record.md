@@ -1,15 +1,17 @@
 # Goal / Cron 三条执行通道 统一调度层 改进计划 · 实施记录
 
 对应计划文档：`next_doc/goal_cron_unified_scheduler_improvement_plan.md`
-（P0、P1、P2、P3 已完成；P4 未开始；P5 为长期目标，本轮未启动）
+（P0、P1、P2、P3、P4 已完成；P5 为长期目标，本轮未启动）
 
 ## 处理状态
 
 - **P0（cron 分级响应资源仲裁）**：已完成。
 - **P1（cron 消耗统一记账）**：已完成。
 - **P2（cron 跳过追踪与主动告警）**：已完成。
-- **P3（tick() 执行看门狗）**：已完成（本轮）。
-- **P4（统一调度可观测面板）**：未开始，留待后续独立实施。
+- **P3（tick() 执行看门狗）**：已完成。
+- **P4（统一调度可观测面板）**：后端只读端点已完成（本轮）；看板 UI 展示
+  区块（方案原文"看板新增一个🕹️统一调度总览折叠区块"）本轮未做，见下方
+  P4 小节说明。
 - **P5（收敛到统一调度层）**：长期目标，本轮未启动，不在本次范围内。
 
 ## 新增文件
@@ -178,3 +180,98 @@ integration.py`、`test_objective_executor_kanban_tracks_r4.py` 等）经
    /`cron.skip_alert_threshold` 的模式补一个 `autonomy.scheduler_
    heartbeat_stuck_threshold_multiplier` 配置项，本轮判断"先用固定默认值
    观察实际数据"是更稳妥的路径，不引入还没有使用数据支撑的可调参数。
+
+## 新增文件（P4）
+
+| 文件 | 作用 |
+|---|---|
+| `tests/test_scheduling_overview_route.py` | P4 共 5 项单测：空状态返回合理默认值、`gating`/`usage_breakdown` 在 paths 可解析时正确返回、Goal 通道正确报告 `objective_slots` 与公平队首 Goal（`last_scheduled_at` 更早的排最前）、cron 通道正确列出 `consecutive_skip_count` 达到阈值的 job、goal_cycle 通道与普通 cron 通道正确分流（不互相污染 running/queued 计数） |
+
+## 修改文件（P4）
+
+| 文件 | 改动 |
+|---|---|
+| `src/mini_agent/api/routes.py` | 新增只读端点 `GET /v1/self/scheduling_overview`：聚合返回 `gating`（`ResourceArbiter.gating_state()` 当前值）、`usage_breakdown`（P1 产出的三类消耗分项 + `daily_token_budget`，直接读 `ensure_self_profile(paths).resource_budget`，不再依赖只出现在 `reason` 文案里的字符串）、`goal_channel`（`objective_slots` 复用 `autonomous_status` 端点已有的 running/max/static_cap 计算逻辑；`queue_head_goal` 取 `GoalBacklog.active_goals()` 中 `last_scheduled_at` 最小的一个，即公平轮询下一个最应该被调度的 Goal）、`cron_channel`（遍历 `CronScheduler.list_jobs()`，按 `run_mode != "goal_cycle"` 过滤后用既有的 `execution_phase()` 分类 running/queued，`jobs_over_skip_threshold` 复用 P2 已经在维护的 `consecutive_skip_count` 字段和 `cron.skip_alert_threshold` 配置，达到阈值即视为需要关注）、`goal_cycle_channel`（同一份 `list_jobs()` 结果按 `run_mode == "goal_cycle"` 过滤，`pending_due_count` 统计 `enabled and next_run_at <= now` 的数量，`recent` 按 `last_run_at` 倒序取最近 5 条，`consecutive_skip_count` 复用同一字段间接反映"最近一次触发是否成功"）。任一子系统缺失（`autonomous_loop`/`_cron_scheduler`/`_objective_executor` 为 None）时对应字段保持初始占位值，不影响其它字段正常返回；顺带修复了本文件里一处既有的 `_objective_executor` 兜底逻辑 bug（`if oe is None and al is not None` 在 `al is None` 时会跳过对 `http_server.bridge._objective_executor` 的兜底查找，导致明明挂在 bridge 上的 executor 永远读不到；改为与文件内其它 7 处同类兜底一致的 `if oe is None:` 无条件兜底） |
+
+## 关键设计决策（P4）
+
+11. **`usage_breakdown` 不解析 `gating_state()["reason"]` 里的分项文案，
+    直接读 `ResourceBudget` 字段**：P1 把三类消耗数字拼进了 `reason`
+    字符串（供人读的告警/日志场景），但 P4 是一个结构化 API，让前端去
+    解析一段中文拼接字符串取数字是脆弱的（文案后续任何措辞调整都会
+    静默破坏解析）。`ResourceBudget` 从 P1 起本身就是持久化的正式
+    dataclass 字段（P1 顺带修复了序列化缺陷），直接读取是更稳的路径，
+    与 `reason` 文案是两条独立但数值一致的展示通道。
+
+12. **`goal_cycle_channel` 的"最近一次触发结果"不新增状态字段，复用
+    `consecutive_skip_count`**：方案原文只写"最近一次触发结果"，没有
+    规定具体形式。`CronJob` 目前没有一个"上次是否成功"的布尔字段（P2
+    只在跳过时递增计数，成功时清零），新增一个专门字段属于改变
+    `CronJob` 数据结构、需要考虑 `to_dict`/`from_dict` 兼容性的改动，
+    超出 P4"只读聚合展示"的范围。`consecutive_skip_count == 0` 已经
+    隐含"上次触发成功"，`> 0` 隐含"最近处于连续失败中"，配合
+    `last_run_at`/`run_count` 已经能让看板判断"这个 goal_cycle 最近
+    健康与否"，不需要额外持久化状态。
+
+13. **`cron_channel`/`goal_cycle_channel` 共用同一次 `list_jobs()` 调用，
+    只遍历一次**：而不是分别为两个通道各查一次 job 列表——`run_mode`
+    字段已经足够区分两类 job，没有必要发起两次等价的 IO（`list_jobs()`
+    内部会读一次 `cron_jobs.json`）。这与 P0 决策 2"避免重复调用
+    `gating_state()`"是同一节流思路的延伸。
+
+14. **顺带修复的 `_objective_executor` 兜底 bug 必须修，不是无关的
+    顺手清理**：写 P4 端点时复用了 `autonomous_status` 端点里
+    `oe = getattr(al, "_objective_executor", None) if al is not None
+    else None` 这一行的既有写法，但紧接着的兜底判断在原文件里错误地
+    多加了一个 `and al is not None` 条件——当 `autonomous_loop` 未注入
+    （`al is None`，例如某些精简部署或测试场景）但 `ObjectiveExecutor`
+    仍然正常挂在 `http_server.bridge._objective_executor` 上时，这个多
+    余的条件会导致兜底查找被跳过，`objective_slots` 永远返回 `None`。
+    对照文件内其它 7 处同类兜底代码（均为无条件 `if oe is None:`），
+    确认这是原 `autonomous_status` 端点的既有缺陷，本轮顺带修复，不
+    改变其余字段的既有行为。
+
+## 测试结果（P4）
+
+```
+tests/test_scheduling_overview_route.py .....   5 passed
+```
+
+与 P0-P3 的既有测试文件联合运行，确认无回归：
+
+```
+tests/test_goal_cron_unified_scheduler_p0_p1_p2.py
+tests/test_goal_cron_unified_scheduler_p3.py
+tests/test_scheduler_heartbeat.py
+tests/test_scheduling_overview_route.py
+28 passed
+```
+
+扩大范围回归（cron/仲裁/goal_cron/autonomous_loop/objective_executor/
+resource_budget/self_profile/global_knowledge/exploration/scheduler/
+goal_fairness/execution_model/scheduling_overview 相关测试文件，本轮
+补装了本地沙箱环境缺失的 `pydantic`/`rich`/`fastapi`/`httpx`/`uvicorn`/
+`python-multipart` 依赖后运行，此前 P0-P3 记录里因为这些依赖缺失而报
+"环境问题、与改动无关"的用例本轮已经验证全部正常通过，不再是未确认
+状态）：
+
+```
+320 passed, 0 failed
+```
+
+无回归。仍有 2 个文件在收集阶段报错（`test_judge_verdict.py` 缺
+`json_repair`、`test_session.py` 里 `ImportError: cannot import name
+'_flock' from 'mini_agent.session'`），确认与本轮改动无关（`_flock` 是
+`mini_agent/session.py` 在非 POSIX 或缺少 `fcntl` 环境下的既有平台
+兼容问题，`json_repair` 是另一个未安装的第三方依赖），未在本次范围内
+修复。
+
+## 待确认项回应（对照原方案 §4，追加 P4 相关项）
+
+7.（对应原方案 §4 第 3 条）P4 的"统一调度总览"信息架构：本轮只实现了
+   后端聚合端点 `GET /v1/self/scheduling_overview`，看板侧"独立新 tab
+   还是并入现有'🩺 自诊断信号闭环'区块"这一 UI 信息架构问题本轮未做
+   决定、也未实现前端展示——数据已经就绪，UI 集成可以在确认信息架构
+   后独立跟进，不阻塞后端能力先行交付。
+
+其余待确认项（1-6）沿用 P0-P3 实施记录的既有回应，状态不变。

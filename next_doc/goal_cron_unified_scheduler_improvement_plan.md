@@ -1,9 +1,12 @@
 # Goal / Cron 三条执行通道 统一调度层 改进计划
 
-- **版本**: v1.2
+- **版本**: v1.3
 - **实施记录**: `next_doc/goal_cron_unified_scheduler_implementation_record.md`
-  （P0/P1/P2/P3 已完成；P4 未开始；P5 为长期目标，未启动）
+  （P0/P1/P2/P3/P4 已完成；P5 为长期目标，未启动）
 - **变更记录**：
+  - v1.3：P4（统一调度可观测面板）已实现（后端只读端点部分；看板 UI
+    展示区块本轮未做，见实施记录说明），详见实施记录。P5 状态不变，
+    仍未实现。
   - v1.2：P3（tick() 执行看门狗）已实现，详见实施记录。P4/P5 状态不变，
     仍未实现。
   - v1.1：P0（cron 分级响应资源仲裁）、P1（cron 消耗统一记账）、P2（cron
@@ -189,7 +192,10 @@
     时间窗口内检测到并触发一次告警，且不重复刷屏。
   - 正常节奏的 tick() 不会误报。
 
-### P4 —— 统一调度可观测面板
+### P4 —— 统一调度可观测面板【已完成（后端）】
+
+**处理状态：后端只读端点已完成；看板 UI 展示区块本轮未做。** 详见
+`next_doc/goal_cron_unified_scheduler_implementation_record.md`。
 
 - **目标**：一个视图能看到三条通道当前的运行/排队/跳过状态，不需要在
   `autonomous_status`、`arbiter_skipped_count`、`gating_history`、cron

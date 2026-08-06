@@ -76,6 +76,11 @@ api/routes.py — FastAPI 路由定义
                                        scheduler_heartbeat_improvement_plan.md]
                                        目标级持久 Worker / 调度心跳独立化
                                        两个灰度开关的当前生效状态
+    GET    /v1/self/scheduling_overview  [goal_cron_unified_scheduler_
+                                       improvement_plan.md P4] 一个视图聚合
+                                       Goal/普通 cron/goal_cycle 三条执行
+                                       通道当前的运行/排队/跳过状态 + 共享
+                                       的 ResourceArbiter 仲裁结果
     GET    /v1/self/config           [kanban_config_management_plan.md] 分类
                                        字段目录状态（agent_config.json）
     PATCH  /v1/self/config           [kanban_config_management_plan.md] 批量
@@ -2214,6 +2219,205 @@ async def get_self_execution_model_status(request: Request):
     except Exception as _mini_agent_exc:
         from mini_agent.errors import log_exception
         log_exception(_mini_agent_exc, where='mini_agent.api.routes.get_self_execution_model_status')
+
+    return result
+
+
+@router.get("/self/scheduling_overview")
+async def get_self_scheduling_overview(request: Request):
+    """GET /v1/self/scheduling_overview —
+    [goal_cron_unified_scheduler_improvement_plan.md P4]
+    只读聚合视图：Goal / 普通 cron / goal_cycle 三条执行通道当前各自的
+    运行/排队/跳过状态，以及三者共享的 ResourceArbiter 仲裁结果。取代
+    此前需要在 autonomous_status / execution_model_status / goal_fairness
+    / cron 面板之间来回切换才能拼出的全貌。纯读取，不修改任何状态、不
+    触发任何调度；任一子系统数据缺失时对应字段返回占位默认值，不影响
+    其它字段正常返回（沿用项目一贯的"非核心信息降级不影响主链路"风格）。
+
+    返回结构：
+    {
+      "gating": {"state": "full"|"degraded"|"blocked", "reason": str},
+      "usage_breakdown": {   # [P1] 三类消耗的分项数字 + 当日预算上限
+        "daily_token_budget": int, "used_today": int,
+        "used_today_goals": int, "used_today_cron": int,
+        "used_today_exploration": int,
+      },
+      "goal_channel": {
+        "objective_slots": {"running": int, "max": int, "static_cap": int} | None,
+        "queue_head_goal": {  # 公平排序队首（最久没轮到的 Goal），None 表示
+                               # 没有 active Goal
+          "goal_id": str, "title": str, "last_scheduled_at": float,
+        } | None,
+      },
+      "cron_channel": {   # 不含 goal_cycle 通道的 job（run_mode 区分）
+        "running": int, "queued": int,
+        "arbiter_skipped_count": int,   # [P1] 进程内累计
+        "jobs_over_skip_threshold": [   # [P2] consecutive_skip_count 达到
+                                          # cron.skip_alert_threshold 的 job
+          {"job_id": str, "name": str, "consecutive_skip_count": int},
+        ],
+      },
+      "goal_cycle_channel": {
+        "total_count": int,        # run_mode="goal_cycle" 的 job 总数
+        "pending_due_count": int,  # 其中已到期（next_run_at <= now）待触发的数量
+        "recent": [                # 按 last_run_at 倒序，最多 5 条
+          {"job_id": str, "goal_title": str, "last_run_at": float,
+           "run_count": int, "consecutive_skip_count": int},
+        ],
+      },
+    }
+    """
+    http_server = getattr(request.app.state, "http_server", None)
+    if http_server is None:
+        raise HTTPException(status_code=503, detail="HttpServer not available")
+    _require_owner(request)
+
+    result: dict = {
+        "gating": None,
+        "usage_breakdown": None,
+        "goal_channel": {"objective_slots": None, "queue_head_goal": None},
+        "cron_channel": {"running": 0, "queued": 0, "arbiter_skipped_count": 0,
+                          "jobs_over_skip_threshold": []},
+        "goal_cycle_channel": {"total_count": 0, "pending_due_count": 0, "recent": []},
+    }
+
+    al = http_server.autonomous_loop
+    paths = getattr(al, "_paths", None) if al is not None else None
+    cfg = getattr(al, "_cfg", None) if al is not None else None
+    if paths is None or cfg is None:
+        try:
+            from mini_agent.storage.paths import AgentPaths
+            self_agent = http_server.bridge.agent
+            _cfg = getattr(self_agent, "cfg", None) if self_agent else None
+            if _cfg is not None and getattr(_cfg, "project_root", None) is not None:
+                paths = AgentPaths(_cfg.project_root)
+                cfg = _cfg
+        except Exception:
+            pass
+
+    # ── 共享仲裁结果 + P1 分项消耗 ──────────────────────────────────────
+    if paths is not None and cfg is not None:
+        try:
+            from mini_agent.evolution.resource_arbiter import ResourceArbiter
+            result["gating"] = ResourceArbiter(paths, cfg).gating_state()
+        except Exception as _mini_agent_exc:
+            from mini_agent.errors import log_exception
+            log_exception(_mini_agent_exc, where='mini_agent.api.routes.get_self_scheduling_overview.gating')
+        try:
+            from mini_agent.perception.global_knowledge import ensure_self_profile
+            rb = ensure_self_profile(paths).resource_budget
+            result["usage_breakdown"] = {
+                "daily_token_budget": rb.daily_token_budget,
+                "used_today": rb.used_today,
+                "used_today_goals": rb.used_today_goals,
+                "used_today_cron": rb.used_today_cron,
+                "used_today_exploration": rb.used_today_exploration,
+            }
+        except Exception as _mini_agent_exc:
+            from mini_agent.errors import log_exception
+            log_exception(_mini_agent_exc, where='mini_agent.api.routes.get_self_scheduling_overview.usage_breakdown')
+
+    # ── Goal 通道 ────────────────────────────────────────────────────────
+    oe = getattr(al, "_objective_executor", None) if al is not None else None
+    if oe is None:
+        oe = getattr(http_server.bridge, "_objective_executor", None)
+    if oe is not None:
+        try:
+            from mini_agent.evolution.objective_executor import MAX_CONCURRENT_OBJECTIVES
+            try:
+                effective_max = oe.effective_max_concurrent()
+            except Exception:
+                effective_max = MAX_CONCURRENT_OBJECTIVES
+            result["goal_channel"]["objective_slots"] = {
+                "running": oe.running_count(),
+                "max": effective_max,
+                "static_cap": MAX_CONCURRENT_OBJECTIVES,
+            }
+        except Exception as _mini_agent_exc:
+            from mini_agent.errors import log_exception
+            log_exception(_mini_agent_exc, where='mini_agent.api.routes.get_self_scheduling_overview.objective_slots')
+
+    if paths is not None:
+        try:
+            from mini_agent.perception.goal_backlog import GoalBacklog
+            backlog = GoalBacklog(paths)
+            backlog.load()
+            active = list(backlog.active_goals())
+            if active:
+                head = min(active, key=lambda g: g.last_scheduled_at or 0.0)
+                result["goal_channel"]["queue_head_goal"] = {
+                    "goal_id": head.id,
+                    "title": head.title,
+                    "last_scheduled_at": head.last_scheduled_at,
+                }
+        except Exception as _mini_agent_exc:
+            from mini_agent.errors import log_exception
+            log_exception(_mini_agent_exc, where='mini_agent.api.routes.get_self_scheduling_overview.queue_head_goal')
+
+    # ── 普通 cron 通道 + goal_cycle 通道（同一份 job 列表，按 run_mode 区分）──
+    cs = getattr(al, "_cron_scheduler", None) if al is not None else None
+    if cs is None:
+        cs = getattr(http_server.bridge, "_cron_scheduler", None)
+    if cs is not None:
+        try:
+            job_runner = getattr(cs, "_job_runner", None)
+            base_cfg = getattr(job_runner, "_base_cfg", None) if job_runner is not None else None
+            cron_cfg = getattr(base_cfg, "cron", None) if base_cfg is not None else None
+            skip_threshold = getattr(cron_cfg, "skip_alert_threshold", 5) if cron_cfg is not None else 5
+
+            now = time.time()
+            jobs = cs.list_jobs()
+            cron_running = 0
+            cron_queued = 0
+            over_threshold = []
+            goal_cycle_jobs = []
+            for j in jobs:
+                run_mode = getattr(j, "run_mode", "message")
+                if run_mode == "goal_cycle":
+                    goal_cycle_jobs.append(j)
+                    continue
+                try:
+                    phase = cs.execution_phase(j.id)
+                except Exception:
+                    phase = "not_running"
+                if phase == "running":
+                    cron_running += 1
+                elif phase == "queued":
+                    cron_queued += 1
+                if skip_threshold > 0 and getattr(j, "consecutive_skip_count", 0) >= skip_threshold:
+                    over_threshold.append({
+                        "job_id": j.id, "name": j.name,
+                        "consecutive_skip_count": j.consecutive_skip_count,
+                    })
+
+            result["cron_channel"] = {
+                "running": cron_running,
+                "queued": cron_queued,
+                "arbiter_skipped_count": getattr(job_runner, "arbiter_skipped_count", 0)
+                if job_runner is not None else 0,
+                "jobs_over_skip_threshold": over_threshold,
+            }
+
+            goal_cycle_jobs.sort(key=lambda j: j.last_run_at or 0.0, reverse=True)
+            result["goal_cycle_channel"] = {
+                "total_count": len(goal_cycle_jobs),
+                "pending_due_count": sum(
+                    1 for j in goal_cycle_jobs if j.enabled and (j.next_run_at or 0.0) <= now
+                ),
+                "recent": [
+                    {
+                        "job_id": j.id,
+                        "goal_title": j.name,
+                        "last_run_at": j.last_run_at,
+                        "run_count": j.run_count,
+                        "consecutive_skip_count": getattr(j, "consecutive_skip_count", 0),
+                    }
+                    for j in goal_cycle_jobs[:5]
+                ],
+            }
+        except Exception as _mini_agent_exc:
+            from mini_agent.errors import log_exception
+            log_exception(_mini_agent_exc, where='mini_agent.api.routes.get_self_scheduling_overview.cron')
 
     return result
 
