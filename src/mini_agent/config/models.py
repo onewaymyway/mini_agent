@@ -1441,6 +1441,20 @@ class SchedulerConfig:
         "goal_cycle": 1.0,
     })
 
+    # [P5 第 5 步 · 灰度接入实际派发] 是否让 AutonomousLoop._tick_passive()
+    # 改用 unified_task_scheduler.dispatch_due_cron_jobs()（经
+    # CronChannelAdapter/GoalCycleChannelAdapter.execute() 委托派发）
+    # 触发普通 cron + goal_cycle job，而不是直接调用
+    # CronScheduler.tick()。默认 False——两条路径最终触发的到期
+    # 判断/记账逻辑完全一致（dispatch_due_cron_jobs() 复用的就是
+    # tick() 内部同一份 _trigger_and_record()），开关只影响"谁来组织
+    # 触发顺序"这一层，用于在正式切换默认值之前先小范围观察是否有
+    # 意外行为（改进计划 P5 第 4 步待确认项 12："需要先设计一个灰度
+    # 开关……不适合与证明 execute() 委托本身可靠这一步骤合并"，本项
+    # 即是该灰度开关）。仅影响普通 cron/goal_cycle 通道——Goal 通道
+    # 派发路径不受影响（ObjectiveChannelAdapter.execute() 仍未实现）。
+    unified_dispatch_enabled: bool = False
+
 
 @dataclass
 class CronConfig:

@@ -127,10 +127,24 @@ class AutonomousLoop:
 
         边界的物理体现：本方法体内不引用 self._goal_backlog 任何方法。
         """
-        # CronScheduler.tick()：检查所有 enabled job 是否到期并触发
+        # CronScheduler.tick()：检查所有 enabled job 是否到期并触发。
+        # [goal_cron_unified_scheduler_improvement_plan.md P5 第 5 步]
+        # `scheduler.unified_dispatch_enabled=True`（默认 False）时改用
+        # `unified_task_scheduler.dispatch_due_cron_jobs()`——经
+        # `CronChannelAdapter`/`GoalCycleChannelAdapter.execute()` 委托
+        # 派发，内部复用的仍是 `CronScheduler.trigger_job_now()` →
+        # `_trigger_and_record()`（与 `tick()` 共用同一份记账），返回值
+        # 语义与 `tick()` 完全一致（触发成功的 job_id 列表），因此下面
+        # 的记账/digest 记录逻辑无需区分走的是哪条路径。开关关闭（默认）
+        # 时行为与改造前完全一致。
         if self._cron_scheduler is not None:
             try:
-                triggered = self._cron_scheduler.tick()
+                _scheduler_cfg = getattr(self._cfg, "scheduler", None)
+                if bool(getattr(_scheduler_cfg, "unified_dispatch_enabled", False)):
+                    from mini_agent.evolution.unified_task_scheduler import dispatch_due_cron_jobs
+                    triggered = dispatch_due_cron_jobs(self._cron_scheduler)
+                else:
+                    triggered = self._cron_scheduler.tick()
                 for job_id in triggered:
                     self._record_digest({
                         "type": "cron_run",

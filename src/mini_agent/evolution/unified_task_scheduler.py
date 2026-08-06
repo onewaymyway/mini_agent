@@ -52,6 +52,7 @@ __all__ = [
     "CronChannelAdapter",
     "GoalCycleChannelAdapter",
     "allocate_weighted_slots",
+    "dispatch_due_cron_jobs",
 ]
 
 
@@ -256,7 +257,14 @@ def _poll_cron_jobs(cron_scheduler: Any, *, want_goal_cycle: bool) -> list[Sched
         if not getattr(j, "enabled", True):
             continue
         next_run_at = getattr(j, "next_run_at", None)
-        if next_run_at is None or next_run_at > now:
+        # [P5 第 5 步] `next_run_at <= 0` 是"尚未初始化"的哨兵值（见
+        # `CronScheduler.tick()` 同一判断），不是"早已到期"——`0 > now`
+        # 恒为假，之前这里会把未初始化的 job 误判成到期任务。P5 第 1-2
+        # 步该字段只用于只读预览，这个误差不影响任何实际执行；但 P5 第
+        # 5 步 `dispatch_due_cron_jobs()` 会真正调用 `execute()` 触发，
+        # 必须与 `tick()` 的到期判断口径完全一致，因此在这里补上同一个
+        # 排除条件。
+        if next_run_at is None or next_run_at <= 0 or next_run_at > now:
             continue
         tasks.append(SchedulableTask(
             source=source,
@@ -380,6 +388,59 @@ def allocate_weighted_slots(
         allocation[name] += floor_shares[name]
 
     return allocation
+
+
+def dispatch_due_cron_jobs(cron_scheduler: Any) -> list[str]:
+    """[P5 第 5 步 · 灰度接入统一入口] 通过 `CronChannelAdapter`/
+    `GoalCycleChannelAdapter` 真正派发本轮到期的普通 cron + goal_cycle
+    job，返回触发成功的 job_id 列表——返回值语义与 `CronScheduler.tick()`
+    完全一致，供 `AutonomousLoop._tick_passive()` 在
+    `scheduler.unified_dispatch_enabled=True` 时直接替换 `tick()` 调用。
+
+    **与 `tick()` 的关系**：本函数不重新实现"到期判断 + 触发 + 记账"，
+    到期判断复用 `poll_due()`（P5 第 1-2 步已有、本轮修复了 `next_run_at
+    <= 0` 的边界条件，见 `_poll_cron_jobs()`），触发 + 记账复用
+    `execute()` → `CronScheduler.trigger_job_now()` → `_trigger_and_
+    record()`（P5 第 4 步已有、与 `tick()` 内部共用同一份实现）。本函数
+    只新增了一件 `tick()` 内部也在做、但 `poll_due()`/`execute()` 各自
+    分离后需要重新组装的事——**把两条 cron 侧通道的到期任务合并后按
+    `priority` 降序统一触发一次**，排序口径与 `CronScheduler.tick()`
+    内部 `due_jobs.sort(key=lambda j: j.priority, reverse=True)` 保持
+    一致（同优先级时维持合并后的相对顺序，与 `tick()` 用稳定排序的
+    效果等价）。
+
+    **已知的行为差异（不影响正确性，写清楚避免误解）**：`tick()` 一次
+    调用只在触发列表非空或有状态变化时 `save()` 一次；本函数通过
+    `trigger_job_now()` 派发，每个 job 各自触发一次 `save()`——多次
+    落盘换来"两条路径共用同一份记账函数、不会出现记账口径漂移"这个
+    更重要的正确性保证（P5 第 4 步决策 28 的延伸），本函数不通过自己
+    重新拼一份"只 save 一次"的批量逻辑来换取这点 IO 优化，避免引入
+    第三份记账代码。
+
+    `cron_scheduler` 为 `None` 时返回空列表，不抛异常（与三条通道一贯的
+    降级风格一致）。
+    """
+    if cron_scheduler is None:
+        return []
+    cron_adapter = CronChannelAdapter(cron_scheduler)
+    goal_cycle_adapter = GoalCycleChannelAdapter(cron_scheduler)
+
+    try:
+        due_tasks = cron_adapter.poll_due() + goal_cycle_adapter.poll_due()
+    except Exception:
+        return []
+    due_tasks.sort(key=lambda t: t.priority, reverse=True)
+
+    triggered: list[str] = []
+    for task in due_tasks:
+        adapter = cron_adapter if task.source == "cron" else goal_cycle_adapter
+        try:
+            ok = adapter.execute(task)
+        except Exception:
+            ok = False
+        if ok:
+            triggered.append(task.task_id)
+    return triggered
 
 
 def build_default_scheduler(

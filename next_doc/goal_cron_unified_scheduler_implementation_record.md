@@ -1,7 +1,8 @@
 # Goal / Cron 三条执行通道 统一调度层 改进计划 · 实施记录
 
 对应计划文档：`next_doc/goal_cron_unified_scheduler_improvement_plan.md`
-（P0、P1、P2、P3、P4 已完成；P5 为长期目标，本轮未启动）
+（P0、P1、P2、P3、P4 已完成；P5 第 1-4 步已完成/部分完成，第 5 步已启动，
+本轮完成灰度开关子集）
 
 ## 处理状态
 
@@ -12,8 +13,14 @@
 - **P4（统一调度可观测面板）**：已完成（后端只读端点 + 看板 UI 展示区块，
   分两轮完成，见下方 P4 小节及"P4 追加（看板 UI）"小节）。
 - **P5（收敛到统一调度层）**：第 1-2 步（定义统一接口 + 三条通道只读
-  适配 + 只读聚合排序建议）本轮已完成；第 3-5 步（接管仲裁裁决/接管实际
-  派发）仍是未启动的长期目标，见下方"P5 第 1-2 步"小节。
+  适配 + 只读聚合排序建议）已完成；第 3 步（接管仲裁裁决 · degraded 并发
+  分配子集）已完成；第 4 步（接管实际派发）部分完成——cron/goal_cycle
+  两通道 `execute()` 已实现真正委托派发，goal 通道 `execute()` 未实现；
+  第 5 步（收敛到统一入口）**本轮完成一个子集**——新增
+  `dispatch_due_cron_jobs()` + `scheduler.unified_dispatch_enabled`
+  灰度开关，`AutonomousLoop._tick_passive()` 可选切换到经统一调度层
+  派发 cron/goal_cycle job，默认关闭；`AutonomousLoop._tick_maintenance()`
+  的 Goal 通道派发路径未涉及，仍是未启动部分，见下方"P5 第 5 步"小节。
 
 ## 新增文件
 
@@ -710,3 +717,134 @@ tests/test_resource_arbiter_gating_track_j.py
 其余待确认项（1-11）沿用 P0-P5 第 1-3 步实施记录的既有回应，状态不变。
 
 
+
+## P5 第 5 步 —— 灰度接入统一入口（子集完成）
+
+**处理状态：cron/goal_cycle 两通道已可经统一调度层派发，由配置开关
+控制默认关闭；Goal 通道派发路径未涉及，`AutonomousLoop` 内部调用点
+本身仍保留（切换逻辑内置在同一方法里，不是替换调用点，见下方决策
+30）。** 对应改进计划 P5 分步迁移路径第 4-5 步交界处：第 4 步遗留的
+"两个 `execute()` 已经可以安全调用，但还没有人在调用"这一状态，本轮
+让`AutonomousLoop`在可控的灰度开关下开始调用它们。
+
+### 新增/修改文件（P5 第 5 步）
+
+| 文件 | 改动 |
+|---|---|
+| `src/mini_agent/evolution/unified_task_scheduler.py` | 新增 `dispatch_due_cron_jobs(cron_scheduler)`：合并 `CronChannelAdapter`/`GoalCycleChannelAdapter` 两条通道的 `poll_due()` 结果、按 `priority` 降序排序后依次调用各自的 `execute()`，返回触发成功的 `job_id` 列表，返回值语义与 `CronScheduler.tick()` 完全一致；`cron_scheduler=None` 或 `poll_due()` 异常时返回空列表，不抛出。**附带修复**：`_poll_cron_jobs()` 原先 `next_run_at is None or next_run_at > now` 的判断遗漏了 `next_run_at <= 0`（`CronScheduler.tick()` 用来标记"尚未初始化"的哨兵值）这一情况——`0 > now` 恒为假，会被误判为"早已到期"。P5 第 1-2 步该字段只供只读预览使用，这个误差不影响任何实际执行；但本轮 `dispatch_due_cron_jobs()` 要真正拿它去触发，必须与 `tick()` 的到期判断口径完全一致，因此补上了这个排除条件 |
+| `src/mini_agent/config/models.py` | `SchedulerConfig` 新增 `unified_dispatch_enabled: bool = False`——控制 `AutonomousLoop._tick_passive()` 是否改用 `dispatch_due_cron_jobs()` 派发普通 cron/goal_cycle job，默认关闭，未升级配置行为不变 |
+| `src/mini_agent/evolution/autonomous_loop.py` | `_tick_passive()` 里原来直接调用 `self._cron_scheduler.tick()` 的地方，改为先读取 `getattr(self._cfg, "scheduler", None)` 上的 `unified_dispatch_enabled`（缺失时按 `False` 处理，兼容没有 `scheduler` 属性的老 `cfg` 对象），`True` 时改调用 `unified_task_scheduler.dispatch_due_cron_jobs(self._cron_scheduler)`，`False`（默认）或读取失败时保持原有 `tick()` 调用；两条路径返回值语义一致，后续的 `_record_digest()` 记录逻辑无需区分 |
+| `tests/test_unified_dispatch_p5_step5.py` | 新增：8 项用例，覆盖 `dispatch_due_cron_jobs()` 的 `None` 输入、cron+goal_cycle 混合触发且按 priority 排序、`next_run_at<=0` 边界修复、触发失败时 `consecutive_skip_count` 正确递增但不进入触发列表、goal_cycle job 经 `GoalCycleChannelAdapter` 正确派发；`AutonomousLoop` 灰度开关的开/关两条路径（含真实 `CronScheduler` 端到端验证）、`cfg` 上完全缺失 `scheduler` 属性时静默退化为 `tick()` 路径不抛异常 |
+
+### 关键设计决策（P5 第 5 步）
+
+30. **只在 `_tick_passive()` 方法内部做"二选一"分支，不新增/替换
+    `AutonomousLoop` 的调用点或构造签名**：改进计划原文 P5 第 5 步的
+    完整目标是"三条通道的 tick() 触发点最终都收敛成
+    `UnifiedTaskScheduler.tick()` 一个入口"，但本轮沿用 P5 第 3 步既有
+    决策 24 的思路——不引入一个需要被同时注入 `AutonomousLoop` 的共享
+    `UnifiedTaskScheduler` 运行时实例（会改变现有构造签名和依赖注入
+    路径），而是让 `dispatch_due_cron_jobs()` 作为一个无状态纯函数，
+    每次调用时用传入的 `cron_scheduler` 现场构造两个轻量适配器。这样
+    `AutonomousLoop.__init__()` 的构造签名完全不变，`_tick_passive()`
+    内部只是多了一个 `if` 分支，改动面被压缩到最小，符合改进计划设计
+    边界第 5 条"允许长期分阶段推进"的要求——是否/何时把这个分支替换成
+    真正的"统一入口调用"，留给后续视灰度观察结果决定。
+
+31. **默认关闭而不是默认开启，且不提供"部分通道单独开关"的更细粒度
+    控制**：`dispatch_due_cron_jobs()` 与 `tick()` 理论上应该产生完全
+    等价的触发结果（到期判断、触发、记账三个环节都复用同一份底层
+    实现），但"理论等价"和"经过充分灰度验证的等价"是两回事——`tick()`
+    是 daemon 至今唯一被验证过的生产路径，`dispatch_due_cron_jobs()`
+    多引入了一层"先聚合排序、再逐个触发"的组装逻辑（尽管排序键与
+    `tick()` 内部完全一致），在没有实际运行数据支撑之前默认开启是不
+    必要的风险。开关粒度上选择"cron+goal_cycle 整体开关"而不是"cron
+    单独开、goal_cycle 单独开"，是因为两者内部走的是同一个
+    `CronScheduler.trigger_job_now()`，拆分开关不会带来额外的风险
+    隔离效果，反而增加配置面和测试组合数，与改进计划待讨论问题 5
+    "避免开关组合爆炸导致的测试覆盖盲区"的顾虑一致。
+
+32. **`dispatch_due_cron_jobs()` 的"多次 `save()`"这一已知行为差异
+    本轮不做进一步优化**：`tick()` 一次调用只在触发列表非空或有状态
+    变化时整体 `save()` 一次；`dispatch_due_cron_jobs()` 通过
+    `trigger_job_now()` 逐个派发，每个成功/失败的 job 各自触发一次
+    `save()`。曾考虑过是否要在本函数内部批量收集变更、最后统一落盘
+    一次，但那样需要在 `dispatch_due_cron_jobs()` 里重新拼一份"只
+    save 一次"的批量逻辑，或者要求 `CronScheduler` 暴露一个"记账但不
+    落盘"的变体接口——两者都会引入与 `_trigger_and_record()`/
+    `trigger_job_now()` 平行的第二份记账相关代码路径，与 P5 第 4 步
+    决策 28"两条路径物理上就是同一段代码，不存在'改一处忘了改另一处'
+    的维护风险"这一关键安全前提相冲突。多次落盘的 IO 成本在到期 job
+    数量正常范围内（单个 tick 周期内到期 job 通常是个位数）可以忽略，
+    换来的正确性保证更重要，因此本轮明确选择不优化，留作已知的、
+    可接受的行为差异记录在案。
+
+33. **未涉及 `_tick_maintenance()` 里的 Goal 通道派发路径，`autonomy.
+    level=maintenance/autonomous` 档位下 `_tick_maintenance()`
+    仍然独立调用 `cron_scheduler.tick()`（而非 `_tick_passive()` 里
+    新增的分支）**：复核代码确认 `_tick_maintenance()`/`_tick_
+    autonomous()` 目前的 cron 触发路径与 `_tick_passive()` 是各自
+    独立的调用点（都直接调 `self._cron_scheduler.tick()`），本轮为了
+    把改动面控制在"先验证一条路径"的最小范围，只改了 `_tick_passive()`
+    这一个方法体；`maintenance`/`autonomous` 档位下 cron 到期触发的
+    行为本轮完全不变。这是一个**明确的遗留范围**（不是遗漏）——把
+    同样的分支逻辑复制到 `_tick_maintenance()`/`_tick_autonomous()`
+    技术上很直接，但既然灰度开关本身就是为了"先观察一段时间数据"，
+    没有必要在观察结果出来之前就把改动面扩大到全部三个档位；下一轮
+    如果灰度观察无异常，会一并把这两个档位的调用点也切过去，并同时
+    评估是否值得把这部分"读开关 + 二选一"的样板代码抽成一个共享的
+    私有方法（当前只有一处调用，重复一次之前抽取暂无必要）。
+
+### 测试结果（P5 第 5 步）
+
+```
+tests/test_unified_dispatch_p5_step5.py             8 passed （新增）
+```
+
+与 P0-P5 第 1-4 步既有测试文件联合运行，确认无回归：
+
+```
+tests/test_unified_dispatch_p5_step4.py
+tests/test_unified_dispatch_p5_step5.py
+tests/test_unified_task_scheduler.py
+tests/test_unified_arbitration_p5_step3.py
+tests/test_goal_cron_unified_scheduler_p0_p1_p2.py
+tests/test_goal_cron_unified_scheduler_p3.py
+tests/test_scheduler_heartbeat.py
+tests/test_cron_scheduler_local_handler.py
+tests/test_cron_job_runner.py
+tests/test_cron_scheduler_priority.py
+tests/test_goal_cron_feedback_and_output_policy.py
+tests/test_goal_cron_bridge.py
+tests/test_cron_schedule_validation.py
+tests/test_cron_scheduler_reap_stale_jobs.py
+tests/test_objective_executor_adaptive_concurrency.py
+tests/test_resource_arbiter_gating_track_j.py
+162 passed, 0 failed
+```
+
+`tests/test_unified_scheduler_preview_route.py`/`tests/test_scheduling_
+overview_route.py`（P4/P5 第 1-2 步既有端点测试）本轮沙箱环境缺
+`httpx2` 包，`fastapi.testclient` 导入阶段报错，无法采集运行——与本轮
+改动的模块（`unified_task_scheduler.py`/`autonomous_loop.py`/
+`config/models.py`）没有依赖关系，确认是环境限制而非本轮引入的回归
+（这两个端点测试文件本身未被本轮修改）。
+
+全量回归本轮仍未完整跑完（本地沙箱执行较慢），已确认无回归的范围
+覆盖了本次改动直接涉及的全部模块。
+
+### 待确认项回应（对照原方案 §4，追加 P5 第 5 步相关项）
+
+14.（对应 P5 第 4 步待确认项 12）`AutonomousLoop` 何时切换到经由
+    `UnifiedTaskScheduler` 派发 cron/goal_cycle job：本轮给出的答案是
+    "先在 `_tick_passive()` 一个档位下加一个默认关闭的灰度开关"——不是
+    "立刻切换"，也不是"继续无限期搁置"，是两者之间的折中：功能已经
+    可以被打开验证，但默认行为完全不变，且刻意没有扩大到
+    `_tick_maintenance()`/`_tick_autonomous()`（见决策 33），把"何时
+    默认开启"、"何时把其余两个档位也接进来"都留给积累了实际灰度数据
+    之后再决定。
+15. `ObjectiveChannelAdapter.execute()` 仍未实现，P5 第 4 步待确认项
+    13 提出的"Goal 通道安全公开入口该以什么形式抽出"本轮未涉及，状态
+    不变——本轮的灰度开关范围明确限定在 cron/goal_cycle 两条通道。
+
+其余待确认项（1-13）沿用 P0-P5 第 1-4 步实施记录的既有回应，状态不变。
