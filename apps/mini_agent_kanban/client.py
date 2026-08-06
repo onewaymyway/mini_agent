@@ -256,6 +256,13 @@ class AgentClient:
         起没起作用"只能靠翻配置文件/看进程猜。"""
         return self._get("/self/execution_model_status")
 
+    def scheduling_overview(self):
+        """[goal_cron_unified_scheduler_improvement_plan.md P4] Goal/普通
+        cron/goal_cycle 三条执行通道的运行/排队/跳过状态 + 共享的
+        ResourceArbiter 仲裁结果一次性聚合拉取，供"🕹️ 统一调度总览"
+        区块展示。"""
+        return self._get("/self/scheduling_overview")
+
     def force_reap(self, target: str = "all"):
         """[kanban_execution_visibility_and_control_plan.md 阶段 B/C]
         看板"🚨 立即回收"按钮：不必等 watchdog 下一次 tick，立刻对指定

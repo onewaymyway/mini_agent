@@ -3298,6 +3298,9 @@ def render_self_tab(client: AgentClient):
     st.divider()
     _render_execution_model_status(client)
 
+    st.divider()
+    _render_scheduling_overview(client)
+
 
 # ═══════════════════════════════════════════════════════════════════════
 # 自诊断信号闭环深化（next_doc/self_diagnosis_feedback_loop_deepening_plan.md
@@ -3786,6 +3789,113 @@ def _render_execution_model_status(client: AgentClient):
                 st.caption("🔴 本次会话内新增，建议关注")
             else:
                 st.metric(label, value)
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# 统一调度总览（goal_cron_unified_scheduler_improvement_plan.md P4）：把
+# Goal / 普通 cron / goal_cycle 三条执行通道当前的运行/排队/跳过状态，以及
+# 三者共享的 ResourceArbiter 仲裁结果，聚合在一个区块里展示。后端聚合端点
+# GET /v1/self/scheduling_overview 在 P4 上一轮已完成，本轮补齐看板 UI 展示
+# 部分。纯只读展示，不提供任何"直接介入调度"的操作按钮——与"🩺 自诊断信号
+# 闭环"一致，观测和决策分离。
+# ═══════════════════════════════════════════════════════════════════════
+_GATING_STATE_LABEL = {
+    "full": "🟢 full（资源充足）",
+    "degraded": "🟡 degraded（收紧中）",
+    "blocked": "🔴 blocked（硬限流）",
+}
+
+
+def _render_scheduling_overview(client: AgentClient):
+    st.markdown("#### 🕹️ 统一调度总览")
+    st.caption(
+        "goal_cron_unified_scheduler_improvement_plan.md P4：Goal → Objective / "
+        "普通 cron / goal_cycle 三条执行通道当前各自的运行、排队、跳过状态，"
+        "以及三者共享的 ResourceArbiter 仲裁结果一次性展示，不必再在"
+        "「⚖️ 执行公平性」「⚙️ 执行模型」「🔄 工作流/Cron」面板之间来回切换拼图。"
+    )
+    if st.button("🔄 刷新", key="scheduling_overview_refresh"):
+        st.rerun()
+
+    resp = client.scheduling_overview() or {}
+    if "_error" in resp:
+        st.warning(f"获取失败：{resp['_error']}")
+        return
+
+    gating = resp.get("gating") or {}
+    state = gating.get("state")
+    st.markdown(f"**当前仲裁状态**：{_GATING_STATE_LABEL.get(state, state or '未知')}")
+    reason = gating.get("reason")
+    if reason:
+        st.caption(reason)
+
+    usage = resp.get("usage_breakdown")
+    if usage:
+        budget = usage.get("daily_token_budget", 0) or 0
+        used_total = usage.get("used_today", 0) or 0
+        ratio = (used_total / budget) if budget else 0.0
+        st.progress(min(ratio, 1.0), text=f"今日预算消耗 {used_total}/{budget}（{ratio:.0%}）")
+        u1, u2, u3 = st.columns(3)
+        u1.metric("Goal 通道消耗", usage.get("used_today_goals", 0))
+        u2.metric("cron 通道消耗", usage.get("used_today_cron", 0))
+        u3.metric("探索沙盒消耗", usage.get("used_today_exploration", 0))
+    else:
+        st.caption("暂无预算分项数据（self_profile.json 尚不可用）。")
+
+    st.divider()
+    g1, g2, g3 = st.columns(3)
+
+    with g1:
+        st.markdown("**🎯 Goal 通道**")
+        goal_ch = resp.get("goal_channel") or {}
+        slots = goal_ch.get("objective_slots")
+        if slots:
+            st.metric("并发槽位", f"{slots.get('running', 0)}/{slots.get('max', 0)}")
+            st.caption(f"静态上限 static_cap={slots.get('static_cap', 0)}")
+        else:
+            st.caption("暂无数据（ObjectiveExecutor 未注入）。")
+        head = goal_ch.get("queue_head_goal")
+        if head:
+            ts = head.get("last_scheduled_at")
+            ts_label = time.strftime("%m-%d %H:%M", time.localtime(ts)) if ts else "从未调度"
+            st.caption(f"公平队首：**{head.get('title', head.get('goal_id',''))}**（上次调度 {ts_label}）")
+        else:
+            st.caption("当前没有 active Goal。")
+
+    with g2:
+        st.markdown("**⏱️ 普通 cron 通道**")
+        cron_ch = resp.get("cron_channel") or {}
+        c1, c2 = st.columns(2)
+        c1.metric("运行中", cron_ch.get("running", 0))
+        c2.metric("排队中", cron_ch.get("queued", 0))
+        st.caption(f"仲裁累计跳过次数（进程内）：{cron_ch.get('arbiter_skipped_count', 0)}")
+        over = cron_ch.get("jobs_over_skip_threshold") or []
+        if over:
+            st.markdown("🔴 **连续跳过超阈值的 job**")
+            for j in over:
+                st.caption(f"`{j.get('name', j.get('job_id',''))}` — 已连续跳过 {j.get('consecutive_skip_count', 0)} 次")
+        else:
+            st.caption("没有 job 连续跳过超过阈值。")
+
+    with g3:
+        st.markdown("**🔁 goal_cycle 通道**")
+        gc_ch = resp.get("goal_cycle_channel") or {}
+        st.metric("待触发数 / 总数", f"{gc_ch.get('pending_due_count', 0)}/{gc_ch.get('total_count', 0)}")
+        recent = gc_ch.get("recent") or []
+        if recent:
+            st.markdown("最近触发")
+            for r in recent:
+                ts = r.get("last_run_at")
+                ts_label = time.strftime("%m-%d %H:%M", time.localtime(ts)) if ts else "-"
+                skip = r.get("consecutive_skip_count", 0)
+                health = "🔴" if skip > 0 else "🟢"
+                st.caption(
+                    f"{health} **{r.get('goal_title', r.get('job_id',''))}** "
+                    f"— 第 {ts_label} 次，累计 {r.get('run_count', 0)} 轮"
+                    + (f"，连续跳过 {skip} 次" if skip else "")
+                )
+        else:
+            st.caption("暂无 goal_cycle job。")
 
 
 # ═══════════════════════════════════════════════════════════════════════
