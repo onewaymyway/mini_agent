@@ -78,6 +78,11 @@ class CronJob:
     # 同结构，用户对本 CronJob 的持续意见反馈历史（追加记录，供 UI/CLI 回看）。
     user_feedback: list[dict] = field(default_factory=list)
 
+    # [goal_cron_unified_scheduler_improvement_plan.md P2] 连续"到点但未能
+    # 成功触发"的次数（_fire() 返回 False 时 +1，成功触发一次清零）。
+    # 缺省 0 保证旧 cron_jobs.json 反序列化后行为等同于改造前。
+    consecutive_skip_count: int = 0
+
     def to_dict(self) -> dict:
         return {
             "id": self.id,
@@ -95,6 +100,7 @@ class CronJob:
             "run_mode": self.run_mode,
             "priority": self.priority,
             "user_feedback": self.user_feedback,
+            "consecutive_skip_count": self.consecutive_skip_count,
             # [看板 cron 面板补齐删除功能] 显式下发 is_system，避免前端
             # 只能靠 id.startswith("sys:") 这种约定猜测，接口更自描述。
             "is_system": self.is_system,
@@ -118,6 +124,7 @@ class CronJob:
             run_mode=d.get("run_mode", "message"),
             priority=d.get("priority", 0),
             user_feedback=d.get("user_feedback", []),
+            consecutive_skip_count=d.get("consecutive_skip_count", 0),
         )
 
     @property
@@ -558,6 +565,7 @@ class CronScheduler:
         """
         now = time.time()
         triggered: list[str] = []
+        skip_state_changed = False
 
         # [P2] 先收集本轮到期的 job，再按 priority 降序排序后依次触发——
         # 之前是遍历 dict 插入顺序，sys: 内置 job 因为 load() 时先注入
@@ -587,9 +595,20 @@ class CronScheduler:
                 job.last_run_at = now
                 job.run_count += 1
                 job.next_run_at = compute_next_run(job.schedule, now)
+                if job.consecutive_skip_count:
+                    job.consecutive_skip_count = 0
+                    skip_state_changed = True
                 triggered.append(job.id)
+            else:
+                # [goal_cron_unified_scheduler_improvement_plan.md P2]
+                # 到点但未能成功触发（仲裁 blocked / 已有一次执行在跑 /
+                # semaphore 排队中拒绝等）：记一次连续跳过，跨越告警阈值
+                # 时发一次通知，避免长期"静默重试"导致用户完全无感知。
+                job.consecutive_skip_count += 1
+                skip_state_changed = True
+                self._maybe_alert_consecutive_skip(job)
 
-        if triggered:
+        if triggered or skip_state_changed:
             try:
                 self.save()
             except Exception as _mini_agent_exc:
@@ -605,6 +624,39 @@ class CronScheduler:
         显式关闭该功能（比如测试场景不想牵扯 ObjectiveExecutor）。
         """
         self._goal_cycle_fn = handler
+
+    def _maybe_alert_consecutive_skip(self, job: CronJob) -> None:
+        """[goal_cron_unified_scheduler_improvement_plan.md P2] 只在
+        consecutive_skip_count 恰好跨越 `cron.skip_alert_threshold`（默认 5）
+        那一刻发一次告警，不重复刷屏——与 `record_gating_transition()` 的
+        "状态变化才写入"是同一节流思路：== threshold 而不是 >= threshold，
+        保证每次连续跳过的"轮次"只在跨越阈值时触发一次；后续再连续跳过
+        不会重复通知，直到某次成功触发清零、重新从零累积、再次跨越阈值。
+        失败静默：告警本身失败不能影响 tick() 主流程。"""
+        try:
+            # CronScheduler 本身不持有 AppConfig（构造参数只有 paths/
+            # submit_fn/digest_advisor_cfg/job_runner），复用 job_runner
+            # 已经持有的 base_cfg（job_runner 未注入时退回默认阈值 5，
+            # 不引入额外的 load_config() 调用）。
+            base_cfg = getattr(self._job_runner, "_base_cfg", None) if self._job_runner is not None else None
+            cron_cfg = getattr(base_cfg, "cron", None) if base_cfg is not None else None
+            threshold = getattr(cron_cfg, "skip_alert_threshold", 5) if cron_cfg is not None else 5
+            if threshold <= 0 or job.consecutive_skip_count != threshold:
+                return
+            from mini_agent.notification.dispatcher import NotificationDispatcher, NotificationMessage
+            NotificationDispatcher(self._paths).dispatch(NotificationMessage(
+                title="cron job 长期未能触发",
+                body=(
+                    f"cron job {job.name!r}（{job.id}）已连续 {job.consecutive_skip_count} "
+                    "次到点未能成功触发，可能是资源仲裁持续 blocked，或已有一次执行"
+                    "长期未结束，建议检查"
+                )[:200],
+                source="cron_skip_alert",
+                meta={"job_id": job.id, "consecutive_skip_count": job.consecutive_skip_count},
+            ))
+        except Exception as _mini_agent_exc:
+            from mini_agent.errors import log_exception
+            log_exception(_mini_agent_exc, where="mini_agent.evolution.cron_scheduler.CronScheduler._maybe_alert_consecutive_skip")
 
     def _fire(self, job: CronJob) -> bool:
         """
@@ -906,6 +958,16 @@ class CronScheduler:
         if self._job_runner is None:
             return []
         return self._job_runner.reap_stale_jobs()
+
+    def set_gating_degraded(self, degraded: bool) -> None:
+        """[goal_cron_unified_scheduler_improvement_plan.md P0] 委托给
+        job_runner.set_gating_degraded()：反映 ResourceArbiter.gating_state()
+        的最新结果，供 CronJobRunner 收紧/恢复普通 cron 通道的并发上限。
+        job_runner 未注入（旧路径）时静默跳过——旧路径的 cron job 直接跑
+        在 AgentRunner 主线程上，没有独立的并发概念可收紧。"""
+        if self._job_runner is None:
+            return
+        self._job_runner.set_gating_degraded(degraded)
 
     def execution_phase(self, job_id: str) -> str:
         """[next_doc/kanban_execution_visibility_and_control_plan.md

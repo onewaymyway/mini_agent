@@ -364,6 +364,17 @@ class AutonomousLoop:
                 # 每次 tick 都重新设置，天然随资源状况变化自动升降档，不需要
                 # 额外的"恢复"逻辑。
                 self._objective_executor.set_gating_degraded(state == "degraded")
+            # [goal_cron_unified_scheduler_improvement_plan.md P0] 普通 cron
+            # 通道（CronJobRunner）与 Objective 通道用同一次 tick 内算好的
+            # 仲裁结果，不重复计算。degraded 时收紧并发（不再是整体跳过），
+            # full 时恢复——与上面 objective_executor 分支同一套"每次 tick
+            # 都重新设置，天然随资源状况变化自动升降档"的写法。
+            if self._cron_scheduler is not None:
+                try:
+                    self._cron_scheduler.set_gating_degraded(state == "degraded")
+                except Exception as _mini_agent_exc:
+                    from mini_agent.errors import log_exception
+                    log_exception(_mini_agent_exc, where='mini_agent.evolution.autonomous_loop._tick_maintenance.cron_set_gating_degraded')
         except Exception as _mini_agent_exc:
             from mini_agent.errors import log_exception
             log_exception(_mini_agent_exc, where='mini_agent.evolution.autonomous_loop.AutonomousLoop._tick_maintenance')

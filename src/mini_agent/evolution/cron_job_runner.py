@@ -27,6 +27,24 @@ evolution/cron_job_runner.py — cron 任务的后台线程调度器
   semaphore 许可也永久不释放，攒够 max_concurrent_jobs 个卡死 job 后，
   其它所有 cron job 会永久阻塞在排队上，cron 功能实质性全局瘫痪。
 
+[goal_cron_unified_scheduler_improvement_plan.md P0/P1/P2]
+  P0：原来的固定容量 `threading.Semaphore(max_concurrent)` 只能表达一个不变的
+  并发上限，`ResourceArbiter` 判定为 degraded 时无法临时收紧。改为用
+  `threading.Condition` 实现的"可变容量槽位"（`_acquire_slot`/`_release_slot`），
+  effective_max_concurrent() 在 degraded 时降到 `cron.degraded_max_concurrent`
+  （默认 1），full 时恢复到构造时传入的 `max_concurrent`——语义与
+  `ObjectiveExecutor.effective_max_concurrent()` 对齐，"只降不升"，不引入新的
+  排队丢弃语义（原来 semaphore 打满时是阻塞排队，现在容量收紧后行为一致，
+  只是排队会更久）。
+  P1：每次 job 执行完毕后，把 Agent 本次消耗的 token（`agent.stats.
+  input_tokens + output_tokens`，cron 用的是一次性构造的独立 Agent，累计值
+  即为本次 job 的总消耗）计入 `ResourceArbiter.record_autonomous_token_usage
+  (usage_type="cron")`，与 Goal/探索三条通道共用同一份 `used_today` 记账，
+  不再是"cron 消耗不计入任何预算计数器"的不对称状态。
+  P2：`CronJob.consecutive_skip_count` 由 `CronScheduler.tick()` 维护（不在本
+  文件内），本文件只需要在 submit() 因仲裁被跳过、以及正常触发成功时，
+  通过返回值告知调用方结果（沿用已有 True/False 返回值，无需新增接口）。
+
   reap_stale_jobs() 是这个问题的外部存活性回收：用一个每次 submit() 生成
   的唯一 token 判定"谁是这个 job 当前合法的执行者"，回收判定为卡死的
   job 时代替永远不会执行到的 finally 释放一次 semaphore、清空记账、把
@@ -70,7 +88,15 @@ class CronJobRunner:
     ) -> None:
         self._base_cfg = base_cfg
         self._paths = paths
-        self._sem = threading.Semaphore(max(1, max_concurrent))
+        # [P0] 固定容量的 threading.Semaphore 换成"容量可变"的槽位实现：
+        # _slot_cond 保护 _held_slots（当前真正持有槽位、在跑的 job 数），
+        # effective_max_concurrent() 决定当前容量上限，degraded 时可以
+        # 临时收紧而不需要重新构造 Semaphore（Semaphore 的容量在构造后
+        # 不可缩小）。max_concurrent 仍是 full 状态下的容量天花板。
+        self._max_concurrent = max(1, max_concurrent)
+        self._slot_cond = threading.Condition()
+        self._held_slots = 0
+        self._gating_degraded = False
         self._on_finished = on_finished
         self._lock = threading.Lock()
         self._running_job_ids: set[str] = set()
@@ -152,6 +178,58 @@ class CronJobRunner:
         """[P1] 进程内累计的"因资源仲裁未通过被跳过"次数。"""
         with self._lock:
             return self._arbiter_skipped_count
+
+    def effective_max_concurrent(self) -> int:
+        """[P0] 当前生效的并发上限。degraded 且未关闭
+        `autonomy.resource_gating_degraded_enabled` 时收紧到
+        `cron.degraded_max_concurrent`（默认 1），否则为构造时传入的
+        `max_concurrent`——语义、命名都与
+        `ObjectiveExecutor.effective_max_concurrent()` 对齐。异常时保守
+        返回天花板值，不因为读配置失败导致 cron 被误收紧。"""
+        cap = self._max_concurrent
+        if not self._gating_degraded:
+            return cap
+        try:
+            autonomy_cfg = getattr(self._base_cfg, "autonomy", None)
+            if autonomy_cfg is not None and not getattr(
+                autonomy_cfg, "resource_gating_degraded_enabled", True
+            ):
+                return cap
+            cron_cfg = getattr(self._base_cfg, "cron", None)
+            degraded_cap = getattr(cron_cfg, "degraded_max_concurrent", 1) if cron_cfg is not None else 1
+            return max(1, min(cap, int(degraded_cap)))
+        except Exception as _mini_agent_exc:
+            from mini_agent.errors import log_exception
+            log_exception(_mini_agent_exc, where="mini_agent.evolution.cron_job_runner.CronJobRunner.effective_max_concurrent")
+            return cap
+
+    def set_gating_degraded(self, degraded: bool) -> None:
+        """[P0] 由 AutonomousLoop 每次 tick 调用，反映
+        ResourceArbiter.gating_state() 的最新结果是否为 "degraded"。
+        不做任何 I/O，纯内存标志位；下一次有 job 排队等待槽位（或槽位
+        释放时唤醒等待者）都会用最新值重新计算 effective_max_concurrent()。
+        """
+        with self._slot_cond:
+            self._gating_degraded = bool(degraded)
+            # 状态变化（尤其是 degraded → full）可能让容量变大，唤醒所有
+            # 正在等待槽位的线程重新检查是否能拿到槽位。
+            self._slot_cond.notify_all()
+
+    def _acquire_slot(self) -> None:
+        """[P0] 等待直到当前持有槽位数 < effective_max_concurrent()，
+        然后占用一个槽位。取代原来的 `self._sem.acquire()`——容量可以在
+        等待期间因为 degraded 状态变化而升降，每次被唤醒都会用最新容量
+        重新判断，而不是一次性固定住。"""
+        with self._slot_cond:
+            while self._held_slots >= self.effective_max_concurrent():
+                self._slot_cond.wait(timeout=1.0)
+            self._held_slots += 1
+
+    def _release_slot(self) -> None:
+        """[P0] 归还一个槽位，取代原来的 `self._sem.release()`。"""
+        with self._slot_cond:
+            self._held_slots = max(0, self._held_slots - 1)
+            self._slot_cond.notify_all()
 
     def execution_phase(self, job_id: str) -> str:
         """[阶段 B] 返回 job 当前的执行阶段：
@@ -312,10 +390,10 @@ class CronJobRunner:
             self._sem_acquired.discard(job_id)
             self._reaped_job_count += 1
 
-        # 代替永远不会执行到的 finally 释放一次 semaphore——线程体收尾时
+        # 代替永远不会执行到的 finally 释放一个槽位——线程体收尾时
         # 会发现自己的 token 已经不是当前合法 token（上面已经 pop 掉），
         # 从而跳过它自己的 release()，两者互斥，不会重复释放。
-        self._sem.release()
+        self._release_slot()
 
         try:
             from mini_agent.evolution.cron_job_workspace import (
@@ -354,7 +432,7 @@ class CronJobRunner:
     # ── 线程体 ────────────────────────────────────────────────────────────
 
     def _run_job_thread(self, job: "CronJob", token: str) -> None:
-        self._sem.acquire()
+        self._acquire_slot()
         with self._lock:
             # 迟到的孤儿线程（已经被 reap_stale_jobs() 回收过）不应该
             # 把自己标记为"正在运行"——只有仍持有当前合法 token 才标记。
@@ -387,6 +465,25 @@ class CronJobRunner:
             ) if cron_cfg is not None else None
 
             outcome = executor.run_job(job, submit_step_fn=step_fn, default_config=default_config)
+
+            # [P1：cron 消耗统一记账] agent 是本次 job 独占的一次性实例
+            # （build_cron_agent 每次触发都重新构造，不跨触发复用），
+            # agent.stats 的累计值就是本次 job 的总消耗，不需要额外做
+            # "本次 - 上次"的差值计算。失败静默：记账失败不能影响 job
+            # 本身已经产出的结果。
+            try:
+                tokens_used = (
+                    getattr(agent.stats, "input_tokens", 0)
+                    + getattr(agent.stats, "output_tokens", 0)
+                )
+                if tokens_used > 0:
+                    from mini_agent.evolution.resource_arbiter import ResourceArbiter
+                    ResourceArbiter(self._paths, self._base_cfg).record_autonomous_token_usage(
+                        tokens_used, usage_type="cron",
+                    )
+            except Exception as _mini_agent_exc:
+                from mini_agent.errors import log_exception
+                log_exception(_mini_agent_exc, where="mini_agent.evolution.cron_job_runner.CronJobRunner._run_job_thread.token_accounting")
 
             if self._on_finished is not None:
                 try:
@@ -429,7 +526,7 @@ class CronJobRunner:
                     self._sem_acquired.discard(job.id)
                     released = True
             if released:
-                self._sem.release()
+                self._release_slot()
 
 
 __all__ = ["CronJobRunner"]

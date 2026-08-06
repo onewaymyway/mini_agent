@@ -240,11 +240,25 @@ class ResourceBudget:
     used_today: int = 0
     budget_reset_at: str = "00:00"
 
+    # [goal_cron_unified_scheduler_improvement_plan.md P1] 三条执行通道各自
+    # 的分项消耗计数器。此前这三个字段只是 ResourceArbiter.
+    # record_autonomous_token_usage() 通过 `rb.__dict__[...] = ...` 动态挂上
+    # 去的属性，从未出现在 to_dict()/from_dict() 里——每次 load_self_profile()
+    # 重新构造 ResourceBudget 后这些分项就会丢失（只有汇总的 used_today 是
+    # 真正持久化的 dataclass 字段）。这里把它们提升为正式字段并纳入序列化，
+    # 缺省值 0 保证旧 self_profile.json（没有这三个 key）反序列化后行为不变。
+    used_today_goals: int = 0
+    used_today_cron: int = 0
+    used_today_exploration: int = 0
+
     def to_dict(self) -> dict:
         return {
             "daily_token_budget": self.daily_token_budget,
             "used_today": self.used_today,
             "budget_reset_at": self.budget_reset_at,
+            "used_today_goals": self.used_today_goals,
+            "used_today_cron": self.used_today_cron,
+            "used_today_exploration": self.used_today_exploration,
         }
 
     @staticmethod
@@ -253,6 +267,9 @@ class ResourceBudget:
             daily_token_budget=int(d.get("daily_token_budget", 200_000) or 200_000),
             used_today=int(d.get("used_today", 0) or 0),
             budget_reset_at=d.get("budget_reset_at", "00:00"),
+            used_today_goals=int(d.get("used_today_goals", 0) or 0),
+            used_today_cron=int(d.get("used_today_cron", 0) or 0),
+            used_today_exploration=int(d.get("used_today_exploration", 0) or 0),
         )
 
 
@@ -388,6 +405,12 @@ def update_self_profile_on_session_end(
     if tokens_used:
         if _is_new_calendar_day(previous_last_active, now):
             profile.resource_budget.used_today = 0
+            # [goal_cron_unified_scheduler_improvement_plan.md P1] 分项计数器
+            # 与汇总计数器同步按日重置，避免"总数已清零，分项却还是昨天的
+            # 数字"这种展示不一致。
+            profile.resource_budget.used_today_goals = 0
+            profile.resource_budget.used_today_cron = 0
+            profile.resource_budget.used_today_exploration = 0
         profile.resource_budget.used_today += max(0, int(tokens_used))
 
     save_self_profile(paths, profile)

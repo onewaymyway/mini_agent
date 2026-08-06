@@ -1442,6 +1442,21 @@ class CronConfig:
     # 即判定为系统性问题。None/0 表示不启用（默认不启用，理由同上）。
     circuit_breaker_distinct_threshold: Optional[int] = None
 
+    # [goal_cron_unified_scheduler_improvement_plan.md P0] ResourceArbiter
+    # 判定为 degraded（而非 blocked）时，普通 cron 通道（CronJobRunner）
+    # 临时收紧到的并发上限。与 AutonomyConfig.resource_gating_degraded_
+    # max_concurrent（Objective 通道用的同名字段）故意分开配置——cron
+    # 通道对"时间确定性"要求更高，收紧幅度允许单独调整，不与 Objective
+    # 通道强绑定。默认 1：degraded 时仍能触发到期的 cron job，只是并发
+    # 收紧到 1，不再像改造前那样把 degraded 当 blocked 处理、整体跳过。
+    degraded_max_concurrent: int = 1
+
+    # [goal_cron_unified_scheduler_improvement_plan.md P2] CronJob 连续
+    # 跳过次数达到该阈值时，通过 NotificationDispatcher 发一次告警。
+    # 默认 5：太低容易在偶发的短暂 blocked 期间就刷屏告警，太高则错过
+    # 真正"长期没跑成功"的信号。
+    skip_alert_threshold: int = 5
+
 
 @dataclass
 class DigestAdvisorConfig:

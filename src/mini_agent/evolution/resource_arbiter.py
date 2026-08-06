@@ -151,7 +151,10 @@ class ResourceArbiter:
         # （方案原文明确写的是"第4/5条规则"，预算是硬限制，不应该有中间态：
         # 预算耗尽就是耗尽，没有"打个折继续花"这种语义）。
         if not self._check_budget():
-            result = {"state": "blocked", "reason": "预算已耗尽（used_today >= daily_token_budget）"}
+            # [P1] 附带三类消耗的分项数字，方便看板/日志区分这次预算耗尽
+            # 主要是被 Goal、cron 还是探索实验哪一部分消耗触发的。
+            reason = "预算已耗尽（used_today >= daily_token_budget）" + self._usage_breakdown_str()
+            result = {"state": "blocked", "reason": reason}
             self._record_transition(result["state"], result["reason"])
             return result
 
@@ -533,7 +536,12 @@ class ResourceArbiter:
     def record_autonomous_token_usage(self, tokens: int, usage_type: str = "goals") -> None:
         """
         记录自主任务的 token 用量（与 update_token_usage 分开计数）。
-        usage_type: "goals"（目标执行）| "exploration"（探索实验）
+        usage_type: "goals"（目标执行）| "exploration"（探索实验）|
+        "cron"（[goal_cron_unified_scheduler_improvement_plan.md P1] 普通
+        cron job 执行，与 goals/exploration 是同级的第三个分项——cron
+        通道跑掉的 token 此前不计入任何计数器，Goal 和 cron 对预算负同等
+        责任后，"blocked" 状态才是可解释、可审计的：不再是只有 Goal 才能
+        把 arbiter 打满）。
         """
         try:
             from mini_agent.perception.global_knowledge import (
@@ -543,12 +551,12 @@ class ResourceArbiter:
             if not profile:
                 return
             rb = profile.resource_budget
-            if usage_type == "exploration":
-                current = getattr(rb, "used_today_exploration", 0)
-                rb.__dict__["used_today_exploration"] = current + max(0, tokens)
-            else:
-                current = getattr(rb, "used_today_goals", 0)
-                rb.__dict__["used_today_goals"] = current + max(0, tokens)
+            field = {
+                "exploration": "used_today_exploration",
+                "cron": "used_today_cron",
+            }.get(usage_type, "used_today_goals")
+            current = getattr(rb, field, 0)
+            setattr(rb, field, current + max(0, tokens))
             # 也累加到 used_today（总计数）
             rb.used_today += max(0, tokens)
             save_self_profile(self._paths, profile)
@@ -556,6 +564,26 @@ class ResourceArbiter:
             from mini_agent.errors import log_exception
             log_exception(_mini_agent_exc, where='mini_agent.evolution.resource_arbiter')
             pass
+
+    def _usage_breakdown_str(self) -> str:
+        """[P1] 返回三类消耗（goals/cron/exploration）的分项数字，供
+        gating_state()/diagnose() 的 reason 文案里说明"这次 blocked/degraded
+        是被哪部分消耗触发的"，不是只看 used_today 总数。读取失败时返回
+        空字符串（调用方拼接时天然降级为不带分项说明）。"""
+        try:
+            from mini_agent.perception.global_knowledge import load_self_profile
+            profile = load_self_profile(self._paths)
+            if not profile:
+                return ""
+            rb = profile.resource_budget
+            goals = getattr(rb, "used_today_goals", 0)
+            cron = getattr(rb, "used_today_cron", 0)
+            exploration = getattr(rb, "used_today_exploration", 0)
+            return f"（分项：goals={goals}, cron={cron}, exploration={exploration}）"
+        except Exception as _mini_agent_exc:
+            from mini_agent.errors import log_exception
+            log_exception(_mini_agent_exc, where='mini_agent.evolution.resource_arbiter.ResourceArbiter._usage_breakdown_str')
+            return ""
 
 
 # ── activity_digest.jsonl 辅助 ────────────────────────────────────────────────

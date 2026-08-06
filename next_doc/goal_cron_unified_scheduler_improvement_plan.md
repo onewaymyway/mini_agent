@@ -1,7 +1,11 @@
 # Goal / Cron 三条执行通道 统一调度层 改进计划
 
-- **版本**: v1.0
+- **版本**: v1.1
+- **实施记录**: `next_doc/goal_cron_unified_scheduler_implementation_record.md`
+  （P0/P1/P2 已完成；P3/P4 未开始；P5 为长期目标，未启动）
 - **变更记录**：
+  - v1.1：P0（cron 分级响应资源仲裁）、P1（cron 消耗统一记账）、P2（cron
+    跳过追踪与主动告警）已实现，详见实施记录。P3/P4/P5 状态不变，仍未实现。
   - v1.0：初版。规划 P0-P5，均未实现。P0/P1 是低风险的过渡修复（消解当前
     "Goal 挤占 Cron"的直接症状），P2-P4 是可观测性与保护机制补齐，P5 是
     本文档的最终目标——把三条通道收敛到一个统一调度层，属于架构级重构，
@@ -88,7 +92,10 @@
 
 ## 2. 分阶段实施计划
 
-### P0 —— cron 分级响应资源仲裁（不再一刀切"blocked 就跳过"）
+### P0 —— cron 分级响应资源仲裁（不再一刀切"blocked 就跳过"）【已完成】
+
+**处理状态：已完成。** 详见
+`next_doc/goal_cron_unified_scheduler_implementation_record.md`。
 
 - **目标**：让普通 cron 通道对 `degraded`/`blocked` 的响应方式向 Goal 通道
   看齐——`degraded` 时收紧、不停摆；只有真正 `blocked`（预算硬耗尽 /
@@ -115,7 +122,10 @@
   Objective 的收紧曲线），具体收紧策略留一个独立配置项
   `cron.degraded_max_concurrent`（默认 1）。
 
-### P1 —— cron 消耗统一记账
+### P1 —— cron 消耗统一记账【已完成】
+
+**处理状态：已完成。** 详见
+`next_doc/goal_cron_unified_scheduler_implementation_record.md`。
 
 - **目标**：让 cron（含 goal_cycle）跑掉的 token 也计入同一份预算，Goal 和
   cron 对预算负同等责任，`blocked` 状态的产生原因才是可解释、可审计的。
@@ -134,7 +144,10 @@
   - 新增测试：cron 单独跑满预算也能触发 `blocked`（验证记账生效，不再是
     只有 Goal 才能把 arbiter 打满）。
 
-### P2 —— cron 跳过追踪与主动告警
+### P2 —— cron 跳过追踪与主动告警【已完成】
+
+**处理状态：已完成。** 详见
+`next_doc/goal_cron_unified_scheduler_implementation_record.md`。
 
 - **目标**：cron 到点被跳过（无论是 P0 改造前的整体跳过，还是并发满载/
   job 已在跑）不能只是静默重试，需要有"连续跳过次数"的记账和阈值告警。
