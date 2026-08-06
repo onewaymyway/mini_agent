@@ -17,6 +17,7 @@ evolution/resource_arbiter.py — Stage 9 资源仲裁（第八节）
 from __future__ import annotations
 
 import json
+import os
 import time
 from pathlib import Path
 from typing import Optional, TYPE_CHECKING
@@ -571,8 +572,9 @@ def append_activity_digest(paths: "AgentPaths", record: dict) -> None:
         _now = time.time()
         entry = {"at": _now, "at_str": ts_to_str(_now), **record}
         with open(digest_path, "a", encoding="utf-8") as f:
-            f.write(json.dumps(entry, ensure_ascii=False))
-            f.write("\n")
+            f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+            f.flush()
+            os.fsync(f.fileno())
     except Exception as _mini_agent_exc:
         from mini_agent.errors import log_exception
         log_exception(_mini_agent_exc, where='mini_agent.evolution.resource_arbiter')
