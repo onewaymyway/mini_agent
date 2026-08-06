@@ -17,6 +17,8 @@ import time
 from pathlib import Path
 from typing import Any, Callable, Optional
 
+from mini_agent.errors import log_exception
+
 
 # Windows 上 os.replace 可能因文件被其他进程短暂锁定而失败 (WinError 5)
 # 使用指数退避重试机制提高成功率
@@ -54,6 +56,8 @@ def _atomic_replace_with_retry(tmp: str, path: Path) -> None:
                     os.unlink(tmp)
                 except OSError:
                     pass
+                log_exception(exc, where="utils.atomic_write._atomic_replace_with_retry",
+                              extra={"path": str(path), "attempts": _ATOMIC_WRITE_MAX_RETRIES})
                 raise
         except OSError as exc:
             # 其他 OSError (如文件不存在等) 直接抛出
@@ -61,6 +65,8 @@ def _atomic_replace_with_retry(tmp: str, path: Path) -> None:
                 os.unlink(tmp)
             except OSError:
                 pass
+            log_exception(exc, where="utils.atomic_write._atomic_replace_with_retry",
+                          extra={"path": str(path)})
             raise
     # 理论上不会到达这里，但为了类型检查器满意
     if last_exc:
@@ -110,11 +116,13 @@ def atomic_write_text(path: Path, text: str, *, flock: bool = False) -> None:
             f.write(text)
             f.flush()
             os.fsync(f.fileno())
-    except Exception:
+    except Exception as exc:
         try:
             os.unlink(tmp)
         except OSError:
             pass
+        log_exception(exc, where="utils.atomic_write.atomic_write_text",
+                      extra={"path": str(path)})
         raise
     
     _atomic_replace_with_retry(tmp, path)
@@ -149,11 +157,13 @@ def atomic_write_jsonl(path: Path, records: list[dict]) -> None:
                 f.write(json.dumps(rec, ensure_ascii=False) + "\n")
             f.flush()
             os.fsync(f.fileno())
-    except Exception:
+    except Exception as exc:
         try:
             os.unlink(tmp)
         except OSError:
             pass
+        log_exception(exc, where="utils.atomic_write.atomic_write_jsonl",
+                      extra={"path": str(path), "record_count": len(records)})
         raise
     
     _atomic_replace_with_retry(tmp, path)
@@ -175,7 +185,9 @@ def atomic_append_jsonl(path: Path, record: dict) -> None:
     if path.exists():
         try:
             existing = path.read_text(encoding="utf-8")
-        except OSError:
+        except OSError as exc:
+            log_exception(exc, where="utils.atomic_write.atomic_append_jsonl.read_existing",
+                          extra={"path": str(path)})
             existing = ""
     line = json.dumps(record, ensure_ascii=False)
     fd, tmp = tempfile.mkstemp(dir=str(path.parent), suffix=".tmp")
@@ -187,11 +199,13 @@ def atomic_append_jsonl(path: Path, record: dict) -> None:
             f.write(line + "\n")
             f.flush()
             os.fsync(f.fileno())
-    except Exception:
+    except Exception as exc:
         try:
             os.unlink(tmp)
         except OSError:
             pass
+        log_exception(exc, where="utils.atomic_write.atomic_append_jsonl",
+                      extra={"path": str(path)})
         raise
     
     _atomic_replace_with_retry(tmp, path)
