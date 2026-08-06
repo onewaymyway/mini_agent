@@ -226,6 +226,10 @@ def retry_operation(
             return result
         except config.retryable_exceptions as e:
             last_exception = e
+            # 不可恢复错误立即抛出，不重试
+            if hasattr(e, 'recoverable') and not e.recoverable:
+                logger.error(f"[{operation}] Non-recoverable error, stopping: {e}")
+                raise
             if attempt < config.max_retries:
                 delay = _calculate_delay(
                     config.backoff_strategy, attempt, config.base_delay, config.max_delay
@@ -304,6 +308,10 @@ async def retry_operation_async(
             return result
         except config.retryable_exceptions as e:
             last_exception = e
+            # 不可恢复错误立即抛出，不重试
+            if hasattr(e, 'recoverable') and not e.recoverable:
+                logger.error(f"[{operation}] Non-recoverable error, stopping: {e}")
+                raise
             if attempt < config.max_retries:
                 delay = _calculate_delay(
                     config.backoff_strategy, attempt, config.base_delay, config.max_delay
