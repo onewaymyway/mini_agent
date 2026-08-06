@@ -43,3 +43,7 @@ apps/mini_agent_kanban/.kanban_prefs.json
 .agent/event_cursors/
 .agent/wiki/
 .agent/workflow_sessions/
+research/
+sing_box/
+work_docs/
+temp_cdp
