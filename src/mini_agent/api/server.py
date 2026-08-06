@@ -1089,12 +1089,30 @@ class HttpServer:
             try:
                 from mini_agent.evolution.scheduler_heartbeat import SchedulerHeartbeat
 
+                _tick_interval_seconds = 60.0
+                try:
+                    _tick_interval_seconds = self._autonomous_loop.get_digest_status().get(
+                        "tick_interval_seconds", 60.0
+                    )
+                except Exception:
+                    pass
+                # [goal_cron_unified_scheduler_improvement_plan.md P3]
+                # 看门狗告警需要 AgentPaths 才能发通知；现场构造，与本文件
+                # 其它位置"paths 从不缓存成 self.paths"的一贯风格一致。
+                _heartbeat_paths = None
+                try:
+                    from mini_agent.storage.paths import AgentPaths as _HeartbeatAgentPaths
+                    _heartbeat_paths = _HeartbeatAgentPaths(agent.cfg.project_root)
+                except Exception:
+                    _heartbeat_paths = None
                 self._scheduler_heartbeat = SchedulerHeartbeat(
                     autonomous_loop=self._autonomous_loop,
                     lock=self._sched_lock,
                     interval_seconds=getattr(
                         agent.cfg.autonomy, "scheduler_heartbeat_poll_interval_seconds", 5.0
                     ),
+                    tick_interval_seconds=_tick_interval_seconds,
+                    paths=_heartbeat_paths,
                 )
             except Exception as _mini_agent_exc:
                 from mini_agent.errors import log_exception

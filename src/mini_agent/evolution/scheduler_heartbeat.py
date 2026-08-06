@@ -34,6 +34,28 @@
   `now - last_tick_finished_at > 2 * tick_interval_seconds`（或类似阈值）
   判断"心跳线程虽然 alive=True，但已经不再产生新的 tick"，作为心跳假死
   的间接信号。
+
+[goal_cron_unified_scheduler_improvement_plan.md P3]
+  上面这段"运维/看板可以用……判断"此前只是一句文档建议——没有任何代码
+  真的去做这个判断，用户必须点开面板细看两个时间戳做心算才能发现心跳假死。
+  本阶段把这句建议升级为主动检测，但检测本身**不能**放在原来那条 tick
+  循环线程里顺带做——如果真的卡在某次 tick() 里，那条线程自己也会跟着
+  卡住，永远轮不到检测代码执行，等于用一个会被卡死的东西去检测自己是否
+  卡死。因此新增一条完全独立的看门狗线程 `_watchdog_run()`，只负责按
+  自己的轮询节奏调用 `_check_stuck()`，与是否发生 tick() 无关。
+
+  判定条件与上面文档描述完全一致——当前确实处在"已经开始但还没结束"的
+  一次 tick 里（`last_tick_started_at > last_tick_finished_at`，排除
+  "从未 tick 过"和"tick 过但已经正常结束"这两种不该误报的情况），且这次
+  tick 已经持续超过 `tick_interval_seconds * stuck_threshold_multiplier`
+  （默认 2 倍）。
+
+  命中时通过 `NotificationDispatcher` 告警一次，并置位
+  `suspected_stuck` 供 `execution_model_status` 展示；命中期间不重复
+  刷屏（同一次"卡住事件"只在刚检测到的那一刻告警一次），直到某次 tick()
+  终于返回（`finally` 分支里 `last_tick_finished_at` 被刷新）才复位，
+  下一次再卡住会重新告警——与 P2 的 `consecutive_skip_count == threshold`
+  是同一节流思路。
 """
 
 from __future__ import annotations
@@ -63,6 +85,9 @@ class SchedulerHeartbeat(threading.Thread):
         lock: threading.Lock,
         interval_seconds: float = 5.0,
         name: str = "scheduler-heartbeat",
+        tick_interval_seconds: float = 60.0,
+        paths=None,
+        stuck_threshold_multiplier: float = 2.0,
     ) -> None:
         super().__init__(daemon=True, name=name)
         self._autonomous_loop = autonomous_loop
@@ -77,11 +102,34 @@ class SchedulerHeartbeat(threading.Thread):
         self._last_tick_started_at: float = 0.0
         self._last_tick_finished_at: float = 0.0
         self._last_tick_duration_seconds: float = 0.0
+        # [P3] tick() 执行看门狗：以下字段只在 `_check_stuck()` 内读写，
+        # 复用 self._stats_lock 一并保护，不额外新增一把锁。
+        self._tick_interval_seconds = max(0.01, float(tick_interval_seconds))
+        self._stuck_threshold_multiplier = max(1.0, float(stuck_threshold_multiplier))
+        self._paths = paths
+        self._suspected_stuck: bool = False
+        self._stuck_alert_sent: bool = False
+        # [P3] 看门狗必须是一条独立于主 tick 循环的线程——如果只是在
+        # run() 的主循环里"tick 完之后顺带检查"，一旦真的卡在某次
+        # tick() 里，主循环会阻塞在 `self._maybe_tick()` 那一行出不来，
+        # 检查代码自己也永远没有机会被执行到（这正是本阶段要解决的
+        # 故障场景本身，绝不能让检测机制依赖同一条会被卡住的线程）。
+        self._watchdog_stop_evt = threading.Event()
+        self._watchdog_thread: Optional[threading.Thread] = None
+        self._watchdog_poll_interval = min(self._interval, 2.0)
+
+    def start(self) -> None:  # type: ignore[override]
+        super().start()
+        self._watchdog_thread = threading.Thread(
+            target=self._watchdog_run, daemon=True, name=f"{self.name}-watchdog",
+        )
+        self._watchdog_thread.start()
 
     def stop(self) -> None:
         """请求心跳线程退出。非阻塞——不等待当前正在进行的 tick() 跑完。
         daemon 关停流程如需确认线程已退出，可自行调用 self.join(timeout=...)。"""
         self._stop_evt.set()
+        self._watchdog_stop_evt.set()
 
     # ── 观测（阶段二） ────────────────────────────────────────────────────
 
@@ -107,6 +155,20 @@ class SchedulerHeartbeat(threading.Thread):
         with self._stats_lock:
             return self._last_tick_duration_seconds
 
+    @property
+    def suspected_stuck(self) -> bool:
+        """[P3] 当前是否怀疑心跳线程卡在某次未返回的 tick() 里
+        （alive=True 但已经很久没有产生新的 tick）。"""
+        with self._stats_lock:
+            return self._suspected_stuck
+
+    def set_tick_interval_seconds(self, tick_interval_seconds: float) -> None:
+        """[P3] AutonomousLoop 的 tick_interval 可能在运行期间被配置/灰度
+        调整，允许调用方（api/server.py）随时刷新看门狗判定用的基准值，
+        不强制要求构造时就拿到最终值。"""
+        with self._stats_lock:
+            self._tick_interval_seconds = max(0.01, float(tick_interval_seconds))
+
     def run(self) -> None:
         log.info("SchedulerHeartbeat started (poll_interval=%.1fs)", self._interval)
         while not self._stop_evt.is_set():
@@ -116,6 +178,84 @@ class SchedulerHeartbeat(threading.Thread):
                 break
             self._maybe_tick()
         log.info("SchedulerHeartbeat stopped")
+
+    def _watchdog_run(self) -> None:
+        """[P3] 独立看门狗线程：不参与 tick 触发，只按自己的轮询间隔
+        （不超过 2 秒，避免用户配置很长的 poll_interval 时看门狗反应
+        也跟着变慢）检查主线程是否卡在某次未返回的 tick() 里。"""
+        while not self._watchdog_stop_evt.is_set():
+            if self._watchdog_stop_evt.wait(self._watchdog_poll_interval):
+                break
+            self._check_stuck()
+
+    def _check_stuck(self) -> None:
+        """[P3] tick() 执行看门狗：把模块 docstring 里"运维/看板可以用
+        ……判断心跳假死"这句建议升级为主动检测。每次心跳轮询醒来（不管
+        这一轮是否真的触发了 tick()）都做一次判定，命中时告警一次并
+        置位 suspected_stuck，直到卡住的那次 tick() 终于返回才复位。
+        本方法自身绝不抛出异常影响心跳线程存活。"""
+        try:
+            with self._stats_lock:
+                started_at = self._last_tick_started_at
+                finished_at = self._last_tick_finished_at
+                threshold_seconds = self._tick_interval_seconds * self._stuck_threshold_multiplier
+            # 从未 tick 过（started_at == 0）不判定；tick 过但已经正常
+            # 结束（finished_at >= started_at）也不判定——只有"已经开始
+            # 但还没结束"才是我们要抓的"卡在某次 tick() 里"这种情况。用
+            # `time.time() - started_at`（本次 tick 已经跑了多久）而不是
+            # `- finished_at`（上一次成功 tick 距今多久）来比较阈值——
+            # 后者在"第一次 tick 就卡住、finished_at 还停在 0.0"这种场景
+            # 下会立刻算出一个巨大的差值（距 Unix 纪元），误判为卡死。
+            is_currently_stuck = (
+                started_at > 0.0
+                and started_at > finished_at
+                and (time.time() - started_at) > threshold_seconds
+            )
+            with self._stats_lock:
+                if is_currently_stuck:
+                    self._suspected_stuck = True
+                    if not self._stuck_alert_sent:
+                        self._stuck_alert_sent = True
+                        stuck_seconds = time.time() - started_at
+                        should_alert = True
+                    else:
+                        should_alert = False
+                else:
+                    # 卡住的那次 tick() 已经返回（或从未发生过卡死），
+                    # 复位，允许下一次卡住重新告警一次。
+                    self._suspected_stuck = False
+                    self._stuck_alert_sent = False
+                    should_alert = False
+                    stuck_seconds = 0.0
+            if should_alert:
+                log.warning(
+                    "SchedulerHeartbeat suspected stuck: tick() has been running for "
+                    "%.1fs (threshold=%.1fs)", stuck_seconds, threshold_seconds,
+                )
+                self._alert_stuck(stuck_seconds)
+        except Exception as exc:
+            log.warning("SchedulerHeartbeat._check_stuck() raised: %s", exc)
+
+    def _alert_stuck(self, stuck_seconds: float) -> None:
+        """告警失败静默降级，不影响心跳线程本身。"""
+        if self._paths is None:
+            return
+        try:
+            from mini_agent.notification.dispatcher import NotificationDispatcher, NotificationMessage
+            NotificationDispatcher(self._paths).dispatch(NotificationMessage(
+                title="调度心跳疑似卡死",
+                body=(
+                    f"SchedulerHeartbeat 已连续 {stuck_seconds:.0f} 秒未能完成一次 "
+                    "tick()，线程仍存活（alive=True）但可能卡在某次同步调用里，"
+                    "建议检查是否有新代码违反了 tick() 内部'决策+提交、不做耗时"
+                    "调用'的约束"
+                )[:200],
+                source="scheduler_heartbeat_stuck",
+                meta={"stuck_seconds": round(stuck_seconds, 1)},
+            ))
+        except Exception as _mini_agent_exc:
+            from mini_agent.errors import log_exception
+            log_exception(_mini_agent_exc, where="mini_agent.evolution.scheduler_heartbeat.SchedulerHeartbeat._alert_stuck")
 
     def _maybe_tick(self) -> None:
         try:

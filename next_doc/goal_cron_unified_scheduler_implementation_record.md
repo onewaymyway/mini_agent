@@ -1,14 +1,14 @@
 # Goal / Cron 三条执行通道 统一调度层 改进计划 · 实施记录
 
 对应计划文档：`next_doc/goal_cron_unified_scheduler_improvement_plan.md`
-（P0、P1、P2 已完成；P3、P4 未开始；P5 为长期目标，本轮未启动）
+（P0、P1、P2、P3 已完成；P4 未开始；P5 为长期目标，本轮未启动）
 
 ## 处理状态
 
 - **P0（cron 分级响应资源仲裁）**：已完成。
 - **P1（cron 消耗统一记账）**：已完成。
 - **P2（cron 跳过追踪与主动告警）**：已完成。
-- **P3（tick() 执行看门狗）**：未开始，留待后续独立实施。
+- **P3（tick() 执行看门狗）**：已完成（本轮）。
 - **P4（统一调度可观测面板）**：未开始，留待后续独立实施。
 - **P5（收敛到统一调度层）**：长期目标，本轮未启动，不在本次范围内。
 
@@ -79,3 +79,102 @@ self_profile/global_knowledge/exploration 相关全部既有测试文件）：
 3. P4 统一调度总览的信息架构：P4 本身未开始，暂不适用。
 4. P5 的 `channel_weights` 是否自适应：P5 未启动，暂不适用。
 5. `UnifiedTaskScheduler` 是否需要感知现有灰度开关组合：P5 未启动，暂不适用。
+
+## 新增文件（P3）
+
+| 文件 | 作用 |
+|---|---|
+| `tests/test_goal_cron_unified_scheduler_p3.py` | P3 共 4 项单测：正常节奏 tick 不误报 `suspected_stuck`、模拟一次超长 tick（`threading.Event` 打桩阻塞）能在预期时间窗口内检测到卡死且只告警一次、`paths` 未注入时 `suspected_stuck` 仍正确置位但静默降级不发通知、`set_tick_interval_seconds()` 能实时更新看门狗判定阈值 |
+
+## 修改文件（P3）
+
+| 文件 | 改动 |
+|---|---|
+| `src/mini_agent/evolution/scheduler_heartbeat.py` | 新增独立看门狗线程：`start()` 重写为额外拉起一条 `_watchdog_run()` 线程（`stop()` 同步置位新增的 `_watchdog_stop_evt`），按不超过 2 秒的轮询间隔调用 `_check_stuck()`。判定条件：`last_tick_started_at > last_tick_finished_at`（当前确实卡在某次未返回的 tick 里，排除"从未 tick 过"/"tick 过但已正常结束"两种不该误报的情况）且 `time.time() - last_tick_started_at > tick_interval_seconds * stuck_threshold_multiplier`（默认 2 倍）。命中时置位 `suspected_stuck`（新增只读 property）并通过 `NotificationDispatcher` 告警一次（`_alert_stuck()`，`paths` 未注入时静默跳过，失败走 `log_exception` 降级）；`finally` 分支里 `last_tick_finished_at` 被刷新后自动复位 `suspected_stuck`/`_stuck_alert_sent`，允许下一次卡住重新告警一次。新增 `set_tick_interval_seconds()` 允许运行期间刷新判定用的基准值。构造参数新增 `tick_interval_seconds`（默认 60.0）、`paths`（默认 None）、`stuck_threshold_multiplier`（默认 2.0） |
+| `src/mini_agent/api/server.py` | 构造 `SchedulerHeartbeat` 时新增传入 `tick_interval_seconds`（读 `autonomous_loop.get_digest_status()` 里的值，失败退回 60.0）和 `paths`（现场 `AgentPaths(agent.cfg.project_root)` 构造，与本文件其它位置"paths 从不缓存"的一贯风格一致，构造失败时保持 `None`，看门狗静默降级） |
+| `src/mini_agent/api/routes.py` | `GET /v1/self/execution_model_status` 的 `scheduler_heartbeat` 字段新增 `suspected_stuck: bool`；端点内顺带调用 `heartbeat.set_tick_interval_seconds(tick_interval_seconds)` 刷新看门狗阈值（该端点已有的 `tick_interval_seconds` 计算逻辑复用，不重复计算；失败不影响其它字段返回） |
+
+## 关键设计决策（P3）
+
+7. **看门狗必须是独立线程，不能放进原有的 tick 循环线程里"顺带检查"**：
+   如果只是在 `run()` 主循环里"tick 完之后调用 `_check_stuck()`"，一旦
+   真的卡在某次 `tick()` 里，主循环本身会阻塞在那一行代码上出不来，
+   `_check_stuck()` 永远没有机会被执行——这正是本阶段要解决的故障场景
+   本身，用一个会被同样卡住的东西去检测"是否卡住"是自相矛盾的。因此
+   拆成两条线程：原有的 `run()` 只负责 tick 触发；新增 `_watchdog_run()`
+   完全独立运行，只依赖 `_stats_lock` 保护的几个时间戳字段，不依赖
+   `self._lock`（与 AgentRunner 共享的业务锁）也不依赖 tick 循环本身
+   是否还在正常运转。本轮实现之初曾把检查逻辑放在 `run()` 循环内，
+   写单测模拟"tick() 内部用 `threading.Event.wait()` 卡住"时立即复现了
+   "watchdog 永远检测不到"的问题，验证了拆分是必须的，不是过度设计。
+
+8. **判定阈值用"当前 tick 已经跑了多久"（`now - last_tick_started_at`），
+   不是文档原文字面的"`now - last_tick_finished_at`"**：如果直接照抄
+   `now - last_tick_finished_at > 2 * tick_interval_seconds`，在"进程
+   刚启动、第一次 tick 就卡住、`last_tick_finished_at` 还停留在初始值
+   `0.0`"这种场景下，`now - 0.0` 会立刻算出一个"距 Unix 纪元"的巨大差值，
+   还没真正卡住多久就会被误判为卡死。改为衡量"本次 tick 已经持续了
+   多久"，语义与文档描述的"当前正卡在一次未返回的 tick() 里"完全一致，
+   且不受 `last_tick_finished_at` 初始值的影响；`last_tick_started_at >
+   last_tick_finished_at` 这个前提条件仍然保留，用来排除"根本没有正在
+   进行的 tick"的情况。
+
+9. **告警节流沿用 P2 的"跨越阈值那一刻只告警一次"思路，但状态机更简单**：
+   P2 是计数器"恰好等于阈值"时触发；P3 没有一个天然递增的计数器，改用
+   一个布尔标志 `_stuck_alert_sent`——检测到卡死且尚未告警过（本次"卡住
+   事件"内）时告警并置位，之后同一次卡住事件内不再重复；`finally` 分支
+   刷新 `last_tick_finished_at` 后下一次 `_check_stuck()` 会发现"已经不
+   再处于卡住状态"，同步复位 `suspected_stuck`/`_stuck_alert_sent`，为
+   下一次可能的卡住事件重新做好告警准备。
+
+10. **看门狗自身的轮询间隔独立于 `interval_seconds`（tick 触发轮询间隔），
+    取 `min(interval_seconds, 2.0)`**：如果用户把 `scheduler_heartbeat_
+    poll_interval_seconds` 配置得很长（比如 30 秒），看门狗的反应速度不
+    应该跟着变慢到"最多 30 秒才检查一次"——卡死检测本身是独立的可观测性
+    功能，反应速度应该有一个不依赖用户配置的合理上限；测试环境里传入
+    很小的 `interval_seconds`（如 0.05）时看门狗也会相应更频繁，不受这个
+    2 秒上限影响（`min` 取两者中较小值）。
+
+## 测试结果（P3）
+
+```
+tests/test_goal_cron_unified_scheduler_p3.py ....   4 passed
+```
+
+与既有 `tests/test_scheduler_heartbeat.py`（阶段二观测字段测试）联合运行：
+
+```
+tests/test_goal_cron_unified_scheduler_p3.py tests/test_scheduler_heartbeat.py
+12 passed
+```
+
+与 P0/P1/P2 的既有测试文件联合运行，确认无回归：
+
+```
+tests/test_goal_cron_unified_scheduler_p3.py
+tests/test_scheduler_heartbeat.py
+tests/test_goal_cron_unified_scheduler_p0_p1_p2.py
+23 passed
+```
+
+范围回归（cron/仲裁/goal_cron/autonomous_loop/objective_executor/
+resource_budget/self_profile/global_knowledge/exploration/scheduler
+相关测试文件，补装本地环境缺失的 `pydantic`/`rich`/`fastapi`/`httpx`
+后运行）：282 passed；另有少数失败/报错文件（`test_global_knowledge_
+integration.py`、`test_objective_executor_kanban_tracks_r4.py` 等）经
+排查确认是本地沙箱环境缺少 `uvicorn` 等依赖导致的既有收集错误，与本轮
+改动无关，不在本次范围内修复（与 P0-P2 实施记录里"少数文件在本次改动
+之前就存在环境依赖问题"的结论一致）。
+
+## 待确认项回应（对照原方案 §4，追加 P3 相关项）
+
+6.（新增，对应原文档 §4 未明确编号但与 P3 相关的隐含问题）看门狗告警的
+   `stuck_threshold_multiplier`（默认 2.0）是否需要做成独立配置项：本轮
+   先以构造参数形式存在（`SchedulerHeartbeat.__init__` 的
+   `stuck_threshold_multiplier`），未接入 `AppConfig`/`autonomy.*`
+   配置体系——`api/server.py` 构造时未显式传入，使用默认值 2.0，与方案
+   原文"`now - last_tick_finished_at > 2 * tick_interval_seconds`"的建议
+   完全一致。若后续需要用户可调，可以比照 `cron.degraded_max_concurrent`
+   /`cron.skip_alert_threshold` 的模式补一个 `autonomy.scheduler_
+   heartbeat_stuck_threshold_multiplier` 配置项，本轮判断"先用固定默认值
+   观察实际数据"是更稳妥的路径，不引入还没有使用数据支撑的可调参数。

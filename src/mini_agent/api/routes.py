@@ -2072,6 +2072,10 @@ async def get_self_execution_model_status(request: Request):
                                            # 但 alive 仍为 True，说明心跳线程
                                            # 卡在某次 tick() 里没有返回。
         "last_tick_duration_seconds": float,  # [阶段二] 上一次 tick() 耗时
+        "suspected_stuck": bool,  # [goal_cron_unified_scheduler_improvement_
+                                   # plan.md P3] 看门狗当前是否怀疑心跳线程
+                                   # 卡在某次未返回的 tick() 里（alive=True
+                                   # 但已经很久没有产生新的 tick）。
       },
       "cron": {
         "reaped_job_count": int,   # [阶段一/三] CronJobRunner 累计强制
@@ -2108,7 +2112,7 @@ async def get_self_execution_model_status(request: Request):
         "scheduler_heartbeat": {"enabled": False, "alive": False,
                                  "poll_interval_seconds": 0.0, "tick_interval_seconds": 0.0,
                                  "last_tick_started_at": 0.0, "last_tick_finished_at": 0.0,
-                                 "last_tick_duration_seconds": 0.0},
+                                 "last_tick_duration_seconds": 0.0, "suspected_stuck": False},
         "cron": {"reaped_job_count": 0},
         "objective_executor": {"stale_step_reap_count": 0},
         "recent_recoveries": [],
@@ -2154,6 +2158,15 @@ async def get_self_execution_model_status(request: Request):
             except Exception:
                 pass
 
+        # [P3] 顺带把最新的 tick_interval_seconds 刷新给看门狗——tick_interval
+        # 可能在心跳线程构造之后被灰度调整，这里只是更新一个纯内存阈值，
+        # 失败不影响本端点其余字段正常返回。
+        if heartbeat is not None:
+            try:
+                heartbeat.set_tick_interval_seconds(tick_interval_seconds)
+            except Exception:
+                pass
+
         result["scheduler_heartbeat"] = {
             "enabled": heartbeat is not None,
             "alive": bool(heartbeat.is_alive()) if heartbeat is not None else False,
@@ -2164,6 +2177,8 @@ async def get_self_execution_model_status(request: Request):
             "last_tick_started_at": getattr(heartbeat, "last_tick_started_at", 0.0) if heartbeat is not None else 0.0,
             "last_tick_finished_at": getattr(heartbeat, "last_tick_finished_at", 0.0) if heartbeat is not None else 0.0,
             "last_tick_duration_seconds": getattr(heartbeat, "last_tick_duration_seconds", 0.0) if heartbeat is not None else 0.0,
+            # [goal_cron_unified_scheduler_improvement_plan.md P3]
+            "suspected_stuck": bool(getattr(heartbeat, "suspected_stuck", False)) if heartbeat is not None else False,
         }
 
         # [阶段一/三] cron watchdog 回收计数——job_runner 未注入（旧路径）
