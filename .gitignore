@@ -38,3 +38,8 @@ temp_data/
 apps/mini_agent_kanban/.kanban_prefs.json
 .agent/knowledge.md
 .agent/hybrid_exec/runs/
+.agent/cron_jobs/
+.agent/daily_reports/
+.agent/event_cursors/
+.agent/wiki/
+.agent/workflow_sessions/
