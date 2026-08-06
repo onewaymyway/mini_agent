@@ -438,3 +438,134 @@ tests/test_unified_scheduler_preview_route.py
    的数据，才需要重新评估——留到那时再判断，不在本轮提前引入。
 
 其余待确认项（1-7）沿用 P0-P4 实施记录的既有回应，状态不变。
+
+## P5 第 3 步 —— 接管仲裁裁决
+
+**处理状态：已完成。** 对应改进计划 P5 分步迁移路径的第 3 步，范围是
+"degraded 状态下 goal 通道与 cron 通道的并发上限，改由统一裁决计算"——
+`blocked`/`full` 两态判定逻辑（`ResourceArbiter.gating_state()` 本身）
+不变，goal_cycle 通道仍复用 goal 通道的执行池（不单独参与槽位分配），
+第 4-5 步（接管实际派发）仍未启动。
+
+### 新增/修改文件（P5 第 3 步）
+
+| 文件 | 改动 |
+|---|---|
+| `src/mini_agent/evolution/unified_task_scheduler.py` | 新增纯函数 `allocate_weighted_slots(total_slots, weights, reserved_min=None) -> dict[str, int]`：先满足 `reserved_min` 声明的保底槽位，剩余槽位按权重用最大余数法（largest remainder）比例分配，保证 `sum(allocation.values()) == total_slots`；`total_slots<=0`/`weights` 为空/权重全为 0 均有明确降级行为 |
+| `src/mini_agent/config/models.py` | 新增 `SchedulerConfig` dataclass（`unified_arbitration_enabled: bool = False`、`degraded_total_slots: int = 2`、`channel_weights: dict` 默认 `{goal:1.0, cron:1.0, goal_cycle:1.0}`），挂载到 `AppConfig.scheduler`；`CronConfig` 新增 `reserved_min_concurrent: int = 1` |
+| `src/mini_agent/evolution/objective_executor.py` | `effective_max_concurrent()` 的 Track J 分支：`scheduler.unified_arbitration_enabled=True` 时，`degraded_cap` 改由 `allocate_weighted_slots(degraded_total_slots, {"goal": w_goal, "cron": w_cron}, reserved_min={"cron": reserved_min_cron})` 计算的 `allocation["goal"]` 覆盖，失败/未启用均回退到原有的 `resource_gating_degraded_max_concurrent` 固定值 |
+| `src/mini_agent/evolution/cron_job_runner.py` | `effective_max_concurrent()` 对称改动：同一次 `allocate_weighted_slots()` 调用取 `allocation["cron"]`（与 `ObjectiveExecutor` 各自独立调用，但传入相同的配置源，计算结果天然一致——两处不共享调用是因为两个类之间本来就没有直接引用关系，重复一次纯函数调用的成本可忽略） |
+| `src/mini_agent/api/routes.py` | `GET /v1/self/unified_scheduler_preview` 新增 `slot_allocation` 字段：展示"如果当前是 degraded 状态，会分配到的槽位"，读取当前配置直接计算，与 `unified_arbitration_enabled` 是否真正打开无关（开关关闭时也能看到"如果打开会怎样"），失败时静默降级为占位结构 |
+| `tests/test_unified_task_scheduler.py` | 新增 `TestAllocateWeightedSlots`：7 项用例覆盖默认配置复现改造前行为、保底优先、保底总和超出总槽位的降级、零/负槽位、按权重的最大余数分配、缺失权重仍保底、空输入 |
+| `tests/test_unified_arbitration_p5_step3.py` | 新增：6 项用例覆盖开关默认关闭时两条通道行为不变、开关开启且默认权重时复现改造前的 1:1 分配、goal 权重更高时分到更多槽位但 cron 仍保底、`full` 态不受影响、构造并发上限仍是"只降不升"的最终安全阀（统一裁决算出的份额不能突破它） |
+
+### 关键设计决策（P5 第 3 步）
+
+22. **本轮只接管"degraded 状态的并发上限"这一个决策点，不是"仲裁的
+    全部结果"**：改进计划原文第 3 步描述比较宽泛（"决定这次调度周期给
+    每条通道分配几个执行槽位"），但 `blocked`/`full` 两态在改造前就是
+    "全体一致响应"（`blocked` 两条通道都停/跳过，`full` 两条通道都不
+    收紧），本来就没有"各通道独立判断、互相不感知"的不一致问题——P0-P1
+    已经解决了这部分（cron 对 `blocked`/`full` 的响应方式已经与 goal
+    通道对齐）。真正存在"两条通道各自硬编码一个固定数字、互相不感知
+    对方权重"这个不对称问题的，只有 `degraded` 这一态的并发上限。把
+    范围收紧到这一个具体决策点，是"渐进式适配、不重写"（改进计划设计
+    边界第 1 条）在本步骤的体现，也让改动可以做到"默认关闭，开启后行为
+    可预测、可回退"，而不是一次性改变三条通道全部的仲裁响应路径。
+
+23. **`channel_weights` 采用固定值，不做"预算消耗越多、权重越低"式的
+    自适应**：与 P5 第 1-2 步 `suggest_order()` 的选择一致（见既有决策
+    19），也是改进计划待讨论问题 4 明确建议的路径——"先上线固定权重
+    版本，积累实际调度数据后再评估是否需要自适应机制，避免一开始就
+    引入难以调试的动态反馈系统"。本轮固定权重版本已经解决了"cron 保底"
+    这个最迫切的不对称问题（`reserved_min_concurrent`），自适应权重
+    留给以后视观察到的调度数据决定是否需要。
+
+24. **`ObjectiveExecutor`/`CronJobRunner` 各自独立调用
+    `allocate_weighted_slots()`，不引入一个共享的 `UnifiedTaskScheduler`
+    单例来"广播"分配结果**：改进计划原文写"改为向它'申请槽位'"，字面
+    上暗示一个共享的调度器实例。但复核代码后发现 `ObjectiveExecutor` 与
+    `CronJobRunner` 之间目前没有任何直接引用关系（都是被
+    `AutonomousLoop`/`HttpServer` 分别持有，互相不知道对方的存在），
+    引入一个共享单例意味着要么在两者之外新建一个必须被同时注入两处的
+    生命周期对象（改变两个类的构造签名和现有的依赖注入路径），要么退化
+    成一个全局单例（违反项目里"避免隐式全局状态"的一贯风格）。
+    `allocate_weighted_slots()` 是纯函数、给定相同输入必然给出相同
+    输出——两个类各自读同一份 `cfg.scheduler`/`cfg.cron` 配置、各自调用
+    这个纯函数，效果与"向一个共享调度器申请槽位"完全等价（两次调用
+    在同一个 tick 周期内看到的配置是同一份，计算结果天然一致），但不
+    需要改变任何现有类的构造方式或引入新的运行时依赖对象，风险显著
+    更低，且完全符合"改进计划第 3 步是这一具体决策点收归统一，不是
+    收归到某一个具体的运行时对象"这一目标本身。等到第 4 步真正需要
+    "统一入口调用 `tick()`"时，再评估是否需要这样一个共享实例。
+
+25. **`goal_cycle` 通道不单独参与槽位分配，`allocate_weighted_slots()`
+    调用时只传 `{"goal": w_goal, "cron": w_cron}` 两个权重**：与 P5
+    第 1-2 步既有决策一致——`goal_cycle` 触发后转发进 `ObjectiveExecutor`
+    （改进计划背景第 3 条），复用的就是 goal 通道的并发池，不是一个
+    独立的执行槽位消费者。`channel_weights` 配置里仍保留 `goal_cycle`
+    这个键（默认 1.0），是为了与 `suggest_order()` 的排序预览保持字段
+    形状一致，但第 3 步的槽位分配计算不读取它，避免"配置了却没有实际
+    效果"的字段被误解为已经生效。
+
+26. **构造并发上限（`max_concurrent`/`MAX_CONCURRENT_OBJECTIVES` 等既有
+    天花板）仍在统一裁决结果之上再收紧一次，不是被统一裁决取代**：
+    `effective_max_concurrent()` 的既有结构是"层层取更严格值"（模块级
+    绝对天花板 → 配置 cap → degraded 收紧 → 自适应收紧，见 Track K
+    文档字符串"只降不升，安全阀在两端"），统一裁决只是替换了"degraded
+    收紧"这一层用什么数字，不改变这个"层层收紧、最终取最严格值"的既有
+    结构。这意味着理论上存在"`allocate_weighted_slots()` 算出的份额超过
+    goal 通道自身天花板、多出的槽位没有被任何通道实际使用"的情况（见
+    `test_allocation_beyond_goal_ceiling_is_clamped_by_module_cap`）——
+    这是已知的、留给未来视是否有实际影响再评估的开放问题（不是本轮的
+    实现缺陷：任何两个独立收紧机制叠加都会有这种"名义分配用不完"的
+    可能，第 4 步"接管实际派发"如果需要更精确的槽位利用率，届时会有
+    完整上下文重新设计）。
+
+### 测试结果（P5 第 3 步）
+
+```
+tests/test_unified_task_scheduler.py            29 passed  （含新增 7 项）
+tests/test_unified_arbitration_p5_step3.py        6 passed  （新增）
+```
+
+与 P0-P5 第 1-2 步既有测试文件联合运行，确认无回归：
+
+```
+tests/test_goal_cron_unified_scheduler_p0_p1_p2.py
+tests/test_goal_cron_unified_scheduler_p3.py
+tests/test_scheduler_heartbeat.py
+tests/test_scheduling_overview_route.py
+tests/test_unified_task_scheduler.py
+tests/test_unified_scheduler_preview_route.py
+tests/test_unified_arbitration_p5_step3.py
+tests/test_objective_executor_adaptive_concurrency.py
+tests/test_resource_arbiter_gating_track_j.py
+80 passed, 0 failed
+```
+
+`tests/test_unified_scheduler_preview_route.py` 单独复核（确认新增
+`slot_allocation` 字段未破坏既有 4 项用例）：4 passed。
+
+全量回归本轮未完整跑完（本地沙箱执行较慢，单次 `pytest tests/` 超出
+执行时间限制被中断），已确认无回归的范围覆盖了本次改动直接涉及的全部
+模块（`unified_task_scheduler`/`objective_executor`/`cron_job_runner`/
+`config.models`/`api.routes` 的 unified_scheduler_preview 端点）；仍有
+2 个文件在收集阶段报错（`test_judge_verdict.py` 缺 `json_repair`、
+`test_session.py` 的 `_flock` 平台兼容问题），与 P4 实施记录里的结论
+一致，确认与本轮改动无关，未在本次范围内修复。
+
+### 待确认项回应（对照原方案 §4，追加 P5 第 3 步相关项）
+
+10.（对应原方案 §4 第 2 条）cron 自己耗尽预算是否需要单独设上限：本轮
+    第 3 步解决的是"degraded 状态下的并发分配"，与"预算是否耗尽"是两个
+    独立的判定维度（`blocked` 仍是二元硬限制，本轮未改变），该问题仍然
+    开放，留给后续评估。
+11.（对应原方案 §4 第 4 条，追加）`channel_weights` 本轮确认采用固定值
+    版本（回应同待确认项 8），第 3 步已经用这份固定权重支撑了"cron 保底
+    并发数"的实际落地（`reserved_min_concurrent`），验证了固定权重版本
+    本身已经能解决当前最迫切的不对称问题，进一步印证了待确认项 4/8
+    "先上线固定权重、积累数据后再评估自适应"这一路径的合理性。
+
+其余待确认项（1-9）沿用 P0-P5 第 1-2 步实施记录的既有回应，状态不变。
+

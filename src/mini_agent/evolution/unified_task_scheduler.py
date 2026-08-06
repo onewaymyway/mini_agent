@@ -43,6 +43,7 @@ __all__ = [
     "ObjectiveChannelAdapter",
     "CronChannelAdapter",
     "GoalCycleChannelAdapter",
+    "allocate_weighted_slots",
 ]
 
 
@@ -274,6 +275,60 @@ class UnifiedTaskScheduler:
             return (-(w * t.priority), due)
 
         return sorted(all_tasks, key=_sort_key)
+
+
+def allocate_weighted_slots(
+    total_slots: int,
+    weights: dict[str, float],
+    *,
+    reserved_min: Optional[dict[str, int]] = None,
+) -> dict[str, int]:
+    """[P5 第 3 步 · 接管仲裁裁决] 按权重把 `total_slots` 个执行槽位分配给\n    各通道，供 `degraded` 状态下的并发上限裁决使用。
+
+    纯函数、零 IO、零 LLM 成本——与改进计划 §设计边界第 3 条一致。设计\n    要点：
+
+    1. **保底优先**：`reserved_min` 里声明的通道，无论权重多低，先分到\n       `min(reserved_min[name], total_slots)`（多个通道保底总和超过\n       `total_slots` 时，按声明顺序依次满足，直到槽位耗尽——这是一个\n       明确的降级行为，不是常态，真正配置合理时不应触发）。这正是\n       改进计划待讨论问题 2 提到的\"cron 保底并发数\"这一更直观的配置\n       思路的落地。\n    2. **剩余槽位按权重比例分配**，用最大余数法（largest remainder）\n       取整，保证 `sum(allocation.values()) == total_slots`（不会因为\n       四舍五入丢失或多出槽位）。\n    3. 权重缺失的通道视为权重 0（不参与剩余槽位的比例分配，但仍享有\n       `reserved_min` 保底）。\n    4. `total_slots <= 0` 或 `weights` 为空时，所有已知通道（`weights`\n       与 `reserved_min` 的并集）分配 0。
+
+    这是本轮新增的**纯计算**能力，尚未接管任何通道的实际执行——见\n    `objective_executor.py`/`cron_job_runner.py` 里 `scheduler.\n    unified_arbitration_enabled` 开关的说明：默认关闭，配置未升级的\n    用户行为完全不变（改进计划 §设计边界第 4 条）。\n    """
+    reserved_min = reserved_min or {}
+    names = list(dict.fromkeys(list(weights.keys()) + list(reserved_min.keys())))
+    allocation: dict[str, int] = {name: 0 for name in names}
+
+    if total_slots <= 0 or not names:
+        return allocation
+
+    remaining = total_slots
+    for name in names:
+        want = max(0, int(reserved_min.get(name, 0)))
+        give = min(want, remaining)
+        allocation[name] = give
+        remaining -= give
+
+    if remaining <= 0:
+        return allocation
+
+    positive_weights = {n: max(0.0, float(weights.get(n, 0.0))) for n in names}
+    total_weight = sum(positive_weights.values())
+
+    if total_weight <= 0:
+        # 没有正权重可参考——剩余槽位平均分给所有通道（largest remainder）。
+        positive_weights = {n: 1.0 for n in names}
+        total_weight = float(len(names))
+
+    raw_shares = {n: remaining * (positive_weights[n] / total_weight) for n in names}
+    floor_shares = {n: int(raw_shares[n]) for n in names}
+    distributed = sum(floor_shares.values())
+    leftover = remaining - distributed
+
+    # 按小数部分从大到小依次 +1，直到分完 leftover（最大余数法）。
+    remainders = sorted(names, key=lambda n: raw_shares[n] - floor_shares[n], reverse=True)
+    for i in range(leftover):
+        floor_shares[remainders[i % len(remainders)]] += 1
+
+    for name in names:
+        allocation[name] += floor_shares[name]
+
+    return allocation
 
 
 def build_default_scheduler(

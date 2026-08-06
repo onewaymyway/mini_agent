@@ -1401,6 +1401,48 @@ class AutonomyConfig:
 
 
 @dataclass
+class SchedulerConfig:
+    """[goal_cron_unified_scheduler_improvement_plan.md P5 第 3 步]
+    `UnifiedTaskScheduler` 的裁决参数。本类只影响"degraded 状态下各通道
+    分到多少并发槽位"这一件事，不涉及 P5 第 1-2 步的只读预览端点（那部分
+    不需要配置，权重默认全 1.0 且只用于展示）。
+
+    默认 `unified_arbitration_enabled=False`——改进计划 §设计边界第 4 条
+    要求"默认行为变化需要可灰度控制"，本类新增的所有字段在开关关闭时
+    不会被读取，`ObjectiveExecutor`/`CronJobRunner` 仍走各自改造前就有的
+    独立裁决路径（各自读 `autonomy.resource_gating_degraded_max_concurrent`
+    / `cron.degraded_max_concurrent`）。
+    """
+
+    # 是否启用统一调度层的仲裁裁决：True 时，degraded 状态下 goal 通道与
+    # cron 通道的并发上限改由 `allocate_weighted_slots()` 按
+    # `channel_weights`/`degraded_total_slots`/`cron.reserved_min_concurrent`
+    # 统一计算；False（默认）时两条通道继续各自独立裁决，行为与本 Track
+    # 之前完全一致。
+    unified_arbitration_enabled: bool = False
+
+    # degraded 状态下，goal 通道与 cron 通道总共可用的并发槽位数（两条
+    # 通道共享，按权重 + cron 保底切分）。默认 2，等于改造前两条通道各自
+    # 默认 degraded 上限（1 + 1）之和——保证开关刚打开、权重仍是默认 1:1
+    # 时，两条通道各自分到的槽位数与改造前完全一致，是一个"接入但不改变
+    # 现状"的安全默认值。
+    degraded_total_slots: int = 2
+
+    # 各通道的相对权重，用于 `allocate_weighted_slots()` 的比例分配。
+    # `goal_cycle` 通道复用 goal 通道的执行池（见改进计划背景第 3 条：
+    # goal_cycle 触发后转发进 `ObjectiveExecutor`，复用通道 1 的并发），
+    # 所以这里只需要 `goal`/`cron` 两个权重参与实际裁决；`goal_cycle`
+    # 权重目前仅供 P5 第 1-2 步的只读排序预览（`suggest_order()`）使用。
+    # 默认全 1.0，不偏向任何通道——与 P5 第 1-2 步 `suggest_order()` 的
+    # 默认权重保持一致的"不引入隐含偏向"原则。
+    channel_weights: dict = field(default_factory=lambda: {
+        "goal": 1.0,
+        "cron": 1.0,
+        "goal_cycle": 1.0,
+    })
+
+
+@dataclass
 class CronConfig:
     """[daemon cron 任务专属执行机制] 见 evolution/cron_job_{workspace,
     executor,runner,agent_bridge}.py。控制 cron job 后台线程执行的全局
@@ -1456,6 +1498,16 @@ class CronConfig:
     # 默认 5：太低容易在偶发的短暂 blocked 期间就刷屏告警，太高则错过
     # 真正"长期没跑成功"的信号。
     skip_alert_threshold: int = 5
+
+    # [goal_cron_unified_scheduler_improvement_plan.md P5 第 3 步] degraded
+    # 状态下、且 `scheduler.unified_arbitration_enabled=True` 时，普通
+    # cron 通道的保底并发槽位数——即使 goal 通道权重更高，cron 通道分配到
+    # 的槽位也不会低于这个值。默认 1，与改造前 `degraded_max_concurrent`
+    # 的默认值语义一致（degraded 时 cron 至少还能跑一个），只是决定权从
+    # "cron 自己固定收紧到这个数"变成"UnifiedTaskScheduler 保证它至少
+    # 拿到这么多"。仅在 `unified_arbitration_enabled=True` 时生效，默认
+    # 关闭状态下完全不影响现有行为。
+    reserved_min_concurrent: int = 1
 
 
 @dataclass
@@ -1720,6 +1772,7 @@ class AppConfig:
     autonomy: AutonomyConfig = field(default_factory=AutonomyConfig)
     digest_advisor: DigestAdvisorConfig = field(default_factory=DigestAdvisorConfig)
     cron: CronConfig = field(default_factory=CronConfig)
+    scheduler: SchedulerConfig = field(default_factory=SchedulerConfig)
     workflow:   WorkflowConfig   = field(default_factory=WorkflowConfig)
     format_correction: FormatCorrectionConfig = field(default_factory=FormatCorrectionConfig)
     role_agent: RoleAgentConfig  = field(default_factory=RoleAgentConfig)

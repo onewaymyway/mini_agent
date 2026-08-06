@@ -691,7 +691,34 @@ class ObjectiveExecutor:
             autonomy_cfg, "resource_gating_degraded_enabled", True
         ):
             degraded_cap = getattr(autonomy_cfg, "resource_gating_degraded_max_concurrent", 1)
-            cap = min(cap, degraded_cap)
+            # [goal_cron_unified_scheduler_improvement_plan.md P5 第 3 步]
+            # `scheduler.unified_arbitration_enabled=True` 时，degraded 上限
+            # 改由 UnifiedTaskScheduler 按 channel_weights 统一裁决（与
+            # CronJobRunner 共享同一份 degraded_total_slots），而不是各自
+            # 独立读一个固定数字——两条通道的裁决从此互相感知对方的权重。
+            # 默认关闭，失败/未启用时都退回上面这行改造前就有的独立裁决，
+            # 不改变现有行为（§设计边界第 4 条）。
+            scheduler_cfg = getattr(self._cfg, "scheduler", None) if self._cfg is not None else None
+            if scheduler_cfg is not None and getattr(scheduler_cfg, "unified_arbitration_enabled", False):
+                try:
+                    from mini_agent.evolution.unified_task_scheduler import allocate_weighted_slots
+                    cron_cfg = getattr(self._cfg, "cron", None)
+                    reserved_min_cron = getattr(cron_cfg, "reserved_min_concurrent", 1) if cron_cfg is not None else 1
+                    total_slots = getattr(scheduler_cfg, "degraded_total_slots", 2)
+                    weights = getattr(scheduler_cfg, "channel_weights", None) or {}
+                    allocation = allocate_weighted_slots(
+                        total_slots,
+                        {"goal": weights.get("goal", 1.0), "cron": weights.get("cron", 1.0)},
+                        reserved_min={"cron": reserved_min_cron},
+                    )
+                    degraded_cap = allocation.get("goal", degraded_cap)
+                except Exception as _mini_agent_exc:
+                    from mini_agent.errors import log_exception
+                    log_exception(
+                        _mini_agent_exc,
+                        where="mini_agent.evolution.objective_executor.ObjectiveExecutor.effective_max_concurrent.unified_arbitration",
+                    )
+            cap = min(cap, max(1, int(degraded_cap)))
 
         if autonomy_cfg is None or not getattr(autonomy_cfg, "adaptive_concurrency_enabled", False):
             return cap

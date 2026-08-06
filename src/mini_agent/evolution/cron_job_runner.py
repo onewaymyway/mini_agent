@@ -197,6 +197,33 @@ class CronJobRunner:
                 return cap
             cron_cfg = getattr(self._base_cfg, "cron", None)
             degraded_cap = getattr(cron_cfg, "degraded_max_concurrent", 1) if cron_cfg is not None else 1
+
+            # [goal_cron_unified_scheduler_improvement_plan.md P5 第 3 步]
+            # 与 ObjectiveExecutor.effective_max_concurrent() 对称：开启
+            # `scheduler.unified_arbitration_enabled` 时，degraded 上限改由
+            # UnifiedTaskScheduler 按 channel_weights + cron 保底并发数统一
+            # 裁决，两条通道共享同一份 degraded_total_slots。默认关闭/异常
+            # 时都退回上面这行改造前就有的独立裁决，不改变现有行为。
+            scheduler_cfg = getattr(self._base_cfg, "scheduler", None)
+            if scheduler_cfg is not None and getattr(scheduler_cfg, "unified_arbitration_enabled", False):
+                try:
+                    from mini_agent.evolution.unified_task_scheduler import allocate_weighted_slots
+                    reserved_min_cron = getattr(cron_cfg, "reserved_min_concurrent", 1) if cron_cfg is not None else 1
+                    total_slots = getattr(scheduler_cfg, "degraded_total_slots", 2)
+                    weights = getattr(scheduler_cfg, "channel_weights", None) or {}
+                    allocation = allocate_weighted_slots(
+                        total_slots,
+                        {"goal": weights.get("goal", 1.0), "cron": weights.get("cron", 1.0)},
+                        reserved_min={"cron": reserved_min_cron},
+                    )
+                    degraded_cap = allocation.get("cron", degraded_cap)
+                except Exception as _mini_agent_exc:
+                    from mini_agent.errors import log_exception
+                    log_exception(
+                        _mini_agent_exc,
+                        where="mini_agent.evolution.cron_job_runner.CronJobRunner.effective_max_concurrent.unified_arbitration",
+                    )
+
             return max(1, min(cap, int(degraded_cap)))
         except Exception as _mini_agent_exc:
             from mini_agent.errors import log_exception

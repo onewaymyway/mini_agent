@@ -1,9 +1,18 @@
 # Goal / Cron 三条执行通道 统一调度层 改进计划
 
-- **版本**: v1.5
+- **版本**: v1.6
 - **实施记录**: `next_doc/goal_cron_unified_scheduler_implementation_record.md`
-  （P0/P1/P2/P3/P4 已完成；P5 第 1-2 步已完成，第 3-5 步未启动）
+  （P0/P1/P2/P3/P4 已完成；P5 第 1-3 步已完成，第 4-5 步未启动）
 - **变更记录**：
+  - v1.6：P5 第 3 步（接管仲裁裁决）已实现——新增纯函数
+    `allocate_weighted_slots()`，`ObjectiveExecutor`/`CronJobRunner` 在
+    `scheduler.unified_arbitration_enabled=True`（默认 `False`）时，
+    degraded 状态的并发上限改由该函数按 `channel_weights`/
+    `degraded_total_slots`/`cron.reserved_min_concurrent` 统一裁决，两条
+    通道从此互相感知对方的权重分配；开关默认关闭，未升级配置的用户行为
+    完全不变。`GET /v1/self/unified_scheduler_preview` 新增
+    `slot_allocation` 字段展示当前配置下的裁决结果（与开关是否打开无关，
+    可提前观察）。第 4-5 步（接管实际派发）仍未启动，详见实施记录。
   - v1.5：P5 第 1-2 步（定义统一接口 + 三条通道只读适配 + 只读聚合排序
     建议）已实现，新增 `UnifiedTaskScheduler`/`TaskChannel` 及配套只读
     预览端点 `GET /v1/self/unified_scheduler_preview`。**不接管任何实际
@@ -224,12 +233,12 @@
     风格）。
   - 看板能正确渲染，新增测试覆盖端点空态/正常态。
 
-### P5（长期目标）—— 收敛到统一调度层【第 1-2 步已完成，第 3-5 步未启动】
+### P5（长期目标）—— 收敛到统一调度层【第 1-3 步已完成，第 4-5 步未启动】
 
-**处理状态：第 1-2 步（定义统一接口 + 三条通道只读适配 + 只读聚合排序
-建议）已完成。** 详见
-`next_doc/goal_cron_unified_scheduler_implementation_record.md`。第 3-5
-步（接管仲裁裁决/接管实际派发）仍是未启动的长期目标。
+**处理状态：第 1-3 步（定义统一接口 + 三条通道只读适配 + 只读聚合排序
+建议 + 接管仲裁裁决）已完成。** 详见
+`next_doc/goal_cron_unified_scheduler_implementation_record.md`。第 4-5
+步（接管实际派发）仍是未启动的长期目标。
 
 - **目标**：三条通道最终都通过一个统一的 `UnifiedTaskScheduler` 提交任务、
   领取执行槽位，由它统一做：并发分配、优先级/权重排序、资源仲裁响应、
@@ -249,11 +258,18 @@
      风险为零，可以先上线观察排序结果是否符合预期）。【已完成，见实施
      记录——新增只读端点 `GET /v1/self/unified_scheduler_preview`
      供观察排序结果】
-  3. **接管仲裁裁决**：`UnifiedTaskScheduler` 内部持有权重配置
+  3. **接管仲裁裁决**【已完成，见实施记录】：`UnifiedTaskScheduler` 内部持有权重配置
      （`scheduler.channel_weights = {goal: x, cron: y, goal_cycle: z}` 或
      "cron 保底并发数"这类更直观的配置），根据 P1 统一记账的预算数据 +
      权重，决定"这次调度周期给每条通道分配几个执行槽位"，`ObjectiveExecutor`/
      `CronJobRunner` 改为向它"申请槽位"而不是各自问 `ResourceArbiter`。
+     ——**范围说明**：本轮落地的是"degraded 状态下两条通道的并发上限"这
+     一具体决策点（新增纯函数 `allocate_weighted_slots()`，`channel_weights`
+     用固定值而非 P1 提到的"根据预算数据自适应"，理由见实施记录待确认项
+     回应），`blocked`/`full` 两态的判定逻辑（`ResourceArbiter.
+     gating_state()` 本身）未改变——仍是"only the degraded concurrency
+     split moved into the unified layer"，不是"仲裁的全部决策都收归统一
+     层"，后者留给未来视情况评估是否需要。
   4. **接管实际派发**：三条通道的 `tick()` 触发点最终都收敛成
      `UnifiedTaskScheduler.tick()` 一个入口，`AutonomousLoop._tick_passive/
      _tick_maintenance` 里现在分散调用 `cron_scheduler.tick()`/

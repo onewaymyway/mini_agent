@@ -2449,14 +2449,41 @@ async def get_self_unified_scheduler_preview(request: Request):
         "goal_cycle": [...],
       },
       "suggested_order": [ 同上字段的任务列表，跨通道合并排序 ],
+      "slot_allocation": {
+        "unified_arbitration_enabled": bool,
+        "degraded_total_slots": int,
+        "channel_weights": {"goal": float, "cron": float},
+        "reserved_min_cron": int,
+        "allocation": {"goal": int, "cron": int},
+      },
     }
+
+    `slot_allocation`（[P5 第 3 步]）展示的是"如果当前处于 degraded 状态，
+    `allocate_weighted_slots()` 会给两条通道分配多少并发槽位"——按当前
+    配置（`scheduler.channel_weights`/`degraded_total_slots`/
+    `cron.reserved_min_concurrent`）计算，与 `unified_arbitration_enabled`
+    是否真正开启无关（开关关闭时这里仍展示"如果开启会怎样"，方便在
+    正式打开开关前先观察计算结果是否符合预期，与 P5 第 1-2 步"先上线
+    观察排序结果"的思路一致）。**本字段仍是纯展示**——是否真的按这份
+    分配裁决，取决于 `unified_arbitration_enabled` 开关本身，本端点不
+    修改任何配置、不触发任何实际派发。
     """
     http_server = getattr(request.app.state, "http_server", None)
     if http_server is None:
         raise HTTPException(status_code=503, detail="HttpServer not available")
     _require_owner(request)
 
-    result: dict = {"channels": {"goal": [], "cron": [], "goal_cycle": []}, "suggested_order": []}
+    result: dict = {
+        "channels": {"goal": [], "cron": [], "goal_cycle": []},
+        "suggested_order": [],
+        "slot_allocation": {
+            "unified_arbitration_enabled": False,
+            "degraded_total_slots": 0,
+            "channel_weights": {},
+            "reserved_min_cron": 0,
+            "allocation": {},
+        },
+    }
 
     al = http_server.autonomous_loop
     paths = getattr(al, "_paths", None) if al is not None else None
@@ -2482,6 +2509,32 @@ async def get_self_unified_scheduler_preview(request: Request):
     cron_scheduler = getattr(al, "_cron_scheduler", None) if al is not None else None
     if cron_scheduler is None:
         cron_scheduler = getattr(http_server.bridge, "_cron_scheduler", None)
+
+    try:
+        from mini_agent.evolution.unified_task_scheduler import allocate_weighted_slots
+        _cfg_for_alloc = getattr(http_server.bridge.agent, "cfg", None) if http_server.bridge.agent else None
+        scheduler_cfg = getattr(_cfg_for_alloc, "scheduler", None) if _cfg_for_alloc is not None else None
+        cron_cfg = getattr(_cfg_for_alloc, "cron", None) if _cfg_for_alloc is not None else None
+        total_slots = getattr(scheduler_cfg, "degraded_total_slots", 2) if scheduler_cfg is not None else 2
+        weights = (getattr(scheduler_cfg, "channel_weights", None) or {}) if scheduler_cfg is not None else {}
+        reserved_min_cron = getattr(cron_cfg, "reserved_min_concurrent", 1) if cron_cfg is not None else 1
+        goal_weight = weights.get("goal", 1.0)
+        cron_weight = weights.get("cron", 1.0)
+        allocation = allocate_weighted_slots(
+            total_slots,
+            {"goal": goal_weight, "cron": cron_weight},
+            reserved_min={"cron": reserved_min_cron},
+        )
+        result["slot_allocation"] = {
+            "unified_arbitration_enabled": bool(getattr(scheduler_cfg, "unified_arbitration_enabled", False)),
+            "degraded_total_slots": total_slots,
+            "channel_weights": {"goal": goal_weight, "cron": cron_weight},
+            "reserved_min_cron": reserved_min_cron,
+            "allocation": allocation,
+        }
+    except Exception as _mini_agent_exc:
+        from mini_agent.errors import log_exception
+        log_exception(_mini_agent_exc, where='mini_agent.api.routes.get_self_unified_scheduler_preview.slot_allocation')
 
     try:
         from mini_agent.evolution.unified_task_scheduler import build_default_scheduler

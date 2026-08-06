@@ -28,6 +28,7 @@ from mini_agent.evolution.unified_task_scheduler import (
     CronChannelAdapter,
     GoalCycleChannelAdapter,
     ObjectiveChannelAdapter,
+    allocate_weighted_slots,
     SchedulableTask,
     UnifiedTaskScheduler,
     build_default_scheduler,
@@ -262,6 +263,55 @@ class TestUnifiedTaskScheduler(_Base):
         # 依赖全为 None 时三条通道都降级为空列表，不报错
         for tasks in result.values():
             self.assertEqual(tasks, [])
+
+
+class TestAllocateWeightedSlots(unittest.TestCase):
+    """[P5 第 3 步] `allocate_weighted_slots()` 纯函数的分配行为。"""
+
+    def test_equal_weights_default_matches_pre_p5_behavior(self):
+        # degraded_total_slots=2、权重 1:1、cron 保底 1 —— 应该正好复现
+        # 改造前 goal=1/cron=1 的默认行为（SchedulerConfig 默认值就是照这个
+        # 场景选的）。
+        allocation = allocate_weighted_slots(
+            2, {"goal": 1.0, "cron": 1.0}, reserved_min={"cron": 1},
+        )
+        self.assertEqual(allocation, {"goal": 1, "cron": 1})
+
+    def test_reserved_min_guarantees_cron_floor_even_with_low_weight(self):
+        allocation = allocate_weighted_slots(
+            4, {"goal": 9.0, "cron": 1.0}, reserved_min={"cron": 1},
+        )
+        self.assertGreaterEqual(allocation["cron"], 1)
+        self.assertEqual(sum(allocation.values()), 4)
+
+    def test_reserved_min_exceeding_total_slots_degrades_gracefully(self):
+        allocation = allocate_weighted_slots(
+            1, {"goal": 1.0, "cron": 1.0}, reserved_min={"cron": 1, "goal": 1},
+        )
+        # 总槽位不够两边都保底时，按声明顺序依次满足，总和不超过 total_slots
+        self.assertEqual(sum(allocation.values()), 1)
+
+    def test_zero_or_negative_total_slots_allocates_nothing(self):
+        allocation = allocate_weighted_slots(0, {"goal": 1.0, "cron": 1.0})
+        self.assertEqual(allocation, {"goal": 0, "cron": 0})
+        allocation_neg = allocate_weighted_slots(-3, {"goal": 1.0, "cron": 1.0})
+        self.assertEqual(allocation_neg, {"goal": 0, "cron": 0})
+
+    def test_weighted_split_sums_to_total_slots_largest_remainder(self):
+        allocation = allocate_weighted_slots(5, {"goal": 2.0, "cron": 1.0})
+        self.assertEqual(sum(allocation.values()), 5)
+        # goal 权重是 cron 两倍，理应分到更多（或至少不少于）槽位
+        self.assertGreaterEqual(allocation["goal"], allocation["cron"])
+
+    def test_missing_weight_defaults_to_zero_but_reserved_min_still_applies(self):
+        allocation = allocate_weighted_slots(
+            3, {"goal": 1.0}, reserved_min={"cron": 1},
+        )
+        self.assertEqual(allocation["cron"], 1)
+        self.assertEqual(sum(allocation.values()), 3)
+
+    def test_empty_weights_and_reserved_min_allocates_nothing(self):
+        self.assertEqual(allocate_weighted_slots(5, {}), {})
 
 
 if __name__ == "__main__":
