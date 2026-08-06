@@ -98,6 +98,50 @@ class TestNeteaseNews:
         assert result.overall_score > 0
 
 
+class TestCLSNews:
+    """财联社评估测试"""
+
+    @pytest.fixture
+    def runner(self):
+        return EvaluationRunner(config={"delay_between_sites": 0})
+
+    @pytest.fixture
+    def cls_config(self):
+        configs = get_websites_by_priority("P1")
+        return next((c for c in configs if c.name == "财联社"), None)
+
+    def test_navigate_homepage(self, runner, cls_config):
+        scenario = {"id": "CLS-01", "name": "首页访问", "action": "navigate", "dimension": "页面访问成功率"}
+        result = runner._run_scenario(scenario, cls_config, mock_mode=True)
+        assert result.success is True
+
+    def test_extract_list(self, runner, cls_config):
+        scenario = {"id": "CLS-02", "name": "快讯列表提取", "action": "extract_list", "dimension": "抓取成功率"}
+        result = runner._run_scenario(scenario, cls_config, mock_mode=True)
+        assert result.success is True
+
+    def test_click_detail(self, runner, cls_config):
+        scenario = {"id": "CLS-03", "name": "专题页访问", "action": "click_detail", "dimension": "元素定位准确率"}
+        result = runner._run_scenario(scenario, cls_config, mock_mode=True)
+        assert result.success is True
+
+    def test_extract_realtime(self, runner, cls_config):
+        scenario = {"id": "CLS-04", "name": "实时行情提取", "action": "extract_realtime", "dimension": "抓取成功率"}
+        result = runner._run_scenario(scenario, cls_config, mock_mode=True)
+        assert result.success is True
+
+    def test_pagination(self, runner, cls_config):
+        scenario = {"id": "CLS-05", "name": "分页浏览", "action": "paginate", "dimension": "稳定性"}
+        result = runner._run_scenario(scenario, cls_config, mock_mode=True)
+        assert result.success is True
+
+    def test_full_evaluation(self, runner, cls_config):
+        result = runner.run_website(cls_config, mock_mode=True)
+        assert result.website_name == "财联社"
+        assert len(result.scenarios) == 5
+        assert result.overall_score > 0
+
+
 class TestNewsIntegration:
     """新闻资讯集成测试"""
 
