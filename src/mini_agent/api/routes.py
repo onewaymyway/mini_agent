@@ -2242,6 +2242,24 @@ async def get_self_scheduling_overview(request: Request):
     返回结构：
     {
       "gating": {"state": "full"|"degraded"|"blocked", "reason": str},
+      "scheduling_mode": {   # [调度模式可见性改进] 当前生效的调度机制配置，
+                              # 解决"到底是哪种调度模式在生效"只能翻配置文件
+                              # 才知道的问题
+        "unified_arbitration_enabled": bool,  # degraded 槽位是否由
+                                                # UnifiedTaskScheduler 按
+                                                # channel_weights 统一裁决
+        "adaptive_concurrency_enabled": bool,  # Goal 通道并发上限是否按
+                                                 # 近期失败率/耗时自适应收紧
+        "resource_gating_degraded_enabled": bool,  # degraded 是否会收紧
+                                                      # 并发（False 时 degraded
+                                                      # 只是提示，不收并发）
+        "channel_weights": {"goal": float, "cron": float} | None,  # 仅
+                              # unified_arbitration_enabled=True 时有意义
+        "degraded_allocation": {"goal": int, "cron": int} | None,  # 当前
+                              # gating.state=="degraded" 且 unified_arbitration
+                              # 开启时，两条通道各自分到的并发槽位；其它
+                              # 情况下为 None（不适用）
+      },
       "usage_breakdown": {   # [P1] 三类消耗的分项数字 + 当日预算上限
         "daily_token_budget": int, "used_today": int,
         "used_today_goals": int, "used_today_cron": int,
@@ -2256,6 +2274,11 @@ async def get_self_scheduling_overview(request: Request):
       },
       "cron_channel": {   # 不含 goal_cycle 通道的 job（run_mode 区分）
         "running": int, "queued": int,
+        "max_concurrent": int | None,   # 当前生效的并发上限（effective_
+                                          # max_concurrent()，degraded 时会
+                                          # 比 static_max_concurrent 更低）
+        "static_max_concurrent": int | None,  # full 状态下的并发天花板
+                                                # （构造时传入的 max_concurrent）
         "arbiter_skipped_count": int,   # [P1] 进程内累计
         "jobs_over_skip_threshold": [   # [P2] consecutive_skip_count 达到
                                           # cron.skip_alert_threshold 的 job
@@ -2279,9 +2302,17 @@ async def get_self_scheduling_overview(request: Request):
 
     result: dict = {
         "gating": None,
+        "scheduling_mode": {
+            "unified_arbitration_enabled": False,
+            "adaptive_concurrency_enabled": False,
+            "resource_gating_degraded_enabled": True,
+            "channel_weights": None,
+            "degraded_allocation": None,
+        },
         "usage_breakdown": None,
         "goal_channel": {"objective_slots": None, "queue_head_goal": None},
-        "cron_channel": {"running": 0, "queued": 0, "arbiter_skipped_count": 0,
+        "cron_channel": {"running": 0, "queued": 0, "max_concurrent": None,
+                          "static_max_concurrent": None, "arbiter_skipped_count": 0,
                           "jobs_over_skip_threshold": []},
         "goal_cycle_channel": {"total_count": 0, "pending_due_count": 0, "recent": []},
     }
@@ -2308,6 +2339,42 @@ async def get_self_scheduling_overview(request: Request):
         except Exception as _mini_agent_exc:
             from mini_agent.errors import log_exception
             log_exception(_mini_agent_exc, where='mini_agent.api.routes.get_self_scheduling_overview.gating')
+
+        # ── 调度模式（哪些开关生效、degraded 时槽位怎么分）──────────────────
+        try:
+            autonomy_cfg = getattr(cfg, "autonomy", None)
+            scheduler_cfg = getattr(cfg, "scheduler", None)
+            cron_cfg = getattr(cfg, "cron", None)
+            unified_enabled = bool(getattr(scheduler_cfg, "unified_arbitration_enabled", False)) if scheduler_cfg is not None else False
+            weights = (getattr(scheduler_cfg, "channel_weights", None) or {}) if scheduler_cfg is not None else {}
+            goal_weight = weights.get("goal", 1.0)
+            cron_weight = weights.get("cron", 1.0)
+            result["scheduling_mode"] = {
+                "unified_arbitration_enabled": unified_enabled,
+                "adaptive_concurrency_enabled": bool(getattr(autonomy_cfg, "adaptive_concurrency_enabled", False)) if autonomy_cfg is not None else False,
+                "resource_gating_degraded_enabled": bool(getattr(autonomy_cfg, "resource_gating_degraded_enabled", True)) if autonomy_cfg is not None else True,
+                "channel_weights": {"goal": goal_weight, "cron": cron_weight} if unified_enabled else None,
+                "degraded_allocation": None,
+            }
+            gating_state = (result["gating"] or {}).get("state")
+            if unified_enabled and gating_state == "degraded":
+                try:
+                    from mini_agent.evolution.unified_task_scheduler import allocate_weighted_slots
+                    reserved_min_cron = getattr(cron_cfg, "reserved_min_concurrent", 1) if cron_cfg is not None else 1
+                    total_slots = getattr(scheduler_cfg, "degraded_total_slots", 2) if scheduler_cfg is not None else 2
+                    allocation = allocate_weighted_slots(
+                        total_slots,
+                        {"goal": goal_weight, "cron": cron_weight},
+                        reserved_min={"cron": reserved_min_cron},
+                    )
+                    result["scheduling_mode"]["degraded_allocation"] = allocation
+                except Exception as _mini_agent_exc:
+                    from mini_agent.errors import log_exception
+                    log_exception(_mini_agent_exc, where='mini_agent.api.routes.get_self_scheduling_overview.degraded_allocation')
+        except Exception as _mini_agent_exc:
+            from mini_agent.errors import log_exception
+            log_exception(_mini_agent_exc, where='mini_agent.api.routes.get_self_scheduling_overview.scheduling_mode')
+
         try:
             from mini_agent.perception.global_knowledge import ensure_self_profile
             rb = ensure_self_profile(paths).resource_budget
@@ -2395,9 +2462,20 @@ async def get_self_scheduling_overview(request: Request):
                         "consecutive_skip_count": j.consecutive_skip_count,
                     })
 
+            max_concurrent = None
+            static_max_concurrent = None
+            if job_runner is not None:
+                try:
+                    max_concurrent = job_runner.effective_max_concurrent()
+                except Exception:
+                    max_concurrent = None
+                static_max_concurrent = getattr(job_runner, "_max_concurrent", None)
+
             result["cron_channel"] = {
                 "running": cron_running,
                 "queued": cron_queued,
+                "max_concurrent": max_concurrent,
+                "static_max_concurrent": static_max_concurrent,
                 "arbiter_skipped_count": getattr(job_runner, "arbiter_skipped_count", 0)
                 if job_runner is not None else 0,
                 "jobs_over_skip_threshold": over_threshold,

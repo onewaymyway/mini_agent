@@ -3838,6 +3838,23 @@ def _render_scheduling_overview(client: AgentClient):
     if reason:
         st.caption(reason)
 
+    mode = resp.get("scheduling_mode") or {}
+    unified_on = mode.get("unified_arbitration_enabled")
+    adaptive_on = mode.get("adaptive_concurrency_enabled")
+    degrade_on = mode.get("resource_gating_degraded_enabled")
+    mode_bits = [
+        f"统一仲裁 {'🟢开' if unified_on else '⚪关'}",
+        f"自适应并发 {'🟢开' if adaptive_on else '⚪关'}",
+        f"degraded 收紧并发 {'🟢开' if degrade_on else '⚪关'}",
+    ]
+    st.markdown(f"**当前调度模式**：{' · '.join(mode_bits)}")
+    if unified_on:
+        weights = mode.get("channel_weights") or {}
+        st.caption(f"通道权重 channel_weights：goal={weights.get('goal', 1.0)} / cron={weights.get('cron', 1.0)}")
+        alloc = mode.get("degraded_allocation")
+        if alloc:
+            st.caption(f"当前 degraded 槽位分配：goal={alloc.get('goal', 0)} / cron={alloc.get('cron', 0)}")
+
     usage = resp.get("usage_breakdown")
     if usage:
         budget = usage.get("daily_token_budget", 0) or 0
@@ -3859,7 +3876,7 @@ def _render_scheduling_overview(client: AgentClient):
         goal_ch = resp.get("goal_channel") or {}
         slots = goal_ch.get("objective_slots")
         if slots:
-            st.metric("并发槽位", f"{slots.get('running', 0)}/{slots.get('max', 0)}")
+            st.metric("并发槽位（运行中/当前上限）", f"{slots.get('running', 0)}/{slots.get('max', 0)}")
             st.caption(f"静态上限 static_cap={slots.get('static_cap', 0)}")
         else:
             st.caption("暂无数据（ObjectiveExecutor 未注入）。")
@@ -3875,8 +3892,13 @@ def _render_scheduling_overview(client: AgentClient):
         st.markdown("**⏱️ 普通 cron 通道**")
         cron_ch = resp.get("cron_channel") or {}
         c1, c2 = st.columns(2)
+        max_c = cron_ch.get("max_concurrent")
         c1.metric("运行中", cron_ch.get("running", 0))
         c2.metric("排队中", cron_ch.get("queued", 0))
+        if max_c is not None:
+            static_c = cron_ch.get("static_max_concurrent")
+            extra = f"（静态上限 {static_c}）" if static_c is not None and static_c != max_c else ""
+            st.caption(f"当前并发上限：{max_c}{extra}")
         st.caption(f"仲裁累计跳过次数（进程内）：{cron_ch.get('arbiter_skipped_count', 0)}")
         over = cron_ch.get("jobs_over_skip_threshold") or []
         if over:

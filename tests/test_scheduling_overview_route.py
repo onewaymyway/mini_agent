@@ -164,6 +164,56 @@ class TestSchedulingOverviewRoute(unittest.TestCase):
         self.assertEqual(body["cron_channel"]["running"], 0)
         self.assertEqual(body["cron_channel"]["queued"], 0)
 
+    def test_scheduling_mode_defaults_when_unified_arbitration_absent(self):
+        # cfg 没有 scheduler 字段（旧配置）时，scheduling_mode 应该安全降级，
+        # 不报错，unified_arbitration_enabled/channel_weights 都是"关闭"语义。
+        client = _make_client(self.root, self.cfg)
+        resp = client.get("/v1/self/scheduling_overview")
+        body = resp.json()
+        mode = body["scheduling_mode"]
+        self.assertFalse(mode["unified_arbitration_enabled"])
+        self.assertIsNone(mode["channel_weights"])
+        self.assertIsNone(mode["degraded_allocation"])
+        self.assertTrue(mode["adaptive_concurrency_enabled"] is False or mode["adaptive_concurrency_enabled"] is True)
+
+    def test_scheduling_mode_reports_degraded_allocation_when_unified_and_degraded(self):
+        cfg = _default_cfg(
+            self.root,
+            frustration_threshold=0,  # 让 gating 落入 degraded
+            adaptive_concurrency_enabled=True,
+        )
+        cfg.scheduler = SimpleNamespace(
+            unified_arbitration_enabled=True,
+            channel_weights={"goal": 2.0, "cron": 1.0},
+            degraded_total_slots=3,
+        )
+        cfg.cron.reserved_min_concurrent = 1
+        client = _make_client(self.root, cfg)
+        resp = client.get("/v1/self/scheduling_overview")
+        body = resp.json()
+        mode = body["scheduling_mode"]
+        self.assertTrue(mode["unified_arbitration_enabled"])
+        self.assertTrue(mode["adaptive_concurrency_enabled"])
+        self.assertEqual(mode["channel_weights"], {"goal": 2.0, "cron": 1.0})
+        if body["gating"]["state"] == "degraded":
+            self.assertIsNotNone(mode["degraded_allocation"])
+            self.assertIn("goal", mode["degraded_allocation"])
+            self.assertIn("cron", mode["degraded_allocation"])
+
+    def test_cron_channel_reports_max_concurrent_from_job_runner(self):
+        from mini_agent.evolution.cron_job_runner import CronJobRunner
+
+        cs = CronScheduler(self.paths, submit_fn=lambda *a, **k: True)
+        runner = CronJobRunner(base_cfg=self.cfg, paths=self.paths, max_concurrent=3)
+        cs._job_runner = runner
+        cs.save()
+
+        client = _make_client(self.root, self.cfg, cron_scheduler=cs)
+        resp = client.get("/v1/self/scheduling_overview")
+        body = resp.json()
+        self.assertEqual(body["cron_channel"]["static_max_concurrent"], 3)
+        self.assertEqual(body["cron_channel"]["max_concurrent"], 3)
+
 
 if __name__ == "__main__":
     unittest.main()
