@@ -176,5 +176,9 @@
     "fairness_time_slicing_enabled": false,
     "fairness_yield_after_steps": 3,
     "fairness_yield_after_seconds": 900.0
+  },
+  "scheduler":{
+    "unified_arbitration_enabled":true,
+    "unified_dispatch_enabled":true
   }
 }

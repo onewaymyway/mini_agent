@@ -52,6 +52,7 @@ from .models import (
     CronConfig,
     AutonomyConfig,
     ObservabilityConfig,
+    SchedulerConfig,
     DEFAULT_MODEL,
     DEFAULT_AGENT_NAME,
     DEFAULT_MAX_TOKENS,
@@ -683,6 +684,11 @@ def load_config(
     cron_cfg = _nested_blocks["cron"]
     autonomy_cfg = _nested_blocks["autonomy"]
     observability_cfg = _nested_blocks["observability"]
+    # [goal_cron_unified_scheduler_improvement_plan.md P5 遗留缺陷修复]
+    # `scheduler` block 此前从未被 `_nested_blocks` 提取、也从未传给
+    # `AppConfig(...)`（见 param_registry.py 里 `NestedBlockSpec("scheduler",
+    # ...)` 新增处的说明），本次一并补齐，其余 block 的加载路径完全不变。
+    scheduler_cfg = _nested_blocks["scheduler"]
 
     return AppConfig(
         api_key=api_key,
@@ -748,6 +754,7 @@ def load_config(
         digest_advisor=digest_advisor_cfg,
         cron=cron_cfg,
         autonomy=autonomy_cfg,
+        scheduler=scheduler_cfg,
         observability=observability_cfg,
         llm_fallback_chain=_llm_fallback_chain,
         llm_fallback_on=_llm_fallback_on,

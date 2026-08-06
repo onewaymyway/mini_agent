@@ -193,6 +193,16 @@ def _build_nested_blocks() -> list:
         NestedBlockSpec("role_agent", _m.RoleAgentConfig),
         NestedBlockSpec("env_info", _m.EnvInfoConfig),
         NestedBlockSpec("web_search", _m.WebSearchConfig),
+        # [goal_cron_unified_scheduler_improvement_plan.md P5 第 3/5 步
+        # 遗留缺陷修复] `SchedulerConfig`（`unified_arbitration_enabled`/
+        # `unified_dispatch_enabled`/`channel_weights` 等）自 P5 第 3 步
+        # 引入以来一直只是 `AppConfig` 上的一个 dataclass 字段，从未注册
+        # 进本表——`agent_config.json` 里写 `"scheduler": {...}` 此前
+        # 完全不起作用（`load_config()` 从未把它传给 `AppConfig(...)`，
+        # 实例上永远是 dataclass 默认值），是本文件模块头部注释里提到的
+        # 那种"autonomy/observability 两个 block 曾长期'写了当没写'"问题
+        # 在 `scheduler` 上的重演。此处补齐注册。
+        NestedBlockSpec("scheduler", _m.SchedulerConfig),
     ]
 
 
