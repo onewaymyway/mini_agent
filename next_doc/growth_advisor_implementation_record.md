@@ -338,9 +338,47 @@
   归一化后合并不产生重复 key、`run_daily_cycle` 按配置开关正确门控
   是否真正调用 LLM。
 
-## 未做（按方案标注为 P3 剩余项，本轮不在范围内）
+## 已完成：P3 里程碑（新增，第五项，P3 收尾）——看板拖拽式看板视图
 
-- 看板里的拖拽式看板视图（当前是列表 + 按钮，不是真正的多列看板）。
+- `apps/mini_agent_kanban/app.py` 新增：
+  - `_sortable_available()`：探测可选依赖 `streamlit-sortables` 是否
+    安装，未安装（`ImportError`）时返回 `False`；
+  - `_render_growth_pending_list()`：把 P1 起就有的"列表 + 采纳/忽略/
+    查看报告三按钮"渲染逻辑原样抽成独立函数，作为可选依赖缺失时的
+    兜底路径，功能不变；
+  - `_render_growth_kanban_dragdrop()`：可选依赖存在时启用，用
+    `streamlit_sortables.sort_items(..., multi_containers=True)` 渲染
+    "待处理 / 已采纳 / 已忽略"三列拖拽看板；每张卡片的显示标签由
+    `_growth_card_label()` 生成（标题 + 置信度 + candidate_id 前 8 位，
+    保证同一批渲染里标签唯一，因为同一主题可能因 dismiss 冷却期结束
+    重新生成、标题重复）；拖拽后对比"跨列移动前后的 candidate_id 归属"
+    而不是无脑对整列重放操作，只对真正发生了跨列移动的卡片调用一次
+    `growth_candidate_action`，避免每次 `st.rerun()` 都对本来就已经在
+    目标列的卡片重复调用；拖回"待处理"列不生效（后端
+    `POST /growth/candidates/{id}/{action}` 本来就只支持 accept/dismiss，
+    没有撤销这个操作，方案原文也没有这个需求，所以不強行模拟）。
+  - `render_growth_tab()` 里原来的待处理候选渲染改成：
+    `_sortable_available()` 为真时走拖拽看板，否则走原列表渲染。
+- `apps/mini_agent_kanban/requirements.txt` 新增
+  `streamlit-sortables>=0.3.0` 作为**可选**依赖（注释说明未安装时自动
+  回退，不影响主功能）。
+- `docs/growth-advisor-guide.md` 第 3 节看板用法、第 6 节"当前局限"
+  （标题也改成"P1 + P2 + P3 全部完成"）同步更新。
+- `tests/test_kanban_growth_dragdrop.py`（新文件，5 个用例，全部通过）：
+  覆盖 `_sortable_available()` 返回类型、`_growth_card_label()` 同标题
+  不同 candidate_id 生成不同标签且带上置信度信息、三列覆盖
+  backlog 全部状态、未安装可选依赖时确实走兜底路径判断。只测纯函数，
+  不驱动 Streamlit 组件交互（`_render_growth_kanban_dragdrop` 依赖真实
+  `ScriptRunContext` 和前端拖拽事件，不在无头单测范围内）。
+- 回归：`tests/test_growth_advisor.py`（46 例）+ 新增 5 例，全部通过。
+
+## P3 里程碑至此全部完成
+
+方案 `next_doc/growth_advisor_design.md` 里标注的 P3 计划项——首次触达
+持久化、`excluded_topics` 可视化编辑、`weekly_digest` 真实周摘要打包、
+月度复盘跨候选能力地图聚合、`growth_signal_scan` 的 LLM 增强版归纳、
+看板拖拽式视图——本轮全部落地。后续如果要继续演进，建议先看用户在
+`topic_map`/周摘要实际使用上给的反馈，而不是接着堆新功能。
 
 ## 已知取舍/风险
 

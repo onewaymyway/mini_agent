@@ -3516,6 +3516,23 @@ def render_growth_tab(client: "AgentClient"):
         return
 
     st.markdown("**待处理候选**")
+    if _sortable_available():
+        _render_growth_kanban_dragdrop(client, candidates)
+    else:
+        _render_growth_pending_list(client, pending)
+
+
+def _sortable_available() -> bool:
+    try:
+        import streamlit_sortables  # noqa: F401
+        return True
+    except ImportError:
+        return False
+
+
+def _render_growth_pending_list(client: "AgentClient", pending: list[dict]):
+    """P1 起就有的列表 + 按钮渲染方式。作为 `streamlit-sortables` 未安装
+    时的兜底路径保留——不强制要求这个可选依赖。"""
     for c in sorted(pending, key=lambda x: -x.get("confidence", 0)):
         with st.container(border=True):
             st.markdown(f"**{c['title']}**  \n{c.get('rationale', '')}")
@@ -3536,6 +3553,77 @@ def render_growth_tab(client: "AgentClient"):
                     st.markdown(rep.get("body", "（报告正文为空）"))
                 else:
                     st.error((rep or {}).get("_error", "读取报告失败"))
+
+
+# P3：拖拽式看板视图（此前一直是"列表 + 采纳/忽略两个按钮"，方案 P3
+# 计划项最后一条）。用 `streamlit-sortables`（可选依赖，未安装时自动
+# 回退到 `_render_growth_pending_list`，不影响原有功能）渲染
+# 待处理/已采纳/已忽略三列，拖动卡片到目标列即视为对应操作。
+_GROWTH_KANBAN_COLUMNS = [
+    ("pending", "🕗 待处理"),
+    ("accepted", "✅ 已采纳"),
+    ("dismissed", "🙈 已忽略"),
+]
+
+
+def _growth_card_label(c: dict) -> str:
+    # sort_items 用字符串本身作为拖拽项的显示文本兼唯一标识，标题可能
+    # 重复（同一主题被 dismiss 后冷却期结束重新生成），拼上 candidate_id
+    # 前 8 位保证同一批渲染里不会有两张标签完全相同的卡片。
+    conf = c.get("confidence", 0)
+    short_id = str(c.get("candidate_id", ""))[:8]
+    return f"{c.get('title', '')}（置信度 {conf}） · {short_id}"
+
+
+def _render_growth_kanban_dragdrop(client: "AgentClient", candidates: list[dict]):
+    from streamlit_sortables import sort_items
+
+    by_status: dict[str, list[dict]] = {"pending": [], "accepted": [], "dismissed": []}
+    for c in candidates:
+        status = c.get("status")
+        if status in by_status:
+            by_status[status].append(c)
+
+    label_to_id: dict[str, str] = {}
+    containers = []
+    for status, header in _GROWTH_KANBAN_COLUMNS:
+        items = sorted(by_status[status], key=lambda x: -x.get("confidence", 0))
+        labels = []
+        for c in items:
+            label = _growth_card_label(c)
+            label_to_id[label] = c["candidate_id"]
+            labels.append(label)
+        containers.append({"header": header, "items": labels})
+
+    st.caption("拖动卡片到「已采纳」/「已忽略」即完成对应操作；"
+                "从已采纳/已忽略拖回待处理不会生效（暂不支持撤销）。")
+    result = sort_items(
+        containers, multi_containers=True, direction="horizontal",
+        key="growth_kanban_dragdrop",
+    )
+
+    # result 是拖拽后每列的最新 label 列表；跟拖拽前的 by_status 对比，
+    # 找出真正发生了"跨列移动"的卡片，只对这些卡片调用一次
+    # growth_candidate_action，而不是无脑对整列重放操作（否则每次
+    # rerun 都会对本来就已经是 accepted 的卡片重复调用 accept）。
+    id_to_status = {c["candidate_id"]: c.get("status") for c in candidates}
+    moved = False
+    for col in result:
+        header = col.get("header", "")
+        target_status = next((s for s, h in _GROWTH_KANBAN_COLUMNS if h == header), None)
+        if target_status not in ("accepted", "dismissed"):
+            continue  # 拖回"待处理"不支持撤销，忽略
+        for label in col.get("items", []):
+            cand_id = label_to_id.get(label)
+            if cand_id is None:
+                continue
+            if id_to_status.get(cand_id) != target_status:
+                client.growth_candidate_action(
+                    cand_id, "accept" if target_status == "accepted" else "dismiss"
+                )
+                moved = True
+    if moved:
+        st.rerun()
 
 
 
