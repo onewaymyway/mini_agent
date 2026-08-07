@@ -629,6 +629,13 @@ class AgentClient:
     def growth_keyword_remove(self, topic: str):
         return self._post(f"/growth/keywords/{topic}/remove")
 
+    # [next_doc/growth_advisor_improvement_plan_v2.md P4-3] 采纳后回访
+    def growth_followups(self):
+        return self._get("/growth/followups")
+
+    def growth_followup_record(self, candidate_id: str, outcome: str):
+        return self._post(f"/growth/followups/{candidate_id}/{outcome}")
+
     # ── 文件系统（产出物浏览）────────────────────────────────────────
     def fs_list(self, path="."):
         return self._get("/fs/list", params={"path": path})

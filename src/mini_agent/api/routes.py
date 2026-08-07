@@ -5861,6 +5861,51 @@ async def post_growth_candidate_action(request: Request, candidate_id: str, acti
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@router.get("/growth/followups")
+async def get_growth_followups(request: Request):
+    """GET /v1/growth/followups — 返回已采纳、满足回访窗口
+    （`GrowthAdvisorConfig.followup_review_days`，默认 30 天）且尚未回访
+    过的候选列表，供看板渲染"这个方向后续有没有推进？"回访卡片。"""
+    _require_owner(request)
+    try:
+        paths = _get_paths_for_request(request)
+        from mini_agent.evolution import growth_advisor as ga
+
+        http_server = getattr(request.app.state, "http_server", None)
+        self_agent = http_server.bridge.agent if http_server else None
+        cfg = getattr(self_agent.cfg, "growth_advisor", None) if self_agent else None
+        if cfg is None:
+            from mini_agent.config.models import GrowthAdvisorConfig
+            cfg = GrowthAdvisorConfig()
+        candidates = ga.pending_followups(paths, cfg)
+        return {"followups": [c.to_dict() for c in candidates]}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/growth/followups/{candidate_id}/{outcome}")
+async def post_growth_followup_record(request: Request, candidate_id: str, outcome: str):
+    """POST /v1/growth/followups/{id}/progressed|stalled — 回答一次回访，
+    结果写回候选并追加到 GrowthFeedbackLedger（供后续置信度调权参考）。"""
+    _require_owner(request)
+    if outcome not in ("progressed", "stalled"):
+        raise HTTPException(status_code=400, detail="outcome must be progressed or stalled")
+    try:
+        paths = _get_paths_for_request(request)
+        from mini_agent.evolution import growth_advisor as ga
+
+        cand = ga.record_followup(paths, candidate_id, outcome)
+        if cand is None:
+            raise HTTPException(status_code=404, detail="candidate not found")
+        return {"ok": True, "candidate": cand.to_dict()}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @router.post("/growth/keywords")
 async def post_growth_keyword_add(request: Request):
     """POST /v1/growth/keywords — 用户在看板上手动添加一个自定义关键词

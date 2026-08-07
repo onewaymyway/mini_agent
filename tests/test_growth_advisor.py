@@ -1021,5 +1021,148 @@ class TestKeywordAutoConfirmStreak(unittest.TestCase):
             self.assertFalse(entry.get("auto_confirmed", False))
 
 
+class TestCategoryFeedbackWeighting(unittest.TestCase):
+    """P4-3 第一条：同一类别下连续忽略多个主题，应该温和拖累同类新主题的
+    初始置信度（比单主题衰减更温和，也不叠加进同一个乘子）。"""
+
+    def test_category_multiplier_floor_and_identity(self):
+        self.assertEqual(ga._category_feedback_multiplier(0), 1.0)
+        m = ga._category_feedback_multiplier(50)
+        self.assertGreaterEqual(m, ga._MIN_CATEGORY_MULTIPLIER)
+
+    def test_category_of_maps_builtin_and_falls_back(self):
+        self.assertEqual(ga._category_of("项目管理"), "管理类")
+        self.assertEqual(ga._category_of("写作与表达"), "表达类")
+        self.assertEqual(ga._category_of("Python 工程实践"), "技术类")
+        self.assertEqual(ga._category_of("摄影"), "其他类")
+
+    def test_dismissing_one_technical_topic_lowers_new_technical_topic_confidence(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = _make_paths(tmp)
+            backlog = ga.GrowthBacklog(paths)
+            # 忽略"数据分析"（技术类），不做冷却处理，只关心它对同类别
+            # 新主题"前端与可视化"的影响。
+            old = backlog.add_or_merge(
+                "数据分析", "理由", ["e1", "e2", "e3"],
+                min_evidence_count=3, max_pending=10, dismissed_cooldown_days=30,
+            )
+            backlog.set_status(old.candidate_id, ga.STATUS_DISMISSED)
+            ga.GrowthFeedbackLedger(paths).record(old.candidate_id, ga.STATUS_DISMISSED)
+
+            cfg = GrowthAdvisorConfig(min_evidence_count=3)
+            profile = UserProfile()
+            profile.derived = {
+                "growth_focus_areas": {"前端与可视化": ["e4", "e5", "e6"]}
+            }
+            produced = ga.growth_candidate_derive(paths, cfg, profile)
+            self.assertEqual(len(produced), 1)
+            # 同类别但不同主题：没有单主题 dismiss 记录，只受类别乘子影响，
+            # 所以置信度应低于满分但高于"直接被 dismiss 过的同一主题"。
+            self.assertLess(produced[0].confidence, ga._confidence_from_evidence(3))
+            self.assertGreater(produced[0].confidence, 0)
+
+    def test_dismissing_other_category_topic_does_not_affect(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = _make_paths(tmp)
+            backlog = ga.GrowthBacklog(paths)
+            old = backlog.add_or_merge(
+                "项目管理", "理由", ["e1", "e2", "e3"],
+                min_evidence_count=3, max_pending=10, dismissed_cooldown_days=30,
+            )
+            backlog.set_status(old.candidate_id, ga.STATUS_DISMISSED)
+            ga.GrowthFeedbackLedger(paths).record(old.candidate_id, ga.STATUS_DISMISSED)
+
+            cfg = GrowthAdvisorConfig(min_evidence_count=3)
+            profile = UserProfile()
+            profile.derived = {"growth_focus_areas": {"数据分析": ["e4", "e5", "e6"]}}
+            produced = ga.growth_candidate_derive(paths, cfg, profile)
+            self.assertEqual(len(produced), 1)
+            # "管理类"被忽略，不应该影响"技术类"新主题的置信度。
+            self.assertEqual(produced[0].confidence, ga._confidence_from_evidence(3))
+
+
+class TestAdoptionFollowup(unittest.TestCase):
+    """P4-3 第二条：采纳后回访（progressed/stalled）。"""
+
+    def test_accepted_at_set_on_first_transition_only(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = _make_paths(tmp)
+            backlog = ga.GrowthBacklog(paths)
+            c = backlog.add_or_merge(
+                "写作与表达", "理由", ["e1", "e2", "e3"],
+                min_evidence_count=3, max_pending=10, dismissed_cooldown_days=30,
+            )
+            accepted = backlog.set_status(c.candidate_id, ga.STATUS_ACCEPTED)
+            self.assertIsNotNone(accepted.accepted_at)
+            first_ts = accepted.accepted_at
+            backlog.attach_report(c.candidate_id, "report-1")
+            reloaded = backlog.get(c.candidate_id)
+            # attach_report 会更新 updated_at，但不应该改动 accepted_at。
+            self.assertEqual(reloaded.accepted_at, first_ts)
+
+    def test_pending_followups_respects_window_and_status(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = _make_paths(tmp)
+            backlog = ga.GrowthBacklog(paths)
+            old = backlog.add_or_merge(
+                "写作与表达", "理由", ["e1", "e2", "e3"],
+                min_evidence_count=3, max_pending=10, dismissed_cooldown_days=30,
+            )
+            backlog.set_status(old.candidate_id, ga.STATUS_ACCEPTED)
+            recent = backlog.add_or_merge(
+                "数据分析", "理由", ["e4", "e5", "e6"],
+                min_evidence_count=3, max_pending=10, dismissed_cooldown_days=30,
+            )
+            backlog.set_status(recent.candidate_id, ga.STATUS_ACCEPTED)
+
+            all_c = backlog.load_all()
+            for c in all_c:
+                if c.candidate_id == old.candidate_id:
+                    c.accepted_at = time.time() - 31 * 86400  # 早于 30 天窗口
+            backlog.save_all(all_c)
+
+            cfg = GrowthAdvisorConfig(followup_review_days=30)
+            due = ga.pending_followups(paths, cfg)
+            due_ids = {c.candidate_id for c in due}
+            self.assertIn(old.candidate_id, due_ids)
+            self.assertNotIn(recent.candidate_id, due_ids)  # 刚采纳，未到窗口
+
+    def test_record_followup_persists_and_ledger_entry(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = _make_paths(tmp)
+            backlog = ga.GrowthBacklog(paths)
+            c = backlog.add_or_merge(
+                "写作与表达", "理由", ["e1", "e2", "e3"],
+                min_evidence_count=3, max_pending=10, dismissed_cooldown_days=30,
+            )
+            backlog.set_status(c.candidate_id, ga.STATUS_ACCEPTED)
+            updated = ga.record_followup(paths, c.candidate_id, "progressed")
+            self.assertEqual(updated.followup_status, "progressed")
+            entries = ga.GrowthFeedbackLedger(paths).all_entries()
+            self.assertTrue(any(e.get("action") == "followup_progressed" for e in entries))
+            # 回答过一次后不再出现在待回访列表里。
+            due = ga.pending_followups(paths, GrowthAdvisorConfig())
+            self.assertNotIn(c.candidate_id, {x.candidate_id for x in due})
+
+    def test_record_followup_rejects_invalid_outcome(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = _make_paths(tmp)
+            with self.assertRaises(ValueError):
+                ga.record_followup(paths, "does-not-matter", "not-a-real-outcome")
+
+    def test_followup_adjustment_stalled_and_progressed(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = _make_paths(tmp)
+            backlog = ga.GrowthBacklog(paths)
+            c = backlog.add_or_merge(
+                "写作与表达", "理由", ["e1", "e2", "e3"],
+                min_evidence_count=3, max_pending=10, dismissed_cooldown_days=30,
+            )
+            backlog.set_status(c.candidate_id, ga.STATUS_ACCEPTED)
+            ga.record_followup(paths, c.candidate_id, "stalled")
+            adj = ga._followup_adjustment_by_dedupe_key(paths)
+            self.assertLess(adj[c.dedupe_key()], 1.0)
+
+
 if __name__ == "__main__":
     unittest.main()

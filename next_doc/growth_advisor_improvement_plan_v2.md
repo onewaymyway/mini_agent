@@ -2,9 +2,9 @@
 
 > **实施状态（2026-08 更新）**：P4-0（`profile.derived` 命名空间冲突修复）、
 > P4-1（关键词表持久化 + 看板展示 profile / 关键词信息）、P4-2（关键词
-> 自动学习稳定后转正）已完成并落地，细节见
-> `next_doc/growth_advisor_implementation_record.md` 的 P4 章节。
-> P4-3 ~ P4-7 仍是方向级规划，未开始实施。
+> 自动学习稳定后转正）、P4-3（反馈学习细化：类别级置信度调权 + 采纳后
+> 回访）已完成并落地，细节见 `next_doc/growth_advisor_implementation_record.md`
+> 的 P4 章节。P4-4 ~ P4-7 仍是方向级规划，未开始实施。
 
 - **版本**: v1（草案）
 - **前置文档**: `next_doc/growth_advisor_design.md`（原始方案，P1-P3 已全部完成）、
@@ -262,7 +262,7 @@ API、验收标准），不要直接照这里的一段话开始写代码。
 > 标记，供看板区分"用户手动保留"和"系统自动保留"。细节见
 > `next_doc/growth_advisor_implementation_record.md` P4 章节。
 
-### P4-3：反馈学习细化 + 采纳后回访
+### P4-3：反馈学习细化 + 采纳后回访（**已完成**）
 - 把"用户对某一类主题的整体倾向"学出来，而不是只有单主题级别的置信度
   衰减（比如连续忽略多个"管理类"主题，应该影响同类新主题的初始置信度，
   而不是各自独立衰减）。
@@ -270,6 +270,16 @@ API、验收标准），不要直接照这里的一段话开始写代码。
   `self_diagnosis_feedback_loop_deepening_plan.md` P2 的建议采纳率回看
   思路，定期（比如 30 天后）问一次"这个方向后续有没有真的推进"，反馈进
   `GrowthFeedbackLedger`，作为置信度调权的额外信号源。
+
+> **实施记录**：类别级调权新增 `_TOPIC_CATEGORIES`（内置主题粗分"技术类/
+> 管理类/表达类"，未登记主题归"其他类"）+ `_category_feedback_multiplier`
+> （衰减因子 0.95、下限 0.7，比单主题的 0.85/0.4 温和很多），与原有单
+> 主题乘子相乘，互不覆盖。采纳后回访新增 `GrowthCandidate.accepted_at`/
+> `followup_status` 字段、`pending_followups()`/`record_followup()`、
+> 新配置项 `GrowthAdvisorConfig.followup_review_days`（默认 30）、API
+> `GET /growth/followups`、`POST /growth/followups/{id}/{progressed|
+> stalled}`，看板新增"📮 该回访一下了"折叠区块。细节见
+> `next_doc/growth_advisor_implementation_record.md` P4 章节。
 
 ### P4-4：报告质量分级 / 增量更新
 - 默认模板报告保持零成本，但给一个可选的"质量优先"档位（消耗一次 LLM

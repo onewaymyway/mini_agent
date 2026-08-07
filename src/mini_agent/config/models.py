@@ -1655,6 +1655,11 @@ class GrowthAdvisorConfig:
     # 近期记忆里归纳新的主题——不影响、不覆盖规则式扫描结果，只做补充。
     llm_signal_augment_enabled: bool = False
 
+    # ── P4-3：采纳后回访（growth_advisor_improvement_plan_v2.md P4-3）───
+    # 候选被采纳这么多天后，如果用户还没回答过"有没有推进"，看板会展示一张
+    # 回访卡片；答案（progressed/stalled）反馈进置信度调权，不强制回答。
+    followup_review_days: int = 30
+
 
 @dataclass
 class ReminderConfig:

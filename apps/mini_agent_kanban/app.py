@@ -3644,6 +3644,8 @@ def render_growth_tab(client: "AgentClient"):
                     f"忽略 {row.get('times_dismissed', 0)}）"
                 )
 
+    _render_growth_followups(client)
+
     pending = [c for c in candidates if c.get("status") == "pending"]
     if not pending:
         st.caption("当前没有待处理的候选。点击上方按钮手动触发一轮扫描，"
@@ -3655,6 +3657,26 @@ def render_growth_tab(client: "AgentClient"):
         _render_growth_kanban_dragdrop(client, candidates)
     else:
         _render_growth_pending_list(client, pending)
+
+
+def _render_growth_followups(client: "AgentClient"):
+    """[P4-3] 采纳后回访：候选被采纳一段时间后，问一次"有没有真的推进"，
+    答案反馈进置信度调权。默认折叠展示，避免没有待回访项时挤占首屏。"""
+    data = client.growth_followups() or {}
+    followups = data.get("followups") or []
+    if not followups:
+        return
+    with st.expander(f"📮 该回访一下了（{len(followups)} 个方向）", expanded=True):
+        st.caption("这些方向是你之前采纳的，过去一段时间没再问过——推进得怎么样了？")
+        for c in followups:
+            cols = st.columns([4, 1, 1])
+            cols[0].write(f"**{c.get('title')}**")
+            if cols[1].button("✅ 有推进", key=f"growth_followup_progressed_{c['candidate_id']}"):
+                client.growth_followup_record(c["candidate_id"], "progressed")
+                st.rerun()
+            if cols[2].button("🕒 还没空", key=f"growth_followup_stalled_{c['candidate_id']}"):
+                client.growth_followup_record(c["candidate_id"], "stalled")
+                st.rerun()
 
 
 def _sortable_available() -> bool:

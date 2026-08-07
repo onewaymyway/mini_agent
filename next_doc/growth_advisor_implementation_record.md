@@ -570,3 +570,70 @@
   （3 个用例：连续命中后自动转正、未命中导致 streak 清零、`user_added`
   主题不参与计数），加上此前 P4-0/P4-1 的用例，`test_growth_advisor.py` +
   `test_profile.py` 合计 62 项全部通过。
+
+### P4-3：反馈学习细化（类别级置信度调权）+ 采纳后回访
+
+**类别级反馈**：
+- `_TOPIC_CATEGORIES`：内置 7 个主题粗分三类——"技术类"（Python 工程
+  实践/前端与可视化/数据分析/系统设计与架构/AI-LLM 应用）、"管理类"
+  （项目管理）、"表达类"（写作与表达）；不在表里的主题（用户自定义 /
+  LLM 学到）统一归"其他类"，不强行猜类别。
+- `_category_dismiss_counts(paths)`：复用 `GrowthFeedbackLedger` 的
+  dismiss 记录，反查候选标题所属类别后按类别累加次数（同一类别下不同
+  主题的忽略会一起计入同一个计数器）。
+- `_category_feedback_multiplier(count)`：衰减因子 `0.95`、下限 `0.7`
+  ——比单主题的 `_feedback_multiplier`（`0.85`/`0.4`）明显温和，因为
+  类别信号本身比"这个主题被明确忽略过"弱得多。
+- `growth_candidate_derive()` 里三个乘子相乘生效：单主题历史 dismiss
+  乘子 × 类别历史 dismiss 乘子 × 回访调节乘子（见下），互相独立、不覆盖，
+  最终 `confidence = base_confidence * multiplier`。
+
+**采纳后回访**：
+- `GrowthCandidate` 新增 `accepted_at`（首次转入 `accepted` 状态时打
+  时间戳，之后即使 `attach_report` 等操作刷新 `updated_at` 也不会被
+  覆盖）、`followup_status`（`None`/`"progressed"`/`"stalled"`，回访
+  只发生一次）两个字段；`GrowthBacklog.set_status()` 负责在状态转为
+  `accepted` 且 `accepted_at` 尚未写过时打时间戳。
+- 新配置项 `GrowthAdvisorConfig.followup_review_days`（默认 30）。
+- `pending_followups(paths, cfg)`：返回已采纳、`accepted_at` 早于
+  `now - followup_review_days` 天、且 `followup_status` 仍为 `None`
+  的候选，按 `accepted_at` 升序排列。
+- `record_followup(paths, candidate_id, outcome)`：`outcome` 限定
+  `"progressed"`/`"stalled"`（其余值 `raise ValueError`），写回候选的
+  `followup_status`，并追加一条 `action="followup_progressed"` /
+  `"followup_stalled"` 的记录到 `GrowthFeedbackLedger`。
+- `_followup_adjustment_by_dedupe_key(paths)`：把历史回访结果折算成
+  按 `dedupe_key` 的置信度调节系数——`stalled` 温和降权
+  （`×0.9`，可累计多次回访）、`progressed` 温和加权（`×1.05`，封顶
+  `1.0`），供同一方向因 dismiss 冷却结束后重新生成候选时参考，避免
+  "确实采纳过、只是没空推进"的方向被当成普通 dismiss 同等强度对待。
+- `diagnostics_snapshot()` 新增 `pending_followups_count` 字段（待回访
+  候选数量，不含明细，明细走独立端点）。
+- **API**：新增 `GET /growth/followups`（返回待回访候选列表）、
+  `POST /growth/followups/{id}/progressed`、
+  `POST /growth/followups/{id}/stalled`。
+- **看板**：`client.py` 新增 `growth_followups()`/
+  `growth_followup_record()`；`app.py` 新增 `_render_growth_followups()`，
+  在候选列表之上渲染"📮 该回访一下了（N 个方向）"折叠区块（有待回访项时
+  默认展开），每条候选带"✅ 有推进"/"🕒 还没空"两个按钮。
+- **测试**：`tests/test_growth_advisor.py` 新增 `TestCategoryFeedbackWeighting`
+  （4 个用例：乘子下限、`_category_of` 映射、同类别新主题被拖累、跨类别
+  互不影响）、`TestAdoptionFollowup`（5 个用例：`accepted_at` 只在首次
+  转入时写入、`pending_followups` 的窗口与状态过滤、`record_followup`
+  落盘与台账、非法 outcome 拒绝、回访调节系数方向正确）；加上此前全部
+  用例，`test_growth_advisor.py` + `test_profile.py` 合计 71 项全部通过。
+
+### P4 已知限制 / 留待后续（更新）
+
+- 类别映射（`_TOPIC_CATEGORIES`）只覆盖内置 7 个主题，用户自定义/
+  LLM 学到的主题一律归"其他类"，不参与类别级反馈的双向影响（既不受
+  其他类别拖累，也不拖累其他类别）——如果后续要支持用户给自定义主题
+  指定类别，需要扩展 `profile.derived["growth_topic_keywords"]` 的
+  数据结构，属于 P4-3 之外的新范围。
+- 回访目前是"一次性"的（回答过一次后 `followup_status` 不会再重置），
+  没有"再问一次"的机制；如果需要长期跟踪同一方向的多轮进展，需要另外
+  设计（比如允许候选被再次采纳后重新进入回访队列），未列入本轮范围。
+- 回访节流未接入 `_maybe_dispatch_notification`/`_maybe_dispatch_
+  weekly_digest`（回访目前只在看板轮询时展示，不会主动推送提醒用户
+  "该回访了"）——留给 P4-5（通知策略细化）一并考虑是否要独立于调研
+  报告推送再开一条回访提醒通道。

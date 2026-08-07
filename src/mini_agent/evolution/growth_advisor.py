@@ -127,6 +127,27 @@ P4-2 范围（对应 next_doc/growth_advisor_improvement_plan_v2.md，本次
       标记，供看板区分"用户手动保留"和"系统自动保留"），不需要用户
       记得去手动点确认。`user_added` 主题创建时已是确认状态，不参与
       这个计数。
+
+P4-3 范围（对应 next_doc/growth_advisor_improvement_plan_v2.md，本次
+新增）——反馈学习细化 + 采纳后回访：
+    - `_TOPIC_CATEGORIES` / `_category_of()` / `_category_dismiss_counts()`
+      / `_category_feedback_multiplier()`：把内置主题粗分成"技术类/管理类/
+      表达类"（未登记主题归"其他类"），同一类别下累计的 dismiss 次数会
+      用比单主题衰减温和得多的系数（`_CATEGORY_DECAY_FACTOR=0.95`，下限
+      `_MIN_CATEGORY_MULTIPLIER=0.7`）压低同类新主题的初始置信度，
+      `growth_candidate_derive()` 里与原有的单主题 `_feedback_multiplier`
+      相乘生效，两者独立衰减、互不覆盖。
+    - `pending_followups()` / `record_followup()`：候选被采纳
+      `GrowthAdvisorConfig.followup_review_days`（默认 30）天后，如果还
+      没有回访记录，进入待回访列表；用户在看板上回答"progressed"（有
+      推进）或"stalled"（没推进）后写回候选（`followup_status`）并追加
+      到 `GrowthFeedbackLedger`（`action="followup_progressed"` /
+      `"followup_stalled"`），回访只发生一次，不强制回答。
+    - `_followup_adjustment_by_dedupe_key()`：把历史回访结果折算成按
+      `dedupe_key` 的置信度调节系数（stalled 温和降权、progressed 温和
+      加权、封顶 1.0），供同一方向因 dismiss 冷却结束后重新生成候选时
+      参考，避免"确实采纳过、只是没空推进"的方向被当成和普通 dismiss
+      同等强度的负面信号对待。
 """
 
 from __future__ import annotations
@@ -187,6 +208,13 @@ class GrowthCandidate:
     created_at: float = field(default_factory=time.time)
     updated_at: float = field(default_factory=time.time)
     report_id: Optional[str] = None      # 生成过调研报告后回填
+    # [P4-3] 采纳后回访：accepted_at 记录首次被 set_status(accepted) 的时间
+    # （只在从非 accepted 状态转入时写一次，之后即便 attach_report 等操作
+    # 更新 updated_at 也不会覆盖它，保证 30 天窗口计算的是"何时被采纳"而
+    # 不是"最后一次被改动"）；followup_status 为 None 表示尚未回访，
+    # "progressed"/"stalled" 为用户回答后的结果，回访只发生一次。
+    accepted_at: Optional[float] = None
+    followup_status: Optional[str] = None
 
     def dedupe_key(self) -> str:
         return normalize_title_key(self.title)
@@ -358,6 +386,10 @@ class GrowthBacklog:
             if c.candidate_id == candidate_id:
                 c.status = status
                 c.updated_at = time.time()
+                # [P4-3] 只在首次转入 accepted 时打时间戳，重复 accept（理论上
+                # 不应该发生，但幂等处理更安全）不会把 accepted_at 往后推。
+                if status == STATUS_ACCEPTED and c.accepted_at is None:
+                    c.accepted_at = c.updated_at
                 self.save_all(all_c)
                 return c
         return None
@@ -435,6 +467,119 @@ def _feedback_multiplier(dismiss_count: int) -> float:
     if dismiss_count <= 0:
         return 1.0
     return max(_MIN_FEEDBACK_MULTIPLIER, round(_DISMISS_DECAY_FACTOR ** dismiss_count, 3))
+
+
+# ────────── [P4-3] 按主题类别聚合的反馈学习 ──────────
+# next_doc/growth_advisor_improvement_plan_v2.md P4-3 第一条：连续忽略同一
+# 类别下的多个主题，应该影响同类新主题的初始置信度，而不是各自独立衰减。
+# 内置主题按语义分成三个粗类别，未登记的主题（用户自定义 / LLM 学到）统一
+# 归为"其他"——不强行归类，避免猜错类别反而引入噪音。类别信号天然比单
+# 主题信号弱（用户忽略"Python 工程实践"不代表讨厌"前端与可视化"，即便
+# 两者都在"技术类"），所以衰减因子明显比 _DISMISS_DECAY_FACTOR 温和，
+# 下限也更高。
+_TOPIC_CATEGORIES: dict[str, str] = {
+    "Python 工程实践": "技术类",
+    "前端与可视化": "技术类",
+    "数据分析": "技术类",
+    "系统设计与架构": "技术类",
+    "AI/LLM 应用": "技术类",
+    "项目管理": "管理类",
+    "写作与表达": "表达类",
+}
+_CATEGORY_DECAY_FACTOR = 0.95
+_MIN_CATEGORY_MULTIPLIER = 0.7
+
+
+def _category_of(topic: str) -> str:
+    return _TOPIC_CATEGORIES.get(topic, "其他类")
+
+
+def _category_dismiss_counts(paths) -> dict[str, int]:
+    """按类别统计历史 dismiss 次数（同一类别下不同主题的忽略次数累加）。"""
+    id_to_title = {c.candidate_id: c.title for c in GrowthBacklog(paths).load_all()}
+    counts: dict[str, int] = {}
+    for entry in GrowthFeedbackLedger(paths).all_entries():
+        if entry.get("action") != STATUS_DISMISSED:
+            continue
+        title = id_to_title.get(entry.get("candidate_id"))
+        if not title:
+            continue
+        category = _category_of(title)
+        counts[category] = counts.get(category, 0) + 1
+    return counts
+
+
+def _category_feedback_multiplier(dismiss_count: int) -> float:
+    if dismiss_count <= 0:
+        return 1.0
+    return max(_MIN_CATEGORY_MULTIPLIER, round(_CATEGORY_DECAY_FACTOR ** dismiss_count, 3))
+
+
+# ────────── [P4-3] 采纳后回访（followup） ──────────
+# 方案第二条：候选被采纳后，隔一段时间（默认 30 天，见
+# GrowthAdvisorConfig.followup_review_days）问一次"这个方向后续有没有真的
+# 推进"，答案写入 GrowthFeedbackLedger（action="followup_progressed" /
+# "followup_stalled"），作为置信度调权的额外信号源——"stalled" 视为比普通
+# dismiss 更弱的负向信号（用户当初确实感兴趣，只是没推进，不代表方向选
+# 错了），"progressed" 则是正向信号，让同一方向即便之后被重新生成候选也
+# 不会一直背着旧的 dismiss 折扣。
+_FOLLOWUP_STALLED_FACTOR = 0.9
+_FOLLOWUP_PROGRESSED_FACTOR = 1.05
+_VALID_FOLLOWUP_OUTCOMES = ("progressed", "stalled")
+
+
+def pending_followups(paths, cfg=None) -> list[GrowthCandidate]:
+    """返回已采纳、满足回访窗口、且尚未回访过的候选（供看板渲染"这个方向
+    后续有没有推进？"的回访卡片）。"""
+    days = getattr(cfg, "followup_review_days", 30) if cfg is not None else 30
+    cutoff = time.time() - max(0, days) * 86400
+    out = []
+    for c in GrowthBacklog(paths).load_all():
+        if c.status != STATUS_ACCEPTED or c.followup_status is not None:
+            continue
+        if c.accepted_at is None or c.accepted_at > cutoff:
+            continue
+        out.append(c)
+    return sorted(out, key=lambda c: c.accepted_at or 0)
+
+
+def record_followup(paths, candidate_id: str, outcome: str) -> Optional[GrowthCandidate]:
+    """记录一次回访结果，写回候选并追加到反馈台账。"""
+    if outcome not in _VALID_FOLLOWUP_OUTCOMES:
+        raise ValueError(f"invalid followup outcome: {outcome}")
+    backlog = GrowthBacklog(paths)
+    all_c = backlog.load_all()
+    for c in all_c:
+        if c.candidate_id == candidate_id:
+            c.followup_status = outcome
+            c.updated_at = time.time()
+            backlog.save_all(all_c)
+            GrowthFeedbackLedger(paths).record(candidate_id, f"followup_{outcome}")
+            return c
+    return None
+
+
+def _followup_adjustment_by_dedupe_key(paths) -> dict[str, float]:
+    """把历史回访结果折算成按 dedupe_key 的置信度调节系数，供
+    `growth_candidate_derive` 在同一方向因 dismiss 冷却结束后重新生成候选
+    时参考——避免"曾经采纳过、只是没推进"的方向永远只看普通 dismiss 折扣。
+    """
+    id_to_key = {c.candidate_id: c.dedupe_key() for c in GrowthBacklog(paths).load_all()}
+    adjustments: dict[str, float] = {}
+    for entry in GrowthFeedbackLedger(paths).all_entries():
+        action = entry.get("action") or ""
+        if not action.startswith("followup_"):
+            continue
+        key = id_to_key.get(entry.get("candidate_id"))
+        if not key:
+            continue
+        current = adjustments.get(key, 1.0)
+        if action == "followup_stalled":
+            current = round(current * _FOLLOWUP_STALLED_FACTOR, 3)
+        elif action == "followup_progressed":
+            current = min(1.0, round(current * _FOLLOWUP_PROGRESSED_FACTOR, 3))
+        adjustments[key] = current
+    return adjustments
 
 
 # ────────────────────────── 信号扫描 growth_signal_scan ──────────────────────────
@@ -849,6 +994,10 @@ def growth_candidate_derive(paths, cfg, profile) -> list[GrowthCandidate]:
     # P2：反馈驱动的置信度调权（方案第 6 节）——先一次性读取历史 dismiss
     # 统计，逐主题查表即可，避免在循环里重复扫描 ledger。
     dismiss_counts = _dismiss_counts_by_dedupe_key(paths)
+    # P4-3：类别级反馈（同一类别下的忽略会温和地拖累同类新主题的初始置信度）
+    # + 采纳后回访调节（stalled/progressed），三者相乘得到最终 multiplier。
+    category_dismiss_counts = _category_dismiss_counts(paths)
+    followup_adjustments = _followup_adjustment_by_dedupe_key(paths)
 
     produced: list[GrowthCandidate] = []
     # 按证据数从多到少处理，保证 max_pending 限额下优先生成信号更强的候选
@@ -856,7 +1005,13 @@ def growth_candidate_derive(paths, cfg, profile) -> list[GrowthCandidate]:
         if topic.strip().lower() in excluded:
             continue
         rationale = f"最近记忆里与「{topic}」相关的内容出现了 {len(set(refs))} 次，可能是值得投入的方向。"
-        multiplier = _feedback_multiplier(dismiss_counts.get(normalize_title_key(topic), 0))
+        key = normalize_title_key(topic)
+        topic_multiplier = _feedback_multiplier(dismiss_counts.get(key, 0))
+        category_multiplier = _category_feedback_multiplier(
+            category_dismiss_counts.get(_category_of(topic), 0)
+        )
+        followup_multiplier = followup_adjustments.get(key, 1.0)
+        multiplier = round(topic_multiplier * category_multiplier * followup_multiplier, 3)
         cand = backlog.add_or_merge(
             title=topic,
             rationale=rationale,
@@ -1355,4 +1510,8 @@ def diagnostics_snapshot(paths, cfg, profile, memory_store) -> dict[str, Any]:
             "entries_in_scan_window": entries_in_window,
         },
         "user_profile": user_profile_snapshot,
+        # [P4-3] 待回访候选数量，供看板在诊断区提示"有 N 个方向该回访了"，
+        # 具体列表通过 GET /growth/followups 单独获取（避免每次
+        # /growth/summary 都要多做一遍 accepted_at 过滤）。
+        "pending_followups_count": len(pending_followups(paths, cfg)),
     }
