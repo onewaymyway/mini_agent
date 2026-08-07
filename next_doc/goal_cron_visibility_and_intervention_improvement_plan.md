@@ -215,3 +215,87 @@ tests/test_cron_scheduler_local_handler.py ... 已有用例全绿（未受影响
 ```
 （`tests/test_goal_mode.py`、`tests/test_goal_fairness_routes.py` 在本沙箱
 环境因缺少 `rich`/`fastapi` 依赖无法收集，与本次改动无关，未改动对应源码。）
+
+### Track E（2026-08 会话，已完成——看板崩溃修复 + 执行列表实时性）
+
+**背景**：用户从顶栏"⚙️ daemon 正在执行 N 项任务"点击"🔍 查看并控制"跳转到
+目标看板时，页面直接报 `ValueError: 'cleaned' is not in list` 崩溃；同时
+反馈顶栏"正在执行"列表内容疑似不实时。
+
+**根因**：
+1. `_render_goal_card()` 的状态下拉框用
+   `[s for s, _ in GOAL_STATUS_COLUMNS].index(status_key)` 定位当前选中项，
+   但 `status_key` 在顶栏跳转这条调用路径上传的是节点的**原始** `status`
+   字段（未经分栏筛选），而 Goal/Objective 的 `status` 在其它子系统里是
+   "不透明字符串"，实际取值远不止 `GOAL_STATUS_COLUMNS` 里的 6 个标准列
+   （如 `paused_by_user`/`paused_for_fairness`/`blocked`/`dormant`，以及
+   历史数据里可能遗留的其它值）——一旦命中非标准值，`.index()` 直接抛
+   `ValueError`，Streamlit 整页崩溃。
+2. `ObjectiveExecutor.get_status_summary()` 只读落盘/内存里的
+   `status=="running"`，没有像 `workflow_runs` 那样做"进程内是否还有活跃
+   worker"的孤儿记录判定——daemon 崩溃/重启后，一个其实已经没有任何线程
+   在推进的 execution 会一直显示"正在执行"，直到超时回收（`reap_stale_
+   steps()`）生效，期间顶栏看起来"不实时"。
+
+**修复**：
+- `apps/mini_agent_kanban/app.py::_render_goal_card()`：状态下拉框改为
+  "当前 status 不在标准 6 项里时，把它作为额外选项追加到下拉框末尾（并给
+  一句 `st.caption` 提示），保证下拉框一定能定位到当前值，不再崩溃"；用户
+  不主动切换选项就不会触发一次多余的状态写回，向后兼容。
+- `src/mini_agent/evolution/objective_agent_bridge.py::
+  ObjectivePersistentRunner`：新增 `has_worker(execution_id) -> bool`，
+  查询进程内 `_executors` registry 判断该 execution 是否确实占着一条
+  专属线程/Agent 实例。
+- `src/mini_agent/evolution/objective_executor.py::ObjectiveExecutor`：
+  新增 `is_active_fn` 构造参数；`get_status_summary()` 对每条
+  `status=="running"` 的记录，若提供了 `is_active_fn` 且返回 `False`，
+  额外标记 `is_stale=True`（语义与 `workflow_runs.is_stale` 完全对称）；
+  未提供 `is_active_fn`（默认，向后兼容旧调用方）时恒为 `False`；
+  `is_active_fn` 自身抛异常时退化为 `is_stale=False`，不影响整体摘要。
+- `src/mini_agent/api/server.py`：只在 `objective_persistent_worker_
+  enabled` 生效（有 `ObjectivePersistentRunner` 实例）时接入
+  `objective_executor._is_active_fn = self._objective_persistent_runner.
+  has_worker`——共享队列/隔离 runner 两条路径没有"独占专属 worker"的
+  概念，不接线，行为不变。
+- `apps/mini_agent_kanban/app.py::_render_daemon_current_tasks()`：把
+  `objective_executions` 按 `is_stale` 拆成两组，正常展示"正在执行"；
+  疑似孤儿的单独列进一个可展开区块（与 `stale_wfs` 同款 UI），提供
+  "🧹 标记为已中断"按钮（复用既有的 `client.cancel_objective()`，`cancel()`
+  只是把内存/磁盘状态置为 `cancelled`，对没有活跃 worker 的孤儿记录调用
+  是安全的）。
+
+**顺带修复**（无关联但在同一函数区块内发现）：
+- `objective_agent_bridge.py`：一次编辑失误导致 `@property` 装饰器错位
+  （从 `discarded_worker_count` 挪到了 `has_worker` 上），已在自测阶段
+  发现并改正——`has_worker` 是普通方法，`discarded_worker_count` 保持
+  `@property`，与既有调用方（`routes.py` 的 `getattr(persistent_runner,
+  "discarded_worker_count", 0)`）保持一致。
+
+**测试**：
+- 新增 `tests/test_kanban_realtime_and_status_bugfix.py`（6 项，覆盖
+  `is_stale` 的四种场景 + `has_worker` 的 registry 读取），全部通过。
+- 回归：`tests/test_goal_cron_bridge.py`（16 项）、
+  `tests/test_objective_executor_kanban_tracks*.py`（四个文件）、
+  `tests/test_objective_executor_adaptive_concurrency.py`、
+  `tests/test_objective_persistent_worker_auto_compact.py`、
+  `tests/test_objective_persistent_worker_restart_summary.py`、
+  `tests/test_execution_model_status_routes.py` 全绿；另外跑了一次覆盖
+  `evolution`/`objective`/`kanban`/`execution_model`/`routes` 关键词的更大
+  范围子集（340 passed，1 failed）——唯一失败项
+  `test_notification_dispatcher.py::test_kanban_writes_alert_record`
+  经与未修改的原始压缩包比对，确认是本次改动之前就存在的既有失败
+  （`NotificationDispatcher` 目标目录未预先创建导致的 `FileNotFoundError`，
+  与本次改动的文件无关），未在本轮处理，如需要可另开一个小 Track 单独修。
+- `_render_goal_card()` 状态下拉框的兜底分支因依赖 Streamlit 运行时
+  环境，未做无头单测覆盖，已通过代码走查 + 复现路径确认修复点覆盖了
+  报错堆栈里的那一行。
+
+**已知限制 / 后续可做**：
+- `is_stale` 目前只在 `objective_persistent_worker_enabled=True`（持久
+  Worker 模式）时才会被计算；共享队列（默认模式）和隔离 runner 模式下
+  仍然只能依赖 `reap_stale_steps()` 的超时回收，顶栏不会提前标记孤儿
+  记录。如果用户主要用的是非持久 Worker 模式，"不实时"的观感可能还会
+  在超时窗口内出现——如有需要可以后续给共享队列模式也设计一个等价的
+  "进程内是否还有人认领这个 turn_id"判定（比如查 `bridge.input_queue`/
+  当前 session 的 in-flight turn 集合），作为独立 Track。
+

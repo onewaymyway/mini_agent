@@ -1694,6 +1694,13 @@ class HttpServer:
                     )
                     objective_executor._submit_fn = self._objective_persistent_runner.submit
                     objective_executor._release_worker_fn = self._objective_persistent_runner.release
+                    # [看板『正在执行』实时性修复] 只有持久 Worker 模式才有
+                    # 一份能查"这个 execution_id 现在是否真的占着一条线程"
+                    # 的进程内 registry（`_executors` 字典）；共享队列/隔离
+                    # runner 两条路径没有这种"独占专属 worker"的概念，不接
+                    # 这个回调，get_status_summary() 的 is_stale 保持默认
+                    # False，行为不变。
+                    objective_executor._is_active_fn = self._objective_persistent_runner.has_worker
                 except Exception as _mini_agent_exc:
                     from mini_agent.errors import log_exception
                     log_exception(_mini_agent_exc, where='mini_agent.api.server.HttpServer._build_autonomous_loop.objective_persistent_runner')

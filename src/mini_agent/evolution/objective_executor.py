@@ -265,6 +265,7 @@ class ObjectiveExecutor:
         artifacts_from_tools_fn: Optional[Callable[[str], list]] = None,
         cfg: Optional["AppConfig"] = None,
         release_worker_fn: Optional[Callable[[str], None]] = None,
+        is_active_fn: Optional[Callable[[str], bool]] = None,
     ) -> None:
         """
         submit_fn         — 提交 Task：(message, initiator, meta) -> turn_id | None
@@ -327,10 +328,24 @@ class ObjectiveExecutor:
                              事——共享队列/隔离 runner 两条既有路径都不需要
                              这个回调。异常会被吞掉，不影响 Objective 终止
                              流程本身。
+        is_active_fn       — [看板『正在执行』实时性修复] (execution_id) ->
+                             bool，判断该 execution 当前是否真的有进程内
+                             worker 在跑（例如
+                             ObjectivePersistentRunner.has_worker()）。提供
+                             后，get_status_summary() 会给每条 status==
+                             "running" 的记录额外算出 is_stale 字段：
+                             is_active_fn 返回 False 即代表"落盘状态是
+                             running，但进程内找不到对应 worker"——多半是
+                             daemon 崩溃/重启后遗留的孤儿记录（跟
+                             workflow_runs 的 is_stale 语义完全对称），交给
+                             看板决定如何展示/提示清理。未提供时（默认，
+                             向后兼容旧调用方/共享队列等没有该 registry 的
+                             提交路径）is_stale 恒为 False，不做判断。
         """
         self._paths = paths
         self._submit_fn = submit_fn
         self._release_worker_fn = release_worker_fn
+        self._is_active_fn = is_active_fn
         self._llm_decompose_fn = llm_decompose_fn
         self._on_progress_fn = on_progress_fn
         self._declare_paths_fn = declare_paths_fn
@@ -1423,11 +1438,26 @@ class ObjectiveExecutor:
             if ex.status in ("completed", "failed", "cancelled") and (time.time() - ex.finished_at) > 3600:
                 continue  # 完成超过 1h 的不再显示
             done, total = ex.progress_ratio
+            # [看板『正在执行』实时性修复] 与 workflow_runs 的 is_stale
+            # 语义对称：is_active_fn 存在且明确返回 False 时，代表磁盘/
+            # 内存里 status=="running"，但进程内 registry 查不到对应
+            # worker——多半是 daemon 崩溃/重启后遗留的孤儿记录，此刻其实
+            # 已经没有任何线程在真正推进它。只在 status=="running" 时才
+            # 计算（非 running 状态不存在"是否还在跑"这个问题，恒为
+            # False）；未接线 is_active_fn（共享队列/隔离 runner/未开启
+            # 持久 Worker 等）时保持 False，不影响现有行为。
+            is_stale = False
+            if ex.status == "running" and self._is_active_fn is not None:
+                try:
+                    is_stale = not self._is_active_fn(ex.execution_id)
+                except Exception:
+                    is_stale = False
             result.append({
                 "execution_id": ex.execution_id,
                 "objective_id": ex.objective_id,
                 "title": ex.objective_title,
                 "status": ex.status,
+                "is_stale": is_stale,
                 "progress": f"{done}/{total}",
                 "current_step": ex.current_step.description[:80] if ex.current_step else "",
                 "started_at": ex.started_at,

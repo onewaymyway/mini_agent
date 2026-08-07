@@ -782,7 +782,15 @@ def _render_daemon_current_tasks(client: AgentClient, autostat: dict) -> None:
     """
     running_objs = [
         ex for ex in (autostat.get("objective_executions") or [])
-        if ex.get("status") == "running"
+        if ex.get("status") == "running" and not ex.get("is_stale")
+    ]
+    # [看板『正在执行』实时性修复] 与 stale_wfs 同一套展示逻辑：is_stale
+    # 为 True 代表磁盘状态还是 running，但进程内已经找不到对应 worker
+    # （多半是 daemon 崩溃/重启后遗留），不计入上方"正在执行"，单独列出并
+    # 提供清理入口。
+    stale_objs = [
+        ex for ex in (autostat.get("objective_executions") or [])
+        if ex.get("status") == "running" and ex.get("is_stale")
     ]
 
     cron_resp = client.cron_jobs() or {}
@@ -800,7 +808,7 @@ def _render_daemon_current_tasks(client: AgentClient, autostat: dict) -> None:
                 continue
             (stale_wfs if r.get("is_stale") else running_wfs).append(r)
 
-    if not running_objs and not running_crons and not running_wfs and not stale_wfs:
+    if not running_objs and not running_crons and not running_wfs and not stale_wfs and not stale_objs:
         return
 
     n = len(running_objs) + len(running_crons) + len(running_wfs)
@@ -859,6 +867,25 @@ def _render_daemon_current_tasks(client: AgentClient, autostat: dict) -> None:
                 c1.markdown(f"🔄 **{wf_name}**　`{rid}`　{r.get('summary_line', '')}")
                 if c2.button("🧹 标记为已中断", key=f"wf_mark_interrupted_{rid}"):
                     res = client.mark_workflow_run_interrupted(rid)
+                    if res and "_error" in res:
+                        st.error(res["_error"])
+                    else:
+                        st.success("已标记为已中断（cancelled）。")
+                        st.rerun()
+
+    if stale_objs:
+        with st.expander(
+            f"⚠️ 发现 {len(stale_objs)} 条疑似失效的 Objective 执行记录（不计入上方"
+            "\"正在执行\"，daemon 重启/崩溃后遗留，实际早已不再运行）",
+            expanded=False,
+        ):
+            for ex in stale_objs:
+                exec_id = ex.get("execution_id", "")
+                title = ex.get("title") or ex.get("objective_id", "")
+                c1, c2 = st.columns([5, 1])
+                c1.markdown(f"🎯 **{title}**　`{exec_id}`　({ex.get('progress', '')})")
+                if c2.button("🧹 标记为已中断", key=f"obj_mark_interrupted_{exec_id}"):
+                    res = client.cancel_objective(exec_id)
                     if res and "_error" in res:
                         st.error(res["_error"])
                     else:
@@ -2229,9 +2256,26 @@ def _render_goal_card(
 
     if execution is not None:
         _render_objective_execution_detail(client, execution, key_prefix=key_prefix)
+    # [bugfix / 顶栏『查看并控制』跳转崩溃] status_key 不总是
+    # GOAL_STATUS_COLUMNS 里的 6 个看板列之一——Goal/Objective 的 status 字段
+    # 在其它子系统（cron 桥接、fairness 调度、旧版本数据兼容等）里是"不透明
+    # 字符串"，实际出现过的值远不止这 6 个（如 paused_by_user、
+    # paused_for_fairness、blocked、dormant，以及历史数据里遗留的 cleaned
+    # 等）。之前这里直接 `.index(status_key)`，一旦当前节点的真实 status 不在
+    # 列表里就抛 ValueError 整页崩掉——顶栏"🔍 查看并控制"跳转（见上面
+    # focus_node 那次调用，传的是节点的原始 status，未经过分栏筛选）最容易
+    # 触发。这里改成：status_key 不在标准 6 项里时，把它作为一个额外选项
+    # 追加到下拉框末尽（标签直接显示原始字符串，提示"当前非标准状态"），
+    # 保证下拉框一定能定位到当前值，不再崩溃；用户不特意去改的话也不会
+    # 误触发一次状态写回。
+    _status_options = [s for s, _ in GOAL_STATUS_COLUMNS]
+    if status_key not in _status_options:
+        _status_options = _status_options + [status_key]
+        st.caption(f"⚠️ 当前状态「{status_key}」不是标准看板状态之一（可能来自其它子系统"
+                   "写入或历史数据），已作为额外选项加入下拉框，避免页面崩溃。")
     new_status = st.selectbox(
-        "状态", [s for s, _ in GOAL_STATUS_COLUMNS],
-        index=[s for s, _ in GOAL_STATUS_COLUMNS].index(status_key),
+        "状态", _status_options,
+        index=_status_options.index(status_key),
         key=f"{key_prefix}goalstatus_{n.get('id')}", label_visibility="collapsed",
     )
     if new_status != status_key:

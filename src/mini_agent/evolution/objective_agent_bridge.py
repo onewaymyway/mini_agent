@@ -680,6 +680,17 @@ class ObjectivePersistentRunner:
         if executor is not None:
             executor.shutdown(wait=False, cancel_futures=True)
 
+    def has_worker(self, execution_id: str) -> bool:
+        """[看板『正在执行』实时性修复] 判断某个 execution 当前是否确实
+        占用着一条专属线程/Agent 实例——status=="running" 只代表磁盘/内存
+        state 上次落定的值，daemon 崩溃重启后这个值不会自动改回终态，但
+        `_executors` 是纯进程内registry，重启后天然是空的，因此可以用
+        "声称在跑，但这里查不到对应 worker" 来识别孤儿记录，用法与
+        workflow 那边 `wf_registry.get(...) is None` 的 is_stale 判断完全
+        对称。"""
+        with self._lock:
+            return execution_id in self._executors
+
     @property
     def discarded_worker_count(self) -> int:
         """[阶段三·顺带做] 见 __init__ 里的说明：release()/idle 兜底回收
