@@ -339,6 +339,41 @@ class AgentPaths:
         """<project_root>/.agent/decision_profile_state.json — 决策画像归纳的运行状态（上次扫描时间等）"""
         return self.workdir_dir / "decision_profile_state.json"
 
+    # ── 成长顾问 Growth Advisor（growth_advisor_design.md）────────────────
+
+    @property
+    def growth_backlog_path(self) -> Path:
+        """<project_root>/.agent/growth_backlog.jsonl — GrowthCandidate 候选队列
+        （每行一条 JSON，status: pending/accepted/dismissed/expired）。"""
+        return self.workdir_dir / "growth_backlog.jsonl"
+
+    @property
+    def growth_reports_index_path(self) -> Path:
+        """<project_root>/.agent/growth_reports.jsonl — GrowthReport 元数据索引，
+        正文落在 wiki_growth_dir 下的 Markdown 文件。"""
+        return self.workdir_dir / "growth_reports.jsonl"
+
+    @property
+    def growth_feedback_ledger_path(self) -> Path:
+        """<project_root>/.agent/growth_feedback_ledger.jsonl — 用户对候选/报告
+        的采纳/忽略反馈流水，供研判层下次调整候选置信度。"""
+        return self.workdir_dir / "growth_feedback_ledger.jsonl"
+
+    @property
+    def growth_state_path(self) -> Path:
+        """<project_root>/.agent/growth_advisor_state.json — 成长顾问运行状态
+        （上次信号扫描/候选生成/推送时间等节奏控制）。"""
+        return self.workdir_dir / "growth_advisor_state.json"
+
+    @property
+    def wiki_growth_dir(self) -> Path:
+        """<project_root>/.agent/wiki/growth/ — 成长顾问调研报告正文目录"""
+        return self.wiki_dir / "growth"
+
+    def growth_report_path(self, slug: str) -> Path:
+        """…/wiki/growth/<slug>.md"""
+        return self.wiki_growth_dir / f"{slug}.md"
+
     @property
     def gating_history_path(self) -> Path:
         """<project_root>/.agent/gating_history.jsonl — ResourceArbiter 三态门控

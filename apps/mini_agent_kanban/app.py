@@ -3419,6 +3419,76 @@ def render_self_tab(client: AgentClient):
 
 
 # ═══════════════════════════════════════════════════════════════════════
+# Tab: 🌱 成长顾问（next_doc/growth_advisor_design.md，P1 里程碑）
+# ═══════════════════════════════════════════════════════════════════════
+def render_growth_tab(client: "AgentClient"):
+    st.markdown("#### 🌱 成长顾问 (Growth Advisor)")
+    st.caption(
+        "从最近的对话/记忆里发现的成长方向候选——只是建议，采纳与否始终由你决定，"
+        "忽略的方向短期内不会重复出现。"
+    )
+
+    col_a, col_b = st.columns([1, 5])
+    with col_a:
+        if st.button("🔍 立即为我看看", key="growth_scan_btn"):
+            with st.spinner("正在扫描最近的信号..."):
+                result = client.growth_scan()
+            if result and "_error" in result:
+                st.error(result["_error"])
+            elif result and result.get("skipped"):
+                st.info(f"跳过：{result.get('reason')}")
+            else:
+                n_c = len(result.get("new_candidates", [])) if result else 0
+                n_r = len(result.get("reports", [])) if result else 0
+                st.success(f"完成：新增/更新候选 {n_c} 条，生成调研报告 {n_r} 份。")
+            st.rerun()
+
+    data = client.growth_summary() or {}
+    if "_error" in data:
+        st.warning(data["_error"])
+        return
+
+    candidates = data.get("candidates", [])
+    reports = {r["report_id"]: r for r in data.get("reports", [])}
+    retro = data.get("retrospective", {})
+
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("候选总数", retro.get("total_candidates", 0))
+    c2.metric("已采纳", retro.get("accepted", 0))
+    c3.metric("已忽略", retro.get("dismissed", 0))
+    c4.metric("调研报告", retro.get("reports_generated", 0))
+
+    pending = [c for c in candidates if c.get("status") == "pending"]
+    if not pending:
+        st.caption("当前没有待处理的候选。点击上方按钮手动触发一轮扫描，"
+                    "或等待每日自动扫描（sys:growth_advisor_daily）。")
+        return
+
+    st.markdown("**待处理候选**")
+    for c in sorted(pending, key=lambda x: -x.get("confidence", 0)):
+        with st.container(border=True):
+            st.markdown(f"**{c['title']}**  \n{c.get('rationale', '')}")
+            st.caption(
+                f"置信度 {c.get('confidence', 0)} · 证据 {c.get('evidence_count', 0)} 条"
+            )
+            b1, b2, b3 = st.columns(3)
+            if b1.button("✅ 采纳", key=f"growth_accept_{c['candidate_id']}"):
+                client.growth_candidate_action(c["candidate_id"], "accept")
+                st.rerun()
+            if b2.button("🙈 忽略", key=f"growth_dismiss_{c['candidate_id']}"):
+                client.growth_candidate_action(c["candidate_id"], "dismiss")
+                st.rerun()
+            report_id = c.get("report_id")
+            if report_id and b3.button("📄 查看报告", key=f"growth_report_{c['candidate_id']}"):
+                rep = client.growth_report(report_id)
+                if rep and "_error" not in rep:
+                    st.markdown(rep.get("body", "（报告正文为空）"))
+                else:
+                    st.error((rep or {}).get("_error", "读取报告失败"))
+
+
+
+# ═══════════════════════════════════════════════════════════════════════
 # 自诊断信号闭环深化（next_doc/self_diagnosis_feedback_loop_deepening_plan.md
 # P1-P4）看板可视化。四路信号此前只落盘/写进 activity_digest.jsonl，人工
 # 要看只能翻文件或翻晨报文本；这里接上 GET /v1/self/diagnosis_feedback，
@@ -5448,7 +5518,7 @@ def main():
     render_topbar(client, get_active_session_id())
 
     tabs = st.tabs(["💬 对话", "🗂️ 会话管理", "📌 目标看板", "🔄 工作流", "📁 产出物", "🖼️ 产出预览",
-                    "🧠 自我状态", "🧬 进化提案", "⏰ Cron 任务", "🗓️ 全局日程", "🔌 外部输入",
+                    "🧠 自我状态", "🌱 成长顾问", "🧬 进化提案", "⏰ Cron 任务", "🗓️ 全局日程", "🔌 外部输入",
                     "🔔 关注与通知", "⚙️ 配置", "🔧 诊断", "🧪 混合执行", "📛 错误日志"])
 
     # [daemon_stability_and_ux_improvement_plan.md 补充 / 看板顶栏跳转]
@@ -5476,22 +5546,24 @@ def main():
     with tabs[6]:
         render_self_tab(client)
     with tabs[7]:
-        render_evolution_proposals_tab(client)
+        render_growth_tab(client)
     with tabs[8]:
-        render_cron_jobs_tab(client)
+        render_evolution_proposals_tab(client)
     with tabs[9]:
-        render_global_schedule_tab(client)
+        render_cron_jobs_tab(client)
     with tabs[10]:
-        render_external_input_tab(client)
+        render_global_schedule_tab(client)
     with tabs[11]:
-        render_notification_tab(client)
+        render_external_input_tab(client)
     with tabs[12]:
-        render_config_tab(client)
+        render_notification_tab(client)
     with tabs[13]:
-        render_diagnostics_tab(client)
+        render_config_tab(client)
     with tabs[14]:
-        render_hybrid_exec_tab(client)
+        render_diagnostics_tab(client)
     with tabs[15]:
+        render_hybrid_exec_tab(client)
+    with tabs[16]:
         render_error_log_tab(client)
 
     # [P0 改造] 原来这里是 `if auto_refresh: time.sleep(3); st.rerun()`——

@@ -183,6 +183,7 @@ def _build_nested_blocks() -> list:
         NestedBlockSpec("proprioception", _m.ProprioceptionConfig),
         NestedBlockSpec("affordance", _m.AffordanceConfig),
         NestedBlockSpec("digest_advisor", _m.DigestAdvisorConfig),
+        NestedBlockSpec("growth_advisor", _m.GrowthAdvisorConfig),
         NestedBlockSpec("cron", _m.CronConfig),
         NestedBlockSpec("autonomy", _m.AutonomyConfig),
         NestedBlockSpec("observability", _m.ObservabilityConfig),

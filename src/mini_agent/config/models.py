@@ -1596,6 +1596,58 @@ class DigestAdvisorConfig:
 
 
 @dataclass
+class GrowthAdvisorConfig:
+    """[growth_advisor_design.md] 用户成长顾问配置。
+
+    与 DigestAdvisorConfig 是姊妹配置块：那边服务 Agent 自己的推荐/画像，
+    这里服务人类用户的成长方向候选/调研报告。见方案第 -1 节的战略定位——
+    默认值按"零成本用起来"的原则设定为开启，而不是常见的 opt-in 保守默认。
+
+    generation（信号扫描/候选生成/调研报告生成）与 interruption（主动推送/
+    通知）是方案第 4.1/4.2 节明确要求拆开治理的两个维度，因此这里也拆成
+    两组独立配置，不能用同一个开关/频率控制。
+    """
+
+    # 总开关：默认开启（opt-out）。关闭后 growth_signal_scan /
+    # growth_candidate_derive / sys:growth_advisor_daily 全部跳过，
+    # 已生成的数据不会被自动清除（清除是看板/CLI 里单独的显式操作）。
+    enabled: bool = True
+
+    # ── 生成频率（generation）──────────────────────────────────────────
+    # daily | every_12h | weekly | manual | off，对应 sys:growth_advisor_daily
+    # 的调度档位（第 4.1 节）。manual 时该 cron job 保持 disabled，只能通过
+    # /growth scan、看板"立即为我看看"按钮手动触发。
+    generation_frequency: str = "daily"
+
+    # ── 推送频率（interruption，独立于生成频率，见第 4.2 节）────────────
+    # daily（默认，最多 1 条/天，取当天新生成里置信度最高的一条）|
+    # weekly_digest（打包成一条周摘要）| kanban_only（只更新看板，不推送）
+    notification_frequency: str = "daily"
+    # 单日最多推送条数（notification_frequency=daily 时生效）
+    notification_max_per_day: int = 1
+    # 值得推送的最低置信度阈值，低于此值当天只更新看板、不发通知
+    notification_min_confidence: float = 0.6
+
+    # ── 候选克制阈值（对齐 decision_profile_builder.MIN_EVIDENCE_COUNT）──
+    min_evidence_count: int = 3
+    # 候选队列 pending 状态上限，超过则本轮不再新增（避免无限堆积）
+    max_pending_candidates: int = 10
+    # 每轮调研 cron 最多处理的 Top-N 候选个数
+    max_reports_per_run: int = 2
+    # 同一 candidate 被 dismissed 后的冷却期（天），期间不再重复调研同一方向
+    dismissed_cooldown_days: int = 30
+
+    # ── 隐私/克制（第 8 节，默认开启但知情权不能省略）──────────────────
+    # 首次进入看板是否需要展示一次轻量提示（不打断使用），展示后本地记录
+    # 已提示过，不重复弹出
+    first_touch_notice_enabled: bool = True
+
+    # ── 用户可选的关注领域黑名单（第 5 节"设置入口"）────────────────────
+    # 命中黑名单关键词的候选在 growth_candidate_derive 阶段直接跳过
+    excluded_topics: list = field(default_factory=list)
+
+
+@dataclass
 class ReminderConfig:
     """[SYS-REMINDER] 动态 Reminder 提示注入配置。
 
@@ -1805,6 +1857,7 @@ class AppConfig:
     affordance: AffordanceConfig = field(default_factory=AffordanceConfig)
     autonomy: AutonomyConfig = field(default_factory=AutonomyConfig)
     digest_advisor: DigestAdvisorConfig = field(default_factory=DigestAdvisorConfig)
+    growth_advisor: GrowthAdvisorConfig = field(default_factory=GrowthAdvisorConfig)
     cron: CronConfig = field(default_factory=CronConfig)
     scheduler: SchedulerConfig = field(default_factory=SchedulerConfig)
     workflow:   WorkflowConfig   = field(default_factory=WorkflowConfig)

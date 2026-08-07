@@ -20,6 +20,8 @@ evolution/cron_scheduler.py — Daemon 模式定时任务调度器
   sys:daily_digest           — 每日融合日报（行为+目标+提交）      cron:0 22 * * *
   sys:next_action_digest     — 主动推荐排序（停滞目标/注意力错配）  interval:10800
   sys:decision_profile_update — 决策画像归纳（默认关闭，见改进计划）interval:604800
+  sys:growth_advisor_daily        — 成长顾问候选扫描+调研报告（默认开启）cron:30 22 * * *
+  sys:growth_monthly_retrospective — 成长顾问月度复盘（默认开启）      interval:2592000
 
 存储：<project_root>/.agent/cron_jobs.json
 """
@@ -283,6 +285,29 @@ _BUILTIN_JOBS: list[dict] = [
         "task_template": "[画像] 执行一次 /decision_profile update，归纳决策画像并落盘",
         "tags": ["profile", "wiki"],
         "enabled": False,
+    },
+    {
+        # [next_doc/growth_advisor_design.md] 成长顾问：信号扫描 + 候选生成 +
+        # Top-N 调研报告。默认 enabled=True 与 GrowthAdvisorConfig.enabled
+        # 的默认值保持一致（opt-out），实际是否运行由
+        # GrowthAdvisorConfig.generation_frequency 决定档位、
+        # 由 growth_advisor.run_daily_cycle 内部的 cfg.enabled 兜底跳过。
+        "id": "sys:growth_advisor_daily",
+        "name": "成长顾问：候选扫描",
+        "schedule": "cron:30 22 * * *",
+        "description": "扫描近期记忆信号，生成/更新成长方向候选，并为置信度最高的候选生成调研报告（每天 22:30，弱信号不生成候选）",
+        "task_template": "[成长顾问] 执行一次 /growth scan，扫描信号、更新候选队列，并为符合条件的候选生成调研报告",
+        "tags": ["growth_advisor", "wiki"],
+        "enabled": True,
+    },
+    {
+        "id": "sys:growth_monthly_retrospective",
+        "name": "成长顾问：月度复盘",
+        "schedule": "interval:2592000",
+        "description": "统计成长候选的生成/采纳/忽略情况，生成一份月度复盘摘要（每 30 天）",
+        "task_template": "[成长顾问] 执行一次 /growth retrospective，生成月度成长复盘摘要",
+        "tags": ["growth_advisor", "digest"],
+        "enabled": True,
     },
 ]
 

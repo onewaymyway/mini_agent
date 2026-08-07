@@ -5717,3 +5717,112 @@ async def get_decision_profile(request: Request):
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+# ── 成长顾问 Growth Advisor 看板端点 ────────────────────────────────────────
+# [next_doc/growth_advisor_design.md] P1 里程碑："看板 tab 上线"。
+# 与上面的 /notification/watchlist 系列一样走只读展示 + 少量显式动作
+# （accept/dismiss/scan）的模式，不在 API 层做任何自动推送判断——推送节奏
+# 完全由 cron job + GrowthAdvisorConfig.notification_* 控制，这里只负责
+# 把当前状态如实透出给看板。
+
+@router.get("/growth/summary")
+async def get_growth_summary(request: Request):
+    """GET /v1/growth/summary — 返回当前候选队列（pending 优先）+ 已生成的
+    调研报告列表 + 月度复盘统计，供看板"🌱 成长顾问"tab 一次性渲染。"""
+    _require_owner(request)
+    try:
+        paths = _get_paths_for_request(request)
+        from mini_agent.evolution import growth_advisor as ga
+
+        backlog = ga.GrowthBacklog(paths)
+        candidates = backlog.load_all()
+        reports = ga.list_reports(paths)
+        retro = ga.monthly_retrospective_summary(paths)
+        return {
+            "candidates": [c.to_dict() for c in candidates],
+            "reports": [r.to_dict() for r in reports],
+            "retrospective": retro,
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/growth/scan")
+async def post_growth_scan(request: Request):
+    """POST /v1/growth/scan — 手动触发一轮信号扫描 + 候选生成 + Top-N 调研
+    报告（等价于 CLI `/growth scan` / cron sys:growth_advisor_daily 的内容），
+    供看板"立即为我看看"按钮调用。规则式实现，不依赖 LLM，可安全同步执行。"""
+    _require_owner(request)
+    try:
+        paths = _get_paths_for_request(request)
+        http_server = getattr(request.app.state, "http_server", None)
+        self_agent = http_server.bridge.agent if http_server else None
+        cfg = getattr(self_agent.cfg, "growth_advisor", None) if self_agent else None
+        if cfg is None:
+            from mini_agent.config.models import GrowthAdvisorConfig
+            cfg = GrowthAdvisorConfig()
+
+        from mini_agent.evolution import growth_advisor as ga
+        from mini_agent.perception.memory_store import MemoryStore
+        from mini_agent.profile import UserProfileManager
+
+        mgr = UserProfileManager(paths)
+        profile = mgr.load()
+        store = MemoryStore(paths)
+        result = ga.run_daily_cycle(paths, cfg, profile, store)
+        mgr.save()
+        return result
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/growth/candidates/{candidate_id}/{action}")
+async def post_growth_candidate_action(request: Request, candidate_id: str, action: str):
+    """POST /v1/growth/candidates/{id}/accept|dismiss — 看板上对单个候选的
+    显式反馈动作，写入 GrowthFeedbackLedger（供后续置信度调优参考）。"""
+    _require_owner(request)
+    if action not in ("accept", "dismiss"):
+        raise HTTPException(status_code=400, detail="action must be accept or dismiss")
+    try:
+        paths = _get_paths_for_request(request)
+        from mini_agent.evolution import growth_advisor as ga
+
+        status = ga.STATUS_ACCEPTED if action == "accept" else ga.STATUS_DISMISSED
+        backlog = ga.GrowthBacklog(paths)
+        cand = backlog.set_status(candidate_id, status)
+        if cand is None:
+            raise HTTPException(status_code=404, detail="candidate not found")
+        ga.GrowthFeedbackLedger(paths).record(candidate_id, status)
+        return {"ok": True, "candidate": cand.to_dict()}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/growth/reports/{report_id}")
+async def get_growth_report_body(request: Request, report_id: str):
+    """GET /v1/growth/reports/{id} — 返回某份调研报告的 Markdown 正文。"""
+    _require_owner(request)
+    try:
+        paths = _get_paths_for_request(request)
+        from mini_agent.evolution import growth_advisor as ga
+
+        reports = {r.report_id: r for r in ga.list_reports(paths)}
+        report = reports.get(report_id)
+        if report is None:
+            raise HTTPException(status_code=404, detail="report not found")
+        from pathlib import Path
+        body_path = Path(report.body_path)
+        body = body_path.read_text(encoding="utf-8") if body_path.exists() else ""
+        d = report.to_dict()
+        d["body"] = body
+        return d
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))

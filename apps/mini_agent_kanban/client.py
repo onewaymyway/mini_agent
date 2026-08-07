@@ -603,6 +603,19 @@ class AgentClient:
     def decision_profile(self):
         return self._get("/decision_profile")
 
+    # ── 成长顾问 Growth Advisor（growth_advisor_design.md）─────────────
+    def growth_summary(self):
+        return self._get("/growth/summary")
+
+    def growth_scan(self):
+        return self._post("/growth/scan")
+
+    def growth_candidate_action(self, candidate_id: str, action: str):
+        return self._post(f"/growth/candidates/{candidate_id}/{action}")
+
+    def growth_report(self, report_id: str):
+        return self._get(f"/growth/reports/{report_id}")
+
     # ── 文件系统（产出物浏览）────────────────────────────────────────
     def fs_list(self, path="."):
         return self._get("/fs/list", params={"path": path})

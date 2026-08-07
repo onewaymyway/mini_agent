@@ -50,6 +50,7 @@ from mini_agent.cli.commands.recall import handle_recall_cmd
 from mini_agent.cli.commands.digest_cmd import handle_digest_cmd
 from mini_agent.cli.commands.next_action_cmd import handle_next_action_cmd
 from mini_agent.cli.commands.profile_cmd import handle_profile_cmd
+from mini_agent.cli.commands.growth_cmd import handle_growth_cmd
 
 __all__ = [
     "handle_behavior_cmd",
@@ -77,4 +78,5 @@ __all__ = [
     "handle_digest_cmd",
     "handle_next_action_cmd",
     "handle_profile_cmd",
+    "handle_growth_cmd",
 ]

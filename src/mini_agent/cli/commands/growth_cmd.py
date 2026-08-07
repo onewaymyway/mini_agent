@@ -1,0 +1,158 @@
+"""
+cli/commands/growth_cmd.py — /growth 命令处理（成长顾问，见
+next_doc/growth_advisor_design.md）。
+
+子命令：
+  /growth                 — 展示候选队列概况（pending 列表 + 已生成报告数）
+  /growth scan             — 手动触发一轮信号扫描 + 候选生成 + Top-N 调研报告
+                              （等价于 sys:growth_advisor_daily 的内容，
+                              不依赖那条 cron job 是否 enabled）
+  /growth list              — 列出当前 pending 候选（含 id，便于 accept/dismiss）
+  /growth accept <id>       — 采纳一个候选（标记 accepted，记入反馈台账）
+  /growth dismiss <id>      — 忽略一个候选（标记 dismissed，进入冷却期）
+  /growth report <id>       — 查看某候选已生成的调研报告正文
+  /growth retrospective     — 生成/展示月度成长复盘摘要
+"""
+
+from __future__ import annotations
+
+import mini_agent.ui.renderer as R
+
+
+def _get_paths(agent):
+    if agent is None:
+        return None
+    paths = getattr(agent, "_paths", None)
+    if paths is not None:
+        return paths
+    cfg = getattr(agent, "cfg", None)
+    if cfg is None:
+        return None
+    try:
+        from mini_agent.storage.paths import AgentPaths
+        return AgentPaths(cfg.project_root)
+    except Exception:
+        return None
+
+
+def _get_cfg(agent):
+    cfg = getattr(agent, "cfg", None) if agent else None
+    growth_cfg = getattr(cfg, "growth_advisor", None) if cfg is not None else None
+    if growth_cfg is None:
+        from mini_agent.config.models import GrowthAdvisorConfig
+        growth_cfg = GrowthAdvisorConfig()
+    return growth_cfg
+
+
+def _get_profile(paths):
+    from mini_agent.profile import UserProfileManager
+    mgr = UserProfileManager(paths)
+    return mgr, mgr.load()
+
+
+def _get_memory_store(paths):
+    try:
+        from mini_agent.perception.memory_store import MemoryStore
+        return MemoryStore(paths)
+    except Exception:
+        return None
+
+
+def handle_growth_cmd(args: list[str], agent=None) -> None:
+    paths = _get_paths(agent)
+    if paths is None:
+        R.print_error("Cannot access project paths (agent not initialized).")
+        return
+
+    from mini_agent.evolution import growth_advisor as ga
+
+    sub = args[0] if args else ""
+
+    if sub == "scan":
+        cfg = _get_cfg(agent)
+        if not cfg.enabled:
+            R.print_warning("成长顾问当前已在配置中关闭（growth_advisor.enabled=False），跳过。")
+            return
+        mgr, profile = _get_profile(paths)
+        store = _get_memory_store(paths)
+        result = ga.run_daily_cycle(paths, cfg, profile, store)
+        mgr.save()
+        if result.get("skipped"):
+            R.print_info(f"跳过：{result.get('reason')}")
+            return
+        n_cand = len(result.get("new_candidates", []))
+        n_rep = len(result.get("reports", []))
+        R.print_info(f"本轮扫描完成：新增/更新候选 {n_cand} 条，生成调研报告 {n_rep} 份。")
+        return
+
+    if sub == "list" or sub == "":
+        backlog = ga.GrowthBacklog(paths)
+        pending = backlog.pending()
+        if not pending:
+            R.print_info("当前没有待处理的成长方向候选。可执行 /growth scan 手动触发一轮扫描。")
+            return
+        R.console.print(f"[bold]待处理的成长方向候选（{len(pending)} 条）：[/bold]")
+        for c in sorted(pending, key=lambda x: -x.confidence):
+            report_mark = "（已有调研报告）" if c.report_id else ""
+            R.console.print(
+                f"  [{c.candidate_id}] {c.title}  confidence={c.confidence}"
+                f"  evidence={c.evidence_count}{report_mark}"
+            )
+            R.console.print(f"      {c.rationale}")
+        return
+
+    if sub in ("accept", "dismiss"):
+        if len(args) < 2:
+            R.print_error(f"用法：/growth {sub} <candidate_id>")
+            return
+        cid = args[1]
+        backlog = ga.GrowthBacklog(paths)
+        status = ga.STATUS_ACCEPTED if sub == "accept" else ga.STATUS_DISMISSED
+        cand = backlog.set_status(cid, status)
+        if cand is None:
+            R.print_error(f"未找到候选：{cid}")
+            return
+        ga.GrowthFeedbackLedger(paths).record(cid, status)
+        verb = "已采纳" if sub == "accept" else "已忽略"
+        R.print_info(f"{verb}：{cand.title}")
+        return
+
+    if sub == "report":
+        if len(args) < 2:
+            R.print_error("用法：/growth report <candidate_id>")
+            return
+        cid = args[1]
+        backlog = ga.GrowthBacklog(paths)
+        cand = backlog.get(cid)
+        if cand is None:
+            R.print_error(f"未找到候选：{cid}")
+            return
+        if not cand.report_id:
+            cfg = _get_cfg(agent)
+            llm_helper = getattr(agent, "llm_helper", None) if agent else None
+            report = ga.generate_growth_report(paths, cand, llm_helper=llm_helper)
+            R.print_info(f"已生成调研报告：{report.body_path}")
+        else:
+            reports = {r.report_id: r for r in ga.list_reports(paths)}
+            report = reports.get(cand.report_id)
+        if report is None:
+            R.print_error("报告索引缺失，请重新执行 /growth report 生成。")
+            return
+        from pathlib import Path
+        body_path = Path(report.body_path)
+        if body_path.exists():
+            R.console.print(body_path.read_text(encoding="utf-8"))
+        else:
+            R.print_error(f"报告文件缺失：{body_path}")
+        return
+
+    if sub == "retrospective":
+        summary = ga.monthly_retrospective_summary(paths)
+        R.console.print("[bold]成长顾问月度复盘：[/bold]")
+        for k, v in summary.items():
+            R.console.print(f"  {k}: {v}")
+        return
+
+    R.print_error(
+        "未知子命令。可用：/growth [list] | scan | accept <id> | dismiss <id> | report <id> | retrospective"
+    )

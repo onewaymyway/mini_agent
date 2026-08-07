@@ -681,6 +681,7 @@ def load_config(
     # 一次性正确加载全部 12 个嵌套 block，不会再出现这类"某个 block 漏接"
     # 的问题——所有 block 的加载路径完全一致，是同一段通用代码。
     digest_advisor_cfg = _nested_blocks["digest_advisor"]
+    growth_advisor_cfg = _nested_blocks["growth_advisor"]
     cron_cfg = _nested_blocks["cron"]
     autonomy_cfg = _nested_blocks["autonomy"]
     observability_cfg = _nested_blocks["observability"]
@@ -752,6 +753,7 @@ def load_config(
         global_knowledge=global_knowledge_cfg,
         privacy=privacy_cfg,
         digest_advisor=digest_advisor_cfg,
+        growth_advisor=growth_advisor_cfg,
         cron=cron_cfg,
         autonomy=autonomy_cfg,
         scheduler=scheduler_cfg,

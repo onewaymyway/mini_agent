@@ -121,6 +121,11 @@ def build_parser() -> argparse.ArgumentParser:
               /next [refresh]             Show (or recompute) the ranked next-action recommendations
               /decision_profile           Show the current decision/value profile (wiki/user_value_profile.md)
               /decision_profile update    Re-summarize the decision profile now (requires LLM helper)
+              /growth [list]              Show pending growth-direction candidates (Growth Advisor)
+              /growth scan                Run one signal scan + candidate derive + top-N report cycle now
+              /growth accept|dismiss <id> Mark a candidate accepted/dismissed
+              /growth report <id>         Show (or generate) the research report for a candidate
+              /growth retrospective       Show the monthly growth retrospective summary
               /debug system               Print current system prompt (with token estimate)
               /debug history [full] [n]   Print history as a table (last n msgs; 'full' = no truncation)
               /debug all [n]              Print system + history together

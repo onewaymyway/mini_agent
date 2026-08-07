@@ -41,7 +41,8 @@ from mini_agent.cli.commands import (
     handle_recall_cmd,
     handle_digest_cmd,
     handle_next_action_cmd,
-    handle_profile_cmd,)
+    handle_profile_cmd,
+    handle_growth_cmd,)
 
 
 def _print_resume_hint(agent: Agent) -> None:
@@ -441,6 +442,11 @@ def _handle_slash(cmd: str, agent: Agent, skill_loader: SkillLoader) -> None:
         # 已经在用的 `sys:decision_profile_update` cron job 命名保持一致，
         # 避免语义混淆的同时也不需要再抢占既有的 /profile 语义。
         handle_profile_cmd(parts[1:], agent)
+
+    elif name == "growth":
+        # [next_doc/growth_advisor_design.md] 成长顾问：见
+        # cli/commands/growth_cmd.py 顶部子命令说明。
+        handle_growth_cmd(parts[1:], agent)
 
     elif name == "debug":
         # /debug system|history [full] [n]|all [n]|save [path]
