@@ -7,7 +7,7 @@ decision_profile_builder / objective_outcome_tracker ...）是姊妹关系：
 反馈台账三层结构完全复用 evolution/ 里已经跑通的"证据 → 候选 → 采纳/
 忽略反馈回路"范式（方案第 3 节 P1 里程碑）。
 
-P1 范围（本次实现）：
+P1 范围（信号扫描 → 候选生成 → 调研报告 → 看板展示，已完成）：
     - GrowthCandidate / GrowthReport 数据模型
     - GrowthBacklog：候选队列（pending/accepted/dismissed/expired），
       按 dedupe_key 去重、dismissed 有冷却期、pending 有数量上限
@@ -24,9 +24,29 @@ P1 范围（本次实现）：
       签名 `llm_helper(prompt: str) -> str`），则优先用它起草正文——
       同 decision_profile_builder 的"可选 LLM 增强，缺省仍要能跑"原则。
 
-不在本次范围内（见方案 P2/P3，占位在 next_doc 文档里）：
-    - 月度成长复盘的深度归因、跨候选的能力地图聚合
-    - 看板里的拖拽式看板视图（P1 只做列表 + 采纳/忽略两个动作）
+P2 范围（反馈驱动的置信度调权 + 推送节流接入 + 复盘深度归因，本次新增）：
+    - `_feedback_multiplier()` / `_dismiss_counts_by_dedupe_key()`：读取
+      GrowthFeedbackLedger 里的历史 dismiss 记录，同一方向被忽略过的
+      次数越多，下次（冷却期过后）重新生成候选时默认置信度打的折扣越
+      大，但不会打到 0——呼应方案第 6 节"不是完全屏蔽，避免用户当时忙、
+      后来又感兴趣的情况被永久拒绝"。
+    - `_maybe_dispatch_notification()`：把 `run_daily_cycle()` 产出的
+      调研报告接入已有的 `NotificationDispatcher`（复用 email/kanban
+      channel）与 `notification.reports_store`，落实方案第 4.2 节的
+      推送节流规则——`notification_frequency=kanban_only` 时不推送；
+      否则当天最多推 `notification_max_per_day` 条（默认 1 条），且必须
+      是这一轮新生成报告里置信度最高、达到 `notification_min_confidence`
+      阈值的一条；节流状态落盘在 `paths.growth_state_path`。
+    - `monthly_retrospective_summary()` 新增 `acceptance_rate`（采纳率）
+      与 `top_accepted_topics` / `top_dismissed_topics`（按候选标题聚合
+      的采纳/忽略排行），作为方案第 6 节"推荐命中率"指标的落地。
+
+不在本次范围内（见方案 P3，占位在 next_doc 文档里）：
+    - 看板里的拖拽式看板视图（当前仍是列表 + 采纳/忽略两个动作）
+    - `excluded_topics` 黑名单的看板可视化编辑入口（仍只能改配置文件）
+    - `notification_frequency=weekly_digest` 档位的真实周摘要打包逻辑
+      （当前该档位下与 `daily` 走同一套节流规则，只是没有单独的"打包成
+      一条"聚合步骤，视为已知简化，见实施记录）
 """
 
 from __future__ import annotations
@@ -200,6 +220,7 @@ class GrowthBacklog:
         min_evidence_count: int,
         max_pending: int,
         dismissed_cooldown_days: int,
+        confidence_multiplier: float = 1.0,
     ) -> Optional[GrowthCandidate]:
         """尝试新增一条候选。规则（对应方案第 3 节"克制"要求）：
             - evidence_refs 数量不达标 → 不生成，返回 None
@@ -234,13 +255,16 @@ class GrowthBacklog:
         if pending_count >= max_pending:
             return None
 
+        base_confidence = _confidence_from_evidence(len(set(evidence_refs)))
         cand = GrowthCandidate(
             candidate_id=uuid.uuid4().hex[:12],
             title=title,
             rationale=rationale,
             evidence_refs=sorted(set(evidence_refs)),
             evidence_count=len(set(evidence_refs)),
-            confidence=_confidence_from_evidence(len(set(evidence_refs))),
+            # confidence_multiplier < 1.0 时说明这个方向此前被 dismiss 过
+            # （见 _feedback_multiplier），新建候选默认置信度打折但不清零。
+            confidence=round(base_confidence * confidence_multiplier, 3),
         )
         all_c.append(cand)
         self.save_all(all_c)
@@ -296,6 +320,41 @@ class GrowthFeedbackLedger:
 
     def all_entries(self) -> list[dict]:
         return _read_jsonl(self._path)
+
+
+# ────────────────────────── P2：反馈驱动的置信度调权 ──────────────────────────
+
+# 每被 dismiss 一次，新建候选的默认置信度衰减为原来的这个比例（复利式衰
+# 减，而不是线性扣分，理由是"第 1 次忽略"和"第 5 次忽略"传达的信号强度
+# 显然不该线性对待）。下限见 _MIN_FEEDBACK_MULTIPLIER——不会打到 0，避免
+# "用户当时忙、后来又感兴趣"被永久拒绝（方案第 6 节明确要求）。
+_DISMISS_DECAY_FACTOR = 0.85
+_MIN_FEEDBACK_MULTIPLIER = 0.4
+
+
+def _dismiss_counts_by_dedupe_key(paths) -> dict[str, int]:
+    """统计每个 dedupe_key（归一化标题）历史上被 dismiss 过多少次。
+
+    GrowthFeedbackLedger 只记录 candidate_id，需要反查 backlog 里对应
+    候选的标题才能归一化到 dedupe_key——包括已经不在 pending 状态、甚至
+    早已被 expire_stale 清理状态的旧候选（backlog 是整表重写，历史记录
+    仍在文件里，只是 status 字段变了），因此这里读全量 load_all()。
+    """
+    id_to_key = {c.candidate_id: c.dedupe_key() for c in GrowthBacklog(paths).load_all()}
+    counts: dict[str, int] = {}
+    for entry in GrowthFeedbackLedger(paths).all_entries():
+        if entry.get("action") != STATUS_DISMISSED:
+            continue
+        key = id_to_key.get(entry.get("candidate_id"))
+        if key:
+            counts[key] = counts.get(key, 0) + 1
+    return counts
+
+
+def _feedback_multiplier(dismiss_count: int) -> float:
+    if dismiss_count <= 0:
+        return 1.0
+    return max(_MIN_FEEDBACK_MULTIPLIER, round(_DISMISS_DECAY_FACTOR ** dismiss_count, 3))
 
 
 # ────────────────────────── 信号扫描 growth_signal_scan ──────────────────────────
@@ -364,12 +423,17 @@ def growth_candidate_derive(paths, cfg, profile) -> list[GrowthCandidate]:
     max_pending = getattr(cfg, "max_pending_candidates", 10)
     cooldown_days = getattr(cfg, "dismissed_cooldown_days", 30)
 
+    # P2：反馈驱动的置信度调权（方案第 6 节）——先一次性读取历史 dismiss
+    # 统计，逐主题查表即可，避免在循环里重复扫描 ledger。
+    dismiss_counts = _dismiss_counts_by_dedupe_key(paths)
+
     produced: list[GrowthCandidate] = []
     # 按证据数从多到少处理，保证 max_pending 限额下优先生成信号更强的候选
     for topic, refs in sorted(focus_areas.items(), key=lambda kv: -len(kv[1])):
         if topic.strip().lower() in excluded:
             continue
         rationale = f"最近记忆里与「{topic}」相关的内容出现了 {len(set(refs))} 次，可能是值得投入的方向。"
+        multiplier = _feedback_multiplier(dismiss_counts.get(normalize_title_key(topic), 0))
         cand = backlog.add_or_merge(
             title=topic,
             rationale=rationale,
@@ -377,6 +441,7 @@ def growth_candidate_derive(paths, cfg, profile) -> list[GrowthCandidate]:
             min_evidence_count=min_evidence_count,
             max_pending=max_pending,
             dismissed_cooldown_days=cooldown_days,
+            confidence_multiplier=multiplier,
         )
         if cand is not None:
             produced.append(cand)
@@ -459,15 +524,120 @@ def list_reports(paths) -> list[GrowthReport]:
     return [GrowthReport.from_dict(d) for d in _read_jsonl(paths.growth_reports_index_path)]
 
 
+# ────────────────────────── P2：推送节流状态（growth_advisor_state.json） ──────────────────────────
+
+
+def _today_str() -> str:
+    return time.strftime("%Y-%m-%d", time.localtime())
+
+
+def _load_growth_state(paths) -> dict:
+    p = paths.growth_state_path
+    if not p.exists():
+        return {}
+    try:
+        return json.loads(p.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+
+
+def _save_growth_state(paths, state: dict) -> None:
+    p = paths.growth_state_path
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(json.dumps(state, ensure_ascii=False), encoding="utf-8")
+
+
+def _maybe_dispatch_notification(
+    paths, cfg, candidates_by_id: dict[str, GrowthCandidate], reports: list[GrowthReport]
+) -> Optional[dict]:
+    """方案第 4.2 节推送节流：看板展示不受限，主动推送（通知中心/邮件）
+    才需要节流——本函数只负责"要不要推、推哪一条"，看板轮询走的是
+    `/growth/summary` 只读端点，跟这里完全独立、不受影响。
+
+    规则：
+        - `notification_frequency == "kanban_only"` 或本轮没有新报告 ->
+          不推送。
+        - 只在达到 `notification_min_confidence` 的报告里选置信度最高
+          的一条；全部达不到阈值 -> 不推送（"宁可不推，不为了凑数硬推"，
+          方案第 4.2 节原文）。
+        - 当天（自然日，本地时区）已推送次数达到 `notification_max_per_day`
+          -> 不再推送，状态落盘在 `paths.growth_state_path`。
+        - 任何一步异常都不应该打断 `run_daily_cycle` 主流程，统一
+          try/except + log_exception 兜底，返回 None。
+    """
+    reports = list(reports or [])
+    if not reports:
+        return None
+    freq = getattr(cfg, "notification_frequency", "daily")
+    if freq == "kanban_only":
+        return None
+
+    min_conf = getattr(cfg, "notification_min_confidence", 0.6)
+    max_per_day = getattr(cfg, "notification_max_per_day", 1)
+
+    scored: list[tuple[float, GrowthReport]] = []
+    for r in reports:
+        cand = candidates_by_id.get(r.candidate_id)
+        conf = cand.confidence if cand is not None else 0.0
+        if conf >= min_conf:
+            scored.append((conf, r))
+    if not scored:
+        return None
+    scored.sort(key=lambda t: -t[0])
+    best_conf, best_report = scored[0]
+
+    try:
+        state = _load_growth_state(paths)
+        today = _today_str()
+        if state.get("last_notify_date") != today:
+            state["last_notify_date"] = today
+            state["notify_count_today"] = 0
+        if state.get("notify_count_today", 0) >= max_per_day:
+            return None
+
+        from mini_agent.notification.dispatcher import NotificationDispatcher, NotificationMessage
+        from mini_agent.notification import reports_store
+
+        message = NotificationMessage(
+            title=f"成长顾问：{best_report.title}",
+            body=best_report.summary,
+            source="growth_report",
+            meta={
+                "candidate_id": best_report.candidate_id,
+                "report_id": best_report.report_id,
+                "confidence": best_conf,
+            },
+        )
+        results = NotificationDispatcher(paths).dispatch(message)
+        reports_store.append_report(
+            paths,
+            {
+                "title": message.title,
+                "body": message.body,
+                "source": message.source,
+                "candidate_id": best_report.candidate_id,
+                "report_id": best_report.report_id,
+                "confidence": best_conf,
+                "created_at": message.created_at,
+                "acknowledged": False,
+            },
+        )
+        state["notify_count_today"] = state.get("notify_count_today", 0) + 1
+        _save_growth_state(paths, state)
+        return {"report_id": best_report.report_id, "confidence": best_conf, "channels": results}
+    except Exception as exc:
+        from mini_agent.errors import log_exception
+        log_exception(exc, where="mini_agent.growth_advisor._maybe_dispatch_notification")
+        return None
+
+
 # ────────────────────────── 每日流程封装（供 cron / CLI 复用） ──────────────────────────
 
 
 def run_daily_cycle(paths, cfg, profile, memory_store) -> dict[str, Any]:
     """`sys:growth_advisor_daily` 与 `/growth scan` 共用的主流程：
-    信号扫描 → 候选生成 → （置信度达标的）Top-N 生成调研报告。
-    不做任何推送/通知——推送节奏是 notification_frequency 独立控制的
-    另一层，由上层调用方（cron job / 通知调度器）决定要不要用这里的
-    返回值触发一次通知。
+    信号扫描 -> 候选生成 -> （置信度达标的）Top-N 生成调研报告 ->
+    （P2 新增）按 4.2 节节流规则决定要不要推送一条通知。
     """
     if not getattr(cfg, "enabled", True):
         return {"skipped": True, "reason": "growth_advisor disabled"}
@@ -479,26 +649,49 @@ def run_daily_cycle(paths, cfg, profile, memory_store) -> dict[str, Any]:
     top = sorted(new_candidates, key=lambda c: -c.confidence)[:max_reports]
     reports = [generate_growth_report(paths, c) for c in top]
 
+    candidates_by_id = {c.candidate_id: c for c in top}
+    notification = _maybe_dispatch_notification(paths, cfg, candidates_by_id, reports)
+
     return {
         "skipped": False,
         "new_candidates": [c.candidate_id for c in new_candidates],
         "reports": [r.report_id for r in reports],
+        "notification": notification,
     }
 
 
 def monthly_retrospective_summary(paths) -> dict[str, Any]:
-    """月度成长复盘统计（P1：只做数量统计，深度归因留给 P2）。"""
+    """月度成长复盘统计。P2 在 P1 的数量统计基础上新增 `acceptance_rate`
+    （采纳率）与按候选标题聚合的采纳/忽略排行——对应方案第 6 节"推荐命中
+    率"这类自我评估指标；跨候选的能力地图聚合仍留给 P3。"""
     backlog = GrowthBacklog(paths)
     all_c = backlog.load_all()
     ledger = GrowthFeedbackLedger(paths).all_entries()
     accepted = sum(1 for c in all_c if c.status == STATUS_ACCEPTED)
     dismissed = sum(1 for c in all_c if c.status == STATUS_DISMISSED)
     pending = sum(1 for c in all_c if c.status == STATUS_PENDING)
+    decided = accepted + dismissed
+    acceptance_rate = round(accepted / decided, 3) if decided else None
+
+    accepted_topics: dict[str, int] = {}
+    dismissed_topics: dict[str, int] = {}
+    for c in all_c:
+        if c.status == STATUS_ACCEPTED:
+            accepted_topics[c.title] = accepted_topics.get(c.title, 0) + 1
+        elif c.status == STATUS_DISMISSED:
+            dismissed_topics[c.title] = dismissed_topics.get(c.title, 0) + 1
+
+    top_accepted = sorted(accepted_topics.items(), key=lambda kv: -kv[1])[:5]
+    top_dismissed = sorted(dismissed_topics.items(), key=lambda kv: -kv[1])[:5]
+
     return {
         "total_candidates": len(all_c),
         "accepted": accepted,
         "dismissed": dismissed,
         "pending": pending,
+        "acceptance_rate": acceptance_rate,
         "feedback_events": len(ledger),
         "reports_generated": len(list_reports(paths)),
+        "top_accepted_topics": top_accepted,
+        "top_dismissed_topics": top_dismissed,
     }

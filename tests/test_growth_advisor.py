@@ -272,6 +272,160 @@ class TestDailyCycleAndRetrospective(unittest.TestCase):
             self.assertEqual(summary["feedback_events"], 2)
 
 
+class TestFeedbackWeighting(unittest.TestCase):
+    """P2：反馈驱动的置信度调权（growth_advisor_design.md 第 6 节）。"""
+
+    def test_dismissed_topic_regenerated_after_cooldown_with_lower_confidence(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = _make_paths(tmp)
+            backlog = ga.GrowthBacklog(paths)
+            c = backlog.add_or_merge(
+                "系统设计与架构", "理由", ["e1", "e2", "e3"],
+                min_evidence_count=3, max_pending=10, dismissed_cooldown_days=30,
+            )
+            baseline_confidence = c.confidence
+            backlog.set_status(c.candidate_id, ga.STATUS_DISMISSED)
+            ga.GrowthFeedbackLedger(paths).record(c.candidate_id, ga.STATUS_DISMISSED)
+
+            # 冷却期已过（把 updated_at 拨回 31 天前），应该重新生成候选，
+            # 但因为历史上被 dismiss 过一次，默认置信度应低于同等证据数
+            # 首次生成时的置信度。
+            all_c = backlog.load_all()
+            all_c[0].updated_at = time.time() - 31 * 86400
+            backlog.save_all(all_c)
+
+            multiplier = ga._feedback_multiplier(1)
+            again = backlog.add_or_merge(
+                "系统设计与架构", "新理由", ["e4", "e5", "e6"],
+                min_evidence_count=3, max_pending=10, dismissed_cooldown_days=30,
+                confidence_multiplier=multiplier,
+            )
+            self.assertIsNotNone(again)
+            self.assertLess(again.confidence, baseline_confidence)
+            self.assertGreater(again.confidence, 0)
+
+    def test_feedback_multiplier_has_floor(self):
+        # 多次 dismiss 也不应该把置信度乘子打到 0（方案第 6 节：不是完全
+        # 屏蔽，避免"用户当时忙、后来又感兴趣"被永久拒绝）。
+        m = ga._feedback_multiplier(20)
+        self.assertGreaterEqual(m, ga._MIN_FEEDBACK_MULTIPLIER)
+        self.assertEqual(ga._feedback_multiplier(0), 1.0)
+
+    def test_candidate_derive_applies_feedback_multiplier(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = _make_paths(tmp)
+            backlog = ga.GrowthBacklog(paths)
+            old = backlog.add_or_merge(
+                "数据分析", "理由", ["e1", "e2", "e3"],
+                min_evidence_count=3, max_pending=10, dismissed_cooldown_days=30,
+            )
+            backlog.set_status(old.candidate_id, ga.STATUS_DISMISSED)
+            all_c = backlog.load_all()
+            all_c[0].updated_at = time.time() - 31 * 86400
+            backlog.save_all(all_c)
+            ga.GrowthFeedbackLedger(paths).record(old.candidate_id, ga.STATUS_DISMISSED)
+
+            cfg = GrowthAdvisorConfig(min_evidence_count=3)
+            profile = UserProfile()
+            profile.derived = {"growth_focus_areas": {"数据分析": ["e4", "e5", "e6"]}}
+            produced = ga.growth_candidate_derive(paths, cfg, profile)
+            self.assertEqual(len(produced), 1)
+            self.assertLess(produced[0].confidence, ga._confidence_from_evidence(3))
+
+
+class TestNotificationThrottle(unittest.TestCase):
+    """P2：推送节流接入 NotificationDispatcher（growth_advisor_design.md 第 4.2 节）。"""
+
+    def test_kanban_only_never_dispatches(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = _make_paths(tmp)
+            backlog = ga.GrowthBacklog(paths)
+            cand = backlog.add_or_merge(
+                "数据分析", "理由", ["e1", "e2", "e3", "e4", "e5", "e6", "e7", "e8"],
+                min_evidence_count=3, max_pending=10, dismissed_cooldown_days=30,
+            )
+            report = ga.generate_growth_report(paths, cand)
+            cfg = GrowthAdvisorConfig(notification_frequency="kanban_only")
+            result = ga._maybe_dispatch_notification(paths, cfg, {cand.candidate_id: cand}, [report])
+            self.assertIsNone(result)
+
+    def test_below_min_confidence_not_dispatched(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = _make_paths(tmp)
+            backlog = ga.GrowthBacklog(paths)
+            cand = backlog.add_or_merge(
+                "数据分析", "理由", ["e1", "e2", "e3"],  # 证据数少 -> 置信度低
+                min_evidence_count=3, max_pending=10, dismissed_cooldown_days=30,
+            )
+            report = ga.generate_growth_report(paths, cand)
+            cfg = GrowthAdvisorConfig(notification_min_confidence=0.99)
+            result = ga._maybe_dispatch_notification(paths, cfg, {cand.candidate_id: cand}, [report])
+            self.assertIsNone(result)
+
+    def test_high_confidence_dispatches_and_respects_daily_cap(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = _make_paths(tmp)
+            backlog = ga.GrowthBacklog(paths)
+            cand = backlog.add_or_merge(
+                "数据分析", "理由", [f"e{i}" for i in range(8)],  # 满 cap -> confidence=1.0
+                min_evidence_count=3, max_pending=10, dismissed_cooldown_days=30,
+            )
+            report = ga.generate_growth_report(paths, cand)
+            cfg = GrowthAdvisorConfig(notification_min_confidence=0.5, notification_max_per_day=1)
+
+            first = ga._maybe_dispatch_notification(paths, cfg, {cand.candidate_id: cand}, [report])
+            self.assertIsNotNone(first)
+            self.assertEqual(first["report_id"], report.report_id)
+
+            second = ga._maybe_dispatch_notification(paths, cfg, {cand.candidate_id: cand}, [report])
+            self.assertIsNone(second)  # 当天已达上限
+
+    def test_run_daily_cycle_includes_notification_key(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = _make_paths(tmp)
+            now = time.time()
+            entries = [
+                _FakeEntry(f"e{i}", "python packaging pytest", ["python"], now - 10)
+                for i in range(8)
+            ]
+            store = _FakeMemoryStore(entries)
+            profile = UserProfile()
+            cfg = GrowthAdvisorConfig(min_evidence_count=3, max_reports_per_run=1, notification_min_confidence=0.1)
+            result = ga.run_daily_cycle(paths, cfg, profile, store)
+            self.assertIn("notification", result)
+            self.assertIsNotNone(result["notification"])
+
+
+class TestMonthlyRetrospectiveAttribution(unittest.TestCase):
+    """P2：月度复盘的采纳率与主题排行。"""
+
+    def test_acceptance_rate_and_topic_ranking(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = _make_paths(tmp)
+            backlog = ga.GrowthBacklog(paths)
+            c1 = backlog.add_or_merge(
+                "写作与表达", "r", ["e1", "e2", "e3"],
+                min_evidence_count=3, max_pending=10, dismissed_cooldown_days=30,
+            )
+            c2 = backlog.add_or_merge(
+                "数据分析", "r", ["e1", "e2", "e3"],
+                min_evidence_count=3, max_pending=10, dismissed_cooldown_days=30,
+            )
+            backlog.set_status(c1.candidate_id, ga.STATUS_ACCEPTED)
+            backlog.set_status(c2.candidate_id, ga.STATUS_DISMISSED)
+
+            summary = ga.monthly_retrospective_summary(paths)
+            self.assertEqual(summary["acceptance_rate"], 0.5)
+            self.assertIn(("写作与表达", 1), summary["top_accepted_topics"])
+            self.assertIn(("数据分析", 1), summary["top_dismissed_topics"])
+
+    def test_acceptance_rate_none_when_no_decisions(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = _make_paths(tmp)
+            summary = ga.monthly_retrospective_summary(paths)
+            self.assertIsNone(summary["acceptance_rate"])
+
+
 class TestCronJobsRegistered(unittest.TestCase):
     def test_builtin_jobs_include_growth_advisor(self):
         from mini_agent.evolution.cron_scheduler import _BUILTIN_JOBS

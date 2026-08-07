@@ -1,7 +1,7 @@
 # 成长顾问（Growth Advisor）指南
 
 > 对应方案：`next_doc/growth_advisor_design.md`；实施记录：
-> `next_doc/growth_advisor_implementation_record.md`（P1 里程碑）。
+> `next_doc/growth_advisor_implementation_record.md`（P1 + P2 里程碑）。
 
 ## 1. 这是什么
 
@@ -27,8 +27,12 @@
    报告；
 4. 每 30 天（`sys:growth_monthly_retrospective`）生成一次月度复盘统计。
 
-**P1 阶段只更新看板，不会主动打断你**——`notification_frequency` 等配置
-项已经预留，但实际的推送派发留给后续迭代（见实施记录"未做"部分）。
+**推送节流（P2）**：达到 `notification_min_confidence` 阈值（默认 `0.6`）
+的调研报告，会通过既有的通知渠道（含看板"关注与通知"tab）推送，但
+`notification_frequency=daily` 时**当天最多推 1 条**（`notification_max_per_day`），
+且是当天新生成里置信度最高的一条；把 `notification_frequency` 设为
+`kanban_only` 可以完全关掉主动推送，只在看板里看。看板"🌱 成长顾问"
+tab 本身随时可看，不受这条节流限制。
 
 ## 3. 怎么用
 
@@ -40,6 +44,8 @@
 - "🔍 立即为我看看" 按钮：手动触发一轮扫描（不用等每天 22:30）
 - 待处理候选卡片：每条显示标题、理由、置信度、证据条数，可以
   ✅ 采纳 / 🙈 忽略 / 📄 查看调研报告
+- 指标卡下方：推荐采纳率 + 可展开的"按主题看采纳/忽略排行"（P2 新增）
+- 首次打开该 tab 会有一条一次性提示，说明已开启该功能、用了哪些数据
 
 ### CLI
 
@@ -68,7 +74,9 @@ GET  /v1/growth/reports/{id}                      # 某份调研报告正文
 | --- | --- | --- |
 | `enabled` | `true` | 总开关，关闭后信号扫描/候选生成/cron job 全部跳过 |
 | `generation_frequency` | `"daily"` | `daily` / `every_12h` / `weekly` / `manual` |
-| `notification_frequency` | `"daily"` | `daily` / `weekly_digest` / `kanban_only` |
+| `notification_frequency` | `"daily"` | `daily` / `weekly_digest` / `kanban_only`；`weekly_digest` 当前与 `daily` 走同一套节流（见实施记录"已知简化"） |
+| `notification_max_per_day` | `1` | `notification_frequency=daily` 时，单日最多推送条数 |
+| `notification_min_confidence` | `0.6` | 低于此置信度的报告只更新看板、不推送 |
 | `min_evidence_count` | `3` | 生成候选所需的最少证据条数 |
 | `max_pending_candidates` | `10` | 候选队列 pending 状态上限 |
 | `max_reports_per_run` | `2` | 每轮 cron 最多生成的调研报告数 |
@@ -86,11 +94,16 @@ GET  /v1/growth/reports/{id}                      # 某份调研报告正文
 - `.agent/growth_feedback_ledger.jsonl` — 采纳/忽略反馈流水
 - `.agent/wiki/growth/*.md` — 调研报告正文
 
-## 6. 当前局限（P1 阶段）
+## 6. 当前局限（P1 + P2 阶段）
 
 - 关键词表覆盖面有限（见 `evolution/growth_advisor.py` 里的
   `_TOPIC_KEYWORDS`），不识别的主题不会被发现，可以直接改代码扩表；
 - 调研报告默认走规则模板，信息密度不如 LLM 生成版本（LLM 增强是可选项，
   需要调用方传入 `llm_helper`）；
-- 候选置信度不会根据你的历史采纳/忽略行为自动调权（P2 计划项）；
-- 尚无主动推送通知，只能在看板/CLI 里主动查看。
+- 候选置信度会按历史 dismiss 次数打折（复利衰减、有下限），但衰减系数
+  是经验取值，不是从真实反馈数据拟合出来的；
+- `notification_frequency=weekly_digest` 暂时没有真正的"打包成一条周
+  摘要"逻辑，效果上等价于 `daily`；
+- 首次触达提示目前只在单次浏览器会话内生效，不是跨会话持久化；
+- 看板仍是列表 + 按钮，不是真正的拖拽式看板视图（P3 计划项）；
+- `excluded_topics` 黑名单仍只能改配置文件，看板暂无可视化编辑入口。

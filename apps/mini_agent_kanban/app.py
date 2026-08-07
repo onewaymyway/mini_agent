@@ -3428,6 +3428,21 @@ def render_growth_tab(client: "AgentClient"):
         "忽略的方向短期内不会重复出现。"
     )
 
+    # [next_doc/growth_advisor_design.md] 第 8 节：功能默认开启，首次触达
+    # 必须透明告知——不是静默开启后什么都不说。用一条不打断使用的轻量
+    # st.info 提示替代强制弹窗，展示一次后本次会话不再重复弹出。
+    # 说明：这里用 st.session_state 做"本次会话内只提示一次"，是相对于
+    # 方案原文"本地记录、跨会话不重复"的一个简化（跨会话持久化需要新增
+    # 一个专门的只读+ack API 端点，留给后续迭代，已记录在实施文档里）。
+    if not st.session_state.get("_growth_first_touch_shown"):
+        st.info(
+            "已为你开启「成长顾问」：它会用你已有的对话记忆、目标记录等信息，"
+            "每天悄悄看一眼有没有值得推进的成长方向，生成调研报告放在这里，"
+            "不会额外采集新数据。不想要的话可以在「⚙️ 配置」里随时关闭。",
+            icon="🌱",
+        )
+        st.session_state["_growth_first_touch_shown"] = True
+
     col_a, col_b = st.columns([1, 5])
     with col_a:
         if st.button("🔍 立即为我看看", key="growth_scan_btn"):
@@ -3457,6 +3472,25 @@ def render_growth_tab(client: "AgentClient"):
     c2.metric("已采纳", retro.get("accepted", 0))
     c3.metric("已忽略", retro.get("dismissed", 0))
     c4.metric("调研报告", retro.get("reports_generated", 0))
+
+    # P2：采纳率 + 主题排行（方案第 6 节"推荐命中率"指标），只在有过采纳/
+    # 忽略决策时才展示，避免新用户看到一个没有意义的 0%。
+    acceptance_rate = retro.get("acceptance_rate")
+    if acceptance_rate is not None:
+        st.caption(f"推荐采纳率：**{acceptance_rate * 100:.1f}%**（基于已做出采纳/忽略决策的候选）")
+        top_accepted = retro.get("top_accepted_topics") or []
+        top_dismissed = retro.get("top_dismissed_topics") or []
+        if top_accepted or top_dismissed:
+            with st.expander("按主题看采纳/忽略排行"):
+                ta, td = st.columns(2)
+                with ta:
+                    st.markdown("**最常被采纳**")
+                    for title, n in top_accepted:
+                        st.write(f"- {title}（{n} 次）")
+                with td:
+                    st.markdown("**最常被忽略**")
+                    for title, n in top_dismissed:
+                        st.write(f"- {title}（{n} 次）")
 
     pending = [c for c in candidates if c.get("status") == "pending"]
     if not pending:

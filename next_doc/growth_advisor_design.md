@@ -6,11 +6,12 @@
 - **v0.2 相对 v0.1 的关键调整**：功能默认改为**开启**（而非 opt-in），daemon 生成频率默认改为**每日至少一次**（而非周频起步），两者均**保留完整配置项**；新增第 -1 节说明战略定位——这是让用户"零成本用起来"、体现自主 Agent 价值的核心入口，据此提高了默认值的力度
 
 > **实施状态（2026-08）**：P1 里程碑（信号扫描 → 候选生成 → 调研报告 →
-> 看板/CLI/API 展示）已落地，细节见
-> `next_doc/growth_advisor_implementation_record.md` 与用户指南
-> `docs/growth-advisor-guide.md`。P2/P3（反馈驱动的置信度调权、LLM 增强
-> 归纳、主动推送通知、拖拽式看板）尚未开始，实施记录里有明确的"未做"
-> 清单，后续按方案原文的里程碑编号继续推进即可。
+> 看板/CLI/API 展示）已落地。P2 里程碑（反馈驱动的置信度调权、接入
+> NotificationDispatcher 的推送节流、月度复盘的采纳率与主题排行）也已
+> 落地。细节见 `next_doc/growth_advisor_implementation_record.md` 与
+> 用户指南 `docs/growth-advisor-guide.md`。P3（LLM 增强版信号归纳、拖拽
+> 式看板、`excluded_topics` 的可视化编辑入口）尚未开始，实施记录里有
+> 明确的"未做"清单，后续按方案原文的里程碑编号继续推进即可。
 
 ---
 
