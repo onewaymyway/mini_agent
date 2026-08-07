@@ -18,6 +18,8 @@ class ErrorCategory(Enum):
     NAVIGATION = "navigation"        # 页面导航
     CONTENT = "content"              # 内容/验证码
     PERMISSION = "permission"        # 权限/拦截
+    AUTH = "auth"                    # 认证失败
+    RESOURCE = "resource"            # 资源耗尽
     UNKNOWN = "unknown"              # 未知
 
 
@@ -173,12 +175,95 @@ class SmartWaitDegradedError(ReliabilityError):
         self.timeout = timeout
 
 
+class PageLoadError(ReliabilityError):
+    """页面加载失败"""
+
+    def __init__(self, url: str, status_code: int = 0, details: Optional[Dict[str, Any]] = None):
+        super().__init__(
+            f"Page load failed: url={url!r}, status_code={status_code}",
+            ErrorCategory.NAVIGATION,
+            recoverable=True,
+            details=details,
+        )
+        self.url = url
+        self.status_code = status_code
+
+
+class ElementInteractableError(ReliabilityError):
+    """元素不可交互（被遮挡、不可见等）"""
+
+    def __init__(self, selector: str, reason: str = "", details: Optional[Dict[str, Any]] = None):
+        super().__init__(
+            f"Element not interactable: selector={selector!r}, reason={reason!r}",
+            ErrorCategory.ELEMENT,
+            recoverable=True,
+            details=details,
+        )
+        self.selector = selector
+        self.reason = reason
+
+
+class PopupDetectedError(ReliabilityError):
+    """检测到弹窗/覆盖层"""
+
+    def __init__(self, popup_type: str = "unknown", details: Optional[Dict[str, Any]] = None):
+        super().__init__(
+            f"Popup detected: type={popup_type!r}",
+            ErrorCategory.ELEMENT,
+            recoverable=True,
+            details=details,
+        )
+        self.popup_type = popup_type
+
+
+class RateLimitError(ReliabilityError):
+    """速率限制（429）"""
+
+    def __init__(self, retry_after: float = 0.0, details: Optional[Dict[str, Any]] = None):
+        super().__init__(
+            f"Rate limited (429), retry_after={retry_after}s",
+            ErrorCategory.AUTH,
+            recoverable=True,
+            details=details,
+        )
+        self.retry_after = retry_after
+
+
+class AuthenticationError(ReliabilityError):
+    """认证失败（401/403）"""
+
+    def __init__(self, status_code: int = 401, details: Optional[Dict[str, Any]] = None):
+        super().__init__(
+            f"Authentication failed: status_code={status_code}",
+            ErrorCategory.AUTH,
+            recoverable=False,
+            details=details,
+        )
+        self.status_code = status_code
+
+
+class ResourceExhaustedError(ReliabilityError):
+    """资源耗尽（内存/连接池）"""
+
+    def __init__(self, resource_type: str = "unknown", details: Optional[Dict[str, Any]] = None):
+        super().__init__(
+            f"Resource exhausted: type={resource_type!r}",
+            ErrorCategory.RESOURCE,
+            recoverable=False,
+            details=details,
+        )
+        self.resource_type = resource_type
+
+
 def is_retryable(error: Exception) -> bool:
     """判断错误是否可重试"""
     if isinstance(error, ReliabilityError):
         return error.recoverable
     # CDP 相关异常默认可重试
     if "CDP" in type(error).__name__ or "websocket" in str(type(error)).lower():
+        return True
+    # HTTP 429 可重试
+    if hasattr(error, 'status_code') and error.status_code == 429:
         return True
     return False
 
@@ -189,12 +274,32 @@ def categorize_error(error: Exception) -> ErrorCategory:
         return ErrorCategory.CONNECTION
     if isinstance(error, (CDPCommandTimeoutError, NetworkIdleTimeoutError, SmartWaitDegradedError)):
         return ErrorCategory.TIMEOUT
-    if isinstance(error, (ElementNotFoundError, ElementIndexInvalidError)):
+    if isinstance(error, (ElementNotFoundError, ElementIndexInvalidError, ElementInteractableError, PopupDetectedError)):
         return ErrorCategory.ELEMENT
-    if isinstance(error, NavigationTimeoutError):
+    if isinstance(error, (NavigationTimeoutError, PageLoadError)):
         return ErrorCategory.NAVIGATION
-    if isinstance(error, (CaptchaDetectedError, BlockedByAntiBotError)):
-        return ErrorCategory.CONTENT if isinstance(error, CaptchaDetectedError) else ErrorCategory.PERMISSION
+    if isinstance(error, CaptchaDetectedError):
+        return ErrorCategory.CONTENT
+    if isinstance(error, BlockedByAntiBotError):
+        return ErrorCategory.PERMISSION
+    if isinstance(error, RateLimitError):
+        return ErrorCategory.AUTH
+    if isinstance(error, AuthenticationError):
+        return ErrorCategory.AUTH
+    if isinstance(error, ResourceExhaustedError):
+        return ErrorCategory.RESOURCE
+    # 基于异常名启发式分类
+    name = type(error).__name__
+    if any(kw in name for kw in ["Timeout", "TimedOut"]):
+        return ErrorCategory.TIMEOUT
+    if any(kw in name for kw in ["Element", "Selector", "NotFound"]):
+        return ErrorCategory.ELEMENT
+    if any(kw in name for kw in ["Navigation", "Load", "Page"]):
+        return ErrorCategory.NAVIGATION
+    if any(kw in name for kw in ["Captcha", "AntiBot", "Blocked"]):
+        return ErrorCategory.PERMISSION
+    if any(kw in name for kw in ["Connection", "Connect", "WebSocket", "CDP"]):
+        return ErrorCategory.CONNECTION
     return ErrorCategory.UNKNOWN
 
 
@@ -211,12 +316,12 @@ ERROR_RULES = {
         "action": "重试（1次）或降级",
     },
     ErrorCategory.ELEMENT: {
-        "examples": ["ElementNotFoundError", "ElementIndexInvalidError"],
+        "examples": ["ElementNotFoundError", "ElementIndexInvalidError", "ElementInteractableError", "PopupDetectedError"],
         "recoverable": True,
         "action": "重新扫描元素或等待",
     },
     ErrorCategory.NAVIGATION: {
-        "examples": ["NavigationTimeoutError"],
+        "examples": ["NavigationTimeoutError", "PageLoadError"],
         "recoverable": True,
         "action": "重试导航",
     },
@@ -230,9 +335,19 @@ ERROR_RULES = {
         "recoverable": False,
         "action": "停止 + 通知用户",
     },
+    ErrorCategory.AUTH: {
+        "examples": ["RateLimitError", "AuthenticationError"],
+        "recoverable": True,
+        "action": "等待后重试（429）或停止+通知（401/403）",
+    },
+    ErrorCategory.RESOURCE: {
+        "examples": ["ResourceExhaustedError"],
+        "recoverable": False,
+        "action": "记录日志 + 人工介入",
+    },
     ErrorCategory.UNKNOWN: {
         "examples": ["其他未分类异常"],
-        "recoverable": "视情况",
-        "action": "记录日志 + 最多重试1次",
+        "recoverable": False,
+        "action": "记录日志 + 人工介入",
     },
 }

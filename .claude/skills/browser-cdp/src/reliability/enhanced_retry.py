@@ -1,9 +1,12 @@
+# -*- coding: utf-8 -*-
 """
-统一重试框架
+增强重试框架
 
-提供同步和异步重试包装器，支持多种退避策略和熔断器。
-整合同步 retry_operation 和异步 retry_operation_async，
-解决原有同步/异步重试框架分离的问题。
+基于分析结果优化的重试机制，支持：
+- 按错误类型动态选择退避策略
+- 智能熔断器（带试探恢复）
+- 不可恢复错误快速失败
+- 重试统计和监控
 """
 
 import asyncio
@@ -12,15 +15,19 @@ import time
 import logging
 from enum import Enum
 from functools import wraps
-from typing import Any, Callable, Optional, Tuple, Type
+from typing import Any, Callable, Dict, List, Optional, Tuple, Type
 
 from .error import (
     ReliabilityError,
     CDPConnectionLostError,
     CDPCommandTimeoutError,
     ElementNotFoundError,
-    RateLimitError,
+    NavigationTimeoutError,
+    CaptchaDetectedError,
+    BlockedByAntiBotError,
     is_retryable,
+    categorize_error,
+    ErrorCategory,
 )
 
 logger = logging.getLogger(__name__)
@@ -32,82 +39,105 @@ class BackoffStrategy(Enum):
     LINEAR = "linear"
     EXPONENTIAL = "exponential"
     EXPONENTIAL_JITTER = "exponential_jitter"
-    WAIT = "wait"  # 固定等待（用于速率限制）
+
+
+class RetryStats:
+    """重试统计信息"""
+    
+    def __init__(self):
+        self.total_attempts = 0
+        self.success_attempts = 0
+        self.failure_attempts = 0
+        self.retry_counts: Dict[str, int] = {}
+        self.duration_sum = 0.0
+        self.duration_count = 0
+    
+    def record_success(self, duration: float = 0.0):
+        self.success_attempts += 1
+        self.total_attempts += 1
+        self.duration_sum += duration
+        self.duration_count += 1
+    
+    def record_failure(self, error_type: str = "unknown"):
+        self.failure_attempts += 1
+        self.total_attempts += 1
+        self.retry_counts[error_type] = self.retry_counts.get(error_type, 0) + 1
+    
+    def get_success_rate(self) -> float:
+        if self.total_attempts == 0:
+            return 0.0
+        return self.success_attempts / self.total_attempts
+    
+    def get_avg_duration(self) -> float:
+        if self.duration_count == 0:
+            return 0.0
+        return self.duration_sum / self.duration_count
+    
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "total_attempts": self.total_attempts,
+            "success_attempts": self.success_attempts,
+            "failure_attempts": self.failure_attempts,
+            "success_rate": self.get_success_rate(),
+            "avg_duration": self.get_avg_duration(),
+            "retry_counts": self.retry_counts,
+        }
 
 
 class RetryConfig:
-    """重试配置 - 按错误类型动态选择退避策略"""
-
-    # 默认配置
+    """重试配置 - 按错误类型优化"""
+    
     DEFAULT_MAX_RETRIES = 3
     DEFAULT_BASE_DELAY = 1.0
     DEFAULT_MAX_DELAY = 30.0
     DEFAULT_BACKOFF = BackoffStrategy.EXPONENTIAL_JITTER
-
-    # 操作类型默认配置
+    
+    ERROR_TYPE_CONFIGS = {
+        ErrorCategory.CONNECTION: {
+            "max_retries": 5, "base_delay": 1.0, "max_delay": 30.0,
+            "backoff": BackoffStrategy.EXPONENTIAL_JITTER,
+            "circuit_breaker": True, "circuit_breaker_threshold": 5,
+            "circuit_breaker_recovery": 30.0,
+        },
+        ErrorCategory.TIMEOUT: {
+            "max_retries": 3, "base_delay": 2.0, "max_delay": 30.0,
+            "backoff": BackoffStrategy.EXPONENTIAL,
+            "circuit_breaker": True, "circuit_breaker_threshold": 3,
+            "circuit_breaker_recovery": 20.0,
+        },
+        ErrorCategory.ELEMENT: {
+            "max_retries": 3, "base_delay": 0.5, "max_delay": 10.0,
+            "backoff": BackoffStrategy.LINEAR, "circuit_breaker": False,
+        },
+        ErrorCategory.NAVIGATION: {
+            "max_retries": 3, "base_delay": 2.0, "max_delay": 30.0,
+            "backoff": BackoffStrategy.EXPONENTIAL_JITTER,
+            "circuit_breaker": True, "circuit_breaker_threshold": 3,
+            "circuit_breaker_recovery": 20.0,
+        },
+        ErrorCategory.CONTENT: {
+            "max_retries": 0, "base_delay": 0.0, "backoff": BackoffStrategy.FIXED,
+            "circuit_breaker": False,
+        },
+        ErrorCategory.PERMISSION: {
+            "max_retries": 0, "base_delay": 0.0, "backoff": BackoffStrategy.FIXED,
+            "circuit_breaker": False,
+        },
+        ErrorCategory.UNKNOWN: {
+            "max_retries": 1, "base_delay": 1.0, "backoff": BackoffStrategy.FIXED,
+            "circuit_breaker": False,
+        },
+    }
+    
     OPERATION_DEFAULTS = {
         "cdp_command": {"max_retries": 5, "base_delay": 1.0, "circuit_breaker": True},
         "element_find": {"max_retries": 3, "base_delay": 0.5, "circuit_breaker": False},
         "navigation": {"max_retries": 3, "base_delay": 2.0, "circuit_breaker": True},
         "screenshot": {"max_retries": 2, "base_delay": 1.0, "circuit_breaker": False},
         "input_click": {"max_retries": 3, "base_delay": 1.0, "circuit_breaker": False},
-        "rate_limit": {"max_retries": 3, "base_delay": 5.0, "backoff_strategy": "wait", "circuit_breaker": False},
+        "search": {"max_retries": 3, "base_delay": 1.5, "circuit_breaker": True},
     }
-
-    # 错误类型对应的退避策略配置
-    ERROR_TYPE_STRATEGIES = {
-        "CONNECTION": {
-            "max_retries": 5,
-            "base_delay": 1.0,
-            "max_delay": 30.0,
-            "backoff_strategy": BackoffStrategy.EXPONENTIAL_JITTER,
-            "circuit_breaker": True,
-        },
-        "TIMEOUT": {
-            "max_retries": 3,
-            "base_delay": 2.0,
-            "max_delay": 30.0,
-            "backoff_strategy": BackoffStrategy.EXPONENTIAL,
-            "circuit_breaker": True,
-        },
-        "ELEMENT": {
-            "max_retries": 3,
-            "base_delay": 0.5,
-            "max_delay": 10.0,
-            "backoff_strategy": BackoffStrategy.LINEAR,
-            "circuit_breaker": False,
-        },
-        "NAVIGATION": {
-            "max_retries": 3,
-            "base_delay": 2.0,
-            "max_delay": 30.0,
-            "backoff_strategy": BackoffStrategy.EXPONENTIAL_JITTER,
-            "circuit_breaker": True,
-        },
-        "CONTENT": {
-            "max_retries": 0,
-            "backoff_strategy": BackoffStrategy.FIXED,
-            "circuit_breaker": False,
-        },
-        "PERMISSION": {
-            "max_retries": 0,
-            "backoff_strategy": BackoffStrategy.FIXED,
-            "circuit_breaker": False,
-        },
-        "AUTH": {
-            "max_retries": 3,
-            "base_delay": 5.0,
-            "max_delay": 60.0,
-            "backoff_strategy": BackoffStrategy.WAIT,
-            "circuit_breaker": False,
-        },
-        "RESOURCE": {
-            "max_retries": 0,
-            "backoff_strategy": BackoffStrategy.FIXED,
-            "circuit_breaker": False,
-        },
-    }
-
+    
     def __init__(
         self,
         max_retries: int = DEFAULT_MAX_RETRIES,
@@ -120,6 +150,7 @@ class RetryConfig:
         circuit_breaker_recovery: float = 30.0,
         on_retry: Optional[Callable[[int, Exception, float], None]] = None,
         on_exhausted: Optional[Callable[[Exception], None]] = None,
+        error_category: Optional[ErrorCategory] = None,
     ):
         self.max_retries = max_retries
         self.backoff_strategy = backoff_strategy
@@ -131,48 +162,57 @@ class RetryConfig:
         self.circuit_breaker_recovery = circuit_breaker_recovery
         self.on_retry = on_retry
         self.on_exhausted = on_exhausted
-
+        self.error_category = error_category
+    
+    @classmethod
+    def for_error_category(cls, category: ErrorCategory) -> "RetryConfig":
+        """根据错误类型创建配置"""
+        config_data = cls.ERROR_TYPE_CONFIGS.get(category, cls.ERROR_TYPE_CONFIGS[ErrorCategory.UNKNOWN])
+        return cls(
+            max_retries=config_data["max_retries"],
+            backoff_strategy=config_data.get("backoff", BackoffStrategy.FIXED),
+            base_delay=config_data.get("base_delay", 1.0),
+            max_delay=config_data.get("max_delay", 30.0),
+            circuit_breaker=config_data.get("circuit_breaker", False),
+            circuit_breaker_threshold=config_data.get("circuit_breaker_threshold", 5),
+            circuit_breaker_recovery=config_data.get("circuit_breaker_recovery", 30.0),
+            error_category=category,
+        )
+    
     @classmethod
     def for_operation(cls, operation: str, **overrides) -> "RetryConfig":
         """根据操作类型创建默认配置"""
         defaults = cls.OPERATION_DEFAULTS.get(operation, {})
         merged = {**defaults, **overrides}
         return cls(**merged)
-
+    
     @classmethod
-    def for_error_category(cls, category: str, **overrides) -> "RetryConfig":
-        """根据错误分类创建配置"""
-        from .error import ErrorCategory
-        # 将 ErrorCategory 枚举值转换为字符串键
-        category_key = category.value if isinstance(category, ErrorCategory) else category.upper()
-        defaults = cls.ERROR_TYPE_STRATEGIES.get(category_key, {})
-        merged = {**defaults, **overrides}
-        return cls(**merged)
+    def adaptive(cls, error: Exception) -> "RetryConfig":
+        """根据异常动态创建配置"""
+        category = categorize_error(error)
+        return cls.for_error_category(category)
 
 
 class CircuitBreaker:
     """
     熔断器：连续失败 N 次后熔断，等待 M 秒后半开试探。
-
+    
     状态转换：
     closed → open（连续失败达到阈值）
     open → half_open（等待恢复超时）
     half_open → closed（试探成功）
     half_open → open（试探失败）
     """
-
-    def __init__(
-        self,
-        failure_threshold: int = 5,
-        recovery_timeout: float = 30.0,
-    ):
+    
+    def __init__(self, failure_threshold: int = 5, recovery_timeout: float = 30.0):
         self.failure_threshold = failure_threshold
         self.recovery_timeout = recovery_timeout
         self.failure_count = 0
         self.last_failure_time = 0.0
-        self.state = "closed"  # closed | open | half_open
+        self.state = "closed"
         self.success_count_after_half_open = 0
-
+        self.trip_count = 0
+    
     def can_execute(self) -> bool:
         """检查是否允许执行"""
         if self.state == "closed":
@@ -184,9 +224,8 @@ class CircuitBreaker:
                 logger.info("Circuit breaker: half-open, allowing probe request")
                 return True
             return False
-        # half_open: 只允许一次试探
         return self.success_count_after_half_open == 0
-
+    
     def record_success(self):
         """记录成功"""
         if self.state == "half_open":
@@ -194,7 +233,7 @@ class CircuitBreaker:
             logger.info("Circuit breaker: closed after successful probe")
         self.failure_count = 0
         self.success_count_after_half_open = 0
-
+    
     def record_failure(self):
         """记录失败"""
         self.failure_count += 1
@@ -204,19 +243,19 @@ class CircuitBreaker:
             logger.warning("Circuit breaker: open after failed probe")
         elif self.failure_count >= self.failure_threshold:
             self.state = "open"
-            logger.warning(
-                f"Circuit breaker: open after {self.failure_count} consecutive failures"
-            )
-
+            self.trip_count += 1
+            logger.warning(f"Circuit breaker: open after {self.failure_count} consecutive failures")
+    
     def get_status(self) -> dict:
         return {
             "state": self.state,
             "failure_count": self.failure_count,
             "failure_threshold": self.failure_threshold,
             "recovery_timeout": self.recovery_timeout,
+            "trip_count": self.trip_count,
             "time_since_last_failure": time.time() - self.last_failure_time if self.last_failure_time else 0,
         }
-
+    
     def reset(self):
         """手动重置熔断器"""
         self.failure_count = 0
@@ -235,10 +274,7 @@ def _calculate_delay(strategy: BackoffStrategy, attempt: int, base: float, max_d
         return min(base ** attempt, max_delay)
     elif strategy == BackoffStrategy.EXPONENTIAL_JITTER:
         delay = min(base ** attempt, max_delay)
-        return delay * (0.5 + random.random())  # 50%~150% jitter
-    elif strategy == BackoffStrategy.WAIT:
-        # 固定等待，用于速率限制场景
-        return min(base, max_delay)
+        return delay * (0.5 + random.random())
     return min(base * attempt, max_delay)
 
 
@@ -250,23 +286,7 @@ def retry_operation(
     *args,
     **kwargs,
 ) -> Any:
-    """
-    同步重试包装器。
-
-    Args:
-        func: 要执行的函数
-        config: 重试配置
-        circuit_breaker: 熔断器实例（可选，默认自动创建）
-        operation: 操作类型名称（用于日志）
-        *args: 传递给 func 的位置参数
-        **kwargs: 传递给 func 的关键字参数
-
-    Returns:
-        func 的返回值
-
-    Raises:
-        最后一次异常（重试耗尽后）
-    """
+    """同步重试包装器（增强版）"""
     config = config or RetryConfig.for_operation(operation)
     cb = circuit_breaker
     if cb is None and config.circuit_breaker:
@@ -274,11 +294,12 @@ def retry_operation(
             failure_threshold=config.circuit_breaker_threshold,
             recovery_timeout=config.circuit_breaker_recovery,
         )
-
+    
+    stats = RetryStats()
     last_exception = None
-
+    start_time = time.time()
+    
     for attempt in range(config.max_retries + 1):
-        # 检查熔断器
         if cb and not cb.can_execute():
             remaining = cb.recovery_timeout - (time.time() - cb.last_failure_time)
             raise CDPConnectionLostError(
@@ -288,37 +309,43 @@ def retry_operation(
                     "remaining_retry_seconds": round(remaining, 1),
                 }
             )
-
+        
         try:
             result = func(*args, **kwargs)
+            duration = time.time() - start_time
+            stats.record_success(duration)
             if cb:
                 cb.record_success()
+            logger.debug(f"[{operation}] Success after {attempt + 1} attempt(s), duration={duration:.2f}s")
             return result
+            
         except config.retryable_exceptions as e:
             last_exception = e
-            # 不可恢复错误立即抛出，不重试
+            category = categorize_error(e)
+            
             if hasattr(e, 'recoverable') and not e.recoverable:
-                logger.error(f"[{operation}] Non-recoverable error, stopping: {e}")
+                logger.error(f"[{operation}] Non-recoverable error ({category.value}), stopping: {e}")
+                stats.record_failure(category.value)
                 raise
+            
+            stats.record_failure(category.value)
+            
             if attempt < config.max_retries:
-                delay = _calculate_delay(
-                    config.backoff_strategy, attempt, config.base_delay, config.max_delay
-                )
-                logger.warning(
-                    f"[{operation}] Retry {attempt+1}/{config.max_retries} after {delay:.1f}s: {e}"
-                )
+                delay = _calculate_delay(config.backoff_strategy, attempt, config.base_delay, config.max_delay)
+                logger.warning(f"[{operation}] Retry {attempt+1}/{config.max_retries} after {delay:.1f}s: {category.value} - {e}")
                 if config.on_retry:
                     config.on_retry(attempt + 1, e, delay)
                 time.sleep(delay)
+            
             if cb:
                 cb.record_failure()
+                
         except Exception as e:
-            # 非预期异常，不重试
-            logger.error(f"[{operation}] Non-retryable error: {e}")
+            logger.error(f"[{operation}] Non-retryable error: {type(e).__name__}: {e}")
+            stats.record_failure("unexpected")
             raise
-
-    # 重试耗尽
-    logger.error(f"[{operation}] All {config.max_retries} retries exhausted")
+    
+    logger.error(f"[{operation}] All {config.max_retries} retries exhausted, stats={stats.to_dict()}")
     if config.on_exhausted:
         config.on_exhausted(last_exception)
     raise last_exception
@@ -332,23 +359,7 @@ async def retry_operation_async(
     *args,
     **kwargs,
 ) -> Any:
-    """
-    异步重试包装器。
-
-    Args:
-        func: 要执行的异步函数
-        config: 重试配置
-        circuit_breaker: 熔断器实例（可选，默认自动创建）
-        operation: 操作类型名称（用于日志）
-        *args: 传递给 func 的位置参数
-        **kwargs: 传递给 func 的关键字参数
-
-    Returns:
-        func 的返回值
-
-    Raises:
-        最后一次异常（重试耗尽后）
-    """
+    """异步重试包装器（增强版）"""
     config = config or RetryConfig.for_operation(operation)
     cb = circuit_breaker
     if cb is None and config.circuit_breaker:
@@ -356,11 +367,12 @@ async def retry_operation_async(
             failure_threshold=config.circuit_breaker_threshold,
             recovery_timeout=config.circuit_breaker_recovery,
         )
-
+    
+    stats = RetryStats()
     last_exception = None
-
+    start_time = time.time()
+    
     for attempt in range(config.max_retries + 1):
-        # 检查熔断器
         if cb and not cb.can_execute():
             remaining = cb.recovery_timeout - (time.time() - cb.last_failure_time)
             raise CDPConnectionLostError(
@@ -370,37 +382,43 @@ async def retry_operation_async(
                     "remaining_retry_seconds": round(remaining, 1),
                 }
             )
-
+        
         try:
             result = await func(*args, **kwargs)
+            duration = time.time() - start_time
+            stats.record_success(duration)
             if cb:
                 cb.record_success()
+            logger.debug(f"[{operation}] Success after {attempt + 1} attempt(s), duration={duration:.2f}s")
             return result
+            
         except config.retryable_exceptions as e:
             last_exception = e
-            # 不可恢复错误立即抛出，不重试
+            category = categorize_error(e)
+            
             if hasattr(e, 'recoverable') and not e.recoverable:
-                logger.error(f"[{operation}] Non-recoverable error, stopping: {e}")
+                logger.error(f"[{operation}] Non-recoverable error ({category.value}), stopping: {e}")
+                stats.record_failure(category.value)
                 raise
+            
+            stats.record_failure(category.value)
+            
             if attempt < config.max_retries:
-                delay = _calculate_delay(
-                    config.backoff_strategy, attempt, config.base_delay, config.max_delay
-                )
-                logger.warning(
-                    f"[{operation}] Retry {attempt+1}/{config.max_retries} after {delay:.1f}s: {e}"
-                )
+                delay = _calculate_delay(config.backoff_strategy, attempt, config.base_delay, config.max_delay)
+                logger.warning(f"[{operation}] Retry {attempt+1}/{config.max_retries} after {delay:.1f}s: {category.value} - {e}")
                 if config.on_retry:
                     config.on_retry(attempt + 1, e, delay)
                 await asyncio.sleep(delay)
+            
             if cb:
                 cb.record_failure()
+                
         except Exception as e:
-            # 非预期异常，不重试
-            logger.error(f"[{operation}] Non-retryable error: {e}")
+            logger.error(f"[{operation}] Non-retryable error: {type(e).__name__}: {e}")
+            stats.record_failure("unexpected")
             raise
-
-    # 重试耗尽
-    logger.error(f"[{operation}] All {config.max_retries} retries exhausted")
+    
+    logger.error(f"[{operation}] All {config.max_retries} retries exhausted, stats={stats.to_dict()}")
     if config.on_exhausted:
         config.on_exhausted(last_exception)
     raise last_exception
@@ -413,14 +431,7 @@ def with_retry(
     operation: str = "unknown",
     circuit_breaker: bool = False,
 ):
-    """
-    装饰器：为同步函数添加重试能力。
-
-    Usage:
-        @with_retry(max_retries=3, operation="my_operation")
-        def my_func(x):
-            ...
-    """
+    """装饰器：为同步函数添加重试能力"""
     def decorator(func: Callable) -> Callable:
         @wraps(func)
         def wrapper(*args, **kwargs):
@@ -430,13 +441,7 @@ def with_retry(
                 base_delay=base_delay,
                 circuit_breaker=circuit_breaker,
             )
-            return retry_operation(
-                func,
-                config=config,
-                operation=operation,
-                *args,
-                **kwargs,
-            )
+            return retry_operation(func, config=config, operation=operation, *args, **kwargs)
         return wrapper
     return decorator
 
@@ -448,14 +453,7 @@ def with_retry_async(
     operation: str = "unknown",
     circuit_breaker: bool = False,
 ):
-    """
-    装饰器：为异步函数添加重试能力。
-
-    Usage:
-        @with_retry_async(max_retries=3, operation="my_operation")
-        async def my_func(x):
-            ...
-    """
+    """装饰器：为异步函数添加重试能力"""
     def decorator(func: Callable) -> Callable:
         @wraps(func)
         async def wrapper(*args, **kwargs):
@@ -465,28 +463,27 @@ def with_retry_async(
                 base_delay=base_delay,
                 circuit_breaker=circuit_breaker,
             )
-            return await retry_operation_async(
-                func,
-                config=config,
-                operation=operation,
-                *args,
-                **kwargs,
-            )
+            return await retry_operation_async(func, config=config, operation=operation, *args, **kwargs)
         return wrapper
     return decorator
 
 
-# 预定义的常用重试配置
 RETRY_CONFIGS = {
     "cdp_command": RetryConfig.for_operation("cdp_command"),
     "element_find": RetryConfig.for_operation("element_find"),
     "navigation": RetryConfig.for_operation("navigation"),
     "screenshot": RetryConfig.for_operation("screenshot"),
     "input_click": RetryConfig.for_operation("input_click"),
-    "rate_limit": RetryConfig.for_operation("rate_limit"),
+    "search": RetryConfig.for_operation("search"),
 }
 
 
 def get_retry_config(operation: str) -> RetryConfig:
     """获取预定义的重试配置"""
     return RETRY_CONFIGS.get(operation, RetryConfig.for_operation(operation))
+
+
+def get_config_for_error(error: Exception) -> RetryConfig:
+    """根据错误类型获取最优重试配置"""
+    category = categorize_error(error)
+    return RetryConfig.for_error_category(category)

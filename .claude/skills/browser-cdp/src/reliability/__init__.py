@@ -71,6 +71,25 @@ from .degradation import (
     degrade_error,
     degrade_fallback,
 )
+from .failover_manager import (
+    FailoverManager,
+    FailoverStrategy,
+    get_failover_manager,
+    reset_failover_manager,
+)
+from .session_recovery import (
+    SessionRecoveryManager,
+    RecoveryStrategy,
+    get_session_recovery_manager,
+    reset_session_recovery_manager,
+)
+from .exception_handler import (
+    ExceptionHandler,
+    get_exception_handler,
+    reset_exception_handler,
+    with_exception_handling,
+    with_exception_handling_async,
+)
 
 __all__ = [
     # 错误分类
@@ -151,6 +170,22 @@ __all__ = [
     "degrade_skip",
     "degrade_error",
     "degrade_fallback",
+    # 故障转移
+    "FailoverManager",
+    "FailoverStrategy",
+    "get_failover_manager",
+    "reset_failover_manager",
+    # 会话恢复
+    "SessionRecoveryManager",
+    "RecoveryStrategy",
+    "get_session_recovery_manager",
+    "reset_session_recovery_manager",
+    # 异常处理
+    "ExceptionHandler",
+    "get_exception_handler",
+    "reset_exception_handler",
+    "with_exception_handling",
+    "with_exception_handling_async",
 ]
 
 __version__ = "1.2.0"
