@@ -3421,6 +3421,75 @@ def render_self_tab(client: AgentClient):
 # ═══════════════════════════════════════════════════════════════════════
 # Tab: 🌱 成长顾问（next_doc/growth_advisor_design.md，P1 里程碑）
 # ═══════════════════════════════════════════════════════════════════════
+# [用户反馈] "运行了一天，成长顾问里的数据都是 0" ——候选/报告数=0 本身
+# 不区分"扫描过但没匹配到"和"压根没扫描过/被关掉了"，用户没法自己判断
+# 卡在哪一步，只能来问。这里把 `/growth/summary` 里新增的 `diagnostics`
+# 字段渲染成一个默认折叠的自检面板：配置快照 + 上次扫描命中了哪些主题
+# 各多少条 + 记忆窗口内条目数 + 后台定时任务有没有真的跑过。纯只读展示，
+# 不做任何判断/建议式文案（"卡在哪一步"交给用户自己对着这几个数字判断）。
+def _render_growth_diagnostics(diagnostics: dict):
+    if not diagnostics:
+        return
+    with st.expander("🩺 我的数据 / 诊断信息（为什么候选是 0？点开看）"):
+        cfg = diagnostics.get("config", {})
+        scan = diagnostics.get("signal_scan", {})
+        mem = diagnostics.get("memory", {})
+        cron_jobs = diagnostics.get("cron_jobs", {})
+
+        st.markdown("**配置**")
+        st.write(
+            f"- 功能开关：{'✅ 已开启' if cfg.get('enabled') else '❌ 已关闭'}\n"
+            f"- 成为候选所需最少证据条数：{cfg.get('min_evidence_count')}\n"
+            f"- 推送频率：`{cfg.get('notification_frequency')}` "
+            f"（置信度阈值 {cfg.get('notification_min_confidence')}）\n"
+            f"- 关注领域黑名单：{cfg.get('excluded_topics') or '（无）'}\n"
+            f"- LLM 增强信号归纳：{'✅ 已开启' if cfg.get('llm_signal_augment_enabled') else '默认关闭'}"
+        )
+
+        st.markdown("**最近一次信号扫描**")
+        last_scan_at = scan.get("last_scan_at")
+        if last_scan_at:
+            st.caption(f"扫描时间：{time.strftime('%Y-%m-%d %H:%M', time.localtime(last_scan_at))}"
+                        f"（扫描窗口：最近 {scan.get('window_days')} 天）")
+        else:
+            st.caption("还没有扫描记录——点上面「🔍 立即为我看看」手动触发一次。")
+        hit_counts = scan.get("topic_hit_counts") or {}
+        tracked = scan.get("topics_tracked") or []
+        if hit_counts:
+            for topic in tracked:
+                n = hit_counts.get(topic, 0)
+                st.write(f"- {topic}：{n} 条命中" + ("" if n else "（暂无）"))
+        else:
+            st.caption("目前所有内置主题都还没有命中任何记忆条目。")
+
+        st.markdown("**记忆数据**")
+        st.write(
+            f"- 记忆总条数：{mem.get('total_entries', 0)}\n"
+            f"- 落在扫描窗口内的条数：{mem.get('entries_in_scan_window', 0)}"
+        )
+
+        st.markdown("**后台定时任务**")
+        if cron_jobs.get("_note"):
+            st.caption(cron_jobs["_note"])
+        else:
+            for jid, label in (("sys:growth_advisor_daily", "每日扫描"),
+                                ("sys:growth_monthly_retrospective", "月度复盘")):
+                j = cron_jobs.get(jid)
+                if not j:
+                    st.caption(f"- {label}（{jid}）：未注册")
+                    continue
+                last_run = (
+                    time.strftime("%Y-%m-%d %H:%M", time.localtime(j["last_run_at"]))
+                    if j.get("last_run_at") else "从未运行过"
+                )
+                st.write(
+                    f"- {label}：{'✅ 已启用' if j.get('enabled') else '❌ 已禁用'}，"
+                    f"上次运行 {last_run}，累计运行 {j.get('run_count', 0)} 次"
+                    + (f"，连续 {j['consecutive_skip_count']} 次到点未触发"
+                       if j.get("consecutive_skip_count") else "")
+                )
+
+
 def render_growth_tab(client: "AgentClient"):
     st.markdown("#### 🌱 成长顾问 (Growth Advisor)")
     st.caption(
@@ -3464,6 +3533,9 @@ def render_growth_tab(client: "AgentClient"):
     candidates = data.get("candidates", [])
     reports = {r["report_id"]: r for r in data.get("reports", [])}
     retro = data.get("retrospective", {})
+    diagnostics = data.get("diagnostics", {})
+
+    _render_growth_diagnostics(diagnostics)
 
     c1, c2, c3, c4 = st.columns(4)
     c1.metric("候选总数", retro.get("total_candidates", 0))

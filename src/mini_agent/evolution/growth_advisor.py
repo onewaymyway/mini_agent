@@ -1016,3 +1016,53 @@ def monthly_retrospective_summary(paths) -> dict[str, Any]:
         "top_dismissed_topics": top_dismissed,
         "topic_map": growth_topic_map(paths),
     }
+
+
+# ────────────────────────── P3（用户反馈追加）：诊断快照 ──────────────────────────
+# 真实用户反馈："运行了一天，成长顾问里的数据都是 0"——排查下来往往不是
+# bug，而是"关键词表没命中"/"证据数没达标"/"cron 没跑过"这类看不见的
+# 中间状态：候选数=0 本身不区分"扫描过但没匹配到"和"压根没扫描过"。这个
+# 函数把决定"为什么是 0"的关键中间量整理成一份可读快照，配合看板展示，
+# 让用户自己就能判断卡在哪一步，不用非得来问。
+def diagnostics_snapshot(paths, cfg, profile, memory_store) -> dict[str, Any]:
+    """成长顾问的自检信息：当前配置快照、上一次信号扫描命中了哪些主题
+    各多少条（只给计数，不回显记忆原文——诊断信息也要遵守"知情但克制"
+    的边界）、扫描窗口内一共有多少条记忆可供扫描。纯只读聚合，不做任何
+    写入，可以随时安全调用（哪怕从未跑过一次扫描）。
+    """
+    derived = dict(getattr(profile, "derived", {}) or {})
+    focus_areas: dict[str, list[str]] = derived.get("growth_focus_areas") or {}
+    last_scan_at = derived.get("growth_focus_areas_updated_at")
+
+    entries = []
+    if memory_store is not None:
+        try:
+            entries = memory_store.all_entries()
+        except Exception:
+            entries = []
+    cutoff = time.time() - SIGNAL_SCAN_WINDOW_DAYS * 86400
+    entries_in_window = sum(1 for e in entries if getattr(e, "created_at", 0) >= cutoff)
+
+    return {
+        "config": {
+            "enabled": getattr(cfg, "enabled", True),
+            "min_evidence_count": getattr(cfg, "min_evidence_count", None),
+            "max_pending_candidates": getattr(cfg, "max_pending_candidates", None),
+            "dismissed_cooldown_days": getattr(cfg, "dismissed_cooldown_days", None),
+            "notification_frequency": getattr(cfg, "notification_frequency", None),
+            "notification_min_confidence": getattr(cfg, "notification_min_confidence", None),
+            "excluded_topics": list(getattr(cfg, "excluded_topics", []) or []),
+            "llm_signal_augment_enabled": getattr(cfg, "llm_signal_augment_enabled", False),
+        },
+        "signal_scan": {
+            "window_days": SIGNAL_SCAN_WINDOW_DAYS,
+            "last_scan_at": last_scan_at,
+            "topics_tracked": list(_TOPIC_KEYWORDS.keys()),
+            # 只给每个主题命中了多少条，不回显 entry_id/记忆原文
+            "topic_hit_counts": {topic: len(ids) for topic, ids in focus_areas.items()},
+        },
+        "memory": {
+            "total_entries": len(entries),
+            "entries_in_scan_window": entries_in_window,
+        },
+    }

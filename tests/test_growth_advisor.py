@@ -779,5 +779,77 @@ class TestLlmSignalAugment(unittest.TestCase):
             self.assertGreaterEqual(called["n"], 1)
 
 
+class TestDiagnosticsSnapshot(unittest.TestCase):
+    """诊断快照——用户反馈"运行了一天数据都是 0"排查用的自检信息。"""
+
+    def test_snapshot_before_any_scan_shows_empty_but_valid_shape(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = _make_paths(tmp)
+            profile = UserProfile()
+            cfg = GrowthAdvisorConfig()
+            snap = ga.diagnostics_snapshot(paths, cfg, profile, None)
+            self.assertIn("config", snap)
+            self.assertIn("signal_scan", snap)
+            self.assertIn("memory", snap)
+            self.assertIsNone(snap["signal_scan"]["last_scan_at"])
+            self.assertEqual(snap["signal_scan"]["topic_hit_counts"], {})
+            self.assertEqual(snap["memory"]["total_entries"], 0)
+
+    def test_snapshot_reflects_config_values(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = _make_paths(tmp)
+            profile = UserProfile()
+            cfg = GrowthAdvisorConfig(
+                enabled=False, min_evidence_count=5,
+                notification_frequency="kanban_only",
+                excluded_topics=["写作与表达"],
+            )
+            snap = ga.diagnostics_snapshot(paths, cfg, profile, None)
+            self.assertFalse(snap["config"]["enabled"])
+            self.assertEqual(snap["config"]["min_evidence_count"], 5)
+            self.assertEqual(snap["config"]["notification_frequency"], "kanban_only")
+            self.assertEqual(snap["config"]["excluded_topics"], ["写作与表达"])
+
+    def test_snapshot_after_scan_shows_topic_hit_counts_and_memory_stats(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = _make_paths(tmp)
+            now = time.time()
+            entries = [
+                _FakeEntry("e1", "python packaging", ["python"], now - 10),
+                _FakeEntry("e2", "pytest fixture", ["python"], now - 20),
+                _FakeEntry("e3", "无关的杂事", [], now - 30),
+                _FakeEntry("e4", "太老的记录", [], now - 200 * 86400),  # 窗口外
+            ]
+            store = _FakeMemoryStore(entries)
+            profile = UserProfile()
+            cfg = GrowthAdvisorConfig()
+
+            ga.growth_signal_scan(paths, profile, store)
+            snap = ga.diagnostics_snapshot(paths, cfg, profile, store)
+
+            self.assertIsNotNone(snap["signal_scan"]["last_scan_at"])
+            self.assertEqual(snap["signal_scan"]["topic_hit_counts"].get("Python 工程实践"), 2)
+            self.assertEqual(snap["memory"]["total_entries"], 4)
+            self.assertEqual(snap["memory"]["entries_in_scan_window"], 3)  # e4 在窗口外
+
+    def test_snapshot_does_not_leak_raw_entry_ids_or_content(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = _make_paths(tmp)
+            now = time.time()
+            store = _FakeMemoryStore([_FakeEntry("secret-entry-id-xyz", "python", ["python"], now - 10)])
+            profile = UserProfile()
+            ga.growth_signal_scan(paths, profile, store)
+            snap = ga.diagnostics_snapshot(paths, GrowthAdvisorConfig(), profile, store)
+            snap_str = json.dumps(snap, ensure_ascii=False)
+            self.assertNotIn("secret-entry-id-xyz", snap_str)
+
+    def test_snapshot_handles_none_memory_store_gracefully(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = _make_paths(tmp)
+            profile = UserProfile()
+            snap = ga.diagnostics_snapshot(paths, GrowthAdvisorConfig(), profile, None)
+            self.assertEqual(snap["memory"]["total_entries"], 0)
+
+
 if __name__ == "__main__":
     unittest.main()

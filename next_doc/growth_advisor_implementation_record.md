@@ -382,6 +382,58 @@
 
 ## 已知取舍/风险
 
+## 已完成：用户反馈追加项——看板"我的数据/诊断信息"面板
+
+真实用户反馈："运行了一天，成长顾问里的数据都是 0"。排查下来这类问题
+往往不是 bug，而是候选数=0 本身不区分"扫描过但没匹配到""证据数没达标"
+"定时任务压根没跑过""功能被关掉了"这几种完全不同的中间状态——用户在
+界面上看不到任何区分信号，只能来问。这次补的不是新的业务功能，是**可
+观测性**：
+
+- `growth_advisor.py` 新增 `diagnostics_snapshot(paths, cfg, profile,
+  memory_store)`：纯只读聚合，返回三块信息——
+  - `config`：当前生效的配置快照（`enabled`/`min_evidence_count`/
+    `notification_frequency`/`excluded_topics`/`llm_signal_augment_enabled`
+    等），解决"是不是被关掉了/阈值是不是设太高了"这个问题；
+  - `signal_scan`：上次扫描时间、扫描窗口天数、每个内置主题各命中了
+    多少条记忆（`topic_hit_counts`，**只给计数，不回显 entry_id 或记忆
+    原文**——诊断信息也要遵守方案里"知情但克制"的边界）；
+  - `memory`：记忆总条数 + 落在扫描窗口内的条数，解决"是不是压根没有
+    记忆数据可扫"这个问题。
+  - 哪怕从未跑过一次扫描（`profile.derived` 里没有 `growth_focus_areas`）
+    也能安全调用，返回全零/空的快照而不是报错。
+- `api/routes.py::get_growth_summary` 新增 `diagnostics` 字段，除了
+  `diagnostics_snapshot()` 的内容，还额外拼进两个内置 cron job
+  （`sys:growth_advisor_daily`/`sys:growth_monthly_retrospective`）的
+  `enabled`/`last_run_at`/`next_run_at`/`run_count`/
+  `consecutive_skip_count`（通过已有的 `_get_cron_scheduler()` 兜底入口
+  获取，跟看板"⏰ Cron 任务"tab 读的是同一个调度器实例），解决"定时
+  任务是不是真的没跑"这个此前只能去翻 Cron tab 手动核对 job id 的问题。
+  非 daemon 模式下 `cron_jobs` 退化成一条 `_note` 说明，不报错。
+- 看板 `render_growth_tab()` 顶部新增 `_render_growth_diagnostics()`：
+  一个默认折叠的"🩺 我的数据 / 诊断信息"expander，把上面三块信息 + cron
+  job 状态渲染成人类可读的文字列表，不做任何"建议你怎么做"式的解读——
+  数字摆出来，"卡在哪一步"交给用户自己判断（这也是为什么标题里带了
+  "为什么候选是 0？点开看"这种直白的引导文案，而不是自动给结论）。
+- `tests/test_growth_advisor.py` 新增 `TestDiagnosticsSnapshot`（5 个
+  用例，全部通过，加上此前 46 个，全文件合计 51 个）：从未扫描过时
+  返回合法的空快照、配置值原样透出、扫描后主题命中计数与记忆窗口统计
+  正确、快照里不泄露原始 entry_id/记忆内容、`memory_store=None` 时优雅
+  降级不报错。
+- `docs/growth-advisor-guide.md` 第 3 节看板用法同步更新。
+
+## 已知局限（本项）
+
+- `topic_hit_counts` 只反映**最近一次**扫描的结果，不是历史累计——如果
+  用户看到某个主题这次是 0 条，不代表这个主题历史上从来没命中过（历史
+  累计信息在 `growth_topic_map()`/月度复盘里，两者概念不同，没有在诊断
+  面板里做交叉引用，后续如果发现用户会混淆可以再加一行说明）。
+- cron job 状态只做了"读取展示"，没有像 P0-8 那类"主动告警"（见
+  `daemon_stability_and_ux_improvement_plan.md`）那样在 job 连续多次
+  跳过时主动推送通知——`consecutive_skip_count` 字段已经透出到诊断面板，
+  用户需要主动打开才能看到，这是刻意的最小改动，不在本轮引入新的推送
+  逻辑。
+
 - `growth_signal_scan` 的关键词表（`_TOPIC_KEYWORDS`）是初始 MVP 覆盖，
   命中面有限；扩展方式是直接往表里加词条，不需要改扫描逻辑，但目前
   没有从用户实际反馈里自动学习新主题词的机制。

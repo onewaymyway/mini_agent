@@ -5728,22 +5728,54 @@ async def get_decision_profile(request: Request):
 @router.get("/growth/summary")
 async def get_growth_summary(request: Request):
     """GET /v1/growth/summary — 返回当前候选队列（pending 优先）+ 已生成的
-    调研报告列表 + 月度复盘统计 + 首次触达提示是否已展示过，供看板
-    "🌱 成长顾问"tab 一次性渲染。"""
+    调研报告列表 + 月度复盘统计 + 首次触达提示是否已展示过 + 诊断快照
+    （配置/信号扫描命中情况/记忆条目数，供用户自查"为什么候选一直是 0"），
+    供看板"🌱 成长顾问"tab 一次性渲染。"""
     _require_owner(request)
     try:
         paths = _get_paths_for_request(request)
         from mini_agent.evolution import growth_advisor as ga
+        from mini_agent.perception.memory_store import MemoryStore
+        from mini_agent.profile import UserProfileManager
 
         backlog = ga.GrowthBacklog(paths)
         candidates = backlog.load_all()
         reports = ga.list_reports(paths)
         retro = ga.monthly_retrospective_summary(paths)
+
+        http_server = getattr(request.app.state, "http_server", None)
+        self_agent = http_server.bridge.agent if http_server else None
+        cfg = getattr(self_agent.cfg, "growth_advisor", None) if self_agent else None
+        if cfg is None:
+            from mini_agent.config.models import GrowthAdvisorConfig
+            cfg = GrowthAdvisorConfig()
+        profile = UserProfileManager(paths).load()
+        store = MemoryStore(paths)
+        diagnostics = ga.diagnostics_snapshot(paths, cfg, profile, store)
+
+        cs = _get_cron_scheduler(http_server) if http_server else None
+        if cs is not None:
+            jobs_by_id = {j.id: j for j in cs.list_jobs()}
+            diagnostics["cron_jobs"] = {
+                jid: {
+                    "enabled": j.enabled,
+                    "last_run_at": j.last_run_at,
+                    "next_run_at": j.next_run_at,
+                    "run_count": j.run_count,
+                    "consecutive_skip_count": j.consecutive_skip_count,
+                }
+                for jid, j in jobs_by_id.items()
+                if jid in (ga.JOB_ID_DAILY, ga.JOB_ID_MONTHLY)
+            }
+        else:
+            diagnostics["cron_jobs"] = {"_note": "CronScheduler not available (daemon mode required)"}
+
         return {
             "candidates": [c.to_dict() for c in candidates],
             "reports": [r.to_dict() for r in reports],
             "retrospective": retro,
             "first_touch_notice_shown": ga.first_touch_notice_shown(paths),
+            "diagnostics": diagnostics,
         }
     except HTTPException:
         raise
