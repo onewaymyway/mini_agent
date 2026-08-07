@@ -31,6 +31,31 @@ try:
 except ImportError:
     YahooScraper = None
 
+try:
+    from .fund_scraper import FundScraper
+except ImportError:
+    FundScraper = None
+
+try:
+    from .bond_scraper import BondScraper
+except ImportError:
+    BondScraper = None
+
+try:
+    from .futures_scraper import FuturesScraper
+except ImportError:
+    FuturesScraper = None
+
+try:
+    from .index_scraper import IndexScraper
+except ImportError:
+    IndexScraper = None
+
+try:
+    from .macro_scraper import MacroScraper
+except ImportError:
+    MacroScraper = None
+
 __all__ = []
 if AKShareScraper:
     __all__.append('AKShareScraper')
@@ -42,3 +67,13 @@ if SinaScraper:
     __all__.append('SinaScraper')
 if YahooScraper:
     __all__.append('YahooScraper')
+if FundScraper:
+    __all__.append('FundScraper')
+if BondScraper:
+    __all__.append('BondScraper')
+if FuturesScraper:
+    __all__.append('FuturesScraper')
+if IndexScraper:
+    __all__.append('IndexScraper')
+if MacroScraper:
+    __all__.append('MacroScraper')

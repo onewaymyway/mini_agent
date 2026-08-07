@@ -614,6 +614,170 @@ class DataFetcher:
     def get_stock_basic(self, source: str = None) -> List[FinanceData]:
         return fetch_stock_basic(source or self.default_source)
 
+    def get_fund(self, symbol: str, data_type: str = 'nav', source: str = None) -> List[FinanceData]:
+        return fetch_fund(symbol, data_type, source or self.default_source)
+
+    def get_bond(self, symbol: str, data_type: str = 'yield', source: str = None) -> List[FinanceData]:
+        return fetch_bond(symbol, data_type, source or self.default_source)
+
+    def get_futures(self, symbol: str, data_type: str = 'quote', source: str = None) -> List[FinanceData]:
+        return fetch_futures(symbol, data_type, source or self.default_source)
+
+    def get_index(self, symbol: str, data_type: str = 'quote', source: str = None) -> List[FinanceData]:
+        return fetch_index(symbol, data_type, source or self.default_source)
+
+    def get_macro(self, data_type: str = 'gdp', source: str = None) -> List[FinanceData]:
+        return fetch_macro(data_type, source or self.default_source)
+
+
+# ============== 基金数据 ==============
+
+def fetch_fund(symbol: str, data_type: str = 'nav', source: str = 'fund') -> List[FinanceData]:
+    """获取基金数据
+
+    Args:
+        symbol: 基金代码 (如 '159915')
+        data_type: 数据类型 (nav/holdings/rank/info/history)
+        source: 数据源
+    """
+    results = []
+
+    try:
+        from .scrapers.fund_scraper import FundScraper
+        if FundScraper:
+            scraper = FundScraper()
+            import asyncio
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            try:
+                data_list = list(scraper.fetch([symbol], data_type))
+                results.extend(data_list)
+            finally:
+                loop.close()
+    except Exception as e:
+        print(f"基金数据获取失败: {e}", file=sys.stderr)
+
+    return results
+
+
+# ============== 债券数据 ==============
+
+def fetch_bond(symbol: str, data_type: str = 'yield', source: str = 'bond') -> List[FinanceData]:
+    """获取债券数据
+
+    Args:
+        symbol: 债券代码 (如 '127045')
+        data_type: 数据类型 (yield/quote/convertible/info)
+        source: 数据源
+    """
+    results = []
+
+    try:
+        from .scrapers.bond_scraper import BondScraper
+        if BondScraper:
+            scraper = BondScraper()
+            import asyncio
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            try:
+                data_list = list(scraper.fetch([symbol], data_type))
+                results.extend(data_list)
+            finally:
+                loop.close()
+    except Exception as e:
+        print(f"债券数据获取失败: {e}", file=sys.stderr)
+
+    return results
+
+
+# ============== 期货数据 ==============
+
+def fetch_futures(symbol: str, data_type: str = 'quote', source: str = 'futures') -> List[FinanceData]:
+    """获取期货数据
+
+    Args:
+        symbol: 期货代码 (如 'CU2401')
+        data_type: 数据类型 (quote/kline/position/info)
+        source: 数据源
+    """
+    results = []
+
+    try:
+        from .scrapers.futures_scraper import FuturesScraper
+        if FuturesScraper:
+            scraper = FuturesScraper()
+            import asyncio
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            try:
+                data_list = list(scraper.fetch([symbol], data_type))
+                results.extend(data_list)
+            finally:
+                loop.close()
+    except Exception as e:
+        print(f"期货数据获取失败: {e}", file=sys.stderr)
+
+    return results
+
+
+# ============== 指数数据 ==============
+
+def fetch_index(symbol: str, data_type: str = 'quote', source: str = 'index') -> List[FinanceData]:
+    """获取指数数据
+
+    Args:
+        symbol: 指数代码 (如 '000001')
+        data_type: 数据类型 (quote/kline/constituents/info)
+        source: 数据源
+    """
+    results = []
+
+    try:
+        from .scrapers.index_scraper import IndexScraper
+        if IndexScraper:
+            scraper = IndexScraper()
+            import asyncio
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            try:
+                data_list = list(scraper.fetch([symbol], data_type))
+                results.extend(data_list)
+            finally:
+                loop.close()
+    except Exception as e:
+        print(f"指数数据获取失败: {e}", file=sys.stderr)
+
+    return results
+
+
+# ============== 宏观经济数据 ==============
+
+def fetch_macro(data_type: str = 'gdp', source: str = 'macro') -> List[FinanceData]:
+    """获取宏观经济数据
+
+    Args:
+        data_type: 数据类型 (gdp/cpi/pmi/interest_rate/exchange_rate/money_supply)
+        source: 数据源
+    """
+    results = []
+
+    try:
+        from .scrapers.macro_scraper import MacroScraper
+        if MacroScraper:
+            scraper = MacroScraper()
+            import asyncio
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            try:
+                data_list = list(scraper.fetch([], data_type))
+                results.extend(data_list)
+            finally:
+                loop.close()
+    except Exception as e:
+        print(f"宏观经济数据获取失败: {e}", file=sys.stderr)
+
+    return results
+
 
 # 便捷实例
 default_fetcher = DataFetcher()
