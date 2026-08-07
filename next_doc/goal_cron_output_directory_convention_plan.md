@@ -280,5 +280,68 @@ outputs_root()`、`output_path_policy.py` 规则 5 的提示文案、
 - 顶层目录名未做成可配置项，直接固定为 `.agent/daemon_run_outputs/`
   （评审后从最初的项目根 `outputs/` 调整而来，见开放问题 1 的结论）。
 - `manifest.json` 里的 `artifacts` 不做路径存在性校验。
-- 一次性 Goal 不套用本目录规范。
 - 不做旧数据迁移、不做自动清理/归档策略（与"非目标"一节保持一致）。
+
+## 7. 一次性（非 recurring）Goal 套用同一套目录规范
+
+[开放问题 3 最终结论] 之前暂定"一次性 Goal 不套用"，现改为**也套用**——
+理由：一次性 Goal 拆解出多个子 Objective 时（`add_objectives_for_goal()`
+一次传入多个 title），同样存在"后一个子任务想接着用前一个子任务的产出"
+这个需求（例如"先抓数据"→"再基于数据写报告"两步），跟周期性场景的
+"下一轮接着用上一轮产出"是同一类问题，没有理由只覆盖周期性场景。
+
+### 目录与命名
+
+复用同一个 `goals/<goal_id>/` 目录（不新增顶层分类），但用不同前缀区分：
+
+- recurring Goal：`cycle_%04d`（编号 = `GoalNode.cycle_count + 1`，触发时
+  由 `goal_cron_bridge._fire_goal_cycle()` 分配，逻辑不变）。
+- 一次性 Goal：`run_%04d`（编号 = 该子 Objective 在父
+  `GoalNode.children_ids` 里的 1-based 位置，创建子节点时由
+  `GoalBacklog.add_objectives_for_goal()` 分配）。
+
+两种前缀不会出现在同一个 `goal_id` 下——一个 Goal 要么 `recurring=True`
+走 `cycle_` 系列，要么不是走 `run_` 系列，`latest.json`/`manifest.json`
+结构和字段完全不变，`previous_cycle_dir` 字段名沿用（虽然一次性场景里
+严格说是"前一个子任务"而不是"前一轮周期"，但字段语义相同——"链表指针
+指向上一个节点"，不为此专门加一个同义字段）。
+
+### 传递机制
+
+`GoalBacklog.add_objectives_for_goal()` 创建每个子 Objective 时：
+
+1. 分配 `run_%04d` 目录（`output_workspace.allocate_objective_dir()`）。
+2. 读同一个 `goal_id` 下 `latest.json` 指向的上一个子任务 manifest（如果
+   有——即前一个子 Objective 已经收尾过），格式化后连同"本轮产出请写入：
+   <本次分配的目录>"一起拼进这个子 Objective 的 `description` 末尾。
+3. 与 recurring 侧共用同一份 `evolution/output_workspace.py` 工具函数，
+   新增的胶水逻辑 `_append_onetime_output_workspace_context()`
+   （`perception/goal_backlog.py`）与 `goal_cron_bridge.
+   _append_output_workspace_context()` 是对称实现，任何一侧异常都静默
+   降级为改造前行为（不影响子节点创建/触发主流程）。
+
+`ObjectiveExecutor._write_output_manifest()` 收尾时不再要求
+`goal.recurring`，只要求"有父 Goal"；recurring 走 `cycle_%04d` 分支，
+一次性走 `run_%04d` 分支（ordinal 用 `goal.children_ids.index(ex.
+objective_id) + 1` 重新算，与分配目录时同一条规则，两处各自独立计算、
+结果一致，不需要把 ordinal 存进 execution 状态）。
+
+### 看板
+
+`_render_goal_output_manifests()` 原本硬编码 `cycle_` 前缀反推历史轮次
+目录名列表，现在从 `latest.json` 的 `latest_dir` 反推前缀（`cycle_` 或
+`run_`），"📂 查看产出"折叠区对一次性 Goal 卡片也展示（原来只在
+`n.get("recurring")` 为真时才展示，现改为所有 Goal 级卡片都尝试展示，
+还没有任何子 Objective 收尾过时函数内部读不到 `latest.json` 会静默不
+显示，不报错）。
+
+### 回归
+
+`test_goal_cron_feedback_and_output_policy.py::
+TestDescriptionInheritance::test_add_objectives_for_goal_inherits_description`
+原先断言子 Objective description 精确等于父 Goal description，现改为
+断言"以父级 description 开头 + 包含产出目录提示"（与 `test_goal_cron_
+bridge.py` 里 recurring 一侧的同类断言调整保持一致）。新增
+`tests/test_goal_output_directory_onetime.py` 覆盖：目录分配、多个子
+Objective 之间的产出传递、recurring Goal 不受影响、`_write_output_
+manifest()` 按 ordinal 写对目录，全部通过。

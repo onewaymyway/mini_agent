@@ -2170,14 +2170,19 @@ def _render_goal_output_manifests(client: AgentClient, goal_id: str, key_prefix:
     if not latest_dir:
         return
 
+    # [goal_cron_output_directory_convention_plan.md §5 开放问题 3] recurring
+    # Goal 用 "cycle_%04d"、一次性 Goal 用 "run_%04d"，这里从 latest_dir 本身
+    # 反推前缀，不再硬编码 "cycle_"，两种命名都能正确倒推出历史轮次/子任务
+    # 目录名列表。
+    dir_prefix, _, num_str = str(latest_dir).rpartition("_")
     try:
-        cycle_no = int(str(latest_dir).rsplit("_", 1)[-1])
+        cycle_no = int(num_str) if dir_prefix else None
     except ValueError:
-        cycle_no = None
+        cycle_no, dir_prefix = None, ""
 
     with st.expander(f"📂 查看产出（最新：{latest_dir}）"):
         dir_names = (
-            [f"cycle_{i:04d}" for i in range(cycle_no, max(cycle_no - limit, 0), -1)]
+            [f"{dir_prefix}_{i:04d}" for i in range(cycle_no, max(cycle_no - limit, 0), -1)]
             if cycle_no else [latest_dir]
         )
         for dir_name in dir_names:
@@ -2302,12 +2307,14 @@ def _render_goal_card(
                 )
                 st.caption(f"`{ts_str}` **{item.get('title', '')}**：{item.get('snippet', '')}")
 
-    # [goal_cron_output_directory_convention_plan.md §4] 周期性 Goal 卡片
-    # 追加"📂 查看产出"折叠区：读 .agent/daemon_run_outputs/goals/<goal_id>/
-    # latest.json + 最近几轮 manifest.json，只列文件名，不做预览/下载——
-    # 避免看板膨胀成文件管理器，需要的话用户直接去 .agent/daemon_run_outputs/
-    # 目录看（沿用已有的 /fs/* 只读接口，不新增专用后端路由）。
-    if n.get("level") != "objective" and n.get("recurring"):
+    # [goal_cron_output_directory_convention_plan.md §4/§5 开放问题 3] Goal
+    # 卡片（周期性 + 一次性均覆盖）追加"📂 查看产出"折叠区：读
+    # .agent/daemon_run_outputs/goals/<goal_id>/latest.json + 最近几轮
+    # manifest.json，只列文件名，不做预览/下载——避免看板膨胀成文件管理器，
+    # 需要的话用户直接去 .agent/daemon_run_outputs/ 目录看（沿用已有的
+    # /fs/* 只读接口，不新增专用后端路由）。一次性 Goal 还没跑出任何子
+    # Objective 收尾时 latest.json 不存在，函数内部会静默不展示。
+    if n.get("level") != "objective":
         _render_goal_output_manifests(client, n.get("id", ""), key_prefix=key_prefix)
 
     if execution is not None:

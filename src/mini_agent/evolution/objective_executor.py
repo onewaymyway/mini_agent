@@ -1880,31 +1880,45 @@ class ObjectiveExecutor:
             log_exception(_mini_agent_exc, where='mini_agent.evolution.objective_executor._record_theme_outcome')
 
     def _write_output_manifest(self, ex: ObjectiveExecution, status: str) -> None:
-        """[goal_cron_output_directory_convention_plan.md §2.2] 只对"绑定了
-        recurring Goal 的周期性子 Objective"落 manifest——普通一次性 Goal
-        不套用这套目录规范（§5 开放问题 3 的暂定结论）。
+        """[goal_cron_output_directory_convention_plan.md §2.2] 为"有父 Goal
+        的子 Objective"落 manifest——recurring Goal 和一次性 Goal 都覆盖
+        （§5 开放问题 3 最终结论：一次性 Goal 也套用本目录规范），没有父
+        Goal（Goal 自己被直接当 Objective 执行，没有拆解出子节点）的情形
+        仍然跳过，agent 自己判断产出放哪。
 
-        cycle 编号复用 goal_cron_bridge._fire_goal_cycle() 分配目录时的
-        同一条规则（goal.cycle_count + 1）：GoalNode.cycle_count 只在
-        reap_finished_cycles()（触发之后、由 AutonomousLoop 被动 tick 调用）
-        里递增，本方法调用时机（Objective 刚收尾）必然早于那次递增，
-        因此这里重新计算出的 cycle_no 与分配目录时一致，不需要额外
-        把 cycle_no 存进 execution 状态里。
+        recurring Goal：cycle 编号复用 goal_cron_bridge._fire_goal_cycle()
+        分配目录时的同一条规则（goal.cycle_count + 1）。GoalNode.cycle_count
+        只在 reap_finished_cycles()（触发之后、由 AutonomousLoop 被动 tick
+        调用）里递增，本方法调用时机（Objective 刚收尾）必然早于那次递增，
+        因此这里重新计算出的 cycle_no 与分配目录时一致，不需要额外把
+        cycle_no 存进 execution 状态里。
+
+        一次性 Goal：ordinal 编号复用 goal_backlog.add_objectives_for_goal()
+        分配目录时的同一条规则（子 Objective 在父 Goal.children_ids 里的
+        1-based 位置），道理与上面 cycle_no 的复用完全对称——children_ids
+        在子节点创建时就已经追加完毕，不会因为本方法调用时机而变化。
         """
         if self._goal_backlog is None:
             return
         try:
             goal_id = self._goal_id_of_objective(ex.objective_id)
             if goal_id == ex.objective_id:
-                return  # 没有父 Goal，不是周期性子 Objective
+                return  # 没有父 Goal，不套用本目录规范
             goal = self._goal_backlog.get(goal_id)
-            if goal is None or not goal.is_goal or not goal.recurring:
+            if goal is None or not goal.is_goal:
                 return
 
             from mini_agent.evolution import output_workspace
-            cycle_no = goal.cycle_count + 1
             base_dir = output_workspace.goal_output_base_dir(self._paths, goal_id)
-            cycle_dir = output_workspace.allocate_cycle_dir(self._paths, goal_id, cycle_no)
+            if goal.recurring:
+                cycle_no = goal.cycle_count + 1
+                cycle_dir = output_workspace.allocate_cycle_dir(self._paths, goal_id, cycle_no)
+            else:
+                try:
+                    ordinal = goal.children_ids.index(ex.objective_id) + 1
+                except ValueError:
+                    ordinal = 1  # 防御性兜底：理论上创建子节点时已追加进 children_ids
+                cycle_dir = output_workspace.allocate_objective_dir(self._paths, goal_id, ordinal)
 
             seen: dict[str, None] = {}
             for step in ex.steps:

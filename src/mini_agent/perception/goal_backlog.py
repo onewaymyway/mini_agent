@@ -237,6 +237,42 @@ def compose_context(parent_desc: str, own_desc: str) -> str:
     return "\n\n".join(parts)
 
 
+def _append_onetime_output_workspace_context(
+    paths: Optional[AgentPaths], goal_id: str, ordinal: int, description: str,
+) -> str:
+    """[goal_cron_output_directory_convention_plan.md §5 开放问题 3] 一次性
+    Goal 版本的 `goal_cron_bridge._append_output_workspace_context()`：分配
+    本个子 Objective 的产出目录、读上一个子 Objective 的 manifest（若有），
+    拼进 description 末尾。逻辑与 recurring 版本刻意保持对称，只是这里的
+    "上一轮"指"同一个一次性 Goal 下按创建顺序更早的子 Objective"，不是
+    "周期性 Goal 的上一轮 cycle"。
+
+    paths 为 None 或任何环节异常时静默跳过，退化为改造前的行为（agent 自己
+    判断产出放哪），不影响 Goal 子节点创建主流程。
+    """
+    if paths is None:
+        return description
+    try:
+        from mini_agent.evolution import output_workspace
+        base_dir = output_workspace.goal_output_base_dir(paths, goal_id)
+        run_dir = output_workspace.allocate_objective_dir(paths, goal_id, ordinal)
+
+        parts = [description] if description and description.strip() else []
+
+        prev_manifest = output_workspace.read_latest_manifest(base_dir)
+        if prev_manifest:
+            prev_text = output_workspace.format_manifest_for_prompt(prev_manifest)
+            if prev_text:
+                parts.append(f"--- 上一个子任务产出（{prev_manifest.get('_dir', '')}） ---\n{prev_text}")
+
+        parts.append(f"本轮产出请写入：{run_dir}")
+        return "\n\n".join(parts)
+    except Exception as _mini_agent_exc:
+        from mini_agent.errors import log_exception
+        log_exception(_mini_agent_exc, where='mini_agent.perception.goal_backlog._append_onetime_output_workspace_context')
+        return description
+
+
 def compute_aging_boost(
     node: "GoalNode",
     now: float,
@@ -631,6 +667,16 @@ class GoalBacklog:
         titles 应该是调用方已经在锁外算好的具体标题（无论是 LLM 拆解结果
         还是降级后的镜像标题）——这个方法本身只做纯粹的数据写入，不做
         任何耗时操作，保证锁的持有时间可控。
+
+        [goal_cron_output_directory_convention_plan.md §5 开放问题 3] **一次性**
+        （非 recurring）Goal 的子 Objective 也套用产出目录规范：每创建一个子
+        Objective，按其在 `children_ids` 里的 1-based 位置分配一个
+        `goals/<goal_id>/run_%04d/` 目录，并把"本轮产出请写入：<目录>"
+        （连同上一个子 Objective 的产出摘要，若有）拼进 description 末尾——
+        与 recurring Goal 侧 `goal_cron_bridge._append_output_workspace_context()`
+        是同一套逻辑，只是分配时机在这里（子节点创建时）而不是 cron 触发时。
+        recurring Goal 不在这里处理（走 `add_objective()` 单数版本 + cron 触发
+        时机分配 `cycle_%04d` 目录），两条路径不会重复分配。
         """
         with self._locked():
             goal = self._nodes.get(goal_id)
@@ -638,6 +684,11 @@ class GoalBacklog:
                 return []
             created: list[GoalNode] = []
             for title in titles:
+                description = goal.description
+                if not goal.recurring:
+                    description = _append_onetime_output_workspace_context(
+                        self._paths, goal_id, len(goal.children_ids) + 1, description,
+                    )
                 node = GoalNode(
                     id=f"obj_{uuid.uuid4().hex[:8]}",
                     level="objective",
@@ -651,7 +702,7 @@ class GoalBacklog:
                     # [goal_cron_feedback_and_output_policy_plan.md P2] 父 Goal 的
                     # description 里常写着约束条件，子 Objective 之前完全没继承，
                     # 这里补上；执行侧还有 effective_context() 做双保险。
-                    description=goal.description,
+                    description=description,
                 )
                 self._nodes[node.id] = node
                 goal.children_ids.append(node.id)

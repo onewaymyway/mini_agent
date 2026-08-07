@@ -233,11 +233,12 @@ kanban：Goal 详情卡片、Cron job 卡片各有一个「💬 提意见」折�
 调用，避免误伤"用户确实特殊说明要改 `src/` 下代码"的合法场景。任务描述里的显式指令
 始终优先于这份规范。
 
-## 10. 产出目录规范（周期性 Goal/CronJob）
+## 10. 产出目录规范（周期性 Goal/CronJob + 一次性 Goal）
 
 [`goal_cron_output_directory_convention_plan.md`] 为每个 recurring Goal 的每一轮
-执行 / 每个（非 goal_cycle 的）普通 CronJob 的每次触发，分配一个稳定、可预测、
-按时间排序的产出目录，并把"上一轮产出了什么"结构化传给下一轮，不再只靠
+执行、每个（非 goal_cycle 的）普通 CronJob 的每次触发、以及**每个一次性 Goal 的
+每个子 Objective**（§7 新增，见下），分配一个稳定、可预测、按时间/创建顺序排序的
+产出目录，并把"上一轮（或上一个子任务）产出了什么"结构化传给下一轮，不再只靠
 `progress_summary` 自由文本回忆。
 
 ### 目录结构
@@ -246,18 +247,27 @@ kanban：Goal 详情卡片、Cron job 卡片各有一个「💬 提意见」折�
 <project_root>/.agent/daemon_run_outputs/
 ├── goals/<goal_id>/
 │   ├── latest.json              # 指针文件：{"latest_dir": "cycle_0003", ...}
-│   ├── cycle_0001/manifest.json
+│   ├── cycle_0001/manifest.json # recurring Goal：按"第几轮"编号
 │   ├── cycle_0002/manifest.json
-│   └── ...
+│   ├── run_0001/manifest.json   # 一次性 Goal：按子 Objective 创建顺序编号
+│   ├── run_0002/manifest.json   # （cycle_/run_ 两种前缀不会同时出现在
+│   └── ...                      #  同一个 goal_id 下，见下方说明）
 └── cron/<job_id>/                # job_id 里的 ':' 换成 '_'，与
     ├── latest.json                # CronJobWorkspace 目录命名一致
     ├── run_<run_id>/manifest.json
     └── ...
 ```
 
-- **`goals/<goal_id>/`**：对应绑定了 `recurring=True` 的 Goal。每次
-  `goal_cron_bridge._fire_goal_cycle()` 成功触发新一轮时，分配
-  `cycle_%04d` 目录，编号为 `GoalNode.cycle_count + 1`（触发前的值 +1）。
+- **`goals/<goal_id>/`**：
+  - `recurring=True` 的 Goal：每次 `goal_cron_bridge._fire_goal_cycle()`
+    成功触发新一轮时，分配 `cycle_%04d` 目录，编号为
+    `GoalNode.cycle_count + 1`（触发前的值 +1）。
+  - `recurring=False` 的一次性 Goal（§7 新增）：`GoalBacklog.
+    add_objectives_for_goal()` 每创建一个子 Objective 时，分配
+    `run_%04d` 目录，编号为该子 Objective 在父 `GoalNode.children_ids`
+    里的 1-based 位置。
+  - 一个 Goal 要么 `recurring=True` 走 `cycle_` 系列，要么走 `run_`
+    系列，两种前缀不会混在同一个 `goal_id` 下。
 - **`cron/<job_id>/`**：对应没有绑定 recurring Goal 的普通 CronJob
   （dedicated-execution 模式，`run_mode != "goal_cycle"`），用触发时的
   `run_id`（与 `.agent/cron_jobs/<job_id>/runs/<run_id>.jsonl` 同一个
@@ -265,10 +275,8 @@ kanban：Goal 详情卡片、Cron job 卡片各有一个「💬 提意见」折�
 - 两者互斥：`run_mode="goal_cycle"` 的 job 只走 `goals/<goal_id>/`，不在
   `cron/<job_id>/` 下重复开一份。
 - 不使用符号链接（跨平台，Windows 默认无权限创建），"最新一轮"用
-  `latest.json` 这个小指针文件表达，每轮收尾（无论 completed/failed/
-  cancelled/timed_out/needs_human_review）时更新。
-- **只覆盖周期性场景**：一次性（非 recurring）Goal 不套用这套目录规范，
-  agent 仍自己判断产出放哪（受第 8 节的产出路径规范约束）。
+  `latest.json` 这个小指针文件表达，每轮（或每个子 Objective）收尾（无论
+  completed/failed/cancelled/timed_out/needs_human_review）时更新。
 
 ### `manifest.json`
 
@@ -292,7 +300,8 @@ kanban：Goal 详情卡片、Cron job 卡片各有一个「💬 提意见」折�
   ObjectiveExecutor）暂时写空列表。
 - `progress_note` 复用 `ObjectiveExecution.progress_notes` /
   `CronJobState.progress_summary` 的既有文本。
-- `previous_cycle_dir` 让"下一轮读上一轮产出"不需要额外查表。
+- `previous_cycle_dir`（一次性 Goal 场景下语义是"上一个子任务的目录"，
+  字段名沿用不改）让"下一轮/下一个子任务读上一份产出"不需要额外查表。
 
 ### 传递机制
 
@@ -305,18 +314,28 @@ kanban：Goal 详情卡片、Cron job 卡片各有一个「💬 提意见」折�
   `description` 末尾追加"上一轮产出摘要 + 本轮产出请写入：<绝对路径>"，
   与 dedicated 模式共享同一份 `evolution/output_workspace.py` 里的
   分配/读写工具函数，避免两处实现分叉。
+- **一次性 Goal**（§7 新增）：`GoalBacklog.add_objectives_for_goal()`
+  创建每个子 Objective 时，同样在 `description` 末尾追加"上一个子任务
+  产出摘要 + 本轮产出请写入：<绝对路径>"，逻辑与 recurring 侧对称
+  （`perception/goal_backlog.py::_append_onetime_output_workspace_context()`），
+  只是分配时机在子节点创建时，而不是 cron 触发时。
 - `output_path_policy.py` 的默认规范新增第 5 条，说明"本轮产出请写入："
   这行优先级最高（见第 8 节）。
 
 ### 看板
 
-Goal 卡片（周期性）新增一个"📂 查看产出"折叠区，通过已有的 `/fs/list`/
-`/fs/read` 只读接口读 `latest.json` + 最近几轮 `manifest.json`，只列文件名
-和备注，不做文件预览/下载——需要的话用户直接去 `.agent/daemon_run_outputs/` 目录看。
+Goal 卡片（周期性 + 一次性均覆盖，§7 新增）新增一个"📂 查看产出"折叠区，
+通过已有的 `/fs/list`/`/fs/read` 只读接口读 `latest.json` + 最近几轮
+`manifest.json`，只列文件名和备注，不做文件预览/下载——需要的话用户直接去
+`.agent/daemon_run_outputs/` 目录看。折叠区内部从 `latest.json` 的
+`latest_dir` 反推目录名前缀（`cycle_` 或 `run_`），不再硬编码
+`cycle_`，两种命名都能正确列出历史目录。一次性 Goal 还没有任何子
+Objective 收尾（没有 `latest.json`）时，折叠区静默不展示，不报错。
 
 对应模块：`evolution/output_workspace.py`（目录分配 + manifest 读写 +
 prompt 格式化，`cron_job_workspace.py`/`goal_cron_bridge.py`/
-`cron_job_executor.py`/`objective_executor.py` 都只调用这个模块）。
+`cron_job_executor.py`/`objective_executor.py`/`perception/goal_backlog.py`
+都只调用这个模块）。
 
 ## 11. 已知限制（新增）
 

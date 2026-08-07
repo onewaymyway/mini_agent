@@ -5,9 +5,12 @@ evolution/output_workspace.py — Goal/Cron 周期性执行的产出目录规范
 目录结构（<project_root>/.agent/daemon_run_outputs/）：
     goals/<goal_id>/
         latest.json           指针文件：{"latest_dir": "cycle_0003", "updated_at": ...}
-        cycle_0001/manifest.json
+        cycle_0001/manifest.json    # recurring Goal：按"轮次"编号
         cycle_0002/manifest.json
         ...
+        run_0001/manifest.json      # 一次性 Goal：按子 Objective 创建顺序编号
+        run_0002/manifest.json      # （两种命名不会出现在同一个 goal_id 下，
+        ...                         #  一个 Goal 要么 recurring 要么不是）
     cron/<job_id>/            job_id 里的 ':' 换成 '_'，与 CronJobWorkspace 一致
         latest.json
         run_<run_id>/manifest.json
@@ -16,7 +19,9 @@ evolution/output_workspace.py — Goal/Cron 周期性执行的产出目录规范
 本模块只负责 §2/§3 的目录分配和 manifest 读写，不关心"什么时候该分配/
 该写"——那部分逻辑分别在 cron_job_executor.py（dedicated-execution cron）、
 goal_cron_bridge.py（recurring Goal 触发时分配目录 + 拼 prompt）、
-objective_executor.py（recurring Goal 对应的 Objective 收尾时落 manifest）。
+goal_backlog.py（一次性 Goal 创建子 Objective 时分配目录 + 拼 description）、
+objective_executor.py（子 Objective 收尾时落 manifest，recurring/一次性
+两种 Goal 都覆盖，见 §5 开放问题 3 的最终结论）。
 
 不用符号链接（跨平台，Windows 默认无权限创建），"最新一轮"用 latest.json
 这个小指针文件表达。
@@ -76,6 +81,25 @@ def allocate_cycle_dir(paths: "AgentPaths", goal_id: str, cycle: int) -> Path:
 def allocate_run_dir(paths: "AgentPaths", job_id: str, run_id: str) -> Path:
     """为普通 CronJob（非 goal_cycle）的一次触发分配（幂等）产出目录。"""
     d = cron_output_base_dir(paths, job_id) / f"run_{run_id}"
+    d.mkdir(parents=True, exist_ok=True)
+    return d
+
+
+def allocate_objective_dir(paths: "AgentPaths", goal_id: str, ordinal: int) -> Path:
+    """[goal_cron_output_directory_convention_plan.md §5 开放问题 3] 为**一次性**
+    （非 recurring）Goal 名下的第 `ordinal` 个子 Objective 分配（幂等）产出目录。
+
+    与 recurring Goal 的 `cycle_%04d` 目录同放在 `goals/<goal_id>/` 下，但用
+    `run_%04d` 命名以示区分——一次性 Goal 的多个子 Objective（拆解出的若干
+    步骤）之间不是"轮次"关系，语义上更接近 CronJob 的一次次离散触发，故沿用
+    `run_` 前缀与 `cron/<job_id>/run_<run_id>/` 保持视觉上的一致性。
+
+    ordinal 取该 Objective 在父 Goal.children_ids 里的 1-based 位置（调用方
+    负责计算，见 `goal_backlog.add_objectives_for_goal()` /
+    `objective_executor._write_output_manifest()` 两处各自独立按同一条规则
+    重新计算，无需额外持久化 ordinal 本身）。
+    """
+    d = goal_output_base_dir(paths, goal_id) / f"run_{ordinal:04d}"
     d.mkdir(parents=True, exist_ok=True)
     return d
 
@@ -194,6 +218,7 @@ __all__ = [
     "cron_output_base_dir",
     "allocate_cycle_dir",
     "allocate_run_dir",
+    "allocate_objective_dir",
     "write_manifest",
     "read_latest_manifest",
     "format_manifest_for_prompt",

@@ -114,12 +114,19 @@ class TestDescriptionInheritance(unittest.TestCase):
         self._tmpdir.cleanup()
 
     def test_add_objectives_for_goal_inherits_description(self):
+        # [goal_cron_output_directory_convention_plan.md §5 开放问题 3]
+        # 一次性 Goal 的子 Objective 现在会在父级 description 之后追加
+        # "本轮产出请写入：<目录>"，不再是与父级 description 精确相等——
+        # 断言改为"以父级 description 开头 + 包含产出目录提示"，这正是
+        # 本方案的预期行为变化（与 test_goal_cron_bridge.py 里 recurring
+        # Goal 一侧的同类断言调整保持一致）。
         backlog = GoalBacklog(self.paths)
         goal = backlog.add_goal(title="父目标", description="父级约束条件")
         created = backlog.add_objectives_for_goal(goal.id, ["子任务1", "子任务2"])
         self.assertEqual(len(created), 2)
         for node in created:
-            self.assertEqual(node.description, "父级约束条件")
+            self.assertTrue(node.description.startswith("父级约束条件"))
+            self.assertIn("本轮产出请写入：", node.description)
 
     def test_compose_context_joins_both_when_present(self):
         self.assertEqual(
