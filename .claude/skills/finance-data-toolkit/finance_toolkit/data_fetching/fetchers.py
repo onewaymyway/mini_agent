@@ -4,15 +4,16 @@
 封装各数据源的具体调用逻辑
 """
 
-import sys
 import json
 import time
-import subprocess
+import logging
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import List, Dict, Any, Optional
 from dataclasses import dataclass
-from functools import wraps
+
+# 导入统一的重试机制
+from ..resilience import retry_with_backoff
 
 # 尝试导入可选依赖
 try:
@@ -33,59 +34,47 @@ try:
 except ImportError:
     HAS_HTTPX = False
 
-# 重试装饰器
-def retry_with_backoff(max_retries: int = 3, base_delay: float = 1.0, max_delay: float = 10.0):
-    """指数退避重试装饰器，专门处理网络异常"""
-    def decorator(func):
-        @wraps(func)
-        def wrapper(*args, **kwargs):
-            last_exception = None
-            for attempt in range(max_retries):
-                try:
-                    return func(*args, **kwargs)
-                except Exception as e:
-                    last_exception = e
-                    # 只对网络相关异常重试
-                    if isinstance(e, (ConnectionError, TimeoutError, OSError, IOError)):
-                        if attempt < max_retries - 1:
-                            delay = min(base_delay * (2 ** attempt), max_delay)
-                            time.sleep(delay)
-                            continue
-                    # 非网络异常或最后一次尝试，直接抛出
-                    raise
-            raise last_exception
-        return wrapper
-    return decorator
+logger = logging.getLogger(__name__)
 
+# 导入数据验证模块
+from ..validation import validate_quote_data, validate_kline_data, QualityReport
 
-# 专用于 AKShare 的重试装饰器（捕获更多网络异常类型）
-def retry_akshare(max_retries: int = 3, base_delay: float = 1.0, max_delay: float = 10.0):
-    """AKShare 专用重试装饰器，捕获更多网络异常类型"""
-    def decorator(func):
-        @wraps(func)
-        def wrapper(*args, **kwargs):
-            last_exception = None
-            for attempt in range(max_retries):
-                try:
-                    return func(*args, **kwargs)
-                except Exception as e:
-                    last_exception = e
-                    # 捕获常见网络异常：RemoteDisconnected, ConnectionError, TimeoutError, 等
-                    error_msg = str(e).lower()
-                    is_network_error = any(keyword in error_msg for keyword in [
-                        'remote', 'disconnect', 'connection', 'timeout', 'reset',
-                        'refused', 'unreachable', 'network', 'socket', 'ssl',
-                        'read timed out', 'connect timed out'
-                    ])
-                    if is_network_error or isinstance(e, (ConnectionError, TimeoutError, OSError, IOError)):
-                        if attempt < max_retries - 1:
-                            delay = min(base_delay * (2 ** attempt), max_delay)
-                            time.sleep(delay)
-                            continue
-                    raise
-            raise last_exception
-        return wrapper
-    return decorator
+# 保留 retry_akshare 作为别名，保持向后兼容
+retry_akshare = retry_with_backoff
+
+# HTTP 客户端连接池配置
+if HAS_HTTPX:
+    # 模块级共享客户端，带连接池
+    _http_client = httpx.Client(
+        timeout=httpx.Timeout(10.0, connect=5.0),
+        limits=httpx.Limits(
+            max_connections=100,
+            max_keepalive_connections=20,
+            keepalive_expiry=30.0
+        ),
+        trust_env=False
+    )
+    
+    def get_http_client():
+        """获取共享 HTTP 客户端"""
+        return _http_client
+    
+    def close_http_client():
+        """关闭共享 HTTP 客户端"""
+        global _http_client
+        if _http_client and not _http_client.is_closed:
+            _http_client.close()
+            _http_client = None
+else:
+    _http_client = None
+    
+    def get_http_client():
+        """获取共享 HTTP 客户端"""
+        return None
+    
+    def close_http_client():
+        """关闭共享 HTTP 客户端"""
+        pass
 
 
 @dataclass
@@ -136,7 +125,7 @@ def to_eastmoney_symbol(code: str) -> str:
 
 # ============== 实时行情 ==============
 
-@retry_with_backoff(max_retries=3, base_delay=1.0, max_delay=10.0)
+@retry_with_backoff(max_retries=3, backoff_factors=[1, 2, 5])
 def _fetch_akshare_realtime():
     """内部函数：获取 AKShare 全市场实时行情（带重试）"""
     return ak.stock_zh_a_spot_em()
@@ -177,15 +166,21 @@ def fetch_realtime_quote(symbols: List[str], source: str = 'akshare') -> List[Fi
                         'total_mv': r['总市值'],
                         'circ_mv': r['流通市值'],
                     }
+                    # 验证数据质量
+                    report = validate_quote_data(payload, std_sym)
+                    if not report.is_valid:
+                        logger.warning(f"数据质量验证失败 [{std_sym}]: {report.issues}")
+                    
                     results.append(FinanceData(
                         source='akshare',
                         data_type='quote',
                         symbol=std_sym,
                         timestamp=datetime.utcnow().isoformat(),
-                        payload=payload
+                        payload=payload,
+                        meta={'quality_report': report.to_dict() if report else None}
                     ))
         except Exception as e:
-            print(f"AKShare获取失败: {e}", file=sys.stderr)
+            logger.error(f"AKShare获取失败: {e}")
     
     elif source == 'eastmoney':
         # 东方财富通过 browser-cdp 抓取
@@ -201,20 +196,20 @@ def fetch_realtime_quote(symbols: List[str], source: str = 'akshare') -> List[Fi
                         payload=data
                     ))
             except Exception as e:
-                print(f"东方财富获取 {sym} 失败：{e}", file=sys.stderr)
+                logger.error(f"东方财富获取 {sym} 失败：{e}")
     
     elif source == 'sina':
         # 新浪财经实时行情
-        import httpx
-        for sym in symbols:
-            try:
-                code = to_sina_symbol(sym)
-                url = f"https://hq.sinajs.cn/list={code}"
-                headers = {
-                    'Referer': 'https://finance.sina.com.cn/',
-                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
-                }
-                with httpx.Client(trust_env=False) as client:
+        client = get_http_client()
+        if client:
+            for sym in symbols:
+                try:
+                    code = to_sina_symbol(sym)
+                    url = f"https://hq.sinajs.cn/list={code}"
+                    headers = {
+                        'Referer': 'https://finance.sina.com.cn/',
+                        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+                    }
                     resp = client.get(url, headers=headers, timeout=10)
                     resp.encoding = 'gbk'
                     if resp.status_code == 200:
@@ -242,8 +237,8 @@ def fetch_realtime_quote(symbols: List[str], source: str = 'akshare') -> List[Fi
                                     timestamp=datetime.utcnow().isoformat(),
                                     payload=payload
                                 ))
-            except Exception as e:
-                print(f"新浪获取 {sym} 失败：{e}", file=sys.stderr)
+                except Exception as e:
+                    logger.error(f"新浪获取 {sym} 失败：{e}")
     
     return results
 
@@ -255,13 +250,13 @@ def _fetch_eastmoney_quote(symbol: str) -> Optional[Dict]:
         finance_data = fetch_stock_data(symbol, headless=True)
         return finance_data.to_dict()
     except Exception as e:
-        print(f"东方财富抓取异常: {e}", file=sys.stderr)
+        logger.error(f"东方财富抓取异常: {e}")
         return None
 
 
 # ============== K线数据 ==============
 
-@retry_with_backoff(max_retries=3, base_delay=1.0, max_delay=10.0)
+@retry_with_backoff(max_retries=3, backoff_factors=[1, 2, 5])
 def _fetch_akshare_kline(code: str, period: str, start: str, end: str, adjust: str):
     """内部函数：获取 AKShare K线数据（带重试）"""
     return ak.stock_zh_a_hist(
@@ -305,9 +300,15 @@ def fetch_kline(
                 '涨跌幅': 'change_pct', '涨跌额': 'change_amt',
                 '换手率': 'turnover'
             })
-            return df.to_dict('records')
+            # 验证 K 线数据质量
+            records = df.to_dict('records')
+            if records:
+                report = validate_kline_data(records, symbol)
+                if not report.is_valid:
+                    logger.warning(f"K线数据质量验证失败 [{symbol}]: {report.issues}")
+            return records
         except Exception as e:
-            print(f"AKShare K线获取失败: {e}", file=sys.stderr)
+            logger.error(f"AKShare K线获取失败: {e}")
     
     elif source == 'sina':
         return _fetch_sina_kline(symbol, period, start, end)
@@ -371,13 +372,13 @@ def _fetch_sina_kline(symbol: str, period: str = 'daily', start: str = '20240101
             })
         return result
     except Exception as e:
-        print(f"新浪K线获取失败: {e}", file=sys.stderr)
+        logger.error(f"新浪K线获取失败: {e}")
         return []
 
 
 # ============== 财务报表 ==============
 
-@retry_akshare(max_retries=3, base_delay=1.0, max_delay=10.0)
+@retry_akshare(max_retries=3, backoff_factors=[1, 2, 5])
 def _fetch_akshare_financial_report(code: str, report_type: str):
     """内部函数：获取 AKShare 财务报表（带重试）"""
     return ak.stock_financial_report_sina(stock=code, symbol=report_type)
@@ -409,12 +410,12 @@ def fetch_financial(symbol: str, source: str = 'akshare') -> List[FinanceData]:
                             payload=payload
                         ))
         except Exception as e:
-            print(f"财务报表获取失败: {e}", file=sys.stderr)
+            logger.error(f"财务报表获取失败: {e}")
     
     return results
 
 
-@retry_akshare(max_retries=3, base_delay=1.0, max_delay=10.0)
+@retry_akshare(max_retries=3, backoff_factors=[1, 2, 5])
 def _fetch_akshare_dividend(code: str):
     """内部函数：获取 AKShare 分红数据（带重试）"""
     return ak.stock_fhps_detail_em(symbol=code)
@@ -437,12 +438,12 @@ def fetch_dividend(symbol: str, source: str = 'akshare') -> List[FinanceData]:
                     payload=row.to_dict()
                 ))
         except Exception as e:
-            print(f"分红数据获取失败: {e}", file=sys.stderr)
+            logger.error(f"分红数据获取失败: {e}")
     
     return results
 
 
-@retry_akshare(max_retries=3, base_delay=1.0, max_delay=10.0)
+@retry_akshare(max_retries=3, backoff_factors=[1, 2, 5])
 def _fetch_akshare_lhb(start_date: str, end_date: str):
     """内部函数：获取 AKShare 龙虎榜数据（带重试）"""
     return ak.stock_lhb_detail_em(start_date=start_date, end_date=end_date)
@@ -490,22 +491,22 @@ def fetch_lhb(symbol: str = None, start_date: str = None, end_date: str = None, 
                     payload=row.to_dict()
                 ))
         except Exception as e:
-            print(f"龙虎榜获取失败：{e}", file=sys.stderr)
+            logger.error(f"龙虎榜获取失败：{e}")
     
     return results
 
 
-@retry_akshare(max_retries=3, base_delay=1.0, max_delay=10.0)
+@retry_akshare(max_retries=3, backoff_factors=[1, 2, 5])
 def _fetch_akshare_northbound():
     """内部函数：获取 AKShare 北向资金汇总数据（带重试）"""
     return ak.stock_hsgt_fund_flow_summary_em()
 
-@retry_akshare(max_retries=3, base_delay=1.0, max_delay=10.0)
+@retry_akshare(max_retries=3, backoff_factors=[1, 2, 5])
 def _fetch_akshare_northbound_hist(symbol: str = '沪股通'):
     """内部函数：获取 AKShare 北向资金历史数据（带重试）"""
     return ak.stock_hsgt_hist_em(symbol=symbol)
 
-@retry_akshare(max_retries=3, base_delay=1.0, max_delay=10.0)
+@retry_akshare(max_retries=3, backoff_factors=[1, 2, 5])
 def _fetch_akshare_northbound_hold(symbol: str):
     """内部函数：获取 AKShare 个股北向持仓数据（带重试）"""
     # 使用 stock_hsgt_individual_em 获取个股北向持仓详情
@@ -546,12 +547,12 @@ def fetch_northbound(symbol: str = None, source: str = 'akshare') -> List[Financ
                         payload=row.to_dict()
                     ))
         except Exception as e:
-            print(f"北向资金获取失败：{e}", file=sys.stderr)
+            logger.error(f"北向资金获取失败：{e}")
     
     return results
 
 
-@retry_akshare(max_retries=3, base_delay=1.0, max_delay=10.0)
+@retry_akshare(max_retries=3, backoff_factors=[1, 2, 5])
 def _fetch_akshare_stock_basic():
     """内部函数：获取 AKShare 股票基础信息（带重试）"""
     return ak.stock_zh_a_spot_em()
@@ -580,7 +581,7 @@ def fetch_stock_basic(source: str = 'akshare') -> List[FinanceData]:
                     }
                 ))
         except Exception as e:
-            print(f"股票基础信息获取失败: {e}", file=sys.stderr)
+            logger.error(f"股票基础信息获取失败: {e}")
     
     return results
 
@@ -655,7 +656,7 @@ def fetch_fund(symbol: str, data_type: str = 'nav', source: str = 'fund') -> Lis
             finally:
                 loop.close()
     except Exception as e:
-        print(f"基金数据获取失败: {e}", file=sys.stderr)
+        logger.error(f"基金数据获取失败: {e}")
 
     return results
 
@@ -685,7 +686,7 @@ def fetch_bond(symbol: str, data_type: str = 'yield', source: str = 'bond') -> L
             finally:
                 loop.close()
     except Exception as e:
-        print(f"债券数据获取失败: {e}", file=sys.stderr)
+        logger.error(f"债券数据获取失败: {e}")
 
     return results
 
@@ -715,7 +716,7 @@ def fetch_futures(symbol: str, data_type: str = 'quote', source: str = 'futures'
             finally:
                 loop.close()
     except Exception as e:
-        print(f"期货数据获取失败: {e}", file=sys.stderr)
+        logger.error(f"期货数据获取失败: {e}")
 
     return results
 
@@ -745,7 +746,7 @@ def fetch_index(symbol: str, data_type: str = 'quote', source: str = 'index') ->
             finally:
                 loop.close()
     except Exception as e:
-        print(f"指数数据获取失败: {e}", file=sys.stderr)
+        logger.error(f"指数数据获取失败: {e}")
 
     return results
 
@@ -774,7 +775,7 @@ def fetch_macro(data_type: str = 'gdp', source: str = 'macro') -> List[FinanceDa
             finally:
                 loop.close()
     except Exception as e:
-        print(f"宏观经济数据获取失败: {e}", file=sys.stderr)
+        logger.error(f"宏观经济数据获取失败: {e}")
 
     return results
 
@@ -785,13 +786,13 @@ default_fetcher = DataFetcher()
 
 if __name__ == '__main__':
     # 测试
-    print("测试实时行情...")
+    logger.info("测试实时行情...")
     quotes = fetch_realtime_quote(['600000.SH', '000001.SZ'])
     for q in quotes:
-        print(f"{q.symbol}: {q.payload.get('close')} ({q.payload.get('change_pct')}%)")
+        logger.info(f"{q.symbol}: {q.payload.get('close')} ({q.payload.get('change_pct')}%)")
     
-    print("\n测试K线...")
+    logger.info("\n测试K线...")
     klines = fetch_kline('600000.SH', period='daily', start='20240101')
-    print(f"获取 {len(klines)} 条K线")
+    logger.info(f"获取 {len(klines)} 条K线")
     if klines:
-        print(f"最新: {klines[-1]}")
+        logger.info(f"最新: {klines[-1]}")
