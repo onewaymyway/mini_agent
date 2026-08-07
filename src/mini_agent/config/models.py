@@ -1621,7 +1621,8 @@ class GrowthAdvisorConfig:
 
     # ── 推送频率（interruption，独立于生成频率，见第 4.2 节）────────────
     # daily（默认，最多 1 条/天，取当天新生成里置信度最高的一条）|
-    # weekly_digest（打包成一条周摘要）| kanban_only（只更新看板，不推送）
+    # weekly_digest（每 7 天把窗口期内新生成的全部报告标题打包成一条摘要
+    # 推送，而非逐条推）| kanban_only（只更新看板，不推送）
     notification_frequency: str = "daily"
     # 单日最多推送条数（notification_frequency=daily 时生效）
     notification_max_per_day: int = 1

@@ -52,13 +52,20 @@ P3 范围（首次触达提示跨会话持久化 + 黑名单可视化编辑，�
       处理的缺口，改成一行一项的文本域——这个修复对所有 list 类型配置
       字段生效，不止 `excluded_topics`。
 
+P3 范围（本次新增）——`notification_frequency=weekly_digest` 的真实周摘要
+打包：
+    - `_maybe_dispatch_weekly_digest()`：独立于 `_maybe_dispatch_notification`
+      的按天节流路径，按"距上次推送是否满 7 天"（而非自然日）判断是否
+      触发；到期后把窗口期内新生成的全部调研报告标题打包成一条摘要消息
+      一次性推送，不再逐条推。`run_daily_cycle()` 按 `notification_frequency`
+      分流：`weekly_digest` 走这里，其余（`daily`/`kanban_only`）仍走
+      `_maybe_dispatch_notification`。
+
 仍不在本次范围内（见方案 P3 剩余项，占位在 next_doc 文档里）：
     - 看板里的拖拽式看板视图（当前仍是列表 + 采纳/忽略两个动作）
-    - `notification_frequency=weekly_digest` 档位的真实周摘要打包逻辑
-      （当前该档位下与 `daily` 走同一套节流规则，只是没有单独的"打包成
-      一条"聚合步骤，视为已知简化，见实施记录）
     - `growth_signal_scan` 的 LLM 增强版归纳（P1/P2/P3 均保持零 LLM 成本
       的规则式实现）
+    - 月度复盘的跨候选能力地图聚合（当前只有数量统计 + 采纳率 + 主题排行）
 """
 
 from __future__ import annotations
@@ -580,6 +587,83 @@ def mark_first_touch_notice_shown(paths) -> None:
         _save_growth_state(paths, state)
 
 
+# ────────────────────────── P3：weekly_digest 真实周摘要打包 ──────────────────────────
+# 此前 notification_frequency="weekly_digest" 与 "daily" 走同一套按天节流的
+# 逻辑（见 P2 实施记录"已知简化"），效果只是"daily 但通常不会真的每天都
+# 推"，并不是方案第 4.2 节要求的"把一周内的报告打包成一条"。这里补上真正
+# 的周频聚合：状态里新增 `last_weekly_digest_at`（时间戳，不是自然日），
+# 距上次推送不满 7 天则跳过；到期后把窗口内新生成的报告标题打包成一条
+# 摘要消息一次性推送，而不是逐条推。
+
+WEEKLY_DIGEST_INTERVAL_DAYS = 7
+
+
+def _maybe_dispatch_weekly_digest(paths, cfg) -> Optional[dict]:
+    """`notification_frequency == "weekly_digest"` 时的推送逻辑：每 7 天
+    最多推一次，内容是窗口期内（上次推送至今，首次则取最近 7 天）新生成
+    的全部调研报告标题打包成一条摘要，而不是逐条推送。
+
+    与 `_maybe_dispatch_notification` 的按天节流是互斥的两套路径，由
+    `run_daily_cycle` 按 `notification_frequency` 分流调用，不会同时触发。
+    """
+    try:
+        state = _load_growth_state(paths)
+        now = time.time()
+        last_at = state.get("last_weekly_digest_at")
+        if last_at and (now - last_at) < WEEKLY_DIGEST_INTERVAL_DAYS * 86400:
+            return None
+
+        window_start = last_at if last_at else (now - WEEKLY_DIGEST_INTERVAL_DAYS * 86400)
+        window_reports = [r for r in list_reports(paths) if r.created_at >= window_start]
+
+        if not window_reports:
+            # 没有新报告也要推进"上次检查时间"，避免每次 daily cycle 都
+            # 重新计算同一个空窗口——但不落一条空摘要消息。
+            state["last_weekly_digest_at"] = now
+            _save_growth_state(paths, state)
+            return None
+
+        window_reports.sort(key=lambda r: -r.created_at)
+        lines = [f"- {r.title}" for r in window_reports]
+        body = (
+            f"过去 {WEEKLY_DIGEST_INTERVAL_DAYS} 天为你生成了 {len(window_reports)} "
+            f"份成长调研报告：\n" + "\n".join(lines)
+        )
+
+        from mini_agent.notification.dispatcher import NotificationDispatcher, NotificationMessage
+        from mini_agent.notification import reports_store
+
+        message = NotificationMessage(
+            title=f"成长顾问周摘要（{len(window_reports)} 份报告）",
+            body=body,
+            source="growth_weekly_digest",
+            meta={"report_ids": [r.report_id for r in window_reports]},
+        )
+        results = NotificationDispatcher(paths).dispatch(message)
+        reports_store.append_report(
+            paths,
+            {
+                "title": message.title,
+                "body": message.body,
+                "source": message.source,
+                "report_ids": [r.report_id for r in window_reports],
+                "created_at": message.created_at,
+                "acknowledged": False,
+            },
+        )
+        state["last_weekly_digest_at"] = now
+        _save_growth_state(paths, state)
+        return {
+            "report_ids": [r.report_id for r in window_reports],
+            "count": len(window_reports),
+            "channels": results,
+        }
+    except Exception as exc:
+        from mini_agent.errors import log_exception
+        log_exception(exc, where="mini_agent.growth_advisor._maybe_dispatch_weekly_digest")
+        return None
+
+
 def _maybe_dispatch_notification(
     paths, cfg, candidates_by_id: dict[str, GrowthCandidate], reports: list[GrowthReport]
 ) -> Optional[dict]:
@@ -602,7 +686,10 @@ def _maybe_dispatch_notification(
     if not reports:
         return None
     freq = getattr(cfg, "notification_frequency", "daily")
-    if freq == "kanban_only":
+    if freq in ("kanban_only", "weekly_digest"):
+        # weekly_digest 走独立的 _maybe_dispatch_weekly_digest()，不复用
+        # 这里的按天节流；防御性地在这里也短路一次，避免调用方误接错分支
+        # 时把 weekly_digest 误当成 daily 逐条推送。
         return None
 
     min_conf = getattr(cfg, "notification_min_confidence", 0.6)
@@ -683,7 +770,11 @@ def run_daily_cycle(paths, cfg, profile, memory_store) -> dict[str, Any]:
     reports = [generate_growth_report(paths, c) for c in top]
 
     candidates_by_id = {c.candidate_id: c for c in top}
-    notification = _maybe_dispatch_notification(paths, cfg, candidates_by_id, reports)
+    freq = getattr(cfg, "notification_frequency", "daily")
+    if freq == "weekly_digest":
+        notification = _maybe_dispatch_weekly_digest(paths, cfg)
+    else:
+        notification = _maybe_dispatch_notification(paths, cfg, candidates_by_id, reports)
 
     return {
         "skipped": False,

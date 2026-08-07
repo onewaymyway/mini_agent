@@ -225,14 +225,49 @@
   配置目录（见 P1 记录），本来就不需要为它单独开一个新端点，缺的只是
   前端这一个类型分支。
 
+## 已完成：P3 里程碑（新增）——`weekly_digest` 真实周摘要打包
+
+此前 `notification_frequency=weekly_digest` 与 `daily` 走同一套按天节流
+逻辑，没有真正实现方案第 4.2 节"打包成一条周摘要"（见 P2 记录"已知
+简化"）。本轮补上：
+
+- `growth_advisor.py` 新增 `_maybe_dispatch_weekly_digest()`：
+  - 状态新增 `last_weekly_digest_at`（时间戳，落盘在已有的
+    `growth_advisor_state.json`，与推送节流/首次触达状态同一个文件），
+    按"距上次推送是否满 `WEEKLY_DIGEST_INTERVAL_DAYS`（7）天"判断是否
+    触发，而不是自然日/自然周；
+  - 到期后，把窗口期（上次成功推送周摘要至今；首次触发时窗口取最近 7
+    天）内 `list_reports()` 中新生成的**全部**调研报告标题打包进**一条**
+    `NotificationMessage`（`source="growth_weekly_digest"`）一次性推送，
+    不再逐条推；窗口内没有新报告时只推进 `last_weekly_digest_at`、不
+    落一条空摘要消息；
+  - 复用已有的 `NotificationDispatcher` 与 `notification/reports_store`
+    （`report_ids` 列表记录本次打包的所有报告，而非单一 `report_id`）；
+  - 全程 try/except + `log_exception(where="mini_agent.growth_advisor.\
+    _maybe_dispatch_weekly_digest")` 兜底。
+- `_maybe_dispatch_notification()`（daily/kanban_only 路径）新增防御性
+  短路：`notification_frequency == "weekly_digest"` 时直接返回 `None`，
+  避免调用方接错分支时把 weekly_digest 误当成 daily 逐条推送。
+- `run_daily_cycle()` 按 `cfg.notification_frequency` 分流：
+  `weekly_digest` → `_maybe_dispatch_weekly_digest()`；其余（`daily`/
+  `kanban_only`）→ 原有的 `_maybe_dispatch_notification()`；两条路径
+  互斥，不会同时触发。
+- `config/models.py::GrowthAdvisorConfig.notification_frequency` 的字段
+  注释同步更新；`docs/growth-advisor-guide.md` 第 5 节配置表与第 6 节
+  "当前局限"同步更新（去掉"等价于 daily"的旧说明）。
+- `tests/test_growth_advisor.py` 新增 `TestWeeklyDigest`（6 个用例，全部
+  通过，加上原有 25 个共 31 个，另有 3 个既有用例不受影响，全文件合计
+  34 个）：首次调用打包全部近期报告、7 天内第二次调用被节流、窗口内无
+  新报告时不推送、时间戳回拨模拟"7 天已过"后可再次推送、
+  `run_daily_cycle` 在 `weekly_digest` 档位下正确分流、daily 路径对
+  `weekly_digest` 频率短路返回 `None`。
+
 ## 未做（按方案标注为 P3 剩余项，本轮不在范围内）
 
 - 看板里的拖拽式看板视图（当前是列表 + 按钮，不是真正的多列看板）。
 - `growth_signal_scan` 的 LLM 增强版归纳（P1/P2/P3 均保持零 LLM 成本的
   规则式实现；调研报告生成阶段已支持可选 LLM 增强，见 P1 记录）。
 - 月度复盘的跨候选能力地图聚合（当前只有数量统计 + 采纳率 + 主题排行）。
-- `notification_frequency=weekly_digest` 的真实周摘要打包逻辑（见上方
-  P2 部分"已知简化"，本轮未改动）。
 
 ## 已知取舍/风险
 
@@ -246,6 +281,11 @@
   和 `0.4` 下限，是经验取值而非从真实用户数据拟合出来的，后续如果发现
   "同一方向被忽略一次就显著更少被推荐"或者相反"衰减太弱、老是被推同一
   个已经明确不感兴趣的方向"，直接调整这两个常量即可，不需要改调用方。
+- `_maybe_dispatch_weekly_digest` 的窗口起点是"上次成功推送周摘要的
+  时间戳"，不是自然周（周一到周日）；如果用户中途把 `notification_
+  frequency` 从别的档位切到 `weekly_digest`，首次触发的窗口固定取"最近
+  7 天"，不会回溯更早生成过的报告——这是刻意的取舍（避免把配置切换前
+  积压的所有历史报告一次性打包成一条巨长的摘要）。
 - `_maybe_dispatch_notification` 的节流状态只按"自然日"计数，没有考虑
   时区跨天的边界情况（用的是 `time.localtime()`，即运行进程所在机器的
   本地时区）；对单机自托管场景够用，多时区/云端多副本部署场景需要另外

@@ -396,6 +396,93 @@ class TestNotificationThrottle(unittest.TestCase):
             self.assertIsNotNone(result["notification"])
 
 
+class TestWeeklyDigest(unittest.TestCase):
+    """P3：`notification_frequency=weekly_digest` 的真实周摘要打包。"""
+
+    def _make_report(self, paths, title, evidence_n=5):
+        backlog = ga.GrowthBacklog(paths)
+        cand = backlog.add_or_merge(
+            title, "理由", [f"e{i}" for i in range(evidence_n)],
+            min_evidence_count=3, max_pending=10, dismissed_cooldown_days=30,
+        )
+        return ga.generate_growth_report(paths, cand)
+
+    def test_first_call_packages_all_recent_reports_into_one_message(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = _make_paths(tmp)
+            r1 = self._make_report(paths, "数据分析")
+            r2 = self._make_report(paths, "系统设计与架构")
+
+            result = ga._maybe_dispatch_weekly_digest(paths, GrowthAdvisorConfig())
+            self.assertIsNotNone(result)
+            self.assertEqual(result["count"], 2)
+            self.assertEqual(set(result["report_ids"]), {r1.report_id, r2.report_id})
+
+    def test_second_call_within_7_days_is_throttled(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = _make_paths(tmp)
+            self._make_report(paths, "数据分析")
+            first = ga._maybe_dispatch_weekly_digest(paths, GrowthAdvisorConfig())
+            self.assertIsNotNone(first)
+
+            self._make_report(paths, "系统设计与架构")
+            second = ga._maybe_dispatch_weekly_digest(paths, GrowthAdvisorConfig())
+            self.assertIsNone(second)  # 距上次推送不满 7 天
+
+    def test_no_new_reports_in_window_skips_without_dispatch(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = _make_paths(tmp)
+            result = ga._maybe_dispatch_weekly_digest(paths, GrowthAdvisorConfig())
+            self.assertIsNone(result)
+
+    def test_ready_again_after_interval_elapses(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = _make_paths(tmp)
+            self._make_report(paths, "数据分析")
+            first = ga._maybe_dispatch_weekly_digest(paths, GrowthAdvisorConfig())
+            self.assertIsNotNone(first)
+
+            # 模拟 7 天已过：直接回拨状态里的时间戳
+            state = ga._load_growth_state(paths)
+            state["last_weekly_digest_at"] = time.time() - (ga.WEEKLY_DIGEST_INTERVAL_DAYS + 1) * 86400
+            ga._save_growth_state(paths, state)
+
+            self._make_report(paths, "系统设计与架构")
+            second = ga._maybe_dispatch_weekly_digest(paths, GrowthAdvisorConfig())
+            self.assertIsNotNone(second)
+            # 窗口起点被回拨到早于两份报告的创建时间，两份都落在窗口内
+            self.assertEqual(second["count"], 2)
+
+    def test_run_daily_cycle_routes_weekly_digest_freq_to_weekly_path(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = _make_paths(tmp)
+            now = time.time()
+            entries = [
+                _FakeEntry(f"e{i}", "python packaging pytest", ["python"], now - 10)
+                for i in range(8)
+            ]
+            store = _FakeMemoryStore(entries)
+            profile = UserProfile()
+            cfg = GrowthAdvisorConfig(
+                min_evidence_count=3, max_reports_per_run=1,
+                notification_frequency="weekly_digest",
+            )
+            result = ga.run_daily_cycle(paths, cfg, profile, store)
+            self.assertIsNotNone(result["notification"])
+            self.assertIn("count", result["notification"])
+
+    def test_daily_path_never_triggers_weekly_digest_directly(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = _make_paths(tmp)
+            report = self._make_report(paths, "数据分析", evidence_n=8)
+            cand = ga.GrowthBacklog(paths).get(report.candidate_id)
+            cfg = GrowthAdvisorConfig(notification_frequency="weekly_digest", notification_min_confidence=0.1)
+            # _maybe_dispatch_notification 应对 weekly_digest 短路返回 None，
+            # 防止调用方接错分支时被误当成 daily 逐条推送。
+            result = ga._maybe_dispatch_notification(paths, cfg, {cand.candidate_id: cand}, [report])
+            self.assertIsNone(result)
+
+
 class TestMonthlyRetrospectiveAttribution(unittest.TestCase):
     """P2：月度复盘的采纳率与主题排行。"""
 

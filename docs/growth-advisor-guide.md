@@ -75,7 +75,7 @@ GET  /v1/growth/reports/{id}                      # 某份调研报告正文
 | --- | --- | --- |
 | `enabled` | `true` | 总开关，关闭后信号扫描/候选生成/cron job 全部跳过 |
 | `generation_frequency` | `"daily"` | `daily` / `every_12h` / `weekly` / `manual` |
-| `notification_frequency` | `"daily"` | `daily` / `weekly_digest` / `kanban_only`；`weekly_digest` 当前与 `daily` 走同一套节流（见实施记录"已知简化"） |
+| `notification_frequency` | `"daily"` | `daily`（当天新报告里置信度最高的一条，最多 `notification_max_per_day` 条）/ `weekly_digest`（每 7 天把窗口期内新生成的全部报告打包成一条摘要推送）/ `kanban_only`（只更新看板，不推送） |
 | `notification_max_per_day` | `1` | `notification_frequency=daily` 时，单日最多推送条数 |
 | `notification_min_confidence` | `0.6` | 低于此置信度的报告只更新看板、不推送 |
 | `min_evidence_count` | `3` | 生成候选所需的最少证据条数 |
@@ -98,7 +98,7 @@ GET  /v1/growth/reports/{id}                      # 某份调研报告正文
 - `.agent/growth_feedback_ledger.jsonl` — 采纳/忽略反馈流水
 - `.agent/wiki/growth/*.md` — 调研报告正文
 
-## 6. 当前局限（P1 + P2 阶段）
+## 6. 当前局限（P1 + P2 + P3 部分阶段）
 
 - 关键词表覆盖面有限（见 `evolution/growth_advisor.py` 里的
   `_TOPIC_KEYWORDS`），不识别的主题不会被发现，可以直接改代码扩表；
@@ -106,7 +106,9 @@ GET  /v1/growth/reports/{id}                      # 某份调研报告正文
   需要调用方传入 `llm_helper`）；
 - 候选置信度会按历史 dismiss 次数打折（复利衰减、有下限），但衰减系数
   是经验取值，不是从真实反馈数据拟合出来的；
-- `notification_frequency=weekly_digest` 暂时没有真正的"打包成一条周
-  摘要"逻辑，效果上等价于 `daily`；
-- 首次触达提示目前只在单次浏览器会话内生效，不是跨会话持久化；
+- `notification_frequency=weekly_digest` 现在会真正把窗口期内新生成的
+  报告打包成一条摘要推送（每 7 天最多一次），窗口起点是"上次成功推送
+  周摘要的时间"，不是自然周（周一到周日），首次触发时窗口取最近 7 天；
+- 首次触达提示已做跨会话持久化（落盘在 `growth_advisor_state.json`）；
+- 月度复盘仍只有数量统计 + 采纳率 + 主题排行，没有跨候选的能力地图聚合；
 - 看板仍是列表 + 按钮，不是真正的拖拽式看板视图（P3 计划项）。
