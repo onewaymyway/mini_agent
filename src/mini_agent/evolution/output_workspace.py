@@ -2,7 +2,7 @@
 evolution/output_workspace.py — Goal/Cron 周期性执行的产出目录规范
 （next_doc/goal_cron_output_directory_convention_plan.md）
 
-目录结构（<project_root>/outputs/）：
+目录结构（<project_root>/.agent/daemon_run_outputs/）：
     goals/<goal_id>/
         latest.json           指针文件：{"latest_dir": "cycle_0003", "updated_at": ...}
         cycle_0001/manifest.json
@@ -41,7 +41,13 @@ MANIFEST_VERSION = 1
 # ── 目录归属 ──────────────────────────────────────────────────────────────────
 
 def outputs_root(paths: "AgentPaths") -> Path:
-    return Path(paths.project_root) / "outputs"
+    # [用户反馈] 顶层目录改放 .agent/ 内部（daemon_run_outputs），不占用
+    # 项目根目录一级命名空间——避免和用户项目里可能已有的同名 outputs/
+    # 目录冲突。语义上仍然是"daemon 自主运行产出"，跟 .agent/ 下其余
+    # "agent 自己的内部状态"目录（cron_jobs/、policies/ 等）放在一起，
+    # 用户想找的话打开 .agent/daemon_run_outputs/ 即可，也方便按需整体
+    # 加进 .gitignore。
+    return Path(paths.project_root) / ".agent" / "daemon_run_outputs"
 
 
 def goal_output_base_dir(paths: "AgentPaths", goal_id: str) -> Path:
@@ -51,7 +57,7 @@ def goal_output_base_dir(paths: "AgentPaths", goal_id: str) -> Path:
 def cron_output_base_dir(paths: "AgentPaths", job_id: str) -> Path:
     # job_id 里可能含 ':'，文件系统里用 '_' 替换，与 CronJobWorkspace 的
     # safe_id 规则保持一致，方便用户对照 .agent/cron_jobs/<safe_id>/ 找到
-    # 对应的 outputs/cron/<safe_id>/。
+    # 对应的 .agent/daemon_run_outputs/cron/<safe_id>/。
     safe_id = job_id.replace(":", "_")
     return outputs_root(paths) / "cron" / safe_id
 

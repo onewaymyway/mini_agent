@@ -62,7 +62,7 @@
 ## 2. 目录结构设计
 
 ```
-<project_root>/outputs/
+<project_root>/.agent/daemon_run_outputs/
 ├── goals/
 │   └── <goal_id>/
 │       ├── latest.json                  # 指针文件，见 §2.3
@@ -83,12 +83,16 @@
         └── ...
 ```
 
-**为什么放在 `<project_root>/outputs/`，不是 `.agent/outputs/`**：
-`.agent/` 目录语义上是"agent 自己的内部状态"（调度器状态机、执行日志、
-知识库索引……），符合 `output_path_policy.md` 里"不要往这类目录塞交付物"
-的精神；而这里存的是用户真正关心的**任务产出**，理应是项目目录下一个
-显眼的一级目录，用户自己也可能直接去 `outputs/` 里翻文件、拿去用，
-不应该藏在点号开头的隐藏目录里。
+**为什么放在 `<project_root>/.agent/daemon_run_outputs/`，不是项目根下
+`outputs/`**（[已根据评审反馈调整] 最初方案倾向于放项目根一级目录，
+理由是"用户真正关心的任务产出不应该藏在点号开头的隐藏目录里"；但顶层
+`outputs/` 容易和用户项目里已有的同名目录（很多项目本来就有构建产物/
+导出目录叫 `outputs/`）冲突，评审后改为放进 `.agent/` 内部）：
+`.agent/` 目录本身仍然是"agent 自己的内部状态"这层语义没变，
+但 `daemon_run_outputs` 是其中命名明确、专门装"周期性任务实际产出"的
+子目录，不会和 `cron_jobs/`/`policies/` 等纯调度态目录混在一起，也不会
+和用户项目已有目录冲突；看板"📂 查看产出"折叠区把它暴露出来，用户不需要
+自己记路径，代价是命令行下少一层可见性，可以接受。
 
 **为什么"Goal 周期"用 `cycle_%04d`、"CronJob 单次触发"用
 `run_<timestamp>`**：两者语义不同——recurring Goal 的每一轮是有序的、
@@ -127,7 +131,7 @@ CronJob（不一定绑定 Goal）触发更像离散的一次次运行，用时�
     {"path": "raw_data.csv", "description": "本周原始导出数据"}
   ],
   "progress_note": "已完成 3/3 步骤；下一轮建议直接对比本轮 raw_data.csv",
-  "previous_cycle_dir": "outputs/goals/goal_abcd1234/cycle_0002"
+  "previous_cycle_dir": ".agent/daemon_run_outputs/goals/goal_abcd1234/cycle_0002"
 }
 ```
 
@@ -204,7 +208,7 @@ render_prompt()`（那是 dedicated-execution cron 专属路径）——需要�
 | `goal_cron_bridge.py` | `_fire_goal_cycle()` 触发时调用 `allocate_cycle_dir()`，把 `{{output_dir}}` 等价内容拼进子 Objective 的 `task_description` |
 | `objective_executor.py` | execution 收尾（`_finish`/`cancel`/`_on_objective_failed`）时调用 `write_manifest()`，复用已有的 `step.artifacts` 汇总逻辑 |
 | `output_path_policy.py` | `DEFAULT_POLICY` 追加一条第 5 条规则，说明"如果 prompt 里出现了『本轮产出请写入：』这行，以该目录为准" |
-| `apps/mini_agent_kanban/app.py` | Goal/CronJob 卡片新增一个"📂 查看产出"折叠区，读 `latest.json` + 最近几轮 `manifest.json`，列出文件名（不做文件预览/下载，避免看板膨胀成文件管理器——需要的话用户直接去 `outputs/` 目录看） |
+| `apps/mini_agent_kanban/app.py` | Goal/CronJob 卡片新增一个"📂 查看产出"折叠区，读 `latest.json` + 最近几轮 `manifest.json`，列出文件名（不做文件预览/下载，避免看板膨胀成文件管理器——需要的话用户直接去 `.agent/daemon_run_outputs/` 目录看） |
 | `docs/goal-cron-binding-guide.md` | 补一节说明这套目录规范，供用户查阅 |
 
 ## 5. 待评审的开放问题
@@ -212,20 +216,20 @@ render_prompt()`（那是 dedicated-execution cron 专属路径）——需要�
 在开始实施前，希望先确认这几点（直接影响 §2 的具体命名/结构，改起来
 成本不同，值得先定下来）：
 
-1. **`outputs/` 这个顶层目录名是否合适？** 会不会和用户项目里已有的
-   同名目录冲突（比如某些项目本来就有 `outputs/` 存别的东西）？如果
-   有冲突风险，可以考虑 `agent_outputs/` 或做成可配置项
-   （`cfg.autonomy.output_dir_name`，默认 `outputs`）。
+1. ~~`outputs/` 这个顶层目录名是否合适？~~ **[已定]** 改放
+   `.agent/daemon_run_outputs/`，不占用项目根目录一级命名空间，避免和
+   用户项目里已有的同名 `outputs/` 目录冲突；未做成可配置项，直接采用
+   这个固定路径（见 §2 开头的说明）。
 2. **`manifest.json` 里的 `artifacts` 要不要做路径存在性校验？**
    即 agent 在 `[ARTIFACTS]` 里声明的路径，如果实际上传目录不在
-   `outputs/goals/<goal_id>/cycle_000N/` 下（比如手滑写到别处），要不要
-   在 manifest 里标一个 `outside_output_dir: true` 的提示，还是干脆
-   不管——本方案目前倾向于**不管**（不做强制校验，只做记录），但想
-   确认这是否符合预期。
+   `.agent/daemon_run_outputs/goals/<goal_id>/cycle_000N/` 下（比如手滑
+   写到别处），要不要在 manifest 里标一个 `outside_output_dir: true` 的
+   提示，还是干脆不管——本方案目前倾向于**不管**（不做强制校验，只做
+   记录），但想确认这是否符合预期。
 3. **非 recurring 的普通一次性 Goal 要不要也套这个目录规范？**
    本方案目前只覆盖"周期性执行"（recurring Goal + CronJob），因为
    "多次执行之间传递进度"这个问题只有周期性场景才存在；一次性 Goal
-   要不要也统一放 `outputs/goals/<goal_id>/cycle_0001/`（哪怕只有一轮）
+   要不要也统一放 `.agent/daemon_run_outputs/goals/<goal_id>/cycle_0001/`（哪怕只有一轮）
    以保持看板"📂 查看产出"入口逻辑一致，还是保持现状（一次性 Goal 不
    套用，agent 自己找地方放）——两种都可以，想听听你的倾向。
 
@@ -263,8 +267,18 @@ render_prompt()`（那是 dedicated-execution cron 专属路径）——需要�
   预期行为变化）。`test_objective_executor_*` 系列在补齐本地测试环境缺失的
   `pydantic`/`uvicorn`/`fastapi` 依赖后，未受本方案改动影响的用例继续通过。
 
+**后续调整**：顶层目录从最初实施时的 `<project_root>/outputs/` 改为
+`<project_root>/.agent/daemon_run_outputs/`（用户反馈原顶层目录名容易和
+项目里已有的 `outputs/` 目录冲突）。改动点：`output_workspace.
+outputs_root()`、`output_path_policy.py` 规则 5 的提示文案、
+`apps/mini_agent_kanban/app.py` 里 `/fs/read` 的 `base` 路径、以及本文档
+与 `docs/goal-cron-binding-guide.md` 里的目录示例，均已同步更新；`.agent/`
+目录本身默认对用户可见（看板"📂 查看产出"折叠区 + `/fs/*` 只读接口），
+不需要额外的可见性补偿。
+
 **未覆盖（开放问题的暂定结论，供后续按需调整）**：
-- `outputs/` 顶层目录名未做成可配置项，直接采用方案原文的默认值。
+- 顶层目录名未做成可配置项，直接固定为 `.agent/daemon_run_outputs/`
+  （评审后从最初的项目根 `outputs/` 调整而来，见开放问题 1 的结论）。
 - `manifest.json` 里的 `artifacts` 不做路径存在性校验。
 - 一次性 Goal 不套用本目录规范。
 - 不做旧数据迁移、不做自动清理/归档策略（与"非目标"一节保持一致）。

@@ -2150,11 +2150,11 @@ def _render_objective_execution_detail(client: AgentClient, execution: dict, key
 
 
 def _render_goal_output_manifests(client: AgentClient, goal_id: str, key_prefix: str = "", limit: int = 5) -> None:
-    """读 outputs/goals/<goal_id>/latest.json 找到最新一轮目录名，倒序展开
+    """读 .agent/daemon_run_outputs/goals/<goal_id>/latest.json 找到最新一轮目录名，倒序展开
     最近 `limit` 轮的 manifest.json，只列文件名 + 备注，不做文件预览/下载。
     目录/文件不存在（这一轮改造上线之前的历史 Goal，或还没跑过一轮）时
     静默不展示，不报错打扰用户。"""
-    base = f"outputs/goals/{goal_id}"
+    base = f".agent/daemon_run_outputs/goals/{goal_id}"
     try:
         latest_resp = client.fs_read(f"{base}/latest.json")
     except Exception:
@@ -2303,10 +2303,10 @@ def _render_goal_card(
                 st.caption(f"`{ts_str}` **{item.get('title', '')}**：{item.get('snippet', '')}")
 
     # [goal_cron_output_directory_convention_plan.md §4] 周期性 Goal 卡片
-    # 追加"📂 查看产出"折叠区：读 outputs/goals/<goal_id>/latest.json + 最近
-    # 几轮 manifest.json，只列文件名，不做预览/下载——避免看板膨胀成文件
-    # 管理器，需要的话用户直接去 outputs/ 目录看（沿用已有的 /fs/* 只读接口，
-    # 不新增专用后端路由）。
+    # 追加"📂 查看产出"折叠区：读 .agent/daemon_run_outputs/goals/<goal_id>/
+    # latest.json + 最近几轮 manifest.json，只列文件名，不做预览/下载——
+    # 避免看板膨胀成文件管理器，需要的话用户直接去 .agent/daemon_run_outputs/
+    # 目录看（沿用已有的 /fs/* 只读接口，不新增专用后端路由）。
     if n.get("level") != "objective" and n.get("recurring"):
         _render_goal_output_manifests(client, n.get("id", ""), key_prefix=key_prefix)
 

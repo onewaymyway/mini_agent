@@ -243,7 +243,7 @@ kanban：Goal 详情卡片、Cron job 卡片各有一个「💬 提意见」折�
 ### 目录结构
 
 ```
-<project_root>/outputs/
+<project_root>/.agent/daemon_run_outputs/
 ├── goals/<goal_id>/
 │   ├── latest.json              # 指针文件：{"latest_dir": "cycle_0003", ...}
 │   ├── cycle_0001/manifest.json
@@ -282,7 +282,7 @@ kanban：Goal 详情卡片、Cron job 卡片各有一个「💬 提意见」折�
   "status": "completed",
   "artifacts": [{"path": "weekly_report.md", "description": ""}],
   "progress_note": "已完成 3/3 步骤",
-  "previous_cycle_dir": "outputs/goals/goal_abcd1234/cycle_0002"
+  "previous_cycle_dir": ".agent/daemon_run_outputs/goals/goal_abcd1234/cycle_0002"
 }
 ```
 
@@ -312,7 +312,7 @@ kanban：Goal 详情卡片、Cron job 卡片各有一个「💬 提意见」折�
 
 Goal 卡片（周期性）新增一个"📂 查看产出"折叠区，通过已有的 `/fs/list`/
 `/fs/read` 只读接口读 `latest.json` + 最近几轮 `manifest.json`，只列文件名
-和备注，不做文件预览/下载——需要的话用户直接去 `outputs/` 目录看。
+和备注，不做文件预览/下载——需要的话用户直接去 `.agent/daemon_run_outputs/` 目录看。
 
 对应模块：`evolution/output_workspace.py`（目录分配 + manifest 读写 +
 prompt 格式化，`cron_job_workspace.py`/`goal_cron_bridge.py`/
