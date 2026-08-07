@@ -3428,21 +3428,6 @@ def render_growth_tab(client: "AgentClient"):
         "忽略的方向短期内不会重复出现。"
     )
 
-    # [next_doc/growth_advisor_design.md] 第 8 节：功能默认开启，首次触达
-    # 必须透明告知——不是静默开启后什么都不说。用一条不打断使用的轻量
-    # st.info 提示替代强制弹窗，展示一次后本次会话不再重复弹出。
-    # 说明：这里用 st.session_state 做"本次会话内只提示一次"，是相对于
-    # 方案原文"本地记录、跨会话不重复"的一个简化（跨会话持久化需要新增
-    # 一个专门的只读+ack API 端点，留给后续迭代，已记录在实施文档里）。
-    if not st.session_state.get("_growth_first_touch_shown"):
-        st.info(
-            "已为你开启「成长顾问」：它会用你已有的对话记忆、目标记录等信息，"
-            "每天悄悄看一眼有没有值得推进的成长方向，生成调研报告放在这里，"
-            "不会额外采集新数据。不想要的话可以在「⚙️ 配置」里随时关闭。",
-            icon="🌱",
-        )
-        st.session_state["_growth_first_touch_shown"] = True
-
     col_a, col_b = st.columns([1, 5])
     with col_a:
         if st.button("🔍 立即为我看看", key="growth_scan_btn"):
@@ -3462,6 +3447,19 @@ def render_growth_tab(client: "AgentClient"):
     if "_error" in data:
         st.warning(data["_error"])
         return
+
+    # [next_doc/growth_advisor_design.md] 第 8 节第 1 条：功能默认开启，
+    # 首次触达必须透明告知。是否展示过跨会话持久化在
+    # growth_advisor_state.json 里（由 `/growth/summary` 一并返回），
+    # 展示后调用 `/growth/first_touch_ack` 落盘、之后不再重复弹出。
+    if not data.get("first_touch_notice_shown"):
+        st.info(
+            "已为你开启「成长顾问」：它会用你已有的对话记忆、目标记录等信息，"
+            "每天悄悄看一眼有没有值得推进的成长方向，生成调研报告放在这里，"
+            "不会额外采集新数据。不想要的话可以在「⚙️ 配置」里随时关闭。",
+            icon="🌱",
+        )
+        client.growth_first_touch_ack()
 
     candidates = data.get("candidates", [])
     reports = {r["report_id"]: r for r in data.get("reports", [])}
@@ -4697,6 +4695,21 @@ def _render_config_field_widget(field: dict, widget_key: str):
         new_v = st.number_input(
             f"{label}（`{json_key}`）", value=float(value or 0.0), key=widget_key,
         )
+    elif ftype == "list":
+        # [next_doc/growth_advisor_design.md] 第 5 节"设置入口"：
+        # excluded_topics 这类字符串列表字段，此前落进 else 分支被当成
+        # 普通文本框（会显示成 "['a', 'b']" 这种 repr，编辑体验很差且容易
+        # 保存出脏数据）。改成一行一项的文本域，空行/首尾空白自动忽略，
+        # 这是通用改动，不止对 growth_advisor 生效——任何 list 类型的配置
+        # 字段都会受益。
+        items = value if isinstance(value, list) else []
+        text_value = "\n".join(str(v) for v in items)
+        new_text = st.text_area(
+            f"{label}（`{json_key}`，每行一项）", value=text_value, key=widget_key, height=100,
+        )
+        new_v = [line.strip() for line in new_text.splitlines() if line.strip()]
+        changed = new_v != items
+        return new_v, changed
     else:  # str / other，一律按文本框处理，None 显示为空字符串
         new_v = st.text_input(f"{label}（`{json_key}`）", value="" if value is None else str(value), key=widget_key)
 

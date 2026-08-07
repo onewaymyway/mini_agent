@@ -1,7 +1,7 @@
 # 成长顾问（Growth Advisor）指南
 
 > 对应方案：`next_doc/growth_advisor_design.md`；实施记录：
-> `next_doc/growth_advisor_implementation_record.md`（P1 + P2 里程碑）。
+> `next_doc/growth_advisor_implementation_record.md`（P1 + P2 + 部分 P3 里程碑）。
 
 ## 1. 这是什么
 
@@ -46,6 +46,7 @@ tab 本身随时可看，不受这条节流限制。
   ✅ 采纳 / 🙈 忽略 / 📄 查看调研报告
 - 指标卡下方：推荐采纳率 + 可展开的"按主题看采纳/忽略排行"（P2 新增）
 - 首次打开该 tab 会有一条一次性提示，说明已开启该功能、用了哪些数据
+  （跨会话持久化，展示过一次后不会再弹）
 
 ### CLI
 
@@ -87,6 +88,9 @@ GET  /v1/growth/reports/{id}                      # 某份调研报告正文
 不会被自动清除，需要的话手动删除 `.agent/growth_backlog.jsonl` /
 `.agent/growth_reports.jsonl` / `.agent/wiki/growth/` 目录。
 
+`excluded_topics` 现在可以直接在看板「⚙️ 配置」tab 的"🌱 成长顾问"分类
+里编辑（一行一个主题关键词），不需要再手改 `agent_config.json`。
+
 ## 5. 数据存放位置
 
 - `.agent/growth_backlog.jsonl` — 候选队列
@@ -105,5 +109,4 @@ GET  /v1/growth/reports/{id}                      # 某份调研报告正文
 - `notification_frequency=weekly_digest` 暂时没有真正的"打包成一条周
   摘要"逻辑，效果上等价于 `daily`；
 - 首次触达提示目前只在单次浏览器会话内生效，不是跨会话持久化；
-- 看板仍是列表 + 按钮，不是真正的拖拽式看板视图（P3 计划项）；
-- `excluded_topics` 黑名单仍只能改配置文件，看板暂无可视化编辑入口。
+- 看板仍是列表 + 按钮，不是真正的拖拽式看板视图（P3 计划项）。

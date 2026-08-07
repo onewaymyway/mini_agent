@@ -616,6 +616,9 @@ class AgentClient:
     def growth_report(self, report_id: str):
         return self._get(f"/growth/reports/{report_id}")
 
+    def growth_first_touch_ack(self):
+        return self._post("/growth/first_touch_ack")
+
     # ── 文件系统（产出物浏览）────────────────────────────────────────
     def fs_list(self, path="."):
         return self._get("/fs/list", params={"path": path})

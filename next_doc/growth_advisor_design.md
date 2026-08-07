@@ -8,10 +8,12 @@
 > **实施状态（2026-08）**：P1 里程碑（信号扫描 → 候选生成 → 调研报告 →
 > 看板/CLI/API 展示）已落地。P2 里程碑（反馈驱动的置信度调权、接入
 > NotificationDispatcher 的推送节流、月度复盘的采纳率与主题排行）也已
-> 落地。细节见 `next_doc/growth_advisor_implementation_record.md` 与
-> 用户指南 `docs/growth-advisor-guide.md`。P3（LLM 增强版信号归纳、拖拽
-> 式看板、`excluded_topics` 的可视化编辑入口）尚未开始，实施记录里有
-> 明确的"未做"清单，后续按方案原文的里程碑编号继续推进即可。
+> 落地。P3 目前完成了两项：首次触达提示的跨会话持久化、`excluded_topics`
+> 黑名单的看板可视化编辑入口（顺带修好了通用配置编辑器对 list 类型字段
+> 的支持）。细节见 `next_doc/growth_advisor_implementation_record.md` 与
+> 用户指南 `docs/growth-advisor-guide.md`。P3 剩余项（LLM 增强版信号归纳、
+> 拖拽式看板视图、`weekly_digest` 的真实周摘要打包）尚未开始，实施记录
+> 里有明确的"未做"清单，后续按方案原文的里程碑编号继续推进即可。
 
 ---
 

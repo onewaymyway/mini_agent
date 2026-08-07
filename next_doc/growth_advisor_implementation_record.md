@@ -192,16 +192,47 @@
   - `TestMonthlyRetrospectiveAttribution`：采纳率计算与主题排行、无
     决策记录时 `acceptance_rate` 为 `None`。
 
-## 未做（按方案标注为 P3，本轮不在范围内）
+## 已完成：P3 里程碑（部分）——首次触达持久化 + 黑名单可视化编辑
+
+### 首次触达提示跨会话持久化
+
+- `growth_advisor.py` 新增 `first_touch_notice_shown(paths)` /
+  `mark_first_touch_notice_shown(paths)`，落盘复用推送节流已经在用的
+  `growth_advisor_state.json`（`paths.growth_state_path`），跟
+  `last_notify_date`/`notify_count_today` 放在同一个文件里，读写各自的
+  key、互不覆盖（`TestFirstTouchNotice.\
+  test_shares_state_file_with_notification_throttle` 覆盖了这一点）。
+- `api/routes.py`：
+  - `GET /growth/summary` 响应新增 `first_touch_notice_shown` 字段；
+  - 新增 `POST /growth/first_touch_ack`，幂等，供看板在展示过提示后
+    调用一次即可，重复调用不会报错也不会重置已记录的展示时间。
+- `apps/mini_agent_kanban/client.py` 新增 `growth_first_touch_ack()`。
+- `apps/mini_agent_kanban/app.py` `render_growth_tab()`：不再用
+  `st.session_state` 做单会话提示，改成读 `/growth/summary` 返回的
+  `first_touch_notice_shown`，没展示过就显示提示并立即调用
+  `growth_first_touch_ack()` 落盘。P2 记录里提到的"已知简化"到这里解决。
+
+### `excluded_topics` 黑名单可视化编辑
+
+- 没有新增专门的 API/端点，而是修好了通用配置编辑器
+  （`kanban/app.py::_render_config_field_widget`）里 `ftype == "list"`
+  分支缺失的问题——此前 list 类型字段（比如 `excluded_topics: list[str]`）
+  会落进 `else` 分支被当成普通字符串处理，编辑体验很差（显示成 Python
+  repr、保存也容易存脏数据）。现在改成一行一项的 `st.text_area`，读写都
+  转换成 `list[str]`，空行自动过滤。
+  这个修复**对所有 list 类型的配置字段生效**，不止 `excluded_topics`——
+  `growth_advisor` 这个 `NestedBlockSpec` 早就通过既有机制接入了通用
+  配置目录（见 P1 记录），本来就不需要为它单独开一个新端点，缺的只是
+  前端这一个类型分支。
+
+## 未做（按方案标注为 P3 剩余项，本轮不在范围内）
 
 - 看板里的拖拽式看板视图（当前是列表 + 按钮，不是真正的多列看板）。
-- `excluded_topics` 黑名单的看板可视化编辑入口（当前只能改配置文件）。
-- `growth_signal_scan` 的 LLM 增强版归纳（P1/P2 均保持零 LLM 成本的规则
-  式实现；调研报告生成阶段已支持可选 LLM 增强，见 P1 记录）。
+- `growth_signal_scan` 的 LLM 增强版归纳（P1/P2/P3 均保持零 LLM 成本的
+  规则式实现；调研报告生成阶段已支持可选 LLM 增强，见 P1 记录）。
 - 月度复盘的跨候选能力地图聚合（当前只有数量统计 + 采纳率 + 主题排行）。
 - `notification_frequency=weekly_digest` 的真实周摘要打包逻辑（见上方
-  "已知简化"）。
-- 首次触达提示的跨会话持久化（见上方"已知简化"）。
+  P2 部分"已知简化"，本轮未改动）。
 
 ## 已知取舍/风险
 

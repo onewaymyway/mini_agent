@@ -5728,7 +5728,8 @@ async def get_decision_profile(request: Request):
 @router.get("/growth/summary")
 async def get_growth_summary(request: Request):
     """GET /v1/growth/summary — 返回当前候选队列（pending 优先）+ 已生成的
-    调研报告列表 + 月度复盘统计，供看板"🌱 成长顾问"tab 一次性渲染。"""
+    调研报告列表 + 月度复盘统计 + 首次触达提示是否已展示过，供看板
+    "🌱 成长顾问"tab 一次性渲染。"""
     _require_owner(request)
     try:
         paths = _get_paths_for_request(request)
@@ -5742,7 +5743,26 @@ async def get_growth_summary(request: Request):
             "candidates": [c.to_dict() for c in candidates],
             "reports": [r.to_dict() for r in reports],
             "retrospective": retro,
+            "first_touch_notice_shown": ga.first_touch_notice_shown(paths),
         }
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/growth/first_touch_ack")
+async def post_growth_first_touch_ack(request: Request):
+    """POST /v1/growth/first_touch_ack — 看板展示过首次触达提示后调用，
+    跨会话持久化"已经提示过"，避免每次打开看板都重新弹一次（方案第 8 节
+    第 1 条：知情权不能省略，但也不能变成每次都打断）。幂等：重复调用
+    不会报错，也不会重置已记录的展示时间。"""
+    _require_owner(request)
+    try:
+        paths = _get_paths_for_request(request)
+        from mini_agent.evolution import growth_advisor as ga
+        ga.mark_first_touch_notice_shown(paths)
+        return {"ok": True}
     except HTTPException:
         raise
     except Exception as e:

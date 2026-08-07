@@ -41,12 +41,24 @@ P2 范围（反馈驱动的置信度调权 + 推送节流接入 + 复盘深度�
       与 `top_accepted_topics` / `top_dismissed_topics`（按候选标题聚合
       的采纳/忽略排行），作为方案第 6 节"推荐命中率"指标的落地。
 
-不在本次范围内（见方案 P3，占位在 next_doc 文档里）：
+P3 范围（首次触达提示跨会话持久化 + 黑名单可视化编辑，本次新增）：
+    - `first_touch_notice_shown()` / `mark_first_touch_notice_shown()`：
+      把方案第 8 节第 1 条"首次触达必须透明告知，但不能每次都打断"落到
+      跨会话持久化，状态复用 `growth_state_path`（与推送节流状态同一个
+      文件，互不覆盖）。看板侧通过 `POST /growth/first_touch_ack` 落盘。
+    - `excluded_topics` 黑名单的看板可视化编辑：不是在这个模块加代码，
+      而是修好了通用配置编辑器（`kanban/app.py` 的
+      `_render_config_field_widget`）里 list 类型字段此前被当纯文本框
+      处理的缺口，改成一行一项的文本域——这个修复对所有 list 类型配置
+      字段生效，不止 `excluded_topics`。
+
+仍不在本次范围内（见方案 P3 剩余项，占位在 next_doc 文档里）：
     - 看板里的拖拽式看板视图（当前仍是列表 + 采纳/忽略两个动作）
-    - `excluded_topics` 黑名单的看板可视化编辑入口（仍只能改配置文件）
     - `notification_frequency=weekly_digest` 档位的真实周摘要打包逻辑
       （当前该档位下与 `daily` 走同一套节流规则，只是没有单独的"打包成
       一条"聚合步骤，视为已知简化，见实施记录）
+    - `growth_signal_scan` 的 LLM 增强版归纳（P1/P2/P3 均保持零 LLM 成本
+      的规则式实现）
 """
 
 from __future__ import annotations
@@ -545,6 +557,27 @@ def _save_growth_state(paths, state: dict) -> None:
     p = paths.growth_state_path
     p.parent.mkdir(parents=True, exist_ok=True)
     p.write_text(json.dumps(state, ensure_ascii=False), encoding="utf-8")
+
+
+# ────────────────────────── P3：首次触达提示的跨会话持久化 ──────────────────────────
+# 方案第 8 节第 1 条："默认开启，但首次触达必须透明告知"。P2 阶段看板只用
+# st.session_state 做了单次会话内的提示（见 P2 实施记录"已知简化"），这里
+# 补上跨会话持久化：状态落盘复用 growth_advisor_state.json，跟推送节流
+# 状态放在同一个文件里（同样是"低频写的小文件"，不需要单独开一个文件）。
+
+
+def first_touch_notice_shown(paths) -> bool:
+    """看板是否已经展示过首次触达提示（跨会话持久化，落盘查询）。"""
+    return bool(_load_growth_state(paths).get("first_touch_notice_shown"))
+
+
+def mark_first_touch_notice_shown(paths) -> None:
+    """记录首次触达提示已经展示过，之后不再重复弹出。"""
+    state = _load_growth_state(paths)
+    if not state.get("first_touch_notice_shown"):
+        state["first_touch_notice_shown"] = True
+        state["first_touch_notice_shown_at"] = time.time()
+        _save_growth_state(paths, state)
 
 
 def _maybe_dispatch_notification(

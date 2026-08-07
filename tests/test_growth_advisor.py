@@ -426,6 +426,41 @@ class TestMonthlyRetrospectiveAttribution(unittest.TestCase):
             self.assertIsNone(summary["acceptance_rate"])
 
 
+class TestFirstTouchNotice(unittest.TestCase):
+    """P3：首次触达提示的跨会话持久化。"""
+
+    def test_not_shown_initially(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = _make_paths(tmp)
+            self.assertFalse(ga.first_touch_notice_shown(paths))
+
+    def test_mark_shown_persists(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = _make_paths(tmp)
+            ga.mark_first_touch_notice_shown(paths)
+            self.assertTrue(ga.first_touch_notice_shown(paths))
+            # 幂等：重复调用不报错，状态保持已展示
+            ga.mark_first_touch_notice_shown(paths)
+            self.assertTrue(ga.first_touch_notice_shown(paths))
+
+    def test_shares_state_file_with_notification_throttle(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = _make_paths(tmp)
+            backlog = ga.GrowthBacklog(paths)
+            cand = backlog.add_or_merge(
+                "数据分析", "理由", [f"e{i}" for i in range(8)],
+                min_evidence_count=3, max_pending=10, dismissed_cooldown_days=30,
+            )
+            report = ga.generate_growth_report(paths, cand)
+            cfg = GrowthAdvisorConfig(notification_min_confidence=0.5)
+            ga._maybe_dispatch_notification(paths, cfg, {cand.candidate_id: cand}, [report])
+            ga.mark_first_touch_notice_shown(paths)
+            # 两类状态同时落在 growth_advisor_state.json 里，互不覆盖
+            state = ga._load_growth_state(paths)
+            self.assertEqual(state.get("notify_count_today"), 1)
+            self.assertTrue(state.get("first_touch_notice_shown"))
+
+
 class TestCronJobsRegistered(unittest.TestCase):
     def test_builtin_jobs_include_growth_advisor(self):
         from mini_agent.evolution.cron_scheduler import _BUILTIN_JOBS
