@@ -37,6 +37,7 @@ from src.reliability.retry import (
 from src.reliability.error import (
     ReliabilityError,
     CDPConnectionLostError,
+    CircuitBreakerOpenError,
     ElementNotFoundError,
     ErrorCategory,
 )
@@ -294,7 +295,7 @@ class TestRetryOperation:
             return "result"
         
         config = RetryConfig(circuit_breaker=True)
-        with pytest.raises(CDPConnectionLostError):
+        with pytest.raises(CircuitBreakerOpenError):
             retry_operation(should_not_run, config=config, circuit_breaker=cb, operation="test")
     
     def test_on_retry_callback(self):
@@ -380,7 +381,7 @@ class TestRetryOperationAsync:
             return "result"
         
         config = RetryConfig(circuit_breaker=True)
-        with pytest.raises(CDPConnectionLostError):
+        with pytest.raises(CircuitBreakerOpenError):
             asyncio.run(retry_operation_async(should_not_run, config=config, circuit_breaker=cb, operation="test"))
 
 
