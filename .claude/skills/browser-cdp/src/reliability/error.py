@@ -255,6 +255,19 @@ class ResourceExhaustedError(ReliabilityError):
         self.resource_type = resource_type
 
 
+class CircuitBreakerOpenError(ReliabilityError):
+    """熔断器开启，暂停执行"""
+
+    def __init__(self, timeout: float, details: Optional[Dict[str, Any]] = None):
+        super().__init__(
+            f"Circuit breaker open, pause {timeout}s before retry",
+            ErrorCategory.RESOURCE,
+            recoverable=True,
+            details=details,
+        )
+        self.timeout = timeout
+
+
 def is_retryable(error: Exception) -> bool:
     """判断错误是否可重试"""
     if isinstance(error, ReliabilityError):

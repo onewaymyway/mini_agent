@@ -147,10 +147,25 @@ class ErrorMiddleware:
         # 1. @middleware.wrap_sync(operation="...", ...)  -> func=None
         # 2. middleware.wrap_sync(func, "...", ...)       -> func is callable
         
+        # OperationType → RetryConfig.OPERATION_DEFAULTS 键映射
+        _OP_KEY_MAP = {
+            OperationType.NAVIGATION: "navigation",
+            OperationType.SCREENSHOT: "screenshot",
+            OperationType.CLICK: "input_click",
+            OperationType.INPUT: "input_click",
+            OperationType.WAIT: "element_find",
+            OperationType.EXTRACT: "element_find",
+            OperationType.SCROLL: "element_find",
+            OperationType.TAB: "cdp_command",
+            OperationType.CDP_COMMAND: "cdp_command",
+            OperationType.UNKNOWN: "cdp_command",
+        }
+
         def _wrap(func):
             _max_retries = max_retries or self.default_max_retries
-            config = RetryConfig.for_operation(operation_type.value, max_retries=_max_retries)
-            
+            op_key = _OP_KEY_MAP.get(operation_type, "cdp_command")
+            config = RetryConfig.for_operation(op_key, max_retries=_max_retries)
+
             @functools.wraps(func)
             def wrapper(*args, **kwargs):
                 context = ErrorContext(
@@ -159,9 +174,9 @@ class ErrorMiddleware:
                     attempt=1,
                     max_attempts=_max_retries,
                 )
-                
+
                 cb = self.get_circuit_breaker(operation) if self.enable_circuit_breaker else None
-                
+
                 try:
                     result = retry_operation(
                         func,
@@ -229,8 +244,9 @@ class ErrorMiddleware:
         
         def _wrap(func):
             _max_retries = max_retries or self.default_max_retries
-            config = RetryConfig.for_operation(operation_type.value, max_retries=_max_retries)
-            
+            op_key = _OP_KEY_MAP.get(operation_type, "cdp_command")
+            config = RetryConfig.for_operation(op_key, max_retries=_max_retries)
+
             @functools.wraps(func)
             async def wrapper(*args, **kwargs):
                 context = ErrorContext(
@@ -239,9 +255,9 @@ class ErrorMiddleware:
                     attempt=1,
                     max_attempts=_max_retries,
                 )
-                
+
                 cb = self.get_circuit_breaker(operation) if self.enable_circuit_breaker else None
-                
+
                 try:
                     result = await retry_operation_async(
                         func,
@@ -259,9 +275,9 @@ class ErrorMiddleware:
                     context.category = categorize_error(e)
                     context.recoverable = e.recoverable
                     context.elapsed = time.time() - context.timestamp
-                    
+
                     logger.warning(f"操作失败: {context}")
-                    
+
                     # 触发告警（不可恢复错误记录日志）
                     if not e.recoverable:
                         logger.error(f"不可恢复错误，触发告警: {context}")

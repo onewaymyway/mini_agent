@@ -125,7 +125,7 @@ class RetryConfig:
         self.backoff_strategy = backoff_strategy
         self.base_delay = base_delay
         self.max_delay = max_delay
-        self.retryable_exceptions = retryable_exceptions or (ReliabilityError, CDPConnectionLostError, ElementNotFoundError)
+        self.retryable_exceptions = retryable_exceptions or (ReliabilityError,)
         self.circuit_breaker = circuit_breaker
         self.circuit_breaker_threshold = circuit_breaker_threshold
         self.circuit_breaker_recovery = circuit_breaker_recovery
@@ -281,11 +281,12 @@ def retry_operation(
         # 检查熔断器
         if cb and not cb.can_execute():
             remaining = cb.recovery_timeout - (time.time() - cb.last_failure_time)
-            raise CDPConnectionLostError(
+            from .error import CircuitBreakerOpenError
+            raise CircuitBreakerOpenError(
+                timeout=remaining,
                 details={
                     "operation": operation,
                     "circuit_breaker_state": cb.get_status(),
-                    "remaining_retry_seconds": round(remaining, 1),
                 }
             )
 
@@ -363,11 +364,12 @@ async def retry_operation_async(
         # 检查熔断器
         if cb and not cb.can_execute():
             remaining = cb.recovery_timeout - (time.time() - cb.last_failure_time)
-            raise CDPConnectionLostError(
+            from .error import CircuitBreakerOpenError
+            raise CircuitBreakerOpenError(
+                timeout=remaining,
                 details={
                     "operation": operation,
                     "circuit_breaker_state": cb.get_status(),
-                    "remaining_retry_seconds": round(remaining, 1),
                 }
             )
 

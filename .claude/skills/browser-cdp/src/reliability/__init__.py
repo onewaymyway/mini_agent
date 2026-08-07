@@ -78,17 +78,41 @@ from .failover_manager import (
     reset_failover_manager,
 )
 from .session_recovery import (
-    SessionRecoveryManager,
-    RecoveryStrategy,
-    get_session_recovery_manager,
-    reset_session_recovery_manager,
+    SessionRecovery,
+    get_session_recovery,
+    reset_session_recovery,
 )
 from .exception_handler import (
     ExceptionHandler,
     get_exception_handler,
     reset_exception_handler,
     with_exception_handling,
-    with_exception_handling_async,
+    async_with_exception_handling,
+)
+from .enhanced_retry import (
+    RetryStats,
+    RetryConfig as EnhancedRetryConfig,
+    CircuitBreaker as EnhancedCircuitBreaker,
+    retry_operation as enhanced_retry_operation,
+    retry_operation_async as enhanced_retry_operation_async,
+    with_retry as enhanced_with_retry,
+    with_retry_async as enhanced_with_retry_async,
+    get_retry_config as get_enhanced_retry_config,
+    get_config_for_error,
+)
+from .enhanced_timeout import (
+    EnhancedTimeoutConfig,
+    EnhancedTimeoutManager,
+    get_enhanced_timeout_manager,
+    with_enhanced_timeout,
+    async_with_enhanced_timeout,
+)
+from .enhanced_exception_handler import (
+    EnhancedExceptionHandler,
+    get_enhanced_exception_handler,
+    reset_enhanced_exception_handler,
+    with_enhanced_exception_handling,
+    async_with_enhanced_exception_handling,
 )
 
 __all__ = [
@@ -176,16 +200,36 @@ __all__ = [
     "get_failover_manager",
     "reset_failover_manager",
     # 会话恢复
-    "SessionRecoveryManager",
-    "RecoveryStrategy",
-    "get_session_recovery_manager",
-    "reset_session_recovery_manager",
+    "SessionRecovery",
+    "get_session_recovery",
+    "reset_session_recovery",
     # 异常处理
     "ExceptionHandler",
     "get_exception_handler",
     "reset_exception_handler",
     "with_exception_handling",
-    "with_exception_handling_async",
+    "async_with_exception_handling",
+    # 增强重试
+    "RetryStats",
+    "EnhancedRetryConfig",
+    "EnhancedCircuitBreaker",
+    "enhanced_retry_operation",
+    "enhanced_retry_operation_async",
+    "enhanced_with_retry",
+    "enhanced_with_retry_async",
+    "get_enhanced_retry_config",
+    # 增强超时
+    "EnhancedTimeoutConfig",
+    "EnhancedTimeoutManager",
+    "get_enhanced_timeout_manager",
+    "with_enhanced_timeout",
+    "async_with_enhanced_timeout",
+    # 增强异常处理
+    "EnhancedExceptionHandler",
+    "get_enhanced_exception_handler",
+    "reset_enhanced_exception_handler",
+    "with_enhanced_exception_handling",
+    "async_with_enhanced_exception_handling",
 ]
 
 __version__ = "1.2.0"

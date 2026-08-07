@@ -154,8 +154,9 @@ class RetryHandler:
         for attempt in range(1, self.config.max_attempts + 1):
             # 检查熔断器
             if not self.circuit_breaker.can_execute():
-                raise Exception(
-                    f"熔断器开启，暂停 {self.config.circuit_breaker_timeout}s 后重试"
+                from ..reliability.error import CircuitBreakerOpenError
+                raise CircuitBreakerOpenError(
+                    timeout=self.config.circuit_breaker_timeout
                 )
             
             try:

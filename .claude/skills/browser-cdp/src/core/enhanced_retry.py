@@ -166,10 +166,7 @@ class AdaptiveRetryHandler:
         """切换到下一个代理（增强版）"""
         if self.proxy_pool:
             try:
-                import asyncio
-                proxy = asyncio.get_event_loop().run_until_complete(
-                    self.proxy_pool.get_next_proxy()
-                )
+                proxy = self.proxy_pool.get_next_proxy()
                 if proxy:
                     logger.info(f"切换到代理: {proxy.url} (健康度: {proxy.health_score:.2f})")
                     return True
@@ -196,7 +193,7 @@ class AdaptiveRetryHandler:
     def _record_success(self):
         """记录成功"""
         self._success_count += 1
-        self._failure_count = max(0, self._failure_count - 1)
+        self._failure_count = 0
         self._retry_history.append({
             "timestamp": time.time(),
             "success": True,
@@ -259,10 +256,11 @@ class AdaptiveRetryHandler:
                 )
                 return result
 
-            except asyncio.TimeoutError:
+            except asyncio.TimeoutError as e:
                 last_exception = asyncio.TimeoutError(
                     f"[{operation_name}] 超时 ({timeout}s)"
                 )
+                last_exception.__cause__ = e
                 error_category = ErrorCategory.TIMEOUT
 
             except Exception as e:
@@ -274,7 +272,7 @@ class AdaptiveRetryHandler:
 
             logger.warning(
                 f"[{operation_name}] 执行失败 (attempt {attempt}/{self._adaptive_config['max_attempts']}), "
-                f"原因: {error_category.value}, 错误: {str(e)[:100]}"
+                f"原因: {error_category.value}, 错误: {str(last_exception)[:100]}"
             )
 
             # 判断是否应该重试
