@@ -12,8 +12,9 @@
 > 聚合、`growth_signal_scan` 的 opt-in LLM 增强归纳、看板拖拽式视图）
 > 均已落地，方案里三个里程碑全部完成。细节见
 > `next_doc/growth_advisor_implementation_record.md` 与用户指南
-> `docs/growth-advisor-guide.md`；后续演进建议先收集真实使用反馈，而不
-> 是接着堆功能。
+> `docs/growth-advisor-guide.md`；后续演进方向已整理成
+> `next_doc/growth_advisor_improvement_plan_v2.md`（P4 里程碑草案：看板
+> 展示用户 profile、关键词表持久化到 profile 等），尚未开始实施。
 
 ---
 
