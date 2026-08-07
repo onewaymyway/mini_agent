@@ -60,6 +60,21 @@ class OperationType(Enum):
     UNKNOWN = "unknown"
 
 
+# OperationType → RetryConfig.OPERATION_DEFAULTS 键映射
+_OP_KEY_MAP = {
+    OperationType.NAVIGATION: "navigation",
+    OperationType.SCREENSHOT: "screenshot",
+    OperationType.CLICK: "input_click",
+    OperationType.INPUT: "input_click",
+    OperationType.WAIT: "element_find",
+    OperationType.EXTRACT: "element_find",
+    OperationType.SCROLL: "element_find",
+    OperationType.TAB: "cdp_command",
+    OperationType.CDP_COMMAND: "cdp_command",
+    OperationType.UNKNOWN: "cdp_command",
+}
+
+
 @dataclass
 class ErrorContext:
     """错误上下文"""
@@ -147,20 +162,6 @@ class ErrorMiddleware:
         # 1. @middleware.wrap_sync(operation="...", ...)  -> func=None
         # 2. middleware.wrap_sync(func, "...", ...)       -> func is callable
         
-        # OperationType → RetryConfig.OPERATION_DEFAULTS 键映射
-        _OP_KEY_MAP = {
-            OperationType.NAVIGATION: "navigation",
-            OperationType.SCREENSHOT: "screenshot",
-            OperationType.CLICK: "input_click",
-            OperationType.INPUT: "input_click",
-            OperationType.WAIT: "element_find",
-            OperationType.EXTRACT: "element_find",
-            OperationType.SCROLL: "element_find",
-            OperationType.TAB: "cdp_command",
-            OperationType.CDP_COMMAND: "cdp_command",
-            OperationType.UNKNOWN: "cdp_command",
-        }
-
         def _wrap(func):
             _max_retries = max_retries or self.default_max_retries
             op_key = _OP_KEY_MAP.get(operation_type, "cdp_command")

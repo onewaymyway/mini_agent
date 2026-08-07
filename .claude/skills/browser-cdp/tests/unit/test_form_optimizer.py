@@ -256,22 +256,22 @@ class TestFormOptimizer:
         "测试完整表单填写流程。"
         mock_session.eval_js.side_effect = [
             [
-                {selector: input[name='username'], type: text, name: username},
-                {selector: input[name='email'], type: email, name: email},
+                {"selector": "input[name='username']", "type": "text", "name": "username"},
+                {"selector": "input[name='email']", "type": "email", "name": "email"},
             ],
-            text,
-            {filled: True, currentValue: john},
-            email,
-            {filled: True, currentValue: john@example.com},
-            {submitted: True, type: button},
-            {valid: True, message: ", missingRequired: []}
+            "text",
+            {"filled": True, "currentValue": "john"},
+            "email",
+            {"filled": True, "currentValue": "john@example.com"},
+            {"submitted": True, "type": "button"},
+            {"valid": True, "message": "", "missingRequired": []}
         ]
         form_def = {
-            fields: [
-                {selector: input[name='username'], value: john},
-                {selector: input[name='email'], value: john@example.com}
+            "fields": [
+                {"selector": "input[name='username']", "value": "john"},
+                {"selector": "input[name='email']", "value": "john@example.com"}
             ],
-            submit: {selector: button[type='submit']},
+            "submit": {"selector": "button[type='submit']"},
         }
         result = optimizer.fill_form(form_def)
         assert result.success is True
@@ -285,20 +285,23 @@ class TestFormOptimizer:
         mock_session.eval_js.side_effect = [
             # detect_form_fields
             [],
-            # fill_field - 元素未找到
+            # fill_field - 元素未找到 (可能多次调用)
             {"error": "element not found"},
+            {"error": "element not found"},
+            # submit_form (default)
+            {"submitted": True, "type": "form"},
             # validate_form
             {"valid": False, "message": "请填写此字段", "missingRequired": ["username"]}
         ]
-        
+
         form_def = {
             "fields": [
                 {"selector": "input[name='username']", "value": "john"}
             ]
         }
-        
+
         result = optimizer.fill_form(form_def)
-        
+
         assert result.success is False
         assert len(result.errors) > 0
     

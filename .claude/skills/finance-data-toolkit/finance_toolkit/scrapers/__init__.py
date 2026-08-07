@@ -56,6 +56,21 @@ try:
 except ImportError:
     MacroScraper = None
 
+try:
+    from .forex_scraper import ForexScraper
+except ImportError:
+    ForexScraper = None
+
+try:
+    from .crypto_scraper import CryptoScraper
+except ImportError:
+    CryptoScraper = None
+
+try:
+    from .etf_scraper import ETFScraper
+except ImportError:
+    ETFScraper = None
+
 __all__ = []
 if AKShareScraper:
     __all__.append('AKShareScraper')
@@ -77,3 +92,9 @@ if IndexScraper:
     __all__.append('IndexScraper')
 if MacroScraper:
     __all__.append('MacroScraper')
+if ForexScraper:
+    __all__.append('ForexScraper')
+if CryptoScraper:
+    __all__.append('CryptoScraper')
+if ETFScraper:
+    __all__.append('ETFScraper')

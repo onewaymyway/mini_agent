@@ -312,12 +312,25 @@ class TestErrorRules:
         rule = ERROR_RULES[ErrorCategory.PERMISSION]
         assert rule["recoverable"] is False
         assert "停止" in rule["action"]
-    
+
+    def test_auth_rules(self):
+        """测试 AUTH 规则"""
+        rule = ERROR_RULES[ErrorCategory.AUTH]
+        # AUTH 类别包含可重试（429）和不可重试（401/403）两种情况
+        assert rule["recoverable"] is True
+        assert "重试" in rule["action"] or "认证" in rule["action"]
+
+    def test_resource_rules(self):
+        """测试 RESOURCE 规则"""
+        rule = ERROR_RULES[ErrorCategory.RESOURCE]
+        assert rule["recoverable"] is False
+        assert "人工介入" in rule["action"]
+
     def test_unknown_rules(self):
         """测试 UNKNOWN 规则"""
         rule = ERROR_RULES[ErrorCategory.UNKNOWN]
-        assert rule["recoverable"] == "视情况"
-        assert "重试" in rule["action"]
+        assert rule["recoverable"] is False
+        assert "人工介入" in rule["action"]
 
 
 if __name__ == "__main__":

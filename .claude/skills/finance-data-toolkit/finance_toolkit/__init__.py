@@ -87,6 +87,10 @@ try:
         fetch_guba_user_profile,
         sync_fetch_guba_posts,
         sync_fetch_guba_hot_posts,
+        fetch_forex_quote,
+        fetch_crypto_quote,
+        fetch_etf_quote,
+        ExtendedDataFetcher,
     )
 except ImportError:
     pass
@@ -267,6 +271,12 @@ __all__ = [
     'fetch_guba_user_profile',
     'sync_fetch_guba_posts',
     'sync_fetch_guba_hot_posts',
+    
+    # 扩展数据获取（外汇/加密货币/ETF）
+    'fetch_forex_quote',
+    'fetch_crypto_quote',
+    'fetch_etf_quote',
+    'ExtendedDataFetcher',
     
     # 新闻抓取
     'NewsSource',

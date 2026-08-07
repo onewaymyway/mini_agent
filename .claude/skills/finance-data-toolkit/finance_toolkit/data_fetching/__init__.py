@@ -45,6 +45,18 @@ from .guba_scraper import (
     sync_fetch_guba_hot_posts,
 )
 
+# 扩展数据获取
+from .extended_fetchers import (
+    fetch_forex_quote,
+    fetch_cny_rates,
+    fetch_crypto_quote,
+    fetch_crypto_rank,
+    fetch_etf_quote,
+    fetch_etf_kline,
+    ExtendedDataFetcher,
+    extended_fetcher,
+)
+
 __all__ = [
     # 同步函数
     'fetch_realtime_quote',
@@ -80,4 +92,14 @@ __all__ = [
     'fetch_guba_user_profile',
     'sync_fetch_guba_posts',
     'sync_fetch_guba_hot_posts',
+    
+    # 扩展数据获取
+    'fetch_forex_quote',
+    'fetch_cny_rates',
+    'fetch_crypto_quote',
+    'fetch_crypto_rank',
+    'fetch_etf_quote',
+    'fetch_etf_kline',
+    'ExtendedDataFetcher',
+    'extended_fetcher',
 ]

@@ -61,21 +61,22 @@ class AlertAggregator:
     def add_alert(self, alert: Alert):
         """添加告警并检查是否需要聚合"""
         key = f"{alert.metric_name}:{alert.severity.value}"
-        
-        # 检查抑制规则
+
+        # 清理过期告警
+        self._cleanup_alerts(key)
+
+        # 添加新告警
+        self._alerts[key].append(alert)
+
+        # 检查是否需要发送聚合告警（先聚合，后抑制）
+        if len(self._alerts[key]) >= 3:
+            self._send_aggregated_alert(key, self._alerts[key])
+            return
+
+        # 聚合后检查抑制规则
         if self._is_suppressed(key, alert):
             logger.debug(f"Alert suppressed: {key}")
             return
-        
-        # 清理过期告警
-        self._cleanup_alerts(key)
-        
-        # 添加新告警
-        self._alerts[key].append(alert)
-        
-        # 检查是否需要发送聚合告警
-        if len(self._alerts[key]) >= 3:
-            self._send_aggregated_alert(key, self._alerts[key])
     
     def _is_suppressed(self, key: str, alert: Alert) -> bool:
         """检查告警是否被抑制"""

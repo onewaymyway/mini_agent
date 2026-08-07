@@ -126,6 +126,15 @@ class SessionRecovery:
         logger.info(f"Session cleared from {self.session_dir}")
 
 
+# 别名，兼容导入
+SessionRecoveryManager = SessionRecovery
+
+
+class RecoveryStrategy:
+    """恢复策略基类"""
+    pass
+
+
 _global_session_recovery: Optional[SessionRecovery] = None
 
 

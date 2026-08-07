@@ -87,7 +87,7 @@ class FundScraper(BaseScraper):
                     'type': 'lsjz',
                     'code': symbol,
                     'page': '1',
-                    'sdate': (kwargs.get('start') or datetime.now() - __import__('datetime').timedelta(days=30)).strftime('%Y-%m-%d'),
+                    'sdate': (kwargs.get('start') or datetime.now() - timedelta(days=30)).strftime('%Y-%m-%d'),
                     'edate': (kwargs.get('end') or datetime.now()).strftime('%Y-%m-%d'),
                     'per': '20'
                 },

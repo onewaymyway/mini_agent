@@ -9,6 +9,7 @@
 import json
 import logging
 import os
+import time
 from abc import ABC, abstractmethod
 from datetime import datetime
 from enum import Enum
@@ -176,16 +177,11 @@ class FailoverManager:
     
     def get_next_site(self) -> str:
         """获取下一个可用网站"""
-        # 检查当前站点健康状态
-        current_site = self.backups[self.current_index - 1] if self.current_index > 0 else self.primary
-        if self._check_health(current_site):
-            return current_site
-        
         # 尝试备用站点
         for i in range(len(self.backups)):
             idx = (self.current_index + i) % len(self.backups)
             site = self.backups[idx]
-            if self._check_health(site):
+            if site not in self.failed_sites:
                 self.current_index = idx + 1
                 logger.info(f"Failover to backup site: {site}")
                 return site

@@ -60,6 +60,10 @@ resources:
     path: references/free-data-sources.md
     description: 免登录数据源详解（腾讯财经、网易财经、百度股市通、中金在线、和讯网、凤凰财经、东方财富板块、新浪港股/美股/期货/外汇）
     triggers: 免登录, 腾讯财经, 网易财经, 百度股市通, 中金在线, 和讯网, 凤凰财经, 港股, 美股, 期货, 外汇, 板块行情
+  - id: data-sources-research
+    path: references/data-sources-research.md
+    description: 金融数据源调研与接入方案（基金、债券、期货、指数、宏观经济数据源详解）
+    triggers: 基金数据, 债券数据, 期货数据, 指数数据, 宏观经济, 数据源调研
   - id: news-module
     path: references/news-module.md
     description: 财经新闻抓取模块（多源聚合、实时监控、情感分析、关键词过滤）
