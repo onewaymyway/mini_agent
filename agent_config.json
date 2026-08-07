@@ -88,7 +88,7 @@
     "judge_yes_mode": true,
     "max_rounds": 20,
     "max_total_compacts": 500,
-    "spec_builder_agent_max_turns":30,
+    "spec_builder_agent_max_turns": 30,
     "consecutive_same_feedback_limit": 3,
     "same_feedback_similarity_threshold": 0.9,
     "persist_state": true,
@@ -162,12 +162,12 @@
     "condition_static_check_enabled": true,
     "dry_run_preview_on_generate": true,
     "git_hint_enabled": true,
-    "python_step_enabled":true
+    "python_step_enabled": true
   },
   "autonomy": {
     "max_concurrent_objectives_per_goal": 1,
     "goal_scheduling_strategy": "fair_round_robin",
-    "guardian_mode_enabled":true,
+    "guardian_mode_enabled": true,
     "objective_isolated_context_enabled": true,
     "objective_isolated_inner_max_turns": 50,
     "objective_isolated_max_workers": 1,
@@ -177,9 +177,12 @@
     "fairness_yield_after_steps": 3,
     "fairness_yield_after_seconds": 900.0
   },
-  "scheduler":{
-    "unified_arbitration_enabled":true,
-    "unified_dispatch_enabled":true,
+  "scheduler": {
+    "unified_arbitration_enabled": true,
+    "unified_dispatch_enabled": true,
     "max_total_concurrent_tasks": 2
+  },
+  "growth_advisor": {
+    "llm_signal_augment_enabled": true
   }
 }
