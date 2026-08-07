@@ -5791,7 +5791,12 @@ async def post_growth_scan(request: Request):
         mgr = UserProfileManager(paths)
         profile = mgr.load()
         store = MemoryStore(paths)
-        result = ga.run_daily_cycle(paths, cfg, profile, store)
+        llm_helper = None
+        if self_agent is not None and getattr(cfg, "llm_signal_augment_enabled", False):
+            helper = getattr(self_agent, "llm_helper", None)
+            if helper is not None:
+                llm_helper = lambda prompt, _h=helper: _h.ask(prompt)
+        result = ga.run_daily_cycle(paths, cfg, profile, store, llm_helper=llm_helper)
         mgr.save()
         return result
     except HTTPException:

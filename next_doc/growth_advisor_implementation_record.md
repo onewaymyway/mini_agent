@@ -293,11 +293,54 @@
   单主题聚合当前状态、"忽略→冷却期后重新生成→再次决策"跨记录累计历史
   次数与峰值置信度、`monthly_retrospective_summary` 正确包含 `topic_map`。
 
+## 已完成：P3 里程碑（新增，第四项）——`growth_signal_scan` 的 LLM 增强版归纳
+
+- `growth_advisor.py` 新增 `_llm_augment_topics()`：
+  - 只处理规则式关键词表命中不到的近期记忆条目，未命中条目数低于
+    `_LLM_AUGMENT_MIN_UNMATCHED`（3）时直接跳过、不调用 LLM（大概率凑
+    不满 `min_evidence_count`，调了也白调）；送 LLM 的条目数上限
+    `_LLM_AUGMENT_MAX_ENTRIES`（40），避免 prompt 随记忆量无限增长；
+  - LLM 输出要求是 JSON 数组 `[{"topic": ..., "entry_ids": [...]}]`，做了
+    三层容错：先直接 `json.loads`，失败则用正则从文本里摘出 `[...]` 再
+    解析一次，仍失败则整体丢弃、返回原规则结果；`entry_ids` 强制过滤成
+    调用方提供的合法子集（LLM 编出来的 id 会被丢弃，不会污染 evidence_
+    refs）；新主题按 `normalize_title_key` 与规则表已有主题去重合并
+    （同名/同义主题不会产生重复 key）。
+  - `growth_signal_scan()` 新增可选 `llm_helper` 形参（约定同
+    `generate_growth_report`），传入时在规则扫描结束后调用一次
+    `_llm_augment_topics()`，全程 try/except + `log_exception(where=
+    "mini_agent.growth_advisor.growth_signal_scan_llm_augment")` 兜底，
+    LLM 侧任何异常都不会影响规则式扫描已经拿到的结果。
+- `config/models.py` 新增 `GrowthAdvisorConfig.llm_signal_augment_enabled`
+  （默认 `False`，opt-in）——`run_daily_cycle()` 新增 `llm_helper` 形参，
+  但只有这个开关为 `True` 时才会真正把它转发给 `growth_signal_scan()`；
+  即使调用方（有 agent 上下文）总是能传入 `llm_helper`，默认路径仍然
+  保持纯规则式、零 LLM 成本，不因为"恰好有"就默认用上。
+- CLI `growth_cmd.py` 新增 `_get_llm_helper(agent)`：把 `agent.llm_helper`
+  （`LLMHelper` 实例）包成 `growth_advisor` 期望的 `Callable[[str], str]`
+  闭包（`lambda prompt: helper.ask(prompt)`），`/growth scan` 与 `/growth
+  report` 都改用它。**顺带修了一个既有 bug**：`/growth report` 此前直接
+  把 `agent.llm_helper`（不可调用的对象）当函数传给
+  `generate_growth_report`，如果候选还没有报告、需要现场生成，一旦真的
+  走到 `llm_helper(prompt)` 这一步会抛 `TypeError`，被 `generate_growth_
+  report` 内部的 try/except 吞掉后静默回退模板——功能上从不报错，但
+  "LLM 优先起草"这条路径实际上从未真正生效过，直到本次修复。
+  `api/routes.py::post_growth_scan` 同步接入等价的闭包包装逻辑（仅在
+  `cfg.llm_signal_augment_enabled=True` 且能拿到 `self_agent.llm_helper`
+  时才构造，其余情况传 `None`）。
+- `docs/growth-advisor-guide.md` 第 4 节配置表、第 6 节"当前局限"同步
+  更新。
+- `tests/test_growth_advisor.py` 新增 `TestLlmSignalAugment`（8 个用例，
+  全部通过，加上此前 38 个，全文件合计 46 个）：无 `llm_helper` 时保持
+  纯规则结果、传入合法 LLM 输出后新增主题且规则结果保留、LLM 编造的
+  entry_id 被过滤、LLM 输出非 JSON 时优雅回退、LLM 调用抛异常不影响主
+  流程、未命中条目太少时不触发 LLM 调用、新主题标题与规则表已有主题
+  归一化后合并不产生重复 key、`run_daily_cycle` 按配置开关正确门控
+  是否真正调用 LLM。
+
 ## 未做（按方案标注为 P3 剩余项，本轮不在范围内）
 
 - 看板里的拖拽式看板视图（当前是列表 + 按钮，不是真正的多列看板）。
-- `growth_signal_scan` 的 LLM 增强版归纳（P1/P2/P3 均保持零 LLM 成本的
-  规则式实现；调研报告生成阶段已支持可选 LLM 增强，见 P1 记录）。
 
 ## 已知取舍/风险
 

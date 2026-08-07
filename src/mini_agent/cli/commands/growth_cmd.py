@@ -58,6 +58,21 @@ def _get_memory_store(paths):
         return None
 
 
+def _get_llm_helper(agent):
+    """把 `agent.llm_helper`（`LLMHelper` 实例，见 `llm/service.py`）包成
+    `growth_advisor` 期望的 `Callable[[str], str]` 约定（`llm_helper(prompt)
+    -> str`）——`LLMHelper` 本身不可直接调用，只暴露 `.ask(prompt)` 等
+    方法，这里统一收敛成一个闭包，任何一步拿不到就返回 None（各调用点
+    的 LLM 增强/生成本来就要求"拿不到就走无 LLM 的默认路径"）。
+    """
+    if agent is None:
+        return None
+    helper = getattr(agent, "llm_helper", None)
+    if helper is None:
+        return None
+    return lambda prompt: helper.ask(prompt)
+
+
 def handle_growth_cmd(args: list[str], agent=None) -> None:
     paths = _get_paths(agent)
     if paths is None:
@@ -75,7 +90,7 @@ def handle_growth_cmd(args: list[str], agent=None) -> None:
             return
         mgr, profile = _get_profile(paths)
         store = _get_memory_store(paths)
-        result = ga.run_daily_cycle(paths, cfg, profile, store)
+        result = ga.run_daily_cycle(paths, cfg, profile, store, llm_helper=_get_llm_helper(agent))
         mgr.save()
         if result.get("skipped"):
             R.print_info(f"跳过：{result.get('reason')}")
@@ -129,8 +144,7 @@ def handle_growth_cmd(args: list[str], agent=None) -> None:
             return
         if not cand.report_id:
             cfg = _get_cfg(agent)
-            llm_helper = getattr(agent, "llm_helper", None) if agent else None
-            report = ga.generate_growth_report(paths, cand, llm_helper=llm_helper)
+            report = ga.generate_growth_report(paths, cand, llm_helper=_get_llm_helper(agent))
             R.print_info(f"已生成调研报告：{report.body_path}")
         else:
             reports = {r.report_id: r for r in ga.list_reports(paths)}

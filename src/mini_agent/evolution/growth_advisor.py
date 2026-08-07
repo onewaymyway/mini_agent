@@ -71,10 +71,31 @@ P3 范围（本次新增，第二项）——月度复盘的跨候选能力地�
       新增 `topic_map` 字段直接复用该函数，`GET /growth/summary` 已经
       透传整个 `retrospective`，未新增 API 端点。
 
+P3 范围（本次新增，第四项）——`growth_signal_scan` 的 LLM 增强版归纳
+（默认关闭，opt-in）：
+    - `_llm_augment_topics()`：只对关键词表命中不到的近期记忆条目（数量
+      不足 `_LLM_AUGMENT_MIN_UNMATCHED` 时直接跳过，避免为了归纳专门调
+      一次 LLM 却大概率凑不满候选证据阈值）做一次 LLM 归纳，把发现的新
+      主题与规则命中结果按 `normalize_title_key` 去重合并；entry_ids 必须
+      是调用方提供的合法子集，任何解析失败/字段缺失都直接丢弃对应结果，
+      不让异常向上传播、也不影响规则式扫描已经拿到的结果。
+    - `growth_signal_scan()` / `run_daily_cycle()` 新增可选 `llm_helper`
+      形参（约定同 `generate_growth_report`），但只有
+      `GrowthAdvisorConfig.llm_signal_augment_enabled=True` 时
+      `run_daily_cycle()` 才会真正把它传给扫描函数——即使调用方处于有
+      agent 上下文的场景（因而总能拿到 `llm_helper`），默认仍然按纯规则
+      式运行，保持"`enabled=True` 默认开启不产生额外 LLM 成本"的底线不变。
+    - CLI `/growth scan`/`/growth report`、API `POST /growth/scan` 新增/
+      修正了把 `agent.llm_helper`（`LLMHelper` 实例，不可直接调用）包成
+      `Callable[[str], str]` 闭包再传下去的逻辑——顺带修掉了 `/growth
+      report` 里此前直接把 `LLMHelper` 实例当函数传给 `generate_growth_
+      report` 的既有 bug（`LLMHelper` 没有 `__call__`，此前这条路径一旦
+      真的没有已生成报告、需要现场生成，会在调用 `llm_helper(prompt)`
+      时抛 `TypeError`，被 `generate_growth_report` 内部的 try/except 吞掉
+      后静默回退模板——功能上不报错，但"LLM 优先起草"从未真正生效过）。
+
 仍不在本次范围内（见方案 P3 剩余项，占位在 next_doc 文档里）：
     - 看板里的拖拽式看板视图（当前仍是列表 + 采纳/忽略两个动作）
-    - `growth_signal_scan` 的 LLM 增强版归纳（P1/P2/P3 均保持零 LLM 成本
-      的规则式实现）
 """
 
 from __future__ import annotations
@@ -401,7 +422,11 @@ _TOPIC_KEYWORDS: dict[str, list[str]] = {
 }
 
 
-def growth_signal_scan(paths, profile, memory_store, *, window_days: int = SIGNAL_SCAN_WINDOW_DAYS) -> dict[str, list[str]]:
+def growth_signal_scan(
+    paths, profile, memory_store, *,
+    window_days: int = SIGNAL_SCAN_WINDOW_DAYS,
+    llm_helper: Optional[Callable[[str], str]] = None,
+) -> dict[str, list[str]]:
     """扫描最近 window_days 内的 memory entries，按 `_TOPIC_KEYWORDS` 做
     命中统计，把 {主题: [entry_id...]} 写入
     `profile.derived["growth_focus_areas"]`（结构化，供 candidate_derive
@@ -409,14 +434,21 @@ def growth_signal_scan(paths, profile, memory_store, *, window_days: int = SIGNA
 
     这是规则式实现（P1），不依赖 LLM——保证 `enabled=True` 默认开启时
     不会给每个用户都额外产生 LLM 调用成本。
+
+    P3：如果调用方传入 `llm_helper`（签名 `llm_helper(prompt: str) ->
+    str`，同 `generate_growth_report` 的约定），会在规则扫描结束后额外
+    做一次 LLM 增强归纳（见 `_llm_augment_topics`），从关键词表命中不到
+    的近期记忆里尝试发现新主题，补充进返回结果——但只有调用方同时传入
+    `llm_helper` 时才会触发，函数本身不读取 `GrowthAdvisorConfig`（是否
+    要传 `llm_helper` 由调用方根据 `cfg.llm_signal_augment_enabled` 决定），
+    保持这个函数纯粹、可测试。
     """
     cutoff = time.time() - window_days * 86400
     hits: dict[str, list[str]] = {}
 
     entries = memory_store.all_entries() if memory_store is not None else []
-    for entry in entries:
-        if getattr(entry, "created_at", 0) < cutoff:
-            continue
+    recent_entries = [e for e in entries if getattr(e, "created_at", 0) >= cutoff]
+    for entry in recent_entries:
         haystack = " ".join(
             [getattr(entry, "summary", "") or ""]
             + list(getattr(entry, "tags", []) or [])
@@ -425,11 +457,112 @@ def growth_signal_scan(paths, profile, memory_store, *, window_days: int = SIGNA
             if any(kw.lower() in haystack for kw in keywords):
                 hits.setdefault(topic, []).append(getattr(entry, "entry_id", "") or "")
 
+    if llm_helper is not None:
+        try:
+            hits = _llm_augment_topics(hits, recent_entries, llm_helper)
+        except Exception as exc:
+            from mini_agent.errors import log_exception
+            log_exception(exc, where="mini_agent.growth_advisor.growth_signal_scan_llm_augment")
+
     derived = dict(getattr(profile, "derived", {}) or {})
     derived["growth_focus_areas"] = hits
     derived["growth_focus_areas_updated_at"] = time.time()
     profile.derived = derived
     return hits
+
+
+# 一次 LLM 增强归纳最多送多少条"规则未命中"的记忆条目，避免 prompt 无限
+# 增长；条目本身不多的账号成本也很低，条目多的账号只取最近的一批。
+_LLM_AUGMENT_MAX_ENTRIES = 40
+# 未命中条目太少时不值得为了归纳专门调一次 LLM（大概率凑不满
+# min_evidence_count，调了也白调）。
+_LLM_AUGMENT_MIN_UNMATCHED = 3
+
+
+def _llm_augment_topics(
+    hits: dict[str, list[str]], recent_entries: list, llm_helper: Callable[[str], str]
+) -> dict[str, list[str]]:
+    """在规则式 `hits` 基础上，对关键词表命中不到的近期记忆条目做一次
+    LLM 归纳，尝试发现 `_TOPIC_KEYWORDS` 没覆盖到的新主题。
+
+    只处理"未命中"的条目——已经被规则命中的条目不重复送给 LLM，既省
+    token，也避免 LLM 把规则已经归好的话题换个说法再归一遍造成主题碎片
+    化。返回的新主题会按 `normalize_title_key` 与已有主题去重合并，不
+    会产生"一个意思两个不同大小写/标点的 key"这种重复。
+
+    任何解析失败、字段缺失、entry_id 对不上号的情况，都直接丢弃对应
+    条目/主题而不是让异常向上传播——LLM 输出不可信，只做"能用就用，
+    用不了就当没发生"的宽松吸收。
+    """
+    matched_ids = {eid for ids in hits.values() for eid in ids}
+    unmatched = [e for e in recent_entries if (getattr(e, "entry_id", "") or "") not in matched_ids]
+    if len(unmatched) < _LLM_AUGMENT_MIN_UNMATCHED:
+        return hits
+
+    unmatched = unmatched[-_LLM_AUGMENT_MAX_ENTRIES:]
+    id_to_entry = {getattr(e, "entry_id", "") or "": e for e in unmatched}
+    valid_ids = set(id_to_entry.keys())
+
+    lines = []
+    for eid, e in id_to_entry.items():
+        summary = (getattr(e, "summary", "") or "").strip().replace("\n", " ")[:200]
+        lines.append(f"- entry_id={eid}: {summary}")
+    prompt = (
+        "以下是一批用户最近的记忆摘要，逐条带有 entry_id。请找出其中反复\n"
+        "出现、可能值得用户系统学习/深入投入的成长方向（不要包括日常琐事、\n"
+        "一次性事件）。只根据已发生的内容归纳，不要编造。\n"
+        "只输出 JSON 数组，不要有其他文字，每个元素形如：\n"
+        '{\"topic\": \"简短主题名\", \"entry_ids\": [\"命中的 entry_id\", ...]}\n'
+        "entry_ids 必须原样从下面列表里选，不要发明新的 id。没有发现\n"
+        "任何值得关注的主题时输出空数组 []。\n\n" + "\n".join(lines)
+    )
+
+    raw = llm_helper(prompt)
+    if not raw or not raw.strip():
+        return hits
+
+    text = raw.strip()
+    if text.startswith("```"):
+        text = re.sub(r"^```[a-zA-Z]*\n?", "", text)
+        text = re.sub(r"```\s*$", "", text).strip()
+
+    try:
+        parsed = json.loads(text)
+    except json.JSONDecodeError:
+        match = re.search(r"\[.*\]", text, re.DOTALL)
+        if not match:
+            return hits
+        try:
+            parsed = json.loads(match.group(0))
+        except json.JSONDecodeError:
+            return hits
+
+    if not isinstance(parsed, list):
+        return hits
+
+    merged = {k: list(v) for k, v in hits.items()}
+    existing_keys = {normalize_title_key(k): k for k in merged}
+
+    for item in parsed:
+        if not isinstance(item, dict):
+            continue
+        topic = str(item.get("topic") or "").strip()
+        raw_ids = item.get("entry_ids")
+        if not topic or not isinstance(raw_ids, list):
+            continue
+        ids = sorted({str(i) for i in raw_ids if str(i) in valid_ids})
+        if not ids:
+            continue
+
+        key = normalize_title_key(topic)
+        canonical = existing_keys.get(key)
+        if canonical is None:
+            existing_keys[key] = topic
+            merged[topic] = ids
+        else:
+            merged[canonical] = sorted(set(merged.get(canonical, [])) | set(ids))
+
+    return merged
 
 
 # ────────────────────────── 候选生成 growth_candidate_derive ──────────────────────────
@@ -763,15 +896,21 @@ def _maybe_dispatch_notification(
 # ────────────────────────── 每日流程封装（供 cron / CLI 复用） ──────────────────────────
 
 
-def run_daily_cycle(paths, cfg, profile, memory_store) -> dict[str, Any]:
+def run_daily_cycle(paths, cfg, profile, memory_store, *, llm_helper: Optional[Callable[[str], str]] = None) -> dict[str, Any]:
     """`sys:growth_advisor_daily` 与 `/growth scan` 共用的主流程：
     信号扫描 -> 候选生成 -> （置信度达标的）Top-N 生成调研报告 ->
     （P2 新增）按 4.2 节节流规则决定要不要推送一条通知。
+
+    P3：`llm_helper` 只有在 `cfg.llm_signal_augment_enabled=True` 时才会
+    真正传给 `growth_signal_scan`（默认 False，零 LLM 成本）——即使调用方
+    在有 agent 上下文的场景下总是能拿到 `llm_helper`，是否使用仍然由
+    这个显式开关控制，不因为"恰好有"就默认用上。
     """
     if not getattr(cfg, "enabled", True):
         return {"skipped": True, "reason": "growth_advisor disabled"}
 
-    growth_signal_scan(paths, profile, memory_store)
+    scan_llm_helper = llm_helper if getattr(cfg, "llm_signal_augment_enabled", False) else None
+    growth_signal_scan(paths, profile, memory_store, llm_helper=scan_llm_helper)
     new_candidates = growth_candidate_derive(paths, cfg, profile)
 
     max_reports = getattr(cfg, "max_reports_per_run", 2)

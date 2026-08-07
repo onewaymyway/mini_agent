@@ -1647,6 +1647,14 @@ class GrowthAdvisorConfig:
     # 命中黑名单关键词的候选在 growth_candidate_derive 阶段直接跳过
     excluded_topics: list = field(default_factory=list)
 
+    # ── P3：growth_signal_scan 的 LLM 增强版归纳（可选，默认关闭）──────
+    # 默认仍是纯规则式关键词扫描（零 LLM 成本），这是 enabled=True 默认
+    # 开启时的成本底线（见方案第 -1/8 节）。只有显式打开这个开关，且
+    # 调用方（CLI/API 的 /growth scan）确实处于有 agent 上下文的场景时，
+    # 才会额外调用一次 LLM，尝试从 _TOPIC_KEYWORDS 关键词表命中不到的
+    # 近期记忆里归纳新的主题——不影响、不覆盖规则式扫描结果，只做补充。
+    llm_signal_augment_enabled: bool = False
+
 
 @dataclass
 class ReminderConfig:

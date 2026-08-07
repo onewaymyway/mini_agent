@@ -86,6 +86,7 @@ GET  /v1/growth/reports/{id}                      # 某份调研报告正文
 | `max_reports_per_run` | `2` | 每轮 cron 最多生成的调研报告数 |
 | `dismissed_cooldown_days` | `30` | 候选被忽略后的冷却期（天） |
 | `excluded_topics` | `[]` | 关注领域黑名单，命中的主题直接跳过 |
+| `llm_signal_augment_enabled` | `false` | 打开后 `/growth scan`（CLI/API，需要有 agent 上下文）会在规则式关键词扫描之外，额外调一次 LLM 尝试从命中不到的近期记忆里归纳新主题；默认关闭以保证零 LLM 成本 |
 
 不想要这个功能，把 `enabled` 设为 `false` 即可；已经生成的候选/报告数据
 不会被自动清除，需要的话手动删除 `.agent/growth_backlog.jsonl` /
@@ -105,6 +106,9 @@ GET  /v1/growth/reports/{id}                      # 某份调研报告正文
 
 - 关键词表覆盖面有限（见 `evolution/growth_advisor.py` 里的
   `_TOPIC_KEYWORDS`），不识别的主题不会被发现，可以直接改代码扩表；
+  打开 `llm_signal_augment_enabled` 后能在这之外额外发现一些新主题，
+  但默认关闭（避免默认开启功能时产生额外 LLM 成本），且只有 CLI/API
+  的 `/growth scan` 在有 agent 上下文时才会真正用上；
 - 调研报告默认走规则模板，信息密度不如 LLM 生成版本（LLM 增强是可选项，
   需要调用方传入 `llm_helper`）；
 - 候选置信度会按历史 dismiss 次数打折（复利衰减、有下限），但衰减系数

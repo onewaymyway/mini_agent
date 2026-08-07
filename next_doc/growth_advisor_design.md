@@ -8,16 +8,16 @@
 > **实施状态（2026-08）**：P1 里程碑（信号扫描 → 候选生成 → 调研报告 →
 > 看板/CLI/API 展示）已落地。P2 里程碑（反馈驱动的置信度调权、接入
 > NotificationDispatcher 的推送节流、月度复盘的采纳率与主题排行）也已
-> 落地。P3 目前完成了四项：首次触达提示的跨会话持久化、`excluded_topics`
+> 落地。P3 目前完成了五项：首次触达提示的跨会话持久化、`excluded_topics`
 > 黑名单的看板可视化编辑入口（顺带修好了通用配置编辑器对 list 类型字段
 > 的支持）、`notification_frequency=weekly_digest` 的真实周摘要打包（不
 > 再等价于 `daily`，改为每 7 天把窗口期内新报告打包成一条摘要推送）、
 > 月度复盘的跨候选能力地图聚合（`growth_topic_map()`，按主题聚合历史
-> 状态/峰值置信度/累计采纳忽略次数）。细节见
+> 状态/峰值置信度/累计采纳忽略次数）、`growth_signal_scan` 的 LLM 增强版
+> 归纳（默认关闭的 opt-in 开关，顺带修了 `/growth report` 里一个既有的
+> `LLMHelper` 误当函数调用的 bug）。细节见
 > `next_doc/growth_advisor_implementation_record.md` 与用户指南
-> `docs/growth-advisor-guide.md`。P3 剩余项（LLM 增强版信号归纳、拖拽式
-> 看板视图）尚未开始，实施记录里有明确的"未做"清单，后续按方案原文的
-> 里程碑编号继续推进即可。
+> `docs/growth-advisor-guide.md`。P3 剩余项（看板拖拽式视图）尚未开始。
 
 ---
 

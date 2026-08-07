@@ -15,6 +15,7 @@
 
 from __future__ import annotations
 
+import json
 import tempfile
 import time
 import unittest
@@ -631,6 +632,151 @@ class TestCronJobsRegistered(unittest.TestCase):
         ids = {j["id"] for j in _BUILTIN_JOBS}
         self.assertIn(ga.JOB_ID_DAILY, ids)
         self.assertIn(ga.JOB_ID_MONTHLY, ids)
+
+
+class TestLlmSignalAugment(unittest.TestCase):
+    """P3：growth_signal_scan 的 LLM 增强版归纳（默认关闭，opt-in）。"""
+
+    def _entries(self, now):
+        return [
+            # 规则命中：Python 工程实践
+            _FakeEntry("e1", "python packaging 踩坑记录", ["python"], now - 10),
+            # 规则命中不到，但反复出现，指向同一个新主题
+            _FakeEntry("e2", "又研究了一下摄影构图", [], now - 20),
+            _FakeEntry("e3", "看了一篇讲摄影用光的文章", [], now - 30),
+            _FakeEntry("e4", "周末去拍了张照片练手", [], now - 40),
+        ]
+
+    def test_no_llm_helper_keeps_rule_only_result(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = _make_paths(tmp)
+            now = time.time()
+            store = _FakeMemoryStore(self._entries(now))
+            profile = UserProfile()
+
+            hits = ga.growth_signal_scan(paths, profile, store)
+            self.assertIn("Python 工程实践", hits)
+            self.assertNotIn("摄影", hits)  # 没传 llm_helper，规则表覆盖不到
+
+    def test_llm_helper_adds_new_topic_from_unmatched_entries(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = _make_paths(tmp)
+            now = time.time()
+            store = _FakeMemoryStore(self._entries(now))
+            profile = UserProfile()
+
+            def fake_llm(prompt):
+                return json.dumps([{"topic": "摄影", "entry_ids": ["e2", "e3", "e4"]}])
+
+            hits = ga.growth_signal_scan(paths, profile, store, llm_helper=fake_llm)
+            self.assertIn("Python 工程实践", hits)  # 规则结果保留
+            self.assertIn("摄影", hits)
+            self.assertEqual(sorted(hits["摄影"]), ["e2", "e3", "e4"])
+
+    def test_llm_cannot_hallucinate_entry_ids(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = _make_paths(tmp)
+            now = time.time()
+            store = _FakeMemoryStore(self._entries(now))
+            profile = UserProfile()
+
+            def fake_llm(prompt):
+                # e999 不在提供的候选集合里，必须被过滤掉
+                return json.dumps([{"topic": "摄影", "entry_ids": ["e2", "e999"]}])
+
+            hits = ga.growth_signal_scan(paths, profile, store, llm_helper=fake_llm)
+            self.assertEqual(hits.get("摄影"), ["e2"])
+
+    def test_malformed_llm_output_falls_back_to_rule_result(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = _make_paths(tmp)
+            now = time.time()
+            store = _FakeMemoryStore(self._entries(now))
+            profile = UserProfile()
+
+            def broken_llm(prompt):
+                return "不是 JSON，纯胡说"
+
+            hits = ga.growth_signal_scan(paths, profile, store, llm_helper=broken_llm)
+            self.assertIn("Python 工程实践", hits)
+            self.assertNotIn("摄影", hits)
+
+    def test_llm_exception_does_not_break_scan(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = _make_paths(tmp)
+            now = time.time()
+            store = _FakeMemoryStore(self._entries(now))
+            profile = UserProfile()
+
+            def boom(prompt):
+                raise RuntimeError("llm down")
+
+            hits = ga.growth_signal_scan(paths, profile, store, llm_helper=boom)
+            self.assertIn("Python 工程实践", hits)
+
+    def test_too_few_unmatched_entries_skips_llm_call(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = _make_paths(tmp)
+            now = time.time()
+            # 只有 1 条命中不到规则表的条目，低于 _LLM_AUGMENT_MIN_UNMATCHED
+            entries = [
+                _FakeEntry("e1", "python packaging 踩坑记录", ["python"], now - 10),
+                _FakeEntry("e2", "唯一一条没归类的杂事", [], now - 20),
+            ]
+            store = _FakeMemoryStore(entries)
+            profile = UserProfile()
+            called = {"n": 0}
+
+            def fake_llm(prompt):
+                called["n"] += 1
+                return "[]"
+
+            ga.growth_signal_scan(paths, profile, store, llm_helper=fake_llm)
+            self.assertEqual(called["n"], 0)
+
+    def test_new_topic_merges_with_existing_rule_topic_on_normalized_title(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = _make_paths(tmp)
+            now = time.time()
+            entries = self._entries(now) + [
+                _FakeEntry("e5", "python 相关的边角料，规则表没命中的措辞", [], now - 15),
+                _FakeEntry("e6", "又一条同类边角料", [], now - 25),
+                _FakeEntry("e7", "再来一条凑够未命中阈值", [], now - 35),
+            ]
+            store = _FakeMemoryStore(entries)
+            profile = UserProfile()
+
+            def fake_llm(prompt):
+                # LLM 归纳出的主题名跟规则表 key 完全一致（大小写/空白不同也应合并）
+                return json.dumps([{"topic": "Python 工程实践", "entry_ids": ["e5", "e6", "e7"]}])
+
+            hits = ga.growth_signal_scan(paths, profile, store, llm_helper=fake_llm)
+            # 合并进同一个 key，不产生重复主题
+            self.assertEqual(len([k for k in hits if ga.normalize_title_key(k) == ga.normalize_title_key("Python 工程实践")]), 1)
+            self.assertIn("e5", hits["Python 工程实践"])
+            self.assertIn("e1", hits["Python 工程实践"])
+
+    def test_run_daily_cycle_gates_llm_augment_by_config_flag(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = _make_paths(tmp)
+            now = time.time()
+            store = _FakeMemoryStore(self._entries(now))
+            profile = UserProfile()
+            called = {"n": 0}
+
+            def fake_llm(prompt):
+                called["n"] += 1
+                return json.dumps([{"topic": "摄影", "entry_ids": ["e2", "e3", "e4"]}])
+
+            # 默认 llm_signal_augment_enabled=False，即使传了 llm_helper 也不会调用
+            cfg_off = GrowthAdvisorConfig(min_evidence_count=3)
+            ga.run_daily_cycle(paths, cfg_off, profile, store, llm_helper=fake_llm)
+            self.assertEqual(called["n"], 0)
+
+            # 显式打开后才会调用
+            cfg_on = GrowthAdvisorConfig(min_evidence_count=3, llm_signal_augment_enabled=True)
+            ga.run_daily_cycle(paths, cfg_on, profile, store, llm_helper=fake_llm)
+            self.assertGreaterEqual(called["n"], 1)
 
 
 if __name__ == "__main__":
