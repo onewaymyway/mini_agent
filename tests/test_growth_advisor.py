@@ -513,6 +513,82 @@ class TestMonthlyRetrospectiveAttribution(unittest.TestCase):
             self.assertIsNone(summary["acceptance_rate"])
 
 
+class TestGrowthTopicMap(unittest.TestCase):
+    """P3：月度复盘的跨候选能力地图聚合（growth_topic_map）。"""
+
+    def test_empty_backlog_returns_empty_list(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = _make_paths(tmp)
+            self.assertEqual(ga.growth_topic_map(paths), [])
+
+    def test_single_topic_aggregates_current_state(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = _make_paths(tmp)
+            backlog = ga.GrowthBacklog(paths)
+            cand = backlog.add_or_merge(
+                "数据分析", "r", ["e1", "e2", "e3", "e4"],
+                min_evidence_count=3, max_pending=10, dismissed_cooldown_days=30,
+            )
+            backlog.set_status(cand.candidate_id, ga.STATUS_ACCEPTED)
+
+            rows = ga.growth_topic_map(paths)
+            self.assertEqual(len(rows), 1)
+            row = rows[0]
+            self.assertEqual(row["topic"], "数据分析")
+            self.assertEqual(row["current_status"], ga.STATUS_ACCEPTED)
+            self.assertEqual(row["times_accepted"], 1)
+            self.assertEqual(row["times_dismissed"], 0)
+            self.assertEqual(row["occurrences"], 1)
+
+    def test_repeated_dismiss_and_regenerate_accumulates_history(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = _make_paths(tmp)
+            backlog = ga.GrowthBacklog(paths)
+            # 第一轮：生成后被 dismiss
+            c1 = backlog.add_or_merge(
+                "系统设计与架构", "r", ["e1", "e2", "e3"],
+                min_evidence_count=3, max_pending=10, dismissed_cooldown_days=30,
+            )
+            backlog.set_status(c1.candidate_id, ga.STATUS_DISMISSED)
+            # 模拟冷却期已过：直接改 updated_at 到很久以前，再次生成会
+            # 走"曾 dismissed 但已出冷却期"分支，产生第二条同标题记录
+            all_c = backlog.load_all()
+            for c in all_c:
+                if c.candidate_id == c1.candidate_id:
+                    c.updated_at = time.time() - 40 * 86400
+            backlog.save_all(all_c)
+
+            c2 = backlog.add_or_merge(
+                "系统设计与架构", "r", ["e1", "e2", "e3", "e4", "e5"],
+                min_evidence_count=3, max_pending=10, dismissed_cooldown_days=30,
+            )
+            self.assertIsNotNone(c2)
+            self.assertNotEqual(c1.candidate_id, c2.candidate_id)
+            backlog.set_status(c2.candidate_id, ga.STATUS_ACCEPTED)
+
+            rows = ga.growth_topic_map(paths)
+            self.assertEqual(len(rows), 1)
+            row = rows[0]
+            self.assertEqual(row["occurrences"], 2)
+            self.assertEqual(row["times_dismissed"], 1)
+            self.assertEqual(row["times_accepted"], 1)
+            self.assertEqual(row["current_status"], ga.STATUS_ACCEPTED)
+            self.assertGreaterEqual(row["peak_confidence"], row["current_confidence"])
+
+    def test_included_in_monthly_retrospective_summary(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = _make_paths(tmp)
+            backlog = ga.GrowthBacklog(paths)
+            backlog.add_or_merge(
+                "写作与表达", "r", ["e1", "e2", "e3"],
+                min_evidence_count=3, max_pending=10, dismissed_cooldown_days=30,
+            )
+            summary = ga.monthly_retrospective_summary(paths)
+            self.assertIn("topic_map", summary)
+            self.assertEqual(len(summary["topic_map"]), 1)
+            self.assertEqual(summary["topic_map"][0]["topic"], "写作与表达")
+
+
 class TestFirstTouchNotice(unittest.TestCase):
     """P3：首次触达提示的跨会话持久化。"""
 

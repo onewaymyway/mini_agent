@@ -262,12 +262,42 @@
   `run_daily_cycle` 在 `weekly_digest` 档位下正确分流、daily 路径对
   `weekly_digest` 频率短路返回 `None`。
 
+## 已完成：P3 里程碑（新增，第三项）——月度复盘的跨候选能力地图聚合
+
+- `growth_advisor.py` 新增 `growth_topic_map(paths)`：
+  - 按 `dedupe_key`（归一化标题）聚合 backlog 里**全部历史候选**（不只是
+    当前 pending/accepted/dismissed 各一条——同一主题可能因 dismiss 冷却
+    期结束后重新生成，产生多条 `candidate_id` 不同但标题相同的记录）；
+  - 每个主题聚合出：`current_status`/`current_confidence`（取
+    `updated_at` 最新的一条）、`peak_confidence`（历史出现过的最高置信度，
+    不因某次 dismiss 后置信度被 `_feedback_multiplier` 打折而"倒退"）、
+    `times_accepted`/`times_dismissed`/`occurrences`（历史累计次数）、
+    `first_seen_at`/`last_updated_at`；
+  - 按 `last_updated_at` 倒序返回，纯聚合展示，不做预测/自动排序推荐；
+  - 思路对齐 `evolution/self_model_snapshot.py`（Agent 自己的能力弱项
+    趋势快照），聚合对象换成了用户的成长方向推进轨迹，这也是方案第 6
+    节"这一点跟 self_model_snapshot.py 让 Agent 能回答'能力弱点清单是
+    变短了还是变长了'是同一个思路"的落地。
+- `monthly_retrospective_summary()` 新增 `topic_map` 字段，直接复用
+  `growth_topic_map()`；`GET /growth/summary` 本来就整体透传
+  `retrospective`，未新增/改动 API 端点。
+- 看板 `render_growth_tab()` 在"按主题看采纳/忽略排行"下方新增一个可
+  折叠的"🗺️ 成长主题地图"区块，逐条展示每个方向的状态/峰值置信度/
+  出现与采纳/忽略次数；CLI `/growth retrospective` 本来就是逐字段打印
+  `monthly_retrospective_summary()` 的返回值，`topic_map` 无需额外改动
+  即可显示。
+- `docs/growth-advisor-guide.md` 第 3 节看板用法、第 6 节"当前局限"同步
+  更新。
+- `tests/test_growth_advisor.py` 新增 `TestGrowthTopicMap`（4 个用例，
+  全部通过，加上此前 34 个，全文件合计 38 个）：空 backlog 返回空列表、
+  单主题聚合当前状态、"忽略→冷却期后重新生成→再次决策"跨记录累计历史
+  次数与峰值置信度、`monthly_retrospective_summary` 正确包含 `topic_map`。
+
 ## 未做（按方案标注为 P3 剩余项，本轮不在范围内）
 
 - 看板里的拖拽式看板视图（当前是列表 + 按钮，不是真正的多列看板）。
 - `growth_signal_scan` 的 LLM 增强版归纳（P1/P2/P3 均保持零 LLM 成本的
   规则式实现；调研报告生成阶段已支持可选 LLM 增强，见 P1 记录）。
-- 月度复盘的跨候选能力地图聚合（当前只有数量统计 + 采纳率 + 主题排行）。
 
 ## 已知取舍/风险
 

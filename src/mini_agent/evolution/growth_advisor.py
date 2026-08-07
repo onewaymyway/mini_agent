@@ -61,11 +61,20 @@ P3 范围（本次新增）——`notification_frequency=weekly_digest` 的真�
       分流：`weekly_digest` 走这里，其余（`daily`/`kanban_only`）仍走
       `_maybe_dispatch_notification`。
 
+P3 范围（本次新增，第二项）——月度复盘的跨候选能力地图聚合：
+    - `growth_topic_map()`：按 `dedupe_key` 聚合 backlog 里全部历史候选
+      （含同一主题因 dismiss 冷却结束后重新生成的多条记录），产出每个
+      主题的当前状态/历史累计采纳与忽略次数/历史峰值置信度/首次出现与
+      最近更新时间，按最近更新时间倒序排列。思路对齐
+      `self_model_snapshot.py`（Agent 自己的能力弱项趋势），只是聚合对象
+      换成了用户的成长方向推进轨迹。`monthly_retrospective_summary()`
+      新增 `topic_map` 字段直接复用该函数，`GET /growth/summary` 已经
+      透传整个 `retrospective`，未新增 API 端点。
+
 仍不在本次范围内（见方案 P3 剩余项，占位在 next_doc 文档里）：
     - 看板里的拖拽式看板视图（当前仍是列表 + 采纳/忽略两个动作）
     - `growth_signal_scan` 的 LLM 增强版归纳（P1/P2/P3 均保持零 LLM 成本
       的规则式实现）
-    - 月度复盘的跨候选能力地图聚合（当前只有数量统计 + 采纳率 + 主题排行）
 """
 
 from __future__ import annotations
@@ -784,6 +793,54 @@ def run_daily_cycle(paths, cfg, profile, memory_store) -> dict[str, Any]:
     }
 
 
+def growth_topic_map(paths) -> list[dict]:
+    """跨候选的主题聚合视图（方案第 6 节"能力地图"聚合，对齐
+    `self_model_snapshot.py` 的思路——只是问题从"Agent 自己的能力弱项
+    清单变长变短"换成了"用户在每个成长方向上的推进轨迹"）。
+
+    按 `dedupe_key`（归一化标题）聚合 backlog 里**全部**历史候选（包括
+    因 dismiss 冷却期结束后重新生成、标题相同但 candidate_id 不同的多
+    条记录），得到每个主题的：
+        - 当前状态（取 updated_at 最新的一条）
+        - 历史累计被采纳/被忽略次数（一个主题可能经历多轮 dismiss ->
+          冷却 -> 重新生成 -> 再次 dismiss/accepted）
+        - 历史出现过的最高置信度（衡量该方向证据积累的峰值，不因为
+          某次 dismiss 后置信度被打折而"倒退"）
+        - 首次出现时间 / 最近更新时间
+
+    只做聚合展示，不做任何预测/排序推荐——聚合结果按 `updated_at` 倒序
+    返回，供看板/CLI 直接渲染成一张列表，不引入新的落盘文件。
+    """
+    all_c = GrowthBacklog(paths).load_all()
+    if not all_c:
+        return []
+
+    groups: dict[str, list[GrowthCandidate]] = {}
+    for c in all_c:
+        groups.setdefault(c.dedupe_key(), []).append(c)
+
+    rows: list[dict] = []
+    for key, items in groups.items():
+        items_sorted = sorted(items, key=lambda c: c.updated_at)
+        latest = items_sorted[-1]
+        rows.append(
+            {
+                "topic": latest.title,
+                "current_status": latest.status,
+                "current_confidence": latest.confidence,
+                "peak_confidence": max(c.confidence for c in items),
+                "times_accepted": sum(1 for c in items if c.status == STATUS_ACCEPTED),
+                "times_dismissed": sum(1 for c in items if c.status == STATUS_DISMISSED),
+                "occurrences": len(items),
+                "first_seen_at": min(c.created_at for c in items),
+                "last_updated_at": latest.updated_at,
+            }
+        )
+
+    rows.sort(key=lambda r: -r["last_updated_at"])
+    return rows
+
+
 def monthly_retrospective_summary(paths) -> dict[str, Any]:
     """月度成长复盘统计。P2 在 P1 的数量统计基础上新增 `acceptance_rate`
     （采纳率）与按候选标题聚合的采纳/忽略排行——对应方案第 6 节"推荐命中
@@ -818,4 +875,5 @@ def monthly_retrospective_summary(paths) -> dict[str, Any]:
         "reports_generated": len(list_reports(paths)),
         "top_accepted_topics": top_accepted,
         "top_dismissed_topics": top_dismissed,
+        "topic_map": growth_topic_map(paths),
     }

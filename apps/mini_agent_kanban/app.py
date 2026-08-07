@@ -3490,6 +3490,25 @@ def render_growth_tab(client: "AgentClient"):
                     for title, n in top_dismissed:
                         st.write(f"- {title}（{n} 次）")
 
+    # P3：跨候选能力地图聚合（growth_topic_map）——按主题聚合的完整推进
+    # 轨迹（含峰值置信度、历史累计出现/采纳/忽略次数），比 4.1 节的
+    # Top5 排行更完整，默认折叠，避免挤占候选列表的首屏空间。
+    topic_map = retro.get("topic_map") or []
+    if topic_map:
+        with st.expander(f"🗺️ 成长主题地图（{len(topic_map)} 个方向）"):
+            for row in topic_map:
+                status_label = {
+                    "pending": "待处理", "accepted": "已采纳",
+                    "dismissed": "已忽略", "expired": "已过期",
+                }.get(row.get("current_status"), row.get("current_status"))
+                st.write(
+                    f"- **{row.get('topic')}** — {status_label}"
+                    f"（峰值置信度 {row.get('peak_confidence', 0):.2f}，"
+                    f"出现 {row.get('occurrences', 0)} 次，"
+                    f"采纳 {row.get('times_accepted', 0)} / "
+                    f"忽略 {row.get('times_dismissed', 0)}）"
+                )
+
     pending = [c for c in candidates if c.get("status") == "pending"]
     if not pending:
         st.caption("当前没有待处理的候选。点击上方按钮手动触发一轮扫描，"
