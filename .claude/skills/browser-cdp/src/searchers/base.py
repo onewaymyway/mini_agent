@@ -189,7 +189,6 @@ class BaseSearcher(ABC, SearcherMixin):
         # 先初始化可靠性层
         SearcherMixin.__init__(self)
         self._config = config or SearcherConfig()
-        self._error_processor = SearcherErrorProcessor(self.__class__.__name__)
     
     @property
     def config(self) -> SearcherConfig:
@@ -345,21 +344,6 @@ class BaseSearcher(ABC, SearcherMixin):
             return loop.run_until_complete(self.search(query, config))
         except RuntimeError:
             return asyncio.run(self.search(query, config))
-
-    def search_with_pagination(self, query: str, max_pages: int = 3,
-                               config: Optional[SearcherConfig] = None) -> SearchResults:
-        """
-        带分页的搜索（统一入口）
-
-        Args:
-            query: 搜索关键词
-            max_pages: 最大页数
-            config: 搜索配置
-
-        Returns:
-            SearchResults 包含所有页的结果
-        """
-        return self.paginate(query, page=1, max_pages=max_pages, config=config)
 
     def get_pagination_info(self) -> Dict[str, Any]:
         """获取当前页面分页信息（占位，子类可重写）"""

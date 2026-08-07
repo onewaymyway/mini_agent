@@ -67,6 +67,19 @@ class CDPConnectionLostError(ReliabilityError):
         )
 
 
+class CircuitBreakerOpenError(ReliabilityError):
+    """熔断器触发异常"""
+
+    def __init__(self, details: Optional[Dict[str, Any]] = None):
+        super().__init__(
+            "Circuit breaker is open",
+            ErrorCategory.CONNECTION,
+            recoverable=True,
+            details=details,
+        )
+        self.details = details or {}
+
+
 class CDPCommandTimeoutError(ReliabilityError):
     """CDP 命令超时"""
 
@@ -222,7 +235,7 @@ class RateLimitError(ReliabilityError):
     def __init__(self, retry_after: float = 0.0, details: Optional[Dict[str, Any]] = None):
         super().__init__(
             f"Rate limited (429), retry_after={retry_after}s",
-            ErrorCategory.AUTH,
+            ErrorCategory.TIMEOUT,
             recoverable=True,
             details=details,
         )
@@ -255,19 +268,6 @@ class ResourceExhaustedError(ReliabilityError):
         self.resource_type = resource_type
 
 
-class CircuitBreakerOpenError(ReliabilityError):
-    """熔断器开启，暂停执行"""
-
-    def __init__(self, timeout: float, details: Optional[Dict[str, Any]] = None):
-        super().__init__(
-            f"Circuit breaker open, pause {timeout}s before retry",
-            ErrorCategory.RESOURCE,
-            recoverable=True,
-            details=details,
-        )
-        self.timeout = timeout
-
-
 def is_retryable(error: Exception) -> bool:
     """判断错误是否可重试"""
     if isinstance(error, ReliabilityError):
@@ -296,7 +296,7 @@ def categorize_error(error: Exception) -> ErrorCategory:
     if isinstance(error, BlockedByAntiBotError):
         return ErrorCategory.PERMISSION
     if isinstance(error, RateLimitError):
-        return ErrorCategory.AUTH
+        return ErrorCategory.TIMEOUT
     if isinstance(error, AuthenticationError):
         return ErrorCategory.AUTH
     if isinstance(error, ResourceExhaustedError):

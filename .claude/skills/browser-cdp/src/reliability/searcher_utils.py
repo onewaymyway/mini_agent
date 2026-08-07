@@ -77,7 +77,7 @@ class SearcherConfig:
         )
 
 
-def run_cmd_with_retry(
+async def run_cmd_with_retry(
     cdp_client: Any,
     cmd_name: str,
     params: Dict[str, Any],
@@ -108,7 +108,7 @@ def run_cmd_with_retry(
     async def _execute():
         return await cdp_client.send(cmd_name, params)
 
-    return retry_operation_async(
+    return await retry_operation_async(
         _execute,
         config=config,
         operation=operation,
@@ -188,6 +188,7 @@ class ElementLocator:
                     timeout=timeout,
                 )
                 if result:
+                    self._last_cache_time = time.time()
                     return result
             except Exception as e:
                 logger.debug(f"Strategy {strategy.__name__} failed: {e}")
@@ -220,6 +221,7 @@ class ElementLocator:
                     timeout=timeout,
                 )
                 if result:
+                    self._last_cache_time = time.time()
                     return result
             except Exception as e:
                 logger.debug(f"Strategy {strategy.__name__} failed: {e}")

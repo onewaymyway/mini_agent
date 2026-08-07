@@ -21,6 +21,7 @@ from .error import (
     ElementNotFoundError,
     RateLimitError,
     is_retryable,
+    CircuitBreakerOpenError,
 )
 
 logger = logging.getLogger(__name__)
@@ -125,7 +126,10 @@ class RetryConfig:
         self.backoff_strategy = backoff_strategy
         self.base_delay = base_delay
         self.max_delay = max_delay
-        self.retryable_exceptions = retryable_exceptions or (ReliabilityError,)
+        if retryable_exceptions:
+            self.retryable_exceptions = retryable_exceptions if isinstance(retryable_exceptions, tuple) else (retryable_exceptions,)
+        else:
+            self.retryable_exceptions = (ReliabilityError,)
         self.circuit_breaker = circuit_breaker
         self.circuit_breaker_threshold = circuit_breaker_threshold
         self.circuit_breaker_recovery = circuit_breaker_recovery
@@ -280,13 +284,12 @@ def retry_operation(
     for attempt in range(config.max_retries + 1):
         # 检查熔断器
         if cb and not cb.can_execute():
-            remaining = cb.recovery_timeout - (time.time() - cb.last_failure_time)
-            from .error import CircuitBreakerOpenError
+            remaining = max(0, cb.recovery_timeout - (time.time() - cb.last_failure_time))
             raise CircuitBreakerOpenError(
-                timeout=remaining,
                 details={
                     "operation": operation,
                     "circuit_breaker_state": cb.get_status(),
+                    "remaining_retry_seconds": round(remaining, 1),
                 }
             )
 
@@ -363,13 +366,12 @@ async def retry_operation_async(
     for attempt in range(config.max_retries + 1):
         # 检查熔断器
         if cb and not cb.can_execute():
-            remaining = cb.recovery_timeout - (time.time() - cb.last_failure_time)
-            from .error import CircuitBreakerOpenError
+            remaining = max(0, cb.recovery_timeout - (time.time() - cb.last_failure_time))
             raise CircuitBreakerOpenError(
-                timeout=remaining,
                 details={
                     "operation": operation,
                     "circuit_breaker_state": cb.get_status(),
+                    "remaining_retry_seconds": round(remaining, 1),
                 }
             )
 
