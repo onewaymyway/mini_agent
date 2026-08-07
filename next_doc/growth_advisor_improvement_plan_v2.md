@@ -1,9 +1,10 @@
 # 成长顾问（Growth Advisor）改进计划 v2
 
 > **实施状态（2026-08 更新）**：P4-0（`profile.derived` 命名空间冲突修复）、
-> P4-1（关键词表持久化 + 看板展示 profile / 关键词信息）已完成并落地，
-> 细节见 `next_doc/growth_advisor_implementation_record.md` 的 P4 章节。
-> P4-2 ~ P4-7 仍是方向级规划，未开始实施。
+> P4-1（关键词表持久化 + 看板展示 profile / 关键词信息）、P4-2（关键词
+> 自动学习稳定后转正）已完成并落地，细节见
+> `next_doc/growth_advisor_implementation_record.md` 的 P4 章节。
+> P4-3 ~ P4-7 仍是方向级规划，未开始实施。
 
 - **版本**: v1（草案）
 - **前置文档**: `next_doc/growth_advisor_design.md`（原始方案，P1-P3 已全部完成）、
@@ -247,12 +248,19 @@ def generate(self, llm_client, entries) -> UserProfile:
 P4-0/P4-1 外，其余每个阶段开工前都应该单独过一遍设计（细化数据结构、
 API、验收标准），不要直接照这里的一段话开始写代码。
 
-### P4-2：关键词表"自动学习稳定后转正"机制
+### P4-2：关键词表"自动学习稳定后转正"机制（**已完成**）
 如果 LLM 学到的同一个主题连续多次扫描都有新证据支持（比如连续 3 次扫描
 都命中 ≥1 条新记忆），且用户没有主动删除过，可以自动把 `confirmed_by_user`
 置为 `True`（不需要用户手动点确认）——降低"用户忘记去确认"导致好不容易
 学到的主题又被静默清理掉的概率。需要先有 P4-1 的数据结构落地、跑一段时间
 积累真实数据后再决定具体阈值。
+
+> **实施记录**：`_update_keyword_learning_streaks()` 已实现，阈值取
+> `_AUTO_CONFIRM_STREAK = 3`（未经真实数据验证的经验值，后续如发现
+> "转正太快/太慢"可直接调整这个常量）。命中要求"连续"，中断一次即清零，
+> 不做"累计命中次数"式的宽松计数。转正后额外打上 `auto_confirmed=True`
+> 标记，供看板区分"用户手动保留"和"系统自动保留"。细节见
+> `next_doc/growth_advisor_implementation_record.md` P4 章节。
 
 ### P4-3：反馈学习细化 + 采纳后回访
 - 把"用户对某一类主题的整体倾向"学出来，而不是只有单主题级别的置信度

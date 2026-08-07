@@ -116,6 +116,17 @@ P4-1 范围（对应 next_doc/growth_advisor_improvement_plan_v2.md，本次新�
     - 前置修复（P4-0，见 `profile.py::UserProfileManager.generate()`）：
       画像生成从整体覆盖 `profile.derived` 改成合并式更新，避免
       `growth_focus_areas`/`growth_topic_keywords` 被定期画像刷新静默清空。
+
+P4-2 范围（对应 next_doc/growth_advisor_improvement_plan_v2.md，本次
+新增）——关键词表"自动学习稳定后转正"：
+    - `_update_keyword_learning_streaks()`：`growth_signal_scan()` 每次
+      扫描结束时，对每个待确认的 `llm_learned` 主题更新连续命中计数
+      （`consecutive_scan_hits`）——本次扫描命中则 +1，未命中则清零；
+      连续命中达到 `_AUTO_CONFIRM_STREAK`（默认 3）次后自动把
+      `confirmed_by_user` 置为 `True`（同时打上 `auto_confirmed=True`
+      标记，供看板区分"用户手动保留"和"系统自动保留"），不需要用户
+      记得去手动点确认。`user_added` 主题创建时已是确认状态，不参与
+      这个计数。
 """
 
 from __future__ import annotations
@@ -468,6 +479,8 @@ def _effective_topic_keywords(profile) -> dict[str, dict[str, Any]]:
             "source": "built_in",
             "confirmed_by_user": True,
             "added_at": None,
+            "consecutive_scan_hits": 0,
+            "auto_confirmed": False,
         }
     for topic, info in custom.items():
         if not isinstance(info, dict):
@@ -480,6 +493,8 @@ def _effective_topic_keywords(profile) -> dict[str, dict[str, Any]]:
             "source": info.get("source") or "user_added",
             "confirmed_by_user": bool(info.get("confirmed_by_user", False)),
             "added_at": info.get("added_at"),
+            "consecutive_scan_hits": int(info.get("consecutive_scan_hits", 0) or 0),
+            "auto_confirmed": bool(info.get("auto_confirmed", False)),
         }
     return result
 
@@ -601,6 +616,59 @@ def _persist_learned_topics(profile, new_topics: dict[str, list[str]]) -> None:
         profile.derived = derived
 
 
+# ─────────── [P4-2] 关键词表"自动学习稳定后转正" ───────────
+# next_doc/growth_advisor_improvement_plan_v2.md 第 4 节 P4-2。同一个
+# llm_learned 待确认主题，如果连续这么多次扫描都有新证据支持（本次 hits
+# 里出现），就自动把 confirmed_by_user 置为 True，不需要用户手动点确认。
+_AUTO_CONFIRM_STREAK = 3
+
+
+def _update_keyword_learning_streaks(profile, hits: dict[str, list[str]]) -> None:
+    """在每次 growth_signal_scan 结束时调用：更新每个待确认自定义主题的
+    连续命中计数，达到 `_AUTO_CONFIRM_STREAK` 时自动转正。
+
+    - 本次扫描命中该主题（`topic in hits` 且证据非空）→ streak += 1；
+      达到阈值 → `confirmed_by_user = True`，streak 清零（转正后不需要
+      再继续计数）。
+    - 本次扫描没有命中 → streak 重置为 0（要求"连续"，中断一次就重来，
+      避免"隔三差五命中一次"也被误判为稳定信号）。
+    - 只处理 `source == "llm_learned"` 且尚未确认的主题；`user_added`
+      的主题创建时就已经是确认状态，不需要这个机制；已确认的主题不再
+      追踪 streak（避免白白维护一个用不上的计数器）。
+    - 用户手动删除/隐藏过的主题不会出现在 `_effective_topic_keywords()`
+      的结果里，因而也不会出现在 `hits` 里，天然不会被这里"复活"。
+    """
+    derived = dict(getattr(profile, "derived", {}) or {})
+    custom = dict(derived.get("growth_topic_keywords") or {})
+    if not custom:
+        return
+
+    changed = False
+    for topic, entry in list(custom.items()):
+        if not isinstance(entry, dict):
+            continue
+        if entry.get("source") != "llm_learned" or entry.get("confirmed_by_user"):
+            continue
+        entry = dict(entry)
+        hit_this_scan = bool(hits.get(topic))
+        streak = int(entry.get("consecutive_scan_hits", 0) or 0)
+        if hit_this_scan:
+            streak += 1
+        else:
+            streak = 0
+        entry["consecutive_scan_hits"] = streak
+        if streak >= _AUTO_CONFIRM_STREAK:
+            entry["confirmed_by_user"] = True
+            entry["auto_confirmed"] = True
+            entry["consecutive_scan_hits"] = 0
+        custom[topic] = entry
+        changed = True
+
+    if changed:
+        derived["growth_topic_keywords"] = custom
+        profile.derived = derived
+
+
 def growth_signal_scan(
     paths, profile, memory_store, *,
     window_days: int = SIGNAL_SCAN_WINDOW_DAYS,
@@ -647,6 +715,16 @@ def growth_signal_scan(
         except Exception as exc:
             from mini_agent.errors import log_exception
             log_exception(exc, where="mini_agent.growth_advisor.growth_signal_scan_llm_augment")
+
+    # [P4-2] 待确认自定义主题的连续命中计数 + 达标自动转正，必须在
+    # _persist_learned_topics 之后调用（保证本次新学到的主题也能立刻开始
+    # 计数），并且在最终写回 growth_focus_areas 之前调用（避免被后面的
+    # `profile.derived = derived` 覆盖掉）。
+    try:
+        _update_keyword_learning_streaks(profile, hits)
+    except Exception as exc:
+        from mini_agent.errors import log_exception
+        log_exception(exc, where="mini_agent.growth_advisor.growth_signal_scan_auto_confirm")
 
     derived = dict(getattr(profile, "derived", {}) or {})
     derived["growth_focus_areas"] = hits
@@ -1236,6 +1314,8 @@ def diagnostics_snapshot(paths, cfg, profile, memory_store) -> dict[str, Any]:
             "keywords": info["keywords"],
             "source": info["source"],
             "confirmed_by_user": info["confirmed_by_user"],
+            "consecutive_scan_hits": info.get("consecutive_scan_hits", 0),
+            "auto_confirmed": info.get("auto_confirmed", False),
         }
         for topic, info in effective_keywords.items()
     ]

@@ -534,9 +534,39 @@
 ### P4 已知限制 / 留待后续
 
 - `confirmed_by_user=False` 的待确认主题目前**仍然参与**候选生成（呼应
-  设计文档 6 节的倾向），推送节流侧暂未对其单独降权——留给 P4-2/P4-5
+  设计文档 6 节的倾向），推送节流侧暂未对其单独降权——留给 P4-3/P4-5
   一起细化。
-- 连续多次扫描证据支持后自动转正（P4-2）、按主题类别的反馈学习细化
-  （P4-3）、报告质量分级（P4-4）、通知策略细化（P4-5）、看板概念统一
-  （P4-6）、任意主题的自定义黑名单细化（P4-7）均未实施，保持方向级
-  规划状态，见 `growth_advisor_improvement_plan_v2.md` 第 4 节。
+- 按主题类别的反馈学习细化（P4-3）、报告质量分级（P4-4）、通知策略细化
+  （P4-5）、看板概念统一（P4-6）、任意主题的自定义黑名单细化（P4-7）
+  均未实施，保持方向级规划状态，见 `growth_advisor_improvement_plan_v2.md`
+  第 4 节。
+
+### P4-2：关键词表"自动学习稳定后转正"
+
+- `_AUTO_CONFIRM_STREAK = 3`：连续命中阈值常量，经验取值。
+- `_update_keyword_learning_streaks(profile, hits)`：在
+  `growth_signal_scan()` 每次扫描结束时调用（在 `_persist_learned_topics`
+  之后、写回 `growth_focus_areas` 之前），遍历 `profile.derived
+  ["growth_topic_keywords"]` 里 `source == "llm_learned"` 且尚未确认的
+  主题：
+  - 本次扫描 `hits` 里出现该主题（无论是规则命中还是 LLM 增强命中）→
+    `consecutive_scan_hits += 1`；未出现 → 直接清零（要求"连续"，
+    不是"累计"，中断一次就重新计数）。
+  - 达到阈值后自动置 `confirmed_by_user = True`，并额外打上
+    `auto_confirmed = True` 标记（区别于用户手动点"✅ 保留"的场景），
+    同时把 `consecutive_scan_hits` 清零（已转正的主题不再需要继续维护
+    这个计数器）。
+  - `user_added`（用户手动添加，创建时已是确认状态）和已确认的
+    `llm_learned` 主题不参与这个计数，避免无意义的写入开销。
+  - 异常处理：整段逻辑包在 try/except 里，异常走
+    `log_exception(..., where="mini_agent.growth_advisor.
+    growth_signal_scan_auto_confirm")`，不影响本次扫描结果的返回。
+- `_effective_topic_keywords()` / `diagnostics_snapshot()` 的
+  `topics_detail` 同步透出 `consecutive_scan_hits`/`auto_confirmed`
+  两个新字段，供看板展示"连续命中 N 次，满 3 次自动保留"的进度提示，
+  以及给已经自动转正的主题打上"🤖 自动保留"标签，与用户手动确认的
+  主题做视觉区分。
+- 测试：`tests/test_growth_advisor.py` 新增 `TestKeywordAutoConfirmStreak`
+  （3 个用例：连续命中后自动转正、未命中导致 streak 清零、`user_added`
+  主题不参与计数），加上此前 P4-0/P4-1 的用例，`test_growth_advisor.py` +
+  `test_profile.py` 合计 62 项全部通过。

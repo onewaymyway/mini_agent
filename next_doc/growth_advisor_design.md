@@ -14,10 +14,10 @@
 > `next_doc/growth_advisor_implementation_record.md` 与用户指南
 > `docs/growth-advisor-guide.md`；后续演进方向已整理成
 > `next_doc/growth_advisor_improvement_plan_v2.md`。其中 **P4-0（`profile.
-> derived` 命名空间冲突修复）与 P4-1（关键词表持久化到 profile + 看板
-> 展示用户 profile / 关键词列表）已完成**，实施细节见
-> `growth_advisor_implementation_record.md` 的 P4 章节；P4-2 及以后仍是
-> 方向级规划，尚未开始实施。
+> derived` 命名空间冲突修复）、P4-1（关键词表持久化到 profile + 看板
+> 展示用户 profile / 关键词列表）、P4-2（关键词自动学习稳定后转正）
+> 已完成**，实施细节见 `growth_advisor_implementation_record.md` 的 P4
+> 章节；P4-3 及以后仍是方向级规划，尚未开始实施。
 
 ---
 

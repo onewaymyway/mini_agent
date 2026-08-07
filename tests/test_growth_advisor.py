@@ -944,5 +944,82 @@ class TestPersistedKeywords(unittest.TestCase):
             self.assertNotIn("preferences", snap["user_profile"])
 
 
+class TestKeywordAutoConfirmStreak(unittest.TestCase):
+    """P4-2（next_doc/growth_advisor_improvement_plan_v2.md 第 4 节）：
+    待确认的 llm_learned 主题连续多次扫描都有命中后自动转正。"""
+
+    def _scan_with_topic_hit(self, paths, profile, hit: bool):
+        now = time.time()
+        if hit:
+            entries = [
+                _FakeEntry(f"e{i}", "又聊到了摄影构图和用光", [], now - i)
+                for i in range(3)
+            ]
+        else:
+            entries = [
+                _FakeEntry(f"e{i}", "今天只是聊了下午饭吃什么", [], now - i)
+                for i in range(3)
+            ]
+        store = _FakeMemoryStore(entries)
+
+        def fake_llm(prompt: str) -> str:
+            if hit:
+                return json.dumps([{"topic": "摄影", "entry_ids": [e.entry_id for e in entries]}])
+            return json.dumps([])
+
+        return ga.growth_signal_scan(paths, profile, store, llm_helper=fake_llm)
+
+    def test_auto_confirms_after_consecutive_hits(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = _make_paths(tmp)
+            profile = UserProfile()
+            # 第 1、2 次扫描命中：streak 累积到 2，尚未转正
+            self._scan_with_topic_hit(paths, profile, hit=True)
+            self._scan_with_topic_hit(paths, profile, hit=True)
+            entry = profile.derived["growth_topic_keywords"]["摄影"]
+            self.assertFalse(entry["confirmed_by_user"])
+            self.assertEqual(entry["consecutive_scan_hits"], 2)
+
+            # 第 3 次扫描命中：达到阈值 3，自动转正
+            self._scan_with_topic_hit(paths, profile, hit=True)
+            entry = profile.derived["growth_topic_keywords"]["摄影"]
+            self.assertTrue(entry["confirmed_by_user"])
+            self.assertTrue(entry["auto_confirmed"])
+            self.assertEqual(entry["consecutive_scan_hits"], 0)
+
+    def test_streak_resets_on_miss(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = _make_paths(tmp)
+            profile = UserProfile()
+            self._scan_with_topic_hit(paths, profile, hit=True)
+            self._scan_with_topic_hit(paths, profile, hit=True)
+            self.assertEqual(
+                profile.derived["growth_topic_keywords"]["摄影"]["consecutive_scan_hits"], 2
+            )
+            # 未命中一次，streak 清零，即使主题仍然存在（关键词表兜底命中）
+            with tempfile.TemporaryDirectory():
+                pass
+            store = _FakeMemoryStore([])
+            ga.growth_signal_scan(paths, profile, store)
+            self.assertEqual(
+                profile.derived["growth_topic_keywords"]["摄影"]["consecutive_scan_hits"], 0
+            )
+            self.assertFalse(profile.derived["growth_topic_keywords"]["摄影"]["confirmed_by_user"])
+
+    def test_manually_confirmed_topic_does_not_track_streak(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = _make_paths(tmp)
+            profile = UserProfile()
+            ga.add_custom_topic_keyword(profile, "摄影", ["摄影"])  # user_added，直接已确认
+            store = _FakeMemoryStore(
+                [_FakeEntry("e1", "又聊到了摄影构图", [], time.time() - 1)]
+            )
+            ga.growth_signal_scan(paths, profile, store)
+            entry = profile.derived["growth_topic_keywords"]["摄影"]
+            # user_added 主题不参与 streak 计数，字段保持初始值
+            self.assertEqual(entry.get("consecutive_scan_hits", 0), 0)
+            self.assertFalse(entry.get("auto_confirmed", False))
+
+
 if __name__ == "__main__":
     unittest.main()

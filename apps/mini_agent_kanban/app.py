@@ -3519,7 +3519,9 @@ def _render_growth_profile_and_keywords(client: "AgentClient", diagnostics: dict
         st.caption("内置：" + "、".join(f"`{t['topic']}`" for t in built_in))
     for t in learned:
         cols = st.columns([4, 1, 1])
-        cols[0].write(f"🟡 待确认：**{t['topic']}**（{', '.join(t['keywords'])}）")
+        streak = t.get("consecutive_scan_hits", 0)
+        streak_hint = f"（连续命中 {streak} 次，满 3 次自动保留）" if streak else ""
+        cols[0].write(f"🟡 待确认：**{t['topic']}**（{', '.join(t['keywords'])}）{streak_hint}")
         if cols[1].button("✅ 保留", key=f"growth_kw_confirm_{t['topic']}"):
             client.growth_keyword_confirm(t["topic"])
             st.rerun()
@@ -3528,7 +3530,8 @@ def _render_growth_profile_and_keywords(client: "AgentClient", diagnostics: dict
             st.rerun()
     for t in user_added:
         cols = st.columns([5, 1])
-        cols[0].write(f"🔵 **{t['topic']}**（{', '.join(t['keywords'])}）")
+        auto_tag = " 🤖 自动保留" if t.get("auto_confirmed") else ""
+        cols[0].write(f"🔵 **{t['topic']}**（{', '.join(t['keywords'])}）{auto_tag}")
         if cols[1].button("❌ 删除", key=f"growth_kw_remove_{t['topic']}"):
             client.growth_keyword_remove(t["topic"])
             st.rerun()
