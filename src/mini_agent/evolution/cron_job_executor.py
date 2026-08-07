@@ -119,7 +119,7 @@ class CronJobExecutor:
             max_recoveries=cfg.stuck_max_recoveries,
         )
 
-        prompt = ws.render_prompt(job.task_template)
+        prompt = ws.render_prompt(job.task_template, run_id=run_id)
         deadline = time.time() + cfg.timeout_seconds
         step_index = 0
         final_status = STATUS_IDLE
@@ -215,11 +215,48 @@ class CronJobExecutor:
                 "type": "run_finished", "status": final_status,
                 "steps_executed": step_index, "duration_seconds": duration,
             })
+            self._write_output_manifest(
+                job=job, run_id=run_id, status=final_status,
+                started_at=state.last_run_started_at,
+                finished_at=state.last_run_finished_at,
+                progress_note=state.progress_summary,
+            )
 
         return RunOutcome(
             run_id=run_id, status=final_status,
             steps_executed=step_index, duration_seconds=duration,
         )
+
+    def _write_output_manifest(
+        self,
+        job: "CronJob",
+        run_id: str,
+        status: str,
+        started_at: float,
+        finished_at: float,
+        progress_note: str,
+    ) -> None:
+        """[goal_cron_output_directory_convention_plan.md §2.2] run_job()
+        收尾（无论 idle/timed_out/needs_human_review）时落一份 manifest，
+        供下次触发时 CronJobWorkspace.render_prompt() 通过
+        {{previous_output}} 读取。异常整体吞掉——manifest 是感知增强，
+        不能反过来影响 run_job() 本身的主流程/返回值。"""
+        try:
+            from mini_agent.evolution import output_workspace
+            base_dir = output_workspace.cron_output_base_dir(self._paths, job.id)
+            run_dir = output_workspace.allocate_run_dir(self._paths, job.id, run_id)
+            output_workspace.write_manifest(
+                base_dir, run_dir,
+                task_summary=(job.task_template or "")[:200],
+                started_at=started_at,
+                finished_at=finished_at,
+                status=status,
+                artifacts=[],
+                progress_note=progress_note,
+            )
+        except Exception as e:  # noqa: BLE001
+            from mini_agent.errors import log_exception
+            log_exception(e, where="mini_agent.evolution.cron_job_executor._write_output_manifest")
 
 
 __all__ = ["CronJobExecutor", "StepResult", "RunOutcome"]

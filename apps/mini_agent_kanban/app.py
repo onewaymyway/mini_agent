@@ -2149,6 +2149,54 @@ def _render_objective_execution_detail(client: AgentClient, execution: dict, key
                     st.toast("✏️ 插话已保存，下一步将附带这段说明", icon="✏️")
 
 
+def _render_goal_output_manifests(client: AgentClient, goal_id: str, key_prefix: str = "", limit: int = 5) -> None:
+    """读 outputs/goals/<goal_id>/latest.json 找到最新一轮目录名，倒序展开
+    最近 `limit` 轮的 manifest.json，只列文件名 + 备注，不做文件预览/下载。
+    目录/文件不存在（这一轮改造上线之前的历史 Goal，或还没跑过一轮）时
+    静默不展示，不报错打扰用户。"""
+    base = f"outputs/goals/{goal_id}"
+    try:
+        latest_resp = client.fs_read(f"{base}/latest.json")
+    except Exception:
+        return
+    content = (latest_resp or {}).get("content") if isinstance(latest_resp, dict) else None
+    if not content:
+        return
+    try:
+        latest = json.loads(content)
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return
+    latest_dir = latest.get("latest_dir")
+    if not latest_dir:
+        return
+
+    try:
+        cycle_no = int(str(latest_dir).rsplit("_", 1)[-1])
+    except ValueError:
+        cycle_no = None
+
+    with st.expander(f"📂 查看产出（最新：{latest_dir}）"):
+        dir_names = (
+            [f"cycle_{i:04d}" for i in range(cycle_no, max(cycle_no - limit, 0), -1)]
+            if cycle_no else [latest_dir]
+        )
+        for dir_name in dir_names:
+            try:
+                m_resp = client.fs_read(f"{base}/{dir_name}/manifest.json")
+                manifest = json.loads((m_resp or {}).get("content") or "{}")
+            except Exception:
+                continue
+            if not manifest:
+                continue
+            st.caption(f"**{dir_name}** · {manifest.get('status', '')} · {manifest.get('task_summary', '')}")
+            for a in manifest.get("artifacts") or []:
+                path = a.get("path", "") if isinstance(a, dict) else str(a)
+                if path:
+                    st.markdown(f"&nbsp;&nbsp;- `{path}`", unsafe_allow_html=True)
+            if manifest.get("progress_note"):
+                st.caption(f"　备注：{manifest['progress_note']}")
+
+
 def _render_goal_card(
     client: AgentClient, n: dict, status_key: str, indent: bool = False, note: str = "",
     execution: Optional[dict] = None, cron_next_run_by_id: Optional[dict] = None,
@@ -2253,6 +2301,14 @@ def _render_goal_card(
                     if occurred_at else "-"
                 )
                 st.caption(f"`{ts_str}` **{item.get('title', '')}**：{item.get('snippet', '')}")
+
+    # [goal_cron_output_directory_convention_plan.md §4] 周期性 Goal 卡片
+    # 追加"📂 查看产出"折叠区：读 outputs/goals/<goal_id>/latest.json + 最近
+    # 几轮 manifest.json，只列文件名，不做预览/下载——避免看板膨胀成文件
+    # 管理器，需要的话用户直接去 outputs/ 目录看（沿用已有的 /fs/* 只读接口，
+    # 不新增专用后端路由）。
+    if n.get("level") != "objective" and n.get("recurring"):
+        _render_goal_output_manifests(client, n.get("id", ""), key_prefix=key_prefix)
 
     if execution is not None:
         _render_objective_execution_detail(client, execution, key_prefix=key_prefix)

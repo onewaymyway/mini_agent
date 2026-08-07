@@ -179,7 +179,12 @@ class TestFireGoalCycle(unittest.TestCase):
             children = gb.get(goal.id).children_ids
             self.assertEqual(len(children), 1)
             child = gb.get(children[0])
-            self.assertEqual(child.description, "搜索最新 AI 技术进展")
+            # [goal_cron_output_directory_convention_plan.md §3] _fire_goal_cycle()
+            # 现在会在描述末尾追加"本轮产出请写入：<cycle_dir>"，原始
+            # task_template 仍完整保留在前面。
+            self.assertTrue(child.description.startswith("搜索最新 AI 技术进展"))
+            self.assertIn("本轮产出请写入：", child.description)
+            self.assertIn("cycle_0001", child.description)
             self.assertIn("第 1 轮", child.title)
 
             # 第一轮仍在跑（is_running=True）：第二次触发应该被幂等检查拦住

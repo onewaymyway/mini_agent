@@ -207,6 +207,8 @@ kanban：Goal 详情卡片、Cron job 卡片各有一个「💬 提意见」折�
 2. 禁止把产出的代码写入 `tests/` 目录。
 3. 和 skill 相关的产出，放到对应 skill 的目录下。
 4. 任务本身已经说明了工作目录的，产出放到该工作目录下。
+5. 如果任务描述里出现了"本轮产出请写入：<目录>"这一行（周期性 Goal/
+   CronJob 每轮自动附加，见第 10 节），以该目录为准，优先级高于本规范其他各条。
 
 如果任务描述中明确要求修改 `src/`、`tests/` 或指定了其他路径，以任务描述的
 明确说明为准，本规范不覆盖显式指令。
@@ -231,8 +233,95 @@ kanban：Goal 详情卡片、Cron job 卡片各有一个「💬 提意见」折�
 调用，避免误伤"用户确实特殊说明要改 `src/` 下代码"的合法场景。任务描述里的显式指令
 始终优先于这份规范。
 
-## 9. 已知限制（新增）
+## 10. 产出目录规范（周期性 Goal/CronJob）
+
+[`goal_cron_output_directory_convention_plan.md`] 为每个 recurring Goal 的每一轮
+执行 / 每个（非 goal_cycle 的）普通 CronJob 的每次触发，分配一个稳定、可预测、
+按时间排序的产出目录，并把"上一轮产出了什么"结构化传给下一轮，不再只靠
+`progress_summary` 自由文本回忆。
+
+### 目录结构
+
+```
+<project_root>/outputs/
+├── goals/<goal_id>/
+│   ├── latest.json              # 指针文件：{"latest_dir": "cycle_0003", ...}
+│   ├── cycle_0001/manifest.json
+│   ├── cycle_0002/manifest.json
+│   └── ...
+└── cron/<job_id>/                # job_id 里的 ':' 换成 '_'，与
+    ├── latest.json                # CronJobWorkspace 目录命名一致
+    ├── run_<run_id>/manifest.json
+    └── ...
+```
+
+- **`goals/<goal_id>/`**：对应绑定了 `recurring=True` 的 Goal。每次
+  `goal_cron_bridge._fire_goal_cycle()` 成功触发新一轮时，分配
+  `cycle_%04d` 目录，编号为 `GoalNode.cycle_count + 1`（触发前的值 +1）。
+- **`cron/<job_id>/`**：对应没有绑定 recurring Goal 的普通 CronJob
+  （dedicated-execution 模式，`run_mode != "goal_cycle"`），用触发时的
+  `run_id`（与 `.agent/cron_jobs/<job_id>/runs/<run_id>.jsonl` 同一个
+  `run_id`，方便对照）分配 `run_<run_id>` 目录。
+- 两者互斥：`run_mode="goal_cycle"` 的 job 只走 `goals/<goal_id>/`，不在
+  `cron/<job_id>/` 下重复开一份。
+- 不使用符号链接（跨平台，Windows 默认无权限创建），"最新一轮"用
+  `latest.json` 这个小指针文件表达，每轮收尾（无论 completed/failed/
+  cancelled/timed_out/needs_human_review）时更新。
+- **只覆盖周期性场景**：一次性（非 recurring）Goal 不套用这套目录规范，
+  agent 仍自己判断产出放哪（受第 8 节的产出路径规范约束）。
+
+### `manifest.json`
+
+```json
+{
+  "version": 1,
+  "dir_name": "cycle_0003",
+  "task_summary": "本轮任务的一句话描述",
+  "started_at": 1754567890.0,
+  "finished_at": 1754568900.0,
+  "status": "completed",
+  "artifacts": [{"path": "weekly_report.md", "description": ""}],
+  "progress_note": "已完成 3/3 步骤",
+  "previous_cycle_dir": "outputs/goals/goal_abcd1234/cycle_0002"
+}
+```
+
+- `artifacts` 复用已经在跑的 Track G 产出提取结果（`ExecutionStep.
+  artifacts`）——execution 收尾时把所有 step 的 `artifacts` 去重合并写入，
+  不新增一套产出发现机制；dedicated-execution cron 路径（不经过
+  ObjectiveExecutor）暂时写空列表。
+- `progress_note` 复用 `ObjectiveExecution.progress_notes` /
+  `CronJobState.progress_summary` 的既有文本。
+- `previous_cycle_dir` 让"下一轮读上一轮产出"不需要额外查表。
+
+### 传递机制
+
+- **dedicated-execution cron**：`CronJobWorkspace.render_prompt()` 新增
+  `{{previous_output}}`/`{{previous_output_dir}}`/`{{output_dir}}` 三个
+  占位符（配合 `{{#previous_output}}` 条件块），`DEFAULT_PROMPT_TEMPLATE`
+  已更新为包含这三个占位符；已存在的自定义 `prompt.md` 如果没有这些
+  占位符则不受影响。
+- **recurring Goal**：`_fire_goal_cycle()` 触发子 Objective 时，在拼好的
+  `description` 末尾追加"上一轮产出摘要 + 本轮产出请写入：<绝对路径>"，
+  与 dedicated 模式共享同一份 `evolution/output_workspace.py` 里的
+  分配/读写工具函数，避免两处实现分叉。
+- `output_path_policy.py` 的默认规范新增第 5 条，说明"本轮产出请写入："
+  这行优先级最高（见第 8 节）。
+
+### 看板
+
+Goal 卡片（周期性）新增一个"📂 查看产出"折叠区，通过已有的 `/fs/list`/
+`/fs/read` 只读接口读 `latest.json` + 最近几轮 `manifest.json`，只列文件名
+和备注，不做文件预览/下载——需要的话用户直接去 `outputs/` 目录看。
+
+对应模块：`evolution/output_workspace.py`（目录分配 + manifest 读写 +
+prompt 格式化，`cron_job_workspace.py`/`goal_cron_bridge.py`/
+`cron_job_executor.py`/`objective_executor.py` 都只调用这个模块）。
+
+## 11. 已知限制（新增）
 
 - 用户意见追加不做去重/冲突检测：同一个节点反复提相互矛盾的意见时，历史全部保留，
   agent 在执行时自己综合判断，不会自动合并或提示冲突。
 - 产出路径规范只是 prompt 层面的软约束，不做运行时强制校验/拒绝执行。
+- 产出目录规范不做旧数据迁移（改造上线之前的历史产出散落在哪就留在哪），也不做
+  `manifest.json` 里 `artifacts` 声明路径的存在性校验，更不做自动清理/归档策略。

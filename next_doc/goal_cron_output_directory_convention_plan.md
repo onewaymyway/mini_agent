@@ -231,5 +231,40 @@ render_prompt()`（那是 dedicated-execution cron 专属路径）——需要�
 
 ## 6. 实施记录
 
-（本轮为设计讨论，未实施。评审通过后按 §4 的模块清单拆 Track 施工，
-每个 Track 完成后在本节追加记录，遵循既有节奏。）
+**已实施**（一次性完成，未按 Track 拆分——改动范围与本文档设计一致，无需
+分阶段评审）：
+
+- 新增 `src/mini_agent/evolution/output_workspace.py`：`allocate_cycle_dir()`/
+  `allocate_run_dir()`、`write_manifest()`、`read_latest_manifest()`、
+  `format_manifest_for_prompt()`，集中管理目录分配和 manifest 读写。
+- `cron_job_workspace.py`：`render_prompt()` 新增 `run_id` 参数，支持
+  `{{previous_output}}`/`{{previous_output_dir}}`/`{{output_dir}}` 三个
+  占位符 + `{{#previous_output}}` 条件块；`DEFAULT_PROMPT_TEMPLATE` 已更新。
+- `cron_job_executor.py`：`run_job()` 传入 `run_id` 渲染 prompt，收尾时调用
+  新增的 `_write_output_manifest()` 落 manifest（`cron/<job_id>/run_<run_id>/`）。
+- `goal_cron_bridge.py`：`_fire_goal_cycle()` 新增 `_append_output_workspace_context()`，
+  分配 `goals/<goal_id>/cycle_%04d/` 目录并拼进子 Objective 的 `description`。
+- `objective_executor.py`：新增 `_write_output_manifest()`，在
+  `_on_objective_completed`/`_on_objective_failed`/`_on_objective_cancelled`
+  三处收尾方法中调用，只对绑定了 `recurring=True` 父 Goal 的子 Objective
+  生效（开放问题 3 采纳"一次性 Goal 不套用"的方案）；`artifacts` 复用
+  `ExecutionStep.artifacts`（Track G）去重合并写入。
+- `output_path_policy.py`：`DEFAULT_POLICY` 追加第 5 条规则。
+- `apps/mini_agent_kanban/app.py`：新增 `_render_goal_output_manifests()`，
+  周期性 Goal 卡片新增"📂 查看产出"折叠区，复用已有 `/fs/list`/`/fs/read`
+  只读接口，不新增后端路由。
+- `docs/goal-cron-binding-guide.md`：新增第 10 节说明这套目录规范，第 8 节
+  产出路径规范示例同步更新第 5 条规则，第 9 节已知限制改编号为第 11 节
+  并追加本方案的限制说明。
+- 回归：`test_cron_job_workspace_and_executor.py`/`test_goal_cron_bridge.py`/
+  `test_goal_cron_feedback_and_output_policy.py` 全部通过（`test_goal_cron_bridge.py`
+  里断言子 Objective `description` 精确等于 `task_template` 的旧用例已更新为
+  断言"以 task_template 开头 + 包含本轮产出目录提示"，因为这正是本方案的
+  预期行为变化）。`test_objective_executor_*` 系列在补齐本地测试环境缺失的
+  `pydantic`/`uvicorn`/`fastapi` 依赖后，未受本方案改动影响的用例继续通过。
+
+**未覆盖（开放问题的暂定结论，供后续按需调整）**：
+- `outputs/` 顶层目录名未做成可配置项，直接采用方案原文的默认值。
+- `manifest.json` 里的 `artifacts` 不做路径存在性校验。
+- 一次性 Goal 不套用本目录规范。
+- 不做旧数据迁移、不做自动清理/归档策略（与"非目标"一节保持一致）。

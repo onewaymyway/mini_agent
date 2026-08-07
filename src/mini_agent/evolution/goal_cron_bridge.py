@@ -146,11 +146,13 @@ def _fire_goal_cycle(
     # task_template，父 Goal 里的约束（含用户后续追加的意见）就不会出现在
     # 子任务里。改成拼接：父 Goal 说明在前，本轮具体任务模板在后，都保留。
     from mini_agent.perception.goal_backlog import compose_context
+    description = compose_context(goal.description, job.task_template)
+    description = _append_output_workspace_context(paths, goal.id, cycle_no, description)
     objective = goal_backlog.add_objective(
         title=f"{goal.title}（第 {cycle_no} 轮）",
         parent_id=goal.id,
         source="cron",
-        description=compose_context(goal.description, job.task_template),
+        description=description,
     )
 
     exec_id = objective_executor.start(objective)
@@ -165,6 +167,39 @@ def _fire_goal_cycle(
         return False
 
     return True
+
+
+def _append_output_workspace_context(paths, goal_id: str, cycle_no: int, description: str) -> str:
+    """[goal_cron_output_directory_convention_plan.md §3] recurring Goal
+    一侧不经过 CronJobWorkspace.render_prompt()（那是 dedicated-execution
+    cron 专属路径），这里补一段等价逻辑：分配本轮产出目录、读上一轮
+    manifest，拼进子 Objective 描述末尾。
+
+    paths 为 None（拿不到 AgentPaths，理论上不应发生，防御性处理）或任何
+    环节异常时，静默跳过——不影响 Goal 触发主流程，退化为改造前的行为
+    （agent 自己判断产出放哪）。
+    """
+    if paths is None:
+        return description
+    try:
+        from mini_agent.evolution import output_workspace
+        base_dir = output_workspace.goal_output_base_dir(paths, goal_id)
+        cycle_dir = output_workspace.allocate_cycle_dir(paths, goal_id, cycle_no)
+
+        parts = [description] if description and description.strip() else []
+
+        prev_manifest = output_workspace.read_latest_manifest(base_dir)
+        if prev_manifest:
+            prev_text = output_workspace.format_manifest_for_prompt(prev_manifest)
+            if prev_text:
+                parts.append(f"--- 上一轮产出（{prev_manifest.get('_dir', '')}） ---\n{prev_text}")
+
+        parts.append(f"本轮产出请写入：{cycle_dir}")
+        return "\n\n".join(parts)
+    except Exception as _mini_agent_exc:
+        from mini_agent.errors import log_exception
+        log_exception(_mini_agent_exc, where='mini_agent.evolution.goal_cron_bridge._append_output_workspace_context')
+        return description
 
 
 # ── 绑定/解绑（用户操作入口） ───────────────────────────────────────────────────

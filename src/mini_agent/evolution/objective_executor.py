@@ -1879,10 +1879,57 @@ class ObjectiveExecutor:
             from mini_agent.errors import log_exception
             log_exception(_mini_agent_exc, where='mini_agent.evolution.objective_executor._record_theme_outcome')
 
+    def _write_output_manifest(self, ex: ObjectiveExecution, status: str) -> None:
+        """[goal_cron_output_directory_convention_plan.md §2.2] 只对"绑定了
+        recurring Goal 的周期性子 Objective"落 manifest——普通一次性 Goal
+        不套用这套目录规范（§5 开放问题 3 的暂定结论）。
+
+        cycle 编号复用 goal_cron_bridge._fire_goal_cycle() 分配目录时的
+        同一条规则（goal.cycle_count + 1）：GoalNode.cycle_count 只在
+        reap_finished_cycles()（触发之后、由 AutonomousLoop 被动 tick 调用）
+        里递增，本方法调用时机（Objective 刚收尾）必然早于那次递增，
+        因此这里重新计算出的 cycle_no 与分配目录时一致，不需要额外
+        把 cycle_no 存进 execution 状态里。
+        """
+        if self._goal_backlog is None:
+            return
+        try:
+            goal_id = self._goal_id_of_objective(ex.objective_id)
+            if goal_id == ex.objective_id:
+                return  # 没有父 Goal，不是周期性子 Objective
+            goal = self._goal_backlog.get(goal_id)
+            if goal is None or not goal.is_goal or not goal.recurring:
+                return
+
+            from mini_agent.evolution import output_workspace
+            cycle_no = goal.cycle_count + 1
+            base_dir = output_workspace.goal_output_base_dir(self._paths, goal_id)
+            cycle_dir = output_workspace.allocate_cycle_dir(self._paths, goal_id, cycle_no)
+
+            seen: dict[str, None] = {}
+            for step in ex.steps:
+                for p in step.artifacts:
+                    seen.setdefault(p, None)
+            artifacts = [{"path": p, "description": ""} for p in seen]
+
+            output_workspace.write_manifest(
+                base_dir, cycle_dir,
+                task_summary=ex.objective_title[:200],
+                started_at=ex.started_at,
+                finished_at=ex.finished_at,
+                status=status,
+                artifacts=artifacts,
+                progress_note=ex.progress_notes,
+            )
+        except Exception as _mini_agent_exc:
+            from mini_agent.errors import log_exception
+            log_exception(_mini_agent_exc, where='mini_agent.evolution.objective_executor._write_output_manifest')
+
     def _on_objective_completed(self, ex: ObjectiveExecution) -> None:
         """Objective 全部步骤完成后的收尾动作。"""
         self._sync_goal_status(ex.objective_id, "completed")
         self._record_theme_outcome(ex, "completed")
+        self._write_output_manifest(ex, "completed")
         try:
             from mini_agent.evolution.resource_arbiter import append_activity_digest
             append_activity_digest(self._paths, {
@@ -1903,6 +1950,7 @@ class ObjectiveExecutor:
         """Objective 执行失败后的收尾动作。"""
         self._sync_goal_status(ex.objective_id, "failed")
         self._record_theme_outcome(ex, "failed")
+        self._write_output_manifest(ex, "failed")
         try:
             from mini_agent.evolution.resource_arbiter import append_activity_digest
             append_activity_digest(self._paths, {
@@ -1946,6 +1994,7 @@ class ObjectiveExecutor:
         避免覆盖用户刚设置的值。digest 记录不受影响，始终执行。"""
         if sync_goal_status:
             self._sync_goal_status(ex.objective_id, "cancelled")
+        self._write_output_manifest(ex, "cancelled")
         try:
             from mini_agent.evolution.resource_arbiter import append_activity_digest
             append_activity_digest(self._paths, {

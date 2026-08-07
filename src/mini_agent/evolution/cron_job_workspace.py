@@ -105,7 +105,14 @@ DEFAULT_PROMPT_TEMPLATE = (
     "请从上述进度继续，不要从头重新开始。\n"
     "{{/progress}}\n"
     "\n"
+    "{{#previous_output}}\n"
+    "--- 上一轮产出（{{previous_output_dir}}） ---\n"
+    "{{previous_output}}\n"
+    "{{/previous_output}}\n"
+    "\n"
     "{{output_policy}}\n"
+    "\n"
+    "本轮产出请写入：{{output_dir}}\n"
 )
 
 
@@ -176,10 +183,10 @@ class CronJobWorkspace:
     def write_state(self, state: CronJobState) -> None:
         atomic_write_json(self.state_path, state.to_dict())
 
-    def render_prompt(self, task_description: str) -> str:
+    def render_prompt(self, task_description: str, run_id: Optional[str] = None) -> str:
         """把 prompt.md 模板渲染成最终发给 agent 的文本。
 
-        支持三个占位符：
+        支持的占位符：
           {{task_description}} — cron_jobs.json 里配置的 task_template
           {{progress}}         — 上次执行遗留的 progress_summary（可能为空）
           {{output_policy}}    — [goal_cron_feedback_and_output_policy_plan.md
@@ -188,26 +195,43 @@ class CronJobWorkspace:
                                   占位符则不受影响（不强行插入）——用户如果想要
                                   这段规范，自己在 prompt.md 里加上即可，等价于
                                   用户主动选择不需要。
-        以及一个极简的 {{#progress}}...{{/progress}} 条件块：
-        progress 为空时整段连同标记一起去掉，避免每次都印出一段空的
-        "上次进度"标题。
+          {{previous_output}}     — [goal_cron_output_directory_convention_plan.md
+                                     §3] 上一次触发产出的文件清单摘要（没有
+                                     历史记录时为空，配合 {{#previous_output}}
+                                     条件块整体隐藏）。
+          {{previous_output_dir}} — 上一次触发产出目录的绝对路径。
+          {{output_dir}}           — 本次触发分配到的产出目录绝对路径，
+                                     由 output_workspace.allocate_run_dir()
+                                     幂等创建。run_id 未传入时（调用方还没
+                                     生成 run_id）留空，不创建目录。
+        以及两个极简的 {{#xxx}}...{{/xxx}} 条件块：progress/previous_output
+        为空时整段连同标记一起去掉，避免每次都印出一段空标题。
         """
         template = self.read_prompt()
         state = self.read_state()
         progress = state.progress_summary.strip()
 
-        if "{{#progress}}" in template and "{{/progress}}" in template:
-            start = template.index("{{#progress}}")
-            end = template.index("{{/progress}}") + len("{{/progress}}")
-            block = template[start:end]
-            if progress:
-                inner = block[len("{{#progress}}"):-len("{{/progress}}")]
-                template = template[:start] + inner + template[end:]
-            else:
-                template = template[:start] + template[end:]
+        output_dir_text = ""
+        previous_output_text = ""
+        previous_output_dir_text = ""
+        if run_id:
+            from mini_agent.evolution import output_workspace
+            base_dir = output_workspace.cron_output_base_dir(self._paths, self.job_id)
+            out_dir = output_workspace.allocate_run_dir(self._paths, self.job_id, run_id)
+            output_dir_text = str(out_dir)
+            prev_manifest = output_workspace.read_latest_manifest(base_dir)
+            if prev_manifest:
+                previous_output_text = output_workspace.format_manifest_for_prompt(prev_manifest)
+                previous_output_dir_text = prev_manifest.get("_dir", "")
+
+        template = self._render_condition_block(template, "progress", bool(progress))
+        template = self._render_condition_block(template, "previous_output", bool(previous_output_text))
 
         template = template.replace("{{task_description}}", task_description)
         template = template.replace("{{progress}}", progress)
+        template = template.replace("{{previous_output}}", previous_output_text)
+        template = template.replace("{{previous_output_dir}}", previous_output_dir_text)
+        template = template.replace("{{output_dir}}", output_dir_text)
         if "{{output_policy}}" in template:
             try:
                 from mini_agent.evolution.output_path_policy import load_policy
@@ -216,6 +240,24 @@ class CronJobWorkspace:
                 policy_text = ""
             template = template.replace("{{output_policy}}", policy_text)
         return template
+
+    @staticmethod
+    def _render_condition_block(template: str, name: str, keep: bool) -> str:
+        """极简 {{#name}}...{{/name}} 条件块处理：keep=False 时整段连同
+        标记一起去掉；keep=True 时只去掉标记本身，保留内部内容（内容里的
+        占位符由调用方后续统一 replace）。标记不存在时原样返回。
+        """
+        start_tag = f"{{{{#{name}}}}}"
+        end_tag = f"{{{{/{name}}}}}"
+        if start_tag not in template or end_tag not in template:
+            return template
+        start = template.index(start_tag)
+        end = template.index(end_tag) + len(end_tag)
+        block = template[start:end]
+        if keep:
+            inner = block[len(start_tag):-len(end_tag)]
+            return template[:start] + inner + template[end:]
+        return template[:start] + template[end:]
 
     # ── 用户意见反馈 ──────────────────────────────────────────────────────
 
