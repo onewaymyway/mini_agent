@@ -619,6 +619,16 @@ class AgentClient:
     def growth_first_touch_ack(self):
         return self._post("/growth/first_touch_ack")
 
+    # [next_doc/growth_advisor_improvement_plan_v2.md P4-1] 关键词表持久化
+    def growth_keyword_add(self, topic: str, keywords: str):
+        return self._post("/growth/keywords", json_body={"topic": topic, "keywords": keywords})
+
+    def growth_keyword_confirm(self, topic: str):
+        return self._post(f"/growth/keywords/{topic}/confirm")
+
+    def growth_keyword_remove(self, topic: str):
+        return self._post(f"/growth/keywords/{topic}/remove")
+
     # ── 文件系统（产出物浏览）────────────────────────────────────────
     def fs_list(self, path="."):
         return self._get("/fs/list", params={"path": path})

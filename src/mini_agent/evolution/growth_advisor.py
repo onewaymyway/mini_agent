@@ -96,6 +96,26 @@ P3 范围（本次新增，第四项）——`growth_signal_scan` 的 LLM 增强
 
 仍不在本次范围内（见方案 P3 剩余项，占位在 next_doc 文档里）：
     - 看板里的拖拽式看板视图（当前仍是列表 + 采纳/忽略两个动作）
+
+P4-1 范围（对应 next_doc/growth_advisor_improvement_plan_v2.md，本次新增）
+——关键词表持久化 + 看板展示 profile / 关键词信息：
+    - `_effective_topic_keywords()`：运行时合并内置 `_TOPIC_KEYWORDS` +
+      `profile.derived["growth_topic_keywords"]`（用户增量），减去
+      `growth_topic_keywords_removed` 里标记隐藏的内置主题。
+      `growth_signal_scan()` 改用它替代直接引用模块常量。
+    - `_llm_augment_topics()` 归纳出的新主题会经 `_persist_learned_topics()`
+      写入 `profile.derived["growth_topic_keywords"]`
+      （`source="llm_learned", confirmed_by_user=False`），不再是"用完即弃"。
+    - `add_custom_topic_keyword()` / `remove_topic_keyword()` /
+      `confirm_topic_keyword()`：看板侧"➕ 添加自定义主题"/"❌ 删除"/
+      "✅ 保留"三个操作对应的后端函数。
+    - `diagnostics_snapshot()` 新增 `signal_scan.topics_detail`（带
+      source/confirmed_by_user 的关键词表明细）与 `user_profile`
+      （`UserProfile.derived` 的 summary/tech_stack/habits 只读快照，
+      不含 preferences），供看板"Agent 对你的了解"区块渲染。
+    - 前置修复（P4-0，见 `profile.py::UserProfileManager.generate()`）：
+      画像生成从整体覆盖 `profile.derived` 改成合并式更新，避免
+      `growth_focus_areas`/`growth_topic_keywords` 被定期画像刷新静默清空。
 """
 
 from __future__ import annotations
@@ -422,6 +442,165 @@ _TOPIC_KEYWORDS: dict[str, list[str]] = {
 }
 
 
+# ─────────── [P4-1] 关键词表持久化：profile.derived["growth_topic_keywords"] ───────────
+# next_doc/growth_advisor_improvement_plan_v2.md 第 3 节。内置表继续留在
+# 代码里（_TOPIC_KEYWORDS），profile.derived 只存增量：用户自定义
+# （source="user_added"）+ LLM 学到但待确认（source="llm_learned"）。
+
+def _effective_topic_keywords(profile) -> dict[str, dict[str, Any]]:
+    """合并内置关键词表 + 用户 profile 里的增量，减去用户隐藏的内置主题。
+
+    返回 {topic: {"keywords": [...], "source": "built_in"|"user_added"|
+    "llm_learned", "confirmed_by_user": bool, "added_at": float|None}}，
+    供 growth_signal_scan / diagnostics_snapshot 统一消费，替代此前直接
+    引用模块常量 `_TOPIC_KEYWORDS` 的写法。
+    """
+    derived = dict(getattr(profile, "derived", {}) or {})
+    removed = set(derived.get("growth_topic_keywords_removed") or [])
+    custom = dict(derived.get("growth_topic_keywords") or {})
+
+    result: dict[str, dict[str, Any]] = {}
+    for topic, kws in _TOPIC_KEYWORDS.items():
+        if topic in removed:
+            continue
+        result[topic] = {
+            "keywords": list(kws),
+            "source": "built_in",
+            "confirmed_by_user": True,
+            "added_at": None,
+        }
+    for topic, info in custom.items():
+        if not isinstance(info, dict):
+            continue
+        kws = [k for k in (info.get("keywords") or []) if k]
+        if not kws:
+            continue
+        result[topic] = {
+            "keywords": kws,
+            "source": info.get("source") or "user_added",
+            "confirmed_by_user": bool(info.get("confirmed_by_user", False)),
+            "added_at": info.get("added_at"),
+        }
+    return result
+
+
+def _clean_keywords(raw) -> list[str]:
+    """清洗用户/LLM 提供的关键词：去空白、去重（大小写不敏感）、丢弃空项。"""
+    if isinstance(raw, str):
+        raw = re.split(r"[,，、\n]+", raw)
+    seen: set[str] = set()
+    cleaned: list[str] = []
+    for item in raw or []:
+        kw = str(item).strip()
+        if not kw:
+            continue
+        key = kw.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        cleaned.append(kw)
+    return cleaned
+
+
+def add_custom_topic_keyword(profile, topic: str, keywords) -> dict[str, Any]:
+    """用户在看板上手动添加一个自定义主题，直接标记为已确认。"""
+    topic = (topic or "").strip()
+    if not topic:
+        raise ValueError("topic must not be empty")
+    cleaned = _clean_keywords(keywords)
+    if not cleaned:
+        raise ValueError("keywords must not be empty")
+
+    derived = dict(getattr(profile, "derived", {}) or {})
+    custom = dict(derived.get("growth_topic_keywords") or {})
+    entry = {
+        "keywords": cleaned,
+        "source": "user_added",
+        "confirmed_by_user": True,
+        "added_at": time.time(),
+    }
+    custom[topic] = entry
+    derived["growth_topic_keywords"] = custom
+    # 用户主动加回来的主题，如果之前被隐藏过，取消隐藏
+    removed = [t for t in (derived.get("growth_topic_keywords_removed") or []) if t != topic]
+    derived["growth_topic_keywords_removed"] = removed
+    profile.derived = derived
+    return entry
+
+
+def remove_topic_keyword(profile, topic: str) -> bool:
+    """删除/隐藏一个主题：自定义主题直接从增量表移除；内置主题记入
+    `growth_topic_keywords_removed` 黑名单（下次扫描时会被排除）。
+    """
+    topic = (topic or "").strip()
+    if not topic:
+        return False
+    derived = dict(getattr(profile, "derived", {}) or {})
+    custom = dict(derived.get("growth_topic_keywords") or {})
+    changed = False
+    if topic in custom:
+        del custom[topic]
+        derived["growth_topic_keywords"] = custom
+        changed = True
+    if topic in _TOPIC_KEYWORDS:
+        removed = set(derived.get("growth_topic_keywords_removed") or [])
+        if topic not in removed:
+            removed.add(topic)
+            derived["growth_topic_keywords_removed"] = sorted(removed)
+            changed = True
+    if changed:
+        profile.derived = derived
+    return changed
+
+
+def confirm_topic_keyword(profile, topic: str) -> bool:
+    """用户在看板上点\"✅ 保留\"，把一个待确认（通常是 llm_learned）的
+    自定义主题标记为已确认。对内置主题/不存在的主题是安全的空操作。
+    """
+    topic = (topic or "").strip()
+    derived = dict(getattr(profile, "derived", {}) or {})
+    custom = dict(derived.get("growth_topic_keywords") or {})
+    entry = custom.get(topic)
+    if not isinstance(entry, dict):
+        return False
+    if entry.get("confirmed_by_user"):
+        return False
+    entry = dict(entry)
+    entry["confirmed_by_user"] = True
+    custom[topic] = entry
+    derived["growth_topic_keywords"] = custom
+    profile.derived = derived
+    return True
+
+
+def _persist_learned_topics(profile, new_topics: dict[str, list[str]]) -> None:
+    """把 `_llm_augment_topics` 新发现的主题写入
+    `profile.derived["growth_topic_keywords"]`（source=llm_learned，
+    confirmed_by_user=False）。已经存在于增量表/内置表里的主题不会被
+    重复写入或覆盖已有状态（例如已被用户确认过的不会被打回未确认）。
+    """
+    if not new_topics:
+        return
+    derived = dict(getattr(profile, "derived", {}) or {})
+    custom = dict(derived.get("growth_topic_keywords") or {})
+    changed = False
+    for topic in new_topics:
+        if topic in custom or topic in _TOPIC_KEYWORDS:
+            continue
+        # LLM 没有直接给出关键词，用主题名自身兜底作为关键词，
+        # 保证下次规则扫描也能命中同一批记忆。
+        custom[topic] = {
+            "keywords": [topic],
+            "source": "llm_learned",
+            "confirmed_by_user": False,
+            "added_at": time.time(),
+        }
+        changed = True
+    if changed:
+        derived["growth_topic_keywords"] = custom
+        profile.derived = derived
+
+
 def growth_signal_scan(
     paths, profile, memory_store, *,
     window_days: int = SIGNAL_SCAN_WINDOW_DAYS,
@@ -446,6 +625,7 @@ def growth_signal_scan(
     cutoff = time.time() - window_days * 86400
     hits: dict[str, list[str]] = {}
 
+    effective_keywords = _effective_topic_keywords(profile)
     entries = memory_store.all_entries() if memory_store is not None else []
     recent_entries = [e for e in entries if getattr(e, "created_at", 0) >= cutoff]
     for entry in recent_entries:
@@ -453,13 +633,17 @@ def growth_signal_scan(
             [getattr(entry, "summary", "") or ""]
             + list(getattr(entry, "tags", []) or [])
         ).lower()
-        for topic, keywords in _TOPIC_KEYWORDS.items():
-            if any(kw.lower() in haystack for kw in keywords):
+        for topic, info in effective_keywords.items():
+            if any(kw.lower() in haystack for kw in info["keywords"]):
                 hits.setdefault(topic, []).append(getattr(entry, "entry_id", "") or "")
 
     if llm_helper is not None:
         try:
+            before_topics = set(hits.keys())
             hits = _llm_augment_topics(hits, recent_entries, llm_helper)
+            new_topics = set(hits.keys()) - before_topics - set(effective_keywords.keys())
+            if new_topics:
+                _persist_learned_topics(profile, {t: hits[t] for t in new_topics})
         except Exception as exc:
             from mini_agent.errors import log_exception
             log_exception(exc, where="mini_agent.growth_advisor.growth_signal_scan_llm_augment")
@@ -1043,6 +1227,30 @@ def diagnostics_snapshot(paths, cfg, profile, memory_store) -> dict[str, Any]:
     cutoff = time.time() - SIGNAL_SCAN_WINDOW_DAYS * 86400
     entries_in_window = sum(1 for e in entries if getattr(e, "created_at", 0) >= cutoff)
 
+    # [P4-1] 关键词表按来源展示（内置/系统学到待确认/用户自定义），
+    # 而不是只给一个不带来源信息的主题名列表。
+    effective_keywords = _effective_topic_keywords(profile)
+    topics_detail = [
+        {
+            "topic": topic,
+            "keywords": info["keywords"],
+            "source": info["source"],
+            "confirmed_by_user": info["confirmed_by_user"],
+        }
+        for topic, info in effective_keywords.items()
+    ]
+
+    # [P4-1] 看板"Agent 对你的了解"区块：只透出 LLM 生成的画像部分
+    # （summary/tech_stack/habits），不包含 preferences（用户显式设置的
+    # 偏好是另一回事，混在一起展示容易让用户误解）。
+    derived_profile = dict(getattr(profile, "derived", {}) or {})
+    user_profile_snapshot = {
+        "summary": derived_profile.get("summary") or "",
+        "tech_stack": list(derived_profile.get("tech_stack") or []),
+        "habits": list(derived_profile.get("habits") or []),
+        "updated_at": derived_profile.get("updated_at"),
+    }
+
     return {
         "config": {
             "enabled": getattr(cfg, "enabled", True),
@@ -1057,7 +1265,8 @@ def diagnostics_snapshot(paths, cfg, profile, memory_store) -> dict[str, Any]:
         "signal_scan": {
             "window_days": SIGNAL_SCAN_WINDOW_DAYS,
             "last_scan_at": last_scan_at,
-            "topics_tracked": list(_TOPIC_KEYWORDS.keys()),
+            "topics_tracked": list(effective_keywords.keys()),
+            "topics_detail": topics_detail,
             # 只给每个主题命中了多少条，不回显 entry_id/记忆原文
             "topic_hit_counts": {topic: len(ids) for topic, ids in focus_areas.items()},
         },
@@ -1065,4 +1274,5 @@ def diagnostics_snapshot(paths, cfg, profile, memory_store) -> dict[str, Any]:
             "total_entries": len(entries),
             "entries_in_scan_window": entries_in_window,
         },
+        "user_profile": user_profile_snapshot,
     }

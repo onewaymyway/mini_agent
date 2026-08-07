@@ -44,6 +44,15 @@ if TYPE_CHECKING:
     from mini_agent.perception.memory_store import MemoryEntry
 
 
+# [next_doc/growth_advisor_improvement_plan_v2.md P4-0] `derived` 的命名空间
+# 约定：UserProfileManager.generate() 只负责下面这几个 key，其余 key（如
+# growth_advisor 写入的 growth_focus_areas / growth_topic_keywords）由各自
+# 的模块自行管理，generate() 不会触碰、也不会清空它们。
+PROFILE_GENERATED_KEYS = frozenset(
+    {"summary", "tech_stack", "habits", "source_entry_count", "updated_at"}
+)
+
+
 @dataclass
 class UserProfile:
     user_id: str = "default"
@@ -185,13 +194,20 @@ class UserProfileManager:
         except json.JSONDecodeError:
             parsed = {"summary": raw[:500]}
 
-        derived = {
+        new_fields = {
             "summary": str(parsed.get("summary", ""))[:1000],
             "tech_stack": list(parsed.get("tech_stack", []))[:20],
             "habits": list(parsed.get("habits", []))[:20],
             "source_entry_count": len(entries),
             "updated_at": time.time(),
         }
-        profile.derived = derived
+        # [next_doc/growth_advisor_improvement_plan_v2.md P4-0] 合并式更新：
+        # 只覆盖本方法自己负责的固定字段集合（_GENERATED_KEYS），保留
+        # derived 里其他模块（如 growth_advisor）写入的 key（例如
+        # growth_focus_areas / growth_topic_keywords）。此前是整体替换
+        # `profile.derived = derived`，会把这些字段悄悄清空。
+        merged = dict(profile.derived or {})
+        merged.update(new_fields)
+        profile.derived = merged
         self.save()
         return profile

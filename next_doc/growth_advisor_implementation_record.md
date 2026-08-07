@@ -453,3 +453,90 @@
   时区跨天的边界情况（用的是 `time.localtime()`，即运行进程所在机器的
   本地时区）；对单机自托管场景够用，多时区/云端多副本部署场景需要另外
   处理。
+
+---
+
+## P4（对应 `next_doc/growth_advisor_improvement_plan_v2.md`）：
+关键词表持久化 + 看板展示 profile / 关键词信息
+
+触发背景：两条真实用户反馈——"运行了一天，成长顾问里的数据都是 0"、
+"看板应该增加用户的 profile 信息；应该展示成长顾问实际使用的关键词表，
+且关键词应该保存到用户 profile 里"。本轮实施 P4-0（前置修复）与 P4-1
+（关键词持久化 + 看板展示），P4-2 ~ P4-7 仍是方向级规划，未实施。
+
+### P4-0：`profile.derived` 命名空间冲突修复
+
+- `src/mini_agent/profile.py::UserProfileManager.generate()`：从
+  `profile.derived = derived`（整体覆盖）改成合并式更新——只覆盖
+  `PROFILE_GENERATED_KEYS`（`summary/tech_stack/habits/
+  source_entry_count/updated_at`）这几个自己负责的字段，其余已存在的
+  key（例如 `growth_advisor` 写入的 `growth_focus_areas`/
+  `growth_topic_keywords`）原样保留。
+- 新增模块级常量 `PROFILE_GENERATED_KEYS`，作为这个命名空间约定的唯一
+  真源，后续任何模块往 `profile.derived` 加字段前可以对照检查是否会被
+  这几个 key 覆盖。
+- 搜索确认了 `profile.derived` 现有的所有读写点（`agent/profile.py`
+  只读 `summary`、`growth_advisor.py` 读写若干 growth_* 前缀字段、
+  `profile.py` 自身），没有发现其他模块假设 `generate()` 后
+  `derived` 是"纯 LLM 输出、无外部写入"，改动是安全的。
+- 测试：新增 `tests/test_profile.py`，覆盖"生成前手动写入的外部字段在
+  `generate()` 后原样保留""`generate()` 只覆盖自己负责的固定字段"两个
+  用例。
+
+### P4-1：关键词表持久化 + 看板展示 profile / 关键词信息
+
+- **数据模型**：`profile.derived["growth_topic_keywords"]` 存用户增量
+  （`{topic: {keywords, source, confirmed_by_user, added_at}}`，
+  `source` 为 `user_added` 或 `llm_learned`），`profile.derived
+  ["growth_topic_keywords_removed"]` 存用户隐藏掉的内置主题名列表。
+  内置表 `_TOPIC_KEYWORDS` 继续留在代码里，不整表复制进 profile。
+- **`_effective_topic_keywords(profile)`**：运行时合并内置表 + 用户
+  增量、排除 removed 列表，返回带 source/confirmed_by_user 信息的
+  统一结构；`growth_signal_scan()` 改用它替代直接引用模块常量。
+- **`_llm_augment_topics()` 归纳出的新主题不再"用完即弃"**：
+  `growth_signal_scan()` 在 LLM 增强归纳后，对比增强前后的主题集合，
+  把新发现的主题通过 `_persist_learned_topics()` 写入
+  `profile.derived["growth_topic_keywords"]`
+  （`source="llm_learned", confirmed_by_user=False`）。由于
+  `_llm_augment_topics` 目前只返回主题名和命中的 entry_id、不返回具体
+  关键词，持久化时用主题名自身兜底作为关键词——保证下次纯规则扫描
+  （没有 `llm_helper`）也能命中同一批记忆，测试
+  `test_llm_augmented_topic_persists_to_profile_and_is_unconfirmed`
+  验证了这条链路。
+- **用户操作三函数**：`add_custom_topic_keyword(profile, topic,
+  keywords)`（`keywords` 支持字符串或列表，字符串按逗号/顿号/换行切分，
+  内部统一走 `_clean_keywords()` 做去空白、大小写不敏感去重）、
+  `remove_topic_keyword(profile, topic)`（自定义主题直接从增量表删除，
+  内置主题记入 removed 黑名单）、`confirm_topic_keyword(profile,
+  topic)`（把待确认的 `llm_learned` 主题标记为已确认，对内置/不存在的
+  主题是安全空操作）。
+- **`diagnostics_snapshot()` 新增两个字段**：`signal_scan.topics_detail`
+  （每个主题的 keywords/source/confirmed_by_user，供看板分组展示）、
+  `user_profile`（`summary`/`tech_stack`/`habits`/`updated_at`，不含
+  `preferences`）。`topics_tracked` 保持原有字符串列表形状不变（非
+  breaking change），`topics_detail` 是新增字段。
+- **API**（`src/mini_agent/api/routes.py`）：新增
+  `POST /growth/keywords`（新增自定义主题）、
+  `POST /growth/keywords/{topic}/confirm`、
+  `POST /growth/keywords/{topic}/remove`；`GET /growth/summary` 透传的
+  `diagnostics` 里自动带上新增的 `topics_detail`/`user_profile`，未新增
+  独立的 profile_snapshot 端点。
+- **看板**（`apps/mini_agent_kanban/`）：`client.py` 新增
+  `growth_keyword_add/confirm/remove` 三个方法；`app.py` 新增
+  `_render_growth_profile_and_keywords()`，在诊断面板下方渲染"🧠 Agent
+  对你的了解"（summary/tech_stack/habits）与"🔑 当前关键词列表"（内置/
+  待确认/自定义三组，待确认主题带"✅ 保留"/"❌ 不要"按钮，自定义主题带
+  "❌ 删除"按钮，底部附一个添加自定义主题的表单）。
+- **测试**：`tests/test_growth_advisor.py` 新增 `TestPersistedKeywords`
+  （6 个用例：合并逻辑、增删改、LLM 归纳持久化、confirm 状态流转、
+  diagnostics 快照内容）；全部通过，且未影响既有 59 项用例中的其余部分。
+
+### P4 已知限制 / 留待后续
+
+- `confirmed_by_user=False` 的待确认主题目前**仍然参与**候选生成（呼应
+  设计文档 6 节的倾向），推送节流侧暂未对其单独降权——留给 P4-2/P4-5
+  一起细化。
+- 连续多次扫描证据支持后自动转正（P4-2）、按主题类别的反馈学习细化
+  （P4-3）、报告质量分级（P4-4）、通知策略细化（P4-5）、看板概念统一
+  （P4-6）、任意主题的自定义黑名单细化（P4-7）均未实施，保持方向级
+  规划状态，见 `growth_advisor_improvement_plan_v2.md` 第 4 节。

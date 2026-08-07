@@ -5861,6 +5861,77 @@ async def post_growth_candidate_action(request: Request, candidate_id: str, acti
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@router.post("/growth/keywords")
+async def post_growth_keyword_add(request: Request):
+    """POST /v1/growth/keywords — 用户在看板上手动添加一个自定义关键词
+    主题，body: {"topic": str, "keywords": str | list[str]}（字符串按逗号/
+    顿号/换行切分）。直接标记为已确认（`confirmed_by_user=True`）。"""
+    _require_owner(request)
+    try:
+        body = await request.json()
+        topic = str(body.get("topic") or "").strip()
+        keywords = body.get("keywords") or []
+        paths = _get_paths_for_request(request)
+        from mini_agent.evolution import growth_advisor as ga
+        from mini_agent.profile import UserProfileManager
+
+        mgr = UserProfileManager(paths)
+        profile = mgr.load()
+        entry = ga.add_custom_topic_keyword(profile, topic, keywords)
+        mgr.save()
+        return {"ok": True, "topic": topic, "entry": entry}
+    except HTTPException:
+        raise
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/growth/keywords/{topic}/confirm")
+async def post_growth_keyword_confirm(request: Request, topic: str):
+    """POST /v1/growth/keywords/{topic}/confirm — 把一个系统学到、待确认
+    的主题标记为已确认（看板"✅ 保留"按钮）。"""
+    _require_owner(request)
+    try:
+        paths = _get_paths_for_request(request)
+        from mini_agent.evolution import growth_advisor as ga
+        from mini_agent.profile import UserProfileManager
+
+        mgr = UserProfileManager(paths)
+        profile = mgr.load()
+        changed = ga.confirm_topic_keyword(profile, topic)
+        if changed:
+            mgr.save()
+        return {"ok": True, "changed": changed}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/growth/keywords/{topic}/remove")
+async def post_growth_keyword_remove(request: Request, topic: str):
+    """POST /v1/growth/keywords/{topic}/remove — 删除自定义主题，或隐藏
+    一个内置主题（看板"❌ 删除"/"🙈 隐藏"按钮）。"""
+    _require_owner(request)
+    try:
+        paths = _get_paths_for_request(request)
+        from mini_agent.evolution import growth_advisor as ga
+        from mini_agent.profile import UserProfileManager
+
+        mgr = UserProfileManager(paths)
+        profile = mgr.load()
+        changed = ga.remove_topic_keyword(profile, topic)
+        if changed:
+            mgr.save()
+        return {"ok": True, "changed": changed}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @router.get("/growth/reports/{report_id}")
 async def get_growth_report_body(request: Request, report_id: str):
     """GET /v1/growth/reports/{id} — 返回某份调研报告的 Markdown 正文。"""

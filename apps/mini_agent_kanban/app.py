@@ -3490,6 +3490,65 @@ def _render_growth_diagnostics(diagnostics: dict):
                 )
 
 
+# [next_doc/growth_advisor_improvement_plan_v2.md P4-1] "Agent 对你的了解"
+# + "当前关键词列表"——用户反馈"看板应该增加用户的 profile 信息""应该增加
+# 成长顾问实际使用的关键词列表"。默认展开（不是诊断信息，是用户想看的），
+# 跟上面纯排障用的 `_render_growth_diagnostics` 分开摆放。
+def _render_growth_profile_and_keywords(client: "AgentClient", diagnostics: dict):
+    user_profile = diagnostics.get("user_profile") or {}
+    st.markdown("**🧠 Agent 对你的了解**")
+    if not user_profile.get("summary") and not user_profile.get("tech_stack") and not user_profile.get("habits"):
+        st.caption("还在观察中，攒够一定数量的记忆后会自动生成画像。")
+    else:
+        if user_profile.get("summary"):
+            st.write(user_profile["summary"])
+        if user_profile.get("tech_stack"):
+            st.caption("技术栈：" + "、".join(user_profile["tech_stack"]))
+        if user_profile.get("habits"):
+            st.caption("习惯：" + "、".join(user_profile["habits"]))
+        if user_profile.get("updated_at"):
+            st.caption(f"更新时间：{time.strftime('%Y-%m-%d %H:%M', time.localtime(user_profile['updated_at']))}")
+
+    st.markdown("**🔑 当前关键词列表**")
+    topics_detail = (diagnostics.get("signal_scan") or {}).get("topics_detail") or []
+    built_in = [t for t in topics_detail if t.get("source") == "built_in"]
+    learned = [t for t in topics_detail if t.get("source") == "llm_learned" and not t.get("confirmed_by_user")]
+    user_added = [t for t in topics_detail if t.get("source") == "user_added" or (t.get("source") == "llm_learned" and t.get("confirmed_by_user"))]
+
+    if built_in:
+        st.caption("内置：" + "、".join(f"`{t['topic']}`" for t in built_in))
+    for t in learned:
+        cols = st.columns([4, 1, 1])
+        cols[0].write(f"🟡 待确认：**{t['topic']}**（{', '.join(t['keywords'])}）")
+        if cols[1].button("✅ 保留", key=f"growth_kw_confirm_{t['topic']}"):
+            client.growth_keyword_confirm(t["topic"])
+            st.rerun()
+        if cols[2].button("❌ 不要", key=f"growth_kw_reject_{t['topic']}"):
+            client.growth_keyword_remove(t["topic"])
+            st.rerun()
+    for t in user_added:
+        cols = st.columns([5, 1])
+        cols[0].write(f"🔵 **{t['topic']}**（{', '.join(t['keywords'])}）")
+        if cols[1].button("❌ 删除", key=f"growth_kw_remove_{t['topic']}"):
+            client.growth_keyword_remove(t["topic"])
+            st.rerun()
+
+    with st.form("growth_add_keyword_form", clear_on_submit=True):
+        st.caption("➕ 添加自定义关注主题")
+        new_topic = st.text_input("主题名", key="growth_new_topic")
+        new_keywords = st.text_input("关键词（逗号分隔）", key="growth_new_keywords")
+        if st.form_submit_button("添加"):
+            if new_topic.strip() and new_keywords.strip():
+                result = client.growth_keyword_add(new_topic.strip(), new_keywords.strip())
+                if result and "_error" in result:
+                    st.error(result["_error"])
+                else:
+                    st.success(f"已添加「{new_topic.strip()}」")
+                    st.rerun()
+            else:
+                st.warning("主题名和关键词都不能为空")
+
+
 def render_growth_tab(client: "AgentClient"):
     st.markdown("#### 🌱 成长顾问 (Growth Advisor)")
     st.caption(
@@ -3536,6 +3595,7 @@ def render_growth_tab(client: "AgentClient"):
     diagnostics = data.get("diagnostics", {})
 
     _render_growth_diagnostics(diagnostics)
+    _render_growth_profile_and_keywords(client, diagnostics)
 
     c1, c2, c3, c4 = st.columns(4)
     c1.metric("候选总数", retro.get("total_candidates", 0))

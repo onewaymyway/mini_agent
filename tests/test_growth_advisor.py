@@ -851,5 +851,98 @@ class TestDiagnosticsSnapshot(unittest.TestCase):
             self.assertEqual(snap["memory"]["total_entries"], 0)
 
 
+class TestPersistedKeywords(unittest.TestCase):
+    """P4-1（next_doc/growth_advisor_improvement_plan_v2.md）：关键词表
+    持久化——_effective_topic_keywords 合并/排除逻辑、LLM 归纳新主题写入
+    profile、用户增删改关键词、confirmed_by_user 状态流转。"""
+
+    def test_effective_keywords_merges_builtin_and_custom(self):
+        profile = UserProfile()
+        ga.add_custom_topic_keyword(profile, "摄影", "摄影, 构图,用光")
+        effective = ga._effective_topic_keywords(profile)
+        self.assertIn("Python 工程实践", effective)
+        self.assertEqual(effective["Python 工程实践"]["source"], "built_in")
+        self.assertTrue(effective["Python 工程实践"]["confirmed_by_user"])
+        self.assertIn("摄影", effective)
+        self.assertEqual(effective["摄影"]["keywords"], ["摄影", "构图", "用光"])
+        self.assertEqual(effective["摄影"]["source"], "user_added")
+        self.assertTrue(effective["摄影"]["confirmed_by_user"])
+
+    def test_remove_topic_keyword_hides_builtin_and_removes_custom(self):
+        profile = UserProfile()
+        ga.add_custom_topic_keyword(profile, "摄影", ["摄影"])
+        self.assertTrue(ga.remove_topic_keyword(profile, "项目管理"))
+        self.assertTrue(ga.remove_topic_keyword(profile, "摄影"))
+        effective = ga._effective_topic_keywords(profile)
+        self.assertNotIn("项目管理", effective)
+        self.assertNotIn("摄影", effective)
+        # 幂等：再次删除不存在的主题不报错，返回 False
+        self.assertFalse(ga.remove_topic_keyword(profile, "摄影"))
+
+    def test_add_custom_topic_keyword_rejects_empty_input(self):
+        profile = UserProfile()
+        with self.assertRaises(ValueError):
+            ga.add_custom_topic_keyword(profile, "", ["x"])
+        with self.assertRaises(ValueError):
+            ga.add_custom_topic_keyword(profile, "topic", [])
+
+    def test_llm_augmented_topic_persists_to_profile_and_is_unconfirmed(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = _make_paths(tmp)
+            now = time.time()
+            entries = [
+                _FakeEntry(f"e{i}", "聊了摄影构图和用光技巧", [], now - i)
+                for i in range(5)
+            ]
+            store = _FakeMemoryStore(entries)
+            profile = UserProfile()
+
+            def fake_llm(prompt: str) -> str:
+                ids = [f"e{i}" for i in range(5)]
+                return json.dumps([{"topic": "摄影", "entry_ids": ids}])
+
+            ga.growth_signal_scan(paths, profile, store, llm_helper=fake_llm)
+            custom = profile.derived.get("growth_topic_keywords", {})
+            self.assertIn("摄影", custom)
+            self.assertEqual(custom["摄影"]["source"], "llm_learned")
+            self.assertFalse(custom["摄影"]["confirmed_by_user"])
+
+            # 下次规则扫描（无 llm_helper）也能命中，因为已经持久化进关键词表
+            profile2 = UserProfile(derived=dict(profile.derived))
+            hits = ga.growth_signal_scan(paths, profile2, store)
+            self.assertIn("摄影", hits)
+
+    def test_confirm_topic_keyword_flips_flag_once(self):
+        profile = UserProfile()
+        ga._persist_learned_topics(profile, {"摄影": ["e1", "e2"]})
+        self.assertFalse(profile.derived["growth_topic_keywords"]["摄影"]["confirmed_by_user"])
+        self.assertTrue(ga.confirm_topic_keyword(profile, "摄影"))
+        self.assertTrue(profile.derived["growth_topic_keywords"]["摄影"]["confirmed_by_user"])
+        # 已经确认过，再次确认返回 False（无变化）
+        self.assertFalse(ga.confirm_topic_keyword(profile, "摄影"))
+        # 内置/不存在的主题是安全的空操作
+        self.assertFalse(ga.confirm_topic_keyword(profile, "Python 工程实践"))
+        self.assertFalse(ga.confirm_topic_keyword(profile, "不存在的主题"))
+
+    def test_diagnostics_snapshot_exposes_topics_detail_and_user_profile(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = _make_paths(tmp)
+            profile = UserProfile(derived={
+                "summary": "热衷 Python 后端开发",
+                "tech_stack": ["python", "fastapi"],
+                "habits": ["喜欢写测试"],
+                "updated_at": time.time(),
+            })
+            ga.add_custom_topic_keyword(profile, "摄影", ["摄影"])
+            snap = ga.diagnostics_snapshot(paths, GrowthAdvisorConfig(), profile, None)
+            topics_detail = snap["signal_scan"]["topics_detail"]
+            sources = {t["topic"]: t["source"] for t in topics_detail}
+            self.assertEqual(sources.get("摄影"), "user_added")
+            self.assertEqual(sources.get("Python 工程实践"), "built_in")
+            self.assertEqual(snap["user_profile"]["summary"], "热衷 Python 后端开发")
+            self.assertEqual(snap["user_profile"]["tech_stack"], ["python", "fastapi"])
+            self.assertNotIn("preferences", snap["user_profile"])
+
+
 if __name__ == "__main__":
     unittest.main()

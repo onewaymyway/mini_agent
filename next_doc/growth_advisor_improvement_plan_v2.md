@@ -1,5 +1,10 @@
 # 成长顾问（Growth Advisor）改进计划 v2
 
+> **实施状态（2026-08 更新）**：P4-0（`profile.derived` 命名空间冲突修复）、
+> P4-1（关键词表持久化 + 看板展示 profile / 关键词信息）已完成并落地，
+> 细节见 `next_doc/growth_advisor_implementation_record.md` 的 P4 章节。
+> P4-2 ~ P4-7 仍是方向级规划，未开始实施。
+
 - **版本**: v1（草案）
 - **前置文档**: `next_doc/growth_advisor_design.md`（原始方案，P1-P3 已全部完成）、
   `next_doc/growth_advisor_implementation_record.md`（逐阶段实施记录）
@@ -71,7 +76,7 @@
 
 ---
 
-## 2. P4-0（前置修复）：`profile.derived` 命名空间冲突
+## 2. P4-0（前置修复，**已完成**）：`profile.derived` 命名空间冲突
 
 **问题**：`UserProfileManager.generate()` 用 LLM 输出整体替换 `profile.derived`，
 `growth_advisor` 写入的字段（现有的 `growth_focus_areas`/
@@ -118,7 +123,7 @@ def generate(self, llm_client, entries) -> UserProfile:
 
 ---
 
-## 3. P4-1：关键词表持久化 + 看板展示 profile / 关键词信息
+## 3. P4-1（**已完成**）：关键词表持久化 + 看板展示 profile / 关键词信息
 
 ### 3.1 数据模型
 
@@ -218,6 +223,23 @@ def generate(self, llm_client, entries) -> UserProfile:
   函数测试（如果新增了看板侧的标签分组辅助函数）。
 
 ---
+
+### 3.5 实施记录摘要（与 3.2/3.3 设计的实际落地差异）
+
+- `topics_tracked` **未做 breaking change**：保持原有的字符串列表形状，
+  新增独立的 `topics_detail`（带 `source`/`confirmed_by_user`/`keywords`）
+  字段，看板改读新字段，旧字段继续保留，兼容任何其他潜在消费方。
+- `GET /growth/profile_snapshot` **未新增独立端点**，采用 3.2 节里提到的
+  备选方案：直接在 `diagnostics_snapshot()` 里加一个 `user_profile` 字段，
+  随 `GET /growth/summary` 一并返回，减少一次网络往返。
+- 新增的三个路由（`POST /growth/keywords`、`.../confirm`、`.../remove`）
+  与设计一致；输入清洗（`_clean_keywords`）统一处理了半角/全角逗号、顿号、
+  换行分隔与大小写不敏感去重，落实第 6 节\"关键词清洗\"的待确认事项。
+- LLM 学到的新主题目前用**主题名自身**作为持久化后的关键词（P3 阶段的
+  `_llm_augment_topics` 只返回主题名+命中的 entry_id，不返回关键词列表），
+  确保下次纯规则扫描也能命中同一批记忆；如果后续想要更精细的关键词，需要
+  同步升级 `_llm_augment_topics` 的 LLM 输出格式，属于后续可选优化，未列入
+  本轮范围。
 
 ## 4. P4 后续阶段（方向级规划，未细化，按优先级排列）
 
