@@ -3446,6 +3446,14 @@ def _render_growth_diagnostics(diagnostics: dict):
             f"- LLM 增强信号归纳：{'✅ 已开启' if cfg.get('llm_signal_augment_enabled') else '默认关闭'}"
         )
 
+        # [P4-5] 类别历史采纳率——解释"为什么这条会被优先推送"。
+        category_rates = diagnostics.get("category_acceptance_rate") or {}
+        if category_rates:
+            st.caption(
+                "各类别历史采纳率（影响推送优先级）："
+                + "，".join(f"{cat} {rate * 100:.0f}%" for cat, rate in category_rates.items())
+            )
+
         st.markdown("**最近一次信号扫描**")
         last_scan_at = scan.get("last_scan_at")
         if last_scan_at:

@@ -1671,6 +1671,16 @@ class GrowthAdvisorConfig:
     # 这份报告了"，避免证据每多 1 条就打扰用户。
     report_refresh_min_new_evidence: int = 3
 
+    # ── P4-5：通知策略细化（growth_advisor_improvement_plan_v2.md P4-5）─
+    # 按主题类别覆盖推送偏好——目前只支持"kanban_only"这一种覆盖值（把
+    # 某个类别完全静音，只在看板展示、不主动推送），不支持给某个类别单独
+    # 设置和全局不同的 daily/weekly_digest 频率（那需要拆分出按类别独立
+    # 节流状态，留给更明确的需求出现后再做，避免过度设计）。key 是类别名
+    # （"技术类"/"管理类"/"表达类"/"其他类"），value 目前只识别
+    # "kanban_only"，其余值原样透传给全局 notification_frequency 逻辑
+    # （即等价于未设置覆盖）。
+    category_notification_frequency: dict = field(default_factory=dict)
+
 
 @dataclass
 class ReminderConfig:

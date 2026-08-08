@@ -3,9 +3,10 @@
 > **实施状态（2026-08 更新）**：P4-0（`profile.derived` 命名空间冲突修复）、
 > P4-1（关键词表持久化 + 看板展示 profile / 关键词信息）、P4-2（关键词
 > 自动学习稳定后转正）、P4-3（反馈学习细化：类别级置信度调权 + 采纳后
-> 回访）、P4-4（报告质量分级 + 增量刷新）已完成并落地，细节见
+> 回访）、P4-4（报告质量分级 + 增量刷新）、P4-5（通知策略细化：类别静音
+> + 优先级分数）已完成并落地，细节见
 > `next_doc/growth_advisor_implementation_record.md` 的 P4 章节。
-> P4-5 ~ P4-7 仍是方向级规划，未开始实施。
+> P4-6/P4-7 仍是方向级规划，未开始实施。
 
 - **版本**: v1（草案）
 - **前置文档**: `next_doc/growth_advisor_design.md`（原始方案，P1-P3 已全部完成）、
@@ -301,10 +302,22 @@ API、验收标准），不要直接照这里的一段话开始写代码。
 > 指向新报告，旧报告保留在历史记录里不删除）。细节见
 > `next_doc/growth_advisor_implementation_record.md` P4 章节。
 
-### P4-5：通知策略细化
+### P4-5：通知策略细化（**已完成**）
 - 按主题类型区分推送偏好（不同主题类别可以有不同的 `notification_frequency`）。
 - 引入"重要程度分级"而不是单一置信度阈值，证据充分 + 历史高采纳率的方向
   应该比刚好卡线的方向有更高的推送优先级。
+
+> **实施记录**：类别偏好新增 `GrowthAdvisorConfig.category_notification_
+> frequency`（`dict[类别名, str]`），目前只识别 `"kanban_only"` 这一种
+> 覆盖值（完全静音某个类别，只看板展示不主动推送），不支持给类别单独
+> 设置和全局不同的 daily/weekly_digest 频率（那需要拆分按类别独立节流
+> 状态，判断本轮没有明确需求支撑这个复杂度，先不做）。重要程度分级新增
+> `_category_acceptance_rate()`（按类别统计历史 accept/dismiss 决策的
+> 采纳率）+ `_notification_priority_score()`（置信度 × 采纳率加权，
+> 0.7~1.3 倍区间，无历史数据按中性 0.5 处理），`_maybe_dispatch_
+> notification()` 用优先级分数替代原来单纯比置信度的排序逻辑，
+> `_maybe_dispatch_weekly_digest()` 同步接入类别静音过滤。细节见
+> `next_doc/growth_advisor_implementation_record.md` P4 章节。
 
 ### P4-6：看板概念统一 + 趋势视图
 - `growth_topic_map`（历史累计）和诊断面板 `topic_hit_counts`（最近一次

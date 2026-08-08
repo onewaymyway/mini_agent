@@ -700,3 +700,65 @@
 - 报告刷新目前是用户手动触发（看板点"🔄 更新"），没有像通知节流那样
   自动决定"要不要主动提醒用户来刷新"——是否需要接入
   `_maybe_dispatch_notification` 留给 P4-5 一并评估。
+
+### P4-5：通知策略细化（类别静音 + 优先级分数）
+
+**类别静音**：
+- `GrowthAdvisorConfig.category_notification_frequency`（`dict[str, str]`，
+  默认空字典）：key 是类别名（复用 P4-3 的 `_TOPIC_CATEGORIES` 分类：
+  "技术类"/"管理类"/"表达类"/"其他类"），value 目前只识别
+  `"kanban_only"`——把这个类别完全静音（仍在看板正常展示，但
+  `_maybe_dispatch_notification`/`_maybe_dispatch_weekly_digest` 都不会
+  主动推送这个类别的报告），其余任意 value 原样透传给全局
+  `notification_frequency` 逻辑，等价于未设置覆盖。**不支持**给某个
+  类别单独设一个和全局不同的 daily/weekly_digest 频率——那需要拆分出
+  按类别独立的节流状态（`last_notify_date`/`notify_count_today` 这些
+  目前是全局共用的一份状态），本轮没有看到明确到这个粒度的需求，先不
+  做，留在已知限制里。
+- `_category_notification_muted(cfg, topic)`：查表判断，`_maybe_dispatch_
+  notification()` 在打分之前先过滤掉被静音类别的报告；
+  `_maybe_dispatch_weekly_digest()` 在打包摘要之前同样过滤，逻辑保持
+  一致（都用 `report.title` 反查类别，报告本身已经带着候选标题，不需要
+  再去查候选对象）。
+
+**重要程度分级**：
+- `_category_acceptance_rate(paths)`：遍历所有候选，只统计
+  `status` 是 `accepted` 或 `dismissed`（已经做出决策）的候选，按
+  `_category_of(candidate.title)` 分类累加，返回
+  `{类别: accept 占比}`；没有任何决策记录的类别不出现在返回值里
+  （调用方应视为中性 0.5，不是 0）。
+- `_notification_priority_score(confidence, acceptance_rate)`：
+  `score = confidence * (0.7 + 0.6 * rate)`，`rate` 缺失时按 0.5 处理
+  （等价于乘以 1.0，既不加分也不减分）——历史上这类方向逢推必采纳
+  （`rate=1`）最多把优先级抬到 1.3 倍，历史上几乎从不被采纳
+  （`rate=0`）打 0.7 折。
+- `_maybe_dispatch_notification()` 改为：先按 `notification_min_
+  confidence` 过滤、再按类别静音过滤，剩下的按优先级分数（而不是原始
+  置信度）排序取最高的一条；`notify_count_today` 节流和
+  `notification_max_per_day` 上限逻辑不变。
+- `diagnostics_snapshot()` 新增 `category_acceptance_rate` 字段（只读
+  聚合结果，供看板"配置"区块展示"各类别历史采纳率（影响推送优先级）"
+  这一行说明，帮助用户理解"为什么这条被优先推送了"，不是新的存储）。
+- **看板**：`_render_growth_diagnostics()` 在配置信息下面新增一行类别
+  采纳率展示（`category_acceptance_rate` 为空时不显示，不占地方）。
+- **测试**：`tests/test_growth_advisor.py` 新增
+  `TestNotificationCategoryAndPriority`（5 个用例：`_category_
+  notification_muted` 只识别 `kanban_only`、静音类别即使高置信度也不
+  推送、置信度打平时历史采纳率更高的类别优先推送、`_category_
+  acceptance_rate` 只统计有决策的类别、weekly digest 排除被静音类别后
+  没有可打包内容返回 `None`）；加上此前全部用例，
+  `test_growth_advisor.py` + `test_profile.py` 合计 82 项全部通过。
+
+### P4 已知限制 / 留待后续（再更新）
+
+- 类别覆盖只支持"完全静音"，不支持"这个类别用 weekly_digest、其他类别
+  用 daily"这种更细粒度的按类别独立频率——如果后续需要，得把
+  `last_notify_date`/`notify_count_today`/`last_weekly_digest_at` 这些
+  节流状态也拆成按类别维度，是相对大的改动，等有明确需求再做。
+- 优先级分数目前只在"同一轮里选哪条报告推"这个场景生效（`_maybe_
+  dispatch_notification` 内部），没有影响 `run_daily_cycle()` 里"选
+  Top-N 候选生成报告"这一步的排序（那一步仍然按 `confidence` 排序）——
+  这是有意的：报告生成本身不消耗推送配额，用置信度排序更符合"证据最
+  充分的方向优先出报告"的直觉，历史采纳率是"值不值得主动打扰用户"的
+  判断，不是"值不值得先研究"的判断，两者语义不同，不应该混用同一个
+  排序键。

@@ -1164,6 +1164,109 @@ class TestAdoptionFollowup(unittest.TestCase):
             self.assertLess(adj[c.dedupe_key()], 1.0)
 
 
+class TestNotificationCategoryAndPriority(unittest.TestCase):
+    """P4-5：类别静音 + 优先级分数（置信度 × 类别历史采纳率）。"""
+
+    def test_category_notification_muted_only_recognizes_kanban_only(self):
+        cfg = GrowthAdvisorConfig(category_notification_frequency={"技术类": "kanban_only"})
+        self.assertTrue(ga._category_notification_muted(cfg, "数据分析"))  # 技术类
+        self.assertFalse(ga._category_notification_muted(cfg, "项目管理"))  # 管理类，未覆盖
+        cfg2 = GrowthAdvisorConfig(category_notification_frequency={"技术类": "daily"})
+        # 目前只识别 kanban_only，其余值等价于未设置覆盖
+        self.assertFalse(ga._category_notification_muted(cfg2, "数据分析"))
+
+    def test_muted_category_never_dispatches_even_with_high_confidence(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = _make_paths(tmp)
+            backlog = ga.GrowthBacklog(paths)
+            cand = backlog.add_or_merge(
+                "数据分析", "理由", [f"e{i}" for i in range(8)],  # confidence=1.0
+                min_evidence_count=3, max_pending=10, dismissed_cooldown_days=30,
+            )
+            report = ga.generate_growth_report(paths, cand)
+            cfg = GrowthAdvisorConfig(
+                notification_min_confidence=0.1,
+                category_notification_frequency={"技术类": "kanban_only"},
+            )
+            result = ga._maybe_dispatch_notification(paths, cfg, {cand.candidate_id: cand}, [report])
+            self.assertIsNone(result)
+
+    def test_priority_score_prefers_high_acceptance_category(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = _make_paths(tmp)
+            backlog = ga.GrowthBacklog(paths)
+            # "技术类"历史上全部被采纳（用另一个技术类主题积累历史，
+            # 避免跟下面的新候选撞同一个 dedupe_key 触发合并而不是新建）。
+            good_history = backlog.add_or_merge(
+                "数据分析", "理由", ["g1", "g2", "g3"],
+                min_evidence_count=3, max_pending=10, dismissed_cooldown_days=30,
+            )
+            backlog.set_status(good_history.candidate_id, ga.STATUS_ACCEPTED)
+            # "管理类"历史上全部被忽略（管理类内置只有"项目管理"一个主题，
+            # 冷却期过后重新生成时是"替换"而不是"合并"，所以直接复用同一
+            # 标题也没问题）。
+            bad_history = backlog.add_or_merge(
+                "项目管理", "理由", ["b1", "b2", "b3"],
+                min_evidence_count=3, max_pending=10, dismissed_cooldown_days=30,
+            )
+            backlog.set_status(bad_history.candidate_id, ga.STATUS_DISMISSED)
+            ga.GrowthFeedbackLedger(paths).record(bad_history.candidate_id, ga.STATUS_DISMISSED)
+            all_c = backlog.load_all()
+            for c in all_c:
+                if c.candidate_id == bad_history.candidate_id:
+                    c.updated_at = time.time() - 31 * 86400  # 冷却期已过
+            backlog.save_all(all_c)
+
+            # 两个新候选证据数相同（置信度相同）：一个技术类（历史高采纳），
+            # 一个管理类（历史全忽略）。
+            cand_good = backlog.add_or_merge(
+                "前端与可视化", "理由2", ["h1", "h2", "h3"],
+                min_evidence_count=3, max_pending=10, dismissed_cooldown_days=30,
+            )
+            cand_bad = backlog.add_or_merge(
+                "项目管理", "理由2", ["k1", "k2", "k3"],
+                min_evidence_count=3, max_pending=10, dismissed_cooldown_days=30,
+            )
+            self.assertIsNotNone(cand_good)
+            self.assertIsNotNone(cand_bad)
+            self.assertEqual(cand_good.confidence, cand_bad.confidence)  # 前提：置信度打平
+
+            report_good = ga.generate_growth_report(paths, cand_good)
+            report_bad = ga.generate_growth_report(paths, cand_bad)
+            cfg = GrowthAdvisorConfig(notification_min_confidence=0.1, notification_max_per_day=1)
+            candidates_by_id = {cand_good.candidate_id: cand_good, cand_bad.candidate_id: cand_bad}
+            result = ga._maybe_dispatch_notification(
+                paths, cfg, candidates_by_id, [report_bad, report_good]
+            )
+            self.assertIsNotNone(result)
+            # 置信度打平的情况下，历史采纳率更高的类别应该被优先推送
+            self.assertEqual(result["report_id"], report_good.report_id)
+
+    def test_category_acceptance_rate_only_includes_decided_categories(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = _make_paths(tmp)
+            backlog = ga.GrowthBacklog(paths)
+            cand = backlog.add_or_merge(
+                "数据分析", "理由", ["e1", "e2", "e3"],
+                min_evidence_count=3, max_pending=10, dismissed_cooldown_days=30,
+            )  # 仍是 pending，没有决策
+            rates = ga._category_acceptance_rate(paths)
+            self.assertNotIn("技术类", rates)
+
+    def test_weekly_digest_excludes_muted_category(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = _make_paths(tmp)
+            backlog = ga.GrowthBacklog(paths)
+            cand = backlog.add_or_merge(
+                "数据分析", "理由", ["e1", "e2", "e3"],
+                min_evidence_count=3, max_pending=10, dismissed_cooldown_days=30,
+            )
+            ga.generate_growth_report(paths, cand)
+            cfg = GrowthAdvisorConfig(category_notification_frequency={"技术类": "kanban_only"})
+            result = ga._maybe_dispatch_weekly_digest(paths, cfg)
+            self.assertIsNone(result)  # 唯一一份报告的类别被静音，没有可打包的内容
+
+
 class TestReportQualityAndRefresh(unittest.TestCase):
     """P4-4：报告质量分级（report_quality_llm_enabled）+ 增量刷新。"""
 

@@ -163,6 +163,22 @@ P4-4 范围（对应 next_doc/growth_advisor_improvement_plan_v2.md，本次
     - `refresh_growth_report()`：为候选重新走一遍 `generate_growth_
       report()`，生成新报告并把候选的 `report_id` 指向新报告；旧报告
       不删除、不覆盖，只是不再是候选"当前挂着"的那份。
+
+P4-5 范围（对应 next_doc/growth_advisor_improvement_plan_v2.md，本次
+新增）——通知策略细化：
+    - `GrowthAdvisorConfig.category_notification_frequency`：按类别
+      （"技术类"/"管理类"/"表达类"/"其他类"）覆盖推送偏好，目前只识别
+      `"kanban_only"` 这一种覆盖值（把某个类别完全静音：仍在看板展示，
+      但 `_maybe_dispatch_notification`/`_maybe_dispatch_weekly_digest`
+      都不会主动推送这个类别的报告）——不支持给某个类别单独设置和全局
+      不同的 daily/weekly_digest 频率，那需要拆分出按类别独立的节流
+      状态，留给更明确的需求出现后再做。
+    - `_category_acceptance_rate()` / `_notification_priority_score()`：
+      多份报告都达到 `notification_min_confidence` 门槛时，不再单纯取
+      置信度最高的一条，而是用"置信度 × 该类别历史采纳率加权"算一个
+      优先级分数（历史采纳率高的类别加权最多到 1.3 倍，历史上常被忽略
+      的类别打到 0.7 折，没有历史决策数据的类别按中性 0.5 处理，既不
+      加分也不减分），取优先级最高的一条推送。
 """
 
 from __future__ import annotations
@@ -598,6 +614,52 @@ def _followup_adjustment_by_dedupe_key(paths) -> dict[str, float]:
             current = min(1.0, round(current * _FOLLOWUP_PROGRESSED_FACTOR, 3))
         adjustments[key] = current
     return adjustments
+
+
+# ────────── [P4-5] 通知策略细化：类别级推送偏好 + 重要程度分级 ──────────
+# next_doc/growth_advisor_improvement_plan_v2.md P4-5。两条独立能力：
+#   1. 类别静音：某个类别的候选完全不主动推送（仍在看板展示），
+#      通过 GrowthAdvisorConfig.category_notification_frequency 配置。
+#   2. 重要程度分级：多份报告都达到 notification_min_confidence 门槛时，
+#      不是简单取置信度最高的一条，而是结合"这个类别历史采纳率高不高"
+#      算一个综合优先级分数——证据充分 + 历史上这类方向经常被采纳，应该
+#      比"刚好卡线但历史上这类方向常被忽略"的方向优先级更高。
+
+
+def _category_notification_muted(cfg, topic: str) -> bool:
+    """某个主题所属类别是否被配置为 kanban_only（完全静音，只看板展示、
+    不主动推送）。目前只识别这一种覆盖值，其余原样透传给全局频率逻辑。"""
+    overrides = getattr(cfg, "category_notification_frequency", None) or {}
+    return overrides.get(_category_of(topic)) == "kanban_only"
+
+
+def _category_acceptance_rate(paths) -> dict[str, float]:
+    """按类别统计历史采纳率（已做出 accept/dismiss 决策的候选里，
+    accept 占比），只统计有过决策的类别，未出现过决策的类别不在返回值里
+    （调用方对缺失类别应视为中性 0.5，既不加分也不减分）。"""
+    accepted: dict[str, int] = {}
+    decided: dict[str, int] = {}
+    for c in GrowthBacklog(paths).load_all():
+        if c.status not in (STATUS_ACCEPTED, STATUS_DISMISSED):
+            continue
+        category = _category_of(c.title)
+        decided[category] = decided.get(category, 0) + 1
+        if c.status == STATUS_ACCEPTED:
+            accepted[category] = accepted.get(category, 0) + 1
+    return {cat: round(accepted.get(cat, 0) / n, 3) for cat, n in decided.items() if n > 0}
+
+
+# 优先级分数 = confidence * (_PRIORITY_BASE + _PRIORITY_RATE_WEIGHT * acceptance_rate)
+# rate=0（历史上这类方向从没被采纳过）时打 0.7 折，rate=1（历史上逢推
+# 必采纳）时打 1.3 倍，rate 缺失（这个类别还没有过任何决策）时按中性 0.5
+# 处理，等价于 1.0 倍——不因为"数据不够"就惩罚或奖励。
+_PRIORITY_BASE = 0.7
+_PRIORITY_RATE_WEIGHT = 0.6
+
+
+def _notification_priority_score(confidence: float, acceptance_rate: Optional[float]) -> float:
+    rate = acceptance_rate if acceptance_rate is not None else 0.5
+    return round(confidence * (_PRIORITY_BASE + _PRIORITY_RATE_WEIGHT * rate), 3)
 
 
 # ────────────────────────── 信号扫描 growth_signal_scan ──────────────────────────
@@ -1246,6 +1308,9 @@ def _maybe_dispatch_weekly_digest(paths, cfg) -> Optional[dict]:
 
         window_start = last_at if last_at else (now - WEEKLY_DIGEST_INTERVAL_DAYS * 86400)
         window_reports = [r for r in list_reports(paths) if r.created_at >= window_start]
+        # [P4-5] 类别被静音的报告不进摘要打包，逻辑与 _maybe_dispatch_notification
+        # 一致——静音是"完全不主动推送"，不是"降低频率"。
+        window_reports = [r for r in window_reports if not _category_notification_muted(cfg, r.title)]
 
         if not window_reports:
             # 没有新报告也要推进"上次检查时间"，避免每次 daily cycle 都
@@ -1305,9 +1370,11 @@ def _maybe_dispatch_notification(
     规则：
         - `notification_frequency == "kanban_only"` 或本轮没有新报告 ->
           不推送。
-        - 只在达到 `notification_min_confidence` 的报告里选置信度最高
-          的一条；全部达不到阈值 -> 不推送（"宁可不推，不为了凑数硬推"，
-          方案第 4.2 节原文）。
+        - 先按 `notification_min_confidence` 过滤、再排除类别被静音
+          （`category_notification_frequency` 配成 `"kanban_only"`）的
+          报告；剩下的按 [P4-5] 优先级分数（置信度 × 类别历史采纳率加权，
+          见 `_notification_priority_score`）取最高的一条；全部被过滤掉
+          -> 不推送（"宁可不推，不为了凑数硬推"，方案第 4.2 节原文）。
         - 当天（自然日，本地时区）已推送次数达到 `notification_max_per_day`
           -> 不再推送，状态落盘在 `paths.growth_state_path`。
         - 任何一步异常都不应该打断 `run_daily_cycle` 主流程，统一
@@ -1325,17 +1392,25 @@ def _maybe_dispatch_notification(
 
     min_conf = getattr(cfg, "notification_min_confidence", 0.6)
     max_per_day = getattr(cfg, "notification_max_per_day", 1)
+    # [P4-5] 按类别历史采纳率算优先级分数，而不是单纯比置信度；同时把
+    # 类别被静音（category_notification_frequency=="kanban_only"）的
+    # 报告排除在候选之外，不管置信度多高都不推送。
+    category_rates = _category_acceptance_rate(paths)
 
     scored: list[tuple[float, GrowthReport]] = []
     for r in reports:
         cand = candidates_by_id.get(r.candidate_id)
         conf = cand.confidence if cand is not None else 0.0
-        if conf >= min_conf:
-            scored.append((conf, r))
+        if conf < min_conf:
+            continue
+        if _category_notification_muted(cfg, r.title):
+            continue
+        priority = _notification_priority_score(conf, category_rates.get(_category_of(r.title)))
+        scored.append((priority, conf, r))
     if not scored:
         return None
     scored.sort(key=lambda t: -t[0])
-    best_conf, best_report = scored[0]
+    _best_priority, best_conf, best_report = scored[0]
 
     try:
         state = _load_growth_state(paths)
@@ -1593,4 +1668,7 @@ def diagnostics_snapshot(paths, cfg, profile, memory_store) -> dict[str, Any]:
         "pending_followups_count": len(pending_followups(paths, cfg)),
         # [P4-4] 待刷新报告数量，明细走 GET /growth/reports/refresh_candidates。
         "reports_needing_refresh_count": len(reports_needing_refresh(paths, cfg)),
+        # [P4-5] 按类别的历史采纳率（供看板解释"为什么这条被优先推送了"），
+        # 只包含有过至少一次 accept/dismiss 决策的类别。
+        "category_acceptance_rate": _category_acceptance_rate(paths),
     }
