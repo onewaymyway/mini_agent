@@ -840,3 +840,41 @@ removed` 黑名单（`growth_candidate_derive()` 消费时会跳过），
     策略。
 这些都不是 bug，是本轮评估后判断"复杂度大于当前收益"而有意搁置的
 范围边界，不是遗漏。
+
+### Code Review 补丁（P4-3~P4-7 交付后的自查）
+
+对本轮（P4-3~P4-7）全部改动做了一次代码审查，发现并修复一个真实 bug：
+
+- **`category_notification_frequency`（P4-5 新增的 `dict` 类型配置字段）
+  在看板通用配置编辑器里会被渲染成一个纯文本框，编辑后保存的是字符串
+  而不是 dict**。根因：`GrowthAdvisorConfig` 的全部字段会通过
+  `config_catalog.py` 的反射机制自动出现在看板"⚙️ 配置"里（`_type_name()`
+  正确识别出 `"dict"` 类型），但 `apps/mini_agent_kanban/app.py` 的
+  `_render_config_field_widget()` 只处理了 `bool`/`int`/`float`/`list`
+  四种类型，`dict` 会落进最后的 `else` 分支被当成普通字符串——展示成
+  Python `repr()`（`{'技术类': 'kanban_only'}`），保存时 `apply_updates()`
+  不做类型校验会原样把这个字符串写进 JSON 配置文件，下次加载
+  `GrowthAdvisorConfig` 时这个字段类型就错了（后续任何 `.get()` 调用都
+  会抛 `AttributeError`）。排查后确认这不是这次新引入的设计缺陷，而是
+  编辑器本身早就存在的通用缺口（`channel_weights` 等其他既有 dict 类型
+  配置字段同样受影响，只是此前没有 dict 字段真正被暴露到看板配置页
+  而没被发现）——`category_notification_frequency` 是第一个撞上这个坑
+  的字段。
+- **修复**：给 `_render_config_field_widget()` 加了 `dict` 分支，复用
+  `list` 分支"一行一项"的编辑思路，格式是 `key=value`（空行/没有 `=`
+  的行忽略），解析结果是 `dict[str, str]`——只覆盖当前唯一的使用场景
+  （字符串到字符串的映射），不支持嵌套结构。这个修复对所有 dict 类型
+  配置字段生效，不止 `category_notification_frequency`，跟 P3 阶段修
+  `list` 类型字段时的做法（也是"通用改动，不止对 growth_advisor 生
+  效"）保持一致的处理原则。
+- 顺手清理了 `restore_builtin_topic_keyword()` 里一处重复读取
+  `derived.get(...)` 的小效率问题（改成读一次存变量），不影响行为。
+- 其余复核项（路由前缀冲突、`GrowthCandidate`/`GrowthReport` 的
+  `from_dict` 对旧记录缺失新字段时的默认值兜底、`llm_helper` 闭包捕获
+  写法是否与 `/growth/scan` 保持一致等）确认均无问题，不需要改动。
+- 没有为这个修复新增自动化测试——`_render_config_field_widget()` 是
+  纯 Streamlit UI 函数，这个代码库里同一函数的其余分支（`bool`/`int`/
+  `float`/`list`）此前也都没有专门的单测覆盖，保持和现有测试范围一致；
+  用 `_type_name()` 的直接调用验证了 dict 类型确实会被正确识别为
+  `"dict"` 分支（回归风险最高的那一步），`test_kanban_growth_dragdrop.py`
+  的 5 个既有用例也确认了 `app.py` 模块改动后仍能正常 import 并通过。

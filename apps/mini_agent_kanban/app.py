@@ -5034,6 +5034,34 @@ def _render_config_field_widget(field: dict, widget_key: str):
         new_v = [line.strip() for line in new_text.splitlines() if line.strip()]
         changed = new_v != items
         return new_v, changed
+    elif ftype == "dict":
+        # [P4-5 code review 补丁] `category_notification_frequency` 这类
+        # dict 类型配置字段此前会落进下面的 else 分支，被当成普通文本框
+        # ——显示成 Python dict 的 repr（`{'技术类': 'kanban_only'}`），
+        # 编辑后保存的是一整条字符串而不是 dict，`apply_updates()` 不做
+        # 类型校验会直接原样写进 JSON，导致下次加载 `GrowthAdvisorConfig`
+        # 时这个字段类型不对——跟上面 `list` 分支的修复是同一类问题，
+        # 用同样的思路修：一行一项，`key=value` 格式，空行/无 `=` 的行
+        # 忽略。只处理 str->str 这种简单场景（目前唯一的 dict 类型配置
+        # 字段就是这种），不支持嵌套结构。
+        items = value if isinstance(value, dict) else {}
+        text_value = "\n".join(f"{k}={v}" for k, v in items.items())
+        new_text = st.text_area(
+            f"{label}（`{json_key}`，每行一项，格式 key=value）",
+            value=text_value, key=widget_key, height=100,
+        )
+        new_v: dict = {}
+        for line in new_text.splitlines():
+            line = line.strip()
+            if not line or "=" not in line:
+                continue
+            k, _, v = line.partition("=")
+            k = k.strip()
+            v = v.strip()
+            if k:
+                new_v[k] = v
+        changed = new_v != items
+        return new_v, changed
     else:  # str / other，一律按文本框处理，None 显示为空字符串
         new_v = st.text_input(f"{label}（`{json_key}`）", value="" if value is None else str(value), key=widget_key)
 

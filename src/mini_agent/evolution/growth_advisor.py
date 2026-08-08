@@ -851,10 +851,10 @@ def restore_builtin_topic_keyword(profile, topic: str) -> bool:
     if not topic or topic not in _TOPIC_KEYWORDS:
         return False
     derived = dict(getattr(profile, "derived", {}) or {})
-    removed = [t for t in (derived.get("growth_topic_keywords_removed") or []) if t != topic]
-    if len(removed) == len(derived.get("growth_topic_keywords_removed") or []):
+    original = derived.get("growth_topic_keywords_removed") or []
+    if topic not in original:
         return False  # 本来就没被隐藏
-    derived["growth_topic_keywords_removed"] = removed
+    derived["growth_topic_keywords_removed"] = [t for t in original if t != topic]
     profile.derived = derived
     return True
 
