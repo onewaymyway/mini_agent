@@ -240,15 +240,20 @@ P5 范围（对应 next_doc/growth_advisor_improvement_plan_v3.md，本次
       topic_keyword()`/`confirm_topic_keyword()`（看板手动添加/确认）
       + `run_daily_cycle()`（cron 自动转正路径），均是可选 `cfg`/
       `llm_helper` 参数，不传时行为与改动前完全一致。
-    - P5-0（数据生命周期 / 存储卫生，部分完成——仅 growth_topic_trend
-      降采样，reports_index/feedback_ledger 的分层存储按方案原文"先审计
-      再动代码"的建议延后到下一轮，见实施记录）：新增
-      `compact_topic_trend_storage()` / `_compact_topic_trend_rows()`，
-      对 `growth_topic_trend.jsonl` 里超过 `_TREND_RAW_WINDOW_DAYS`
-      （60 天）的旧快照按"同一主题同一周只留最新一条"降采样，近期快照
-      不动；`growth_candidate_derive()` 每轮 cron 结束后顺带调用一次，
-      不改变 `_topic_trend_series()` 的调用契约（它本来就只取最近
-      `limit` 个点，被压缩掉的都是早已在这个窗口之外的历史点）。
+    - P5-0（数据生命周期 / 存储卫生，已完成）：
+      - `growth_topic_trend.jsonl` 降采样：`compact_topic_trend_storage()`
+        对超过 60 天的旧快照按"同一主题同一周只留最新一条"压缩，
+        `growth_candidate_derive()` 每轮 cron 顺带调用。
+      - `growth_reports_index.jsonl` 分层存储：`compact_reports_index_
+        storage()` 把"不再是任何候选当前挂着的那份 + 生成超过 180 天"
+        的旧报告移到新增的 `growth_reports.archive.jsonl`；新增
+        `get_report_by_id()`（活跃索引查不到再查归档，避免旧报告链接
+        变成 404）与 `list_reports(include_archived=True)`（累计统计
+        用），修正了实现过程中发现的两处真实倒退风险（按 id 查报告
+        404、`monthly_retrospective_summary()` 的报告总数计数变少）。
+        不接入 `run_daily_cycle()` 自动触发，留给人工/未来月度 cron。
+      - `growth_feedback_ledger.jsonl` 的分层存储（消费方全是累计统计
+        语义，需要先转聚合计数再归档，改动量级更大）延后到下一轮。
     - P5-2/P5-4/P5-6 尚未开工，方向和大致方案见
       `next_doc/growth_advisor_improvement_plan_v3.md`，进度以
       `next_doc/growth_advisor_implementation_record.md` 的 P5 章节
@@ -1417,8 +1422,69 @@ def generate_growth_report(
     return report
 
 
-def list_reports(paths) -> list[GrowthReport]:
-    return [GrowthReport.from_dict(d) for d in _read_jsonl(paths.growth_reports_index_path)]
+def list_reports(paths, *, include_archived: bool = False) -> list[GrowthReport]:
+    """返回活跃索引（`growth_reports.jsonl`）里的报告，默认不含已被
+    `compact_reports_index_storage()` 归档掉的旧报告——这跟改动前的行为
+    完全一致（`compact_reports_index_storage()` 是本轮 P5-0 新增的功能，
+    不调用它就不会有任何报告被移出这个文件）。`include_archived=True`
+    时额外并入归档文件，供"报告生成总数"这类累计统计使用。"""
+    rows = _read_jsonl(paths.growth_reports_index_path)
+    if include_archived:
+        rows = rows + _read_jsonl(paths.growth_reports_archive_path)
+    return [GrowthReport.from_dict(d) for d in rows]
+
+
+def get_report_by_id(paths, report_id: str) -> Optional[GrowthReport]:
+    """按 `report_id` 查单份报告：先查活跃索引（常见路径，几乎所有调用都
+    是查"当前候选挂着的那份"），查不到再查归档文件——保证"直接打开一份
+    很久以前生成、后来被刷新替换掉的旧报告"这类场景在 P5-0 归档上线后
+    仍然可用，不会因为报告被移出活跃索引就变成 404。"""
+    for d in _read_jsonl(paths.growth_reports_index_path):
+        if d.get("report_id") == report_id:
+            return GrowthReport.from_dict(d)
+    for d in _read_jsonl(paths.growth_reports_archive_path):
+        if d.get("report_id") == report_id:
+            return GrowthReport.from_dict(d)
+    return None
+
+
+# [P5-0] next_doc/growth_advisor_improvement_plan_v3.md 存储卫生第二部分：
+# growth_reports_index.jsonl 只追加不轮转，长期运行会无限增长。审计结论
+# （见 growth_advisor_implementation_record.md P5-0 章节的"依赖全量读取的
+# 函数清单"）：唯一依赖"当前挂着的那份报告"语义的 `reports_needing_
+# refresh()` 只通过 `candidate.report_id` 查表，从不关心已经被替换掉的
+# 旧报告；`_maybe_dispatch_weekly_digest()` 的窗口只有 7 天，远小于下面
+# 的归档窗口，不会被影响。真正需要小心的是"通过 report_id 直接查看某份
+# 报告正文"这个场景（看板/CLI 里可能存着旧的 report_id 链接）——为此新增
+# `get_report_by_id()` 兜底查归档文件，不会因为报告被归档就 404。
+_REPORTS_ARCHIVE_WINDOW_DAYS = 180
+
+
+def compact_reports_index_storage(paths, *, now: Optional[float] = None) -> int:
+    """把"已经不是任何候选当前挂着的那份、且生成时间超过归档窗口"的旧
+    报告从活跃索引移到归档文件，返回被归档的条数（0 表示无操作，不触发
+    写盘）。供人工维护脚本或未来的月度 cron 调用；不在
+    `run_daily_cycle()` 的每日路径里自动触发（报告归档比 topic_trend
+    降采样更需要谨慎，不适合悄悄地每天跑）。"""
+    now = now if now is not None else time.time()
+    cutoff = now - _REPORTS_ARCHIVE_WINDOW_DAYS * 86400
+    active_rows = _read_jsonl(paths.growth_reports_index_path)
+    if not active_rows:
+        return 0
+    attached_ids = {c.report_id for c in GrowthBacklog(paths).load_all() if c.report_id}
+    stale_rows = [
+        r for r in active_rows
+        if r.get("report_id") not in attached_ids and r.get("created_at", now) < cutoff
+    ]
+    if not stale_rows:
+        return 0
+    kept_rows = [r for r in active_rows if r not in stale_rows]
+    paths.growth_reports_archive_path.parent.mkdir(parents=True, exist_ok=True)
+    with paths.growth_reports_archive_path.open("a", encoding="utf-8") as f:
+        for r in stale_rows:
+            f.write(json.dumps(r, ensure_ascii=False) + "\n")
+    _write_jsonl(paths.growth_reports_index_path, kept_rows)
+    return len(stale_rows)
 
 
 # ────────── [P4-6] 主题证据数走势 ──────────
@@ -1928,7 +1994,7 @@ def monthly_retrospective_summary(paths) -> dict[str, Any]:
         "pending": pending,
         "acceptance_rate": acceptance_rate,
         "feedback_events": len(ledger),
-        "reports_generated": len(list_reports(paths)),
+        "reports_generated": len(list_reports(paths, include_archived=True)),
         "top_accepted_topics": top_accepted,
         "top_dismissed_topics": top_dismissed,
         "topic_map": growth_topic_map(paths),

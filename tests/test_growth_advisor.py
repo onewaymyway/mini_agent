@@ -1394,6 +1394,113 @@ class TestReportQualityAndRefresh(unittest.TestCase):
             self.assertEqual(reports_by_id[report_ids[0]].source, "llm")
 
 
+class TestReportsIndexArchive(unittest.TestCase):
+    """P5-0：growth_reports_index.jsonl 归档（compact_reports_index_storage）。"""
+
+    def _make_candidate_with_report(self, paths, title="数据分析"):
+        backlog = ga.GrowthBacklog(paths)
+        cand = backlog.add_or_merge(
+            title, "理由", ["e1", "e2", "e3"],
+            min_evidence_count=3, max_pending=10, dismissed_cooldown_days=30,
+        )
+        report = ga.generate_growth_report(paths, cand)
+        return cand, report
+
+    def test_currently_attached_report_never_archived(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = _make_paths(tmp)
+            cand, report = self._make_candidate_with_report(paths)
+            # 人为把这条报告的 created_at 改得很旧（超过归档窗口）。
+            rows = ga._read_jsonl(paths.growth_reports_index_path)
+            rows[0]["created_at"] = time.time() - 400 * 86400
+            ga._write_jsonl(paths.growth_reports_index_path, rows)
+            archived = ga.compact_reports_index_storage(paths)
+            self.assertEqual(archived, 0)  # 仍是候选当前挂着的那份，不归档
+            self.assertEqual(len(ga.list_reports(paths)), 1)
+
+    def test_replaced_old_report_gets_archived(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = _make_paths(tmp)
+            cand, old_report = self._make_candidate_with_report(paths)
+            # 刷新出一份新报告，候选的 report_id 转指新报告，旧报告不再
+            # 被任何候选挂着。
+            new_report = ga.refresh_growth_report(paths, cand.candidate_id)
+            self.assertIsNotNone(new_report)
+            rows = ga._read_jsonl(paths.growth_reports_index_path)
+            for r in rows:
+                if r["report_id"] == old_report.report_id:
+                    r["created_at"] = time.time() - 400 * 86400
+            ga._write_jsonl(paths.growth_reports_index_path, rows)
+
+            archived = ga.compact_reports_index_storage(paths)
+            self.assertEqual(archived, 1)
+            active_ids = {r.report_id for r in ga.list_reports(paths)}
+            self.assertNotIn(old_report.report_id, active_ids)
+            self.assertIn(new_report.report_id, active_ids)
+
+    def test_replaced_but_recent_report_not_archived_yet(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = _make_paths(tmp)
+            cand, old_report = self._make_candidate_with_report(paths)
+            ga.refresh_growth_report(paths, cand.candidate_id)
+            # 旧报告刚被替换，created_at 仍是"现在"，没超过归档窗口。
+            archived = ga.compact_reports_index_storage(paths)
+            self.assertEqual(archived, 0)
+            self.assertEqual(len(ga.list_reports(paths)), 2)
+
+    def test_get_report_by_id_falls_back_to_archive(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = _make_paths(tmp)
+            cand, old_report = self._make_candidate_with_report(paths)
+            ga.refresh_growth_report(paths, cand.candidate_id)
+            rows = ga._read_jsonl(paths.growth_reports_index_path)
+            for r in rows:
+                if r["report_id"] == old_report.report_id:
+                    r["created_at"] = time.time() - 400 * 86400
+            ga._write_jsonl(paths.growth_reports_index_path, rows)
+            ga.compact_reports_index_storage(paths)
+
+            # 归档之后仍然能按 id 查到（不是 404）。
+            found = ga.get_report_by_id(paths, old_report.report_id)
+            self.assertIsNotNone(found)
+            self.assertEqual(found.report_id, old_report.report_id)
+            self.assertIsNone(ga.get_report_by_id(paths, "not-a-real-id"))
+
+    def test_reports_needing_refresh_unaffected_by_archive(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = _make_paths(tmp)
+            cand, old_report = self._make_candidate_with_report(paths)
+            ga.refresh_growth_report(paths, cand.candidate_id)
+            rows = ga._read_jsonl(paths.growth_reports_index_path)
+            for r in rows:
+                if r["report_id"] == old_report.report_id:
+                    r["created_at"] = time.time() - 400 * 86400
+            ga._write_jsonl(paths.growth_reports_index_path, rows)
+            ga.compact_reports_index_storage(paths)
+            # 归档不影响"当前挂着的报告要不要刷新"这条只读聚合。
+            self.assertEqual(ga.reports_needing_refresh(paths), [])
+
+    def test_monthly_retrospective_reports_generated_counts_archived(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = _make_paths(tmp)
+            cand, old_report = self._make_candidate_with_report(paths)
+            ga.refresh_growth_report(paths, cand.candidate_id)
+            rows = ga._read_jsonl(paths.growth_reports_index_path)
+            for r in rows:
+                if r["report_id"] == old_report.report_id:
+                    r["created_at"] = time.time() - 400 * 86400
+            ga._write_jsonl(paths.growth_reports_index_path, rows)
+            ga.compact_reports_index_storage(paths)
+            summary = ga.monthly_retrospective_summary(paths)
+            # 归档 1 份 + 活跃 1 份 = 2，累计总数不因为归档而"变少"。
+            self.assertEqual(summary["reports_generated"], 2)
+
+    def test_compact_reports_index_storage_noop_on_empty(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = _make_paths(tmp)
+            self.assertEqual(ga.compact_reports_index_storage(paths), 0)
+
+
 class TestTopicTrend(unittest.TestCase):
     """P4-6：证据数走势快照（growth_topic_trend.jsonl）。"""
 

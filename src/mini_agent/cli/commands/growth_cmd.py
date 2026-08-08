@@ -147,8 +147,7 @@ def handle_growth_cmd(args: list[str], agent=None) -> None:
             report = ga.generate_growth_report(paths, cand, llm_helper=_get_llm_helper(agent))
             R.print_info(f"已生成调研报告：{report.body_path}")
         else:
-            reports = {r.report_id: r for r in ga.list_reports(paths)}
-            report = reports.get(cand.report_id)
+            report = ga.get_report_by_id(paths, cand.report_id)
         if report is None:
             R.print_error("报告索引缺失，请重新执行 /growth report 生成。")
             return

@@ -6063,8 +6063,7 @@ async def get_growth_report_body(request: Request, report_id: str):
         paths = _get_paths_for_request(request)
         from mini_agent.evolution import growth_advisor as ga
 
-        reports = {r.report_id: r for r in ga.list_reports(paths)}
-        report = reports.get(report_id)
+        report = ga.get_report_by_id(paths, report_id)
         if report is None:
             raise HTTPException(status_code=404, detail="report not found")
         from pathlib import Path

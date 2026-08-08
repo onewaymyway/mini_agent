@@ -354,6 +354,15 @@ class AgentPaths:
         return self.workdir_dir / "growth_reports.jsonl"
 
     @property
+    def growth_reports_archive_path(self) -> Path:
+        """<project_root>/.agent/growth_reports.archive.jsonl — [P5-0]
+        `compact_reports_index_storage()` 归档掉的"已被刷新替换、不再是
+        任何候选当前挂着的那份"的旧 GrowthReport 记录。只追加，不参与
+        `list_reports()`/`reports_needing_refresh()` 等运行时读取路径，
+        纯粹是历史留痕，需要时可以手动查阅。"""
+        return self.workdir_dir / "growth_reports.archive.jsonl"
+
+    @property
     def growth_feedback_ledger_path(self) -> Path:
         """<project_root>/.agent/growth_feedback_ledger.jsonl — 用户对候选/报告
         的采纳/忽略反馈流水，供研判层下次调整候选置信度。"""

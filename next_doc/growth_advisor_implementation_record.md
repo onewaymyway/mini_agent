@@ -991,16 +991,18 @@ removed` 黑名单（`growth_candidate_derive()` 消费时会跳过），
   主题的初始置信度确实被拖低，不是只挂了个标签）；连同此前全部用例，
   `test_growth_advisor.py` 合计 104 项全部通过。
 
-### P5-0：数据生命周期 / 存储卫生（部分完成——仅 growth_topic_trend 降采样）
+### P5-0：数据生命周期 / 存储卫生（已完成）
 
 - **范围说明**：方案原文对三个只追加文件的处理方式分层建议不同——
   `growth_topic_trend.jsonl`"相对独立、聚合意义不强，可以先单独做降
   采样"；`growth_reports_index.jsonl`/`growth_feedback_ledger.jsonl` 则
   要求"先盘点一遍还有哪些函数依赖读整个文件，确认压缩策略不会静默改变
-  现有统计口径"。这次先落地风险更低、依赖更少的前者，后两个文件的分层
-  存储按方案原文的建议方式（先审计再动代码）延后到下一轮，审计结论见
-  下方"依赖全量读取的函数清单"，供下一轮直接复用不用重新盘点。
-- **已实现（growth_topic_trend 降采样）**：
+  现有统计口径"。第一轮先落地了风险更低的前者；这一轮基于审计结论
+  （见下方表格）完成了 `growth_reports_index.jsonl` 的分层存储。
+  `growth_feedback_ledger.jsonl` 因为消费方全部是"累计统计"语义，
+  归档前必须先把旧条目转成等价的持久化聚合计数，改动量级明显大于
+  reports_index，继续延后到下一轮单独排期。
+- **已实现（growth_topic_trend 降采样，上一轮）**：
   - `_compact_topic_trend_rows(rows, *, now=None)`：纯函数，超过
     `_TREND_RAW_WINDOW_DAYS`（60 天）的旧快照按 `(dedupe_key, 周编号)`
     分桶，桶内只保留 `scanned_at` 最大的一条；60 天窗口内的近期快照
@@ -1017,25 +1019,58 @@ removed` 黑名单（`growth_candidate_derive()` 消费时会跳过），
     正常 cron 频率（哪怕每天一轮）也远超 20 个点，被压缩掉的旧快照
     早就落在这个 limit 窗口之外、从未被这个函数返回过，因此降采样前后
     `_topic_trend_series()` 的任何返回值都不变。
-- **依赖全量读取的函数清单**（审计结论，供 P5-0 下一轮直接使用）：
-  | 文件 | 读取方式 | 消费函数 | 是否只取"尾部"/可安全归档旧数据 |
+- **已实现（growth_reports_index 分层存储，本轮新增）**：
+  - `paths.growth_reports_archive_path`（新文件
+    `growth_reports.archive.jsonl`）：只追加，存放归档掉的旧报告。
+  - `compact_reports_index_storage(paths, *, now=None)`：归档条件是
+    **同时满足**"不是任何候选当前挂着的那份"（`candidate.report_id`
+    不指向它）**且**"生成时间超过 `_REPORTS_ARCHIVE_WINDOW_DAYS`
+    （180 天）"——只满足其中一条都不归档：刚被刷新替换但还很新的报告
+    留一段观察期，防止"报告生成后立刻被下一轮扫描判定过期归档"这种
+    边界情况；仍被候选挂着的报告（不管多旧）永远不归档，因为
+    `reports_needing_refresh()` 需要读到它。
+  - **发现的额外风险点（审计时没预料到，实现时排查出来）**：
+    `api/routes.py` 的 `GET /growth/reports/{report_id}` 和
+    `cli/commands/growth_cmd.py` 的 `/growth report` 都存在"直接按
+    `report_id` 查某一份报告正文"的场景（比如看板里存着旧链接、或
+    候选当前挂着的就是这份报告）——如果归档后这两处还是只查活跃索引，
+    归档掉的旧报告会从"能查到"变成 404，是一次真实的行为倒退。为此
+    新增 `get_report_by_id(paths, report_id)`：先查活跃索引，查不到
+    再查归档文件，两处调用都已经切换成这个函数，归档前后查询结果
+    不变。
+  - `list_reports(paths, *, include_archived=False)`：新增可选参数，
+    默认行为（只读活跃索引）与改动前完全一致；`include_archived=True`
+    时额外并入归档文件，供"报告生成总数"这类累计统计使用——
+    `monthly_retrospective_summary()` 的 `reports_generated` 字段
+    （审计时发现的另一处依赖全量计数的地方，此前只统计活跃索引的
+    条数，归档上线后如果不改这里，这个数字会在报告被归档的那一刻
+    突然"变少"，是另一个真实的行为倒退）已同步改成
+    `include_archived=True`。
+  - `_maybe_dispatch_weekly_digest()` 的窗口只有 7 天，远小于 180 天的
+    归档窗口，确认不受影响，未改动；`reports_needing_refresh()` 只通过
+    `candidate.report_id` 查表，从未查过已被替换的旧报告，也未改动。
+  - **不在 `run_daily_cycle()` 里自动触发**：跟 topic_trend 降采样不同，
+    报告归档改的是"能不能查到某份报告"这个用户可感知的行为，不适合
+    悄悄地每天自动跑；留给人工维护脚本或未来单独排期的月度 cron 调用。
+- **依赖全量读取的函数清单**（审计结论）：
+  | 文件 | 读取方式 | 消费函数 | 处理方式 |
   |---|---|---|---|
-  | `growth_reports_index.jsonl` | `list_reports()` 全量读取 | `reports_needing_refresh()`：按 `candidate.report_id` 建字典后只看每个候选**当前挂着**的那份报告 | 是——旧报告（已被刷新替换、`candidate.report_id` 不再指向它）参与字典构建但从不被返回，可以安全归档 |
-  | `growth_backlog.jsonl` | `GrowthBacklog.load_all()` 全量读取 | `_category_acceptance_rate()`：统计全部历史 accept/dismiss 决策占比 | 否——这是"累计统计"语义的全量聚合，且这个文件本身不是 append-only（`save_all()` 整表重写），数据量受"候选总数"自然限制，不在本轮 P5-0 讨论范围内 |
-  | `growth_feedback_ledger.jsonl` | `GrowthFeedbackLedger.all_entries()` 全量读取 | `_dismiss_counts_by_dedupe_key()`：按 `dedupe_key` 累计历史 dismiss 次数；`_category_dismiss_counts()`：按类别累计；`_followup_adjustment_by_dedupe_key()`：读 `followup_*` 类型条目算调节系数；`monthly_retrospective_summary()`：统计当月 accept/dismiss 数 | 否——前三个都是"累计统计"语义，归档旧条目前必须先把归档掉的部分转成等价的聚合计数（比如 `{dedupe_key: {"dismissed": N}}`），否则会静默改变置信度调权结果；`monthly_retrospective_summary()` 只看当月，理论上可以只读最近窗口，但目前实现是筛全量后按月过滤，归档改造时需要同步改这里的读取方式 |
-
-  结论：`growth_reports_index.jsonl` 的归档风险最低（消费方语义本来就是
-  "只看当前挂着的那份"，历史条目对现有统计口径没有贡献），适合下一轮
-  优先做；`growth_feedback_ledger.jsonl` 必须先把"归档旧条目"和"把旧
-  条目累计进一份持久化的聚合计数"这两步绑定在一起做，不能只做归档，
-  否则会破坏 P2/P4-3 的反馈调权和月度复盘统计，改动量级比方案原文预估
-  的更大，建议单独排一轮而不是跟 reports_index 一起做。
+  | `growth_reports_index.jsonl` | `list_reports()` 全量读取 | `reports_needing_refresh()`：只看当前挂着的那份；`_maybe_dispatch_weekly_digest()`：7 天窗口；`monthly_retrospective_summary()`：累计计数；看板/CLI 按 id 查询 | 已归档（本轮），归档条件 + `get_report_by_id()` 兜底 + `include_archived` 累计计数三者配合，确认无行为倒退 |
+  | `growth_backlog.jsonl` | `GrowthBacklog.load_all()` 全量读取 | `_category_acceptance_rate()`：累计统计 | 否——这个文件本身不是 append-only（`save_all()` 整表重写），数据量受"候选总数"自然限制，不在 P5-0 讨论范围内 |
+  | `growth_feedback_ledger.jsonl` | `GrowthFeedbackLedger.all_entries()` 全量读取 | `_dismiss_counts_by_dedupe_key()`/`_category_dismiss_counts()`/`_followup_adjustment_by_dedupe_key()`/`monthly_retrospective_summary()`：全部是累计统计语义 | 否——必须先把"归档"和"转成持久化聚合计数"绑定在一起做，不能只做归档，改动量级比 reports_index 更大，延后到下一轮单独排期 |
+- **测试**：`tests/test_growth_advisor.py` 新增
+  `TestReportsIndexArchive`（7 个用例：当前挂着的报告不归档、被替换的
+  旧报告归档、被替换但还没超过窗口期的报告暂不归档、`get_report_by_id`
+  归档后仍能查到 / 查不存在的 id 返回 `None`、`reports_needing_refresh`
+  不受归档影响、月度复盘的累计报告数不因归档而变少、空文件时的空
+  操作）；连同 `TestTopicTrend` 类新增的 4 个用例，`test_growth_advisor.py`
+  合计 115 项全部通过。
 
 ### P5-2/P5-4/P5-6：尚未开工
 
 方向和大致方案见 `next_doc/growth_advisor_improvement_plan_v3.md` 第 2
-节对应小节；按文档第 3 节的建议顺序，下一步是完成 P5-0 剩余部分
-（reports_index 归档，风险已确认可控），随后是 P5-2 → P5-4（有前置
-依赖关系，需要一起规划），P5-6 留到最后（涉及产品方向判断，不是纯
-技术决策）。
+节对应小节；`growth_feedback_ledger.jsonl` 的分层存储（P5-0 剩余部分）
+建议跟 P5-2（置信度模型改动，同样要动 `evidence_refs`/`focus_areas`
+数据结构）放在一起规划再决定顺序，避免两次改动互相踩脚。P5-6 留到
+最后（涉及产品方向判断，不是纯技术决策）。
 
