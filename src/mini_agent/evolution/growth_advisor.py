@@ -240,7 +240,16 @@ P5 范围（对应 next_doc/growth_advisor_improvement_plan_v3.md，本次
       topic_keyword()`/`confirm_topic_keyword()`（看板手动添加/确认）
       + `run_daily_cycle()`（cron 自动转正路径），均是可选 `cfg`/
       `llm_helper` 参数，不传时行为与改动前完全一致。
-    - P5-0/P5-2/P5-4/P5-6 尚未开工，方向和大致方案见
+    - P5-0（数据生命周期 / 存储卫生，部分完成——仅 growth_topic_trend
+      降采样，reports_index/feedback_ledger 的分层存储按方案原文"先审计
+      再动代码"的建议延后到下一轮，见实施记录）：新增
+      `compact_topic_trend_storage()` / `_compact_topic_trend_rows()`，
+      对 `growth_topic_trend.jsonl` 里超过 `_TREND_RAW_WINDOW_DAYS`
+      （60 天）的旧快照按"同一主题同一周只留最新一条"降采样，近期快照
+      不动；`growth_candidate_derive()` 每轮 cron 结束后顺带调用一次，
+      不改变 `_topic_trend_series()` 的调用契约（它本来就只取最近
+      `limit` 个点，被压缩掉的都是早已在这个窗口之外的历史点）。
+    - P5-2/P5-4/P5-6 尚未开工，方向和大致方案见
       `next_doc/growth_advisor_improvement_plan_v3.md`，进度以
       `next_doc/growth_advisor_implementation_record.md` 的 P5 章节
       为准。
@@ -1328,6 +1337,10 @@ def growth_candidate_derive(paths, cfg, profile) -> list[GrowthCandidate]:
         )
         if cand is not None:
             produced.append(cand)
+    # [P5-0] 每轮扫描结束后顺带做一次趋势文件降采样压缩，摊销掉的是"每天
+    # 一次、读一次全量文件"的成本，跟这个函数本身已经是"整轮 cron 只跑
+    # 一次"的调用频率一致，不会引入额外的高频 IO。
+    compact_topic_trend_storage(paths)
     return produced
 
 
@@ -1420,6 +1433,54 @@ def list_reports(paths) -> list[GrowthReport]:
 # 因为 cron 频率是可配的，"最近 N 轮"比"最近 N 天"更贴合"扫描轮次"这个
 # 原始诉求。
 _DEFAULT_TREND_MAX_POINTS = 20
+
+# [P5-0] next_doc/growth_advisor_improvement_plan_v3.md 存储卫生：
+# growth_topic_trend.jsonl 是纯只追加文件，长期运行（每天一轮 cron，每轮
+# 每个 focus topic 都记一条）行数会无限增长，但 `_topic_trend_series()`
+# 只关心"最近 N 个点"，早期的高频快照对展示价值很低。这里做一个轻量
+# 降采样：超过 `_TREND_RAW_WINDOW_DAYS` 天的旧快照，同一个主题
+# （`dedupe_key`）同一周只保留最新的一条（代表"这一周末的证据数"），
+# 窗口内的近期快照保持逐条不动，不改变 `_topic_trend_series()` 的调用
+# 契约（依然是"按时间正序，最多取最近 limit 条"），因为被压缩掉的都是
+# 早已经落在 limit 窗口之外的历史点。
+_TREND_RAW_WINDOW_DAYS = 60
+
+
+def _compact_topic_trend_rows(rows: list[dict], *, now: Optional[float] = None) -> list[dict]:
+    """纯函数：对 growth_topic_trend 的行做降采样，返回压缩后的新列表
+    （不做任何 IO）。`now` 参数只为测试可控注入，默认取当前时间。"""
+    now = now if now is not None else time.time()
+    cutoff = now - _TREND_RAW_WINDOW_DAYS * 86400
+    recent = [r for r in rows if r.get("scanned_at", 0) >= cutoff]
+    old = [r for r in rows if r.get("scanned_at", 0) < cutoff]
+    if not old:
+        return rows
+    # 按 (dedupe_key, 周编号) 分桶，桶内只保留 scanned_at 最大的那条。
+    buckets: dict[tuple, dict] = {}
+    for r in old:
+        ts = r.get("scanned_at", 0)
+        week_bucket = (r.get("dedupe_key"), int(ts // (7 * 86400)))
+        existing = buckets.get(week_bucket)
+        if existing is None or ts > existing.get("scanned_at", 0):
+            buckets[week_bucket] = r
+    out = list(buckets.values()) + recent
+    out.sort(key=lambda r: r.get("scanned_at", 0))
+    return out
+
+
+def compact_topic_trend_storage(paths, *, now: Optional[float] = None) -> int:
+    """对落盘的 growth_topic_trend.jsonl 做一次降采样压缩，返回被压缩掉
+    的行数（0 表示本次没有可压缩的旧数据，不会触发写盘）。供
+    `growth_candidate_derive()` 每轮 cron 顺带调用，也可以单独调用（比如
+    手动维护脚本），是幂等操作。"""
+    rows = _read_jsonl(paths.growth_topic_trend_path)
+    if not rows:
+        return 0
+    compacted = _compact_topic_trend_rows(rows, now=now)
+    removed = len(rows) - len(compacted)
+    if removed > 0:
+        _write_jsonl(paths.growth_topic_trend_path, compacted)
+    return removed
 
 
 def _record_topic_trend_snapshot(

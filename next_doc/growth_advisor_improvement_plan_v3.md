@@ -1,6 +1,13 @@
 # 成长顾问（Growth Advisor）改进计划 v3
 
-- **版本**: v1（草案，方向级规划，未开始实施）
+> **实施状态（2026-08 更新）**：P5-1（迁移期检查清单）、P5-5（配置类型
+> 校验兜底）、P5-3（LLM 归类）已完成；P5-0（存储卫生）部分完成——
+> `growth_topic_trend.jsonl` 降采样已落地，`growth_reports_index.jsonl`/
+> `growth_feedback_ledger.jsonl` 的分层存储已完成审计（依赖全量读取的
+> 函数清单）但代码延后到下一轮；P5-2/P5-4/P5-6 尚未开工。细节见
+> `next_doc/growth_advisor_implementation_record.md` 的 P5 章节。
+
+- **版本**: v1（草案，方向级规划，部分已实施，见上方实施状态）
 - **前置文档**: `next_doc/growth_advisor_design.md`（原始方案）、
   `next_doc/growth_advisor_improvement_plan_v2.md`（P4-0~P4-7，已全部完成）、
   `next_doc/growth_advisor_implementation_record.md`（逐阶段实施记录，含
@@ -74,7 +81,7 @@ P4 交付后确认的几个结构性事实：
 
 ## 2. 方向清单
 
-### P5-0：数据生命周期 / 存储卫生
+### P5-0：数据生命周期 / 存储卫生（部分完成——见实施记录）
 **问题**：`growth_reports_index.jsonl` / `growth_feedback_ledger.jsonl` /
 `growth_topic_trend.jsonl` 三个文件只追加、不轮转，长期运行会无限增长。
 

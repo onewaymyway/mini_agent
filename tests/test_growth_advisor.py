@@ -1433,6 +1433,83 @@ class TestTopicTrend(unittest.TestCase):
             series = ga._topic_trend_series(paths, ga.normalize_title_key("数据分析"), limit=2)
             self.assertEqual([pt["evidence_count"] for pt in series], [3, 4])
 
+    def test_compact_topic_trend_storage_downsamples_old_points(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = _make_paths(tmp)
+            now = time.time()
+            key = ga.normalize_title_key("数据分析")
+            # 90 天前起，同一周内塞 3 条快照（应该被压缩成 1 条：最新的那条）。
+            old_week_start = now - 90 * 86400
+            for i, offset in enumerate((0, 1 * 86400, 2 * 86400)):
+                ga._append_jsonl(
+                    paths.growth_topic_trend_path,
+                    {
+                        "dedupe_key": key,
+                        "topic": "数据分析",
+                        "scanned_at": old_week_start + offset,
+                        "evidence_count": i,
+                        "confidence": None,
+                    },
+                )
+            # 近期（窗口内）快照，不应被压缩。
+            for i in range(3):
+                ga._append_jsonl(
+                    paths.growth_topic_trend_path,
+                    {
+                        "dedupe_key": key,
+                        "topic": "数据分析",
+                        "scanned_at": now - i,
+                        "evidence_count": 10 + i,
+                        "confidence": None,
+                    },
+                )
+            removed = ga.compact_topic_trend_storage(paths, now=now)
+            self.assertEqual(removed, 2)  # 3 条旧快照压缩成 1 条
+            rows = ga._read_jsonl(paths.growth_topic_trend_path)
+            self.assertEqual(len(rows), 4)  # 1 条压缩后的旧点 + 3 条近期点
+            old_rows = [r for r in rows if r["scanned_at"] < now - ga._TREND_RAW_WINDOW_DAYS * 86400]
+            self.assertEqual(len(old_rows), 1)
+            self.assertEqual(old_rows[0]["evidence_count"], 2)  # 保留的是最新那条（offset 最大）
+
+    def test_compact_topic_trend_storage_noop_when_nothing_old(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = _make_paths(tmp)
+            ga._record_topic_trend_snapshot(paths, "数据分析", 3, 0.5)
+            removed = ga.compact_topic_trend_storage(paths)
+            self.assertEqual(removed, 0)
+            self.assertEqual(len(ga._read_jsonl(paths.growth_topic_trend_path)), 1)
+
+    def test_compact_topic_trend_storage_noop_on_missing_file(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = _make_paths(tmp)
+            removed = ga.compact_topic_trend_storage(paths)
+            self.assertEqual(removed, 0)
+
+    def test_candidate_derive_compacts_trend_storage_each_run(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = _make_paths(tmp)
+            now = time.time()
+            key = ga.normalize_title_key("数据分析")
+            old_week_start = now - 90 * 86400
+            for offset in (0, 86400):
+                ga._append_jsonl(
+                    paths.growth_topic_trend_path,
+                    {
+                        "dedupe_key": key,
+                        "topic": "数据分析",
+                        "scanned_at": old_week_start + offset,
+                        "evidence_count": 1,
+                        "confidence": None,
+                    },
+                )
+            profile = UserProfile()
+            profile.derived = {"growth_focus_areas": {"数据分析": ["e1", "e2", "e3"]}}
+            cfg = GrowthAdvisorConfig(min_evidence_count=3)
+            ga.growth_candidate_derive(paths, cfg, profile)
+            rows = ga._read_jsonl(paths.growth_topic_trend_path)
+            old_rows = [r for r in rows if r["scanned_at"] < now - ga._TREND_RAW_WINDOW_DAYS * 86400]
+            self.assertEqual(len(old_rows), 1)  # 2 条旧点被压缩成 1 条
+
     def test_growth_topic_map_includes_evidence_trend(self):
         with tempfile.TemporaryDirectory() as tmp:
             paths = _make_paths(tmp)

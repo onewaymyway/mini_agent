@@ -991,10 +991,51 @@ removed` 黑名单（`growth_candidate_derive()` 消费时会跳过），
   主题的初始置信度确实被拖低，不是只挂了个标签）；连同此前全部用例，
   `test_growth_advisor.py` 合计 104 项全部通过。
 
-### P5-0/P5-2/P5-4/P5-6：尚未开工
+### P5-0：数据生命周期 / 存储卫生（部分完成——仅 growth_topic_trend 降采样）
+
+- **范围说明**：方案原文对三个只追加文件的处理方式分层建议不同——
+  `growth_topic_trend.jsonl`"相对独立、聚合意义不强，可以先单独做降
+  采样"；`growth_reports_index.jsonl`/`growth_feedback_ledger.jsonl` 则
+  要求"先盘点一遍还有哪些函数依赖读整个文件，确认压缩策略不会静默改变
+  现有统计口径"。这次先落地风险更低、依赖更少的前者，后两个文件的分层
+  存储按方案原文的建议方式（先审计再动代码）延后到下一轮，审计结论见
+  下方"依赖全量读取的函数清单"，供下一轮直接复用不用重新盘点。
+- **已实现（growth_topic_trend 降采样）**：
+  - `_compact_topic_trend_rows(rows, *, now=None)`：纯函数，超过
+    `_TREND_RAW_WINDOW_DAYS`（60 天）的旧快照按 `(dedupe_key, 周编号)`
+    分桶，桶内只保留 `scanned_at` 最大的一条；60 天窗口内的近期快照
+    原样保留、不做任何压缩。
+  - `compact_topic_trend_storage(paths, *, now=None)`：读取 → 压缩 →
+    （有压缩才）写回的落盘封装，返回被压缩掉的行数，`removed == 0` 时
+    不触发任何写操作（幂等、无副作用）。
+  - 接入点：`growth_candidate_derive()`（`run_daily_cycle()` 每轮 cron
+    唯一会调用它的路径）每轮扫描结束后顺带调用一次——调用频率跟这个
+    函数本身的调用频率一致（每天一次或用户手动触发一次 `/growth
+    scan`），不会引入额外的高频 IO。
+  - 为什么这个压缩策略是安全的：`_topic_trend_series()` 的调用契约本来
+    就是"按时间正序，最多取最近 `limit`（默认 20）个点"，60 天窗口内
+    正常 cron 频率（哪怕每天一轮）也远超 20 个点，被压缩掉的旧快照
+    早就落在这个 limit 窗口之外、从未被这个函数返回过，因此降采样前后
+    `_topic_trend_series()` 的任何返回值都不变。
+- **依赖全量读取的函数清单**（审计结论，供 P5-0 下一轮直接使用）：
+  | 文件 | 读取方式 | 消费函数 | 是否只取"尾部"/可安全归档旧数据 |
+  |---|---|---|---|
+  | `growth_reports_index.jsonl` | `list_reports()` 全量读取 | `reports_needing_refresh()`：按 `candidate.report_id` 建字典后只看每个候选**当前挂着**的那份报告 | 是——旧报告（已被刷新替换、`candidate.report_id` 不再指向它）参与字典构建但从不被返回，可以安全归档 |
+  | `growth_backlog.jsonl` | `GrowthBacklog.load_all()` 全量读取 | `_category_acceptance_rate()`：统计全部历史 accept/dismiss 决策占比 | 否——这是"累计统计"语义的全量聚合，且这个文件本身不是 append-only（`save_all()` 整表重写），数据量受"候选总数"自然限制，不在本轮 P5-0 讨论范围内 |
+  | `growth_feedback_ledger.jsonl` | `GrowthFeedbackLedger.all_entries()` 全量读取 | `_dismiss_counts_by_dedupe_key()`：按 `dedupe_key` 累计历史 dismiss 次数；`_category_dismiss_counts()`：按类别累计；`_followup_adjustment_by_dedupe_key()`：读 `followup_*` 类型条目算调节系数；`monthly_retrospective_summary()`：统计当月 accept/dismiss 数 | 否——前三个都是"累计统计"语义，归档旧条目前必须先把归档掉的部分转成等价的聚合计数（比如 `{dedupe_key: {"dismissed": N}}`），否则会静默改变置信度调权结果；`monthly_retrospective_summary()` 只看当月，理论上可以只读最近窗口，但目前实现是筛全量后按月过滤，归档改造时需要同步改这里的读取方式 |
+
+  结论：`growth_reports_index.jsonl` 的归档风险最低（消费方语义本来就是
+  "只看当前挂着的那份"，历史条目对现有统计口径没有贡献），适合下一轮
+  优先做；`growth_feedback_ledger.jsonl` 必须先把"归档旧条目"和"把旧
+  条目累计进一份持久化的聚合计数"这两步绑定在一起做，不能只做归档，
+  否则会破坏 P2/P4-3 的反馈调权和月度复盘统计，改动量级比方案原文预估
+  的更大，建议单独排一轮而不是跟 reports_index 一起做。
+
+### P5-2/P5-4/P5-6：尚未开工
 
 方向和大致方案见 `next_doc/growth_advisor_improvement_plan_v3.md` 第 2
-节对应小节；按文档第 3 节的建议顺序，下一步是 P5-0（存储卫生），随后是
-P5-2 → P5-4（有前置依赖关系，需要一起规划），P5-6 留到最后（涉及产品
-方向判断，不是纯技术决策）。
+节对应小节；按文档第 3 节的建议顺序，下一步是完成 P5-0 剩余部分
+（reports_index 归档，风险已确认可控），随后是 P5-2 → P5-4（有前置
+依赖关系，需要一起规划），P5-6 留到最后（涉及产品方向判断，不是纯
+技术决策）。
 
