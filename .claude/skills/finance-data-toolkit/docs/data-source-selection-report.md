@@ -311,18 +311,46 @@
 - ✅ 加密货币（主流币种）
 - ✅ 宏观经济（GDP、CPI、PMI、利率、汇率）
 
-### 4.2 潜在扩展方向
+### 4.2 已验证数据源（2026-08-08 测试）
 
-- ⚠️ 商品数据（黄金、白银、原油）
-- ⚠️ 股指期货（IF、IC、IH、T）
-- ⚠️ 期权数据（更详细的期权链）
-- ⚠️ 融资融券数据
+#### ✅ 可用数据源
+
+| 数据源 | 函数 | 状态 | 记录数 | 备注 |
+|--------|------|------|--------|------|
+| AKShare 商品主力连续 | `futures_display_main_sina()` | ✅ OK | 82 | 新浪期货 |
+| AKShare 融资融券明细 | `stock_margin_detail_szse()` | ✅ OK | 1811 | 深交所 |
+| AKShare 北向资金 | `stock_hsgt_hist_em()` | ✅ OK | 2726 | 沪深港通 |
+| AKShare 龙虎榜 | `stock_lhb_detail_em()` | ✅ OK | 1518 | 2024年1月 |
+| AKShare 期货主力 | `futures_main_sina()` | ✅ OK | 4174 | 新浪期货 |
+| AKShare 商品合约 | `option_commodity_contract_sina()` | ✅ OK | 4 | 新浪期权 |
+| AKShare A股实时 | `stock_zh_a_spot()` | ✅ OK | 5538 | 新浪接口 |
+| AKShare A股历史 | `stock_zh_a_daily()` | ✅ OK | 22 | 新浪接口 |
+| AKShare 债券行情 | `bond_china_yield()` | ✅ OK | 738 | 中国债券收益率 |
+| AKShare 外汇汇率 | `currency_boc_safe()` | ✅ OK | 8022 | 外汇局 |
+| AKShare 加密货币 | `crypto_js_spot()` | ✅ OK | 10 | 主流币种 |
+| AKShare 宏观经济 | `macro_china_cpi_yearly()` | ✅ OK | 477 | 年度数据 |
+
+#### ❌ 不可用数据源（代理问题）
+
+| 数据源 | 函数 | 错误原因 | 备注 |
+|--------|------|----------|------|
+| AKShare 股票实时 | `stock_zh_a_spot_em()` | 东方财富 push2 API 代理失败 | 需直连 |
+| AKShare ETF实时 | `fund_etf_spot_em()` | 东方财富 push2 API 代理失败 | 需直连 |
+| AKShare 指数实时 | `stock_zh_index_spot_em()` | 东方财富 push2 API 代理失败 | 需直连 |
+| AKShare 港股实时 | `stock_hk_spot_em()` | 东方财富 push2 API 代理失败 | 需直连 |
+| AKShare 美股实时 | `stock_us_spot_em()` | 东方财富 push2 API 代理失败 | 需直连 |
+| AKShare 期权风险 | `option_risk_analysis_em()` | 东方财富 push2 API 代理失败 | 需直连 |
+| AKShare 商品历史 | `option_commodity_hist_sina()` | JSON 解析失败 | 接口变更 |
+| AKShare 基金实时 | `fund_open_fund_info_em()` | JS 解析错误 | 接口变更 |
+
+### 4.3 扩展方向
+
+- ⚠️ 商品历史数据（需修复接口）
+- ⚠️ 股指期货数据（IF、IC、IH、T）
+- ⚠️ 期权链数据（更详细的期权合约）
 - ⚠️ 大宗交易数据
-- ⚠️ 港股实时行情
-- ⚠️ 美股实时行情
-- ⚠️ 北向资金实时数据
-- ⚠️ 龙虎榜详细数据
 - ⚠️ 资金流向数据（行业/概念）
+- ⚠️ 解决东方财富 push2 API 代理问题
 
 ---
 
