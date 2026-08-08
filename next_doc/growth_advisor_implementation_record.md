@@ -1104,11 +1104,66 @@ removed` 黑名单（`growth_candidate_derive()` 消费时会跳过），
   一致）；连同此前全部用例，`test_growth_advisor.py` 合计 122 项
   全部通过。
 
-### P5-4/P5-6：尚未开工
+### P5-4：回访/报告刷新接入被动信号，减少主动打扰（已完成）
+
+- **问题回顾**：P4-3 的采纳后回访、P4-4 的报告刷新提示都是"到点就问
+  用户"，没有先用手边已有的 `growth_topic_trend.jsonl`（P4-6）做一次
+  初筛——即便证据数还在涨，也照样弹回访卡片，体感不对。
+- **实现**：
+  - `_topic_trend_rising(paths, dedupe_key, *, window_days)`：取窗口期
+    内的趋势快照，比较窗口内第一个点和最后一个点的证据数，判断"在涨"
+    （`True`）/"走平或下降"（`False`）/"数据不够，判断不了"（`None`，
+    窗口内少于 2 个快照点）。`None` 是一等公民，不能被简化成 `True`
+    或 `False` 中的任何一个——数据不足时应该退回改动前的行为，不能
+    悄悄改变语义。
+  - `pending_followups()`：到期候选（原有的 status/window 判断不变）
+    在纳入结果之前，多一步 `_topic_trend_rising()` 检查——`True` 直接
+    跳过（顺延到下一轮，不主动打扰），`False`/`None` 都正常展示。
+    **不持久化"已推迟"状态**：每次调用都基于当次快照现算，这样"不再
+    涨了自然就展示"是自动生效的，不需要考虑"如何撤销推迟标记"这类
+    额外的状态管理语义（对应方案原文"不引入完整的推迟状态机"的取舍）。
+  - `followup_question_hint(paths, candidate, *, cfg=None)`：给看板提供
+    更贴切的提问文案——走势判断为"走平/下降"（`False`）时换成"最近这个
+    方向的记忆变少了，是先放一放了吗？"，其余情况（含判断不了的
+    `None`）用原有的默认问法。只影响文案，`record_followup()` 的
+    progressed/stalled 两个合法答案不变。
+  - `_recent_evidence_delta(paths, dedupe_key, *, window_days)`：从趋势
+    快照估算最近 `window_days`（默认 14）天内新增了多少证据——用最新
+    快照点减去"窗口边界之前最后一个快照点"（如果全部快照都在窗口内，
+    用最早的点做基线，相当于把全部证据都算作"最近"）。快照点不足 2 个
+    时返回 `None`（不是 `0`——"判断不了"和"确定没有最近突增"是两回事，
+    调用方要能区分）。
+  - `reports_needing_refresh()`：每条待刷新记录新增 `recent_evidence_
+    delta` 字段，排序键从单纯 `-new_evidence` 改成 `(-recent_evidence_
+    delta_or_0, -new_evidence)`——证据是最近突然涨的排在前面，即便总量
+    暂时不如另一个"慢慢攒够阈值"的候选；`recent_evidence_delta is
+    None`（没有趋势快照数据）时退化为按 `new_evidence` 排序，不会被
+    误判成"没有最近突增"而排到最后。
+  - `api/routes.py` 的 `GET /growth/followups` 响应给每条候选额外拼了
+    `question_hint` 字段（用 `followup_question_hint()` 算出来），
+    `GET /growth/reports/refresh_candidates` 不用改代码——新字段跟着
+    `reports_needing_refresh()` 的返回值自然透传。
+  - 删除了旧的、被新版本完全覆盖的 `pending_followups()` 定义（新版本
+    加了趋势检查，函数签名和基础行为——status/window 判断——不变，
+    只是在原实现基础上插入了一步判断，之前误留了新旧两份定义，本轮
+    一并清理）。
+- **已知限制**：`_topic_trend_rising()`/`_recent_evidence_delta()`
+  都依赖 `growth_candidate_derive()` 每轮 cron 顺带写入的趋势快照——
+  如果一个候选是通过测试直接构造 backlog（不经过 `growth_candidate_
+  derive()`）产生的，不会有对应的趋势快照，两个函数都会返回 `None`，
+  行为退化为改动前的样子，这是设计上的保底行为，不是遗漏。
+- **测试**：`tests/test_growth_advisor.py` 新增
+  `TestFollowupAndRefreshPassiveSignals`（10 个用例，覆盖：趋势判断
+  数据不足返回 `None`、走势上升/下降两种判断、回访窗口到期但证据还在
+  涨时被推迟、走平时正常展示、完全没有趋势数据时正常展示（向后兼容）、
+  回访问法在走平时换措辞/默认措辞、`_recent_evidence_delta` 数据不足
+  返回 `None`、报告刷新排序优先"最近突增"而不是单纯总量、没有趋势
+  数据时退化为按总量排序）；连同此前全部用例，`test_growth_advisor.py`
+  合计 132 项全部通过。
+
+### P5-6：尚未开工
 
 方向和大致方案见 `next_doc/growth_advisor_improvement_plan_v3.md` 第 2
-节对应小节；`growth_feedback_ledger.jsonl` 的分层存储（P5-0 剩余部分）
-可以跟 P5-4（回访/报告刷新接入被动信号，同样会用到 P5-2 刚落地的时间戳
-数据）放在一起规划再决定顺序。P5-6 留到最后（涉及产品方向判断，不是
-纯技术决策）。
+节对应小节，涉及产品方向判断（是否打破"证据不够强就不推荐"的一贯克制
+原则），不建议在没有明确产品决策的情况下直接实施，即使技术上完全可行。
 

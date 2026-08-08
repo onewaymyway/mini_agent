@@ -5878,7 +5878,12 @@ async def get_growth_followups(request: Request):
             from mini_agent.config.models import GrowthAdvisorConfig
             cfg = GrowthAdvisorConfig()
         candidates = ga.pending_followups(paths, cfg)
-        return {"followups": [c.to_dict() for c in candidates]}
+        return {
+            "followups": [
+                {**c.to_dict(), "question_hint": ga.followup_question_hint(paths, c, cfg=cfg)}
+                for c in candidates
+            ]
+        }
     except HTTPException:
         raise
     except Exception as e:

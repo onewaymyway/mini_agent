@@ -261,7 +261,15 @@ P5 范围（对应 next_doc/growth_advisor_improvement_plan_v3.md，本次
       单独存 `profile.derived["growth_evidence_timestamps"]`，由
       `growth_signal_scan()` 在扫描窗口内整体覆盖式写入，不改
       `evidence_refs` 本身的 `list[str]` 结构。
-    - P5-4/P5-6 尚未开工，方向和大致方案见
+    - P5-4（回访/报告刷新接入被动信号，已完成）：`pending_followups()`
+      到期候选先看一眼 `_topic_trend_rising()`（读 P4-6 的
+      `growth_topic_trend.jsonl` 快照），窗口期内证据数在涨就跳过这次
+      主动询问、顺延到下一轮（不持久化"已推迟"状态，纯按当次快照现算）；
+      `followup_question_hint()` 给回访卡片挑更贴切的提问措辞。
+      `reports_needing_refresh()` 新增 `recent_evidence_delta`（最近 14
+      天内新增证据数，见 `_recent_evidence_delta`），排序优先级从单纯按
+      `new_evidence` 总量改成"最近突增优先，总量其次"。
+    - P5-6 尚未开工，方向和大致方案见
       `next_doc/growth_advisor_improvement_plan_v3.md`，进度以
       `next_doc/growth_advisor_implementation_record.md` 的 P5 章节
       为准。
@@ -674,21 +682,6 @@ def _category_feedback_multiplier(dismiss_count: int) -> float:
 _FOLLOWUP_STALLED_FACTOR = 0.9
 _FOLLOWUP_PROGRESSED_FACTOR = 1.05
 _VALID_FOLLOWUP_OUTCOMES = ("progressed", "stalled")
-
-
-def pending_followups(paths, cfg=None) -> list[GrowthCandidate]:
-    """返回已采纳、满足回访窗口、且尚未回访过的候选（供看板渲染"这个方向
-    后续有没有推进？"的回访卡片）。"""
-    days = getattr(cfg, "followup_review_days", 30) if cfg is not None else 30
-    cutoff = time.time() - max(0, days) * 86400
-    out = []
-    for c in GrowthBacklog(paths).load_all():
-        if c.status != STATUS_ACCEPTED or c.followup_status is not None:
-            continue
-        if c.accepted_at is None or c.accepted_at > cutoff:
-            continue
-        out.append(c)
-    return sorted(out, key=lambda c: c.accepted_at or 0)
 
 
 def record_followup(paths, candidate_id: str, outcome: str) -> Optional[GrowthCandidate]:
@@ -1642,6 +1635,68 @@ def _topic_trend_series(paths, dedupe_key: str, limit: int = _DEFAULT_TREND_MAX_
     return rows[-limit:] if limit else rows
 
 
+# ────────── [P5-4] 回访/报告刷新接入被动信号，减少主动打扰 ──────────
+# next_doc/growth_advisor_improvement_plan_v3.md P5-4：回访（P4-3）/报告
+# 刷新提示（P4-4）都是纯被动的"到点就问"，没有先看一眼手边已有的
+# `growth_topic_trend.jsonl`（P4-6）判断"用户是不是其实还在关注"。这里
+# 两处都复用同一个"看趋势快照"的思路，都是纯只读判断（不新增存储、不
+# 持久化"已经推迟过一次"这类状态）——每次调用都基于当时的快照数据现算，
+# 跟 `reports_needing_refresh()` 本来就是"纯只读聚合"的风格保持一致，
+# 也避免了"要不要撤销已经推迟的标记"这类需要额外语义澄清的状态管理。
+
+
+def _topic_trend_rising(paths, dedupe_key: str, *, window_days: int) -> Optional[bool]:
+    """判断某个主题最近 `window_days` 天内的证据数走势是"在涨"还是"走平/
+    下降"。数据点不足（窗口内少于 2 个快照点）时返回 `None`，代表"没有
+    足够信息判断"——调用方应当把 `None` 当成"不确定"处理，不能默认成
+    "在涨"或"没在涨"中的任何一个，避免在数据稀疏时把不确定性伪装成
+    确定的判断。
+    """
+    series = _topic_trend_series(paths, dedupe_key)
+    cutoff = time.time() - max(0, window_days) * 86400
+    in_window = [p for p in series if p["scanned_at"] >= cutoff]
+    if len(in_window) < 2:
+        return None
+    return in_window[-1]["evidence_count"] > in_window[0]["evidence_count"]
+
+
+def followup_question_hint(paths, candidate: GrowthCandidate, *, cfg=None) -> str:
+    """给回访卡片挑一句更贴合实际状态的提问，而不是固定的"有推进/没空"。
+    看板侧读取这个字段决定文案，不影响 `pending_followups()`/
+    `record_followup()` 本身的行为（回答仍然只有 progressed/stalled 两种，
+    只是问法更贴切）。"""
+    days = getattr(cfg, "followup_review_days", 30) if cfg is not None else 30
+    rising = _topic_trend_rising(paths, candidate.dedupe_key(), window_days=days)
+    if rising is False:
+        return f"最近「{candidate.title}」相关的记忆变少了，是先放一放了吗？"
+    return f"「{candidate.title}」这个方向，后续有没有真的推进？"
+
+
+def pending_followups(paths, cfg=None) -> list[GrowthCandidate]:
+    """返回已采纳、满足回访窗口、且尚未回访过的候选（供看板渲染"这个方向
+    后续有没有推进？"的回访卡片）。
+
+    [P5-4] 到期候选先看一眼窗口期内的证据数走势：如果趋势判断结果是
+    "在涨"（`_topic_trend_rising` 返回 `True`），证据本身已经说明用户
+    还在关注，直接跳过这次主动询问、顺延到下一轮再看（不持久化"已推迟"
+    状态——纯按当次快照现算，下次调用如果趋势不再涨了自然就会展示，也
+    不需要考虑"如何撤销推迟标记"）。趋势不确定（快照点不足，返回
+    `None`）或判断为走平/下降时，仍按原逻辑展示回访卡片。
+    """
+    days = getattr(cfg, "followup_review_days", 30) if cfg is not None else 30
+    cutoff = time.time() - max(0, days) * 86400
+    out = []
+    for c in GrowthBacklog(paths).load_all():
+        if c.status != STATUS_ACCEPTED or c.followup_status is not None:
+            continue
+        if c.accepted_at is None or c.accepted_at > cutoff:
+            continue
+        if _topic_trend_rising(paths, c.dedupe_key(), window_days=days) is True:
+            continue  # 证据还在涨，顺延一轮，不主动打扰
+        out.append(c)
+    return sorted(out, key=lambda c: c.accepted_at or 0)
+
+
 # ────────── [P4-4] 报告质量分级 / 增量刷新 ──────────
 # next_doc/growth_advisor_improvement_plan_v2.md P4-4：默认模板报告保持
 # 零成本，`report_quality_llm_enabled` 是独立于 `llm_signal_augment_enabled`
@@ -1652,12 +1707,47 @@ def _topic_trend_series(paths, dedupe_key: str, limit: int = _DEFAULT_TREND_MAX_
 # 候选证据数比上一次生成报告时又新增达到这个数量，才提示"可以刷新了"，
 # 避免证据每多 1 条就被打扰。
 _DEFAULT_REPORT_REFRESH_MIN_NEW_EVIDENCE = 3
+# [P5-4] 判断"新增证据是不是最近突然冒出来的"用的窗口——证据是这两天
+# 突然涨的，可能是用户主动在推进这件事，看板展示顺序应该比"证据在几个
+# 月里慢慢攒够阈值"的更靠前。
+_REPORT_REFRESH_RECENT_BURST_WINDOW_DAYS = 14
+
+
+def _recent_evidence_delta(paths, dedupe_key: str, *, window_days: int) -> Optional[int]:
+    """从趋势快照里估算最近 `window_days` 天内新增了多少证据：用最新一个
+    快照点减去"窗口边界之前最后一个快照点"（如果全部快照都落在窗口内，
+    说明这个候选本身历史就短，直接把最早的一个点当基线，相当于把全部
+    证据都算作"最近"）。快照点不足 2 个（数据不够判断）时返回 `None`，
+    调用方应当把这种情况当"没有额外信息"处理，退化为只按 `new_evidence`
+    总量排序，不能默认成 0（0 意味着"确定没有最近突增"，跟"不知道"是
+    两回事）。
+    """
+    series = _topic_trend_series(paths, dedupe_key)
+    if len(series) < 2:
+        return None
+    cutoff = time.time() - max(0, window_days) * 86400
+    baseline = series[0]
+    for point in series:
+        if point["scanned_at"] <= cutoff:
+            baseline = point
+        else:
+            break
+    return max(0, series[-1]["evidence_count"] - baseline["evidence_count"])
 
 
 def reports_needing_refresh(paths, cfg=None) -> list[dict]:
     """返回"生成之后证据又显著增长、值得提示用户刷新一下"的报告列表。
     只看每个候选**当前挂着的那份报告**（`candidate.report_id`），已经被
-    刷新过的旧报告不会重复出现。纯只读聚合，不做任何写入。"""
+    刷新过的旧报告不会重复出现。纯只读聚合，不做任何写入。
+
+    [P5-4] 排序不再单纯按 `new_evidence` 总量：额外算一个
+    `recent_evidence_delta`（最近 14 天内新增的证据数，见
+    `_recent_evidence_delta`），证据是最近突然涨的排在前面——即便总量
+    暂时不如另一个"证据在几个月里慢慢攒够阈值"的候选，前者更可能是
+    用户正在主动推进、当下更值得优先刷新。没有足够趋势快照数据判断的
+    候选（`recent_evidence_delta is None`）退化按 `new_evidence` 排序，
+    不会被误判成"没有最近突增"而排到最后。
+    """
     min_new = getattr(cfg, "report_refresh_min_new_evidence", _DEFAULT_REPORT_REFRESH_MIN_NEW_EVIDENCE) if cfg is not None else _DEFAULT_REPORT_REFRESH_MIN_NEW_EVIDENCE
     reports_by_id = {r.report_id: r for r in list_reports(paths)}
     out = []
@@ -1674,6 +1764,9 @@ def reports_needing_refresh(paths, cfg=None) -> list[dict]:
             continue
         new_evidence = c.evidence_count - report.evidence_count_at_generation
         if new_evidence >= min_new:
+            recent_delta = _recent_evidence_delta(
+                paths, c.dedupe_key(), window_days=_REPORT_REFRESH_RECENT_BURST_WINDOW_DAYS
+            )
             out.append(
                 {
                     "candidate_id": c.candidate_id,
@@ -1682,9 +1775,13 @@ def reports_needing_refresh(paths, cfg=None) -> list[dict]:
                     "evidence_count": c.evidence_count,
                     "evidence_count_at_generation": report.evidence_count_at_generation,
                     "new_evidence": new_evidence,
+                    "recent_evidence_delta": recent_delta,
                 }
             )
-    return sorted(out, key=lambda row: -row["new_evidence"])
+    return sorted(
+        out,
+        key=lambda row: (-(row["recent_evidence_delta"] or 0), -row["new_evidence"]),
+    )
 
 
 def refresh_growth_report(

@@ -1906,3 +1906,216 @@ class TestEvidenceDistribution(unittest.TestCase):
             produced = ga.growth_candidate_derive(paths, cfg, profile)
             self.assertEqual(len(produced), 1)
             self.assertEqual(produced[0].confidence, ga._confidence_from_evidence(3))
+
+
+class TestFollowupAndRefreshPassiveSignals(unittest.TestCase):
+    """P5-2 后续 P5-4：回访/报告刷新接入被动信号（growth_topic_trend 快照）。"""
+
+    def _accepted_candidate(self, paths, title, refs, *, accepted_days_ago):
+        backlog = ga.GrowthBacklog(paths)
+        c = backlog.add_or_merge(
+            title, "理由", refs,
+            min_evidence_count=3, max_pending=10, dismissed_cooldown_days=30,
+        )
+        backlog.set_status(c.candidate_id, ga.STATUS_ACCEPTED)
+        all_c = backlog.load_all()
+        for cand in all_c:
+            if cand.candidate_id == c.candidate_id:
+                cand.accepted_at = time.time() - accepted_days_ago * 86400
+        backlog.save_all(all_c)
+        return backlog.get(c.candidate_id)
+
+    def test_topic_trend_rising_none_with_insufficient_points(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = _make_paths(tmp)
+            self.assertIsNone(ga._topic_trend_rising(paths, "no-such-topic", window_days=30))
+            ga._record_topic_trend_snapshot(paths, "写作与表达", 3, None)
+            # 只有 1 个快照点，仍然判断不了走势。
+            self.assertIsNone(
+                ga._topic_trend_rising(paths, ga.normalize_title_key("写作与表达"), window_days=30)
+            )
+
+    def test_topic_trend_rising_true_and_false(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = _make_paths(tmp)
+            key = ga.normalize_title_key("写作与表达")
+            now = time.time()
+            for i, (offset, count) in enumerate([(20 * 86400, 2), (10 * 86400, 5), (0, 8)]):
+                ga._append_jsonl(
+                    paths.growth_topic_trend_path,
+                    {
+                        "dedupe_key": key, "topic": "写作与表达",
+                        "scanned_at": now - offset, "evidence_count": count, "confidence": None,
+                    },
+                )
+            self.assertTrue(ga._topic_trend_rising(paths, key, window_days=30))
+
+            paths2 = _make_paths(tmp + "-2") if False else paths  # keep same paths, new key
+            key2 = ga.normalize_title_key("项目管理")
+            for offset, count in [(20 * 86400, 8), (10 * 86400, 6), (0, 5)]:
+                ga._append_jsonl(
+                    paths.growth_topic_trend_path,
+                    {
+                        "dedupe_key": key2, "topic": "项目管理",
+                        "scanned_at": now - offset, "evidence_count": count, "confidence": None,
+                    },
+                )
+            self.assertFalse(ga._topic_trend_rising(paths, key2, window_days=30))
+
+    def test_pending_followups_defers_when_evidence_still_rising(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = _make_paths(tmp)
+            due = self._accepted_candidate(
+                paths, "写作与表达", ["e1", "e2", "e3"], accepted_days_ago=31
+            )
+            key = due.dedupe_key()
+            now = time.time()
+            for offset, count in [(20 * 86400, 2), (10 * 86400, 5), (0, 9)]:
+                ga._append_jsonl(
+                    paths.growth_topic_trend_path,
+                    {
+                        "dedupe_key": key, "topic": "写作与表达",
+                        "scanned_at": now - offset, "evidence_count": count, "confidence": None,
+                    },
+                )
+            cfg = GrowthAdvisorConfig(followup_review_days=30)
+            out = ga.pending_followups(paths, cfg)
+            self.assertNotIn(due.candidate_id, {c.candidate_id for c in out})
+
+    def test_pending_followups_shows_when_evidence_flat(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = _make_paths(tmp)
+            due = self._accepted_candidate(
+                paths, "写作与表达", ["e1", "e2", "e3"], accepted_days_ago=31
+            )
+            key = due.dedupe_key()
+            now = time.time()
+            for offset, count in [(20 * 86400, 5), (10 * 86400, 5), (0, 5)]:
+                ga._append_jsonl(
+                    paths.growth_topic_trend_path,
+                    {
+                        "dedupe_key": key, "topic": "写作与表达",
+                        "scanned_at": now - offset, "evidence_count": count, "confidence": None,
+                    },
+                )
+            cfg = GrowthAdvisorConfig(followup_review_days=30)
+            out = ga.pending_followups(paths, cfg)
+            self.assertIn(due.candidate_id, {c.candidate_id for c in out})
+
+    def test_pending_followups_shows_when_no_trend_data(self):
+        # 没有任何趋势快照（数据不足以判断）时仍按原逻辑展示，不因为"判断
+        # 不了"就被当成"在涨"处理，保持向后兼容。
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = _make_paths(tmp)
+            due = self._accepted_candidate(
+                paths, "写作与表达", ["e1", "e2", "e3"], accepted_days_ago=31
+            )
+            cfg = GrowthAdvisorConfig(followup_review_days=30)
+            out = ga.pending_followups(paths, cfg)
+            self.assertIn(due.candidate_id, {c.candidate_id for c in out})
+
+    def test_followup_question_hint_changes_wording_when_flat(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = _make_paths(tmp)
+            due = self._accepted_candidate(
+                paths, "写作与表达", ["e1", "e2", "e3"], accepted_days_ago=31
+            )
+            key = due.dedupe_key()
+            now = time.time()
+            for offset, count in [(20 * 86400, 5), (10 * 86400, 5), (0, 5)]:
+                ga._append_jsonl(
+                    paths.growth_topic_trend_path,
+                    {
+                        "dedupe_key": key, "topic": "写作与表达",
+                        "scanned_at": now - offset, "evidence_count": count, "confidence": None,
+                    },
+                )
+            cfg = GrowthAdvisorConfig(followup_review_days=30)
+            hint = ga.followup_question_hint(paths, due, cfg=cfg)
+            self.assertIn("变少了", hint)
+
+    def test_followup_question_hint_default_wording_without_trend_data(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = _make_paths(tmp)
+            due = self._accepted_candidate(
+                paths, "写作与表达", ["e1", "e2", "e3"], accepted_days_ago=31
+            )
+            hint = ga.followup_question_hint(paths, due, cfg=GrowthAdvisorConfig())
+            self.assertIn("有没有真的推进", hint)
+
+    def test_recent_evidence_delta_none_with_insufficient_points(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = _make_paths(tmp)
+            self.assertIsNone(
+                ga._recent_evidence_delta(paths, "no-such-topic", window_days=14)
+            )
+
+    def test_reports_needing_refresh_prioritizes_recent_burst(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = _make_paths(tmp)
+            backlog = ga.GrowthBacklog(paths)
+
+            # 候选 A：总新增证据多（7 条），但发生在很久以前，最近 14 天没有新增。
+            a = backlog.add_or_merge(
+                "数据分析", "理由", ["a1", "a2", "a3"],
+                min_evidence_count=3, max_pending=10, dismissed_cooldown_days=30,
+            )
+            ga.generate_growth_report(paths, a)
+            a = backlog.add_or_merge(
+                "数据分析", "理由2", [f"a{i}" for i in range(1, 11)],
+                min_evidence_count=3, max_pending=10, dismissed_cooldown_days=30,
+            )
+            key_a = a.dedupe_key()
+            now = time.time()
+            for offset, count in [(60 * 86400, 3), (40 * 86400, 10)]:
+                ga._append_jsonl(
+                    paths.growth_topic_trend_path,
+                    {
+                        "dedupe_key": key_a, "topic": "数据分析",
+                        "scanned_at": now - offset, "evidence_count": count, "confidence": None,
+                    },
+                )
+
+            # 候选 B：总新增证据较少（4 条），但发生在最近几天，明显是突增。
+            b = backlog.add_or_merge(
+                "写作与表达", "理由", ["b1", "b2", "b3"],
+                min_evidence_count=3, max_pending=10, dismissed_cooldown_days=30,
+            )
+            ga.generate_growth_report(paths, b)
+            b = backlog.add_or_merge(
+                "写作与表达", "理由2", ["b1", "b2", "b3", "b4", "b5", "b6", "b7"],
+                min_evidence_count=3, max_pending=10, dismissed_cooldown_days=30,
+            )
+            key_b = b.dedupe_key()
+            for offset, count in [(60 * 86400, 3), (2 * 86400, 7)]:
+                ga._append_jsonl(
+                    paths.growth_topic_trend_path,
+                    {
+                        "dedupe_key": key_b, "topic": "写作与表达",
+                        "scanned_at": now - offset, "evidence_count": count, "confidence": None,
+                    },
+                )
+
+            rows = ga.reports_needing_refresh(paths, GrowthAdvisorConfig())
+            self.assertEqual(len(rows), 2)
+            # B 的 new_evidence 总量（4）比 A（7）少，但最近突增更明显，应该排在前面。
+            self.assertEqual(rows[0]["candidate_id"], b.candidate_id)
+            self.assertGreater(rows[0]["recent_evidence_delta"], rows[1]["recent_evidence_delta"])
+
+    def test_reports_needing_refresh_falls_back_to_new_evidence_without_trend_data(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = _make_paths(tmp)
+            backlog = ga.GrowthBacklog(paths)
+            c = backlog.add_or_merge(
+                "数据分析", "理由", ["e1", "e2", "e3"],
+                min_evidence_count=3, max_pending=10, dismissed_cooldown_days=30,
+            )
+            ga.generate_growth_report(paths, c)
+            backlog.add_or_merge(
+                "数据分析", "理由2", ["e1", "e2", "e3", "e4", "e5", "e6"],
+                min_evidence_count=3, max_pending=10, dismissed_cooldown_days=30,
+            )
+            rows = ga.reports_needing_refresh(paths, GrowthAdvisorConfig())
+            self.assertEqual(len(rows), 1)
+            self.assertIsNone(rows[0]["recent_evidence_delta"])
+            self.assertEqual(rows[0]["new_evidence"], 3)
