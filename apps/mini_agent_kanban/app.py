@@ -3479,6 +3479,51 @@ def _render_growth_diagnostics(diagnostics: dict):
             f"- 落在扫描窗口内的条数：{mem.get('entries_in_scan_window', 0)}"
         )
 
+        # [LLM 增强路径可观测性] 三个 opt-in LLM 调用点各自"最近一次调用
+        # 结果"——开关开了不代表在正常工作，这里让用户能直接看出来，而
+        # 不是只能靠"候选/分类看起来没变化"去猜。
+        st.markdown("**LLM 增强调用状态**")
+        llm_status = diagnostics.get("llm_call_status") or {}
+        _LLM_CALL_LABELS = {
+            "signal_augment": "信号扫描增强（llm_signal_augment_enabled）",
+            "report_quality": "报告正文润色（report_quality_llm_enabled）",
+            "topic_category": "主题分类（topic_category_llm_enabled）",
+        }
+        _LLM_OUTCOME_LABELS = {
+            "success": "✅ 成功",
+            "no_new_topics": "✅ 成功（本次没有新发现）",
+            "empty_response": "⚠️ 调用成功但响应为空",
+            "skipped_insufficient_unmatched": "ℹ️ 未命中记忆太少，本次跳过调用",
+            "parse_error": "⚠️ 响应解析失败",
+            "error": "❌ 调用抛出异常",
+        }
+        if not llm_status:
+            st.caption("三个 LLM 增强开关目前都还没被触发过（要么全部关闭，要么还没跑过一轮 cron/scan）。")
+        else:
+            for call_type, label in _LLM_CALL_LABELS.items():
+                info = llm_status.get(call_type)
+                if not info:
+                    st.caption(f"- {label}：尚未触发过")
+                    continue
+                outcome = info.get("outcome", "")
+                ts = info.get("ts")
+                when = time.strftime("%Y-%m-%d %H:%M", time.localtime(ts)) if ts else "未知时间"
+                detail = info.get("detail") or ""
+                st.write(
+                    f"- {label}：{_LLM_OUTCOME_LABELS.get(outcome, outcome)}（{when}）"
+                    + (f"　`{detail}`" if detail else "")
+                )
+
+        # [反馈粒度细化] "方向没错，报告没写好"的累计次数，跟正常的
+        # dismiss（方向级信号）分开展示，避免被误当成"这个方向不受欢迎"。
+        report_quality_flags = diagnostics.get("report_quality_flags_count", 0)
+        if report_quality_flags:
+            st.caption(
+                f"ℹ️ 历史上有 {report_quality_flags} 次「方向没错，是报告没写好」的忽略反馈"
+                "——这些不会压低对应方向的置信度，明细可在「月度成长复盘」的"
+                "报告质量待改进列表里查看。"
+            )
+
         st.markdown("**后台定时任务**")
         if cron_jobs.get("_note"):
             st.caption(cron_jobs["_note"])
@@ -3652,6 +3697,18 @@ def render_growth_tab(client: "AgentClient"):
                     for title, n in top_dismissed:
                         st.write(f"- {title}（{n} 次）")
 
+    # [反馈粒度细化] "方向没错，是报告没写好"的排行——跟上面"最常被
+    # 忽略"分开展示，前者不代表用户不喜欢这个方向，只是报告质量该改进。
+    top_report_quality_flags = retro.get("top_report_quality_flags") or []
+    if top_report_quality_flags:
+        with st.expander(
+            f"📄 报告质量待改进（{retro.get('report_quality_flags_total', 0)} 次「方向没错，报告没写好」反馈）"
+        ):
+            st.caption("这些方向本身没有被判定为不受欢迎，只是生成的调研报告没能打动用户，"
+                       "考虑打开 report_quality_llm_enabled 或人工改写模板。")
+            for title, n in top_report_quality_flags:
+                st.write(f"- {title}（{n} 次）")
+
     # P3：跨候选能力地图聚合（growth_topic_map）——按主题聚合的完整推进
     # 轨迹（含峰值置信度、历史累计出现/采纳/忽略次数），比 4.1 节的
     # Top5 排行更完整，默认折叠，避免挤占候选列表的首屏空间。
@@ -3747,6 +3804,14 @@ def _sortable_available() -> bool:
         return False
 
 
+_GROWTH_DISMISS_REASON_OPTIONS = [
+    ("unspecified", "不说明原因"),
+    ("not_interested", "不感兴趣"),
+    ("bad_timing", "方向可以，但现在不是时候"),
+    ("report_not_useful", "方向没错，是报告没写好"),
+]
+
+
 def _render_growth_pending_list(client: "AgentClient", pending: list[dict]):
     """P1 起就有的列表 + 按钮渲染方式。作为 `streamlit-sortables` 未安装
     时的兜底路径保留——不强制要求这个可选依赖。"""
@@ -3756,12 +3821,28 @@ def _render_growth_pending_list(client: "AgentClient", pending: list[dict]):
             st.caption(
                 f"置信度 {c.get('confidence', 0)} · 证据 {c.get('evidence_count', 0)} 条"
             )
+            # [反馈粒度细化] dismiss 原因选择——"方向没错，是报告没写好"
+            # 不会压低这个方向今后的置信度，只会计入报告质量诊断，跟
+            # "不感兴趣"/"时机不对"是两种完全不同的信号，分开记录才能让
+            # 系统学到正确的东西。默认"不说明原因"，行为与此前版本一致。
+            reason_key = f"growth_dismiss_reason_{c['candidate_id']}"
+            reason_label = st.selectbox(
+                "忽略原因（可选，仅在点「忽略」时生效）",
+                options=[label for _, label in _GROWTH_DISMISS_REASON_OPTIONS],
+                key=reason_key,
+                label_visibility="collapsed",
+            )
+            reason_value = next(
+                (v for v, label in _GROWTH_DISMISS_REASON_OPTIONS if label == reason_label),
+                "unspecified",
+            )
             b1, b2, b3 = st.columns(3)
             if b1.button("✅ 采纳", key=f"growth_accept_{c['candidate_id']}"):
                 client.growth_candidate_action(c["candidate_id"], "accept")
                 st.rerun()
             if b2.button("🙈 忽略", key=f"growth_dismiss_{c['candidate_id']}"):
-                client.growth_candidate_action(c["candidate_id"], "dismiss")
+                dismiss_reason = None if reason_value == "unspecified" else reason_value
+                client.growth_candidate_action(c["candidate_id"], "dismiss", reason=dismiss_reason)
                 st.rerun()
             report_id = c.get("report_id")
             if report_id and b3.button("📄 查看报告", key=f"growth_report_{c['candidate_id']}"):
@@ -3812,8 +3893,13 @@ def _render_growth_kanban_dragdrop(client: "AgentClient", candidates: list[dict]
             labels.append(label)
         containers.append({"header": header, "items": labels})
 
-    st.caption("拖动卡片到「已采纳」/「已忽略」即完成对应操作；"
-                "从已采纳/已忽略拖回待处理不会生效（暂不支持撤销）。")
+    st.caption(
+        "拖动卡片到「已采纳」/「已忽略」即完成对应操作；"
+        "从已采纳/已忽略拖回待处理不会生效（暂不支持撤销）。"
+        "拖拽方式忽略的候选不会记录具体原因（记为「不说明原因」），"
+        "如果想标注「方向没错，是报告没写好」这类细化原因，请切到"
+        "列表视图操作。"
+    )
     result = sort_items(
         containers, multi_containers=True, direction="horizontal",
         key="growth_kanban_dragdrop",

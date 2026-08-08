@@ -5840,20 +5840,38 @@ async def post_growth_scan(request: Request):
 @router.post("/growth/candidates/{candidate_id}/{action}")
 async def post_growth_candidate_action(request: Request, candidate_id: str, action: str):
     """POST /v1/growth/candidates/{id}/accept|dismiss — 看板上对单个候选的
-    显式反馈动作，写入 GrowthFeedbackLedger（供后续置信度调优参考）。"""
+    显式反馈动作，写入 GrowthFeedbackLedger（供后续置信度调优参考）。
+
+    [反馈粒度细化] dismiss 时可选传一个 JSON body `{"reason": "..."}`，
+    取值见 `growth_advisor._VALID_DISMISS_REASONS`；不传 body 或不传
+    `reason` 字段都等价于 `reason=None`（记为 unspecified，行为与此前
+    版本完全一致）。accept 动作忽略 body 内容。
+    """
     _require_owner(request)
     if action not in ("accept", "dismiss"):
         raise HTTPException(status_code=400, detail="action must be accept or dismiss")
     try:
+        reason = None
+        if action == "dismiss":
+            try:
+                body = await request.json()
+            except Exception:
+                body = None
+            if isinstance(body, dict):
+                reason = body.get("reason") or None
+
         paths = _get_paths_for_request(request)
         from mini_agent.evolution import growth_advisor as ga
+
+        if reason is not None and reason not in ga._VALID_DISMISS_REASONS:
+            raise HTTPException(status_code=400, detail=f"invalid dismiss reason: {reason}")
 
         status = ga.STATUS_ACCEPTED if action == "accept" else ga.STATUS_DISMISSED
         backlog = ga.GrowthBacklog(paths)
         cand = backlog.set_status(candidate_id, status)
         if cand is None:
             raise HTTPException(status_code=404, detail="candidate not found")
-        ga.GrowthFeedbackLedger(paths).record(candidate_id, status)
+        ga.GrowthFeedbackLedger(paths).record(candidate_id, status, reason=reason)
         return {"ok": True, "candidate": cand.to_dict()}
     except HTTPException:
         raise

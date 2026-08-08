@@ -2270,3 +2270,268 @@ class TestExplorationSlot(unittest.TestCase):
             reports = [ga.get_report_by_id(paths, rid) for rid in result["reports"]]
             self.assertTrue(any(r.is_exploration for r in reports))
             self.assertTrue(any(not r.is_exploration for r in reports))
+
+
+class TestDismissReasonGranularity(unittest.TestCase):
+    """反馈信号粒度细化：区分"方向错"（参与置信度衰减）与"报告差"
+    （不参与衰减，只计入报告质量诊断）。"""
+
+    def test_record_defaults_reason_to_unspecified_and_counts_as_before(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = _make_paths(tmp)
+            ledger = ga.GrowthFeedbackLedger(paths)
+            ledger.record("cand-1", ga.STATUS_DISMISSED)
+            entries = ledger.all_entries()
+            self.assertEqual(entries[0]["reason"], ga.DISMISS_REASON_UNSPECIFIED)
+
+    def test_record_rejects_invalid_reason(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = _make_paths(tmp)
+            ledger = ga.GrowthFeedbackLedger(paths)
+            with self.assertRaises(ValueError):
+                ledger.record("cand-1", ga.STATUS_DISMISSED, reason="not_a_real_reason")
+
+    def test_accept_action_ignores_reason(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = _make_paths(tmp)
+            ledger = ga.GrowthFeedbackLedger(paths)
+            ledger.record("cand-1", ga.STATUS_ACCEPTED, reason=ga.DISMISS_REASON_NOT_INTERESTED)
+            entries = ledger.all_entries()
+            self.assertIsNone(entries[0]["reason"])
+
+    def test_legacy_entries_without_reason_field_still_count_toward_decay(self):
+        """兼容旧数据：ledger 里老记录压根没有 reason 字段（旧版本写入的），
+        `_dismiss_counts_by_dedupe_key` 读取时应视为 unspecified，正常参与
+        衰减，不能因为新代码上线就让历史 dismiss 记录失效。"""
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = _make_paths(tmp)
+            cand = ga.GrowthCandidate(
+                candidate_id="c1", title="Python 工程实践", rationale="r",
+                confidence=0.5, evidence_count=3, evidence_refs=[],
+                status=ga.STATUS_DISMISSED,
+            )
+            backlog = ga.GrowthBacklog(paths)
+            backlog.save_all([cand])
+            # 直接写一条没有 reason 字段的旧格式 ledger 记录
+            ga._append_jsonl(
+                paths.growth_feedback_ledger_path,
+                {"candidate_id": "c1", "action": ga.STATUS_DISMISSED, "note": "", "ts": time.time()},
+            )
+            counts = ga._dismiss_counts_by_dedupe_key(paths)
+            self.assertEqual(counts.get(cand.dedupe_key()), 1)
+
+    def test_report_not_useful_excluded_from_direction_decay(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = _make_paths(tmp)
+            cand = ga.GrowthCandidate(
+                candidate_id="c1", title="Python 工程实践", rationale="r",
+                confidence=0.5, evidence_count=3, evidence_refs=[],
+                status=ga.STATUS_DISMISSED,
+            )
+            backlog = ga.GrowthBacklog(paths)
+            backlog.save_all([cand])
+            ledger = ga.GrowthFeedbackLedger(paths)
+            ledger.record("c1", ga.STATUS_DISMISSED, reason=ga.DISMISS_REASON_REPORT_NOT_USEFUL)
+
+            counts = ga._dismiss_counts_by_dedupe_key(paths)
+            self.assertNotIn(cand.dedupe_key(), counts)
+            # feedback multiplier 应该保持中性（1.0），不因为"报告没写好"
+            # 就压低这个方向下次生成候选的置信度。
+            self.assertEqual(ga._feedback_multiplier(counts.get(cand.dedupe_key(), 0)), 1.0)
+
+    def test_not_interested_still_decays_direction_confidence(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = _make_paths(tmp)
+            cand = ga.GrowthCandidate(
+                candidate_id="c1", title="Python 工程实践", rationale="r",
+                confidence=0.5, evidence_count=3, evidence_refs=[],
+                status=ga.STATUS_DISMISSED,
+            )
+            backlog = ga.GrowthBacklog(paths)
+            backlog.save_all([cand])
+            ledger = ga.GrowthFeedbackLedger(paths)
+            ledger.record("c1", ga.STATUS_DISMISSED, reason=ga.DISMISS_REASON_NOT_INTERESTED)
+
+            counts = ga._dismiss_counts_by_dedupe_key(paths)
+            self.assertEqual(counts.get(cand.dedupe_key()), 1)
+            self.assertLess(ga._feedback_multiplier(counts[cand.dedupe_key()]), 1.0)
+
+    def test_category_dismiss_counts_excludes_report_not_useful(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = _make_paths(tmp)
+            cand = ga.GrowthCandidate(
+                candidate_id="c1", title="Python 工程实践", rationale="r",
+                confidence=0.5, evidence_count=3, evidence_refs=[],
+                status=ga.STATUS_DISMISSED,
+            )
+            backlog = ga.GrowthBacklog(paths)
+            backlog.save_all([cand])
+            ledger = ga.GrowthFeedbackLedger(paths)
+            ledger.record("c1", ga.STATUS_DISMISSED, reason=ga.DISMISS_REASON_REPORT_NOT_USEFUL)
+
+            counts = ga._category_dismiss_counts(paths)
+            self.assertEqual(counts.get("技术类", 0), 0)
+
+    def test_report_quality_dismiss_counts_tracks_separately(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = _make_paths(tmp)
+            cand = ga.GrowthCandidate(
+                candidate_id="c1", title="Python 工程实践", rationale="r",
+                confidence=0.5, evidence_count=3, evidence_refs=[],
+                status=ga.STATUS_DISMISSED,
+            )
+            backlog = ga.GrowthBacklog(paths)
+            backlog.save_all([cand])
+            ledger = ga.GrowthFeedbackLedger(paths)
+            ledger.record("c1", ga.STATUS_DISMISSED, reason=ga.DISMISS_REASON_REPORT_NOT_USEFUL)
+            ledger.record("c1", ga.STATUS_DISMISSED, reason=ga.DISMISS_REASON_REPORT_NOT_USEFUL)
+
+            counts = ga._report_quality_dismiss_counts(paths)
+            self.assertEqual(counts.get(cand.title), 2)
+
+    def test_monthly_retrospective_reports_quality_flags_separately(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = _make_paths(tmp)
+            cand = ga.GrowthCandidate(
+                candidate_id="c1", title="Python 工程实践", rationale="r",
+                confidence=0.5, evidence_count=3, evidence_refs=[],
+                status=ga.STATUS_DISMISSED,
+            )
+            backlog = ga.GrowthBacklog(paths)
+            backlog.save_all([cand])
+            ledger = ga.GrowthFeedbackLedger(paths)
+            ledger.record("c1", ga.STATUS_DISMISSED, reason=ga.DISMISS_REASON_REPORT_NOT_USEFUL)
+
+            summary = ga.monthly_retrospective_summary(paths)
+            self.assertEqual(summary["report_quality_flags_total"], 1)
+            self.assertEqual(summary["top_report_quality_flags"][0][0], "Python 工程实践")
+            # top_dismissed_topics 反映状态字段本身（跟 reason 无关），
+            # report_quality 排行是额外补充，不是替代。
+            self.assertEqual(summary["top_dismissed_topics"][0][0], "Python 工程实践")
+
+
+class TestLLMCallStatusObservability(unittest.TestCase):
+    """LLM 增强路径可观测性：三个 opt-in LLM 调用点的最近一次调用结果
+    应该可以被诊断快照读取到，而不是失败后只留一条日志。"""
+
+    def test_no_status_before_any_llm_call(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = _make_paths(tmp)
+            self.assertEqual(ga.llm_call_status_snapshot(paths), {})
+
+    def test_signal_augment_success_recorded(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = _make_paths(tmp)
+            profile = UserProfile()
+            now = time.time()
+            entries = [
+                _FakeEntry(f"e{i}", f"聊了一些关于摄影构图的心得 {i}", [], now - i)
+                for i in range(5)
+            ]
+            store = _FakeMemoryStore(entries)
+
+            def fake_llm(prompt: str) -> str:
+                ids = [e.entry_id for e in entries]
+                return json.dumps([{"topic": "摄影", "entry_ids": ids}])
+
+            ga.growth_signal_scan(paths, profile, store, llm_helper=fake_llm)
+            status = ga.llm_call_status_snapshot(paths)
+            self.assertIn("signal_augment", status)
+            self.assertEqual(status["signal_augment"]["outcome"], "success")
+
+    def test_signal_augment_error_recorded_not_just_logged(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = _make_paths(tmp)
+            profile = UserProfile()
+            now = time.time()
+            entries = [
+                _FakeEntry(f"e{i}", f"关于摄影构图的心得 {i}", [], now - i) for i in range(5)
+            ]
+            store = _FakeMemoryStore(entries)
+
+            def broken_llm(prompt: str) -> str:
+                raise RuntimeError("llm backend unavailable")
+
+            # growth_signal_scan 内部吞掉异常继续跑完（不让 LLM 故障拖垮
+            # 规则式扫描），但状态快照应该能看到这次调用失败了。
+            ga.growth_signal_scan(paths, profile, store, llm_helper=broken_llm)
+            status = ga.llm_call_status_snapshot(paths)
+            self.assertEqual(status["signal_augment"]["outcome"], "error")
+            self.assertIn("llm backend unavailable", status["signal_augment"]["detail"])
+
+    def test_signal_augment_parse_error_recorded(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = _make_paths(tmp)
+            profile = UserProfile()
+            now = time.time()
+            entries = [
+                _FakeEntry(f"e{i}", f"关于摄影构图的心得 {i}", [], now - i) for i in range(5)
+            ]
+            store = _FakeMemoryStore(entries)
+
+            ga.growth_signal_scan(paths, profile, store, llm_helper=lambda p: "这不是 JSON")
+            status = ga.llm_call_status_snapshot(paths)
+            self.assertEqual(status["signal_augment"]["outcome"], "parse_error")
+
+    def test_report_quality_success_recorded(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = _make_paths(tmp)
+            cand = ga.GrowthCandidate(
+                candidate_id="c1", title="写作与表达", rationale="r",
+                confidence=0.5, evidence_count=3, evidence_refs=[],
+            )
+            ga.generate_growth_report(paths, cand, llm_helper=lambda p: "# 正文\n内容")
+            status = ga.llm_call_status_snapshot(paths)
+            self.assertEqual(status["report_quality"]["outcome"], "success")
+
+    def test_report_quality_error_recorded_and_falls_back_to_template(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = _make_paths(tmp)
+            cand = ga.GrowthCandidate(
+                candidate_id="c1", title="写作与表达", rationale="r",
+                confidence=0.5, evidence_count=3, evidence_refs=[],
+            )
+
+            def broken_llm(prompt: str) -> str:
+                raise RuntimeError("timeout")
+
+            report = ga.generate_growth_report(paths, cand, llm_helper=broken_llm)
+            self.assertEqual(report.source, "template")
+            status = ga.llm_call_status_snapshot(paths)
+            self.assertEqual(status["report_quality"]["outcome"], "error")
+
+    def test_topic_category_success_recorded_when_paths_passed(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = _make_paths(tmp)
+            category = ga.classify_topic_category_llm(
+                "摄影构图", ["摄影", "构图"], lambda p: "表达类", paths=paths
+            )
+            self.assertEqual(category, "表达类")
+            status = ga.llm_call_status_snapshot(paths)
+            self.assertEqual(status["topic_category"]["outcome"], "success")
+
+    def test_topic_category_status_not_recorded_without_paths(self):
+        """paths=None（向后兼容默认值）时不应该报错，也不需要记录状态。"""
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = _make_paths(tmp)
+            category = ga.classify_topic_category_llm("摄影构图", ["摄影"], lambda p: "表达类")
+            self.assertEqual(category, "表达类")
+            # 没传 paths，自然也没有地方可以查——用一个全新目录确认没有
+            # 意外产生状态文件。
+            self.assertEqual(ga.llm_call_status_snapshot(paths), {})
+
+    def test_diagnostics_snapshot_exposes_llm_call_status(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = _make_paths(tmp)
+            profile = UserProfile()
+            cfg = GrowthAdvisorConfig()
+            store = _FakeMemoryStore([])
+            ga._record_llm_call_status(paths, "signal_augment", "success", detail="new_topics=1")
+            snapshot = ga.diagnostics_snapshot(paths, cfg, profile, store)
+            self.assertIn("llm_call_status", snapshot)
+            self.assertEqual(snapshot["llm_call_status"]["signal_augment"]["outcome"], "success")
+            self.assertIn("report_quality_flags_count", snapshot)
+
+
+if __name__ == "__main__":
+    unittest.main()

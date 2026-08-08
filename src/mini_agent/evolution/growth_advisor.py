@@ -285,6 +285,42 @@ P5 范围（对应 next_doc/growth_advisor_improvement_plan_v3.md，本次
       `growth_advisor_improvement_plan_v3.md` 的 P5-0 ~ P5-6 全部完成，
       进度以 `next_doc/growth_advisor_implementation_record.md` 的 P5
       章节为准。
+
+P6 范围（对应 next_doc/growth_advisor_improvement_plan_v3.md「反馈粒度
+细化 + LLM 增强路径可观测性」，本次新增）：
+    - **反馈粒度细化**：`GrowthFeedbackLedger.record()` 新增可选
+      `reason` 参数，dismiss 时可以说明原因（`DISMISS_REASON_NOT_
+      INTERESTED` 不感兴趣 / `DISMISS_REASON_BAD_TIMING` 时机不对 /
+      `DISMISS_REASON_REPORT_NOT_USEFUL` 方向没错但报告没写好 /
+      `DISMISS_REASON_UNSPECIFIED` 未指定，默认值，兼容旧数据）。
+      `_dismiss_counts_by_dedupe_key()` / `_category_dismiss_counts()`
+      两个驱动置信度衰减的核心统计函数，都排除了
+      `report_not_useful` 原因的记录——此前"方向不对"和"报告写得不好"
+      被合并成同一个 dismiss 信号，会错误地永久压低一个其实有效、只是
+      报告质量差的方向。新增 `_report_quality_dismiss_counts()` 单独
+      统计报告质量信号（纯诊断用途，不参与任何置信度计算），接入
+      `monthly_retrospective_summary()`（`report_quality_flags_total` /
+      `top_report_quality_flags`）与看板月度复盘区块。CLI `/growth
+      dismiss <id> [reason]` 与 API `POST /growth/candidates/{id}/
+      dismiss`（body `{"reason": "..."}`）都支持传这个新参数，不传
+      时行为与此前版本完全一致。看板列表视图新增忽略原因下拉选择；
+      拖拽视图暂不支持指定原因（拖拽忽略记为 unspecified，看板文案有
+      提示）。
+    - **LLM 增强路径可观测性**：三个 opt-in LLM 调用点（`growth_signal_
+      scan()` 的信号增强扫描、`generate_growth_report()` 的报告正文
+      润色、`classify_topic_category_llm()` 的主题分类）此前调用失败
+      只落一条 `log_exception` 或者原样吞掉退回默认路径，用户在诊断
+      面板里完全看不出"这些我主动打开的增强开关，是不是真的在正常
+      工作"。新增 `_record_llm_call_status()` / `llm_call_status_
+      snapshot()`，把每次调用的结果（`success` / `no_new_topics` /
+      `empty_response` / `skipped_insufficient_unmatched` /
+      `parse_error` / `error`）记一份"最近一次"快照到
+      `growth_advisor_state.json`，`diagnostics_snapshot()` 新增
+      `llm_call_status` 字段透出。`classify_topic_category_llm()` /
+      `maybe_classify_topic_category()` / `add_custom_topic_keyword()`
+      / `confirm_topic_keyword()` 新增可选 `paths` 参数用于透传状态
+      记录能力，默认 `None`（不记录），向后兼容。看板诊断面板新增
+      「LLM 增强调用状态」区块，逐个调用点展示最近结果。
 """
 
 from __future__ import annotations
@@ -578,12 +614,32 @@ class GrowthFeedbackLedger:
     def __init__(self, paths) -> None:
         self._path = paths.growth_feedback_ledger_path
 
-    def record(self, candidate_id: str, action: str, *, note: str = "") -> None:
+    def record(
+        self, candidate_id: str, action: str, *, note: str = "", reason: Optional[str] = None
+    ) -> None:
+        """记一条反馈流水。
+
+        [反馈粒度细化] `reason` 仅在 `action == STATUS_DISMISSED` 时有意义，
+        取值见 `_VALID_DISMISS_REASONS`：区分"这个方向我不关心/时机不对"
+        （方向级负向信号，会参与置信度衰减）与"方向没错，只是这份报告写得
+        不好"（`DISMISS_REASON_REPORT_NOT_USEFUL`，不参与方向/类别衰减，
+        只计入报告质量诊断，见 `_report_quality_dismiss_counts`）。不传
+        （`None`）等价于历史上没有这个字段时的行为——记为
+        `DISMISS_REASON_UNSPECIFIED`，仍然参与衰减，保证旧数据 / 旧调用方
+        不传这个新参数时行为完全不变。
+        """
+        if action == STATUS_DISMISSED:
+            reason = reason or DISMISS_REASON_UNSPECIFIED
+            if reason not in _VALID_DISMISS_REASONS:
+                raise ValueError(f"invalid dismiss reason: {reason}")
+        else:
+            reason = None
         _append_jsonl(
             self._path,
             {
                 "candidate_id": candidate_id,
                 "action": action,          # "accepted" | "dismissed"
+                "reason": reason,          # None | 见 _VALID_DISMISS_REASONS
                 "note": note,
                 "ts": time.time(),
             },
@@ -602,9 +658,34 @@ class GrowthFeedbackLedger:
 _DISMISS_DECAY_FACTOR = 0.85
 _MIN_FEEDBACK_MULTIPLIER = 0.4
 
+# [反馈粒度细化] dismiss 原因枚举。"方向级负向信号"（会压低同方向/同
+# 类别未来置信度）与"报告质量信号"（不影响置信度，只影响是否值得改进
+# 报告生成方式）分开统计——此前两者被合并成同一个 dismiss 计数，导致
+# "候选被用户 dismiss，是因为方向不对，还是因为报告写得不痛不痒"这两种
+# 完全不同的情况被同等地拿去衰减方向置信度，可能错误地永久压低一个其实
+# 有效、只是报告质量差的方向。
+DISMISS_REASON_NOT_INTERESTED = "not_interested"      # 这个方向我不关心
+DISMISS_REASON_BAD_TIMING = "bad_timing"               # 方向可以，但现在不是时候
+DISMISS_REASON_REPORT_NOT_USEFUL = "report_not_useful"  # 方向没错，报告没写好
+DISMISS_REASON_UNSPECIFIED = "unspecified"             # 未指定原因（兼容旧数据/旧调用方）
+_VALID_DISMISS_REASONS = frozenset(
+    {
+        DISMISS_REASON_NOT_INTERESTED,
+        DISMISS_REASON_BAD_TIMING,
+        DISMISS_REASON_REPORT_NOT_USEFUL,
+        DISMISS_REASON_UNSPECIFIED,
+    }
+)
+# 参与"方向/类别置信度衰减"的 dismiss 原因——REPORT_NOT_USEFUL 不在这
+# 个集合里，是本次改动的核心：它不代表用户对这个方向不感兴趣。
+_DIRECTION_NEGATIVE_DISMISS_REASONS = frozenset(
+    {DISMISS_REASON_NOT_INTERESTED, DISMISS_REASON_BAD_TIMING, DISMISS_REASON_UNSPECIFIED}
+)
+
 
 def _dismiss_counts_by_dedupe_key(paths) -> dict[str, int]:
-    """统计每个 dedupe_key（归一化标题）历史上被 dismiss 过多少次。
+    """统计每个 dedupe_key（归一化标题）历史上被"方向级负向原因"
+    dismiss 过多少次（`DISMISS_REASON_REPORT_NOT_USEFUL` 不计入，见上）。
 
     GrowthFeedbackLedger 只记录 candidate_id，需要反查 backlog 里对应
     候选的标题才能归一化到 dedupe_key——包括已经不在 pending 状态、甚至
@@ -616,9 +697,32 @@ def _dismiss_counts_by_dedupe_key(paths) -> dict[str, int]:
     for entry in GrowthFeedbackLedger(paths).all_entries():
         if entry.get("action") != STATUS_DISMISSED:
             continue
+        if entry.get("reason", DISMISS_REASON_UNSPECIFIED) not in _DIRECTION_NEGATIVE_DISMISS_REASONS:
+            continue
         key = id_to_key.get(entry.get("candidate_id"))
         if key:
             counts[key] = counts.get(key, 0) + 1
+    return counts
+
+
+def _report_quality_dismiss_counts(paths) -> dict[str, int]:
+    """[反馈粒度细化] 按候选标题统计"方向没错、报告没写好"
+    （`DISMISS_REASON_REPORT_NOT_USEFUL`）的次数——纯诊断用途，不参与
+    任何置信度计算。用于在月度复盘 / 诊断面板里回答"哪些方向的报告质量
+    该优先改进"，跟"哪些方向该少推荐"是两个独立的问题。用原始标题
+    （而不是归一化的 dedupe_key）计数，跟 `monthly_retrospective_summary`
+    里其它 `top_*_topics` 排行的展示口径保持一致。
+    """
+    id_to_title = {c.candidate_id: c.title for c in GrowthBacklog(paths).load_all()}
+    counts: dict[str, int] = {}
+    for entry in GrowthFeedbackLedger(paths).all_entries():
+        if entry.get("action") != STATUS_DISMISSED:
+            continue
+        if entry.get("reason") != DISMISS_REASON_REPORT_NOT_USEFUL:
+            continue
+        title = id_to_title.get(entry.get("candidate_id"))
+        if title:
+            counts[title] = counts.get(title, 0) + 1
     return counts
 
 
@@ -670,11 +774,17 @@ def _category_of(topic: str, profile=None) -> str:
 
 
 def _category_dismiss_counts(paths, profile=None) -> dict[str, int]:
-    """按类别统计历史 dismiss 次数（同一类别下不同主题的忽略次数累加）。"""
+    """按类别统计历史"方向级负向原因" dismiss 次数（同一类别下不同主题的
+    忽略次数累加；`DISMISS_REASON_REPORT_NOT_USEFUL` 不计入，理由同
+    `_dismiss_counts_by_dedupe_key`——报告写得不好不该连累同类别其他方向
+    的初始置信度）。
+    """
     id_to_title = {c.candidate_id: c.title for c in GrowthBacklog(paths).load_all()}
     counts: dict[str, int] = {}
     for entry in GrowthFeedbackLedger(paths).all_entries():
         if entry.get("action") != STATUS_DISMISSED:
+            continue
+        if entry.get("reason", DISMISS_REASON_UNSPECIFIED) not in _DIRECTION_NEGATIVE_DISMISS_REASONS:
             continue
         title = id_to_title.get(entry.get("candidate_id"))
         if not title:
@@ -911,7 +1021,7 @@ def _clean_keywords(raw) -> list[str]:
 
 
 def add_custom_topic_keyword(
-    profile, topic: str, keywords, *, cfg=None, llm_helper: Optional[Callable[[str], str]] = None
+    profile, topic: str, keywords, *, cfg=None, llm_helper: Optional[Callable[[str], str]] = None, paths=None
 ) -> dict[str, Any]:
     """用户在看板上手动添加一个自定义主题，直接标记为已确认。
 
@@ -941,7 +1051,7 @@ def add_custom_topic_keyword(
     removed = [t for t in (derived.get("growth_topic_keywords_removed") or []) if t != topic]
     derived["growth_topic_keywords_removed"] = removed
     profile.derived = derived
-    maybe_classify_topic_category(profile, topic, cleaned, cfg, llm_helper=llm_helper)
+    maybe_classify_topic_category(profile, topic, cleaned, cfg, llm_helper=llm_helper, paths=paths)
     return entry
 
 
@@ -1002,7 +1112,7 @@ def restore_builtin_topic_keyword(profile, topic: str) -> bool:
 
 
 def confirm_topic_keyword(
-    profile, topic: str, *, cfg=None, llm_helper: Optional[Callable[[str], str]] = None
+    profile, topic: str, *, cfg=None, llm_helper: Optional[Callable[[str], str]] = None, paths=None
 ) -> bool:
     """用户在看板上点"✅ 保留"，把一个待确认（通常是 llm_learned）的
     自定义主题标记为已确认。对内置主题/不存在的主题是安全的空操作。
@@ -1023,7 +1133,9 @@ def confirm_topic_keyword(
     custom[topic] = entry
     derived["growth_topic_keywords"] = custom
     profile.derived = derived
-    maybe_classify_topic_category(profile, topic, list(entry.get("keywords") or []), cfg, llm_helper=llm_helper)
+    maybe_classify_topic_category(
+        profile, topic, list(entry.get("keywords") or []), cfg, llm_helper=llm_helper, paths=paths
+    )
     return True
 
 
@@ -1052,7 +1164,7 @@ def _persist_topic_category(profile, topic: str, category: str) -> None:
 
 
 def classify_topic_category_llm(
-    topic: str, keywords: list[str], llm_helper: Callable[[str], str]
+    topic: str, keywords: list[str], llm_helper: Callable[[str], str], *, paths=None
 ) -> Optional[str]:
     """[P5-3] 用 LLM 把一个主题粗分类到 4 个内置类别之一（技术类/管理类/
     表达类/其他类）。复用 `llm_signal_augment_enabled` 同款的"opt-in、
@@ -1071,19 +1183,33 @@ def classify_topic_category_llm(
     )
     try:
         raw = llm_helper(prompt)
-    except Exception:
+    except Exception as exc:
+        if paths is not None:
+            _record_llm_call_status(paths, "topic_category", "error", detail=str(exc)[:200])
         return None
     if not raw:
+        if paths is not None:
+            _record_llm_call_status(paths, "topic_category", "empty_response")
         return None
     text = raw.strip()
     for label in _TOPIC_CATEGORY_LABELS:
         if label in text:
+            if paths is not None:
+                _record_llm_call_status(paths, "topic_category", "success", detail=label)
             return label
+    if paths is not None:
+        _record_llm_call_status(paths, "topic_category", "parse_error", detail=text[:100])
     return None
 
 
 def maybe_classify_topic_category(
-    profile, topic: str, keywords: list[str], cfg=None, *, llm_helper: Optional[Callable[[str], str]] = None
+    profile,
+    topic: str,
+    keywords: list[str],
+    cfg=None,
+    *,
+    llm_helper: Optional[Callable[[str], str]] = None,
+    paths=None,
 ) -> Optional[str]:
     """[P5-3] 主题新增/确认转正时的归类入口：`topic_category_llm_enabled`
     关闭（默认）或没有可用的 `llm_helper` 时是零成本空操作；开启且已有
@@ -1099,7 +1225,7 @@ def maybe_classify_topic_category(
         return None  # 内置主题已经有硬编码类别，不需要 LLM 归类
     if topic in _learned_topic_categories(profile):
         return None  # 已经分类过，不重复调用
-    category = classify_topic_category_llm(topic, keywords, llm_helper)
+    category = classify_topic_category_llm(topic, keywords, llm_helper, paths=paths)
     if category is None:
         return None
     _persist_topic_category(profile, topic, category)
@@ -1225,15 +1351,25 @@ def growth_signal_scan(
                 hits.setdefault(topic, []).append(getattr(entry, "entry_id", "") or "")
 
     if llm_helper is not None:
+        # [LLM 增强路径可观测性] 无论最终是成功、空转还是异常，都记一份
+        # 结果快照——这里不是"失败时才记"，是每次触发都记，这样诊断面板
+        # 展示的才是"最近一次"，而不是"最近一次失败"（成功之后再失败一次
+        # 也应该看得到最新状态）。
+        status_out: dict[str, Any] = {"outcome": "error"}
         try:
             before_topics = set(hits.keys())
-            hits = _llm_augment_topics(hits, recent_entries, llm_helper)
+            hits = _llm_augment_topics(hits, recent_entries, llm_helper, status_out=status_out)
             new_topics = set(hits.keys()) - before_topics - set(effective_keywords.keys())
             if new_topics:
                 _persist_learned_topics(profile, {t: hits[t] for t in new_topics})
+            _record_llm_call_status(
+                paths, "signal_augment", status_out.get("outcome", "success"),
+                detail=f"new_topics={status_out.get('new_topic_count', len(new_topics))}",
+            )
         except Exception as exc:
             from mini_agent.errors import log_exception
             log_exception(exc, where="mini_agent.growth_advisor.growth_signal_scan_llm_augment")
+            _record_llm_call_status(paths, "signal_augment", "error", detail=str(exc)[:200])
 
     # [P4-2] 待确认自定义主题的连续命中计数 + 达标自动转正，必须在
     # _persist_learned_topics 之后调用（保证本次新学到的主题也能立刻开始
@@ -1270,7 +1406,11 @@ _LLM_AUGMENT_MIN_UNMATCHED = 3
 
 
 def _llm_augment_topics(
-    hits: dict[str, list[str]], recent_entries: list, llm_helper: Callable[[str], str]
+    hits: dict[str, list[str]],
+    recent_entries: list,
+    llm_helper: Callable[[str], str],
+    *,
+    status_out: Optional[dict] = None,
 ) -> dict[str, list[str]]:
     """在规则式 `hits` 基础上，对关键词表命中不到的近期记忆条目做一次
     LLM 归纳，尝试发现 `_TOPIC_KEYWORDS` 没覆盖到的新主题。
@@ -1287,6 +1427,8 @@ def _llm_augment_topics(
     matched_ids = {eid for ids in hits.values() for eid in ids}
     unmatched = [e for e in recent_entries if (getattr(e, "entry_id", "") or "") not in matched_ids]
     if len(unmatched) < _LLM_AUGMENT_MIN_UNMATCHED:
+        if status_out is not None:
+            status_out["outcome"] = "skipped_insufficient_unmatched"
         return hits
 
     unmatched = unmatched[-_LLM_AUGMENT_MAX_ENTRIES:]
@@ -1309,6 +1451,8 @@ def _llm_augment_topics(
 
     raw = llm_helper(prompt)
     if not raw or not raw.strip():
+        if status_out is not None:
+            status_out["outcome"] = "empty_response"
         return hits
 
     text = raw.strip()
@@ -1321,13 +1465,19 @@ def _llm_augment_topics(
     except json.JSONDecodeError:
         match = re.search(r"\[.*\]", text, re.DOTALL)
         if not match:
+            if status_out is not None:
+                status_out["outcome"] = "parse_error"
             return hits
         try:
             parsed = json.loads(match.group(0))
         except json.JSONDecodeError:
+            if status_out is not None:
+                status_out["outcome"] = "parse_error"
             return hits
 
     if not isinstance(parsed, list):
+        if status_out is not None:
+            status_out["outcome"] = "parse_error"
         return hits
 
     merged = {k: list(v) for k, v in hits.items()}
@@ -1351,6 +1501,11 @@ def _llm_augment_topics(
             merged[topic] = ids
         else:
             merged[canonical] = sorted(set(merged.get(canonical, [])) | set(ids))
+
+    if status_out is not None:
+        new_count = len(merged) - len(hits)
+        status_out["outcome"] = "success" if new_count > 0 else "no_new_topics"
+        status_out["new_topic_count"] = max(new_count, 0)
 
     return merged
 
@@ -1469,8 +1624,12 @@ def generate_growth_report(
             body = llm_helper(prompt)
             if body and body.strip():
                 source = "llm"
-        except Exception:
+                _record_llm_call_status(paths, "report_quality", "success")
+            else:
+                _record_llm_call_status(paths, "report_quality", "empty_response")
+        except Exception as exc:
             body = None
+            _record_llm_call_status(paths, "report_quality", "error", detail=str(exc)[:200])
 
     if not body:
         body = (
@@ -1853,6 +2012,48 @@ def _save_growth_state(paths, state: dict) -> None:
     p.write_text(json.dumps(state, ensure_ascii=False), encoding="utf-8")
 
 
+# ────────────────────────── [LLM 增强路径可观测性] ──────────────────────────
+# 此前 `_llm_augment_topics` / 报告正文 LLM 起草 / `classify_topic_category_llm`
+# 三处 LLM 增强调用失败（异常、空响应、JSON 解析失败）都只落一条
+# `log_exception` 或者干脆原样吞掉退回默认路径，用户在诊断面板里完全看
+# 不出"这些 opt-in 开关我开了，但它是不是真的在生效"——对一个用户主动
+# 选择开启的能力来说，静默失败比默认关闭更容易造成误解（以为在用 LLM，
+# 实际上一直在退化路径）。这里统一记一份"最近一次调用结果"快照，复用
+# growth_advisor_state.json（同样是低频写的小文件，不需要单独开一个）。
+
+# 可能的 outcome 取值（不同调用点用得到的子集不同，均为诊断展示用途，
+# 不参与任何业务判断）：
+#   "success"                         —— 正常拿到可用结果
+#   "no_new_topics" / "empty_response" —— 调用成功但没有新增有效内容
+#   "skipped_insufficient_unmatched"   —— 未命中记忆条目太少，没必要调用（仅信号增强）
+#   "parse_error"                      —— 有响应，但解析失败（仅信号增强）
+#   "error"                            —— 调用本身抛出异常
+_LLM_CALL_TYPES = ("signal_augment", "report_quality", "topic_category")
+
+
+def _record_llm_call_status(paths, call_type: str, outcome: str, *, detail: str = "") -> None:
+    """记录一次 LLM 增强调用的结果快照，供 `diagnostics_snapshot` 展示。
+    只保留"最近一次"，不追加历史（这是一份健康检查用的状态，不是审计
+    日志；需要历史趋势的话应该看各调用点各自落盘的业务数据，比如
+    `growth_reports.jsonl` 里 `source` 字段的分布）。"""
+    state = _load_growth_state(paths)
+    llm_status = dict(state.get("llm_call_status") or {})
+    llm_status[call_type] = {
+        "outcome": outcome,
+        "detail": (detail or "")[:300],
+        "ts": time.time(),
+    }
+    state["llm_call_status"] = llm_status
+    _save_growth_state(paths, state)
+
+
+def llm_call_status_snapshot(paths) -> dict[str, dict]:
+    """[诊断] 三个 LLM 增强调用点各自"最近一次调用结果"，未触发过的
+    调用点不会出现在返回值里（区别于"触发过但失败"）。"""
+    state = _load_growth_state(paths)
+    return dict(state.get("llm_call_status") or {})
+
+
 # ────────────────────────── P3：首次触达提示的跨会话持久化 ──────────────────────────
 # 方案第 8 节第 1 条："默认开启，但首次触达必须透明告知"。P2 阶段看板只用
 # st.session_state 做了单次会话内的提示（见 P2 实施记录"已知简化"），这里
@@ -2149,7 +2350,7 @@ def run_daily_cycle(paths, cfg, profile, memory_store, *, llm_helper: Optional[C
         for c in new_candidates:
             info = effective_keywords.get(c.title)
             kws = list(info.get("keywords") or []) if isinstance(info, dict) else []
-            maybe_classify_topic_category(profile, c.title, kws, cfg, llm_helper=llm_helper)
+            maybe_classify_topic_category(profile, c.title, kws, cfg, llm_helper=llm_helper, paths=paths)
 
     # [P5-6] 默认关闭时，`_select_candidates_for_reports` 的行为跟改动前
     # 完全一致（纯按置信度取 Top-N）；开启后至多把其中 1 个名额换成
@@ -2257,6 +2458,13 @@ def monthly_retrospective_summary(paths) -> dict[str, Any]:
     top_accepted = sorted(accepted_topics.items(), key=lambda kv: -kv[1])[:5]
     top_dismissed = sorted(dismissed_topics.items(), key=lambda kv: -kv[1])[:5]
 
+    # [反馈粒度细化] "方向没错、报告没写好"单独列出来，不混进
+    # top_dismissed_topics（那份排行反映的是"用户对这个方向本身的态度"，
+    # 报告质量问题是另一个维度的信号，混在一起会让人误以为这些方向也
+    # 不受欢迎）。
+    report_quality_counts = _report_quality_dismiss_counts(paths)
+    top_report_quality_flags = sorted(report_quality_counts.items(), key=lambda kv: -kv[1])[:5]
+
     return {
         "total_candidates": len(all_c),
         "accepted": accepted,
@@ -2267,6 +2475,10 @@ def monthly_retrospective_summary(paths) -> dict[str, Any]:
         "reports_generated": len(list_reports(paths, include_archived=True)),
         "top_accepted_topics": top_accepted,
         "top_dismissed_topics": top_dismissed,
+        # [反馈粒度细化] 报告质量待改进的方向排行（dismiss 原因=
+        # report_not_useful），不参与任何置信度计算，仅供参考。
+        "report_quality_flags_total": sum(report_quality_counts.values()),
+        "top_report_quality_flags": top_report_quality_flags,
         "topic_map": growth_topic_map(paths),
     }
 
@@ -2365,4 +2577,13 @@ def diagnostics_snapshot(paths, cfg, profile, memory_store) -> dict[str, Any]:
         ),
         # [P4-7] 被隐藏的内置主题列表，供看板渲染"已隐藏"区块 + 恢复按钮。
         "hidden_builtin_topics": hidden_builtin_topics(profile),
+        # [LLM 增强路径可观测性] 三个 opt-in LLM 调用点各自"最近一次调用
+        # 结果"，key 是 _LLM_CALL_TYPES 里的调用点名字，没触发过的调用点
+        # 不出现在里面（区别于"触发过但失败"）。开关本身是否开启看上面
+        # config 区块，这里只回答"开了之后实际跑得怎么样"。
+        "llm_call_status": llm_call_status_snapshot(paths),
+        # [反馈粒度细化] "方向没错、报告没写好"的累计次数，跟
+        # dismiss（方向级）分开统计，明细走月度复盘的
+        # top_report_quality_flags。
+        "report_quality_flags_count": sum(_report_quality_dismiss_counts(paths).values()),
     }

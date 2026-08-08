@@ -8,10 +8,19 @@ next_doc/growth_advisor_design.md）。
                               （等价于 sys:growth_advisor_daily 的内容，
                               不依赖那条 cron job 是否 enabled）
   /growth list              — 列出当前 pending 候选（含 id，便于 accept/dismiss）
+  /growth dismiss <id> [reason]  — 忽略一个候选（标记 dismissed，进入冷却期）；
+                              reason 可选，见下方枚举，不传则记为 unspecified，
+                              行为与之前版本一致
   /growth accept <id>       — 采纳一个候选（标记 accepted，记入反馈台账）
-  /growth dismiss <id>      — 忽略一个候选（标记 dismissed，进入冷却期）
   /growth report <id>       — 查看某候选已生成的调研报告正文
   /growth retrospective     — 生成/展示月度成长复盘摘要
+
+dismiss 的 reason 可选值：
+  not_interested    — 这个方向我不关心（参与方向/类别置信度衰减）
+  bad_timing        — 方向可以，但现在不是时候（参与衰减）
+  report_not_useful — 方向没错，是报告没写好（不参与衰减，只计入报告
+                       质量诊断，见月度复盘 top_report_quality_flags）
+  unspecified       — 未指定（默认值，参与衰减，兼容旧行为）
 """
 
 from __future__ import annotations
@@ -118,7 +127,13 @@ def handle_growth_cmd(args: list[str], agent=None) -> None:
 
     if sub in ("accept", "dismiss"):
         if len(args) < 2:
-            R.print_error(f"用法：/growth {sub} <candidate_id>")
+            R.print_error(f"用法：/growth {sub} <candidate_id>" + ("  [reason]" if sub == "dismiss" else ""))
+            if sub == "dismiss":
+                R.print_info(
+                    "可选 reason（不传则记为 unspecified，行为等价于此前版本）："
+                    "not_interested(不感兴趣) | bad_timing(时机不对) | "
+                    "report_not_useful(方向没错，报告没写好，不会压低该方向今后的置信度)"
+                )
             return
         cid = args[1]
         backlog = ga.GrowthBacklog(paths)
@@ -127,7 +142,16 @@ def handle_growth_cmd(args: list[str], agent=None) -> None:
         if cand is None:
             R.print_error(f"未找到候选：{cid}")
             return
-        ga.GrowthFeedbackLedger(paths).record(cid, status)
+        reason = None
+        if sub == "dismiss":
+            reason = args[2] if len(args) >= 3 else None
+            if reason is not None and reason not in ga._VALID_DISMISS_REASONS:
+                R.print_error(
+                    f"未知 reason：{reason}，可选值：not_interested | bad_timing | "
+                    "report_not_useful | unspecified"
+                )
+                return
+        ga.GrowthFeedbackLedger(paths).record(cid, status, reason=reason)
         verb = "已采纳" if sub == "accept" else "已忽略"
         R.print_info(f"{verb}：{cand.title}")
         return

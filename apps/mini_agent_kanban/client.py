@@ -610,8 +610,11 @@ class AgentClient:
     def growth_scan(self):
         return self._post("/growth/scan")
 
-    def growth_candidate_action(self, candidate_id: str, action: str):
-        return self._post(f"/growth/candidates/{candidate_id}/{action}")
+    def growth_candidate_action(self, candidate_id: str, action: str, *, reason: str | None = None):
+        """反馈粒度细化：dismiss 时可选传 reason（见
+        `growth_advisor._VALID_DISMISS_REASONS`），accept 忽略该参数。"""
+        body = {"reason": reason} if (action == "dismiss" and reason) else None
+        return self._post(f"/growth/candidates/{candidate_id}/{action}", body)
 
     def growth_report(self, report_id: str):
         return self._get(f"/growth/reports/{report_id}")
