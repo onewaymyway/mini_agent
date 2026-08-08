@@ -39,6 +39,10 @@ logger = logging.getLogger(__name__)
 # 导入数据验证模块
 from ..validation import validate_quote_data, validate_kline_data, QualityReport
 
+# 导入新增数据源
+from .tencent_fetcher import fetch_tencent_quote, fetch_tencent_kline
+from .netease_fetcher import fetch_163_quote
+
 # 保留 retry_akshare 作为别名，保持向后兼容
 retry_akshare = retry_with_backoff
 
@@ -135,15 +139,28 @@ def fetch_realtime_quote(symbols: List[str], source: str = 'akshare') -> List[Fi
     
     Args:
         symbols: 股票代码列表，支持 600000.SH / 000001.SZ 格式
-        source: 数据源 (akshare/eastmoney/sina)
+        source: 数据源 (akshare/eastmoney/sina/tencent/netease)
     """
     results = []
     
-    if source == 'akshare' and HAS_AKSHARE:
+    if source == 'tencent' and HAS_HTTPX:
+        # 提取纯数字代码
+        codes = [s.split('.')[0] for s in symbols]
+        results.extend(fetch_tencent_quote(codes))
+    
+    elif source == 'netease' and HAS_HTTPX:
+        # 网易财经使用纯数字代码
+        codes = [s.split('.')[0] for s in symbols]
+        results.extend(fetch_163_quote(codes))
+    
+    elif source == 'akshare' and HAS_AKSHARE:
         # AKShare 获取全市场行情再筛选
         try:
             df = _fetch_akshare_realtime()
-            df['symbol'] = df['代码'].apply(lambda x: f'{x}.SH' if x.startswith(('60','68','90')) else f'{x}.SZ')
+            if df is None:
+                logger.warning("AKShare 返回空数据")
+            else:
+                df['symbol'] = df['代码'].apply(lambda x: f'{x}.SH' if x.startswith(('60','68','90')) else f'{x}.SZ')
             
             for sym in symbols:
                 std_sym = to_standard_symbol(sym)
@@ -220,16 +237,20 @@ def fetch_realtime_quote(symbols: List[str], source: str = 'akshare') -> List[Fi
                             data_str = text.split('="')[1].rstrip('"')
                             parts = data_str.split(',')
                             if len(parts) >= 10:
-                                payload = {
-                                    'name': parts[0],
-                                    'open': float(parts[1]),
-                                    'pre_close': float(parts[2]),
-                                    'price': float(parts[3]),
-                                    'high': float(parts[4]),
-                                    'low': float(parts[5]),
-                                    'volume': int(parts[6]) if parts[6] else 0,
-                                    'amount': float(parts[7]) if parts[7] else 0,
-                                }
+                                try:
+                                    payload = {
+                                        'name': parts[0],
+                                        'open': float(parts[1]) if parts[1] else 0.0,
+                                        'pre_close': float(parts[2]) if parts[2] else 0.0,
+                                        'price': float(parts[3]) if parts[3] else 0.0,
+                                        'high': float(parts[4]) if parts[4] else 0.0,
+                                        'low': float(parts[5]) if parts[5] else 0.0,
+                                        'volume': int(float(parts[6])) if parts[6] else 0,
+                                        'amount': float(parts[7]) if parts[7] else 0.0,
+                                    }
+                                except (ValueError, IndexError):
+                                    logger.warning(f"新浪数据解析失败 {sym}: {parts[:5]}")
+                                    continue
                                 results.append(FinanceData(
                                     source='sina',
                                     data_type='quote',

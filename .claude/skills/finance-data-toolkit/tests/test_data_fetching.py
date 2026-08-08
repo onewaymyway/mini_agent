@@ -35,7 +35,7 @@ class TestFetchRealtimeQuote:
             
             mock_resp = MagicMock()
             mock_resp.status_code = 200
-            mock_resp.text = 'var hq_str_sh600000="浦发银行,10.50,10.45,10.50,10.55,10.40,100000,2000000,2024-01-15,15:00:00,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0";'
+            mock_resp.text = 'var hq_str_sh600000="浦发银行,10.50,10.45,10.50,10.55,10.40,100000,2000000,2024-01-15,15:00:00,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0";\n'
             mock_resp.encoding = 'gbk'
             mock_client.get.return_value = mock_resp
             

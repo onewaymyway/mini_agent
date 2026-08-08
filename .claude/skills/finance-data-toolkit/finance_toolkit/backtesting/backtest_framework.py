@@ -366,7 +366,11 @@ class FactorBacktest:
         ann_ret = (1 + returns.mean()) ** (252 / len(returns)) - 1
         ann_vol = returns.std() * np.sqrt(252 / len(returns))
         sharpe = ann_ret / ann_vol if ann_vol > 0 else 0
-        max_dd = (returns.cumsum().expanding().max() - returns.cumsum()).max()
+        # 最大回撤：峰值到谷值的最大跌幅，应为负数或零
+        cum_returns = (1 + returns).cumprod()
+        running_max = cum_returns.expanding().max()
+        drawdowns = (cum_returns - running_max) / running_max
+        max_dd = drawdowns.min()  # 最大回撤为负数
         win_rate = (returns > 0).mean()
         
         return BacktestResult(

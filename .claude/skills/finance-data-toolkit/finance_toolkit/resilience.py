@@ -304,39 +304,64 @@ def retry_with_backoff(
     使用示例：
         @retry_with_backoff(max_retries=3, backoff_factors=[1, 2, 5])
         async def fetch_data():
-            ...  
+            ...
+        
+        @retry_with_backoff(max_retries=3, backoff_factors=[1, 2, 5])
+        def fetch_data_sync():
+            ...
     """
     if backoff_factors is None:
         backoff_factors = [1, 2, 5]
     
     def decorator(func):
-        @wraps(func)
-        async def wrapper(*args, **kwargs):
-            last_exception = None
-            
-            for attempt in range(max_retries + 1):
-                try:
-                    if asyncio.iscoroutinefunction(func):
+        if asyncio.iscoroutinefunction(func):
+            @wraps(func)
+            async def async_wrapper(*args, **kwargs):
+                last_exception = None
+                
+                for attempt in range(max_retries + 1):
+                    try:
                         return await func(*args, **kwargs)
-                    else:
-                        return func(*args, **kwargs)
+                    except retryable_exceptions as e:
+                        last_exception = e
                         
-                except retryable_exceptions as e:
-                    last_exception = e
-                    
-                    if attempt < max_retries:
-                        wait_time = backoff_factors[min(attempt, len(backoff_factors) - 1)]
-                        logger.warning(
-                            f"{func.__name__} 第 {attempt + 1} 次失败，"
-                            f"等待 {wait_time}s 后重试：{str(e)[:100]}"
-                        )
-                        await asyncio.sleep(wait_time)
-                    else:
-                        logger.error(f"{func.__name__} 重试 {max_retries} 次后仍失败")
+                        if attempt < max_retries:
+                            wait_time = backoff_factors[min(attempt, len(backoff_factors) - 1)]
+                            logger.warning(
+                                f"{func.__name__} 第 {attempt + 1} 次失败，"
+                                f"等待 {wait_time}s 后重试：{str(e)[:100]}"
+                            )
+                            await asyncio.sleep(wait_time)
+                        else:
+                            logger.error(f"{func.__name__} 重试 {max_retries} 次后仍失败")
+                
+                raise last_exception
             
-            raise last_exception
-        
-        return wrapper
+            return async_wrapper
+        else:
+            @wraps(func)
+            def sync_wrapper(*args, **kwargs):
+                last_exception = None
+                
+                for attempt in range(max_retries + 1):
+                    try:
+                        return func(*args, **kwargs)
+                    except retryable_exceptions as e:
+                        last_exception = e
+                        
+                        if attempt < max_retries:
+                            wait_time = backoff_factors[min(attempt, len(backoff_factors) - 1)]
+                            logger.warning(
+                                f"{func.__name__} 第 {attempt + 1} 次失败，"
+                                f"等待 {wait_time}s 后重试：{str(e)[:100]}"
+                            )
+                            time.sleep(wait_time)
+                        else:
+                            logger.error(f"{func.__name__} 重试 {max_retries} 次后仍失败")
+                
+                raise last_exception
+            
+            return sync_wrapper
     
     return decorator
 
