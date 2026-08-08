@@ -366,6 +366,15 @@ class AgentPaths:
         return self.workdir_dir / "growth_advisor_state.json"
 
     @property
+    def growth_topic_trend_path(self) -> Path:
+        """<project_root>/.agent/growth_topic_trend.jsonl — [P4-6] 每次
+        `growth_candidate_derive()` 运行后按主题记录一条证据数/置信度快照
+        （每行一条 JSON：scanned_at/topic/evidence_count/confidence），
+        供看板画"证据数走势"这类简单趋势视图；只追加不改写，是
+        `growth_backlog.jsonl`（当前状态）之外单独的历史序列。"""
+        return self.workdir_dir / "growth_topic_trend.jsonl"
+
+    @property
     def wiki_growth_dir(self) -> Path:
         """<project_root>/.agent/wiki/growth/ — 成长顾问调研报告正文目录"""
         return self.wiki_dir / "growth"

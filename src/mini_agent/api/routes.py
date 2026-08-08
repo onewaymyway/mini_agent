@@ -5977,6 +5977,28 @@ async def post_growth_keyword_remove(request: Request, topic: str):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@router.post("/growth/keywords/{topic}/restore")
+async def post_growth_keyword_restore(request: Request, topic: str):
+    """POST /v1/growth/keywords/{topic}/restore — 恢复一个被隐藏的内置
+    主题（P4-7，`remove` 的对称操作）。"""
+    _require_owner(request)
+    try:
+        paths = _get_paths_for_request(request)
+        from mini_agent.evolution import growth_advisor as ga
+        from mini_agent.profile import UserProfileManager
+
+        mgr = UserProfileManager(paths)
+        profile = mgr.load()
+        changed = ga.restore_builtin_topic_keyword(profile, topic)
+        if changed:
+            mgr.save()
+        return {"ok": True, "changed": changed}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @router.get("/growth/reports/refresh_candidates")
 async def get_growth_reports_refresh_candidates(request: Request):
     """GET /v1/growth/reports/refresh_candidates — 返回"生成之后证据又

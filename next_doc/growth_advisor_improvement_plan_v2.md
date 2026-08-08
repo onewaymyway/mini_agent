@@ -4,9 +4,10 @@
 > P4-1（关键词表持久化 + 看板展示 profile / 关键词信息）、P4-2（关键词
 > 自动学习稳定后转正）、P4-3（反馈学习细化：类别级置信度调权 + 采纳后
 > 回访）、P4-4（报告质量分级 + 增量刷新）、P4-5（通知策略细化：类别静音
-> + 优先级分数）已完成并落地，细节见
-> `next_doc/growth_advisor_implementation_record.md` 的 P4 章节。
-> P4-6/P4-7 仍是方向级规划，未开始实施。
+> + 优先级分数）、P4-6（看板概念统一说明 + 证据数走势）已完成并落地，
+> 细节见 `next_doc/growth_advisor_implementation_record.md` 的 P4 章节。
+> P4-7 仍是方向级规划——不过已确认 P4-1 的"🙈 隐藏内置主题"能力已经
+> 覆盖了 P4-7 的诉求，细节见下面 P4-7 小节。
 
 - **版本**: v1（草案）
 - **前置文档**: `next_doc/growth_advisor_design.md`（原始方案，P1-P3 已全部完成）、
@@ -319,7 +320,7 @@ API、验收标准），不要直接照这里的一段话开始写代码。
 > `_maybe_dispatch_weekly_digest()` 同步接入类别静音过滤。细节见
 > `next_doc/growth_advisor_implementation_record.md` P4 章节。
 
-### P4-6：看板概念统一 + 趋势视图
+### P4-6：看板概念统一 + 趋势视图（**已完成**）
 - `growth_topic_map`（历史累计）和诊断面板 `topic_hit_counts`（最近一次
   扫描）目前是两个独立区块、口径不同，容易让用户觉得数字对不上——考虑
   在诊断面板里显式说明"这是最近一次扫描的数字，历史累计看下面的主题地图"，
@@ -327,11 +328,32 @@ API、验收标准），不要直接照这里的一段话开始写代码。
 - `growth_topic_map` 目前只有峰值/当前两个值，没有中间时间序列，加一个
   简单的按扫描轮次的证据数走势（不需要复杂图表，文字/简单折线都可以）。
 
-### P4-7：自定义黑名单细化
+> **实施记录**：选择"两处都加提示"而不是硬合并成一个视图（两者语义
+> 确实不同：诊断面板是"最新一轮扫描快照"，主题地图是"历史累计"，合并
+> 会丢掉其中一个维度的信息）——`diagnostics_snapshot()` 新增
+> `topic_hit_counts_note` 文字字段，看板在两处都展示了对应提示。趋势
+> 视图新增独立文件 `growth_topic_trend.jsonl`（`growth_candidate_derive()`
+> 每处理一个主题就追加一条 `evidence_count`/`confidence` 快照，不管这
+> 轮是否达标生成候选），`growth_topic_map()` 每行新增 `evidence_trend`
+> 字段，看板用文字箭头（↗/↘/→）渲染成一行走势说明，没有引入图表库。
+> 细节见 `next_doc/growth_advisor_implementation_record.md` P4 章节。
+
+### P4-7：自定义黑名单细化（**已完成——发现后端早已支持，补齐了 UI**）
 `excluded_topics` 目前只能排除内置的 7 个固定主题；P4-1 落地后，用户能
 自定义添加主题，也应该能对**任意**主题（内置或自定义）设置黑名单，这个
 其实是 P4-1 里 "🙈 隐藏内置主题" 按钮的自然延伸，等 P4-1 落地后一起复核
 是否已经覆盖到，如果覆盖到了这一项可以直接从后续清单划掉。
+
+> **实施记录**：复核发现后端在 P3 阶段就已经完整支持（`remove_topic_
+> keyword()` 会把内置主题写入 `growth_topic_keywords_removed` 黑名单，
+> API 文档也一直写着"🙈 隐藏"），但看板从来没有真正渲染过内置主题的
+> 隐藏按钮，也没有地方能看到/恢复已隐藏的内置主题——是纯 UI 缺口，不
+> 是需要重新设计的功能。补上了对称的恢复操作
+> `restore_builtin_topic_keyword()`（不是复用 `add_custom_topic_
+> keyword()`，避免把内置主题误转成需要用户重填关键词的自定义条目）+
+> `hidden_builtin_topics()` 查询 + API `POST /growth/keywords/{topic}/
+> restore` + 看板的隐藏/恢复 UI。细节见
+> `next_doc/growth_advisor_implementation_record.md` P4 章节。
 
 ---
 

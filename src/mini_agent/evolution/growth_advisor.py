@@ -179,6 +179,41 @@ P4-5 范围（对应 next_doc/growth_advisor_improvement_plan_v2.md，本次
       优先级分数（历史采纳率高的类别加权最多到 1.3 倍，历史上常被忽略
       的类别打到 0.7 折，没有历史决策数据的类别按中性 0.5 处理，既不
       加分也不减分），取优先级最高的一条推送。
+
+P4-6 范围（对应 next_doc/growth_advisor_improvement_plan_v2.md，本次
+新增）——看板概念统一 + 趋势视图：
+    - `diagnostics_snapshot()["topic_hit_counts_note"]`：显式文字说明
+      诊断面板"最近一次扫描"命中计数跟 `growth_topic_map` 历史累计口径
+      不同——不是合并成一个视图（两者语义确实不同，硬合并会丢信息），
+      而是在两处都加提示，让用户知道"数字对不上是正常的"。
+    - `growth_topic_trend_path`（新文件 `growth_topic_trend.jsonl`）：
+      `growth_candidate_derive()` 每处理一个主题就追加一条快照
+      （`evidence_count`/`confidence`/`scanned_at`），独立于
+      `growth_backlog.jsonl`（那个只存当前状态，merge 会覆盖历史证据数，
+      没法看走势）。`_topic_trend_series()` 按 `dedupe_key` 查询，最多
+      回看最近 `_DEFAULT_TREND_MAX_POINTS`（20）个快照点。
+    - `growth_topic_map()` 每行新增 `evidence_trend` 字段（该主题的
+      走势序列），看板用文字箭头（↗/↘/→）渲染成一行"证据数走势"说明，
+      没有引入图表库。
+
+P4-7 范围（对应 next_doc/growth_advisor_improvement_plan_v2.md，本次
+新增）——自定义黑名单细化：
+    - 排查后发现 `remove_topic_keyword()` 早在 P3 就已经支持隐藏内置
+      主题（写入 `growth_topic_keywords_removed`），`POST /growth/
+      keywords/{topic}/remove` 的接口文档也一直写着"🙈 隐藏"——但看板
+      从来没有实际渲染过内置主题的隐藏按钮，也没有地方能看到"我隐藏过
+      哪些内置主题、想不想恢复"，是后端功能完整、前端 UI 一直缺失的
+      情况，不是需要重新设计黑名单机制。
+    - `hidden_builtin_topics(profile)`：返回当前被隐藏的内置主题列表。
+    - `restore_builtin_topic_keyword(profile, topic)`：`remove_topic_
+      keyword()` 的对称操作，把内置主题从黑名单摘掉——特意不复用
+      `add_custom_topic_keyword()`（那个会把主题转成一条自定义关键词
+      记录，需要用户重新填关键词，对"恢复内置主题"这个场景没必要，
+      内置关键词本来就还在 `_TOPIC_KEYWORDS` 常量里）。
+    - `diagnostics_snapshot()` 新增 `hidden_builtin_topics` 字段；
+      API 新增 `POST /growth/keywords/{topic}/restore`；看板在内置主题
+      列表下面加了"🙈 隐藏某个内置主题"折叠区块（逐个主题一个隐藏按钮）
+      和"已隐藏的内置主题"列表（带"↩️ 恢复"按钮）。
 """
 
 from __future__ import annotations
@@ -793,6 +828,37 @@ def remove_topic_keyword(profile, topic: str) -> bool:
     return changed
 
 
+# [P4-7] next_doc/growth_advisor_improvement_plan_v2.md P4-7：`remove_topic_
+# keyword()` 早在 P3 就已经支持隐藏内置主题（写入 `growth_topic_keywords_
+# removed`），`POST /growth/keywords/{topic}/remove` 的 docstring 也一直
+# 写着"🙈 隐藏"——但看板从来没有实际渲染过内置主题的隐藏按钮，也没有地方
+# 能看到"我隐藏过哪些内置主题、想不想恢复"，功能有一半是空的。这里补上
+# 对称的另一半：查询 + 恢复，不重新发明黑名单机制。
+def hidden_builtin_topics(profile) -> list[str]:
+    """当前被隐藏的内置主题列表（按名称排序），供看板渲染"已隐藏"区块。"""
+    derived = dict(getattr(profile, "derived", {}) or {})
+    removed = derived.get("growth_topic_keywords_removed") or []
+    return sorted(t for t in removed if t in _TOPIC_KEYWORDS)
+
+
+def restore_builtin_topic_keyword(profile, topic: str) -> bool:
+    """把一个被隐藏的内置主题恢复回来——只是从
+    `growth_topic_keywords_removed` 黑名单里摘掉，不会像
+    `add_custom_topic_keyword()` 那样把它转成一条自定义关键词记录（那需要
+    用户重新填一遍关键词，对"恢复内置主题"这个场景没有必要，内置关键词
+    本来就还在 `_TOPIC_KEYWORDS` 常量里，不需要重建）。"""
+    topic = (topic or "").strip()
+    if not topic or topic not in _TOPIC_KEYWORDS:
+        return False
+    derived = dict(getattr(profile, "derived", {}) or {})
+    removed = [t for t in (derived.get("growth_topic_keywords_removed") or []) if t != topic]
+    if len(removed) == len(derived.get("growth_topic_keywords_removed") or []):
+        return False  # 本来就没被隐藏
+    derived["growth_topic_keywords_removed"] = removed
+    profile.derived = derived
+    return True
+
+
 def confirm_topic_keyword(profile, topic: str) -> bool:
     """用户在看板上点\"✅ 保留\"，把一个待确认（通常是 llm_learned）的
     自定义主题标记为已确认。对内置主题/不存在的主题是安全的空操作。
@@ -1101,6 +1167,12 @@ def growth_candidate_derive(paths, cfg, profile) -> list[GrowthCandidate]:
             dismissed_cooldown_days=cooldown_days,
             confidence_multiplier=multiplier,
         )
+        # [P4-6] 每轮都记一条趋势快照，不管这次是否达标生成/更新了候选
+        # ——证据数本身在低于阈值时也是有意义的"正在积累"信号，只有在
+        # 达标之后才看得到候选反而会让走势图开局就是一条空白。
+        _record_topic_trend_snapshot(
+            paths, topic, len(set(refs)), cand.confidence if cand is not None else None
+        )
         if cand is not None:
             produced.append(cand)
     return produced
@@ -1181,6 +1253,47 @@ def generate_growth_report(
 
 def list_reports(paths) -> list[GrowthReport]:
     return [GrowthReport.from_dict(d) for d in _read_jsonl(paths.growth_reports_index_path)]
+
+
+# ────────── [P4-6] 主题证据数走势 ──────────
+# next_doc/growth_advisor_improvement_plan_v2.md P4-6 第二条："growth_topic_map
+# 目前只有峰值/当前两个值，没有中间时间序列，加一个简单的按扫描轮次的证据
+# 数走势"。用一个独立的只追加 jsonl 记录每轮 `growth_candidate_derive()`
+# 处理到的每个主题的证据数快照，跟 `growth_backlog.jsonl`（只存当前状态，
+# 合并会覆盖历史证据数）分开，避免为了"看走势"污染候选队列本身的数据
+# 结构。按 dedupe_key 存，兼容同一主题标题的大小写/空格差异。
+
+# 单个主题查询/展示时最多回看多少个快照点——按扫描轮次而不是按天数，
+# 因为 cron 频率是可配的，"最近 N 轮"比"最近 N 天"更贴合"扫描轮次"这个
+# 原始诉求。
+_DEFAULT_TREND_MAX_POINTS = 20
+
+
+def _record_topic_trend_snapshot(
+    paths, topic: str, evidence_count: int, confidence: Optional[float]
+) -> None:
+    _append_jsonl(
+        paths.growth_topic_trend_path,
+        {
+            "dedupe_key": normalize_title_key(topic),
+            "topic": topic,
+            "scanned_at": time.time(),
+            "evidence_count": evidence_count,
+            "confidence": confidence,
+        },
+    )
+
+
+def _topic_trend_series(paths, dedupe_key: str, limit: int = _DEFAULT_TREND_MAX_POINTS) -> list[dict]:
+    """返回某个主题按时间正序排列的快照点，最多取最近 `limit` 个（早期
+    的点丢弃，展示更关心"最近的走势"而不是完整历史）。"""
+    rows = [
+        {"scanned_at": r["scanned_at"], "evidence_count": r["evidence_count"], "confidence": r.get("confidence")}
+        for r in _read_jsonl(paths.growth_topic_trend_path)
+        if r.get("dedupe_key") == dedupe_key
+    ]
+    rows.sort(key=lambda r: r["scanned_at"])
+    return rows[-limit:] if limit else rows
 
 
 # ────────── [P4-4] 报告质量分级 / 增量刷新 ──────────
@@ -1542,6 +1655,10 @@ def growth_topic_map(paths) -> list[dict]:
                 "occurrences": len(items),
                 "first_seen_at": min(c.created_at for c in items),
                 "last_updated_at": latest.updated_at,
+                # [P4-6] 简单的证据数走势（最近若干轮扫描的快照点），
+                # 供看板画一条走势线/文字趋势，不是新的权威数据源，纯粹
+                # 从 growth_topic_trend.jsonl 里按 dedupe_key 查出来。
+                "evidence_trend": _topic_trend_series(paths, key),
             }
         )
 
@@ -1671,4 +1788,14 @@ def diagnostics_snapshot(paths, cfg, profile, memory_store) -> dict[str, Any]:
         # [P4-5] 按类别的历史采纳率（供看板解释"为什么这条被优先推送了"），
         # 只包含有过至少一次 accept/dismiss 决策的类别。
         "category_acceptance_rate": _category_acceptance_rate(paths),
+        # [P4-6] 显式说明诊断面板"命中计数"跟主题地图"历史累计"口径不同，
+        # 避免用户看到两处数字对不上以为哪里坏了——诊断面板永远只是"最近
+        # 一次扫描"的快照，历史累计要看 growth_topic_map/月度复盘。
+        "topic_hit_counts_note": (
+            "上面「最近一次信号扫描」里的命中次数，只是最新一轮扫描的快照，"
+            "跟下面「成长主题地图」里的历史累计次数是两个不同的口径——"
+            "地图数字只增不减，这里的数字每次扫描都会重新统计。"
+        ),
+        # [P4-7] 被隐藏的内置主题列表，供看板渲染"已隐藏"区块 + 恢复按钮。
+        "hidden_builtin_topics": hidden_builtin_topics(profile),
     }

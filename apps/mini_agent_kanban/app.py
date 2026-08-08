@@ -3469,6 +3469,9 @@ def _render_growth_diagnostics(diagnostics: dict):
                 st.write(f"- {topic}：{n} 条命中" + ("" if n else "（暂无）"))
         else:
             st.caption("目前所有内置主题都还没有命中任何记忆条目。")
+        topic_hit_counts_note = diagnostics.get("topic_hit_counts_note")
+        if topic_hit_counts_note:
+            st.caption(f"ℹ️ {topic_hit_counts_note}")
 
         st.markdown("**记忆数据**")
         st.write(
@@ -3525,6 +3528,22 @@ def _render_growth_profile_and_keywords(client: "AgentClient", diagnostics: dict
 
     if built_in:
         st.caption("内置：" + "、".join(f"`{t['topic']}`" for t in built_in))
+        # [P4-7] 内置主题此前只能展示，看不到隐藏按钮——后端一直支持
+        # （remove_topic_keyword 会把内置主题记进黑名单），这里补上 UI。
+        with st.expander("🙈 隐藏某个内置主题"):
+            for t in built_in:
+                if st.button(f"隐藏「{t['topic']}」", key=f"growth_kw_hide_{t['topic']}"):
+                    client.growth_keyword_remove(t["topic"])
+                    st.rerun()
+    hidden_builtin = diagnostics.get("hidden_builtin_topics") or []
+    if hidden_builtin:
+        st.caption("已隐藏的内置主题（不会再出现在扫描里）：")
+        for topic in hidden_builtin:
+            cols = st.columns([4, 1])
+            cols[0].write(f"⚪ ~~{topic}~~")
+            if cols[1].button("↩️ 恢复", key=f"growth_kw_restore_{topic}"):
+                client.growth_keyword_restore(topic)
+                st.rerun()
     for t in learned:
         cols = st.columns([4, 1, 1])
         streak = t.get("consecutive_scan_hits", 0)
@@ -3639,6 +3658,7 @@ def render_growth_tab(client: "AgentClient"):
     topic_map = retro.get("topic_map") or []
     if topic_map:
         with st.expander(f"🗺️ 成长主题地图（{len(topic_map)} 个方向）"):
+            st.caption("这里是历史累计视角，跟上面诊断面板「最近一次扫描」的命中计数是两个口径。")
             for row in topic_map:
                 status_label = {
                     "pending": "待处理", "accepted": "已采纳",
@@ -3651,6 +3671,16 @@ def render_growth_tab(client: "AgentClient"):
                     f"采纳 {row.get('times_accepted', 0)} / "
                     f"忽略 {row.get('times_dismissed', 0)}）"
                 )
+                # [P4-6] 简单文字走势：只展示证据数的涨跌箭头序列，不引入
+                # 图表库——"简单折线都可以"，这里选了更轻量的文字版本。
+                trend = row.get("evidence_trend") or []
+                if len(trend) >= 2:
+                    counts = [pt["evidence_count"] for pt in trend]
+                    arrows = "".join(
+                        "↗" if b > a else ("↘" if b < a else "→")
+                        for a, b in zip(counts, counts[1:])
+                    )
+                    st.caption(f"　证据数走势（最近 {len(counts)} 轮）：{counts[0]} {arrows} {counts[-1]}")
 
     _render_growth_followups(client)
     _render_growth_report_refresh_candidates(client)

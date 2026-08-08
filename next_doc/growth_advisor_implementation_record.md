@@ -762,3 +762,81 @@
   充分的方向优先出报告"的直觉，历史采纳率是"值不值得主动打扰用户"的
   判断，不是"值不值得先研究"的判断，两者语义不同，不应该混用同一个
   排序键。
+
+### P4-6：看板概念统一 + 趋势视图
+
+**概念统一（加提示，不硬合并）**：
+- `diagnostics_snapshot()` 新增 `topic_hit_counts_note`：一段固定文字，
+  说明"最近一次信号扫描"命中计数是最新一轮快照、跟"成长主题地图"的
+  历史累计是两个口径。看板在诊断面板的命中列表下方、以及主题地图
+  expander 顶部都展示了对应提示（两处提示文案略有不同，分别贴合各自
+  上下文，但传达的是同一件事）。
+
+**趋势视图**：
+- 新增独立文件 `growth_topic_trend.jsonl`（`AgentPaths.growth_topic_
+  trend_path`），只追加不改写，跟 `growth_backlog.jsonl`（只存当前
+  状态，merge 会覆盖历史证据数）分开，避免污染候选队列的数据结构。
+- `_record_topic_trend_snapshot()`：`growth_candidate_derive()` 每处理
+  一个主题（不管这轮证据是否达标生成/更新了候选）就追加一条
+  `{dedupe_key, topic, scanned_at, evidence_count, confidence}`——低于
+  阈值时 `confidence` 记为 `None`，但证据数本身仍然是有意义的"正在
+  积累"信号，不因为还没达标就不记录（否则走势图会开局一大段空白）。
+- `_topic_trend_series(paths, dedupe_key, limit=20)`：按 `dedupe_key`
+  查询，时间正序返回，默认只保留最近 20 个点（早期历史丢弃，展示更
+  关心"最近走势"）。
+- `growth_topic_map()` 每行新增 `evidence_trend` 字段（该主题的走势
+  序列）。看板渲染成一行文字箭头（比如 `3 ↗ 5 ↗ 8`），选择文字而不是
+  真的画折线图——"不需要复杂图表，文字/简单折线都可以"，文字版本零
+  额外依赖、渲染成本最低。
+- **测试**：`tests/test_growth_advisor.py` 新增 `TestTopicTrend`（5 个
+  用例：低于阈值也记录快照、多轮快照按时间正序累积、`limit` 参数保留
+  最近的点、`growth_topic_map` 携带 `evidence_trend`、诊断快照包含
+  `topic_hit_counts_note`）；加上此前全部用例，`test_growth_advisor.py`
+  + `test_profile.py` 合计 87 项全部通过。
+
+### P4-7：自定义黑名单细化（发现后端早已支持，补齐 UI）
+
+排查这一项之前，先确认了"P4-1 落地后是否已经覆盖到"（计划文档里写的
+复核动作）——结论是：**后端在更早的 P3 阶段就已经完整支持**了，
+`remove_topic_keyword()` 一直会把内置主题写入 `growth_topic_keywords_
+removed` 黑名单（`growth_candidate_derive()` 消费时会跳过），
+`POST /growth/keywords/{topic}/remove` 的接口文档也一直写着"🙈 隐藏"字
+样。但看板代码里，内置主题那一行从来只是 `st.caption(...)` 纯展示，没
+有配套的隐藏按钮，也没有任何地方能看到"我之前隐藏过哪些内置主题、要不
+要恢复"——是后端功能完整、前端 UI 一直没跟上的情况，不需要重新设计
+黑名单机制本身，只需要补 UI + 一个对称的"恢复"操作。
+
+- `hidden_builtin_topics(profile)`：返回当前被隐藏的内置主题列表
+  （从 `growth_topic_keywords_removed` 里筛出仍然是 `_TOPIC_KEYWORDS`
+  常量成员的项，按名称排序）。
+- `restore_builtin_topic_keyword(profile, topic)`：`remove_topic_
+  keyword()` 的对称操作，只是把内置主题从黑名单里摘掉。特意**不**复用
+  `add_custom_topic_keyword()`——那个函数是给"用户自己定义一个新主题
+  + 关键词"用的，如果拿来"恢复"一个内置主题，会把它转成一条
+  `source="user_added"` 的自定义记录，需要用户重新填一遍关键词，而
+  内置关键词本来就还完整地留在 `_TOPIC_KEYWORDS` 常量里，不需要重建，
+  用错函数反而会制造数据不一致。
+- `diagnostics_snapshot()` 新增 `hidden_builtin_topics` 字段。
+- **API**：新增 `POST /growth/keywords/{topic}/restore`。
+- **看板**：内置主题那一行下面新增"🙈 隐藏某个内置主题"折叠区块（逐个
+  主题一个隐藏按钮，用的还是已有的 `growth_keyword_remove` 端点，不是
+  新端点），以及"已隐藏的内置主题"列表（划线展示 + "↩️ 恢复"按钮）。
+- **测试**：`tests/test_growth_advisor.py` 新增 `TestBuiltinTopicHideRestore`
+  （5 个用例：默认没有隐藏项、隐藏后出现在列表里且恢复后从
+  `_effective_topic_keywords()` 里重新可见、恢复未知/未隐藏主题返回
+  `False`、恢复不会把主题转成自定义条目、诊断快照正确暴露隐藏列表）；
+  加上此前全部用例，`test_growth_advisor.py` + `test_profile.py` 合计
+  92 项全部通过。
+
+### P4 全部子项完成小结
+
+至此 `growth_advisor_improvement_plan_v2.md` 里 P4-0 ~ P4-7 全部完成
+（P4-7 的"完成"是确认 + 补齐 UI 缺口，不是新功能开发）。已知限制汇总
+见上面各小节末尾，比较值得后续留意的几条：
+  - 类别覆盖（P4-5）只支持"完全静音"，不支持按类别设置独立频率；
+  - 回访（P4-3）和报告刷新提示（P4-4）目前都不接入主动推送通道，只在
+    看板轮询时展示；
+  - 趋势快照（P4-6）文件只追加不轮转，长期运行后需要时可以再补清理
+    策略。
+这些都不是 bug，是本轮评估后判断"复杂度大于当前收益"而有意搁置的
+范围边界，不是遗漏。

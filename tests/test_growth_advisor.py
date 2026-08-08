@@ -1372,5 +1372,113 @@ class TestReportQualityAndRefresh(unittest.TestCase):
             self.assertEqual(reports_by_id[report_ids[0]].source, "llm")
 
 
+class TestTopicTrend(unittest.TestCase):
+    """P4-6：证据数走势快照（growth_topic_trend.jsonl）。"""
+
+    def test_candidate_derive_records_trend_snapshot_even_below_threshold(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = _make_paths(tmp)
+            profile = UserProfile()
+            profile.derived = {"growth_focus_areas": {"数据分析": ["e1", "e2"]}}  # 不达标（阈值 3）
+            cfg = GrowthAdvisorConfig(min_evidence_count=3)
+            produced = ga.growth_candidate_derive(paths, cfg, profile)
+            self.assertEqual(produced, [])  # 没有生成候选
+            series = ga._topic_trend_series(paths, ga.normalize_title_key("数据分析"))
+            self.assertEqual(len(series), 1)
+            self.assertEqual(series[0]["evidence_count"], 2)
+            self.assertIsNone(series[0]["confidence"])  # 没有候选，置信度为空
+
+    def test_multiple_scans_accumulate_trend_points_in_order(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = _make_paths(tmp)
+            profile = UserProfile()
+            cfg = GrowthAdvisorConfig(min_evidence_count=3)
+            for n in (3, 5, 8):
+                profile.derived = {
+                    "growth_focus_areas": {"数据分析": [f"e{i}" for i in range(n)]}
+                }
+                ga.growth_candidate_derive(paths, cfg, profile)
+                time.sleep(0.001)
+            series = ga._topic_trend_series(paths, ga.normalize_title_key("数据分析"))
+            self.assertEqual([pt["evidence_count"] for pt in series], [3, 5, 8])
+            self.assertTrue(series[0]["scanned_at"] <= series[-1]["scanned_at"])
+
+    def test_topic_trend_series_limit_keeps_most_recent(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = _make_paths(tmp)
+            for n in range(5):
+                ga._record_topic_trend_snapshot(paths, "数据分析", n, None)
+            series = ga._topic_trend_series(paths, ga.normalize_title_key("数据分析"), limit=2)
+            self.assertEqual([pt["evidence_count"] for pt in series], [3, 4])
+
+    def test_growth_topic_map_includes_evidence_trend(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = _make_paths(tmp)
+            backlog = ga.GrowthBacklog(paths)
+            backlog.add_or_merge(
+                "数据分析", "理由", ["e1", "e2", "e3"],
+                min_evidence_count=3, max_pending=10, dismissed_cooldown_days=30,
+            )
+            ga._record_topic_trend_snapshot(paths, "数据分析", 3, 0.5)
+            rows = ga.growth_topic_map(paths)
+            self.assertEqual(len(rows), 1)
+            self.assertIn("evidence_trend", rows[0])
+            self.assertEqual(len(rows[0]["evidence_trend"]), 1)
+
+    def test_diagnostics_snapshot_includes_topic_hit_counts_note(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = _make_paths(tmp)
+            profile = UserProfile()
+            cfg = GrowthAdvisorConfig()
+            snap = ga.diagnostics_snapshot(paths, cfg, profile, None)
+            self.assertIn("topic_hit_counts_note", snap)
+            self.assertTrue(snap["topic_hit_counts_note"])
+
+
+class TestBuiltinTopicHideRestore(unittest.TestCase):
+    """P4-7：内置主题隐藏/恢复的对称操作。"""
+
+    def test_hidden_builtin_topics_empty_by_default(self):
+        profile = UserProfile()
+        self.assertEqual(ga.hidden_builtin_topics(profile), [])
+
+    def test_remove_then_hidden_list_and_restore(self):
+        profile = UserProfile()
+        topic = next(iter(ga._TOPIC_KEYWORDS.keys()))
+        self.assertTrue(ga.remove_topic_keyword(profile, topic))
+        self.assertIn(topic, ga.hidden_builtin_topics(profile))
+
+        # 恢复后不再出现在隐藏列表，且能被重新扫描到
+        self.assertTrue(ga.restore_builtin_topic_keyword(profile, topic))
+        self.assertNotIn(topic, ga.hidden_builtin_topics(profile))
+        effective = ga._effective_topic_keywords(profile)
+        self.assertIn(topic, effective)
+
+    def test_restore_unknown_or_not_hidden_topic_returns_false(self):
+        profile = UserProfile()
+        self.assertFalse(ga.restore_builtin_topic_keyword(profile, "不存在的主题"))
+        self.assertFalse(ga.restore_builtin_topic_keyword(profile, ""))
+        topic = next(iter(ga._TOPIC_KEYWORDS.keys()))
+        self.assertFalse(ga.restore_builtin_topic_keyword(profile, topic))  # 本来没隐藏
+
+    def test_restore_does_not_create_custom_keyword_entry(self):
+        profile = UserProfile()
+        topic = next(iter(ga._TOPIC_KEYWORDS.keys()))
+        ga.remove_topic_keyword(profile, topic)
+        ga.restore_builtin_topic_keyword(profile, topic)
+        custom = (getattr(profile, "derived", {}) or {}).get("growth_topic_keywords") or {}
+        self.assertNotIn(topic, custom)  # 恢复不应该把内置主题转成自定义条目
+
+    def test_diagnostics_snapshot_exposes_hidden_builtin_topics(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = _make_paths(tmp)
+            profile = UserProfile()
+            topic = next(iter(ga._TOPIC_KEYWORDS.keys()))
+            ga.remove_topic_keyword(profile, topic)
+            cfg = GrowthAdvisorConfig()
+            snap = ga.diagnostics_snapshot(paths, cfg, profile, None)
+            self.assertIn(topic, snap["hidden_builtin_topics"])
+
+
 if __name__ == "__main__":
     unittest.main()

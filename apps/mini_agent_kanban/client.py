@@ -629,6 +629,10 @@ class AgentClient:
     def growth_keyword_remove(self, topic: str):
         return self._post(f"/growth/keywords/{topic}/remove")
 
+    # [next_doc/growth_advisor_improvement_plan_v2.md P4-7] 恢复被隐藏的内置主题
+    def growth_keyword_restore(self, topic: str):
+        return self._post(f"/growth/keywords/{topic}/restore")
+
     # [next_doc/growth_advisor_improvement_plan_v2.md P4-3] 采纳后回访
     def growth_followups(self):
         return self._get("/growth/followups")
