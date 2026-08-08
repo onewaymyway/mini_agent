@@ -1681,6 +1681,18 @@ class GrowthAdvisorConfig:
     # （即等价于未设置覆盖）。
     category_notification_frequency: dict = field(default_factory=dict)
 
+    # ── P5-3：自定义/学习到的主题也能参与类别系统（growth_advisor_
+    # improvement_plan_v3.md P5-3）───────────────────────────────────
+    # 默认关闭：`_TOPIC_CATEGORIES` 硬编码只覆盖内置 7 个主题，自定义/
+    # LLM 学到的主题一律落进"其他类"。打开后，用户新增自定义主题、或者
+    # LLM 学习到的主题被确认转正时，额外调用一次 llm_helper 做"4 选 1"
+    # 粗粒度分类（技术类/管理类/表达类/其他类），结果持久化到
+    # `profile.derived["growth_topic_categories"]`，不重复调用。独立于
+    # `llm_signal_augment_enabled`（那个控制"归纳新主题"，这个控制"给
+    # 已经存在的主题分类"），两者互不影响。明确不引入 embedding，理由见
+    # 方案文档非目标一节。
+    topic_category_llm_enabled: bool = False
+
 
 @dataclass
 class ReminderConfig:

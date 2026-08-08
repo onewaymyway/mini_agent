@@ -62,6 +62,7 @@ from __future__ import annotations
 
 import argparse
 import dataclasses
+import logging
 import os
 from typing import Any, Optional
 
@@ -121,6 +122,8 @@ def load_nested_block(block: dict, cls: type, env_fallback: Optional[dict] = Non
             continue
         has_default = f.default is not dataclasses.MISSING
         default_v = f.default if has_default else None
+        has_default_factory = f.default_factory is not dataclasses.MISSING
+        factory_sample = f.default_factory() if has_default_factory else None
         try:
             if isinstance(default_v, bool):
                 kwargs[f.name] = bool(raw_v)
@@ -130,17 +133,47 @@ def load_nested_block(block: dict, cls: type, env_fallback: Optional[dict] = Non
                 kwargs[f.name] = float(raw_v)
             elif isinstance(default_v, str):
                 kwargs[f.name] = str(raw_v)
-            elif isinstance(default_v, list) or f.default_factory is not dataclasses.MISSING and isinstance(
-                f.default_factory(), list
-            ):
-                kwargs[f.name] = list(raw_v) if isinstance(raw_v, list) else default_v
+            elif isinstance(default_v, list) or (has_default_factory and isinstance(factory_sample, list)):
+                kwargs[f.name] = list(raw_v) if isinstance(raw_v, list) else _fallback_field(
+                    cls, f.name, raw_v, "list", default_v if has_default else factory_sample
+                )
+            elif isinstance(default_v, dict) or (has_default_factory and isinstance(factory_sample, dict)):
+                # [P5-5] dict 类型字段（如 GrowthAdvisorConfig.category_
+                # notification_frequency）此前是"原样透传"，配置文件/编辑器
+                # 存进来的错误类型（例如整段被误当字符串保存）会静默流入
+                # 下游，某个随机调用点才报错。这里显式校验类型，不匹配时
+                # 回退默认值并记一条 warning 日志，不让一个字段的脏数据
+                # 拖垮整个加载流程。
+                kwargs[f.name] = raw_v if isinstance(raw_v, dict) else _fallback_field(
+                    cls, f.name, raw_v, "dict", default_v if has_default else factory_sample
+                )
             else:
-                # None 默认 / dict 默认 / Optional[...] 等：原样透传
+                # None 默认 / Optional[...] 等：原样透传（合法空值不应被
+                # 误判为类型不匹配，例如 `Optional[str] = None` 传入 None）
                 kwargs[f.name] = raw_v
         except (TypeError, ValueError):
             # 类型转换失败（脏配置）——忽略该字段，退回默认值
             continue
     return cls(**kwargs)
+
+
+def _fallback_field(cls: type, field_name: str, raw_v: Any, expected: str, default_v: Any) -> Any:
+    """[P5-5] 类型不匹配的字段回退到默认值，并记一条 warning 日志（不
+    中断加载流程）。"""
+    try:
+        from mini_agent.errors import log_exception
+        log_exception(
+            TypeError(
+                f"{cls.__name__}.{field_name} expected {expected}, "
+                f"got {type(raw_v).__name__}; falling back to default"
+            ),
+            where="mini_agent.config.param_registry.load_nested_block",
+            extra={"field": field_name, "dataclass": cls.__name__, "expected_type": expected, "actual_type": type(raw_v).__name__},
+            level=logging.WARNING,
+        )
+    except Exception:
+        pass
+    return default_v
 
 
 def apply_overrides(instance: Any, **overrides: Any) -> Any:

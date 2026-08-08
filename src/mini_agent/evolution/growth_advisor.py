@@ -177,8 +177,7 @@ P4-5 范围（对应 next_doc/growth_advisor_improvement_plan_v2.md，本次
       多份报告都达到 `notification_min_confidence` 门槛时，不再单纯取
       置信度最高的一条，而是用"置信度 × 该类别历史采纳率加权"算一个
       优先级分数（历史采纳率高的类别加权最多到 1.3 倍，历史上常被忽略
-      的类别打到 0.7 折，没有历史决策数据的类别按中性 0.5 处理，既不
-      加分也不减分），取优先级最高的一条推送。
+      的类别打到 0.7 折，没有历史决策数据的类别按中性 0.5 处理，既不      加分也不减分），取优先级最高的一条推送。
 
 P4-6 范围（对应 next_doc/growth_advisor_improvement_plan_v2.md，本次
 新增）——看板概念统一 + 趋势视图：
@@ -214,6 +213,37 @@ P4-7 范围（对应 next_doc/growth_advisor_improvement_plan_v2.md，本次
       API 新增 `POST /growth/keywords/{topic}/restore`；看板在内置主题
       列表下面加了"🙈 隐藏某个内置主题"折叠区块（逐个主题一个隐藏按钮）
       和"已隐藏的内置主题"列表（带"↩️ 恢复"按钮）。
+
+P5 范围（对应 next_doc/growth_advisor_improvement_plan_v3.md，本次
+新增，进行中）——跳出"补功能"视角的结构性盲区复盘：
+    - P5-1（迁移期检查清单）：`GrowthReport.evidence_count_at_generation`
+      默认值从 `0` 改为 `-1`（哨兵值，语义是"生成时的证据数快照缺失"，
+      不是"生成时证据数真的是 0"），`reports_needing_refresh()` 显式
+      跳过负值，修复 P4-4 上线当天旧报告被批量误判为"该刷新"的问题；
+      同时把这类"给已落盘 dataclass 加字段"的通用检查项沉淀进
+      `next_doc/dataclass_field_migration_checklist.md`，不止服务这一次
+      修复。
+    - P5-5（配置类型校验兜底）：`config/param_registry.py::load_nested_
+      block()` 新增 dict 类型字段的显式校验，类型不匹配时回退默认值 +
+      记 warning 日志，而不是原样透传导致脏值在某个随机调用点才报错
+      （修复的是这次 review 发现的 `category_notification_frequency`
+      被编辑器错误存成字符串这个真实场景的根因，不止 growth_advisor
+      一个模块受益）。
+    - P5-3（自定义/学习到的主题也能参与类别系统）：新增
+      `GrowthAdvisorConfig.topic_category_llm_enabled`（默认关闭）+
+      `classify_topic_category_llm()`（复用 `llm_helper` opt-in 模式，
+      4 选 1 粗粒度分类，明确不引入 embedding）+
+      `profile.derived["growth_topic_categories"]` 持久化；`_category_
+      of()` 现在接受可选 `profile` 参数，命中已归类的自定义/学习到主题
+      时不再统一落进"其他类"，类别级反馈学习（P4-3）/静音（P4-5）/
+      推送优先级（P4-5）对这部分主题同样生效。触发点：`add_custom_
+      topic_keyword()`/`confirm_topic_keyword()`（看板手动添加/确认）
+      + `run_daily_cycle()`（cron 自动转正路径），均是可选 `cfg`/
+      `llm_helper` 参数，不传时行为与改动前完全一致。
+    - P5-0/P5-2/P5-4/P5-6 尚未开工，方向和大致方案见
+      `next_doc/growth_advisor_improvement_plan_v3.md`，进度以
+      `next_doc/growth_advisor_implementation_record.md` 的 P5 章节
+      为准。
 """
 
 from __future__ import annotations
@@ -304,9 +334,21 @@ class GrowthReport:
     body_path: str                       # 相对/绝对路径，正文落在 wiki_growth_dir
     created_at: float = field(default_factory=time.time)
     source: str = "template"             # "template" | "llm"
-    # [P4-4] 生成这份报告时候选的证据数快照，供 `reports_needing_refresh()`
-    # 判断"生成之后又新增了多少证据"，决定是否提示用户"要不要更新一下"。
-    evidence_count_at_generation: int = 0
+    # [P4-4][P5-1 修正] 生成这份报告时候选的证据数快照，供
+    # `reports_needing_refresh()` 判断"生成之后又新增了多少证据"，决定是否
+    # 提示用户"要不要更新一下"。
+    #
+    # 哨兵值说明：默认值曾经是 `0`，导致 P4-4 上线当天所有此前生成的旧报告
+    # （`from_dict()` 反序列化时这个字段在旧数据里缺失，落到默认值 `0`）
+    # 被下游误判为"证据从 0 涨到了现在这么多，该刷新了"，触发一批批量误报
+    # ——这不是 bug，是新增字段时"老数据在默认值下会被怎么解读"没有想清楚
+    # 的一次真实案例，见 next_doc/growth_advisor_improvement_plan_v3.md
+    # P5-1。现在默认值改成 `-1`（"生成时的证据数快照缺失"的哨兵值，而不是
+    # "生成时证据数真的是 0"），`reports_needing_refresh()` 遇到负值直接
+    # 跳过，不计入待刷新列表。新生成的报告（见 `generate_growth_report()`）
+    # 永远显式传入真实的 `candidate.evidence_count`（>= 0），只有反序列化
+    # 旧数据时才会落到这个哨兵默认值。
+    evidence_count_at_generation: int = -1
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -555,15 +597,31 @@ _TOPIC_CATEGORIES: dict[str, str] = {
     "项目管理": "管理类",
     "写作与表达": "表达类",
 }
+# 4 个可选类别标签（内置主题只出现在前 3 个里，"其他类"是默认兜底 +
+# LLM 归类可选返回值）。P5-3 的 LLM 归类结果只接受这 4 选 1，其余一律
+# 判定为解析失败，兜底"其他类"。
+_TOPIC_CATEGORY_LABELS = ("技术类", "管理类", "表达类", "其他类")
 _CATEGORY_DECAY_FACTOR = 0.95
 _MIN_CATEGORY_MULTIPLIER = 0.7
 
 
-def _category_of(topic: str) -> str:
-    return _TOPIC_CATEGORIES.get(topic, "其他类")
+def _category_of(topic: str, profile=None) -> str:
+    """主题 → 类别。内置 7 个主题走硬编码表；`profile` 非 None 时，额外
+    查一次 `profile.derived["growth_topic_categories"]`（P5-3 LLM 归类的
+    持久化结果），仍未命中的落回"其他类"（跟不传 profile 时的行为完全
+    一致，向后兼容）。"""
+    category = _TOPIC_CATEGORIES.get(topic)
+    if category is not None:
+        return category
+    if profile is not None:
+        learned = _learned_topic_categories(profile)
+        category = learned.get(topic)
+        if category in _TOPIC_CATEGORY_LABELS:
+            return category
+    return "其他类"
 
 
-def _category_dismiss_counts(paths) -> dict[str, int]:
+def _category_dismiss_counts(paths, profile=None) -> dict[str, int]:
     """按类别统计历史 dismiss 次数（同一类别下不同主题的忽略次数累加）。"""
     id_to_title = {c.candidate_id: c.title for c in GrowthBacklog(paths).load_all()}
     counts: dict[str, int] = {}
@@ -573,7 +631,7 @@ def _category_dismiss_counts(paths) -> dict[str, int]:
         title = id_to_title.get(entry.get("candidate_id"))
         if not title:
             continue
-        category = _category_of(title)
+        category = _category_of(title, profile)
         counts[category] = counts.get(category, 0) + 1
     return counts
 
@@ -661,14 +719,14 @@ def _followup_adjustment_by_dedupe_key(paths) -> dict[str, float]:
 #      比"刚好卡线但历史上这类方向常被忽略"的方向优先级更高。
 
 
-def _category_notification_muted(cfg, topic: str) -> bool:
+def _category_notification_muted(cfg, topic: str, profile=None) -> bool:
     """某个主题所属类别是否被配置为 kanban_only（完全静音，只看板展示、
     不主动推送）。目前只识别这一种覆盖值，其余原样透传给全局频率逻辑。"""
     overrides = getattr(cfg, "category_notification_frequency", None) or {}
-    return overrides.get(_category_of(topic)) == "kanban_only"
+    return overrides.get(_category_of(topic, profile)) == "kanban_only"
 
 
-def _category_acceptance_rate(paths) -> dict[str, float]:
+def _category_acceptance_rate(paths, profile=None) -> dict[str, float]:
     """按类别统计历史采纳率（已做出 accept/dismiss 决策的候选里，
     accept 占比），只统计有过决策的类别，未出现过决策的类别不在返回值里
     （调用方对缺失类别应视为中性 0.5，既不加分也不减分）。"""
@@ -677,7 +735,7 @@ def _category_acceptance_rate(paths) -> dict[str, float]:
     for c in GrowthBacklog(paths).load_all():
         if c.status not in (STATUS_ACCEPTED, STATUS_DISMISSED):
             continue
-        category = _category_of(c.title)
+        category = _category_of(c.title, profile)
         decided[category] = decided.get(category, 0) + 1
         if c.status == STATUS_ACCEPTED:
             accepted[category] = accepted.get(category, 0) + 1
@@ -777,8 +835,16 @@ def _clean_keywords(raw) -> list[str]:
     return cleaned
 
 
-def add_custom_topic_keyword(profile, topic: str, keywords) -> dict[str, Any]:
-    """用户在看板上手动添加一个自定义主题，直接标记为已确认。"""
+def add_custom_topic_keyword(
+    profile, topic: str, keywords, *, cfg=None, llm_helper: Optional[Callable[[str], str]] = None
+) -> dict[str, Any]:
+    """用户在看板上手动添加一个自定义主题，直接标记为已确认。
+
+    `cfg`/`llm_helper` 是 P5-3 可选参数：`cfg.topic_category_llm_enabled`
+    打开且传入了 `llm_helper` 时，额外做一次类别归类（见
+    `maybe_classify_topic_category()`）；不传或开关关闭时是零成本空操作，
+    不影响此前的调用方（如 API 路由，目前没有同步 llm_helper 可用）。
+    """
     topic = (topic or "").strip()
     if not topic:
         raise ValueError("topic must not be empty")
@@ -800,6 +866,7 @@ def add_custom_topic_keyword(profile, topic: str, keywords) -> dict[str, Any]:
     removed = [t for t in (derived.get("growth_topic_keywords_removed") or []) if t != topic]
     derived["growth_topic_keywords_removed"] = removed
     profile.derived = derived
+    maybe_classify_topic_category(profile, topic, cleaned, cfg, llm_helper=llm_helper)
     return entry
 
 
@@ -859,9 +926,14 @@ def restore_builtin_topic_keyword(profile, topic: str) -> bool:
     return True
 
 
-def confirm_topic_keyword(profile, topic: str) -> bool:
-    """用户在看板上点\"✅ 保留\"，把一个待确认（通常是 llm_learned）的
+def confirm_topic_keyword(
+    profile, topic: str, *, cfg=None, llm_helper: Optional[Callable[[str], str]] = None
+) -> bool:
+    """用户在看板上点"✅ 保留"，把一个待确认（通常是 llm_learned）的
     自定义主题标记为已确认。对内置主题/不存在的主题是安全的空操作。
+
+    `cfg`/`llm_helper`：见 `add_custom_topic_keyword()` 同名参数说明——
+    P5-3 的可选归类钩子，确认转正是方案里明确提到的另一个触发时机。
     """
     topic = (topic or "").strip()
     derived = dict(getattr(profile, "derived", {}) or {})
@@ -876,7 +948,88 @@ def confirm_topic_keyword(profile, topic: str) -> bool:
     custom[topic] = entry
     derived["growth_topic_keywords"] = custom
     profile.derived = derived
+    maybe_classify_topic_category(profile, topic, list(entry.get("keywords") or []), cfg, llm_helper=llm_helper)
     return True
+
+
+def _learned_topic_categories(profile) -> dict[str, str]:
+    """读取 P5-3 持久化的自定义/学习到主题的类别归类结果
+    （`profile.derived["growth_topic_categories"]`，`{topic: category}`）。
+    """
+    derived = dict(getattr(profile, "derived", {}) or {})
+    raw = derived.get("growth_topic_categories") or {}
+    if not isinstance(raw, dict):
+        return {}
+    return {k: v for k, v in raw.items() if v in _TOPIC_CATEGORY_LABELS}
+
+
+def _persist_topic_category(profile, topic: str, category: str) -> None:
+    """把一个主题的归类结果写入 `profile.derived["growth_topic_
+    categories"]`。已有记录会被覆盖（重新分类场景），调用方负责判断是否
+    需要重新分类。"""
+    if category not in _TOPIC_CATEGORY_LABELS:
+        return
+    derived = dict(getattr(profile, "derived", {}) or {})
+    categories = dict(derived.get("growth_topic_categories") or {})
+    categories[topic] = category
+    derived["growth_topic_categories"] = categories
+    profile.derived = derived
+
+
+def classify_topic_category_llm(
+    topic: str, keywords: list[str], llm_helper: Callable[[str], str]
+) -> Optional[str]:
+    """[P5-3] 用 LLM 把一个主题粗分类到 4 个内置类别之一（技术类/管理类/
+    表达类/其他类）。复用 `llm_signal_augment_enabled` 同款的"opt-in、
+    宽松吸收"模式——解析失败、返回值不在 4 个类别里，一律返回 None，
+    调用方兜底为"其他类"（不倒退现有行为）。明确不用 embedding：这是
+    4 选 1 的粗粒度分类，LLM 一次调用即可给出可解释的分类理由，边际复杂度
+    比维护一份类别参考向量更低，见
+    next_doc/growth_advisor_improvement_plan_v3.md P5-3。"""
+    prompt = (
+        "请把下面这个用户成长方向主题归到 4 个类别之一：技术类/管理类/"
+        "表达类/其他类。技术类指编程、工程、数据、系统设计等技术能力；"
+        "管理类指项目管理、团队协作、time management 等；表达类指写作、"
+        "演讲、沟通表达；不属于以上三类的一律归为其他类。\n"
+        f"主题：{topic}\n关键词：{', '.join(keywords)}\n"
+        "只输出类别名称本身（4 选 1），不要有其他文字。"
+    )
+    try:
+        raw = llm_helper(prompt)
+    except Exception:
+        return None
+    if not raw:
+        return None
+    text = raw.strip()
+    for label in _TOPIC_CATEGORY_LABELS:
+        if label in text:
+            return label
+    return None
+
+
+def maybe_classify_topic_category(
+    profile, topic: str, keywords: list[str], cfg=None, *, llm_helper: Optional[Callable[[str], str]] = None
+) -> Optional[str]:
+    """[P5-3] 主题新增/确认转正时的归类入口：`topic_category_llm_enabled`
+    关闭（默认）或没有可用的 `llm_helper` 时是零成本空操作；开启且已有
+    `llm_helper` 时调用一次 LLM 分类并持久化。已经分类过的主题不会重复
+    调用（分类结果倾向于长期稳定，不需要每次都重新问）——如需强制重新
+    分类，调用方直接调 `_persist_topic_category()` 覆盖。
+    """
+    if not getattr(cfg, "topic_category_llm_enabled", False):
+        return None
+    if llm_helper is None:
+        return None
+    if topic in _TOPIC_CATEGORIES:
+        return None  # 内置主题已经有硬编码类别，不需要 LLM 归类
+    if topic in _learned_topic_categories(profile):
+        return None  # 已经分类过，不重复调用
+    category = classify_topic_category_llm(topic, keywords, llm_helper)
+    if category is None:
+        return None
+    _persist_topic_category(profile, topic, category)
+    return category
+
 
 
 def _persist_learned_topics(profile, new_topics: dict[str, list[str]]) -> None:
@@ -1142,7 +1295,7 @@ def growth_candidate_derive(paths, cfg, profile) -> list[GrowthCandidate]:
     dismiss_counts = _dismiss_counts_by_dedupe_key(paths)
     # P4-3：类别级反馈（同一类别下的忽略会温和地拖累同类新主题的初始置信度）
     # + 采纳后回访调节（stalled/progressed），三者相乘得到最终 multiplier。
-    category_dismiss_counts = _category_dismiss_counts(paths)
+    category_dismiss_counts = _category_dismiss_counts(paths, profile)
     followup_adjustments = _followup_adjustment_by_dedupe_key(paths)
 
     produced: list[GrowthCandidate] = []
@@ -1154,7 +1307,7 @@ def growth_candidate_derive(paths, cfg, profile) -> list[GrowthCandidate]:
         key = normalize_title_key(topic)
         topic_multiplier = _feedback_multiplier(dismiss_counts.get(key, 0))
         category_multiplier = _category_feedback_multiplier(
-            category_dismiss_counts.get(_category_of(topic), 0)
+            category_dismiss_counts.get(_category_of(topic, profile), 0)
         )
         followup_multiplier = followup_adjustments.get(key, 1.0)
         multiplier = round(topic_multiplier * category_multiplier * followup_multiplier, 3)
@@ -1321,6 +1474,11 @@ def reports_needing_refresh(paths, cfg=None) -> list[dict]:
         report = reports_by_id.get(c.report_id)
         if report is None:
             continue
+        if report.evidence_count_at_generation < 0:
+            # [P5-1] 哨兵值：生成时的证据数快照缺失（反序列化自这个字段
+            # 引入之前的旧数据），不做"证据从 0 涨到现在"这种误判，直接
+            # 跳过，不计入待刷新。
+            continue
         new_evidence = c.evidence_count - report.evidence_count_at_generation
         if new_evidence >= min_new:
             out.append(
@@ -1404,7 +1562,7 @@ def mark_first_touch_notice_shown(paths) -> None:
 WEEKLY_DIGEST_INTERVAL_DAYS = 7
 
 
-def _maybe_dispatch_weekly_digest(paths, cfg) -> Optional[dict]:
+def _maybe_dispatch_weekly_digest(paths, cfg, profile=None) -> Optional[dict]:
     """`notification_frequency == "weekly_digest"` 时的推送逻辑：每 7 天
     最多推一次，内容是窗口期内（上次推送至今，首次则取最近 7 天）新生成
     的全部调研报告标题打包成一条摘要，而不是逐条推送。
@@ -1423,7 +1581,7 @@ def _maybe_dispatch_weekly_digest(paths, cfg) -> Optional[dict]:
         window_reports = [r for r in list_reports(paths) if r.created_at >= window_start]
         # [P4-5] 类别被静音的报告不进摘要打包，逻辑与 _maybe_dispatch_notification
         # 一致——静音是"完全不主动推送"，不是"降低频率"。
-        window_reports = [r for r in window_reports if not _category_notification_muted(cfg, r.title)]
+        window_reports = [r for r in window_reports if not _category_notification_muted(cfg, r.title, profile)]
 
         if not window_reports:
             # 没有新报告也要推进"上次检查时间"，避免每次 daily cycle 都
@@ -1474,7 +1632,7 @@ def _maybe_dispatch_weekly_digest(paths, cfg) -> Optional[dict]:
 
 
 def _maybe_dispatch_notification(
-    paths, cfg, candidates_by_id: dict[str, GrowthCandidate], reports: list[GrowthReport]
+    paths, cfg, candidates_by_id: dict[str, GrowthCandidate], reports: list[GrowthReport], profile=None
 ) -> Optional[dict]:
     """方案第 4.2 节推送节流：看板展示不受限，主动推送（通知中心/邮件）
     才需要节流——本函数只负责"要不要推、推哪一条"，看板轮询走的是
@@ -1508,7 +1666,7 @@ def _maybe_dispatch_notification(
     # [P4-5] 按类别历史采纳率算优先级分数，而不是单纯比置信度；同时把
     # 类别被静音（category_notification_frequency=="kanban_only"）的
     # 报告排除在候选之外，不管置信度多高都不推送。
-    category_rates = _category_acceptance_rate(paths)
+    category_rates = _category_acceptance_rate(paths, profile)
 
     scored: list[tuple[float, GrowthReport]] = []
     for r in reports:
@@ -1516,7 +1674,7 @@ def _maybe_dispatch_notification(
         conf = cand.confidence if cand is not None else 0.0
         if conf < min_conf:
             continue
-        if _category_notification_muted(cfg, r.title):
+        if _category_notification_muted(cfg, r.title, profile):
             continue
         priority = _notification_priority_score(conf, category_rates.get(_category_of(r.title)))
         scored.append((priority, conf, r))
@@ -1590,6 +1748,18 @@ def run_daily_cycle(paths, cfg, profile, memory_store, *, llm_helper: Optional[C
     growth_signal_scan(paths, profile, memory_store, llm_helper=scan_llm_helper)
     new_candidates = growth_candidate_derive(paths, cfg, profile)
 
+    # [P5-3] 除了看板上"手动添加/确认"两个触发点，cron 每日流程本身也会
+    # 让主题"转正"（`_update_keyword_learning_streaks` 的自动确认路径），
+    # 这里顺带给本轮新增候选里还没分类过的主题补一次归类，开关关闭或没
+    # 有 llm_helper 时是零成本空操作（`maybe_classify_topic_category`
+    # 内部已经判断）。
+    if getattr(cfg, "topic_category_llm_enabled", False) and llm_helper is not None:
+        effective_keywords = _effective_topic_keywords(profile)
+        for c in new_candidates:
+            info = effective_keywords.get(c.title)
+            kws = list(info.get("keywords") or []) if isinstance(info, dict) else []
+            maybe_classify_topic_category(profile, c.title, kws, cfg, llm_helper=llm_helper)
+
     max_reports = getattr(cfg, "max_reports_per_run", 2)
     top = sorted(new_candidates, key=lambda c: -c.confidence)[:max_reports]
     # [P4-4] report_quality_llm_enabled 独立于 llm_signal_augment_enabled：
@@ -1602,9 +1772,9 @@ def run_daily_cycle(paths, cfg, profile, memory_store, *, llm_helper: Optional[C
     candidates_by_id = {c.candidate_id: c for c in top}
     freq = getattr(cfg, "notification_frequency", "daily")
     if freq == "weekly_digest":
-        notification = _maybe_dispatch_weekly_digest(paths, cfg)
+        notification = _maybe_dispatch_weekly_digest(paths, cfg, profile)
     else:
-        notification = _maybe_dispatch_notification(paths, cfg, candidates_by_id, reports)
+        notification = _maybe_dispatch_notification(paths, cfg, candidates_by_id, reports, profile)
 
     return {
         "skipped": False,
@@ -1787,7 +1957,7 @@ def diagnostics_snapshot(paths, cfg, profile, memory_store) -> dict[str, Any]:
         "reports_needing_refresh_count": len(reports_needing_refresh(paths, cfg)),
         # [P4-5] 按类别的历史采纳率（供看板解释"为什么这条被优先推送了"），
         # 只包含有过至少一次 accept/dismiss 决策的类别。
-        "category_acceptance_rate": _category_acceptance_rate(paths),
+        "category_acceptance_rate": _category_acceptance_rate(paths, profile),
         # [P4-6] 显式说明诊断面板"命中计数"跟主题地图"历史累计"口径不同，
         # 避免用户看到两处数字对不上以为哪里坏了——诊断面板永远只是"最近
         # 一次扫描"的快照，历史累计要看 growth_topic_map/月度复盘。

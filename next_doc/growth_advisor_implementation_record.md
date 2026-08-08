@@ -878,3 +878,123 @@ removed` 黑名单（`growth_candidate_derive()` 消费时会跳过），
   用 `_type_name()` 的直接调用验证了 dict 类型确实会被正确识别为
   `"dict"` 分支（回归风险最高的那一步），`test_kanban_growth_dragdrop.py`
   的 5 个既有用例也确认了 `app.py` 模块改动后仍能正常 import 并通过。
+
+## P5（对应 next_doc/growth_advisor_improvement_plan_v3.md，进行中）
+
+> P5 是一次跳出"补功能"视角的结构性复盘，7 个方向按文档第 3 节的优先级
+> 顺序推进。以下按已完成/进行中的顺序记录，未提及的方向（P5-0/P5-2/
+> P5-4/P5-6）视为未开工。
+
+### P5-1：新增 dataclass 字段的迁移期检查清单（已完成）
+
+- **问题回顾**：`GrowthReport.evidence_count_at_generation`（P4-4 新增）
+  默认值是 `0`，上线当天所有此前生成的旧报告（`from_dict()` 反序列化
+  时这个字段在旧数据里缺失，落到默认值 `0`）被 `reports_needing_
+  refresh()` 误判为"证据从 0 涨到了现在这么多，该刷新了"，触发一批批量
+  误报。
+- **修复**：默认值从 `0` 改为 `-1`（哨兵值，语义是"生成时的证据数快照
+  缺失"，不是"生成时证据数真的是 0"）；`reports_needing_refresh()` 遇到
+  负值直接跳过，不计入待刷新列表。新生成的报告（`generate_growth_
+  report()`）永远显式传入真实的 `candidate.evidence_count`（>= 0），
+  只有反序列化引入这个字段之前的旧数据才会落到哨兵默认值。
+- **文档**：新增 `next_doc/dataclass_field_migration_checklist.md`——
+  给以后任何"给已经落盘过历史数据的 dataclass 加字段"的改动提供一份
+  通用检查清单（不止服务 growth_advisor），把这次踩坑的教训抽象成可
+  复用的流程项，而不是只在这一处打个补丁。
+- **测试**：`tests/test_growth_advisor.py` 新增
+  `test_legacy_report_missing_evidence_snapshot_not_flagged_for_refresh`
+  ——直接从落盘的 jsonl 里 `pop()` 掉这个字段模拟真实的"字段引入之前"
+  场景（而不是用当前 dataclass 构造后转 dict，那样测不出真实的反序列化
+  缺失），验证不会被误判。
+
+### P5-5：配置加载路径的类型校验兜底（已完成）
+
+- **问题回顾**：`category_notification_frequency`（dict 类型配置字段）
+  被看板编辑器错误存成字符串后，`config/param_registry.py::load_
+  nested_block()` 对 dict 类型字段是"原样透传"，脏值会静默流入
+  `GrowthAdvisorConfig`，直到某个随机调用点（比如 `.get()` 调用）才
+  报错——UI 层此前已经修过展示 bug，但加载路径本身没有兜底，同类问题
+  以后加别的复杂类型字段时还会复现。
+- **修复**：`load_nested_block()` 新增对 dict 默认值/`default_factory`
+  字段的显式类型校验：值不是 `dict` 时回退到该字段的默认值，并通过
+  已有的 `errors.py::log_exception()`（`level=logging.WARNING`）记一条
+  日志，附带字段名/dataclass 名/期望类型/实际类型，不让一个字段的脏
+  数据拖垮整个 block 的加载。list 类型字段的回退逻辑同时复用了同一个
+  `_fallback_field()` 辅助函数，行为保持一致。`Optional[str] = None`
+  这类"合法空值"字段的显式 null 语义不受影响（校验只针对"非 None 但
+  类型不对"的情况）。
+- **改动范围说明**：这个改动不属于 growth_advisor 模块，是
+  `config/param_registry.py` 里所有走 `NESTED_CONFIG_BLOCKS` 通用加载
+  的配置块共享的核心路径（`autonomy`/`tech_radar`/`goal_mode`/
+  `workdir_knowledge`/... 十几个 block 都会经过这里），growth_advisor
+  只是这次撞上具体风险场景的模块，同时也是加固后的回归验证用例。
+- **测试**：新增 `tests/test_param_registry_type_validation.py`（5 个
+  用例：dict 字段类型错误时回退默认值且不崩溃、正确类型时正常生效、
+  字段缺失时用默认值、`Optional[str]=None` 不被误判为类型不匹配、一个
+  字段类型错误不拖垮同一 block 里其它字段的加载）；跑了更大范围的
+  config/growth/skill 相关子集（136 通过 / 14 失败，逐一确认失败项都是
+  与本次改动无关的既有环境缺口——`SkillLoader._auto_activate_blocked`
+  属性不存在等，改动前就已存在，复现路径与本次改动无交集）。
+
+### P5-3：自定义/学习到的主题也能参与类别系统（LLM 归类，不用 embedding）（已完成）
+
+- **问题回顾**：`_TOPIC_CATEGORIES` 硬编码只覆盖内置 7 个主题，用户
+  自定义和 LLM 学到的主题一律落进"其他类"，类别级反馈学习（P4-3）和
+  类别静音/优先级加权（P4-5）对这部分完全不生效。
+- **实现**：
+  - `GrowthAdvisorConfig.topic_category_llm_enabled`（新字段，默认
+    `False`，opt-in，零成本）。
+  - `classify_topic_category_llm(topic, keywords, llm_helper)`：复用
+    `llm_signal_augment_enabled` 同款的"opt-in、宽松吸收"模式——4 选 1
+    粗粒度分类（技术类/管理类/表达类/其他类），解析失败、异常、返回值
+    不在 4 个类别里，一律返回 `None`，调用方兜底为"其他类"（不倒退
+    现有行为）。明确不引入 embedding：这是粗粒度分类场景，LLM 一次
+    调用即可给出可解释的分类理由，边际复杂度比维护类别参考向量、调
+    相似度阈值更低。
+  - `_learned_topic_categories(profile)` / `_persist_topic_category(
+    profile, topic, category)`：归类结果持久化到 `profile.derived[
+    "growth_topic_categories"]`（`{topic: category}`），同一个主题不
+    重复调用 LLM——分类对同一主题基本是一次性的。
+  - `maybe_classify_topic_category(profile, topic, keywords, cfg, *,
+    llm_helper=None)`：统一的归类入口，内部判断开关/`llm_helper`
+    是否可用、是否是内置主题（内置主题类别始终由硬编码表决定，不接受
+    LLM 归类覆盖）、是否已经分类过，全部满足才真正调用一次 LLM。
+  - `_category_of(topic, profile=None)`：新增可选 `profile` 参数，
+    内置主题优先，其次查 `profile` 的已归类结果，都没有才落"其他类"；
+    不传 `profile`（默认值）时行为与改动前完全一致，向后兼容此前所有
+    调用方。已在以下消费方就近传入 `profile`（这些函数本来就持有
+    `profile`，改动只是多传一个参数）：`_category_dismiss_counts()`、
+    `_category_notification_muted()`、`_category_acceptance_rate()`、
+    `growth_candidate_derive()`、`_maybe_dispatch_weekly_digest()`、
+    `_maybe_dispatch_notification()`、`diagnostics_snapshot()`，
+    `run_daily_cycle()` 相应也把 `profile` 传给了两个 dispatch 函数。
+  - 触发点（对应方案原文"用户新增自定义主题、或者 LLM 学到的主题被
+    确认转正时"）：`add_custom_topic_keyword()` / `confirm_topic_
+    keyword()` 新增可选关键字参数 `cfg=None, llm_helper=None`，默认
+    值保证 `api/routes.py` 里现有的两处调用（`POST /growth/keywords`、
+    `POST /growth/keywords/{topic}/confirm`，目前没有同步 `llm_helper`
+    可用）行为完全不变；`run_daily_cycle()` 内部对本轮新增候选里还
+    没分类过的主题额外补一次归类，覆盖 cron 触发的自动转正路径
+    （`_update_keyword_learning_streaks()` 的自动确认）。
+- **已知限制**：`topic_category_llm_enabled=True` 但开关先开后关（用户
+  体验了一下又关掉）的场景下，已经持久化到 `profile.derived[
+  "growth_topic_categories"]` 的归类结果会被保留（关掉开关只是不再
+  产生新的分类，不会撤销已有分类）——这是方案文档"已知风险"一节明确
+  倾向的语义，这里按此实现，不是遗漏。
+- **测试**：`tests/test_growth_advisor.py` 新增 `TestTopicCategoryLLM`
+  （12 个用例，覆盖：无 profile 时行为不变、LLM 输出解析成功/失败
+  /异常三种情况、开关关闭时空操作、无 `llm_helper` 时空操作、归类结果
+  持久化后 `_category_of()` 能读到、不重复调用 LLM、内置主题不接受
+  LLM 归类覆盖、`add_custom_topic_keyword()`/`confirm_topic_keyword()`
+  两个触发点分别验证、以及一条端到端用例证明归类结果真的接入了类别级
+  反馈学习——同类别下内置主题被 dismiss 过之后，一个刚归类完的自定义
+  主题的初始置信度确实被拖低，不是只挂了个标签）；连同此前全部用例，
+  `test_growth_advisor.py` 合计 104 项全部通过。
+
+### P5-0/P5-2/P5-4/P5-6：尚未开工
+
+方向和大致方案见 `next_doc/growth_advisor_improvement_plan_v3.md` 第 2
+节对应小节；按文档第 3 节的建议顺序，下一步是 P5-0（存储卫生），随后是
+P5-2 → P5-4（有前置依赖关系，需要一起规划），P5-6 留到最后（涉及产品
+方向判断，不是纯技术决策）。
+

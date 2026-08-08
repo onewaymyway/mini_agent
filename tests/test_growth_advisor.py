@@ -1339,6 +1339,28 @@ class TestReportQualityAndRefresh(unittest.TestCase):
             paths = _make_paths(tmp)
             self.assertIsNone(ga.refresh_growth_report(paths, "does-not-exist"))
 
+    def test_legacy_report_missing_evidence_snapshot_not_flagged_for_refresh(self):
+        """[P5-1] 迁移期回归测试：`evidence_count_at_generation` 字段引入
+        之前生成的旧报告（反序列化时该 key 缺失），不应该被误判为"证据从 0
+        涨到现在，该刷新了"。"""
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = _make_paths(tmp)
+            backlog = ga.GrowthBacklog(paths)
+            c = backlog.add_or_merge(
+                "数据分析", "理由", ["e1", "e2", "e3", "e4", "e5", "e6", "e7"],
+                min_evidence_count=3, max_pending=10, dismissed_cooldown_days=30,
+            )
+            report = ga.generate_growth_report(paths, c)
+            # 模拟"字段引入之前"落盘的旧数据：直接改写 jsonl，去掉这个 key。
+            rows = ga._read_jsonl(paths.growth_reports_index_path)
+            for row in rows:
+                row.pop("evidence_count_at_generation", None)
+            ga._write_jsonl(paths.growth_reports_index_path, rows)
+
+            reloaded = ga.list_reports(paths)[0]
+            self.assertEqual(reloaded.evidence_count_at_generation, -1)  # 哨兵值，不是 0
+            self.assertEqual(ga.reports_needing_refresh(paths, GrowthAdvisorConfig()), [])
+
     def test_run_daily_cycle_uses_template_by_default_even_with_llm_helper(self):
         with tempfile.TemporaryDirectory() as tmp:
             paths = _make_paths(tmp)
@@ -1482,3 +1504,133 @@ class TestBuiltinTopicHideRestore(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestTopicCategoryLLM(unittest.TestCase):
+    """[P5-3] 自定义/学习到的主题也能参与类别系统（LLM 归类，不用
+    embedding）。next_doc/growth_advisor_improvement_plan_v3.md P5-3。"""
+
+    def test_custom_topic_defaults_to_other_category_without_profile(self):
+        # 不传 profile 时行为跟改动前完全一致：自定义主题一律"其他类"。
+        self.assertEqual(ga._category_of("摄影"), "其他类")
+
+    def test_classify_topic_category_llm_parses_known_label(self):
+        helper = lambda prompt: "这个主题属于：技术类"
+        result = ga.classify_topic_category_llm("摄影后期", ["修图", "调色"], helper)
+        self.assertEqual(result, "技术类")
+
+    def test_classify_topic_category_llm_returns_none_on_unknown_label(self):
+        helper = lambda prompt: "娱乐类"  # 不在 4 选 1 里
+        result = ga.classify_topic_category_llm("摄影", ["修图"], helper)
+        self.assertIsNone(result)
+
+    def test_classify_topic_category_llm_returns_none_on_exception(self):
+        def helper(prompt):
+            raise RuntimeError("boom")
+        result = ga.classify_topic_category_llm("摄影", ["修图"], helper)
+        self.assertIsNone(result)
+
+    def test_maybe_classify_noop_when_disabled(self):
+        profile = UserProfile()
+        cfg = GrowthAdvisorConfig(topic_category_llm_enabled=False)
+        helper = lambda prompt: "技术类"
+        result = ga.maybe_classify_topic_category(profile, "摄影", ["修图"], cfg, llm_helper=helper)
+        self.assertIsNone(result)
+        self.assertEqual(ga._category_of("摄影", profile), "其他类")
+
+    def test_maybe_classify_noop_without_llm_helper(self):
+        profile = UserProfile()
+        cfg = GrowthAdvisorConfig(topic_category_llm_enabled=True)
+        result = ga.maybe_classify_topic_category(profile, "摄影", ["修图"], cfg, llm_helper=None)
+        self.assertIsNone(result)
+
+    def test_maybe_classify_persists_and_category_of_picks_it_up(self):
+        profile = UserProfile()
+        cfg = GrowthAdvisorConfig(topic_category_llm_enabled=True)
+        helper = lambda prompt: "技术类"
+        result = ga.maybe_classify_topic_category(profile, "摄影后期", ["修图", "调色"], cfg, llm_helper=helper)
+        self.assertEqual(result, "技术类")
+        self.assertEqual(ga._category_of("摄影后期", profile), "技术类")
+        # 不传 profile 仍然拿不到（向后兼容，不影响旧调用方）。
+        self.assertEqual(ga._category_of("摄影后期"), "其他类")
+
+    def test_maybe_classify_does_not_reclassify_already_classified_topic(self):
+        profile = UserProfile()
+        cfg = GrowthAdvisorConfig(topic_category_llm_enabled=True)
+        calls = []
+
+        def helper(prompt):
+            calls.append(prompt)
+            return "技术类"
+
+        ga.maybe_classify_topic_category(profile, "摄影后期", ["修图"], cfg, llm_helper=helper)
+        self.assertEqual(len(calls), 1)
+        # 第二次调用（比如另一轮 cron scan 又遇到这个主题）不应该重复问 LLM。
+        result = ga.maybe_classify_topic_category(profile, "摄影后期", ["修图"], cfg, llm_helper=helper)
+        self.assertIsNone(result)
+        self.assertEqual(len(calls), 1)
+
+    def test_maybe_classify_skips_builtin_topics(self):
+        profile = UserProfile()
+        cfg = GrowthAdvisorConfig(topic_category_llm_enabled=True)
+        helper = lambda prompt: "管理类"  # 故意给一个跟内置类别不同的答案
+        builtin_topic = "写作与表达"
+        result = ga.maybe_classify_topic_category(profile, builtin_topic, ["写作"], cfg, llm_helper=helper)
+        self.assertIsNone(result)
+        # 内置主题的类别始终由硬编码表决定，不会被 LLM 归类结果覆盖。
+        self.assertEqual(ga._category_of(builtin_topic, profile), "表达类")
+
+    def test_add_custom_topic_keyword_triggers_classification_when_enabled(self):
+        profile = UserProfile()
+        cfg = GrowthAdvisorConfig(topic_category_llm_enabled=True)
+        helper = lambda prompt: "管理类"
+        ga.add_custom_topic_keyword(profile, "敏捷实践", ["scrum", "站会"], cfg=cfg, llm_helper=helper)
+        self.assertEqual(ga._category_of("敏捷实践", profile), "管理类")
+
+    def test_add_custom_topic_keyword_backward_compatible_without_cfg(self):
+        # 不传 cfg/llm_helper（旧调用方式，如 API 路由）行为不变。
+        profile = UserProfile()
+        entry = ga.add_custom_topic_keyword(profile, "摄影", ["修图"])
+        self.assertEqual(entry["source"], "user_added")
+        self.assertEqual(ga._category_of("摄影", profile), "其他类")
+
+    def test_confirm_topic_keyword_triggers_classification_when_enabled(self):
+        profile = UserProfile()
+        cfg = GrowthAdvisorConfig(topic_category_llm_enabled=True)
+        derived = dict(getattr(profile, "derived", {}) or {})
+        derived["growth_topic_keywords"] = {
+            "机器学习": {"keywords": ["ml", "深度学习"], "source": "llm_learned", "confirmed_by_user": False}
+        }
+        profile.derived = derived
+        helper = lambda prompt: "技术类"
+        changed = ga.confirm_topic_keyword(profile, "机器学习", cfg=cfg, llm_helper=helper)
+        self.assertTrue(changed)
+        self.assertEqual(ga._category_of("机器学习", profile), "技术类")
+
+    def test_category_feedback_learning_applies_to_classified_custom_topic(self):
+        """归类结果不是摆设：接入现有的类别级反馈调权（P4-3），跟内置主题
+        享有同样的"同类被忽略过会拖累新主题初始置信度"待遇。"""
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = _make_paths(tmp)
+            profile = UserProfile()
+            cfg = GrowthAdvisorConfig(topic_category_llm_enabled=True, min_evidence_count=3)
+            helper = lambda prompt: "技术类"
+            # 先手动写一条已归类的自定义主题类别，模拟"之前已经分类过"。
+            ga._persist_topic_category(profile, "摄影后期", "技术类")
+
+            # 制造"技术类"下 Python 工程实践被 dismiss 的历史。
+            backlog = ga.GrowthBacklog(paths)
+            c1 = backlog.add_or_merge(
+                "Python 工程实践", "理由", ["e1", "e2", "e3"],
+                min_evidence_count=3, max_pending=10, dismissed_cooldown_days=30,
+            )
+            backlog.set_status(c1.candidate_id, ga.STATUS_DISMISSED)
+            ga.GrowthFeedbackLedger(paths).record(c1.candidate_id, ga.STATUS_DISMISSED)
+
+            profile.derived = dict(profile.derived or {})
+            profile.derived["growth_focus_areas"] = {"摄影后期": ["e4", "e5", "e6"]}
+            candidates = ga.growth_candidate_derive(paths, cfg, profile)
+            cand = next(c for c in candidates if c.title == "摄影后期")
+            # 同类别历史 dismiss 应该让新主题的初始置信度打折（< 未打折的
+            # _confidence_from_evidence(3)）。
+            self.assertLess(cand.confidence, ga._confidence_from_evidence(3))
