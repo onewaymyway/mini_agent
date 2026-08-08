@@ -39,6 +39,7 @@ SINA_FOREX_CODES = {
 }
 
 
+@register_scraper
 class ForexScraper(BaseScraper):
     """外汇数据抓取器"""
 

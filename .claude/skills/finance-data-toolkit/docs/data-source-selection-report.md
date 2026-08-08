@@ -23,14 +23,14 @@
 
 | 数据源 | 抓取器 | 支持数据类型 | 状态 | 依赖 |
 |--------|--------|-------------|------|------|
-| 基金 | FundScraper | fund_nav, fund_holdings, fund_rank, fund_info, fund_history | ✅ 已接入 | httpx |
+| 基金 | FundScraper | fund_nav, fund_holdings, fund_rank, fund_info, fund_history | ✅ 已接入 | httpx, akshare |
 | 债券 | BondScraper | bond_yield, bond_quote, convertible, bond_info | ✅ 已接入 | httpx |
 | 期货 | FuturesScraper | futures_quote, futures_kline, futures_position, futures_info | ✅ 已接入 | httpx |
-| 指数 | IndexScraper | index_quote, index_kline, index_constituents, index_info | ✅ 已接入 | httpx |
+| 指数 | IndexScraper | index_quote, index_kline, index_constituents, index_info | ⚠️ 部分可用 | httpx, akshare |
 | 宏观经济 | MacroScraper | gdp, cpi, pmi, interest_rate, exchange_rate, money_supply | ✅ 已接入 | httpx |
 | 外汇 | ForexScraper | forex_quote, forex_kline, forex_cny, forex_cross | ✅ 已接入 | httpx, akshare |
 | 加密货币 | CryptoScraper | crypto_quote, crypto_kline, crypto_rank, crypto_trending | ✅ 已接入 | httpx, akshare |
-| ETF/期权 | ETFScraper | etf_quote, etf_kline, etf_holdings, option_quote, option_chain | ✅ 已接入 | httpx, akshare |
+| ETF/期权 | ETFScraper | etf_quote, etf_kline, etf_holdings, option_quote, option_chain | ⚠️ 部分可用 | httpx, akshare |
 
 ---
 
@@ -320,6 +320,9 @@
 - ⚠️ 大宗交易数据
 - ⚠️ 港股实时行情
 - ⚠️ 美股实时行情
+- ⚠️ 北向资金实时数据
+- ⚠️ 龙虎榜详细数据
+- ⚠️ 资金流向数据（行业/概念）
 
 ---
 
@@ -339,6 +342,8 @@
 2. **导入路径错误**: `from .scrapers.macro_scraper` 应为 `from ..scrapers.macro_scraper`
 3. **测试覆盖不足**: 新增数据源缺少单元测试
 4. **文档不完整**: 部分模块缺少使用说明
+5. **网络连通性问题**: ETF/指数数据源因代理问题导致 health_check 失败
+6. **API 变更**: 部分东方财富 API 接口返回 302 重定向
 
 ### 5.3 优化建议
 
@@ -377,6 +382,8 @@ finance-data-toolkit 已实现 **9 大类** 金融数据源：
 2. **增加测试**: 为所有数据源添加单元测试
 3. **扩展数据**: 考虑增加商品、融资融券等数据
 4. **性能优化**: 添加缓存层，减少重复请求
+5. **网络优化**: 解决 ETF/指数数据源的代理连通性问题
+6. **API 适配**: 适配东方财富 API 变更（302 重定向问题）
 
 ---
 

@@ -665,15 +665,17 @@ def fetch_fund(symbol: str, data_type: str = 'nav', source: str = 'fund') -> Lis
     results = []
 
     try:
-        from .scrapers.fund_scraper import FundScraper
+        from ..scrapers.fund_scraper import FundScraper
         if FundScraper:
             scraper = FundScraper()
             import asyncio
             loop = asyncio.new_event_loop()
             asyncio.set_event_loop(loop)
             try:
-                data_list = list(scraper.fetch([symbol], data_type))
-                results.extend(data_list)
+                async def _fetch():
+                    async for data in scraper.fetch([symbol], data_type):
+                        results.append(data)
+                loop.run_until_complete(_fetch())
             finally:
                 loop.close()
     except Exception as e:
@@ -695,15 +697,17 @@ def fetch_bond(symbol: str, data_type: str = 'yield', source: str = 'bond') -> L
     results = []
 
     try:
-        from .scrapers.bond_scraper import BondScraper
+        from ..scrapers.bond_scraper import BondScraper
         if BondScraper:
             scraper = BondScraper()
             import asyncio
             loop = asyncio.new_event_loop()
             asyncio.set_event_loop(loop)
             try:
-                data_list = list(scraper.fetch([symbol], data_type))
-                results.extend(data_list)
+                async def _fetch():
+                    async for data in scraper.fetch([symbol], data_type):
+                        results.append(data)
+                loop.run_until_complete(_fetch())
             finally:
                 loop.close()
     except Exception as e:
@@ -725,15 +729,17 @@ def fetch_futures(symbol: str, data_type: str = 'quote', source: str = 'futures'
     results = []
 
     try:
-        from .scrapers.futures_scraper import FuturesScraper
+        from ..scrapers.futures_scraper import FuturesScraper
         if FuturesScraper:
             scraper = FuturesScraper()
             import asyncio
             loop = asyncio.new_event_loop()
             asyncio.set_event_loop(loop)
             try:
-                data_list = list(scraper.fetch([symbol], data_type))
-                results.extend(data_list)
+                async def _fetch():
+                    async for data in scraper.fetch([symbol], data_type):
+                        results.append(data)
+                loop.run_until_complete(_fetch())
             finally:
                 loop.close()
     except Exception as e:
@@ -755,15 +761,17 @@ def fetch_index(symbol: str, data_type: str = 'quote', source: str = 'index') ->
     results = []
 
     try:
-        from .scrapers.index_scraper import IndexScraper
+        from ..scrapers.index_scraper import IndexScraper
         if IndexScraper:
             scraper = IndexScraper()
             import asyncio
             loop = asyncio.new_event_loop()
             asyncio.set_event_loop(loop)
             try:
-                data_list = list(scraper.fetch([symbol], data_type))
-                results.extend(data_list)
+                async def _fetch():
+                    async for data in scraper.fetch([symbol], data_type):
+                        results.append(data)
+                loop.run_until_complete(_fetch())
             finally:
                 loop.close()
     except Exception as e:
@@ -784,15 +792,17 @@ def fetch_macro(data_type: str = 'gdp', source: str = 'macro') -> List[FinanceDa
     results = []
 
     try:
-        from .scrapers.macro_scraper import MacroScraper
+        from ..scrapers.macro_scraper import MacroScraper
         if MacroScraper:
             scraper = MacroScraper()
             import asyncio
             loop = asyncio.new_event_loop()
             asyncio.set_event_loop(loop)
             try:
-                data_list = list(scraper.fetch([], data_type))
-                results.extend(data_list)
+                async def _fetch():
+                    async for data in scraper.fetch([], data_type):
+                        results.append(data)
+                loop.run_until_complete(_fetch())
             finally:
                 loop.close()
     except Exception as e:

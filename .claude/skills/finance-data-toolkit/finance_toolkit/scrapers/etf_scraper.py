@@ -24,6 +24,7 @@ except ImportError:
 from ..core import BaseScraper, FinanceData, register_scraper
 
 
+@register_scraper
 class ETFScraper(BaseScraper):
     """ETF/期权数据抓取器"""
 

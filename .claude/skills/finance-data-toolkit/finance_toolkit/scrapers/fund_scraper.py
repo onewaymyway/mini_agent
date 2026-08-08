@@ -5,7 +5,7 @@
 支持: 基金净值、历史净值、持仓、分类、基金经理等
 """
 
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import List, Optional, AsyncIterator
 
 try:
