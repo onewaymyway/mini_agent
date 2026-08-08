@@ -269,10 +269,22 @@ P5 范围（对应 next_doc/growth_advisor_improvement_plan_v3.md，本次
       `reports_needing_refresh()` 新增 `recent_evidence_delta`（最近 14
       天内新增证据数，见 `_recent_evidence_delta`），排序优先级从单纯按
       `new_evidence` 总量改成"最近突增优先，总量其次"。
-    - P5-6 尚未开工，方向和大致方案见
-      `next_doc/growth_advisor_improvement_plan_v3.md`，进度以
-      `next_doc/growth_advisor_implementation_record.md` 的 P5 章节
-      为准。
+    - P5-6（候选生成排序里的"探索位"，已完成）：新增
+      `GrowthAdvisorConfig.exploration_slot_enabled`（默认关闭）+
+      `exploration_recent_window`（默认 5）。开启后 `run_daily_cycle()`
+      的 `_select_candidates_for_reports()` 会在 `max_reports_per_run`
+      名额里最多留 1 个给"最近几轮报告里没出现过的类别"（`_recent_
+      report_categories()` 读 `list_reports()` 最近若干份算出类别集合，
+      复用 P5-3 的 `_category_of()`），所有类别都已出现过则退化成正常
+      按置信度选，不强行制造探索。选中的探索位候选生成报告时
+      `generate_growth_report(..., is_exploration=True)`，正文/摘要各
+      带一句"这是我们不太确定你会不会感兴趣的新方向"的标注
+      （`GrowthReport.is_exploration` 字段透传给前端）。只动了 Top-N
+      报告生成，未改推送优先级排序——探索位报告仍照常走
+      `notification_min_confidence`/类别静音过滤，不额外强推。至此
+      `growth_advisor_improvement_plan_v3.md` 的 P5-0 ~ P5-6 全部完成，
+      进度以 `next_doc/growth_advisor_implementation_record.md` 的 P5
+      章节为准。
 """
 
 from __future__ import annotations
