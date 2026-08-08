@@ -637,3 +637,66 @@
   weekly_digest`（回访目前只在看板轮询时展示，不会主动推送提醒用户
   "该回访了"）——留给 P4-5（通知策略细化）一并考虑是否要独立于调研
   报告推送再开一条回访提醒通道。
+
+### P4-4：报告质量分级 / 增量刷新
+
+**报告质量分级**：
+- `GrowthAdvisorConfig.report_quality_llm_enabled`（默认 `False`）：
+  独立于 `llm_signal_augment_enabled` 的另一个 opt-in 开关。排查代码时
+  发现一个此前没被记录过的既有 gap——`run_daily_cycle()` 虽然接受
+  `llm_helper` 形参，但调用 `generate_growth_report()` 时从未把它传下去
+  （只有 CLI `/growth report`、API `POST /growth/scan` 里手写的一次性
+  报告生成路径才会用到 LLM），也就是说 cron 自动生成的报告实际上
+  **一直**是模板，即使配置了 `llm_signal_augment_enabled=True` 也不
+  影响报告正文——这不是 bug（默认模板是刻意选择），但此前没有一个显式
+  开关能让用户选择"cron 自动生成时也用 LLM"，现在补上。
+- `run_daily_cycle()` 改为：`report_llm_helper = llm_helper if cfg.
+  report_quality_llm_enabled else None`，只有显式打开才会把 `llm_helper`
+  传给每个候选的 `generate_growth_report()`。
+
+**增量刷新**：
+- `GrowthReport` 新增 `evidence_count_at_generation: int`：
+  `generate_growth_report()` 生成报告时把候选当时的 `evidence_count`
+  存进去，作为"这份报告是基于多少条证据写的"的快照。
+- `reports_needing_refresh(paths, cfg)`：遍历所有候选，只看每个候选
+  **当前挂着的那份报告**（`candidate.report_id`），比较候选当前
+  `evidence_count` 与报告快照的差值；差值达到
+  `report_refresh_min_new_evidence`（默认 3）才计入结果，按新增证据数
+  从多到少排序。纯只读聚合，不修改任何状态。
+- `refresh_growth_report(paths, candidate_id, llm_helper=None)`：内部
+  直接复用 `generate_growth_report()`（新 `report_id`/新文件/新
+  `evidence_count_at_generation` 快照），并把候选的 `report_id` 指向
+  这份新报告；旧报告不删除、不覆盖，仍留在
+  `growth_reports_index.jsonl` 里，只是不再是候选"当前挂着"的那份，
+  之后也不会再出现在 `reports_needing_refresh()` 的结果里。
+- `diagnostics_snapshot()` 新增 `reports_needing_refresh_count` 字段
+  （数量，不含明细，明细走独立端点，与 P4-3 的
+  `pending_followups_count` 处理方式保持一致）。
+- **API**：新增 `GET /growth/reports/refresh_candidates`（返回待刷新
+  报告列表）、`POST /growth/candidates/{id}/report/refresh`（触发刷新；
+  路径特意用 `/report/refresh` 两段而不是单段 `refresh_report`，避免
+  和已有的 `POST /growth/candidates/{id}/{action}` 通用 accept/dismiss
+  路由发生前缀冲突——后者的 `{action}` 是单段路径参数，`report/refresh`
+  两段不会被它提前匹配掉）。
+- **看板**：`client.py` 新增 `growth_reports_refresh_candidates()`/
+  `growth_candidate_refresh_report()`；`app.py` 新增
+  `_render_growth_report_refresh_candidates()`，在回访区块下方渲染
+  "🔄 有 N 份报告可以更新一下了"折叠区块，每行展示"新增证据 X 条
+  （A → B）"和一个"🔄 更新"按钮。
+- **测试**：`tests/test_growth_advisor.py` 新增 `TestReportQualityAndRefresh`
+  （6 个用例：生成报告时快照证据数、待刷新阈值判断、刷新后新旧报告都
+  在历史记录里且候选正确重新指向、未知候选返回 `None`、
+  `run_daily_cycle` 默认不使用 LLM 生成报告、显式打开
+  `report_quality_llm_enabled` 后确实使用 LLM）；加上此前全部用例，
+  `test_growth_advisor.py` + `test_profile.py` 合计 77 项全部通过。
+
+### P4 已知限制 / 留待后续（再更新）
+
+- `reports_needing_refresh()` 只看候选当前挂着的那一份报告，如果同一
+  候选被反复刷新多次，历史上的旧报告会在 `growth_reports_index.jsonl`
+  里越积越多且不会被清理——目前判断这是可接受的（报告文件本身不大，
+  多版本历史反而有留档价值），如果后续觉得需要清理策略，可以再补一个
+  显式的"清理未挂载的旧报告"维护动作，不在本轮范围。
+- 报告刷新目前是用户手动触发（看板点"🔄 更新"），没有像通知节流那样
+  自动决定"要不要主动提醒用户来刷新"——是否需要接入
+  `_maybe_dispatch_notification` 留给 P4-5 一并评估。

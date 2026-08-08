@@ -1164,5 +1164,110 @@ class TestAdoptionFollowup(unittest.TestCase):
             self.assertLess(adj[c.dedupe_key()], 1.0)
 
 
+class TestReportQualityAndRefresh(unittest.TestCase):
+    """P4-4：报告质量分级（report_quality_llm_enabled）+ 增量刷新。"""
+
+    def test_generate_report_snapshots_evidence_count(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = _make_paths(tmp)
+            backlog = ga.GrowthBacklog(paths)
+            c = backlog.add_or_merge(
+                "数据分析", "理由", ["e1", "e2", "e3"],
+                min_evidence_count=3, max_pending=10, dismissed_cooldown_days=30,
+            )
+            report = ga.generate_growth_report(paths, c)
+            self.assertEqual(report.evidence_count_at_generation, 3)
+
+    def test_reports_needing_refresh_respects_threshold(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = _make_paths(tmp)
+            backlog = ga.GrowthBacklog(paths)
+            c = backlog.add_or_merge(
+                "数据分析", "理由", ["e1", "e2", "e3"],
+                min_evidence_count=3, max_pending=10, dismissed_cooldown_days=30,
+            )
+            ga.generate_growth_report(paths, c)
+            # 只多 1 条证据，不达到默认阈值 3，不应该出现在待刷新列表。
+            backlog.add_or_merge(
+                "数据分析", "新理由", ["e1", "e2", "e3", "e4"],
+                min_evidence_count=3, max_pending=10, dismissed_cooldown_days=30,
+            )
+            cfg = GrowthAdvisorConfig()
+            self.assertEqual(ga.reports_needing_refresh(paths, cfg), [])
+
+            # 再多几条，达到阈值，应该出现。
+            backlog.add_or_merge(
+                "数据分析", "新理由2", ["e1", "e2", "e3", "e4", "e5", "e6", "e7"],
+                min_evidence_count=3, max_pending=10, dismissed_cooldown_days=30,
+            )
+            rows = ga.reports_needing_refresh(paths, cfg)
+            self.assertEqual(len(rows), 1)
+            self.assertEqual(rows[0]["candidate_id"], c.candidate_id)
+            self.assertEqual(rows[0]["new_evidence"], 4)
+
+    def test_refresh_growth_report_creates_new_report_and_reattaches(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = _make_paths(tmp)
+            backlog = ga.GrowthBacklog(paths)
+            c = backlog.add_or_merge(
+                "数据分析", "理由", ["e1", "e2", "e3"],
+                min_evidence_count=3, max_pending=10, dismissed_cooldown_days=30,
+            )
+            first = ga.generate_growth_report(paths, c)
+            backlog.add_or_merge(
+                "数据分析", "新理由", ["e1", "e2", "e3", "e4", "e5", "e6"],
+                min_evidence_count=3, max_pending=10, dismissed_cooldown_days=30,
+            )
+            second = ga.refresh_growth_report(paths, c.candidate_id)
+            self.assertNotEqual(second.report_id, first.report_id)
+            self.assertEqual(second.evidence_count_at_generation, 6)
+
+            reloaded = backlog.get(c.candidate_id)
+            self.assertEqual(reloaded.report_id, second.report_id)
+            # 旧报告仍在历史记录里，不会被删除。
+            all_reports = {r.report_id for r in ga.list_reports(paths)}
+            self.assertIn(first.report_id, all_reports)
+            self.assertIn(second.report_id, all_reports)
+            # 已经刷新过，不应该再出现在待刷新列表。
+            self.assertEqual(ga.reports_needing_refresh(paths, GrowthAdvisorConfig()), [])
+
+    def test_refresh_growth_report_unknown_candidate_returns_none(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = _make_paths(tmp)
+            self.assertIsNone(ga.refresh_growth_report(paths, "does-not-exist"))
+
+    def test_run_daily_cycle_uses_template_by_default_even_with_llm_helper(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = _make_paths(tmp)
+            profile = UserProfile()
+            store = _FakeMemoryStore(
+                [_FakeEntry(f"e{i}", "聊到了 pandas 数据分析", [], time.time() - i)
+                 for i in range(4)]
+            )
+            cfg = GrowthAdvisorConfig(min_evidence_count=3)  # report_quality_llm_enabled 默认 False
+            llm_helper = lambda prompt: "# LLM 生成的报告"
+            result = ga.run_daily_cycle(paths, cfg, profile, store, llm_helper=llm_helper)
+            report_ids = result.get("reports") or []
+            self.assertTrue(report_ids)
+            reports_by_id = {r.report_id: r for r in ga.list_reports(paths)}
+            self.assertEqual(reports_by_id[report_ids[0]].source, "template")
+
+    def test_run_daily_cycle_uses_llm_when_quality_enabled(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = _make_paths(tmp)
+            profile = UserProfile()
+            store = _FakeMemoryStore(
+                [_FakeEntry(f"e{i}", "聊到了 pandas 数据分析", [], time.time() - i)
+                 for i in range(4)]
+            )
+            cfg = GrowthAdvisorConfig(min_evidence_count=3, report_quality_llm_enabled=True)
+            llm_helper = lambda prompt: "# LLM 生成的报告"
+            result = ga.run_daily_cycle(paths, cfg, profile, store, llm_helper=llm_helper)
+            report_ids = result.get("reports") or []
+            self.assertTrue(report_ids)
+            reports_by_id = {r.report_id: r for r in ga.list_reports(paths)}
+            self.assertEqual(reports_by_id[report_ids[0]].source, "llm")
+
+
 if __name__ == "__main__":
     unittest.main()

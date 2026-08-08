@@ -5977,6 +5977,62 @@ async def post_growth_keyword_remove(request: Request, topic: str):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@router.get("/growth/reports/refresh_candidates")
+async def get_growth_reports_refresh_candidates(request: Request):
+    """GET /v1/growth/reports/refresh_candidates — 返回"生成之后证据又
+    显著增长、值得提示用户刷新一下"的报告列表（P4-4 增量刷新）。"""
+    _require_owner(request)
+    try:
+        paths = _get_paths_for_request(request)
+        from mini_agent.evolution import growth_advisor as ga
+
+        http_server = getattr(request.app.state, "http_server", None)
+        self_agent = http_server.bridge.agent if http_server else None
+        cfg = getattr(self_agent.cfg, "growth_advisor", None) if self_agent else None
+        if cfg is None:
+            from mini_agent.config.models import GrowthAdvisorConfig
+            cfg = GrowthAdvisorConfig()
+        return {"refresh_candidates": ga.reports_needing_refresh(paths, cfg)}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/growth/candidates/{candidate_id}/report/refresh")
+async def post_growth_candidate_refresh_report(request: Request, candidate_id: str):
+    """POST /v1/growth/candidates/{id}/report/refresh — 用新的（更多的）
+    证据为该候选重新生成一份调研报告，替换候选当前挂着的报告；旧报告仍
+    保留在历史记录里，不会被删除。是否使用 LLM 起草正文由
+    `GrowthAdvisorConfig.report_quality_llm_enabled` 决定，与手动触发的
+    `/growth/scan` 保持一致的判断逻辑。"""
+    _require_owner(request)
+    try:
+        paths = _get_paths_for_request(request)
+        from mini_agent.evolution import growth_advisor as ga
+
+        http_server = getattr(request.app.state, "http_server", None)
+        self_agent = http_server.bridge.agent if http_server else None
+        cfg = getattr(self_agent.cfg, "growth_advisor", None) if self_agent else None
+        llm_helper = None
+        if (
+            self_agent is not None
+            and cfg is not None
+            and getattr(cfg, "report_quality_llm_enabled", False)
+        ):
+            helper = getattr(self_agent, "llm_helper", None)
+            if helper is not None:
+                llm_helper = lambda prompt, _h=helper: _h.ask(prompt)
+        report = ga.refresh_growth_report(paths, candidate_id, llm_helper=llm_helper)
+        if report is None:
+            raise HTTPException(status_code=404, detail="candidate not found")
+        return {"ok": True, "report": report.to_dict()}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @router.get("/growth/reports/{report_id}")
 async def get_growth_report_body(request: Request, report_id: str):
     """GET /v1/growth/reports/{id} — 返回某份调研报告的 Markdown 正文。"""

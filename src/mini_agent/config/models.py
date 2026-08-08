@@ -1660,6 +1660,17 @@ class GrowthAdvisorConfig:
     # 回访卡片；答案（progressed/stalled）反馈进置信度调权，不强制回答。
     followup_review_days: int = 30
 
+    # ── P4-4：报告质量分级 / 增量刷新（growth_advisor_improvement_plan_v2.md
+    # P4-4）────────────────────────────────────────────────────────────
+    # 默认关闭：run_daily_cycle 生成报告正文时用零成本模板。打开后，
+    # cron/手动扫描生成报告时会额外花一次 LLM 调用换取更高信息密度，
+    # 独立于 llm_signal_augment_enabled（那个控制的是扫描阶段的主题归纳，
+    # 不是报告正文）。
+    report_quality_llm_enabled: bool = False
+    # 候选证据数比上一次生成报告时又新增达到这个数量，才提示"可以刷新
+    # 这份报告了"，避免证据每多 1 条就打扰用户。
+    report_refresh_min_new_evidence: int = 3
+
 
 @dataclass
 class ReminderConfig:

@@ -636,6 +636,13 @@ class AgentClient:
     def growth_followup_record(self, candidate_id: str, outcome: str):
         return self._post(f"/growth/followups/{candidate_id}/{outcome}")
 
+    # [next_doc/growth_advisor_improvement_plan_v2.md P4-4] 报告质量分级 / 增量刷新
+    def growth_reports_refresh_candidates(self):
+        return self._get("/growth/reports/refresh_candidates")
+
+    def growth_candidate_refresh_report(self, candidate_id: str):
+        return self._post(f"/growth/candidates/{candidate_id}/report/refresh")
+
     # ── 文件系统（产出物浏览）────────────────────────────────────────
     def fs_list(self, path="."):
         return self._get("/fs/list", params={"path": path})

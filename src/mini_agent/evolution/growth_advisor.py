@@ -148,6 +148,21 @@ P4-3 范围（对应 next_doc/growth_advisor_improvement_plan_v2.md，本次
       加权、封顶 1.0），供同一方向因 dismiss 冷却结束后重新生成候选时
       参考，避免"确实采纳过、只是没空推进"的方向被当成和普通 dismiss
       同等强度的负面信号对待。
+
+P4-4 范围（对应 next_doc/growth_advisor_improvement_plan_v2.md，本次
+新增）——报告质量分级 / 增量刷新：
+    - `GrowthAdvisorConfig.report_quality_llm_enabled`：独立于
+      `llm_signal_augment_enabled` 的另一个 opt-in 开关（默认关闭）——
+      那个控制"扫描阶段要不要多花一次 LLM 归纳新主题"，这个控制
+      "`run_daily_cycle()` 生成调研报告正文时要不要多花一次 LLM 调用换
+      更高信息密度"；默认仍是零成本模板报告，两个开关互不影响。
+    - `GrowthReport.evidence_count_at_generation`：生成报告那一刻候选的
+      证据数快照；`reports_needing_refresh()` 拿候选当前证据数与这个
+      快照比较，差值达到 `report_refresh_min_new_evidence`（默认 3）才
+      认为"值得提示刷新"，避免证据每多 1 条就打扰用户。
+    - `refresh_growth_report()`：为候选重新走一遍 `generate_growth_
+      report()`，生成新报告并把候选的 `report_id` 指向新报告；旧报告
+      不删除、不覆盖，只是不再是候选"当前挂着"的那份。
 """
 
 from __future__ import annotations
@@ -238,6 +253,9 @@ class GrowthReport:
     body_path: str                       # 相对/绝对路径，正文落在 wiki_growth_dir
     created_at: float = field(default_factory=time.time)
     source: str = "template"             # "template" | "llm"
+    # [P4-4] 生成这份报告时候选的证据数快照，供 `reports_needing_refresh()`
+    # 判断"生成之后又新增了多少证据"，决定是否提示用户"要不要更新一下"。
+    evidence_count_at_generation: int = 0
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -1092,6 +1110,7 @@ def generate_growth_report(
         summary=summary,
         body_path=str(report_path),
         source=source,
+        evidence_count_at_generation=candidate.evidence_count,
     )
     _append_jsonl(paths.growth_reports_index_path, report.to_dict())
     GrowthBacklog(paths).attach_report(candidate.candidate_id, report_id)
@@ -1100,6 +1119,59 @@ def generate_growth_report(
 
 def list_reports(paths) -> list[GrowthReport]:
     return [GrowthReport.from_dict(d) for d in _read_jsonl(paths.growth_reports_index_path)]
+
+
+# ────────── [P4-4] 报告质量分级 / 增量刷新 ──────────
+# next_doc/growth_advisor_improvement_plan_v2.md P4-4：默认模板报告保持
+# 零成本，`report_quality_llm_enabled` 是独立于 `llm_signal_augment_enabled`
+# 的另一个 opt-in 开关——后者控制"扫描阶段要不要多花一次 LLM 调用去归纳
+# 新主题"，这个开关控制"生成调研报告正文时要不要多花一次 LLM 调用换取
+# 更高信息密度"，两者互不影响，用户可以只开一个。
+
+# 候选证据数比上一次生成报告时又新增达到这个数量，才提示"可以刷新了"，
+# 避免证据每多 1 条就被打扰。
+_DEFAULT_REPORT_REFRESH_MIN_NEW_EVIDENCE = 3
+
+
+def reports_needing_refresh(paths, cfg=None) -> list[dict]:
+    """返回"生成之后证据又显著增长、值得提示用户刷新一下"的报告列表。
+    只看每个候选**当前挂着的那份报告**（`candidate.report_id`），已经被
+    刷新过的旧报告不会重复出现。纯只读聚合，不做任何写入。"""
+    min_new = getattr(cfg, "report_refresh_min_new_evidence", _DEFAULT_REPORT_REFRESH_MIN_NEW_EVIDENCE) if cfg is not None else _DEFAULT_REPORT_REFRESH_MIN_NEW_EVIDENCE
+    reports_by_id = {r.report_id: r for r in list_reports(paths)}
+    out = []
+    for c in GrowthBacklog(paths).load_all():
+        if not c.report_id:
+            continue
+        report = reports_by_id.get(c.report_id)
+        if report is None:
+            continue
+        new_evidence = c.evidence_count - report.evidence_count_at_generation
+        if new_evidence >= min_new:
+            out.append(
+                {
+                    "candidate_id": c.candidate_id,
+                    "title": c.title,
+                    "report_id": report.report_id,
+                    "evidence_count": c.evidence_count,
+                    "evidence_count_at_generation": report.evidence_count_at_generation,
+                    "new_evidence": new_evidence,
+                }
+            )
+    return sorted(out, key=lambda row: -row["new_evidence"])
+
+
+def refresh_growth_report(
+    paths, candidate_id: str, *, llm_helper: Optional[Callable[[str], str]] = None
+) -> Optional[GrowthReport]:
+    """为一个候选重新生成一份调研报告（新 report_id/新文件），并把候选
+    的 `report_id` 指向新报告——旧报告仍留在 `growth_reports_index.jsonl`
+    历史记录里（不删除、不覆盖），只是不再是候选"当前挂着"的那份，
+    `reports_needing_refresh()` 之后也不会再把它算作"待刷新"。"""
+    candidate = GrowthBacklog(paths).get(candidate_id)
+    if candidate is None:
+        return None
+    return generate_growth_report(paths, candidate, llm_helper=llm_helper)
 
 
 # ────────────────────────── P2：推送节流状态（growth_advisor_state.json） ──────────────────────────
@@ -1332,7 +1404,12 @@ def run_daily_cycle(paths, cfg, profile, memory_store, *, llm_helper: Optional[C
 
     max_reports = getattr(cfg, "max_reports_per_run", 2)
     top = sorted(new_candidates, key=lambda c: -c.confidence)[:max_reports]
-    reports = [generate_growth_report(paths, c) for c in top]
+    # [P4-4] report_quality_llm_enabled 独立于 llm_signal_augment_enabled：
+    # 默认仍是零成本模板报告，只有显式打开这个开关才会在生成报告正文时
+    # 用 llm_helper 换取更高信息密度（同样是 opt-in，不因为"恰好有" llm_helper
+    # 就默认用上）。
+    report_llm_helper = llm_helper if getattr(cfg, "report_quality_llm_enabled", False) else None
+    reports = [generate_growth_report(paths, c, llm_helper=report_llm_helper) for c in top]
 
     candidates_by_id = {c.candidate_id: c for c in top}
     freq = getattr(cfg, "notification_frequency", "daily")
@@ -1514,4 +1591,6 @@ def diagnostics_snapshot(paths, cfg, profile, memory_store) -> dict[str, Any]:
         # 具体列表通过 GET /growth/followups 单独获取（避免每次
         # /growth/summary 都要多做一遍 accepted_at 过滤）。
         "pending_followups_count": len(pending_followups(paths, cfg)),
+        # [P4-4] 待刷新报告数量，明细走 GET /growth/reports/refresh_candidates。
+        "reports_needing_refresh_count": len(reports_needing_refresh(paths, cfg)),
     }

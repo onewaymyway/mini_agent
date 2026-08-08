@@ -3645,6 +3645,7 @@ def render_growth_tab(client: "AgentClient"):
                 )
 
     _render_growth_followups(client)
+    _render_growth_report_refresh_candidates(client)
 
     pending = [c for c in candidates if c.get("status") == "pending"]
     if not pending:
@@ -3676,6 +3677,27 @@ def _render_growth_followups(client: "AgentClient"):
                 st.rerun()
             if cols[2].button("🕒 还没空", key=f"growth_followup_stalled_{c['candidate_id']}"):
                 client.growth_followup_record(c["candidate_id"], "stalled")
+                st.rerun()
+
+
+def _render_growth_report_refresh_candidates(client: "AgentClient"):
+    """[P4-4] 增量刷新：候选证据数比生成报告时又明显增长，提示"要不要
+    更新一下这份报告"，不强制、只提示。"""
+    data = client.growth_reports_refresh_candidates() or {}
+    rows = data.get("refresh_candidates") or []
+    if not rows:
+        return
+    with st.expander(f"🔄 有 {len(rows)} 份报告可以更新一下了"):
+        st.caption("这些方向自从生成报告后，又积累了不少新的相关记忆——要不要重新生成一份？")
+        for row in rows:
+            cols = st.columns([4, 1])
+            cols[0].write(
+                f"**{row.get('title')}** — 新增证据 {row.get('new_evidence')} 条"
+                f"（{row.get('evidence_count_at_generation')} → {row.get('evidence_count')}）"
+            )
+            if cols[1].button("🔄 更新", key=f"growth_refresh_report_{row['candidate_id']}"):
+                with st.spinner("正在重新生成报告..."):
+                    client.growth_candidate_refresh_report(row["candidate_id"])
                 st.rerun()
 
 

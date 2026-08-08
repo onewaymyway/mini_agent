@@ -3,8 +3,9 @@
 > **实施状态（2026-08 更新）**：P4-0（`profile.derived` 命名空间冲突修复）、
 > P4-1（关键词表持久化 + 看板展示 profile / 关键词信息）、P4-2（关键词
 > 自动学习稳定后转正）、P4-3（反馈学习细化：类别级置信度调权 + 采纳后
-> 回访）已完成并落地，细节见 `next_doc/growth_advisor_implementation_record.md`
-> 的 P4 章节。P4-4 ~ P4-7 仍是方向级规划，未开始实施。
+> 回访）、P4-4（报告质量分级 + 增量刷新）已完成并落地，细节见
+> `next_doc/growth_advisor_implementation_record.md` 的 P4 章节。
+> P4-5 ~ P4-7 仍是方向级规划，未开始实施。
 
 - **版本**: v1（草案）
 - **前置文档**: `next_doc/growth_advisor_design.md`（原始方案，P1-P3 已全部完成）、
@@ -281,12 +282,24 @@ API、验收标准），不要直接照这里的一段话开始写代码。
 > stalled}`，看板新增"📮 该回访一下了"折叠区块。细节见
 > `next_doc/growth_advisor_implementation_record.md` P4 章节。
 
-### P4-4：报告质量分级 / 增量更新
+### P4-4：报告质量分级 / 增量更新（**已完成**）
 - 默认模板报告保持零成本，但给一个可选的"质量优先"档位（消耗一次 LLM
   调用换取更高信息密度），呼应已经在用的 `llm_signal_augment_enabled`
   opt-in 模式。
 - 已采纳方向的报告支持"增量刷新"（有新证据积累时提示"要不要更新一下这份
   报告"），而不是一次生成后永远不变。
+
+> **实施记录**：新增独立开关 `GrowthAdvisorConfig.report_quality_llm_
+> enabled`（默认 `False`），只影响 `run_daily_cycle()` 生成报告正文时
+> 是否传入 `llm_helper`，与控制扫描阶段的 `llm_signal_augment_enabled`
+> 完全独立（此前发现 `run_daily_cycle()` 实际上从未把 `llm_helper` 传给
+> `generate_growth_report()`，即使调用方传了 `llm_helper` 也一直只走
+> 模板——这是本轮顺带修的一个既有 gap，现在由新开关显式控制）。增量
+> 刷新新增 `GrowthReport.evidence_count_at_generation` 快照字段、
+> `reports_needing_refresh()`（阈值 `report_refresh_min_new_evidence`，
+> 默认 3）、`refresh_growth_report()`（生成新报告并把候选 `report_id`
+> 指向新报告，旧报告保留在历史记录里不删除）。细节见
+> `next_doc/growth_advisor_implementation_record.md` P4 章节。
 
 ### P4-5：通知策略细化
 - 按主题类型区分推送偏好（不同主题类别可以有不同的 `notification_frequency`）。
