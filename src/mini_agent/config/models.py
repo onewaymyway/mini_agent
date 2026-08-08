@@ -1693,6 +1693,18 @@ class GrowthAdvisorConfig:
     # 方案文档非目标一节。
     topic_category_llm_enabled: bool = False
 
+    # ── P5-6：候选/推送排序里留一个小比例的"探索位"（growth_advisor_
+    # improvement_plan_v3.md P5-6）─────────────────────────────────────
+    # 默认关闭：Top-N 报告生成此前完全是"置信度越高越优先"的纯利用策略，
+    # 这个开关打破了"证据不够强就不推荐"的一贯克制原则，需要显式打开才
+    # 生效。打开后，`max_reports_per_run` 名额里最多留 1 个给"最近几轮
+    # 报告里没出现过的类别"，如果所有类别都出现过，退化成正常按置信度
+    # 选，不强行制造探索。
+    exploration_slot_enabled: bool = False
+    # 判断"某类别最近是否出现过"时，往回看最近多少份报告（不含已归档的
+    # 旧报告）。
+    exploration_recent_window: int = 5
+
 
 @dataclass
 class ReminderConfig:

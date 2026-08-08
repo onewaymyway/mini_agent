@@ -378,6 +378,13 @@ class GrowthReport:
     # 永远显式传入真实的 `candidate.evidence_count`（>= 0），只有反序列化
     # 旧数据时才会落到这个哨兵默认值。
     evidence_count_at_generation: int = -1
+    # [P5-6] 这份报告是否来自"探索位"（growth_advisor_improvement_plan_v3.md
+    # P5-6）——探索位是从达标候选里，为最近几轮报告里没出现过的类别特意
+    # 留出的一个名额，不是置信度/证据最强的那个。默认值 `False` 对旧数据/
+    # 未开启探索位开关时生成的报告完全透明（跟改动前行为一致），只有
+    # `run_daily_cycle` 在 `cfg.exploration_slot_enabled=True` 且确实选中
+    # 了探索位候选时才会显式传 `True`。
+    is_exploration: bool = False
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -1421,12 +1428,18 @@ def generate_growth_report(
     candidate: GrowthCandidate,
     *,
     llm_helper: Optional[Callable[[str], str]] = None,
+    is_exploration: bool = False,
 ) -> GrowthReport:
     """为一个候选生成调研报告并落盘。
 
     P1 默认走规则模板（保证零 LLM 成本也能跑通闭环）；如果调用方传入
     `llm_helper`（例如 cron job 触发时由 Agent 自己的 LLM 会话承担），
     优先用它起草正文，模板兜底失败时的输出。
+
+    `is_exploration`：[P5-6] 调用方（`run_daily_cycle`）判定这份报告来自
+    "探索位"时传 `True`——给正文和摘要各加一句管理预期的标注（"这是我们
+    不太确定你会不会感兴趣的新方向"），避免被当成"我们觉得这个特别
+    重要"。默认 `False`，不影响现有的正常路径。
     """
     report_id = uuid.uuid4().hex[:12]
     slug = f"{_slugify(candidate.title)}-{report_id[:6]}"
@@ -1461,11 +1474,18 @@ def generate_growth_report(
             "建议先按 1~2 周的轻量投入评估是否继续深入，避免一次性重投入。\n"
         )
 
+    summary = candidate.rationale
+    if is_exploration:
+        # [P5-6] 探索位候选：正文和摘要各加一句管理预期的标注，避免被
+        # 当成"我们觉得这个特别重要"。
+        note = "> 这是我们不太确定你会不会感兴趣的新方向，证据还不算多，供参考。\n\n"
+        body = note + body
+        summary = "[探索方向] " + summary
+
     report_path = paths.growth_report_path(slug)
     report_path.parent.mkdir(parents=True, exist_ok=True)
     report_path.write_text(body, encoding="utf-8")
 
-    summary = candidate.rationale
     report = GrowthReport(
         report_id=report_id,
         candidate_id=candidate.candidate_id,
@@ -1475,6 +1495,7 @@ def generate_growth_report(
         body_path=str(report_path),
         source=source,
         evidence_count_at_generation=candidate.evidence_count,
+        is_exploration=is_exploration,
     )
     _append_jsonl(paths.growth_reports_index_path, report.to_dict())
     GrowthBacklog(paths).attach_report(candidate.candidate_id, report_id)
@@ -2018,6 +2039,74 @@ def _maybe_dispatch_notification(
         return None
 
 
+# ────────── [P5-6] Top-N 报告生成里的"探索位" ──────────
+# next_doc/growth_advisor_improvement_plan_v3.md P5-6：候选/推送排序此前
+# 完全是"证据/置信度越高越优先"的纯利用策略，长期跑下去容易强化用户已经
+# 感兴趣的类别，冷门但可能有价值的新方向永远排不上号。这里只做一个轻量
+# 版本，不是完整的 bandit 算法：`max_reports_per_run` 名额里最多留 1 个
+# 给"最近几轮报告里没出现过的类别"，如果所有类别都出现过，退化成正常按
+# 置信度选（不强行制造探索）。默认关闭（`exploration_slot_enabled=False`），
+# 这改变了"证据不够强就不推荐"的一贯克制原则，需要显式打开。
+_DEFAULT_EXPLORATION_RECENT_WINDOW = 5
+
+
+def _recent_report_categories(paths, cfg, profile=None) -> set[str]:
+    """最近几轮报告（默认最近 5 份，见 `cfg.exploration_recent_window`）
+    覆盖过哪些类别——用于判断某个类别算不算"最近已经出现过"。只读
+    `list_reports()`（不含已归档的旧报告，语义上"最近"本来就不该看很久
+    以前的历史），空历史返回空集合（意味着任何类别都算"没出现过"，第一次
+    跑探索位选择时不会因为没有历史数据而拒绝探索）。"""
+    window = getattr(cfg, "exploration_recent_window", _DEFAULT_EXPLORATION_RECENT_WINDOW) if cfg is not None else _DEFAULT_EXPLORATION_RECENT_WINDOW
+    reports = sorted(list_reports(paths), key=lambda r: -r.created_at)[: max(window, 0)]
+    return {_category_of(r.title, profile) for r in reports}
+
+
+def _select_candidates_for_reports(
+    candidates: list[GrowthCandidate], cfg, paths, profile=None
+) -> list[tuple[GrowthCandidate, bool]]:
+    """[P5-6] `run_daily_cycle` 里"选哪些候选生成报告"的入口，返回
+    `(candidate, is_exploration)` 的列表，取代原来单纯的
+    `sorted(...)[:max_reports]`。
+
+    - 开关关闭（默认）或 `max_reports_per_run < 2`（没有多余名额可以留给
+      探索位，硬留会导致"利用位"归零，不是本方案的取舍）时，行为跟改动
+      前完全一致：纯按置信度取 Top-N，`is_exploration` 全部是 `False`。
+    - 开启且名额 >= 2 时：正常按置信度取前 `max_reports - 1` 个作为
+      "利用位"；剩下的候选里，优先选一个类别不在 `_recent_report_
+      categories()` 里的（按原有置信度顺序找第一个符合条件的，不是随机
+      选）；如果剩下的候选一个都没有，或者所有候选的类别都已经在最近几轮
+      出现过，退化成正常按置信度选（保持 Top-N 的总数不变，只是
+      `is_exploration` 都是 `False`）。
+    """
+    max_reports = getattr(cfg, "max_reports_per_run", 2) if cfg is not None else 2
+    ranked = sorted(candidates, key=lambda c: -c.confidence)
+    if max_reports <= 0 or not ranked:
+        return []
+    if not getattr(cfg, "exploration_slot_enabled", False) or max_reports < 2:
+        return [(c, False) for c in ranked[:max_reports]]
+
+    normal_n = max_reports - 1
+    normal = ranked[:normal_n]
+    remaining = ranked[normal_n:]
+    if not remaining:
+        return [(c, False) for c in normal]
+
+    recent_categories = _recent_report_categories(paths, cfg, profile)
+    explore_idx = None
+    for i, c in enumerate(remaining):
+        if _category_of(c.title, profile) not in recent_categories:
+            explore_idx = i
+            break
+
+    if explore_idx is None:
+        # 所有候选类别都已经在最近几轮出现过，不强行制造探索，退化成
+        # 正常按置信度选（跟名额 = normal_n + 1 时的默认行为一致）。
+        return [(c, False) for c in normal] + [(remaining[0], False)]
+
+    explore_pick = remaining[explore_idx]
+    return [(c, False) for c in normal] + [(explore_pick, True)]
+
+
 # ────────────────────────── 每日流程封装（供 cron / CLI 复用） ──────────────────────────
 
 
@@ -2050,14 +2139,20 @@ def run_daily_cycle(paths, cfg, profile, memory_store, *, llm_helper: Optional[C
             kws = list(info.get("keywords") or []) if isinstance(info, dict) else []
             maybe_classify_topic_category(profile, c.title, kws, cfg, llm_helper=llm_helper)
 
-    max_reports = getattr(cfg, "max_reports_per_run", 2)
-    top = sorted(new_candidates, key=lambda c: -c.confidence)[:max_reports]
+    # [P5-6] 默认关闭时，`_select_candidates_for_reports` 的行为跟改动前
+    # 完全一致（纯按置信度取 Top-N）；开启后至多把其中 1 个名额换成
+    # "探索位"（最近几轮报告没出现过的类别）。
+    selected = _select_candidates_for_reports(new_candidates, cfg, paths, profile)
+    top = [c for c, _ in selected]
     # [P4-4] report_quality_llm_enabled 独立于 llm_signal_augment_enabled：
     # 默认仍是零成本模板报告，只有显式打开这个开关才会在生成报告正文时
     # 用 llm_helper 换取更高信息密度（同样是 opt-in，不因为"恰好有" llm_helper
     # 就默认用上）。
     report_llm_helper = llm_helper if getattr(cfg, "report_quality_llm_enabled", False) else None
-    reports = [generate_growth_report(paths, c, llm_helper=report_llm_helper) for c in top]
+    reports = [
+        generate_growth_report(paths, c, llm_helper=report_llm_helper, is_exploration=is_exploration)
+        for c, is_exploration in selected
+    ]
 
     candidates_by_id = {c.candidate_id: c for c in top}
     freq = getattr(cfg, "notification_frequency", "daily")

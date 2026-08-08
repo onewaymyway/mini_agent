@@ -1161,9 +1161,75 @@ removed` 黑名单（`growth_candidate_derive()` 消费时会跳过），
   数据时退化为按总量排序）；连同此前全部用例，`test_growth_advisor.py`
   合计 132 项全部通过。
 
-### P5-6：尚未开工
+### P5-6：候选生成排序里的"探索位"（已完成）
 
-方向和大致方案见 `next_doc/growth_advisor_improvement_plan_v3.md` 第 2
-节对应小节，涉及产品方向判断（是否打破"证据不够强就不推荐"的一贯克制
-原则），不建议在没有明确产品决策的情况下直接实施，即使技术上完全可行。
+- **问题回顾**：`run_daily_cycle()` 里 Top-N 报告生成此前是纯"利用"
+  策略——`sorted(new_candidates, key=lambda c: -c.confidence)[:max_reports]`，
+  证据/置信度越高越优先，长期跑下去容易强化用户历史上感兴趣的类别，
+  证据没那么强但可能有价值的新方向永远排不上号。
+- **产品判断**：方案原文明确这项改动"涉及对'要不要主动打破用户已经
+  建立的信任预期'的产品判断，不是纯技术决策"，不建议在没有明确产品
+  决策前直接实施。落地时采用的解法是**默认关闭 + opt-in 开关**——技术
+  实现和产品判断解耦：代码本身不替用户做"要不要打破克制原则"的决定，
+  只是把这个选项做出来，默认行为（`exploration_slot_enabled=False`）
+  与改动前逐字节一致，是否打开留给后续更明确的产品决策/用户反馈。
+- **实现**（不引入完整 bandit 算法，只做一个轻量版本）：
+  - `GrowthAdvisorConfig` 新增两个字段：`exploration_slot_enabled: bool
+    = False`（总开关）、`exploration_recent_window: int = 5`（判断"某
+    类别最近是否出现过"时往回看的报告数量）。
+  - `_recent_report_categories(paths, cfg, profile=None)`：取
+    `list_reports()`（不含已归档的旧报告——语义上"最近"本来就不该看
+    很久以前的历史）里最新的 `exploration_recent_window` 份，用 P5-3
+    已有的 `_category_of()` 算出每份报告标题对应的类别，返回类别集合。
+    历史为空时返回空集合（意味着任何类别都算"没出现过"，冷启动时不会
+    因为没有历史数据而拒绝探索）。
+  - `_select_candidates_for_reports(candidates, cfg, paths, profile=None)`：
+    取代原来内联的 `sorted(...)[:max_reports]`，返回
+    `list[tuple[GrowthCandidate, bool]]`（候选 + 是否探索位）：
+    - 开关关闭，或 `max_reports_per_run < 2`（没有多余名额可以留给
+      探索位，硬留会导致"利用位"归零，不是本方案的取舍）：行为与
+      改动前完全一致，纯按置信度取 Top-N，全部 `is_exploration=False`。
+    - 开关开启且名额 >= 2：先按置信度取前 `max_reports - 1` 个作为
+      "利用位"；剩下的候选按原有置信度顺序找**第一个**类别不在
+      `_recent_report_categories()` 里的，作为探索位；如果剩下的候选
+      一个都没有，或者所有候选类别都已经在最近几轮出现过，退化成正常
+      按置信度选（`is_exploration` 全部 `False`，Top-N 总数不变）——
+      不强行制造探索，对应方案原文"如果所有类别都出现过，退化成正常
+      按置信度选"。
+  - `GrowthReport` 新增 `is_exploration: bool = False` 字段（默认值对
+    旧数据/未开启开关时生成的报告完全透明，跟 P5-1 的字段迁移检查清单
+    要求一致：明确写清楚老数据在默认值下会被怎么解读——这里默认值
+    `False` 不会触发任何下游批量提示，是中性的）。
+  - `generate_growth_report()` 新增 `is_exploration: bool = False` 参数：
+    为 `True` 时给正文加一句 Markdown 引用块标注（"这是我们不太确定你
+    会不会感兴趣的新方向，证据还不算多，供参考。"），摘要加
+    `[探索方向] ` 前缀——管理用户预期，避免探索位候选被当成"我们觉得
+    这个特别重要"，对应方案原文"报告/推送里可以加一句标注"。不传该
+    参数时行为与改动前完全一致。
+  - `run_daily_cycle()` 改用 `_select_candidates_for_reports()` 选出
+    候选列表，逐个把 `is_exploration` 透传给 `generate_growth_report()`；
+    `api/routes.py` 的报告详情/列表端点直接走 `report.to_dict()` 序列化，
+    新字段自动透出，未额外改动路由代码。
+- **范围取舍（未做的部分）**：方案原文提到"候选生成的 Top-N 排序、
+  通知推送的优先级选择"两处，本次只落地了前者（Top-N 报告生成）——
+  这是方案里给出的主要设计（`max_reports_per_run` 名额分配），后者
+  （`_maybe_dispatch_notification()` 的 `_notification_priority_score`
+  排序）未改动：探索位候选依然会经过现有的
+  `notification_min_confidence` 阈值和类别静音过滤，可能被推送也可能
+  只留在看板，这跟改动前的推送节流逻辑保持一致，不额外强推探索位
+  报告，属于方案"宁可不推、不为了凑数硬推"的克制原则在推送层的自然
+  延续。
+- **测试**：`tests/test_growth_advisor.py` 新增 `TestExplorationSlot`
+  （8 个用例，覆盖：开关默认关闭时行为与改动前完全一致、
+  `max_reports_per_run < 2` 时即便开关打开也不产生探索位、探索位优先
+  选最近没出现过的类别、所有类别都已在最近报告里出现过时退化成正常
+  按置信度选、空候选列表返回空列表、`_recent_report_categories()`
+  正确遵守 `exploration_recent_window` 窗口大小、
+  `generate_growth_report()` 在 `is_exploration=True`/默认两种路径下的
+  正文与摘要标注、`run_daily_cycle()` 端到端验证开关打开时确实能同时
+  产出一份利用位报告和一份探索位报告）；连同此前全部用例，
+  `test_growth_advisor.py` 合计 140 项全部通过。
+
+至此 `growth_advisor_improvement_plan_v3.md` 的 7 个方向（P5-0 ~ P5-6）
+已全部落地。
 

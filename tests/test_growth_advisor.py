@@ -2119,3 +2119,154 @@ class TestFollowupAndRefreshPassiveSignals(unittest.TestCase):
             self.assertEqual(len(rows), 1)
             self.assertIsNone(rows[0]["recent_evidence_delta"])
             self.assertEqual(rows[0]["new_evidence"], 3)
+
+
+class TestExplorationSlot(unittest.TestCase):
+    """P5-6：Top-N 报告生成里的"探索位"（growth_advisor_improvement_plan_v3.md P5-6）。"""
+
+    @staticmethod
+    def _cand(title, confidence, suffix):
+        return ga.GrowthCandidate(
+            candidate_id=f"cand-{suffix}",
+            title=title,
+            rationale="理由",
+            evidence_refs=["e1", "e2", "e3"],
+            evidence_count=3,
+            confidence=confidence,
+        )
+
+    def test_disabled_by_default_behaves_like_plain_top_n(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = _make_paths(tmp)
+            candidates = [
+                self._cand("Python 工程实践", 0.9, "1"),
+                self._cand("项目管理", 0.7, "2"),
+                self._cand("写作与表达", 0.5, "3"),
+            ]
+            cfg = GrowthAdvisorConfig(max_reports_per_run=2)  # exploration_slot_enabled 默认 False
+            selected = ga._select_candidates_for_reports(candidates, cfg, paths)
+            self.assertEqual([c.candidate_id for c, _ in selected], ["cand-1", "cand-2"])
+            self.assertTrue(all(not is_exp for _, is_exp in selected))
+
+    def test_max_reports_less_than_2_no_exploration_even_if_enabled(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = _make_paths(tmp)
+            candidates = [
+                self._cand("Python 工程实践", 0.9, "1"),
+                self._cand("项目管理", 0.7, "2"),
+            ]
+            cfg = GrowthAdvisorConfig(max_reports_per_run=1, exploration_slot_enabled=True)
+            selected = ga._select_candidates_for_reports(candidates, cfg, paths)
+            self.assertEqual([c.candidate_id for c, _ in selected], ["cand-1"])
+            self.assertFalse(selected[0][1])
+
+    def test_explore_slot_prefers_category_not_seen_recently(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = _make_paths(tmp)
+            # 预先造一份"技术类"报告，代表最近已经出现过的类别。
+            old_cand = self._cand("前端与可视化", 0.4, "old")
+            ga.generate_growth_report(paths, old_cand)
+
+            candidates = [
+                self._cand("Python 工程实践", 0.9, "1"),   # 技术类，最高置信度，进常规位
+                self._cand("数据分析", 0.8, "2"),           # 技术类，已在最近类别里，跳过
+                self._cand("项目管理", 0.7, "3"),           # 管理类，未在最近类别里，探索位
+                self._cand("写作与表达", 0.6, "4"),         # 表达类
+            ]
+            cfg = GrowthAdvisorConfig(max_reports_per_run=2, exploration_slot_enabled=True)
+            selected = ga._select_candidates_for_reports(candidates, cfg, paths)
+            self.assertEqual(len(selected), 2)
+            normal_cand, normal_exp = selected[0]
+            explore_cand, explore_exp = selected[1]
+            self.assertEqual(normal_cand.candidate_id, "cand-1")
+            self.assertFalse(normal_exp)
+            self.assertEqual(explore_cand.candidate_id, "cand-3")
+            self.assertTrue(explore_exp)
+
+    def test_explore_slot_degrades_to_plain_top_n_when_all_categories_recent(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = _make_paths(tmp)
+            # 预先让 技术类/管理类/表达类 都在最近的报告里出现过。
+            for title, suffix in [("Python 工程实践", "t"), ("项目管理", "m"), ("写作与表达", "e")]:
+                ga.generate_growth_report(paths, self._cand(title, 0.3, suffix))
+
+            candidates = [
+                self._cand("数据分析", 0.9, "1"),
+                self._cand("系统设计与架构", 0.8, "2"),
+                self._cand("AI/LLM 应用", 0.7, "3"),
+            ]
+            cfg = GrowthAdvisorConfig(max_reports_per_run=2, exploration_slot_enabled=True)
+            selected = ga._select_candidates_for_reports(candidates, cfg, paths)
+            # 所有候选都是"技术类"，且技术类已经在最近报告里出现过，退化成
+            # 正常按置信度选，不强行制造探索。
+            self.assertEqual([c.candidate_id for c, _ in selected], ["cand-1", "cand-2"])
+            self.assertTrue(all(not is_exp for _, is_exp in selected))
+
+    def test_empty_candidates_returns_empty(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = _make_paths(tmp)
+            cfg = GrowthAdvisorConfig(max_reports_per_run=2, exploration_slot_enabled=True)
+            self.assertEqual(ga._select_candidates_for_reports([], cfg, paths), [])
+
+    def test_recent_report_categories_respects_window(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = _make_paths(tmp)
+            # 5 份"管理类"报告，1 份更早的"技术类"报告。窗口=5 时看不到
+            # 最早那份技术类报告。
+            ga.generate_growth_report(paths, self._cand("Python 工程实践", 0.1, "old"))
+            rows = ga._read_jsonl(paths.growth_reports_index_path)
+            rows[0]["created_at"] = time.time() - 999999
+            ga._write_jsonl(paths.growth_reports_index_path, rows)
+            for i in range(5):
+                ga.generate_growth_report(paths, self._cand("项目管理", 0.2, f"m{i}"))
+
+            cfg = GrowthAdvisorConfig(exploration_recent_window=5)
+            cats = ga._recent_report_categories(paths, cfg)
+            self.assertEqual(cats, {"管理类"})
+
+            cfg_wide = GrowthAdvisorConfig(exploration_recent_window=6)
+            cats_wide = ga._recent_report_categories(paths, cfg_wide)
+            self.assertEqual(cats_wide, {"管理类", "技术类"})
+
+    def test_generate_growth_report_marks_exploration(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = _make_paths(tmp)
+            cand = self._cand("项目管理", 0.5, "1")
+            report = ga.generate_growth_report(paths, cand, is_exploration=True)
+            self.assertTrue(report.is_exploration)
+            self.assertTrue(report.summary.startswith("[探索方向] "))
+            body = Path(report.body_path).read_text(encoding="utf-8")
+            self.assertIn("不太确定你会不会感兴趣", body)
+
+            # 默认路径（不传 is_exploration）行为不变。
+            normal_report = ga.generate_growth_report(paths, self._cand("写作与表达", 0.5, "2"))
+            self.assertFalse(normal_report.is_exploration)
+            self.assertFalse(normal_report.summary.startswith("[探索方向]"))
+
+    def test_run_daily_cycle_wires_exploration_slot_end_to_end(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = _make_paths(tmp)
+            profile = UserProfile()
+            now = time.time()
+            entries = [
+                _FakeEntry("e1", "python packaging 问题", ["python"], now - 10),
+                _FakeEntry("e2", "pytest fixture 写法", [], now - 20),
+                _FakeEntry("e3", "又聊了一次 python 打包", ["python"], now - 30),
+                _FakeEntry("e4", "和产品聊了排期", ["项目管理"], now - 40),
+                _FakeEntry("e5", "项目排期又变了", [], now - 50),
+                _FakeEntry("e6", "项目管理的沟通成本", [], now - 60),
+            ]
+            memory_store = _FakeMemoryStore(entries)
+            # 先造一份"技术类"报告，让它算作"最近出现过"的类别，这样
+            # 本轮扫描出的技术类候选即便置信度更高，也应该只占用常规位，
+            # 管理类候选拿到探索位。
+            ga.generate_growth_report(paths, self._cand("前端与可视化", 0.1, "seed"))
+
+            cfg = GrowthAdvisorConfig(
+                min_evidence_count=3, max_reports_per_run=2, exploration_slot_enabled=True,
+                notification_frequency="kanban_only",
+            )
+            result = ga.run_daily_cycle(paths, cfg, profile, memory_store)
+            reports = [ga.get_report_by_id(paths, rid) for rid in result["reports"]]
+            self.assertTrue(any(r.is_exploration for r in reports))
+            self.assertTrue(any(not r.is_exploration for r in reports))
