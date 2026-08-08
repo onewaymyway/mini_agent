@@ -1818,3 +1818,91 @@ class TestTopicCategoryLLM(unittest.TestCase):
             # 同类别历史 dismiss 应该让新主题的初始置信度打折（< 未打折的
             # _confidence_from_evidence(3)）。
             self.assertLess(cand.confidence, ga._confidence_from_evidence(3))
+
+
+class TestEvidenceDistribution(unittest.TestCase):
+    """P5-2：置信度模型引入"证据分布度"（growth_advisor_improvement_plan_v3.md P5-2）。"""
+
+    def test_distribution_multiplier_neutral_without_timestamps(self):
+        # 查不到时间戳（或只有 0/1 条能查到）时退化为中性值 1.0，不惩罚也不加成。
+        self.assertEqual(ga._distribution_multiplier(["e1", "e2", "e3"], {}), 1.0)
+        self.assertEqual(ga._distribution_multiplier(["e1"], {"e1": time.time()}), 1.0)
+
+    def test_distribution_multiplier_concentrated_is_discounted(self):
+        now = time.time()
+        ts = {"e1": now, "e2": now + 10, "e3": now + 20}  # 全部同一天
+        multiplier = ga._distribution_multiplier(["e1", "e2", "e3"], ts)
+        self.assertLess(multiplier, 1.0)
+        self.assertGreaterEqual(multiplier, ga._DISTRIBUTION_MIN_MULTIPLIER)
+
+    def test_distribution_multiplier_spread_is_boosted(self):
+        now = time.time()
+        ts = {"e1": now, "e2": now - 7 * 86400, "e3": now - 14 * 86400}  # 分散在 3 周
+        multiplier = ga._distribution_multiplier(["e1", "e2", "e3"], ts)
+        self.assertGreaterEqual(multiplier, 1.0)
+        self.assertLessEqual(multiplier, ga._DISTRIBUTION_MAX_MULTIPLIER)
+
+    def test_distribution_multiplier_ignores_unknown_refs(self):
+        now = time.time()
+        # e3 没有时间戳记录，应该被忽略，不影响 e1/e2 的分桶计算。
+        ts = {"e1": now, "e2": now}
+        multiplier_with_unknown = ga._distribution_multiplier(["e1", "e2", "e3"], ts)
+        multiplier_without_unknown = ga._distribution_multiplier(["e1", "e2"], ts)
+        self.assertEqual(multiplier_with_unknown, multiplier_without_unknown)
+
+    def test_signal_scan_persists_evidence_timestamps_for_window_entries(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = _make_paths(tmp)
+            now = time.time()
+            entries = [
+                _FakeEntry("e1", "讨论了 python packaging 的坑", ["python"], now - 10),
+                _FakeEntry("e2", "一年前的老记录", ["python"], now - 200 * 86400),  # 窗口外
+            ]
+            store = _FakeMemoryStore(entries)
+            profile = UserProfile()
+            ga.growth_signal_scan(paths, profile, store)
+            ts_map = profile.derived.get("growth_evidence_timestamps", {})
+            self.assertIn("e1", ts_map)
+            self.assertNotIn("e2", ts_map)  # 窗口外的条目不写入时间戳表
+
+    def test_candidate_derive_applies_distribution_multiplier(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = _make_paths(tmp)
+            cfg = GrowthAdvisorConfig(min_evidence_count=3)
+            now = time.time()
+
+            # 场景 A：证据集中在一天内。
+            profile_concentrated = UserProfile()
+            profile_concentrated.derived = {
+                "growth_focus_areas": {"数据分析": ["e1", "e2", "e3"]},
+                "growth_evidence_timestamps": {"e1": now, "e2": now + 5, "e3": now + 10},
+            }
+            produced_a = ga.growth_candidate_derive(paths, cfg, profile_concentrated)
+
+            # 场景 B：证据分散在 3 周内（换一个不冲突的主题避免 backlog 合并）。
+            profile_spread = UserProfile()
+            profile_spread.derived = {
+                "growth_focus_areas": {"系统设计与架构": ["e4", "e5", "e6"]},
+                "growth_evidence_timestamps": {
+                    "e4": now, "e5": now - 7 * 86400, "e6": now - 14 * 86400,
+                },
+            }
+            produced_b = ga.growth_candidate_derive(paths, cfg, profile_spread)
+
+            self.assertEqual(len(produced_a), 1)
+            self.assertEqual(len(produced_b), 1)
+            # 分布更分散的候选置信度应该更高（其余乘子在两个场景下都是 1.0，
+            # 唯一差异就是证据分布度）。
+            self.assertGreater(produced_b[0].confidence, produced_a[0].confidence)
+
+    def test_candidate_derive_without_timestamp_data_unaffected(self):
+        # 向后兼容：不带 growth_evidence_timestamps 的 profile（旧数据/大量既有
+        # 测试用例的写法）行为跟改动前完全一致。
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = _make_paths(tmp)
+            cfg = GrowthAdvisorConfig(min_evidence_count=3)
+            profile = UserProfile()
+            profile.derived = {"growth_focus_areas": {"数据分析": ["e1", "e2", "e3"]}}
+            produced = ga.growth_candidate_derive(paths, cfg, profile)
+            self.assertEqual(len(produced), 1)
+            self.assertEqual(produced[0].confidence, ga._confidence_from_evidence(3))

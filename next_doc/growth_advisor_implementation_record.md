@@ -1066,11 +1066,49 @@ removed` 黑名单（`growth_candidate_derive()` 消费时会跳过），
   操作）；连同 `TestTopicTrend` 类新增的 4 个用例，`test_growth_advisor.py`
   合计 115 项全部通过。
 
-### P5-2/P5-4/P5-6：尚未开工
+### P5-2：置信度模型引入"证据分布度"（已完成）
+
+- **问题回顾**：`_confidence_from_evidence()` 只看 `len(evidence_refs)`，
+  "一天内集中出现 5 条"和"5 周内每周出现 1 条"权重完全一样，后者更像
+  持续关注。
+- **实现**：
+  - `_distribution_multiplier(evidence_refs, evidence_timestamps)`：
+    按证据对应记忆条目的时间戳分桶（天粒度），`spread_ratio =
+    distinct_day_buckets / entries_with_known_timestamp`，线性映射到
+    `[_DISTRIBUTION_MIN_MULTIPLIER=0.85, _DISTRIBUTION_MAX_MULTIPLIER=
+    1.1]`——全部集中在一天打折，分布在多天加成。跟 `_feedback_
+    multiplier`/`_category_feedback_multiplier`/`_followup_adjustment`
+    同款"乘法叠加"结构，接入 `growth_candidate_derive()` 的乘子链
+    （`topic × category × followup × distribution`）。
+  - **未改动 `evidence_refs` 结构**（方案原文明确的风险点：大量既有
+    测试直接传字符串列表 `["e1","e2","e3"]`）：时间戳单独存一份
+    `profile.derived["growth_evidence_timestamps"]`
+    （`{entry_id: created_at}`），由 `growth_signal_scan()` 在当前
+    扫描窗口（`window_days`）内的 entries 上整体覆盖式写入（不是
+    增量 merge），天然跟随窗口有界，不会无限增长；早于窗口的旧证据
+    本来就已经不在这个窗口里。
+  - **保底行为**：查不到时间戳的 entry_id（比如证据是很久以前的扫描
+    留下、后来滚出窗口的旧记忆）直接忽略，不参与分布计算；一个主题
+    的证据里"有已知时间戳的"少于 2 条时（含全部查不到的情况），
+    `_distribution_multiplier` 直接返回中性值 `1.0`——没有分布信息
+    时不惩罚也不加成，这是保底行为，不是数据缺陷；不传
+    `growth_evidence_timestamps` 的 profile（旧数据、以及改动前的
+    全部既有测试用例）行为与改动前完全一致。
+- **测试**：`tests/test_growth_advisor.py` 新增 `TestEvidenceDistribution`
+  （7 个用例：无时间戳数据/单条时间戳退化为中性值 1.0、证据集中一天
+  内打折、证据分散多周加成、未知 entry_id 被安全忽略且不影响其余证据
+  的分桶计算、`growth_signal_scan` 只把窗口内 entries 的时间戳写入
+  `growth_evidence_timestamps`（窗口外的不写入）、`growth_candidate_
+  derive` 在证据分布更分散时给出更高置信度（对照组：其余乘子相同，
+  唯一差异是分布度）、不带时间戳数据的 profile 置信度与改动前完全
+  一致）；连同此前全部用例，`test_growth_advisor.py` 合计 122 项
+  全部通过。
+
+### P5-4/P5-6：尚未开工
 
 方向和大致方案见 `next_doc/growth_advisor_improvement_plan_v3.md` 第 2
 节对应小节；`growth_feedback_ledger.jsonl` 的分层存储（P5-0 剩余部分）
-建议跟 P5-2（置信度模型改动，同样要动 `evidence_refs`/`focus_areas`
-数据结构）放在一起规划再决定顺序，避免两次改动互相踩脚。P5-6 留到
-最后（涉及产品方向判断，不是纯技术决策）。
+可以跟 P5-4（回访/报告刷新接入被动信号，同样会用到 P5-2 刚落地的时间戳
+数据）放在一起规划再决定顺序。P5-6 留到最后（涉及产品方向判断，不是
+纯技术决策）。
 

@@ -254,7 +254,14 @@ P5 范围（对应 next_doc/growth_advisor_improvement_plan_v3.md，本次
         不接入 `run_daily_cycle()` 自动触发，留给人工/未来月度 cron。
       - `growth_feedback_ledger.jsonl` 的分层存储（消费方全是累计统计
         语义，需要先转聚合计数再归档，改动量级更大）延后到下一轮。
-    - P5-2/P5-4/P5-6 尚未开工，方向和大致方案见
+    - P5-2（置信度模型引入"证据分布度"，已完成）：新增
+      `_distribution_multiplier()`，按证据对应记忆条目的时间戳分桶
+      （天粒度）计算分布度，接入 `growth_candidate_derive()` 的乘子
+      叠加链（`topic × category × followup × distribution`）；时间戳
+      单独存 `profile.derived["growth_evidence_timestamps"]`，由
+      `growth_signal_scan()` 在扫描窗口内整体覆盖式写入，不改
+      `evidence_refs` 本身的 `list[str]` 结构。
+    - P5-4/P5-6 尚未开工，方向和大致方案见
       `next_doc/growth_advisor_improvement_plan_v3.md`，进度以
       `next_doc/growth_advisor_implementation_record.md` 的 P5 章节
       为准。
@@ -723,6 +730,48 @@ def _followup_adjustment_by_dedupe_key(paths) -> dict[str, float]:
     return adjustments
 
 
+# ────────── [P5-2] 置信度模型引入"证据分布度" ──────────
+# next_doc/growth_advisor_improvement_plan_v3.md P5-2：`_confidence_from_
+# evidence()` 只看证据条数，不看证据出现的时间分布——"一天内集中出现 5
+# 条"和"5 周内每周出现 1 条"权重完全一样，但后者更像持续关注，前者更可能
+# 只是某一天恰好聊得比较多。这里按跟 `_feedback_multiplier` 同款的"乘法
+# 叠加"结构新增一个 `_distribution_multiplier`，分布越分散乘子越接近/
+# 超过 1.0，全部集中在一两天则打折。
+#
+# 数据依赖：`evidence_refs` 本身只存 entry_id（不改这个结构，保持跟现有
+# 大量测试用例里直接传字符串列表 `["e1", "e2", "e3"]` 的假设兼容），时间
+# 戳单独存一份 `profile.derived["growth_evidence_timestamps"]`
+# （`{entry_id: created_at}`），由 `growth_signal_scan()` 在扫描窗口内的
+# entries 上顺带建好、每次扫描整体覆盖（不做增量合并，天然跟随
+# `window_days` 有界，不会无限增长）。查不到时间戳的 entry_id（比如证据
+# 是很久以前的扫描留下来、早就滚出当前窗口的旧记忆）直接忽略，不参与
+# 分布计算；如果一个主题的证据全部查不到时间戳，乘子退化为中性值 1.0
+# （没有分布信息时不惩罚，也不加成——这是保底行为，不是数据缺陷）。
+_DISTRIBUTION_MIN_MULTIPLIER = 0.85
+_DISTRIBUTION_MAX_MULTIPLIER = 1.1
+
+
+def _distribution_multiplier(
+    evidence_refs: list[str], evidence_timestamps: dict[str, float]
+) -> float:
+    """按证据对应记忆条目的时间戳分桶（天粒度），分布越分散乘子越高。
+
+    `spread_ratio = distinct_day_buckets / entries_with_known_timestamp`：
+    全部证据落在同一天 → ratio 趋近 `1/n`（打折）；每条证据都落在不同的
+    天 → ratio = 1.0（加成）。只有 1 条有时间戳的证据时，分布这件事本身
+    没有意义，直接返回中性值 1.0，不参与打折/加成。
+    """
+    known_ts = [evidence_timestamps[ref] for ref in evidence_refs if ref in evidence_timestamps]
+    if len(known_ts) < 2:
+        return 1.0
+    day_buckets = {int(ts // 86400) for ts in known_ts}
+    spread_ratio = len(day_buckets) / len(known_ts)
+    multiplier = _DISTRIBUTION_MIN_MULTIPLIER + (
+        _DISTRIBUTION_MAX_MULTIPLIER - _DISTRIBUTION_MIN_MULTIPLIER
+    ) * spread_ratio
+    return round(multiplier, 3)
+
+
 # ────────── [P4-5] 通知策略细化：类别级推送偏好 + 重要程度分级 ──────────
 # next_doc/growth_advisor_improvement_plan_v2.md P4-5。两条独立能力：
 #   1. 类别静音：某个类别的候选完全不主动推送（仍在看板展示），
@@ -1187,6 +1236,15 @@ def growth_signal_scan(
     derived = dict(getattr(profile, "derived", {}) or {})
     derived["growth_focus_areas"] = hits
     derived["growth_focus_areas_updated_at"] = time.time()
+    # [P5-2] 证据分布度乘子需要的时间戳数据，只覆盖当前扫描窗口内的
+    # entries——整体覆盖（不是增量 merge），天然跟随 window_days 有界，
+    # 不会无限增长；早于窗口的旧证据本来也已经不在这里，`_distribution_
+    # multiplier` 查不到时间戳时会安全地退化为中性乘子 1.0。
+    derived["growth_evidence_timestamps"] = {
+        (getattr(e, "entry_id", "") or ""): getattr(e, "created_at", 0)
+        for e in recent_entries
+        if getattr(e, "entry_id", "")
+    }
     profile.derived = derived
     return hits
 
@@ -1311,6 +1369,10 @@ def growth_candidate_derive(paths, cfg, profile) -> list[GrowthCandidate]:
     # + 采纳后回访调节（stalled/progressed），三者相乘得到最终 multiplier。
     category_dismiss_counts = _category_dismiss_counts(paths, profile)
     followup_adjustments = _followup_adjustment_by_dedupe_key(paths)
+    # [P5-2] 由 growth_signal_scan() 顺带建好，本轮候选生成直接查表使用。
+    evidence_timestamps: dict[str, float] = dict(
+        (getattr(profile, "derived", {}) or {}).get("growth_evidence_timestamps", {})
+    )
 
     produced: list[GrowthCandidate] = []
     # 按证据数从多到少处理，保证 max_pending 限额下优先生成信号更强的候选
@@ -1324,7 +1386,11 @@ def growth_candidate_derive(paths, cfg, profile) -> list[GrowthCandidate]:
             category_dismiss_counts.get(_category_of(topic, profile), 0)
         )
         followup_multiplier = followup_adjustments.get(key, 1.0)
-        multiplier = round(topic_multiplier * category_multiplier * followup_multiplier, 3)
+        distribution_multiplier = _distribution_multiplier(refs, evidence_timestamps)
+        multiplier = round(
+            topic_multiplier * category_multiplier * followup_multiplier * distribution_multiplier,
+            3,
+        )
         cand = backlog.add_or_merge(
             title=topic,
             rationale=rationale,
