@@ -1404,6 +1404,20 @@ class HttpServer:
                 from mini_agent.errors import log_exception
                 log_exception(_mini_agent_exc, where='mini_agent.api.server.HttpServer._build_autonomous_loop.ensure_wiki_utility_audit_job')
 
+            # wiki/quarantine.py + wiki/quarantine_repair.py：daemon 启动时
+            # 补注册 sys:wiki_quarantine_repair（全量扫描 wiki/ 发现解析
+            # 失败页面记入隔离区，并对已知格式问题尝试自动修复，零 LLM
+            # 成本，本地回调），同构写法见上面 ensure_wiki_utility_audit_job。
+            try:
+                from mini_agent.wiki.quarantine_repair import (
+                    ensure_wiki_quarantine_repair_job,
+                )
+
+                ensure_wiki_quarantine_repair_job(paths, cron_scheduler)
+            except Exception as _mini_agent_exc:
+                from mini_agent.errors import log_exception
+                log_exception(_mini_agent_exc, where='mini_agent.api.server.HttpServer._build_autonomous_loop.ensure_wiki_quarantine_repair_job')
+
             # 自诊断闭环深化计划 P1：daemon 启动时补注册
             # sys:improvement_backlog_merge（汇总 self_maintenance/
             # gap_scanner/decommission/self_model 四路信号为排序过的改进

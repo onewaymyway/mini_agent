@@ -173,6 +173,8 @@ query
 | `/wiki stats` | 内容来源分布统计（P0），展示 `by_type`/`by_entity_type`/`by_source_kind`/`by_knowledge_state`（O4）以及抽取批次充分性指标（E2 方案B） |
 | `/wiki promotion` | wiki 转正为主索引的三项标准（P4）当前达成情况：内容占比连续达标天数、校验无错误连续天数、检索 A/B 命中率对比，末尾给出仅供参考的一句话结论——**该命令只读、不触发任何切换动作** |
 | `/wiki lifecycle-scan [--days N]` | O4：手动触发一次知识生命周期巡检（`stale_candidate_scan()`），把长期未被验证过的 `fresh` 页面标记为 `stale`。默认阈值取 `MemoryConfig.lifecycle_stale_threshold_days`（90 天），只做标记，默认不影响检索排序 |
+| `/wiki fallback-cleanup [--days N]` | 归并/标记 `session-facts` 兜底页里长期未被合并的 fact（见 §十一·5 新增子命令小节） |
+| `/wiki quarantine [list\|repair]` | 解析失败页面隔离区（见 §十四）：`list`（默认）只读展示当前 pending/needs_human 记录；`repair` 手动触发一轮"全量扫描 + 尝试修复"，跟 `sys:wiki_quarantine_repair` cron job 是同一份逻辑 |
 
 `/wiki <page-id>` 找不到 backlinks 时会提示先跑 `/wiki rebuild`，而不是静默显示"无 backlinks"——backlinks 只存在于 `_index/` 里，页面本身刚写入还没重建索引时是看不到的。
 
@@ -201,6 +203,7 @@ query
 | `_index/promotion_log.jsonl` | P4 每日快照（占比、校验错误数） | 是——删除只是重新开始累积观测天数，不丢知识本身 |
 | `_index/search_ab_log.jsonl` | P4 检索 A/B 对比样本 | 是——删除只是重新开始累积样本，不丢知识本身 |
 | `_index/topics_reconsolidation_log.jsonl` | O3 topic 再巩固事件日志（追加次数、是否触发 `needs_review`） | 是——删除只是重新开始累积观测，不丢已追加进 topic 正文的内容 |
+| `_quarantine.json` | §十四：解析失败页面的问题记录（路径、错误信息、修复状态/尝试次数） | 是——纯诊断/修复调度状态，删除只是丢失历史检测记录，下次 `sys:wiki_quarantine_repair` 扫描会重新发现仍然存在的问题页面 |
 | `decision_candidates_pending.jsonl`（workdir 根目录，非 wiki/ 下） | compact 提炼出的决策候选，尚未经巩固循环批量落盘 | 否——删除会丢失尚未处理的候选（不影响已落盘的 decisions/*.md），见九·2 |
 | `extraction_cursor.json`（workdir 根目录） | E1 独立抽取触发器的 `last_extracted_index` 游标 | 否——删除会导致下次扫描重新覆盖已抽取过的历史区间，产生重复抽取（不会丢已落盘知识，只是浪费一次 LLM 调用） |
 | `extraction_trigger_log.jsonl`（workdir 根目录） | E1 规则扫描命中记录，供校准触发阈值 | 是——删除只是重新开始累积观测样本 |
@@ -663,6 +666,56 @@ monthly_trend_retrospective.py` 新增 cron job
 运行（无上一轮快照可比）时增长/变化会把全量值当作"从无到有"展示，
 属于预期行为。详见
 `next_doc/external_knowledge_feedback_loop_improvement_plan.md` P5。
+
+## 十四、wiki 问题页面检测与自动修复（本轮新增）
+
+`wiki/stats.py::compute_stats()` / `wiki/indexer.py::build_index()`
+遇到解析失败的页面（frontmatter 缺字段、`links` 格式不对等
+`PageParseError`）此前只是 `log_exception` 后跳过——问题数据会一直
+留在磁盘上，每次扫描都重新触发同一条异常日志，没有持久化记录，也没有
+任何自动修复机制。
+
+`wiki/quarantine.py`（发现 + 记录）与 `wiki/quarantine_repair.py`
+（修复策略 + 修复循环）补上这两块空白：
+
+- **发现与记录**：`quarantine.record_issue()` 在解析失败时写一条
+  `QuarantineRecord`（页面路径、错误类型/信息、状态、检测次数、修复
+  尝试次数）到 `.agent/wiki/_quarantine.json`（整表 JSON，同类小文件
+  参考 `usage_stats.json` 的写法），同一页面重复检测到同一问题只合并
+  计数，不重复建记录。`compute_stats()`/`build_index()` 的解析失败
+  分支都已接入。`quarantine.scan_and_record()` 提供一个独立的全量扫描
+  入口（这是因为 `build_index()` 不是每次都会被调用，"发现问题"这个
+  机制需要一个稳定的周期性触发点），扫描时还会对隔离区里已有记录、但
+  现在能正常解析的页面做"自愈确认"（可能是人工手动修好的）并自动
+  摘除记录。
+- **自动修复**：`quarantine_repair.py` 用一个显式的修复策略注册表
+  （`_FIXERS`），只处理"确定是数据笔误、改法唯一"的情况，不做任何
+  语义猜测。首批两条策略均来自真实故障（`frontmatter.links` 写成裸
+  字符串列表，如 `links: [tushare]` 而不是
+  `links: [{target: tushare}]`）：`links` 列表内的字符串项 →
+  `{"target": 字符串}`；`links` 整个字段没包成列表 → 包一层。每次
+  修复后都会重新完整 `parse_page()` 验证，确认真的能通过校验才落盘，
+  半吊子的修复（改完还是解析失败）不写文件。单个页面自动修复尝试超过
+  `DEFAULT_MAX_REPAIR_ATTEMPTS`（默认 5 次）仍未成功，状态转
+  `needs_human`，不再参与后续自动修复循环，避免对一份自动策略解决不了
+  的坏数据每个 cron 周期都重复尝试。
+- **cron 接入**：`sys:wiki_quarantine_repair`（`interval:21600`，每 6
+  小时一次，零 LLM 成本，本地回调 handler，默认 enabled）跑
+  "全量扫描 + 对 pending 记录逐个尝试修复"的完整循环，即
+  `run_quarantine_repair_cycle()`。daemon 启动时在 `api/server.py`
+  里补注册（跟 `sys:wiki_utility_audit` 同构写法）。
+- **CLI**：`/wiki quarantine`（等价于 `/wiki quarantine list`）展示
+  当前 pending/needs_human 记录；`/wiki quarantine repair` 手动触发
+  一轮扫描+修复，跟 cron job 跑的是同一份逻辑，用于不想等定时任务、
+  想立刻看到修复结果的场景。`needs_human` 状态的记录人工改好对应文件
+  后，下次扫描（cron 或手动 `repair`）会自动确认并摘除，不需要额外的
+  "标记已处理"操作。
+
+当前局限：修复策略目前只覆盖 `links` 字段的两类已知笔误，其它类型的
+`PageParseError`（比如缺失必填字段、YAML 语法本身损坏）会被记录但暂时
+没有对应的自动修复策略，停在 `pending` 状态直到人工介入或后续版本
+补充新的修复策略；YAML 语法损坏这类"没有确定改法"的问题被有意排除在
+自动修复范围之外，不做猜测性修复。
 
 ## 相关文档
 

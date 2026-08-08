@@ -130,6 +130,16 @@ def compute_stats(paths: AgentPaths) -> WikiStats:
         except Exception as _mini_agent_exc:
             from mini_agent.errors import log_exception
             log_exception(_mini_agent_exc, where='mini_agent.wiki.stats.compute_stats')
+            # 解析失败的页面除了打日志，还记一条持久化的问题记录——
+            # 日志会被淹没在其它输出里没人看，隔离区记录会被
+            # sys:wiki_quarantine_repair 周期性捞出来尝试自动修复，
+            # 见 wiki/quarantine.py。这里的记录动作本身失败也不该
+            # 拖垮统计主流程，单独 try/except。
+            try:
+                from mini_agent.wiki.quarantine import record_issue
+                record_issue(paths, md_path, _mini_agent_exc)
+            except Exception:
+                pass
             continue
         stats.total_pages += 1
         stats.by_type[page.type] = stats.by_type.get(page.type, 0) + 1

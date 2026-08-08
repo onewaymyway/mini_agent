@@ -37,7 +37,8 @@ def handle_wiki_cmd(args: list[str], agent=None) -> None:
             "Usage: /wiki <page-id> | /wiki list [--type T] | "
             "/wiki search <query> [--deep] | /wiki rebuild [--full] | "
             "/wiki stats | /wiki promotion | /wiki lifecycle-scan [--days N] | "
-            "/wiki gap-scan [--max-results N] [--dispatch] | /wiki fallback-cleanup [--days N]"
+            "/wiki gap-scan [--max-results N] [--dispatch] | /wiki fallback-cleanup [--days N] | "
+            "/wiki quarantine [list|repair]"
         )
         return
 
@@ -60,6 +61,8 @@ def handle_wiki_cmd(args: list[str], agent=None) -> None:
         _handle_gap_scan(rest, agent)
     elif sub == "fallback-cleanup":
         _handle_fallback_cleanup(rest, agent)
+    elif sub == "quarantine":
+        _handle_quarantine(rest, agent)
     else:
         _handle_show(sub, agent)
 
@@ -597,3 +600,77 @@ def _handle_fallback_cleanup(rest: list[str], agent) -> None:
         for e in report.errors[:5]:
             R.console.print(f"[dim]  - {e}[/dim]")
 
+
+def _handle_quarantine(rest: list[str], agent) -> None:
+    """/wiki quarantine [list|repair] —— 解析失败页面隔离区（问题数据
+    检测与自动修复机制，见 wiki/quarantine.py + wiki/quarantine_repair.py）。
+
+    不传子命令等价于 list：展示当前隔离区里的 pending/needs_human 记录，
+    不做任何写操作。repair 手动触发一轮"全量扫描 + 尝试修复"，跟
+    sys:wiki_quarantine_repair cron job 跑的是同一份逻辑，用于不想等
+    定时任务、想立刻看到修复结果的场景。
+    """
+    paths = _get_paths(agent)
+    if paths is None:
+        return
+
+    action = rest[0] if rest else "list"
+
+    if action == "repair":
+        from mini_agent.wiki.quarantine_repair import run_quarantine_repair_cycle
+
+        report = run_quarantine_repair_cycle(paths)
+        R.print_success(
+            f"隔离区修复完成：扫描 {report.scanned} 篇"
+            f"（新发现问题 {report.newly_quarantined} 篇，自愈确认 {report.auto_resolved} 篇）；"
+            f"尝试修复 {report.repair_attempted} 篇，成功 {report.repaired} 篇，"
+            f"仍失败 {report.still_failing} 篇，转人工 {report.needs_human} 篇"
+            + (f"，{report.skipped_missing_file} 篇文件已不存在" if report.skipped_missing_file else "")
+        )
+        if report.errors:
+            R.console.print("[dim]扫描过程中的附带问题：[/dim]")
+            for e in report.errors[:5]:
+                R.console.print(f"[dim]  - {e}[/dim]")
+        return
+
+    if action != "list":
+        R.print_error("用法：/wiki quarantine [list|repair]")
+        return
+
+    from mini_agent.wiki.quarantine import STATUS_NEEDS_HUMAN, STATUS_PENDING, load_quarantine
+
+    records = load_quarantine(paths)
+    pending = [r for r in records.values() if r.status == STATUS_PENDING]
+    needs_human = [r for r in records.values() if r.status == STATUS_NEEDS_HUMAN]
+    repaired = [r for r in records.values() if r.status not in (STATUS_PENDING, STATUS_NEEDS_HUMAN)]
+
+    if not records:
+        R.console.print("[dim]隔离区当前是空的，没有检测到解析失败的页面。[/dim]")
+        return
+
+    R.console.print(
+        f"隔离区：{len(pending)} 篇待修复，{len(needs_human)} 篇已转人工处理，"
+        f"{len(repaired)} 篇历史已修复"
+    )
+
+    if pending:
+        R.console.print("\n[bold]待修复（下次 cron 会自动尝试）[/bold]")
+        for r in sorted(pending, key=lambda x: -x.last_seen_at):
+            R.console.print(
+                f"  [dim]{r.page_path}[/dim]\n"
+                f"    {r.error_type}: {r.error_message[:120]}\n"
+                f"    已检测 {r.detect_count} 次，已尝试修复 {r.repair_attempts} 次"
+            )
+
+    if needs_human:
+        R.console.print("\n[bold yellow]需要人工处理（自动修复尝试已耗尽或没有匹配策略）[/bold yellow]")
+        for r in sorted(needs_human, key=lambda x: -x.last_seen_at):
+            R.console.print(
+                f"  [dim]{r.page_path}[/dim]\n"
+                f"    {r.error_type}: {r.error_message[:120]}\n"
+                f"    最近一次尝试失败原因：{r.last_attempt_error}"
+            )
+        R.console.print(
+            "[dim]人工改好对应文件后，下次扫描（cron 或 /wiki quarantine repair）"
+            "会自动确认并把记录标记为已修复。[/dim]"
+        )

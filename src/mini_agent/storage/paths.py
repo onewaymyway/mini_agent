@@ -213,6 +213,16 @@ class AgentPaths:
         只做追加写，不做读改写，不需要跨调用方的独占锁。"""
         return self.wiki_dir / "usage_log.jsonl"
 
+    @property
+    def wiki_quarantine_path(self) -> Path:
+        """<project_root>/.agent/wiki/_quarantine.json — 解析失败页面的
+        问题记录（`wiki/quarantine.py`）：`page_path -> QuarantineRecord`
+        的整表 JSON（同类小文件参考 `usage_stats.json` 的写法，预期条目
+        数量少，整表重写足够）。`wiki/stats.py::compute_stats()` /
+        `wiki/indexer.py::build_index()` 遇到解析失败的页面时写入一条
+        记录；`sys:wiki_quarantine_repair` cron job 周期性尝试修复。"""
+        return self.wiki_dir / "_quarantine.json"
+
     # ── 主动推荐 / 日报 / 决策画像（次日议程改进计划）───────────────────────
 
     # ── Workflow Session（workflow机制改进计划.md P1）───────────────────────

@@ -198,6 +198,22 @@ _BUILTIN_JOBS: list[dict] = [
         "enabled": True,
     },
     {
+        # wiki/quarantine.py + wiki/quarantine_repair.py：全量扫描 wiki/
+        # 发现解析失败的页面，记入隔离区 _quarantine.json，并对已知的
+        # 格式性问题（frontmatter.links 写成裸字符串等）尝试自动修复。
+        # 零 LLM 成本，本地回调（ensure_wiki_quarantine_repair_job 在
+        # daemon 启动时通过 register_local_handler 注册，这里的
+        # task_template 字段不会被用到，仅为跟其它 job 的记录格式保持
+        # 一致，方便 /cron list 展示描述）。
+        "id": "sys:wiki_quarantine_repair",
+        "name": "wiki 问题页面自动修复",
+        "schedule": "interval:21600",
+        "description": "扫描 wiki/ 记录解析失败的页面并尝试自动修复已知格式问题（每 6 小时）",
+        "task_template": "",
+        "tags": ["maintenance", "wiki"],
+        "enabled": True,
+    },
+    {
         "id": "sys:workdir_sync",
         "name": "工作区知识整合",
         "schedule": "interval:3600",

@@ -34,6 +34,13 @@ from mini_agent.wiki.graph import GraphIndex
 from mini_agent.wiki.parser import WikiPage, parse_page
 from mini_agent.wiki.validator import ValidationReport, validate_pages
 
+# [顺手修复，与本次隔离区改动无关] 全文件多处用的是 `_atomic_write_json`
+# 这个名字，但此前只导入了不带下划线的 `atomic_write_json`，从未定义过
+# 别名——`build_index()` 一旦真正写到索引落盘那几行就会 NameError。
+# `tests/test_wiki_index_reuse.py` 里 4 个测试因此从最初的代码起就是
+# 失败的（在本次改动引入的隔离区功能之前就已经这样，非本次改动导致）。
+_atomic_write_json = atomic_write_json
+
 _MANIFEST_NAME = "_manifest.json"
 _STOPWORDS = {
     "the", "a", "an", "is", "are", "was", "were", "of", "to", "in", "on",
@@ -128,6 +135,11 @@ def build_index(paths: AgentPaths, *, incremental: bool = True) -> IndexResult:
             from mini_agent.errors import log_exception
             log_exception(exc, where='mini_agent.wiki.indexer.build_index')
             result.parse_errors.append(f"{md_path}: {exc}")
+            try:
+                from mini_agent.wiki.quarantine import record_issue
+                record_issue(paths, md_path, exc)
+            except Exception:
+                pass
             continue
         result.pages.append(page)
 
