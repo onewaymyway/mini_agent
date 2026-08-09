@@ -5854,8 +5854,9 @@ async def post_growth_scan(request: Request):
         # 权限问题等）不覆盖原始异常，只做尽力而为。
         try:
             mgr.save()
-        except Exception:
-            pass
+        except Exception as save_exc:
+            from mini_agent.errors import log_exception
+            log_exception(save_exc, where="mini_agent.api.routes.post_growth_scan.fallback_save")
         raise HTTPException(status_code=500, detail=str(e))
 
 

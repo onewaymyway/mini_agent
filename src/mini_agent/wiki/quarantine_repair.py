@@ -108,7 +108,12 @@ def _llm_repair_page_text(
     )
     try:
         text = llm_helper.ask(prompt, system=_LLM_REPAIR_SYSTEM_PROMPT)
-    except Exception:  # noqa: BLE001 - LLM 调用失败（超时/额度/网络）当作这次修复未成功
+    except Exception as exc:  # LLM 调用失败（超时/额度/网络）当作这次修复未成功，
+        # 但不能静默吞掉——按项目规范记错误日志，供排查 LLM 调用为什么失败
+        # （跟 growth_signal_scan 里 LLM 增强路径的 log_exception 用法一致）。
+        from mini_agent.errors import log_exception
+
+        log_exception(exc, where="mini_agent.wiki.quarantine_repair._llm_repair_page_text")
         return None
     if not text or not text.strip():
         return None
