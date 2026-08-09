@@ -301,6 +301,7 @@ POST /v1/growth/keywords/{topic}/restore                 # 恢复一个被隐藏
 GET  /v1/growth/reports/refresh_candidates               # "值得刷新"的报告列表
 POST /v1/growth/candidates/{id}/report/refresh            # 重新生成该候选的调研报告
 GET  /v1/growth/reports/{id}                             # 某份调研报告的完整元数据 + 正文
+GET  /v1/growth/health_trend                             # 健康度趋势快照序列（v4 N1，见 5.5 节）
 ```
 
 ## 5. 常用配置项（`agent_config.json` / `growth_advisor` 块）
@@ -326,6 +327,12 @@ GET  /v1/growth/reports/{id}                             # 某份调研报告的
 | `topic_category_llm_enabled` | `false` | 打开后，自定义/LLM 学到的主题新增或确认转正时会额外调一次 LLM 做"4 选 1"粗粒度分类，结果持久化，使这些主题也能参与类别级反馈学习/静音/推送优先级 |
 | `exploration_slot_enabled` | `false` | 打开后，`max_reports_per_run` 名额里最多留 1 个给"最近几轮报告没出现过的类别"，其余候选仍按置信度选；关闭时行为与改动前完全一致 |
 | `exploration_recent_window` | `5` | 判断"某类别最近是否出现过"时，往回看最近多少份报告（不含已归档的旧报告） |
+| `sync_confirmed_topics_to_tech_radar_enabled` | `false` | （v4 N3）打开后 `run_daily_cycle()` 收尾时把已确认关键词幂等同步进 `TechRadarConfig.keywords`；会实际修改 `agent_config.json` |
+| `report_include_external_context` | `false` | （v4 N4）打开后调研报告（LLM 生成路径）会把外部资讯命中数作为背景信息，独立于 `report_quality_llm_enabled` |
+
+另外 `memory_backfill.cron_run_backfill_enabled`（默认 `true`，v4 N2）
+控制 cron 任务收尾是否自动回填记忆，属于 `memory_backfill` 配置块而非
+`growth_advisor` 块，详见 5.5 节 N2 与 `docs/memory-backfill-guide.md`。
 
 不想要这个功能，把 `enabled` 设为 `false` 即可；已经生成的候选/报告数据
 不会被自动清除，需要的话手动删除 `.agent/growth_backlog.jsonl` /
@@ -339,6 +346,102 @@ GET  /v1/growth/reports/{id}                             # 某份调研报告的
 不匹配时（比如本该是 dict 的字段被存成字符串），会回退到该字段的默认值
 并记一条 warning 日志，不会导致 Agent 起不来或者错误值静默流入下游。
 
+## 5.5 v4 新增能力（N1~N4，`next_doc/growth_advisor_improvement_plan_v4.md`）
+
+在 P1~P6（本文档 3~5 节描述的基线）之上，v4 计划的四个方向已全部落地
+（详见 `next_doc/growth_advisor_implementation_record.md` 对应章节）。
+四项均遵循同一个原则：**默认不改变任何既有行为**——新增的写操作/外部
+信号全部走独立开关，默认关闭或默认不产生副作用。
+
+### N1：诊断面板健康度趋势化
+
+`diagnostics_snapshot()` 只反映"当下"，无法看出"这周记忆总条数涨了
+多少"。v4 新增 `.agent/growth_health_trend.jsonl`：`run_daily_cycle()`
+每天结束时追加一条快照（`total_entries` / `entries_in_scan_window` /
+`backfill_candidates_count` / `pending_followups_count` /
+`reports_needing_refresh_count` / `topics_tracked_count`），超过窗口期
+的旧快照会被降采样压缩（复用 `growth_topic_trend.jsonl` 同款机制）。
+
+- 看板"🌱 成长顾问"tab 的诊断面板新增一个可折叠的"📈 健康度趋势"区块，
+  用折线图展示上述几个指标的走势；
+- API：`GET /v1/growth/health_trend`（独立于 `/growth/summary`，看板
+  展开该区块时才请求，不影响默认加载速度）。
+
+这是纯只读展示能力，不需要额外配置即可生效（只要总开关 `enabled` 为
+真、且 `sys:growth_advisor_daily` 正常运行）。
+
+### N2：cron 记忆回填（对应 `docs/memory-backfill-guide.md` 方向一 M3）
+
+daemon/cron 任务此前完全不产出记忆——`cron_agent_bridge.py` 每次触发都
+重新构建 Agent、不跨触发保留 session 历史，M1/M2 的存量回填天然扫不到
+这类运行。v4 在 `CronJobExecutor.run_job()` 的收尾 `finally` 块里新增
+一次"记忆化"：
+
+- **触发条件**：仅当本次运行正常收尾（`final_status == idle`，不含
+  `timed_out`/`needs_human_review`）且有实质产出文本时才生成记忆；
+- **摘要生成**：`memory_backfill.py::generate_summary_from_text()`，
+  跟离线批量回填共享同一套摘要 prompt，额外把 job 的任务描述拼进输入
+  避免摘要读起来没有上下文；
+- **`session_id` 格式**：`cron:<job_id>:<run_id>`，跟真实 `Session.id`
+  取值空间不相交；
+- **去重**：同一 job 连续触发如果产出的摘要跟该 job 最近一条已生成的
+  记忆高度雷同，跳过写入（避免"每小时检查一次待办"这类高频重复任务把
+  记忆库刷成同质化内容），只影响本次记忆生成，不影响任务本身的其它
+  收尾逻辑（比如产出物清单照常写）。
+
+配置项：`memory_backfill.cron_run_backfill_enabled`（默认 `true`），
+关闭后 cron 任务恢复到 v4 之前"不产出记忆"的行为。上线效果可以直接用
+N1 的健康度趋势图观察——`total_entries` 应该能看到回升。
+
+### N3：成长顾问关键词表 → tech_radar 检索种子同步
+
+成长顾问的关键词表（`profile.derived["growth_topic_keywords"]`）和
+外部输入网关的 `TechRadarConfig.keywords` 此前是两套互不感知的"用户
+关注点"表达。v4 新增单向桥接：`sync_confirmed_topics_to_tech_radar()`
+把已确认（`confirmed_by_user=True`，含内置主题）的关键词幂等合并进
+`TechRadarConfig.keywords`，供 `tech_radar_search.py` 的主动检索种子池
+使用。只增不删——隐藏/删除一个成长顾问主题不会反向删除对应的 tech_radar
+种子（两者语义不同：用户可能仍想关注外部动态，只是不想让它出现在成长
+顾问候选里）。
+
+- 配置项：`growth_advisor.sync_confirmed_topics_to_tech_radar_enabled`
+  （**默认 `false`**——这会实际修改 `agent_config.json`，属于有外部
+  效果的写操作，需要用户显式打开）；
+- 触发时机：`run_daily_cycle()` 收尾处，跟 N1 的健康度快照同一个"旁路
+  增强不能反过来影响主流程"模式，异常静默降级；
+- 写入路径复用配置系统既有的原子写入（`config_catalog.py` 新增
+  `apply_list_seed_merge()` / `write_config_file()`），不会绕过校验
+  直接改 JSON 文件。
+
+打开后需要注意：`daily_seed_limit`（默认 5，不受本次改动影响）不变，
+关键词表持续增长会让种子池覆盖一轮的周期变长——`tech_radar_search.py`
+本身的轮转游标机制能兜住（不丢种子，只是变慢），是已知、可接受的权衡。
+
+### N4：外部资讯作为候选/报告的展示背景（不参与判断）
+
+`knowledge_extractor.py` 沉淀进 wiki、带 `source_kind` 为
+`external_watch`/`external_search` 标记的条目，现在可以作为成长顾问
+调研报告的"背景参考"：
+
+- `_external_signal_count_for_topic()`：只读聚合，统计最近 N 天内 wiki
+  里有多少条外部资讯条目命中了某主题的关键词；
+- `generate_growth_report()` 新增可选参数 `profile`/`cfg`，仅当
+  `report_include_external_context` 为真、且报告走 LLM 生成路径
+  （`report_quality_llm_enabled` 打开且有 agent 上下文）时，才会把这个
+  计数作为背景信息拼进 prompt，并明确要求 LLM"报告的核心判断仍要基于
+  用户自己的记忆证据"。
+
+**关键约束**：这个数字只影响报告正文的 prompt 输入，**不会**改变
+`candidate.confidence`/证据数等任何落盘字段，也不影响候选排序或推送
+优先级——外部世界讨论的热度不等于用户自己的兴趣，成长顾问一贯坚持
+"置信度只反映用户自己证据"的原则在这里没有被打破。
+
+配置项：`growth_advisor.report_include_external_context`（默认
+`false`），**独立于** `report_quality_llm_enabled`（可以只要更好的
+报告质量、不要外部背景，两者分开控制）。当前只接入了报告生成路径，
+看板候选卡片上还没有展示这个计数（基础设施先行，展示位留给后续按需
+接入）。
+
 ## 6. 数据存放位置
 
 - `.agent/growth_backlog.jsonl` — 候选队列（整表重写，不是只追加）
@@ -349,6 +452,8 @@ GET  /v1/growth/reports/{id}                             # 某份调研报告的
 - `.agent/growth_feedback_ledger.jsonl` — 采纳/忽略/回访反馈流水
 - `.agent/growth_topic_trend.jsonl` — 按主题的证据数/置信度历史快照
   （P4-6，超过 60 天的旧快照会被降采样压缩）
+- `.agent/growth_health_trend.jsonl` — 全局健康度快照（v4 N1，每天
+  一条，同样有降采样机制）
 - `.agent/growth_advisor_state.json` — 推送节流状态 + 首次触达提示
   状态
 - `.agent/wiki/growth/*.md` — 调研报告正文

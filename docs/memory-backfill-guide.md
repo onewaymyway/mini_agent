@@ -31,9 +31,11 @@
   没有新证据支持的旧特征在下一轮生成时被显式标注、交给 LLM 重新评估
   是否还成立。
 
-> **不覆盖的范围**：cron/daemon 任务本身触发的运行不会产生
-> `Session`，因此也不在本机制的扫描范围内（这部分设计见方案文档 2.4
-> 节方案 A，暂未实施，属于后续排期）。
+> **cron/daemon 任务的记忆覆盖**：cron 任务本身触发的运行不会产生
+> `Session`，因此不在上述"离线扫描存量 session"的范围内，但这类运行
+> 现在会在收尾时**直接**产出记忆（不经过 `Session`/摘要回填这条链路）
+> ——见 2.5 节"cron 任务记忆回填（v4 N2）"。方案文档 2.4 节方案 B
+> （cron 全面持久化 session）仍未实施，见 2.5 节末尾说明。
 
 ## 2. 记忆回填（Memory Backfill）
 
@@ -86,14 +88,55 @@
   意义不大。
 - `max_sessions_per_run`：单轮最多处理的候选数，控制一次触发的 LLM
   调用量。
-- `cron_run_backfill_enabled`：预留给"cron 任务自身直接产出记忆"这个
-  尚未实施的方向（见方案文档 2.4 节方案 A），当前版本暂无实际效果。
+- `cron_run_backfill_enabled`：控制"cron 任务自身直接产出记忆"（2.5
+  节）是否生效，默认 `true`。
 
 ### 2.4 幂等性
 
 回填只处理 `summary` 为空的 session，写入摘要后 `summary` 非空，天然
 幂等——不会重复处理已经回填过的 session。单个候选处理失败不影响其它
 候选，失败的候选下次扫描会自然重新出现在候选列表里，不需要手动重试。
+
+### 2.5 cron 任务记忆回填（v4 N2，方案文档 2.4 节方案 A）
+
+对应 `next_doc/growth_advisor_improvement_plan_v4.md` 方向一、
+`next_doc/growth_advisor_implementation_record.md` "N2" 章节。
+
+**接入点**：`CronJobExecutor.run_job()` 收尾的 `finally` 块，跟产出物
+清单写入并列。**触发条件**：仅当本次运行正常收尾（`final_status ==
+idle`，不含 `timed_out`/`needs_human_review`）且有实质产出文本时才
+生成记忆——异常/卡死/超时的运行不产出记忆，避免污染成长顾问的信号
+扫描。
+
+**跟 2.1~2.4 节的存量回填是两条独立链路**：cron 任务不经过
+`Session`/`save_session()`，因此不会被 `sys:memory_backfill_scan`
+扫到；本节的记忆是 cron 收尾时**直接**调用
+`memory_backfill.py::generate_summary_from_text()`（复用离线回填同一套
+摘要 prompt，额外把 job 的任务描述拼进输入）生成并写入的，`session_id`
+格式为 `cron:<job_id>:<run_id>`，跟真实 `Session.id`（纯十六进制无
+分隔符）取值空间不相交，成长顾问/记忆库的下游代码只做字符串相等比较，
+不需要额外适配。
+
+**去重**：同一 job 连续触发如果产出摘要跟该 job 最近一条已生成的记忆
+高度雷同（比如"每小时检查一次待办"这类几乎不变的任务），会跳过本次
+记忆写入，避免持续产生同质化内容稀释成长顾问信号扫描的信噪比；去重
+只跟同一个 job 的历史比较，不跨 job 互相影响，且只影响记忆写入这一步，
+不影响该次 cron 运行的其它收尾逻辑（产出物清单照常写）。
+
+**配置**：`memory_backfill.cron_run_backfill_enabled`（默认 `true`，
+2.3 节）。`CronJobExecutor` 未升级构造参数（比如测试里直接构造）时，
+`memory_backfill_cfg`/`memory_backend`/`llm_client` 均为默认值
+`None`，记忆生成静默跳过，不影响主流程，向后兼容。
+
+**验收**：可以直接看 `docs/growth-advisor-guide.md` 5.5 节 N1 的
+"📈 健康度趋势"图——上线后 `total_entries` 应能观察到回升。
+
+**未做的部分（维持方案文档判断）**：
+- 方案文档 2.4 节方案 B（cron 全面持久化 session，改变
+  `cron_agent_bridge.py`"不跨触发保留历史"的核心设计前提）仍不建议
+  现在做，建议先观察方案 A 至少一个迭代周期；
+- 诊断面板/健康度快照尚未新增"cron 产出记忆 vs 真实交互 session 占比"
+  这个维度的独立字段，留给后续需要时再补。
 
 ## 3. 用户画像增量更新
 
