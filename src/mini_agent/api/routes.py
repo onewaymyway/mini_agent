@@ -63,6 +63,7 @@ api/routes.py — FastAPI 路由定义
                                        gaps_improvement_plan.md 方向 C）
     GET    /v1/self/llm_pool_status  [kanban_perception_gaps_improvement_plan.md
                                        方向 B.1] LLMClientPool 故障转移状态
+    GET    /v1/self/llm_call_stats   [同上 方向 B.2] 按天聚合的 LLM 调用计数
     GET    /v1/wiki/quarantine_status  [同上 方向 E] wiki 隔离区积压
     GET    /v1/sentinel/summary      [同上 方向 A] 哨兵聚合面板
     GET    /v1/goals                 GoalBacklog 完整视图（active goals + objectives）
@@ -522,6 +523,34 @@ async def get_self_llm_pool_status(request: Request):
     if snap is None:
         return {"entries": [], "current": 0, "switched_from_preferred": False, "enabled": False}
     return {**snap, "enabled": True}
+
+
+# ── LLM 调用计数（方向 B.2）─────────────────────────────────────────────────
+@router.get("/self/llm_call_stats")
+async def get_self_llm_call_stats(request: Request, days: int = Query(7, ge=1, le=90)):
+    """GET /v1/self/llm_call_stats?days=7 — 按天聚合的轻量 LLM 调用计数
+    （调用次数/成功数/失败数/key 切换数/配置切换数/token 用量/平均耗时），
+    数据来源见 `llm/call_stats.py`。默认开启、不含任何请求/响应正文，
+    跟需要手动开启的 `LLM_DEBUG=1` 完整调试日志是两套独立的东西。"""
+    http_server = getattr(request.app.state, "http_server", None)
+    if http_server is None:
+        raise HTTPException(status_code=503, detail="HttpServer not available")
+    _require_owner(request)
+
+    try:
+        from mini_agent.storage.paths import AgentPaths
+        from mini_agent.llm.call_stats import call_stats_series
+
+        self_agent = http_server.bridge.agent
+        project_root = getattr(self_agent.cfg, "project_root", None) if self_agent else None
+        if project_root is None:
+            return {"series": []}
+        paths = AgentPaths(project_root)
+        return {"series": call_stats_series(paths, days=days)}
+    except Exception as _mini_agent_exc:
+        from mini_agent.errors import log_exception
+        log_exception(_mini_agent_exc, where='mini_agent.api.routes.get_self_llm_call_stats')
+        return {"series": []}
 
 
 # ── wiki 隔离区积压（方向 E）─────────────────────────────────────────────────

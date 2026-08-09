@@ -405,6 +405,17 @@ class AgentPaths:
         return self.workdir_dir / "growth_health_trend.jsonl"
 
     @property
+    def llm_call_stats_path(self) -> Path:
+        """<project_root>/.agent/llm_call_stats.jsonl — [kanban_perception_gaps_
+        improvement_plan.md 方向 B.2] 轻量 LLM 调用计数，跟 `llm/debug_logger.py`
+        （默认关闭、记录完整请求/响应正文，用于调试排障）是两套独立的东西：
+        这里默认开启，只记数字（provider/model/token 数/耗时/结果分类），不含
+        任何请求/响应正文。近期记录是逐条原始记录，超过 `_RAW_WINDOW_DAYS`
+        的旧记录会被压缩成按天聚合的汇总行（`llm/call_stats.py::
+        compact_call_stats_storage()`），避免无限增长。"""
+        return self.workdir_dir / "llm_call_stats.jsonl"
+
+    @property
     def wiki_growth_dir(self) -> Path:
         """<project_root>/.agent/wiki/growth/ — 成长顾问调研报告正文目录"""
         return self.wiki_dir / "growth"

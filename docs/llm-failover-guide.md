@@ -492,6 +492,44 @@ daemon 模式下，`LLMClientPool.snapshot()` / `ApiKeyPool.snapshot()` 这两�
 里（见 `docs/kanban-dashboard-guide.md`）。这一步不涉及任何新增持久化，
 纯粹是把已经在内存里的状态读出来展示。
 
+### 轻量调用计数（方向 B.2）
+
+在 B.1 只读暴露状态之外，"这个 daemon 今天到底调用了多少次 LLM、大概
+花了多少 token"这类最基础的量级问题此前完全答不出来——`llm/
+debug_logger.py` 需要手动设置 `LLM_DEBUG=1` 才会记录，且落盘的是完整
+请求/响应正文（为调试排障设计，不是为统计设计）。
+
+新增 `llm/call_stats.py`，跟调试日志是两套独立的东西：**默认开启**，
+每次调用只记数字（provider/model/输入输出 token 数/耗时/结果分类：
+成功/失败/key 切换/配置切换），不含任何请求/响应正文。挂载点是
+`agent/llm_control.py::_call_llm()`（主对话循环）和 `llm/service.py::
+LLMHelper.chat()`（judge/ensemble/目标拆解等场景），这是仅有的两处
+`LLMClientPool.call_with_pool()` 调用点，覆盖了系统里发生的所有 LLM
+调用。
+
+写入策略是"攒批"，不是每次调用都落盘：内存缓冲区攒够 10 条或超过 30
+秒未落盘才真正写一次文件，降低密集工具循环场景下的 I/O 开销。记录失败
+（包括拿不到 project_root 之类的边界情况）一律静默忽略——调用计数是
+锦上添花的可观测性增强，绝不能因为这里出问题影响真正的 LLM 调用主
+链路，这一点在两处挂载点和 `call_stats.record_call()` 内部都做了三层
+兜底。
+
+原始逐条记录只保留最近 7 天（`_RAW_WINDOW_DAYS`），更早的记录会被
+`compact_call_stats_storage()` 压缩成按天求和的汇总行，避免文件无限
+增长——调用方式跟 `evolution/growth_advisor.py::compact_health_trend_
+storage()` 一致，但聚合语义不同（健康度快照是"取当天最新一条"，调用
+计数是"当天全部记录求和"，因为次数/token 数天然需要累加而不是取某个
+时间点的瞬时值）。当前实现**没有**接一个自动定期调用压缩函数的调度点
+（不像 `growth_health_trend` 挂在 `run_daily_cycle()` 上），查询接口
+`call_stats_series()` 本身在内存里重新聚合、不依赖压缩是否发生过，
+所以晚一点压缩不影响展示正确性，只是文件会先涨到一定大小再被压缩——
+这是刻意的取舍：本期先验证有没有人真的关心这份数据，暂不新增一个
+调度点。
+
+新增只读端点 `GET /v1/self/llm_call_stats?days=7`，返回按天聚合的
+序列。看板"🧠 自我状态"Tab 新增"📊 LLM 调用统计"区块（调用次数/失败数
+柱状图 + 当日汇总指标）。
+
 ---
 
 ## 相关文件
@@ -505,4 +543,5 @@ daemon 模式下，`LLMClientPool.snapshot()` / `ApiKeyPool.snapshot()` 这两�
 | `src/mini_agent/agent.py` | `_call_llm` 通过 `LLMClientPool` 调用 |
 | `docs/retry-backoff-guide.md` | 重试退避策略（与本机制配合使用） |
 | `src/mini_agent/perception/sentinel.py` | `read_llm_pool_snapshot()`：把 `snapshot()` 转成 `GET /v1/self/llm_pool_status` 的响应结构 |
-| `next_doc/kanban_perception_gaps_improvement_plan.md` | 方向 B.1（故障转移状态暴露）设计与排查记录 |
+| `src/mini_agent/llm/call_stats.py` | 轻量调用计数（方向 B.2）：攒批写入 + 按天聚合 + 降采样压缩 |
+| `next_doc/kanban_perception_gaps_improvement_plan.md` | 方向 B.1（故障转移状态暴露）/ B.2（调用计数）设计与排查记录 |

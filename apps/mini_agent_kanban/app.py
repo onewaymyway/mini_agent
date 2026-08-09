@@ -3523,6 +3523,25 @@ def _render_llm_pool_status(client: AgentClient) -> None:
                     f"失败次数:{k.get('fail_count', 0)}{cooldown_txt}"
                 )
 
+    st.markdown("**📊 LLM 调用统计**（近 7 天，按天聚合）")
+    stats_resp = client.llm_call_stats(days=7)
+    if stats_resp and "_error" in stats_resp:
+        st.caption(f"读取失败：{stats_resp['_error']}")
+    else:
+        series = (stats_resp or {}).get("series") or []
+        if not series:
+            st.caption("暂无调用记录")
+        else:
+            import pandas as pd
+            df = pd.DataFrame(series).set_index("day")
+            st.bar_chart(df[["call_count", "error_count"]])
+            latest = series[-1]
+            c1, c2, c3, c4 = st.columns(4)
+            c1.metric("今日调用", latest.get("call_count", 0))
+            c2.metric("今日失败", latest.get("error_count", 0))
+            c3.metric("今日输入 token", latest.get("total_input_tokens", 0))
+            c4.metric("今日输出 token", latest.get("total_output_tokens", 0))
+
 
 # ═══════════════════════════════════════════════════════════════════════
 # Tab: 🌱 成长顾问（next_doc/growth_advisor_design.md，P1 里程碑）

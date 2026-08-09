@@ -3,6 +3,7 @@ from __future__ import annotations
 import copy
 import re as _re
 import threading
+import time
 from typing import Optional
 
 from mini_agent.config import AppConfig, SessionStats, build_system_prompt
@@ -38,6 +39,39 @@ from mini_agent.agent._helpers import (
 
 class LLMControlMixin:
     """LLM 客户端与 Provider/模型切换、底层调用封装。"""
+
+    def _record_llm_call_stat(
+        self, *, outcome: str, duration_ms: int = 0, usage=None,
+    ) -> None:
+        """[kanban_perception_gaps_improvement_plan.md 方向 B.2] 记一条轻量
+        调用计数（不含请求/响应正文），失败静默忽略——见
+        `llm/call_stats.py::record_call()` 的失败降级约定。项目根目录
+        取不到（罕见的测试/嵌入场景）时直接跳过，不影响主调用链路。"""
+        try:
+            project_root = getattr(self.cfg, "project_root", None)
+            if not project_root:
+                return
+            from mini_agent.storage.paths import AgentPaths
+            from mini_agent.llm import call_stats
+
+            entry = self._client_pool.current_entry if self._client_pool else None
+            provider = entry.config.provider if entry else getattr(self.cfg, "llm_provider", "")
+            model = entry.config.model if entry else getattr(self.cfg, "model", "")
+            call_stats.record_call(
+                AgentPaths(project_root),
+                provider=provider or "",
+                model=model or "",
+                input_tokens=getattr(usage, "input_tokens", 0) if usage else 0,
+                output_tokens=getattr(usage, "output_tokens", 0) if usage else 0,
+                duration_ms=duration_ms,
+                outcome=outcome,
+            )
+        except Exception:
+            # 调用计数是锦上添花的可观测性增强，绝不能因为这里出问题
+            # 影响真正的 LLM 调用主链路——静默忽略，不记 log_exception
+            # 也不重试（call_stats.record_call 内部已经有自己的
+            # log_exception，这里只是再兜一层保险）。
+            pass
 
     @property
     def llm_client(self) -> LLMClient:
@@ -290,12 +324,14 @@ class LLMControlMixin:
                 f"[key-switch] ...{old_suffix} → ...{new_suffix} "
                 f"({type(exc).__name__})"
             )
+            self._record_llm_call_stat(outcome="key_switch")
 
         def _on_switch_config(old_label: str, new_label: str, exc: Exception) -> None:
             R.print_warning(
                 f"[llm-fallback] {old_label} → {new_label} "
                 f"({type(exc).__name__}: {str(exc)[:80]})"
             )
+            self._record_llm_call_stat(outcome="config_switch")
             self._llm = self._client_pool.current_client
             # [BUGFIX] 自动 fallback 切换 provider/model 后，之前只更新了
             # self._llm，没有同步 self.cfg.model / self.cfg.llm_provider——
@@ -310,11 +346,23 @@ class LLMControlMixin:
             self.cfg.model = _entry.config.model
             self.cfg.llm_provider = _entry.config.provider
 
-        response = self._client_pool.call_with_pool(
-            call_fn=_do_single_call,
-            retry_policy=self._retry_policy,
-            on_switch_key=_on_switch_key,
-            on_switch_config=_on_switch_config,
+        _call_started_at = time.time()
+        try:
+            response = self._client_pool.call_with_pool(
+                call_fn=_do_single_call,
+                retry_policy=self._retry_policy,
+                on_switch_key=_on_switch_key,
+                on_switch_config=_on_switch_config,
+            )
+        except Exception:
+            self._record_llm_call_stat(
+                outcome="error", duration_ms=int((time.time() - _call_started_at) * 1000),
+            )
+            raise
+        self._record_llm_call_stat(
+            outcome="success",
+            duration_ms=int((time.time() - _call_started_at) * 1000),
+            usage=response.usage,
         )
         self._llm = self._client_pool.current_client
 

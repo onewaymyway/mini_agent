@@ -48,6 +48,42 @@ class LLMHelper:
         self._pool = client_pool
         self._cfg = app_cfg
 
+    @staticmethod
+    def _now() -> float:
+        import time
+        return time.time()
+
+    @staticmethod
+    def _elapsed_ms(started_at: float) -> int:
+        import time
+        return int((time.time() - started_at) * 1000)
+
+    def _record_call_stat(self, *, outcome: str, duration_ms: int = 0, usage=None) -> None:
+        """[kanban_perception_gaps_improvement_plan.md 方向 B.2] 跟
+        `agent/llm_control.py::LLMControlMixin._record_llm_call_stat()` 是
+        平行实现（LLMHelper 不是 Agent 的成员方法，拿不到 self.cfg 之外的
+        任何 Agent 状态），同样遵循"失败静默忽略，绝不影响主调用链路"的
+        约定。"""
+        try:
+            project_root = getattr(self._cfg, "project_root", None)
+            if not project_root:
+                return
+            from mini_agent.storage.paths import AgentPaths
+            from mini_agent.llm import call_stats
+
+            entry = self._pool.current_entry if self._pool else None
+            provider = entry.config.provider if entry else getattr(self._cfg, "llm_provider", "")
+            model = entry.config.model if entry else getattr(self._cfg, "model", "")
+            call_stats.record_call(
+                AgentPaths(project_root),
+                provider=provider or "", model=model or "",
+                input_tokens=getattr(usage, "input_tokens", 0) if usage else 0,
+                output_tokens=getattr(usage, "output_tokens", 0) if usage else 0,
+                duration_ms=duration_ms, outcome=outcome,
+            )
+        except Exception:
+            pass
+
     @classmethod
     def from_config(cls, app_cfg: Any) -> "LLMHelper":
         """
@@ -121,10 +157,19 @@ class LLMHelper:
                 override_temperature=override_temperature,
             )
 
-        return self._pool.call_with_pool(
-            call_fn=lambda client: client.chat(messages, system, tools),
-            retry_policy=policy,
+        _call_started_at = self._now()
+        try:
+            response = self._pool.call_with_pool(
+                call_fn=lambda client: client.chat(messages, system, tools),
+                retry_policy=policy,
+            )
+        except Exception:
+            self._record_call_stat(outcome="error", duration_ms=self._elapsed_ms(_call_started_at))
+            raise
+        self._record_call_stat(
+            outcome="success", duration_ms=self._elapsed_ms(_call_started_at), usage=response.usage,
         )
+        return response
 
     # ── override 分支：临时构造独立 client，不经过 fallback chain ─────────────
 

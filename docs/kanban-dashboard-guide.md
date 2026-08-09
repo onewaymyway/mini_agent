@@ -271,6 +271,12 @@ key 级的 `fail_count`/`cooldown_remaining` 从未被任何端点返回过，da
 `llm_fallback_chain`（只用单一配置）时本区块显示"未配置故障转移链"，
 不是错误。
 
+紧接着的"📊 LLM 调用统计"区块（`GET /v1/self/llm_call_stats`，方向
+B.2）展示近 7 天按天聚合的调用次数/失败数柱状图，以及当日调用数/失败数/
+输入输出 token 数四个指标——默认开启、只统计数字，不含请求/响应正文，
+跟需要手动开启的 `LLM_DEBUG=1` 完整调试日志是两套独立的东西，详见
+`docs/llm-failover-guide.md`。
+
 ### ⏰ Cron 任务 Tab
 
 Cron Job 列表、启用/禁用、手动触发、新建，`priority` 字段的展示与编辑
@@ -349,6 +355,7 @@ Tab。流程与目标看板一致：点击"🗑️ 删除"进入二次确认态�
 | `execution_model_status()` | `GET /v1/self/execution_model_status` | 目标级持久 Worker / 调度心跳独立化两个灰度开关的生效状态，含 `recent_recoveries` 最近卡死回收事件（只读） |
 | `force_reap(target=)` | `POST /v1/self/execution_model/force_reap` | 立即对指定链路（`cron`/`objective_step`/`isolated_pool`/`all`）跑一次卡死回收扫描 |
 | `llm_pool_status()` | `GET /v1/self/llm_pool_status` | LLMClientPool 当前故障转移状态：是否已切离首选配置、各 key 的 fail_count/冷却剩余时间（只读，方向 B.1） |
+| `llm_call_stats(days=7)` | `GET /v1/self/llm_call_stats` | 按天聚合的 LLM 调用计数：调用次数/成功失败数/切换次数/token 用量/平均耗时（只读，方向 B.2） |
 | `wiki_quarantine_status()` | `GET /v1/wiki/quarantine_status` | wiki 隔离区当前积压情况，不含已修复记录（只读，方向 E） |
 | `sentinel_summary(cron_failure_threshold=2)` | `GET /v1/sentinel/summary` | 哨兵聚合面板：cron 连续失败 + Objective 重试热点 + wiki 隔离区积压 + LLM 故障转移状态 + 近 7 天仲裁降级/阻塞占比一次性拉取（只读，方向 A） |
 

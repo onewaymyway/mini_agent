@@ -282,6 +282,12 @@ class AgentClient:
         "🧠 自我状态"tab"🔀 LLM 故障转移状态"区块展示。"""
         return self._get("/self/llm_pool_status")
 
+    def llm_call_stats(self, days: int = 7):
+        """[kanban_perception_gaps_improvement_plan.md 方向 B.2] 按天聚合的
+        LLM 调用计数（调用次数/成功失败数/切换次数/token 用量/平均耗时），
+        供"🧠 自我状态"tab"📊 LLM 调用统计"区块展示。"""
+        return self._get("/self/llm_call_stats", params={"days": days})
+
     def wiki_quarantine_status(self):
         """[kanban_perception_gaps_improvement_plan.md 方向 E] wiki 隔离区
         当前积压情况（不含已修复记录）。"""
