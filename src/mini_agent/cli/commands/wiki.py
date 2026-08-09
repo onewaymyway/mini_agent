@@ -619,12 +619,21 @@ def _handle_quarantine(rest: list[str], agent) -> None:
     if action == "repair":
         from mini_agent.wiki.quarantine_repair import run_quarantine_repair_cycle
 
-        report = run_quarantine_repair_cycle(paths)
+        # 规则修复兜底失败时，是否额外尝试一次 LLM 修复：跟 daemon 里
+        # sys:wiki_quarantine_repair 走同一个开关
+        # （MemoryConfig.wiki_quarantine_llm_repair_enabled），保持手动
+        # 触发（本命令）和定时触发行为一致，opt-in，不传/关闭时零 LLM 成本。
+        llm_helper = None
+        if getattr(agent.cfg.memory, "wiki_quarantine_llm_repair_enabled", False):
+            llm_helper = getattr(agent, "llm_helper", None)
+
+        report = run_quarantine_repair_cycle(paths, llm_helper=llm_helper)
         R.print_success(
             f"隔离区修复完成：扫描 {report.scanned} 篇"
             f"（新发现问题 {report.newly_quarantined} 篇，自愈确认 {report.auto_resolved} 篇）；"
-            f"尝试修复 {report.repair_attempted} 篇，成功 {report.repaired} 篇，"
-            f"仍失败 {report.still_failing} 篇，转人工 {report.needs_human} 篇"
+            f"尝试修复 {report.repair_attempted} 篇，成功 {report.repaired} 篇"
+            + (f"（其中 LLM 兜底修复 {report.llm_repaired} 篇）" if report.llm_repaired else "")
+            + f"，仍失败 {report.still_failing} 篇，转人工 {report.needs_human} 篇"
             + (f"，{report.skipped_missing_file} 篇文件已不存在" if report.skipped_missing_file else "")
         )
         if report.errors:

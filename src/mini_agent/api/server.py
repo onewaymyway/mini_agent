@@ -1413,7 +1413,15 @@ class HttpServer:
                     ensure_wiki_quarantine_repair_job,
                 )
 
-                ensure_wiki_quarantine_repair_job(paths, cron_scheduler)
+                def _wiki_quarantine_llm_helper():
+                    if not getattr(cfg.memory, "wiki_quarantine_llm_repair_enabled", False):
+                        return None
+                    return getattr(agent, "llm_helper", None)
+
+                ensure_wiki_quarantine_repair_job(
+                    paths, cron_scheduler,
+                    llm_helper_provider=_wiki_quarantine_llm_helper,
+                )
             except Exception as _mini_agent_exc:
                 from mini_agent.errors import log_exception
                 log_exception(_mini_agent_exc, where='mini_agent.api.server.HttpServer._build_autonomous_loop.ensure_wiki_quarantine_repair_job')

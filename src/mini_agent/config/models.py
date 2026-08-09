@@ -168,6 +168,14 @@ class MemoryConfig:
     # 权重压过内容相关性本身；设为 0 等价于改动前的排序结果（回归保护）。
     wiki_confidence_weight: float = 0.1
 
+    # ── wiki/quarantine_repair.py：隔离区页面 LLM 兜底修复 ─────────────────
+    # 默认关闭（opt-in），复用 `llm_helper` opt-in 模式（架构决策：涉及文本
+    # 理解/归类的新功能一律走 LLM，不引入 embedding 模型）。规则式修复策略
+    # （_FIXERS，只处理"改法唯一"的笔误）兜底失败后，如果这个开关打开且
+    # 调用方（cron handler / CLI）传入了可用的 llm_helper，才会额外尝试一次
+    # LLM 修复；关闭时行为与改动前完全一致（零 LLM 成本）。
+    wiki_quarantine_llm_repair_enabled: bool = False
+
     # ── wiki 提取层与组织层改进计划 O4：统一知识生命周期状态机 ──────────────
     # `wiki/lifecycle.py::stale_candidate_scan()` 的判定阈值（天）：
     # `knowledge_state=fresh` 且 `last_validated_at`（或历史遗留页面的

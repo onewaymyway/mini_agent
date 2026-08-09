@@ -699,17 +699,32 @@ monthly_trend_retrospective.py` 新增 cron job
   `DEFAULT_MAX_REPAIR_ATTEMPTS`（默认 5 次）仍未成功，状态转
   `needs_human`，不再参与后续自动修复循环，避免对一份自动策略解决不了
   的坏数据每个 cron 周期都重复尝试。
+- **LLM 兜底修复（本轮新增，opt-in，默认关闭）**：规则策略只覆盖
+  "改法唯一"的已知故障模式，遇到没见过的结构性问题（YAML 语法错误、
+  字段缺失/拼写错误等）只能转 `needs_human`。`MemoryConfig.
+  wiki_quarantine_llm_repair_enabled=True` 时，规则修复兜底失败的页面
+  会额外尝试一次 LLM 修复——复用 `llm_helper` opt-in 模式，把原始页面
+  文本 + 错误信息交给模型，只要求它修正导致解析失败的结构性问题，不碰
+  正文/不臆造信息。跟规则修复共用同一个"改完必须重新通过 `parse_page()`
+  才落盘"的校验闸门，且额外要求输出必须是带 frontmatter 的完整页面
+  （否则判定失败，不落盘）；LLM 调用异常/无输出/结果仍解析失败都当作
+  这次修复未成功，转下一轮或最终 `needs_human`，不会比规则修复更
+  "激进"。修复成功时 `repaired_by` 记为 `llm_repair`，跟规则策略名区分
+  以供追溯。
 - **cron 接入**：`sys:wiki_quarantine_repair`（`interval:21600`，每 6
-  小时一次，零 LLM 成本，本地回调 handler，默认 enabled）跑
+  小时一次，本地回调 handler，默认 enabled）跑
   "全量扫描 + 对 pending 记录逐个尝试修复"的完整循环，即
   `run_quarantine_repair_cycle()`。daemon 启动时在 `api/server.py`
-  里补注册（跟 `sys:wiki_utility_audit` 同构写法）。
+  里补注册（跟 `sys:wiki_utility_audit` 同构写法），`llm_helper`
+  惰性获取（handler 触发时才按 `wiki_quarantine_llm_repair_enabled`
+  决定要不要拿 `agent.llm_helper`），开关关闭时零 LLM 成本，行为与
+  改动前完全一致。
 - **CLI**：`/wiki quarantine`（等价于 `/wiki quarantine list`）展示
   当前 pending/needs_human 记录；`/wiki quarantine repair` 手动触发
-  一轮扫描+修复，跟 cron job 跑的是同一份逻辑，用于不想等定时任务、
-  想立刻看到修复结果的场景。`needs_human` 状态的记录人工改好对应文件
-  后，下次扫描（cron 或手动 `repair`）会自动确认并摘除，不需要额外的
-  "标记已处理"操作。
+  一轮扫描+修复，跟 cron job 跑的是同一份逻辑（含同一个 LLM 兜底
+  开关），用于不想等定时任务、想立刻看到修复结果的场景。`needs_human`
+  状态的记录人工改好对应文件后，下次扫描（cron 或手动 `repair`）会
+  自动确认并摘除，不需要额外的"标记已处理"操作。
 
 当前局限：修复策略目前只覆盖 `links` 字段的两类已知笔误，其它类型的
 `PageParseError`（比如缺失必填字段、YAML 语法本身损坏）会被记录但暂时

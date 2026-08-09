@@ -221,6 +221,126 @@ class TestAttemptRepairPage:
         assert outcome.reason == "file_not_found"
 
 
+class _FakeLLMHelper:
+    """测试用假 LLM helper：`.ask()` 返回预设文本，记录调用次数供断言。"""
+
+    def __init__(self, response: str):
+        self.response = response
+        self.calls = 0
+
+    def ask(self, prompt: str, *, system: str = "") -> str:
+        self.calls += 1
+        return self.response
+
+
+class TestAttemptRepairPageLLMFallback:
+    """规则修复策略解决不了时的 LLM 兜底路径（opt-in，需传入 llm_helper）。"""
+
+    def test_llm_repair_disabled_by_default_still_needs_human(self, paths):
+        """不传 llm_helper 时行为跟改动前完全一致：yaml 语法错误直接转
+        needs_human 语义的 reason，不做任何 LLM 调用。"""
+        text = "---\nid: role-z\n  bad indent: [unterminated\n---\n\n正文。\n"
+        md_path = paths.wiki_entities_dir / "role-z.md"
+        md_path.write_text(text, encoding="utf-8")
+
+        outcome = qzr.attempt_repair_page(md_path)  # llm_helper 默认 None
+        assert outcome.fixed is False
+        assert "yaml_syntax_error" in outcome.reason
+
+    def test_llm_repair_fixes_yaml_syntax_error(self, paths):
+        """规则策略对 YAML 语法错误无能为力，但传入 llm_helper 后可以
+        兜底修好——用假 LLM 直接返回一个能通过 parse_page() 的完整页面。"""
+        text = "---\nid: role-z\n  bad indent: [unterminated\n---\n\n正文。\n"
+        md_path = paths.wiki_entities_dir / "role-z.md"
+        md_path.write_text(text, encoding="utf-8")
+
+        fixed_text = (
+            "---\nid: role-z\ntype: entity\ntags: []\nstatus: active\n"
+            "confidence: 0.5\ncreated: 2026-08-01\nupdated: 2026-08-01\n"
+            "---\n\n正文。\n"
+        )
+        helper = _FakeLLMHelper(fixed_text)
+
+        outcome = qzr.attempt_repair_page(md_path, llm_helper=helper)
+        assert outcome.fixed is True
+        assert outcome.reason == "ok_llm_repair"
+        assert qzr.LLM_REPAIR_NAME in outcome.applied_fixers
+        assert helper.calls == 1
+
+        page = parse_page(md_path)
+        assert page.id == "role-z"
+
+    def test_llm_repair_strips_code_fence(self, paths):
+        """模型偶尔会用代码块包裹输出，即使 prompt 里要求了不要——兜底剥离。"""
+        text = "---\nid: role-w\n  bad: [unterminated\n---\n\n正文。\n"
+        md_path = paths.wiki_entities_dir / "role-w.md"
+        md_path.write_text(text, encoding="utf-8")
+
+        fixed_text = (
+            "```\n---\nid: role-w\ntype: entity\ntags: []\nstatus: active\n"
+            "confidence: 0.5\ncreated: 2026-08-01\nupdated: 2026-08-01\n"
+            "---\n\n正文。\n```\n"
+        )
+        helper = _FakeLLMHelper(fixed_text)
+
+        outcome = qzr.attempt_repair_page(md_path, llm_helper=helper)
+        assert outcome.fixed is True
+        page = parse_page(md_path)
+        assert page.id == "role-w"
+
+    def test_llm_repair_does_not_write_when_output_still_fails_parse(self, paths):
+        """模型输出仍然过不了 parse_page()——不落盘，不覆盖原文件。"""
+        text = "---\nid: role-v\n  bad: [unterminated\n---\n\n正文。\n"
+        md_path = paths.wiki_entities_dir / "role-v.md"
+        original = text
+        md_path.write_text(text, encoding="utf-8")
+
+        helper = _FakeLLMHelper("---\nid: role-v\n---\n\n仍然缺字段。\n")
+
+        outcome = qzr.attempt_repair_page(md_path, llm_helper=helper)
+        assert outcome.fixed is False
+        assert "llm_repair_still_fails" in outcome.reason
+        assert md_path.read_text(encoding="utf-8") == original
+
+    def test_llm_repair_does_not_write_when_output_missing_frontmatter(self, paths):
+        """模型只返回了正文、丢了 frontmatter——直接判定失败，不猜。"""
+        text = "---\nid: role-u\n  bad: [unterminated\n---\n\n正文。\n"
+        md_path = paths.wiki_entities_dir / "role-u.md"
+        original = text
+        md_path.write_text(text, encoding="utf-8")
+
+        helper = _FakeLLMHelper("这是修复后的正文，但是没有 frontmatter。\n")
+
+        outcome = qzr.attempt_repair_page(md_path, llm_helper=helper)
+        assert outcome.fixed is False
+        assert "llm_repair_malformed_output" in outcome.reason
+        assert md_path.read_text(encoding="utf-8") == original
+
+    def test_llm_repair_not_called_when_rule_fixer_already_succeeds(self, paths):
+        """规则策略已经能解决问题时不应该多此一举调用 LLM。"""
+        md_path = _write_bare_string_links_page(paths)
+        helper = _FakeLLMHelper("不应该被用到")
+
+        outcome = qzr.attempt_repair_page(md_path, llm_helper=helper)
+        assert outcome.fixed is True
+        assert qzr.LLM_REPAIR_NAME not in outcome.applied_fixers
+        assert helper.calls == 0
+
+    def test_llm_repair_handles_llm_call_exception_gracefully(self, paths):
+        """LLM 调用本身抛异常（超时/额度耗尽）时当作这次修复未成功，不崩循环。"""
+        text = "---\nid: role-t\n  bad: [unterminated\n---\n\n正文。\n"
+        md_path = paths.wiki_entities_dir / "role-t.md"
+        md_path.write_text(text, encoding="utf-8")
+
+        class _BrokenHelper:
+            def ask(self, prompt, *, system=""):
+                raise RuntimeError("llm timeout")
+
+        outcome = qzr.attempt_repair_page(md_path, llm_helper=_BrokenHelper())
+        assert outcome.fixed is False
+        assert "llm_repair_no_output" in outcome.reason
+
+
 # ────────────────────────── 端到端：发现 + 定时修复整轮循环 ──────────────────────────
 
 
@@ -243,6 +363,29 @@ class TestRunQuarantineRepairCycle:
 
         page = parse_page(md_path)  # 不再抛异常
         assert page.strong_links()[0].target == "tushare"
+
+    def test_full_cycle_uses_llm_helper_when_rule_fixers_fail(self, paths):
+        """规则策略解决不了、传入了 llm_helper 时，整轮循环应该走 LLM
+        兜底修好页面，并且 report.llm_repaired 计数正确。"""
+        text = "---\nid: role-llm\n  bad: [unterminated\n---\n\n正文。\n"
+        md_path = paths.wiki_entities_dir / "role-llm.md"
+        md_path.write_text(text, encoding="utf-8")
+
+        fixed_text = (
+            "---\nid: role-llm\ntype: entity\ntags: []\nstatus: active\n"
+            "confidence: 0.5\ncreated: 2026-08-01\nupdated: 2026-08-01\n"
+            "---\n\n正文。\n"
+        )
+        helper = _FakeLLMHelper(fixed_text)
+
+        report = qzr.run_quarantine_repair_cycle(paths, llm_helper=helper)
+        assert report.repaired == 1
+        assert report.llm_repaired == 1
+
+        rec = qz.load_quarantine(paths)[str(md_path)]
+        assert rec.status == qz.STATUS_REPAIRED
+        assert rec.repaired_by == qzr.LLM_REPAIR_NAME
+        parse_page(md_path)  # 不再抛异常
 
     def test_two_cycles_do_not_repeat_work_on_already_repaired_page(self, paths):
         md_path = _write_bare_string_links_page(paths)
