@@ -240,6 +240,54 @@ resources:
     path: references/compatibility-test-framework-design.md
     description: 兼容性测试框架设计文档：架构设计、数据模型、测试用例设计、评估指标体系
     triggers: 框架设计, 架构设计, 测试用例, 评估体系
+  - id: ccgp-search
+    path: references/ccgp-search.md
+    description: 中国政府采购网搜索自动化脚本（ccgp_search.py），支持招标公告/中标结果/更正公告/单一来源公示搜索
+    triggers: 政府采购, ccgp search, ccgp_search.py, 招标公告, 中标结果
+  - id: gov-open-search
+    path: references/gov-open-search.md
+    description: 全国政府信息公开搜索自动化脚本（gov_open_search.py），支持行政法规/部门规章/地方政府规章/规范性文件搜索
+    triggers: 政府信息公开, gov open search, gov_open_search.py, 政策文件, 行政法规
+  - id: baidu-health-search
+    path: references/baidu-health-search.md
+    description: 百度健康搜索自动化脚本（baidu_health_search.py），支持疾病知识/药品信息/医院信息/医生信息搜索
+    triggers: 百度健康, baidu health search, baidu_health_search.py, 疾病知识, 药品搜索
+  - id: yihu-search
+    path: references/yihu-search.md
+    description: 健康之路搜索自动化脚本（yihu_search.py），支持健康知识/药品信息/医院信息查询
+    triggers: 健康之路, yihu search, yihu_search.py, 健康知识, 医院查询
+  - id: familydoctor-search
+    path: references/familydoctor-search.md
+    description: 家庭医生在线搜索自动化脚本（familydoctor_search.py），支持疾病知识/药品信息/医院信息查询
+    triggers: 家庭医生, familydoctor search, familydoctor_search.py, 疾病知识, 医院查询
+  - id: cnlaw-search
+    path: references/cnlaw-search.md
+    description: 中国法律网搜索自动化脚本（cnlaw_search.py），支持法律法规/司法案例/法律咨询搜索
+    triggers: 中国法律网, cnlaw search, cnlaw_search.py, 法律法规, 司法案例
+  - id: cnlawyer-search
+    path: references/cnlawyer-search.md
+    description: 华律网搜索自动化脚本（cnlawyer_search.py），支持律师信息/法律咨询/法律知识搜索
+    triggers: 华律网, cnlawyer search, cnlawyer_search.py, 律师搜索, 法律咨询
+  - id: haolvshi-search
+    path: references/haolvshi-search.md
+    description: 华律师搜索自动化脚本（haolvshi_search.py），支持律师信息/法律咨询/法律知识搜索
+    triggers: 华律师, haolvshi search, haolvshi_search.py, 律师搜索, 法律咨询
+  - id: acla-search
+    path: references/acla-search.md
+    description: 中国法律援助网搜索自动化脚本（acla_search.py），支持法律援助/法律咨询/法律知识搜索
+    triggers: 法律援助, acla search, acla_search.py, 法律援助申请, 法律咨询
+  - id: ths-search
+    path: references/ths-search.md
+    description: 同花顺搜索自动化脚本（ths_search.py），支持股票行情/财经资讯/资金流向搜索
+    triggers: 同花顺, ths search, ths_search.py, 股票行情, 财经资讯
+  - id: finance-news-search
+    path: references/finance-news-search.md
+    description: 财经资讯搜索自动化脚本（finance_news_search.py），支持财联社/证券时报/第一财经多源新闻搜索
+    triggers: 财经新闻, finance news search, finance_news_search.py, 财联社, 证券时报
+  - id: tencent-sports-search
+    path: references/tencent-sports-search.md
+    description: 腾讯体育搜索自动化脚本（tencent_sports_search.py），支持体育新闻/赛事资讯/球员动态搜索
+    triggers: 腾讯体育, tencent sports search, tencent_sports_search.py, 体育新闻, NBA
 ---
 
 # Browser CDP Skill
