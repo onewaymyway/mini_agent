@@ -2791,11 +2791,7 @@ async def patch_self_config(request: Request):
         raise HTTPException(status_code=400, detail=str(e))
 
     try:
-        import json as _json
-        tmp_path = config_path.with_suffix(".json.tmp")
-        tmp_path.write_text(_json.dumps(new_raw, ensure_ascii=False, indent=2), encoding="utf-8")
-        import os as _os
-        _os.replace(tmp_path, config_path)
+        _cc.write_config_file(config_path, new_raw)
     except Exception as _mini_agent_exc:
         from mini_agent.errors import log_exception
         log_exception(_mini_agent_exc, where='mini_agent.api.routes.patch_self_config')

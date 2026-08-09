@@ -447,3 +447,62 @@ def apply_updates(raw_file_cfg: dict, updates: list) -> dict:
             new_cfg[json_key] = value
 
     return new_cfg
+
+
+def apply_list_seed_merge(raw_file_cfg: dict, block: str, field_name: str, new_items: list) -> tuple:
+    """[growth_advisor_improvement_plan_v4.md 方向二 2.2 节] 把一批字符串
+    合并进 `raw_file_cfg[block][field_name]`（一个 list 字段）的深拷贝，
+    返回 `(new_cfg, added_count)`。
+
+    跟 `apply_updates()` 是平行但独立的写路径——`apply_updates()` 只处理
+    `KNOWN_FIELDS` 里收录的标量字段（模块头部说明里明确写了"不收录
+    list/dict 类型的复杂字段"），`TechRadarConfig.keywords` 这类 list
+    字段走这里。两者共享同一套"深拷贝 + 不修改传入对象"约定，写盘统一
+    通过 `write_config_file()`（与 `PATCH /v1/self/config` 完全一致的
+    临时文件 + `os.replace` 原子写入），不允许调用方自己拼 JSON 直接
+    写文件——这是 2.5 节风险项 1 明确要求的"必须走跟看板保存配置一致的
+    路径"。
+
+    幂等：已存在的项（大小写不敏感比较）不重复添加，只追加新增的。
+    """
+    import copy
+    new_cfg = copy.deepcopy(raw_file_cfg)
+    block_dict = new_cfg.get(block)
+    if not isinstance(block_dict, dict):
+        block_dict = {}
+    existing = block_dict.get(field_name)
+    if not isinstance(existing, list):
+        existing = []
+    existing_lower = {str(x).strip().lower() for x in existing}
+    merged = list(existing)
+    added = 0
+    for item in new_items or []:
+        item = str(item).strip()
+        if not item:
+            continue
+        key = item.lower()
+        if key in existing_lower:
+            continue
+        existing_lower.add(key)
+        merged.append(item)
+        added += 1
+    block_dict[field_name] = merged
+    new_cfg[block] = block_dict
+    return new_cfg, added
+
+
+def write_config_file(config_path, raw_cfg: dict) -> None:
+    """原子写入 `agent_config.json`：临时文件 + `os.replace`，与
+    `PATCH /v1/self/config`（`api/routes.py::patch_self_config`）使用的
+    写入方式完全一致。所有需要修改配置文件的调用方（无论走的是
+    `apply_updates()` 还是 `apply_list_seed_merge()`）都应该收敛到这一个
+    函数完成落盘，避免同一份文件出现两套不一致的写入实现。
+    """
+    import json as _json
+    import os as _os
+    from pathlib import Path as _Path
+
+    config_path = _Path(config_path)
+    tmp_path = config_path.with_suffix(".json.tmp")
+    tmp_path.write_text(_json.dumps(raw_cfg, ensure_ascii=False, indent=2), encoding="utf-8")
+    _os.replace(tmp_path, config_path)

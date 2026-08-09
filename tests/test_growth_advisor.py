@@ -2691,5 +2691,132 @@ class TestHealthTrend(unittest.TestCase):
             self.assertEqual(ga.health_trend_series(paths), [])
 
 
+
+
+class TestSyncConfirmedTopicsToTechRadar(unittest.TestCase):
+    """[next_doc/growth_advisor_improvement_plan_v4.md 方向二 2.2 节 / N3]
+    把成长顾问已确认主题关键词同步进 TechRadarConfig.keywords。"""
+
+    def test_syncs_confirmed_builtin_and_custom_topic_keywords(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = _make_paths(tmp)
+            profile = UserProfile()
+            profile.derived = {
+                "growth_topic_keywords": {
+                    "rust_async": {
+                        "keywords": ["rust", "tokio"],
+                        "source": "user_added",
+                        "confirmed_by_user": True,
+                    },
+                    "unconfirmed_topic": {
+                        "keywords": ["should_not_sync"],
+                        "source": "llm_learned",
+                        "confirmed_by_user": False,
+                    },
+                }
+            }
+            cfg = GrowthAdvisorConfig()
+            added = ga.sync_confirmed_topics_to_tech_radar(paths, profile, cfg)
+            self.assertGreater(added, 0)
+
+            config_path = paths.project_root / "agent_config.json"
+            raw = json.loads(config_path.read_text(encoding="utf-8"))
+            keywords = raw["tech_radar"]["keywords"]
+            self.assertIn("rust", keywords)
+            self.assertIn("tokio", keywords)
+            self.assertNotIn("should_not_sync", keywords)
+
+    def test_is_idempotent_across_repeated_calls(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = _make_paths(tmp)
+            profile = UserProfile()
+            profile.derived = {
+                "growth_topic_keywords": {
+                    "rust_async": {
+                        "keywords": ["rust"],
+                        "source": "user_added",
+                        "confirmed_by_user": True,
+                    },
+                }
+            }
+            cfg = GrowthAdvisorConfig()
+            first = ga.sync_confirmed_topics_to_tech_radar(paths, profile, cfg)
+            second = ga.sync_confirmed_topics_to_tech_radar(paths, profile, cfg)
+            self.assertGreater(first, 0)
+            self.assertEqual(second, 0)
+
+    def test_no_confirmed_custom_topics_still_syncs_builtin(self):
+        """内置主题 confirmed_by_user 恒为 True（见 _effective_topic_
+        keywords），空 profile 时也会同步内置关键词——这是预期行为，不是
+        bug：只要打开了这个开关，内置主题本身就被视为"已确认"。"""
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = _make_paths(tmp)
+            profile = UserProfile()
+            cfg = GrowthAdvisorConfig()
+            added = ga.sync_confirmed_topics_to_tech_radar(paths, profile, cfg)
+            self.assertGreater(added, 0)
+
+    def test_run_daily_cycle_does_not_sync_when_flag_disabled(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = _make_paths(tmp)
+            now = time.time()
+            entries = [_FakeEntry(f"e{i}", "python pytest", ["python"], now - 10) for i in range(4)]
+            store = _FakeMemoryStore(entries)
+            profile = UserProfile()
+            cfg = GrowthAdvisorConfig(min_evidence_count=3, max_reports_per_run=2)
+            self.assertFalse(cfg.sync_confirmed_topics_to_tech_radar_enabled)
+
+            ga.run_daily_cycle(paths, cfg, profile, store)
+
+            self.assertFalse((paths.project_root / "agent_config.json").exists())
+
+    def test_run_daily_cycle_syncs_when_flag_enabled(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = _make_paths(tmp)
+            now = time.time()
+            entries = [_FakeEntry(f"e{i}", "python pytest", ["python"], now - 10) for i in range(4)]
+            store = _FakeMemoryStore(entries)
+            profile = UserProfile()
+            cfg = GrowthAdvisorConfig(
+                min_evidence_count=3, max_reports_per_run=2,
+                sync_confirmed_topics_to_tech_radar_enabled=True,
+            )
+
+            ga.run_daily_cycle(paths, cfg, profile, store)
+
+            config_path = paths.project_root / "agent_config.json"
+            self.assertTrue(config_path.exists())
+            raw = json.loads(config_path.read_text(encoding="utf-8"))
+            self.assertTrue(raw.get("tech_radar", {}).get("keywords"))
+
+    def test_sync_failure_does_not_break_run_daily_cycle_result(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = _make_paths(tmp)
+            now = time.time()
+            entries = [_FakeEntry(f"e{i}", "python pytest", ["python"], now - 10) for i in range(4)]
+            store = _FakeMemoryStore(entries)
+            profile = UserProfile()
+            cfg = GrowthAdvisorConfig(
+                min_evidence_count=3, max_reports_per_run=2,
+                sync_confirmed_topics_to_tech_radar_enabled=True,
+            )
+
+            orig = ga.sync_confirmed_topics_to_tech_radar
+            ga.sync_confirmed_topics_to_tech_radar = lambda *a, **kw: (_ for _ in ()).throw(RuntimeError("boom"))
+            try:
+                result = ga.run_daily_cycle(paths, cfg, profile, store)
+            finally:
+                ga.sync_confirmed_topics_to_tech_radar = orig
+            self.assertFalse(result["skipped"])
+            self.assertEqual(len(result["new_candidates"]), 1)
+
+    def test_missing_project_root_returns_zero(self):
+        from types import SimpleNamespace
+        fake_paths = SimpleNamespace(project_root=None)
+        profile = UserProfile()
+        cfg = GrowthAdvisorConfig()
+        self.assertEqual(ga.sync_confirmed_topics_to_tech_radar(fake_paths, profile, cfg), 0)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -1400,3 +1400,77 @@ removed` 黑名单（`growth_candidate_derive()` 消费时会跳过），
     触发是否新增了记忆"，可以在 `CronJobExecutor.run_job()`
     的 `RunOutcome` 里加一个可选字段，当前不属于 M3 范围。
 
+
+---
+
+## N3：关键词表 → tech_radar 种子同步（growth_advisor_improvement_plan_v4.md 方向二 2.2 节）
+
+对应 `next_doc/growth_advisor_improvement_plan_v4.md` 方向二 2.2 节，
+是 v4 优先级表里排在第三位、"改动集中、默认关闭零风险"的一个纯新增
+桥接函数。**只实现 2.2 节（关键词表 → tech_radar 种子），不实现 2.3/
+2.4 节（外部资讯作为展示/报告背景，划归 N4）**。
+
+- **配置新增**：`GrowthAdvisorConfig.sync_confirmed_topics_to_tech_
+  radar_enabled`（`config/models.py`，默认 `False`）——这会实际修改
+  `agent_config.json` 的内容，属于有实际外部效果的写操作，对齐方案
+  文档 2.2 节"不应该默认开启"的要求。
+- **`config_catalog.py` 新增两个函数**（2.5 节风险项 1 要求"必须走跟
+  看板保存配置完全一致的路径"，但 `apply_updates()` 按设计明确不收录
+  list/dict 类型字段，`TechRadarConfig.keywords` 是 list，因此新增
+  平行但独立的写路径，而不是硬塞进 `apply_updates()`）：
+  - `apply_list_seed_merge(raw_file_cfg, block, field_name, new_items)`：
+    对 list 字段做幂等合并（大小写不敏感去重），返回
+    `(new_cfg, added_count)`，深拷贝、不修改传入对象，跟
+    `apply_updates()` 的既有约定一致。
+  - `write_config_file(config_path, raw_cfg)`：从 `patch_self_config()`
+    里抽出来的原子写入逻辑（临时文件 + `os.replace`），供
+    `apply_list_seed_merge()` 的调用方和 `PATCH /v1/self/config` 共用
+    同一份实现——顺手把 `api/routes.py::patch_self_config()` 原地的
+    写入代码改成调用这个新函数，消除重复实现（`tests/
+    test_kanban_config_routes.py` 6 项回归测试确认这个重构没有改变
+    该接口的行为）。
+- **`growth_advisor.py` 新增**：
+  - `sync_confirmed_topics_to_tech_radar(paths, profile, cfg) -> int`：
+    调用 `_effective_topic_keywords(profile)` 取所有
+    `confirmed_by_user=True` 的主题（含内置主题——内置主题在
+    `_effective_topic_keywords()` 里恒为 `confirmed_by_user=True`，
+    是既有语义，本次沿用不做特殊处理）的关键词，合并调用
+    `config_catalog.apply_list_seed_merge()` + `write_config_file()`
+    写入 `TechRadarConfig.keywords`。返回本次新增的种子数量。只增不
+    减（不做反向删除，理由见方案文档 2.2 节：用户隐藏成长顾问主题
+    不等于不想再关注该方向的外部动态）。`paths.project_root` 缺失时
+    直接返回 0，不报错。
+  - `run_daily_cycle()` 收尾处新增一段 `try/except`：仅当
+    `cfg.sync_confirmed_topics_to_tech_radar_enabled` 为真时调用，
+    异常静默降级，不影响本轮扫描/候选生成/推送已经产出的结果——跟
+    N1 的健康度快照收尾是同一个"旁路增强不能反过来影响主流程"模式。
+- **测试**：
+  - 新增 `tests/test_config_catalog_list_seed_merge.py`（8 个用例：
+    空 block 合并、大小写不敏感幂等去重、不修改传入的原始 dict、
+    合并时保留 block 内其它字段、空白项被跳过、无新增项时
+    `added == 0`；`write_config_file()` 写入可读、覆盖已有文件后
+    临时文件不残留）。
+  - `tests/test_growth_advisor.py` 新增 `TestSyncConfirmedTopicsToTechRadar`
+    （7 个用例：正常同步已确认自定义主题关键词且不同步未确认主题、
+    重复调用幂等、空 profile 时仍会同步内置主题关键词（预期行为，不是
+    bug）、开关关闭时 `run_daily_cycle()` 不产生 `agent_config.json`
+    写入、开关开启时确实写入、同步内部异常不影响
+    `run_daily_cycle()` 的主返回值、`project_root` 缺失时返回 0）。
+  - `test_kanban_config_routes.py`（6 项，验证 `patch_self_config()`
+    重构没有改变行为）+ `test_growth_advisor.py`（172 项）+
+    `test_config_catalog_list_seed_merge.py`（8 项）合计 186 项全部
+    通过。
+- **范围取舍（未做的部分）**：
+  - 2.3 节（外部资讯命中 → 成长顾问候选展示补充信号，
+    `_external_signal_count_for_topic()`）、2.4 节（调研报告可选纳入
+    外部资讯背景，`cfg.report_include_external_context`）——按优先级
+    表排在 N4，依赖 2.2 节跑出的种子同步先验证数据链路通畅，本次不做。
+  - 2.5 节风险项 2（种子池膨胀，`daily_seed_limit` 不变导致覆盖一轮
+    的周期变长）——按方案文档"可以接受，不算 bug"的判断，不在本次
+    引入任何缓解机制（比如动态提升 `daily_seed_limit`），维持
+    `tech_radar_search.py` 原有的轮转游标机制不变。
+  - 没有在看板/CLI 层面新增"本轮同步了 N 个新种子"的展示——
+    `sync_confirmed_topics_to_tech_radar()` 的返回值目前只在
+    `run_daily_cycle()` 内部消费后丢弃；后续如果要展示，可以并入
+    `run_daily_cycle()` 的返回结构或者健康度快照（N1）的字段，当前
+    不属于 N3 范围。

@@ -2477,12 +2477,79 @@ def run_daily_cycle(paths, cfg, profile, memory_store, *, llm_helper: Optional[C
     except Exception:
         pass
 
+    # [growth_advisor_improvement_plan_v4.md 方向二 2.2 节 / N3] 默认
+    # 关闭——这会实际修改 agent_config.json，属于有外部效果的写操作，
+    # 只在用户显式打开时才会触发。跟健康度快照收尾一样静默降级，不
+    # 影响本轮已经产出的扫描/候选生成/推送结果。
+    if getattr(cfg, "sync_confirmed_topics_to_tech_radar_enabled", False):
+        try:
+            sync_confirmed_topics_to_tech_radar(paths, profile, cfg)
+        except Exception:
+            pass
+
     return {
         "skipped": False,
         "new_candidates": [c.candidate_id for c in new_candidates],
         "reports": [r.report_id for r in reports],
         "notification": notification,
     }
+
+
+# ────────── N3：关键词表 → tech_radar 种子同步（方向二 2.2 节）──────────
+
+def sync_confirmed_topics_to_tech_radar(paths, profile, cfg) -> int:
+    """把成长顾问里"已确认"（`confirmed_by_user=True`）且当前未被隐藏的
+    主题关键词，同步进 `TechRadarConfig.keywords`，供
+    `tech_radar_search.py` 的主动检索种子池使用。
+
+    - 只同步 confirmed 状态的主题（内置主题 / `user_added` / 已转正的
+      `llm_learned`），待确认的候选主题不同步——避免把还在观察期的
+      候选也拉去消耗外部检索配额，对齐成长顾问一贯"证据不够强就不
+      推荐"的克制原则。
+    - 幂等：`TechRadarConfig.keywords` 里已存在的关键词（大小写不敏感）
+      不重复添加，见 `config_catalog.apply_list_seed_merge()`。
+    - 不做反向删除：用户在成长顾问里隐藏/删除一个主题，不会自动从
+      tech_radar 种子池移除——两者语义不同（"不想再被成长顾问追踪"
+      不等于"不想再关注外部世界动态"），删除 tech_radar 种子仍然需要
+      用户去配置里手动做。
+    - 严格走跟"看板保存配置"完全一致的写入路径（`config_catalog.
+      apply_list_seed_merge()` + `write_config_file()`，2.5 节风险项 1
+      的明确要求），不直接拼 JSON 写文件。
+    - 由调用方（`run_daily_cycle()`）保证只在
+      `cfg.sync_confirmed_topics_to_tech_radar_enabled` 开启时调用——本
+      函数内部不重复判断这个开关（跟 `_record_health_snapshot()` 一样
+      "不感知调用时机、只管做事"的定位），但会做一次 `paths` 是否具备
+      `project_root` 的防御性判断。
+
+    返回本次新增的种子数量（0 表示没有新增，包括"没有已确认主题"和
+    "已确认主题的关键词都已经在种子池里了"两种情况，调用方不需要区分）。
+    异常向上抛出，由调用方决定如何静默降级。
+    """
+    project_root = getattr(paths, "project_root", None)
+    if project_root is None:
+        return 0
+
+    effective = _effective_topic_keywords(profile)
+    confirmed_keywords: list[str] = []
+    for topic, info in effective.items():
+        if not info.get("confirmed_by_user"):
+            continue
+        confirmed_keywords.extend(info.get("keywords") or [])
+    if not confirmed_keywords:
+        return 0
+
+    from mini_agent.config import config_catalog as _cc
+    from mini_agent.config.loader import _load_config_file
+
+    config_path = project_root / "agent_config.json"
+    raw_file_cfg = _load_config_file(config_path) if config_path.exists() else {}
+
+    new_raw, added = _cc.apply_list_seed_merge(
+        raw_file_cfg, "tech_radar", "keywords", confirmed_keywords,
+    )
+    if added > 0:
+        _cc.write_config_file(config_path, new_raw)
+    return added
 
 
 def growth_topic_map(paths) -> list[dict]:

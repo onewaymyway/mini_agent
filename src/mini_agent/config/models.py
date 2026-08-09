@@ -1746,6 +1746,17 @@ class GrowthAdvisorConfig:
     # 旧报告）。
     exploration_recent_window: int = 5
 
+    # ── N3：关键词表 → tech_radar 种子同步（growth_advisor_improvement_
+    # plan_v4.md 方向二 2.2 节）────────────────────────────────────────
+    # 默认关闭：这会实际修改 agent_config.json 的内容（写入
+    # TechRadarConfig.keywords），属于有实际外部效果的写操作，不应该
+    # 默认开启——用户需要显式打开才会触发这个联动。打开后，
+    # `run_daily_cycle()` 每日收尾时会把成长顾问里"已确认"
+    # （confirmed_by_user=True）且当前未被隐藏的主题关键词同步进
+    # `TechRadarConfig.keywords`（幂等，只增不减，见
+    # `sync_confirmed_topics_to_tech_radar()`）。
+    sync_confirmed_topics_to_tech_radar_enabled: bool = False
+
 
 @dataclass
 class ReminderConfig:
