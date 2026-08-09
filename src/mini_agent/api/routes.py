@@ -64,6 +64,8 @@ api/routes.py — FastAPI 路由定义
     GET    /v1/self/llm_pool_status  [kanban_perception_gaps_improvement_plan.md
                                        方向 B.1] LLMClientPool 故障转移状态
     GET    /v1/self/llm_call_stats   [同上 方向 B.2] 按天聚合的 LLM 调用计数
+    GET    /v1/objectives/completion_trend  [同上 方向 D.1] Objective 完成率
+                                       每日趋势（快照挂在 /growth/scan 上记录）
     GET    /v1/wiki/quarantine_status  [同上 方向 E] wiki 隔离区积压
     GET    /v1/sentinel/summary      [同上 方向 A] 哨兵聚合面板
     GET    /v1/goals                 GoalBacklog 完整视图（active goals + objectives）
@@ -6004,6 +6006,16 @@ async def post_growth_scan(request: Request):
                 llm_helper = lambda prompt, _h=helper: _h.ask(prompt)
         result = ga.run_daily_cycle(paths, cfg, profile, store, llm_helper=llm_helper)
         mgr.save()
+        # [kanban_perception_gaps_improvement_plan.md 方向 D.1] 复用这个
+        # 既有的每日调用点，顺带记一条 Objective 完成率快照——不新增独立
+        # 线程/cron。best-effort：跟成长顾问本身的信号扫描是两件不相关的
+        # 事，快照记录失败绝不能让本次成长顾问扫描的结果也跟着 500。
+        try:
+            from mini_agent.evolution.objective_trend import record_objective_completion_snapshot
+            record_objective_completion_snapshot(paths)
+        except Exception as _mini_agent_exc:
+            from mini_agent.errors import log_exception
+            log_exception(_mini_agent_exc, where="mini_agent.api.routes.post_growth_scan.objective_trend_snapshot")
         return result
     except HTTPException:
         raise
@@ -6247,6 +6259,25 @@ async def get_growth_health_trend(request: Request):
         except (TypeError, ValueError):
             limit = 30
         return {"health_trend": ga.health_trend_series(paths, limit=limit)}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/objectives/completion_trend")
+async def get_objectives_completion_trend(request: Request, limit: int = Query(30, ge=1, le=200)):
+    """GET /v1/objectives/completion_trend — [kanban_perception_gaps_
+    improvement_plan.md 方向 D.1] Objective 完成率每日快照序列（最近若干
+    天，按时间正序）：每天完成/失败的 Objective 数、平均重试次数、当前
+    活跃 Objective 数。快照由 `POST /v1/growth/scan`（cron
+    `sys:growth_advisor_daily` 每日调用）顺带记录，本端点只读，不触发
+    任何计算。"""
+    _require_owner(request)
+    try:
+        paths = _get_paths_for_request(request)
+        from mini_agent.evolution.objective_trend import objective_completion_trend_series
+        return {"completion_trend": objective_completion_trend_series(paths, limit=limit)}
     except HTTPException:
         raise
     except Exception as e:

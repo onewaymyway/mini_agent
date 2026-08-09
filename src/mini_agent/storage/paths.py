@@ -416,6 +416,18 @@ class AgentPaths:
         return self.workdir_dir / "llm_call_stats.jsonl"
 
     @property
+    def objective_completion_trend_path(self) -> Path:
+        """<project_root>/.agent/objective_completion_trend.jsonl —
+        [kanban_perception_gaps_improvement_plan.md 方向 D.1] Objective
+        完成率每日快照（`objectives_completed_today` /
+        `objectives_failed_today` / `avg_retry_count` /
+        `active_goals_count`），供看板"📌 目标看板"Tab 画趋势折线图。
+        用 `perception/daily_snapshot.py` 的通用"每日一条 + 按天降采样"
+        存储小工具，跟 `growth_health_trend_path` 是平行但独立的只追加
+        文件。"""
+        return self.workdir_dir / "objective_completion_trend.jsonl"
+
+    @property
     def wiki_growth_dir(self) -> Path:
         """<project_root>/.agent/wiki/growth/ — 成长顾问调研报告正文目录"""
         return self.wiki_dir / "growth"

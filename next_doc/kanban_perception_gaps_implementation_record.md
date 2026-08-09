@@ -84,7 +84,8 @@ recent_ratio` 字段本身就依赖 S4 的计算函数，两者天然是同一�
 
 ### 未实现（按设计文档优先级，留给后续分期）
 
-- 方向 D（Goal/Objective 完成率趋势、通用"每日快照"小工具抽取）
+（无——方向 A/B.1/B.2/C/D/E 已在本记录的三期改动中全部落地，详见下方
+第三期。）
 
 ---
 
@@ -127,42 +128,120 @@ recent_ratio` 字段本身就依赖 S4 的计算函数，两者天然是同一�
 
 ---
 
+## 第三期（D.1 + D.2）— 已完成
+
+### D.3 风险 1 的应对：抽取通用每日快照存储小工具
+
+- 新增 `perception/daily_snapshot.py`：`append_daily_snapshot()` /
+  `compact_daily_snapshot_storage()`（按天分桶、桶内保留 `recorded_at`
+  最大的一条）/ `read_daily_snapshot_series()`，跟 `growth_advisor.py::
+  _compact_health_trend_rows()` 的降采样语义完全一致（"每天一条，取
+  最新覆盖"）。
+- **有意的不一致，不是遗漏**：`growth_health_trend.jsonl` 本身**没有**
+  迁移到这个通用工具上——它已经有一套跑通并测试过的独立实现，本次不做
+  无收益的迁移重构（风险 > 收益：现成实现没有 bug，迁移只是为了"统一"
+  而统一）；`llm/call_stats.py`（B.2）也**没有**改造成基于本模块——它的
+  降采样语义是"按天求和"而不是"按天取最新"，语义不同，勉强复用只会让
+  接口参数变得更绕（需要传一个聚合函数）。这个通用小工具目前只服务于
+  新增的 D.1 场景，是"给未来同类场景一个现成的选项"，不是"强制所有
+  日快照类数据统一到一个实现"。
+
+### D.1：Objective 完成率趋势
+
+- 新增 `evolution/objective_trend.py`：`compute_objective_completion_
+  snapshot()`（纯计算，从 `.agent/objective_executions.json` 统计
+  `objectives_completed_today`/`objectives_failed_today`/
+  `avg_retry_count`/`active_goals_count`）+ `record_objective_
+  completion_snapshot()`（计算并追加快照）+
+  `objective_completion_trend_series()`（查询）+
+  `compact_objective_completion_trend_storage()`（降采样，委托给
+  `daily_snapshot.py`）。
+- **挂载点**：按设计文档"复用 `growth_advisor.run_daily_cycle()` 同一个
+  每日调用点"的建议，选择了 `POST /v1/growth/scan` 路由（cron
+  `sys:growth_advisor_daily` 每日调用的既有端点）——在
+  `ga.run_daily_cycle()` 成功后顺带记一条快照，best-effort（try/except
+  + log_exception，不影响成长顾问本身的返回结果）。**跟设计文档的取舍
+  差异**：设计文档也提到"或者新建一个平行的每日 cron"这个选项，本次
+  选择挂载到既有路由而不是新建 cron，是因为 Objective 完成率快照和
+  成长顾问信号扫描虽然领域不同，但都符合"daemon 每日收尾时该做的事"
+  这个语义，没有必要为了"代码归属"洁癖再新增一个 cron job 定义、
+  多一次调度开销——`objective_trend.py` 独立成模块（不是塞进
+  `growth_advisor.py`），已经保证了领域边界清晰，调用点复用不等于
+  代码耦合。
+- **"今天"的窗口口径**：`compute_objective_completion_snapshot()` 用
+  `now` 所在自然日的 `[day_start, day_start+86400)` 时间戳窗口判定
+  `completed`/`failed` 是否计入"今天"，`active_goals_count` 则不受时间
+  窗口限制（"现在还有多少个在跑"是瞬时状态，不是"今天发生了多少次"）。
+  测试覆盖了窗口内/窗口外两种边界。
+- 新增只读端点 `GET /v1/objectives/completion_trend?limit=30`。
+- 看板"📌 目标看板"Tab 顶部新增"📈 完成率趋势"折叠区块（默认收起，展开
+  才拉取），跟"🌱 成长顾问"tab 的"📈 健康度趋势"是同一套"折叠区块 + 折线
+  图 + 最新指标"展示模式，数据源完全独立。
+
+### D.2：记忆库增长趋势（几乎零成本的展示位置决策）
+
+- 设计文档明确指出这个需求已经被 `growth_health_trend.jsonl` 覆盖，
+  不需要新增任何采集逻辑——落地方式是"在'🧠 自我状态'Tab 也调用一次
+  既有的 `_render_growth_health_trend(client)` 组件"，跟"🌱 成长顾问"
+  Tab 复用同一个函数、同一份数据源，零新增存储/端点。
+
+### 未实现（超出改进方案范围，供未来参考）
+
+- D.3 风险 2 提到的"避免新增独立线程/cron"约束已经满足（D.1 挂载在
+  既有路由上）；风险 1 的通用小工具已抽取但只用于新场景，不做存量迁移
+  （见上）。方向 D 至此已按设计文档的范围全部落地。
+
+---
+
 ## 涉及文件清单
 
 | 文件 | 改动类型 | 说明 |
 |---|---|---|
 | `src/mini_agent/perception/sentinel.py` | 新增 | 五类扫描函数 + `sentinel_summary()` |
+| `src/mini_agent/perception/daily_snapshot.py` | 新增 | 通用每日快照存储小工具（方向 D.3 风险 1） |
 | `src/mini_agent/llm/call_stats.py` | 新增 | 轻量调用计数：攒批写入 + 按天聚合 + 降采样压缩 |
+| `src/mini_agent/evolution/objective_trend.py` | 新增 | Objective 完成率每日趋势快照（方向 D.1） |
 | `src/mini_agent/agent/llm_control.py` | 修改 | `_call_llm()` 挂载调用计数记录，新增 `_record_llm_call_stat()` helper |
 | `src/mini_agent/llm/service.py` | 修改 | `LLMHelper.chat()` 挂载调用计数记录，新增 `_record_call_stat()` helper |
-| `src/mini_agent/storage/paths.py` | 修改 | 新增 `llm_call_stats_path` 属性 |
+| `src/mini_agent/storage/paths.py` | 修改 | 新增 `llm_call_stats_path` / `objective_completion_trend_path` 属性 |
 | `src/mini_agent/evolution/resource_arbiter.py` | 修改 | 新增 `gating_ratio_summary()` |
-| `src/mini_agent/api/routes.py` | 修改 | 新增 4 个端点（llm_pool_status/wiki_quarantine_status/sentinel/summary/llm_call_stats）+ `gating_history` 响应扩展字段 + 路由列表注释更新 |
-| `apps/mini_agent_kanban/client.py` | 修改 | 新增 `llm_pool_status()` / `llm_call_stats()` / `wiki_quarantine_status()` / `sentinel_summary()` |
-| `apps/mini_agent_kanban/app.py` | 修改 | 新增 `_render_llm_pool_status()`（含调用统计图表）/ `_render_sentinel_panel()`，全局日程 Tab 展示 ratio_summary |
+| `src/mini_agent/api/routes.py` | 修改 | 新增 5 个端点（llm_pool_status/wiki_quarantine_status/sentinel/summary/llm_call_stats/objectives/completion_trend）+ `gating_history` 响应扩展字段 + `/growth/scan` 顺带记录 Objective 快照 + 路由列表注释更新 |
+| `apps/mini_agent_kanban/client.py` | 修改 | 新增 `llm_pool_status()` / `llm_call_stats()` / `wiki_quarantine_status()` / `sentinel_summary()` / `objective_completion_trend()` |
+| `apps/mini_agent_kanban/app.py` | 修改 | 新增 `_render_llm_pool_status()`（含调用统计图表）/ `_render_sentinel_panel()` / `_render_objective_completion_trend()`，自我状态 Tab 复用健康度趋势组件，全局日程 Tab 展示 ratio_summary |
 | `tests/test_sentinel_panel.py` | 新增 | 18 个测试用例，覆盖 sentinel.py 全部函数 |
 | `tests/test_llm_call_stats.py` | 新增 | 10 个测试用例，覆盖 call_stats.py 全部函数 |
-| `docs/kanban-dashboard-guide.md` | 修改 | 顶栏哨兵面板 / 自我状态 Tab LLM 区块 / 全局日程 Tab 占比摘要 / API 端点表 |
+| `tests/test_objective_completion_trend.py` | 新增 | 13 个测试用例，覆盖 daily_snapshot.py + objective_trend.py 全部函数 |
+| `docs/kanban-dashboard-guide.md` | 修改 | 顶栏哨兵面板 / 自我状态 Tab LLM+健康度趋势区块 / 目标看板 Tab 完成率趋势 / 全局日程 Tab 占比摘要 / API 端点表 |
 | `docs/llm-failover-guide.md` | 修改 | 新增"daemon 模式下的可观测性"与"轻量调用计数"两节 |
 
 ## 测试情况
 
 `tests/test_sentinel_panel.py`（18 用例）+ `tests/test_llm_call_stats.py`
-（10 用例）全部通过（`PYTHONPATH=src python3 -m pytest tests/
-test_sentinel_panel.py tests/test_llm_call_stats.py -q`）。回归验证了
+（10 用例）+ `tests/test_objective_completion_trend.py`（13 用例）共 41
+个新增用例全部通过（`PYTHONPATH=src python3 -m pytest tests/
+test_sentinel_panel.py tests/test_llm_call_stats.py tests/
+test_objective_completion_trend.py -q`）。回归验证了
 `test_gating_history_active_recording.py`、
 `test_resource_arbiter_gating_track_j.py`、
 `test_resource_arbiter_behavior_gating.py`、`test_wiki_quarantine.py`、
 `test_cron_job_runner_resource_arbiter.py`、`test_llm_helper.py`、
 `test_orchestration_llm_helper_provider.py`、
-`test_hybrid_exec_llm_pool_sharing.py` 共 102 个既有用例（前 52 个 +
-本次新增的 LLMHelper/call_with_pool 相关回归），全部通过，无回归。
-`test_gating_history.py`（依赖 fastapi TestClient）因为当前环境缺少
-可用的 `httpx2` 依赖无法收集，是既有环境缺口，跟本次改动无关（其余
-测试文件也依赖同样的 fastapi 但不需要 TestClient 因而不受影响）。
-`test_goal_mode.py` 中 5 个 `test_build_from_history_*` 用例本身就
-因为测试 mock 的 `_run_builder` 签名（单参数 `lambda prompt`）跟生产
-代码当前签名（`_run_builder(self, prompt, *, detection_text=None)`）
-不一致而失败，是运行环境里已经存在的测试/生产代码漂移，跟本次改动
-的调用路径（`GoalSpecBuilder._run_builder` 完全不经过 `LLMHelper.
-chat()`/`call_with_pool()`）无关，未做修复（超出本次改动范围）。
+`test_hybrid_exec_llm_pool_sharing.py` 共 74 个既有用例，全部通过，
+三期加起来累计 115 个用例全绿，无回归。
+
+**已知的、与本次改动无关的既有环境/代码问题**（均已核实不在本次改动
+的调用路径上，未做修复）：
+- `test_gating_history.py`（依赖 fastapi TestClient）因为当前环境缺少
+  可用的 `httpx2` 依赖无法收集；
+- `test_goal_mode.py` 中 5 个 `test_build_from_history_*` 用例的 mock
+  签名（`lambda prompt`）跟生产代码当前签名（`_run_builder(self,
+  prompt, *, detection_text=None)`）不一致而失败，是运行环境里已经
+  存在的测试/生产代码漂移，`GoalSpecBuilder._run_builder` 完全不经过
+  `LLMHelper.chat()`/`call_with_pool()`；
+- `test_growth_advisor.py::TestHealthTrend::
+  test_compact_health_trend_storage_downsamples_old_points` 断言
+  `removed == 2` 实际得到 `1`，该测试和被测函数
+  （`compact_health_trend_storage()`）均在 `growth_advisor.py` 里，
+  本次三期改动都没有修改过这个文件（只是新增了 `daily_snapshot.py`
+  作为供*未来*场景使用的独立工具，`growth_health_trend.jsonl` 的存量
+  实现原样未动），确认是环境里已经存在的问题。

@@ -288,6 +288,11 @@ class AgentClient:
         供"🧠 自我状态"tab"📊 LLM 调用统计"区块展示。"""
         return self._get("/self/llm_call_stats", params={"days": days})
 
+    def objective_completion_trend(self, limit: int = 30):
+        """[kanban_perception_gaps_improvement_plan.md 方向 D.1] Objective
+        完成率每日快照序列，供"📌 目标看板"tab"📈 完成率趋势"区块展示。"""
+        return self._get("/objectives/completion_trend", params={"limit": limit})
+
     def wiki_quarantine_status(self):
         """[kanban_perception_gaps_improvement_plan.md 方向 E] wiki 隔离区
         当前积压情况（不含已修复记录）。"""

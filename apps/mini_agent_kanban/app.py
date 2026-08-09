@@ -2510,8 +2510,51 @@ def _render_goal_card(
                     st.rerun()
 
 
+# [kanban_perception_gaps_improvement_plan.md 方向 D.1] "📈 完成率趋势"
+# ——跟上面 growth_health_trend 是完全平行的模式（同一套"每日一条快照 +
+# 折叠区块里才拉取"的展示约定），数据来源是新增的 `objective_trend.py`，
+# 快照挂在 `POST /v1/growth/scan`（cron sys:growth_advisor_daily 每日
+# 调用）上顺带记录，不是独立调度点。
+def _render_objective_completion_trend(client: "AgentClient"):
+    with st.expander("📈 完成率趋势", expanded=False):
+        try:
+            data = client.objective_completion_trend(limit=30) or {}
+        except Exception as e:
+            st.caption(f"趋势数据加载失败：{e}")
+            return
+        if data and "_error" in data:
+            st.caption(f"趋势数据加载失败：{data['_error']}")
+            return
+        rows = data.get("completion_trend") or []
+        if not rows:
+            st.caption("暂无历史快照——完成率趋势在每天一轮的自动扫描"
+                        "（sys:growth_advisor_daily）结束后才会记一条，"
+                        "至少运行几天后才能看到走势。")
+            return
+        import pandas as pd
+        df = pd.DataFrame(rows)
+        df["日期"] = df["recorded_at"].apply(
+            lambda ts: time.strftime("%m-%d", time.localtime(ts)) if ts else ""
+        )
+        df = df.set_index("日期")
+        chart_cols = {
+            "objectives_completed_today": "当日完成数",
+            "objectives_failed_today": "当日失败数",
+        }
+        present = [c for c in chart_cols if c in df.columns]
+        if present:
+            st.line_chart(df[present].rename(columns=chart_cols))
+        latest = rows[-1]
+        c1, c2, c3 = st.columns(3)
+        c1.metric("最近一次完成数", latest.get("objectives_completed_today", 0))
+        c2.metric("最近一次失败数", latest.get("objectives_failed_today", 0))
+        c3.metric("平均重试次数", latest.get("avg_retry_count", 0))
+
+
 def render_kanban_tab(client: AgentClient):
     st.markdown("#### 📌 目标看板 (Goal Backlog)")
+
+    _render_objective_completion_trend(client)
 
     with st.expander("➕ 新建目标"):
         with st.form("new_goal", clear_on_submit=True):
@@ -3484,6 +3527,14 @@ def render_self_tab(client: AgentClient):
 
     st.divider()
     _render_llm_pool_status(client)
+
+    st.divider()
+    _render_growth_health_trend(client)
+    # [kanban_perception_gaps_improvement_plan.md 方向 D.2] 记忆库增长
+    # 趋势——`growth_health_trend.jsonl` 里已经有 total_entries 等字段，
+    # 覆盖了"记忆总条数走势"这个需求，不需要为此单独另起一份存储，只是
+    # 换一个展示位置：跟"🌱 成长顾问"tab 复用同一个 `_render_growth_
+    # health_trend()` 组件和同一份数据源。
 
 
 # [kanban_perception_gaps_improvement_plan.md 方向 B.1] "🔀 LLM 故障转移状态"

@@ -141,6 +141,17 @@ Web Demo 的事件流面板类似，但集成在同一多 Tab 界面中。
 
 对接 Stage 9 自主 daemon 的 `GoalBacklog` 与 `CronScheduler`：
 
+- **📈 完成率趋势**（`GET /v1/objectives/completion_trend`，
+  `next_doc/kanban_perception_gaps_improvement_plan.md` 方向 D.1）：折叠
+  区块，展开才拉取。展示每日完成/失败 Objective 数的折线图，以及最近
+  一次快照的完成数/失败数/平均重试次数三个指标——回答"这周完成的
+  Objective 比上周多还是少""平均一个 Objective 要重试几次才能完成"这
+  类此前答不出来的趋势问题。跟"🌱 成长顾问"tab 的"📈 健康度趋势"是同一套
+  展示模式（折叠区块 + 折线图 + 最新指标），但数据源完全独立：本区块
+  的快照挂在 `POST /v1/growth/scan`（cron `sys:growth_advisor_daily` 每日
+  调用）上顺带记录，不是成长顾问自己的数据，只是复用了同一个每日调用
+  时机，避免新增线程/独立 cron。首次使用需要等 cron 至少跑过一轮才会
+  有数据，之前显示"暂无历史快照"提示。
 - 按状态列出 Goal（如 `pending` / `active` / `done`），支持新建目标（标题、描述、优先级、
   来源）。创建成功后用 `st.toast()` 弹出确认提示，表单同时以
   `clear_on_submit=True` 清空输入（`kanban_goal_creation_feedback_bugfix.md`），
@@ -277,6 +288,12 @@ B.2）展示近 7 天按天聚合的调用次数/失败数柱状图，以及当�
 跟需要手动开启的 `LLM_DEBUG=1` 完整调试日志是两套独立的东西，详见
 `docs/llm-failover-guide.md`。
 
+再往下是"📈 健康度趋势"折叠区块——跟"🌱 成长顾问"tab 里的同名区块是
+**同一个组件、同一份数据**（`next_doc/kanban_perception_gaps_improvement_
+plan.md` 方向 D.2）：`growth_health_trend.jsonl` 已经覆盖了"记忆总条数
+走势"这类需求，这里只是换一个展示位置方便"🧠 自我状态"tab 一站式查看，
+没有另起一份采集逻辑。
+
 ### ⏰ Cron 任务 Tab
 
 Cron Job 列表、启用/禁用、手动触发、新建，`priority` 字段的展示与编辑
@@ -356,6 +373,7 @@ Tab。流程与目标看板一致：点击"🗑️ 删除"进入二次确认态�
 | `force_reap(target=)` | `POST /v1/self/execution_model/force_reap` | 立即对指定链路（`cron`/`objective_step`/`isolated_pool`/`all`）跑一次卡死回收扫描 |
 | `llm_pool_status()` | `GET /v1/self/llm_pool_status` | LLMClientPool 当前故障转移状态：是否已切离首选配置、各 key 的 fail_count/冷却剩余时间（只读，方向 B.1） |
 | `llm_call_stats(days=7)` | `GET /v1/self/llm_call_stats` | 按天聚合的 LLM 调用计数：调用次数/成功失败数/切换次数/token 用量/平均耗时（只读，方向 B.2） |
+| `objective_completion_trend(limit=30)` | `GET /v1/objectives/completion_trend` | Objective 完成率每日快照序列：完成/失败数、平均重试次数、活跃数（只读，方向 D.1） |
 | `wiki_quarantine_status()` | `GET /v1/wiki/quarantine_status` | wiki 隔离区当前积压情况，不含已修复记录（只读，方向 E） |
 | `sentinel_summary(cron_failure_threshold=2)` | `GET /v1/sentinel/summary` | 哨兵聚合面板：cron 连续失败 + Objective 重试热点 + wiki 隔离区积压 + LLM 故障转移状态 + 近 7 天仲裁降级/阻塞占比一次性拉取（只读，方向 A） |
 
@@ -428,6 +446,10 @@ Tab。流程与目标看板一致：点击"🗑️ 删除"进入二次确认态�
 - `src/mini_agent/perception/sentinel.py` — 哨兵聚合面板后端：cron 连续
   失败 / Objective 重试热点 / wiki 隔离区积压 / LLM 故障转移状态 四类
   扫描函数 + `sentinel_summary()`
+- `src/mini_agent/perception/daily_snapshot.py` /
+  `src/mini_agent/evolution/objective_trend.py` — 方向 D.1 Objective
+  完成率每日趋势：通用"每日快照 + 降采样"存储小工具 + 具体的快照计算/
+  记录/查询函数
 
 ---
 
