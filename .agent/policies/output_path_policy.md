@@ -12,4 +12,4 @@
 
 禁止自动push代码，仅允许commit代码
 commit代码时，仅允许commit代码和配置文件还有对应的文档，禁止commit数据和测试数据或者测试结果之类的
-
+commit时，仅允许commit当前任务相关的内容，禁止commit非本任务相关的内容
