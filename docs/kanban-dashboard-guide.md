@@ -74,6 +74,22 @@ streamlit run app.py
   框之上单独高亮渲染一遍，并提供"❌ 清除定位"退出高亮态；跳转到「⏰ Cron
   任务」时目标 job 会被排到列表最前面并给出提示；跳转到「🔄 工作流」复用
   已有的 `wf_active_run_id` 机制直接展开该次运行详情。
+- **⚠️ 系统状态哨兵**（`GET /v1/sentinel/summary`，
+  `next_doc/kanban_perception_gaps_improvement_plan.md` 方向 A）：跟上面
+  "📥 全局待办中心"是姊妹关系但语义不同——待办中心的每一条都有明确的
+  下一步操作（批准/拒绝/查看），哨兵面板聚合的是"系统状态可能不太对劲，
+  用户大概率没注意到"的信号，很多条目本身不需要用户立即做什么，只是
+  提醒留意。两者刻意不合并，各自独立可折叠。当前聚合五类信号：
+  - cron job 连续失败次数达到阈值（默认 ≥2 次，含"已启用但一直在失败"
+    这种最容易被忽视的组合），点击"跳转"直接定位到「⏰ Cron 任务」Tab；
+  - Objective 执行步骤重试次数接近上限（快要判定失败前的最后一次机会）；
+  - wiki 隔离区积压条数（详见下方"🧠 自我状态"Tab 一节）；
+  - LLM 是否已切换到备用配置（详见下方 LLM 故障转移状态一节）；
+  - 过去 7 天资源仲裁处于 `degraded`/`blocked` 的时间占比。
+  五类中任意一类非空即视为"有内容"，区块默认展开；全部为空时区块本身
+  不渲染（不占位置提示"一切正常"）。不引入"已读/已忽略"状态机——某一类
+  信号持续存在但用户判断"不需要处理"时，让它持续显示是符合预期的，不是
+  bug。
 
 ## 多会话并行（每个看板页面绑定不同 session）
 
@@ -243,6 +259,18 @@ force_reap`）。区块下方还有"🩹 卡死回收累计计数"四个指标�
 Objective step/持久 Worker discard/隔离线程池重建），本次看板会话内
 任一数字增长会标红提示。
 
+Tab 末尾还有一个 **🔀 LLM 故障转移状态** 区块（`GET /v1/self/
+llm_pool_status`，`next_doc/kanban_perception_gaps_improvement_plan.md`
+方向 B.1）：展示 `LLMClientPool.snapshot()` 的当前状态——是否已经切离
+首选 provider/model（`current` entry 下标非 0 时高亮"⚠️ 当前已切换到
+备用配置"），以及每个 configured key 的可用性（🟢/🔴）、累计失败次数、
+冷却剩余时间。这是"接上一根已经焊好的线"：`LLMClientPool.snapshot()`
+早就实现好了，此前只在内部用于取当前模型名（`/models`、`/status`），
+key 级的 `fail_count`/`cooldown_remaining` 从未被任何端点返回过，daemon
+因为限流不断切 key/切配置时用户完全没有渠道知道。未配置
+`llm_fallback_chain`（只用单一配置）时本区块显示"未配置故障转移链"，
+不是错误。
+
 ### ⏰ Cron 任务 Tab
 
 Cron Job 列表、启用/禁用、手动触发、新建，`priority` 字段的展示与编辑
@@ -273,7 +301,14 @@ Tab。流程与目标看板一致：点击"🗑️ 删除"进入二次确认态�
   记录（例如从 `full` 变成 `degraded` 又恢复到 `full`），不是"每次轮询
   记一条"的日志流。记录的写入时机挂在 `/v1/autonomous/status` 被轮询上
   （看板顶栏会周期性调用），因此如果长时间没有任何客户端轮询过这个接口，
-  期间发生的状态变化不会被记录下来。
+  期间发生的状态变化不会被记录下来。时间线上方新增一行**聚合占比摘要**
+  （`next_doc/kanban_perception_gaps_improvement_plan.md` 方向 C，响应体
+  新增的 `ratio_summary` 字段）：过去 7 天 `full`/`degraded`/`blocked`
+  各自的累计时长占比，回答"这周有百分之多少时间处于降级/阻塞"这类逐条
+  时间线难以心算的问题。历史记录条数达到 `_GATING_HISTORY_MAX_ENTRIES`
+  （200 条）裁剪上限、且窗口内的最早一条记录仍晚于窗口起点时，摘要会
+  附带"数据不完整，可能因为期间状态变化过于频繁"的提示，而不是静默
+  给出一个不准确的比例。
 
 ## `AgentClient` 封装的 API 端点
 
@@ -313,6 +348,9 @@ Tab。流程与目标看板一致：点击"🗑️ 删除"进入二次确认态�
 | `decision_profile()` | `GET /v1/decision_profile` | 决策画像 Markdown + 结构化模式列表（只读） |
 | `execution_model_status()` | `GET /v1/self/execution_model_status` | 目标级持久 Worker / 调度心跳独立化两个灰度开关的生效状态，含 `recent_recoveries` 最近卡死回收事件（只读） |
 | `force_reap(target=)` | `POST /v1/self/execution_model/force_reap` | 立即对指定链路（`cron`/`objective_step`/`isolated_pool`/`all`）跑一次卡死回收扫描 |
+| `llm_pool_status()` | `GET /v1/self/llm_pool_status` | LLMClientPool 当前故障转移状态：是否已切离首选配置、各 key 的 fail_count/冷却剩余时间（只读，方向 B.1） |
+| `wiki_quarantine_status()` | `GET /v1/wiki/quarantine_status` | wiki 隔离区当前积压情况，不含已修复记录（只读，方向 E） |
+| `sentinel_summary(cron_failure_threshold=2)` | `GET /v1/sentinel/summary` | 哨兵聚合面板：cron 连续失败 + Objective 重试热点 + wiki 隔离区积压 + LLM 故障转移状态 + 近 7 天仲裁降级/阻塞占比一次性拉取（只读，方向 A） |
 
 上表标了 `session_id=` 的方法都新增了可选的 `session_id` 参数（默认 `None`，
 不传时行为与旧版本完全一致）：传了就会作为 `?session_id=` 查询参数附加到请求上，
@@ -376,6 +414,13 @@ Tab。流程与目标看板一致：点击"🗑️ 删除"进入二次确认态�
 - `next_doc/scheduling_unification_and_kanban_visibility_improvement_plan.md`
   — cron 仲裁接入 / priority 排序 / 仲裁状态可见 / recurring 语义合并 /
   "🗓️ 全局日程"Tab 的设计与实现记录
+- `next_doc/kanban_perception_gaps_improvement_plan.md` /
+  `next_doc/kanban_perception_gaps_implementation_record.md`
+  — "⚠️ 系统状态哨兵"面板、LLM 故障转移状态暴露、wiki 隔离区暴露、
+  仲裁状态聚合占比的设计与实现记录
+- `src/mini_agent/perception/sentinel.py` — 哨兵聚合面板后端：cron 连续
+  失败 / Objective 重试热点 / wiki 隔离区积压 / LLM 故障转移状态 四类
+  扫描函数 + `sentinel_summary()`
 
 ---
 

@@ -455,6 +455,43 @@ Configured models  (active: anthropic/claude-opus-4-7)
 
 > **注**：`Agent` 上还保留着更底层的 `switch_provider(llm_config)` 方法（供编程/测试场景直接传入完整 `LLMConfig` 使用），它会把整个 `LLMClientPool` 重建为单条链，丢弃原有 fallback chain。`/model` 与 `/provider switch` 这两个 CLI 命令不会调用它，而是调用 `switch_model()` / `switch_to_provider_default()`，二者都不会丢弃 fallback chain 中的其他条目。
 
+### daemon 模式下的可观测性（看板 / API）
+
+`/provider models` 是 CLI 内的命令，只在本地直跑或已连接的 REPL 里可用。
+daemon 模式下，`LLMClientPool.snapshot()` / `ApiKeyPool.snapshot()` 这两个
+早就实现好的方法此前完全没有被任何 HTTP 端点暴露过——daemon 在后台因为
+某个 provider 频繁触发限流而不断切 key/切配置时，看板用户没有任何渠道
+知道这件事正在发生，只能等到所有 fallback 都耗尽、彻底报错的那一刻才
+会注意到（详见 `next_doc/kanban_perception_gaps_improvement_plan.md`
+方向 B.1 的排查记录）。
+
+现在新增只读端点 `GET /v1/self/llm_pool_status`，返回：
+
+```json
+{
+  "entries": [
+    {"label": "anthropic/claude-opus-4-7", "active": true,
+     "keys": [{"key_suffix": "...abcd", "available": true,
+               "cooldown_remaining": 0.0, "fail_count": 1}]},
+    {"label": "openai/gpt-4o", "active": false}
+  ],
+  "current": 0,
+  "switched_from_preferred": false,
+  "enabled": true
+}
+```
+
+- `switched_from_preferred`：`current != 0` 的简化标记，即当前是否已经
+  不在 fallback chain 的第一条（首选）配置上——这是用户最想第一眼看到
+  的信号，不需要自己数第几个 entry 是 active。
+- 没有配置 `llm_fallback_chain`（只用单一配置）或 agent 未就绪时，
+  `enabled` 为 `false`，其余字段为空，不是错误。
+
+看板"🧠 自我状态"Tab 新增"🔀 LLM 故障转移状态"区块直接展示这份数据；
+`switched_from_preferred=true` 时还会出现在顶栏"⚠️ 系统状态哨兵"聚合面板
+里（见 `docs/kanban-dashboard-guide.md`）。这一步不涉及任何新增持久化，
+纯粹是把已经在内存里的状态读出来展示。
+
 ---
 
 ## 相关文件
@@ -467,3 +504,5 @@ Configured models  (active: anthropic/claude-opus-4-7)
 | `src/mini_agent/config.py` | `_load_providers_config`、`_merge_providers_into_chain`、`load_config` |
 | `src/mini_agent/agent.py` | `_call_llm` 通过 `LLMClientPool` 调用 |
 | `docs/retry-backoff-guide.md` | 重试退避策略（与本机制配合使用） |
+| `src/mini_agent/perception/sentinel.py` | `read_llm_pool_snapshot()`：把 `snapshot()` 转成 `GET /v1/self/llm_pool_status` 的响应结构 |
+| `next_doc/kanban_perception_gaps_improvement_plan.md` | 方向 B.1（故障转移状态暴露）设计与排查记录 |

@@ -1019,6 +1019,71 @@ def _render_topbar_body(client: AgentClient, session_id: str = ""):
 
     _render_global_inbox(client, session_id)
 
+    _render_sentinel_panel(client)
+
+
+# [kanban_perception_gaps_improvement_plan.md 方向 A] "⚠️ 系统状态哨兵"
+# ——跟上面"📥 全局待办中心"是姊妹关系但语义不同：待办中心的每一条都有
+# 明确的下一步操作（批准/拒绝/查看），这里聚合的是"系统状态可能不太
+# 对劲，用户大概率没注意到"的信号，很多条目本身不需要用户立即做什么，
+# 只是提醒留意，等它自己好转，或者用户判断后决定要不要介入。两者刻意
+# 不合并（合并会让待办中心变嘈杂、稀释高优先级信息），做成顶栏一个
+# 独立的可折叠区块，跟待办中心并列，不是子集关系（方向 A.0）。
+def _render_sentinel_panel(client: AgentClient) -> None:
+    data = client.sentinel_summary() or {}
+    if "_error" in data:
+        # 静默失败：哨兵面板是增强能力，不应影响顶栏其它内容的展示
+        return
+
+    total = data.get("total_count", 0)
+    if not total:
+        return
+
+    with st.expander(f"⚠️ 系统状态哨兵：发现 {total} 项可能需要留意（点击展开）", expanded=True):
+        cron_items = data.get("cron_jobs_with_failures") or []
+        if cron_items:
+            st.markdown(f"**⏰ {len(cron_items)} 个 cron job 连续失败**")
+            for job in cron_items:
+                enabled_badge = "🟢 已启用" if job.get("enabled") else "⚪ 已停用"
+                c1, c2 = st.columns([6, 1])
+                c1.caption(
+                    f"{enabled_badge}　**{job.get('name')}**　"
+                    f"连续失败 {job.get('consecutive_failures')} 次"
+                    + (f"　·　{job.get('last_error')}" if job.get("last_error") else "")
+                )
+                if c2.button("跳转", key=f"sentinel_jump_cron_{job.get('job_id')}"):
+                    st.session_state["cron_focus_job_id"] = job.get("job_id")
+                    st.session_state["_pending_tab_switch"] = "⏰ Cron 任务"
+                    st.rerun()
+
+        obj_items = data.get("stuck_objective_steps") or []
+        if obj_items:
+            st.markdown(f"**🎯 {len(obj_items)} 个 Objective 正卡在重试循环里**")
+            for ex in obj_items:
+                st.caption(
+                    f"**{ex.get('title')}**　最多重试 {ex.get('max_retry_count')} 次"
+                    + (f"　·　{ex.get('last_error')}" if ex.get("last_error") else "")
+                )
+
+        qb = data.get("quarantine_backlog") or {}
+        if qb.get("pending_count"):
+            st.markdown(f"**📚 wiki 隔离区积压 {qb.get('pending_count')} 条**")
+            st.caption("格式损坏/解析失败的 wiki 页面，可通过 CLI `quarantine` 命令查看/修复明细。")
+
+        llm_state = data.get("llm_failover_state") or {}
+        if llm_state.get("switched_from_preferred"):
+            st.markdown("**🔀 LLM 已切换到备用配置**（不在首选 provider/model 上，详见\"🧠 自我状态\"tab）")
+
+        ratio = data.get("arbitration_recent_ratio") or {}
+        ratios = ratio.get("ratios") or {}
+        if ratios and (ratios.get("degraded", 0) + ratios.get("blocked", 0)) > 0:
+            incomplete_note = "（数据不完整，可能因为期间状态变化过于频繁）" if ratio.get("incomplete") else ""
+            st.markdown(
+                f"**🗓️ 过去 {ratio.get('window_days', 7):.0f} 天资源仲裁**：🟢 正常 "
+                f"{ratios.get('full', 0):.0%} · 🟡 降级 {ratios.get('degraded', 0):.0%} · "
+                f"🔴 阻塞 {ratios.get('blocked', 0):.0%}{incomplete_note}"
+            )
+
 
 def _render_global_inbox(client: AgentClient, current_session_id: str = "") -> None:
     """[看板与自主性改进方案 Track A] 全局待办通知中心：跨所有 session 聚合
@@ -3417,6 +3482,47 @@ def render_self_tab(client: AgentClient):
     st.divider()
     _render_scheduling_overview(client)
 
+    st.divider()
+    _render_llm_pool_status(client)
+
+
+# [kanban_perception_gaps_improvement_plan.md 方向 B.1] "🔀 LLM 故障转移状态"
+# ——把已经在内存里现成可用的 LLMClientPool.snapshot() 接上一个只读展示，
+# 让"daemon 正在因为限流不断切 key/切配置"这件事不再是用户完全无从得知、
+# 只能等所有 fallback 耗尽才发现的黑箱。
+def _render_llm_pool_status(client: AgentClient) -> None:
+    st.markdown("**🔀 LLM 故障转移状态**")
+    data = client.llm_pool_status() or {}
+    if "_error" in data:
+        st.caption(f"读取失败：{data['_error']}")
+        return
+    if not data.get("enabled"):
+        st.caption("未配置故障转移链（llm_fallback_chain 为空），仅使用单一配置。")
+        return
+
+    entries = data.get("entries") or []
+    if data.get("switched_from_preferred"):
+        st.warning("⚠️ 当前已切换到备用配置，不在首选 provider/model 上")
+    else:
+        st.caption("✅ 当前使用首选配置")
+
+    for i, entry in enumerate(entries):
+        active = entry.get("active")
+        label = entry.get("label", f"配置 {i}")
+        prefix = "🟢 " if active else "⚪ "
+        st.markdown(f"{prefix}**{label}**" + ("（当前激活）" if active else ""))
+        keys = entry.get("keys") or []
+        if keys:
+            for k in keys:
+                avail = k.get("available")
+                icon = "🟢" if avail else "🔴"
+                cooldown = k.get("cooldown_remaining", 0)
+                cooldown_txt = f"，冷却剩余 {cooldown}s" if cooldown else ""
+                st.caption(
+                    f"　{icon} key `...{k.get('key_suffix', '')}` "
+                    f"失败次数:{k.get('fail_count', 0)}{cooldown_txt}"
+                )
+
 
 # ═══════════════════════════════════════════════════════════════════════
 # Tab: 🌱 成长顾问（next_doc/growth_advisor_design.md，P1 里程碑）
@@ -5141,6 +5247,18 @@ def render_global_schedule_tab(client: AgentClient):
     if hist_resp and "_error" in hist_resp:
         st.caption(f"获取仲裁状态历史失败：{hist_resp['_error']}")
     else:
+        # [kanban_perception_gaps_improvement_plan.md 方向 C] 逐条时间线在
+        # 条目多的时候人眼很难心算出"过去 7 天有百分之多少的时间处于
+        # degraded/blocked"，这里在时间线上方加一行聚合占比摘要。
+        ratio_summary = (hist_resp or {}).get("ratio_summary") or {}
+        ratios = ratio_summary.get("ratios") or {}
+        if any(ratios.values()):
+            incomplete_note = "（数据不完整，可能因为期间状态变化过于频繁）" if ratio_summary.get("incomplete") else ""
+            st.caption(
+                f"过去 {ratio_summary.get('window_days', 7):.0f} 天：🟢 正常 "
+                f"{ratios.get('full', 0):.0%} · 🟡 降级 {ratios.get('degraded', 0):.0%} · "
+                f"🔴 阻塞 {ratios.get('blocked', 0):.0%}{incomplete_note}"
+            )
         history = (hist_resp or {}).get("history") or []
         if not history:
             st.caption("暂无状态变化记录（仲裁状态自看板启用以来一直保持不变，"

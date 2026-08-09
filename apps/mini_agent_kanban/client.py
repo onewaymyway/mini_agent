@@ -276,6 +276,24 @@ class AgentClient:
         区块展示。"""
         return self._get("/self/scheduling_overview")
 
+    def llm_pool_status(self):
+        """[kanban_perception_gaps_improvement_plan.md 方向 B.1] LLMClientPool
+        当前故障转移状态（是否已切离首选配置、各 key 冷却/可用状态），供
+        "🧠 自我状态"tab"🔀 LLM 故障转移状态"区块展示。"""
+        return self._get("/self/llm_pool_status")
+
+    def wiki_quarantine_status(self):
+        """[kanban_perception_gaps_improvement_plan.md 方向 E] wiki 隔离区
+        当前积压情况（不含已修复记录）。"""
+        return self._get("/wiki/quarantine_status")
+
+    def sentinel_summary(self, cron_failure_threshold: int = 2):
+        """[kanban_perception_gaps_improvement_plan.md 方向 A] 哨兵聚合面板：
+        cron 连续失败 + Objective 重试热点 + wiki 隔离区积压 + LLM 故障转移
+        状态 + 近 7 天仲裁降级/阻塞占比，一次性拉取，供顶栏"⚠️ 系统状态
+        哨兵"区块展示。"""
+        return self._get("/sentinel/summary", params={"cron_failure_threshold": cron_failure_threshold})
+
     def force_reap(self, target: str = "all"):
         """[kanban_execution_visibility_and_control_plan.md 阶段 B/C]
         看板"🚨 立即回收"按钮：不必等 watchdog 下一次 tick，立刻对指定

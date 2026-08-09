@@ -103,6 +103,96 @@ def read_gating_history(paths: "AgentPaths", limit: int = 50) -> list[dict]:
         return []
 
 
+def gating_ratio_summary(paths: "AgentPaths", *, window_days: float = 7.0, limit: int = 200) -> dict:
+    """[kanban_perception_gaps_improvement_plan.md 方向 C] 基于
+    `read_gating_history()` 的逐条状态变化记录，重建 `window_days` 天窗口内
+    full/degraded/blocked 三态各自的累计时长占比。
+
+    纯计算函数，不新增任何落盘文件——所有输入数据 `record_gating_transition()`
+    已经持久化在 gating_history.jsonl 里了。
+
+    重建方法：记录只在\"状态变化时\"才追加一条（见 `record_gating_transition()`
+    的去重逻辑），所以某个时间点的状态 = 小于等于该时间点的最后一条记录的
+    state。用相邻两条记录的时间差做区间累加；窗口起点落在两条记录之间的，
+    只计入窗口内的那一段；最后一条记录到\"现在\"的这段区间按当前状态计入。
+
+    返回：
+    {
+      "window_days": float,
+      "ratios": {"full": 0.92, "degraded": 0.06, "blocked": 0.02},  # 占比之和≈1
+      "seconds": {"full": ..., "degraded": ..., "blocked": ...},    # 原始秒数，供调试
+      "incomplete": bool,   # True 表示历史记录可能因为
+                             # _GATING_HISTORY_MAX_ENTRIES 裁剪而缺失窗口最早的一段
+                             # （或窗口内压根没有任何记录，也就是"从未变化过"，
+                             # 此时 incomplete 仍为 False，因为不是被裁剪掉的）
+    }
+
+    窗口内没有任何状态变化记录、也没有任何历史记录时，返回全部为 0 的占比，
+    调用方应据此展示"暂无数据"而不是强行凑出 100%。
+    """
+    now = time.time()
+    window_seconds = max(0.0, window_days) * 86400.0
+    window_start = now - window_seconds
+
+    seconds = {"full": 0.0, "degraded": 0.0, "blocked": 0.0}
+    incomplete = False
+
+    try:
+        all_entries = read_gating_history(paths, limit=limit)
+    except Exception:
+        all_entries = []
+
+    if not all_entries:
+        return {
+            "window_days": window_days,
+            "ratios": {"full": 0.0, "degraded": 0.0, "blocked": 0.0},
+            "seconds": seconds,
+            "incomplete": False,
+        }
+
+    # 记录数达到裁剪上限，且最早一条记录本身就落在窗口内（说明窗口内的
+    # 状态变化次数可能超过了 limit，更早的记录已经被裁剪掉，无法准确重建）。
+    if len(all_entries) >= min(limit, _GATING_HISTORY_MAX_ENTRIES) and all_entries[0].get("at", now) > window_start:
+        incomplete = True
+
+    # 窗口开始时刻的状态：取窗口起点之前（或恰好等于）的最后一条记录的 state；
+    # 如果所有记录都晚于窗口起点，说明窗口起点之前的状态未知，退化为把
+    # 第一条记录的 state 当作窗口起点状态（保守近似，不因此判定 incomplete，
+    # 因为这只是"窗口比数据历史更长"，不是数据被裁剪导致的缺失）。
+    prev_state = all_entries[0].get("state", "full")
+    prev_at = window_start
+    for entry in all_entries:
+        at = entry.get("at", now)
+        state = entry.get("state", "full")
+        if at <= window_start:
+            prev_state = state
+            continue
+        seg_start = max(prev_at, window_start)
+        seg_end = min(at, now)
+        if seg_end > seg_start and prev_state in seconds:
+            seconds[prev_state] += seg_end - seg_start
+        prev_state = state
+        prev_at = at
+
+    # 最后一条记录到"现在"的这段区间。
+    seg_start = max(prev_at, window_start)
+    if now > seg_start and prev_state in seconds:
+        seconds[prev_state] += now - seg_start
+
+    total = sum(seconds.values())
+    if total <= 0:
+        ratios = {"full": 0.0, "degraded": 0.0, "blocked": 0.0}
+    else:
+        ratios = {k: round(v / total, 4) for k, v in seconds.items()}
+
+    return {
+        "window_days": window_days,
+        "ratios": ratios,
+        "seconds": {k: round(v, 1) for k, v in seconds.items()},
+        "incomplete": incomplete,
+    }
+
+
 class ResourceArbiter:
     """
     自主任务的资源仲裁器。

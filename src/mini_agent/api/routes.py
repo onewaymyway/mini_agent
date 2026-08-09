@@ -58,7 +58,13 @@ api/routes.py — FastAPI 路由定义
     GET    /v1/autonomous/gating_history  [scheduling_unification_and_kanban_
                                        visibility_improvement_plan.md P5]
                                        ResourceArbiter 三态门控状态变化时间线
-                                       （?limit=50）
+                                       （?limit=50），响应附带 ratio_summary
+                                       （近 7 天三态占比，见 kanban_perception_
+                                       gaps_improvement_plan.md 方向 C）
+    GET    /v1/self/llm_pool_status  [kanban_perception_gaps_improvement_plan.md
+                                       方向 B.1] LLMClientPool 故障转移状态
+    GET    /v1/wiki/quarantine_status  [同上 方向 E] wiki 隔离区积压
+    GET    /v1/sentinel/summary      [同上 方向 A] 哨兵聚合面板
     GET    /v1/goals                 GoalBacklog 完整视图（active goals + objectives）
     POST   /v1/goals                 新增 Goal
     PATCH  /v1/goals/{goal_id}       更新 Goal 状态/进度/优先级/标题/描述
@@ -483,6 +489,120 @@ async def list_models(request: Request):
         from mini_agent.errors import log_exception
         log_exception(_mini_agent_exc, where='mini_agent.api.routes')
     return {"models": models, "current": current}
+
+
+# ── LLM 故障转移状态（方向 B.1）─────────────────────────────────────────────
+# 背景：LLMClientPool.snapshot() / ApiKeyPool.snapshot() 早就实现好了
+# （供上面 /models 端点内部取当前模型名用），但 key 级 fail_count/
+# cooldown_remaining、entry 级切换状态从未被任何端点返回过——daemon 在
+# 后台因为某个 provider 频繁触发限流而不断切 key/切配置时，用户完全没有
+# 渠道知道这件事正在发生。这里只是"接上一根已经焊好的线"：把已经在内存里
+# 的状态通过只读端点读出来，不新增任何持久化。
+@router.get("/self/llm_pool_status")
+async def get_self_llm_pool_status(request: Request):
+    """GET /v1/self/llm_pool_status — LLMClientPool 当前故障转移状态：
+    每条 fallback 配置的 label/是否激活，激活配置下每个 key 的
+    fail_count/冷却剩余时间/是否可用。
+
+    返回结构：
+    {
+      "entries": [{"label": str, "active": bool, "keys": [...]}, ...],
+      "current": int,                    # 当前激活的 entry 下标
+      "switched_from_preferred": bool,   # current != 0，即已经不在首选配置上
+    }
+
+    _client_pool 不存在（没有配置 llm_fallback_chain，或 agent 未就绪）时
+    返回全部字段为空/False 的结构，不报错——这是"未启用"，不是"出错"。
+    """
+    bridge = _bridge(request)
+    from mini_agent.perception.sentinel import read_llm_pool_snapshot
+
+    pool = getattr(bridge.agent, "_client_pool", None) if bridge.agent else None
+    snap = read_llm_pool_snapshot(pool)
+    if snap is None:
+        return {"entries": [], "current": 0, "switched_from_preferred": False, "enabled": False}
+    return {**snap, "enabled": True}
+
+
+# ── wiki 隔离区积压（方向 E）─────────────────────────────────────────────────
+# 背景：wiki/quarantine.py 的 load_quarantine()/ScanReport 目前是一个完全
+# 独立于看板/API 之外的孤岛，只有 cli/commands/quarantine.py 能访问。这类
+# "格式损坏/解析失败被隔离的 wiki 页面"如果持续积压，用户除非记得定期敲
+# CLI 命令检查，否则永远不会知道。这里只加只读暴露，不新增修复流程
+# （修复仍然走 wiki/quarantine_repair.py 描述的 LLM 修复流程 / CLI）。
+@router.get("/wiki/quarantine_status")
+async def get_wiki_quarantine_status(request: Request):
+    """GET /v1/wiki/quarantine_status — wiki 隔离区当前积压情况（不含已修复
+    记录）。供看板哨兵面板 quarantine_backlog 一类展示，也可独立调用。"""
+    http_server = getattr(request.app.state, "http_server", None)
+    if http_server is None:
+        raise HTTPException(status_code=503, detail="HttpServer not available")
+    _require_owner(request)
+
+    try:
+        from mini_agent.storage.paths import AgentPaths
+        from mini_agent.perception.sentinel import _scan_quarantine_backlog
+
+        self_agent = http_server.bridge.agent
+        project_root = getattr(self_agent.cfg, "project_root", None) if self_agent else None
+        if project_root is None:
+            return {"pending_count": 0, "earliest_first_seen_at": None, "items": []}
+        paths = AgentPaths(project_root)
+        return _scan_quarantine_backlog(paths)
+    except Exception as _mini_agent_exc:
+        from mini_agent.errors import log_exception
+        log_exception(_mini_agent_exc, where='mini_agent.api.routes.get_wiki_quarantine_status')
+        return {"pending_count": 0, "earliest_first_seen_at": None, "items": []}
+
+
+# ── 哨兵聚合面板（kanban_perception_gaps_improvement_plan.md 方向 A）────────
+@router.get("/sentinel/summary")
+async def get_sentinel_summary(
+    request: Request,
+    cron_failure_threshold: int = Query(2, ge=1, description="cron 连续失败达到此次数才提醒"),
+):
+    """GET /v1/sentinel/summary — 聚合"系统状态可能不太对劲，用户大概率
+    没注意到"的信号：cron 连续失败、Objective 重试热点、wiki 隔离区积压、
+    LLM 故障转移状态、最近 7 天仲裁降级/阻塞占比。
+
+    跟 /v1/inbox（全局待办中心）是姊妹关系但语义不同：inbox 的每一条都有
+    明确的下一步操作（批准/拒绝/查看），本端点的很多条目本身不需要用户
+    立即做什么，只是"提醒留意"。详见 kanban_perception_gaps_improvement_
+    plan.md 方向 A.0。
+
+    全部只读聚合，不修改任何现有状态；单个数据源失败时该类返回空结构，
+    不影响其它类别（见 perception/sentinel.py 的失败降级约定）。
+    """
+    http_server = getattr(request.app.state, "http_server", None)
+    if http_server is None:
+        raise HTTPException(status_code=503, detail="HttpServer not available")
+    _require_owner(request)
+
+    try:
+        from mini_agent.storage.paths import AgentPaths
+        from mini_agent.perception.sentinel import sentinel_summary
+
+        self_agent = http_server.bridge.agent
+        project_root = getattr(self_agent.cfg, "project_root", None) if self_agent else None
+        if project_root is None:
+            return {
+                "generated_at": time.time(), "total_count": 0,
+                "cron_jobs_with_failures": [], "stuck_objective_steps": [],
+                "quarantine_backlog": {"pending_count": 0, "earliest_first_seen_at": None, "items": []},
+                "llm_failover_state": None, "arbitration_recent_ratio": None,
+            }
+        paths = AgentPaths(project_root)
+        client_pool = getattr(self_agent, "_client_pool", None)
+        return sentinel_summary(paths, client_pool=client_pool, cron_failure_threshold=cron_failure_threshold)
+    except Exception as _mini_agent_exc:
+        from mini_agent.errors import log_exception
+        log_exception(_mini_agent_exc, where='mini_agent.api.routes.get_sentinel_summary')
+        return {
+            "generated_at": time.time(), "total_count": 0,
+            "cron_jobs_with_failures": [], "stuck_objective_steps": [],
+            "quarantine_backlog": {"pending_count": 0, "earliest_first_seen_at": None, "items": []},
+            "llm_failover_state": None, "arbitration_recent_ratio": None,
+        }
 
 
 # ── 诊断（Stage 6 / 6.2）──────────────────────────────────────────────────────
@@ -3164,16 +3284,27 @@ async def get_gating_history(request: Request, limit: int = Query(50, ge=1, le=2
     _require_owner(request)
 
     try:
-        from mini_agent.evolution.resource_arbiter import read_gating_history
+        from mini_agent.evolution.resource_arbiter import read_gating_history, gating_ratio_summary
         al = http_server.autonomous_loop
         paths = getattr(al, "_paths", None) if al is not None else None
         if paths is None:
             return {"history": []}
-        return {"history": read_gating_history(paths, limit=limit)}
+        history = read_gating_history(paths, limit=limit)
+        # [kanban_perception_gaps_improvement_plan.md 方向 C] 顺带在同一个
+        # 响应里附一份"过去 7 天三态占比"的聚合摘要——数据来源和调用方跟
+        # 逐条时间线完全一致，没必要为这一个数字单独拆一次请求。计算失败
+        # 时该字段整体缺省为 None，不影响 history 本身的返回。
+        ratio_summary = None
+        try:
+            ratio_summary = gating_ratio_summary(paths, window_days=7.0)
+        except Exception as _mini_agent_exc2:
+            from mini_agent.errors import log_exception
+            log_exception(_mini_agent_exc2, where='mini_agent.api.routes.get_gating_history.ratio_summary')
+        return {"history": history, "ratio_summary": ratio_summary}
     except Exception as _mini_agent_exc:
         from mini_agent.errors import log_exception
         log_exception(_mini_agent_exc, where='mini_agent.api.routes.get_gating_history')
-        return {"history": []}
+        return {"history": [], "ratio_summary": None}
 
 
 # ── Goals REST API ────────────────────────────────────────────────────────────
