@@ -517,3 +517,65 @@ M3/M4（cron 任务本身产出记忆）按第 5 节分期建议暂未实施。
 额外做过一次 `load_config()` 端到端加载确认默认值生效
 （`profile.enabled=True`、`memory_backfill` 各字段读到预期默认值）。
 
+---
+
+## 8. 看板信息展示（v3 追加）
+
+M1/M2 落地后本机制本身对用户是"看不见"的——除了 `/memory backfill`
+和 `/profile rebuild` 两个命令，用户没有直观的地方能看到"记忆回填还有
+多少存量没处理"、"画像里哪些特征已经很久没被印证"。本节把这两块信息
+接入看板"🌱 成长顾问"tab 的"🧠 Agent 对你的了解"区块（已实现，v3 补充
+落地）：
+
+**改动点**：
+
+- `src/mini_agent/evolution/growth_advisor.py::diagnostics_snapshot()`
+  —— 新增可选参数 `profile_cfg`（用于取 `stale_after_days`）；
+  `user_profile` 字段新增 `stale_tech_stack`/`stale_habits`/
+  `stale_after_days`（复用 `profile.py` 的 `_migrate_text_items()`/
+  `stale_items()`，只读计算，不触发画像刷新）；`memory` 字段新增
+  `backfill_candidates_count`（复用 `memory_backfill.py::
+  scan_sessions_for_backfill()` 做只读扫描，不触发实际回填/写入）。
+  两处计算都做了 try/except 静默降级为空值/0，任何一处失败不影响
+  诊断面板其它部分正常展示。
+- `src/mini_agent/api/routes.py::get_growth_summary()` —— 调用
+  `diagnostics_snapshot()` 时传入 `profile_cfg=self_agent.cfg.profile`；
+  `cron_jobs` 透出列表里加入 `sys:memory_backfill_scan`（跟已有的
+  `JOB_ID_DAILY`/`JOB_ID_MONTHLY` 并列），供看板展示回填任务的
+  上次/下次运行时间。
+- `apps/mini_agent_kanban/app.py::_render_growth_profile_and_keywords()`
+  —— 新增两块只读展示：
+  - **🕰️ 待复核特征**：默认折叠的 expander，列出超过
+    `stale_after_days` 天未被印证的 `tech_stack`/`habits` 条目，纯
+    提示，不提供手动删除（去留仍交给下一次画像增量更新时的 LLM 判断，
+    保持跟 3.4 节"去留由 LLM 决定"的设计原则一致）。
+  - **🗄️ 记忆回填状态**：待回填候选数 + `sys:memory_backfill_scan`
+    的运行状态（非 daemon 模式下无法拿到 cron 任务状态，提示改用
+    `/memory backfill` 手动执行）。
+
+**未做的事**：不在看板上提供"立即触发一次回填/立即重建画像"的按钮
+——这两个操作本身成本不低（要跑多次 LLM 调用），且已经有对应的 CLI
+命令（`/memory backfill`、`/profile rebuild`），看板本节定位是"只读
+状态展示"，避免看板功能面铺得太开、每个信息展示都顺带加一个动作
+按钮。如果后续有明确需求，可以再单独排期。
+
+**改动文件清单（本节新增/修改）**：
+
+- `src/mini_agent/evolution/growth_advisor.py` —— `diagnostics_snapshot()`
+  扩展（见上）。
+- `src/mini_agent/api/routes.py` —— `get_growth_summary()` 透传
+  `profile_cfg`，`cron_jobs` 加入回填任务。
+- `apps/mini_agent_kanban/app.py` —— `_render_growth_profile_and_keywords()`
+  新增待复核特征 + 记忆回填状态两块展示。
+- `docs/memory-backfill-guide.md` —— 3.3 节改写，说明看板展示的两块
+  内容。
+- `tests/test_growth_advisor.py` —— 新增
+  `test_snapshot_exposes_backfill_candidates_count_and_stale_profile_items`。
+
+**已跑过的验证**：`tests/test_growth_advisor.py`（177 个相关用例全部
+通过，含新增用例）、`tests/test_memory_backfill.py`、
+`tests/test_profile.py`、`tests/test_cron_scheduler_local_handler.py`、
+`tests/test_param_registry_type_validation.py` 全部通过；额外对
+`diagnostics_snapshot()` 做过一次独立脚本调用，确认在空 profile/无
+memory_store 场景下也能正常返回新字段（静默降级路径），不会抛异常。
+

@@ -5751,11 +5751,16 @@ async def get_growth_summary(request: Request):
             cfg = GrowthAdvisorConfig()
         profile = UserProfileManager(paths).load()
         store = MemoryStore(paths)
-        diagnostics = ga.diagnostics_snapshot(paths, cfg, profile, store)
+        profile_cfg = getattr(self_agent.cfg, "profile", None) if self_agent else None
+        diagnostics = ga.diagnostics_snapshot(paths, cfg, profile, store, profile_cfg=profile_cfg)
 
         cs = _get_cron_scheduler(http_server) if http_server else None
         if cs is not None:
             jobs_by_id = {j.id: j for j in cs.list_jobs()}
+            # [next_doc/memory_backfill_and_profile_update_plan.md 看板展示]
+            # 把 sys:memory_backfill_scan 也一并透出，跟 diagnostics.memory.
+            # backfill_candidates_count 搭配展示——看板能同时看到"还有多少
+            # 候选没处理"和"上一次自动回填是什么时候跑的"。
             diagnostics["cron_jobs"] = {
                 jid: {
                     "enabled": j.enabled,
@@ -5765,7 +5770,7 @@ async def get_growth_summary(request: Request):
                     "consecutive_skip_count": j.consecutive_skip_count,
                 }
                 for jid, j in jobs_by_id.items()
-                if jid in (ga.JOB_ID_DAILY, ga.JOB_ID_MONTHLY)
+                if jid in (ga.JOB_ID_DAILY, ga.JOB_ID_MONTHLY, "sys:memory_backfill_scan")
             }
         else:
             diagnostics["cron_jobs"] = {"_note": "CronScheduler not available (daemon mode required)"}

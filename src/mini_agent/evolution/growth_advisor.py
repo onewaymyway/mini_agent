@@ -2489,11 +2489,16 @@ def monthly_retrospective_summary(paths) -> dict[str, Any]:
 # 中间状态：候选数=0 本身不区分"扫描过但没匹配到"和"压根没扫描过"。这个
 # 函数把决定"为什么是 0"的关键中间量整理成一份可读快照，配合看板展示，
 # 让用户自己就能判断卡在哪一步，不用非得来问。
-def diagnostics_snapshot(paths, cfg, profile, memory_store) -> dict[str, Any]:
+def diagnostics_snapshot(paths, cfg, profile, memory_store, profile_cfg=None) -> dict[str, Any]:
     """成长顾问的自检信息：当前配置快照、上一次信号扫描命中了哪些主题
     各多少条（只给计数，不回显记忆原文——诊断信息也要遵守"知情但克制"
     的边界）、扫描窗口内一共有多少条记忆可供扫描。纯只读聚合，不做任何
     写入，可以随时安全调用（哪怕从未跑过一次扫描）。
+
+    [next_doc/memory_backfill_and_profile_update_plan.md 看板展示]
+    `profile_cfg`（`ProfileConfig`）为可选参数，仅用于取
+    `stale_after_days` 来计算画像"待复核"条目——不传时（比如老调用方/
+    测试还没升级）该字段直接退化为空列表，不影响函数原有行为。
     """
     derived = dict(getattr(profile, "derived", {}) or {})
     focus_areas: dict[str, list[str]] = derived.get("growth_focus_areas") or {}
@@ -2552,6 +2557,51 @@ def diagnostics_snapshot(paths, cfg, profile, memory_store) -> dict[str, Any]:
         "updated_at": derived_profile.get("updated_at"),
     }
 
+    # [next_doc/memory_backfill_and_profile_update_plan.md 看板展示]
+    # "待复核"条目：距今超过 stale_after_days 天没有被新证据再次印证的
+    # tech_stack/habits，只给文本列表（不暴露具体时间戳，跟上面
+    # user_profile_snapshot 对外展示的字段类型保持一致的克制程度）。
+    # stale_after_days 优先取 profile_cfg，取不到时退回 ProfileConfig 的
+    # dataclass 默认值（90 天），不因为调用方没传 profile_cfg 就直接跳过。
+    stale_after_days = getattr(profile_cfg, "stale_after_days", None)
+    if stale_after_days is None:
+        stale_after_days = 90
+    try:
+        from mini_agent.profile import _migrate_text_items, stale_items
+        now = time.time()
+        stale_tech = stale_items(
+            _migrate_text_items(derived_profile.get("tech_stack") or [], fallback_ts=now),
+            now=now, stale_after_days=stale_after_days,
+        )
+        stale_habits = stale_items(
+            _migrate_text_items(derived_profile.get("habits") or [], fallback_ts=now),
+            now=now, stale_after_days=stale_after_days,
+        )
+    except Exception:
+        stale_tech, stale_habits = [], []
+    user_profile_snapshot["stale_tech_stack"] = stale_tech
+    user_profile_snapshot["stale_habits"] = stale_habits
+    user_profile_snapshot["stale_after_days"] = stale_after_days
+
+    # [next_doc/memory_backfill_and_profile_update_plan.md M1 看板展示]
+    # 记忆回填候选数：只读扫描（对齐 CLI `/memory backfill --dry-run` 的
+    # 判定逻辑），不触发任何生成/写入，供看板解释"为什么记忆总条数这么
+    # 少"以及"现在还有多少存量 session 没被回填"。扫描失败（比如
+    # session 目录不可读）不影响诊断面板其它部分，静默降级为 0。
+    backfill_candidates_count = 0
+    try:
+        from mini_agent.evolution.memory_backfill import scan_sessions_for_backfill
+        from mini_agent.session import SessionManager
+        # 这里的 min_turns 只用于诊断展示的粗略计数，取
+        # MemoryBackfillConfig 的 dataclass 默认值即可，不强依赖调用方
+        # 把完整配置传进来（cfg 是 GrowthAdvisorConfig，不包含这个字段）。
+        sm = SessionManager(project_root=getattr(paths, "project_root", None))
+        backfill_candidates_count = len(scan_sessions_for_backfill(
+            sm, min_turns_for_backfill=4,
+        ))
+    except Exception:
+        backfill_candidates_count = 0
+
     return {
         "config": {
             "enabled": getattr(cfg, "enabled", True),
@@ -2574,6 +2624,11 @@ def diagnostics_snapshot(paths, cfg, profile, memory_store) -> dict[str, Any]:
         "memory": {
             "total_entries": len(entries),
             "entries_in_scan_window": entries_in_window,
+            # [next_doc/memory_backfill_and_profile_update_plan.md M1]
+            # 还有多少存量 session 符合回填条件（summary 为空、轮次达标）
+            # 但尚未被回填——配合 cron_jobs.sys:memory_backfill_scan 的
+            # last_run_at 一起看，能解释"记忆总条数"为什么偏低。
+            "backfill_candidates_count": backfill_candidates_count,
         },
         "user_profile": user_profile_snapshot,
         # [P4-3] 待回访候选数量，供看板在诊断区提示"有 N 个方向该回访了"，

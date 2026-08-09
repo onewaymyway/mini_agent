@@ -124,11 +124,22 @@
 - 旧版本产生的纯字符串列表格式在下次加载时会自动迁移成新结构，
   `last_confirmed_at` 无法回溯，统一取迁移发生的时刻。
 
-### 3.3 诊断面板
+### 3.3 诊断面板 / 看板展示
 
 成长顾问诊断面板的"Agent 对你的了解"区块只展示 `text` 部分（跟改动前
-的展示效果一致，是纯字符串列表），`last_confirmed_at` 是内部维护用的，
-暂未在面板上展示。
+的展示效果一致，是纯字符串列表）。`last_confirmed_at` 本身不直接展示，
+但看板"🌱 成长顾问"tab 会基于它派生出两块只读展示：
+
+- **🕰️ 待复核特征**：超过 `profile.stale_after_days`（默认 90 天）
+  没有被再次印证的 `tech_stack`/`habits` 条目，以可折叠区块展示（默认
+  折叠，不打扰日常查看），提醒用户"这些可能已经过时，下次画像刷新会
+  交给 LLM 重新评估"——纯提示，不提供手动删除入口。
+- **🗄️ 记忆回填状态**：还有多少存量 session 符合回填条件但尚未处理
+  （`GET /v1/growth/summary` 的 `diagnostics.memory.
+  backfill_candidates_count`，只读扫描，不触发实际回填），以及系统内
+  置回填任务 `sys:memory_backfill_scan` 的上次/下次运行时间（非
+  daemon 模式下无法获取任务运行状态，会提示改用 `/memory backfill`
+  手动执行）。
 
 ### 3.4 `profile.enabled` 默认值变化
 

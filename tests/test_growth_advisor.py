@@ -810,6 +810,38 @@ class TestDiagnosticsSnapshot(unittest.TestCase):
             self.assertEqual(snap["config"]["notification_frequency"], "kanban_only")
             self.assertEqual(snap["config"]["excluded_topics"], ["写作与表达"])
 
+    def test_snapshot_exposes_backfill_candidates_count_and_stale_profile_items(self):
+        # [next_doc/memory_backfill_and_profile_update_plan.md 看板展示]
+        with tempfile.TemporaryDirectory() as tmp:
+            from mini_agent.config.models import ProfileConfig
+            from mini_agent.session import SessionManager
+
+            paths = _make_paths(tmp)
+            sm = SessionManager(project_root=paths.project_root)
+            session = sm.new_session(provider="test-provider", model="test-model")
+            history = [
+                {"role": "user", "content": "帮我实现一个功能"},
+                {"role": "assistant", "content": "好的"},
+                {"role": "user", "content": "再补充一点细节"},
+                {"role": "assistant", "content": "收到"},
+            ]
+            stats = {"turns": 4, "input_tokens": 0, "output_tokens": 0, "tool_calls": 0}
+            sm.save(session, history=history, stats=stats)  # summary 留空 -> 应被回填扫描命中
+
+            now = time.time()
+            stale_ts = now - 200 * 86400  # 超过默认 90 天
+            profile = UserProfile(derived={
+                "tech_stack": [{"text": "Python", "last_confirmed_at": stale_ts}],
+                "habits": [{"text": "先写测试", "last_confirmed_at": now}],
+            })
+            cfg = GrowthAdvisorConfig()
+            snap = ga.diagnostics_snapshot(paths, cfg, profile, None, profile_cfg=ProfileConfig())
+
+            self.assertGreaterEqual(snap["memory"]["backfill_candidates_count"], 1)
+            self.assertIn("Python", snap["user_profile"]["stale_tech_stack"])
+            self.assertNotIn("先写测试", snap["user_profile"]["stale_habits"])
+            self.assertEqual(snap["user_profile"]["stale_after_days"], 90)
+
     def test_snapshot_after_scan_shows_topic_hit_counts_and_memory_stats(self):
         with tempfile.TemporaryDirectory() as tmp:
             paths = _make_paths(tmp)

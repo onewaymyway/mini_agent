@@ -3565,6 +3565,44 @@ def _render_growth_profile_and_keywords(client: "AgentClient", diagnostics: dict
         if user_profile.get("updated_at"):
             st.caption(f"更新时间：{time.strftime('%Y-%m-%d %H:%M', time.localtime(user_profile['updated_at']))}")
 
+    # [next_doc/memory_backfill_and_profile_update_plan.md 看板展示]
+    # "待复核"特征：距今超过 stale_after_days 天没有被新记忆再次印证，
+    # 提醒用户这些可能已经过时（去留仍由下一次画像刷新时 LLM 判断，
+    # 这里只做提示，不提供手动删除入口，避免绕过增量更新的既有机制）。
+    stale_tech = user_profile.get("stale_tech_stack") or []
+    stale_habits = user_profile.get("stale_habits") or []
+    if stale_tech or stale_habits:
+        stale_days = user_profile.get("stale_after_days", 90)
+        with st.expander(f"🕰️ {len(stale_tech) + len(stale_habits)} 条特征已超过 {stale_days} 天未被印证，待下次画像刷新复核"):
+            if stale_tech:
+                st.caption("技术栈：" + "、".join(stale_tech))
+            if stale_habits:
+                st.caption("习惯：" + "、".join(stale_habits))
+
+    # [next_doc/memory_backfill_and_profile_update_plan.md M1 看板展示]
+    # 记忆回填状态：还有多少存量 session 符合回填条件、系统内置回填
+    # cron job 上一次/下一次运行时间——帮用户判断"记忆条目少"是不是因为
+    # 回填还没跑到，而不是功能本身没生效。
+    backfill_count = (diagnostics.get("memory") or {}).get("backfill_candidates_count", 0)
+    backfill_job = (diagnostics.get("cron_jobs") or {}).get("sys:memory_backfill_scan")
+    if backfill_count or backfill_job:
+        st.markdown("**🗄️ 记忆回填状态**")
+        if backfill_count:
+            st.caption(f"发现 {backfill_count} 个会话有实质内容但尚未生成记忆摘要，等待下一次回填扫描。")
+        else:
+            st.caption("暂无待回填的存量会话。")
+        if backfill_job:
+            if not backfill_job.get("enabled"):
+                st.caption("回填任务当前已关闭（`sys:memory_backfill_scan`）。")
+            else:
+                last_run = backfill_job.get("last_run_at")
+                next_run = backfill_job.get("next_run_at")
+                last_run_text = time.strftime("%Y-%m-%d %H:%M", time.localtime(last_run)) if last_run else "尚未运行"
+                next_run_text = time.strftime("%Y-%m-%d %H:%M", time.localtime(next_run)) if next_run else "未知"
+                st.caption(f"上次运行：{last_run_text}　下次运行：{next_run_text}")
+        else:
+            st.caption("（当前非 daemon 模式，无法显示自动回填任务的运行状态；可用 `/memory backfill` 手动执行。）")
+
     st.markdown("**🔑 当前关键词列表**")
     topics_detail = (diagnostics.get("signal_scan") or {}).get("topics_detail") or []
     built_in = [t for t in topics_detail if t.get("source") == "built_in"]
