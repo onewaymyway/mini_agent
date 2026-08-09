@@ -32,6 +32,7 @@ from __future__ import annotations
 
 import re as _re
 import time
+import difflib as _difflib
 from dataclasses import dataclass, field
 from typing import Optional, TYPE_CHECKING
 
@@ -167,6 +168,131 @@ def generate_summary_offline(
         max_retries=10,
     )
     return (resp.text or "").strip(), user_turns
+
+
+# ── [next_doc/growth_advisor_improvement_plan_v4.md 方向一 M3] cron 任务
+# 收尾时直接产出记忆，不经过 Session/summary 中转 ─────────────────────────
+
+def generate_summary_from_text(
+    text: str, llm_client: "LLMClient", *, task_template: str = "", max_chars: int = 4000,
+) -> str:
+    """对一段已有文本（不是完整对话历史）做摘要，供 cron 任务收尾场景复用。
+
+    跟 `generate_summary_offline()` 共享同一套 prompt 模板
+    （`user/session_summary_request` + `system/summarizer`），只是输入侧从
+    "用户发言列表"换成"单段任务产出文本"，避免为 cron 场景另建一套摘要
+    prompt。`task_template`（job 本身的任务描述）会拼进摘要输入——否则
+    摘要读起来会是"做了后续处理"这种没有上下文的碎片，看不出这段文本是
+    在完成什么任务时产出的。
+
+    `text` 为空或去除首尾空白后为空字符串时直接返回空字符串，不发起 LLM
+    调用（调用方在 `run_job()` 收尾处已经做过 `last_text.strip()` 判断，
+    这里再判断一次是为了让本函数本身也能被安全地独立调用/测试）。
+    """
+    text = (text or "").strip()
+    if not text:
+        return ""
+
+    from mini_agent.prompts import pm
+
+    turns_text = text[:max_chars]
+    if task_template and task_template.strip():
+        turns_text = f"[本次任务] {task_template.strip()[:200]}\n\n[任务产出] {turns_text}"
+
+    prompt = pm.render("user/session_summary_request", turns_text=turns_text)
+    resp = llm_client.chat_with_retry(
+        messages=[{"role": "user", "content": prompt}],
+        system=pm.render("system/summarizer"),
+        tools=[],
+        max_retries=10,
+    )
+    return (resp.text or "").strip()
+
+
+def _is_similar_to_recent_cron_summary(
+    memory_backend: "MemoryBackend", job_id: str, summary: str, *, similarity_threshold: float = 0.85,
+) -> bool:
+    """[1.5 节 幂等与去重] 同一个 job 连续多次触发如果任务模板高度相似
+    （比如"每小时检查一次待办"这类几乎不变的任务），会持续产生高度雷同的
+    记忆条目，稀释成长顾问信号扫描的信噪比。这里复用 `StuckDetector`
+    同款的"文本相似度"判断思路（`difflib.SequenceMatcher`，规则实现，
+    不是 embedding），只跟该 job 最近一条已生成的 cron 记忆摘要做比较，
+    高度雷同则返回 True（调用方据此跳过本次记忆写入）。
+
+    `memory_backend` 查询失败（比如后端不支持 `all_entries()`）时静默
+    返回 False（不阻止本次记忆生成，去重是"锦上添花"，不能成为记忆
+    生成路径上的一个新故障点）。
+    """
+    if not summary:
+        return False
+    try:
+        entries = memory_backend.all_entries()
+    except Exception:
+        return False
+
+    prefix = f"cron:{job_id}:"
+    cron_entries = [e for e in entries if str(getattr(e, "session_id", "")).startswith(prefix)]
+    if not cron_entries:
+        return False
+    latest = max(cron_entries, key=lambda e: getattr(e, "created_at", 0))
+    ratio = _difflib.SequenceMatcher(None, latest.summary or "", summary).ratio()
+    return ratio >= similarity_threshold
+
+
+def backfill_cron_run(
+    job_id: str,
+    run_id: str,
+    last_text: str,
+    *,
+    memory_backend: "MemoryBackend",
+    llm_client: "LLMClient",
+    model: str = "",
+    task_template: str = "",
+    similarity_threshold: float = 0.85,
+) -> Optional["MemoryEntry"]:
+    """cron 任务正常收尾（`STATUS_IDLE`）时，把最后一步的产出文本直接
+    摘要成一条长期记忆，不经过 `Session`/`summary` 中转
+    （`cron_agent_bridge.py` 的设计前提是"每次触发都重新构建 Agent，不
+    跨触发保留 session 历史"，M1 的存量回填天然扫不到这类运行）。
+
+    `session_id` 合成规则：`cron:<job_id>:<run_id>`（
+    `memory_backfill_and_profile_update_plan.md` 第 4 节风险项 2 已核实——跟真实 `Session.id`
+    取值空间不相交，`memory_store.py`/`growth_advisor.py` 对 `session_id`
+    全部是字符串相等比较或展示切片，不做格式解析）。
+
+    严格由调用方（`CronJobExecutor.run_job()`）保证只在
+    `final_status == STATUS_IDLE` 且 `last_text` 非空时调用——本函数内部
+    不重复判断收尾状态（不感知 `CronJobConfig`/`CronJobState` 这些
+    cron 专属类型，保持跟 `backfill_sessions()` 一样"纯粹处理文本/记忆"
+    的定位）。
+
+    返回写入的 `MemoryEntry`；因为去重跳过、摘要为空（没有可摘要的实质
+    内容）等原因未写入时返回 `None`。异常向上抛出，由调用方决定如何
+    静默降级（`run_job()` 的收尾逻辑不能因为记忆生成失败而影响主流程，
+    但这一点由调用方的 try/except 负责，不是本函数的职责）。
+    """
+    summary = generate_summary_from_text(last_text, llm_client, task_template=task_template)
+    if not summary:
+        return None
+
+    if _is_similar_to_recent_cron_summary(
+        memory_backend, job_id, summary, similarity_threshold=similarity_threshold,
+    ):
+        return None
+
+    from mini_agent.perception.memory_store import MemoryEntry
+    import re as _re2
+
+    tags = list({w.lower() for w in _re2.findall(r"[a-zA-Z一-鿿]{3,}", summary)})[:8]
+    entry = MemoryEntry(
+        session_id=f"cron:{job_id}:{run_id}",
+        summary=summary,
+        key_outcomes=[last_text.strip()[:200]] if last_text.strip() else [],
+        tags=tags,
+        model=model,
+    )
+    memory_backend.upsert(entry)
+    return entry
 
 
 def _build_memory_entry(session_id: str, summary: str, user_turns: list[str], model: str) -> "MemoryEntry":

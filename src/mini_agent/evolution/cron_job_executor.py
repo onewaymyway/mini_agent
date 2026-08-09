@@ -75,6 +75,16 @@ class CronJobExecutor:
         # 实例化写法兼容）；构造参数同样接受，供需要一次性传入的调用方
         # 使用。未设置时（None）不启用广度熔断，行为与改造前一致。
         self.circuit_breaker = circuit_breaker
+        # [growth_advisor_improvement_plan_v4.md 方向一 M3] cron 任务收尾
+        # 时是否顺带产出一条长期记忆，跟 circuit_breaker 走同样的"属性
+        # 赋值"接入方式——三个都是可选的、由 CronJobRunner 在构造后设置
+        # 的旁路能力，不进构造签名，保持所有现有直接实例化写法（包括
+        # 测试里的 `CronJobExecutor(paths)`）不受影响。`memory_backfill_cfg`
+        # 为 None（默认值，未升级的调用方）时 `_maybe_backfill_memory()`
+        # 直接跳过，不需要强制所有调用方都升级。
+        self.memory_backfill_cfg = None
+        self.memory_backend = None
+        self.llm_client = None
 
     def run_job(
         self,
@@ -221,6 +231,15 @@ class CronJobExecutor:
                 finished_at=state.last_run_finished_at,
                 progress_note=state.progress_summary,
             )
+            # [growth_advisor_improvement_plan_v4.md 方向一 M3] 跟
+            # `_write_output_manifest()` 并列的"收尾时顺带做的感知增强，
+            # 不能反过来影响主流程"——严格限定只有正常收尾
+            # （`final_status == STATUS_IDLE`，不含 timed_out/
+            # needs_human_review）且 `last_text` 非空才会生成记忆。
+            if final_status == STATUS_IDLE and last_text.strip():
+                self._maybe_backfill_memory(
+                    job=job, run_id=run_id, last_text=last_text,
+                )
 
         return RunOutcome(
             run_id=run_id, status=final_status,
@@ -257,6 +276,41 @@ class CronJobExecutor:
         except Exception as e:  # noqa: BLE001
             from mini_agent.errors import log_exception
             log_exception(e, where="mini_agent.evolution.cron_job_executor._write_output_manifest")
+
+    def _maybe_backfill_memory(self, job: "CronJob", run_id: str, last_text: str) -> None:
+        """[next_doc/growth_advisor_improvement_plan_v4.md 方向一 M3]
+        cron 任务本身仍然是记忆覆盖率的结构性盲区——`cron_agent_bridge.py`
+        的设计前提是"每次触发都重新构建 Agent，不跨触发保留 session
+        历史"，因此 cron 任务运行完全不会经过 `Session`/`summary` 这条链
+        路，M1 的存量回填天然扫不到它们。
+
+        由调用方（`CronJobRunner`）在构造 `CronJobExecutor` 后通过属性
+        赋值提供 `memory_backfill_cfg`/`memory_backend`/`llm_client` 三样
+        依赖——任何一样缺失都直接跳过（`memory_backfill_cfg` 为 None 表示
+        调用方还没升级到支持这个特性；`memory_backend`/`llm_client` 缺失
+        通常意味着 cron 任务本身的记忆/LLM 功能就没配置好，静默跳过，
+        不在这里制造一个新的报错点）。整个方法异常兜底，绝不能让"感知
+        增强"这个旁路反过来影响 `run_job()` 已经产出的主流程结果。
+        """
+        cfg = self.memory_backfill_cfg
+        if cfg is None or not getattr(cfg, "enabled", True):
+            return
+        if not getattr(cfg, "cron_run_backfill_enabled", True):
+            return
+        if self.memory_backend is None or self.llm_client is None:
+            return
+        try:
+            from mini_agent.evolution.memory_backfill import backfill_cron_run
+
+            backfill_cron_run(
+                job.id, run_id, last_text,
+                memory_backend=self.memory_backend,
+                llm_client=self.llm_client,
+                task_template=job.task_template or "",
+            )
+        except Exception as e:  # noqa: BLE001
+            from mini_agent.errors import log_exception
+            log_exception(e, where="mini_agent.evolution.cron_job_executor._maybe_backfill_memory")
 
 
 __all__ = ["CronJobExecutor", "StepResult", "RunOutcome"]

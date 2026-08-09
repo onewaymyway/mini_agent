@@ -1298,3 +1298,105 @@ removed` 黑名单（`growth_candidate_derive()` 消费时会跳过），
     可以在 `_record_health_snapshot()` 里加一个"距上次记录不足 N 小时则
     跳过"的判断，当前阶段不引入这个复杂度。
 
+---
+
+## N2：cron 记忆回填 M3（growth_advisor_improvement_plan_v4.md 方向一）
+
+对应 `next_doc/growth_advisor_improvement_plan_v4.md` 方向一，实现方案 A
+（cron 任务收尾时直接把最后一步产出摘要成一条记忆，不经过
+`Session`/`summary` 中转），是 v4 优先级表里排在第二位、也是用户最初
+反馈"daemon 跑的任务没有 memory"里更核心的一半。
+
+- **新增函数（`evolution/memory_backfill.py`）**：
+  - `generate_summary_from_text(text, llm_client, *, task_template="",
+    max_chars=4000)`：对单段文本（而不是完整 `history`）做摘要，跟
+    `generate_summary_offline()` 共享同一套 prompt 模板
+    （`user/session_summary_request` + `system/summarizer`）。
+    `task_template` 会拼进摘要输入的前缀（`[本次任务] ... [任务产出]
+    ...`），避免摘要读起来是"做了后续处理"这种没有上下文的碎片。空
+    文本直接返回空字符串，不发起 LLM 调用。
+  - `_is_similar_to_recent_cron_summary(memory_backend, job_id, summary,
+    *, similarity_threshold=0.85)`：[1.5 节 幂等与去重] 复用
+    `StuckDetector` 同款的 `difflib.SequenceMatcher` 文本相似度判断
+    （规则实现，不是 embedding），只跟该 job（按 `cron:<job_id>:`
+    前缀过滤 `memory_backend.all_entries()`）最近一条已生成的记忆摘要
+    比较，超过阈值判定为高度雷同。查询失败时静默返回 `False`（去重
+    是锦上添花，不能成为记忆生成路径上的新故障点）。
+  - `backfill_cron_run(job_id, run_id, last_text, *, memory_backend,
+    llm_client, model="", task_template="", similarity_threshold=0.85)`：
+    主入口，串联"生成摘要 → 去重检查 → 构造 `MemoryEntry` → upsert"。
+    `session_id` 合成规则延续方案文档第 4 节风险项 2 已核实的结论：
+    `cron:<job_id>:<run_id>` 前缀 + 冒号格式，跟真实 `Session.id`
+    （纯十六进制无分隔符）取值空间不相交，`memory_store.py`/
+    `growth_advisor.py` 对 `session_id` 全部是字符串相等比较或展示
+    切片，不做格式解析。摘要为空或被判定去重时返回 `None`（不写入）。
+- **`evolution/cron_job_executor.py` 改动**：
+  - `CronJobExecutor.__init__` 新增三个可选属性
+    `memory_backfill_cfg`/`memory_backend`/`llm_client`（默认
+    `None`），跟已有的 `circuit_breaker` 走同样的"构造后属性赋值"
+    接入模式，**不改变构造签名**——所有既有的 `CronJobExecutor(paths)`
+    直接实例化写法（包括测试里的写法）不受影响。
+  - 新增 `_maybe_backfill_memory(job, run_id, last_text)`：读三个属性，
+    任何一个缺失（`memory_backfill_cfg is None`、
+    `cron_run_backfill_enabled=False`、`memory_backend`/`llm_client`
+    为 `None`）直接跳过；调用 `backfill_cron_run()`，整个方法异常
+    兜底（`log_exception` 记录，不向上抛）。
+  - `run_job()` 的 `finally` 块内，紧跟在 `_write_output_manifest()`
+    之后新增一段调用：**严格限定** `final_status == STATUS_IDLE`
+    （不含 `timed_out`/`needs_human_review`）且 `last_text.strip()`
+    非空才会调用 `_maybe_backfill_memory()`——异常/卡死/超时的运行
+    不产出记忆，对齐方案文档"这类运行本身信息价值低，强行摘要只会
+    污染成长顾问的信号扫描"的判断。
+- **`evolution/cron_job_runner.py` 改动**：`_run_job_thread()` 里在
+  `executor.circuit_breaker = self._circuit_breaker` 之后新增三行
+  属性赋值：`executor.memory_backfill_cfg =
+  getattr(self._base_cfg, "memory_backfill", None)`、
+  `executor.memory_backend = getattr(agent, "_memory", None)`、
+  `executor.llm_client = getattr(agent, "_llm", None)`——`agent` 是
+  `build_cron_agent()` 为本次 job 独占构造的一次性实例，它持有的项目
+  记忆后端和 LLM 客户端就是记忆生成需要的全部依赖，不需要额外构造。
+- **配置**：复用已有的 `MemoryBackfillConfig.cron_run_backfill_enabled`
+  字段（`config/models.py`，默认 `True`，`config/loader.py` 已经在读
+  `memory_backfill` 配置块，本次不需要新增迁移逻辑）——方案文档草稿
+  阶段预留的字段名是 `cron_session_backfill_enabled`，实现时确认
+  `config/models.py` 里已有语义相同但命名为
+  `cron_run_backfill_enabled` 的字段（`memory_backfill_and_profile_
+  update_plan.md` M1/M2 落地时已经加上，只是当时没有代码实际读取），
+  复用它而不是另起一个重名字段。
+- **测试**：
+  - `tests/test_memory_backfill.py` 新增 `TestGenerateSummaryFromText`
+    （3 个用例：空文本不触发 LLM 调用、正常摘要去除首尾空白、
+    `task_template` 确实拼进了 prompt 输入）+ `TestBackfillCronRun`
+    （6 个用例：正常写入且 `session_id` 格式正确、空摘要不写入、
+    连续高度雷同摘要第二条被去重跳过、明显不同的摘要都写入、去重只
+    跟同一个 job 的历史比较不跨 job 互相影响、`all_entries()` 查询
+    失败时不阻止本次写入）。
+  - `tests/test_cron_job_workspace_and_executor.py` 新增
+    `TestCronJobExecutorMemoryBackfill`（8 个用例：正常收尾写入一条
+    `cron:<job_id>:<run_id>` 记忆、`timed_out` 不写入、
+    `needs_human_review` 不写入、空白 `last_text` 不写入、
+    `memory_backfill_cfg` 保持默认 `None` 时静默跳过且不影响主流程、
+    `cron_run_backfill_enabled=False` 时跳过、`memory_backend`/
+    `llm_client` 缺失时静默跳过、记忆生成内部抛异常时不影响
+    `run_job()` 的 outcome/状态落盘结果）。
+  - 全部新增用例（`test_memory_backfill.py` 14 项、
+    `test_cron_job_workspace_and_executor.py` 34 项）连同既有用例
+    全部通过；额外跑了 `test_cron_job_runner.py`/
+    `test_cron_job_runner_resource_arbiter.py`（19 项）确认属性赋值
+    改动没有影响调用方的既有测试；`test_growth_advisor.py`
+    （165 项）作为回归基线一并跑过，均通过。
+- **范围取舍（未做的部分）**：
+  - 方向一 1.6 节提到的"诊断面板展示 cron 产出记忆 vs 真实交互 session
+    的比例"——依赖的字段（区分 `session_id` 是否带 `cron:` 前缀）在
+    `diagnostics_snapshot()`/`_record_health_snapshot()`（N1）里还没有
+    新增对应字段，留给后续需要时再补，`growth_health_trend.jsonl` 的
+    快照结构对新增字段是纯新增列，不需要迁移。
+  - 1.7 节 M4（cron 全面持久化 session）依然不做，维持方案文档"先
+    观察 M3 至少一个迭代周期"的判断。
+  - 未新增 CLI/看板层面的"本轮 cron 记忆回填统计"展示——`backfill_
+    cron_run()` 返回值（`Optional[MemoryEntry]`）目前只在
+    `_maybe_backfill_memory()` 内部消费后丢弃，调用方（cron 收尾流程）
+    本身也不需要这个返回值参与任何决策；如果未来要展示"本次 cron
+    触发是否新增了记忆"，可以在 `CronJobExecutor.run_job()`
+    的 `RunOutcome` 里加一个可选字段，当前不属于 M3 范围。
+

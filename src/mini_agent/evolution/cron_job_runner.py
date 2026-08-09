@@ -516,6 +516,15 @@ class CronJobRunner:
             # 直接实例化/测试替身写法；executor.py 内部把它当可选属性
             # 处理（None 时不启用广度熔断，行为与改造前一致）。
             executor.circuit_breaker = self._circuit_breaker
+            # [growth_advisor_improvement_plan_v4.md 方向一 M3] cron 任务
+            # 收尾时顺带产出记忆——跟 circuit_breaker 一样走属性赋值接入，
+            # 不改变 CronJobExecutor(paths) 的构造签名。`agent` 是本次 job
+            # 独占的一次性实例（`build_cron_agent` 每次触发都重新构造），
+            # 它持有的 `_memory`（项目记忆后端）/`_llm`（LLM 客户端）就是
+            # 这次记忆生成需要的依赖，不需要额外构造。
+            executor.memory_backfill_cfg = getattr(self._base_cfg, "memory_backfill", None)
+            executor.memory_backend = getattr(agent, "_memory", None)
+            executor.llm_client = getattr(agent, "_llm", None)
 
             # 根据全局 AppConfig.cron 构造"该 job 若是首次运行"时应写入的
             # config.json 默认值；job 若已经有自己的 config.json（用户手动

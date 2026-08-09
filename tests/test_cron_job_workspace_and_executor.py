@@ -441,3 +441,162 @@ class TestCronJobExecutor:
         assert "run_started" in types
         assert "step" in types
         assert "run_finished" in types
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# CronJobExecutor — [growth_advisor_improvement_plan_v4.md 方向一 M3]
+# 收尾时顺带产出记忆（`memory_backfill_cfg`/`memory_backend`/`llm_client`
+# 属性赋值接入，跟 circuit_breaker 走同样的模式）
+# ═══════════════════════════════════════════════════════════════════════
+
+class _FakeMemoryBackfillCfg:
+    def __init__(self, enabled=True, cron_run_backfill_enabled=True):
+        self.enabled = enabled
+        self.cron_run_backfill_enabled = cron_run_backfill_enabled
+
+
+class _FakeMemoryBackend:
+    def __init__(self):
+        self.entries = []
+
+    def upsert(self, entry):
+        self.entries.append(entry)
+
+    def all_entries(self):
+        return self.entries
+
+
+class _FakeSummaryResp:
+    def __init__(self, text):
+        self.text = text
+
+
+class _FakeLLMClient:
+    def __init__(self, summary_text="cron 任务已完成"):
+        self._summary_text = summary_text
+
+    def chat_with_retry(self, **kwargs):
+        return _FakeSummaryResp(self._summary_text)
+
+
+def _make_backfill_executor(paths, *, cfg=None, backend=None, llm=None):
+    executor = CronJobExecutor(paths)
+    executor.memory_backfill_cfg = cfg if cfg is not None else _FakeMemoryBackfillCfg()
+    executor.memory_backend = backend if backend is not None else _FakeMemoryBackend()
+    executor.llm_client = llm if llm is not None else _FakeLLMClient()
+    return executor
+
+
+class TestCronJobExecutorMemoryBackfill:
+    def test_normal_completion_writes_cron_memory_entry(self, tmp_path):
+        paths = _FakePaths(tmp_path)
+        backend = _FakeMemoryBackend()
+        executor = _make_backfill_executor(paths, backend=backend)
+
+        def step_fn(prompt):
+            return StepResult(text="今天的日报已生成完毕。", done=True)
+
+        outcome = executor.run_job(_FakeJob(job_id="sys:daily_report"), step_fn)
+
+        assert outcome.status == STATUS_IDLE
+        assert len(backend.entries) == 1
+        assert backend.entries[0].session_id == f"cron:sys:daily_report:{outcome.run_id}"
+
+    def test_timed_out_run_does_not_write_memory(self, tmp_path):
+        paths = _FakePaths(tmp_path)
+        backend = _FakeMemoryBackend()
+        executor = _make_backfill_executor(paths, backend=backend)
+        ws = CronJobWorkspace(paths, "user:test_job")
+        ws.ensure(default_config=CronJobConfig(timeout_seconds=0, max_steps=999))
+
+        def step_fn(prompt):
+            return StepResult(text="还在跑第一步")
+
+        outcome = executor.run_job(_FakeJob(), step_fn)
+
+        assert outcome.status == STATUS_TIMED_OUT
+        assert len(backend.entries) == 0
+
+    def test_needs_human_review_run_does_not_write_memory(self, tmp_path):
+        paths = _FakePaths(tmp_path)
+        backend = _FakeMemoryBackend()
+        executor = _make_backfill_executor(paths, backend=backend)
+
+        def step_fn(prompt):
+            raise RuntimeError("步执行异常")
+
+        outcome = executor.run_job(_FakeJob(), step_fn)
+
+        assert outcome.status == STATUS_NEEDS_REVIEW
+        assert len(backend.entries) == 0
+
+    def test_empty_last_text_does_not_write_memory(self, tmp_path):
+        paths = _FakePaths(tmp_path)
+        backend = _FakeMemoryBackend()
+        executor = _make_backfill_executor(paths, backend=backend)
+
+        def step_fn(prompt):
+            return StepResult(text="   ", done=True)
+
+        outcome = executor.run_job(_FakeJob(), step_fn)
+
+        assert outcome.status == STATUS_IDLE
+        assert len(backend.entries) == 0
+
+    def test_missing_memory_backfill_cfg_skips_silently(self, tmp_path):
+        """未升级的调用方（属性保持默认 None）不应该受影响，`run_job()`
+        主流程行为跟改造前完全一致。"""
+        paths = _FakePaths(tmp_path)
+
+        def step_fn(prompt):
+            return StepResult(text="完成", done=True)
+
+        outcome = CronJobExecutor(paths).run_job(_FakeJob(), step_fn)
+        assert outcome.status == STATUS_IDLE  # 没有因为缺依赖而报错
+
+    def test_disabled_cron_run_backfill_flag_skips(self, tmp_path):
+        paths = _FakePaths(tmp_path)
+        backend = _FakeMemoryBackend()
+        executor = _make_backfill_executor(
+            paths, backend=backend,
+            cfg=_FakeMemoryBackfillCfg(cron_run_backfill_enabled=False),
+        )
+
+        def step_fn(prompt):
+            return StepResult(text="完成", done=True)
+
+        executor.run_job(_FakeJob(), step_fn)
+        assert len(backend.entries) == 0
+
+    def test_missing_memory_backend_or_llm_client_skips_silently(self, tmp_path):
+        paths = _FakePaths(tmp_path)
+        executor = CronJobExecutor(paths)
+        executor.memory_backfill_cfg = _FakeMemoryBackfillCfg()
+        # memory_backend / llm_client 都保持默认 None
+
+        def step_fn(prompt):
+            return StepResult(text="完成", done=True)
+
+        outcome = executor.run_job(_FakeJob(), step_fn)
+        assert outcome.status == STATUS_IDLE  # 没有报错，静默跳过
+
+    def test_backfill_exception_does_not_break_run_job_result(self, tmp_path):
+        """记忆生成内部抛异常时，不能反过来影响 run_job() 已经产出的
+        outcome/状态落盘结果。"""
+        paths = _FakePaths(tmp_path)
+
+        class _BrokenLLMClient:
+            def chat_with_retry(self, **kwargs):
+                raise RuntimeError("LLM 调用失败")
+
+        executor = _make_backfill_executor(paths, llm=_BrokenLLMClient())
+
+        def step_fn(prompt):
+            return StepResult(text="完成", done=True)
+
+        outcome = executor.run_job(_FakeJob(), step_fn)
+        assert outcome.status == STATUS_IDLE
+
+        ws = CronJobWorkspace(paths, "user:test_job")
+        state = ws.read_state()
+        assert state.status == STATUS_IDLE
