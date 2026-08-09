@@ -52,3 +52,4 @@ temp_cdp
 .claude/skills/browser-cdp/test_reports/
 .claude/skills/browser-cdp/test.elements.json
 .claude/skills/browser-cdp/output/
+.agent/daemon_run_outputs/
