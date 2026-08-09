@@ -355,13 +355,26 @@ def _handle_slash(cmd: str, agent: Agent, skill_loader: SkillLoader) -> None:
         handle_workflow_cmd(parts[1:], agent)
 
     elif name == "memory":
-        agent.trigger_summary_and_profile(force=True)
+        from mini_agent.cli.commands.memory_cmd import handle_memory_cmd
+        handle_memory_cmd(parts[1:], agent)
 
-    elif name == "profile":
+    elif name == "profile" and len(parts) >= 2 and parts[1] == "rebuild":
         import threading
         threading.Thread(
             target=agent._maybe_refresh_profile,
-            kwargs={"force": True},
+            kwargs={"force": True, "rebuild": True},
+            daemon=True,
+            name="mini-agent-profile",
+        ).start()
+
+    elif name == "profile":
+        # [next_doc/memory_backfill_and_profile_update_plan.md 3.3 节]
+        # 默认行为改为"立即刷新，走增量更新"（不丢弃已有画像）；
+        # 想从头重建请用 `/profile rebuild`。
+        import threading
+        threading.Thread(
+            target=agent._maybe_refresh_profile,
+            kwargs={"force": True, "rebuild": False},
             daemon=True,
             name="mini-agent-profile",
         ).start()

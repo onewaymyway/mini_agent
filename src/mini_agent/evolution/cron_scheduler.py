@@ -325,6 +325,24 @@ _BUILTIN_JOBS: list[dict] = [
         "tags": ["growth_advisor", "digest"],
         "enabled": True,
     },
+    {
+        # [next_doc/memory_backfill_and_profile_update_plan.md 方向一] 记忆
+        # 回填：扫描 summary 为空但轮次达标的存量 session（异常中断/摘要
+        # 生成失败未重试的场景），离线补生成摘要并写入长期记忆——这是
+        # growth_advisor 信号扫描、以及用户画像的共同上游数据源，覆盖率
+        # 低会导致两者都"无米下锅"。默认 enabled=True 与
+        # MemoryBackfillConfig.enabled 的默认值保持一致（opt-out），实际
+        # 是否运行由 cfg.memory_backfill.enabled 兜底跳过。不含 cron/daemon
+        # 任务本身产出记忆这部分（见方案 2.4 节，由 cron_job_executor.py
+        # 收尾逻辑单独处理，不经过本 job）。
+        "id": "sys:memory_backfill_scan",
+        "name": "记忆回填：补跑遗漏摘要",
+        "schedule": "interval:21600",
+        "description": "扫描 summary 为空但内容达标的 session，补生成摘要并写入长期记忆（每 6 小时）",
+        "task_template": "[记忆回填] 执行一次 /memory backfill，扫描待补摘要的 session 并回填长期记忆",
+        "tags": ["memory", "profile"],
+        "enabled": True,
+    },
 ]
 
 

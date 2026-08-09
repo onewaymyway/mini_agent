@@ -1,0 +1,159 @@
+# 记忆回填（Memory Backfill）与用户画像更新机制指南
+
+> 对应方案：`next_doc/memory_backfill_and_profile_update_plan.md`
+> （方向一：记忆回填 M1；方向二：画像增量更新 M2，均已实现）。
+> 代码入口：`src/mini_agent/evolution/memory_backfill.py`（记忆回填）、
+> `src/mini_agent/profile.py`（画像生成/更新）。
+
+## 1. 这解决什么问题
+
+长期记忆(`MemoryEntry`，成长顾问的信号扫描、用户画像都靠它)只有一条
+写入路径：session 结束时的摘要生成。这条路径要求 session **正常走完
+`save_session()`、且轮次达标**，因此以下几类 session **从来不会产生
+任何记忆**：
+
+- 进程被中断/崩溃，没有正常走到摘要生成那一步；
+- 摘要生成本身因为 LLM 调用失败而静默失败，且没有重试；
+- 轮次不够摘要生成阈值（`session.summary_min_turns`，默认 4）。
+
+同时，用户画像（`profile.derived.summary/tech_stack/habits`，成长顾问
+诊断面板里的"Agent 对你的了解"就是这个）此前每次刷新都是"只看最近
+20 条记忆，从零重新总结、整体覆盖旧画像"，导致画像持续向"只反映最近
+一小段任务"漂移——哪怕某个特征长期成立，只要相关记忆掉出了最近 20 条
+窗口，下次刷新就会把它悄悄丢掉。
+
+本机制分两部分修复：
+
+- **记忆回填**：定期扫描 `summary` 为空但轮次达标的存量 session，离线
+  补生成一次摘要并写入长期记忆。
+- **画像增量更新**：画像刷新从"整体重写"改为"在上一版基础上更新"，
+  并给 `tech_stack`/`habits` 的每一项挂一个"最后被印证时间"，供长期
+  没有新证据支持的旧特征在下一轮生成时被显式标注、交给 LLM 重新评估
+  是否还成立。
+
+> **不覆盖的范围**：cron/daemon 任务本身触发的运行不会产生
+> `Session`，因此也不在本机制的扫描范围内（这部分设计见方案文档 2.4
+> 节方案 A，暂未实施，属于后续排期）。
+
+## 2. 记忆回填（Memory Backfill）
+
+### 2.1 手动触发
+
+```
+/memory backfill [--dry-run] [--limit N]
+```
+
+- 不加参数：真正执行，扫描候选并补生成摘要 + 写入长期记忆，同时把
+  `Session.summary` 回写到磁盘（只改 `meta.json`，不动 `history.json`）。
+- `--dry-run`：只报告会处理哪些 session，不实际调用 LLM、不写入任何
+  东西。**建议第一次先跑 dry-run 看看会处理哪些候选。**
+- `--limit N`：覆盖单轮最多处理的候选数（默认见下方配置
+  `max_sessions_per_run`）。
+
+判定候选的条件：`Session.summary` 为空 **且** 轮次 ≥
+`memory_backfill.min_turns_for_backfill`（默认 4，和正常摘要生成的
+阈值一致）。**不限制候选的新旧程度**——多陈旧的 session 都会被扫描到，
+只靠 `max_sessions_per_run` 控制单轮开销，多轮扫描下最终会覆盖全部
+存量（候选按 `updated_at` 从旧到新排序，保证公平推进，不会被新
+产生的候选一直插队）。
+
+当前 session 不会被当作候选（正在进行中，还没到该生成摘要的时候）。
+
+### 2.2 自动运行
+
+内置 cron job `sys:memory_backfill_scan`，默认每 6 小时跑一次，
+`/cron list` 能看到。跟成长顾问的信号扫描 cron job 一样，是"零成本
+用起来"的默认开启策略，出问题可以单独关掉（见下方配置）。
+
+### 2.3 配置项
+
+`agent_config.json` 里的 `memory_backfill` 块：
+
+```json
+{
+  "memory_backfill": {
+    "enabled": true,
+    "min_turns_for_backfill": 4,
+    "max_sessions_per_run": 20,
+    "cron_run_backfill_enabled": true
+  }
+}
+```
+
+- `enabled`：总开关，关闭后 `/memory backfill` 会提示未开启，cron job
+  也会跳过。
+- `min_turns_for_backfill`：轮次门槛，太短的 session 内容太少，回填
+  意义不大。
+- `max_sessions_per_run`：单轮最多处理的候选数，控制一次触发的 LLM
+  调用量。
+- `cron_run_backfill_enabled`：预留给"cron 任务自身直接产出记忆"这个
+  尚未实施的方向（见方案文档 2.4 节方案 A），当前版本暂无实际效果。
+
+### 2.4 幂等性
+
+回填只处理 `summary` 为空的 session，写入摘要后 `summary` 非空，天然
+幂等——不会重复处理已经回填过的 session。单个候选处理失败不影响其它
+候选，失败的候选下次扫描会自然重新出现在候选列表里，不需要手动重试。
+
+## 3. 用户画像增量更新
+
+### 3.1 行为变化
+
+- `/profile`：立即刷新画像，**走增量更新**——把上一版
+  `summary/tech_stack/habits` 也提供给 LLM，只喂"自上次生成以来新增"
+  的那部分记忆，要求在此基础上更新而不是重写。
+- `/profile rebuild`：**全量重建**，不参考上一版画像，从最近
+  `profile.max_entries_for_profile`（默认 20）条记忆重新生成——用于
+  觉得画像跑偏了、想从头再来的场景。
+- 自动刷新（记忆每新增 `profile.refresh_interval_entries` 条触发一次）
+  同样走增量更新。首次生成（画像此前不存在）总是走全量分支，没有
+  "上一版"可参考。
+
+### 3.2 `tech_stack`/`habits` 的"最后被印证时间"
+
+这两个字段现在是结构化列表，每一项形如
+`{"text": "...", "last_confirmed_at": <时间戳>}`：
+
+- 某一项在新一轮生成里被 LLM 继续保留，`last_confirmed_at` 会更新为
+  本次生成时间；
+- 新出现的条目，`last_confirmed_at` = 首次出现时间；
+- 超过 `profile.stale_after_days`（默认 90 天）没有被再次印证的条目，
+  会在下一次增量更新的 prompt 里被单独标注"很久没有新证据支持，请
+  重新评估是否仍然成立"——**是否保留仍然由 LLM 判断**，这只是把"新鲜
+  度"这个信号显式暴露给它，不是代码层面的硬删除。
+- 旧版本产生的纯字符串列表格式在下次加载时会自动迁移成新结构，
+  `last_confirmed_at` 无法回溯，统一取迁移发生的时刻。
+
+### 3.3 诊断面板
+
+成长顾问诊断面板的"Agent 对你的了解"区块只展示 `text` 部分（跟改动前
+的展示效果一致，是纯字符串列表），`last_confirmed_at` 是内部维护用的，
+暂未在面板上展示。
+
+### 3.4 `profile.enabled` 默认值变化
+
+`profile.enabled` 默认值从 `false` 改为 `true`——画像功能默认开启
+（前提是记忆功能 `memory.enabled` 也是开启的；两者都关的话画像不会
+生成任何内容，不会报错）。如果不想要这个功能，在 `agent_config.json`
+里显式设置 `"profile": {"enabled": false}` 即可关闭。
+
+## 4. 常见问题
+
+**Q: 回填会不会把很久以前、已经不重要的 session 也翻出来？**
+
+会。方案评审时明确决定不加"最多回溯多少天"的时间窗口——`summary`
+为空就是候选，靠 `max_sessions_per_run` 控制节奏，不做"太旧就不管了"
+的过滤。如果这些陈旧的记忆生成的画像/信号确实没有参考价值，可以
+用 `/profile rebuild` 重新生成一版画像，或者直接删除对应的记忆条目。
+
+**Q: 增量更新会不会导致画像里的旧内容永远删不掉？**
+
+理论上有这个风险（去留完全由 LLM 判断），"最后被印证时间"就是为这个
+问题准备的缓解手段——超期未印证的条目会被显式提醒重新评估。如果观察
+到画像里堆积了明显过时的内容，可以用 `/profile rebuild` 手动重置。
+
+**Q: 回填生成的记忆和正常 session 结束时生成的记忆有区别吗？**
+
+没有本质区别，走的是同一套摘要生成 prompt
+（`user/session_summary_request` + `system/summarizer`），产出的
+`MemoryEntry` 结构完全一样，成长顾问的信号扫描不会区分两者。

@@ -23,12 +23,23 @@ Profile 文件结构：
   "preferences": {},          # 用户可通过命令显式设置，本模块不会自动覆盖
   "derived": {
     "summary": "...",          # 一段自然语言画像总结
-    "tech_stack": [...],
-    "habits": [...],
-    "source_entry_count": 5,   # 生成时使用的记忆条目数（用于增量刷新判断）
+    "tech_stack": [             # [next_doc/memory_backfill_and_profile_update_plan.md
+      {"text": "...", "last_confirmed_at": 1700000000.0}, ...
+    ],
+    "habits": [{"text": "...", "last_confirmed_at": 1700000000.0}, ...],
+    "source_entry_count": 5,   # 生成时使用的记忆条目累计数（用于增量刷新判断）
     "updated_at": 1700000000.0
   }
 }
+
+[next_doc/memory_backfill_and_profile_update_plan.md 方向二] 画像刷新机制：
+从"每次用最近 N 条记忆重新生成、整体覆盖"改为"把上一版画像也喂给 LLM，
+要求在此基础上更新"。`tech_stack`/`habits` 因此从纯字符串列表升级为
+`{text, last_confirmed_at}` 结构——LLM 只负责给出文本内容的增删，
+`last_confirmed_at` 由代码按文本匹配维护，不交给 LLM 生成（时间戳是
+客观事实，交给 LLM 容易出现幻觉时间）。旧版纯字符串列表在加载时会被
+自动迁移成新结构（见 `_migrate_text_items`），`last_confirmed_at` 无法
+回溯，统一取迁移时刻。
 """
 
 from __future__ import annotations
@@ -53,6 +64,82 @@ PROFILE_GENERATED_KEYS = frozenset(
 )
 
 
+def _normalize_text_key(text: str) -> str:
+    """[方向二] 文本归一化比较键：去首尾空白 + 折叠内部连续空白 +
+    大小写不敏感。只做规则层面的宽松匹配，不做语义模糊匹配——避免把
+    本该是两条不同的特征误判合并（见方案 3.4 节的说明）。"""
+    return " ".join((text or "").split()).lower()
+
+
+def _migrate_text_items(raw: list, *, fallback_ts: float) -> list[dict]:
+    """把旧版"纯字符串列表"或已经是新结构的数据统一整理成
+    `[{"text": ..., "last_confirmed_at": ...}, ...]`。
+
+    - 元素是 str：视为旧格式，`last_confirmed_at` 无法回溯，取
+      `fallback_ts`（迁移发生的时刻）。
+    - 元素是 dict 且带 text：原样保留（缺失/非法的 last_confirmed_at
+      同样回退到 fallback_ts，不让脏数据拖垮整个画像加载）。
+    - 其它类型的元素直接丢弃，不让一条脏数据拖垮整份画像。
+    """
+    out: list[dict] = []
+    for item in raw or []:
+        if isinstance(item, str):
+            text = item.strip()
+            if text:
+                out.append({"text": text, "last_confirmed_at": fallback_ts})
+        elif isinstance(item, dict):
+            text = str(item.get("text", "")).strip()
+            if not text:
+                continue
+            try:
+                ts = float(item.get("last_confirmed_at", fallback_ts))
+            except (TypeError, ValueError):
+                ts = fallback_ts
+            out.append({"text": text, "last_confirmed_at": ts})
+    return out
+
+
+def _merge_text_items(
+    previous_items: list[dict], new_texts: list[str], *, now: float,
+) -> list[dict]:
+    """[方向二] 用 LLM 本轮输出的纯文本列表，和上一版结构化列表做合并：
+
+    - 新文本能在旧列表里找到归一化匹配的，视为"被再次印证"，
+      `last_confirmed_at` 更新为 `now`。
+    - 新文本在旧列表里找不到匹配的，视为新增条目，`last_confirmed_at`
+      = `now`。
+    - 旧列表里存在、但本轮 LLM 输出没有再提到的条目，视为 LLM 判断
+      该淘汰，直接丢弃——去留仍然完全由 LLM 决定，这里只维护"新鲜度"
+      这个原本对 LLM 不可见的信号。
+    """
+    old_by_key = {_normalize_text_key(it["text"]): it for it in previous_items}
+    merged: list[dict] = []
+    seen_keys: set[str] = set()
+    for text in new_texts:
+        text = str(text).strip()
+        if not text:
+            continue
+        key = _normalize_text_key(text)
+        if key in seen_keys:
+            continue  # 本轮输出内部去重，避免 LLM 重复输出同一条
+        seen_keys.add(key)
+        old = old_by_key.get(key)
+        merged.append({"text": text, "last_confirmed_at": now})
+        del old  # 仅用于表达"找到即算被印证"，时间戳统一取 now，不取旧值
+    return merged
+
+
+def stale_items(items: list[dict], *, now: float, stale_after_days: int) -> list[str]:
+    """挑出"距今超过 stale_after_days 天没有被再次印证"的条目文本，
+    供 prompt 渲染时单独标注提醒 LLM 重新评估（见
+    prompts/user/profile_update_request.md）。"""
+    cutoff = now - stale_after_days * 86400.0
+    return [
+        it["text"] for it in items
+        if float(it.get("last_confirmed_at", now)) < cutoff
+    ]
+
+
 @dataclass
 class UserProfile:
     user_id: str = "default"
@@ -70,7 +157,18 @@ class UserProfile:
     @classmethod
     def from_dict(cls, data: dict) -> "UserProfile":
         known = {f for f in cls.__dataclass_fields__}
-        return cls(**{k: v for k, v in data.items() if k in known})
+        profile = cls(**{k: v for k, v in data.items() if k in known})
+        # [方向二：迁移期兼容] 加载时把 tech_stack/habits 统一整理成新结构，
+        # 不管磁盘上存的是旧版纯字符串列表还是新结构——保证 generate()
+        # 和下游读取方（growth_advisor 诊断面板等）任何时候看到的都是
+        # 统一格式，迁移只在"读到旧格式"这一刻发生一次。
+        if profile.derived:
+            now = time.time()
+            for field_name in ("tech_stack", "habits"):
+                raw = profile.derived.get(field_name)
+                if raw:
+                    profile.derived[field_name] = _migrate_text_items(raw, fallback_ts=now)
+        return profile
 
     @property
     def is_new(self) -> bool:
@@ -159,22 +257,103 @@ class UserProfileManager:
         last_count = profile.derived.get("source_entry_count", 0)
         return (current_entry_count - last_count) >= cfg.profile_refresh_interval_entries
 
-    def generate(self, llm_client: "LLMClient", entries: list["MemoryEntry"]) -> UserProfile:
+    def generate(
+        self,
+        llm_client: "LLMClient",
+        entries: list["MemoryEntry"],
+        *,
+        max_entries_for_profile: int = 20,
+        stale_after_days: int = 90,
+        rebuild: bool = False,
+    ) -> UserProfile:
         """
-        基于最近的长期记忆条目，调用 LLM 生成/刷新 derived 画像。
+        基于长期记忆条目，调用 LLM 生成/刷新 derived 画像。
+
+        [next_doc/memory_backfill_and_profile_update_plan.md 方向二]
+        `entries` 传入的是全部（按 created_at 升序排序过的）候选记忆，
+        本方法内部自己决定实际喂给 LLM 的是哪一段：
+
+        - `rebuild=True`（对应显式的"全量重建"入口，如 `/profile rebuild`）
+          或画像此前从未生成过：退化为旧行为，只取最近
+          `max_entries_for_profile` 条，不参考上一版画像。
+        - 否则走增量更新：只取"自上次生成以来新增"的条目（用
+          `source_entry_count` 做差集，与 `should_refresh()` 用的是
+          同一套计数口径），并把上一版 `summary/tech_stack/habits`
+          一并放进 prompt，要求 LLM 在此基础上更新而不是从零重写。
+          `max_entries_for_profile` 在这个分支里退化为"新增条目数
+          万一异常多时的兜底上限"（例如记忆回填一次性补了大量历史
+          记忆，见方向一），不再是"每次固定只看这么多"。
 
         本方法只做 LLM 调用 + 解析 + 落盘，不做线程调度；
-        调用方（agent.py）负责在后台线程中调用它。
+        调用方（agent/profile.py）负责在后台线程中调用它。
         """
         from mini_agent.prompts import pm
 
         profile = self.load()
+        now = time.time()
+
+        prev_derived = dict(profile.derived or {})
+        prev_summary = str(prev_derived.get("summary", "") or "")
+        prev_tech_items = _migrate_text_items(prev_derived.get("tech_stack") or [], fallback_ts=now)
+        prev_habit_items = _migrate_text_items(prev_derived.get("habits") or [], fallback_ts=now)
+        last_count = int(prev_derived.get("source_entry_count", 0) or 0)
+
+        incremental = (not rebuild) and (not profile.is_new) and last_count > 0
+        if incremental:
+            # entries 已按 created_at 升序排列（调用方保证），取上次生成
+            # 之后新增的那一段；如果因为记忆被删除/顺序变化导致算出的
+            # delta 异常（比如为空却明明触发了 should_refresh），退化为
+            # 全量重建分支，不让一次异常直接卡死画像刷新。
+            delta_entries = entries[last_count:] if last_count < len(entries) else []
+            if not delta_entries:
+                incremental = False
+                delta_entries = entries[-max_entries_for_profile:]
+            elif len(delta_entries) > max_entries_for_profile:
+                # 兜底上限：新增条目数异常多时（如记忆回填一次性补了
+                # 大量历史），只取最近的一批，避免 prompt 无限增长。
+                delta_entries = delta_entries[-max_entries_for_profile:]
+        else:
+            delta_entries = entries[-max_entries_for_profile:]
 
         memory_text = "\n".join(
             f"- {e.summary}" + (f"（标签: {', '.join(e.tags)}）" if e.tags else "")
-            for e in entries
+            for e in delta_entries
         )
-        prompt = pm.render("user/profile_update_request", memory_text=memory_text)
+
+        previous_profile_text = ""
+        stale_tech = stale_items(prev_tech_items, now=now, stale_after_days=stale_after_days)
+        stale_habits = stale_items(prev_habit_items, now=now, stale_after_days=stale_after_days)
+        if incremental:
+            lines = ["Here is the previous profile, built from earlier sessions:"]
+            if prev_summary:
+                lines.append(f"Summary: {prev_summary}")
+            if prev_tech_items:
+                lines.append("Tech stack: " + "; ".join(it["text"] for it in prev_tech_items))
+            if prev_habit_items:
+                lines.append("Habits: " + "; ".join(it["text"] for it in prev_habit_items))
+            if stale_tech or stale_habits:
+                lines.append(
+                    "The following items have not been reconfirmed by any evidence in a "
+                    "long time — please reconsider whether they still hold:"
+                )
+                for t in stale_tech:
+                    lines.append(f"  - [tech_stack] {t}")
+                for h in stale_habits:
+                    lines.append(f"  - [habits] {h}")
+            lines.append(
+                "Update the profile above based on the new session summaries below: keep "
+                "what still holds, adjust or remove what the new evidence contradicts or "
+                "what is flagged as stale, and add what's genuinely new. Do not simply "
+                "summarize only the new sessions in isolation."
+            )
+            lines.append("")  # 与下面的 Session summaries 之间留一个空行
+            previous_profile_text = "\n".join(lines) + "\n\n"
+
+        prompt = pm.render(
+            "user/profile_update_request",
+            memory_text=memory_text,
+            previous_profile_block=previous_profile_text,
+        )
 
         resp = llm_client.chat_with_retry(
             messages=[{"role": "user", "content": prompt}],
@@ -194,20 +373,33 @@ class UserProfileManager:
         except json.JSONDecodeError:
             parsed = {"summary": raw[:500]}
 
+        new_tech_texts = [str(t) for t in list(parsed.get("tech_stack", []))[:20]]
+        new_habit_texts = [str(t) for t in list(parsed.get("habits", []))[:20]]
+
+        if incremental:
+            tech_items = _merge_text_items(prev_tech_items, new_tech_texts, now=now)
+            habit_items = _merge_text_items(prev_habit_items, new_habit_texts, now=now)
+        else:
+            tech_items = [{"text": t, "last_confirmed_at": now} for t in new_tech_texts if t.strip()]
+            habit_items = [{"text": h, "last_confirmed_at": now} for h in new_habit_texts if h.strip()]
+
         new_fields = {
             "summary": str(parsed.get("summary", ""))[:1000],
-            "tech_stack": list(parsed.get("tech_stack", []))[:20],
-            "habits": list(parsed.get("habits", []))[:20],
+            "tech_stack": tech_items[:20],
+            "habits": habit_items[:20],
+            # source_entry_count 记录的是"累计处理过的记忆条目数"（用于
+            # should_refresh 的增量判断和下一次 generate 的 delta 计算），
+            # 不是"本次喂给 LLM 的条目数"——增量分支下两者不相等。
             "source_entry_count": len(entries),
-            "updated_at": time.time(),
+            "updated_at": now,
         }
         # [next_doc/growth_advisor_improvement_plan_v2.md P4-0] 合并式更新：
-        # 只覆盖本方法自己负责的固定字段集合（_GENERATED_KEYS），保留
-        # derived 里其他模块（如 growth_advisor）写入的 key（例如
-        # growth_focus_areas / growth_topic_keywords）。此前是整体替换
-        # `profile.derived = derived`，会把这些字段悄悄清空。
+        # 只覆盖本方法自己负责的固定字段集合（PROFILE_GENERATED_KEYS），
+        # 保留 derived 里其他模块（如 growth_advisor）写入的 key（例如
+        # growth_focus_areas / growth_topic_keywords）。
         merged = dict(profile.derived or {})
         merged.update(new_fields)
         profile.derived = merged
         self.save()
         return profile
+

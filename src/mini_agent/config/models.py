@@ -480,13 +480,46 @@ class ProfileConfig:
     为后续多用户预留：profile 存储路径由 AgentPaths.profile_path(user_id) 决定，
     当前 user_id 默认为 None（单用户），不影响现有行为。
     """
-    enabled: bool = False
+    # [next_doc/memory_backfill_and_profile_update_plan.md 第 4 节风险项 4]
+    # 默认值从 False 改为 True：与 GrowthAdvisorConfig.enabled 的"零成本
+    # 用起来"策略保持一致，从 opt-in 变成 opt-out。`_maybe_refresh_profile()`
+    # 本身已有"无记忆来源/记忆为空则安全跳过"的兜底（agent/profile.py），
+    # 默认开启不会对没有配置记忆功能的用户产生副作用。
+    enabled: bool = True
     # 全局记忆每新增 N 条，触发一次 profile 刷新（后台线程，不阻塞主流程）
     refresh_interval_entries: int = 3
     # 全局记忆条目数达到该值之前，不生成 profile（信息太少意义不大）
     min_entries: int = 1
-    # 取最近多少条全局记忆用于生成/刷新 profile
+    # 取最近多少条全局记忆用于生成/刷新 profile（首次全量生成时的上限；
+    # 增量更新时表示"自上次生成以来新增条目数"的兜底上限，见 profile.py）
     max_entries_for_profile: int = 20
+    # tech_stack/habits 里某一项超过多少天没有被新证据再次印证，就在
+    # 增量更新的 prompt 里被标注为"建议重新评估"（不是硬删，去留仍由
+    # LLM 判断，见 profile.py::_stale_cutoff）
+    stale_after_days: int = 90
+
+
+@dataclass
+class MemoryBackfillConfig:
+    """[next_doc/memory_backfill_and_profile_update_plan.md] 记忆回填配置。
+
+    修复"session 有内容但从没生成过摘要/记忆"的系统性遗漏（异常中断、
+    LLM 调用失败未重试、cron/daemon 自动运行的 session）。只处理
+    `Session.summary == ""` 且轮次达标的存量 session，不做时间窗口
+    限制（方案评审已确认：陈年 session 也应该被回填，靠
+    `max_sessions_per_run` 限流控制单轮开销，见方案第 4 节风险项 1）。
+    """
+    enabled: bool = True
+    # 对齐 SessionConfig.summary_min_turns：轮次达到这个值才需要补摘要，
+    # 太短的 session 内容太少，回填意义不大
+    min_turns_for_backfill: int = 4
+    # 每次扫描最多处理多少个候选 session，避免存量很多时一次触发跑很久
+    max_sessions_per_run: int = 20
+    # cron/daemon 自动执行的任务，是否也在收尾时直接产出一条记忆
+    # （不经过 Session/summary 中转，见 evolution/memory_backfill.py
+    # 的 backfill_cron_run()）。独立开关：出问题时可以只关这一半，
+    # 不影响存量 session 的回填
+    cron_run_backfill_enabled: bool = True
 
 
 @dataclass
@@ -1912,6 +1945,7 @@ class AppConfig:
     perception: PerceptionConfig = field(default_factory=PerceptionConfig)
     session:    SessionConfig    = field(default_factory=SessionConfig)
     profile:    ProfileConfig    = field(default_factory=ProfileConfig)
+    memory_backfill: MemoryBackfillConfig = field(default_factory=MemoryBackfillConfig)
     debug:      DebugConfig      = field(default_factory=DebugConfig)
     http:       HttpConfig       = field(default_factory=HttpConfig)
     retry:      RetryConfig      = field(default_factory=RetryConfig)

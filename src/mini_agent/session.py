@@ -412,6 +412,28 @@ class SessionManager:
         _atomic_write_json(meta_path, session.to_meta_dict())
         return True
 
+    def mark_summary_backfilled(self, session_id: str, summary: str, summary_at_turns: int) -> bool:
+        """[next_doc/memory_backfill_and_profile_update_plan.md 方向一]
+        离线回填摘要成功后，把 summary 写回 meta.json（只改 meta，不动
+        history）——对齐 `mark_knowledge_extracted()` / `set_pinned()` 的
+        "只写 meta"风格，比走完整的 `save()`（会连带重写 history.json）
+        更轻量，也避免触碰 `save()` 里"首条真实用户消息推导标题"等与
+        本场景无关的逻辑。
+
+        由 evolution/memory_backfill.py 在离线补生成摘要 + 写入长期记忆
+        成功后调用。
+        """
+        session = self.load(session_id)
+        if session is None:
+            return False
+        session.summary = summary
+        session.summary_at_turns = summary_at_turns
+        meta_path = self.session_dir / session.id / "meta.json"
+        if not meta_path.parent.is_dir():
+            return False
+        _atomic_write_json(meta_path, session.to_meta_dict())
+        return True
+
     def delete(self, session_id: str) -> bool:
         """删除 Session，返回是否成功。"""
         import shutil

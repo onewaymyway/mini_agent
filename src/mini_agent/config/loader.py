@@ -444,10 +444,17 @@ def load_config(
     )
 
     profile_cfg = ProfileConfig(
-        enabled=_fb("profile_enabled", None),
+        # [next_doc/memory_backfill_and_profile_update_plan.md 第 4 节
+        # 风险项 4] 此前这里的隐式默认值是 `_fb` 的第三个参数缺省值
+        # `False`，与 `ProfileConfig.enabled` 的 dataclass 默认值各自
+        # 独立维护、容易脱节（"dataclass 默认值改了，这里没同步改"）。
+        # 现在显式传 `True`，与 dataclass 默认值保持一致，agent_config.json
+        # 里没写 profile_enabled 的用户，画像功能默认开启。
+        enabled=_fb("profile_enabled", None, True),
         refresh_interval_entries=_fn("profile_refresh_interval_entries", None, 3),
         min_entries=_fn("profile_min_entries", None, 1),
         max_entries_for_profile=_fn("profile_max_entries_for_profile", None, 20),
+        stale_after_days=_fn("profile_stale_after_days", None, 90),
     )
 
     _env_debug     = os.environ.get("LLM_DEBUG", "").lower() in ("1", "true", "yes")
@@ -690,6 +697,8 @@ def load_config(
     # `AppConfig(...)`（见 param_registry.py 里 `NestedBlockSpec("scheduler",
     # ...)` 新增处的说明），本次一并补齐，其余 block 的加载路径完全不变。
     scheduler_cfg = _nested_blocks["scheduler"]
+    # [next_doc/memory_backfill_and_profile_update_plan.md] 记忆回填配置。
+    memory_backfill_cfg = _nested_blocks["memory_backfill"]
 
     return AppConfig(
         api_key=api_key,
@@ -732,6 +741,7 @@ def load_config(
         perception=perception_cfg,
         session=session_cfg,
         profile=profile_cfg,
+        memory_backfill=memory_backfill_cfg,
         debug=debug_cfg,
         http=http_cfg,
         retry=retry_cfg,

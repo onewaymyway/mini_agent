@@ -2526,11 +2526,29 @@ def diagnostics_snapshot(paths, cfg, profile, memory_store) -> dict[str, Any]:
     # [P4-1] 看板"Agent 对你的了解"区块：只透出 LLM 生成的画像部分
     # （summary/tech_stack/habits），不包含 preferences（用户显式设置的
     # 偏好是另一回事，混在一起展示容易让用户误解）。
+    # [next_doc/memory_backfill_and_profile_update_plan.md 方向二]
+    # tech_stack/habits 从纯字符串列表升级为 `{text, last_confirmed_at}`
+    # 结构后，这里改成只透出 text 部分——保持看板对外展示的字段类型不变
+    # （仍是字符串列表），新增的 last_confirmed_at 是内部维护"新鲜度"用的，
+    # 暂不在诊断面板展示，避免一次性引入太多新字段。旧格式（纯字符串）
+    # 数据也兼容处理，防止 profile.py 迁移逻辑还没跑到时这里报错。
     derived_profile = dict(getattr(profile, "derived", {}) or {})
+
+    def _as_text_list(raw) -> list[str]:
+        out = []
+        for item in raw or []:
+            if isinstance(item, dict):
+                text = str(item.get("text", "")).strip()
+            else:
+                text = str(item).strip()
+            if text:
+                out.append(text)
+        return out
+
     user_profile_snapshot = {
         "summary": derived_profile.get("summary") or "",
-        "tech_stack": list(derived_profile.get("tech_stack") or []),
-        "habits": list(derived_profile.get("habits") or []),
+        "tech_stack": _as_text_list(derived_profile.get("tech_stack")),
+        "habits": _as_text_list(derived_profile.get("habits")),
         "updated_at": derived_profile.get("updated_at"),
     }
 

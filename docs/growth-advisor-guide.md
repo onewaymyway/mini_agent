@@ -264,7 +264,10 @@ docstring 和 `next_doc/growth_advisor_implementation_record.md` 里）。
   对不上是正常的）、记忆总条数与落在扫描窗口内的条数、两个 cron job
   是否启用/上次运行时间/累计运行次数——出现"候选一直是 0"这类情况时，
   打开这个面板通常就能看出卡在哪一步（关键词没命中 / 证据数不够 /
-  定时任务没跑过 / 功能被关掉）
+  定时任务没跑过 / 功能被关掉）。**"记忆总条数"长期是 0 或很低**，
+  通常不是信号扫描本身的问题，而是长期记忆覆盖率不足——见
+  `docs/memory-backfill-guide.md`（`next_doc/
+  memory_backfill_and_profile_update_plan.md` 方向一）。
 
 ### CLI
 

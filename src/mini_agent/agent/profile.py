@@ -50,7 +50,7 @@ class ProfileMixin:
             return ""
         return profile.derived.get("summary", "") if profile.derived else ""
 
-    def _maybe_refresh_profile(self, force: bool = False) -> None:
+    def _maybe_refresh_profile(self, force: bool = False, rebuild: bool = False) -> None:
         """
         [SYS-PROFILE] 检查是否需要(重新)生成用户画像，若需要则同步生成。
 
@@ -58,7 +58,14 @@ class ProfileMixin:
         不阻塞主流程），因此这里直接同步调用 LLM，不再额外开线程。
 
         force=True 时跳过 should_refresh 的间隔判断，只要有记忆条目就重新生成
-        （由 /profile 命令触发）。
+        （由 /profile、/memory 命令触发）。
+
+        rebuild=True 时额外要求 generate() 走全量重建分支（不参考上一版
+        画像，从最近 max_entries_for_profile 条记忆重新生成），对应显式的
+        `/profile rebuild` 入口——用户觉得画像跑偏了、想从头再来的场景。
+        `force=True, rebuild=False`（`/profile`/`/memory` 的默认行为）
+        仍然是"立即刷新，但走增量更新，不丢弃已有画像"。
+        [next_doc/memory_backfill_and_profile_update_plan.md 3.3 节]
         """
         if not self._profile_mgr:
             if force:
@@ -82,10 +89,19 @@ class ProfileMixin:
             count = len(entries)
             if not force and not self._profile_mgr.should_refresh(count, self.cfg):
                 return
-            # 按 created_at 升序取最近 N 条
-            entries = sorted(entries, key=lambda e: e.created_at)[-self.cfg.profile.max_entries_for_profile:]
+            # [next_doc/memory_backfill_and_profile_update_plan.md 方向二]
+            # 排序后整段传给 generate()，不再在这里截断成"最近 N 条"——
+            # 是否只取最近一段、要不要参考上一版画像，由 generate() 内部
+            # 根据 rebuild/是否已有画像自己决定（增量分支只需要"自上次
+            # 以来新增"的那一小段，反而比这里手写的固定截断更精确）。
+            entries = sorted(entries, key=lambda e: e.created_at)
             _locked_print_info("正在更新用户画像(profile)...")
-            self._profile_mgr.generate(self._llm, entries)
+            self._profile_mgr.generate(
+                self._llm, entries,
+                max_entries_for_profile=self.cfg.profile.max_entries_for_profile,
+                stale_after_days=self.cfg.profile.stale_after_days,
+                rebuild=rebuild,
+            )
             _locked_print_info("用户画像(profile)已更新")
         except Exception as e:
             from mini_agent.errors import log_exception

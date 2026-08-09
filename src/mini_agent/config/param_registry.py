@@ -237,6 +237,11 @@ def _build_nested_blocks() -> list:
         # 那种"autonomy/observability 两个 block 曾长期'写了当没写'"问题
         # 在 `scheduler` 上的重演。此处补齐注册。
         NestedBlockSpec("scheduler", _m.SchedulerConfig),
+        # [next_doc/memory_backfill_and_profile_update_plan.md] 记忆回填配置，
+        # 走通用加载机制，避免重演 profile_enabled 那种"手写构造代码里默认值
+        # 和 dataclass 默认值不一致"的问题（见 loader.py profile_cfg 处的
+        # 说明——那里是历史遗留的手写路径，本 block 直接走新机制不受影响）。
+        NestedBlockSpec("memory_backfill", _m.MemoryBackfillConfig),
     ]
 
 

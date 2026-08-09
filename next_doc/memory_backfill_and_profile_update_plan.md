@@ -1,9 +1,8 @@
 # 记忆回填（Memory Backfill）与用户画像更新机制改进方案
 
-- **版本**: v2（v1 基础上完成一轮评审，第 4 节四个风险项均已给出明确
-  决策：不加回填时间窗口 / session_id 合成规则已确认不冲突 / 画像
-  "最后被印证时间"本轮直接做 / `profile.enabled` 默认值改为
-  `True`——仍是方向级规划，未开始实施）
+- **版本**: v3（M1/M2 已实现，见文末"实施状态"一节；v1→v2 的评审决策
+  见第 4 节，本版在 v2 基础上补充实现落点，不再是纯方向级规划）
+
 - **前置文档**: `next_doc/growth_advisor_design.md`、
   `next_doc/growth_advisor_improvement_plan_v2.md` / `v3.md`（成长顾问的
   信号扫描/候选生成机制，本方案是其上游数据源问题的修复）、
@@ -450,3 +449,71 @@ LLM 每次都主动判断"这条是不是该删了"——LLM 在没有明确提�
   不再提及 A，但 A 依然成立"的场景，增量更新后的画像应仍保留 A（而
   当前的全量替换实现会丢失 A）——可以作为一个手工验证 case，也可以
   沉淀成 `tests/test_profile.py` 里的一个用例。
+
+  > **实施状态**：该场景已实现为
+  > `tests/test_profile.py::TestIncrementalProfileUpdate.
+  > test_previous_feature_retained_when_llm_keeps_it`，见第 7 节。
+
+---
+
+## 7. 实施状态（v3 补充）
+
+M1（记忆回填）与 M2（画像增量更新，含"最后被印证时间"）已实现，
+M3/M4（cron 任务本身产出记忆）按第 5 节分期建议暂未实施。
+
+**用户文档**：`docs/memory-backfill-guide.md`（新增，面向使用者的
+完整说明），`docs/growth-advisor-guide.md` 诊断面板一节补充了指向
+本文档的交叉引用。
+
+**改动文件清单**：
+
+- `src/mini_agent/config/models.py` —— 新增 `MemoryBackfillConfig`；
+  `ProfileConfig.enabled` 默认值改为 `True`；`ProfileConfig` 新增
+  `stale_after_days` 字段。
+- `src/mini_agent/config/loader.py` —— `profile_cfg` 显式默认
+  `enabled=True`（不再依赖 `_fb` 隐式默认值，避免与 dataclass 默认值
+  脱节）；接入 `memory_backfill` 嵌套 block。
+- `src/mini_agent/config/param_registry.py` —— 注册
+  `NestedBlockSpec("memory_backfill", MemoryBackfillConfig)`。
+- `src/mini_agent/profile.py` —— `generate()` 支持增量更新（区分
+  `rebuild`/首次生成/增量三种分支）；`tech_stack`/`habits` 改为
+  `{text, last_confirmed_at}` 结构；新增 `_migrate_text_items()`
+  （旧格式兼容迁移）、`_merge_text_items()`（增量合并）、
+  `stale_items()`（挑出过期条目）。
+- `src/mini_agent/agent/profile.py` —— `_maybe_refresh_profile()`
+  新增 `rebuild` 参数；不再在这里手写"取最近 N 条"的截断，交给
+  `generate()` 内部决定。
+- `src/mini_agent/prompts/system/profile_summarizer.md` /
+  `src/mini_agent/prompts/user/profile_update_request.md` —— 支持
+  "有上一版画像可参考"时的更新指引（模板引擎只支持简单变量替换，
+  条件文本由 `profile.py` 在 Python 侧拼好整段传入）。
+- `src/mini_agent/evolution/growth_advisor.py` —— 诊断面板
+  `user_profile_snapshot` 适配 `tech_stack`/`habits` 的新结构（只透出
+  `text`，兼容新旧两种格式）。
+- `src/mini_agent/evolution/memory_backfill.py` —— **新增**，记忆回填
+  核心模块：`scan_sessions_for_backfill()` / `backfill_sessions()` /
+  `generate_summary_offline()` 等。
+- `src/mini_agent/session.py` —— 新增
+  `SessionManager.mark_summary_backfilled()`（只改 `meta.json` 的轻量
+  写回，风格对齐已有的 `mark_knowledge_extracted()`）。
+- `src/mini_agent/evolution/cron_scheduler.py` —— 新增内置 cron job
+  `sys:memory_backfill_scan`。
+- `src/mini_agent/cli/commands/memory_cmd.py` —— **新增**，
+  `/memory backfill [--dry-run] [--limit N]` 命令实现。
+- `src/mini_agent/cli/repl.py` —— `/memory` 分派到新的
+  `handle_memory_cmd`；新增 `/profile rebuild` 分支。
+- `tests/test_profile.py` —— 适配新的 `tech_stack`/`habits` 结构；
+  新增增量更新保留旧特征、`rebuild` 忽略上一版画像两个用例。
+- `tests/test_memory_backfill.py` —— **新增**，覆盖候选扫描（含"不加
+  时间窗口"这条决策）、dry-run 不写入、真实执行写入、
+  `max_sessions_per_run` 限流。
+- `docs/memory-backfill-guide.md` —— **新增**，面向使用者的完整说明。
+- `docs/growth-advisor-guide.md` —— 诊断面板一节补充交叉引用。
+
+**已跑过的验证**：`tests/test_profile.py`（4 个用例，含新增的 2 个）、
+`tests/test_memory_backfill.py`（5 个用例，新增）、
+`tests/test_growth_advisor.py`/`test_cron_scheduler_*`/
+`test_param_registry_type_validation.py` 等既有相关测试全部通过；
+额外做过一次 `load_config()` 端到端加载确认默认值生效
+（`profile.enabled=True`、`memory_backfill` 各字段读到预期默认值）。
+
