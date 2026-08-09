@@ -6072,6 +6072,31 @@ async def get_growth_reports_refresh_candidates(request: Request):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@router.get("/growth/health_trend")
+async def get_growth_health_trend(request: Request):
+    """GET /v1/growth/health_trend — [next_doc/growth_advisor_improvement_plan_v4.md
+    方向三 N1] 返回全局健康度快照序列（最近若干天，按时间正序），供看板
+    画折线图。独立于 `/growth/summary`：趋势数据不需要每次打开 tab 都拉
+    取，看板在用户展开"健康度趋势"区块时才请求，减少默认加载的数据量。"""
+    _require_owner(request)
+    try:
+        paths = _get_paths_for_request(request)
+        from mini_agent.evolution import growth_advisor as ga
+
+        limit = 30
+        try:
+            raw_limit = request.query_params.get("limit")
+            if raw_limit is not None:
+                limit = max(1, int(raw_limit))
+        except (TypeError, ValueError):
+            limit = 30
+        return {"health_trend": ga.health_trend_series(paths, limit=limit)}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @router.post("/growth/candidates/{candidate_id}/report/refresh")
 async def post_growth_candidate_refresh_report(request: Request, candidate_id: str):
     """POST /v1/growth/candidates/{id}/report/refresh — 用新的（更多的）

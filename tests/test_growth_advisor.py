@@ -2565,5 +2565,131 @@ class TestLLMCallStatusObservability(unittest.TestCase):
             self.assertIn("report_quality_flags_count", snapshot)
 
 
+class TestHealthTrend(unittest.TestCase):
+    """[next_doc/growth_advisor_improvement_plan_v4.md 方向三 N1] 诊断面板
+    健康度趋势（growth_health_trend.jsonl）。"""
+
+    def test_run_daily_cycle_records_health_snapshot(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = _make_paths(tmp)
+            now = time.time()
+            entries = [
+                _FakeEntry(f"e{i}", "python packaging pytest", ["python"], now - 10)
+                for i in range(4)
+            ]
+            store = _FakeMemoryStore(entries)
+            profile = UserProfile()
+            cfg = GrowthAdvisorConfig(min_evidence_count=3, max_reports_per_run=2)
+
+            ga.run_daily_cycle(paths, cfg, profile, store)
+
+            series = ga.health_trend_series(paths)
+            self.assertEqual(len(series), 1)
+            row = series[0]
+            self.assertEqual(row["total_entries"], 4)
+            self.assertIn("topics_tracked_count", row)
+            self.assertIn("backfill_candidates_count", row)
+
+    def test_run_daily_cycle_disabled_does_not_record_snapshot(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = _make_paths(tmp)
+            cfg = GrowthAdvisorConfig(enabled=False)
+            profile = UserProfile()
+            ga.run_daily_cycle(paths, cfg, profile, None)
+            self.assertEqual(ga.health_trend_series(paths), [])
+
+    def test_health_trend_series_limit_keeps_most_recent(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = _make_paths(tmp)
+            for i in range(5):
+                ga._append_jsonl(
+                    paths.growth_health_trend_path,
+                    {
+                        "recorded_at": time.time() + i,
+                        "total_entries": i,
+                        "entries_in_scan_window": i,
+                        "backfill_candidates_count": 0,
+                        "pending_followups_count": 0,
+                        "reports_needing_refresh_count": 0,
+                        "topics_tracked_count": 0,
+                    },
+                )
+            series = ga.health_trend_series(paths, limit=2)
+            self.assertEqual([r["total_entries"] for r in series], [3, 4])
+
+    def test_compact_health_trend_storage_downsamples_old_points(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = _make_paths(tmp)
+            now = time.time()
+            old_day_start = now - 90 * 86400
+            for i, offset in enumerate((0, 3600, 7200)):
+                ga._append_jsonl(
+                    paths.growth_health_trend_path,
+                    {
+                        "recorded_at": old_day_start + offset,
+                        "total_entries": i,
+                        "entries_in_scan_window": 0,
+                        "backfill_candidates_count": 0,
+                        "pending_followups_count": 0,
+                        "reports_needing_refresh_count": 0,
+                        "topics_tracked_count": 0,
+                    },
+                )
+            for i in range(3):
+                ga._append_jsonl(
+                    paths.growth_health_trend_path,
+                    {
+                        "recorded_at": now - i,
+                        "total_entries": 10 + i,
+                        "entries_in_scan_window": 0,
+                        "backfill_candidates_count": 0,
+                        "pending_followups_count": 0,
+                        "reports_needing_refresh_count": 0,
+                        "topics_tracked_count": 0,
+                    },
+                )
+            removed = ga.compact_health_trend_storage(paths, now=now)
+            self.assertEqual(removed, 2)
+            rows = ga._read_jsonl(paths.growth_health_trend_path)
+            self.assertEqual(len(rows), 4)
+            old_rows = [
+                r for r in rows
+                if r["recorded_at"] < now - ga._HEALTH_TREND_RAW_WINDOW_DAYS * 86400
+            ]
+            self.assertEqual(len(old_rows), 1)
+            self.assertEqual(old_rows[0]["total_entries"], 2)  # 保留最新那条
+
+    def test_compact_health_trend_storage_noop_on_missing_file(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = _make_paths(tmp)
+            removed = ga.compact_health_trend_storage(paths)
+            self.assertEqual(removed, 0)
+
+    def test_record_health_snapshot_failure_does_not_break_daily_cycle(self):
+        """`_record_health_snapshot()` 内部聚合出错（比如
+        `diagnostics_snapshot` 抛异常）时，`run_daily_cycle()` 主流程已经
+        产出的结果不应该被这一步收尾逻辑影响。"""
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = _make_paths(tmp)
+            now = time.time()
+            entries = [
+                _FakeEntry(f"e{i}", "python packaging pytest", ["python"], now - 10)
+                for i in range(4)
+            ]
+            store = _FakeMemoryStore(entries)
+            profile = UserProfile()
+            cfg = GrowthAdvisorConfig(min_evidence_count=3, max_reports_per_run=2)
+
+            orig = ga.diagnostics_snapshot
+            ga.diagnostics_snapshot = lambda *a, **kw: (_ for _ in ()).throw(RuntimeError("boom"))
+            try:
+                result = ga.run_daily_cycle(paths, cfg, profile, store)
+            finally:
+                ga.diagnostics_snapshot = orig
+            self.assertFalse(result["skipped"])
+            self.assertEqual(len(result["new_candidates"]), 1)
+            self.assertEqual(ga.health_trend_series(paths), [])
+
+
 if __name__ == "__main__":
     unittest.main()

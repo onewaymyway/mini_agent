@@ -1827,6 +1827,99 @@ def _topic_trend_series(paths, dedupe_key: str, limit: int = _DEFAULT_TREND_MAX_
     return rows[-limit:] if limit else rows
 
 
+# ────────── [v4 N1] 诊断面板健康度趋势化 ──────────
+# next_doc/growth_advisor_improvement_plan_v4.md 方向三：
+# `diagnostics_snapshot()` 只有"当下"，没有"变化"。这里新增一个平行于
+# `growth_topic_trend.jsonl`（单主题证据数走势）的"全局健康度"快照序列，
+# 复用同一套"只追加 + 定期降采样"模式。字段选取原则：只记
+# `diagnostics_snapshot()` 已经在展示的数字，避免"趋势图上的数字"和
+# "诊断面板上的数字"来源不一致造成用户困惑。
+
+_HEALTH_TREND_RAW_WINDOW_DAYS = 60
+_DEFAULT_HEALTH_TREND_MAX_POINTS = 30
+
+
+def _compact_health_trend_rows(rows: list[dict], *, now: Optional[float] = None) -> list[dict]:
+    """纯函数：对 growth_health_trend 的行做降采样，返回压缩后的新列表
+    （不做任何 IO）。跟 `_compact_topic_trend_rows()` 是平行实现——健康度
+    快照本身就是"每天最多一条"（见 `_record_health_snapshot()`），所以当前
+    阶段这里基本不会真的压缩掉数据；预留这个函数主要是为未来"提高记录
+    频率"这类改动留一个安全网，不需要到时候再补治理。"""
+    now = now if now is not None else time.time()
+    cutoff = now - _HEALTH_TREND_RAW_WINDOW_DAYS * 86400
+    recent = [r for r in rows if r.get("recorded_at", 0) >= cutoff]
+    old = [r for r in rows if r.get("recorded_at", 0) < cutoff]
+    if not old:
+        return rows
+    # 按天分桶，桶内只保留 recorded_at 最大的那条（同一天多条快照的场景，
+    # 当前阶段每日一条不会触发，但函数本身要能正确处理）。
+    buckets: dict[int, dict] = {}
+    for r in old:
+        ts = r.get("recorded_at", 0)
+        day_bucket = int(ts // 86400)
+        existing = buckets.get(day_bucket)
+        if existing is None or ts > existing.get("recorded_at", 0):
+            buckets[day_bucket] = r
+    out = list(buckets.values()) + recent
+    out.sort(key=lambda r: r.get("recorded_at", 0))
+    return out
+
+
+def compact_health_trend_storage(paths, *, now: Optional[float] = None) -> int:
+    """对落盘的 growth_health_trend.jsonl 做一次降采样压缩，返回被压缩掉
+    的行数（0 表示本次没有可压缩的旧数据，不会触发写盘）。幂等操作，跟
+    `compact_topic_trend_storage()` 的调用契约一致。"""
+    rows = _read_jsonl(paths.growth_health_trend_path)
+    if not rows:
+        return 0
+    compacted = _compact_health_trend_rows(rows, now=now)
+    removed = len(rows) - len(compacted)
+    if removed > 0:
+        _write_jsonl(paths.growth_health_trend_path, compacted)
+    return removed
+
+
+def _record_health_snapshot(paths, cfg, profile, memory_store) -> dict[str, Any]:
+    """在 `run_daily_cycle()` 每轮结束时记一条全局健康度快照，供看板画
+    趋势图。只应该在 `run_daily_cycle()` 这个既有的每日调用点触发，不应该
+    被其它地方高频调用——`diagnostics_snapshot()` 内部有几处"扫描记忆
+    全量"的计算（比如 backfill_candidates_count），每天一次调用可以接受，
+    更高频率需要重新评估开销。返回写入的快照字典，供调用方需要时直接
+    使用（比如测试断言），不强制调用方重新读盘。"""
+    snap = diagnostics_snapshot(paths, cfg, profile, memory_store)
+    row = {
+        "recorded_at": time.time(),
+        "total_entries": snap["memory"]["total_entries"],
+        "entries_in_scan_window": snap["memory"]["entries_in_scan_window"],
+        "backfill_candidates_count": snap["memory"]["backfill_candidates_count"],
+        "pending_followups_count": snap["pending_followups_count"],
+        "reports_needing_refresh_count": snap["reports_needing_refresh_count"],
+        "topics_tracked_count": len(snap["signal_scan"]["topics_tracked"]),
+    }
+    _append_jsonl(paths.growth_health_trend_path, row)
+    return row
+
+
+def health_trend_series(paths, *, limit: int = _DEFAULT_HEALTH_TREND_MAX_POINTS) -> list[dict]:
+    """返回最近 `limit` 个健康度快照，按时间正序，供看板画折线图/API
+    `GET /growth/health_trend` 直接返回。跟 `_topic_trend_series()` 的
+    调用契约一致（早期的点丢弃，只关心"最近的走势"）。"""
+    rows = [
+        {
+            "recorded_at": r.get("recorded_at"),
+            "total_entries": r.get("total_entries"),
+            "entries_in_scan_window": r.get("entries_in_scan_window"),
+            "backfill_candidates_count": r.get("backfill_candidates_count"),
+            "pending_followups_count": r.get("pending_followups_count"),
+            "reports_needing_refresh_count": r.get("reports_needing_refresh_count"),
+            "topics_tracked_count": r.get("topics_tracked_count"),
+        }
+        for r in _read_jsonl(paths.growth_health_trend_path)
+    ]
+    rows.sort(key=lambda r: r.get("recorded_at") or 0)
+    return rows[-limit:] if limit else rows
+
+
 # ────────── [P5-4] 回访/报告刷新接入被动信号，减少主动打扰 ──────────
 # next_doc/growth_advisor_improvement_plan_v3.md P5-4：回访（P4-3）/报告
 # 刷新提示（P4-4）都是纯被动的"到点就问"，没有先看一眼手边已有的
@@ -2373,6 +2466,16 @@ def run_daily_cycle(paths, cfg, profile, memory_store, *, llm_helper: Optional[C
         notification = _maybe_dispatch_weekly_digest(paths, cfg, profile)
     else:
         notification = _maybe_dispatch_notification(paths, cfg, candidates_by_id, reports, profile)
+
+    # [v4 N1] 每日流程收尾时顺带记一条全局健康度快照 + 做一次降采样
+    # 压缩，跟 growth_topic_trend 的既有节奏一致（每天一次，不影响主
+    # 流程返回结构）。快照/压缩失败不应该影响本轮扫描/候选生成/推送
+    # 已经产出的结果，静默降级。
+    try:
+        _record_health_snapshot(paths, cfg, profile, memory_store)
+        compact_health_trend_storage(paths)
+    except Exception:
+        pass
 
     return {
         "skipped": False,

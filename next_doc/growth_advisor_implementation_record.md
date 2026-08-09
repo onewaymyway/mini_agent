@@ -1233,3 +1233,68 @@ removed` 黑名单（`growth_candidate_derive()` 消费时会跳过），
 至此 `growth_advisor_improvement_plan_v3.md` 的 7 个方向（P5-0 ~ P5-6）
 已全部落地。
 
+---
+
+## N1：诊断面板健康度趋势化（growth_advisor_improvement_plan_v4.md 方向三）
+
+对应 `next_doc/growth_advisor_improvement_plan_v4.md` 方向三 3.1-3.3 节，
+是 v4 优先级表里排在第一位（改动量级最小、可作为后续 N2 的验收工具）。
+
+- **新增文件**：`<project_root>/.agent/growth_health_trend.jsonl`
+  （`AgentPaths.growth_health_trend_path`），跟 `growth_topic_trend.jsonl`
+  是平行但独立的只追加文件，每行一条全局健康度快照。字段严格取自
+  `diagnostics_snapshot()` 已经在展示的数字（`total_entries` /
+  `entries_in_scan_window` / `backfill_candidates_count` /
+  `pending_followups_count` / `reports_needing_refresh_count` /
+  `topics_tracked_count`），不引入新的统计口径，避免"趋势图上的数字"和
+  "诊断面板上的数字"来源不一致。
+- **`growth_advisor.py` 新增**：
+  - `_record_health_snapshot(paths, cfg, profile, memory_store)`：调用
+    `diagnostics_snapshot()` 取当前快照，抽取上面 6 个字段落盘一条
+    `growth_health_trend.jsonl`；只应该在 `run_daily_cycle()` 这个既有
+    的每日调用点触发，不应该被其它地方高频调用（docstring 里已明确
+    写清楚，对齐方案文档 3.5 节的风险提示）。
+  - `_compact_health_trend_rows()` / `compact_health_trend_storage()`：
+    跟 `_compact_topic_trend_rows()` / `compact_topic_trend_storage()`
+    平行实现，按天分桶降采样。当前阶段快照本身就是"每天最多一条"，
+    降采样基本不会真的触发，属于"从设计时就带上治理机制，不留给未来
+    补"（对应方案文档"已知风险汇总"第 3 条）。
+  - `health_trend_series(paths, *, limit=30)`：返回最近 `limit` 个快照，
+    按时间正序，供 API/看板直接消费。
+  - `run_daily_cycle()` 收尾处新增一段 `try/except`：调用
+    `_record_health_snapshot()` + `compact_health_trend_storage()`，
+    失败时静默降级，不影响本轮扫描/候选生成/推送已经产出的返回值——
+    对齐"排障用的旁路增强不能反过来影响主流程"的一贯原则（跟
+    `CronJobExecutor._write_output_manifest()` 的收尾定位类似）。
+- **API 新增**：`GET /growth/health_trend?limit=N`（`api/routes.py`），
+  独立于 `/growth/summary`，返回 `{"health_trend": [...]}`。
+- **看板新增**：`apps/mini_agent_kanban/client.py` 新增
+  `AgentClient.growth_health_trend(limit=30)`；`app.py` 新增
+  `_render_growth_health_trend()`，在"🌱 成长顾问"tab 的诊断区块下方
+  加一个默认折叠的"📈 健康度趋势"expander，用户展开时才请求接口（减少
+  默认加载数据量，对应方案文档 3.3 节的取舍），用 `st.line_chart` 画
+  `记忆总条数` / `待回填候选数` / `关注主题数` 三条线；无历史数据时给
+  出"至少运行几天后才能看到走势"的提示文案。
+- **`AgentPaths` 新增**：`growth_health_trend_path` 属性。
+- **测试**：`tests/test_growth_advisor.py` 新增 `TestHealthTrend`
+  （6 个用例：`run_daily_cycle()` 正常路径记一条快照且字段正确、
+  `enabled=False` 时不记录、`health_trend_series()` 的 `limit` 保留最近
+  的点、降采样按天分桶压缩旧点并保留最新的一条、空文件降采样是
+  no-op、`diagnostics_snapshot()` 内部抛异常时不影响 `run_daily_cycle()`
+  的主返回值且不留下半条脏数据）；连同此前全部用例，
+  `test_growth_advisor.py` 合计 165 项全部通过。
+- **范围取舍（未做的部分）**：
+  - 方向三 3.4 节提到的"跟方向一（cron 记忆回填 M3）联动，展示
+    `cron_originated_entries`"以及"跟方向二联动，展示
+    `external_signal_topics_count`"——这两个字段依赖 N2/N3 落地后才有
+    数据来源，本次 N1 的快照结构预留了后续新增字段的空间（`_append_jsonl`
+    写入的是普通 dict，新增字段对旧数据是纯新增列，不需要迁移），但
+    暂不提前加空字段占位。
+  - 方向三 3.1 节原文示例代码里提到的"每天最多一条"限制，本次实现里
+    没有做"同一天重复调用只记一条"的显式去重——`run_daily_cycle()` 本身
+    在 cron 场景下就是每天触发一次，手动 `/growth scan` 触发时多记几条
+    快照不构成问题（`health_trend_series()` 只是取最近若干个点，多几个
+    同一天的点不影响趋势图的可读性），如果未来需要严格"每天一条"的语义，
+    可以在 `_record_health_snapshot()` 里加一个"距上次记录不足 N 小时则
+    跳过"的判断，当前阶段不引入这个复杂度。
+

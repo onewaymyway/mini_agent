@@ -3546,6 +3546,43 @@ def _render_growth_diagnostics(diagnostics: dict):
                 )
 
 
+# [next_doc/growth_advisor_improvement_plan_v4.md 方向三 N1] 诊断面板
+# 健康度趋势——放在可折叠区块里，用户展开才拉取 `/growth/health_trend`，
+# 不影响 tab 默认加载速度。
+def _render_growth_health_trend(client: "AgentClient"):
+    with st.expander("📈 健康度趋势", expanded=False):
+        try:
+            data = client.growth_health_trend(limit=30) or {}
+        except Exception as e:
+            st.caption(f"趋势数据加载失败：{e}")
+            return
+        rows = data.get("health_trend") or []
+        if not rows:
+            st.caption("暂无历史快照——健康度趋势在每天一轮的自动扫描"
+                        "（sys:growth_advisor_daily）结束后才会记一条，"
+                        "至少运行几天后才能看到走势。")
+            return
+        import pandas as pd
+        df = pd.DataFrame(rows)
+        df["日期"] = df["recorded_at"].apply(
+            lambda ts: time.strftime("%m-%d", time.localtime(ts)) if ts else ""
+        )
+        df = df.set_index("日期")
+        chart_cols = {
+            "total_entries": "记忆总条数",
+            "backfill_candidates_count": "待回填候选数",
+            "topics_tracked_count": "关注主题数",
+        }
+        present = [c for c in chart_cols if c in df.columns]
+        if present:
+            st.line_chart(df[present].rename(columns=chart_cols))
+        st.caption(
+            f"共 {len(rows)} 个数据点。趋势只是把 `/growth/summary` 诊断区块"
+            "里的数字每天记一条，不是新的统计口径——对不上的时候，以"
+            "「诊断」区块当前展示的数字为准。"
+        )
+
+
 # [next_doc/growth_advisor_improvement_plan_v2.md P4-1] "Agent 对你的了解"
 # + "当前关键词列表"——用户反馈"看板应该增加用户的 profile 信息""应该增加
 # 成长顾问实际使用的关键词列表"。默认展开（不是诊断信息，是用户想看的），
@@ -3714,6 +3751,7 @@ def render_growth_tab(client: "AgentClient"):
     diagnostics = data.get("diagnostics", {})
 
     _render_growth_diagnostics(diagnostics)
+    _render_growth_health_trend(client)
     _render_growth_profile_and_keywords(client, diagnostics)
 
     c1, c2, c3, c4 = st.columns(4)

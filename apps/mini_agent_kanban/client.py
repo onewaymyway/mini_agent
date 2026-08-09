@@ -656,6 +656,11 @@ class AgentClient:
     def growth_candidate_refresh_report(self, candidate_id: str):
         return self._post(f"/growth/candidates/{candidate_id}/report/refresh")
 
+    # [next_doc/growth_advisor_improvement_plan_v4.md 方向三 N1] 诊断面板
+    # 健康度趋势——独立于 growth_summary，看板展开趋势区块时才拉取。
+    def growth_health_trend(self, limit: int = 30):
+        return self._get(f"/growth/health_trend?limit={limit}")
+
     # ── 文件系统（产出物浏览）────────────────────────────────────────
     def fs_list(self, path="."):
         return self._get("/fs/list", params={"path": path})

@@ -394,6 +394,17 @@ class AgentPaths:
         return self.workdir_dir / "growth_topic_trend.jsonl"
 
     @property
+    def growth_health_trend_path(self) -> Path:
+        """<project_root>/.agent/growth_health_trend.jsonl — [v4 N1]
+        `run_daily_cycle()` 每轮结束时记一条全局健康度快照（字段只取自
+        `diagnostics_snapshot()` 已经在展示的数字，不引入新的统计口径），
+        供看板画"记忆总条数/待回填候选数/关注主题数"这类全局趋势折线图。
+        跟 `growth_topic_trend_path`（单主题证据数走势）是平行但独立的
+        只追加文件，同样从设计时起就预留降采样接口（见
+        `_compact_health_trend_rows()`）。"""
+        return self.workdir_dir / "growth_health_trend.jsonl"
+
+    @property
     def wiki_growth_dir(self) -> Path:
         """<project_root>/.agent/wiki/growth/ — 成长顾问调研报告正文目录"""
         return self.wiki_dir / "growth"
