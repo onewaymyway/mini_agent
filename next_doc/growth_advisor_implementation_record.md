@@ -1474,3 +1474,74 @@ removed` 黑名单（`growth_candidate_derive()` 消费时会跳过），
     `run_daily_cycle()` 内部消费后丢弃；后续如果要展示，可以并入
     `run_daily_cycle()` 的返回结构或者健康度快照（N1）的字段，当前
     不属于 N3 范围。
+
+---
+
+## N4：外部资讯作为展示/报告背景（growth_advisor_improvement_plan_v4.md 方向二 2.3/2.4 节）
+
+对应方向二 2.3 节（外部资讯命中 → 成长顾问候选展示补充信号）+ 2.4 节
+（调研报告可选纳入外部资讯背景），v4 优先级表里排在第四位、"仅展示、
+不影响判断"的克制设计，收益是锦上添花性质。
+
+- **`growth_advisor.py` 新增**：
+  - `_external_signal_count_for_topic(paths, topic, keywords, *,
+    window_days=30) -> int`：只读聚合，扫描 `wiki/` 下 `source_kind`
+    属于 `external_watch`/`external_search`（`wiki/world_writer.py` 的
+    `EXTERNAL_WATCH_SOURCE_KIND`/`EXTERNAL_SEARCH_SOURCE_KIND`）的页面，
+    复用 `growth_signal_scan()` 对记忆做关键词匹配的同一套简单规则
+    （小写子串匹配，haystack 取 `page.id + body 前 2000 字 + tags`）。
+    时间窗口过滤直接对 `created`/`updated`（`date.today().isoformat()`
+    格式的 `"YYYY-MM-DD"` 字符串，见 `wiki/writer.py`）做字符串比较，
+    等价于按日期比较，不需要额外解析成 `datetime` 对象。单个页面解析
+    失败静默跳过，不重复承担 `wiki/quarantine.py` 的隔离区治理职责。
+    **只统计，不改变任何置信度计算**——这是本函数存在的唯一边界。
+  - `generate_growth_report()` 新增两个可选参数 `profile`/`cfg`：仅当
+    `cfg.report_include_external_context` 为真、且报告走 LLM 生成路径
+    （`llm_helper` 非 `None`）时，才会把 `_external_signal_count_for_
+    topic()` 统计到的数量拼进喂给 LLM 的 prompt，并显式要求"这些只是
+    外部背景信息，报告的核心判断仍然要基于用户自己的记忆证据"。**不
+    改变** `candidate.confidence`/`evidence_count_at_generation` 等
+    落盘字段——只影响 prompt 输入，不影响候选排序/推送判断，这是
+    2.3/2.4 节反复强调的克制点。两个参数缺失、或走模板路径
+    （`llm_helper is None`）时整体跳过，向后兼容此前所有不传这两个
+    参数的调用方（包括 `api/routes.py` 里 `refresh_growth_report()`
+    的既有调用点——该处暂未升级传入 `profile`/`cfg`，行为保持不变）。
+  - `refresh_growth_report()` 同步新增透传的 `profile`/`cfg` 可选参数。
+  - `run_daily_cycle()` 生成 Top-N 报告的调用点（`_select_candidates_
+    for_reports()` 之后）新增 `profile=profile, cfg=cfg` 透传，是
+    `report_include_external_context` 实际生效的唯一接入点。
+- **配置新增**：`GrowthAdvisorConfig.report_include_external_context`
+  （默认 `False`），**独立于** `report_quality_llm_enabled`（用户可能
+  想要更好的报告质量但不想引入外部背景，两者应该能各自控制，对齐
+  方案文档 2.4 节的明确要求）。
+- **测试**：`tests/test_growth_advisor.py` 新增两个测试类：
+  - `TestExternalSignalCountForTopic`（5 个用例：命中关键词的页面计入、
+    非 external_watch/external_search 的 `source_kind` 被忽略、窗口期
+    外的旧页面被忽略、空关键词列表直接返回 0 不扫描、wiki 目录不存在
+    时返回 0）。
+  - `TestReportIncludeExternalContext`（6 个用例：开关关闭时 prompt
+    不包含外部背景段落、开关打开且确有外部信号命中时 prompt 包含该
+    段落、开关打开后候选的 `confidence` 数值不变、缺失 `profile`/
+    `cfg` 时安全降级为改动前行为、模板路径下开关不产生任何影响）。
+  - 全部新增用例（11 项）连同既有 `test_growth_advisor.py`
+    （172 项）、`test_config_catalog_list_seed_merge.py`（8 项）、
+    `test_kanban_config_routes.py`（6 项）合计 196 项全部通过；另外
+    跑了 `test_external_input_knowledge_extractor.py`（6 项，验证没有
+    影响 `source_kind` 的既有写入逻辑）确认无回归。
+- **范围取舍（未做的部分）**：
+  - **没有把 `_external_signal_count_for_topic()` 接入
+    `growth_topic_map()` 的看板展示**（2.3 节原文提到"候选卡片上加一句
+    外部世界最近 N 条相关资讯"）——`growth_topic_map()` 按
+    `dedupe_key`（归一化标题）聚合历史候选，本身不持有该主题当前的
+    关键词列表，接入需要额外把 `profile`/关键词表传进这个纯只读聚合
+    函数、并为每个主题都跑一次 wiki 全量扫描（`discover_pages()` +
+    逐页 `parse_page()`），开销和改动面都明显超出"仅展示"的定位；
+    2.3 节本身也只要求"新增一个只读聚合函数"，并未强制要求接入某个
+    具体展示位。当前先把可复用的聚合函数做好、并在 2.4 节报告生成
+    路径验证了数据链路通畅，看板展示位留给后续需要时再接，属于
+    "基础设施先行，展示位按需接入"的取舍，不是遗漏。
+  - `refresh_growth_report()` 在 `api/routes.py` 里的既有调用点没有
+    升级传入 `profile`/`cfg`——该路由本身没有现成的 `profile` 对象
+    可用（需要额外从 bridge/agent 上下文取），且"重新生成单份报告"
+    这个场景本身调用频率低、用户可以接受暂时不带外部背景，不属于
+    N4 的必要范围，后续如果需要可以单独补一个小改动。

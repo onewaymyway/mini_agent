@@ -1596,6 +1596,8 @@ def generate_growth_report(
     *,
     llm_helper: Optional[Callable[[str], str]] = None,
     is_exploration: bool = False,
+    profile=None,
+    cfg=None,
 ) -> GrowthReport:
     """为一个候选生成调研报告并落盘。
 
@@ -1607,6 +1609,17 @@ def generate_growth_report(
     "探索位"时传 `True`——给正文和摘要各加一句管理预期的标注（"这是我们
     不太确定你会不会感兴趣的新方向"），避免被当成"我们觉得这个特别
     重要"。默认 `False`，不影响现有的正常路径。
+
+    `profile`/`cfg`：[N4，growth_advisor_improvement_plan_v4.md 方向二
+    2.4 节] 可选参数，仅当 `cfg.report_include_external_context` 为真
+    且 `llm_helper` 也传入时生效——把 `_external_signal_count_for_topic()`
+    统计到的外部资讯数量作为"背景参考"额外拼进喂给 LLM 的 prompt，明确
+    要求"这些只是外部背景信息，报告的核心判断仍然要基于用户自己的记忆
+    证据"。**不影响候选的置信度/排序**——这里只改 LLM prompt 的输入，
+    `candidate.confidence`、`evidence_count_at_generation` 等落盘字段
+    完全不受这个开关影响，对齐 2.3/2.4 节"仅展示、不影响判断"的克制
+    设计。两个参数任一缺失、或规则模板路径（`llm_helper is None`）时，
+    这段逻辑整体跳过，向后兼容此前所有不传这两个参数的调用方。
     """
     report_id = uuid.uuid4().hex[:12]
     slug = f"{_slugify(candidate.title)}-{report_id[:6]}"
@@ -1614,11 +1627,29 @@ def generate_growth_report(
     body = None
     source = "template"
     if llm_helper is not None:
+        external_context_section = ""
+        if profile is not None and cfg is not None and getattr(cfg, "report_include_external_context", False):
+            try:
+                effective = _effective_topic_keywords(profile)
+                info = effective.get(candidate.title)
+                if info:
+                    ext_count = _external_signal_count_for_topic(paths, candidate.title, info["keywords"])
+                    if ext_count > 0:
+                        external_context_section = (
+                            f"\n[外部背景参考，仅供了解，不改变你的判断] "
+                            f"最近 30 天外部世界大约有 {ext_count} 条跟这个方向相关的资讯。"
+                            "这只是背景信息，报告的核心判断仍然要基于用户自己的记忆证据，"
+                            "不要因为这个数字改变你对该方向重要性的评估。\n"
+                        )
+            except Exception:
+                external_context_section = ""
+
         prompt = (
             "请为以下用户成长方向候选撰写一份简短调研报告（Markdown，"
             "包含：为什么值得关注、可以怎么入门、常见资源/路径、"
             "预计投入与见效周期，4 个小节即可，不要超过 500 字）：\n"
             f"主题：{candidate.title}\n理由：{candidate.rationale}\n"
+            f"{external_context_section}"
         )
         try:
             body = llm_helper(prompt)
@@ -2070,16 +2101,21 @@ def reports_needing_refresh(paths, cfg=None) -> list[dict]:
 
 
 def refresh_growth_report(
-    paths, candidate_id: str, *, llm_helper: Optional[Callable[[str], str]] = None
+    paths, candidate_id: str, *, llm_helper: Optional[Callable[[str], str]] = None,
+    profile=None, cfg=None,
 ) -> Optional[GrowthReport]:
     """为一个候选重新生成一份调研报告（新 report_id/新文件），并把候选
     的 `report_id` 指向新报告——旧报告仍留在 `growth_reports_index.jsonl`
     历史记录里（不删除、不覆盖），只是不再是候选"当前挂着"的那份，
-    `reports_needing_refresh()` 之后也不会再把它算作"待刷新"。"""
+    `reports_needing_refresh()` 之后也不会再把它算作"待刷新"。
+
+    `profile`/`cfg`：[N4] 透传给 `generate_growth_report()`，控制是否
+    附带外部资讯背景（见该函数 docstring）；不传时行为与改动前完全
+    一致。"""
     candidate = GrowthBacklog(paths).get(candidate_id)
     if candidate is None:
         return None
-    return generate_growth_report(paths, candidate, llm_helper=llm_helper)
+    return generate_growth_report(paths, candidate, llm_helper=llm_helper, profile=profile, cfg=cfg)
 
 
 # ────────────────────────── P2：推送节流状态（growth_advisor_state.json） ──────────────────────────
@@ -2456,7 +2492,10 @@ def run_daily_cycle(paths, cfg, profile, memory_store, *, llm_helper: Optional[C
     # 就默认用上）。
     report_llm_helper = llm_helper if getattr(cfg, "report_quality_llm_enabled", False) else None
     reports = [
-        generate_growth_report(paths, c, llm_helper=report_llm_helper, is_exploration=is_exploration)
+        generate_growth_report(
+            paths, c, llm_helper=report_llm_helper, is_exploration=is_exploration,
+            profile=profile, cfg=cfg,
+        )
         for c, is_exploration in selected
     ]
 
@@ -2550,6 +2589,72 @@ def sync_confirmed_topics_to_tech_radar(paths, profile, cfg) -> int:
     if added > 0:
         _cc.write_config_file(config_path, new_raw)
     return added
+
+
+# ────────── N4：外部资讯命中 → 展示补充信号 / 报告背景（方向二 2.3/2.4 节）──────────
+
+def _external_signal_count_for_topic(
+    paths, topic: str, keywords: list[str], *, window_days: int = 30,
+) -> int:
+    """[growth_advisor_improvement_plan_v4.md 方向二 2.3 节] 粗略统计：
+    最近 `window_days` 天内，wiki 里有多少条 `source_kind` 属于
+    `external_watch`/`external_search`（外部检索/外部观察产出，见
+    `wiki/world_writer.py` 的 `EXTERNAL_WATCH_SOURCE_KIND`/
+    `EXTERNAL_SEARCH_SOURCE_KIND`）的页面，标题/正文命中了该主题的
+    关键词。
+
+    复用 `growth_signal_scan()` 对记忆做关键词匹配的同一套简单规则
+    （小写子串匹配，不引入新的匹配算法/embedding）。**只读聚合，不改变
+    任何置信度计算**——这是本函数存在的唯一边界：外部世界的资讯量本身
+    跟"用户自己是否感兴趣"没有必然关系，只能作为展示补充，不能参与
+    `_confidence_from_evidence()` 这类判断用户投入程度的计算。
+
+    单个页面解析失败（frontmatter 缺失/格式错误等，`wiki/quarantine.py`
+    已经有独立的隔离区机制处理这类问题）时静默跳过，不影响其它页面的
+    统计，也不在这里重复记录隔离区问题（那是 `wiki/stats.py::
+    compute_stats()` 的职责，本函数只是"顺手数一下"，不承担 wiki 健康度
+    治理的职责）。
+    """
+    if not keywords:
+        return 0
+    try:
+        from mini_agent.wiki.indexer import discover_pages
+        from mini_agent.wiki.parser import parse_page
+        from mini_agent.wiki.world_writer import (
+            EXTERNAL_WATCH_SOURCE_KIND, EXTERNAL_SEARCH_SOURCE_KIND,
+        )
+    except Exception:
+        return 0
+
+    cutoff_date = (
+        __import__("datetime").date.today()
+        - __import__("datetime").timedelta(days=window_days)
+    ).isoformat()
+    lowered_keywords = [k.lower() for k in keywords if k]
+    count = 0
+    try:
+        page_paths = discover_pages(paths)
+    except Exception:
+        return 0
+    for md_path in page_paths:
+        try:
+            page = parse_page(md_path)
+        except Exception:
+            continue
+        source_kind = str(page.raw_frontmatter.get("source_kind") or "")
+        if source_kind not in (EXTERNAL_WATCH_SOURCE_KIND, EXTERNAL_SEARCH_SOURCE_KIND):
+            continue
+        # created/updated 是 date.today().isoformat() 生成的 "YYYY-MM-DD"
+        # 字符串（见 wiki/writer.py），字符串字典序比较等价于按日期比较，
+        # 不需要额外解析成 datetime 对象。取 updated 优先（更新过的页面
+        # 说明最近仍有活跃信号），没有 updated 时退回 created。
+        page_date = page.updated or page.created
+        if page_date and page_date < cutoff_date:
+            continue
+        haystack = " ".join([page.id, page.body[:2000]] + list(page.tags)).lower()
+        if any(kw in haystack for kw in lowered_keywords):
+            count += 1
+    return count
 
 
 def growth_topic_map(paths) -> list[dict]:

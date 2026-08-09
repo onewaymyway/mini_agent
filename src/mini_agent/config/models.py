@@ -1757,6 +1757,16 @@ class GrowthAdvisorConfig:
     # `sync_confirmed_topics_to_tech_radar()`）。
     sync_confirmed_topics_to_tech_radar_enabled: bool = False
 
+    # ── N4：调研报告可选纳入外部资讯背景（growth_advisor_improvement_
+    # plan_v4.md 方向二 2.4 节）──────────────────────────────────────
+    # 默认关闭，独立于 report_quality_llm_enabled（用户可能想要更好的
+    # 报告质量但不想引入外部资讯作为背景，两者应该能独立控制）。打开后，
+    # 仅当报告走 LLM 生成路径（`llm_helper` 非 None）时，才会把
+    # `_external_signal_count_for_topic()` 统计到的外部资讯数量作为
+    # "背景参考"额外拼进 prompt——只影响 LLM 输入，不改变候选的置信度/
+    # 排序（2.3/2.4 节"仅展示、不影响判断"的克制设计）。
+    report_include_external_context: bool = False
+
 
 @dataclass
 class ReminderConfig:

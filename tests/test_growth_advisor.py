@@ -2818,5 +2818,155 @@ class TestSyncConfirmedTopicsToTechRadar(unittest.TestCase):
         self.assertEqual(ga.sync_confirmed_topics_to_tech_radar(fake_paths, profile, cfg), 0)
 
 
+
+
+class TestExternalSignalCountForTopic(unittest.TestCase):
+    """[next_doc/growth_advisor_improvement_plan_v4.md 方向二 2.3 节 / N4]
+    只读聚合：最近 window_days 天内命中该主题关键词的外部 wiki 页面数。"""
+
+    def _write_external_page(self, paths, page_id, *, source_kind, body, updated=None):
+        from mini_agent.wiki.writer import write_page
+        write_page(
+            paths, page_id=page_id, page_type="entity", body=body,
+            tags=["tag"], updated=updated,
+            extra_frontmatter={"source_kind": source_kind},
+        )
+
+    def test_counts_pages_matching_keyword_within_window(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = _make_paths(tmp)
+            self._write_external_page(
+                paths, "rust-async-runtime", source_kind="external_search",
+                body="# Rust 异步运行时\n\ntokio 生态最近的一些进展。",
+            )
+            count = ga._external_signal_count_for_topic(paths, "rust_async", ["rust", "tokio"])
+            self.assertEqual(count, 1)
+
+    def test_ignores_pages_with_non_external_source_kind(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = _make_paths(tmp)
+            self._write_external_page(
+                paths, "rust-note", source_kind="world_model",
+                body="# Rust 笔记\n\n关于 rust 的一些个人记录。",
+            )
+            count = ga._external_signal_count_for_topic(paths, "rust_async", ["rust"])
+            self.assertEqual(count, 0)
+
+    def test_ignores_pages_outside_window(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = _make_paths(tmp)
+            old_date = (
+                __import__("datetime").date.today() - __import__("datetime").timedelta(days=90)
+            ).isoformat()
+            self._write_external_page(
+                paths, "rust-old-news", source_kind="external_search",
+                body="# Rust 旧闻\n\n很久以前的 rust 资讯。",
+                updated=old_date,
+            )
+            count = ga._external_signal_count_for_topic(paths, "rust_async", ["rust"], window_days=30)
+            self.assertEqual(count, 0)
+
+    def test_no_keywords_returns_zero_without_scanning(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = _make_paths(tmp)
+            self.assertEqual(ga._external_signal_count_for_topic(paths, "topic", []), 0)
+
+    def test_missing_wiki_dir_returns_zero(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = _make_paths(tmp)
+            self.assertEqual(ga._external_signal_count_for_topic(paths, "topic", ["rust"]), 0)
+
+
+class TestReportIncludeExternalContext(unittest.TestCase):
+    """[next_doc/growth_advisor_improvement_plan_v4.md 方向二 2.4 节 / N4]
+    generate_growth_report() 可选纳入外部资讯背景，且不影响候选置信度。"""
+
+    def _make_candidate(self, title="rust_async"):
+        return ga.GrowthCandidate(
+            candidate_id="c1", title=title, rationale="持续投入证据充分",
+            confidence=0.8, evidence_count=5,
+        )
+
+    def test_flag_disabled_does_not_touch_prompt(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = _make_paths(tmp)
+            profile = UserProfile()
+            cfg = GrowthAdvisorConfig(report_include_external_context=False)
+            captured = {}
+
+            def llm_helper(prompt):
+                captured["prompt"] = prompt
+                return "报告正文"
+
+            ga.generate_growth_report(
+                paths, self._make_candidate(), llm_helper=llm_helper, profile=profile, cfg=cfg,
+            )
+            self.assertNotIn("外部背景参考", captured["prompt"])
+
+    def test_flag_enabled_appends_external_context_when_signals_exist(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = _make_paths(tmp)
+            from mini_agent.wiki.writer import write_page
+            write_page(
+                paths, page_id="rust-async-runtime", page_type="entity",
+                body="# Rust 异步运行时\n\ntokio 生态最近的一些进展。", tags=["tag"],
+                extra_frontmatter={"source_kind": "external_search"},
+            )
+            profile = UserProfile()
+            profile.derived = {
+                "growth_topic_keywords": {
+                    "rust_async": {
+                        "keywords": ["rust", "tokio"], "source": "user_added",
+                        "confirmed_by_user": True,
+                    },
+                }
+            }
+            cfg = GrowthAdvisorConfig(report_include_external_context=True)
+            captured = {}
+
+            def llm_helper(prompt):
+                captured["prompt"] = prompt
+                return "报告正文"
+
+            ga.generate_growth_report(
+                paths, self._make_candidate(), llm_helper=llm_helper, profile=profile, cfg=cfg,
+            )
+            self.assertIn("外部背景参考", captured["prompt"])
+
+    def test_does_not_change_candidate_confidence(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = _make_paths(tmp)
+            profile = UserProfile()
+            cfg = GrowthAdvisorConfig(report_include_external_context=True)
+            candidate = self._make_candidate()
+            before_confidence = candidate.confidence
+
+            ga.generate_growth_report(
+                paths, candidate, llm_helper=lambda p: "报告正文", profile=profile, cfg=cfg,
+            )
+            self.assertEqual(candidate.confidence, before_confidence)
+
+    def test_missing_profile_or_cfg_is_safe_noop(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = _make_paths(tmp)
+            # 不传 profile/cfg，行为应该跟改动前完全一致，不报错。
+            report = ga.generate_growth_report(
+                paths, self._make_candidate(), llm_helper=lambda p: "报告正文",
+            )
+            self.assertEqual(report.source, "llm")
+
+    def test_template_path_ignores_external_context_flag(self):
+        """没有 llm_helper（走模板路径）时，即使开关打开也不应该触发
+        任何外部信号统计（没有 prompt 可拼，模板正文本身不受影响）。"""
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = _make_paths(tmp)
+            profile = UserProfile()
+            cfg = GrowthAdvisorConfig(report_include_external_context=True)
+            report = ga.generate_growth_report(
+                paths, self._make_candidate(), profile=profile, cfg=cfg,
+            )
+            self.assertEqual(report.source, "template")
+
+
 if __name__ == "__main__":
     unittest.main()
