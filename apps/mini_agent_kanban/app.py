@@ -3636,14 +3636,20 @@ def render_growth_tab(client: "AgentClient"):
         if st.button("🔍 立即为我看看", key="growth_scan_btn"):
             with st.spinner("正在扫描最近的信号..."):
                 result = client.growth_scan()
+            # [BUGFIX] 之前这里用 st.error/st.info/st.success + 紧跟的无条件
+            # st.rerun()：Streamlit 的 rerun 会立刻重新执行整个脚本，这些
+            # 消息在还没被用户看到之前就被下一次渲染冲掉了，表现为"点了按钮
+            # 好像没反应"——不管扫描成功、跳过还是报错，用户都看不到反馈。
+            # 改用 st.toast()（跨 st.rerun() 仍会展示，见上面 2098 行附近
+            # 同类用法），不需要额外的 session_state 搬运。
             if result and "_error" in result:
-                st.error(result["_error"])
+                st.toast(f"❌ 扫描失败：{result['_error']}", icon="❌")
             elif result and result.get("skipped"):
-                st.info(f"跳过：{result.get('reason')}")
+                st.toast(f"ℹ️ 跳过：{result.get('reason')}", icon="ℹ️")
             else:
                 n_c = len(result.get("new_candidates", [])) if result else 0
                 n_r = len(result.get("reports", [])) if result else 0
-                st.success(f"完成：新增/更新候选 {n_c} 条，生成调研报告 {n_r} 份。")
+                st.toast(f"✅ 完成：新增/更新候选 {n_c} 条，生成调研报告 {n_r} 份。", icon="✅")
             st.rerun()
 
     data = client.growth_summary() or {}

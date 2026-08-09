@@ -608,7 +608,13 @@ class AgentClient:
         return self._get("/growth/summary")
 
     def growth_scan(self):
-        return self._post("/growth/scan")
+        # `llm_signal_augment_enabled` / `report_quality_llm_enabled` 开启时
+        # 这一轮会带上真实 LLM 调用（信号归纳 + 报告正文），默认 15s 超时
+        # 经常不够——超时后前端拿到 _error，但服务端其实还在继续跑，容易
+        # 造成"点了按钮报错/没反应，过一会再看候选却确实生成了"的错觉。
+        # 放宽到 90s，给 LLM 调用留出合理的重试余量（LLMHelper.ask 默认
+        # max_retries=3）。
+        return self._post("/growth/scan", timeout=90)
 
     def growth_candidate_action(self, candidate_id: str, action: str, *, reason: str | None = None):
         """反馈粒度细化：dismiss 时可选传 reason（见

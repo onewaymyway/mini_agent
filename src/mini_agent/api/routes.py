@@ -5805,10 +5805,29 @@ async def post_growth_first_touch_ack(request: Request):
 async def post_growth_scan(request: Request):
     """POST /v1/growth/scan — 手动触发一轮信号扫描 + 候选生成 + Top-N 调研
     报告（等价于 CLI `/growth scan` / cron sys:growth_advisor_daily 的内容），
-    供看板"立即为我看看"按钮调用。规则式实现，不依赖 LLM，可安全同步执行。"""
+    供看板"立即为我看看"按钮调用。规则式实现，不依赖 LLM，可安全同步执行
+    （信号扫描本身；候选/报告生成阶段是否走 LLM 由各自的 opt-in 开关决定）。
+
+    [BUGFIX] `run_daily_cycle()` 内部把"信号扫描"（写 profile.derived，
+    包含诊断面板展示的 last_scan_at）、"候选生成"、"报告生成"（可能走
+    LLM，耗时更长、更容易失败）串在一条调用链里，而 profile 的落盘此前
+    统一放在整条链跑完之后——如果候选生成/报告生成阶段抛异常（比如
+    report_quality_llm_enabled 开着但 LLM 调用超时/出错），整个请求会
+    500，profile.save() 根本不会被执行，连"已经成功完成的信号扫描"这部分
+    结果都跟着丢了：诊断面板会一直显示"还没有扫描记录"，即使实际上扫描
+    本身是成功的。现在无论后面阶段是否失败都会尝试落盘 profile——正常
+    路径 mgr.save() 照旧，异常路径在转换成 HTTPException 之前先补一次
+    mgr.save()，至少诊断面板能如实反映"扫描确实跑过"。
+    """
     _require_owner(request)
+    paths = _get_paths_for_request(request)
+    from mini_agent.evolution import growth_advisor as ga
+    from mini_agent.perception.memory_store import MemoryStore
+    from mini_agent.profile import UserProfileManager
+
+    mgr = UserProfileManager(paths)
+    profile = mgr.load()
     try:
-        paths = _get_paths_for_request(request)
         http_server = getattr(request.app.state, "http_server", None)
         self_agent = http_server.bridge.agent if http_server else None
         cfg = getattr(self_agent.cfg, "growth_advisor", None) if self_agent else None
@@ -5816,12 +5835,6 @@ async def post_growth_scan(request: Request):
             from mini_agent.config.models import GrowthAdvisorConfig
             cfg = GrowthAdvisorConfig()
 
-        from mini_agent.evolution import growth_advisor as ga
-        from mini_agent.perception.memory_store import MemoryStore
-        from mini_agent.profile import UserProfileManager
-
-        mgr = UserProfileManager(paths)
-        profile = mgr.load()
         store = MemoryStore(paths)
         llm_helper = None
         if self_agent is not None and getattr(cfg, "llm_signal_augment_enabled", False):
@@ -5834,6 +5847,15 @@ async def post_growth_scan(request: Request):
     except HTTPException:
         raise
     except Exception as e:
+        # 信号扫描阶段（`ga.growth_signal_scan` 内部）已经把结果写进了
+        # 上面 load() 出来的同一个 profile 对象；即使异常发生在后面的候选/
+        # 报告生成阶段，这里也要把已经完成的那部分落盘，不能让整轮请求
+        # 500 就把"扫描确实跑过"这个事实也一并丢掉。落盘本身失败（磁盘满/
+        # 权限问题等）不覆盖原始异常，只做尽力而为。
+        try:
+            mgr.save()
+        except Exception:
+            pass
         raise HTTPException(status_code=500, detail=str(e))
 
 
