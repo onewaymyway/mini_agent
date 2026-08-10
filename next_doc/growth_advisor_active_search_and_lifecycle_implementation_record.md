@@ -125,3 +125,21 @@
 均已接入轨迹查看能力。仍未做的是真正的图形化时间轴 UI 组件（当前三处
 入口点开后展示的都是同一个 `_render_growth_topic_timeline()` 文字版
 垂直列表），留给看板专项迭代评估是否值得引入额外的可视化组件依赖。
+
+## 追加：真正的图形化时间轴（本次新增）
+
+- `_render_growth_topic_timeline()` 改为渲染一条手写 SVG 水平时间轴
+  （`_build_growth_timeline_svg()`）：轴线 + 每个事件一个圆点（按
+  stage 上色，见 `_GROWTH_TIMELINE_STAGE_COLORS`），标签/日期交替上下
+  排布避免拥挤，圆点自带 `<title>` 悬停提示完整文案。SVG 渲染异常时
+  静默跳过（`try/except`），不阻塞下面的兜底展示。
+- SVG 下方保留一个可折叠的"查看文字版详情"区块（默认收起），完整还原
+  此前纯文字版的信息密度，兼顾窄屏/打印场景下 SVG 可能显示不佳的情况。
+- 纯手写字符串拼接 SVG，未引入新的可视化组件依赖（`streamlit.
+  components.v1` 已在文件顶部导入但本次未使用，保持跟既有 P4-6 走势
+  箭头一样"轻量自绘"的原则）。
+
+至此，成长轨迹时间线从数据聚合（`growth_topic_lifecycle()`）到三处
+入口（列表卡片/主题地图/拖拽视图）再到图形化展示均已打通，
+`growth_advisor_active_search_and_lifecycle_plan.md` 方向二"看板的
+时间线图形化渲染留给看板专项迭代"这条非目标本次一并完成。

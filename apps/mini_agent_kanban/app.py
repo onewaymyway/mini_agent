@@ -4083,8 +4083,10 @@ _GROWTH_DISMISS_REASON_OPTIONS = [
 
 
 # [next_doc/growth_advisor_active_search_and_lifecycle_plan.md 方向二]
-# 单个主题的成长轨迹时间线——文字版垂直时间轴，不引入图表库（跟 P4-6
-# 证据数走势"简单文字箭头"是同一克制原则，图形化留给专项迭代）。
+# 单个主题的成长轨迹时间线：一条 SVG 水平轴线 + 每个事件一个节点/图标，
+# 悬停可看完整文案；下面附文字列表兜底（SVG 在极窄屏幕/打印场景可能
+# 显示不佳，文字列表始终可读）。不引入图表库，纯手写 SVG，跟项目里
+# 其它可视化区块（P4-6 走势箭头）一样保持轻量。
 _GROWTH_TIMELINE_STAGE_ICONS = {
     "discovered": "🔍",
     "report_generated": "📄",
@@ -4095,6 +4097,57 @@ _GROWTH_TIMELINE_STAGE_ICONS = {
     "goal_completed": "🏁",
     "goal_stalled": "⚠️",
 }
+_GROWTH_TIMELINE_STAGE_COLORS = {
+    "discovered": "#8888aa",
+    "report_generated": "#4a90d9",
+    "accepted": "#2e9e5b",
+    "dismissed": "#b0705a",
+    "goal_linked": "#c98a2b",
+    "goal_active": "#c98a2b",
+    "goal_completed": "#2e9e5b",
+    "goal_stalled": "#b0705a",
+}
+
+
+def _build_growth_timeline_svg(topic: str, events: list[dict]) -> str:
+    n = len(events)
+    left_pad, right_pad, top = 40, 40, 70
+    width = max(560, left_pad + right_pad + (n - 1) * 140 if n > 1 else 560)
+    height = 150
+    axis_y = top
+    if n == 1:
+        xs = [width / 2]
+    else:
+        span = width - left_pad - right_pad
+        xs = [left_pad + span * i / (n - 1) for i in range(n)]
+
+    parts = [
+        f'<svg viewBox="0 0 {width} {height}" xmlns="http://www.w3.org/2000/svg" '
+        f'style="width:100%;height:auto;font-family:sans-serif;">',
+        f'<line x1="{left_pad}" y1="{axis_y}" x2="{width - right_pad}" y2="{axis_y}" '
+        f'stroke="#cccccc" stroke-width="2" />',
+    ]
+    for i, e in enumerate(events):
+        x = xs[i]
+        stage = e.get("stage", "")
+        color = _GROWTH_TIMELINE_STAGE_COLORS.get(stage, "#888888")
+        icon = _GROWTH_TIMELINE_STAGE_ICONS.get(stage, "•")
+        ts = e.get("ts")
+        ts_str = datetime.fromtimestamp(ts).strftime("%Y-%m-%d") if ts else "?"
+        label = _esc_html(e.get("label", ""))[:24]
+        label_y = axis_y - 26 if i % 2 == 0 else axis_y + 40
+        line_y2 = axis_y - 8 if i % 2 == 0 else axis_y + 8
+        parts.append(f'<line x1="{x}" y1="{axis_y}" x2="{x}" y2="{line_y2}" stroke="{color}" stroke-width="2" />')
+        parts.append(f'<circle cx="{x}" cy="{axis_y}" r="7" fill="{color}"><title>{label} ({ts_str})</title></circle>')
+        parts.append(
+            f'<text x="{x}" y="{label_y}" text-anchor="middle" font-size="11" fill="#333333">{icon} {label}</text>'
+        )
+        parts.append(
+            f'<text x="{x}" y="{label_y + (14 if i % 2 == 0 else -14)}" '
+            f'text-anchor="middle" font-size="10" fill="#999999">{ts_str}</text>'
+        )
+    parts.append("</svg>")
+    return "".join(parts)
 
 
 def _render_growth_topic_timeline(client: "AgentClient", candidate_id: str) -> None:
@@ -4103,15 +4156,23 @@ def _render_growth_topic_timeline(client: "AgentClient", candidate_id: str) -> N
         st.error((data or {}).get("_error", "读取成长轨迹失败"))
         return
     events = data.get("events") or []
+    topic = data.get("topic", "")
     if not events:
         st.caption("暂无可展示的成长轨迹。")
         return
-    st.markdown(f"**{data.get('topic', '')} 的成长轨迹**")
-    for e in events:
-        ts = e.get("ts")
-        ts_str = datetime.fromtimestamp(ts).strftime("%Y-%m-%d") if ts else "?"
-        icon = _GROWTH_TIMELINE_STAGE_ICONS.get(e.get("stage"), "•")
-        st.write(f"{icon} `{ts_str}` {e.get('label', '')}")
+    st.markdown(f"**{topic} 的成长轨迹**")
+    try:
+        svg = _build_growth_timeline_svg(topic, events)
+        st.markdown(svg, unsafe_allow_html=True)
+    except Exception:
+        # SVG 渲染失败（极端数据/环境问题）不应该挡住文字版兜底。
+        pass
+    with st.expander("查看文字版详情", expanded=False):
+        for e in events:
+            ts = e.get("ts")
+            ts_str = datetime.fromtimestamp(ts).strftime("%Y-%m-%d") if ts else "?"
+            icon = _GROWTH_TIMELINE_STAGE_ICONS.get(e.get("stage"), "•")
+            st.write(f"{icon} `{ts_str}` {e.get('label', '')}")
 
 
 def _render_growth_pending_list(client: "AgentClient", pending: list[dict]):
