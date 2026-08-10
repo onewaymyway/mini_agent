@@ -80,6 +80,10 @@ resources:
     path: references/scholar-search.md
     description: Google Scholar 学术论文搜索脚本（scholar_search.py），支持标题/作者/摘要/引用数提取
     triggers: Google Scholar, scholar search, 学术论文, 论文搜索, scholar_search.py
+  - id: thepaper-search
+    path: references/thepaper-search.md
+    description: 澎湃新闻搜索自动化脚本（thepaper_search.py），支持关键词搜索、频道浏览、新闻详情获取
+    triggers: 澎湃新闻, thepaper search, thepaper_search.py, 时政新闻, 新闻抓取
   - id: captcha-handling
     path: references/captcha-handling.md
     description: 验证码处理与反检测指南：滑块/点选/文字验证码处理、reCAPTCHA/hCaptcha 应对、反检测模式配置、常见反爬场景策略
