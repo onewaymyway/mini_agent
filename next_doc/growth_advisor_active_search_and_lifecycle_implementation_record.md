@@ -57,10 +57,28 @@
 ## 未完成 / 留给后续
 
 - 看板（Streamlit kanban）尚未接入 `growth_topic_lifecycle()` 的图形化
-  时间轴展示，也未提供"手动生成报告"入口里勾选"允许现查"的开关 UI；
-  当前只打通了数据层（函数可直接被 CLI/API/看板后端调用）。
-- CLI `/growth report <id>` 命令尚未透传 `web_search_fn`（需要在命令
-  实现处从 Agent 已注册的 `tools/builtin.py::web_search` 取一个绑定好
-  cfg 的 partial 函数传进去）。
+  时间轴展示；当前只有 CLI 文字版（`/growth timeline <id>`）。
 - `run_daily_cycle()`（cron 无人值守路径）按计划文档"非目标"明确不接入
   主动检索，未来如需要需单独评估调度成本。
+
+## 追加：CLI 接入（本次新增）
+
+- `cli/commands/growth_cmd.py` 新增 `_get_web_search_fn(agent)`：把
+  Agent 已注册的 `tools/builtin.py::web_search()` 包成
+  `generate_growth_report()` 期望的 `web_search_fn(query, max_results)
+  -> str` 约定；`agent`/`agent.cfg` 缺失时返回 `None`（据此判断"调用
+  方是否具备检索工具"，不新增检索通道）。
+- `/growth report <id>` 命令生成报告时改为同时传入 `profile`、`cfg`、
+  `web_search_fn`（此前只传了 `llm_helper`，导致 N4 外部背景摘录和
+  本次的主动检索都无法在这条路径生效）——`report_include_external_
+  context`/`report_active_search_enabled` 默认都是关闭的，接入后
+  默认行为不变，用户需要显式在 `agent_config.json` 打开对应开关才会
+  生效。
+- 新增 `/growth timeline <id>` 子命令：调用 `growth_topic_lifecycle()`
+  按时间正序打印该候选所属主题的完整轨迹（发现/报告/采纳忽略/落地
+  目标/目标状态）。
+
+新增测试 `tests/test_growth_cmd_timeline_and_active_search_wiring.py`
+（6 用例，覆盖 `_get_web_search_fn` 的三种边界情况 + `/growth timeline`
+命令的正常/未知候选/缺参数三种路径），全部通过。
+

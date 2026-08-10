@@ -20,6 +20,11 @@ next_doc/growth_advisor_design.md）。
                               哪些已建目标但停滞
   /growth adopt-goal <id>   — 把一个候选落地成一个 GoalBacklog 目标
                               （阶段 B，要求候选已有调研报告）
+  /growth timeline <id>     — 查看某方向的完整成长轨迹时间线（发现 →
+                              生成报告 → 采纳/忽略 → 落地成目标 → 目标
+                              当前状态），见
+                              next_doc/growth_advisor_active_search_and_
+                              lifecycle_plan.md 方向二
 
 dismiss 的 reason 可选值：
   not_interested    — 这个方向我不关心（参与方向/类别置信度衰减）
@@ -30,6 +35,8 @@ dismiss 的 reason 可选值：
 """
 
 from __future__ import annotations
+
+import time
 
 import mini_agent.ui.renderer as R
 
@@ -87,6 +94,25 @@ def _get_goal_backlog(paths):
         return GoalBacklog(paths)
     except Exception:
         return None
+
+
+def _get_web_search_fn(agent):
+    """[growth_advisor_active_search_and_lifecycle_plan.md 方向一]
+    把 Agent 已注册的 `tools/builtin.py::web_search()` 包成
+    `generate_growth_report()` 期望的 `web_search_fn(query, max_results)
+    -> str` 约定。拿不到 agent/cfg 时返回 `None`——调用方据此判断"调用
+    方是否具备检索工具"，不引入新的检索通道。
+    """
+    if agent is None:
+        return None
+    cfg = getattr(agent, "cfg", None)
+    if cfg is None:
+        return None
+    try:
+        from mini_agent.tools.builtin import web_search as _web_search_tool
+    except Exception:
+        return None
+    return lambda query, max_results=5: _web_search_tool(query, max_results=max_results)
 
 
 def _get_llm_helper(agent):
@@ -190,7 +216,11 @@ def handle_growth_cmd(args: list[str], agent=None) -> None:
             return
         if not cand.report_id:
             cfg = _get_cfg(agent)
-            report = ga.generate_growth_report(paths, cand, llm_helper=_get_llm_helper(agent))
+            _, profile = _get_profile(paths)
+            report = ga.generate_growth_report(
+                paths, cand, llm_helper=_get_llm_helper(agent),
+                profile=profile, cfg=cfg, web_search_fn=_get_web_search_fn(agent),
+            )
             R.print_info(f"已生成调研报告：{report.body_path}")
         else:
             report = ga.get_report_by_id(paths, cand.report_id)
@@ -203,6 +233,27 @@ def handle_growth_cmd(args: list[str], agent=None) -> None:
             R.console.print(body_path.read_text(encoding="utf-8"))
         else:
             R.print_error(f"报告文件缺失：{body_path}")
+        return
+
+    if sub == "timeline":
+        if len(args) < 2:
+            R.print_error("用法：/growth timeline <candidate_id>")
+            return
+        cid = args[1]
+        backlog = ga.GrowthBacklog(paths)
+        cand = backlog.get(cid)
+        if cand is None:
+            R.print_error(f"未找到候选：{cid}")
+            return
+        goal_backlog = _get_goal_backlog(paths)
+        events = ga.growth_topic_lifecycle(paths, cand.dedupe_key(), goal_backlog=goal_backlog)
+        if not events:
+            R.print_info("暂无可展示的成长轨迹。")
+            return
+        R.console.print(f"[bold]{cand.title} 的成长轨迹：[/bold]")
+        for e in events:
+            ts_str = time.strftime("%Y-%m-%d", time.localtime(e["ts"])) if e.get("ts") else "?"
+            R.console.print(f"  [{ts_str}] {e['label']}")
         return
 
     if sub == "retrospective":
@@ -278,5 +329,5 @@ def handle_growth_cmd(args: list[str], agent=None) -> None:
 
     R.print_error(
         "未知子命令。可用：/growth [list] | scan | accept <id> | dismiss <id> | report <id> | "
-        "retrospective | align | adopt-goal <id>"
+        "retrospective | align | adopt-goal <id> | timeline <id>"
     )
