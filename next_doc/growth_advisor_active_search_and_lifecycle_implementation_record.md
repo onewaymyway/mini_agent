@@ -82,3 +82,33 @@
 （6 用例，覆盖 `_get_web_search_fn` 的三种边界情况 + `/growth timeline`
 命令的正常/未知候选/缺参数三种路径），全部通过。
 
+## 追加：看板图形化时间轴接入（本次新增）
+
+- `api/routes.py` 新增 `GET /growth/candidates/{candidate_id}/timeline`：
+  根据候选反查 `dedupe_key`，调用 `growth_topic_lifecycle()`，尽力附带
+  `GoalBacklog`（拿不到时静默传 `None`，事件列表相应缺失 Goal 相关
+  阶段，跟 CLI 路径同一容错原则），跟 `/growth/health_trend` 一样是
+  按需拉取的独立端点。
+- `apps/mini_agent_kanban/client.py` 新增 `growth_candidate_timeline
+  (candidate_id)`。
+- `apps/mini_agent_kanban/app.py`：
+  - 新增 `_render_growth_topic_timeline()`：文字版垂直时间轴（按
+    stage 配图标 + 日期 + 文案），不引入图表库，跟 P4-6 证据数走势
+    "简单文字箭头"是同一克制原则。
+  - `_render_growth_pending_list()` 每张候选卡片新增第 4 个按钮
+    "🕒 轨迹"，点击后展开该候选所属主题的完整时间线。
+
+## 未完成 / 留给后续
+
+- `growth_topic_map()` 展开区块（历史主题地图，按 dedupe_key 聚合，
+  不含 candidate_id）尚未接入时间轴按钮——当前时间轴入口只挂在
+  "待处理候选卡片"上（有 candidate_id 可用）；如需从主题地图行直接
+  查看轨迹，需要新增一个按 dedupe_key 查询的端点变体或在候选池里查
+  最新一条候选的 id，留给后续按需求评估。
+- 拖拽式看板视图（`_render_growth_kanban_dragdrop`，`streamlit-
+  sortables` 可用时的路径）尚未加轨迹按钮，只有兜底的列表视图
+  （`_render_growth_pending_list`）接入了。
+- 真正的图形化时间轴组件（水平/垂直可视化时间轴 UI，而非纯文字列表）
+  留给看板专项迭代，本次先把数据链路（API + 客户端 + 基础展示）打通。
+
+

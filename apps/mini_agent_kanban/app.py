@@ -4075,6 +4075,38 @@ _GROWTH_DISMISS_REASON_OPTIONS = [
 ]
 
 
+# [next_doc/growth_advisor_active_search_and_lifecycle_plan.md 方向二]
+# 单个主题的成长轨迹时间线——文字版垂直时间轴，不引入图表库（跟 P4-6
+# 证据数走势"简单文字箭头"是同一克制原则，图形化留给专项迭代）。
+_GROWTH_TIMELINE_STAGE_ICONS = {
+    "discovered": "🔍",
+    "report_generated": "📄",
+    "accepted": "✅",
+    "dismissed": "🙈",
+    "goal_linked": "🎯",
+    "goal_active": "🚧",
+    "goal_completed": "🏁",
+    "goal_stalled": "⚠️",
+}
+
+
+def _render_growth_topic_timeline(client: "AgentClient", candidate_id: str) -> None:
+    data = client.growth_candidate_timeline(candidate_id)
+    if not data or "_error" in data:
+        st.error((data or {}).get("_error", "读取成长轨迹失败"))
+        return
+    events = data.get("events") or []
+    if not events:
+        st.caption("暂无可展示的成长轨迹。")
+        return
+    st.markdown(f"**{data.get('topic', '')} 的成长轨迹**")
+    for e in events:
+        ts = e.get("ts")
+        ts_str = datetime.fromtimestamp(ts).strftime("%Y-%m-%d") if ts else "?"
+        icon = _GROWTH_TIMELINE_STAGE_ICONS.get(e.get("stage"), "•")
+        st.write(f"{icon} `{ts_str}` {e.get('label', '')}")
+
+
 def _render_growth_pending_list(client: "AgentClient", pending: list[dict]):
     """P1 起就有的列表 + 按钮渲染方式。作为 `streamlit-sortables` 未安装
     时的兜底路径保留——不强制要求这个可选依赖。"""
@@ -4099,7 +4131,7 @@ def _render_growth_pending_list(client: "AgentClient", pending: list[dict]):
                 (v for v, label in _GROWTH_DISMISS_REASON_OPTIONS if label == reason_label),
                 "unspecified",
             )
-            b1, b2, b3 = st.columns(3)
+            b1, b2, b3, b4 = st.columns(4)
             if b1.button("✅ 采纳", key=f"growth_accept_{c['candidate_id']}"):
                 client.growth_candidate_action(c["candidate_id"], "accept")
                 st.rerun()
@@ -4114,6 +4146,8 @@ def _render_growth_pending_list(client: "AgentClient", pending: list[dict]):
                     st.markdown(rep.get("body", "（报告正文为空）"))
                 else:
                     st.error((rep or {}).get("_error", "读取报告失败"))
+            if b4.button("🕒 轨迹", key=f"growth_timeline_{c['candidate_id']}"):
+                _render_growth_topic_timeline(client, c["candidate_id"])
 
 
 # P3：拖拽式看板视图（此前一直是"列表 + 采纳/忽略两个按钮"，方案 P3

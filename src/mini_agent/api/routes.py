@@ -6288,6 +6288,44 @@ async def get_growth_health_trend(request: Request):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@router.get("/growth/candidates/{candidate_id}/timeline")
+async def get_growth_candidate_timeline(request: Request, candidate_id: str):
+    """GET /v1/growth/candidates/{id}/timeline —
+    [next_doc/growth_advisor_active_search_and_lifecycle_plan.md 方向二]
+    返回该候选所属主题（按 dedupe_key）的完整成长轨迹事件列表（按时间
+    正序），供看板画时间轴。跟 `/growth/health_trend` 一样是按需拉取的
+    独立端点，不挤进 `/growth/summary` 的默认 payload。"""
+    _require_owner(request)
+    try:
+        paths = _get_paths_for_request(request)
+        from mini_agent.evolution import growth_advisor as ga
+
+        backlog = ga.GrowthBacklog(paths)
+        candidate = backlog.get(candidate_id)
+        if candidate is None:
+            raise HTTPException(status_code=404, detail=f"候选不存在：{candidate_id}")
+
+        goal_backlog = None
+        try:
+            from mini_agent.perception.goal_backlog import GoalBacklog
+            http_server = getattr(request.app.state, "http_server", None)
+            self_agent = http_server.bridge.agent if http_server is not None else None
+            cfg = getattr(self_agent, "cfg", None) if self_agent else None
+            project_root = getattr(cfg, "project_root", None) if cfg is not None else None
+            if project_root is not None:
+                goal_backlog = GoalBacklog(paths)
+                goal_backlog.load()
+        except Exception:
+            goal_backlog = None
+
+        events = ga.growth_topic_lifecycle(paths, candidate.dedupe_key(), goal_backlog=goal_backlog)
+        return {"topic": candidate.title, "events": events}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @router.get("/objectives/completion_trend")
 async def get_objectives_completion_trend(request: Request, limit: int = Query(30, ge=1, le=200)):
     """GET /v1/objectives/completion_trend — [kanban_perception_gaps_

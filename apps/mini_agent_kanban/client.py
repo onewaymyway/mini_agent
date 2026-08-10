@@ -690,6 +690,12 @@ class AgentClient:
     def growth_health_trend(self, limit: int = 30):
         return self._get(f"/growth/health_trend?limit={limit}")
 
+    # [next_doc/growth_advisor_active_search_and_lifecycle_plan.md 方向二]
+    # 单个候选所属主题的完整成长轨迹时间线——看板展开某个候选/主题详情
+    # 时才按需拉取，不挤进 growth_summary 的默认 payload。
+    def growth_candidate_timeline(self, candidate_id: str):
+        return self._get(f"/growth/candidates/{candidate_id}/timeline")
+
     # ── 文件系统（产出物浏览）────────────────────────────────────────
     def fs_list(self, path="."):
         return self._get("/fs/list", params={"path": path})
