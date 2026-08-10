@@ -6100,10 +6100,24 @@ async def get_growth_followups(request: Request):
         if cfg is None:
             from mini_agent.config.models import GrowthAdvisorConfig
             cfg = GrowthAdvisorConfig()
-        candidates = ga.pending_followups(paths, cfg)
+        # [growth_advisor_goal_cron_integration_plan.md 阶段 C] 尽力附带
+        # GoalBacklog，让已关联 Goal 的候选优先用 Goal 真实状态判断是否
+        # 该展示回访卡片；拿不到时两个函数自动退化为原有的 memory 证据数
+        # 走势逻辑，不影响接口可用性。
+        try:
+            from mini_agent.perception.goal_backlog import GoalBacklog
+            goal_backlog = GoalBacklog(paths)
+        except Exception:
+            goal_backlog = None
+        candidates = ga.pending_followups(paths, cfg, goal_backlog=goal_backlog)
         return {
             "followups": [
-                {**c.to_dict(), "question_hint": ga.followup_question_hint(paths, c, cfg=cfg)}
+                {
+                    **c.to_dict(),
+                    "question_hint": ga.followup_question_hint(
+                        paths, c, cfg=cfg, goal_backlog=goal_backlog
+                    ),
+                }
                 for c in candidates
             ]
         }

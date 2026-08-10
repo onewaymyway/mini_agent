@@ -321,6 +321,29 @@ P6 范围（对应 next_doc/growth_advisor_improvement_plan_v3.md「反馈粒度
       / `confirm_topic_keyword()` 新增可选 `paths` 参数用于透传状态
       记录能力，默认 `None`（不记录），向后兼容。看板诊断面板新增
       「LLM 增强调用状态」区块，逐个调用点展示最近结果。
+
+Goal/Cron 打通范围（对应 next_doc/growth_advisor_goal_cron_integration_
+plan.md，本次新增）：
+    - **阶段 A 对齐分析**：新增 `goal_growth_alignment()`，纯规则式
+      关键词匹配（零 LLM 成本），比对"证据数达标的兴趣方向/已采纳
+      候选"和 GoalBacklog 里的 Goal 标题，找出"有兴趣但没建目标"和
+      "已建目标但停滞"（`GrowthAdvisorConfig.goal_alignment_stalled_
+      days`，默认 21 天没 touch）两类方向。`diagnostics_snapshot()`
+      新增 `goal_alignment` 计数字段，CLI 新增 `/growth align`。
+    - **阶段 B 一键落地**：新增 `adopt_candidate_as_goal()`，把一个
+      已有调研报告的候选创建成 GoalBacklog Goal（`description` 用
+      报告摘要 + 路径引用），候选反向记 `linked_goal_id`（新增字段，
+      旧数据反序列化兜底为 `None`）；`GrowthBacklog.set_linked_goal()`
+      负责这次写入。用户显式触发（CLI `/growth adopt-goal <id>`），
+      不在 `run_daily_cycle()` 里自动发生。
+    - **阶段 C 回访读取 Goal 真实状态**：`pending_followups()` /
+      `followup_question_hint()` 新增可选 `goal_backlog` 参数，候选
+      已关联 Goal 时优先用 `_goal_progress_signal()` 判断（Goal
+      `completed` → 直接记 progressed，不占用一次询问；`active` 且
+      近期有 touch → 顺延；停滞/暂停/放弃/失败/取消 → 正常展示回访
+      卡片，措辞换成 Goal 专属提示）；未关联 Goal 或未传
+      `goal_backlog` 时完全退化为原有 memory 证据数走势逻辑，向后
+      兼容，`api/routes.py` 的 `/v1/growth/followups` 已同步升级。
 """
 
 from __future__ import annotations
@@ -388,6 +411,14 @@ class GrowthCandidate:
     # "progressed"/"stalled" 为用户回答后的结果，回访只发生一次。
     accepted_at: Optional[float] = None
     followup_status: Optional[str] = None
+    # [growth_advisor_goal_cron_integration_plan.md 阶段 B] 这个候选
+    # 是否已经通过 `adopt_candidate_as_goal()` 落地成一个 GoalBacklog
+    # 里的 Goal 节点——`None` 表示尚未落地（绝大多数候选的常态）。
+    # 落地后的候选行为不变（仍然可以被 dismiss/继续走原有回访路径），
+    # 只是阶段 C 的回访逻辑会优先参考这个 Goal 的真实状态。旧数据反
+    # 序列化时缺该字段，`from_dict` 走既有的已知字段兜底默认值机制，
+    # 自然落到 `None`，等价于"未落地"，不需要额外迁移。
+    linked_goal_id: Optional[str] = None
 
     def dedupe_key(self) -> str:
         return normalize_title_key(self.title)
@@ -596,6 +627,24 @@ class GrowthBacklog:
                 c.report_id = report_id
                 c.updated_at = time.time()
         self.save_all(all_c)
+
+    def set_linked_goal(self, candidate_id: str, goal_id: str) -> Optional[GrowthCandidate]:
+        """[growth_advisor_goal_cron_integration_plan.md 阶段 B] 把候选
+        跟一个已创建的 GoalBacklog Goal 节点关联起来，供后续对齐分析/
+        回访逻辑读取。不校验 `goal_id` 是否真实存在——那是调用方
+        （`adopt_candidate_as_goal()`）的职责，这里只是一次纯粹的
+        字段写入，保持跟 `attach_report()` 同等的简单程度。
+        """
+        all_c = self.load_all()
+        found = None
+        for c in all_c:
+            if c.candidate_id == candidate_id:
+                c.linked_goal_id = goal_id
+                c.updated_at = time.time()
+                found = c
+        if found is not None:
+            self.save_all(all_c)
+        return found
 
 
 def _confidence_from_evidence(evidence_count: int, cap: int = 8) -> float:
@@ -1976,19 +2025,57 @@ def _topic_trend_rising(paths, dedupe_key: str, *, window_days: int) -> Optional
     return in_window[-1]["evidence_count"] > in_window[0]["evidence_count"]
 
 
-def followup_question_hint(paths, candidate: GrowthCandidate, *, cfg=None) -> str:
+def _goal_progress_signal(goal_backlog, goal_id: str, *, stalled_days: int) -> Optional[str]:
+    """[growth_advisor_goal_cron_integration_plan.md 阶段 C] 从一个已
+    关联的 Goal 节点读取真实状态，判断这个方向"是不是还在推进"，作为
+    比 memory 证据数走势更直接的回访信号来源。
+
+    返回 `"progressed"` / `"stalled"` / `None`（找不到 Goal 或
+    `goal_backlog` 不可用，调用方应退化到原有的 memory 证据数走势逻辑，
+    不能当成"确定没推进"）。
+    """
+    if goal_backlog is None or not goal_id:
+        return None
+    try:
+        goal = goal_backlog.get(goal_id)
+    except Exception:
+        return None
+    if goal is None:
+        return None
+    if goal.status == "completed":
+        return "progressed"
+    if goal.status == "active":
+        cutoff = time.time() - max(0, stalled_days) * 86400
+        return "progressed" if (goal.last_touched_at or 0) >= cutoff else "stalled"
+    # paused / abandoned / failed / cancelled 都算"没在推进"
+    return "stalled"
+
+
+def followup_question_hint(paths, candidate: GrowthCandidate, *, cfg=None, goal_backlog=None) -> str:
     """给回访卡片挑一句更贴合实际状态的提问，而不是固定的"有推进/没空"。
     看板侧读取这个字段决定文案，不影响 `pending_followups()`/
     `record_followup()` 本身的行为（回答仍然只有 progressed/stalled 两种，
-    只是问法更贴切）。"""
+    只是问法更贴切）。
+
+    [growth_advisor_goal_cron_integration_plan.md 阶段 C] 候选已关联
+    Goal 时优先用 Goal 真实状态措辞；未关联或 `goal_backlog` 未传入时
+    完全走原有的 memory 证据数走势逻辑，行为不变。
+    """
     days = getattr(cfg, "followup_review_days", 30) if cfg is not None else 30
+    if candidate.linked_goal_id:
+        stalled_days = getattr(cfg, "goal_alignment_stalled_days", 21) if cfg is not None else 21
+        signal = _goal_progress_signal(goal_backlog, candidate.linked_goal_id, stalled_days=stalled_days)
+        if signal == "stalled":
+            return f"「{candidate.title}」对应的目标看起来有一阵没动了，要不要先放一放，或者重新规划一下？"
+        if signal == "progressed":
+            return f"「{candidate.title}」对应的目标最近还在推进，要不要跟我说说进展？"
     rising = _topic_trend_rising(paths, candidate.dedupe_key(), window_days=days)
     if rising is False:
         return f"最近「{candidate.title}」相关的记忆变少了，是先放一放了吗？"
     return f"「{candidate.title}」这个方向，后续有没有真的推进？"
 
 
-def pending_followups(paths, cfg=None) -> list[GrowthCandidate]:
+def pending_followups(paths, cfg=None, *, goal_backlog=None) -> list[GrowthCandidate]:
     """返回已采纳、满足回访窗口、且尚未回访过的候选（供看板渲染"这个方向
     后续有没有推进？"的回访卡片）。
 
@@ -1998,8 +2085,19 @@ def pending_followups(paths, cfg=None) -> list[GrowthCandidate]:
     状态——纯按当次快照现算，下次调用如果趋势不再涨了自然就会展示，也
     不需要考虑"如何撤销推迟标记"）。趋势不确定（快照点不足，返回
     `None`）或判断为走平/下降时，仍按原逻辑展示回访卡片。
+
+    [growth_advisor_goal_cron_integration_plan.md 阶段 C] 候选已关联
+    Goal 且传入了 `goal_backlog` 时，优先用 Goal 真实状态判断：
+    - Goal 已 `completed` → 视为显而易见的"已推进"，直接写回
+      `record_followup(..., "progressed")`，不占用一次主动询问；
+    - Goal 仍在正常推进（`active` 且近期有 touch）→ 跳过本轮，顺延；
+    - Goal 已停滞/暂停/放弃/失败/取消 → 正常展示回访卡片（问法见
+      `followup_question_hint()`）。
+    未关联 Goal，或未传入 `goal_backlog`（老调用点未升级）时，完全
+    退化为原有的 memory 证据数走势逻辑，不影响既有行为。
     """
     days = getattr(cfg, "followup_review_days", 30) if cfg is not None else 30
+    stalled_days = getattr(cfg, "goal_alignment_stalled_days", 21) if cfg is not None else 21
     cutoff = time.time() - max(0, days) * 86400
     out = []
     for c in GrowthBacklog(paths).load_all():
@@ -2007,6 +2105,26 @@ def pending_followups(paths, cfg=None) -> list[GrowthCandidate]:
             continue
         if c.accepted_at is None or c.accepted_at > cutoff:
             continue
+
+        if c.linked_goal_id and goal_backlog is not None:
+            signal = _goal_progress_signal(goal_backlog, c.linked_goal_id, stalled_days=stalled_days)
+            if signal == "progressed":
+                goal = None
+                try:
+                    goal = goal_backlog.get(c.linked_goal_id)
+                except Exception:
+                    goal = None
+                if goal is not None and goal.status == "completed":
+                    # 已经完成，不需要用户再确认，直接记录并跳过展示。
+                    record_followup(paths, c.candidate_id, "progressed")
+                    continue
+                continue  # 仍在正常推进，顺延一轮，不主动打扰
+            if signal == "stalled":
+                out.append(c)
+                continue
+            # signal is None：找不到 Goal 或 goal_backlog 异常，退化到
+            # memory 证据数走势逻辑（走到下面的兜底分支）。
+
         if _topic_trend_rising(paths, c.dedupe_key(), window_days=days) is True:
             continue  # 证据还在涨，顺延一轮，不主动打扰
         out.append(c)
@@ -2119,6 +2237,179 @@ def refresh_growth_report(
 
 
 # ────────────────────────── P2：推送节流状态（growth_advisor_state.json） ──────────────────────────
+
+
+# ────────── [growth_advisor_goal_cron_integration_plan.md] Goal/Cron 打通 ──────────
+
+
+def _load_goal_backlog_safely(paths):
+    """尽力构造一个 `GoalBacklog`，任何失败（比如 `paths` 不是完整的
+    `AgentPaths`、goals.json 损坏）都静默返回 `None`——对齐分析/回访
+    信号都被设计为"拿不到就退化，不报错"，这个辅助函数是唯一一处需要
+    真正 import `perception.goal_backlog` 的地方。
+    """
+    try:
+        from mini_agent.perception.goal_backlog import GoalBacklog
+        return GoalBacklog(paths)
+    except Exception:
+        return None
+
+
+def goal_growth_alignment(
+    paths, profile, *, cfg=None, goal_backlog=None,
+    min_confidence: float = 0.5, stalled_days: Optional[int] = None,
+) -> dict[str, Any]:
+    """[growth_advisor_goal_cron_integration_plan.md 阶段 A] 对齐分析：
+    找出"有兴趣信号但没有对应 Goal"和"已经关联 Goal 但该 Goal 停滞"的
+    两类方向。纯只读聚合，不写任何状态，可随时安全调用。
+
+    `cfg.goal_alignment_enabled=False` 时直接返回空结果（两个列表都是
+    `[]`，`enabled=False`），供 CLI/看板判断要不要展示这块功能。
+    """
+    enabled = getattr(cfg, "goal_alignment_enabled", True) if cfg is not None else True
+    if not enabled:
+        return {"enabled": False, "unmatched_interests": [], "linked_goals": []}
+
+    if stalled_days is None:
+        stalled_days = getattr(cfg, "goal_alignment_stalled_days", 21) if cfg is not None else 21
+
+    if goal_backlog is None:
+        goal_backlog = _load_goal_backlog_safely(paths)
+
+    goals: list = []
+    if goal_backlog is not None:
+        try:
+            goals = [n for n in goal_backlog.all_nodes() if n.level == "goal"]
+        except Exception:
+            goals = []
+    goal_keys_by_id = {g.id: normalize_title_key(g.title) for g in goals}
+    goal_by_key: dict[str, Any] = {}
+    for g in goals:
+        goal_by_key.setdefault(goal_keys_by_id[g.id], g)
+
+    # 候选兴趣来源一：本轮/上一轮信号扫描的 focus areas（证据数达标）。
+    derived = dict(getattr(profile, "derived", {}) or {})
+    focus_areas: dict[str, list[str]] = derived.get("growth_focus_areas") or {}
+    min_evidence_count = getattr(cfg, "min_evidence_count", 3) if cfg is not None else 3
+    interest_topics: dict[str, dict[str, Any]] = {}
+    for topic, ids in focus_areas.items():
+        if len(ids) < min_evidence_count:
+            continue
+        interest_topics[normalize_title_key(topic)] = {
+            "topic": topic, "evidence_count": len(ids), "confidence": None,
+        }
+
+    # 候选兴趣来源二：已采纳的候选（不管是否达标于本轮扫描窗口，历史上
+    # 曾经被采纳过就说明用户认可这个方向值得关注）。
+    backlog = GrowthBacklog(paths)
+    accepted_candidates = [c for c in backlog.load_all() if c.status == STATUS_ACCEPTED]
+    for c in accepted_candidates:
+        key = c.dedupe_key()
+        entry = interest_topics.setdefault(key, {
+            "topic": c.title, "evidence_count": c.evidence_count, "confidence": c.confidence,
+        })
+        if entry.get("confidence") is None:
+            entry["confidence"] = c.confidence
+        entry["candidate_id"] = c.candidate_id
+        entry["linked_goal_id"] = c.linked_goal_id
+
+    unmatched_interests = []
+    linked_goals = []
+    now = time.time()
+    for key, info in interest_topics.items():
+        conf = info.get("confidence")
+        if conf is not None and conf < min_confidence:
+            continue
+        linked_goal_id = info.get("linked_goal_id")
+        goal = goal_backlog.get(linked_goal_id) if (linked_goal_id and goal_backlog is not None) else None
+        if goal is None:
+            goal = goal_by_key.get(key)
+        if goal is None:
+            unmatched_interests.append({
+                "topic": info["topic"],
+                "evidence_count": info.get("evidence_count"),
+                "confidence": conf,
+                "candidate_id": info.get("candidate_id"),
+            })
+            continue
+        stalled = goal.status == "active" and (goal.last_touched_at or 0) < now - stalled_days * 86400
+        linked_goals.append({
+            "topic": info["topic"],
+            "goal_id": goal.id,
+            "goal_title": goal.title,
+            "goal_status": goal.status,
+            "last_touched_at": goal.last_touched_at,
+            "recurring": goal.recurring,
+            "cycle_count": goal.cycle_count,
+            "stalled": stalled,
+        })
+
+    return {
+        "enabled": True,
+        "unmatched_interests": sorted(
+            unmatched_interests, key=lambda r: -(r.get("evidence_count") or 0)
+        ),
+        "linked_goals": sorted(linked_goals, key=lambda r: (not r["stalled"], r["topic"])),
+    }
+
+
+def adopt_candidate_as_goal(
+    paths, candidate: GrowthCandidate, *, goal_backlog=None, extra_tags: Optional[list[str]] = None,
+) -> Any:
+    """[growth_advisor_goal_cron_integration_plan.md 阶段 B] 把一个候选
+    "落地"成 GoalBacklog 里的一个 Goal 节点：
+
+    - 要求候选已经有调研报告（`report_id` 非空），没有报告时抛
+      `ValueError`——调用方（CLI/API）负责提示用户先 `/growth report
+      <id>` 生成一份，体验上比\"建了个没有实质内容的 Goal\"更好。
+    - Goal 的 `description` 用报告摘要 + 报告路径引用（不整篇塞报告
+      正文——`description` 是给后续任务执行读的上下文，太长反而稀释
+      重点，完整内容用户/Agent 需要时可以按路径读）。
+    - 候选反向记 `linked_goal_id`；如果候选此前还是 `pending`，顺带
+      流转成 `accepted`（\"建了 Goal 去推进\"本身就是一种采纳）。
+
+    返回创建的 `GoalNode`。
+    """
+    if not candidate.report_id:
+        raise ValueError(
+            f"候选 {candidate.candidate_id} 还没有调研报告，请先执行 "
+            "`/growth report <candidate_id>` 生成报告后再落地成目标。"
+        )
+
+    if goal_backlog is None:
+        goal_backlog = _load_goal_backlog_safely(paths)
+    if goal_backlog is None:
+        raise RuntimeError("无法访问 GoalBacklog（项目路径不可用），无法创建目标。")
+
+    report = get_report_by_id(paths, candidate.report_id)
+    summary = report.summary if report is not None else candidate.rationale
+    body_path = report.body_path if report is not None else ""
+    description_parts = [candidate.rationale]
+    if summary and summary != candidate.rationale:
+        description_parts.append(summary)
+    description_parts.append(f"来源：成长顾问候选 {candidate.candidate_id}")
+    if body_path:
+        description_parts.append(f"完整调研报告：{body_path}")
+    description = "\n\n".join(p for p in description_parts if p)
+
+    tags = ["growth_advisor"]
+    if extra_tags:
+        tags.extend(extra_tags)
+
+    goal = goal_backlog.add_goal(
+        title=candidate.title,
+        description=description,
+        source="user",
+        tags=tags,
+    )
+
+    backlog = GrowthBacklog(paths)
+    backlog.set_linked_goal(candidate.candidate_id, goal.id)
+    if candidate.status == STATUS_PENDING:
+        backlog.set_status(candidate.candidate_id, STATUS_ACCEPTED)
+        GrowthFeedbackLedger(paths).record(candidate.candidate_id, STATUS_ACCEPTED, reason=None)
+
+    return goal
 
 
 def _today_str() -> str:
@@ -2913,7 +3204,9 @@ def diagnostics_snapshot(paths, cfg, profile, memory_store, profile_cfg=None) ->
         # [P4-3] 待回访候选数量，供看板在诊断区提示"有 N 个方向该回访了"，
         # 具体列表通过 GET /growth/followups 单独获取（避免每次
         # /growth/summary 都要多做一遍 accepted_at 过滤）。
-        "pending_followups_count": len(pending_followups(paths, cfg)),
+        "pending_followups_count": len(
+            pending_followups(paths, cfg, goal_backlog=_load_goal_backlog_safely(paths))
+        ),
         # [P4-4] 待刷新报告数量，明细走 GET /growth/reports/refresh_candidates。
         "reports_needing_refresh_count": len(reports_needing_refresh(paths, cfg)),
         # [P4-5] 按类别的历史采纳率（供看板解释"为什么这条被优先推送了"），
@@ -2938,4 +3231,24 @@ def diagnostics_snapshot(paths, cfg, profile, memory_store, profile_cfg=None) ->
         # dismiss（方向级）分开统计，明细走月度复盘的
         # top_report_quality_flags。
         "report_quality_flags_count": sum(_report_quality_dismiss_counts(paths).values()),
+        # [growth_advisor_goal_cron_integration_plan.md 阶段 A] 只给计数，
+        # 明细走 `/growth align`（或未来的 GET /growth/align）。
+        # `goal_backlog` 不可用（比如没有项目路径/加载失败）或功能被
+        # `goal_alignment_enabled=False` 关闭时，两个字段整体为 `None`，
+        # 不影响诊断面板其余部分。
+        "goal_alignment": _goal_alignment_diagnostics_summary(paths, cfg, profile),
+    }
+
+
+def _goal_alignment_diagnostics_summary(paths, cfg, profile) -> dict[str, Any]:
+    try:
+        alignment = goal_growth_alignment(paths, profile, cfg=cfg)
+    except Exception:
+        return {"unmatched_interests_count": None, "stalled_linked_goals_count": None}
+    if not alignment.get("enabled", True):
+        return {"unmatched_interests_count": None, "stalled_linked_goals_count": None}
+    stalled_count = sum(1 for g in alignment.get("linked_goals", []) if g.get("stalled"))
+    return {
+        "unmatched_interests_count": len(alignment.get("unmatched_interests", [])),
+        "stalled_linked_goals_count": stalled_count,
     }

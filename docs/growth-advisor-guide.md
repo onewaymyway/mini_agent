@@ -5,7 +5,9 @@
 > 完成）、`next_doc/growth_advisor_improvement_plan_v3.md`（P5-0~P5-6，
 > 已全部完成）；逐阶段实施细节见
 > `next_doc/growth_advisor_implementation_record.md`。P6（反馈粒度细化
-> + LLM 增强路径可观测性）见本文档 2.7/2.8 节。
+> + LLM 增强路径可观测性）见本文档 2.7/2.8 节；Goal/Cron 打通见
+> `next_doc/growth_advisor_goal_cron_integration_plan.md` 与本文档
+> 2.9 节。
 > 代码入口：`src/mini_agent/evolution/growth_advisor.py`（模块头部
 > docstring 是最权威的阶段变更历史，本文档是面向使用者的整理版）。
 
@@ -216,6 +218,54 @@ docstring 和 `next_doc/growth_advisor_implementation_record.md` 里）。
 只记"最近一次"，不追加历史（这是健康检查用的状态，不是审计日志）；
 从未触发过的调用点会显示"尚未触发过"，跟"触发过但失败"区分开。
 
+### 2.9 Goal/Cron 打通：对齐分析 + 一键落地 + 回访用真实进度（本次新增）
+
+> 对应方案：`next_doc/growth_advisor_goal_cron_integration_plan.md`。
+
+此前成长顾问从头到尾只读 memory 记忆，跟另一套同样成熟的机制——
+`GoalBacklog`（跨会话目标层级）+ `goal_cron_bridge`（目标的周期性自动
+推进）——完全没有交叉。现在打通了三层：
+
+**对齐分析（阶段 A，默认开启，零 LLM 成本）**：`goal_growth_alignment()`
+用关键词匹配（跟内置主题关键词表同等复杂度，不引入 embedding），比对
+"证据数达标的兴趣方向 / 已采纳候选"和"GoalBacklog 里的 Goal 标题"，
+找出两类需要关注的情况：
+
+- **有兴趣信号但没建目标**：说明这个方向反复被聊到，但还没有落成一个
+  可追踪的目标；
+- **已建目标但停滞**：Goal `status="active"` 且 `last_touched_at`
+  超过 `goal_alignment_stalled_days`（默认 21 天）没动过。
+
+CLI：`/growth align`；诊断面板新增
+`goal_alignment.unmatched_interests_count` /
+`goal_alignment.stalled_linked_goals_count` 两个计数（明细走
+`/growth align`，跟诊断面板一贯"只给计数，明细走专门入口"的惯例一致）；
+`goal_alignment_enabled=False` 或 GoalBacklog 不可用时两个计数整体为
+`None`，不影响诊断面板其余部分。
+
+**一键落地（阶段 B，用户显式触发，不会自动发生）**：一个候选已经生成
+过调研报告后，可以 `/growth adopt-goal <candidate_id>` 直接创建一个
+GoalBacklog Goal——标题用候选标题，`description` 用报告摘要 + 报告
+路径引用，打上 `growth_advisor` 标签；候选反向记一份
+`linked_goal_id`，如果候选此前还是 `pending` 会顺带流转成
+`accepted`。落地之后要不要把这个 Goal 设成周期性任务（绑定 cron），
+走既有的 Goal 管理命令即可，成长顾问不代管 Goal 的生命周期。
+
+**回访优先用 Goal 真实状态（阶段 C，向后兼容）**：候选一旦有
+`linked_goal_id`，30 天回访（2.3 节）判断"要不要展示回访卡片"时，
+优先看这个 Goal 的真实状态而不是 memory 证据数走势：
+
+- Goal 已 `completed` → 视为显而易见的"已推进"，自动记录，不占用一次
+  主动询问；
+- Goal `active` 且近期有 touch → 仍在正常推进，跳过本轮、顺延；
+- Goal 已停滞（超过 `goal_alignment_stalled_days` 没动）、或
+  `paused`/`abandoned`/`failed`/`cancelled` → 正常展示回访卡片，
+  问法换成"这个方向对应的目标看起来有一阵没动了，要不要先放一放，或者
+  重新规划一下？"，比原来"有没有真的推进？"更贴合实际状态。
+
+没有关联 Goal 的候选、或调用方没有传入 GoalBacklog（比如某些老的调用
+路径尚未升级），行为跟此前完全一致，不受任何影响。
+
 ## 3. 默认行为速览
 
 `GrowthAdvisorConfig.enabled` 默认 `True`（opt-out），不需要任何额外
@@ -280,6 +330,10 @@ docstring 和 `next_doc/growth_advisor_implementation_record.md` 里）。
                        # unspecified（行为与 P6 之前一致）
 /growth report <id>   # 查看（或按需生成）某候选的调研报告正文
 /growth retrospective # 查看月度成长复盘统计
+/growth align          # 兴趣方向 ⇄ 目标 对齐分析（见 2.9 节）：哪些方向
+                       # 有兴趣但没建目标、哪些已建目标但停滞
+/growth adopt-goal <id> # 把候选落地成一个 GoalBacklog 目标（要求候选
+                       # 已有调研报告，见 2.9 节阶段 B）
 ```
 
 回访、关键词管理、类别静音、探索位这些更细的操作目前只在看板/API 提供
@@ -329,6 +383,8 @@ GET  /v1/growth/health_trend                             # 健康度趋势快照
 | `exploration_recent_window` | `5` | 判断"某类别最近是否出现过"时，往回看最近多少份报告（不含已归档的旧报告） |
 | `sync_confirmed_topics_to_tech_radar_enabled` | `false` | （v4 N3）打开后 `run_daily_cycle()` 收尾时把已确认关键词幂等同步进 `TechRadarConfig.keywords`；会实际修改 `agent_config.json` |
 | `report_include_external_context` | `false` | （v4 N4）打开后调研报告（LLM 生成路径）会把外部资讯命中数作为背景信息，独立于 `report_quality_llm_enabled` |
+| `goal_alignment_enabled` | `true` | （2.9 节）兴趣方向 ⇄ 目标 对齐分析总开关，纯规则式关键词匹配，零 LLM 成本 |
+| `goal_alignment_stalled_days` | `21` | （2.9 节）已关联 Goal 的方向，`active` 状态下超过这么多天没被 touch 就判定为"停滞"，独立于 `followup_review_days` |
 
 另外 `memory_backfill.cron_run_backfill_enabled`（默认 `true`，v4 N2）
 控制 cron 任务收尾是否自动回填记忆，属于 `memory_backfill` 配置块而非
@@ -487,4 +543,14 @@ N1 的健康度趋势图观察——`total_entries` 应该能看到回升。
   记录，否则会退回 P6 之前"静默失败"的旧行为；
 - 报告质量信号（`report_not_useful`）目前只是"记录下来给人看"，还
   没有被用来反过来指导报告生成策略本身（比如自动为高频被标记的方向
-  切换到 LLM 生成、或调整模板内容），这是留给未来版本的闭环。
+  切换到 LLM 生成、或调整模板内容），这是留给未来版本的闭环；
+- Goal/Cron 打通（2.9 节）目前只做了"对齐分析 + 一键落地 + 回访读取
+  Goal 状态"三件事：候选 → Goal 是单向的（Goal 完成/停滞状态会反哺
+  回访判断，但 Goal 的 `progress_notes` 更新不会自动同步成候选的新
+  证据）；对齐分析用的是关键词包含匹配，标题措辞差异较大时可能匹配
+  不上（比如候选叫"数据分析能力"、Goal 叫"提升可视化技能"）；也
+  没有接入 cron 执行历史（比如某个绑定 cron 的 Goal 反复
+  `_notify_cycle_failed`）作为新的候选证据来源——这是
+  `next_doc/growth_advisor_goal_cron_integration_plan.md` 明确标注的
+  非目标，留给后续单独排期；看板前端也还没有接入 `/growth align` /
+  `adopt-goal` 的可视化入口，目前只有 CLI。

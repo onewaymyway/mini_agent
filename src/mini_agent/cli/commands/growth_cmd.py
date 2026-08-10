@@ -14,6 +14,12 @@ next_doc/growth_advisor_design.md）。
   /growth accept <id>       — 采纳一个候选（标记 accepted，记入反馈台账）
   /growth report <id>       — 查看某候选已生成的调研报告正文
   /growth retrospective     — 生成/展示月度成长复盘摘要
+  /growth align             — 查看兴趣方向 ⇄ Goal 对齐分析（见
+                              next_doc/growth_advisor_goal_cron_integration_plan.md
+                              阶段 A）：哪些方向有兴趣信号但没建目标、
+                              哪些已建目标但停滞
+  /growth adopt-goal <id>   — 把一个候选落地成一个 GoalBacklog 目标
+                              （阶段 B，要求候选已有调研报告）
 
 dismiss 的 reason 可选值：
   not_interested    — 这个方向我不关心（参与方向/类别置信度衰减）
@@ -67,6 +73,18 @@ def _get_memory_store(paths):
     try:
         from mini_agent.perception.memory_factory import build_default_memory_store
         return build_default_memory_store(paths)
+    except Exception:
+        return None
+
+
+def _get_goal_backlog(paths):
+    """[growth_advisor_goal_cron_integration_plan.md] 尽力构造一个
+    `GoalBacklog`，拿不到就返回 None——对齐分析/落地目标命令都要能在
+    goals.json 暂不可用时给出明确报错，而不是让异常直接冒出去。
+    """
+    try:
+        from mini_agent.perception.goal_backlog import GoalBacklog
+        return GoalBacklog(paths)
     except Exception:
         return None
 
@@ -194,6 +212,61 @@ def handle_growth_cmd(args: list[str], agent=None) -> None:
             R.console.print(f"  {k}: {v}")
         return
 
+    if sub == "align":
+        cfg = _get_cfg(agent)
+        mgr, profile = _get_profile(paths)
+        goal_backlog = _get_goal_backlog(paths)
+        alignment = ga.goal_growth_alignment(paths, profile, cfg=cfg, goal_backlog=goal_backlog)
+        if not alignment.get("enabled", True):
+            R.print_info("对齐分析当前已关闭（growth_advisor.goal_alignment_enabled=False）。")
+            return
+        unmatched = alignment.get("unmatched_interests", [])
+        linked = alignment.get("linked_goals", [])
+        R.console.print("[bold]兴趣方向 ⇄ 目标 对齐分析：[/bold]")
+        if unmatched:
+            R.console.print(f"  有兴趣信号但还没建目标（{len(unmatched)} 个）：")
+            for row in unmatched:
+                cid_mark = f"  [{row['candidate_id']}]" if row.get("candidate_id") else ""
+                R.console.print(
+                    f"    - {row['topic']}{cid_mark}  证据数={row.get('evidence_count')}"
+                )
+        else:
+            R.console.print("  没有找到\"有兴趣但没建目标\"的方向。")
+        if linked:
+            R.console.print(f"  已关联目标的方向（{len(linked)} 个）：")
+            for row in linked:
+                mark = "  ⚠️ 停滞" if row["stalled"] else ""
+                R.console.print(
+                    f"    - {row['topic']} → 目标 [{row['goal_id']}] {row['goal_title']}"
+                    f"  状态={row['goal_status']}{mark}"
+                )
+        else:
+            R.console.print("  当前没有已关联目标的方向。")
+        return
+
+    if sub == "adopt-goal":
+        if len(args) < 2:
+            R.print_error("用法：/growth adopt-goal <candidate_id>")
+            return
+        cid = args[1]
+        backlog = ga.GrowthBacklog(paths)
+        cand = backlog.get(cid)
+        if cand is None:
+            R.print_error(f"未找到候选：{cid}")
+            return
+        goal_backlog = _get_goal_backlog(paths)
+        try:
+            goal = ga.adopt_candidate_as_goal(paths, cand, goal_backlog=goal_backlog)
+        except ValueError as exc:
+            R.print_error(str(exc))
+            return
+        except RuntimeError as exc:
+            R.print_error(str(exc))
+            return
+        R.print_info(f"已创建目标 [{goal.id}] {goal.title}，并关联到候选 {cid}。")
+        return
+
     R.print_error(
-        "未知子命令。可用：/growth [list] | scan | accept <id> | dismiss <id> | report <id> | retrospective"
+        "未知子命令。可用：/growth [list] | scan | accept <id> | dismiss <id> | report <id> | "
+        "retrospective | align | adopt-goal <id>"
     )

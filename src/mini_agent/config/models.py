@@ -1767,6 +1767,17 @@ class GrowthAdvisorConfig:
     # 排序（2.3/2.4 节"仅展示、不影响判断"的克制设计）。
     report_include_external_context: bool = False
 
+    # ── Goal/Cron 打通（growth_advisor_goal_cron_integration_plan.md）──
+    # 阶段 A：兴趣方向 ⇄ Goal 对齐分析，纯规则式关键词匹配，零 LLM 成本，
+    # 默认开启（对齐项目"默认零成本可用"的一贯原则）。关闭后
+    # `goal_growth_alignment()` 直接返回空结果，`/growth align` 提示
+    # 功能已关闭，不影响候选/报告/回访等其余机制。
+    goal_alignment_enabled: bool = True
+    # 一个 Goal 的 status="active" 但 last_touched_at 超过这么多天没动，
+    # 才判定为"停滞"。独立于 `followup_review_days`（那是"候选采纳多久
+    # 后该回访"），两者语义不同，不应该共用一个默认值。
+    goal_alignment_stalled_days: int = 21
+
 
 @dataclass
 class ReminderConfig:
