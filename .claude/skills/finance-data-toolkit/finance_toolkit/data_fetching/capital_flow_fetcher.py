@@ -94,12 +94,37 @@ class SectorCapitalFlowData:
         }
 
 
+class NorthboundFlowData:
+    """北向资金数据模型"""
+    def __init__(self, date: str, flow_type: str, sector: str,
+                 net_buy: float, net_inflow: float,
+                 source: str = 'akshare'):
+        self.date = date
+        self.flow_type = flow_type
+        self.sector = sector
+        self.net_buy = net_buy
+        self.net_inflow = net_inflow
+        self.source = source
+        self.timestamp = datetime.utcnow().isoformat()
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            'date': self.date,
+            'flow_type': self.flow_type,
+            'sector': self.sector,
+            'net_buy': self.net_buy,
+            'net_inflow': self.net_inflow,
+            'source': self.source,
+            'timestamp': self.timestamp,
+        }
+
+
 # ============== 个股资金流向 ==============
 
 @retry_with_backoff(max_retries=3, backoff_factors=[1, 2, 5])
-def _fetch_akshare_individual_fund_flow(symbol: str):
+def _fetch_akshare_individual_fund_flow(symbol: str, market: str = 'sh'):
     """内部函数：获取 AKShare 个股资金流向（带重试）"""
-    return ak.stock_individual_fund_flow(stock=symbol)
+    return ak.stock_individual_fund_flow(stock=symbol, market=market)
 
 
 @retry_with_backoff(max_retries=3, backoff_factors=[1, 2, 5])
@@ -134,11 +159,11 @@ def fetch_individual_capital_flow(
                     for _, row in df.iterrows():
                         results.append(CapitalFlowData(
                             symbol=symbol,
-                            name=row.get('名称', ''),
-                            date=row.get('日期', ''),
+                            name='',
+                            date=str(row.get('日期', '')),
                             main_inflow_net=float(row.get('主力净流入-净额', 0) or 0),
                             main_inflow_ratio=float(row.get('主力净流入-净占比', 0) or 0),
-                            retail_inflow_net=float(row.get('散户净流入-净额', 0) or 0),
+                            retail_inflow_net=float(row.get('小单净流入-净额', 0) or 0),
                             mid_inflow_net=float(row.get('中单净流入-净额', 0) or 0),
                             large_inflow_net=float(row.get('大单净流入-净额', 0) or 0),
                             super_large_inflow_net=float(row.get('超大单净流入-净额', 0) or 0),
@@ -147,43 +172,46 @@ def fetch_individual_capital_flow(
                             source='akshare'
                         ).to_dict())
                 else:
-                    # 个股资金流向排行
-                    df = _fetch_akshare_individual_fund_flow_rank('今日')
-                    for _, row in df.iterrows():
-                        results.append({
-                            'symbol': row.get('代码', ''),
-                            'name': row.get('名称', ''),
-                            'main_inflow_net': float(row.get('主力净流入-净额', 0) or 0),
-                            'main_inflow_ratio': float(row.get('主力净流入-净占比', 0) or 0),
-                            'rank': int(row.get('排名', 0) or 0),
-                            'source': 'akshare',
-                            'timestamp': datetime.utcnow().isoformat(),
-                        })
+                    # 个股资金流向排行（代理环境下可能失败，返回空）
+                    try:
+                        df = _fetch_akshare_individual_fund_flow_rank('今日')
+                        for _, row in df.iterrows():
+                            results.append({
+                                'symbol': row.get('代码', ''),
+                                'name': row.get('名称', ''),
+                                'main_inflow_net': float(row.get('主力净流入-净额', 0) or 0),
+                                'main_inflow_ratio': float(row.get('主力净流入-净占比', 0) or 0),
+                                'rank': int(row.get('排名', 0) or 0),
+                                'source': 'akshare',
+                                'timestamp': datetime.utcnow().isoformat(),
+                            })
+                    except Exception as e:
+                        logger.warning(f"个股资金流排行获取失败（代理限制）: {e}")
 
             elif data_type == 'sector':
                 # 行业板块资金流向
-                df = ak.stock_sector_fund_flow_rank(industry_type='行业')
+                df = ak.stock_fund_flow_industry(symbol='即时')
                 for _, row in df.iterrows():
                     results.append(SectorCapitalFlowData(
-                        sector_code=row.get('板块代码', ''),
-                        sector_name=row.get('板块名称', ''),
-                        main_inflow_net=float(row.get('主力净流入-净额', 0) or 0),
-                        main_inflow_ratio=float(row.get('主力净流入-净占比', 0) or 0),
-                        change_pct=float(row.get('涨跌幅', 0) or 0),
-                        rank=int(row.get('排名', 0) or 0),
+                        sector_code='',
+                        sector_name=row.get('行业', ''),
+                        main_inflow_net=float(row.get('净额', 0) or 0),
+                        main_inflow_ratio=0.0,
+                        change_pct=float(row.get('行业-涨跌幅', 0) or 0),
+                        rank=int(row.get('序号', 0) or 0),
                         source='akshare'
                     ).to_dict())
 
                 # 概念板块资金流向
-                df_concept = ak.stock_sector_fund_flow_rank(industry_type='概念')
+                df_concept = ak.stock_fund_flow_concept(symbol='即时')
                 for _, row in df_concept.iterrows():
                     results.append(SectorCapitalFlowData(
-                        sector_code=row.get('板块代码', ''),
-                        sector_name=row.get('板块名称', ''),
-                        main_inflow_net=float(row.get('主力净流入-净额', 0) or 0),
-                        main_inflow_ratio=float(row.get('主力净流入-净占比', 0) or 0),
-                        change_pct=float(row.get('涨跌幅', 0) or 0),
-                        rank=int(row.get('排名', 0) or 0),
+                        sector_code='',
+                        sector_name=row.get('行业', ''),
+                        main_inflow_net=float(row.get('净额', 0) or 0),
+                        main_inflow_ratio=0.0,
+                        change_pct=float(row.get('行业-涨跌幅', 0) or 0),
+                        rank=int(row.get('序号', 0) or 0),
                         source='akshare'
                     ).to_dict())
 
@@ -228,6 +256,73 @@ def _fetch_eastmoney_capital_flow(symbol: str) -> List[Dict[str, Any]]:
                     })
     except Exception as e:
         logger.error(f"东方财富资金流向获取失败: {e}")
+
+    return results
+
+
+# ============== 北向资金 ==============
+
+@retry_with_backoff(max_retries=3, backoff_factors=[1, 2, 5])
+def _fetch_akshare_northbound_summary():
+    """内部函数：获取北向资金汇总（带重试）"""
+    return ak.stock_hsgt_fund_flow_summary_em()
+
+
+@retry_with_backoff(max_retries=3, backoff_factors=[1, 2, 5])
+def _fetch_akshare_northbound_hist(symbol: str = '沪股通'):
+    """内部函数：获取北向资金历史（带重试）"""
+    return ak.stock_hsgt_hist_em(symbol=symbol)
+
+
+def fetch_northbound_flow(
+    data_type: str = 'summary',
+    symbol: str = None
+) -> List[Dict[str, Any]]:
+    """获取北向资金数据
+
+    Args:
+        data_type: 数据类型 (summary/hist)
+        symbol: 北向类型 (沪股通/深股通/港股通(沪)/港股通(深))
+
+    Returns:
+        List[Dict]: 北向资金数据列表
+    """
+    results = []
+
+    if not HAS_AKSHARE:
+        return results
+
+    try:
+        if data_type == 'summary':
+            df = _fetch_akshare_northbound_summary()
+            for _, row in df.iterrows():
+                results.append(NorthboundFlowData(
+                    date=str(row.get('交易日', '')),
+                    flow_type=str(row.get('类型', '')),
+                    sector=str(row.get('板块', '')),
+                    net_buy=float(row.get('成交净买额', 0) or 0),
+                    net_inflow=float(row.get('资金净流入', 0) or 0),
+                    source='akshare'
+                ).to_dict())
+
+        elif data_type == 'hist':
+            target_symbol = symbol or '沪股通'
+            df = _fetch_akshare_northbound_hist(target_symbol)
+            for _, row in df.iterrows():
+                results.append({
+                    'date': str(row.get('日期', '')),
+                    'net_buy': float(row.get('当日成交净买额', 0) or 0),
+                    'buy_amount': float(row.get('买入成交额', 0) or 0),
+                    'sell_amount': float(row.get('卖出成交额', 0) or 0),
+                    'cumulative_net': float(row.get('历史累计净买额', 0) or 0),
+                    'leading_stock': str(row.get('领涨股', '')),
+                    'leading_stock_change': float(row.get('领涨股-涨跌幅', 0) or 0),
+                    'source': 'akshare',
+                    'timestamp': datetime.utcnow().isoformat(),
+                })
+
+    except Exception as e:
+        logger.error(f"北向资金数据获取失败: {e}")
 
     return results
 
