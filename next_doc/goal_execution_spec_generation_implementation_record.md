@@ -107,6 +107,7 @@
 - `spec show <goal_id>`：打印 `render_summary_for_user()`。
 - `/agent goals recur` 命令尾部新增一句提示：没有已确认规范时提示可以
   先 `spec generate`，不强制依赖（对应方案 §6.4 最后一句）。
+- Stage 2 追加了 `spec close-check <goal_id>` 子命令，见 §2.2。
 
 ### 1.8 测试
 
@@ -182,6 +183,13 @@ criteria(goal_id, cfg=None)`：
 路径即使导致全部子节点凑齐终态，也不在那两条路径上额外触发一次判断
 （下次任何其它子节点走完成路径收尾时，或用户手动干预后，仍会自然触发）。
 
+`cli/commands/goals.py` 新增 `/agent goals spec close-check <goal_id>`
+子命令，直接调用同一个 `GoalBacklog.maybe_close_goal_by_overall_
+criteria()`，供用户在不新增子 Objective 的情况下手动（重新）触发一次
+判定（比如上一次自动判定结果是"暂不关闭"，用户后续补充了材料想重判）；
+Goal 非 `active` 时提前给出提示、不调用该方法，其余前置条件判断与自动
+路径完全一致。
+
 ### 2.3 测试
 
 `tests/test_goal_overall_completion.py`（新增，12 个用例）：
@@ -201,6 +209,13 @@ criteria(goal_id, cfg=None)`：
   bridge.py`/`test_goal_backlog.py`/`test_goal_output_directory_onetime.py`/
   `test_objective_outcome_tracker.py`/`test_goal_execution_fairness*.py`
   回归通过（共 98 个用例）。
+
+`tests/test_goals_spec_close_check_cli.py`（新增，5 个用例）：`spec
+close-check` 命令的 Goal 不存在报错、非 active 提前跳过（不调用
+`maybe_close_goal_by_overall_criteria`）、`None`/`closed`/`kept_open`
+三种返回值对应的提示文案。
+
+全部改动累计新增测试 17 个，与既有测试合计 103 个用例回归通过。
 
 ## 3. 与方案的偏差 / 未实施清单
 
@@ -230,11 +245,13 @@ criteria(goal_id, cfg=None)`：
    走 `read_all_manifests()`，本来就读全部历史轮次。）
 5. **看板"从执行历史反推"默认预填**、**差异高亮 UI**：均依赖 1，随看板
    UI 一起实施。
-6. **CLI 侧暴露"整体关闭判定"的手动触发/查看入口**：目前
-   `maybe_close_goal_by_overall_criteria()` 只在 Objective 正常完成的
-   自动路径里触发，没有对应的 `/agent goals ...` 子命令让用户在不新增
-   子 Objective 的情况下手动重新触发一次判定（比如判定结果是
-   `continue` 之后，用户后续手动补充了一些材料，想重新判一次）。
+6. **CLI 侧暴露"整体关闭判定"的手动触发/查看入口**：**已实施**——见
+   `/agent goals spec close-check <goal_id>`（`cli/commands/goals.py::
+   _cmd_spec_close_check()`），直接调用
+   `GoalBacklog.maybe_close_goal_by_overall_criteria()`，Goal 非
+   `active` 时提前跳过（不消耗 LLM 调用），其余前置条件判断复用同一个
+   方法，行为与自动触发路径完全一致。测试见
+   `tests/test_goals_spec_close_check_cli.py`（5 个用例）。
 
 以上未实施项均不影响已实施部分的正确性——`execution_spec_confirmed`
 默认 `False`，未生成/未确认的 Goal 行为与方案引入前完全一致；
@@ -246,9 +263,8 @@ criteria(goal_id, cfg=None)`：
 1. 看板 UI（§6.1 最小可用版本：展示 5 个 section + 反馈文本框 + 确认/
    跳过两个按钮即可，字段级锁定/差异高亮可以作为该 Track 内的第二个
    迭代，不必一次做全；同时把 §2 的整体关闭判定结果做成看板上更显眼的
-   状态展示，而不只是 progress_notes 里的一行文本）。
-2. CLI 侧补一个手动重新触发整体关闭判定的命令（见 §3 第 6 条），成本低，
-   可以和看板 UI 并行。
-3. `builder_mode="agent"` 路径 + 模板自动匹配（优先级较低，当前 `llm`
+   状态展示，而不只是 progress_notes 里的一行文本；`spec close-check`
+   命令对应的"手动重判"按钮也应该一并加进去）。
+2. `builder_mode="agent"` 路径 + 模板自动匹配（优先级较低，当前 `llm`
    路径已经可用，且 `revise()` 的字段锁定机制已经能覆盖"生成方向不对
    需要人工干预"的场景）。

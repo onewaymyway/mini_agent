@@ -15,6 +15,10 @@ cli/commands/goals.py — /agent goals slash 命令处理（Stage 9 第六节）
                                    — 生成执行规范草稿（见 perception/goal_execution_spec.py）
   /agent goals spec confirm <id>   — 确认执行规范（冻结，下次触发生效）
   /agent goals spec show <id>      — 查看执行规范当前内容
+  /agent goals spec close-check <id>
+                                   — 手动（重新）触发一次"整体是否可以关闭"
+                                     判定（见 §5 第二段，通常由子 Objective
+                                     完成时自动触发，这里补一个手动入口）
   /agent goals status              — 显示 AutonomousLoop tick 状态
 """
 
@@ -117,7 +121,8 @@ def handle_goals_cmd(args: list[str], agent=None) -> None:
         if not rest:
             R.print_error(
                 "Usage: /agent goals spec generate <goal_id> [--template <id>] "
-                "| /agent goals spec confirm <goal_id> | /agent goals spec show <goal_id>"
+                "| /agent goals spec confirm <goal_id> | /agent goals spec show <goal_id> "
+                "| /agent goals spec close-check <goal_id>"
             )
             return
         _cmd_spec(gb, paths, rest[0], rest[1:])
@@ -524,6 +529,7 @@ def _cmd_spec(gb, paths, action: str, rest: list[str]) -> None:
     /agent goals spec generate <goal_id> [--template <id>] [--from-history]
     /agent goals spec confirm <goal_id>
     /agent goals spec show <goal_id>
+    /agent goals spec close-check <goal_id>
     """
     if action == "generate":
         if not rest:
@@ -553,9 +559,15 @@ def _cmd_spec(gb, paths, action: str, rest: list[str]) -> None:
             return
         _cmd_spec_show(paths, rest[0])
 
+    elif action == "close-check":
+        if not rest:
+            R.print_error("Usage: /agent goals spec close-check <goal_id>")
+            return
+        _cmd_spec_close_check(gb, paths, rest[0])
+
     else:
         R.print_error(f"Unknown spec subcommand: {action!r}")
-        R.print_info("Available: generate, confirm, show")
+        R.print_info("Available: generate, confirm, show, close-check")
 
 
 def _cmd_spec_generate(gb, paths, goal_id: str, template_id: Optional[str], from_history: bool) -> None:
@@ -634,6 +646,48 @@ def _cmd_spec_show(paths, goal_id: str) -> None:
         R.print_info(f"该 Goal 还没有执行规范：{goal_id}")
         return
     R.print_info(spec.render_summary_for_user())
+
+
+def _cmd_spec_close_check(gb, paths, goal_id: str) -> None:
+    """[goal_execution_spec_generation_plan.md §5 第二段] 手动（重新）触发一次
+    "整体是否可以关闭"判定。正常情况下这个判定在最后一个子 Objective 正常
+    完成时由 `ObjectiveExecutor._maybe_close_parent_goal()` 自动触发一次；
+    本命令是补充入口，用于：
+      - 上一次自动判定结果是 `continue`，用户后续手动补充了材料/调整了
+        Goal 描述，想不新增子 Objective 就重新判一次；
+      - 排查"为什么这个 Goal 一直没有自动关闭"。
+
+    `GoalBacklog.maybe_close_goal_by_overall_criteria()` 自己会重新校验全部
+    前置条件（是否一次性 Goal、子节点是否全部终态、规范是否已确认且
+    `overall_completion_criteria` 非空），条件不满足时直接告知原因，不会
+    误触发。
+    """
+    node = gb.get(goal_id)
+    if node is None or not node.is_goal:
+        R.print_error(f"Goal 不存在：{goal_id}")
+        return
+    if node.status != "active":
+        R.print_info(f"Goal 当前状态为 {node.status!r}，不是 active，跳过判定。")
+        return
+    try:
+        from mini_agent.config import load_config
+        cfg = load_config()
+        outcome = gb.maybe_close_goal_by_overall_criteria(goal_id, cfg)
+    except Exception as e:
+        from mini_agent.errors import log_exception
+        log_exception(e, where='mini_agent.cli.commands.goals._cmd_spec_close_check')
+        R.print_error(f"整体完成判定失败：{e}")
+        return
+
+    if outcome is None:
+        R.print_info(
+            "未触发判定：可能不是一次性 Goal、还有子 Objective 未进入终态、"
+            "执行规范未确认，或 overall_completion_criteria 为空。"
+        )
+    elif outcome == "closed":
+        R.print_success(f"判定为整体已完成，Goal 已标记为 completed：{goal_id}")
+    else:
+        R.print_info(f"判定为暂不关闭（继续保持 active）：{goal_id}，详见 progress notes。")
 
 
 def _format_ago(seconds: float) -> str:
