@@ -330,6 +330,11 @@ def fetch_kline(
             return records
         except Exception as e:
             logger.error(f"AKShare K线获取失败: {e}")
+            # 兼容 akshare 返回 list 的情况
+            if isinstance(df, list):
+                import pandas as pd
+                df = pd.DataFrame(df)
+            return []
     
     elif source == 'sina':
         return _fetch_sina_kline(symbol, period, start, end)
@@ -651,6 +656,367 @@ class DataFetcher:
     def get_macro(self, data_type: str = 'gdp', source: str = None) -> List[FinanceData]:
         return fetch_macro(data_type, source or self.default_source)
 
+    def get_sector_quote(self, sector_type: str = 'industry', source: str = None) -> List[FinanceData]:
+        return fetch_sector_quote(sector_type, source or self.default_source)
+
+    def get_sector_flow(self, sector_type: str = 'industry', source: str = None) -> List[FinanceData]:
+        return fetch_sector_flow(sector_type, source or self.default_source)
+
+    def get_margin_data(self, data_type: str = 'summary', source: str = None) -> List[FinanceData]:
+        return fetch_margin_data(data_type, source or self.default_source)
+
+    def get_capital_flow(self, symbol: str = None, data_type: str = 'stock', source: str = None) -> List[FinanceData]:
+        return fetch_capital_flow(symbol, data_type, source or self.default_source)
+
+    def get_ipo_data(self, data_type: str = 'apply', source: str = None) -> List[FinanceData]:
+        return fetch_ipo_data(data_type, source or self.default_source)
+
+    def get_convertible_bond(self, symbol: str = None, data_type: str = 'quote', source: str = None) -> List[FinanceData]:
+        return fetch_convertible_bond(symbol, data_type, source or self.default_source)
+
+
+# ============== 板块数据 ==============
+
+def fetch_sector_quote(sector_type: str = 'industry', source: str = 'akshare') -> List[FinanceData]:
+    """获取板块实时行情
+
+    Args:
+        sector_type: 板块类型 (industry/concept/region)
+        source: 数据源
+    """
+    results = []
+
+    try:
+        from ..scrapers.sector_scraper import SectorScraper
+        if SectorScraper:
+            scraper = SectorScraper()
+            import asyncio
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            try:
+                async def _fetch():
+                    async for data in scraper.fetch([], 'sector_quote', sector_type=sector_type):
+                        results.append(data)
+                loop.run_until_complete(_fetch())
+            finally:
+                loop.close()
+    except Exception as e:
+        logger.error(f"板块行情获取失败: {e}")
+
+    return results
+
+
+def fetch_sector_flow(sector_type: str = 'industry', source: str = 'akshare') -> List[FinanceData]:
+    """获取板块资金流向
+
+    Args:
+        sector_type: 板块类型 (industry/concept)
+        source: 数据源
+    """
+    results = []
+
+    try:
+        from ..scrapers.sector_scraper import SectorScraper
+        if SectorScraper:
+            scraper = SectorScraper()
+            import asyncio
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            try:
+                async def _fetch():
+                    async for data in scraper.fetch([], 'sector_flow', sector_type=sector_type):
+                        results.append(data)
+                loop.run_until_complete(_fetch())
+            finally:
+                loop.close()
+    except Exception as e:
+        logger.error(f"板块资金流向获取失败: {e}")
+
+    return results
+
+
+# ============== 融资融券数据 ==============
+
+def fetch_margin_data(data_type: str = 'summary', source: str = 'akshare') -> List[FinanceData]:
+    """获取融资融券数据
+
+    Args:
+        data_type: 数据类型 (summary/stock)
+        source: 数据源
+    """
+    results = []
+
+    if source == 'akshare' and HAS_AKSHARE:
+        try:
+            if data_type == 'summary':
+                # 融资融券汇总数据
+                df_sz = ak.stock_margin_size_szse()
+                df_sse = ak.stock_margin_size_sse()
+
+                for _, row in df_sz.iterrows():
+                    results.append(FinanceData(
+                        source='akshare',
+                        data_type='margin_summary',
+                        symbol='SZSE',
+                        timestamp=datetime.utcnow().isoformat(),
+                        payload={
+                            'date': row.get('日期', ''),
+                            'exchange': 'SZSE',
+                            'margin_balance': float(row.get('融资余额', 0) or 0),
+                            'margin_buy': float(row.get('融资买入额', 0) or 0),
+                            'short_balance': float(row.get('融券余额', 0) or 0),
+                            'short_sell': float(row.get('融券卖出量', 0) or 0),
+                        }
+                    ))
+
+                for _, row in df_sse.iterrows():
+                    results.append(FinanceData(
+                        source='akshare',
+                        data_type='margin_summary',
+                        symbol='SSE',
+                        timestamp=datetime.utcnow().isoformat(),
+                        payload={
+                            'date': row.get('日期', ''),
+                            'exchange': 'SSE',
+                            'margin_balance': float(row.get('融资余额', 0) or 0),
+                            'margin_buy': float(row.get('融资买入额', 0) or 0),
+                            'short_balance': float(row.get('融券余额', 0) or 0),
+                            'short_sell': float(row.get('融券卖出量', 0) or 0),
+                        }
+                    ))
+
+            elif data_type == 'stock':
+                # 个股融资融券明细
+                df = ak.stock_margin_detail_szse()
+                for _, row in df.iterrows():
+                    results.append(FinanceData(
+                        source='akshare',
+                        data_type='margin_stock',
+                        symbol=row.get('代码', ''),
+                        timestamp=datetime.utcnow().isoformat(),
+                        payload={
+                            'stock_code': row.get('代码', ''),
+                            'stock_name': row.get('名称', ''),
+                            'margin_balance': float(row.get('融资余额', 0) or 0),
+                            'margin_change': float(row.get('融资余额变化', 0) or 0),
+                            'short_balance': float(row.get('融券余额', 0) or 0),
+                            'update_date': row.get('日期', ''),
+                        }
+                    ))
+        except Exception as e:
+            logger.error(f"融资融券数据获取失败: {e}")
+
+    return results
+
+
+# ============== 资金流向数据 ==============
+
+def fetch_capital_flow(symbol: str = None, data_type: str = 'stock', source: str = 'akshare') -> List[FinanceData]:
+    """获取资金流向数据
+
+    Args:
+        symbol: 股票代码（可选）
+        data_type: 数据类型 (stock/sector)
+        source: 数据源
+    """
+    results = []
+
+    if source == 'akshare' and HAS_AKSHARE:
+        try:
+            if data_type == 'stock':
+                if symbol:
+                    # 个股资金流向
+                    df = ak.stock_individual_fund_flow(stock=symbol)
+                    for _, row in df.iterrows():
+                        results.append(FinanceData(
+                            source='akshare',
+                            data_type='capital_flow',
+                            symbol=symbol,
+                            timestamp=datetime.utcnow().isoformat(),
+                            payload={
+                                'date': row.get('日期', ''),
+                                'main_inflow': float(row.get('主力净流入-净额', 0) or 0),
+                                'main_inflow_ratio': float(row.get('主力净流入-净占比', 0) or 0),
+                                'retail_inflow': float(row.get('散户净流入-净额', 0) or 0),
+                                'close': float(row.get('收盘价', 0) or 0),
+                                'change_pct': float(row.get('涨跌幅', 0) or 0),
+                            }
+                        ))
+                else:
+                    # 个股资金流向排行
+                    df = ak.stock_individual_fund_flow_rank(indicator='今日')
+                    for _, row in df.iterrows():
+                        results.append(FinanceData(
+                            source='akshare',
+                            data_type='capital_flow',
+                            symbol=row.get('代码', ''),
+                            timestamp=datetime.utcnow().isoformat(),
+                            payload={
+                                'stock_code': row.get('代码', ''),
+                                'stock_name': row.get('名称', ''),
+                                'main_inflow': float(row.get('主力净流入-净额', 0) or 0),
+                                'main_inflow_ratio': float(row.get('主力净流入-净占比', 0) or 0),
+                                'rank': int(row.get('排名', 0) or 0),
+                            }
+                        ))
+
+            elif data_type == 'sector':
+                # 板块资金流向
+                df = ak.stock_sector_fund_flow_rank(industry_type='行业')
+                for _, row in df.iterrows():
+                    results.append(FinanceData(
+                        source='akshare',
+                        data_type='sector_capital_flow',
+                        symbol=row.get('板块代码', ''),
+                        timestamp=datetime.utcnow().isoformat(),
+                        payload={
+                            'sector_code': row.get('板块代码', ''),
+                            'sector_name': row.get('板块名称', ''),
+                            'main_inflow': float(row.get('主力净流入-净额', 0) or 0),
+                            'main_inflow_ratio': float(row.get('主力净流入-净占比', 0) or 0),
+                            'change_pct': float(row.get('涨跌幅', 0) or 0),
+                            'rank': int(row.get('排名', 0) or 0),
+                        }
+                    ))
+        except Exception as e:
+            logger.error(f"资金流向数据获取失败: {e}")
+
+    return results
+
+
+# ============== 新股数据 ==============
+
+def fetch_ipo_data(data_type: str = 'apply', source: str = 'akshare') -> List[FinanceData]:
+    """获取新股数据
+
+    Args:
+        data_type: 数据类型 (apply/list/query)
+        source: 数据源
+    """
+    results = []
+
+    if source == 'akshare' and HAS_AKSHARE:
+        try:
+            if data_type == 'apply':
+                # 新股申购
+                df = ak.stock_yzrp_em()
+                for _, row in df.iterrows():
+                    results.append(FinanceData(
+                        source='akshare',
+                        data_type='ipo_apply',
+                        symbol=row.get('代码', ''),
+                        timestamp=datetime.utcnow().isoformat(),
+                        payload={
+                            'stock_code': row.get('代码', ''),
+                            'stock_name': row.get('名称', ''),
+                            'apply_date': row.get('申购日期', ''),
+                            'issue_price': float(row.get('发行价', 0) or 0),
+                            'pe_ratio': float(row.get('市盈率', 0) or 0),
+                            'lot_size': int(row.get('申购单位', 0) or 0),
+                            'industry': row.get('行业', ''),
+                        }
+                    ))
+
+            elif data_type == 'list':
+                # 新股上市
+                df = ak.stock_ipo_can()
+                for _, row in df.iterrows():
+                    results.append(FinanceData(
+                        source='akshare',
+                        data_type='ipo_list',
+                        symbol=row.get('代码', ''),
+                        timestamp=datetime.utcnow().isoformat(),
+                        payload={
+                            'stock_code': row.get('代码', ''),
+                            'stock_name': row.get('名称', ''),
+                            'list_date': row.get('上市日期', ''),
+                            'issue_price': float(row.get('发行价', 0) or 0),
+                            'industry': row.get('行业', ''),
+                        }
+                    ))
+
+            elif data_type == 'query':
+                # 新股询价
+                df = ak.stock_ipo_can()
+                for _, row in df.iterrows():
+                    results.append(FinanceData(
+                        source='akshare',
+                        data_type='ipo_query',
+                        symbol=row.get('代码', ''),
+                        timestamp=datetime.utcnow().isoformat(),
+                        payload={
+                            'stock_code': row.get('代码', ''),
+                            'stock_name': row.get('名称', ''),
+                            'query_start_date': row.get('询价开始日期', ''),
+                            'query_end_date': row.get('询价结束日期', ''),
+                            'issue_price_range': row.get('发行价区间', ''),
+                        }
+                    ))
+        except Exception as e:
+            logger.error(f"新股数据获取失败: {e}")
+
+    return results
+
+
+# ============== 可转债数据 ==============
+
+def fetch_convertible_bond(symbol: str = None, data_type: str = 'quote', source: str = 'akshare') -> List[FinanceData]:
+    """获取可转债数据
+
+    Args:
+        symbol: 债券代码（可选）
+        data_type: 数据类型 (quote/history)
+        source: 数据源
+    """
+    results = []
+
+    if source == 'akshare' and HAS_AKSHARE:
+        try:
+            if data_type == 'quote':
+                # 可转债实时行情
+                df = ak.bond_zh_hs_cov_spot()
+                for _, row in df.iterrows():
+                    results.append(FinanceData(
+                        source='akshare',
+                        data_type='convertible_bond',
+                        symbol=row.get('代码', ''),
+                        timestamp=datetime.utcnow().isoformat(),
+                        payload={
+                            'bond_code': row.get('代码', ''),
+                            'bond_name': row.get('名称', ''),
+                            'stock_code': row.get('股票代码', ''),
+                            'stock_name': row.get('股票名称', ''),
+                            'price': float(row.get('现价', 0) or 0),
+                            'premium': float(row.get('转股溢价率', 0) or 0),
+                            'conversion_price': float(row.get('转股价', 0) or 0),
+                            'maturity_date': row.get('到期日期', ''),
+                            'rating': row.get('评级', ''),
+                            'volume': int(row.get('成交量', 0) or 0),
+                            'change_pct': float(row.get('涨跌幅', 0) or 0),
+                        }
+                    ))
+
+            elif data_type == 'history':
+                if symbol:
+                    # 可转债历史数据
+                    df = ak.bond_zh_hs_cov_daily(symbol=symbol)
+                    for _, row in df.iterrows():
+                        results.append(FinanceData(
+                            source='akshare',
+                            data_type='convertible_bond_history',
+                            symbol=symbol,
+                            timestamp=datetime.utcnow().isoformat(),
+                            payload={
+                                'date': row.get('日期', ''),
+                                'price': float(row.get('收盘', 0) or 0),
+                                'volume': int(row.get('成交量', 0) or 0),
+                            }
+                        ))
+        except Exception as e:
+            logger.error(f"可转债数据获取失败: {e}")
+
+    return results
+
 
 # ============== 基金数据 ==============
 
@@ -811,11 +1177,80 @@ def fetch_macro(data_type: str = 'gdp', source: str = 'macro') -> List[FinanceDa
     return results
 
 
+# ============== 股票扩展数据 ==============
+
+from .stock_extended_fetchers import (
+    fetch_block_trade,
+    fetch_shareholder_data,
+    fetch_lhb_depth,
+    fetch_all_stock_extended,
+)
+from .capital_flow_fetcher import (
+    fetch_capital_flow,
+    fetch_individual_capital_flow,
+)
+from .margin_fetcher import (
+    fetch_margin_data,
+    fetch_margin_summary,
+    fetch_margin_stock,
+)
+from .northbound_fetcher import (
+    fetch_northbound_data,
+    fetch_northbound_flow,
+    fetch_northbound_holdings,
+)
+
+
 # 便捷实例
 default_fetcher = DataFetcher()
 
 
+class ExtendedDataFetcher(DataFetcher):
+    """扩展数据获取器 - 支持大宗交易、股东数据、龙虎榜深度"""
+
+    def get_block_trade(self, **kwargs) -> List[Dict]:
+        return fetch_block_trade(**kwargs)
+
+    def get_shareholder_data(self, symbol: str = None, **kwargs) -> List[Dict]:
+        return fetch_shareholder_data(symbol, **kwargs)
+
+    def get_lhb_depth(self, **kwargs) -> List[Dict]:
+        return fetch_lhb_depth(**kwargs)
+
+    def get_all_extended(self, symbol: str = None, **kwargs) -> Dict:
+        return fetch_all_stock_extended(symbol, **kwargs)
+
+    def get_capital_flow(self, symbol: str = None, data_type: str = 'stock', **kwargs) -> List[Dict]:
+        return fetch_capital_flow(symbol, data_type, **kwargs)
+
+    def get_margin_data(self, data_type: str = 'summary', **kwargs) -> List[Dict]:
+        return fetch_margin_data(data_type, **kwargs)
+
+    def get_northbound_data(self, data_type: str = 'flow', **kwargs) -> List[Dict]:
+        return fetch_northbound_data(data_type, **kwargs)
+
+
 if __name__ == '__main__':
+    # 测试资金流向
+    logger.info("测试资金流向...")
+    flows = fetch_capital_flow(data_type='stock')
+    logger.info(f"获取 {len(flows)} 条资金流向数据")
+    if flows:
+        logger.info(f"最新: {flows[0]}")
+
+    # 测试融资融券
+    logger.info("\n测试融资融券...")
+    margins = fetch_margin_data(data_type='summary')
+    logger.info(f"获取 {len(margins)} 条融资融券数据")
+    if margins:
+        logger.info(f"最新: {margins[0]}")
+
+    # 测试北向资金
+    logger.info("\n测试北向资金...")
+    northbound = fetch_northbound_data(data_type='flow')
+    logger.info(f"获取 {len(northbound)} 条北向资金数据")
+    if northbound:
+        logger.info(f"最新: {northbound[0]}")
     # 测试
     logger.info("测试实时行情...")
     quotes = fetch_realtime_quote(['600000.SH', '000001.SZ'])
