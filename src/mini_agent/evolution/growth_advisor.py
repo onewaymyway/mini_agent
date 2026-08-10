@@ -1740,6 +1740,7 @@ def generate_growth_report(
     is_exploration: bool = False,
     profile=None,
     cfg=None,
+    web_search_fn=None,
 ) -> GrowthReport:
     """为一个候选生成调研报告并落盘。
 
@@ -1771,6 +1772,14 @@ def generate_growth_report(
       "四个小节"结构；提纲阶段失败（异常/空响应/解析失败）时静默退回
       单段式 prompt，不影响正文生成本身。
 
+    `web_search_fn`：[growth_advisor_active_search_and_lifecycle_plan.md
+    方向一] 可选，签名 `web_search_fn(query: str, max_results: int) ->
+    str`（跟 `tools/builtin.py::web_search()` 一致）。仅当
+    `cfg.report_active_search_enabled` 开启、`llm_helper` 非 `None`、
+    且被动扫描（上面 `report_include_external_context` 那段）命中 0
+    条素材时，才会用它现查一次并把结果落一份 wiki 页面供复用；不传时
+    行为与改动前完全一致。
+
     以上参数任一缺失、或规则模板路径（`llm_helper is None`）时，相应
     逻辑整体跳过，向后兼容此前所有不传这些参数的调用方。
     """
@@ -1788,14 +1797,28 @@ def generate_growth_report(
                 if info:
                     keywords = info["keywords"]
                     ext_count = _external_signal_count_for_topic(paths, candidate.title, keywords)
+                    excerpts: list[dict[str, str]] = []
                     if ext_count > 0:
                         excerpts = _external_signal_excerpts_for_topic(paths, candidate.title, keywords)
+                    elif (
+                        web_search_fn is not None
+                        and cfg is not None
+                        and getattr(cfg, "report_active_search_enabled", False)
+                    ):
+                        # [方向一：真正的主动检索] 被动扫描没有可用素材，
+                        # 且调用方具备检索工具，现查一次而不是直接放弃。
+                        excerpts = _active_search_excerpts_for_topic(
+                            paths, candidate, keywords,
+                            web_search_fn=web_search_fn, llm_helper=llm_helper,
+                        )
+                    if excerpts:
                         excerpt_lines = "\n".join(
                             f"- 参考：{e['id']}（{e['date']}）：{e['excerpt']}" for e in excerpts
                         )
+                        count_desc = f"最近 30 天外部世界大约有 {ext_count} 条" if ext_count > 0 else "现查到一条"
                         external_context_section = (
                             f"\n[外部背景参考，仅供了解，不改变你的判断] "
-                            f"最近 30 天外部世界大约有 {ext_count} 条跟这个方向相关的资讯，"
+                            f"{count_desc}跟这个方向相关的资讯，"
                             "以下是其中几条的摘录（可以参考，但不要照抄，仍然要结合用户自己的"
                             "处境；如果确实参考了某条，请在对应内容后用"
                             "『（参考：页面id）』的形式标注来源，没有参考到的不要提）：\n"
@@ -3266,6 +3289,86 @@ def _external_signal_excerpts_for_topic(
     return out
 
 
+# ────────── 方向一：真正的主动检索（growth_advisor_active_search_and_
+# lifecycle_plan.md）──────────
+
+def _active_search_excerpts_for_topic(
+    paths,
+    candidate: "GrowthCandidate",
+    keywords: list[str],
+    *,
+    web_search_fn,
+    llm_helper,
+    max_results: int = 5,
+) -> list[dict[str, str]]:
+    """[growth_advisor_active_search_and_lifecycle_plan.md 方向一] 被动
+    扫描（`_external_signal_matching_pages()`）没有可用素材时，现查一次
+    并落一份 wiki 页面供后续复用。任何一步失败都静默返回空列表，退回
+    "没有外部背景"的原有路径，不让检索失败拖垮报告生成本身。
+
+    复用 `external_input/tech_radar_search.py` 同一套 `EntityCandidate`/
+    `FactCandidate` 抽取管道与 `EXTERNAL_SEARCH_SOURCE_KIND` 落盘标记，
+    `source_entries` 前缀换成 `growth_advisor_active_search:<candidate_
+    id>` 以便跟巡检产生的页面区分来源。
+    """
+    if web_search_fn is None or llm_helper is None:
+        return []
+    query = candidate.title if not keywords else f"{candidate.title} {keywords[0]}"
+    try:
+        raw_text = web_search_fn(query, max_results=max_results)
+    except Exception:
+        return []
+    if not raw_text or not str(raw_text).strip():
+        return []
+
+    try:
+        from mini_agent.external_input.tech_radar_search import (
+            _build_search_extraction_prompt, _parse_search_extraction_response, _URL_RE,
+            _MAX_SOURCE_URLS_PER_SEED,
+        )
+        from mini_agent.history.world_extraction import EntityCandidate, FactCandidate
+        from mini_agent.wiki.world_writer import EXTERNAL_SEARCH_SOURCE_KIND, queue_entities, queue_facts
+    except Exception:
+        return []
+
+    prompt = _build_search_extraction_prompt([(query, raw_text)])
+    try:
+        raw_response = llm_helper(prompt)
+    except Exception:
+        return []
+    parsed = _parse_search_extraction_response(raw_response)
+    item = parsed.get(1)
+    if item is None:
+        return []
+
+    source_urls = _URL_RE.findall(raw_text)[:_MAX_SOURCE_URLS_PER_SEED]
+    source_entries = [f"growth_advisor_active_search:{candidate.candidate_id}:{query}"] + source_urls
+
+    entities: list = []
+    for e in (item.get("entities") or []):
+        if not isinstance(e, dict):
+            continue
+        c = EntityCandidate.from_dict(e)
+        if c.is_meaningful:
+            entities.append(c)
+    facts: list = []
+    for f in (item.get("facts") or []):
+        if not isinstance(f, dict):
+            continue
+        c = FactCandidate.from_dict(f)
+        if c.is_meaningful:
+            facts.append(c)
+    if entities:
+        queue_entities(paths, entities, source_entries=source_entries, source_kind=EXTERNAL_SEARCH_SOURCE_KIND)
+    if facts:
+        queue_facts(paths, facts, source_entries=source_entries, source_kind=EXTERNAL_SEARCH_SOURCE_KIND)
+
+    # 落盘走 pending 队列（跟巡检一致，需要后续 consolidate 才会生成正式
+    # wiki 页面），当次报告仍然直接用现查到的原始摘录，不等 consolidate。
+    excerpt = " ".join(str(raw_text).split())[:150]
+    return [{"id": f"active_search:{query}", "date": _today_str(), "excerpt": excerpt}]
+
+
 def growth_topic_map(paths) -> list[dict]:
     """跨候选的主题聚合视图（方案第 6 节"能力地图"聚合，对齐
     `self_model_snapshot.py` 的思路——只是问题从"Agent 自己的能力弱项
@@ -3316,6 +3419,86 @@ def growth_topic_map(paths) -> list[dict]:
 
     rows.sort(key=lambda r: -r["last_updated_at"])
     return rows
+
+
+def growth_topic_lifecycle(paths, dedupe_key: str, *, goal_backlog=None) -> list[dict]:
+    """[growth_advisor_active_search_and_lifecycle_plan.md 方向二] 某个
+    成长方向的完整生命周期时间线：发现 → 每次生成调研报告 → 每次采纳/
+    忽略 → 落地成 Goal → Goal 当前状态。
+
+    纯只读聚合，不新增落盘文件，从 `growth_backlog.jsonl`、
+    `growth_reports_index.jsonl`（含归档）、`growth_feedback_ledger.
+    jsonl`、`goal_backlog`（可选，缺失时静默跳过 Goal 相关事件）四处
+    现有数据拼出来，按 `ts` 正序返回，供看板/CLI 渲染成一条时间线。
+    """
+    all_c = GrowthBacklog(paths).load_all()
+    items = [c for c in all_c if c.dedupe_key() == dedupe_key]
+    if not items:
+        return []
+
+    events: list[dict] = []
+
+    first_created = min(c.created_at for c in items)
+    events.append({
+        "stage": "discovered",
+        "ts": first_created,
+        "label": f"首次被信号扫描发现：{items[0].title}",
+        "detail": "",
+    })
+
+    candidate_ids = {c.candidate_id for c in items}
+    report_ids = {c.report_id for c in items if c.report_id}
+    if report_ids:
+        for report in list_reports(paths, include_archived=True):
+            if report.report_id in report_ids:
+                events.append({
+                    "stage": "report_generated",
+                    "ts": report.created_at,
+                    "label": f"生成调研报告：{report.summary[:40]}",
+                    "detail": report.report_id,
+                })
+
+    ledger = GrowthFeedbackLedger(paths).all_entries()
+    for entry in ledger:
+        if entry.get("candidate_id") not in candidate_ids:
+            continue
+        action = entry.get("action")
+        if action == STATUS_ACCEPTED:
+            events.append({
+                "stage": "accepted", "ts": entry.get("ts", 0.0),
+                "label": "用户采纳了这个方向", "detail": "",
+            })
+        elif action == STATUS_DISMISSED:
+            reason = entry.get("reason") or ""
+            events.append({
+                "stage": "dismissed", "ts": entry.get("ts", 0.0),
+                "label": "用户忽略了这个方向" + (f"（{reason}）" if reason else ""),
+                "detail": reason,
+            })
+
+    linked = next((c for c in items if c.linked_goal_id), None)
+    if linked is not None:
+        events.append({
+            "stage": "goal_linked", "ts": linked.updated_at,
+            "label": "落地成一个具体目标（Goal）", "detail": linked.linked_goal_id,
+        })
+        if goal_backlog is not None:
+            try:
+                goal = goal_backlog.get(linked.linked_goal_id)
+            except Exception:
+                goal = None
+            if goal is not None:
+                status = getattr(goal, "status", None)
+                ts = getattr(goal, "last_touched_at", None) or getattr(goal, "created_at", linked.updated_at)
+                if status == "completed":
+                    events.append({"stage": "goal_completed", "ts": ts, "label": "目标已完成", "detail": ""})
+                elif status in ("abandoned", "failed", "cancelled"):
+                    events.append({"stage": "goal_stalled", "ts": ts, "label": f"目标已停滞（{status}）", "detail": status})
+                elif status == "active":
+                    events.append({"stage": "goal_active", "ts": ts, "label": "目标进行中", "detail": ""})
+
+    events.sort(key=lambda e: e["ts"])
+    return events
 
 
 def monthly_retrospective_summary(paths) -> dict[str, Any]:

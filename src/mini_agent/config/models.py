@@ -1801,6 +1801,18 @@ class GrowthAdvisorConfig:
     # 成本几乎为零，默认开启。
     report_dismiss_reason_adaptive_enabled: bool = True
 
+    # ── 真正的主动检索（growth_advisor_active_search_and_lifecycle_
+    # plan.md 方向一）──────────────────────────────────────────────────
+    # 默认关闭：会实际发起 web_search 调用，属于"增加调用成本的能力
+    # 默认 opt-in"。打开后，`generate_growth_report()` 在
+    # `_external_signal_count_for_topic()` 命中 0 条、且调用方传入了
+    # `web_search_fn` 时，才会现查一次并把结果落一份 wiki 页面；只在
+    # 被动扫描（N4）确实没有可用素材时补一次，不是"素材不够多再补"。
+    report_active_search_enabled: bool = False
+    # 单次报告最多触发几次检索调用，当前实现只用 1 次，预留字段供以后
+    # 扩展为"多个关键词各查一次"时使用，不代表当前已支持多轮。
+    report_active_search_max_calls: int = 1
+
 
 @dataclass
 class ReminderConfig:
