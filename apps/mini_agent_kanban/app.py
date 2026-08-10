@@ -22,7 +22,7 @@ import time
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
-from typing import Optional
+from typing import Callable, Optional
 
 import streamlit as st
 import streamlit.components.v1 as components
@@ -2267,6 +2267,143 @@ def _render_goal_output_manifests(client: AgentClient, goal_id: str, key_prefix:
                 st.caption(f"　备注：{manifest['progress_note']}")
 
 
+def _render_execution_spec_summary(spec: dict) -> None:
+    """把 execution_spec dict 渲染成可读摘要（看板本地实现，不依赖后端渲染
+    出的文本，方便反馈迭代后立即重绘）。"""
+    deliverables = spec.get("deliverables") or []
+    handoff = spec.get("handoff_fields") or []
+    subdirs = spec.get("sub_directories") or []
+    criteria = spec.get("per_cycle_criteria") or []
+    overall = spec.get("overall_completion_criteria") or []
+    constraints = spec.get("special_constraints") or []
+    if deliverables:
+        st.markdown("**产出物：**")
+        for d in deliverables:
+            req = "每轮必需" if d.get("required_every_cycle", True) else "可选"
+            st.caption(f"- {d.get('name', '')}（{req}）：{d.get('description', '')}")
+    if handoff:
+        st.markdown("**跨轮传递：**")
+        for h in handoff:
+            st.caption(f"- `{h.get('key', '')}`：{h.get('description', '')}")
+    if subdirs:
+        st.markdown("**子目录：**")
+        for s in subdirs:
+            st.caption(f"- {s.get('name', '')}：{s.get('purpose', '')}")
+    if criteria:
+        st.markdown("**每轮完成标准：**")
+        for c in criteria:
+            st.caption(f"- [{c.get('verification_method', 'manual_review')}] {c.get('text', '')}")
+    if overall:
+        st.markdown("**整体完成标准：**")
+        for c in overall:
+            st.caption(f"- [{c.get('verification_method', 'manual_review')}] {c.get('text', '')}")
+    if constraints:
+        st.markdown("**特殊约束：**")
+        for s in constraints:
+            st.caption(f"- {s}")
+    if not (deliverables or handoff or subdirs or criteria or overall or constraints):
+        st.caption("（当前草稿全部字段为空，等价于沿用默认通用行为，不额外拼接任何 prompt 文字）")
+
+
+# [goal_execution_spec_generation_plan.md §6.1/§6.2/§6.3] 看板"生成草稿 →
+# 反馈迭代（字段级锁定）→ 确认"最小可用版本。之前只有 CLI（/agent goals
+# spec ...）能走这套流程，这里补上看板入口——不做方案 §6.2 描述的"直接编辑
+# 字段文本框 + 差异高亮"（留作后续迭代，见 next_doc 实施记录），只做"生成→
+# 看摘要→补充意见重新生成（可锁定已满意的 section）→确认/放弃"这条主线，
+# 与 CLI 的 `spec generate/confirm` 语义完全对齐，草稿缓存在
+# st.session_state 里跨 rerun 保留，不在每次 rerun 时重新触发 LLM 调用。
+def _render_goal_execution_spec_widget(
+    client: "AgentClient", goal_id: str, key_prefix: str = "",
+    on_confirm_extra: Optional[Callable[[], None]] = None,
+) -> bool:
+    """返回 True 表示当前已经是"已确认"状态（调用方可据此决定要不要再提示
+    用户"建议先确认规范"之类的文案，不影响主流程是否能继续）。"""
+    draft_key = f"{key_prefix}ges_draft_{goal_id}"
+
+    if draft_key not in st.session_state:
+        existing = client.get_execution_spec(goal_id)
+        if existing and not existing.get("_error") and existing.get("spec"):
+            st.session_state[draft_key] = existing["spec"]
+
+    spec = st.session_state.get(draft_key)
+
+    if spec and spec.get("confirmed"):
+        st.success(f"✅ 执行规范已确认（第 {spec.get('version', 1)} 版），下次触发即生效。")
+        with st.expander("查看当前执行规范", expanded=False):
+            _render_execution_spec_summary(spec)
+            if st.button("♻️ 生成新草稿（重新想一遍细节）", key=f"{key_prefix}ges_regen_{goal_id}"):
+                del st.session_state[draft_key]
+                st.rerun()
+        return True
+
+    if spec is None:
+        tpl_res = client.execution_spec_templates() or {}
+        templates = tpl_res.get("templates", []) if not tpl_res.get("_error") else []
+        tpl_labels = ["（不使用模板，完全从零生成）"] + [f"{t['id']} · {t['name']}" for t in templates]
+        gcol1, gcol2 = st.columns([2, 1])
+        tpl_choice = gcol1.selectbox("起草方式", tpl_labels, key=f"{key_prefix}ges_tpl_{goal_id}")
+        if gcol2.button("📋 生成执行规范草稿", key=f"{key_prefix}ges_gen_{goal_id}"):
+            template_id = tpl_choice.split(" · ")[0] if tpl_choice != tpl_labels[0] else ""
+            res = client.generate_execution_spec(goal_id, template_id=template_id)
+            if res and res.get("_error"):
+                st.error(f"生成失败：{res['_error']}")
+            else:
+                st.session_state[draft_key] = res.get("spec")
+                st.rerun()
+        return False
+
+    # 有草稿、未确认：展示摘要 + 字段级锁定 + 反馈迭代 + 确认/放弃
+    if spec.get("generation_error"):
+        st.warning(f"⚠️ 上次生成存在问题（已保存为空草稿，可补充意见重新生成）：{spec['generation_error']}")
+    st.caption(f"📝 执行规范草稿（第 {spec.get('version', 1)} 版，未确认，不影响执行）")
+    _render_execution_spec_summary(spec)
+
+    lock_sections = [
+        ("deliverables", "产出物"), ("handoff_fields", "跨轮传递"),
+        ("sub_directories", "子目录"), ("per_cycle_criteria", "每轮标准"),
+        ("special_constraints", "特殊约束"),
+    ]
+    prior_locked = set(spec.get("locked_fields") or [])
+    lock_cols = st.columns(len(lock_sections))
+    locked_now = []
+    for (field_name, label), col in zip(lock_sections, lock_cols):
+        if col.checkbox(f"🔒{label}", key=f"{key_prefix}ges_lock_{field_name}_{goal_id}",
+                         value=field_name in prior_locked):
+            locked_now.append(field_name)
+
+    with st.form(f"{key_prefix}ges_revise_form_{goal_id}"):
+        feedback = st.text_area("补充意见（提交后，未勾选🔒锁定的部分会据此重新生成，已锁定的原样保留）", height=60)
+        rcol1, rcol2, rcol3 = st.columns(3)
+        revise_click = rcol1.form_submit_button("🔄 补充意见重新生成")
+        confirm_click = rcol2.form_submit_button("✅ 确认使用此规范")
+        skip_click = rcol3.form_submit_button("❌ 放弃草稿")
+
+    if revise_click:
+        if not feedback.strip():
+            st.error("补充意见不能为空")
+        else:
+            res = client.revise_execution_spec(goal_id, feedback.strip(), locked_fields=locked_now)
+            if res and res.get("_error"):
+                st.error(f"重新生成失败：{res['_error']}")
+            else:
+                st.session_state[draft_key] = res.get("spec")
+                st.rerun()
+    elif confirm_click:
+        res = client.confirm_execution_spec(goal_id)
+        if res and res.get("_error"):
+            st.error(f"确认失败：{res['_error']}")
+        else:
+            st.session_state[draft_key] = res.get("spec")
+            if on_confirm_extra:
+                on_confirm_extra()
+            st.rerun()
+    elif skip_click:
+        del st.session_state[draft_key]
+        st.rerun()
+
+    return False
+
+
 def _render_goal_card(
     client: AgentClient, n: dict, status_key: str, indent: bool = False, note: str = "",
     execution: Optional[dict] = None, cron_next_run_by_id: Optional[dict] = None,
@@ -2464,8 +2601,37 @@ def _render_goal_card(
                     if res and "_error" in res:
                         st.error(res["_error"])
                     st.rerun()
+                # [goal_execution_spec_generation_plan.md §6.1 最后一条] 已绑定
+                # 周期性、但从未生成过规范的既有 Goal，补一个「生成执行规范」
+                # 入口，走同一套草稿确认流程；确认后下一轮触发即生效，不需要
+                # 先解绑再重新绑定。
+                st.markdown("---")
+                _render_goal_execution_spec_widget(client, n.get("id"), key_prefix=key_prefix)
             else:
                 st.caption("这个 Goal 还不是周期性的——绑定后会按 schedule 自动派生并启动新一轮。")
+                _render_goal_execution_spec_widget(client, n.get("id"), key_prefix=key_prefix)
+                # [goal_execution_spec_generation_plan.md §5 第二段] 一次性、拆了
+                # 多个子 Objective 的 Goal，如果确认过规范且填了
+                # overall_completion_criteria，正常情况下最后一个子 Objective
+                # 完成时会自动判定一次；这里补一个手动重判入口，对应 CLI
+                # `spec close-check`，用于"上次判定是继续、后续补充了材料想重判"
+                # 或排查"为什么一直没自动关闭"。
+                if st.button("🔁 手动重判整体是否可以关闭", key=f"{key_prefix}ges_closecheck_{n.get('id')}"):
+                    res = client.close_check_execution_spec(n.get("id"))
+                    if res and res.get("_error"):
+                        st.error(res["_error"])
+                    else:
+                        outcome = res.get("outcome")
+                        if outcome == "closed":
+                            st.success("判定为整体已完成，Goal 已标记为 completed。")
+                        elif outcome == "kept_open":
+                            st.info("判定为暂不关闭（继续保持 active），详见下方进展记录。")
+                        else:
+                            st.caption(res.get("reason") or "未触发判定：可能子 Objective 未全部终态、"
+                                                              "规范未确认，或 overall_completion_criteria 为空。")
+                        st.rerun()
+                st.markdown("---")
+                st.caption("生成/确认执行规范是可选步骤——不想先想细节，可以直接下面绑定周期性（跳过规范）。")
                 with st.form(f"{key_prefix}recur_form_{n.get('id')}"):
                     r_schedule = st.text_input(
                         "调度 (interval:<秒数> 或 cron:<表达式>)",
@@ -2561,6 +2727,11 @@ def render_kanban_tab(client: AgentClient):
             title = st.text_input("标题")
             desc = st.text_area("描述", height=60)
             priority = st.slider("优先级", 0, 100, 50)
+            # [goal_execution_spec_generation_plan.md §6.3] 默认不勾选——多数
+            # 随手创建的一次性 Goal 不值得投入一次 LLM 调用去想细节，是否需要
+            # 由用户主动决定，不在新建这一步强推。适用场景是"一次性但会拆多个
+            # 子 Objective、需要跨子任务传递信息/整体完成判定"的 Goal。
+            gen_spec = st.checkbox("同时生成一次性 Goal 的执行规范（用于会拆多个子任务的场景）", value=False)
             submitted = st.form_submit_button("创建")
         if submitted and title.strip():
             res = client.add_goal(title.strip(), desc, priority)
@@ -2573,9 +2744,29 @@ def render_kanban_tab(client: AgentClient):
                 # 标题/描述/优先级，避免用户看到"点了创建，输入框却还留着刚
                 # 才填的内容"，误以为没提交成功。
                 st.toast(f"✅ 目标「{title.strip()}」已创建", icon="✅")
+                new_goal = res.get("goal") if isinstance(res, dict) else None
+                new_goal_id = (new_goal or {}).get("id") if isinstance(new_goal, dict) else None
+                if gen_spec and new_goal_id:
+                    st.session_state["_ges_pending_new_goal"] = new_goal_id
             st.rerun()
         elif submitted and not title.strip():
             st.error("标题不能为空")
+
+    # 新建目标时勾选了"同时生成执行规范"——创建请求本身只返回新 Goal 的 id，
+    # 拿到 id 之后才能调用生成接口，所以草稿确认区块放在表单外面单独渲染，
+    # 跨 rerun 用 session_state 记住"当前正在为哪个新建的 Goal 走这个流程"。
+    _pending_new_goal_id = st.session_state.get("_ges_pending_new_goal")
+    if _pending_new_goal_id:
+        with st.container(border=True):
+            st.markdown(f"##### 📋 为新建目标生成执行规范（`{_pending_new_goal_id}`）")
+            confirmed = _render_goal_execution_spec_widget(
+                client, _pending_new_goal_id, key_prefix="newgoal_",
+            )
+            if st.button("收起（稍后可在该 Goal 卡片下继续）", key="_ges_pending_dismiss"):
+                del st.session_state["_ges_pending_new_goal"]
+                st.rerun()
+            if confirmed:
+                del st.session_state["_ges_pending_new_goal"]
 
     goals_data = client.goals() or {}
     if "_error" in goals_data:

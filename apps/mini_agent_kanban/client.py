@@ -352,6 +352,36 @@ class AgentClient:
         """[goal_cron_feedback_and_output_policy_plan.md 3.5/3.6] 持久化提意见。"""
         return self._post(f"/goals/{goal_id}/feedback", {"text": text})
 
+    # ── 看板：Goal 执行规范草稿生成/反馈迭代/确认/查看（goal_execution_spec_
+    # generation_plan.md §6.1/§6.3/§6.4）────────────────────────────────────
+    def execution_spec_templates(self):
+        return self._get("/goal_execution_spec_templates")
+
+    def get_execution_spec(self, goal_id: str):
+        return self._get(f"/goals/{goal_id}/execution_spec")
+
+    def generate_execution_spec(self, goal_id: str, schedule: str = "", task_template: str = "",
+                                 template_id: str = "", from_history: bool = False):
+        body = {"from_history": from_history}
+        if schedule:
+            body["schedule"] = schedule
+        if task_template:
+            body["task_template"] = task_template
+        if template_id:
+            body["template_id"] = template_id
+        return self._post(f"/goals/{goal_id}/execution_spec/generate", body)
+
+    def revise_execution_spec(self, goal_id: str, feedback: str, locked_fields: list | None = None):
+        return self._post(f"/goals/{goal_id}/execution_spec/revise", {
+            "feedback": feedback, "locked_fields": locked_fields or [],
+        })
+
+    def confirm_execution_spec(self, goal_id: str):
+        return self._post(f"/goals/{goal_id}/execution_spec/confirm")
+
+    def close_check_execution_spec(self, goal_id: str):
+        return self._post(f"/goals/{goal_id}/execution_spec/close_check")
+
     # ── 看板：Objective 执行操作（Track D）+ 全局待办中心（Track A）───
     def cancel_objective(self, execution_id: str):
         return self._post(f"/objectives/{execution_id}/cancel")

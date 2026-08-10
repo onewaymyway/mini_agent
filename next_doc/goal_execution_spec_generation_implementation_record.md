@@ -1,10 +1,11 @@
-# Goal 执行规范自动生成 + 用户确认机制 —— 实施记录（Stage 1 + Stage 2）
+# Goal 执行规范自动生成 + 用户确认机制 —— 实施记录（Stage 1 + Stage 2 + Stage 3）
 
 对应设计文档：`next_doc/goal_execution_spec_generation_plan.md`
 
 本记录覆盖 Stage 1（后端核心能力）+ Stage 2（`overall_completion_criteria`
-驱动的一次性 Goal 整体关闭判断）的实施情况，不重复方案本身的设计论证，只
-记录"最终落地成什么样、和方案哪里不同、还差什么"。
+驱动的一次性 Goal 整体关闭判断）+ Stage 3（看板 UI 最小可用版本）的实施
+情况，不重复方案本身的设计论证，只记录"最终落地成什么样、和方案哪里
+不同、还差什么"。
 
 ## 1. 已实施
 
@@ -217,17 +218,129 @@ close-check` 命令的 Goal 不存在报错、非 active 提前跳过（不调�
 
 全部改动累计新增测试 17 个，与既有测试合计 103 个用例回归通过。
 
-## 3. 与方案的偏差 / 未实施清单
+## 3. Stage 3 已实施：看板 UI 最小可用版本（对应方案 §6.1/§6.2/§6.3，
+   Stage 1/2 未实施清单第 1 项）
+
+### 3.1 REST 端点（`api/routes.py`）
+
+在既有"周期性 Goal 绑定/解绑/跳过"三个端点旁新增一组"Goal 执行规范"端点，
+直接复用 `perception/goal_execution_spec.py` 里 CLI 已经在用的同一套
+`GoalExecutionSpecBuilder`/`load_spec`/`save_spec`，行为与 CLI 对称：
+
+| 端点 | 对应 CLI | 说明 |
+| --- | --- | --- |
+| `GET /goal_execution_spec_templates` | （模板库摘要，CLI 无直接对应） | 供看板"起草方式"下拉框 |
+| `GET /goals/{id}/execution_spec` | `spec show` | 没生成过时返回 `{"spec": null}`，不是 404 |
+| `POST /goals/{id}/execution_spec/generate` | `spec generate` | body 支持 `schedule`/`task_template`/`template_id`/`from_history` |
+| `POST /goals/{id}/execution_spec/revise` | （CLI 无对应，仅看板迭代场景使用） | body: `feedback`（必填）、`locked_fields` |
+| `POST /goals/{id}/execution_spec/confirm` | `spec confirm` | 确认与"设为周期性"解耦成两次独立请求，任一失败不会让另一半处于不一致状态 |
+| `POST /goals/{id}/execution_spec/close_check` | `spec close-check` | 非 `active` 时直接返回 `{"outcome": null, "reason": "..."}`，不算错误 |
+
+新增 `_goal_backlog_only(request)` 辅助函数，与既有 `_goal_backlog_and_
+scheduler()` 的区别是不解析 `CronScheduler`——执行规范相关端点都不涉及
+cron job 读写，复用带 scheduler 解析的版本会引入无关的失败面（测试环境/
+精简嵌入场景下 `http_server.autonomous_loop` 可能缺失）。两者共用同一份
+`project_root`/`AgentPaths`/`GoalBacklog` 解析逻辑，只是要不要多解析一次
+scheduler 的区别。
+
+### 3.2 `AgentClient` 封装（`apps/mini_agent_kanban/client.py`）
+
+新增 `execution_spec_templates()`/`get_execution_spec()`/
+`generate_execution_spec()`/`revise_execution_spec()`/
+`confirm_execution_spec()`/`close_check_execution_spec()`，与既有
+`recur_goal`/`unrecur_goal` 等方法同样的"失败返回带 `_error` 字段的 dict，
+不抛异常"约定。
+
+### 3.3 看板 UI（`apps/mini_agent_kanban/app.py`）
+
+新增 `_render_goal_execution_spec_widget(client, goal_id, key_prefix,
+on_confirm_extra=None)`，实现方案 §6.1/§6.2 的"生成草稿 → 反馈迭代（字段
+级锁定）→ 确认/放弃"主线，草稿缓存在 `st.session_state` 里跨 rerun 保留
+（不在每次 rerun 时重新触发 LLM 调用）；打开时若服务端已有未确认草稿或
+已确认规范会自动预载，不需要用户重新点一次"生成"。三处接入：
+
+- **"⏰ 周期性设置" expander**（对应 §6.1）：
+  - 未绑定周期性分支：规范草稿区块渲染在"设为周期性"表单**之上**，规范
+    生成/确认与"设为周期性"表单提交解耦成两个独立操作——不管规范是否
+    已确认，"设为周期性"表单随时可以直接提交（对应方案"跳过，不生成
+    规范"的非目标声明，只是这里用"两个区块共存、互不阻塞"替代了原方案
+    描述的"表单内嵌一个跳过按钮"，效果等价：用户可以只点规范区块、只点
+    绑定表单，或两者都点）。
+  - 已绑定周期性分支：追加同一个规范区块（对应方案"已绑定但从未生成过
+    规范的既有 Goal，追加一个「📋 生成执行规范」按钮"）。
+  - 同一分支内追加「🔁 手动重判整体是否可以关闭」按钮，对应 CLI `spec
+    close-check`，处理三种返回（`closed`/`kept_open`/`null`）对应的提示
+    文案。
+- **"➕ 新建目标" expander**（对应 §6.3）：表单内新增「同时生成一次性
+  Goal 的执行规范」复选框，默认不勾选。创建成功后若勾选，把新 Goal id
+  存入 `st.session_state["_ges_pending_new_goal"]`（创建请求本身只返回
+  新 Goal 的 id，规范生成需要在拿到 id 之后才能调用，所以确认区块渲染在
+  表单外、创建之后的一次 rerun 里，而不是表单内联）；确认或用户主动收起
+  后清除该 session_state 标记。
+- **字段级锁定**（对应 §6.2）：5 个顶层 section（产出物/跨轮传递/子目录/
+  每轮标准/特殊约束）各一个 `🔒` 复选框，勾选状态随 `revise()` 请求一并
+  提交为 `locked_fields`，服务端沿用 Stage 1 已实现的"prompt 提示 + 代码
+  级强制覆盖"双重保障。
+
+### 3.4 与方案的简化取舍（Stage 3 范围内）
+
+- **不做方案 §6.1 描述的"每节可编辑文本框，提交时按行拆分"**：改为"展示
+  只读摘要 + 补充意见文本框 + 字段级锁定"，用户对某个字段不满意时通过
+  反馈文字描述、锁定其余满意的字段来迭代，而不是直接在文本框里逐行改写
+  结构化字段。理由：直接编辑要求前端把 5 种不同结构（`Deliverable`/
+  `HandoffField`/`SubDirectory`/`Criterion`/纯字符串）分别设计一套"编码
+  成单行文本 ↔ 解析回结构化字段"的双向转换，且编辑后如果不点"重新生成"
+  直接点"确认"，服务端当前还是按最后一次 `generate`/`revise` 返回的
+  版本落盘确认——文本框里的手工编辑不会被保存，容易让用户误以为编辑生效
+  了。改为"反馈驱动迭代"完全避开这个陷阱，但确实降低了"精确控制某一个
+  字段具体怎么改"的能力，留作后续差异。
+- **不做 §6.1 描述的"差异高亮"**：`revise()` 前后的草稿摘要都是重新整段
+  渲染，不做新增/删除/改写条目的高亮对比。
+- **不做"📄 从模板重新起草"独立按钮**：模板选择只出现在"生成第 1 版草稿"
+  这一步（下拉框 + 生成按钮），已有草稿后如果想换模板，需要先「❌ 放弃
+  草稿」回到"未生成"状态重新选模板生成——比方案描述的"随时可以从模板
+  重新起草而不丢弃当前进度"少一步便利性，但实现更简单、不需要额外维护
+  "草稿 A 是否源自模板 B"这类隐藏状态。
+- **不做"从执行历史反推"在看板侧的默认预填**：看板生成按钮固定不传
+  `from_history`；`from_history=True` 目前只有 CLI `--from-history` 参数
+  在用，REST 端点虽然已经支持透传这个字段（`generate_execution_spec()`
+  客户端方法也留了 `from_history` 参数），但看板 UI 没有暴露对应的
+  勾选框——history_manifests 输入源第一版就绪，只是这次没做前端开关。
+
+### 3.5 测试
+
+`tests/test_goal_execution_spec_kanban_routes.py`（新增，11 个用例）：
+沿用 `tests/test_kanban_config_routes.py` 的最小 FastAPI app 测试模式，
+不拉起完整 `HttpServer`；覆盖模板列表端点、未生成时 `GET` 返回
+`{"spec": null}`、`generate`/`revise`/`confirm`/`close_check` 四个端点的
+正常路径（含落盘验证）与各自的前置条件报错（Goal 不存在、没有草稿就
+revise/confirm、`feedback` 为空、Goal 非 active 时 `close_check` 短路）。
+`GoalExecutionSpecBuilder.build_draft`/`revise`、`GoalBacklog.maybe_close_
+goal_by_overall_criteria` 均打桩，只验证路由层的参数透传/状态码/错误
+处理，不重复 `test_goal_execution_spec.py` 已经覆盖的生成器内部逻辑。
+
+全部新增用例 + 既有 `test_goal_execution_spec.py`/`test_goal_cron_
+bridge.py`/`test_goal_backlog.py`/`test_goal_overall_completion.py`/
+`test_goals_spec_close_check_cli.py`/`test_kanban_config_routes.py`/
+`test_goal_output_directory_onetime.py`/`test_goal_execution_fairness.py`
+回归通过（共 100 个用例）。
+
+## 4. 与方案的偏差 / 未实施清单
 
 以下条目方案里有描述，**未实施**，留作后续 Track：
 
-1. **看板 UI（§6.1/§6.2/§6.3）**：`apps/mini_agent_kanban/app.py` 的
-   "⏰ 周期性设置"/"➕ 新建目标"表单尚未接入草稿确认区块、字段级锁定
-   勾选框、差异高亮。当前只能通过 CLI（`/agent goals spec ...`）生成/
-   确认/查看规范。这是本次范围内最大的缺口——方案里"看板"是用户
-   反馈的主要触发场景，目前只有 CLI 路径可用。§2 新增的"整体关闭
-   判定"结果（`✅`/`ℹ️` 两种 progress_notes）目前也只能在看板"进展记录"
-   区块里以纯文本形式看到，没有专门的状态徽标/提示样式。
+1. **看板 UI 的"精细"部分**：Stage 3 已实现"生成→反馈迭代（字段级锁定）
+   →确认/放弃"主线接入"⏰ 周期性设置"/"➕ 新建目标"/手动整体关闭重判，
+   但方案 §6.1/§6.2 描述的以下细节仍未做（见 §3.4 的具体取舍说明）：
+   - 每个 section 直接编辑文本框（按行拆分），当前只能"看摘要 + 写反馈
+     + 重新生成"，不能手工微调某个字段的具体文字；
+   - `revise()` 前后的差异高亮；
+   - "📄 从模板重新起草"独立按钮（当前只能放弃草稿后重新选模板生成）；
+   - 看板侧"从执行历史反推"的开关（`from_history` 参数 REST 层已支持
+     透传，只是看板没有暴露对应勾选框）；
+   - §2 新增的"整体关闭判定"结果目前在看板上只有 close_check 按钮点击
+     后的一次性 `st.success`/`st.info` 提示，没有做成持久化的状态徽标
+     （历史判定结果仍然只能在"进展记录"里看纯文本）。
 2. **`builder_mode="agent"` 只读探索路径**：方案 §3 输入源 1 提到应
    支持"起一个只读受限 Agent 先看一眼项目再生成"，镜像
    `GoalSpecBuilder._run_builder_agent()`。当前 `GoalExecutionSpecBuilder`
@@ -243,8 +356,8 @@ close-check` 命令的 Goal 不存在报错、非 active 提前跳过（不调�
    只需要改 `_cmd_spec_generate()` 里收集 manifest 的逻辑，不需要改
    核心模块签名。（§2 的 `evaluate_overall_completion()` 不受此限——它
    走 `read_all_manifests()`，本来就读全部历史轮次。）
-5. **看板"从执行历史反推"默认预填**、**差异高亮 UI**：均依赖 1，随看板
-   UI 一起实施。
+5. **看板"从执行历史反推"默认预填**、**差异高亮 UI**：Stage 3 未做，见
+   §3.4/未实施清单第 1 项。
 6. **CLI 侧暴露"整体关闭判定"的手动触发/查看入口**：**已实施**——见
    `/agent goals spec close-check <goal_id>`（`cli/commands/goals.py::
    _cmd_spec_close_check()`），直接调用
@@ -258,13 +371,12 @@ close-check` 命令的 Goal 不存在报错、非 active 提前跳过（不调�
 `overall_completion_criteria` 为空（绝大多数周期性 Goal 的默认情况）
 时 §2 的判定逻辑不会被触发，等价于该功能关闭。
 
-## 4. 后续建议顺序
+## 5. 后续建议顺序
 
-1. 看板 UI（§6.1 最小可用版本：展示 5 个 section + 反馈文本框 + 确认/
-   跳过两个按钮即可，字段级锁定/差异高亮可以作为该 Track 内的第二个
-   迭代，不必一次做全；同时把 §2 的整体关闭判定结果做成看板上更显眼的
-   状态展示，而不只是 progress_notes 里的一行文本；`spec close-check`
-   命令对应的"手动重判"按钮也应该一并加进去）。
+1. 看板 UI 的剩余精细化：字段直接编辑文本框 + 差异高亮（当前"反馈驱动
+   迭代"已经能覆盖大多数场景，这一项主要是进一步降低反馈成本）；整体
+   关闭判定结果做成更显眼的持久化状态展示，而不只是一次性 toast +
+   progress_notes 里的文本行。
 2. `builder_mode="agent"` 路径 + 模板自动匹配（优先级较低，当前 `llm`
    路径已经可用，且 `revise()` 的字段锁定机制已经能覆盖"生成方向不对
    需要人工干预"的场景）。

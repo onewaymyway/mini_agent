@@ -3550,6 +3550,29 @@ def _goal_backlog_and_scheduler(request: Request):
     return backlog, scheduler
 
 
+def _goal_backlog_only(request: Request):
+    """[goal_execution_spec_generation_plan.md §6.1/§6.3/§6.4] 与
+    `_goal_backlog_and_scheduler()` 的区别：不解析 CronScheduler。执行规范
+    的生成/修订/确认/整体关闭判定几个端点都不涉及 cron job 读写，强行复用
+    `_goal_backlog_and_scheduler()` 会因为测试/部分嵌入场景下
+    `http_server.autonomous_loop`/`bridge._cron_scheduler` 缺失而无谓报错——
+    这里单独拆一个只解析 GoalBacklog 的轻量版本，两者都基于同一份
+    project_root 解析逻辑，只是要不要额外解析 scheduler 的区别。"""
+    http_server = getattr(request.app.state, "http_server", None)
+    if http_server is None:
+        raise HTTPException(status_code=503, detail="HttpServer not available")
+    _require_owner(request)
+    from mini_agent.storage.paths import AgentPaths
+    from mini_agent.perception.goal_backlog import load_goal_backlog
+    self_agent = http_server.bridge.agent
+    project_root = getattr(self_agent.cfg, "project_root", None) if self_agent else None
+    if not project_root:
+        raise HTTPException(status_code=503, detail="project_root not configured")
+    paths = AgentPaths(project_root)
+    backlog = load_goal_backlog(paths)
+    return backlog
+
+
 @router.post("/goals/{goal_id}/recur")
 async def recur_goal(goal_id: str, request: Request):
     """POST /v1/goals/{goal_id}/recur — 把一个已有 Goal 声明为周期性。
@@ -3625,6 +3648,168 @@ async def add_goal_feedback(goal_id: str, request: Request):
         raise HTTPException(status_code=500, detail="add_user_feedback failed")
     updated = backlog.get(goal_id)
     return {"goal": updated.to_dict() if updated else None}
+
+
+# ── Goal 执行规范（goal_execution_spec_generation_plan.md §6.1/§6.3/§6.4）───
+# 看板"⏰ 周期性设置"/"➕ 新建目标"的草稿生成/反馈迭代/确认/查看/整体关闭
+# 手动重判，五个端点直接复用 CLI（/agent goals spec ...）已经验证过的同一套
+# perception/goal_execution_spec.py 模块，行为对称——REST 层只是把 CLI 能力
+# 暴露给看板，不重复实现生成/确认逻辑。
+
+def _spec_paths(request: Request) -> "AgentPaths":
+    http_server = getattr(request.app.state, "http_server", None)
+    if http_server is None:
+        raise HTTPException(status_code=503, detail="HttpServer not available")
+    _require_owner(request)
+    from mini_agent.storage.paths import AgentPaths
+    self_agent = http_server.bridge.agent
+    project_root = getattr(self_agent.cfg, "project_root", None) if self_agent else None
+    if not project_root:
+        raise HTTPException(status_code=503, detail="project_root not configured")
+    return AgentPaths(project_root)
+
+
+@router.get("/goal_execution_spec_templates")
+async def list_goal_execution_spec_templates(request: Request):
+    """GET /v1/goal_execution_spec_templates — 模板库摘要列表（方案 §7），
+    供看板"从模板起步"下拉框使用。"""
+    _require_owner(request)
+    from mini_agent.perception.goal_execution_spec import list_templates
+    return {"templates": list_templates()}
+
+
+@router.get("/goals/{goal_id}/execution_spec")
+async def get_goal_execution_spec(goal_id: str, request: Request):
+    """GET /v1/goals/{goal_id}/execution_spec — 查看当前执行规范（草稿或已
+    确认版本），对应 CLI `/agent goals spec show`。没有生成过时返回
+    `{"spec": None}`，不是 404——"还没生成"是合法状态，不是错误。"""
+    paths = _spec_paths(request)
+    from mini_agent.perception.goal_execution_spec import load_spec
+    spec = load_spec(paths, goal_id)
+    return {"spec": spec.to_dict() if spec else None}
+
+
+@router.post("/goals/{goal_id}/execution_spec/generate")
+async def generate_goal_execution_spec(goal_id: str, request: Request):
+    """POST /v1/goals/{goal_id}/execution_spec/generate — 生成第 1 版草稿
+    （不确认，不影响执行），对应 CLI `/agent goals spec generate`。
+    Body: { "schedule": str?, "task_template": str?, "template_id": str?,
+            "from_history": bool? }
+    """
+    backlog = _goal_backlog_only(request)
+    node = backlog.get(goal_id)
+    if node is None or not node.is_goal:
+        raise HTTPException(status_code=404, detail=f"Goal '{goal_id}' not found")
+    body = await request.json() if await request.body() else {}
+    paths = _spec_paths(request)
+    try:
+        from mini_agent.config import load_config
+        from mini_agent.perception import goal_execution_spec as ges
+        from mini_agent.evolution import output_workspace
+
+        cfg = load_config()
+        history_manifests = None
+        if body.get("from_history"):
+            base_dir = output_workspace.goal_output_base_dir(paths, goal_id)
+            m = output_workspace.read_latest_manifest(base_dir)
+            history_manifests = [m] if m else None
+
+        builder = ges.GoalExecutionSpecBuilder(cfg)
+        spec = builder.build_draft(
+            goal_id, node.title, node.description,
+            schedule=body.get("schedule") or None,
+            task_template=body.get("task_template") or None,
+            template_id=body.get("template_id") or None,
+            history_manifests=history_manifests,
+        )
+        ges.save_spec(paths, goal_id, spec)
+    except HTTPException:
+        raise
+    except Exception as e:
+        from mini_agent.errors import log_exception
+        log_exception(e, where='mini_agent.api.routes.generate_goal_execution_spec')
+        raise HTTPException(status_code=500, detail=f"生成执行规范失败：{e}")
+    return {"spec": spec.to_dict()}
+
+
+@router.post("/goals/{goal_id}/execution_spec/revise")
+async def revise_goal_execution_spec(goal_id: str, request: Request):
+    """POST /v1/goals/{goal_id}/execution_spec/revise — 基于反馈 + 字段级
+    锁定重新生成（方案 §6.2），对应看板「🔄 补充意见重新生成」按钮。
+    Body: { "feedback": str, "locked_fields": [str, ...]? }
+    """
+    body = await request.json()
+    feedback = (body.get("feedback") or "").strip()
+    if not feedback:
+        raise HTTPException(status_code=400, detail="feedback is required")
+    paths = _spec_paths(request)
+    from mini_agent.perception import goal_execution_spec as ges
+    prior = ges.load_spec(paths, goal_id)
+    if prior is None:
+        raise HTTPException(status_code=404, detail=f"该 Goal 还没有生成过执行规范草稿：{goal_id}")
+    try:
+        from mini_agent.config import load_config
+        builder = ges.GoalExecutionSpecBuilder(load_config())
+        spec = builder.revise(prior, feedback, locked_fields=body.get("locked_fields"))
+        ges.save_spec(paths, goal_id, spec)
+    except HTTPException:
+        raise
+    except Exception as e:
+        from mini_agent.errors import log_exception
+        log_exception(e, where='mini_agent.api.routes.revise_goal_execution_spec')
+        raise HTTPException(status_code=500, detail=f"修订执行规范失败：{e}")
+    return {"spec": spec.to_dict()}
+
+
+@router.post("/goals/{goal_id}/execution_spec/confirm")
+async def confirm_goal_execution_spec(goal_id: str, request: Request):
+    """POST /v1/goals/{goal_id}/execution_spec/confirm — 确认并冻结当前草稿
+    （下次触发即生效），对应 CLI `/agent goals spec confirm`。看板"✅ 确认
+    并设为周期性"/"✅ 确认执行规范"按钮在这一步之后紧接着调用
+    `recur_goal`（周期性场景）或什么都不做（一次性 Goal 场景）——两种场景
+    共用同一个确认端点，`recur` 与 `confirm` 解耦成两次独立请求，任一失败
+    都不会让另一半处于不一致的"半成功"状态。"""
+    backlog = _goal_backlog_only(request)
+    node = backlog.get(goal_id)
+    if node is None or not node.is_goal:
+        raise HTTPException(status_code=404, detail=f"Goal '{goal_id}' not found")
+    paths = _spec_paths(request)
+    from mini_agent.perception import goal_execution_spec as ges
+    spec = ges.load_spec(paths, goal_id)
+    if spec is None:
+        raise HTTPException(status_code=404, detail=f"该 Goal 还没有生成过执行规范草稿：{goal_id}")
+    try:
+        ges.GoalExecutionSpecBuilder.confirm(spec)
+        ges.save_spec(paths, goal_id, spec)
+        backlog.update_fields(goal_id, execution_spec_confirmed=True)
+    except Exception as e:
+        from mini_agent.errors import log_exception
+        log_exception(e, where='mini_agent.api.routes.confirm_goal_execution_spec')
+        raise HTTPException(status_code=500, detail=f"确认执行规范失败：{e}")
+    updated = backlog.get(goal_id)
+    return {"spec": spec.to_dict(), "goal": updated.to_dict() if updated else None}
+
+
+@router.post("/goals/{goal_id}/execution_spec/close_check")
+async def close_check_goal_execution_spec(goal_id: str, request: Request):
+    """POST /v1/goals/{goal_id}/execution_spec/close_check — 手动（重新）
+    触发一次"整体是否可以关闭"判定，对应 CLI `/agent goals spec
+    close-check`。前置条件不满足时返回 `outcome: null`，不算错误。"""
+    backlog = _goal_backlog_only(request)
+    node = backlog.get(goal_id)
+    if node is None or not node.is_goal:
+        raise HTTPException(status_code=404, detail=f"Goal '{goal_id}' not found")
+    if node.status != "active":
+        return {"outcome": None, "reason": f"Goal 当前状态为 {node.status!r}，不是 active，跳过判定。"}
+    try:
+        from mini_agent.config import load_config
+        outcome = backlog.maybe_close_goal_by_overall_criteria(goal_id, load_config())
+    except Exception as e:
+        from mini_agent.errors import log_exception
+        log_exception(e, where='mini_agent.api.routes.close_check_goal_execution_spec')
+        raise HTTPException(status_code=500, detail=f"整体完成判定失败：{e}")
+    updated = backlog.get(goal_id)
+    return {"outcome": outcome, "goal": updated.to_dict() if updated else None}
 
 
 # ── Objective 执行操作（看板与自主性改进方案 Track D）────────────────────────

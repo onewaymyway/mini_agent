@@ -2,9 +2,11 @@
 
 - **状态**：Stage 1（核心数据模型/存储/生成器/模板库/配置 + 两处消费方
   注入 + §5.1 轻量核对 + CLI 命令）+ Stage 2（`overall_completion_
-  criteria` 驱动的一次性 Goal 整体关闭判断）已实施。看板 UI
-  （§6.1/§6.2/§6.3）、`builder_mode="agent"` 只读探索路径、模板自动匹配
-  仍未实施，见
+  criteria` 驱动的一次性 Goal 整体关闭判断）+ Stage 3（看板 UI 最小可用
+  版本：§6.1/§6.2/§6.3 的生成/反馈迭代/字段级锁定/确认/手动整体关闭重判
+  已接入看板）已实施。看板侧的"直接编辑字段文本框"“差异高亮”"从模板
+  重新起草独立按钮"“从执行历史反推的看板开关”、`builder_mode="agent"`
+  只读探索路径、模板自动匹配仍未实施，见
   `next_doc/goal_execution_spec_generation_implementation_record.md`
   的"未实施"清单。
 - **触发背景**：用户反馈"goal 系统已经有自动生成验收标准的能力
