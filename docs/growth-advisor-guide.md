@@ -7,7 +7,8 @@
 > `next_doc/growth_advisor_implementation_record.md`。P6（反馈粒度细化
 > + LLM 增强路径可观测性）见本文档 2.7/2.8 节；Goal/Cron 打通见
 > `next_doc/growth_advisor_goal_cron_integration_plan.md` 与本文档
-> 2.9 节。
+> 2.9 节；调研信息获取与整理见
+> `next_doc/growth_advisor_research_quality_plan.md` 与本文档 2.10 节。
 > 代码入口：`src/mini_agent/evolution/growth_advisor.py`（模块头部
 > docstring 是最权威的阶段变更历史，本文档是面向使用者的整理版）。
 
@@ -279,6 +280,38 @@ GoalBacklog Goal——标题用候选标题，`description` 用报告摘要 + �
 没有关联 Goal 的候选、或调用方没有传入 GoalBacklog（比如某些老的调用
 路径尚未升级），行为跟此前完全一致，不受任何影响。
 
+### 2.10 调研信息获取与整理：从"计数/现编"到"真摘录/有来源/更具体"（本次新增）
+
+> 对应方案：`next_doc/growth_advisor_research_quality_plan.md`。
+
+此前调研报告生成（`generate_growth_report()`）本质是"一个 prompt
+直接让 LLM 现编 500 字四段式内容"：外部资讯即使打开
+`report_include_external_context` 也只是一个数字（"大约有 12 条相关
+资讯"），页面内容完全没被用上；报告结构固定是"为什么值得关注/怎么
+入门/常见资源/投入周期"四段，容易写成放之四海皆准的通用建议。这次
+做了四处增量改进，互相独立，任一开关关闭都退化到改动前的行为：
+
+- **外部资讯从"计数"升级为"摘录"**（复用 `report_include_external_
+  context` 这一个开关，不新增开关）：报告生成时真正取最近 2 条命中
+  wiki 页面的正文摘录（不只是数一数有几条），并要求 LLM 引用到的地方
+  用『（参考：页面id）』标注来源——用户能自己判断报告里的内容是不是
+  真的有依据，不是 LLM 凭训练知识现编。
+- **忽略原因驱动针对性调整**（`report_dismiss_reason_adaptive_
+  enabled`，默认开启，零额外成本）：复用已有的 `report_not_useful`
+  统计（2.7 节），如果这个方向之前的报告被标过"内容太笼统"，生成
+  prompt 时追加一句强约束，要求 LLM 这次给出具体、贴合用户处境的
+  建议，不要重蹈覆辙。
+- **两段式生成：先提纲、后填充**（`report_two_stage_enabled`，默认
+  关闭——多一次 LLM 调用，成本翻倍）：打开后先让 LLM 针对候选主题
+  提炼 3-4 个具体问题（不是"怎么入门"这种泛泛提问），再逐一回答，
+  替代固定的四段式结构。提纲阶段调用失败/空响应/解析失败都静默退回
+  单段式 prompt，不影响报告生成本身；调用结果计入诊断面板"LLM 增强
+  调用状态"区块的新调用点 `report_outline`。
+
+CLI/看板无需任何操作——这几项都发生在 `generate_growth_report()`
+内部，`/growth report <id>`、`/growth scan` 自动带上新行为，行为差异
+只体现在报告正文本身（有真实摘录 + 来源标注、更具体的结构）。
+
 ## 3. 默认行为速览
 
 `GrowthAdvisorConfig.enabled` 默认 `True`（opt-out），不需要任何额外
@@ -399,6 +432,8 @@ GET  /v1/growth/health_trend                             # 健康度趋势快照
 | `goal_alignment_enabled` | `true` | （2.9 节）兴趣方向 ⇄ 目标 对齐分析总开关，纯规则式关键词匹配，零 LLM 成本 |
 | `goal_alignment_stalled_days` | `21` | （2.9 节）已关联 Goal 的方向，`active` 状态下超过这么多天没被 touch 就判定为"停滞"，独立于 `followup_review_days` |
 | `goal_alignment_llm_enabled` | `false` | （2.9 节）对齐分析是否额外做一次 LLM 语义匹配，找出关键词匹配漏掉的"字面不同、实质同一件事"配对；结果只出现在建议列表，不自动写入关联关系 |
+| `report_two_stage_enabled` | `false` | （2.10 节）报告生成先让 LLM 提炼 3-4 个具体问题再逐一回答，替代固定的四段式结构；多一次 LLM 调用，默认关闭 |
+| `report_dismiss_reason_adaptive_enabled` | `true` | （2.10 节）报告曾被标"内容太笼统"时，下次生成追加针对性提醒；不产生额外 LLM 调用，默认开启 |
 
 另外 `memory_backfill.cron_run_backfill_enabled`（默认 `true`，v4 N2）
 控制 cron 任务收尾是否自动回填记忆，属于 `memory_backfill` 配置块而非
@@ -570,4 +605,15 @@ N1 的健康度趋势图观察——`total_entries` 应该能看到回升。
   `_notify_cycle_failed`）作为新的候选证据来源——这是
   `next_doc/growth_advisor_goal_cron_integration_plan.md` 明确标注的
   非目标，留给后续单独排期；看板前端也还没有接入 `/growth align` /
-  `adopt-goal` 的可视化入口，目前只有 CLI。
+  `adopt-goal` 的可视化入口，目前只有 CLI；
+- 调研信息获取（2.10 节）目前只做了"复用现有 wiki 素材做摘录 + 结构
+  更具体 + 忽略原因驱动调整"三件事：不会在报告生成时主动触发新的
+  外部检索（只从已经存在的 wiki 页面里取材，候选主题在 wiki 里完全
+  没有相关页面时，摘录部分自然为空，报告仍然退回"只基于用户自己记忆
+  证据"的路径）；相近主题之间不共享调研素材（比如"数据分析"和"数据
+  可视化"会各自独立检索/生成，不会互相复用）；报告的"新鲜度"判断
+  （`reports_needing_refresh()`）也还没有把"引用的外部资讯是否过时"
+  纳入触发条件；月度复盘也还没有接入"报告质量趋势"（比如 too_generic
+  比例是不是在上升）——这几项都是
+  `next_doc/growth_advisor_research_quality_plan.md` 明确标注的
+  非目标，留给后续单独排期。

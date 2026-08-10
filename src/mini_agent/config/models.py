@@ -1789,6 +1789,18 @@ class GrowthAdvisorConfig:
     # 写入任何持久化的关联关系。
     goal_alignment_llm_enabled: bool = False
 
+    # ── 调研信息获取与整理（growth_advisor_research_quality_plan.md）──
+    # 阶段 2：报告生成先让 LLM 提炼 3-4 个具体问题，再逐个回答，替代
+    # "一次性要求四段通用内容"。默认关闭——这一步是额外一次 LLM 调用，
+    # 成本翻倍，遵循"增加调用成本的能力默认 opt-in"的一贯原则。
+    report_two_stage_enabled: bool = False
+    # 阶段 4：如果这个方向之前的报告被标过"内容太笼统"
+    # （report_not_useful），生成 prompt 时追加一句强约束提醒 LLM
+    # 别再写得空泛。不产生任何新的 LLM 调用，只是复用已有的
+    # `_report_quality_dismiss_counts()` 统计结果调整 prompt 文字，
+    # 成本几乎为零，默认开启。
+    report_dismiss_reason_adaptive_enabled: bool = True
+
 
 @dataclass
 class ReminderConfig:

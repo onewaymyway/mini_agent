@@ -349,6 +349,26 @@ plan.md，本次新增）：
       卡片，措辞换成 Goal 专属提示）；未关联 Goal 或未传
       `goal_backlog` 时完全退化为原有 memory 证据数走势逻辑，向后
       兼容，`api/routes.py` 的 `/v1/growth/followups` 已同步升级。
+
+调研信息获取与整理范围（对应
+next_doc/growth_advisor_research_quality_plan.md，本次新增）：
+    - **外部资讯从计数升级为摘录**：`_external_signal_count_for_topic()`
+      重构为 `_external_signal_matching_pages()`（找命中页面）+
+      `len()`，行为不变；新增 `_external_signal_excerpts_for_topic()`
+      复用同一段匹配逻辑，额外截取正文摘录。`generate_growth_report()`
+      在 `report_include_external_context=True` 时把摘录拼进 prompt，
+      要求 LLM 引用处标注来源（`（参考：页面id）`），不新增配置开关，
+      是对既有开关的行为增强。
+    - **忽略原因驱动针对性调整**：新增 `report_dismiss_reason_
+      adaptive_enabled`（默认 `True`），复用已有的 `_report_quality_
+      dismiss_counts()`，命中 `report_not_useful` 历史时在 prompt
+      追加"避免空泛"的强约束，不产生新的 LLM 调用。
+    - **两段式生成（先提纲、后填充）**：新增 `report_two_stage_
+      enabled`（默认 `False`）+ `_generate_report_outline()`，打开后
+      先让 LLM 提炼 3-4 个具体问题（`_REPORT_OUTLINE_MAX_QUESTIONS`
+      上限）再逐一回答正文，替代固定四段式；提纲阶段失败/空响应/
+      解析失败都静默退回单段式 prompt。调用状态计入新增的
+      `report_outline` LLM 调用类型，接入诊断面板既有区块。
 """
 
 from __future__ import annotations
@@ -1644,6 +1664,74 @@ def _slugify(title: str) -> str:
     return key or uuid.uuid4().hex[:8]
 
 
+# 提纲阶段最多要求几个问题——太多会让正文阶段的 prompt 和输出都跟着
+# 膨胀，4 个跟原有固定四段式的小节数保持一致，体验上是"更具体的四段"
+# 而不是"篇幅明显变长的报告"。
+_REPORT_OUTLINE_MAX_QUESTIONS = 4
+
+
+def _generate_report_outline(
+    paths, candidate: GrowthCandidate, external_context_section: str,
+    llm_helper: Callable[[str], str],
+) -> Optional[list[str]]:
+    """[growth_advisor_research_quality_plan.md 阶段 2] 让 LLM 针对这个
+    候选主题提炼几个具体问题，供正文阶段逐一回答，替代固定的"四个小节"
+    结构（"为什么值得关注/怎么入门/……"对每个主题都问一样的问题，容易
+    写成放之四海皆准的通用建议）。
+
+    只输出 JSON 字符串数组；任何解析失败/空响应/异常都返回 `None`，
+    调用方（`generate_growth_report()`）据此退回原有的单段式 prompt，
+    不让报告生成本身失败——这是"能用就用，用不了就当没发生"的一贯
+    容错原则，跟 `_llm_augment_topics()` 等既有 LLM 增强调用点一致。
+    """
+    prompt = (
+        "针对下面这个用户成长方向候选，请提出 3-4 个『这份调研报告应该\n"
+        "重点具体回答』的问题——要具体、可操作，避免『怎么入门』这种\n"
+        "放之四海皆准的泛泛提问，最好能结合候选理由里透露出的用户处境。\n"
+        "只输出 JSON 字符串数组，不要有其他文字，例如：\n"
+        '["问题1", "问题2", "问题3"]\n\n'
+        f"主题：{candidate.title}\n理由：{candidate.rationale}\n"
+        f"{external_context_section}"
+    )
+    try:
+        raw = llm_helper(prompt)
+    except Exception as exc:
+        _record_llm_call_status(paths, "report_outline", "error", detail=str(exc)[:200])
+        return None
+    if not raw or not raw.strip():
+        _record_llm_call_status(paths, "report_outline", "empty_response")
+        return None
+
+    text = raw.strip()
+    if text.startswith("```"):
+        text = re.sub(r"^```[a-zA-Z]*\n?", "", text)
+        text = re.sub(r"```\s*$", "", text).strip()
+
+    try:
+        parsed = json.loads(text)
+    except json.JSONDecodeError:
+        match = re.search(r"\[.*\]", text, re.DOTALL)
+        if not match:
+            _record_llm_call_status(paths, "report_outline", "parse_error")
+            return None
+        try:
+            parsed = json.loads(match.group(0))
+        except json.JSONDecodeError:
+            _record_llm_call_status(paths, "report_outline", "parse_error")
+            return None
+
+    if not isinstance(parsed, list):
+        _record_llm_call_status(paths, "report_outline", "parse_error")
+        return None
+    questions = [str(q).strip() for q in parsed if str(q).strip()]
+    questions = questions[:_REPORT_OUTLINE_MAX_QUESTIONS]
+    if not questions:
+        _record_llm_call_status(paths, "report_outline", "no_new_topics")
+        return None
+    _record_llm_call_status(paths, "report_outline", "success", detail=f"questions={len(questions)}")
+    return questions
+
+
 def generate_growth_report(
     paths,
     candidate: GrowthCandidate,
@@ -1665,15 +1753,26 @@ def generate_growth_report(
     重要"。默认 `False`，不影响现有的正常路径。
 
     `profile`/`cfg`：[N4，growth_advisor_improvement_plan_v4.md 方向二
-    2.4 节] 可选参数，仅当 `cfg.report_include_external_context` 为真
-    且 `llm_helper` 也传入时生效——把 `_external_signal_count_for_topic()`
-    统计到的外部资讯数量作为"背景参考"额外拼进喂给 LLM 的 prompt，明确
-    要求"这些只是外部背景信息，报告的核心判断仍然要基于用户自己的记忆
-    证据"。**不影响候选的置信度/排序**——这里只改 LLM prompt 的输入，
-    `candidate.confidence`、`evidence_count_at_generation` 等落盘字段
-    完全不受这个开关影响，对齐 2.3/2.4 节"仅展示、不影响判断"的克制
-    设计。两个参数任一缺失、或规则模板路径（`llm_helper is None`）时，
-    这段逻辑整体跳过，向后兼容此前所有不传这两个参数的调用方。
+    2.4 节；growth_advisor_research_quality_plan.md 阶段 1/2/3/4]
+    可选参数，`llm_helper` 也传入时才生效，控制以下几件事：
+
+    - `cfg.report_include_external_context`：把 `_external_signal_
+      excerpts_for_topic()` 取到的真实摘录（不再只是一个数量）拼进
+      prompt，并要求 LLM 引用到的地方标注来源（页面 id）——**不影响
+      候选的置信度/排序**，只改 LLM prompt 的输入，`candidate.
+      confidence`、`evidence_count_at_generation` 等落盘字段完全不受
+      这个开关影响，对齐"仅展示、不影响判断"的克制设计。
+    - `cfg.report_dismiss_reason_adaptive_enabled`（默认开启）：如果
+      这个方向之前的报告被标过"内容太笼统"
+      （`_report_quality_dismiss_counts()` 命中），追加一句强约束
+      提醒 LLM 别再写得空泛。不产生额外 LLM 调用，只改 prompt 文字。
+    - `cfg.report_two_stage_enabled`（默认关闭）：先让 LLM 提炼几个
+      具体问题（`report_outline` 调用），再要求逐一回答，替代固定的
+      "四个小节"结构；提纲阶段失败（异常/空响应/解析失败）时静默退回
+      单段式 prompt，不影响正文生成本身。
+
+    以上参数任一缺失、或规则模板路径（`llm_helper is None`）时，相应
+    逻辑整体跳过，向后兼容此前所有不传这些参数的调用方。
     """
     report_id = uuid.uuid4().hex[:12]
     slug = f"{_slugify(candidate.title)}-{report_id[:6]}"
@@ -1687,24 +1786,62 @@ def generate_growth_report(
                 effective = _effective_topic_keywords(profile)
                 info = effective.get(candidate.title)
                 if info:
-                    ext_count = _external_signal_count_for_topic(paths, candidate.title, info["keywords"])
+                    keywords = info["keywords"]
+                    ext_count = _external_signal_count_for_topic(paths, candidate.title, keywords)
                     if ext_count > 0:
+                        excerpts = _external_signal_excerpts_for_topic(paths, candidate.title, keywords)
+                        excerpt_lines = "\n".join(
+                            f"- 参考：{e['id']}（{e['date']}）：{e['excerpt']}" for e in excerpts
+                        )
                         external_context_section = (
                             f"\n[外部背景参考，仅供了解，不改变你的判断] "
-                            f"最近 30 天外部世界大约有 {ext_count} 条跟这个方向相关的资讯。"
+                            f"最近 30 天外部世界大约有 {ext_count} 条跟这个方向相关的资讯，"
+                            "以下是其中几条的摘录（可以参考，但不要照抄，仍然要结合用户自己的"
+                            "处境；如果确实参考了某条，请在对应内容后用"
+                            "『（参考：页面id）』的形式标注来源，没有参考到的不要提）：\n"
+                            f"{excerpt_lines}\n"
                             "这只是背景信息，报告的核心判断仍然要基于用户自己的记忆证据，"
                             "不要因为这个数字改变你对该方向重要性的评估。\n"
                         )
             except Exception:
                 external_context_section = ""
 
-        prompt = (
-            "请为以下用户成长方向候选撰写一份简短调研报告（Markdown，"
-            "包含：为什么值得关注、可以怎么入门、常见资源/路径、"
-            "预计投入与见效周期，4 个小节即可，不要超过 500 字）：\n"
-            f"主题：{candidate.title}\n理由：{candidate.rationale}\n"
-            f"{external_context_section}"
-        )
+        dismiss_reason_note = ""
+        if cfg is not None and getattr(cfg, "report_dismiss_reason_adaptive_enabled", True):
+            try:
+                if _report_quality_dismiss_counts(paths).get(candidate.title, 0) > 0:
+                    dismiss_reason_note = (
+                        "\n注意：这个方向之前生成的报告曾被反馈『内容太笼统』，"
+                        "这次请务必给出具体、可操作、贴合用户实际处境的建议，"
+                        "避免空泛的通用性建议。\n"
+                    )
+            except Exception:
+                dismiss_reason_note = ""
+
+        outline_questions: Optional[list[str]] = None
+        if cfg is not None and getattr(cfg, "report_two_stage_enabled", False):
+            outline_questions = _generate_report_outline(
+                paths, candidate, external_context_section, llm_helper
+            )
+
+        if outline_questions:
+            questions_block = "\n".join(f"{i}. {q}" for i, q in enumerate(outline_questions, 1))
+            prompt = (
+                "请为以下用户成长方向候选撰写一份简短调研报告（Markdown），"
+                "逐一具体回答下面这几个问题（每个问题一个小节，标题用问题原文"
+                "或精简版均可，不要超过 500 字）：\n"
+                f"{questions_block}\n\n"
+                f"主题：{candidate.title}\n理由：{candidate.rationale}\n"
+                f"{external_context_section}{dismiss_reason_note}"
+            )
+        else:
+            prompt = (
+                "请为以下用户成长方向候选撰写一份简短调研报告（Markdown，"
+                "包含：为什么值得关注、可以怎么入门、常见资源/路径、"
+                "预计投入与见效周期，4 个小节即可，不要超过 500 字）：\n"
+                f"主题：{candidate.title}\n理由：{candidate.rationale}\n"
+                f"{external_context_section}{dismiss_reason_note}"
+            )
         try:
             body = llm_helper(prompt)
             if body and body.strip():
@@ -2589,7 +2726,9 @@ def _save_growth_state(paths, state: dict) -> None:
 #   "skipped_insufficient_unmatched"   —— 未命中记忆条目太少，没必要调用（仅信号增强）
 #   "parse_error"                      —— 有响应，但解析失败（仅信号增强）
 #   "error"                            —— 调用本身抛出异常
-_LLM_CALL_TYPES = ("signal_augment", "report_quality", "topic_category", "goal_alignment_match")
+_LLM_CALL_TYPES = (
+    "signal_augment", "report_quality", "topic_category", "goal_alignment_match", "report_outline",
+)
 
 
 def _record_llm_call_status(paths, call_type: str, outcome: str, *, detail: str = "") -> None:
@@ -3025,15 +3164,20 @@ def sync_confirmed_topics_to_tech_radar(paths, profile, cfg) -> int:
 
 # ────────── N4：外部资讯命中 → 展示补充信号 / 报告背景（方向二 2.3/2.4 节）──────────
 
-def _external_signal_count_for_topic(
+def _external_signal_matching_pages(
     paths, topic: str, keywords: list[str], *, window_days: int = 30,
-) -> int:
-    """[growth_advisor_improvement_plan_v4.md 方向二 2.3 节] 粗略统计：
-    最近 `window_days` 天内，wiki 里有多少条 `source_kind` 属于
+) -> list:
+    """[growth_advisor_improvement_plan_v4.md 方向二 2.3 节 /
+    growth_advisor_research_quality_plan.md 阶段 1] 找出最近
+    `window_days` 天内，wiki 里 `source_kind` 属于
     `external_watch`/`external_search`（外部检索/外部观察产出，见
     `wiki/world_writer.py` 的 `EXTERNAL_WATCH_SOURCE_KIND`/
-    `EXTERNAL_SEARCH_SOURCE_KIND`）的页面，标题/正文命中了该主题的
-    关键词。
+    `EXTERNAL_SEARCH_SOURCE_KIND`）、标题/正文命中该主题关键词的页面，
+    按更新时间倒序返回页面对象列表。
+
+    `_external_signal_count_for_topic()`（纯计数，参与展示）和
+    `_external_signal_excerpts_for_topic()`（摘录，参与报告生成）共享
+    这段"找到命中页面"的逻辑，避免同一套过滤条件维护两份。
 
     复用 `growth_signal_scan()` 对记忆做关键词匹配的同一套简单规则
     （小写子串匹配，不引入新的匹配算法/embedding）。**只读聚合，不改变
@@ -3044,11 +3188,11 @@ def _external_signal_count_for_topic(
     单个页面解析失败（frontmatter 缺失/格式错误等，`wiki/quarantine.py`
     已经有独立的隔离区机制处理这类问题）时静默跳过，不影响其它页面的
     统计，也不在这里重复记录隔离区问题（那是 `wiki/stats.py::
-    compute_stats()` 的职责，本函数只是"顺手数一下"，不承担 wiki 健康度
+    compute_stats()` 的职责，本函数只是"顺手找一下"，不承担 wiki 健康度
     治理的职责）。
     """
     if not keywords:
-        return 0
+        return []
     try:
         from mini_agent.wiki.indexer import discover_pages
         from mini_agent.wiki.parser import parse_page
@@ -3056,18 +3200,18 @@ def _external_signal_count_for_topic(
             EXTERNAL_WATCH_SOURCE_KIND, EXTERNAL_SEARCH_SOURCE_KIND,
         )
     except Exception:
-        return 0
+        return []
 
     cutoff_date = (
         __import__("datetime").date.today()
         - __import__("datetime").timedelta(days=window_days)
     ).isoformat()
     lowered_keywords = [k.lower() for k in keywords if k]
-    count = 0
+    matched: list = []
     try:
         page_paths = discover_pages(paths)
     except Exception:
-        return 0
+        return []
     for md_path in page_paths:
         try:
             page = parse_page(md_path)
@@ -3085,8 +3229,41 @@ def _external_signal_count_for_topic(
             continue
         haystack = " ".join([page.id, page.body[:2000]] + list(page.tags)).lower()
         if any(kw in haystack for kw in lowered_keywords):
-            count += 1
-    return count
+            matched.append(page)
+    matched.sort(key=lambda p: p.updated or p.created or "", reverse=True)
+    return matched
+
+
+def _external_signal_count_for_topic(
+    paths, topic: str, keywords: list[str], *, window_days: int = 30,
+) -> int:
+    """粗略统计命中页面数量，纯粹是 `_external_signal_matching_pages()`
+    结果的 `len()`——行为跟重构前完全一致，见该函数 docstring 了解
+    过滤规则细节。"""
+    return len(_external_signal_matching_pages(paths, topic, keywords, window_days=window_days))
+
+
+def _external_signal_excerpts_for_topic(
+    paths, topic: str, keywords: list[str], *, window_days: int = 30, max_excerpts: int = 2,
+) -> list[dict[str, str]]:
+    """[growth_advisor_research_quality_plan.md 阶段 1] 取命中页面里
+    最近的 `max_excerpts` 条，各截取正文前 ~150 字作为摘录，供报告生成
+    时真正"看到内容"而不只是"知道有几条"。
+
+    返回 `[{"id": 页面 id, "date": 更新/创建日期, "excerpt": 摘录}, ...]`，
+    按最近更新时间倒序。任何页面解析失败已经在
+    `_external_signal_matching_pages()` 里被跳过，这里不需要重复处理。
+    """
+    pages = _external_signal_matching_pages(paths, topic, keywords, window_days=window_days)
+    out: list[dict[str, str]] = []
+    for page in pages[:max_excerpts]:
+        excerpt = " ".join((page.body or "").split())[:150]
+        out.append({
+            "id": page.id,
+            "date": page.updated or page.created or "",
+            "excerpt": excerpt,
+        })
+    return out
 
 
 def growth_topic_map(paths) -> list[dict]:

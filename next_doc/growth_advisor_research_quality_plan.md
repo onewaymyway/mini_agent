@@ -24,7 +24,7 @@
   忽略原因存在的直接原因——但目前这个反馈只是"记录下来给人看"
   （2.7 节明确标注留给未来），完全没有反过来影响下一次怎么生成。
 
-## 1. 目标（本轮范围）
+## 1. 目标（本轮范围，已全部实施完成）
 
 在 `generate_growth_report()` 现有框架内做增量改动，不引入新的存储
 文件、不改变候选置信度/排序逻辑（延续"外部资讯只做展示补充，不参与
@@ -162,12 +162,16 @@ prompt 内容与本方案实施前一致。
 
 ## 7. 实施顺序与验收
 
-1. 阶段 1（外部资讯摘录，纯读 + prompt 拼接）→ 补测试。
-2. 阶段 3（来源标注，阶段 1 的直接延伸，同一批实施）→ 补测试。
-3. 阶段 4（忽略原因驱动调整，复用现有统计）→ 补测试。
-4. 阶段 2（两段式生成，成本最高、改动面最大，最后做）→ 补测试。
+> 状态：阶段 1/2/3/4 均已实施完成，详见 `docs/growth-advisor-guide.md`
+> 2.10 节、`src/mini_agent/evolution/growth_advisor.py` 模块头部
+> docstring、`tests/test_growth_advisor_research_quality.py`。
+
+1. 阶段 1（外部资讯摘录，纯读 + prompt 拼接）→ 补测试。✅
+2. 阶段 3（来源标注，阶段 1 的直接延伸，同一批实施）→ 补测试。✅
+3. 阶段 4（忽略原因驱动调整，复用现有统计）→ 补测试。✅
+4. 阶段 2（两段式生成，成本最高、改动面最大，最后做）→ 补测试。✅
 5. 每阶段完成后同步更新 `docs/growth-advisor-guide.md`
-   （新增 2.10 节）与本文档、模块头部 docstring 变更历史。
+   （新增 2.10 节）与本文档、模块头部 docstring 变更历史。✅
 
 每个阶段都在 `report_include_external_context`/
 `report_two_stage_enabled`/`report_dismiss_reason_adaptive_enabled`
